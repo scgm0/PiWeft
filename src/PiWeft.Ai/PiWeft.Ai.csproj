@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+	<IsAotCompatible>true</IsAotCompatible>
+	<RootNamespace>PiWeft.Ai</RootNamespace>
+	<AssemblyName>PiWeft.Ai</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<InternalsVisibleTo Include="PiWeft.Ai.Tests" />
+	<InternalsVisibleTo Include="PiWeft.CodingAgent" />
+	<InternalsVisibleTo Include="PiWeft.CodingAgent.Tests" />
+	<InternalsVisibleTo Include="pi" />
+	<InternalsVisibleTo Include="PiWeft.Cli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<!-- SSE parsing comes from the shared framework on .NET 10 (System.Net.ServerSentEvents). -->
+	<!-- Models are large; ship them as a (trim-safe) source-generated JSON resource. -->
+	<EmbeddedResource Include="Resources\models.json" />
+  </ItemGroup>
+
+</Project>

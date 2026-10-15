@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<IsPackable>false</IsPackable>
+		<PublishAot>true</PublishAot>
+		<AssemblyName>piweft-aot-smoke</AssemblyName>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<TrimmerRootAssembly Include="PiWeft.Ai" />
+		<TrimmerRootAssembly Include="PiWeft.Agent" />
+		<TrimmerRootAssembly Include="PiWeft.CodingAgent" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="../../src/PiWeft.Ai/PiWeft.Ai.csproj" />
+		<ProjectReference Include="../../src/PiWeft.Agent/PiWeft.Agent.csproj" />
+		<ProjectReference Include="../../src/PiWeft.CodingAgent/PiWeft.CodingAgent.csproj" />
+		<ProjectReference Include="../../src/PiWeft.Cli/PiWeft.Cli.csproj" />
+		<ProjectReference Include="../../src/PiWeft.Mcp/PiWeft.Mcp.csproj" />
+	</ItemGroup>
+
+</Project>

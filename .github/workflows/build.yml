@@ -1,0 +1,127 @@
+name: Test and Package
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (without v prefix)'
+        required: true
+        default: '0.1.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install desktop test dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb libx11-6 libxcursor1 libxrandr2 libxi6 libgl1 libegl1 libfontconfig1
+      - name: Restore
+        run: dotnet restore PiWeft.slnx
+      - name: Test
+        run: xvfb-run -a dotnet test PiWeft.slnx -c Release --no-restore --logger trx --results-directory TestResults
+      - name: Test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/*.trx
+          if-no-files-found: warn
+
+  package:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            rid: win-x64
+          - os: ubuntu-24.04
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: macos-15-intel
+            rid: osx-x64
+          - os: macos-15
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install Linux NativeAOT dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev libx11-6 libxcursor1 libxrandr2 libxi6 libgl1 libegl1 libfontconfig1
+      - name: Select version
+        id: version
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $env:GITHUB_REF.Substring('refs/tags/v'.Length)
+          } elseif ($env:INPUT_VERSION) {
+            $env:INPUT_VERSION
+          } else {
+            "0.1.0-ci.$env:GITHUB_RUN_NUMBER"
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+([-.][A-Za-z0-9.-]+)?$') { throw 'Invalid package version' }
+          "value=$version" >> $env:GITHUB_OUTPUT
+      - name: Publish NativeAOT CLI and desktop, then archive
+        shell: pwsh
+        run: ./scripts/package.ps1 -Rid '${{ matrix.rid }}' -Version '${{ steps.version.outputs.value }}'
+      - name: Published CLI smoke test
+        shell: pwsh
+        run: |
+          $extension = if ($IsWindows) { '.exe' } else { '' }
+          & "./artifacts/publish/${{ matrix.rid }}/PiWeft.Cli/pi$extension" --version
+          if ($LASTEXITCODE -ne 0) { throw 'Published CLI smoke test failed' }
+          $staged = Get-ChildItem -Path './artifacts/stage' -Directory -Filter 'PiWeft-*' | Select-Object -First 1
+          if ($null -eq $staged) { throw 'staged package directory is missing' }
+          if (-not (Test-Path (Join-Path $staged.FullName "pi$extension"))) { throw "staged CLI binary is not named pi$extension" }
+          if (-not (Test-Path (Join-Path $staged.FullName "piweft-desktop$extension"))) { throw "staged desktop binary is not named piweft-desktop$extension" }
+      - name: Published desktop self-check
+        shell: pwsh
+        run: |
+          $env:PI_CODING_AGENT_DIR = Join-Path $env:RUNNER_TEMP 'pi-agent-smoke'
+          $extension = if ($IsWindows) { '.exe' } else { '' }
+          & "./artifacts/publish/${{ matrix.rid }}/PiWeft.Desktop/piweft-desktop$extension" --self-check --cwd $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw 'Published desktop self-check failed' }
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: PiWeft-${{ matrix.rid }}
+          path: artifacts/packages/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: PiWeft-*
+          path: packages
+          merge-multiple: true
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" packages/* --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes

@@ -1,0 +1,73 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<AssemblyName>piweft-desktop</AssemblyName>
+		<AssemblyTitle>PiWeft Desktop</AssemblyTitle>
+		<RootNamespace>PiWeft.Desktop</RootNamespace>
+		<PublishAot>true</PublishAot>
+		<TrimMode>full</TrimMode>
+		<InvariantGlobalization>false</InvariantGlobalization>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<MewUITarget Condition="'$(RuntimeIdentifier)' == '' and $([System.OperatingSystem]::IsWindows())">windows</MewUITarget>
+		<MewUITarget Condition="'$(RuntimeIdentifier)' == '' and $([System.OperatingSystem]::IsMacOS())">macos</MewUITarget>
+		<MewUITarget Condition="'$(RuntimeIdentifier)' == '' and $([System.OperatingSystem]::IsLinux())">linux</MewUITarget>
+		<MewUITarget Condition="$(RuntimeIdentifier.StartsWith('win'))">windows</MewUITarget>
+		<MewUITarget Condition="$(RuntimeIdentifier.StartsWith('osx'))">macos</MewUITarget>
+		<MewUITarget Condition="$(RuntimeIdentifier.StartsWith('linux'))">linux</MewUITarget>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(MewUITarget)' == 'linux'">
+		<DefineConstants>$(DefineConstants);MEWUI_X11</DefineConstants>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(MewUITarget)' == 'windows'">
+		<DefineConstants>$(DefineConstants);MEWUI_WIN32</DefineConstants>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(MewUITarget)' == 'macos'">
+		<DefineConstants>$(DefineConstants);MEWUI_MACOS</DefineConstants>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Aprillz.MewUI.Core" />
+		<PackageReference Include="Aprillz.MewUI.Svg" />
+		<PackageReference Include="Aprillz.MewUI.Markdown" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(MewUITarget)' == 'linux'">
+		<PackageReference Include="Aprillz.MewUI.Platform.X11" />
+		<PackageReference Include="Aprillz.MewUI.Backend.MewVG.X11" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(MewUITarget)' == 'windows'">
+		<PackageReference Include="Aprillz.MewUI.Platform.Win32" />
+		<PackageReference Include="Aprillz.MewUI.Backend.Direct2D" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(MewUITarget)' == 'macos'">
+		<PackageReference Include="Aprillz.MewUI.Platform.MacOS" />
+		<PackageReference Include="Aprillz.MewUI.Backend.MewVG.MacOS" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="PiWeft.Desktop.Tests" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<EmbeddedResource Include="Resources/fonts/*.ttf" />
+		<EmbeddedResource Include="Resources/icons/*.svg" />
+		<None Include="Resources/fonts/LICENSE-*.txt" />
+		<None Include="Resources/icons/LICENSE-*.txt" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="../PiWeft.CodingAgent/PiWeft.CodingAgent.csproj" />
+		<ProjectReference Include="../PiWeft.Mcp/PiWeft.Mcp.csproj" />
+		<ProjectReference Include="../PiWeft.Cli/PiWeft.Cli.csproj" />
+	</ItemGroup>
+
+</Project>

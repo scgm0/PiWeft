@@ -1,0 +1,24 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="11.0.0-rc.2.26504.105" />
+    <PackageVersion Include="ZLogger" Version="2.5.10" />
+    <PackageVersion Include="Aprillz.MewUI.Core" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Platform.Win32" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Platform.MacOS" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Backend.Direct2D" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Backend.Gdi" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Backend.MewVG.Win32" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Backend.MewVG.MacOS" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Platform.X11" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Backend.MewVG.X11" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Svg" Version="0.22.1" />
+    <PackageVersion Include="Aprillz.MewUI.Markdown" Version="0.22.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
+  </ItemGroup>
+</Project>

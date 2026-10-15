@@ -1,0 +1,23 @@
+<Solution>
+  <Folder Name="/src/">
+	<Project Path="src/PiWeft.Ai/PiWeft.Ai.csproj" />
+	<Project Path="src/PiWeft.Agent/PiWeft.Agent.csproj" />
+	<Project Path="src/PiWeft.CodingAgent/PiWeft.CodingAgent.csproj" />
+	<Project Path="src/PiWeft.Cli/PiWeft.Cli.csproj" />
+	<Project Path="src/PiWeft.Mcp/PiWeft.Mcp.csproj" />
+	<Project Path="src/PiWeft.Desktop/PiWeft.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+	<Project Path="tests/PiWeft.Ai.Tests/PiWeft.Ai.Tests.csproj" />
+	<Project Path="tests/PiWeft.Agent.Tests/PiWeft.Agent.Tests.csproj" />
+	<Project Path="tests/PiWeft.CodingAgent.Tests/PiWeft.CodingAgent.Tests.csproj" />
+	<Project Path="tests/PiWeft.Cli.Tests/PiWeft.Cli.Tests.csproj" />
+	<Project Path="tests/PiWeft.Mcp.Tests/PiWeft.Mcp.Tests.csproj" />
+	<Project Path="tests/PiWeft.Desktop.Tests/PiWeft.Desktop.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+	<Project Path="tools/PiWeft.AotSmoke/PiWeft.AotSmoke.csproj" />
+	<Project Path="tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj" />
+	<Project Path="tools/PiWeft.Mcp.FixtureServer/PiWeft.Mcp.FixtureServer.csproj" />
+  </Folder>
+</Solution>

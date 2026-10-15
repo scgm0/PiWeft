@@ -1,0 +1,30 @@
+using Aprillz.MewUI;
+using Aprillz.MewUI.Controls;
+
+namespace PiWeft.Desktop;
+
+/// <summary>模型、命令和图片浮层共用窗口级互斥与清理，避免跨标签叠加。</summary>
+internal sealed class TransientOverlay : IOverlayService
+{
+	private UIElement? _active;
+	private Action? _close;
+
+	public static void Open(Window window, UIElement view, Action close)
+	{
+		var host = window.OverlayLayer.GetOrCreateService(static _ => new TransientOverlay());
+		if (!ReferenceEquals(host._active, view)) host._close?.Invoke();
+		host._active = view;
+		host._close = close;
+		if (!window.OverlayLayer.Contains(view)) window.OverlayLayer.Add(view);
+	}
+
+	public static void Remove(Window window, UIElement view)
+	{
+		window.OverlayLayer.Remove(view);
+		if (window.OverlayLayer.GetService<TransientOverlay>() is { } host && ReferenceEquals(host._active, view))
+		{
+			host._active = null;
+			host._close = null;
+		}
+	}
+}

@@ -1,0 +1,1134 @@
+using PiWeft.Agent;
+using PiWeft.Ai;
+using PiWeft.CodingAgent.Compaction;
+using PiWeft.CodingAgent.Prompts;
+using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Settings;
+using PiWeft.CodingAgent.Tools;
+
+// 本类型上也有 `Tools` 属性，因此给 shell 运行器起别名。
+using ShellRunner = PiWeft.CodingAgent.Tools.ShellRunner;
+
+// `PiWeft.Agent` 同时是命名空间，因此给运行时类型起别名。
+using AgentRuntime = PiWeft.Agent.Agent;
+
+// 会话上也有 `Tools` 属性，因此给 todo 工具工厂起别名。
+using TodoToolFactory = PiWeft.CodingAgent.Tools.TodoTool;
+using AskQuestionToolFactory = PiWeft.CodingAgent.Tools.AskQuestionTool;
+
+namespace PiWeft.CodingAgent;
+
+public sealed record CodingAgentSessionOptions
+{
+	public required string Cwd { get; init; }
+
+	public required Model Model { get; init; }
+
+	/// <summary>流式产出助手回复。接模型网关时用 <c>AgentGatewayStreamFn.For(gateway)</c>。</summary>
+	public required StreamFn StreamFn { get; init; }
+
+	/// <summary>
+	/// 思考级别。为 <c>null</c> 时沿用会话里记录的级别（恢复会话时就是上次的），没有记录则为
+	/// <see cref="ThinkingLevels.Off"/> —— 与 pi 一致：显式指定优先，其次会话记录，最后默认值。
+	/// </summary>
+	public string? ThinkingLevel { get; init; }
+
+	/// <summary>覆盖内置工具集。</summary>
+	public IReadOnlyList<AgentTool>? Tools { get; init; }
+
+	/// <summary>在内置工具集之上追加的工具，例如 MCP 服务器提供的工具。</summary>
+	public IReadOnlyList<AgentTool> ExtraTools { get; init; } = [];
+
+	/// <summary>要恢复的已有会话；不传则新建。</summary>
+	public SessionManager? Session { get; init; }
+
+	/// <summary>是否把会话条目写入磁盘；设为 <c>false</c> 即纯内存会话。</summary>
+	public bool Persist { get; init; } = true;
+
+	/// <summary>CLI 按 pi 的行为在启动时记录级别；桌面浏览可延迟到开始对话再记录。</summary>
+	public bool RecordInitialThinkingLevel { get; init; }
+
+	public CodingAgentSettings Settings { get; init; } = new();
+
+	/// <summary>追加在工具准则之后的准则，默认使用 pi 的基础规则。</summary>
+	public IReadOnlyList<string>? ExtraGuidelines { get; init; }
+
+	/// <summary>自定义前缀提示词（<c>--system-prompt</c>），取代默认 preamble。</summary>
+	public string? CustomSystemPrompt { get; init; }
+
+	/// <summary>追加到提示词的 <c>addendum</c> 章节（<c>--append-system-prompt</c>）。</summary>
+	public string? AppendSystemPrompt { get; init; }
+
+	/// <summary>为 true 时不加载 AGENTS.md / CLAUDE.md 等项目上下文文件。</summary>
+	public bool NoContextFiles { get; init; }
+
+	/// <summary>宿主交互界面；为 null 时 <c>ask_question</c> 直接报告不支持。</summary>
+	public IUiHost? UiHost { get; init; }
+
+	/// <summary>
+	/// 项目是否受信任。为 false 时不加载项目级技能与提示词模板（<c>&lt;cwd&gt;/.pi/skills</c>、
+	/// <c>.agents/skills</c> 等），但仍加载用户级目录。上下文文件不受影响（与 pi 一致）。
+	/// </summary>
+	public bool ProjectTrusted { get; init; } = true;
+
+	/// <summary>每次请求的基础 provider 选项（API key、请求头、超时、采样参数）。</summary>
+	public StreamOptions Options { get; init; } = new();
+
+	/// <summary>覆盖技能发现结果；传空列表即不加载任何技能。</summary>
+	public IReadOnlyList<Skills.Skill>? Skills { get; init; }
+
+	/// <summary>覆盖提示词模板的发现结果。</summary>
+	public IReadOnlyList<PromptTemplate>? PromptTemplates { get; init; }
+
+	public Func<BeforeToolCallContext, CancellationToken, ValueTask<BeforeToolCallResult?>>? BeforeToolCall { get; init; }
+
+	public Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? AfterToolCall { get; init; }
+}
+
+/// <summary>
+/// 一个编码代理会话：分章节的系统提示词、内置工具、仅追加的会话文件与代理循环接在一起。
+/// 已落盘的消息才是权威记录，因此每次请求发送的都是会话当前分支的投影。
+/// </summary>
+public sealed class CodingAgentSession : IDisposable
+{
+	private readonly AgentRuntime _agent;
+
+	/// <summary>系统提示词中最后一次描述过的工具集合。</summary>
+	private IReadOnlyList<BuiltinTool> _promptTools = [];
+
+	/// <summary>会话运行期间不会变化的提示词输入。</summary>
+	private SystemPromptOptions _systemPromptSections = null!;
+
+	/// <summary>工具集变化后重建的系统提示词。</summary>
+	private SystemMessage? _refreshedSystemPrompt;
+	private readonly IDisposable _persistence;
+
+	/// <summary>会话订阅者：代理事件之外，会话自己也会发重试事件。</summary>
+	private readonly List<Func<AgentEvent, ValueTask>> _listeners = [];
+
+	/// <summary>连续重试次数（0 表示当前不在重试）。</summary>
+	private int _retryAttempt;
+
+	/// <summary>退避等待的中止开关。</summary>
+	private CancellationTokenSource? _retryAbort;
+
+	/// <summary>RPC 的 <c>set_auto_retry</c> 覆盖值；为 null 时用设置里的默认。</summary>
+	private bool? _autoRetryOverride;
+	private readonly StreamFn _streamFn;
+	private readonly StreamOptions _streamOptions;
+	private bool _disposed;
+	private readonly Lock _statisticsGate = new();
+	private readonly SessionStatisticsCache _statistics = new();
+	private long _todoRevision = -1;
+	private TodoState _todo = TodoState.Empty;
+
+	/// <summary>本次计划模式是否由 PiDeck 标记开启（决定下一条无标记消息是否自动退出）。</summary>
+	private bool _planModeFromMarker;
+	private IReadOnlyList<Message>? _contextMessages;
+	private (long Tokens, int? LastUsageIndex) _contextTokens;
+
+	/// <summary>当前生效的完整工具集（不受计划模式过滤影响）。</summary>
+	private IReadOnlyList<BuiltinTool> _fullTools = [];
+
+	/// <summary>宿主提供的 beforeToolCall 钩子；计划模式的安全网在它之前执行。</summary>
+	private readonly Func<BeforeToolCallContext, CancellationToken, ValueTask<BeforeToolCallResult?>>? _userBeforeToolCall;
+
+	public CodingAgentSession(CodingAgentSessionOptions options)
+	{
+		ArgumentNullException.ThrowIfNull(options);
+
+		Cwd = Path.GetFullPath(options.Cwd);
+		Settings = options.Settings;
+		UiHost = options.UiHost;
+		ProjectTrusted = options.ProjectTrusted;
+		Session = options.Session
+			?? (options.Persist ? SessionManager.Create(Cwd) : SessionManager.InMemory(Cwd));
+
+		DiscoveredSkills = options.Skills ?? Skills.Skills.Discover(Cwd, agentDir: null, includeProject: options.ProjectTrusted);
+		PromptTemplates = options.PromptTemplates ?? Prompts.PromptTemplates.Discover(Cwd, agentDir: null, includeProject: options.ProjectTrusted);
+
+		// 内置工具的提示词元数据以名称索引：命令行/桌面会传入已经过滤的 AgentTool 列表，
+		// 这里按名称把短 snippet 与 guidelines 重新挂回去，保证提示词与 pi/PiDeck 一致。
+		var defaults = BuiltinTools.Create(Cwd);
+		var defaultsByName = new Dictionary<string, BuiltinTool>(defaults.Count, StringComparer.Ordinal);
+		foreach (var tool in defaults)
+		{
+			defaultsByName[tool.Tool.Name] = tool;
+		}
+
+		List<BuiltinTool> builtins;
+		if (options.Tools is null)
+		{
+			builtins = [.. defaults, .. options.ExtraTools.Select(static tool => new BuiltinTool(tool, tool.Description, []))];
+		}
+		else
+		{
+			builtins = new List<BuiltinTool>(options.Tools.Count + options.ExtraTools.Count);
+			foreach (var tool in options.Tools)
+			{
+				builtins.Add(defaultsByName.TryGetValue(tool.Name, out var described)
+					? described with { Tool = tool }
+					: new BuiltinTool(tool, tool.Description, []));
+			}
+
+			foreach (var tool in options.ExtraTools)
+			{
+				builtins.Add(new BuiltinTool(tool, tool.Description, []));
+			}
+		}
+
+		// 把占位的 todo 工具换成绑定到本会话的版本，使其能读写当前分支的 PiDeck 兼容快照。
+		// 切换会话（SwitchSession/ForkAt）时闭包会读到新的 Session，无需重建工具。
+		for (var index = 0; index < builtins.Count; index++)
+		{
+			if (builtins[index].Tool.Name == TodoToolFactory.Name)
+			{
+				builtins[index] = TodoToolFactory.Create(() => Session);
+			}
+			else if (builtins[index].Tool.Name == AskQuestionToolFactory.Name)
+			{
+				builtins[index] = AskQuestionToolFactory.Create(() => this);
+			}
+		}
+
+		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
+		// 写进去的话，真实 pi 读这个会话时会把 role:system 的消息当成历史，污染上下文。
+		_systemPromptSections = new SystemPromptOptions
+		{
+			Cwd = Cwd,
+			ExtraGuidelines = options.ExtraGuidelines ?? SystemPrompt.BaselineGuidelines,
+			CustomPrompt = options.CustomSystemPrompt,
+			Addendum = options.AppendSystemPrompt,
+			Skills = Skills.Skills.FormatForPrompt(DiscoveredSkills),
+			ProjectContext = options.NoContextFiles ? null : ContextFiles.Load(Cwd),
+		};
+
+		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
+		_fullTools = builtins;
+		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(builtins));
+		_userBeforeToolCall = options.BeforeToolCall;
+
+		_streamFn = options.StreamFn;
+		_streamOptions = options.Options with
+		{
+			TimeoutMs = options.Options.TimeoutMs ?? options.Settings.TimeoutMs,
+		};
+
+		// 恢复会话时，会话文件里记录的思考级别优先于默认值（显式传入的级别仍然最优先）。
+		var requestedThinkingLevel = options.ThinkingLevel
+			?? (Session.Entries.Count > 0 ? Session.BuildSessionContext().ThinkingLevel : null)
+			?? ThinkingLevels.Off;
+
+		_agent = new AgentRuntime(new AgentOptions
+		{
+			Model = options.Model,
+			ThinkingLevel = ThinkingLevelResolver.Clamp(options.Model, requestedThinkingLevel),
+			StreamFn = options.StreamFn,
+			Tools = [.. builtins.Select(static builtin => builtin.Tool)],
+			ConvertToLlm = CodingMessages.ConvertToLlm,
+			TransformContext = TransformContextAsync,
+			BeforeToolCall = GuardedBeforeToolCallAsync,
+			AfterToolCall = options.AfterToolCall,
+			Options = _streamOptions,
+		});
+
+		// 恢复会话：代理从分支投影出发，使其自身状态与文件一致。
+		_agent.SetMessages(Session.BuildProjectedMessages());
+
+		// CLI 保留上游启动行为；桌面仅浏览时不追加元数据。
+		if (options.RecordInitialThinkingLevel)
+		{
+			Session.AppendThinkingLevelChange(_agent.ThinkingLevel);
+		}
+
+		_persistence = _agent.Subscribe(PersistAsync);
+	}
+
+	public string Cwd { get; }
+
+	public CodingAgentSettings Settings { get; }
+
+	/// <summary>宿主交互界面（RPC / CLI / 桌面）；为 null 时 ask_question 报告不可用。</summary>
+	public IUiHost? UiHost { get; }
+
+	/// <summary>项目是否受信任；决定项目级技能与提示词模板是否加载。</summary>
+	public bool ProjectTrusted { get; }
+
+	public SessionManager Session { get; private set; }
+
+	public AgentRuntime Agent => _agent;
+
+	public Model Model => _agent.Model;
+
+	public string ThinkingLevel => _agent.ThinkingLevel;
+
+	public IReadOnlyList<AgentTool> Tools => _agent.Tools;
+
+	/// <summary>当前分支上模型可见的消息，已应用上下文编辑与压缩。</summary>
+	/// <summary>模型下一次请求会看到的完整消息（含运行时构造的系统提示词）。</summary>
+	public IReadOnlyList<Message> Messages => Project();
+
+	/// <summary>
+	/// 下一次请求将携带的消息：分支投影；若会话中途工具集发生变化，
+	/// 其中的系统提示词会被重建。
+	/// </summary>
+	public IReadOnlyList<Message> ProjectedMessages => Project();
+
+	/// <summary>当前是否有压缩正在进行。</summary>
+	public bool IsCompacting { get; private set; }
+
+	/// <summary>队列中等待的 steering 与 follow-up 消息数。</summary>
+	public int PendingMessageCount => _agent.PendingMessageCount;
+
+	/// <summary>由 <c>set_session_name</c> 设置的显示名（如果设置了）。</summary>
+	public string? SessionName => Session.CurrentName();
+
+	/// <summary>估算的上下文大小，以及它所依据的最后一条助手用量下标。</summary>
+	/// <summary>为该会话工作目录发现的技能。</summary>
+	public IReadOnlyList<Skills.Skill> DiscoveredSkills { get; }
+
+	/// <summary>为该会话发现的斜杠命令提示词模板。</summary>
+	public IReadOnlyList<PromptTemplate> PromptTemplates { get; }
+
+	/// <summary>用已发现的提示词模板展开 <c>/name args</c> 形式的消息。</summary>
+	public string ExpandPromptTemplate(string text) => Prompts.PromptTemplates.Expand(text, PromptTemplates);
+
+	/// <summary>
+	/// 展开一条用户输入：先展开 <c>/skill:name</c> 技能命令，再展开提示词模板，顺序与 pi 一致。
+	/// </summary>
+	public string ExpandInput(string text)
+	{
+		if (text.Length == 0)
+		{
+			return text;
+		}
+
+		// 大多数输入既不是技能命令也不是模板（不以 '/' 开头），先快速返回避免任何额外分配。
+		if (text[0] != '/')
+		{
+			return text;
+		}
+
+		return Prompts.PromptTemplates.Expand(
+			Skills.Skills.ExpandCommand(text, DiscoveredSkills),
+			PromptTemplates);
+	}
+
+	/// <summary>
+	/// 把一条文本输入（可选图片）组装成待发送的用户消息，展开技能命令与提示词模板。
+	/// CLI、RPC 与桌面共用这条路径，保证三者的输入语义一致。
+	/// </summary>
+	public UserMessage PrepareInput(string text, IReadOnlyList<ImageContent>? images = null)
+	{
+		// 计划模式：PiDeck 的 Plan 开关会在消息首行注入隐藏标记。带标记就开启，
+		// 随后第一条无标记消息（来自同一开关流）自动退出；/plan 手动的源不自动退出。
+		if (PlanMode.TryStripMarker(text, out var withoutMarker))
+		{
+			_planModeFromMarker = true;
+			SetPlanMode(true);
+			text = withoutMarker;
+		}
+		else if (PlanModeEnabled && _planModeFromMarker)
+		{
+			_planModeFromMarker = false;
+			SetPlanMode(false);
+		}
+
+		var expanded = ExpandInput(text);
+		var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+		if (images is not { Count: > 0 })
+		{
+			return new UserMessage { Content = MessageContent.FromText(expanded), Timestamp = timestamp };
+		}
+
+		var blocks = new List<ContentBlock>(images.Count + 1) { new TextContent { Text = expanded } };
+		blocks.AddRange(images);
+		return new UserMessage { Content = MessageContent.FromBlocks(blocks), Timestamp = timestamp };
+	}
+
+	/// <summary>
+	/// 把叶子移动到 <paramref name="targetId"/>，并先把被放弃的路径摘要成一条
+	/// <c>branch_summary</c> 条目。
+	/// </summary>
+	public async Task<BranchSummaryResult?> NavigateWithSummaryAsync(
+		string targetId,
+		string? customInstructions = null,
+		CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+		if (_agent.IsStreaming)
+		{
+			throw new InvalidOperationException("Cannot navigate while the session is streaming");
+		}
+
+		var result = await BranchSummarizer.NavigateWithSummaryAsync(
+			Session,
+			_agent.Model,
+			_streamFn,
+			_streamOptions,
+			Settings.Compaction,
+			targetId,
+			customInstructions,
+			cancellationToken).ConfigureAwait(false);
+
+		_agent.SetMessages(Session.BuildProjectedMessages());
+		return result;
+	}
+
+	/// <summary>
+	/// 直接把叶子移到某个条目并重载消息，不生成分支摘要。界面上的「跳到此处」用它，
+	/// 只做回退不做摘要生成，因此是即时操作。
+	/// </summary>
+	public void NavigateTo(string entryId)
+	{
+		ThrowIfDisposed();
+
+		if (_agent.IsStreaming)
+		{
+			throw new InvalidOperationException("运行期间不能切换分支");
+		}
+
+		if (!Session.Contains(entryId))
+		{
+			throw new InvalidOperationException($"找不到条目 {entryId}");
+		}
+
+		Session.Branch(entryId);
+		_agent.SetMessages(Session.BuildProjectedMessages());
+	}
+
+	/// <summary>
+	/// 替换当前会话，<c>switch_session</c>、<c>fork</c>、<c>clone</c> 都需要它。代理保留自己的模型、
+	/// 工具与设置，会话记录则按新会话的分支重建。
+	/// </summary>
+	public void SwitchSession(SessionManager session)
+	{
+		ThrowIfDisposed();
+		ArgumentNullException.ThrowIfNull(session);
+
+		if (_agent.IsStreaming)
+		{
+			throw new InvalidOperationException("Cannot switch sessions while streaming");
+		}
+
+		Session = session;
+		_agent.SetMessages(Session.BuildProjectedMessages());
+	}
+
+	/// <summary>
+	/// 在当前会话的 <paramref name="entryId"/> 处派生，并切换到新的会话文件。
+	/// <paramref name="position"/> 取 <c>before</c>（在用户消息之前派生，RPC 的默认值）或 <c>at</c>
+	/// （保留该条目本身，也就是 <see cref="CloneAsync"/> 的行为）。
+	/// </summary>
+	/// <returns>被派生那条用户消息的文本；在条目处派生时返回 <c>null</c>。</returns>
+	public string? ForkAt(string entryId, string position = "before")
+	{
+		ThrowIfDisposed();
+
+		if (_agent.IsStreaming)
+		{
+			throw new InvalidOperationException("Cannot fork while streaming");
+		}
+
+		var selected = Session.GetEntry(entryId)
+			?? throw new InvalidOperationException("Invalid entry ID for forking");
+
+		string? targetLeafId;
+		string? selectedText = null;
+
+		if (position == "at")
+		{
+			targetLeafId = selected.Id;
+		}
+		else
+		{
+			if (selected is not SessionMessageEntry { Message: UserMessage user })
+			{
+				throw new InvalidOperationException("Invalid entry ID for forking");
+			}
+
+			targetLeafId = selected.ParentId;
+			selectedText = user.Content.Text ?? string.Empty;
+		}
+
+		if (!Session.IsPersisted)
+		{
+			// 内存会话无法再产生第二个文件，改为移动叶子。
+			if (targetLeafId is null)
+			{
+				Session.StartNew();
+			}
+			else
+			{
+				Session.Branch(targetLeafId);
+			}
+
+			_agent.SetMessages(Session.BuildProjectedMessages());
+			return selectedText;
+		}
+
+		var sourceFile = Session.SessionFile;
+		if (targetLeafId is null)
+		{
+			Session.StartNew(parentSession: sourceFile);
+		}
+		else
+		{
+			Session.CreateBranchedSession(targetLeafId);
+		}
+
+		_agent.SetMessages(Session.BuildProjectedMessages());
+		return selectedText;
+	}
+
+	/// <summary>把当前分支复制成一个新会话文件，位置不变。</summary>
+	public void CloneAsync()
+	{
+		ThrowIfDisposed();
+		var leaf = Session.LeafId ?? throw new InvalidOperationException("Cannot clone session: no current entry selected");
+		ForkAt(leaf, "at");
+	}
+
+	/// <summary>只摘要被放弃的路径，不做导航。</summary>
+	public Task<BranchSummaryResult?> SummarizeBranchAsync(
+		string targetId,
+		string? customInstructions = null,
+		CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+		return BranchSummarizer.SummarizeBranchAsync(
+			Session,
+			_agent.Model,
+			_streamFn,
+			_streamOptions,
+			Settings.Compaction,
+			targetId,
+			customInstructions,
+			cancellationToken);
+	}
+
+	public (long Tokens, int? LastUsageIndex) ContextTokens()
+	{
+		lock (_statisticsGate)
+		{
+			var messages = Session.BuildProjectedMessages();
+			if (!ReferenceEquals(messages, _contextMessages))
+			{
+				_contextTokens = Compaction.ContextTokens.EstimateContextTokens(messages);
+				_contextMessages = messages;
+			}
+			return _contextTokens;
+		}
+	}
+
+	/// <summary>上下文是否超过当前模型的压缩阈值。</summary>
+	public bool ShouldCompact() =>
+		Compaction.ContextTokens.ShouldCompact(ContextTokens().Tokens, _agent.Model.ContextWindow, Settings.Compaction);
+
+	/// <summary>
+	/// 摘要较旧的条目并记录一条 <c>compaction</c> 条目。没有可压缩内容时返回 <c>null</c>。
+	/// 完成后会从会话刷新代理的会话记录。
+	/// </summary>
+	public async Task<CompactionResult?> CompactAsync(
+		string? customInstructions = null,
+		CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+		if (_agent.IsStreaming)
+		{
+			throw new InvalidOperationException("Cannot compact while the session is streaming");
+		}
+
+		IsCompacting = true;
+		CompactionResult? result;
+		try
+		{
+			result = await Compactor.CompactAsync(
+				Session,
+				_agent.Model,
+				_streamFn,
+				_streamOptions,
+				Settings.Compaction,
+				customInstructions,
+				cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			IsCompacting = false;
+		}
+
+		if (result is not null)
+		{
+			_agent.SetMessages(Session.BuildProjectedMessages());
+		}
+
+		return result;
+	}
+
+	public bool IsStreaming => _agent.IsStreaming;
+
+	/// <summary>每个抽取点投递多少条 steering 消息。</summary>
+	public AgentQueueMode SteeringMode
+	{
+		get => _agent.SteeringMode;
+		set => _agent.SteeringMode = value;
+	}
+
+	/// <summary>每个抽取点投递多少条 follow-up 消息。</summary>
+	public AgentQueueMode FollowUpMode
+	{
+		get => _agent.FollowUpMode;
+		set => _agent.FollowUpMode = value;
+	}
+
+	/// <summary>自动压缩的运行时开关，与配置里的 <c>compaction.enabled</c> 同时生效。</summary>
+	public bool AutoCompactionEnabled { get; set; } = true;
+
+	/// <summary>清空排队的 steering 与 follow-up 消息，并返回被丢弃的内容。</summary>
+	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue() => _agent.ClearQueue();
+
+	public string? ErrorMessage => _agent.ErrorMessage;
+
+	public IDisposable Subscribe(Func<AgentEvent, ValueTask> listener)
+	{
+		var subscription = _agent.Subscribe(listener);
+		_listeners.Add(listener);
+
+		return new ListenerHandle(subscription, _listeners, listener);
+	}
+
+	/// <summary>把会话级事件（例如重试）发给订阅者。</summary>
+	private void Emit(AgentEvent @event)
+	{
+		foreach (var listener in _listeners.ToArray())
+		{
+			listener(@event).AsTask().GetAwaiter().GetResult();
+		}
+	}
+
+	private sealed class ListenerHandle(
+		IDisposable inner,
+		List<Func<AgentEvent, ValueTask>> listeners,
+		Func<AgentEvent, ValueTask> listener) : IDisposable
+	{
+		private bool _disposed;
+
+		public void Dispose()
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			_disposed = true;
+			inner.Dispose();
+			listeners.Remove(listener);
+		}
+	}
+
+	public void Abort() => _agent.Abort();
+
+	/// <summary>缓存的全文件统计快照；只有追加条目才消费新用量。</summary>
+	public SessionStatistics Statistics()
+	{
+		lock (_statisticsGate) return _statistics.Get(Session);
+	}
+
+	/// <summary>是否处于计划模式：写工具被停用，提示词附加只读指引。</summary>
+	public bool PlanModeEnabled { get; private set; }
+
+	/// <summary>开关计划模式。停用 <c>edit</c>/<c>write</c> 并重建提示词与工具集。</summary>
+	public void SetPlanMode(bool enabled)
+	{
+		if (PlanModeEnabled == enabled)
+		{
+			return;
+		}
+
+		PlanModeEnabled = enabled;
+		ApplyTools();
+	}
+
+	/// <summary>把完整工具集按计划模式过滤后应用到代理，并重建提示词。</summary>
+	private void ApplyTools()
+	{
+		var effective = _fullTools;
+		if (PlanModeEnabled)
+		{
+			effective = [.. _fullTools.Where(static tool => !PlanMode.DisabledTools.Contains(tool.Tool.Name, StringComparer.Ordinal))];
+		}
+
+		_agent.SetTools([.. effective.Select(static tool => tool.Tool)]);
+		_promptTools = effective;
+		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(effective));
+	}
+
+	/// <summary>带上 <c>plan_mode</c> 章节（如启用）的提示词输入。</summary>
+	private SystemPromptOptions SectionsFor(IReadOnlyList<BuiltinTool> tools)
+	{
+		IReadOnlyDictionary<string, string?>? overrides = _systemPromptSections.SectionOverrides;
+		if (PlanModeEnabled)
+		{
+			var merged = overrides is null
+				? new Dictionary<string, string?>(StringComparer.Ordinal)
+				: new Dictionary<string, string?>(overrides, StringComparer.Ordinal);
+			merged["plan_mode"] = PlanMode.Instructions;
+			overrides = merged;
+		}
+
+		return _systemPromptSections with { Tools = tools, SectionOverrides = overrides };
+	}
+
+	/// <summary>计划模式下的安全网：即使模型仍调用写工具也会被拦下。</summary>
+	private async ValueTask<BeforeToolCallResult?> GuardedBeforeToolCallAsync(
+		BeforeToolCallContext context,
+		CancellationToken cancellationToken)
+	{
+		if (PlanModeEnabled)
+		{
+			if (PlanMode.DisabledTools.Contains(context.ToolCall.Name, StringComparer.Ordinal))
+			{
+				return new BeforeToolCallResult { Block = true, Reason = "plan mode: writing tools are disabled until the plan is approved" };
+			}
+
+			if (context.ToolCall.Name == "bash" &&
+				context.Arguments["command"]?.GetValue<string>() is { Length: > 0 } command &&
+				!PlanMode.IsReadOnlyShellCommand(command))
+			{
+				return new BeforeToolCallResult { Block = true, Reason = "plan mode: only read-only shell commands are allowed" };
+			}
+		}
+
+		return _userBeforeToolCall is null
+			? null
+			: await _userBeforeToolCall(context, cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// 用本会话的模型、凭据与选项做一次连接测试（只发 1 个输出 token）。
+	/// 桌面的「测试连接」与 RPC 的 <c>test_model</c> 共用它。
+	/// </summary>
+	public Task<ProviderTestResult> TestConnectionAsync(CancellationToken cancellationToken = default) =>
+		ProviderProbe.TestAsync(_streamFn, _agent.Model, _streamOptions, cancellationToken);
+
+	/// <summary>当前分支的待办计划；按会话 revision 缓存，未变更时零扫描。</summary>
+	public TodoState CurrentTodo()
+	{
+		lock (_statisticsGate)
+		{
+			if (_todoRevision != Session.Revision)
+			{
+				_todo = TodoToolFactory.Current(Session);
+				_todoRevision = Session.Revision;
+			}
+
+			return _todo;
+		}
+	}
+
+	/// <summary>按类型拆分的令牌合计，供客户端展示统计。</summary>
+	public (long Input, long Output, long CacheRead, long CacheWrite) UsageBreakdown()
+	{
+		var stats = Statistics();
+		return (stats.Input, stats.Output, stats.CacheRead, stats.CacheWrite);
+	}
+
+	/// <summary>整个会话的令牌与费用合计，包含其它运行写入的条目。</summary>
+	public (long Tokens, double Cost) UsageTotals()
+	{
+		var stats = Statistics();
+		return (stats.Tokens, stats.Cost);
+	}
+
+	public async Task<IReadOnlyList<Message>> PromptAsync(string text, CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+		// 展开技能命令与提示词模板，让 CLI、RPC、桌面与交互模式共享同一语义。
+		var message = PrepareInput(text);
+		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
+		return await RunWithRetryAsync(
+			() => _agent.PromptAsync(message, cancellationToken),
+			cancellationToken).ConfigureAwait(false);
+	}
+
+	// ------------------------------------------------------------ 自动重试
+
+	/// <summary>是否启用自动重试（RPC 覆盖优先，其次是设置）。</summary>
+	public bool AutoRetryEnabled => _autoRetryOverride ?? Settings.Retry.Enabled;
+
+	/// <summary>RPC 的 <c>set_auto_retry</c>。</summary>
+	public void SetAutoRetryEnabled(bool enabled) => _autoRetryOverride = enabled;
+
+	/// <summary>当前重试到第几次（0 表示没有在重试）。</summary>
+	public int RetryAttempt => _retryAttempt;
+
+	/// <summary>是否正在退避等待。</summary>
+	public bool IsRetrying => _retryAbort is not null;
+
+	/// <summary>中止正在进行的重试等待，对应 RPC 的 <c>abort_retry</c>。</summary>
+	public void AbortRetry() => _retryAbort?.Cancel();
+
+	/// <summary>
+	/// 跑一次代理，并在「可重试的失败」上按退避策略重试。与 pi 一致：
+	/// 失败的助手回复保留在会话文件里，但通过 <c>context_edit</c> 从模型投影中移除，
+	/// 这样重试请求不会带上那次失败；重试本身不重新提交用户消息。
+	/// </summary>
+	private async Task<IReadOnlyList<Message>> RunWithRetryAsync(
+		Func<Task<IReadOnlyList<Message>>> run,
+		CancellationToken cancellationToken)
+	{
+		for (;;)
+		{
+			var messages = await run().ConfigureAwait(false);
+			var last = LastAssistantMessage(messages);
+			var policy = Settings.Retry;
+
+			if (last is null || last.StopReason != StopReason.Error)
+			{
+				FinishRetry(success: true, finalError: null);
+				return messages;
+			}
+
+			var maxRetries = Math.Max(0, policy.MaxRetries);
+			if (!AutoRetryEnabled || _retryAttempt >= maxRetries || !RetryClassifier.IsRetryable(last))
+			{
+				FinishRetry(success: false, last.ErrorMessage);
+				return messages;
+			}
+
+			_retryAttempt++;
+			var delayMs = RetryClassifier.DelayMs(policy, _retryAttempt);
+
+			Emit(new AutoRetryStartEvent
+			{
+				Attempt = _retryAttempt,
+				MaxAttempts = maxRetries,
+				DelayMs = delayMs,
+				ErrorMessage = last.ErrorMessage ?? "Unknown error",
+			});
+
+			// 把失败的那次尝试从投影里去掉（文件里保留）。
+			OmitFromContext(last);
+
+			using var abort = new CancellationTokenSource();
+			_retryAbort = abort;
+			try
+			{
+				await Task.Delay(delayMs, abort.Token).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				_retryAbort = null;
+				FinishRetry(success: false, "Aborted");
+				return messages;
+			}
+			finally
+			{
+				_retryAbort = null;
+			}
+
+			// 代理自身的消息列表里还留着那次失败，重置为当前投影（已排除它）再继续。
+			_agent.SetMessages(Project());
+		}
+	}
+
+	private void FinishRetry(bool success, string? finalError)
+	{
+		if (_retryAttempt == 0)
+		{
+			return;
+		}
+
+		Emit(new AutoRetryEndEvent
+		{
+			Success = success,
+			Attempt = _retryAttempt,
+			FinalError = success ? null : finalError,
+		});
+
+		_retryAttempt = 0;
+	}
+
+	private static AssistantMessage? LastAssistantMessage(IReadOnlyList<Message> messages)
+	{
+		for (var index = messages.Count - 1; index >= 0; index--)
+		{
+			if (messages[index] is AssistantMessage assistant)
+			{
+				return assistant;
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>把某条消息从模型投影中移除（保留在会话文件里）。</summary>
+	private void OmitFromContext(Message message)
+	{
+		foreach (var entry in Session.Entries.OfType<SessionMessageEntry>())
+		{
+			if (ReferenceEquals(entry.Message, message))
+			{
+				Session.AppendContextEdit(entry.Id, replacement: null);
+				return;
+			}
+		}
+	}
+
+	/// <summary>上下文超过阈值且开启了压缩时，先压缩再继续。</summary>
+	private async Task AutoCompactAsync(CancellationToken cancellationToken)
+	{
+		if (!AutoCompactionEnabled || !Settings.Compaction.Enabled || _agent.IsStreaming)
+		{
+			return;
+		}
+
+		if (ShouldCompact())
+		{
+			await CompactAsync(customInstructions: null, cancellationToken).ConfigureAwait(false);
+		}
+	}
+
+	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+		// 与字符串重载一致：先自动压缩，再按重试策略运行。
+		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
+		return await RunWithRetryAsync(
+			() => _agent.PromptAsync(message, cancellationToken),
+			cancellationToken).ConfigureAwait(false);
+	}
+
+	public async Task<IReadOnlyList<Message>> ContinueAsync(CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
+		return await RunWithRetryAsync(
+			() => _agent.ContinueAsync(cancellationToken),
+			cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>排入一条消息，在当前工具批次结束后引导正在运行的代理。</summary>
+	public void Steer(Message message) => _agent.Steer(message);
+
+	/// <summary>排入一条消息，在代理本应停止时继续处理。</summary>
+	public void FollowUp(Message message) => _agent.FollowUp(message);
+
+	/// <summary>切换模型，并在会话中记录一条 <c>model_change</c> 条目。</summary>
+	public void SetModel(Model model)
+	{
+		ArgumentNullException.ThrowIfNull(model);
+		if (model.Id == _agent.Model.Id && model.Provider == _agent.Model.Provider)
+		{
+			return;
+		}
+
+		_agent.SetModel(model);
+		Session.AppendModelChange(model.Provider, model.Id);
+	}
+
+	/// <summary>设置思考级别（按模型收敛），并记录一条变更条目。</summary>
+	public void SetThinkingLevel(string level)
+	{
+		var clamped = ThinkingLevelResolver.Clamp(_agent.Model, level);
+		if (clamped == _agent.ThinkingLevel)
+		{
+			return;
+		}
+
+		_agent.SetThinkingLevel(clamped);
+		Session.AppendThinkingLevelChange(clamped);
+	}
+
+	/// <summary>在模型的工具循环之外执行 shell 命令的结果。</summary>
+	public sealed record BashRunResult
+	{
+		public required string Output { get; init; }
+
+		public int? ExitCode { get; init; }
+
+		public bool Cancelled { get; init; }
+
+		public bool Truncated { get; init; }
+
+		public string? FullOutputPath { get; init; }
+	}
+
+	/// <summary>
+	/// 立即执行一条 shell 命令，并记为 <c>bashExecution</c> 消息，因此下一次提示能看到它 ——
+	/// 除非设置了 <paramref name="excludeFromContext"/>。交互模式的 <c>!</c> 命令与 RPC 的 <c>bash</c>
+	/// 命令都由它支撑。
+	/// </summary>
+	public async Task<BashRunResult> RunBashAsync(
+		string command,
+		bool excludeFromContext = false,
+		Action<string>? onOutput = null,
+		CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+
+		var result = await ShellRunner
+			.RunAsync(command, Cwd, timeoutSeconds: null, onOutput, cancellationToken)
+			.ConfigureAwait(false);
+
+		var truncation = Truncate.Tail(result.Output);
+		var fullOutputPath = truncation.Truncated ? ShellRunner.WriteFullOutput(result.Output) : null;
+
+		Session.AppendMessage(CodingMessages.BashExecution(
+			command,
+			truncation.Content,
+			result.ExitCode,
+			result.Cancelled,
+			truncation.Truncated,
+			fullOutputPath,
+			excludeFromContext,
+			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+
+		if (!_agent.IsStreaming)
+		{
+			_agent.SetMessages(Session.BuildProjectedMessages());
+		}
+
+		return new BashRunResult
+		{
+			Output = truncation.Content,
+			ExitCode = result.ExitCode,
+			Cancelled = result.Cancelled,
+			Truncated = truncation.Truncated,
+			FullOutputPath = fullOutputPath,
+		};
+	}
+
+	/// <summary>追加一条会参与 LLM 上下文的扩展风格消息。</summary>
+	public string AppendCustomMessage(string customType, string content, bool display = true) =>
+		Session.AppendCustomMessage(customType, MessageContent.FromText(content), display);
+
+	public void Dispose()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_disposed = true;
+		_persistence.Dispose();
+		GC.SuppressFinalize(this);
+	}
+
+	private ValueTask<IReadOnlyList<Message>> TransformContextAsync(
+		IReadOnlyList<Message> messages,
+		CancellationToken cancellationToken) =>
+		ValueTask.FromResult(Project());
+
+	/// <summary>
+	/// 分支投影，外加当前系统提示词。会话运行期间工具集可能变化（例如 MCP 服务器宣告了新工具），
+	/// 所以模型看到的提示词每次都按当前状态重建。
+	/// <para>
+	/// 会话文件里不存系统提示（与 pi 一致）：文件里若因历史原因残留了 role:system 的消息，用当前
+	/// 提示词替换它；否则插到最前面。压缩产生的 system 消息不在开头，保持原样。
+	/// </para>
+	/// </summary>
+	private IReadOnlyList<Message> Project()
+	{
+		var projected = Session.BuildProjectedMessages();
+		var prompt = _refreshedSystemPrompt
+			?? SystemPrompt.Build(SectionsFor(_promptTools));
+
+		if (projected.Count == 0)
+		{
+			return [prompt];
+		}
+
+		if (projected[0] is SystemMessage existing)
+		{
+			// 替换章节而不是把它们拍平，这样 provider 侧缓存仍能看到相同的分界
+			// （preamble、tools、rules 等）。
+			var updated = new List<Message>(projected)
+			{
+				[0] = existing with
+				{
+					Sections = prompt.Sections,
+					ToolsAdded = prompt.ToolsAdded,
+				},
+			};
+
+			return updated;
+		}
+
+		var withPrompt = new List<Message>(projected.Count + 1) { prompt };
+		withPrompt.AddRange(projected);
+		return withPrompt;
+	}
+
+	/// <summary>
+	/// 替换生效的工具集，例如 MCP 服务器宣告 <c>tools/list_changed</c> 之后。系统提示词会
+	/// 用新的工具声明重建，未变动的工具沿用已有的措辞。
+	/// </summary>
+	public void SetTools(IReadOnlyList<AgentTool> tools)
+	{
+		// 同样把占位 todo 工具换成绑定到本会话的版本，保持提示词与执行一致。
+		var bound = new List<AgentTool>(tools.Count);
+		foreach (var tool in tools)
+		{
+			bound.Add(tool.Name switch
+			{
+				TodoToolFactory.Name => TodoToolFactory.Create(() => Session).Tool,
+				AskQuestionToolFactory.Name => AskQuestionToolFactory.Create(() => this).Tool,
+				_ => tool,
+			});
+		}
+
+		var known = new Dictionary<string, BuiltinTool>(StringComparer.Ordinal);
+		foreach (var tool in _fullTools)
+		{
+			known[tool.Tool.Name] = tool;
+		}
+
+		var rebuilt = new List<BuiltinTool>(bound.Count);
+		foreach (var tool in bound)
+		{
+			switch (tool.Name)
+			{
+				case TodoToolFactory.Name:
+					rebuilt.Add(TodoToolFactory.Create(() => Session));
+					continue;
+				case AskQuestionToolFactory.Name:
+					rebuilt.Add(AskQuestionToolFactory.Create(() => this));
+					continue;
+			}
+
+			rebuilt.Add(known.TryGetValue(tool.Name, out var described)
+				? described with { Tool = tool }
+				: new BuiltinTool(tool, tool.Description, []));
+		}
+
+		_fullTools = rebuilt;
+		ApplyTools();
+	}
+
+	private ValueTask PersistAsync(AgentEvent @event)
+	{
+		if (@event is not MessageEndEvent messageEnd)
+		{
+			return ValueTask.CompletedTask;
+		}
+
+		switch (messageEnd.Message)
+		{
+			// 系统提示词永不入库：它是运行时构造的，写进去会让真实 pi 把它当成历史消息。
+			case AssistantMessage or UserMessage or ToolResultMessage:
+				if (!string.Equals(Session.BuildSessionContext().ThinkingLevel, _agent.ThinkingLevel, StringComparison.Ordinal))
+				{
+					Session.AppendThinkingLevelChange(_agent.ThinkingLevel);
+				}
+
+				Session.AppendMessage(messageEnd.Message);
+				break;
+		}
+
+		return ValueTask.CompletedTask;
+	}
+
+	private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+}

@@ -1,0 +1,17 @@
+{
+  "providers": {
+    "local-openai": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "api": "openai-completions",
+      "models": [
+        { "id": "local-code", "name": "Local Code", "contextWindow": 128000, "maxTokens": 8192, "reasoning": true, "input": ["text", "image"] },
+        { "id": "local-chat", "name": "Local Chat", "contextWindow": 32768, "maxTokens": 4096, "input": ["text"] }
+      ]
+    },
+    "local-anthropic": {
+      "baseUrl": "http://127.0.0.1:8081",
+      "api": "anthropic-messages",
+      "models": [ { "id": "local-reasoner", "name": "Local Reasoner", "contextWindow": 200000, "maxTokens": 16384, "reasoning": true, "input": ["text"] } ]
+    }
+  }
+}

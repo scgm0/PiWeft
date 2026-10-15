@@ -1,0 +1,40 @@
+namespace PiWeft.Desktop;
+
+public static partial class Strings
+{
+	public const string ImagePreviewOpen = "点击放大查看图片";
+	public const string ImagePreviewClose = "关闭图片预览";
+	public const string AttachFiles = "添加文件或图片";
+	public const string AllFiles = "所有文件";
+	public const string AttachmentLimit = "图片限单张 10 MiB、总计 20 MiB，最多 10 张。";
+	public const string ImageModelRequired = "当前模型不支持图片，请选择支持图片的模型后发送。";
+	public const string AttachmentReadFailed = "部分附件无法读取，或超过大小上限。";
+	public const string AttachmentLoading = "正在读取图片，请稍后发送。";
+	public const string ProviderUsage = "余额查询";
+	public const string UsageRemaining = "剩余";
+	public const string UsageTotal = "总额";
+	public const string UsageUsed = "已用";
+	public const string UsageConfigure = "配置用量查询";
+	public const string UsageRefresh = "刷新余额";
+	public const string UsageAutomatic = "自动识别";
+	public const string UsageNewApi = "New API";
+	public const string UsageEndpoint = "请求路径或 URL";
+	public const string UsageRootPath = "从服务根地址请求";
+	public const string UsageValuePath = "余额字段路径";
+	public const string UsageTotalPath = "总额字段路径";
+	public const string UsageUsedPath = "已用字段路径";
+	public const string UsageCurrency = "币种或单位";
+	public const string UsageCurrencyPath = "币种字段路径";
+	public const string UsageScale = "数值除数";
+	public const string UsageToken = "访问令牌（留空使用供应商凭据）";
+	public const string UsageCookie = "Cookie";
+	public const string UsageUserId = "New API 用户 ID";
+	public const string UsageInvalidConfig = "余额查询配置无效，请检查地址、字段路径与除数。异域 URL 需单独填写凭据，仅支持 HTTPS 或本机 HTTP。";
+	public const string UsageMissingKey = "缺少供应商凭据，请配置 API Key 或查询令牌。";
+	public const string UsageResponseTooLarge = "余额接口响应超过大小上限。";
+	public const string UsageUnavailable = "余额暂时不可用，请检查接口和字段路径。";
+	public const string UsageTimeout = "余额查询超时。";
+	public const string UsageLoading = "正在查询余额…";
+	public const string UsageHttpPrefix = "余额接口 HTTP ";
+	public static string UsageHttpError(int status) => $"{UsageHttpPrefix}{status}";
+}

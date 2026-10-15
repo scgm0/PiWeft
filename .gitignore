@@ -1,0 +1,27 @@
+# .NET and NativeAOT output
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# Local tools and editors
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local agent state and credentials
+.pi/
+.env
+.env.*
+!.env.example
+auth.json
+usage-queries.json
+*.log

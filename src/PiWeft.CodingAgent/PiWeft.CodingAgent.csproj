@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<IsAotCompatible>true</IsAotCompatible>
+		<RootNamespace>PiWeft.CodingAgent</RootNamespace>
+		<AssemblyName>PiWeft.CodingAgent</AssemblyName>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="PiWeft.CodingAgent.Tests" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="../PiWeft.Ai/PiWeft.Ai.csproj" />
+		<ProjectReference Include="../PiWeft.Agent/PiWeft.Agent.csproj" />
+	</ItemGroup>
+
+</Project>

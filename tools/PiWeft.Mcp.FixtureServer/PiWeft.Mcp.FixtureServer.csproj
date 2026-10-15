@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<IsPackable>false</IsPackable>
+		<AssemblyName>PiWeft.Mcp.FixtureServer</AssemblyName>
+		<RootNamespace>PiWeft.Mcp.FixtureServer</RootNamespace>
+		<PublishAot>true</PublishAot>
+	</PropertyGroup>
+
+</Project>

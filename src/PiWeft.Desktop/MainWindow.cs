@@ -1,0 +1,1815 @@
+using Aprillz.MewUI;
+using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
+using PiWeft.Cli;
+using PiWeft.Agent;
+using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Stats;
+using PiWeft.Mcp;
+using ZLogger;
+
+namespace PiWeft.Desktop;
+
+/// <summary>
+/// 桌面外壳主窗口：顶栏、左侧会话栏、多标签会话主区。
+/// 每个标签是一个独立的 <see cref="SessionTab"/>（各自持有会话与输入区），因此可以并行开着多个会话。
+/// 会话文件与 CLI、pi 完全互通。
+/// </summary>
+public sealed partial class MainWindow : Window
+{
+	private readonly string _cwd;
+	private readonly SessionCatalog _catalog = new();
+	private CliArguments _arguments;
+	/// <summary>与 TabControl 一一对应的标签内容：<see cref="SessionTab"/> 或 <see cref="SettingsView"/>。</summary>
+	private readonly List<object> _tabEntries = [];
+	private McpConnection? _mcp;
+	private IReadOnlyList<AgentTool> _mcpTools = [];
+	/// <summary>标签标题文本，主题/名称变化时只改这一个控件。</summary>
+	private readonly Dictionary<object, TextBlock> _tabLabels = [];
+	private SettingsView? _settingsView;
+	private GitView? _gitView;
+	private FileBrowserView? _filesView;
+	private TerminalDock? _terminalView;
+	private SessionTab? _lastSessionTab;
+	private CommandPalette? _palette;
+
+	private UsageStatsView? _usageStatsView;
+	private string? _pendingNotice;
+	private readonly Dictionary<string, CliEnvironment> _environments = new(StringComparer.Ordinal);
+	private CliEnvironment? _environment;
+	private CheckBox _currentDirOnly = null!;
+	private IReadOnlyList<SessionListItem> _sessions = [];
+	private IReadOnlyList<SessionCatalog.ContentMatch> _contentMatches = [];
+
+	/// <summary>搜索请求序号：后台搜索结果回来时用它判断是否已过期。</summary>
+	private int _searchVersion;
+	private bool _restoringSelection;
+	private CancellationTokenSource? _contentSearch;
+	private bool _closed;
+	private Border _sidebar = null!;
+	private SplitPanel _workspace = null!;
+	private IReadOnlyList<SessionListItem> _allSessions = [];
+	private IReadOnlyList<Model> _models = [];
+
+	private TextBox _search = null!;
+	private TextBox _nameBox = null!;
+	private TextBlock _tabCaption = null!;
+	private TreeView _sessionTree = null!;
+
+	/// <summary>当前的快捷键绑定（启动时读一次，改键后提示重启生效）。</summary>
+	private ShortcutMap _shortcuts = new();
+
+	/// <summary>当前的会话树节点，便于在重建后恢复选中。</summary>
+	private IReadOnlyList<TreeViewNode> _sessionNodes = [];
+	private TabControl _tabControl = null!;
+	private Border _welcome = null!;
+	private TextBlock _banner = null!;
+	private TextBlock _status = null!;
+
+	/// <summary>是否在启动后自动切换一次主题然后退出（用于无人值守验证运行时换肤）。</summary>
+	public bool ThemeSmoke { get; init; }
+
+	/// <summary>启动后自动打开的标签（<c>settings</c> / <c>git</c>），用于无人值守截图检查这些面板。</summary>
+	public string? SmokeTab { get; init; }
+
+	/// <summary>启动后自动打开某个视图并停留，供截图验证（git/settings/branch/search）。</summary>
+	public string? UiSmoke { get; init; }
+
+	public MainWindow(string cwd)
+	{
+		_cwd = cwd;
+		var preference = DesktopPreference.Load();
+		this.Resizable(preference.WindowWidth ?? 1280, preference.WindowHeight ?? 820);
+		this.Padding(Thickness.Zero);
+		this.AllowDrop();
+
+		// 模型与会话都由界面决定，因此这里只用最少的默认开关。
+		_arguments = CliArguments.Parse(["--mode", "text"]).Arguments!;
+	}
+
+	protected override void OnBuild()
+	{
+		base.OnBuild();
+
+		// 命名样式挂在窗口上：颜色由主题解析，因此换肤时 MewUI 自动重绘，不需要重建界面。
+		this.StyleSheet(AppStyles.Create());
+
+		RegisterShortcuts();
+		BuildUi();
+		this.OnLoaded(Startup);
+	}
+
+	/// <summary>
+	/// 注册窗口级快捷键。绑定来自 <see cref="ShortcutMap"/>（内置默认值 + <c>desktop.json</c> 里的覆盖），
+	/// 因此用户可以改键；Ctrl+1…9 是范围型动作，固定不参与改键。
+	/// </summary>
+	private void RegisterShortcuts()
+	{
+		_shortcuts = new ShortcutMap(DesktopPreference.Load().Shortcuts);
+
+		this.OnKeyDown(key =>
+		{
+			// 设置面板正在等待用户按下新组合键：优先把这次按键交给它。
+			// 走窗口级处理（而不是输入框）是刻意的 —— 输入法会吞掉合成出来的可打印字符。
+			if (_settingsView?.CapturingId is not null)
+			{
+				if (key.Key == Key.Escape)
+				{
+					key.Handled = true;
+					_settingsView.CancelCapture();
+					return;
+				}
+
+				if (_settingsView.CaptureBinding(key.Key, key.Modifiers))
+				{
+					key.Handled = true;
+					return;
+				}
+			}
+
+			// Ctrl+1…9 直接切到第 N 个标签。
+			if (key.ControlKey && !key.ShiftKey && !key.AltKey && key.Key is >= Key.D1 and <= Key.D9)
+			{
+				var index = key.Key - Key.D1;
+				if (index < _tabEntries.Count)
+				{
+					key.Handled = true;
+					_tabControl.SelectedIndex = index;
+					UpdateStatus();
+				}
+
+				return;
+			}
+
+			foreach (var definition in ShortcutMap.Definitions)
+			{
+				if (_shortcuts.Get(definition.Id) is not { } binding || !binding.Matches(key))
+				{
+					continue;
+				}
+
+				key.Handled = true;
+				InvokeShortcut(definition.Id);
+				return;
+			}
+		});
+	}
+
+	/// <summary>执行一个快捷键动作。</summary>
+	private void InvokeShortcut(string id)
+	{
+		switch (id)
+		{
+			case ShortcutActions.Palette:
+				_palette?.Toggle(this);
+				break;
+
+			case ShortcutActions.NewSession:
+				OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd));
+				break;
+
+			case ShortcutActions.Models:
+				CurrentTab()?.ShowModelPicker();
+				break;
+
+			case ShortcutActions.OpenProject:
+				_ = ChooseProjectAsync();
+				break;
+
+			case ShortcutActions.SearchSessions:
+				_sidebar.IsVisible(true);
+				_search.Focus();
+				break;
+
+			case ShortcutActions.CloseTab:
+				CloseCurrentTab();
+
+				break;
+
+			case ShortcutActions.Settings:
+				OpenSettingsTab();
+				break;
+
+			case ShortcutActions.Git:
+				OpenGitTab();
+				break;
+
+			case ShortcutActions.Files:
+				OpenFilesTab();
+				break;
+
+			case ShortcutActions.Terminal:
+				OpenTerminalTab();
+				break;
+
+			case ShortcutActions.ToggleTheme:
+				ToggleTheme();
+				break;
+
+			case ShortcutActions.Refresh:
+				RefreshSessions();
+				break;
+
+			case ShortcutActions.Send:
+				if (_tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count &&
+					_tabEntries[_tabControl.SelectedIndex] is SessionTab sendTo)
+				{
+					sendTo.SendFromShortcut();
+				}
+
+				break;
+
+			case ShortcutActions.Branches:
+				CurrentTab()?.ShowBranches();
+				break;
+		}
+	}
+
+	/// <summary>
+	/// 构建静态外壳一次；主题切换只重解析样式与更新动态内容，不替换会话与输入控件。
+	/// </summary>
+	private void BuildUi()
+	{
+
+		_banner = new TextBlock().FontSize(AppTheme.FontSizeCaption).MutedText();
+		_status = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
+
+		// ------------------------------------------------------------ 顶栏
+		// 参考同类客户端：左侧是身份与当前上下文，右侧只放图标动作，快捷键提示收进命令面板。
+		// 顶栏动作使用 Lucide 矢量图标（不受字体缺字影响），配中文提示。
+		var git = AppIcons.Button("git-branch", Strings.Git, OpenGitTab, size: AppIcons.ToolbarSize);
+		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
+		var theme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
+		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsTab, size: AppIcons.ToolbarSize);
+
+		var brand = new TextBlock()
+			.Text(Strings.AppName)
+			.FontSize(AppTheme.FontSizeBrand)
+			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
+			.FontWeight(FontWeight.Bold)
+			.PrimaryText();
+
+		_tabCaption = new TextBlock()
+			.Text(_cwd)
+			.FontSize(AppTheme.FontSizeCaption)
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.SubtleText();
+
+		var topBar = new Border()
+			.StyleName(AppStyles.TopBar)
+			.Padding(new Thickness(AppTheme.Space3, 6, AppTheme.Space3, 6))
+			.Child(new DockPanel()
+				.LastChildFill()
+				.Children(
+					new StackPanel()
+						.Orientation(Orientation.Horizontal)
+						.Spacing(2)
+						.Children(palette, git, settings, theme)
+						.DockRight(),
+					new DockPanel().LastChildFill().Children(
+						AppIcons.Button("panel-left", Strings.ToggleSidebar, ToggleSidebar).DockLeft(), brand.DockLeft(), _tabCaption)));
+
+		// ------------------------------------------------------------ 侧栏
+		// 结构参考同类客户端：新建（主）+ 搜索 + 过滤开关 + 列表 + 底部紧凑操作。
+		_search = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeControl)
+			.Placeholder(Strings.SearchPlaceholder).CornerRadius(AppTheme.RadiusMd)
+			.Height(AppTheme.ControlHeightMd)
+			.OnTextChanged(_ => FilterSessions());
+
+		_nameBox = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeControl)
+			.Placeholder(Strings.SessionNamePlaceholder)
+			.IsVisible(false)
+			.OnKeyDown(key =>
+			{
+				if (key.Key == Key.Enter)
+				{
+					key.Handled = true;
+					RenameSelected();
+				}
+			});
+
+		_currentDirOnly = new CheckBox()
+			.Content(new TextBlock().Text(Strings.CurrentDirOnly).FontSize(AppTheme.FontSizeCaption))
+			.IsChecked(true)
+			.OnCheckedChanged(_ => RefreshSessions());
+
+		_sessionTree = new TreeView().FontSize(AppTheme.FontSizeControl)
+			.BorderThickness(0).Background(AppTheme.Transparent);
+		ConfigureSessionRows();
+		_sessionTree.SelectedNodeChanged += OnSessionSelected;
+
+		var pin = AppIcons.Button("star", Strings.TogglePin, TogglePin);
+		var rename = AppIcons.Button("pencil", Strings.Rename, ShowRenameBox);
+		var remove = AppIcons.Button("trash", Strings.Delete, () => _ = DeleteSelectedAsync());
+
+		var sessionActions = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(2)
+			.Children(pin, rename, remove);
+
+
+		_banner.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap);
+
+		var newSession = AppIcons.TextButton("plus", Strings.NewSession,
+			() => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd)))
+			.MinHeight(AppTheme.ControlHeightLg);
+		var openProject = AppIcons.Button("folder-open", Strings.OpenProject, () => _ = ChooseProjectAsync());
+
+		var sidebarTop = new StackPanel().Spacing(AppTheme.Space2);
+		sidebarTop.Children(
+			new DockPanel().LastChildFill().Children(openProject.DockRight(), newSession),
+			_search,
+			_currentDirOnly,
+			_nameBox,
+			_banner);
+
+		// 列表要吃掉剩余高度，所以这里用 DockPanel；StackPanel 会把 ListBox 压成内容高度。
+		var sidebar = _sidebar = new Border()
+			.StyleName(AppStyles.Sidebar)
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
+			.Child(new DockPanel()
+				.LastChildFill()
+				.Children(
+					new DockPanel().LastChildFill().Children(
+						AppIcons.Button("refresh-cw", Strings.RefreshSessions, RefreshSessions).DockRight(),
+						new TextBlock().Text(Strings.SessionList).HoverTip(_cwd).Caption()).DockTop(),
+					sidebarTop.DockTop(),
+					sessionActions.DockBottom(),
+					new Border()
+						.Background(AppTheme.Transparent)
+						.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
+						.Child(_sessionTree)));
+
+		// ------------------------------------------------------------ 主区
+		_tabControl = new TabControl().BorderThickness(0).CornerRadius(0).Padding(Thickness.Zero)
+			.WithTheme((theme, tabs) => tabs.Background = AppTheme.For(theme).WindowBackground);
+		_tabControl.SelectionChanged += _ => UpdateStatus();
+
+		_welcome = new Border()
+			.StyleName(AppStyles.Window)
+			.Padding(new Thickness(AppTheme.Space6))
+			.Child(new StackPanel()
+				.Spacing(AppTheme.Space2)
+				.Children(
+					new TextBlock()
+						.Text(Strings.WelcomeTitle)
+						.FontSize(18)
+						.FontWeight(FontWeight.Bold)
+						.PrimaryText(),
+					new TextBlock()
+						.Text(Strings.WelcomeBody)
+						.FontSize(AppTheme.FontSizeCaption)
+						.MutedText()
+						.TextWrapping(TextWrapping.Wrap),
+					_status));
+
+		_palette = new CommandPalette(PaletteCommands);
+		_palette.Closed += () =>
+		{
+			if (CurrentTab() is { } tab)
+			{
+				tab.FocusComposer();
+			}
+			else
+			{
+				_search.Focus();
+			}
+		};
+
+		var main = new Grid();
+		main.Children(_tabControl);
+		main.Children(_welcome);
+
+		// 侧栏与主区之间可以拖拽调宽。
+		var preference = DesktopPreference.Load();
+		_sidebar.IsVisible(!preference.SidebarCollapsed);
+		_workspace = new SplitPanel().Horizontal().SplitterThickness(4)
+			.MinFirst(200).MinSecond(520)
+			.FirstLength(GridLength.Pixels(preference.SidebarWidth))
+			.SecondLength(GridLength.Stars(1)).First(sidebar).Second(main);
+		Content = new Border()
+			.StyleName(AppStyles.Window)
+			.Child(new DockPanel().LastChildFill().Children(topBar.DockTop(), _workspace));
+
+	}
+
+	// ------------------------------------------------------------------ 启动
+
+	private async void Startup()
+	{
+		try
+		{
+			// 默认策略为 ask 且存在受保护项目资源时，先弹卡片问是否信任（选择会记住）。
+			if (ProjectTrust.HasPendingDecision(_cwd, trustOverride: _arguments.ProjectTrustOverride))
+			{
+				var host = new DesktopUiHost();
+				host.Attach(this);
+				var trusted = await ProjectTrust.PromptAsync(_cwd, host).ConfigureAwait(true);
+				_arguments = _arguments with { ProjectTrustOverride = trusted };
+			}
+
+			StartupCore();
+		}
+		catch (Exception ex)
+		{
+			_banner.Text(Strings.StartupFailed(ex.ToString()));
+			_status.Text(ex.Message);
+			AppLog.Failure(AppLog.For<MainWindow>(), "Window startup", ex);
+			Console.Error.WriteLine($"piweft-desktop: {Strings.StartupFailed(ex.ToString())}");
+		}
+	}
+
+	private void StartupCore()
+	{
+		this.Title(Strings.WindowTitle(_cwd));
+
+		// 尺寸在创建原生窗口前配置；这里恢复已加载窗口的位置。
+		var preference = DesktopPreference.Load();
+
+		if (preference.WindowLeft is { } left && preference.WindowTop is { } top)
+		{
+			try
+			{
+				MoveTo(left, top);
+			}
+			catch (Exception ex) when (ex is InvalidOperationException or PlatformNotSupportedException)
+			{
+				// 位置恢复失败不影响使用。
+			}
+		}
+
+		// 关闭时记住窗口状态，下次打开原位恢复。
+		this.OnClosed(() =>
+		{
+			_closed = true;
+			_contentSearch?.Cancel();
+			_usageStatsView?.Close();
+			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
+			SaveWindowState();
+		});
+		this.OnClosing(args =>
+		{
+			if (_settingsView is not { IsDirty: true } settings) return;
+			var deferral = args.GetDeferral();
+			_ = ConfirmSettingsCloseAsync(settings, args, deferral);
+		});
+
+		var (environment, error) = CliEnvironment.Create(_arguments, _cwd);
+		if (environment is null)
+		{
+			_banner.Text(Strings.StartupFailed(error ?? Strings.NoSession));
+			_status.Text(error ?? Strings.NoSession);
+			return;
+		}
+
+		try
+		{
+			preference.RememberProject(_cwd).Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Save recent project", ex);
+		}
+
+		_environment = environment;
+		_environments[Path.GetFullPath(_cwd)] = environment;
+		_models = environment.ListAvailableModels(_arguments.ApiKey);
+		AppLog.For<MainWindow>().ZLogInformation($"Desktop ready: models={_models.Count}, tools={environment.Tools.Count}");
+
+		RefreshSessions();
+
+		// MCP 服务器在后台连接：连上后把工具注入所有已打开的会话，设置面板同步显示状态。
+		_ = ConnectMcpAsync();
+
+		if (_sessions.Count > 0)
+		{
+			OpenSessionPath(_sessions[0].Path);
+		}
+		else
+		{
+			OpenSession(_catalog.Create(_cwd));
+		}
+
+		if (SmokeTab is { Length: > 0 } smokeTab)
+		{
+			// 外部工具（xdotool 等）往这个后端注入键盘/指针事件并不可靠，
+			// 因此把「打开某个面板」做成启动参数，便于无人值守截图检查。
+			if (string.Equals(smokeTab, "git", StringComparison.OrdinalIgnoreCase))
+			{
+				OpenGitTab();
+			}
+			else
+			{
+				OpenSettingsTab();
+			}
+		}
+
+		if (ThemeSmoke)
+		{
+			_ = RunThemeSmokeAsync();
+		}
+
+		if (UiSmoke is { Length: > 0 } view)
+		{
+			_ = RunUiSmokeAsync(view);
+		}
+	}
+
+	// ------------------------------------------------------------- 会话列表
+
+	/// <summary>重建侧栏列表，应用当前搜索关键字。</summary>
+	private void RefreshSessions()
+	{
+		// 「仅当前目录」默认开启；关掉后可以看到该机器上所有项目的会话。
+		var preference = DesktopPreference.Load();
+		_allSessions = _currentDirOnly?.IsChecked == false ? _catalog.List() : _catalog.List(_cwd);
+
+		// 置顶的会话排在最前，其余保持最近修改优先。
+		_allSessions =
+		[
+			.. _allSessions.Where(item => preference.IsPinned(item.Id)),
+			.. _allSessions.Where(item => !preference.IsPinned(item.Id)),
+		];
+
+		FilterSessions(preference);
+	}
+
+	/// <summary>输入搜索词时复用目录快照，只有显式刷新或会话操作才重新扫描磁盘。</summary>
+	private void FilterSessions(DesktopPreference? preference = null)
+	{
+		_contentMatches = [];
+		_sessions = SessionCatalog.Search(_allSessions, _search?.Text);
+		UpdateSessionList(preference ?? DesktopPreference.Load());
+		StartContentSearch(_search?.Text);
+	}
+
+	/// <summary>
+	/// 正文搜索放到后台：会话文件可能很大，直接在输入回调里扫会卡住输入。
+	/// 结果回来时用请求序号判断是否已经过期。
+	/// </summary>
+	private void StartContentSearch(string? query)
+	{
+		_contentSearch?.Cancel();
+		var trimmed = query?.Trim() ?? string.Empty;
+		var version = ++_searchVersion;
+		if (trimmed.Length == 0) return;
+
+		var knownPaths = _sessions.Select(static item => item.Path).ToHashSet(StringComparer.Ordinal);
+		var candidates = _allSessions.Where(item => !knownPaths.Contains(item.Path)).ToList();
+		if (candidates.Count == 0) return;
+
+		var cancellation = new CancellationTokenSource();
+		_contentSearch = cancellation;
+		_ = SearchContentAsync(candidates, trimmed, version, cancellation);
+	}
+
+	/// <summary>连续输入先等待短暂静止；新请求取消旧扫描，关闭窗口也会撤销待执行结果。</summary>
+	private async Task SearchContentAsync(IReadOnlyList<SessionListItem> candidates, string query, int version, CancellationTokenSource cancellation)
+	{
+		try
+		{
+			await Task.Delay(220, cancellation.Token).ConfigureAwait(false);
+			var matches = await Task.Run(() => SessionCatalog.SearchContent(candidates, query,
+				cancellationToken: cancellation.Token), cancellation.Token).ConfigureAwait(false);
+			Dispatch(() =>
+			{
+				if (_closed || version != _searchVersion) return;
+				_contentMatches = matches;
+				UpdateSessionList(DesktopPreference.Load());
+			});
+		}
+		catch (OperationCanceledException) { }
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Search session content", ex);
+		}
+		finally
+		{
+			Dispatch(() =>
+			{
+				if (ReferenceEquals(_contentSearch, cancellation)) _contentSearch = null;
+				cancellation.Dispose();
+			});
+		}
+	}
+
+	/// <summary>把元数据命中与正文命中合成侧栏列表。</summary>
+	private void UpdateSessionList(DesktopPreference preference)
+	{
+		var selectedId = SelectedSession()?.Id ?? CurrentTab()?.Session.Session.SessionId;
+		var rows = new List<SessionListItem>(_sessions);
+		rows.AddRange(_contentMatches.Select(static match => match.Session));
+
+		// 按工作目录分组：项目是父节点，会话是子节点（树默认展开），与 PiDeck 的项目视图一致。
+		var nodes = rows
+			.DistinctBy(static item => item.Path)
+			.GroupBy(static item => item.Cwd)
+			.OrderByDescending(static group => group.Max(static item => item.Modified))
+			.Select(group => new TreeViewNode(
+				ProjectLabel(group.Key, group.Count()),
+				[.. group
+					.OrderByDescending(item => preference.IsPinned(item.Id))
+					.ThenByDescending(static item => item.Modified)
+					.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item))],
+				tag: null))
+			.ToList();
+
+		_pinnedSessionIds = preference.Pinned.ToHashSet(StringComparer.Ordinal);
+		_sessionNodes = nodes;
+		_sessionTree.ItemsSource(nodes);
+
+		foreach (var node in nodes)
+		{
+			_sessionTree.Expand(node);
+		}
+
+		if (selectedId is not null)
+		{
+			RestoreSelection(selectedId);
+		}
+
+		if (_allSessions.Count == 0)
+		{
+			_banner.Text(Strings.NoSessions);
+		}
+		else if (rows.Count == 0)
+		{
+			_banner.Text(Strings.NoMatches);
+		}
+		else if (_contentMatches.Count > 0)
+		{
+			_banner.Text(Strings.ContentMatches(_contentMatches.Count, _contentMatches[0].Excerpt));
+		}
+		else
+		{
+			_banner.Text(string.Empty);
+		}
+	}
+
+	/// <summary>项目节点的标题：目录短名 + 会话数（完整路径放在提示里）。</summary>
+	private static string ProjectLabel(string cwd, int count) =>
+		count > 1 ? $"{ShortCwd(cwd)} ({count})" : ShortCwd(cwd);
+
+	/// <summary>会话节点的标题：置顶标记、标题、时间，内容命中再加标记。</summary>
+	private string SessionLine(SessionListItem item, DesktopPreference preference)
+	{
+		var pin = preference.IsPinned(item.Id) ? $"{Strings.PinnedMark} " : string.Empty;
+		var content = _contentMatches.Any(match => match.Session.Path == item.Path) ? $" · {Strings.ContentHit}" : string.Empty;
+
+		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}{content}";
+	}
+
+	private void OnSessionSelected(object? item)
+	{
+		if (_restoringSelection)
+		{
+			return;
+		}
+
+		var selected = SelectedSession();
+		if (selected is null)
+		{
+			return;
+		}
+
+		_nameBox.Text = selected.Name;
+
+		try
+		{
+			OpenSessionPath(selected.Path);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Open session", ex);
+			_banner.Text(Strings.OpenSessionFailed(ex.Message));
+		}
+	}
+
+	/// <summary>侧栏当前选中的会话。</summary>
+	private SessionListItem? SelectedSession()
+	{
+		return _sessionTree.SelectedNode?.Tag as SessionListItem;
+	}
+
+	/// <summary>把输入框里的名称写给选中的会话，并刷新列表与标签标题。</summary>
+	private void RenameSelected()
+	{
+		var selected = SelectedSession();
+		if (selected is null)
+		{
+			_banner.Text(Strings.SelectSessionFirst);
+			return;
+		}
+
+		try
+		{
+			_catalog.Rename(selected.Path, _nameBox.Text?.Trim());
+			RefreshSessions();
+
+			foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => tab.Session.Session.SessionFile == selected.Path))
+			{
+				tab.RefreshTitle();
+			}
+
+			_nameBox.IsVisible(false);
+			UpdateTabHeaders();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Rename session", ex);
+			_banner.Text(Strings.OpenSessionFailed(ex.Message));
+		}
+	}
+
+	/// <summary>删除会话前先确认；文件移到 <c>.trash</c> 而不是直接抹掉。</summary>
+	private async Task DeleteSelectedAsync()
+	{
+		var selected = SelectedSession();
+		if (selected is null)
+		{
+			_banner.Text(Strings.SelectSessionFirst);
+			return;
+		}
+
+		if (!await MessageBox.ConfirmAsync(Strings.DeleteConfirm(selected.Display)))
+		{
+			return;
+		}
+
+		try
+		{
+			// 先关掉对应标签，避免继续往已移走的文件追加。
+			var open = _tabEntries.OfType<SessionTab>().Where(tab => tab.Session.Session.SessionFile == selected.Path).ToList();
+			foreach (var tab in open)
+			{
+				CloseTab(tab);
+			}
+
+			var moved = _catalog.Delete(selected.Path);
+			RefreshSessions();
+			_banner.Text(Strings.Deleted(moved));
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Archive session", ex);
+			_banner.Text(Strings.OpenSessionFailed(ex.Message));
+		}
+	}
+
+	/// <summary>关闭标签并释放它持有的会话。</summary>
+	private void CloseTab(SessionTab tab)
+	{
+		var index = _tabEntries.IndexOf(tab);
+		if (index < 0)
+		{
+			return;
+		}
+
+		if (ReferenceEquals(_lastSessionTab, tab))
+		{
+			_lastSessionTab = _tabEntries.OfType<SessionTab>().FirstOrDefault(other => !ReferenceEquals(other, tab));
+		}
+
+		_tabEntries.RemoveAt(index);
+		_tabLabels.Remove(tab);
+
+		if (index < _tabControl.Tabs.Count)
+		{
+			_tabControl.RemoveTabAt(index);
+		}
+
+		tab.Dispose();
+		UpdateStatus();
+	}
+
+	// --------------------------------------------------------------- 标签页
+
+	/// <summary>先选中已打开的标签，避免重复反序列化整个 JSONL 文件。</summary>
+	private void OpenSessionPath(string path)
+	{
+		var resolved = Path.GetFullPath(path);
+		var existing = _tabEntries.OfType<SessionTab>().FirstOrDefault(tab => tab.Session.Session.SessionFile == resolved);
+		if (existing is not null)
+		{
+			_tabControl.SelectedIndex = _tabEntries.IndexOf(existing);
+			existing.FocusComposer();
+			return;
+		}
+		OpenSession(_catalog.Open(resolved));
+	}
+
+	/// <summary>打开一个会话：已打开则选中，否则新建标签页。</summary>
+	private void OpenSession(SessionManager manager)
+	{
+		if (_environment is null)
+		{
+			return;
+		}
+
+		// 同一个会话文件只开一个标签。
+		var path = manager.SessionFile;
+		if (path is not null)
+		{
+			var existing = _tabEntries.OfType<SessionTab>().FirstOrDefault(tab => tab.Session.Session.SessionFile == path);
+			if (existing is not null)
+			{
+				_tabControl.SelectedIndex = _tabEntries.IndexOf(existing);
+				existing.FocusComposer();
+				return;
+			}
+		}
+
+		// 会话可能属于别的项目：为该工作目录准备（并缓存）一套环境，工具与会话一样以它的 cwd 为基准。
+		var environment = EnvironmentFor(manager.Cwd);
+		var extraTools = McpToolsFor(manager.Cwd);
+		// 问询卡片需要标签的视图来定位窗口，因此先建宿主、构造会话，再把视图挂回去。
+		var uiHost = new DesktopUiHost();
+		var session = environment.CreateSession(
+			_arguments, manager.Cwd, session: manager, extraTools: extraTools, recordInitialThinkingLevel: false, uiHost: uiHost);
+
+		var tab = AttachTab(session);
+		uiHost.Attach(tab.View);
+		tab.UiHost = uiHost;
+		AppLog.For<MainWindow>().ZLogInformation($"Session opened: session={session.Session.SessionId}");
+		_tabControl.SelectedIndex = _tabEntries.Count - 1;
+		UpdateTabHeaders();
+		UpdateStatus();
+		tab.FocusComposer();
+	}
+
+	/// <summary>为已有会话创建一个标签页。</summary>
+	private SessionTab AttachTab(CodingAgentSession session)
+	{
+		// 选择器与会话沿用同一启动环境，避免热重载后列出当前会话尚不能调用的新端点。
+		var environment = EnvironmentFor(session.Cwd);
+		var tab = new SessionTab(session, environment.ListAvailableModels(_arguments.ApiKey), SessionTab.TitleFor(session),
+			() => environment.ListAvailableModels(_arguments.ApiKey));
+		tab.TitleChanged += _ => UpdateTabHeaders();
+		tab.StateChanged += _ =>
+		{
+			UpdateTabHeaders();
+			if (!tab.IsStreaming)
+			{
+				RefreshSessions();
+			}
+		};
+		tab.Forked += _ => RefreshSessions();
+
+		_tabEntries.Add(tab);
+		AddTab(header: TabHeader(tab.Title, () => CloseTab(tab)), content: tab.View, entry: tab);
+
+		return tab;
+	}
+
+	/// <summary>标签标题：标题文本 + 关闭按钮，与同类客户端的标签形态一致。</summary>
+	private UIElement TabHeader(string title, Action onClose)
+	{
+		var label = new TextBlock().Text(title).MaxWidth(180).FontSize(AppTheme.FontSizeCaption)
+			.TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(title);
+
+		return new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(4)
+			.Children(
+				label,
+				AppIcons.Button("x", Strings.CloseCurrentTab, onClose, size: 12));
+	}
+
+	/// <summary>登记标签页并记住标题控件，便于后续更新。</summary>
+	private void AddTab(UIElement header, UIElement content, object entry)
+	{
+		var item = new TabItem().Header(header).Content(content);
+		if (header is FrameworkElement element)
+		{
+			element.ContextMenu(TabMenu(element, entry));
+		}
+
+		if (header is StackPanel panel && panel.Children.Count > 0 && panel.Children[0] is TextBlock label)
+		{
+			_tabLabels[entry] = label;
+		}
+
+		_tabControl.AddTab(item);
+	}
+
+	/// <summary>刷新标签标题：会话名 + 运行状态指示。</summary>
+	private void UpdateTabHeaders()
+	{
+		foreach (var (entry, label) in _tabLabels)
+		{
+			if (entry is SessionTab tab)
+			{
+				label.Text(tab.IsStreaming ? $"{tab.Title} …" : tab.Title);
+			}
+		}
+	}
+
+	/// <summary>关闭设置/Git 这类辅助标签。</summary>
+	private void CloseAuxTab(object entry)
+	{
+		if (entry is SettingsView { IsDirty: true } settings)
+		{
+			_ = CloseSettingsTabAsync(settings);
+			return;
+		}
+		CloseAuxTabCore(entry);
+	}
+
+	private async Task CloseSettingsTabAsync(SettingsView settings)
+	{
+		if (await settings.CanCloseAsync()) CloseAuxTabCore(settings);
+	}
+
+	private static async Task ConfirmSettingsCloseAsync(SettingsView settings, ClosingEventArgs args, ClosingDeferral deferral)
+	{
+		using (deferral)
+		{
+			try { args.Cancel = !await settings.CanCloseAsync(); }
+			catch (InvalidOperationException) { args.Cancel = true; }
+		}
+	}
+
+	private void CloseAuxTabCore(object entry)
+	{
+		var index = _tabEntries.IndexOf(entry);
+		if (index < 0)
+		{
+			return;
+		}
+
+		_tabEntries.RemoveAt(index);
+		_tabLabels.Remove(entry);
+
+		if (index < _tabControl.Tabs.Count)
+		{
+			_tabControl.RemoveTabAt(index);
+		}
+
+		if (ReferenceEquals(entry, _settingsView))
+		{
+			_settingsView = null;
+		}
+		else if (ReferenceEquals(entry, _gitView))
+		{
+			_gitView = null;
+		}
+		else if (ReferenceEquals(entry, _filesView))
+		{
+			_filesView = null;
+		}
+		else if (ReferenceEquals(entry, _terminalView))
+		{
+			_terminalView?.Dispose();
+			_terminalView = null;
+		}
+		else if (ReferenceEquals(entry, _usageStatsView))
+		{
+			_usageStatsView?.Close();
+			_usageStatsView = null;
+		}
+
+		UpdateStatus();
+	}
+
+	private void UpdateStatus()
+	{
+		var index = _tabControl.SelectedIndex;
+		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
+		if (_lastSessionTab is { } previous && !ReferenceEquals(entry, previous)) previous.HideTransientPanels();
+
+		_welcome.IsVisible(entry is null);
+		_tabControl.IsVisible(entry is not null);
+
+		switch (entry)
+		{
+			case null:
+				_status.Text(Strings.NoOpenSession);
+				UpdateTopBarCaption();
+				return;
+
+			case SettingsView view:
+				// 每次切到设置标签都重新取一次快照，数据是实时的。
+				view.Refresh();
+				_status.Text(Strings.SettingsTitle);
+				SetTopCaption(Strings.SettingsTitle);
+				return;
+
+			case GitView git:
+				// Git 状态同样是现取现用。
+				git.Refresh();
+				_status.Text(Strings.Git);
+				SetTopCaption(Strings.Git);
+				return;
+
+			case SessionTab active:
+				_lastSessionTab = active;
+				RestoreSelection(active.Session.Session.SessionId);
+				UpdateTabHeaders();
+				UpdateTopBarCaption();
+				return;
+		}
+	}
+
+	/// <summary>
+	/// 无人值守的界面演练：启动后打开指定视图并停留若干秒（外部脚本趁机截图），随后退出。
+	/// 键盘/鼠标注入在 Wayland 会话里不可靠，这种方式能稳定覆盖各个视图。
+	/// </summary>
+	private async Task RunUiSmokeAsync(string view)
+	{
+		await Task.Delay(1500).ConfigureAwait(false);
+
+		Dispatch(() =>
+		{
+			switch (view)
+			{
+				case "hints":
+					PrepareHoverSmoke();
+					break;
+				case "interactions":
+					CurrentTab()?.PrepareInteractionSmoke();
+					break;
+				case "primary":
+					CurrentTab()?.PreparePrimarySmoke();
+					break;
+				case "palette":
+					_palette?.Show(this);
+					break;
+				case "model":
+					CurrentTab()?.ShowModelPicker();
+					break;
+				case "git":
+					OpenGitTab();
+					break;
+				case "config":
+					OpenSettingsTab();
+					_settingsView?.ShowConfiguration();
+					break;
+				case "appearance":
+					OpenSettingsTab();
+					if (_settingsView is { } appearance) _ = appearance.SelectSectionAsync("appearance");
+					break;
+				case "agent":
+				case "mcp":
+					OpenSettingsTab();
+					_settingsView?.ShowConfiguration();
+					if (_settingsView is { } configuration) _ = configuration.SelectSectionAsync(view);
+					break;
+				case "sidebar":
+					ToggleSidebar();
+					break;
+				case "settings":
+					OpenSettingsTab();
+					break;
+				case "branch":
+					CurrentTab()?.ShowBranches();
+					break;
+				case "balance":
+					CurrentTab()?.ShowProviderUsage();
+					break;
+				case "statistics-details":
+					CurrentTab()?.ShowStatisticsDetails();
+					break;
+				case "statistics":
+					CurrentTab()?.ShowStatistics();
+					break;
+				case "chat":
+					CurrentTab()?.ShowChat();
+					break;
+				case "search":
+					CurrentTab()?.ToggleSearchFromSmoke();
+					break;
+				default:
+					Console.Error.WriteLine($"piweft-desktop: 未知的界面演练目标：{view}");
+					break;
+			}
+
+			Console.WriteLine($"piweft-desktop: ui smoke 已打开 {view}，标签数={_tabEntries.Count}");
+		});
+
+		await Task.Delay(view == "interactions" ? 18000 : 7000).ConfigureAwait(false);
+		Dispatch(() =>
+		{
+			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();
+			if (view == "chat") CurrentTab()?.ReportConversationSmoke();
+			Console.WriteLine("piweft-desktop: ui smoke ok");
+			Application.Shutdown();
+		});
+	}
+
+	/// <summary>
+	/// 无人值守的主题演练：等界面稳定后换肤，验证选择颜色与草稿状态，再退出。
+	/// </summary>
+	private async Task RunThemeSmokeAsync()
+	{
+		Color oldSelection = default;
+		Color oldPickerBackground = default;
+		SessionTab? originalTab = null;
+		try
+		{
+			// 固定从深色开始，这样「切换后是浅色」才有意义（否则起点可能是跟随系统）。
+			await Task.Delay(800).ConfigureAwait(false);
+			Dispatch(() =>
+			{
+				(DesktopPreference.Load() with { Theme = DesktopPreference.DarkTheme }).Save();
+				Application.Current.SetTheme(ThemeVariant.Dark);
+			});
+
+			await Task.Delay(800).ConfigureAwait(false);
+			Dispatch(() =>
+			{
+				var started = System.Diagnostics.Stopwatch.StartNew();
+				Console.WriteLine($"piweft-desktop: 切换前 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
+				oldSelection = Application.Current.Theme.Palette.SelectionBackground;
+				originalTab = CurrentTab();
+				originalTab?.PrepareThemeSmoke();
+				oldPickerBackground = originalTab?.ThemeSmokePickerBackground ?? default;
+				ToggleTheme();
+				started.Stop();
+				Console.WriteLine($"piweft-desktop: 换肤耗时 {started.Elapsed.TotalMilliseconds:0.0} ms");
+			});
+
+			await Task.Delay(1500).ConfigureAwait(false);
+			Dispatch(() =>
+			{
+				Console.WriteLine($"piweft-desktop: 切换后 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
+				var valid = oldSelection != Application.Current.Theme.Palette.SelectionBackground &&
+					ReferenceEquals(originalTab, CurrentTab()) && originalTab?.VerifyThemeSmoke(oldPickerBackground) == true;
+				Console.WriteLine(valid ? "theme controls ok: selection, picker, border, draft, caret" : "theme controls FAILED");
+				Console.WriteLine(valid ? "piweft-desktop: theme smoke ok" : "piweft-desktop: theme smoke failed");
+				if (!valid) Environment.ExitCode = 1;
+				Application.Shutdown();
+			});
+		}
+		catch (Exception ex)
+		{
+			Console.Error.WriteLine($"piweft-desktop: theme smoke failed: {ex}");
+			Dispatch(() => Application.Shutdown());
+		}
+	}
+
+	/// <summary>换肤只更新颜色，正文、Markdown、分支树与 Git 快照均保留。</summary>
+	protected override void OnThemeChanged(Theme oldTheme, Theme newTheme)
+	{
+		base.OnThemeChanged(oldTheme, newTheme);
+
+		if (ReferenceEquals(oldTheme, newTheme))
+		{
+			return;
+		}
+
+		try
+		{
+			AppStyles.ApplyTextColors(this);
+			if (_palette is { IsOpen: true }) AppStyles.ApplyTextColors(_palette.View);
+			AppIcons.RefreshAll();
+
+			foreach (var tab in _tabEntries.OfType<SessionTab>())
+			{
+				tab.ApplyTheme();
+			}
+
+			_settingsView?.ApplyTheme();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Theme refresh", ex);
+			Console.Error.WriteLine($"piweft-desktop: 换肤刷新失败：{ex}");
+		}
+	}
+
+	/// <summary>把窗口尺寸与位置写进偏好文件。</summary>
+	private void SaveWindowState()
+	{
+		try
+		{
+			var position = Position;
+			var preference = DesktopPreference.Load().WithWindow(Width, Height, position.X, position.Y) with
+			{
+				SidebarCollapsed = !_sidebar.IsVisible,
+				SidebarWidth = _workspace.FirstLength.IsAbsolute ? _workspace.FirstLength.Value : AppTheme.SidebarWidth,
+			};
+			preference.Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Save window state", ex);
+			Console.Error.WriteLine($"piweft-desktop: 无法保存窗口状态：{ex.Message}");
+		}
+	}
+
+	/// <summary>收起时复用现有侧栏与会话，SplitPanel 自动把空间交给主区。</summary>
+	private void ToggleSidebar()
+	{
+		_sidebar.IsVisible = !_sidebar.IsVisible;
+		SaveWindowState();
+	}
+
+	/// <summary>
+	/// 切换深色/浅色配色：原位更新主题，并把偏好写盘供下次启动使用。
+	/// </summary>
+	private void ToggleTheme()
+	{
+		var preference = DesktopPreference.Load().Cycle();
+
+		try
+		{
+			preference.Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Save theme preference", ex);
+			_pendingNotice = Strings.ThemeChangeFailed(ex.Message);
+		}
+
+		var name = preference.Theme switch
+		{
+			DesktopPreference.LightTheme => Strings.ThemeLight,
+			DesktopPreference.SystemTheme => Strings.ThemeSystem,
+			_ => Strings.ThemeDark,
+		};
+
+		_pendingNotice ??= Strings.ThemeChanged(name);
+
+		if (Application.IsRunning)
+		{
+			Application.Current.SetTheme(preference.Variant);
+		}
+		_banner.Text(_pendingNotice);
+		_pendingNotice = null;
+	}
+
+	/// <summary>把当前会话的文件路径或会话 id 复制到剪贴板。</summary>
+	private void CopySessionInfo(bool path)
+	{
+		if (CurrentTab() is not { } tab)
+		{
+			_banner.Text(Strings.SelectSessionFirst);
+			return;
+		}
+
+		var text = path
+			? tab.Session.Session.SessionFile ?? tab.Session.Session.SessionId
+			: tab.Session.Session.SessionId;
+
+		var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
+		_banner.Text(clipboard?.TrySetText(text) == true ? Strings.Copied : Strings.ClipboardUnavailable);
+	}
+
+	/// <summary>
+	/// 把当前会话导出成自包含的 HTML（与 CLI 的 <c>export_html</c> 同一套渲染），
+	/// 可选立刻用系统默认程序打开。
+	/// </summary>
+	private void ExportCurrentSession(bool open)
+	{
+		if (CurrentTab() is not { } tab)
+		{
+			_banner.Text(Strings.SelectSessionFirst);
+			return;
+		}
+
+		try
+		{
+			var directory = tab.Session.Session.SessionDir;
+			if (directory.Length == 0)
+			{
+				directory = Path.Combine(SessionPaths.GetAgentDir(), "exports");
+			}
+
+			Directory.CreateDirectory(directory);
+			var path = Path.Combine(directory, $"{tab.Session.Session.SessionId}.html");
+			File.WriteAllText(path, PiWeft.Cli.SessionHtml.Render(tab.Session));
+
+			_banner.Text(Strings.Exported(path));
+
+			if (open)
+			{
+				Shell.Open(path);
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Export session", ex);
+			_banner.Text(Strings.ExportFailed(ex.Message));
+		}
+	}
+
+	/// <summary>打开（或选中）Git 状态标签。</summary>
+	private void OpenGitTab()
+	{
+		var index = _gitView is null ? -1 : _tabEntries.IndexOf(_gitView);
+		if (_gitView is not null && index >= 0)
+		{
+			_gitView.Refresh();
+			_tabControl.SelectedIndex = index;
+			return;
+		}
+
+		_gitView = new GitView(() => CurrentSession()?.Cwd ?? _cwd);
+		_tabEntries.Add(_gitView);
+		AddTab(TabHeader(Strings.Git, () => CloseAuxTab(_gitView)), _gitView.View, _gitView);
+
+		_tabControl.SelectedIndex = _tabEntries.Count - 1;
+		UpdateStatus();
+	}
+
+	/// <summary>打开（或选中）用量统计标签；每次切回都会重新扫描。</summary>
+	private void OpenUsageStatsTab()
+	{
+		var index = _usageStatsView is null ? -1 : _tabEntries.IndexOf(_usageStatsView);
+		if (_usageStatsView is not null && index >= 0)
+		{
+			_ = _usageStatsView.RefreshAsync();
+			_tabControl.SelectedIndex = index;
+			return;
+		}
+
+		_usageStatsView = new UsageStatsView(
+			() => _arguments.SessionDir is { Length: > 0 } dir ? dir : UsageStats.DefaultRoot(),
+			(provider, model) => _environment?.Registry.Get(provider, model)?.Cost);
+		_tabEntries.Add(_usageStatsView);
+		AddTab(TabHeader(Strings.UsageStatsTitle, () => CloseAuxTab(_usageStatsView)), _usageStatsView.View, _usageStatsView);
+
+		_tabControl.SelectedIndex = _tabEntries.Count - 1;
+		UpdateStatus();
+	}
+
+	/// <summary>打开（或选中）文件浏览器标签。</summary>
+	private void OpenFilesTab()
+	{
+		var index = _filesView is null ? -1 : _tabEntries.IndexOf(_filesView);
+		if (_filesView is not null && index >= 0)
+		{
+			_filesView.Refresh();
+			_tabControl.SelectedIndex = index;
+			return;
+		}
+
+		_filesView = new FileBrowserView(() => CurrentSession()?.Cwd ?? _cwd);
+		_tabEntries.Add(_filesView);
+		AddTab(TabHeader(Strings.FileBrowser, () => CloseAuxTab(_filesView)), _filesView.View, _filesView);
+
+		_tabControl.SelectedIndex = _tabEntries.Count - 1;
+		UpdateStatus();
+	}
+
+	/// <summary>打开（或选中）命令 Dock 标签。</summary>
+	private void OpenTerminalTab()
+	{
+		var index = _terminalView is null ? -1 : _tabEntries.IndexOf(_terminalView);
+		if (_terminalView is not null && index >= 0)
+		{
+			_tabControl.SelectedIndex = index;
+			return;
+		}
+
+		_terminalView = new TerminalDock(() => CurrentSession()?.Cwd ?? _cwd);
+		_tabEntries.Add(_terminalView);
+		AddTab(TabHeader(Strings.Terminal, () => CloseAuxTab(_terminalView)), _terminalView.View, _terminalView);
+
+		_tabControl.SelectedIndex = _tabEntries.Count - 1;
+		UpdateStatus();
+	}
+
+	/// <summary>打开（或选中）设置标签。</summary>
+	private void OpenSettingsTab()
+	{
+		var existing = _tabEntries.IndexOf(_settingsView!);
+		if (_settingsView is not null && existing >= 0)
+		{
+			_tabControl.SelectedIndex = existing;
+			return;
+		}
+
+		_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync);
+		_tabEntries.Add(_settingsView);
+		AddTab(TabHeader(Strings.Settings, () => CloseAuxTab(_settingsView)), _settingsView.View, _settingsView);
+
+		_tabControl.SelectedIndex = _tabEntries.Count - 1;
+		UpdateStatus();
+	}
+
+	/// <summary>Reload future-session environments without replacing any running session.</summary>
+	private void ReloadConfiguration(ConfigFile file)
+	{
+		if (file == ConfigFile.Mcp) { _banner.Text(Strings.ConfigMcpRestart); return; }
+		try
+		{
+			var (environment, error) = CliEnvironment.Create(_arguments, _cwd);
+			if (environment is null) { _banner.Text(error ?? Strings.ConfigFailed); return; }
+			_environment = environment;
+			_environments.Clear();
+			_environments[Path.GetFullPath(_cwd)] = environment;
+			_models = environment.ListAvailableModels(_arguments.ApiKey);
+			_banner.Text(Strings.ConfigApplied);
+		}
+		catch (Exception ex) when (ex is IOException or ArgumentException or InvalidOperationException)
+		{
+			_banner.Text(Strings.ConfigFailed);
+		}
+	}
+
+	/// <summary>命令面板的命令集：宿主操作 + 当前会话的斜杠命令。</summary>
+	private IReadOnlyList<PaletteCommand> PaletteCommands()
+	{
+		var commands = new List<PaletteCommand>
+		{
+			new(Strings.NewSession, Strings.ShortcutNewSession, () => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd))),
+			new(Strings.OpenProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
+			new(Strings.SelectModel, "Ctrl+M", () => CurrentTab()?.ShowModelPicker()),
+			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsTab),
+			new(Strings.Git, Strings.ShortcutGit, OpenGitTab),
+			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, OpenFilesTab),
+			new(Strings.Terminal, Strings.ShortcutTerminal, OpenTerminalTab),
+			new(Strings.UsageStatsTitle, string.Empty, OpenUsageStatsTab),
+			new(Strings.CopySessionPath, Strings.ShortcutCopyPath, () => CopySessionInfo(path: true)),
+			new(Strings.CopySessionId, Strings.ShortcutCopyId, () => CopySessionInfo(path: false)),
+			new(Strings.ExportSession, Strings.ShortcutExportSession, () => ExportCurrentSession(open: false)),
+			new(Strings.ExportSessionAndOpen, Strings.ShortcutExportAndOpen, () => ExportCurrentSession(open: true)),
+			new(Strings.ToggleTheme, Strings.ShortcutTheme, ToggleTheme),
+			new(Strings.RefreshSessions, Strings.ShortcutRefresh, RefreshSessions),
+			new(Strings.CloseCurrentTab, Strings.ShortcutCloseTab, CloseCurrentTab),
+			new(Strings.ViewBranches, Strings.ShortcutBranches, () =>
+			{
+				if (CurrentTab() is { } tab)
+				{
+					tab.ShowBranches();
+				}
+			}),
+			new(Strings.MoveTabLeft, Strings.ShortcutMoveTabLeft, () => MoveCurrentTab(-1)),
+			new(Strings.MoveTabRight, Strings.ShortcutMoveTabRight, () => MoveCurrentTab(1)),
+			new(Strings.CloseOtherTabs, Strings.ShortcutCloseOtherTabs, CloseOtherTabs),
+			new(Strings.CloseAllTabs, Strings.ShortcutCloseAllTabs, CloseAllTabs),
+			new(Strings.ViewChat, Strings.ShortcutChat, () =>
+			{
+				if (CurrentTab() is { } tab)
+				{
+					tab.ShowChat();
+				}
+			}),
+		};
+
+		foreach (var project in DesktopPreference.Load().RecentProjects.Where(Directory.Exists))
+		{
+			commands.Add(new PaletteCommand($"{Strings.RecentProjects} · {ShortCwd(project)}", project, () => OpenProject(project)));
+		}
+
+		// 会话标签跳转。
+		for (var index = 0; index < _tabEntries.Count; index++)
+		{
+			if (_tabEntries[index] is SessionTab tab)
+			{
+				var target = index;
+				commands.Add(new PaletteCommand(
+					tab.Title,
+					Strings.ShortcutSwitchTo(target + 1),
+					() =>
+					{
+						_tabControl.SelectedIndex = target;
+						UpdateStatus();
+					}));
+			}
+		}
+
+		// 当前会话可以运行的斜杠命令。
+		if (CurrentTab() is { } current)
+		{
+			foreach (var command in current.SlashCommands())
+			{
+				var name = command;
+				commands.Add(new PaletteCommand(
+					$"/{name}",
+					Strings.ShortcutSlashCommand,
+					() => current.Prefill($"/{name} ")));
+			}
+		}
+
+		return commands;
+	}
+
+	/// <summary>关闭当前选中的标签。</summary>
+	private void CloseCurrentTab()
+	{
+		var index = _tabControl.SelectedIndex;
+		if (index >= 0 && index < _tabEntries.Count)
+		{
+			CloseEntry(_tabEntries[index]);
+		}
+	}
+
+	/// <summary>显示重命名输入框（平时隐藏，保持侧栏整洁）。</summary>
+	private void ShowRenameBox()
+	{
+		if (SelectedSession() is null)
+		{
+			_banner.Text(Strings.SelectSessionFirst);
+			return;
+		}
+
+		_nameBox.Text = SelectedSession()?.Name ?? string.Empty;
+		_nameBox.IsVisible(true);
+		_nameBox.Focus();
+	}
+
+	/// <summary>置顶/取消置顶侧栏选中的会话。</summary>
+	private void TogglePin()
+	{
+		var selected = SelectedSession();
+		if (selected is null)
+		{
+			_banner.Text(Strings.SelectSessionFirst);
+			return;
+		}
+
+		try
+		{
+			var preference = DesktopPreference.Load().TogglePinned(selected.Id);
+			preference.Save();
+			RefreshSessions();
+			RestoreSelection(selected.Id);
+			_banner.Text(preference.IsPinned(selected.Id) ? Strings.Pinned(selected.Display) : Strings.Unpinned(selected.Display));
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			_banner.Text(Strings.ThemeChangeFailed(ex.Message));
+		}
+	}
+
+	/// <summary>顶栏显示当前会话名，没有会话时显示工作目录。</summary>
+	private void UpdateTopBarCaption()
+	{
+		var tab = CurrentTab();
+		SetTopCaption(tab is null ? ShortCwd(_cwd) : $"{tab.Title} · {ShortCwd(tab.Session.Cwd)}");
+		_tabCaption.HoverTip(tab?.Session.Cwd ?? _cwd);
+	}
+
+	private void SetTopCaption(string text) => _tabCaption.Text(text);
+
+	/// <summary>在列表重建后把选中项恢复到指定会话。</summary>
+	private void RestoreSelection(string sessionId)
+	{
+		// 恢复高亮不应再次打开会话或把焦点从正在输入的控件抢走。
+		_restoringSelection = true;
+		try
+		{
+			foreach (var project in _sessionNodes)
+			{
+				foreach (var child in project.Children)
+				{
+					if (child.Tag is SessionListItem item && string.Equals(item.Id, sessionId, StringComparison.Ordinal))
+					{
+						_sessionTree.SelectedNode = child;
+						return;
+					}
+				}
+			}
+		}
+		finally
+		{
+			_restoringSelection = false;
+		}
+	}
+
+	/// <summary>把当前标签左移/右移一格（拖拽排序的键盘替代）。</summary>
+	private void MoveCurrentTab(int delta)
+	{
+		var index = _tabControl.SelectedIndex;
+		if (index >= 0 && index < _tabEntries.Count)
+		{
+			MoveTab(_tabEntries[index], delta);
+		}
+	}
+
+	/// <summary>按 _tabEntries 的顺序重建标签栏。</summary>
+	private void RebuildTabStrip()
+	{
+		_tabControl.ClearTabs();
+		_tabLabels.Clear();
+
+		foreach (var entry in _tabEntries)
+		{
+			switch (entry)
+			{
+				case SessionTab tab:
+				{
+					var captured = tab;
+					AddTab(TabHeader(tab.Title, () => CloseTab(captured)), tab.View, tab);
+					break;
+				}
+
+				case SettingsView settings:
+					AddTab(TabHeader(Strings.Settings, () => CloseAuxTab(settings)), settings.View, settings);
+					break;
+
+				case GitView git:
+					AddTab(TabHeader(Strings.Git, () => CloseAuxTab(git)), git.View, git);
+					break;
+
+				case FileBrowserView files:
+					AddTab(TabHeader(Strings.FileBrowser, () => CloseAuxTab(files)), files.View, files);
+					break;
+
+				case TerminalDock terminal:
+					AddTab(TabHeader(Strings.Terminal, () => CloseAuxTab(terminal)), terminal.View, terminal);
+					break;
+			}
+		}
+	}
+
+	/// <summary>关闭除当前标签之外的所有会话标签。</summary>
+	private void CloseOtherTabs()
+	{
+		var keep = CurrentTab();
+		foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => !ReferenceEquals(tab, keep)).ToList())
+		{
+			CloseTab(tab);
+		}
+	}
+
+	/// <summary>关闭所有会话标签（设置面板保留）。</summary>
+	private void CloseAllTabs()
+	{
+		foreach (var tab in _tabEntries.OfType<SessionTab>().ToList())
+		{
+			CloseTab(tab);
+		}
+	}
+
+	/// <summary>当前选中的会话标签。</summary>
+	private SessionTab? CurrentTab()
+	{
+		var index = _tabControl.SelectedIndex;
+		return index >= 0 && index < _tabEntries.Count ? _tabEntries[index] as SessionTab : null;
+	}
+
+	/// <summary>设置面板的数据快照。</summary>
+	private SettingsSnapshot Snapshot() => new()
+	{
+		AgentDir = SessionPaths.GetAgentDir(),
+		LoadArchived = () => _catalog.ListDeleted(),
+		Cwd = CurrentSession()?.Cwd ?? _cwd,
+		ModelCount = _models.Count,
+		Tools = [.. CurrentSession()?.Tools.Select(static tool => tool.Name) ?? []],
+		Skills = [.. CurrentSession()?.DiscoveredSkills.Select(static skill => skill.Name) ?? []],
+		McpServers = [.. _mcp?.Servers.Select(state => new McpServerStatus(state.Name, state.Connected, state.ToolCount, state.Error)) ?? []],
+		Session = CurrentSession(),
+	};
+
+	/// <summary>辅助标签沿用最近聚焦的会话，打开设置不会丢失模型、工具和用量上下文。</summary>
+	private CodingAgentSession? CurrentSession() => CurrentTab()?.Session ?? _lastSessionTab?.Session;
+
+	/// <summary>给某个工作目录准备 MCP 工具：全局连一次，工具按会话所属目录过滤。</summary>
+	private IReadOnlyList<AgentTool> McpToolsFor(string cwd) =>
+		string.Equals(Path.GetFullPath(cwd), Path.GetFullPath(_cwd), StringComparison.Ordinal) ? _mcpTools : [];
+
+	/// <summary>后台连接 MCP 服务器，并把工具注入所有已打开的会话。</summary>
+	private async Task ConnectMcpAsync()
+	{
+		try
+		{
+			var connection = await McpServers.ConnectConfiguredAsync(
+				_cwd,
+				onError: message => Dispatch(() => _banner.Text($"MCP：{message}")),
+				includeProject: _environment?.ProjectTrusted ?? true).ConfigureAwait(false);
+
+			var resourceTools = McpResourceTools.Create(() => connection.ResourceServers);
+
+			Dispatch(() =>
+			{
+				_mcp = connection;
+				AppLog.For<MainWindow>().ZLogInformation($"MCP connections ready: servers={connection.Servers.Count}, errors={connection.Errors.Count}");
+
+				// 服务器在运行中添加/移除工具时，同步到已打开的会话。
+				connection.ToolsChanged += changed =>
+				{
+					var tools = ToolSetFor(changed);
+					Dispatch(() =>
+					{
+						_mcpTools = tools;
+						foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => McpToolsFor(tab.Session.Cwd).Count > 0))
+						{
+							tab.Session.SetTools([.. WithoutMcp(tab.Session.Tools), .. tools]);
+						}
+
+						_settingsView?.Refresh();
+					});
+				};
+
+				_mcpTools = [.. connection.Tools, .. resourceTools];
+
+				foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => McpToolsFor(tab.Session.Cwd).Count > 0))
+				{
+					tab.Session.SetTools([.. WithoutMcp(tab.Session.Tools), .. _mcpTools]);
+				}
+
+				if (connection.Errors.Count == 0 && connection.Servers.Count > 0)
+				{
+					_banner.Text(Strings.McpConnected(connection.Servers.Count, _mcpTools.Count));
+				}
+
+				_settingsView?.Refresh();
+			});
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Connect MCP servers", ex);
+			Dispatch(() => _banner.Text($"MCP：{ex.Message}"));
+		}
+	}
+
+	/// <summary>重建 MCP 连接：先释放旧连接，再按当前配置重新连接（供设置面板的手动重连使用）。</summary>
+	internal async Task ReconnectMcpAsync()
+	{
+		var previous = _mcp;
+		_mcp = null;
+		_mcpTools = [];
+		if (previous is not null)
+		{
+			try
+			{
+				await previous.DisposeAsync().ConfigureAwait(false);
+			}
+			catch (Exception ex)
+			{
+				AppLog.Failure(AppLog.For<MainWindow>(), "Dispose MCP before reconnect", ex);
+			}
+		}
+
+		await ConnectMcpAsync().ConfigureAwait(false);
+	}
+
+	private static IReadOnlyList<AgentTool> ToolSetFor(McpConnection connection) =>
+		[.. connection.Tools, .. McpResourceTools.Create(() => connection.ResourceServers)];
+
+	/// <summary>去掉工具列表里来自 MCP 的项，保留内置工具。</summary>
+	private static IReadOnlyList<AgentTool> WithoutMcp(IReadOnlyList<AgentTool> tools) =>
+		[.. tools.Where(tool => !tool.Name.StartsWith("mcp__", StringComparison.Ordinal) && !McpResourceTools.IsResourceTool(tool.Name))];
+
+	// ------------------------------------------------------------------ 辅助
+
+	/// <summary>按工作目录缓存环境；创建失败时回退到启动时的那套。</summary>
+	private CliEnvironment EnvironmentFor(string cwd)
+	{
+		var key = Path.GetFullPath(cwd);
+		if (_environments.TryGetValue(key, out var cached))
+		{
+			return cached;
+		}
+
+		var (environment, error) = CliEnvironment.Create(_arguments, key);
+		if (environment is null)
+		{
+			if (_environment is null)
+			{
+				throw new InvalidOperationException(error ?? Strings.NoSession);
+			}
+
+			// 另一个项目可能缺配置（例如 models.json 不完整）；用启动环境继续，至少会话可读。
+			_banner.Text(Strings.EnvironmentFallback(key, error ?? string.Empty));
+			_environments[key] = _environment;
+			return _environment;
+		}
+
+		_environments[key] = environment;
+		return environment;
+	}
+
+	/// <summary>把工作目录压缩成便于在列表里识别的短名。</summary>
+	private static string ShortCwd(string cwd)
+	{
+		if (cwd.Length == 0)
+		{
+			return "?";
+		}
+
+		var trimmed = cwd.TrimEnd(Path.DirectorySeparatorChar);
+		var name = Path.GetFileName(trimmed);
+		return name.Length > 0 ? name : trimmed;
+	}
+
+	/// <summary>把动作调度到 UI 线程；应用尚未运行时直接执行。</summary>
+	private static void Dispatch(Action action)
+	{
+		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
+		if (dispatcher is null || dispatcher.IsOnUIThread)
+		{
+			action();
+			return;
+		}
+
+		dispatcher.BeginInvoke(action);
+	}
+
+	private static string TimeAgo(DateTimeOffset time)
+	{
+		var delta = DateTimeOffset.UtcNow - time;
+		return delta switch
+		{
+			{ TotalMinutes: < 1 } => Strings.TimeJustNow,
+			{ TotalHours: < 1 } => Strings.TimeMinutes((int)delta.TotalMinutes),
+			{ TotalDays: < 1 } => Strings.TimeHours((int)delta.TotalHours),
+			{ TotalDays: < 30 } => Strings.TimeDays((int)delta.TotalDays),
+			_ => time.ToLocalTime().ToString("yyyy-MM-dd"),
+		};
+	}
+}

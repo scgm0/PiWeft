@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<IsAotCompatible>true</IsAotCompatible>
+		<RootNamespace>PiWeft.Mcp</RootNamespace>
+		<AssemblyName>PiWeft.Mcp</AssemblyName>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="PiWeft.Mcp.Tests" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="../PiWeft.Ai/PiWeft.Ai.csproj" />
+		<ProjectReference Include="../PiWeft.Agent/PiWeft.Agent.csproj" />
+	</ItemGroup>
+
+</Project>

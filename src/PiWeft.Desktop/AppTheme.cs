@@ -1,0 +1,117 @@
+using Aprillz.MewUI;
+
+namespace PiWeft.Desktop;
+
+/// <summary>
+/// 桌面端的视觉常量：颜色转发到 <see cref="AppPalette"/>（按当前主题解析），尺寸是固定值。
+/// </summary>
+/// <remarks>
+/// 颜色在这里读取是**即时**的：界面里长期存在的容器应该用 <see cref="AppStyles"/> 的命名样式，
+/// 让 MewUI 在主题变化时重新解析（不必重建界面）；这里的属性适合构建瞬间就要定色的内容，
+/// 例如消息气泡、图标与语法高亮。
+/// </remarks>
+public static class AppTheme
+{
+	/// <summary>
+	/// 是否使用浅色配色。应用运行期间读取当前生效的主题（因此运行时切换主题后重新取色即可跟随）；
+	/// 启动之前只有偏好可用，此时退回 <see cref="ThemeManager.Default"/>。
+	/// </summary>
+	private static bool IsLight => Application.IsRunning
+		? !Application.Current.Theme.IsDark
+		: ThemeManager.Default == ThemeVariant.Light;
+
+	/// <summary>当前是否浅色配色（供诊断输出与语法配色使用）。</summary>
+	public static bool IsLightTheme => IsLight;
+
+	/// <summary>按主题解析配色；样式 setter 用它，因此换肤无需重建界面。</summary>
+	public static AppPalette For(Theme theme) => theme.IsDark ? AppPalette.Dark : AppPalette.Light;
+
+	/// <summary>Use the application colors for framework controls, menus and selection surfaces.</summary>
+	public static ThemeSeed Seed(AppPalette palette) => new()
+	{
+		WindowBackground = palette.WindowBackground,
+		WindowText = palette.TextPrimary,
+		ControlBackground = palette.CardBackground,
+		ButtonFace = palette.CardBackgroundAlt,
+		ButtonDisabledBackground = palette.HoverBackground,
+		Error = palette.Error,
+	};
+
+	/// <summary>当前生效的配色。</summary>
+	public static AppPalette Current => IsLight ? AppPalette.Light : AppPalette.Dark;
+
+	// ------------------------------------------------------------ 颜色转发
+	public static Color WindowBackground => Current.WindowBackground;
+
+	public static Color SidebarBackground => Current.SidebarBackground;
+
+	public static Color CardBackground => Current.CardBackground;
+
+	public static Color CardBackgroundAlt => Current.CardBackgroundAlt;
+
+	public static Color HoverBackground => Current.HoverBackground;
+
+	public static Color CodeBackground => Current.CodeBackground;
+
+	public static Color CodeText => Current.CodeText;
+
+	public static Color TextPrimary => Current.TextPrimary;
+
+	public static Color TextMuted => Current.TextMuted;
+
+	public static Color TextSubtle => Current.TextSubtle;
+
+	public static Color TextFaint => Current.TextFaint;
+
+	public static Color TextOnAccent => Current.TextOnAccent;
+
+	public static Color Accent => Current.Accent;
+
+	public static Color AccentSoft => Current.AccentSoft;
+
+	public static Color Border => Current.Border;
+
+	public static Color BorderSubtle => Current.BorderSubtle;
+
+	public static Color Error => Current.Error;
+
+	public static Color Success => Current.Success;
+
+	public static Color Info => Current.Info;
+
+	public static Color Thinking => Current.Thinking;
+
+	public static Color Transparent => Current.Transparent;
+
+	// -------------------------------------------------------------------- 尺寸
+	public const double RadiusXs = 4;
+	public const double RadiusSm = 6;
+	public const double RadiusMd = 8;
+	public const double RadiusLg = 10;
+	public const double RadiusXl = 12;
+
+	public const double Space1 = 4;
+	public const double Space2 = 8;
+	public const double Space3 = 12;
+	public const double Space4 = 16;
+	public const double Space6 = 24;
+
+	public const double ControlHeightSm = 28;
+	public const double ControlHeightMd = 32;
+	public const double ControlHeightLg = 36;
+
+	public const double SidebarWidth = 280;
+	public const double ComposerHeight = 72;
+	public static double MessageMaxWidth => ReadingPreferences.Width;
+
+	// 正文对齐 PiDeck 16px；辅助信息提高一档，避免大屏过小。
+	public const double FontSizeMicro = 12;
+	public const double FontSizeCaption = 13;
+	public const double FontSizeControl = 14;
+	public static double FontSizeChat => ReadingPreferences.FontSize;
+	public const double FontSizeTitle = 17;
+	public const double FontSizeBrand = 18;
+
+	/// <summary>等宽字体族：优先内嵌的 Maple Mono，注册失败时退回系统等宽字体。</summary>
+	public static string MonoFont => AppFonts.Mono;
+}
