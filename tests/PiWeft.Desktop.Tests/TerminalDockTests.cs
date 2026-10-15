@@ -1,3 +1,4 @@
+using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Desktop;
 using Xunit;
@@ -40,5 +41,20 @@ public sealed class TerminalDockTests
 		await dock.RunAsync();
 
 		Assert.DoesNotContain(Find<TextBlock>(dock.View), block => block.Text.Contains("退出码", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void ViewAttachesToAStyleSheetWithoutTargetMismatch()
+	{
+		using var dock = new TerminalDock(() => Shell);
+
+		// 复现崩溃路径：视图挂到带样式表的根上会触发整棵子树的样式解析，
+		// 单行 TextBox 套 MultiLineTextBox 的命名样式会在这里抛 InvalidOperationException。
+		var root = new Border().StyleSheet(AppStyles.Create()).Child(dock.View);
+		dock.View.Measure(new Size(600, 400));
+
+		var command = Find<TextBox>(root).Single();
+		Assert.NotEqual(default, command.BorderBrush);
+		GC.KeepAlive(root);
 	}
 }

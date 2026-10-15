@@ -50,7 +50,7 @@ public sealed class TerminalDock : IDisposable
 		_command
 			.Placeholder(Strings.TerminalPlaceholder)
 			.CornerRadius(AppTheme.RadiusMd)
-			.StyleName(AppStyles.TextInput)
+			.StyleName(AppStyles.TextInputLine)
 			.OnKeyDown(key =>
 			{
 				if (key.Key == Key.Enter)

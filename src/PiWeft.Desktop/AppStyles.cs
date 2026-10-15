@@ -18,6 +18,7 @@ public static class AppStyles
 	public const string FramedWindow = "pi-window-framed";
 	public const string FramedSidebar = "pi-sidebar-framed";
 	public const string TextInput = "pi-text-input";
+	public const string TextInputLine = "pi-text-input-line";
 	public const string TopBar = "pi-topbar";
 	public const string Sidebar = "pi-sidebar";
 	public const string Panel = "pi-panel";
@@ -119,6 +120,10 @@ public static class AppStyles
 			.With(FramedWindow, () => CardStyle(typeof(Border), p => p.WindowBackground))
 			.With(FramedSidebar, () => CardStyle(typeof(Border), p => p.SidebarBackground))
 			.With(TextInput, () => new Style(typeof(MultiLineTextBox))
+			{
+				Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border))],
+			})
+			.With(TextInputLine, () => new Style(typeof(TextBox))
 			{
 				Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border))],
 			})
