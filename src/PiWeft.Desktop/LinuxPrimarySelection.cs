@@ -7,23 +7,23 @@ internal interface IPrimarySelection
 {
 	void Publish(string text);
 	Task<string?> ReadAsync();
+	Task PendingPublish { get; }
 }
 
-/// <summary>One on-demand PRIMARY owner, separate from CLIPBOARD; no polling or UI-thread process IO.</summary>
+/// <summary>
+/// PRIMARY 服务选择器：优先使用进程内原生 X11 实现（无外部程序），失败时回退到
+/// xclip / xsel（X11）或 wl-copy / wl-paste（Wayland）。不含 CLIPBOARD 语义。
+/// </summary>
 internal sealed class LinuxPrimarySelection : IPrimarySelection, IDisposable
 {
-	internal const int MaxBytes = 1024 * 1024;
+	// 原生实现按 ICCCM INCR 分块，单次传输上限可放宽到 8 MiB；外部程序回退路径沿用同一上限。
+	internal const int MaxBytes = 8 * 1024 * 1024;
 	internal const int MaxCharacters = MaxBytes / 2;
-	private readonly SelectionCommand _command;
-	private readonly Lock _gate = new();
-	private readonly SemaphoreSlim _writer = new(1);
-	private readonly CancellationTokenSource _shutdown = new();
-	private CancellationTokenSource? _pending;
-	private Process? _owner;
-	private bool _disposed;
-	internal Task PendingPublish { get; private set; } = Task.CompletedTask;
+	private readonly IPrimarySelection _inner;
 
-	internal LinuxPrimarySelection(SelectionCommand command) => _command = command;
+	private LinuxPrimarySelection(IPrimarySelection inner) => _inner = inner;
+
+	internal LinuxPrimarySelection(SelectionCommand command) => _inner = new ProcessPrimarySelection(command);
 
 	public static LinuxPrimarySelection? Create()
 	{
@@ -31,15 +31,16 @@ internal sealed class LinuxPrimarySelection : IPrimarySelection, IDisposable
 		// MewUI currently runs on X11/XWayland. Prefer that selection domain even on a Wayland desktop.
 		if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")))
 		{
-			if (Find("xclip") is { } xclip) return new(new(xclip,
+			if (X11PrimarySelection.Create() is { } native) return new(native);
+			if (Find("xclip") is { } xclip) return new(new SelectionCommand(xclip,
 				["-quiet", "-selection", "primary", "-in", "-target", "UTF8_STRING"],
 				["-selection", "primary", "-out"]));
-			if (Find("xsel") is { } xsel) return new(new(xsel,
+			if (Find("xsel") is { } xsel) return new(new SelectionCommand(xsel,
 				["--nodetach", "--primary", "--input"], ["--primary", "--output"]));
 		}
 		if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")) &&
 			Find("wl-copy") is { } copy && Find("wl-paste") is { } paste)
-			return new(new(copy, ["--foreground", "--primary", "--type", "text/plain;charset=utf-8"],
+			return new(new SelectionCommand(copy, ["--foreground", "--primary", "--type", "text/plain;charset=utf-8"],
 				["--primary", "--no-newline"], paste));
 		return null;
 	}
@@ -48,6 +49,27 @@ internal sealed class LinuxPrimarySelection : IPrimarySelection, IDisposable
 		.Split(Path.PathSeparator).Where(static directory => directory.Length > 0)
 		.Select(directory => Path.Combine(directory, name)).FirstOrDefault(File.Exists);
 
+	public void Publish(string text) => _inner.Publish(text);
+	public Task<string?> ReadAsync() => _inner.ReadAsync();
+	public Task PendingPublish => _inner.PendingPublish;
+	public void Dispose() => (_inner as IDisposable)?.Dispose();
+}
+
+/// <summary>外部程序后端（xclip / xsel / wl-copy）：原生 X11 实现不可用时的回退。</summary>
+internal sealed class ProcessPrimarySelection : IPrimarySelection, IDisposable
+{
+	private readonly SelectionCommand _command;
+	private readonly Lock _gate = new();
+	private readonly SemaphoreSlim _writer = new(1);
+	private readonly CancellationTokenSource _shutdown = new();
+	private CancellationTokenSource? _pending;
+	private Process? _owner;
+	private bool _disposed;
+
+	public Task PendingPublish { get; private set; } = Task.CompletedTask;
+
+	internal ProcessPrimarySelection(SelectionCommand command) => _command = command;
+
 	public void Publish(string text)
 	{
 		lock (_gate)
@@ -55,7 +77,7 @@ internal sealed class LinuxPrimarySelection : IPrimarySelection, IDisposable
 			if (_disposed) return;
 			_pending?.Cancel();
 			// Clearing a selection keeps the last PRIMARY, but cancels a delayed intermediate drag.
-			if (text.Length == 0 || text.Length > MaxCharacters) return;
+			if (text.Length == 0 || text.Length > LinuxPrimarySelection.MaxCharacters) return;
 			var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
 			_pending = cancellation;
 			PendingPublish = PublishAsync(text, cancellation);
@@ -72,7 +94,7 @@ internal sealed class LinuxPrimarySelection : IPrimarySelection, IDisposable
 			await _writer.WaitAsync(cancellation.Token).ConfigureAwait(false);
 			acquired = true;
 			cancellation.Token.ThrowIfCancellationRequested();
-			if (Encoding.UTF8.GetByteCount(text) > MaxBytes) return;
+			if (Encoding.UTF8.GetByteCount(text) > LinuxPrimarySelection.MaxBytes) return;
 			candidate = Start(_command.WriteFile, _command.WriteArguments, input: true);
 			if (candidate is null) return;
 			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
@@ -118,7 +140,7 @@ internal sealed class LinuxPrimarySelection : IPrimarySelection, IDisposable
 			{
 				var count = await process.StandardOutput.BaseStream.ReadAsync(buffer, timeout.Token).ConfigureAwait(false);
 				if (count == 0) break;
-				if (content.Length + count > MaxBytes) return null;
+				if (content.Length + count > LinuxPrimarySelection.MaxBytes) return null;
 				content.Write(buffer, 0, count);
 			}
 			await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);

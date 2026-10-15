@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Xunit;
@@ -96,6 +97,89 @@ public sealed class PrimarySelectionTests : IDisposable
 	}
 
 	[Fact]
+	public async Task NativeSelectionOwnerServesOtherX11Clients()
+	{
+		if (!OperatingSystem.IsLinux() || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY"))) return;
+		using var owner = X11PrimarySelection.Create();
+		using var reader = X11PrimarySelection.Create();
+		Assert.NotNull(owner);
+		Assert.NotNull(reader);
+
+		// 两个独立连接：owner 持有选区，reader 必须经由 SelectionRequest/SelectionNotify 协议取回文本。
+		owner!.Publish("原生 PRIMARY\n中文 second line");
+		await owner.PendingPublish;
+		Assert.Equal("原生 PRIMARY\n中文 second line", await ReadEventually(reader!, "原生 PRIMARY\n中文 second line"));
+
+		if (!File.Exists("/usr/bin/xclip")) return;
+		owner.Publish("由外部 xclip 读取");
+		await owner.PendingPublish;
+		Assert.Equal("由外部 xclip 读取", await ReadEventually(new XclipPrimary(), "由外部 xclip 读取"));
+
+		// 反向：外部程序持有 PRIMARY 时，原生实现必须经 ConvertSelection 读回。
+		await SetPrimaryWithXclip("xclip owned primary");
+		Assert.Equal("xclip owned primary", await ReadEventually(reader!, "xclip owned primary"));
+	}
+
+	[Fact]
+	public async Task IncrementalTransferCarriesTextLargerThanOneRequest()
+	{
+		if (!OperatingSystem.IsLinux() || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY"))) return;
+		using var owner = X11PrimarySelection.Create();
+		using var reader = X11PrimarySelection.Create();
+		Assert.NotNull(owner);
+		Assert.NotNull(reader);
+
+		// 明显超过单块阈值：必须经由 ICCCM INCR 分块往返才能取回。
+		var expected = string.Concat(Enumerable.Repeat("中文增量传输-", 200_000));
+		Assert.True(Encoding.UTF8.GetByteCount(expected) > owner!.TransferChunkBytes,
+			"fixture must exceed one request chunk so the INCR path is exercised");
+		owner.Publish(expected);
+		await owner.PendingPublish;
+		var received = await ReadEventually(reader!, expected);
+		Assert.True(received == expected, $"incremental owner mismatch, length={(received?.Length).GetValueOrDefault()}");
+
+		if (!File.Exists("/usr/bin/xclip")) return;
+		// 反向：外部 owner 交出大文本时，接收端同样要经 INCR 累积后再解码。
+		var external = string.Concat(Enumerable.Repeat("xclip大文本-", 150_000));
+		await SetPrimaryWithXclip(external);
+		var fromXclip = await ReadEventually(reader!, external);
+		Assert.True(fromXclip == external, $"incremental receive mismatch, length={(fromXclip?.Length).GetValueOrDefault()}");
+	}
+
+	private static async Task<string?> ReadEventually(IPrimarySelection selection, string expected)
+	{
+		string? text = null;
+		for (var attempt = 0; attempt < 40; attempt++)
+		{
+			text = await selection.ReadAsync();
+			if (text == expected) break;
+			await Task.Delay(25);
+		}
+		return text;
+	}
+
+	private static async Task SetPrimaryWithXclip(string text)
+	{
+		using var process = StartXclip("-selection", "primary", "-in");
+		await process.StandardInput.WriteAsync(text);
+		process.StandardInput.Close();
+		await process.WaitForExitAsync();
+	}
+
+	private sealed class XclipPrimary : IPrimarySelection
+	{
+		public Task PendingPublish => Task.CompletedTask;
+		public void Publish(string text) { }
+		public async Task<string?> ReadAsync()
+		{
+			using var process = StartXclip("-selection", "primary", "-out");
+			var text = await process.StandardOutput.ReadToEndAsync();
+			await process.WaitForExitAsync();
+			return process.ExitCode == 0 ? text : null;
+		}
+	}
+
+	[Fact]
 	public async Task FailedOrOversizedSelectionReadsFailClosed()
 	{
 		if (!OperatingSystem.IsLinux()) return;
@@ -103,7 +187,8 @@ public sealed class PrimarySelectionTests : IDisposable
 		Assert.Null(await missing.ReadAsync());
 		missing.Publish("test");
 		await missing.PendingPublish;
-		using var oversized = new LinuxPrimarySelection(new("/usr/bin/head", [], ["-c", "1048577", "/dev/zero"]));
+		using var oversized = new LinuxPrimarySelection(new("/usr/bin/head", [],
+			["-c", (LinuxPrimarySelection.MaxBytes + 1).ToString(), "/dev/zero"]));
 		Assert.Null(await oversized.ReadAsync());
 	}
 
@@ -141,6 +226,7 @@ public sealed class PrimarySelectionTests : IDisposable
 		public List<string> Published { get; } = [];
 		public string? Result { get; init; }
 		public Task<string?>? Pending { get; init; }
+		public Task PendingPublish => Task.CompletedTask;
 		public void Publish(string text) => Published.Add(text);
 		public Task<string?> ReadAsync() => Pending ?? Task.FromResult(Result);
 	}

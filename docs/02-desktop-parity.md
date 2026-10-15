@@ -100,15 +100,15 @@ PiDeck 历史思考显示 0ms 的路径是未恢复 `thinkingStartedAt` / `think
 
 Linux 上选中的用户/助手原文、Markdown、代码和工具输出，以及普通输入框文本，自动发布到 PRIMARY；鼠标中键在可编辑文本的点击位置插入 PRIMARY。普通 Ctrl+C/Ctrl+V 的 CLIPBOARD 不受影响，密码框不发布文本，中键粘贴不自动发送，并且可撤销。支持与外部 Linux 应用互通。
 
-当前 MewUI Linux 宿主是 X11/XWayland，优先使用 PATH 上的 `xclip`，其次 `xsel`；没有 DISPLAY 时可使用 `wl-copy`/`wl-paste` 的 PRIMARY 后端（需 compositor 支持）。没有工具时静默保留普通剪贴板行为。Ubuntu/Debian 可安装 `xclip`。原生 Wayland 后端尚未验证。
+当前 MewUI Linux 宿主是 X11/XWayland。PRIMARY 默认由进程内原生实现持有：`X11PrimarySelection` 用独立 Display 连接与专用事件线程直接实现 X11 selection owner 协议（`XSetSelectionOwner` 加 `SelectionRequest`/`SelectionNotify`/`SelectionClear`/`PropertyNotify`，只依赖 `libX11.so.6`），不启动外部程序。事件线程用 `poll` 同时等待 X 连接与 `eventfd` 唤醒：空闲时完全阻塞、不轮询，跨线程投递经 eventfd 计数合并，不会丢失唤醒。超过单个请求块的文本按 ICCCM INCR 协议分块传输：属性类型 `INCR`、format 32、值为字节数下界，块大小取握手回报的 maximum-request-size 的一半并限制在 16 KiB–1 MiB，以零长度属性结束，服务端订阅 requestor 窗口的 `PropertyChangeMask` 以追加后续块。`XOpenDisplay` 或资源创建失败时按 `xclip`、`xsel` 顺序回退外部程序；没有 DISPLAY 时才使用 `wl-copy`/`wl-paste`（需 compositor 支持，`wl-paste --primary` 仍可能不提供 PRIMARY）。全部不可用时静默保留普通剪贴板行为。原生 Wayland 后端尚未验证，纯 Wayland 且无 XWayland 时只能走 `wl-copy` 回退路径。
 
-选区通过公开属性绑定观察，不轮询、不在 UI 线程读写外部进程。连续拖选合并 140 ms，最多保留一个前台 PRIMARY owner；所有参数使用 ArgumentList，不拼 shell。读取最多 1 MiB / 2 秒，写入同样有大小和超时边界；窗口关闭取消 IO 并释放自有 owner。异步粘贴拒绝已改动草稿、移动光标或隐藏标签的迟到结果。选区内容不会写入日志、配置或会话，只有实际发送的草稿进入会话。
+选区通过公开属性绑定观察，不轮询。原生实现只在自身事件线程调用 X11（不与 MewUI 的连接竞争）；回退路径用 ArgumentList 传参、不拼 shell，也不在 UI 线程做进程 IO。连续拖选合并 140 ms，最多保留一个前台 PRIMARY owner。原生写入服务 `TARGETS` 与 `UTF8_STRING`（含 `XA_STRING` 兼容读取），单次读取或写出上限 8 MiB，读取等待 2 秒。未接管全局 `XSetErrorHandler`，以免影响宿主框架的 Xlib 调用，因此异常 requestor 窗口的异步错误只由默认处理器打印、不中断服务。窗口关闭取消未落地发布并销毁自有 owner 窗口、关闭连接，X 服务器随即释放选区。异步粘贴拒绝已改动草稿、移动光标或隐藏标签的迟到结果。选区内容不会写入日志、配置或会话，只有实际发送的草稿进入会话。
 
 ```sh
 xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 ```
 
-该脚本使用独立 fixture，检查 Markdown 选区被外部 xclip 读取、外部中文多行 PRIMARY 经实际中键事件插入正确位置、CLIPBOARD 不变。截图测试分别串行启动，避免同时启动 Xvfb 的显示编号竞争。
+该脚本使用独立 fixture，检查 Markdown 选区被外部 xclip 读取（此时应用自身即 PRIMARY owner，xclip 只是外部读取客户端）、外部中文多行 PRIMARY 经实际中键事件插入正确位置、CLIPBOARD 不变。截图测试分别串行启动，避免同时启动 Xvfb 的显示编号竞争。
 
 ## 日志与验证
 
