@@ -57,8 +57,22 @@ internal sealed class FakeMcpHttpHandler : HttpMessageHandler
 		Content = new StringContent(body, Encoding.UTF8, "application/json"),
 	});
 
+	/// <summary>GET（独立通知流）收到的会话头，按顺序记录。</summary>
+	public List<string?> NotificationStreamRequests { get; } = [];
+
+	/// <summary>通知流 GET 的响应工厂；为 null 时回 405，模拟不支持独立流的服务器。</summary>
+	public Func<HttpResponseMessage>? NotificationStreamResponse { get; set; }
+
 	protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
 	{
+		// 独立通知流走 GET：默认回 405，这样脚本化队列只服务于 POST 请求-响应。
+		if (request.Method == HttpMethod.Get)
+		{
+			NotificationStreamRequests.Add(
+				request.Headers.TryGetValues("Mcp-Session-Id", out var session) ? session.FirstOrDefault() : null);
+			return NotificationStreamResponse?.Invoke() ?? new HttpResponseMessage(HttpStatusCode.MethodNotAllowed);
+		}
+
 		var body = request.Content is null ? "{}" : await request.Content.ReadAsStringAsync(cancellationToken);
 		var record = JsonNode.Parse(body)!.AsObject();
 		_requests.Add(record);
@@ -302,5 +316,71 @@ public class McpHttpClientTests
 
 		Assert.False(result.IsError);
 		Assert.Equal("found", Assert.IsType<TextContent>(result.Content[0]).Text);
+	}
+
+	[Fact]
+	public async Task NotificationStreamDeliversServerNotifications()
+	{
+		var handler = new FakeMcpHttpHandler
+		{
+			SessionIdToIssue = "session-1",
+			NotificationStreamResponse = () => new HttpResponseMessage(HttpStatusCode.OK)
+			{
+				Content = new StringContent(
+					"event: message\n" +
+					"data: " + new JsonObject
+					{
+						["jsonrpc"] = "2.0",
+						["method"] = "notifications/tools/list_changed",
+					}.ToJsonString() + "\n\n",
+					Encoding.UTF8,
+					"text/event-stream"),
+			},
+		};
+
+		handler.EnqueueJson(InitializeResult);
+		handler.EnqueueAccepted();
+
+		var client = await McpHttpClient.ConnectAsync(Url, headers: null, timeout: TimeSpan.FromSeconds(10), httpClient: new HttpClient(handler));
+		await using var _ = client;
+
+		var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+		client.NotificationReceived += (method, _) => received.TrySetResult(method);
+
+		var method = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		Assert.Equal("notifications/tools/list_changed", method);
+		Assert.True(client.NotificationStreamActive);
+		// 通知流必须带上握手拿到的会话 id。
+		Assert.Contains("session-1", handler.NotificationStreamRequests);
+	}
+
+	[Fact]
+	public async Task NotificationStreamDegradesWhenGetIsRejected()
+	{
+		// 默认 handler 对 GET 回 405：客户端应静默降级，且不干扰请求-响应用到的队列。
+		var handler = new FakeMcpHttpHandler { SessionIdToIssue = "session-1" };
+		handler.EnqueueJson(InitializeResult);
+		handler.EnqueueAccepted();
+
+		var client = await McpHttpClient.ConnectAsync(Url, headers: null, timeout: TimeSpan.FromSeconds(10), httpClient: new HttpClient(handler));
+		await using var _ = client;
+
+		for (var attempt = 0; attempt < 50 && handler.NotificationStreamRequests.Count == 0; attempt++)
+		{
+			await Task.Delay(20);
+		}
+
+		Assert.NotEmpty(handler.NotificationStreamRequests);
+		Assert.False(client.NotificationStreamActive);
+
+		handler.EnqueueJson(new JsonObject { ["tools"] = new JsonArray() });
+		var tools = await client.ListToolsAsync(CancellationToken.None);
+
+		Assert.Empty(tools);
+		// GET 没有消费脚本化队列：三个 POST 依次拿到对应的响应。
+		Assert.Equal(
+			new[] { "initialize", "notifications/initialized", "tools/list" },
+			handler.Requests.Select(request => request["method"]!.GetValue<string>()));
 	}
 }

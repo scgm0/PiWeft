@@ -360,14 +360,20 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			return ValueTask.CompletedTask;
 		});
 
-		await session.PromptAsync(message, cancellationToken).ConfigureAwait(false);
-
-		lock (_outputGate)
+		try
 		{
-			var text = collected.ToString();
-			if (text.Length > 0)
+			await session.PromptAsync(message, cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			// 取消（Ctrl+C）时也要把已经生成的部分写出来：用户等了很久的回答不该凭空消失。
+			lock (_outputGate)
 			{
-				output.WriteLine(text);
+				var text = collected.ToString();
+				if (text.Length > 0)
+				{
+					output.WriteLine(text);
+				}
 			}
 		}
 
@@ -452,6 +458,23 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 	// ------------------------------------------------------------------- RPC
 
+	/// <summary>当前 RPC 会话的事件订阅；换会话实例时必须重建。</summary>
+	private IDisposable? _sessionEvents;
+
+	/// <summary>
+	/// 订阅当前会话的代理事件并写成 JSONL。订阅绑定在会话实例上：<c>new_session</c> 会换掉实例，
+	/// 必须重新订阅，否则客户端只收到 response、收不到任何 message_*/tool_* 事件。
+	/// </summary>
+	private void SubscribeSessionEvents()
+	{
+		_sessionEvents?.Dispose();
+		_sessionEvents = _session?.Subscribe(@event =>
+		{
+			WriteRecord(AgentEventWriter.Write(@event));
+			return ValueTask.CompletedTask;
+		});
+	}
+
 	/// <summary>
 	/// RPC 模式：在 stdin/stdout 上运行长驻的 JSONL 命令/响应/事件协议。不输出会话头部，
 	/// 客户端改为调用 <c>get_state</c>。
@@ -460,12 +483,9 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	{
 		_arguments = arguments;
 		_cwd = cwd;
+		// 当前 RPC 会话的事件订阅；换会话实例时必须重建。
 		_session = environment.CreateSession(arguments, cwd, extraTools: _extraTools, uiHost: this);
-		using var subscription = _session.Subscribe(@event =>
-		{
-			WriteRecord(AgentEventWriter.Write(@event));
-			return ValueTask.CompletedTask;
-		});
+		SubscribeSessionEvents();
 
 		try
 		{
@@ -541,7 +561,14 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			return false;
 		}
 
-		var id = command["id"]?.GetValueKind() == JsonValueKind.String ? command["id"]!.GetValue<string>() : null;
+		// id 按协议是字符串，但客户端发数字时也必须回显（否则响应无法关联）；
+		// 数字原样字符串化，保持与请求值一致的可读形式。
+		var id = command["id"] switch
+		{
+			JsonValue value when value.GetValueKind() == JsonValueKind.String => value.GetValue<string>(),
+			JsonValue value when value.GetValueKind() == JsonValueKind.Number => value.ToJsonString(),
+			_ => null,
+		};
 		var type = command["type"]?.GetValueKind() == JsonValueKind.String ? command["type"]!.GetValue<string>() : null;
 
 		try
@@ -683,6 +710,15 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 				case "get_commands":
 					WriteRecord(Response(id, "get_commands", true, CommandsRecord(session), null));
+					break;
+
+				case "get_resources":
+					WriteRecord(Response(id, "get_resources", true, ResourcesRecord(session), null));
+					break;
+
+				case "reload_resources":
+					session.ReloadResources();
+					WriteRecord(Response(id, "reload_resources", true, ResourcesRecord(session), null));
 					break;
 
 				case "export_html":
@@ -843,6 +879,9 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 						extraTools: _extraTools,
 						uiHost: this);
 					previous?.Dispose();
+
+					// 新实例需要新的订阅：旧订阅随旧会话一起失效。
+					SubscribeSessionEvents();
 
 					WriteRecord(Response(id, "new_session", true, new JsonObject { ["cancelled"] = false }, null));
 					break;
@@ -1382,6 +1421,15 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				error.WriteLine(session.PlanModeEnabled
 					? "计划模式已开启：只读探索，edit / write 已停用。用 /plan 再次关闭。"
 					: "计划模式已关闭。");
+				continue;
+			}
+
+			if (trimmed == "/reload")
+			{
+				// 与 pi 的 /reload 对应：重新发现技能、提示词模板与主题，不重建会话。
+				session.ReloadResources();
+				error.WriteLine(
+					$"已重载 {session.Resources.Skills.Count} 个技能、{session.Resources.Templates.Count} 个提示词模板、{session.Resources.Themes.Count} 个主题。");
 				continue;
 			}
 

@@ -213,8 +213,9 @@ public static class Checkpoints
 				return (Strings.GitUnavailable, false);
 			}
 
-			var stdout = process.StandardOutput.ReadToEnd();
-			var stderr = process.StandardError.ReadToEnd();
+			// 两路并发读：顺序读时子进程写满另一路缓冲会阻塞，进而永远不退出（超时也等不到）。
+			var stdoutTask = process.StandardOutput.ReadToEndAsync();
+			var stderrTask = process.StandardError.ReadToEndAsync();
 			if (!process.WaitForExit(30_000))
 			{
 				try
@@ -228,6 +229,8 @@ public static class Checkpoints
 				return (Strings.GitTimeout, false);
 			}
 
+			var stdout = stdoutTask.GetAwaiter().GetResult();
+			var stderr = stderrTask.GetAwaiter().GetResult();
 			var output = stdout.Length > 0 ? stdout : stderr;
 			return (output.Length <= 4096 ? output : output[..4096], process.ExitCode == 0);
 		}

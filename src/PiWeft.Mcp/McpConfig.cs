@@ -1,5 +1,6 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace PiWeft.Mcp;
@@ -35,6 +36,21 @@ public sealed record McpServerConfig
 
 	/// <summary>按工具名或 <c>*</c> 通配符逐工具覆盖暴露方式；精确名优先于通配符。</summary>
 	public IReadOnlyDictionary<string, string>? ToolExposure { get; init; }
+
+	/// <summary>HTTP 认证方式：<c>oauth</c> 走授权码流程；其它值（含 null）只沿用静态 headers。</summary>
+	public string? Auth { get; init; }
+
+	/// <summary>OAuth 客户端 id；留空时按需动态注册（RFC 7591）。</summary>
+	public string? ClientId { get; init; }
+
+	/// <summary>OAuth 请求的 scope；留空时用授权服务器建议的 scope。</summary>
+	public IReadOnlyList<string> Scopes { get; init; } = [];
+
+	/// <summary>是否走 OAuth：必须是 HTTP 服务器且显式声明 <c>auth: oauth</c>。</summary>
+	public bool UsesOAuth => IsHttp && string.Equals(Auth, OAuthAuthValue, StringComparison.OrdinalIgnoreCase);
+
+	/// <summary><c>auth</c> 字段里表示 OAuth 的取值。</summary>
+	public const string OAuthAuthValue = "oauth";
 
 	public TimeSpan TimeoutSpan => TimeSpan.FromSeconds(Timeout is > 0 ? Timeout.Value : 60);
 
@@ -73,6 +89,12 @@ public sealed record McpServerEntry
 	public string? Exposure { get; init; }
 
 	public IReadOnlyDictionary<string, string>? ToolExposure { get; init; }
+
+	public string? Auth { get; init; }
+
+	public string? ClientId { get; init; }
+
+	public IReadOnlyList<string>? Scopes { get; init; }
 }
 
 /// <summary>
@@ -141,6 +163,116 @@ public static partial class McpConfig
 		}
 	}
 
+	/// <summary>
+	/// 把一条服务器配置写进指定的 <c>mcp.json</c>。保留文件里其它键，写入是原子的；
+	/// 已有同名条目会被替换（<c>pi mcp add</c> 的语义）。
+	/// </summary>
+	public static void SaveEntry(string path, string name, McpServerEntry entry)
+	{
+		var root = ReadObject(path);
+		var servers = root["mcpServers"] as JsonObject ?? new JsonObject();
+		servers[name] = JsonSerializer.SerializeToNode(entry, McpJsonContext.Default.McpServerEntry);
+		root["mcpServers"] = servers;
+		WriteAtomically(path, root);
+	}
+
+	/// <summary>从指定的 <c>mcp.json</c> 移除一条服务器配置；不存在时返回 <c>false</c>。</summary>
+	public static bool RemoveEntry(string path, string name)
+	{
+		if (!File.Exists(path))
+		{
+			return false;
+		}
+
+		var root = ReadObject(path);
+		if (root["mcpServers"] is not JsonObject servers || servers.Remove(name) is false)
+		{
+			return false;
+		}
+
+		if (servers.Count == 0)
+		{
+			root.Remove("mcpServers");
+		}
+
+		WriteAtomically(path, root);
+		return true;
+	}
+
+	private static JsonObject ReadObject(string path)
+	{
+		if (!File.Exists(path))
+		{
+			return new JsonObject();
+		}
+
+		try
+		{
+			// 加载路径允许注释与尾逗号，写回时必须能解析同样的文件：
+			// 一旦解析失败就返回空对象再写回，用户的其它服务器会被整片抹掉。
+			return JsonNode.Parse(
+				File.ReadAllText(path),
+				nodeOptions: null,
+				documentOptions: new JsonDocumentOptions
+				{
+					CommentHandling = JsonCommentHandling.Skip,
+					AllowTrailingCommas = true,
+				}) as JsonObject
+				?? throw new InvalidDataException($"{path} 的顶层必须是 JSON 对象");
+		}
+		catch (JsonException exception)
+		{
+			throw new InvalidDataException($"无法解析 {path}：{exception.Message}", exception);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			throw new InvalidDataException($"无法读取 {path}：{exception.Message}", exception);
+		}
+	}
+
+	private static void WriteAtomically(string path, JsonObject root)
+	{
+		var directory = Path.GetDirectoryName(path);
+		if (directory is { Length: > 0 })
+		{
+			Directory.CreateDirectory(directory);
+		}
+
+		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+		try
+		{
+			File.WriteAllText(
+				temporary,
+				root.ToJsonString(new JsonSerializerOptions
+				{
+					WriteIndented = true,
+					Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+				}));
+
+			if (!OperatingSystem.IsWindows())
+			{
+				File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+			}
+
+			File.Move(temporary, path, overwrite: true);
+		}
+		finally
+		{
+			// 失败时不要留下 .tmp 垃圾；成功时 Move 已经把它搬走了。
+			if (File.Exists(temporary))
+			{
+				try
+				{
+					File.Delete(temporary);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 清理失败不影响主流程的错误上报。
+				}
+			}
+		}
+	}
+
 	/// <summary>合并用户与项目条目，并用环境变量展开 <c>${VAR}</c>。</summary>
 	internal static IReadOnlyList<McpServerConfig> Merge(McpConfigFile? user, McpConfigFile? project)
 	{
@@ -204,6 +336,9 @@ public static partial class McpConfig
 					? null
 					: entry.ToolExposure.ToDictionary(static pair => pair.Key,
 						static pair => McpExposure.Normalize(pair.Value) ?? McpExposure.Default),
+				Auth = entry.Auth,
+				ClientId = Expand(entry.ClientId),
+				Scopes = entry.Scopes is null ? [] : [.. entry.Scopes],
 			});
 		}
 
@@ -228,6 +363,9 @@ public static partial class McpConfig
 			Description = patch.Description ?? existing.Description,
 			Exposure = patch.Exposure ?? existing.Exposure,
 			ToolExposure = patch.ToolExposure ?? existing.ToolExposure,
+			Auth = patch.Auth ?? existing.Auth,
+			ClientId = patch.ClientId ?? existing.ClientId,
+			Scopes = patch.Scopes ?? existing.Scopes,
 		};
 	}
 
@@ -267,6 +405,7 @@ public static partial class McpConfig
 	ReadCommentHandling = JsonCommentHandling.Skip,
 	AllowTrailingCommas = true)]
 [JsonSerializable(typeof(McpConfigFile))]
+[JsonSerializable(typeof(McpOAuthFile))]
 internal partial class McpJsonContext : JsonSerializerContext
 {
 	// 保留源生成选项，只替换编码器。

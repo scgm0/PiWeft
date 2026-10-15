@@ -1,12 +1,11 @@
-# 会话统计与性能优化
+# 会话统计与性能
 
-本轮只修改 `PiWeft`，参考 `/home/scgm/TestBuild/PiDeck` 的
-`ComposerStatsLine.tsx`、`SurfaceComponents.tsx`、`cacheHitStats.ts` 和 `messagePerfTracker.ts`。
-不修改 PiDeck，不新增运行时依赖，保持 .NET 10 / MewUI 0.22.1 / NativeAOT。
+统计口径参考 `/home/scgm/TestBuild/PiDeck` 的 `ComposerStatsLine.tsx`、`SurfaceComponents.tsx`、
+`cacheHitStats.ts` 和 `messagePerfTracker.ts`。不新增运行时依赖，保持 .NET 10 / MewUI 0.22.1 / NativeAOT。
 
 ## 展示
 
-输入区下方新增紧凑统计行：当前分支轮次、首 token 延迟、最近一次模型回复耗时、生成速度、最新缓存命中率、累计输入/输出。
+输入区下方为紧凑统计行：当前分支轮次、首 token 延迟、最近一次模型回复耗时、生成速度、最新缓存命中率、累计输入/输出。
 点击上下文百分比或查看图标打开窗口级统计面板：
 
 - 当前上下文 token / 模型窗口，包含超过窗口上限的真实百分比。
@@ -16,14 +15,14 @@
 - 最近一次模型回复的首 token 延迟、总耗时、生成速度与端到端速度。
 - 模型回复累计耗时、工具累计执行耗时和平均首 token 延迟。
 - 手动压缩上下文；运行时禁用，压缩期间可从输入区中断，关闭标签也会取消。
-- 供应商余额区现在位于会话统计弹窗，输入工具栏不再单独展示余额入口。保留刷新、查询时间、配置入口与错误状态；配置关闭后回到统计弹窗。成功结果短时缓存，切换供应商或项目清空旧值，隐藏弹窗取消请求并拒绝迟到结果。
+- 供应商余额区位于会话统计弹窗。保留刷新、查询时间、配置入口与错误状态；配置关闭后回到统计弹窗。成功结果短时缓存，切换供应商或项目清空旧值，隐藏弹窗取消请求并拒绝迟到结果。
 
 设置页使用同一份统计。明细控件原位更新，深浅主题同步，窄窗口内滚动；切换标签或关闭会话时移除浮层。
 面板遮罩覆盖整个窗口，不以右侧会话区为定位边界。
 
 ## 口径
 
-- 缓存命中率为 `cacheRead / (input + cacheRead + cacheWrite)`，修正旧实现漏计写缓存的问题。
+- 缓存命中率为 `cacheRead / (input + cacheRead + cacheWrite)`。
 - 平均命中率是有效助手消息命中率的算术平均；加权命中率是累计缓存读取除以累计 prompt token。
   样本是实际助手消息，不是 UI 刷新次数。无有效 prompt token 时不添加样本。
 - 累计 token 与费用沿用既有 `UsageTotals` / `UsageBreakdown` 口径，包含全文件助手消息和 `usage` 条目。
@@ -46,7 +45,7 @@
 - 上下文估算按投影引用缓存，CLI 与桌面端共用；用 .NET 的 `Lock` / `EnterScope()` 同步快照及版本，
   防止后台追加与 UI 读取交错导致过期缓存。
 - 聊天快照共享不可变历史前缀，流式帧只分配小尾部；重复读取同一帧复用快照。
-  分支/压缩后重新投影，修正原来静态导航后聊天行可能仍停留在旧分支的问题。
+  分支/压缩后重新投影，避免静态导航后聊天行停留在旧分支。
 - 继续利用 MewUI 的 40ms `DispatcherTimer` 合并更新、历史控件复用与流式结束后才解析 Markdown 的现有设计。
   未变更的统计行不重新格式化或替换控件，历史行比较优先按引用判断。
 
@@ -65,11 +64,11 @@ dotnet run --project tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj
 | 修改后 | 0.46 ms | 0 bytes | 5657030200 |
 
 这是未变更会话的查询热路径结果，不代表启动、网络推理、完整 UI 渲染或整进程 RSS 提升相同比例。
-首次加载和变更后的投影仍需要遍历会话；本轮不宣称长会话已实现全量消息虚拟化。
+首次加载和变更后的投影仍需要遍历会话；不宣称长会话已实现全量消息虚拟化。
 
 ## 验证
 
-- `dotnet test PiWeft.slnx`：852 项通过（2026-10-15 复核），覆盖计时 JSON 往返、空/旧数据、错误与取消终态、
+- `dotnet test PiWeft.slnx`：993 项通过（2026-10-16 复核），覆盖计时 JSON 往返、空/旧数据、错误与取消终态、
   算术与加权统计、追加、导航、编辑、压缩、派生、新建、切换会话、并发查询和零分配查询。
 - `dotnet publish src/PiWeft.Desktop/PiWeft.Desktop.csproj -c Release -r linux-x64`：NativeAOT 发布成功，无新增警告。
 - 独立临时 agent 目录下，调试版和 NativeAOT 版均通过深浅主题 1280x820、窄窗口 720x520 截图演练；
@@ -85,4 +84,4 @@ PI_STATISTICS_SMOKE_APP="$PWD/src/PiWeft.Desktop/bin/Release/net10.0/linux-x64/p
 初始窗口尺寸在创建原生窗口前设置，位置恢复仍在加载后进行。
 
 发布入口：`src/PiWeft.Desktop/bin/Release/net10.0/linux-x64/publish/piweft-desktop`。
-本轮范围不涉及系统/工具 prompt token 的独立估算、实时汇率或 PiDeck 的全部高级功能（供应商余额查询已在后续轮次加入，见上文）。
+不涉及系统/工具 prompt token 的独立估算、实时汇率或 PiDeck 的全部高级功能；供应商余额查询见上文。

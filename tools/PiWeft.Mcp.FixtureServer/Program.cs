@@ -120,7 +120,23 @@ async Task<int> RunHttpAsync(int httpPort)
 			break;
 		}
 
-		await HandleHttpAsync(context);
+		try
+		{
+			await HandleHttpAsync(context);
+		}
+		catch (Exception)
+		{
+			// 单个坏请求不应让 fixture 退出：回 500 后继续服务。
+			try
+			{
+				context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+				context.Response.Close();
+			}
+			catch (Exception)
+			{
+				// 连接可能已经断开。
+			}
+		}
 	}
 
 	listener.Stop();
@@ -129,6 +145,15 @@ async Task<int> RunHttpAsync(int httpPort)
 
 async Task HandleHttpAsync(HttpListenerContext context)
 {
+	// 独立通知流走 GET：这个 fixture 模拟**不支持**该流的服务器，客户端应静默降级。
+	// 不处理 GET 的话会去 parse 空 body 并抛异常，把整个 fixture 带下线。
+	if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+	{
+		context.Response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
+		context.Response.Close();
+		return;
+	}
+
 	using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
 	var request = JsonNode.Parse(await reader.ReadToEndAsync())?.AsObject();
 

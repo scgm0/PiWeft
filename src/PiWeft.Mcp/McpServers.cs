@@ -83,10 +83,32 @@ public sealed class McpProcess : IAsyncDisposable
 			}
 		});
 
-		var client = await McpClient.ConnectAsync(
-			process.StandardOutput.BaseStream,
-			process.StandardInput.BaseStream,
-			cancellationToken).ConfigureAwait(false);
+		McpClient client;
+		try
+		{
+			client = await McpClient.ConnectAsync(
+				process.StandardOutput.BaseStream,
+				process.StandardInput.BaseStream,
+				cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception)
+		{
+			// 握手失败时必须杀掉已经拉起来的进程：否则它会一直挂着，占住内存与管道。
+			try
+			{
+				if (!process.HasExited)
+				{
+					process.Kill(entireProcessTree: true);
+				}
+			}
+			catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
+			{
+				// 进程已经退出，或平台不支持整树杀进程。
+			}
+
+			process.Dispose();
+			throw;
+		}
 
 		client.ConfiguredServerName = config.Name;
 		return new McpProcess(process, client, config);
@@ -345,7 +367,8 @@ public static class McpServers
 	public static async Task<McpConnection> ConnectAllAsync(
 		IReadOnlyList<McpServerConfig> servers,
 		Action<string>? onError = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		string? agentDir = null)
 	{
 		var transports = new List<IAsyncDisposable>();
 		var connected = new List<McpConnection.ServerEntry>();
@@ -387,14 +410,29 @@ public static class McpServers
 
 				if (config.IsHttp)
 				{
+					// 声明 auth: oauth 的服务器用存储里的访问令牌（必要时自动刷新）。
+					IMcpAccessTokenProvider? tokens = config.UsesOAuth
+						? new McpOAuthTokenProvider(config.Url!, agentDir)
+						: null;
+
 					var http = await McpHttpClient
-						.ConnectAsync(config.Url!, config.Headers, config.TimeoutSpan, cancellationToken: cancellationToken)
+						.ConnectAsync(
+							config.Url!,
+							config.Headers,
+							config.TimeoutSpan,
+							cancellationToken: cancellationToken,
+							tokens: tokens)
 						.ConfigureAwait(false);
 
 					http.ConfiguredServerName = config.Name;
 					transports.Add(http);
 					client = http;
 					resources = http;
+
+					// HTTP 走独立的 SSE 通知流；服务器拒绝（404/405）时客户端会静默降级，
+					// 与 stdio 的通知路径共用同一套热刷新逻辑。
+					var httpName = config.Name;
+					http.NotificationReceived += (method, _) => connection.OnNotification(httpName, method);
 				}
 				else
 				{
@@ -403,7 +441,6 @@ public static class McpServers
 					client = process.Client;
 					resources = process.Client;
 
-					// stdio 能收到服务器通知；HTTP 需要打开 SSE 流，本客户端暂不这样做。
 					var serverName = config.Name;
 					process.Client.NotificationReceived += (method, _) => connection.OnNotification(serverName, method);
 				}
@@ -454,5 +491,5 @@ public static class McpServers
 		Action<string>? onError = null,
 		CancellationToken cancellationToken = default,
 		bool includeProject = true) =>
-		ConnectAllAsync(McpConfig.Load(cwd, agentDir, includeProject), onError, cancellationToken);
+		ConnectAllAsync(McpConfig.Load(cwd, agentDir, includeProject), onError, cancellationToken, agentDir);
 }

@@ -152,6 +152,59 @@ public static class FileTools
 		Execute = invocation => Task.FromResult(WriteFile(cwd, invocation)),
 	};
 
+	/// <summary>
+	/// 同目录临时文件 + 原子替换：写到一半崩溃/断电不会把原文件截成半截（那可能是用户几天的改动）。
+	/// 覆盖时保留原有的 Unix 权限位，避免 <c>chmod +x</c> 过的脚本丢掉执行位。
+	/// </summary>
+	private static void WriteAtomically(string path, string content)
+	{
+		UnixFileMode? preserved = null;
+		if (!OperatingSystem.IsWindows() && File.Exists(path))
+		{
+			try
+			{
+				preserved = File.GetUnixFileMode(path);
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+			{
+				// 读不到权限位就按默认落盘。
+			}
+		}
+
+		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+		try
+		{
+			File.WriteAllText(temporary, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+			File.Move(temporary, path, overwrite: true);
+
+			if (preserved is { } mode && !OperatingSystem.IsWindows())
+			{
+				try
+				{
+					File.SetUnixFileMode(path, mode);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+				{
+					// 恢复权限失败不影响写入结果本身。
+				}
+			}
+		}
+		finally
+		{
+			if (File.Exists(temporary))
+			{
+				try
+				{
+					File.Delete(temporary);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 清理失败不影响主流程。
+				}
+			}
+		}
+	}
+
 	private static AgentToolResult WriteFile(string cwd, AgentToolInvocation invocation)
 	{
 		var path = RequiredString(invocation, "path");
@@ -159,7 +212,7 @@ public static class FileTools
 		var absolutePath = ToolPaths.ResolveToCwd(path, cwd);
 
 		ToolPaths.EnsureParentDirectory(absolutePath);
-		File.WriteAllText(absolutePath, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+		WriteAtomically(absolutePath, content);
 
 		return new AgentToolResult
 		{
@@ -250,10 +303,7 @@ public static class FileTools
 
 		var applied = EditDiff.ApplyEdits(normalized, edits, path);
 		var restored = EditDiff.RestoreLineEndings(applied.NewContent, lineEnding);
-		File.WriteAllText(
-			absolutePath,
-			hadBom ? "\uFEFF" + restored : restored,
-			new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+		WriteAtomically(absolutePath, hadBom ? "\uFEFF" + restored : restored);
 
 		return new AgentToolResult
 		{

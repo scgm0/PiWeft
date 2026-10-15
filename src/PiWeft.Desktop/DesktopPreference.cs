@@ -77,7 +77,8 @@ public sealed record DesktopPreference
 			var theme = root?["theme"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 			return new DesktopPreference
 			{
-				Theme = theme is LightTheme or SystemTheme ? theme : DarkTheme,
+				// 取值可以是内建名，也可以是自定义 pi 主题名；解析失败时由 DesktopTheme 回退。
+				Theme = string.IsNullOrWhiteSpace(theme) ? DarkTheme : theme,
 				SidebarCollapsed = root?["sidebarCollapsed"] is JsonValue collapsed && collapsed.TryGetValue<bool>(out var hidden) && hidden,
 				SidebarWidth = Math.Clamp(Number(root, "sidebarWidth", positive: true) ?? AppTheme.SidebarWidth, 200, 480),
 				ChatFontSize = Math.Clamp(Number(root, "chatFontSize", positive: true) ?? 16, 14, 22),

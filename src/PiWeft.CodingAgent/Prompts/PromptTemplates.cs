@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
-using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Resources;
 
 namespace PiWeft.CodingAgent.Prompts;
 
@@ -13,6 +13,9 @@ public sealed record PromptTemplate
 	public required string Content { get; init; }
 
 	public required string FilePath { get; init; }
+
+	/// <summary>模板来源（用户、项目或包）。</summary>
+	public ResourceOrigin Origin { get; init; }
 }
 
 /// <summary>
@@ -20,22 +23,30 @@ public sealed record PromptTemplate
 /// </summary>
 public static partial class PromptTemplates
 {
-	/// <summary>从用户与项目提示词目录加载模板，项目模板优先。</summary>
+	/// <summary>从用户与项目提示词目录加载模板，项目模板优先；包含已安装 pi 包提供的模板。</summary>
 	public static IReadOnlyList<PromptTemplate> Discover(string cwd, string? agentDir = null, bool includeProject = true)
+	{
+		var resolvedAgentDir = agentDir ?? Session.SessionPaths.GetAgentDir();
+		var packages = PiPackageStore.Discover(cwd, resolvedAgentDir, includeProject);
+		return Discover(ResourceResolver.PromptRoots(cwd, resolvedAgentDir, includeProject, packages));
+	}
+
+	/// <summary>从已解析的根目录加载模板；单个根可以是目录，也可以是 <c>.md</c> 文件。</summary>
+	public static IReadOnlyList<PromptTemplate> Discover(IReadOnlyList<ResourceRoot> roots)
 	{
 		var templates = new List<PromptTemplate>();
 		var seenNames = new HashSet<string>(StringComparer.Ordinal);
 
-		// 项目优先，便于覆盖同名的用户模板；不受信时只加载用户级目录。
-		if (includeProject)
+		foreach (var (root, origin) in roots)
 		{
-			LoadDirectory(
-				Path.Combine(Path.GetFullPath(cwd), SessionPaths.ConfigDirName, "prompts"),
-				templates,
-				seenNames);
-		}
+			if (File.Exists(root))
+			{
+				LoadFile(root, origin, templates, seenNames);
+				continue;
+			}
 
-		LoadDirectory(Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "prompts"), templates, seenNames);
+			LoadDirectory(root, origin, templates, seenNames);
+		}
 
 		return templates;
 	}
@@ -170,48 +181,59 @@ public static partial class PromptTemplates
 		return index >= 0 && index < args.Count ? args[index] : string.Empty;
 	}
 
-	private static void LoadDirectory(string directory, List<PromptTemplate> templates, HashSet<string> seenNames)
+	private static void LoadDirectory(
+		string directory,
+		ResourceOrigin origin,
+		List<PromptTemplate> templates,
+		HashSet<string> seenNames)
 	{
 		if (!Directory.Exists(directory))
 		{
 			return;
 		}
 
-		IEnumerable<string> files;
+		string[] files;
 		try
 		{
-			files = Directory.EnumerateFiles(directory, "*.md");
+			// 物化到数组：EnumerateFiles 是惰性的，异常在遍历时才抛，只包住创建等于没有保护。
+			files = [.. Directory.EnumerateFiles(directory, "*.md")];
 		}
-		catch (IOException)
-		{
-			return;
-		}
-		catch (UnauthorizedAccessException)
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
 			return;
 		}
 
 		foreach (var file in files.OrderBy(static f => f, StringComparer.Ordinal))
 		{
-			var name = Path.GetFileNameWithoutExtension(file);
-			if (name.Length == 0 || !seenNames.Add(name))
-			{
-				continue;
-			}
+			LoadFile(file, origin, templates, seenNames);
+		}
+	}
 
-			try
+	private static void LoadFile(
+		string file,
+		ResourceOrigin origin,
+		List<PromptTemplate> templates,
+		HashSet<string> seenNames)
+	{
+		var name = Path.GetFileNameWithoutExtension(file);
+		if (name.Length == 0 || !seenNames.Add(name))
+		{
+			return;
+		}
+
+		try
+		{
+			templates.Add(new PromptTemplate
 			{
-				templates.Add(new PromptTemplate
-				{
-					Name = name,
-					Content = File.ReadAllText(file),
-					FilePath = Path.GetFullPath(file),
-				});
-			}
-			catch (IOException)
-			{
-				seenNames.Remove(name);
-			}
+				Name = name,
+				Content = File.ReadAllText(file),
+				FilePath = Path.GetFullPath(file),
+				Origin = origin,
+			});
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			seenNames.Remove(name);
 		}
 	}
 

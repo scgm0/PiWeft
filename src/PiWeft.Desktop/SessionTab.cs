@@ -21,6 +21,7 @@ public sealed partial class SessionTab : IDisposable
 	private volatile bool _disposed;
 	private bool _sending;
 	private Task _pendingSend = Task.CompletedTask;
+	private Task _pendingPaste = Task.CompletedTask;
 	private CancellationTokenSource? _compactionAbort;
 	private readonly ItemsControl _messages;
 	private readonly ScrollViewer _scroll;
@@ -172,7 +173,12 @@ public sealed partial class SessionTab : IDisposable
 				{
 					key.Handled = true;
 					Send();
+					return;
 				}
+
+				// 命令分发在按键冒泡之后，这里能先看到 Ctrl/Cmd+V；剪贴板里是图片时就当附件，
+				// 否则交给框架做原有文本粘贴。
+				if (key.Key == Key.V && key.PrimaryKey && !key.AltKey && PasteImageFromClipboard()) key.Handled = true;
 			});
 
 		_commandBar.Spacing(AppTheme.Space2).Margin(new Thickness(0, 0, 0, 4)).IsVisible(false);
@@ -330,6 +336,10 @@ public sealed partial class SessionTab : IDisposable
 				Render();
 			}
 		};
+		_imagePreview.Status = message =>
+		{
+			if (!_disposed) _status.Text(message);
+		};
 		_chat.Attach(session);
 
 		RefreshPickers();
@@ -387,8 +397,42 @@ public sealed partial class SessionTab : IDisposable
 
 	public void Dispose()
 	{
+		// 流式运行中直接释放会留下一轮孤儿运行：agent 继续烧 token 执行工具，
+		// 而持久化监听已退订、这一轮的结果不会再落盘。这里先发中止信号（安全网）；
+		// 用户主动关闭走 CloseAsync，会等这轮收尾落盘。
+		try
+		{
+			Session.Abort();
+		}
+		catch (ObjectDisposedException)
+		{
+			// 会话已经释放。
+		}
+
 		DisposeView();
 		Session.Dispose();
+	}
+
+	/// <summary>
+	/// 关闭标签：先中止运行中的轮次并等它收尾（结果落盘），再释放界面与会话。
+	/// 有界等待，收尾失败也继续关闭。
+	/// </summary>
+	public async Task CloseAsync()
+	{
+		try
+		{
+			if (IsStreaming)
+			{
+				Session.Abort();
+				await _pendingSend.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(true);
+			}
+		}
+		catch (Exception exception) when (exception is OperationCanceledException or TimeoutException or ObjectDisposedException)
+		{
+			// 收尾失败也继续关闭。
+		}
+
+		Dispose();
 	}
 
 	/// <summary>释放界面订阅和待执行的刷新，不释放会话。</summary>
@@ -1214,8 +1258,48 @@ public sealed partial class SessionTab : IDisposable
 
 	private void PreviewAttachment(ImageContent image)
 	{
-		try { PreviewImage(ChatImages.Source(image.Data)); }
+		try { PreviewImage(ChatImages.Source(new ChatImage(image.Data, image.MimeType))); }
 		catch (FormatException) { _status.Text(Strings.BrokenImage); }
+	}
+
+	/// <summary>剪贴板里是图片时把它附加到输入框；返回是否接管了这次按键。</summary>
+	private bool PasteImageFromClipboard()
+	{
+		if (_disposed || ClipboardImages.Service is not { } service || !service.HasImage()) return false;
+		_pendingPaste = PasteImageAsync(service);
+		return true;
+	}
+
+	/// <summary>最近一次剪贴板图片粘贴；测试与交互诊断用它等待后台读取结束。</summary>
+	internal Task PendingPaste => _pendingPaste;
+
+	/// <summary>窗口级图片预览浮层；浮层不在会话可视树里，测试与交互诊断经这里取其中的控件。</summary>
+	internal ImagePreview ImagePreview => _imagePreview;
+
+	/// <summary>读取剪贴板图片并逐个附加；读取失败时说明原因，避免按键被吞掉后没有任何反馈。</summary>
+	private async Task PasteImageAsync(IClipboardImages service)
+	{
+		IReadOnlyList<ClipboardAttachment> attachments;
+		try
+		{
+			attachments = await service.ReadAsync().ConfigureAwait(true);
+		}
+		catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Paste clipboard image", ex);
+			Dispatch(() => { if (!_disposed) _status.Text(Strings.ClipboardImageUnavailable); });
+			return;
+		}
+
+		if (_disposed) return;
+		if (attachments.Count == 0)
+		{
+			_status.Text(Strings.ClipboardImageUnavailable);
+			return;
+		}
+
+		foreach (var attachment in attachments) AddImage(attachment.Name, attachment.Content);
+		FocusComposer();
 	}
 
 	/// <summary>带标题与时间的通用卡片，用于错误等系统类消息。</summary>

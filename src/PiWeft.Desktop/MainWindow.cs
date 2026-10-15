@@ -4,6 +4,7 @@ using PiWeft.Ai;
 using PiWeft.Cli;
 using PiWeft.Agent;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Stats;
 using PiWeft.Mcp;
@@ -758,7 +759,10 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>关闭标签并释放它持有的会话。</summary>
-	private void CloseTab(SessionTab tab)
+	private void CloseTab(SessionTab tab) => _ = CloseTabAsync(tab);
+
+	/// <summary>流式运行中先中止并等这轮结果落盘，再移除标签与会话。</summary>
+	private async Task CloseTabAsync(SessionTab tab)
 	{
 		var index = _tabEntries.IndexOf(tab);
 		if (index < 0)
@@ -779,7 +783,7 @@ public sealed partial class MainWindow : Window
 			_tabControl.RemoveTabAt(index);
 		}
 
-		tab.Dispose();
+		await tab.CloseAsync();
 		UpdateStatus();
 	}
 
@@ -1061,6 +1065,10 @@ public sealed partial class MainWindow : Window
 				case "settings":
 					OpenSettingsTab();
 					break;
+				case "resources":
+					OpenSettingsTab();
+					if (_settingsView is { } resourceView) _ = resourceView.SelectSectionAsync("resources");
+					break;
 				case "branch":
 					CurrentTab()?.ShowBranches();
 					break;
@@ -1092,6 +1100,13 @@ public sealed partial class MainWindow : Window
 		{
 			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();
 			if (view == "chat") CurrentTab()?.ReportConversationSmoke();
+			if (view == "resources" && _settingsView?.LastSectionError is { Length: > 0 } error)
+			{
+				// 资源页构建失败（例如引用了不存在的内嵌图标）必须在无人值守演练里暴露出来。
+				Console.Error.WriteLine($"piweft-desktop: resources smoke failed: {error}");
+				Environment.ExitCode = 1;
+			}
+
 			Console.WriteLine("piweft-desktop: ui smoke ok");
 			Application.Shutdown();
 		});
@@ -1381,7 +1396,7 @@ public sealed partial class MainWindow : Window
 			return;
 		}
 
-		_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync);
+		_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
 		_tabEntries.Add(_settingsView);
 		AddTab(TabHeader(Strings.Settings, () => CloseAuxTab(_settingsView)), _settingsView.View, _settingsView);
 
@@ -1407,6 +1422,29 @@ public sealed partial class MainWindow : Window
 		{
 			_banner.Text(Strings.ConfigFailed);
 		}
+	}
+
+	/// <summary>
+	/// 重新解析技能、提示词模板与主题，对应 pi 的 <c>/reload</c>：已打开的会话不重建，
+	/// 只刷新它们下一次请求使用的系统提示词章节。
+	/// </summary>
+	private Task ReloadResourcesAsync()
+	{
+		foreach (var tab in _tabEntries.OfType<SessionTab>())
+		{
+			try
+			{
+				tab.Session.ReloadResources();
+			}
+			catch (ObjectDisposedException)
+			{
+				// 标签正在关闭：跳过。
+			}
+		}
+
+		_settingsView?.Refresh();
+		_banner.Text(Strings.ResourcesReloaded);
+		return Task.CompletedTask;
 	}
 
 	/// <summary>命令面板的命令集：宿主操作 + 当前会话的斜杠命令。</summary>
@@ -1651,6 +1689,10 @@ public sealed partial class MainWindow : Window
 		ModelCount = _models.Count,
 		Tools = [.. CurrentSession()?.Tools.Select(static tool => tool.Name) ?? []],
 		Skills = [.. CurrentSession()?.DiscoveredSkills.Select(static skill => skill.Name) ?? []],
+		Resources = CurrentSession()?.Resources ?? ResourceResolver.Resolve(
+			CurrentSession()?.Cwd ?? _cwd,
+			SessionPaths.GetAgentDir(),
+			_environment?.ProjectTrusted ?? true),
 		McpServers = [.. _mcp?.Servers.Select(state => new McpServerStatus(state.Name, state.Connected, state.ToolCount, state.Error)) ?? []],
 		Session = CurrentSession(),
 	};

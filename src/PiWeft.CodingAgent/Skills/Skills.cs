@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using PiWeft.CodingAgent.Resources;
 
 namespace PiWeft.CodingAgent.Skills;
 
@@ -21,6 +22,9 @@ public sealed record Skill
 
 	/// <summary>前置元数据之后的 Markdown 正文。</summary>
 	public string Body { get; init; } = string.Empty;
+
+	/// <summary>技能来源（用户、项目或包）。</summary>
+	public ResourceOrigin Origin { get; init; }
 }
 
 /// <summary>
@@ -38,71 +42,59 @@ public static partial class Skills
 	};
 
 	/// <summary>
-	/// 发现技能，项目位置优先，因此同名时项目技能会覆盖用户技能。
+	/// 发现技能：约定目录（项目优先）加 settings 显式路径与已安装包。
+	/// 同名技能先发现者获胜，因此项目技能会覆盖用户技能。
 	/// </summary>
 	public static IReadOnlyList<Skill> Discover(string cwd, string? agentDir = null, bool includeProject = true)
+	{
+		// 这条便捷重载也要带上包资源，否则桌面/测试看到的技能集合会比会话快照少。
+		var resolvedAgentDir = agentDir ?? Session.SessionPaths.GetAgentDir();
+		var packages = PiPackageStore.Discover(cwd, resolvedAgentDir, includeProject);
+		return Discover(ResourceResolver.SkillRoots(cwd, resolvedAgentDir, includeProject, packages));
+	}
+
+	/// <summary>从已解析的根目录发现技能。</summary>
+	public static IReadOnlyList<Skill> Discover(IReadOnlyList<ResourceRoot> roots)
 	{
 		var found = new List<Skill>();
 		var seenNames = new HashSet<string>(StringComparer.Ordinal);
 		var seenPaths = new HashSet<string>(StringComparer.Ordinal);
 
-		foreach (var root in SearchRoots(cwd, agentDir, includeProject))
+		foreach (var (root, origin) in roots)
 		{
+			// settings 里可以直接声明一个 SKILL.md 文件；只按目录处理会把它静默丢掉。
+			if (File.Exists(root))
+			{
+				Add(root, origin, found, seenNames, seenPaths);
+				continue;
+			}
+
 			if (!Directory.Exists(root))
 			{
 				continue;
 			}
 
-			Collect(root, found, seenNames, seenPaths);
+			Collect(root, origin, found, seenNames, seenPaths);
 		}
 
 		return found;
 	}
 
-	/// <summary>
-	/// 按发现顺序排列的技能目录：先从工作目录逐级向上的项目根，然后是用户根。
-	/// </summary>
+	/// <summary>按发现顺序排列的技能目录（仅路径）。</summary>
 	public static IReadOnlyList<string> SearchRoots(string cwd, string? agentDir = null, bool includeProject = true)
 	{
-		var roots = new List<string>();
-		var resolvedAgentDir = agentDir ?? Session.SessionPaths.GetAgentDir();
-
-		// 不受信时只加载用户级资源，项目内的技能目录全部跳过。
-		if (includeProject)
+		var roots = ResourceResolver.SkillRoots(cwd, agentDir, includeProject);
+		var paths = new List<string>(roots.Count);
+		foreach (var root in roots)
 		{
-			foreach (var directory in AncestorDirectories(cwd))
-			{
-				roots.Add(Path.Combine(directory, Session.SessionPaths.ConfigDirName, "skills"));
-				roots.Add(Path.Combine(directory, ".agents", "skills"));
-			}
+			paths.Add(root.Path);
 		}
 
-		roots.Add(Path.Combine(resolvedAgentDir, "skills"));
-		roots.Add(Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-			".agents",
-			"skills"));
-
-		return roots;
+		return paths;
 	}
 
 	/// <summary>从 <paramref name="cwd"/> 向上直到（含）仓库根或文件系统根的各级目录。</summary>
-	internal static IEnumerable<string> AncestorDirectories(string cwd)
-	{
-		var current = new DirectoryInfo(Path.GetFullPath(cwd));
-		while (current is not null)
-		{
-			yield return current.FullName;
-
-			// 遇到仓库根时终止项目内的发现。
-			if (Directory.Exists(Path.Combine(current.FullName, ".git")))
-			{
-				yield break;
-			}
-
-			current = current.Parent;
-		}
-	}
+	internal static IEnumerable<string> AncestorDirectories(string cwd) => ResourcePaths.AncestorDirectories(cwd);
 
 	/// <summary>
 	/// 展开 <c>/skill:name args</c> 命令为技能正文（带 <c>&lt;skill&gt;</c> 包裹），
@@ -176,7 +168,7 @@ public static partial class Skills
 		{
 			text = File.ReadAllText(path);
 		}
-		catch (IOException)
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
 			return null;
 		}
@@ -253,6 +245,7 @@ public static partial class Skills
 
 	private static void Collect(
 		string root,
+		ResourceOrigin origin,
 		List<Skill> found,
 		HashSet<string> seenNames,
 		HashSet<string> seenPaths)
@@ -261,17 +254,22 @@ public static partial class Skills
 		var direct = Path.Combine(root, "SKILL.md");
 		if (File.Exists(direct))
 		{
-			Add(direct, found, seenNames, seenPaths);
+			Add(direct, origin, found, seenNames, seenPaths);
 			return;
 		}
 
 		foreach (var file in EnumerateSkillFiles(root))
 		{
-			Add(file, found, seenNames, seenPaths);
+			Add(file, origin, found, seenNames, seenPaths);
 		}
 	}
 
-	private static void Add(string path, List<Skill> found, HashSet<string> seenNames, HashSet<string> seenPaths)
+	private static void Add(
+		string path,
+		ResourceOrigin origin,
+		List<Skill> found,
+		HashSet<string> seenNames,
+		HashSet<string> seenPaths)
 	{
 		var full = Path.GetFullPath(path);
 		if (!seenPaths.Add(full))
@@ -291,21 +289,18 @@ public static partial class Skills
 			return;
 		}
 
-		found.Add(skill);
+		found.Add(skill with { Origin = origin });
 	}
 
 	private static IEnumerable<string> EnumerateSkillFiles(string root)
 	{
-		IEnumerable<string> children;
+		string[] children;
 		try
 		{
-			children = Directory.EnumerateDirectories(root);
+			// 物化到数组：EnumerateDirectories 是惰性的，异常在遍历时才抛，只包住创建等于没有保护。
+			children = [.. Directory.EnumerateDirectories(root)];
 		}
-		catch (IOException)
-		{
-			yield break;
-		}
-		catch (UnauthorizedAccessException)
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
 			yield break;
 		}

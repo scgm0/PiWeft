@@ -210,7 +210,38 @@ public sealed partial class SessionManager
 			}
 		}
 
+		EnsureTrailingNewline(path);
 		return entries;
+	}
+
+	/// <summary>
+	/// 上次崩溃可能留下没有换行的半行记录：后续追加会把新记录直接拼上去，合成一行非法 JSON，
+	/// 导致新旧两条一起被跳过。打开会话时补一个换行把它封口。
+	/// </summary>
+	private static void EnsureTrailingNewline(string path)
+	{
+		try
+		{
+			using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+			if (stream.Length == 0)
+			{
+				return;
+			}
+
+			stream.Seek(-1, SeekOrigin.End);
+			if (stream.ReadByte() == '\n')
+			{
+				return;
+			}
+
+			stream.Seek(0, SeekOrigin.End);
+			stream.WriteByte((byte)'\n');
+			stream.Flush(flushToDisk: true);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			// 修复失败不影响打开会话本身。
+		}
 	}
 
 	private void RebuildIndex()

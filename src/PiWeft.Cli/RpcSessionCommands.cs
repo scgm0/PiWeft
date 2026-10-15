@@ -3,8 +3,10 @@ using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Prompts;
+using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Skills;
+using PiWeft.CodingAgent.Themes;
 
 namespace PiWeft.Cli;
 
@@ -163,6 +165,84 @@ public sealed partial class CliRunner
 
 		return new JsonObject { ["commands"] = new JsonArray([.. commands]) };
 	}
+
+	/// <summary>
+	/// <c>get_resources</c> / <c>reload_resources</c> 的数据：已解析的技能、提示词模板、主题与包。
+	/// 桌面管理界面与 <c>pi</c> 的 RPC 客户端共用同一份形状。
+	/// </summary>
+	private static JsonObject ResourcesRecord(CodingAgentSession session)
+	{
+		var skills = new List<JsonNode?>(session.Resources.Skills.Count);
+		foreach (var skill in session.Resources.Skills)
+		{
+			skills.Add(new JsonObject
+			{
+				["name"] = skill.Name,
+				["description"] = skill.Description,
+				["path"] = skill.FilePath,
+				["scope"] = ScopeText(skill.Origin.Scope),
+				["source"] = skill.Origin.Display,
+				["disableModelInvocation"] = skill.DisableModelInvocation,
+			});
+		}
+
+		var prompts = new List<JsonNode?>(session.Resources.Templates.Count);
+		foreach (var template in session.Resources.Templates)
+		{
+			prompts.Add(new JsonObject
+			{
+				["name"] = template.Name,
+				["path"] = template.FilePath,
+				["scope"] = ScopeText(template.Origin.Scope),
+				["source"] = template.Origin.Display,
+			});
+		}
+
+		var themes = new List<JsonNode?>(session.Resources.Themes.Count);
+		foreach (var theme in session.Resources.Themes)
+		{
+			themes.Add(new JsonObject
+			{
+				["name"] = theme.Name,
+				["path"] = theme.FilePath,
+				["scope"] = ScopeText(theme.Origin.Scope),
+				["source"] = theme.Origin.Display,
+				["valid"] = theme.IsValid,
+				["error"] = theme.Error,
+				["appearance"] = theme.Theme is { } parsed
+					? (parsed.Appearance == ThemeAppearance.Light ? "light" : "dark")
+					: null,
+			});
+		}
+
+		var packages = new List<JsonNode?>(session.Resources.Packages.Count);
+		foreach (var package in session.Resources.Packages)
+		{
+			packages.Add(new JsonObject
+			{
+				["name"] = package.Name,
+				["source"] = package.Source,
+				["root"] = package.Root,
+				["scope"] = ScopeText(package.Scope),
+			});
+		}
+
+		return new JsonObject
+		{
+			["skills"] = new JsonArray([.. skills]),
+			["prompts"] = new JsonArray([.. prompts]),
+			["themes"] = new JsonArray([.. themes]),
+			["packages"] = new JsonArray([.. packages]),
+			["diagnostics"] = new JsonArray([.. session.Resources.Diagnostics.Select(static text => (JsonNode?)JsonValue.Create(text))]),
+		};
+	}
+
+	private static string ScopeText(ResourceScope scope) => scope switch
+	{
+		ResourceScope.Project => "project",
+		ResourceScope.Package => "package",
+		_ => "user",
+	};
 
 	/// <summary>资源元数据，对应 pi 的 <c>SourceInfo</c>。</summary>
 	private JsonObject SourceInfoRecord(string path, string source)

@@ -150,7 +150,9 @@ public static class CodexAuth
 			}
 
 			var error = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-			var code = JsonNode.Parse(error)?["error"]?.GetValue<string>();
+			// 代理或 CDN 可能回 HTML / 纯文本；解析失败只当作「没有 error 字段」，
+			// 不要让 JsonException 冒出去打断整个登录流程。
+			var code = ErrorCodeOf(error);
 
 			// 用户尚未完成授权；客户端轮询过快时服务器会要求 slow_down。
 			if (code == "slow_down" || (int)response.StatusCode == 429)
@@ -242,6 +244,9 @@ public static class CodexAuth
 		}
 	}
 
+	/// <summary>进程级刷新闸门：并发请求不要各自拿同一个 refresh token 去换。</summary>
+	private static readonly SemaphoreSlim RefreshGate = new(1, 1);
+
 	/// <summary>加载已保存的凭据，即将过期时先刷新。</summary>
 	public static async Task<CodexCredentials> ResolveAsync(
 		HttpClient http,
@@ -258,10 +263,25 @@ public static class CodexAuth
 			return stored;
 		}
 
-		var refreshed = await RefreshAsync(http, stored.Refresh, authBaseUrl, cancellationToken).ConfigureAwait(false);
-		var credentials = CodexCredentials.FromTokens(refreshed);
-		Save(credentials, agentDir);
-		return credentials;
+		await RefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			// 取锁后再读一次：等待期间别的请求可能已经把令牌刷新过了。
+			var current = Load(agentDir);
+			if (current is { } stillValid && stillValid.ExpiresAt - ExpirySkew > DateTimeOffset.UtcNow)
+			{
+				return stillValid;
+			}
+
+			var refreshed = await RefreshAsync(http, current?.Refresh ?? stored.Refresh, authBaseUrl, cancellationToken).ConfigureAwait(false);
+			var credentials = CodexCredentials.FromTokens(refreshed);
+			Save(credentials, agentDir);
+			return credentials;
+		}
+		finally
+		{
+			RefreshGate.Release();
+		}
 	}
 
 	/// <summary>读取已保存的凭据；不存在时返回 <c>null</c>。</summary>
@@ -306,7 +326,10 @@ public static class CodexAuth
 		}
 	}
 
-	/// <summary>写入凭据，同时保留文件中其它 provider 的条目。</summary>
+	/// <summary>
+	/// 写入凭据，同时保留文件中其它 provider 的条目。写入是原子的，Unix 下仅用户可读写；
+	/// 文件存在但无法解析时**拒绝覆盖** —— 否则会把其它供应商的凭据整片抹掉。
+	/// </summary>
 	public static void Save(CodexCredentials credentials, string? agentDir = null)
 	{
 		var path = CredentialsPath(agentDir);
@@ -319,13 +342,55 @@ public static class CodexAuth
 				? JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject()
 				: new JsonObject();
 		}
-		catch (JsonException)
+		catch (JsonException exception)
 		{
-			root = new JsonObject();
+			throw new CodexAuthException($"无法解析 {path}（{exception.Message}），为避免覆盖其它凭据已中止写入");
 		}
 
 		root[ProviderKey] = JsonSerializer.SerializeToNode(credentials, AuthJsonContext.Default.CodexCredentials);
-		File.WriteAllText(path, root.ToJsonString(WriteOptions));
+
+		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+		try
+		{
+			File.WriteAllText(temporary, root.ToJsonString(WriteOptions));
+			if (!OperatingSystem.IsWindows())
+			{
+				// 令牌文件不能按 umask 落成 0644：本机其它用户不该读到 access/refresh token。
+				File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+			}
+
+			File.Move(temporary, path, overwrite: true);
+		}
+		finally
+		{
+			if (File.Exists(temporary))
+			{
+				try
+				{
+					File.Delete(temporary);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 清理失败不影响主流程的错误上报。
+				}
+			}
+		}
+	}
+
+	/// <summary>
+	/// 从错误体里取 <c>error</c> 字段；不是 JSON 时返回 <c>null</c>（不抛异常）。
+	/// 注意不要把这个 body 原样拼进异常消息：它可能包含 access/refresh token。
+	/// </summary>
+	private static string? ErrorCodeOf(string body)
+	{
+		try
+		{
+			return JsonNode.Parse(body)?["error"]?.GetValue<string>();
+		}
+		catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+		{
+			return null;
+		}
 	}
 
 	/// <summary>提交 JSON 请求体。手写实现，保证裁剪后仍然是反射无关的路径。</summary>

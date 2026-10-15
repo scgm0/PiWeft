@@ -170,8 +170,10 @@ public static class GitWriter
 				return (Strings.GitUnavailable, false);
 			}
 
-			var stdout = process.StandardOutput.ReadToEnd();
-			var stderr = process.StandardError.ReadToEnd();
+			// 两路并发读：顺序读 stderr 时，子进程的 stdout 缓冲（约 64KB）一旦写满会阻塞，
+			// 进而永远不退出 —— 那 WaitForExit 的超时也救不了，UI 会冻结。
+			var stdoutTask = process.StandardOutput.ReadToEndAsync();
+			var stderrTask = process.StandardError.ReadToEndAsync();
 			if (!process.WaitForExit(30_000))
 			{
 				try
@@ -184,6 +186,9 @@ public static class GitWriter
 
 				return (Strings.GitTimeout, false);
 			}
+
+			var stdout = stdoutTask.GetAwaiter().GetResult();
+			var stderr = stderrTask.GetAwaiter().GetResult();
 
 			// 只去掉尾部换行，保留行首空格：git branch 用前导空格表示非当前分支。
 			var output = stdout.TrimEnd('\r', '\n');

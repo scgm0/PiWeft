@@ -1,6 +1,6 @@
-# 桌面主题与历史渲染性能
+# 桌面渲染性能
 
-已完成：主题原位换色、可变高度消息虚拟化、延迟构建分支树，以及 PiDeck 风格的轻量侧栏、消息卡片、空会话页与输入区。实现见 `ConversationTimeline.cs`、`SessionTab.cs`、`AppStyles.cs` 和 `MainWindow.cs`。
+主题原位换色、可变高度消息虚拟化、延迟构建分支树，以及 PiDeck 风格的轻量侧栏、消息卡片、空会话页与输入区均已实现。实现见 `ConversationTimeline.cs`、`SessionTab.cs`、`AppStyles.cs` 和 `MainWindow.cs`。
 
 ## 主题切换
 
@@ -61,11 +61,7 @@ PIWEFT_NATIVE_TESTS=1 PIWEFT_SCREENSHOTS=/tmp/piweft-interaction-validation \
 
 ## 验证与复现
 
-该轮交互修复验证（历史记录）：全项目 **711 项测试通过**，其中桌面端 **251 项**；Debug 与 Linux NativeAOT 发布版都通过原生鼠标/键盘演练，覆盖三级开合位置稳定、差异跨行选择、图片留白关闭和本地链接启动模拟编辑器。NativeAOT 发布无警告；Windows/macOS 原生界面未在本环境验证。
-
-下面保留的是上一轮历史渲染优化的基准与复现记录。
-
-全项目 **662 项测试通过**，其中桌面端 202 项；Linux NativeAOT 发布无警告。新增测试验证历史首尾浏览、流式选区、工具回收与展开状态、原位换肤、窄屏草稿和高于视口的长回复。Windows/macOS 原生界面未在本环境验证。
+全项目 **993 项测试通过**，其中桌面端 **343 项**（2026-10-16 复核）；Linux NativeAOT 发布无警告。Debug 与 Linux NativeAOT 发布版都通过原生鼠标/键盘演练，覆盖三级开合位置稳定、差异跨行选择、图片留白关闭和本地链接启动模拟编辑器。Windows/macOS 原生界面未在本环境验证。
 
 ```sh
 xvfb-run -a dotnet test PiWeft.slnx
@@ -79,11 +75,3 @@ PI_WORKSPACE_SMOKE_APP="$PWD/artifacts/desktop-optimized-linux-x64/piweft-deskto
 ```
 
 截图演练均使用独立目录，无真实会话或凭据。脚本除窗口尺寸与进程退出检查外，还断言最新回复实际落在消息视口内。案例 9 为浅色会话，10/11 为深色/浅色空会话；`PI_WORKSPACE_SMOKE_TURNS` 可设 0–5000，0 使用原工具 fixture。
-
-本地发布程序保存在 `artifacts/desktop-optimized-linux-x64/piweft-desktop`，许可文件位于同目录的 `licenses/`。本次截图与日志在 `artifacts/desktop-validation/`（构建产物不提交）：
-
-- [深色会话](../artifacts/desktop-validation/chat-dark.png)
-- [浅色会话](../artifacts/desktop-validation/chat-light.png)
-- [窄窗口](../artifacts/desktop-validation/chat-narrow.png)
-- [深色空会话](../artifacts/desktop-validation/empty-dark.png)
-- [浅色空会话](../artifacts/desktop-validation/empty-light.png)

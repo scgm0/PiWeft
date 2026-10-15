@@ -10,19 +10,76 @@ using var logging = args is ["--version"] or ["-v"] or ["--help"] or ["-h"]
 	? null
 	: AppLog.Start("cli");
 
+// 子命令（auth/mcp/package）可能跑网络请求或外部进程：未预期的异常要转成
+// 「pi: ...」+ 退出码 1，而不是让 .NET 的栈回溯直接砸到用户脸上。
+async Task<int?> RunPreParseAsync(string label, Func<Task<int?>> command)
+{
+	try
+	{
+		return await command().ConfigureAwait(false);
+	}
+	catch (Exception exception) when (exception
+		is HttpRequestException or System.Net.Sockets.SocketException
+		or System.Text.Json.JsonException or InvalidDataException
+		or IOException or UnauthorizedAccessException
+		or InvalidOperationException or ArgumentException)
+	{
+		Console.Error.WriteLine($"pi: {label} 失败：{exception.Message}");
+		return 1;
+	}
+}
+
 // 凭据命令最先处理，并且**不经过通用参数解析**：它们有自己的开关
 // （--json / --credentials / --no-refresh / --min-expiry），通用解析器会把它们当成未知选项。
 // 这也和 pi 一致 —— 官方在解析参数之前先看是不是 auth 命令。
 if (args.Length > 0 && args[0] is "login" or "logout" or "auth")
 {
-	var authExit = await AuthCommands.RunAsync(
-		args[0],
-		args[1..],
-		Console.Out,
-		Console.Error,
-		CancellationToken.None).ConfigureAwait(false);
+	var authExit = await RunPreParseAsync("auth", () =>
+		AuthCommands.RunAsync(
+			args[0],
+			args[1..],
+			Console.Out,
+			Console.Error,
+			CancellationToken.None));
 
 	if (authExit is { } code)
+	{
+		return code;
+	}
+}
+
+// MCP 子命令同样在解析前分发：自带 --local/--url/--command 等开关。
+if (args.Length > 0 && args[0] == "mcp")
+{
+	IReadOnlyList<string> mcpRest = args.Length > 2 ? args[2..] : [];
+	var mcpExit = await RunPreParseAsync("mcp", () =>
+		McpCommands.RunAsync(
+			args.Length > 1 ? args[1] : "list",
+			mcpRest,
+			Console.Out,
+			Console.Error,
+			Directory.GetCurrentDirectory(),
+			CancellationToken.None));
+
+	if (mcpExit is { } code)
+	{
+		return code;
+	}
+}
+
+// 包命令同样在解析前分发：pi install/remove/update 自带 --local/-l/--json 开关。
+if (args.Length > 0 && args[0] is "install" or "remove" or "uninstall" or "list" or "update")
+{
+	var packageExit = await RunPreParseAsync("package", () =>
+		PackageCommands.RunAsync(
+			args[0],
+			args[1..],
+			Console.Out,
+			Console.Error,
+			Directory.GetCurrentDirectory(),
+			CancellationToken.None));
+
+	if (packageExit is { } code)
 	{
 		return code;
 	}

@@ -561,15 +561,17 @@ public sealed class ChatViewModel : IDisposable
 
 					foreach (var call in calls)
 					{
+						// 同一份参数序列化一次复用：连续两次 ToJsonString 在工具多的会话里是白做的热路径开销。
+						var arguments = call.Arguments.ToJsonString(PiJson.NodeOptions);
 						_entries.Add(new ChatEntry
 						{
 							Role = ChatRole.Tool,
 							EntryId = $"{entryIds.GetValueOrDefault(message) ?? call.Id}/tool/{call.Id}",
 							ToolName = call.Name,
 							ToolCallId = call.Id,
-							ToolArguments = call.Arguments.ToJsonString(PiJson.NodeOptions),
+							ToolArguments = arguments,
 							IsStreaming = true,
-							Text = call.Arguments.ToJsonString(PiJson.NodeOptions),
+							Text = arguments,
 						});
 					}
 

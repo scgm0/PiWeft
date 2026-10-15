@@ -23,7 +23,7 @@ public sealed class ImagePreviewTests
 		Assert.True(preview.IsOpen);
 		Assert.Same(image.Source, PreviewImage(preview).Source);
 		Assert.True(window.OverlayLayer.Contains(preview.View));
-		Click(Find<Button>(preview.View).Single(button => HoverHints.Text(button) is not null));
+		Click(Find<Button>(preview.View).Single(button => HoverHints.Text(button) == Strings.ImagePreviewClose));
 		Assert.False(preview.IsOpen);
 		Assert.Null(preview.View.Parent);
 		Assert.Null(PreviewImage(preview).Source);

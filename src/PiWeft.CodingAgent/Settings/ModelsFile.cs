@@ -76,11 +76,15 @@ public static partial class ModelsFileLoader
 		public int OverrideCount { get; init; }
 	}
 
-	/// <summary>加载并应用两个文件；同名时项目条目替换用户条目。</summary>
-	public static Applied Load(string cwd, string? agentDir = null)
+	/// <summary>
+	/// 加载并应用两个文件；同名时项目条目替换用户条目。
+	/// 项目级 <c>.pi/models.json</c> 能改写端点与请求头，因此不受信的项目必须传
+	/// <paramref name="includeProject"/> = <c>false</c>（与 settings / 技能同一信任边界）。
+	/// </summary>
+	public static Applied Load(string cwd, string? agentDir = null, bool includeProject = true)
 	{
 		var user = Read(UserPath(agentDir));
-		var project = Read(ProjectPath(cwd));
+		var project = includeProject ? Read(ProjectPath(cwd)) : null;
 		return user is null && project is null ? new Applied() : Apply(user, project);
 	}
 

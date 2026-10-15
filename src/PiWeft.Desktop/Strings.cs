@@ -67,8 +67,10 @@ public static partial class Strings
 	public static string BranchFailed(string reason) => $"分支失败：{reason}";
 	public const string CloseCurrentTab = "关闭标签";
 	public const string Copied = "已复制。";
+	public const string CopyImage = "复制图片";
 	public const string NothingToCopy = "还没有可复制的回复。";
 	public const string ClipboardUnavailable = "剪贴板不可用。";
+	public const string ClipboardImageUnavailable = "剪贴板里读不到可用的图片。";
 	public const string BrokenImage = "（图片数据无法解码）";
 	public const string PaletteButton = "命令";
 	public const string PinnedMark = "★";
@@ -165,6 +167,26 @@ public static partial class Strings
 	public const string SettingsMcpReconnecting = "正在重连 MCP…";
 
 	public const string SettingsMcpReconnected = "MCP 已重连";
+
+	/// <summary>资源管理（技能 / 提示词模板 / 主题 / pi 包）。</summary>
+	public const string SettingsResources = "资源";
+	public const string ResourcesPrompts = "提示词模板";
+	public const string ResourcesThemes = "主题";
+	public const string ResourcesPackages = "pi 包";
+
+	public const string ResourcesSkillHint = "技能按描述在任务匹配时进入系统提示词；也可以用 /skill:name 显式触发。";
+	public const string ResourcesPromptHint = "提示词模板以文件名作为斜杠命令，例如 review.md 对应 /review。";
+	public const string ResourcesThemeHint = "主题在「外观」页选择；这里列出已发现的主题文件与解析结果。";
+	public const string ResourcesPackageHint = "用 pi install <source> 添加包，或直接编辑 settings.json 的 packages。";
+	public const string ResourcesEmpty = "没有发现资源。";
+	public const string ResourcesReload = "重载资源";
+	public const string ResourcesReloaded = "资源已重载";
+	public const string ResourcesOpen = "打开文件";
+	public const string ResourcesDiagnostics = "诊断";
+	public const string ResourcesInvalid = "无法解析";
+	public const string ResourcesLight = "浅色";
+	public const string ResourcesDark = "深色";
+	public const string ResourcesUnknown = "未知";
 
 	/// <summary>D-07 跨会话用量统计。</summary>
 	public const string UsageStatsTitle = "用量统计";

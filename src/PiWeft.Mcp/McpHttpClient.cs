@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.ServerSentEvents;
 using System.Text;
@@ -6,6 +7,16 @@ using System.Text.Json.Nodes;
 
 using PiWeft.Ai.Json;
 namespace PiWeft.Mcp;
+
+/// <summary>为 MCP 请求提供 OAuth 访问令牌。</summary>
+public interface IMcpAccessTokenProvider
+{
+	/// <summary>取当前可用的访问令牌；没有令牌时返回 <c>null</c>（照常发送匿名请求）。</summary>
+	Task<string?> GetTokenAsync(CancellationToken cancellationToken);
+
+	/// <summary>强制刷新令牌，通常在收到 401 之后调用；失败时返回 <c>null</c>。</summary>
+	Task<string?> RefreshAsync(CancellationToken cancellationToken);
+}
 
 /// <summary>
 /// 基于 streamable HTTP 传输的 MCP 客户端：每条 JSON-RPC 消息都以 POST 发往同一个端点，
@@ -19,16 +30,40 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 	private readonly IReadOnlyDictionary<string, string> _headers;
 	private readonly TimeSpan _timeout;
 	private readonly bool _ownsHttpClient;
+	private readonly IMcpAccessTokenProvider? _tokens;
 	private readonly SemaphoreSlim _gate = new(1, 1);
 	private int _nextId;
 
-	private McpHttpClient(HttpClient http, string url, IReadOnlyDictionary<string, string>? headers, TimeSpan timeout, bool ownsHttpClient)
+	/// <summary>独立通知流的取消源；服务器不支持时为 null。</summary>
+	private CancellationTokenSource? _notificationCts;
+	private Task? _notificationTask;
+
+	/// <summary>服务器是否接受独立 SSE 通知流（<c>GET</c> + <c>text/event-stream</c>）。</summary>
+	private volatile bool _notificationStreamActive;
+
+	/// <summary>
+	/// 服务器通过独立流推送的通知（<c>params</c> 可能为 null），
+	/// 例如 <c>notifications/tools/list_changed</c>。
+	/// </summary>
+	public event Action<string, JsonObject?>? NotificationReceived;
+
+	/// <summary>独立通知流当前是否在线；服务器明确拒绝（404/405 等）时为 <c>false</c>。</summary>
+	public bool NotificationStreamActive => _notificationStreamActive;
+
+	private McpHttpClient(
+		HttpClient http,
+		string url,
+		IReadOnlyDictionary<string, string>? headers,
+		TimeSpan timeout,
+		bool ownsHttpClient,
+		IMcpAccessTokenProvider? tokens)
 	{
 		_http = http;
 		_url = url;
 		_headers = headers ?? new Dictionary<string, string>();
 		_timeout = timeout;
 		_ownsHttpClient = ownsHttpClient;
+		_tokens = tokens;
 	}
 
 	public string ServerName { get; private set; } = string.Empty;
@@ -61,14 +96,16 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		HttpClient? httpClient = null,
 		CancellationToken cancellationToken = default,
 		string clientName = "PiWeft",
-		string clientVersion = "0.1.0")
+		string clientVersion = "0.1.0",
+		IMcpAccessTokenProvider? tokens = null)
 	{
 		var client = new McpHttpClient(
 			httpClient ?? CreateDefaultClient(),
 			url,
 			headers,
 			timeout,
-			ownsHttpClient: httpClient is null);
+			ownsHttpClient: httpClient is null,
+			tokens);
 
 		var parameters = new JsonObject
 		{
@@ -97,6 +134,8 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		await client.SendAsync("notifications/initialized", parameters: null, expectResult: false, cancellationToken)
 			.ConfigureAwait(false);
 
+		// 打开独立 SSE 通知流：服务器在运行中宣告工具/资源变化时靠它热刷新。
+		client.StartNotificationStream();
 		return client;
 	}
 
@@ -203,16 +242,206 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		return McpProtocol.DecodeCallResult(response.Result ?? new JsonObject());
 	}
 
-	public ValueTask DisposeAsync()
+	public async ValueTask DisposeAsync()
 	{
+		if (_notificationCts is { } notifications)
+		{
+			try
+			{
+				await notifications.CancelAsync().ConfigureAwait(false);
+			}
+			catch (ObjectDisposedException)
+			{
+				// 已经释放过：忽略。
+			}
+		}
+
+		if (_notificationTask is { } task)
+		{
+			try
+			{
+				await task.ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is OperationCanceledException or IOException or HttpRequestException or JsonException or ObjectDisposedException)
+			{
+				// 流被取消或连接断开：关闭时不需要上报。
+			}
+		}
+
+		_notificationCts?.Dispose();
+		_notificationCts = null;
+		_notificationTask = null;
+
 		_gate.Dispose();
 
 		if (_ownsHttpClient)
 		{
 			_http.Dispose();
 		}
+	}
 
-		return ValueTask.CompletedTask;
+	/// <summary>
+	/// 启动独立通知流。它与请求-响应共用同一个端点，但必须绕开 <c>_gate</c> ——
+	/// 长连接会永久占住那把锁，让所有请求饿死。
+	/// </summary>
+	private void StartNotificationStream()
+	{
+		var notifications = new CancellationTokenSource();
+		_notificationCts = notifications;
+		_notificationTask = Task.Run(() => RunNotificationStreamAsync(notifications.Token), CancellationToken.None);
+	}
+
+	private async Task RunNotificationStreamAsync(CancellationToken cancellationToken)
+	{
+		var attempt = 0;
+		while (!cancellationToken.IsCancellationRequested)
+		{
+			try
+			{
+				using var request = new HttpRequestMessage(HttpMethod.Get, _url);
+				request.Headers.TryAddWithoutValidation("accept", "text/event-stream");
+				request.Headers.TryAddWithoutValidation("user-agent", "PiWeft/0.1.0");
+
+				foreach (var (name, value) in _headers)
+				{
+					request.Headers.TryAddWithoutValidation(name, value);
+				}
+
+				if (SessionId is { Length: > 0 } session)
+				{
+					request.Headers.TryAddWithoutValidation("mcp-session-id", session);
+				}
+
+				await ApplyAuthorizationAsync(request, cancellationToken).ConfigureAwait(false);
+
+				using var response = await _http
+					.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+					.ConfigureAwait(false);
+
+				if (IsUnsupported(response.StatusCode))
+				{
+					// 服务器不支持独立流（404/405/204 等）：静默降级到请求-响应模式。
+					_notificationStreamActive = false;
+					return;
+				}
+
+				if (response.StatusCode == HttpStatusCode.Unauthorized)
+				{
+					// 主动刷新一次令牌：应用空闲时没有 POST 请求去触发刷新，
+					// 否则这条流会一直用过期令牌拿 401，永远恢复不了。
+					_notificationStreamActive = false;
+					if (_tokens is not null)
+					{
+						await _tokens.RefreshAsync(cancellationToken).ConfigureAwait(false);
+					}
+
+					attempt++;
+					if (!await DelayAsync(attempt, cancellationToken).ConfigureAwait(false))
+					{
+						return;
+					}
+
+					continue;
+				}
+
+				if (!response.IsSuccessStatusCode)
+				{
+					_notificationStreamActive = false;
+					attempt++;
+					if (!await DelayAsync(attempt, cancellationToken).ConfigureAwait(false))
+					{
+						return;
+					}
+
+					continue;
+				}
+
+				_notificationStreamActive = true;
+				attempt = 0;
+
+				await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+				var parser = SseParser.Create<JsonDocument?>(stream, ParseFrame);
+
+				await foreach (var item in parser.EnumerateAsync(cancellationToken).ConfigureAwait(false))
+				{
+					if (item.Data is null)
+					{
+						continue;
+					}
+
+					using var document = item.Data;
+					if (document.RootElement.ValueKind != JsonValueKind.Object)
+					{
+						continue;
+					}
+
+					if (JsonNode.Parse(document.RootElement.GetRawText()) is JsonObject record)
+					{
+						DispatchNotification(record);
+					}
+				}
+
+				// 服务器把流正常关闭（例如代理回了 200 + 空正文立刻断开）时也必须退避，
+				// 否则这里会零延迟地无限重连，把服务器打爆。
+				attempt++;
+				if (!await DelayAsync(attempt, cancellationToken).ConfigureAwait(false))
+				{
+					return;
+				}
+			}
+			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+			{
+				return;
+			}
+			catch (Exception exception) when (exception is HttpRequestException or IOException or McpException or JsonException or ObjectDisposedException)
+			{
+				_notificationStreamActive = false;
+				attempt++;
+				if (!await DelayAsync(attempt, cancellationToken).ConfigureAwait(false))
+				{
+					return;
+				}
+			}
+		}
+	}
+
+	/// <summary>指数退避等待；返回 <c>false</c> 表示已取消。</summary>
+	private static async Task<bool> DelayAsync(int attempt, CancellationToken cancellationToken)
+	{
+		var milliseconds = Math.Min(30_000, 500 * Math.Pow(2, Math.Min(attempt, 6)));
+		try
+		{
+			await Task.Delay(TimeSpan.FromMilliseconds(milliseconds), cancellationToken).ConfigureAwait(false);
+			return true;
+		}
+		catch (OperationCanceledException)
+		{
+			return false;
+		}
+	}
+
+	private static bool IsUnsupported(HttpStatusCode status) => status
+		is HttpStatusCode.BadRequest
+		or HttpStatusCode.NotFound
+		or HttpStatusCode.MethodNotAllowed
+		or HttpStatusCode.NotAcceptable
+		or HttpStatusCode.NoContent;
+
+	/// <summary>分发独立流里的一条记录：只处理服务端通知，响应与服务端请求不在这里处理。</summary>
+	private void DispatchNotification(JsonObject record)
+	{
+		if (record["method"] is not JsonValue method || method.GetValueKind() != JsonValueKind.String)
+		{
+			return;
+		}
+
+		// 带 id 的是服务端请求（例如 ping）；HTTP 传输下的反向应答尚未实现，忽略即可。
+		if (record["id"] is not null)
+		{
+			return;
+		}
+
+		NotificationReceived?.Invoke(method.GetValue<string>(), record["params"] as JsonObject);
 	}
 
 	private static HttpClient CreateDefaultClient() => new(new SocketsHttpHandler
@@ -255,54 +484,92 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 				record["params"] = parameters.DeepClone();
 			}
 
-			using var request = new HttpRequestMessage(HttpMethod.Post, _url)
+			// 访问令牌可能在长时间运行后过期：401 时刷新一次并重放同一个请求。
+			for (var attempt = 0; ; attempt++)
 			{
-				Content = new StringContent(record.ToJsonString(PiJson.NodeOptions), new UTF8Encoding(false), "application/json"),
-			};
+				using var request = await CreateRequestAsync(record, cancellationToken).ConfigureAwait(false);
+				using var response = await _http
+					.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+					.ConfigureAwait(false);
 
-			request.Headers.TryAddWithoutValidation("accept", "application/json, text/event-stream");
-			request.Headers.TryAddWithoutValidation("user-agent", "PiWeft/0.1.0");
+				SessionId ??= ReadSessionId(response);
 
-			foreach (var (name, value) in _headers)
-			{
-				request.Headers.TryAddWithoutValidation(name, value);
+				if (response.StatusCode == HttpStatusCode.Unauthorized &&
+					attempt == 0 &&
+					_tokens is not null &&
+					await _tokens.RefreshAsync(cancellationToken).ConfigureAwait(false) is not null)
+				{
+					continue;
+				}
+
+				if (!response.IsSuccessStatusCode)
+				{
+					var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+					throw new McpException(
+						(int)response.StatusCode,
+						$"MCP server returned {(int)response.StatusCode}: {Truncate(body, 400)}");
+				}
+
+				if (!expectResult)
+				{
+					// 通知以 202 确认，且不带响应体。
+					return (null, SessionId);
+				}
+
+				// 读正文同样受 _timeout 约束：只给发送头阶段限时的话，
+				// 服务器先回响应头再拖住正文就能让握手/列举无限挂起。
+				var mediaType = response.Content.Headers.ContentType?.MediaType;
+				var result = mediaType?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true
+					? await ReadFromEventStreamAsync(response, id!.Value, timeout.Token).ConfigureAwait(false)
+					: await ReadFromJsonAsync(response, timeout.Token).ConfigureAwait(false);
+
+				return (result, SessionId);
 			}
-
-			if (SessionId is { Length: > 0 } session)
-			{
-				request.Headers.TryAddWithoutValidation("mcp-session-id", session);
-			}
-
-			using var response = await _http
-				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
-				.ConfigureAwait(false);
-
-			SessionId ??= ReadSessionId(response);
-
-			if (!response.IsSuccessStatusCode)
-			{
-				var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-				throw new McpException(
-					(int)response.StatusCode,
-					$"MCP server returned {(int)response.StatusCode}: {Truncate(body, 400)}");
-			}
-
-			if (!expectResult)
-			{
-				// 通知以 202 确认，且不带响应体。
-				return (null, SessionId);
-			}
-
-			var mediaType = response.Content.Headers.ContentType?.MediaType;
-			var result = mediaType?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true
-				? await ReadFromEventStreamAsync(response, id!.Value, cancellationToken).ConfigureAwait(false)
-				: await ReadFromJsonAsync(response, cancellationToken).ConfigureAwait(false);
-
-			return (result, SessionId);
 		}
 		finally
 		{
 			_gate.Release();
+		}
+	}
+
+	/// <summary>构造一条 POST 请求，并按需带上 OAuth 访问令牌。</summary>
+	private async Task<HttpRequestMessage> CreateRequestAsync(JsonObject record, CancellationToken cancellationToken)
+	{
+		var request = new HttpRequestMessage(HttpMethod.Post, _url)
+		{
+			Content = new StringContent(record.ToJsonString(PiJson.NodeOptions), new UTF8Encoding(false), "application/json"),
+		};
+
+		request.Headers.TryAddWithoutValidation("accept", "application/json, text/event-stream");
+		request.Headers.TryAddWithoutValidation("user-agent", "PiWeft/0.1.0");
+
+		foreach (var (name, value) in _headers)
+		{
+			request.Headers.TryAddWithoutValidation(name, value);
+		}
+
+		if (SessionId is { Length: > 0 } session)
+		{
+			request.Headers.TryAddWithoutValidation("mcp-session-id", session);
+		}
+
+		await ApplyAuthorizationAsync(request, cancellationToken).ConfigureAwait(false);
+		return request;
+	}
+
+	/// <summary>注入 <c>Authorization: Bearer …</c>；没有令牌提供者或令牌时保持匿名请求。</summary>
+	private async Task ApplyAuthorizationAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+	{
+		if (_tokens is null)
+		{
+			return;
+		}
+
+		if (await _tokens.GetTokenAsync(cancellationToken).ConfigureAwait(false) is { Length: > 0 } token)
+		{
+			// 配置里可能已经带了静态 Authorization 头；OAuth 令牌优先，避免重复发两个头。
+			request.Headers.Remove("authorization");
+			request.Headers.TryAddWithoutValidation("authorization", $"Bearer {token}");
 		}
 	}
 
@@ -321,7 +588,7 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		CancellationToken cancellationToken)
 	{
 		await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-		var parser = SseParser.Create<JsonDocument?>(stream, static (_, span) => JsonDocument.Parse(span.ToArray()));
+		var parser = SseParser.Create<JsonDocument?>(stream, ParseFrame);
 
 		await foreach (var item in parser.EnumerateAsync(cancellationToken).ConfigureAwait(false))
 		{
@@ -366,6 +633,23 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		}
 
 		return null;
+	}
+
+	/// <summary>
+	/// 解析一帧 SSE 数据。坏帧（服务器发来非法 JSON）直接跳过而不是抛出：
+	/// 通知流的后台任务一旦 fault，连 <see cref="DisposeAsync"/> 都会被带着抛出。
+	/// </summary>
+	private static JsonDocument? ParseFrame(string eventName, ReadOnlySpan<byte> data)
+	{
+		_ = eventName;
+		try
+		{
+			return JsonDocument.Parse(data.ToArray());
+		}
+		catch (JsonException)
+		{
+			return null;
+		}
 	}
 
 	private static string Truncate(string value, int max) =>

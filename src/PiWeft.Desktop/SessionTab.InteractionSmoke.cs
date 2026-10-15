@@ -13,7 +13,8 @@ public sealed partial class SessionTab
 		{
 			if (key.Key != Key.F8) return;
 			key.Handled = true;
-			PreviewImage(ChatImages.Source("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j7XcAAAAASUVORK5CYII="));
+			PreviewImage(ChatImages.Source(new ChatImage(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j7XcAAAAASUVORK5CYII=", "image/png")));
 		};
 		Expander? run = null;
 		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(50));

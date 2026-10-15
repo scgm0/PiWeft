@@ -4,6 +4,9 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
+/// <summary>预览图片的原始编码数据：「复制图片」按它写系统剪贴板。</summary>
+internal sealed record PreviewPayload(string Base64, string MimeType);
+
 /// <summary>缩略图和预览共用图片源；弱缓存不延长会话或大位图的生命周期。</summary>
 internal static class ChatImages
 {
@@ -20,13 +23,27 @@ internal static class ChatImages
 	}
 	private static readonly ConditionalWeakTable<string, CachedSource> Sources = new();
 
+	/// <summary>图片源到原始数据的映射随源一起消失，不额外持有位图。</summary>
+	private static readonly ConditionalWeakTable<ImageSource, PreviewPayload> Payloads = new();
+
 	internal static ImageSource Source(string data) => Sources.GetOrCreateValue(data).Get(data);
+
+	/// <summary>登记原始编码数据，供预览里的「复制图片」原样写回剪贴板。</summary>
+	internal static ImageSource Source(ChatImage image)
+	{
+		var source = Source(image.Data);
+		Payloads.AddOrUpdate(source, new PreviewPayload(image.Data, image.MimeType));
+		return source;
+	}
+
+	internal static PreviewPayload? PayloadOf(ImageSource source) =>
+		Payloads.TryGetValue(source, out var payload) ? payload : null;
 
 	public static UIElement Create(ChatImage image, Action<ImageSource>? preview = null)
 	{
 		try
 		{
-			var source = Source(image.Data);
+			var source = Source(image);
 			var thumbnail = new Image().Source(source).MaxWidth(AppTheme.MessageMaxWidth).MaxHeight(360);
 			return preview is null ? thumbnail : new Button().Ghost().Padding(0).Cursor(CursorType.Hand)
 				.HorizontalAlignment(HorizontalAlignment.Left).MaxWidth(AppTheme.MessageMaxWidth)
@@ -39,29 +56,38 @@ internal static class ChatImages
 	}
 }
 
-/// <summary>窗口级图片预览：适应窗口、遮罩关闭、Escape 关闭，隐藏时释放图片引用。</summary>
+/// <summary>窗口级图片预览：适应窗口、遮罩关闭、Escape 关闭，可把当前图片复制回剪贴板；隐藏时释放图片引用。</summary>
 internal sealed class ImagePreview
 {
 	private readonly Image _image = new();
 	private readonly Button _close;
+	private readonly Button _copy;
+	private readonly StackPanel _actions;
 	private Window? _window;
 	private UIElement? _returnFocus;
+	private PreviewPayload? _payload;
 
 	public ImagePreview()
 	{
 		_close = AppIcons.Button("x", Strings.ImagePreviewClose, Hide);
+		_copy = AppIcons.Button("copy", Strings.CopyImage, CopyImage);
+		_actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+			.HorizontalAlignment(HorizontalAlignment.Right).VerticalAlignment(VerticalAlignment.Top)
+			.Margin(new Thickness(AppTheme.Space3)).Children(_copy, _close);
 		View = new Grid().IsVisible(false).Children(
 			new Button().Background(new Color(0xE0, 0, 0, 0)).BorderThickness(0).CornerRadius(0)
 				.Cursor(CursorType.Arrow).Focusable(false).OnClick(Hide),
 			_image.Margin(new Thickness(48)).HorizontalAlignment(HorizontalAlignment.Center)
 				.VerticalAlignment(VerticalAlignment.Center).OnMouseDown(args => args.Handled = true),
-			_close.HorizontalAlignment(HorizontalAlignment.Right).VerticalAlignment(VerticalAlignment.Top)
-				.Margin(new Thickness(AppTheme.Space3)))
+			_actions)
 			.OnKeyDown(key => { if (key.Key == Key.Escape) { key.Handled = true; Hide(); } });
 	}
 
 	public UIElement View { get; }
 	public bool IsOpen => View.IsVisible;
+
+	/// <summary>写剪贴板的结果反馈出口；由宿主接到状态行，未接时静默。</summary>
+	public Action<string>? Status { get; set; }
 
 	public void Show(UIElement owner, ImageSource source)
 	{
@@ -69,6 +95,9 @@ internal sealed class ImagePreview
 		if (_window is not null && !ReferenceEquals(_window, window)) Hide();
 		_window = window;
 		_image.Source(source);
+		_payload = ChatImages.PayloadOf(source);
+		// 没有原始编码数据（例如外部传入的图片源）时不给一个注定失败的按钮。
+		_copy.IsVisible(_payload is not null);
 		TransientOverlay.Open(window, View, Hide);
 		if (!IsOpen) _returnFocus = window.FocusManager.FocusedElement;
 		View.IsVisible(true);
@@ -82,7 +111,36 @@ internal sealed class ImagePreview
 		if (_window is { } window) TransientOverlay.Remove(window, View);
 		_window = null;
 		_image.Source = null;
+		_payload = null;
 		_returnFocus?.Focus();
 		_returnFocus = null;
+	}
+
+	private void CopyImage()
+	{
+		if (_payload is not { } payload) return;
+		if (ClipboardImages.Service is not { } service)
+		{
+			Status?.Invoke(Strings.ClipboardUnavailable);
+			return;
+		}
+
+		_ = CopyImageAsync(service, payload);
+	}
+
+	private async Task CopyImageAsync(IClipboardImages service, PreviewPayload payload)
+	{
+		bool copied;
+		try
+		{
+			copied = await service.TrySetImageAsync(payload.MimeType, Convert.FromBase64String(payload.Base64)).ConfigureAwait(true);
+		}
+		catch (FormatException)
+		{
+			copied = false;
+		}
+
+		if (!IsOpen) return;
+		Status?.Invoke(copied ? Strings.Copied : Strings.ClipboardUnavailable);
 	}
 }

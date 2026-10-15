@@ -101,8 +101,9 @@ public static class GitStatusReader
 				return new GitStatus { Error = Strings.GitUnavailable };
 			}
 
-			var stdout = process.StandardOutput.ReadToEnd();
-			var stderr = process.StandardError.ReadToEnd();
+			// 两路并发读：顺序读时子进程写满 stderr 缓冲会阻塞，进而永远不退出（超时也等不到）。
+			var stdoutTask = process.StandardOutput.ReadToEndAsync();
+			var stderrTask = process.StandardError.ReadToEndAsync();
 
 			if (!process.WaitForExit((int)(timeout ?? TimeSpan.FromSeconds(10)).TotalMilliseconds))
 			{
@@ -117,6 +118,9 @@ public static class GitStatusReader
 
 				return new GitStatus { Error = Strings.GitTimeout };
 			}
+
+			var stdout = stdoutTask.GetAwaiter().GetResult();
+			var stderr = stderrTask.GetAwaiter().GetResult();
 
 			if (process.ExitCode != 0)
 			{
@@ -187,9 +191,12 @@ public static class GitStatusReader
 				return (string.Empty, -1);
 			}
 
-			var output = process.StandardOutput.ReadToEnd();
-			process.StandardError.ReadToEnd();
+			// 两路并发读：先 stdout 再 stderr 时，子进程写满 stderr 缓冲会阻塞，WaitForExit 永远等不到。
+			var stdoutTask = process.StandardOutput.ReadToEndAsync();
+			var stderrTask = process.StandardError.ReadToEndAsync();
 			process.WaitForExit(10_000);
+			var output = stdoutTask.GetAwaiter().GetResult();
+			_ = stderrTask.GetAwaiter().GetResult();
 			return (output, process.ExitCode);
 		}
 		catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)

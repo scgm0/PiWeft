@@ -123,6 +123,9 @@ public static class Program
 		ReadingPreferences.Initialize(DesktopPreference.Load());
 		using var primarySelection = LinuxPrimarySelection.Create();
 		PrimarySelectionText.Service = primarySelection;
+		// 图片剪贴板是平台原生实现；没有实现的平台保持 null，界面会退回纯文本粘贴。
+		using var clipboardImages = ClipboardImages.Create();
+		ClipboardImages.Service = clipboardImages;
 
 		var window = new MainWindow(cwd) { ThemeSmoke = themeSmoke, SmokeTab = smokeTab, UiSmoke = uiSmoke };
 		instance.Listen(() => Application.Current.Dispatcher?.BeginInvoke(window.Activate));
@@ -137,7 +140,11 @@ public static class Program
 			Console.Error.WriteLine($"piweft-desktop: {Strings.WindowStartFailed(ex.ToString())}");
 			return 1;
 		}
-		finally { PrimarySelectionText.Service = null; }
+		finally
+		{
+			PrimarySelectionText.Service = null;
+			ClipboardImages.Service = null;
+		}
 
 		return 0;
 	}
@@ -187,12 +194,17 @@ public static class Program
 	/// <summary>应用界面主题：按偏好取深色或浅色，配合紫色强调。</summary>
 	private static void ApplyTheme()
 	{
-		ThemeManager.Default = DesktopPreference.Load().Variant;
+		var preference = DesktopPreference.Load();
+		// 主题名可能是内建名，也可能是 <agentDir>/themes 下的自定义 pi 主题。
+		var resolution = DesktopTheme.Resolve(preference.Theme, Directory.GetCurrentDirectory(), null);
+		AppTheme.UseCustomPalette(resolution.Light, resolution.Dark);
+
+		ThemeManager.Default = resolution.Variant;
 		// A raw startup color stays fixed across variants. Gray resolves per theme, including System.
 		ThemeManager.DefaultAccentColor = null;
 		ThemeManager.DefaultAccent = Accent.Gray;
-		ThemeManager.DefaultLightSeed = AppTheme.Seed(AppPalette.Light);
-		ThemeManager.DefaultDarkSeed = AppTheme.Seed(AppPalette.Dark);
+		ThemeManager.DefaultLightSeed = AppTheme.Seed(resolution.Light ?? AppPalette.Light);
+		ThemeManager.DefaultDarkSeed = AppTheme.Seed(resolution.Dark ?? AppPalette.Dark);
 	}
 
 	/// <summary>

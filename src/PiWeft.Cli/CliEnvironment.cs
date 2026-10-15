@@ -113,7 +113,8 @@ public sealed class CliEnvironment
 		var registry = ModelRegistry.LoadDefault();
 
 		// models.json 会新增或替换目录条目，兼容端点就是靠它注册进来的。
-		var customModels = ModelsFileLoader.Load(cwd);
+		// 项目级文件能改写端点与请求头，必须跟 settings 用同一套信任门控。
+		var customModels = ModelsFileLoader.Load(cwd, agentDir: null, includeProject: projectTrusted);
 		foreach (var custom in customModels.Models)
 		{
 			registry.Add(custom);
@@ -124,7 +125,7 @@ public sealed class CliEnvironment
 			ModelsFileLoader.ApplyOverrides(
 				registry,
 				ModelsFileLoader.Read(ModelsFileLoader.UserPath()),
-				ModelsFileLoader.Read(ModelsFileLoader.ProjectPath(cwd)));
+				projectTrusted ? ModelsFileLoader.Read(ModelsFileLoader.ProjectPath(cwd)) : null);
 		}
 
 		var gateway = new ModelsGateway(registry);
@@ -212,6 +213,13 @@ public sealed class CliEnvironment
 	/// <summary>按 <c>provider/id</c>、精确 id、glob 模式或子串查找模型。</summary>
 	public static Model? FindModel(ModelRegistry registry, string pattern, string? provider = null)
 	{
+		if (pattern.Length == 0)
+		{
+			// 空模式（例如 `--model=`）会让后面的子串匹配 `Contains("")` 恒真，
+			// 静默选中目录里的第一个模型；这里显式返回未命中，交给调用方报错。
+			return null;
+		}
+
 		if (provider is not null && registry.Get(provider, pattern) is { } direct)
 		{
 			return direct;
@@ -485,7 +493,33 @@ public sealed class CliEnvironment
 			return SessionManager.ContinueRecent(cwd, sessionDir);
 		}
 
+		// 与 pi 一致：--session-id 指向的会话已存在就继续用它，而不是每次都造新文件 ——
+		// 否则同一条命令跑两次会得到两个同 id 会话，之后 --session 的命中就不确定了。
+		if (arguments.SessionId is { Length: > 0 } sessionId &&
+			FindSessionById(sessionId, cwd, sessionDir) is { } existing)
+		{
+			return SessionManager.Open(existing, sessionDir);
+		}
+
 		return SessionManager.Create(cwd, sessionDir, arguments.SessionId);
+	}
+
+	/// <summary>按会话 id 在会话目录里找最新的匹配文件（文件名包含 id）。</summary>
+	private static string? FindSessionById(string id, string cwd, string? sessionDir)
+	{
+		var directory = sessionDir is { Length: > 0 } configured
+			? PiWeft.CodingAgent.Session.UserPath.Resolve(configured)
+			: SessionPaths.GetDefaultSessionDir(cwd);
+		if (!Directory.Exists(directory))
+		{
+			return null;
+		}
+
+		return Directory
+			.EnumerateFiles(directory, "*.jsonl")
+			.Where(path => Path.GetFileName(path).Contains(id, StringComparison.OrdinalIgnoreCase))
+			.OrderBy(static path => path, StringComparer.Ordinal)
+			.LastOrDefault();
 	}
 
 	/// <summary>在会话目录中解析会话文件路径或部分 UUID。</summary>
@@ -505,9 +539,13 @@ public sealed class CliEnvironment
 			return null;
 		}
 
+		// 短 id（如 "12"）可能命中文件名里的时间戳等任意子串；枚举顺序又不保证，
+		// 所以按文件名排序后取最新的一个，保证同样的输入总是解析到同一个会话。
 		return Directory
 			.EnumerateFiles(directory, "*.jsonl")
-			.FirstOrDefault(path => Path.GetFileName(path).Contains(pathOrId, StringComparison.OrdinalIgnoreCase));
+			.Where(path => Path.GetFileName(path).Contains(pathOrId, StringComparison.OrdinalIgnoreCase))
+			.OrderBy(static path => path, StringComparer.Ordinal)
+			.LastOrDefault();
 	}
 
 	private static IEnumerable<string> ExpandPatterns(IReadOnlyList<string> patterns, IReadOnlyList<AgentTool> tools)

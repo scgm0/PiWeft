@@ -141,12 +141,13 @@ public static class ProviderEnvironment
 			return options.ApiKey;
 		}
 
-		if (Auth.AuthStore.ReadApiKey(provider) is { Length: > 0 } stored)
+		var (stored, isCommand) = Auth.AuthStore.ReadCredentialState(provider);
+		if (stored is { Length: > 0 })
 		{
 			return stored;
 		}
 
-		if (Auth.AuthStore.IsCommandCredential(provider))
+		if (isCommand)
 		{
 			// 命令型凭据要执行外部命令，本端口不执行；明说一句，省得用户对着 401 猜。
 			Console.Error.WriteLine(

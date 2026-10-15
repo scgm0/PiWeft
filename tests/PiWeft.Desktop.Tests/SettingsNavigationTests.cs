@@ -1,5 +1,9 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.CodingAgent.Prompts;
+using PiWeft.CodingAgent.Resources;
+using PiWeft.CodingAgent.Skills;
+using PiWeft.CodingAgent.Themes;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
 
@@ -39,6 +43,88 @@ public sealed class SettingsNavigationTests : IDisposable
 		view.BeginCapture(ShortcutActions.Palette);
 		view.ApplyTheme();
 		Assert.Equal(ShortcutActions.Palette, view.CapturingId);
+	}
+
+	[Fact]
+	public async Task ResourcesSection_RendersHintsAndEmptyState()
+	{
+		var reloads = 0;
+		var view = new SettingsView(
+			() => new SettingsSnapshot
+			{
+				AgentDir = Path.Combine(_root, "agent"), Cwd = _root, ModelCount = 0,
+				Tools = [], Skills = [], McpServers = [], Resources = ResourceSnapshot.Empty,
+			},
+			reloadResources: () =>
+			{
+				reloads++;
+				return Task.CompletedTask;
+			});
+
+		await view.SelectSectionAsync("resources");
+
+		// 构建期间不能有被吞掉的错误（例如引用了不存在的内嵌图标）。
+		Assert.Null(view.LastSectionError);
+
+		var texts = Find<TextBlock>(view.View).Select(block => block.Text).ToArray();
+		Assert.Contains(Strings.ResourcesSkillHint, texts);
+		Assert.Contains(Strings.ResourcesEmpty, texts);
+		Assert.Contains(Strings.ResourcesReload, texts);
+		Assert.Equal(0, reloads);
+	}
+
+	[Fact]
+	public async Task ResourcesSection_ListsDiscoveredResourcesAndDiagnostics()
+	{
+		var origin = new ResourceOrigin(ResourceScope.User, "/home/u/.pi/agent", ResourceOrigin.UserRank);
+		var resources = new ResourceSnapshot
+		{
+			Skills =
+			[
+				new Skill
+				{
+					Name = "demo-skill", Description = "演示技能",
+					FilePath = "/home/u/.pi/agent/skills/demo/SKILL.md", BaseDirectory = "/home/u/.pi/agent/skills/demo",
+					Origin = origin,
+				},
+			],
+			Templates =
+			[
+				new PromptTemplate { Name = "review", Content = "review", FilePath = "/home/u/.pi/agent/prompts/review.md", Origin = origin },
+			],
+			Themes =
+			[
+				new ThemeEntry
+				{
+					Name = "forest", FilePath = "/home/u/.pi/agent/themes/forest.json", Origin = origin,
+					Theme = PiTheme.Parse("""{ "name": "forest", "appearance": "light", "colors": { "text": "#ffffff" } }""",
+						"/home/u/.pi/agent/themes/forest.json", origin, out _, out _),
+				},
+			],
+			Packages =
+			[
+				new PiPackage { Name = "demo-pkg", Source = "npm:demo-pkg", Root = "/home/u/.pi/agent/npm/node_modules/demo-pkg", Scope = ResourceScope.User },
+			],
+			Diagnostics = ["主题 broken.json 无效：缺少必需的 name 字段"],
+		};
+
+		var view = new SettingsView(() => new SettingsSnapshot
+		{
+			AgentDir = Path.Combine(_root, "agent"), Cwd = _root, ModelCount = 0,
+			Tools = [], Skills = [], McpServers = [], Resources = resources,
+		});
+
+		await view.SelectSectionAsync("resources");
+
+		Assert.Null(view.LastSectionError);
+		var texts = Find<TextBlock>(view.View).Select(block => block.Text).ToArray();
+		Assert.Contains("demo-skill", texts);
+		Assert.Contains("review", texts);
+		Assert.Contains("forest", texts);
+		Assert.Contains("demo-pkg", texts);
+		Assert.Contains(Strings.ResourcesLight, texts);
+		Assert.Contains("主题 broken.json 无效：缺少必需的 name 字段", texts);
+		Assert.Contains(Strings.ResourcesDiagnostics, texts);
 	}
 
 	private SettingsView Create(Func<IReadOnlyList<SessionListItem>> archive) => new(() => new SettingsSnapshot

@@ -1,7 +1,7 @@
 # 桌面对齐与限制
 
 `PiWeft.Desktop` 使用 MewUI + NativeAOT，PiDeck 使用 Electron + React。本端口复用 pi 兼容核心，但不宣称完整桌面功能对齐。
-核心协议见 [项目状态](00-status.md)，配置安全边界见 [配置管理](03-pideck-configuration-parity.md)，统计口径和基准见 [会话统计与性能](04-session-statistics-performance.md)，主题与历史渲染优化见 [桌面渲染性能](05-desktop-rendering-performance.md)。
+核心协议见 [项目状态](00-status.md)，配置安全边界见 [配置管理与安全边界](03-pideck-configuration-parity.md)，统计口径和基准见 [会话统计与性能](04-session-statistics-performance.md)，渲染与主题优化见 [桌面渲染性能](05-desktop-rendering-performance.md)。
 
 ## 视觉与主题
 
@@ -47,8 +47,8 @@ MewUI 0.22.1 字族注册表只保留最后注册的文件，Regular 必须最�
 | 消息 | Markdown、语法高亮、代码复制、图片与点击放大、思考折叠、用户/助手复制 | 代码行号、跨行块注释、更多语言 |
 | 工具 | 折叠摘要、状态/耗时、参数/输出、带行号的统一 patch、可切换并排 diff | 完整文件交互、跨行块注释 |
 | 历史操作 | 编辑重发、重试、fork、分支树、直接/摘要跳转、HTML 导出 | 多选批量操作、分支比较 |
-| 输入与模型 | 斜杠命令、命令面板、可改快捷键、可用模型筛选、供应商分组/折叠、搜索/刷新、最近模型优先、中文思考级别 | 模型收藏、图片剪贴板粘贴 |
-| 附件 | 路径引用、图片文件/原生字节、仅图片发送 | 完整剪贴板工作流 |
+| 输入与模型 | 斜杠命令、命令面板、可改快捷键、可用模型筛选、供应商分组/折叠、搜索/刷新、最近模型优先、中文思考级别 | 模型收藏 |
+| 附件 | 路径引用、图片文件/原生字节、剪贴板图片粘贴、把预览图片复制回剪贴板、仅图片发送 | 完整剪贴板工作流（更多媒体类型、把回复整体复制为图片） |
 | 用量 | 会话统计、上下文、费用、缓存与计时、手动压缩；余额/积分查询（入口在统计弹窗）；跨会话统计与 26 周热力图 | 完整供应商订阅窗口、热力图下钻 |
 | 设置 | 模型/供应商、API Key、Agent、MCP、JSON、作用域与草稿保护 | 桌面 OAuth、技能/提示词管理、商店 |
 | MCP | 启动连接、状态、stdio 工具热刷新、设置面板手动重连 | 自动重连、跨项目运行时管理 |
@@ -110,9 +110,21 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 
 该脚本使用独立 fixture，检查 Markdown 选区被外部 xclip 读取（此时应用自身即 PRIMARY owner，xclip 只是外部读取客户端）、外部中文多行 PRIMARY 经实际中键事件插入正确位置、CLIPBOARD 不变。截图测试分别串行启动，避免同时启动 Xvfb 的显示编号竞争。
 
+## 图片剪贴板
+
+输入框按 Ctrl+V/Cmd+V 时，如果系统剪贴板里有图片，就按附件处理（与拖入图片同一条 `AddImage` 路径、同一体积与数量上限）；剪贴板里没有图片时按键原样交给框架做文本粘贴，因此原有粘贴语义不变。命令分发发生在按键冒泡之后，所以会话标签能在输入框的按键处理里先看到这次按键并接管它。图片预览浮层提供「复制图片」，把该图片的原始编码字节写回系统剪贴板，结果反馈在会话状态行。
+
+MewUI 的 `IClipboardService` 只有文本，因此桌面侧新增端口 `IClipboardImages`（`HasImage` / `ReadAsync` / `TrySetImageAsync`），与 PRIMARY 一样用可替换的服务定位器接进界面，测试注入假实现即可覆盖交互。平台实现按构建期目标选择：
+
+- Linux：`xclip` 读写 `image/png`、`image/jpeg`、`image/webp`、`image/gif` 目标。MewUI 的 Linux 宿主本身是 X11/XWayland，图片与文本因此落在同一个剪贴板域里；xclip 必须常驻才能持有选区，所以写入后保留该进程作为 owner。xsel 不支持图片类型，只装了 xsel 时按不可用处理，界面保留文本粘贴。不处理原生 Wayland 会话。
+- Windows：直接读写原生剪贴板。读取优先用注册格式 `PNG`（浏览器、终端等现代程序都放它），其次 `CF_DIBV5`/`CF_DIB`（先解出真彩像素再编成 PNG），复制文件（`CF_HDROP`）里的图片也会被附加。写入时同时放 `CF_DIB`、`CF_DIBV5` 与编码格式：画图和 Word 只认前者，带 alpha 的程序认后者。
+- macOS：`NSPasteboard` 的 `public.png`/`public.jpeg`；系统截图默认放的 `public.tiff` 经 `NSBitmapImageRep` 转成 PNG。
+
+解码统一用 MewUI 公开的 `ImageDecoders` / `ImageSource.CopyPixels`（PNG、JPEG、BMP、ICO）。框架没有编码一侧，因此 Windows 的 DIB↔PNG 互转自带最小实现：`DibCodec` 读写 24/32 位无调色板 DIB，`PngCodec` 只负责编码（逐行按最小绝对差启发式选滤波器）。两者都是纯托管代码、可用同一份单元测试覆盖，并用框架的解码器交叉验证编码输出与 `CF_DIB` 布局。剪贴板内容先做轻量签名校验（`LooksLike`）再当图片使用，避免 owner 只声明类型却给出坏数据；读取失败或读回为空时在状态行说明，不静默吞掉这次按键。
+
 ## 日志与验证
 
-CLI/桌面共用 ZLogger 后台文件日志，位于 `<agentDir>/logs`，按天或 4 MiB 滚动，目标保留 32 份并清理超过 14 天的旧文件。
+CLI/桌面共用 ZLogger 后台文件日志，位于 `<agentDir>/logs`，按天或 4 MiB 滚动，保留最近 31 份并清理超过 14 天的旧文件。
 队列上限 1024，满时丢弃而不阻塞界面；在用文件不删，退出前排空。
 不记录提示词、回复、工具参数、凭据或原始 provider 响应；异常仅记录类型与堆栈。
 `PI_LOG_LEVEL` 默认 Information。CLI 不污染 stdout；桌面另输出 stderr，文件日志不可写时仍可查看终端诊断。
@@ -127,10 +139,6 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-workspace-smoke.py
 `desktop-workspace-smoke.py` 默认使用 60 条折叠工具输出的独立 fixture，覆盖对话、外观、Agent 配置、MCP、720×520 窄窗口、收起侧栏、统计概览/明细、深浅空会话和 1920×1080 宽屏；设置 `PI_WORKSPACE_SMOKE_TURNS=1000` 可改用长历史。脚本检查最新回复确实可见。宽屏需要 `-screen 0 2000x1200x24`。保存截图、日志与 `results.json`。脚本需要 Python 3、ImageMagick、xdotool，通过 Linux `/proc` 读取 RSS 和 2 秒 CPU 采样。可传入场景编号分批执行，设置 `PI_WORKSPACE_SMOKE_APP` 指向 NativeAOT 可执行文件，以免把托管 Debug 构建的占用当成发布版表现。CPU 百分比以单核 100% 为基准，数据包含字体和 Xvfb/Mesa 渲染后端，不能当成所有硬件或无限历史的占用保证。
 
 截图脚本使用独立 fixture agent 目录，不读取真实密钥。修改进程环境变量的测试必须加入 `process-environment` 串行集合。
-
-模型筛选与图片预览改动验证：全量 852 项测试通过（2026-10-15 复核）；Linux NativeAOT 发布无警告，调试版与发布版均通过深浅主题模型弹窗、实际图片点击放大和 Esc 关闭截图演练。1000 条模型的布局测试确认 360 DIP 视口只实例化不到 30 个模型行控件；搜索覆盖全部结果。
-
-模型筛选局部基准：Release 构建，独立目录含 20 个虚拟供应商、2000 个有凭据的模型，叠加内置目录后共 3539 条，预热后执行 5 次。逐模型调用凭据解析的对照耗时 1568.91 ms、当前线程分配 555694064 bytes；当前批量筛选耗时 91.08 ms、分配 1815064 bytes，两者返回数量校验和均为 10000。对照是相同认证筛选的逐模型读取方式，不是旧版整应用的基准；分配量是累计临时分配，不是 RSS，结果不代表网络推理或完整 UI 性能。
 
 MewUI 命名样式按目标控件类型校验，Border 样式不能用于 Button；包版 Key 枚举没有标点键，不能根据上游 main 源码假设 API 可用。
 Windows/macOS 原生 GUI、发布包以及 PiDeck 完整 e2e 仍需独立验证。

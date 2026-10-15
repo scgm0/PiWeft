@@ -47,6 +47,32 @@ public static class AuthStore
 		return string.IsNullOrEmpty(resolved) ? null : resolved;
 	}
 
+	/// <summary>
+	/// 一次解析同时给出可用的 key 与该凭据是否为命令型。provider 每次请求都要做这个判断，
+	/// 分开调用会让 <c>auth.json</c> 被读两遍（这也是桌面/CLI 启动热路径）。
+	/// </summary>
+	public static (string? Key, bool IsCommand) ReadCredentialState(string provider, string? agentDir = null)
+	{
+		if (ReadCredential(provider, agentDir) is not { } credential)
+		{
+			return (null, false);
+		}
+
+		var (key, env) = credential;
+		if (key.Length == 0)
+		{
+			return (null, false);
+		}
+
+		if (key.StartsWith('!'))
+		{
+			return (null, true);
+		}
+
+		var resolved = ResolveTemplate(key, env);
+		return (string.IsNullOrEmpty(resolved) ? null : resolved, false);
+	}
+
 	/// <summary>列出 auth.json 里配置过的 provider（用于 <c>pi auth check</c> 不带参数时逐个汇报）。</summary>
 	public static IReadOnlyList<string> ListProviders(string? agentDir = null)
 	{

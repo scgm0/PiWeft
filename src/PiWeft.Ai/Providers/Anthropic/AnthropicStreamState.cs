@@ -92,6 +92,13 @@ internal sealed class AnthropicStreamState
 
 		EnsureStarted();
 
+		// 服务端若在 content_block_stop 之前就结束（代理截断 / TCP 干净关闭），
+		// 在途的工具参数还没解析成 ToolCallEndEvent，会丢参数；这里补一次收尾。
+		if (_blockKind.Length > 0)
+		{
+			OnContentBlockStop();
+		}
+
 		if (_stopReason is StopReason.Error or StopReason.Aborted)
 		{
 			_finished = true;
@@ -190,7 +197,7 @@ internal sealed class AnthropicStreamState
 			case "text_delta":
 			{
 				var text = GetString(delta, "text");
-				if (string.IsNullOrEmpty(text))
+				if (string.IsNullOrEmpty(text) || index < 0 || index >= _content.Count)
 				{
 					return;
 				}
@@ -204,7 +211,7 @@ internal sealed class AnthropicStreamState
 			case "thinking_delta":
 			{
 				var text = GetString(delta, "thinking");
-				if (string.IsNullOrEmpty(text))
+				if (string.IsNullOrEmpty(text) || index < 0 || index >= _content.Count)
 				{
 					return;
 				}

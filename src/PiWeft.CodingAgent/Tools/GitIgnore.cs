@@ -277,6 +277,12 @@ public static class FileWalker
 					continue;
 				}
 
+				// 不跟随符号链接目录：指向祖先的软链接会让遍历无限递归（ripgrep 默认也是这个语义）。
+				if (IsReparsePoint(child))
+				{
+					continue;
+				}
+
 				if (IsIgnored(stack, child, isDirectory: true))
 				{
 					continue;
@@ -355,6 +361,12 @@ public static class FileWalker
 					continue;
 				}
 
+				// 与 WalkFiles 同样的理由：符号链接目录不跟随，避免自指软链接导致无限递归。
+				if (IsReparsePoint(child))
+				{
+					continue;
+				}
+
 				foreach (var entry in WalkEntries(child, stack))
 				{
 					yield return entry;
@@ -367,6 +379,22 @@ public static class FileWalker
 			{
 				stack.RemoveAt(stack.Count - 1);
 			}
+		}
+	}
+
+	/// <summary>
+	/// 是否是符号链接/重解析点。读不到属性时按「不进入」处理 —— 宁可少扫一点，也不要因为
+	/// 自指软链接把 grep/find 拖进无限递归。
+	/// </summary>
+	private static bool IsReparsePoint(string path)
+	{
+		try
+		{
+			return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return true;
 		}
 	}
 

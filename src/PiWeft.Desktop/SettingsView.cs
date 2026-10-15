@@ -1,7 +1,9 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Themes;
 using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
@@ -21,6 +23,9 @@ public sealed record SettingsSnapshot
 	public required IReadOnlyList<string> Tools { get; init; }
 
 	public required IReadOnlyList<string> Skills { get; init; }
+
+	/// <summary>已解析的资源（技能、提示词模板、主题、包与诊断）。</summary>
+	public ResourceSnapshot Resources { get; init; } = ResourceSnapshot.Empty;
 
 	public required IReadOnlyList<McpServerStatus> McpServers { get; init; }
 
@@ -48,6 +53,9 @@ public sealed class SettingsView
 
 	/// <summary>手动重建 MCP 连接；为空时不显示重连按钮。</summary>
 	private readonly Func<Task>? _reconnectMcp;
+
+	/// <summary>重新解析技能/提示词/主题；为空时不显示重载按钮。</summary>
+	private readonly Func<Task>? _reloadResources;
 	private readonly ScrollViewer _systemView;
 	private readonly Button _systemButton;
 	private readonly Button _configButton;
@@ -58,12 +66,17 @@ public sealed class SettingsView
 	private ShortcutMap _shortcuts = new(DesktopPreference.Load().Shortcuts);
 
 
-	public SettingsView(Func<SettingsSnapshot> snapshot, Action<ConfigFile>? saved = null, Func<Task>? reconnectMcp = null)
+	public SettingsView(
+		Func<SettingsSnapshot> snapshot,
+		Action<ConfigFile>? saved = null,
+		Func<Task>? reconnectMcp = null,
+		Func<Task>? reloadResources = null)
 	{
 		_snapshot = snapshot;
 		var initial = snapshot();
 		_saved = saved ?? (_ => { });
 		_reconnectMcp = reconnectMcp;
+		_reloadResources = reloadResources;
 		_configuration = new(() => new ConfigurationView(initial.AgentDir, initial.Cwd, _saved));
 		_toast.FontSize(AppTheme.FontSizeMicro).FaintText().IsVisible(false);
 		_content.Spacing(AppTheme.Space3).MaxWidth(960);
@@ -130,6 +143,7 @@ public sealed class SettingsView
 				("source", "square-pen", Strings.ConfigSource) }
 			: new (string Id, string Icon, string Title)[] {
 				("overview", "settings", Strings.ConfigOverview), ("appearance", "contrast", Strings.ConfigAppearance),
+				("resources", "folder-open", Strings.SettingsResources),
 				("session", "message-square", Strings.SettingsSession), ("archive", "trash", Strings.SettingsArchive),
 				("shortcuts", "terminal", Strings.SettingsShortcuts), ("logs", "folder-open", Strings.SettingsLogs),
 				("about", "settings", Strings.SettingsAbout) };
@@ -166,6 +180,12 @@ public sealed class SettingsView
 		_toast.IsVisible(true);
 	}
 
+	/// <summary>
+	/// 最近一次分区构建失败的原因；正常时为 <c>null</c>。
+	/// 图标缺失一类的错误会记在这里并给出可见提示，而不是留下空白面板。
+	/// </summary>
+	internal string? LastSectionError { get; private set; }
+
 	/// <summary>重新读取快照并重建面板。</summary>
 	public void Refresh()
 	{
@@ -174,46 +194,107 @@ public sealed class SettingsView
 		_content.Clear();
 		SmoothScroll.For(_systemView).Stop();
 		_systemView.SetScrollOffsets(0, 0);
-		switch (_section)
+		LastSectionError = null;
+
+		try
 		{
-			case "appearance": _content.Children(AppearanceSection()); break;
-			case "session": _content.Children(SessionSection(snapshot.Session)); break;
-			case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
-			case "shortcuts": _content.Children(ShortcutSection()); break;
-			case "logs": _content.Children(LogSection()); break;
-			case "about": _content.Children(AboutSection()); break;
-			default:
-				_content.Children(Section(Strings.SettingsEnvironment, [
-					(Strings.SettingsAgentDir, snapshot.AgentDir), (Strings.SettingsCwd, snapshot.Cwd),
-					(Strings.SettingsModels, snapshot.ModelCount.ToString()),
-					(Strings.SettingsTools, snapshot.Tools.Count == 0 ? "—" : string.Join(", ", snapshot.Tools))]),
-					Section(Strings.SettingsSkills, snapshot.Skills.Count == 0
-						? [(Strings.SettingsNone, "")] : [.. snapshot.Skills.Select(name => (name, string.Empty))]),
-					McpSection(snapshot.McpServers));
-				break;
+			switch (_section)
+			{
+				case "appearance": _content.Children(AppearanceSection()); break;
+				case "resources": _content.Children(ResourcesSection()); break;
+				case "session": _content.Children(SessionSection(snapshot.Session)); break;
+				case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
+				case "shortcuts": _content.Children(ShortcutSection()); break;
+				case "logs": _content.Children(LogSection()); break;
+				case "about": _content.Children(AboutSection()); break;
+				default:
+					_content.Children(Section(Strings.SettingsEnvironment, [
+						(Strings.SettingsAgentDir, snapshot.AgentDir), (Strings.SettingsCwd, snapshot.Cwd),
+						(Strings.SettingsModels, snapshot.ModelCount.ToString()),
+						(Strings.SettingsTools, snapshot.Tools.Count == 0 ? "—" : string.Join(", ", snapshot.Tools))]),
+						Section(Strings.SettingsSkills, snapshot.Skills.Count == 0
+							? [(Strings.SettingsNone, "")] : [.. snapshot.Skills.Select(name => (name, string.Empty))]),
+						McpSection(snapshot.McpServers));
+					break;
+			}
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException)
+		{
+			// 分区构建失败时保留一个可见的提示，避免整页空白。
+			LastSectionError = ex.Message;
+			AppLog.Failure(AppLog.For<SettingsView>(), $"Build settings section {_section}", ex);
+			_content.Children(new TextBlock().Text(Strings.ConfigFailed)
+				.FontSize(AppTheme.FontSizeControl).MutedText().TextWrapping(TextWrapping.Wrap));
 		}
 	}
 
 	private Element AppearanceSection()
 	{
-		var names = new[] { Strings.ThemeDark, Strings.ThemeLight, Strings.ThemeSystem };
-		var values = new[] { DesktopPreference.DarkTheme, DesktopPreference.LightTheme, DesktopPreference.SystemTheme };
-		var picker = new ComboBox().ItemsSource(ItemsView.Create(names)).Width(200);
-		picker.SelectedIndex = Math.Max(0, Array.IndexOf(values, DesktopPreference.Load().Theme));
-		picker.SelectionChanged += _ =>
+		var snapshot = _snapshot();
+		var entries = new List<(string Label, string Value, AppPalette Palette)>
 		{
-			if (picker.SelectedIndex < 0) return;
-			var preference = DesktopPreference.Load() with { Theme = values[picker.SelectedIndex] };
-			try { preference.Save(); }
-			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return; }
-			if (Application.IsRunning) Application.Current.SetTheme(preference.Variant);
+			(Strings.ThemeDark, DesktopPreference.DarkTheme, AppPalette.Dark),
+			(Strings.ThemeLight, DesktopPreference.LightTheme, AppPalette.Light),
+			(Strings.ThemeSystem, DesktopPreference.SystemTheme, AppPalette.Dark),
 		};
+
+		// 自定义主题：用户与项目 themes 目录下能解析的 pi 主题文件。
+		foreach (var (name, error) in DesktopTheme.ListCustomThemes(snapshot.Cwd, snapshot.AgentDir))
+		{
+			if (error is not null)
+			{
+				// 无效主题只在资源侧提示，不进入主题选择器。
+				continue;
+			}
+
+			var resolved = DesktopTheme.Resolve(name, snapshot.Cwd, snapshot.AgentDir);
+			entries.Add((name, name, resolved.Light ?? resolved.Dark ?? AppPalette.Dark));
+		}
+
+		var current = DesktopPreference.Load().Theme;
+		var picker = new ComboBox()
+			.ItemsSource(ItemsView.Create(entries.Select(entry => entry.Label).ToArray()))
+			.Width(220);
+		picker.SelectedIndex = Math.Max(
+			0,
+			entries.FindIndex(entry => string.Equals(entry.Value, current, StringComparison.Ordinal)));
+
+		void ApplySelection()
+		{
+			if (picker.SelectedIndex < 0 || picker.SelectedIndex >= entries.Count)
+			{
+				return;
+			}
+
+			var value = entries[picker.SelectedIndex].Value;
+			try
+			{
+				(DesktopPreference.Load() with { Theme = value }).Save();
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				return;
+			}
+
+			var resolved = DesktopTheme.Resolve(value, snapshot.Cwd, snapshot.AgentDir);
+			AppTheme.UseCustomPalette(resolved.Light, resolved.Dark);
+
+			if (Application.IsRunning)
+			{
+				// 自定义主题要连 seed 一起换，框架控件才会跟着变色。
+				ThemeManager.DefaultLightSeed = AppTheme.Seed(resolved.Light ?? AppPalette.Light);
+				ThemeManager.DefaultDarkSeed = AppTheme.Seed(resolved.Dark ?? AppPalette.Dark);
+				Application.Current.SetTheme(resolved.Variant);
+			}
+		}
+
+		picker.SelectionChanged += _ => ApplySelection();
 		var previews = new WrapPanel().Spacing(AppTheme.Space2);
 		var buttons = new List<Button>();
-		for (var index = 0; index < names.Length; index++)
+		for (var index = 0; index < entries.Count; index++)
 		{
 			var selected = index;
-			var palette = index == 1 ? AppPalette.Light : AppPalette.Dark;
+			var palette = entries[index].Palette;
 			var miniature = new Border().Background(palette.WindowBackground).BorderBrush(palette.Border)
 				.BorderThickness(1).CornerRadius(AppTheme.RadiusXs).Height(54).Child(
 					new DockPanel().LastChildFill().Children(
@@ -221,9 +302,12 @@ public sealed class SettingsView
 						new StackPanel().Spacing(6).Padding(new Thickness(10)).Children(
 							new Border().Background(palette.TextMuted).Height(4).Width(72).HorizontalAlignment(HorizontalAlignment.Left),
 							new Border().Background(palette.Accent).Height(5).Width(44).HorizontalAlignment(HorizontalAlignment.Left),
-							new Border().Background(index == 2 ? AppPalette.Light.CardBackground : palette.CardBackgroundAlt).Height(6))));
+							new Border().Background(
+								string.Equals(entries[selected].Value, DesktopPreference.SystemTheme, StringComparison.Ordinal)
+									? AppPalette.Light.CardBackground
+									: palette.CardBackgroundAlt).Height(6))));
 			var button = new Button().Width(176).Padding(new Thickness(AppTheme.Space2))
-				.Content(new StackPanel().Spacing(AppTheme.Space2).Children(miniature, LabelForPreview(names[index])))
+				.Content(new StackPanel().Spacing(AppTheme.Space2).Children(miniature, LabelForPreview(entries[index].Label)))
 				.OnClick(() => picker.SelectedIndex = selected)
 				.StyleName(index == picker.SelectedIndex ? AppStyles.SelectedButton : AppStyles.CardButton);
 			buttons.Add(button);
@@ -264,6 +348,128 @@ public sealed class SettingsView
 
 	private static TextBlock LabelForPreview(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeControl).PrimaryText();
+
+	/// <summary>资源管理：技能、提示词模板、主题与 pi 包的来源、路径与解析结果。</summary>
+	private Element ResourcesSection()
+	{
+		var snapshot = _snapshot();
+		var resources = snapshot.Resources;
+		var panel = new StackPanel().Spacing(AppTheme.Space4);
+
+		panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
+			Caption("book-open", Strings.SettingsSkills),
+			Hint(Strings.ResourcesSkillHint),
+			ResourceList(resources.Skills.Select(skill => new ResourceRow(
+				skill.Name, skill.Description, skill.Origin.Display, skill.FilePath))))));
+
+		panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
+			Caption("file-text", Strings.ResourcesPrompts),
+			Hint(Strings.ResourcesPromptHint),
+			ResourceList(resources.Templates.Select(template => new ResourceRow(
+				template.Name, string.Empty, template.Origin.Display, template.FilePath))))));
+
+		panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
+			Caption("palette", Strings.ResourcesThemes),
+			Hint(Strings.ResourcesThemeHint),
+			ResourceList(resources.Themes.Select(theme => new ResourceRow(
+				theme.Name, ThemeDetail(theme), theme.Origin.Display, theme.FilePath))))));
+
+		panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
+			Caption("package", Strings.ResourcesPackages),
+			Hint(Strings.ResourcesPackageHint),
+			ResourceList(resources.Packages.Select(package => new ResourceRow(
+				package.Name,
+				package.Source,
+				package.Scope == ResourceScope.Project ? Strings.ConfigProject : Strings.ConfigGlobal,
+				package.Root))))));
+
+		if (resources.Diagnostics.Count > 0)
+		{
+			var diagnostics = new StackPanel().Spacing(2);
+			foreach (var message in resources.Diagnostics)
+			{
+				diagnostics.Children(new TextBlock().Text(message)
+					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
+			}
+
+			panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
+				Caption(Strings.ResourcesDiagnostics), diagnostics)));
+		}
+
+		if (_reloadResources is not null)
+		{
+			panel.Children(AppIcons.TextButton("refresh-cw", Strings.ResourcesReload, () => _ = ReloadAsync()));
+		}
+
+		return panel;
+
+		async Task ReloadAsync()
+		{
+			try
+			{
+				await _reloadResources();
+				Toast(Strings.ResourcesReloaded);
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+			{
+				Toast(Strings.ConfigFailed);
+			}
+		}
+	}
+
+	/// <summary>资源列表的一行：名称、补充说明、来源与文件路径。</summary>
+	private sealed record ResourceRow(string Name, string Detail, string Source, string Path);
+
+	private Element ResourceList(IEnumerable<ResourceRow> rows)
+	{
+		var list = new StackPanel().Spacing(AppTheme.Space2);
+		var empty = true;
+
+		foreach (var row in rows)
+		{
+			empty = false;
+			var header = new DockPanel().LastChildFill();
+			header.Children(
+				AppIcons.TextButton("square-pen", Strings.ResourcesOpen, () => OpenPath(row.Path)).DockRight(),
+				new TextBlock().Text(row.Source).FontSize(AppTheme.FontSizeMicro).FaintText().DockRight(),
+				new TextBlock().Text(row.Name).FontSize(AppTheme.FontSizeControl).PrimaryText());
+
+			list.Children(new StackPanel().Spacing(2).Children(
+				header,
+				new TextBlock().Text(row.Detail.Length > 0 ? row.Detail : row.Path)
+					.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap)));
+		}
+
+		if (empty)
+		{
+			list.Children(new TextBlock().Text(Strings.ResourcesEmpty)
+				.FontSize(AppTheme.FontSizeCaption).MutedText());
+		}
+
+		return list;
+	}
+
+	private void OpenPath(string path)
+	{
+		try
+		{
+			if (!Shell.OpenInEditor(path))
+			{
+				Toast(Strings.ConfigFailed);
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+		{
+			Toast(Strings.ConfigFailed);
+		}
+	}
+
+	private static string ThemeDetail(ThemeEntry theme) => theme.Theme is { } parsed
+		? (parsed.Appearance == ThemeAppearance.Light ? Strings.ResourcesLight : Strings.ResourcesDark)
+		: (theme.Error ?? Strings.ResourcesInvalid);
+
+	private static TextBlock Hint(string text) => new TextBlock().Text(text)
+		.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap);
 
 	private Element LogSection()
 	{
@@ -310,6 +516,16 @@ public sealed class SettingsView
 		.FontSize(AppTheme.FontSizeMicro)
 		.FontWeight(FontWeight.Bold)
 		.SubtleText();
+
+	/// <summary>带图标的卡片标题；图标名取自内嵌的 Lucide 图标集。</summary>
+	private static Element Caption(string icon, string text) => new StackPanel()
+		.Orientation(Orientation.Horizontal)
+		.VerticalAlignment(VerticalAlignment.Center)
+		.Spacing(6)
+		.Children(
+			new Image().Source(AppIcons.Get(icon, AppTheme.TextSubtle)).Width(13).Height(13)
+				.VerticalAlignment(VerticalAlignment.Center),
+			Caption(text).VerticalAlignment(VerticalAlignment.Center));
 
 	private static Element Section(string title, IReadOnlyList<(string Label, string Value)> rows)
 	{

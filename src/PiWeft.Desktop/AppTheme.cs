@@ -23,8 +23,24 @@ public static class AppTheme
 	/// <summary>当前是否浅色配色（供诊断输出与语法配色使用）。</summary>
 	public static bool IsLightTheme => IsLight;
 
+	/// <summary>用户自定义主题的配色覆盖；为 null 时使用内建配色。</summary>
+	private static AppPalette? _customLight;
+	private static AppPalette? _customDark;
+
+	/// <summary>
+	/// 应用自定义主题配色（两个方向都可为空）。传 null 恢复内建深浅配色。
+	/// 命名样式通过 <see cref="For"/> 解析颜色，因此换肤不需要重建界面。
+	/// </summary>
+	public static void UseCustomPalette(AppPalette? light, AppPalette? dark)
+	{
+		_customLight = light;
+		_customDark = dark;
+	}
+
 	/// <summary>按主题解析配色；样式 setter 用它，因此换肤无需重建界面。</summary>
-	public static AppPalette For(Theme theme) => theme.IsDark ? AppPalette.Dark : AppPalette.Light;
+	public static AppPalette For(Theme theme) => theme.IsDark
+		? _customDark ?? AppPalette.Dark
+		: _customLight ?? AppPalette.Light;
 
 	/// <summary>Use the application colors for framework controls, menus and selection surfaces.</summary>
 	public static ThemeSeed Seed(AppPalette palette) => new()
@@ -38,7 +54,9 @@ public static class AppTheme
 	};
 
 	/// <summary>当前生效的配色。</summary>
-	public static AppPalette Current => IsLight ? AppPalette.Light : AppPalette.Dark;
+	public static AppPalette Current => IsLight
+		? _customLight ?? AppPalette.Light
+		: _customDark ?? AppPalette.Dark;
 
 	// ------------------------------------------------------------ 颜色转发
 	public static Color WindowBackground => Current.WindowBackground;

@@ -2,6 +2,7 @@ using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Prompts;
+using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
@@ -80,6 +81,9 @@ public sealed record CodingAgentSessionOptions
 	/// <summary>覆盖提示词模板的发现结果。</summary>
 	public IReadOnlyList<PromptTemplate>? PromptTemplates { get; init; }
 
+	/// <summary>预先解析好的资源快照（技能、模板、主题、包）；不传则由会话自行解析。</summary>
+	public ResourceSnapshot? Resources { get; init; }
+
 	public Func<BeforeToolCallContext, CancellationToken, ValueTask<BeforeToolCallResult?>>? BeforeToolCall { get; init; }
 
 	public Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? AfterToolCall { get; init; }
@@ -118,6 +122,10 @@ public sealed class CodingAgentSession : IDisposable
 	private readonly StreamOptions _streamOptions;
 	private bool _disposed;
 	private readonly Lock _statisticsGate = new();
+
+	/// <summary>宿主显式传入的技能/模板（例如 <c>--no-skills</c>），重载资源时保持生效。</summary>
+	private readonly IReadOnlyList<Skills.Skill>? _explicitSkills;
+	private readonly IReadOnlyList<PromptTemplate>? _explicitTemplates;
 	private readonly SessionStatisticsCache _statistics = new();
 	private long _todoRevision = -1;
 	private TodoState _todo = TodoState.Empty;
@@ -144,8 +152,18 @@ public sealed class CodingAgentSession : IDisposable
 		Session = options.Session
 			?? (options.Persist ? SessionManager.Create(Cwd) : SessionManager.InMemory(Cwd));
 
-		DiscoveredSkills = options.Skills ?? Skills.Skills.Discover(Cwd, agentDir: null, includeProject: options.ProjectTrusted);
-		PromptTemplates = options.PromptTemplates ?? Prompts.PromptTemplates.Discover(Cwd, agentDir: null, includeProject: options.ProjectTrusted);
+		_explicitSkills = options.Skills;
+		_explicitTemplates = options.PromptTemplates;
+		Resources = options.Resources ?? ResourceResolver.Resolve(Cwd, agentDir: null, includeProject: options.ProjectTrusted);
+		if (options.Skills is not null || options.PromptTemplates is not null)
+		{
+			// CLI 的 --no-skills / --no-prompt-templates 以显式空列表表达，优先于自动发现。
+			Resources = Resources with
+			{
+				Skills = options.Skills ?? Resources.Skills,
+				Templates = options.PromptTemplates ?? Resources.Templates,
+			};
+		}
 
 		// 内置工具的提示词元数据以名称索引：命令行/桌面会传入已经过滤的 AgentTool 列表，
 		// 这里按名称把短 snippet 与 guidelines 重新挂回去，保证提示词与 pi/PiDeck 一致。
@@ -284,11 +302,38 @@ public sealed class CodingAgentSession : IDisposable
 	public string? SessionName => Session.CurrentName();
 
 	/// <summary>估算的上下文大小，以及它所依据的最后一条助手用量下标。</summary>
+	/// <summary>当前会话解析出的资源快照（技能、模板、主题、包与诊断）。</summary>
+	public ResourceSnapshot Resources { get; private set; }
+
 	/// <summary>为该会话工作目录发现的技能。</summary>
-	public IReadOnlyList<Skills.Skill> DiscoveredSkills { get; }
+	public IReadOnlyList<Skills.Skill> DiscoveredSkills => Resources.Skills;
 
 	/// <summary>为该会话发现的斜杠命令提示词模板。</summary>
-	public IReadOnlyList<PromptTemplate> PromptTemplates { get; }
+	public IReadOnlyList<PromptTemplate> PromptTemplates => Resources.Templates;
+
+	/// <summary>
+	/// 重新解析技能、提示词模板与主题，对应 pi 的 <c>/reload</c>：不重建会话，
+	/// 只刷新提示词里的技能章节，使后续请求看到新的资源集合。
+	/// </summary>
+	public void ReloadResources()
+	{
+		ThrowIfDisposed();
+
+		var resolved = ResourceResolver.Resolve(Cwd, agentDir: null, includeProject: ProjectTrusted);
+		Resources = resolved with
+		{
+			// 显式传入的列表（--no-skills 等）在重载后继续生效。
+			Skills = _explicitSkills ?? resolved.Skills,
+			Templates = _explicitTemplates ?? resolved.Templates,
+		};
+
+		_systemPromptSections = _systemPromptSections with
+		{
+			Skills = Skills.Skills.FormatForPrompt(Resources.Skills),
+		};
+
+		ApplyTools();
+	}
 
 	/// <summary>用已发现的提示词模板展开 <c>/name args</c> 形式的消息。</summary>
 	public string ExpandPromptTemplate(string text) => Prompts.PromptTemplates.Expand(text, PromptTemplates);
@@ -748,7 +793,10 @@ public sealed class CodingAgentSession : IDisposable
 		var message = PrepareInput(text);
 		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
 		return await RunWithRetryAsync(
-			() => _agent.PromptAsync(message, cancellationToken),
+			// 只有首次才追加用户消息；重试时它已经在投影里，再 PromptAsync 会写第二份进内存与 JSONL。
+			attempt => attempt == 0
+				? _agent.PromptAsync(message, cancellationToken)
+				: _agent.ContinueAsync(cancellationToken),
 			cancellationToken).ConfigureAwait(false);
 	}
 
@@ -774,13 +822,15 @@ public sealed class CodingAgentSession : IDisposable
 	/// 失败的助手回复保留在会话文件里，但通过 <c>context_edit</c> 从模型投影中移除，
 	/// 这样重试请求不会带上那次失败；重试本身不重新提交用户消息。
 	/// </summary>
+	/// <param name="run">接收「本次调用内的第几次尝试」（0 表示首次），跑一轮代理。</param>
 	private async Task<IReadOnlyList<Message>> RunWithRetryAsync(
-		Func<Task<IReadOnlyList<Message>>> run,
+		Func<int, Task<IReadOnlyList<Message>>> run,
 		CancellationToken cancellationToken)
 	{
+		var attempt = 0;
 		for (;;)
 		{
-			var messages = await run().ConfigureAwait(false);
+			var messages = await run(attempt).ConfigureAwait(false);
 			var last = LastAssistantMessage(messages);
 			var policy = Settings.Retry;
 
@@ -830,6 +880,9 @@ public sealed class CodingAgentSession : IDisposable
 
 			// 代理自身的消息列表里还留着那次失败，重置为当前投影（已排除它）再继续。
 			_agent.SetMessages(Project());
+
+			// 下一次尝试走"继续"分支：用户消息已经在投影里了。
+			attempt++;
 		}
 	}
 
@@ -893,10 +946,12 @@ public sealed class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
-		// 与字符串重载一致：先自动压缩，再按重试策略运行。
+		// 与字符串重载一致：先自动压缩，再按重试策略运行；重试同样走"继续"而不是重新提问。
 		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
 		return await RunWithRetryAsync(
-			() => _agent.PromptAsync(message, cancellationToken),
+			attempt => attempt == 0
+				? _agent.PromptAsync(message, cancellationToken)
+				: _agent.ContinueAsync(cancellationToken),
 			cancellationToken).ConfigureAwait(false);
 	}
 
@@ -905,7 +960,7 @@ public sealed class CodingAgentSession : IDisposable
 		ThrowIfDisposed();
 		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
 		return await RunWithRetryAsync(
-			() => _agent.ContinueAsync(cancellationToken),
+			_ => _agent.ContinueAsync(cancellationToken),
 			cancellationToken).ConfigureAwait(false);
 	}
 
@@ -1118,9 +1173,10 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			// 系统提示词永不入库：它是运行时构造的，写进去会让真实 pi 把它当成历史消息。
 			case AssistantMessage or UserMessage or ToolResultMessage:
-				if (!string.Equals(Session.BuildSessionContext().ThinkingLevel, _agent.ThinkingLevel, StringComparison.Ordinal))
+				if (!string.Equals(PersistedThinkingLevel(), _agent.ThinkingLevel, StringComparison.Ordinal))
 				{
 					Session.AppendThinkingLevelChange(_agent.ThinkingLevel);
+					_persistedThinkingLevel = _agent.ThinkingLevel;
 				}
 
 				Session.AppendMessage(messageEnd.Message);
@@ -1128,6 +1184,30 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		return ValueTask.CompletedTask;
+	}
+
+	/// <summary>会话文件里最近一次写入的 thinking level 是否已经读过。</summary>
+	private bool _persistedThinkingLevelLoaded;
+
+	/// <summary>会话文件里最近一次写入的 thinking level；恢复会话时读一次并缓存，之后随写入更新。</summary>
+	private string? _persistedThinkingLevel;
+
+	/// <summary>
+	/// 会话文件里最近一次写入的 thinking level。只在第一次需要时重建分支上下文（O(n)），
+	/// 之后随写入同步更新 —— 否则每条消息结束都会把整个分支遍历一遍。
+	/// </summary>
+	private string? PersistedThinkingLevel()
+	{
+		if (!_persistedThinkingLevelLoaded)
+		{
+			_persistedThinkingLevelLoaded = true;
+
+			// 空会话也要走一次 BuildSessionContext：它对空分支返回默认级别（"off"），
+			// 缓存成 null 会让首条消息多写一条 thinking_level_change。
+			_persistedThinkingLevel = Session.BuildSessionContext().ThinkingLevel;
+		}
+
+		return _persistedThinkingLevel;
 	}
 
 	private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

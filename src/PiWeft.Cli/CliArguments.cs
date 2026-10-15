@@ -240,7 +240,9 @@ public sealed record CliArguments
 						break;
 					case "--list-models":
 					{
-						var search = index + 1 < argv.Count && !argv[index + 1].StartsWith('-') ? NextValue(flag) : null;
+						// 同时支持 `--list-models gpt` 与 `--list-models=gpt`；只认后者的下一个参数会丢掉内联值。
+						var search = inlineValue
+							?? (index + 1 < argv.Count && !argv[index + 1].StartsWith('-') ? NextValue(flag) : null);
 						result = result with { ListModels = true, ListModelsSearch = search };
 						break;
 					}
@@ -276,7 +278,7 @@ public sealed record CliArguments
 						or "--skill" or "--prompt-template" or "--theme" or "--no-themes" or "--use-theme"
 						or "--tui-mode" or "--autocomplete-max-visible":
 						if (inlineValue is null && flag is "-e" or "--extension" or "--skill" or "--prompt-template"
-							or "--theme" or "--use-theme" or "--tui-mode")
+							or "--theme" or "--use-theme" or "--tui-mode" or "--autocomplete-max-visible")
 						{
 							NextValue(flag); // 消费掉该值，避免它被当成提示词
 						}
@@ -307,6 +309,8 @@ public sealed record CliArguments
 		  logout [provider]             Remove stored OAuth credentials
 		  auth check                    Show stored OAuth credentials
 		  auth print-bearer-token       Print a valid access token (refreshing when needed)
+		  install/list/remove/update     Manage pi packages (npm, git, or local paths)
+		  mcp list|add|remove|login|logout  Manage MCP servers and their OAuth tokens
 
 		Options:
 		  --provider <name>              Provider to search for --model (requires --model)
@@ -338,15 +342,16 @@ public sealed record CliArguments
 		  --export <session> [output]    Export a session file to HTML and exit
 		  --list-models [search]         List available models
 		  --verbose                      Force verbose startup
-		  --offline                      Disable startup network operations
+		  --offline                      Accepted for compatibility (no effect in this port)
 		  --version, -v                  Print the version
 		  --help, -h                     Show this help
 
 		Accepted for pi/PiDeck compatibility but not implemented in this port:
 		  -e/--extension, -ne/--no-extensions, --skill, --prompt-template,
 		  --theme, --use-theme, --no-themes, --tui-mode.
-		These flags are consumed so PiDeck can launch the binary; they do not enable extensions,
-		themes, or a full-screen TUI. MCP is supported separately (see --no-mcp).
+		These flags are consumed so PiDeck can launch the binary; they do not enable extensions
+		or a full-screen TUI. Custom pi themes are read by the desktop app from the themes
+		directory. MCP is supported separately (see --no-mcp).
 		""";
 
 	private static IEnumerable<string> SplitList(string value) =>

@@ -1,5 +1,6 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Session;
@@ -37,6 +38,18 @@ public sealed record CodingAgentSettings
 	public RetryPolicy Retry { get; init; } = new();
 
 	public bool EnableSkillCommands { get; init; } = true;
+
+	/// <summary>包来源（npm / git / 本地路径），对应 pi 的 <c>settings.packages</c>。</summary>
+	public IReadOnlyList<string> Packages { get; init; } = [];
+
+	/// <summary>额外的技能文件或目录，对应 pi 的 <c>settings.skills</c>。</summary>
+	public IReadOnlyList<string> Skills { get; init; } = [];
+
+	/// <summary>额外的提示词模板文件或目录，对应 pi 的 <c>settings.prompts</c>。</summary>
+	public IReadOnlyList<string> Prompts { get; init; } = [];
+
+	/// <summary>额外的主题文件或目录，对应 pi 的 <c>settings.themes</c>。</summary>
+	public IReadOnlyList<string> Themes { get; init; } = [];
 
 	/// <summary>
 	/// 项目信任的默认决策：<c>always</c>、<c>never</c> 或 <c>ask</c>。
@@ -81,30 +94,163 @@ public sealed record CodingAgentSettings
 		var path = GlobalPath(agentDir);
 		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-		System.Text.Json.Nodes.JsonObject root;
-		try
-		{
-			root = File.Exists(path)
-				? System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path)) as System.Text.Json.Nodes.JsonObject
-					?? new System.Text.Json.Nodes.JsonObject()
-				: new System.Text.Json.Nodes.JsonObject();
-		}
-		catch (System.Text.Json.JsonException)
-		{
-			// 文件坏了就以它为基础重建这两个键，而不是让整个操作失败。
-			root = new System.Text.Json.Nodes.JsonObject();
-		}
-
+		var root = ReadExistingObject(path);
 		root["defaultProvider"] = provider;
 		root["defaultModel"] = model;
 
 		File.WriteAllText(
 			path,
-			root.ToJsonString(new System.Text.Json.JsonSerializerOptions
+			root.ToJsonString(new JsonSerializerOptions
 			{
 				WriteIndented = true,
-				Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+				Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 			}));
+	}
+
+	/// <summary>
+	/// 读取 settings 里的 <c>npmCommand</c>（默认 <c>["npm"]</c>）。该键只在包管理时使用，
+	/// 因此不进入建模的设置字段，避免保存时把用户没动过的值写回文件。
+	/// </summary>
+	public static IReadOnlyList<string> NpmCommand(string settingsPath)
+	{
+		var root = File.Exists(settingsPath) ? ReadExistingObject(settingsPath) : null;
+		if (root?["npmCommand"] is not JsonArray array || array.Count == 0)
+		{
+			return ["npm"];
+		}
+
+		var command = new List<string>(array.Count);
+		foreach (var node in array)
+		{
+			if (node is JsonValue value && value.GetValueKind() == JsonValueKind.String && value.GetValue<string>() is { Length: > 0 } text)
+			{
+				command.Add(text);
+			}
+		}
+
+		return command.Count > 0 ? command : ["npm"];
+	}
+
+	/// <summary>
+	/// 把包来源加入某份 settings 的 <c>packages</c> 数组。保留文件里其它键，写入是原子的；
+	/// 已经声明过时返回 <c>false</c>（不重复追加）。
+	/// </summary>
+	public static bool AddPackage(string settingsPath, string source)
+	{
+		var root = ReadExistingObject(settingsPath);
+		var existing = root["packages"] as JsonArray;
+		if (existing is not null)
+		{
+			foreach (var node in existing)
+			{
+				if (node is JsonValue value && value.GetValueKind() == JsonValueKind.String &&
+					string.Equals(value.GetValue<string>(), source, StringComparison.Ordinal))
+				{
+					return false;
+				}
+			}
+		}
+
+		var count = existing?.Count ?? 0;
+		var items = new JsonNode?[count + 1];
+		for (var index = 0; index < count; index++)
+		{
+			items[index] = existing![index]?.DeepClone();
+		}
+
+		items[count] = JsonValue.Create(source);
+		root["packages"] = new JsonArray(items);
+		WriteAtomically(settingsPath, root);
+		return true;
+	}
+
+	/// <summary>从某份 settings 的 <c>packages</c> 数组移除一个来源；未声明时返回 <c>false</c>。</summary>
+	public static bool RemovePackage(string settingsPath, string source)
+	{
+		if (!File.Exists(settingsPath))
+		{
+			return false;
+		}
+
+		var root = ReadExistingObject(settingsPath);
+		if (root["packages"] is not JsonArray existing)
+		{
+			return false;
+		}
+
+		var kept = new List<JsonNode?>(existing.Count);
+		var removed = false;
+		foreach (var node in existing)
+		{
+			if (node is JsonValue value && value.GetValueKind() == JsonValueKind.String &&
+				string.Equals(value.GetValue<string>(), source, StringComparison.Ordinal))
+			{
+				removed = true;
+				continue;
+			}
+
+			kept.Add(node?.DeepClone());
+		}
+
+		if (!removed)
+		{
+			return false;
+		}
+
+		if (kept.Count == 0)
+		{
+			root.Remove("packages");
+		}
+		else
+		{
+			root["packages"] = new JsonArray([.. kept]);
+		}
+
+		WriteAtomically(settingsPath, root);
+		return true;
+	}
+
+	/// <summary>同目录临时文件 + 原子替换；Unix 上新文件仅用户可读写。</summary>
+	private static void WriteAtomically(string path, JsonObject root)
+	{
+		var directory = Path.GetDirectoryName(path);
+		if (directory is { Length: > 0 })
+		{
+			Directory.CreateDirectory(directory);
+		}
+
+		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+		var json = root.ToJsonString(new JsonSerializerOptions
+		{
+			WriteIndented = true,
+			Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+		});
+
+		try
+		{
+			File.WriteAllText(temporary, json);
+			if (!OperatingSystem.IsWindows())
+			{
+				File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+			}
+
+			File.Move(temporary, path, overwrite: true);
+		}
+		finally
+		{
+			// 失败时不要留下 .tmp 垃圾；成功时 Move 已经把它搬走了。
+			if (File.Exists(temporary))
+			{
+				try
+				{
+					File.Delete(temporary);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 清理失败不影响主流程的错误上报。
+				}
+			}
+		}
 	}
 
 	/// <summary>
@@ -125,31 +271,31 @@ public sealed record CodingAgentSettings
 			{
 				WriteIndented = true,
 				DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-				Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+				Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 			}));
 	}
 
 	/// <summary>读出现有设置文件（不存在或坏掉时给一个空对象）。</summary>
-	private static System.Text.Json.Nodes.JsonObject ReadExistingObject(string path)
+	private static JsonObject ReadExistingObject(string path)
 	{
 		if (!File.Exists(path))
 		{
-			return new System.Text.Json.Nodes.JsonObject();
+			return new JsonObject();
 		}
 
 		try
 		{
-			return System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))
-				as System.Text.Json.Nodes.JsonObject ?? new System.Text.Json.Nodes.JsonObject();
+			return JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject();
 		}
 		catch (Exception ex) when (ex is JsonException or IOException)
 		{
-			return new System.Text.Json.Nodes.JsonObject();
+			// 文件坏了就以它为基础重建，而不是让整个操作失败。
+			return new JsonObject();
 		}
 	}
 
 	/// <summary>把已知字段写进 JSON 对象，其余键原样保留。</summary>
-	private static void MergeInto(System.Text.Json.Nodes.JsonObject root, SettingsFile file)
+	private static void MergeInto(JsonObject root, SettingsFile file)
 	{
 		Write(root, "defaultProvider", file.DefaultProvider);
 		Write(root, "defaultModel", file.DefaultModel);
@@ -157,10 +303,14 @@ public sealed record CodingAgentSettings
 		Write(root, "enableSkillCommands", file.EnableSkillCommands);
 		Write(root, "defaultProjectTrust", file.DefaultProjectTrust);
 		Write(root, "timeoutMs", file.TimeoutMs);
+		Write(root, "packages", file.Packages);
+		Write(root, "skills", file.Skills);
+		Write(root, "prompts", file.Prompts);
+		Write(root, "themes", file.Themes);
 
 		if (file.Compaction is { } compaction)
 		{
-			var target = root["compaction"] as System.Text.Json.Nodes.JsonObject ?? new System.Text.Json.Nodes.JsonObject();
+			var target = root["compaction"] as JsonObject ?? new JsonObject();
 			Write(target, "enabled", compaction.Enabled);
 			Write(target, "reserveTokens", compaction.ReserveTokens);
 			Write(target, "keepRecentTokens", compaction.KeepRecentTokens);
@@ -170,7 +320,7 @@ public sealed record CodingAgentSettings
 		if (file.Retry is { } retry)
 		{
 			// 只写本端口建模的子键，retry.provider 之类的上游键保持不动。
-			var target = root["retry"] as System.Text.Json.Nodes.JsonObject ?? new System.Text.Json.Nodes.JsonObject();
+			var target = root["retry"] as JsonObject ?? new JsonObject();
 			Write(target, "enabled", retry.Enabled);
 			Write(target, "maxRetries", retry.MaxRetries);
 			Write(target, "baseDelayMs", retry.BaseDelayMs);
@@ -180,28 +330,45 @@ public sealed record CodingAgentSettings
 	}
 
 	// 用具体类型的重载写值：泛型的 JsonValue.Create<T> 在 AOT 下需要运行时代码生成。
-	private static void Write(System.Text.Json.Nodes.JsonObject root, string name, string? value)
+	private static void Write(JsonObject root, string name, string? value)
 	{
 		if (value is not null)
 		{
-			root[name] = System.Text.Json.Nodes.JsonValue.Create(value);
+			root[name] = JsonValue.Create(value);
 		}
 	}
 
-	private static void Write(System.Text.Json.Nodes.JsonObject root, string name, bool? value)
+	private static void Write(JsonObject root, string name, bool? value)
 	{
 		if (value is not null)
 		{
-			root[name] = System.Text.Json.Nodes.JsonValue.Create(value.Value);
+			root[name] = JsonValue.Create(value.Value);
 		}
 	}
 
-	private static void Write(System.Text.Json.Nodes.JsonObject root, string name, int? value)
+	private static void Write(JsonObject root, string name, int? value)
 	{
 		if (value is not null)
 		{
-			root[name] = System.Text.Json.Nodes.JsonValue.Create(value.Value);
+			root[name] = JsonValue.Create(value.Value);
 		}
+	}
+
+	private static void Write(JsonObject root, string name, List<string>? values)
+	{
+		if (values is null)
+		{
+			return;
+		}
+
+		// 用数组构造器而不是 JsonArray.Add<T>：泛型 Add 在 AOT 下会触发 IL2026/IL3050。
+		var nodes = new JsonNode?[values.Count];
+		for (var index = 0; index < values.Count; index++)
+		{
+			nodes[index] = JsonValue.Create(values[index]);
+		}
+
+		root[name] = new JsonArray(nodes);
 	}
 
 	internal static SettingsFile? ReadFile(string path)
@@ -237,6 +404,10 @@ public sealed record CodingAgentSettings
 			KeepRecentTokens = project?.Compaction?.KeepRecentTokens ?? global?.Compaction?.KeepRecentTokens ?? 20000,
 		},
 		EnableSkillCommands = project?.EnableSkillCommands ?? global?.EnableSkillCommands ?? true,
+		Packages = MergeLists(global?.Packages, project?.Packages),
+		Skills = MergeLists(global?.Skills, project?.Skills),
+		Prompts = MergeLists(global?.Prompts, project?.Prompts),
+		Themes = MergeLists(global?.Themes, project?.Themes),
 		DefaultProjectTrust = project?.DefaultProjectTrust ?? global?.DefaultProjectTrust ?? "always",
 		TimeoutMs = project?.TimeoutMs ?? global?.TimeoutMs,
 		Retry = new RetryPolicy(
@@ -246,6 +417,40 @@ public sealed record CodingAgentSettings
 			MaxAgentDelayMs: project?.Retry?.MaxAgentDelayMs ?? global?.Retry?.MaxAgentDelayMs
 				?? RetryClassifier.DefaultMaxAgentDelayMs),
 	};
+
+	/// <summary>拼接全局与项目的资源列表并去重（先出现者保留）。</summary>
+	private static IReadOnlyList<string> MergeLists(List<string>? global, List<string>? project)
+	{
+		if (global is null or { Count: 0 })
+		{
+			return project is null or { Count: 0 } ? [] : [.. project];
+		}
+
+		if (project is null or { Count: 0 })
+		{
+			return [.. global];
+		}
+
+		var merged = new List<string>(global.Count + project.Count);
+		var seen = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var item in global)
+		{
+			if (seen.Add(item))
+			{
+				merged.Add(item);
+			}
+		}
+
+		foreach (var item in project)
+		{
+			if (seen.Add(item))
+			{
+				merged.Add(item);
+			}
+		}
+
+		return merged;
+	}
 
 	internal static SettingsFile ToFile(CodingAgentSettings settings) => new()
 	{
@@ -259,6 +464,10 @@ public sealed record CodingAgentSettings
 			KeepRecentTokens = settings.Compaction.KeepRecentTokens,
 		},
 		EnableSkillCommands = settings.EnableSkillCommands,
+		Packages = List(settings.Packages),
+		Skills = List(settings.Skills),
+		Prompts = List(settings.Prompts),
+		Themes = List(settings.Themes),
 		DefaultProjectTrust = settings.DefaultProjectTrust,
 		TimeoutMs = settings.TimeoutMs,
 		Retry = new RetryFile
@@ -269,6 +478,9 @@ public sealed record CodingAgentSettings
 			MaxAgentDelayMs = settings.Retry.MaxAgentDelayMs,
 		},
 	};
+
+	/// <summary>空列表写成 <c>null</c>，保存时不会覆盖文件里已有的条目。</summary>
+	private static List<string>? List(IReadOnlyList<string> values) => values.Count > 0 ? [.. values] : null;
 }
 
 /// <summary>设置文件的磁盘形状。所有字段都是可选的，未知键会被忽略。</summary>
@@ -283,6 +495,14 @@ public sealed record SettingsFile
 	public CompactionFile? Compaction { get; init; }
 
 	public bool? EnableSkillCommands { get; init; }
+
+	public List<string>? Packages { get; init; }
+
+	public List<string>? Skills { get; init; }
+
+	public List<string>? Prompts { get; init; }
+
+	public List<string>? Themes { get; init; }
 
 	public string? DefaultProjectTrust { get; init; }
 
