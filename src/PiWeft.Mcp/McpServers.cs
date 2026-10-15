@@ -29,9 +29,13 @@ public sealed class McpProcess : IAsyncDisposable
 			throw new InvalidOperationException($"MCP server '{config.Name}' has no command to start");
 		}
 
+		// 图形外壳启动时进程只继承最小 PATH：把登录 shell PATH 与常见目录补进来，并把命令
+		// 解析成绝对路径，否则 `"command": "node"` 会以 ENOENT 失败（见 McpLaunchEnvironment）。
+		var (fileName, path) = await McpLaunchEnvironment.PrepareAsync(config.Command!).ConfigureAwait(false);
+
 		var startInfo = new ProcessStartInfo
 		{
-			FileName = config.Command!,
+			FileName = fileName,
 			RedirectStandardInput = true,
 			RedirectStandardOutput = true,
 			RedirectStandardError = true,
@@ -43,6 +47,8 @@ public sealed class McpProcess : IAsyncDisposable
 			startInfo.ArgumentList.Add(argument);
 		}
 
+		// 服务器自己也常要拉起 node/npx 子进程，PATH 必须传给子进程。
+		startInfo.Environment["PATH"] = path;
 		startInfo.Environment["MCP_CLIENT"] = "PiWeft";
 		foreach (var (name, value) in config.Env ?? new Dictionary<string, string>())
 		{

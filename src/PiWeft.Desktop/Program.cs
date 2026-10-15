@@ -61,12 +61,22 @@ public static class Program
 			}
 		}
 
-		// 从二进制目录直接启动时恢复最近项目；终端传入的目录和自检语义保持不变。
-		if (!explicitCwd && !selfCheck &&
-			Path.TrimEndingDirectorySeparator(cwd) == Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory) &&
-			DesktopPreference.Load().RecentProjects.FirstOrDefault(Directory.Exists) is { } recent)
+		// 从二进制目录直接启动时恢复最近项目；Finder/开始菜单启动时 cwd 是文件系统根，
+		// 同样退回最近项目或用户主目录。终端传入的目录和自检语义保持不变。
+		if (!explicitCwd && !selfCheck)
 		{
-			cwd = recent;
+			var launchCwd = cwd;
+			cwd = StartupDirectory.Resolve(
+				cwd,
+				AppContext.BaseDirectory,
+				StartupDirectory.LaunchedByShell,
+				DesktopPreference.Load().RecentProjects,
+				Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+
+			if (!string.Equals(cwd, launchCwd, StringComparison.Ordinal))
+			{
+				AppLog.For<MainWindow>().ZLogInformation($"Startup directory: {launchCwd} -> {cwd}");
+			}
 		}
 
 		if (!Directory.Exists(cwd))

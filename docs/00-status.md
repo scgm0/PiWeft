@@ -73,6 +73,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 ### MCP
 
 stdio 与 streamable HTTP 均支持握手、工具/资源/模板/提示分页及调用。
+stdio 服务器的子进程 PATH 按 PiDeck 的顺序组装（env PATH → 登录 shell PATH → 包管理器/版本管理器目录 → 平台兜底），命令解析为绝对路径：图形外壳启动（macOS Finder）只有系统 PATH 时仍能找到 Homebrew/nvm 里的 `node`，解析失败给出含搜索路径的错误而不是裸 ENOENT。登录 shell 探测异步执行并按进程缓存，超时或失败只退化到 env PATH。
 资源工具过滤 `ui://` / MCP App 内容，保留图片块；其它二进制保存到临时文件，模型侧文本限制为 20 KB 并提供完整文件路径。
 stdio 列表变化通知刷新工具并调用 `SetTools`；HTTP 尚未打开独立 SSE 通知流，因此不支持该通知路径。
 
@@ -81,6 +82,7 @@ stdio 列表变化通知刷新工具并调用 `SetTools`；HTTP 尚未打开独�
 桌面直接复用 CLI 的环境装配与相同会话文件，不启动 RPC 子进程。
 
 - 多项目会话树、元数据与有界正文搜索、置顶、命名、删除到 `.trash`、恢复、并行标签与右键操作。
+- 启动目录兜底：从二进制目录启动沿用最近项目；macOS 由 Finder/launchd 启动且 cwd 为文件系统根时退回最近项目或用户主目录，避免把 `/` 当成项目。终端启动与显式 `--cwd` 不做推断。
 - 文件浏览器与内置编辑器（`Ctrl+Shift+E`）：按目录导航、跳过 `.git`/依赖/构建产物、带 Git 状态标记；文本读写有大小与二进制判定，保存用时间戳检测外部修改。
 - 助手中的每轮修改汇总：自上一条用户消息以来成功的 `edit`/`write` 文件列表显示在回答下方。
 - 原生 `todo` 工具与输入区上方的待办条：计划按会话分支持久化为 PiDeck v3 自定义条目（`customType: "pi-deck-todo"`），切换分支时自动恢复；计划全貌只随变更的 toolResult 进入历史，不逐轮注入。
