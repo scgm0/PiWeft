@@ -71,7 +71,8 @@ jobs:
           $staged = Get-ChildItem -Path './artifacts/stage' -Directory -Filter 'PiWeft-*' | Select-Object -First 1
           if ($null -eq $staged) { throw 'staged package directory is missing' }
           if (-not (Test-Path (Join-Path $staged.FullName "pi$extension"))) { throw "staged CLI binary is not named pi$extension" }
-          if (-not (Test-Path (Join-Path $staged.FullName "piweft-desktop$extension"))) { throw "staged desktop binary is not named piweft-desktop$extension" }
+          $desktopRelative = if ($IsMacOS) { 'PiWeft Desktop.app/Contents/MacOS/piweft-desktop' } else { "piweft-desktop$extension" }
+          if (-not (Test-Path (Join-Path $staged.FullName $desktopRelative))) { throw "staged desktop binary is missing: $desktopRelative" }
       - name: Verify published desktop
         shell: pwsh
         run: |
