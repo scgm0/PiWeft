@@ -190,7 +190,7 @@ public sealed partial class SessionTab : IDisposable
 				_sendIcon, _sendLabel.Text(Strings.Send).FontSize(AppTheme.FontSizeCaption).OnAccentText()))
 			.OnClick(Send)
 			.Primary().Height(AppTheme.ControlHeightMd)
-			.CornerRadius(AppTheme.ControlHeightMd / 2)
+			.CornerRadius(AppTheme.RadiusMd)
 			.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0))
 			.VerticalAlignment(VerticalAlignment.Center);
 
@@ -239,7 +239,7 @@ public sealed partial class SessionTab : IDisposable
 
 		var composerPane = _composerPane = new Border()
 			.StyleName(AppStyles.Composer)
-			.CornerRadius(16)
+			.CornerRadius(AppTheme.RadiusLg)
 			.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
 			.HorizontalAlignment(HorizontalAlignment.Center)
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3, AppTheme.Space2))
@@ -1193,8 +1193,8 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// <summary>
-	/// 用户消息：元信息行在色块上方（角色铭牌 + 悬停操作），色块左缘带黄铜「纬线」——
-	/// 对话是织物，不是聊天软件。外层 Border 挂 actions（Tag 约定），主题冒烟测试按它识别用户消息行。
+	/// 用户消息：整块靠右排，与助手回复（左侧正文）一眼分开；元信息行在色块上方（角色铭牌 + 悬停操作）。
+	/// 色块不再带左缘「纬线」——那种强调形态留给错误行。外层 Border 挂 actions（Tag 约定）。
 	/// </summary>
 	private UIElement Bubble(ChatEntry entry)
 	{
@@ -1223,24 +1223,21 @@ public sealed partial class SessionTab : IDisposable
 			.StyleName(AppStyles.UserMessage)
 			.BorderThickness(0)
 			.CornerRadius(AppTheme.RadiusSm)
-			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space4, AppTheme.Space2))
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.MaxWidth(AppTheme.MessageMaxWidth)
+			.HorizontalAlignment(HorizontalAlignment.Right)
 			.Child(rows);
 
 		card.Tag = actions;
 
-		// 签名细节「纬线」：左缘 2px 强调色短线。
-		var thread = new Border()
-			.Width(AppTheme.ThreadWidth)
-			.CornerRadius(AppTheme.RadiusXs)
-			.VerticalAlignment(VerticalAlignment.Stretch)
-			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).Accent);
-
 		return new StackPanel()
 			.Spacing(AppTheme.Space1)
+			.HorizontalAlignment(HorizontalAlignment.Right)
 			.Children(
-				new DockPanel().LastChildFill().Children(actions.DockRight(), Header(string.Empty, entry, Strings.RoleUser)),
-				new DockPanel().LastChildFill().Children(thread.DockLeft(), card.Margin(new Thickness(AppTheme.Space2, 0, 0, 0))));
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1)
+					.HorizontalAlignment(HorizontalAlignment.Right)
+					.Children(actions, Header(string.Empty, entry, Strings.RoleUser)),
+				card);
 	}
 
 	/// <summary>

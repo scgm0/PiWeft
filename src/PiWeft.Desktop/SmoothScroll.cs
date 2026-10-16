@@ -6,31 +6,27 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Frame-driven scrolling with accumulated wheel targets and immediate interruption by direct input.</summary>
+/// <summary>Frame-driven scrolling with exponential decay physics, natively supporting both high-frequency trackpads and discrete mouse wheels.</summary>
 internal sealed class SmoothScroll : IDisposable
 {
-	/// <summary>
-	/// 滚轮事件间隔低于该值视为连续输入流（macOS 触控板/Magic Mouse 及其惯性阶段以
-	/// 60-125Hz 发送分数增量）。对连续流逐事件重启 180ms 缓动会不断打断速度曲线，
-	/// 视觉上卡顿（macOS 上所有可滚动区域滚轮卡顿、拖滚动条正常的根因）；此时改为
-	/// 直接落位，与拖滚动条同一条渲染路径。离散滚轮刻度（Windows 鼠标）保留缓动。
-	/// </summary>
-	internal const double ContinuousWheelIntervalMs = 50;
-
 	private static readonly ConditionalWeakTable<FrameworkElement, SmoothScroll> Controllers = new();
 	private readonly FrameworkElement _view;
 	private readonly ScrollViewer? _viewport;
 	private readonly MultiLineTextBox? _text;
 	private readonly ScrollBar? _verticalBar;
 	private readonly ScrollBar? _horizontalBar;
-	private readonly AnimationClock _clock = new(TimeSpan.FromMilliseconds(180), EaseOut);
-	private readonly Stopwatch _wheelClock = Stopwatch.StartNew();
-	private double _lastWheelMs = double.NegativeInfinity;
-	private Point _from;
+
+	// 使用极长的持续时间作为纯帧循环触发器，目标到达时主动终止以释放资源
+	private readonly AnimationClock _clock = new(TimeSpan.FromDays(1), LinearEase);
+	private readonly Stopwatch _renderClock = new();
+
 	private Point _target;
 	private Point _lastOffset;
 	private bool _toEnd;
 	private bool _disposed;
+
+	// 阻尼系数：控制追赶 _target 的敏捷度（约 12-18，值越大越敏捷，15 接近 Chromium/iOS 体感）
+	private const double DecayRate = 15.0;
 
 	private SmoothScroll(FrameworkElement view)
 	{
@@ -115,35 +111,23 @@ internal sealed class SmoothScroll : IDisposable
 	{
 		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
 		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
-		// macOS 对所有滚动设备（含普通滚轮鼠标）做系统级平滑与惯性合成：物理刻度之后
-		// 还会补发一串高频分数增量（Windows 的普通鼠标则一个刻度一个事件）。事件流连续
-		// 时逐次重启缓动会打断速度曲线，视觉上卡顿；此时直接落位，与拖滚动条同一路径。
-		var nowMs = _wheelClock.Elapsed.TotalMilliseconds;
-		var continuous = nowMs - _lastWheelMs < ContinuousWheelIntervalMs;
-		_lastWheelMs = nowMs;
 
 		var current = Offset;
 		var pending = IsAnimating ? new Point(_target.X, _toEnd ? MaxVerticalOffset : _target.Y) : current;
+
 		// Reversing the wheel should respond now instead of consuming a backlog in the previous direction.
 		var x = horizontal * (pending.X - current.X) < 0 ? current.X : pending.X;
 		var y = vertical * (pending.Y - current.Y) < 0 ? current.Y : pending.Y;
+
 		var target = new Point(Math.Clamp(x + horizontal * step, 0, Maximum(false)),
 			Math.Clamp(y + vertical * step, 0, MaxVerticalOffset));
 
-		if (continuous)
-		{
-			Stop();
-			Apply(target);
-		}
-		else
-		{
-			Start(target, toEnd: false, milliseconds: 180);
-		}
+		Start(target, toEnd: false);
 
 		if (vertical != 0) VerticalInput?.Invoke(vertical);
 	}
 
-	public void ScrollToEnd() => Start(new Point(Offset.X, MaxVerticalOffset), toEnd: true, milliseconds: 280);
+	public void ScrollToEnd() => Start(new Point(Offset.X, MaxVerticalOffset), toEnd: true);
 
 	public void JumpToEnd()
 	{
@@ -151,20 +135,25 @@ internal sealed class SmoothScroll : IDisposable
 		Apply(new Point(Offset.X, MaxVerticalOffset));
 	}
 
-	private void Start(Point target, bool toEnd, double milliseconds)
+	private void Start(Point target, bool toEnd)
 	{
 		if (_disposed) return;
-		_from = Offset;
 		_target = target;
 		_toEnd = toEnd;
-		if (Math.Abs(target.X - _from.X) < 0.5 && Math.Abs(target.Y - _from.Y) < 0.5)
+
+		var current = Offset;
+		if (Math.Abs(target.X - current.X) < 0.5 && Math.Abs(target.Y - current.Y) < 0.5)
 		{
 			Stop();
 			Apply(target);
 			return;
 		}
-		_clock.Duration = TimeSpan.FromMilliseconds(milliseconds);
-		_clock.Start();
+
+		if (!_clock.IsRunning)
+		{
+			_renderClock.Restart();
+			_clock.Start();
+		}
 	}
 
 	private void Advance(double progress)
@@ -174,9 +163,32 @@ internal sealed class SmoothScroll : IDisposable
 		{
 			if (element is UIElement { IsVisible: false }) { Stop(); return; }
 		}
+
+		// 根据自上一帧流逝的真实时间计算指数衰减系数
+		double dt = _renderClock.Elapsed.TotalSeconds;
+		_renderClock.Restart();
+
+		// 防御性拦截：如果主线程卡顿引起 dt 过大，限制单帧最大平滑跳跃步长以防抖
+		if (dt > 0.05) dt = 0.05;
+
+		var current = Offset;
+		var targetX = Math.Min(_target.X, Maximum(false));
 		var targetY = _toEnd ? MaxVerticalOffset : Math.Min(_target.Y, MaxVerticalOffset);
-		Apply(new Point(_from.X + (Math.Min(_target.X, Maximum(false)) - _from.X) * progress,
-			_from.Y + (targetY - _from.Y) * progress));
+
+		// 指数平滑方程 (Exponential Smoothing)：完美衔接低频的大段离散滚轮与高频细小的触控板滚轮
+		double factor = 1 - Math.Exp(-DecayRate * dt);
+		double nextX = current.X + (targetX - current.X) * factor;
+		double nextY = current.Y + (targetY - current.Y) * factor;
+
+		// 检查衰减极限，到达阈值直接落位
+		if (Math.Abs(targetX - nextX) < 0.5 && Math.Abs(targetY - nextY) < 0.5)
+		{
+			Apply(new Point(targetX, targetY));
+			Stop();
+			return;
+		}
+
+		Apply(new Point(nextX, nextY));
 	}
 
 	private void Apply(Point offset)
@@ -205,7 +217,9 @@ internal sealed class SmoothScroll : IDisposable
 	private void OnMouseDown(MouseEventArgs args) => Stop();
 	private void OnKeyDown(KeyEventArgs args) => Stop();
 	public void Stop() { _clock.Stop(); _toEnd = false; }
-	private static double EaseOut(double progress) => 1 - Math.Pow(1 - progress, 3);
+
+	// 对于以时间为基准的物理循环，内置 Easing 提供恒等映射即可
+	private static double LinearEase(double progress) => progress;
 
 	public void Dispose()
 	{

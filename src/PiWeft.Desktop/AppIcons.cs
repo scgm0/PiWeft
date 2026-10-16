@@ -88,12 +88,16 @@ public static class AppIcons
 			.StyleName(AppStyles.PrimaryButton);
 	}
 
-	/// <summary>Icon and label for navigation and secondary commands, with theme-aware normal text.</summary>
-	public static Button TextButton(string icon, string text, Action onClick)
+	/// <summary>
+	/// Icon and label for navigation and secondary commands, with theme-aware normal text.
+	/// <paramref name="strong"/> 把图标也提亮到主文字色：侧栏顶部的「新建 / 搜索会话」这类主要入口用得上。
+	/// </summary>
+	public static Button TextButton(string icon, string text, Action onClick, bool strong = false)
 	{
-		var image = new Image().Source(Get(icon)).Width(14).Height(14)
+		Color? tint = strong ? AppTheme.TextPrimary : null;
+		var image = new Image().Source(Get(icon, tint)).Width(14).Height(14)
 			.VerticalAlignment(VerticalAlignment.Center);
-		Track(image, icon, null);
+		Track(image, icon, tint);
 		return new Button().Ghost().Content(new StackPanel().Orientation(Orientation.Horizontal)
 			.VerticalAlignment(VerticalAlignment.Center).Spacing(6)
 			.Children(image, new TextBlock().Text(text).FontSize(AppTheme.FontSizeControl).PrimaryText()

@@ -23,6 +23,8 @@ public static class AppStyles
 	public const string Panel = "pi-panel";
 	public const string Card = "pi-card";
 	public const string CardMuted = "pi-card-muted";
+	/// <summary>浮层卡片（上下文/余额这类浮在内容之上的面板）：比 Card 多一条可见结构线，配合阴影使用。</summary>
+	public const string PopupCard = "pi-popup-card";
 	public const string UserMessage = "pi-message-user";
 	public const string ToolMessage = "pi-message-tool";
 	public const string ToolError = "pi-message-tool-error";
@@ -146,6 +148,16 @@ public static class AppStyles
 					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
 					Setter.Create(Control.BorderThicknessProperty, 1.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+				],
+			})
+			.With(PopupCard, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusMd),
 				],
 			})
 			.With(Composer, () => new Style(typeof(Border))

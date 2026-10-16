@@ -11,11 +11,13 @@ public sealed partial class MainWindow
 	/// <summary>Virtualized rows keep time visible while titles ellipsize rather than forcing horizontal scrolling.</summary>
 	private void ConfigureSessionRows()
 	{
+		HideScrollbarsWhenIdle(_sessionTree);
 		_sessionTree.SmoothScrolling().CornerRadius(AppTheme.RadiusMd);
 		_sessionTree.HorizontalScroll = ScrollMode.Disabled;
 		_sessionTree.ItemHeight = 36;
 		_sessionTree.Indent = 14;
-		_sessionTree.ItemPadding = new Thickness(8, 2, 8, 2);
+		// 右侧多留滚动条的位置：滚动条是浮层式的（不占布局宽度），否则 ⋯ 按钮会被压在条下面。
+		_sessionTree.ItemPadding = new Thickness(8, 2, 8 + AppTheme.Space3, 2);
 		_sessionTree.ItemTemplate<TreeViewNode>(context =>
 		{
 			// 项目分组行带文件夹图标，会话行不带 —— 层级一眼可辨。
@@ -63,11 +65,13 @@ public sealed partial class MainWindow
 	/// <summary>「对话」视图：平铺的会话列表，每行一个会话，不属于任何项目。</summary>
 	private void ConfigureChatsRows()
 	{
+		HideScrollbarsWhenIdle(_chatsTree);
 		_chatsTree.SmoothScrolling().CornerRadius(AppTheme.RadiusMd);
 		_chatsTree.HorizontalScroll = ScrollMode.Disabled;
 		_chatsTree.ItemHeight = 36;
 		_chatsTree.Indent = 0;
-		_chatsTree.ItemPadding = new Thickness(8, 2, 8, 2);
+		// 与「项目」视图保持一致：行右侧留出滚动条的位置。
+		_chatsTree.ItemPadding = new Thickness(8, 2, 8 + AppTheme.Space3, 2);
 		_chatsTree.ItemTemplate<TreeViewNode>(context =>
 		{
 			var title = new TextBlock().FontSize(AppTheme.FontSizeControl).PrimaryText()
@@ -101,6 +105,27 @@ public sealed partial class MainWindow
 				row.HoverTip(node.Text);
 			}
 		});
+	}
+
+	/// <summary>
+	/// 列表的滚动条是 MewUI 的浮层条：不占布局宽度，默认常显，会压在行的右缘上。
+	/// 打开自动隐藏后，静止时完全淡出、滚动或悬停条本身时淡入，平时列表里看不到条。
+	/// </summary>
+	private static void HideScrollbarsWhenIdle(Element view)
+	{
+		if (view is ScrollViewer scroll)
+		{
+			scroll.AutoHideScrollBars = true;
+		}
+
+		if (view is IVisualTreeHost host)
+		{
+			host.VisitChildren(child =>
+			{
+				HideScrollbarsWhenIdle(child);
+				return true;
+			});
+		}
 	}
 
 	/// <summary>行尾 ⋯ 按钮的统一分发：会话行与项目行各弹各的菜单。</summary>
@@ -156,7 +181,6 @@ public sealed partial class MainWindow
 		_projectsTabButton.StyleName(projects ? AppStyles.SelectedButton : AppStyles.GhostButton);
 		_newSessionButton.IsVisible(!projects);
 		_addProjectButton.IsVisible(projects);
-		_search.IsVisible(true);
 		_sessionTree.IsVisible(projects);
 		_chatsTree.IsVisible(!projects);
 	}

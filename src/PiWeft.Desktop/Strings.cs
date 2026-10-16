@@ -45,13 +45,12 @@ public static partial class Strings
 	public static string DeleteConfirm(string name) => $"把会话「{name}」移到 .trash 目录？文件会被保留，可手动恢复。";
 	public static string Deleted(string path) => $"已移动到 {path}";
 	public const string NoSessions = "此目录下暂无会话，点「新建」开始一个。";
-	public const string SearchPlaceholder = "搜索会话…";
+	/// <summary>侧栏入口与搜索弹窗的输入提示共用一个短名。</summary>
+	public const string SessionSearch = "搜索会话";
 	public const string CurrentDirOnly = "仅当前目录";
 	public static string EnvironmentFallback(string cwd, string reason) => $"目录 {cwd} 的环境不可用（{reason}），已回退到启动环境。";
 	public const string NoMatches = "没有匹配的会话。";
 	public const string ContentHit = "内容命中";
-	public static string ContentMatches(int count, string excerpt) =>
-		$"{Strings.ContentHit} {count} 个会话，例如：{excerpt}";
 
 	// 输入区
 	public const string ComposerPlaceholder = "输入指令，Enter 发送，Shift+Enter 换行";
@@ -230,6 +229,7 @@ public static partial class Strings
 	// 命令面板的说明与快捷键
 	public const string RefreshSessions = "刷新会话列表";
 	public const string ShortcutNewSession = "Ctrl+T";
+	public const string ShortcutSearchSessions = "Ctrl+K";
 	public const string ShortcutSettings = "环境、技能与 MCP 状态";
 	public const string ShortcutGit = "当前分支与工作区改动";
 	public const string ShortcutTheme = "立即在深色与浅色之间切换";

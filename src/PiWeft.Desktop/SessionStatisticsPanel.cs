@@ -45,13 +45,21 @@ public sealed class SessionStatisticsPanel
 			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(_overview, _details));
 		var content = new DockPanel().LastChildFill().Spacing(AppTheme.Space3)
 			.Children(heading.DockTop(), _compact.DockBottom(), scroll);
+		// 卡片是右下角带结构线与落影的一块，背景不变暗；第一层的透明捕获层只做一件事：
+		// 点面板以外的空白处收起浮层（不吞掉外观，也不变暗）。关闭另有 × 与 Esc。
 		View = new Grid().IsVisible(false).Children(
-			new Button().Background(new Color(0x20, 0x00, 0x00, 0x00)).Cursor(CursorType.Arrow)
+			new Button().Background(AppTheme.Transparent).Cursor(CursorType.Arrow)
 				.Focusable(false).BorderThickness(0).CornerRadius(0).OnClick(Hide),
-			new Border().Width(420).MaxWidth(420).HorizontalAlignment(HorizontalAlignment.Right)
-				.VerticalAlignment(VerticalAlignment.Bottom).Margin(new Thickness(AppTheme.Space3))
-				.StyleName(AppStyles.Card).CornerRadius(AppTheme.RadiusMd)
-				.Padding(new Thickness(AppTheme.Space4)).Child(content))
+			new ShadowDecorator()
+				.BlurRadius(14).OffsetY(4).CornerRadius(AppTheme.RadiusMd)
+				.WithTheme((theme, shadow) => shadow.ShadowColor = theme.IsDark
+					? new Color(0xB4, 0x00, 0x00, 0x00)
+					: new Color(0x3C, 0x00, 0x00, 0x00))
+				.HorizontalAlignment(HorizontalAlignment.Right).VerticalAlignment(VerticalAlignment.Bottom)
+				.Margin(new Thickness(AppTheme.Space1))
+				.Child(new Border().Width(420).MaxWidth(420)
+					.StyleName(AppStyles.PopupCard)
+					.Padding(new Thickness(AppTheme.Space4)).Child(content)))
 			.OnKeyDown(key =>
 			{
 				if (key.Key != Key.Escape) return;

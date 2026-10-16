@@ -66,7 +66,7 @@ public sealed class SessionCatalog
 		return result;
 	}
 
-	/// <summary>按关键字过滤会话：匹配名称、id、工作目录或文件名，忽略大小写。</summary>
+	/// <summary>按关键字过滤会话：匹配名称、id、工作目录或文件名（不含 .jsonl 后缀，否则搜 "json" 会命中全部），忽略大小写。</summary>
 	public static IReadOnlyList<SessionListItem> Search(IReadOnlyList<SessionListItem> sessions, string? query)
 	{
 		var trimmed = query?.Trim() ?? string.Empty;
@@ -82,7 +82,7 @@ public sealed class SessionCatalog
 				item.Name.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ||
 				item.Id.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ||
 				item.Cwd.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ||
-				Path.GetFileName(item.Path).Contains(trimmed, StringComparison.OrdinalIgnoreCase)),
+				Path.GetFileNameWithoutExtension(item.Path).Contains(trimmed, StringComparison.OrdinalIgnoreCase)),
 		];
 	}
 

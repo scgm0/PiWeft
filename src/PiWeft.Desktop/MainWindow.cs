@@ -44,13 +44,7 @@ public sealed partial class MainWindow : Window
 	private CliEnvironment? _environment;
 	private CheckBox _currentDirOnly = null!;
 	private IReadOnlyList<SessionListItem> _sessions = [];
-	private IReadOnlyList<SessionCatalog.ContentMatch> _contentMatches = [];
-
-	/// <summary>搜索请求序号：后台搜索结果回来时用它判断是否已过期。</summary>
-	private int _searchVersion;
 	private bool _restoringSelection;
-	private CancellationTokenSource? _contentSearch;
-	private bool _closed;
 	private Border _sidebar = null!;
 	private SplitPanel _workspace = null!;
 	private Button _sidebarFloat = null!;
@@ -68,7 +62,8 @@ public sealed partial class MainWindow : Window
 	private IReadOnlyList<SessionListItem> _allSessions = [];
 	private IReadOnlyList<Model> _models = [];
 
-	private TextBox _search = null!;
+	private SessionSearchPalette _sessionSearch = null!;
+	private Button _searchButton = null!;
 	private TextBox _nameBox = null!;
 	private TextBlock _tabCaption = null!;
 	private TreeView _sessionTree = null!;
@@ -195,7 +190,7 @@ public sealed partial class MainWindow : Window
 
 			case ShortcutActions.SearchSessions:
 				_sidebar.IsVisible(true);
-				_search.Focus();
+				_sessionSearch.Toggle(this);
 				break;
 
 			case ShortcutActions.CloseTab:
@@ -262,14 +257,16 @@ public sealed partial class MainWindow : Window
 			.IsVisible(false);
 
 		// ------------------------------------------------------------ 侧栏
-		// 新会话（主按钮）+ 搜索 + 过滤 + 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
-		// 药丸形无边框搜索框：只靠色调与背景分层。
-		_search = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeControl)
-			.Placeholder(Strings.SearchPlaceholder).CornerRadius(AppTheme.ControlHeightMd / 2)
-			.BorderThickness(0)
-			.WithTheme((theme, box) => box.Background = AppTheme.For(theme).CardBackground)
-			.Height(AppTheme.ControlHeightMd)
-			.OnTextChanged(_ => FilterSessions());
+		// 新建会话 + 搜索会话（两条与侧栏同色的导航行）+ 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
+		// 「搜索会话」不是常驻输入框：点击打开搜索弹窗（Ctrl+K），结果按名称、路径与正文过滤。
+		_sessionSearch = new SessionSearchPalette(() => _allSessions, OpenSessionFromSearch);
+		_sessionSearch.Closed += () =>
+		{
+			if (CurrentTab() is { } tab) tab.FocusComposer();
+		};
+		_searchButton = AppIcons.TextButton("search", Strings.SessionSearch, () => _sessionSearch.Toggle(this), strong: true)
+			.MinHeight(AppTheme.ControlHeightLg)
+			.CornerRadius(AppTheme.RadiusMd);
 
 		_nameBox = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeControl)
 			.Placeholder(Strings.SessionNamePlaceholder)
@@ -283,7 +280,7 @@ public sealed partial class MainWindow : Window
 				}
 			});
 
-		// 「项目」视图：工作区列表（文件夹 + 行级 ⋯ 菜单）。
+		// 「项目」视图：工作区列表（文件夹 + 行级 ⋯ 菜单）。行内边距在 ConfigureSessionRows 里定。
 		_sessionTree = new TreeView().FontSize(AppTheme.FontSizeControl)
 			.BorderThickness(0).Background(AppTheme.Transparent);
 		ConfigureSessionRows();
@@ -307,14 +304,15 @@ public sealed partial class MainWindow : Window
 				.MinWidth(84).TextAlignment(TextAlignment.Center))
 			.OnClick(() => ShowSidebarView(projects: true));
 
-		_newSessionButton = AppIcons.PrimaryButton("plus", Strings.NewSession,
-			() => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd)))
+		// 「新建」与侧栏同色、悬停才浮起（PiDeck 式导航行）：默认不铺底色，行宽撑满侧栏。
+		_newSessionButton = AppIcons.TextButton("plus", Strings.NewSession,
+			() => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd)), strong: true)
 			.MinHeight(AppTheme.ControlHeightLg)
-			.CornerRadius(AppTheme.ControlHeightLg / 2);
+			.CornerRadius(AppTheme.RadiusMd);
 		_addProjectButton = AppIcons.PrimaryButton("folder-open", Strings.AddProject,
 			() => _ = ChooseProjectAsync())
 			.MinHeight(AppTheme.ControlHeightLg)
-			.CornerRadius(AppTheme.ControlHeightLg / 2);
+			.CornerRadius(AppTheme.RadiusMd);
 
 		var sidebarTop = new StackPanel().Spacing(AppTheme.Space2);
 		sidebarTop.Children(
@@ -322,7 +320,7 @@ public sealed partial class MainWindow : Window
 				.HorizontalAlignment(HorizontalAlignment.Center)
 				.Children(_sessionsTabButton, _projectsTabButton),
 			new DockPanel().LastChildFill().Children(_addProjectButton.DockRight(), _newSessionButton),
-			_search,
+			_searchButton,
 			_nameBox,
 			_banner);
 
@@ -335,6 +333,8 @@ public sealed partial class MainWindow : Window
 		// 底部工具行：图标 + 小字标签（命令面板/Git/设置/主题），参照 Codex 桌面端的安静页脚。
 		static StackPanel FooterItem(string label, Button button)
 		{
+			// 按钮收窄一档（图标本身不变）：内容窄了，格间才有余量留给间距。
+			button.Padding(new Thickness(6, 4, 6, 4));
 			return new StackPanel()
 				.Spacing(2)
 				.HorizontalAlignment(HorizontalAlignment.Center)
@@ -343,16 +343,18 @@ public sealed partial class MainWindow : Window
 						.HorizontalAlignment(HorizontalAlignment.Center));
 		}
 
+		// 页脚入口：五个内容列按各自宽度排（文字不会被裁），剩余宽度由四个弹性列平分 ——
+		// 侧栏越宽间距越大，越窄间距越小，但入口本身始终保持完整。
 		var sidebarFooter = new Border()
 			.BorderBrush(AppTheme.BorderSubtle).BorderThickness(new Thickness(0, 1, 0, 0))
 			.Margin(new Thickness(0, AppTheme.Space2, 0, 0))
 			.Padding(new Thickness(0, AppTheme.Space2, 0, 0))
-			.Child(new DockPanel().LastChildFill().Children(
-				FooterItem(Strings.PaletteButton, palette).Width(52).DockLeft(),
-				FooterItem(Strings.Git, git).Width(52).DockLeft(),
-				FooterItem(Strings.ToggleTheme, theme).Width(52).DockLeft(),
-				FooterItem(Strings.SidebarCollapse, collapse).Width(52).DockRight(),
-				FooterItem(Strings.Settings, settings).Width(52).DockRight()));
+			.Child(new Grid().Columns("auto,*,auto,*,auto,*,auto,*,auto").Children(
+				FooterItem(Strings.PaletteButton, palette).Column(0),
+				FooterItem(Strings.SidebarGit, git).Column(2),
+				FooterItem(Strings.ToggleTheme, theme).Column(4),
+				FooterItem(Strings.Settings, settings).Column(6),
+				FooterItem(Strings.SidebarCollapse, collapse).Column(8)));
 
 		// 列表要吃掉剩余高度，所以这里用 DockPanel；StackPanel 会把 ListBox 压成内容高度。
 		var sidebar = _sidebar = new Border()
@@ -407,7 +409,7 @@ public sealed partial class MainWindow : Window
 			}
 			else
 			{
-				_search.Focus();
+				_searchButton.Focus();
 			}
 		};
 
@@ -520,8 +522,6 @@ public sealed partial class MainWindow : Window
 		// 关闭时记住窗口状态，下次打开原位恢复。
 		this.OnClosed(() =>
 		{
-			_closed = true;
-			_contentSearch?.Cancel();
 			_usageStatsView?.Close();
 			_themeWatcher?.Dispose();
 			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
@@ -614,71 +614,18 @@ public sealed partial class MainWindow : Window
 		FilterSessions(preference);
 	}
 
-	/// <summary>输入搜索词时复用目录快照，只有显式刷新或会话操作才重新扫描磁盘。</summary>
+	/// <summary>侧栏列表与目录快照同步；正文搜索移到了「搜索会话」弹窗里。</summary>
 	private void FilterSessions(DesktopPreference? preference = null)
 	{
-		_contentMatches = [];
-		_sessions = SessionCatalog.Search(_allSessions, _search?.Text);
+		_sessions = _allSessions;
 		UpdateSessionList(preference ?? DesktopPreference.Load());
-		StartContentSearch(_search?.Text);
 	}
 
-	/// <summary>
-	/// 正文搜索放到后台：会话文件可能很大，直接在输入回调里扫会卡住输入。
-	/// 结果回来时用请求序号判断是否已经过期。
-	/// </summary>
-	private void StartContentSearch(string? query)
-	{
-		_contentSearch?.Cancel();
-		var trimmed = query?.Trim() ?? string.Empty;
-		var version = ++_searchVersion;
-		if (trimmed.Length == 0) return;
-
-		var knownPaths = _sessions.Select(static item => item.Path).ToHashSet(StringComparer.Ordinal);
-		var candidates = _allSessions.Where(item => !knownPaths.Contains(item.Path)).ToList();
-		if (candidates.Count == 0) return;
-
-		var cancellation = new CancellationTokenSource();
-		_contentSearch = cancellation;
-		_ = SearchContentAsync(candidates, trimmed, version, cancellation);
-	}
-
-	/// <summary>连续输入先等待短暂静止；新请求取消旧扫描，关闭窗口也会撤销待执行结果。</summary>
-	private async Task SearchContentAsync(IReadOnlyList<SessionListItem> candidates, string query, int version, CancellationTokenSource cancellation)
-	{
-		try
-		{
-			await Task.Delay(220, cancellation.Token).ConfigureAwait(false);
-			var matches = await Task.Run(() => SessionCatalog.SearchContent(candidates, query,
-				cancellationToken: cancellation.Token), cancellation.Token).ConfigureAwait(false);
-			Dispatch(() =>
-			{
-				if (_closed || version != _searchVersion) return;
-				_contentMatches = matches;
-				UpdateSessionList(DesktopPreference.Load());
-			});
-		}
-		catch (OperationCanceledException) { }
-		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-		{
-			AppLog.Failure(AppLog.For<MainWindow>(), "Search session content", ex);
-		}
-		finally
-		{
-			Dispatch(() =>
-			{
-				if (ReferenceEquals(_contentSearch, cancellation)) _contentSearch = null;
-				cancellation.Dispose();
-			});
-		}
-	}
-
-	/// <summary>把元数据命中与正文命中合成侧栏列表。</summary>
+	/// <summary>重建侧栏列表（内容命中分组已随搜索弹窗移走）。</summary>
 	private void UpdateSessionList(DesktopPreference preference)
 	{
 		var selectedId = SelectedSession()?.Id ?? CurrentTab()?.Session.Session.SessionId;
 		var rows = new List<SessionListItem>(_sessions);
-		rows.AddRange(_contentMatches.Select(static match => match.Session));
 
 		// 按工作目录分组：项目是父节点，会话是子节点（树默认展开），与 PiDeck 的项目视图一致。
 		var nodes = rows
@@ -721,14 +668,6 @@ public sealed partial class MainWindow : Window
 		{
 			_banner.Text(Strings.NoSessions);
 		}
-		else if (rows.Count == 0)
-		{
-			_banner.Text(Strings.NoMatches);
-		}
-		else if (_contentMatches.Count > 0)
-		{
-			_banner.Text(Strings.ContentMatches(_contentMatches.Count, _contentMatches[0].Excerpt));
-		}
 		else
 		{
 			_banner.Text(string.Empty);
@@ -739,13 +678,12 @@ public sealed partial class MainWindow : Window
 	private static string ProjectLabel(string cwd, int count) =>
 		count > 1 ? $"{ShortCwd(cwd)} ({count})" : ShortCwd(cwd);
 
-	/// <summary>会话节点的标题：置顶标记、标题、时间，内容命中再加标记。</summary>
+	/// <summary>会话节点的标题：置顶标记、标题、时间。</summary>
 	private string SessionLine(SessionListItem item, DesktopPreference preference)
 	{
 		var pin = preference.IsPinned(item.Id) ? $"{Strings.PinnedMark} " : string.Empty;
-		var content = _contentMatches.Any(match => match.Session.Path == item.Path) ? $" · {Strings.ContentHit}" : string.Empty;
 
-		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}{content}";
+		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}";
 	}
 
 	private void OnSessionSelected(object? item)
@@ -766,6 +704,22 @@ public sealed partial class MainWindow : Window
 		try
 		{
 			OpenSessionPath(selected.Path);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Open session", ex);
+			_banner.Text(Strings.OpenSessionFailed(ex.Message));
+		}
+	}
+
+	/// <summary>「搜索会话」弹窗里选中的会话：按路径打开，已打开则切到那个标签。</summary>
+	private void OpenSessionFromSearch(SessionListItem item)
+	{
+		_nameBox.Text = item.Name;
+
+		try
+		{
+			OpenSessionPath(item.Path);
 		}
 		catch (Exception ex)
 		{
@@ -1145,6 +1099,9 @@ public sealed partial class MainWindow : Window
 					break;
 				case "search":
 					CurrentTab()?.ToggleSearchFromSmoke();
+					break;
+				case "session-search":
+					_sessionSearch.Show(this);
 					break;
 				default:
 					Console.Error.WriteLine($"piweft-desktop: 未知的界面演练目标：{view}");
@@ -1612,6 +1569,7 @@ public sealed partial class MainWindow : Window
 		var commands = new List<PaletteCommand>
 		{
 			new(Strings.NewSession, Strings.ShortcutNewSession, () => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd))),
+			new(Strings.SessionSearch, Strings.ShortcutSearchSessions, () => _sessionSearch.Toggle(this)),
 			new(Strings.OpenProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
 			new(Strings.SelectModel, "Ctrl+M", () => CurrentTab()?.ShowModelPicker()),
 			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsTab),
