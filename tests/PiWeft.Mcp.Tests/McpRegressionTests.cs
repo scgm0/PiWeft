@@ -83,7 +83,7 @@ public class McpRegressionTests : IDisposable
 	}
 
 	[Fact]
-	public async Task NotificationStreamSkipsMalformedFramesAndDisposesCleanly()
+	public async Task NotificationStreamSkipsMalformedFramesAndDeliversGoodOnes()
 	{
 		var handler = new FakeMcpHttpHandler
 		{
@@ -95,7 +95,7 @@ public class McpRegressionTests : IDisposable
 					"event: message\ndata: " + new JsonObject
 					{
 						["jsonrpc"] = "2.0",
-						["method"] = "notifications/resources/list_changed",
+						["method"] = "notifications/tools/list_changed",
 					}.ToJsonString() + "\n\n",
 					Encoding.UTF8,
 					"text/event-stream"),
@@ -112,8 +112,11 @@ public class McpRegressionTests : IDisposable
 
 		// 坏帧被跳过，同一批里的好帧仍然要送达。
 		Assert.Equal(
-			"notifications/resources/list_changed",
+			"notifications/tools/list_changed",
 			await received.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+		Assert.True(client.NotificationStreamActive);
+		// 通知流必须带上握手拿到的会话 id。
+		Assert.Contains("session-1", handler.NotificationStreamRequests);
 
 		// 后台任务没有 fault，因此关连接时 DisposeAsync 必须干净返回。
 		await client.DisposeAsync();

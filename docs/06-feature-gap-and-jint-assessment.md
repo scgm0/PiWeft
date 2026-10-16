@@ -1,6 +1,6 @@
 # 功能缺口与 Jint 技术评估
 
-评估日期：2026-10-14（Jint 探针）；2026-10-16 对照源码与全量 993 项测试复核，更新实现状态、清理已完成的记录并修复排查出的缺陷。状态：规划输入，尚未批准为实施路线。
+评估日期：2026-10-14（Jint 探针）；2026-10-16 对照源码与全量测试复核，更新实现状态、清理已完成的记录并修复排查出的缺陷。状态：规划输入，尚未批准为实施路线。
 
 本文汇总 PiWeft 与 pi / PiDeck 的功能对照，以及 Jint 5 实现 codemode、JS 扩展的可行性和性能探针结果。用于后续确定产品范围、拆分任务、建立依赖与验收标准，不代表相关功能已经实现，也不修改既有产品范围决策。
 
@@ -9,7 +9,7 @@
 - 基础编码 Agent、会话和轻量桌面工作流已经具备；既有入口的兼容缺口（C-01 至 C-06、PI-11）与高频工作台闭环（D-01 至 D-07、PI-06）已基本处置，主要差距在扩展生态、工作台深度与高级模型运行时。
 - 会话文件和 RPC 互通不等于完整替代 pi + PiDeck，尤其不能据握手成功推断 JS 扩展工作流可用。
 - 剩余优先事项：完整 TUI、多后端、远程服务等应先确定是否属于产品目标，再决定 JS 扩展/codemode 的范围变更。
-- Jint 适合先实现受限 codemode，再实现有限的 JS 扩展 API。完整 pi 扩展兼容的主要成本在宿主契约，而非解释器速度。
+- Jint 适合先实现受限 codemode，再实现有限的 JS 扩展 API。完整 pi 扩展兼容的主要成本在宿主契约，而非解释器速度。参照移植已分化出两条路线：Rust 版内嵌 QuickJS-ng 直接加载 pi 的 TS 扩展（兼容优先），Go 版放弃进程内扩展、改用 hooks + MCP + skills（重写优先）；本端口处于兼容优先路线上。
 - 性能要分别看首次初始化、热执行、数据转换、托管分配、原生体积和真实工作流，不能只引用一个微基准。
 
 缺口使用稳定编号：`C-*` 为兼容行为，`PI-*` 为 pi 能力，`D-*` 为桌面工作台，`X-*` 为 pi_agent_rust/pi-go 补充方向。编号便于拆分任务，不是完成度统计。阶段与优先级均为建议，负责人、工作量和时间安排留待正式计划确定。
@@ -24,7 +24,7 @@
 | pi_agent_rust / pi-go | 本地同级仓库，作为子代理、IDE、记忆和工具增强参考，不作为原版 pi 的必备契约 |
 | Jint | 当时正式版 4.17.0；5.0.0 开发线固定提交 `8537426f92ee847ccb09af59b1db60079e3a8028` |
 
-功能分析以源码静态核对为主。Jint 探针实际执行了 JIT 与 Linux x64 NativeAOT。2026-10-16 复核重新运行了全量测试（993 项通过）并对照源码更新第 3、4 节状态；真实供应商联网测试与完整 PiDeck UI e2e 两个口径始终未进行，开始实施前仍应重新确认版本、代码路径和缺口状态。
+功能分析以源码静态核对为主。Jint 探针实际执行了 JIT 与 Linux x64 NativeAOT。2026-10-16 复核重新运行了全量测试并对照源码更新第 3、4 节状态；真实供应商联网测试与完整 PiDeck UI e2e 两个口径始终未进行，开始实施前仍应重新确认版本、代码路径和缺口状态。
 
 ### 1.2 与现有文档的关系
 
@@ -77,7 +77,7 @@
 | PI-01 | JS/TS 扩展宿主 | 没有现有 pi 扩展的加载、注册、生命周期、动态能力、重载与清理机制 |
 | PI-02 | 扩展 UI 协议 | 部分实现：原生 `ask_question` 经 RPC `extension_ui_request`（`method: "input"`，PiDeck 批量信封）发出，`extension_ui_response` 唤醒等待中的提问；CLI 交互提示与桌面卡片同路径。pi 的对话框方法 `select`/`confirm`/`editor` 与 fire-and-forget 的 `notify` 已按 pi 线协议实现（RPC 转发、控制台与桌面三宿主、agent 侧 `timeout` 自动解析），为 S3 扩展宿主就位；尚未有进程内调用方，`setStatus`/`setWidget`/`setTitle`/`set_editor_text` 不发出，pi 扩展的 renderer / 自定义 TUI 协议不成立 |
 | PI-03 | Pi 包管理 | 已实现：settings 的 `packages` 来源解析与包资源发现（`package.json` 的 `pi` 清单、约定目录、glob 收窄、按名去重）；`pi install/list/remove/update` 支持 npm 安装（`--prefix` + `--legacy-peer-deps`）、git 克隆（含 `@ref`）、本地路径登记与目录清理，来源原子写回 settings。未覆盖：npm 依赖冲突治理、包图库与资源筛选诊断界面 |
-| PI-04 | 完整终端 TUI | 当前为按行 REPL，缺少多行编辑、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
+| PI-04 | 完整终端 TUI | 当前为按行 REPL，缺少多行编辑、`$EDITOR` 外部编辑、剪贴板图片粘贴进 TUI、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
 | PI-05 | codemode / tool_search | 缺少脚本编排、结果过滤、延迟工具发现和脚本状态；并行 Agent 工具执行不是 codemode |
 | PI-06 | MCP 高级运行时 | 部分实现：`McpExposure` 实现 pi 同名 `exposure`/`toolExposure`（`codemode-deferred` 归一、精确名优先于通配符、逐工具覆盖服务器默认；`hidden` 工具不声明，整台 `hidden` 且无逐工具放行的服务器不连接）；因无 codemode，`codemode`/`deferred` 暂按 `direct`。运行时重连：RPC `list_mcp`/`reconnect_mcp` 与桌面「重连 MCP」共用释放-重建-热替换路径。已覆盖：OAuth 2.1 授权码 + PKCE（RFC 9728/8414/7591 的发现与动态注册、回环回调、401 自动刷新并重放、令牌存 `<agentDir>/mcp-oauth.json`）、**客户端凭据授权**（`clientId + clientSecret` 走 RFC 6749 §4.4，`pi mcp login` 与运行时到期重新授权均无需浏览器）、**HTTP 通知流上的服务端请求反向应答**（`ping` 回空结果，其余 -32601）、HTTP 独立 SSE 通知流（服务器返回 404/405 时静默降级）、CLI `mcp list/add/remove/login/logout`。未覆盖：OAuth 网关模式的令牌交换变体、桌面界面的 MCP 授权入口 |
 | PI-07 | 认证覆盖 | 部分实现：命令型凭据（`!` 开头）已在请求时执行（10 秒超时、64 KiB 输出上限、不缓存，失败回落环境变量，与 pi 一致）；`auth check` 三态 `ready`/`not_ready`/`invalid` 齐备。OAuth 仍只支持 Codex 设备码；AWS 环境签名路径不等于完整 profile/ECS/IRSA 链 |
@@ -85,6 +85,10 @@
 | PI-09 | 高级模型运行时 | 缺少虚拟路由、分类器/生图模型执行、缓存保温、Codex WebSocket、模型级按思考档位采样配置 |
 | PI-10 | 资源配置与主题 | 部分实现：技能/模板/主题按用户、项目、包作用域统一发现（含 settings 的 `skills`/`prompts`/`themes` 与诊断）；pi 主题 JSON 解析完整（hex / oklch / okhsl / ANSI 索引 / 变量引用 / 终端默认，含色域映射），桌面外观页可选择并即时换肤；**主题目录文件监视热重载已实现**（防抖 400ms、坏文件保留旧外观、项目主题受信任门控，`ThemeWatcher`）。`/reload` 与 RPC `reload_resources` 重新解析资源而不重建会话。未覆盖：独立资源管理界面 |
 | PI-11 | 项目信任 | 已实现：`<agentDir>/trust.json`（规范化路径 → true/false）、父目录查找、原子写入；显式 `-a/--na` 优先，其次 trust.json，最后**全局** `settings.defaultProjectTrust`（默认 `ask`，与 pi 一致；项目设置不能自我授权）；不受信时不合并项目设置、不连项目 `.pi/mcp.json`、不加载项目级技能/提示词模板；CLI 交互模式与桌面启动时询问（信任/仅本次/不信任），无 UI 时 `ask` 按不受信处理。测试：`ProjectTrustTests`、`CliEnvironmentTests.Create_GatesProjectSettingsWhenUntrusted`、`McpConfigTests.Load_WithoutProjectTrustIgnoresProjectConfig` |
+| PI-12 | 行内 shell 与会话环境变量 | 均未实现：输入框 `!`/`!!` 前缀直接执行 shell（pi 扩展可经 `user_bash` 事件拦截接管）；bash/powershell 工具向子进程注入 `AI_AGENT`、`PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，供扩展和脚本感知会话上下文 |
+| PI-13 | Windows powershell 工具 | pi 在 Windows 提供独立的 powershell 内置工具；本端口只有 bash 类工具 |
+| PI-14 | CLI 键位绑定 | pi 有 `keybindings.json` 命名动作映射与 `/hotkeys`；桌面快捷键体系独立，两者互不相通 |
+| PI-15 | pi 专属斜杠命令余项 | `/copy`、`/import`、`/bug` 已实现；`/share`（上传 Radius/GitHub gist）、`/llama`（内置 llama.cpp 本地模型，可并入 PI-08 决策）、`/settings` 未实现 |
 
 依据：[项目状态](00-status.md)、[Provider 装配](../src/PiWeft.Cli/CliEnvironment.cs)、[模型目录](../src/PiWeft.Ai/Models/ModelRegistry.cs)、[MCP 配置](../src/PiWeft.Mcp/McpConfig.cs)。
 
@@ -275,7 +279,7 @@ S4 可以与 S2/S3 并行，不要求文件树或模型探测等待完整 JS 宿
 | 决策 | 必须明确的内容 |
 | --- | --- |
 | 产品定位 | 轻量原生工作台、pi 协议替代，还是完整 pi + PiDeck 功能替代 |
-| 扩展目标 | 自有 JS API、指定 pi 扩展子集，还是 npm 生态兼容；哪些 API 明确拒绝 |
+| 扩展目标 | 自有 JS API、指定 pi 扩展子集，还是 npm 生态兼容；哪些 API 明确拒绝。两条参照路线：Rust 版尽最大努力兼容 TS 扩展（内嵌 QuickJS-ng + Node/Bun shim），Go 版明确放弃进程内扩展（hooks + MCP + skills 覆盖大部分需求）；判据是 PiDeck 现有扩展（已由本端口原生工具覆盖）之外是否有真实扩展依赖 |
 | Jint 版本 | 等待正式版、固定 preview，或维护源码构建；升级和安全修复策略 |
 | 隔离等级 | 可信扩展/不可信 codemode 的能力、进程、文件、网络和凭据边界 |
 | NativeAOT 门槛 | 警告审计和可接受体积增量；不要全局静默忽略分析器警告 |

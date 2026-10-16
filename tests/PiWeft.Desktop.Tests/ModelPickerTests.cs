@@ -49,19 +49,13 @@ public sealed class ModelPickerTests
 	}
 
 	[Fact]
-	public void ModelAndCommandPalettesReplaceEachOtherAndCloseWithEscape()
+	public void ModelPickerClosesWithEscape()
 	{
+		// 面板互斥替换由 PaletteOverlayTests.OpeningAnotherPaletteClosesThePreviousWindowOverlay 覆盖；
+		// 这里只保留 Escape 关闭模型面板自身的语义。
 		var model = Model("current");
 		var picker = new ModelPicker(() => [model], () => model, _ => { });
-		var commands = new CommandPalette(() => []);
 		var window = new Window();
-		commands.Show(window);
-		picker.Show(window);
-		Assert.False(commands.IsOpen);
-		Assert.Equal(1, window.OverlayLayer.Count);
-		commands.Show(window);
-		Assert.False(picker.IsOpen);
-		Assert.Equal(1, window.OverlayLayer.Count);
 		picker.Show(window);
 		Key(picker.View, Aprillz.MewUI.Key.Escape);
 		Assert.False(picker.IsOpen);

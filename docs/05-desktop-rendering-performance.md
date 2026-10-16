@@ -61,7 +61,7 @@ PIWEFT_NATIVE_TESTS=1 PIWEFT_SCREENSHOTS=/tmp/piweft-interaction-validation \
 
 ## 验证与复现
 
-全项目 **993 项测试通过**，其中桌面端 **343 项**（2026-10-16 复核）；Linux NativeAOT 发布无警告。Debug 与 Linux NativeAOT 发布版都通过原生鼠标/键盘演练，覆盖三级开合位置稳定、差异跨行选择、图片留白关闭和本地链接启动模拟编辑器。Windows/macOS 原生界面未在本环境验证。
+全量测试与桌面端测试均通过（基线计数见 [00-status.md](00-status.md) 验证入口）；Linux NativeAOT 发布无警告。Debug 与 Linux NativeAOT 发布版都通过原生鼠标/键盘演练，覆盖三级开合位置稳定、差异跨行选择、图片留白关闭和本地链接启动模拟编辑器。Windows/macOS 原生界面未在本环境验证。
 
 ```sh
 xvfb-run -a dotnet test PiWeft.slnx

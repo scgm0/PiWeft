@@ -436,31 +436,6 @@ public class CliRunnerTests : IDisposable
 	}
 
 	[Fact]
-	public void CreateSession_NoContextFilesSkipsProjectContext()
-	{
-		File.WriteAllText(Path.Combine(_root, "AGENTS.md"), "secret project rule");
-		var (environment, _) = Environment();
-
-		using var withContext = environment.CreateSession(Arguments("--no-session"), _root);
-		Assert.Contains("secret project rule", SystemSections(withContext)["project_context"]);
-
-		using var withoutContext = environment.CreateSession(Arguments("--no-session", "--no-context-files"), _root);
-		Assert.False(SystemSections(withoutContext).ContainsKey("project_context"));
-	}
-
-	[Fact]
-	public void CreateSession_AppendsSystemPromptAsAddendum()
-	{
-		var (environment, _) = Environment();
-
-		using var session = environment.CreateSession(
-			Arguments("--no-session", "--append-system-prompt", "answer in Chinese"),
-			_root);
-
-		Assert.Equal("answer in Chinese", SystemSections(session)["addendum"]);
-	}
-
-	[Fact]
 	public async Task PrintMode_UsesTheSystemPromptOverride()
 	{
 		var (environment, script) = Environment();

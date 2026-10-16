@@ -68,7 +68,7 @@ dotnet run --project tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj
 
 ## 验证
 
-- `dotnet test PiWeft.slnx`：993 项通过（2026-10-16 复核），覆盖计时 JSON 往返、空/旧数据、错误与取消终态、
+- `dotnet test PiWeft.slnx`：全量通过（基线计数见 [00-status.md](00-status.md) 验证入口），覆盖计时 JSON 往返、空/旧数据、错误与取消终态、
   算术与加权统计、追加、导航、编辑、压缩、派生、新建、切换会话、并发查询和零分配查询。
 - `dotnet publish src/PiWeft.Desktop/PiWeft.Desktop.csproj -c Release -r linux-x64`：NativeAOT 发布成功，无新增警告。
 - 独立临时 agent 目录下，调试版和 NativeAOT 版均通过深浅主题 1280x820、窄窗口 720x520 截图演练；

@@ -8,10 +8,10 @@ namespace PiWeft.Desktop.Tests;
 [Collection("mewui-controls")]
 public sealed class FoldScrollTests
 {
-	[Theory]
-	[InlineData(false)]
-	[InlineData(true)]
-	public void ManualFoldStopsEndFollowingAndKeepsItsHeaderAtTheSameReadingPosition(bool keyboard)
+	// 指针折叠的锚点保持在虚拟化时间线上由 VirtualizedProcessDoesNotJumpToTheAnswerWhenExpandedAtTheBottom 覆盖；
+	// 这里只保留键盘（Space）路径。
+	[Fact]
+	public void KeyboardFoldStopsEndFollowingAndKeepsItsHeaderAtTheSameReadingPosition()
 	{
 		var fold = new Expander().Header(new TextBlock().Text("process")).IsExpanded(false)
 			.Content(new Border().Height(800));
@@ -26,16 +26,14 @@ public sealed class FoldScrollTests
 		// Simulate the reading-intent callback immediately before the native toggle.
 		using var inputGuard = new TextFocusScrollGuard(scroll, conversation.PreserveAnchor);
 		inputGuard.TrackFold(fold);
-		if (!keyboard) conversation.PreserveAnchor(fold);
-		Toggle(fold, keyboard);
+		Toggle(fold, keyboard: true);
 		ConversationPerformanceTests.Layout(scroll, 500, 400);
 		conversation.RestoreAnchor();
 		ConversationPerformanceTests.Layout(scroll, 500, 400);
 		Assert.True(fold.IsExpanded);
 		Assert.False(conversation.Following);
 		Assert.InRange(Math.Abs(fold.Bounds.Y - y), 0, 1);
-		if (!keyboard) conversation.PreserveAnchor(fold);
-		Toggle(fold, keyboard);
+		Toggle(fold, keyboard: true);
 		ConversationPerformanceTests.Layout(scroll, 500, 400);
 		conversation.RestoreAnchor();
 		ConversationPerformanceTests.Layout(scroll, 500, 400);

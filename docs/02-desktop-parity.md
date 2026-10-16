@@ -91,10 +91,10 @@ MewUI 0.22.1 字族注册表只保留最后注册的文件，Regular 必须最�
 桌面通过 `recordInitialThinkingLevel: false` 打开会话，不追加条目或修改 mtime；真正开始对话时再记录实际级别。
 CLI 默认保留 pi 启动元数据行为，RPC 字段对照测试验证消息与条目计数。
 
-标准 pi 会话没有独立思考计时字段。`durationMs` 是整次回复耗时，不能据此推测思考耗时；本端口保留历史值。
-新回复可持久化 `firstTokenMs` 与 `streamingDurationMs`，旧数据缺失时显示 `-`，计时口径见统计文档。
+标准 pi 会话没有独立思考计时字段，`durationMs` 是整次回复耗时，不能据此推测思考耗时；本端口保留历史值。
 PiDeck 历史思考显示 0ms 的路径是未恢复 `thinkingStartedAt` / `thinkingEndedAt`，显示端回退到相同消息时间戳。
 本仓库未修改该 PiDeck 路径，也不能恢复会话中从未保存的原始思考时长。
+`firstTokenMs` / `streamingDurationMs` 的口径见 [会话统计与性能](04-session-statistics-performance.md)。
 
 ## Linux PRIMARY 选区
 
@@ -129,14 +129,7 @@ CLI/桌面共用 ZLogger 后台文件日志，位于 `<agentDir>/logs`，按天�
 不记录提示词、回复、工具参数、凭据或原始 provider 响应；异常仅记录类型与堆栈。
 `PI_LOG_LEVEL` 默认 Information。CLI 不污染 stdout；桌面另输出 stderr，文件日志不可写时仍可查看终端诊断。
 
-```sh
-xvfb-run -a dotnet test PiWeft.slnx
-xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-parity-smoke.sh
-xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-statistics-smoke.sh
-xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-workspace-smoke.py
-```
-
-`desktop-workspace-smoke.py` 默认使用 60 条折叠工具输出的独立 fixture，覆盖对话、外观、Agent 配置、MCP、720×520 窄窗口、收起侧栏、统计概览/明细、深浅空会话和 1920×1080 宽屏；设置 `PI_WORKSPACE_SMOKE_TURNS=1000` 可改用长历史。脚本检查最新回复确实可见。宽屏需要 `-screen 0 2000x1200x24`。保存截图、日志与 `results.json`。脚本需要 Python 3、ImageMagick、xdotool，通过 Linux `/proc` 读取 RSS 和 2 秒 CPU 采样。可传入场景编号分批执行，设置 `PI_WORKSPACE_SMOKE_APP` 指向 NativeAOT 可执行文件，以免把托管 Debug 构建的占用当成发布版表现。CPU 百分比以单核 100% 为基准，数据包含字体和 Xvfb/Mesa 渲染后端，不能当成所有硬件或无限历史的占用保证。
+截图与冒烟演练（parity / statistics / workspace / 原生鼠标键盘）分别在 [配置管理与安全边界](03-pideck-configuration-parity.md)、[会话统计与性能](04-session-statistics-performance.md)、[桌面渲染性能](05-desktop-rendering-performance.md) 的验证节给出命令，均使用独立 fixture，不读取真实密钥或会话。全量测试基线见 [项目状态](00-status.md) 验证入口。
 
 截图脚本使用独立 fixture agent 目录，不读取真实密钥。修改进程环境变量的测试必须加入 `process-environment` 串行集合。
 

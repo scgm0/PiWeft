@@ -122,26 +122,54 @@ public class MessageJsonTests
 
 /// <summary>
 /// JSON 写出保留中文与必要的 JSON 引号转义，避免可读内容变成 \uXXXX。
+/// 源生成上下文、消息序列化与 JsonNode 四个入口共用同一编码器配置，合并为理论用例 + 引号用例。
 /// </summary>
 public class JsonEscapingTests
 {
 	private const string Command = "echo \"=== 我这条会话的启动时间 ===\"";
 
-	[Fact]
-	public void JsonNodesAreWrittenWithoutUnicodeEscapes()
+	[Theory]
+	[InlineData("中")]
+	[InlineData("<tag> & 'quote'")]
+	[InlineData("\"quoted\"")]
+	public void EverySerializationEntryPointKeepsTextReadableWithoutUnicodeEscapes(string text)
 	{
-		var node = new System.Text.Json.Nodes.JsonObject { ["command"] = Command };
+		// 源生成上下文：模型目录与认证文件。
+		Assert.DoesNotContain("\\u", SerializeThroughContext(text));
+		Assert.DoesNotContain("\\u", SerializeThroughAuthContext(text));
 
-		var json = node.ToJsonString(PiWeft.Ai.Json.PiJson.NodeOptions);
+		// 消息序列化：工具参数里的可读文本。
+		var message = new AssistantMessage
+		{
+			Timestamp = 1,
+			Api = "openai-completions",
+			Provider = "openai",
+			Model = "gpt-test",
+			StopReason = StopReason.ToolUse,
+			Content =
+			[
+				new ToolCall
+				{
+					Id = "call_1",
+					Name = "bash",
+					Arguments = new System.Text.Json.Nodes.JsonObject { ["command"] = text },
+				},
+			],
+		};
 
-		Assert.Contains("\"command\":\"echo \\\"=== 我这条会话的启动时间 ===\\\"\"", json);
-		Assert.DoesNotContain("\\u0022", json);
-		Assert.DoesNotContain("\\u6211", json);
+		Assert.DoesNotContain("\\u", PiJson.SerializeMessage(message));
 	}
 
 	[Fact]
-	public void MessageJsonKeepsChineseAndQuotesReadable()
+	public void JsonNodesAndMessagesKeepQuotesEscapedWithoutUnicodeEscapes()
 	{
+		// JsonNode 与消息写出都必须保留 \" 转义，而不是换成 \u0022。
+		var node = new System.Text.Json.Nodes.JsonObject { ["command"] = Command };
+		var nodeJson = node.ToJsonString(PiWeft.Ai.Json.PiJson.NodeOptions);
+		Assert.Contains("\"command\":\"echo \\\"=== 我这条会话的启动时间 ===\\\"\"", nodeJson);
+		Assert.DoesNotContain("\\u0022", nodeJson);
+		Assert.DoesNotContain("\\u6211", nodeJson);
+
 		var message = new AssistantMessage
 		{
 			Timestamp = 1,
@@ -160,41 +188,26 @@ public class JsonEscapingTests
 			],
 		};
 
-		var json = PiJson.SerializeMessage(message);
-
-		Assert.Contains("我这条会话的启动时间", json);
-		Assert.Contains("\\\"=== ", json);
-		Assert.DoesNotContain("\\u0022", json);
-		Assert.DoesNotContain("\\u6211", json);
-	}
-
-	[Theory]
-	[InlineData("中")]
-	[InlineData("<tag> & 'quote'")]
-	[InlineData("\"quoted\"")]
-	public void AiSourceGeneratedContextUsesTheRelaxedEncoder(string text)
-	{
-		Assert.DoesNotContain("\\u", SerializeThroughContext(text));
-	}
-
-	[Theory]
-	[InlineData("中")]
-	[InlineData("<tag> & 'quote'")]
-	[InlineData("\"quoted\"")]
-	public void AuthSourceGeneratedContextUsesTheRelaxedEncoder(string text)
-	{
-		var credentials = new PiWeft.Ai.Auth.CodexCredentials { Access = text, Refresh = text };
-		var context = PiWeft.Ai.Auth.AuthJsonContext.Default;
-
-		var json = JsonSerializer.Serialize(credentials, context.CodexCredentials);
-
-		Assert.DoesNotContain("\\u", json);
-		Assert.Equal(text, JsonSerializer.Deserialize(json, context.CodexCredentials)!.Access);
+		var messageJson = PiJson.SerializeMessage(message);
+		Assert.Contains("我这条会话的启动时间", messageJson);
+		Assert.Contains("\\\"=== ", messageJson);
+		Assert.DoesNotContain("\\u0022", messageJson);
+		Assert.DoesNotContain("\\u6211", messageJson);
 	}
 
 	private static string SerializeThroughContext(string text)
 	{
 		var model = new Model { Id = text, Provider = "test", Name = text };
 		return JsonSerializer.Serialize(model, PiJsonContext.Default.Model);
+	}
+
+	private static string SerializeThroughAuthContext(string text)
+	{
+		var credentials = new PiWeft.Ai.Auth.CodexCredentials { Access = text, Refresh = text };
+		var context = PiWeft.Ai.Auth.AuthJsonContext.Default;
+
+		var json = JsonSerializer.Serialize(credentials, context.CodexCredentials);
+		Assert.Equal(text, JsonSerializer.Deserialize(json, context.CodexCredentials)!.Access);
+		return json;
 	}
 }

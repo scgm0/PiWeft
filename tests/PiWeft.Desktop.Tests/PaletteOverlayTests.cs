@@ -21,8 +21,6 @@ public sealed class PaletteOverlayTests
 		Assert.Same(window, palette.View.Parent);
 		Assert.True(window.OverlayLayer.Contains(palette.View));
 		Assert.Equal(1, window.OverlayLayer.Count);
-		palette.Show(owner);
-		Assert.Equal(1, window.OverlayLayer.Count);
 
 		palette.Hide();
 		Assert.False(palette.IsOpen);

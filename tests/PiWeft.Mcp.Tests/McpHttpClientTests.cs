@@ -361,43 +361,6 @@ public class McpHttpClientTests
 	}
 
 	[Fact]
-	public async Task NotificationStreamDeliversServerNotifications()
-	{
-		var handler = new FakeMcpHttpHandler
-		{
-			SessionIdToIssue = "session-1",
-			NotificationStreamResponse = () => new HttpResponseMessage(HttpStatusCode.OK)
-			{
-				Content = new StringContent(
-					"event: message\n" +
-					"data: " + new JsonObject
-					{
-						["jsonrpc"] = "2.0",
-						["method"] = "notifications/tools/list_changed",
-					}.ToJsonString() + "\n\n",
-					Encoding.UTF8,
-					"text/event-stream"),
-			},
-		};
-
-		handler.EnqueueJson(InitializeResult);
-		handler.EnqueueAccepted();
-
-		var client = await McpHttpClient.ConnectAsync(Url, headers: null, timeout: TimeSpan.FromSeconds(10), httpClient: new HttpClient(handler));
-		await using var _ = client;
-
-		var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-		client.NotificationReceived += (method, _) => received.TrySetResult(method);
-
-		var method = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-		Assert.Equal("notifications/tools/list_changed", method);
-		Assert.True(client.NotificationStreamActive);
-		// 通知流必须带上握手拿到的会话 id。
-		Assert.Contains("session-1", handler.NotificationStreamRequests);
-	}
-
-	[Fact]
 	public async Task NotificationStreamDegradesWhenGetIsRejected()
 	{
 		// 默认 handler 对 GET 回 405：客户端应静默降级，且不干扰请求-响应用到的队列。

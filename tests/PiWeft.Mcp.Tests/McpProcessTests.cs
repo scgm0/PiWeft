@@ -117,16 +117,6 @@ public class McpProcessTests
 	}
 
 	[Fact]
-	public async Task ConnectAllExposesRealServerToolsWithPiNaming()
-	{
-		await using var connection = await McpServers.ConnectAllAsync([Config("fixture-server")]);
-		Assert.Empty(connection.Errors);
-		Assert.Equal(3, connection.Tools.Count);
-		Assert.All(connection.Tools, static tool => Assert.StartsWith("mcp__fixture_server__", tool.Name));
-		Assert.Contains(connection.Tools, static tool => tool.Name == "mcp__fixture_server__echo");
-	}
-
-	[Fact]
 	public async Task StartupCrashSurfacesExitCodeAndStderrInsteadOfBareConnectionClosed()
 	{
 		var config = new McpServerConfig

@@ -73,19 +73,17 @@ public sealed class ImagePreviewTests
 	}
 
 	[Fact]
-	public void RepeatedPreviewDoesNotAddLayersAndCommandPaletteReplacesIt()
+	public void RepeatedPreviewDoesNotAddLayersAndClosingReleasesTheSource()
 	{
+		// 面板互斥替换由 PaletteOverlayTests.OpeningAnotherPaletteClosesThePreviousWindowOverlay 覆盖。
 		var window = new Window();
 		var preview = new ImagePreview();
 		preview.Show(window, ChatImages.Source(Png));
 		preview.Show(window, ChatImages.Source(Png));
 		Assert.Equal(1, window.OverlayLayer.Count);
-		var palette = new CommandPalette(() => []);
-		palette.Show(window);
-		Assert.False(preview.IsOpen);
+		Assert.NotNull(PreviewImage(preview).Source);
+		preview.Hide();
 		Assert.Null(PreviewImage(preview).Source);
-		Assert.Equal(1, window.OverlayLayer.Count);
-		palette.Hide();
 	}
 
 	[Fact]

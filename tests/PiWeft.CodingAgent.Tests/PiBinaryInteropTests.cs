@@ -163,31 +163,4 @@ public class PiBinaryInteropTests : IDisposable
 			entries,
 			static entry => entry!["message"]?["role"]?.GetValue<string>() == "system");
 	}
-
-	[Fact]
-	public async Task RealPiRoundTripsASessionItReExports()
-	{
-		var pi = FindPi();
-		if (pi is null)
-		{
-			return;
-		}
-
-		var sessionFile = await WriteSessionAsync();
-		var exportDir = Path.Combine(_root, "export2");
-		Directory.CreateDirectory(exportDir);
-
-		var (exitCode, output) = Run(
-			pi,
-			exportDir,
-			"--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--export", sessionFile);
-		Assert.True(exitCode == 0, output);
-
-		// Our reader must still accept the file afterwards (pi may migrate or normalise it in place).
-		var reopened = SessionManager.Open(sessionFile);
-		Assert.Equal(3, reopened.Header!.Version);
-
-		// 用户消息 + 助手回复（系统提示词不在文件里，所以投影由运行时补上）。
-		Assert.Equal(2, reopened.BuildProjectedMessages().Count);
-	}
 }

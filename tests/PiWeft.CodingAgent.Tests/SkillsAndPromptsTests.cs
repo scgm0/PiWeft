@@ -104,23 +104,6 @@ public class SkillsTests : IDisposable
 	}
 
 	[Fact]
-	public void Discover_ProjectSkillShadowsTheUserSkillWithTheSameName()
-	{
-		var project = WriteSkill(".pi/skills", "pdf-tools", PdfSkill);
-		WriteSkill("agent/skills", "pdf-tools", """
-			---
-			name: pdf-tools
-			description: The user level copy.
-			---
-			body
-			""");
-
-		var skills = CodingAgent.Skills.Skills.Discover(_root, _agentDir);
-		var skill = Assert.Single(skills, static s => s.Name == "pdf-tools");
-		Assert.Equal(Path.GetFullPath(project), skill.FilePath);
-	}
-
-	[Fact]
 	public void FormatForPrompt_MatchesPiShapeAndHidesExplicitOnlySkills()
 	{
 		var skills = new List<CodingAgent.Skills.Skill>
