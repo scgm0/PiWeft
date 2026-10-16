@@ -47,7 +47,6 @@ public static partial class Strings
 	public const string NoSessions = "此目录下暂无会话，点「新建」开始一个。";
 	/// <summary>侧栏入口与搜索弹窗的输入提示共用一个短名。</summary>
 	public const string SessionSearch = "搜索会话";
-	public const string CurrentDirOnly = "仅当前目录";
 	public static string EnvironmentFallback(string cwd, string reason) => $"目录 {cwd} 的环境不可用（{reason}），已回退到启动环境。";
 	public const string NoMatches = "没有匹配的会话。";
 	public const string ContentHit = "内容命中";

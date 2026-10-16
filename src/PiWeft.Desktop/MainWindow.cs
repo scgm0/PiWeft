@@ -42,7 +42,6 @@ public sealed partial class MainWindow : Window
 	private string? _pendingNotice;
 	private readonly Dictionary<string, CliEnvironment> _environments = new(StringComparer.Ordinal);
 	private CliEnvironment? _environment;
-	private CheckBox _currentDirOnly = null!;
 	private IReadOnlyList<SessionListItem> _sessions = [];
 	private bool _restoringSelection;
 	private Border _sidebar = null!;
