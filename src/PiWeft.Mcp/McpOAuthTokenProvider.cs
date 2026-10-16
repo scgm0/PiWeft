@@ -2,7 +2,8 @@ namespace PiWeft.Mcp;
 
 /// <summary>
 /// 基于 <see cref="McpOAuthStore"/> 的令牌提供者：首次请求时读取（必要时刷新）访问令牌，
-/// 收到 401 后强制刷新。
+/// 收到 401 后强制刷新。配置了 <c>clientId + clientSecret</c> 的服务器在没有已存令牌或
+/// 令牌到期时走客户端凭据授权，无需用户参与。
 /// </summary>
 public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 {
@@ -19,14 +20,16 @@ public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 	private readonly HttpClient _http;
 	private readonly string _endpoint;
 	private readonly string? _agentDir;
+	private readonly McpServerConfig? _config;
 	private readonly Lock _gate = new();
 	private McpOAuthToken? _cached;
 
-	public McpOAuthTokenProvider(string endpoint, string? agentDir = null, HttpClient? http = null)
+	public McpOAuthTokenProvider(string endpoint, string? agentDir = null, HttpClient? http = null, McpServerConfig? config = null)
 	{
 		_http = http ?? SharedHttp;
 		_endpoint = endpoint;
 		_agentDir = agentDir;
+		_config = config;
 	}
 
 	/// <summary>最近一次解析到的令牌；供 <c>list_mcp</c> 展示到期时间。</summary>
@@ -53,6 +56,15 @@ public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 		}
 
 		var token = await McpOAuth.ResolveAsync(_http, _endpoint, _agentDir, cancellationToken).ConfigureAwait(false);
+		if (token is null && _config is not null && McpOAuth.UsesClientCredentials(_config))
+		{
+			// 没有已存令牌且配置了客户端凭据：静默取一次令牌，不需要 pi mcp login。
+			var granted = await McpOAuth
+				.ClientCredentialsAsync(_http, _endpoint, _config, _agentDir, cancellationToken)
+				.ConfigureAwait(false);
+			token = granted.Ok ? granted.Token : null;
+		}
+
 		lock (_gate)
 		{
 			_cached = token;
@@ -73,6 +85,25 @@ public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 		{
 			// 还没有任何令牌：再走一次完整解析（可能是首次授权）。
 			return await GetTokenAsync(cancellationToken).ConfigureAwait(false);
+		}
+
+		if (current.Refresh is not { Length: > 0 } && _config is not null && McpOAuth.UsesClientCredentials(_config))
+		{
+			// 客户端凭据令牌没有 refresh token：到期后重新授权。
+			var granted = await McpOAuth
+				.ClientCredentialsAsync(_http, _endpoint, _config, _agentDir, cancellationToken)
+				.ConfigureAwait(false);
+			if (!granted.Ok)
+			{
+				return null;
+			}
+
+			lock (_gate)
+			{
+				_cached = granted.Token;
+			}
+
+			return granted.Token!.Access;
 		}
 
 		var refreshed = await McpOAuth.RefreshAsync(_http, current, cancellationToken).ConfigureAwait(false);

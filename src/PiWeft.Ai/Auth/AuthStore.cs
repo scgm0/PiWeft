@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -8,12 +10,17 @@ namespace PiWeft.Ai.Auth;
 /// <para>
 /// 凭据解析时存储值优先于环境变量（与 pi 一致）。
 /// key 值可以是明文，也可以是 <c>${VAR}</c> 模板（变量取自同一凭据的 <c>env</c> 字段或进程环境）；
-/// 以 <c>!</c> 开头的命令型凭据需要执行外部命令，本端口不执行，读取时视为不可用并给出提示。
+/// 以 <c>!</c> 开头的命令型凭据在请求时执行外部命令取 stdout（与 pi 一致：不缓存）。
 /// </para>
 /// </summary>
 public static class AuthStore
 {
 	private static readonly Regex TemplatePattern = new(@"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+
+	/// <summary>命令型凭据的执行上限：超时或超长输出都视为取值失败。</summary>
+	private const int CommandTimeoutMs = 10_000;
+
+	private const int CommandOutputLimit = 64 * 1024;
 
 	/// <summary>凭据文件的位置。</summary>
 	public static string Path(string? agentDir = null) =>
@@ -21,7 +28,7 @@ public static class AuthStore
 
 	/// <summary>
 	/// 取某个 provider 的 API key。文件不存在、provider 没有 api_key 凭据、模板变量缺失，
-	/// 或凭据是命令型时返回 null（不抛异常，让调用方继续走环境变量）。
+	/// 或命令型凭据执行失败时返回 null（不抛异常，让调用方继续走环境变量）。
 	/// </summary>
 	public static string? ReadApiKey(string provider, string? agentDir = null)
 	{
@@ -37,10 +44,10 @@ public static class AuthStore
 			return null;
 		}
 
-		// 命令型凭据（!cmd）需要执行外部命令取值，本端口不执行。
+		// 命令型凭据（!cmd）在取值时执行，stdout 即为 key；与 pi 一致不缓存。
 		if (key.StartsWith('!'))
 		{
-			return null;
+			return ExecuteCommandKey(key[1..]);
 		}
 
 		var resolved = ResolveTemplate(key, env);
@@ -48,8 +55,71 @@ public static class AuthStore
 	}
 
 	/// <summary>
-	/// 一次解析同时给出可用的 key 与该凭据是否为命令型。provider 每次请求都要做这个判断，
-	/// 分开调用会让 <c>auth.json</c> 被读两遍（这也是桌面/CLI 启动热路径）。
+	/// 执行一条命令型凭据命令并返回修剪后的 stdout。
+	/// 命令来自用户自己的 <c>auth.json</c>（用户级文件，项目配置无法写入）；
+	/// 超时 10 秒、输出上限 64 KiB，超时即终止进程并视为失败。
+	/// </summary>
+	public static string? ExecuteCommandKey(string command)
+	{
+		if (string.IsNullOrWhiteSpace(command))
+		{
+			return null;
+		}
+
+		try
+		{
+			var start = OperatingSystem.IsWindows()
+				? new ProcessStartInfo("cmd.exe", $"/d /s /c \"{command}\"")
+				: new ProcessStartInfo("/bin/sh", $"-c \"{command.Replace("\"", "\\\"")}\"");
+			start.RedirectStandardOutput = true;
+			start.RedirectStandardError = true;
+			start.UseShellExecute = false;
+			start.CreateNoWindow = true;
+
+			using var process = Process.Start(start);
+			if (process is null)
+			{
+				return null;
+			}
+
+			var output = process.StandardOutput.ReadToEndAsync();
+			if (!process.WaitForExit(CommandTimeoutMs))
+			{
+				try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+				return null;
+			}
+
+			// 进程已退出；输出流最多再等 2 秒，防止游离子进程占着管道不放。
+			try
+			{
+				if (!output.Wait(2_000))
+				{
+					return null;
+				}
+			}
+			catch (AggregateException)
+			{
+				return null;
+			}
+
+			// 输出截断即视为失败：被截断的 key 一定是坏的。
+			var text = output.Result;
+			if (text.Length >= CommandOutputLimit || process.ExitCode != 0)
+			{
+				return null;
+			}
+
+			return text.Trim('\r', '\n') is { Length: > 0 } key ? key : null;
+		}
+		catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// 一次解析同时给出可用的 key 与该凭据是否为命令型（不执行命令）。
+	/// 需要执行命令取 key 的调用方应改用 <see cref="ReadApiKey"/>。
 	/// </summary>
 	public static (string? Key, bool IsCommand) ReadCredentialState(string provider, string? agentDir = null)
 	{
@@ -97,6 +167,25 @@ public static class AuthStore
 	/// <summary>凭据是否属于「需要执行命令」的类型，用于给出更准确的提示。</summary>
 	public static bool IsCommandCredential(string provider, string? agentDir = null) =>
 		ReadCredential(provider, agentDir) is { } credential && credential.Key.StartsWith('!');
+
+	/// <summary>
+	/// 列出配置了命令型凭据的 provider。只解析文件不执行命令，
+	/// 供启动路径（模型可用性筛选）把这类 provider 计为可用。
+	/// </summary>
+	public static IReadOnlyList<string> CommandCredentialProviders(string? agentDir = null)
+	{
+		var providers = new List<string>();
+		if (ReadRoot(agentDir) is not { } root) return providers;
+		foreach (var (provider, node) in root)
+		{
+			if (ReadCredential(node) is { } credential && credential.Key.StartsWith('!'))
+			{
+				providers.Add(provider);
+			}
+		}
+
+		return providers;
+	}
 
 	/// <summary>一次读取全部 API key；模型目录筛选无需为每个模型重复解析凭据文件。</summary>
 	public static IReadOnlyDictionary<string, string> ReadApiKeys(string? agentDir = null)

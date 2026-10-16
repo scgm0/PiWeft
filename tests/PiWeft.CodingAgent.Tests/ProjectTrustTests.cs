@@ -140,6 +140,14 @@ public class ProjectTrustTests : IDisposable
 	}
 
 	[Fact]
+	public void GlobalDefaultProjectTrust_DefaultsToAsk()
+	{
+		// 无任何设置文件时默认 ask（与 pi 一致）：交互询问，无 UI 按不受信处理。
+		Assert.Equal("ask", CodingAgentSettings.GlobalDefaultProjectTrust(_agentDir));
+		Assert.Equal("ask", CodingAgentSettings.Load(_root, _agentDir).DefaultProjectTrust);
+	}
+
+	[Fact]
 	public void GlobalDefaultProjectTrust_IgnoresProjectSettings()
 	{
 		File.WriteAllText(

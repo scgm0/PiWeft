@@ -410,10 +410,11 @@ public static class McpServers
 
 				if (config.IsHttp)
 				{
-					// 声明 auth: oauth 的服务器用存储里的访问令牌（必要时自动刷新）。
-					IMcpAccessTokenProvider? tokens = config.UsesOAuth
-						? new McpOAuthTokenProvider(config.Url!, agentDir)
-						: null;
+				// 声明 auth: oauth 的服务器用存储里的访问令牌（必要时自动刷新）；
+				// 配置了 clientId+clientSecret 时可静默走客户端凭据授权。
+				IMcpAccessTokenProvider? tokens = config.UsesOAuth
+					? new McpOAuthTokenProvider(config.Url!, agentDir, config: config)
+					: null;
 
 					var http = await McpHttpClient
 						.ConnectAsync(

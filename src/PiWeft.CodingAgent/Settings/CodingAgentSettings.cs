@@ -53,9 +53,9 @@ public sealed record CodingAgentSettings
 
 	/// <summary>
 	/// 项目信任的默认决策：<c>always</c>、<c>never</c> 或 <c>ask</c>。
-	/// 本端口默认 <c>always</c>（不改变既有行为）；显式设置或 <c>--no-approve</c> 才会收紧。
+	/// 默认 <c>ask</c>（与 pi 一致）：交互场景弹卡询问，RPC/print 等无 UI 场景按不受信处理。
 	/// </summary>
-	public string DefaultProjectTrust { get; init; } = "always";
+	public string DefaultProjectTrust { get; init; } = "ask";
 
 	/// <summary>provider 请求超时，单位毫秒。</summary>
 	public int? TimeoutMs { get; init; }
@@ -82,7 +82,7 @@ public sealed record CodingAgentSettings
 	/// 否则一个项目可以用自己的 settings.json 把自己标成可信。
 	/// </summary>
 	public static string GlobalDefaultProjectTrust(string? agentDir = null) =>
-		ReadFile(GlobalPath(agentDir))?.DefaultProjectTrust ?? "always";
+		ReadFile(GlobalPath(agentDir))?.DefaultProjectTrust ?? "ask";
 
 	/// <summary>
 	/// 把默认模型写进**全局**设置文件（<c>&lt;agentDir&gt;/settings.json</c>）。
@@ -408,7 +408,7 @@ public sealed record CodingAgentSettings
 		Skills = MergeLists(global?.Skills, project?.Skills),
 		Prompts = MergeLists(global?.Prompts, project?.Prompts),
 		Themes = MergeLists(global?.Themes, project?.Themes),
-		DefaultProjectTrust = project?.DefaultProjectTrust ?? global?.DefaultProjectTrust ?? "always",
+		DefaultProjectTrust = project?.DefaultProjectTrust ?? global?.DefaultProjectTrust ?? "ask",
 		TimeoutMs = project?.TimeoutMs ?? global?.TimeoutMs,
 		Retry = new RetryPolicy(
 			Enabled: project?.Retry?.Enabled ?? global?.Retry?.Enabled ?? true,

@@ -32,13 +32,13 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - `pi install <source>`、`pi list`、`pi remove <source>`、`pi update [source]` 管理 pi 包：npm 装到 `<agentDir>/npm/node_modules`、git 克隆到 `<agentDir>/git`、本地路径只登记不复制；`--local/-l` 写项目 `.pi/settings.json`。npm 可执行文件可用 `settings.npmCommand` 覆盖。
 - `pi mcp list|add|remove|login|logout` 管理 MCP 服务器与它们的 OAuth 令牌：配置写 `<agentDir>/mcp.json`（`--local` 改项目 `.pi/mcp.json`），令牌写 `<agentDir>/mcp-oauth.json`；`login` 走授权码 + PKCE 的回环流程，没有 `clientId` 时按需动态注册。写入是保留式的：保留文件里的其它键、注释与尾逗号，解析失败时拒绝覆盖并报错。
 - CLI `@file` 参数展开为 `<file>` 文本块，图片作为内容块随首条提示发送；print / JSON 模式还会把重定向的 stdin 合入首条提示（交互模式不读管道 stdin）。RPC 模式明确拒绝 `@file`。
-- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开，CLI、RPC 与桌面共享同一语义；RPC 空闲 `prompt` 保留 `images` 内容块。
+- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开，CLI、RPC 与桌面共享同一语义；RPC 空闲 `prompt` 保留 `images` 内容块。交互模式另有 pi 的 `/copy`（最近助手回复进系统剪贴板）、`/import <路径>`（把另一会话当前分支的消息并入本会话并重建上下文）与 `/bug`（反馈入口 + 会话路径）；pi 的 `/share`、`/llama`、`/settings` 未实现。
 - CLI 启动记录思考级别元数据，与 pi 一致。桌面只读浏览不改文件字节或 mtime，开始对话或主动改级别时再记录。
 - 凭据按显式选项、存储凭据、环境变量解析；每次请求按目标供应商选择凭据，压缩与分支摘要共用该路径。
 - 请求超时只覆盖等待响应头，不切断正常长流。输出上限截断在 print 模式输出部分文本并以 1 退出。
 - 可恢复错误按 `settings.retry` 分类并指数退避；失败尝试保留在文件里，通过 `context_edit` 从模型上下文排除，不重复提交用户消息。
 - PiDeck 传入的 `--no-themes`、`--offline`、`--no-extensions`、`-e <path>` 等兼容参数保留。接受参数不代表实现了 JS 扩展；主题由桌面按 pi 主题 JSON 解析。
-- 项目信任：`<agentDir>/trust.json` 与 pi 同构（规范化路径 → true/false），从工作目录逐级向上取第一个决策；`-a/--approve`、`-na/--no-approve` 覆盖；全局 `settings.defaultProjectTrust` 为兜底。为 false 时不合并项目设置、不连接项目 `.pi/mcp.json`、不读取项目级 `.pi/models.json`（它能改写端点与请求头），也不加载项目级技能与提示词模板（用户级目录仍加载，上下文文件不受影响）。本端口默认 `always`（pi 默认 `ask`），以免破坏既有行为；PiDeck 传的 `--no-approve` 会按预期收紧。当默认值为 `ask` 且存在受保护项目资源时，CLI 交互模式与桌面在启动时弹卡片询问「信任（记住）/仅本次会话信任/不信任（记住）」，选择写入 `trust.json`；RPC 与 `--print` 无法弹框，`ask` 按不受信处理（失败关闭）。
+- 项目信任：`<agentDir>/trust.json` 与 pi 同构（规范化路径 → true/false），从工作目录逐级向上取第一个决策；`-a/--approve`、`-na/--no-approve` 覆盖；全局 `settings.defaultProjectTrust` 为兜底，**默认 `ask`（与 pi 一致）**。为 false 时不合并项目设置、不连接项目 `.pi/mcp.json`、不读取项目级 `.pi/models.json`（它能改写端点与请求头），也不加载项目级技能与提示词模板（用户级目录仍加载，上下文文件不受影响）。当默认值为 `ask` 且存在受保护项目资源时，CLI 交互模式与桌面在启动时弹卡片询问「信任（记住）/仅本次会话信任/不信任（记住）」，选择写入 `trust.json`；RPC 与 `--print` 无法弹框，`ask` 按不受信处理（失败关闭）。
 
 ### RPC
 
@@ -53,7 +53,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 | 连接与目录 | `test_model` 用当前 provider 的完整请求路径发 1-token 探测，返回 `ok`/`latencyMs`/`usage`/`error`；`fetch_remote_models` 按 API 拉取远程模型 id 列表 |
 | MCP 运行时 | `list_mcp` 回报每个配置服务器的连接状态/工具数/错误；`reconnect_mcp` 释放旧连接后按当前 `mcp.json` 重建并热替换当前会话的工具集 |
 | 用量统计 | `get_usage_stats` 单遍扫描会话 JSONL，返回总数与按日期/模型/项目的聚合及 `heatmap`（`weeks`/`since`/`project` 可选） |
-| 扩展 UI | `ask_question` 发出 `extension_ui_request`（`method: "input"`，PiDeck 批量信封），`extension_ui_response` 唤醒等待中的提问；其它扩展 UI 方法不发出 |
+| 扩展 UI | `ask_question` 发出 `extension_ui_request`（`method: "input"`，PiDeck 批量信封），`extension_ui_response` 唤醒等待中的提问；pi 的对话框方法 `select`/`confirm`/`editor` 与 fire-and-forget 的 `notify` 已按 pi 线协议实现（含 agent 侧 `timeout` 自动解析），`setStatus`/`setWidget`/`setTitle`/`set_editor_text` 尚未发出 |
 | 资源 | `get_resources` 返回已解析的技能/提示词/主题/包与诊断；`reload_resources` 重新解析并刷新系统提示词里的技能章节 |
 
 `get_state` 在 pi 字段之外补充 `cwd`、`tools`、`entryCount` 和 `errorMessage`；消息计数不含运行时系统提示词。
@@ -69,16 +69,16 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 `mistral-conversations`、`pi-messages`。
 
 `pi login` 支持 ChatGPT Codex 设备码授权与令牌刷新；`logout` 保留其它供应商条目。
-`pi auth check` 输出 `ready` / `not_ready`，退出码为 0 / 1（参数或凭据异常为 2）；pi 的 `invalid` 状态尚未实现。支持供应商、模型、JSON、凭据检查和禁用刷新选项。
+`pi auth check` 输出 `ready` / `not_ready` / `invalid`，退出码为 0 / 1 / 2（参数异常为 2）；`invalid` 表示凭据存在但不可用（命令型凭据执行失败、OAuth 刷新失败）。支持供应商、模型、JSON、凭据检查和禁用刷新选项。
 `print-api-key` / `print-bearer-token` 只输出相应凭据；`--min-expiry` 仅适用于后者。
-`auth.json` 的 API Key 支持明文和 `${VAR}` 模板；命令型凭据（`!` 开头）不执行并明确提示。写入是原子的，Unix 下仅用户可读写；文件无法解析时拒绝覆盖，避免抹掉其它供应商的凭据。
+`auth.json` 的 API Key 支持明文和 `${VAR}` 模板；命令型凭据（`!` 开头）在取值时执行命令取 stdout（10 秒超时、64 KiB 上限，与 pi 一致不缓存），失败时回落到环境变量。写入是原子的，Unix 下仅用户可读写；文件无法解析时拒绝覆盖，避免抹掉其它供应商的凭据。
 
 ### MCP
 
 stdio 与 streamable HTTP 均支持握手、工具/资源/模板/提示分页及调用。
 stdio 服务器的子进程 PATH 按 PiDeck 的顺序组装（env PATH → 登录 shell PATH → 包管理器/版本管理器目录 → 平台兜底），命令解析为绝对路径：图形外壳启动（macOS Finder）只有系统 PATH 时仍能找到 Homebrew/nvm 里的 `node`，解析失败给出含搜索路径的错误而不是裸 ENOENT。登录 shell 探测异步执行并按进程缓存，超时或失败只退化到 env PATH。
 资源工具过滤 `ui://` / MCP App 内容，保留图片块；其它二进制保存到临时文件，模型侧文本限制为 20 KB 并提供完整文件路径。
-stdio 列表变化通知刷新工具并调用 `SetTools`；HTTP 通过独立 SSE 通知流接收同一路径的通知，服务器返回 400 / 404 / 405 / 406 / 204 时静默降级为请求-响应模式。通知流对坏帧只跳过、流被关闭或失败后指数退避重连（上限 30 秒），收到 401 时主动刷新令牌；握手失败会杀掉已拉起的 stdio 子进程并释放自有 `HttpClient`。声明 `auth: oauth` 的 HTTP 服务器使用 OAuth 访问令牌：请求 401 时刷新一次并重放同一请求，令牌单独保存在 `<agentDir>/mcp-oauth.json`，与 provider 凭据的 `auth.json` 分开；授权走授权码 + PKCE 回环回调，没有 `clientId` 时按需动态注册，回环回调容忍浏览器的杂散连接。
+HTTP 传输下通知流里带 id 的服务端请求（如 `ping`）会反向 POST 应答：`ping` 回空结果，其余方法回 -32601；应答失败静默丢弃，不影响通知流。声明 `auth: oauth` 的服务器配置 `clientId + clientSecret` 时走客户端凭据授权（RFC 6749 §4.4）：无需浏览器与动态注册，`pi mcp login` 直接取令牌，运行时到期自动重新授权；仅配置 `clientId` 时仍走授权码 + PKCE 回环流程，没有 `clientId` 时按需动态注册，回环回调容忍浏览器的杂散连接。令牌单独保存在 `<agentDir>/mcp-oauth.json`，与 provider 凭据的 `auth.json` 分开；请求 401 时刷新一次并重放同一请求。stdio 列表变化通知刷新工具并调用 `SetTools`；HTTP 通过独立 SSE 通知流接收同一路径的通知，服务器返回 400 / 404 / 405 / 406 / 204 时静默降级为请求-响应模式。通知流对坏帧只跳过、流被关闭或失败后指数退避重连（上限 30 秒），收到 401 时主动刷新令牌；握手失败会杀掉已拉起的 stdio 子进程并释放自有 `HttpClient`。
 
 ## 桌面能力
 
@@ -100,7 +100,7 @@ stdio 列表变化通知刷新工具并调用 `SetTools`；HTTP 通过独立 SSE
 - 远程模型目录：配置页每个供应商的「拉取远程模型」按钮按 API 探测 `GET /models`（OpenAI 兼容 / Anthropic `/v1/models` / Google `/models`），把缺失的模型以保守默认值并入配置草稿；RPC 提供 `fetch_remote_models`。
 - 实时会话统计、首 token 延迟、速度、费用、缓存命中率与手动压缩；统计口径与性能基准见专项文档。
 - 深色、浅色、跟随系统；主题切换不重建整棵界面。内嵌 HarmonyOS Sans SC、Maple Mono CN 和 Lucide 图标，许可随包。
-- 资源与主题：按 pi 约定发现技能、提示词模板与主题，来源覆盖用户目录、项目 `.pi`/`.agents`、settings 显式声明的路径与已安装 pi 包。优先级按 rank 排序：项目 settings 声明（0）> 项目自动发现（1）> 用户 settings 声明（2）> 用户目录自动发现（3）> 包（4）；同名资源保留先发现者，因此项目级总能覆盖用户级。坏资源不阻断会话：主题名类型错误、颜色值非法、`SKILL.md` 不可读都只记一条诊断后跳过。「资源」页列出技能、模板、主题与 pi 包的来源、路径与解析诊断，可一键重载；外观页可选择自定义 pi 主题（含包提供的主题）并即时换肤。`/reload` 与 RPC `reload_resources` 重新解析资源而不重建会话。
+- 资源与主题：按 pi 约定发现技能、提示词模板与主题，来源覆盖用户目录、项目 `.pi`/`.agents`、settings 显式声明的路径与已安装 pi 包。优先级按 rank 排序：项目 settings 声明（0）> 项目自动发现（1）> 用户 settings 声明（2）> 用户目录自动发现（3）> 包（4）；同名资源保留先发现者，因此项目级总能覆盖用户级。坏资源不阻断会话：主题名类型错误、颜色值非法、`SKILL.md` 不可读都只记一条诊断后跳过。「资源」页列出技能、模板、主题与 pi 包的来源、路径与解析诊断，可一键重载；外观页可选择自定义 pi 主题（含包提供的主题）并即时换肤。主题目录有文件监视热重载（防抖 400ms）：激活主题的文件被修改后即时换肤，文件临时解析失败时保留当前外观；项目主题只在受信任时监视。`/reload` 与 RPC `reload_resources` 重新解析资源而不重建会话。
 - Git 状态/diff、暂存与取消暂存、提交、分支切换/新建，编辑器与浏览器跳转，自包含 HTML 导出，窗口尺寸/位置与最近项目/模型持久化。
 - 工作区检查点与回滚：快照写入 `refs/pi-checkpoints/<id>` 低层引用（不产生分支或提交），Git 面板可手动创建/恢复；发送提示前每仓库每分钟自动打一个（仅在有改动时），默认保留 50 个。
 - 命令 Dock（`Ctrl+Shift+D`）：在项目目录里运行单条 shell 命令并流式显示输出，支持取消与有界输出。**不是完整 PTY**：无交互式提示、全屏 TUI 或常驻会话。

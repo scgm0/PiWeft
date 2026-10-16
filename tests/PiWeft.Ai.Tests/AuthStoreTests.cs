@@ -90,13 +90,35 @@ public class AuthStoreTests : IDisposable
 	}
 
 	[Fact]
-	public void CommandCredentialIsReportedButNotExecuted()
+	public void CommandCredentialIsExecutedAtRequestTime()
 	{
-		WriteAuth("""{"deepseek":{"type":"api_key","key":"!security find-generic-password"}}""");
+		// 与 pi 一致：命令型凭据在取值时执行 stdout，不落盘、不缓存到文件。
+		WriteAuth("""{"deepseek":{"type":"api_key","key":"!echo from-command"}}""");
 
 		Assert.True(AuthStore.IsCommandCredential(Provider, _agentDir));
+		Assert.Equal("from-command", AuthStore.ReadApiKey(Provider, _agentDir));
+		Assert.Equal("from-command", ProviderEnvironment.ResolveApiKey(Provider, Options()));
+	}
+
+	[Fact]
+	public void FailingCommandCredentialFallsBackToTheEnvironmentVariable()
+	{
+		WriteAuth("""{"deepseek":{"type":"api_key","key":"!exit 3"}}""");
+		Environment.SetEnvironmentVariable("DEEPSEEK_API_KEY", "from-environment");
+
 		Assert.Null(AuthStore.ReadApiKey(Provider, _agentDir));
-		Assert.Null(ProviderEnvironment.ResolveApiKey(Provider, Options()));
+		Assert.Equal("from-environment", ProviderEnvironment.ResolveApiKey(Provider, Options()));
+	}
+
+	[Fact]
+	public void CommandCredentialProvidersListsProvidersWithoutExecuting()
+	{
+		WriteAuth("""
+			{"deepseek":{"type":"api_key","key":"!echo x"},
+			 "openai":{"type":"api_key","key":"literal"}}
+			""");
+
+		Assert.Equal(["deepseek"], AuthStore.CommandCredentialProviders(_agentDir));
 	}
 
 	[Fact]

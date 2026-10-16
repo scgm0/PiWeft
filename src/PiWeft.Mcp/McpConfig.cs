@@ -43,6 +43,12 @@ public sealed record McpServerConfig
 	/// <summary>OAuth 客户端 id；留空时按需动态注册（RFC 7591）。</summary>
 	public string? ClientId { get; init; }
 
+	/// <summary>
+	/// OAuth 客户端密钥；与 <see cref="ClientId"/> 同时配置时走客户端凭据授权
+	/// （RFC 6749 §4.4），不再需要浏览器授权与动态注册。
+	/// </summary>
+	public string? ClientSecret { get; init; }
+
 	/// <summary>OAuth 请求的 scope；留空时用授权服务器建议的 scope。</summary>
 	public IReadOnlyList<string> Scopes { get; init; } = [];
 
@@ -93,6 +99,8 @@ public sealed record McpServerEntry
 	public string? Auth { get; init; }
 
 	public string? ClientId { get; init; }
+
+	public string? ClientSecret { get; init; }
 
 	public IReadOnlyList<string>? Scopes { get; init; }
 }
@@ -338,6 +346,7 @@ public static partial class McpConfig
 						static pair => McpExposure.Normalize(pair.Value) ?? McpExposure.Default),
 				Auth = entry.Auth,
 				ClientId = Expand(entry.ClientId),
+				ClientSecret = Expand(entry.ClientSecret),
 				Scopes = entry.Scopes is null ? [] : [.. entry.Scopes],
 			});
 		}
@@ -365,6 +374,7 @@ public static partial class McpConfig
 			ToolExposure = patch.ToolExposure ?? existing.ToolExposure,
 			Auth = patch.Auth ?? existing.Auth,
 			ClientId = patch.ClientId ?? existing.ClientId,
+			ClientSecret = patch.ClientSecret ?? existing.ClientSecret,
 			Scopes = patch.Scopes ?? existing.Scopes,
 		};
 	}

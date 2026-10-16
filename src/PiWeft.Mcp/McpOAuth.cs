@@ -236,6 +236,67 @@ public static partial class McpOAuth
 		}
 	}
 
+	/// <summary>
+	/// 配置里是否同时给了 <c>clientId</c> 与 <c>clientSecret</c>：此时用客户端凭据授权
+	/// （RFC 6749 §4.4），不需要浏览器参与。
+	/// </summary>
+	public static bool UsesClientCredentials(McpServerConfig config) =>
+		config.ClientId is { Length: > 0 } && config.ClientSecret is { Length: > 0 };
+
+	/// <summary>
+	/// 客户端凭据授权：直接向令牌端点请求访问令牌并写进存储。
+	/// 适用于网关/机器账号等无需用户参与的场景；没有 refresh token，到期后重新走本流程。
+	/// </summary>
+	public static async Task<McpOAuthResult> ClientCredentialsAsync(
+		HttpClient http,
+		string endpoint,
+		McpServerConfig config,
+		string? agentDir,
+		CancellationToken cancellationToken,
+		McpAuthorizationServerMetadata? metadata = null)
+	{
+		if (!UsesClientCredentials(config))
+		{
+			return McpOAuthResult.Failure("客户端凭据授权需要同时配置 clientId 与 clientSecret");
+		}
+
+		metadata ??= await DiscoverAsync(http, endpoint, challenge: null, cancellationToken).ConfigureAwait(false);
+		if (metadata is null)
+		{
+			return McpOAuthResult.Failure("无法发现授权服务器元数据，客户端凭据授权需要可访问的元数据端点");
+		}
+
+		var parameters = new Dictionary<string, string>
+		{
+			["grant_type"] = "client_credentials",
+			["client_id"] = config.ClientId!,
+			["client_secret"] = config.ClientSecret!,
+		};
+
+		var scopes = config.Scopes.Count > 0 ? config.Scopes : metadata.ScopesSupported;
+		if (scopes.Count > 0)
+		{
+			parameters["scope"] = string.Join(' ', scopes);
+		}
+
+		var token = await ExchangeAsync(
+			http,
+			metadata.TokenEndpoint,
+			parameters,
+			config.ClientId,
+			metadata.Issuer,
+			endpoint,
+			cancellationToken).ConfigureAwait(false);
+
+		if (!token.Ok)
+		{
+			return token;
+		}
+
+		McpOAuthStore.Save(endpoint, token.Token!, agentDir);
+		return token;
+	}
+
 	/// <summary>用 refresh token 换一个新的访问令牌。</summary>
 	public static async Task<McpOAuthResult> RefreshAsync(HttpClient http, McpOAuthToken token, CancellationToken cancellationToken)
 	{

@@ -7,6 +7,8 @@ using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Stats;
+using PiWeft.CodingAgent.Settings;
+using PiWeft.CodingAgent.Themes;
 using PiWeft.Mcp;
 using ZLogger;
 
@@ -34,6 +36,8 @@ public sealed partial class MainWindow : Window
 	private TerminalDock? _terminalView;
 	private SessionTab? _lastSessionTab;
 	private CommandPalette? _palette;
+	/// <summary>主题目录监视器：主题文件变化时即时换肤（PI-10）。</summary>
+	private ThemeWatcher? _themeWatcher;
 
 	private UsageStatsView? _usageStatsView;
 	private string? _pendingNotice;
@@ -425,6 +429,9 @@ public sealed partial class MainWindow : Window
 	{
 		this.Title(Strings.WindowTitle(_cwd));
 
+		// 主题目录热重载：受信项目才监视项目主题；回调切回 UI 线程后再换肤。
+		StartThemeWatcher();
+
 		// 尺寸在创建原生窗口前配置；这里恢复已加载窗口的位置。
 		var preference = DesktopPreference.Load();
 
@@ -446,6 +453,7 @@ public sealed partial class MainWindow : Window
 			_closed = true;
 			_contentSearch?.Cancel();
 			_usageStatsView?.Close();
+			_themeWatcher?.Dispose();
 			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
 			SaveWindowState();
 		});
@@ -1160,6 +1168,68 @@ public sealed partial class MainWindow : Window
 		{
 			Console.Error.WriteLine($"piweft-desktop: theme smoke failed: {ex}");
 			Dispatch(() => Application.Shutdown());
+		}
+	}
+
+	/// <summary>监视主题目录：防抖后的变更回调切回 UI 线程重新解析并换肤。</summary>
+	private void StartThemeWatcher()
+	{
+		try
+		{
+			var projectTrusted = ProjectTrust.Resolve(
+				_cwd,
+				_arguments.ProjectTrustOverride,
+				CodingAgentSettings.GlobalDefaultProjectTrust());
+			_themeWatcher = ThemeWatcher.Create(_cwd, includeProject: projectTrusted);
+			_themeWatcher.Changed += () => Dispatch(ReapplyThemeFromDisk);
+		}
+		catch (Exception ex)
+		{
+			// 监视失败只损失热重载能力，不影响主题本身的加载。
+			AppLog.Failure(AppLog.For<MainWindow>(), "Theme watcher", ex);
+			Console.Error.WriteLine($"piweft-desktop: 主题监视不可用：{ex.Message}");
+		}
+	}
+
+	/// <summary>主题文件变化后重新解析当前主题并应用；坏文件保留现有外观并记录诊断。</summary>
+	private void ReapplyThemeFromDisk()
+	{
+		try
+		{
+			var preference = DesktopPreference.Load();
+			var resolved = DesktopTheme.Resolve(preference.Theme, _cwd, SessionPaths.GetAgentDir());
+			var isBuiltin = preference.Theme is DesktopPreference.LightTheme or DesktopPreference.DarkTheme or DesktopPreference.SystemTheme;
+			if (!isBuiltin && resolved.Light is null && resolved.Dark is null)
+			{
+				// 自定义主题文件此刻解析失败（保存到一半或语法错误）：保留旧外观。
+				Console.Error.WriteLine($"piweft-desktop: 主题 {preference.Theme} 解析失败，保留当前外观");
+				return;
+			}
+
+			AppTheme.UseCustomPalette(resolved.Light, resolved.Dark);
+			if (!Application.IsRunning)
+			{
+				return;
+			}
+
+			ThemeManager.DefaultLightSeed = AppTheme.Seed(resolved.Light ?? AppPalette.Light);
+			ThemeManager.DefaultDarkSeed = AppTheme.Seed(resolved.Dark ?? AppPalette.Dark);
+			Application.Current.SetTheme(resolved.Variant);
+
+			// SetTheme 对相同变体可能不触发 OnThemeChanged；无论事件是否到达都轻量刷新一遍。
+			AppStyles.ApplyTextColors(this);
+			AppIcons.RefreshAll();
+			foreach (var tab in _tabEntries.OfType<SessionTab>())
+			{
+				tab.ApplyTheme();
+			}
+
+			_settingsView?.ApplyTheme();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Theme hot reload", ex);
+			Console.Error.WriteLine($"piweft-desktop: 主题热重载失败：{ex.Message}");
 		}
 	}
 

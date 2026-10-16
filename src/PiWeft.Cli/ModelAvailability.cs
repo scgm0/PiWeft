@@ -14,6 +14,8 @@ internal static class ModelAvailability
 		IReadOnlyDictionary<string, string> configuredKeys, string? explicitKey = null)
 	{
 		var stored = AuthStore.ReadApiKeys();
+		// 命令型凭据按可用处理（与 pi 一致：命令在请求时执行）；这里只查文件，不在启动路径上跑进程。
+		var commandProviders = new HashSet<string>(AuthStore.CommandCredentialProviders(), StringComparer.Ordinal);
 		var credentials = ReadCodexCredentials();
 		var providers = new Dictionary<(string Provider, string Api), bool>();
 		return [.. models.Where(model =>
@@ -26,6 +28,7 @@ internal static class ModelAvailability
 				var key = explicitKey is { Length: > 0 } ? explicitKey : configuredKey is { Length: > 0 } ? configuredKey :
 					stored.GetValueOrDefault(model.Provider) ?? Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(model.Provider));
 				var hasKey = !string.IsNullOrWhiteSpace(key) && !key.StartsWith('!');
+				var hasCommandKey = commandProviders.Contains(model.Provider);
 				available = model.Api switch
 				{
 					OpenAiCodexResponsesProvider.ApiId => !string.IsNullOrWhiteSpace(explicitKey) ||
@@ -36,8 +39,8 @@ internal static class ModelAvailability
 						configuredKeys.GetValueOrDefault(model.Provider) is { Length: > 0 } vertexKey && !vertexKey.StartsWith('!') ||
 						HasVariable("GOOGLE_CLOUD_API_KEY") || HasVariable(GoogleAdc.AccessTokenVariable) ||
 						File.Exists(Environment.GetEnvironmentVariable(GoogleAdc.CredentialsVariable)),
-					AzureOpenAiResponsesProvider.ApiId => hasKey || HasVariable("AZURE_OPENAI_API_KEY"),
-					_ => hasKey,
+					AzureOpenAiResponsesProvider.ApiId => hasKey || hasCommandKey || HasVariable("AZURE_OPENAI_API_KEY"),
+					_ => hasKey || hasCommandKey,
 				};
 				providers[identity] = available;
 			}

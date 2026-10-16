@@ -171,7 +171,7 @@ public static class AuthCommands
 		}
 	}
 
-	/// <summary><c>pi auth check</c>：只报告状态，除非显式要求凭据。</summary>
+	/// <summary><c>pi auth check</c>：校验凭据可用性并报告状态（不打印凭据本身，除非 --credentials）。</summary>
 	private static int AuthCheck(
 		string provider,
 		string? agentDir,
@@ -190,12 +190,27 @@ public static class AuthCommands
 			var status = authType is null ? "not_ready" : "ready";
 			string? credential = null;
 
-			if (status == "ready" && withCredentials)
+			if (authType is not null)
 			{
-				credential = ResolveCredential(provider, agentDir, noRefresh, cancellationToken);
-				if (credential is null)
+				// 凭据存在就要校验可用性：命令型凭据此时执行命令，OAuth 按需刷新。
+				// 取不到值报告 invalid（凭据配置坏了），与「没配置」的 not_ready 区分开。
+				try
 				{
-					status = "not_ready";
+					credential = ResolveCredential(provider, agentDir, noRefresh, cancellationToken);
+				}
+				catch (CodexAuthException)
+				{
+					credential = null;
+				}
+
+				if (credential is not { Length: > 0 })
+				{
+					status = "invalid";
+					credential = null;
+				}
+				else if (!withCredentials)
+				{
+					credential = null;
 				}
 			}
 
@@ -286,10 +301,12 @@ public static class AuthCommands
 		}
 	}
 
-	/// <summary>凭据类型：<c>api_key</c>（auth.json 或环境变量）或 <c>oauth</c>；都没有时返回 null。</summary>
+	/// <summary>凭据类型：<c>api_key</c>（auth.json、命令型凭据或环境变量）或 <c>oauth</c>；都没有时返回 null。</summary>
 	private static string? ResolveAuthType(string provider, string? agentDir)
 	{
-		if (AuthStore.ReadApiKey(provider, agentDir) is { Length: > 0 } ||
+		var (stored, isCommand) = AuthStore.ReadCredentialState(provider, agentDir);
+		if (stored is { Length: > 0 } ||
+			isCommand ||
 			Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(provider)) is { Length: > 0 })
 		{
 			return "api_key";

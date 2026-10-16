@@ -62,7 +62,7 @@
 | C-03 | 桌面补全列出模板和 `/skill:name`，普通发送未接模板展开；显式技能加载未见对应完整处理 | [SessionTab](../src/PiWeft.Desktop/SessionTab.cs)、[ChatViewModel](../src/PiWeft.Desktop/ChatViewModel.cs)、[PromptTemplates](../src/PiWeft.CodingAgent/Prompts/PromptTemplates.cs) | 已实现：`CodingAgentSession.ExpandInput` 统一展开 `/skill:name` 与提示词模板，CLI/RPC/桌面共享 | `PromptInputTests`、`PromptAsync_ExpandsSkillAndTemplateBeforeSending` |
 | C-04 | RPC 空闲 `prompt` 路径只发送展开后的文本，没有使用 `images`；忙碌排队路径有图片转换 | [HandlePromptAsync / TextMessage](../src/PiWeft.Cli/CliRunner.cs) | 已实现：空闲 `prompt` 与 steer/follow-up 均保留 `images` 内容块；消息重载补齐自动压缩与重试 | `CliRunnerTests.RpcMode_PreservesImagesOnIdlePrompt` |
 | C-05 | `--export`、`--models`、显式资源路径、主题/TUI/信任等部分兼容参数只是消费并忽略 | [兼容参数分支](../src/PiWeft.Cli/CliArguments.cs) | 部分实现：`--export` 与 `--models` 已落地；扩展/主题/TUI 类参数显式标注为「接受但不实现」，帮助文本同步说明 | `CliArgumentsTests`、`CliRunnerTests` |
-| C-06 | 文档/帮助仍有过度或滞后声明，例如 RPC 图片支持、斜杠命令完整度、帮助中的 MCP 范围，以及 `pi auth check` 的 `invalid` 状态 | [状态文档](00-status.md)、[HelpText](../src/PiWeft.Cli/CliArguments.cs) | 已实现：HelpText 移除错误的 MCP 范围声明，并列明接受的兼容参数；状态文档同步，`auth check` 按实际只输出 `ready` / `not_ready`（`invalid` 未实现） | 能力清单随改动维护 |
+| C-06 | 文档/帮助仍有过度或滞后声明，例如 RPC 图片支持、斜杠命令完整度、帮助中的 MCP 范围，以及 `pi auth check` 的 `invalid` 状态 | [状态文档](00-status.md)、[HelpText](../src/PiWeft.Cli/CliArguments.cs) | 已实现：HelpText 移除错误的 MCP 范围声明，并列明接受的兼容参数；状态文档同步。`auth check` 已补齐 pi 的三态输出 `ready`/`not_ready`/`invalid`（退出码 0/1/2）：`invalid` 表示凭据存在但不可用（命令型凭据执行失败、OAuth 刷新失败） | 能力清单随改动维护；`AuthCommandProcessTests.AuthCheckReportsInvalidWhenTheCommandCredentialFails` |
 
 提示词保真：CLI/桌面传入已过滤的工具列表时会丢失内置工具的短 snippet 与 guidelines，现按名称重新挂回（`todo` 的 snippet/guidelines 与 PiDeck 原文一致）；回归见 `SystemPromptTests`、`RealPromptFidelityTests`（取全部真实会话的并集）。
 
@@ -75,16 +75,16 @@
 | 编号 | 能力 | 当前状态与差距 |
 | --- | --- | --- |
 | PI-01 | JS/TS 扩展宿主 | 没有现有 pi 扩展的加载、注册、生命周期、动态能力、重载与清理机制 |
-| PI-02 | 扩展 UI 协议 | 部分实现：原生 `ask_question` 经 RPC `extension_ui_request`（`method: "input"`，PiDeck 批量信封）发出，`extension_ui_response` 唤醒等待中的提问；CLI 交互提示与桌面卡片同路径。其它扩展 UI 方法不发出；pi 扩展的 renderer / 自定义 TUI 协议不成立 |
+| PI-02 | 扩展 UI 协议 | 部分实现：原生 `ask_question` 经 RPC `extension_ui_request`（`method: "input"`，PiDeck 批量信封）发出，`extension_ui_response` 唤醒等待中的提问；CLI 交互提示与桌面卡片同路径。pi 的对话框方法 `select`/`confirm`/`editor` 与 fire-and-forget 的 `notify` 已按 pi 线协议实现（RPC 转发、控制台与桌面三宿主、agent 侧 `timeout` 自动解析），为 S3 扩展宿主就位；尚未有进程内调用方，`setStatus`/`setWidget`/`setTitle`/`set_editor_text` 不发出，pi 扩展的 renderer / 自定义 TUI 协议不成立 |
 | PI-03 | Pi 包管理 | 已实现：settings 的 `packages` 来源解析与包资源发现（`package.json` 的 `pi` 清单、约定目录、glob 收窄、按名去重）；`pi install/list/remove/update` 支持 npm 安装（`--prefix` + `--legacy-peer-deps`）、git 克隆（含 `@ref`）、本地路径登记与目录清理，来源原子写回 settings。未覆盖：npm 依赖冲突治理、包图库与资源筛选诊断界面 |
 | PI-04 | 完整终端 TUI | 当前为按行 REPL，缺少多行编辑、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
 | PI-05 | codemode / tool_search | 缺少脚本编排、结果过滤、延迟工具发现和脚本状态；并行 Agent 工具执行不是 codemode |
-| PI-06 | MCP 高级运行时 | 部分实现：`McpExposure` 实现 pi 同名 `exposure`/`toolExposure`（`codemode-deferred` 归一、精确名优先于通配符、逐工具覆盖服务器默认；`hidden` 工具不声明，整台 `hidden` 且无逐工具放行的服务器不连接）；因无 codemode，`codemode`/`deferred` 暂按 `direct`。运行时重连：RPC `list_mcp`/`reconnect_mcp` 与桌面「重连 MCP」共用释放-重建-热替换路径。已覆盖：OAuth 2.1 授权码 + PKCE（RFC 9728/8414/7591 的发现与动态注册、回环回调、401 自动刷新并重放、令牌存 `<agentDir>/mcp-oauth.json`）、HTTP 独立 SSE 通知流（服务器返回 404/405 时静默降级）、CLI `mcp list/add/remove/login/logout`。未覆盖：OAuth 客户端凭据与网关模式、桌面界面的 MCP 授权入口 |
-| PI-07 | 认证覆盖 | OAuth 主要支持 Codex；命令型凭据不执行；AWS 环境签名路径不等于完整 profile/ECS/IRSA 链 |
+| PI-06 | MCP 高级运行时 | 部分实现：`McpExposure` 实现 pi 同名 `exposure`/`toolExposure`（`codemode-deferred` 归一、精确名优先于通配符、逐工具覆盖服务器默认；`hidden` 工具不声明，整台 `hidden` 且无逐工具放行的服务器不连接）；因无 codemode，`codemode`/`deferred` 暂按 `direct`。运行时重连：RPC `list_mcp`/`reconnect_mcp` 与桌面「重连 MCP」共用释放-重建-热替换路径。已覆盖：OAuth 2.1 授权码 + PKCE（RFC 9728/8414/7591 的发现与动态注册、回环回调、401 自动刷新并重放、令牌存 `<agentDir>/mcp-oauth.json`）、**客户端凭据授权**（`clientId + clientSecret` 走 RFC 6749 §4.4，`pi mcp login` 与运行时到期重新授权均无需浏览器）、**HTTP 通知流上的服务端请求反向应答**（`ping` 回空结果，其余 -32601）、HTTP 独立 SSE 通知流（服务器返回 404/405 时静默降级）、CLI `mcp list/add/remove/login/logout`。未覆盖：OAuth 网关模式的令牌交换变体、桌面界面的 MCP 授权入口 |
+| PI-07 | 认证覆盖 | 部分实现：命令型凭据（`!` 开头）已在请求时执行（10 秒超时、64 KiB 输出上限、不缓存，失败回落环境变量，与 pi 一致）；`auth check` 三态 `ready`/`not_ready`/`invalid` 齐备。OAuth 仍只支持 Codex 设备码；AWS 环境签名路径不等于完整 profile/ECS/IRSA 链 |
 | PI-08 | 动态模型目录 | 固定内置目录加本地覆盖；配置页可按 API 拉取远程模型 id 并入草稿（`RemoteModelCatalog`），但缺少账号级目录/能力同步与联网更新；模型选择器刷新仍只重查本地认证 |
 | PI-09 | 高级模型运行时 | 缺少虚拟路由、分类器/生图模型执行、缓存保温、Codex WebSocket、模型级按思考档位采样配置 |
-| PI-10 | 资源配置与主题 | 部分实现：技能/模板/主题按用户、项目、包作用域统一发现（含 settings 的 `skills`/`prompts`/`themes` 与诊断）；pi 主题 JSON 解析完整（hex / oklch / okhsl / ANSI 索引 / 变量引用 / 终端默认，含色域映射），桌面外观页可选择并即时换肤；`/reload` 与 RPC `reload_resources` 重新解析资源而不重建会话。未覆盖：主题文件自动监视、独立资源管理界面 |
-| PI-11 | 项目信任 | 已实现：`<agentDir>/trust.json`（规范化路径 → true/false）、父目录查找、原子写入；显式 `-a/--na` 优先，其次 trust.json，最后**全局** `settings.defaultProjectTrust`（默认 `always`，项目设置不能自我授权）；不受信时不合并项目设置、不连项目 `.pi/mcp.json`、不加载项目级技能/提示词模板；CLI 交互模式与桌面启动时询问（信任/仅本次/不信任），无 UI 时 `ask` 按不受信处理。测试：`ProjectTrustTests`、`CliEnvironmentTests.Create_GatesProjectSettingsWhenUntrusted`、`McpConfigTests.Load_WithoutProjectTrustIgnoresProjectConfig` |
+| PI-10 | 资源配置与主题 | 部分实现：技能/模板/主题按用户、项目、包作用域统一发现（含 settings 的 `skills`/`prompts`/`themes` 与诊断）；pi 主题 JSON 解析完整（hex / oklch / okhsl / ANSI 索引 / 变量引用 / 终端默认，含色域映射），桌面外观页可选择并即时换肤；**主题目录文件监视热重载已实现**（防抖 400ms、坏文件保留旧外观、项目主题受信任门控，`ThemeWatcher`）。`/reload` 与 RPC `reload_resources` 重新解析资源而不重建会话。未覆盖：独立资源管理界面 |
+| PI-11 | 项目信任 | 已实现：`<agentDir>/trust.json`（规范化路径 → true/false）、父目录查找、原子写入；显式 `-a/--na` 优先，其次 trust.json，最后**全局** `settings.defaultProjectTrust`（默认 `ask`，与 pi 一致；项目设置不能自我授权）；不受信时不合并项目设置、不连项目 `.pi/mcp.json`、不加载项目级技能/提示词模板；CLI 交互模式与桌面启动时询问（信任/仅本次/不信任），无 UI 时 `ask` 按不受信处理。测试：`ProjectTrustTests`、`CliEnvironmentTests.Create_GatesProjectSettingsWhenUntrusted`、`McpConfigTests.Load_WithoutProjectTrustIgnoresProjectConfig` |
 
 依据：[项目状态](00-status.md)、[Provider 装配](../src/PiWeft.Cli/CliEnvironment.cs)、[模型目录](../src/PiWeft.Ai/Models/ModelRegistry.cs)、[MCP 配置](../src/PiWeft.Mcp/McpConfig.cs)。
 

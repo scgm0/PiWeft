@@ -75,7 +75,8 @@ public static class ProjectTrust
 
 	/// <summary>
 	/// 解析实际是否信任：显式开关优先，其次已存决策，最后默认值。
-	/// <c>always</c> 与 <c>ask</c> 的区别是后者会被非交互场景拒绝；本端口默认 <c>always</c> 以免破坏既有行为。
+	/// <c>ask</c> 在无 UI 场景按不受信处理（失败关闭）；交互场景由调用方先经
+	/// <see cref="HasPendingDecision"/> 与 <see cref="PromptAsync"/> 取得决策。
 	/// </summary>
 	public static bool Resolve(string cwd, bool? trustOverride, string? defaultTrust, string? agentDir = null)
 	{

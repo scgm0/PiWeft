@@ -124,13 +124,16 @@ public class CliProcessEndToEndTests : IDisposable
 				""");
 
 			// 3. Run the real CLI as a child process.
-			var cliInfo = new ProcessStartInfo(dotnet!)
-			{
-				WorkingDirectory = work,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				UseShellExecute = false,
-			};
+		var cliInfo = new ProcessStartInfo(dotnet!)
+		{
+			WorkingDirectory = work,
+			RedirectStandardOutput = true,
+			RedirectStandardError = true,
+			// 显式接管 stdin 并立即关闭：继承的 stdin 若是永不关闭的管道
+			// （CI/受控环境常见），print/json 模式等待管道 EOF 会永久挂起。
+			RedirectStandardInput = true,
+			UseShellExecute = false,
+		};
 
 			cliInfo.Environment["PI_CODING_AGENT_DIR"] = agentDir;
 			cliInfo.Environment.Remove("ANTHROPIC_API_KEY");
@@ -148,8 +151,9 @@ public class CliProcessEndToEndTests : IDisposable
 				cliInfo.ArgumentList.Add(argument);
 			}
 
-			using var cli = Process.Start(cliInfo)!;
-			var stdout = await cli.StandardOutput.ReadToEndAsync();
+		using var cli = Process.Start(cliInfo)!;
+		cli.StandardInput.Close();
+		var stdout = await cli.StandardOutput.ReadToEndAsync();
 			var stderr = await cli.StandardError.ReadToEndAsync();
 			await cli.WaitForExitAsync();
 

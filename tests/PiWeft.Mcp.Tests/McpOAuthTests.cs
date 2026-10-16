@@ -223,6 +223,92 @@ public class McpOAuthTests : IDisposable
 	}
 
 	[Fact]
+	public void ClientCredentials_RequiresBothIdAndSecret()
+	{
+		Assert.False(McpOAuth.UsesClientCredentials(new McpServerConfig { Name = "x", Url = Endpoint, ClientId = "a" }));
+		Assert.False(McpOAuth.UsesClientCredentials(new McpServerConfig { Name = "x", Url = Endpoint, ClientSecret = "b" }));
+		Assert.True(McpOAuth.UsesClientCredentials(new McpServerConfig { Name = "x", Url = Endpoint, ClientId = "a", ClientSecret = "b" }));
+	}
+
+	[Fact]
+	public async Task ClientCredentialsAsync_ExchangesAndStoresTheToken()
+	{
+		var handler = new ScriptedHttpHandler
+		{
+			Responder = (request, _) => request.RequestUri!.AbsolutePath switch
+			{
+				"/.well-known/oauth-protected-resource/mcp" => Json(new JsonObject
+				{
+					["resource"] = Endpoint,
+					["authorization_servers"] = new JsonArray("https://auth.example"),
+				}),
+				"/.well-known/oauth-authorization-server" => Json(new JsonObject
+				{
+					["issuer"] = "https://auth.example",
+					["authorization_endpoint"] = "https://auth.example/authorize",
+					["token_endpoint"] = "https://auth.example/token",
+				}),
+				"/token" => Json(new JsonObject { ["access_token"] = "cc-access", ["token_type"] = "Bearer", ["expires_in"] = 600 }),
+				_ => new HttpResponseMessage(HttpStatusCode.NotFound),
+			},
+		};
+
+		var config = new McpServerConfig
+		{
+			Name = "gateway",
+			Url = Endpoint,
+			Auth = "oauth",
+			ClientId = "client-1",
+			ClientSecret = "secret-1",
+			Scopes = ["mcp.read"],
+		};
+
+		var result = await McpOAuth.ClientCredentialsAsync(new HttpClient(handler), Endpoint, config, _agentDir, CancellationToken.None);
+
+		Assert.True(result.Ok, result.Error);
+		Assert.Equal("cc-access", result.Token!.Access);
+		Assert.Equal("cc-access", McpOAuthStore.Load(Endpoint, _agentDir)!.Access);
+
+		var tokenCall = Assert.Single(handler.Calls, call => call.Url.EndsWith("/token", StringComparison.Ordinal));
+		Assert.Contains("grant_type=client_credentials", tokenCall.Body);
+		Assert.Contains("client_id=client-1", tokenCall.Body);
+		Assert.Contains("client_secret=secret-1", tokenCall.Body);
+		Assert.Contains("scope=mcp.read", tokenCall.Body);
+	}
+
+	[Fact]
+	public async Task TokenProvider_FallsBackToTheClientCredentialsGrant()
+	{
+		var handler = new ScriptedHttpHandler
+		{
+			Responder = (request, _) => request.RequestUri!.AbsolutePath switch
+			{
+				"/.well-known/oauth-protected-resource/mcp" => Json(new JsonObject
+				{
+					["resource"] = Endpoint,
+					["authorization_servers"] = new JsonArray("https://auth.example"),
+				}),
+				"/.well-known/oauth-authorization-server" => Json(new JsonObject
+				{
+					["issuer"] = "https://auth.example",
+					["authorization_endpoint"] = "https://auth.example/authorize",
+					["token_endpoint"] = "https://auth.example/token",
+				}),
+				"/token" => Json(new JsonObject { ["access_token"] = "cc-access", ["expires_in"] = 600 }),
+				_ => new HttpResponseMessage(HttpStatusCode.NotFound),
+			},
+		};
+
+		var config = new McpServerConfig { Name = "gateway", Url = Endpoint, Auth = "oauth", ClientId = "c", ClientSecret = "s" };
+		var provider = new McpOAuthTokenProvider(Endpoint, _agentDir, new HttpClient(handler), config);
+
+		var token = await provider.GetTokenAsync(CancellationToken.None);
+
+		Assert.Equal("cc-access", token);
+		Assert.Equal("cc-access", provider.Cached!.Access);
+	}
+
+	[Fact]
 	public async Task AuthorizeAsync_RunsTheLoopbackFlowAndStoresTheToken()
 	{
 		using var server = new FakeOAuthServer();

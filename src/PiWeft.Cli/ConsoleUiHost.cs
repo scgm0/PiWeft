@@ -5,11 +5,111 @@ namespace PiWeft.Cli;
 
 /// <summary>
 /// 基于终端的 <see cref="IUiHost"/>：把 <c>ask_question</c> 的批量信封渲染成命令行问答，
+/// 并提供 pi 扩展 UI 对话框方法（select/confirm/input/editor）的终端实现，
 /// 供 CLI 交互模式使用。print/JSON 模式不提供宿主，工具会明确报告不可用。
 /// </summary>
 internal sealed class ConsoleUiHost(TextReader input, TextWriter output) : IUiHost
 {
 	public bool HasUi => true;
+
+	/// <summary>终端没有真正的通知面：打到输出流（交互模式是 stderr 旁的提示流）。</summary>
+	public void Notify(UiNotifyRequest request) =>
+		output.WriteLine($"[notify:{request.NotifyType}] {request.Message}");
+
+	public async Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken)
+	{
+		output.WriteLine();
+		output.WriteLine(request.Title);
+		for (var index = 0; index < request.Options.Count; index++)
+		{
+			output.WriteLine($"  {index + 1}. {request.Options[index]}");
+		}
+
+		while (true)
+		{
+			output.Write("> ");
+			output.Flush();
+			var line = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+			if (line is null)
+			{
+				return null;
+			}
+
+			var value = line.Trim();
+			if (value.Length == 0)
+			{
+				return null; // 直接回车视为取消
+			}
+
+			if (int.TryParse(value, out var index) && index >= 1 && index <= request.Options.Count)
+			{
+				return request.Options[index - 1];
+			}
+
+			var match = request.Options.FirstOrDefault(option =>
+				string.Equals(option, value, StringComparison.OrdinalIgnoreCase));
+			if (match is not null)
+			{
+				return match;
+			}
+
+			output.WriteLine("  无效选择：请输入序号或选项文本。");
+		}
+	}
+
+	public async Task<bool?> ConfirmAsync(UiConfirmRequest request, CancellationToken cancellationToken)
+	{
+		output.WriteLine();
+		output.WriteLine(request.Title);
+		if (request.Message is { Length: > 0 } message)
+		{
+			output.WriteLine(message);
+		}
+
+		while (true)
+		{
+			output.Write("y/n > ");
+			output.Flush();
+			var line = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+			if (line is null)
+			{
+				return false;
+			}
+
+			var value = line.Trim();
+			if (value is "y" or "Y" or "yes" or "是")
+			{
+				return true;
+			}
+
+			if (value is "n" or "N" or "no" or "否" or "")
+			{
+				return false;
+			}
+		}
+	}
+
+	public async Task<string?> EditorAsync(UiEditorRequest request, CancellationToken cancellationToken)
+	{
+		// 终端模式没有多行编辑器：退化为单行输入，空输入返回预填内容。
+		output.WriteLine();
+		output.WriteLine(request.Title);
+		output.WriteLine("（终端模式为单行输入；直接回车保留原有内容）");
+		if (request.Prefill is { Length: > 0 } prefill)
+		{
+			output.WriteLine($"当前内容：{prefill}");
+		}
+
+		output.Write("> ");
+		output.Flush();
+		var line = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+		if (line is null)
+		{
+			return null;
+		}
+
+		return line.Trim().Length == 0 ? request.Prefill ?? string.Empty : line.Trim();
+	}
 
 	public async Task<string?> InputAsync(UiInputRequest request, CancellationToken cancellationToken)
 	{

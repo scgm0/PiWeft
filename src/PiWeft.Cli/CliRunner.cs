@@ -1433,11 +1433,103 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				continue;
 			}
 
+			if (trimmed == "/copy")
+			{
+				// 与 pi 的 /copy 对应：把最近一条助手回复放进系统剪贴板。
+				var lastText = session.Session.LastAssistantText();
+				if (string.IsNullOrEmpty(lastText))
+				{
+					error.WriteLine("还没有可复制的助手回复。");
+				}
+				else
+				{
+					error.WriteLine(CliClipboard.TryCopy(lastText)
+						? $"已复制 {lastText.Length} 个字符到剪贴板。"
+						: "复制失败：未找到可用的剪贴板工具（wl-copy/xclip/pbcopy/clip）。");
+				}
+
+				continue;
+			}
+
+			if (trimmed.StartsWith("/import", StringComparison.Ordinal))
+			{
+				// 与 pi 的 /import 对应：把另一个会话的当前分支消息追加进本会话。
+				var source = trimmed["/import".Length..].Trim().Trim('"');
+				if (source.Length == 0)
+				{
+					error.WriteLine("用法：/import <会话文件路径>");
+					continue;
+				}
+
+				var resolved = PiWeft.CodingAgent.Session.UserPath.Resolve(source);
+				if (!File.Exists(resolved))
+				{
+					error.WriteLine($"pi: 找不到会话文件 {resolved}");
+					continue;
+				}
+
+				try
+				{
+					var imported = ImportSession(session, resolved);
+					error.WriteLine($"已导入 {imported} 条消息自 {resolved}。");
+				}
+				catch (Exception exception) when (exception is InvalidOperationException or IOException
+					or UnauthorizedAccessException or System.Text.Json.JsonException)
+				{
+					error.WriteLine($"pi: 导入失败：{exception.Message}");
+				}
+
+				continue;
+			}
+
+			if (trimmed == "/bug")
+			{
+				// 与 pi 的 /bug 对应：给出反馈入口与本会话路径，由用户自行整理提交。
+				error.WriteLine("反馈问题：https://github.com/earendil-works/pi/issues");
+				error.WriteLine($"当前会话文件：{session.Session.SessionFile ?? "（未落盘）"}");
+				continue;
+			}
+
 			// 技能命令与提示词模板由 session.PromptAsync 展开，交互模式不再重复展开。
 			await RunAndPrintAsync(session, trimmed, cancellationToken).ConfigureAwait(false);
 		}
 
 		return 0;
+	}
+
+	/// <summary>
+	/// 把另一个会话文件当前分支的消息追加进当前会话，并重建代理上下文。
+	/// 与 pi 的 <c>/import</c> 语义一致：导入的是消息内容，不带走模型/思考级别等元数据条目。
+	/// </summary>
+	internal static int ImportSession(CodingAgentSession session, string sourcePath)
+	{
+		if (session.IsStreaming)
+		{
+			throw new InvalidOperationException("会话正在生成回复，稍后再导入");
+		}
+
+		if (!File.Exists(sourcePath))
+		{
+			throw new InvalidOperationException($"Session file not found: {sourcePath}");
+		}
+
+		// 只读打开源会话：导入是复制条目，不动源文件，无需释放。
+		var source = SessionManager.Open(sourcePath, session.Session.SessionDir);
+		var messages = source.BuildProjectedMessages();
+		var count = 0;
+		foreach (var message in messages)
+		{
+			session.Session.AppendMessage(message);
+			count++;
+		}
+
+		if (count > 0)
+		{
+			// 同一实例换进去只为触发 SetMessages 重建上下文。
+			session.SwitchSession(session.Session);
+		}
+
+		return count;
 	}
 
 	private void WriteRecord(string record)

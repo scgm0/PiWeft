@@ -427,7 +427,7 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		or HttpStatusCode.NotAcceptable
 		or HttpStatusCode.NoContent;
 
-	/// <summary>分发独立流里的一条记录：只处理服务端通知，响应与服务端请求不在这里处理。</summary>
+	/// <summary>分发独立流里的一条记录：处理服务端通知，并对服务端请求（带 id）反向应答。</summary>
 	private void DispatchNotification(JsonObject record)
 	{
 		if (record["method"] is not JsonValue method || method.GetValueKind() != JsonValueKind.String)
@@ -435,13 +435,61 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 			return;
 		}
 
-		// 带 id 的是服务端请求（例如 ping）；HTTP 传输下的反向应答尚未实现，忽略即可。
-		if (record["id"] is not null)
+		// 带 id 的是服务端请求（例如 ping）：按 JSON-RPC 语义回一条响应记录。
+		if (record["id"] is { } id)
 		{
+			PostServerResponseAsync(id, method.GetValue<string>());
 			return;
 		}
 
 		NotificationReceived?.Invoke(method.GetValue<string>(), record["params"] as JsonObject);
+	}
+
+	/// <summary>
+	/// 对服务端请求反向应答：<c>ping</c> 返回空结果，其余方法返回 -32601。
+	/// 不取 <c>_gate</c>（那把锁只保护客户端自己的请求-响应配对）；失败静默丢弃，
+	/// 通知流的后台任务不能因为一次应答失败而中断。
+	/// </summary>
+	private void PostServerResponseAsync(JsonNode id, string method)
+	{
+		JsonObject response;
+		if (string.Equals(method, "ping", StringComparison.Ordinal))
+		{
+			response = new JsonObject
+			{
+				["jsonrpc"] = "2.0",
+				["id"] = id.DeepClone(),
+				["result"] = new JsonObject(),
+			};
+		}
+		else
+		{
+			response = new JsonObject
+			{
+				["jsonrpc"] = "2.0",
+				["id"] = id.DeepClone(),
+				["error"] = new JsonObject
+				{
+					["code"] = -32601,
+					["message"] = $"Method not found: {method}",
+				},
+			};
+		}
+
+		_ = PostResponseAsync(response);
+	}
+
+	private async Task PostResponseAsync(JsonObject response)
+	{
+		try
+		{
+			using var request = await CreateRequestAsync(response, CancellationToken.None).ConfigureAwait(false);
+			using var httpResponse = await _http.SendAsync(request, CancellationToken.None).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is HttpRequestException or IOException or ObjectDisposedException or InvalidOperationException)
+		{
+			// 反向应答失败不影响通知流；服务器会在超时后自行重试。
+		}
 	}
 
 	private static HttpClient CreateDefaultClient() => new(new SocketsHttpHandler

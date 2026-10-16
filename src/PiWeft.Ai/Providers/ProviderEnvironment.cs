@@ -141,18 +141,10 @@ public static class ProviderEnvironment
 			return options.ApiKey;
 		}
 
-		var (stored, isCommand) = Auth.AuthStore.ReadCredentialState(provider);
+		var stored = Auth.AuthStore.ReadApiKey(provider);
 		if (stored is { Length: > 0 })
 		{
 			return stored;
-		}
-
-		if (isCommand)
-		{
-			// 命令型凭据要执行外部命令，本端口不执行；明说一句，省得用户对着 401 猜。
-			Console.Error.WriteLine(
-				$"pi: {provider} 的凭据是命令型（auth.json 里的 ! 开头），本端口不执行外部命令取值，" +
-				$"请改用明文 key 或设置 {KeyName(provider)} 环境变量。");
 		}
 
 		var direct = Environment.GetEnvironmentVariable(KeyName(provider));

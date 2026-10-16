@@ -126,6 +126,48 @@ public class McpHttpClientTests
 	}
 
 	[Fact]
+	public async Task NotificationStreamAnswersServerPingRequests()
+	{
+		var handler = new FakeMcpHttpHandler();
+		handler.EnqueueJson(InitializeResult);
+		handler.EnqueueAccepted();
+		// 独立通知流推送一条带 id 的服务端请求（ping）：客户端应反向 POST 应答。
+		handler.NotificationStreamResponse = () => new HttpResponseMessage(HttpStatusCode.OK)
+		{
+			Content = new StringContent(
+				"event: message\ndata: " + new JsonObject
+				{
+					["jsonrpc"] = "2.0",
+					["id"] = 7,
+					["method"] = "ping",
+				}.ToJsonString() + "\n\n",
+				Encoding.UTF8,
+				"text/event-stream"),
+		};
+
+		var client = await McpHttpClient.ConnectAsync(
+			Url, headers: null, timeout: TimeSpan.FromSeconds(10), httpClient: new HttpClient(handler));
+		await using var _ = client;
+
+		// 反向应答是异步的：轮询等待它到达脚本化端点。
+		var deadline = DateTime.UtcNow.AddSeconds(10);
+		while (DateTime.UtcNow < deadline)
+		{
+			var response = handler.Requests.FirstOrDefault(request =>
+				request["result"] is not null && request["id"]?.GetValue<int>() == 7);
+			if (response is not null)
+			{
+				Assert.NotNull(response["result"]);
+				return;
+			}
+
+			await Task.Delay(50);
+		}
+
+		Assert.Fail("服务器 ping 没有在通知流上收到反向应答");
+	}
+
+	[Fact]
 	public async Task ConnectPerformsTheHandshakeOverJson()
 	{
 		var (client, handler) = await ConnectAsync();

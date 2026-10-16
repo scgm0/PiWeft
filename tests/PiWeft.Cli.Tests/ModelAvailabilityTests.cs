@@ -48,14 +48,21 @@ public sealed class ModelAvailabilityTests : IDisposable
 	}
 
 	[Theory]
-	[InlineData("!never execute this")]
 	[InlineData("${PI_TEST_UNSET_AVAILABILITY}")]
 	[InlineData("")]
-	public void UnresolvedOrCommandAuthIsHiddenAndCanFallBackToTheEnvironment(string key)
+	public void UnresolvedAuthIsHiddenAndCanFallBackToTheEnvironment(string key)
 	{
 		File.WriteAllText(AuthStore.Path(), $$$"""{"fixture-available":{"type":"api_key","key":"{{{key}}}"}}""");
 		Assert.Empty(ModelAvailability.Filter([Model()], new Dictionary<string, string>()));
 		Environment.SetEnvironmentVariable("FIXTURE_AVAILABLE_API_KEY", "env-test-key");
+		Assert.Single(ModelAvailability.Filter([Model()], new Dictionary<string, string>()));
+	}
+
+	[Fact]
+	public void CommandAuthCountsAsAvailableWithoutExecuting()
+	{
+		// 命令型凭据在请求时执行（与 pi 一致）；可用性筛选只看文件，不在启动路径上跑进程。
+		File.WriteAllText(AuthStore.Path(), """{"fixture-available":{"type":"api_key","key":"!never execute this"}}""");
 		Assert.Single(ModelAvailability.Filter([Model()], new Dictionary<string, string>()));
 	}
 

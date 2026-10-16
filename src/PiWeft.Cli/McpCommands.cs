@@ -276,6 +276,22 @@ public static class McpCommands
 			return 1;
 		}
 
+		// 配置了 clientId + clientSecret 的服务器直接走客户端凭据授权，无需浏览器参与。
+		if (McpOAuth.UsesClientCredentials(server))
+		{
+			var granted = await McpOAuth
+				.ClientCredentialsAsync(Http, server.Url!, server, agentDir, cancellationToken, metadata)
+				.ConfigureAwait(false);
+			if (!granted.Ok)
+			{
+				error.WriteLine($"pi: 客户端凭据授权失败：{granted.Error}");
+				return 1;
+			}
+
+			output.WriteLine($"已登录 {name}（客户端凭据授权），令牌保存在 {McpOAuthStore.Path(agentDir)}");
+			return 0;
+		}
+
 		var result = await McpOAuth.AuthorizeAsync(
 			Http,
 			server.Url!,

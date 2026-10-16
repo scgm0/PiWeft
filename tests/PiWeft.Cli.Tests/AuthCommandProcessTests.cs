@@ -233,6 +233,24 @@ public sealed class AuthCommandProcessTests : IDisposable
 	}
 
 	[Fact]
+	public async Task AuthCheckReportsInvalidWhenTheCommandCredentialFails()
+	{
+		// 命令型凭据存在但执行失败：invalid（凭据坏了），与「没配置」的 not_ready 区分。
+		File.WriteAllText(
+			Path.Combine(_root, "auth.json"),
+			"""{"deepseek":{"type":"api_key","key":"!exit 5"}}""");
+
+		var (exitCode, stdout, _) = await RunAsync("auth", "check", "--provider", "deepseek");
+
+		Assert.Equal(2, exitCode);
+		Assert.Equal("invalid", stdout.Trim());
+
+		var json = await RunAsync("auth", "check", "--provider", "deepseek", "--json");
+		Assert.Equal(2, json.ExitCode);
+		Assert.Equal("invalid", JsonNode.Parse(json.StdOut)!["status"]!.GetValue<string>());
+	}
+
+	[Fact]
 	public async Task ModelArgumentResolvesTheProvider()
 	{
 		var path = Path.Combine(_root, "auth.json");
