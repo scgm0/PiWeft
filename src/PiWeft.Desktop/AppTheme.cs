@@ -102,11 +102,15 @@ public static class AppTheme
 	public static Color Transparent => Current.Transparent;
 
 	// -------------------------------------------------------------------- 尺寸
+	// 「织机」形制（DESIGN.md）：小圆角，表面靠色阶与发丝线区分，最大圆角 10。
 	public const double RadiusXs = 4;
 	public const double RadiusSm = 6;
 	public const double RadiusMd = 8;
 	public const double RadiusLg = 10;
-	public const double RadiusXl = 12;
+	public const double RadiusXl = 10;
+
+	/// <summary>签名细节「纬线」的宽度：活动会话、活动标签、用户消息左缘的强调短线。</summary>
+	public const double ThreadWidth = 2;
 
 	public const double Space1 = 4;
 	public const double Space2 = 8;
@@ -119,7 +123,7 @@ public static class AppTheme
 	public const double ControlHeightLg = 36;
 
 	public const double SidebarWidth = 280;
-	public const double ComposerHeight = 72;
+	public const double ComposerHeight = 64;
 	public static double MessageMaxWidth => ReadingPreferences.Width;
 
 	// 正文对齐 PiDeck 16px；辅助信息提高一档，避免大屏过小。

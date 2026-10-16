@@ -54,7 +54,7 @@ public static partial class Strings
 		$"{Strings.ContentHit} {count} 个会话，例如：{excerpt}";
 
 	// 输入区
-	public const string ComposerPlaceholder = "输入指令，Ctrl+Enter 发送";
+	public const string ComposerPlaceholder = "输入指令，Enter 发送，Shift+Enter 换行";
 	public const string Send = "发送";
 	public const string Abort = "中断";
 	public const string CopyLastReply = "复制回复";

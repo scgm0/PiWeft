@@ -67,7 +67,9 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>「编辑重发」时记录要回到的条目；发送前先在该处分支。</summary>
 	private string? _pendingBranchEntryId;
 	private readonly TextBlock _emptyContext = new();
+	private readonly TextBlock _cwdLine = new();
 	private readonly Border _emptyCard;
+	private Border _headerRow = null!;
 	private readonly WrapPanel _commandBar = new();
 	private readonly Border _editNotice;
 
@@ -133,15 +135,7 @@ public sealed partial class SessionTab : IDisposable
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
 				.Children(
-					new Border().StyleName(AppStyles.CardMuted).Width(52).Height(52).CornerRadius(AppTheme.RadiusXl)
-						.HorizontalAlignment(HorizontalAlignment.Center).Child(
-							new TextBlock().Text("Pi").FontSize(24).FontWeight(FontWeight.Bold).PrimaryText()
-								.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center)),
-					new TextBlock().Text(Strings.WelcomeTitle).FontSize(26).FontWeight(FontWeight.Bold).PrimaryText()
-						.HorizontalAlignment(HorizontalAlignment.Center),
-					_emptyContext.FontSize(AppTheme.FontSizeCaption).SubtleText().TextWrapping(TextWrapping.Wrap)
-						.HorizontalAlignment(HorizontalAlignment.Center),
-					AppIcons.TextButton("search", Strings.SelectModel, ShowModelPicker)
+					new TextBlock().Text(Strings.WelcomeTitle).FontSize(24).FontWeight(FontWeight.Medium).PrimaryText()
 						.HorizontalAlignment(HorizontalAlignment.Center)));
 
 		_timeline = new ConversationTimeline(Row);
@@ -166,10 +160,10 @@ public sealed partial class SessionTab : IDisposable
 				_composerHint.IsVisible(value.Length == 0);
 				RefreshCommandBar();
 			})
-			// 回车换行，Ctrl+Enter 发送 —— 与占位符里的提示一致。
 			.OnKeyDown(key =>
 			{
-				if (key.Key == Key.Enter && key.ControlKey)
+				// Enter 发送，Shift+Enter 换行 —— 与占位符里的提示一致。
+				if (key.Key == Key.Enter && !key.ShiftKey)
 				{
 					key.Handled = true;
 					Send();
@@ -181,6 +175,12 @@ public sealed partial class SessionTab : IDisposable
 				if (key.Key == Key.V && key.PrimaryKey && !key.AltKey && PasteImageFromClipboard()) key.Handled = true;
 			});
 
+		// 工作区路径铭牌：等宽小字，只在会话为空时显示在输入框上方。
+		_cwdLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.Margin(new Thickness(AppTheme.Space2, 0, 0, 0))
+			.IsVisible(false);
+
 		_commandBar.Spacing(AppTheme.Space2).Margin(new Thickness(0, 0, 0, 4)).IsVisible(false);
 
 		_sendIcon.Width(14).Height(14).VerticalAlignment(VerticalAlignment.Center)
@@ -189,7 +189,10 @@ public sealed partial class SessionTab : IDisposable
 			.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6).Children(
 				_sendIcon, _sendLabel.Text(Strings.Send).FontSize(AppTheme.FontSizeCaption).OnAccentText()))
 			.OnClick(Send)
-			.Primary().Height(AppTheme.ControlHeightMd).VerticalAlignment(VerticalAlignment.Center);
+			.Primary().Height(AppTheme.ControlHeightMd)
+			.CornerRadius(AppTheme.ControlHeightMd / 2)
+			.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0))
+			.VerticalAlignment(VerticalAlignment.Center);
 
 		var attach = AppIcons.Button("image-plus", Strings.AttachFiles, () => _ = AttachImageAsync());
 		var commands = AppIcons.Button("square-slash", Strings.Commands, () => _composer.Text = "/");
@@ -236,14 +239,14 @@ public sealed partial class SessionTab : IDisposable
 
 		var composerPane = _composerPane = new Border()
 			.StyleName(AppStyles.Composer)
-			.CornerRadius(AppTheme.RadiusXl)
+			.CornerRadius(16)
 			.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
 			.HorizontalAlignment(HorizontalAlignment.Center)
-			.Padding(new Thickness(AppTheme.Space3))
-			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3, AppTheme.Space2))
+			.Margin(new Thickness(AppTheme.Space4, AppTheme.Space2, AppTheme.Space4, AppTheme.Space3))
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
-				.Children(_todoStrip, _editNotice, _commandBar, _attachmentBar,
+				.Children(_cwdLine, _todoStrip, _editNotice, _commandBar, _attachmentBar,
 					new Grid().Children(_composer, _composerHint.Text(Strings.ComposerPlaceholder)
 						.FontSize(AppTheme.FontSizeChat).SubtleText().TextTrimming(TextTrimming.CharacterEllipsis)
 						.Margin(new Thickness(AppTheme.Space2)).IsHitTestVisible(false)
@@ -292,12 +295,12 @@ public sealed partial class SessionTab : IDisposable
 			.Spacing(2)
 			.Children(chatView, branchView);
 
-		_status.FontSize(AppTheme.FontSizeMicro).SubtleText();
+		_status.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont);
 
-		var header = new Border()
-			.StyleName(AppStyles.Window)
-			.BorderBrush(AppTheme.Border)
-			.BorderThickness(0)
+		// 标题行：左状态铭牌（等宽小字），右动作簇；不再是一块独立底色的条。
+		// 会话头行（状态铭牌 + 视图切换/搜索/重试）：空会话时整行隐藏，出现第一条消息后再显示。
+		_headerRow = new Border()
+			.Background(AppTheme.Transparent)
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel()
 				.LastChildFill()
@@ -310,12 +313,12 @@ public sealed partial class SessionTab : IDisposable
 			.HorizontalAlignment(HorizontalAlignment.Center).Children(
 				_contextBar,
 				new DockPanel().LastChildFill().Children(contextButton.DockRight(),
-					_statisticsLine.FontSize(AppTheme.FontSizeCaption).MutedText()));
+					_statisticsLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)));
 
 		var layout = new DockPanel()
 			.LastChildFill()
 			.Children(
-				header.DockTop(),
+				_headerRow.DockTop(),
 				_searchBox.HorizontalAlignment(HorizontalAlignment.Left)
 					.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)).DockTop(),
 				new StackPanel().Spacing(2).Children(composerPane,
@@ -971,6 +974,8 @@ public sealed partial class SessionTab : IDisposable
 			_filterStatus.IsVisible(false);
 		}
 
+		_headerRow.IsVisible(entries.Count > 0);
+
 		var status = $"{Session.Model.Provider} / {Session.Model.Id} · {Strings.ThinkingShort(Session.ThinkingLevel)}";
 		if (Session.IsCompacting) status += $" · {Strings.Compacting}";
 		else if (IsStreaming) status += $" · {Strings.Streaming}";
@@ -1021,7 +1026,9 @@ public sealed partial class SessionTab : IDisposable
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
 		if (all.Count == 0)
 		{
-			_emptyContext.Text(Strings.EmptySessionContext(Session.Model.Provider, Session.Model.Id, Session.Cwd));
+			// 空会话时输入框上方只显示工作区路径。
+		_cwdLine.Text(Session.Cwd);
+		_cwdLine.IsVisible(entries.Count == 0);
 			_conversationScroll.Stop();
 		}
 
@@ -1175,7 +1182,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		var row = entry.Role switch
 		{
-			ChatRole.User => Bubble(entry, alignRight: true),
+			ChatRole.User => Bubble(entry),
 			ChatRole.Process => new ExecutionProcessView(entry, Row, _textFocus).View,
 			ChatRole.Tool => new ToolMessageView(entry, _textFocus, PreviewImage).View,
 			ChatRole.Error => Card(entry, Strings.RoleError),
@@ -1185,17 +1192,19 @@ public sealed partial class SessionTab : IDisposable
 		return row;
 	}
 
-	/// <summary>用户消息：靠右的弱化色气泡，带「在此分支」按钮（回到该提问之前，重开一条）。</summary>
-	private UIElement Bubble(ChatEntry entry, bool alignRight)
+	/// <summary>
+	/// 用户消息：元信息行在色块上方（角色铭牌 + 悬停操作），色块左缘带黄铜「纬线」——
+	/// 对话是织物，不是聊天软件。外层 Border 挂 actions（Tag 约定），主题冒烟测试按它识别用户消息行。
+	/// </summary>
+	private UIElement Bubble(ChatEntry entry)
 	{
 		var body = MessageText.Create(entry.Text);
 		_textFocus.Track(body);
 
 		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
 			.Children(AppIcons.Button("copy", Strings.CopyUserMessage, () => CopyText(entry.Text), size: 14));
-		var rows = new StackPanel().Spacing(AppTheme.Space2).Children(
-			new DockPanel().LastChildFill().Children(actions.DockRight(), Header(string.Empty, entry, Strings.RoleUser)), body);
 
+		var rows = new StackPanel().Spacing(AppTheme.Space2).Children(body);
 		foreach (var image in entry.Images)
 		{
 			rows.Children(ImageView(image, PreviewImage));
@@ -1213,13 +1222,25 @@ public sealed partial class SessionTab : IDisposable
 		var card = new Border()
 			.StyleName(AppStyles.UserMessage)
 			.BorderThickness(0)
-			.CornerRadius(AppTheme.RadiusXl)
-			.Padding(new Thickness(AppTheme.Space4))
+			.CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space4, AppTheme.Space2))
 			.MaxWidth(AppTheme.MessageMaxWidth)
 			.Child(rows);
 
 		card.Tag = actions;
-		return alignRight ? card.HorizontalAlignment(HorizontalAlignment.Right) : card;
+
+		// 签名细节「纬线」：左缘 2px 强调色短线。
+		var thread = new Border()
+			.Width(AppTheme.ThreadWidth)
+			.CornerRadius(AppTheme.RadiusXs)
+			.VerticalAlignment(VerticalAlignment.Stretch)
+			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).Accent);
+
+		return new StackPanel()
+			.Spacing(AppTheme.Space1)
+			.Children(
+				new DockPanel().LastChildFill().Children(actions.DockRight(), Header(string.Empty, entry, Strings.RoleUser)),
+				new DockPanel().LastChildFill().Children(thread.DockLeft(), card.Margin(new Thickness(AppTheme.Space2, 0, 0, 0))));
 	}
 
 	/// <summary>
@@ -1313,17 +1334,21 @@ public sealed partial class SessionTab : IDisposable
 			.Spacing(4)
 			.Children(Header(string.Empty, entry, label), text);
 
-		return new Border()
-			.WithTheme((theme, element) =>
-			{
-				element.Background = AppTheme.For(theme).CardBackgroundAlt;
-				element.BorderBrush = AppTheme.For(theme).Error;
-			})
-			.BorderThickness(1)
-			.CornerRadius(AppTheme.RadiusSm)
-			.Padding(new Thickness(AppTheme.Space3))
-			.MaxWidth(AppTheme.MessageMaxWidth)
-			.Child(content);
+		// 错误同样走「纬线」形态：左缘红线 + 内嵌底，不再包整圈边框。
+		var thread = new Border()
+			.Width(AppTheme.ThreadWidth)
+			.CornerRadius(AppTheme.RadiusXs)
+			.VerticalAlignment(VerticalAlignment.Stretch)
+			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).Error);
+
+		return new DockPanel().LastChildFill()
+			.Children(thread.DockLeft(), new Border()
+				.WithTheme((theme, element) => element.Background = AppTheme.For(theme).CardBackgroundAlt)
+				.CornerRadius(AppTheme.RadiusSm)
+				.Padding(new Thickness(AppTheme.Space3))
+				.Margin(new Thickness(AppTheme.Space2, 0, 0, 0))
+				.MaxWidth(AppTheme.MessageMaxWidth)
+				.Child(content));
 	}
 
 	/// <summary>角色行：角色名 + 时间。</summary>
@@ -1334,10 +1359,11 @@ public sealed partial class SessionTab : IDisposable
 			? DateTimeOffset.FromUnixTimeMilliseconds(entry.Timestamp).ToLocalTime().ToString("HH:mm")
 			: string.Empty;
 
+		// 角色铭牌：等宽小字，工坊铭牌而非标题。
 		return new TextBlock()
 			.Text(time.Length > 0 ? $"{name}  ·  {time}" : name)
 			.FontSize(AppTheme.FontSizeMicro)
-			.FontWeight(FontWeight.Bold)
+			.FontFamily(AppTheme.MonoFont)
 			.SubtleText();
 	}
 

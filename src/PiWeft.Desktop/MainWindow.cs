@@ -29,7 +29,6 @@ public sealed partial class MainWindow : Window
 	private McpConnection? _mcp;
 	private IReadOnlyList<AgentTool> _mcpTools = [];
 	/// <summary>标签标题文本，主题/名称变化时只改这一个控件。</summary>
-	private readonly Dictionary<object, TextBlock> _tabLabels = [];
 	private SettingsView? _settingsView;
 	private GitView? _gitView;
 	private FileBrowserView? _filesView;
@@ -54,6 +53,18 @@ public sealed partial class MainWindow : Window
 	private bool _closed;
 	private Border _sidebar = null!;
 	private SplitPanel _workspace = null!;
+	private Button _sidebarFloat = null!;
+	private StackPanel _collapsedActions = null!;
+	private Button _backButton = null!;
+	private bool _sidebarPreferred;
+	private TreeView _chatsTree = null!;
+	private Button _sessionsTabButton = null!;
+	private Button _projectsTabButton = null!;
+	private Button _newSessionButton = null!;
+	private Button _addProjectButton = null!;
+	private bool _projectsTab;
+	private string? _renamingPath;
+	private readonly HashSet<string> _removedProjects = new(StringComparer.Ordinal);
 	private IReadOnlyList<SessionListItem> _allSessions = [];
 	private IReadOnlyList<Model> _models = [];
 
@@ -237,48 +248,26 @@ public sealed partial class MainWindow : Window
 	private void BuildUi()
 	{
 
-		_banner = new TextBlock().FontSize(AppTheme.FontSizeCaption).MutedText();
+		_banner = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 		_status = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 
-		// ------------------------------------------------------------ 顶栏
-		// 参考同类客户端：左侧是身份与当前上下文，右侧只放图标动作，快捷键提示收进命令面板。
-		// 顶栏动作使用 Lucide 矢量图标（不受字体缺字影响），配中文提示。
-		var git = AppIcons.Button("git-branch", Strings.Git, OpenGitTab, size: AppIcons.ToolbarSize);
-		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
-		var theme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
-		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsTab, size: AppIcons.ToolbarSize);
-
-		var brand = new TextBlock()
-			.Text(Strings.AppName)
-			.FontSize(AppTheme.FontSizeBrand)
-			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
-			.FontWeight(FontWeight.Bold)
-			.PrimaryText();
-
+		// ------------------------------------------------------------ 外壳
+		// 侧栏不设品牌区：主区空状态就是应用门面；_tabCaption 仅承载标题语境更新（不参与布局）。
 		_tabCaption = new TextBlock()
 			.Text(_cwd)
-			.FontSize(AppTheme.FontSizeCaption)
+			.FontSize(AppTheme.FontSizeMicro)
+			.FontFamily(AppTheme.MonoFont)
 			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.SubtleText();
-
-		var topBar = new Border()
-			.StyleName(AppStyles.TopBar)
-			.Padding(new Thickness(AppTheme.Space3, 6, AppTheme.Space3, 6))
-			.Child(new DockPanel()
-				.LastChildFill()
-				.Children(
-					new StackPanel()
-						.Orientation(Orientation.Horizontal)
-						.Spacing(2)
-						.Children(palette, git, settings, theme)
-						.DockRight(),
-					new DockPanel().LastChildFill().Children(
-						AppIcons.Button("panel-left", Strings.ToggleSidebar, ToggleSidebar).DockLeft(), brand.DockLeft(), _tabCaption)));
+			.SubtleText()
+			.IsVisible(false);
 
 		// ------------------------------------------------------------ 侧栏
-		// 结构参考同类客户端：新建（主）+ 搜索 + 过滤开关 + 列表 + 底部紧凑操作。
+		// 新会话（主按钮）+ 搜索 + 过滤 + 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
+		// 药丸形无边框搜索框：只靠色调与背景分层。
 		_search = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeControl)
-			.Placeholder(Strings.SearchPlaceholder).CornerRadius(AppTheme.RadiusMd)
+			.Placeholder(Strings.SearchPlaceholder).CornerRadius(AppTheme.ControlHeightMd / 2)
+			.BorderThickness(0)
+			.WithTheme((theme, box) => box.Background = AppTheme.For(theme).CardBackground)
 			.Height(AppTheme.ControlHeightMd)
 			.OnTextChanged(_ => FilterSessions());
 
@@ -294,57 +283,91 @@ public sealed partial class MainWindow : Window
 				}
 			});
 
-		_currentDirOnly = new CheckBox()
-			.Content(new TextBlock().Text(Strings.CurrentDirOnly).FontSize(AppTheme.FontSizeCaption))
-			.IsChecked(true)
-			.OnCheckedChanged(_ => RefreshSessions());
-
+		// 「项目」视图：工作区列表（文件夹 + 行级 ⋯ 菜单）。
 		_sessionTree = new TreeView().FontSize(AppTheme.FontSizeControl)
 			.BorderThickness(0).Background(AppTheme.Transparent);
 		ConfigureSessionRows();
 		_sessionTree.SelectedNodeChanged += OnSessionSelected;
 
-		var pin = AppIcons.Button("star", Strings.TogglePin, TogglePin);
-		var rename = AppIcons.Button("pencil", Strings.Rename, ShowRenameBox);
-		var remove = AppIcons.Button("trash", Strings.Delete, () => _ = DeleteSelectedAsync());
-
-		var sessionActions = new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(2)
-			.Children(pin, rename, remove);
-
+		// 「对话」tab：平铺的会话列表（不属于任何项目）；「项目」tab：按项目分组的任务树。
+		_chatsTree = new TreeView().FontSize(AppTheme.FontSizeControl)
+			.BorderThickness(0).Background(AppTheme.Transparent);
+		ConfigureChatsRows();
+		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
 		_banner.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap);
 
-		var newSession = AppIcons.TextButton("plus", Strings.NewSession,
+		// 顶部「对话 | 项目」切换；MinWidth + TextAlignment 保证两个 tab 文字都居中。
+		_sessionsTabButton = new Button().Ghost()
+			.Content(new TextBlock().Text(Strings.SidebarTabChats).FontSize(AppTheme.FontSizeCaption).PrimaryText()
+				.MinWidth(84).TextAlignment(TextAlignment.Center))
+			.OnClick(() => ShowSidebarView(projects: false));
+		_projectsTabButton = new Button().Ghost()
+			.Content(new TextBlock().Text(Strings.SidebarTabProjects).FontSize(AppTheme.FontSizeCaption).PrimaryText()
+				.MinWidth(84).TextAlignment(TextAlignment.Center))
+			.OnClick(() => ShowSidebarView(projects: true));
+
+		_newSessionButton = AppIcons.PrimaryButton("plus", Strings.NewSession,
 			() => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd)))
-			.MinHeight(AppTheme.ControlHeightLg);
-		var openProject = AppIcons.Button("folder-open", Strings.OpenProject, () => _ = ChooseProjectAsync());
+			.MinHeight(AppTheme.ControlHeightLg)
+			.CornerRadius(AppTheme.ControlHeightLg / 2);
+		_addProjectButton = AppIcons.PrimaryButton("folder-open", Strings.AddProject,
+			() => _ = ChooseProjectAsync())
+			.MinHeight(AppTheme.ControlHeightLg)
+			.CornerRadius(AppTheme.ControlHeightLg / 2);
 
 		var sidebarTop = new StackPanel().Spacing(AppTheme.Space2);
 		sidebarTop.Children(
-			new DockPanel().LastChildFill().Children(openProject.DockRight(), newSession),
+			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.Children(_sessionsTabButton, _projectsTabButton),
+			new DockPanel().LastChildFill().Children(_addProjectButton.DockRight(), _newSessionButton),
 			_search,
-			_currentDirOnly,
 			_nameBox,
 			_banner);
+
+		var git = AppIcons.Button("git-branch", Strings.Git, OpenGitTab, size: AppIcons.ToolbarSize);
+		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
+		var theme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
+		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsTab, size: AppIcons.ToolbarSize);
+		var collapse = AppIcons.Button("panel-left", Strings.ToggleSidebar, ToggleSidebar, size: AppIcons.ToolbarSize);
+
+		// 底部工具行：图标 + 小字标签（命令面板/Git/设置/主题），参照 Codex 桌面端的安静页脚。
+		static StackPanel FooterItem(string label, Button button)
+		{
+			return new StackPanel()
+				.Spacing(2)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.Children(button.HorizontalAlignment(HorizontalAlignment.Center),
+					new TextBlock().Text(label).FontSize(11).SubtleText()
+						.HorizontalAlignment(HorizontalAlignment.Center));
+		}
+
+		var sidebarFooter = new Border()
+			.BorderBrush(AppTheme.BorderSubtle).BorderThickness(new Thickness(0, 1, 0, 0))
+			.Margin(new Thickness(0, AppTheme.Space2, 0, 0))
+			.Padding(new Thickness(0, AppTheme.Space2, 0, 0))
+			.Child(new DockPanel().LastChildFill().Children(
+				FooterItem(Strings.PaletteButton, palette).Width(52).DockLeft(),
+				FooterItem(Strings.Git, git).Width(52).DockLeft(),
+				FooterItem(Strings.ToggleTheme, theme).Width(52).DockLeft(),
+				FooterItem(Strings.SidebarCollapse, collapse).Width(52).DockRight(),
+				FooterItem(Strings.Settings, settings).Width(52).DockRight()));
 
 		// 列表要吃掉剩余高度，所以这里用 DockPanel；StackPanel 会把 ListBox 压成内容高度。
 		var sidebar = _sidebar = new Border()
 			.StyleName(AppStyles.Sidebar)
-			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel()
 				.LastChildFill()
 				.Children(
-					new DockPanel().LastChildFill().Children(
-						AppIcons.Button("refresh-cw", Strings.RefreshSessions, RefreshSessions).DockRight(),
-						new TextBlock().Text(Strings.SessionList).HoverTip(_cwd).Caption()).DockTop(),
-					sidebarTop.DockTop(),
-					sessionActions.DockBottom(),
-					new Border()
-						.Background(AppTheme.Transparent)
-						.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
-						.Child(_sessionTree)));
+				sidebarFooter.DockBottom(),
+				new DockPanel().LastChildFill()
+					.Children(sidebarTop.DockTop(),
+						new Border()
+							.Background(AppTheme.Transparent)
+							.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
+							.Child(new Grid().Children(_sessionTree, _chatsTree.IsVisible(false))))));
 
 		// ------------------------------------------------------------ 主区
 		_tabControl = new TabControl().BorderThickness(0).CornerRadius(0).Padding(Thickness.Zero)
@@ -355,19 +378,25 @@ public sealed partial class MainWindow : Window
 			.StyleName(AppStyles.Window)
 			.Padding(new Thickness(AppTheme.Space6))
 			.Child(new StackPanel()
-				.Spacing(AppTheme.Space2)
+				.Spacing(AppTheme.Space3)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.VerticalAlignment(VerticalAlignment.Center)
 				.Children(
 					new TextBlock()
 						.Text(Strings.WelcomeTitle)
-						.FontSize(18)
-						.FontWeight(FontWeight.Bold)
-						.PrimaryText(),
+						.FontSize(20)
+						.FontWeight(FontWeight.Medium)
+						.PrimaryText()
+						.HorizontalAlignment(HorizontalAlignment.Center),
 					new TextBlock()
 						.Text(Strings.WelcomeBody)
 						.FontSize(AppTheme.FontSizeCaption)
 						.MutedText()
-						.TextWrapping(TextWrapping.Wrap),
-					_status));
+						.TextAlignment(TextAlignment.Center)
+						.MaxWidth(420)
+						.TextWrapping(TextWrapping.Wrap)
+						.HorizontalAlignment(HorizontalAlignment.Center),
+					_status.HorizontalAlignment(HorizontalAlignment.Center)));
 
 		_palette = new CommandPalette(PaletteCommands);
 		_palette.Closed += () =>
@@ -384,20 +413,61 @@ public sealed partial class MainWindow : Window
 
 		var main = new Grid();
 		main.Children(_tabControl);
+		// 侧栏折叠后的唯一展开入口：主区左上角的悬浮开关（侧栏头部的折叠钮在折叠后随之消失）。
+		_sidebarFloat = AppIcons.Button("panel-left", Strings.ToggleSidebar, ToggleSidebar);
+		_sidebarFloat.HorizontalAlignment(HorizontalAlignment.Left)
+			.VerticalAlignment(VerticalAlignment.Top)
+			.Margin(new Thickness(AppTheme.Space2))
+			.IsVisible(_sidebar.IsVisible == false);
+
+		// 侧栏收起时，命令/设置/主题悬浮固定在主区右上角（独立按钮实例，不与页脚共用）。
+		var floatPalette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
+		var floatSettings = AppIcons.Button("settings", Strings.Settings, OpenSettingsTab, size: AppIcons.ToolbarSize);
+		var floatTheme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
+		_collapsedActions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.VerticalAlignment(VerticalAlignment.Top)
+			.Margin(new Thickness(AppTheme.Space2))
+			.IsVisible(_sidebar.IsVisible == false)
+			.Children(floatPalette, floatSettings, floatTheme);
+
+		// 辅助页（设置/Git/文件/终端/用量）左上角的返回工作区入口。
+		_backButton = AppIcons.Button("arrow-left", Strings.BackToWorkspace, BackToWorkspace, size: AppIcons.ToolbarSize)
+			.HorizontalAlignment(HorizontalAlignment.Left)
+			.VerticalAlignment(VerticalAlignment.Top)
+			.Margin(new Thickness(AppTheme.Space2))
+			.IsVisible(false);
+		// 页签头已按 Codex 风格隐去；TabControl 仍会给选中页画一个小底座，用与主区同色的遮罩盖住。
+		main.Children(new Border()
+			.Height(30)
+			.VerticalAlignment(VerticalAlignment.Top)
+			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).WindowBackground)
+			.IsHitTestVisible(false));
 		main.Children(_welcome);
+		// 浮层顺序最后：保证悬浮开关压在欢迎页之上。
+		main.Children(_sidebarFloat);
+		main.Children(_collapsedActions);
+		main.Children(_backButton);
 
 		// 侧栏与主区之间可以拖拽调宽。
 		var preference = DesktopPreference.Load();
-		_sidebar.IsVisible(!preference.SidebarCollapsed);
+		_sidebarPreferred = !preference.SidebarCollapsed;
+		_sidebar.IsVisible(_sidebarPreferred);
+		UpdateSidebarChrome();
 		_workspace = new SplitPanel().Horizontal().SplitterThickness(4)
 			.MinFirst(200).MinSecond(520)
 			.FirstLength(GridLength.Pixels(preference.SidebarWidth))
 			.SecondLength(GridLength.Stars(1)).First(sidebar).Second(main);
 		Content = new Border()
 			.StyleName(AppStyles.Window)
-			.Child(new DockPanel().LastChildFill().Children(topBar.DockTop(), _workspace));
+			.Child(_workspace);
+
+		ShowSidebarView(projects: false);
 
 	}
+
+	/// <summary>把侧栏头部的小字铭牌换成当前上下文（会话标题或工作目录）。</summary>
+	private void SetSidebarCaption(string text) => _tabCaption.Text(text);
 
 	// ------------------------------------------------------------------ 启动
 
@@ -530,11 +600,11 @@ public sealed partial class MainWindow : Window
 	/// <summary>重建侧栏列表，应用当前搜索关键字。</summary>
 	private void RefreshSessions()
 	{
-		// 「仅当前目录」默认开启；关掉后可以看到该机器上所有项目的会话。
-		var preference = DesktopPreference.Load();
-		_allSessions = _currentDirOnly?.IsChecked == false ? _catalog.List() : _catalog.List(_cwd);
+		// 列表默认展示全部项目的会话；「项目」视图只负责工作区管理。
+		_allSessions = _catalog.List();
 
 		// 置顶的会话排在最前，其余保持最近修改优先。
+		var preference = DesktopPreference.Load();
 		_allSessions =
 		[
 			.. _allSessions.Where(item => preference.IsPinned(item.Id)),
@@ -621,7 +691,7 @@ public sealed partial class MainWindow : Window
 					.OrderByDescending(item => preference.IsPinned(item.Id))
 					.ThenByDescending(static item => item.Modified)
 					.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item))],
-				tag: null))
+				tag: group.Key))
 			.ToList();
 
 		_pinnedSessionIds = preference.Pinned.ToHashSet(StringComparer.Ordinal);
@@ -632,6 +702,15 @@ public sealed partial class MainWindow : Window
 		{
 			_sessionTree.Expand(node);
 		}
+
+		// 「对话」视图：同一批会话按最近修改平铺，不分组。
+		_chatsTree.ItemsSource(
+		[
+			.. rows
+				.DistinctBy(static item => item.Path)
+				.OrderByDescending(static item => item.Modified)
+				.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item)),
+		]);
 
 		if (selectedId is not null)
 		{
@@ -704,8 +783,8 @@ public sealed partial class MainWindow : Window
 	/// <summary>把输入框里的名称写给选中的会话，并刷新列表与标签标题。</summary>
 	private void RenameSelected()
 	{
-		var selected = SelectedSession();
-		if (selected is null)
+		var path = _renamingPath ?? SelectedSession()?.Path;
+		if (path is null)
 		{
 			_banner.Text(Strings.SelectSessionFirst);
 			return;
@@ -713,10 +792,11 @@ public sealed partial class MainWindow : Window
 
 		try
 		{
-			_catalog.Rename(selected.Path, _nameBox.Text?.Trim());
+			_catalog.Rename(path, _nameBox.Text?.Trim());
+			_renamingPath = null;
 			RefreshSessions();
 
-			foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => tab.Session.Session.SessionFile == selected.Path))
+			foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => tab.Session.Session.SessionFile == path))
 			{
 				tab.RefreshTitle();
 			}
@@ -784,7 +864,6 @@ public sealed partial class MainWindow : Window
 		}
 
 		_tabEntries.RemoveAt(index);
-		_tabLabels.Remove(tab);
 
 		if (index < _tabControl.Tabs.Count)
 		{
@@ -869,52 +948,24 @@ public sealed partial class MainWindow : Window
 		tab.Forked += _ => RefreshSessions();
 
 		_tabEntries.Add(tab);
-		AddTab(header: TabHeader(tab.Title, () => CloseTab(tab)), content: tab.View, entry: tab);
+		AddTab(header: null!, content: tab.View, entry: tab);
 
 		return tab;
 	}
 
-	/// <summary>标签标题：标题文本 + 关闭按钮，与同类客户端的标签形态一致。</summary>
-	private UIElement TabHeader(string title, Action onClose)
-	{
-		var label = new TextBlock().Text(title).MaxWidth(180).FontSize(AppTheme.FontSizeCaption)
-			.TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(title);
-
-		return new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(4)
-			.Children(
-				label,
-				AppIcons.Button("x", Strings.CloseCurrentTab, onClose, size: 12));
-	}
-
-	/// <summary>登记标签页并记住标题控件，便于后续更新。</summary>
+	/// <summary>
+	/// 登记标签页。页签头不渲染（Codex 风格：切换与关闭走侧栏和命令面板，
+	/// 命令面板里有「关闭当前/其他/全部标签页」），流式状态经 <see cref="UpdateStatus"/> 反映在状态铭牌上。
+	/// </summary>
 	private void AddTab(UIElement header, UIElement content, object entry)
 	{
-		var item = new TabItem().Header(header).Content(content);
-		if (header is FrameworkElement element)
-		{
-			element.ContextMenu(TabMenu(element, entry));
-		}
-
-		if (header is StackPanel panel && panel.Children.Count > 0 && panel.Children[0] is TextBlock label)
-		{
-			_tabLabels[entry] = label;
-		}
-
-		_tabControl.AddTab(item);
+		// TabItem 强制要求 Header；给一个 0×0 空元素，页签条视觉上不可见（Codex 风格）。
+		_tabControl.AddTab(new TabItem().Header(new Border().Width(0).Height(0)).Content(content));
 	}
 
-	/// <summary>刷新标签标题：会话名 + 运行状态指示。</summary>
+	/// <summary>页签头已隐藏，标题刷新退化为空操作；保留调用点以维持状态时序。</summary>
 	private void UpdateTabHeaders()
 	{
-		foreach (var (entry, label) in _tabLabels)
-		{
-			if (entry is SessionTab tab)
-			{
-				label.Text(tab.IsStreaming ? $"{tab.Title} …" : tab.Title);
-			}
-		}
 	}
 
 	/// <summary>关闭设置/Git 这类辅助标签。</summary>
@@ -951,7 +1002,6 @@ public sealed partial class MainWindow : Window
 		}
 
 		_tabEntries.RemoveAt(index);
-		_tabLabels.Remove(entry);
 
 		if (index < _tabControl.Tabs.Count)
 		{
@@ -992,6 +1042,7 @@ public sealed partial class MainWindow : Window
 
 		_welcome.IsVisible(entry is null);
 		_tabControl.IsVisible(entry is not null);
+		ApplySidebarLayout();
 
 		switch (entry)
 		{
@@ -1004,14 +1055,14 @@ public sealed partial class MainWindow : Window
 				// 每次切到设置标签都重新取一次快照，数据是实时的。
 				view.Refresh();
 				_status.Text(Strings.SettingsTitle);
-				SetTopCaption(Strings.SettingsTitle);
+				SetSidebarCaption(Strings.SettingsTitle);
 				return;
 
 			case GitView git:
 				// Git 状态同样是现取现用。
 				git.Refresh();
 				_status.Text(Strings.Git);
-				SetTopCaption(Strings.Git);
+				SetSidebarCaption(Strings.Git);
 				return;
 
 			case SessionTab active:
@@ -1271,7 +1322,7 @@ public sealed partial class MainWindow : Window
 			var position = Position;
 			var preference = DesktopPreference.Load().WithWindow(Width, Height, position.X, position.Y) with
 			{
-				SidebarCollapsed = !_sidebar.IsVisible,
+				SidebarCollapsed = !_sidebarPreferred,
 				SidebarWidth = _workspace.FirstLength.IsAbsolute ? _workspace.FirstLength.Value : AppTheme.SidebarWidth,
 			};
 			preference.Save();
@@ -1284,10 +1335,48 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>收起时复用现有侧栏与会话，SplitPanel 自动把空间交给主区。</summary>
+	/// <summary>从辅助页返回工作区：最近的会话标签，没有会话则关掉当前辅助页回到欢迎页。</summary>
+	private void BackToWorkspace()
+	{
+		var index = _tabEntries.FindLastIndex(entry => entry is SessionTab);
+		if (index >= 0)
+		{
+			_tabControl.SelectedIndex = index;
+			UpdateStatus();
+		}
+		else
+		{
+			CloseCurrentTab();
+		}
+	}
+
 	private void ToggleSidebar()
 	{
-		_sidebar.IsVisible = !_sidebar.IsVisible;
+		_sidebarPreferred = !_sidebarPreferred;
+		ApplySidebarLayout();
 		SaveWindowState();
+	}
+
+	/// <summary>按偏好与当前标签类型套用侧栏可见性：设置等辅助页不需要会话侧栏。</summary>
+	private void ApplySidebarLayout()
+	{
+		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
+			? _tabEntries[_tabControl.SelectedIndex] : null;
+		var sidebarAllowed = entry is null or SessionTab;
+		_sidebar.IsVisible(_sidebarPreferred && sidebarAllowed);
+		UpdateSidebarChrome();
+	}
+
+	private void UpdateSidebarChrome()
+	{
+		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
+			? _tabEntries[_tabControl.SelectedIndex] : null;
+		var sidebarAllowed = entry is null or SessionTab;
+		var collapsed = !_sidebar.IsVisible;
+		// 展开入口只属于主页面（会话/欢迎）；设置等辅助页不放侧栏开关，左上角是返回工作区。
+		_sidebarFloat.IsVisible(collapsed && sidebarAllowed);
+		_backButton.IsVisible(!sidebarAllowed);
+		_collapsedActions.IsVisible(collapsed);
 	}
 
 	/// <summary>
@@ -1392,7 +1481,7 @@ public sealed partial class MainWindow : Window
 
 		_gitView = new GitView(() => CurrentSession()?.Cwd ?? _cwd);
 		_tabEntries.Add(_gitView);
-		AddTab(TabHeader(Strings.Git, () => CloseAuxTab(_gitView)), _gitView.View, _gitView);
+		AddTab(header: null!, _gitView.View, _gitView);
 
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateStatus();
@@ -1413,7 +1502,7 @@ public sealed partial class MainWindow : Window
 			() => _arguments.SessionDir is { Length: > 0 } dir ? dir : UsageStats.DefaultRoot(),
 			(provider, model) => _environment?.Registry.Get(provider, model)?.Cost);
 		_tabEntries.Add(_usageStatsView);
-		AddTab(TabHeader(Strings.UsageStatsTitle, () => CloseAuxTab(_usageStatsView)), _usageStatsView.View, _usageStatsView);
+		AddTab(header: null!, _usageStatsView.View, _usageStatsView);
 
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateStatus();
@@ -1432,7 +1521,7 @@ public sealed partial class MainWindow : Window
 
 		_filesView = new FileBrowserView(() => CurrentSession()?.Cwd ?? _cwd);
 		_tabEntries.Add(_filesView);
-		AddTab(TabHeader(Strings.FileBrowser, () => CloseAuxTab(_filesView)), _filesView.View, _filesView);
+		AddTab(header: null!, _filesView.View, _filesView);
 
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateStatus();
@@ -1450,7 +1539,7 @@ public sealed partial class MainWindow : Window
 
 		_terminalView = new TerminalDock(() => CurrentSession()?.Cwd ?? _cwd);
 		_tabEntries.Add(_terminalView);
-		AddTab(TabHeader(Strings.Terminal, () => CloseAuxTab(_terminalView)), _terminalView.View, _terminalView);
+		AddTab(header: null!, _terminalView.View, _terminalView);
 
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateStatus();
@@ -1468,7 +1557,7 @@ public sealed partial class MainWindow : Window
 
 		_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
 		_tabEntries.Add(_settingsView);
-		AddTab(TabHeader(Strings.Settings, () => CloseAuxTab(_settingsView)), _settingsView.View, _settingsView);
+		AddTab(header: null!, _settingsView.View, _settingsView);
 
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateStatus();
@@ -1647,11 +1736,10 @@ public sealed partial class MainWindow : Window
 	private void UpdateTopBarCaption()
 	{
 		var tab = CurrentTab();
-		SetTopCaption(tab is null ? ShortCwd(_cwd) : $"{tab.Title} · {ShortCwd(tab.Session.Cwd)}");
+		SetSidebarCaption(tab is null ? ShortCwd(_cwd) : $"{tab.Title} · {ShortCwd(tab.Session.Cwd)}");
 		_tabCaption.HoverTip(tab?.Session.Cwd ?? _cwd);
 	}
 
-	private void SetTopCaption(string text) => _tabCaption.Text(text);
 
 	/// <summary>在列表重建后把选中项恢复到指定会话。</summary>
 	private void RestoreSelection(string sessionId)
@@ -1692,7 +1780,6 @@ public sealed partial class MainWindow : Window
 	private void RebuildTabStrip()
 	{
 		_tabControl.ClearTabs();
-		_tabLabels.Clear();
 
 		foreach (var entry in _tabEntries)
 		{
@@ -1701,24 +1788,24 @@ public sealed partial class MainWindow : Window
 				case SessionTab tab:
 				{
 					var captured = tab;
-					AddTab(TabHeader(tab.Title, () => CloseTab(captured)), tab.View, tab);
+					AddTab(header: null!, tab.View, tab);
 					break;
 				}
 
 				case SettingsView settings:
-					AddTab(TabHeader(Strings.Settings, () => CloseAuxTab(settings)), settings.View, settings);
+					AddTab(header: null!, settings.View, settings);
 					break;
 
 				case GitView git:
-					AddTab(TabHeader(Strings.Git, () => CloseAuxTab(git)), git.View, git);
+					AddTab(header: null!, git.View, git);
 					break;
 
 				case FileBrowserView files:
-					AddTab(TabHeader(Strings.FileBrowser, () => CloseAuxTab(files)), files.View, files);
+					AddTab(header: null!, files.View, files);
 					break;
 
 				case TerminalDock terminal:
-					AddTab(TabHeader(Strings.Terminal, () => CloseAuxTab(terminal)), terminal.View, terminal);
+					AddTab(header: null!, terminal.View, terminal);
 					break;
 			}
 		}

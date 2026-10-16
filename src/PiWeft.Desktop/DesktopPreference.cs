@@ -45,7 +45,7 @@ public sealed record DesktopPreference
 	public bool SidebarCollapsed { get; init; }
 	public double SidebarWidth { get; init; } = AppTheme.SidebarWidth;
 	public double ChatFontSize { get; init; } = 16;
-	public double ReadingWidth { get; init; } = 1060;
+	public double ReadingWidth { get; init; } = 880;
 
 	public bool IsLight => Theme == LightTheme;
 
@@ -82,7 +82,7 @@ public sealed record DesktopPreference
 				SidebarCollapsed = root?["sidebarCollapsed"] is JsonValue collapsed && collapsed.TryGetValue<bool>(out var hidden) && hidden,
 				SidebarWidth = Math.Clamp(Number(root, "sidebarWidth", positive: true) ?? AppTheme.SidebarWidth, 200, 480),
 				ChatFontSize = Math.Clamp(Number(root, "chatFontSize", positive: true) ?? 16, 14, 22),
-				ReadingWidth = Math.Clamp(Number(root, "readingWidth", positive: true) ?? 1060, 760, 1360),
+				ReadingWidth = Math.Clamp(Number(root, "readingWidth", positive: true) ?? 880, 760, 1360),
 				WindowWidth = Number(root, "windowWidth", positive: true),
 				WindowHeight = Number(root, "windowHeight", positive: true),
 				WindowLeft = Number(root, "windowLeft"),

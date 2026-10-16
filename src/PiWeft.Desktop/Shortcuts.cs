@@ -131,7 +131,7 @@ public sealed class ShortcutMap
 		new(ShortcutActions.Terminal, "视图", "命令 Dock", "Ctrl+Shift+D"),
 		new(ShortcutActions.ToggleTheme, "视图", "切换深浅主题", "Ctrl+Shift+T"),
 		new(ShortcutActions.Refresh, "视图", "刷新会话列表", "Ctrl+R"),
-		new(ShortcutActions.Send, "会话", "发送输入框内容", "Ctrl+Enter"),
+		new(ShortcutActions.Send, "会话", "发送输入框内容", "Enter"),
 		new(ShortcutActions.Branches, "视图", "分支面板", "Ctrl+B"),
 	];
 

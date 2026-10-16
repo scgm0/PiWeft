@@ -24,8 +24,8 @@ internal sealed class AssistantMessageView : IDisposable
 	{
 		_focus = focus;
 		_openLink = openLink ?? (url => Shell.OpenMessageLink(url, Environment.CurrentDirectory));
-		_header.FontSize(AppTheme.FontSizeMicro).FontWeight(FontWeight.Bold).SubtleText();
-		_thinkingHeader.FontSize(AppTheme.FontSizeCaption)
+		_header.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText();
+		_thinkingHeader.FontSize(AppTheme.FontSizeCaption).FontFamily(AppTheme.MonoFont)
 			.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Thinking);
 		_focus.Track(_thinkingText);
 		_focus.Track(_streamingText);

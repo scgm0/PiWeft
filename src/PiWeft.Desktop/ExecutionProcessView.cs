@@ -25,16 +25,17 @@ internal sealed class ExecutionProcessView
 		_entry = entry;
 		_fold = new Expander().Header(_header.FontSize(AppTheme.FontSizeCaption).MutedText())
 			.IsExpanded(false).HoverTip(Strings.ExecutionExpandHint);
+		// 参照 Codex 风格：执行过程是通栏色调条，不随折叠改变宽度。
 		View = new Border().StyleName(AppStyles.ToolMessage).CornerRadius(AppTheme.RadiusSm)
-			.Padding(new Thickness(AppTheme.Space2)).MaxWidth(AppTheme.MessageMaxWidth).Child(_fold);
+			.HorizontalAlignment(HorizontalAlignment.Stretch)
+			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))
+			.MaxWidth(AppTheme.MessageMaxWidth).Child(_fold);
 		View.Tag = this;
 		_fold.ExpandedChanged += expanded =>
 		{
-			View.HorizontalAlignment = expanded ? HorizontalAlignment.Stretch : HorizontalAlignment.Left;
 			if (expanded) Build();
 		};
 		Track("run", _fold, entry.IsStreaming);
-		View.HorizontalAlignment = _fold.IsExpanded ? HorizontalAlignment.Stretch : HorizontalAlignment.Left;
 		Update(entry);
 	}
 

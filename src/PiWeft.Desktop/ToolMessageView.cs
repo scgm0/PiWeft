@@ -8,9 +8,22 @@ internal sealed class ToolMessageView
 {
 	public ToolMessageView(ChatEntry entry, TextFocusScrollGuard focus, Action<ImageSource>? preview = null)
 	{
+		// 状态点：成败一眼可辨，与参考稿一致。
+		var statusDot = new Border()
+			.Width(7).Height(7)
+			.CornerRadius(AppTheme.RadiusXs)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(0, 0, 6, 0))
+			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).Success);
+		var header = new TextBlock().Text(Strings.ToolSummary(entry.ToolName ?? string.Empty, entry.Text, entry.IsError, entry.DurationMs))
+			.FontSize(AppTheme.FontSizeCaption).MutedText().TextTrimming(TextTrimming.CharacterEllipsis);
+		if (entry.IsError)
+		{
+			statusDot.WithTheme((theme, element) => element.Background = AppTheme.For(theme).Error);
+		}
+
 		var expander = new Expander()
-			.Header(new TextBlock().Text(Strings.ToolSummary(entry.ToolName ?? string.Empty, entry.Text, entry.IsError, entry.DurationMs))
-				.FontSize(AppTheme.FontSizeCaption).MutedText().TextTrimming(TextTrimming.CharacterEllipsis))
+			.Header(new DockPanel().LastChildFill().Children(statusDot.DockLeft(), header))
 			.IsExpanded(false).HoverTip(Strings.ToolExpandHint);
 		focus.TrackFold(expander);
 		expander.ExpandedChanged += expanded =>

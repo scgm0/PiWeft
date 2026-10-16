@@ -19,7 +19,6 @@ public static class AppStyles
 	public const string FramedSidebar = "pi-sidebar-framed";
 	public const string TextInput = "pi-text-input";
 	public const string TextInputLine = "pi-text-input-line";
-	public const string TopBar = "pi-topbar";
 	public const string Sidebar = "pi-sidebar";
 	public const string Panel = "pi-panel";
 	public const string Card = "pi-card";
@@ -127,15 +126,6 @@ public static class AppStyles
 			{
 				Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border))],
 			})
-			.With(TopBar, () => new Style(typeof(Border))
-			{
-				Setters =
-				[
-					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).SidebarBackground)),
-					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
-					Setter.Create(Control.BorderThicknessProperty, 0.0),
-				],
-			})
 			.With(Sidebar, () => Fill(typeof(Border), p => p.SidebarBackground))
 			.With(Panel, () => Fill(typeof(Border), p => p.CardBackground))
 			.With(Card, () => new Style(typeof(Border))
@@ -143,9 +133,9 @@ public static class AppStyles
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackground)),
-					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
 					Setter.Create(Control.BorderThicknessProperty, 1.0),
-					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusLg),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusMd),
 				],
 			})
 			.With(CardMuted, () => new Style(typeof(Border))
@@ -153,7 +143,7 @@ public static class AppStyles
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
-					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
 					Setter.Create(Control.BorderThicknessProperty, 1.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
 				],
@@ -163,13 +153,14 @@ public static class AppStyles
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackground)),
-					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
 					Setter.Create(Control.BorderThicknessProperty, 1.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusLg),
 				],
 			})
 			.With(UserMessage, () => Fill(typeof(Border), p => p.CardBackgroundAlt))
-			.With(ToolMessage, () => CardStyle(typeof(Border), p => p.CardBackground))
+			// 工具调用条：无描边的色调条（图标 + 命令摘要 + 状态），展开后内容再进卡片。
+			.With(ToolMessage, () => Fill(typeof(Border), p => p.CardBackground))
 			.With(ToolError, () => new Style(typeof(Border))
 			{
 				Setters =
