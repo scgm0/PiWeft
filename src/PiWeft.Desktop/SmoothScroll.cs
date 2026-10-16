@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Animation;
@@ -8,6 +9,14 @@ namespace PiWeft.Desktop;
 /// <summary>Frame-driven scrolling with accumulated wheel targets and immediate interruption by direct input.</summary>
 internal sealed class SmoothScroll : IDisposable
 {
+	/// <summary>
+	/// 滚轮事件间隔低于该值视为连续输入流（macOS 触控板/Magic Mouse 及其惯性阶段以
+	/// 60-125Hz 发送分数增量）。对连续流逐事件重启 180ms 缓动会不断打断速度曲线，
+	/// 视觉上卡顿（macOS 上所有可滚动区域滚轮卡顿、拖滚动条正常的根因）；此时改为
+	/// 直接落位，与拖滚动条同一条渲染路径。离散滚轮刻度（Windows 鼠标）保留缓动。
+	/// </summary>
+	internal const double ContinuousWheelIntervalMs = 50;
+
 	private static readonly ConditionalWeakTable<FrameworkElement, SmoothScroll> Controllers = new();
 	private readonly FrameworkElement _view;
 	private readonly ScrollViewer? _viewport;
@@ -15,6 +24,8 @@ internal sealed class SmoothScroll : IDisposable
 	private readonly ScrollBar? _verticalBar;
 	private readonly ScrollBar? _horizontalBar;
 	private readonly AnimationClock _clock = new(TimeSpan.FromMilliseconds(180), EaseOut);
+	private readonly Stopwatch _wheelClock = Stopwatch.StartNew();
+	private double _lastWheelMs = double.NegativeInfinity;
 	private Point _from;
 	private Point _target;
 	private Point _lastOffset;
@@ -104,13 +115,31 @@ internal sealed class SmoothScroll : IDisposable
 	{
 		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
 		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
+		// macOS 对所有滚动设备（含普通滚轮鼠标）做系统级平滑与惯性合成：物理刻度之后
+		// 还会补发一串高频分数增量（Windows 的普通鼠标则一个刻度一个事件）。事件流连续
+		// 时逐次重启缓动会打断速度曲线，视觉上卡顿；此时直接落位，与拖滚动条同一路径。
+		var nowMs = _wheelClock.Elapsed.TotalMilliseconds;
+		var continuous = nowMs - _lastWheelMs < ContinuousWheelIntervalMs;
+		_lastWheelMs = nowMs;
+
 		var current = Offset;
 		var pending = IsAnimating ? new Point(_target.X, _toEnd ? MaxVerticalOffset : _target.Y) : current;
 		// Reversing the wheel should respond now instead of consuming a backlog in the previous direction.
 		var x = horizontal * (pending.X - current.X) < 0 ? current.X : pending.X;
 		var y = vertical * (pending.Y - current.Y) < 0 ? current.Y : pending.Y;
-		Start(new Point(Math.Clamp(x + horizontal * step, 0, Maximum(false)),
-			Math.Clamp(y + vertical * step, 0, MaxVerticalOffset)), toEnd: false, milliseconds: 180);
+		var target = new Point(Math.Clamp(x + horizontal * step, 0, Maximum(false)),
+			Math.Clamp(y + vertical * step, 0, MaxVerticalOffset));
+
+		if (continuous)
+		{
+			Stop();
+			Apply(target);
+		}
+		else
+		{
+			Start(target, toEnd: false, milliseconds: 180);
+		}
+
 		if (vertical != 0) VerticalInput?.Invoke(vertical);
 	}
 

@@ -146,10 +146,36 @@ public sealed class SmoothScrollTests
 		AnimationFrames.Advance(50);
 		Assert.False(smooth.IsAnimating);
 		view.IsVisible(true);
+		// 隔开一个事件间隔，让这次滚轮作为孤立刻度重新走缓动路径。
+		Thread.Sleep((int)SmoothScroll.ContinuousWheelIntervalMs + 20);
 		smooth.ScrollBy(0, 1);
 		Assert.True(smooth.IsAnimating);
 		smooth.Dispose();
 		Assert.False(smooth.IsAnimating);
+	}
+
+	[Fact]
+	public void ContinuousWheelStreamAppliesImmediatelyInsteadOfRestartingTheAnimation()
+	{
+		// macOS 对所有滚动设备做系统级平滑与惯性合成：事件流连续且增量为分数。
+		// 逐事件重启 180ms 缓动会打断速度曲线（滚轮卡顿的根因），连续流必须直接落位。
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+		smooth.ScrollBy(0, 1);
+		Assert.True(smooth.IsAnimating);
+		smooth.ScrollBy(0, 1);
+		Assert.False(smooth.IsAnimating);
+		Assert.Equal(step * 2, view.VerticalOffset);
+		AnimationFrames.Advance(200);
+		Assert.Equal(step * 2, view.VerticalOffset);
+
+		// 连续流中的反向输入同样立即从当前位置响应。
+		var offset = view.VerticalOffset;
+		smooth.ScrollBy(0, -1);
+		Assert.False(smooth.IsAnimating);
+		Assert.Equal(offset - step, view.VerticalOffset);
 	}
 
 	[Fact]
