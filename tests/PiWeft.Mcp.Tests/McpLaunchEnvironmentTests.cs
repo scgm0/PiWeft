@@ -109,6 +109,67 @@ public class McpLaunchEnvironmentTests : IDisposable
 	}
 
 	[Fact]
+	public void VersionDirectoriesAreOrderedNewestFirstNotAlphabetically()
+	{
+		// 字典序会把 v12 排在 v24 前面，GUI 启动就会解析到最老的 node（v12 跑不了 ??）。
+		var ordered = McpLaunchEnvironment.OrderVersionsNewestFirst(
+		[
+			Path.Combine(_root, "v12.22.12"),
+			Path.Combine(_root, "v24.15.0"),
+			Path.Combine(_root, "v16.20.2"),
+			Path.Combine(_root, "not-a-version"),
+		]).Select(Path.GetFileName).ToList();
+
+		Assert.Equal(["v24.15.0", "v16.20.2", "v12.22.12", "not-a-version"], ordered);
+	}
+
+	[Fact]
+	public void NvmDefaultAliasResolvesThroughChainedAliasesToTheHighestPartialMatch()
+	{
+		// 复现 macOS 朋友机器的布局：default → stable → "24.15"，已装 v12.22.12 与 v24.15.0。
+		var home = Path.Combine(_root, "home");
+		var versions = Path.Combine(home, ".nvm", "versions", "node");
+		Directory.CreateDirectory(Path.Combine(versions, "v12.22.12", "bin"));
+		Directory.CreateDirectory(Path.Combine(versions, "v24.15.0", "bin"));
+		var aliasDir = Path.Combine(home, ".nvm", "alias");
+		Directory.CreateDirectory(aliasDir);
+		File.WriteAllText(Path.Combine(aliasDir, "default"), "stable\n");
+		File.WriteAllText(Path.Combine(aliasDir, "stable"), "24.15\n");
+
+		Assert.Equal(Path.Combine(versions, "v24.15.0", "bin"), McpLaunchEnvironment.NvmDefaultBin(home));
+	}
+
+	[Fact]
+	public void NvmDefaultAliasPrefersTheExactVersionOverNewerInstalls()
+	{
+		var home = Path.Combine(_root, "home-exact");
+		var versions = Path.Combine(home, ".nvm", "versions", "node");
+		Directory.CreateDirectory(Path.Combine(versions, "v16.20.2", "bin"));
+		Directory.CreateDirectory(Path.Combine(versions, "v24.15.0", "bin"));
+		var aliasDir = Path.Combine(home, ".nvm", "alias");
+		Directory.CreateDirectory(aliasDir);
+		File.WriteAllText(Path.Combine(aliasDir, "default"), "16.20.2\n");
+
+		Assert.Equal(Path.Combine(versions, "v16.20.2", "bin"), McpLaunchEnvironment.NvmDefaultBin(home));
+	}
+
+	[Fact]
+	public void NvmDefaultBinReturnsNullWhenTheAliasIsMissingOrLts()
+	{
+		var empty = Path.Combine(_root, "home-empty");
+		Directory.CreateDirectory(empty);
+
+		Assert.Null(McpLaunchEnvironment.NvmDefaultBin(empty));
+
+		var lts = Path.Combine(_root, "home-lts");
+		var aliasDir = Path.Combine(lts, ".nvm", "alias");
+		Directory.CreateDirectory(aliasDir);
+		File.WriteAllText(Path.Combine(aliasDir, "default"), "lts/hydrogen\n");
+
+		Assert.Null(McpLaunchEnvironment.NvmDefaultBin(lts));
+	}
+
+	[Fact]
 	public async Task StartingAnUnknownCommandReportsTheSearchedPath()
 	{
 		if (OperatingSystem.IsWindows())

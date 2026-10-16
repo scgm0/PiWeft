@@ -259,8 +259,18 @@ internal static class McpLaunchEnvironment
 		}
 
 		// 版本管理器：每个 node 版本各有一个 bin 目录，只靠 <root>/current 会漏掉未切软链的机器。
+		// 顺序按版本号从新到旧：目录名字典序会把 v12 排在 v24 前面，而 PATH 查找按顺序取
+		// 第一个命中——GUI 启动就会解析到最老的 node，跑不了新语法（如 ??），服务器直接
+		// SyntaxError 退出（Node 12 + `??` 的真实案例）。nvm 的 default 别名最贴近用户
+		// 终端里的选择，解析得到就放在最前。
 		entries.Add(Path.Combine(home, ".nvm", "current", "bin"));
-		entries.AddRange(ChildDirectories(Path.Combine(home, ".nvm", "versions", "node"))
+		var nvmVersions = ChildDirectories(Path.Combine(home, ".nvm", "versions", "node"));
+		if (NvmDefaultBin(home) is { Length: > 0 } nvmDefault)
+		{
+			entries.Add(nvmDefault);
+		}
+
+		entries.AddRange(OrderVersionsNewestFirst(nvmVersions)
 			.Select(version => Path.Combine(version, "bin")));
 
 		var fnmRoots = new List<string>();
@@ -279,7 +289,7 @@ internal static class McpLaunchEnvironment
 		foreach (var root in fnmRoots)
 		{
 			entries.Add(Path.Combine(root, "current", "bin"));
-			entries.AddRange(ChildDirectories(Path.Combine(root, "node-versions"))
+			entries.AddRange(OrderVersionsNewestFirst(ChildDirectories(Path.Combine(root, "node-versions")))
 				.Select(version => Path.Combine(version, "installation", "bin")));
 		}
 
@@ -338,13 +348,187 @@ internal static class McpLaunchEnvironment
 		try
 		{
 			return Directory.Exists(parent)
-				? Directory.GetDirectories(parent).OrderBy(static directory => directory, StringComparer.Ordinal)
+				? Directory.GetDirectories(parent)
 				: [];
 		}
 		catch (Exception)
 		{
 			// 目录不可读时按不存在处理。
 			return [];
+		}
+	}
+
+	/// <summary>
+	/// 版本目录按版本号从新到旧排序。"v12.22.12" 这类名字的字典序与版本号无关（v12 排在
+	/// v24 前面），而 PATH 查找按顺序取第一个命中，排序错了 GUI 启动就会拿到最老的 node。
+	/// 版本号解析不出的目录排在最后，彼此仍按名字典序。
+	/// </summary>
+	internal static IEnumerable<string> OrderVersionsNewestFirst(IEnumerable<string> directories) =>
+		directories
+			.Select(directory => (Directory: directory, Key: VersionKey(directory)))
+			.OrderByDescending(entry => entry.Key, VersionKeyComparer.Instance)
+			.Select(entry => entry.Directory);
+
+	private static (ulong Major, ulong Minor, ulong Patch, bool HasVersion, string Name) VersionKey(string directory)
+	{
+		var name = Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+		// nvm/fnm 是 "v12.22.12"，mise 是 "20.15.0"：跳过可选的 "v" 后逐段解析数字。
+		var digits = name.StartsWith('v') ? name[1..] : name;
+		var major = 0UL;
+		var minor = 0UL;
+		var patch = 0UL;
+		var hasVersion = false;
+
+		foreach (var (index, value) in Segments(digits))
+		{
+			switch (index)
+			{
+				case 0 when TryParseUlong(value, out var parsed):
+					major = parsed;
+					hasVersion = true;
+					break;
+				case 1 when TryParseUlong(value, out var parsed):
+					minor = parsed;
+					break;
+				case 2 when TryParseUlong(value, out var parsed):
+					patch = parsed;
+					break;
+				default:
+					break; // 只认三段数字，之后的段（如 "-rc.1" 的残余）不参与比较。
+			}
+		}
+
+		return (major, minor, patch, hasVersion, name);
+
+		static IEnumerable<(int Index, string Value)> Segments(string text)
+		{
+			var parts = text.Split('.');
+			for (var index = 0; index < parts.Length && index < 3; index++)
+			{
+				yield return (index, parts[index]);
+			}
+		}
+	}
+
+	private static bool TryParseUlong(string text, out ulong value)
+	{
+		value = 0;
+		if (text.Length == 0)
+		{
+			return false;
+		}
+
+		foreach (var character in text)
+		{
+			if (character is < '0' or > '9')
+			{
+				return false;
+			}
+
+			value = checked(value * 10 + (ulong)(character - '0'));
+		}
+
+		return true;
+	}
+
+	private sealed class VersionKeyComparer : IComparer<(ulong Major, ulong Minor, ulong Patch, bool HasVersion, string Name)>
+	{
+		internal static readonly VersionKeyComparer Instance = new();
+
+		public int Compare(
+			(ulong Major, ulong Minor, ulong Patch, bool HasVersion, string Name) left,
+			(ulong Major, ulong Minor, ulong Patch, bool HasVersion, string Name) right)
+		{
+			// 自然升序（版本小在前），方向由 OrderByDescending 反转：有版本号的排前面，
+			// 版本从新到旧；版本相同时按名字字典序，保证结果确定。
+			var byHasVersion = left.HasVersion.CompareTo(right.HasVersion);
+			if (byHasVersion != 0)
+			{
+				return byHasVersion;
+			}
+
+			var byMajor = left.Major.CompareTo(right.Major);
+			if (byMajor != 0)
+			{
+				return byMajor;
+			}
+
+			var byMinor = left.Minor.CompareTo(right.Minor);
+			if (byMinor != 0)
+			{
+				return byMinor;
+			}
+
+			var byPatch = left.Patch.CompareTo(right.Patch);
+			return byPatch != 0 ? byPatch : string.CompareOrdinal(left.Name, right.Name);
+		}
+	}
+
+	/// <summary>
+	/// 解析 nvm 的 default 别名指向的 bin 目录（最贴近用户终端里 <c>node</c> 的版本）：
+	/// <c>alias/default</c> → 版本号或再一层别名 → <c>versions/node/&lt;版本&gt;</c>，
+	/// 别名只写到部分版本号（如 <c>24.15</c>）时取匹配的最高已装版本。
+	/// 解析不出来（无别名、lts 名、格式不符）返回 null，退回“从新到旧”的排序。
+	/// </summary>
+	internal static string? NvmDefaultBin(string home)
+	{
+		if (string.IsNullOrEmpty(home))
+		{
+			return null;
+		}
+
+		try
+		{
+			var aliasDir = Path.Combine(home, ".nvm", "alias");
+			var target = ReadAlias(aliasDir, "default");
+			if (target.Length == 0 || target.Contains('/'))
+			{
+				// 无别名，或 lts 代号（"lts/hydrogen"）这类不带版本号的形态。
+				return null;
+			}
+
+			var versionsRoot = Path.Combine(home, ".nvm", "versions", "node");
+			for (var hop = 0; hop < 2; hop++)
+			{
+				var exact = Path.Combine(versionsRoot, target);
+				if (Directory.Exists(exact))
+				{
+					return Path.Combine(exact, "bin");
+				}
+
+				var next = ReadAlias(aliasDir, target);
+				if (next.Length == 0)
+				{
+					break;
+				}
+
+				target = next;
+			}
+
+			// 别名只写了部分版本号（"24.15" → v24.15.0）：取匹配的最高版本。
+			var prefix = target.StartsWith('v') ? target[1..] : target;
+			return OrderVersionsNewestFirst(Directory.GetDirectories(versionsRoot)
+					.Where(directory => Path.GetFileName(directory).TrimStart('v').StartsWith(prefix, StringComparison.Ordinal)))
+				.Select(directory => Path.Combine(directory, "bin"))
+				.FirstOrDefault();
+		}
+		catch (Exception)
+		{
+			// 别名解析是尽力而为：任何失败都只意味着走“从新到旧”的排序。
+			return null;
+		}
+	}
+
+	private static string ReadAlias(string aliasDir, string name)
+	{
+		try
+		{
+			var path = Path.Combine(aliasDir, name);
+			return File.Exists(path) ? File.ReadAllText(path).Trim() : string.Empty;
+		}
+		catch (Exception)
+		{
+			return string.Empty;
 		}
 	}
 }
