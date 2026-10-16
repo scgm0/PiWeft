@@ -82,6 +82,13 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 	/// </summary>
 	public event Action<string, JsonObject?>? NotificationReceived;
 
+	/// <summary>
+	/// 连接中断时传输层补充的诊断说明，例如 stdio 进程的退出码与 stderr 摘要。
+	/// 读取循环失败挂起请求时会把它并入异常消息，否则用户只能看到一句
+	/// "connection closed"，无从判断服务器为何退出。
+	/// </summary>
+	public volatile string? ClosureDiagnostics;
+
 	/// <summary>建立连接并完成 MCP 握手。</summary>
 	public static async Task<McpClient> ConnectAsync(
 		Stream input,
@@ -419,16 +426,51 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		}
 		finally
 		{
+			var detail = await DescribeClosureAsync().ConfigureAwait(false);
 			lock (_gate)
 			{
 				foreach (var pending in _pending.Values)
 				{
-					pending.TrySetException(new IOException("The MCP connection closed before a response arrived"));
+					pending.TrySetException(new IOException(ClosedMessage(detail)));
 				}
 
 				_pending.Clear();
 			}
 		}
+	}
+
+	/// <summary>连接中断时挂起请求收到的异常消息；带得上诊断就带上。</summary>
+	private static string ClosedMessage(string detail) =>
+		detail.Length > 0
+			? $"The MCP connection closed before a response arrived ({detail})"
+			: "The MCP connection closed before a response arrived";
+
+	/// <summary>
+	/// stdout 关闭与传输层上报退出诊断（进程退出事件、stderr 读完）之间存在竞争：
+	/// 还有挂起请求时给诊断一小段时间到达，再带着已知信息失败。没有挂起请求或已
+	/// 主动释放时立即返回，不拖慢释放路径。
+	/// </summary>
+	private async Task<string> DescribeClosureAsync()
+	{
+		if (_disposed)
+		{
+			return ClosureDiagnostics ?? string.Empty;
+		}
+
+		lock (_gate)
+		{
+			if (_pending.Count == 0)
+			{
+				return ClosureDiagnostics ?? string.Empty;
+			}
+		}
+
+		for (var attempt = 0; attempt < 20 && ClosureDiagnostics is null && !_disposed; attempt++)
+		{
+			await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
+		}
+
+		return ClosureDiagnostics ?? string.Empty;
 	}
 
 	private void Dispatch(string line)

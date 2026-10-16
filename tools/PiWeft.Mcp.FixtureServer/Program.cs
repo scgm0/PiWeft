@@ -20,6 +20,16 @@ if (args.Length >= 2 && args[0] == "--llm" && int.TryParse(args[1], out var llmP
 	return await RunLlmAsync(llmPort, args.Length >= 3 ? args[2] : null);
 }
 
+// Crash mode: complain on stderr and exit without speaking MCP, so tests can assert
+// that the client surfaces the exit code and the stderr tail instead of a bare
+// "connection closed" message.
+if (args.Length >= 2 && args[0] == "--crash")
+{
+	var message = args.Length >= 3 ? args[2] : "fixture crash";
+	Console.Error.WriteLine(message);
+	return int.TryParse(args[1], out var crashCode) ? crashCode : 1;
+}
+
 return await RunStdioAsync();
 
 // ---------------------------------------------------------------- stdio mode

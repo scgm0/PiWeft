@@ -126,6 +126,34 @@ public class McpProcessTests
 		Assert.Contains(connection.Tools, static tool => tool.Name == "mcp__fixture_server__echo");
 	}
 
+	[Fact]
+	public async Task StartupCrashSurfacesExitCodeAndStderrInsteadOfBareConnectionClosed()
+	{
+		var config = new McpServerConfig
+		{
+			Name = "crash",
+			Command = DotnetHost,
+			Arguments = [FixtureAssembly(), "--crash", "7", "image-gen needs GEMINI_API_KEY"],
+			Timeout = 30,
+		};
+
+		var exception = await Assert.ThrowsAsync<IOException>(
+			() => McpProcess.StartAsync(config, CancellationToken.None));
+
+		// The message must carry what the user needs to fix the server: why it died
+		// (exit code) and what it said (stderr tail), not just "connection closed".
+		Assert.Contains("exited with code 7", exception.Message);
+		Assert.Contains("image-gen needs GEMINI_API_KEY", exception.Message);
+		Assert.StartsWith("The MCP connection closed before a response arrived (", exception.Message);
+
+		// The same detail flows into ConnectAllAsync's per-server error line, which is
+		// what the UI shows.
+		await using var connection = await McpServers.ConnectAllAsync([config]);
+		var error = Assert.Single(connection.Errors);
+		Assert.Contains("crash: The MCP connection closed before a response arrived (process exited with code 7", error);
+		Assert.Contains("image-gen needs GEMINI_API_KEY", error);
+	}
+
 	private sealed class HttpFixture(Process process, int port) : IAsyncDisposable
 	{
 		public string Url => $"http://127.0.0.1:{port}/mcp/";

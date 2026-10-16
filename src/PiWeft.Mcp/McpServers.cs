@@ -67,20 +67,49 @@ public sealed class McpProcess : IAsyncDisposable
 			throw new InvalidOperationException($"Failed to start MCP server '{config.Name}' ({config.Command})");
 		}
 
-		// 持续读取 stderr，避免话多的服务器因管道写满而阻塞。
+		// 持续读取 stderr，避免话多的服务器因管道写满而阻塞；同时保留一份有界摘要，
+		// 进程异常退出时挂起请求能带上退出码与最后几行 stderr，而不是只有一句
+		// "connection closed"——那句话没有任何可操作的信息（见 McpClient.ClosureDiagnostics）。
+		var stderrTail = new StderrTail(capacity: 4000);
+		var exitDetail = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 		_ = Task.Run(async () =>
 		{
 			try
 			{
-				while (await process.StandardError.ReadLineAsync().ConfigureAwait(false) is not null)
+				while (await process.StandardError.ReadLineAsync().ConfigureAwait(false) is { } line)
 				{
-					// 诊断信息有意丢弃；stdout 归 MCP 协议使用。
+					stderrTail.Append(line);
 				}
 			}
 			catch (Exception)
 			{
 				// 进程已退出。
 			}
+
+			try
+			{
+				using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+				await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+			}
+			catch (Exception)
+			{
+				// 等不到退出码就用已知信息：进程退出（stderr 已关闭）这一事实本身仍然有用。
+			}
+
+			string detail;
+			try
+			{
+				detail = process.HasExited
+					? $"process exited with code {process.ExitCode}"
+					: "process exited";
+			}
+			catch (Exception)
+			{
+				detail = "process exited";
+			}
+
+			var tail = stderrTail.ToString();
+			exitDetail.TrySetResult(tail.Length > 0 ? $"{detail}: {tail}" : detail);
 		});
 
 		McpClient client;
@@ -91,8 +120,13 @@ public sealed class McpProcess : IAsyncDisposable
 				process.StandardInput.BaseStream,
 				cancellationToken).ConfigureAwait(false);
 		}
-		catch (Exception)
+		catch (Exception exception)
 		{
+			// 握手失败时尽量带上服务器的退出码与 stderr 摘要：正在崩溃的进程几乎都已退出，
+			// 短等一拍就够；还活着的服务器按失败原因本身处理（超时/协议错误），杀掉后不猜退出码。
+			var detail = await ExitDetailAsync(process, stderrTail, wait: TimeSpan.FromMilliseconds(500))
+				.ConfigureAwait(false);
+
 			// 握手失败时必须杀掉已经拉起来的进程：否则它会一直挂着，占住内存与管道。
 			try
 			{
@@ -101,17 +135,71 @@ public sealed class McpProcess : IAsyncDisposable
 					process.Kill(entireProcessTree: true);
 				}
 			}
-			catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
+			catch (Exception killException) when (killException is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
 			{
 				// 进程已经退出，或平台不支持整树杀进程。
 			}
 
 			process.Dispose();
+
+			if (detail.Length > 0 && exception is IOException closed)
+			{
+				throw new IOException($"{closed.Message} ({detail})", closed);
+			}
+
 			throw;
 		}
 
+		// 进程退出后把退出码与 stderr 摘要挂到客户端上：握手期间或会话中途崩溃的
+		// 挂起请求都能带上原因。
+		_ = exitDetail.Task.ContinueWith(
+			static (task, state) => ((McpClient)state!).ClosureDiagnostics = task.Result,
+			client,
+			CancellationToken.None,
+			TaskContinuationOptions.ExecuteSynchronously,
+			TaskScheduler.Default);
+
 		client.ConfiguredServerName = config.Name;
 		return new McpProcess(process, client, config);
+	}
+
+	/// <summary>
+	/// 汇总服务器进程的退出诊断：退出码与 stderr 尾部。先给正在退出的进程一小段时间，
+	/// 超时后按仍存活处理；两者都拿不到就返回空串，调用方沿用原始错误。
+	/// </summary>
+	private static async Task<string> ExitDetailAsync(Process process, StderrTail stderrTail, TimeSpan wait)
+	{
+		try
+		{
+			using var timeout = new CancellationTokenSource(wait);
+			await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+		}
+		catch (Exception)
+		{
+			// 没等到退出就按仍存活处理，不猜退出码。
+		}
+
+		string? code = null;
+		try
+		{
+			if (process.HasExited)
+			{
+				code = $"process exited with code {process.ExitCode}";
+			}
+		}
+		catch (Exception)
+		{
+			// 退出码拿不到就只报 stderr。
+		}
+
+		var tail = stderrTail.ToString();
+		return (code, tail.Length) switch
+		{
+			(null, 0) => string.Empty,
+			(null, _) => tail,
+			(_, 0) => code!,
+			(_, _) => $"{code}: {tail}",
+		};
 	}
 
 	public async ValueTask DisposeAsync()
@@ -135,6 +223,42 @@ public sealed class McpProcess : IAsyncDisposable
 		}
 
 		_process.Dispose();
+	}
+
+	/// <summary>有界的 stderr 尾部缓冲：只保留最后若干行，供崩溃诊断使用。</summary>
+	private sealed class StderrTail(int capacity)
+	{
+		private const int MaxLineLength = 500;
+
+		private readonly object _gate = new();
+		private readonly Queue<string> _lines = new();
+		private int _length;
+
+		public void Append(string line)
+		{
+			if (line.Length > MaxLineLength)
+			{
+				line = string.Concat(line.AsSpan(0, MaxLineLength), "…");
+			}
+
+			lock (_gate)
+			{
+				_lines.Enqueue(line);
+				_length += line.Length + 3;
+				while (_length > capacity && _lines.Count > 1)
+				{
+					_length -= _lines.Dequeue().Length + 3;
+				}
+			}
+		}
+
+		public override string ToString()
+		{
+			lock (_gate)
+			{
+				return string.Join(" | ", _lines);
+			}
+		}
 	}
 }
 
