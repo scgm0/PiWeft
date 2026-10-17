@@ -48,6 +48,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private readonly List<bool> _lineDirty = [];
 	private int _selectionVersion;
 	private int _cachedSelectionVersion = -1;
+	private int _cursorFocusVersion;
+	private int _cachedCursorFocusVersion = -1;
 	private TerminalCursorStyle _paintCursorStyle;
 	private bool _paintReverseVideo;
 	private uint?[] _paintPalette = new uint?[256];
@@ -155,8 +157,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_scrollBar.ValueChanged += OnScrollBarChanged;
 
 		_panel = new Border()
-			.StyleName(AppStyles.Code)
-			.CornerRadius(AppTheme.RadiusMd)
+			.StyleName(AppStyles.Terminal)
 			.Padding(new Thickness(AppTheme.Space2));
 
 		_input = new TerminalInputSurface(this);
@@ -166,7 +167,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		// IME 预编辑浮层：终端没有文本缓冲区，直接把组合中的文字画在光标格上。
 		_imeLabel.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeCaption);
 		_imePreview = new Border()
-			.Background(AppTheme.CodeBackground)
+			.Background(AppTheme.TerminalBackground)
 			.IsVisible(false)
 			.IsHitTestVisible(false)
 			.HorizontalAlignment(HorizontalAlignment.Left)
@@ -226,6 +227,51 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	}
 
 	public UIElement View { get; }
+
+	/// <summary>把键盘焦点交给终端输入层；自定义 shell 输入框打开时优先给它。</summary>
+	public void FocusTerminal()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		if (_shellInput.IsVisible)
+		{
+			_shellInput.Focus();
+			return;
+		}
+
+		_input.Focus();
+	}
+
+	/// <summary>主题切换：终端表面、光标、选区、链接与 ANSI 系统色都按新主题重绘。</summary>
+	public void ApplyTheme()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		AppStyles.ApplyTextColors((Element)View);
+		_imePreview.Background(AppTheme.TerminalBackground);
+		foreach (var run in _imeLabel.Inlines)
+		{
+			run.Foreground = AppTheme.TerminalCursor;
+		}
+
+		_paintedPanelBackground = default;
+		_renderedVersion = -1;
+		_cachedColorVersion = -1;
+		_cachedSelectionVersion = -1;
+		_cachedCursorFocusVersion = -1;
+		for (var index = 0; index < _lineSignatures.Count; index++)
+		{
+			_lineSignatures[index] = ulong.MaxValue;
+		}
+
+		PaintIfDirty(force: true);
+	}
 
 	/// <summary>窗口less 测试用：当前视口文本。</summary>
 	internal string ScreenText
@@ -687,7 +733,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 		_imeLabel.Inlines.Add(new Run(text)
 		{
-			Foreground = AppTheme.Accent,
+			Foreground = AppTheme.TerminalCursor,
 			Decoration = TextDecoration.Underline,
 		});
 		PositionImePreview();
@@ -768,8 +814,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			.OnClick(CancelPaste);
 
 		return new Border()
-			.StyleName(AppStyles.Code)
-			.CornerRadius(AppTheme.RadiusMd)
+			.StyleName(AppStyles.Terminal)
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2))
 			.Margin(new Thickness(AppTheme.Space2))
 			.HorizontalAlignment(HorizontalAlignment.Right)
@@ -900,12 +945,10 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	{
 		_inputFocused = focused;
 		_blinkTicks = 0;
-		if (!focused && _blinkHidden)
-		{
-			// 失焦时立刻恢复实心光标，避免留下半亮状态。
-			_blinkHidden = false;
-			_blinkDirty = true;
-		}
+		// 焦点切换时光标颜色/明暗会变，立即重绘；失焦不保留半亮的闪烁相。
+		_blinkHidden = false;
+		_blinkDirty = true;
+		Interlocked.Increment(ref _cursorFocusVersion);
 
 		bool report;
 		lock (_gate)
@@ -918,10 +961,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			SendText(focused ? "\u001b[I" : "\u001b[O");
 		}
 
-		if (focused)
-		{
-			Wake();
-		}
+		Wake();
 	}
 
 	/// <summary>DECSCUSR 请求闪烁时按 ~480ms 翻转光标；返回定时器是否应保持运行。</summary>
@@ -1256,8 +1296,9 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			return;
 		}
 
-		var width = _panel.Bounds.Width - _panel.Padding.HorizontalThickness - ScrollBarReserve;
-		var height = _panel.Bounds.Height - _panel.Padding.VerticalThickness;
+		var border = _panel.BorderThickness * 2;
+		var width = _panel.Bounds.Width - _panel.Padding.HorizontalThickness - border - ScrollBarReserve;
+		var height = _panel.Bounds.Height - _panel.Padding.VerticalThickness - border;
 		if (width <= 0 || height <= 0)
 		{
 			return;
@@ -1412,6 +1453,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			// 行级缓存：行内容、视口映射、光标所在行都没变就不重建 runs。
 			var viewTop = _screen.ViewTop;
 			var selectionVersion = Volatile.Read(ref _selectionVersion);
+			var cursorFocusVersion = Volatile.Read(ref _cursorFocusVersion);
 			_paintCursorStyle = _screen.CursorStyle;
 			_paintReverseVideo = _screen.ReverseVideo;
 			_paintPalette = _screen.Palette;
@@ -1419,8 +1461,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			_paintDefaultBackground = _screen.DefaultBackgroundRgb;
 			_paintCursorColor = _screen.CursorColorRgb;
 			// OSC 10/11 查询时用当前主题色作答（主题可能被用户切换）。
-			_screen.HostForeground = ToRgb(AppTheme.CodeText);
-			_screen.HostBackground = ToRgb(AppTheme.CodeBackground);
+			_screen.HostForeground = ToRgb(AppTheme.TerminalForeground);
+			_screen.HostBackground = ToRgb(AppTheme.TerminalBackground);
 			var colorVersion = _screen.ColorVersion;
 			// DECSCUSR / DECSCNM / OSC 4/10/11/12 只改整屏渲染参数，不碰行内容，必须主动全量重绘一次。
 			var renderChanged = _paintCursorStyle != _cachedCursorStyle ||
@@ -1429,12 +1471,23 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			_cachedCursorStyle = _paintCursorStyle;
 			_cachedReverseVideo = _paintReverseVideo;
 			_cachedColorVersion = colorVersion;
-			var allDirty = selectionVersion != _cachedSelectionVersion || renderChanged;
+			var allDirty = selectionVersion != _cachedSelectionVersion ||
+				cursorFocusVersion != _cachedCursorFocusVersion ||
+				renderChanged;
 			_cachedSelectionVersion = selectionVersion;
+			_cachedCursorFocusVersion = cursorFocusVersion;
+			if (renderChanged)
+			{
+				// OSC 4/10/11/12 或光标形态变化不进 run 结构，靠重置指纹强制重建。
+				for (var index = 0; index < _lineSignatures.Count; index++)
+				{
+					_lineSignatures[index] = ulong.MaxValue;
+				}
+			}
 
 			var panelBackground = _paintDefaultBackground is { } backgroundOverride
 				? FromRgb(backgroundOverride)
-				: AppTheme.CodeBackground;
+				: AppTheme.TerminalBackground;
 			if (!panelBackground.Equals(_paintedPanelBackground))
 			{
 				_paintedPanelBackground = panelBackground;
@@ -1474,7 +1527,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			}
 
 			var runs = _lineRuns[row];
-			var signature = Signature(runs, row == cursorRow ? cursorColumn : -1);
+			var signature = Signature(runs, row == cursorRow ? cursorColumn : -1, row == cursorRow && _inputFocused);
 			if (signature == _lineSignatures[row])
 			{
 				continue;
@@ -1608,13 +1661,13 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			return;
 		}
 
-		// 默认前景/背景取代码配色，OSC 10/11 可覆盖；DECSCNM 时两者互换，SGR 7 再按单元格换一次。
+		// 默认前景/背景取终端主题色，OSC 10/11 可覆盖；DECSCNM 时两者互换，SGR 7 再按单元格换一次。
 		var defaultForeground = _paintDefaultForeground is { } foregroundOverride
 			? FromRgb(foregroundOverride)
-			: AppTheme.CodeText;
+			: AppTheme.TerminalForeground;
 		var defaultBackground = _paintDefaultBackground is { } backgroundOverride
 			? FromRgb(backgroundOverride)
-			: AppTheme.CodeBackground;
+			: AppTheme.TerminalBackground;
 		if (_paintReverseVideo)
 		{
 			(defaultForeground, defaultBackground) = (defaultBackground, defaultForeground);
@@ -1628,12 +1681,14 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			(foreground, background) = (background, foreground);
 		}
 
-		var cursorColor = _paintCursorColor is { } cursorOverride ? FromRgb(cursorOverride) : AppTheme.Accent;
+		var cursorColor = _paintCursorColor is { } cursorOverride ? FromRgb(cursorOverride) : AppTheme.TerminalCursor;
+		var unfocusedCursorColor = AppTheme.TerminalCursorUnfocused;
+		var cursorFocused = _inputFocused;
 		var element = new Run(text);
 		if (cursor && _paintCursorStyle == TerminalCursorStyle.Block)
 		{
-			// 块状光标：反色块，块内文字跟着反色。
-			element.Background = cursorColor;
+			// 块状光标：聚焦是实心强调色，失焦是更暗的灰块；块内文字始终取终端底色。
+			element.Background = cursorFocused ? cursorColor : unfocusedCursorColor;
 			element.Foreground = defaultBackground;
 		}
 		else
@@ -1641,7 +1696,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			element.Foreground = foreground;
 			if (run.Selected)
 			{
-				element.Background = AppTheme.AccentSoft;
+				element.Background = AppTheme.TerminalSelection;
 			}
 			else if (_paintReverseVideo || explicitDefault || run.Background.Kind != TerminalColorKind.Default)
 			{
@@ -1650,16 +1705,17 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 			if (cursor)
 			{
-				// 下划线/竖线光标不遮字，用光标色标识（竖线以下划线近似）。
-				element.Foreground = cursorColor;
-				if (_paintCursorStyle == TerminalCursorStyle.Underline)
+				// 下划线/竖线光标不遮字，用光标色标识（竖线以下划线近似）；失焦时同样降为灰。
+				element.Foreground = cursorFocused ? cursorColor : unfocusedCursorColor;
+				if (_paintCursorStyle is TerminalCursorStyle.Underline or TerminalCursorStyle.Bar)
 				{
+					// MewUI 的 Run 没有竖线装饰，Bar 与 Underline 都以下划线近似。
 					element.Decoration |= TextDecoration.Underline;
 				}
 			}
 			else if (run.Link && run.Foreground.Kind == TerminalColorKind.Default)
 			{
-				element.Foreground = AppTheme.Accent;
+				element.Foreground = AppTheme.TerminalLink;
 			}
 		}
 
@@ -1708,7 +1764,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	/// <summary>默认色交给主题/OSC 覆盖，调色板（含 OSC 4 改写）与真彩色转成具体颜色。</summary>
 	private Color? Resolve(TerminalColor color) => color.Kind switch
 	{
-		TerminalColorKind.Indexed => FromRgb(_paintPalette[color.Index] ?? TerminalPalette.Rgb(color.Index)),
+		TerminalColorKind.Indexed => FromRgb(_paintPalette[color.Index] ?? TerminalPalette.Rgb(color.Index, AppTheme.IsLightTheme)),
 		TerminalColorKind.Rgb => FromRgb(color.Rgb),
 		_ => null,
 	};
@@ -1721,10 +1777,11 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private static uint ToRgb(Color color) => ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
 
 	/// <summary>行内容指纹：用结构哈希代替字符串拼接，每帧每行零字符串分配。</summary>
-	private static ulong Signature(List<TerminalRun> runs, int cursor)
+	private static ulong Signature(List<TerminalRun> runs, int cursor, bool cursorFocused = false)
 	{
 		var hash = new HashCode();
 		hash.Add(cursor);
+		hash.Add(cursorFocused);
 		foreach (var run in runs)
 		{
 			hash.Add(run.Column);

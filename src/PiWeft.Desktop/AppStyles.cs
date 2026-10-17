@@ -29,6 +29,7 @@ public static class AppStyles
 	public const string ToolMessage = "pi-message-tool";
 	public const string ToolError = "pi-message-tool-error";
 	public const string Code = "pi-code";
+	public const string Terminal = "pi-terminal";
 	public const string Composer = "pi-composer";
 	public const string SelectedRow = "pi-row-selected";
 
@@ -64,6 +65,7 @@ public static class AppStyles
 
 	// 按钮
 	public const string PrimaryButton = "pi-button-primary";
+	public const string CodeButton = "pi-button-code";
 	public const string GhostButton = "pi-button-ghost";
 	public const string SelectedButton = "pi-button-selected";
 
@@ -195,6 +197,16 @@ public static class AppStyles
 				],
 			})
 			.With(Code, () => Fill(typeof(Border), p => p.CodeBackground))
+			.With(Terminal, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TerminalBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TerminalBorder)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusMd),
+				],
+			})
 			.With(SelectedRow, () => Fill(typeof(Border), p => p.AccentSoft))
 			// 标题栏左右两段：左段与侧栏同色、右段与主区同色，拼成 PiDeck 式的连续窗框。
 			.With(TitleBarSidebar, () => new Style(typeof(Border))
@@ -411,6 +423,40 @@ public static class AppStyles
 			.With(TextFaint, () => Text(p => p.TextFaint))
 			.With(AccentText, () => Text(p => p.Accent))
 			.With(OnAccentText, () => Text(p => p.TextOnAccent))
+			// 深色代码表面（工具输出/diff、图片预览遮罩）上的按钮：前景始终取 CodeText，
+			// 悬停是白色低透明度，不跟随浅色主题的 Ghost 底。
+			.With(CodeButton, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText.WithAlpha(0x1a))),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText)),
+						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText.WithAlpha(0x2e))),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText)),
+						],
+					},
+				],
+			})
 			.With(PrimaryButton, () => new Style(typeof(Button))
 			{
 				BasedOn = ButtonInteraction,

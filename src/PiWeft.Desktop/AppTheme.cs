@@ -73,6 +73,20 @@ public static class AppTheme
 
 	public static Color CodeText => Current.CodeText;
 
+	public static Color TerminalBackground => Current.TerminalBackground;
+
+	public static Color TerminalForeground => Current.TerminalForeground;
+
+	public static Color TerminalBorder => Current.TerminalBorder;
+
+	public static Color TerminalSelection => Current.TerminalSelection;
+
+	public static Color TerminalCursor => Current.TerminalCursor;
+
+	public static Color TerminalCursorUnfocused => Current.TerminalCursorUnfocused;
+
+	public static Color TerminalLink => Current.TerminalLink;
+
 	public static Color TextPrimary => Current.TextPrimary;
 
 	public static Color TextMuted => Current.TextMuted;

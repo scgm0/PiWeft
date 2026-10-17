@@ -24,6 +24,21 @@ public sealed record AppPalette
 
 	public required Color CodeText { get; init; }
 
+	// 终端是独立可交互表面：浅色主题下用浅底深字，深色主题下保持代码块的深底。
+	public required Color TerminalBackground { get; init; }
+
+	public required Color TerminalForeground { get; init; }
+
+	public required Color TerminalBorder { get; init; }
+
+	public required Color TerminalSelection { get; init; }
+
+	public required Color TerminalCursor { get; init; }
+
+	public required Color TerminalCursorUnfocused { get; init; }
+
+	public required Color TerminalLink { get; init; }
+
 	// 文本
 	public required Color TextPrimary { get; init; }
 
@@ -64,6 +79,13 @@ public sealed record AppPalette
 		HoverBackground = new Color(0x2b, 0x2b, 0x2b),
 		CodeBackground = new Color(0x0f, 0x0f, 0x0f),
 		CodeText = new Color(0xe6, 0xe6, 0xe6),
+		TerminalBackground = new Color(0x0f, 0x0f, 0x0f),
+		TerminalForeground = new Color(0xe6, 0xe6, 0xe6),
+		TerminalBorder = new Color(0x20, 0x20, 0x20),
+		TerminalSelection = new Color(0x2f, 0x2f, 0x2f),
+		TerminalCursor = new Color(0xfa, 0xfa, 0xfa),
+		TerminalCursorUnfocused = new Color(0x54, 0x54, 0x54),
+		TerminalLink = new Color(0x60, 0xa5, 0xfa),
 		TextPrimary = new Color(0xf5, 0xf5, 0xf5),
 		TextMuted = new Color(0xa6, 0xa6, 0xa6),
 		TextSubtle = new Color(0x7d, 0x7d, 0x7d),
@@ -90,6 +112,13 @@ public sealed record AppPalette
 		HoverBackground = new Color(0xe5, 0xe5, 0xe5),
 		CodeBackground = new Color(0x17, 0x17, 0x17),
 		CodeText = new Color(0xe6, 0xe6, 0xe6),
+		TerminalBackground = new Color(0xff, 0xff, 0xff),
+		TerminalForeground = new Color(0x17, 0x17, 0x17),
+		TerminalBorder = new Color(0xe0, 0xe0, 0xe0),
+		TerminalSelection = new Color(0xe8, 0xe8, 0xe8),
+		TerminalCursor = new Color(0x17, 0x17, 0x17),
+		TerminalCursorUnfocused = new Color(0xa3, 0xa3, 0xa3),
+		TerminalLink = new Color(0x1d, 0x4e, 0xd8),
 		TextPrimary = new Color(0x17, 0x17, 0x17),
 		TextMuted = new Color(0x52, 0x52, 0x52),
 		TextSubtle = new Color(0x73, 0x73, 0x73),

@@ -78,7 +78,7 @@ public sealed class TerminalDockTests
 		dock.View.Measure(new Size(600, 400));
 		dock.View.Arrange(new Rect(0, 0, 600, 400));
 
-		var panel = Find<Border>(root).First(border => border.StyleName == AppStyles.Code);
+		var panel = Find<Border>(root).First(border => border.StyleName == AppStyles.Terminal);
 		Assert.NotEqual(default, panel.Background);
 		GC.KeepAlive(root);
 	}

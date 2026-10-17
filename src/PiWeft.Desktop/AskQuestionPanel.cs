@@ -14,6 +14,7 @@ internal sealed class AskQuestionPanel
 	private readonly StackPanel _body = new();
 	private readonly Button _submit;
 	private Window? _window;
+	private Window? _themeWindow;
 	private UIElement? _returnFocus;
 	private TaskCompletionSource<string?>? _completion;
 	private List<Func<AskAnswer>> _answers = [];
@@ -75,6 +76,12 @@ internal sealed class AskQuestionPanel
 		}
 
 		_window = window;
+		if (!ReferenceEquals(_themeWindow, window))
+		{
+			if (_themeWindow is not null) _themeWindow.ThemeChanged -= OnWindowThemeChanged;
+			_themeWindow = window;
+			window.ThemeChanged += OnWindowThemeChanged;
+		}
 		_returnFocus = window.FocusManager.FocusedElement;
 		_completion = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
 		cancellationToken.Register(static state => ((AskQuestionPanel)state!).Finish(cancelled: true), this);
@@ -88,9 +95,12 @@ internal sealed class AskQuestionPanel
 
 		TransientOverlay.Open(window, View, () => Finish(cancelled: true));
 		View.IsVisible(true);
+		AppStyles.ApplyTextColors(View);
 		_submit.Focus();
 		return _completion.Task;
 	}
+
+	private void OnWindowThemeChanged(Theme oldTheme, Theme newTheme) => AppStyles.ApplyTextColors(View);
 
 	private void BuildQuestion(AskQuestion question)
 	{
@@ -234,6 +244,12 @@ internal sealed class AskQuestionPanel
 		if (_window is { } window)
 		{
 			TransientOverlay.Remove(window, View);
+		}
+
+		if (_themeWindow is { } themeWindow)
+		{
+			themeWindow.ThemeChanged -= OnWindowThemeChanged;
+			_themeWindow = null;
 		}
 
 		_window = null;

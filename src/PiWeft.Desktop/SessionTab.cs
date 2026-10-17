@@ -528,11 +528,13 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>原位换色，保留 Markdown、选区、工具折叠与阅读位置。</summary>
 	public void ApplyTheme()
 	{
+		AppStyles.ApplyTextColors((Element)View);
 		_status.Foreground(AppStyles.ColorForRole(AppStyles.RoleSubtle));
 		AppStyles.ApplyTextColors(_modelPicker.View);
 		AppStyles.ApplyTextColors(_statisticsPanel.View);
 		AppStyles.ApplyTextColors(_usagePanel.View);
-		if (_branchPanel.View.IsVisible) AppStyles.ApplyTextColors(_branchPanel.View);
+		AppStyles.ApplyTextColors(_branchPanel.View);
+		AppStyles.ApplyTextColors(_imagePreview.View);
 	}
 
 

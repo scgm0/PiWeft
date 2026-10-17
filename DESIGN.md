@@ -36,6 +36,9 @@ PiWeft（weft = 纬线）是一台**织机**：会话是经线，agent 的每一
 | Error / Success / Info | `#f87171` / `#4ade80` / `#60a5fa` | 同系加深 | 语义 |
 | Thinking | `#a78bfa` | `#6d28d9` | 思考文本 |
 
+终端是独立的交互表面：浅色主题用白色底 + 深色字（Terminal tokens），深色主题沿用 CodeBackground；
+ANSI 系统色在浅色终端里换成深色版本，选区/光标/链接/IME 都使用对应的 Terminal token。
+
 ## 形
 
 - 圆角：Xs 4 / Sm 6 / Md 8 / Lg 10。**没有 12+ 的大圆角**，没有药丸气泡：

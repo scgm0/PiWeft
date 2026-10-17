@@ -25,6 +25,15 @@ internal static class ThemePalette
 		CodeBackground = fallback.CodeBackground,
 		CodeText = Pick(theme, ThemeTokens.MdCodeBlock, Pick(theme, ThemeTokens.MdCode, fallback.CodeText)),
 
+		// 终端是独立的浅/深表面：跟随 fallback 的主题明暗，保留自定义主题的链接色。
+		TerminalBackground = fallback.TerminalBackground,
+		TerminalForeground = fallback.TerminalForeground,
+		TerminalBorder = fallback.TerminalBorder,
+		TerminalSelection = fallback.TerminalSelection,
+		TerminalCursor = fallback.TerminalCursor,
+		TerminalCursorUnfocused = fallback.TerminalCursorUnfocused,
+		TerminalLink = Pick(theme, ThemeTokens.MdLink, fallback.TerminalLink),
+
 		TextPrimary = Pick(theme, ThemeTokens.Text, fallback.TextPrimary),
 		TextMuted = Pick(theme, ThemeTokens.Muted, fallback.TextMuted),
 		TextSubtle = Pick(theme, ThemeTokens.Dim, fallback.TextSubtle),

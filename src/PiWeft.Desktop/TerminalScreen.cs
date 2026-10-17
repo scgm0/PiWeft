@@ -2642,7 +2642,18 @@ internal static class TerminalPalette
 {
 	private static readonly uint[] Colors = Create();
 
+	// 浅色终端下 16 个系统色换成深色版本：白/亮白不能再是近白色，否则在白底上看不见。
+	private static readonly uint[] LightColors =
+	[
+		0x24292f, 0xcf222e, 0x116329, 0x9a6700, 0x0969da, 0x8250df, 0x1b7c83, 0x6e7781,
+		0x57606a, 0xa40e26, 0x1a7f37, 0x7d4e00, 0x0550ae, 0x6639ba, 0x0f6e75, 0x24292f,
+	];
+
 	public static uint Rgb(byte index) => Colors[index];
+
+	/// <summary>按终端表面明暗取系统色；16 色以后的立方体/灰阶保持 xterm 标准。</summary>
+	public static uint Rgb(byte index, bool light) =>
+		light && index < LightColors.Length ? LightColors[index] : Colors[index];
 
 	private static uint[] Create()
 	{

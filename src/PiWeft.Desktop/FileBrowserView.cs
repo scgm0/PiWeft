@@ -67,6 +67,9 @@ public sealed class FileBrowserView
 
 	public UIElement View { get; }
 
+	/// <summary>主题切换后刷新角色文本颜色；图形在各自 WithTheme 里跟随。</summary>
+	public void ApplyTheme() => AppStyles.ApplyTextColors(View);
+
 	/// <summary>重新列举当前目录。</summary>
 	public void Refresh()
 	{

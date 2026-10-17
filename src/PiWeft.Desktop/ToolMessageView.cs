@@ -41,8 +41,8 @@ internal sealed class ToolMessageView
 			if (entry.Patch is { Length: > 0 } patch)
 			{
 				var host = new Border();
-				var unified = new Button().Ghost().Content(Label(Strings.DiffUnified)).OnClick(() => host.Child(DiffView.Render(patch, focus)));
-				var sideBySide = new Button().Ghost().Content(Label(Strings.DiffSideBySide)).OnClick(() => host.Child(DiffView.RenderSideBySide(patch, focus)));
+				var unified = new Button().StyleName(AppStyles.CodeButton).Content(CodeLabel(Strings.DiffUnified)).OnClick(() => host.Child(DiffView.Render(patch, focus)));
+				var sideBySide = new Button().StyleName(AppStyles.CodeButton).Content(CodeLabel(Strings.DiffSideBySide)).OnClick(() => host.Child(DiffView.RenderSideBySide(patch, focus)));
 				host.Child(DiffView.Render(patch, focus));
 				body.Children(new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(unified, sideBySide), host);
 			}
@@ -66,5 +66,8 @@ internal sealed class ToolMessageView
 
 	public Border View { get; }
 
-	private static TextBlock Label(string text) => new TextBlock().Text(text).FontSize(AppTheme.FontSizeMicro).PrimaryText();
+	private static TextBlock CodeLabel(string text) => new TextBlock()
+		.Text(text)
+		.FontSize(AppTheme.FontSizeMicro)
+		.WithTheme((theme, block) => block.Foreground = AppTheme.For(theme).CodeText);
 }

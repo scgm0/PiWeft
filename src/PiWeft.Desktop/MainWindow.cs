@@ -34,6 +34,8 @@ public sealed partial class MainWindow : Window
 	private FileBrowserView? _filesView;
 	private TerminalDock? _terminalView;
 	private SessionTab? _lastSessionTab;
+	/// <summary>上一次 UpdateStatus 看到的标签，用来区分“切到终端”和普通的流式状态刷新。</summary>
+	private object? _activeEntry;
 	private CommandPalette? _palette;
 	/// <summary>主题目录监视器：主题文件变化时即时换肤（PI-10）。</summary>
 	private ThemeWatcher? _themeWatcher;
@@ -265,10 +267,7 @@ public sealed partial class MainWindow : Window
 		// 新建会话 + 搜索会话（两条与侧栏同色的导航行）+ 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
 		// 「搜索会话」不是常驻输入框：点击打开搜索弹窗（Ctrl+K），结果按名称、路径与正文过滤。
 		_sessionSearch = new SessionSearchPalette(() => _allSessions, OpenSessionFromSearch);
-		_sessionSearch.Closed += () =>
-		{
-			if (CurrentTab() is { } tab) tab.FocusComposer();
-		};
+		_sessionSearch.Closed += FocusActiveEntry;
 		_searchButton = AppIcons.TextButton("search", Strings.SessionSearch, () => _sessionSearch.Toggle(this), strong: true)
 			.MinHeight(AppTheme.ControlHeightLg)
 			.CornerRadius(AppTheme.RadiusMd);
@@ -418,17 +417,7 @@ public sealed partial class MainWindow : Window
 					_status.HorizontalAlignment(HorizontalAlignment.Center)));
 
 		_palette = new CommandPalette(PaletteCommands);
-		_palette.Closed += () =>
-		{
-			if (CurrentTab() is { } tab)
-			{
-				tab.FocusComposer();
-			}
-			else
-			{
-				_searchButton.Focus();
-			}
-		};
+		_palette.Closed += FocusActiveEntry;
 
 		var main = new Grid();
 		main.Children(_tabControl);
@@ -1028,6 +1017,8 @@ public sealed partial class MainWindow : Window
 	{
 		var index = _tabControl.SelectedIndex;
 		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
+		var entryChanged = !ReferenceEquals(_activeEntry, entry);
+		_activeEntry = entry;
 		if (_lastSessionTab is { } previous && !ReferenceEquals(entry, previous)) previous.HideTransientPanels();
 
 		_welcome.IsVisible(entry is null);
@@ -1055,8 +1046,15 @@ public sealed partial class MainWindow : Window
 				return;
 
 			case FileBrowserView:
-			case TerminalDock:
 			case UsageStatsView:
+				return;
+
+			case TerminalDock terminal:
+				if (entryChanged)
+				{
+					ScheduleTerminalFocus(terminal);
+				}
+
 				return;
 
 			case SessionTab active:
@@ -1278,6 +1276,11 @@ public sealed partial class MainWindow : Window
 			}
 
 			_settingsView?.ApplyTheme();
+			_terminalView?.ApplyTheme();
+			_gitView?.ApplyTheme();
+			_filesView?.ApplyTheme();
+			_usageStatsView?.ApplyTheme();
+			AppStyles.ApplyTextColors(_sessionSearch.View);
 		}
 		catch (Exception ex)
 		{
@@ -1310,6 +1313,11 @@ public sealed partial class MainWindow : Window
 			}
 
 			_settingsView?.ApplyTheme();
+			_terminalView?.ApplyTheme();
+			_gitView?.ApplyTheme();
+			_filesView?.ApplyTheme();
+			_usageStatsView?.ApplyTheme();
+			AppStyles.ApplyTextColors(_sessionSearch.View);
 		}
 		catch (Exception ex)
 		{
@@ -1539,6 +1547,7 @@ public sealed partial class MainWindow : Window
 		if (_terminalView is not null && index >= 0)
 		{
 			_tabControl.SelectedIndex = index;
+			ScheduleTerminalFocus(_terminalView);
 			return;
 		}
 
@@ -1548,6 +1557,41 @@ public sealed partial class MainWindow : Window
 
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateStatus();
+		ScheduleTerminalFocus(_terminalView);
+	}
+
+	/// <summary>浮层关闭后把焦点还给它覆盖的当前视图：会话给输入框，终端给终端输入层。</summary>
+	private void FocusActiveEntry()
+	{
+		var index = _tabControl.SelectedIndex;
+		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
+		switch (entry)
+		{
+			case TerminalDock terminal:
+				ScheduleTerminalFocus(terminal);
+				break;
+			case SessionTab tab:
+				tab.FocusComposer();
+				break;
+			default:
+				_searchButton.Focus();
+				break;
+		}
+	}
+
+	/// <summary>
+	/// 终端刚挂到标签树时输入层未必已经可聚焦；排到下一次 UI 调度，等布局完成后再交焦点。
+	/// </summary>
+	private static void ScheduleTerminalFocus(TerminalDock terminal)
+	{
+		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
+		if (dispatcher is null)
+		{
+			terminal.FocusTerminal();
+			return;
+		}
+
+		dispatcher.BeginInvoke(terminal.FocusTerminal);
 	}
 
 	/// <summary>打开（或选中）设置标签。</summary>

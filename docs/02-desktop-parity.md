@@ -54,7 +54,7 @@ MewUI 0.22.1 字族注册表只保留最后注册的文件，Regular 必须最�
 | MCP | 启动连接、状态、stdio 工具热刷新、设置面板手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、diff、在编辑器中打开、暂存/取消暂存、提交、分支切换/新建、检查点创建/恢复 | 推送/拉取、历史图谱、冲突解决界面 |
 | 文件 | 目录导航、Git 标记、内置文本编辑器与冲突检测保存、回答级修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
-| 终端 | 命令 Dock：MiniPty 伪终端（Linux/macOS `forkpty`/`posix_spawn`，Windows ConPTY）、交互式 shell、Shell 选择（自动/检测到的/自定义路径，偏好持久化）、scrollback 与滚动条、文本选择（连选/选词/选行/Alt 区块）、SGR 颜色、滚动区域、字符集、备用屏、窗口缩放重排、制表位、DECSCUSR（含闪烁）/DECSCNM/DECALN/DECRQM、OSC 4/10/11/12 调色板与默认色、OSC 8 超链接与 OSC 52、鼠标上报（1000/1002/1003、1006/1015/1016）、bracketed paste（多行先确认）、IME 预编辑与候选窗定位、Ctrl+C/V 复制粘贴（macOS Cmd）、PRIMARY selection（拖选复制/中键粘贴）、右键菜单、重启 | 完整 VT100 边界行为、终端多标签、快照回放 |
+| 终端 | 命令 Dock：MiniPty 伪终端（Linux/macOS `forkpty`/`posix_spawn`，Windows ConPTY）、交互式 shell、Shell 选择（自动/检测到的/自定义路径，偏好持久化）、scrollback 与滚动条、文本选择（连选/选词/选行/Alt 区块）、SGR 颜色、滚动区域、字符集、备用屏、窗口缩放重排、制表位、DECSCUSR（含闪烁）/DECSCNM/DECALN/DECRQM、OSC 4/10/11/12 调色板与默认色、OSC 8 超链接与 OSC 52、鼠标上报（1000/1002/1003、1006/1015/1016）、bracketed paste（多行先确认）、IME 预编辑与候选窗定位、Ctrl+C/V 复制粘贴（macOS Cmd）、PRIMARY selection（拖选复制/中键粘贴）、右键菜单、重启、打开自动聚焦、输入焦点光标明暗、浅/深主题终端表面与 16 色适配 | 完整 VT100 边界行为、终端多标签、快照回放 |
 | 主题与窗口 | 深浅/系统主题预览、侧栏收起与宽度恢复、尺寸与零/负位置恢复、单实例 | 自定义强调色、多显示器可见性/最大化恢复 |
 
 内嵌浏览器、自动更新、托盘、通知等不在实现范围内（命令 Dock 已是基于 MiniPty 的伪终端，但不是完整终端仿真器）。
