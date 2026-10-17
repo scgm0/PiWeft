@@ -67,8 +67,10 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>「编辑重发」时记录要回到的条目；发送前先在该处分支。</summary>
 	private string? _pendingBranchEntryId;
 	private readonly TextBlock _emptyContext = new();
-	private readonly TextBlock _cwdLine = new();
 	private readonly Border _emptyCard;
+
+	/// <summary>输入区整列：提示文本 + 输入框 + 状态栏，空会话时一起居中。</summary>
+	private readonly StackPanel _composerColumn;
 	private Border _headerRow = null!;
 	private readonly WrapPanel _commandBar = new();
 	private readonly Border _editNotice;
@@ -125,13 +127,12 @@ public sealed partial class SessionTab : IDisposable
 		};
 
 
+		// 空会话提示：与输入区同属一列，居中时正好落在输入框上方，只留一段固定间距。
 		_emptyCard = new Border()
 			.Background(AppTheme.Transparent)
-			.Padding(new Thickness(AppTheme.Space6))
 			.MaxWidth(560)
 			.HorizontalAlignment(HorizontalAlignment.Center)
-			.VerticalAlignment(VerticalAlignment.Center)
-			.Margin(new Thickness(AppTheme.Space6))
+			.Margin(new Thickness(AppTheme.Space6, 0, AppTheme.Space6, AppTheme.Space4))
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
 				.Children(
@@ -174,12 +175,6 @@ public sealed partial class SessionTab : IDisposable
 				// 否则交给框架做原有文本粘贴。
 				if (key.Key == Key.V && key.PrimaryKey && !key.AltKey && PasteImageFromClipboard()) key.Handled = true;
 			});
-
-		// 工作区路径铭牌：等宽小字，只在会话为空时显示在输入框上方。
-		_cwdLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)
-			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.Margin(new Thickness(AppTheme.Space2, 0, 0, 0))
-			.IsVisible(false);
 
 		_commandBar.Spacing(AppTheme.Space2).Margin(new Thickness(0, 0, 0, 4)).IsVisible(false);
 
@@ -257,7 +252,7 @@ public sealed partial class SessionTab : IDisposable
 			.Margin(new Thickness(AppTheme.Space4, AppTheme.Space2, AppTheme.Space4, AppTheme.Space3))
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
-				.Children(_cwdLine, _todoStrip, _editNotice, _commandBar, _attachmentBar,
+				.Children(_todoStrip, _editNotice, _commandBar, _attachmentBar,
 					new Grid().Children(_composer, _composerHint.Text(Strings.ComposerPlaceholder)
 						.FontSize(AppTheme.FontSizeChat).SubtleText().TextTrimming(TextTrimming.CharacterEllipsis)
 						.Margin(new Thickness(AppTheme.Space2)).IsHitTestVisible(false)
@@ -269,7 +264,6 @@ public sealed partial class SessionTab : IDisposable
 
 		// 主区在「对话」与「分支」两个视图之间切换，两者叠放，只显示其中一个。
 		_mainArea.Children(_messages);
-		_mainArea.Children(_emptyCard.IsVisible(false));
 		_mainArea.Children(_noMatches.Text(Strings.NoMatches).MutedText()
 			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center).IsVisible(false));
 		_mainArea.Children(_branchPanel.View.IsVisible(false));
@@ -326,15 +320,21 @@ public sealed partial class SessionTab : IDisposable
 				new DockPanel().LastChildFill().Children(contextButton.DockRight(),
 					_statisticsLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)));
 
-		var layout = new DockPanel()
-			.LastChildFill()
+		// 输入区整列（提示文本 + 输入框 + 状态栏）：空会话时落在填充行并居中，有消息后回到贴底的自适应行。
+		_composerColumn = new StackPanel()
+			.Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Stretch)
+			.Children(_emptyCard.IsVisible(false), composerPane,
+				statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)));
+
+		var layout = new Grid()
+			.Rows("Auto,Auto,*,Auto")
 			.Children(
-				_headerRow.DockTop(),
+				_headerRow.Row(0),
 				_searchBox.HorizontalAlignment(HorizontalAlignment.Left)
-					.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)).DockTop(),
-				new StackPanel().Spacing(2).Children(composerPane,
-					statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2))).DockBottom(),
-				_mainArea);
+					.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)).Row(1),
+				_mainArea.Row(2),
+				_composerColumn.Row(3));
 		View = layout.AllowDrop().OnDragEnter(OnFilesDragOver).OnDragOver(OnFilesDragOver).OnDrop(OnFilesDropped)
 			.OnLayoutSizeChanged(args => _composer.Height = args.NewSize.Width < 640 || args.NewSize.Height < 560 ? 56 : AppTheme.ComposerHeight);
 
@@ -698,7 +698,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		_conversationScroll.Stop();
 		_messages.IsVisible(showChat);
-		_emptyCard.IsVisible(showChat && _chat.Entries().Count == 0);
+		SetEmptyState(showChat && _chat.Entries().Count == 0);
 		_noMatches.IsVisible(showChat && _filter.Length > 0 && _messages.ItemsSource.Count == 0);
 		_branchPanel.View.IsVisible(!showChat);
 
@@ -710,6 +710,24 @@ public sealed partial class SessionTab : IDisposable
 		{
 			_branchPanel.Refresh();
 		}
+	}
+
+	/// <summary>
+	/// 空会话：提示文本与输入区（含状态栏）作为一个整体居中，落在消息区正中；
+	/// 有记录后输入区回到贴底的自适应行。只换网格行，不重建输入框 —— 草稿、附件与焦点都保留。
+	/// </summary>
+	private void SetEmptyState(bool empty)
+	{
+		_emptyCard.IsVisible(empty);
+		var row = empty ? 2 : 3;
+		if (Grid.GetRow(_composerColumn) != row)
+		{
+			// 换行只发生在有/无记录之间：整棵树重排一次，行高与对齐立刻生效。
+			Grid.SetRow(_composerColumn, row);
+			View.InvalidateMeasure();
+		}
+
+		_composerColumn.VerticalAlignment(empty ? VerticalAlignment.Center : VerticalAlignment.Stretch);
 	}
 
 	/// <summary>选择图片并附加到下一次发送。图片以 Base64 随消息发给模型（`prompt` 的 images 字段同源）。</summary>
@@ -1062,13 +1080,10 @@ public sealed partial class SessionTab : IDisposable
 		_copyReply.IsEnabled = all.Any(static row => row.Role == ChatRole.Assistant && row.Text.Length > 0);
 
 		_timeline.SetEntries(entries, force);
-		_emptyCard.IsVisible(all.Count == 0 && _messages.IsVisible);
+		SetEmptyState(all.Count == 0 && _messages.IsVisible);
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
 		if (all.Count == 0)
 		{
-			// 空会话时输入框上方只显示工作区路径。
-		_cwdLine.Text(Session.Cwd);
-		_cwdLine.IsVisible(entries.Count == 0);
 			_conversationScroll.Stop();
 		}
 

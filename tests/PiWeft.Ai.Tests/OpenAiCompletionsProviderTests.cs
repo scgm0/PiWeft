@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using PiWeft.Ai;
 using PiWeft.Ai.Providers.OpenAi;
 using Xunit;
@@ -262,6 +263,138 @@ public class OpenAiCompletionsProviderTests
 		Assert.Equal("high", OpenAiCompletionsProvider.ResolveReasoningEffort(mapped, new StreamOptions { ThinkingLevel = "max" }));
 		Assert.Null(OpenAiCompletionsProvider.ResolveReasoningEffort(mapped, new StreamOptions { ThinkingLevel = ThinkingLevels.Off }));
 		Assert.Null(OpenAiCompletionsProvider.ResolveReasoningEffort(Model() with { Reasoning = false }, new StreamOptions()));
+	}
+
+	private static Model DeepSeekThinkingModel() => Model() with
+	{
+		Compat = new JsonObject
+		{
+			["thinkingFormat"] = "deepseek",
+			["requiresReasoningContentOnAssistantMessages"] = true,
+		},
+		ThinkingLevelMap = new Dictionary<string, string?> { ["low"] = "low", ["high"] = "high", ["max"] = "max" },
+	};
+
+	[Fact]
+	public void ThinkingSwitchFollowsTheDeclaredFormat()
+	{
+		var deepSeek = DeepSeekThinkingModel();
+
+		// DeepSeek 默认开启思考，关闭必须显式下发 thinking.type=disabled。
+		Assert.Equal("disabled", OpenAiCompletionsProvider.ResolveThinkingMode(deepSeek, new StreamOptions { ThinkingLevel = ThinkingLevels.Off }));
+		Assert.Equal("enabled", OpenAiCompletionsProvider.ResolveThinkingMode(deepSeek, new StreamOptions { ThinkingLevel = ThinkingLevels.Low }));
+		Assert.Equal("enabled", OpenAiCompletionsProvider.ResolveThinkingMode(deepSeek, new StreamOptions { ThinkingLevel = "max" }));
+
+		// 没有声明 thinking 开关的端点只看 reasoning_effort。
+		Assert.Null(OpenAiCompletionsProvider.ResolveThinkingMode(Model(), new StreamOptions { ThinkingLevel = "max" }));
+		Assert.Null(OpenAiCompletionsProvider.ResolveThinkingMode(deepSeek with { Reasoning = false }, new StreamOptions()));
+
+		// 目录把 off 映射成 null 时该档位本身不可用（与 pi 的 getSupportedThinkingLevels 一致）：
+		// 请求 off 会被收敛到下一个可用档位，因此仍然下发 enabled。
+		var omittedOff = deepSeek with
+		{
+			ThinkingLevelMap = new Dictionary<string, string?> { [ThinkingLevels.Off] = null, ["high"] = "high" },
+		};
+		Assert.Equal("enabled", OpenAiCompletionsProvider.ResolveThinkingMode(omittedOff, new StreamOptions { ThinkingLevel = ThinkingLevels.Off }));
+	}
+
+	[Fact]
+	public async Task DeepSeekRequestTurnsThinkingOffAndDropsTheEffort()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			DeepSeekThinkingModel(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = "k", ThinkingLevel = ThinkingLevels.Off });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		Assert.Equal("disabled", document.RootElement.GetProperty("thinking").GetProperty("type").GetString());
+		Assert.False(document.RootElement.TryGetProperty("reasoning_effort", out _));
+	}
+
+	[Fact]
+	public async Task DeepSeekRequestReplaysReasoningContentOnAssistantMessages()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+
+		var context = new Context
+		{
+			Messages =
+			[
+				new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 },
+				new AssistantMessage
+				{
+					Content =
+					[
+						new ThinkingContent { Thinking = "plan", ThinkingSignature = "reasoning_content" },
+						new TextContent { Text = "done" },
+					],
+					Timestamp = 2,
+				},
+			],
+		};
+
+		var stream = provider.Stream(DeepSeekThinkingModel(), context, new StreamOptions { ApiKey = "k", ThinkingLevel = "high" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var assistant = document.RootElement.GetProperty("messages")[1];
+		Assert.Equal("plan", assistant.GetProperty("reasoning_content").GetString());
+	}
+
+	[Fact]
+	public async Task DeepSeekRequestSendsEmptyReasoningContentWhenTheTurnHadNone()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+
+		var context = new Context
+		{
+			Messages =
+			[
+				new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 },
+				new AssistantMessage { Content = [new TextContent { Text = "plain" }], Timestamp = 2 },
+			],
+		};
+
+		var stream = provider.Stream(DeepSeekThinkingModel(), context, new StreamOptions { ApiKey = "k", ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in stream)
+		{
+		}
+
+		// 带工具的 DeepSeek 请求要求每条助手消息都有 reasoning_content，漏传会直接 400。
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var assistant = document.RootElement.GetProperty("messages")[1];
+		Assert.Equal(string.Empty, assistant.GetProperty("reasoning_content").GetString());
+	}
+
+	[Fact]
+	public async Task DeepSeekRequestTurnsThinkingOnWithTheMappedEffort()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			DeepSeekThinkingModel(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = "k", ThinkingLevel = "max" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		Assert.Equal("enabled", document.RootElement.GetProperty("thinking").GetProperty("type").GetString());
+		Assert.Equal("max", document.RootElement.GetProperty("reasoning_effort").GetString());
 	}
 }
 

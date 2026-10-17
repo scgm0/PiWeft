@@ -15,6 +15,12 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 {
 	public const string ApiId = "openai-completions";
 
+	/// <summary>目录里 <c>compat.thinkingFormat</c> 的取值：用 <c>thinking.type</c> 开关思考。</summary>
+	private const string DeepSeekThinkingFormat = "deepseek";
+
+	private const string ThinkingEnabled = "enabled";
+	private const string ThinkingDisabled = "disabled";
+
 	private static readonly byte[] DoneMarker = "[DONE]"u8.ToArray();
 
 	private readonly HttpClient _http;
@@ -42,9 +48,11 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		{
 			var messages = Transcript.Normalize(context);
 			var tools = Transcript.GetTools(messages);
-			var reasoningEffort = ResolveReasoningEffort(model, options);
+			var thinkingMode = ResolveThinkingMode(model, options);
+			// 关闭思考时不下发强度：两个字段同时出现时，端点的开关与档位可能互相矛盾。
+			var reasoningEffort = thinkingMode == ThinkingDisabled ? null : ResolveReasoningEffort(model, options);
 
-			using var request = BuildRequest(model, messages, tools, options, reasoningEffort);
+			using var request = BuildRequest(model, messages, tools, options, reasoningEffort, thinkingMode);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
@@ -118,11 +126,12 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		IReadOnlyList<Message> messages,
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
-		string? reasoningEffort)
+		string? reasoningEffort,
+		string? thinkingMode)
 	{
 		var maxTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
 		var bytes = JsonPayload.Write(writer =>
-			OpenAiCompletionsWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, maxTokens));
+			OpenAiCompletionsWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, thinkingMode, maxTokens));
 
 		if (options.OnPayload is { } onPayload)
 		{
@@ -173,6 +182,37 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		return request;
 	}
 
+	/// <summary>
+	/// 用 <c>thinking.type</c> 显式开关思考的端点在「关闭」时返回 <c>disabled</c>，
+	/// 其余思考档位返回 <c>enabled</c>；没有这个开关的端点返回 <c>null</c>。
+	/// 目录里 <c>off: null</c> 表示「省略思考参数即关闭」，此时按 pi 的做法不下发开关。
+	/// </summary>
+	internal static string? ResolveThinkingMode(Model model, StreamOptions options)
+	{
+		if (!model.Reasoning || !UsesThinkingSwitch(model))
+		{
+			return null;
+		}
+
+		var level = ThinkingLevelResolver.Clamp(model, options.ThinkingLevel ?? ThinkingLevels.Medium);
+		if (level != ThinkingLevels.Off)
+		{
+			return ThinkingEnabled;
+		}
+
+		var offDeclaredAsOmitted = model.ThinkingLevelMap?.TryGetValue(ThinkingLevels.Off, out var off) == true && off is null;
+		return offDeclaredAsOmitted ? null : ThinkingDisabled;
+	}
+
+	/// <summary>
+	/// 目录用 <c>compat.thinkingFormat</c> 声明思考字段的形状。<c>deepseek</c> 默认开启思考，
+	/// 只发 <c>reasoning_effort</c> 关不掉它，必须带上 <c>thinking.type</c>。
+	/// </summary>
+	internal static bool UsesThinkingSwitch(Model model) =>
+		model.Compat?["thinkingFormat"] is JsonValue value &&
+		value.TryGetValue<string>(out var format) &&
+		string.Equals(format, DeepSeekThinkingFormat, StringComparison.Ordinal);
+
 	/// <summary>把 pi 的思考级别映射到 provider 的 <c>reasoning_effort</c>；返回 <c>null</c> 表示不带该字段。</summary>
 	internal static string? ResolveReasoningEffort(Model model, StreamOptions options)
 	{
@@ -182,7 +222,8 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		}
 
 		var level = ThinkingLevelResolver.Clamp(model, options.ThinkingLevel ?? ThinkingLevels.Medium);
-		if (model.ThinkingLevelMap?.TryGetValue(level, out var mapped) == true)
+		// 与 pi 的 `thinkingLevelMap?.[level] ?? level` 一致：映射值为 null 时按档位名原样发送。
+		if (model.ThinkingLevelMap?.TryGetValue(level, out var mapped) == true && mapped is not null)
 		{
 			return mapped;
 		}
