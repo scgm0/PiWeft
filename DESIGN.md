@@ -47,7 +47,7 @@ PiWeft（weft = 纬线）是一台**织机**：会话是经线，agent 的每一
 
 ## 字体
 
-- 正文 HarmonyOS Sans SC Regular（内嵌，CJK 硬需求；默认字体族别名 `HarmonyOS_Sans_SC_Regular`），等宽 Maple Mono CN。
+- 正文 HarmonyOS Sans SC Regular（内嵌，CJK 硬需求；默认字体族别名 `HarmonyOS_Sans_SC_Regular`），等宽 Maple Mono NF CN（Nerd Font，终端 powerline 图标）。
 - 元数据（路径、模型名、id、耗时、统计）一律等宽 + TextSubtle，这是工坊铭牌，不是装饰。
 - 字阶：12 / 13 / 14 / 正文(阅读偏好) / 17。标题不加粗超过 SemiBold。
 

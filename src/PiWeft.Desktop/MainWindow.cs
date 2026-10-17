@@ -535,6 +535,8 @@ public sealed partial class MainWindow : Window
 		{
 			_usageStatsView?.Close();
 			_themeWatcher?.Dispose();
+			// 伪终端要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
+			_terminalView?.Dispose();
 			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
 			SaveWindowState();
 		});
@@ -1095,6 +1097,9 @@ public sealed partial class MainWindow : Window
 					break;
 				case "git":
 					OpenGitTab();
+					break;
+				case "terminal":
+					OpenTerminalTab();
 					break;
 				case "config":
 					OpenSettingsTab();

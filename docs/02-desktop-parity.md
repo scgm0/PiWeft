@@ -33,7 +33,7 @@ MewUI 0.22.1 全部来自 NuGet。Linux 使用 X11 + MewVG，Windows 使用 Win3
 
 Lucide 原始 SVG 内嵌，许可为 ISC。SVG tint 只处理 fill，而 Lucide 使用 stroke，因此加载时替换 `currentColor` 并将线宽调为 2.25；图标按钮附带中文提示。
 
-正文默认使用 HarmonyOS Sans SC 官方静态 Regular（字体族别名 `HarmonyOS_Sans_SC_Regular`），Bold 由后端处理；代码与工具输出使用 Maple Mono CN Regular，许可随包。
+正文默认使用 HarmonyOS Sans SC 官方静态 Regular（字体族别名 `HarmonyOS_Sans_SC_Regular`），Bold 由后端处理；代码与终端使用 Maple Mono NF CN Regular（Nerd Font 版，含 powerline 图标），许可随包。
 HarmonyOS Sans 的镜像许可与官方发布说明存在差异，分发前需核实许可；Maple Mono 为 SIL OFL 1.1。
 MewUI 0.22.1 字族注册表只保留最后注册的文件，Regular 必须最后注册，否则普通正文会拿到 Bold。粗体请求交给后端处理。
 界面操作使用图标或中文状态词，避免字体缺失符号引起回退混排。
@@ -54,10 +54,10 @@ MewUI 0.22.1 字族注册表只保留最后注册的文件，Regular 必须最�
 | MCP | 启动连接、状态、stdio 工具热刷新、设置面板手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、diff、在编辑器中打开、暂存/取消暂存、提交、分支切换/新建、检查点创建/恢复 | 推送/拉取、历史图谱、冲突解决界面 |
 | 文件 | 目录导航、Git 标记、内置文本编辑器与冲突检测保存、回答级修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
-| 终端 | 命令 Dock：项目目录下单条命令运行与流式输出、取消、有界输出 | 完整 PTY、常驻会话、交互式提示与全屏 TUI |
+| 终端 | 命令 Dock：MiniPty 伪终端（Linux/macOS `forkpty`/`posix_spawn`，Windows ConPTY）、交互式 shell、Shell 选择（自动/检测到的/自定义路径，偏好持久化）、scrollback 与滚动条、文本选择（连选/选词/选行/Alt 区块）、SGR 颜色、滚动区域、字符集、备用屏、窗口缩放重排、制表位、DECSCUSR（含闪烁）/DECSCNM/DECALN/DECRQM、OSC 4/10/11/12 调色板与默认色、OSC 8 超链接与 OSC 52、鼠标上报（1000/1002/1003、1006/1015/1016）、bracketed paste（多行先确认）、IME 预编辑与候选窗定位、Ctrl+C/V 复制粘贴（macOS Cmd）、PRIMARY selection（拖选复制/中键粘贴）、右键菜单、重启 | 完整 VT100 边界行为、终端多标签、快照回放 |
 | 主题与窗口 | 深浅/系统主题预览、侧栏收起与宽度恢复、尺寸与零/负位置恢复、单实例 | 自定义强调色、多显示器可见性/最大化恢复 |
 
-内嵌终端/浏览器、自动更新、托盘、通知等不在实现范围内（命令 Dock 只是单命令运行面板，不是 PTY）。
+内嵌浏览器、自动更新、托盘、通知等不在实现范围内（命令 Dock 已是基于 MiniPty 的伪终端，但不是完整终端仿真器）。
 
 ## 交互与性能约束
 

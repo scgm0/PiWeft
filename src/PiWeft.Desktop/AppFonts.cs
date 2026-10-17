@@ -13,8 +13,8 @@ namespace PiWeft.Desktop;
 /// <item>界面正文用 <b>HarmonyOS Sans SC</b> 的官方静态字重（Regular / Bold）。早前用 fontTools
 /// 把三个字重合成过一个可变字体，但插值后的笔画粗细在原字重之间不够均匀，因此改回官方文件；
 /// 界面只用两档字重，Medium 没有引用，就没有嵌进来。</item>
-/// <item>代码块、工具输出等等宽文本用 <b>Maple Mono CN</b>（静态 Regular）。Maple Mono 的可变字体只有拉丁版，
-/// 没有 CJK；用 CN 版是为了让代码里的中文注释也能等宽对齐。</item>
+/// <item>代码块、工具输出等等宽文本用 <b>Maple Mono NF CN</b>（静态 Regular）。Maple Mono 的可变字体只有拉丁版，
+/// 没有 CJK；用 CN 版是为了让代码里的中文注释也能等宽对齐，NF 版额外的 Nerd Font 图标供终端里的 powerline 提示符使用。</item>
 /// </list>
 /// 使用官方静态字重资源；MewUI 0.22.1 的注册表按字族只保留最后一个文件，
 /// 因此 Regular 最后注册，Normal 使用原版正文笔画，Bold 请求由各平台后端处理。
@@ -35,8 +35,8 @@ public static class AppFonts
 	/// </summary>
 	public const string DefaultUiFamily = "HarmonyOS_Sans_SC_Regular";
 
-	/// <summary>等宽字体族。</summary>
-	public const string MonoFamily = "Maple Mono CN";
+	/// <summary>等宽字体族（Nerd Font 版，含 powerline 图标）。</summary>
+	public const string MonoFamily = "Maple Mono NF CN";
 
 	private static bool _registered;
 	private static bool _uiLoaded;
@@ -78,7 +78,7 @@ public static class AppFonts
 		_regularLoaded = RegisterFont("HarmonyOS_Sans_SC_Regular.ttf", DefaultUiFamily);
 		_uiLoaded = boldLoaded || _regularLoaded;
 
-		_monoLoaded = RegisterFont("MapleMono-CN-Regular.ttf");
+		_monoLoaded = RegisterFont("MapleMono-NF-CN-Regular.ttf");
 
 		// 正文是全局默认字体：由 ThemeMetrics 下发到每个控件，MewUI 自己画的对话框也跟着变。
 		// 用 Regular 的显式别名，确保默认字重拿到官方 Regular 文件。

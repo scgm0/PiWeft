@@ -58,6 +58,12 @@ public sealed record DesktopPreference
 	public double ChatFontSize { get; init; } = 16;
 	public double ReadingWidth { get; init; } = 880;
 
+	/// <summary>
+	/// 命令 Dock 使用的 shell 可执行文件；空表示自动（<c>$SHELL</c> → bash → sh）。
+	/// 只影响终端面板，不改动系统登录 shell。
+	/// </summary>
+	public string TerminalShell { get; init; } = string.Empty;
+
 	public bool IsLight => Theme == LightTheme;
 
 	public bool IsSystem => Theme == SystemTheme;
@@ -118,6 +124,9 @@ public sealed record DesktopPreference
 				ChatWorkspace = root?["chatWorkspace"] is JsonValue chat && chat.TryGetValue<string>(out var chatWorkspace) ? chatWorkspace : string.Empty,
 				ChatFontSize = Math.Clamp(Number(root, "chatFontSize", positive: true) ?? 16, 14, 22),
 				ReadingWidth = Math.Clamp(Number(root, "readingWidth", positive: true) ?? 880, 760, 1360),
+				TerminalShell = root?["terminalShell"] is JsonValue shell && shell.TryGetValue<string>(out var shellPath)
+					? shellPath.Trim()
+					: string.Empty,
 				WindowWidth = Number(root, "windowWidth", positive: true),
 				WindowHeight = Number(root, "windowHeight", positive: true),
 				WindowLeft = Number(root, "windowLeft"),
@@ -171,6 +180,14 @@ public sealed record DesktopPreference
 		}
 		root["chatFontSize"] = double.IsFinite(ChatFontSize) ? Math.Clamp(ChatFontSize, 14, 22) : 16;
 		root["readingWidth"] = double.IsFinite(ReadingWidth) ? Math.Clamp(ReadingWidth, 760, 1360) : 1060;
+		if (string.IsNullOrWhiteSpace(TerminalShell))
+		{
+			root.Remove("terminalShell");
+		}
+		else
+		{
+			root["terminalShell"] = TerminalShell.Trim();
+		}
 		WriteList(root, "recentProjects", RecentProjects);
 		WriteList(root, "recentModels", RecentModels);
 
@@ -234,6 +251,9 @@ public sealed record DesktopPreference
 
 	/// <summary>记忆侧栏停留在「对话」还是「项目」分段。</summary>
 	public DesktopPreference WithSidebarProjects(bool projects) => this with { SidebarProjects = projects };
+
+	/// <summary>命令 Dock 使用的 shell；空字符串表示自动。</summary>
+	public DesktopPreference WithTerminalShell(string shell) => this with { TerminalShell = shell ?? string.Empty };
 
 	public DesktopPreference TogglePinned(string sessionId)
 	{

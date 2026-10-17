@@ -20,7 +20,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - JSON 使用 `System.Text.Json` 源生成与手写转换器，不依赖 Newtonsoft.Json 或供应商 SDK。保留 trim/AOT 分析器。
 - 核心库无第三方运行时包；宿主使用 ZLogger，桌面使用 MewUI 0.22.1、Markdown 和 SVG 扩展。
 - 模型目录固定在 `src/PiWeft.Ai/Resources/models.json`，自定义端点由 `models.json` 注册。
-- 不实现 JS 扩展宿主、codemode、mermaid、KaTeX、托盘、桌面通知、自动更新、崩溃上报、内嵌浏览器或终端。
+- 不实现 JS 扩展宿主、codemode、mermaid、KaTeX、托盘、桌面通知、自动更新、崩溃上报或内嵌浏览器；终端以独立的 PTY 命令 Dock 提供，不内嵌第三方终端组件。
 
 ## pi 与 PiDeck 兼容
 
@@ -99,11 +99,11 @@ HTTP 传输下通知流里带 id 的服务端请求（如 `ping`）会反向 POS
 - 模型连接测试：输入框工具栏的「测试连接」按钮发一次 1-token 探测，验证 Base URL、凭据、模型 ID 与自定义头，并显示延迟；RPC 提供 `test_model`。
 - 远程模型目录：配置页每个供应商的「拉取远程模型」按钮按 API 探测 `GET /models`（OpenAI 兼容 / Anthropic `/v1/models` / Google `/models`），把缺失的模型以保守默认值并入配置草稿；RPC 提供 `fetch_remote_models`。
 - 实时会话统计、首 token 延迟、速度、费用、缓存命中率与手动压缩；统计口径与性能基准见专项文档。
-- 深色、浅色、跟随系统；主题切换不重建整棵界面。内嵌 HarmonyOS Sans SC、Maple Mono CN 和 Lucide 图标，许可随包。
+- 深色、浅色、跟随系统；主题切换不重建整棵界面。内嵌 HarmonyOS Sans SC、Maple Mono NF CN 和 Lucide 图标，许可随包。
 - 资源与主题：按 pi 约定发现技能、提示词模板与主题，来源覆盖用户目录、项目 `.pi`/`.agents`、settings 显式声明的路径与已安装 pi 包。优先级按 rank 排序：项目 settings 声明（0）> 项目自动发现（1）> 用户 settings 声明（2）> 用户目录自动发现（3）> 包（4）；同名资源保留先发现者，因此项目级总能覆盖用户级。坏资源不阻断会话：主题名类型错误、颜色值非法、`SKILL.md` 不可读都只记一条诊断后跳过。「资源」页列出技能、模板、主题与 pi 包的来源、路径与解析诊断，可一键重载；外观页可选择自定义 pi 主题（含包提供的主题）并即时换肤。主题目录有文件监视热重载（防抖 400ms）：激活主题的文件被修改后即时换肤，文件临时解析失败时保留当前外观；项目主题只在受信任时监视。`/reload` 与 RPC `reload_resources` 重新解析资源而不重建会话。
 - Git 状态/diff、暂存与取消暂存、提交、分支切换/新建，编辑器与浏览器跳转，自包含 HTML 导出，窗口尺寸/位置与最近项目/模型持久化。
 - 工作区检查点与回滚：快照写入 `refs/pi-checkpoints/<id>` 低层引用（不产生分支或提交），Git 面板可手动创建/恢复；发送提示前每仓库每分钟自动打一个（仅在有改动时），默认保留 50 个。
-- 命令 Dock（`Ctrl+Shift+D`）：在项目目录里运行单条 shell 命令并流式显示输出，支持取消与有界输出。**不是完整 PTY**：无交互式提示、全屏 TUI 或常驻会话。
+- 命令 Dock（`Ctrl+Shift+D`）：MiniPty 在项目目录里启动交互式 shell（真伪终端），键盘与 IME 输入直接写回 PTY。终端仿真对齐 xterm.js 的常用部分：2000 行 scrollback + 滚动条、选择（拖选/双击选词/三击选行/Alt 区块）、缩放重排（软换行重切）、SGR 颜色与宽字符（斜体/下划线/删除线/暗淡/隐藏）、滚动区域（DECSTBM）、G0/G1 字符集、备用屏（47/1047/1049）、自动换行/原点模式/应用光标键、鼠标上报（1000/1002/1003、1006、1015、1016）、bracketed paste（多行先确认）、DECSCUSR 光标形态与闪烁、OSC 4/10/11/12 调色、DECSCNM/DECALN/DECRQM、制表位、IRM、OSC 8 超链接、OSC 52 剪贴板、焦点上报、DSR/DA。剪贴板：`Ctrl+C` 有选区复制、无选区中断，`Ctrl+V` 粘贴；Linux 选区同步 PRIMARY（拖选即复制、中键粘贴）；右键菜单含复制/粘贴/全选/清屏/重启；Shift+滚轮本地翻历史。输入法在三个平台走同一组 MewUI 接口（Linux 用 IBus/fcitx5/XIM，Windows 用 IMM32，macOS 用 NSTextInputClient）：组合文字以浮层显示在光标格、不写入 PTY，候选窗经 `GetCharRectInWindow` 定位，提交文本以 UTF-8 写入 PTY。头部 Shell 按钮支持自动（`$SHELL` → bash → sh）、检测到的 shell 与自定义路径，选择写入 `desktop.json` 并重启当前 PTY。macOS 走同一 POSIX 分支（MiniPty 的 `posix_spawn` helper），复制/粘贴用 Cmd+C/V、Ctrl+C 仍是中断；helper 由 MiniPty 包分发（JIT 与 dylib 同目录，AOT 时复制到发布根目录）。未覆盖：终端多标签、快照回放与完整 VT100 边界行为。
 - 按工作目录单实例；后台有界日志；`--self-check`、`--theme-smoke` 及截图脚本用于验证。
 
 详细约束集中在以下文档，不再重复维护逐轮开发记录：

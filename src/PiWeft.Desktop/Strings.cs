@@ -415,22 +415,38 @@ public static partial class Strings
 
 	public static string FileBrowserSaved(string path) => $"已保存 {path}";
 
-	/// <summary>命令 Dock（非交互式终端）。</summary>
+	/// <summary>命令 Dock（MiniPty 伪终端）。</summary>
 	public const string Terminal = "终端";
 
-	public const string TerminalRun = "运行";
+	public const string TerminalRunning = "交互式 shell（伪终端）。拖选即复制到主选区、中键粘贴；Ctrl+C/V 复制/粘贴（macOS 用 Cmd），右键更多。";
 
-	public const string TerminalCancel = "取消";
+	public const string TerminalRestart = "重启 shell";
 
-	public const string TerminalPlaceholder = "输入命令，回车运行";
+	public const string TerminalClear = "清屏";
 
-	public const string TerminalHint = "命令 Dock：在项目目录里运行单条命令并显示输出；不提供交互式终端或全屏 TUI。";
+	public const string TerminalCopy = "复制";
 
-	public const string TerminalCancelled = "[已取消]";
+	public const string TerminalPaste = "粘贴";
+
+	public static string TerminalPasteConfirm(int lines) => $"粘贴 {lines} 行内容？（可能直接执行）";
+
+	public const string TerminalSelectAll = "全选";
+
+	public const string TerminalShell = "选择 Shell";
+
+	public const string TerminalShellAuto = "自动（系统默认）";
+
+	public const string TerminalShellCustom = "自定义…";
+
+	public const string TerminalShellPrompt = "Shell 可执行文件路径，例如 /bin/zsh";
+
+	public const string TerminalShellInvalid = "找不到这个 Shell，仍使用当前设置。";
+
+	public const string TerminalHint = "命令 Dock：在项目目录里启动交互式 shell（伪终端）。";
 
 	public const string ShortcutTerminal = "打开命令 Dock";
 
-	public static string TerminalExit(int? exitCode) => $"[退出码 {exitCode?.ToString() ?? "?"}]";
+	public static string TerminalExited(int? exitCode) => $"[shell 已退出，退出码 {exitCode?.ToString() ?? "?"}]";
 
 	public static string TerminalFailed(string reason) => $"[错误] {reason}";
 
