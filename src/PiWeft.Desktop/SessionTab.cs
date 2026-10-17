@@ -88,8 +88,8 @@ public sealed partial class SessionTab : IDisposable
 	private bool _testing;
 	private readonly ModelPicker _modelPicker;
 	private readonly ImagePreview _imagePreview = new();
-	private readonly ComboBox _thinkingPicker = new();
-	private bool _refreshingPickers;
+	private readonly Button _thinkingButton;
+	private readonly TextBlock _thinkingLabel = new();
 
 	/// <summary>标签标题变化时触发（会话名、运行状态）。</summary>
 	public event Action<SessionTab>? TitleChanged;
@@ -208,12 +208,23 @@ public sealed partial class SessionTab : IDisposable
 			.Content(_modelLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText())
 			.OnClick(ShowModelPicker);
 
-		_thinkingPicker.Width(96);
-		_thinkingPicker.SelectionChanged += _ => OnThinkingSelected();
+		// 思考强度与模型名同级：都是安静的 ghost 文本，不带边框/底色；点开才出现单选菜单。
+		_thinkingLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText();
+		var thinkingChevron = new GlyphElement()
+			.Kind(GlyphKind.ChevronDown)
+			.GlyphSize(3)
+			.VerticalAlignment(VerticalAlignment.Center);
+		_thinkingButton = new Button().Ghost().MinHeight(AppTheme.ControlHeightMd)
+			.Content(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(2)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(_thinkingLabel, thinkingChevron))
+			.OnClick(ShowThinkingMenu);
 
 		// 次要动作在窄窗口自动换行，发送/中断始终可达。
 		var toolbar = new DockPanel().LastChildFill().Children(_sendButton.DockRight(),
-			new WrapPanel().Spacing(4).Children(attach, commands, _planButton, _testButton, _modelButton, _thinkingPicker));
+			new WrapPanel().Spacing(4).Children(attach, commands, _planButton, _testButton, _modelButton, _thinkingButton));
 
 		// 上下文占用条：接近窗口上限时一眼可见。
 		_contextBar.Maximum(100).Height(3).Margin(new Thickness(0, 2, 0, 2));
@@ -854,19 +865,56 @@ public sealed partial class SessionTab : IDisposable
 		Render();
 	}
 
-	private void OnThinkingSelected()
+	/// <summary>思考强度菜单：与模型选择一样按当前模型支持项生成，当前项打勾。</summary>
+	private void ShowThinkingMenu()
 	{
-		if (_refreshingPickers || _thinkingPicker.SelectedIndex < 0)
+		if (IsStreaming || _disposed)
 		{
 			return;
 		}
 
 		var levels = ThinkingLevelResolver.GetSupported(Session.Model);
-		if (_thinkingPicker.SelectedIndex < levels.Count)
+		if (levels.Count == 0)
 		{
-			Session.SetThinkingLevel(levels[_thinkingPicker.SelectedIndex]);
-			Render();
+			return;
 		}
+
+		// 点击后指针仍在按钮上，先收起悬停提示，避免它压在刚打开的菜单上。
+		HoverHints.Cancel(_thinkingButton);
+
+		// 当前级别在菜单图标列打勾；MewUI 0.22.1 的 MenuItem 还没有 IsCheckable，
+		// 用 IconTemplate 表达同一层信息。
+		var checkIcon = new IconTemplate(size => new GlyphElement()
+			.Kind(GlyphKind.CheckMark)
+			.GlyphSize(4)
+			.Foreground(AppTheme.Accent)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.VerticalAlignment(VerticalAlignment.Center));
+
+		var menu = new ContextMenu();
+		foreach (var level in levels)
+		{
+			var command = new Command($"pi.thinking.{level}", Strings.ThinkingLevelName(level));
+			_thinkingButton.Commands.Register(command, () => SelectThinkingLevel(level));
+			menu.Items.Add(new MenuItem(command)
+			{
+				Icon = string.Equals(level, Session.ThinkingLevel, StringComparison.Ordinal) ? checkIcon : null,
+			});
+		}
+
+		menu.Show(_thinkingButton);
+	}
+
+	private void SelectThinkingLevel(string level)
+	{
+		if (IsStreaming || _disposed)
+		{
+			return;
+		}
+
+		Session.SetThinkingLevel(level);
+		RefreshPickers();
+		Render();
 	}
 
 	/// <summary>
@@ -926,23 +974,15 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>同步当前模型和思考级别选择项。</summary>
+	/// <summary>同步当前模型与思考强度铭牌。</summary>
 	private void RefreshPickers()
 	{
-		_refreshingPickers = true;
-		try
-		{
-			_modelLabel.Text(Session.Model.Id);
-			_modelButton.HoverTip($"{Session.Model.Provider}/{Session.Model.Id}\n{Strings.ModelCapabilities(Session.Model)}");
+		_modelLabel.Text(Session.Model.Id);
+		_modelButton.HoverTip($"{Session.Model.Provider}/{Session.Model.Id}\n{Strings.ModelCapabilities(Session.Model)}");
 
-			var levels = ThinkingLevelResolver.GetSupported(Session.Model);
-			_thinkingPicker.ItemsSource(ItemsView.Create([.. levels.Select(Strings.ThinkingLevelName)]));
-			_thinkingPicker.SelectedIndex = Math.Max(0, levels.ToList().IndexOf(Session.ThinkingLevel));
-		}
-		finally
-		{
-			_refreshingPickers = false;
-		}
+		var thinking = Strings.ThinkingLevelName(Session.ThinkingLevel);
+		_thinkingLabel.Text(thinking);
+		_thinkingButton.HoverTip($"{Strings.ThinkingLevelTitle}：{thinking}");
 	}
 
 	/// <summary>保留未变化的消息控件和折叠状态，只重绘变化后的尾部。</summary>
@@ -1014,7 +1054,7 @@ public sealed partial class SessionTab : IDisposable
 		_sendLabel.Text(busy ? Strings.Abort : Strings.Send);
 		_sendIcon.Source(AppIcons.Get(busy ? "x" : "arrow-up", AppTheme.TextOnAccent));
 		_modelButton.IsEnabled = !busy;
-		_thinkingPicker.IsEnabled = !busy;
+		_thinkingButton.IsEnabled = !busy;
 		_planLabel.Text(Session.PlanModeEnabled ? Strings.PlanModeOn : Strings.PlanMode);
 		_planButton.IsEnabled = !busy;
 		_testButton.IsEnabled = !busy && !_testing;

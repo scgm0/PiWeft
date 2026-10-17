@@ -38,8 +38,7 @@ public static partial class Strings
 	public const string ProjectMenuRemove = "移除";
 	public const string ProjectMenuReveal = "查看文件";
 	public const string ProjectMenuNewTask = "新建任务";
-	public const string SidebarCollapse = "收起";
-	/// <summary>页脚入口的短标签：完整说明在悬浮提示里，文字不参与撑宽五格布局。</summary>
+	/// <summary>页脚入口的短标签：完整说明在悬浮提示里，文字不参与撑宽页脚布局。</summary>
 	public const string SidebarGit = "Git";
 	public const string BackToWorkspace = "返回工作区";
 	public const string MoreActions = "更多操作";

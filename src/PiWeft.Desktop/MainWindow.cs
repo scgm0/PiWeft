@@ -15,7 +15,7 @@ using ZLogger;
 namespace PiWeft.Desktop;
 
 /// <summary>
-/// 桌面外壳主窗口：顶栏、左侧会话栏、多标签会话主区。
+/// 桌面外壳主窗口：自定义标题栏、左侧会话栏、多标签会话主区。
 /// 每个标签是一个独立的 <see cref="SessionTab"/>（各自持有会话与输入区），因此可以并行开着多个会话。
 /// 会话文件与 CLI、pi 完全互通。
 /// </summary>
@@ -46,8 +46,6 @@ public sealed partial class MainWindow : Window
 	private bool _restoringSelection;
 	private Border _sidebar = null!;
 	private SplitPanel _workspace = null!;
-	private Button _sidebarFloat = null!;
-	private StackPanel _collapsedActions = null!;
 	private Button _backButton = null!;
 	private bool _sidebarPreferred;
 	private TreeView _chatsTree = null!;
@@ -64,7 +62,6 @@ public sealed partial class MainWindow : Window
 	private SessionSearchPalette _sessionSearch = null!;
 	private Button _searchButton = null!;
 	private TextBox _nameBox = null!;
-	private TextBlock _tabCaption = null!;
 	private TreeView _sessionTree = null!;
 
 	/// <summary>当前的快捷键绑定（启动时读一次，改键后提示重启生效）。</summary>
@@ -93,6 +90,11 @@ public sealed partial class MainWindow : Window
 		this.Resizable(preference.WindowWidth ?? 1280, preference.WindowHeight ?? 820);
 		this.Padding(Thickness.Zero);
 		this.AllowDrop();
+		// 窗口本身显式使用内嵌 Regular：默认样式、继承文本与框架对话框都从这里拿到同一张脸。
+		this.FontFamily = AppFonts.DefaultUi;
+		this.FontWeight = FontWeight.Normal;
+		// 自定义标题栏必须在显示原生窗口之前定型：Win32/macOS 走客户区延伸，X11 走无边框。
+		ConfigureWindowFrame();
 
 		// 模型与会话都由界面决定，因此这里只用最少的默认开关。
 		_arguments = CliArguments.Parse(["--mode", "text"]).Arguments!;
@@ -246,14 +248,8 @@ public sealed partial class MainWindow : Window
 		_status = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 
 		// ------------------------------------------------------------ 外壳
-		// 侧栏不设品牌区：主区空状态就是应用门面；_tabCaption 仅承载标题语境更新（不参与布局）。
-		_tabCaption = new TextBlock()
-			.Text(_cwd)
-			.FontSize(AppTheme.FontSizeMicro)
-			.FontFamily(AppTheme.MonoFont)
-			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.SubtleText()
-			.IsVisible(false);
+		// 窗口标题栏（品牌 + 当前语境 + 窗口按钮）由 BuildChromeShell 组装；
+		// 主区仍直接是内容，不新增全局工具栏。
 
 		// ------------------------------------------------------------ 侧栏
 		// 新建会话 + 搜索会话（两条与侧栏同色的导航行）+ 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
@@ -327,7 +323,6 @@ public sealed partial class MainWindow : Window
 		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
 		var theme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
 		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsTab, size: AppIcons.ToolbarSize);
-		var collapse = AppIcons.Button("panel-left", Strings.ToggleSidebar, ToggleSidebar, size: AppIcons.ToolbarSize);
 
 		// 底部工具行：图标 + 小字标签（命令面板/Git/设置/主题），参照 Codex 桌面端的安静页脚。
 		static StackPanel FooterItem(string label, Button button)
@@ -342,18 +337,17 @@ public sealed partial class MainWindow : Window
 						.HorizontalAlignment(HorizontalAlignment.Center));
 		}
 
-		// 页脚入口：五个内容列按各自宽度排（文字不会被裁），剩余宽度由四个弹性列平分 ——
-		// 侧栏越宽间距越大，越窄间距越小，但入口本身始终保持完整。
+		// 页脚入口：四个内容列按各自宽度排（文字不会被裁），剩余宽度由三个弹性列平分 ——
+		// 侧栏越宽间距越大，越窄间距越小，但入口本身始终保持完整。侧栏折叠入口移到标题栏。
 		var sidebarFooter = new Border()
 			.BorderBrush(AppTheme.BorderSubtle).BorderThickness(new Thickness(0, 1, 0, 0))
 			.Margin(new Thickness(0, AppTheme.Space2, 0, 0))
 			.Padding(new Thickness(0, AppTheme.Space2, 0, 0))
-			.Child(new Grid().Columns("auto,*,auto,*,auto,*,auto,*,auto").Children(
+			.Child(new Grid().Columns("auto,*,auto,*,auto,*,auto").Children(
 				FooterItem(Strings.PaletteButton, palette).Column(0),
 				FooterItem(Strings.SidebarGit, git).Column(2),
 				FooterItem(Strings.ToggleTheme, theme).Column(4),
-				FooterItem(Strings.Settings, settings).Column(6),
-				FooterItem(Strings.SidebarCollapse, collapse).Column(8)));
+				FooterItem(Strings.Settings, settings).Column(6)));
 
 		// 列表要吃掉剩余高度，所以这里用 DockPanel；StackPanel 会把 ListBox 压成内容高度。
 		var sidebar = _sidebar = new Border()
@@ -414,23 +408,6 @@ public sealed partial class MainWindow : Window
 
 		var main = new Grid();
 		main.Children(_tabControl);
-		// 侧栏折叠后的唯一展开入口：主区左上角的悬浮开关（侧栏头部的折叠钮在折叠后随之消失）。
-		_sidebarFloat = AppIcons.Button("panel-left", Strings.ToggleSidebar, ToggleSidebar);
-		_sidebarFloat.HorizontalAlignment(HorizontalAlignment.Left)
-			.VerticalAlignment(VerticalAlignment.Top)
-			.Margin(new Thickness(AppTheme.Space2))
-			.IsVisible(_sidebar.IsVisible == false);
-
-		// 侧栏收起时，命令/设置/主题悬浮固定在主区右上角（独立按钮实例，不与页脚共用）。
-		var floatPalette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
-		var floatSettings = AppIcons.Button("settings", Strings.Settings, OpenSettingsTab, size: AppIcons.ToolbarSize);
-		var floatTheme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
-		_collapsedActions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
-			.HorizontalAlignment(HorizontalAlignment.Right)
-			.VerticalAlignment(VerticalAlignment.Top)
-			.Margin(new Thickness(AppTheme.Space2))
-			.IsVisible(_sidebar.IsVisible == false)
-			.Children(floatPalette, floatSettings, floatTheme);
 
 		// 辅助页（设置/Git/文件/终端/用量）左上角的返回工作区入口。
 		_backButton = AppIcons.Button("arrow-left", Strings.BackToWorkspace, BackToWorkspace, size: AppIcons.ToolbarSize)
@@ -438,37 +415,47 @@ public sealed partial class MainWindow : Window
 			.VerticalAlignment(VerticalAlignment.Top)
 			.Margin(new Thickness(AppTheme.Space2))
 			.IsVisible(false);
-		// 页签头已按 Codex 风格隐去；TabControl 仍会给选中页画一个小底座，用与主区同色的遮罩盖住。
+		// TabControl 自带的页签条仍隐藏（标题栏右段另绘）；它会给选中页画一个小底座，用主区同色遮罩盖住。
 		main.Children(new Border()
 			.Height(30)
 			.VerticalAlignment(VerticalAlignment.Top)
 			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).WindowBackground)
 			.IsHitTestVisible(false));
 		main.Children(_welcome);
-		// 浮层顺序最后：保证悬浮开关压在欢迎页之上。
-		main.Children(_sidebarFloat);
-		main.Children(_collapsedActions);
 		main.Children(_backButton);
+
+		// ------------------------------------------------------------ 窗框
+		// PiDeck 式连续窗框：左段与侧栏同色，右段与主区同色；
+		// 页签条、新建入口、命令/面板入口与窗口按钮都在标题栏里，内容从标题栏下方开始。
+		var sidebarColumn = _sidebarColumn = new DockPanel().LastChildFill()
+			.Children(BuildSidebarTitleBar().DockTop(), sidebar);
+		var mainColumn = new DockPanel().LastChildFill()
+			.Children(BuildMainTitleBar().DockTop(), main);
 
 		// 侧栏与主区之间可以拖拽调宽。
 		var preference = DesktopPreference.Load();
 		_sidebarPreferred = !preference.SidebarCollapsed;
-		_sidebar.IsVisible(_sidebarPreferred);
+		_sidebarColumn.IsVisible(_sidebarPreferred);
 		UpdateSidebarChrome();
 		_workspace = new SplitPanel().Horizontal().SplitterThickness(4)
 			.MinFirst(200).MinSecond(520)
 			.FirstLength(GridLength.Pixels(preference.SidebarWidth))
-			.SecondLength(GridLength.Stars(1)).First(sidebar).Second(main);
-		Content = new Border()
-			.StyleName(AppStyles.Window)
-			.Child(_workspace);
+			.SecondLength(GridLength.Stars(1)).First(sidebarColumn).Second(mainColumn);
+		// 窗框由 Window.Template 拥有（MewUI 文档的 custom chrome 模式）：Content 只放工作区，
+		// 模板通过 ContentPresenter 投影它；重建窗框不会替换会话与输入控件。
+		Content = _workspace;
+		Template = new DelegateControlTemplate<MainWindow>((window, _) => window.BuildChromeShell());
 
 		ShowSidebarView(projects: false);
 
 	}
 
-	/// <summary>把侧栏头部的小字铭牌换成当前上下文（会话标题或工作目录）。</summary>
-	private void SetSidebarCaption(string text) => _tabCaption.Text(text);
+	/// <summary>把标题栏左段的项目铭牌换成指定文本，并同步完整路径提示。</summary>
+	private void SetProjectCaption(string text, string? tip = null)
+	{
+		_tabCaption.Text(text);
+		_tabCaption.HoverTip(tip);
+	}
 
 	// ------------------------------------------------------------------ 启动
 
@@ -907,18 +894,19 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>
-	/// 登记标签页。页签头不渲染（Codex 风格：切换与关闭走侧栏和命令面板，
-	/// 命令面板里有「关闭当前/其他/全部标签页」），流式状态经 <see cref="UpdateStatus"/> 反映在状态铭牌上。
+	/// 登记标签页。TabControl 自带的页签头不渲染：标题栏右段另绘 PiDeck 式页签，
+	/// 切换/关闭都在那里完成；命令面板里也保留同一组「关闭当前/其他/全部标签」动作。
 	/// </summary>
 	private void AddTab(UIElement header, UIElement content, object entry)
 	{
-		// TabItem 强制要求 Header；给一个 0×0 空元素，页签条视觉上不可见（Codex 风格）。
+		// TabItem 强制要求 Header；给一个 0×0 空元素，隐藏 TabControl 自带的页签条。
 		_tabControl.AddTab(new TabItem().Header(new Border().Width(0).Height(0)).Content(content));
 	}
 
-	/// <summary>页签头已隐藏，标题刷新退化为空操作；保留调用点以维持状态时序。</summary>
+	/// <summary>会话标题变化或标签集合变化后，按标题/选中项同步标题栏页签。</summary>
 	private void UpdateTabHeaders()
 	{
+		SyncTitleBarTabs();
 	}
 
 	/// <summary>关闭设置/Git 这类辅助标签。</summary>
@@ -996,33 +984,37 @@ public sealed partial class MainWindow : Window
 		_welcome.IsVisible(entry is null);
 		_tabControl.IsVisible(entry is not null);
 		ApplySidebarLayout();
+		SyncTitleBarTabs();
 
 		switch (entry)
 		{
 			case null:
 				_status.Text(Strings.NoOpenSession);
-				UpdateTopBarCaption();
+				UpdateProjectCaption();
 				return;
 
 			case SettingsView view:
 				// 每次切到设置标签都重新取一次快照，数据是实时的。
 				view.Refresh();
 				_status.Text(Strings.SettingsTitle);
-				SetSidebarCaption(Strings.SettingsTitle);
 				return;
 
 			case GitView git:
 				// Git 状态同样是现取现用。
 				git.Refresh();
 				_status.Text(Strings.Git);
-				SetSidebarCaption(Strings.Git);
+				return;
+
+			case FileBrowserView:
+			case TerminalDock:
+			case UsageStatsView:
 				return;
 
 			case SessionTab active:
 				_lastSessionTab = active;
 				RestoreSelection(active.Session.Session.SessionId);
 				UpdateTabHeaders();
-				UpdateTopBarCaption();
+				UpdateProjectCaption();
 				return;
 		}
 	}
@@ -1133,7 +1125,7 @@ public sealed partial class MainWindow : Window
 	private async Task RunThemeSmokeAsync()
 	{
 		Color oldSelection = default;
-		Color oldPickerBackground = default;
+		Color oldPickerColor = default;
 		SessionTab? originalTab = null;
 		try
 		{
@@ -1153,7 +1145,7 @@ public sealed partial class MainWindow : Window
 				oldSelection = Application.Current.Theme.Palette.SelectionBackground;
 				originalTab = CurrentTab();
 				originalTab?.PrepareThemeSmoke();
-				oldPickerBackground = originalTab?.ThemeSmokePickerBackground ?? default;
+				oldPickerColor = originalTab?.ThemeSmokePickerColor ?? default;
 				ToggleTheme();
 				started.Stop();
 				Console.WriteLine($"piweft-desktop: 换肤耗时 {started.Elapsed.TotalMilliseconds:0.0} ms");
@@ -1164,7 +1156,7 @@ public sealed partial class MainWindow : Window
 			{
 				Console.WriteLine($"piweft-desktop: 切换后 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
 				var valid = oldSelection != Application.Current.Theme.Palette.SelectionBackground &&
-					ReferenceEquals(originalTab, CurrentTab()) && originalTab?.VerifyThemeSmoke(oldPickerBackground) == true;
+					ReferenceEquals(originalTab, CurrentTab()) && originalTab?.VerifyThemeSmoke(oldPickerColor) == true;
 				Console.WriteLine(valid ? "theme controls ok: selection, picker, border, draft, caret" : "theme controls FAILED");
 				Console.WriteLine(valid ? "piweft-desktop: theme smoke ok" : "piweft-desktop: theme smoke failed");
 				if (!valid) Environment.ExitCode = 1;
@@ -1226,6 +1218,8 @@ public sealed partial class MainWindow : Window
 			// SetTheme 对相同变体可能不触发 OnThemeChanged；无论事件是否到达都轻量刷新一遍。
 			AppStyles.ApplyTextColors(this);
 			AppIcons.RefreshAll();
+			_nativeBorderColor = null;
+			UpdateChrome();
 			foreach (var tab in _tabEntries.OfType<SessionTab>())
 			{
 				tab.ApplyTheme();
@@ -1255,6 +1249,8 @@ public sealed partial class MainWindow : Window
 			AppStyles.ApplyTextColors(this);
 			if (_palette is { IsOpen: true }) AppStyles.ApplyTextColors(_palette.View);
 			AppIcons.RefreshAll();
+			_nativeBorderColor = null;
+			UpdateChrome();
 
 			foreach (var tab in _tabEntries.OfType<SessionTab>())
 			{
@@ -1319,7 +1315,7 @@ public sealed partial class MainWindow : Window
 		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
 			? _tabEntries[_tabControl.SelectedIndex] : null;
 		var sidebarAllowed = entry is null or SessionTab;
-		_sidebar.IsVisible(_sidebarPreferred && sidebarAllowed);
+		_sidebarColumn.IsVisible(_sidebarPreferred && sidebarAllowed);
 		UpdateSidebarChrome();
 	}
 
@@ -1328,11 +1324,12 @@ public sealed partial class MainWindow : Window
 		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
 			? _tabEntries[_tabControl.SelectedIndex] : null;
 		var sidebarAllowed = entry is null or SessionTab;
-		var collapsed = !_sidebar.IsVisible;
-		// 展开入口只属于主页面（会话/欢迎）；设置等辅助页不放侧栏开关，左上角是返回工作区。
-		_sidebarFloat.IsVisible(collapsed && sidebarAllowed);
+		var collapsed = !_sidebarColumn.IsVisible;
+		// 展开/收起入口：展开时在左段品牌旁，收起后回到主标题栏最左侧。
+		_hideSidebarButton.IsVisible(!collapsed && sidebarAllowed);
+		_showSidebarButton.IsVisible(collapsed && sidebarAllowed);
 		_backButton.IsVisible(!sidebarAllowed);
-		_collapsedActions.IsVisible(collapsed);
+		UpdateChrome();
 	}
 
 	/// <summary>
@@ -1689,12 +1686,11 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>顶栏显示当前会话名，没有会话时显示工作目录。</summary>
-	private void UpdateTopBarCaption()
+	/// <summary>标题栏左段的项目铭牌：显示当前会话所属项目，没有会话时显示窗口工作目录。</summary>
+	private void UpdateProjectCaption()
 	{
-		var tab = CurrentTab();
-		SetSidebarCaption(tab is null ? ShortCwd(_cwd) : $"{tab.Title} · {ShortCwd(tab.Session.Cwd)}");
-		_tabCaption.HoverTip(tab?.Session.Cwd ?? _cwd);
+		var cwd = CurrentTab()?.Session.Cwd ?? _cwd;
+		SetProjectCaption(ShortCwd(cwd), cwd);
 	}
 
 

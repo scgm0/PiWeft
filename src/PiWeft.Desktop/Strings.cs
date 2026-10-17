@@ -78,6 +78,14 @@ public static partial class Strings
 
 	// 顶栏与欢迎页
 	public const string AppName = "PiWeft Desktop";
+
+	/// <summary>标题栏上的短品牌名；完整名在关于与自检里。</summary>
+	public const string BrandShort = "PiWeft";
+
+	public const string MinimizeWindow = "最小化";
+	public const string MaximizeWindow = "最大化";
+	public const string RestoreWindow = "还原";
+	public const string CloseWindow = "关闭窗口";
 	public const string WelcomeTitle = "开始一次会话";
 	public const string WelcomeBody = "左侧列出该目录下的历史会话；点「新建」开始一个，或用搜索框按名称、目录、编号查找。";
 
@@ -521,6 +529,7 @@ public static partial class Strings
 		_ => level,
 	};
 	public static string ThinkingShort(string level) => $"思考 {ThinkingLevelName(level)}";
+	public const string ThinkingLevelTitle = "思考强度";
 	public const string Context = "上下文";
 	public const string Tokens = "令牌";
 	public const string CacheHit = "缓存命中";

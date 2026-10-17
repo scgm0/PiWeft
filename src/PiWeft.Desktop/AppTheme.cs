@@ -124,6 +124,12 @@ public static class AppTheme
 
 	public const double SidebarWidth = 280;
 	public const double ComposerHeight = 64;
+
+	/// <summary>自定义窗框标题栏的高度（DIP）。Windows/macOS 由系统原生按钮，X11 由应用绘制。</summary>
+	public const double TitleBarHeight = 40;
+
+	/// <summary>标题栏窗口按钮的宽度：与标题栏等高、三键等宽、贴右缘。</summary>
+	public const double TitleBarButtonWidth = 46;
 	public static double MessageMaxWidth => ReadingPreferences.Width;
 
 	// 正文对齐 PiDeck 16px；辅助信息提高一档，避免大屏过小。

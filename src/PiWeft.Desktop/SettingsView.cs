@@ -779,7 +779,7 @@ public sealed class SettingsView
 		foreach (var (label, value) in new (string, string)[]
 		{
 			(Strings.AboutVersion, AppInfo.Version),
-			(Strings.AboutUiFont, AppFonts.HasUiFont ? AppFonts.Ui : $"{AppFonts.Ui}（系统字体）"),
+			(Strings.AboutUiFont, AppFonts.HasUiFont ? AppFonts.UiDisplayName : $"{AppFonts.UiDisplayName}（系统字体）"),
 			(Strings.AboutMonoFont, AppFonts.HasMonoFont ? AppFonts.Mono : $"{AppFonts.Mono}（系统字体）"),
 			(Strings.AboutFramework, AppInfo.Framework),
 			(Strings.AboutIcons, AppInfo.Icons),

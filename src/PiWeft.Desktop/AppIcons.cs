@@ -28,7 +28,7 @@ public static class AppIcons
 	/// <summary>图标的标准显示尺寸（Lucide 的画布是 24×24）。</summary>
 	public const double Size = 16;
 
-	/// <summary>顶栏动作的图标略大一号，远看也认得出。</summary>
+	/// <summary>工具栏动作的图标略大一号，远看也认得出。</summary>
 	public const double ToolbarSize = 20;
 
 	/// <summary>按名称取一个已着色的图标，颜色用于缓存键。</summary>

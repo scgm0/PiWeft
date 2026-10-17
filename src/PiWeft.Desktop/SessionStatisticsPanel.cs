@@ -78,6 +78,10 @@ public sealed class SessionStatisticsPanel
 		Update(display, busy);
 		if (IsOpen) { _usageSummary?.Show(); return; }
 		_window = window;
+		if (View is FrameworkElement element)
+		{
+			element.Margin = window is MainWindow ? MainWindow.OverlayInset : new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
+		}
 		window.OverlayLayer.Add(View);
 		View.IsVisible(true);
 		AppStyles.ApplyTextColors(View);
