@@ -218,7 +218,9 @@ public static class AppStyles
 				BasedOn = ButtonInteraction,
 				Setters =
 				[
-					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Transparent)),
+					// 底色用「悬停色的零 alpha」而不是 Transparent：黑色全透明到浅灰的插值会经过深灰，
+					// 悬停进出时肉眼看到闪一下（MewUI 的 flat 按钮样式也是这么处理的）。
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground.WithAlpha(0))),
 					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),
 					Setter.Create(Control.BorderThicknessProperty, 0.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),

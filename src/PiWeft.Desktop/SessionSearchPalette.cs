@@ -71,8 +71,8 @@ public sealed class SessionSearchPalette
 			});
 
 		// 搜索行：放大镜 + 无边框输入框，右侧是收起提示（键名不翻译）。
-		var icon = new Image().Source(AppIcons.Get("search", AppTheme.TextSubtle)).Width(16).Height(16)
-			.VerticalAlignment(VerticalAlignment.Center).Margin(new Thickness(0, 0, AppTheme.Space2, 0));
+		var icon = AppIcons.Icon("search", AppStyles.RoleSubtle, 16)
+			.Margin(new Thickness(0, 0, AppTheme.Space2, 0));
 		var esc = new Border().Padding(new Thickness(6, 1, 6, 1)).CornerRadius(AppTheme.RadiusXs)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.WithTheme((theme, badge) => badge.Background = AppTheme.For(theme).CardBackgroundAlt)
@@ -218,8 +218,8 @@ public sealed class SessionSearchPalette
 
 	private void AddRow(SessionListItem session, string icon, string title, string? detail)
 	{
-		var image = new Image().Source(AppIcons.Get(icon, AppTheme.TextSubtle)).Width(15).Height(15)
-			.VerticalAlignment(VerticalAlignment.Center).Margin(new Thickness(0, 0, AppTheme.Space2, 0));
+		var image = AppIcons.Icon(icon, AppStyles.RoleSubtle, 15)
+			.Margin(new Thickness(0, 0, AppTheme.Space2, 0));
 		var lines = new StackPanel().Spacing(1).VerticalAlignment(VerticalAlignment.Center).Children(
 			new TextBlock().Text(title).FontSize(AppTheme.FontSizeControl).PrimaryText()
 				.TextTrimming(TextTrimming.CharacterEllipsis));

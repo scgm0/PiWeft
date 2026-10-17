@@ -303,13 +303,13 @@ public sealed partial class MainWindow : Window
 				.MinWidth(84).TextAlignment(TextAlignment.Center))
 			.OnClick(() => ShowSidebarView(projects: true));
 
-		// 「新建」与侧栏同色、悬停才浮起（PiDeck 式导航行）：默认不铺底色，行宽撑满侧栏。
+		// 「新建 / 添加项目」与侧栏同色、悬停才浮起（PiDeck 式导航行）：默认不铺底色，行宽撑满侧栏。
 		_newSessionButton = AppIcons.TextButton("plus", Strings.NewSession,
 			() => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd)), strong: true)
 			.MinHeight(AppTheme.ControlHeightLg)
 			.CornerRadius(AppTheme.RadiusMd);
-		_addProjectButton = AppIcons.PrimaryButton("folder-open", Strings.AddProject,
-			() => _ = ChooseProjectAsync())
+		_addProjectButton = AppIcons.TextButton("folder-open", Strings.AddProject,
+			() => _ = ChooseProjectAsync(), strong: true)
 			.MinHeight(AppTheme.ControlHeightLg)
 			.CornerRadius(AppTheme.RadiusMd);
 

@@ -21,8 +21,7 @@ public sealed partial class MainWindow
 		_sessionTree.ItemTemplate<TreeViewNode>(context =>
 		{
 			// 项目分组行带文件夹图标，会话行不带 —— 层级一眼可辨。
-			var folder = new Image().Source(AppIcons.Get("folder-open", AppTheme.TextSubtle))
-				.Width(14).Height(14).VerticalAlignment(VerticalAlignment.Center)
+			var folder = AppIcons.Icon("folder-open", AppStyles.RoleSubtle, 14)
 				.Margin(new Thickness(0, 0, 6, 0));
 			var title = new TextBlock().FontSize(AppTheme.FontSizeControl).PrimaryText()
 				.TextTrimming(TextTrimming.CharacterEllipsis).VerticalAlignment(VerticalAlignment.Center);

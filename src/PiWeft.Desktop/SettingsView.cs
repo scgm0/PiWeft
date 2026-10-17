@@ -523,8 +523,7 @@ public sealed class SettingsView
 		.VerticalAlignment(VerticalAlignment.Center)
 		.Spacing(6)
 		.Children(
-			new Image().Source(AppIcons.Get(icon, AppTheme.TextSubtle)).Width(13).Height(13)
-				.VerticalAlignment(VerticalAlignment.Center),
+			AppIcons.Icon(icon, AppStyles.RoleSubtle, 13),
 			Caption(text).VerticalAlignment(VerticalAlignment.Center));
 
 	private static Element Section(string title, IReadOnlyList<(string Label, string Value)> rows)

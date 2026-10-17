@@ -94,14 +94,23 @@ public static class AppIcons
 	/// </summary>
 	public static Button TextButton(string icon, string text, Action onClick, bool strong = false)
 	{
-		Color? tint = strong ? AppTheme.TextPrimary : null;
-		var image = new Image().Source(Get(icon, tint)).Width(14).Height(14)
+		// 只记「跟随主文字色」这个语义，不记当时的具体颜色 —— 否则换肤后图标会停在旧主题的色值上。
+		var image = new Image().Source(Get(icon, strong ? AppTheme.TextPrimary : null)).Width(14).Height(14)
 			.VerticalAlignment(VerticalAlignment.Center);
-		Track(image, icon, tint);
+		Track(image, icon, tint: null, role: strong ? AppStyles.RolePrimary : null);
 		return new Button().Ghost().Content(new StackPanel().Orientation(Orientation.Horizontal)
 			.VerticalAlignment(VerticalAlignment.Center).Spacing(6)
 			.Children(image, new TextBlock().Text(text).FontSize(AppTheme.FontSizeControl).PrimaryText()
 				.VerticalAlignment(VerticalAlignment.Center))).OnClick(onClick);
+	}
+
+	/// <summary>纯展示图标（行内文件夹、标题前的图标等）：颜色按文本角色跟随主题，换肤时会重新取色。</summary>
+	public static Image Icon(string icon, string role = AppStyles.RoleSubtle, double size = Size)
+	{
+		var image = new Image().Source(Get(icon, AppStyles.ColorForRole(role))).Width(size).Height(size)
+			.VerticalAlignment(VerticalAlignment.Center);
+		Track(image, icon, tint: null, role: role);
+		return image;
 	}
 
 	/// <summary>主题变化后给所有已存在的图标换色。</summary>
@@ -119,7 +128,11 @@ public static class AppIcons
 
 				if (Info.TryGetValue(image, out var info))
 				{
-					image.Source(Get(info.Icon, info.OnAccent ? AppTheme.TextOnAccent : info.Tint));
+					// 每次都按当前主题重新取色：角色优先（主文字/次要文字…），其次反色，最后才是记录的固定色。
+					var tint = info.Role is { } role ? AppStyles.ColorForRole(role)
+						: info.OnAccent ? AppTheme.TextOnAccent
+						: info.Tint;
+					image.Source(Get(info.Icon, tint));
 				}
 			}
 		}
@@ -128,13 +141,17 @@ public static class AppIcons
 	// 元数据不能强引用 Image，否则弱引用列表里的旧消息图标永远不会被回收。
 	private static readonly ConditionalWeakTable<Image, IconInfo> Info = new();
 
-	private sealed record IconInfo(string Icon, Color? Tint, bool OnAccent);
+	/// <summary>
+	/// <see cref="Role"/> 是文本角色（主文字/次要文字…），换肤时按新主题重解析；
+	/// <see cref="Tint"/> 则是构建时的固定色，只用于确需固定颜色的图标。
+	/// </summary>
+	private sealed record IconInfo(string Icon, Color? Tint, bool OnAccent, string? Role = null);
 
-	private static void Track(Image image, string icon, Color? tint, bool onAccent = false)
+	private static void Track(Image image, string icon, Color? tint, bool onAccent = false, string? role = null)
 	{
 		lock (Cache)
 		{
-			Info.Add(image, new IconInfo(icon, tint, onAccent));
+			Info.Add(image, new IconInfo(icon, tint, onAccent, role));
 			if (++_trackedSinceSweep >= 128)
 			{
 				_trackedSinceSweep = 0;

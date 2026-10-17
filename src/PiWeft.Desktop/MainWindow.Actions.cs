@@ -10,11 +10,12 @@ public sealed partial class MainWindow
 	{
 		try
 		{
+			// 优先用系统的文件夹选择器（Linux 走 XDG Desktop Portal，Windows/macOS 走原生对话框）；
+			// 平台不提供原生实现时，MewUI 会自动回退到内置对话框。
 			var folder = await FileDialog.SelectFolderAsync(new FolderDialogOptions
 			{
 				Title = Strings.OpenProject,
 				Owner = this,
-				PreferNative = false,
 				InitialDirectory = CurrentSession()?.Cwd ?? _cwd,
 			});
 			if (folder is not null)
