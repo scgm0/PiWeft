@@ -1,6 +1,7 @@
 using Aprillz.MewUI;
 using System.Text.Json.Nodes;
 using PiWeft.Cli;
+using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
 
@@ -44,6 +45,16 @@ public sealed record DesktopPreference
 	/// <summary>工作区侧栏状态与拖拽宽度（DIP）。</summary>
 	public bool SidebarCollapsed { get; init; }
 	public double SidebarWidth { get; init; } = AppTheme.SidebarWidth;
+
+	/// <summary>侧栏上次停在「项目」分段；默认是「对话」。</summary>
+	public bool SidebarProjects { get; init; }
+
+	/// <summary>
+	/// 「对话」分段的聊天目录；空表示使用默认的 <see cref="DefaultChatWorkspace"/>。
+	/// 与 PiDeck 的内置 Chat 项目一样，这块工作区不属于任何项目，适合日常对话。
+	/// </summary>
+	public string ChatWorkspace { get; init; } = string.Empty;
+
 	public double ChatFontSize { get; init; } = 16;
 	public double ReadingWidth { get; init; } = 880;
 
@@ -61,6 +72,28 @@ public sealed record DesktopPreference
 
 	public static string Path(string? agentDir = null) =>
 		System.IO.Path.Combine(agentDir ?? PiWeft.CodingAgent.Session.SessionPaths.GetAgentDir(), "desktop.json");
+
+	/// <summary>「对话」的默认聊天目录：<c>&lt;agentDir&gt;/chat-workspace</c>。</summary>
+	public static string DefaultChatWorkspace(string? agentDir = null) =>
+		System.IO.Path.Combine(agentDir ?? PiWeft.CodingAgent.Session.SessionPaths.GetAgentDir(), "chat-workspace");
+
+	/// <summary>实际的聊天目录：优先用户自定义路径（展开 <c>~</c> 并转绝对路径），否则用默认目录。</summary>
+	public string ResolveChatWorkspace(string? agentDir = null)
+	{
+		if (string.IsNullOrWhiteSpace(ChatWorkspace))
+		{
+			return DefaultChatWorkspace(agentDir);
+		}
+
+		try
+		{
+			return System.IO.Path.GetFullPath(UserPath.ExpandTilde(ChatWorkspace.Trim()));
+		}
+		catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			return DefaultChatWorkspace(agentDir);
+		}
+	}
 
 	/// <summary>读取偏好；文件缺失或损坏时返回默认值。</summary>
 	public static DesktopPreference Load(string? agentDir = null)
@@ -81,6 +114,8 @@ public sealed record DesktopPreference
 				Theme = string.IsNullOrWhiteSpace(theme) ? DarkTheme : theme,
 				SidebarCollapsed = root?["sidebarCollapsed"] is JsonValue collapsed && collapsed.TryGetValue<bool>(out var hidden) && hidden,
 				SidebarWidth = Math.Clamp(Number(root, "sidebarWidth", positive: true) ?? AppTheme.SidebarWidth, 200, 480),
+				SidebarProjects = root?["sidebarProjects"] is JsonValue tab && tab.TryGetValue<bool>(out var projects) && projects,
+				ChatWorkspace = root?["chatWorkspace"] is JsonValue chat && chat.TryGetValue<string>(out var chatWorkspace) ? chatWorkspace : string.Empty,
 				ChatFontSize = Math.Clamp(Number(root, "chatFontSize", positive: true) ?? 16, 14, 22),
 				ReadingWidth = Math.Clamp(Number(root, "readingWidth", positive: true) ?? 880, 760, 1360),
 				WindowWidth = Number(root, "windowWidth", positive: true),
@@ -123,7 +158,17 @@ public sealed record DesktopPreference
 
 		root["theme"] = Theme;
 		root["sidebarCollapsed"] = SidebarCollapsed;
+		root["sidebarProjects"] = SidebarProjects;
 		root["sidebarWidth"] = double.IsFinite(SidebarWidth) ? Math.Clamp(SidebarWidth, 200, 480) : AppTheme.SidebarWidth;
+		// 聊天目录只有用户改过才落盘，默认目录跟随 agent 目录走，不写死进文件。
+		if (string.IsNullOrWhiteSpace(ChatWorkspace))
+		{
+			root.Remove("chatWorkspace");
+		}
+		else
+		{
+			root["chatWorkspace"] = ChatWorkspace.Trim();
+		}
 		root["chatFontSize"] = double.IsFinite(ChatFontSize) ? Math.Clamp(ChatFontSize, 14, 22) : 16;
 		root["readingWidth"] = double.IsFinite(ReadingWidth) ? Math.Clamp(ReadingWidth, 760, 1360) : 1060;
 		WriteList(root, "recentProjects", RecentProjects);
@@ -186,6 +231,9 @@ public sealed record DesktopPreference
 	/// <summary>替换快捷键覆盖表（只存与默认不同的项）。</summary>
 	public DesktopPreference WithShortcuts(IReadOnlyDictionary<string, string> shortcuts) =>
 		this with { Shortcuts = shortcuts };
+
+	/// <summary>记忆侧栏停留在「对话」还是「项目」分段。</summary>
+	public DesktopPreference WithSidebarProjects(bool projects) => this with { SidebarProjects = projects };
 
 	public DesktopPreference TogglePinned(string sessionId)
 	{

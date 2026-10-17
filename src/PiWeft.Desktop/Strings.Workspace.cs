@@ -32,6 +32,10 @@ public static partial class Strings
 	// 侧栏「对话 | 项目」双视图与行级菜单。
 	public const string SidebarTabChats = "对话";
 	public const string SidebarTabProjects = "项目";
+
+	/// <summary>「对话」为空时的引导：这里不是全部会话的平铺，而是没有项目上下文的聊天目录。</summary>
+	public const string ChatsEmpty = "还没有对话。这里的会话不属于任何项目，点「新建」开始一个。";
+	public static string ChatWorkspaceFailed(string reason) => $"无法使用聊天目录：{reason}";
 	public const string AddProject = "添加项目";
 	public const string SessionMenuRename = "重命名会话";
 	public const string SessionMenuArchive = "归档会话";

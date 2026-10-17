@@ -59,6 +59,15 @@ public sealed partial class MainWindow : Window
 	private IReadOnlyList<SessionListItem> _allSessions = [];
 	private IReadOnlyList<Model> _models = [];
 
+	/// <summary>「对话」分段的工作目录：这里开出的会话不属于任何项目。</summary>
+	private readonly string _chatWorkspace;
+
+	/// <summary>「对话」分段的节点，重建后用来恢复选中。</summary>
+	private IReadOnlyList<TreeViewNode> _chatNodes = [];
+
+	/// <summary>「对话」为空时的提示；列表铺满剩余高度，提示叠在列表上方。</summary>
+	private TextBlock _chatsEmpty = null!;
+
 	private SessionSearchPalette _sessionSearch = null!;
 	private Button _searchButton = null!;
 	private TextBox _nameBox = null!;
@@ -87,6 +96,7 @@ public sealed partial class MainWindow : Window
 	{
 		_cwd = cwd;
 		var preference = DesktopPreference.Load();
+		_chatWorkspace = preference.ResolveChatWorkspace();
 		this.Resizable(preference.WindowWidth ?? 1280, preference.WindowHeight ?? 820);
 		this.Padding(Thickness.Zero);
 		this.AllowDrop();
@@ -178,7 +188,7 @@ public sealed partial class MainWindow : Window
 				break;
 
 			case ShortcutActions.NewSession:
-				OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd));
+				NewSessionFromCurrentView();
 				break;
 
 			case ShortcutActions.Models:
@@ -281,27 +291,42 @@ public sealed partial class MainWindow : Window
 		ConfigureSessionRows();
 		_sessionTree.SelectedNodeChanged += OnSessionSelected;
 
-		// 「对话」tab：平铺的会话列表（不属于任何项目）；「项目」tab：按项目分组的任务树。
+		// 「对话」tab：聊天目录里的会话（不属于任何项目）；「项目」tab：按项目分组的任务树。
 		_chatsTree = new TreeView().FontSize(AppTheme.FontSizeControl)
 			.BorderThickness(0).Background(AppTheme.Transparent);
 		ConfigureChatsRows();
 		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
+		// 聊天目录还没有会话时给一句引导，而不是一片空白；列表铺满剩余高度，提示叠在列表上方。
+		_chatsEmpty = new TextBlock()
+			.Text(Strings.ChatsEmpty)
+			.FontSize(AppTheme.FontSizeCaption)
+			.SubtleText()
+			.TextWrapping(TextWrapping.Wrap)
+			.Margin(new Thickness(10, AppTheme.Space2, 6, 0))
+			.VerticalAlignment(VerticalAlignment.Top)
+			.IsHitTestVisible(false)
+			.IsVisible(false);
+
 		_banner.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap);
 
-		// 顶部「对话 | 项目」切换；MinWidth + TextAlignment 保证两个 tab 文字都居中。
+		// 顶部「对话 | 项目」切换：两列等分侧栏宽度，侧栏拖宽时按钮跟着变宽；
+		// TextAlignment 保证文字始终落在各自按钮正中。
 		_sessionsTabButton = new Button().Ghost()
+			.HorizontalAlignment(HorizontalAlignment.Stretch)
 			.Content(new TextBlock().Text(Strings.SidebarTabChats).FontSize(AppTheme.FontSizeCaption).PrimaryText()
-				.MinWidth(84).TextAlignment(TextAlignment.Center))
+				.TextAlignment(TextAlignment.Center))
 			.OnClick(() => ShowSidebarView(projects: false));
 		_projectsTabButton = new Button().Ghost()
+			.HorizontalAlignment(HorizontalAlignment.Stretch)
 			.Content(new TextBlock().Text(Strings.SidebarTabProjects).FontSize(AppTheme.FontSizeCaption).PrimaryText()
-				.MinWidth(84).TextAlignment(TextAlignment.Center))
+				.TextAlignment(TextAlignment.Center))
 			.OnClick(() => ShowSidebarView(projects: true));
 
 		// 「新建 / 添加项目」与侧栏同色、悬停才浮起（PiDeck 式导航行）：默认不铺底色，行宽撑满侧栏。
+		// 「新建」属于「对话」分段，落点在聊天目录，不会混进当前项目。
 		_newSessionButton = AppIcons.TextButton("plus", Strings.NewSession,
-			() => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd)), strong: true)
+			NewChatSession, strong: true)
 			.MinHeight(AppTheme.ControlHeightLg)
 			.CornerRadius(AppTheme.RadiusMd);
 		_addProjectButton = AppIcons.TextButton("folder-open", Strings.AddProject,
@@ -311,9 +336,8 @@ public sealed partial class MainWindow : Window
 
 		var sidebarTop = new StackPanel().Spacing(AppTheme.Space2);
 		sidebarTop.Children(
-			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4)
-				.HorizontalAlignment(HorizontalAlignment.Center)
-				.Children(_sessionsTabButton, _projectsTabButton),
+			new Grid().Columns("*,*").Spacing(4)
+				.Children(_sessionsTabButton.Column(0), _projectsTabButton.Column(1)),
 			new DockPanel().LastChildFill().Children(_addProjectButton.DockRight(), _newSessionButton),
 			_searchButton,
 			_nameBox,
@@ -362,7 +386,7 @@ public sealed partial class MainWindow : Window
 						new Border()
 							.Background(AppTheme.Transparent)
 							.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
-							.Child(new Grid().Children(_sessionTree, _chatsTree.IsVisible(false))))));
+							.Child(new Grid().Children(_sessionTree, _chatsTree.IsVisible(false), _chatsEmpty)))));
 
 		// ------------------------------------------------------------ 主区
 		_tabControl = new TabControl().BorderThickness(0).CornerRadius(0).Padding(Thickness.Zero)
@@ -446,7 +470,8 @@ public sealed partial class MainWindow : Window
 		Content = _workspace;
 		Template = new DelegateControlTemplate<MainWindow>((window, _) => window.BuildChromeShell());
 
-		ShowSidebarView(projects: false);
+		// 侧栏停在哪个分段与 PiDeck 一样记忆：对话用于日常聊天，项目用于工作区任务。
+		ShowSidebarView(preference.SidebarProjects, persist: false);
 
 	}
 
@@ -551,9 +576,14 @@ public sealed partial class MainWindow : Window
 		{
 			OpenSessionPath(_sessions[0].Path);
 		}
+		else if (preference.SidebarProjects)
+		{
+			NewSessionIn(_cwd);
+		}
 		else
 		{
-			OpenSession(_catalog.Create(_cwd));
+			// 首次启动停在「对话」：在聊天目录里开一个，而不是往当前项目里塞一个空会话。
+			NewChatSession();
 		}
 
 		if (SmokeTab is { Length: > 0 } smokeTab)
@@ -583,10 +613,10 @@ public sealed partial class MainWindow : Window
 
 	// ------------------------------------------------------------- 会话列表
 
-	/// <summary>重建侧栏列表，应用当前搜索关键字。</summary>
+	/// <summary>重建侧栏列表。目录快照始终包含全部会话，侧栏再按聊天目录分成「对话」与「项目」两段。</summary>
 	private void RefreshSessions()
 	{
-		// 列表默认展示全部项目的会话；「项目」视图只负责工作区管理。
+		// 搜索弹窗需要全部会话；侧栏的两个分段在 UpdateSessionList 里分流。
 		_allSessions = _catalog.List();
 
 		// 置顶的会话排在最前，其余保持最近修改优先。
@@ -613,8 +643,13 @@ public sealed partial class MainWindow : Window
 		var selectedId = SelectedSession()?.Id ?? CurrentTab()?.Session.Session.SessionId;
 		var rows = new List<SessionListItem>(_sessions);
 
+		// 「对话」= 聊天目录里的会话。与 PiDeck 的内置 Chat 项目一致：它不是全部会话的平铺，
+		// 否则同一批会话会在两个分段里重复出现，项目视图失去区分度。
+		var chats = SessionGroups.Chats(rows, _chatWorkspace);
+
 		// 按工作目录分组：项目是父节点，会话是子节点（树默认展开），与 PiDeck 的项目视图一致。
-		var nodes = rows
+		// 聊天目录里的会话只属于「对话」，不再作为项目出现在这里。
+		var nodes = SessionGroups.Projects(rows, _chatWorkspace)
 			.DistinctBy(static item => item.Path)
 			.GroupBy(static item => item.Cwd)
 			.OrderByDescending(static group => group.Max(static item => item.Modified))
@@ -636,14 +671,17 @@ public sealed partial class MainWindow : Window
 			_sessionTree.Expand(node);
 		}
 
-		// 「对话」视图：同一批会话按最近修改平铺，不分组。
-		_chatsTree.ItemsSource(
+		// 「对话」分段：聊天目录里的会话按置顶、最近修改平铺，不分组。
+		_chatNodes =
 		[
-			.. rows
+			.. chats
 				.DistinctBy(static item => item.Path)
-				.OrderByDescending(static item => item.Modified)
+				.OrderByDescending(item => preference.IsPinned(item.Id))
+				.ThenByDescending(static item => item.Modified)
 				.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item)),
-		]);
+		];
+		_chatsTree.ItemsSource(_chatNodes);
+		_chatsEmpty.IsVisible(!_projectsTab && _chatNodes.Count == 0);
 
 		if (selectedId is not null)
 		{
@@ -672,6 +710,7 @@ public sealed partial class MainWindow : Window
 		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}";
 	}
 
+	/// <summary>两个分段共用同一个处理器：只对会话行打开会话，项目分组行忽略。</summary>
 	private void OnSessionSelected(object? item)
 	{
 		if (_restoringSelection)
@@ -679,8 +718,9 @@ public sealed partial class MainWindow : Window
 			return;
 		}
 
-		var selected = SelectedSession();
-		if (selected is null)
+		// 事件带的是刚选中的节点；不能去读另一个（可能隐藏的）树的选中项，
+		// 否则在「对话」里点一行会被忽略。
+		if (item is not TreeViewNode { Tag: SessionListItem selected })
 		{
 			return;
 		}
@@ -714,10 +754,17 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>侧栏当前选中的会话。</summary>
+	/// <summary>侧栏当前选中的会话：取可见分段的选中行，避免命中另一棵树的旧选择。</summary>
 	private SessionListItem? SelectedSession()
 	{
-		return _sessionTree.SelectedNode?.Tag as SessionListItem;
+		var tree = _projectsTab ? _sessionTree : _chatsTree;
+		if (tree.SelectedNode?.Tag is not SessionListItem selected)
+		{
+			return null;
+		}
+
+		// 列表重建或分段切换后，旧节点可能已不属于当前分段：只接受属于它的会话。
+		return SessionGroups.IsChat(selected, _chatWorkspace) == !_projectsTab ? selected : null;
 	}
 
 	/// <summary>把输入框里的名称写给选中的会话，并刷新列表与标签标题。</summary>
@@ -1564,7 +1611,7 @@ public sealed partial class MainWindow : Window
 	{
 		var commands = new List<PaletteCommand>
 		{
-			new(Strings.NewSession, Strings.ShortcutNewSession, () => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd))),
+			new(Strings.NewSession, Strings.ShortcutNewSession, NewSessionFromCurrentView),
 			new(Strings.SessionSearch, Strings.ShortcutSearchSessions, () => _sessionSearch.Toggle(this)),
 			new(Strings.OpenProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
 			new(Strings.SelectModel, "Ctrl+M", () => CurrentTab()?.ShowModelPicker()),
@@ -1694,13 +1741,22 @@ public sealed partial class MainWindow : Window
 	}
 
 
-	/// <summary>在列表重建后把选中项恢复到指定会话。</summary>
+	/// <summary>在列表重建后把选中项恢复到指定会话；「对话」与「项目」两个分段都要找。</summary>
 	private void RestoreSelection(string sessionId)
 	{
 		// 恢复高亮不应再次打开会话或把焦点从正在输入的控件抢走。
 		_restoringSelection = true;
 		try
 		{
+			foreach (var chat in _chatNodes)
+			{
+				if (chat.Tag is SessionListItem item && string.Equals(item.Id, sessionId, StringComparison.Ordinal))
+				{
+					_chatsTree.SelectedNode = chat;
+					return;
+				}
+			}
+
 			foreach (var project in _sessionNodes)
 			{
 				foreach (var child in project.Children)

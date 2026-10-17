@@ -221,7 +221,7 @@ public sealed partial class MainWindow
 		var newTabButton = BuildChromeGlyphButton(
 			GlyphKind.Plus,
 			Strings.NewSession,
-			() => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd)));
+			NewSessionFromCurrentView);
 		newTabButton.Margin(new Thickness(4, 0, 0, 0));
 
 		var tabsRow = new StackPanel()

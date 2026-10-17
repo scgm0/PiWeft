@@ -61,7 +61,7 @@ public sealed partial class MainWindow
 		});
 	}
 
-	/// <summary>「对话」视图：平铺的会话列表，每行一个会话，不属于任何项目。</summary>
+	/// <summary>「对话」视图：聊天目录里的会话平铺，每行一个会话，不属于任何项目。</summary>
 	private void ConfigureChatsRows()
 	{
 		HideScrollbarsWhenIdle(_chatsTree);
@@ -166,14 +166,14 @@ public sealed partial class MainWindow
 			menu.Items.Add(new MenuItem(command));
 		}
 
-		Add(Strings.ProjectMenuNewTask, () => OpenSession(_catalog.Create(cwd)));
+		Add(Strings.ProjectMenuNewTask, () => NewSessionIn(cwd));
 		Add(Strings.ProjectMenuReveal, () => Shell.Open(cwd));
 		Add(Strings.ProjectMenuRemove, () => RemoveProject(cwd));
 		menu.Show(owner);
 	}
 
-	/// <summary>「对话 | 项目」切换：对话是平铺会话流，项目是按项目分组的任务树。</summary>
-	private void ShowSidebarView(bool projects)
+	/// <summary>「对话 | 项目」切换：对话是聊天目录里的会话流，项目是按项目分组的任务树。</summary>
+	private void ShowSidebarView(bool projects, bool persist = true)
 	{
 		_projectsTab = projects;
 		_sessionsTabButton.StyleName(projects ? AppStyles.GhostButton : AppStyles.SelectedButton);
@@ -182,6 +182,61 @@ public sealed partial class MainWindow
 		_addProjectButton.IsVisible(projects);
 		_sessionTree.IsVisible(projects);
 		_chatsTree.IsVisible(!projects);
+		_chatsEmpty.IsVisible(!projects && _chatNodes.Count == 0);
+
+		if (!persist)
+		{
+			return;
+		}
+
+		// 与 PiDeck 一样记住上次停在哪个分段，下次启动直接回到同一视图。
+		try
+		{
+			var preference = DesktopPreference.Load();
+			if (preference.SidebarProjects != projects)
+			{
+				preference.WithSidebarProjects(projects).Save();
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Save sidebar tab", ex);
+		}
+	}
+
+	/// <summary>「对话」的「新建」：会话落在聊天目录里，不属于任何项目。</summary>
+	private void NewChatSession()
+	{
+		try
+		{
+			Directory.CreateDirectory(_chatWorkspace);
+			NewSessionIn(_chatWorkspace);
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Create chat session", ex);
+			_banner.Text(Strings.ChatWorkspaceFailed(ex.Message));
+		}
+	}
+
+	/// <summary>新建会话的统一落点：跟随侧栏分段 —— 对话落在聊天目录，项目落在当前会话/窗口目录。</summary>
+	private void NewSessionFromCurrentView()
+	{
+		if (!_projectsTab)
+		{
+			NewChatSession();
+			return;
+		}
+
+		NewSessionIn(CurrentSession()?.Cwd ?? _cwd);
+	}
+
+	/// <summary>在指定目录新建会话并立即出现在侧栏，而不是等第一条消息落盘后才刷新。</summary>
+	private void NewSessionIn(string cwd)
+	{
+		// 没有工作目录的旧会话会聚成「?」分组：给它开新任务时退回窗口目录，避免空路径。
+		OpenSession(_catalog.Create(string.IsNullOrWhiteSpace(cwd) ? _cwd : cwd));
+		RefreshSessions();
 	}
 
 	/// <summary>从会话行发起的重命名优先于「选中项」。</summary>
