@@ -149,7 +149,7 @@ public sealed class CliEnvironment
 			return (null, modelError ?? "No usable model found.");
 		}
 
-		var tools = ResolveTools(arguments, cwd);
+		var tools = ResolveTools(arguments, cwd, settings);
 		return (new CliEnvironment(registry, gateway, settings, model, tools, customModels.ApiKeys, projectTrusted), null);
 	}
 
@@ -174,10 +174,13 @@ public sealed class CliEnvironment
 
 		if (requested is not null)
 		{
-			var match = FindModel(registry, requested, provider);
+			var match = FindModel(registry, requested, provider, providerApiKeys, arguments.ApiKey);
 			if (match is null)
 			{
-				error = $"Model not found: {requested}";
+				// 裸 id 同时命中多个 provider 且凭据无法区分时，提示用户用 --provider 消歧。
+				error = registry.FindById(requested).Count > 1
+					? $"Ambiguous model '{requested}': multiple providers share this id. Pass --provider to disambiguate."
+					: $"Model not found: {requested}";
 				return null;
 			}
 
@@ -210,8 +213,17 @@ public sealed class CliEnvironment
 		return null;
 	}
 
-	/// <summary>按 <c>provider/id</c>、精确 id、glob 模式或子串查找模型。</summary>
-	public static Model? FindModel(ModelRegistry registry, string pattern, string? provider = null)
+	/// <summary>
+	/// 按 <c>provider/id</c>、精确 id、glob 模式或子串查找模型。与 pi 1.3.0 一致：
+	/// 同名 id 出现在多个 provider 时优先选择**有可用凭据**的那个，仍然无法区分时返回 null
+	/// 由调用方报「模型未找到/有歧义」。
+	/// </summary>
+	public static Model? FindModel(
+		ModelRegistry registry,
+		string pattern,
+		string? provider = null,
+		IReadOnlyDictionary<string, string>? providerApiKeys = null,
+		string? explicitApiKey = null)
 	{
 		if (pattern.Length == 0)
 		{
@@ -230,6 +242,15 @@ public sealed class CliEnvironment
 			return byKey;
 		}
 
+		// 裸 id 命中多个 provider：优先有凭据者；不知道凭据情况（未传 key 信息）或仍然并列时
+		// 维持「有歧义」的返回，让调用方报错而不是猜一个。
+		var byId = registry.FindById(pattern).Where(m => SupportedApis.Contains(m.Api, StringComparer.Ordinal)).ToList();
+		if (byId.Count > 1)
+		{
+			var credentialed = PreferCredentialed(byId, providerApiKeys, explicitApiKey);
+			return credentialed.Count == 1 ? credentialed[0] : null;
+		}
+
 		var candidates = registry.ChatModels(provider);
 		var qualified = candidates.Select(model => (Model: model, Key: $"{model.Provider}/{model.Id}")).ToList();
 
@@ -244,7 +265,9 @@ public sealed class CliEnvironment
 
 			if (matches.Count > 0)
 			{
-				return matches[0];
+				return PreferCredentialed(matches, providerApiKeys, explicitApiKey) is { Count: > 0 } preferred
+					? preferred[0]
+					: null;
 			}
 		}
 
@@ -255,7 +278,28 @@ public sealed class CliEnvironment
 			.Select(static entry => entry.Model)
 			.ToList();
 
-		return substring.Count > 0 ? substring[0] : null;
+		if (substring.Count > 0)
+		{
+			return PreferCredentialed(substring, providerApiKeys, explicitApiKey) is { Count: > 0 } preferred
+				? preferred[0]
+				: null;
+		}
+
+		return null;
+	}
+
+	/// <summary>知道凭据情况时，把候选收窄到本地有可用凭据的 provider；不知道时原样返回。</summary>
+	private static IReadOnlyList<Model> PreferCredentialed(
+		IReadOnlyList<Model> candidates,
+		IReadOnlyDictionary<string, string>? providerApiKeys,
+		string? explicitApiKey)
+	{
+		if (providerApiKeys is null || candidates.Count <= 1)
+		{
+			return candidates;
+		}
+
+		return ModelAvailability.Filter(candidates, providerApiKeys, explicitApiKey);
 	}
 
 	/// <summary>某个模型是否命中所给的 <c>--models</c> 模式：支持 glob 与子串匹配。</summary>
@@ -311,45 +355,91 @@ public sealed class CliEnvironment
 		return [.. models.OrderBy(static m => m.Provider, StringComparer.Ordinal).ThenBy(static m => m.Id, StringComparer.Ordinal)];
 	}
 
-	/// <summary>应用工具相关参数：内置集、白名单、黑名单。</summary>
-	public static IReadOnlyList<AgentTool> ResolveTools(CliArguments arguments, string cwd)
+	/// <summary>应用工具相关参数：默认集、白名单、黑名单。</summary>
+	public static IReadOnlyList<AgentTool> ResolveTools(CliArguments arguments, string cwd) =>
+		ResolveTools(arguments, cwd, new CodingAgentSettings());
+
+	/// <summary>
+	/// 与 pi 相同的三态语义：默认集来自 <c>settings.defaultTools</c>（未配置时用
+	/// <see cref="CodingAgentSettings.DefaultToolNames"/>）；<c>--tools</c> 的纯名字列表整体替换默认集，
+	/// 只含 <c>+</c>/<c>-</c> 时在默认集上增删；<c>--exclude-tools</c> 最后应用并支持通配。
+	/// 模式永远针对**完整**内置目录展开，因此默认关闭的 <c>grep</c>/<c>find</c>/<c>ls</c> 仍可显式选中。
+	/// </summary>
+	public static IReadOnlyList<AgentTool> ResolveTools(CliArguments arguments, string cwd, CodingAgentSettings settings)
 	{
 		if (arguments.NoTools)
 		{
 			return [];
 		}
 
-		var tools = arguments.NoBuiltinTools
-			? new List<AgentTool>()
-			: [.. BuiltinTools.Tools(cwd)];
+		var catalog = arguments.NoBuiltinTools ? [] : BuiltinTools.Tools(cwd);
+		if (catalog.Count == 0)
+		{
+			return [];
+		}
+
+		// 默认集：settings.defaultTools 的纯名字整体替换 pi 默认集，只有 +/- 时在默认集上增删。
+		var defaults = settings.DefaultTools.Count > 0 ? settings.DefaultTools : CodingAgentSettings.DefaultToolNames;
+		var tools = ApplyToolEntries(
+			[.. catalog.Where(tool => CodingAgentSettings.DefaultToolNames.Contains(tool.Name, StringComparer.Ordinal))],
+			catalog,
+			defaults,
+			allowPatterns: false);
 
 		if (arguments.Tools.Count > 0)
 		{
-			var adjustments = arguments.Tools.Where(static t => t.StartsWith('+') || t.StartsWith('-')).ToList();
-			var replacements = arguments.Tools.Where(static t => !t.StartsWith('+') && !t.StartsWith('-')).ToList();
-
-			if (replacements.Count > 0)
-			{
-				var allow = new HashSet<string>(ExpandPatterns(replacements, tools), StringComparer.Ordinal);
-				tools = [.. tools.Where(tool => allow.Contains(tool.Name))];
-			}
-
-			foreach (var adjustment in adjustments)
-			{
-				var name = adjustment[1..];
-				tools = adjustment[0] == '+'
-					? [.. tools, .. BuiltinTools.Tools(cwd).Where(tool => tool.Name == name && tools.All(existing => existing.Name != name))]
-					: [.. tools.Where(tool => tool.Name != name)];
-			}
+			tools = ApplyToolEntries(tools, catalog, arguments.Tools, allowPatterns: true);
 		}
 
 		if (arguments.ExcludeTools.Count > 0)
 		{
-			var excluded = new HashSet<string>(ExpandPatterns(arguments.ExcludeTools, tools), StringComparer.Ordinal);
+			var excluded = new HashSet<string>(ExpandPatterns(arguments.ExcludeTools, catalog), StringComparer.Ordinal);
 			tools = [.. tools.Where(tool => !excluded.Contains(tool.Name))];
 		}
 
 		return tools;
+	}
+
+	/// <summary>
+	/// 按 <c>+name</c> / <c>-name</c> / 纯名字三态调整工具集。纯名字出现即整体替换
+	/// <paramref name="baseTools"/>（<c>--tools</c> 额外支持通配），否则只在基线上增删。
+	/// </summary>
+	private static List<AgentTool> ApplyToolEntries(
+		IReadOnlyList<AgentTool> baseTools,
+		IReadOnlyList<AgentTool> catalog,
+		IReadOnlyList<string> entries,
+		bool allowPatterns)
+	{
+		var adjustments = entries.Where(static entry => entry.StartsWith('+') || entry.StartsWith('-')).ToList();
+		var replacements = entries.Where(static entry => !entry.StartsWith('+') && !entry.StartsWith('-')).ToList();
+		var selected = new List<AgentTool>(baseTools);
+
+		if (replacements.Count > 0)
+		{
+			var allow = new HashSet<string>(
+				allowPatterns ? ExpandPatterns(replacements, catalog) : replacements,
+				StringComparer.Ordinal);
+			selected = [.. catalog.Where(tool => allow.Contains(tool.Name))];
+		}
+
+		foreach (var adjustment in adjustments)
+		{
+			var name = adjustment[1..];
+			if (adjustment[0] == '+')
+			{
+				if (catalog.FirstOrDefault(tool => tool.Name == name) is { } tool &&
+					selected.All(existing => existing.Name != name))
+				{
+					selected.Add(tool);
+				}
+			}
+			else
+			{
+				selected.RemoveAll(tool => tool.Name == name);
+			}
+		}
+
+		return selected;
 	}
 
 	/// <summary>按会话相关参数解析出要使用的会话。</summary>
@@ -361,7 +451,7 @@ public sealed class CliEnvironment
 		bool recordInitialThinkingLevel = true,
 		IUiHost? uiHost = null)
 	{
-		var manager = session ?? ResolveSession(arguments, cwd);
+		var manager = session ?? ResolveSession(arguments, cwd, Settings.SessionDir);
 
 		IReadOnlyList<CodingAgent.Skills.Skill>? skills = arguments.NoSkills ? [] : null;
 		IReadOnlyList<CodingAgent.Prompts.PromptTemplate>? templates = arguments.NoPromptTemplates ? [] : null;
@@ -462,15 +552,19 @@ public sealed class CliEnvironment
 		return pattern.IndexOfAny(['*', '?']) >= 0 && SearchTools.GlobToRegex(pattern).IsMatch(name);
 	}
 
-	/// <summary>打开或创建参数所要求的会话文件。</summary>
-	public static SessionManager ResolveSession(CliArguments arguments, string cwd)
+	/// <summary>
+	/// 打开或创建参数所要求的会话文件。<paramref name="defaultSessionDir"/> 来自
+	/// <c>settings.sessionDir</c>，只有在没有 <c>--session-dir</c> 时才生效。
+	/// </summary>
+	public static SessionManager ResolveSession(CliArguments arguments, string cwd, string? defaultSessionDir = null)
 	{
 		if (arguments.NoSession)
 		{
 			return SessionManager.InMemory(cwd, arguments.SessionId);
 		}
 
-		var sessionDir = arguments.SessionDir;
+		var sessionDir = arguments.SessionDir
+			?? (defaultSessionDir is { Length: > 0 } configured ? PiWeft.CodingAgent.Session.UserPath.Resolve(configured) : null);
 
 		if (arguments.Fork is { Length: > 0 } forkSource)
 		{

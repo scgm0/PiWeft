@@ -7,6 +7,7 @@ using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Stats;
 using PiWeft.Mcp;
 using ZLogger;
@@ -57,6 +58,12 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 		_arguments = arguments;
 		AppLog.For<CliRunner>().ZLogInformation($"CLI run: mode={arguments.Mode.ToString()}");
+
+		// 兼容参数被静默吞掉会让用户以为功能生效了（例如 -e 期望扩展加载）；显式提示一次。
+		foreach (var flag in arguments.AcceptedCompatFlags)
+		{
+			error.WriteLine($"pi: warning: {flag} is accepted for pi/PiDeck compatibility but not implemented in this port (see --help).");
+		}
 
 		if (arguments.Mode == CliMode.Rpc && arguments.FileArgs.Count > 0)
 		{
@@ -253,7 +260,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	}
 
 	/// <summary><c>pi --version</c> 报告的 RPC 契约版本，供客户端判断特性支持；不是自身构建号。</summary>
-	public const string RpcContractVersion = "1.2.0";
+	public const string RpcContractVersion = "1.3.0";
 
 	public static string VersionString => RpcContractVersion;
 
@@ -401,6 +408,14 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			.OfType<AssistantMessage>()
 			.LastOrDefault() is { StopReason: StopReason.Error or StopReason.Aborted };
 
+	/// <summary>最后一次运行是否以「被中止」结束，供 <c>agent_settled.aborted</c> 使用。</summary>
+	private static bool LastStopReasonWasAborted(CodingAgentSession session) =>
+		session.Session.Entries
+			.OfType<SessionMessageEntry>()
+			.Select(static entry => entry.Message)
+			.OfType<AssistantMessage>()
+			.LastOrDefault() is { StopReason: StopReason.Aborted };
+
 	// ------------------------------------------------------------------ JSON
 
 	/// <summary>JSON 模式：先输出会话头部，再为每个代理事件输出一行 JSONL。</summary>
@@ -423,7 +438,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				.ConfigureAwait(false);
 		}
 
-		WriteRecord("""{"type":"agent_settled","aborted":false}""");
+		WriteRecord(AgentEventWriter.AgentSettled(LastStopReasonWasAborted(session)));
 		// 与 pi 一致：被输出上限截断时打印部分文本、在 stderr 说明原因，并以 1 退出 ——
 		// 静默地以 0 退出会让脚本把半截回答当成完整结果。
 		if (LastStopReasonIsTruncated(session))
@@ -703,7 +718,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				{
 					var name = command["name"]?.GetValue<string>()
 						?? throw new InvalidOperationException("name is required");
-					session.Session.AppendSessionInfo(name);
+					session.SetSessionName(name);
 					WriteRecord(Response(id, "set_session_name", true, new JsonObject(), null));
 					break;
 				}
@@ -1238,6 +1253,12 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				{
 					error.WriteLine($"pi: prompt failed: {ex.Message}");
 				}
+				finally
+				{
+					// pi 的客户端（含 PiDeck）以 agent_settled 判定「本次运行不会再自动继续」，
+					// 只等 agent_end 会在自动重试/压缩后提前收尾。
+					WriteRecord(AgentEventWriter.AgentSettled(LastStopReasonWasAborted(session)));
+				}
 			},
 			CancellationToken.None);
 
@@ -1490,6 +1511,19 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				continue;
 			}
 
+			// pi 的内联 shell：`!cmd` 把输出并入对话，`!!cmd` 只执行不进模型上下文。
+			if (trimmed.StartsWith('!'))
+			{
+				await RunInlineShellAsync(session, trimmed, cancellationToken).ConfigureAwait(false);
+				continue;
+			}
+
+			// pi 的其余内置斜杠命令；未识别的 `/…` 仍然回落到技能命令与提示词模板展开。
+			if (await HandleSlashCommandAsync(session, arguments, trimmed, input, cancellationToken).ConfigureAwait(false))
+			{
+				continue;
+			}
+
 			// 技能命令与提示词模板由 session.PromptAsync 展开，交互模式不再重复展开。
 			await RunAndPrintAsync(session, trimmed, cancellationToken).ConfigureAwait(false);
 		}
@@ -1531,6 +1565,374 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 		return count;
 	}
+
+	// ------------------------------------------------------------ 交互命令
+
+	/// <summary>交互模式可用的斜杠命令一览（/help）。</summary>
+	private const string InteractiveHelpText = """
+		命令：
+		  /model                    查看当前 provider/model/thinking
+		  /thinking [级别]          查看/设置思考级别（off…max）
+		  /compact                  压缩上下文
+		  /plan                     切换计划模式（只读）
+		  /reload                   重新发现技能/提示词模板/主题
+		  /new                      开始新会话
+		  /resume                   选择并恢复历史会话
+		  /session                  查看会话文件、消息数与用量
+		  /name <名称>              给当前会话命名
+		  /tree                     查看分支树
+		  /fork                     从某条用户消息分叉
+		  /clone                    把当前分支复制为新会话
+		  /export [路径]            导出 HTML（JSONL 是会话文件本身）
+		  /scoped-models            查看 --models 轮换范围
+		  /mcp                      查看已连接的 MCP 服务器与工具
+		  /trust                    查看当前项目信任状态
+		  /settings                 查看设置文件路径与生效值
+		  /login [provider]         OAuth 登录（默认 openai-codex）
+		  /logout [provider]        移除已存凭据
+		  /copy                     复制最近一条助手回复
+		  /import <路径>            导入另一个会话的当前分支
+		  /export、/bug、/exit     导出 / 反馈 / 退出
+		  !<命令>                   执行 shell 并把输出加入对话
+		  !!<命令>                  执行 shell，输出不进模型上下文
+		未实现的 pi 命令：/share、/llama、/hotkeys（行式 REPL 无键位绑定）。
+		""";
+
+	/// <summary>交互模式的内联 shell：`!cmd` 把输出并入对话，`!!cmd` 只执行不入上下文。</summary>
+	private async Task RunInlineShellAsync(CodingAgentSession session, string line, CancellationToken cancellationToken)
+	{
+		var excludeFromContext = line.StartsWith("!!");
+		var command = (excludeFromContext ? line[2..] : line[1..]).Trim();
+		if (command.Length == 0)
+		{
+			error.WriteLine("用法：!<命令>（输出进入对话）或 !!<命令>（输出不进模型上下文）");
+			return;
+		}
+
+		var result = await session
+			.RunBashAsync(command, excludeFromContext, onOutput: null, cancellationToken)
+			.ConfigureAwait(false);
+
+		if (result.Output.Length > 0)
+		{
+			output.WriteLine(result.Output.TrimEnd());
+		}
+
+		if (result.ExitCode is { } exitCode && exitCode != 0)
+		{
+			error.WriteLine($"退出码 {exitCode}");
+		}
+
+		if (excludeFromContext)
+		{
+			error.WriteLine("（输出未加入模型上下文）");
+		}
+	}
+
+	/// <summary>
+	/// pi 内置斜杠命令的行式实现。返回 true 表示已消费；未识别的 <c>/…</c> 继续走
+	/// 技能命令与提示词模板展开（与既有行为一致）。
+	/// </summary>
+	private async Task<bool> HandleSlashCommandAsync(
+		CodingAgentSession session,
+		CliArguments arguments,
+		string line,
+		TextReader input,
+		CancellationToken cancellationToken)
+	{
+		var space = line.IndexOf(' ');
+		var command = space < 0 ? line : line[..space];
+		var rest = space < 0 ? string.Empty : line[(space + 1)..].Trim();
+
+		switch (command)
+		{
+			case "/help":
+				error.WriteLine(InteractiveHelpText);
+				return true;
+
+			case "/thinking":
+			{
+				if (rest.Length == 0)
+				{
+					error.WriteLine($"thinking: {session.ThinkingLevel}（可选 off/minimal/low/medium/high/xhigh/max）");
+					return true;
+				}
+
+				try
+				{
+					session.SetThinkingLevel(rest);
+					error.WriteLine($"thinking → {session.ThinkingLevel}");
+				}
+				catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+				{
+					error.WriteLine($"pi: {exception.Message}");
+				}
+
+				return true;
+			}
+
+			case "/name":
+				if (rest.Length == 0)
+				{
+					error.WriteLine("用法：/name <名称>（再次 /name 新名称可修改）");
+					return true;
+				}
+
+				session.SetSessionName(rest);
+				error.WriteLine($"会话名称 → {rest}");
+				return true;
+
+			case "/session":
+			{
+				var stats = session.Statistics();
+				error.WriteLine($"文件: {session.Session.SessionFile ?? "（未落盘）"}");
+				error.WriteLine($"ID: {(session.Session.SessionId.Length > 0 ? session.Session.SessionId : "（未生成）")}");
+				error.WriteLine($"名称: {session.SessionName ?? "（未命名）"}");
+				error.WriteLine(
+					$"消息条目: {session.Session.Entries.Count(static entry => entry is SessionMessageEntry)}  " +
+					$"令牌: {stats.Tokens:N0}  费用: ${stats.Cost:F4}");
+				return true;
+			}
+
+			case "/new":
+				if (session.IsStreaming)
+				{
+					error.WriteLine("pi: 正在生成回复，稍后再试");
+					return true;
+				}
+
+				session.Session.StartNew();
+				session.SwitchSession(session.Session);
+				error.WriteLine($"已开始新会话：{session.Session.SessionFile ?? "（未落盘）"}");
+				return true;
+
+			case "/resume":
+				await ResumeInteractiveAsync(session, input, cancellationToken).ConfigureAwait(false);
+				return true;
+
+			case "/tree":
+				PrintSessionTree(session);
+				return true;
+
+			case "/fork":
+				await ForkInteractiveAsync(session, input).ConfigureAwait(false);
+				return true;
+
+			case "/clone":
+				if (session.IsStreaming)
+				{
+					error.WriteLine("pi: 正在生成回复，稍后再试");
+					return true;
+				}
+
+				try
+				{
+					session.CloneAsync();
+					error.WriteLine($"已克隆到 {session.Session.SessionFile}");
+				}
+				catch (InvalidOperationException exception)
+				{
+					error.WriteLine($"pi: {exception.Message}");
+				}
+
+				return true;
+
+			case "/export":
+				output.WriteLine($"Exported to: {ExportHtml(session, rest.Length > 0 ? rest : null)}");
+				return true;
+
+			case "/scoped-models":
+				error.WriteLine(arguments.Models.Count == 0
+					? "未设置 --models（启动时用 --models <模式列表> 限定轮换范围）。"
+					: $"--models: {string.Join(", ", arguments.Models)}\n当前: {session.Model.Provider}/{session.Model.Id}");
+				return true;
+
+			case "/mcp":
+				PrintMcpServers();
+				return true;
+
+			case "/trust":
+				error.WriteLine(session.ProjectTrusted
+					? "当前项目：受信任（项目级设置、MCP 与资源会加载）。"
+					: "当前项目：不受信任（项目级设置、MCP 与资源未加载）。");
+				error.WriteLine("覆盖：启动时 -a / -na，或全局 settings.defaultProjectTrust（always/never/ask）。");
+				return true;
+
+			case "/settings":
+				error.WriteLine($"全局设置: {CodingAgentSettings.GlobalPath()}");
+				error.WriteLine($"项目设置: {CodingAgentSettings.ProjectPath(session.Cwd)}");
+				error.WriteLine(
+					$"默认模型: {session.Settings.DefaultProvider ?? "*"}/{session.Settings.DefaultModel ?? "*"}  " +
+					$"thinking: {session.Settings.DefaultThinkingLevel ?? "(默认)"}");
+				return true;
+
+			case "/login":
+				await AuthCommands.RunAsync("login", rest.Length == 0 ? [] : [rest], output, error, cancellationToken)
+					.ConfigureAwait(false);
+				return true;
+
+			case "/logout":
+				await AuthCommands.RunAsync("logout", rest.Length == 0 ? [] : [rest], output, error, cancellationToken)
+					.ConfigureAwait(false);
+				return true;
+
+			case "/hotkeys":
+				error.WriteLine("行式 REPL 没有键位绑定；桌面端的快捷键在「设置 → 快捷键」里自定义。");
+				return true;
+
+			case "/changelog":
+				error.WriteLine($"PiWeft（RPC 契约 {RpcContractVersion}）。上游变更：https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md");
+				return true;
+
+			case "/share":
+				error.WriteLine("pi: /share 未实现（会话上传与 Radius/Gist 集成不在本端口范围）。可用 /export 导出 HTML。");
+				return true;
+
+			case "/llama":
+				error.WriteLine("pi: /llama 未实现（内置 llama.cpp 集成不在本端口范围）。");
+				return true;
+
+			default:
+				return false;
+		}
+	}
+
+	private async Task ResumeInteractiveAsync(CodingAgentSession session, TextReader input, CancellationToken cancellationToken)
+	{
+		if (session.IsStreaming)
+		{
+			error.WriteLine("pi: 正在生成回复，稍后再试");
+			return;
+		}
+
+		var sessions = SessionManager.ListSessions(session.Session.SessionDir, session.Cwd);
+		if (sessions.Count == 0)
+		{
+			error.WriteLine("当前目录没有已保存的会话。");
+			return;
+		}
+
+		for (var index = 0; index < sessions.Count; index++)
+		{
+			var info = sessions[index];
+			var title = string.IsNullOrEmpty(info.Name) ? info.FirstMessage : info.Name;
+			error.WriteLine($"{index + 1,3}. {FirstLine(title ?? string.Empty)}  [{info.Modified:yyyy-MM-dd HH:mm}]");
+		}
+
+		error.Write("输入序号选择会话（回车取消）: ");
+		error.Flush();
+		var picked = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+		if (!int.TryParse(picked?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var choice) ||
+			choice < 1 || choice > sessions.Count)
+		{
+			return;
+		}
+
+		var opened = SessionManager.Open(sessions[choice - 1].Path, session.Session.SessionDir);
+		session.SwitchSession(opened);
+		error.WriteLine($"已切换到 {opened.SessionFile}");
+	}
+
+	private async Task ForkInteractiveAsync(CodingAgentSession session, TextReader input)
+	{
+		var candidates = session.Session.GetUserMessagesForForking();
+		if (candidates.Count == 0)
+		{
+			error.WriteLine("当前分支没有用户消息可分叉。");
+			return;
+		}
+
+		for (var index = 0; index < candidates.Count; index++)
+		{
+			error.WriteLine($"{index + 1,3}. {FirstLine(candidates[index].Text)}");
+		}
+
+		error.Write("输入序号，在该消息之前分叉（回车取消）: ");
+		error.Flush();
+		var picked = await input.ReadLineAsync(CancellationToken.None).ConfigureAwait(false);
+		if (!int.TryParse(picked?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var choice) ||
+			choice < 1 || choice > candidates.Count)
+		{
+			return;
+		}
+
+		var text = session.ForkAt(candidates[choice - 1].EntryId, "before");
+		if (text is { Length: > 0 })
+		{
+			// 分叉自用户消息之前时，pi 会把那条消息放回输入框；行式 REPL 直接重发它。
+			await RunAndPrintAsync(session, session.PrepareInput(text), CancellationToken.None).ConfigureAwait(false);
+		}
+		else
+		{
+			error.WriteLine($"已切到条目 {candidates[choice - 1].EntryId}。");
+		}
+	}
+
+	private void PrintSessionTree(CodingAgentSession session)
+	{
+		foreach (var entry in session.Session.Entries)
+		{
+			var marker = entry.Id == session.Session.LeafId ? "*" : " ";
+			var parent = entry.ParentId is { Length: > 0 } parentId ? parentId[..Math.Min(8, parentId.Length)] : "--------";
+			var label = entry switch
+			{
+				SessionMessageEntry message => DescribeMessage(message.Message),
+				CompactionEntry compaction => $"compaction（保留自 {compaction.FirstKeptEntryId[..Math.Min(8, compaction.FirstKeptEntryId.Length)]}）",
+				BranchSummaryEntry summary => $"branch_summary {FirstLine(summary.Summary, 48)}",
+				ModelChangeEntry model => $"model {model.Provider}/{model.ModelId}",
+				ThinkingLevelChangeEntry thinking => $"thinking {thinking.ThinkingLevel}",
+				SessionInfoEntry info => $"name {info.Name ?? ""}",
+				ContextEditEntry => "context_edit",
+				UsageEntry usage => $"usage {usage.Kind} {usage.Model}",
+				CustomEntry custom => $"custom {custom.CustomType}",
+				CustomMessageEntry customMessage => $"custom_message {customMessage.CustomType}",
+				LabelEntry => "label",
+				_ => entry.Type,
+			};
+
+			error.WriteLine($"{marker} {entry.Id[..Math.Min(8, entry.Id.Length)]}  {parent}  {label}");
+		}
+	}
+
+	/// <summary>按 <c>mcp__&lt;server&gt;__&lt;tool&gt;</c> 前缀分组，展示每个服务器的工具数。</summary>
+	private void PrintMcpServers()
+	{
+		var any = false;
+		foreach (var group in _extraTools
+			.Select(static tool => tool.Name.StartsWith("mcp__", StringComparison.Ordinal)
+				? tool.Name["mcp__".Length..].Split("__")
+				: null)
+			.Where(static parts => parts is { Length: >= 2 })
+			.GroupBy(static parts => parts![0], StringComparer.Ordinal)
+			.OrderBy(static group => group.Key, StringComparer.Ordinal))
+		{
+			any = true;
+			error.WriteLine($"{group.Key}: {group.Count()} 个工具");
+		}
+
+		if (!any)
+		{
+			error.WriteLine("没有已连接的 MCP 服务器（用 `pi mcp add` 添加，或 `pi mcp list` 查看）。");
+		}
+	}
+
+	private static string FirstLine(string text, int max = 64)
+	{
+		var line = text.Split('\n')[0].Trim();
+		return line.Length <= max ? line : $"{line[..max]}…";
+	}
+
+	/// <summary>分支树里一条消息的单行描述。</summary>
+	private static string DescribeMessage(Message message) => message switch
+	{
+		UserMessage user => $"user {FirstLine(user.Content.Text ?? string.Empty, 48)}",
+		AssistantMessage assistant => $"assistant {FirstLine(
+			assistant.Content.OfType<TextContent>().FirstOrDefault()?.Text ?? string.Empty, 48)}",
+		ToolResultMessage => "toolResult",
+		SystemMessage => "system",
+		CustomMessage custom => $"{custom.CustomRole} {FirstLine(custom.Content.Text ?? string.Empty, 40)}",
+		_ => message.Role,
+	};
 
 	private void WriteRecord(string record)
 	{

@@ -27,8 +27,7 @@ public static class McpExposure
 	};
 
 	/// <summary>旧别名替换成当前名称；未知值与 null 返回 <c>null</c>（由调用方决定兜底）。</summary>
-	public static string? Normalize(string? value)
-	{
+	public static string? Normalize(string? value)	{
 		if (string.IsNullOrWhiteSpace(value))
 		{
 			return null;
@@ -42,6 +41,9 @@ public static class McpExposure
 
 		return trimmed is Codemode or Deferred or Direct or Hidden ? trimmed : null;
 	}
+
+	/// <summary>取值是否是可识别的 exposure（含旧别名）。</summary>
+	public static bool IsKnown(string? value) => Normalize(value) is not null;
 
 	/// <summary>该工具是否会被声明给模型。/ <c>hidden</c> 之外都可见（PiWeft 暂无 codemode/tool_search）。</summary>
 	public static bool IsVisible(string exposure) => exposure != Hidden;

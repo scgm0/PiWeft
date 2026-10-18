@@ -93,6 +93,12 @@ public sealed record CliArguments
 
 	public bool Offline { get; init; }
 
+	/// <summary>
+	/// 为兼容而接受但本端口不实现的选项名（<c>-e</c>、<c>--theme</c> 等）。
+	/// 调用方据此向用户提示「该开关不会生效」，避免静默降级。
+	/// </summary>
+	public List<string> AcceptedCompatFlags { get; init; } = [];
+
 	/// <summary>解析 argv。以错误信息代替异常返回，便于调用方打印用法。</summary>
 	public static (CliArguments? Arguments, string? Error) Parse(IReadOnlyList<string> argv)
 	{
@@ -277,6 +283,7 @@ public sealed record CliArguments
 					case "-e" or "--extension" or "-ne" or "--no-extensions"
 						or "--skill" or "--prompt-template" or "--theme" or "--no-themes" or "--use-theme"
 						or "--tui-mode" or "--autocomplete-max-visible":
+						result.AcceptedCompatFlags.Add(flag);
 						if (inlineValue is null && flag is "-e" or "--extension" or "--skill" or "--prompt-template"
 							or "--theme" or "--use-theme" or "--tui-mode" or "--autocomplete-max-visible")
 						{
@@ -295,7 +302,38 @@ public sealed record CliArguments
 			return (null, ex.Message);
 		}
 
-		return (result, null);
+		return (SplitModelThinkingSuffix(result), null);
+	}
+
+	/// <summary>
+	/// pi 允许在 <c>--model</c> 里用 <c>provider/id:level</c> 顺带指定思考级别
+	///（<c>off</c>、<c>minimal</c>…<c>max</c>）。显式 <c>--thinking</c> 优先于后缀。
+	/// 解析在全部参数处理完后进行，因此 <c>--thinking</c> 与 <c>--model</c> 的先后顺序不影响结果。
+	/// </summary>
+	private static CliArguments SplitModelThinkingSuffix(CliArguments arguments)
+	{
+		if (arguments.Model is not { Length: > 0 } model)
+		{
+			return arguments;
+		}
+
+		var colon = model.LastIndexOf(':');
+		if (colon <= 0 || colon == model.Length - 1)
+		{
+			return arguments;
+		}
+
+		var level = model[(colon + 1)..];
+		if (!PiWeft.Ai.ThinkingLevels.Model.Contains(level, StringComparer.Ordinal))
+		{
+			return arguments;
+		}
+
+		return arguments with
+		{
+			Model = model[..colon],
+			ThinkingLevel = arguments.ThinkingLevel ?? level,
+		};
 	}
 
 	public static string HelpText => """

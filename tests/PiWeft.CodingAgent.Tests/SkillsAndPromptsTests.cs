@@ -319,6 +319,15 @@ public class PromptTemplateTests : IDisposable
 		Assert.Equal(["a", "b c", "d"], PromptTemplates.ParseArgs("a \"b c\" 'd'"));
 		Assert.Empty(PromptTemplates.ParseArgs("   "));
 	}
+
+	[Fact]
+	public void ParseArgs_KeepsEmptyQuotedArguments()
+	{
+		// pi 1.3.0 修正：空引号参数是合法的位置参数，丢弃会让后续参数错位。
+		Assert.Equal(["", "x"], PromptTemplates.ParseArgs("\"\" x"));
+		Assert.Equal(["a", ""], PromptTemplates.ParseArgs("a ''"));
+		Assert.Equal([""], PromptTemplates.ParseArgs("\"\""));
+	}
 }
 
 public class BranchSummarizationTests : IDisposable

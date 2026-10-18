@@ -239,6 +239,15 @@ public sealed class Agent
 		}
 	}
 
+	/// <summary>当前排队消息的快照（steering、follow-up 各一份）。</summary>
+	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) PendingQueues()
+	{
+		lock (_gate)
+		{
+			return (_steering.ToList(), _followUp.ToList());
+		}
+	}
+
 	/// <summary>清空所有排队消息，并返回被丢弃的内容。</summary>
 	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue()
 	{
@@ -371,21 +380,49 @@ public sealed class Agent
 		GetFollowUpMessages = DrainFollowUp,
 	};
 
-	private ValueTask<IReadOnlyList<Message>> DrainSteering(CancellationToken cancellationToken)
+	private async ValueTask<IReadOnlyList<Message>> DrainSteering(CancellationToken cancellationToken)
 	{
+		IReadOnlyList<Message> messages;
+		QueueUpdateEvent update;
 		lock (_gate)
 		{
-			return ValueTask.FromResult<IReadOnlyList<Message>>(Drain(_steering, _steeringMode));
+			messages = Drain(_steering, _steeringMode);
+			update = QueueUpdate();
 		}
+
+		// 交给模型的那部分已经离开队列：把剩余队列的最新全量发给订阅者（pi 的 queue_update）。
+		if (messages.Count > 0)
+		{
+			await EmitAsync(update).ConfigureAwait(false);
+		}
+
+		return messages;
 	}
 
-	private ValueTask<IReadOnlyList<Message>> DrainFollowUp(CancellationToken cancellationToken)
+	private async ValueTask<IReadOnlyList<Message>> DrainFollowUp(CancellationToken cancellationToken)
 	{
+		IReadOnlyList<Message> messages;
+		QueueUpdateEvent update;
 		lock (_gate)
 		{
-			return ValueTask.FromResult<IReadOnlyList<Message>>(Drain(_followUp, _followUpMode));
+			messages = Drain(_followUp, _followUpMode);
+			update = QueueUpdate();
 		}
+
+		if (messages.Count > 0)
+		{
+			await EmitAsync(update).ConfigureAwait(false);
+		}
+
+		return messages;
 	}
+
+	/// <summary>调用方必须持有 <see cref="_gate"/>。</summary>
+	private QueueUpdateEvent QueueUpdate() => new()
+	{
+		Steering = _steering.ToList(),
+		FollowUp = _followUp.ToList(),
+	};
 
 	private static List<Message> Drain(Queue<Message> queue, AgentQueueMode mode)
 	{

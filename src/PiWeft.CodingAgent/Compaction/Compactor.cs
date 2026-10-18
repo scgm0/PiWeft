@@ -237,10 +237,9 @@ public static class Compactor
 		CancellationToken cancellationToken,
 		string? basePromptOverride = null)
 	{
-		var maxTokens = Math.Min(
-			(int)(0.8 * settings.ReserveTokens),
-			model.MaxTokens > 0 ? model.MaxTokens : int.MaxValue);
-
+		// 与 pi 现行行为一致：摘要请求使用模型自身的输出上限。
+		// compaction.reserveTokens 只决定「何时开始压缩」，不再限制摘要长度 ——
+		// 固定的小上限会让长思考的模型稳定撞上 token cap（上游已修）。
 		var basePrompt = basePromptOverride
 			?? (previousSummary is null ? CompactionPrompts.SummarizationPrompt : CompactionPrompts.UpdateSummarizationPrompt);
 
@@ -276,7 +275,11 @@ public static class Compactor
 		var stream = streamFn(
 			model,
 			promptMessages,
-			options with { MaxTokens = Math.Max(1, maxTokens), ThinkingLevel = ThinkingLevels.Off });
+			options with
+			{
+				MaxTokens = model.MaxTokens > 0 ? model.MaxTokens : null,
+				ThinkingLevel = ThinkingLevels.Off,
+			});
 
 		await foreach (var _ in stream.WithCancellation(cancellationToken).ConfigureAwait(false))
 		{

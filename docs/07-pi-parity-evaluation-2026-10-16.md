@@ -1,6 +1,8 @@
 # PiWeft 与 pi 功能差距评估（2026-10-16 快照）
 
-> **2026-10-16 晚间更新**：本文的以下条目已在本轮补全中落地——`/copy` `/import` `/bug`（NEW-06 子集）、PI-02 的对话框方法面（select/confirm/editor/notify）、PI-06 的客户端凭据授权与 HTTP 反向应答、PI-07 的命令型凭据执行与 `auth check` invalid、PI-10 的主题热重载、PI-11 的默认值改为 `ask`。详见 [00-status.md](00-status.md) 与 [06 第 3、4 节](06-feature-gap-and-jint-assessment.md) 的最新状态。仍未实现：NEW-01（环境变量协议）、NEW-03（powershell 工具）、NEW-04（CLI keybindings）、NEW-05（编辑器增强）、`/share` `/llama` `/settings`、PI-08/PI-09。`defaultProjectTrust` 默认值已从 `always` 收紧为 `ask`：依赖旧默认（项目设置静默生效）的部署需在全局 settings 显式写回 `"defaultProjectTrust":"always"`。
+> **2026-10-19 更新**：基准已前进到 pi 1.3.0。本轮（F/C 类修正）落地——NEW-01（`PI_*` 环境变量注入 + `AI_AGENT`/`PI_CODING_AGENT` 进程标记）、事件协议补齐（`agent_settled`、`queue_update`、`session_info_changed`、`thinking_level_changed`、`entry_appended`、`compaction_*`）、默认工具集对齐 pi、settings 功能性键（`shellPath`/`shellCommandPrefix`/`sessionDir`/`defaultTools`）、CLI 斜杠命令面（含 `!`/`!!`）、`pi config` 与 `pi update --self/--extensions/--models/--all`、`pi mcp add` 的 pi 形状选项、提示词模板空参数、摘要输出上限、模型歧义优先凭据与 `--model :thinking` 后缀、兼容参数降级警告、RPC 契约版本 1.3.0。仍未实现：NEW-03（powershell 工具）、NEW-04（CLI keybindings.json）、NEW-05（编辑器增强）、`/share`（上传）与 `/llama`、PI-01/02/04/05/08/09。NEW-07 撤销：`--min-release-age` 不是 pi 的用户面参数。
+>
+> **2026-10-16 晚间更新**：本文的以下条目已在本轮补全中落地——`/copy` `/import` `/bug`（NEW-06 子集）、PI-02 的对话框方法面（select/confirm/editor/notify）、PI-06 的客户端凭据授权与 HTTP 反向应答、PI-07 的命令型凭据执行与 `auth check` invalid、PI-10 的主题热重载、PI-11 的默认值改为 `ask`。详见 [00-status.md](00-status.md) 与 [06 第 3、4 节](06-feature-gap-and-jint-assessment.md) 的最新状态。`defaultProjectTrust` 默认值已从 `always` 收紧为 `ask`：依赖旧默认（项目设置静默生效）的部署需在全局 settings 显式写回 `"defaultProjectTrust":"always"`。
 
 评估对象：PiWeft 工作树源码（993 项测试通过基线）。
 基准：本地 `/home/scgm/TestBuild/pi`（coding-agent 1.2.0，TypeScript 上游）；

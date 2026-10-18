@@ -90,6 +90,17 @@ public sealed record ToolExecutionUpdateEvent : AgentEvent
 	public required AgentToolResult PartialResult { get; init; }
 }
 
+/// <summary>
+/// steering / follow-up 队列发生变化，对应 pi 的 <c>queue_update</c>。
+/// 两个字段都是变化后的完整队列，客户端直接替换即可。
+/// </summary>
+public sealed record QueueUpdateEvent : AgentEvent
+{
+	public required IReadOnlyList<Message> Steering { get; init; }
+
+	public required IReadOnlyList<Message> FollowUp { get; init; }
+}
+
 /// <summary>一个工具执行结束。</summary>
 public sealed record ToolExecutionEndEvent : AgentEvent
 {

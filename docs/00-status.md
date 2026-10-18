@@ -24,15 +24,19 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 ## pi 与 PiDeck 兼容
 
-- CLI 产物与程序集名保持 `pi`；`--version` 报告 RPC 契约版本 **1.2.0**，不是桌面构建号。
+- CLI 产物与程序集名保持 `pi`；`--version` 报告 RPC 契约版本 **1.3.0**，不是桌面构建号。
 - 保留 `PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、项目 `.pi`、配置文件名及 version 3 JSONL 会话格式。
 - 系统提示词只在运行时构造，不能作为历史消息写入会话。工具热更新保留提示章节边界；未知会话字段原样保留。内置工具的短 snippet 与 guidelines 在所有入口（CLI/RPC/桌面）按名称重新挂回，与 pi/PiDeck 提示词一致。
+- 默认工具集与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 PiDeck 依赖的原生 `todo` 与 `ask_question`；pi 默认关闭的 `grep`/`find`/`ls` 需要 `--tools`、`settings.defaultTools` 显式开启。`--tools` 的纯名字列表整体替换默认集、`+name`/`-name` 在默认集上增减、`--exclude-tools` 支持通配，模式始终针对完整内置目录展开。
+- bash 工具向子进程注入 pi 的会话环境变量（`PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，执行前先清除继承值），进程启动时设置 `AI_AGENT=pi` 与 `PI_CODING_AGENT=true`；`settings.shellPath`、`settings.shellCommandPrefix` 分别控制 bash 的 shell 与命令前缀。`!`/`!!` 内联命令（交互模式）不走注入，与 pi 一致。
+- 生效的 settings 键新增：`shellPath`、`shellCommandPrefix`、`sessionDir`（`--session-dir` 优先）、`defaultTools`。其余 pi 键继续原样保留、不生效。
 - `--system-prompt` 取代默认 preamble，`--append-system-prompt` 追加为 `addendum` 章节，`--no-context-files` 停用 AGENTS.md / CLAUDE.md 发现；三者都接受字面文本或文件路径。
 - `--export <session> [output]` 导出 HTML 后退出（只读，不改会话文件）；`--models <patterns>` 限定 Ctrl+P 模型轮换范围。
 - `pi install <source>`、`pi list`、`pi remove <source>`、`pi update [source]` 管理 pi 包：npm 装到 `<agentDir>/npm/node_modules`、git 克隆到 `<agentDir>/git`、本地路径只登记不复制；`--local/-l` 写项目 `.pi/settings.json`。npm 可执行文件可用 `settings.npmCommand` 覆盖。
 - `pi mcp list|add|remove|login|logout` 管理 MCP 服务器与它们的 OAuth 令牌：配置写 `<agentDir>/mcp.json`（`--local` 改项目 `.pi/mcp.json`），令牌写 `<agentDir>/mcp-oauth.json`；`login` 走授权码 + PKCE 的回环流程，没有 `clientId` 时按需动态注册。写入是保留式的：保留文件里的其它键、注释与尾逗号，解析失败时拒绝覆盖并报错。
 - CLI `@file` 参数展开为 `<file>` 文本块，图片作为内容块随首条提示发送；print / JSON 模式还会把重定向的 stdin 合入首条提示（交互模式不读管道 stdin）。RPC 模式明确拒绝 `@file`。
-- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开，CLI、RPC 与桌面共享同一语义；RPC 空闲 `prompt` 保留 `images` 内容块。交互模式另有 pi 的 `/copy`（最近助手回复进系统剪贴板）、`/import <路径>`（把另一会话当前分支的消息并入本会话并重建上下文）与 `/bug`（反馈入口 + 会话路径）；pi 的 `/share`、`/llama`、`/settings` 未实现。
+- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开，CLI、RPC 与桌面共享同一语义；RPC 空闲 `prompt` 保留 `images` 内容块。交互模式实现 pi 的内置斜杠命令面：`/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`；`/share` 与 `/llama` 给出明确的未实现提示。`!command` 把输出并入对话，`!!command` 只执行不入模型上下文。
+- 为兼容而接受但不生效的选项（`-e`、`--theme`、`--tui-mode` 等）会在 stderr 提示一次「accepted for compatibility but not implemented」，不再静默降级；`pi config` 列出包来源与可编辑资源键，`pi update --self/--self 别名`、`--extensions`、`--models`、`--all`、`--force` 按 pi 语义解析（自更新交由系统包管理器），`pi mcp add` 支持 pi 形状（`-- <command> [args]`、`--bearer-token-env-var`、`--oauth-client-id/secret`、`--exposure`、`--description`），`pi mcp login --timeout` 限定整个登录过程。
 - CLI 启动记录思考级别元数据，与 pi 一致。桌面只读浏览不改文件字节或 mtime，开始对话或主动改级别时再记录。
 - 凭据按显式选项、存储凭据、环境变量解析；每次请求按目标供应商选择凭据，压缩与分支摘要共用该路径。
 - 请求超时只覆盖等待响应头，不切断正常长流。输出上限截断在 print 模式输出部分文本并以 1 退出。
@@ -58,6 +62,8 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 `get_state` 在 pi 字段之外补充 `cwd`、`tools`、`entryCount` 和 `errorMessage`；消息计数不含运行时系统提示词。
 `get_session_stats` 拆分输入、输出、缓存读取和写入，并给出上下文窗口占比。JSON 写入深度为 65536，以容纳深层会话树。
+
+事件族与 pi 对齐（JSON 与 RPC 共用）：每次会话级运行结束发 `agent_settled`（`aborted` 取自最后一次助手消息的中止状态），RPC 的每个 `prompt` 运行结束时也发；`queue_update` 在 steering/follow-up 队列变化（入队、清空、被代理消费）时发全量快照；`thinking_level_changed`、`session_info_changed`、`entry_appended`、`compaction_start`/`compaction_end`（含 `reason`/`result`/`aborted`/`willRetry`/`errorMessage`）齐备；`tool_execution_update`/`tool_execution_end` 携带 `partialResult`/`result`（content + details）与 `durationMs`。
 
 让 PiDeck 使用本端口：将 `customPiPath` 指向发布的 `pi` 二进制，或执行 `dotnet .../pi.dll` 的包装脚本。
 真实 pi 字段对照和 PiDeck 握手由现有测试验证；PiDeck 完整 UI e2e 仍需单独运行，不能由握手测试推断全部高级能力已覆盖。

@@ -322,4 +322,62 @@ public class CliEnvironmentTests
 		var glob = CliEnvironment.ResolveTools(new CliArguments { Tools = ["re*", "ls"] }, cwd);
 		Assert.Equal(["read", "ls"], glob.Select(static t => t.Name));
 	}
+
+	[Fact]
+	public void ResolveTools_DefaultsToThePiToolSet()
+	{
+		// 与 pi 一致：默认 read/bash/edit/write，grep/find/ls 默认关闭；
+		// 另外保留 PiDeck 依赖的原生 todo/ask_question。
+		var tools = CliEnvironment.ResolveTools(new CliArguments(), Path.GetTempPath());
+		Assert.Equal(
+			["read", "bash", "edit", "write", "todo", "ask_question"],
+			tools.Select(static tool => tool.Name));
+	}
+
+	[Fact]
+	public void ResolveTools_PlusEntriesAdjustTheDefaultSet()
+	{
+		var tools = CliEnvironment.ResolveTools(
+			new CliArguments { Tools = ["+grep", "-todo"] },
+			Path.GetTempPath());
+
+		Assert.Contains(tools, static tool => tool.Name == "grep");
+		Assert.Contains(tools, static tool => tool.Name == "read");
+		Assert.DoesNotContain(tools, static tool => tool.Name == "todo");
+	}
+
+	[Fact]
+	public void ResolveTools_HonorsSettingsDefaultTools()
+	{
+		var settings = new CodingAgentSettings { DefaultTools = ["read", "grep"] };
+		var tools = CliEnvironment.ResolveTools(new CliArguments(), Path.GetTempPath(), settings);
+		Assert.Equal(["read", "grep"], tools.Select(static tool => tool.Name));
+	}
+
+	[Fact]
+	public void Parse_SplitsTheThinkingSuffixFromTheModel()
+	{
+		var (arguments, error) = CliArguments.Parse(["--model", "anthropic/claude:high"]);
+		Assert.Null(error);
+		Assert.Equal("anthropic/claude", arguments!.Model);
+		Assert.Equal("high", arguments.ThinkingLevel);
+
+		// 显式 --thinking 优先于模型后缀，与参数顺序无关。
+		var (explicitThinking, explicitError) = CliArguments.Parse(["--thinking", "off", "--model", "anthropic/claude:high"]);
+		Assert.Null(explicitError);
+		Assert.Equal("off", explicitThinking!.ThinkingLevel);
+
+		// 不是思考级别的冒号后缀保持原样（例如镜像 tag）。
+		var (untouched, untouchedError) = CliArguments.Parse(["--model", "registry/model:latest"]);
+		Assert.Null(untouchedError);
+		Assert.Equal("registry/model:latest", untouched!.Model);
+	}
+
+	[Fact]
+	public void Parse_RecordsTheAcceptedCompatibilityFlags()
+	{
+		var (arguments, error) = CliArguments.Parse(["-e", "./ext.js", "--tui-mode", "fullscreen", "-ne"]);
+		Assert.Null(error);
+		Assert.Equal(["-e", "--tui-mode", "-ne"], arguments!.AcceptedCompatFlags);
+	}
 }

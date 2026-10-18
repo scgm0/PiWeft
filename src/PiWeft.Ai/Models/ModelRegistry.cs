@@ -69,13 +69,8 @@ public sealed class ModelRegistry
 		}
 
 		Model? match = null;
-		foreach (var candidate in _byKey.Values)
+		foreach (var candidate in FindById(providerOrModel))
 		{
-			if (!string.Equals(candidate.Id, providerOrModel, StringComparison.Ordinal))
-			{
-				continue;
-			}
-
 			if (match is not null)
 			{
 				return null; // 有歧义
@@ -86,6 +81,10 @@ public sealed class ModelRegistry
 
 		return match;
 	}
+
+	/// <summary>所有与该模型 id 同名的目录条目（可能分布在多个 provider）。</summary>
+	public IReadOnlyList<Model> FindById(string modelId) =>
+		[.. _byKey.Values.Where(candidate => string.Equals(candidate.Id, modelId, StringComparison.Ordinal))];
 
 	public static ModelRegistry LoadDefault()
 	{

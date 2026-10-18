@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Mcp;
@@ -58,11 +59,16 @@ public static class McpCommands
 		output.WriteLine("""
 			pi mcp 命令：
 			  pi mcp list [--json] [--local]                列出 MCP 服务器与授权状态
-			  pi mcp add <name> --url <url> [--auth oauth] [--header k=v] [--client-id id] [--scope a,b]
-			  pi mcp add <name> --command <cmd> [--arg a] [--env k=v] [--cwd dir]
+			  pi mcp add <name> [options] -- <command> [args...]
+			      [--env k=v]... [--cwd dir]                添加 stdio 服务器
+			  pi mcp add <name> --url <url> [options]       添加 streamable HTTP 服务器
+			      [--header k=v]... [--bearer-token-env-var <NAME>]
+			      [--auth oauth] [--oauth-client-id id] [--oauth-client-secret secret]
+			      [--scope a,b] [--exposure codemode|deferred|direct|hidden]
+			      [--description text]
 			  pi mcp remove <name> [--local]                移除服务器（同时清除它的令牌）
-			  pi mcp login <name>                          为 HTTP 服务器走 OAuth 授权
-			  pi mcp logout <name>                         删除保存的令牌
+			  pi mcp login <name> [--timeout <seconds>]     为 HTTP 服务器走 OAuth 授权
+			  pi mcp logout <name>                          删除保存的令牌
 
 			默认写全局 <agentDir>/mcp.json；--local 改项目 .pi/mcp.json。
 			OAuth 令牌存放在 <agentDir>/mcp-oauth.json。
@@ -72,7 +78,7 @@ public static class McpCommands
 
 	private static int List(IReadOnlyList<string> rest, string cwd, TextWriter output, TextWriter error, string agentDir)
 	{
-		var (_, options) = Parse(rest);
+		var (_, options, _) = Parse(rest);
 
 		IReadOnlyList<McpServerConfig> servers;
 		try
@@ -137,7 +143,7 @@ public static class McpCommands
 
 	private static int Add(IReadOnlyList<string> rest, string cwd, TextWriter output, TextWriter error, string agentDir)
 	{
-		var (name, options) = Parse(rest);
+		var (name, options, trailing) = Parse(rest);
 		if (name is not { Length: > 0 })
 		{
 			error.WriteLine("pi: mcp add 需要一个服务器名");
@@ -150,11 +156,12 @@ public static class McpCommands
 			return 2;
 		}
 
+		// pi 形式：`add <name> [options] -- <command> [args...]`；`--command`/`--arg` 仍兼容。
 		var url = First(options, "url");
-		var command = First(options, "command");
+		var command = First(options, "command") ?? (trailing.Count > 0 ? trailing[0] : null);
 		if (url is null == (command is null))
 		{
-			error.WriteLine("pi: 必须且只能指定 --url 或 --command");
+			error.WriteLine("pi: 必须且只能指定 --url 或 -- <command>");
 			return 2;
 		}
 
@@ -165,21 +172,55 @@ public static class McpCommands
 			return 2;
 		}
 
+		// pi 的 `--bearer-token-env-var <NAME>`：运行时发送 `Authorization: Bearer ${NAME}`。
+		if (First(options, "bearer-token-env-var") is { Length: > 0 } bearerVariable)
+		{
+			headers["Authorization"] = $"Bearer ${{{bearerVariable}}}";
+		}
+
+		if (First(options, "exposure") is { Length: > 0 } exposure &&
+			!McpExposure.IsKnown(exposure))
+		{
+			error.WriteLine($"pi: 未知的 exposure「{exposure}」（可选 {McpExposure.Codemode} / {McpExposure.Deferred} / {McpExposure.Direct} / {McpExposure.Hidden}）");
+			return 2;
+		}
+
+		// pi 的别名：--oauth-client-id / --oauth-client-secret。
+		var clientId = First(options, "client-id") ?? First(options, "oauth-client-id");
+		var clientSecret = First(options, "oauth-client-secret");
+
 		var scopes = First(options, "scope");
+		var arguments = command is null
+			? (IReadOnlyList<string>)[]
+			: [.. All(options, "arg"), .. trailing.Skip(1)];
 		var entry = new McpServerEntry
 		{
 			Url = url,
 			Command = command,
-			Args = command is null ? null : [.. All(options, "arg")],
+			Args = command is null ? null : arguments,
 			Headers = headers.Count > 0 ? headers : null,
 			Env = command is not null && environment.Count > 0 ? environment : null,
 			Cwd = First(options, "cwd"),
 			Auth = command is null ? First(options, "auth") : null,
-			ClientId = First(options, "client-id"),
+			ClientId = clientId,
+			ClientSecret = clientSecret,
+			Description = First(options, "description"),
+			Exposure = First(options, "exposure"),
 			Scopes = scopes is { Length: > 0 }
 				? [.. scopes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)]
 				: null,
 		};
+
+		// 本端口没有独立的回环端口/客户端名字段：接受 pi 的开关但明确告知不生效。
+		if (options.ContainsKey("oauth-callback-port"))
+		{
+			error.WriteLine("pi: 注意 --oauth-callback-port 在本端口不生效（回环回调使用动态端口）。");
+		}
+
+		if (options.ContainsKey("oauth-client-name"))
+		{
+			error.WriteLine("pi: 注意 --oauth-client-name 在本端口不生效（动态客户端注册使用默认名称）。");
+		}
 
 		var path = options.ContainsKey("local") ? McpConfig.ProjectPath(cwd) : McpConfig.UserPath(agentDir);
 		try
@@ -194,7 +235,8 @@ public static class McpCommands
 
 		output.WriteLine($"已写入 {path}");
 		output.WriteLine($"    {name} → {url ?? command}");
-		if (string.Equals(entry.Auth, McpServerConfig.OAuthAuthValue, StringComparison.OrdinalIgnoreCase))
+		if (string.Equals(entry.Auth, McpServerConfig.OAuthAuthValue, StringComparison.OrdinalIgnoreCase) ||
+			(clientId is not null && url is not null))
 		{
 			output.WriteLine($"    该服务器使用 OAuth：运行 pi mcp login {name} 完成授权。");
 		}
@@ -204,7 +246,7 @@ public static class McpCommands
 
 	private static int Remove(IReadOnlyList<string> rest, string cwd, TextWriter output, TextWriter error, string agentDir)
 	{
-		var (name, options) = Parse(rest);
+		var (name, options, _) = Parse(rest);
 		if (name is not { Length: > 0 })
 		{
 			error.WriteLine("pi: mcp remove 需要一个服务器名");
@@ -246,7 +288,7 @@ public static class McpCommands
 		string agentDir,
 		CancellationToken cancellationToken)
 	{
-		var (name, _) = Parse(rest);
+		var (name, options, _) = Parse(rest);
 		if (name is not { Length: > 0 })
 		{
 			error.WriteLine("pi: mcp login 需要一个服务器名");
@@ -268,6 +310,39 @@ public static class McpCommands
 			return 2;
 		}
 
+		// pi 的 --timeout 限定整个登录过程（含对授权服务器的请求），不只是等浏览器回来。
+		CancellationTokenSource? timeoutSource = null;
+		if (double.TryParse(First(options, "timeout"), NumberStyles.Float, CultureInfo.InvariantCulture, out var timeoutSeconds) &&
+			timeoutSeconds > 0)
+		{
+			timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			timeoutSource.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+			cancellationToken = timeoutSource.Token;
+		}
+
+		try
+		{
+			return await LoginAsyncInner(server, name, agentDir, output, error, cancellationToken).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException) when (timeoutSource is not null && timeoutSource.IsCancellationRequested)
+		{
+			error.WriteLine($"pi: 登录超时（--timeout {timeoutSeconds:0} 秒）");
+			return 1;
+		}
+		finally
+		{
+			timeoutSource?.Dispose();
+		}
+	}
+
+	private static async Task<int> LoginAsyncInner(
+		McpServerConfig server,
+		string name,
+		string agentDir,
+		TextWriter output,
+		TextWriter error,
+		CancellationToken cancellationToken)
+	{
 		var challenge = await ProbeChallengeAsync(server.Url!, cancellationToken).ConfigureAwait(false);
 		var metadata = await McpOAuth.DiscoverAsync(Http, server.Url!, challenge, cancellationToken).ConfigureAwait(false);
 		if (metadata is null)
@@ -318,7 +393,7 @@ public static class McpCommands
 
 	private static int Logout(IReadOnlyList<string> rest, string cwd, TextWriter output, TextWriter error, string agentDir)
 	{
-		var (name, _) = Parse(rest);
+		var (name, _, _) = Parse(rest);
 		if (name is not { Length: > 0 })
 		{
 			error.WriteLine("pi: mcp logout 需要一个服务器名");
@@ -363,14 +438,32 @@ public static class McpCommands
 		}
 	}
 
-	private static (string? Positional, Dictionary<string, List<string>> Options) Parse(IReadOnlyList<string> rest)
+	/// <summary>
+	/// 解析子命令参数。<c>--</c> 之后的参数原样进入 <paramref name="trailing"/>（pi 的
+	/// <c>pi mcp add name -- command args...</c> 形式），不再当成选项或位置参数。
+	/// </summary>
+	private static (string? Positional, Dictionary<string, List<string>> Options, IReadOnlyList<string> Trailing) Parse(
+		IReadOnlyList<string> rest)
 	{
 		var options = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 		string? positional = null;
+		List<string>? trailing = null;
 
 		for (var index = 0; index < rest.Count; index++)
 		{
 			var item = rest[index];
+			if (trailing is not null)
+			{
+				trailing.Add(item);
+				continue;
+			}
+
+			if (item == "--")
+			{
+				trailing = [];
+				continue;
+			}
+
 			if (item == "-l")
 			{
 				Add(options, "local", "true");
@@ -399,7 +492,7 @@ public static class McpCommands
 			}
 		}
 
-		return (positional, options);
+		return (positional, options, trailing ?? []);
 
 		static void Add(Dictionary<string, List<string>> target, string key, string value)
 		{

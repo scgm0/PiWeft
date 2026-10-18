@@ -20,8 +20,8 @@ public static class PackageCommands
 		string cwd,
 		CancellationToken cancellationToken)
 	{
-		var (source, local, json, help) = Parse(rest);
-		if (help)
+		var parsed = Parse(rest);
+		if (parsed.Help)
 		{
 			PrintUsage(output);
 			return 0;
@@ -30,14 +30,16 @@ public static class PackageCommands
 		switch (command)
 		{
 			case "install":
-				return await InstallAsync(source, local, cwd, output, error, cancellationToken).ConfigureAwait(false);
+				return await InstallAsync(parsed.Source, parsed.Local, cwd, output, error, cancellationToken).ConfigureAwait(false);
 			case "remove":
 			case "uninstall":
-				return await RemoveAsync(source, local, cwd, output, error, cancellationToken).ConfigureAwait(false);
+				return await RemoveAsync(parsed.Source, parsed.Local, cwd, output, error, cancellationToken).ConfigureAwait(false);
 			case "update":
-				return await UpdateAsync(source, local, cwd, output, error, cancellationToken).ConfigureAwait(false);
+				return await UpdateAsync(parsed, cwd, output, error, cancellationToken).ConfigureAwait(false);
 			case "list":
-				return List(local, json, cwd, output, error);
+				return List(parsed.Local, parsed.Json, cwd, output, error);
+			case "config":
+				return Config(parsed.Local, cwd, output, error);
 			default:
 				return null;
 		}
@@ -82,14 +84,28 @@ public static class PackageCommands
 	}
 
 	private static async Task<int> UpdateAsync(
-		string? source,
-		bool local,
+		ParsedPackageArgs parsed,
 		string cwd,
 		TextWriter output,
 		TextWriter error,
 		CancellationToken cancellationToken)
 	{
-		var options = Options(local, cwd);
+		// 与 pi 对齐的别名与范围开关：pi update（自更新）、--self/self/pi、--extensions/--all、--models。
+		if (parsed.Self)
+		{
+			output.WriteLine("pi: 本构建是 NativeAOT 单文件，请用发行页安装包或系统包管理器更新 pi 本体；包与目录更新不受影响。");
+			return 0;
+		}
+
+		if (parsed.Models)
+		{
+			output.WriteLine("pi: 模型目录内嵌于二进制（更新 pi 本体即更新目录），无需单独刷新。可用 `pi --list-models` 查看当前目录。");
+			return 0;
+		}
+
+		// `pi update`（无来源）、--extensions 与 --all 都表示「更新全部已声明包」。
+		var source = parsed.Source ?? parsed.ExtensionSource;
+		var options = Options(parsed.Local, cwd);
 		var results = await PiPackageManager.UpdateAsync(source, options, runner: null, cancellationToken).ConfigureAwait(false);
 
 		if (results.Count == 0)
@@ -214,41 +230,131 @@ public static class PackageCommands
 		};
 	}
 
-	private static (string? Source, bool Local, bool Json, bool Help) Parse(IReadOnlyList<string> rest)
+	/// <summary>包命令的解析结果，包含 pi 的 update 范围开关。</summary>
+	private sealed record ParsedPackageArgs
 	{
-		string? source = null;
-		var local = false;
-		var json = false;
-		var help = false;
+		public string? Source { get; init; }
 
-		foreach (var item in rest)
+		public bool Local { get; init; }
+
+		public bool Json { get; init; }
+
+		public bool Help { get; init; }
+
+		/// <summary><c>pi update --self</c> / <c>self</c> / <c>pi</c>。</summary>
+		public bool Self { get; init; }
+
+		/// <summary><c>pi update --extensions</c>（更新全部包）。</summary>
+		public bool Extensions { get; init; }
+
+		/// <summary><c>pi update --all</c>。</summary>
+		public bool All { get; init; }
+
+		/// <summary><c>pi update --models</c>。</summary>
+		public bool Models { get; init; }
+
+		/// <summary><c>pi update --force</c>（本端口无自更新语义，接受并忽略）。</summary>
+		public bool Force { get; init; }
+
+		/// <summary><c>pi update --extension &lt;source&gt;</c> 的别名形式。</summary>
+		public string? ExtensionSource { get; init; }
+	}
+
+	private static ParsedPackageArgs Parse(IReadOnlyList<string> rest)
+	{
+		ParsedPackageArgs parsed = new();
+
+		for (var index = 0; index < rest.Count; index++)
 		{
+			var item = rest[index];
 			switch (item)
 			{
 				case "--local" or "-l":
-					local = true;
+					parsed = parsed with { Local = true };
 					break;
 				case "--global" or "-g":
-					local = false;
+					parsed = parsed with { Local = false };
 					break;
 				case "--json":
-					json = true;
+					parsed = parsed with { Json = true };
 					break;
 				case "--help" or "-h":
-					help = true;
+					parsed = parsed with { Help = true };
+					break;
+				case "--self":
+					parsed = parsed with { Self = true };
+					break;
+				case "--extensions":
+					parsed = parsed with { Extensions = true };
+					break;
+				case "--all":
+					parsed = parsed with { All = true };
+					break;
+				case "--models":
+					parsed = parsed with { Models = true };
+					break;
+				case "--force":
+					parsed = parsed with { Force = true };
+					break;
+				case "--extension":
+					if (index + 1 < rest.Count)
+					{
+						index++;
+						parsed = parsed with { ExtensionSource = rest[index] };
+					}
+
 					break;
 				default:
-					// 首个非选项参数是包来源；其余忽略，避免误把值当成来源。
-					if (!item.StartsWith('-') && source is null)
+					// 首个非选项参数是包来源；pi 的 `update self`/`update pi` 是 --self 的别名。
+					if (!item.StartsWith('-'))
 					{
-						source = item;
+						if (parsed.Source is null)
+						{
+							parsed = parsed with
+							{
+								Source = item is "self" or "pi" ? null : item,
+								Self = item is "self" or "pi",
+							};
+						}
 					}
 
 					break;
 			}
 		}
 
-		return (source, local, json, help);
+		return parsed;
+	}
+
+	/// <summary><c>pi config</c>：列出已声明的包来源与资源键，行式 REPL 没有交互式选择界面。</summary>
+	private static int Config(bool local, string cwd, TextWriter output, TextWriter error)
+	{
+		var agentDir = SessionPaths.GetAgentDir();
+		var settingsPath = local ? CodingAgentSettings.ProjectPath(cwd) : CodingAgentSettings.GlobalPath(agentDir);
+		output.WriteLine($"写入目标: {settingsPath}");
+		output.WriteLine("可编辑键: packages / skills / prompts / themes（数组，路径或包来源）。");
+
+		try
+		{
+			var sources = PiPackageStore.DeclaredSources(cwd, agentDir, includeProject: true);
+			if (sources.Count == 0)
+			{
+				output.WriteLine("尚未声明任何包。用 `pi install <source>` 添加。");
+				return 0;
+			}
+
+			foreach (var source in sources)
+			{
+				var scope = local && source.Scope != ResourceScope.Project ? "（跳过：非项目级）" : string.Empty;
+				output.WriteLine($"  [{source.Scope}] {source.Value}{scope}");
+			}
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+		{
+			error.WriteLine($"pi: 无法读取包声明：{exception.Message}");
+			return 1;
+		}
+
+		return 0;
 	}
 
 	private static void PrintUsage(TextWriter output)
@@ -258,7 +364,11 @@ public static class PackageCommands
 			  pi install <source> [--local|-l]   安装 npm / git / 本地 pi 包
 			  pi list [--json] [--local|-l]      列出已声明的包与安装状态
 			  pi remove <source> [--local|-l]    移除包（别名 uninstall）
+			  pi config [--local|-l]             查看包来源与可编辑的资源键
 			  pi update [source] [--local|-l]    更新一个或全部包
+			  pi update --extensions             更新全部包
+			  pi update --self | self | pi       pi 本体更新（本构建交由系统包管理器）
+			  pi update --models                 模型目录（内嵌，随 pi 更新）
 
 			来源形式：
 			  npm:@scope/pkg@1.0.0   装到 <agentDir>/npm/node_modules

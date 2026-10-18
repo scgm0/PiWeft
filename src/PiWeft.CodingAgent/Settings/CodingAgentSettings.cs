@@ -60,6 +60,28 @@ public sealed record CodingAgentSettings
 	/// <summary>provider 请求超时，单位毫秒。</summary>
 	public int? TimeoutMs { get; init; }
 
+	/// <summary>bash 工具使用的 shell 路径，对应 pi 的 <c>shellPath</c>；为空时按平台默认值。</summary>
+	public string? ShellPath { get; init; }
+
+	/// <summary>每条 bash 命令前追加的初始化脚本，对应 pi 的 <c>shellCommandPrefix</c>。</summary>
+	public string? ShellCommandPrefix { get; init; }
+
+	/// <summary>会话目录，对应 pi 的 <c>sessionDir</c>；<c>--session-dir</c> 优先。</summary>
+	public string? SessionDir { get; init; }
+
+	/// <summary>
+	/// 默认启用的工具名（可带前缀 <c>+</c> / <c>-</c>），对应 pi 的 <c>defaultTools</c>。
+	/// 为空时使用 <see cref="DefaultToolNames"/>。
+	/// </summary>
+	public IReadOnlyList<string> DefaultTools { get; init; } = [];
+
+	/// <summary>
+	/// 未配置 <c>defaultTools</c> 时的默认工具集，与 pi 一致（<c>read</c>/<c>bash</c>/<c>edit</c>/<c>write</c>），
+	/// 另外保留 PiDeck 依赖的原生 <c>todo</c> 与 <c>ask_question</c>。
+	/// pi 默认关闭的 <c>grep</c>/<c>find</c>/<c>ls</c> 需要 <c>--tools</c> 或 <c>defaultTools</c> 显式开启。
+	/// </summary>
+	public static readonly string[] DefaultToolNames = ["read", "bash", "edit", "write", "todo", "ask_question"];
+
 	/// <summary>全局设置路径：<c>&lt;agentDir&gt;/settings.json</c>。</summary>
 	public static string GlobalPath(string? agentDir = null) =>
 		Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "settings.json");
@@ -410,6 +432,12 @@ public sealed record CodingAgentSettings
 		Themes = MergeLists(global?.Themes, project?.Themes),
 		DefaultProjectTrust = project?.DefaultProjectTrust ?? global?.DefaultProjectTrust ?? "ask",
 		TimeoutMs = project?.TimeoutMs ?? global?.TimeoutMs,
+		ShellPath = project?.ShellPath ?? global?.ShellPath,
+		ShellCommandPrefix = project?.ShellCommandPrefix ?? global?.ShellCommandPrefix,
+		SessionDir = project?.SessionDir ?? global?.SessionDir,
+		DefaultTools = (project?.DefaultTools ?? global?.DefaultTools) is { Count: > 0 } defaultTools
+			? [.. defaultTools]
+			: [],
 		Retry = new RetryPolicy(
 			Enabled: project?.Retry?.Enabled ?? global?.Retry?.Enabled ?? true,
 			MaxRetries: project?.Retry?.MaxRetries ?? global?.Retry?.MaxRetries ?? 3,
@@ -470,6 +498,10 @@ public sealed record CodingAgentSettings
 		Themes = List(settings.Themes),
 		DefaultProjectTrust = settings.DefaultProjectTrust,
 		TimeoutMs = settings.TimeoutMs,
+		ShellPath = settings.ShellPath,
+		ShellCommandPrefix = settings.ShellCommandPrefix,
+		SessionDir = settings.SessionDir,
+		DefaultTools = List(settings.DefaultTools),
 		Retry = new RetryFile
 		{
 			Enabled = settings.Retry.Enabled,
@@ -507,6 +539,14 @@ public sealed record SettingsFile
 	public string? DefaultProjectTrust { get; init; }
 
 	public int? TimeoutMs { get; init; }
+
+	public string? ShellPath { get; init; }
+
+	public string? ShellCommandPrefix { get; init; }
+
+	public string? SessionDir { get; init; }
+
+	public List<string>? DefaultTools { get; init; }
 
 	public RetryFile? Retry { get; init; }
 }

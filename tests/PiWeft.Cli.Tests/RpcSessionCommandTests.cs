@@ -183,6 +183,51 @@ public class RpcSessionCommandTests : IDisposable
 	}
 
 	[Fact]
+	public async Task PromptEmitsAgentSettledAfterEachRun()
+	{
+		// pi 文档要求客户端等 agent_settled 才能确认「不会再自动继续」（重试/压缩/排队之后）。
+		var (environment, output) = Setup();
+		var runner = new CliRunner(environment, output, new StringWriter());
+
+		var records = await RunAsync(
+			runner,
+			Arguments(),
+			string.Join('\n', Seed(), """{"id":"1","type":"exit"}"""),
+			output);
+
+		var settled = records
+			.Where(static node => node["type"]!.GetValue<string>() == "agent_settled")
+			.ToList();
+
+		Assert.Equal(2, settled.Count);
+		Assert.All(settled, static node => Assert.False(node["aborted"]!.GetValue<bool>()));
+	}
+
+	[Fact]
+	public async Task SteeringEmitsQueueUpdatesToTheClient()
+	{
+		var (environment, output) = Setup();
+		var runner = new CliRunner(environment, output, new StringWriter());
+
+		var records = await RunAsync(
+			runner,
+			Arguments(),
+			string.Join(
+				'\n',
+				"""{"id":"p1","type":"prompt","message":"first question"}""",
+				"""{"id":"s1","type":"steer","message":"mid-run steer"}""",
+				"""{"id":"1","type":"exit"}"""),
+			output);
+
+		// steer 至少触发一次 queue_update，且响应声明进入队列。
+		Assert.Contains(
+			records,
+			static node => node["type"]!.GetValue<string>() == "queue_update");
+		var steer = ResponseFor(records, "steer");
+		Assert.Equal("queued", steer["data"]!["disposition"]!.GetValue<string>());
+	}
+
+	[Fact]
 	public async Task EntriesSupportACursorAndRejectUnknownIds()
 	{
 		var (environment, output) = Setup();

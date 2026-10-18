@@ -207,6 +207,11 @@ public sealed class CodingAgentSession : IDisposable
 			{
 				builtins[index] = AskQuestionToolFactory.Create(() => this);
 			}
+			else if (builtins[index].Tool.Name == "bash")
+			{
+				// bash 需要会话上下文来注入 PI_* 环境变量与 settings 的 shell 配置。
+				builtins[index] = builtins[index] with { Tool = PiWeft.CodingAgent.Tools.BashTool.Create(Cwd, BashEnvironment) };
+			}
 		}
 
 		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
@@ -575,9 +580,11 @@ public sealed class CodingAgentSession : IDisposable
 	/// 摘要较旧的条目并记录一条 <c>compaction</c> 条目。没有可压缩内容时返回 <c>null</c>。
 	/// 完成后会从会话刷新代理的会话记录。
 	/// </summary>
+	/// <param name="reason">压缩原因（<c>manual</c> / <c>threshold</c> / <c>overflow</c>），随事件发给客户端。</param>
 	public async Task<CompactionResult?> CompactAsync(
 		string? customInstructions = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		string reason = CompactionReasons.Manual)
 	{
 		ThrowIfDisposed();
 		if (_agent.IsStreaming)
@@ -586,6 +593,7 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		IsCompacting = true;
+		Emit(new CompactionStartEvent { Reason = reason });
 		CompactionResult? result;
 		try
 		{
@@ -598,6 +606,22 @@ public sealed class CodingAgentSession : IDisposable
 				customInstructions,
 				cancellationToken).ConfigureAwait(false);
 		}
+		catch (OperationCanceledException)
+		{
+			IsCompacting = false;
+			Emit(new CompactionEndEvent { Reason = reason, Aborted = true });
+			throw;
+		}
+		catch (Exception exception)
+		{
+			IsCompacting = false;
+			Emit(new CompactionEndEvent
+			{
+				Reason = reason,
+				ErrorMessage = exception.Message,
+			});
+			throw;
+		}
 		finally
 		{
 			IsCompacting = false;
@@ -607,6 +631,13 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			_agent.SetMessages(Session.BuildProjectedMessages());
 		}
+
+		Emit(new CompactionEndEvent
+		{
+			Reason = reason,
+			Result = result,
+			EstimatedTokensAfter = result is null ? null : ContextTokens().Tokens,
+		});
 
 		return result;
 	}
@@ -631,7 +662,22 @@ public sealed class CodingAgentSession : IDisposable
 	public bool AutoCompactionEnabled { get; set; } = true;
 
 	/// <summary>清空排队的 steering 与 follow-up 消息，并返回被丢弃的内容。</summary>
-	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue() => _agent.ClearQueue();
+	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue()
+	{
+		var cleared = _agent.ClearQueue();
+		EmitQueueUpdate();
+		return cleared;
+	}
+
+	/// <summary>当前排队消息的快照，供队列类事件与界面使用。</summary>
+	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) PendingQueues() => _agent.PendingQueues();
+
+	/// <summary>把队列现状作为 <c>queue_update</c> 发给订阅者。</summary>
+	private void EmitQueueUpdate()
+	{
+		var (steering, followUp) = _agent.PendingQueues();
+		Emit(new QueueUpdateEvent { Steering = steering, FollowUp = followUp });
+	}
 
 	public string? ErrorMessage => _agent.ErrorMessage;
 
@@ -939,7 +985,10 @@ public sealed class CodingAgentSession : IDisposable
 
 		if (ShouldCompact())
 		{
-			await CompactAsync(customInstructions: null, cancellationToken).ConfigureAwait(false);
+			await CompactAsync(
+				customInstructions: null,
+				cancellationToken,
+				CompactionReasons.Threshold).ConfigureAwait(false);
 		}
 	}
 
@@ -965,10 +1014,18 @@ public sealed class CodingAgentSession : IDisposable
 	}
 
 	/// <summary>排入一条消息，在当前工具批次结束后引导正在运行的代理。</summary>
-	public void Steer(Message message) => _agent.Steer(message);
+	public void Steer(Message message)
+	{
+		_agent.Steer(message);
+		EmitQueueUpdate();
+	}
 
 	/// <summary>排入一条消息，在代理本应停止时继续处理。</summary>
-	public void FollowUp(Message message) => _agent.FollowUp(message);
+	public void FollowUp(Message message)
+	{
+		_agent.FollowUp(message);
+		EmitQueueUpdate();
+	}
 
 	/// <summary>切换模型，并在会话中记录一条 <c>model_change</c> 条目。</summary>
 	public void SetModel(Model model)
@@ -994,6 +1051,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		_agent.SetThinkingLevel(clamped);
 		Session.AppendThinkingLevelChange(clamped);
+		Emit(new ThinkingLevelChangedEvent { Level = clamped });
 	}
 
 	/// <summary>在模型的工具循环之外执行 shell 命令的结果。</summary>
@@ -1056,8 +1114,34 @@ public sealed class CodingAgentSession : IDisposable
 	}
 
 	/// <summary>追加一条会参与 LLM 上下文的扩展风格消息。</summary>
-	public string AppendCustomMessage(string customType, string content, bool display = true) =>
-		Session.AppendCustomMessage(customType, MessageContent.FromText(content), display);
+	public string AppendCustomMessage(string customType, string content, bool display = true)
+	{
+		var id = Session.AppendCustomMessage(customType, MessageContent.FromText(content), display);
+		EmitEntryAppended(id);
+		return id;
+	}
+
+	/// <summary>设置会话显示名；<paramref name="name"/> 为 null 表示清除。对应 RPC 的 <c>set_session_name</c>。</summary>
+	public void SetSessionName(string? name)
+	{
+		Session.AppendSessionInfo(name);
+		Emit(new SessionInfoChangedEvent { Name = name });
+	}
+
+	/// <summary>把刚追加的自定义条目作为 <c>entry_appended</c> 发出。</summary>
+	private void EmitEntryAppended(string entryId)
+	{
+		if (Session.GetEntry(entryId) is not { } entry)
+		{
+			return;
+		}
+
+		var json = System.Text.Json.Nodes.JsonNode.Parse(SessionJson.Serialize(entry));
+		if (json is System.Text.Json.Nodes.JsonObject obj)
+		{
+			Emit(new EntryAppendedEvent { Entry = obj });
+		}
+	}
 
 	public void Dispose()
 	{
@@ -1151,6 +1235,12 @@ public sealed class CodingAgentSession : IDisposable
 				case AskQuestionToolFactory.Name:
 					rebuilt.Add(AskQuestionToolFactory.Create(() => this));
 					continue;
+				case "bash":
+					// 工具集被 MCP 刷新重建时，bash 也要重新绑定会话上下文（PI_* 注入）。
+					rebuilt.Add(known.TryGetValue(tool.Name, out var bashDescribed)
+						? bashDescribed with { Tool = PiWeft.CodingAgent.Tools.BashTool.Create(Cwd, BashEnvironment) }
+						: new BuiltinTool(tool, tool.Description, []));
+					continue;
 			}
 
 			rebuilt.Add(known.TryGetValue(tool.Name, out var described)
@@ -1161,6 +1251,18 @@ public sealed class CodingAgentSession : IDisposable
 		_fullTools = rebuilt;
 		ApplyTools();
 	}
+
+	/// <summary>bash 工具的会话上下文：以 <c>PI_*</c> 环境变量暴露当前会话与模型。</summary>
+	private Tools.BashSessionEnvironment? BashEnvironment() => new()
+	{
+		SessionId = Session.SessionId,
+		SessionFile = Session.SessionFile,
+		Provider = _agent.Model.Provider,
+		ModelId = _agent.Model.Id,
+		ThinkingLevel = _agent.ThinkingLevel,
+		ShellPath = Settings.ShellPath,
+		CommandPrefix = Settings.ShellCommandPrefix,
+	};
 
 	private ValueTask PersistAsync(AgentEvent @event)
 	{

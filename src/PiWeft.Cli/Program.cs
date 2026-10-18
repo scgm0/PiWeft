@@ -6,6 +6,12 @@ using ZLogger;
 // 控制台输出统一为 UTF-8，保证 JSONL 记录与中日韩文本在任何 locale 下都不出错。
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
+
+// 进程标记（与 pi 的 cli/rpc 入口一致）：子进程与扩展凭它识别「宿主是 pi」。
+// SDK 嵌入时由宿主自行决定是否设置，因此只在值缺失时补默认。
+Environment.SetEnvironmentVariable("AI_AGENT", Environment.GetEnvironmentVariable("AI_AGENT") ?? "pi");
+Environment.SetEnvironmentVariable("PI_CODING_AGENT", Environment.GetEnvironmentVariable("PI_CODING_AGENT") ?? "true");
+
 using var logging = args is ["--version"] or ["-v"] or ["--help"] or ["-h"]
 	? null
 	: AppLog.Start("cli");
@@ -68,7 +74,7 @@ if (args.Length > 0 && args[0] == "mcp")
 }
 
 // 包命令同样在解析前分发：pi install/remove/update 自带 --local/-l/--json 开关。
-if (args.Length > 0 && args[0] is "install" or "remove" or "uninstall" or "list" or "update")
+if (args.Length > 0 && args[0] is "install" or "remove" or "uninstall" or "list" or "update" or "config")
 {
 	var packageExit = await RunPreParseAsync("package", () =>
 		PackageCommands.RunAsync(
