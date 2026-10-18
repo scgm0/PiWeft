@@ -240,6 +240,11 @@ internal sealed class TerminalScreen
 		var widthChanged = columns != _columns;
 		var oldRows = _rows;
 
+		// 只改高度时视口底部锚定（多出来的历史在顶部长出来），光标要跟着它所在的那一行走，
+		// 否则行数一变光标就跳到别的行上——拖分隔条时会看到提示符和光标脱节。
+		var oldBase = Math.Max(0, _primary.Count - oldRows);
+		var cursorBufferRow = oldBase + _cursorRow;
+
 		_columns = columns;
 		_rows = rows;
 		ResizeTabStops();
@@ -284,6 +289,11 @@ internal sealed class TerminalScreen
 			_cursorColumn = Math.Clamp(reflowCursorColumn, 0, columns - 1);
 			_viewOffset = Math.Clamp(_primary.Count - rows - reflowViewTop, 0, MaxViewOffset);
 		}
+		else if (!widthChanged && !_alternateActive)
+		{
+			// 行数变化：同一缓冲行在新的视口里往上/往下挪了几行，光标跟着挪。
+			_cursorRow = Math.Clamp(cursorBufferRow - BufferBase, 0, rows - 1);
+		}
 
 		_scrollTop = 0;
 		_scrollBottom = rows - 1;
@@ -293,7 +303,13 @@ internal sealed class TerminalScreen
 		_viewOffset = Math.Clamp(_viewOffset, 0, MaxViewOffset);
 		if (sizeChanged)
 		{
-			MarkAllLines();
+			// 列宽变化会重排每一行，行缓存必须整体作废；只改高度时行内容没动，
+			// 渲染端按「视图行 → 缓冲行」的映射自己发现哪些行挪了位置，不必整屏重建。
+			if (widthChanged)
+			{
+				MarkAllLines();
+			}
+
 			Touch();
 		}
 	}

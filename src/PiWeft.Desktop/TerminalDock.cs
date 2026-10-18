@@ -32,6 +32,12 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	/// <summary>两次重绘之间的最小间隔，避免高频输出逐个字符重排。</summary>
 	private const long PaintIntervalMs = 40;
 
+	/// <summary>
+	/// 面板尺寸连续变化（拖分隔条、缩放窗口）时，PTY 尺寸延后这么久再发一次：
+	/// 每个像素都发 SIGWINCH 会让 shell 逐帧重画提示符，看起来像终端内容在跳。
+	/// </summary>
+	private const int ResizeSettleMs = 120;
+
 	/// <summary>为滚动条预留的宽度（控件 + 间距），列数计算时扣除。</summary>
 	private const double ScrollBarReserve = 18;
 
@@ -66,9 +72,16 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private readonly Border _imePreview;
 	private readonly TextBlock _imeLabel = new();
 	private bool _imeActive;
+
+	/// <summary>失焦光标：空心方框，只描边、不改字符颜色（对齐 VS Code 的 outline 光标）。</summary>
+	private readonly Border _cursorOutline;
 	private readonly ScrollBar _scrollBar;
 	private readonly DispatcherTimer _timer;
 	private readonly Lock _gate = new();
+
+	/// <summary>拖拽面板高度时的 PTY 尺寸只在停下后发一次，避免 SIGWINCH 让 shell 逐帧重画。</summary>
+	private DispatcherTimer? _resizeTimer;
+	private PtySize? _pendingResize;
 
 	private PtySession? _session;
 	private CancellationTokenSource? _shellCancel;
@@ -183,7 +196,20 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			.VerticalAlignment(VerticalAlignment.Top)
 			.Child(_imeLabel);
 
-		var surface = new Grid().Children(_lineHost, _input, _imePreview).Column(0);
+		// 失焦光标：压在文字之上的一圈空心方框，描边跟聚焦时的光标同色（不降亮），字符保持原色不被反白。
+		// 颜色在 Paint 里按主题/OSC 12 覆盖同步，位置每帧按光标格写进 Margin。
+		_cursorOutline = new Border()
+			.BorderThickness(1)
+			.Background(AppTheme.Transparent)
+			.BorderBrush(AppTheme.TerminalCursor)
+			.Width(_cellWidth)
+			.Height(_lineHeight)
+			.IsVisible(false)
+			.IsHitTestVisible(false)
+			.HorizontalAlignment(HorizontalAlignment.Left)
+			.VerticalAlignment(VerticalAlignment.Top);
+
+		var surface = new Grid().Children(_lineHost, _input, _cursorOutline, _imePreview).Column(0);
 		_pastePrompt = BuildPastePrompt();
 		surface.Children(_pastePrompt);
 		_panel.Child = new Grid()
@@ -342,6 +368,19 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			}
 		}
 	}
+
+	/// <summary>窗口less 测试用：模拟失焦/聚焦并立即重绘。</summary>
+	internal void SetFocusForTest(bool focused)
+	{
+		SendFocus(focused);
+		PaintIfDirty(force: true);
+	}
+
+	/// <summary>窗口less 测试用：失焦时的空心光标当前是否可见。</summary>
+	internal bool CursorOutlineVisible => _cursorOutline.IsVisible;
+
+	/// <summary>窗口less 测试用：空心光标的描边颜色。</summary>
+	internal Color CursorOutlineBrush => _cursorOutline.BorderBrush;
 
 	// ------------------------------------------------------------------ PTY
 
@@ -573,6 +612,9 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 	private void StopShell()
 	{
+		// 旧的 shell 不再需要这组尺寸；新 shell 会直接用当前行列启动。
+		_resizeTimer?.Stop();
+		_pendingResize = null;
 		_inputQueue?.Writer.TryComplete();
 		_inputQueue = null;
 		_shellCancel?.Cancel();
@@ -628,6 +670,9 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 	public void SendKey(KeyEventArgs key)
 	{
+		// 刚拖完高度就打字时，先把挂起的尺寸发出去，shell 回显才用正确宽度。
+		FlushPtyResize();
+
 		// 粘贴确认条打开时 Esc 只关掉它，不把 ESC 送进 shell。
 		if (_pendingPaste is not null && key.Key == Key.Escape)
 		{
@@ -982,7 +1027,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	{
 		_inputFocused = focused;
 		_blinkTicks = 0;
-		// 焦点切换时光标颜色/明暗会变，立即重绘；失焦不保留半亮的闪烁相。
+		// 焦点切换时实心块与空心框互换，立即重绘；失焦不保留半亮的闪烁相。
 		_blinkHidden = false;
 		_blinkDirty = true;
 		Interlocked.Increment(ref _cursorFocusVersion);
@@ -1356,15 +1401,51 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 
 		RebuildRows();
+		QueuePtyResize(columns, rows);
+		PaintIfDirty(force: true);
+	}
+
+	/// <summary>攒一次 PTY 尺寸，等面板尺寸停下来再发；连续的 resize 只保留最后一组行列。</summary>
+	private void QueuePtyResize(int columns, int rows)
+	{
+		if (_session is null)
+		{
+			return;
+		}
+
+		_pendingResize = new PtySize(columns, rows);
+		_resizeTimer ??= CreateResizeTimer();
+		_resizeTimer.Stop();
+		_resizeTimer.Start();
+	}
+
+	private DispatcherTimer CreateResizeTimer()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(ResizeSettleMs));
+		timer.Tick += FlushPtyResize;
+		return timer;
+	}
+
+	/// <summary>把攒下的尺寸发给 PTY；没有挂起的尺寸时什么也不做。</summary>
+	private void FlushPtyResize()
+	{
+		_resizeTimer?.Stop();
+		var pending = _pendingResize;
+		_pendingResize = null;
+		var session = _session;
+		if (pending is not { } size || session is null)
+		{
+			return;
+		}
+
 		try
 		{
-			_session?.Resize(new PtySize(columns, rows));
+			session.Resize(size);
 		}
 		catch (InvalidOperationException)
 		{
+			// shell 已经退出：尺寸不再重要。
 		}
-
-		PaintIfDirty(force: true);
 	}
 
 	private void RebuildRows()
@@ -1556,6 +1637,23 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 		SyncScrollBar(maxOffset, viewOffset);
 
+		// 失焦光标是压在文字上的空心方框：跟随光标格移动，看历史或输入法组合时隐藏。
+		// 只有聚焦时才把光标画进文本 run（实心块 / 下划线），失焦一行文字都不会变。
+		// 描边取光标自身颜色（含 OSC 12 覆盖）：失焦只是从实心变空心，不把光标调暗。
+		var outlineColor = _paintCursorColor is { } outlineOverride ? FromRgb(outlineOverride) : AppTheme.TerminalCursor;
+		if (_cursorOutline.BorderBrush != outlineColor)
+		{
+			_cursorOutline.BorderBrush = outlineColor;
+		}
+
+		var outlineVisible = cursorVisible && !_inputFocused && cursorRow >= 0;
+		if (outlineVisible)
+		{
+			_cursorOutline.Margin(new Thickness(cursorColumn * _cellWidth, cursorRow * _lineHeight, 0, 0));
+		}
+
+		_cursorOutline.IsVisible(outlineVisible);
+
 		for (var row = 0; row < rows && row < _lineViews.Count; row++)
 		{
 			if (!_lineDirty[row])
@@ -1564,7 +1662,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			}
 
 			var runs = _lineRuns[row];
-			var signature = Signature(runs, row == cursorRow ? cursorColumn : -1, row == cursorRow && _inputFocused);
+			var focusedCursor = row == cursorRow && _inputFocused;
+			var signature = Signature(runs, focusedCursor ? cursorColumn : -1, focusedCursor);
 			if (signature == _lineSignatures[row])
 			{
 				continue;
@@ -1719,13 +1818,13 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 
 		var cursorColor = _paintCursorColor is { } cursorOverride ? FromRgb(cursorOverride) : AppTheme.TerminalCursor;
-		var unfocusedCursorColor = AppTheme.TerminalCursorUnfocused;
-		var cursorFocused = _inputFocused;
+		// 失焦时光标由压在文字上的空心方框表示（见 Paint / _cursorOutline）：字符保持原色，不做反白也不染色。
+		var cursorFocused = cursor && _inputFocused;
 		var element = new Run(text);
-		if (cursor && _paintCursorStyle == TerminalCursorStyle.Block)
+		if (cursorFocused && _paintCursorStyle == TerminalCursorStyle.Block)
 		{
-			// 块状光标：聚焦是实心强调色，失焦是更暗的灰块；块内文字始终取终端底色。
-			element.Background = cursorFocused ? cursorColor : unfocusedCursorColor;
+			// 块状光标：实心强调色，块内文字取终端底色。
+			element.Background = cursorColor;
 			element.Foreground = defaultBackground;
 		}
 		else
@@ -1740,10 +1839,10 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 				element.Background = background;
 			}
 
-			if (cursor)
+			if (cursorFocused)
 			{
-				// 下划线/竖线光标不遮字，用光标色标识（竖线以下划线近似）；失焦时同样降为灰。
-				element.Foreground = cursorFocused ? cursorColor : unfocusedCursorColor;
+				// 下划线/竖线光标不遮字，用光标色标识（竖线以下划线近似）。
+				element.Foreground = cursorColor;
 				if (_paintCursorStyle is TerminalCursorStyle.Underline or TerminalCursorStyle.Bar)
 				{
 					// MewUI 的 Run 没有竖线装饰，Bar 与 Underline 都以下划线近似。
@@ -1869,6 +1968,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_disposed = true;
 		_timer.Stop();
 		_timerRunning = false;
+		_resizeTimer?.Dispose();
+		_resizeTimer = null;
 		_scrollBar.ValueChanged -= OnScrollBarChanged;
 		StopShell();
 	}

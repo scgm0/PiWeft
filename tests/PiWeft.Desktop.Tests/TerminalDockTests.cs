@@ -23,6 +23,21 @@ public sealed class TerminalDockTests
 	}
 
 	[Fact]
+	public void UnfocusedCursorBecomesAHollowOutline()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+
+		// 失焦不把光标涂成灰块：字符颜色保持不变，只按光标格压一圈空心方框。
+		dock.SetFocusForTest(false);
+		Assert.True(dock.CursorOutlineVisible);
+		// 描边就是光标色：失焦只从实心变空心，亮度不降。
+		Assert.Equal(AppTheme.TerminalCursor, dock.CursorOutlineBrush);
+
+		dock.SetFocusForTest(true);
+		Assert.False(dock.CursorOutlineVisible);
+	}
+
+	[Fact]
 	public void PasteConfirmationOnlyTriggersOnLineBreaks()
 	{
 		Assert.False(TerminalDock.NeedsPasteConfirmation("ls -la"));

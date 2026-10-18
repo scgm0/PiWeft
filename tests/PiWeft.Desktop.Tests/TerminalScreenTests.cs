@@ -709,4 +709,40 @@ public sealed class TerminalScreenTests
 		screen.Feed("\u001b[3J".AsSpan());
 		Assert.Equal(0, screen.ScrollbackLines);
 	}
+
+	[Fact]
+	public void HeightChangeKeepsTheCursorOnItsLine()
+	{
+		var screen = NewScreen(columns: 10, rows: 4);
+
+		screen.Feed("a\r\nb\r\nc\r\nd\r\ne\r\nf".AsSpan());
+		Assert.Equal(3, screen.CursorRow);
+
+		// 变矮：视口向底部收，光标跟着「f」那一行往下走，不跳到别的行上。
+		screen.Resize(10, 2);
+		Assert.Equal("e\nf", screen.GetText());
+		Assert.Equal(1, screen.CursorRow);
+
+		// 变高：多出来的历史从顶部长出来，光标仍在「f」上。
+		screen.Resize(10, 5);
+		Assert.Equal("b\nc\nd\ne\nf", screen.GetText());
+		Assert.Equal(4, screen.CursorRow);
+	}
+
+	[Fact]
+	public void HeightOnlyResizeKeepsLineCacheButWidthChangeInvalidatesIt()
+	{
+		var screen = NewScreen(columns: 10, rows: 4);
+		screen.Feed("a\r\nb".AsSpan());
+
+		var version = screen.LineVersion(0);
+
+		// 只改高度时行内容没变，行版本不动，渲染端可以继续沿用未移动的行。
+		screen.Resize(10, 6);
+		Assert.Equal(version, screen.LineVersion(0));
+
+		// 列宽变化会重排每一行，缓存必须整体作废。
+		screen.Resize(12, 6);
+		Assert.NotEqual(version, screen.LineVersion(0));
+	}
 }

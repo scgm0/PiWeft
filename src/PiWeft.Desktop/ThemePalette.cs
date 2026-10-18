@@ -31,7 +31,6 @@ internal static class ThemePalette
 		TerminalBorder = fallback.TerminalBorder,
 		TerminalSelection = fallback.TerminalSelection,
 		TerminalCursor = fallback.TerminalCursor,
-		TerminalCursorUnfocused = fallback.TerminalCursorUnfocused,
 		TerminalLink = Pick(theme, ThemeTokens.MdLink, fallback.TerminalLink),
 
 		TextPrimary = Pick(theme, ThemeTokens.Text, fallback.TextPrimary),

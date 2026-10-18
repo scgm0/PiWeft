@@ -33,9 +33,8 @@ public sealed record AppPalette
 
 	public required Color TerminalSelection { get; init; }
 
+	/// <summary>光标色：聚焦时填充实心块，失焦时用它给空心方框描边（同色，不降亮）。</summary>
 	public required Color TerminalCursor { get; init; }
-
-	public required Color TerminalCursorUnfocused { get; init; }
 
 	public required Color TerminalLink { get; init; }
 
@@ -84,7 +83,6 @@ public sealed record AppPalette
 		TerminalBorder = new Color(0x20, 0x20, 0x20),
 		TerminalSelection = new Color(0x2f, 0x2f, 0x2f),
 		TerminalCursor = new Color(0xfa, 0xfa, 0xfa),
-		TerminalCursorUnfocused = new Color(0x54, 0x54, 0x54),
 		TerminalLink = new Color(0x60, 0xa5, 0xfa),
 		TextPrimary = new Color(0xf5, 0xf5, 0xf5),
 		TextMuted = new Color(0xa6, 0xa6, 0xa6),
@@ -117,7 +115,6 @@ public sealed record AppPalette
 		TerminalBorder = new Color(0xe0, 0xe0, 0xe0),
 		TerminalSelection = new Color(0xe8, 0xe8, 0xe8),
 		TerminalCursor = new Color(0x17, 0x17, 0x17),
-		TerminalCursorUnfocused = new Color(0xa3, 0xa3, 0xa3),
 		TerminalLink = new Color(0x1d, 0x4e, 0xd8),
 		TextPrimary = new Color(0x17, 0x17, 0x17),
 		TextMuted = new Color(0x52, 0x52, 0x52),

@@ -83,8 +83,6 @@ public static class AppTheme
 
 	public static Color TerminalCursor => Current.TerminalCursor;
 
-	public static Color TerminalCursorUnfocused => Current.TerminalCursorUnfocused;
-
 	public static Color TerminalLink => Current.TerminalLink;
 
 	public static Color TextPrimary => Current.TextPrimary;
