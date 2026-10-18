@@ -232,7 +232,7 @@ public sealed partial class MainWindow : Window
 				break;
 
 			case ShortcutActions.Terminal:
-				ShowTerminalPanel();
+				ToggleTerminalPanel();
 				break;
 
 			case ShortcutActions.RightPanel:
@@ -1095,7 +1095,7 @@ public sealed partial class MainWindow : Window
 					ShowGitPanel();
 					break;
 				case "terminal":
-					ShowTerminalPanel();
+					ToggleTerminalPanel();
 					break;
 				case "files":
 					ShowFilesPanel();
@@ -1383,7 +1383,7 @@ public sealed partial class MainWindow : Window
 
 		if (open)
 		{
-			// 首次展开时才创建视图：默认收起，所以不会在每个会话里都拉起伪终端。
+			// 首次展开时才创建视图：默认收起，文件与 Git 都只在需要时读盘。
 			panel.Show(section ?? panel.Section);
 		}
 		else
@@ -1403,10 +1403,11 @@ public sealed partial class MainWindow : Window
 
 	private void ShowFilesPanel() => SetRightPanel(open: true, RightPanelSection.Files);
 
-	private void ShowTerminalPanel() => SetRightPanel(open: true, RightPanelSection.Terminal);
+	/// <summary>Ctrl+Shift+D / 命令面板：开关当前会话底部的终端面板（终端不再占用右侧面板）。</summary>
+	private void ToggleTerminalPanel() => CurrentTab()?.ToggleTerminal();
 
 	/// <summary>
-	/// 当前会话的面板决定宿主是否出现：切换会话只切可见性，各会话的分段与终端状态都保留。
+	/// 当前会话的面板决定宿主是否出现：切换会话只切可见性，各会话的分段与内容都保留。
 	/// </summary>
 	private void SyncPanelLayout()
 	{
@@ -1681,7 +1682,7 @@ public sealed partial class MainWindow : Window
 			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsDialog),
 			new(Strings.Git, Strings.ShortcutGit, ShowGitPanel),
 			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, ShowFilesPanel),
-			new(Strings.Terminal, Strings.ShortcutTerminal, ShowTerminalPanel),
+			new(Strings.Terminal, Strings.ShortcutTerminal, ToggleTerminalPanel),
 			new(Strings.RightPanel, Strings.ShortcutRightPanel, ToggleRightPanel),
 			new(Strings.UsageStatsTitle, string.Empty, OpenUsageStatsTab),
 			new(Strings.CopySessionPath, Strings.ShortcutCopyPath, () => CopySessionInfo(path: true)),

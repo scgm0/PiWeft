@@ -103,9 +103,10 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 	/// <param name="cwd">当前会话的工作目录。</param>
 	/// <param name="compact">
-	/// 紧凑形态：供右侧功能面板使用，省掉大标题与多余留白，只保留一行 shell 动作与状态。
+	/// 紧凑形态：供会话底部的终端面板使用，省掉大标题与多余留白，标题与 shell 动作挤在同一行。
 	/// </param>
-	public TerminalDock(Func<string> cwd, bool compact = false)
+	/// <param name="onClose">提供时在标题行末尾追加一个收起键，由宿主决定面板的开关。</param>
+	public TerminalDock(Func<string> cwd, bool compact = false, Action? onClose = null)
 	{
 		_cwd = cwd;
 		_shellPath = DesktopPreference.Load().TerminalShell;
@@ -161,7 +162,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		};
 		_scrollBar.ValueChanged += OnScrollBarChanged;
 
-		// 面板里的终端不再包一层卡片：无边框、无圆角、无外边距，深色表面直接铺满。
+		// 展开成面板形态时不再包一层卡片：无边框、无圆角、无外边距，深色表面直接铺满。
 		_panel = new Border()
 			.StyleName(AppStyles.Terminal)
 			.BorderThickness(compact ? 0 : 1)
@@ -192,16 +193,29 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		var actions = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(AppTheme.Space2)
+			.VerticalAlignment(VerticalAlignment.Center)
 			.Children(_shellButton, restart, clear);
 
-		// 紧凑形态给右侧面板用：面板页签已经写着「终端」，这里不再重复大标题；
+		if (onClose is not null)
+		{
+			actions.Children(AppIcons.Button("x", Strings.CloseTerminal, onClose));
+		}
+
+		// 紧凑形态给会话底部的终端面板用：标题行只有一行 —— 左边「终端」，右边 shell / 重启 / 清屏 / 收起；
 		// 说明文本默认隐藏，只在 shell 失败/退出时显示一行省略的诊断。
 		var header = compact
 			? new StackPanel()
 				.Spacing(AppTheme.Space1)
-				.Padding(new Thickness(AppTheme.Space2, AppTheme.Space2, AppTheme.Space2, 0))
+				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space1, AppTheme.Space2, 0))
 				.Children(
-					actions,
+					new DockPanel()
+						.LastChildFill()
+						.Children(actions.DockRight(),
+							new TextBlock()
+								.Text(Strings.Terminal)
+								.FontSize(AppTheme.FontSizeCaption)
+								.MutedText()
+								.VerticalAlignment(VerticalAlignment.Center)),
 					_status.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
 					_shellInput)
 			: new StackPanel()
@@ -213,7 +227,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 					actions,
 					_shellInput);
 
-		// 底色由右侧面板统一给（与左侧栏同色）；终端表面自己保持深底。
+		// 底色由宿主面板统一给（会话底部的终端面板）；终端表面自己保持深底。
 		View = new Border()
 			.Child(new DockPanel()
 				.LastChildFill()

@@ -93,6 +93,16 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _thinkingButton;
 	private readonly TextBlock _thinkingLabel = new();
 
+	/// <summary>输入框左群的终端开关键：控制会话底部的终端面板。</summary>
+	private readonly Button _terminalButton;
+	private readonly Border _terminalPane;
+	private readonly SplitPanel _terminalSplit;
+	private TerminalDock? _terminal;
+	private bool _terminalOpen;
+
+	/// <summary>底部终端面板的高度：收起时记下来，下次展开沿用。</summary>
+	private double _terminalDockHeight = AppTheme.TerminalDockHeight;
+
 	/// <summary>标签标题变化时触发（会话名、运行状态）。</summary>
 	public event Action<SessionTab>? TitleChanged;
 
@@ -195,6 +205,7 @@ public sealed partial class SessionTab : IDisposable
 		_planLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText();
 		_planButton = new Button().Ghost().Content(_planLabel).HoverTip(Strings.PlanModeHint)
 			.OnClick(TogglePlanMode);
+		_terminalButton = AppIcons.Button("terminal", Strings.Terminal, ToggleTerminal);
 		_testButton = AppIcons.Button("refresh-cw", Strings.TestConnection, () => _ = TestConnectionAsync());
 
 		_modelPicker = new ModelPicker(availableModels ?? (() => models), () => Session.Model, SelectModel);
@@ -217,9 +228,19 @@ public sealed partial class SessionTab : IDisposable
 				.Children(_thinkingLabel, thinkingChevron))
 			.OnClick(ShowThinkingMenu);
 
-		// 次要动作在窄窗口自动换行，发送/中断始终可达。
-		var toolbar = new DockPanel().LastChildFill().Children(_sendButton.DockRight(),
-			new WrapPanel().Spacing(4).Children(attach, commands, _planButton, _testButton, _modelButton, _thinkingButton));
+		// 左群是会改变下一条消息的开关与插入动作（计划、附件、命令、终端），窄窗口自动换行；
+		// 右群是这次请求的目标与代价（连接测试、模型、思考强度），发送/中断永远贴在最右。
+		var leftActions = new WrapPanel().Spacing(4)
+			.Children(_planButton, attach, commands, _terminalButton);
+		var rightActions = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Center)
+			// 思考强度与发送键之间留一段间距：发送是主操按钮，不该贴着文本按钮。
+			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
+			.Children(_testButton, _modelButton, _thinkingButton);
+		var toolbar = new DockPanel().LastChildFill()
+			.Children(_sendButton.DockRight(), rightActions.DockRight(), leftActions);
 
 		// 上下文占用条：接近窗口上限时一眼可见。
 		_contextBar.Maximum(100).Height(3).Margin(new Thickness(0, 2, 0, 2));
@@ -335,7 +356,21 @@ public sealed partial class SessionTab : IDisposable
 					.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)).Row(1),
 				_mainArea.Row(2),
 				_composerColumn.Row(3));
-		View = layout.AllowDrop().OnDragEnter(OnFilesDragOver).OnDragOver(OnFilesDragOver).OnDrop(OnFilesDropped)
+
+		// 底部终端：属于会话、默认收起，第一次展开才拉起伪终端；收起只隐藏，shell 的历史与工作目录都留着。
+		// 与对话之间是一条分隔条，拖拽即可调整终端高度（高度按会话记着，下次展开沿用）。
+		_terminalPane = new Border()
+			.StyleName(AppStyles.TerminalDock)
+			.IsVisible(false);
+		_terminalSplit = new SplitPanel().Vertical().SplitterThickness(4)
+			.MinFirst(240)
+			.MinSecond(AppTheme.TerminalDockMinHeight)
+			.MaxSecond(AppTheme.TerminalDockMaxHeight)
+			.FirstLength(GridLength.Stars(1))
+			.SecondLength(GridLength.Pixels(_terminalDockHeight))
+			.First(layout).Second(_terminalPane);
+
+		View = _terminalSplit.AllowDrop().OnDragEnter(OnFilesDragOver).OnDragOver(OnFilesDragOver).OnDrop(OnFilesDropped)
 			.OnLayoutSizeChanged(args => _composer.Height = args.NewSize.Width < 640 || args.NewSize.Height < 560 ? 56 : AppTheme.ComposerHeight);
 
 		_readingStatisticsBar = statisticsBar;
@@ -462,6 +497,7 @@ public sealed partial class SessionTab : IDisposable
 		_conversationScroll.Dispose();
 		_textFocus.Dispose();
 		_timeline.Dispose();
+		_terminal?.Dispose();
 		_chat.Changed -= OnChatChanged;
 		_chat.Dispose();
 		UiLifetime.Release(View);
@@ -535,6 +571,7 @@ public sealed partial class SessionTab : IDisposable
 		AppStyles.ApplyTextColors(_usagePanel.View);
 		AppStyles.ApplyTextColors(_branchPanel.View);
 		AppStyles.ApplyTextColors(_imagePreview.View);
+		_terminal?.ApplyTheme();
 	}
 
 
@@ -883,6 +920,75 @@ public sealed partial class SessionTab : IDisposable
 
 		Session.SetPlanMode(!Session.PlanModeEnabled);
 		Render();
+	}
+
+	/// <summary>会话底部的终端面板是否展开。</summary>
+	public bool IsTerminalOpen => _terminalOpen;
+
+	/// <summary>输入框的终端键 / Ctrl+Shift+D：展开时收起，收起时展开。</summary>
+	public void ToggleTerminal() => SetTerminalOpen(!_terminalOpen);
+
+	/// <summary>
+	/// 展开或收起底部终端。终端在第一次展开时才创建（会真的启动伪终端），之后收起只隐藏，
+	/// shell 的历史与工作目录都不丢；展开时把键盘焦点交给它。
+	/// </summary>
+	public void SetTerminalOpen(bool open)
+	{
+		if (_disposed || _terminalOpen == open)
+		{
+			return;
+		}
+
+		if (!open)
+		{
+			// 收起前记下当前高度，下次展开沿用。
+			if (_terminalPane.Bounds.Height >= AppTheme.TerminalDockMinHeight - 0.5)
+			{
+				_terminalDockHeight = Math.Clamp(_terminalPane.Bounds.Height,
+					AppTheme.TerminalDockMinHeight, AppTheme.TerminalDockMaxHeight);
+			}
+
+			_terminalOpen = false;
+			_terminalPane.IsVisible(false);
+			UpdateTerminalButton();
+			FocusComposer();
+			return;
+		}
+
+		if (_terminal is null)
+		{
+			_terminal = new TerminalDock(() => Session.Cwd, compact: true, onClose: () => SetTerminalOpen(false));
+			_terminalPane.Child(_terminal.View);
+		}
+
+		_terminalOpen = true;
+		_terminalPane.IsVisible(true);
+		_terminalSplit.SecondLength = GridLength.Pixels(_terminalDockHeight);
+		UpdateTerminalButton();
+		FocusTerminalSoon();
+	}
+
+	/// <summary>终端键在面板展开时常驻浮起，一眼看出终端是从这里打开的。</summary>
+	private void UpdateTerminalButton() =>
+		_terminalButton.StyleName(_terminalOpen ? AppStyles.SelectedButton : AppStyles.GhostButton);
+
+	/// <summary>展开后再交焦点：面板这一帧还没布局完，终端输入层此时还收不到键盘。</summary>
+	private void FocusTerminalSoon()
+	{
+		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
+		if (dispatcher is null)
+		{
+			_terminal?.FocusTerminal();
+			return;
+		}
+
+		dispatcher.BeginInvoke(() =>
+		{
+			if (!_disposed)
+			{
+				_terminal?.FocusTerminal();
+			}
+		});
 	}
 
 	/// <summary>思考强度菜单：与模型选择一样按当前模型支持项生成，当前项打勾。</summary>

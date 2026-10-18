@@ -3,22 +3,20 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>右侧功能面板的分段：文件、Git 与终端都是会话的辅助表面，不再是独立标签页。</summary>
+/// <summary>右侧功能面板的分段：文件与 Git 是会话的辅助表面，不再是独立标签页（终端在会话底部）。</summary>
 public enum RightPanelSection
 {
 	Files,
 	Git,
-	Terminal,
 }
 
 /// <summary>
 /// 会话的右侧功能面板（对齐 PiDeck 的右侧 Dock）：顶部一条页签条，
-/// 下面按分段挂文件浏览器、Git 或终端；切换分段不重建其它视图，收起只是隐藏。
+/// 下面按分段挂文件浏览器或 Git；切换分段不重建其它视图，收起只是隐藏。
 /// </summary>
 /// <remarks>
 /// 每个会话各有一个面板，内容跟着会话的工作目录走，默认收起。
-/// 视图按需创建：终端会真的启动伪终端，所以第一次切到终端时才建，之后一直保留，
-/// 收起再展开不会丢掉 shell 的历史与工作目录。面板放在主窗口最右侧的定宽栏里，
+/// 视图按需创建，之后一直保留。面板放在主窗口最右侧的定宽栏里，
 /// 由默认分隔条拖拽调宽，宽度是窗口级偏好（<see cref="DesktopPreference.RightPanelWidth"/>）。
 /// </remarks>
 public sealed class RightPanel : IDisposable
@@ -29,7 +27,6 @@ public sealed class RightPanel : IDisposable
 	private readonly Border _header;
 	private readonly List<TabView> _tabs = [];
 	private readonly Dictionary<RightPanelSection, UIElement> _views = [];
-	private TerminalDock? _terminal;
 	private FileBrowserView? _files;
 	private GitView? _git;
 	private RightPanelSection _section;
@@ -47,12 +44,11 @@ public sealed class RightPanel : IDisposable
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Center);
 
-		// 顺序固定为「文件 → Git → 终端」：文件是打开面板最常用的入口。
+		// 顺序固定为「文件 → Git」：文件是打开面板最常用的入口。
 		foreach (var option in new[]
 		{
 			(Section: RightPanelSection.Files, Icon: "file-text", Title: Strings.FileBrowser),
 			(Section: RightPanelSection.Git, Icon: "git-branch", Title: Strings.SidebarGit),
-			(Section: RightPanelSection.Terminal, Icon: "terminal", Title: Strings.Terminal),
 		})
 		{
 			var icon = new Image()
@@ -139,11 +135,6 @@ public sealed class RightPanel : IDisposable
 		{
 			Refresh();
 		}
-
-		if (section == RightPanelSection.Terminal)
-		{
-			FocusTerminalSoon();
-		}
 	}
 
 	/// <summary>收起面板；终端等视图保持存活，再次展开时延续原来的状态。</summary>
@@ -177,31 +168,9 @@ public sealed class RightPanel : IDisposable
 	public void ApplyTheme()
 	{
 		AppStyles.ApplyTextColors((Element)View);
-		_terminal?.ApplyTheme();
 		_files?.ApplyTheme();
 		_git?.ApplyTheme();
 		UpdateTabs();
-	}
-
-	/// <summary>面板里的终端最近可见时把键盘焦点交给它。</summary>
-	public void FocusTerminal()
-	{
-		if (_terminal is { } terminal && _section == RightPanelSection.Terminal && _open)
-		{
-			terminal.FocusTerminal();
-		}
-	}
-
-	private void FocusTerminalSoon()
-	{
-		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
-		if (dispatcher is null)
-		{
-			FocusTerminal();
-			return;
-		}
-
-		dispatcher.BeginInvoke(FocusTerminal);
 	}
 
 	/// <summary>只创建一次视图并挂进内容区；之后切换只改可见性。返回本次是否新建。</summary>
@@ -213,8 +182,7 @@ public sealed class RightPanel : IDisposable
 			UIElement view = section switch
 			{
 				RightPanelSection.Files => (_files = new FileBrowserView(_cwd)).View,
-				RightPanelSection.Git => (_git = new GitView(_cwd)).View,
-				_ => (_terminal = new TerminalDock(_cwd, compact: true)).View,
+				_ => (_git = new GitView(_cwd)).View,
 			};
 
 			_views[section] = view;
@@ -254,7 +222,6 @@ public sealed class RightPanel : IDisposable
 	private static string TitleFor(RightPanelSection section) => section switch
 	{
 		RightPanelSection.Git => Strings.SidebarGit,
-		RightPanelSection.Terminal => Strings.Terminal,
 		_ => Strings.FileBrowser,
 	};
 
@@ -266,7 +233,6 @@ public sealed class RightPanel : IDisposable
 		}
 
 		_disposed = true;
-		_terminal?.Dispose();
 	}
 
 	private sealed record TabView(

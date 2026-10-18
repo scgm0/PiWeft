@@ -150,6 +150,11 @@ public static class AppTheme
 	/// <summary>拖拽右侧面板时主区必须保留的最小宽度（PiDeck 的 chat 下限是 360）。</summary>
 	public const double MinChatWidth = 400;
 
+	/// <summary>会话底部终端面板的默认高度与拖拽范围（DIP）。</summary>
+	public const double TerminalDockHeight = 260;
+	public const double TerminalDockMinHeight = 140;
+	public const double TerminalDockMaxHeight = 640;
+
 	/// <summary>自定义窗框标题栏的高度（DIP）。Windows/macOS 由系统原生按钮，X11 由应用绘制。</summary>
 	public const double TitleBarHeight = 40;
 

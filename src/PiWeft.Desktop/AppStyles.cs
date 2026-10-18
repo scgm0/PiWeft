@@ -31,6 +31,9 @@ public static class AppStyles
 	/// <summary>右侧面板外壳：与左侧栏同色，窗框两侧对称。</summary>
 	public const string RightPanel = "pi-right-panel";
 
+	/// <summary>会话底部的终端面板：主区底色，顶部一条发丝线把终端与对话分开。</summary>
+	public const string TerminalDock = "pi-terminal-dock";
+
 	public const string UserMessage = "pi-message-user";
 	public const string ToolMessage = "pi-message-tool";
 	public const string ToolError = "pi-message-tool-error";
@@ -241,6 +244,16 @@ public static class AppStyles
 			})
 			.With(SelectedRow, () => Fill(typeof(Border), p => p.AccentSoft))
 			.With(RightPanel, () => Fill(typeof(Border), p => p.SidebarBackground))
+			// 底部终端面板：与主区同色，顶部一条发丝线就是它与对话之间的分界。
+			.With(TerminalDock, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).WindowBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 1, 0, 0)),
+				]
+			})
 			// 设置弹窗：浮起表面 + 一条结构线，圆角由调用方给到 Lg（弹窗是唯一的“大”表面）。
 			.With(Dialog, () => new Style(typeof(Border))
 			{

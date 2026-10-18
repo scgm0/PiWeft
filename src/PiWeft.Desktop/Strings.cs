@@ -418,7 +418,7 @@ public static partial class Strings
 
 	public static string FileBrowserSaved(string path) => $"已保存 {path}";
 
-	/// <summary>命令 Dock（MiniPty 伪终端）。</summary>
+	/// <summary>会话底部的命令 Dock（MiniPty 伪终端）。</summary>
 	public const string Terminal = "终端";
 
 	public const string TerminalRestart = "重启 shell";
@@ -445,7 +445,10 @@ public static partial class Strings
 
 	public const string TerminalHint = "命令 Dock：在项目目录里启动交互式 shell（伪终端）。";
 
-	public const string ShortcutTerminal = "打开命令 Dock";
+	/// <summary>输入框里的终端开关键与底部面板的收起键。</summary>
+	public const string CloseTerminal = "收起终端";
+
+	public const string ShortcutTerminal = "在会话底部开关终端";
 
 	public static string TerminalExited(int? exitCode) => $"[shell 已退出，退出码 {exitCode?.ToString() ?? "?"}]";
 
