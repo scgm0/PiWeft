@@ -101,7 +101,11 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private readonly TextBox _shellInput;
 	private readonly Button _shellButton;
 
-	public TerminalDock(Func<string> cwd)
+	/// <param name="cwd">当前会话的工作目录。</param>
+	/// <param name="compact">
+	/// 紧凑形态：供右侧功能面板使用，省掉大标题与多余留白，只保留一行 shell 动作与状态。
+	/// </param>
+	public TerminalDock(Func<string> cwd, bool compact = false)
 	{
 		_cwd = cwd;
 		_shellPath = DesktopPreference.Load().TerminalShell;
@@ -113,7 +117,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_screen.SelectionChanged += OnSelectionChanged;
 		MeasureCell();
 
-		_status.FontSize(AppTheme.FontSizeMicro).SubtleText();
+		// 说明文本默认不占位：只有 shell 失败/退出这类诊断才显示一行。
+		_status.FontSize(AppTheme.FontSizeMicro).SubtleText().IsVisible(false);
 
 		_shellLabel.Text(TerminalShells.DisplayName(_shellPath)).FontSize(AppTheme.FontSizeCaption).PrimaryText();
 		_shellButton = new Button().Ghost()
@@ -156,8 +161,11 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		};
 		_scrollBar.ValueChanged += OnScrollBarChanged;
 
+		// 面板里的终端不再包一层卡片：无边框、无圆角、无外边距，深色表面直接铺满。
 		_panel = new Border()
 			.StyleName(AppStyles.Terminal)
+			.BorderThickness(compact ? 0 : 1)
+			.CornerRadius(compact ? 0 : AppTheme.RadiusMd)
 			.Padding(new Thickness(AppTheme.Space2));
 
 		_input = new TerminalInputSurface(this);
@@ -181,25 +189,39 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			.Columns("*,Auto")
 			.Children(surface, _scrollBar.Column(1));
 
-		var header = new StackPanel()
+		var actions = new StackPanel()
+			.Orientation(Orientation.Horizontal)
 			.Spacing(AppTheme.Space2)
-			.Padding(new Thickness(AppTheme.Space3))
-			.Children(
-				new TextBlock().Text(Strings.Terminal).FontSize(18).FontWeight(FontWeight.Bold).PrimaryText(),
-				_status,
-				new StackPanel()
-					.Orientation(Orientation.Horizontal)
-					.Spacing(AppTheme.Space2)
-					.Children(_shellButton, restart, clear),
-				_shellInput);
+			.Children(_shellButton, restart, clear);
 
+		// 紧凑形态给右侧面板用：面板页签已经写着「终端」，这里不再重复大标题；
+		// 说明文本默认隐藏，只在 shell 失败/退出时显示一行省略的诊断。
+		var header = compact
+			? new StackPanel()
+				.Spacing(AppTheme.Space1)
+				.Padding(new Thickness(AppTheme.Space2, AppTheme.Space2, AppTheme.Space2, 0))
+				.Children(
+					actions,
+					_status.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
+					_shellInput)
+			: new StackPanel()
+				.Spacing(AppTheme.Space2)
+				.Padding(new Thickness(AppTheme.Space3))
+				.Children(
+					new TextBlock().Text(Strings.Terminal).FontSize(18).FontWeight(FontWeight.Bold).PrimaryText(),
+					_status,
+					actions,
+					_shellInput);
+
+		// 底色由右侧面板统一给（与左侧栏同色）；终端表面自己保持深底。
 		View = new Border()
-			.StyleName(AppStyles.Window)
 			.Child(new DockPanel()
 				.LastChildFill()
 				.Children(
 					header.DockTop(),
-					_panel.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))));
+					_panel.Margin(compact
+						? Thickness.Zero
+						: new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))));
 
 		_panel.OnLayoutSizeChanged(_ => SyncViewport());
 
@@ -441,7 +463,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			return;
 		}
 
-		Status(Strings.TerminalRunning);
+		// 正常运行不显示说明文本：只有失败/退出才有诊断行。
+		Status(string.Empty);
 		_shellCancel = new CancellationTokenSource();
 		_inputQueue = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
 		var session = _session;
@@ -1802,7 +1825,13 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		return (ulong)hash.ToHashCode();
 	}
 
-	private void Status(string text) => _status.Text(text);
+	private void Status(string text)
+	{
+		// 说明文本只在有诊断时占一行；正常运行时整行隐藏，终端可以铺满。
+		_status.Text(text);
+		_status.IsVisible(text.Length > 0);
+		HoverHints.Set(_status, text.Length > 0 ? text : null);
+	}
 
 	private static void Dispatch(Action action)
 	{

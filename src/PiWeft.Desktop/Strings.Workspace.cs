@@ -13,6 +13,11 @@ public static partial class Strings
 	public const string StatisticsDetails = "明细";
 	public const string StatisticsContext = "上下文";
 	public const string ToggleSidebar = "展开 / 收起项目侧栏";
+
+	/// <summary>会话的右侧面板：文件 / Git / 终端都停靠在这里，默认收起。</summary>
+	public const string OpenRightPanel = "打开右侧边栏";
+	public const string CloseRightPanel = "关闭右侧边栏";
+	public const string RightPanel = "右侧边栏";
 	public const string SessionList = "项目";
 	public const string SettingsHint = "管理外观、快捷键和运行环境；模型与认证在配置管理中。";
 	public const string SettingsClose = "关闭设置";

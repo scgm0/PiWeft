@@ -12,9 +12,10 @@ public sealed partial class MainWindow
 		void Visit(Element element)
 		{
 			if (element is FrameworkElement control && HoverHints.Text(control) is { } hint &&
-				(hint == Strings.ToggleTheme || hint == Strings.Settings || hint == Strings.SessionStatistics || hint == Strings.ExecutionExpandHint))
+				(hint == Strings.ToggleTheme || hint == Strings.Settings || hint == Strings.SessionStatistics ||
+				 hint == Strings.ExecutionExpandHint || ReferenceEquals(control, _rightPanelButton)))
 			{
-				var name = hint switch
+				var name = ReferenceEquals(control, _rightPanelButton) ? "panel" : hint switch
 				{
 					Strings.ToggleTheme => "theme", Strings.Settings => "settings",
 					Strings.SessionStatistics => "statistics", _ => "process",

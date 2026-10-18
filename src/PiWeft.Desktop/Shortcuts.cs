@@ -129,6 +129,7 @@ public sealed class ShortcutMap
 		new(ShortcutActions.Git, "视图", "Git 面板", "Ctrl+O"),
 		new(ShortcutActions.Files, "视图", "文件浏览器", "Ctrl+Shift+E"),
 		new(ShortcutActions.Terminal, "视图", "命令 Dock", "Ctrl+Shift+D"),
+		new(ShortcutActions.RightPanel, "视图", "右侧边栏", "Ctrl+J"),
 		new(ShortcutActions.ToggleTheme, "视图", "切换深浅主题", "Ctrl+Shift+T"),
 		new(ShortcutActions.Refresh, "视图", "刷新会话列表", "Ctrl+R"),
 		new(ShortcutActions.Send, "会话", "发送输入框内容", "Enter"),
@@ -255,6 +256,7 @@ public static class ShortcutActions
 	public const string Git = "git";
 	public const string Files = "files";
 	public const string Terminal = "terminal";
+	public const string RightPanel = "rightPanel";
 	public const string ToggleTheme = "toggleTheme";
 	public const string Refresh = "refresh";
 	public const string Send = "send";

@@ -21,10 +21,16 @@ public static class AppStyles
 	public const string TextInputLine = "pi-text-input-line";
 	public const string Sidebar = "pi-sidebar";
 	public const string Panel = "pi-panel";
+	/// <summary>右侧功能面板的页签条：与侧栏同色，底部一条发丝线，与主区页签条区分。</summary>
+	public const string RightPanelHeader = "pi-right-panel-header";
 	public const string Card = "pi-card";
 	public const string CardMuted = "pi-card-muted";
 	/// <summary>浮层卡片（上下文/余额这类浮在内容之上的面板）：比 Card 多一条可见结构线，配合阴影使用。</summary>
 	public const string PopupCard = "pi-popup-card";
+
+	/// <summary>右侧面板外壳：与左侧栏同色，窗框两侧对称。</summary>
+	public const string RightPanel = "pi-right-panel";
+
 	public const string UserMessage = "pi-message-user";
 	public const string ToolMessage = "pi-message-tool";
 	public const string ToolError = "pi-message-tool-error";
@@ -54,6 +60,9 @@ public static class AppStyles
 	public const string TitleBarSeparator = "pi-title-bar-separator";
 	public const string TitleBarButton = "pi-title-bar-button";
 	public const string TitleBarIconButton = "pi-title-bar-icon";
+
+	/// <summary>标题栏里的开关型图标按钮（右侧面板开关）处于打开状态时的常驻浮起。</summary>
+	public const string TitleBarIconButtonActive = "pi-title-bar-icon-active";
 	public const string TitleBarCloseButton = "pi-title-bar-close";
 	public const string TitleBarTab = "pi-title-bar-tab";
 	public const string TitleBarTabActive = "pi-title-bar-tab-active";
@@ -159,6 +168,15 @@ public static class AppStyles
 			})
 			.With(Sidebar, () => Fill(typeof(Border), p => p.SidebarBackground))
 			.With(Panel, () => Fill(typeof(Border), p => p.CardBackground))
+			.With(RightPanelHeader, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).SidebarBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 0, 0, 1)),
+				]
+			})
 			.With(Card, () => new Style(typeof(Border))
 			{
 				Setters =
@@ -222,6 +240,7 @@ public static class AppStyles
 				],
 			})
 			.With(SelectedRow, () => Fill(typeof(Border), p => p.AccentSoft))
+			.With(RightPanel, () => Fill(typeof(Border), p => p.SidebarBackground))
 			// 设置弹窗：浮起表面 + 一条结构线，圆角由调用方给到 Lg（弹窗是唯一的“大”表面）。
 			.With(Dialog, () => new Style(typeof(Border))
 			{
@@ -392,6 +411,32 @@ public static class AppStyles
 						Setters =
 						[
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+				],
+			})
+			// 开关型标题栏按钮的「已打开」态：与悬停同档的浮起，再加一条强调弱底，
+			// 让用户一眼看出右侧面板是从这个键唤醒的、现在正开着。
+			.With(TitleBarIconButtonActive, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft)),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusXs),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
 						],
 					},

@@ -13,12 +13,13 @@ public sealed class TerminalDockTests
 	private static string ShellDirectory => Path.GetTempPath();
 
 	[Fact]
-	public void ShowsTheTitleAndPtyStatus()
+	public void ShowsTheTitleWithoutDescriptiveStatus()
 	{
 		using var dock = new TerminalDock(() => ShellDirectory);
 
 		Assert.Contains(Find<TextBlock>(dock.View), block => block.Text == Strings.Terminal);
-		Assert.Contains(Find<TextBlock>(dock.View), block => block.Text.Contains("伪终端", StringComparison.Ordinal));
+		// 说明文本默认不占位：正常运行时只在标题下留出终端表面，失败/退出才显示诊断行。
+		Assert.DoesNotContain(Find<TextBlock>(dock.View), block => block.Text.Contains("伪终端", StringComparison.Ordinal));
 	}
 
 	[Fact]

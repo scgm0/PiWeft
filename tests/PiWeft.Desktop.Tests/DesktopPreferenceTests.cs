@@ -161,6 +161,24 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void RightPanelWidthRoundTripsAndClamps()
+	{
+		new DesktopPreference { RightPanelWidth = 520 }.Save(_agentDir);
+		Assert.Equal(520, DesktopPreference.Load(_agentDir).RightPanelWidth);
+
+		// 面板属于会话、默认收起：折叠状态与分段不再落盘，旧版本留下的键也要清掉。
+		var text = File.ReadAllText(DesktopPreference.Path(_agentDir));
+		Assert.DoesNotContain("rightPanelCollapsed", text);
+		Assert.DoesNotContain("rightPanelTab", text);
+
+		File.WriteAllText(DesktopPreference.Path(_agentDir), "{\"rightPanelWidth\":9999}");
+		Assert.Equal(AppTheme.RightPanelMaxWidth, DesktopPreference.Load(_agentDir).RightPanelWidth);
+
+		File.WriteAllText(DesktopPreference.Path(_agentDir), "{\"rightPanelWidth\":10}");
+		Assert.Equal(AppTheme.RightPanelMinWidth, DesktopPreference.Load(_agentDir).RightPanelWidth);
+	}
+
+	[Fact]
 	public void ReadingPreferencesRoundTripAndRejectInvalidNumbers()
 	{
 		new DesktopPreference { ChatFontSize = 20, ReadingWidth = 1360 }.Save(_agentDir);

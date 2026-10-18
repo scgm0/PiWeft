@@ -33,12 +33,17 @@ public sealed partial class MainWindow : Window
 
 	/// <summary>设置是窗口级弹窗（与 PiDeck 一致），不占用主区标签。</summary>
 	private SettingsDialog? _settingsDialog;
-	private GitView? _gitView;
-	private FileBrowserView? _filesView;
-	private TerminalDock? _terminalView;
+
+	/// <summary>
+	/// 每个会话各有一个右侧面板（文件 / Git / 终端）：内容跟着会话的工作目录，
+	/// 默认收起；宽度是窗口级偏好，切换会话时沿用。
+	/// </summary>
+	private readonly Dictionary<SessionTab, RightPanel> _sessionPanels = [];
+	/// <summary>用户偏好宽度：只由拖拽分隔条/关窗写入；窗口缩放造成的夹取不覆盖它。</summary>
+	private double _rightPanelWidth = AppTheme.RightPanelWidth;
+	private SplitPanel _panelSplit = null!;
+	private Grid _panelHost = null!;
 	private SessionTab? _lastSessionTab;
-	/// <summary>上一次 UpdateStatus 看到的标签，用来区分“切到终端”和普通的流式状态刷新。</summary>
-	private object? _activeEntry;
 	private CommandPalette? _palette;
 	/// <summary>主题目录监视器：主题文件变化时即时换肤（PI-10）。</summary>
 	private ThemeWatcher? _themeWatcher;
@@ -219,15 +224,19 @@ public sealed partial class MainWindow : Window
 				break;
 
 			case ShortcutActions.Git:
-				OpenGitTab();
+				ShowGitPanel();
 				break;
 
 			case ShortcutActions.Files:
-				OpenFilesTab();
+				ShowFilesPanel();
 				break;
 
 			case ShortcutActions.Terminal:
-				OpenTerminalTab();
+				ShowTerminalPanel();
+				break;
+
+			case ShortcutActions.RightPanel:
+				ToggleRightPanel();
 				break;
 
 			case ShortcutActions.ToggleTheme:
@@ -258,7 +267,6 @@ public sealed partial class MainWindow : Window
 	/// </summary>
 	private void BuildUi()
 	{
-
 		_banner = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 		_status = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 
@@ -345,7 +353,7 @@ public sealed partial class MainWindow : Window
 			_nameBox,
 			_banner);
 
-		var git = AppIcons.Button("git-branch", Strings.Git, OpenGitTab, size: AppIcons.ToolbarSize);
+		var git = AppIcons.Button("git-branch", Strings.Git, ShowGitPanel, size: AppIcons.ToolbarSize);
 		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
 		var theme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
 		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsDialog, size: AppIcons.ToolbarSize);
@@ -425,7 +433,7 @@ public sealed partial class MainWindow : Window
 		var main = new Grid();
 		main.Children(_tabControl);
 
-		// 辅助页（设置/Git/文件/终端/用量）左上角的返回工作区入口。
+		// 辅助页（用量统计）左上角的返回工作区入口。
 		_backButton = AppIcons.Button("arrow-left", Strings.BackToWorkspace, BackToWorkspace, size: AppIcons.ToolbarSize)
 			.HorizontalAlignment(HorizontalAlignment.Left)
 			.VerticalAlignment(VerticalAlignment.Top)
@@ -440,23 +448,42 @@ public sealed partial class MainWindow : Window
 		main.Children(_welcome);
 		main.Children(_backButton);
 
+		// ------------------------------------------------------------ 右侧功能面板
+		// 面板属于会话：每个标签在 AttachTab 里挂一个 RightPanel 进这个宿主。
+		// 主区与面板之间用默认分隔条（与左侧同一套 SplitPanel）：主区星号、面板定宽，
+		// 窗口缩放后重新钉回用户宽度，拖拽时只在鼠标按下的帧里记录实际宽度。
+		var preference = DesktopPreference.Load();
+		_rightPanelWidth = preference.RightPanelWidth;
+		_panelHost = new Grid { ClipToBounds = true }.IsVisible(false);
+
+
 		// ------------------------------------------------------------ 窗框
-		// PiDeck 式连续窗框：左段与侧栏同色，右段与主区同色；
-		// 页签条、新建入口、命令/面板入口与窗口按钮都在标题栏里，内容从标题栏下方开始。
+		// PiDeck 式连续窗框：左段与侧栏同色；主区与右侧面板共用顶部一行窗框，
+		// 面板列从窗口顶部一直铺到底，页签条与主标题栏同高（40），不再是标题栏下方的一行。
+		// 窗口按钮先建好：标题栏与面板页签条都要按它的宽度让位（浮层在窗框模板里）。
+		_windowActionsOverlay = BuildWindowActionsOverlay();
+
 		var sidebarColumn = _sidebarColumn = new DockPanel().LastChildFill()
 			.Children(BuildSidebarTitleBar().DockTop(), sidebar);
 		var mainColumn = new DockPanel().LastChildFill()
 			.Children(BuildMainTitleBar().DockTop(), main);
 
+		_panelSplit = new SplitPanel().Horizontal().SplitterThickness(4)
+			.MinFirst(AppTheme.MinChatWidth)
+			.MinSecond(AppTheme.RightPanelMinWidth)
+			.MaxSecond(AppTheme.RightPanelMaxWidth)
+			.FirstLength(GridLength.Stars(1))
+			.SecondLength(GridLength.Pixels(_rightPanelWidth))
+			.First(mainColumn).Second(_panelHost);
+
 		// 侧栏与主区之间可以拖拽调宽。
-		var preference = DesktopPreference.Load();
 		_sidebarPreferred = !preference.SidebarCollapsed;
 		_sidebarColumn.IsVisible(_sidebarPreferred);
 		UpdateSidebarChrome();
 		_workspace = new SplitPanel().Horizontal().SplitterThickness(4)
 			.MinFirst(200).MinSecond(520)
 			.FirstLength(GridLength.Pixels(preference.SidebarWidth))
-			.SecondLength(GridLength.Stars(1)).First(sidebarColumn).Second(mainColumn);
+			.SecondLength(GridLength.Stars(1)).First(sidebarColumn).Second(_panelSplit);
 		// 窗框由 Window.Template 拥有（MewUI 文档的 custom chrome 模式）：Content 只放工作区，
 		// 模板通过 ContentPresenter 投影它；重建窗框不会替换会话与输入控件。
 		Content = _workspace;
@@ -527,9 +554,10 @@ public sealed partial class MainWindow : Window
 		{
 			_usageStatsView?.Close();
 			_themeWatcher?.Dispose();
-			// 伪终端要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
-			_terminalView?.Dispose();
+			// 每个会话面板里的伪终端都要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
+			foreach (var panel in _sessionPanels.Values) panel.Dispose();
 			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
+			CapturePanelWidth();
 			SaveWindowState();
 		});
 		this.OnClosing(args =>
@@ -586,7 +614,7 @@ public sealed partial class MainWindow : Window
 			// 因此把「打开某个面板」做成启动参数，便于无人值守截图检查。
 			if (string.Equals(smokeTab, "git", StringComparison.OrdinalIgnoreCase))
 			{
-				OpenGitTab();
+				ShowGitPanel();
 			}
 			else
 			{
@@ -851,6 +879,14 @@ public sealed partial class MainWindow : Window
 			_tabControl.RemoveTabAt(index);
 		}
 
+		// 关掉这个会话自己的面板：从宿主摘下并释放它可能启动的伪终端。
+		if (_sessionPanels.Remove(tab, out var panel))
+		{
+			panel.View.IsVisible(false);
+			_panelHost.Remove(panel.View);
+			panel.Dispose();
+		}
+
 		await tab.CloseAsync();
 		UpdateStatus();
 	}
@@ -931,6 +967,14 @@ public sealed partial class MainWindow : Window
 		_tabEntries.Add(tab);
 		AddTab(header: null!, content: tab.View, entry: tab);
 
+		// 这个会话自己的右侧面板：文件 / Git / 终端都以它的工作目录为基准，默认收起。
+		// 面板视图挂在共享宿主里，切换会话只切可见性，终端等状态不会丢。
+		var panel = new RightPanel(() => session.Cwd);
+		panel.SetHeaderRightInset(_panelHeaderRightInset);
+		_sessionPanels[tab] = panel;
+		_panelHost.Children(panel.View);
+		panel.View.IsVisible(false);
+
 		return tab;
 	}
 
@@ -980,20 +1024,7 @@ public sealed partial class MainWindow : Window
 			_tabControl.RemoveTabAt(index);
 		}
 
-		if (ReferenceEquals(entry, _gitView))
-		{
-			_gitView = null;
-		}
-		else if (ReferenceEquals(entry, _filesView))
-		{
-			_filesView = null;
-		}
-		else if (ReferenceEquals(entry, _terminalView))
-		{
-			_terminalView?.Dispose();
-			_terminalView = null;
-		}
-		else if (ReferenceEquals(entry, _usageStatsView))
+		if (ReferenceEquals(entry, _usageStatsView))
 		{
 			_usageStatsView?.Close();
 			_usageStatsView = null;
@@ -1006,13 +1037,12 @@ public sealed partial class MainWindow : Window
 	{
 		var index = _tabControl.SelectedIndex;
 		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
-		var entryChanged = !ReferenceEquals(_activeEntry, entry);
-		_activeEntry = entry;
 		if (_lastSessionTab is { } previous && !ReferenceEquals(entry, previous)) previous.HideTransientPanels();
 
 		_welcome.IsVisible(entry is null);
 		_tabControl.IsVisible(entry is not null);
 		ApplySidebarLayout();
+		SyncPanelLayout();
 		SyncTitleBarTabs();
 
 		switch (entry)
@@ -1022,22 +1052,7 @@ public sealed partial class MainWindow : Window
 				UpdateProjectCaption();
 				return;
 
-			case GitView git:
-				// Git 状态同样是现取现用。
-				git.Refresh();
-				_status.Text(Strings.Git);
-				return;
-
-			case FileBrowserView:
 			case UsageStatsView:
-				return;
-
-			case TerminalDock terminal:
-				if (entryChanged)
-				{
-					ScheduleTerminalFocus(terminal);
-				}
-
 				return;
 
 			case SessionTab active:
@@ -1077,10 +1092,16 @@ public sealed partial class MainWindow : Window
 					CurrentTab()?.ShowModelPicker();
 					break;
 				case "git":
-					OpenGitTab();
+					ShowGitPanel();
 					break;
 				case "terminal":
-					OpenTerminalTab();
+					ShowTerminalPanel();
+					break;
+				case "files":
+					ShowFilesPanel();
+					break;
+				case "panel":
+					ToggleRightPanel();
 					break;
 				case "config":
 					OpenSettingsDialog();
@@ -1256,9 +1277,7 @@ public sealed partial class MainWindow : Window
 
 			_settingsView?.ApplyTheme();
 			_settingsDialog?.ApplyTheme();
-			_terminalView?.ApplyTheme();
-			_gitView?.ApplyTheme();
-			_filesView?.ApplyTheme();
+			foreach (var panel in _sessionPanels.Values) panel.ApplyTheme();
 			_usageStatsView?.ApplyTheme();
 			AppStyles.ApplyTextColors(_sessionSearch.View);
 		}
@@ -1294,9 +1313,7 @@ public sealed partial class MainWindow : Window
 
 			_settingsView?.ApplyTheme();
 			_settingsDialog?.ApplyTheme();
-			_terminalView?.ApplyTheme();
-			_gitView?.ApplyTheme();
-			_filesView?.ApplyTheme();
+			foreach (var panel in _sessionPanels.Values) panel.ApplyTheme();
 			_usageStatsView?.ApplyTheme();
 			AppStyles.ApplyTextColors(_sessionSearch.View);
 		}
@@ -1317,6 +1334,7 @@ public sealed partial class MainWindow : Window
 			{
 				SidebarCollapsed = !_sidebarPreferred,
 				SidebarWidth = _workspace.FirstLength.IsAbsolute ? _workspace.FirstLength.Value : AppTheme.SidebarWidth,
+				RightPanelWidth = _rightPanelWidth,
 			};
 			preference.Save();
 		}
@@ -1350,7 +1368,107 @@ public sealed partial class MainWindow : Window
 		SaveWindowState();
 	}
 
-	/// <summary>按偏好与当前标签类型套用侧栏可见性：Git/文件/终端等辅助页不需要会话侧栏。</summary>
+	// ------------------------------------------------------- 右侧功能面板
+
+	/// <summary>标题栏的 panel 键 / Ctrl+J：收起时展开，展开时收起；面板属于当前会话。</summary>
+	private void ToggleRightPanel() => SetRightPanel(_panelHost?.IsVisible != true);
+
+	/// <summary>展开或收起当前会话的右侧面板；指定分段时顺带切过去。</summary>
+	private void SetRightPanel(bool open, RightPanelSection? section = null)
+	{
+		if (CurrentTab() is not { } tab || !_sessionPanels.TryGetValue(tab, out var panel))
+		{
+			return;
+		}
+
+		if (open)
+		{
+			// 首次展开时才创建视图：默认收起，所以不会在每个会话里都拉起伪终端。
+			panel.Show(section ?? panel.Section);
+		}
+		else
+		{
+			// 收起前把当前宽度记下来，下次展开沿用；之后交给 SplitPanel 默认行为。
+			CapturePanelWidth();
+			panel.Close();
+			// 收起键会随面板一起消失，焦点交还主区的输入框。
+			FocusActiveEntry();
+		}
+
+		SyncPanelLayout();
+		SaveWindowState();
+	}
+
+	private void ShowGitPanel() => SetRightPanel(open: true, RightPanelSection.Git);
+
+	private void ShowFilesPanel() => SetRightPanel(open: true, RightPanelSection.Files);
+
+	private void ShowTerminalPanel() => SetRightPanel(open: true, RightPanelSection.Terminal);
+
+	/// <summary>
+	/// 当前会话的面板决定宿主是否出现：切换会话只切可见性，各会话的分段与终端状态都保留。
+	/// </summary>
+	private void SyncPanelLayout()
+	{
+		if (_panelHost is null || _panelSplit is null)
+		{
+			return;
+		}
+
+		var active = CurrentTab();
+		var activePanel = active is not null && _sessionPanels.TryGetValue(active, out var found) ? found : null;
+		var open = activePanel?.IsOpen == true;
+
+		foreach (var (tab, panel) in _sessionPanels)
+		{
+			panel.View.IsVisible(open && ReferenceEquals(tab, active));
+		}
+
+		if (_panelHost.IsVisible != open)
+		{
+			_panelHost.IsVisible(open);
+			if (open)
+			{
+				ReapplyPanelWidth();
+			}
+
+			// 面板开合会改变主标题栏/面板页签条给窗口按钮让位的宽度。
+			UpdateChrome();
+		}
+		else
+		{
+			UpdateRightPanelButton();
+		}
+	}
+
+	/// <summary>展开时用上次记录的宽度初始化分栏；之后完全交给 SplitPanel 的默认布局。</summary>
+	private void ReapplyPanelWidth()
+	{
+		if (!_panelHost.IsVisible)
+		{
+			return;
+		}
+
+		_panelSplit.FirstLength = GridLength.Stars(1);
+		_panelSplit.SecondLength = GridLength.Pixels(_rightPanelWidth);
+	}
+
+	/// <summary>收起面板/关窗时把当前宽度记成偏好，供下次展开使用。</summary>
+	private void CapturePanelWidth()
+	{
+		if (!_panelHost.IsVisible)
+		{
+			return;
+		}
+
+		var width = _panelHost.Bounds.Width;
+		if (width >= AppTheme.RightPanelMinWidth - 0.5)
+		{
+			_rightPanelWidth = Math.Clamp(width, AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth);
+		}
+	}
+
+	/// <summary>辅助页（用量统计）不需要会话侧栏；右侧面板不占用侧栏。</summary>
 	private void ApplySidebarLayout()
 	{
 		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
@@ -1462,25 +1580,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>打开（或选中）Git 状态标签。</summary>
-	private void OpenGitTab()
-	{
-		var index = _gitView is null ? -1 : _tabEntries.IndexOf(_gitView);
-		if (_gitView is not null && index >= 0)
-		{
-			_gitView.Refresh();
-			_tabControl.SelectedIndex = index;
-			return;
-		}
-
-		_gitView = new GitView(() => CurrentSession()?.Cwd ?? _cwd);
-		_tabEntries.Add(_gitView);
-		AddTab(header: null!, _gitView.View, _gitView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
-	}
-
 	/// <summary>打开（或选中）用量统计标签；每次切回都会重新扫描。</summary>
 	private void OpenUsageStatsTab()
 	{
@@ -1502,77 +1601,16 @@ public sealed partial class MainWindow : Window
 		UpdateStatus();
 	}
 
-	/// <summary>打开（或选中）文件浏览器标签。</summary>
-	private void OpenFilesTab()
-	{
-		var index = _filesView is null ? -1 : _tabEntries.IndexOf(_filesView);
-		if (_filesView is not null && index >= 0)
-		{
-			_filesView.Refresh();
-			_tabControl.SelectedIndex = index;
-			return;
-		}
-
-		_filesView = new FileBrowserView(() => CurrentSession()?.Cwd ?? _cwd);
-		_tabEntries.Add(_filesView);
-		AddTab(header: null!, _filesView.View, _filesView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
-	}
-
-	/// <summary>打开（或选中）命令 Dock 标签。</summary>
-	private void OpenTerminalTab()
-	{
-		var index = _terminalView is null ? -1 : _tabEntries.IndexOf(_terminalView);
-		if (_terminalView is not null && index >= 0)
-		{
-			_tabControl.SelectedIndex = index;
-			ScheduleTerminalFocus(_terminalView);
-			return;
-		}
-
-		_terminalView = new TerminalDock(() => CurrentSession()?.Cwd ?? _cwd);
-		_tabEntries.Add(_terminalView);
-		AddTab(header: null!, _terminalView.View, _terminalView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
-		ScheduleTerminalFocus(_terminalView);
-	}
-
-	/// <summary>浮层关闭后把焦点还给它覆盖的当前视图：会话给输入框，终端给终端输入层。</summary>
+	/// <summary>浮层关闭后把焦点还给当前视图：会话给输入框，没有会话时给搜索入口。</summary>
 	private void FocusActiveEntry()
 	{
-		var index = _tabControl.SelectedIndex;
-		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
-		switch (entry)
+		if (CurrentTab() is { } tab)
 		{
-			case TerminalDock terminal:
-				ScheduleTerminalFocus(terminal);
-				break;
-			case SessionTab tab:
-				tab.FocusComposer();
-				break;
-			default:
-				_searchButton.Focus();
-				break;
-		}
-	}
-
-	/// <summary>
-	/// 终端刚挂到标签树时输入层未必已经可聚焦；排到下一次 UI 调度，等布局完成后再交焦点。
-	/// </summary>
-	private static void ScheduleTerminalFocus(TerminalDock terminal)
-	{
-		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
-		if (dispatcher is null)
-		{
-			terminal.FocusTerminal();
+			tab.FocusComposer();
 			return;
 		}
 
-		dispatcher.BeginInvoke(terminal.FocusTerminal);
+		_searchButton.Focus();
 	}
 
 	/// <summary>打开设置弹窗（与 PiDeck 一样是模态浮层，不是主区标签）。</summary>
@@ -1641,9 +1679,10 @@ public sealed partial class MainWindow : Window
 			new(Strings.OpenProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
 			new(Strings.SelectModel, "Ctrl+M", () => CurrentTab()?.ShowModelPicker()),
 			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsDialog),
-			new(Strings.Git, Strings.ShortcutGit, OpenGitTab),
-			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, OpenFilesTab),
-			new(Strings.Terminal, Strings.ShortcutTerminal, OpenTerminalTab),
+			new(Strings.Git, Strings.ShortcutGit, ShowGitPanel),
+			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, ShowFilesPanel),
+			new(Strings.Terminal, Strings.ShortcutTerminal, ShowTerminalPanel),
+			new(Strings.RightPanel, Strings.ShortcutRightPanel, ToggleRightPanel),
 			new(Strings.UsageStatsTitle, string.Empty, OpenUsageStatsTab),
 			new(Strings.CopySessionPath, Strings.ShortcutCopyPath, () => CopySessionInfo(path: true)),
 			new(Strings.CopySessionId, Strings.ShortcutCopyId, () => CopySessionInfo(path: false)),
@@ -1820,22 +1859,11 @@ public sealed partial class MainWindow : Window
 			switch (entry)
 			{
 				case SessionTab tab:
-				{
-					var captured = tab;
 					AddTab(header: null!, tab.View, tab);
 					break;
-				}
 
-				case GitView git:
-					AddTab(header: null!, git.View, git);
-					break;
-
-				case FileBrowserView files:
-					AddTab(header: null!, files.View, files);
-					break;
-
-				case TerminalDock terminal:
-					AddTab(header: null!, terminal.View, terminal);
+				case UsageStatsView stats:
+					AddTab(header: null!, stats.View, stats);
 					break;
 			}
 		}

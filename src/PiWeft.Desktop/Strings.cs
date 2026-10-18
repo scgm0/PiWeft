@@ -239,6 +239,7 @@ public static partial class Strings
 	public const string ShortcutSearchSessions = "Ctrl+K";
 	public const string ShortcutSettings = "环境、技能与 MCP 状态";
 	public const string ShortcutGit = "当前分支与工作区改动";
+	public const string ShortcutRightPanel = "打开或收起当前会话的右侧边栏";
 	public const string ShortcutTheme = "立即在深色与浅色之间切换";
 	public const string ShortcutRefresh = "重新读取磁盘上的会话";
 	public const string ShortcutCloseTab = "Ctrl+W";
@@ -409,7 +410,9 @@ public static partial class Strings
 
 	public const string FileBrowserNoFile = "请先在左侧选择一个文件。";
 
-	public const string ShortcutFilesPanel = "打开文件浏览器";
+	public const string ShortcutFilesPanel = "在右侧面板打开文件浏览器";
+
+	public const string FileBrowserBack = "返回文件列表";
 
 	public static string FileBrowserOpened(string path) => $"已打开 {path}";
 
@@ -417,8 +420,6 @@ public static partial class Strings
 
 	/// <summary>命令 Dock（MiniPty 伪终端）。</summary>
 	public const string Terminal = "终端";
-
-	public const string TerminalRunning = "交互式 shell（伪终端）。拖选即复制到主选区、中键粘贴；Ctrl+C/V 复制/粘贴（macOS 用 Cmd），右键更多。";
 
 	public const string TerminalRestart = "重启 shell";
 

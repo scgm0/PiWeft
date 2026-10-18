@@ -50,6 +50,12 @@ public sealed record DesktopPreference
 	public bool SidebarProjects { get; init; }
 
 	/// <summary>
+	/// 右侧功能面板的拖拽宽度（DIP）。面板本身属于会话、默认收起，因此折叠状态与分段
+	/// 不落盘；只有宽度是窗口级、跨会话共享的偏好。
+	/// </summary>
+	public double RightPanelWidth { get; init; } = AppTheme.RightPanelWidth;
+
+	/// <summary>
 	/// 「对话」分段的聊天目录；空表示使用默认的 <see cref="DefaultChatWorkspace"/>。
 	/// 与 PiDeck 的内置 Chat 项目一样，这块工作区不属于任何项目，适合日常对话。
 	/// </summary>
@@ -121,6 +127,8 @@ public sealed record DesktopPreference
 				SidebarCollapsed = root?["sidebarCollapsed"] is JsonValue collapsed && collapsed.TryGetValue<bool>(out var hidden) && hidden,
 				SidebarWidth = Math.Clamp(Number(root, "sidebarWidth", positive: true) ?? AppTheme.SidebarWidth, 200, 480),
 				SidebarProjects = root?["sidebarProjects"] is JsonValue tab && tab.TryGetValue<bool>(out var projects) && projects,
+				RightPanelWidth = Math.Clamp(Number(root, "rightPanelWidth", positive: true) ?? AppTheme.RightPanelWidth,
+					AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth),
 				ChatWorkspace = root?["chatWorkspace"] is JsonValue chat && chat.TryGetValue<string>(out var chatWorkspace) ? chatWorkspace : string.Empty,
 				ChatFontSize = Math.Clamp(Number(root, "chatFontSize", positive: true) ?? 16, 14, 22),
 				ReadingWidth = Math.Clamp(Number(root, "readingWidth", positive: true) ?? 880, 760, 1360),
@@ -169,6 +177,12 @@ public sealed record DesktopPreference
 		root["sidebarCollapsed"] = SidebarCollapsed;
 		root["sidebarProjects"] = SidebarProjects;
 		root["sidebarWidth"] = double.IsFinite(SidebarWidth) ? Math.Clamp(SidebarWidth, 200, 480) : AppTheme.SidebarWidth;
+		root["rightPanelWidth"] = double.IsFinite(RightPanelWidth)
+			? Math.Clamp(RightPanelWidth, AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth)
+			: AppTheme.RightPanelWidth;
+		// 面板默认收起且按会话各自打开：旧的折叠状态与分段不再写盘。
+		root.Remove("rightPanelCollapsed");
+		root.Remove("rightPanelTab");
 		// 聊天目录只有用户改过才落盘，默认目录跟随 agent 目录走，不写死进文件。
 		if (string.IsNullOrWhiteSpace(ChatWorkspace))
 		{

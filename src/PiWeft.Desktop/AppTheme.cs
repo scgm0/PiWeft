@@ -139,6 +139,17 @@ public static class AppTheme
 	public const double SidebarWidth = 280;
 	public const double ComposerHeight = 64;
 
+	/// <summary>
+	/// 右侧功能面板的默认宽度与可拖拽范围：面板页签与窗口按钮共用标题栏那一行，
+	/// 所以下限要留出「三段页签 + 窗口按钮」的宽度；对话区保底见下方。
+	/// </summary>
+	public const double RightPanelWidth = 420;
+	public const double RightPanelMinWidth = 360;
+	public const double RightPanelMaxWidth = 720;
+
+	/// <summary>拖拽右侧面板时主区必须保留的最小宽度（PiDeck 的 chat 下限是 360）。</summary>
+	public const double MinChatWidth = 400;
+
 	/// <summary>自定义窗框标题栏的高度（DIP）。Windows/macOS 由系统原生按钮，X11 由应用绘制。</summary>
 	public const double TitleBarHeight = 40;
 

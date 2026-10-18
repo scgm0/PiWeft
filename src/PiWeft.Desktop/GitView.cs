@@ -26,19 +26,20 @@ public sealed class GitView
 		_content.Spacing(AppTheme.Space2);
 
 		var refresh = AppIcons.Button("refresh-cw", Strings.RefreshGit, Refresh);
+		_summary.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap)
+			.VerticalAlignment(VerticalAlignment.Center);
 
+		// 面板页签已经写着「Git」，这里不再重复大标题：第一行直接是分支与改动摘要 + 刷新。
+		// 底色由右侧面板统一给（与左侧栏同色）。
 		View = new Border()
-			.StyleName(AppStyles.Window)
 			.Child(new ScrollViewer().SmoothScrolling()
 				.Content(new StackPanel()
 					.Spacing(AppTheme.Space3)
-					.Padding(new Thickness(AppTheme.Space6))
+					.Padding(new Thickness(AppTheme.Space3))
 					.Children(
-						new TextBlock().Text(Strings.Git).FontSize(18).FontWeight(FontWeight.Bold).PrimaryText(),
-						new StackPanel()
-							.Orientation(Orientation.Horizontal)
-							.Spacing(AppTheme.Space2)
-							.Children(refresh, _summary.FontSize(AppTheme.FontSizeCaption).SubtleText()),
+						new DockPanel()
+							.LastChildFill()
+							.Children(refresh.DockRight(), _summary),
 						_notice.FontSize(AppTheme.FontSizeCaption).AccentText().IsVisible(false),
 						_content))
 				.AutoVerticalScroll()
@@ -107,7 +108,7 @@ public sealed class GitView
 			branches.Add(status.Branch);
 		}
 
-		var branchBox = new ComboBox().ItemsSource(ItemsView.Create(branches)).MinWidth(180);
+		var branchBox = new ComboBox().ItemsSource(ItemsView.Create(branches)).MinWidth(120);
 		branchBox.SelectedIndex = Math.Max(0, branches.IndexOf(status.Branch));
 		branchBox.SelectionChanged += _ =>
 		{
@@ -120,7 +121,7 @@ public sealed class GitView
 			ApplyResult(GitWriter.SwitchBranch(_cwd(), branches[index]));
 		};
 
-		var newBranch = new TextBox().Text(_branchDraft).Placeholder(Strings.GitBranchPlaceholder).MinWidth(140);
+		var newBranch = new TextBox().Text(_branchDraft).Placeholder(Strings.GitBranchPlaceholder);
 		newBranch.OnTextChanged(value => _branchDraft = value);
 		var create = new Button().Content(Label(Strings.GitNewBranch)).OnClick(() =>
 		{
@@ -133,10 +134,15 @@ public sealed class GitView
 			ApplyResult(result);
 		});
 
+		// 窄面板里控件竖排：分支名一栏，新建分支一栏。
 		_content.Children(new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(AppTheme.Space2)
-			.Children(Label(Strings.GitBranch), branchBox, newBranch, create));
+			.Spacing(AppTheme.Space1)
+			.Children(
+				Label(Strings.GitBranch),
+				branchBox,
+				new DockPanel()
+					.LastChildFill()
+					.Children(create.DockRight(), newBranch.Margin(new Thickness(0, 0, AppTheme.Space2, 0)))));
 	}
 
 	/// <summary>检查点：创建与恢复。快照写入低层引用，不产生分支或提交。</summary>
@@ -155,10 +161,9 @@ public sealed class GitView
 			Refresh();
 		});
 
-		_content.Children(new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(AppTheme.Space2)
-			.Children(Label(Strings.Checkpoints), create));
+		_content.Children(new DockPanel()
+			.LastChildFill()
+			.Children(create.DockRight(), Label(Strings.Checkpoints)));
 
 		var checkpoints = Checkpoints.List(cwd);
 		if (checkpoints.Count == 0)
@@ -189,7 +194,9 @@ public sealed class GitView
 		var message = new TextBox().Text(_commitDraft).Placeholder(Strings.GitCommitPlaceholder);
 		message.OnTextChanged(value => _commitDraft = value);
 
-		var commit = new Button().Primary().Content(Label(Strings.GitCommit)).OnClick(() =>
+		// 主按钮是反色底：标签必须用强调色上的文字色，普通正文色会白底白字看不见。
+		var commit = new Button().Primary().Content(
+			new TextBlock().Text(Strings.GitCommit).FontSize(AppTheme.FontSizeCaption).OnAccentText()).OnClick(() =>
 		{
 			var result = GitWriter.Commit(_cwd(), message.Text?.Trim() ?? string.Empty);
 			if (result.Ok)

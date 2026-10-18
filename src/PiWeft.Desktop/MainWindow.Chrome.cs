@@ -49,7 +49,7 @@ public sealed partial class MainWindow
 	/// <summary>标题栏左段：品牌、侧栏折叠键、当前项目铭牌。</summary>
 	private Border _sidebarTitleBar = null!;
 
-	/// <summary>标题栏右段：页签条、新建入口、命令入口与窗口按钮。</summary>
+	/// <summary>标题栏中段：页签条、新建入口、命令入口与右侧面板唤醒键。</summary>
 	private Border _mainTitleBar = null!;
 
 	private DockPanel _sidebarColumn = null!;
@@ -59,6 +59,24 @@ public sealed partial class MainWindow
 	private Button _showSidebarButton = null!;
 
 	private Button _hideSidebarButton = null!;
+
+	/// <summary>标题栏右段的 panel 键：唤醒 / 收起当前会话的右侧面板。</summary>
+	private Button _rightPanelButton = null!;
+
+	/// <summary>panel 键的图标：打开态换成主文字色，和常驻浮起一起表示「此刻开着」。</summary>
+	private Image _rightPanelGlyph = null!;
+
+	/// <summary>窗口按钮浮层：不属于某一列，始终贴在窗口右上角（面板展开时盖在面板页签条上）。</summary>
+	private UIElement _windowActionsOverlay = null!;
+
+	/// <summary>标题栏右段的实际内边距；面板收起时给右上角的窗口按钮浮层让位。</summary>
+	private double _titleBarRightPadding;
+
+	/// <summary>面板页签条右侧预留宽度：窗口按钮浮层盖在面板列右上角。</summary>
+	private double _panelHeaderRightInset = AppTheme.Space1;
+
+	/// <summary>唤醒键上一次的开关态：只在变化时重设样式与图标色，避免布局回调里反复失效。</summary>
+	private bool? _rightPanelButtonOpen;
 
 	/// <summary>命令入口与窗口按钮之间的发丝线；系统自带窗口按钮时隐藏。</summary>
 	private Border _chromeActionsSeparator = null!;
@@ -121,12 +139,15 @@ public sealed partial class MainWindow
 	}
 
 	/// <summary>
-	/// 窗口模板只负责外框与内容槽；标题栏作为侧栏/主区两列的一部分由 BuildUi 组装。
+	/// 窗口模板只负责外框、内容槽与右上角的窗口按钮浮层；标题栏属于侧栏/主区/面板各列，
+	/// 由 BuildUi 组装。
 	/// </summary>
 	private UIElement BuildChromeShell()
 	{
-		var shell = new DockPanel().LastChildFill()
-			.Children(new ContentPresenter());
+		// 窗口按钮浮在内容之上：右侧面板展开时它们落在面板页签条的右端，
+		// 收起时落在主标题栏右端，与 PiDeck 一样属于窗框而不是某一列。
+		var shell = new Grid()
+			.Children(new ContentPresenter(), _windowActionsOverlay);
 
 		UIElement root;
 		if (UsesNativeWindowFrame)
@@ -213,7 +234,7 @@ public sealed partial class MainWindow
 		return _sidebarTitleBar;
 	}
 
-	/// <summary>标题栏右段：页签条 + 新建 + 命令入口 + 窗口按钮。</summary>
+	/// <summary>标题栏中段：页签条 + 新建 + 命令入口 + 右侧面板唤醒键（窗口按钮在浮层里）。</summary>
 	private UIElement BuildMainTitleBar()
 	{
 		// 侧栏收起后，panel 键回到主标题栏最左侧（PiDeck 的位置），右段不再重复放一个。
@@ -240,18 +261,79 @@ public sealed partial class MainWindow
 		// 页签与按钮之外的空白仍属于标题栏拖动区；页签过多时裁切，避免压到窗口按钮。
 		var tabArea = new Grid { ClipToBounds = true }.Children(tabsRow);
 
-		// 右段工具组只保留命令入口；侧栏开关在左段品牌旁 / 收起后的最左侧。
+		// 右段工具组：唤醒键 + 命令入口。窗口按钮在窗框顶层（BuildWindowActionsOverlay），
+		// 面板展开时它们落在面板页签右端，收起时落在主标题栏右端。
+		_rightPanelButton = BuildRightPanelButton();
 		var palette = AppIcons.Button("ellipsis", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.Size);
 		palette.Width(32).Height(28).Padding(Thickness.Zero)
 			.StyleName(AppStyles.TitleBarIconButton)
 			.VerticalAlignment(VerticalAlignment.Center);
 
+		// 唤醒键放在最右：面板展开时主标题栏止于面板左缘，它就贴在分界上。
 		var utilities = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Center)
-			.Children(palette);
+			.Children(palette, _rightPanelButton);
 
+		var titleRow = new Grid()
+			.Columns("auto,*,auto")
+			.Children(
+				_showSidebarButton.Column(0),
+				tabArea.Column(1),
+				utilities.Column(2));
+
+		_mainTitleBar = new Border()
+			.StyleName(AppStyles.TitleBarMain)
+			.Height(AppTheme.TitleBarHeight)
+			.Padding(new Thickness(AppTheme.Space2, 0, 0, 0))
+			.Child(titleRow);
+
+		AttachTitleBarDrag(_mainTitleBar);
+		SyncTitleBarTabs(force: true);
+		return _mainTitleBar;
+	}
+
+	/// <summary>标题栏里的小图标按钮：28×28 的悬停块，不撑满整行。</summary>
+	private Button BuildChromeIconButton(string icon, string tip, Action onClick)
+	{
+		var button = AppIcons.Button(icon, tip, onClick, size: AppIcons.Size);
+		button.Width(28).Height(28).Padding(Thickness.Zero)
+			.StyleName(AppStyles.TitleBarIconButton)
+			.VerticalAlignment(VerticalAlignment.Center);
+		return button;
+	}
+
+	/// <summary>
+	/// 右侧面板的唤醒键：图标自己持有，打开态换主文字色 + 常驻浮起，
+	/// 提示文字随开关变成「打开 / 关闭右侧边栏」并带上当前快捷键。
+	/// </summary>
+	private Button BuildRightPanelButton()
+	{
+		_rightPanelGlyph = new Image()
+			.Source(AppIcons.Get("panel-right", AppTheme.TextMuted))
+			.Width(AppIcons.Size)
+			.Height(AppIcons.Size)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.VerticalAlignment(VerticalAlignment.Center);
+
+		return new Button()
+			.Content(_rightPanelGlyph)
+			.Width(28)
+			.Height(28)
+			.Padding(Thickness.Zero)
+			.StyleName(AppStyles.TitleBarIconButton)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.OnClick(ToggleRightPanel)
+			.IsVisible(false);
+	}
+
+	/// <summary>
+	/// 窗口按钮浮层：贴在窗口右上角、盖在内容之上。右侧面板展开时它落在面板页签条右端
+	/// （页签右侧预留同样宽度），收起时落在主标题栏右端；位置与面板开关无关，不需要重排。
+	/// </summary>
+	private UIElement BuildWindowActionsOverlay()
+	{
 		_chromeActionsSeparator = new Border()
 			.StyleName(AppStyles.TitleBarSeparator)
 			.Width(1)
@@ -269,35 +351,39 @@ public sealed partial class MainWindow
 			.VerticalAlignment(VerticalAlignment.Stretch)
 			.Children(_minimizeButton, _maximizeButton, _closeButton);
 
-		var actions = new StackPanel()
+		return new StackPanel()
 			.Orientation(Orientation.Horizontal)
-			.VerticalAlignment(VerticalAlignment.Stretch)
-			.Children(utilities, _chromeActionsSeparator, _titleBarButtons);
-
-		_mainTitleBar = new Border()
-			.StyleName(AppStyles.TitleBarMain)
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.VerticalAlignment(VerticalAlignment.Top)
 			.Height(AppTheme.TitleBarHeight)
-			.Padding(new Thickness(AppTheme.Space2, 0, 0, 0))
-			.Child(new Grid()
-				.Columns("auto,*,auto")
-				.Children(
-					_showSidebarButton.Column(0),
-					tabArea.Column(1),
-					actions.Column(2)));
-
-		AttachTitleBarDrag(_mainTitleBar);
-		SyncTitleBarTabs(force: true);
-		return _mainTitleBar;
+			.Children(_chromeActionsSeparator, _titleBarButtons);
 	}
 
-	/// <summary>标题栏里的小图标按钮：28×28 的悬停块，不撑满整行。</summary>
-	private Button BuildChromeIconButton(string icon, string tip, Action onClick)
+	/// <summary>
+	/// 同步唤醒键：没有会话时不占位；展开时呈强调弱底。位置由布局决定 ——
+	/// 它是主标题栏右端的最后一项，面板展开时主标题栏变窄，它自然停在面板左缘。
+	/// </summary>
+	private void UpdateRightPanelButton()
 	{
-		var button = AppIcons.Button(icon, tip, onClick, size: AppIcons.Size);
-		button.Width(28).Height(28).Padding(Thickness.Zero)
-			.StyleName(AppStyles.TitleBarIconButton)
-			.VerticalAlignment(VerticalAlignment.Center);
-		return button;
+		if (_rightPanelButton is null || _rightPanelGlyph is null || _tabControl is null)
+		{
+			return;
+		}
+
+		var open = _panelHost?.IsVisible == true;
+		_rightPanelButton.IsVisible(CurrentTab() is not null);
+
+		if (_rightPanelButtonOpen != open)
+		{
+			_rightPanelButtonOpen = open;
+			_rightPanelButton.StyleName(open ? AppStyles.TitleBarIconButtonActive : AppStyles.TitleBarIconButton);
+			_rightPanelGlyph.Source(AppIcons.Get("panel-right", open ? AppTheme.TextPrimary : AppTheme.TextMuted));
+		}
+
+		var action = open ? Strings.CloseRightPanel : Strings.OpenRightPanel;
+		HoverHints.Set(_rightPanelButton, _shortcuts.Get(ShortcutActions.RightPanel) is { } binding
+			? $"{action} · {binding}"
+			: action);
 	}
 
 	/// <summary>标题栏里的形状按钮（+）：与窗口按钮同一套 Glyph 绘制，跟随前景色。</summary>
@@ -498,9 +584,6 @@ public sealed partial class MainWindow
 	private static string EntryTitle(object entry) => entry switch
 	{
 		SessionTab tab => tab.Title,
-		GitView => Strings.SidebarGit,
-		FileBrowserView => Strings.FileBrowser,
-		TerminalDock => Strings.Terminal,
 		UsageStatsView => Strings.UsageStatsTitle,
 		_ => string.Empty,
 	};
@@ -566,6 +649,16 @@ public sealed partial class MainWindow
 
 		_titleBarButtons.IsVisible(!nativeButtons);
 		_chromeActionsSeparator.IsVisible(!nativeButtons);
+		_minimizeButton.IsVisible(CanMinimize);
+		_maximizeButton.IsVisible(CanMaximize);
+		_closeButton.IsVisible(CanClose);
+
+		// 右上角窗口按钮浮层的宽度：自绘 = 分隔条 + 可见按钮；原生 = 系统 inset（macOS 只留右缘空白）。
+		var buttonCount = (CanMinimize ? 1 : 0) + (CanMaximize ? 1 : 0) + (CanClose ? 1 : 0);
+		var overlayWidth = nativeButtons
+			? inset.Right + AppTheme.Space3
+			: 6 + 1 + 6 + (AppTheme.TitleBarButtonWidth * buttonCount);
+		var panelOpen = _panelHost?.IsVisible == true;
 
 		// macOS 的红绿灯固定在窗口左上角：侧栏可见时由左段让位，收起后由右段让位。
 		_sidebarTitleBar.Padding(new Thickness(
@@ -573,15 +666,22 @@ public sealed partial class MainWindow
 			0,
 			AppTheme.Space2,
 			0));
+
+		// 面板收起时主标题栏铺到窗口右缘，要给浮层让位；展开时止于面板左缘，
+		// 只留 4px 让唤醒键避开分隔条向主区伸出的命中区。
+		_titleBarRightPadding = panelOpen ? AppTheme.Space1 : overlayWidth;
 		_mainTitleBar.Padding(new Thickness(
 			AppTheme.Space2 + (sidebarVisible ? 0 : inset.Left),
 			0,
-			inset.Right + (nativeButtons ? AppTheme.Space3 : 0),
+			_titleBarRightPadding,
 			0));
 
-		_minimizeButton.IsVisible(CanMinimize);
-		_maximizeButton.IsVisible(CanMaximize);
-		_closeButton.IsVisible(CanClose);
+		// 面板页签条右侧同样给浮层让位（浮层盖在面板列右上角）。
+		_panelHeaderRightInset = overlayWidth + AppTheme.Space1;
+		foreach (var panel in _sessionPanels.Values)
+		{
+			panel.SetHeaderRightInset(_panelHeaderRightInset);
+		}
 
 		var maximized = WindowState == WindowState.Maximized;
 		_maximizeGlyph.Kind(maximized ? GlyphKind.WindowRestore : GlyphKind.WindowMaximize);
@@ -589,6 +689,8 @@ public sealed partial class MainWindow
 
 		UpdateTransparentFrame(WindowState == WindowState.Normal);
 		SyncNativeBorderColor();
+
+		UpdateRightPanelButton();
 	}
 
 	/// <summary>
