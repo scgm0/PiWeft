@@ -245,7 +245,7 @@ public static partial class Strings
 	public const string CloseOtherTabs = "关闭其它标签";
 	public const string CloseAllTabs = "关闭全部标签";
 	public const string ShortcutCloseOtherTabs = "只留下当前会话";
-	public const string ShortcutCloseAllTabs = "关闭所有会话标签（设置面板保留）";
+	public const string ShortcutCloseAllTabs = "关闭所有会话标签（设置弹窗不受影响）";
 	public const string ShortcutBranches = "查看当前会话的分支树";
 	public const string ShortcutChat = "回到对话视图";
 	public const string ShortcutSlashCommand = "斜杠命令：填入输入框";

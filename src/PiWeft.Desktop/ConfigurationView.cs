@@ -14,7 +14,6 @@ internal sealed partial class ConfigurationView
 	private readonly TextBlock _path = new();
 	private readonly TextBlock _dirtyLabel = new();
 	private readonly ComboBox _scope = new();
-	private readonly Button _saveButton;
 	private ConfigurationDocument? _document;
 	private JsonObject _root = new();
 	private ConfigFile _file = ConfigFile.Models;
@@ -29,7 +28,6 @@ internal sealed partial class ConfigurationView
 	{
 		_store = new(agentDir, cwd);
 		_saved = saved;
-		_saveButton = AppIcons.PrimaryButton("check", Strings.ConfigSave, SaveDraft);
 		_scope.ItemsSource(ItemsView.Create(new[] { Strings.ConfigGlobal, Strings.ConfigProject })).Width(150).SelectedIndex(0);
 		_scope.SelectionChanged += _ =>
 		{
@@ -43,7 +41,6 @@ internal sealed partial class ConfigurationView
 				new DockPanel().LastChildFill().Children(
 					new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(
 						_scope,
-						_saveButton,
 						AppIcons.Button("refresh-cw", Strings.ConfigReload, () => _ = ReloadAsync()),
 						AppIcons.Button("folder-open", Strings.ConfigOpenFile, OpenFile)).DockRight(),
 					_dirtyLabel.FontSize(AppTheme.FontSizeCaption).AccentText()).Margin(new Thickness(0, 0, 0, 4)),
@@ -56,6 +53,10 @@ internal sealed partial class ConfigurationView
 
 	public UIElement View { get; }
 	public bool IsDirty => _dirty;
+	/// <summary>当前表单是否可提交（源文件模式在「显示源文件」之前不可保存）。</summary>
+	public bool CanSave => _saveForm is not null;
+	/// <summary>脏状态或可保存性变化；设置弹窗据此刷新头部的保存按钮。</summary>
+	public event Action? StateChanged;
 	internal void SaveDraft() => Guard(() => _saveForm?.Invoke());
 	public void Discard() => Load();
 	public void ApplyTheme() => AppStyles.ApplyTextColors((Element)View);
@@ -112,7 +113,6 @@ internal sealed partial class ConfigurationView
 	{
 		_saveForm = null;
 		_body.Clear();
-		_saveButton.IsEnabled(true);
 		if (_source || _document?.Error is not null) { BuildSource(); return; }
 		switch (_file)
 		{
@@ -121,6 +121,7 @@ internal sealed partial class ConfigurationView
 			case ConfigFile.Settings: BuildAgentSettings(); break;
 			case ConfigFile.Mcp: BuildMcp(); break;
 		}
+		StateChanged?.Invoke();
 	}
 
 	private void Save(JsonObject next)
@@ -138,6 +139,7 @@ internal sealed partial class ConfigurationView
 	{
 		_dirty = value;
 		_dirtyLabel.Text(value ? Strings.ConfigDirty : Strings.ConfigReady);
+		StateChanged?.Invoke();
 	}
 
 	private void Guard(Action action)
@@ -183,13 +185,13 @@ internal sealed partial class ConfigurationView
 			BuildSource();
 		});
 		_body.Children(reveal);
-		if (!_revealed) { _saveForm = null; _saveButton.IsEnabled(false); return; }
-		_saveButton.IsEnabled(true);
+		if (!_revealed) { _saveForm = null; StateChanged?.Invoke(); return; }
 		var editor = new MultiLineTextBox().PrimarySelection().StyleName(AppStyles.TextInput).FontFamily(AppTheme.MonoFont)
 			.FontSize(AppTheme.FontSizeCaption).Height(420).Text(_document?.Raw is { Length: > 0 } raw ? raw : "{}")
 			.OnTextChanged(_ => SetDirty(true));
 		_body.Children(editor);
 		_saveForm = () => Save(ConfigurationStore.ParseObject(editor.Text));
+		StateChanged?.Invoke();
 	}
 
 	private TextBox Input(string value = "") => new TextBox().PrimarySelection().Text(value).MinWidth(160).OnTextChanged(_ => SetDirty(true));

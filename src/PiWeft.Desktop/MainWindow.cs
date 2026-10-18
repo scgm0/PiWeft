@@ -24,12 +24,15 @@ public sealed partial class MainWindow : Window
 	private readonly string _cwd;
 	private readonly SessionCatalog _catalog = new();
 	private CliArguments _arguments;
-	/// <summary>与 TabControl 一一对应的标签内容：<see cref="SessionTab"/> 或 <see cref="SettingsView"/>。</summary>
+	/// <summary>与 TabControl 一一对应的标签内容：<see cref="SessionTab"/> 或 Git/文件/终端等辅助页。</summary>
 	private readonly List<object> _tabEntries = [];
 	private McpConnection? _mcp;
 	private IReadOnlyList<AgentTool> _mcpTools = [];
 	/// <summary>标签标题文本，主题/名称变化时只改这一个控件。</summary>
 	private SettingsView? _settingsView;
+
+	/// <summary>设置是窗口级弹窗（与 PiDeck 一致），不占用主区标签。</summary>
+	private SettingsDialog? _settingsDialog;
 	private GitView? _gitView;
 	private FileBrowserView? _filesView;
 	private TerminalDock? _terminalView;
@@ -212,7 +215,7 @@ public sealed partial class MainWindow : Window
 				break;
 
 			case ShortcutActions.Settings:
-				OpenSettingsTab();
+				OpenSettingsDialog();
 				break;
 
 			case ShortcutActions.Git:
@@ -345,7 +348,7 @@ public sealed partial class MainWindow : Window
 		var git = AppIcons.Button("git-branch", Strings.Git, OpenGitTab, size: AppIcons.ToolbarSize);
 		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
 		var theme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
-		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsTab, size: AppIcons.ToolbarSize);
+		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsDialog, size: AppIcons.ToolbarSize);
 
 		// 底部工具行：图标 + 小字标签（命令面板/Git/设置/主题），参照 Codex 桌面端的安静页脚。
 		static StackPanel FooterItem(string label, Button button)
@@ -587,7 +590,7 @@ public sealed partial class MainWindow : Window
 			}
 			else
 			{
-				OpenSettingsTab();
+				OpenSettingsDialog();
 			}
 		}
 
@@ -947,20 +950,10 @@ public sealed partial class MainWindow : Window
 		SyncTitleBarTabs();
 	}
 
-	/// <summary>关闭设置/Git 这类辅助标签。</summary>
+	/// <summary>关闭 Git/文件/终端这类辅助标签。</summary>
 	private void CloseAuxTab(object entry)
 	{
-		if (entry is SettingsView { IsDirty: true } settings)
-		{
-			_ = CloseSettingsTabAsync(settings);
-			return;
-		}
 		CloseAuxTabCore(entry);
-	}
-
-	private async Task CloseSettingsTabAsync(SettingsView settings)
-	{
-		if (await settings.CanCloseAsync()) CloseAuxTabCore(settings);
 	}
 
 	private static async Task ConfirmSettingsCloseAsync(SettingsView settings, ClosingEventArgs args, ClosingDeferral deferral)
@@ -987,11 +980,7 @@ public sealed partial class MainWindow : Window
 			_tabControl.RemoveTabAt(index);
 		}
 
-		if (ReferenceEquals(entry, _settingsView))
-		{
-			_settingsView = null;
-		}
-		else if (ReferenceEquals(entry, _gitView))
+		if (ReferenceEquals(entry, _gitView))
 		{
 			_gitView = null;
 		}
@@ -1031,12 +1020,6 @@ public sealed partial class MainWindow : Window
 			case null:
 				_status.Text(Strings.NoOpenSession);
 				UpdateProjectCaption();
-				return;
-
-			case SettingsView view:
-				// 每次切到设置标签都重新取一次快照，数据是实时的。
-				view.Refresh();
-				_status.Text(Strings.SettingsTitle);
 				return;
 
 			case GitView git:
@@ -1100,16 +1083,16 @@ public sealed partial class MainWindow : Window
 					OpenTerminalTab();
 					break;
 				case "config":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					_settingsView?.ShowConfiguration();
 					break;
 				case "appearance":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					if (_settingsView is { } appearance) _ = appearance.SelectSectionAsync("appearance");
 					break;
 				case "agent":
 				case "mcp":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					_settingsView?.ShowConfiguration();
 					if (_settingsView is { } configuration) _ = configuration.SelectSectionAsync(view);
 					break;
@@ -1117,10 +1100,10 @@ public sealed partial class MainWindow : Window
 					ToggleSidebar();
 					break;
 				case "settings":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					break;
 				case "resources":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					if (_settingsView is { } resourceView) _ = resourceView.SelectSectionAsync("resources");
 					break;
 				case "branch":
@@ -1255,15 +1238,11 @@ public sealed partial class MainWindow : Window
 				return;
 			}
 
-			AppTheme.UseCustomPalette(resolved.Light, resolved.Dark);
+			DesktopTheme.Apply(resolved);
 			if (!Application.IsRunning)
 			{
 				return;
 			}
-
-			ThemeManager.DefaultLightSeed = AppTheme.Seed(resolved.Light ?? AppPalette.Light);
-			ThemeManager.DefaultDarkSeed = AppTheme.Seed(resolved.Dark ?? AppPalette.Dark);
-			Application.Current.SetTheme(resolved.Variant);
 
 			// SetTheme 对相同变体可能不触发 OnThemeChanged；无论事件是否到达都轻量刷新一遍。
 			AppStyles.ApplyTextColors(this);
@@ -1276,6 +1255,7 @@ public sealed partial class MainWindow : Window
 			}
 
 			_settingsView?.ApplyTheme();
+			_settingsDialog?.ApplyTheme();
 			_terminalView?.ApplyTheme();
 			_gitView?.ApplyTheme();
 			_filesView?.ApplyTheme();
@@ -1313,6 +1293,7 @@ public sealed partial class MainWindow : Window
 			}
 
 			_settingsView?.ApplyTheme();
+			_settingsDialog?.ApplyTheme();
 			_terminalView?.ApplyTheme();
 			_gitView?.ApplyTheme();
 			_filesView?.ApplyTheme();
@@ -1369,7 +1350,7 @@ public sealed partial class MainWindow : Window
 		SaveWindowState();
 	}
 
-	/// <summary>按偏好与当前标签类型套用侧栏可见性：设置等辅助页不需要会话侧栏。</summary>
+	/// <summary>按偏好与当前标签类型套用侧栏可见性：Git/文件/终端等辅助页不需要会话侧栏。</summary>
 	private void ApplySidebarLayout()
 	{
 		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
@@ -1420,7 +1401,7 @@ public sealed partial class MainWindow : Window
 
 		if (Application.IsRunning)
 		{
-			Application.Current.SetTheme(preference.Variant);
+			DesktopTheme.Apply(DesktopTheme.Resolve(preference.Theme, _cwd, SessionPaths.GetAgentDir()));
 		}
 		_banner.Text(_pendingNotice);
 		_pendingNotice = null;
@@ -1594,22 +1575,17 @@ public sealed partial class MainWindow : Window
 		dispatcher.BeginInvoke(terminal.FocusTerminal);
 	}
 
-	/// <summary>打开（或选中）设置标签。</summary>
-	private void OpenSettingsTab()
+	/// <summary>打开设置弹窗（与 PiDeck 一样是模态浮层，不是主区标签）。</summary>
+	private void OpenSettingsDialog()
 	{
-		var existing = _tabEntries.IndexOf(_settingsView!);
-		if (_settingsView is not null && existing >= 0)
+		if (_settingsDialog is null)
 		{
-			_tabControl.SelectedIndex = existing;
-			return;
+			_settingsView ??= new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
+			_settingsDialog = new SettingsDialog(_settingsView);
+			_settingsDialog.Closed += FocusActiveEntry;
 		}
 
-		_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
-		_tabEntries.Add(_settingsView);
-		AddTab(header: null!, _settingsView.View, _settingsView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
+		_settingsDialog.Show(this);
 	}
 
 	/// <summary>Reload future-session environments without replacing any running session.</summary>
@@ -1664,7 +1640,7 @@ public sealed partial class MainWindow : Window
 			new(Strings.SessionSearch, Strings.ShortcutSearchSessions, () => _sessionSearch.Toggle(this)),
 			new(Strings.OpenProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
 			new(Strings.SelectModel, "Ctrl+M", () => CurrentTab()?.ShowModelPicker()),
-			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsTab),
+			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsDialog),
 			new(Strings.Git, Strings.ShortcutGit, OpenGitTab),
 			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, OpenFilesTab),
 			new(Strings.Terminal, Strings.ShortcutTerminal, OpenTerminalTab),
@@ -1849,10 +1825,6 @@ public sealed partial class MainWindow : Window
 					AddTab(header: null!, tab.View, tab);
 					break;
 				}
-
-				case SettingsView settings:
-					AddTab(header: null!, settings.View, settings);
-					break;
 
 				case GitView git:
 					AddTab(header: null!, git.View, git);

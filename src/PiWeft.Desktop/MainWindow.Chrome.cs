@@ -23,16 +23,23 @@ public sealed partial class MainWindow
 	private const double ShadowOffset = 2;
 
 	/// <summary>
-	/// 窗口级浮层的可见区域：跳过标题栏；X11 还要跳过透明阴影边，
+	/// 窗口级浮层的可见区域：跳过标题栏；X11 正常窗口还要跳过透明阴影边，
 	/// 否则浮层的透明捕获层会盖住标题栏底部或压出圆角窗框。
+	/// 最大化/全屏时透明阴影边已不存在，浮层要贴住窗口四边，否则四周会留一圈亮边。
 	/// </summary>
-	internal static Thickness OverlayInset => UsesNativeWindowFrame
-		? new Thickness(0, AppTheme.TitleBarHeight, 0, 0)
-		: new Thickness(
+	internal static Thickness OverlayInsetFor(WindowState state)
+	{
+		if (UsesNativeWindowFrame || state is WindowState.Maximized or WindowState.FullScreen)
+		{
+			return new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
+		}
+
+		return new Thickness(
 			ShadowExtent,
 			(ShadowExtent - ShadowOffset) + AppTheme.TitleBarHeight,
 			ShadowExtent,
 			ShadowExtent + ShadowOffset);
+	}
 
 	/// <summary>标题栏页签文本的最大宽度：长会话名在页签里省略，鼠标悬停看全名。</summary>
 	private const double TitleTabMaxWidth = 180;
@@ -491,7 +498,6 @@ public sealed partial class MainWindow
 	private static string EntryTitle(object entry) => entry switch
 	{
 		SessionTab tab => tab.Title,
-		SettingsView => Strings.Settings,
 		GitView => Strings.SidebarGit,
 		FileBrowserView => Strings.FileBrowser,
 		TerminalDock => Strings.Terminal,

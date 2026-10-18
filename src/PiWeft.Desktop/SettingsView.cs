@@ -38,7 +38,8 @@ public sealed record SettingsSnapshot
 }
 
 /// <summary>
-/// 设置面板：分类展示系统状态，并通过独立的配置视图管理模型、认证、Agent 与 MCP 文件。
+/// 设置弹窗的内容：分类展示系统状态，并通过独立的配置视图管理模型、认证、Agent 与 MCP 文件。
+/// 外壳（压暗背景、卡片、标题栏、保存/关闭）由 <see cref="SettingsDialog"/> 提供。
 /// </summary>
 public sealed class SettingsView
 {
@@ -57,14 +58,15 @@ public sealed class SettingsView
 	/// <summary>重新解析技能/提示词/主题；为空时不显示重载按钮。</summary>
 	private readonly Func<Task>? _reloadResources;
 	private readonly ScrollViewer _systemView;
-	private readonly Button _systemButton;
-	private readonly Button _configButton;
+	private Button? _activeNavigationButton;
 	private bool _configMode;
 	private string _section = "overview";
 
 	/// <summary>当前快捷键表（可改键后刷新）。</summary>
 	private ShortcutMap _shortcuts = new(DesktopPreference.Load().Shortcuts);
 
+	/// <summary>分区或配置脏状态变化；宿主弹窗据此刷新头部的保存按钮。</summary>
+	public event Action? StateChanged;
 
 	public SettingsView(
 		Func<SettingsSnapshot> snapshot,
@@ -77,30 +79,70 @@ public sealed class SettingsView
 		_saved = saved ?? (_ => { });
 		_reconnectMcp = reconnectMcp;
 		_reloadResources = reloadResources;
-		_configuration = new(() => new ConfigurationView(initial.AgentDir, initial.Cwd, _saved));
-		_toast.FontSize(AppTheme.FontSizeMicro).FaintText().IsVisible(false);
-		_content.Spacing(AppTheme.Space3).MaxWidth(960);
+		_configuration = new(() =>
+		{
+			var view = new ConfigurationView(initial.AgentDir, initial.Cwd, _saved);
+			view.StateChanged += () => StateChanged?.Invoke();
+			return view;
+		});
+		_toast.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap)
+			.MaxWidth(420).VerticalAlignment(VerticalAlignment.Center).IsVisible(false);
+		_content.Spacing(AppTheme.Space4).MaxWidth(960);
 		_systemView = new ScrollViewer().SmoothScrolling().Content(_content).AutoVerticalScroll().NoHorizontalScroll();
-		_systemButton = AppIcons.TextButton("settings", Strings.SystemSettings, () => _ = SwitchModeAsync(false));
-		_configButton = AppIcons.TextButton("square-pen", Strings.ConfigTitle, () => _ = SwitchModeAsync(true));
 		var main = _main = new Grid().Children(_systemView);
-		View = new Border().StyleName(AppStyles.Window).Child(new DockPanel().LastChildFill().Children(
-			new StackPanel().Spacing(AppTheme.Space2).Padding(new Thickness(AppTheme.Space4)).Children(
-				Title(Strings.SettingsTitle),
-				new TextBlock().Text(Strings.SettingsHint).FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap),
-				new Border().StyleName(AppStyles.Panel).CornerRadius(AppTheme.RadiusMd)
-					.HorizontalAlignment(HorizontalAlignment.Left).Padding(new Thickness(4))
-					.Child(new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(_systemButton, _configButton)), _toast).DockTop(),
-			new Border().StyleName(AppStyles.Sidebar).Width(184).Padding(new Thickness(AppTheme.Space3))
-				.Child(new ScrollViewer().SmoothScrolling().AutoVerticalScroll().NoHorizontalScroll().Content(_navigation.Spacing(4))).DockLeft(),
-			new Border().StyleName(AppStyles.Window).Padding(new Thickness(AppTheme.Space4)).Child(
-				new DockPanel().LastChildFill().Children(_sectionTitle.FontSize(AppTheme.FontSizeTitle).FontWeight(FontWeight.Bold)
-					.PrimaryText().Margin(new Thickness(0, 0, 0, AppTheme.Space3)).DockTop(), main))));
+
+		// 弹窗左侧导航轨：顶部是「系统设置 / 配置管理」分段，下面是分区列表。
+		_navigation.Spacing(2);
+		var navigationColumn = new Border().StyleName(AppStyles.DialogNav).Width(196)
+			.Padding(new Thickness(10, AppTheme.Space3, 10, AppTheme.Space3))
+			.Child(new ScrollViewer().SmoothScrolling().Content(_navigation)
+				.AutoVerticalScroll().NoHorizontalScroll());
+
+		// 右侧内容区：分区标题固定在顶部，只有卡片列表滚动。
+		var sectionHeader = new DockPanel().LastChildFill()
+			.Margin(new Thickness(0, 0, 0, AppTheme.Space3))
+			.Children(_toast.DockRight(), _sectionTitle.FontSize(AppTheme.FontSizeTitle)
+				.FontWeight(FontWeight.SemiBold).PrimaryText().VerticalAlignment(VerticalAlignment.Center));
+		var contentColumn = new Border().StyleName(AppStyles.DialogContent)
+			.Padding(new Thickness(AppTheme.Space4 + 4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space4))
+			.Child(new DockPanel().LastChildFill().Children(sectionHeader.DockTop(), main));
+		View = new Grid().Columns("auto,*")
+			.Children(navigationColumn.Column(0), contentColumn.Column(1));
 		BuildNavigation();
 		Refresh();
 	}
 
 	public UIElement View { get; }
+
+	public bool IsConfigMode => _configMode;
+
+	/// <summary>当前表单是否可提交；源文件模式在勾选「显示源文件」之前不可保存。</summary>
+	public bool CanSave => _configuration.IsValueCreated && _configuration.Value.CanSave;
+
+	/// <summary>把保存动作交给配置草稿；没有打开配置分区时什么也不做。</summary>
+	public void SaveDraft()
+	{
+		if (_configuration.IsValueCreated) _configuration.Value.SaveDraft();
+	}
+
+	/// <summary>把焦点放到当前分区，保证弹窗打开或切换分区后 Esc / 键盘导航仍然可达。</summary>
+	public void FocusNavigation()
+	{
+		if (_activeNavigationButton is { } active)
+		{
+			active.Focus();
+			return;
+		}
+
+		foreach (var child in _navigation.Children)
+		{
+			if (child is Button button)
+			{
+				button.Focus();
+				return;
+			}
+		}
+	}
 
 	public void ApplyTheme()
 	{
@@ -129,35 +171,109 @@ public sealed class SettingsView
 		_systemView.IsVisible(!config);
 		BuildNavigation();
 		Refresh();
+		StateChanged?.Invoke();
+		FocusNavigation();
 	}
 
 	private void BuildNavigation()
 	{
 		_navigation.Clear();
-		_systemButton.StyleName(_configMode ? AppStyles.GhostButton : AppStyles.SelectedButton);
-		_configButton.StyleName(_configMode ? AppStyles.SelectedButton : AppStyles.GhostButton);
-		var sections = _configMode
-			? new (string Id, string Icon, string Title)[] {
-				("models", "settings", Strings.ConfigModels), ("auth", "star", Strings.ConfigAuth),
-				("agent", "settings", Strings.ConfigSettings), ("mcp", "terminal", Strings.SettingsMcp),
-				("source", "square-pen", Strings.ConfigSource) }
-			: new (string Id, string Icon, string Title)[] {
-				("overview", "settings", Strings.ConfigOverview), ("appearance", "contrast", Strings.ConfigAppearance),
-				("resources", "folder-open", Strings.SettingsResources),
-				("session", "message-square", Strings.SettingsSession), ("archive", "trash", Strings.SettingsArchive),
-				("shortcuts", "terminal", Strings.SettingsShortcuts), ("logs", "folder-open", Strings.SettingsLogs),
-				("about", "settings", Strings.SettingsAbout) };
-		_navigation.Children(Caption(_configMode ? Strings.ConfigurationGroup : Strings.NavigationGroup)
-			.Margin(new Thickness(8, 4, 0, 8)));
-		foreach (var (id, icon, title) in sections)
+		_activeNavigationButton = null;
+
+		// 分段切换：与 PiDeck 一样放在导航顶部，两个分区在同一块轨道里。
+		_navigation.Children(new Border().StyleName(AppStyles.SegmentTrack)
+			.Padding(new Thickness(3)).Margin(new Thickness(0, 0, 0, AppTheme.Space3))
+			.Child(new Grid().Columns("*,*").Spacing(AppTheme.Space1).Children(
+				ModeButton("settings", Strings.SystemSettings, !_configMode, () => _ = SwitchModeAsync(false)).Column(0),
+				ModeButton("square-pen", Strings.ConfigTitle, _configMode, () => _ = SwitchModeAsync(true)).Column(1))));
+
+		if (_configMode)
 		{
-			if (!_configMode && id == "archive") _navigation.Children(Caption(Strings.MaintenanceGroup)
-				.Margin(new Thickness(8, AppTheme.Space4, 0, 8)));
-			var button = AppIcons.TextButton(icon, title, () => _ = SelectSectionAsync(id)).MinHeight(AppTheme.ControlHeightLg);
-			button.StyleName(id == _section ? AppStyles.SelectedButton : AppStyles.GhostButton);
-			_navigation.Children(button);
-			if (id == _section) _sectionTitle.Text(title);
+			AddNavigationGroup(Strings.ConfigurationGroup, first: true);
+			AddNavigationButton("models", "settings", Strings.ConfigModels);
+			AddNavigationButton("auth", "star", Strings.ConfigAuth);
+			AddNavigationButton("agent", "settings", Strings.ConfigSettings);
+			AddNavigationButton("mcp", "terminal", Strings.SettingsMcp);
+			AddNavigationButton("source", "square-pen", Strings.ConfigSource);
 		}
+		else
+		{
+			AddNavigationGroup(Strings.SettingsGroupGeneral, first: true);
+			AddNavigationButton("overview", "settings", Strings.ConfigOverview);
+			AddNavigationButton("appearance", "contrast", Strings.ConfigAppearance);
+			AddNavigationGroup(Strings.SettingsGroupRuntime, first: false);
+			AddNavigationButton("resources", "book-open", Strings.SettingsResources);
+			AddNavigationButton("session", "message-square", Strings.SettingsSession);
+			AddNavigationButton("shortcuts", "terminal", Strings.SettingsShortcuts);
+			AddNavigationGroup(Strings.MaintenanceGroup, first: false);
+			AddNavigationButton("archive", "trash", Strings.SettingsArchive);
+			AddNavigationButton("logs", "folder-open", Strings.SettingsLogs);
+			AddNavigationButton("about", "settings", Strings.SettingsAbout);
+		}
+
+		_sectionTitle.Text(SectionTitle(_section));
+	}
+
+	private static string SectionTitle(string id) => id switch
+	{
+		"models" => Strings.ConfigModels,
+		"auth" => Strings.ConfigAuth,
+		"agent" => Strings.ConfigSettings,
+		"mcp" => Strings.SettingsMcp,
+		"source" => Strings.ConfigSource,
+		"appearance" => Strings.ConfigAppearance,
+		"resources" => Strings.SettingsResources,
+		"session" => Strings.SettingsSession,
+		"archive" => Strings.SettingsArchive,
+		"shortcuts" => Strings.SettingsShortcuts,
+		"logs" => Strings.SettingsLogs,
+		"about" => Strings.SettingsAbout,
+		_ => Strings.ConfigOverview,
+	};
+
+	private void AddNavigationGroup(string title, bool first)
+	{
+		_navigation.Children(new TextBlock().Text(title)
+			.FontSize(11).FontWeight(FontWeight.SemiBold).FaintText()
+			.Margin(new Thickness(AppTheme.Space2, first ? 0 : AppTheme.Space3, 0, AppTheme.Space1)));
+	}
+
+	private void AddNavigationButton(string id, string icon, string title)
+	{
+		var active = id == _section;
+		var label = new TextBlock().Text(title).FontSize(AppTheme.FontSizeControl);
+		if (active) label.PrimaryText(); else label.MutedText();
+		var button = new Button()
+			.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(AppIcons.Icon(icon, active ? AppStyles.RolePrimary : AppStyles.RoleSubtle, 15), label))
+			.OnClick(() => _ = SelectSectionAsync(id))
+			.StyleName(active ? AppStyles.SelectedButton : AppStyles.GhostButton)
+			.HorizontalAlignment(HorizontalAlignment.Stretch)
+			.MinHeight(AppTheme.ControlHeightMd + 2)
+			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0));
+		if (active) _activeNavigationButton = button;
+		_navigation.Children(button);
+	}
+
+	private static Button ModeButton(string icon, string text, bool active, Action onClick)
+	{
+		var label = new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption)
+			.HorizontalAlignment(HorizontalAlignment.Center);
+		if (active)
+		{
+			// 选中段加半粗，暗色下即使只看到明度差也能靠字重认出当前分区。
+			label.PrimaryText().FontWeight(FontWeight.SemiBold);
+		}
+		else label.MutedText();
+		return new Button()
+			.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6)
+				.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center)
+				.Children(AppIcons.Icon(icon, active ? AppStyles.RolePrimary : AppStyles.RoleSubtle, 14), label))
+			.OnClick(onClick)
+			.StyleName(active ? AppStyles.SegmentButtonActive : AppStyles.SegmentButton)
+			.Height(AppTheme.ControlHeightSm + 2)
+			.HorizontalAlignment(HorizontalAlignment.Stretch);
 	}
 
 	internal async Task SelectSectionAsync(string section)
@@ -171,6 +287,8 @@ public sealed class SettingsView
 		_section = section;
 		BuildNavigation();
 		Refresh();
+		StateChanged?.Invoke();
+		FocusNavigation();
 	}
 
 	/// <summary>在面板顶部提示一句话（例如「已设为默认模型」）。</summary>
@@ -259,32 +377,35 @@ public sealed class SettingsView
 			0,
 			entries.FindIndex(entry => string.Equals(entry.Value, current, StringComparison.Ordinal)));
 
+		// 换肤会触发浮层重解析，重建过程中 ComboBox 可能再次抛出 SelectionChanged；
+		// 用重入保护避免同一轮里反复保存/应用主题。
+		var applying = false;
 		void ApplySelection()
 		{
-			if (picker.SelectedIndex < 0 || picker.SelectedIndex >= entries.Count)
+			if (applying || picker.SelectedIndex < 0 || picker.SelectedIndex >= entries.Count)
 			{
 				return;
 			}
 
-			var value = entries[picker.SelectedIndex].Value;
+			applying = true;
 			try
 			{
-				(DesktopPreference.Load() with { Theme = value }).Save();
-			}
-			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-			{
-				return;
-			}
+				var value = entries[picker.SelectedIndex].Value;
+				try
+				{
+					(DesktopPreference.Load() with { Theme = value }).Save();
+				}
+				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+				{
+					return;
+				}
 
-			var resolved = DesktopTheme.Resolve(value, snapshot.Cwd, snapshot.AgentDir);
-			AppTheme.UseCustomPalette(resolved.Light, resolved.Dark);
-
-			if (Application.IsRunning)
+				var resolved = DesktopTheme.Resolve(value, snapshot.Cwd, snapshot.AgentDir);
+				DesktopTheme.Apply(resolved);
+			}
+			finally
 			{
-				// 自定义主题要连 seed 一起换，框架控件才会跟着变色。
-				ThemeManager.DefaultLightSeed = AppTheme.Seed(resolved.Light ?? AppPalette.Light);
-				ThemeManager.DefaultDarkSeed = AppTheme.Seed(resolved.Dark ?? AppPalette.Dark);
-				Application.Current.SetTheme(resolved.Variant);
+				applying = false;
 			}
 		}
 
@@ -338,9 +459,9 @@ public sealed class SettingsView
 		font.SelectionChanged += _ => SaveReading();
 		width.SelectionChanged += _ => SaveReading();
 		return new StackPanel().Spacing(AppTheme.Space4).Children(
-			Card(new StackPanel().Spacing(AppTheme.Space3).Children(Caption(Strings.ConfigTheme), previews,
+			Group("palette", Strings.ConfigTheme, new StackPanel().Spacing(AppTheme.Space3).Children(previews,
 				picker.HorizontalAlignment(HorizontalAlignment.Left))),
-			Card(new StackPanel().Spacing(AppTheme.Space3).Children(Caption(Strings.ReadingSettings),
+			Group("file-text", Strings.ReadingSettings, new StackPanel().Spacing(AppTheme.Space3).Children(
 				new DockPanel().LastChildFill().Children(font.DockRight(), LabelForPreview(Strings.ChatFontSize)),
 				new DockPanel().LastChildFill().Children(width.DockRight(), LabelForPreview(Strings.ReadingWidth)),
 				sample)));
@@ -356,26 +477,22 @@ public sealed class SettingsView
 		var resources = snapshot.Resources;
 		var panel = new StackPanel().Spacing(AppTheme.Space4);
 
-		panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
-			Caption("book-open", Strings.SettingsSkills),
+		panel.Children(Group("book-open", Strings.SettingsSkills, new StackPanel().Spacing(AppTheme.Space3).Children(
 			Hint(Strings.ResourcesSkillHint),
 			ResourceList(resources.Skills.Select(skill => new ResourceRow(
 				skill.Name, skill.Description, skill.Origin.Display, skill.FilePath))))));
 
-		panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
-			Caption("file-text", Strings.ResourcesPrompts),
+		panel.Children(Group("file-text", Strings.ResourcesPrompts, new StackPanel().Spacing(AppTheme.Space3).Children(
 			Hint(Strings.ResourcesPromptHint),
 			ResourceList(resources.Templates.Select(template => new ResourceRow(
 				template.Name, string.Empty, template.Origin.Display, template.FilePath))))));
 
-		panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
-			Caption("palette", Strings.ResourcesThemes),
+		panel.Children(Group("palette", Strings.ResourcesThemes, new StackPanel().Spacing(AppTheme.Space3).Children(
 			Hint(Strings.ResourcesThemeHint),
 			ResourceList(resources.Themes.Select(theme => new ResourceRow(
 				theme.Name, ThemeDetail(theme), theme.Origin.Display, theme.FilePath))))));
 
-		panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
-			Caption("package", Strings.ResourcesPackages),
+		panel.Children(Group("package", Strings.ResourcesPackages, new StackPanel().Spacing(AppTheme.Space3).Children(
 			Hint(Strings.ResourcesPackageHint),
 			ResourceList(resources.Packages.Select(package => new ResourceRow(
 				package.Name,
@@ -392,8 +509,7 @@ public sealed class SettingsView
 					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
 			}
 
-			panel.Children(Card(new StackPanel().Spacing(AppTheme.Space2).Children(
-				Caption(Strings.ResourcesDiagnostics), diagnostics)));
+			panel.Children(Group("settings", Strings.ResourcesDiagnostics, diagnostics));
 		}
 
 		if (_reloadResources is not null)
@@ -473,8 +589,7 @@ public sealed class SettingsView
 
 	private Element LogSection()
 	{
-		return new StackPanel().Spacing(AppTheme.Space2).Children(
-			Caption(Strings.SettingsLogs),
+		return Group("folder-open", Strings.SettingsLogs, new StackPanel().Spacing(AppTheme.Space3).Children(
 			new TextBlock().Text(AppLog.DirectoryPath).FontSize(AppTheme.FontSizeCaption)
 				.MutedText().TextWrapping(TextWrapping.Wrap),
 			new DockPanel().LastChildFill().Children(
@@ -485,7 +600,7 @@ public sealed class SettingsView
 					Toast(clipboard?.TrySetText(AppLog.DirectoryPath) == true ? Strings.Copied : Strings.ClipboardUnavailable);
 				}).DockRight(),
 				new TextBlock().Text($"{Strings.LogLevel}：{AppLog.MinimumLevel}")
-					.FontSize(AppTheme.FontSizeMicro).SubtleText()));
+					.FontSize(AppTheme.FontSizeMicro).SubtleText())));
 	}
 
 	private void OpenLogDirectory()
@@ -505,26 +620,25 @@ public sealed class SettingsView
 		}
 	}
 
-	private static Element Title(string text) => new TextBlock()
-		.Text(text)
-		.FontSize(18)
-		.FontWeight(FontWeight.Bold)
-		.PrimaryText();
-
-	private static TextBlock Caption(string text) => new TextBlock()
-		.Text(text)
-		.FontSize(AppTheme.FontSizeMicro)
-		.FontWeight(FontWeight.Bold)
-		.SubtleText();
-
 	/// <summary>带图标的卡片标题；图标名取自内嵌的 Lucide 图标集。</summary>
-	private static Element Caption(string icon, string text) => new StackPanel()
-		.Orientation(Orientation.Horizontal)
-		.VerticalAlignment(VerticalAlignment.Center)
-		.Spacing(6)
-		.Children(
-			AppIcons.Icon(icon, AppStyles.RoleSubtle, 13),
-			Caption(text).VerticalAlignment(VerticalAlignment.Center));
+	private static Element Group(string icon, string title, UIElement content) => new Border()
+		.StyleName(AppStyles.Card)
+		.CornerRadius(AppTheme.RadiusMd)
+		.MaxWidth(960)
+		.ClipToBounds(true)
+		.Child(new DockPanel().LastChildFill().Children(
+			new Border().StyleName(AppStyles.CardHeader)
+				.Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space3))
+				.Child(new StackPanel().Orientation(Orientation.Horizontal)
+					.VerticalAlignment(VerticalAlignment.Center).Spacing(AppTheme.Space2)
+					.Children(
+						AppIcons.Icon(icon, AppStyles.RoleSubtle, 14),
+						new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption)
+							.FontWeight(FontWeight.SemiBold).PrimaryText()
+							.VerticalAlignment(VerticalAlignment.Center)))
+				.DockTop(),
+			new Border().Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space4))
+				.Child(content)));
 
 	private static Element Section(string title, IReadOnlyList<(string Label, string Value)> rows)
 	{
@@ -537,9 +651,7 @@ public sealed class SettingsView
 					.FontSize(AppTheme.FontSizeCaption).PrimaryText().HoverTip(value)));
 		}
 
-		return Card(new StackPanel()
-			.Spacing(AppTheme.Space2)
-			.Children(Caption(title), body));
+		return Group("settings", title, body);
 	}
 
 	private Element McpSection(IReadOnlyList<McpServerStatus> servers)
@@ -575,9 +687,7 @@ public sealed class SettingsView
 				.HorizontalAlignment(HorizontalAlignment.Left));
 		}
 
-		return Card(new StackPanel()
-			.Spacing(AppTheme.Space2)
-			.Children(Caption(Strings.SettingsMcp), body));
+		return Group("terminal", Strings.SettingsMcp, body);
 	}
 
 	private async Task ReconnectAsync(Func<Task> reconnect)
@@ -657,9 +767,7 @@ public sealed class SettingsView
 				.AccentText());
 		}
 
-		return Card(new StackPanel()
-			.Spacing(AppTheme.Space2)
-			.Children(Caption(Strings.SettingsShortcuts), body));
+		return Group("terminal", Strings.SettingsShortcuts, body);
 	}
 
 	/// <summary>
@@ -793,9 +901,7 @@ public sealed class SettingsView
 				.MutedText());
 		}
 
-		return Card(new StackPanel()
-			.Spacing(AppTheme.Space2)
-			.Children(Caption(Strings.SettingsAbout), body));
+		return Group("settings", Strings.SettingsAbout, body);
 	}
 
 	/// <summary>归档管理：恢复单个会话，或清空归档。</summary>
@@ -834,9 +940,7 @@ public sealed class SettingsView
 						.SubtleText()));
 		}
 
-		return Card(new StackPanel()
-			.Spacing(AppTheme.Space2)
-			.Children(Caption(Strings.SettingsArchive), body));
+		return Group("trash", Strings.SettingsArchive, body);
 	}
 
 	private void Restore(SessionListItem item)
@@ -927,15 +1031,6 @@ public sealed class SettingsView
 				size: 13));
 		}
 
-		return Card(new StackPanel()
-			.Spacing(AppTheme.Space2)
-			.Children(Caption(Strings.SettingsSession), body));
+		return Group("message-square", Strings.SettingsSession, body);
 	}
-
-	private static Element Card(UIElement content) => new Border()
-		.StyleName(AppStyles.Card)
-		.CornerRadius(AppTheme.RadiusMd)
-		.Padding(new Thickness(AppTheme.Space3))
-		.MaxWidth(960)
-		.Child(content);
 }

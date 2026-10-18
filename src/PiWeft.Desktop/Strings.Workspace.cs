@@ -15,8 +15,11 @@ public static partial class Strings
 	public const string ToggleSidebar = "展开 / 收起项目侧栏";
 	public const string SessionList = "项目";
 	public const string SettingsHint = "管理外观、快捷键和运行环境；模型与认证在配置管理中。";
+	public const string SettingsClose = "关闭设置";
 	public const string AppearanceHint = "选择适合当前环境的明暗模式，立即生效。";
 	public const string NavigationGroup = "工作区";
+	public const string SettingsGroupGeneral = "通用";
+	public const string SettingsGroupRuntime = "运行";
 	public const string ConfigurationGroup = "配置文件";
 	public const string MaintenanceGroup = "维护";
 	public const string ConfigReady = "修改后点击保存";

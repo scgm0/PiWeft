@@ -47,8 +47,10 @@ public sealed class ConfigurationViewTests : IDisposable
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
 		await view.OpenAsync(ConfigFile.Settings, source: true);
 		Assert.Empty(Find<MultiLineTextBox>(view.View));
+		Assert.False(view.CanSave);
 		Find<CheckBox>(view.View).Single().IsChecked = true;
 		var editor = Find<MultiLineTextBox>(view.View).Single();
+		Assert.True(view.CanSave);
 		editor.Text = "{\"unknown\":42}";
 		view.ApplyTheme();
 		Assert.Same(editor, Find<MultiLineTextBox>(view.View).Single());
@@ -74,6 +76,22 @@ public sealed class ConfigurationViewTests : IDisposable
 		Assert.False(saved.ContainsKey("compaction"));
 		Assert.False(saved.ContainsKey("retry"));
 		Assert.False(saved.ContainsKey("defaultThinkingLevel"));
+	}
+
+	[Fact]
+	public void SaveAvailabilityTracksTheDraftAndRaisesStateChanges()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		Assert.True(view.CanSave);
+		var states = 0;
+		view.StateChanged += () => states++;
+		view.EditProvider(null);
+		Find<TextBox>(view.View).First().Text = "local";
+		Assert.True(view.IsDirty);
+		Assert.True(states > 0);
+		view.Discard();
+		Assert.False(view.IsDirty);
+		Assert.True(view.CanSave);
 	}
 
 	[Fact]

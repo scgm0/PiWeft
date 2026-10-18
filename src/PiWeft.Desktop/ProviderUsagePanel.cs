@@ -49,7 +49,9 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		_window = window;
 		if (View is FrameworkElement element)
 		{
-			element.Margin = window is MainWindow ? MainWindow.OverlayInset : new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
+			element.Margin = window is MainWindow main
+				? MainWindow.OverlayInsetFor(main.WindowState)
+				: new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
 		}
 		window.OverlayLayer.Add(View);
 		View.IsVisible(true);
