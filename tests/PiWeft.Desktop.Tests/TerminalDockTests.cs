@@ -46,6 +46,21 @@ public sealed class TerminalDockTests
 	}
 
 	[Fact]
+	public void ReverseVideoTextPaintsTheSwappedBackground()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+
+		// SGR 7 + 默认前景/背景：交换后文字色就是终端底色，必须同时画出交换后的背景，
+		// 否则字符会变成“底色叠底色”。zsh 的括号粘贴高亮正是这种形态。
+		dock.FeedForTest("\u001b[2J\u001b[H\u001b[7mPASTED123");
+
+		var line = Find<TextBlock>(dock.View).Single(block => block.Text.Contains("PASTED123", StringComparison.Ordinal));
+		var run = line.Inlines.Single(inline => inline.Text.Contains("PASTED123", StringComparison.Ordinal));
+		Assert.Equal(AppTheme.TerminalBackground, run.Foreground);
+		Assert.Equal(AppTheme.TerminalForeground, run.Background);
+	}
+
+	[Fact]
 	public async Task MultiLinePasteAsksBeforeFeedingTheShell()
 	{
 		using var dock = new TerminalDock(() => ShellDirectory);

@@ -357,6 +357,17 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
+	/// <summary>窗口less 测试用：向屏幕喂一段输出并立即重绘。</summary>
+	internal void FeedForTest(string text)
+	{
+		lock (_gate)
+		{
+			_screen.Feed(text.AsSpan());
+		}
+
+		PaintIfDirty(force: true);
+	}
+
 	/// <summary>窗口less 测试用：读取屏幕内部状态。</summary>
 	internal TerminalScreen Screen
 	{
@@ -1834,7 +1845,9 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			{
 				element.Background = AppTheme.TerminalSelection;
 			}
-			else if (_paintReverseVideo || explicitDefault || run.Background.Kind != TerminalColorKind.Default)
+			// SGR 7（反白）把默认前景换成了背景色：不写明背景时字符会被画成“底色叠底色”，
+			// 例如 zsh 对括号粘贴高亮的输入看起来就像整段消失。反白行必须显式铺上交换后的背景。
+			else if (_paintReverseVideo || explicitDefault || run.Reverse || run.Background.Kind != TerminalColorKind.Default)
 			{
 				element.Background = background;
 			}
