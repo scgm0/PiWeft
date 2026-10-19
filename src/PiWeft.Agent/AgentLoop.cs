@@ -327,7 +327,7 @@ public static class AgentLoop
 		CancellationToken cancellationToken)
 	{
 		var hasSequential = toolCalls.Any(call =>
-			context.Tools?.FirstOrDefault(t => t.Name == call.Name)?.ExecutionMode == ToolExecutionMode.Sequential);
+			context.ResolveTools().FirstOrDefault(t => t.Name == call.Name)?.ExecutionMode == ToolExecutionMode.Sequential);
 
 		return config.ToolExecution == ToolExecutionMode.Sequential || hasSequential
 			? await ExecuteSequentialAsync(context, assistantMessage, toolCalls, config, emit, cancellationToken)
@@ -491,7 +491,7 @@ public static class AgentLoop
 		AgentLoopConfig config,
 		CancellationToken cancellationToken)
 	{
-		var tool = context.Tools?.FirstOrDefault(t => string.Equals(t.Name, toolCall.Name, StringComparison.Ordinal));
+		var tool = context.ResolveTools().FirstOrDefault(t => string.Equals(t.Name, toolCall.Name, StringComparison.Ordinal));
 		if (tool is null)
 		{
 			return (null, Immediate(toolCall, $"Tool {toolCall.Name} not found"));
@@ -752,7 +752,8 @@ public static class AgentLoop
 		}
 
 		var currentTools = Transcript.GetTools([.. context.Messages, .. committed]);
-		var desired = (context.Tools ?? []).Select(tool => tool.ToDeclaration()).ToList();
+		// 只有声明给模型的工具进入 transcript；codemode/deferred 工具仍可执行但不声明。
+		var desired = context.ResolveDeclaredTools().Select(tool => tool.ToDeclaration()).ToList();
 
 		var added = desired
 			.Where(tool => !currentTools.Any(existingTool => string.Equals(existingTool.Name, tool.Name, StringComparison.Ordinal)))

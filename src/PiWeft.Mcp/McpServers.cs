@@ -269,6 +269,9 @@ public static class McpToolAdapter
 	public static string ToolName(string server, string tool) =>
 		$"mcp__{Sanitize(server)}__{Sanitize(tool)}";
 
+	/// <summary>codemode 命名空间名，与 pi 一致：<c>mcp__&lt;server&gt;</c>。</summary>
+	public static string NamespaceName(string server) => $"mcp__{Sanitize(server)}";
+
 	public static string Sanitize(string value)
 	{
 		var buffer = new char[value.Length];
@@ -282,7 +285,14 @@ public static class McpToolAdapter
 	}
 
 	/// <summary>把单个 MCP 工具包装成代理工具，调用会回到服务器。</summary>
-	public static AgentTool Create(IMcpToolInvoker client, string server, McpTool tool, TimeSpan? timeout = null)
+	public static AgentTool Create(
+		IMcpToolInvoker client,
+		string server,
+		McpTool tool,
+		TimeSpan? timeout = null,
+		string? exposure = null,
+		string? namespaceDescription = null,
+		string? namespaceInstructions = null)
 	{
 		var name = ToolName(server, tool.Name);
 		var requestTimeout = timeout;
@@ -296,6 +306,13 @@ public static class McpToolAdapter
 			Label = name,
 			Description = description,
 			Parameters = (JsonObject)tool.InputSchema.DeepClone(),
+			OutputSchema = tool.OutputSchema is { } outputSchema ? (JsonObject)outputSchema.DeepClone() : null,
+			Exposure = exposure ?? ToolExposure.Direct,
+			// 与 pi 一致：命名空间是 mcp__<server>，服务器原名作为别名。
+			Namespace = NamespaceName(server),
+			NamespaceAliases = [server],
+			NamespaceDescription = string.IsNullOrWhiteSpace(namespaceDescription) ? null : namespaceDescription,
+			NamespaceInstructions = string.IsNullOrWhiteSpace(namespaceInstructions) ? null : namespaceInstructions,
 			Execute = async invocation =>
 			{
 				using var timeoutSource = requestTimeout is not null
@@ -575,15 +592,31 @@ public static class McpServers
 
 				connected.Add(new McpConnection.ServerEntry(config.Name, client, config.TimeoutSpan));
 
+				// 服务器 initialize 的 instructions 进入命名空间说明（pi 的 describeNamespace 返回它）。
+				var namespaceInstructions = client switch
+				{
+					McpClient stdio => stdio.Instructions,
+					McpHttpClient http => http.Instructions,
+					_ => null,
+				};
+
 				foreach (var tool in await client.ListToolsAsync(cancellationToken).ConfigureAwait(false))
 				{
-					// hidden 的工具不声明给模型；逐工具 toolExposure 可覆盖服务器默认。
-					if (!McpExposure.IsVisible(McpExposure.Resolve(config, tool.Name)))
+					// hidden 的工具不可达；其余交给会话按 exposure 决定声明还是只给脚本。
+					var exposure = McpExposure.Resolve(config, tool.Name);
+					if (!McpExposure.IsVisible(exposure))
 					{
 						continue;
 					}
 
-					tools.Add(McpToolAdapter.Create(client, config.Name, tool, config.TimeoutSpan));
+					tools.Add(McpToolAdapter.Create(
+						client,
+						config.Name,
+						tool,
+						config.TimeoutSpan,
+						exposure,
+						config.Description,
+						namespaceInstructions));
 					toolCount++;
 				}
 

@@ -15,6 +15,9 @@ public sealed record McpTool
 
 	/// <summary>工具参数的 JSON Schema。</summary>
 	public required JsonObject InputSchema { get; init; }
+
+	/// <summary>工具结构化输出的 JSON Schema（可选）。</summary>
+	public JsonObject? OutputSchema { get; init; }
 }
 
 /// <summary><c>tools/call</c> 解码后的结果。</summary>

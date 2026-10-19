@@ -1,11 +1,18 @@
+using System.Text;
+using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.Ai.Json;
+using PiWeft.Ai.Utils;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
+using PiWeft.JavaScript;
 
 // 本类型上也有 `Tools` 属性，因此给 shell 运行器起别名。
 using ShellRunner = PiWeft.CodingAgent.Tools.ShellRunner;
@@ -16,6 +23,9 @@ using AgentRuntime = PiWeft.Agent.Agent;
 // 会话上也有 `Tools` 属性，因此给 todo 工具工厂起别名。
 using TodoToolFactory = PiWeft.CodingAgent.Tools.TodoTool;
 using AskQuestionToolFactory = PiWeft.CodingAgent.Tools.AskQuestionTool;
+
+// `PiWeft.JavaScript` 里也有 CodeModeTool（沙箱侧类型），这里只用工具工厂。
+using CodeModeToolFactory = PiWeft.CodingAgent.Tools.CodeModeTool;
 
 namespace PiWeft.CodingAgent;
 
@@ -33,6 +43,12 @@ public sealed record CodingAgentSessionOptions
 
 	/// <summary>为路由后的物理 Provider 解析凭据（来自 models.json 的 key）。</summary>
 	public Func<string, string?>? ApiKeyForProvider { get; init; }
+
+	/// <summary>生图网关；codemode 的 <c>models.generateImages()</c> 使用它。</summary>
+	public ImagesGateway? Images { get; init; }
+
+	/// <summary>分类网关；codemode 的 <c>models.classify()</c> 使用它。</summary>
+	public ClassifiersGateway? Classifiers { get; init; }
 
 	/// <summary>
 	/// 思考级别。为 <c>null</c> 时沿用会话里记录的级别（恢复会话时就是上次的），没有记录则为
@@ -132,8 +148,12 @@ public sealed class CodingAgentSession : IDisposable
 	private bool _overflowRecoveryAttempted;
 	private readonly StreamFn _streamFn;
 	private readonly StreamFn _routedStreamFn;
+	private static readonly Lazy<ModelRegistry> FallbackModelRegistry = new(ModelRegistry.LoadDefault);
+
 	private readonly ModelRegistry? _registry;
 	private readonly Func<string, string?>? _apiKeyForProvider;
+	private readonly ImagesGateway? _images;
+	private readonly ClassifiersGateway? _classifiers;
 	private readonly StreamOptions _streamOptions;
 	private bool _disposed;
 	private readonly Lock _statisticsGate = new();
@@ -153,8 +173,17 @@ public sealed class CodingAgentSession : IDisposable
 	/// <summary>当前生效的完整工具集（不受计划模式过滤影响）。</summary>
 	private IReadOnlyList<BuiltinTool> _fullTools = [];
 
+	/// <summary><c>tool_search</c> 工具：懒创建，按需加入可执行与声明集合。</summary>
+	private readonly Lazy<AgentTool> _toolSearch;
+
+	/// <summary>会话里记录 <c>tool_search</c> 加载结果的条目类型。</summary>
+	private const string ToolLoadEntryType = "tool-load";
+
 	/// <summary>宿主提供的 beforeToolCall 钩子；计划模式的安全网在它之前执行。</summary>
 	private readonly Func<BeforeToolCallContext, CancellationToken, ValueTask<BeforeToolCallResult?>>? _userBeforeToolCall;
+
+	/// <summary>宿主提供的 afterToolCall 钩子；嵌套的 codemode 调用也走同一个钩子。</summary>
+	private readonly Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? _userAfterToolCall;
 
 	public CodingAgentSession(CodingAgentSessionOptions options)
 	{
@@ -164,6 +193,8 @@ public sealed class CodingAgentSession : IDisposable
 		Settings = options.Settings;
 		UiHost = options.UiHost;
 		ProjectTrusted = options.ProjectTrusted;
+		_images = options.Images;
+		_classifiers = options.Classifiers;
 		Session = options.Session
 			?? (options.Persist ? SessionManager.Create(Cwd) : SessionManager.InMemory(Cwd));
 
@@ -243,10 +274,21 @@ public sealed class CodingAgentSession : IDisposable
 			ProjectContext = options.NoContextFiles ? null : ContextFiles.Load(Cwd),
 		};
 
+		// 有 exposure: codemode 的工具时自动启用 codemode（pi 的 autoEnableCodemode 行为）。
+		if (Settings.Codemode.AutoEnable
+			&& builtins.Any(static tool => string.Equals(tool.Tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal))
+			&& builtins.TrueForAll(static tool => !string.Equals(tool.Tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)))
+		{
+			builtins.Add(CodeModeToolFactory.CreatePlaceholder());
+		}
+
+		_toolSearch = new Lazy<AgentTool>(CreateToolSearchTool);
+
 		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
 		_fullTools = builtins;
 		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(builtins));
 		_userBeforeToolCall = options.BeforeToolCall;
+		_userAfterToolCall = options.AfterToolCall;
 
 		_streamFn = options.StreamFn;
 		_registry = options.Registry;
@@ -283,6 +325,9 @@ public sealed class CodingAgentSession : IDisposable
 			WillRetry = ShouldRetryAssistant,
 			Options = _streamOptions,
 		});
+
+		// codemode 的描述要列出会话当前可调用的工具，因此等代理建好后再绑定并重建提示词。
+		RebindCodeMode([.. builtins.Select(static builtin => builtin.Tool)]);
 
 		_agent.SteeringMode = ParseQueueMode(options.Settings.SteeringMode);
 		_agent.FollowUpMode = ParseQueueMode(options.Settings.FollowUpMode);
@@ -322,6 +367,9 @@ public sealed class CodingAgentSession : IDisposable
 	public string ThinkingLevel => _agent.ThinkingLevel;
 
 	public IReadOnlyList<AgentTool> Tools => _agent.Tools;
+
+	/// <summary>真正声明给模型的工具（<see cref="Tools"/> 是脚本/钩子可调用的全集）。</summary>
+	public IReadOnlyList<AgentTool> DeclaredTools => _agent.DeclaredTools;
 
 	/// <summary>当前分支上模型可见的消息，已应用上下文编辑与压缩。</summary>
 	/// <summary>模型下一次请求会看到的完整消息（含运行时构造的系统提示词）。</summary>
@@ -816,10 +864,57 @@ public sealed class CodingAgentSession : IDisposable
 			effective = [.. _fullTools.Where(static tool => !PlanMode.DisabledTools.Contains(tool.Tool.Name, StringComparer.Ordinal))];
 		}
 
-		_agent.SetTools([.. effective.Select(static tool => tool.Tool)]);
-		_promptTools = effective;
-		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(effective));
+		var loaded = LoadedToolNames();
+		var hasDiscovery = effective.Any(static tool => IsDiscoveryExposure(tool.Tool.Exposure));
+		var toolSearch = hasDiscovery ? _toolSearch.Value : null;
+
+		// 声明给模型：direct 工具 + tool_search 加载过的非 direct 工具。
+		var declared = new List<BuiltinTool>(effective.Count + 1);
+		foreach (var tool in effective)
+		{
+			var exposure = tool.Tool.Exposure;
+			if (string.Equals(exposure, ToolExposure.Direct, StringComparison.Ordinal)
+				|| (!string.Equals(exposure, ToolExposure.Hidden, StringComparison.Ordinal) && loaded.Contains(tool.Tool.Name)))
+			{
+				declared.Add(tool);
+			}
+		}
+
+		if (toolSearch is not null)
+		{
+			declared.Add(new BuiltinTool(toolSearch, "Search for tools to load", []));
+		}
+
+		var codemodeActive = effective.Any(static tool => tool.Tool.Name == CodeModeToolFactory.Name);
+		// codemode 的 mode=on：直接声明给模型的工具补上从脚本调用的说明。
+		if (string.Equals(Settings.Codemode.Mode, "on", StringComparison.Ordinal) && codemodeActive)
+		{
+			declared = [.. declared.Select(static tool => tool.Tool.Name is CodeModeToolFactory.Name or ToolSearchName
+				? tool
+				: tool with { Tool = WithCodemodeHint(tool.Tool) })];
+		}
+		// mode=only：直接工具只给脚本，不再声明给模型（codemode/tool_search 自身除外）。
+		else if (string.Equals(Settings.Codemode.Mode, "only", StringComparison.Ordinal) && codemodeActive)
+		{
+			declared = [.. declared.Where(static tool =>
+				!string.Equals(tool.Tool.Exposure, ToolExposure.Direct, StringComparison.Ordinal)
+				|| tool.Tool.Name is CodeModeToolFactory.Name or ToolSearchName)];
+		}
+
+		var callableTools = toolSearch is null
+			? effective.Select(static tool => tool.Tool).ToList()
+			: [.. effective.Select(static tool => tool.Tool), toolSearch];
+		_agent.SetTools(callableTools, declared.Select(static tool => tool.Tool).ToList());
+		_promptTools = declared;
+		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(declared));
 	}
+
+	/// <summary><c>tool_search</c> 的名字；它不是内置目录里的工具，只在需要发现时出现。</summary>
+	private const string ToolSearchName = "tool_search";
+
+	private static bool IsDiscoveryExposure(string exposure) =>
+		string.Equals(exposure, ToolExposure.Codemode, StringComparison.Ordinal)
+		|| string.Equals(exposure, ToolExposure.Deferred, StringComparison.Ordinal);
 
 	/// <summary>带上 <c>plan_mode</c> 章节（如启用）的提示词输入。</summary>
 	private static AgentQueueMode ParseQueueMode(string? value) =>
@@ -837,17 +932,80 @@ public sealed class CodingAgentSession : IDisposable
 	private SystemPromptOptions SectionsFor(IReadOnlyList<BuiltinTool> tools)
 	{
 		IReadOnlyDictionary<string, string?>? overrides = _systemPromptSections.SectionOverrides;
-		if (PlanModeEnabled)
+		Dictionary<string, string?>? merged = null;
+		Dictionary<string, string?> Merge()
 		{
-			var merged = overrides is null
+			merged ??= overrides is null
 				? new Dictionary<string, string?>(StringComparer.Ordinal)
 				: new Dictionary<string, string?>(overrides, StringComparer.Ordinal);
-			merged["plan_mode"] = PlanMode.Instructions;
-			overrides = merged;
+			return merged;
 		}
 
-		return _systemPromptSections with { Tools = tools, SectionOverrides = overrides };
+		if (PlanModeEnabled) Merge()["plan_mode"] = PlanMode.Instructions;
+		if (BuildMcpServersSection() is { } mcpServers) Merge()["mcp_servers"] = mcpServers;
+
+		return _systemPromptSections with
+		{
+			Tools = tools,
+			SectionOverrides = merged ?? overrides,
+		};
 	}
+
+	/// <summary>
+	/// 与 pi 的 <c>mcp_servers</c> 章节对齐：列出工具没有直接声明给模型的 MCP 服务器，
+	/// 以及该用 codemode 还是 tool_search 去够到它们。
+	/// </summary>
+	private string? BuildMcpServersSection()
+	{
+		var namespaces = new Dictionary<string, McpNamespaceInfo>(StringComparer.Ordinal);
+		foreach (var builtin in _fullTools)
+		{
+			var tool = builtin.Tool;
+			if (tool.Namespace is null
+				|| string.Equals(tool.Exposure, ToolExposure.Direct, StringComparison.Ordinal)
+				|| string.Equals(tool.Exposure, ToolExposure.Hidden, StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			if (PlanModeEnabled && PlanMode.DisabledTools.Contains(tool.Name, StringComparer.Ordinal)) continue;
+
+			var deferred = string.Equals(tool.Exposure, ToolExposure.Deferred, StringComparison.Ordinal);
+			namespaces[tool.Namespace] = namespaces.TryGetValue(tool.Namespace, out var info)
+				? info with
+				{
+					Description = info.Description ?? tool.NamespaceDescription,
+					Deferred = info.Deferred || deferred,
+					Codemode = info.Codemode || !deferred,
+				}
+				: new McpNamespaceInfo(tool.NamespaceDescription, deferred, !deferred);
+		}
+
+		if (namespaces.Count == 0) return null;
+
+		var hasCodemode = namespaces.Values.Any(static info => info.Codemode);
+		var hasDeferred = namespaces.Values.Any(static info => info.Deferred);
+		var builder = new StringBuilder("MCP servers whose tools are not declared to you.");
+		if (hasCodemode) builder.Append(" Call the tools of `codemode` servers from codemode scripts.");
+		if (hasDeferred) builder.Append(" Load the tools of `tool_search` servers with `tool_search`.");
+
+		foreach (var (name, info) in namespaces.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
+		{
+			var mode = info.Codemode && info.Deferred
+				? "codemode/tool_search"
+				: info.Deferred ? "tool_search" : "codemode";
+			builder.Append("\n- `").Append(name).Append("` (").Append(mode).Append(')');
+			if (info.Description is { Length: > 0 } description)
+			{
+				builder.Append(' ').Append(description.Length > 250 ? description[..249] + "…" : description);
+			}
+		}
+
+		var text = builder.ToString();
+		return text.Length > 4096 ? text[..4095] + "…" : text;
+	}
+
+	private sealed record McpNamespaceInfo(string? Description, bool Deferred, bool Codemode);
 
 	/// <summary>计划模式下的安全网：即使模型仍调用写工具也会被拦下。</summary>
 	private async ValueTask<BeforeToolCallResult?> GuardedBeforeToolCallAsync(
@@ -872,6 +1030,787 @@ public sealed class CodingAgentSession : IDisposable
 		return _userBeforeToolCall is null
 			? null
 			: await _userBeforeToolCall(context, cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>把占位的 codemode 换成绑定到本会话的版本，并按新的工具集重建提示词。</summary>
+	private void RebindCodeMode(IReadOnlyList<AgentTool> tools)
+	{
+		var index = -1;
+		for (var i = 0; i < _fullTools.Count; i++)
+		{
+			if (_fullTools[i].Tool.Name == CodeModeToolFactory.Name)
+			{
+				index = i;
+				break;
+			}
+		}
+
+		if (index < 0)
+		{
+			return;
+		}
+
+		var rebuilt = _fullTools.ToList();
+		rebuilt[index] = CreateCodeModeTool(tools);
+		_fullTools = rebuilt;
+		ApplyTools();
+	}
+
+	private BuiltinTool CreateCodeModeTool(IReadOnlyList<AgentTool> tools) => CodeModeToolFactory.Create(
+		new CodeModeHost
+		{
+			// 执行时用代理当前的工具集（MCP 刷新/计划模式之后仍然正确）。
+			Tools = () => _agent?.Tools ?? tools,
+			ExecuteTool = ExecuteNestedToolAsync,
+			LoadStore = LoadCodeModeStore,
+			SaveStore = SaveCodeModeStore,
+			Models = QueryCodeModeModels,
+			ModelCall = _images is not null || _classifiers is not null ? ExecuteModelCallAsync : null,
+			Guidelines = ToolGuidelines,
+			// 嵌套调用的钩子上下文复用同一份消息快照，避免每次工具调用拷贝整段会话记录。
+			Messages = () => [.. _agent.Messages],
+		},
+		declaredTools: CodemodeDescribedTools(tools),
+		inlineBudget: Settings.Codemode.InlineBudget);
+
+	/// <summary>
+	/// codemode 描述里列出的工具。pi 的 mode=on 只列 <c>codemode</c> exposure 的工具：已经直接
+	/// 声明给模型的工具不再重复一遍（它们的描述里会加上怎么从脚本调用），deferred 留给
+	/// <c>tool_search</c>。mode=only 额外列出 direct 工具。
+	/// </summary>
+	private IReadOnlyList<AgentTool> CodemodeDescribedTools(IReadOnlyList<AgentTool> tools)
+	{
+		var only = string.Equals(Settings.Codemode.Mode, "only", StringComparison.Ordinal);
+		return
+		[
+			.. tools.Where(tool =>
+				!string.Equals(tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)
+				&& !string.Equals(tool.Exposure, ToolExposure.Hidden, StringComparison.Ordinal)
+				&& (string.Equals(tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal)
+					|| (only && !string.Equals(tool.Exposure, ToolExposure.Deferred, StringComparison.Ordinal)))),
+		];
+	}
+
+	/// <summary>按当前分支重建 <c>tool_search</c> 加载过的工具名。</summary>
+	private HashSet<string> LoadedToolNames()
+	{
+		var names = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var entry in Session.GetBranch())
+		{
+			if (entry is not CustomEntry { CustomType: ToolLoadEntryType } custom || custom.Data?["tools"] is not JsonArray tools)
+			{
+				continue;
+			}
+
+			foreach (var node in tools)
+			{
+				if (node?.GetValue<string>() is { Length: > 0 } name)
+				{
+					names.Add(name);
+				}
+			}
+		}
+
+		return names;
+	}
+
+	/// <summary>
+	/// 面向模型的 <c>tool_search</c>：在尚未声明的 <c>codemode</c>/<c>deferred</c> 工具里按 BM25
+	/// 排序，把命中的工具写成 <c>tool-load</c> 条目并立即声明（后续回合可直接调用）。
+	/// 与 pi 一样，加载会进入会话记录，因此恢复、fork 与切换分支都看得到。
+	/// </summary>
+	private AgentTool CreateToolSearchTool() => new()
+	{
+		Name = ToolSearchName,
+		Label = ToolSearchName,
+		Description =
+			"Search for tools that are not declared to you yet and load the matching ones so you can call them directly. " +
+			"Use it when a task needs a tool you cannot see, such as an MCP tool.",
+		Parameters = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["query"] = new JsonObject
+				{
+					["type"] = "string",
+					["description"] = "What the tool should do.",
+				},
+				["limit"] = new JsonObject
+				{
+					["type"] = "integer",
+					["minimum"] = 1,
+					["description"] = "Maximum number of tools to load (default 8).",
+				},
+			},
+			["required"] = new JsonArray("query"),
+		},
+		Execute = SearchToolsAsync,
+	};
+
+	private Task<AgentToolResult> SearchToolsAsync(AgentToolInvocation invocation)
+	{
+		var query = invocation.Arguments["query"] is JsonValue value && value.TryGetValue<string>(out var text)
+			? text.Trim()
+			: string.Empty;
+		if (query.Length == 0)
+		{
+			return Task.FromResult(AgentToolResult.Error("tool_search expects a non-empty query"));
+		}
+
+		var limit = 8;
+		if (invocation.Arguments["limit"] is JsonValue limitValue
+			&& (!limitValue.TryGetValue<int>(out limit) || limit <= 0))
+		{
+			return Task.FromResult(AgentToolResult.Error("tool_search limit must be a positive integer"));
+		}
+
+		var declared = _agent.DeclaredTools.Select(static tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+		var loaded = LoadedToolNames();
+		var candidates = _fullTools
+			.Select(static tool => tool.Tool)
+			.Where(tool => IsDiscoveryExposure(tool.Exposure)
+				&& !declared.Contains(tool.Name)
+				&& !loaded.Contains(tool.Name))
+			.ToList();
+		if (candidates.Count == 0)
+		{
+			return Task.FromResult(AgentToolResult.Text("No tools are waiting to be loaded."));
+		}
+
+		var documents = candidates
+			.Select(tool => (tool.Name, CodeModeSearch.CreateDocument(tool.Name, tool.Description, tool.Parameters)))
+			.ToList();
+		var matches = CodeModeSearch.Rank(query, documents, limit);
+		if (matches.Count == 0)
+		{
+			return Task.FromResult(AgentToolResult.Text($"No tools matched \"{query}\"."));
+		}
+
+		var names = new JsonArray();
+		foreach (var name in matches)
+		{
+			names.Add((JsonNode?)JsonValue.Create(name));
+		}
+
+		Session.AppendCustom(ToolLoadEntryType, new JsonObject { ["tools"] = names });
+		// 立即重建 loadout：后续回合的声明与脚本可调用集合都包含这些工具。
+		ApplyTools();
+
+		var sections = matches.Select(name =>
+		{
+			var tool = candidates.First(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+			return CodeModeToolFactory.RenderDeclaration(tool, ToolGuidelines(tool.Name));
+		});
+		return Task.FromResult(AgentToolResult.Text(
+			$"Loaded {matches.Count} tool(s):\n\n{string.Join("\n\n", sections)}"));
+	}
+
+	/// <summary>内置工具的 prompt guidelines，附在声明与 ALL_TOOLS 的描述后。</summary>
+	private IReadOnlyList<string> ToolGuidelines(string name)
+	{
+		foreach (var builtin in _fullTools)
+		{
+			if (string.Equals(builtin.Tool.Name, name, StringComparison.Ordinal)) return builtin.Guidelines;
+		}
+
+		return [];
+	}
+
+	/// <summary>mode=on：直接声明给模型的工具补一行从脚本调用的说明（与 pi 一致）。</summary>
+	private static AgentTool WithCodemodeHint(AgentTool tool)
+	{
+		// 调用方可能把已经带提示的工具再传回来（MCP 刷新/测试），避免重复追加。
+		if (tool.Description.Contains("\n\nCodemode: `tools.", StringComparison.Ordinal)) return tool;
+
+		var output = tool.OutputSchema is null ? "a string" : "an object";
+		return tool with
+		{
+			Description = $"{tool.Description.Trim()}\n\nCodemode: `tools.{CodeModeIdentifier.ToIdentifier(tool.Name)}(args)` resolves to {output}.",
+		};
+	}
+
+	/// <summary>
+	/// 执行脚本发起的一次嵌套调用。与顶层调用共用同一条管线：参数修正、schema 校验、
+	/// 计划模式安全网与宿主钩子都会执行，嵌套结果不进入 LLM 上下文。
+	/// </summary>
+	private async Task<AgentToolCallOutcome> ExecuteNestedToolAsync(
+		string name,
+		JsonObject arguments,
+		string toolCallId,
+		CancellationToken cancellationToken,
+		IReadOnlyList<Message>? messages)
+	{
+		var tools = _agent.Tools;
+		var tool = tools.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+		var toolCall = new ToolCall { Id = toolCallId, Name = name, Arguments = arguments };
+		if (tool is null)
+		{
+			return new AgentToolCallOutcome
+			{
+				ToolCall = toolCall,
+				Result = AgentToolResult.Error($"Tool {name} not found"),
+				IsError = true,
+			};
+		}
+
+		var prepared = tool.PrepareArguments is { } prepare ? prepare(arguments) : arguments;
+		var validation = JsonSchemaValidator.ValidateToolArguments(tool.ToDeclaration(), prepared);
+		if (validation.Error is { } validationError)
+		{
+			return new AgentToolCallOutcome
+			{
+				ToolCall = toolCall,
+				Result = AgentToolResult.Error(validationError),
+				IsError = true,
+			};
+		}
+
+		var value = validation.Value!;
+		toolCall = toolCall with { Arguments = value };
+		// 每次 codemode 执行一份消息快照，全部嵌套调用复用；没有会话上下文时才按调用取。
+		var snapshot = messages ?? [.. _agent.Messages];
+		var context = new AgentContext { Messages = snapshot as List<Message> ?? [.. snapshot], Tools = tools };
+		var assistant = snapshot.LastOrDefault(static message => message is AssistantMessage) as AssistantMessage
+			?? new AssistantMessage
+			{
+				Content = [],
+				Api = _agent.Model.Api,
+				Provider = _agent.Model.Provider,
+				Model = _agent.Model.Id,
+			};
+
+		var blocked = await GuardedBeforeToolCallAsync(
+			new BeforeToolCallContext
+			{
+				AssistantMessage = assistant,
+				ToolCall = toolCall,
+				Arguments = value,
+				Context = context,
+			},
+			cancellationToken).ConfigureAwait(false);
+		if (blocked?.Block == true)
+		{
+			return new AgentToolCallOutcome
+			{
+				ToolCall = toolCall,
+				Result = AgentToolResult.Error(blocked.Reason ?? $"Tool call blocked by policy: {name}") with
+				{
+					Terminate = blocked.Terminate,
+				},
+				IsError = true,
+			};
+		}
+
+		var startedAt = Stopwatch.GetTimestamp();
+		AgentToolResult result;
+		bool isError;
+		try
+		{
+			result = await tool.Execute(new AgentToolInvocation
+			{
+				ToolCallId = toolCallId,
+				ToolName = name,
+				Arguments = value,
+				CancellationToken = cancellationToken,
+			}).ConfigureAwait(false);
+			isError = result.IsError;
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			// 取消不是工具失败：让沙箱把这次调用标成 cancelled，而不是一个 error 结果。
+			throw;
+		}
+		catch (Exception ex)
+		{
+			result = AgentToolResult.Error(ex.Message);
+			isError = true;
+		}
+
+		var durationMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+		if (_userAfterToolCall is { } after)
+		{
+			var hook = await after(
+				new AfterToolCallContext
+				{
+					AssistantMessage = assistant,
+					ToolCall = toolCall,
+					Arguments = value,
+					Result = result,
+					IsError = isError,
+					Context = context,
+				},
+				cancellationToken).ConfigureAwait(false);
+			if (hook is not null)
+			{
+				result = result with
+				{
+					Content = hook.Content ?? result.Content,
+					Details = hook.HasDetails ? hook.Details : result.Details,
+					StructuredContent = hook.HasStructuredContent
+						? hook.StructuredContent
+						: (hook.Content is not null ? null : result.StructuredContent),
+					Usage = hook.Usage ?? result.Usage,
+					Terminate = hook.Terminate ?? result.Terminate,
+					IsError = hook.IsError ?? result.IsError,
+				};
+				isError = hook.IsError ?? isError;
+			}
+		}
+
+		return new AgentToolCallOutcome
+		{
+			ToolCall = toolCall,
+			Result = result,
+			IsError = isError,
+			DurationMs = durationMs,
+		};
+	}
+
+	/// <summary>
+	/// 脚本的 <c>models.*</c>：只查询会话的模型目录，不发请求。pi 的 <c>classify</c>/<c>generateImages</c>
+	/// 需要网关与凭据，PiWeft 还没把这两个入口接到会话，因此这里只暴露目录查询。
+	/// </summary>
+	private JsonNode? QueryCodeModeModels(CodeModeModelsRequest request)
+	{
+		var type = request.Type switch
+		{
+			"chat" => ModelType.Chat,
+			"image" => ModelType.Image,
+			"classifier" => ModelType.Classifier,
+			_ => throw new ArgumentException(
+				$"Unknown model type \"{request.Type}\". Use \"chat\", \"image\", or \"classifier\"."),
+		};
+
+		var registry = _registry ?? FallbackModelRegistry.Value;
+		if (request.Operation == CodeModeModelOperation.Get)
+		{
+			if (request.Provider is null || request.Id is null)
+			{
+				throw new ArgumentException("models.getModelOfType(type, provider, id) expects three strings");
+			}
+
+			var model = registry.Get(request.Provider, request.Id);
+			return model is null || model.Type != type ? null : ModelInfo(model);
+		}
+
+		IEnumerable<Model> models = registry.List(request.Provider).Where(model => model.Type == type);
+		if (request.Operation == CodeModeModelOperation.Available)
+		{
+			models = models.Where(model => IsProviderAvailable(model.Provider));
+		}
+
+		var array = new JsonArray();
+		foreach (var model in models) array.Add((JsonNode)ModelInfo(model));
+		return array;
+	}
+
+	/// <summary>没有凭据解析器时按「全部可用」处理；有解析器时以它能否给出 key 为准。</summary>
+	private bool IsProviderAvailable(string provider) =>
+		_apiKeyForProvider is null || _apiKeyForProvider(provider) is { Length: > 0 };
+
+	private static JsonObject ModelInfo(Model model)
+	{
+		var info = JsonSerializer.SerializeToNode(model, PiJsonContext.Default.Model) as JsonObject ?? new JsonObject();
+		// 目录里的 headers 可能带凭据，脚本不能看到（与 pi 一样剔除）。
+		info.Remove("headers");
+		return info;
+	}
+
+	/// <summary>
+	/// 执行一次 <c>models.classify()</c> / <c>models.generateImages()</c>。模型由脚本给出
+	/// provider + id，凭据与请求头沿用会话的解析结果，脚本无法自带 baseUrl/headers。
+	/// </summary>
+	private async Task<CodeModeModelCallResult> ExecuteModelCallAsync(
+		CodeModeModelCall call,
+		CancellationToken cancellationToken)
+	{
+		var registry = _registry ?? FallbackModelRegistry.Value;
+		var model = registry.Resolve(call.Provider, call.Id)
+			?? throw new InvalidOperationException($"Unknown model \"{call.Provider}/{call.Id}\"");
+		var options = new ProviderRequestOptions
+		{
+			ApiKey = _apiKeyForProvider?.Invoke(model.Provider),
+			TimeoutMs = Settings.TimeoutMs,
+			Headers = _streamOptions.Headers,
+			CancellationToken = cancellationToken,
+		};
+
+		if (string.Equals(call.Operation, "classify", StringComparison.Ordinal))
+		{
+			if (model.Type != ModelType.Classifier)
+			{
+				throw new InvalidOperationException($"\"{call.Provider}/{call.Id}\" is not a classifier model");
+			}
+
+			var gateway = _classifiers ?? throw new InvalidOperationException("classifiers are not available in this session");
+			var result = await gateway
+				.ClassifyAsync(model, ParseClassifierContext(call.Context), options, cancellationToken)
+				.ConfigureAwait(false);
+			return new CodeModeModelCallResult
+			{
+				Status = StopStatus(result.StopReason),
+				Error = result.ErrorMessage,
+				Output = ClassifierJson(result),
+				InputTokens = result.Usage?.Input ?? 0,
+				OutputTokens = result.Usage?.Output ?? 0,
+				TotalTokens = result.Usage?.TotalTokens ?? 0,
+				Cost = result.Usage?.Cost.Total ?? 0,
+			};
+		}
+
+		if (string.Equals(call.Operation, "generateImages", StringComparison.Ordinal))
+		{
+			if (model.Type != ModelType.Image)
+			{
+				throw new InvalidOperationException($"\"{call.Provider}/{call.Id}\" is not an image model");
+			}
+
+			var gateway = _images ?? throw new InvalidOperationException("image generation is not available in this session");
+			var result = await gateway
+				.GenerateAsync(model, ParseImagesContext(call.Context), options, cancellationToken)
+				.ConfigureAwait(false);
+			return new CodeModeModelCallResult
+			{
+				Status = StopStatus(result.StopReason),
+				Error = result.ErrorMessage,
+				Output = ImagesJson(result),
+				InputTokens = result.Usage.Input,
+				OutputTokens = result.Usage.Output,
+				TotalTokens = result.Usage.TotalTokens,
+				Cost = result.Usage.Cost.Total,
+				GeneratedImages = result.Output.OfType<ImageContent>().Count(),
+			};
+		}
+
+		throw new InvalidOperationException($"Unknown model operation \"{call.Operation}\"");
+	}
+
+	private static string StopStatus(StopReason reason) => reason switch
+	{
+		StopReason.Error => "error",
+		StopReason.Aborted => "aborted",
+		_ => "stop",
+	};
+
+	private static JsonObject ClassifierJson(ClassifierResult result)
+	{
+		var answers = new JsonObject();
+		foreach (var (id, answer) in result.Answers)
+		{
+			answers[id] = answer switch
+			{
+				ClassifierChoiceAnswer choice => new JsonObject
+				{
+					["type"] = "choice",
+					["choice"] = choice.Choice,
+					["probabilities"] = MapJson(choice.Probabilities),
+					["confidence"] = choice.Confidence,
+				},
+				ClassifierScoreAnswer score => new JsonObject
+				{
+					["type"] = "score",
+					["score"] = score.Score,
+					["confidence"] = score.Confidence,
+				},
+				ClassifierBoolAnswer boolean => new JsonObject
+				{
+					["type"] = "bool",
+					["probability"] = boolean.Probability,
+				},
+				_ => null,
+			};
+		}
+
+		return new JsonObject
+		{
+			["api"] = result.Api,
+			["provider"] = result.Provider,
+			["model"] = result.Model,
+			["answers"] = answers,
+			["usage"] = UsageJson(result.Usage),
+			["stopReason"] = StopStatus(result.StopReason),
+			["errorMessage"] = result.ErrorMessage,
+			["timestamp"] = result.Timestamp,
+		};
+	}
+
+	private static JsonObject ImagesJson(ImageGenerationResult result)
+	{
+		var output = new JsonArray();
+		foreach (var block in result.Output)
+		{
+			output.Add(block switch
+			{
+				TextContent text => (JsonNode)new JsonObject { ["type"] = "text", ["text"] = text.Text },
+				ImageContent image => new JsonObject
+				{
+					["type"] = "image",
+					["data"] = image.Data,
+					["mimeType"] = image.MimeType,
+				},
+				_ => null,
+			});
+		}
+
+		return new JsonObject
+		{
+			["api"] = result.Api,
+			["provider"] = result.Provider,
+			["model"] = result.Model,
+			["output"] = output,
+			["usage"] = UsageJson(result.Usage),
+			["stopReason"] = StopStatus(result.StopReason),
+			["errorMessage"] = result.ErrorMessage,
+			["timestamp"] = result.Timestamp,
+		};
+	}
+
+	private static JsonObject? UsageJson(Usage? usage) => usage is null
+		? null
+		: new JsonObject
+		{
+			["input"] = usage.Input,
+			["output"] = usage.Output,
+			["cacheRead"] = usage.CacheRead,
+			["cacheWrite"] = usage.CacheWrite,
+			["totalTokens"] = usage.TotalTokens,
+			["cost"] = new JsonObject { ["total"] = usage.Cost.Total },
+		};
+
+	private static JsonObject MapJson(IReadOnlyDictionary<string, double> values)
+	{
+		var node = new JsonObject();
+		foreach (var (key, value) in values) node[key] = value;
+		return node;
+	}
+
+	private static ClassifierContext ParseClassifierContext(JsonNode? node)
+	{
+		if (node is not JsonObject context)
+		{
+			throw new InvalidOperationException("models.classify() expects a context object as its second argument");
+		}
+
+		if (context["state"] is not JsonObject state)
+		{
+			throw new InvalidOperationException("models.classify() context.state must be an object");
+		}
+
+		var images = ParseImages(context["images"], "models.classify() context.images");
+		if (context["questions"] is not JsonObject questions || questions.Count == 0)
+		{
+			throw new InvalidOperationException("models.classify() context.questions must map question IDs to questions");
+		}
+
+		var parsed = new Dictionary<string, ClassifierQuestion>(StringComparer.Ordinal);
+		foreach (var (id, value) in questions)
+		{
+			if (value is not JsonObject question)
+			{
+				throw new InvalidOperationException($"models.classify() context.questions.{id} must be an object");
+			}
+
+			var instructions = question["instructions"]?.GetValue<string>() ?? string.Empty;
+			var type = question["type"]?.GetValue<string>();
+			switch (type)
+			{
+				case "choice":
+				{
+					if (question["criteria"] is not JsonObject criteria)
+					{
+						throw new InvalidOperationException(
+							$"models.classify() context.questions.{id} is a \"choice\" question, so criteria must map each label to its meaning");
+					}
+
+					var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+					foreach (var (label, meaning) in criteria)
+					{
+						labels[label] = meaning?.GetValue<string>()
+							?? throw new InvalidOperationException($"models.classify() context.questions.{id}.criteria.{label} must be a string");
+					}
+
+					parsed[id] = new ClassifierChoiceQuestion { Instructions = instructions, Criteria = labels };
+					break;
+				}
+
+				case "score":
+				{
+					parsed[id] = new ClassifierScoreQuestion
+					{
+						Instructions = instructions,
+						Criteria = ReadStrings(question["criteria"], $"models.classify() context.questions.{id}.criteria"),
+					};
+					break;
+				}
+
+				case "bool":
+				{
+					if (question["criteria"] is not JsonObject criteria)
+					{
+						throw new InvalidOperationException(
+							$"models.classify() context.questions.{id} is a \"bool\" question, so criteria must be {{ true: string, false: string }}");
+					}
+
+					parsed[id] = new ClassifierBoolQuestion
+					{
+						Instructions = instructions,
+						TrueMeaning = criteria["true"]?.GetValue<string>()
+							?? throw new InvalidOperationException($"models.classify() context.questions.{id}.criteria.true must be a string"),
+						FalseMeaning = criteria["false"]?.GetValue<string>()
+							?? throw new InvalidOperationException($"models.classify() context.questions.{id}.criteria.false must be a string"),
+					};
+					break;
+				}
+
+				default:
+					throw new InvalidOperationException(
+						$"models.classify() context.questions.{id}.type must be \"choice\", \"score\", or \"bool\"");
+			}
+		}
+
+		return new ClassifierContext
+		{
+			State = (JsonObject)state.DeepClone(),
+			Images = images.Count > 0 ? images : null,
+			Questions = parsed,
+		};
+	}
+
+	private static ImageGenerationRequest ParseImagesContext(JsonNode? node)
+	{
+		if (node is not JsonObject context || context["input"] is not JsonArray input || input.Count == 0)
+		{
+			throw new InvalidOperationException(
+				"models.generateImages() expects a context object with a non-empty input array of text/image blocks");
+		}
+
+		var blocks = new List<ContentBlock>(input.Count);
+		foreach (var item in input)
+		{
+			if (item is not JsonObject block)
+			{
+				throw new InvalidOperationException("models.generateImages() context.input items must be text or image blocks");
+			}
+
+			switch (block["type"]?.GetValue<string>())
+			{
+				case "text":
+					blocks.Add(new TextContent
+					{
+						Text = block["text"]?.GetValue<string>()
+							?? throw new InvalidOperationException("models.generateImages() text blocks need a string text field"),
+					});
+					break;
+				case "image":
+					blocks.Add(new ImageContent
+					{
+						Data = block["data"]?.GetValue<string>()
+							?? throw new InvalidOperationException("models.generateImages() image blocks need a string data field"),
+						MimeType = block["mimeType"]?.GetValue<string>()
+							?? throw new InvalidOperationException("models.generateImages() image blocks need a string mimeType field"),
+					});
+					break;
+				default:
+					throw new InvalidOperationException("models.generateImages() context.input items must be text or image blocks");
+			}
+		}
+
+		return new ImageGenerationRequest { Input = blocks };
+	}
+
+	private static List<ImageContent> ParseImages(JsonNode? node, string label)
+	{
+		var images = new List<ImageContent>();
+		if (node is null) return images;
+		if (node is not JsonArray array)
+		{
+			throw new InvalidOperationException($"{label} must be an array of image blocks");
+		}
+
+		foreach (var item in array)
+		{
+			if (item is not JsonObject image || image["type"]?.GetValue<string>() != "image")
+			{
+				throw new InvalidOperationException($"{label} items must be image blocks");
+			}
+
+			images.Add(new ImageContent
+			{
+				Data = image["data"]?.GetValue<string>()
+					?? throw new InvalidOperationException($"{label} image blocks need a string data field"),
+				MimeType = image["mimeType"]?.GetValue<string>()
+					?? throw new InvalidOperationException($"{label} image blocks need a string mimeType field"),
+			});
+		}
+
+		return images;
+	}
+
+	private static IReadOnlyList<string> ReadStrings(JsonNode? node, string label)
+	{
+		if (node is not JsonArray array || array.Count == 0)
+		{
+			throw new InvalidOperationException($"{label} must be a non-empty array of strings");
+		}
+
+		var values = new List<string>(array.Count);
+		foreach (var item in array)
+		{
+			values.Add(item?.GetValue<string>()
+				?? throw new InvalidOperationException($"{label} must be a non-empty array of strings"));
+		}
+
+		return values;
+	}
+
+	/// <summary>按当前分支重建 <c>load()</c> 可见的 store：从根开始依次应用 codemode-store 条目。</summary>
+	private IReadOnlyDictionary<string, JsonNode?> LoadCodeModeStore()
+	{
+		var store = new Dictionary<string, JsonNode?>(StringComparer.Ordinal);
+		foreach (var entry in Session.GetBranch())
+		{
+			if (entry is not CustomEntry { CustomType: CodeModeToolFactory.EntryType } custom || custom.Data is not JsonObject data)
+			{
+				continue;
+			}
+
+			if (data["delete"] is JsonArray deleted)
+			{
+				foreach (var key in deleted)
+				{
+					if (key?.GetValue<string>() is { } name) store.Remove(name);
+				}
+			}
+
+			if (data["set"] is JsonObject set)
+			{
+				foreach (var (key, value) in set)
+				{
+					store[key] = value?.DeepClone();
+				}
+			}
+		}
+
+		return store;
+	}
+
+	/// <summary>成功执行后把 <c>store()</c> 的改动追加为一条自定义条目（不进入上下文）。</summary>
+	private void SaveCodeModeStore(PiWeft.JavaScript.CodeModeStoreWrites writes)
+	{
+		var set = new JsonObject();
+		foreach (var (key, value) in writes.Set)
+		{
+			set[key] = value?.DeepClone();
+		}
+
+		var delete = new JsonArray();
+		foreach (var key in writes.Delete)
+		{
+			delete.Add((JsonNode?)JsonValue.Create(key));
+		}
+
+		Session.AppendCustom(CodeModeToolFactory.EntryType, new JsonObject { ["set"] = set, ["delete"] = delete });
 	}
 
 	/// <summary>
@@ -1647,6 +2586,14 @@ public sealed class CodingAgentSession : IDisposable
 	/// </summary>
 	public void SetTools(IReadOnlyList<AgentTool> tools)
 	{
+		// 有 exposure: codemode 的工具时自动补上 codemode（pi 的 autoEnableCodemode 行为）。
+		if (Settings.Codemode.AutoEnable
+			&& tools.Any(static tool => string.Equals(tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal))
+			&& tools.All(static tool => !string.Equals(tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)))
+		{
+			tools = [.. tools, CodeModeToolFactory.CreatePlaceholder().Tool];
+		}
+
 		// 同样把占位 todo 工具换成绑定到本会话的版本，保持提示词与执行一致。
 		var bound = new List<AgentTool>(tools.Count);
 		foreach (var tool in tools)
@@ -1675,6 +2622,10 @@ public sealed class CodingAgentSession : IDisposable
 					continue;
 				case AskQuestionToolFactory.Name:
 					rebuilt.Add(AskQuestionToolFactory.Create(() => this));
+					continue;
+				case CodeModeToolFactory.Name:
+					// 工具集变化后 codemode 的描述也要重新列出可调用工具。
+					rebuilt.Add(CreateCodeModeTool(bound));
 					continue;
 				case "bash":
 					// 工具集被 MCP 刷新重建时，bash 也要重新绑定会话上下文（PI_* 注入）。

@@ -11,6 +11,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 | `src/PiWeft.Ai` | 消息、JSON、模型目录（含虚拟模型）、费用、认证、provider 流式适配、生图/分类 API、Codex WebSocket |
 | `src/PiWeft.Agent` | 代理循环、串行/并行工具、steering、follow-up、事件与中断 |
 | `src/PiWeft.CodingAgent` | 会话、内置工具、资源发现（技能/提示词/主题/包）、设置、压缩、分支摘要、重试与统计 |
+| `src/PiWeft.JavaScript` | Jint 5 沙箱、codemode 源码解析与 TypeScript 声明渲染 |
 | `src/PiWeft.Mcp` | stdio / streamable HTTP、分页、工具、资源、提示与通知 |
 | `src/PiWeft.Cli` | 参数与环境装配、text / print / JSON / RPC、认证、HTML 导出、宿主日志 |
 | `src/PiWeft.Desktop` | 多项目、多会话工作台，进程内驱动 `CodingAgentSession` |
@@ -18,18 +19,18 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 - 使用 .NET 10、`LangVersion=preview` 和制表符缩进；中文为文档、界面文案和注释的第一方语言。
 - JSON 使用 `System.Text.Json` 源生成与手写转换器，不依赖 Newtonsoft.Json 或供应商 SDK。保留 trim/AOT 分析器。
-- 核心库无第三方运行时包；宿主使用 ZLogger，桌面使用 MewUI 0.22.1、Markdown 和 SVG 扩展。
+- 核心库无第三方运行时包，唯一例外是 codemode 所需的 Jint 5 预览版（`src/PiWeft.JavaScript`，版本固定在 `Directory.Packages.props`，包来自 `nuget.config` 里的 `Jint-preview` 源）；宿主使用 ZLogger，桌面使用 MewUI 0.22.1、Markdown 和 SVG 扩展。
 - 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线，`<agentDir>/models-store.json` 缓存 pi.dev 远程目录（`pi update --models` 刷新），自定义端点由 `models.json` 注册。`models.json` 的模型条目可写 `"virtual":{"model":"provider/id","thinkingLevel":"high","thinkingLevels":["off","high"]}`，注册为不直接访问 Provider 的虚拟目录项；每次请求由静态目标路由，助手消息仍记录实际物理模型。
-- 不实现 JS 扩展宿主、codemode、mermaid、KaTeX、托盘、桌面通知、自动更新、崩溃上报或内嵌浏览器；终端以独立的 PTY 命令 Dock 提供，不内嵌第三方终端组件。
+- 不实现 JS 扩展宿主、mermaid、KaTeX、托盘、桌面通知、自动更新、崩溃上报或内嵌浏览器；终端以独立的 PTY 命令 Dock 提供，不内嵌第三方终端组件。codemode 已按下面「codemode」一节实现为内置工具，默认不启用。
 
 ## pi 与 PiDeck 兼容
 
 - CLI 产物与程序集名保持 `pi`；`--version` 报告 RPC 契约版本 **1.3.0**，不是桌面构建号。
 - 保留 `PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、项目 `.pi`、配置文件名及 version 3 JSONL 会话格式。
 - 系统提示词只在运行时构造，不能作为历史消息写入会话。工具热更新保留提示章节边界；未知会话字段原样保留。内置工具的短 snippet 与 guidelines 在所有入口（CLI/RPC/桌面）按名称重新挂回，与 pi/PiDeck 提示词一致。
-- 默认工具集与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 PiDeck 依赖的原生 `todo` 与 `ask_question`；pi 默认关闭的 `grep`/`find`/`ls` 需要 `--tools`、`settings.defaultTools` 显式开启。`--tools` 的纯名字列表整体替换默认集、`+name`/`-name` 在默认集上增减、`--exclude-tools` 支持通配，模式始终针对完整内置目录展开。
+- 默认工具集与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 PiDeck 依赖的原生 `todo` 与 `ask_question`；pi 默认关闭的 `grep`/`find`/`ls` 与 `codemode` 需要 `--tools`、`settings.defaultTools` 显式开启。`--tools` 的纯名字列表整体替换默认集、`+name`/`-name` 在默认集上增减、`--exclude-tools` 支持通配，模式始终针对完整内置目录展开。
 - bash 工具向子进程注入 pi 的会话环境变量（`PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，执行前先清除继承值），进程启动时设置 `AI_AGENT=pi` 与 `PI_CODING_AGENT=true`；`settings.shellPath`、`settings.shellCommandPrefix` 分别控制 bash 的 shell 与命令前缀。`!`/`!!` 内联命令（交互模式）不走注入，与 pi 一致。
-- 生效的 settings 键新增：`shellPath`、`shellCommandPrefix`、`sessionDir`（`--session-dir` 优先）、`defaultTools`、`cacheWarming`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`sessionShareDestination`。其余 pi 键继续原样保留、不生效。
+- 生效的 settings 键新增：`shellPath`、`shellCommandPrefix`、`sessionDir`（`--session-dir` 优先）、`defaultTools`、`cacheWarming`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`sessionShareDestination`、`codemode`（`mode`/`inlineBudget`/`autoEnable`）。其余 pi 键继续原样保留、不生效。
 - `--system-prompt` 取代默认 preamble，`--append-system-prompt` 追加为 `addendum` 章节，`--no-context-files` 停用 AGENTS.md / CLAUDE.md 发现；三者都接受字面文本或文件路径。
 - `--export <session> [output]` 导出 HTML 后退出（只读，不改会话文件）；`--models <patterns>` 限定 Ctrl+P 模型轮换范围。
 - `pi install <source>`、`pi list`、`pi remove <source>`、`pi update [source]` 管理 pi 包：npm 装到 `<agentDir>/npm/node_modules`、git 克隆到 `<agentDir>/git`、本地路径只登记不复制；`--local/-l` 写项目 `.pi/settings.json`。npm 可执行文件可用 `settings.npmCommand` 覆盖。
@@ -43,6 +44,25 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 可恢复错误按 `settings.retry` 分类并指数退避；失败尝试保留在文件里，通过 `context_edit` 从模型上下文排除，不重复提交用户消息。
 - PiDeck 传入的 `--no-themes`、`--offline`、`--no-extensions`、`-e <path>` 等兼容参数保留。接受参数不代表实现了 JS 扩展；主题由桌面按 pi 主题 JSON 解析。
 - 项目信任：`<agentDir>/trust.json` 与 pi 同构（规范化路径 → true/false），从工作目录逐级向上取第一个决策；`-a/--approve`、`-na/--no-approve` 覆盖；全局 `settings.defaultProjectTrust` 为兜底，**默认 `ask`（与 pi 一致）**。为 false 时不合并项目设置、不连接项目 `.pi/mcp.json`、不读取项目级 `.pi/models.json`（它能改写端点与请求头），也不加载项目级技能与提示词模板（用户级目录仍加载，上下文文件不受影响）。当默认值为 `ask` 且存在受保护项目资源时，CLI 交互模式与桌面在启动时弹卡片询问「信任（记住）/仅本次会话信任/不信任（记住）」，选择写入 `trust.json`；RPC 与 `--print` 无法弹框，`ask` 按不受信处理（失败关闭）。
+
+### codemode
+
+内置 `codemode` 工具让模型写 JavaScript，在 Jint 5 沙箱里调用其它工具。默认**不启用**（与 pi 的 inactive 注册一致）：`--tools +codemode` 或 `settings.defaultTools: ["+codemode"]` 选中。
+
+**脚本面**——async 函数体，支持顶层 `await`/`return`；首行可写 `// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}`。可见的只有 `tools.<name>(args)`、`ALL_TOOLS`、发现函数、`models.*`、`text()`/`image()`/`exit()`/`console.*`、`store()`/`load()`；没有 Node、文件、网络、定时器或模块加载；`eval`/`new Function` 可用（与 pi 的 QuickJS 一致，动态源码同受预算约束）；宿主桥在 prelude 里收进闭包并删除。
+
+- 发现：`searchTools(query, { limit?, namespace? })` 用与 pi 相同的分词 + Okapi BM25（k1=1.2、b=0.75）在全部嵌套工具上排序；`describeTool(name)` 返回 TypeScript 声明；`describeNamespace(name)` 返回 `{ name, aliases, description, instructions, tools }`。命名空间是 `mcp__<server>`，服务器原名作别名（`dev-radius` ≡ `dev_radius`），描述来自 `mcp.json`、instructions 来自服务器 initialize。
+- `models.*`：目录查询 `getModelsOfType`/`getAvailableOfType`/`getModelOfType`（剔除凭据 headers，`getAvailableOfType` 按凭据过滤）；`classify(model, context)`/`generateImages(model, context)` 走会话的分类/生图网关（并发 4，context 形状宿主校验，凭据由会话解析），调用进详情并汇入 `usage`，未展示的生成图片会提示。
+
+**暴露与加载**（与 pi 一致）：`direct` 直接声明、`codemode` 只给脚本、`deferred` 等 `tool_search` 加载、`hidden` 丢弃；MCP 默认 `codemode` 并自动启用 codemode（`settings.codemode.autoEnable`）。`tool_search` 用 BM25 加载未声明的 `codemode`/`deferred` 工具，命中写入 `tool-load` 条目并立即声明（随分支恢复/fork 保留）。`Agent` 区分可执行集合（`Tools`）与声明集合（`DeclaredTools`）。
+
+**声明与预算**：codemode 描述按命名空间分组（`## mcp__docs` 附服务器描述；预算按组轮转，被裁掉的组标注 `(tools not listed)`/`(some tools not listed)`），`inlineBudget`（默认 3000 token）控制总量；`mode`: `on` 给直接声明补「`Codemode: tools.x(args)` resolves to …」并不再重复列出，`only` 列出全部并隐藏直接声明；系统提示词的 `mcp_servers` 章节列出未直接声明的服务器与够到它们的方式（描述 250 字符、整节 4096 字符截断）。
+
+**执行管线**：嵌套调用走会话完整管线（`PrepareArguments`、schema 校验、计划模式安全网、`before/afterToolCall` 钩子，运行中经 `OnUpdate` 推送快照）；子结果不进 LLM 上下文；结束时未完成的调用标记 `cancelled`；工具 `OutputSchema`（MCP 已映射）声明后脚本拿 `structuredContent`。`store()` 成功才写 `codemode-store` 条目，`load()` 按分支从根重建。`return` 值参与 `text N/M` 编号、console 最后；输出超 `max_output_tokens` 保留首尾并落盘 `pi-codemode-*.txt`（details 给 `fullOutputPath`，`0` 时只保留截断提示）；`image()` 保存 `pi-codemode-*.png|jpg|gif|webp` 并标注路径。
+
+**沙箱与隔离**：每次执行新建引擎，手动搭出与 `ForUntrustedCode` 相同的预算（语句 200 万、托管 256 MiB、时限、源码/AST 上限、栈守卫）并关闭 interop 反射/写入口——不启用 `ForUntrustedCode` 本身，因其不可变配置会永久禁 eval。默认无超时（只有 `@options.timeout_ms` 与 abort），无挂起工具/落定/定时任务时报「Promise 永远不会落定」；并发解释器上限 2（pi 的 `MAX_CONCURRENT_CODEMODE_WORKERS`）。专用后台线程泵 `Engine.Tasks`，脚本代码（含 await 续体）始终在同一线程；是线程级隔离，不是 OS 沙箱。等待事件驱动（取消注册唤醒，无轮询）；实测固定开销约 4ms/执行、工具启动约 0.03ms/个、重复 `searchTools()` 约 0.7ms/百工具。
+
+**与 pi 的差异及 AOT**：未移植 prelude 内建对象 lockdown（每次执行新建引擎，风险有限）；命名空间只来自 MCP 服务器（无扩展宿主）；顶层 `arguments` 因 AOT 箭头包装与 pi 略有差异。`PiWeft.JavaScript` 关闭 AOT/trim 分析器，CLI 发布带 Jint 裁剪警告；执行路径（eval/search/models）已在 `tools/PiWeft.AotSmoke` 实跑——AOT 下脚本包装必须用 async **箭头**函数：`async function` + 直接 eval 会触发 Jint 的泛型接口分派缺陷（`RhpCidResolve` FailFast）。
 
 ### RPC
 
@@ -142,7 +162,7 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-2026-10-19 本轮验证：Ai/Agent/CodingAgent/MCP/CLI 共 752 项测试通过，Linux x64 NativeAOT 冒烟通过（`AOT SMOKE OK`）；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。真实供应商联网与 Windows/macOS 实机仍未验证。
+2026-10-19 本轮验证：Ai/Agent/CodingAgent/MCP/CLI/JavaScript 共 835 项测试通过，Linux x64 NativeAOT 冒烟通过（`AOT SMOKE OK`）；Desktop 437 项通过（X11 PrimarySelection 在并行全量运行下偶发失败，单独运行稳定）。真实供应商联网与 Windows/macOS 实机仍未验证。
 
 GUI 环境可用 `xvfb-run`。真实二进制对照测试要求 PATH 中有 TypeScript `pi`；没有安装时测试失败，不静默跳过。
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。

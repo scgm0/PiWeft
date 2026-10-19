@@ -212,6 +212,43 @@ public class McpToolNamingTests
 		Assert.Equal("mcp__dev_radius__list_rules", McpToolAdapter.ToolName("dev-radius", "list-rules"));
 		Assert.Equal("mcp__s__a_b_c", McpToolAdapter.ToolName("s", "a.b/c"));
 	}
+
+	[Fact]
+	public void AdapterCarriesExposureNamespaceAndOutputSchema()
+	{
+		var tool = new McpTool
+		{
+			Name = "list-rules",
+			Description = "List rules",
+			InputSchema = new JsonObject { ["type"] = "object" },
+			OutputSchema = new JsonObject { ["type"] = "object" },
+		};
+
+		var agentTool = McpToolAdapter.Create(
+			new StubInvoker(),
+			"dev-radius",
+			tool,
+			TimeSpan.FromSeconds(1),
+			McpExposure.Codemode,
+			"Radius rules",
+			"Call list-rules first.");
+
+		Assert.Equal(McpExposure.Codemode, agentTool.Exposure);
+		Assert.Equal("mcp__dev_radius", agentTool.Namespace);
+		Assert.Contains("dev-radius", agentTool.NamespaceAliases!);
+		Assert.Equal("Radius rules", agentTool.NamespaceDescription);
+		Assert.Equal("Call list-rules first.", agentTool.NamespaceInstructions);
+		Assert.NotNull(agentTool.OutputSchema);
+	}
+
+	private sealed class StubInvoker : IMcpToolInvoker
+	{
+		public Task<McpCallResult> CallToolAsync(string name, JsonObject arguments, CancellationToken cancellationToken) =>
+			Task.FromResult(new McpCallResult());
+
+		public Task<IReadOnlyList<McpTool>> ListToolsAsync(CancellationToken cancellationToken) =>
+			Task.FromResult<IReadOnlyList<McpTool>>([]);
+	}
 }
 
 public class McpClientTests
@@ -459,8 +496,8 @@ public class McpExposureTests
 		var server = Assert.Single(McpConfig.Merge(file, null));
 		Assert.Equal("codemode", server.Exposure);
 		Assert.Equal("hidden", server.ToolExposure!["t"]);
-		// 未知值回落到默认，而不是让服务器或工具消失。
-		Assert.Equal("direct", server.ToolExposure!["u"]);
+		// 未知值回落到默认（与 pi 一致是 codemode），而不是让服务器或工具消失。
+		Assert.Equal("codemode", server.ToolExposure!["u"]);
 	}
 }
 

@@ -8,8 +8,9 @@ namespace PiWeft.Mcp;
 /// <item><c>direct</c>：像普通工具一样直接声明给模型。</item>
 /// <item><c>hidden</c>：注册但不可达（等于移除）。</item>
 /// </list>
-/// PiWeft 还没有 codemode 与 tool_search，因此只有 <c>hidden</c> 会真正改变可用性；
-/// <c>codemode</c> 与 <c>deferred</c> 暂按 <c>direct</c> 处理，并沿用 pi 的默认别名替换规则。
+/// 默认值与 pi 一致：<c>codemode</c>。会话会把这类工具留给脚本调用（必要时自动启用 codemode），
+/// <c>deferred</c> 等 <c>tool_search</c> 加载后再声明给模型，<c>hidden</c> 直接丢弃。
+/// 仍沿用 pi 的默认别名替换规则。
 /// </summary>
 public static class McpExposure
 {
@@ -18,8 +19,8 @@ public static class McpExposure
 	public const string Direct = "direct";
 	public const string Hidden = "hidden";
 
-	/// <summary>配置文件里 <c>exposure</c> 的默认值，与 pi 保持一致的「按 codemode 处理」语义。</summary>
-	public const string Default = Direct;
+	/// <summary>配置文件里 <c>exposure</c> 的默认值：与 pi 一致，MCP 工具默认只在 codemode 脚本里可用。</summary>
+	public const string Default = Codemode;
 
 	private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
 	{
@@ -45,7 +46,7 @@ public static class McpExposure
 	/// <summary>取值是否是可识别的 exposure（含旧别名）。</summary>
 	public static bool IsKnown(string? value) => Normalize(value) is not null;
 
-	/// <summary>该工具是否会被声明给模型。/ <c>hidden</c> 之外都可见（PiWeft 暂无 codemode/tool_search）。</summary>
+	/// <summary>该工具是否可达（<c>hidden</c> 之外都可执行；是否直接声明由会话按 exposure 决定）。</summary>
 	public static bool IsVisible(string exposure) => exposure != Hidden;
 
 	/// <summary>

@@ -64,6 +64,9 @@ public sealed record CodingAgentSettings
 	/// <summary>自动重试策略，对应 pi 的 <c>settings.retry</c>。</summary>
 	public RetryPolicy Retry { get; init; } = new();
 
+	/// <summary>codemode 工具设置，对应 pi 的 <c>settings.codemode</c>。</summary>
+	public CodemodeSettings Codemode { get; init; } = new();
+
 	public bool EnableSkillCommands { get; init; } = true;
 
 	/// <summary>包来源（npm / git / 本地路径），对应 pi 的 <c>settings.packages</c>。</summary>
@@ -395,6 +398,15 @@ public sealed record CodingAgentSettings
 			Write(target, "maxAgentDelayMs", retry.MaxAgentDelayMs);
 			root["retry"] = target;
 		}
+
+		if (file.Codemode is { } codemode)
+		{
+			var target = root["codemode"] as JsonObject ?? new JsonObject();
+			Write(target, "mode", codemode.Mode);
+			Write(target, "inlineBudget", codemode.InlineBudget);
+			Write(target, "autoEnable", codemode.AutoEnable);
+			root["codemode"] = target;
+		}
 	}
 
 	// 用具体类型的重载写值：泛型的 JsonValue.Create<T> 在 AOT 下需要运行时代码生成。
@@ -512,6 +524,12 @@ public sealed record CodingAgentSettings
 		SessionShareDestination = project?.SessionShareDestination ?? global?.SessionShareDestination ?? "auto",
 		DefaultTools = MergeTools(global?.DefaultTools, project?.DefaultTools),
 		DefaultToolsConfigured = project?.DefaultTools is not null || global?.DefaultTools is not null,
+		Codemode = new CodemodeSettings
+		{
+			Mode = NormalizeCodemodeMode(project?.Codemode?.Mode ?? global?.Codemode?.Mode),
+			InlineBudget = NormalizeCodemodeBudget(project?.Codemode?.InlineBudget ?? global?.Codemode?.InlineBudget),
+			AutoEnable = project?.Codemode?.AutoEnable ?? global?.Codemode?.AutoEnable ?? true,
+		},
 		Retry = new RetryPolicy(
 			Enabled: project?.Retry?.Enabled ?? global?.Retry?.Enabled ?? true,
 			MaxRetries: project?.Retry?.MaxRetries ?? global?.Retry?.MaxRetries ?? 3,
@@ -720,6 +738,12 @@ public sealed record CodingAgentSettings
 		SessionDir = settings.SessionDir,
 		SessionShareDestination = settings.SessionShareDestination,
 		DefaultTools = settings.DefaultToolsConfigured ? [.. settings.DefaultTools] : null,
+		Codemode = new CodemodeFile
+		{
+			Mode = settings.Codemode.Mode,
+			InlineBudget = settings.Codemode.InlineBudget,
+			AutoEnable = settings.Codemode.AutoEnable,
+		},
 		Retry = new RetryFile
 		{
 			Enabled = settings.Retry.Enabled,
@@ -731,6 +755,29 @@ public sealed record CodingAgentSettings
 
 	/// <summary>空列表写成 <c>null</c>，保存时不会覆盖文件里已有的条目。</summary>
 	private static List<string>? List(IReadOnlyList<string> values) => values.Count > 0 ? [.. values] : null;
+
+	/// <summary>settings.codemode.mode：只认 <c>only</c>，其余按 <c>on</c>（与 pi 的默认值一致）。</summary>
+	private static string NormalizeCodemodeMode(string? value) =>
+		string.Equals(value, "only", StringComparison.OrdinalIgnoreCase) ? "only" : "on";
+
+	/// <summary>settings.codemode.inlineBudget：负数按默认值处理。</summary>
+	private static int NormalizeCodemodeBudget(int? value) => value is >= 0 ? value.Value : CodemodeSettings.DefaultInlineBudget;
+}
+
+/// <summary>codemode 工具设置，对应 pi 的 <c>settings.codemode</c>。</summary>
+public sealed record CodemodeSettings
+{
+	/// <summary>默认的描述预算（估算 token）。</summary>
+	public const int DefaultInlineBudget = 3000;
+
+	/// <summary><c>on</c>（默认）或 <c>only</c>；<c>only</c> 需要延迟声明支持，当前按 <c>on</c> 执行。</summary>
+	public string Mode { get; init; } = "on";
+
+	/// <summary>描述里工具声明的预算（估算 token）。</summary>
+	public int InlineBudget { get; init; } = DefaultInlineBudget;
+
+	/// <summary>有 <c>exposure: codemode</c> 的 MCP 工具时自动启用 codemode（与 pi 一致）。</summary>
+	public bool AutoEnable { get; init; } = true;
 }
 
 /// <summary>设置文件的磁盘形状。所有字段都是可选的，未知键会被忽略。</summary>
@@ -787,6 +834,18 @@ public sealed record SettingsFile
 	public List<string>? DefaultTools { get; init; }
 
 	public RetryFile? Retry { get; init; }
+
+	public CodemodeFile? Codemode { get; init; }
+}
+
+/// <summary><c>settings.codemode</c> 的磁盘形状。</summary>
+public sealed record CodemodeFile
+{
+	public string? Mode { get; init; }
+
+	public int? InlineBudget { get; init; }
+
+	public bool? AutoEnable { get; init; }
 }
 
 /// <summary><c>settings.retry</c> 的磁盘形状。</summary>

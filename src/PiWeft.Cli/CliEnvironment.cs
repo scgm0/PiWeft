@@ -532,7 +532,8 @@ public sealed class CliEnvironment
 			return [];
 		}
 
-		var catalog = arguments.NoBuiltinTools ? [] : BuiltinTools.Tools(cwd);
+		// 目录含默认不启用的 codemode，这样 --tools/--exclude-tools/defaultTools 才能选中它。
+		var catalog = arguments.NoBuiltinTools ? [] : BuiltinTools.CatalogTools(cwd);
 		if (catalog.Count == 0)
 		{
 			return [];
@@ -670,6 +671,8 @@ public sealed class CliEnvironment
 			StreamFn = sessionStream,
 			Registry = Registry,
 			ApiKeyForProvider = provider => arguments.ApiKey ?? ProviderApiKeys.GetValueOrDefault(provider),
+			Images = Images,
+			Classifiers = Classifiers,
 			// null 表示「沿用会话里记录的级别」，恢复会话时因此能记住上次的选择；
 			// 每模型默认值与全局默认值由会话层解析。
 			ThinkingLevel = arguments.ThinkingLevel,

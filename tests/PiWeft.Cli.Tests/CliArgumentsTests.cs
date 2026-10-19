@@ -347,6 +347,17 @@ public class CliEnvironmentTests
 	}
 
 	[Fact]
+	public void ResolveTools_ExposesCodemodeOnlyWhenSelected()
+	{
+		// 与 pi 的 inactive 注册一致：默认不启用，但可以从完整目录里选中。
+		var defaults = CliEnvironment.ResolveTools(new CliArguments(), Path.GetTempPath());
+		Assert.DoesNotContain(defaults, static tool => tool.Name == "codemode");
+
+		var selected = CliEnvironment.ResolveTools(new CliArguments { Tools = ["+codemode"] }, Path.GetTempPath());
+		Assert.Contains(selected, static tool => tool.Name == "codemode");
+	}
+
+	[Fact]
 	public void ResolveTools_HonorsSettingsDefaultTools()
 	{
 		var settings = new CodingAgentSettings { DefaultTools = ["read", "grep"], DefaultToolsConfigured = true };

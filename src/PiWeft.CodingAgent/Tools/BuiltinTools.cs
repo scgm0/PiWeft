@@ -69,8 +69,25 @@ public static class BuiltinTools
 		AskQuestionTool.Create(static () => null),
 	];
 
+	/// <summary>
+	/// 可被 <c>--tools</c>/<c>--exclude-tools</c> 或 <c>defaultTools</c> 选中的完整目录。
+	/// 比默认集多出 <c>codemode</c>：与 pi 一样它默认不启用，需要显式选中
+	/// （<c>--tools +codemode</c> 或 <c>"defaultTools": ["+codemode"]</c>）。
+	/// </summary>
+	public static IReadOnlyList<BuiltinTool> Catalog(string cwd) =>
+	[
+		.. Create(cwd),
+		// codemode 的可调用工具集来自会话，这里先放占位，会话构造时再重新绑定
+		// （见 CodingAgentSession）。
+		CodeModeTool.CreatePlaceholder(),
+	];
+
 	/// <summary>只取可执行的工具，供 <see cref="AgentContext.Tools"/> 使用。</summary>
 	public static IReadOnlyList<AgentTool> Tools(string cwd) => [.. Create(cwd).Select(static builtin => builtin.Tool)];
+
+	/// <summary>完整目录里的可执行工具。</summary>
+	public static IReadOnlyList<AgentTool> CatalogTools(string cwd) =>
+		[.. Catalog(cwd).Select(static builtin => builtin.Tool)];
 
 	/// <summary>为自定义工具集构建工具声明列表。</summary>
 	public static IReadOnlyList<JsonObject> Describe(IEnumerable<AgentTool> tools) =>

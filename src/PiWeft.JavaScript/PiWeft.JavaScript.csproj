@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<RootNamespace>PiWeft.JavaScript</RootNamespace>
+		<AssemblyName>PiWeft.JavaScript</AssemblyName>
+		<!-- Jint 的解释器路径大量使用反射/动态代码，不满足 AOT 分析器要求；
+		     这里只对本项目关闭该分析，宿主项目仍按原样分析。 -->
+		<IsAotCompatible>false</IsAotCompatible>
+		<EnableAotAnalyzer>false</EnableAotAnalyzer>
+		<EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+		<EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="PiWeft.JavaScript.Tests" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Jint" />
+	</ItemGroup>
+
+</Project>

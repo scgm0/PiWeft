@@ -1,6 +1,8 @@
 # 功能缺口与 Jint 技术评估
 
-评估日期：2026-10-14（Jint 探针）；2026-10-19 对照 pi 1.3.0 与当前工作树复核。Ai/Agent/CodingAgent/MCP/CLI 共 752 项测试通过；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。状态：规划输入，尚未批准为实施路线。
+评估日期：2026-10-14（Jint 探针）；2026-10-19 对照 pi 1.3.0 与当前工作树复核。Ai 197、Agent 20、CodingAgent 347、Mcp 89、CLI 130、JavaScript 52 共 835 项测试通过；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。
+
+> **2026-10-19 实施更新**：S2 的 codemode 已按本文 S2 范围完整落地（细节见 [状态文档](00-status.md) 的 codemode 一节）。要点：新建 `src/PiWeft.JavaScript`（Jint `5.0.0-preview-2281`，`Jint-preview` 源），提供受限沙箱与 TypeScript 声明渲染；`codemode` 默认不启用，嵌套调用走会话完整管线；脚本内有 `searchTools`/`describeTool`/`describeNamespace`（BM25 与 pi 同参）、`models.*`（目录 + classify/generateImages）与 `eval`/`new Function`；exposure 分流、`tool_search` 与随分支恢复的 `tool-load` 已实现；专用 worker 线程泵续体、事件驱动等待、并发上限 2；性能探针后百工具执行成本约 51ms → 7ms。测试：`tests/PiWeft.JavaScript.Tests` 52 项、`CodeModeToolTests` 29 项；Linux x64 NativeAOT 冒烟实跑 eval/search/models（`tools/PiWeft.AotSmoke`）。AOT 下脚本包装必须用 async 箭头函数（`async function` + 直接 eval 触发 Jint 泛型接口分派缺陷 FailFast）。本文以下内容是实施前的评估记录，缺口编号与结论按当时口径保留。
 
 本文汇总 PiWeft 与 pi / PiDeck 的功能对照，以及 Jint 5 实现 codemode、JS 扩展的可行性和性能探针结果。用于后续确定产品范围、拆分任务、建立依赖与验收标准，不代表相关功能已经实现，也不修改既有产品范围决策。
 
@@ -24,7 +26,7 @@
 | pi_agent_rust / pi-go | 本地同级仓库，作为子代理、IDE、记忆和工具增强参考，不作为原版 pi 的必备契约 |
 | Jint | 当时正式版 4.17.0；5.0.0 开发线固定提交 `8537426f92ee847ccb09af59b1db60079e3a8028` |
 
-功能分析以源码静态核对为主。Jint 探针实际执行了 JIT 与 Linux x64 NativeAOT。2026-10-19 复核重新运行了非桌面测试（752 项通过）与 AOT 冒烟；真实供应商联网测试、Windows/macOS 实机与完整 PiDeck UI e2e 仍未进行，开始实施前仍应重新确认版本、代码路径和缺口状态。
+功能分析以源码静态核对为主。Jint 探针实际执行了 JIT 与 Linux x64 NativeAOT。2026-10-19 复核重新运行了非桌面测试（835 项通过）与 AOT 冒烟；真实供应商联网测试、Windows/macOS 实机与完整 PiDeck UI e2e 仍未进行，开始实施前仍应重新确认版本、代码路径和缺口状态。
 
 ### 1.2 与现有文档的关系
 
@@ -33,7 +35,7 @@
 - [配置管理差距](03-pideck-configuration-parity.md)：配置领域的对照。
 - [统计与性能](04-session-statistics-performance.md)、[渲染性能](05-desktop-rendering-performance.md)：已有性能口径。
 
-现有文档明确排除 JS 扩展宿主、codemode、Mermaid、KaTeX、托盘、通知、自动更新、崩溃上报、内嵌浏览器和终端。本文将其记录为产品范围差异或候选方向；采用 Jint 等方案需要另行批准范围变更。
+现有文档原本排除 JS 扩展宿主、codemode、Mermaid、KaTeX、托盘、通知、自动更新、崩溃上报、内嵌浏览器和终端。codemode 已在 2026-10-19 按本文 S2 的范围实现；其余项目仍记录为产品范围差异或候选方向。
 
 ## 2. 已有能力基线
 
@@ -78,7 +80,7 @@
 | PI-02 | 扩展 UI 协议 | 部分实现：原生 `ask_question` 经 RPC `extension_ui_request`（`method: "input"`，PiDeck 批量信封）发出，`extension_ui_response` 唤醒等待中的提问；CLI 交互提示与桌面卡片同路径。pi 的对话框方法 `select`/`confirm`/`editor` 与 fire-and-forget 的 `notify` 已按 pi 线协议实现（RPC 转发、控制台与桌面三宿主、agent 侧 `timeout` 自动解析），为 S3 扩展宿主就位；尚未有进程内调用方，`setStatus`/`setWidget`/`setTitle`/`set_editor_text` 不发出，pi 扩展的 renderer / 自定义 TUI 协议不成立 |
 | PI-03 | Pi 包管理 | 已实现：settings 的 `packages` 来源解析与包资源发现（`package.json` 的 `pi` 清单、约定目录、glob 收窄、按名去重）；`pi install/list/remove/update` 支持 npm 安装（`--prefix` + `--legacy-peer-deps`）、git 克隆（含 `@ref`）、本地路径登记与目录清理，来源原子写回 settings。未覆盖：npm 依赖冲突治理、包图库与资源筛选诊断界面 |
 | PI-04 | 完整终端 TUI | 当前为按行 REPL，缺少多行编辑、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
-| PI-05 | codemode / tool_search | 缺少脚本编排、结果过滤、延迟工具发现和脚本状态；并行 Agent 工具执行不是 codemode |
+| PI-05 | codemode / tool_search | 已实现（2026-10-19）：codemode 全套——Jint 5 沙箱、嵌套管线、分支 store、`eval`、脚本内 `searchTools`/`describeTool`/`describeNamespace`、`models.*`（含 classify/generateImages）、structuredContent、guidelines、输出/图片落盘、`settings.codemode.*`、stalled 检测、专用 worker 线程（默认不启用）；exposure 分流（MCP 默认 `codemode` + 自动启用）、`tool_search` 与随分支恢复的加载；命名空间（`mcp__<server>`、别名、描述、instructions、分组预算）与 `mcp_servers` 章节。余项：pi prelude 的 lockdown |
 | PI-06 | MCP 高级运行时 | 部分实现：`McpExposure` 实现 pi 同名 `exposure`/`toolExposure`；因无 codemode，`codemode`/`deferred` 暂按 `direct`。已覆盖：pi 形状的 `oauth` 对象（兼容旧 `auth: oauth`）、授权码 + PKCE、客户端凭据、`callbackPort`/`clientName`/`authServerMetadataUrl`、401 刷新重放、HTTP 通知流与服务端反向应答、`mcp list` 连接并报告 state/tools/error。未覆盖：`cimd`、完整 `callbackUrl` 路径、与 pi 共享 `mcp-auth.json` 令牌格式、桌面 MCP 授权入口 |
 | PI-07 | 认证覆盖 | 大部分实现：Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius 的 OAuth 已落地；其余 Provider 支持 API key 登录。命令型凭据、运行时刷新与 `auth check` 三态齐备。余项是 AWS profile/ECS/IRSA 完整 ambient 链与部分企业登录细分 |
 | PI-08 | 动态模型目录 | 已实现 pi.dev 目录刷新、`<agentDir>/models-store.json` 离线缓存、启动加载，以及账号级 OpenRouter/Radius/GitHub Copilot 目录。未覆盖 ETag/刷新节流与更细的账号能力同步 |
@@ -126,9 +128,11 @@
 
 ### 5.1 版本与验证范围
 
-评估时 GitHub/NuGet 正式版为 **4.17.0**。`main` 声明 5.0.0 开发线，预览源列出至 `5.0.0-preview-2249`。本次因预览包下载缓慢，使用固定源码提交构建，不能将结果标成正式版 5.0.0 或 preview-2249 的测试结果。
+评估时 GitHub/NuGet 正式版为 **4.17.0**。`main` 声明 5.0.0 开发线，预览源当时列出至 `5.0.0-preview-2249`。本次因预览包下载缓慢，使用固定源码提交构建，不能将结果标成正式版 5.0.0 或 preview-2249 的测试结果。
 
-源码唯一构建调整是将 Jint 项目的目标框架限制为 `net10.0`，没有改变解释器运行时源码。正式采用时必须固定包版本/来源，审查许可证与依赖，并复跑目标版本；Jint 主分支 API 仍可能发生破坏性变化。
+**实施时（2026-10-19）**：`Jint-preview` 源（`https://f.feedz.io/sebastienros/jint/nuget/index.json`）已列出至 `5.0.0-preview-2281`，项目固定使用该预览版（`Directory.Packages.props`），由 `nuget.config` 的 `packageSourceMapping` 限定只有 `Jint*` 走预览源。包版本之前列出的源码构建调整不再适用。
+
+正式采用时必须固定包版本/来源，审查许可证与依赖，并复跑目标版本；Jint 主分支 API 仍可能发生破坏性变化。
 
 | 目标 | 判断 | Jint 之外的工作 |
 | --- | --- | --- |
@@ -246,7 +250,7 @@ Jint 官方比较页当时的性能表仍以 4.16.0 为基准，不能当成 Jin
 | --- | --- | --- | --- | --- |
 | S0 兼容回归 | C-01 至 C-06 | 已完成，见第 3 节 | 对照目标 pi 行为 | 失败用例先行；CLI/RPC/桌面实际输入一致；公开能力说明与实现吻合 |
 | S1 安全和运行时基础 | PI-11、共享输入处理、工具调度和结构化 UI；D-01 可先原生实现 | 已完成：信任、统一输入展开、原生 Ask/todo/plan 均已落地 | S0，明确许可与项目资源加载边界 | 不可信项目资源不会静默执行；嵌套工具不绕过钩子；Ask/中断/关闭不会挂起 |
-| S2 Jint 试点/codemode MVP | PI-05 的基础部分 | 未开始；范围变更未批准 | S1 工具契约，批准 JS 范围变更 | 固定 Jint 版本；有限能力；错误/取消/并发/输出预算；Linux AOT 实跑，报告警告和实际包增量 |
+| S2 Jint 试点/codemode MVP | PI-05 的基础部分 | 已完成（2026-10-19）：`PiWeft.JavaScript` + 内置 `codemode`，默认不启用 | S1 工具契约，批准 JS 范围变更 | 固定 Jint 版本；有限能力；错误/取消/并发/输出预算；Linux AOT 实跑，报告警告和实际包增量（AOT 包增量仍是欠账） |
 | S3 有限扩展宿主 | PI-01/PI-02，按需 PI-10 和 D-01 | 未开始 | S2 的投影/调度与 UI 基础 | 明确支持 API 清单；指定扩展样本通过；重载/清理/分支恢复；未支持导入有可理解错误 |
 | S4 高频工作台闭环 | D-02 文件树/编辑器、D-04、D-06、PI-06、PI-08、D-07 基础统计 | 大部分已完成，剩余见第 4 节各条目「未覆盖」 | 各领域协议/认证/文件安全设计 | 连接探测不误报；Git 写操作与冲突处理；配置作用域和凭据隔离；MCP 保存/重连行为明确 |
 | S5 产品扩展 | PI-03/PI-04/PI-09、D-03/D-05/D-08 至 D-13、X-* | 未开始 | 范围和成本决策 | 分领域单独验收，不捆绑为一次“全功能对齐” |

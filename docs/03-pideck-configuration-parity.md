@@ -43,7 +43,7 @@
 
 ```sh
 xvfb-run -a dotnet test PiWeft.slnx --no-restore -v minimal
-# 2026-10-19 复核：非桌面 752 项通过；Desktop 436/437，剩余 1 项为 X11 PrimarySelection 环境相关失败。
+# 2026-10-19 复核：非桌面 835 项通过；Desktop 437 项通过（X11 PrimarySelection 偶发失败，单独运行稳定）。
 
 dotnet publish src/PiWeft.Desktop/PiWeft.Desktop.csproj -c Release -r linux-x64 --no-restore -v minimal
 # NativeAOT 发布通过，未产生编译或 trim/AOT 警告。

@@ -8,7 +8,7 @@
 >
 > **2026-10-16 晚间更新**：本文的以下条目已在本轮补全中落地——`/copy` `/import` `/bug`（NEW-06 子集）、PI-02 的对话框方法面（select/confirm/editor/notify）、PI-06 的客户端凭据授权与 HTTP 反向应答、PI-07 的命令型凭据执行与 `auth check` invalid、PI-10 的主题热重载、PI-11 的默认值改为 `ask`。详见 [00-status.md](00-status.md) 与 [06 第 3、4 节](06-feature-gap-and-jint-assessment.md) 的最新状态。`defaultProjectTrust` 默认值已从 `always` 收紧为 `ask`：依赖旧默认（项目设置静默生效）的部署需在全局 settings 显式写回 `"defaultProjectTrust":"always"`。
 
-评估对象：PiWeft 工作树源码（2026-10-19：非桌面 752 项、Desktop 436/437 通过）。
+评估对象：PiWeft 工作树源码（2026-10-19：非桌面 835 项、Desktop 437 项通过）。
 基准：本地 `/home/scgm/TestBuild/pi`（当前 `v1.3.0+30`，`482c1381a`，TypeScript 上游）；
 参照：`/home/scgm/TestBuild/pi_agent_rust`（Rust 移植，v0.8.0）与 `/home/scgm/TestBuild/pi-go`（Go 移植），仅用于交叉验证缺口真实性与补全策略，不作为必备契约。
 
@@ -24,7 +24,7 @@
 
 与 pi 逐项核对后确认已对齐的能力，详见 [06 第 2 节](06-feature-gap-and-jint-assessment.md)，此处只列本次新确认的对照点：
 
-- **工具面**：pi 的 8 个内置工具中，`read/bash/edit/write/grep/find/ls` 全部实现，并新增 `powershell`；pi 经扩展注册的 `todo`/`ask_question` PiWeft 已原生实现且线协议与 PiDeck 一致。pi 默认关闭的 `codemode`/`tool_search` 未实现（PI-05）。
+- **工具面**：pi 的 8 个内置工具中，`read/bash/edit/write/grep/find/ls` 全部实现，并新增 `powershell`；pi 经扩展注册的 `todo`/`ask_question` PiWeft 已原生实现且线协议与 PiDeck 一致。`codemode` 与 `tool_search` 已用 Jint 5 实现，默认不启用（`--tools +codemode` 或 `defaultTools` 选中，PI-05）。
 - **Provider 协议**：10 类流式 API 已覆盖 pi 30+ 提供商所依赖的全部主流协议族（Anthropic/OpenAI 系/Google 系/Bedrock/Mistral/pi-messages）；差距在认证方式与目录服务，不在协议本身。
 - **RPC 面**：对照 pi `docs/rpc-commands.md`，PiWeft 的命令组覆盖对话/队列/会话/导航/模型/计划/管理/MCP/统计/资源，明显超过 Go 版的 RPC 面。`extension_ui` 的 `select`/`confirm`/`input`/`editor`/`notify` 已实现；缺的是扩展宿主与 `setStatus`/`setWidget` 等 fire-and-forget 方法（PI-02）。
 - **Go 版自评的 P0 缺失**（steering/follow-up 排队、上下文文件发现、prompt 模板、每模型压缩预算）在 PiWeft 全部已实现——这些不是缺口。
@@ -36,7 +36,7 @@
 | PI-01 | JS/TS 扩展宿主 | 仍未开始。Rust 版证明该路线可行：内嵌 QuickJS-ng 直接加载 pi 的 `.ts/.js` 扩展，Node/Bun shim 覆盖 13 个核心模块，223 个真实扩展语料 91.9% 通过。PiWeft 的 Jint 5 探针（06 第 5-6 节）结论与之互证：解释器不是瓶颈，宿主契约才是 |
 | PI-02 | 扩展 UI 协议 | 仅 `input` 方法。pi 的 renderer 注册、自定义组件、经 RPC 转发的完整 `extension_ui` 记录族不成立 |
 | PI-04 | 完整终端 TUI | 仍为按行 REPL。Rust/Go 均重投了大量工程（Rust 自研 FrankenTUI，Go 用 Bubble Tea v2 + 补全 + 模糊评分）；这是 CLI 用户的第一体验，建议列为扩展生态之外的最高优先级 |
-| PI-05 | codemode / tool_search | 未实现。Rust 版经验：tool_search（BM25 延迟发现）与 exposure 分级是工具数超过上下文预算时的完整方案，PiWeft 的 `McpExposure` 已就位但 `codemode/deferred` 暂按 `direct` 降级 |
+| PI-05 | codemode / tool_search | 已实现（2026-10-19）：codemode 全套与 exposure 分流（MCP 默认 `codemode` + 自动启用）、`tool_search`（`tool-load` 随分支恢复）、命名空间（`mcp__<server>`、别名、描述、instructions、分组预算）与 `mcp_servers` 章节、`models.classify`/`generateImages`。余项：pi prelude 的 lockdown |
 | PI-06 | MCP 高级运行时 | 已覆盖 OAuth 授权码 + PKCE、客户端凭据、`oauth` 对象形状、callbackPort/clientName/authServerMetadataUrl、HTTP 通知流与服务端反向应答；余项是网关模式令牌交换变体、桌面 MCP 授权入口、与 pi 完全一致的令牌文件共享格式 |
 | PI-07 | 认证覆盖 | 已支持 Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius 的 OAuth，以及所有 Provider 的 API key 登录；`!command` 命令型凭据与运行时刷新可用。余项是 Bedrock profile/ECS/IRSA 完整 ambient 链、Radius 浏览器/设备码选择菜单、GitHub Enterprise 之外的细分登录方式 |
 | PI-08 | 动态模型目录 | 已实现 pi.dev 目录刷新、`<agentDir>/models-store.json` 离线缓存、账号级 OpenRouter/Radius/GitHub Copilot 目录。余项是 ETag/刷新节流与更细的账号能力同步 |
@@ -70,7 +70,7 @@ NEW-01/02/03 与 NEW-06 的主要命令已落地；剩余 NEW-04/05 属 TUI 范�
 | 档 | 内容 | 理由 |
 | --- | --- | --- |
 | P0 | PI-04 完整 TUI；S2 Jint 试点（PI-05 基础）；高级运行时入口接线（生图/分类、虚拟模型动态路由）；验证欠账（多平台实机 + 真实供应商联网） | TUI 是 CLI 第一体验；Jint 可行性已论证、依赖 S1 已完成；认证、账号目录、缓存保温、虚拟模型与 WebSocket 核心已落地，剩余是扩展宿主和入口；无实证口径一切兼容声明都悬空 |
-| P1 | PI-01 扩展宿主（S3，前提是范围决策通过）；PI-05 完整（tool_search/exposure 生效）；PI-09 的扩展动态路由/连接复用/入口；NEW-04 键位；PI-06 余项 | 扩展生态是「替代 pi + 扩展工作流」的分水岭，但成本在宿主契约，需先批准范围变更；其余为独立可验收的能力增强 |
+| P1 | PI-01 扩展宿主（S3，前提是范围决策通过）；PI-05 收尾（prelude lockdown）；PI-09 的扩展动态路由/连接复用/入口；NEW-04 键位；PI-06 余项 | 扩展生态是「替代 pi + 扩展工作流」的分水岭，但成本在宿主契约，需先批准范围变更；其余为独立可验收的能力增强 |
 | P2 | PI-02 完整 extension_ui；X-01 子代理、X-03 LSP/AST、X-04 记忆、X-07 搜索/浏览器；D 系列深化（D-04 推拉、D-13 长历史分页等） | 属于超越 pi 基线的方向，两个参照仓库也都是后置；按产品需求单独取舍 |
 
 **关键决策点**（与 06 第 7.3 节一致，本次补充）：在「Rust 路线（尽最大努力兼容 TS 扩展）」与「Go 路线（明确放弃，hooks + MCP + skills）」之间二选一，是 PI-01/02/05 全部下游工作的前置条件；建议以 PiDeck 现有扩展（`pi-deck-ask-question`/`pi-deck-todo`/`pi-deck-plan-mode`——PiWeft 已原生覆盖）之外是否有真实扩展依赖为判据。
