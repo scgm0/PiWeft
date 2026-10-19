@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace PiWeft.Ai.Json;
@@ -32,6 +33,9 @@ public static class PiJson
 
 	public static string SerializeMessage(Message message) =>
 		JsonSerializer.Serialize(message, PiJsonContext.Default.Message);
+
+	public static JsonNode? SerializeModelNode(Model model) =>
+		JsonSerializer.SerializeToNode(model, PiJsonContext.Default.Model);
 
 	public static Message DeserializeMessage(string json) =>
 		JsonSerializer.Deserialize(json, PiJsonContext.Default.Message)

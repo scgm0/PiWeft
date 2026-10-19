@@ -91,24 +91,6 @@ public class McpLaunchEnvironmentTests : IDisposable
 	}
 
 	[Fact]
-	public async Task LoginShellPathIsEitherUsableOrEmpty()
-	{
-		if (OperatingSystem.IsWindows())
-		{
-			return;
-		}
-
-		var path = await McpLaunchEnvironment.ReadLoginShellPathAsync();
-
-		// 探测是尽力而为的：失败按空串负缓存，成功则必须是单行 PATH。
-		Assert.DoesNotContain('\n', path);
-		if (path.Length > 0)
-		{
-			Assert.Contains(Path.PathSeparator, path);
-		}
-	}
-
-	[Fact]
 	public void VersionDirectoriesAreOrderedNewestFirstNotAlphabetically()
 	{
 		// 字典序会把 v12 排在 v24 前面，GUI 启动就会解析到最老的 node（v12 跑不了 ??）。

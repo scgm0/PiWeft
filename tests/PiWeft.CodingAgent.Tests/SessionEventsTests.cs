@@ -154,7 +154,7 @@ public class SessionEventsTests : IDisposable
 		});
 
 		await session.PromptAsync("hello world", CancellationToken.None);
-		var result = await session.CompactAsync(cancellationToken: CancellationToken.None).ConfigureAwait(false);
+		var result = await session.CompactAsync(cancellationToken: CancellationToken.None);
 
 		Assert.NotNull(result);
 		var start = Assert.Single(events.OfType<CompactionStartEvent>());
@@ -191,7 +191,7 @@ public class SessionEventsTests : IDisposable
 					["command"] = "printf '%s|%s' \"$PI_MODEL\" \"$PI_PROVIDER\"",
 				},
 			})
-			.ConfigureAwait(false);
+			;
 
 		Assert.Equal("test-model|test", Assert.IsType<TextContent>(result.Content[0]).Text.TrimEnd('\n'));
 	}

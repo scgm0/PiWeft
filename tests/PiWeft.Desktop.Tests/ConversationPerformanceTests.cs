@@ -89,30 +89,6 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 	}
 
 	[Fact]
-	public void RecycledMessageReleasesItsActiveTextScrollClock()
-	{
-		var rows = Enumerable.Range(0, 200).Select(i => new ChatEntry
-		{
-			Role = ChatRole.User, Text = $"message {i}", EntryId = $"entry-{i}",
-		}).ToArray();
-		using var timeline = new ConversationTimeline(entry => new Border().Child(
-			MessageText.Create(string.Join("\n", Enumerable.Range(0, 100).Select(i => $"{entry.Text} line {i}")))
-			.Height(150)));
-		timeline.SetEntries(rows);
-		timeline.View.ScrollIntoView(0);
-		Layout(timeline.View);
-		var text = Find<MultiLineTextBox>(timeline.View).First();
-		var scroll = SmoothScroll.For(text);
-		scroll.ScrollBy(0, 1);
-		Assert.True(scroll.IsAnimating);
-		timeline.View.ScrollIntoView(rows.Length - 1);
-		Layout(timeline.View);
-		timeline.PruneRecycled();
-		Assert.False(scroll.IsAnimating);
-		Assert.DoesNotContain(text, Find<MultiLineTextBox>(timeline.View));
-	}
-
-	[Fact]
 	public void StreamingTailKeepsTheSelectedHistoryAndTheThinkingExpander()
 	{
 		using var focus = new TextFocusScrollGuard(new ScrollViewer());

@@ -53,6 +53,17 @@ if (!readableJson.Contains("\u4f60\u597d", StringComparison.Ordinal) ||
 
 Console.WriteLine("json node encoding: readable UTF-8 and quotes");
 
+var scriptResult = await ScriptFunction.InvokeAsync(
+	"return { value: request.a + 1, nested: { ok: true } };",
+	new JsonObject { ["a"] = 41 },
+	null);
+if (scriptResult?["value"]?.GetValue<int>() != 42 || scriptResult["nested"]?["ok"]?.GetValue<bool>() != true)
+{
+	throw new InvalidOperationException("ScriptFunction failed under NativeAOT");
+}
+
+Console.WriteLine("js script function: 42");
+
 const string streamBody = """
 	event: message_start
 	data: {"type":"message_start","message":{"id":"msg_aot","model":"claude-sonnet-4-5","usage":{"input_tokens":5}}}

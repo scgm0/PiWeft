@@ -85,6 +85,9 @@ public static class VirtualModels
 	/// <summary>虚拟目录项使用的 api id；请求到达 provider 前必须已经被路由。</summary>
 	public const string Api = "pi-virtual";
 
+	/// <summary>保存路由状态的会话自定义条目类型，与 pi 相同。</summary>
+	public const string StateEntryType = "pi.virtual-model-state";
+
 	public static bool IsVirtual(Model model) =>
 		string.Equals(model.Api, Api, StringComparison.Ordinal);
 

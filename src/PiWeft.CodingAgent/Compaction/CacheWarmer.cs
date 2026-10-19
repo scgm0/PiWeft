@@ -32,12 +32,37 @@ public sealed record CacheWarmingStatus
 	public DateTimeOffset? NextWarmAt { get; init; }
 
 	public CacheWarmingDecision? Decision { get; init; }
+
+	/// <summary>扩展把 pi 的决策改成了另一个动作。</summary>
+	public bool ExtensionOverride { get; init; }
+}
+
+/// <summary>每次刷新前发给扩展的决策事件，对应 pi 的 <c>cache_warming_decision</c>。</summary>
+public sealed record CacheWarmingDecisionEvent
+{
+	public string Type => "cache_warming_decision";
+
+	public required bool Idle { get; init; }
+
+	public required double WarmCost { get; init; }
+
+	public required double MissCost { get; init; }
+
+	public required double ContinuationProbability { get; init; }
+
+	public required double ExpectedSavings { get; init; }
+
+	public required bool EconomicsAvailable { get; init; }
+
+	/// <summary>pi 自己的决策：<c>warm</c> 或 <c>stop</c>。</summary>
+	public required string Action { get; init; }
 }
 
 /// <summary>
 /// 在提示缓存到期前用 1 token 输出重放最近一次请求，保持 Provider 的 prompt cache 命中。
 /// 对应 pi 的 <c>CacheWarmer</c>：streaming 阶段在代理运行期间保温，agent settled 后停止；
-/// idle 阶段使用更低的中断概率和 30 分钟上限。扩展决策事件尚未接入。
+/// idle 阶段使用更低的中断概率和 30 分钟上限。每次刷新前可经 <c>cache_warming_decision</c>
+/// 回调让扩展覆盖 pi 的决策。
 /// </summary>
 public sealed class CacheWarmer : IDisposable
 {
@@ -50,6 +75,9 @@ public sealed class CacheWarmer : IDisposable
 	private readonly StreamFn _streamFn;
 	private readonly Func<string> _mode;
 	private readonly Action<Usage> _recordUsage;
+	private readonly Func<CacheWarmingDecisionEvent, CancellationToken, Task<string?>>? _decide;
+	private readonly Action<CacheWarmingStatus>? _statusChanged;
+	private CacheWarmingStatus _status;
 	private readonly Lock _gate = new();
 	private CancellationTokenSource? _cancellation;
 	private Task? _loop;
@@ -59,15 +87,37 @@ public sealed class CacheWarmer : IDisposable
 	private bool _idle;
 	private bool _disposed;
 
-	public CacheWarmer(StreamFn streamFn, Func<string> mode, Action<Usage> recordUsage)
+	public CacheWarmer(
+		StreamFn streamFn,
+		Func<string> mode,
+		Action<Usage> recordUsage,
+		Func<CacheWarmingDecisionEvent, CancellationToken, Task<string?>>? decide = null,
+		Action<CacheWarmingStatus>? statusChanged = null)
 	{
 		_streamFn = streamFn;
 		_mode = mode;
 		_recordUsage = recordUsage;
-		Status = new CacheWarmingStatus { State = "inactive", Reason = "waiting for first request" };
+		_decide = decide;
+		_statusChanged = statusChanged;
+		_status = new CacheWarmingStatus { State = "inactive", Reason = "waiting for first request" };
 	}
 
-	public CacheWarmingStatus Status { get; private set; }
+	public CacheWarmingStatus Status
+	{
+		get => _status;
+		private set
+		{
+			_status = value;
+			try
+			{
+				_statusChanged?.Invoke(value);
+			}
+			catch
+			{
+				// 观察者失败不影响保温。
+			}
+		}
+	}
 
 	/// <summary>开始为一条已发送的请求保温；新的调用会替换旧的计时器。</summary>
 	public void Start(Model model, IReadOnlyList<Message> messages, StreamOptions options)
@@ -113,7 +163,7 @@ public sealed class CacheWarmer : IDisposable
 			NextWarmAt = DateTimeOffset.UtcNow.AddMilliseconds(delayMs),
 			Decision = decision,
 		};
-		if (decision.Action == "stop")
+		if (decision.Action == "stop" && _decide is null)
 		{
 			Status = new CacheWarmingStatus
 			{
@@ -159,7 +209,7 @@ public sealed class CacheWarmer : IDisposable
 		if (_model is { } model && _messages is { } messages)
 		{
 			var decision = Evaluate(model, messages, idle: true);
-			if (decision.Action == "stop")
+			if (decision.Action == "stop" && _decide is null)
 			{
 				Cancel(decision.EconomicsAvailable
 					? "expected savings below threshold"
@@ -228,15 +278,52 @@ public sealed class CacheWarmer : IDisposable
 				}
 
 				var decision = Evaluate(model, messages, _idle);
-				if (decision.Action == "stop")
+				var action = decision.Action;
+				var extensionOverride = false;
+				if (_decide is { } decide)
+				{
+					try
+					{
+						action = await decide(new CacheWarmingDecisionEvent
+						{
+							Idle = decision.Idle,
+							WarmCost = decision.WarmCost,
+							MissCost = decision.MissCost,
+							ContinuationProbability = decision.ContinuationProbability,
+							ExpectedSavings = decision.ExpectedSavings,
+							EconomicsAvailable = decision.EconomicsAvailable,
+							Action = decision.Action,
+						}, cancellationToken).ConfigureAwait(false) ?? decision.Action;
+					}
+					catch (OperationCanceledException)
+					{
+						throw;
+					}
+					catch
+					{
+						action = decision.Action;
+					}
+
+					if (action is not ("warm" or "stop"))
+					{
+						action = decision.Action;
+					}
+
+					extensionOverride = !string.Equals(action, decision.Action, StringComparison.Ordinal);
+				}
+
+				if (string.Equals(action, "stop", StringComparison.Ordinal))
 				{
 					Status = new CacheWarmingStatus
 					{
 						State = "inactive",
-						Reason = decision.EconomicsAvailable
-							? "expected savings below threshold"
-							: "cache economics unavailable",
+						Reason = extensionOverride
+							? "stopped by extension"
+							: decision.EconomicsAvailable
+								? "expected savings below threshold"
+								: "cache economics unavailable",
 						Decision = decision,
+						ExtensionOverride = extensionOverride,
 					};
 					return;
 				}
@@ -245,6 +332,7 @@ public sealed class CacheWarmer : IDisposable
 				{
 					State = "refreshing",
 					Decision = decision,
+					ExtensionOverride = extensionOverride,
 				};
 
 				var stream = _streamFn(model, messages, options);
@@ -270,6 +358,7 @@ public sealed class CacheWarmer : IDisposable
 					State = "scheduled",
 					NextWarmAt = DateTimeOffset.UtcNow.Add(delay),
 					Decision = decision,
+					ExtensionOverride = extensionOverride,
 				};
 			}
 		}

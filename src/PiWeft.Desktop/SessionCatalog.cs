@@ -291,7 +291,7 @@ public sealed class SessionCatalog
 	}
 
 	/// <summary>按文件路径打开会话，恢复其中的模型与思考级别。</summary>
-	public SessionManager Open(string path) => SessionManager.Open(path);
+	public SessionManager Open(string path, string? cwdFallback = null) => SessionManager.Open(path, cwdFallback: cwdFallback);
 
 	/// <summary>给会话设置显示名（追加一条 <c>session_info</c> 条目，历史不受影响）。</summary>
 	public void Rename(string path, string? name) => SessionManager.Open(path).AppendSessionInfo(name);

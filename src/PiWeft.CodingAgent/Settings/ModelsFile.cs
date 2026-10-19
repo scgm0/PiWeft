@@ -336,8 +336,14 @@ public static partial class ModelsFileLoader
 			throw new InvalidOperationException($"Virtual model '{providerId}/{id}' has no virtual settings");
 		}
 
-		var target = settings["model"]?.GetValue<string>()
-			?? throw new InvalidOperationException($"Virtual model '{providerId}/{id}' has no target model");
+		var target = settings["model"]?.GetValue<string>();
+		var (routeSource, routeTimeoutMs) = RouteSource(settings["route"]);
+		if (target is null && routeSource is null)
+		{
+			throw new InvalidOperationException(
+				$"Virtual model '{providerId}/{id}' must declare either a target model or a route script");
+		}
+
 		var thinking = settings["thinkingLevel"]?.GetValue<string>();
 		var levels = StringArray(settings["thinkingLevels"]);
 		var input = StringArray(settings["input"] ?? raw["input"]);
@@ -351,8 +357,32 @@ public static partial class ModelsFileLoader
 			Input = input.Count > 0 ? input : ["text", "image"],
 			ContextWindow = raw["contextWindow"]?.GetValue<int>() ?? 0,
 			MaxTokens = raw["maxTokens"]?.GetValue<int>() ?? 0,
-			Route = VirtualModels.StaticRoute(target, thinking),
+			Route = routeSource is not null
+				? VirtualModelScript.Create(providerId, id, routeSource, routeTimeoutMs)
+				: VirtualModels.StaticRoute(target!, thinking),
 		};
+	}
+
+	/// <summary>
+	/// <c>virtual.route</c> 可以是源码字符串，或 <c>{ "code": "...", "timeoutMs": 2000 }</c>。
+	/// </summary>
+	private static (string? Source, int? TimeoutMs) RouteSource(JsonNode? node)
+	{
+		if (node is JsonValue value && value.TryGetValue<string>(out var source) && !string.IsNullOrWhiteSpace(source))
+		{
+			return (source, null);
+		}
+
+		if (node is JsonObject settings)
+		{
+			var code = settings["code"]?.GetValue<string>() ?? settings["source"]?.GetValue<string>();
+			if (code is { Length: > 0 })
+			{
+				return (code, settings["timeoutMs"]?.GetValue<int>());
+			}
+		}
+
+		return (null, null);
 	}
 
 	private static IReadOnlyList<string> StringArray(JsonNode? node)

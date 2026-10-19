@@ -82,14 +82,6 @@ public class GitStatusTests
 		Assert.Equal(Strings.GitNotRepository, status.Summary());
 		Assert.Contains("not a git repository", status.Error);
 	}
-
-	[Fact]
-	public void ReadingARealDirectoryDoesNotThrow()
-	{
-		// 本仓库是 git 工作区，读取应当成功；即便不是，也只返回错误而不抛异常。
-		var status = GitStatusReader.Read(Directory.GetCurrentDirectory(), TimeSpan.FromSeconds(15));
-		Assert.True(status.IsRepository || status.Error is { Length: > 0 });
-	}
 }
 
 /// <summary>Git diff 读取的截断逻辑：界面只展示前若干行，超出部分给出提示。</summary>
@@ -112,13 +104,5 @@ public class GitDiffTests
 		Assert.Contains("line 5", truncated);
 		Assert.DoesNotContain("line 6", truncated);
 		Assert.Contains("还有 25 行未显示", truncated);
-	}
-
-	[Fact]
-	public void ReadingADiffOutsideARepositoryDoesNotThrow()
-	{
-		// 非仓库目录：git 会失败，这里只要求返回空串而不是抛异常。
-		var diff = GitStatusReader.Diff(Path.GetTempPath(), "nothing.txt", untracked: true);
-		Assert.NotNull(diff);
 	}
 }

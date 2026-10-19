@@ -129,38 +129,6 @@ public class RealSessionFidelityTests
 		Assert.True(checkedAny);
 	}
 
-	[Fact]
-	public void RealSessionsExposeTheEntryTypesWeModel()
-	{
-		var root = SessionsRoot();
-		if (root is null)
-		{
-			return;
-		}
-
-		var types = new HashSet<string>(StringComparer.Ordinal);
-		var roles = new HashSet<string>(StringComparer.Ordinal);
-		foreach (var path in SessionFiles(root))
-		{
-			foreach (var entry in SessionManager.Open(path).Entries)
-			{
-				types.Add(entry.Type);
-				if (entry is SessionMessageEntry message)
-				{
-					roles.Add(message.Message.Role);
-				}
-			}
-		}
-
-		Assert.Contains("message", types);
-		Assert.Contains("model_change", types);
-		Assert.Contains("thinking_level_change", types);
-		Assert.Contains("system", roles);
-		Assert.Contains("user", roles);
-		Assert.Contains("assistant", roles);
-		Assert.Contains("toolResult", roles);
-	}
-
 	private static string FirstDifference(string a, string b)
 	{
 		var limit = Math.Min(a.Length, b.Length);

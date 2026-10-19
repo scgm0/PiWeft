@@ -904,7 +904,8 @@ public sealed partial class MainWindow : Window
 			existing.FocusComposer();
 			return;
 		}
-		OpenSession(_catalog.Open(resolved));
+		// 外部会话的头部可能没有 cwd；桌面用当前项目兜底，而不是守护进程的启动目录。
+		OpenSession(_catalog.Open(resolved, _cwd));
 	}
 
 	/// <summary>打开一个会话：已打开则选中，否则新建标签页。</summary>
@@ -937,7 +938,7 @@ public sealed partial class MainWindow : Window
 			_arguments, manager.Cwd, session: manager, extraTools: extraTools, recordInitialThinkingLevel: false, uiHost: uiHost);
 
 		var tab = AttachTab(session);
-		uiHost.Attach(tab.View);
+		uiHost.Attach(tab);
 		tab.UiHost = uiHost;
 		AppLog.For<MainWindow>().ZLogInformation($"Session opened: session={session.Session.SessionId}");
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
@@ -2005,10 +2006,28 @@ public sealed partial class MainWindow : Window
 
 	// ------------------------------------------------------------------ 辅助
 
+	/// <summary>会话头部可能来自行为不规范的工具；空目录或坏路径按当前目录处理，至少让历史可读。</summary>
+	private static string ResolveCwd(string? cwd)
+	{
+		if (!string.IsNullOrWhiteSpace(cwd))
+		{
+			try
+			{
+				return Path.GetFullPath(cwd);
+			}
+			catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+			{
+				AppLog.For<MainWindow>().ZLogWarning($"Invalid session cwd, falling back to the process directory: cwd={cwd}, error={ex.Message}");
+			}
+		}
+
+		return Environment.CurrentDirectory;
+	}
+
 	/// <summary>按工作目录缓存环境；创建失败时回退到启动时的那套。</summary>
 	private CliEnvironment EnvironmentFor(string cwd)
 	{
-		var key = Path.GetFullPath(cwd);
+		var key = ResolveCwd(cwd);
 		if (_environments.TryGetValue(key, out var cached))
 		{
 			return cached;

@@ -24,55 +24,16 @@ public sealed class CodeModeSourceTests
 		Assert.Equal(30000, parsed.Options.TimeoutMs);
 	}
 
-	[Fact]
-	public void Parse_RejectsEmptyInput()
+	[Theory]
+	[InlineData("   \n", "non-empty")]
+	[InlineData("const a = 1;\n// @options: {\"timeout_ms\": 100}\nreturn a;", "must be the first line")]
+	[InlineData("// @options: {\"max_tokens\": 10}\nreturn 1;", "max_tokens")]
+	[InlineData("// @options: {\"max_output_tokens\": -1}\nreturn 1;", "non-negative")]
+	[InlineData("// @options: {\"timeout_ms\": 0}\nreturn 1;", "positive integer")]
+	[InlineData("// @options: {\"timeout_ms\": 100}", "must be followed by JavaScript")]
+	public void Parse_RejectsInvalidSourceOrOptions(string source, string expectedError)
 	{
-		var error = Assert.Throws<CodeModeSourceException>(() => CodeModeSource.Parse("   \n"));
-		Assert.Contains("non-empty", error.Message);
-	}
-
-	[Fact]
-	public void Parse_RejectsOptionsLineThatIsNotFirst()
-	{
-		var error = Assert.Throws<CodeModeSourceException>(() =>
-			CodeModeSource.Parse("const a = 1;\n// @options: {\"timeout_ms\": 100}\nreturn a;"));
-
-		Assert.Contains("must be the first line", error.Message);
-	}
-
-	[Fact]
-	public void Parse_RejectsUnknownOptions()
-	{
-		var error = Assert.Throws<CodeModeSourceException>(() =>
-			CodeModeSource.Parse("// @options: {\"max_tokens\": 10}\nreturn 1;"));
-
-		Assert.Contains("max_tokens", error.Message);
-	}
-
-	[Fact]
-	public void Parse_RejectsNegativeTokenBudget()
-	{
-		var error = Assert.Throws<CodeModeSourceException>(() =>
-			CodeModeSource.Parse("// @options: {\"max_output_tokens\": -1}\nreturn 1;"));
-
-		Assert.Contains("non-negative", error.Message);
-	}
-
-	[Fact]
-	public void Parse_RejectsZeroTimeout()
-	{
-		var error = Assert.Throws<CodeModeSourceException>(() =>
-			CodeModeSource.Parse("// @options: {\"timeout_ms\": 0}\nreturn 1;"));
-
-		Assert.Contains("positive integer", error.Message);
-	}
-
-	[Fact]
-	public void Parse_RejectsOptionsWithoutCode()
-	{
-		var error = Assert.Throws<CodeModeSourceException>(() =>
-			CodeModeSource.Parse("// @options: {\"timeout_ms\": 100}"));
-
-		Assert.Contains("must be followed by JavaScript", error.Message);
+		var error = Assert.Throws<CodeModeSourceException>(() => CodeModeSource.Parse(source));
+		Assert.Contains(expectedError, error.Message);
 	}
 }

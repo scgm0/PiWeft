@@ -969,6 +969,57 @@ public sealed class CacheWarmerTests
 	}
 
 	[Fact]
+	public async Task ExtensionDecisionCanStopARefresh()
+	{
+		var events = new List<PiWeft.CodingAgent.Compaction.CacheWarmingDecisionEvent>();
+		var script = new ScriptedStreamFn();
+		var model = ScriptedSessions.Model() with { PromptCache = new Dictionary<string, int> { ["short"] = 11 } };
+		using var warmer = new PiWeft.CodingAgent.Compaction.CacheWarmer(
+			script.Invoke,
+			static () => "streaming",
+			static _ => { },
+			(decisionEvent, _) =>
+			{
+				events.Add(decisionEvent);
+				return Task.FromResult<string?>("stop");
+			});
+
+		warmer.Start(model, WarmMessages(model), new StreamOptions { CacheRetention = CacheRetentions.Short });
+		await Task.Delay(TimeSpan.FromMilliseconds(1300));
+
+		Assert.Single(events);
+		Assert.Equal("cache_warming_decision", events[0].Type);
+		Assert.Equal("inactive", warmer.Status.State);
+		Assert.Contains("stopped by extension", warmer.Status.Reason);
+		Assert.True(warmer.Status.ExtensionOverride);
+		Assert.Empty(script.Requests);
+	}
+
+	[Fact]
+	public async Task ExtensionDecisionCanOverrideACheapStopWithWarm()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("warm");
+		var model = ScriptedSessions.Model() with
+		{
+			Cost = new ModelCost { Input = 0.001, Output = 0.001 },
+			PromptCache = new Dictionary<string, int> { ["short"] = 11 },
+		};
+		using var warmer = new PiWeft.CodingAgent.Compaction.CacheWarmer(
+			script.Invoke,
+			static () => "streaming",
+			static _ => { },
+			static (_, _) => Task.FromResult<string?>("warm"));
+
+		warmer.Start(model, WarmMessages(model), new StreamOptions { CacheRetention = CacheRetentions.Short });
+		await Task.Delay(TimeSpan.FromMilliseconds(1300));
+
+		Assert.Single(script.Requests);
+		Assert.Equal("scheduled", warmer.Status.State);
+		Assert.True(warmer.Status.ExtensionOverride);
+	}
+
+	[Fact]
 	public async Task WarmsWithOneTokenAndRecordsUsage()
 	{
 		var script = new ScriptedStreamFn();

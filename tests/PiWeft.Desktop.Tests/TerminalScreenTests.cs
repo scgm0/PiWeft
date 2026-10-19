@@ -401,9 +401,9 @@ public sealed class TerminalScreenTests
 	}
 
 	[Fact]
-	public void LineVersionChangesOnlyForTheEditedLine()
+	public void LineVersionsTrackEditedLinesAndSurviveHeightOnlyResize()
 	{
-		var screen = NewScreen(columns: 10, rows: 2);
+		var screen = NewScreen(columns: 10, rows: 4);
 
 		screen.Feed("abc\r\ndef".AsSpan());
 		var first = screen.LineVersion(0);
@@ -413,6 +413,15 @@ public sealed class TerminalScreenTests
 
 		Assert.Equal(first, screen.LineVersion(0));
 		Assert.NotEqual(second, screen.LineVersion(1));
+
+		// 只改高度时行内容没变，行版本不动，渲染端可以继续沿用未移动的行。
+		var stable = screen.LineVersion(0);
+		screen.Resize(10, 6);
+		Assert.Equal(stable, screen.LineVersion(0));
+
+		// 列宽变化会重排每一行，缓存必须整体作废。
+		screen.Resize(12, 6);
+		Assert.NotEqual(stable, screen.LineVersion(0));
 	}
 
 	[Fact]
@@ -729,20 +738,4 @@ public sealed class TerminalScreenTests
 		Assert.Equal(4, screen.CursorRow);
 	}
 
-	[Fact]
-	public void HeightOnlyResizeKeepsLineCacheButWidthChangeInvalidatesIt()
-	{
-		var screen = NewScreen(columns: 10, rows: 4);
-		screen.Feed("a\r\nb".AsSpan());
-
-		var version = screen.LineVersion(0);
-
-		// 只改高度时行内容没变，行版本不动，渲染端可以继续沿用未移动的行。
-		screen.Resize(10, 6);
-		Assert.Equal(version, screen.LineVersion(0));
-
-		// 列宽变化会重排每一行，缓存必须整体作废。
-		screen.Resize(12, 6);
-		Assert.NotEqual(version, screen.LineVersion(0));
-	}
 }

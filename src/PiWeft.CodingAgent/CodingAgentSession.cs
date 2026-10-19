@@ -109,6 +109,12 @@ public sealed record CodingAgentSessionOptions
 	public Func<BeforeToolCallContext, CancellationToken, ValueTask<BeforeToolCallResult?>>? BeforeToolCall { get; init; }
 
 	public Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? AfterToolCall { get; init; }
+
+	/// <summary>
+	/// 扩展的 <c>cache_warming_decision</c> 处理器：返回 <c>warm</c>/<c>stop</c> 覆盖 pi 的决策，
+	/// 返回 <c>null</c> 或抛异常时沿用 pi 的决策。
+	/// </summary>
+	public Func<CacheWarmingDecisionEvent, CancellationToken, Task<string?>>? DecideCacheWarming { get; init; }
 }
 
 /// <summary>
@@ -139,6 +145,7 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// <summary>连续重试次数（0 表示当前不在重试）。</summary>
 	private int _retryAttempt;
+	private AssistantMessage? _routeFailed;
 
 	/// <summary>退避等待的中止开关。</summary>
 	private CancellationTokenSource? _retryAbort;
@@ -148,6 +155,7 @@ public sealed class CodingAgentSession : IDisposable
 	private bool _overflowRecoveryAttempted;
 	private readonly StreamFn _streamFn;
 	private readonly StreamFn _routedStreamFn;
+	private readonly StreamFn _directStreamFn;
 	private static readonly Lazy<ModelRegistry> FallbackModelRegistry = new(ModelRegistry.LoadDefault);
 
 	private readonly ModelRegistry? _registry;
@@ -294,15 +302,18 @@ public sealed class CodingAgentSession : IDisposable
 		_registry = options.Registry;
 		_apiKeyForProvider = options.ApiKeyForProvider;
 		_routedStreamFn = StreamWithVirtualRouting;
+		_directStreamFn = StreamDirectWithVirtualRouting;
 		_streamOptions = options.Options with
 		{
 			TimeoutMs = options.Options.TimeoutMs ?? options.Settings.TimeoutMs,
 		};
 
 		_cacheWarmer = new CacheWarmer(
-			_routedStreamFn,
+			_directStreamFn,
 			() => Settings.CacheWarming,
-			usage => Session.AppendUsage("cache_warm", _agent!.Model.Provider, _agent.Model.Id, usage, "prompt cache warm"));
+			usage => Session.AppendUsage("cache_warm", _agent!.Model.Provider, _agent.Model.Id, usage, "prompt cache warm"),
+			options.DecideCacheWarming,
+			PushCacheWarmingStatus);
 
 		// 恢复会话时，会话文件里记录的思考级别优先于默认值（显式传入的级别仍然最优先）。
 		var requestedThinkingLevel = options.ThinkingLevel
@@ -499,7 +510,7 @@ public sealed class CodingAgentSession : IDisposable
 		var result = await BranchSummarizer.NavigateWithSummaryAsync(
 			Session,
 			_agent.Model,
-			_routedStreamFn,
+			_directStreamFn,
 			_streamOptions,
 			Settings.Compaction,
 			Settings.BranchSummary,
@@ -645,7 +656,7 @@ public sealed class CodingAgentSession : IDisposable
 		return BranchSummarizer.SummarizeBranchAsync(
 			Session,
 			_agent.Model,
-			_routedStreamFn,
+			_directStreamFn,
 			_streamOptions,
 			Settings.Compaction,
 			Settings.BranchSummary,
@@ -699,7 +710,7 @@ public sealed class CodingAgentSession : IDisposable
 				() => Compactor.CompactAsync(
 					Session,
 					_agent.Model,
-					_routedStreamFn,
+					_directStreamFn,
 					_streamOptions,
 					Settings.Compaction,
 					customInstructions,
@@ -1818,7 +1829,7 @@ public sealed class CodingAgentSession : IDisposable
 	/// 桌面的「测试连接」与 RPC 的 <c>test_model</c> 共用它。
 	/// </summary>
 	public Task<ProviderTestResult> TestConnectionAsync(CancellationToken cancellationToken = default) =>
-		ProviderProbe.TestAsync(_routedStreamFn, _agent.Model, _streamOptions, cancellationToken);
+		ProviderProbe.TestAsync(_directStreamFn, _agent.Model, _streamOptions, cancellationToken);
 
 	/// <summary>当前分支的待办计划；按会话 revision 缓存，未变更时零扫描。</summary>
 	public TodoState CurrentTodo()
@@ -1949,7 +1960,21 @@ public sealed class CodingAgentSession : IDisposable
 	private AssistantMessageEventStream StreamWithVirtualRouting(
 		Model model,
 		IReadOnlyList<Message> messages,
-		StreamOptions options)
+		StreamOptions options) =>
+		StreamWithVirtualRouting(model, messages, options, direct: false);
+
+	/// <summary>代理循环之外的调用（摘要、分支摘要）：route 结果不写路由状态。</summary>
+	private AssistantMessageEventStream StreamDirectWithVirtualRouting(
+		Model model,
+		IReadOnlyList<Message> messages,
+		StreamOptions options) =>
+		StreamWithVirtualRouting(model, messages, options, direct: true);
+
+	private AssistantMessageEventStream StreamWithVirtualRouting(
+		Model model,
+		IReadOnlyList<Message> messages,
+		StreamOptions options,
+		bool direct)
 	{
 		var definition = VirtualModels.IsVirtual(model) && _registry is not null
 			? _registry.Virtual(model.Provider, model.Id)
@@ -1966,19 +1991,34 @@ public sealed class CodingAgentSession : IDisposable
 			try
 			{
 				var previous = FindPreviousPhysicalResponse(messages);
+				var failed = direct ? null : _routeFailed;
+				var state = direct ? null : ReadVirtualModelState(model.Provider, model.Id);
 				var route = await VirtualModels.RouteAsync(
 					definition,
 					new VirtualModelRequest
 					{
 						Model = model,
 						ThinkingLevel = options.ThinkingLevel ?? _agent?.ThinkingLevel ?? ThinkingLevels.Off,
-						Reason = RouteReason(messages),
+						Reason = direct
+							? VirtualRouteReason.Direct
+							: failed is not null ? VirtualRouteReason.Retry : RouteReason(messages),
 						Messages = messages,
 						Registry = _registry!,
 						PreviousModel = previous?.Model,
 						PreviousThinkingLevel = previous?.ThinkingLevel,
+						Failed = failed,
+						State = state,
 					},
 					cancellationToken).ConfigureAwait(false);
+
+				if (!direct && route.State is not null && !JsonNode.DeepEquals(route.State, state))
+				{
+					StoreVirtualModelState(model.Provider, model.Id, route.State);
+				}
+
+				UiHost?.SetStatus(new UiStatusRequest(
+					"piweft:virtual-model",
+					$"{model.Provider}/{model.Id} → {route.Model.Provider}/{route.Model.Id}"));
 
 				var routedOptions = options with
 				{
@@ -2017,6 +2057,36 @@ public sealed class CodingAgentSession : IDisposable
 		}, CancellationToken.None);
 
 		return stream;
+	}
+
+	/// <summary>读取当前分支上某个虚拟模型最近一次保存的路由状态。</summary>
+	private JsonNode? ReadVirtualModelState(string provider, string modelId)
+	{
+		foreach (var entry in Session.GetBranch())
+		{
+			if (entry is not CustomEntry { CustomType: VirtualModels.StateEntryType, Data: JsonObject data }
+				|| data["provider"]?.GetValue<string>() != provider
+				|| data["modelId"]?.GetValue<string>() != modelId)
+			{
+				continue;
+			}
+
+			return data["state"]?.DeepClone();
+		}
+
+		return null;
+	}
+
+	/// <summary>把路由状态写成 <c>pi.virtual-model-state</c> 自定义条目，不进入 LLM 上下文。</summary>
+	private void StoreVirtualModelState(string provider, string modelId, JsonNode state)
+	{
+		var id = Session.AppendCustom(VirtualModels.StateEntryType, new JsonObject
+		{
+			["provider"] = provider,
+			["modelId"] = modelId,
+			["state"] = state.DeepClone(),
+		});
+		EmitEntryAppended(id);
 	}
 
 	private (Model Model, string? ThinkingLevel)? FindPreviousPhysicalResponse(IReadOnlyList<Message> messages)
@@ -2091,6 +2161,18 @@ public sealed class CodingAgentSession : IDisposable
 		return ValueTask.CompletedTask;
 	}
 
+	/// <summary>把保温状态同步到扩展 UI 的 <c>piweft:cache-warming</c> 状态项。</summary>
+	private void PushCacheWarmingStatus(Compaction.CacheWarmingStatus status)
+	{
+		var text = status.State switch
+		{
+			"scheduled" => "缓存已排程",
+			"refreshing" => "缓存保温中",
+			_ => null,
+		};
+		UiHost?.SetStatus(new UiStatusRequest("piweft:cache-warming", text));
+	}
+
 	private void StartCacheWarmer()
 	{
 		try
@@ -2144,7 +2226,7 @@ public sealed class CodingAgentSession : IDisposable
 				() => Compactor.CompactAsync(
 					Session,
 					_agent.Model,
-					_routedStreamFn,
+					_directStreamFn,
 					_streamOptions,
 					Settings.Compaction,
 					customInstructions: null,
@@ -2189,88 +2271,99 @@ public sealed class CodingAgentSession : IDisposable
 		CancellationToken cancellationToken)
 	{
 		var attempt = 0;
-		for (;;)
+		AssistantMessage? routeFailed = null;
+		try
 		{
-			var messages = await run(attempt).ConfigureAwait(false);
-			var last = LastAssistantMessage(messages);
-			var policy = Settings.Retry;
-
-			if (last is null || last.StopReason != StopReason.Error)
+			for (;;)
 			{
-				FinishRetry(success: true, finalError: null);
-				return messages;
-			}
+				_routeFailed = attempt == 0 ? null : routeFailed;
+				var messages = await run(attempt).ConfigureAwait(false);
+				var last = LastAssistantMessage(messages);
+				var policy = Settings.Retry;
 
-			if (!_overflowRecoveryAttempted && ContextOverflow.IsOverflow(last))
-			{
-				_overflowRecoveryAttempted = true;
-				OmitFromContext(last);
-				try
+				if (last is null || last.StopReason != StopReason.Error)
 				{
-					var compacted = await CompactAsync(
-						customInstructions: null,
-						cancellationToken,
-						CompactionReasons.Overflow,
-						willRetry: true).ConfigureAwait(false);
-					if (compacted is null)
-					{
-						FinishRetry(success: false, "Context overflow recovery could not compact the conversation.");
-						return messages;
-					}
-				}
-				catch (Exception exception) when (exception is not OperationCanceledException)
-				{
-					FinishRetry(success: false, $"Context overflow recovery failed: {exception.Message}");
+					FinishRetry(success: true, finalError: null);
 					return messages;
 				}
 
+				routeFailed = last;
+
+				if (!_overflowRecoveryAttempted && ContextOverflow.IsOverflow(last))
+				{
+					_overflowRecoveryAttempted = true;
+					OmitFromContext(last);
+					try
+					{
+						var compacted = await CompactAsync(
+							customInstructions: null,
+							cancellationToken,
+							CompactionReasons.Overflow,
+							willRetry: true).ConfigureAwait(false);
+						if (compacted is null)
+						{
+							FinishRetry(success: false, "Context overflow recovery could not compact the conversation.");
+							return messages;
+						}
+					}
+					catch (Exception exception) when (exception is not OperationCanceledException)
+					{
+						FinishRetry(success: false, $"Context overflow recovery failed: {exception.Message}");
+						return messages;
+					}
+
+					attempt++;
+					continue;
+				}
+
+				var maxRetries = Math.Max(0, policy.MaxRetries);
+				if (!AutoRetryEnabled || _retryAttempt >= maxRetries || !RetryClassifier.IsRetryable(last))
+				{
+					FinishRetry(success: false, last.ErrorMessage);
+					return messages;
+				}
+
+				_retryAttempt++;
+				var delayMs = RetryClassifier.DelayMs(policy, _retryAttempt);
+
+				Emit(new AutoRetryStartEvent
+				{
+					Attempt = _retryAttempt,
+					MaxAttempts = maxRetries,
+					DelayMs = delayMs,
+					ErrorMessage = last.ErrorMessage ?? "Unknown error",
+				});
+
+				// 把失败的那次尝试从投影里去掉（文件里保留）。
+				OmitFromContext(last);
+
+				using var abort = new CancellationTokenSource();
+				_retryAbort = abort;
+				try
+				{
+					await Task.Delay(delayMs, abort.Token).ConfigureAwait(false);
+				}
+				catch (OperationCanceledException)
+				{
+					_retryAbort = null;
+					FinishRetry(success: false, "Aborted");
+					return messages;
+				}
+				finally
+				{
+					_retryAbort = null;
+				}
+
+				// 代理自身的消息列表里还留着那次失败，重置为当前投影（已排除它）再继续。
+				_agent.SetMessages(Project());
+
+				// 下一次尝试走"继续"分支：用户消息已经在投影里了。
 				attempt++;
-				continue;
 			}
-
-			var maxRetries = Math.Max(0, policy.MaxRetries);
-			if (!AutoRetryEnabled || _retryAttempt >= maxRetries || !RetryClassifier.IsRetryable(last))
-			{
-				FinishRetry(success: false, last.ErrorMessage);
-				return messages;
-			}
-
-			_retryAttempt++;
-			var delayMs = RetryClassifier.DelayMs(policy, _retryAttempt);
-
-			Emit(new AutoRetryStartEvent
-			{
-				Attempt = _retryAttempt,
-				MaxAttempts = maxRetries,
-				DelayMs = delayMs,
-				ErrorMessage = last.ErrorMessage ?? "Unknown error",
-			});
-
-			// 把失败的那次尝试从投影里去掉（文件里保留）。
-			OmitFromContext(last);
-
-			using var abort = new CancellationTokenSource();
-			_retryAbort = abort;
-			try
-			{
-				await Task.Delay(delayMs, abort.Token).ConfigureAwait(false);
-			}
-			catch (OperationCanceledException)
-			{
-				_retryAbort = null;
-				FinishRetry(success: false, "Aborted");
-				return messages;
-			}
-			finally
-			{
-				_retryAbort = null;
-			}
-
-			// 代理自身的消息列表里还留着那次失败，重置为当前投影（已排除它）再继续。
-			_agent.SetMessages(Project());
-
-			// 下一次尝试走"继续"分支：用户消息已经在投影里了。
-			attempt++;
+		}
+		finally
+		{
+			_routeFailed = null;
 		}
 	}
 

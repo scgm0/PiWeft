@@ -77,6 +77,51 @@ public class ModelsFileTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Load_ParsesDynamicVirtualRoute()
+	{
+		WriteUser(
+			"""
+			{
+			  "providers": {
+			    "router": {
+			      "models": [
+			        {
+			          "id": "auto",
+			          "name": "Auto",
+			          "virtual": {
+			            "thinkingLevels": ["off", "high"],
+			            "route": "return { model: ctx.modelRegistry.find('p', request.thinkingLevel === 'high' ? 'b' : 'a'), thinkingLevel: 'off', state: { seen: request.reason } };"
+			          }
+			        }
+			      ]
+			    }
+			  }
+			}
+			""");
+
+		var applied = ModelsFileLoader.Load(ProjectCwd, AgentDir);
+		var definition = Assert.Single(applied.VirtualModels);
+		var registry = new ModelRegistry();
+		registry.Add(ScriptedSessions.Model("a") with { Provider = "p", Id = "a" });
+		registry.Add(ScriptedSessions.Model("b") with { Provider = "p", Id = "b" });
+		registry.AddVirtual(definition);
+
+		var route = await definition.Route(new VirtualModelRequest
+		{
+			Model = registry.Get("router", "auto")!,
+			ThinkingLevel = "high",
+			Reason = VirtualRouteReason.User,
+			Messages = [],
+			Registry = registry,
+		}, CancellationToken.None);
+
+		Assert.Equal("p", route.Model.Provider);
+		Assert.Equal("b", route.Model.Id);
+		Assert.Equal("off", route.ThinkingLevel);
+		Assert.Equal("user", route.State!["seen"]!.GetValue<string>());
+	}
+
+	[Fact]
 	public void Load_AddsACompatibleEndpoint()
 	{
 		WriteUser(

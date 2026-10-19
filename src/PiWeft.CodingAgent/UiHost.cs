@@ -15,6 +15,15 @@ public sealed record UiEditorRequest(string Title, string? Prefill);
 /// <summary>通知（fire-and-forget），对应 <c>extension_ui_request</c> 的 <c>method: "notify"</c>。</summary>
 public sealed record UiNotifyRequest(string Message, string NotifyType);
 
+/// <summary>状态栏条目，对应 <c>method: "setStatus"</c>；<see cref="Text"/> 为 null 时清除。</summary>
+public sealed record UiStatusRequest(string Key, string? Text);
+
+/// <summary>输入框上/下方的 widget，对应 <c>method: "setWidget"</c>；<see cref="Lines"/> 为 null 时清除。</summary>
+public sealed record UiWidgetRequest(string Key, IReadOnlyList<string>? Lines, string? Placement);
+
+/// <summary>窗口/会话标题，对应 <c>method: "setTitle"</c>。</summary>
+public sealed record UiTitleRequest(string Title);
+
 /// <summary>
 /// 宿主交互能力。CLI 交互模式、RPC 与桌面各自实现；headless（print/JSON）不提供实现，
 /// <c>ask_question</c> 会明确告知模型当前环境无法交互，而不是静默阻塞。
@@ -42,6 +51,33 @@ public interface IUiHost
 
 	/// <summary>展示一条通知；不等待回应，宿主可忽略。</summary>
 	void Notify(UiNotifyRequest request)
+	{
+	}
+
+	/// <summary>设置/清除状态栏条目（<c>setStatus</c>）；不等待回应。</summary>
+	void SetStatus(UiStatusRequest request)
+	{
+	}
+
+	void SetStatus(string key, string? text) => SetStatus(new UiStatusRequest(key, text));
+
+	/// <summary>设置/清除输入框附近的 widget（<c>setWidget</c>）；不等待回应。</summary>
+	void SetWidget(UiWidgetRequest request)
+	{
+	}
+
+	void SetWidget(string key, IReadOnlyList<string>? lines, string? placement = null) =>
+		SetWidget(new UiWidgetRequest(key, lines, placement));
+
+	/// <summary>设置窗口/会话标题（<c>setTitle</c>）。</summary>
+	void SetTitle(UiTitleRequest request)
+	{
+	}
+
+	void SetTitle(string title) => SetTitle(new UiTitleRequest(title));
+
+	/// <summary>替换输入框文本（<c>set_editor_text</c>）。</summary>
+	void SetEditorText(string text)
 	{
 	}
 }

@@ -38,7 +38,7 @@ public class ThemeWatcherTests : IDisposable
 
 		File.WriteAllText(file, """{"name":"forest","appearance":"dark","colors":{"background":"#202020"}}""");
 
-		var completed = await Task.WhenAny(fired.Task, Task.Delay(5_000)).ConfigureAwait(false);
+		var completed = await Task.WhenAny(fired.Task, Task.Delay(5_000));
 		Assert.Same(fired.Task, completed);
 	}
 
@@ -51,7 +51,7 @@ public class ThemeWatcherTests : IDisposable
 
 		Directory.CreateDirectory(Path.Combine(_agentDir, "themes"));
 
-		var completed = await Task.WhenAny(fired.Task, Task.Delay(5_000)).ConfigureAwait(false);
+		var completed = await Task.WhenAny(fired.Task, Task.Delay(5_000));
 		Assert.Same(fired.Task, completed);
 	}
 

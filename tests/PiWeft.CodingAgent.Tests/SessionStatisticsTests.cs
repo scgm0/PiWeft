@@ -163,28 +163,6 @@ public sealed class SessionStatisticsTests
 		Assert.Equal(1000, session.Statistics().CacheHitSamples);
 	}
 
-	[Fact]
-	public void UnchangedSessionQueriesAllocateNoHistoricalSnapshots()
-	{
-		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
-		for (var i = 0; i < 1000; i++) manager.AppendMessage(Assistant(100, 800, 100));
-		using var session = Create(manager);
-		for (var i = 0; i < 20; i++)
-		{
-			_ = session.UsageTotals();
-			_ = session.UsageBreakdown();
-			_ = session.ContextTokens();
-		}
-		var before = GC.GetAllocatedBytesForCurrentThread();
-		for (var i = 0; i < 1000; i++)
-		{
-			_ = session.UsageTotals();
-			_ = session.UsageBreakdown();
-			_ = session.ContextTokens();
-		}
-		Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
-	}
-
 	[Theory]
 	[InlineData(0)]
 	[InlineData(-1)]

@@ -75,6 +75,7 @@ public class CliEndToEndTests : IDisposable
 		"--no-skills",
 		"--no-prompt-templates",
 		"--no-context-files",
+		"--approve",
 	]).Arguments!;
 
 	[Fact]
@@ -171,6 +172,7 @@ public class CliEndToEndTests : IDisposable
 		var tools = response["data"]!["tools"]!.AsArray().Select(static node => node!.GetValue<string>()).ToList();
 
 		// Every tool of the server, across both listing pages, plus the three resource tools.
+		// MCP defaults to codemode exposure, but those tools remain executable and are listed here.
 		Assert.Contains("mcp__fixture__echo", tools);
 		Assert.Contains("mcp__fixture__fail", tools);
 		Assert.Contains("mcp__fixture__add_tool", tools);

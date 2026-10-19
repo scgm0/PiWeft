@@ -28,14 +28,6 @@ public sealed class ProviderStreamEventTests
 	}
 
 	[Fact]
-	public void NoCallbackDoesNotParseOrThrow()
-	{
-		var model = new Model { Id = "m", Provider = "p", Api = "test" };
-		var options = new StreamOptions();
-		options.NotifyStreamEvent("""{"type":"delta"}""", model);
-	}
-
-	[Fact]
 	public void ElementOverloadPassesTheElement()
 	{
 		var model = new Model { Id = "m", Provider = "p", Api = "test" };

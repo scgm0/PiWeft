@@ -114,19 +114,44 @@ public sealed partial class SessionManager
 		return manager;
 	}
 
-	/// <summary>打开已有的会话文件。工作目录默认取头部记录，可显式覆盖。</summary>
-	public static SessionManager Open(string path, string? sessionDir = null, string? cwdOverride = null)
+	/// <summary>打开已有的会话文件。工作目录默认取头部记录，可显式覆盖；头部损坏时可用 <paramref name="cwdFallback"/> 兜底。</summary>
+	public static SessionManager Open(
+		string path,
+		string? sessionDir = null,
+		string? cwdOverride = null,
+		string? cwdFallback = null)
 	{
 		var resolved = Path.GetFullPath(path);
 		var entries = ReadFileEntries(resolved);
 
 		var header = entries.OfType<SessionHeader>().FirstOrDefault();
-		var cwd = cwdOverride ?? header?.Cwd ?? Environment.CurrentDirectory;
+		var cwd = NormalizeCwd(cwdOverride)
+			?? NormalizeCwd(header?.Cwd)
+			?? NormalizeCwd(cwdFallback)
+			?? Environment.CurrentDirectory;
 		var dir = sessionDir ?? Path.GetDirectoryName(resolved) ?? Environment.CurrentDirectory;
 
 		var manager = new SessionManager(cwd, dir, resolved, true);
 		manager.LoadEntries(entries, header);
 		return manager;
+	}
+
+	/// <summary>把头部里的工作目录规范成绝对路径；空值或损坏值交给调用方回退。</summary>
+	private static string? NormalizeCwd(string? cwd)
+	{
+		if (string.IsNullOrWhiteSpace(cwd))
+		{
+			return null;
+		}
+
+		try
+		{
+			return Path.GetFullPath(cwd);
+		}
+		catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			return null;
+		}
 	}
 
 	/// <summary>打开该工作目录下最近的会话；不存在则新建。</summary>

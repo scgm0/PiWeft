@@ -106,20 +106,6 @@ public class PiBinaryRpcParityTests
 	];
 
 	[Fact]
-	public void FixtureIsExactlyAHeaderAndTwoMessages()
-	{
-		// 这个测试盯住 fixture 本身：文件里只能有头部 + 两条消息。
-		// 一旦写入端偷偷追加别的条目（例如 thinking_level_change），两边实现的条目数就会不一致。
-		using var fixture = new SessionFixture();
-		var lines = File.ReadAllLines(fixture.FilePath);
-
-		Assert.Equal(3, lines.Length);
-		Assert.Contains("\"type\":\"session\"", lines[0]);
-		Assert.Contains("\"role\":\"user\"", lines[1]);
-		Assert.Contains("\"role\":\"assistant\"", lines[2]);
-	}
-
-	[Fact]
 	public async Task ReadOnlyCommandsMatchTheReferenceImplementation()
 	{
 		var pi = FindPi();

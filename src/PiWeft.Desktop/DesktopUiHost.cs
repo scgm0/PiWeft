@@ -12,11 +12,19 @@ internal sealed class DesktopUiHost : IUiHost
 {
 	private readonly AskQuestionPanel _panel = new();
 	private UIElement? _owner;
+	private SessionTab? _tab;
 
 	public bool HasUi => true;
 
 	/// <summary>会话标签的视图，用来定位窗口。</summary>
 	public void Attach(UIElement owner) => _owner = owner;
+
+	/// <summary>绑定会话标签，让 fire-and-forget 的扩展 UI 更新落到该标签。</summary>
+	public void Attach(SessionTab tab)
+	{
+		_tab = tab;
+		_owner = tab.View;
+	}
 
 	public Task<string?> InputAsync(UiInputRequest request, CancellationToken cancellationToken)
 	{
@@ -73,6 +81,18 @@ internal sealed class DesktopUiHost : IUiHost
 	public void Notify(UiNotifyRequest request)
 	{
 	}
+
+	public void SetStatus(UiStatusRequest request) =>
+		Dispatch(() => _tab?.SetExtensionStatus(request.Key, request.Text));
+
+	public void SetWidget(UiWidgetRequest request) =>
+		Dispatch(() => _tab?.SetExtensionWidget(request.Key, request.Lines));
+
+	public void SetTitle(UiTitleRequest request) =>
+		Dispatch(() => _tab?.SetExtensionTitle(request.Title));
+
+	public void SetEditorText(string text) =>
+		Dispatch(() => _tab?.SetExtensionText(text));
 
 	/// <summary>把单问题卡片挂到窗口上并等待回答；取消或关闭返回 <c>null</c>。</summary>
 	private Task<T?> ShowDialogAsync<T>(

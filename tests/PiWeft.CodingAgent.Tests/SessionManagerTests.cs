@@ -42,6 +42,43 @@ public class SessionManagerTests : IDisposable
 		Assert.Equal("2026-10-12T03:53:32.360Z", obj["timestamp"]!.GetValue<string>());
 	}
 
+	[Theory]
+	[InlineData("")]
+	[InlineData("   ")]
+	public void Open_FallsBackToProcessCwdWhenHeaderCwdIsBlank(string cwd)
+	{
+		Directory.CreateDirectory(_root);
+		var path = Path.Combine(_root, "external.jsonl");
+		var header = new SessionHeader
+		{
+			Id = "external-1",
+			Timestamp = "2026-10-19T16:52:43.514Z",
+			Cwd = cwd,
+		};
+		File.WriteAllText(path, SessionJson.Serialize(header) + "\n");
+
+		var manager = SessionManager.Open(path);
+
+		Assert.Equal(Path.GetFullPath(Environment.CurrentDirectory), manager.Cwd);
+	}
+
+	[Fact]
+	public void Open_UsesExplicitFallbackWhenHeaderCwdIsBlank()
+	{
+		Directory.CreateDirectory(_root);
+		var path = Path.Combine(_root, "external-fallback.jsonl");
+		File.WriteAllText(path, SessionJson.Serialize(new SessionHeader
+		{
+			Id = "external-2",
+			Timestamp = "2026-10-19T16:52:43.514Z",
+			Cwd = string.Empty,
+		}) + "\n");
+
+		var manager = SessionManager.Open(path, cwdFallback: Path.Combine(_root, "project"));
+
+		Assert.Equal(Path.GetFullPath(Path.Combine(_root, "project")), manager.Cwd);
+	}
+
 	[Fact]
 	public void AppendMessage_WritesEntriesWithTreeLinks()
 	{

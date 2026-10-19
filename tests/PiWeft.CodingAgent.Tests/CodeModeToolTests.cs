@@ -219,7 +219,7 @@ public sealed class CodeModeToolTests : IDisposable
 			const content = await tools.read({ path: "a.txt" });
 			text(content.toUpperCase());
 			return 2;
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		var text = Text(result);
@@ -241,7 +241,7 @@ public sealed class CodeModeToolTests : IDisposable
 
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			await tools.read({ path: "missing.txt" });
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.True(result.IsError);
 		var text = Text(result);
@@ -259,7 +259,7 @@ public sealed class CodeModeToolTests : IDisposable
 			const matches = searchTools("file contents");
 			text(matches.map(function (match) { return match.name; }).join(","));
 			text(describeTool(matches[0].name));
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		var text = Text(result);
@@ -289,7 +289,7 @@ public sealed class CodeModeToolTests : IDisposable
 			const one = models.getModelOfType("chat", "test", "smoke");
 			text(String(listed.length));
 			return one.id + ":" + (one.headers === undefined ? "no-headers" : "leaked");
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		Assert.Contains("smoke:no-headers", Text(result));
@@ -305,7 +305,7 @@ public sealed class CodeModeToolTests : IDisposable
 			text("first");
 			console.log("log line");
 			return "second";
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		var text = Text(result);
@@ -325,7 +325,7 @@ public sealed class CodeModeToolTests : IDisposable
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			// @options: {"max_output_tokens": 0}
 			text("hello world");
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		Assert.Contains("Warning: truncated output", Text(result));
@@ -443,7 +443,7 @@ public sealed class CodeModeToolTests : IDisposable
 			});
 			image(generated.output[1]);
 			return generated.output.length;
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		Assert.Contains("good", Text(result));
@@ -469,7 +469,7 @@ public sealed class CodeModeToolTests : IDisposable
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			const classifier = models.getModelOfType("classifier", "test", "fake-classifier");
 			await models.classify(classifier, { questions: {} });
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.True(result.IsError);
 		Assert.Contains("context.state", Text(result));
@@ -483,7 +483,7 @@ public sealed class CodeModeToolTests : IDisposable
 
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			image("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		Assert.Contains(result.Content, static block => block is ImageContent);
@@ -520,7 +520,7 @@ public sealed class CodeModeToolTests : IDisposable
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			const data = await tools.structured({});
 			return data.value;
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		Assert.Contains("42", Text(result));
@@ -551,7 +551,7 @@ public sealed class CodeModeToolTests : IDisposable
 			ToolName = CodeModeTool.Name,
 			Arguments = new JsonObject { ["code"] = """await tools.read({ path: "a.txt" });""" },
 			OnUpdate = updates.Add,
-		}).ConfigureAwait(false);
+		});
 
 		Assert.False(result.IsError, Text(result));
 		Assert.NotEmpty(updates);
@@ -584,7 +584,7 @@ public sealed class CodeModeToolTests : IDisposable
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			tools.hang({});
 			exit();
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		var details = Assert.IsType<JsonObject>(result.Details);
@@ -607,7 +607,7 @@ public sealed class CodeModeToolTests : IDisposable
 
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			return await tools.script_only({});
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(result.IsError, Text(result));
 		Assert.Contains("called", Text(result));
@@ -626,7 +626,7 @@ public sealed class CodeModeToolTests : IDisposable
 			ToolCallId = "search-1",
 			ToolName = "tool_search",
 			Arguments = new JsonObject { ["query"] = "deferred" },
-		}).ConfigureAwait(false);
+		});
 
 		Assert.False(result.IsError, Text(result));
 		Assert.Contains("deferred_tool", Text(result));
@@ -637,7 +637,7 @@ public sealed class CodeModeToolTests : IDisposable
 	}
 
 	[Fact]
-	public void DeferredTool_LoadIsRestoredOnASecondSession()
+	public async Task DeferredTool_LoadIsRestoredOnASecondSession()
 	{
 		var sessionManager = SessionManager.Create(_root, Path.Combine(_root, "sessions"));
 		using (var first = CreateSession(
@@ -645,12 +645,12 @@ public sealed class CodeModeToolTests : IDisposable
 			session: sessionManager))
 		{
 			var search = first.DeclaredTools.Single(static tool => tool.Name == "tool_search");
-			search.Execute(new AgentToolInvocation
+			await search.Execute(new AgentToolInvocation
 			{
 				ToolCallId = "search-1",
 				ToolName = "tool_search",
 				Arguments = new JsonObject { ["query"] = "deferred" },
-			}).GetAwaiter().GetResult();
+			});
 		}
 
 		using var second = CreateSession(
@@ -684,7 +684,7 @@ public sealed class CodeModeToolTests : IDisposable
 		using var session = CreateSession();
 		var codemode = session.Tools.Single(static tool => tool.Name == CodeModeTool.Name);
 
-		await codemode.Execute(Invoke(CodeModeTool.Name, """store("counter", 41);""")).ConfigureAwait(false);
+		await codemode.Execute(Invoke(CodeModeTool.Name, """store("counter", 41);"""));
 
 		var entry = Assert.Single(session.Session.Entries.OfType<CustomEntry>());
 		Assert.Equal(CodeModeTool.EntryType, entry.CustomType);
@@ -693,7 +693,7 @@ public sealed class CodeModeToolTests : IDisposable
 		var second = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			store("counter", load("counter") + 1);
 			return load("counter");
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.False(second.IsError, Text(second));
 		Assert.Contains("42", Text(second));
@@ -708,7 +708,7 @@ public sealed class CodeModeToolTests : IDisposable
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			store("counter", 1);
 			throw new Error("boom");
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.True(result.IsError);
 		Assert.DoesNotContain(session.Session.Entries, static entry => entry is CustomEntry);
@@ -723,7 +723,7 @@ public sealed class CodeModeToolTests : IDisposable
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
 			// @options: {"timeout_ms": 200}
 			while (true) {}
-			""")).ConfigureAwait(false);
+			"""));
 
 		Assert.True(result.IsError);
 		Assert.Contains("timed out", Text(result));
@@ -735,7 +735,7 @@ public sealed class CodeModeToolTests : IDisposable
 		using var session = CreateSession();
 		var codemode = session.Tools.Single(static tool => tool.Name == CodeModeTool.Name);
 
-		var result = await codemode.Execute(Invoke(CodeModeTool.Name, "   ")).ConfigureAwait(false);
+		var result = await codemode.Execute(Invoke(CodeModeTool.Name, "   "));
 
 		Assert.True(result.IsError);
 		Assert.Contains("non-empty", Text(result));

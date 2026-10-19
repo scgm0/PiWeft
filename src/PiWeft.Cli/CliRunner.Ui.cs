@@ -81,17 +81,60 @@ public sealed partial class CliRunner : IUiHost
 		return StringValueOf(response);
 	}
 
-	void IUiHost.Notify(UiNotifyRequest request)
+	void IUiHost.Notify(UiNotifyRequest request) => WriteUiFireAndForget("notify", new JsonObject
 	{
-		// fire-and-forget：只发记录，不登记等待。
-		WriteRecord(CliJson.Serialize(new JsonObject
+		["message"] = request.Message,
+		["notifyType"] = request.NotifyType,
+	});
+
+	void IUiHost.SetStatus(UiStatusRequest request)
+	{
+		var parameters = new JsonObject { ["statusKey"] = request.Key };
+		if (request.Text is not null)
+		{
+			parameters["statusText"] = request.Text;
+		}
+
+		WriteUiFireAndForget("setStatus", parameters);
+	}
+
+	void IUiHost.SetWidget(UiWidgetRequest request)
+	{
+		var parameters = new JsonObject { ["widgetKey"] = request.Key };
+		if (request.Lines is not null)
+		{
+			parameters["widgetLines"] = new JsonArray([.. request.Lines.Select(static line => (JsonNode?)JsonValue.Create(line))]);
+		}
+
+		if (request.Placement is { Length: > 0 } placement)
+		{
+			parameters["widgetPlacement"] = placement;
+		}
+
+		WriteUiFireAndForget("setWidget", parameters);
+	}
+
+	void IUiHost.SetTitle(UiTitleRequest request) =>
+		WriteUiFireAndForget("setTitle", new JsonObject { ["title"] = request.Title });
+
+	void IUiHost.SetEditorText(string text) =>
+		WriteUiFireAndForget("set_editor_text", new JsonObject { ["text"] = text });
+
+	/// <summary>发出一个不等待回应的扩展 UI 请求，字段与 pi RPC 的顶层字段一致。</summary>
+	private void WriteUiFireAndForget(string method, JsonObject parameters)
+	{
+		var record = new JsonObject
 		{
 			["type"] = "extension_ui_request",
 			["id"] = Guid.NewGuid().ToString("N"),
-			["method"] = "notify",
-			["message"] = request.Message,
-			["notifyType"] = request.NotifyType,
-		}));
+			["method"] = method,
+		};
+		foreach (var (name, value) in parameters)
+		{
+			record[name] = value?.DeepClone();
+		}
+
+		WriteRecord(CliJson.Serialize(record));
 	}
 
 	/// <summary>

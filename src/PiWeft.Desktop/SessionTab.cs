@@ -52,6 +52,9 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _scrollToLatest;
 	private readonly TextBox _searchBox = new TextBox().PrimarySelection();
 	private readonly TextBlock _filterStatus = new();
+	private readonly TextBlock _extensionLine = new();
+	private readonly Dictionary<string, string> _extensionStatuses = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, IReadOnlyList<string>> _extensionWidgets = new(StringComparer.Ordinal);
 	private string _filter = string.Empty;
 	private IReadOnlyList<ChatEntry>? _projectedSource;
 	private IReadOnlyList<ChatEntry> _projectedRows = [];
@@ -343,10 +346,13 @@ public sealed partial class SessionTab : IDisposable
 					_statisticsLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)));
 
 		// 输入区整列（提示文本 + 输入框 + 状态栏）：空会话时落在填充行并居中，有消息后回到贴底的自适应行。
+		_extensionLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)
+			.HorizontalAlignment(HorizontalAlignment.Center).IsVisible(false);
+
 		_composerColumn = new StackPanel()
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Stretch)
-			.Children(_emptyCard.IsVisible(false), composerPane,
+			.Children(_extensionLine, _emptyCard.IsVisible(false), composerPane,
 				statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)));
 
 		var layout = new Grid()
@@ -425,6 +431,87 @@ public sealed partial class SessionTab : IDisposable
 
 		// 没有名字也没有消息时用通用名，而不是把 id 摆给用户看。
 		return Strings.UntitledSession;
+	}
+
+	/// <summary>扩展 <c>setStatus</c>：状态条目显示在输入区上方；text 为 null 时清除。</summary>
+	public void SetExtensionStatus(string key, string? text)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		if (text is null)
+		{
+			_extensionStatuses.Remove(key);
+		}
+		else
+		{
+			_extensionStatuses[key] = text;
+		}
+
+		RefreshExtensionLine();
+	}
+
+	/// <summary>扩展 <c>setWidget</c>：把 widget 的文本行并入输入区上方的提示行。</summary>
+	public void SetExtensionWidget(string key, IReadOnlyList<string>? lines)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		if (lines is null || lines.Count == 0)
+		{
+			_extensionWidgets.Remove(key);
+		}
+		else
+		{
+			_extensionWidgets[key] = lines;
+		}
+
+		RefreshExtensionLine();
+	}
+
+	/// <summary>扩展 <c>setTitle</c>：更新标签页标题。</summary>
+	public void SetExtensionTitle(string title)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		if (string.IsNullOrWhiteSpace(title) || string.Equals(Title, title, StringComparison.Ordinal))
+		{
+			return;
+		}
+
+		Title = title;
+		TitleChanged?.Invoke(this);
+	}
+
+	/// <summary>扩展 <c>set_editor_text</c>：替换输入框内容并把焦点交回编辑器。</summary>
+	public void SetExtensionText(string text)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_composer.Text = text;
+		FocusComposer();
+	}
+
+	private void RefreshExtensionLine()
+	{
+		var parts = _extensionStatuses.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+			.Select(static pair => pair.Value)
+			.Concat(_extensionWidgets.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+				.SelectMany(static pair => pair.Value))
+			.Where(static part => !string.IsNullOrWhiteSpace(part))
+			.ToArray();
+		_extensionLine.Text(string.Join(" · ", parts));
+		_extensionLine.IsVisible(parts.Length > 0);
 	}
 
 	public void RefreshTitle()

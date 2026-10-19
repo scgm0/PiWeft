@@ -53,6 +53,7 @@ public sealed partial class CliRunner
 			["state"] = status.State,
 			["reason"] = status.Reason,
 			["nextWarmAt"] = status.NextWarmAt?.ToUnixTimeMilliseconds(),
+			["extensionOverride"] = status.ExtensionOverride,
 		};
 		if (status.Decision is { } decision)
 		{

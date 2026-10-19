@@ -24,7 +24,7 @@ public class AgentEventWriterTests
 	};
 
 	[Fact]
-	public void AgentAndTurnEventsMatchPiWireShape()
+	public void AgentTurnAndMessageEventsMatchPiWireShape()
 	{
 		Assert.Equal("agent_start", JsonNode.Parse(AgentEventWriter.Write(new AgentStartEvent()))!["type"]!.GetValue<string>());
 		Assert.Equal("turn_start", JsonNode.Parse(AgentEventWriter.Write(new TurnStartEvent()))!["type"]!.GetValue<string>());
@@ -46,34 +46,24 @@ public class AgentEventWriterTests
 
 		Assert.Equal("turn_end", turnEnd["type"]!.GetValue<string>());
 		Assert.Empty(turnEnd["toolResults"]!.AsArray());
-	}
 
-	[Fact]
-	public void MessageUpdateIsDeltaOnly()
-	{
 		var partial = Assistant(new TextContent { Text = "hello" });
-		var record = JsonNode.Parse(AgentEventWriter.Write(new MessageUpdateEvent
+		var update = JsonNode.Parse(AgentEventWriter.Write(new MessageUpdateEvent
 		{
 			Message = partial,
 			AssistantMessageEvent = new TextDeltaEvent { ContentIndex = 0, Delta = "hello", Partial = partial },
 		}))!;
 
-		Assert.Equal("message_update", record["type"]!.GetValue<string>());
+		Assert.Equal("message_update", update["type"]!.GetValue<string>());
 		// The cumulative message is not on the wire; usage and the nested delta are.
-		Assert.False(record.AsObject().ContainsKey("message"));
-		Assert.Equal(4, record["usage"]!["totalTokens"]!.GetValue<int>());
+		Assert.False(update.AsObject().ContainsKey("message"));
+		Assert.Equal(4, update["usage"]!["totalTokens"]!.GetValue<int>());
 
-		var nested = record["assistantMessageEvent"]!;
+		var nested = update["assistantMessageEvent"]!;
 		Assert.Equal("text_delta", nested["type"]!.GetValue<string>());
 		Assert.Equal(0, nested["contentIndex"]!.GetValue<int>());
 		Assert.Equal("hello", nested["delta"]!.GetValue<string>());
 		Assert.False(nested.AsObject().ContainsKey("partial"));
-	}
-
-	[Fact]
-	public void AssistantMessageEventsCarryTheirFields()
-	{
-		var partial = Assistant();
 
 		string Write(AssistantMessageEvent @event) => AgentEventWriter.Write(new MessageUpdateEvent
 		{
@@ -102,6 +92,21 @@ public class AgentEventWriterTests
 			Content = "thought",
 			Partial = partial,
 		}))!["assistantMessageEvent"]!["type"]!.GetValue<string>());
+
+		var messageEnd = JsonNode.Parse(AgentEventWriter.Write(new MessageEndEvent
+		{
+			Message = new ToolResultMessage
+			{
+				ToolCallId = "c1",
+				ToolName = "read",
+				Content = [new TextContent { Text = "contents" }],
+				Timestamp = 7,
+			},
+		}))!;
+
+		Assert.Equal("message_end", messageEnd["type"]!.GetValue<string>());
+		Assert.Equal("toolResult", messageEnd["message"]!["role"]!.GetValue<string>());
+		Assert.Equal("c1", messageEnd["message"]!["toolCallId"]!.GetValue<string>());
 	}
 
 	[Theory]
@@ -139,24 +144,6 @@ public class AgentEventWriterTests
 		Assert.Equal(command, arguments!["command"]!.GetValue<string>());
 	}
 
-	[Fact]
-	public void MessageEndCarriesTheMessage()
-	{
-		var record = JsonNode.Parse(AgentEventWriter.Write(new MessageEndEvent
-		{
-			Message = new ToolResultMessage
-			{
-				ToolCallId = "c1",
-				ToolName = "read",
-				Content = [new TextContent { Text = "contents" }],
-				Timestamp = 7,
-			},
-		}))!;
-
-		Assert.Equal("message_end", record["type"]!.GetValue<string>());
-		Assert.Equal("toolResult", record["message"]!["role"]!.GetValue<string>());
-		Assert.Equal("c1", record["message"]!["toolCallId"]!.GetValue<string>());
-	}
 }
 
 public class CliRunnerTests : IDisposable
@@ -200,6 +187,46 @@ public class CliRunnerTests : IDisposable
 	}
 
 	private CliArguments Arguments(params string[] argv) => CliArguments.Parse(argv).Arguments!;
+
+	[Fact]
+	public void ExtensionUiFireAndForgetMatchesPiWireShape()
+	{
+		var (environment, _) = Environment();
+		var (runner, output, _) = RunnerFor(environment);
+		var host = (IUiHost)runner;
+
+		host.SetStatus(new UiStatusRequest("build", "compiling"));
+		host.SetStatus(new UiStatusRequest("build", null));
+		host.SetWidget(new UiWidgetRequest("plan", ["step 1", "step 2"], "aboveEditor"));
+		host.SetTitle(new UiTitleRequest("release"));
+		host.SetEditorText("draft");
+
+		var records = output.ToString()
+			.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+			.Select(static line => JsonNode.Parse(line)!)
+			.ToArray();
+		Assert.Equal(5, records.Length);
+
+		Assert.Equal("extension_ui_request", records[0]["type"]!.GetValue<string>());
+		Assert.Equal("setStatus", records[0]["method"]!.GetValue<string>());
+		Assert.Equal("build", records[0]["statusKey"]!.GetValue<string>());
+		Assert.Equal("compiling", records[0]["statusText"]!.GetValue<string>());
+
+		// 清除状态时不带 statusText。
+		Assert.Equal("setStatus", records[1]["method"]!.GetValue<string>());
+		Assert.False(records[1].AsObject().ContainsKey("statusText"));
+
+		Assert.Equal("setWidget", records[2]["method"]!.GetValue<string>());
+		Assert.Equal("plan", records[2]["widgetKey"]!.GetValue<string>());
+		Assert.Equal(["step 1", "step 2"], records[2]["widgetLines"]!.AsArray().Select(static line => line!.GetValue<string>()));
+		Assert.Equal("aboveEditor", records[2]["widgetPlacement"]!.GetValue<string>());
+
+		Assert.Equal("setTitle", records[3]["method"]!.GetValue<string>());
+		Assert.Equal("release", records[3]["title"]!.GetValue<string>());
+
+		Assert.Equal("set_editor_text", records[4]["method"]!.GetValue<string>());
+		Assert.Equal("draft", records[4]["text"]!.GetValue<string>());
+	}
 
 	[Theory]
 	[InlineData("off")]
@@ -603,7 +630,8 @@ public class CliRunnerTests : IDisposable
 		for (var attempt = 0; attempt < 500 && requestId is null; attempt++)
 		{
 			var request = Parse(output).FirstOrDefault(static node =>
-				node["type"]?.GetValue<string>() == "extension_ui_request");
+				node["type"]?.GetValue<string>() == "extension_ui_request" &&
+				node["method"]?.GetValue<string>() == "input");
 			if (request is not null)
 			{
 				Assert.Equal(AskQuestions.EnvelopePlaceholder, request["placeholder"]!.GetValue<string>());

@@ -16,6 +16,30 @@ internal sealed class ConsoleUiHost(TextReader input, TextWriter output) : IUiHo
 	public void Notify(UiNotifyRequest request) =>
 		output.WriteLine($"[notify:{request.NotifyType}] {request.Message}");
 
+	public void SetStatus(UiStatusRequest request) =>
+		output.WriteLine(request.Text is null ? $"[status:{request.Key}]" : $"[status:{request.Key}] {request.Text}");
+
+	public void SetWidget(UiWidgetRequest request)
+	{
+		if (request.Lines is not { Count: > 0 } lines)
+		{
+			output.WriteLine($"[widget:{request.Key}]");
+			return;
+		}
+
+		foreach (var line in lines)
+		{
+			output.WriteLine($"[widget:{request.Key}] {line}");
+		}
+	}
+
+	public void SetTitle(UiTitleRequest request) => output.WriteLine($"[title] {request.Title}");
+
+	/// <summary>终端输入循环不暴露可替换的编辑缓冲；set_editor_text 在这里保持 no-op。</summary>
+	public void SetEditorText(string text)
+	{
+	}
+
 	public async Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken)
 	{
 		output.WriteLine();
