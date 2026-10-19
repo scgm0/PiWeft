@@ -17,6 +17,25 @@ public sealed class SmoothScrollTests
 		view.Arrange(new Rect(0, 0, 200, 200));
 	}
 
+	/// <summary>
+	/// 推进一帧：新的衰减物理按真实经过时间计算，假时钟只负责触发 Tick，
+	/// 所以帧间隔必须真的存在（否则 dt≈0，画面不动）。
+	/// </summary>
+	private static void Frame(int milliseconds = 16)
+	{
+		Thread.Sleep(milliseconds);
+		AnimationFrames.Advance(milliseconds);
+	}
+
+	/// <summary>持续推进到落位：指数衰减每帧只走完剩余距离的一部分。</summary>
+	private static void Settle(SmoothScroll smooth, int frames = 60)
+	{
+		for (var index = 0; index < frames && smooth.IsAnimating; index++)
+		{
+			Frame();
+		}
+	}
+
 	[Fact]
 	public void TreeViewportAndTextEditorsAnimateWithoutReplacingTheirContent()
 	{
@@ -27,9 +46,9 @@ public sealed class SmoothScrollTests
 		using var smoothTree = SmoothScroll.For(viewport);
 		smoothTree.RouteWheel(new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None));
 		Assert.Equal(0, viewport.VerticalOffset);
-		AnimationFrames.Advance(45);
+		Frame(45);
 		Assert.InRange(viewport.VerticalOffset, 1, ThemeManager.DefaultMetrics.ScrollWheelStep - 1);
-		AnimationFrames.Advance(200);
+		Settle(smoothTree);
 
 		var text = new MultiLineTextBox().Text(string.Join("\n", Enumerable.Range(0, 200).Select(i => $"Line {i}"))).SmoothScrolling();
 		ConversationPerformanceTests.Layout(text, 240, 200);
@@ -37,9 +56,9 @@ public sealed class SmoothScrollTests
 		var original = text.Text;
 		smoothText.RouteWheel(new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None));
 		Assert.Equal(0, text.VerticalOffset);
-		AnimationFrames.Advance(45);
+		Frame(45);
 		Assert.InRange(text.VerticalOffset, 1, ThemeManager.DefaultMetrics.ScrollWheelStep - 1);
-		AnimationFrames.Advance(200);
+		Settle(smoothText);
 		Assert.Equal(ThemeManager.DefaultMetrics.ScrollWheelStep, text.VerticalOffset);
 		Assert.Equal(original, text.Text);
 		text.ScrollToCaret();
@@ -58,7 +77,7 @@ public sealed class SmoothScrollTests
 		var down = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
 		smooth.RouteWheel(down);
 		Assert.True(down.Handled);
-		AnimationFrames.Advance(200);
+		Settle(smooth);
 		Assert.Equal(ThemeManager.DefaultMetrics.ScrollWheelStep, view.VerticalOffset);
 		smooth.JumpToEnd();
 		down = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
@@ -75,10 +94,10 @@ public sealed class SmoothScrollTests
 		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
 		smooth.ScrollBy(0, 1);
 		Assert.Equal(0, view.VerticalOffset);
-		AnimationFrames.Advance(45);
+		Frame(45);
 		Assert.InRange(view.VerticalOffset, 1, step - 1);
 		smooth.ScrollBy(0, 1);
-		AnimationFrames.Advance(200);
+		Settle(smooth);
 		Assert.Equal(step * 2, view.VerticalOffset);
 		Assert.False(smooth.IsAnimating);
 	}
@@ -91,10 +110,10 @@ public sealed class SmoothScrollTests
 		view.SetScrollOffsets(0, 500);
 		using var smooth = SmoothScroll.For(view);
 		smooth.ScrollBy(0, 5);
-		AnimationFrames.Advance(45);
+		Frame(45);
 		var turningPoint = view.VerticalOffset;
 		smooth.ScrollBy(0, -1);
-		AnimationFrames.Advance(200);
+		Settle(smooth);
 		Assert.InRange(view.VerticalOffset, turningPoint - ThemeManager.DefaultMetrics.ScrollWheelStep - 1,
 			turningPoint - ThemeManager.DefaultMetrics.ScrollWheelStep + 1);
 	}
@@ -108,13 +127,13 @@ public sealed class SmoothScrollTests
 		var args = new MouseWheelEventArgs(default, default, new Vector(-0.4, -0.2), false, false, false, ModifierKeys.None);
 		smooth.RouteWheel(args);
 		Assert.True(args.Handled);
-		AnimationFrames.Advance(200);
+		Settle(smooth);
 		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
 		Assert.Equal(step * 0.4, view.HorizontalOffset);
 		Assert.Equal(step * 0.2, view.VerticalOffset);
 		args = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.Shift);
 		smooth.RouteWheel(args);
-		AnimationFrames.Advance(200);
+		Settle(smooth);
 		Assert.Equal(step * 1.4, view.HorizontalOffset);
 		Assert.Equal(step * 0.2, view.VerticalOffset);
 	}
@@ -126,12 +145,12 @@ public sealed class SmoothScrollTests
 		Layout(view);
 		using var smooth = SmoothScroll.For(view);
 		smooth.ScrollBy(0, 1000);
-		AnimationFrames.Advance(200);
+		Settle(smooth);
 		Assert.Equal(smooth.MaxVerticalOffset, view.VerticalOffset);
 		smooth.ScrollBy(0, -10);
 		view.SetScrollOffsets(0, 300);
 		Assert.False(smooth.IsAnimating);
-		AnimationFrames.Advance(200);
+		Frame(50);
 		Assert.Equal(300, view.VerticalOffset);
 	}
 
@@ -146,8 +165,6 @@ public sealed class SmoothScrollTests
 		AnimationFrames.Advance(50);
 		Assert.False(smooth.IsAnimating);
 		view.IsVisible(true);
-		// 隔开一个事件间隔，让这次滚轮作为孤立刻度重新走缓动路径。
-		Thread.Sleep((int)SmoothScroll.ContinuousWheelIntervalMs + 20);
 		smooth.ScrollBy(0, 1);
 		Assert.True(smooth.IsAnimating);
 		smooth.Dispose();
@@ -155,26 +172,41 @@ public sealed class SmoothScrollTests
 	}
 
 	[Fact]
-	public void ContinuousWheelStreamAppliesImmediatelyInsteadOfRestartingTheAnimation()
+	public void WheelStreamAccumulatesIntoOneContinuousAnimation()
 	{
-		// macOS 对所有滚动设备做系统级平滑与惯性合成：事件流连续且增量为分数。
-		// 逐事件重启 180ms 缓动会打断速度曲线（滚轮卡顿的根因），连续流必须直接落位。
+		// 高频分数增量（触控板/惯性）与离散刻度共用同一条指数衰减曲线：
+		// 连续输入只累加目标、动画不重启，所以速度是连续的（不从头再来一次缓动）。
 		var view = View();
 		Layout(view);
 		using var smooth = SmoothScroll.For(view);
 		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+
 		smooth.ScrollBy(0, 1);
 		Assert.True(smooth.IsAnimating);
-		smooth.ScrollBy(0, 1);
-		Assert.False(smooth.IsAnimating);
-		Assert.Equal(step * 2, view.VerticalOffset);
-		AnimationFrames.Advance(200);
-		Assert.Equal(step * 2, view.VerticalOffset);
+		Assert.Equal(step, smooth.TargetVerticalOffset);
 
-		// 连续流中的反向输入同样立即从当前位置响应。
+		Frame(20);
+		var midway = view.VerticalOffset;
+		Assert.InRange(midway, 1, step - 1);
+
+		// 动画进行中继续输入：目标累加，位置不回退也不重开缓动。
+		smooth.ScrollBy(0, 1);
+		smooth.ScrollBy(0, 1);
+		Assert.True(smooth.IsAnimating);
+		Assert.Equal(step * 3, smooth.TargetVerticalOffset);
+		Frame(20);
+		Assert.True(view.VerticalOffset > midway);
+
+		Settle(smooth);
+		Assert.Equal(step * 3, view.VerticalOffset);
+		Assert.False(smooth.IsAnimating);
+
+		// 反向输入立即从当前位置起算：待追赶的前向量不参与。
 		var offset = view.VerticalOffset;
 		smooth.ScrollBy(0, -1);
-		Assert.False(smooth.IsAnimating);
+		Assert.True(smooth.IsAnimating);
+		Assert.Equal(offset - step, smooth.TargetVerticalOffset);
+		Settle(smooth);
 		Assert.Equal(offset - step, view.VerticalOffset);
 	}
 
@@ -196,7 +228,7 @@ public sealed class SmoothScrollTests
 		Assert.False(conversation.Following);
 		conversation.FollowContent();
 		Assert.True(smooth.IsAnimating);
-		AnimationFrames.Advance(200);
+		Settle(smooth);
 		var readingOffset = view.VerticalOffset;
 		Assert.True(showLatest);
 		((Border)view.Content!).Height(3000);
@@ -216,11 +248,11 @@ public sealed class SmoothScrollTests
 		Assert.False(conversation.Following);
 		conversation.ScrollToLatest();
 		Assert.Equal(100, view.VerticalOffset);
-		AnimationFrames.Advance(70);
+		Frame(70);
 		Assert.InRange(view.VerticalOffset, 101, SmoothScroll.For(view).MaxVerticalOffset - 1);
 		((Border)view.Content!).Height(3000);
 		Layout(view);
-		AnimationFrames.Advance(300);
+		Settle(SmoothScroll.For(view));
 		Assert.Equal(SmoothScroll.For(view).MaxVerticalOffset, view.VerticalOffset);
 		Assert.True(conversation.Following);
 	}

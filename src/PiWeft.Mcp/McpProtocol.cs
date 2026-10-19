@@ -36,6 +36,7 @@ internal static class McpProtocol
 				Name = name,
 				Description = tool["description"]?.GetValue<string>() ?? string.Empty,
 				InputSchema = tool["inputSchema"] as JsonObject ?? new JsonObject { ["type"] = "object" },
+				OutputSchema = tool["outputSchema"] as JsonObject,
 			});
 		}
 

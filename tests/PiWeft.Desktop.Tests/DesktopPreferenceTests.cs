@@ -161,6 +161,24 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void RightPanelWidthRoundTripsAndClamps()
+	{
+		new DesktopPreference { RightPanelWidth = 520 }.Save(_agentDir);
+		Assert.Equal(520, DesktopPreference.Load(_agentDir).RightPanelWidth);
+
+		// 面板属于会话、默认收起：折叠状态与分段不再落盘，旧版本留下的键也要清掉。
+		var text = File.ReadAllText(DesktopPreference.Path(_agentDir));
+		Assert.DoesNotContain("rightPanelCollapsed", text);
+		Assert.DoesNotContain("rightPanelTab", text);
+
+		File.WriteAllText(DesktopPreference.Path(_agentDir), "{\"rightPanelWidth\":9999}");
+		Assert.Equal(AppTheme.RightPanelMaxWidth, DesktopPreference.Load(_agentDir).RightPanelWidth);
+
+		File.WriteAllText(DesktopPreference.Path(_agentDir), "{\"rightPanelWidth\":10}");
+		Assert.Equal(AppTheme.RightPanelMinWidth, DesktopPreference.Load(_agentDir).RightPanelWidth);
+	}
+
+	[Fact]
 	public void ReadingPreferencesRoundTripAndRejectInvalidNumbers()
 	{
 		new DesktopPreference { ChatFontSize = 20, ReadingWidth = 1360 }.Save(_agentDir);
@@ -171,6 +189,41 @@ public class DesktopPreferenceTests : IDisposable
 		loaded = DesktopPreference.Load(_agentDir);
 		Assert.Equal(22, loaded.ChatFontSize);
 		Assert.Equal(760, loaded.ReadingWidth);
+	}
+
+	[Fact]
+	public void ChatWorkspaceDefaultsToAgentDirAndSidebarTabRoundTrips()
+	{
+		var defaultWorkspace = DesktopPreference.DefaultChatWorkspace(_agentDir);
+		Assert.Equal(Path.Combine(_agentDir, "chat-workspace"), defaultWorkspace);
+		Assert.Equal(defaultWorkspace, DesktopPreference.Load(_agentDir).ResolveChatWorkspace(_agentDir));
+
+		var preference = DesktopPreference.Load(_agentDir) with
+		{
+			SidebarProjects = true,
+			ChatWorkspace = "~/piweft-chats",
+		};
+		preference.Save(_agentDir);
+
+		var loaded = DesktopPreference.Load(_agentDir);
+		Assert.True(loaded.SidebarProjects);
+		Assert.Equal("~/piweft-chats", loaded.ChatWorkspace);
+		Assert.Equal(
+			Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "piweft-chats")),
+			loaded.ResolveChatWorkspace(_agentDir));
+	}
+
+	[Fact]
+	public void InvalidChatWorkspaceFallsBackToTheDefaultDirectory()
+	{
+		File.WriteAllText(DesktopPreference.Path(_agentDir), "{\"chatWorkspace\":42}");
+		var preference = DesktopPreference.Load(_agentDir);
+		Assert.Equal(string.Empty, preference.ChatWorkspace);
+		Assert.Equal(DesktopPreference.DefaultChatWorkspace(_agentDir), preference.ResolveChatWorkspace(_agentDir));
+
+		// 自定义路径无法解析时也不应抛异常打断启动。
+		var broken = preference with { ChatWorkspace = "\0invalid" };
+		Assert.Equal(DesktopPreference.DefaultChatWorkspace(_agentDir), broken.ResolveChatWorkspace(_agentDir));
 	}
 
 	[Fact]

@@ -13,6 +13,7 @@ public sealed class ModelRegistry
 
 	private readonly Dictionary<string, Model> _byKey = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, List<Model>> _byProvider = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, VirtualModelDefinition> _virtual = new(StringComparer.Ordinal);
 
 	public int Count => _byKey.Count;
 
@@ -26,7 +27,13 @@ public sealed class ModelRegistry
 	public void Add(Model model)
 	{
 		ArgumentNullException.ThrowIfNull(model);
-		_byKey[Key(model.Provider, model.Id)] = model;
+		var key = Key(model.Provider, model.Id);
+		if (!VirtualModels.IsVirtual(model))
+		{
+			_virtual.Remove(key);
+		}
+
+		_byKey[key] = model;
 		if (!_byProvider.TryGetValue(model.Provider, out var list))
 		{
 			list = [];
@@ -39,6 +46,59 @@ public sealed class ModelRegistry
 
 	public Model? Get(string provider, string id) =>
 		_byKey.TryGetValue(Key(provider, id), out var model) ? model : null;
+
+	/// <summary>注册虚拟模型；同名的物理模型会阻止注册，避免路由目标被遮蔽。</summary>
+	public void AddVirtual(VirtualModelDefinition definition)
+	{
+		ArgumentNullException.ThrowIfNull(definition);
+		var key = Key(definition.Provider, definition.Id);
+		if (_byKey.TryGetValue(key, out var existing) && !VirtualModels.IsVirtual(existing))
+		{
+			throw new InvalidOperationException(
+				$"Virtual model {definition.Provider}/{definition.Id} conflicts with a physical model.");
+		}
+
+		_virtual[key] = definition;
+		Add(VirtualModels.CreateCatalogModel(definition));
+	}
+
+	/// <summary>查找虚拟模型定义；普通模型返回 null。</summary>
+	public VirtualModelDefinition? Virtual(string provider, string id) =>
+		_virtual.TryGetValue(Key(provider, id), out var definition) ? definition : null;
+
+	/// <summary>移除虚拟模型定义与目录项。</summary>
+	public bool RemoveVirtual(string provider, string id)
+	{
+		var key = Key(provider, id);
+		if (!_virtual.Remove(key))
+		{
+			return false;
+		}
+
+		return Remove(provider, id);
+	}
+
+	/// <summary>移除一个模型；返回是否存在。</summary>
+	public bool Remove(string provider, string id)
+	{
+		var key = Key(provider, id);
+		_virtual.Remove(key);
+		if (!_byKey.Remove(key))
+		{
+			return false;
+		}
+
+		if (_byProvider.TryGetValue(provider, out var list))
+		{
+			list.RemoveAll(model => string.Equals(model.Id, id, StringComparison.Ordinal));
+			if (list.Count == 0)
+			{
+				_byProvider.Remove(provider);
+			}
+		}
+
+		return true;
+	}
 
 	/// <summary>列出模型，可限定某个 provider。</summary>
 	public IReadOnlyList<Model> List(string? provider = null)
@@ -53,6 +113,12 @@ public sealed class ModelRegistry
 
 	public IReadOnlyList<Model> ChatModels(string? provider = null) =>
 		[.. List(provider).Where(m => m.Type == ModelType.Chat)];
+
+	public IReadOnlyList<Model> ImageModels(string? provider = null) =>
+		[.. List(provider).Where(m => m.Type == ModelType.Image)];
+
+	public IReadOnlyList<Model> ClassifierModels(string? provider = null) =>
+		[.. List(provider).Where(m => m.Type == ModelType.Classifier)];
 
 	/// <summary>解析 <c>provider/model</c>；找不到时退回跨 provider 的唯一 id 匹配。</summary>
 	public Model? Resolve(string providerOrModel, string? modelId = null)
@@ -69,13 +135,8 @@ public sealed class ModelRegistry
 		}
 
 		Model? match = null;
-		foreach (var candidate in _byKey.Values)
+		foreach (var candidate in FindById(providerOrModel))
 		{
-			if (!string.Equals(candidate.Id, providerOrModel, StringComparison.Ordinal))
-			{
-				continue;
-			}
-
 			if (match is not null)
 			{
 				return null; // 有歧义
@@ -86,6 +147,10 @@ public sealed class ModelRegistry
 
 		return match;
 	}
+
+	/// <summary>所有与该模型 id 同名的目录条目（可能分布在多个 provider）。</summary>
+	public IReadOnlyList<Model> FindById(string modelId) =>
+		[.. _byKey.Values.Where(candidate => string.Equals(candidate.Id, modelId, StringComparison.Ordinal))];
 
 	public static ModelRegistry LoadDefault()
 	{

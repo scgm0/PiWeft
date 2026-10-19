@@ -46,6 +46,32 @@ internal static class DesktopTheme
 			: new Resolution(ThemeVariant.Dark, null, palette);
 	}
 
+	/// <summary>
+	/// 运行期应用一次主题解析：更新应用配色并广播主题变化。
+	/// </summary>
+	/// <remarks>
+	/// MewUI 0.22.1 禁止在 Application 运行后修改 <c>ThemeManager.DefaultLightSeed/DefaultDarkSeed</c>，
+	/// 因此这里不再尝试更新框架控件的 seed；自定义主题的颜色通过 <see cref="AppTheme.UseCustomPalette"/>
+	/// 作用于 PiWeft 自己的命名样式，框架控件保持启动时的 seed，需重启才能完全跟随自定义色板。
+	/// 同变体切换（例如两个深色自定义主题）不会产生新的 Theme 对象，用一次同色强调色刷新强制广播，
+	/// 否则设置页会保存了偏好却看不到变化。
+	/// </remarks>
+	public static void Apply(Resolution resolution)
+	{
+		AppTheme.UseCustomPalette(resolution.Light, resolution.Dark);
+		if (!Application.IsRunning)
+		{
+			return;
+		}
+
+		var before = Application.Current.Theme;
+		Application.Current.SetTheme(resolution.Variant);
+		if (ReferenceEquals(before, Application.Current.Theme))
+		{
+			Application.Current.SetAccent(Accent.Gray);
+		}
+	}
+
 	/// <summary>可选的界面主题列表：三个内建项加上所有已发现的自定义主题。</summary>
 	public static IReadOnlyList<(string Name, string? Error)> ListCustomThemes(string cwd, string? agentDir)
 	{

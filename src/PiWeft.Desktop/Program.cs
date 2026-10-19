@@ -171,7 +171,7 @@ public static class Program
 
 		Console.WriteLine($"  {Strings.SelfCheckModel}: {environment.Model.Provider}/{environment.Model.Id} ({environment.Model.Api})");
 		Console.WriteLine($"  {Strings.SelfCheckTools}: {string.Join(", ", environment.Tools.Select(static tool => tool.Name))}");
-		Console.WriteLine($"  {Strings.SelfCheckUiFont}: {AppFonts.Ui}");
+		Console.WriteLine($"  {Strings.SelfCheckUiFont}: {AppFonts.UiDisplayName}");
 		Console.WriteLine($"  {Strings.SelfCheckMonoFont}: {AppFonts.Mono}");
 
 		// 框架文案是否已切到中文（例如右键菜单），一眼可查。

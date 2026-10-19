@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Session;
@@ -100,6 +101,7 @@ public static class BranchSummarizer
 		StreamFn streamFn,
 		StreamOptions options,
 		CompactionSettings settings,
+		BranchSummarySettings branchSettings,
 		string targetId,
 		string? customInstructions = null,
 		CancellationToken cancellationToken = default)
@@ -121,11 +123,12 @@ public static class BranchSummarizer
 			return null;
 		}
 
-		var messages = new List<Message>();
-		foreach (var entry in abandoned)
+		if (branchSettings.SkipPrompt)
 		{
-			messages.AddRange(SessionManager.MessagesForEntry(entry));
+			return null;
 		}
+
+		var messages = SelectWithinBudget(abandoned, model.ContextWindow, branchSettings.ReserveTokens);
 
 		var instructions = customInstructions is { Length: > 0 } focus
 			? $"{BranchSummaryPrompt}\n\nAdditional focus: {focus}"
@@ -143,12 +146,16 @@ public static class BranchSummarizer
 			basePromptOverride: instructions).ConfigureAwait(false);
 
 		var fileOperations = ConversationSerializer.CollectFileOperations(messages);
-		var details = ConversationSerializer.FormatFileOperations(
-			fileOperations.ReadFiles,
-			fileOperations.ModifiedFiles);
+		var details = new JsonObject
+		{
+			["readFiles"] = new JsonArray([.. fileOperations.ReadFiles.OrderBy(static f => f, StringComparer.Ordinal)
+				.Select(static f => (JsonNode?)JsonValue.Create(f))]),
+			["modifiedFiles"] = new JsonArray([.. fileOperations.ModifiedFiles.OrderBy(static f => f, StringComparer.Ordinal)
+				.Select(static f => (JsonNode?)JsonValue.Create(f))]),
+		};
 
 		session.Branch(targetId);
-		session.AppendBranchSummary(leafId, summary, usage);
+		session.AppendBranchSummary(leafId, summary, usage, details);
 
 		return new BranchSummaryResult
 		{
@@ -167,6 +174,7 @@ public static class BranchSummarizer
 		StreamFn streamFn,
 		StreamOptions options,
 		CompactionSettings settings,
+		BranchSummarySettings branchSettings,
 		string targetId,
 		string? customInstructions = null,
 		CancellationToken cancellationToken = default)
@@ -183,11 +191,12 @@ public static class BranchSummarizer
 			return null;
 		}
 
-		var messages = new List<Message>();
-		foreach (var entry in abandoned)
+		if (branchSettings.SkipPrompt)
 		{
-			messages.AddRange(SessionManager.MessagesForEntry(entry));
+			return null;
 		}
+
+		var messages = SelectWithinBudget(abandoned, model.ContextWindow, branchSettings.ReserveTokens);
 
 		var instructions = customInstructions is { Length: > 0 } focus
 			? $"{BranchSummaryPrompt}\n\nAdditional focus: {focus}"
@@ -215,4 +224,42 @@ public static class BranchSummarizer
 			SummarizedEntries = abandoned.Count,
 		};
 	}
+
+	/// <summary>从最新的条目往前取，直到达到上下文窗口预算。</summary>
+	private static List<Message> SelectWithinBudget(
+		IReadOnlyList<SessionEntry> abandoned,
+		int contextWindow,
+		int reserveTokens)
+	{
+		var budget = contextWindow > 0 ? contextWindow - Math.Max(0, reserveTokens) : 0;
+		if (budget <= 0)
+		{
+			return [.. abandoned.SelectMany(SessionManager.MessagesForEntry)];
+		}
+
+		var selected = new List<(int Index, List<Message> Messages)>();
+		long tokens = 0;
+		for (var index = abandoned.Count - 1; index >= 0; index--)
+		{
+			var messages = SessionManager.MessagesForEntry(abandoned[index]).ToList();
+			var entryTokens = messages.Sum(ContextTokens.EstimateTokens);
+			if (selected.Count > 0 && tokens + entryTokens > budget)
+			{
+				break;
+			}
+
+			selected.Add((index, messages));
+			tokens += entryTokens;
+		}
+
+		selected.Reverse();
+		var result = new List<Message>();
+		foreach (var (_, messages) in selected)
+		{
+			result.AddRange(messages);
+		}
+
+		return result;
+	}
+
 }

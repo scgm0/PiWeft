@@ -127,6 +127,52 @@ public sealed class SettingsNavigationTests : IDisposable
 		Assert.Contains(Strings.ResourcesDiagnostics, texts);
 	}
 
+	[Fact]
+	public void SettingsDialogAttachesAsAWindowOverlayAndDetachesOnHide()
+	{
+		var view = Create(() => []);
+		var dialog = new SettingsDialog(view);
+		var window = new Window();
+		var closed = 0;
+		dialog.Closed += () => closed++;
+
+		Assert.False(dialog.IsOpen);
+		dialog.Show(window);
+		Assert.True(dialog.IsOpen);
+		Assert.True(window.OverlayLayer.Contains(dialog.View));
+		Assert.Same(window, dialog.View.Parent);
+
+		dialog.Hide();
+		Assert.False(dialog.IsOpen);
+		Assert.Null(dialog.View.Parent);
+		Assert.Equal(0, window.OverlayLayer.Count);
+		Assert.Equal(1, closed);
+		dialog.Hide();
+		Assert.Equal(1, closed);
+	}
+
+	[Fact]
+	public void SettingsDialogDimsTheTitleBarOnlyWhenMaximizedOrFullScreen()
+	{
+		var view = Create(() => []);
+		var dialog = new SettingsDialog(view);
+		var window = new Window();
+		dialog.Show(window);
+		Assert.Equal(1, window.OverlayLayer.Count);
+
+		window.WindowState = WindowState.Maximized;
+		Assert.Equal(2, window.OverlayLayer.Count);
+
+		window.WindowState = WindowState.FullScreen;
+		Assert.Equal(2, window.OverlayLayer.Count);
+
+		window.WindowState = WindowState.Normal;
+		Assert.Equal(1, window.OverlayLayer.Count);
+
+		dialog.Hide();
+		Assert.Equal(0, window.OverlayLayer.Count);
+	}
+
 	private SettingsView Create(Func<IReadOnlyList<SessionListItem>> archive) => new(() => new SettingsSnapshot
 	{
 		AgentDir = Path.Combine(_root, "agent"), Cwd = _root, ModelCount = 0,

@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.OpenAi;
 
@@ -136,8 +137,9 @@ internal sealed class OpenAiCompletionsStreamState
 				continue;
 			}
 
-			var arguments = ParseArguments(_toolArguments.TryGetValue(streamIndex, out var buffer) ? buffer.ToString() : null);
-			call = call with { Arguments = arguments };
+			var (arguments, argumentsError) = JsonRepair.ParseObject(
+				_toolArguments.TryGetValue(streamIndex, out var buffer) ? buffer.ToString() : null);
+			call = call with { Arguments = arguments ?? new(), ArgumentsError = argumentsError };
 			_content[contentIndex] = call;
 			Push(new ToolCallEndEvent { ContentIndex = contentIndex, ToolCall = call, Partial = Snapshot() });
 		}
@@ -398,20 +400,4 @@ internal sealed class OpenAiCompletionsStreamState
 			? value.GetInt64()
 			: null;
 
-	private static JsonObject ParseArguments(string? json)
-	{
-		if (string.IsNullOrWhiteSpace(json))
-		{
-			return [];
-		}
-
-		try
-		{
-			return JsonNode.Parse(json)?.AsObject() ?? [];
-		}
-		catch (JsonException)
-		{
-			return [];
-		}
-	}
 }

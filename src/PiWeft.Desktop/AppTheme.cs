@@ -73,6 +73,18 @@ public static class AppTheme
 
 	public static Color CodeText => Current.CodeText;
 
+	public static Color TerminalBackground => Current.TerminalBackground;
+
+	public static Color TerminalForeground => Current.TerminalForeground;
+
+	public static Color TerminalBorder => Current.TerminalBorder;
+
+	public static Color TerminalSelection => Current.TerminalSelection;
+
+	public static Color TerminalCursor => Current.TerminalCursor;
+
+	public static Color TerminalLink => Current.TerminalLink;
+
 	public static Color TextPrimary => Current.TextPrimary;
 
 	public static Color TextMuted => Current.TextMuted;
@@ -102,11 +114,15 @@ public static class AppTheme
 	public static Color Transparent => Current.Transparent;
 
 	// -------------------------------------------------------------------- 尺寸
+	// 「织机」形制（DESIGN.md）：小圆角，表面靠色阶与发丝线区分，最大圆角 10。
 	public const double RadiusXs = 4;
 	public const double RadiusSm = 6;
 	public const double RadiusMd = 8;
 	public const double RadiusLg = 10;
-	public const double RadiusXl = 12;
+	public const double RadiusXl = 10;
+
+	/// <summary>签名细节「纬线」的宽度：活动会话、活动标签、用户消息左缘的强调短线。</summary>
+	public const double ThreadWidth = 2;
 
 	public const double Space1 = 4;
 	public const double Space2 = 8;
@@ -119,7 +135,29 @@ public static class AppTheme
 	public const double ControlHeightLg = 36;
 
 	public const double SidebarWidth = 280;
-	public const double ComposerHeight = 72;
+	public const double ComposerHeight = 64;
+
+	/// <summary>
+	/// 右侧功能面板的默认宽度与可拖拽范围：面板页签与窗口按钮共用标题栏那一行，
+	/// 所以下限要留出「三段页签 + 窗口按钮」的宽度；对话区保底见下方。
+	/// </summary>
+	public const double RightPanelWidth = 420;
+	public const double RightPanelMinWidth = 360;
+	public const double RightPanelMaxWidth = 720;
+
+	/// <summary>拖拽右侧面板时主区必须保留的最小宽度（PiDeck 的 chat 下限是 360）。</summary>
+	public const double MinChatWidth = 400;
+
+	/// <summary>会话底部终端面板的默认高度与拖拽范围（DIP）。</summary>
+	public const double TerminalDockHeight = 260;
+	public const double TerminalDockMinHeight = 140;
+	public const double TerminalDockMaxHeight = 640;
+
+	/// <summary>自定义窗框标题栏的高度（DIP）。Windows/macOS 由系统原生按钮，X11 由应用绘制。</summary>
+	public const double TitleBarHeight = 40;
+
+	/// <summary>标题栏窗口按钮的宽度：与标题栏等高、三键等宽、贴右缘。</summary>
+	public const double TitleBarButtonWidth = 46;
 	public static double MessageMaxWidth => ReadingPreferences.Width;
 
 	// 正文对齐 PiDeck 16px；辅助信息提高一档，避免大屏过小。

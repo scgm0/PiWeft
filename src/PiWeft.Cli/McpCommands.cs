@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Mcp;
@@ -36,7 +37,7 @@ public static class McpCommands
 		var resolvedAgentDir = McpConfig.GetAgentDir(agentDir);
 		return command switch
 		{
-			"list" => List(rest, cwd, output, error, resolvedAgentDir),
+			"list" => await ListAsync(rest, cwd, output, error, resolvedAgentDir, cancellationToken).ConfigureAwait(false),
 			"add" => Add(rest, cwd, output, error, resolvedAgentDir),
 			"remove" or "rm" => Remove(rest, cwd, output, error, resolvedAgentDir),
 			"login" => await LoginAsync(rest, cwd, output, error, resolvedAgentDir, cancellationToken).ConfigureAwait(false),
@@ -58,11 +59,16 @@ public static class McpCommands
 		output.WriteLine("""
 			pi mcp 命令：
 			  pi mcp list [--json] [--local]                列出 MCP 服务器与授权状态
-			  pi mcp add <name> --url <url> [--auth oauth] [--header k=v] [--client-id id] [--scope a,b]
-			  pi mcp add <name> --command <cmd> [--arg a] [--env k=v] [--cwd dir]
+			  pi mcp add <name> [options] -- <command> [args...]
+			      [--env k=v]... [--cwd dir]                添加 stdio 服务器
+			  pi mcp add <name> --url <url> [options]       添加 streamable HTTP 服务器
+			      [--header k=v]... [--bearer-token-env-var <NAME>]
+			      [--auth oauth] [--oauth-client-id id] [--oauth-client-secret secret]
+			      [--scope a,b] [--exposure codemode|deferred|direct|hidden]
+			      [--description text]
 			  pi mcp remove <name> [--local]                移除服务器（同时清除它的令牌）
-			  pi mcp login <name>                          为 HTTP 服务器走 OAuth 授权
-			  pi mcp logout <name>                         删除保存的令牌
+			  pi mcp login <name> [--timeout <seconds>]     为 HTTP 服务器走 OAuth 授权
+			  pi mcp logout <name>                          删除保存的令牌
 
 			默认写全局 <agentDir>/mcp.json；--local 改项目 .pi/mcp.json。
 			OAuth 令牌存放在 <agentDir>/mcp-oauth.json。
@@ -70,14 +76,19 @@ public static class McpCommands
 		return 0;
 	}
 
-	private static int List(IReadOnlyList<string> rest, string cwd, TextWriter output, TextWriter error, string agentDir)
+	private static async Task<int> ListAsync(
+		IReadOnlyList<string> rest,
+		string cwd,
+		TextWriter output,
+		TextWriter error,
+		string agentDir,
+		CancellationToken cancellationToken)
 	{
-		var (_, options) = Parse(rest);
-
-		IReadOnlyList<McpServerConfig> servers;
+		var (_, options, _) = Parse(rest);
+		IReadOnlyList<McpServerConfig> configured;
 		try
 		{
-			servers = McpConfig.Load(cwd, agentDir, includeProject: !options.ContainsKey("local"));
+			configured = McpConfig.Load(cwd, agentDir, includeProject: !options.ContainsKey("local"));
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
@@ -85,59 +96,110 @@ public static class McpCommands
 			return 1;
 		}
 
-		if (options.ContainsKey("json"))
+		McpConnection? connection = null;
+		try
 		{
-			var items = new List<JsonNode?>(servers.Count);
-			foreach (var server in servers)
+			connection = await McpServers.ConnectConfiguredAsync(
+				cwd,
+				agentDir,
+				onError: _ => { },
+				cancellationToken,
+				includeProject: !options.ContainsKey("local")).ConfigureAwait(false);
+
+			var states = connection.Servers.ToDictionary(static state => state.Name, StringComparer.Ordinal);
+			var failed = false;
+			if (options.ContainsKey("json"))
 			{
-				var token = server.Url is { Length: > 0 } endpoint ? McpOAuthStore.Load(endpoint, agentDir) : null;
-				items.Add(new JsonObject
+				var items = new List<JsonNode?>(configured.Count);
+				foreach (var server in configured)
 				{
-					["name"] = server.Name,
-					["transport"] = server.IsHttp ? "http" : "stdio",
-					["url"] = server.Url,
-					["command"] = server.Command,
-					["enabled"] = server.Enabled,
-					["oauth"] = server.UsesOAuth,
-					["authorized"] = token is not null,
-					["expiresAt"] = token?.ExpiresAt,
-				});
+					states.TryGetValue(server.Name, out var state);
+					var token = server.Url is { Length: > 0 } endpoint ? McpOAuthStore.Load(endpoint, agentDir) : null;
+					var tools = connection.Tools
+						.Where(tool => tool.Name.StartsWith($"mcp__{McpToolAdapter.Sanitize(server.Name)}__", StringComparison.Ordinal))
+						.Select(static tool => (JsonNode?)JsonValue.Create(tool.Name))
+						.ToList();
+					items.Add(new JsonObject
+					{
+						["name"] = server.Name,
+						["transport"] = server.IsHttp ? "http" : "stdio",
+						["url"] = server.Url,
+						["command"] = server.Command,
+						["enabled"] = server.Enabled,
+						["exposure"] = server.Exposure,
+						["state"] = state is null ? "disconnected" : state.Connected ? "connected" : "error",
+						["tools"] = new JsonArray([.. tools]),
+						["oauth"] = server.UsesOAuth,
+						["authorized"] = token is not null,
+						["error"] = state?.Error,
+					});
+					if (server.Enabled && state is not { Connected: true })
+					{
+						failed = true;
+					}
+				}
+
+				output.WriteLine(new JsonObject { ["servers"] = new JsonArray([.. items]) }.ToJsonString());
+				return failed ? 1 : 0;
 			}
 
-			output.WriteLine(new JsonObject { ["servers"] = new JsonArray([.. items]) }.ToJsonString());
-			return 0;
-		}
-
-		if (servers.Count == 0)
-		{
-			output.WriteLine("没有配置 MCP 服务器。用 pi mcp add 添加。");
-			return 0;
-		}
-
-		foreach (var server in servers)
-		{
-			var target = server.Url ?? string.Join(' ', new[] { server.Command }.Concat(server.Arguments).Where(static part => part is { Length: > 0 }));
-			output.WriteLine($"{server.Name}  [{(server.IsHttp ? "http" : "stdio")}] {target}");
-			if (!server.Enabled)
+			if (configured.Count == 0)
 			{
-				output.WriteLine("    已停用");
+				output.WriteLine("没有配置 MCP 服务器。用 pi mcp add 添加。");
+				return 0;
 			}
 
-			if (server.UsesOAuth && server.Url is { Length: > 0 } endpoint)
+			foreach (var server in configured)
 			{
-				var token = McpOAuthStore.Load(endpoint, agentDir);
-				output.WriteLine(token is null
-					? $"    未授权：pi mcp login {server.Name}"
-					: $"    已授权{(token.ExpiresAt is { } expires ? $"，到期 {DateTimeOffset.FromUnixTimeSeconds(expires).LocalDateTime:yyyy-MM-dd HH:mm}" : string.Empty)}");
+				states.TryGetValue(server.Name, out var state);
+				var target = server.Url ?? string.Join(' ', new[] { server.Command }.Concat(server.Arguments).Where(static part => part is { Length: > 0 }));
+				output.WriteLine($"{server.Name}  [{(server.IsHttp ? "http" : "stdio")}] {(state?.Connected == true ? "connected" : "disconnected")}  {target}");
+				if (!server.Enabled)
+				{
+					output.WriteLine("    已停用");
+				}
+
+				if (state is { Connected: true })
+				{
+					var count = connection.Tools.Count(tool =>
+						tool.Name.StartsWith($"mcp__{McpToolAdapter.Sanitize(server.Name)}__", StringComparison.Ordinal));
+					output.WriteLine($"    工具 {count}");
+				}
+				else if (state?.Error is { Length: > 0 } reason)
+				{
+					output.WriteLine($"    错误：{reason}");
+				}
+
+				if (server.UsesOAuth)
+				{
+					output.WriteLine("    OAuth 服务器；需要登录时运行 pi mcp login " + server.Name);
+				}
+
+				if (server.Enabled && state is not { Connected: true })
+				{
+					failed = true;
+				}
+			}
+
+			foreach (var message in connection.Errors)
+			{
+				error.WriteLine($"pi: mcp {message}");
+			}
+
+			return failed ? 1 : 0;
+		}
+		finally
+		{
+			if (connection is not null)
+			{
+				await connection.DisposeAsync().ConfigureAwait(false);
 			}
 		}
-
-		return 0;
 	}
 
 	private static int Add(IReadOnlyList<string> rest, string cwd, TextWriter output, TextWriter error, string agentDir)
 	{
-		var (name, options) = Parse(rest);
+		var (name, options, trailing) = Parse(rest);
 		if (name is not { Length: > 0 })
 		{
 			error.WriteLine("pi: mcp add 需要一个服务器名");
@@ -150,11 +212,12 @@ public static class McpCommands
 			return 2;
 		}
 
+		// pi 形式：`add <name> [options] -- <command> [args...]`；`--command`/`--arg` 仍兼容。
 		var url = First(options, "url");
-		var command = First(options, "command");
+		var command = First(options, "command") ?? (trailing.Count > 0 ? trailing[0] : null);
 		if (url is null == (command is null))
 		{
-			error.WriteLine("pi: 必须且只能指定 --url 或 --command");
+			error.WriteLine("pi: 必须且只能指定 --url 或 -- <command>");
 			return 2;
 		}
 
@@ -165,17 +228,57 @@ public static class McpCommands
 			return 2;
 		}
 
+		// pi 的 `--bearer-token-env-var <NAME>`：运行时发送 `Authorization: Bearer ${NAME}`。
+		if (First(options, "bearer-token-env-var") is { Length: > 0 } bearerVariable)
+		{
+			headers["Authorization"] = $"Bearer ${{{bearerVariable}}}";
+		}
+
+		if (First(options, "exposure") is { Length: > 0 } exposure &&
+			!McpExposure.IsKnown(exposure))
+		{
+			error.WriteLine($"pi: 未知的 exposure「{exposure}」（可选 {McpExposure.Codemode} / {McpExposure.Deferred} / {McpExposure.Direct} / {McpExposure.Hidden}）");
+			return 2;
+		}
+
+		// pi 的别名：--oauth-client-id / --oauth-client-secret。
+		var clientId = First(options, "client-id") ?? First(options, "oauth-client-id");
+		var clientSecret = First(options, "oauth-client-secret");
+
 		var scopes = First(options, "scope");
+		var arguments = command is null
+			? (IReadOnlyList<string>)[]
+			: [.. All(options, "arg"), .. trailing.Skip(1)];
+		var authOption = First(options, "auth");
+		var oauthConfig = url is not null && (string.Equals(authOption, "oauth", StringComparison.OrdinalIgnoreCase) ||
+			clientId is not null || clientSecret is not null ||
+			scopes is { Length: > 0 } || options.ContainsKey("oauth-callback-port") ||
+			options.ContainsKey("oauth-client-name"))
+				? new McpOAuthConfigEntry
+				{
+					ClientId = clientId,
+					ClientSecret = clientSecret,
+					Scope = scopes,
+					CallbackPort = int.TryParse(First(options, "oauth-callback-port"), out var port) ? port : null,
+					ClientName = First(options, "oauth-client-name"),
+				}
+				: null;
+
 		var entry = new McpServerEntry
 		{
 			Url = url,
 			Command = command,
-			Args = command is null ? null : [.. All(options, "arg")],
+			Args = command is null ? null : arguments,
 			Headers = headers.Count > 0 ? headers : null,
 			Env = command is not null && environment.Count > 0 ? environment : null,
 			Cwd = First(options, "cwd"),
-			Auth = command is null ? First(options, "auth") : null,
-			ClientId = First(options, "client-id"),
+			Auth = command is null && authOption is not null &&
+				!string.Equals(authOption, "oauth", StringComparison.OrdinalIgnoreCase) ? authOption : null,
+			ClientId = clientId,
+			ClientSecret = clientSecret,
+			OAuth = oauthConfig,
+			Description = First(options, "description"),
+			Exposure = First(options, "exposure"),
 			Scopes = scopes is { Length: > 0 }
 				? [.. scopes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)]
 				: null,
@@ -194,7 +297,9 @@ public static class McpCommands
 
 		output.WriteLine($"已写入 {path}");
 		output.WriteLine($"    {name} → {url ?? command}");
-		if (string.Equals(entry.Auth, McpServerConfig.OAuthAuthValue, StringComparison.OrdinalIgnoreCase))
+		if (oauthConfig is not null ||
+			string.Equals(entry.Auth, McpServerConfig.OAuthAuthValue, StringComparison.OrdinalIgnoreCase) ||
+			(clientId is not null && url is not null))
 		{
 			output.WriteLine($"    该服务器使用 OAuth：运行 pi mcp login {name} 完成授权。");
 		}
@@ -204,7 +309,7 @@ public static class McpCommands
 
 	private static int Remove(IReadOnlyList<string> rest, string cwd, TextWriter output, TextWriter error, string agentDir)
 	{
-		var (name, options) = Parse(rest);
+		var (name, options, _) = Parse(rest);
 		if (name is not { Length: > 0 })
 		{
 			error.WriteLine("pi: mcp remove 需要一个服务器名");
@@ -229,11 +334,7 @@ public static class McpCommands
 			return 1;
 		}
 
-		if (known?.Url is { Length: > 0 } endpoint)
-		{
-			McpOAuthStore.Remove(endpoint, agentDir);
-		}
-
+		// 与 pi 一致：移除配置不会删除已保存的 OAuth 凭据。
 		output.WriteLine($"已移除 {name}");
 		return 0;
 	}
@@ -246,7 +347,7 @@ public static class McpCommands
 		string agentDir,
 		CancellationToken cancellationToken)
 	{
-		var (name, _) = Parse(rest);
+		var (name, options, _) = Parse(rest);
 		if (name is not { Length: > 0 })
 		{
 			error.WriteLine("pi: mcp login 需要一个服务器名");
@@ -268,8 +369,46 @@ public static class McpCommands
 			return 2;
 		}
 
+		// pi 的 --timeout 限定整个登录过程（含对授权服务器的请求），不只是等浏览器回来。
+		CancellationTokenSource? timeoutSource = null;
+		if (double.TryParse(First(options, "timeout"), NumberStyles.Float, CultureInfo.InvariantCulture, out var timeoutSeconds) &&
+			timeoutSeconds > 0)
+		{
+			timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			timeoutSource.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+			cancellationToken = timeoutSource.Token;
+		}
+
+		try
+		{
+			return await LoginAsyncInner(server, name, agentDir, output, error, cancellationToken).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException) when (timeoutSource is not null && timeoutSource.IsCancellationRequested)
+		{
+			error.WriteLine($"pi: 登录超时（--timeout {timeoutSeconds:0} 秒）");
+			return 1;
+		}
+		finally
+		{
+			timeoutSource?.Dispose();
+		}
+	}
+
+	private static async Task<int> LoginAsyncInner(
+		McpServerConfig server,
+		string name,
+		string agentDir,
+		TextWriter output,
+		TextWriter error,
+		CancellationToken cancellationToken)
+	{
 		var challenge = await ProbeChallengeAsync(server.Url!, cancellationToken).ConfigureAwait(false);
-		var metadata = await McpOAuth.DiscoverAsync(Http, server.Url!, challenge, cancellationToken).ConfigureAwait(false);
+		var metadata = await McpOAuth.DiscoverAsync(
+			Http,
+			server.Url!,
+			challenge,
+			cancellationToken,
+			server.OAuth?.AuthServerMetadataUrl).ConfigureAwait(false);
 		if (metadata is null)
 		{
 			error.WriteLine("pi: 无法发现授权服务器元数据（检查网络或服务器的 WWW-Authenticate）");
@@ -318,7 +457,7 @@ public static class McpCommands
 
 	private static int Logout(IReadOnlyList<string> rest, string cwd, TextWriter output, TextWriter error, string agentDir)
 	{
-		var (name, _) = Parse(rest);
+		var (name, _, _) = Parse(rest);
 		if (name is not { Length: > 0 })
 		{
 			error.WriteLine("pi: mcp logout 需要一个服务器名");
@@ -363,14 +502,32 @@ public static class McpCommands
 		}
 	}
 
-	private static (string? Positional, Dictionary<string, List<string>> Options) Parse(IReadOnlyList<string> rest)
+	/// <summary>
+	/// 解析子命令参数。<c>--</c> 之后的参数原样进入 <paramref name="trailing"/>（pi 的
+	/// <c>pi mcp add name -- command args...</c> 形式），不再当成选项或位置参数。
+	/// </summary>
+	private static (string? Positional, Dictionary<string, List<string>> Options, IReadOnlyList<string> Trailing) Parse(
+		IReadOnlyList<string> rest)
 	{
 		var options = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 		string? positional = null;
+		List<string>? trailing = null;
 
 		for (var index = 0; index < rest.Count; index++)
 		{
 			var item = rest[index];
+			if (trailing is not null)
+			{
+				trailing.Add(item);
+				continue;
+			}
+
+			if (item == "--")
+			{
+				trailing = [];
+				continue;
+			}
+
 			if (item == "-l")
 			{
 				Add(options, "local", "true");
@@ -399,7 +556,7 @@ public static class McpCommands
 			}
 		}
 
-		return (positional, options);
+		return (positional, options, trailing ?? []);
 
 		static void Add(Dictionary<string, List<string>> target, string key, string value)
 		{

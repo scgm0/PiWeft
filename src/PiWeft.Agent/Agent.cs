@@ -12,6 +12,9 @@ public sealed record AgentOptions
 
 	public IReadOnlyList<AgentTool> Tools { get; init; } = [];
 
+	/// <summary>真正声明给模型的工具；为 <c>null</c> 时等于 <see cref="Tools"/>。</summary>
+	public IReadOnlyList<AgentTool>? DeclaredTools { get; init; }
+
 	/// <summary>流式产出助手回复。接模型网关时用 <see cref="AgentGatewayStreamFn.For"/>。</summary>
 	public required StreamFn StreamFn { get; init; }
 
@@ -32,6 +35,8 @@ public sealed record AgentOptions
 	public Func<PrepareRequestContext, CancellationToken, ValueTask<PrepareRequestUpdate?>>? PrepareRequest { get; init; }
 
 	public Func<AgentTurnContext, CancellationToken, ValueTask<AgentTurnUpdate?>>? PrepareNextTurn { get; init; }
+
+	public Func<AssistantMessage, bool>? WillRetry { get; init; }
 
 	public StreamOptions Options { get; init; } = new();
 }
@@ -55,6 +60,7 @@ public sealed class Agent
 	private AgentQueueMode _steeringMode = AgentQueueMode.OneAtATime;
 	private AgentQueueMode _followUpMode = AgentQueueMode.OneAtATime;
 	private IReadOnlyList<AgentTool> _tools;
+	private IReadOnlyList<AgentTool> _declaredTools;
 	private CancellationTokenSource? _cancellation;
 	private bool _isStreaming;
 	private string? _errorMessage;
@@ -63,6 +69,7 @@ public sealed class Agent
 	{
 		_options = options;
 		_tools = options.Tools;
+		_declaredTools = options.DeclaredTools ?? options.Tools;
 		if (!string.IsNullOrEmpty(options.SystemPrompt))
 		{
 			_messages.Add(new SystemMessage
@@ -130,6 +137,18 @@ public sealed class Agent
 		}
 	}
 
+	/// <summary>真正声明给模型的工具；<see cref="Tools"/> 是脚本与钩子可调用的全集。</summary>
+	public IReadOnlyList<AgentTool> DeclaredTools
+	{
+		get
+		{
+			lock (_gate)
+			{
+				return _declaredTools;
+			}
+		}
+	}
+
 	/// <summary>会话记录的快照，返回的是副本。</summary>
 	public IReadOnlyList<Message> Messages
 	{
@@ -158,11 +177,18 @@ public sealed class Agent
 		}
 	}
 
-	public void SetTools(IReadOnlyList<AgentTool> tools)
+	public void SetTools(IReadOnlyList<AgentTool> tools) => SetTools(tools, tools);
+
+	/// <summary>
+	/// 分别设置可执行与声明给模型的工具集。codemode/deferred 工具留在可执行集合里，
+	/// 但只有 <paramref name="declared"/> 会进入请求的工具声明。
+	/// </summary>
+	public void SetTools(IReadOnlyList<AgentTool> tools, IReadOnlyList<AgentTool> declared)
 	{
 		lock (_gate)
 		{
 			_tools = tools;
+			_declaredTools = declared;
 		}
 	}
 
@@ -236,6 +262,15 @@ public sealed class Agent
 			{
 				return _steering.Count + _followUp.Count;
 			}
+		}
+	}
+
+	/// <summary>当前排队消息的快照（steering、follow-up 各一份）。</summary>
+	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) PendingQueues()
+	{
+		lock (_gate)
+		{
+			return (_steering.ToList(), _followUp.ToList());
 		}
 	}
 
@@ -341,7 +376,14 @@ public sealed class Agent
 			_cancellation = cancellation;
 		}
 
-		return new AgentContext { Tools = Tools, Messages = _messages };
+		return new AgentContext
+		{
+			Tools = Tools,
+			DeclaredTools = DeclaredTools,
+			ToolProvider = () => Tools,
+			DeclaredToolProvider = () => DeclaredTools,
+			Messages = _messages,
+		};
 	}
 
 	private void EndRun()
@@ -367,25 +409,54 @@ public sealed class Agent
 		FinishTurn = _options.FinishTurn,
 		PrepareRequest = _options.PrepareRequest,
 		PrepareNextTurn = _options.PrepareNextTurn,
+		WillRetry = _options.WillRetry,
 		GetSteeringMessages = DrainSteering,
 		GetFollowUpMessages = DrainFollowUp,
 	};
 
-	private ValueTask<IReadOnlyList<Message>> DrainSteering(CancellationToken cancellationToken)
+	private async ValueTask<IReadOnlyList<Message>> DrainSteering(CancellationToken cancellationToken)
 	{
+		IReadOnlyList<Message> messages;
+		QueueUpdateEvent update;
 		lock (_gate)
 		{
-			return ValueTask.FromResult<IReadOnlyList<Message>>(Drain(_steering, _steeringMode));
+			messages = Drain(_steering, _steeringMode);
+			update = QueueUpdate();
 		}
+
+		// 交给模型的那部分已经离开队列：把剩余队列的最新全量发给订阅者（pi 的 queue_update）。
+		if (messages.Count > 0)
+		{
+			await EmitAsync(update).ConfigureAwait(false);
+		}
+
+		return messages;
 	}
 
-	private ValueTask<IReadOnlyList<Message>> DrainFollowUp(CancellationToken cancellationToken)
+	private async ValueTask<IReadOnlyList<Message>> DrainFollowUp(CancellationToken cancellationToken)
 	{
+		IReadOnlyList<Message> messages;
+		QueueUpdateEvent update;
 		lock (_gate)
 		{
-			return ValueTask.FromResult<IReadOnlyList<Message>>(Drain(_followUp, _followUpMode));
+			messages = Drain(_followUp, _followUpMode);
+			update = QueueUpdate();
 		}
+
+		if (messages.Count > 0)
+		{
+			await EmitAsync(update).ConfigureAwait(false);
+		}
+
+		return messages;
 	}
+
+	/// <summary>调用方必须持有 <see cref="_gate"/>。</summary>
+	private QueueUpdateEvent QueueUpdate() => new()
+	{
+		Steering = _steering.ToList(),
+		FollowUp = _followUp.ToList(),
+	};
 
 	private static List<Message> Drain(Queue<Message> queue, AgentQueueMode mode)
 	{

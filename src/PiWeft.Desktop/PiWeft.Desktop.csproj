@@ -36,6 +36,7 @@
 		<PackageReference Include="Aprillz.MewUI.Core" />
 		<PackageReference Include="Aprillz.MewUI.Svg" />
 		<PackageReference Include="Aprillz.MewUI.Markdown" />
+		<PackageReference Include="MiniPty" />
 	</ItemGroup>
 
 	<ItemGroup Condition="'$(MewUITarget)' == 'linux'">

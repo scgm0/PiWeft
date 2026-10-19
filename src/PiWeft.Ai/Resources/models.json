@@ -19210,9 +19210,9 @@
 		{
 			"id": "k3",
 			"name": "Kimi K3",
-			"api": "anthropic-messages",
+			"api": "openai-completions",
 			"provider": "kimi-coding",
-			"baseUrl": "https://api.kimi.com/coding",
+			"baseUrl": "https://api.kimi.com/coding/v1",
 			"compat": {
 				"allowEmptySignature": true,
 				"forceAdaptiveThinking": true
@@ -19254,9 +19254,9 @@
 		{
 			"id": "k3-256k",
 			"name": "Kimi K3-256K",
-			"api": "anthropic-messages",
+			"api": "openai-completions",
 			"provider": "kimi-coding",
-			"baseUrl": "https://api.kimi.com/coding",
+			"baseUrl": "https://api.kimi.com/coding/v1",
 			"compat": {
 				"forceAdaptiveThinking": true
 			},
@@ -19297,9 +19297,9 @@
 		{
 			"id": "kimi-for-coding",
 			"name": "kimi-for-coding",
-			"api": "anthropic-messages",
+			"api": "openai-completions",
 			"provider": "kimi-coding",
-			"baseUrl": "https://api.kimi.com/coding",
+			"baseUrl": "https://api.kimi.com/coding/v1",
 			"compat": {
 				"allowEmptySignature": true,
 				"forceAdaptiveThinking": true
@@ -19341,9 +19341,9 @@
 		{
 			"id": "kimi-for-coding-highspeed",
 			"name": "Kimi For Coding HighSpeed",
-			"api": "anthropic-messages",
+			"api": "openai-completions",
 			"provider": "kimi-coding",
-			"baseUrl": "https://api.kimi.com/coding",
+			"baseUrl": "https://api.kimi.com/coding/v1",
 			"compat": {
 				"forceAdaptiveThinking": true
 			},

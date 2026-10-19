@@ -26,6 +26,37 @@ public static class AuthStore
 	public static string Path(string? agentDir = null) =>
 		System.IO.Path.Combine(agentDir ?? AgentPaths.AgentDirectory(), "auth.json");
 
+	/// <summary>写入一个 api_key 凭据，保留 auth.json 里的其它 provider 与字段。</summary>
+	public static void SaveApiKey(string provider, string key, string? agentDir = null)
+	{
+		var path = Path(agentDir);
+		var root = ReadRoot(agentDir) ?? new JsonObject();
+		root[provider] = new JsonObject
+		{
+			["type"] = "api_key",
+			["key"] = key,
+		};
+
+		var directory = System.IO.Path.GetDirectoryName(path);
+		if (directory is { Length: > 0 })
+		{
+			Directory.CreateDirectory(directory);
+		}
+
+		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+		File.WriteAllText(temporary, root.ToJsonString(new System.Text.Json.JsonSerializerOptions
+		{
+			WriteIndented = true,
+			Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+		}));
+		if (!OperatingSystem.IsWindows())
+		{
+			File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+		}
+
+		File.Move(temporary, path, overwrite: true);
+	}
+
 	/// <summary>
 	/// 取某个 provider 的 API key。文件不存在、provider 没有 api_key 凭据、模板变量缺失，
 	/// 或命令型凭据执行失败时返回 null（不抛异常，让调用方继续走环境变量）。

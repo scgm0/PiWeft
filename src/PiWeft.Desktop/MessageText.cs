@@ -32,7 +32,7 @@ internal static class MessageText
 			Padding = Thickness.Zero,
 			MinHeight = 0,
 			CornerRadius = 0,
-			FontFamily = mono ? AppTheme.MonoFont : AppFonts.Ui,
+			FontFamily = mono ? AppTheme.MonoFont : AppFonts.DefaultUi,
 			FontSize = fontSize ?? AppTheme.FontSizeChat,
 			Foreground = muted ? AppTheme.TextMuted : AppTheme.TextPrimary,
 			Tag = muted ? AppStyles.RoleMuted : AppStyles.RolePrimary,

@@ -12,10 +12,11 @@ public static class Transcript
 	/// 把 <see cref="Context.SystemPrompt"/> 与 <see cref="Context.Tools"/> 折叠进消息列表，
 	/// 并把所有 system 消息合并成开头的一条。其余消息保持原有顺序。
 	/// </summary>
-	public static List<Message> Normalize(Context context)
+	public static List<Message> Normalize(Context context, Model? model = null)
 	{
 		ArgumentNullException.ThrowIfNull(context);
 
+		var source = model is null ? context.Messages : MessageTransform.Transform(context.Messages, model);
 		var prompt = new StringBuilder();
 		var sections = new Dictionary<string, string?>(StringComparer.Ordinal);
 		IReadOnlyList<Tool>? tools = context.Tools;
@@ -25,8 +26,8 @@ public static class Transcript
 			prompt.Append(context.SystemPrompt);
 		}
 
-		var rest = new List<Message>(context.Messages.Count);
-		foreach (var message in context.Messages)
+		var rest = new List<Message>(source.Count);
+		foreach (var message in source)
 		{
 			if (message is SystemMessage system)
 			{

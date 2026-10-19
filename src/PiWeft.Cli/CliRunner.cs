@@ -7,6 +7,7 @@ using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Stats;
 using PiWeft.Mcp;
 using ZLogger;
@@ -58,6 +59,12 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		_arguments = arguments;
 		AppLog.For<CliRunner>().ZLogInformation($"CLI run: mode={arguments.Mode.ToString()}");
 
+		// 兼容参数被静默吞掉会让用户以为功能生效了（例如 -e 期望扩展加载）；显式提示一次。
+		foreach (var flag in arguments.AcceptedCompatFlags)
+		{
+			error.WriteLine($"pi: warning: {flag} is accepted for pi/PiDeck compatibility but not implemented in this port (see --help).");
+		}
+
 		if (arguments.Mode == CliMode.Rpc && arguments.FileArgs.Count > 0)
 		{
 			// pi 在 RPC 模式下拒绝 @file：stdin 已被协议占用，无法再读附件。
@@ -81,7 +88,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 			try
 			{
-				if (!arguments.NoMcp)
+				if (!arguments.NoMcp && !arguments.NoTools)
 				{
 					// 先连接 MCP 服务器，使其工具包含在提示词的工具声明里。
 					await ConnectMcpAsync(cwd, environment.ProjectTrusted, cancellationToken).ConfigureAwait(false);
@@ -235,6 +242,44 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	};
 
 	/// <summary><c>pi --export &lt;session&gt; [output]</c>：把会话渲染成自包含 HTML 后退出。</summary>
+	/// <summary>导出会话为 JSONL；已落盘时直接复制，内存会话则按条目重建。</summary>
+	internal static string ExportJsonl(CodingAgentSession session, string? outputPath)
+	{
+		var path = outputPath is { Length: > 0 }
+			? Path.GetFullPath(outputPath)
+			: Path.Combine(
+				session.Session.SessionDir,
+				$"{session.Session.SessionId}.jsonl");
+
+		var directory = Path.GetDirectoryName(path);
+		if (directory is { Length: > 0 })
+		{
+			Directory.CreateDirectory(directory);
+		}
+
+		if (session.Session.SessionFile is { Length: > 0 } source &&
+			File.Exists(source) &&
+			!string.Equals(Path.GetFullPath(source), path, StringComparison.Ordinal))
+		{
+			File.Copy(source, path, overwrite: true);
+			return path;
+		}
+
+		var lines = new List<string>();
+		if (session.Session.Header is { } header)
+		{
+			lines.Add(SessionJson.Serialize(header));
+		}
+
+		foreach (var entry in session.Session.Entries)
+		{
+			lines.Add(SessionJson.Serialize(entry));
+		}
+
+		File.WriteAllText(path, string.Join('\n', lines) + "\n");
+		return path;
+	}
+
 	private int ExportSession(string source, CliArguments arguments, string cwd)
 	{
 		var sessionPath = CliEnvironment.ResolveSessionPath(source, cwd, arguments.SessionDir)
@@ -247,13 +292,17 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			session: SessionManager.Open(sessionPath, arguments.SessionDir),
 			recordInitialThinkingLevel: false);
 
-		var outputPath = ExportHtml(session, arguments.Prompts.Count > 0 ? arguments.Prompts[0] : null);
+		var requested = arguments.Prompts.Count > 0 ? arguments.Prompts[0] : null;
+		var outputPath = requested is not null &&
+			requested.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)
+				? ExportJsonl(session, requested)
+				: ExportHtml(session, requested);
 		output.WriteLine($"Exported to: {outputPath}");
 		return 0;
 	}
 
 	/// <summary><c>pi --version</c> 报告的 RPC 契约版本，供客户端判断特性支持；不是自身构建号。</summary>
-	public const string RpcContractVersion = "1.2.0";
+	public const string RpcContractVersion = "1.3.0";
 
 	public static string VersionString => RpcContractVersion;
 
@@ -401,6 +450,14 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			.OfType<AssistantMessage>()
 			.LastOrDefault() is { StopReason: StopReason.Error or StopReason.Aborted };
 
+	/// <summary>最后一次运行是否以「被中止」结束，供 <c>agent_settled.aborted</c> 使用。</summary>
+	private static bool LastStopReasonWasAborted(CodingAgentSession session) =>
+		session.Session.Entries
+			.OfType<SessionMessageEntry>()
+			.Select(static entry => entry.Message)
+			.OfType<AssistantMessage>()
+			.LastOrDefault() is { StopReason: StopReason.Aborted };
+
 	// ------------------------------------------------------------------ JSON
 
 	/// <summary>JSON 模式：先输出会话头部，再为每个代理事件输出一行 JSONL。</summary>
@@ -423,7 +480,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				.ConfigureAwait(false);
 		}
 
-		WriteRecord("""{"type":"agent_settled","aborted":false}""");
+		WriteRecord(AgentEventWriter.AgentSettled(LastStopReasonWasAborted(session)));
 		// 与 pi 一致：被输出上限截断时打印部分文本、在 stderr 说明原因，并以 1 退出 ——
 		// 静默地以 0 退出会让脚本把半截回答当成完整结果。
 		if (LastStopReasonIsTruncated(session))
@@ -598,7 +655,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				}
 
 				case "abort":
-					session.Abort();
+					await session.AbortAsync(cancellationToken).ConfigureAwait(false);
 					WriteRecord(Response(id, "abort", true, new JsonObject(), null));
 					break;
 
@@ -703,7 +760,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				{
 					var name = command["name"]?.GetValue<string>()
 						?? throw new InvalidOperationException("name is required");
-					session.Session.AppendSessionInfo(name);
+					session.SetSessionName(name);
 					WriteRecord(Response(id, "set_session_name", true, new JsonObject(), null));
 					break;
 				}
@@ -812,7 +869,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 					var models = new List<JsonNode?>();
 					foreach (var model in environment.ListAvailableModels(_arguments?.ApiKey))
 					{
-						models.Add(ModelRecord(model));
+						models.Add(ModelRecordWithThinking(model));
 					}
 
 					WriteRecord(Response(
@@ -1084,6 +1141,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 							["tokensBefore"] = result.TokensBefore,
 							["estimatedTokensAfter"] = session.ContextTokens().Tokens,
 							["usage"] = AgentEventWriter.UsageRecord(result.Usage),
+							["details"] = result.Details?.DeepClone(),
 						},
 						null));
 					break;
@@ -1238,6 +1296,12 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				{
 					error.WriteLine($"pi: prompt failed: {ex.Message}");
 				}
+				finally
+				{
+					// pi 的客户端（含 PiDeck）以 agent_settled 判定「本次运行不会再自动继续」，
+					// 只等 agent_end 会在自动重试/压缩后提前收尾。
+					WriteRecord(AgentEventWriter.AgentSettled(LastStopReasonWasAborted(session)));
+				}
 			},
 			CancellationToken.None);
 
@@ -1317,6 +1381,22 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		if (model.InputLimits is { Count: > 0 } limits)
 		{
 			record["inputLimits"] = limits.DeepClone();
+		}
+
+		if (model.PromptCache is { Count: > 0 } cache)
+		{
+			var lifetimes = new JsonObject();
+			foreach (var (tier, seconds) in cache)
+			{
+				lifetimes[tier] = seconds;
+			}
+
+			record["promptCache"] = lifetimes;
+		}
+
+		if (model.SamplingParams is { Count: > 0 } sampling)
+		{
+			record["samplingParams"] = sampling.DeepClone();
 		}
 
 		if (model.ThinkingLevelMap is { Count: > 0 } map)
@@ -1470,8 +1550,9 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 				try
 				{
-					var imported = ImportSession(session, resolved);
-					error.WriteLine($"已导入 {imported} 条消息自 {resolved}。");
+					var imported = ImportSession(resolved);
+					session.SwitchSession(imported);
+					error.WriteLine($"Session imported from: {resolved}");
 				}
 				catch (Exception exception) when (exception is InvalidOperationException or IOException
 					or UnauthorizedAccessException or System.Text.Json.JsonException)
@@ -1482,11 +1563,33 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				continue;
 			}
 
-			if (trimmed == "/bug")
+			if (trimmed == "/bug" || trimmed.StartsWith("/bug ", StringComparison.Ordinal))
 			{
-				// 与 pi 的 /bug 对应：给出反馈入口与本会话路径，由用户自行整理提交。
-				error.WriteLine("反馈问题：https://github.com/earendil-works/pi/issues");
-				error.WriteLine($"当前会话文件：{session.Session.SessionFile ?? "（未落盘）"}");
+				var description = trimmed.Length > 5 ? trimmed[5..].Trim() : null;
+				try
+				{
+					var report = BugReport.Create(session, description);
+					error.WriteLine($"Bug report written to: {report}");
+					error.WriteLine("包含会话记录；分享前请自行检查敏感内容。");
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+				{
+					error.WriteLine($"pi: 生成诊断包失败：{exception.Message}");
+				}
+
+				continue;
+			}
+
+			// pi 的内联 shell：`!cmd` 把输出并入对话，`!!cmd` 只执行不进模型上下文。
+			if (trimmed.StartsWith('!'))
+			{
+				await RunInlineShellAsync(session, trimmed, cancellationToken).ConfigureAwait(false);
+				continue;
+			}
+
+			// pi 的其余内置斜杠命令；未识别的 `/…` 仍然回落到技能命令与提示词模板展开。
+			if (await HandleSlashCommandAsync(session, arguments, trimmed, input, cancellationToken).ConfigureAwait(false))
+			{
 				continue;
 			}
 
@@ -1498,39 +1601,588 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	}
 
 	/// <summary>
-	/// 把另一个会话文件当前分支的消息追加进当前会话，并重建代理上下文。
-	/// 与 pi 的 <c>/import</c> 语义一致：导入的是消息内容，不带走模型/思考级别等元数据条目。
+	/// 导入并 resume 一个 JSONL 会话：返回打开后的会话，由调用方替换当前会话。
 	/// </summary>
-	internal static int ImportSession(CodingAgentSession session, string sourcePath)
+	internal static SessionManager ImportSession(string sourcePath)
 	{
-		if (session.IsStreaming)
-		{
-			throw new InvalidOperationException("会话正在生成回复，稍后再导入");
-		}
-
 		if (!File.Exists(sourcePath))
 		{
 			throw new InvalidOperationException($"Session file not found: {sourcePath}");
 		}
 
-		// 只读打开源会话：导入是复制条目，不动源文件，无需释放。
-		var source = SessionManager.Open(sourcePath, session.Session.SessionDir);
-		var messages = source.BuildProjectedMessages();
-		var count = 0;
-		foreach (var message in messages)
-		{
-			session.Session.AppendMessage(message);
-			count++;
-		}
-
-		if (count > 0)
-		{
-			// 同一实例换进去只为触发 SetMessages 重建上下文。
-			session.SwitchSession(session.Session);
-		}
-
-		return count;
+		// pi 的 /import 是“导入并 resume”：替换当前会话，而不是把消息追加到当前分支。
+		return SessionManager.Open(Path.GetFullPath(sourcePath));
 	}
+
+	// ------------------------------------------------------------ 交互命令
+
+	/// <summary>交互模式可用的斜杠命令一览（/help）。</summary>
+	private const string InteractiveHelpText = """
+		命令：
+		  /model                    查看当前 provider/model/thinking
+		  /thinking [级别]          查看/设置思考级别（off…max）
+		  /compact                  压缩上下文
+		  /plan                     切换计划模式（只读）
+		  /reload                   重新发现技能/提示词模板/主题
+		  /new                      开始新会话
+		  /resume                   选择并恢复历史会话
+		  /session                  查看会话文件、消息数与用量
+		  /name <名称>              给当前会话命名
+		  /tree                     查看分支树
+		  /fork                     从某条用户消息分叉
+		  /clone                    把当前分支复制为新会话
+		  /export [路径]            导出 HTML；路径以 .jsonl 结尾时导出 JSONL
+		  /scoped-models            查看 --models 轮换范围
+		  /mcp                      查看已连接的 MCP 服务器与工具
+		  /trust                    查看当前项目信任状态
+		  /settings                 查看设置文件路径与生效值
+		  /login [provider]         OAuth 登录（默认 openai-codex）
+		  /logout [provider]        移除已存凭据
+		  /copy                     复制最近一条助手回复
+		  /import <路径>            导入并切换到另一个 JSONL 会话
+		  /bug [描述]               生成脱敏诊断包（zip）
+		  /export、/exit            导出 / 退出
+		  !<命令>                   执行 shell 并把输出加入对话
+		  !!<命令>                  执行 shell，输出不进模型上下文
+		/hotkeys 仅有桌面快捷键；/llama 需要 LLAMA_BASE_URL 指向 router 模式服务器。
+		""";
+
+	/// <summary>交互模式的内联 shell：`!cmd` 把输出并入对话，`!!cmd` 只执行不入上下文。</summary>
+	private async Task RunInlineShellAsync(CodingAgentSession session, string line, CancellationToken cancellationToken)
+	{
+		var excludeFromContext = line.StartsWith("!!");
+		var command = (excludeFromContext ? line[2..] : line[1..]).Trim();
+		if (command.Length == 0)
+		{
+			error.WriteLine("用法：!<命令>（输出进入对话）或 !!<命令>（输出不进模型上下文）");
+			return;
+		}
+
+		var result = await session
+			.RunBashAsync(command, excludeFromContext, onOutput: null, cancellationToken)
+			.ConfigureAwait(false);
+
+		if (result.Output.Length > 0)
+		{
+			output.WriteLine(result.Output.TrimEnd());
+		}
+
+		if (result.ExitCode is { } exitCode && exitCode != 0)
+		{
+			error.WriteLine($"退出码 {exitCode}");
+		}
+
+		if (excludeFromContext)
+		{
+			error.WriteLine("（输出未加入模型上下文）");
+		}
+	}
+
+	/// <summary>
+	/// pi 内置斜杠命令的行式实现。返回 true 表示已消费；未识别的 <c>/…</c> 继续走
+	/// 技能命令与提示词模板展开（与既有行为一致）。
+	/// </summary>
+	private async Task<bool> HandleSlashCommandAsync(
+		CodingAgentSession session,
+		CliArguments arguments,
+		string line,
+		TextReader input,
+		CancellationToken cancellationToken)
+	{
+		var space = line.IndexOf(' ');
+		var command = space < 0 ? line : line[..space];
+		var rest = space < 0 ? string.Empty : line[(space + 1)..].Trim();
+
+		switch (command)
+		{
+			case "/help":
+				error.WriteLine(InteractiveHelpText);
+				return true;
+
+			case "/thinking":
+			{
+				if (rest.Length == 0)
+				{
+					error.WriteLine($"thinking: {session.ThinkingLevel}（可选 off/minimal/low/medium/high/xhigh/max）");
+					return true;
+				}
+
+				try
+				{
+					session.SetThinkingLevel(rest);
+					error.WriteLine($"thinking → {session.ThinkingLevel}");
+				}
+				catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+				{
+					error.WriteLine($"pi: {exception.Message}");
+				}
+
+				return true;
+			}
+
+			case "/name":
+				if (rest.Length == 0)
+				{
+					error.WriteLine("用法：/name <名称>（再次 /name 新名称可修改）");
+					return true;
+				}
+
+				session.SetSessionName(rest);
+				error.WriteLine($"会话名称 → {rest}");
+				return true;
+
+			case "/session":
+			{
+				var stats = session.Statistics();
+				error.WriteLine($"文件: {session.Session.SessionFile ?? "（未落盘）"}");
+				error.WriteLine($"ID: {(session.Session.SessionId.Length > 0 ? session.Session.SessionId : "（未生成）")}");
+				error.WriteLine($"名称: {session.SessionName ?? "（未命名）"}");
+				error.WriteLine(
+					$"消息条目: {session.Session.Entries.Count(static entry => entry is SessionMessageEntry)}  " +
+					$"令牌: {stats.Tokens:N0}  费用: ${stats.Cost:F4}");
+				return true;
+			}
+
+			case "/new":
+				if (session.IsStreaming)
+				{
+					error.WriteLine("pi: 正在生成回复，稍后再试");
+					return true;
+				}
+
+				session.Session.StartNew();
+				session.SwitchSession(session.Session);
+				error.WriteLine($"已开始新会话：{session.Session.SessionFile ?? "（未落盘）"}");
+				return true;
+
+			case "/resume":
+				await ResumeInteractiveAsync(session, input, cancellationToken).ConfigureAwait(false);
+				return true;
+
+			case "/tree":
+				PrintSessionTree(session);
+				return true;
+
+			case "/fork":
+				await ForkInteractiveAsync(session, input).ConfigureAwait(false);
+				return true;
+
+			case "/clone":
+				if (session.IsStreaming)
+				{
+					error.WriteLine("pi: 正在生成回复，稍后再试");
+					return true;
+				}
+
+				try
+				{
+					session.CloneAsync();
+					error.WriteLine($"已克隆到 {session.Session.SessionFile}");
+				}
+				catch (InvalidOperationException exception)
+				{
+					error.WriteLine($"pi: {exception.Message}");
+				}
+
+				return true;
+
+			case "/export":
+			{
+				var exportPath = rest.Length > 0 ? rest : null;
+				output.WriteLine(exportPath is not null &&
+					exportPath.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)
+						? $"Exported to: {ExportJsonl(session, exportPath)}"
+						: $"Exported to: {ExportHtml(session, exportPath)}");
+				return true;
+			}
+
+			case "/scoped-models":
+				error.WriteLine(arguments.Models.Count == 0
+					? "未设置 --models（启动时用 --models <模式列表> 限定轮换范围）。"
+					: $"--models: {string.Join(", ", arguments.Models)}\n当前: {session.Model.Provider}/{session.Model.Id}");
+				return true;
+
+			case "/mcp":
+				PrintMcpServers();
+				return true;
+
+			case "/trust":
+				error.WriteLine(session.ProjectTrusted
+					? "当前项目：受信任（项目级设置、MCP 与资源会加载）。"
+					: "当前项目：不受信任（项目级设置、MCP 与资源未加载）。");
+				error.WriteLine("覆盖：启动时 -a / -na，或全局 settings.defaultProjectTrust（always/never/ask）。");
+				return true;
+
+			case "/settings":
+				error.WriteLine($"全局设置: {CodingAgentSettings.GlobalPath()}");
+				error.WriteLine($"项目设置: {CodingAgentSettings.ProjectPath(session.Cwd)}");
+				error.WriteLine(
+					$"默认模型: {session.Settings.DefaultProvider ?? "*"}/{session.Settings.DefaultModel ?? "*"}  " +
+					$"thinking: {session.Settings.DefaultThinkingLevel ?? "(默认)"}");
+				return true;
+
+			case "/login":
+				await AuthCommands.RunAsync("login", rest.Length == 0 ? [] : [rest], output, error, input, cancellationToken)
+					.ConfigureAwait(false);
+				return true;
+
+			case "/logout":
+				await AuthCommands.RunAsync("logout", rest.Length == 0 ? [] : [rest], output, error, input, cancellationToken)
+					.ConfigureAwait(false);
+				return true;
+
+			case "/hotkeys":
+				error.WriteLine("行式 REPL 没有键位绑定；桌面端的快捷键在「设置 → 快捷键」里自定义。");
+				return true;
+
+			case "/changelog":
+				error.WriteLine($"PiWeft（RPC 契约 {RpcContractVersion}）。上游变更：https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md");
+				return true;
+
+			case "/share":
+			{
+				var destination = rest is "gist" or "radius" ? rest : "auto";
+				var (ok, url, message) = await SessionSharing.ShareAsync(session, destination, cancellationToken).ConfigureAwait(false);
+				if (ok && url is not null)
+				{
+					output.WriteLine($"Shared: {url}");
+				}
+				else
+				{
+					error.WriteLine($"pi: {message}");
+				}
+
+				return true;
+			}
+
+			case "/llama":
+			{
+				var separator = rest.IndexOf(' ');
+				var action = separator < 0 ? (rest.Length > 0 ? rest : "list") : rest[..separator];
+				var argument = separator < 0 ? null : rest[(separator + 1)..].Trim();
+				try
+				{
+					void Register(IEnumerable<LlamaRouter.ModelInfo> models, bool select)
+					{
+						foreach (var info in models.Where(static model => model.Status is "loaded" or "sleeping"))
+						{
+							var llamaModel = LlamaRouter.ToModel(info);
+							environment.Registry.Add(llamaModel);
+							if (select && argument is { Length: > 0 } &&
+								(string.Equals(info.Id, argument, StringComparison.Ordinal) ||
+								 info.Id.StartsWith(argument + ":", StringComparison.Ordinal)))
+							{
+								session.SetModel(llamaModel);
+								error.WriteLine($"当前模型 → llama.cpp/{info.Id}");
+							}
+						}
+					}
+
+					switch (action)
+					{
+						case "list":
+						case "refresh":
+						{
+							var models = await LlamaRouter.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+							Register(models, select: false);
+							error.WriteLine($"llama.cpp router: {LlamaRouter.BaseUrl}（{models.Count} 个模型）");
+							foreach (var item in models)
+							{
+								error.WriteLine($"  {item.Id}  [{item.Status}]{(item.Name is { Length: > 0 } name ? $"  {name}" : string.Empty)}");
+							}
+
+							error.WriteLine("用法：/llama load|unload|download <id>、/llama search <query>、/llama details <repo>、/llama list");
+							break;
+						}
+
+						case "load":
+						{
+							if (argument is not { Length: > 0 })
+							{
+								error.WriteLine("用法：/llama load <id>");
+								break;
+							}
+
+							await LlamaRouter.LoadAsync(argument, cancellationToken: cancellationToken).ConfigureAwait(false);
+							var models = await LlamaRouter.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+							Register(models, select: true);
+							error.WriteLine($"llama.cpp load: {argument}");
+							break;
+						}
+
+						case "unload":
+							if (argument is not { Length: > 0 })
+							{
+								error.WriteLine("用法：/llama unload <id>");
+								break;
+							}
+
+							await LlamaRouter.UnloadAsync(argument, cancellationToken: cancellationToken).ConfigureAwait(false);
+							environment.Registry.Remove("llama.cpp", argument);
+							error.WriteLine($"llama.cpp unload: {argument}");
+							break;
+
+						case "search":
+						{
+							if (argument is not { Length: > 0 })
+							{
+								error.WriteLine("用法：/llama search <query>");
+								break;
+							}
+
+							var results = await LlamaRouter.SearchHuggingFaceAsync(argument, cancellationToken: cancellationToken).ConfigureAwait(false);
+							foreach (var item in results)
+							{
+								error.WriteLine($"  {item.Id}  ({item.Downloads:N0} downloads)");
+							}
+
+							break;
+						}
+
+						case "details":
+						{
+							if (argument is not { Length: > 0 })
+							{
+								error.WriteLine("用法：/llama details <owner/repo>");
+								break;
+							}
+
+							var details = await LlamaRouter.HuggingFaceDetailsAsync(argument, cancellationToken: cancellationToken).ConfigureAwait(false);
+							if (details is null)
+							{
+								error.WriteLine($"pi: 未找到 {argument}");
+								break;
+							}
+
+							error.WriteLine($"{details.Id}  gated={details.Gated}");
+							if (details.Quantizations.Count > 0)
+							{
+								error.WriteLine($"  量化：{string.Join(", ", details.Quantizations)}");
+							}
+
+							break;
+						}
+
+						case "download":
+						{
+							if (argument is not { Length: > 0 })
+							{
+								error.WriteLine("用法：/llama download <owner/repo[:quant]>");
+								break;
+							}
+
+							var repository = argument;
+							var quantization = string.Empty;
+							var colon = argument.LastIndexOf(':');
+							if (colon > 0 && !argument[(colon + 1)..].Contains('/'))
+							{
+								repository = argument[..colon];
+								quantization = argument[(colon + 1)..];
+							}
+
+							if (quantization.Length == 0)
+							{
+								var details = await LlamaRouter.HuggingFaceDetailsAsync(repository, cancellationToken: cancellationToken).ConfigureAwait(false);
+								if (details is { Gated: not "false" } && Environment.GetEnvironmentVariable("HF_TOKEN") is not { Length: > 0 })
+								{
+									error.WriteLine($"pi: {repository} 需要 Hugging Face 访问授权，且未设置 HF_TOKEN。");
+									break;
+								}
+
+								quantization = details?.Quantizations.Contains("Q4_K_M") == true
+									? "Q4_K_M"
+									: details?.Quantizations.FirstOrDefault() ?? string.Empty;
+							}
+
+							var requested = quantization.Length > 0 ? $"{repository}:{quantization}" : repository;
+							error.WriteLine($"开始下载 {requested} …");
+							await LlamaRouter.DownloadAsync(requested, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+							var deadline = DateTimeOffset.UtcNow.AddMinutes(30);
+							IReadOnlyList<LlamaRouter.ModelInfo> models = [];
+							while (DateTimeOffset.UtcNow < deadline)
+							{
+								await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+								models = await LlamaRouter.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+								var current = models.FirstOrDefault(model =>
+									string.Equals(model.Id, repository, StringComparison.Ordinal) ||
+									model.Id.StartsWith(repository + ":", StringComparison.Ordinal));
+								if (current is { Status: "loaded" or "sleeping" })
+								{
+									break;
+								}
+
+								if (current is { Status: "failed" })
+								{
+									error.WriteLine($"pi: 下载失败：{current.Id}");
+									break;
+								}
+							}
+
+							Register(models, select: true);
+							if (models.Any(model => model.Status is "loaded" or "sleeping" && model.Id.StartsWith(repository, StringComparison.Ordinal)))
+							{
+								error.WriteLine($"已下载 {requested}");
+							}
+
+							break;
+						}
+
+						default:
+							error.WriteLine("用法：/llama [list|refresh|load|unload|download|search|details]");
+							break;
+					}
+				}
+				catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException or OperationCanceledException)
+				{
+					error.WriteLine($"pi: llama.cpp 不可用：{exception.Message}");
+					error.WriteLine($"设置 {LlamaRouter.BaseUrlVariable}（默认 {LlamaRouter.DefaultBaseUrl}）并启动 router 模式。");
+				}
+
+				return true;
+			}
+
+			default:
+				return false;
+		}
+	}
+
+	private async Task ResumeInteractiveAsync(CodingAgentSession session, TextReader input, CancellationToken cancellationToken)
+	{
+		if (session.IsStreaming)
+		{
+			error.WriteLine("pi: 正在生成回复，稍后再试");
+			return;
+		}
+
+		var sessions = SessionManager.ListSessions(session.Session.SessionDir, session.Cwd);
+		if (sessions.Count == 0)
+		{
+			error.WriteLine("当前目录没有已保存的会话。");
+			return;
+		}
+
+		for (var index = 0; index < sessions.Count; index++)
+		{
+			var info = sessions[index];
+			var title = string.IsNullOrEmpty(info.Name) ? info.FirstMessage : info.Name;
+			error.WriteLine($"{index + 1,3}. {FirstLine(title ?? string.Empty)}  [{info.Modified:yyyy-MM-dd HH:mm}]");
+		}
+
+		error.Write("输入序号选择会话（回车取消）: ");
+		error.Flush();
+		var picked = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+		if (!int.TryParse(picked?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var choice) ||
+			choice < 1 || choice > sessions.Count)
+		{
+			return;
+		}
+
+		var opened = SessionManager.Open(sessions[choice - 1].Path, session.Session.SessionDir);
+		session.SwitchSession(opened);
+		error.WriteLine($"已切换到 {opened.SessionFile}");
+	}
+
+	private async Task ForkInteractiveAsync(CodingAgentSession session, TextReader input)
+	{
+		var candidates = session.Session.GetUserMessagesForForking();
+		if (candidates.Count == 0)
+		{
+			error.WriteLine("当前分支没有用户消息可分叉。");
+			return;
+		}
+
+		for (var index = 0; index < candidates.Count; index++)
+		{
+			error.WriteLine($"{index + 1,3}. {FirstLine(candidates[index].Text)}");
+		}
+
+		error.Write("输入序号，在该消息之前分叉（回车取消）: ");
+		error.Flush();
+		var picked = await input.ReadLineAsync(CancellationToken.None).ConfigureAwait(false);
+		if (!int.TryParse(picked?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var choice) ||
+			choice < 1 || choice > candidates.Count)
+		{
+			return;
+		}
+
+		var text = session.ForkAt(candidates[choice - 1].EntryId, "before");
+		if (text is { Length: > 0 })
+		{
+			// 分叉自用户消息之前时，pi 会把那条消息放回输入框；行式 REPL 直接重发它。
+			await RunAndPrintAsync(session, session.PrepareInput(text), CancellationToken.None).ConfigureAwait(false);
+		}
+		else
+		{
+			error.WriteLine($"已切到条目 {candidates[choice - 1].EntryId}。");
+		}
+	}
+
+	private void PrintSessionTree(CodingAgentSession session)
+	{
+		foreach (var entry in session.Session.Entries)
+		{
+			var marker = entry.Id == session.Session.LeafId ? "*" : " ";
+			var parent = entry.ParentId is { Length: > 0 } parentId ? parentId[..Math.Min(8, parentId.Length)] : "--------";
+			var label = entry switch
+			{
+				SessionMessageEntry message => DescribeMessage(message.Message),
+				CompactionEntry compaction => $"compaction（保留自 {compaction.FirstKeptEntryId[..Math.Min(8, compaction.FirstKeptEntryId.Length)]}）",
+				BranchSummaryEntry summary => $"branch_summary {FirstLine(summary.Summary, 48)}",
+				ModelChangeEntry model => $"model {model.Provider}/{model.ModelId}",
+				ThinkingLevelChangeEntry thinking => $"thinking {thinking.ThinkingLevel}",
+				SessionInfoEntry info => $"name {info.Name ?? ""}",
+				ContextEditEntry => "context_edit",
+				UsageEntry usage => $"usage {usage.Kind} {usage.Model}",
+				CustomEntry custom => $"custom {custom.CustomType}",
+				CustomMessageEntry customMessage => $"custom_message {customMessage.CustomType}",
+				LabelEntry => "label",
+				_ => entry.Type,
+			};
+
+			error.WriteLine($"{marker} {entry.Id[..Math.Min(8, entry.Id.Length)]}  {parent}  {label}");
+		}
+	}
+
+	/// <summary>按 <c>mcp__&lt;server&gt;__&lt;tool&gt;</c> 前缀分组，展示每个服务器的工具数。</summary>
+	private void PrintMcpServers()
+	{
+		var any = false;
+		foreach (var group in _extraTools
+			.Select(static tool => tool.Name.StartsWith("mcp__", StringComparison.Ordinal)
+				? tool.Name["mcp__".Length..].Split("__")
+				: null)
+			.Where(static parts => parts is { Length: >= 2 })
+			.GroupBy(static parts => parts![0], StringComparer.Ordinal)
+			.OrderBy(static group => group.Key, StringComparer.Ordinal))
+		{
+			any = true;
+			error.WriteLine($"{group.Key}: {group.Count()} 个工具");
+		}
+
+		if (!any)
+		{
+			error.WriteLine("没有已连接的 MCP 服务器（用 `pi mcp add` 添加，或 `pi mcp list` 查看）。");
+		}
+	}
+
+	private static string FirstLine(string text, int max = 64)
+	{
+		var line = text.Split('\n')[0].Trim();
+		return line.Length <= max ? line : $"{line[..max]}…";
+	}
+
+	/// <summary>分支树里一条消息的单行描述。</summary>
+	private static string DescribeMessage(Message message) => message switch
+	{
+		UserMessage user => $"user {FirstLine(user.Content.Text ?? string.Empty, 48)}",
+		AssistantMessage assistant => $"assistant {FirstLine(
+			assistant.Content.OfType<TextContent>().FirstOrDefault()?.Text ?? string.Empty, 48)}",
+		ToolResultMessage => "toolResult",
+		SystemMessage => "system",
+		CustomMessage custom => $"{custom.CustomRole} {FirstLine(custom.Content.Text ?? string.Empty, 40)}",
+		_ => message.Role,
+	};
 
 	private void WriteRecord(string record)
 	{

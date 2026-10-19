@@ -49,6 +49,9 @@ internal sealed class UsageStatsView
 
 	public UIElement View { get; }
 
+	/// <summary>主题切换后刷新角色文本颜色；图形在各自 WithTheme 里跟随。</summary>
+	public void ApplyTheme() => AppStyles.ApplyTextColors(View);
+
 	public void Close()
 	{
 		_open = false;
@@ -159,7 +162,7 @@ internal sealed class UsageStatsView
 					.Width(12)
 					.Height(12)
 					.CornerRadius(2)
-					.Background(LevelColor(cell.Level));
+					.WithTheme((theme, border) => border.Background = LevelColor(cell.Level, theme.IsDark));
 				square.ToolTip($"{cell.Date} · {FormatTokens(cell.Tokens)}");
 				row.Children(square);
 			}
@@ -172,13 +175,17 @@ internal sealed class UsageStatsView
 			new TextBlock().Text(Strings.UsageStatsHeatmapHint).FontSize(AppTheme.FontSizeMicro).FaintText());
 	}
 
-	private static Color LevelColor(int level) => level switch
+	/// <summary>
+	/// GitHub 风格的热力图：浅色卡片用浅绿阶、深色卡片用深绿阶；
+	/// 0 级是“无活动”，在两种主题下都保持可见的低对比底。
+	/// </summary>
+	private static Color LevelColor(int level, bool dark) => (dark, level) switch
 	{
-		1 => new Color(0x9B, 0xE9, 0xB0),
-		2 => new Color(0x4A, 0xD1, 0x7A),
-		3 => new Color(0x2E, 0xA0, 0x52),
-		4 => new Color(0x18, 0x6A, 0x36),
-		_ => new Color(0xEB, 0xED, 0xF0),
+		(_, 1) => dark ? new Color(0x0E, 0x44, 0x29) : new Color(0x9B, 0xE9, 0xB0),
+		(_, 2) => dark ? new Color(0x00, 0x6D, 0x32) : new Color(0x4A, 0xD1, 0x7A),
+		(_, 3) => dark ? new Color(0x26, 0xA6, 0x41) : new Color(0x2E, 0xA0, 0x52),
+		(_, 4) => dark ? new Color(0x39, 0xD3, 0x53) : new Color(0x18, 0x6A, 0x36),
+		_ => dark ? new Color(0x2A, 0x2F, 0x36) : new Color(0xEB, 0xED, 0xF0),
 	};
 
 	private static Element ModelList(UsageStatsReport report)

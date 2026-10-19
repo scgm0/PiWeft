@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.ServerSentEvents;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -57,23 +58,41 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			var accountId = CodexAuth.GetAccountId(credentials.Access)
 				?? throw new CodexAuthException("Failed to extract the ChatGPT account id from the access token");
 
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var reasoningEffort = OpenAiResponsesProvider.ResolveReasoningEffort(model, options);
 			var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
 			var cacheKey = options.SessionId ?? options.Metadata?["prompt_cache_key"]?.GetValue<string>();
 
-			using var request = BuildRequest(
+			var body = BuildRequestBody(
 				model,
 				messages,
 				tools,
 				options,
 				reasoningEffort,
 				maxOutputTokens,
-				cacheKey,
-				accountId,
-				credentials.Access);
+				cacheKey);
+			var transport = (options.Transport ?? "auto").ToLowerInvariant();
+			var webSocket = transport is "websocket" or "websocket-cached" or "auto";
+			if (webSocket)
+			{
+				var handled = await RunWebSocketAsync(
+					model,
+					body,
+					options,
+					stream,
+					startedAt,
+					accountId,
+					credentials.Access,
+					allowFallback: transport == "auto",
+					cancellationToken).ConfigureAwait(false);
+				if (handled)
+				{
+					return;
+				}
+			}
 
+			using var request = BuildHttpRequest(model, body, options, accountId, credentials.Access);
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
@@ -82,43 +101,34 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 
 			if (!response.IsSuccessStatusCode)
 			{
-				var body = await response.Content.ReadAsStringAsync(options.CancellationToken).ConfigureAwait(false);
-				PushFailure(stream, model, startedAt, $"Codex request failed ({(int)response.StatusCode}): {Truncate(body, 2000)}");
+				var errorBody = await response.Content.ReadAsStringAsync(options.CancellationToken).ConfigureAwait(false);
+				PushFailure(stream, model, startedAt, $"Codex request failed ({(int)response.StatusCode}): {Truncate(errorBody, 2000)}");
 				return;
 			}
 
 			await using var bodyStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
 			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId);
-			var parser = SseParser.Create<JsonDocument?>(bodyStream, static (eventType, span) =>
+			var sse = new SseJsonReader();
+			var parser = SseParser.Create<bool>(bodyStream, (eventType, span) =>
 			{
 				if (span.SequenceEqual(DoneMarker))
 				{
-					return null;
+					return false;
 				}
 
-				try
-				{
-					return JsonDocument.Parse(span.ToArray());
-				}
-				catch (JsonException ex)
-				{
-					throw new InvalidOperationException(
-						$"Could not parse provider SSE event '{eventType}': {ex.Message}",
-						ex);
-				}
+				using var document = sse.Parse(eventType, span);
+				options.NotifyStreamEvent(document.RootElement, model);
+				state.Handle(document.RootElement);
+				return true;
 			});
 
 			await foreach (var item in parser.EnumerateAsync(cancellationToken).ConfigureAwait(false))
 			{
-				if (item.Data is null)
+				if (!item.Data)
 				{
-					break;
+					break; // data: [DONE]
 				}
-
-				using var document = item.Data;
-				options.OnProviderStreamEvent?.Invoke(JsonNode.Parse(document.RootElement.GetRawText())!, model);
-				state.Handle(document.RootElement);
 			}
 
 			state.Finish();
@@ -137,16 +147,14 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 		}
 	}
 
-	private static HttpRequestMessage BuildRequest(
+	private static byte[] BuildRequestBody(
 		Model model,
 		IReadOnlyList<Message> messages,
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
 		string? reasoningEffort,
 		int? maxOutputTokens,
-		string? cacheKey,
-		string accountId,
-		string accessToken)
+		string? cacheKey)
 	{
 		var bytes = JsonPayload.Write(writer => OpenAiResponsesWire.WriteRequest(
 			writer,
@@ -169,6 +177,16 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			}
 		}
 
+		return bytes;
+	}
+
+	private static HttpRequestMessage BuildHttpRequest(
+		Model model,
+		byte[] bytes,
+		StreamOptions options,
+		string accountId,
+		string accessToken)
+	{
 		var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(model))
 		{
 			Content = new ByteArrayContent(bytes),
@@ -204,6 +222,151 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 		}
 
 		return request;
+	}
+
+	private async Task<bool> RunWebSocketAsync(
+		Model model,
+		byte[] body,
+		StreamOptions options,
+		AssistantMessageEventStream stream,
+		long startedAt,
+		string accountId,
+		string accessToken,
+		bool allowFallback,
+		CancellationToken cancellationToken)
+	{
+		var started = false;
+		using var socket = new ClientWebSocket();
+		try
+		{
+			var requestId = options.SessionId is { Length: > 0 } sessionId ? sessionId : Guid.NewGuid().ToString("N");
+			SetWebSocketHeaders(socket, model, options, accountId, accessToken, requestId);
+
+			using var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			connectTimeout.CancelAfter(TimeSpan.FromMilliseconds(options.TimeoutMs is > 0 ? options.TimeoutMs.Value : 15_000));
+			await socket.ConnectAsync(new Uri(BuildWebSocketUrl(model)), connectTimeout.Token).ConfigureAwait(false);
+
+			var payload = JsonNode.Parse(body) as JsonObject ?? new JsonObject();
+			payload["type"] = "response.create";
+			var frame = Encoding.UTF8.GetBytes(payload.ToJsonString(PiJson.NodeOptions));
+			await socket.SendAsync(frame, WebSocketMessageType.Text, endOfMessage: true, cancellationToken).ConfigureAwait(false);
+
+			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId);
+			var buffer = new byte[64 * 1024];
+			var received = new MemoryStream();
+			var terminal = false;
+			while (!terminal && socket.State == WebSocketState.Open)
+			{
+				var result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
+				if (result.MessageType == WebSocketMessageType.Close)
+				{
+					throw new InvalidOperationException("Codex WebSocket closed before response.completed");
+				}
+
+				received.Write(buffer, 0, result.Count);
+				if (!result.EndOfMessage)
+				{
+					continue;
+				}
+
+				var text = Encoding.UTF8.GetString(received.GetBuffer(), 0, (int)received.Length);
+				received.SetLength(0);
+				if (text.Length == 0)
+				{
+					continue;
+				}
+
+				using var document = JsonDocument.Parse(text);
+				started = true;
+				options.NotifyStreamEvent(document.RootElement, model);
+				state.Handle(document.RootElement);
+				terminal = IsTerminalEvent(document.RootElement);
+			}
+
+			if (!terminal)
+			{
+				throw new InvalidOperationException("Codex WebSocket ended before response.completed");
+			}
+
+			state.Finish();
+			return true;
+		}
+		catch (Exception) when (
+			!started &&
+			allowFallback &&
+			!cancellationToken.IsCancellationRequested)
+		{
+			// “auto” 在握手/首帧失败时静默回退到 SSE。
+			return false;
+		}
+		catch (Exception exception)
+		{
+			PushFailure(
+				stream,
+				model,
+				startedAt,
+				cancellationToken.IsCancellationRequested ? "Request aborted" : $"Codex WebSocket failed: {exception.Message}",
+				cancellationToken.IsCancellationRequested ? StopReason.Aborted : StopReason.Error);
+			return true;
+		}
+	}
+
+	private static void SetWebSocketHeaders(
+		ClientWebSocket socket,
+		Model model,
+		StreamOptions options,
+		string accountId,
+		string accessToken,
+		string requestId)
+	{
+		socket.Options.SetRequestHeader("originator", "pi");
+		socket.Options.SetRequestHeader("user-agent", SharedHttpClient.UserAgent);
+		socket.Options.SetRequestHeader("authorization", $"Bearer {accessToken}");
+		socket.Options.SetRequestHeader("chatgpt-account-id", accountId);
+		socket.Options.SetRequestHeader("OpenAI-Beta", "responses_websockets=2026-02-06");
+		socket.Options.SetRequestHeader("x-client-request-id", requestId);
+		socket.Options.SetRequestHeader("session-id", requestId);
+
+		if (model.Headers is { Count: > 0 } modelHeaders)
+		{
+			foreach (var (name, value) in modelHeaders)
+			{
+				socket.Options.SetRequestHeader(name, value);
+			}
+		}
+
+		if (options.Headers is { Count: > 0 } extra)
+		{
+			foreach (var (name, value) in extra)
+			{
+				if (value is not null)
+				{
+					socket.Options.SetRequestHeader(name, value);
+				}
+			}
+		}
+	}
+
+	private static bool IsTerminalEvent(JsonElement root)
+	{
+		var type = root.TryGetProperty("type", out var typeNode) ? typeNode.GetString() : null;
+		return type is "response.completed" or "response.done" or "response.incomplete" or "response.failed" or "error";
+	}
+
+	/// <summary>把 responses 端点换成 WebSocket URL。</summary>
+	internal static string BuildWebSocketUrl(Model model)
+	{
+		var uri = new Uri(BuildUrl(model));
+		var builder = new UriBuilder(uri)
+		{
+			Scheme = uri.Scheme switch
+			{
+				"https" => "wss",
+				"http" => "ws",
+				_ => uri.Scheme,
+			},
+		};
+		return builder.Uri.ToString();
 	}
 
 	/// <summary>Codex 的 responses 端点，兼容已经带上该路径的 base URL。</summary>

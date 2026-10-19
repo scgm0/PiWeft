@@ -162,6 +162,56 @@ public static class SystemPrompt
 }
 
 /// <summary>
+/// 自动加载 SYSTEM.md / APPEND_SYSTEM.md。受信任项目的 <c>.pi</c> 文件覆盖 agent 目录的对应文件。
+/// </summary>
+public static class SystemPromptFiles
+{
+	public const string SystemFileName = "SYSTEM.md";
+	public const string AppendFileName = "APPEND_SYSTEM.md";
+
+	/// <summary>返回替换默认 preamble 的文本；没有时返回 null。</summary>
+	public static string? LoadSystem(string cwd, bool projectTrusted, string? agentDir = null) =>
+		Load(cwd, projectTrusted, SystemFileName, agentDir);
+
+	/// <summary>返回追加到提示词末尾的文本；没有时返回 null。</summary>
+	public static string? LoadAppend(string cwd, bool projectTrusted, string? agentDir = null) =>
+		Load(cwd, projectTrusted, AppendFileName, agentDir);
+
+	private static string? Load(string cwd, bool projectTrusted, string fileName, string? agentDir)
+	{
+		if (projectTrusted)
+		{
+			var project = Path.Combine(Path.GetFullPath(cwd), Session.SessionPaths.ConfigDirName, fileName);
+			if (Read(project) is { Length: > 0 } projectText)
+			{
+				return projectText;
+			}
+		}
+
+		var directory = agentDir ?? Session.SessionPaths.GetAgentDir();
+		return Read(Path.Combine(directory, fileName));
+	}
+
+	private static string? Read(string path)
+	{
+		if (!File.Exists(path))
+		{
+			return null;
+		}
+
+		try
+		{
+			var text = File.ReadAllText(path);
+			return string.IsNullOrWhiteSpace(text) ? null : text;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return null;
+		}
+	}
+}
+
+/// <summary>
 /// 从工作目录向上加载项目指令文件（AGENTS.md、CLAUDE.md 等），对应 pi 的
 /// <c>loadProjectContextFiles</c>：
 /// <list type="bullet">
@@ -176,7 +226,8 @@ public static class ContextFiles
 	public const string SectionName = "project_context";
 
 	/// <summary>pi 会查找的指令文件名，按优先级排列。</summary>
-	public static readonly string[] FileNames = ["AGENTS.md", "CLAUDE.md", "CODEBUDDY.md"];
+	public static readonly string[] FileNames =
+	["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD", "CODEBUDDY.md"];
 
 	/// <summary>
 	/// 为 <paramref name="cwd"/> 渲染 <c>project_context</c> 章节；没有内容时返回 <c>null</c>。

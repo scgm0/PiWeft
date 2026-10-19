@@ -45,16 +45,14 @@ public static partial class Strings
 	public static string DeleteConfirm(string name) => $"把会话「{name}」移到 .trash 目录？文件会被保留，可手动恢复。";
 	public static string Deleted(string path) => $"已移动到 {path}";
 	public const string NoSessions = "此目录下暂无会话，点「新建」开始一个。";
-	public const string SearchPlaceholder = "搜索会话…";
-	public const string CurrentDirOnly = "仅当前目录";
+	/// <summary>侧栏入口与搜索弹窗的输入提示共用一个短名。</summary>
+	public const string SessionSearch = "搜索会话";
 	public static string EnvironmentFallback(string cwd, string reason) => $"目录 {cwd} 的环境不可用（{reason}），已回退到启动环境。";
 	public const string NoMatches = "没有匹配的会话。";
 	public const string ContentHit = "内容命中";
-	public static string ContentMatches(int count, string excerpt) =>
-		$"{Strings.ContentHit} {count} 个会话，例如：{excerpt}";
 
 	// 输入区
-	public const string ComposerPlaceholder = "输入指令，Ctrl+Enter 发送";
+	public const string ComposerPlaceholder = "输入指令，Enter 发送，Shift+Enter 换行";
 	public const string Send = "发送";
 	public const string Abort = "中断";
 	public const string CopyLastReply = "复制回复";
@@ -80,6 +78,14 @@ public static partial class Strings
 
 	// 顶栏与欢迎页
 	public const string AppName = "PiWeft Desktop";
+
+	/// <summary>标题栏上的短品牌名；完整名在关于与自检里。</summary>
+	public const string BrandShort = "PiWeft";
+
+	public const string MinimizeWindow = "最小化";
+	public const string MaximizeWindow = "最大化";
+	public const string RestoreWindow = "还原";
+	public const string CloseWindow = "关闭窗口";
 	public const string WelcomeTitle = "开始一次会话";
 	public const string WelcomeBody = "左侧列出该目录下的历史会话；点「新建」开始一个，或用搜索框按名称、目录、编号查找。";
 
@@ -230,15 +236,17 @@ public static partial class Strings
 	// 命令面板的说明与快捷键
 	public const string RefreshSessions = "刷新会话列表";
 	public const string ShortcutNewSession = "Ctrl+T";
+	public const string ShortcutSearchSessions = "Ctrl+K";
 	public const string ShortcutSettings = "环境、技能与 MCP 状态";
 	public const string ShortcutGit = "当前分支与工作区改动";
+	public const string ShortcutRightPanel = "打开或收起当前会话的右侧边栏";
 	public const string ShortcutTheme = "立即在深色与浅色之间切换";
 	public const string ShortcutRefresh = "重新读取磁盘上的会话";
 	public const string ShortcutCloseTab = "Ctrl+W";
 	public const string CloseOtherTabs = "关闭其它标签";
 	public const string CloseAllTabs = "关闭全部标签";
 	public const string ShortcutCloseOtherTabs = "只留下当前会话";
-	public const string ShortcutCloseAllTabs = "关闭所有会话标签（设置面板保留）";
+	public const string ShortcutCloseAllTabs = "关闭所有会话标签（设置弹窗不受影响）";
 	public const string ShortcutBranches = "查看当前会话的分支树";
 	public const string ShortcutChat = "回到对话视图";
 	public const string ShortcutSlashCommand = "斜杠命令：填入输入框";
@@ -402,28 +410,47 @@ public static partial class Strings
 
 	public const string FileBrowserNoFile = "请先在左侧选择一个文件。";
 
-	public const string ShortcutFilesPanel = "打开文件浏览器";
+	public const string ShortcutFilesPanel = "在右侧面板打开文件浏览器";
+
+	public const string FileBrowserBack = "返回文件列表";
 
 	public static string FileBrowserOpened(string path) => $"已打开 {path}";
 
 	public static string FileBrowserSaved(string path) => $"已保存 {path}";
 
-	/// <summary>命令 Dock（非交互式终端）。</summary>
+	/// <summary>会话底部的命令 Dock（MiniPty 伪终端）。</summary>
 	public const string Terminal = "终端";
 
-	public const string TerminalRun = "运行";
+	public const string TerminalRestart = "重启 shell";
 
-	public const string TerminalCancel = "取消";
+	public const string TerminalClear = "清屏";
 
-	public const string TerminalPlaceholder = "输入命令，回车运行";
+	public const string TerminalCopy = "复制";
 
-	public const string TerminalHint = "命令 Dock：在项目目录里运行单条命令并显示输出；不提供交互式终端或全屏 TUI。";
+	public const string TerminalPaste = "粘贴";
 
-	public const string TerminalCancelled = "[已取消]";
+	public static string TerminalPasteConfirm(int lines) => $"粘贴 {lines} 行内容？（可能直接执行）";
 
-	public const string ShortcutTerminal = "打开命令 Dock";
+	public const string TerminalSelectAll = "全选";
 
-	public static string TerminalExit(int? exitCode) => $"[退出码 {exitCode?.ToString() ?? "?"}]";
+	public const string TerminalShell = "选择 Shell";
+
+	public const string TerminalShellAuto = "自动（系统默认）";
+
+	public const string TerminalShellCustom = "自定义…";
+
+	public const string TerminalShellPrompt = "Shell 可执行文件路径，例如 /bin/zsh";
+
+	public const string TerminalShellInvalid = "找不到这个 Shell，仍使用当前设置。";
+
+	public const string TerminalHint = "命令 Dock：在项目目录里启动交互式 shell（伪终端）。";
+
+	/// <summary>输入框里的终端开关键与底部面板的收起键。</summary>
+	public const string CloseTerminal = "收起终端";
+
+	public const string ShortcutTerminal = "在会话底部开关终端";
+
+	public static string TerminalExited(int? exitCode) => $"[shell 已退出，退出码 {exitCode?.ToString() ?? "?"}]";
 
 	public static string TerminalFailed(string reason) => $"[错误] {reason}";
 
@@ -522,6 +549,7 @@ public static partial class Strings
 		_ => level,
 	};
 	public static string ThinkingShort(string level) => $"思考 {ThinkingLevelName(level)}";
+	public const string ThinkingLevelTitle = "思考强度";
 	public const string Context = "上下文";
 	public const string Tokens = "令牌";
 	public const string CacheHit = "缓存命中";

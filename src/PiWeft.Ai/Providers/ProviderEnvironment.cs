@@ -102,7 +102,7 @@ public static class ProviderEnvironment
 		["opencode-go"] = "OPENCODE_API_KEY",
 		["kimi-coding"] = "KIMI_API_KEY",
 		["google"] = "GEMINI_API_KEY",
-		["google-vertex"] = "GOOGLE_API_KEY",
+		["google-vertex"] = "GOOGLE_CLOUD_API_KEY",
 		["vercel-ai-gateway"] = "AI_GATEWAY_API_KEY",
 		["cloudflare-workers-ai"] = "CLOUDFLARE_API_KEY",
 		["cloudflare-ai-gateway"] = "CLOUDFLARE_API_KEY",
@@ -126,6 +126,28 @@ public static class ProviderEnvironment
 		return builder.ToString();
 	}
 
+	private static Auth.OAuthCredential? RefreshOAuth(string provider, Auth.OAuthCredential credential)
+	{
+		try
+		{
+			return provider switch
+			{
+				Auth.AnthropicOAuth.ProviderKey => Auth.AnthropicOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
+				Auth.XaiOAuth.ProviderKey => Auth.XaiOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
+				Auth.KimiOAuth.ProviderKey => Auth.KimiOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
+				Auth.OpenAiChatGptOAuth.ProviderKey => Auth.OpenAiChatGptOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
+				Auth.GitHubCopilotOAuth.ProviderKey => Auth.GitHubCopilotOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
+				Auth.MetaOAuth.ProviderKey => Auth.MetaOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
+				Auth.RadiusOAuth.ProviderKey => Auth.RadiusOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
+				_ => null,
+			};
+		}
+		catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException or Auth.CodexAuthException)
+		{
+			return null;
+		}
+	}
+
 	/// <summary>
 	/// 与 pi 一致的顺序：显式选项 → <c>auth.json</c> 里存储的凭据 → 该 provider 的环境变量 →
 	/// 一小组 OpenAI 兼容网关通用的兜底变量。
@@ -145,6 +167,22 @@ public static class ProviderEnvironment
 		if (stored is { Length: > 0 })
 		{
 			return stored;
+		}
+
+		// OAuth 凭据（Anthropic / xAI 等）以 access token 形式复用 API key 通道；
+		// AnthropicProvider 会按 sk-ant-oat 前缀切换成 Bearer 请求。
+		if (Auth.OAuthStore.Read(provider) is { Access.Length: > 0 } oauth)
+		{
+			if (oauth.ExpiresAt <= DateTimeOffset.UtcNow && oauth.Refresh.Length > 0)
+			{
+				var refreshed = RefreshOAuth(provider, oauth);
+				if (refreshed is { Access.Length: > 0 } updated)
+				{
+					return updated.Access;
+				}
+			}
+
+			return oauth.Access;
 		}
 
 		var direct = Environment.GetEnvironmentVariable(KeyName(provider));

@@ -63,6 +63,23 @@ public sealed class SessionStatisticsDisplayTests
 	}
 
 	[Fact]
+	public void ClickingOutsideTheStatisticsCardClosesItWithoutDimming()
+	{
+		var owner = new Border();
+		var window = new Window().Content(owner);
+		var panel = new SessionStatisticsPanel(static () => { });
+		panel.Show(owner, new SessionStatisticsDisplay(new SessionStatistics(), 10, 100, 1), false);
+		panel.View.Measure(new Size(720, 520));
+		panel.View.Arrange(new Rect(0, 0, 720, 520));
+		var backdrop = Assert.IsType<Button>(panel.View.HitTest(new Point(40, 40)));
+		Assert.Equal(0, backdrop.Background.A);
+		Assert.NotSame(backdrop, panel.View.HitTest(new Point(600, 400)));
+		ImagePreviewTests.Click(backdrop);
+		Assert.False(panel.IsOpen);
+		Assert.Equal(0, window.OverlayLayer.Count);
+	}
+
+	[Fact]
 	public void StatisticsOverviewKeepsAllDetailsAvailableWithoutRecreatingRowsOnUpdate()
 	{
 		var panel = new SessionStatisticsPanel(static () => { });

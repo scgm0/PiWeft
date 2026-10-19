@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Agent;
 using PiWeft.CodingAgent;
@@ -69,6 +70,31 @@ public sealed class TodoStripTests : IDisposable
 		using var tab = new SessionTab(session, [session.Model], "test");
 
 		Assert.Contains(Find<Button>(tab.View), button => HoverHints.Text(button) == Strings.TestConnection);
+	}
+
+	[Fact]
+	public void TerminalButtonTogglesTheBottomDock()
+	{
+		using var session = Session();
+		using var tab = new SessionTab(session, [session.Model], "test");
+
+		// 终端属于会话底部的纵向分栏，默认收起（不再占用右侧面板）。
+		var split = Assert.IsType<SplitPanel>(tab.View);
+		Assert.Equal(Orientation.Vertical, split.Orientation);
+		Assert.False(tab.IsTerminalOpen);
+
+		var pane = Find<Border>(tab.View).Single(border => border.StyleName == AppStyles.TerminalDock);
+		Assert.False(pane.IsVisible);
+
+		var button = Find<Button>(tab.View).Single(candidate => HoverHints.Text(candidate) == Strings.Terminal);
+		ImagePreviewTests.Click(button);
+		Assert.True(tab.IsTerminalOpen);
+		Assert.True(pane.IsVisible);
+		Assert.NotEmpty(Find<Border>(pane));
+
+		ImagePreviewTests.Click(button);
+		Assert.False(tab.IsTerminalOpen);
+		Assert.False(pane.IsVisible);
 	}
 
 	[Fact]

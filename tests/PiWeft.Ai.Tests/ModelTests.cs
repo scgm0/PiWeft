@@ -29,6 +29,26 @@ public class ModelTests
 	}
 
 	[Fact]
+	public void DeepSeekCatalogEntryDeclaresTheThinkingSwitch()
+	{
+		// 目录的 compat.thinkingFormat 决定请求里怎么开关思考；读不到它，DeepSeek 就会一直按默认开启思考。
+		var model = Registry.Get("deepseek", "deepseek-flash");
+
+		Assert.NotNull(model);
+		Assert.Equal("deepseek", model!.Compat?["thinkingFormat"]?.GetValue<string>());
+	}
+
+	[Fact]
+	public void CatalogPromptCacheLifetimesAreLoaded()
+	{
+		var model = Registry.Resolve("anthropic", "claude-fable-5");
+
+		Assert.NotNull(model);
+		Assert.Equal(300, model!.PromptCache!["short"]);
+		Assert.Equal(3600, model.PromptCache["long"]);
+	}
+
+	[Fact]
 	public void CostCalculator_AppliesPerMillionRates()
 	{
 		var model = new Model

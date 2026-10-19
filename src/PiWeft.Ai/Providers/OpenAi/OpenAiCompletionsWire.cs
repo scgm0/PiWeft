@@ -15,6 +15,7 @@ internal static class OpenAiCompletionsWire
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
 		string? reasoningEffort,
+		string? thinkingMode,
 		int? maxTokens)
 	{
 		writer.WriteStartObject();
@@ -38,6 +39,16 @@ internal static class OpenAiCompletionsWire
 			writer.WriteString("reasoning_effort", reasoningEffort);
 		}
 
+		if (thinkingMode is not null)
+		{
+			// DeepSeek 的开关与强度是两个字段：type 决定是否思考，reasoning_effort 只决定档位。
+			// 它的默认值是「开启」，所以「关闭」必须显式写出来。
+			writer.WritePropertyName("thinking");
+			writer.WriteStartObject();
+			writer.WriteString("type", thinkingMode);
+			writer.WriteEndObject();
+		}
+
 		writer.WriteBoolean("stream", true);
 		writer.WritePropertyName("stream_options");
 		writer.WriteStartObject();
@@ -45,7 +56,7 @@ internal static class OpenAiCompletionsWire
 		writer.WriteEndObject();
 
 		writer.WritePropertyName("messages");
-		WriteMessages(writer, messages);
+		WriteMessages(writer, messages, model);
 
 		if (tools.Count > 0)
 		{
@@ -74,7 +85,7 @@ internal static class OpenAiCompletionsWire
 		writer.WriteEndObject();
 	}
 
-	internal static void WriteMessages(Utf8JsonWriter writer, IReadOnlyList<Message> messages)
+	internal static void WriteMessages(Utf8JsonWriter writer, IReadOnlyList<Message> messages, Model? model = null)
 	{
 		writer.WriteStartArray();
 		foreach (var message in messages)
@@ -90,7 +101,7 @@ internal static class OpenAiCompletionsWire
 					break;
 
 				case AssistantMessage assistant:
-					WriteAssistant(writer, assistant);
+					WriteAssistant(writer, assistant, model);
 					break;
 
 				case ToolResultMessage result:
@@ -168,7 +179,7 @@ internal static class OpenAiCompletionsWire
 		writer.WriteEndObject();
 	}
 
-	private static void WriteAssistant(Utf8JsonWriter writer, AssistantMessage message)
+	private static void WriteAssistant(Utf8JsonWriter writer, AssistantMessage message, Model? model)
 	{
 		var text = string.Concat(message.Content
 			.OfType<TextContent>()
@@ -190,6 +201,30 @@ internal static class OpenAiCompletionsWire
 		else
 		{
 			writer.WriteNull("content");
+		}
+
+		// 思考原文回放：签名记着这段思考来自哪个字段（reasoning_content 等），原样写回即可让端点续上上下文。
+		var thinking = message.Content
+			.OfType<ThinkingContent>()
+			.Where(static block => block.Redacted != true && !string.IsNullOrWhiteSpace(block.Thinking))
+			.ToList();
+		var signature = thinking
+			.Select(static block => block.ThinkingSignature)
+			.FirstOrDefault(static field => !string.IsNullOrEmpty(field));
+		var reasoningField = signature is { Length: > 0 } && Array.IndexOf(ReasoningFields, signature) >= 0
+			? signature
+			: null;
+
+		if (reasoningField is not null)
+		{
+			writer.WriteString(
+				reasoningField,
+				TextSanitizer.SanitizeSurrogates(string.Join("\n", thinking.Select(static block => block.Thinking))));
+		}
+		else if (model is { Reasoning: true } && RequiresReasoningContent(model))
+		{
+			// DeepSeek 带工具的请求要求每条助手消息都有 reasoning_content；这一轮没有思考就发空串。
+			writer.WriteString("reasoning_content", string.Empty);
 		}
 
 		if (calls.Count > 0)
@@ -257,4 +292,13 @@ internal static class OpenAiCompletionsWire
 
 	internal static bool UsesMaxCompletionTokens(Model model) =>
 		model.BaseUrl.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>OpenAI 兼容端点在流式响应里可能承载思考的字段名，与解析端保持同一顺序。</summary>
+	private static readonly string[] ReasoningFields = ["reasoning_content", "reasoning", "reasoning_text"];
+
+	/// <summary>目录声明「助手消息必须带 reasoning_content」的端点（DeepSeek）。</summary>
+	internal static bool RequiresReasoningContent(Model model) =>
+		model.Compat?["requiresReasoningContentOnAssistantMessages"] is JsonValue flag &&
+		flag.TryGetValue<bool>(out var required) &&
+		required;
 }

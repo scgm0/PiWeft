@@ -19,6 +19,16 @@ public sealed record CompactionSettings
 	public int KeepRecentTokens { get; init; } = 20000;
 }
 
+/// <summary>分支摘要参数，对应 pi 的 <c>settings.branchSummary</c>。</summary>
+public sealed record BranchSummarySettings
+{
+	/// <summary>摘要请求为上下文窗口预留的令牌数。</summary>
+	public int ReserveTokens { get; init; } = 16384;
+
+	/// <summary>跳过分支摘要提示，直接导航。</summary>
+	public bool SkipPrompt { get; init; }
+}
+
 /// <summary>
 /// 本端口读取的 pi <c>settings.json</c> 子集。未知键会被忽略，因此完整的 pi 设置文件也能
 /// 正常加载而不报错。
@@ -32,15 +42,35 @@ public sealed record CodingAgentSettings
 	/// <summary>取值 <c>off</c>、<c>minimal</c>…<c>max</c>。</summary>
 	public string? DefaultThinkingLevel { get; init; }
 
+	/// <summary>按 <c>provider/modelId</c> 覆盖启动思考级别。</summary>
+	public IReadOnlyDictionary<string, string> ModelThinkingLevels { get; init; } =
+		new Dictionary<string, string>(StringComparer.Ordinal);
+
+	/// <summary>启动与轮换使用的模型模式；空表示全部可用模型。</summary>
+	public IReadOnlyList<string> EnabledModels { get; init; } = [];
+
+	/// <summary><c>all</c> 或 <c>one-at-a-time</c>。</summary>
+	public string SteeringMode { get; init; } = "one-at-a-time";
+
+	public string FollowUpMode { get; init; } = "one-at-a-time";
+
+	/// <summary><c>off</c> / <c>streaming</c> / <c>idle</c>：保持提示缓存热的策略。</summary>
+	public string CacheWarming { get; init; } = "streaming";
+
 	public CompactionSettings Compaction { get; init; } = new();
+
+	public BranchSummarySettings BranchSummary { get; init; } = new();
 
 	/// <summary>自动重试策略，对应 pi 的 <c>settings.retry</c>。</summary>
 	public RetryPolicy Retry { get; init; } = new();
 
+	/// <summary>codemode 工具设置，对应 pi 的 <c>settings.codemode</c>。</summary>
+	public CodemodeSettings Codemode { get; init; } = new();
+
 	public bool EnableSkillCommands { get; init; } = true;
 
 	/// <summary>包来源（npm / git / 本地路径），对应 pi 的 <c>settings.packages</c>。</summary>
-	public IReadOnlyList<string> Packages { get; init; } = [];
+	public IReadOnlyList<PackageDeclaration> Packages { get; init; } = [];
 
 	/// <summary>额外的技能文件或目录，对应 pi 的 <c>settings.skills</c>。</summary>
 	public IReadOnlyList<string> Skills { get; init; } = [];
@@ -59,6 +89,34 @@ public sealed record CodingAgentSettings
 
 	/// <summary>provider 请求超时，单位毫秒。</summary>
 	public int? TimeoutMs { get; init; }
+
+	/// <summary>bash 工具使用的 shell 路径，对应 pi 的 <c>shellPath</c>；为空时按平台默认值。</summary>
+	public string? ShellPath { get; init; }
+
+	/// <summary>每条 bash 命令前追加的初始化脚本，对应 pi 的 <c>shellCommandPrefix</c>。</summary>
+	public string? ShellCommandPrefix { get; init; }
+
+	/// <summary>会话目录，对应 pi 的 <c>sessionDir</c>；<c>--session-dir</c> 优先。</summary>
+	public string? SessionDir { get; init; }
+
+	/// <summary><c>/share</c> 的目标：<c>auto</c>、<c>gist</c> 或 <c>radius</c>。</summary>
+	public string SessionShareDestination { get; init; } = "auto";
+
+	/// <summary>
+	/// 默认启用的工具名（可带前缀 <c>+</c> / <c>-</c>），对应 pi 的 <c>defaultTools</c>。
+	/// 为空时使用 <see cref="DefaultToolNames"/>。
+	/// </summary>
+	public IReadOnlyList<string> DefaultTools { get; init; } = [];
+
+	/// <summary>settings 里是否显式写了 defaultTools（空的列表表示禁用全部内置工具）。</summary>
+	public bool DefaultToolsConfigured { get; init; }
+
+	/// <summary>
+	/// 未配置 <c>defaultTools</c> 时的默认工具集，与 pi 一致（<c>read</c>/<c>bash</c>/<c>edit</c>/<c>write</c>），
+	/// 另外保留 PiDeck 依赖的原生 <c>todo</c> 与 <c>ask_question</c>。
+	/// pi 默认关闭的 <c>grep</c>/<c>find</c>/<c>ls</c> 需要 <c>--tools</c> 或 <c>defaultTools</c> 显式开启。
+	/// </summary>
+	public static readonly string[] DefaultToolNames = ["read", "bash", "edit", "write", "todo", "ask_question"];
 
 	/// <summary>全局设置路径：<c>&lt;agentDir&gt;/settings.json</c>。</summary>
 	public static string GlobalPath(string? agentDir = null) =>
@@ -143,8 +201,8 @@ public sealed record CodingAgentSettings
 		{
 			foreach (var node in existing)
 			{
-				if (node is JsonValue value && value.GetValueKind() == JsonValueKind.String &&
-					string.Equals(value.GetValue<string>(), source, StringComparison.Ordinal))
+				if (PackageSourceOf(node) is { } declared &&
+					string.Equals(declared, source, StringComparison.Ordinal))
 				{
 					return false;
 				}
@@ -182,8 +240,8 @@ public sealed record CodingAgentSettings
 		var removed = false;
 		foreach (var node in existing)
 		{
-			if (node is JsonValue value && value.GetValueKind() == JsonValueKind.String &&
-				string.Equals(value.GetValue<string>(), source, StringComparison.Ordinal))
+			if (PackageSourceOf(node) is { } declared &&
+				string.Equals(declared, source, StringComparison.Ordinal))
 			{
 				removed = true;
 				continue;
@@ -300,10 +358,15 @@ public sealed record CodingAgentSettings
 		Write(root, "defaultProvider", file.DefaultProvider);
 		Write(root, "defaultModel", file.DefaultModel);
 		Write(root, "defaultThinkingLevel", file.DefaultThinkingLevel);
+		Write(root, "modelThinkingLevels", file.ModelThinkingLevels);
+		Write(root, "enabledModels", file.EnabledModels);
+		Write(root, "steeringMode", file.SteeringMode);
+		Write(root, "followUpMode", file.FollowUpMode);
+		Write(root, "cacheWarming", file.CacheWarming);
 		Write(root, "enableSkillCommands", file.EnableSkillCommands);
 		Write(root, "defaultProjectTrust", file.DefaultProjectTrust);
 		Write(root, "timeoutMs", file.TimeoutMs);
-		Write(root, "packages", file.Packages);
+		WritePackages(root, file.Packages);
 		Write(root, "skills", file.Skills);
 		Write(root, "prompts", file.Prompts);
 		Write(root, "themes", file.Themes);
@@ -317,6 +380,14 @@ public sealed record CodingAgentSettings
 			root["compaction"] = target;
 		}
 
+		if (file.BranchSummary is { } branchSummary)
+		{
+			var target = root["branchSummary"] as JsonObject ?? new JsonObject();
+			Write(target, "reserveTokens", branchSummary.ReserveTokens);
+			Write(target, "skipPrompt", branchSummary.SkipPrompt);
+			root["branchSummary"] = target;
+		}
+
 		if (file.Retry is { } retry)
 		{
 			// 只写本端口建模的子键，retry.provider 之类的上游键保持不动。
@@ -326,6 +397,15 @@ public sealed record CodingAgentSettings
 			Write(target, "baseDelayMs", retry.BaseDelayMs);
 			Write(target, "maxAgentDelayMs", retry.MaxAgentDelayMs);
 			root["retry"] = target;
+		}
+
+		if (file.Codemode is { } codemode)
+		{
+			var target = root["codemode"] as JsonObject ?? new JsonObject();
+			Write(target, "mode", codemode.Mode);
+			Write(target, "inlineBudget", codemode.InlineBudget);
+			Write(target, "autoEnable", codemode.AutoEnable);
+			root["codemode"] = target;
 		}
 	}
 
@@ -344,6 +424,22 @@ public sealed record CodingAgentSettings
 		{
 			root[name] = JsonValue.Create(value.Value);
 		}
+	}
+
+	private static void Write(JsonObject root, string name, IReadOnlyDictionary<string, string>? values)
+	{
+		if (values is null)
+		{
+			return;
+		}
+
+		var node = new JsonObject();
+		foreach (var (key, value) in values)
+		{
+			node[key] = value;
+		}
+
+		root[name] = node;
 	}
 
 	private static void Write(JsonObject root, string name, int? value)
@@ -397,25 +493,180 @@ public sealed record CodingAgentSettings
 		DefaultProvider = project?.DefaultProvider ?? global?.DefaultProvider,
 		DefaultModel = project?.DefaultModel ?? global?.DefaultModel,
 		DefaultThinkingLevel = project?.DefaultThinkingLevel ?? global?.DefaultThinkingLevel,
+		ModelThinkingLevels = MergeDictionary(global?.ModelThinkingLevels, project?.ModelThinkingLevels),
+		EnabledModels = project?.EnabledModels is { Count: > 0 } projectEnabled
+			? [.. projectEnabled]
+			: global?.EnabledModels is { Count: > 0 } globalEnabled ? [.. globalEnabled] : [],
+		SteeringMode = project?.SteeringMode ?? global?.SteeringMode ?? "one-at-a-time",
+		FollowUpMode = project?.FollowUpMode ?? global?.FollowUpMode ?? "one-at-a-time",
+		CacheWarming = project?.CacheWarming ?? global?.CacheWarming ?? "streaming",
 		Compaction = new CompactionSettings
 		{
 			Enabled = project?.Compaction?.Enabled ?? global?.Compaction?.Enabled ?? true,
 			ReserveTokens = project?.Compaction?.ReserveTokens ?? global?.Compaction?.ReserveTokens ?? 16384,
 			KeepRecentTokens = project?.Compaction?.KeepRecentTokens ?? global?.Compaction?.KeepRecentTokens ?? 20000,
 		},
+		BranchSummary = new BranchSummarySettings
+		{
+			ReserveTokens = project?.BranchSummary?.ReserveTokens ?? global?.BranchSummary?.ReserveTokens ?? 16384,
+			SkipPrompt = project?.BranchSummary?.SkipPrompt ?? global?.BranchSummary?.SkipPrompt ?? false,
+		},
 		EnableSkillCommands = project?.EnableSkillCommands ?? global?.EnableSkillCommands ?? true,
-		Packages = MergeLists(global?.Packages, project?.Packages),
+		Packages = MergePackages(global?.Packages, project?.Packages),
 		Skills = MergeLists(global?.Skills, project?.Skills),
 		Prompts = MergeLists(global?.Prompts, project?.Prompts),
 		Themes = MergeLists(global?.Themes, project?.Themes),
 		DefaultProjectTrust = project?.DefaultProjectTrust ?? global?.DefaultProjectTrust ?? "ask",
 		TimeoutMs = project?.TimeoutMs ?? global?.TimeoutMs,
+		ShellPath = project?.ShellPath ?? global?.ShellPath,
+		ShellCommandPrefix = project?.ShellCommandPrefix ?? global?.ShellCommandPrefix,
+		SessionDir = project?.SessionDir ?? global?.SessionDir,
+		SessionShareDestination = project?.SessionShareDestination ?? global?.SessionShareDestination ?? "auto",
+		DefaultTools = MergeTools(global?.DefaultTools, project?.DefaultTools),
+		DefaultToolsConfigured = project?.DefaultTools is not null || global?.DefaultTools is not null,
+		Codemode = new CodemodeSettings
+		{
+			Mode = NormalizeCodemodeMode(project?.Codemode?.Mode ?? global?.Codemode?.Mode),
+			InlineBudget = NormalizeCodemodeBudget(project?.Codemode?.InlineBudget ?? global?.Codemode?.InlineBudget),
+			AutoEnable = project?.Codemode?.AutoEnable ?? global?.Codemode?.AutoEnable ?? true,
+		},
 		Retry = new RetryPolicy(
 			Enabled: project?.Retry?.Enabled ?? global?.Retry?.Enabled ?? true,
 			MaxRetries: project?.Retry?.MaxRetries ?? global?.Retry?.MaxRetries ?? 3,
 			BaseDelayMs: project?.Retry?.BaseDelayMs ?? global?.Retry?.BaseDelayMs ?? 2000,
 			MaxAgentDelayMs: project?.Retry?.MaxAgentDelayMs ?? global?.Retry?.MaxAgentDelayMs
 				?? RetryClassifier.DefaultMaxAgentDelayMs),
+	};
+
+	private static IReadOnlyDictionary<string, string> MergeDictionary(
+		IReadOnlyDictionary<string, string>? global,
+		IReadOnlyDictionary<string, string>? project)
+	{
+		var merged = new Dictionary<string, string>(StringComparer.Ordinal);
+		foreach (var (key, value) in global ?? new Dictionary<string, string>())
+		{
+			merged[key] = value;
+		}
+
+		foreach (var (key, value) in project ?? new Dictionary<string, string>())
+		{
+			merged[key] = value;
+		}
+
+		return merged;
+	}
+
+	/// <summary>
+	/// defaultTools 的项目继承：项目只含 +/− 时叠加到用户列表；出现纯名字时整体替换。
+	/// 空列表是合法的“全部禁用”，不能回退到默认值。
+	/// </summary>
+	private static IReadOnlyList<string> MergeTools(List<string>? global, List<string>? project)
+	{
+		if (project is null)
+		{
+			return global is null ? [] : [.. global];
+		}
+
+		if (project.Count == 0)
+		{
+			return [];
+		}
+
+		var hasPlain = project.Any(static entry => entry.Length > 0 && entry[0] is not ('+' or '-'));
+		if (hasPlain)
+		{
+			return [.. project];
+		}
+
+		var merged = new List<string>(global?.Count ?? 0 + project.Count);
+		if (global is not null)
+		{
+			merged.AddRange(global);
+		}
+
+		merged.AddRange(project);
+		return merged;
+	}
+
+	/// <summary>合并 packages：项目条目按来源替换用户条目，新条目追加在后面。</summary>
+	private static IReadOnlyList<PackageDeclaration> MergePackages(
+		IReadOnlyList<PackageDeclaration>? global,
+		IReadOnlyList<PackageDeclaration>? project)
+	{
+		var merged = new List<PackageDeclaration>();
+		var indexBySource = new Dictionary<string, int>(StringComparer.Ordinal);
+
+		void Add(PackageDeclaration package)
+		{
+			if (indexBySource.TryGetValue(package.Source, out var index))
+			{
+				merged[index] = package;
+			}
+			else
+			{
+				indexBySource[package.Source] = merged.Count;
+				merged.Add(package);
+			}
+		}
+
+		foreach (var package in global ?? [])
+		{
+			Add(package);
+		}
+
+		foreach (var package in project ?? [])
+		{
+			Add(package);
+		}
+
+		return merged;
+	}
+
+	/// <summary>把 packages 写成 pi 支持的字符串/对象数组，保留过滤字段。</summary>
+	private static void WritePackages(JsonObject root, List<PackageDeclaration>? packages)
+	{
+		if (packages is null)
+		{
+			return;
+		}
+
+		var nodes = new JsonNode?[packages.Count];
+		for (var index = 0; index < packages.Count; index++)
+		{
+			var package = packages[index];
+			if (package.Autoload && package.Extensions is null && package.Skills is null &&
+				package.Prompts is null && package.Themes is null)
+			{
+				nodes[index] = JsonValue.Create(package.Source);
+				continue;
+			}
+
+			var node = new JsonObject { ["source"] = package.Source };
+			if (!package.Autoload) node["autoload"] = false;
+			AddList(node, "extensions", package.Extensions);
+			AddList(node, "skills", package.Skills);
+			AddList(node, "prompts", package.Prompts);
+			AddList(node, "themes", package.Themes);
+			nodes[index] = node;
+		}
+
+		root["packages"] = new JsonArray(nodes);
+	}
+
+	private static void AddList(JsonObject node, string name, List<string>? values)
+	{
+		if (values is null) return;
+		var items = new JsonNode?[values.Count];
+		for (var index = 0; index < values.Count; index++) items[index] = JsonValue.Create(values[index]);
+		node[name] = new JsonArray(items);
+	}
+
+	private static string? PackageSourceOf(JsonNode? node) => node switch
+	{
+		JsonValue value when value.GetValueKind() == JsonValueKind.String => value.GetValue<string>(),
+		JsonObject obj when obj["source"] is JsonValue source && source.GetValueKind() == JsonValueKind.String =>
+			source.GetValue<string>(),
+		_ => null,
 	};
 
 	/// <summary>拼接全局与项目的资源列表并去重（先出现者保留）。</summary>
@@ -457,19 +708,42 @@ public sealed record CodingAgentSettings
 		DefaultProvider = settings.DefaultProvider,
 		DefaultModel = settings.DefaultModel,
 		DefaultThinkingLevel = settings.DefaultThinkingLevel,
+		ModelThinkingLevels = settings.ModelThinkingLevels.Count > 0
+			? new Dictionary<string, string>(settings.ModelThinkingLevels, StringComparer.Ordinal)
+			: null,
+		EnabledModels = List(settings.EnabledModels),
+		SteeringMode = settings.SteeringMode,
+		FollowUpMode = settings.FollowUpMode,
+		CacheWarming = settings.CacheWarming,
 		Compaction = new CompactionFile
 		{
 			Enabled = settings.Compaction.Enabled,
 			ReserveTokens = settings.Compaction.ReserveTokens,
 			KeepRecentTokens = settings.Compaction.KeepRecentTokens,
 		},
+		BranchSummary = new BranchSummaryFile
+		{
+			ReserveTokens = settings.BranchSummary.ReserveTokens,
+			SkipPrompt = settings.BranchSummary.SkipPrompt,
+		},
 		EnableSkillCommands = settings.EnableSkillCommands,
-		Packages = List(settings.Packages),
+		Packages = settings.Packages.Count > 0 ? [.. settings.Packages] : null,
 		Skills = List(settings.Skills),
 		Prompts = List(settings.Prompts),
 		Themes = List(settings.Themes),
 		DefaultProjectTrust = settings.DefaultProjectTrust,
 		TimeoutMs = settings.TimeoutMs,
+		ShellPath = settings.ShellPath,
+		ShellCommandPrefix = settings.ShellCommandPrefix,
+		SessionDir = settings.SessionDir,
+		SessionShareDestination = settings.SessionShareDestination,
+		DefaultTools = settings.DefaultToolsConfigured ? [.. settings.DefaultTools] : null,
+		Codemode = new CodemodeFile
+		{
+			Mode = settings.Codemode.Mode,
+			InlineBudget = settings.Codemode.InlineBudget,
+			AutoEnable = settings.Codemode.AutoEnable,
+		},
 		Retry = new RetryFile
 		{
 			Enabled = settings.Retry.Enabled,
@@ -481,6 +755,29 @@ public sealed record CodingAgentSettings
 
 	/// <summary>空列表写成 <c>null</c>，保存时不会覆盖文件里已有的条目。</summary>
 	private static List<string>? List(IReadOnlyList<string> values) => values.Count > 0 ? [.. values] : null;
+
+	/// <summary>settings.codemode.mode：只认 <c>only</c>，其余按 <c>on</c>（与 pi 的默认值一致）。</summary>
+	private static string NormalizeCodemodeMode(string? value) =>
+		string.Equals(value, "only", StringComparison.OrdinalIgnoreCase) ? "only" : "on";
+
+	/// <summary>settings.codemode.inlineBudget：负数按默认值处理。</summary>
+	private static int NormalizeCodemodeBudget(int? value) => value is >= 0 ? value.Value : CodemodeSettings.DefaultInlineBudget;
+}
+
+/// <summary>codemode 工具设置，对应 pi 的 <c>settings.codemode</c>。</summary>
+public sealed record CodemodeSettings
+{
+	/// <summary>默认的描述预算（估算 token）。</summary>
+	public const int DefaultInlineBudget = 3000;
+
+	/// <summary><c>on</c>（默认）或 <c>only</c>；<c>only</c> 需要延迟声明支持，当前按 <c>on</c> 执行。</summary>
+	public string Mode { get; init; } = "on";
+
+	/// <summary>描述里工具声明的预算（估算 token）。</summary>
+	public int InlineBudget { get; init; } = DefaultInlineBudget;
+
+	/// <summary>有 <c>exposure: codemode</c> 的 MCP 工具时自动启用 codemode（与 pi 一致）。</summary>
+	public bool AutoEnable { get; init; } = true;
 }
 
 /// <summary>设置文件的磁盘形状。所有字段都是可选的，未知键会被忽略。</summary>
@@ -492,12 +789,29 @@ public sealed record SettingsFile
 
 	public string? DefaultThinkingLevel { get; init; }
 
+	/// <summary>按 <c>provider/modelId</c> 覆盖启动思考级别。</summary>
+	public Dictionary<string, string>? ModelThinkingLevels { get; init; }
+
+	/// <summary>启动与轮换使用的模型模式；空表示全部可用模型。</summary>
+	public List<string>? EnabledModels { get; init; }
+
+	/// <summary><c>all</c> 或 <c>one-at-a-time</c>。</summary>
+	public string? SteeringMode { get; init; }
+
+	public string? FollowUpMode { get; init; }
+
+	public string? CacheWarming { get; init; }
+
 	public CompactionFile? Compaction { get; init; }
+
+	public BranchSummaryFile? BranchSummary { get; init; }
 
 	public bool? EnableSkillCommands { get; init; }
 
-	public List<string>? Packages { get; init; }
+	[JsonConverter(typeof(PackageDeclarationListJsonConverter))]
+	public List<PackageDeclaration>? Packages { get; init; }
 
+	[JsonConverter(typeof(FlexibleStringListJsonConverter))]
 	public List<string>? Skills { get; init; }
 
 	public List<string>? Prompts { get; init; }
@@ -508,7 +822,30 @@ public sealed record SettingsFile
 
 	public int? TimeoutMs { get; init; }
 
+	public string? ShellPath { get; init; }
+
+	public string? ShellCommandPrefix { get; init; }
+
+	public string? SessionDir { get; init; }
+
+	/// <summary><c>/share</c> 的目标：<c>auto</c>、<c>gist</c> 或 <c>radius</c>。</summary>
+	public string SessionShareDestination { get; init; } = "auto";
+
+	public List<string>? DefaultTools { get; init; }
+
 	public RetryFile? Retry { get; init; }
+
+	public CodemodeFile? Codemode { get; init; }
+}
+
+/// <summary><c>settings.codemode</c> 的磁盘形状。</summary>
+public sealed record CodemodeFile
+{
+	public string? Mode { get; init; }
+
+	public int? InlineBudget { get; init; }
+
+	public bool? AutoEnable { get; init; }
 }
 
 /// <summary><c>settings.retry</c> 的磁盘形状。</summary>
@@ -521,6 +858,13 @@ public sealed record RetryFile
 	public int? BaseDelayMs { get; init; }
 
 	public int? MaxAgentDelayMs { get; init; }
+}
+
+public sealed record BranchSummaryFile
+{
+	public int? ReserveTokens { get; init; }
+
+	public bool? SkipPrompt { get; init; }
 }
 
 public sealed record CompactionFile

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using PiWeft.Ai.Utils;
 using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Providers.Bedrock;
@@ -254,9 +255,11 @@ internal sealed class BedrockStreamState
 			return;
 		}
 
+		var (arguments, argumentsError) = JsonRepair.ParseObject(slot.Buffer.ToString());
 		var call = ((ToolCall)_content[slot.ContentIndex]) with
 		{
-			Arguments = ParseArguments(slot.Buffer.ToString()),
+			Arguments = arguments ?? new(),
+			ArgumentsError = argumentsError,
 		};
 
 		_content[slot.ContentIndex] = call;
@@ -345,22 +348,6 @@ internal sealed class BedrockStreamState
 
 	private void Push(AssistantMessageEvent @event) => _stream.Push(@event);
 
-	private static JsonObject ParseArguments(string json)
-	{
-		if (string.IsNullOrWhiteSpace(json))
-		{
-			return new JsonObject();
-		}
-
-		try
-		{
-			return JsonNode.Parse(json)?.AsObject() ?? new JsonObject();
-		}
-		catch (JsonException)
-		{
-			return new JsonObject();
-		}
-	}
 
 	private static string? GetString(JsonElement element, string name) =>
 		element.ValueKind == JsonValueKind.Object &&

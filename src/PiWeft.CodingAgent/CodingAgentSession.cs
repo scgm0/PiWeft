@@ -1,11 +1,18 @@
+using System.Text;
+using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.Ai.Json;
+using PiWeft.Ai.Utils;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
+using PiWeft.JavaScript;
 
 // 本类型上也有 `Tools` 属性，因此给 shell 运行器起别名。
 using ShellRunner = PiWeft.CodingAgent.Tools.ShellRunner;
@@ -17,6 +24,9 @@ using AgentRuntime = PiWeft.Agent.Agent;
 using TodoToolFactory = PiWeft.CodingAgent.Tools.TodoTool;
 using AskQuestionToolFactory = PiWeft.CodingAgent.Tools.AskQuestionTool;
 
+// `PiWeft.JavaScript` 里也有 CodeModeTool（沙箱侧类型），这里只用工具工厂。
+using CodeModeToolFactory = PiWeft.CodingAgent.Tools.CodeModeTool;
+
 namespace PiWeft.CodingAgent;
 
 public sealed record CodingAgentSessionOptions
@@ -27,6 +37,18 @@ public sealed record CodingAgentSessionOptions
 
 	/// <summary>流式产出助手回复。接模型网关时用 <c>AgentGatewayStreamFn.For(gateway)</c>。</summary>
 	public required StreamFn StreamFn { get; init; }
+
+	/// <summary>会话使用的模型目录；虚拟模型路由需要它解析物理目标。</summary>
+	public ModelRegistry? Registry { get; init; }
+
+	/// <summary>为路由后的物理 Provider 解析凭据（来自 models.json 的 key）。</summary>
+	public Func<string, string?>? ApiKeyForProvider { get; init; }
+
+	/// <summary>生图网关；codemode 的 <c>models.generateImages()</c> 使用它。</summary>
+	public ImagesGateway? Images { get; init; }
+
+	/// <summary>分类网关；codemode 的 <c>models.classify()</c> 使用它。</summary>
+	public ClassifiersGateway? Classifiers { get; init; }
 
 	/// <summary>
 	/// 思考级别。为 <c>null</c> 时沿用会话里记录的级别（恢复会话时就是上次的），没有记录则为
@@ -96,6 +118,7 @@ public sealed record CodingAgentSessionOptions
 public sealed class CodingAgentSession : IDisposable
 {
 	private readonly AgentRuntime _agent;
+	private CacheWarmer? _cacheWarmer;
 
 	/// <summary>系统提示词中最后一次描述过的工具集合。</summary>
 	private IReadOnlyList<BuiltinTool> _promptTools = [];
@@ -105,7 +128,11 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// <summary>工具集变化后重建的系统提示词。</summary>
 	private SystemMessage? _refreshedSystemPrompt;
+	private IReadOnlyList<Message>? _projectedCache;
+	private long _projectedCacheRevision = -1;
+	private SystemMessage? _projectedCachePrompt;
 	private readonly IDisposable _persistence;
+	private readonly IDisposable _cacheWarmLifecycle;
 
 	/// <summary>会话订阅者：代理事件之外，会话自己也会发重试事件。</summary>
 	private readonly List<Func<AgentEvent, ValueTask>> _listeners = [];
@@ -118,7 +145,15 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// <summary>RPC 的 <c>set_auto_retry</c> 覆盖值；为 null 时用设置里的默认。</summary>
 	private bool? _autoRetryOverride;
+	private bool _overflowRecoveryAttempted;
 	private readonly StreamFn _streamFn;
+	private readonly StreamFn _routedStreamFn;
+	private static readonly Lazy<ModelRegistry> FallbackModelRegistry = new(ModelRegistry.LoadDefault);
+
+	private readonly ModelRegistry? _registry;
+	private readonly Func<string, string?>? _apiKeyForProvider;
+	private readonly ImagesGateway? _images;
+	private readonly ClassifiersGateway? _classifiers;
 	private readonly StreamOptions _streamOptions;
 	private bool _disposed;
 	private readonly Lock _statisticsGate = new();
@@ -138,8 +173,17 @@ public sealed class CodingAgentSession : IDisposable
 	/// <summary>当前生效的完整工具集（不受计划模式过滤影响）。</summary>
 	private IReadOnlyList<BuiltinTool> _fullTools = [];
 
+	/// <summary><c>tool_search</c> 工具：懒创建，按需加入可执行与声明集合。</summary>
+	private readonly Lazy<AgentTool> _toolSearch;
+
+	/// <summary>会话里记录 <c>tool_search</c> 加载结果的条目类型。</summary>
+	private const string ToolLoadEntryType = "tool-load";
+
 	/// <summary>宿主提供的 beforeToolCall 钩子；计划模式的安全网在它之前执行。</summary>
 	private readonly Func<BeforeToolCallContext, CancellationToken, ValueTask<BeforeToolCallResult?>>? _userBeforeToolCall;
+
+	/// <summary>宿主提供的 afterToolCall 钩子；嵌套的 codemode 调用也走同一个钩子。</summary>
+	private readonly Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? _userAfterToolCall;
 
 	public CodingAgentSession(CodingAgentSessionOptions options)
 	{
@@ -149,6 +193,8 @@ public sealed class CodingAgentSession : IDisposable
 		Settings = options.Settings;
 		UiHost = options.UiHost;
 		ProjectTrusted = options.ProjectTrusted;
+		_images = options.Images;
+		_classifiers = options.Classifiers;
 		Session = options.Session
 			?? (options.Persist ? SessionManager.Create(Cwd) : SessionManager.InMemory(Cwd));
 
@@ -207,6 +253,11 @@ public sealed class CodingAgentSession : IDisposable
 			{
 				builtins[index] = AskQuestionToolFactory.Create(() => this);
 			}
+			else if (builtins[index].Tool.Name == "bash")
+			{
+				// bash 需要会话上下文来注入 PI_* 环境变量与 settings 的 shell 配置。
+				builtins[index] = builtins[index] with { Tool = PiWeft.CodingAgent.Tools.BashTool.Create(Cwd, BashEnvironment) };
+			}
 		}
 
 		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
@@ -215,40 +266,71 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			Cwd = Cwd,
 			ExtraGuidelines = options.ExtraGuidelines ?? SystemPrompt.BaselineGuidelines,
-			CustomPrompt = options.CustomSystemPrompt,
-			Addendum = options.AppendSystemPrompt,
+			CustomPrompt = options.CustomSystemPrompt ?? SystemPromptFiles.LoadSystem(Cwd, options.ProjectTrusted),
+			Addendum = CombineAddendum(
+				SystemPromptFiles.LoadAppend(Cwd, options.ProjectTrusted),
+				options.AppendSystemPrompt),
 			Skills = Skills.Skills.FormatForPrompt(DiscoveredSkills),
 			ProjectContext = options.NoContextFiles ? null : ContextFiles.Load(Cwd),
 		};
+
+		// 有 exposure: codemode 的工具时自动启用 codemode（pi 的 autoEnableCodemode 行为）。
+		if (Settings.Codemode.AutoEnable
+			&& builtins.Any(static tool => string.Equals(tool.Tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal))
+			&& builtins.TrueForAll(static tool => !string.Equals(tool.Tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)))
+		{
+			builtins.Add(CodeModeToolFactory.CreatePlaceholder());
+		}
+
+		_toolSearch = new Lazy<AgentTool>(CreateToolSearchTool);
 
 		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
 		_fullTools = builtins;
 		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(builtins));
 		_userBeforeToolCall = options.BeforeToolCall;
+		_userAfterToolCall = options.AfterToolCall;
 
 		_streamFn = options.StreamFn;
+		_registry = options.Registry;
+		_apiKeyForProvider = options.ApiKeyForProvider;
+		_routedStreamFn = StreamWithVirtualRouting;
 		_streamOptions = options.Options with
 		{
 			TimeoutMs = options.Options.TimeoutMs ?? options.Settings.TimeoutMs,
 		};
 
+		_cacheWarmer = new CacheWarmer(
+			_routedStreamFn,
+			() => Settings.CacheWarming,
+			usage => Session.AppendUsage("cache_warm", _agent!.Model.Provider, _agent.Model.Id, usage, "prompt cache warm"));
+
 		// 恢复会话时，会话文件里记录的思考级别优先于默认值（显式传入的级别仍然最优先）。
 		var requestedThinkingLevel = options.ThinkingLevel
 			?? (Session.Entries.Count > 0 ? Session.BuildSessionContext().ThinkingLevel : null)
+			?? options.Settings.ModelThinkingLevels.GetValueOrDefault($"{options.Model.Provider}/{options.Model.Id}")
+			?? options.Settings.DefaultThinkingLevel
 			?? ThinkingLevels.Off;
 
 		_agent = new AgentRuntime(new AgentOptions
 		{
 			Model = options.Model,
 			ThinkingLevel = ThinkingLevelResolver.Clamp(options.Model, requestedThinkingLevel),
-			StreamFn = options.StreamFn,
+			StreamFn = _routedStreamFn,
 			Tools = [.. builtins.Select(static builtin => builtin.Tool)],
 			ConvertToLlm = CodingMessages.ConvertToLlm,
 			TransformContext = TransformContextAsync,
 			BeforeToolCall = GuardedBeforeToolCallAsync,
 			AfterToolCall = options.AfterToolCall,
+			PrepareNextTurn = PrepareNextTurnAsync,
+			WillRetry = ShouldRetryAssistant,
 			Options = _streamOptions,
 		});
+
+		// codemode 的描述要列出会话当前可调用的工具，因此等代理建好后再绑定并重建提示词。
+		RebindCodeMode([.. builtins.Select(static builtin => builtin.Tool)]);
+
+		_agent.SteeringMode = ParseQueueMode(options.Settings.SteeringMode);
+		_agent.FollowUpMode = ParseQueueMode(options.Settings.FollowUpMode);
 
 		// 恢复会话：代理从分支投影出发，使其自身状态与文件一致。
 		_agent.SetMessages(Session.BuildProjectedMessages());
@@ -260,6 +342,7 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		_persistence = _agent.Subscribe(PersistAsync);
+		_cacheWarmLifecycle = _agent.Subscribe(CacheWarmLifecycleAsync);
 	}
 
 	public string Cwd { get; }
@@ -278,9 +361,15 @@ public sealed class CodingAgentSession : IDisposable
 
 	public Model Model => _agent.Model;
 
+	/// <summary>当前缓存保温状态；模型没有 promptCache 时也会给出 inactive 原因。</summary>
+	public Compaction.CacheWarmingStatus? CacheWarmingStatus => _cacheWarmer?.Status;
+
 	public string ThinkingLevel => _agent.ThinkingLevel;
 
 	public IReadOnlyList<AgentTool> Tools => _agent.Tools;
+
+	/// <summary>真正声明给模型的工具（<see cref="Tools"/> 是脚本/钩子可调用的全集）。</summary>
+	public IReadOnlyList<AgentTool> DeclaredTools => _agent.DeclaredTools;
 
 	/// <summary>当前分支上模型可见的消息，已应用上下文编辑与压缩。</summary>
 	/// <summary>模型下一次请求会看到的完整消息（含运行时构造的系统提示词）。</summary>
@@ -410,9 +499,10 @@ public sealed class CodingAgentSession : IDisposable
 		var result = await BranchSummarizer.NavigateWithSummaryAsync(
 			Session,
 			_agent.Model,
-			_streamFn,
+			_routedStreamFn,
 			_streamOptions,
 			Settings.Compaction,
+			Settings.BranchSummary,
 			targetId,
 			customInstructions,
 			cancellationToken).ConfigureAwait(false);
@@ -459,6 +549,16 @@ public sealed class CodingAgentSession : IDisposable
 
 		Session = session;
 		_agent.SetMessages(Session.BuildProjectedMessages());
+
+		// 恢复会话记录的思考级别（模型仍由宿主当前选择决定）。
+		if (Session.Entries.Count > 0)
+		{
+			var recorded = Session.BuildSessionContext().ThinkingLevel;
+			if (recorded is { Length: > 0 })
+			{
+				_agent.SetThinkingLevel(ThinkingLevelResolver.Clamp(_agent.Model, recorded));
+			}
+		}
 	}
 
 	/// <summary>
@@ -545,9 +645,10 @@ public sealed class CodingAgentSession : IDisposable
 		return BranchSummarizer.SummarizeBranchAsync(
 			Session,
 			_agent.Model,
-			_streamFn,
+			_routedStreamFn,
 			_streamOptions,
 			Settings.Compaction,
+			Settings.BranchSummary,
 			targetId,
 			customInstructions,
 			cancellationToken);
@@ -575,9 +676,12 @@ public sealed class CodingAgentSession : IDisposable
 	/// 摘要较旧的条目并记录一条 <c>compaction</c> 条目。没有可压缩内容时返回 <c>null</c>。
 	/// 完成后会从会话刷新代理的会话记录。
 	/// </summary>
+	/// <param name="reason">压缩原因（<c>manual</c> / <c>threshold</c> / <c>overflow</c>），随事件发给客户端。</param>
 	public async Task<CompactionResult?> CompactAsync(
 		string? customInstructions = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		string reason = CompactionReasons.Manual,
+		bool willRetry = false)
 	{
 		ThrowIfDisposed();
 		if (_agent.IsStreaming)
@@ -585,18 +689,41 @@ public sealed class CodingAgentSession : IDisposable
 			throw new InvalidOperationException("Cannot compact while the session is streaming");
 		}
 
+		_cacheWarmer?.Cancel();
 		IsCompacting = true;
+		Emit(new CompactionStartEvent { Reason = reason });
 		CompactionResult? result;
 		try
 		{
-			result = await Compactor.CompactAsync(
-				Session,
-				_agent.Model,
-				_streamFn,
-				_streamOptions,
-				Settings.Compaction,
-				customInstructions,
+			result = await RunSummarizationWithRetryAsync(
+				() => Compactor.CompactAsync(
+					Session,
+					_agent.Model,
+					_routedStreamFn,
+					_streamOptions,
+					Settings.Compaction,
+					customInstructions,
+					cancellationToken),
+				"compaction",
+				reason,
 				cancellationToken).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException)
+		{
+			IsCompacting = false;
+			Emit(new CompactionEndEvent { Reason = reason, Aborted = true, WillRetry = willRetry });
+			throw;
+		}
+		catch (Exception exception)
+		{
+			IsCompacting = false;
+			Emit(new CompactionEndEvent
+			{
+				Reason = reason,
+				ErrorMessage = exception.Message,
+				WillRetry = willRetry,
+			});
+			throw;
 		}
 		finally
 		{
@@ -607,6 +734,14 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			_agent.SetMessages(Session.BuildProjectedMessages());
 		}
+
+		Emit(new CompactionEndEvent
+		{
+			Reason = reason,
+			Result = result,
+			EstimatedTokensAfter = result is null ? null : ContextTokens().Tokens,
+			WillRetry = willRetry && result is not null,
+		});
 
 		return result;
 	}
@@ -631,7 +766,22 @@ public sealed class CodingAgentSession : IDisposable
 	public bool AutoCompactionEnabled { get; set; } = true;
 
 	/// <summary>清空排队的 steering 与 follow-up 消息，并返回被丢弃的内容。</summary>
-	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue() => _agent.ClearQueue();
+	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue()
+	{
+		var cleared = _agent.ClearQueue();
+		EmitQueueUpdate();
+		return cleared;
+	}
+
+	/// <summary>当前排队消息的快照，供队列类事件与界面使用。</summary>
+	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) PendingQueues() => _agent.PendingQueues();
+
+	/// <summary>把队列现状作为 <c>queue_update</c> 发给订阅者。</summary>
+	private void EmitQueueUpdate()
+	{
+		var (steering, followUp) = _agent.PendingQueues();
+		Emit(new QueueUpdateEvent { Steering = steering, FollowUp = followUp });
+	}
 
 	public string? ErrorMessage => _agent.ErrorMessage;
 
@@ -674,6 +824,16 @@ public sealed class CodingAgentSession : IDisposable
 
 	public void Abort() => _agent.Abort();
 
+	/// <summary>中止当前运行并等到会话真正空闲，供 RPC 的 abort 命令使用。</summary>
+	public async Task AbortAsync(CancellationToken cancellationToken = default)
+	{
+		_agent.Abort();
+		while (_agent.IsStreaming && !cancellationToken.IsCancellationRequested)
+		{
+			await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+		}
+	}
+
 	/// <summary>缓存的全文件统计快照；只有追加条目才消费新用量。</summary>
 	public SessionStatistics Statistics()
 	{
@@ -704,26 +864,148 @@ public sealed class CodingAgentSession : IDisposable
 			effective = [.. _fullTools.Where(static tool => !PlanMode.DisabledTools.Contains(tool.Tool.Name, StringComparer.Ordinal))];
 		}
 
-		_agent.SetTools([.. effective.Select(static tool => tool.Tool)]);
-		_promptTools = effective;
-		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(effective));
+		var loaded = LoadedToolNames();
+		var hasDiscovery = effective.Any(static tool => IsDiscoveryExposure(tool.Tool.Exposure));
+		var toolSearch = hasDiscovery ? _toolSearch.Value : null;
+
+		// 声明给模型：direct 工具 + tool_search 加载过的非 direct 工具。
+		var declared = new List<BuiltinTool>(effective.Count + 1);
+		foreach (var tool in effective)
+		{
+			var exposure = tool.Tool.Exposure;
+			if (string.Equals(exposure, ToolExposure.Direct, StringComparison.Ordinal)
+				|| (!string.Equals(exposure, ToolExposure.Hidden, StringComparison.Ordinal) && loaded.Contains(tool.Tool.Name)))
+			{
+				declared.Add(tool);
+			}
+		}
+
+		if (toolSearch is not null)
+		{
+			declared.Add(new BuiltinTool(toolSearch, "Search for tools to load", []));
+		}
+
+		var codemodeActive = effective.Any(static tool => tool.Tool.Name == CodeModeToolFactory.Name);
+		// codemode 的 mode=on：直接声明给模型的工具补上从脚本调用的说明。
+		if (string.Equals(Settings.Codemode.Mode, "on", StringComparison.Ordinal) && codemodeActive)
+		{
+			declared = [.. declared.Select(static tool => tool.Tool.Name is CodeModeToolFactory.Name or ToolSearchName
+				? tool
+				: tool with { Tool = WithCodemodeHint(tool.Tool) })];
+		}
+		// mode=only：直接工具只给脚本，不再声明给模型（codemode/tool_search 自身除外）。
+		else if (string.Equals(Settings.Codemode.Mode, "only", StringComparison.Ordinal) && codemodeActive)
+		{
+			declared = [.. declared.Where(static tool =>
+				!string.Equals(tool.Tool.Exposure, ToolExposure.Direct, StringComparison.Ordinal)
+				|| tool.Tool.Name is CodeModeToolFactory.Name or ToolSearchName)];
+		}
+
+		var callableTools = toolSearch is null
+			? effective.Select(static tool => tool.Tool).ToList()
+			: [.. effective.Select(static tool => tool.Tool), toolSearch];
+		_agent.SetTools(callableTools, declared.Select(static tool => tool.Tool).ToList());
+		_promptTools = declared;
+		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(declared));
 	}
 
+	/// <summary><c>tool_search</c> 的名字；它不是内置目录里的工具，只在需要发现时出现。</summary>
+	private const string ToolSearchName = "tool_search";
+
+	private static bool IsDiscoveryExposure(string exposure) =>
+		string.Equals(exposure, ToolExposure.Codemode, StringComparison.Ordinal)
+		|| string.Equals(exposure, ToolExposure.Deferred, StringComparison.Ordinal);
+
 	/// <summary>带上 <c>plan_mode</c> 章节（如启用）的提示词输入。</summary>
+	private static AgentQueueMode ParseQueueMode(string? value) =>
+		string.Equals(value, "all", StringComparison.OrdinalIgnoreCase)
+			? AgentQueueMode.All
+			: AgentQueueMode.OneAtATime;
+
+	private static string? CombineAddendum(string? fileText, string? optionText)
+	{
+		if (string.IsNullOrEmpty(fileText)) return optionText;
+		if (string.IsNullOrEmpty(optionText)) return fileText;
+		return $"{fileText}\n\n{optionText}";
+	}
+
 	private SystemPromptOptions SectionsFor(IReadOnlyList<BuiltinTool> tools)
 	{
 		IReadOnlyDictionary<string, string?>? overrides = _systemPromptSections.SectionOverrides;
-		if (PlanModeEnabled)
+		Dictionary<string, string?>? merged = null;
+		Dictionary<string, string?> Merge()
 		{
-			var merged = overrides is null
+			merged ??= overrides is null
 				? new Dictionary<string, string?>(StringComparer.Ordinal)
 				: new Dictionary<string, string?>(overrides, StringComparer.Ordinal);
-			merged["plan_mode"] = PlanMode.Instructions;
-			overrides = merged;
+			return merged;
 		}
 
-		return _systemPromptSections with { Tools = tools, SectionOverrides = overrides };
+		if (PlanModeEnabled) Merge()["plan_mode"] = PlanMode.Instructions;
+		if (BuildMcpServersSection() is { } mcpServers) Merge()["mcp_servers"] = mcpServers;
+
+		return _systemPromptSections with
+		{
+			Tools = tools,
+			SectionOverrides = merged ?? overrides,
+		};
 	}
+
+	/// <summary>
+	/// 与 pi 的 <c>mcp_servers</c> 章节对齐：列出工具没有直接声明给模型的 MCP 服务器，
+	/// 以及该用 codemode 还是 tool_search 去够到它们。
+	/// </summary>
+	private string? BuildMcpServersSection()
+	{
+		var namespaces = new Dictionary<string, McpNamespaceInfo>(StringComparer.Ordinal);
+		foreach (var builtin in _fullTools)
+		{
+			var tool = builtin.Tool;
+			if (tool.Namespace is null
+				|| string.Equals(tool.Exposure, ToolExposure.Direct, StringComparison.Ordinal)
+				|| string.Equals(tool.Exposure, ToolExposure.Hidden, StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			if (PlanModeEnabled && PlanMode.DisabledTools.Contains(tool.Name, StringComparer.Ordinal)) continue;
+
+			var deferred = string.Equals(tool.Exposure, ToolExposure.Deferred, StringComparison.Ordinal);
+			namespaces[tool.Namespace] = namespaces.TryGetValue(tool.Namespace, out var info)
+				? info with
+				{
+					Description = info.Description ?? tool.NamespaceDescription,
+					Deferred = info.Deferred || deferred,
+					Codemode = info.Codemode || !deferred,
+				}
+				: new McpNamespaceInfo(tool.NamespaceDescription, deferred, !deferred);
+		}
+
+		if (namespaces.Count == 0) return null;
+
+		var hasCodemode = namespaces.Values.Any(static info => info.Codemode);
+		var hasDeferred = namespaces.Values.Any(static info => info.Deferred);
+		var builder = new StringBuilder("MCP servers whose tools are not declared to you.");
+		if (hasCodemode) builder.Append(" Call the tools of `codemode` servers from codemode scripts.");
+		if (hasDeferred) builder.Append(" Load the tools of `tool_search` servers with `tool_search`.");
+
+		foreach (var (name, info) in namespaces.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
+		{
+			var mode = info.Codemode && info.Deferred
+				? "codemode/tool_search"
+				: info.Deferred ? "tool_search" : "codemode";
+			builder.Append("\n- `").Append(name).Append("` (").Append(mode).Append(')');
+			if (info.Description is { Length: > 0 } description)
+			{
+				builder.Append(' ').Append(description.Length > 250 ? description[..249] + "…" : description);
+			}
+		}
+
+		var text = builder.ToString();
+		return text.Length > 4096 ? text[..4095] + "…" : text;
+	}
+
+	private sealed record McpNamespaceInfo(string? Description, bool Deferred, bool Codemode);
 
 	/// <summary>计划模式下的安全网：即使模型仍调用写工具也会被拦下。</summary>
 	private async ValueTask<BeforeToolCallResult?> GuardedBeforeToolCallAsync(
@@ -750,12 +1032,793 @@ public sealed class CodingAgentSession : IDisposable
 			: await _userBeforeToolCall(context, cancellationToken).ConfigureAwait(false);
 	}
 
+	/// <summary>把占位的 codemode 换成绑定到本会话的版本，并按新的工具集重建提示词。</summary>
+	private void RebindCodeMode(IReadOnlyList<AgentTool> tools)
+	{
+		var index = -1;
+		for (var i = 0; i < _fullTools.Count; i++)
+		{
+			if (_fullTools[i].Tool.Name == CodeModeToolFactory.Name)
+			{
+				index = i;
+				break;
+			}
+		}
+
+		if (index < 0)
+		{
+			return;
+		}
+
+		var rebuilt = _fullTools.ToList();
+		rebuilt[index] = CreateCodeModeTool(tools);
+		_fullTools = rebuilt;
+		ApplyTools();
+	}
+
+	private BuiltinTool CreateCodeModeTool(IReadOnlyList<AgentTool> tools) => CodeModeToolFactory.Create(
+		new CodeModeHost
+		{
+			// 执行时用代理当前的工具集（MCP 刷新/计划模式之后仍然正确）。
+			Tools = () => _agent?.Tools ?? tools,
+			ExecuteTool = ExecuteNestedToolAsync,
+			LoadStore = LoadCodeModeStore,
+			SaveStore = SaveCodeModeStore,
+			Models = QueryCodeModeModels,
+			ModelCall = _images is not null || _classifiers is not null ? ExecuteModelCallAsync : null,
+			Guidelines = ToolGuidelines,
+			// 嵌套调用的钩子上下文复用同一份消息快照，避免每次工具调用拷贝整段会话记录。
+			Messages = () => [.. _agent.Messages],
+		},
+		declaredTools: CodemodeDescribedTools(tools),
+		inlineBudget: Settings.Codemode.InlineBudget);
+
+	/// <summary>
+	/// codemode 描述里列出的工具。pi 的 mode=on 只列 <c>codemode</c> exposure 的工具：已经直接
+	/// 声明给模型的工具不再重复一遍（它们的描述里会加上怎么从脚本调用），deferred 留给
+	/// <c>tool_search</c>。mode=only 额外列出 direct 工具。
+	/// </summary>
+	private IReadOnlyList<AgentTool> CodemodeDescribedTools(IReadOnlyList<AgentTool> tools)
+	{
+		var only = string.Equals(Settings.Codemode.Mode, "only", StringComparison.Ordinal);
+		return
+		[
+			.. tools.Where(tool =>
+				!string.Equals(tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)
+				&& !string.Equals(tool.Exposure, ToolExposure.Hidden, StringComparison.Ordinal)
+				&& (string.Equals(tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal)
+					|| (only && !string.Equals(tool.Exposure, ToolExposure.Deferred, StringComparison.Ordinal)))),
+		];
+	}
+
+	/// <summary>按当前分支重建 <c>tool_search</c> 加载过的工具名。</summary>
+	private HashSet<string> LoadedToolNames()
+	{
+		var names = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var entry in Session.GetBranch())
+		{
+			if (entry is not CustomEntry { CustomType: ToolLoadEntryType } custom || custom.Data?["tools"] is not JsonArray tools)
+			{
+				continue;
+			}
+
+			foreach (var node in tools)
+			{
+				if (node?.GetValue<string>() is { Length: > 0 } name)
+				{
+					names.Add(name);
+				}
+			}
+		}
+
+		return names;
+	}
+
+	/// <summary>
+	/// 面向模型的 <c>tool_search</c>：在尚未声明的 <c>codemode</c>/<c>deferred</c> 工具里按 BM25
+	/// 排序，把命中的工具写成 <c>tool-load</c> 条目并立即声明（后续回合可直接调用）。
+	/// 与 pi 一样，加载会进入会话记录，因此恢复、fork 与切换分支都看得到。
+	/// </summary>
+	private AgentTool CreateToolSearchTool() => new()
+	{
+		Name = ToolSearchName,
+		Label = ToolSearchName,
+		Description =
+			"Search for tools that are not declared to you yet and load the matching ones so you can call them directly. " +
+			"Use it when a task needs a tool you cannot see, such as an MCP tool.",
+		Parameters = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["query"] = new JsonObject
+				{
+					["type"] = "string",
+					["description"] = "What the tool should do.",
+				},
+				["limit"] = new JsonObject
+				{
+					["type"] = "integer",
+					["minimum"] = 1,
+					["description"] = "Maximum number of tools to load (default 8).",
+				},
+			},
+			["required"] = new JsonArray("query"),
+		},
+		Execute = SearchToolsAsync,
+	};
+
+	private Task<AgentToolResult> SearchToolsAsync(AgentToolInvocation invocation)
+	{
+		var query = invocation.Arguments["query"] is JsonValue value && value.TryGetValue<string>(out var text)
+			? text.Trim()
+			: string.Empty;
+		if (query.Length == 0)
+		{
+			return Task.FromResult(AgentToolResult.Error("tool_search expects a non-empty query"));
+		}
+
+		var limit = 8;
+		if (invocation.Arguments["limit"] is JsonValue limitValue
+			&& (!limitValue.TryGetValue<int>(out limit) || limit <= 0))
+		{
+			return Task.FromResult(AgentToolResult.Error("tool_search limit must be a positive integer"));
+		}
+
+		var declared = _agent.DeclaredTools.Select(static tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+		var loaded = LoadedToolNames();
+		var candidates = _fullTools
+			.Select(static tool => tool.Tool)
+			.Where(tool => IsDiscoveryExposure(tool.Exposure)
+				&& !declared.Contains(tool.Name)
+				&& !loaded.Contains(tool.Name))
+			.ToList();
+		if (candidates.Count == 0)
+		{
+			return Task.FromResult(AgentToolResult.Text("No tools are waiting to be loaded."));
+		}
+
+		var documents = candidates
+			.Select(tool => (tool.Name, CodeModeSearch.CreateDocument(tool.Name, tool.Description, tool.Parameters)))
+			.ToList();
+		var matches = CodeModeSearch.Rank(query, documents, limit);
+		if (matches.Count == 0)
+		{
+			return Task.FromResult(AgentToolResult.Text($"No tools matched \"{query}\"."));
+		}
+
+		var names = new JsonArray();
+		foreach (var name in matches)
+		{
+			names.Add((JsonNode?)JsonValue.Create(name));
+		}
+
+		Session.AppendCustom(ToolLoadEntryType, new JsonObject { ["tools"] = names });
+		// 立即重建 loadout：后续回合的声明与脚本可调用集合都包含这些工具。
+		ApplyTools();
+
+		var sections = matches.Select(name =>
+		{
+			var tool = candidates.First(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+			return CodeModeToolFactory.RenderDeclaration(tool, ToolGuidelines(tool.Name));
+		});
+		return Task.FromResult(AgentToolResult.Text(
+			$"Loaded {matches.Count} tool(s):\n\n{string.Join("\n\n", sections)}"));
+	}
+
+	/// <summary>内置工具的 prompt guidelines，附在声明与 ALL_TOOLS 的描述后。</summary>
+	private IReadOnlyList<string> ToolGuidelines(string name)
+	{
+		foreach (var builtin in _fullTools)
+		{
+			if (string.Equals(builtin.Tool.Name, name, StringComparison.Ordinal)) return builtin.Guidelines;
+		}
+
+		return [];
+	}
+
+	/// <summary>mode=on：直接声明给模型的工具补一行从脚本调用的说明（与 pi 一致）。</summary>
+	private static AgentTool WithCodemodeHint(AgentTool tool)
+	{
+		// 调用方可能把已经带提示的工具再传回来（MCP 刷新/测试），避免重复追加。
+		if (tool.Description.Contains("\n\nCodemode: `tools.", StringComparison.Ordinal)) return tool;
+
+		var output = tool.OutputSchema is null ? "a string" : "an object";
+		return tool with
+		{
+			Description = $"{tool.Description.Trim()}\n\nCodemode: `tools.{CodeModeIdentifier.ToIdentifier(tool.Name)}(args)` resolves to {output}.",
+		};
+	}
+
+	/// <summary>
+	/// 执行脚本发起的一次嵌套调用。与顶层调用共用同一条管线：参数修正、schema 校验、
+	/// 计划模式安全网与宿主钩子都会执行，嵌套结果不进入 LLM 上下文。
+	/// </summary>
+	private async Task<AgentToolCallOutcome> ExecuteNestedToolAsync(
+		string name,
+		JsonObject arguments,
+		string toolCallId,
+		CancellationToken cancellationToken,
+		IReadOnlyList<Message>? messages)
+	{
+		var tools = _agent.Tools;
+		var tool = tools.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+		var toolCall = new ToolCall { Id = toolCallId, Name = name, Arguments = arguments };
+		if (tool is null)
+		{
+			return new AgentToolCallOutcome
+			{
+				ToolCall = toolCall,
+				Result = AgentToolResult.Error($"Tool {name} not found"),
+				IsError = true,
+			};
+		}
+
+		var prepared = tool.PrepareArguments is { } prepare ? prepare(arguments) : arguments;
+		var validation = JsonSchemaValidator.ValidateToolArguments(tool.ToDeclaration(), prepared);
+		if (validation.Error is { } validationError)
+		{
+			return new AgentToolCallOutcome
+			{
+				ToolCall = toolCall,
+				Result = AgentToolResult.Error(validationError),
+				IsError = true,
+			};
+		}
+
+		var value = validation.Value!;
+		toolCall = toolCall with { Arguments = value };
+		// 每次 codemode 执行一份消息快照，全部嵌套调用复用；没有会话上下文时才按调用取。
+		var snapshot = messages ?? [.. _agent.Messages];
+		var context = new AgentContext { Messages = snapshot as List<Message> ?? [.. snapshot], Tools = tools };
+		var assistant = snapshot.LastOrDefault(static message => message is AssistantMessage) as AssistantMessage
+			?? new AssistantMessage
+			{
+				Content = [],
+				Api = _agent.Model.Api,
+				Provider = _agent.Model.Provider,
+				Model = _agent.Model.Id,
+			};
+
+		var blocked = await GuardedBeforeToolCallAsync(
+			new BeforeToolCallContext
+			{
+				AssistantMessage = assistant,
+				ToolCall = toolCall,
+				Arguments = value,
+				Context = context,
+			},
+			cancellationToken).ConfigureAwait(false);
+		if (blocked?.Block == true)
+		{
+			return new AgentToolCallOutcome
+			{
+				ToolCall = toolCall,
+				Result = AgentToolResult.Error(blocked.Reason ?? $"Tool call blocked by policy: {name}") with
+				{
+					Terminate = blocked.Terminate,
+				},
+				IsError = true,
+			};
+		}
+
+		var startedAt = Stopwatch.GetTimestamp();
+		AgentToolResult result;
+		bool isError;
+		try
+		{
+			result = await tool.Execute(new AgentToolInvocation
+			{
+				ToolCallId = toolCallId,
+				ToolName = name,
+				Arguments = value,
+				CancellationToken = cancellationToken,
+			}).ConfigureAwait(false);
+			isError = result.IsError;
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			// 取消不是工具失败：让沙箱把这次调用标成 cancelled，而不是一个 error 结果。
+			throw;
+		}
+		catch (Exception ex)
+		{
+			result = AgentToolResult.Error(ex.Message);
+			isError = true;
+		}
+
+		var durationMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+		if (_userAfterToolCall is { } after)
+		{
+			var hook = await after(
+				new AfterToolCallContext
+				{
+					AssistantMessage = assistant,
+					ToolCall = toolCall,
+					Arguments = value,
+					Result = result,
+					IsError = isError,
+					Context = context,
+				},
+				cancellationToken).ConfigureAwait(false);
+			if (hook is not null)
+			{
+				result = result with
+				{
+					Content = hook.Content ?? result.Content,
+					Details = hook.HasDetails ? hook.Details : result.Details,
+					StructuredContent = hook.HasStructuredContent
+						? hook.StructuredContent
+						: (hook.Content is not null ? null : result.StructuredContent),
+					Usage = hook.Usage ?? result.Usage,
+					Terminate = hook.Terminate ?? result.Terminate,
+					IsError = hook.IsError ?? result.IsError,
+				};
+				isError = hook.IsError ?? isError;
+			}
+		}
+
+		return new AgentToolCallOutcome
+		{
+			ToolCall = toolCall,
+			Result = result,
+			IsError = isError,
+			DurationMs = durationMs,
+		};
+	}
+
+	/// <summary>
+	/// 脚本的 <c>models.*</c>：只查询会话的模型目录，不发请求。pi 的 <c>classify</c>/<c>generateImages</c>
+	/// 需要网关与凭据，PiWeft 还没把这两个入口接到会话，因此这里只暴露目录查询。
+	/// </summary>
+	private JsonNode? QueryCodeModeModels(CodeModeModelsRequest request)
+	{
+		var type = request.Type switch
+		{
+			"chat" => ModelType.Chat,
+			"image" => ModelType.Image,
+			"classifier" => ModelType.Classifier,
+			_ => throw new ArgumentException(
+				$"Unknown model type \"{request.Type}\". Use \"chat\", \"image\", or \"classifier\"."),
+		};
+
+		var registry = _registry ?? FallbackModelRegistry.Value;
+		if (request.Operation == CodeModeModelOperation.Get)
+		{
+			if (request.Provider is null || request.Id is null)
+			{
+				throw new ArgumentException("models.getModelOfType(type, provider, id) expects three strings");
+			}
+
+			var model = registry.Get(request.Provider, request.Id);
+			return model is null || model.Type != type ? null : ModelInfo(model);
+		}
+
+		IEnumerable<Model> models = registry.List(request.Provider).Where(model => model.Type == type);
+		if (request.Operation == CodeModeModelOperation.Available)
+		{
+			models = models.Where(model => IsProviderAvailable(model.Provider));
+		}
+
+		var array = new JsonArray();
+		foreach (var model in models) array.Add((JsonNode)ModelInfo(model));
+		return array;
+	}
+
+	/// <summary>没有凭据解析器时按「全部可用」处理；有解析器时以它能否给出 key 为准。</summary>
+	private bool IsProviderAvailable(string provider) =>
+		_apiKeyForProvider is null || _apiKeyForProvider(provider) is { Length: > 0 };
+
+	private static JsonObject ModelInfo(Model model)
+	{
+		var info = JsonSerializer.SerializeToNode(model, PiJsonContext.Default.Model) as JsonObject ?? new JsonObject();
+		// 目录里的 headers 可能带凭据，脚本不能看到（与 pi 一样剔除）。
+		info.Remove("headers");
+		return info;
+	}
+
+	/// <summary>
+	/// 执行一次 <c>models.classify()</c> / <c>models.generateImages()</c>。模型由脚本给出
+	/// provider + id，凭据与请求头沿用会话的解析结果，脚本无法自带 baseUrl/headers。
+	/// </summary>
+	private async Task<CodeModeModelCallResult> ExecuteModelCallAsync(
+		CodeModeModelCall call,
+		CancellationToken cancellationToken)
+	{
+		var registry = _registry ?? FallbackModelRegistry.Value;
+		var model = registry.Resolve(call.Provider, call.Id)
+			?? throw new InvalidOperationException($"Unknown model \"{call.Provider}/{call.Id}\"");
+		var options = new ProviderRequestOptions
+		{
+			ApiKey = _apiKeyForProvider?.Invoke(model.Provider),
+			TimeoutMs = Settings.TimeoutMs,
+			Headers = _streamOptions.Headers,
+			CancellationToken = cancellationToken,
+		};
+
+		if (string.Equals(call.Operation, "classify", StringComparison.Ordinal))
+		{
+			if (model.Type != ModelType.Classifier)
+			{
+				throw new InvalidOperationException($"\"{call.Provider}/{call.Id}\" is not a classifier model");
+			}
+
+			var gateway = _classifiers ?? throw new InvalidOperationException("classifiers are not available in this session");
+			var result = await gateway
+				.ClassifyAsync(model, ParseClassifierContext(call.Context), options, cancellationToken)
+				.ConfigureAwait(false);
+			return new CodeModeModelCallResult
+			{
+				Status = StopStatus(result.StopReason),
+				Error = result.ErrorMessage,
+				Output = ClassifierJson(result),
+				InputTokens = result.Usage?.Input ?? 0,
+				OutputTokens = result.Usage?.Output ?? 0,
+				TotalTokens = result.Usage?.TotalTokens ?? 0,
+				Cost = result.Usage?.Cost.Total ?? 0,
+			};
+		}
+
+		if (string.Equals(call.Operation, "generateImages", StringComparison.Ordinal))
+		{
+			if (model.Type != ModelType.Image)
+			{
+				throw new InvalidOperationException($"\"{call.Provider}/{call.Id}\" is not an image model");
+			}
+
+			var gateway = _images ?? throw new InvalidOperationException("image generation is not available in this session");
+			var result = await gateway
+				.GenerateAsync(model, ParseImagesContext(call.Context), options, cancellationToken)
+				.ConfigureAwait(false);
+			return new CodeModeModelCallResult
+			{
+				Status = StopStatus(result.StopReason),
+				Error = result.ErrorMessage,
+				Output = ImagesJson(result),
+				InputTokens = result.Usage.Input,
+				OutputTokens = result.Usage.Output,
+				TotalTokens = result.Usage.TotalTokens,
+				Cost = result.Usage.Cost.Total,
+				GeneratedImages = result.Output.OfType<ImageContent>().Count(),
+			};
+		}
+
+		throw new InvalidOperationException($"Unknown model operation \"{call.Operation}\"");
+	}
+
+	private static string StopStatus(StopReason reason) => reason switch
+	{
+		StopReason.Error => "error",
+		StopReason.Aborted => "aborted",
+		_ => "stop",
+	};
+
+	private static JsonObject ClassifierJson(ClassifierResult result)
+	{
+		var answers = new JsonObject();
+		foreach (var (id, answer) in result.Answers)
+		{
+			answers[id] = answer switch
+			{
+				ClassifierChoiceAnswer choice => new JsonObject
+				{
+					["type"] = "choice",
+					["choice"] = choice.Choice,
+					["probabilities"] = MapJson(choice.Probabilities),
+					["confidence"] = choice.Confidence,
+				},
+				ClassifierScoreAnswer score => new JsonObject
+				{
+					["type"] = "score",
+					["score"] = score.Score,
+					["confidence"] = score.Confidence,
+				},
+				ClassifierBoolAnswer boolean => new JsonObject
+				{
+					["type"] = "bool",
+					["probability"] = boolean.Probability,
+				},
+				_ => null,
+			};
+		}
+
+		return new JsonObject
+		{
+			["api"] = result.Api,
+			["provider"] = result.Provider,
+			["model"] = result.Model,
+			["answers"] = answers,
+			["usage"] = UsageJson(result.Usage),
+			["stopReason"] = StopStatus(result.StopReason),
+			["errorMessage"] = result.ErrorMessage,
+			["timestamp"] = result.Timestamp,
+		};
+	}
+
+	private static JsonObject ImagesJson(ImageGenerationResult result)
+	{
+		var output = new JsonArray();
+		foreach (var block in result.Output)
+		{
+			output.Add(block switch
+			{
+				TextContent text => (JsonNode)new JsonObject { ["type"] = "text", ["text"] = text.Text },
+				ImageContent image => new JsonObject
+				{
+					["type"] = "image",
+					["data"] = image.Data,
+					["mimeType"] = image.MimeType,
+				},
+				_ => null,
+			});
+		}
+
+		return new JsonObject
+		{
+			["api"] = result.Api,
+			["provider"] = result.Provider,
+			["model"] = result.Model,
+			["output"] = output,
+			["usage"] = UsageJson(result.Usage),
+			["stopReason"] = StopStatus(result.StopReason),
+			["errorMessage"] = result.ErrorMessage,
+			["timestamp"] = result.Timestamp,
+		};
+	}
+
+	private static JsonObject? UsageJson(Usage? usage) => usage is null
+		? null
+		: new JsonObject
+		{
+			["input"] = usage.Input,
+			["output"] = usage.Output,
+			["cacheRead"] = usage.CacheRead,
+			["cacheWrite"] = usage.CacheWrite,
+			["totalTokens"] = usage.TotalTokens,
+			["cost"] = new JsonObject { ["total"] = usage.Cost.Total },
+		};
+
+	private static JsonObject MapJson(IReadOnlyDictionary<string, double> values)
+	{
+		var node = new JsonObject();
+		foreach (var (key, value) in values) node[key] = value;
+		return node;
+	}
+
+	private static ClassifierContext ParseClassifierContext(JsonNode? node)
+	{
+		if (node is not JsonObject context)
+		{
+			throw new InvalidOperationException("models.classify() expects a context object as its second argument");
+		}
+
+		if (context["state"] is not JsonObject state)
+		{
+			throw new InvalidOperationException("models.classify() context.state must be an object");
+		}
+
+		var images = ParseImages(context["images"], "models.classify() context.images");
+		if (context["questions"] is not JsonObject questions || questions.Count == 0)
+		{
+			throw new InvalidOperationException("models.classify() context.questions must map question IDs to questions");
+		}
+
+		var parsed = new Dictionary<string, ClassifierQuestion>(StringComparer.Ordinal);
+		foreach (var (id, value) in questions)
+		{
+			if (value is not JsonObject question)
+			{
+				throw new InvalidOperationException($"models.classify() context.questions.{id} must be an object");
+			}
+
+			var instructions = question["instructions"]?.GetValue<string>() ?? string.Empty;
+			var type = question["type"]?.GetValue<string>();
+			switch (type)
+			{
+				case "choice":
+				{
+					if (question["criteria"] is not JsonObject criteria)
+					{
+						throw new InvalidOperationException(
+							$"models.classify() context.questions.{id} is a \"choice\" question, so criteria must map each label to its meaning");
+					}
+
+					var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+					foreach (var (label, meaning) in criteria)
+					{
+						labels[label] = meaning?.GetValue<string>()
+							?? throw new InvalidOperationException($"models.classify() context.questions.{id}.criteria.{label} must be a string");
+					}
+
+					parsed[id] = new ClassifierChoiceQuestion { Instructions = instructions, Criteria = labels };
+					break;
+				}
+
+				case "score":
+				{
+					parsed[id] = new ClassifierScoreQuestion
+					{
+						Instructions = instructions,
+						Criteria = ReadStrings(question["criteria"], $"models.classify() context.questions.{id}.criteria"),
+					};
+					break;
+				}
+
+				case "bool":
+				{
+					if (question["criteria"] is not JsonObject criteria)
+					{
+						throw new InvalidOperationException(
+							$"models.classify() context.questions.{id} is a \"bool\" question, so criteria must be {{ true: string, false: string }}");
+					}
+
+					parsed[id] = new ClassifierBoolQuestion
+					{
+						Instructions = instructions,
+						TrueMeaning = criteria["true"]?.GetValue<string>()
+							?? throw new InvalidOperationException($"models.classify() context.questions.{id}.criteria.true must be a string"),
+						FalseMeaning = criteria["false"]?.GetValue<string>()
+							?? throw new InvalidOperationException($"models.classify() context.questions.{id}.criteria.false must be a string"),
+					};
+					break;
+				}
+
+				default:
+					throw new InvalidOperationException(
+						$"models.classify() context.questions.{id}.type must be \"choice\", \"score\", or \"bool\"");
+			}
+		}
+
+		return new ClassifierContext
+		{
+			State = (JsonObject)state.DeepClone(),
+			Images = images.Count > 0 ? images : null,
+			Questions = parsed,
+		};
+	}
+
+	private static ImageGenerationRequest ParseImagesContext(JsonNode? node)
+	{
+		if (node is not JsonObject context || context["input"] is not JsonArray input || input.Count == 0)
+		{
+			throw new InvalidOperationException(
+				"models.generateImages() expects a context object with a non-empty input array of text/image blocks");
+		}
+
+		var blocks = new List<ContentBlock>(input.Count);
+		foreach (var item in input)
+		{
+			if (item is not JsonObject block)
+			{
+				throw new InvalidOperationException("models.generateImages() context.input items must be text or image blocks");
+			}
+
+			switch (block["type"]?.GetValue<string>())
+			{
+				case "text":
+					blocks.Add(new TextContent
+					{
+						Text = block["text"]?.GetValue<string>()
+							?? throw new InvalidOperationException("models.generateImages() text blocks need a string text field"),
+					});
+					break;
+				case "image":
+					blocks.Add(new ImageContent
+					{
+						Data = block["data"]?.GetValue<string>()
+							?? throw new InvalidOperationException("models.generateImages() image blocks need a string data field"),
+						MimeType = block["mimeType"]?.GetValue<string>()
+							?? throw new InvalidOperationException("models.generateImages() image blocks need a string mimeType field"),
+					});
+					break;
+				default:
+					throw new InvalidOperationException("models.generateImages() context.input items must be text or image blocks");
+			}
+		}
+
+		return new ImageGenerationRequest { Input = blocks };
+	}
+
+	private static List<ImageContent> ParseImages(JsonNode? node, string label)
+	{
+		var images = new List<ImageContent>();
+		if (node is null) return images;
+		if (node is not JsonArray array)
+		{
+			throw new InvalidOperationException($"{label} must be an array of image blocks");
+		}
+
+		foreach (var item in array)
+		{
+			if (item is not JsonObject image || image["type"]?.GetValue<string>() != "image")
+			{
+				throw new InvalidOperationException($"{label} items must be image blocks");
+			}
+
+			images.Add(new ImageContent
+			{
+				Data = image["data"]?.GetValue<string>()
+					?? throw new InvalidOperationException($"{label} image blocks need a string data field"),
+				MimeType = image["mimeType"]?.GetValue<string>()
+					?? throw new InvalidOperationException($"{label} image blocks need a string mimeType field"),
+			});
+		}
+
+		return images;
+	}
+
+	private static IReadOnlyList<string> ReadStrings(JsonNode? node, string label)
+	{
+		if (node is not JsonArray array || array.Count == 0)
+		{
+			throw new InvalidOperationException($"{label} must be a non-empty array of strings");
+		}
+
+		var values = new List<string>(array.Count);
+		foreach (var item in array)
+		{
+			values.Add(item?.GetValue<string>()
+				?? throw new InvalidOperationException($"{label} must be a non-empty array of strings"));
+		}
+
+		return values;
+	}
+
+	/// <summary>按当前分支重建 <c>load()</c> 可见的 store：从根开始依次应用 codemode-store 条目。</summary>
+	private IReadOnlyDictionary<string, JsonNode?> LoadCodeModeStore()
+	{
+		var store = new Dictionary<string, JsonNode?>(StringComparer.Ordinal);
+		foreach (var entry in Session.GetBranch())
+		{
+			if (entry is not CustomEntry { CustomType: CodeModeToolFactory.EntryType } custom || custom.Data is not JsonObject data)
+			{
+				continue;
+			}
+
+			if (data["delete"] is JsonArray deleted)
+			{
+				foreach (var key in deleted)
+				{
+					if (key?.GetValue<string>() is { } name) store.Remove(name);
+				}
+			}
+
+			if (data["set"] is JsonObject set)
+			{
+				foreach (var (key, value) in set)
+				{
+					store[key] = value?.DeepClone();
+				}
+			}
+		}
+
+		return store;
+	}
+
+	/// <summary>成功执行后把 <c>store()</c> 的改动追加为一条自定义条目（不进入上下文）。</summary>
+	private void SaveCodeModeStore(PiWeft.JavaScript.CodeModeStoreWrites writes)
+	{
+		var set = new JsonObject();
+		foreach (var (key, value) in writes.Set)
+		{
+			set[key] = value?.DeepClone();
+		}
+
+		var delete = new JsonArray();
+		foreach (var key in writes.Delete)
+		{
+			delete.Add((JsonNode?)JsonValue.Create(key));
+		}
+
+		Session.AppendCustom(CodeModeToolFactory.EntryType, new JsonObject { ["set"] = set, ["delete"] = delete });
+	}
+
 	/// <summary>
 	/// 用本会话的模型、凭据与选项做一次连接测试（只发 1 个输出 token）。
 	/// 桌面的「测试连接」与 RPC 的 <c>test_model</c> 共用它。
 	/// </summary>
 	public Task<ProviderTestResult> TestConnectionAsync(CancellationToken cancellationToken = default) =>
-		ProviderProbe.TestAsync(_streamFn, _agent.Model, _streamOptions, cancellationToken);
+		ProviderProbe.TestAsync(_routedStreamFn, _agent.Model, _streamOptions, cancellationToken);
 
 	/// <summary>当前分支的待办计划；按会话 revision 缓存，未变更时零扫描。</summary>
 	public TodoState CurrentTodo()
@@ -817,6 +1880,304 @@ public sealed class CodingAgentSession : IDisposable
 	/// <summary>中止正在进行的重试等待，对应 RPC 的 <c>abort_retry</c>。</summary>
 	public void AbortRetry() => _retryAbort?.Cancel();
 
+	private async Task<CompactionResult?> RunSummarizationWithRetryAsync(
+		Func<Task<CompactionResult?>> run,
+		string source,
+		string? reason,
+		CancellationToken cancellationToken)
+	{
+		var policy = Settings.Retry;
+		var maxAttempts = policy.Enabled ? Math.Max(1, policy.MaxRetries + 1) : 1;
+		var retried = false;
+
+		for (var attempt = 1; ; attempt++)
+		{
+			try
+			{
+				var result = await run().ConfigureAwait(false);
+				if (retried)
+				{
+					Emit(new SummarizationRetryFinishedEvent());
+				}
+
+				return result;
+			}
+			catch (OperationCanceledException)
+			{
+				if (retried)
+				{
+					Emit(new SummarizationRetryFinishedEvent());
+				}
+
+				throw;
+			}
+			catch (Exception exception) when (attempt < maxAttempts)
+			{
+				retried = true;
+				var delay = RetryClassifier.DelayMs(policy, attempt);
+				Emit(new SummarizationRetryScheduledEvent
+				{
+					Attempt = attempt,
+					MaxAttempts = maxAttempts,
+					DelayMs = delay,
+					ErrorMessage = exception.Message,
+				});
+
+				if (delay > 0)
+				{
+					await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+				}
+
+				Emit(new SummarizationRetryAttemptStartEvent { Source = source, Reason = reason });
+			}
+			catch
+			{
+				if (retried)
+				{
+					Emit(new SummarizationRetryFinishedEvent());
+				}
+
+				throw;
+			}
+		}
+	}
+
+	/// <summary>
+	/// 虚拟模型的请求入口：先按当前会话选择路由到物理模型，再把事件原样转发。
+	/// 助手消息因此记录物理 provider/model，而 <c>model_change</c> 仍保留虚拟模型。
+	/// </summary>
+	private AssistantMessageEventStream StreamWithVirtualRouting(
+		Model model,
+		IReadOnlyList<Message> messages,
+		StreamOptions options)
+	{
+		var definition = VirtualModels.IsVirtual(model) && _registry is not null
+			? _registry.Virtual(model.Provider, model.Id)
+			: null;
+		if (definition is null)
+		{
+			return _streamFn(model, messages, options);
+		}
+
+		var stream = new AssistantMessageEventStream();
+		var cancellationToken = options.CancellationToken;
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				var previous = FindPreviousPhysicalResponse(messages);
+				var route = await VirtualModels.RouteAsync(
+					definition,
+					new VirtualModelRequest
+					{
+						Model = model,
+						ThinkingLevel = options.ThinkingLevel ?? _agent?.ThinkingLevel ?? ThinkingLevels.Off,
+						Reason = RouteReason(messages),
+						Messages = messages,
+						Registry = _registry!,
+						PreviousModel = previous?.Model,
+						PreviousThinkingLevel = previous?.ThinkingLevel,
+					},
+					cancellationToken).ConfigureAwait(false);
+
+				var routedOptions = options with
+				{
+					ThinkingLevel = route.ThinkingLevel ?? options.ThinkingLevel,
+				};
+				if (_apiKeyForProvider?.Invoke(route.Model.Provider) is { Length: > 0 } apiKey)
+				{
+					routedOptions = routedOptions with { ApiKey = apiKey };
+				}
+
+				var inner = _streamFn(route.Model, messages, routedOptions);
+				await foreach (var @event in inner.WithCancellation(cancellationToken).ConfigureAwait(false))
+				{
+					stream.Push(@event switch
+					{
+						DoneEvent done => done with { Partial = done.Partial with { ThinkingLevel = route.ThinkingLevel } },
+						ErrorEvent error => error with { Partial = error.Partial with { ThinkingLevel = route.ThinkingLevel } },
+						_ => @event,
+					});
+				}
+
+				if (!stream.IsDone)
+				{
+					var result = await inner.Result.ConfigureAwait(false);
+					stream.End(result with { ThinkingLevel = route.ThinkingLevel });
+				}
+			}
+			catch (OperationCanceledException)
+			{
+				PushRouteFailure(stream, model, "Request aborted", StopReason.Aborted);
+			}
+			catch (Exception exception)
+			{
+				PushRouteFailure(stream, model, exception.Message, StopReason.Error);
+			}
+		}, CancellationToken.None);
+
+		return stream;
+	}
+
+	private (Model Model, string? ThinkingLevel)? FindPreviousPhysicalResponse(IReadOnlyList<Message> messages)
+	{
+		for (var index = messages.Count - 1; index >= 0; index--)
+		{
+			if (messages[index] is not AssistantMessage assistant ||
+				assistant.StopReason is StopReason.Error or StopReason.Aborted ||
+				_registry?.Get(assistant.Provider, assistant.Model) is not { } physical ||
+				VirtualModels.IsVirtual(physical))
+			{
+				continue;
+			}
+
+			return (physical, assistant.ThinkingLevel);
+		}
+
+		return null;
+	}
+
+	private static VirtualRouteReason RouteReason(IReadOnlyList<Message> messages)
+	{
+		for (var index = messages.Count - 1; index >= 0; index--)
+		{
+			if (messages[index] is AssistantMessage)
+			{
+				break;
+			}
+
+			if (messages[index] is UserMessage)
+			{
+				return VirtualRouteReason.User;
+			}
+		}
+
+		return VirtualRouteReason.Continuation;
+	}
+
+	private static void PushRouteFailure(
+		AssistantMessageEventStream stream,
+		Model model,
+		string message,
+		StopReason reason)
+	{
+		var error = new AssistantMessage
+		{
+			Provider = model.Provider,
+			Model = model.Id,
+			Api = model.Api,
+			Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			StopReason = reason,
+			ErrorMessage = message,
+		};
+		stream.Push(new ErrorEvent { Reason = reason, Partial = error });
+	}
+
+	private ValueTask CacheWarmLifecycleAsync(AgentEvent @event)
+	{
+		switch (@event)
+		{
+			case AgentStartEvent:
+				_cacheWarmer?.Cancel();
+				break;
+			case MessageEndEvent { Message: AssistantMessage }:
+				StartCacheWarmer();
+				break;
+			case AgentEndEvent:
+				_cacheWarmer?.AgentSettled();
+				break;
+		}
+
+		return ValueTask.CompletedTask;
+	}
+
+	private void StartCacheWarmer()
+	{
+		try
+		{
+			var messages = Project();
+			_cacheWarmer?.Start(_agent.Model, messages, _streamOptions with { ThinkingLevel = _agent.ThinkingLevel });
+		}
+		catch (Exception)
+		{
+			// 保温是尽力而为，不影响会话。
+		}
+	}
+
+	/// <summary>工具回合结束后检查阈值；需要时在继续同一个运行前压缩。</summary>
+	private async ValueTask<AgentTurnUpdate?> PrepareNextTurnAsync(
+		AgentTurnContext turn,
+		CancellationToken cancellationToken)
+	{
+		if (!AutoCompactionEnabled || !Settings.Compaction.Enabled || IsCompacting)
+		{
+			return null;
+		}
+
+		var projected = Session.BuildProjectedMessages();
+		var (tokens, _) = Compaction.ContextTokens.EstimateContextTokens(projected);
+		if (!Compaction.ContextTokens.ShouldCompact(tokens, _agent.Model.ContextWindow, Settings.Compaction))
+		{
+			return null;
+		}
+
+		await CompactDuringRunAsync(CompactionReasons.Threshold, cancellationToken).ConfigureAwait(false);
+		return new AgentTurnUpdate
+		{
+			Context = new AgentContext
+			{
+				Messages = [.. Session.BuildProjectedMessages()],
+				Tools = turn.Context.Tools,
+			},
+		};
+	}
+
+	private async Task CompactDuringRunAsync(string reason, CancellationToken cancellationToken)
+	{
+		_cacheWarmer?.Cancel();
+		IsCompacting = true;
+		Emit(new CompactionStartEvent { Reason = reason });
+		CompactionResult? result;
+		try
+		{
+			result = await RunSummarizationWithRetryAsync(
+				() => Compactor.CompactAsync(
+					Session,
+					_agent.Model,
+					_routedStreamFn,
+					_streamOptions,
+					Settings.Compaction,
+					customInstructions: null,
+					cancellationToken),
+				"compaction",
+				reason,
+				cancellationToken).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException)
+		{
+			IsCompacting = false;
+			Emit(new CompactionEndEvent { Reason = reason, Aborted = true });
+			throw;
+		}
+		catch (Exception exception)
+		{
+			IsCompacting = false;
+			Emit(new CompactionEndEvent { Reason = reason, ErrorMessage = exception.Message });
+			throw;
+		}
+		finally
+		{
+			IsCompacting = false;
+		}
+
+		Emit(new CompactionEndEvent
+		{
+			Reason = reason,
+			Result = result,
+			EstimatedTokensAfter = result is null ? null : ContextTokens().Tokens,
+		});
+	}
+
 	/// <summary>
 	/// 跑一次代理，并在「可重试的失败」上按退避策略重试。与 pi 一致：
 	/// 失败的助手回复保留在会话文件里，但通过 <c>context_edit</c> 从模型投影中移除，
@@ -838,6 +2199,33 @@ public sealed class CodingAgentSession : IDisposable
 			{
 				FinishRetry(success: true, finalError: null);
 				return messages;
+			}
+
+			if (!_overflowRecoveryAttempted && ContextOverflow.IsOverflow(last))
+			{
+				_overflowRecoveryAttempted = true;
+				OmitFromContext(last);
+				try
+				{
+					var compacted = await CompactAsync(
+						customInstructions: null,
+						cancellationToken,
+						CompactionReasons.Overflow,
+						willRetry: true).ConfigureAwait(false);
+					if (compacted is null)
+					{
+						FinishRetry(success: false, "Context overflow recovery could not compact the conversation.");
+						return messages;
+					}
+				}
+				catch (Exception exception) when (exception is not OperationCanceledException)
+				{
+					FinishRetry(success: false, $"Context overflow recovery failed: {exception.Message}");
+					return messages;
+				}
+
+				attempt++;
+				continue;
 			}
 
 			var maxRetries = Math.Max(0, policy.MaxRetries);
@@ -903,6 +2291,24 @@ public sealed class CodingAgentSession : IDisposable
 		_retryAttempt = 0;
 	}
 
+	private bool ShouldRetryAssistant(AssistantMessage message)
+	{
+		if (message.StopReason != StopReason.Error)
+		{
+			return false;
+		}
+
+		if (!_overflowRecoveryAttempted && ContextOverflow.IsOverflow(message))
+		{
+			return true;
+		}
+
+		var policy = Settings.Retry;
+		return AutoRetryEnabled &&
+			_retryAttempt < Math.Max(0, policy.MaxRetries) &&
+			RetryClassifier.IsRetryable(message);
+	}
+
 	private static AssistantMessage? LastAssistantMessage(IReadOnlyList<Message> messages)
 	{
 		for (var index = messages.Count - 1; index >= 0; index--)
@@ -939,13 +2345,18 @@ public sealed class CodingAgentSession : IDisposable
 
 		if (ShouldCompact())
 		{
-			await CompactAsync(customInstructions: null, cancellationToken).ConfigureAwait(false);
+			await CompactAsync(
+				customInstructions: null,
+				cancellationToken,
+				CompactionReasons.Threshold).ConfigureAwait(false);
 		}
 	}
 
 	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
+		_cacheWarmer?.Cancel();
+		_overflowRecoveryAttempted = false;
 		// 与字符串重载一致：先自动压缩，再按重试策略运行；重试同样走"继续"而不是重新提问。
 		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
 		return await RunWithRetryAsync(
@@ -958,6 +2369,7 @@ public sealed class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> ContinueAsync(CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
+		_cacheWarmer?.Cancel();
 		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
 		return await RunWithRetryAsync(
 			_ => _agent.ContinueAsync(cancellationToken),
@@ -965,14 +2377,23 @@ public sealed class CodingAgentSession : IDisposable
 	}
 
 	/// <summary>排入一条消息，在当前工具批次结束后引导正在运行的代理。</summary>
-	public void Steer(Message message) => _agent.Steer(message);
+	public void Steer(Message message)
+	{
+		_agent.Steer(message);
+		EmitQueueUpdate();
+	}
 
 	/// <summary>排入一条消息，在代理本应停止时继续处理。</summary>
-	public void FollowUp(Message message) => _agent.FollowUp(message);
+	public void FollowUp(Message message)
+	{
+		_agent.FollowUp(message);
+		EmitQueueUpdate();
+	}
 
 	/// <summary>切换模型，并在会话中记录一条 <c>model_change</c> 条目。</summary>
 	public void SetModel(Model model)
 	{
+		_cacheWarmer?.Cancel();
 		ArgumentNullException.ThrowIfNull(model);
 		if (model.Id == _agent.Model.Id && model.Provider == _agent.Model.Provider)
 		{
@@ -994,6 +2415,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		_agent.SetThinkingLevel(clamped);
 		Session.AppendThinkingLevelChange(clamped);
+		Emit(new ThinkingLevelChangedEvent { Level = clamped });
 	}
 
 	/// <summary>在模型的工具循环之外执行 shell 命令的结果。</summary>
@@ -1056,11 +2478,39 @@ public sealed class CodingAgentSession : IDisposable
 	}
 
 	/// <summary>追加一条会参与 LLM 上下文的扩展风格消息。</summary>
-	public string AppendCustomMessage(string customType, string content, bool display = true) =>
-		Session.AppendCustomMessage(customType, MessageContent.FromText(content), display);
+	public string AppendCustomMessage(string customType, string content, bool display = true)
+	{
+		var id = Session.AppendCustomMessage(customType, MessageContent.FromText(content), display);
+		EmitEntryAppended(id);
+		return id;
+	}
+
+	/// <summary>设置会话显示名；<paramref name="name"/> 为 null 表示清除。对应 RPC 的 <c>set_session_name</c>。</summary>
+	public void SetSessionName(string? name)
+	{
+		Session.AppendSessionInfo(name);
+		Emit(new SessionInfoChangedEvent { Name = name });
+	}
+
+	/// <summary>把刚追加的自定义条目作为 <c>entry_appended</c> 发出。</summary>
+	private void EmitEntryAppended(string entryId)
+	{
+		if (Session.GetEntry(entryId) is not { } entry)
+		{
+			return;
+		}
+
+		var json = System.Text.Json.Nodes.JsonNode.Parse(SessionJson.Serialize(entry));
+		if (json is System.Text.Json.Nodes.JsonObject obj)
+		{
+			Emit(new EntryAppendedEvent { Entry = obj });
+		}
+	}
 
 	public void Dispose()
 	{
+		_cacheWarmer?.Dispose();
+		_cacheWarmer = null;
 		if (_disposed)
 		{
 			return;
@@ -1068,6 +2518,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		_disposed = true;
 		_persistence.Dispose();
+		_cacheWarmLifecycle.Dispose();
 		GC.SuppressFinalize(this);
 	}
 
@@ -1086,20 +2537,28 @@ public sealed class CodingAgentSession : IDisposable
 	/// </summary>
 	private IReadOnlyList<Message> Project()
 	{
-		var projected = Session.BuildProjectedMessages();
-		var prompt = _refreshedSystemPrompt
-			?? SystemPrompt.Build(SectionsFor(_promptTools));
-
-		if (projected.Count == 0)
+		// The prompt is built once and only replaced when tools/resources rebuild it. Reusing the
+		// projected list also keeps the historical Message instances stable for incremental views.
+		var prompt = _refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools));
+		var revision = Session.Revision;
+		if (_projectedCache is { } cached &&
+			_projectedCacheRevision == revision &&
+			ReferenceEquals(_projectedCachePrompt, prompt))
 		{
-			return [prompt];
+			return cached;
 		}
 
-		if (projected[0] is SystemMessage existing)
+		var projected = Session.BuildProjectedMessages();
+		IReadOnlyList<Message> result;
+		if (projected.Count == 0)
+		{
+			result = [prompt];
+		}
+		else if (projected[0] is SystemMessage existing)
 		{
 			// 替换章节而不是把它们拍平，这样 provider 侧缓存仍能看到相同的分界
 			// （preamble、tools、rules 等）。
-			var updated = new List<Message>(projected)
+			result = new List<Message>(projected)
 			{
 				[0] = existing with
 				{
@@ -1107,13 +2566,18 @@ public sealed class CodingAgentSession : IDisposable
 					ToolsAdded = prompt.ToolsAdded,
 				},
 			};
-
-			return updated;
+		}
+		else
+		{
+			// The prompt is the only new element; keep the projected list shared instead of
+			// copying thousands of message references on every revision.
+			result = new PromptedMessages(prompt, projected);
 		}
 
-		var withPrompt = new List<Message>(projected.Count + 1) { prompt };
-		withPrompt.AddRange(projected);
-		return withPrompt;
+		_projectedCache = result;
+		_projectedCacheRevision = revision;
+		_projectedCachePrompt = prompt;
+		return result;
 	}
 
 	/// <summary>
@@ -1122,6 +2586,14 @@ public sealed class CodingAgentSession : IDisposable
 	/// </summary>
 	public void SetTools(IReadOnlyList<AgentTool> tools)
 	{
+		// 有 exposure: codemode 的工具时自动补上 codemode（pi 的 autoEnableCodemode 行为）。
+		if (Settings.Codemode.AutoEnable
+			&& tools.Any(static tool => string.Equals(tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal))
+			&& tools.All(static tool => !string.Equals(tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)))
+		{
+			tools = [.. tools, CodeModeToolFactory.CreatePlaceholder().Tool];
+		}
+
 		// 同样把占位 todo 工具换成绑定到本会话的版本，保持提示词与执行一致。
 		var bound = new List<AgentTool>(tools.Count);
 		foreach (var tool in tools)
@@ -1151,6 +2623,16 @@ public sealed class CodingAgentSession : IDisposable
 				case AskQuestionToolFactory.Name:
 					rebuilt.Add(AskQuestionToolFactory.Create(() => this));
 					continue;
+				case CodeModeToolFactory.Name:
+					// 工具集变化后 codemode 的描述也要重新列出可调用工具。
+					rebuilt.Add(CreateCodeModeTool(bound));
+					continue;
+				case "bash":
+					// 工具集被 MCP 刷新重建时，bash 也要重新绑定会话上下文（PI_* 注入）。
+					rebuilt.Add(known.TryGetValue(tool.Name, out var bashDescribed)
+						? bashDescribed with { Tool = PiWeft.CodingAgent.Tools.BashTool.Create(Cwd, BashEnvironment) }
+						: new BuiltinTool(tool, tool.Description, []));
+					continue;
 			}
 
 			rebuilt.Add(known.TryGetValue(tool.Name, out var described)
@@ -1161,6 +2643,18 @@ public sealed class CodingAgentSession : IDisposable
 		_fullTools = rebuilt;
 		ApplyTools();
 	}
+
+	/// <summary>bash 工具的会话上下文：以 <c>PI_*</c> 环境变量暴露当前会话与模型。</summary>
+	private Tools.BashSessionEnvironment? BashEnvironment() => new()
+	{
+		SessionId = Session.SessionId,
+		SessionFile = Session.SessionFile,
+		Provider = _agent.Model.Provider,
+		ModelId = _agent.Model.Id,
+		ThinkingLevel = _agent.ThinkingLevel,
+		ShellPath = Settings.ShellPath,
+		CommandPrefix = Settings.ShellCommandPrefix,
+	};
 
 	private ValueTask PersistAsync(AgentEvent @event)
 	{
@@ -1208,6 +2702,25 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		return _persistedThinkingLevel;
+	}
+
+	/// <summary>Read-only view of a system prompt followed by the session projection.</summary>
+	private sealed class PromptedMessages(Message prompt, IReadOnlyList<Message> projected) : IReadOnlyList<Message>
+	{
+		public int Count => projected.Count + 1;
+
+		public Message this[int index] => index == 0 ? prompt : projected[index - 1];
+
+		public IEnumerator<Message> GetEnumerator()
+		{
+			yield return prompt;
+			foreach (var message in projected)
+			{
+				yield return message;
+			}
+		}
+
+		System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 	}
 
 	private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

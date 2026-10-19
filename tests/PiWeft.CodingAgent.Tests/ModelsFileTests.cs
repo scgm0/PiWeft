@@ -39,6 +39,44 @@ public class ModelsFileTests : IDisposable
 	}
 
 	[Fact]
+	public void Load_ParsesVirtualModelRoutes()
+	{
+		WriteUser(
+			"""
+			{
+			  "providers": {
+			    "router": {
+			      "models": [
+			        {
+			          "id": "auto",
+			          "name": "Auto",
+			          "contextWindow": 64000,
+			          "virtual": {
+			            "model": "ollama/qwen2.5-coder:7b",
+			            "thinkingLevel": "high",
+			            "thinkingLevels": ["off", "high"],
+			            "input": ["text"]
+			          }
+			        }
+			      ]
+			    }
+			  }
+			}
+			""");
+
+		var applied = ModelsFileLoader.Load(ProjectCwd, AgentDir);
+
+		Assert.Empty(applied.Models);
+		var definition = Assert.Single(applied.VirtualModels);
+		Assert.Equal("router", definition.Provider);
+		Assert.Equal("auto", definition.Id);
+		Assert.Equal("Auto", definition.Name);
+		Assert.Equal(64000, definition.ContextWindow);
+		Assert.Equal(["off", "high"], definition.ThinkingLevels);
+		Assert.Equal(["text"], definition.Input);
+	}
+
+	[Fact]
 	public void Load_AddsACompatibleEndpoint()
 	{
 		WriteUser(
@@ -202,6 +240,71 @@ public class ModelsFileTests : IDisposable
 		};
 
 		Assert.Equal(0, ModelsFileLoader.ApplyOverrides(registry, file, null));
+	}
+
+
+	[Fact]
+	public void ProviderLevelModelOverridesApplyToCatalogModels()
+	{
+		WriteUser(
+			"""
+			{
+			  "providers": {
+			    "anthropic": {
+			      "modelOverrides": {
+			        "claude-sonnet-4-5": { "name": "Provider override", "maxTokens": 777 }
+			      }
+			    }
+			  }
+			}
+			""");
+
+		var registry = ModelRegistry.LoadDefault();
+		var file = ModelsFileLoader.Read(ModelsFileLoader.UserPath(AgentDir));
+
+		Assert.True(ModelsFileLoader.ApplyOverrides(registry, file, null) >= 1);
+		var model = registry.Resolve("anthropic", "claude-sonnet-4-5")!;
+		Assert.Equal("Provider override", model.Name);
+		Assert.Equal(777, model.MaxTokens);
+	}
+
+	[Fact]
+	public void ProviderBaseUrlAppliesToBuiltInModels()
+	{
+		WriteUser("""{"providers":{"anthropic":{"baseUrl":"https://proxy.example.test/v1"}}}""");
+
+		var registry = ModelRegistry.LoadDefault();
+		var file = ModelsFileLoader.Read(ModelsFileLoader.UserPath(AgentDir));
+		Assert.True(ModelsFileLoader.ApplyProviderSettings(registry, file, null) > 0);
+
+		Assert.Equal("https://proxy.example.test/v1", registry.Resolve("anthropic", "claude-sonnet-4-5")!.BaseUrl);
+	}
+
+	[Fact]
+	public void PartialCostOverrideKeepsUnmentionedRates()
+	{
+		var registry = ModelRegistry.LoadDefault();
+		var before = registry.Resolve("anthropic", "claude-sonnet-4-5")!;
+		var file = new ModelsFile
+		{
+			Providers = new Dictionary<string, ModelsProviderEntry>
+			{
+				["anthropic"] = new()
+				{
+					ModelOverrides = new Dictionary<string, ModelsOverrideEntry>
+					{
+						["claude-sonnet-4-5"] = new() { Cost = new ModelCostPatch { Input = 99 } },
+					},
+				},
+			},
+		};
+
+		ModelsFileLoader.ApplyOverrides(registry, file, null);
+		var after = registry.Resolve("anthropic", "claude-sonnet-4-5")!;
+
+		Assert.Equal(99, after.Cost.Input);
+		Assert.Equal(before.Cost.Output, after.Cost.Output);
+		Assert.Equal(before.Cost.CacheRead, after.Cost.CacheRead);
 	}
 
 	[Fact]

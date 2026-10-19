@@ -12,6 +12,9 @@ public sealed record PromptTemplate
 
 	public required string Content { get; init; }
 
+	/// <summary>frontmatter 里的 description，供命令补全展示。</summary>
+	public string? Description { get; init; }
+
 	public required string FilePath { get; init; }
 
 	/// <summary>模板来源（用户、项目或包）。</summary>
@@ -79,12 +82,19 @@ public static partial class PromptTemplates
 		return text;
 	}
 
-	/// <summary>按空白切分参数字符串，并识别单引号与双引号。</summary>
+	/// <summary>
+	/// 按空白切分参数字符串，并识别单引号与双引号。
+	/// 空的引号参数（<c>""</c> / <c>''</c>）是一个位置参数，不能丢弃 ——
+	/// 丢掉会让后面的参数错位、默认值失真（pi 1.3.0 修正的正是这个行为）。
+	/// </summary>
 	public static string[] ParseArgs(string argsString)
 	{
 		var args = new List<string>();
 		var current = new StringBuilder();
 		char? quote = null;
+
+		// 当前词里出现过引号或有实际内容；引号即使立刻闭合也代表一个（可能为空的）参数。
+		var sawToken = false;
 
 		foreach (var c in argsString)
 		{
@@ -102,22 +112,25 @@ public static partial class PromptTemplates
 			else if (c is '"' or '\'')
 			{
 				quote = c;
+				sawToken = true;
 			}
 			else if (char.IsWhiteSpace(c))
 			{
-				if (current.Length > 0)
+				if (current.Length > 0 || sawToken)
 				{
 					args.Add(current.ToString());
 					current.Clear();
+					sawToken = false;
 				}
 			}
 			else
 			{
 				current.Append(c);
+				sawToken = true;
 			}
 		}
 
-		if (current.Length > 0)
+		if (current.Length > 0 || sawToken)
 		{
 			args.Add(current.ToString());
 		}
@@ -223,10 +236,14 @@ public static partial class PromptTemplates
 
 		try
 		{
+			var raw = File.ReadAllText(file);
+			var (fields, body) = Skills.Skills.ParseFrontmatter(raw);
 			templates.Add(new PromptTemplate
 			{
 				Name = name,
-				Content = File.ReadAllText(file),
+				Content = body,
+				Description = fields is not null && fields.TryGetValue("description", out var description) &&
+					description.Length > 0 ? description : null,
 				FilePath = Path.GetFullPath(file),
 				Origin = origin,
 			});

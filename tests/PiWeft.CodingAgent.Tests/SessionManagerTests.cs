@@ -203,6 +203,49 @@ public class SessionManagerTests : IDisposable
 	}
 
 	[Fact]
+	public void BuildProjectedMessages_ExtendsAnAppendedBranchAndInvalidatesForEdits()
+	{
+		var manager = SessionManager.InMemory("/tmp/p");
+		manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("one"), Timestamp = 1 });
+		var firstAssistant = manager.AppendMessage(new AssistantMessage
+		{
+			Api = "a", Provider = "p", Model = "m",
+			Content = [new TextContent { Text = "first" }], StopReason = StopReason.Stop, Timestamp = 2,
+		});
+
+		var first = manager.BuildProjectedMessages();
+		Assert.Equal(2, first.Count);
+		var firstMessage = first[0];
+
+		manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("two"), Timestamp = 3 });
+		var extended = manager.BuildProjectedMessages();
+		Assert.Equal(3, extended.Count);
+		Assert.Same(firstMessage, extended[0]);
+		Assert.Equal("two", UserText(extended[2]));
+
+		manager.AppendContextEdit(firstAssistant, MessageContent.FromText("first (edited)"));
+		var edited = manager.BuildProjectedMessages();
+		Assert.Equal("first (edited)", Assert.IsType<AssistantMessage>(edited[1]).Content
+			.OfType<TextContent>().Single().Text);
+		Assert.Equal("two", UserText(edited[2]));
+
+		// A branch switch cannot reuse the prefix from the old leaf.
+		manager.Branch(firstAssistant);
+		manager.AppendMessage(new AssistantMessage
+		{
+			Api = "a", Provider = "p", Model = "m",
+			Content = [new TextContent { Text = "branched" }], StopReason = StopReason.Stop, Timestamp = 4,
+		});
+		var branched = manager.BuildProjectedMessages();
+		Assert.Equal(3, branched.Count);
+		// The edit was appended after this leaf, so the new branch must not include it.
+		Assert.Equal("first",
+			Assert.IsType<AssistantMessage>(branched[1]).Content.OfType<TextContent>().Single().Text);
+		Assert.Equal("branched",
+			Assert.IsType<AssistantMessage>(branched[2]).Content.OfType<TextContent>().Single().Text);
+	}
+
+	[Fact]
 	public void Branch_MovesTheLeafSoLaterEntriesFormANewChild()
 	{
 		var manager = SessionManager.Create("/tmp/p", SessionDir);

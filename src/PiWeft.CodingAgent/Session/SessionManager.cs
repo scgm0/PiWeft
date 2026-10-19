@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Session;
@@ -14,18 +15,34 @@ public sealed partial class SessionManager
 	private readonly Dictionary<string, SessionEntry> _byId = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _labelsById = new(StringComparer.Ordinal);
 	private readonly bool _persist;
+	private readonly System.Buffers.ArrayBufferWriter<byte> _persistBuffer = new(1024);
 	private string? _leafId;
 	private IReadOnlyList<SessionEntry>? _entriesSnapshot;
+	private ImmutableList<SessionEntry>? _branchSnapshot;
 	private IReadOnlyList<Message>? _projectedSnapshot;
+	private List<Message>? _incrementalBase;
+	private List<Message> _incrementalTail = [];
+	private IReadOnlyList<SessionEntry>? _incrementalBranch;
 
 	/// <summary>追加、重载、新建或导航后递增，供消费者失效派生缓存。</summary>
 	public long Revision { get { lock (_stateGate) return _revision; } }
 
-	private void Invalidate()
+	private void Invalidate(bool keepIncrementalProjection = false, bool keepBranch = false)
 	{
 		_revision++;
 		_entriesSnapshot = null;
+		if (!keepBranch)
+		{
+			_branchSnapshot = null;
+		}
+
 		_projectedSnapshot = null;
+		if (!keepIncrementalProjection)
+		{
+			_incrementalBase = null;
+			_incrementalTail = [];
+			_incrementalBranch = null;
+		}
 	}
 
 	private SessionManager(string cwd, string sessionDir, string? sessionFile, bool persist)
@@ -334,7 +351,11 @@ public sealed partial class SessionManager
 		FromHook = fromHook,
 	});
 
-	public string AppendBranchSummary(string fromId, string summary, Usage? usage = null) => Append(new BranchSummaryEntry
+	public string AppendBranchSummary(
+		string fromId,
+		string summary,
+		Usage? usage = null,
+		System.Text.Json.Nodes.JsonNode? details = null) => Append(new BranchSummaryEntry
 	{
 		Id = NextId(),
 		ParentId = _leafId,
@@ -342,6 +363,7 @@ public sealed partial class SessionManager
 		FromId = fromId,
 		Summary = summary,
 		Usage = usage,
+		Details = details,
 	});
 
 	public string AppendCustom(string customType, System.Text.Json.Nodes.JsonNode? data = null) => Append(new CustomEntry
@@ -430,9 +452,20 @@ public sealed partial class SessionManager
 	private string Append(SessionEntry entry)
 	{
 		using var scope = _stateGate.EnterScope();
-		Invalidate();
+		var extendsBranch = entry.ParentId == _leafId;
+		// A normal message only extends the projection. Edits, compaction and summaries can
+		// change earlier messages, so those still rebuild it from the branch.
+		Invalidate(
+			keepIncrementalProjection: extendsBranch &&
+				entry is not (ContextEditEntry or CompactionEntry or BranchSummaryEntry or CustomMessageEntry),
+			keepBranch: extendsBranch);
 		_fileEntries.Add(entry);
 		_byId[entry.Id] = entry;
+		if (extendsBranch && _branchSnapshot is { } branch)
+		{
+			// ImmutableList shares the old path; the projection's cached branch stays unchanged.
+			_branchSnapshot = branch.Add(entry);
+		}
 
 		if (entry is LabelEntry { Label: { Length: > 0 } label } labelEntry)
 		{
@@ -468,7 +501,9 @@ public sealed partial class SessionManager
 			_fileEntries.Insert(0, header);
 		}
 
-		File.AppendAllText(SessionFile, SessionJson.Serialize(entry) + "\n");
+		_persistBuffer.Clear();
+		SessionJson.WriteEntryLine(_persistBuffer, entry);
+		File.AppendAllBytes(SessionFile, _persistBuffer.WrittenSpan);
 	}
 
 	private string NextId()
@@ -512,8 +547,24 @@ public sealed partial class SessionManager
 	public IReadOnlyList<SessionEntry> GetBranch(string? fromId = null)
 	{
 		using var scope = _stateGate.EnterScope();
+		if (fromId is null && _branchSnapshot is { } cached)
+		{
+			return cached;
+		}
+
+		var path = BuildBranchPath(fromId ?? _leafId);
+		if (fromId is null)
+		{
+			_branchSnapshot = path;
+		}
+
+		return path;
+	}
+
+	private ImmutableList<SessionEntry> BuildBranchPath(string? leafId)
+	{
 		var path = new List<SessionEntry>();
-		var currentId = fromId ?? _leafId;
+		var currentId = leafId;
 		while (currentId is not null && _byId.TryGetValue(currentId, out var current))
 		{
 			path.Add(current);
@@ -521,13 +572,14 @@ public sealed partial class SessionManager
 		}
 
 		path.Reverse();
-		return path;
+		return ImmutableList.CreateRange(path);
 	}
 
 	/// <summary>供上下文与渲染使用的、感知压缩的条目列表。</summary>
-	public IReadOnlyList<SessionEntry> BuildContextEntries()
+	public IReadOnlyList<SessionEntry> BuildContextEntries() => BuildContextEntries(GetBranch());
+
+	private IReadOnlyList<SessionEntry> BuildContextEntries(IReadOnlyList<SessionEntry> path)
 	{
-		var path = GetBranch();
 		CompactionEntry? compaction = null;
 		foreach (var entry in path)
 		{
@@ -586,11 +638,17 @@ public sealed partial class SessionManager
 	{
 		using var scope = _stateGate.EnterScope();
 		if (_projectedSnapshot is { } cached) return cached;
-		var entries = BuildContextEntries();
+		var branch = GetBranch();
+		if (TryExtendProjection(branch, out var extended))
+		{
+			return _projectedSnapshot = extended;
+		}
+
+		var entries = BuildContextEntries(branch);
 
 		// 对每个目标条目，取当前分支上最后一次编辑的结果。
 		var edits = new Dictionary<string, ContextEditEntry>(StringComparer.Ordinal);
-		foreach (var entry in GetBranch())
+		foreach (var entry in branch)
 		{
 			if (entry is ContextEditEntry edit)
 			{
@@ -601,27 +659,150 @@ public sealed partial class SessionManager
 		var messages = new List<Message>(entries.Count);
 		foreach (var entry in entries)
 		{
-			var produced = ToMessages(entry);
-			if (editOmit(entry, edits))
+			if (edits.TryGetValue(entry.Id, out var edit))
 			{
-				continue;
-			}
-
-			if (edits.TryGetValue(entry.Id, out var edit) && edit.Replacement is { } replacement)
-			{
-				for (var i = 0; i < produced.Count; i++)
+				if (edit.Replacement is null)
 				{
-					produced[i] = ReplaceContent(produced[i], replacement);
+					continue;
 				}
-			}
 
-			messages.AddRange(produced);
+				AddEntryMessages(messages, entry, edit.Replacement);
+			}
+			else
+			{
+				AddEntryMessages(messages, entry, replacement: null);
+			}
 		}
 
+		_incrementalBase = messages;
+		_incrementalTail = [];
+		_incrementalBranch = branch;
 		return _projectedSnapshot = messages.AsReadOnly();
+	}
 
-		static bool editOmit(SessionEntry entry, Dictionary<string, ContextEditEntry> edits) =>
-			edits.TryGetValue(entry.Id, out var edit) && edit.Replacement is null;
+	private bool TryExtendProjection(IReadOnlyList<SessionEntry> branch, out IReadOnlyList<Message> messages)
+	{
+		messages = [];
+		if (_incrementalBase is not { } baseMessages || _incrementalBranch is not { } previousBranch ||
+			branch.Count < previousBranch.Count)
+		{
+			return false;
+		}
+
+		// The branch is a tree path, so the last shared entry proves the whole prefix: its
+		// ParentId chain fixes every entry before it.
+		if (previousBranch.Count > 0 &&
+			!ReferenceEquals(branch[previousBranch.Count - 1], previousBranch[previousBranch.Count - 1]))
+		{
+			return false;
+		}
+
+		for (var index = previousBranch.Count; index < branch.Count; index++)
+		{
+			if (branch[index] is ContextEditEntry or CompactionEntry or BranchSummaryEntry or CustomMessageEntry)
+			{
+				return false;
+			}
+		}
+
+		var tail = new List<Message>(_incrementalTail);
+		for (var index = previousBranch.Count; index < branch.Count; index++)
+		{
+			if (branch[index] is SessionMessageEntry messageEntry)
+			{
+				AddEntryMessages(tail, messageEntry, replacement: null);
+			}
+		}
+
+		_incrementalTail = tail;
+		_incrementalBranch = branch;
+
+		// Fold a long tail back into the base occasionally; most appends add one or two messages,
+		// and the joined view keeps the 10k-message prefix shared instead of copying it.
+		const int MaxTail = 512;
+		if (tail.Count > MaxTail)
+		{
+			var merged = new List<Message>(baseMessages.Count + tail.Count);
+			merged.AddRange(baseMessages);
+			merged.AddRange(tail);
+			_incrementalBase = merged;
+			_incrementalTail = [];
+			messages = merged.AsReadOnly();
+			return true;
+		}
+
+		messages = tail.Count == 0 ? baseMessages.AsReadOnly() : new JoinedMessages(baseMessages, tail.ToArray());
+		return true;
+	}
+
+	private sealed class JoinedMessages(IReadOnlyList<Message> prefix, Message[] tail) : IReadOnlyList<Message>
+	{
+		public int Count => prefix.Count + tail.Length;
+
+		public Message this[int index] => index < prefix.Count ? prefix[index] : tail[index - prefix.Count];
+
+		public IEnumerator<Message> GetEnumerator()
+		{
+			foreach (var message in prefix)
+			{
+				yield return message;
+			}
+
+			foreach (var message in tail)
+			{
+				yield return message;
+			}
+		}
+
+		System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+	}
+
+	/// <summary>
+	/// Appends an entry's projected messages without building a temporary list per entry.
+	/// A context edit replaces the content of every message the entry contributes.
+	/// </summary>
+	private static void AddEntryMessages(List<Message> messages, SessionEntry entry, MessageContent? replacement)
+	{
+		switch (entry)
+		{
+			case SessionMessageEntry message:
+				messages.Add(replacement is null ? message.Message : ReplaceContent(message.Message, replacement.Value));
+				break;
+
+			case CompactionEntry compaction:
+				if (compaction.SystemMessage is { } checkpoint)
+				{
+					messages.Add(replacement is null ? checkpoint : ReplaceContent(checkpoint, replacement.Value));
+				}
+
+				var summary = new UserMessage
+				{
+					Content = MessageContent.FromText(
+						CodingMessages.CompactionSummaryPrefix + compaction.Summary + CodingMessages.CompactionSummarySuffix),
+					Timestamp = ToUnixMs(compaction.Timestamp),
+				};
+				messages.Add(replacement is null ? summary : ReplaceContent(summary, replacement.Value));
+				break;
+
+			case BranchSummaryEntry branch:
+				var branchMessage = new UserMessage
+				{
+					Content = MessageContent.FromText(
+						CodingMessages.BranchSummaryPrefix + branch.Summary + CodingMessages.BranchSummarySuffix),
+					Timestamp = ToUnixMs(branch.Timestamp),
+				};
+				messages.Add(replacement is null ? branchMessage : ReplaceContent(branchMessage, replacement.Value));
+				break;
+
+			case CustomMessageEntry custom:
+				var customMessage = new UserMessage
+				{
+					Content = custom.Content,
+					Timestamp = ToUnixMs(custom.Timestamp),
+				};
+				messages.Add(replacement is null ? customMessage : ReplaceContent(customMessage, replacement.Value));
+				break;
+		}
 	}
 
 	/// <summary>模型可见的上下文，以及从当前分支解析出的设置。</summary>

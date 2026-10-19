@@ -17,12 +17,13 @@ public static class AuthCommands
 		IReadOnlyList<string> rest,
 		TextWriter output,
 		TextWriter error,
+		TextReader input,
 		CancellationToken cancellationToken)
 	{
 		switch (command)
 		{
 			case "login":
-				return await LoginAsync(rest, output, error, cancellationToken).ConfigureAwait(false);
+				return await LoginAsync(rest, output, error, input, cancellationToken).ConfigureAwait(false);
 
 			case "logout":
 				return Logout(rest, output, error);
@@ -39,13 +40,152 @@ public static class AuthCommands
 		IReadOnlyList<string> rest,
 		TextWriter output,
 		TextWriter error,
+		TextReader input,
 		CancellationToken cancellationToken)
 	{
 		var provider = rest.Count > 0 ? rest[0] : CodexAuth.ProviderKey;
+		if (!ModelRegistry.LoadDefault().Providers.Contains(provider, StringComparer.Ordinal))
+		{
+			error.WriteLine($"pi: Unknown provider '{provider}'.");
+			return 2;
+		}
+
+		if (string.Equals(provider, AnthropicOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await AnthropicOAuth.LoginAsync(input, output, cancellationToken).ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, XaiOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await XaiOAuth.LoginAsync(output, cancellationToken).ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, KimiOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await KimiOAuth.LoginAsync(output, cancellationToken).ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, OpenAiChatGptOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await OpenAiChatGptOAuth.LoginAsync(input, output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, GitHubCopilotOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await GitHubCopilotOAuth.LoginAsync(input, output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				await PiWeft.CodingAgent.Models.ModelCatalogStore
+					.RefreshAccountCatalogAsync("github-copilot", cancellationToken: cancellationToken)
+					.ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, OpenRouterOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await OpenRouterOAuth.LoginAsync(input, output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				await PiWeft.CodingAgent.Models.ModelCatalogStore
+					.RefreshAccountCatalogAsync("openrouter", cancellationToken: cancellationToken)
+					.ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, MetaOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await MetaOAuth.LoginAsync(output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, RadiusOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await RadiusOAuth.LoginAsync(output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				await PiWeft.CodingAgent.Models.ModelCatalogStore
+					.RefreshAccountCatalogAsync("radius", cancellationToken: cancellationToken)
+					.ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
 		if (provider != CodexAuth.ProviderKey)
 		{
-			error.WriteLine($"pi: '{provider}' does not use OAuth login. Set its API key instead (see 'pi --help').");
-			return 2;
+			// 其余 Provider 走 API key 登录：安全地写入 auth.json，不经过 shell 历史。
+			output.Write($"请输入 {provider} 的 API key（以 ! 开头表示命令型凭据）：");
+			output.Flush();
+			var key = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+			if (string.IsNullOrWhiteSpace(key))
+			{
+				error.WriteLine("pi: API key 为空，登录取消。");
+				return 1;
+			}
+
+			AuthStore.SaveApiKey(provider, key.Trim());
+			output.WriteLine($"凭据已写入 {AuthStore.Path()}（provider: {provider}）。");
+			return 0;
 		}
 
 		using var http = new HttpClient();
@@ -79,29 +219,14 @@ public static class AuthCommands
 	private static int Logout(IReadOnlyList<string> rest, TextWriter output, TextWriter error)
 	{
 		var provider = rest.Count > 0 ? rest[0] : CodexAuth.ProviderKey;
-		if (provider != CodexAuth.ProviderKey)
-		{
-			error.WriteLine($"pi: no stored OAuth credentials for '{provider}'.");
-			return 2;
-		}
-
 		var agentDir = Environment.GetEnvironmentVariable(PiWeft.Ai.Auth.AgentPaths.EnvAgentDir);
-		var path = CodexAuth.CredentialsPath(agentDir);
-		if (!File.Exists(path))
+		if (!OAuthStore.RemoveProvider(provider, agentDir))
 		{
-			output.WriteLine($"No {CodexAuth.ProviderKey} credentials to remove.");
-			return 0;
+			error.WriteLine($"pi: no stored credentials for '{provider}'.");
+			return 1;
 		}
 
-		// 只删除该 provider 的条目，其它 provider 的凭据保持不动。
-		var root = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path)) as System.Text.Json.Nodes.JsonObject
-			?? new System.Text.Json.Nodes.JsonObject();
-		if (root.Remove(CodexAuth.ProviderKey))
-		{
-			File.WriteAllText(path, root.ToJsonString(new System.Text.Json.JsonSerializerOptions(PiJson.NodeOptions) { WriteIndented = true }));
-		}
-
-		output.WriteLine($"Removed {CodexAuth.ProviderKey} credentials from {path}");
+		output.WriteLine($"Removed {provider} credentials from {OAuthStore.Path(agentDir)}");
 		return 0;
 	}
 
@@ -278,20 +403,16 @@ public static class AuthCommands
 		TextWriter error,
 		CancellationToken cancellationToken)
 	{
-		if (!string.Equals(provider, CodexAuth.ProviderKey, StringComparison.Ordinal))
-		{
-			error.WriteLine($"pi: Provider \"{provider}\" is not configured with an OAuth bearer token");
-			return 1;
-		}
-
-		using var http = new HttpClient();
 		try
 		{
-			var credentials = await CodexAuth
-				.ResolveAsync(http, agentDir, Environment.GetEnvironmentVariable(AuthBaseUrlVariable), cancellationToken)
-				.ConfigureAwait(false);
+			var token = ResolveCredential(provider, agentDir, noRefresh: false, cancellationToken);
+			if (token is not { Length: > 0 })
+			{
+				error.WriteLine($"pi: Provider \"{provider}\" is not configured with an OAuth bearer token");
+				return 1;
+			}
 
-			output.WriteLine(credentials.Access);
+			output.WriteLine(token);
 			return 0;
 		}
 		catch (CodexAuthException ex)
@@ -312,8 +433,8 @@ public static class AuthCommands
 			return "api_key";
 		}
 
-		if (string.Equals(provider, CodexAuth.ProviderKey, StringComparison.Ordinal) &&
-			CodexAuth.Load(agentDir) is not null)
+		if (OAuthStore.Read(provider, agentDir) is not null ||
+			(string.Equals(provider, CodexAuth.ProviderKey, StringComparison.Ordinal) && CodexAuth.Load(agentDir) is not null))
 		{
 			return "oauth";
 		}
@@ -334,19 +455,80 @@ public static class AuthCommands
 				?? Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(provider));
 		}
 
-		if (noRefresh && CodexAuth.Load(agentDir) is { } stored)
+		using var http = new HttpClient();
+		if (string.Equals(provider, CodexAuth.ProviderKey, StringComparison.Ordinal))
 		{
-			return stored.Access;
+			if (noRefresh && CodexAuth.Load(agentDir) is { } stored)
+			{
+				return stored.Access;
+			}
+
+			return CodexAuth
+				.ResolveAsync(http, agentDir, Environment.GetEnvironmentVariable(AuthBaseUrlVariable), cancellationToken)
+				.GetAwaiter()
+				.GetResult()
+				.Access;
 		}
 
-		using var http = new HttpClient();
-		var credentials = CodexAuth
-			.ResolveAsync(http, agentDir, Environment.GetEnvironmentVariable(AuthBaseUrlVariable), cancellationToken)
-			.GetAwaiter()
-			.GetResult();
+		var credential = OAuthStore.Read(provider, agentDir);
+		if (credential is null)
+		{
+			return null;
+		}
 
-		return credentials.Access;
+		if (!noRefresh && credential.ExpiresAt <= DateTimeOffset.UtcNow && credential.Refresh.Length > 0)
+		{
+			if (string.Equals(provider, AnthropicOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return AnthropicOAuth.RefreshAsync(credential, cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, XaiOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return XaiOAuth.RefreshAsync(credential, cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, KimiOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return KimiOAuth.RefreshAsync(credential, cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, OpenAiChatGptOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return OpenAiChatGptOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, GitHubCopilotOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return GitHubCopilotOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, MetaOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return MetaOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, RadiusOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return RadiusOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, OpenRouterOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return credential.Access;
+			}
+		}
+
+		return credential.Access;
 	}
+
 
 	/// <summary>把 <c>provider/model</c> 形式的模型标识折成 provider。</summary>
 	private static string? ProviderOf(string? model)

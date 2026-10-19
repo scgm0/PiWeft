@@ -56,9 +56,9 @@ public sealed class McpCommandTests : IDisposable
 		Assert.Contains("OAuth", output.ToString(), StringComparison.Ordinal);
 
 		output.GetStringBuilder().Clear();
-		Assert.Equal(0, await RunAsync("list", [], output, error));
+		Assert.Equal(1, await RunAsync("list", [], output, error));
 		Assert.Contains("demo", output.ToString(), StringComparison.Ordinal);
-		Assert.Contains("未授权", output.ToString(), StringComparison.Ordinal);
+		Assert.Contains("OAuth", output.ToString(), StringComparison.Ordinal);
 
 		output.GetStringBuilder().Clear();
 		Assert.Equal(0, await RunAsync("remove", ["demo"], output, error));
@@ -143,7 +143,7 @@ public sealed class McpCommandTests : IDisposable
 		await RunAsync("add", ["demo", "--url", "https://mcp.example/mcp", "--auth", "oauth"], output, error);
 
 		output.GetStringBuilder().Clear();
-		Assert.Equal(0, await RunAsync("list", ["--json"], output, error));
+		Assert.Equal(1, await RunAsync("list", ["--json"], output, error));
 
 		var json = System.Text.Json.Nodes.JsonNode.Parse(output.ToString())!;
 		var server = json["servers"]![0]!;

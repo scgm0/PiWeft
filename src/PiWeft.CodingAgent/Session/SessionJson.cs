@@ -50,6 +50,26 @@ public static class SessionJson
 		return Encoding.UTF8.GetString(buffer.WrittenSpan);
 	}
 
+	/// <summary>
+	/// Writes one JSONL line (entry + newline) into a reusable buffer. Persist paths can hand the
+	/// UTF-8 bytes straight to <c>File.AppendAllBytes</c> instead of allocating a string and
+	/// encoding it again.
+	/// </summary>
+	public static void WriteEntryLine(IBufferWriter<byte> buffer, SessionEntry entry)
+	{
+		using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
+		{
+			WriteEntry(writer, entry);
+			writer.Flush();
+		}
+
+		// A top-level WriteRawValue after the object makes Utf8JsonWriter treat the values as a
+		// comma-separated sequence; append the JSONL newline to the buffer directly instead.
+		var newline = buffer.GetSpan(1);
+		newline[0] = (byte)'\n';
+		buffer.Advance(1);
+	}
+
 	public static void WriteHeader(Utf8JsonWriter writer, SessionHeader header)
 	{
 		writer.WriteStartObject();

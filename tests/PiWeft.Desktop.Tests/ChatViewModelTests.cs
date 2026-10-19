@@ -166,6 +166,47 @@ public class ChatViewModelTests : IDisposable
 	}
 
 	[Fact]
+	public void AppendingAfterAttachKeepsHistoryAndReflectsEdits()
+	{
+		var manager = SessionManager.InMemory(_root);
+		manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("one"), Timestamp = 1 });
+		var firstAssistant = manager.AppendMessage(new AssistantMessage
+		{
+			Api = "a", Provider = "p", Model = "m",
+			Content = [new TextContent { Text = "first" }], StopReason = StopReason.Stop, Timestamp = 2,
+		});
+		using var session = NewSession(manager);
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var initial = viewModel.Entries();
+		Assert.Equal(2, initial.Count);
+		Assert.Equal("one", initial[0].Text);
+		Assert.Equal("first", initial[1].Text);
+
+		// Appending a new turn must keep the earlier ChatEntry instances and add only the tail.
+		manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("two"), Timestamp = 3 });
+		manager.AppendMessage(new AssistantMessage
+		{
+			Api = "a", Provider = "p", Model = "m",
+			Content = [new TextContent { Text = "second" }], StopReason = StopReason.Stop, Timestamp = 4,
+		});
+		var appended = viewModel.Entries();
+		Assert.Equal(4, appended.Count);
+		Assert.Same(initial[0], appended[0]);
+		Assert.Same(initial[1], appended[1]);
+		Assert.Equal("two", appended[2].Text);
+		Assert.Equal("second", appended[3].Text);
+
+		// A context edit changes an earlier row; the tail must still be mapped correctly.
+		manager.AppendContextEdit(firstAssistant, MessageContent.FromText("first (edited)"));
+		var edited = viewModel.Entries();
+		Assert.Equal(4, edited.Count);
+		Assert.Equal("first (edited)", edited[1].Text);
+		Assert.Equal("second", edited[3].Text);
+	}
+
+	[Fact]
 	public async Task UserAndAssistantTurnsBecomeRows()
 	{
 		_streams.Enqueue(static model => FakeStreams.Text(model, "hello back"));

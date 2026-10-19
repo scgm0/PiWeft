@@ -15,6 +15,7 @@ using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
+using PiWeft.JavaScript;
 using PiWeft.Mcp;
 using PiWeft.Cli;
 using ZLogger;
@@ -723,6 +724,59 @@ finally
 
 if (!readBack.Contains("hello from the tool test", StringComparison.Ordinal) || persistedEntries != 4 || projectedMessages != 4)
 {
+	return 1;
+}
+
+// codemode: the Jint sandbox (and the async tool bridge) must survive trimming.
+var codeModeSandbox = new CodeModeSandbox(new CodeModeSandboxOptions
+{
+	Tools =
+	[
+		new PiWeft.JavaScript.CodeModeTool
+		{
+			Name = "echo",
+			Description = "echo a value",
+			InputSchema = new JsonObject
+			{
+				["type"] = "object",
+				["properties"] = new JsonObject { ["value"] = new JsonObject { ["type"] = "string" } },
+			},
+			Execute = (arguments, _) => Task.FromResult<JsonNode?>(
+				JsonValue.Create(arguments!["value"]!.GetValue<string>())),
+		},
+	],
+	Models = request => new JsonArray(
+		(JsonNode)new JsonObject { ["id"] = "smoke", ["type"] = request.Type }),
+	Timeout = TimeSpan.FromSeconds(30),
+});
+var codeModeBasic = await codeModeSandbox.ExecuteAsync("""text("a"); return 1;""");
+Console.WriteLine($"codemode basic: ok={codeModeBasic.Ok} value={codeModeBasic.Value} error={codeModeBasic.Error?.Message}");
+
+var codeModeSecond = await codeModeSandbox.ExecuteAsync("""return 1;""");
+Console.WriteLine($"codemode second: ok={codeModeSecond.Ok} value={codeModeSecond.Value} error={codeModeSecond.Error?.Message}");
+
+var codeModeEval = await codeModeSandbox.ExecuteAsync("""return eval("1 + 1");""");
+Console.WriteLine($"codemode eval: ok={codeModeEval.Ok} value={codeModeEval.Value} error={codeModeEval.Error?.Message}");
+
+var codeModeSearch = await codeModeSandbox.ExecuteAsync("""return searchTools("echo")[0].name;""");
+Console.WriteLine($"codemode search: ok={codeModeSearch.Ok} value={codeModeSearch.Value} error={codeModeSearch.Error?.Message}");
+
+var codeModeModels = await codeModeSandbox.ExecuteAsync("""return models.getModelsOfType("chat")[0].id;""");
+Console.WriteLine($"codemode models: ok={codeModeModels.Ok} value={codeModeModels.Value} error={codeModeModels.Error?.Message}");
+
+var codeMode = await codeModeSandbox.ExecuteAsync("""
+	const value = await tools.echo({ value: "hi" });
+	const compiled = eval("1 + 1");
+	const found = searchTools("echo")[0].name;
+	const model = models.getModelsOfType("chat")[0].id;
+	text("codemode:" + value);
+	return compiled + 40 + (found === "echo" ? 0 : 100) + (model === "smoke" ? 0 : 100);
+	""");
+var codeModeText = string.Join("|", codeMode.Output.OfType<CodeModeTextItem>().Select(item => item.Text));
+Console.WriteLine($"codemode: ok={codeMode.Ok} value={codeMode.Value} output={codeModeText}");
+if (!codeMode.Ok || codeMode.Value?.GetValue<int>() != 42 || codeModeText != "codemode:hi")
+{
+	Console.WriteLine($"codemode failed: {codeMode.Error?.Kind} {codeMode.Error?.Message}");
 	return 1;
 }
 

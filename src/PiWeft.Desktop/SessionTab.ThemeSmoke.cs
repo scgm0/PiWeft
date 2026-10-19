@@ -33,13 +33,13 @@ public sealed partial class SessionTab
 		_themeSmokeUser = _timeline.VisibleRows.OfType<Border>().FirstOrDefault(row => row.Tag is StackPanel);
 	}
 
-	internal bool VerifyThemeSmoke(Color oldPickerBackground) =>
+	internal bool VerifyThemeSmoke(Color oldPickerColor) =>
 		_composer.Text == "theme smoke draft" && _composer.SelectionStart == 6 && _composer.SelectionLength == 5 &&
-		_composer.BorderBrush == AppTheme.Border && _thinkingPicker.Background != oldPickerBackground &&
+		_composer.BorderBrush == AppTheme.Border && _thinkingLabel.Foreground != oldPickerColor &&
 		(_themeSmokeMarkdown is null || Find<MarkdownPresenter>(_messages).Contains(_themeSmokeMarkdown) &&
 			_themeSmokeMarkdown.SelectedText == _themeSmokeSelection) &&
 		(_themeSmokeTool is null || _themeSmokeTool.IsExpanded && ReferenceEquals(_themeSmokeToolContent, _themeSmokeTool.Content)) &&
 		(_themeSmokeUser is null || _themeSmokeUser.Background == AppTheme.CardBackgroundAlt);
 
-	internal Color ThemeSmokePickerBackground => _thinkingPicker.Background;
+	internal Color ThemeSmokePickerColor => _thinkingLabel.Foreground;
 }

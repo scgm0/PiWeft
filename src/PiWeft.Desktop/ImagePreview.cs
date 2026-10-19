@@ -69,8 +69,12 @@ internal sealed class ImagePreview
 
 	public ImagePreview()
 	{
-		_close = AppIcons.Button("x", Strings.ImagePreviewClose, Hide);
-		_copy = AppIcons.Button("copy", Strings.CopyImage, CopyImage);
+		// 预览遮罩始终是深色：按钮用代码表面的浅色前景与低透明度白色悬停，
+		// 不能用浅色主题的 Ghost 前景/底色，否则按钮会消失在遮罩里。
+		_close = AppIcons.Button("x", Strings.ImagePreviewClose, Hide, tint: AppTheme.CodeText)
+			.StyleName(AppStyles.CodeButton).Padding(Thickness.Zero);
+		_copy = AppIcons.Button("copy", Strings.CopyImage, CopyImage, tint: AppTheme.CodeText)
+			.StyleName(AppStyles.CodeButton).Padding(Thickness.Zero);
 		_actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 			.HorizontalAlignment(HorizontalAlignment.Right).VerticalAlignment(VerticalAlignment.Top)
 			.Margin(new Thickness(AppTheme.Space3)).Children(_copy, _close);

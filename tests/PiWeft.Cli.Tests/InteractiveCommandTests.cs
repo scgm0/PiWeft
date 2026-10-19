@@ -39,9 +39,8 @@ public class InteractiveCommandTests : IDisposable
 	}
 
 	[Fact]
-	public void ImportSessionAppendsSourceBranchMessagesAndRebuildsTheContext()
+	public void ImportSessionReplacesTheCurrentSessionAndResumesIt()
 	{
-		// 源会话带一段完整的对话。
 		var source = SessionManager.Create(_root, Path.Combine(_root, "source-sessions"));
 		source.AppendMessage(new UserMessage { Content = MessageContent.FromText("源里的问题") });
 		source.AppendMessage(new AssistantMessage { Content = [new TextContent { Text = "源里的回答" }] });
@@ -50,24 +49,24 @@ public class InteractiveCommandTests : IDisposable
 		using var target = CreateSession();
 		target.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("既有消息") });
 
-		var imported = CliRunner.ImportSession(target, sourceFile);
+		var imported = CliRunner.ImportSession(sourceFile);
+		target.SwitchSession(imported);
 
-		Assert.Equal(2, imported);
-		Assert.Equal(3, target.Session.BuildProjectedMessages().Count);
+		Assert.Equal(sourceFile, target.Session.SessionFile);
+		Assert.Equal(2, target.Session.BuildProjectedMessages().Count);
 		Assert.Contains(
 			"源里的回答",
 			target.Session.BuildProjectedMessages().OfType<AssistantMessage>().Single().Content.OfType<TextContent>().Single().Text);
-
-		// 源文件不被改动。
-		Assert.Equal(2, SessionManager.Open(sourceFile).BuildProjectedMessages().Count);
+		Assert.DoesNotContain(
+			"既有消息",
+			target.Session.BuildProjectedMessages().OfType<UserMessage>().Select(static message => message.Content.Text));
 	}
 
 	[Fact]
 	public void ImportSessionRejectsMissingFiles()
 	{
-		using var target = CreateSession();
 		Assert.Throws<InvalidOperationException>(
-			() => CliRunner.ImportSession(target, Path.Combine(_root, "absent.jsonl")));
+			() => CliRunner.ImportSession(Path.Combine(_root, "absent.jsonl")));
 	}
 
 	[Fact]

@@ -19,17 +19,58 @@ public static class AppStyles
 	public const string FramedSidebar = "pi-sidebar-framed";
 	public const string TextInput = "pi-text-input";
 	public const string TextInputLine = "pi-text-input-line";
-	public const string TopBar = "pi-topbar";
 	public const string Sidebar = "pi-sidebar";
 	public const string Panel = "pi-panel";
+	/// <summary>右侧功能面板的页签条：与侧栏同色，底部一条发丝线，与主区页签条区分。</summary>
+	public const string RightPanelHeader = "pi-right-panel-header";
 	public const string Card = "pi-card";
 	public const string CardMuted = "pi-card-muted";
+	/// <summary>浮层卡片（上下文/余额这类浮在内容之上的面板）：比 Card 多一条可见结构线，配合阴影使用。</summary>
+	public const string PopupCard = "pi-popup-card";
+
+	/// <summary>右侧面板外壳：与左侧栏同色，窗框两侧对称。</summary>
+	public const string RightPanel = "pi-right-panel";
+
+	/// <summary>会话底部的终端面板：主区底色，顶部一条发丝线把终端与对话分开。</summary>
+	public const string TerminalDock = "pi-terminal-dock";
+
 	public const string UserMessage = "pi-message-user";
 	public const string ToolMessage = "pi-message-tool";
 	public const string ToolError = "pi-message-tool-error";
 	public const string Code = "pi-code";
+	public const string Terminal = "pi-terminal";
 	public const string Composer = "pi-composer";
 	public const string SelectedRow = "pi-row-selected";
+
+	// 弹窗（设置 / 配置管理）：窗口级浮层里的整块界面。
+	public const string Dialog = "pi-dialog";
+	public const string DialogHeader = "pi-dialog-header";
+	public const string DialogNav = "pi-dialog-nav";
+	public const string DialogContent = "pi-dialog-content";
+
+	/// <summary>设置卡片的分区标题条：底色与卡片同色，只有一条底发丝线。</summary>
+	public const string CardHeader = "pi-card-header";
+
+	/// <summary>分段切换（系统设置 / 配置管理）：轨道容器。</summary>
+	public const string SegmentTrack = "pi-segment-track";
+	public const string SegmentButton = "pi-segment-button";
+	public const string SegmentButtonActive = "pi-segment-button-active";
+
+	// 窗框（自定义标题栏）
+	public const string TitleBarSidebar = "pi-title-bar-sidebar";
+	public const string TitleBarMain = "pi-title-bar-main";
+	public const string TitleBarThread = "pi-title-bar-thread";
+	public const string TitleBarSeparator = "pi-title-bar-separator";
+	public const string TitleBarButton = "pi-title-bar-button";
+	public const string TitleBarIconButton = "pi-title-bar-icon";
+
+	/// <summary>标题栏里的开关型图标按钮（右侧面板开关）处于打开状态时的常驻浮起。</summary>
+	public const string TitleBarIconButtonActive = "pi-title-bar-icon-active";
+	public const string TitleBarCloseButton = "pi-title-bar-close";
+	public const string TitleBarTab = "pi-title-bar-tab";
+	public const string TitleBarTabActive = "pi-title-bar-tab-active";
+	public const string TitleBarTabClose = "pi-title-bar-tab-close";
+	public const string WindowFrame = "pi-window-frame";
 
 	/// <summary>
 	/// 与 <see cref="Card"/> 同色但目标是 <see cref="Button"/> 的版本。
@@ -50,6 +91,7 @@ public static class AppStyles
 
 	// 按钮
 	public const string PrimaryButton = "pi-button-primary";
+	public const string CodeButton = "pi-button-code";
 	public const string GhostButton = "pi-button-ghost";
 	public const string SelectedButton = "pi-button-selected";
 
@@ -127,25 +169,25 @@ public static class AppStyles
 			{
 				Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border))],
 			})
-			.With(TopBar, () => new Style(typeof(Border))
+			.With(Sidebar, () => Fill(typeof(Border), p => p.SidebarBackground))
+			.With(Panel, () => Fill(typeof(Border), p => p.CardBackground))
+			.With(RightPanelHeader, () => new Style(typeof(Border))
 			{
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).SidebarBackground)),
 					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
-					Setter.Create(Control.BorderThicknessProperty, 0.0),
-				],
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 0, 0, 1)),
+				]
 			})
-			.With(Sidebar, () => Fill(typeof(Border), p => p.SidebarBackground))
-			.With(Panel, () => Fill(typeof(Border), p => p.CardBackground))
 			.With(Card, () => new Style(typeof(Border))
 			{
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackground)),
-					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
 					Setter.Create(Control.BorderThicknessProperty, 1.0),
-					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusLg),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusMd),
 				],
 			})
 			.With(CardMuted, () => new Style(typeof(Border))
@@ -153,9 +195,19 @@ public static class AppStyles
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
-					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
 					Setter.Create(Control.BorderThicknessProperty, 1.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+				],
+			})
+			.With(PopupCard, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusMd),
 				],
 			})
 			.With(Composer, () => new Style(typeof(Border))
@@ -163,13 +215,14 @@ public static class AppStyles
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackground)),
-					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
 					Setter.Create(Control.BorderThicknessProperty, 1.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusLg),
 				],
 			})
 			.With(UserMessage, () => Fill(typeof(Border), p => p.CardBackgroundAlt))
-			.With(ToolMessage, () => CardStyle(typeof(Border), p => p.CardBackground))
+			// 工具调用条：无描边的色调条（图标 + 命令摘要 + 状态），展开后内容再进卡片。
+			.With(ToolMessage, () => Fill(typeof(Border), p => p.CardBackground))
 			.With(ToolError, () => new Style(typeof(Border))
 			{
 				Setters =
@@ -179,7 +232,369 @@ public static class AppStyles
 				],
 			})
 			.With(Code, () => Fill(typeof(Border), p => p.CodeBackground))
+			.With(Terminal, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TerminalBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TerminalBorder)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusMd),
+				],
+			})
 			.With(SelectedRow, () => Fill(typeof(Border), p => p.AccentSoft))
+			.With(RightPanel, () => Fill(typeof(Border), p => p.SidebarBackground))
+			// 底部终端面板：与主区同色，顶部一条发丝线就是它与对话之间的分界。
+			.With(TerminalDock, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).WindowBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 1, 0, 0)),
+				]
+			})
+			// 设置弹窗：浮起表面 + 一条结构线，圆角由调用方给到 Lg（弹窗是唯一的“大”表面）。
+			.With(Dialog, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusLg),
+					Setter.Create(Border.ClipToBoundsProperty, true),
+				]
+			})
+			// 弹窗头尾都用发丝线分区：标题栏只有一条底边，不铺重背景。
+			.With(DialogHeader, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 0, 0, 1)),
+				]
+			})
+			// 弹窗里的导航轨：与主区同属一块表面，但比内容区深一档，右侧一条结构线。
+			.With(DialogNav, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).SidebarBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 0, 1, 0)),
+				]
+			})
+			.With(DialogContent, () => Fill(typeof(Border), p => p.WindowBackground))
+			.With(CardHeader, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 0, 0, 1)),
+				]
+			})
+			// 分段切换：轨道用内嵌表面，活动段用卡片底色 + 结构线浮起。
+			.With(SegmentTrack, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					// 轨道压在导航轨上：深色用比侧栏稍亮的主区底色，浅色用比导航轨暗一档的
+					// 结构色，让「轨道 < 悬停 < 活动」的亮度阶梯在两个主题里都成立。
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => t.IsDark
+						? AppTheme.For(t).WindowBackground : AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => t.IsDark
+						? AppTheme.For(t).BorderSubtle : AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusMd),
+				]
+			})
+			.With(SegmentButton, () => new Style(typeof(Button))
+			{
+				BasedOn = ButtonInteraction,
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.ForegroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						// 悬停色取「轨道与活动段之间」的一档：深色 #141414→#252525→#2b2b2b，
+						// 浅色 #e0e0e0→#f0f0f0→#ffffff。不再和轨道同色，浅色也能看见反馈。
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt))],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft))],
+					},
+				],
+			})
+			.With(SegmentButtonActive, () => new Style(typeof(Button))
+			{
+				BasedOn = ButtonInteraction,
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.ForegroundProperty)],
+				Setters =
+				[
+					// 活动段要比轨道明显跳一档：深色用悬停灰、浅色用白底，各带一条结构线。
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => t.IsDark
+						? AppTheme.For(t).HoverBackground : AppTheme.For(t).CardBackground)),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => t.IsDark
+						? AppTheme.For(t).Border : AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft))],
+					},
+				],
+			})
+			// 标题栏左右两段：左段与侧栏同色、右段与主区同色，拼成 PiDeck 式的连续窗框。
+			.With(TitleBarSidebar, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).SidebarBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 0, 0, 1)),
+				],
+			})
+			.With(TitleBarMain, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).WindowBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 0, 0, 1)),
+				],
+			})
+			// 无边框窗口没有系统外框：由应用补圆角、可见边界与裁剪；阴影由 ShadowDecorator 负责。
+			.With(WindowFrame, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).WindowBackground)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusLg),
+					Setter.Create(Border.ClipToBoundsProperty, true),
+				],
+			})
+			.With(TitleBarThread, () => Fill(typeof(Border), p => p.Accent))
+			.With(TitleBarSeparator, () => Fill(typeof(Border), p => p.BorderSubtle))
+			// 标题栏图标的悬停块：小圆角，不撑满整行。
+			.With(TitleBarIconButton, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusXs),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+				],
+			})
+			// 开关型标题栏按钮的「已打开」态：与悬停同档的浮起，再加一条强调弱底，
+			// 让用户一眼看出右侧面板是从这个键唤醒的、现在正开着。
+			.With(TitleBarIconButtonActive, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft)),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusXs),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+				],
+			})
+			// 窗口按钮是窗框的一部分，不是正文按钮：直角、等高、悬停才浮起。
+			.With(TitleBarButton, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, 0.0),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+				],
+			})
+			// 关闭键是唯一的语义色窗口按钮：悬停只给极淡的错误色底，不抢正文注意力。
+			.With(TitleBarCloseButton, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.ForegroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, 0.0),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error.WithAlpha(0x2e))),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error)),
+						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error.WithAlpha(0x4a))),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error)),
+						],
+					},
+				],
+			})
+			// 页签：非活动态透明、活动态浮起；文字色由 Button 的前景继承给标签。
+			.With(TitleBarTab, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.ForegroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+				],
+			})
+			.With(TitleBarTabActive, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.ForegroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+						],
+					},
+				],
+			})
+			.With(TitleBarTabClose, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.ForegroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusXs),
+					Setter.Create(Control.PaddingProperty, new Thickness(0)),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error.WithAlpha(0x2e))),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error)),
+						],
+					},
+				],
+			})
 			.With(CardButton, () => CardStyle(typeof(Button), p => p.CardBackground))
 			.With(CardMutedButton, () => CardStyle(typeof(Button), p => p.CardBackgroundAlt))
 			.With(TextPrimary, () => Text(p => p.TextPrimary))
@@ -188,15 +603,77 @@ public static class AppStyles
 			.With(TextFaint, () => Text(p => p.TextFaint))
 			.With(AccentText, () => Text(p => p.Accent))
 			.With(OnAccentText, () => Text(p => p.TextOnAccent))
+			// 深色代码表面（工具输出/diff、图片预览遮罩）上的按钮：前景始终取 CodeText，
+			// 悬停是白色低透明度，不跟随浅色主题的 Ghost 底。
+			.With(CodeButton, () => new Style(typeof(Button))
+			{
+				Transitions = [Transition.Create(Control.BackgroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText.WithAlpha(0x1a))),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText)),
+						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText.WithAlpha(0x2e))),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText)),
+						],
+					},
+				],
+			})
 			.With(PrimaryButton, () => new Style(typeof(Button))
 			{
 				BasedOn = ButtonInteraction,
+				// 主按钮的强调色在浅色是近黑、深色是近白，用透明度做悬停/按下反馈，
+				// 两个主题的反馈方向一致，也不必为两种底色各配一套颜色。
+				Transitions = [Transition.Create(UIElement.OpacityProperty)],
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent)),
 					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextOnAccent)),
 					Setter.Create(Control.BorderThicknessProperty, 0.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+					// 常态不透明度写进样式：悬停/按下触发退出后能可靠回到 1。
+					Setter.Create(UIElement.OpacityProperty, 1.0),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(UIElement.OpacityProperty, 0.9)],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(UIElement.OpacityProperty, 0.78)],
+					},
+					// 主按钮没有“未保存”时可点：禁用态整体变灰，不保留醒目的强调白。
+					new StateTrigger
+					{
+						Exclude = VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextFaint)),
+						],
+					},
 				],
 			})
 			.With(SelectedButton, () => new Style(typeof(Button))
@@ -215,7 +692,9 @@ public static class AppStyles
 				BasedOn = ButtonInteraction,
 				Setters =
 				[
-					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Transparent)),
+					// 底色用「悬停色的零 alpha」而不是 Transparent：黑色全透明到浅灰的插值会经过深灰，
+					// 悬停进出时肉眼看到闪一下（MewUI 的 flat 按钮样式也是这么处理的）。
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground.WithAlpha(0))),
 					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),
 					Setter.Create(Control.BorderThicknessProperty, 0.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
@@ -224,8 +703,10 @@ public static class AppStyles
 				[
 					new StateTrigger
 					{
+						// 悬停色取「轨道与活动段之间」的一档：深色 #141414→#252525→#2b2b2b，
+						// 浅色 #e0e0e0→#f0f0f0→#ffffff。不再和轨道同色，浅色也能看见反馈。
 						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
-						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground))],
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt))],
 					},
 					new StateTrigger
 					{

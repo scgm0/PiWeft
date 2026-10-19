@@ -1,0 +1,137 @@
+using System.Reflection;
+using Aprillz.MewUI;
+using Aprillz.MewUI.Controls;
+using Xunit;
+using static PiWeft.Desktop.Tests.VisualTree;
+
+namespace PiWeft.Desktop.Tests;
+
+[Collection("mewui-controls")]
+public sealed class SessionSearchPaletteTests
+{
+	private static readonly IReadOnlyList<SessionListItem> Catalog =
+	[
+		Item("chat", "/work/alpha"),
+		Item("json-i-18n", "/work/godot"),
+		Item("notes", "/work/godot"),
+	];
+
+	private static SessionListItem Item(string name, string cwd) => new()
+	{
+		Path = Path.Combine(cwd, name + ".jsonl"),
+		Id = name,
+		Name = name,
+		Cwd = cwd,
+	};
+
+	[Fact]
+	public void OpeningAttachesToTheWindowAndClosingDetachesOnce()
+	{
+		var owner = new Border();
+		var window = new Window().Content(owner);
+		var palette = new SessionSearchPalette(() => Catalog, static _ => { });
+		var closed = 0;
+		palette.Closed += () => closed++;
+
+		palette.Show(owner);
+		Assert.True(palette.IsOpen);
+		Assert.Same(window, palette.View.Parent);
+		Assert.Equal(1, window.OverlayLayer.Count);
+
+		palette.Hide();
+		Assert.False(palette.IsOpen);
+		Assert.Null(palette.View.Parent);
+		Assert.Equal(0, window.OverlayLayer.Count);
+		Assert.Equal(1, closed);
+		palette.Hide();
+		Assert.Equal(1, closed);
+	}
+
+	[Fact]
+	public void OpeningThePaletteClosesTheCommandPaletteLikeTheOtherOverlays()
+	{
+		var window = new Window();
+		var commands = new CommandPalette(() => []);
+		var search = new SessionSearchPalette(() => Catalog, static _ => { });
+		commands.Show(window);
+		search.Show(window);
+		Assert.False(commands.IsOpen);
+		Assert.True(search.IsOpen);
+		Assert.Equal(1, window.OverlayLayer.Count);
+		search.Hide();
+		Assert.Equal(0, window.OverlayLayer.Count);
+	}
+
+	[Fact]
+	public void TypingFiltersByNameAndEnterOpensTheSelectedSession()
+	{
+		var owner = new Border();
+		var window = new Window().Content(owner);
+		SessionListItem? opened = null;
+		var palette = new SessionSearchPalette(() => Catalog, item => opened = item);
+		palette.Show(owner);
+
+		var query = Find<TextBox>(palette.View).First();
+		query.Text = "i-18n";
+		Assert.Equal(["json-i-18n"], palette.Matches.Select(static item => item.Name));
+		var titles = Find<TextBlock>(palette.View).Select(static text => text.Text)
+			.Where(static text => text.Length > 0).ToArray();
+		Assert.Equal(["Esc", Strings.SessionSearch, "json-i-18n", "/work/godot"], titles);
+
+		Press(query, Key.Enter);
+		Assert.Same(Catalog[1], opened);
+		Assert.False(palette.IsOpen);
+		Assert.Equal(0, window.OverlayLayer.Count);
+	}
+
+	[Fact]
+	public void ArrowKeysMoveTheSelectionAndEscapeCloses()
+	{
+		var owner = new Border();
+		var window = new Window().Content(owner);
+		var palette = new SessionSearchPalette(() => Catalog, static _ => { });
+		palette.Show(owner);
+		var query = Find<TextBox>(palette.View).First();
+		var rows = Find<Button>(palette.View).Where(button => HoverHints.Text(button) is not null).ToArray();
+		Assert.Equal(3, rows.Length);
+		Assert.Equal(AppStyles.SelectedButton, rows[0].StyleName);
+
+		Press(query, Key.Down);
+		Assert.Equal(AppStyles.GhostButton, rows[0].StyleName);
+		Assert.Equal(AppStyles.SelectedButton, rows[1].StyleName);
+
+		Press(query, Key.Escape);
+		Assert.False(palette.IsOpen);
+		Assert.Equal(0, window.OverlayLayer.Count);
+	}
+
+	[Fact]
+	public void NoMatchesShowsTheHintAndTheBlankAreaClosesThePalette()
+	{
+		var owner = new Border();
+		var window = new Window().Content(owner);
+		var palette = new SessionSearchPalette(() => Catalog, static _ => { });
+		palette.Show(owner);
+		var query = Find<TextBox>(palette.View).First();
+		query.Text = "no-such-session";
+		var hint = Find<TextBlock>(palette.View).Single(text => text.Text == Strings.NoMatches);
+		Assert.True(hint.IsVisible);
+
+		var backdrop = Find<Button>(palette.View).First(button => HoverHints.Text(button) is null);
+		ImagePreviewTests.Click(backdrop);
+		Assert.False(palette.IsOpen);
+		Assert.Equal(0, window.OverlayLayer.Count);
+	}
+
+	[Fact]
+	public void DetachedOwnersDoNotOpenThePalette()
+	{
+		var palette = new SessionSearchPalette(() => Catalog, static _ => { });
+		palette.Show(new Border());
+		Assert.False(palette.IsOpen);
+		Assert.Null(palette.View.Parent);
+	}
+
+	private static void Press(UIElement element, Key key) =>
+		typeof(UIElement).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(element, [new KeyEventArgs(key, 0)]);
+}

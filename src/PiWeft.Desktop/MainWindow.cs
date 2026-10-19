@@ -15,7 +15,7 @@ using ZLogger;
 namespace PiWeft.Desktop;
 
 /// <summary>
-/// 桌面外壳主窗口：顶栏、左侧会话栏、多标签会话主区。
+/// 桌面外壳主窗口：自定义标题栏、左侧会话栏、多标签会话主区。
 /// 每个标签是一个独立的 <see cref="SessionTab"/>（各自持有会话与输入区），因此可以并行开着多个会话。
 /// 会话文件与 CLI、pi 完全互通。
 /// </summary>
@@ -24,16 +24,25 @@ public sealed partial class MainWindow : Window
 	private readonly string _cwd;
 	private readonly SessionCatalog _catalog = new();
 	private CliArguments _arguments;
-	/// <summary>与 TabControl 一一对应的标签内容：<see cref="SessionTab"/> 或 <see cref="SettingsView"/>。</summary>
+	/// <summary>与 TabControl 一一对应的标签内容：<see cref="SessionTab"/> 或 Git/文件/终端等辅助页。</summary>
 	private readonly List<object> _tabEntries = [];
 	private McpConnection? _mcp;
 	private IReadOnlyList<AgentTool> _mcpTools = [];
 	/// <summary>标签标题文本，主题/名称变化时只改这一个控件。</summary>
-	private readonly Dictionary<object, TextBlock> _tabLabels = [];
 	private SettingsView? _settingsView;
-	private GitView? _gitView;
-	private FileBrowserView? _filesView;
-	private TerminalDock? _terminalView;
+
+	/// <summary>设置是窗口级弹窗（与 PiDeck 一致），不占用主区标签。</summary>
+	private SettingsDialog? _settingsDialog;
+
+	/// <summary>
+	/// 每个会话各有一个右侧面板（文件 / Git / 终端）：内容跟着会话的工作目录，
+	/// 默认收起；宽度是窗口级偏好，切换会话时沿用。
+	/// </summary>
+	private readonly Dictionary<SessionTab, RightPanel> _sessionPanels = [];
+	/// <summary>用户偏好宽度：只由拖拽分隔条/关窗写入；窗口缩放造成的夹取不覆盖它。</summary>
+	private double _rightPanelWidth = AppTheme.RightPanelWidth;
+	private SplitPanel _panelSplit = null!;
+	private Grid _panelHost = null!;
 	private SessionTab? _lastSessionTab;
 	private CommandPalette? _palette;
 	/// <summary>主题目录监视器：主题文件变化时即时换肤（PI-10）。</summary>
@@ -43,23 +52,35 @@ public sealed partial class MainWindow : Window
 	private string? _pendingNotice;
 	private readonly Dictionary<string, CliEnvironment> _environments = new(StringComparer.Ordinal);
 	private CliEnvironment? _environment;
-	private CheckBox _currentDirOnly = null!;
 	private IReadOnlyList<SessionListItem> _sessions = [];
-	private IReadOnlyList<SessionCatalog.ContentMatch> _contentMatches = [];
-
-	/// <summary>搜索请求序号：后台搜索结果回来时用它判断是否已过期。</summary>
-	private int _searchVersion;
 	private bool _restoringSelection;
-	private CancellationTokenSource? _contentSearch;
-	private bool _closed;
 	private Border _sidebar = null!;
 	private SplitPanel _workspace = null!;
+	private Button _backButton = null!;
+	private bool _sidebarPreferred;
+	private TreeView _chatsTree = null!;
+	private Button _sessionsTabButton = null!;
+	private Button _projectsTabButton = null!;
+	private Button _newSessionButton = null!;
+	private Button _addProjectButton = null!;
+	private bool _projectsTab;
+	private string? _renamingPath;
+	private readonly HashSet<string> _removedProjects = new(StringComparer.Ordinal);
 	private IReadOnlyList<SessionListItem> _allSessions = [];
 	private IReadOnlyList<Model> _models = [];
 
-	private TextBox _search = null!;
+	/// <summary>「对话」分段的工作目录：这里开出的会话不属于任何项目。</summary>
+	private readonly string _chatWorkspace;
+
+	/// <summary>「对话」分段的节点，重建后用来恢复选中。</summary>
+	private IReadOnlyList<TreeViewNode> _chatNodes = [];
+
+	/// <summary>「对话」为空时的提示；列表铺满剩余高度，提示叠在列表上方。</summary>
+	private TextBlock _chatsEmpty = null!;
+
+	private SessionSearchPalette _sessionSearch = null!;
+	private Button _searchButton = null!;
 	private TextBox _nameBox = null!;
-	private TextBlock _tabCaption = null!;
 	private TreeView _sessionTree = null!;
 
 	/// <summary>当前的快捷键绑定（启动时读一次，改键后提示重启生效）。</summary>
@@ -85,9 +106,15 @@ public sealed partial class MainWindow : Window
 	{
 		_cwd = cwd;
 		var preference = DesktopPreference.Load();
+		_chatWorkspace = preference.ResolveChatWorkspace();
 		this.Resizable(preference.WindowWidth ?? 1280, preference.WindowHeight ?? 820);
 		this.Padding(Thickness.Zero);
 		this.AllowDrop();
+		// 窗口本身显式使用内嵌 Regular：默认样式、继承文本与框架对话框都从这里拿到同一张脸。
+		this.FontFamily = AppFonts.DefaultUi;
+		this.FontWeight = FontWeight.Normal;
+		// 自定义标题栏必须在显示原生窗口之前定型：Win32/macOS 走客户区延伸，X11 走无边框。
+		ConfigureWindowFrame();
 
 		// 模型与会话都由界面决定，因此这里只用最少的默认开关。
 		_arguments = CliArguments.Parse(["--mode", "text"]).Arguments!;
@@ -171,7 +198,7 @@ public sealed partial class MainWindow : Window
 				break;
 
 			case ShortcutActions.NewSession:
-				OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd));
+				NewSessionFromCurrentView();
 				break;
 
 			case ShortcutActions.Models:
@@ -184,7 +211,7 @@ public sealed partial class MainWindow : Window
 
 			case ShortcutActions.SearchSessions:
 				_sidebar.IsVisible(true);
-				_search.Focus();
+				_sessionSearch.Toggle(this);
 				break;
 
 			case ShortcutActions.CloseTab:
@@ -193,19 +220,23 @@ public sealed partial class MainWindow : Window
 				break;
 
 			case ShortcutActions.Settings:
-				OpenSettingsTab();
+				OpenSettingsDialog();
 				break;
 
 			case ShortcutActions.Git:
-				OpenGitTab();
+				ShowGitPanel();
 				break;
 
 			case ShortcutActions.Files:
-				OpenFilesTab();
+				ShowFilesPanel();
 				break;
 
 			case ShortcutActions.Terminal:
-				OpenTerminalTab();
+				ToggleTerminalPanel();
+				break;
+
+			case ShortcutActions.RightPanel:
+				ToggleRightPanel();
 				break;
 
 			case ShortcutActions.ToggleTheme:
@@ -236,51 +267,21 @@ public sealed partial class MainWindow : Window
 	/// </summary>
 	private void BuildUi()
 	{
-
-		_banner = new TextBlock().FontSize(AppTheme.FontSizeCaption).MutedText();
+		_banner = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 		_status = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 
-		// ------------------------------------------------------------ 顶栏
-		// 参考同类客户端：左侧是身份与当前上下文，右侧只放图标动作，快捷键提示收进命令面板。
-		// 顶栏动作使用 Lucide 矢量图标（不受字体缺字影响），配中文提示。
-		var git = AppIcons.Button("git-branch", Strings.Git, OpenGitTab, size: AppIcons.ToolbarSize);
-		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
-		var theme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
-		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsTab, size: AppIcons.ToolbarSize);
-
-		var brand = new TextBlock()
-			.Text(Strings.AppName)
-			.FontSize(AppTheme.FontSizeBrand)
-			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
-			.FontWeight(FontWeight.Bold)
-			.PrimaryText();
-
-		_tabCaption = new TextBlock()
-			.Text(_cwd)
-			.FontSize(AppTheme.FontSizeCaption)
-			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.SubtleText();
-
-		var topBar = new Border()
-			.StyleName(AppStyles.TopBar)
-			.Padding(new Thickness(AppTheme.Space3, 6, AppTheme.Space3, 6))
-			.Child(new DockPanel()
-				.LastChildFill()
-				.Children(
-					new StackPanel()
-						.Orientation(Orientation.Horizontal)
-						.Spacing(2)
-						.Children(palette, git, settings, theme)
-						.DockRight(),
-					new DockPanel().LastChildFill().Children(
-						AppIcons.Button("panel-left", Strings.ToggleSidebar, ToggleSidebar).DockLeft(), brand.DockLeft(), _tabCaption)));
+		// ------------------------------------------------------------ 外壳
+		// 窗口标题栏（品牌 + 当前语境 + 窗口按钮）由 BuildChromeShell 组装；
+		// 主区仍直接是内容，不新增全局工具栏。
 
 		// ------------------------------------------------------------ 侧栏
-		// 结构参考同类客户端：新建（主）+ 搜索 + 过滤开关 + 列表 + 底部紧凑操作。
-		_search = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeControl)
-			.Placeholder(Strings.SearchPlaceholder).CornerRadius(AppTheme.RadiusMd)
-			.Height(AppTheme.ControlHeightMd)
-			.OnTextChanged(_ => FilterSessions());
+		// 新建会话 + 搜索会话（两条与侧栏同色的导航行）+ 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
+		// 「搜索会话」不是常驻输入框：点击打开搜索弹窗（Ctrl+K），结果按名称、路径与正文过滤。
+		_sessionSearch = new SessionSearchPalette(() => _allSessions, OpenSessionFromSearch);
+		_sessionSearch.Closed += FocusActiveEntry;
+		_searchButton = AppIcons.TextButton("search", Strings.SessionSearch, () => _sessionSearch.Toggle(this), strong: true)
+			.MinHeight(AppTheme.ControlHeightLg)
+			.CornerRadius(AppTheme.RadiusMd);
 
 		_nameBox = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeControl)
 			.Placeholder(Strings.SessionNamePlaceholder)
@@ -294,57 +295,108 @@ public sealed partial class MainWindow : Window
 				}
 			});
 
-		_currentDirOnly = new CheckBox()
-			.Content(new TextBlock().Text(Strings.CurrentDirOnly).FontSize(AppTheme.FontSizeCaption))
-			.IsChecked(true)
-			.OnCheckedChanged(_ => RefreshSessions());
-
+		// 「项目」视图：工作区列表（文件夹 + 行级 ⋯ 菜单）。行内边距在 ConfigureSessionRows 里定。
 		_sessionTree = new TreeView().FontSize(AppTheme.FontSizeControl)
 			.BorderThickness(0).Background(AppTheme.Transparent);
 		ConfigureSessionRows();
 		_sessionTree.SelectedNodeChanged += OnSessionSelected;
 
-		var pin = AppIcons.Button("star", Strings.TogglePin, TogglePin);
-		var rename = AppIcons.Button("pencil", Strings.Rename, ShowRenameBox);
-		var remove = AppIcons.Button("trash", Strings.Delete, () => _ = DeleteSelectedAsync());
+		// 「对话」tab：聊天目录里的会话（不属于任何项目）；「项目」tab：按项目分组的任务树。
+		_chatsTree = new TreeView().FontSize(AppTheme.FontSizeControl)
+			.BorderThickness(0).Background(AppTheme.Transparent);
+		ConfigureChatsRows();
+		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
-		var sessionActions = new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(2)
-			.Children(pin, rename, remove);
-
+		// 聊天目录还没有会话时给一句引导，而不是一片空白；列表铺满剩余高度，提示叠在列表上方。
+		_chatsEmpty = new TextBlock()
+			.Text(Strings.ChatsEmpty)
+			.FontSize(AppTheme.FontSizeCaption)
+			.SubtleText()
+			.TextWrapping(TextWrapping.Wrap)
+			.Margin(new Thickness(10, AppTheme.Space2, 6, 0))
+			.VerticalAlignment(VerticalAlignment.Top)
+			.IsHitTestVisible(false)
+			.IsVisible(false);
 
 		_banner.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap);
 
-		var newSession = AppIcons.TextButton("plus", Strings.NewSession,
-			() => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd)))
-			.MinHeight(AppTheme.ControlHeightLg);
-		var openProject = AppIcons.Button("folder-open", Strings.OpenProject, () => _ = ChooseProjectAsync());
+		// 顶部「对话 | 项目」切换：两列等分侧栏宽度，侧栏拖宽时按钮跟着变宽；
+		// TextAlignment 保证文字始终落在各自按钮正中。
+		_sessionsTabButton = new Button().Ghost()
+			.HorizontalAlignment(HorizontalAlignment.Stretch)
+			.Content(new TextBlock().Text(Strings.SidebarTabChats).FontSize(AppTheme.FontSizeCaption).PrimaryText()
+				.TextAlignment(TextAlignment.Center))
+			.OnClick(() => ShowSidebarView(projects: false));
+		_projectsTabButton = new Button().Ghost()
+			.HorizontalAlignment(HorizontalAlignment.Stretch)
+			.Content(new TextBlock().Text(Strings.SidebarTabProjects).FontSize(AppTheme.FontSizeCaption).PrimaryText()
+				.TextAlignment(TextAlignment.Center))
+			.OnClick(() => ShowSidebarView(projects: true));
+
+		// 「新建 / 添加项目」与侧栏同色、悬停才浮起（PiDeck 式导航行）：默认不铺底色，行宽撑满侧栏。
+		// 「新建」属于「对话」分段，落点在聊天目录，不会混进当前项目。
+		_newSessionButton = AppIcons.TextButton("plus", Strings.NewSession,
+			NewChatSession, strong: true)
+			.MinHeight(AppTheme.ControlHeightLg)
+			.CornerRadius(AppTheme.RadiusMd);
+		_addProjectButton = AppIcons.TextButton("folder-open", Strings.AddProject,
+			() => _ = ChooseProjectAsync(), strong: true)
+			.MinHeight(AppTheme.ControlHeightLg)
+			.CornerRadius(AppTheme.RadiusMd);
 
 		var sidebarTop = new StackPanel().Spacing(AppTheme.Space2);
 		sidebarTop.Children(
-			new DockPanel().LastChildFill().Children(openProject.DockRight(), newSession),
-			_search,
-			_currentDirOnly,
+			new Grid().Columns("*,*").Spacing(4)
+				.Children(_sessionsTabButton.Column(0), _projectsTabButton.Column(1)),
+			new DockPanel().LastChildFill().Children(_addProjectButton.DockRight(), _newSessionButton),
+			_searchButton,
 			_nameBox,
 			_banner);
+
+		var git = AppIcons.Button("git-branch", Strings.Git, ShowGitPanel, size: AppIcons.ToolbarSize);
+		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
+		var theme = AppIcons.Button("contrast", Strings.ToggleTheme, ToggleTheme, size: AppIcons.ToolbarSize);
+		var settings = AppIcons.Button("settings", Strings.Settings, OpenSettingsDialog, size: AppIcons.ToolbarSize);
+
+		// 底部工具行：图标 + 小字标签（命令面板/Git/设置/主题），参照 Codex 桌面端的安静页脚。
+		static StackPanel FooterItem(string label, Button button)
+		{
+			// 按钮收窄一档（图标本身不变）：内容窄了，格间才有余量留给间距。
+			button.Padding(new Thickness(6, 4, 6, 4));
+			return new StackPanel()
+				.Spacing(2)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.Children(button.HorizontalAlignment(HorizontalAlignment.Center),
+					new TextBlock().Text(label).FontSize(11).SubtleText()
+						.HorizontalAlignment(HorizontalAlignment.Center));
+		}
+
+		// 页脚入口：四个内容列按各自宽度排（文字不会被裁），剩余宽度由三个弹性列平分 ——
+		// 侧栏越宽间距越大，越窄间距越小，但入口本身始终保持完整。侧栏折叠入口移到标题栏。
+		var sidebarFooter = new Border()
+			.BorderBrush(AppTheme.BorderSubtle).BorderThickness(new Thickness(0, 1, 0, 0))
+			.Margin(new Thickness(0, AppTheme.Space2, 0, 0))
+			.Padding(new Thickness(0, AppTheme.Space2, 0, 0))
+			.Child(new Grid().Columns("auto,*,auto,*,auto,*,auto").Children(
+				FooterItem(Strings.PaletteButton, palette).Column(0),
+				FooterItem(Strings.SidebarGit, git).Column(2),
+				FooterItem(Strings.ToggleTheme, theme).Column(4),
+				FooterItem(Strings.Settings, settings).Column(6)));
 
 		// 列表要吃掉剩余高度，所以这里用 DockPanel；StackPanel 会把 ListBox 压成内容高度。
 		var sidebar = _sidebar = new Border()
 			.StyleName(AppStyles.Sidebar)
-			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel()
 				.LastChildFill()
 				.Children(
-					new DockPanel().LastChildFill().Children(
-						AppIcons.Button("refresh-cw", Strings.RefreshSessions, RefreshSessions).DockRight(),
-						new TextBlock().Text(Strings.SessionList).HoverTip(_cwd).Caption()).DockTop(),
-					sidebarTop.DockTop(),
-					sessionActions.DockBottom(),
-					new Border()
-						.Background(AppTheme.Transparent)
-						.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
-						.Child(_sessionTree)));
+				sidebarFooter.DockBottom(),
+				new DockPanel().LastChildFill()
+					.Children(sidebarTop.DockTop(),
+						new Border()
+							.Background(AppTheme.Transparent)
+							.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
+							.Child(new Grid().Children(_sessionTree, _chatsTree.IsVisible(false), _chatsEmpty)))));
 
 		// ------------------------------------------------------------ 主区
 		_tabControl = new TabControl().BorderThickness(0).CornerRadius(0).Padding(Thickness.Zero)
@@ -355,48 +407,98 @@ public sealed partial class MainWindow : Window
 			.StyleName(AppStyles.Window)
 			.Padding(new Thickness(AppTheme.Space6))
 			.Child(new StackPanel()
-				.Spacing(AppTheme.Space2)
+				.Spacing(AppTheme.Space3)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.VerticalAlignment(VerticalAlignment.Center)
 				.Children(
 					new TextBlock()
 						.Text(Strings.WelcomeTitle)
-						.FontSize(18)
-						.FontWeight(FontWeight.Bold)
-						.PrimaryText(),
+						.FontSize(20)
+						.FontWeight(FontWeight.Medium)
+						.PrimaryText()
+						.HorizontalAlignment(HorizontalAlignment.Center),
 					new TextBlock()
 						.Text(Strings.WelcomeBody)
 						.FontSize(AppTheme.FontSizeCaption)
 						.MutedText()
-						.TextWrapping(TextWrapping.Wrap),
-					_status));
+						.TextAlignment(TextAlignment.Center)
+						.MaxWidth(420)
+						.TextWrapping(TextWrapping.Wrap)
+						.HorizontalAlignment(HorizontalAlignment.Center),
+					_status.HorizontalAlignment(HorizontalAlignment.Center)));
 
 		_palette = new CommandPalette(PaletteCommands);
-		_palette.Closed += () =>
-		{
-			if (CurrentTab() is { } tab)
-			{
-				tab.FocusComposer();
-			}
-			else
-			{
-				_search.Focus();
-			}
-		};
+		_palette.Closed += FocusActiveEntry;
 
 		var main = new Grid();
 		main.Children(_tabControl);
+
+		// 辅助页（用量统计）左上角的返回工作区入口。
+		_backButton = AppIcons.Button("arrow-left", Strings.BackToWorkspace, BackToWorkspace, size: AppIcons.ToolbarSize)
+			.HorizontalAlignment(HorizontalAlignment.Left)
+			.VerticalAlignment(VerticalAlignment.Top)
+			.Margin(new Thickness(AppTheme.Space2))
+			.IsVisible(false);
+		// TabControl 自带的页签条仍隐藏（标题栏右段另绘）；它会给选中页画一个小底座，用主区同色遮罩盖住。
+		main.Children(new Border()
+			.Height(30)
+			.VerticalAlignment(VerticalAlignment.Top)
+			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).WindowBackground)
+			.IsHitTestVisible(false));
 		main.Children(_welcome);
+		main.Children(_backButton);
+
+		// ------------------------------------------------------------ 右侧功能面板
+		// 面板属于会话：每个标签在 AttachTab 里挂一个 RightPanel 进这个宿主。
+		// 主区与面板之间用默认分隔条（与左侧同一套 SplitPanel）：主区星号、面板定宽，
+		// 窗口缩放后重新钉回用户宽度，拖拽时只在鼠标按下的帧里记录实际宽度。
+		var preference = DesktopPreference.Load();
+		_rightPanelWidth = preference.RightPanelWidth;
+		_panelHost = new Grid { ClipToBounds = true }.IsVisible(false);
+
+
+		// ------------------------------------------------------------ 窗框
+		// PiDeck 式连续窗框：左段与侧栏同色；主区与右侧面板共用顶部一行窗框，
+		// 面板列从窗口顶部一直铺到底，页签条与主标题栏同高（40），不再是标题栏下方的一行。
+		// 窗口按钮先建好：标题栏与面板页签条都要按它的宽度让位（浮层在窗框模板里）。
+		_windowActionsOverlay = BuildWindowActionsOverlay();
+
+		var sidebarColumn = _sidebarColumn = new DockPanel().LastChildFill()
+			.Children(BuildSidebarTitleBar().DockTop(), sidebar);
+		var mainColumn = new DockPanel().LastChildFill()
+			.Children(BuildMainTitleBar().DockTop(), main);
+
+		_panelSplit = new SplitPanel().Horizontal().SplitterThickness(4)
+			.MinFirst(AppTheme.MinChatWidth)
+			.MinSecond(AppTheme.RightPanelMinWidth)
+			.MaxSecond(AppTheme.RightPanelMaxWidth)
+			.FirstLength(GridLength.Stars(1))
+			.SecondLength(GridLength.Pixels(_rightPanelWidth))
+			.First(mainColumn).Second(_panelHost);
 
 		// 侧栏与主区之间可以拖拽调宽。
-		var preference = DesktopPreference.Load();
-		_sidebar.IsVisible(!preference.SidebarCollapsed);
+		_sidebarPreferred = !preference.SidebarCollapsed;
+		_sidebarColumn.IsVisible(_sidebarPreferred);
+		UpdateSidebarChrome();
 		_workspace = new SplitPanel().Horizontal().SplitterThickness(4)
 			.MinFirst(200).MinSecond(520)
 			.FirstLength(GridLength.Pixels(preference.SidebarWidth))
-			.SecondLength(GridLength.Stars(1)).First(sidebar).Second(main);
-		Content = new Border()
-			.StyleName(AppStyles.Window)
-			.Child(new DockPanel().LastChildFill().Children(topBar.DockTop(), _workspace));
+			.SecondLength(GridLength.Stars(1)).First(sidebarColumn).Second(_panelSplit);
+		// 窗框由 Window.Template 拥有（MewUI 文档的 custom chrome 模式）：Content 只放工作区，
+		// 模板通过 ContentPresenter 投影它；重建窗框不会替换会话与输入控件。
+		Content = _workspace;
+		Template = new DelegateControlTemplate<MainWindow>((window, _) => window.BuildChromeShell());
 
+		// 侧栏停在哪个分段与 PiDeck 一样记忆：对话用于日常聊天，项目用于工作区任务。
+		ShowSidebarView(preference.SidebarProjects, persist: false);
+
+	}
+
+	/// <summary>把标题栏左段的项目铭牌换成指定文本，并同步完整路径提示。</summary>
+	private void SetProjectCaption(string text, string? tip = null)
+	{
+		_tabCaption.Text(text);
+		_tabCaption.HoverTip(tip);
 	}
 
 	// ------------------------------------------------------------------ 启动
@@ -450,11 +552,12 @@ public sealed partial class MainWindow : Window
 		// 关闭时记住窗口状态，下次打开原位恢复。
 		this.OnClosed(() =>
 		{
-			_closed = true;
-			_contentSearch?.Cancel();
 			_usageStatsView?.Close();
 			_themeWatcher?.Dispose();
+			// 每个会话面板里的伪终端都要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
+			foreach (var panel in _sessionPanels.Values) panel.Dispose();
 			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
+			CapturePanelWidth();
 			SaveWindowState();
 		});
 		this.OnClosing(args =>
@@ -495,9 +598,14 @@ public sealed partial class MainWindow : Window
 		{
 			OpenSessionPath(_sessions[0].Path);
 		}
+		else if (preference.SidebarProjects)
+		{
+			NewSessionIn(_cwd);
+		}
 		else
 		{
-			OpenSession(_catalog.Create(_cwd));
+			// 首次启动停在「对话」：在聊天目录里开一个，而不是往当前项目里塞一个空会话。
+			NewChatSession();
 		}
 
 		if (SmokeTab is { Length: > 0 } smokeTab)
@@ -506,11 +614,11 @@ public sealed partial class MainWindow : Window
 			// 因此把「打开某个面板」做成启动参数，便于无人值守截图检查。
 			if (string.Equals(smokeTab, "git", StringComparison.OrdinalIgnoreCase))
 			{
-				OpenGitTab();
+				ShowGitPanel();
 			}
 			else
 			{
-				OpenSettingsTab();
+				OpenSettingsDialog();
 			}
 		}
 
@@ -527,14 +635,14 @@ public sealed partial class MainWindow : Window
 
 	// ------------------------------------------------------------- 会话列表
 
-	/// <summary>重建侧栏列表，应用当前搜索关键字。</summary>
+	/// <summary>重建侧栏列表。目录快照始终包含全部会话，侧栏再按聊天目录分成「对话」与「项目」两段。</summary>
 	private void RefreshSessions()
 	{
-		// 「仅当前目录」默认开启；关掉后可以看到该机器上所有项目的会话。
-		var preference = DesktopPreference.Load();
-		_allSessions = _currentDirOnly?.IsChecked == false ? _catalog.List() : _catalog.List(_cwd);
+		// 搜索弹窗需要全部会话；侧栏的两个分段在 UpdateSessionList 里分流。
+		_allSessions = _catalog.List();
 
 		// 置顶的会话排在最前，其余保持最近修改优先。
+		var preference = DesktopPreference.Load();
 		_allSessions =
 		[
 			.. _allSessions.Where(item => preference.IsPinned(item.Id)),
@@ -544,74 +652,26 @@ public sealed partial class MainWindow : Window
 		FilterSessions(preference);
 	}
 
-	/// <summary>输入搜索词时复用目录快照，只有显式刷新或会话操作才重新扫描磁盘。</summary>
+	/// <summary>侧栏列表与目录快照同步；正文搜索移到了「搜索会话」弹窗里。</summary>
 	private void FilterSessions(DesktopPreference? preference = null)
 	{
-		_contentMatches = [];
-		_sessions = SessionCatalog.Search(_allSessions, _search?.Text);
+		_sessions = _allSessions;
 		UpdateSessionList(preference ?? DesktopPreference.Load());
-		StartContentSearch(_search?.Text);
 	}
 
-	/// <summary>
-	/// 正文搜索放到后台：会话文件可能很大，直接在输入回调里扫会卡住输入。
-	/// 结果回来时用请求序号判断是否已经过期。
-	/// </summary>
-	private void StartContentSearch(string? query)
-	{
-		_contentSearch?.Cancel();
-		var trimmed = query?.Trim() ?? string.Empty;
-		var version = ++_searchVersion;
-		if (trimmed.Length == 0) return;
-
-		var knownPaths = _sessions.Select(static item => item.Path).ToHashSet(StringComparer.Ordinal);
-		var candidates = _allSessions.Where(item => !knownPaths.Contains(item.Path)).ToList();
-		if (candidates.Count == 0) return;
-
-		var cancellation = new CancellationTokenSource();
-		_contentSearch = cancellation;
-		_ = SearchContentAsync(candidates, trimmed, version, cancellation);
-	}
-
-	/// <summary>连续输入先等待短暂静止；新请求取消旧扫描，关闭窗口也会撤销待执行结果。</summary>
-	private async Task SearchContentAsync(IReadOnlyList<SessionListItem> candidates, string query, int version, CancellationTokenSource cancellation)
-	{
-		try
-		{
-			await Task.Delay(220, cancellation.Token).ConfigureAwait(false);
-			var matches = await Task.Run(() => SessionCatalog.SearchContent(candidates, query,
-				cancellationToken: cancellation.Token), cancellation.Token).ConfigureAwait(false);
-			Dispatch(() =>
-			{
-				if (_closed || version != _searchVersion) return;
-				_contentMatches = matches;
-				UpdateSessionList(DesktopPreference.Load());
-			});
-		}
-		catch (OperationCanceledException) { }
-		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-		{
-			AppLog.Failure(AppLog.For<MainWindow>(), "Search session content", ex);
-		}
-		finally
-		{
-			Dispatch(() =>
-			{
-				if (ReferenceEquals(_contentSearch, cancellation)) _contentSearch = null;
-				cancellation.Dispose();
-			});
-		}
-	}
-
-	/// <summary>把元数据命中与正文命中合成侧栏列表。</summary>
+	/// <summary>重建侧栏列表（内容命中分组已随搜索弹窗移走）。</summary>
 	private void UpdateSessionList(DesktopPreference preference)
 	{
 		var selectedId = SelectedSession()?.Id ?? CurrentTab()?.Session.Session.SessionId;
 		var rows = new List<SessionListItem>(_sessions);
-		rows.AddRange(_contentMatches.Select(static match => match.Session));
+
+		// 「对话」= 聊天目录里的会话。与 PiDeck 的内置 Chat 项目一致：它不是全部会话的平铺，
+		// 否则同一批会话会在两个分段里重复出现，项目视图失去区分度。
+		var chats = SessionGroups.Chats(rows, _chatWorkspace);
 
 		// 按工作目录分组：项目是父节点，会话是子节点（树默认展开），与 PiDeck 的项目视图一致。
-		var nodes = rows
+		// 聊天目录里的会话只属于「对话」，不再作为项目出现在这里。
+		var nodes = SessionGroups.Projects(rows, _chatWorkspace)
 			.DistinctBy(static item => item.Path)
 			.GroupBy(static item => item.Cwd)
 			.OrderByDescending(static group => group.Max(static item => item.Modified))
@@ -621,7 +681,7 @@ public sealed partial class MainWindow : Window
 					.OrderByDescending(item => preference.IsPinned(item.Id))
 					.ThenByDescending(static item => item.Modified)
 					.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item))],
-				tag: null))
+				tag: group.Key))
 			.ToList();
 
 		_pinnedSessionIds = preference.Pinned.ToHashSet(StringComparer.Ordinal);
@@ -633,6 +693,18 @@ public sealed partial class MainWindow : Window
 			_sessionTree.Expand(node);
 		}
 
+		// 「对话」分段：聊天目录里的会话按置顶、最近修改平铺，不分组。
+		_chatNodes =
+		[
+			.. chats
+				.DistinctBy(static item => item.Path)
+				.OrderByDescending(item => preference.IsPinned(item.Id))
+				.ThenByDescending(static item => item.Modified)
+				.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item)),
+		];
+		_chatsTree.ItemsSource(_chatNodes);
+		_chatsEmpty.IsVisible(!_projectsTab && _chatNodes.Count == 0);
+
 		if (selectedId is not null)
 		{
 			RestoreSelection(selectedId);
@@ -641,14 +713,6 @@ public sealed partial class MainWindow : Window
 		if (_allSessions.Count == 0)
 		{
 			_banner.Text(Strings.NoSessions);
-		}
-		else if (rows.Count == 0)
-		{
-			_banner.Text(Strings.NoMatches);
-		}
-		else if (_contentMatches.Count > 0)
-		{
-			_banner.Text(Strings.ContentMatches(_contentMatches.Count, _contentMatches[0].Excerpt));
 		}
 		else
 		{
@@ -660,15 +724,15 @@ public sealed partial class MainWindow : Window
 	private static string ProjectLabel(string cwd, int count) =>
 		count > 1 ? $"{ShortCwd(cwd)} ({count})" : ShortCwd(cwd);
 
-	/// <summary>会话节点的标题：置顶标记、标题、时间，内容命中再加标记。</summary>
+	/// <summary>会话节点的标题：置顶标记、标题、时间。</summary>
 	private string SessionLine(SessionListItem item, DesktopPreference preference)
 	{
 		var pin = preference.IsPinned(item.Id) ? $"{Strings.PinnedMark} " : string.Empty;
-		var content = _contentMatches.Any(match => match.Session.Path == item.Path) ? $" · {Strings.ContentHit}" : string.Empty;
 
-		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}{content}";
+		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}";
 	}
 
+	/// <summary>两个分段共用同一个处理器：只对会话行打开会话，项目分组行忽略。</summary>
 	private void OnSessionSelected(object? item)
 	{
 		if (_restoringSelection)
@@ -676,8 +740,9 @@ public sealed partial class MainWindow : Window
 			return;
 		}
 
-		var selected = SelectedSession();
-		if (selected is null)
+		// 事件带的是刚选中的节点；不能去读另一个（可能隐藏的）树的选中项，
+		// 否则在「对话」里点一行会被忽略。
+		if (item is not TreeViewNode { Tag: SessionListItem selected })
 		{
 			return;
 		}
@@ -695,17 +760,40 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>侧栏当前选中的会话。</summary>
+	/// <summary>「搜索会话」弹窗里选中的会话：按路径打开，已打开则切到那个标签。</summary>
+	private void OpenSessionFromSearch(SessionListItem item)
+	{
+		_nameBox.Text = item.Name;
+
+		try
+		{
+			OpenSessionPath(item.Path);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Open session", ex);
+			_banner.Text(Strings.OpenSessionFailed(ex.Message));
+		}
+	}
+
+	/// <summary>侧栏当前选中的会话：取可见分段的选中行，避免命中另一棵树的旧选择。</summary>
 	private SessionListItem? SelectedSession()
 	{
-		return _sessionTree.SelectedNode?.Tag as SessionListItem;
+		var tree = _projectsTab ? _sessionTree : _chatsTree;
+		if (tree.SelectedNode?.Tag is not SessionListItem selected)
+		{
+			return null;
+		}
+
+		// 列表重建或分段切换后，旧节点可能已不属于当前分段：只接受属于它的会话。
+		return SessionGroups.IsChat(selected, _chatWorkspace) == !_projectsTab ? selected : null;
 	}
 
 	/// <summary>把输入框里的名称写给选中的会话，并刷新列表与标签标题。</summary>
 	private void RenameSelected()
 	{
-		var selected = SelectedSession();
-		if (selected is null)
+		var path = _renamingPath ?? SelectedSession()?.Path;
+		if (path is null)
 		{
 			_banner.Text(Strings.SelectSessionFirst);
 			return;
@@ -713,10 +801,11 @@ public sealed partial class MainWindow : Window
 
 		try
 		{
-			_catalog.Rename(selected.Path, _nameBox.Text?.Trim());
+			_catalog.Rename(path, _nameBox.Text?.Trim());
+			_renamingPath = null;
 			RefreshSessions();
 
-			foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => tab.Session.Session.SessionFile == selected.Path))
+			foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => tab.Session.Session.SessionFile == path))
 			{
 				tab.RefreshTitle();
 			}
@@ -784,11 +873,18 @@ public sealed partial class MainWindow : Window
 		}
 
 		_tabEntries.RemoveAt(index);
-		_tabLabels.Remove(tab);
 
 		if (index < _tabControl.Tabs.Count)
 		{
 			_tabControl.RemoveTabAt(index);
+		}
+
+		// 关掉这个会话自己的面板：从宿主摘下并释放它可能启动的伪终端。
+		if (_sessionPanels.Remove(tab, out var panel))
+		{
+			panel.View.IsVisible(false);
+			_panelHost.Remove(panel.View);
+			panel.Dispose();
 		}
 
 		await tab.CloseAsync();
@@ -869,68 +965,39 @@ public sealed partial class MainWindow : Window
 		tab.Forked += _ => RefreshSessions();
 
 		_tabEntries.Add(tab);
-		AddTab(header: TabHeader(tab.Title, () => CloseTab(tab)), content: tab.View, entry: tab);
+		AddTab(header: null!, content: tab.View, entry: tab);
+
+		// 这个会话自己的右侧面板：文件 / Git / 终端都以它的工作目录为基准，默认收起。
+		// 面板视图挂在共享宿主里，切换会话只切可见性，终端等状态不会丢。
+		var panel = new RightPanel(() => session.Cwd);
+		panel.SetHeaderRightInset(_panelHeaderRightInset);
+		_sessionPanels[tab] = panel;
+		_panelHost.Children(panel.View);
+		panel.View.IsVisible(false);
 
 		return tab;
 	}
 
-	/// <summary>标签标题：标题文本 + 关闭按钮，与同类客户端的标签形态一致。</summary>
-	private UIElement TabHeader(string title, Action onClose)
-	{
-		var label = new TextBlock().Text(title).MaxWidth(180).FontSize(AppTheme.FontSizeCaption)
-			.TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(title);
-
-		return new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(4)
-			.Children(
-				label,
-				AppIcons.Button("x", Strings.CloseCurrentTab, onClose, size: 12));
-	}
-
-	/// <summary>登记标签页并记住标题控件，便于后续更新。</summary>
+	/// <summary>
+	/// 登记标签页。TabControl 自带的页签头不渲染：标题栏右段另绘 PiDeck 式页签，
+	/// 切换/关闭都在那里完成；命令面板里也保留同一组「关闭当前/其他/全部标签」动作。
+	/// </summary>
 	private void AddTab(UIElement header, UIElement content, object entry)
 	{
-		var item = new TabItem().Header(header).Content(content);
-		if (header is FrameworkElement element)
-		{
-			element.ContextMenu(TabMenu(element, entry));
-		}
-
-		if (header is StackPanel panel && panel.Children.Count > 0 && panel.Children[0] is TextBlock label)
-		{
-			_tabLabels[entry] = label;
-		}
-
-		_tabControl.AddTab(item);
+		// TabItem 强制要求 Header；给一个 0×0 空元素，隐藏 TabControl 自带的页签条。
+		_tabControl.AddTab(new TabItem().Header(new Border().Width(0).Height(0)).Content(content));
 	}
 
-	/// <summary>刷新标签标题：会话名 + 运行状态指示。</summary>
+	/// <summary>会话标题变化或标签集合变化后，按标题/选中项同步标题栏页签。</summary>
 	private void UpdateTabHeaders()
 	{
-		foreach (var (entry, label) in _tabLabels)
-		{
-			if (entry is SessionTab tab)
-			{
-				label.Text(tab.IsStreaming ? $"{tab.Title} …" : tab.Title);
-			}
-		}
+		SyncTitleBarTabs();
 	}
 
-	/// <summary>关闭设置/Git 这类辅助标签。</summary>
+	/// <summary>关闭 Git/文件/终端这类辅助标签。</summary>
 	private void CloseAuxTab(object entry)
 	{
-		if (entry is SettingsView { IsDirty: true } settings)
-		{
-			_ = CloseSettingsTabAsync(settings);
-			return;
-		}
 		CloseAuxTabCore(entry);
-	}
-
-	private async Task CloseSettingsTabAsync(SettingsView settings)
-	{
-		if (await settings.CanCloseAsync()) CloseAuxTabCore(settings);
 	}
 
 	private static async Task ConfirmSettingsCloseAsync(SettingsView settings, ClosingEventArgs args, ClosingDeferral deferral)
@@ -951,31 +1018,13 @@ public sealed partial class MainWindow : Window
 		}
 
 		_tabEntries.RemoveAt(index);
-		_tabLabels.Remove(entry);
 
 		if (index < _tabControl.Tabs.Count)
 		{
 			_tabControl.RemoveTabAt(index);
 		}
 
-		if (ReferenceEquals(entry, _settingsView))
-		{
-			_settingsView = null;
-		}
-		else if (ReferenceEquals(entry, _gitView))
-		{
-			_gitView = null;
-		}
-		else if (ReferenceEquals(entry, _filesView))
-		{
-			_filesView = null;
-		}
-		else if (ReferenceEquals(entry, _terminalView))
-		{
-			_terminalView?.Dispose();
-			_terminalView = null;
-		}
-		else if (ReferenceEquals(entry, _usageStatsView))
+		if (ReferenceEquals(entry, _usageStatsView))
 		{
 			_usageStatsView?.Close();
 			_usageStatsView = null;
@@ -992,33 +1041,25 @@ public sealed partial class MainWindow : Window
 
 		_welcome.IsVisible(entry is null);
 		_tabControl.IsVisible(entry is not null);
+		ApplySidebarLayout();
+		SyncPanelLayout();
+		SyncTitleBarTabs();
 
 		switch (entry)
 		{
 			case null:
 				_status.Text(Strings.NoOpenSession);
-				UpdateTopBarCaption();
+				UpdateProjectCaption();
 				return;
 
-			case SettingsView view:
-				// 每次切到设置标签都重新取一次快照，数据是实时的。
-				view.Refresh();
-				_status.Text(Strings.SettingsTitle);
-				SetTopCaption(Strings.SettingsTitle);
-				return;
-
-			case GitView git:
-				// Git 状态同样是现取现用。
-				git.Refresh();
-				_status.Text(Strings.Git);
-				SetTopCaption(Strings.Git);
+			case UsageStatsView:
 				return;
 
 			case SessionTab active:
 				_lastSessionTab = active;
 				RestoreSelection(active.Session.Session.SessionId);
 				UpdateTabHeaders();
-				UpdateTopBarCaption();
+				UpdateProjectCaption();
 				return;
 		}
 	}
@@ -1051,19 +1092,28 @@ public sealed partial class MainWindow : Window
 					CurrentTab()?.ShowModelPicker();
 					break;
 				case "git":
-					OpenGitTab();
+					ShowGitPanel();
+					break;
+				case "terminal":
+					ToggleTerminalPanel();
+					break;
+				case "files":
+					ShowFilesPanel();
+					break;
+				case "panel":
+					ToggleRightPanel();
 					break;
 				case "config":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					_settingsView?.ShowConfiguration();
 					break;
 				case "appearance":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					if (_settingsView is { } appearance) _ = appearance.SelectSectionAsync("appearance");
 					break;
 				case "agent":
 				case "mcp":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					_settingsView?.ShowConfiguration();
 					if (_settingsView is { } configuration) _ = configuration.SelectSectionAsync(view);
 					break;
@@ -1071,10 +1121,10 @@ public sealed partial class MainWindow : Window
 					ToggleSidebar();
 					break;
 				case "settings":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					break;
 				case "resources":
-					OpenSettingsTab();
+					OpenSettingsDialog();
 					if (_settingsView is { } resourceView) _ = resourceView.SelectSectionAsync("resources");
 					break;
 				case "branch":
@@ -1094,6 +1144,9 @@ public sealed partial class MainWindow : Window
 					break;
 				case "search":
 					CurrentTab()?.ToggleSearchFromSmoke();
+					break;
+				case "session-search":
+					_sessionSearch.Show(this);
 					break;
 				default:
 					Console.Error.WriteLine($"piweft-desktop: 未知的界面演练目标：{view}");
@@ -1126,7 +1179,7 @@ public sealed partial class MainWindow : Window
 	private async Task RunThemeSmokeAsync()
 	{
 		Color oldSelection = default;
-		Color oldPickerBackground = default;
+		Color oldPickerColor = default;
 		SessionTab? originalTab = null;
 		try
 		{
@@ -1146,7 +1199,7 @@ public sealed partial class MainWindow : Window
 				oldSelection = Application.Current.Theme.Palette.SelectionBackground;
 				originalTab = CurrentTab();
 				originalTab?.PrepareThemeSmoke();
-				oldPickerBackground = originalTab?.ThemeSmokePickerBackground ?? default;
+				oldPickerColor = originalTab?.ThemeSmokePickerColor ?? default;
 				ToggleTheme();
 				started.Stop();
 				Console.WriteLine($"piweft-desktop: 换肤耗时 {started.Elapsed.TotalMilliseconds:0.0} ms");
@@ -1157,7 +1210,7 @@ public sealed partial class MainWindow : Window
 			{
 				Console.WriteLine($"piweft-desktop: 切换后 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
 				var valid = oldSelection != Application.Current.Theme.Palette.SelectionBackground &&
-					ReferenceEquals(originalTab, CurrentTab()) && originalTab?.VerifyThemeSmoke(oldPickerBackground) == true;
+					ReferenceEquals(originalTab, CurrentTab()) && originalTab?.VerifyThemeSmoke(oldPickerColor) == true;
 				Console.WriteLine(valid ? "theme controls ok: selection, picker, border, draft, caret" : "theme controls FAILED");
 				Console.WriteLine(valid ? "piweft-desktop: theme smoke ok" : "piweft-desktop: theme smoke failed");
 				if (!valid) Environment.ExitCode = 1;
@@ -1206,25 +1259,27 @@ public sealed partial class MainWindow : Window
 				return;
 			}
 
-			AppTheme.UseCustomPalette(resolved.Light, resolved.Dark);
+			DesktopTheme.Apply(resolved);
 			if (!Application.IsRunning)
 			{
 				return;
 			}
 
-			ThemeManager.DefaultLightSeed = AppTheme.Seed(resolved.Light ?? AppPalette.Light);
-			ThemeManager.DefaultDarkSeed = AppTheme.Seed(resolved.Dark ?? AppPalette.Dark);
-			Application.Current.SetTheme(resolved.Variant);
-
 			// SetTheme 对相同变体可能不触发 OnThemeChanged；无论事件是否到达都轻量刷新一遍。
 			AppStyles.ApplyTextColors(this);
 			AppIcons.RefreshAll();
+			_nativeBorderColor = null;
+			UpdateChrome();
 			foreach (var tab in _tabEntries.OfType<SessionTab>())
 			{
 				tab.ApplyTheme();
 			}
 
 			_settingsView?.ApplyTheme();
+			_settingsDialog?.ApplyTheme();
+			foreach (var panel in _sessionPanels.Values) panel.ApplyTheme();
+			_usageStatsView?.ApplyTheme();
+			AppStyles.ApplyTextColors(_sessionSearch.View);
 		}
 		catch (Exception ex)
 		{
@@ -1248,6 +1303,8 @@ public sealed partial class MainWindow : Window
 			AppStyles.ApplyTextColors(this);
 			if (_palette is { IsOpen: true }) AppStyles.ApplyTextColors(_palette.View);
 			AppIcons.RefreshAll();
+			_nativeBorderColor = null;
+			UpdateChrome();
 
 			foreach (var tab in _tabEntries.OfType<SessionTab>())
 			{
@@ -1255,6 +1312,10 @@ public sealed partial class MainWindow : Window
 			}
 
 			_settingsView?.ApplyTheme();
+			_settingsDialog?.ApplyTheme();
+			foreach (var panel in _sessionPanels.Values) panel.ApplyTheme();
+			_usageStatsView?.ApplyTheme();
+			AppStyles.ApplyTextColors(_sessionSearch.View);
 		}
 		catch (Exception ex)
 		{
@@ -1271,8 +1332,9 @@ public sealed partial class MainWindow : Window
 			var position = Position;
 			var preference = DesktopPreference.Load().WithWindow(Width, Height, position.X, position.Y) with
 			{
-				SidebarCollapsed = !_sidebar.IsVisible,
+				SidebarCollapsed = !_sidebarPreferred,
 				SidebarWidth = _workspace.FirstLength.IsAbsolute ? _workspace.FirstLength.Value : AppTheme.SidebarWidth,
+				RightPanelWidth = _rightPanelWidth,
 			};
 			preference.Save();
 		}
@@ -1284,10 +1346,150 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>收起时复用现有侧栏与会话，SplitPanel 自动把空间交给主区。</summary>
+	/// <summary>从辅助页返回工作区：最近的会话标签，没有会话则关掉当前辅助页回到欢迎页。</summary>
+	private void BackToWorkspace()
+	{
+		var index = _tabEntries.FindLastIndex(entry => entry is SessionTab);
+		if (index >= 0)
+		{
+			_tabControl.SelectedIndex = index;
+			UpdateStatus();
+		}
+		else
+		{
+			CloseCurrentTab();
+		}
+	}
+
 	private void ToggleSidebar()
 	{
-		_sidebar.IsVisible = !_sidebar.IsVisible;
+		_sidebarPreferred = !_sidebarPreferred;
+		ApplySidebarLayout();
 		SaveWindowState();
+	}
+
+	// ------------------------------------------------------- 右侧功能面板
+
+	/// <summary>标题栏的 panel 键 / Ctrl+J：收起时展开，展开时收起；面板属于当前会话。</summary>
+	private void ToggleRightPanel() => SetRightPanel(_panelHost?.IsVisible != true);
+
+	/// <summary>展开或收起当前会话的右侧面板；指定分段时顺带切过去。</summary>
+	private void SetRightPanel(bool open, RightPanelSection? section = null)
+	{
+		if (CurrentTab() is not { } tab || !_sessionPanels.TryGetValue(tab, out var panel))
+		{
+			return;
+		}
+
+		if (open)
+		{
+			// 首次展开时才创建视图：默认收起，文件与 Git 都只在需要时读盘。
+			panel.Show(section ?? panel.Section);
+		}
+		else
+		{
+			// 收起前把当前宽度记下来，下次展开沿用；之后交给 SplitPanel 默认行为。
+			CapturePanelWidth();
+			panel.Close();
+			// 收起键会随面板一起消失，焦点交还主区的输入框。
+			FocusActiveEntry();
+		}
+
+		SyncPanelLayout();
+		SaveWindowState();
+	}
+
+	private void ShowGitPanel() => SetRightPanel(open: true, RightPanelSection.Git);
+
+	private void ShowFilesPanel() => SetRightPanel(open: true, RightPanelSection.Files);
+
+	/// <summary>Ctrl+Shift+D / 命令面板：开关当前会话底部的终端面板（终端不再占用右侧面板）。</summary>
+	private void ToggleTerminalPanel() => CurrentTab()?.ToggleTerminal();
+
+	/// <summary>
+	/// 当前会话的面板决定宿主是否出现：切换会话只切可见性，各会话的分段与内容都保留。
+	/// </summary>
+	private void SyncPanelLayout()
+	{
+		if (_panelHost is null || _panelSplit is null)
+		{
+			return;
+		}
+
+		var active = CurrentTab();
+		var activePanel = active is not null && _sessionPanels.TryGetValue(active, out var found) ? found : null;
+		var open = activePanel?.IsOpen == true;
+
+		foreach (var (tab, panel) in _sessionPanels)
+		{
+			panel.View.IsVisible(open && ReferenceEquals(tab, active));
+		}
+
+		if (_panelHost.IsVisible != open)
+		{
+			_panelHost.IsVisible(open);
+			if (open)
+			{
+				ReapplyPanelWidth();
+			}
+
+			// 面板开合会改变主标题栏/面板页签条给窗口按钮让位的宽度。
+			UpdateChrome();
+		}
+		else
+		{
+			UpdateRightPanelButton();
+		}
+	}
+
+	/// <summary>展开时用上次记录的宽度初始化分栏；之后完全交给 SplitPanel 的默认布局。</summary>
+	private void ReapplyPanelWidth()
+	{
+		if (!_panelHost.IsVisible)
+		{
+			return;
+		}
+
+		_panelSplit.FirstLength = GridLength.Stars(1);
+		_panelSplit.SecondLength = GridLength.Pixels(_rightPanelWidth);
+	}
+
+	/// <summary>收起面板/关窗时把当前宽度记成偏好，供下次展开使用。</summary>
+	private void CapturePanelWidth()
+	{
+		if (!_panelHost.IsVisible)
+		{
+			return;
+		}
+
+		var width = _panelHost.Bounds.Width;
+		if (width >= AppTheme.RightPanelMinWidth - 0.5)
+		{
+			_rightPanelWidth = Math.Clamp(width, AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth);
+		}
+	}
+
+	/// <summary>辅助页（用量统计）不需要会话侧栏；右侧面板不占用侧栏。</summary>
+	private void ApplySidebarLayout()
+	{
+		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
+			? _tabEntries[_tabControl.SelectedIndex] : null;
+		var sidebarAllowed = entry is null or SessionTab;
+		_sidebarColumn.IsVisible(_sidebarPreferred && sidebarAllowed);
+		UpdateSidebarChrome();
+	}
+
+	private void UpdateSidebarChrome()
+	{
+		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
+			? _tabEntries[_tabControl.SelectedIndex] : null;
+		var sidebarAllowed = entry is null or SessionTab;
+		var collapsed = !_sidebarColumn.IsVisible;
+		// 展开/收起入口：展开时在左段品牌旁，收起后回到主标题栏最左侧。
+		_hideSidebarButton.IsVisible(!collapsed && sidebarAllowed);
+		_showSidebarButton.IsVisible(collapsed && sidebarAllowed);
+		_backButton.IsVisible(!sidebarAllowed);
+		UpdateChrome();
 	}
 
 	/// <summary>
@@ -1318,7 +1520,7 @@ public sealed partial class MainWindow : Window
 
 		if (Application.IsRunning)
 		{
-			Application.Current.SetTheme(preference.Variant);
+			DesktopTheme.Apply(DesktopTheme.Resolve(preference.Theme, _cwd, SessionPaths.GetAgentDir()));
 		}
 		_banner.Text(_pendingNotice);
 		_pendingNotice = null;
@@ -1379,25 +1581,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>打开（或选中）Git 状态标签。</summary>
-	private void OpenGitTab()
-	{
-		var index = _gitView is null ? -1 : _tabEntries.IndexOf(_gitView);
-		if (_gitView is not null && index >= 0)
-		{
-			_gitView.Refresh();
-			_tabControl.SelectedIndex = index;
-			return;
-		}
-
-		_gitView = new GitView(() => CurrentSession()?.Cwd ?? _cwd);
-		_tabEntries.Add(_gitView);
-		AddTab(TabHeader(Strings.Git, () => CloseAuxTab(_gitView)), _gitView.View, _gitView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
-	}
-
 	/// <summary>打开（或选中）用量统计标签；每次切回都会重新扫描。</summary>
 	private void OpenUsageStatsTab()
 	{
@@ -1413,65 +1596,35 @@ public sealed partial class MainWindow : Window
 			() => _arguments.SessionDir is { Length: > 0 } dir ? dir : UsageStats.DefaultRoot(),
 			(provider, model) => _environment?.Registry.Get(provider, model)?.Cost);
 		_tabEntries.Add(_usageStatsView);
-		AddTab(TabHeader(Strings.UsageStatsTitle, () => CloseAuxTab(_usageStatsView)), _usageStatsView.View, _usageStatsView);
+		AddTab(header: null!, _usageStatsView.View, _usageStatsView);
 
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateStatus();
 	}
 
-	/// <summary>打开（或选中）文件浏览器标签。</summary>
-	private void OpenFilesTab()
+	/// <summary>浮层关闭后把焦点还给当前视图：会话给输入框，没有会话时给搜索入口。</summary>
+	private void FocusActiveEntry()
 	{
-		var index = _filesView is null ? -1 : _tabEntries.IndexOf(_filesView);
-		if (_filesView is not null && index >= 0)
+		if (CurrentTab() is { } tab)
 		{
-			_filesView.Refresh();
-			_tabControl.SelectedIndex = index;
+			tab.FocusComposer();
 			return;
 		}
 
-		_filesView = new FileBrowserView(() => CurrentSession()?.Cwd ?? _cwd);
-		_tabEntries.Add(_filesView);
-		AddTab(TabHeader(Strings.FileBrowser, () => CloseAuxTab(_filesView)), _filesView.View, _filesView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
+		_searchButton.Focus();
 	}
 
-	/// <summary>打开（或选中）命令 Dock 标签。</summary>
-	private void OpenTerminalTab()
+	/// <summary>打开设置弹窗（与 PiDeck 一样是模态浮层，不是主区标签）。</summary>
+	private void OpenSettingsDialog()
 	{
-		var index = _terminalView is null ? -1 : _tabEntries.IndexOf(_terminalView);
-		if (_terminalView is not null && index >= 0)
+		if (_settingsDialog is null)
 		{
-			_tabControl.SelectedIndex = index;
-			return;
+			_settingsView ??= new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
+			_settingsDialog = new SettingsDialog(_settingsView);
+			_settingsDialog.Closed += FocusActiveEntry;
 		}
 
-		_terminalView = new TerminalDock(() => CurrentSession()?.Cwd ?? _cwd);
-		_tabEntries.Add(_terminalView);
-		AddTab(TabHeader(Strings.Terminal, () => CloseAuxTab(_terminalView)), _terminalView.View, _terminalView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
-	}
-
-	/// <summary>打开（或选中）设置标签。</summary>
-	private void OpenSettingsTab()
-	{
-		var existing = _tabEntries.IndexOf(_settingsView!);
-		if (_settingsView is not null && existing >= 0)
-		{
-			_tabControl.SelectedIndex = existing;
-			return;
-		}
-
-		_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
-		_tabEntries.Add(_settingsView);
-		AddTab(TabHeader(Strings.Settings, () => CloseAuxTab(_settingsView)), _settingsView.View, _settingsView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
+		_settingsDialog.Show(this);
 	}
 
 	/// <summary>Reload future-session environments without replacing any running session.</summary>
@@ -1522,13 +1675,15 @@ public sealed partial class MainWindow : Window
 	{
 		var commands = new List<PaletteCommand>
 		{
-			new(Strings.NewSession, Strings.ShortcutNewSession, () => OpenSession(_catalog.Create(CurrentSession()?.Cwd ?? _cwd))),
+			new(Strings.NewSession, Strings.ShortcutNewSession, NewSessionFromCurrentView),
+			new(Strings.SessionSearch, Strings.ShortcutSearchSessions, () => _sessionSearch.Toggle(this)),
 			new(Strings.OpenProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
 			new(Strings.SelectModel, "Ctrl+M", () => CurrentTab()?.ShowModelPicker()),
-			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsTab),
-			new(Strings.Git, Strings.ShortcutGit, OpenGitTab),
-			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, OpenFilesTab),
-			new(Strings.Terminal, Strings.ShortcutTerminal, OpenTerminalTab),
+			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsDialog),
+			new(Strings.Git, Strings.ShortcutGit, ShowGitPanel),
+			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, ShowFilesPanel),
+			new(Strings.Terminal, Strings.ShortcutTerminal, ToggleTerminalPanel),
+			new(Strings.RightPanel, Strings.ShortcutRightPanel, ToggleRightPanel),
 			new(Strings.UsageStatsTitle, string.Empty, OpenUsageStatsTab),
 			new(Strings.CopySessionPath, Strings.ShortcutCopyPath, () => CopySessionInfo(path: true)),
 			new(Strings.CopySessionId, Strings.ShortcutCopyId, () => CopySessionInfo(path: false)),
@@ -1643,23 +1798,30 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>顶栏显示当前会话名，没有会话时显示工作目录。</summary>
-	private void UpdateTopBarCaption()
+	/// <summary>标题栏左段的项目铭牌：显示当前会话所属项目，没有会话时显示窗口工作目录。</summary>
+	private void UpdateProjectCaption()
 	{
-		var tab = CurrentTab();
-		SetTopCaption(tab is null ? ShortCwd(_cwd) : $"{tab.Title} · {ShortCwd(tab.Session.Cwd)}");
-		_tabCaption.HoverTip(tab?.Session.Cwd ?? _cwd);
+		var cwd = CurrentTab()?.Session.Cwd ?? _cwd;
+		SetProjectCaption(ShortCwd(cwd), cwd);
 	}
 
-	private void SetTopCaption(string text) => _tabCaption.Text(text);
 
-	/// <summary>在列表重建后把选中项恢复到指定会话。</summary>
+	/// <summary>在列表重建后把选中项恢复到指定会话；「对话」与「项目」两个分段都要找。</summary>
 	private void RestoreSelection(string sessionId)
 	{
 		// 恢复高亮不应再次打开会话或把焦点从正在输入的控件抢走。
 		_restoringSelection = true;
 		try
 		{
+			foreach (var chat in _chatNodes)
+			{
+				if (chat.Tag is SessionListItem item && string.Equals(item.Id, sessionId, StringComparison.Ordinal))
+				{
+					_chatsTree.SelectedNode = chat;
+					return;
+				}
+			}
+
 			foreach (var project in _sessionNodes)
 			{
 				foreach (var child in project.Children)
@@ -1692,33 +1854,17 @@ public sealed partial class MainWindow : Window
 	private void RebuildTabStrip()
 	{
 		_tabControl.ClearTabs();
-		_tabLabels.Clear();
 
 		foreach (var entry in _tabEntries)
 		{
 			switch (entry)
 			{
 				case SessionTab tab:
-				{
-					var captured = tab;
-					AddTab(TabHeader(tab.Title, () => CloseTab(captured)), tab.View, tab);
-					break;
-				}
-
-				case SettingsView settings:
-					AddTab(TabHeader(Strings.Settings, () => CloseAuxTab(settings)), settings.View, settings);
+					AddTab(header: null!, tab.View, tab);
 					break;
 
-				case GitView git:
-					AddTab(TabHeader(Strings.Git, () => CloseAuxTab(git)), git.View, git);
-					break;
-
-				case FileBrowserView files:
-					AddTab(TabHeader(Strings.FileBrowser, () => CloseAuxTab(files)), files.View, files);
-					break;
-
-				case TerminalDock terminal:
-					AddTab(TabHeader(Strings.Terminal, () => CloseAuxTab(terminal)), terminal.View, terminal);
+				case UsageStatsView stats:
+					AddTab(header: null!, stats.View, stats);
 					break;
 			}
 		}

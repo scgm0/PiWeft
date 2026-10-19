@@ -13,6 +13,7 @@
 	<ItemGroup>
 		<ProjectReference Include="../PiWeft.Ai/PiWeft.Ai.csproj" />
 		<ProjectReference Include="../PiWeft.Agent/PiWeft.Agent.csproj" />
+		<ProjectReference Include="../PiWeft.JavaScript/PiWeft.JavaScript.csproj" />
 	</ItemGroup>
 
 </Project>

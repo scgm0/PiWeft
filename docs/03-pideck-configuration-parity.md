@@ -11,12 +11,12 @@
 | `src/renderer/src/config/McpTab.tsx` | 全局/项目作用域、enabled、stdio/HTTP；保存不启动服务器 | `ConfigurationView.Mcp.cs`；明确下次启动生效 |
 | `src/main/config/piConfigFileStore.ts` | revision、未知字段保留、同目录原子替换、外部修改冲突 | `ConfigurationStore.cs` |
 | `src/main/config/ConfigManager.ts` | 配置领域与视图分离；模型拉取与探测按 API 分流 | 已分离文件/字段逻辑；网络拉取与探测已移植（`ProviderProbe`、`RemoteModelCatalog`） |
-| MewUI `Core/ThemeManager.cs`、`Core/Palette.cs` | 原始强调色跨主题固定；枚举强调色按深浅重新解析 | 启动改用 `Accent.Gray`，框架 seed 与应用配色统一 |
+| MewUI `Core/ThemeManager.cs`、`Core/Palette.cs` | 原始强调色跨主题固定；枚举强调色按深浅重新解析 | 启动改用 `Accent.Gray`；运行期不再改写框架 seed（MewUI 禁止），应用自有样式即时更新，自定义主题的框架控件配色需重启 |
 
 ## 功能范围
 
 - 分类设置页：系统设置与配置管理分开；保留环境、会话用量、归档、快捷键、日志和关于。
-- 外观页可直接选择深色、浅色或跟随系统。
+- 外观页可直接选择深色、浅色或跟随系统，保存后立即换肤；`DesktopTheme.Apply` 负责同变体强制广播，避免设置页只写偏好不生效。
 - 自定义供应商：新增、编辑端点和协议、复制、删除、导入 JSON、脱敏导出。
 - 模型：新增、编辑、删除；可设置 ID、名称、上下文、输出上限、推理及图片输入。
 - 模型字段补丁保留 `headers`、`cost`、`compat` 等未编辑数据，不重新序列化成窄 DTO。
@@ -24,7 +24,7 @@
 - Agent 设置：默认供应商/模型/思考级别、自动压缩和自动重试。未修改的继承值不制造项目覆盖。
 - MCP：全局/项目配置，stdio/HTTP 编辑、参数数组、启停和删除；保留 env/headers 等高级字段。
 - 源文件：模型、认证、设置和 MCP JSON，可显式显示、编辑和修复损坏文件。
-- 配置草稿独立于主题刷新；切页、重载、关闭设置标签和窗口均保护未保存修改。
+- 配置草稿独立于主题刷新；切页、重载、关闭设置弹窗和窗口均保护未保存修改。
 - 保存后重新加载未来会话使用的模型目录与设置；不替换正在运行的会话。
 
 ## 安全与行为边界
@@ -43,7 +43,11 @@
 
 ```sh
 xvfb-run -a dotnet test PiWeft.slnx --no-restore -v minimal
+<<<<<<< HEAD
 # 全量测试通过（基线计数见 [00-status.md](00-status.md) 验证入口），包括配置表单、文件冲突、字段保留与跨供应商凭据回归。
+=======
+# 2026-10-19 复核：非桌面 835 项通过；Desktop 437 项通过（X11 PrimarySelection 偶发失败，单独运行稳定）。
+>>>>>>> redesign/loom-workbench
 
 dotnet publish src/PiWeft.Desktop/PiWeft.Desktop.csproj -c Release -r linux-x64 --no-restore -v minimal
 # NativeAOT 发布通过，未产生编译或 trim/AOT 警告。

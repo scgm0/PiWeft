@@ -55,6 +55,7 @@ public sealed partial class SessionTab : IDisposable
 	private string _filter = string.Empty;
 	private IReadOnlyList<ChatEntry>? _projectedSource;
 	private IReadOnlyList<ChatEntry> _projectedRows = [];
+	private readonly ExecutionProcessProjector _projector = new();
 	private string _projectedFilter = string.Empty;
 	private bool _projectedBusy;
 
@@ -68,6 +69,10 @@ public sealed partial class SessionTab : IDisposable
 	private string? _pendingBranchEntryId;
 	private readonly TextBlock _emptyContext = new();
 	private readonly Border _emptyCard;
+
+	/// <summary>输入区整列：提示文本 + 输入框 + 状态栏，空会话时一起居中。</summary>
+	private readonly StackPanel _composerColumn;
+	private Border _headerRow = null!;
 	private readonly WrapPanel _commandBar = new();
 	private readonly Border _editNotice;
 
@@ -86,8 +91,18 @@ public sealed partial class SessionTab : IDisposable
 	private bool _testing;
 	private readonly ModelPicker _modelPicker;
 	private readonly ImagePreview _imagePreview = new();
-	private readonly ComboBox _thinkingPicker = new();
-	private bool _refreshingPickers;
+	private readonly Button _thinkingButton;
+	private readonly TextBlock _thinkingLabel = new();
+
+	/// <summary>输入框左群的终端开关键：控制会话底部的终端面板。</summary>
+	private readonly Button _terminalButton;
+	private readonly Border _terminalPane;
+	private readonly SplitPanel _terminalSplit;
+	private TerminalDock? _terminal;
+	private bool _terminalOpen;
+
+	/// <summary>底部终端面板的高度：收起时记下来，下次展开沿用。</summary>
+	private double _terminalDockHeight = AppTheme.TerminalDockHeight;
 
 	/// <summary>标签标题变化时触发（会话名、运行状态）。</summary>
 	public event Action<SessionTab>? TitleChanged;
@@ -123,25 +138,16 @@ public sealed partial class SessionTab : IDisposable
 		};
 
 
+		// 空会话提示：与输入区同属一列，居中时正好落在输入框上方，只留一段固定间距。
 		_emptyCard = new Border()
 			.Background(AppTheme.Transparent)
-			.Padding(new Thickness(AppTheme.Space6))
 			.MaxWidth(560)
 			.HorizontalAlignment(HorizontalAlignment.Center)
-			.VerticalAlignment(VerticalAlignment.Center)
-			.Margin(new Thickness(AppTheme.Space6))
+			.Margin(new Thickness(AppTheme.Space6, 0, AppTheme.Space6, AppTheme.Space4))
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
 				.Children(
-					new Border().StyleName(AppStyles.CardMuted).Width(52).Height(52).CornerRadius(AppTheme.RadiusXl)
-						.HorizontalAlignment(HorizontalAlignment.Center).Child(
-							new TextBlock().Text("Pi").FontSize(24).FontWeight(FontWeight.Bold).PrimaryText()
-								.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center)),
-					new TextBlock().Text(Strings.WelcomeTitle).FontSize(26).FontWeight(FontWeight.Bold).PrimaryText()
-						.HorizontalAlignment(HorizontalAlignment.Center),
-					_emptyContext.FontSize(AppTheme.FontSizeCaption).SubtleText().TextWrapping(TextWrapping.Wrap)
-						.HorizontalAlignment(HorizontalAlignment.Center),
-					AppIcons.TextButton("search", Strings.SelectModel, ShowModelPicker)
+					new TextBlock().Text(Strings.WelcomeTitle).FontSize(24).FontWeight(FontWeight.Medium).PrimaryText()
 						.HorizontalAlignment(HorizontalAlignment.Center)));
 
 		_timeline = new ConversationTimeline(Row);
@@ -166,10 +172,10 @@ public sealed partial class SessionTab : IDisposable
 				_composerHint.IsVisible(value.Length == 0);
 				RefreshCommandBar();
 			})
-			// 回车换行，Ctrl+Enter 发送 —— 与占位符里的提示一致。
 			.OnKeyDown(key =>
 			{
-				if (key.Key == Key.Enter && key.ControlKey)
+				// Enter 发送，Shift+Enter 换行 —— 与占位符里的提示一致。
+				if (key.Key == Key.Enter && !key.ShiftKey)
 				{
 					key.Handled = true;
 					Send();
@@ -189,7 +195,10 @@ public sealed partial class SessionTab : IDisposable
 			.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6).Children(
 				_sendIcon, _sendLabel.Text(Strings.Send).FontSize(AppTheme.FontSizeCaption).OnAccentText()))
 			.OnClick(Send)
-			.Primary().Height(AppTheme.ControlHeightMd).VerticalAlignment(VerticalAlignment.Center);
+			.Primary().Height(AppTheme.ControlHeightMd)
+			.CornerRadius(AppTheme.RadiusMd)
+			.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0))
+			.VerticalAlignment(VerticalAlignment.Center);
 
 		var attach = AppIcons.Button("image-plus", Strings.AttachFiles, () => _ = AttachImageAsync());
 		var commands = AppIcons.Button("square-slash", Strings.Commands, () => _composer.Text = "/");
@@ -197,6 +206,7 @@ public sealed partial class SessionTab : IDisposable
 		_planLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText();
 		_planButton = new Button().Ghost().Content(_planLabel).HoverTip(Strings.PlanModeHint)
 			.OnClick(TogglePlanMode);
+		_terminalButton = AppIcons.Button("terminal", Strings.Terminal, ToggleTerminal);
 		_testButton = AppIcons.Button("refresh-cw", Strings.TestConnection, () => _ = TestConnectionAsync());
 
 		_modelPicker = new ModelPicker(availableModels ?? (() => models), () => Session.Model, SelectModel);
@@ -205,12 +215,33 @@ public sealed partial class SessionTab : IDisposable
 			.Content(_modelLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText())
 			.OnClick(ShowModelPicker);
 
-		_thinkingPicker.Width(96);
-		_thinkingPicker.SelectionChanged += _ => OnThinkingSelected();
+		// 思考强度与模型名同级：都是安静的 ghost 文本，不带边框/底色；点开才出现单选菜单。
+		_thinkingLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText();
+		var thinkingChevron = new GlyphElement()
+			.Kind(GlyphKind.ChevronDown)
+			.GlyphSize(3)
+			.VerticalAlignment(VerticalAlignment.Center);
+		_thinkingButton = new Button().Ghost().MinHeight(AppTheme.ControlHeightMd)
+			.Content(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(2)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(_thinkingLabel, thinkingChevron))
+			.OnClick(ShowThinkingMenu);
 
-		// 次要动作在窄窗口自动换行，发送/中断始终可达。
-		var toolbar = new DockPanel().LastChildFill().Children(_sendButton.DockRight(),
-			new WrapPanel().Spacing(4).Children(attach, commands, _planButton, _testButton, _modelButton, _thinkingPicker));
+		// 左群是会改变下一条消息的开关与插入动作（计划、附件、命令、终端），窄窗口自动换行；
+		// 右群是这次请求的目标与代价（连接测试、模型、思考强度），发送/中断永远贴在最右。
+		var leftActions = new WrapPanel().Spacing(4)
+			.Children(_planButton, attach, commands, _terminalButton);
+		var rightActions = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Center)
+			// 思考强度与发送键之间留一段间距：发送是主操按钮，不该贴着文本按钮。
+			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
+			.Children(_testButton, _modelButton, _thinkingButton);
+		var toolbar = new DockPanel().LastChildFill()
+			.Children(_sendButton.DockRight(), rightActions.DockRight(), leftActions);
 
 		// 上下文占用条：接近窗口上限时一眼可见。
 		_contextBar.Maximum(100).Height(3).Margin(new Thickness(0, 2, 0, 2));
@@ -236,11 +267,11 @@ public sealed partial class SessionTab : IDisposable
 
 		var composerPane = _composerPane = new Border()
 			.StyleName(AppStyles.Composer)
-			.CornerRadius(AppTheme.RadiusXl)
+			.CornerRadius(AppTheme.RadiusLg)
 			.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
 			.HorizontalAlignment(HorizontalAlignment.Center)
-			.Padding(new Thickness(AppTheme.Space3))
-			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3, AppTheme.Space2))
+			.Margin(new Thickness(AppTheme.Space4, AppTheme.Space2, AppTheme.Space4, AppTheme.Space3))
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
 				.Children(_todoStrip, _editNotice, _commandBar, _attachmentBar,
@@ -255,7 +286,6 @@ public sealed partial class SessionTab : IDisposable
 
 		// 主区在「对话」与「分支」两个视图之间切换，两者叠放，只显示其中一个。
 		_mainArea.Children(_messages);
-		_mainArea.Children(_emptyCard.IsVisible(false));
 		_mainArea.Children(_noMatches.Text(Strings.NoMatches).MutedText()
 			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center).IsVisible(false));
 		_mainArea.Children(_branchPanel.View.IsVisible(false));
@@ -292,12 +322,12 @@ public sealed partial class SessionTab : IDisposable
 			.Spacing(2)
 			.Children(chatView, branchView);
 
-		_status.FontSize(AppTheme.FontSizeMicro).SubtleText();
+		_status.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont);
 
-		var header = new Border()
-			.StyleName(AppStyles.Window)
-			.BorderBrush(AppTheme.Border)
-			.BorderThickness(0)
+		// 标题行：左状态铭牌（等宽小字），右动作簇；不再是一块独立底色的条。
+		// 会话头行（状态铭牌 + 视图切换/搜索/重试）：空会话时整行隐藏，出现第一条消息后再显示。
+		_headerRow = new Border()
+			.Background(AppTheme.Transparent)
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel()
 				.LastChildFill()
@@ -310,18 +340,38 @@ public sealed partial class SessionTab : IDisposable
 			.HorizontalAlignment(HorizontalAlignment.Center).Children(
 				_contextBar,
 				new DockPanel().LastChildFill().Children(contextButton.DockRight(),
-					_statisticsLine.FontSize(AppTheme.FontSizeCaption).MutedText()));
+					_statisticsLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)));
 
-		var layout = new DockPanel()
-			.LastChildFill()
+		// 输入区整列（提示文本 + 输入框 + 状态栏）：空会话时落在填充行并居中，有消息后回到贴底的自适应行。
+		_composerColumn = new StackPanel()
+			.Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Stretch)
+			.Children(_emptyCard.IsVisible(false), composerPane,
+				statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)));
+
+		var layout = new Grid()
+			.Rows("Auto,Auto,*,Auto")
 			.Children(
-				header.DockTop(),
+				_headerRow.Row(0),
 				_searchBox.HorizontalAlignment(HorizontalAlignment.Left)
-					.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)).DockTop(),
-				new StackPanel().Spacing(2).Children(composerPane,
-					statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2))).DockBottom(),
-				_mainArea);
-		View = layout.AllowDrop().OnDragEnter(OnFilesDragOver).OnDragOver(OnFilesDragOver).OnDrop(OnFilesDropped)
+					.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)).Row(1),
+				_mainArea.Row(2),
+				_composerColumn.Row(3));
+
+		// 底部终端：属于会话、默认收起，第一次展开才拉起伪终端；收起只隐藏，shell 的历史与工作目录都留着。
+		// 与对话之间是一条分隔条，拖拽即可调整终端高度（高度按会话记着，下次展开沿用）。
+		_terminalPane = new Border()
+			.StyleName(AppStyles.TerminalDock)
+			.IsVisible(false);
+		_terminalSplit = new SplitPanel().Vertical().SplitterThickness(4)
+			.MinFirst(240)
+			.MinSecond(AppTheme.TerminalDockMinHeight)
+			.MaxSecond(AppTheme.TerminalDockMaxHeight)
+			.FirstLength(GridLength.Stars(1))
+			.SecondLength(GridLength.Pixels(_terminalDockHeight))
+			.First(layout).Second(_terminalPane);
+
+		View = _terminalSplit.AllowDrop().OnDragEnter(OnFilesDragOver).OnDragOver(OnFilesDragOver).OnDrop(OnFilesDropped)
 			.OnLayoutSizeChanged(args => _composer.Height = args.NewSize.Width < 640 || args.NewSize.Height < 560 ? 56 : AppTheme.ComposerHeight);
 
 		_readingStatisticsBar = statisticsBar;
@@ -448,6 +498,7 @@ public sealed partial class SessionTab : IDisposable
 		_conversationScroll.Dispose();
 		_textFocus.Dispose();
 		_timeline.Dispose();
+		_terminal?.Dispose();
 		_chat.Changed -= OnChatChanged;
 		_chat.Dispose();
 		UiLifetime.Release(View);
@@ -514,11 +565,14 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>原位换色，保留 Markdown、选区、工具折叠与阅读位置。</summary>
 	public void ApplyTheme()
 	{
+		AppStyles.ApplyTextColors((Element)View);
 		_status.Foreground(AppStyles.ColorForRole(AppStyles.RoleSubtle));
 		AppStyles.ApplyTextColors(_modelPicker.View);
 		AppStyles.ApplyTextColors(_statisticsPanel.View);
 		AppStyles.ApplyTextColors(_usagePanel.View);
-		if (_branchPanel.View.IsVisible) AppStyles.ApplyTextColors(_branchPanel.View);
+		AppStyles.ApplyTextColors(_branchPanel.View);
+		AppStyles.ApplyTextColors(_imagePreview.View);
+		_terminal?.ApplyTheme();
 	}
 
 
@@ -684,7 +738,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		_conversationScroll.Stop();
 		_messages.IsVisible(showChat);
-		_emptyCard.IsVisible(showChat && _chat.Entries().Count == 0);
+		SetEmptyState(showChat && _chat.Entries().Count == 0);
 		_noMatches.IsVisible(showChat && _filter.Length > 0 && _messages.ItemsSource.Count == 0);
 		_branchPanel.View.IsVisible(!showChat);
 
@@ -696,6 +750,24 @@ public sealed partial class SessionTab : IDisposable
 		{
 			_branchPanel.Refresh();
 		}
+	}
+
+	/// <summary>
+	/// 空会话：提示文本与输入区（含状态栏）作为一个整体居中，落在消息区正中；
+	/// 有记录后输入区回到贴底的自适应行。只换网格行，不重建输入框 —— 草稿、附件与焦点都保留。
+	/// </summary>
+	private void SetEmptyState(bool empty)
+	{
+		_emptyCard.IsVisible(empty);
+		var row = empty ? 2 : 3;
+		if (Grid.GetRow(_composerColumn) != row)
+		{
+			// 换行只发生在有/无记录之间：整棵树重排一次，行高与对齐立刻生效。
+			Grid.SetRow(_composerColumn, row);
+			View.InvalidateMeasure();
+		}
+
+		_composerColumn.VerticalAlignment(empty ? VerticalAlignment.Center : VerticalAlignment.Stretch);
 	}
 
 	/// <summary>选择图片并附加到下一次发送。图片以 Base64 随消息发给模型（`prompt` 的 images 字段同源）。</summary>
@@ -851,19 +923,125 @@ public sealed partial class SessionTab : IDisposable
 		Render();
 	}
 
-	private void OnThinkingSelected()
+	/// <summary>会话底部的终端面板是否展开。</summary>
+	public bool IsTerminalOpen => _terminalOpen;
+
+	/// <summary>输入框的终端键 / Ctrl+Shift+D：展开时收起，收起时展开。</summary>
+	public void ToggleTerminal() => SetTerminalOpen(!_terminalOpen);
+
+	/// <summary>
+	/// 展开或收起底部终端。终端在第一次展开时才创建（会真的启动伪终端），之后收起只隐藏，
+	/// shell 的历史与工作目录都不丢；展开时把键盘焦点交给它。
+	/// </summary>
+	public void SetTerminalOpen(bool open)
 	{
-		if (_refreshingPickers || _thinkingPicker.SelectedIndex < 0)
+		if (_disposed || _terminalOpen == open)
+		{
+			return;
+		}
+
+		if (!open)
+		{
+			// 收起前记下当前高度，下次展开沿用。
+			if (_terminalPane.Bounds.Height >= AppTheme.TerminalDockMinHeight - 0.5)
+			{
+				_terminalDockHeight = Math.Clamp(_terminalPane.Bounds.Height,
+					AppTheme.TerminalDockMinHeight, AppTheme.TerminalDockMaxHeight);
+			}
+
+			_terminalOpen = false;
+			_terminalPane.IsVisible(false);
+			UpdateTerminalButton();
+			FocusComposer();
+			return;
+		}
+
+		if (_terminal is null)
+		{
+			_terminal = new TerminalDock(() => Session.Cwd, compact: true, onClose: () => SetTerminalOpen(false));
+			_terminalPane.Child(_terminal.View);
+		}
+
+		_terminalOpen = true;
+		_terminalPane.IsVisible(true);
+		_terminalSplit.SecondLength = GridLength.Pixels(_terminalDockHeight);
+		UpdateTerminalButton();
+		FocusTerminalSoon();
+	}
+
+	/// <summary>终端键在面板展开时常驻浮起，一眼看出终端是从这里打开的。</summary>
+	private void UpdateTerminalButton() =>
+		_terminalButton.StyleName(_terminalOpen ? AppStyles.SelectedButton : AppStyles.GhostButton);
+
+	/// <summary>展开后再交焦点：面板这一帧还没布局完，终端输入层此时还收不到键盘。</summary>
+	private void FocusTerminalSoon()
+	{
+		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
+		if (dispatcher is null)
+		{
+			_terminal?.FocusTerminal();
+			return;
+		}
+
+		dispatcher.BeginInvoke(() =>
+		{
+			if (!_disposed)
+			{
+				_terminal?.FocusTerminal();
+			}
+		});
+	}
+
+	/// <summary>思考强度菜单：与模型选择一样按当前模型支持项生成，当前项打勾。</summary>
+	private void ShowThinkingMenu()
+	{
+		if (IsStreaming || _disposed)
 		{
 			return;
 		}
 
 		var levels = ThinkingLevelResolver.GetSupported(Session.Model);
-		if (_thinkingPicker.SelectedIndex < levels.Count)
+		if (levels.Count == 0)
 		{
-			Session.SetThinkingLevel(levels[_thinkingPicker.SelectedIndex]);
-			Render();
+			return;
 		}
+
+		// 点击后指针仍在按钮上，先收起悬停提示，避免它压在刚打开的菜单上。
+		HoverHints.Cancel(_thinkingButton);
+
+		// 当前级别在菜单图标列打勾；MewUI 0.22.1 的 MenuItem 还没有 IsCheckable，
+		// 用 IconTemplate 表达同一层信息。
+		var checkIcon = new IconTemplate(size => new GlyphElement()
+			.Kind(GlyphKind.CheckMark)
+			.GlyphSize(4)
+			.Foreground(AppTheme.Accent)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.VerticalAlignment(VerticalAlignment.Center));
+
+		var menu = new ContextMenu();
+		foreach (var level in levels)
+		{
+			var command = new Command($"pi.thinking.{level}", Strings.ThinkingLevelName(level));
+			_thinkingButton.Commands.Register(command, () => SelectThinkingLevel(level));
+			menu.Items.Add(new MenuItem(command)
+			{
+				Icon = string.Equals(level, Session.ThinkingLevel, StringComparison.Ordinal) ? checkIcon : null,
+			});
+		}
+
+		menu.Show(_thinkingButton);
+	}
+
+	private void SelectThinkingLevel(string level)
+	{
+		if (IsStreaming || _disposed)
+		{
+			return;
+		}
+
+		Session.SetThinkingLevel(level);
+		RefreshPickers();
+		Render();
 	}
 
 	/// <summary>
@@ -923,23 +1101,15 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>同步当前模型和思考级别选择项。</summary>
+	/// <summary>同步当前模型与思考强度铭牌。</summary>
 	private void RefreshPickers()
 	{
-		_refreshingPickers = true;
-		try
-		{
-			_modelLabel.Text(Session.Model.Id);
-			_modelButton.HoverTip($"{Session.Model.Provider}/{Session.Model.Id}\n{Strings.ModelCapabilities(Session.Model)}");
+		_modelLabel.Text(Session.Model.Id);
+		_modelButton.HoverTip($"{Session.Model.Provider}/{Session.Model.Id}\n{Strings.ModelCapabilities(Session.Model)}");
 
-			var levels = ThinkingLevelResolver.GetSupported(Session.Model);
-			_thinkingPicker.ItemsSource(ItemsView.Create([.. levels.Select(Strings.ThinkingLevelName)]));
-			_thinkingPicker.SelectedIndex = Math.Max(0, levels.ToList().IndexOf(Session.ThinkingLevel));
-		}
-		finally
-		{
-			_refreshingPickers = false;
-		}
+		var thinking = Strings.ThinkingLevelName(Session.ThinkingLevel);
+		_thinkingLabel.Text(thinking);
+		_thinkingButton.HoverTip($"{Strings.ThinkingLevelTitle}：{thinking}");
 	}
 
 	/// <summary>保留未变化的消息控件和折叠状态，只重绘变化后的尾部。</summary>
@@ -954,7 +1124,7 @@ public sealed partial class SessionTab : IDisposable
 		var matched = _filter.Length == 0 ? all : [.. all.Where(entry => Matches(entry, _filter))];
 		if (!ReferenceEquals(_projectedSource, all) || _projectedFilter != _filter || _projectedBusy != IsStreaming)
 		{
-			_projectedRows = ExecutionProcess.Project(matched, IsStreaming);
+			_projectedRows = _projector.Project(matched, IsStreaming);
 			_projectedSource = all;
 			_projectedFilter = _filter;
 			_projectedBusy = IsStreaming;
@@ -970,6 +1140,8 @@ public sealed partial class SessionTab : IDisposable
 		{
 			_filterStatus.IsVisible(false);
 		}
+
+		_headerRow.IsVisible(entries.Count > 0);
 
 		var status = $"{Session.Model.Provider} / {Session.Model.Id} · {Strings.ThinkingShort(Session.ThinkingLevel)}";
 		if (Session.IsCompacting) status += $" · {Strings.Compacting}";
@@ -1009,19 +1181,18 @@ public sealed partial class SessionTab : IDisposable
 		_sendLabel.Text(busy ? Strings.Abort : Strings.Send);
 		_sendIcon.Source(AppIcons.Get(busy ? "x" : "arrow-up", AppTheme.TextOnAccent));
 		_modelButton.IsEnabled = !busy;
-		_thinkingPicker.IsEnabled = !busy;
+		_thinkingButton.IsEnabled = !busy;
 		_planLabel.Text(Session.PlanModeEnabled ? Strings.PlanModeOn : Strings.PlanMode);
 		_planButton.IsEnabled = !busy;
 		_testButton.IsEnabled = !busy && !_testing;
 		_retry.IsEnabled = !busy && all.Any(static row => row.Role == ChatRole.User);
 		_copyReply.IsEnabled = all.Any(static row => row.Role == ChatRole.Assistant && row.Text.Length > 0);
 
-		_timeline.SetEntries(entries, force);
-		_emptyCard.IsVisible(all.Count == 0 && _messages.IsVisible);
+		_timeline.SetEntries(entries, force, _projector.LastStablePrefix, _projector.LastPrefixReused);
+		SetEmptyState(all.Count == 0 && _messages.IsVisible);
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
 		if (all.Count == 0)
 		{
-			_emptyContext.Text(Strings.EmptySessionContext(Session.Model.Provider, Session.Model.Id, Session.Cwd));
 			_conversationScroll.Stop();
 		}
 
@@ -1175,7 +1346,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		var row = entry.Role switch
 		{
-			ChatRole.User => Bubble(entry, alignRight: true),
+			ChatRole.User => Bubble(entry),
 			ChatRole.Process => new ExecutionProcessView(entry, Row, _textFocus).View,
 			ChatRole.Tool => new ToolMessageView(entry, _textFocus, PreviewImage).View,
 			ChatRole.Error => Card(entry, Strings.RoleError),
@@ -1185,17 +1356,19 @@ public sealed partial class SessionTab : IDisposable
 		return row;
 	}
 
-	/// <summary>用户消息：靠右的弱化色气泡，带「在此分支」按钮（回到该提问之前，重开一条）。</summary>
-	private UIElement Bubble(ChatEntry entry, bool alignRight)
+	/// <summary>
+	/// 用户消息：整块靠右排，与助手回复（左侧正文）一眼分开；元信息行在色块上方（角色铭牌 + 悬停操作）。
+	/// 色块不再带左缘「纬线」——那种强调形态留给错误行。外层 Border 挂 actions（Tag 约定）。
+	/// </summary>
+	private UIElement Bubble(ChatEntry entry)
 	{
 		var body = MessageText.Create(entry.Text);
 		_textFocus.Track(body);
 
 		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
 			.Children(AppIcons.Button("copy", Strings.CopyUserMessage, () => CopyText(entry.Text), size: 14));
-		var rows = new StackPanel().Spacing(AppTheme.Space2).Children(
-			new DockPanel().LastChildFill().Children(actions.DockRight(), Header(string.Empty, entry, Strings.RoleUser)), body);
 
+		var rows = new StackPanel().Spacing(AppTheme.Space2).Children(body);
 		foreach (var image in entry.Images)
 		{
 			rows.Children(ImageView(image, PreviewImage));
@@ -1213,13 +1386,22 @@ public sealed partial class SessionTab : IDisposable
 		var card = new Border()
 			.StyleName(AppStyles.UserMessage)
 			.BorderThickness(0)
-			.CornerRadius(AppTheme.RadiusXl)
-			.Padding(new Thickness(AppTheme.Space4))
+			.CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.MaxWidth(AppTheme.MessageMaxWidth)
+			.HorizontalAlignment(HorizontalAlignment.Right)
 			.Child(rows);
 
 		card.Tag = actions;
-		return alignRight ? card.HorizontalAlignment(HorizontalAlignment.Right) : card;
+
+		return new StackPanel()
+			.Spacing(AppTheme.Space1)
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.Children(
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1)
+					.HorizontalAlignment(HorizontalAlignment.Right)
+					.Children(actions, Header(string.Empty, entry, Strings.RoleUser)),
+				card);
 	}
 
 	/// <summary>
@@ -1313,17 +1495,21 @@ public sealed partial class SessionTab : IDisposable
 			.Spacing(4)
 			.Children(Header(string.Empty, entry, label), text);
 
-		return new Border()
-			.WithTheme((theme, element) =>
-			{
-				element.Background = AppTheme.For(theme).CardBackgroundAlt;
-				element.BorderBrush = AppTheme.For(theme).Error;
-			})
-			.BorderThickness(1)
-			.CornerRadius(AppTheme.RadiusSm)
-			.Padding(new Thickness(AppTheme.Space3))
-			.MaxWidth(AppTheme.MessageMaxWidth)
-			.Child(content);
+		// 错误同样走「纬线」形态：左缘红线 + 内嵌底，不再包整圈边框。
+		var thread = new Border()
+			.Width(AppTheme.ThreadWidth)
+			.CornerRadius(AppTheme.RadiusXs)
+			.VerticalAlignment(VerticalAlignment.Stretch)
+			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).Error);
+
+		return new DockPanel().LastChildFill()
+			.Children(thread.DockLeft(), new Border()
+				.WithTheme((theme, element) => element.Background = AppTheme.For(theme).CardBackgroundAlt)
+				.CornerRadius(AppTheme.RadiusSm)
+				.Padding(new Thickness(AppTheme.Space3))
+				.Margin(new Thickness(AppTheme.Space2, 0, 0, 0))
+				.MaxWidth(AppTheme.MessageMaxWidth)
+				.Child(content));
 	}
 
 	/// <summary>角色行：角色名 + 时间。</summary>
@@ -1334,10 +1520,11 @@ public sealed partial class SessionTab : IDisposable
 			? DateTimeOffset.FromUnixTimeMilliseconds(entry.Timestamp).ToLocalTime().ToString("HH:mm")
 			: string.Empty;
 
+		// 角色铭牌：等宽小字，工坊铭牌而非标题。
 		return new TextBlock()
 			.Text(time.Length > 0 ? $"{name}  ·  {time}" : name)
 			.FontSize(AppTheme.FontSizeMicro)
-			.FontWeight(FontWeight.Bold)
+			.FontFamily(AppTheme.MonoFont)
 			.SubtleText();
 	}
 

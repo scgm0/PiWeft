@@ -1,6 +1,12 @@
 # 功能缺口与 Jint 技术评估
 
+<<<<<<< HEAD
 评估日期：2026-10-14（Jint 探针）；2026-10-16 对照源码与全量测试复核，更新实现状态、清理已完成的记录并修复排查出的缺陷。状态：规划输入，尚未批准为实施路线。
+=======
+评估日期：2026-10-14（Jint 探针）；2026-10-19 对照 pi 1.3.0 与当前工作树复核。Ai 197、Agent 20、CodingAgent 347、Mcp 89、CLI 130、JavaScript 52 共 835 项测试通过；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。
+
+> **2026-10-19 实施更新**：S2 的 codemode 已按本文 S2 范围完整落地（细节见 [状态文档](00-status.md) 的 codemode 一节）。要点：新建 `src/PiWeft.JavaScript`（Jint `5.0.0-preview-2281`，`Jint-preview` 源），提供受限沙箱与 TypeScript 声明渲染；`codemode` 默认不启用，嵌套调用走会话完整管线；脚本内有 `searchTools`/`describeTool`/`describeNamespace`（BM25 与 pi 同参）、`models.*`（目录 + classify/generateImages）与 `eval`/`new Function`；exposure 分流、`tool_search` 与随分支恢复的 `tool-load` 已实现；专用 worker 线程泵续体、事件驱动等待、并发上限 2；性能探针后百工具执行成本约 51ms → 7ms。测试：`tests/PiWeft.JavaScript.Tests` 52 项、`CodeModeToolTests` 29 项；Linux x64 NativeAOT 冒烟实跑 eval/search/models（`tools/PiWeft.AotSmoke`）。AOT 下脚本包装必须用 async 箭头函数（`async function` + 直接 eval 触发 Jint 泛型接口分派缺陷 FailFast）。本文以下内容是实施前的评估记录，缺口编号与结论按当时口径保留。
+>>>>>>> redesign/loom-workbench
 
 本文汇总 PiWeft 与 pi / PiDeck 的功能对照，以及 Jint 5 实现 codemode、JS 扩展的可行性和性能探针结果。用于后续确定产品范围、拆分任务、建立依赖与验收标准，不代表相关功能已经实现，也不修改既有产品范围决策。
 
@@ -19,12 +25,16 @@
 | 对象 | 基准与用途 |
 | --- | --- |
 | PiWeft | 当前工作目录源码及现有状态文档；评估时源码处于未跟踪工作树，未以已提交版本作为快照 |
-| pi | 本地 `/home/scgm/TestBuild/pi`，coding-agent 包版本 1.2.0；作为核心协议、CLI、扩展及 codemode 基准 |
+| pi | 本地 `/home/scgm/TestBuild/pi`，当前 `v1.3.0+30`（`482c1381a`）；作为核心协议、CLI、扩展及 codemode 基准 |
 | PiDeck | 本地 `/home/scgm/TestBuild/PiDeck`，包版本 0.9.0；作为桌面工作流基准 |
 | pi_agent_rust / pi-go | 本地同级仓库，作为子代理、IDE、记忆和工具增强参考，不作为原版 pi 的必备契约 |
 | Jint | 当时正式版 4.17.0；5.0.0 开发线固定提交 `8537426f92ee847ccb09af59b1db60079e3a8028` |
 
+<<<<<<< HEAD
 功能分析以源码静态核对为主。Jint 探针实际执行了 JIT 与 Linux x64 NativeAOT。2026-10-16 复核重新运行了全量测试并对照源码更新第 3、4 节状态；真实供应商联网测试与完整 PiDeck UI e2e 两个口径始终未进行，开始实施前仍应重新确认版本、代码路径和缺口状态。
+=======
+功能分析以源码静态核对为主。Jint 探针实际执行了 JIT 与 Linux x64 NativeAOT。2026-10-19 复核重新运行了非桌面测试（835 项通过）与 AOT 冒烟；真实供应商联网测试、Windows/macOS 实机与完整 PiDeck UI e2e 仍未进行，开始实施前仍应重新确认版本、代码路径和缺口状态。
+>>>>>>> redesign/loom-workbench
 
 ### 1.2 与现有文档的关系
 
@@ -33,7 +43,7 @@
 - [配置管理差距](03-pideck-configuration-parity.md)：配置领域的对照。
 - [统计与性能](04-session-statistics-performance.md)、[渲染性能](05-desktop-rendering-performance.md)：已有性能口径。
 
-现有文档明确排除 JS 扩展宿主、codemode、Mermaid、KaTeX、托盘、通知、自动更新、崩溃上报、内嵌浏览器和终端。本文将其记录为产品范围差异或候选方向；采用 Jint 等方案需要另行批准范围变更。
+现有文档原本排除 JS 扩展宿主、codemode、Mermaid、KaTeX、托盘、通知、自动更新、崩溃上报、内嵌浏览器和终端。codemode 已在 2026-10-19 按本文 S2 的范围实现；其余项目仍记录为产品范围差异或候选方向。
 
 ## 2. 已有能力基线
 
@@ -41,11 +51,11 @@
 
 | 领域 | 已有能力 | 不能据此推断 |
 | --- | --- | --- |
-| 模型调用 | 十类 Provider API、流式事件、思考级别、用量和费用、Codex 设备码登录/刷新 | 所有 Provider OAuth、动态账号模型目录、WebSocket 传输都可用 |
-| Agent | 七个基础文件/Shell/搜索工具、串行/并行工具、校验、前后钩子、steering/follow-up、中断、原生 todo/ask_question/计划模式 | 已有 codemode、嵌套工具管线或子代理编排 |
+| 模型调用 | 十类 Provider API、流式事件、思考级别、用量和费用；Codex/OpenAI ChatGPT/GitHub Copilot/Anthropic/OpenRouter/xAI/Kimi/Meta/Radius OAuth 与全 Provider API key；pi.dev 与账号级目录缓存；虚拟模型、cache warming、Codex WebSocket、生图/分类网关 | 扩展动态路由、连接复用、生图/分类入口及全部账号能力同步可用 |
+| Agent | 八个基础文件/Shell/搜索工具（含 powershell）、串行/并行工具、校验、前后钩子、steering/follow-up、中断、原生 todo/ask_question/计划模式 | 已有 codemode、嵌套工具管线或子代理编排 |
 | 会话 | JSONL 兼容、恢复、fork/clone、分支树/摘要导航、压缩、重试、统计 | 文件回滚、完整历史分页或跨 Agent 原生格式导入 |
 | MCP | stdio/streamable HTTP、工具/资源/模板/提示的基础能力、stdio 工具列表热刷新、exposure 过滤、运行时重连 | OAuth、HTTP 独立通知流、CLI 管理子命令 |
-| 桌面 | 多项目/并行标签、搜索、会话置顶/命名/归档、Markdown、思考/工具过程、图片附件/预览、编辑重发、文件浏览器与编辑器、Git 写操作、检查点、命令 Dock、跨会话用量统计 | 完整消息编辑删除、PTY 终端、后台 Ask 工作流 |
+| 桌面 | 多项目/并行标签、搜索、会话置顶/命名/归档、Markdown、思考/工具过程、图片附件/预览、编辑重发、文件浏览器与编辑器、Git 写操作、检查点、PTY 命令 Dock、跨会话用量统计 | 完整消息编辑删除、完整 VT 仿真与 scrollback、后台 Ask 工作流 |
 | 配置 | 模型/供应商/API Key/Agent/MCP/JSON、作用域、未知字段保留、原子写入和冲突检测、连接测试、远程模型拉取、价格表单 | 完整 pi 配置语义、OAuth 登录 |
 | 用量与系统 | 会话与跨会话用量、余额/积分、自定义查询、New API/Cookie、Git 状态/diff 与写操作、检查点、HTML 导出、主题、日志、单实例 | 订阅窗口、热力图下钻、推送/拉取、托盘或更新系统 |
 
@@ -61,7 +71,7 @@
 | C-02 | CLI `@file` 没有 pi 的附件展开语义；print 路径没有把管道 stdin 合入首条提示 | [参数解析](../src/PiWeft.Cli/CliArguments.cs)、[执行路径](../src/PiWeft.Cli/CliRunner.cs) | 已实现：`@file` 展开为 `<file>` 文本块/图片内容块，print/JSON 合并重定向 stdin（交互模式不读管道 stdin）；RPC 明确拒绝 | `CliArgumentsTests.Parse_CollectsFileArgumentsSeparately`、`CliRunnerTests.PrintMode_ExpandsFileArgumentsIntoThePrompt`、`RpcMode_RejectsFileArguments` |
 | C-03 | 桌面补全列出模板和 `/skill:name`，普通发送未接模板展开；显式技能加载未见对应完整处理 | [SessionTab](../src/PiWeft.Desktop/SessionTab.cs)、[ChatViewModel](../src/PiWeft.Desktop/ChatViewModel.cs)、[PromptTemplates](../src/PiWeft.CodingAgent/Prompts/PromptTemplates.cs) | 已实现：`CodingAgentSession.ExpandInput` 统一展开 `/skill:name` 与提示词模板，CLI/RPC/桌面共享 | `PromptInputTests`、`PromptAsync_ExpandsSkillAndTemplateBeforeSending` |
 | C-04 | RPC 空闲 `prompt` 路径只发送展开后的文本，没有使用 `images`；忙碌排队路径有图片转换 | [HandlePromptAsync / TextMessage](../src/PiWeft.Cli/CliRunner.cs) | 已实现：空闲 `prompt` 与 steer/follow-up 均保留 `images` 内容块；消息重载补齐自动压缩与重试 | `CliRunnerTests.RpcMode_PreservesImagesOnIdlePrompt` |
-| C-05 | `--export`、`--models`、显式资源路径、主题/TUI/信任等部分兼容参数只是消费并忽略 | [兼容参数分支](../src/PiWeft.Cli/CliArguments.cs) | 部分实现：`--export` 与 `--models` 已落地；扩展/主题/TUI 类参数显式标注为「接受但不实现」，帮助文本同步说明 | `CliArgumentsTests`、`CliRunnerTests` |
+| C-05 | `--export`、`--models`、显式资源路径、主题/TUI/信任等部分兼容参数只是消费并忽略 | [兼容参数分支](../src/PiWeft.Cli/CliArguments.cs) | 部分实现：`--export`、`--models`、`--skill`、`--prompt-template`、`--theme`、`--no-themes` 已落地；只剩扩展/TUI 类参数显式标注为「接受但不实现」 | `CliArgumentsTests`、`CliRunnerTests` |
 | C-06 | 文档/帮助仍有过度或滞后声明，例如 RPC 图片支持、斜杠命令完整度、帮助中的 MCP 范围，以及 `pi auth check` 的 `invalid` 状态 | [状态文档](00-status.md)、[HelpText](../src/PiWeft.Cli/CliArguments.cs) | 已实现：HelpText 移除错误的 MCP 范围声明，并列明接受的兼容参数；状态文档同步。`auth check` 已补齐 pi 的三态输出 `ready`/`not_ready`/`invalid`（退出码 0/1/2）：`invalid` 表示凭据存在但不可用（命令型凭据执行失败、OAuth 刷新失败） | 能力清单随改动维护；`AuthCommandProcessTests.AuthCheckReportsInvalidWhenTheCommandCredentialFails` |
 
 提示词保真：CLI/桌面传入已过滤的工具列表时会丢失内置工具的短 snippet 与 guidelines，现按名称重新挂回（`todo` 的 snippet/guidelines 与 PiDeck 原文一致）；回归见 `SystemPromptTests`、`RealPromptFidelityTests`（取全部真实会话的并集）。
@@ -77,12 +87,21 @@
 | PI-01 | JS/TS 扩展宿主 | 没有现有 pi 扩展的加载、注册、生命周期、动态能力、重载与清理机制 |
 | PI-02 | 扩展 UI 协议 | 部分实现：原生 `ask_question` 经 RPC `extension_ui_request`（`method: "input"`，PiDeck 批量信封）发出，`extension_ui_response` 唤醒等待中的提问；CLI 交互提示与桌面卡片同路径。pi 的对话框方法 `select`/`confirm`/`editor` 与 fire-and-forget 的 `notify` 已按 pi 线协议实现（RPC 转发、控制台与桌面三宿主、agent 侧 `timeout` 自动解析），为 S3 扩展宿主就位；尚未有进程内调用方，`setStatus`/`setWidget`/`setTitle`/`set_editor_text` 不发出，pi 扩展的 renderer / 自定义 TUI 协议不成立 |
 | PI-03 | Pi 包管理 | 已实现：settings 的 `packages` 来源解析与包资源发现（`package.json` 的 `pi` 清单、约定目录、glob 收窄、按名去重）；`pi install/list/remove/update` 支持 npm 安装（`--prefix` + `--legacy-peer-deps`）、git 克隆（含 `@ref`）、本地路径登记与目录清理，来源原子写回 settings。未覆盖：npm 依赖冲突治理、包图库与资源筛选诊断界面 |
+<<<<<<< HEAD
 | PI-04 | 完整终端 TUI | 当前为按行 REPL，缺少多行编辑、`$EDITOR` 外部编辑、剪贴板图片粘贴进 TUI、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
 | PI-05 | codemode / tool_search | 缺少脚本编排、结果过滤、延迟工具发现和脚本状态；并行 Agent 工具执行不是 codemode |
 | PI-06 | MCP 高级运行时 | 部分实现：`McpExposure` 实现 pi 同名 `exposure`/`toolExposure`（`codemode-deferred` 归一、精确名优先于通配符、逐工具覆盖服务器默认；`hidden` 工具不声明，整台 `hidden` 且无逐工具放行的服务器不连接）；因无 codemode，`codemode`/`deferred` 暂按 `direct`。运行时重连：RPC `list_mcp`/`reconnect_mcp` 与桌面「重连 MCP」共用释放-重建-热替换路径。已覆盖：OAuth 2.1 授权码 + PKCE（RFC 9728/8414/7591 的发现与动态注册、回环回调、401 自动刷新并重放、令牌存 `<agentDir>/mcp-oauth.json`）、**客户端凭据授权**（`clientId + clientSecret` 走 RFC 6749 §4.4，`pi mcp login` 与运行时到期重新授权均无需浏览器）、**HTTP 通知流上的服务端请求反向应答**（`ping` 回空结果，其余 -32601）、HTTP 独立 SSE 通知流（服务器返回 404/405 时静默降级）、CLI `mcp list/add/remove/login/logout`。未覆盖：OAuth 网关模式的令牌交换变体、桌面界面的 MCP 授权入口 |
 | PI-07 | 认证覆盖 | 部分实现：命令型凭据（`!` 开头）已在请求时执行（10 秒超时、64 KiB 输出上限、不缓存，失败回落环境变量，与 pi 一致）；`auth check` 三态 `ready`/`not_ready`/`invalid` 齐备。OAuth 仍只支持 Codex 设备码；AWS 环境签名路径不等于完整 profile/ECS/IRSA 链 |
 | PI-08 | 动态模型目录 | 固定内置目录加本地覆盖；配置页可按 API 拉取远程模型 id 并入草稿（`RemoteModelCatalog`），但缺少账号级目录/能力同步与联网更新；模型选择器刷新仍只重查本地认证 |
 | PI-09 | 高级模型运行时 | 缺少虚拟路由、分类器/生图模型执行、缓存保温、Codex WebSocket、模型级按思考档位采样配置 |
+=======
+| PI-04 | 完整终端 TUI | 当前为按行 REPL，缺少多行编辑、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
+| PI-05 | codemode / tool_search | 已实现（2026-10-19）：codemode 全套——Jint 5 沙箱、嵌套管线、分支 store、`eval`、脚本内 `searchTools`/`describeTool`/`describeNamespace`、`models.*`（含 classify/generateImages）、structuredContent、guidelines、输出/图片落盘、`settings.codemode.*`、stalled 检测、专用 worker 线程（默认不启用）；exposure 分流（MCP 默认 `codemode` + 自动启用）、`tool_search` 与随分支恢复的加载；命名空间（`mcp__<server>`、别名、描述、instructions、分组预算）与 `mcp_servers` 章节。余项：pi prelude 的 lockdown |
+| PI-06 | MCP 高级运行时 | 部分实现：`McpExposure` 实现 pi 同名 `exposure`/`toolExposure`；因无 codemode，`codemode`/`deferred` 暂按 `direct`。已覆盖：pi 形状的 `oauth` 对象（兼容旧 `auth: oauth`）、授权码 + PKCE、客户端凭据、`callbackPort`/`clientName`/`authServerMetadataUrl`、401 刷新重放、HTTP 通知流与服务端反向应答、`mcp list` 连接并报告 state/tools/error。未覆盖：`cimd`、完整 `callbackUrl` 路径、与 pi 共享 `mcp-auth.json` 令牌格式、桌面 MCP 授权入口 |
+| PI-07 | 认证覆盖 | 大部分实现：Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius 的 OAuth 已落地；其余 Provider 支持 API key 登录。命令型凭据、运行时刷新与 `auth check` 三态齐备。余项是 AWS profile/ECS/IRSA 完整 ambient 链与部分企业登录细分 |
+| PI-08 | 动态模型目录 | 已实现 pi.dev 目录刷新、`<agentDir>/models-store.json` 离线缓存、启动加载，以及账号级 OpenRouter/Radius/GitHub Copilot 目录。未覆盖 ETag/刷新节流与更细的账号能力同步 |
+| PI-09 | 高级模型运行时 | 已实现虚拟模型（`pi-virtual` + `models.json` 静态路由）、cache warming（off/streaming/idle、经济学阈值、状态）、模型级 `samplingParams`、Codex Responses WebSocket（auto 回退 SSE）、OpenRouter 生图与 OpenAI Decisions 分类网关。仍缺扩展动态 `route()`/路由状态、`websocket-cached` 连接复用、Codex zstd 与完整 continuation，以及生图/分类入口接线 |
+>>>>>>> redesign/loom-workbench
 | PI-10 | 资源配置与主题 | 部分实现：技能/模板/主题按用户、项目、包作用域统一发现（含 settings 的 `skills`/`prompts`/`themes` 与诊断）；pi 主题 JSON 解析完整（hex / oklch / okhsl / ANSI 索引 / 变量引用 / 终端默认，含色域映射），桌面外观页可选择并即时换肤；**主题目录文件监视热重载已实现**（防抖 400ms、坏文件保留旧外观、项目主题受信任门控，`ThemeWatcher`）。`/reload` 与 RPC `reload_resources` 重新解析资源而不重建会话。未覆盖：独立资源管理界面 |
 | PI-11 | 项目信任 | 已实现：`<agentDir>/trust.json`（规范化路径 → true/false）、父目录查找、原子写入；显式 `-a/--na` 优先，其次 trust.json，最后**全局** `settings.defaultProjectTrust`（默认 `ask`，与 pi 一致；项目设置不能自我授权）；不受信时不合并项目设置、不连项目 `.pi/mcp.json`、不加载项目级技能/提示词模板；CLI 交互模式与桌面启动时询问（信任/仅本次/不信任），无 UI 时 `ask` 按不受信处理。测试：`ProjectTrustTests`、`CliEnvironmentTests.Create_GatesProjectSettingsWhenUntrusted`、`McpConfigTests.Load_WithoutProjectTrustIgnoresProjectConfig` |
 | PI-12 | 行内 shell 与会话环境变量 | 均未实现：输入框 `!`/`!!` 前缀直接执行 shell（pi 扩展可经 `user_bash` 事件拦截接管）；bash/powershell 工具向子进程注入 `AI_AGENT`、`PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，供扩展和脚本感知会话上下文 |
@@ -98,7 +117,7 @@
 | --- | --- | --- |
 | D-01 | 问询、待办、计划 | 已实现：原生 `todo`（PiDeck v3 `customType: "pi-deck-todo"` 自定义条目、按会话分支恢复、计划全貌只随变更 toolResult 进上下文）、原生 `ask_question`（select/multi_select/confirm/input/editor；RPC/CLI 交互/桌面卡片三宿主，headless 明确报告不可用）、计划模式（停用 `edit`/`write`、`plan_mode` 提示章节、只读 shell 白名单、识别 PiDeck 标记自动退出）。测试：`TodoToolTests`（11 项）、`AskQuestionTests`（5 项）、`PlanModeTests`（14 项）、`TodoStripTests`、`AskQuestionPanelTests`（2 项）。未覆盖：独立后台 Ask 工作流 |
 | D-02 | 文件工作台 | 部分实现：`ProjectFiles` 目录列举（跳过 `.git`/依赖/构建产物、2000 条上限）与文本读写（1MiB 上限、NUL 二进制判定、路径不越出根目录、时间戳冲突检测）；`FileBrowserView` 目录导航与内置编辑器（`Ctrl+Shift+E`）；回答级修改汇总；统一/并排 diff 切换。测试：`ProjectFilesTests`（7 项）、`FileBrowserViewTests`（2 项）、`SideBySideDiffTests`/`DiffViewRenderTests`（6 项）、`ChatViewModelTests.AssistantRowSummarizesFilesChangedThisTurn`。未覆盖：多文件标签、草稿本、跨行块注释、内嵌浏览器 |
-| D-03 | 内置终端 | 部分实现：`TerminalDock` 复用 `ShellRunner` 在项目目录运行单条命令，流式输出、取消、200K 字符上限、40ms 合并刷新与自动滚底；`Ctrl+Shift+D` 与命令面板入口。测试：`TerminalDockTests`（3 项）。未覆盖：完整 PTY、常驻交互式会话、多 tab、快照回放 |
+| D-03 | 内置终端 | 已实现：`TerminalDock` 用 MiniPty 1.3.0 在项目目录启动真伪终端（Linux/macOS `forkpty`/`posix_spawn`，Windows ConPTY）；`TerminalScreen` 做 VT 解析（scrollback、备用屏 47/1047/1049、滚动区域、G0/G1 字符集、SGR 全属性与宽字符、自动换行/原点模式/应用光标键、制表位、IRM、DECSCUSR（含闪烁）/DECSCNM/DECALN/DECRQM、OSC 4/10/11/12 调色、OSC 8 超链接、OSC 52、焦点上报、DSR/DA），清行/清屏、鼠标 1000/1002/1003 + 1006/1015/1016；窗口缩放按软换行重排，40ms 合并重绘并带滚动条。键盘/IME 经队列串行写回，拖选/双击/三击/Alt 区块选择、Shift+滚轮翻历史、bracketed paste（多行先确认），尺寸变化同步 `TIOCSWINSZ`；复制粘贴用 `Ctrl+C`/`Ctrl+V`，Linux 选区同步 PRIMARY（中键粘贴），右键菜单含复制/粘贴/全选/清屏/重启；IME 预编辑经 `ITextCompositionClient` 浮层显示在光标格、候选窗按光标格定位，提交文本经 `ITextInputClient` 写回 PTY（依赖 MewUI X11 的 IBus/fcitx5/XIM 后端）；等宽字体 Maple Mono NF CN；头部 Shell 按钮切换自动/检测到的/自定义路径，写入 `desktop.json` 并重启 PTY；macOS 用 MiniPty 的 `posix_spawn` helper（JIT 时随 native assets 与 dylib 同目录，AOT 由包 targets 复制到发布根目录），复制粘贴走 Cmd+C/V；`Ctrl+Shift+D` 与命令面板入口。测试：`TerminalScreenTests`（49 项）、`TerminalDockTests`（8 项）、`TerminalShellTests`（6 项）、`AppFontTests`（1 项）。未覆盖：macOS/Windows 实机回归、完整 VT100 边界行为、终端多标签、快照回放 |
 | D-04 | 完整 Git 工作流 | 部分实现（写操作已落地）：Git 面板分支切换/新建、逐文件暂存/取消暂存、提交信息与提交；`GitWriter` 用 `ArgumentList` 传参、拒绝以 `-` 开头的名称、30s 超时、4KB 输出上限。测试：`GitWriteTests`（真实临时仓库，4 项）、`GitViewTests`（2 项）。未覆盖：推送/拉取、历史图谱、冲突解决界面 |
 | D-05 | 文件检查点/回滚 | 部分实现：`Checkpoints` 用临时索引 + `commit-tree` 把工作区（含未跟踪文件、尊从 .gitignore）写成 `refs/pi-checkpoints/<id>`，不产生分支或提交；`git restore --worktree` 回滚；默认保留 50 个并按时间清理；发送提示前每仓库每分钟自动快照（干净工作区不消耗限频窗口）。测试：`CheckpointTests`（5 项）、`GitViewTests.CreatingACheckpointAddsARestoreRow`。未覆盖：快照与助手回合关联、清理后新增的未跟踪文件、检查点分页与 diff 预览 |
 | D-06 | 配置深度 | 部分实现：`ProviderProbe` 复用完整 provider 请求路径做 1-token 探测（桌面「测试连接」与 RPC `test_model` 共用）；`RemoteModelCatalog` 按 API 拉取模型 id（OpenAI 兼容 `GET /models`、Anthropic `/v1/models`、Google `/models`，2MiB 与 15s 上限），配置页「拉取远程模型」把缺失项以默认参数并入草稿，RPC `fetch_remote_models`；编辑模型表单含输入/输出/缓存读/缓存写四个价格框，非负且有限才写入 `cost`。测试：`ProviderProbeTests`（5 项）、`RemoteModelCatalogTests`（5 项）、`ConfigurationStoreTests.AddMissingModelsKeepsExistingEntriesAndDefaultsNewOnes`/`ModelCostIsWrittenOnlyWhenProvided`、`CliRunnerTests.RpcMode_TestsModelConnection`/`RpcMode_FetchRemoteModelsReportsUnsupportedApi`。未覆盖：供应商迁移、收藏/隐藏/排序、Azure/Vertex/Bedrock 专用目录接口、桌面 OAuth |
@@ -130,9 +149,11 @@
 
 ### 5.1 版本与验证范围
 
-评估时 GitHub/NuGet 正式版为 **4.17.0**。`main` 声明 5.0.0 开发线，预览源列出至 `5.0.0-preview-2249`。本次因预览包下载缓慢，使用固定源码提交构建，不能将结果标成正式版 5.0.0 或 preview-2249 的测试结果。
+评估时 GitHub/NuGet 正式版为 **4.17.0**。`main` 声明 5.0.0 开发线，预览源当时列出至 `5.0.0-preview-2249`。本次因预览包下载缓慢，使用固定源码提交构建，不能将结果标成正式版 5.0.0 或 preview-2249 的测试结果。
 
-源码唯一构建调整是将 Jint 项目的目标框架限制为 `net10.0`，没有改变解释器运行时源码。正式采用时必须固定包版本/来源，审查许可证与依赖，并复跑目标版本；Jint 主分支 API 仍可能发生破坏性变化。
+**实施时（2026-10-19）**：`Jint-preview` 源（`https://f.feedz.io/sebastienros/jint/nuget/index.json`）已列出至 `5.0.0-preview-2281`，项目固定使用该预览版（`Directory.Packages.props`），由 `nuget.config` 的 `packageSourceMapping` 限定只有 `Jint*` 走预览源。包版本之前列出的源码构建调整不再适用。
+
+正式采用时必须固定包版本/来源，审查许可证与依赖，并复跑目标版本；Jint 主分支 API 仍可能发生破坏性变化。
 
 | 目标 | 判断 | Jint 之外的工作 |
 | --- | --- | --- |
@@ -250,7 +271,7 @@ Jint 官方比较页当时的性能表仍以 4.16.0 为基准，不能当成 Jin
 | --- | --- | --- | --- | --- |
 | S0 兼容回归 | C-01 至 C-06 | 已完成，见第 3 节 | 对照目标 pi 行为 | 失败用例先行；CLI/RPC/桌面实际输入一致；公开能力说明与实现吻合 |
 | S1 安全和运行时基础 | PI-11、共享输入处理、工具调度和结构化 UI；D-01 可先原生实现 | 已完成：信任、统一输入展开、原生 Ask/todo/plan 均已落地 | S0，明确许可与项目资源加载边界 | 不可信项目资源不会静默执行；嵌套工具不绕过钩子；Ask/中断/关闭不会挂起 |
-| S2 Jint 试点/codemode MVP | PI-05 的基础部分 | 未开始；范围变更未批准 | S1 工具契约，批准 JS 范围变更 | 固定 Jint 版本；有限能力；错误/取消/并发/输出预算；Linux AOT 实跑，报告警告和实际包增量 |
+| S2 Jint 试点/codemode MVP | PI-05 的基础部分 | 已完成（2026-10-19）：`PiWeft.JavaScript` + 内置 `codemode`，默认不启用 | S1 工具契约，批准 JS 范围变更 | 固定 Jint 版本；有限能力；错误/取消/并发/输出预算；Linux AOT 实跑，报告警告和实际包增量（AOT 包增量仍是欠账） |
 | S3 有限扩展宿主 | PI-01/PI-02，按需 PI-10 和 D-01 | 未开始 | S2 的投影/调度与 UI 基础 | 明确支持 API 清单；指定扩展样本通过；重载/清理/分支恢复；未支持导入有可理解错误 |
 | S4 高频工作台闭环 | D-02 文件树/编辑器、D-04、D-06、PI-06、PI-08、D-07 基础统计 | 大部分已完成，剩余见第 4 节各条目「未覆盖」 | 各领域协议/认证/文件安全设计 | 连接探测不误报；Git 写操作与冲突处理；配置作用域和凭据隔离；MCP 保存/重连行为明确 |
 | S5 产品扩展 | PI-03/PI-04/PI-09、D-03/D-05/D-08 至 D-13、X-* | 未开始 | 范围和成本决策 | 分领域单独验收，不捆绑为一次“全功能对齐” |

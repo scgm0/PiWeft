@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.Ai;
@@ -66,7 +67,7 @@ public sealed class SessionCatalog
 		return result;
 	}
 
-	/// <summary>按关键字过滤会话：匹配名称、id、工作目录或文件名，忽略大小写。</summary>
+	/// <summary>按关键字过滤会话：匹配名称、id、工作目录或文件名（不含 .jsonl 后缀，否则搜 "json" 会命中全部），忽略大小写。</summary>
 	public static IReadOnlyList<SessionListItem> Search(IReadOnlyList<SessionListItem> sessions, string? query)
 	{
 		var trimmed = query?.Trim() ?? string.Empty;
@@ -82,7 +83,7 @@ public sealed class SessionCatalog
 				item.Name.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ||
 				item.Id.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ||
 				item.Cwd.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ||
-				Path.GetFileName(item.Path).Contains(trimmed, StringComparison.OrdinalIgnoreCase)),
+				Path.GetFileNameWithoutExtension(item.Path).Contains(trimmed, StringComparison.OrdinalIgnoreCase)),
 		];
 	}
 
@@ -331,17 +332,15 @@ public sealed class SessionCatalog
 			id = id[(separator + 1)..];
 		}
 
-		string name = string.Empty;
-		string cwd = string.Empty;
-		string preview = string.Empty;
-		var messages = 0;
+		var scan = new CatalogScan();
 		var readSucceeded = false;
 
 		try
 		{
-			foreach (var line in File.ReadLines(path))
+			using var lines = new Utf8LineReader(path);
+			while (lines.TryReadLine(out var line))
 			{
-				if (line.Length == 0 || line[0] != '{')
+				if (line.Length == 0 || line[0] != (byte)'{')
 				{
 					continue;
 				}
@@ -349,30 +348,10 @@ public sealed class SessionCatalog
 				// Catalog rows need metadata, not typed tool output, image data or model usage.
 				try
 				{
-					using var document = JsonDocument.Parse(line);
-					var root = document.RootElement;
-					if (!root.TryGetProperty("type", out var type)) continue;
-					switch (type.GetString())
-					{
-						case "session":
-							if (root.TryGetProperty("cwd", out var directory)) cwd = directory.GetString() ?? string.Empty;
-							break;
-						case "session_info":
-							name = root.TryGetProperty("name", out var title) ? title.GetString() ?? string.Empty : string.Empty;
-							break;
-						case "message" when root.TryGetProperty("message", out var message) && message.TryGetProperty("role", out var role):
-							if (!role.ValueEquals("user") && !role.ValueEquals("assistant") && !role.ValueEquals("toolResult")) break;
-							messages++;
-							if (preview.Length == 0 && role.ValueEquals("user") && message.TryGetProperty("content", out var content))
-							{
-								var text = content.ValueKind == JsonValueKind.String ? content.GetString() :
-									content.ValueKind == JsonValueKind.Array ? string.Join("\n", content.EnumerateArray()
-										.Where(static block => block.TryGetProperty("type", out var kind) && kind.ValueEquals("text"))
-										.Select(static block => block.TryGetProperty("text", out var value) ? value.GetString() : null)) : null;
-								preview = Summarize(text);
-							}
-							break;
-					}
+					// Parse into a copy so a malformed trailing token cannot leave a partial line behind.
+					var candidate = scan;
+					ScanLine(line, ref candidate);
+					scan = candidate;
 				}
 				catch (Exception ex) when (ex is JsonException or InvalidOperationException)
 				{
@@ -390,17 +369,254 @@ public sealed class SessionCatalog
 		{
 			Path = path,
 			Id = id,
-			Name = name,
-			Cwd = cwd,
+			Name = scan.Name ?? string.Empty,
+			Cwd = scan.Cwd ?? string.Empty,
 			Modified = modified,
-			MessageCount = messages,
-			Preview = preview,
+			MessageCount = scan.Messages,
+			Preview = scan.Preview ?? string.Empty,
 		};
 		info.Refresh();
 		// A writer may have appended while we scanned. Cache only a complete, stable snapshot.
 		if (readSucceeded && info.Exists && info.Length == length && info.LastWriteTimeUtc == modified)
 			_summaries[path] = new SummaryStamp(length, modified, item);
 		return item;
+	}
+
+	private ref struct CatalogScan
+	{
+		public string? Name;
+		public string? Cwd;
+		public string? Preview;
+		public int Messages;
+	}
+
+	private static void ScanLine(ReadOnlySpan<byte> line, ref CatalogScan scan)
+	{
+		var reader = new Utf8JsonReader(line, isFinalBlock: true, state: default);
+		if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+		{
+			return;
+		}
+
+		string? type = null;
+		string? cwd = null;
+		string? name = null;
+		var hasCwd = false;
+		while (reader.Read())
+		{
+			if (reader.TokenType == JsonTokenType.EndObject)
+			{
+				break;
+			}
+
+			if (reader.TokenType != JsonTokenType.PropertyName)
+			{
+				reader.Skip();
+				continue;
+			}
+
+			if (reader.ValueTextEquals("type"u8))
+			{
+				reader.Read();
+				type = reader.GetString();
+			}
+			else if (reader.ValueTextEquals("cwd"u8))
+			{
+				reader.Read();
+				hasCwd = true;
+				cwd = reader.GetString();
+			}
+			else if (reader.ValueTextEquals("name"u8))
+			{
+				reader.Read();
+				name = reader.GetString();
+			}
+			else if (reader.ValueTextEquals("message"u8))
+			{
+				reader.Read();
+				ScanMessage(ref reader, ref scan);
+			}
+			else
+			{
+				reader.Skip();
+			}
+		}
+
+		// JsonDocument.Parse rejected trailing garbage; keep the catalog's tolerance identical.
+		while (reader.Read())
+		{
+			throw new JsonException("Unexpected trailing JSON value.");
+		}
+
+		if (type == "session" && hasCwd)
+		{
+			scan.Cwd = cwd ?? string.Empty;
+		}
+		else if (type == "session_info")
+		{
+			// A later session_info entry replaces the previous name, including a cleared one.
+			scan.Name = name ?? string.Empty;
+		}
+	}
+
+	private static void ScanMessage(ref Utf8JsonReader reader, ref CatalogScan scan)
+	{
+		if (reader.TokenType != JsonTokenType.StartObject)
+		{
+			reader.Skip();
+			return;
+		}
+
+		string? role = null;
+		string? contentText = null;
+		while (reader.Read())
+		{
+			if (reader.TokenType == JsonTokenType.EndObject)
+			{
+				break;
+			}
+
+			if (reader.TokenType != JsonTokenType.PropertyName)
+			{
+				reader.Skip();
+				continue;
+			}
+
+			if (reader.ValueTextEquals("role"u8))
+			{
+				reader.Read();
+				role = reader.GetString();
+			}
+			else if (reader.ValueTextEquals("content"u8))
+			{
+				reader.Read();
+				// pi writes role before content. When an external writer does not, read the
+				// content anyway so the first user preview is still found.
+				var mayNeedPreview = role == "user" || (role is null && string.IsNullOrEmpty(scan.Preview));
+				contentText = ReadContentText(ref reader, mayNeedPreview);
+			}
+			else
+			{
+				reader.Skip();
+			}
+		}
+
+		if (role is not ("user" or "assistant" or "toolResult"))
+		{
+			return;
+		}
+
+		scan.Messages++;
+		if (role == "user" && string.IsNullOrEmpty(scan.Preview) && contentText is { Length: > 0 })
+		{
+			scan.Preview = Summarize(contentText);
+		}
+	}
+
+	private static string? ReadContentText(ref Utf8JsonReader reader, bool read)
+	{
+		if (!read)
+		{
+			reader.Skip();
+			return null;
+		}
+
+		if (reader.TokenType == JsonTokenType.String)
+		{
+			return reader.GetString();
+		}
+
+		if (reader.TokenType != JsonTokenType.StartArray)
+		{
+			reader.Skip();
+			return null;
+		}
+
+		StringBuilder? builder = null;
+		while (reader.Read())
+		{
+			if (reader.TokenType == JsonTokenType.EndArray)
+			{
+				break;
+			}
+
+			if (reader.TokenType != JsonTokenType.StartObject)
+			{
+				reader.Skip();
+				continue;
+			}
+
+			string? kind = null;
+			string? text = null;
+			while (reader.Read())
+			{
+				if (reader.TokenType == JsonTokenType.EndObject)
+				{
+					break;
+				}
+
+				if (reader.TokenType != JsonTokenType.PropertyName)
+				{
+					reader.Skip();
+					continue;
+				}
+
+				if (reader.ValueTextEquals("type"u8))
+				{
+					reader.Read();
+					kind = reader.GetString();
+				}
+				else if (reader.ValueTextEquals("text"u8))
+				{
+					reader.Read();
+					text = reader.GetString();
+				}
+				else
+				{
+					reader.Skip();
+				}
+			}
+
+			if (kind == "text" && text is { Length: > 0 })
+			{
+				if (builder is null)
+				{
+					builder = new StringBuilder(text);
+				}
+				else
+				{
+					builder.Append('\n').Append(text);
+				}
+			}
+		}
+
+		return builder?.ToString();
+	}
+
+	/// <summary>窗口less 测试用：扫描一行会话摘要。</summary>
+	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLineForTest(string line) =>
+		ScanLinesForTest([line]);
+
+	/// <summary>窗口less 测试用：按文件顺序扫描多行会话摘要。</summary>
+	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLinesForTest(IEnumerable<string> lines)
+	{
+		var scan = new CatalogScan();
+		foreach (var line in lines)
+		{
+			var candidate = scan;
+			try
+			{
+				ScanLine(System.Text.Encoding.UTF8.GetBytes(line), ref candidate);
+			}
+			catch (JsonException)
+			{
+				continue;
+			}
+
+			scan = candidate;
+		}
+
+		return (scan.Cwd, scan.Name, scan.Preview, scan.Messages);
 	}
 
 	/// <summary>把首条用户消息压成一行摘要。</summary>

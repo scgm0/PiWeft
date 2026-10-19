@@ -70,8 +70,9 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		timeline.SetEntries(rows);
 		timeline.View.ScrollIntoView(0);
 		Layout(timeline.View);
-		var first = Find<Expander>(timeline.View).Single(expander => expander.Header is TextBlock header &&
-			header.Text == Strings.ToolSummary("read", "tool 0", false, null));
+		// 折叠标题是「状态点 + 摘要文本」的组合，按标题子树里的摘要文本定位这一行。
+		var first = Find<Expander>(timeline.View).Single(expander => expander.Header is { } header &&
+			Find<TextBlock>(header).Any(text => text.Text == Strings.ToolSummary("read", "tool 0", false, null)));
 		first.IsExpanded = true;
 		var original = first.Content;
 		Assert.Contains(Find<MultiLineTextBox>(original!), text => text.Text == "tool 0");

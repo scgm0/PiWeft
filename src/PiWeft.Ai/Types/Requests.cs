@@ -65,6 +65,28 @@ public record ProviderRequestOptions
 
 	/// <summary>覆盖 HTTP 处理器（用于测试或代理）。</summary>
 	public HttpMessageHandler? HttpHandler { get; init; }
+
+	/// <summary>
+	/// Raises <see cref="OnProviderStreamEvent"/> only when someone listens. The callback argument
+	/// must not be evaluated unconditionally: parsing a JsonNode for every streamed delta is one of
+	/// the largest avoidable allocations in a normal request.
+	/// </summary>
+	internal void NotifyStreamEvent(string payloadJson, Model model)
+	{
+		if (OnProviderStreamEvent is { } callback)
+		{
+			callback(JsonNode.Parse(payloadJson)!, model);
+		}
+	}
+
+	/// <inheritdoc cref="NotifyStreamEvent(string, Model)"/>
+	internal void NotifyStreamEvent(JsonElement element, Model model)
+	{
+		if (OnProviderStreamEvent is { } callback)
+		{
+			callback(JsonNode.Parse(element.GetRawText())!, model);
+		}
+	}
 }
 
 public sealed record StreamOptions : ProviderRequestOptions
