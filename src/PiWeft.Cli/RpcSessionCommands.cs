@@ -147,6 +147,7 @@ public sealed partial class CliRunner
 			commands.Add(new JsonObject
 			{
 				["name"] = template.Name,
+				["description"] = template.Description,
 				["source"] = "prompt",
 				["sourceInfo"] = SourceInfoRecord(template.FilePath, "prompt"),
 			});
@@ -281,7 +282,7 @@ public sealed partial class CliRunner
 		{
 			["model"] = ModelRecordWithThinking(next),
 			["thinkingLevel"] = level,
-			["isScoped"] = false,
+			["isScoped"] = _arguments?.Models is { Count: > 0 },
 		};
 	}
 
@@ -305,7 +306,10 @@ public sealed partial class CliRunner
 	private List<Model> CycleModels(CodingAgentSession session)
 	{
 		var models = new List<Model>(environment.ListModels());
-		if (_arguments?.Models is { Count: > 0 } patterns)
+		var patterns = _arguments?.Models is { Count: > 0 } cliPatterns
+			? cliPatterns
+			: [.. session.Settings.EnabledModels];
+		if (patterns.Count > 0)
 		{
 			models = [.. models.Where(model => patterns.Any(pattern => CliEnvironment.MatchesModelPattern(model, pattern)))];
 		}

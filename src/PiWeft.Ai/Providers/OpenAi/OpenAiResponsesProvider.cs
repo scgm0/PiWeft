@@ -40,7 +40,7 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 
 		try
 		{
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var reasoningEffort = ResolveReasoningEffort(model, options);
 

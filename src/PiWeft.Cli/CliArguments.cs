@@ -81,6 +81,17 @@ public sealed record CliArguments
 
 	public bool NoPromptTemplates { get; init; }
 
+	public bool NoThemes { get; init; }
+
+	/// <summary><c>--skill</c> 显式技能路径（文件或目录），可重复。</summary>
+	public List<string> Skills { get; init; } = [];
+
+	/// <summary><c>--prompt-template</c> 显式模板路径，可重复。</summary>
+	public List<string> PromptTemplates { get; init; } = [];
+
+	/// <summary><c>--theme</c> 显式主题路径，可重复。</summary>
+	public List<string> Themes { get; init; } = [];
+
 	public bool ListModels { get; init; }
 
 	public string? ListModelsSearch { get; init; }
@@ -279,9 +290,22 @@ public sealed record CliArguments
 						result = result with { Offline = true };
 						break;
 
+					case "--skill":
+						result = result with { Skills = [.. result.Skills, Value()] };
+						break;
+					case "--prompt-template":
+						result = result with { PromptTemplates = [.. result.PromptTemplates, Value()] };
+						break;
+					case "--theme":
+						result = result with { Themes = [.. result.Themes, Value()] };
+						break;
+					case "--no-themes":
+						result = result with { NoThemes = true };
+						break;
+
 					// 为兼容性而接受；对应功能不在本端口范围内（保留参数以免破坏 PiDeck 启动）。
 					case "-e" or "--extension" or "-ne" or "--no-extensions"
-						or "--skill" or "--prompt-template" or "--theme" or "--no-themes" or "--use-theme"
+						or "--use-theme"
 						or "--tui-mode" or "--autocomplete-max-visible":
 						result.AcceptedCompatFlags.Add(flag);
 						if (inlineValue is null && flag is "-e" or "--extension" or "--skill" or "--prompt-template"
@@ -376,6 +400,10 @@ public sealed record CliArguments
 		  -na, --no-approve              Do not trust the current project for this run
 		  --no-skills, -ns               Disable skills discovery
 		  --no-prompt-templates, -np     Disable prompt template discovery
+		  --skill <path>                 Load an explicit skill file or directory (repeatable)
+		  --prompt-template <path>       Load an explicit prompt template (repeatable)
+		  --theme <path>                 Load an explicit theme file or directory (repeatable)
+		  --no-themes                    Disable theme discovery
 		  --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
 		  --export <session> [output]    Export a session file to HTML and exit
 		  --list-models [search]         List available models
@@ -385,8 +413,7 @@ public sealed record CliArguments
 		  --help, -h                     Show this help
 
 		Accepted for pi/PiDeck compatibility but not implemented in this port:
-		  -e/--extension, -ne/--no-extensions, --skill, --prompt-template,
-		  --theme, --use-theme, --no-themes, --tui-mode.
+		  -e/--extension, -ne/--no-extensions, --use-theme, --tui-mode.
 		These flags are consumed so PiDeck can launch the binary; they do not enable extensions
 		or a full-screen TUI. Custom pi themes are read by the desktop app from the themes
 		directory. MCP is supported separately (see --no-mcp).

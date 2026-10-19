@@ -53,7 +53,7 @@ public sealed class GoogleVertexProvider : IApiProvider
 				? await GoogleAdc.GetAccessTokenAsync(_tokenHttp, cancellationToken).ConfigureAwait(false)
 				: null;
 
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var thinkingBudget = GoogleGenerativeAiProvider.ResolveThinkingBudget(model, options);
 			var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);

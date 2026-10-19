@@ -9,6 +9,8 @@ namespace PiWeft.CodingAgent.Settings;
 /// <summary><c>models.json</c> 中的一个 provider 条目。</summary>
 public sealed record ModelsProviderEntry
 {
+	public string? Name { get; init; }
+
 	public string? BaseUrl { get; init; }
 
 	/// <summary>该端点使用的 api，例如 <c>openai-completions</c>。</summary>
@@ -19,8 +21,18 @@ public sealed record ModelsProviderEntry
 
 	public IReadOnlyDictionary<string, string>? Headers { get; init; }
 
+	public JsonObject? Compat { get; init; }
+
+	public bool? AuthHeader { get; init; }
+
+	/// <summary>Radius 等 Provider 的 OAuth 登录方式。</summary>
+	public string? OAuth { get; init; }
+
 	/// <summary>在该 provider 上新增或替换的模型。</summary>
 	public IReadOnlyList<JsonObject>? Models { get; init; }
+
+	/// <summary>按模型 id 覆盖该 Provider 的内置模型。</summary>
+	public IReadOnlyDictionary<string, ModelsOverrideEntry>? ModelOverrides { get; init; }
 }
 
 /// <summary>按模型 id 索引的元数据覆盖，作用于已存在的模型。</summary>
@@ -36,11 +48,27 @@ public sealed record ModelsOverrideEntry
 
 	public int? MaxTokens { get; init; }
 
-	public ModelCost? Cost { get; init; }
+	public ModelCostPatch? Cost { get; init; }
 
 	public IReadOnlyDictionary<string, string?>? ThinkingLevelMap { get; init; }
 
 	public IReadOnlyDictionary<string, string>? Headers { get; init; }
+
+	public JsonObject? Compat { get; init; }
+
+	public JsonObject? InputLimits { get; init; }
+}
+
+/// <summary>modelOverrides 里只覆盖部分价格；未给出的字段保持原值。</summary>
+public sealed record ModelCostPatch
+{
+	public double? Input { get; init; }
+
+	public double? Output { get; init; }
+
+	public double? CacheRead { get; init; }
+
+	public double? CacheWrite { get; init; }
 }
 
 /// <summary><c>models.json</c> 文件：自定义 provider，以及对目录模型的覆盖。</summary>
@@ -74,6 +102,10 @@ public static partial class ModelsFileLoader
 		public IReadOnlyDictionary<string, string> ApiKeys { get; init; } = new Dictionary<string, string>();
 
 		public int OverrideCount { get; init; }
+
+		/// <summary>最终生效的 provider 条目，用于把 baseUrl/compat 作用于内置模型。</summary>
+		public IReadOnlyDictionary<string, ModelsProviderEntry> ProviderEntries { get; init; } =
+			new Dictionary<string, ModelsProviderEntry>();
 	}
 
 	/// <summary>
@@ -130,7 +162,11 @@ public static partial class ModelsFileLoader
 		{
 			if (entry.ApiKey is { Length: > 0 } key)
 			{
-				apiKeys[providerId] = Interpolate(key) ?? key;
+				var resolved = ResolveValue(key);
+				if (resolved is { Length: > 0 })
+				{
+					apiKeys[providerId] = resolved;
+				}
 			}
 
 			foreach (var raw in entry.Models ?? [])
@@ -155,6 +191,7 @@ public static partial class ModelsFileLoader
 			Models = models,
 			ApiKeys = apiKeys,
 			OverrideCount = overrides.Count,
+			ProviderEntries = providers,
 		};
 	}
 
@@ -162,15 +199,8 @@ public static partial class ModelsFileLoader
 	public static int ApplyOverrides(ModelRegistry registry, ModelsFile? user, ModelsFile? project)
 	{
 		var overrides = new Dictionary<string, ModelsOverrideEntry>(StringComparer.Ordinal);
-		foreach (var (id, entry) in user?.ModelOverrides ?? new Dictionary<string, ModelsOverrideEntry>())
-		{
-			overrides[id] = entry;
-		}
-
-		foreach (var (id, entry) in project?.ModelOverrides ?? new Dictionary<string, ModelsOverrideEntry>())
-		{
-			overrides[id] = entry;
-		}
+		CollectOverrides(overrides, user);
+		CollectOverrides(overrides, project);
 
 		var applied = 0;
 		foreach (var (id, entry) in overrides)
@@ -185,11 +215,13 @@ public static partial class ModelsFileLoader
 					Reasoning = entry.Reasoning ?? existing.Reasoning,
 					ContextWindow = entry.ContextWindow ?? existing.ContextWindow,
 					MaxTokens = entry.MaxTokens ?? existing.MaxTokens,
-					Cost = entry.Cost ?? existing.Cost,
+					Cost = MergeCost(existing.Cost, entry.Cost),
 					ThinkingLevelMap = entry.ThinkingLevelMap is { Count: > 0 } map
 						? new Dictionary<string, string?>(map)
 						: existing.ThinkingLevelMap,
 					Headers = MergeHeaders(existing.Headers, entry.Headers),
+					Compat = MergeNodes(existing.Compat, entry.Compat),
+					InputLimits = entry.InputLimits ?? existing.InputLimits,
 				});
 
 				applied++;
@@ -197,6 +229,84 @@ public static partial class ModelsFileLoader
 		}
 
 		return applied;
+	}
+
+	/// <summary>把 provider 级设置（baseUrl/compat）应用到已经加载的内置模型。</summary>
+	public static int ApplyProviderSettings(ModelRegistry registry, ModelsFile? user, ModelsFile? project)
+	{
+		var providers = new Dictionary<string, ModelsProviderEntry>(StringComparer.Ordinal);
+		foreach (var (name, entry) in user?.Providers ?? new Dictionary<string, ModelsProviderEntry>())
+		{
+			providers[name] = entry;
+		}
+
+		foreach (var (name, entry) in project?.Providers ?? new Dictionary<string, ModelsProviderEntry>())
+		{
+			providers[name] = entry;
+		}
+
+		var applied = 0;
+		foreach (var (providerId, entry) in providers)
+		{
+			if (!string.IsNullOrEmpty(entry.BaseUrl) || entry.Compat is not null)
+			{
+				foreach (var existing in registry.List(providerId).ToList())
+				{
+					registry.Add(existing with
+					{
+						BaseUrl = string.IsNullOrEmpty(entry.BaseUrl) ? existing.BaseUrl : entry.BaseUrl,
+						Compat = MergeNodes(entry.Compat, existing.Compat),
+					});
+					applied++;
+				}
+			}
+		}
+
+		return applied;
+	}
+
+	private static void CollectOverrides(Dictionary<string, ModelsOverrideEntry> overrides, ModelsFile? file)
+	{
+		foreach (var (id, entry) in file?.ModelOverrides ?? new Dictionary<string, ModelsOverrideEntry>())
+		{
+			overrides[id] = entry;
+		}
+
+		foreach (var (_, provider) in file?.Providers ?? new Dictionary<string, ModelsProviderEntry>())
+		{
+			foreach (var (id, entry) in provider.ModelOverrides ?? new Dictionary<string, ModelsOverrideEntry>())
+			{
+				overrides[id] = entry;
+			}
+		}
+	}
+
+	private static ModelCost MergeCost(ModelCost existing, ModelCostPatch? patch) =>
+		patch is null
+			? existing
+			: new ModelCost
+			{
+				Input = patch.Input ?? existing.Input,
+				Output = patch.Output ?? existing.Output,
+				CacheRead = patch.CacheRead ?? existing.CacheRead,
+				CacheWrite = patch.CacheWrite ?? existing.CacheWrite,
+				Tiers = existing.Tiers,
+			};
+
+	private static JsonObject? MergeNodes(JsonObject? existing, JsonObject? patch)
+	{
+		if (patch is null)
+		{
+			return existing;
+		}
+
+		var merged = existing is null ? new JsonObject() : (JsonObject)existing.DeepClone();
+		foreach (var (key, value) in patch)
+		{
+			merged[key] = value?.DeepClone();
+		}
+
+		return merged;
 	}
 
 	private static Model ToModel(string providerId, ModelsProviderEntry provider, JsonObject raw)
@@ -213,9 +323,10 @@ public static partial class ModelsFileLoader
 			Api = FirstNonEmpty(model.Api, provider.Api) ?? "openai-completions",
 			BaseUrl = FirstNonEmpty(model.BaseUrl, provider.BaseUrl) ?? string.Empty,
 			Name = string.IsNullOrEmpty(model.Name) ? id : model.Name,
+			Compat = MergeNodes(provider.Compat, model.Compat),
 			Headers = MergeHeaders(provider.Headers is null
 				? null
-				: provider.Headers.ToDictionary(static pair => pair.Key, static pair => pair.Value), model.Headers),
+				: provider.Headers.ToDictionary(static pair => pair.Key, static pair => ResolveValue(pair.Value) ?? string.Empty), model.Headers),
 		};
 	}
 
@@ -242,6 +353,18 @@ public static partial class ModelsFileLoader
 
 	private static string? FirstNonEmpty(string? first, string? second) =>
 		!string.IsNullOrEmpty(first) ? first : !string.IsNullOrEmpty(second) ? second : null;
+
+	/// <summary>解析 models.json 中的值：<c>!command</c> 执行命令，其余做环境变量插值。</summary>
+	internal static string? ResolveValue(string? value)
+	{
+		if (value is { Length: > 1 } && value[0] == '!')
+		{
+			var command = value[1..].Trim();
+			return command.Length == 0 ? null : PiWeft.Ai.Auth.AuthStore.ExecuteCommandKey(command) ?? value;
+		}
+
+		return Interpolate(value);
+	}
 
 	/// <summary>
 	/// 展开 <c>$NAME</c> 与 <c>${NAME}</c>。以 <c>!command</c> 开头的形式（pi 会在请求时执行 shell 命令）

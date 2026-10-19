@@ -42,7 +42,7 @@ public sealed class MistralConversationsProvider : IApiProvider
 
 		try
 		{
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var effort = ResolveReasoningEffort(model, options);
 

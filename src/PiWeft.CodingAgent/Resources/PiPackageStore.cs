@@ -42,15 +42,25 @@ public static class PiPackageStore
 				return;
 			}
 
-			foreach (var value in declared)
+			foreach (var declaration in declared)
 			{
-				var trimmed = value.Trim();
+				var trimmed = declaration.Source.Trim();
 				if (trimmed.Length == 0 || !seen.Add((scope, trimmed)))
 				{
 					continue;
 				}
 
-				sources.Add(new PackageSource { Value = trimmed, Scope = scope, ScopeRoot = scopeRoot });
+				sources.Add(new PackageSource
+				{
+					Value = trimmed,
+					Scope = scope,
+					ScopeRoot = scopeRoot,
+					Autoload = declaration.Autoload,
+					Extensions = declaration.Extensions,
+					Skills = declaration.Skills,
+					Prompts = declaration.Prompts,
+					Themes = declaration.Themes,
+				});
 			}
 		}
 	}
@@ -84,6 +94,13 @@ public static class PiPackageStore
 		Root = root,
 		Scope = source.Scope,
 		Manifest = PiPackageManifest.Load(root),
+		Filters = source.FiltersFor(ResourcePaths.SkillsDirectoryName) is null &&
+			source.FiltersFor(ResourcePaths.PromptsDirectoryName) is null &&
+			source.FiltersFor(ResourcePaths.ThemesDirectoryName) is null &&
+			source.FiltersFor(ResourcePaths.ExtensionsDirectoryName) is null &&
+			source.Autoload
+				? null
+				: source,
 	};
 
 	/// <summary>

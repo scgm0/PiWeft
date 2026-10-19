@@ -269,7 +269,7 @@ public static class McpToolAdapter
 	public static string ToolName(string server, string tool) =>
 		$"mcp__{Sanitize(server)}__{Sanitize(tool)}";
 
-	internal static string Sanitize(string value)
+	public static string Sanitize(string value)
 	{
 		var buffer = new char[value.Length];
 		for (var i = 0; i < value.Length; i++)
@@ -315,9 +315,12 @@ public static class McpToolAdapter
 						.ConfigureAwait(false);
 
 					// 工具失败时协议层仍算正常返回，但对模型来说是一次错误结果。
+					// 没有 content 时回退到 structuredContent 的 JSON（pi 的 toLlmContent 行为）。
 					var content = result.Content.Count > 0
 						? result.Content
-						: [new TextContent { Text = result.IsError ? "MCP tool failed" : "(no output)" }];
+						: result.StructuredContent is { } structured
+							? [new TextContent { Text = structured.ToJsonString() }]
+							: [new TextContent { Text = result.IsError ? "MCP tool failed" : "(no output)" }];
 
 					return new AgentToolResult
 					{

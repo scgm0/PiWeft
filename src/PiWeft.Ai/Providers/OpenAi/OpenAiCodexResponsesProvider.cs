@@ -57,7 +57,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			var accountId = CodexAuth.GetAccountId(credentials.Access)
 				?? throw new CodexAuthException("Failed to extract the ChatGPT account id from the access token");
 
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var reasoningEffort = OpenAiResponsesProvider.ResolveReasoningEffort(model, options);
 			var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);

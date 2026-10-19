@@ -61,6 +61,12 @@ public sealed record ToolCall : ContentBlock
 
 	public JsonObject Arguments { get; init; } = new();
 
+	/// <summary>
+	/// 模型给出的完整参数不是合法 JSON 对象时为错误文本，<see cref="Arguments"/> 则为空对象。
+	/// 工具参数校验会用它失败并把原文反馈给模型。
+	/// </summary>
+	public string? ArgumentsError { get; init; }
+
 	/// <summary>Google 私有的不透明签名，用于复用思考上下文。</summary>
 	public string? ThoughtSignature { get; init; }
 

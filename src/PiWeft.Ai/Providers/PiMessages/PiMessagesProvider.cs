@@ -120,7 +120,7 @@ public sealed class PiMessagesProvider : IApiProvider
 
 			writer.WritePropertyName("messages");
 			writer.WriteStartArray();
-			foreach (var message in context.Messages)
+			foreach (var message in MessageTransform.Transform(context.Messages, model))
 			{
 				// 后端期望收到完整会话记录，因此 system 消息保持原位置。
 				PiWeft.Ai.Json.MessageJsonConverter.WriteMessage(writer, message);

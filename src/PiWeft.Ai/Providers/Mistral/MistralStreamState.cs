@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using PiWeft.Ai.Utils;
 using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Providers.Mistral;
@@ -124,7 +125,8 @@ internal sealed class MistralStreamState
 				continue;
 			}
 
-			call = call with { Arguments = ParseArguments(entry.Arguments.ToString()) };
+			var (arguments, argumentsError) = JsonRepair.ParseObject(entry.Arguments.ToString());
+			call = call with { Arguments = arguments ?? new(), ArgumentsError = argumentsError };
 			_content[entry.ContentIndex] = call;
 			Push(new ToolCallEndEvent { ContentIndex = entry.ContentIndex, ToolCall = call, Partial = Snapshot() });
 		}
@@ -354,22 +356,6 @@ internal sealed class MistralStreamState
 
 	private void Push(AssistantMessageEvent @event) => _stream.Push(@event);
 
-	private static JsonObject ParseArguments(string json)
-	{
-		if (string.IsNullOrWhiteSpace(json))
-		{
-			return new JsonObject();
-		}
-
-		try
-		{
-			return JsonNode.Parse(json)?.AsObject() ?? new JsonObject();
-		}
-		catch (JsonException)
-		{
-			return new JsonObject();
-		}
-	}
 
 	private static string? GetString(JsonElement element, string name) =>
 		element.ValueKind == JsonValueKind.Object &&

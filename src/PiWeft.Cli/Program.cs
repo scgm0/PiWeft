@@ -46,6 +46,7 @@ if (args.Length > 0 && args[0] is "login" or "logout" or "auth")
 			args[1..],
 			Console.Out,
 			Console.Error,
+			Console.In,
 			CancellationToken.None));
 
 	if (authExit is { } code)

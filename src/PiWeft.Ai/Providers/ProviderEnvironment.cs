@@ -102,7 +102,7 @@ public static class ProviderEnvironment
 		["opencode-go"] = "OPENCODE_API_KEY",
 		["kimi-coding"] = "KIMI_API_KEY",
 		["google"] = "GEMINI_API_KEY",
-		["google-vertex"] = "GOOGLE_API_KEY",
+		["google-vertex"] = "GOOGLE_CLOUD_API_KEY",
 		["vercel-ai-gateway"] = "AI_GATEWAY_API_KEY",
 		["cloudflare-workers-ai"] = "CLOUDFLARE_API_KEY",
 		["cloudflare-ai-gateway"] = "CLOUDFLARE_API_KEY",
@@ -145,6 +145,13 @@ public static class ProviderEnvironment
 		if (stored is { Length: > 0 })
 		{
 			return stored;
+		}
+
+		// OAuth 凭据（Anthropic / xAI 等）以 access token 形式复用 API key 通道；
+		// AnthropicProvider 会按 sk-ant-oat 前缀切换成 Bearer 请求。
+		if (Auth.OAuthStore.Read(provider) is { Access.Length: > 0 } oauth)
+		{
+			return oauth.Access;
 		}
 
 		var direct = Environment.GetEnvironmentVariable(KeyName(provider));

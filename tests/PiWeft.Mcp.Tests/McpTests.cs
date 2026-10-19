@@ -410,6 +410,37 @@ public class McpExposureTests
 		Assert.Equal(expected, McpExposure.MatchesWildcard(pattern, value));
 
 	[Fact]
+	public void Merge_ReadsPiOAuthObject()
+	{
+		var file = new McpConfigFile
+		{
+			McpServers = new Dictionary<string, McpServerEntry>
+			{
+				["remote"] = new()
+				{
+					Url = "https://mcp.example/mcp",
+					OAuth = new McpOAuthConfigEntry
+					{
+						ClientId = "client",
+						ClientSecret = "secret",
+						Scope = "read write",
+						CallbackPort = 8765,
+						ClientName = "PiWeft Test",
+					},
+				},
+			},
+		};
+
+		var server = Assert.Single(McpConfig.Merge(file, null));
+
+		Assert.True(server.UsesOAuth);
+		Assert.Equal("client", server.ClientId);
+		Assert.Equal("secret", server.ClientSecret);
+		Assert.Equal(["read", "write"], server.Scopes);
+		Assert.Equal(8765, server.OAuth!.CallbackPort);
+	}
+
+	[Fact]
 	public void Merge_NormalizesExposureFromTheConfigFile()
 	{
 		var file = new McpConfigFile

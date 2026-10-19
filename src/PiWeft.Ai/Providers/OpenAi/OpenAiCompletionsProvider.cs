@@ -46,7 +46,7 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 
 		try
 		{
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var thinkingMode = ResolveThinkingMode(model, options);
 			// 关闭思考时不下发强度：两个字段同时出现时，端点的开关与档位可能互相矛盾。

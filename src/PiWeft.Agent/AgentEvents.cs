@@ -12,6 +12,9 @@ public sealed record AgentStartEvent : AgentEvent;
 /// <summary>一次运行结束，携带当前完整会话记录。</summary>
 public sealed record AgentEndEvent : AgentEvent
 {
+	/// <summary>会话层是否会在本次 low-level run 结束后自动重试。</summary>
+	public bool WillRetry { get; init; }
+
 	public required IReadOnlyList<Message> Messages { get; init; }
 }
 

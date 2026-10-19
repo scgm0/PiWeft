@@ -50,7 +50,7 @@ public sealed class AnthropicProvider : IApiProvider
 				return;
 			}
 
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var thinking = ResolveThinking(model, options);
 			var maxTokens = ResolveMaxTokens(model, options, thinking);

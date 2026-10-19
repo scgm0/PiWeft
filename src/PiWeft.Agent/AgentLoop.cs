@@ -157,7 +157,11 @@ public static class AgentLoop
 					}
 
 					await emit(new TurnEndEvent { Message = message, ToolResults = [] });
-					await emit(new AgentEndEvent { Messages = newMessages });
+					await emit(new AgentEndEvent
+					{
+						Messages = newMessages,
+						WillRetry = config.WillRetry?.Invoke(message) == true,
+					});
 					return;
 				}
 
@@ -491,6 +495,12 @@ public static class AgentLoop
 		if (tool is null)
 		{
 			return (null, Immediate(toolCall, $"Tool {toolCall.Name} not found"));
+		}
+
+		if (toolCall.ArgumentsError is { Length: > 0 } argumentsError)
+		{
+			return (null, Immediate(toolCall,
+				$"Tool \"{toolCall.Name}\" arguments were not valid JSON:\n{argumentsError}"));
 		}
 
 		var arguments = toolCall.Arguments;

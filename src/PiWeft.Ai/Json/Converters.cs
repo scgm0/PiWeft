@@ -58,6 +58,7 @@ internal static class PiJsonValue
 				Id = Str(obj, "id") ?? string.Empty,
 				Name = Str(obj, "name") ?? string.Empty,
 				Arguments = Object(obj, "arguments") ?? new JsonObject(),
+				ArgumentsError = Str(obj, "argumentsError"),
 				ThoughtSignature = Str(obj, "thoughtSignature"),
 				Namespace = Str(obj, "namespace"),
 			},
@@ -113,6 +114,7 @@ internal static class PiJsonValue
 				writer.WriteString("name", call.Name);
 				writer.WritePropertyName("arguments");
 				call.Arguments.WriteTo(writer);
+				WriteOptional(writer, "argumentsError", call.ArgumentsError);
 				WriteOptional(writer, "thoughtSignature", call.ThoughtSignature);
 				WriteOptional(writer, "namespace", call.Namespace);
 				break;

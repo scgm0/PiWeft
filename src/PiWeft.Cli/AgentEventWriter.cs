@@ -65,7 +65,7 @@ public static class AgentEventWriter
 				writer.WriteString("type", "agent_end");
 				writer.WritePropertyName("messages");
 				WriteMessages(writer, end.Messages);
-				writer.WriteBoolean("willRetry", false);
+				writer.WriteBoolean("willRetry", end.WillRetry);
 				break;
 
 			case TurnStartEvent:
@@ -112,6 +112,8 @@ public static class AgentEventWriter
 				writer.WriteString("type", "tool_execution_update");
 				writer.WriteString("toolCallId", toolUpdate.ToolCallId);
 				writer.WriteString("toolName", toolUpdate.ToolName);
+				writer.WritePropertyName("args");
+				toolUpdate.Arguments.WriteTo(writer);
 				writer.WritePropertyName("partialResult");
 				WriteToolResult(writer, toolUpdate.PartialResult);
 				break;
@@ -156,6 +158,28 @@ public static class AgentEventWriter
 				writer.WriteString("type", "entry_appended");
 				writer.WritePropertyName("entry");
 				appended.Entry.WriteTo(writer);
+				break;
+
+			case SummarizationRetryScheduledEvent retry:
+				writer.WriteString("type", "summarization_retry_scheduled");
+				writer.WriteNumber("attempt", retry.Attempt);
+				writer.WriteNumber("maxAttempts", retry.MaxAttempts);
+				writer.WriteNumber("delayMs", retry.DelayMs);
+				writer.WriteString("errorMessage", retry.ErrorMessage);
+				break;
+
+			case SummarizationRetryAttemptStartEvent retryStart:
+				writer.WriteString("type", "summarization_retry_attempt_start");
+				writer.WriteString("source", retryStart.Source);
+				if (retryStart.Reason is { Length: > 0 } retryReason)
+				{
+					writer.WriteString("reason", retryReason);
+				}
+
+				break;
+
+			case SummarizationRetryFinishedEvent:
+				writer.WriteString("type", "summarization_retry_finished");
 				break;
 
 			case CompactionStartEvent compactionStart:
@@ -232,6 +256,13 @@ public static class AgentEventWriter
 			case ToolCallStartEvent start:
 				writer.WriteString("type", "toolcall_start");
 				writer.WriteNumber("contentIndex", start.ContentIndex);
+				if (start.ContentIndex >= 0 && start.ContentIndex < start.Partial.Content.Count &&
+					start.Partial.Content[start.ContentIndex] is ToolCall call)
+				{
+					if (call.Id.Length > 0) writer.WriteString("id", call.Id);
+					if (call.Name.Length > 0) writer.WriteString("toolName", call.Name);
+				}
+
 				break;
 
 			case ToolCallDeltaEvent delta:
@@ -308,13 +339,8 @@ public static class AgentEventWriter
 
 		writer.WritePropertyName("usage");
 		UsageRecord(result.Usage).WriteTo(writer);
-		writer.WriteStartObject("details");
-		if (result.Details is { Length: > 0 } details)
-		{
-			writer.WriteString("fileOperations", details);
-		}
-
-		writer.WriteEndObject();
+		writer.WritePropertyName("details");
+		(result.Details ?? new JsonObject()).WriteTo(writer);
 		writer.WriteEndObject();
 	}
 

@@ -22,6 +22,9 @@ public sealed record ShellInvocation
 	/// 注入子进程的环境变量；值为 null 表示从继承的环境中删除该变量。
 	/// </summary>
 	public IReadOnlyDictionary<string, string?>? Environment { get; init; }
+
+	/// <summary>强制使用 PowerShell，而不是平台默认 shell。</summary>
+	public bool PowerShell { get; init; }
 }
 
 /// <summary>为 <c>bash</c> 工具与 RPC 的 <c>bash</c> 命令执行 shell。</summary>
@@ -61,7 +64,9 @@ public static class ShellRunner
 			command = $"{prefix}\n{command}";
 		}
 
-		var (fileName, arguments) = ShellCommand(command, invocation?.ShellPath);
+		var (fileName, arguments) = invocation?.PowerShell == true
+			? PowerShellCommand(command)
+			: ShellCommand(command, invocation?.ShellPath);
 		var startInfo = new ProcessStartInfo
 		{
 			FileName = fileName,
@@ -148,6 +153,16 @@ public static class ShellRunner
 
 		File.WriteAllText(path, output, new UTF8Encoding(false));
 		return path;
+	}
+
+	/// <summary>PowerShell 可执行文件与参数；找不到时抛出带说明的异常。</summary>
+	public static (string FileName, string[] Arguments) PowerShellCommand(string command)
+	{
+		var shell = FindOnPath("pwsh") ?? FindOnPath("pwsh.exe") ??
+			FindOnPath("powershell") ?? FindOnPath("powershell.exe");
+		return shell is null
+			? throw new InvalidOperationException("PowerShell (pwsh or powershell) was not found on PATH")
+			: (shell, ["-NoProfile", "-NonInteractive", "-Command", command]);
 	}
 
 	/// <summary>执行命令所用的 shell 与参数，与 pi 的平台默认值一致。</summary>

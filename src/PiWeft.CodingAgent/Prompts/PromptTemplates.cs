@@ -12,6 +12,9 @@ public sealed record PromptTemplate
 
 	public required string Content { get; init; }
 
+	/// <summary>frontmatter 里的 description，供命令补全展示。</summary>
+	public string? Description { get; init; }
+
 	public required string FilePath { get; init; }
 
 	/// <summary>模板来源（用户、项目或包）。</summary>
@@ -233,10 +236,14 @@ public static partial class PromptTemplates
 
 		try
 		{
+			var raw = File.ReadAllText(file);
+			var (fields, body) = Skills.Skills.ParseFrontmatter(raw);
 			templates.Add(new PromptTemplate
 			{
 				Name = name,
-				Content = File.ReadAllText(file),
+				Content = body,
+				Description = fields is not null && fields.TryGetValue("description", out var description) &&
+					description.Length > 0 ? description : null,
 				FilePath = Path.GetFullPath(file),
 				Origin = origin,
 			});

@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using PiWeft.CodingAgent.Models;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
@@ -99,8 +100,12 @@ public static class PackageCommands
 
 		if (parsed.Models)
 		{
-			output.WriteLine("pi: 模型目录内嵌于二进制（更新 pi 本体即更新目录），无需单独刷新。可用 `pi --list-models` 查看当前目录。");
-			return 0;
+			var (updated, catalogFailures) = await ModelCatalogStore.RefreshAllAsync(
+				onError: message => error.WriteLine($"pi: model catalog {message}"),
+				cancellationToken: cancellationToken).ConfigureAwait(false);
+			output.WriteLine($"模型目录已刷新：{updated} 个 Provider 更新，{catalogFailures} 个失败。");
+			output.WriteLine($"缓存：{ModelCatalogStore.PathFor()}");
+			return catalogFailures == 0 ? 0 : 1;
 		}
 
 		// `pi update`（无来源）、--extensions 与 --all 都表示「更新全部已声明包」。

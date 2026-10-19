@@ -49,7 +49,7 @@ public sealed class BedrockConverseProvider : IApiProvider
 				return;
 			}
 
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var thinkingBudget = ResolveThinkingBudget(model, options);
 			var maxTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);

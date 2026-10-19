@@ -33,6 +33,8 @@ public sealed record AgentOptions
 
 	public Func<AgentTurnContext, CancellationToken, ValueTask<AgentTurnUpdate?>>? PrepareNextTurn { get; init; }
 
+	public Func<AssistantMessage, bool>? WillRetry { get; init; }
+
 	public StreamOptions Options { get; init; } = new();
 }
 
@@ -376,6 +378,7 @@ public sealed class Agent
 		FinishTurn = _options.FinishTurn,
 		PrepareRequest = _options.PrepareRequest,
 		PrepareNextTurn = _options.PrepareNextTurn,
+		WillRetry = _options.WillRetry,
 		GetSteeringMessages = DrainSteering,
 		GetFollowUpMessages = DrainFollowUp,
 	};

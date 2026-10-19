@@ -400,6 +400,7 @@ public class BranchSummarizationTests : IDisposable
 			script.Invoke,
 			new StreamOptions(),
 			new CompactionSettings { ReserveTokens = 4096 },
+			new BranchSummarySettings(),
 			rootAnswer);
 
 		Assert.NotNull(result);
@@ -440,6 +441,7 @@ public class BranchSummarizationTests : IDisposable
 			script.Invoke,
 			new StreamOptions(),
 			new CompactionSettings(),
+			new BranchSummarySettings(),
 			root);
 
 		Assert.Null(result);

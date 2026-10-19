@@ -198,6 +198,24 @@ public sealed class AuthCommandProcessTests : IDisposable
 		Assert.Equal(0, (await RunAsync("auth", "check", "--provider", "deepseek")).ExitCode);
 	}
 
+
+	[Fact]
+	public async Task StoredOAuthTokensAreRecognizedForNonCodexProviders()
+	{
+		var expires = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds();
+		File.WriteAllText(
+			Path.Combine(_root, "auth.json"),
+			"{\"xai\":{\"type\":\"oauth\",\"access\":\"xai-token\",\"refresh\":\"r\",\"expires\":" + expires + "}}");
+
+		var check = await RunAsync("auth", "check", "--provider", "xai");
+		Assert.Equal(0, check.ExitCode);
+		Assert.Equal("ready", check.StdOut.Trim());
+
+		var token = await RunAsync("auth", "print-bearer-token", "--provider", "xai");
+		Assert.Equal(0, token.ExitCode);
+		Assert.Equal("xai-token", token.StdOut.Trim());
+	}
+
 	[Fact]
 	public async Task AuthCheckRequiresAProviderOrModel()
 	{
@@ -291,10 +309,10 @@ public sealed class AuthCommandProcessTests : IDisposable
 	[Fact]
 	public async Task UnknownProviderIsRejectedWithoutTouchingTheStore()
 	{
-		var (exitCode, _, stderr) = await RunAsync("login", "anthropic");
+		var (exitCode, _, stderr) = await RunAsync("login", "not-a-provider");
 
 		Assert.Equal(2, exitCode);
-		Assert.Contains("does not use OAuth login", stderr);
+		Assert.Contains("Unknown provider", stderr);
 		Assert.False(File.Exists(Path.Combine(_root, "auth.json")));
 	}
 }

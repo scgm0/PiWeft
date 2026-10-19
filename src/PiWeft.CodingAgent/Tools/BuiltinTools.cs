@@ -24,6 +24,13 @@ public static class BuiltinTools
 			"Execute bash commands (ls, grep, find, etc.)",
 			["You can inspect PI_* environment variables for current model and session details."]),
 
+		.. OperatingSystem.IsWindows()
+			? [new BuiltinTool(
+				PowerShellTool.Create(cwd),
+				"Execute PowerShell commands",
+				["You can inspect PI_* environment variables for current model and session details."])]
+			: Array.Empty<BuiltinTool>(),
+
 		new BuiltinTool(
 			FileTools.Edit(cwd),
 			"Make precise file edits with exact text replacement, including multiple disjoint edits in one call",

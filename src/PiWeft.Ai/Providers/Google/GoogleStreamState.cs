@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using PiWeft.Ai.Utils;
 using System.Text.Json.Nodes;
 
 using PiWeft.Ai.Json;
@@ -242,15 +243,16 @@ internal sealed class GoogleStreamState
 			_content.Any(block => block is ToolCall existing && existing.Id == providedId);
 
 		var id = needsId ? $"{name}_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}_{++_toolCallCounter}" : providedId!;
-		var arguments = functionCall.TryGetProperty("args", out var args) && args.ValueKind == JsonValueKind.Object
-			? JsonNode.Parse(args.GetRawText())?.AsObject() ?? []
-			: [];
+		var (arguments, argumentsError) = functionCall.TryGetProperty("args", out var args)
+			? JsonRepair.ParseObject(args.GetRawText())
+			: (new JsonObject(), null);
 
 		var call = new ToolCall
 		{
 			Id = id,
 			Name = name,
-			Arguments = arguments,
+			Arguments = arguments ?? new(),
+			ArgumentsError = argumentsError,
 			ThoughtSignature = thoughtSignature,
 		};
 
@@ -258,7 +260,7 @@ internal sealed class GoogleStreamState
 		_content.Add(call);
 
 		Push(new ToolCallStartEvent { ContentIndex = index, Partial = Snapshot() });
-		Push(new ToolCallDeltaEvent { ContentIndex = index, Delta = arguments.ToJsonString(PiJson.NodeOptions), Partial = Snapshot() });
+		Push(new ToolCallDeltaEvent { ContentIndex = index, Delta = (arguments ?? new JsonObject()).ToJsonString(PiJson.NodeOptions), Partial = Snapshot() });
 		Push(new ToolCallEndEvent { ContentIndex = index, ToolCall = call, Partial = Snapshot() });
 	}
 

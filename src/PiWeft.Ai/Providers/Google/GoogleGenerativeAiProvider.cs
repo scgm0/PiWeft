@@ -40,7 +40,7 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 
 		try
 		{
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var thinkingBudget = ResolveThinkingBudget(model, options);
 			var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);

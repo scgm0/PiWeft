@@ -351,7 +351,11 @@ public sealed partial class SessionManager
 		FromHook = fromHook,
 	});
 
-	public string AppendBranchSummary(string fromId, string summary, Usage? usage = null) => Append(new BranchSummaryEntry
+	public string AppendBranchSummary(
+		string fromId,
+		string summary,
+		Usage? usage = null,
+		System.Text.Json.Nodes.JsonNode? details = null) => Append(new BranchSummaryEntry
 	{
 		Id = NextId(),
 		ParentId = _leafId,
@@ -359,6 +363,7 @@ public sealed partial class SessionManager
 		FromId = fromId,
 		Summary = summary,
 		Usage = usage,
+		Details = details,
 	});
 
 	public string AppendCustom(string customType, System.Text.Json.Nodes.JsonNode? data = null) => Append(new CustomEntry

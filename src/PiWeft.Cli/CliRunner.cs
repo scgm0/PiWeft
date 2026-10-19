@@ -88,7 +88,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 			try
 			{
-				if (!arguments.NoMcp)
+				if (!arguments.NoMcp && !arguments.NoTools)
 				{
 					// 先连接 MCP 服务器，使其工具包含在提示词的工具声明里。
 					await ConnectMcpAsync(cwd, environment.ProjectTrusted, cancellationToken).ConfigureAwait(false);
@@ -242,6 +242,44 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	};
 
 	/// <summary><c>pi --export &lt;session&gt; [output]</c>：把会话渲染成自包含 HTML 后退出。</summary>
+	/// <summary>导出会话为 JSONL；已落盘时直接复制，内存会话则按条目重建。</summary>
+	internal static string ExportJsonl(CodingAgentSession session, string? outputPath)
+	{
+		var path = outputPath is { Length: > 0 }
+			? Path.GetFullPath(outputPath)
+			: Path.Combine(
+				session.Session.SessionDir,
+				$"{session.Session.SessionId}.jsonl");
+
+		var directory = Path.GetDirectoryName(path);
+		if (directory is { Length: > 0 })
+		{
+			Directory.CreateDirectory(directory);
+		}
+
+		if (session.Session.SessionFile is { Length: > 0 } source &&
+			File.Exists(source) &&
+			!string.Equals(Path.GetFullPath(source), path, StringComparison.Ordinal))
+		{
+			File.Copy(source, path, overwrite: true);
+			return path;
+		}
+
+		var lines = new List<string>();
+		if (session.Session.Header is { } header)
+		{
+			lines.Add(SessionJson.Serialize(header));
+		}
+
+		foreach (var entry in session.Session.Entries)
+		{
+			lines.Add(SessionJson.Serialize(entry));
+		}
+
+		File.WriteAllText(path, string.Join('\n', lines) + "\n");
+		return path;
+	}
+
 	private int ExportSession(string source, CliArguments arguments, string cwd)
 	{
 		var sessionPath = CliEnvironment.ResolveSessionPath(source, cwd, arguments.SessionDir)
@@ -254,7 +292,11 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			session: SessionManager.Open(sessionPath, arguments.SessionDir),
 			recordInitialThinkingLevel: false);
 
-		var outputPath = ExportHtml(session, arguments.Prompts.Count > 0 ? arguments.Prompts[0] : null);
+		var requested = arguments.Prompts.Count > 0 ? arguments.Prompts[0] : null;
+		var outputPath = requested is not null &&
+			requested.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)
+				? ExportJsonl(session, requested)
+				: ExportHtml(session, requested);
 		output.WriteLine($"Exported to: {outputPath}");
 		return 0;
 	}
@@ -613,7 +655,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				}
 
 				case "abort":
-					session.Abort();
+					await session.AbortAsync(cancellationToken).ConfigureAwait(false);
 					WriteRecord(Response(id, "abort", true, new JsonObject(), null));
 					break;
 
@@ -827,7 +869,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 					var models = new List<JsonNode?>();
 					foreach (var model in environment.ListAvailableModels(_arguments?.ApiKey))
 					{
-						models.Add(ModelRecord(model));
+						models.Add(ModelRecordWithThinking(model));
 					}
 
 					WriteRecord(Response(
@@ -1099,6 +1141,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 							["tokensBefore"] = result.TokensBefore,
 							["estimatedTokensAfter"] = session.ContextTokens().Tokens,
 							["usage"] = AgentEventWriter.UsageRecord(result.Usage),
+							["details"] = result.Details?.DeepClone(),
 						},
 						null));
 					break;
@@ -1491,8 +1534,9 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 				try
 				{
-					var imported = ImportSession(session, resolved);
-					error.WriteLine($"已导入 {imported} 条消息自 {resolved}。");
+					var imported = ImportSession(resolved);
+					session.SwitchSession(imported);
+					error.WriteLine($"Session imported from: {resolved}");
 				}
 				catch (Exception exception) when (exception is InvalidOperationException or IOException
 					or UnauthorizedAccessException or System.Text.Json.JsonException)
@@ -1503,11 +1547,20 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				continue;
 			}
 
-			if (trimmed == "/bug")
+			if (trimmed == "/bug" || trimmed.StartsWith("/bug ", StringComparison.Ordinal))
 			{
-				// 与 pi 的 /bug 对应：给出反馈入口与本会话路径，由用户自行整理提交。
-				error.WriteLine("反馈问题：https://github.com/earendil-works/pi/issues");
-				error.WriteLine($"当前会话文件：{session.Session.SessionFile ?? "（未落盘）"}");
+				var description = trimmed.Length > 5 ? trimmed[5..].Trim() : null;
+				try
+				{
+					var report = BugReport.Create(session, description);
+					error.WriteLine($"Bug report written to: {report}");
+					error.WriteLine("包含会话记录；分享前请自行检查敏感内容。");
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+				{
+					error.WriteLine($"pi: 生成诊断包失败：{exception.Message}");
+				}
+
 				continue;
 			}
 
@@ -1532,38 +1585,17 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	}
 
 	/// <summary>
-	/// 把另一个会话文件当前分支的消息追加进当前会话，并重建代理上下文。
-	/// 与 pi 的 <c>/import</c> 语义一致：导入的是消息内容，不带走模型/思考级别等元数据条目。
+	/// 导入并 resume 一个 JSONL 会话：返回打开后的会话，由调用方替换当前会话。
 	/// </summary>
-	internal static int ImportSession(CodingAgentSession session, string sourcePath)
+	internal static SessionManager ImportSession(string sourcePath)
 	{
-		if (session.IsStreaming)
-		{
-			throw new InvalidOperationException("会话正在生成回复，稍后再导入");
-		}
-
 		if (!File.Exists(sourcePath))
 		{
 			throw new InvalidOperationException($"Session file not found: {sourcePath}");
 		}
 
-		// 只读打开源会话：导入是复制条目，不动源文件，无需释放。
-		var source = SessionManager.Open(sourcePath, session.Session.SessionDir);
-		var messages = source.BuildProjectedMessages();
-		var count = 0;
-		foreach (var message in messages)
-		{
-			session.Session.AppendMessage(message);
-			count++;
-		}
-
-		if (count > 0)
-		{
-			// 同一实例换进去只为触发 SetMessages 重建上下文。
-			session.SwitchSession(session.Session);
-		}
-
-		return count;
+		// pi 的 /import 是“导入并 resume”：替换当前会话，而不是把消息追加到当前分支。
+		return SessionManager.Open(Path.GetFullPath(sourcePath));
 	}
 
 	// ------------------------------------------------------------ 交互命令
@@ -1583,7 +1615,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		  /tree                     查看分支树
 		  /fork                     从某条用户消息分叉
 		  /clone                    把当前分支复制为新会话
-		  /export [路径]            导出 HTML（JSONL 是会话文件本身）
+		  /export [路径]            导出 HTML；路径以 .jsonl 结尾时导出 JSONL
 		  /scoped-models            查看 --models 轮换范围
 		  /mcp                      查看已连接的 MCP 服务器与工具
 		  /trust                    查看当前项目信任状态
@@ -1591,11 +1623,12 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		  /login [provider]         OAuth 登录（默认 openai-codex）
 		  /logout [provider]        移除已存凭据
 		  /copy                     复制最近一条助手回复
-		  /import <路径>            导入另一个会话的当前分支
-		  /export、/bug、/exit     导出 / 反馈 / 退出
+		  /import <路径>            导入并切换到另一个 JSONL 会话
+		  /bug [描述]               生成脱敏诊断包（zip）
+		  /export、/exit            导出 / 退出
 		  !<命令>                   执行 shell 并把输出加入对话
 		  !!<命令>                  执行 shell，输出不进模型上下文
-		未实现的 pi 命令：/share、/llama、/hotkeys（行式 REPL 无键位绑定）。
+		/hotkeys 仅有桌面快捷键；/llama 需要 LLAMA_BASE_URL 指向 router 模式服务器。
 		""";
 
 	/// <summary>交互模式的内联 shell：`!cmd` 把输出并入对话，`!!cmd` 只执行不入上下文。</summary>
@@ -1738,8 +1771,14 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				return true;
 
 			case "/export":
-				output.WriteLine($"Exported to: {ExportHtml(session, rest.Length > 0 ? rest : null)}");
+			{
+				var exportPath = rest.Length > 0 ? rest : null;
+				output.WriteLine(exportPath is not null &&
+					exportPath.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)
+						? $"Exported to: {ExportJsonl(session, exportPath)}"
+						: $"Exported to: {ExportHtml(session, exportPath)}");
 				return true;
+			}
 
 			case "/scoped-models":
 				error.WriteLine(arguments.Models.Count == 0
@@ -1767,12 +1806,12 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				return true;
 
 			case "/login":
-				await AuthCommands.RunAsync("login", rest.Length == 0 ? [] : [rest], output, error, cancellationToken)
+				await AuthCommands.RunAsync("login", rest.Length == 0 ? [] : [rest], output, error, input, cancellationToken)
 					.ConfigureAwait(false);
 				return true;
 
 			case "/logout":
-				await AuthCommands.RunAsync("logout", rest.Length == 0 ? [] : [rest], output, error, cancellationToken)
+				await AuthCommands.RunAsync("logout", rest.Length == 0 ? [] : [rest], output, error, input, cancellationToken)
 					.ConfigureAwait(false);
 				return true;
 
@@ -1785,12 +1824,77 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				return true;
 
 			case "/share":
-				error.WriteLine("pi: /share 未实现（会话上传与 Radius/Gist 集成不在本端口范围）。可用 /export 导出 HTML。");
+			{
+				var destination = rest is "gist" or "radius" ? rest : "auto";
+				var (ok, url, message) = await SessionSharing.ShareAsync(session, destination, cancellationToken).ConfigureAwait(false);
+				if (ok && url is not null)
+				{
+					output.WriteLine($"Shared: {url}");
+				}
+				else
+				{
+					error.WriteLine($"pi: {message}");
+				}
+
 				return true;
+			}
 
 			case "/llama":
-				error.WriteLine("pi: /llama 未实现（内置 llama.cpp 集成不在本端口范围）。");
+			{
+				var parts = rest.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+				var action = parts.Length > 0 ? parts[0] : "list";
+				var model = parts.Length > 1 ? rest[(rest.IndexOf(parts[1], StringComparison.Ordinal))..].Trim() : null;
+				try
+				{
+					switch (action)
+					{
+						case "list":
+						case "refresh":
+						{
+							var models = await LlamaRouter.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+							error.WriteLine($"llama.cpp router: {LlamaRouter.BaseUrl}（{models.Count} 个模型）");
+							foreach (var item in models)
+							{
+								error.WriteLine($"  {item.Id}  [{item.Status}]{(item.Name is { Length: > 0 } name ? $"  {name}" : string.Empty)}");
+							}
+
+							error.WriteLine("用法：/llama load <id>、/llama unload <id>、/llama list");
+							break;
+						}
+
+						case "load":
+						case "unload":
+							if (model is not { Length: > 0 })
+							{
+								error.WriteLine($"用法：/llama {action} <id>");
+								break;
+							}
+
+							if (action == "load")
+							{
+								await LlamaRouter.LoadAsync(model, cancellationToken: cancellationToken).ConfigureAwait(false);
+							}
+							else
+							{
+								await LlamaRouter.UnloadAsync(model, cancellationToken: cancellationToken).ConfigureAwait(false);
+							}
+
+							error.WriteLine($"llama.cpp {action}: {model}");
+							break;
+
+						default:
+							error.WriteLine("用法：/llama [list|refresh|load <id>|unload <id>]");
+							break;
+					}
+				}
+				catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException or OperationCanceledException)
+				{
+					error.WriteLine($"pi: llama.cpp 不可用：{exception.Message}");
+					error.WriteLine($"设置 {LlamaRouter.BaseUrlVariable}（默认 {LlamaRouter.DefaultBaseUrl}）并启动 router 模式。");
+				}
+
 				return true;
+			}
 
 			default:
 				return false;

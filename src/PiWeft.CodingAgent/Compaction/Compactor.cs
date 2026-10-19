@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Session;
@@ -19,7 +20,7 @@ public sealed record CompactionResult
 
 	public Usage Usage { get; init; } = new();
 
-	public string? Details { get; init; }
+	public JsonObject? Details { get; init; }
 }
 
 /// <summary>
@@ -203,9 +204,13 @@ public static class Compactor
 		var checkpoint = LastSystemMessage(session);
 
 		var details = ConversationSerializer.CollectFileOperations(historyMessages.Concat(turnPrefixMessages));
-		var detailsText = ConversationSerializer.FormatFileOperations(
-			details.ReadFiles,
-			details.ModifiedFiles);
+		var detailsNode = new JsonObject
+		{
+			["readFiles"] = new JsonArray([.. details.ReadFiles.OrderBy(static f => f, StringComparer.Ordinal)
+				.Select(static f => (JsonNode?)JsonValue.Create(f))]),
+			["modifiedFiles"] = new JsonArray([.. details.ModifiedFiles.OrderBy(static f => f, StringComparer.Ordinal)
+				.Select(static f => (JsonNode?)JsonValue.Create(f))]),
+		};
 
 		session.AppendCompaction(
 			summary,
@@ -213,7 +218,7 @@ public static class Compactor
 			tokensBefore,
 			checkpoint,
 			usage,
-			detailsText.Length > 0 ? new System.Text.Json.Nodes.JsonObject { ["fileOperations"] = detailsText } : null);
+			detailsNode);
 
 		return new CompactionResult
 		{
@@ -221,7 +226,7 @@ public static class Compactor
 			TokensBefore = tokensBefore,
 			Summary = summary,
 			Usage = usage,
-			Details = detailsText,
+			Details = detailsNode,
 		};
 	}
 

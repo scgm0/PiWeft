@@ -58,6 +58,25 @@ public sealed record CompactionEndEvent : SessionEvent
 	public long? EstimatedTokensAfter { get; init; }
 }
 
+/// <summary>摘要请求即将重试。</summary>
+public sealed record SummarizationRetryScheduledEvent : SessionEvent
+{
+	public required int Attempt { get; init; }
+	public required int MaxAttempts { get; init; }
+	public required int DelayMs { get; init; }
+	public required string ErrorMessage { get; init; }
+}
+
+/// <summary>摘要重试开始；<c>Source</c> 为 <c>compaction</c> 或 <c>branchSummary</c>。</summary>
+public sealed record SummarizationRetryAttemptStartEvent : SessionEvent
+{
+	public required string Source { get; init; }
+	public string? Reason { get; init; }
+}
+
+/// <summary>摘要重试结束。</summary>
+public sealed record SummarizationRetryFinishedEvent : SessionEvent;
+
 /// <summary>压缩原因常量，与 pi 的字符串取值一致。</summary>
 public static class CompactionReasons
 {

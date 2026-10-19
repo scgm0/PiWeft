@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.Anthropic;
 
@@ -288,8 +289,8 @@ internal sealed class AnthropicStreamState
 			{
 				if (_index >= 0 && _index < _content.Count && _content[_index] is ToolCall call)
 				{
-					var arguments = ParseToolArguments(_toolJson.ToString());
-					call = call with { Arguments = arguments };
+					var (arguments, argumentsError) = JsonRepair.ParseObject(_toolJson.ToString());
+					call = call with { Arguments = arguments ?? new(), ArgumentsError = argumentsError };
 					_content[_index] = call;
 					Push(new ToolCallEndEvent { ContentIndex = _index, ToolCall = call, Partial = Snapshot() });
 				}
@@ -442,20 +443,4 @@ internal sealed class AnthropicStreamState
 			? System.Text.Json.Nodes.JsonNode.Parse(value.GetRawText())!.AsObject()
 			: new System.Text.Json.Nodes.JsonObject();
 
-	private static System.Text.Json.Nodes.JsonObject ParseToolArguments(string json)
-	{
-		if (string.IsNullOrWhiteSpace(json))
-		{
-			return new System.Text.Json.Nodes.JsonObject();
-		}
-
-		try
-		{
-			return System.Text.Json.Nodes.JsonNode.Parse(json)?.AsObject() ?? new System.Text.Json.Nodes.JsonObject();
-		}
-		catch (JsonException)
-		{
-			return new System.Text.Json.Nodes.JsonObject();
-		}
-	}
 }

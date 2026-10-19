@@ -19,7 +19,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 使用 .NET 10、`LangVersion=preview` 和制表符缩进；中文为文档、界面文案和注释的第一方语言。
 - JSON 使用 `System.Text.Json` 源生成与手写转换器，不依赖 Newtonsoft.Json 或供应商 SDK。保留 trim/AOT 分析器。
 - 核心库无第三方运行时包；宿主使用 ZLogger，桌面使用 MewUI 0.22.1、Markdown 和 SVG 扩展。
-- 模型目录固定在 `src/PiWeft.Ai/Resources/models.json`，自定义端点由 `models.json` 注册。
+- 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线，`<agentDir>/models-store.json` 缓存 pi.dev 远程目录（`pi update --models` 刷新），自定义端点由 `models.json` 注册。
 - 不实现 JS 扩展宿主、codemode、mermaid、KaTeX、托盘、桌面通知、自动更新、崩溃上报或内嵌浏览器；终端以独立的 PTY 命令 Dock 提供，不内嵌第三方终端组件。
 
 ## pi 与 PiDeck 兼容
@@ -33,9 +33,9 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - `--system-prompt` 取代默认 preamble，`--append-system-prompt` 追加为 `addendum` 章节，`--no-context-files` 停用 AGENTS.md / CLAUDE.md 发现；三者都接受字面文本或文件路径。
 - `--export <session> [output]` 导出 HTML 后退出（只读，不改会话文件）；`--models <patterns>` 限定 Ctrl+P 模型轮换范围。
 - `pi install <source>`、`pi list`、`pi remove <source>`、`pi update [source]` 管理 pi 包：npm 装到 `<agentDir>/npm/node_modules`、git 克隆到 `<agentDir>/git`、本地路径只登记不复制；`--local/-l` 写项目 `.pi/settings.json`。npm 可执行文件可用 `settings.npmCommand` 覆盖。
-- `pi mcp list|add|remove|login|logout` 管理 MCP 服务器与它们的 OAuth 令牌：配置写 `<agentDir>/mcp.json`（`--local` 改项目 `.pi/mcp.json`），令牌写 `<agentDir>/mcp-oauth.json`；`login` 走授权码 + PKCE 的回环流程，没有 `clientId` 时按需动态注册。写入是保留式的：保留文件里的其它键、注释与尾逗号，解析失败时拒绝覆盖并报错。
+- `pi mcp list|add|remove|login|logout` 管理 MCP 服务器与它们的 OAuth 令牌：`list` 会连接服务器并报告 state/tools/error，启用服务器失败时退出 1；配置写 `<agentDir>/mcp.json`（`--local` 改项目 `.pi/mcp.json`），令牌写 `<agentDir>/mcp-oauth.json`；`login` 走授权码 + PKCE 的回环流程，没有 `clientId` 时按需动态注册。写入是保留式的：保留文件里的其它键、注释与尾逗号，解析失败时拒绝覆盖并报错。
 - CLI `@file` 参数展开为 `<file>` 文本块，图片作为内容块随首条提示发送；print / JSON 模式还会把重定向的 stdin 合入首条提示（交互模式不读管道 stdin）。RPC 模式明确拒绝 `@file`。
-- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开，CLI、RPC 与桌面共享同一语义；RPC 空闲 `prompt` 保留 `images` 内容块。交互模式实现 pi 的内置斜杠命令面：`/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`；`/share` 与 `/llama` 给出明确的未实现提示。`!command` 把输出并入对话，`!!command` 只执行不入模型上下文。
+- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开，CLI、RPC 与桌面共享同一语义；RPC 空闲 `prompt` 保留 `images` 内容块。交互模式实现 pi 的内置斜杠命令面：`/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`；`/share`（私有 GitHub gist）、`/llama`（router 列表/加载/卸载）与 `/bug`（脱敏诊断 zip）已实现。`!command` 把输出并入对话，`!!command` 只执行不入模型上下文。
 - 为兼容而接受但不生效的选项（`-e`、`--theme`、`--tui-mode` 等）会在 stderr 提示一次「accepted for compatibility but not implemented」，不再静默降级；`pi config` 列出包来源与可编辑资源键，`pi update --self/--self 别名`、`--extensions`、`--models`、`--all`、`--force` 按 pi 语义解析（自更新交由系统包管理器），`pi mcp add` 支持 pi 形状（`-- <command> [args]`、`--bearer-token-env-var`、`--oauth-client-id/secret`、`--exposure`、`--description`），`pi mcp login --timeout` 限定整个登录过程。
 - CLI 启动记录思考级别元数据，与 pi 一致。桌面只读浏览不改文件字节或 mtime，开始对话或主动改级别时再记录。
 - 凭据按显式选项、存储凭据、环境变量解析；每次请求按目标供应商选择凭据，压缩与分支摘要共用该路径。
@@ -74,7 +74,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 `azure-openai-responses`、`google-generative-ai`、`google-vertex`、`bedrock-converse-stream`、
 `mistral-conversations`、`pi-messages`。
 
-`pi login` 支持 ChatGPT Codex 设备码授权与令牌刷新；`logout` 保留其它供应商条目。
+`pi login` 支持 ChatGPT Codex 设备码、Anthropic 浏览器 PKCE、xAI/Kimi 设备码；其它 Provider 走 API key 登录。`logout` 可移除任意 Provider 的凭据并保留其它条目。
 `pi auth check` 输出 `ready` / `not_ready` / `invalid`，退出码为 0 / 1 / 2（参数异常为 2）；`invalid` 表示凭据存在但不可用（命令型凭据执行失败、OAuth 刷新失败）。支持供应商、模型、JSON、凭据检查和禁用刷新选项。
 `print-api-key` / `print-bearer-token` 只输出相应凭据；`--min-expiry` 仅适用于后者。
 `auth.json` 的 API Key 支持明文和 `${VAR}` 模板；命令型凭据（`!` 开头）在取值时执行命令取 stdout（10 秒超时、64 KiB 上限，与 pi 一致不缓存），失败时回落到环境变量。写入是原子的，Unix 下仅用户可读写；文件无法解析时拒绝覆盖，避免抹掉其它供应商的凭据。
@@ -83,8 +83,18 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 stdio 与 streamable HTTP 均支持握手、工具/资源/模板/提示分页及调用。
 stdio 服务器的子进程 PATH 按 PiDeck 的顺序组装（env PATH → 登录 shell PATH → 包管理器/版本管理器目录 → 平台兜底），命令解析为绝对路径：图形外壳启动（macOS Finder）只有系统 PATH 时仍能找到 Homebrew/nvm 里的 `node`，解析失败给出含搜索路径的错误而不是裸 ENOENT。登录 shell 探测异步执行并按进程缓存，超时或失败只退化到 env PATH。
-资源工具过滤 `ui://` / MCP App 内容，保留图片块；其它二进制保存到临时文件，模型侧文本限制为 20 KB 并提供完整文件路径。
-HTTP 传输下通知流里带 id 的服务端请求（如 `ping`）会反向 POST 应答：`ping` 回空结果，其余方法回 -32601；应答失败静默丢弃，不影响通知流。声明 `auth: oauth` 的服务器配置 `clientId + clientSecret` 时走客户端凭据授权（RFC 6749 §4.4）：无需浏览器与动态注册，`pi mcp login` 直接取令牌，运行时到期自动重新授权；仅配置 `clientId` 时仍走授权码 + PKCE 回环流程，没有 `clientId` 时按需动态注册，回环回调容忍浏览器的杂散连接。令牌单独保存在 `<agentDir>/mcp-oauth.json`，与 provider 凭据的 `auth.json` 分开；请求 401 时刷新一次并重放同一请求。stdio 列表变化通知刷新工具并调用 `SetTools`；HTTP 通过独立 SSE 通知流接收同一路径的通知，服务器返回 400 / 404 / 405 / 406 / 204 时静默降级为请求-响应模式。通知流对坏帧只跳过、流被关闭或失败后指数退避重连（上限 30 秒），收到 401 时主动刷新令牌；握手失败会杀掉已拉起的 stdio 子进程并释放自有 `HttpClient`。
+资源工具过滤 `ui://` / MCP App 内容，保留图片块；其它二进制保存到临时文件，模型侧文本限制为 20 KB 并提供完整文件路径。工具只返回 `structuredContent` 时，模型侧回退为 JSON 文本。
+HTTP 传输下通知流里带 id 的服务端请求（如 `ping`）会反向 POST 应答：`ping` 回空结果，其余方法回 -32601；应答失败静默丢弃，不影响通知流。服务器的 `oauth` 对象（兼容旧的 `auth: oauth` + 顶层字段）配置 `clientId + clientSecret` 时走客户端凭据授权（RFC 6749 §4.4）：无需浏览器与动态注册，`pi mcp login` 直接取令牌，运行时到期自动重新授权；仅配置 `clientId` 时仍走授权码 + PKCE 回环流程，没有 `clientId` 时按需动态注册，回环回调容忍浏览器的杂散连接。令牌单独保存在 `<agentDir>/mcp-oauth.json`，与 provider 凭据的 `auth.json` 分开；请求 401 时刷新一次并重放同一请求。stdio 列表变化通知刷新工具并调用 `SetTools`；HTTP 通过独立 SSE 通知流接收同一路径的通知，服务器返回 400 / 404 / 405 / 406 / 204 时静默降级为请求-响应模式。通知流对坏帧只跳过、流被关闭或失败后指数退避重连（上限 30 秒），收到 401 时主动刷新令牌；握手失败会杀掉已拉起的 stdio 子进程并释放自有 `HttpClient`。
+
+
+### 2026-10-19 本轮补全
+
+- **正确性**：Provider 请求前的消息变换层补齐（跨模型 thinking 丢弃、失败回合跳过、孤儿工具调用补结果、工具调用 id 归一、非视觉模型图片降级）；工具参数 JSON 修复与 `argumentsError`；工具回合中途自动压缩、上下文溢出后的 compact+retry、摘要请求重试事件；`/import` 改为替换并 resume；RPC `abort` 等待空闲，补齐 `toolcall_start`/`tool_execution_update`/`agent_end.willRetry`/`cycle_model.isScoped` 字段；compaction/branch summary 的 `details` 改为 pi 的 `{readFiles, modifiedFiles}`。
+- **配置兼容**：`packages` 对象形式与旧版 `skills` 对象不再导致整份 settings 失效；`defaultTools` 支持项目 `+ / -` 继承与显式空列表；`models.json` 支持 provider 级 `modelOverrides`、`baseUrl`、`compat`，以及部分价格覆盖和环境/命令型值；`--no-tools` 同时禁用 MCP。
+- **模型目录与选择**：新增 `<agentDir>/models-store.json` 远程目录缓存，`pi update --models` 会刷新 pi.dev 目录；启动时加载缓存；新增 pi 的 `defaultModelPerProvider` 选择顺序与未知模型 fallback；修正 `kimi-coding` 到 1.3.0 的 `openai-completions` + `/coding/v1`。
+- **内置工具**：新增 `powershell`（Windows/装有 pwsh 的平台）；自动加载 `SYSTEM.md` / `APPEND_SYSTEM.md`，上下文文件补齐 `AGENTS.override.md` 与大小写变体。
+- **命令与导出**：`/share` 支持私有 GitHub gist（`GITHUB_TOKEN`/`GH_TOKEN`）；`/llama` 支持 router 列表、load、unload；`/bug` 生成脱敏 zip（环境、配置、错误日志、可选会话）；`/export` 支持 `.jsonl`。
+- **认证**：`pi login` 新增 Anthropic 浏览器 OAuth（PKCE + 回环）、xAI 设备码、Kimi 设备码，并为其余 Provider 提供 API key 登录；`logout` 可移除任意 Provider 的凭据。OpenAI ChatGPT、GitHub Copilot、OpenRouter、Meta、Radius 的 OAuth 仍未实现。
 
 ## 桌面能力
 
@@ -129,6 +139,8 @@ dotnet publish tools/PiWeft.AotSmoke -c Release -r linux-x64
 dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
+
+2026-10-19 本轮验证：Ai/Agent/CodingAgent/MCP/CLI 共 729 项测试通过，Linux x64 NativeAOT 冒烟通过（`AOT SMOKE OK`）；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。真实供应商联网与 Windows/macOS 实机仍未验证。
 
 GUI 环境可用 `xvfb-run`。真实二进制对照测试要求 PATH 中有 TypeScript `pi`；没有安装时测试失败，不静默跳过。
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。

@@ -53,7 +53,7 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 				return;
 			}
 
-			var messages = Transcript.Normalize(context);
+			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var reasoningEffort = OpenAiResponsesProvider.ResolveReasoningEffort(model, options);
 			var deployment = ResolveDeploymentName(model);

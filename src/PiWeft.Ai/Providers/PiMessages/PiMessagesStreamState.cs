@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.PiMessages;
 
@@ -285,11 +286,21 @@ internal sealed class PiMessagesStreamState
 			return null;
 		}
 
+		var rawArguments = node["arguments"];
+		var (arguments, argumentsError) = rawArguments switch
+		{
+			JsonObject value => (value, (string?)null),
+			JsonValue value when value.GetValueKind() == System.Text.Json.JsonValueKind.String =>
+				JsonRepair.ParseObject(value.GetValue<string>()),
+			_ => (new JsonObject(), null),
+		};
+
 		return new ToolCall
 		{
 			Id = node["id"]?.GetValue<string>() ?? string.Empty,
 			Name = node["name"]?.GetValue<string>() ?? string.Empty,
-			Arguments = node["arguments"] as JsonObject ?? new JsonObject(),
+			Arguments = arguments ?? new JsonObject(),
+			ArgumentsError = argumentsError,
 			ThoughtSignature = node["thoughtSignature"]?.GetValue<string>(),
 		};
 	}

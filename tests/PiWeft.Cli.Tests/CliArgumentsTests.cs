@@ -349,9 +349,50 @@ public class CliEnvironmentTests
 	[Fact]
 	public void ResolveTools_HonorsSettingsDefaultTools()
 	{
-		var settings = new CodingAgentSettings { DefaultTools = ["read", "grep"] };
+		var settings = new CodingAgentSettings { DefaultTools = ["read", "grep"], DefaultToolsConfigured = true };
 		var tools = CliEnvironment.ResolveTools(new CliArguments(), Path.GetTempPath(), settings);
 		Assert.Equal(["read", "grep"], tools.Select(static tool => tool.Name));
+	}
+
+
+	[Fact]
+	public void ResolveModel_BuildsFallbackForAnUnknownModelWithProvider()
+	{
+		var registry = ModelRegistry.LoadDefault();
+		var (arguments, _) = CliArguments.Parse(["--provider", "anthropic", "--model", "claude-brand-new"]);
+
+		var model = CliEnvironment.ResolveModel(registry, arguments!, new CodingAgentSettings(), out var error);
+
+		Assert.Null(error);
+		Assert.NotNull(model);
+		Assert.Equal("anthropic", model!.Provider);
+		Assert.Equal("claude-brand-new", model.Id);
+		Assert.False(string.IsNullOrEmpty(model.BaseUrl));
+	}
+
+	[Fact]
+	public void ResolveModel_DoesNotEscapeTheRequestedProvider()
+	{
+		var registry = ModelRegistry.LoadDefault();
+		var (arguments, _) = CliArguments.Parse(["--provider", "anthropic", "--model", "gpt-5.5"]);
+
+		var model = CliEnvironment.ResolveModel(registry, arguments!, new CodingAgentSettings(), out _);
+
+		Assert.NotNull(model);
+		Assert.Equal("anthropic", model!.Provider);
+	}
+
+	[Fact]
+	public void Parse_CollectsExplicitResourcePaths()
+	{
+		var (arguments, error) = CliArguments.Parse(
+			["--skill", "a/SKILL.md", "--skill", "b", "--prompt-template", "p.md", "--theme", "t.json", "--no-themes"]);
+
+		Assert.Null(error);
+		Assert.Equal(["a/SKILL.md", "b"], arguments!.Skills);
+		Assert.Equal(["p.md"], arguments.PromptTemplates);
+		Assert.Equal(["t.json"], arguments.Themes);
+		Assert.True(arguments.NoThemes);
 	}
 
 	[Fact]

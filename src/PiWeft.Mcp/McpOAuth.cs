@@ -101,8 +101,15 @@ public static partial class McpOAuth
 		HttpClient http,
 		string endpoint,
 		string? challenge,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		string? authServerMetadataUrl = null)
 	{
+		if (authServerMetadataUrl is { Length: > 0 })
+		{
+			var configured = await GetJsonAsync(http, authServerMetadataUrl, cancellationToken).ConfigureAwait(false);
+			return configured is null ? null : MetadataFromDocument(configured, authServerMetadataUrl);
+		}
+
 		var resourceUrl = ResourceMetadataUrl(challenge, endpoint);
 		var resource = resourceUrl is null ? null : await GetJsonAsync(http, resourceUrl, cancellationToken).ConfigureAwait(false);
 
@@ -125,18 +132,33 @@ public static partial class McpOAuth
 				continue;
 			}
 
-			var scopes = Strings(document["scopes_supported"]);
-			return new McpAuthorizationServerMetadata
-			{
-				AuthorizationEndpoint = authorizationEndpoint,
-				TokenEndpoint = tokenEndpoint,
-				Issuer = String(document, "issuer"),
-				RegistrationEndpoint = String(document, "registration_endpoint"),
-				ScopesSupported = scopes.Count > 0 ? scopes : resourceScopes,
-			};
+			return MetadataFromDocument(document, issuer, resourceScopes);
 		}
 
 		return null;
+	}
+
+	private static McpAuthorizationServerMetadata? MetadataFromDocument(
+		JsonObject document,
+		string fallbackIssuer,
+		IReadOnlyList<string>? fallbackScopes = null)
+	{
+		var authorizationEndpoint = String(document, "authorization_endpoint");
+		var tokenEndpoint = String(document, "token_endpoint");
+		if (authorizationEndpoint is not { Length: > 0 } || tokenEndpoint is not { Length: > 0 })
+		{
+			return null;
+		}
+
+		var scopes = Strings(document["scopes_supported"]);
+		return new McpAuthorizationServerMetadata
+		{
+			AuthorizationEndpoint = authorizationEndpoint,
+			TokenEndpoint = tokenEndpoint,
+			Issuer = String(document, "issuer") ?? fallbackIssuer,
+			RegistrationEndpoint = String(document, "registration_endpoint"),
+			ScopesSupported = scopes.Count > 0 ? scopes : fallbackScopes ?? [],
+		};
 	}
 
 	/// <summary>按 RFC 8414 的顺序列出候选的授权服务器元数据地址。</summary>
@@ -167,7 +189,8 @@ public static partial class McpOAuth
 		CancellationToken cancellationToken,
 		bool openBrowser = true)
 	{
-		var listener = new TcpListener(IPAddress.Loopback, 0);
+		var callbackPort = config.OAuth?.CallbackPort is > 0 and <= 65535 ? config.OAuth.CallbackPort.Value : 0;
+		var listener = new TcpListener(IPAddress.Loopback, callbackPort);
 		try
 		{
 			listener.Start();
@@ -186,7 +209,12 @@ public static partial class McpOAuth
 			var clientId = config.ClientId ?? existing?.ClientId;
 			if (clientId is not { Length: > 0 })
 			{
-				var registration = await RegisterClientAsync(http, metadata, redirectUri, cancellationToken).ConfigureAwait(false);
+				var registration = await RegisterClientAsync(
+					http,
+					metadata,
+					redirectUri,
+					cancellationToken,
+					config.OAuth?.ClientName).ConfigureAwait(false);
 				if (!registration.Ok)
 				{
 					return registration;
@@ -206,7 +234,7 @@ public static partial class McpOAuth
 				TryOpenBrowser(authorizationUrl);
 			}
 
-			var code = await WaitForCallbackAsync(listener, state, cancellationToken).ConfigureAwait(false);
+			var code = await WaitForCallbackAsync(listener, state, metadata.Issuer, cancellationToken).ConfigureAwait(false);
 			if (code is null)
 			{
 				return McpOAuthResult.Failure("授权回调超时或被取消");
@@ -400,7 +428,8 @@ public static partial class McpOAuth
 		HttpClient http,
 		McpAuthorizationServerMetadata metadata,
 		string redirectUri,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		string? clientName = null)
 	{
 		if (metadata.RegistrationEndpoint is not { Length: > 0 } registrationEndpoint)
 		{
@@ -409,8 +438,8 @@ public static partial class McpOAuth
 
 		var payload = new JsonObject
 		{
-			["client_name"] = ClientName,
 			["redirect_uris"] = new JsonArray(redirectUri),
+			["client_name"] = clientName is { Length: > 0 } ? clientName : ClientName,
 			["grant_types"] = new JsonArray("authorization_code", "refresh_token"),
 			["response_types"] = new JsonArray("code"),
 			["token_endpoint_auth_method"] = "none",
@@ -484,7 +513,11 @@ public static partial class McpOAuth
 	}
 
 	/// <summary>等待回环回调，返回授权码；超时或 state 不匹配时返回 null。</summary>
-	private static async Task<string?> WaitForCallbackAsync(TcpListener listener, string expectedState, CancellationToken cancellationToken)
+	private static async Task<string?> WaitForCallbackAsync(
+		TcpListener listener,
+		string expectedState,
+		string? expectedIssuer,
+		CancellationToken cancellationToken)
 	{
 		using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		timeout.CancelAfter(AuthorizationTimeout);
@@ -506,6 +539,7 @@ public static partial class McpOAuth
 				var query = QueryOf(target, out var error);
 				var code = query.GetValueOrDefault("code");
 				var state = query.GetValueOrDefault("state");
+				var issuer = query.GetValueOrDefault("iss");
 
 				if (error is { Length: > 0 })
 				{
@@ -519,6 +553,16 @@ public static partial class McpOAuth
 				{
 					await WriteCallbackResponseAsync(stream, ok: false, timeout.Token).ConfigureAwait(false);
 					continue;
+				}
+
+				// RFC 9207：带 iss 时必须能校验；校验不了就失败，而不是接受未知发行方。
+				var issuerValid = issuer is null
+					? expectedIssuer is null
+					: expectedIssuer is not null && string.Equals(issuer, expectedIssuer, StringComparison.Ordinal);
+				if (!issuerValid && issuer is not null)
+				{
+					await WriteCallbackResponseAsync(stream, ok: false, timeout.Token).ConfigureAwait(false);
+					return null;
 				}
 
 				// state 不匹配时不向浏览器显示「已完成授权」。

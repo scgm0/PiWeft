@@ -121,6 +121,7 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// <summary>RPC 的 <c>set_auto_retry</c> 覆盖值；为 null 时用设置里的默认。</summary>
 	private bool? _autoRetryOverride;
+	private bool _overflowRecoveryAttempted;
 	private readonly StreamFn _streamFn;
 	private readonly StreamOptions _streamOptions;
 	private bool _disposed;
@@ -223,8 +224,10 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			Cwd = Cwd,
 			ExtraGuidelines = options.ExtraGuidelines ?? SystemPrompt.BaselineGuidelines,
-			CustomPrompt = options.CustomSystemPrompt,
-			Addendum = options.AppendSystemPrompt,
+			CustomPrompt = options.CustomSystemPrompt ?? SystemPromptFiles.LoadSystem(Cwd, options.ProjectTrusted),
+			Addendum = CombineAddendum(
+				SystemPromptFiles.LoadAppend(Cwd, options.ProjectTrusted),
+				options.AppendSystemPrompt),
 			Skills = Skills.Skills.FormatForPrompt(DiscoveredSkills),
 			ProjectContext = options.NoContextFiles ? null : ContextFiles.Load(Cwd),
 		};
@@ -243,6 +246,8 @@ public sealed class CodingAgentSession : IDisposable
 		// 恢复会话时，会话文件里记录的思考级别优先于默认值（显式传入的级别仍然最优先）。
 		var requestedThinkingLevel = options.ThinkingLevel
 			?? (Session.Entries.Count > 0 ? Session.BuildSessionContext().ThinkingLevel : null)
+			?? options.Settings.ModelThinkingLevels.GetValueOrDefault($"{options.Model.Provider}/{options.Model.Id}")
+			?? options.Settings.DefaultThinkingLevel
 			?? ThinkingLevels.Off;
 
 		_agent = new AgentRuntime(new AgentOptions
@@ -255,8 +260,13 @@ public sealed class CodingAgentSession : IDisposable
 			TransformContext = TransformContextAsync,
 			BeforeToolCall = GuardedBeforeToolCallAsync,
 			AfterToolCall = options.AfterToolCall,
+			PrepareNextTurn = PrepareNextTurnAsync,
+			WillRetry = ShouldRetryAssistant,
 			Options = _streamOptions,
 		});
+
+		_agent.SteeringMode = ParseQueueMode(options.Settings.SteeringMode);
+		_agent.FollowUpMode = ParseQueueMode(options.Settings.FollowUpMode);
 
 		// 恢复会话：代理从分支投影出发，使其自身状态与文件一致。
 		_agent.SetMessages(Session.BuildProjectedMessages());
@@ -421,6 +431,7 @@ public sealed class CodingAgentSession : IDisposable
 			_streamFn,
 			_streamOptions,
 			Settings.Compaction,
+			Settings.BranchSummary,
 			targetId,
 			customInstructions,
 			cancellationToken).ConfigureAwait(false);
@@ -467,6 +478,16 @@ public sealed class CodingAgentSession : IDisposable
 
 		Session = session;
 		_agent.SetMessages(Session.BuildProjectedMessages());
+
+		// 恢复会话记录的思考级别（模型仍由宿主当前选择决定）。
+		if (Session.Entries.Count > 0)
+		{
+			var recorded = Session.BuildSessionContext().ThinkingLevel;
+			if (recorded is { Length: > 0 })
+			{
+				_agent.SetThinkingLevel(ThinkingLevelResolver.Clamp(_agent.Model, recorded));
+			}
+		}
 	}
 
 	/// <summary>
@@ -556,6 +577,7 @@ public sealed class CodingAgentSession : IDisposable
 			_streamFn,
 			_streamOptions,
 			Settings.Compaction,
+			Settings.BranchSummary,
 			targetId,
 			customInstructions,
 			cancellationToken);
@@ -587,7 +609,8 @@ public sealed class CodingAgentSession : IDisposable
 	public async Task<CompactionResult?> CompactAsync(
 		string? customInstructions = null,
 		CancellationToken cancellationToken = default,
-		string reason = CompactionReasons.Manual)
+		string reason = CompactionReasons.Manual,
+		bool willRetry = false)
 	{
 		ThrowIfDisposed();
 		if (_agent.IsStreaming)
@@ -600,19 +623,23 @@ public sealed class CodingAgentSession : IDisposable
 		CompactionResult? result;
 		try
 		{
-			result = await Compactor.CompactAsync(
-				Session,
-				_agent.Model,
-				_streamFn,
-				_streamOptions,
-				Settings.Compaction,
-				customInstructions,
+			result = await RunSummarizationWithRetryAsync(
+				() => Compactor.CompactAsync(
+					Session,
+					_agent.Model,
+					_streamFn,
+					_streamOptions,
+					Settings.Compaction,
+					customInstructions,
+					cancellationToken),
+				"compaction",
+				reason,
 				cancellationToken).ConfigureAwait(false);
 		}
 		catch (OperationCanceledException)
 		{
 			IsCompacting = false;
-			Emit(new CompactionEndEvent { Reason = reason, Aborted = true });
+			Emit(new CompactionEndEvent { Reason = reason, Aborted = true, WillRetry = willRetry });
 			throw;
 		}
 		catch (Exception exception)
@@ -622,6 +649,7 @@ public sealed class CodingAgentSession : IDisposable
 			{
 				Reason = reason,
 				ErrorMessage = exception.Message,
+				WillRetry = willRetry,
 			});
 			throw;
 		}
@@ -640,6 +668,7 @@ public sealed class CodingAgentSession : IDisposable
 			Reason = reason,
 			Result = result,
 			EstimatedTokensAfter = result is null ? null : ContextTokens().Tokens,
+			WillRetry = willRetry && result is not null,
 		});
 
 		return result;
@@ -723,6 +752,16 @@ public sealed class CodingAgentSession : IDisposable
 
 	public void Abort() => _agent.Abort();
 
+	/// <summary>中止当前运行并等到会话真正空闲，供 RPC 的 abort 命令使用。</summary>
+	public async Task AbortAsync(CancellationToken cancellationToken = default)
+	{
+		_agent.Abort();
+		while (_agent.IsStreaming && !cancellationToken.IsCancellationRequested)
+		{
+			await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+		}
+	}
+
 	/// <summary>缓存的全文件统计快照；只有追加条目才消费新用量。</summary>
 	public SessionStatistics Statistics()
 	{
@@ -759,6 +798,18 @@ public sealed class CodingAgentSession : IDisposable
 	}
 
 	/// <summary>带上 <c>plan_mode</c> 章节（如启用）的提示词输入。</summary>
+	private static AgentQueueMode ParseQueueMode(string? value) =>
+		string.Equals(value, "all", StringComparison.OrdinalIgnoreCase)
+			? AgentQueueMode.All
+			: AgentQueueMode.OneAtATime;
+
+	private static string? CombineAddendum(string? fileText, string? optionText)
+	{
+		if (string.IsNullOrEmpty(fileText)) return optionText;
+		if (string.IsNullOrEmpty(optionText)) return fileText;
+		return $"{fileText}\n\n{optionText}";
+	}
+
 	private SystemPromptOptions SectionsFor(IReadOnlyList<BuiltinTool> tools)
 	{
 		IReadOnlyDictionary<string, string?>? overrides = _systemPromptSections.SectionOverrides;
@@ -866,6 +917,141 @@ public sealed class CodingAgentSession : IDisposable
 	/// <summary>中止正在进行的重试等待，对应 RPC 的 <c>abort_retry</c>。</summary>
 	public void AbortRetry() => _retryAbort?.Cancel();
 
+	private async Task<CompactionResult?> RunSummarizationWithRetryAsync(
+		Func<Task<CompactionResult?>> run,
+		string source,
+		string? reason,
+		CancellationToken cancellationToken)
+	{
+		var policy = Settings.Retry;
+		var maxAttempts = policy.Enabled ? Math.Max(1, policy.MaxRetries + 1) : 1;
+		var retried = false;
+
+		for (var attempt = 1; ; attempt++)
+		{
+			try
+			{
+				var result = await run().ConfigureAwait(false);
+				if (retried)
+				{
+					Emit(new SummarizationRetryFinishedEvent());
+				}
+
+				return result;
+			}
+			catch (OperationCanceledException)
+			{
+				if (retried)
+				{
+					Emit(new SummarizationRetryFinishedEvent());
+				}
+
+				throw;
+			}
+			catch (Exception exception) when (attempt < maxAttempts)
+			{
+				retried = true;
+				var delay = RetryClassifier.DelayMs(policy, attempt);
+				Emit(new SummarizationRetryScheduledEvent
+				{
+					Attempt = attempt,
+					MaxAttempts = maxAttempts,
+					DelayMs = delay,
+					ErrorMessage = exception.Message,
+				});
+
+				if (delay > 0)
+				{
+					await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+				}
+
+				Emit(new SummarizationRetryAttemptStartEvent { Source = source, Reason = reason });
+			}
+			catch
+			{
+				if (retried)
+				{
+					Emit(new SummarizationRetryFinishedEvent());
+				}
+
+				throw;
+			}
+		}
+	}
+
+	/// <summary>工具回合结束后检查阈值；需要时在继续同一个运行前压缩。</summary>
+	private async ValueTask<AgentTurnUpdate?> PrepareNextTurnAsync(
+		AgentTurnContext turn,
+		CancellationToken cancellationToken)
+	{
+		if (!AutoCompactionEnabled || !Settings.Compaction.Enabled || IsCompacting)
+		{
+			return null;
+		}
+
+		var projected = Session.BuildProjectedMessages();
+		var (tokens, _) = Compaction.ContextTokens.EstimateContextTokens(projected);
+		if (!Compaction.ContextTokens.ShouldCompact(tokens, _agent.Model.ContextWindow, Settings.Compaction))
+		{
+			return null;
+		}
+
+		await CompactDuringRunAsync(CompactionReasons.Threshold, cancellationToken).ConfigureAwait(false);
+		return new AgentTurnUpdate
+		{
+			Context = new AgentContext
+			{
+				Messages = [.. Session.BuildProjectedMessages()],
+				Tools = turn.Context.Tools,
+			},
+		};
+	}
+
+	private async Task CompactDuringRunAsync(string reason, CancellationToken cancellationToken)
+	{
+		IsCompacting = true;
+		Emit(new CompactionStartEvent { Reason = reason });
+		CompactionResult? result;
+		try
+		{
+			result = await RunSummarizationWithRetryAsync(
+				() => Compactor.CompactAsync(
+					Session,
+					_agent.Model,
+					_streamFn,
+					_streamOptions,
+					Settings.Compaction,
+					customInstructions: null,
+					cancellationToken),
+				"compaction",
+				reason,
+				cancellationToken).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException)
+		{
+			IsCompacting = false;
+			Emit(new CompactionEndEvent { Reason = reason, Aborted = true });
+			throw;
+		}
+		catch (Exception exception)
+		{
+			IsCompacting = false;
+			Emit(new CompactionEndEvent { Reason = reason, ErrorMessage = exception.Message });
+			throw;
+		}
+		finally
+		{
+			IsCompacting = false;
+		}
+
+		Emit(new CompactionEndEvent
+		{
+			Reason = reason,
+			Result = result,
+			EstimatedTokensAfter = result is null ? null : ContextTokens().Tokens,
+		});
+	}
+
 	/// <summary>
 	/// 跑一次代理，并在「可重试的失败」上按退避策略重试。与 pi 一致：
 	/// 失败的助手回复保留在会话文件里，但通过 <c>context_edit</c> 从模型投影中移除，
@@ -887,6 +1073,33 @@ public sealed class CodingAgentSession : IDisposable
 			{
 				FinishRetry(success: true, finalError: null);
 				return messages;
+			}
+
+			if (!_overflowRecoveryAttempted && ContextOverflow.IsOverflow(last))
+			{
+				_overflowRecoveryAttempted = true;
+				OmitFromContext(last);
+				try
+				{
+					var compacted = await CompactAsync(
+						customInstructions: null,
+						cancellationToken,
+						CompactionReasons.Overflow,
+						willRetry: true).ConfigureAwait(false);
+					if (compacted is null)
+					{
+						FinishRetry(success: false, "Context overflow recovery could not compact the conversation.");
+						return messages;
+					}
+				}
+				catch (Exception exception) when (exception is not OperationCanceledException)
+				{
+					FinishRetry(success: false, $"Context overflow recovery failed: {exception.Message}");
+					return messages;
+				}
+
+				attempt++;
+				continue;
 			}
 
 			var maxRetries = Math.Max(0, policy.MaxRetries);
@@ -952,6 +1165,24 @@ public sealed class CodingAgentSession : IDisposable
 		_retryAttempt = 0;
 	}
 
+	private bool ShouldRetryAssistant(AssistantMessage message)
+	{
+		if (message.StopReason != StopReason.Error)
+		{
+			return false;
+		}
+
+		if (!_overflowRecoveryAttempted && ContextOverflow.IsOverflow(message))
+		{
+			return true;
+		}
+
+		var policy = Settings.Retry;
+		return AutoRetryEnabled &&
+			_retryAttempt < Math.Max(0, policy.MaxRetries) &&
+			RetryClassifier.IsRetryable(message);
+	}
+
 	private static AssistantMessage? LastAssistantMessage(IReadOnlyList<Message> messages)
 	{
 		for (var index = messages.Count - 1; index >= 0; index--)
@@ -998,6 +1229,7 @@ public sealed class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
+		_overflowRecoveryAttempted = false;
 		// 与字符串重载一致：先自动压缩，再按重试策略运行；重试同样走"继续"而不是重新提问。
 		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
 		return await RunWithRetryAsync(

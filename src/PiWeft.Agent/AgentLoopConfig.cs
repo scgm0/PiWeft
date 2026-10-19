@@ -105,4 +105,7 @@ public sealed record AgentLoopConfig
 	public Func<PrepareRequestContext, CancellationToken, ValueTask<PrepareRequestUpdate?>>? PrepareRequest { get; init; }
 
 	public Func<AgentTurnContext, CancellationToken, ValueTask<AgentTurnUpdate?>>? PrepareNextTurn { get; init; }
+
+	/// <summary>给定失败的助手消息，判断本次 run 结束后是否会自动重试。</summary>
+	public Func<AssistantMessage, bool>? WillRetry { get; init; }
 }

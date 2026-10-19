@@ -52,8 +52,13 @@ public sealed record McpServerConfig
 	/// <summary>OAuth 请求的 scope；留空时用授权服务器建议的 scope。</summary>
 	public IReadOnlyList<string> Scopes { get; init; } = [];
 
+	/// <summary>pi 形状的 oauth 配置；PiWeft 也接受旧的 <c>auth: "oauth"</c> + 顶层字段。</summary>
+	[System.Text.Json.Serialization.JsonPropertyName("oauth")]
+	public McpOAuthConfigEntry? OAuth { get; init; }
+
 	/// <summary>是否走 OAuth：必须是 HTTP 服务器且显式声明 <c>auth: oauth</c>。</summary>
-	public bool UsesOAuth => IsHttp && string.Equals(Auth, OAuthAuthValue, StringComparison.OrdinalIgnoreCase);
+	public bool UsesOAuth => IsHttp &&
+		(OAuth is not null || string.Equals(Auth, OAuthAuthValue, StringComparison.OrdinalIgnoreCase));
 
 	/// <summary><c>auth</c> 字段里表示 OAuth 的取值。</summary>
 	public const string OAuthAuthValue = "oauth";
@@ -63,6 +68,19 @@ public sealed record McpServerConfig
 	public bool IsStdio => Command is { Length: > 0 };
 
 	public bool IsHttp => Url is { Length: > 0 };
+}
+
+/// <summary>pi 形状的 <c>oauth</c> 配置对象。</summary>
+public sealed record McpOAuthConfigEntry
+{
+	public string? ClientId { get; init; }
+	public string? ClientSecret { get; init; }
+	public int? CallbackPort { get; init; }
+	public string? CallbackUrl { get; init; }
+	public string? Scope { get; init; }
+	public string? ClientName { get; init; }
+	public string? ClientRegistration { get; init; }
+	public string? AuthServerMetadataUrl { get; init; }
 }
 
 /// <summary>一个 <c>mcp.json</c> 文件：服务器名到条目的映射。</summary>
@@ -103,6 +121,9 @@ public sealed record McpServerEntry
 	public string? ClientSecret { get; init; }
 
 	public IReadOnlyList<string>? Scopes { get; init; }
+
+	[System.Text.Json.Serialization.JsonPropertyName("oauth")]
+	public McpOAuthConfigEntry? OAuth { get; init; }
 }
 
 /// <summary>
@@ -345,9 +366,12 @@ public static partial class McpConfig
 					: entry.ToolExposure.ToDictionary(static pair => pair.Key,
 						static pair => McpExposure.Normalize(pair.Value) ?? McpExposure.Default),
 				Auth = entry.Auth,
-				ClientId = Expand(entry.ClientId),
-				ClientSecret = Expand(entry.ClientSecret),
-				Scopes = entry.Scopes is null ? [] : [.. entry.Scopes],
+				ClientId = Expand(entry.OAuth?.ClientId ?? entry.ClientId),
+				ClientSecret = Expand(entry.OAuth?.ClientSecret ?? entry.ClientSecret),
+				Scopes = entry.OAuth?.Scope is { Length: > 0 } scope
+					? [.. scope.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)]
+					: entry.Scopes is null ? [] : [.. entry.Scopes],
+				OAuth = entry.OAuth,
 			});
 		}
 
@@ -376,6 +400,7 @@ public static partial class McpConfig
 			ClientId = patch.ClientId ?? existing.ClientId,
 			ClientSecret = patch.ClientSecret ?? existing.ClientSecret,
 			Scopes = patch.Scopes ?? existing.Scopes,
+			OAuth = patch.OAuth ?? existing.OAuth,
 		};
 	}
 

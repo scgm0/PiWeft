@@ -18,6 +18,7 @@ internal static class ModelAvailability
 		var commandProviders = new HashSet<string>(AuthStore.CommandCredentialProviders(), StringComparer.Ordinal);
 		var credentials = ReadCodexCredentials();
 		var providers = new Dictionary<(string Provider, string Api), bool>();
+		var oauthProviders = new Dictionary<string, bool>(StringComparer.Ordinal);
 		return [.. models.Where(model =>
 		{
 			if (!CliEnvironment.SupportedApis.Contains(model.Api, StringComparer.Ordinal)) return false;
@@ -29,6 +30,11 @@ internal static class ModelAvailability
 					stored.GetValueOrDefault(model.Provider) ?? Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(model.Provider));
 				var hasKey = !string.IsNullOrWhiteSpace(key) && !key.StartsWith('!');
 				var hasCommandKey = commandProviders.Contains(model.Provider);
+				if (!oauthProviders.TryGetValue(model.Provider, out var hasOAuth))
+				{
+					hasOAuth = OAuthStore.Read(model.Provider) is not null;
+					oauthProviders[model.Provider] = hasOAuth;
+				}
 				available = model.Api switch
 				{
 					OpenAiCodexResponsesProvider.ApiId => !string.IsNullOrWhiteSpace(explicitKey) ||
@@ -40,7 +46,7 @@ internal static class ModelAvailability
 						HasVariable("GOOGLE_CLOUD_API_KEY") || HasVariable(GoogleAdc.AccessTokenVariable) ||
 						File.Exists(Environment.GetEnvironmentVariable(GoogleAdc.CredentialsVariable)),
 					AzureOpenAiResponsesProvider.ApiId => hasKey || hasCommandKey || HasVariable("AZURE_OPENAI_API_KEY"),
-					_ => hasKey || hasCommandKey,
+					_ => hasKey || hasCommandKey || hasOAuth,
 				};
 				providers[identity] = available;
 			}
