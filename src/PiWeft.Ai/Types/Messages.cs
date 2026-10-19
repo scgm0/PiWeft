@@ -75,6 +75,10 @@ public sealed record ToolResultMessage : Message
 
 	public string ToolName { get; init; } = string.Empty;
 
+	/// <summary>旧的外部会话可能省略 toolName；保留“是否有这个字段”，重写时不凭空补空值。</summary>
+	[JsonIgnore]
+	public bool HasToolName { get; init; } = true;
+
 	/// <summary>支持文本与图片。</summary>
 	public IReadOnlyList<ContentBlock> Content { get; init; } = [];
 

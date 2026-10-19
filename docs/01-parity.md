@@ -6,8 +6,8 @@ PiWeft 复用 pi 兼容核心，桌面端用 MewUI + NativeAOT，PiDeck 用 Elec
 
 | 对象 | 版本/路径 | 用途 |
 |---|---|---|
-| pi | `/home/scgm/TestBuild/pi`，`v1.3.0+30`（`482c1381a`） | 核心协议、CLI、扩展与 codemode |
-| PiDeck | `/home/scgm/TestBuild/PiDeck`，0.9.0 | 桌面工作流、配置与视觉基准 |
+| pi | 本地只读检出，`v1.3.0+30`（`482c1381a`） | 核心协议、CLI、扩展与 codemode |
+| PiDeck | 本地只读检出，0.9.0 | 桌面工作流、配置与视觉基准 |
 | pi_agent_rust / pi-go | 本地同级仓库 | 子代理、IDE、记忆与工具增强参考，不是必备契约 |
 
 ## 桌面视觉与主题

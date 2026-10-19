@@ -17,11 +17,42 @@ TestResults/
 .DS_Store
 Thumbs.db
 
-# Local agent state and credentials
+# Local agent state, transcripts and credentials
 .pi/
 .env
 .env.*
 !.env.example
 auth.json
+mcp-oauth.json
+models-store.json
+trust.json
 usage-queries.json
+usage-probes.json
+desktop.json
+*.jsonl
 *.log
+
+# Local AI/editor workspaces (may contain prompts, paths and transcripts)
+.workbuddy/
+.codebuddy/
+.agents/
+.claude/
+.codex/
+.cursor/
+.continue/
+.aider*
+.gemini/
+
+# Private keys and credential stores
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+id_rsa*
+id_ed25519*
+.npmrc
+.netrc
+.git-credentials

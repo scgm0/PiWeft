@@ -431,6 +431,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 	{
 		ToolCallId = PiJsonValue.Str(obj, "toolCallId") ?? string.Empty,
 		ToolName = PiJsonValue.Str(obj, "toolName") ?? string.Empty,
+		HasToolName = obj.ContainsKey("toolName"),
 		Content = PiJsonValue.ReadBlocks(obj.TryGetPropertyValue("content", out var content) ? content : null),
 		Details = obj.TryGetPropertyValue("details", out var details) ? details : null,
 		Usage = PiJsonValue.Object(obj, "usage") is { } usage ? PiJsonValue.ReadUsage(usage) : null,
@@ -544,7 +545,10 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 			case ToolResultMessage result:
 				writer.WriteString("role", "toolResult");
 				writer.WriteString("toolCallId", result.ToolCallId);
-				writer.WriteString("toolName", result.ToolName);
+				if (result.HasToolName)
+				{
+					writer.WriteString("toolName", result.ToolName);
+				}
 				writer.WritePropertyName("content");
 				PiJsonValue.WriteBlocks(writer, result.Content);
 				if (result.Details is not null)

@@ -18,7 +18,7 @@ public class SystemPromptTests
 	[Fact]
 	public void Build_EmitsPiSectionNamesInOrder()
 	{
-		var message = SystemPrompt.Build(Options("/home/scgm/project"));
+		var message = SystemPrompt.Build(Options("/workspace/project"));
 
 		Assert.NotNull(message.Sections);
 		Assert.Equal(
@@ -26,8 +26,8 @@ public class SystemPromptTests
 			message.Sections!.Keys.ToList());
 
 		Assert.Equal(SystemPrompt.Preamble, message.Sections["preamble"]);
-		Assert.Equal("<cwd>\n/home/scgm/project\n</cwd>", message.Sections["cwd"]);
-		Assert.Equal(BuiltinTools.Create("/home/scgm/project").Count, message.ToolsAdded!.Count);
+		Assert.Equal("<cwd>\n/workspace/project\n</cwd>", message.Sections["cwd"]);
+		Assert.Equal(BuiltinTools.Create("/workspace/project").Count, message.ToolsAdded!.Count);
 	}
 
 	[Fact]

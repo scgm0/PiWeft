@@ -83,6 +83,7 @@ public static class SessionJson
 			writer.WriteString("parentSession", parent);
 		}
 
+		WriteExtras(writer, header.Extra);
 		writer.WriteEndObject();
 	}
 
@@ -228,6 +229,7 @@ public static class SessionJson
 		Timestamp = PiJsonValue.Str(obj, "timestamp") ?? string.Empty,
 		Cwd = PiJsonValue.Str(obj, "cwd") ?? string.Empty,
 		ParentSession = PiJsonValue.Str(obj, "parentSession"),
+		Extra = ExtractExtras(obj, "type", "version", "id", "timestamp", "cwd", "parentSession"),
 	};
 
 	public static SessionEntry ParseEntry(JsonObject obj, string type)
@@ -318,6 +320,45 @@ public static class SessionJson
 		};
 
 		return entry with { Id = id, ParentId = parentId, Timestamp = timestamp };
+	}
+
+	/// <summary>收集未知的顶层字段，重写时原样保留。</summary>
+	private static JsonObject? ExtractExtras(JsonObject obj, params string[] known)
+	{
+		JsonObject? extras = null;
+		foreach (var (key, value) in obj)
+		{
+			if (Array.IndexOf(known, key) >= 0)
+			{
+				continue;
+			}
+
+			extras ??= new JsonObject();
+			extras[key] = value?.DeepClone();
+		}
+
+		return extras;
+	}
+
+	private static void WriteExtras(Utf8JsonWriter writer, JsonObject? extras)
+	{
+		if (extras is null)
+		{
+			return;
+		}
+
+		foreach (var (key, value) in extras)
+		{
+			if (value is null)
+			{
+				writer.WriteNull(key);
+			}
+			else
+			{
+				writer.WritePropertyName(key);
+				value.WriteTo(writer);
+			}
+		}
 	}
 
 	private static void WriteOptionalNode(Utf8JsonWriter writer, string name, JsonNode? node)

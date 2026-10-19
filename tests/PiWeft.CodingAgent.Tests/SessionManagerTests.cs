@@ -28,7 +28,7 @@ public class SessionManagerTests : IDisposable
 	public void Create_WritesPiCompatibleHeaderAndFileName()
 	{
 		var now = new DateTimeOffset(2026, 10, 12, 3, 53, 32, 360, TimeSpan.Zero);
-		var manager = SessionManager.Create("/home/scgm/project", SessionDir, id: "01a12e3e-87c8-7569-a0de-3e85a3ed2265", now: now);
+		var manager = SessionManager.Create("/workspace/project", SessionDir, id: "01a12e3e-87c8-7569-a0de-3e85a3ed2265", now: now);
 
 		var fileName = Path.GetFileName(manager.SessionFile!);
 		Assert.Equal("2026-10-12T03-53-32-360Z_01a12e3e-87c8-7569-a0de-3e85a3ed2265.jsonl", fileName);
@@ -38,7 +38,7 @@ public class SessionManagerTests : IDisposable
 		Assert.Equal("session", obj["type"]!.GetValue<string>());
 		Assert.Equal(3, obj["version"]!.GetValue<int>());
 		Assert.Equal("01a12e3e-87c8-7569-a0de-3e85a3ed2265", obj["id"]!.GetValue<string>());
-		Assert.Equal("/home/scgm/project", obj["cwd"]!.GetValue<string>());
+		Assert.Equal("/workspace/project", obj["cwd"]!.GetValue<string>());
 		Assert.Equal("2026-10-12T03:53:32.360Z", obj["timestamp"]!.GetValue<string>());
 	}
 
@@ -312,7 +312,7 @@ public class SessionManagerTests : IDisposable
 			return;
 		}
 
-		Assert.Equal("--home-scgm-RiderProjects-Vintaglow--", SessionPaths.EncodeCwd("/home/scgm/RiderProjects/Vintaglow"));
+		Assert.Equal("--home-user-RiderProjects-Example--", SessionPaths.EncodeCwd("/home/user/RiderProjects/Example"));
 		Assert.Equal("--tmp--", SessionPaths.EncodeCwd("/tmp"));
 	}
 
@@ -420,6 +420,20 @@ public class SessionFileEncodingTests : IDisposable
 		}
 
 		GC.SuppressFinalize(this);
+	}
+
+	[Fact]
+	public void UnknownHeaderFieldsAndMissingToolNameRoundTrip()
+	{
+		const string headerLine =
+			"""{"type":"session","version":3,"id":"external","timestamp":"2026-10-19T16:52:43.514Z","cwd":"","vendorExtras":{"session_id":"unknown","mode":"test"}}""";
+		var header = Assert.IsType<SessionHeader>(SessionJson.ParseLine(headerLine));
+		Assert.True(JsonNode.DeepEquals(JsonNode.Parse(headerLine), JsonNode.Parse(SessionJson.Serialize(header))));
+
+		const string resultLine =
+			"""{"type":"message","id":"aaaa1111","parentId":null,"timestamp":"2026-10-19T16:52:43.514Z","message":{"role":"toolResult","toolCallId":"call_1","content":[],"isError":false,"timestamp":1}}""";
+		var result = Assert.IsType<SessionMessageEntry>(SessionJson.ParseLine(resultLine));
+		Assert.True(JsonNode.DeepEquals(JsonNode.Parse(resultLine), JsonNode.Parse(SessionJson.Serialize(result))));
 	}
 
 	[Fact]

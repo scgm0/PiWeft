@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.CodingAgent.Session;
 using Xunit;
@@ -35,8 +34,10 @@ public class RealSessionFidelityTests
 
 		foreach (var path in SessionFiles(root))
 		{
+			var lineNumber = 0;
 			foreach (var line in File.ReadLines(path))
 			{
+				lineNumber++;
 				if (string.IsNullOrWhiteSpace(line))
 				{
 					continue;
@@ -51,13 +52,13 @@ public class RealSessionFidelityTests
 				}
 				catch (Exception ex)
 				{
-					failures.Add($"{Path.GetFileName(path)}: parse threw {ex.GetType().Name}: {ex.Message}\n  {Trim(line)}");
+					failures.Add($"{Path.GetFileName(path)}:{lineNumber}: parse threw {ex.GetType().Name}");
 					continue;
 				}
 
 				if (parsed is null)
 				{
-					failures.Add($"{Path.GetFileName(path)}: parsed to null\n  {Trim(line)}");
+					failures.Add($"{Path.GetFileName(path)}:{lineNumber}: parsed to null");
 					continue;
 				}
 
@@ -70,10 +71,10 @@ public class RealSessionFidelityTests
 					_ => throw new InvalidOperationException($"unexpected parse result {parsed.GetType().Name}"),
 				};
 
+				// Do not print session payloads: they may contain commands, paths or credentials.
 				if (!JsonNode.DeepEquals(JsonNode.Parse(line), JsonNode.Parse(reserialized)))
 				{
-					failures.Add(
-						$"{Path.GetFileName(path)}: round trip changed the payload\n{FirstDifference(line, reserialized)}\n  in : {Trim(line)}\n  out: {Trim(reserialized)}");
+					failures.Add($"{Path.GetFileName(path)}:{lineNumber}: round trip changed the payload");
 				}
 			}
 		}
@@ -127,35 +128,5 @@ public class RealSessionFidelityTests
 		}
 
 		Assert.True(checkedAny);
-	}
-
-	private static string FirstDifference(string a, string b)
-	{
-		var limit = Math.Min(a.Length, b.Length);
-		for (var i = 0; i < limit; i++)
-		{
-			if (a[i] != b[i])
-			{
-				return $"  first difference at {i}: in='{Window(a, i)}' out='{Window(b, i)}'";
-			}
-		}
-
-		return a.Length == b.Length
-			? "  (strings are identical but the parsed nodes differ)"
-			: $"  lengths differ: in={a.Length} out={b.Length}";
-	}
-
-	private static string Window(string value, int index)
-	{
-		var start = Math.Max(0, index - 40);
-		var length = Math.Min(80, value.Length - start);
-		return value.Substring(start, length);
-	}
-
-	private static string Trim(string value)
-	{
-		var builder = new StringBuilder(value.Length);
-		builder.Append(value.AsSpan(0, Math.Min(value.Length, 600)));
-		return builder.ToString();
 	}
 }

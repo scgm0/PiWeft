@@ -16,6 +16,9 @@ public sealed record SessionHeader
 
 	/// <summary>由别的会话派生而来时才有该值。</summary>
 	public string? ParentSession { get; init; }
+
+	/// <summary>未知的顶层字段；原样保留，避免第三方会话工具的数据在重写时丢失。</summary>
+	public System.Text.Json.Nodes.JsonObject? Extra { get; init; }
 }
 
 /// <summary>会话树中所有条目的基类。</summary>
