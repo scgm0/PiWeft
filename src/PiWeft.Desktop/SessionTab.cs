@@ -55,6 +55,7 @@ public sealed partial class SessionTab : IDisposable
 	private string _filter = string.Empty;
 	private IReadOnlyList<ChatEntry>? _projectedSource;
 	private IReadOnlyList<ChatEntry> _projectedRows = [];
+	private readonly ExecutionProcessProjector _projector = new();
 	private string _projectedFilter = string.Empty;
 	private bool _projectedBusy;
 
@@ -1123,7 +1124,7 @@ public sealed partial class SessionTab : IDisposable
 		var matched = _filter.Length == 0 ? all : [.. all.Where(entry => Matches(entry, _filter))];
 		if (!ReferenceEquals(_projectedSource, all) || _projectedFilter != _filter || _projectedBusy != IsStreaming)
 		{
-			_projectedRows = ExecutionProcess.Project(matched, IsStreaming);
+			_projectedRows = _projector.Project(matched, IsStreaming);
 			_projectedSource = all;
 			_projectedFilter = _filter;
 			_projectedBusy = IsStreaming;
@@ -1187,7 +1188,7 @@ public sealed partial class SessionTab : IDisposable
 		_retry.IsEnabled = !busy && all.Any(static row => row.Role == ChatRole.User);
 		_copyReply.IsEnabled = all.Any(static row => row.Role == ChatRole.Assistant && row.Text.Length > 0);
 
-		_timeline.SetEntries(entries, force);
+		_timeline.SetEntries(entries, force, _projector.LastStablePrefix, _projector.LastPrefixReused);
 		SetEmptyState(all.Count == 0 && _messages.IsVisible);
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
 		if (all.Count == 0)

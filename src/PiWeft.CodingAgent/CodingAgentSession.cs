@@ -105,6 +105,9 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// <summary>工具集变化后重建的系统提示词。</summary>
 	private SystemMessage? _refreshedSystemPrompt;
+	private IReadOnlyList<Message>? _projectedCache;
+	private long _projectedCacheRevision = -1;
+	private SystemMessage? _projectedCachePrompt;
 	private readonly IDisposable _persistence;
 
 	/// <summary>会话订阅者：代理事件之外，会话自己也会发重试事件。</summary>
@@ -1170,20 +1173,28 @@ public sealed class CodingAgentSession : IDisposable
 	/// </summary>
 	private IReadOnlyList<Message> Project()
 	{
-		var projected = Session.BuildProjectedMessages();
-		var prompt = _refreshedSystemPrompt
-			?? SystemPrompt.Build(SectionsFor(_promptTools));
-
-		if (projected.Count == 0)
+		// The prompt is built once and only replaced when tools/resources rebuild it. Reusing the
+		// projected list also keeps the historical Message instances stable for incremental views.
+		var prompt = _refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools));
+		var revision = Session.Revision;
+		if (_projectedCache is { } cached &&
+			_projectedCacheRevision == revision &&
+			ReferenceEquals(_projectedCachePrompt, prompt))
 		{
-			return [prompt];
+			return cached;
 		}
 
-		if (projected[0] is SystemMessage existing)
+		var projected = Session.BuildProjectedMessages();
+		IReadOnlyList<Message> result;
+		if (projected.Count == 0)
+		{
+			result = [prompt];
+		}
+		else if (projected[0] is SystemMessage existing)
 		{
 			// 替换章节而不是把它们拍平，这样 provider 侧缓存仍能看到相同的分界
 			// （preamble、tools、rules 等）。
-			var updated = new List<Message>(projected)
+			result = new List<Message>(projected)
 			{
 				[0] = existing with
 				{
@@ -1191,13 +1202,18 @@ public sealed class CodingAgentSession : IDisposable
 					ToolsAdded = prompt.ToolsAdded,
 				},
 			};
-
-			return updated;
+		}
+		else
+		{
+			// The prompt is the only new element; keep the projected list shared instead of
+			// copying thousands of message references on every revision.
+			result = new PromptedMessages(prompt, projected);
 		}
 
-		var withPrompt = new List<Message>(projected.Count + 1) { prompt };
-		withPrompt.AddRange(projected);
-		return withPrompt;
+		_projectedCache = result;
+		_projectedCacheRevision = revision;
+		_projectedCachePrompt = prompt;
+		return result;
 	}
 
 	/// <summary>
@@ -1310,6 +1326,25 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		return _persistedThinkingLevel;
+	}
+
+	/// <summary>Read-only view of a system prompt followed by the session projection.</summary>
+	private sealed class PromptedMessages(Message prompt, IReadOnlyList<Message> projected) : IReadOnlyList<Message>
+	{
+		public int Count => projected.Count + 1;
+
+		public Message this[int index] => index == 0 ? prompt : projected[index - 1];
+
+		public IEnumerator<Message> GetEnumerator()
+		{
+			yield return prompt;
+			foreach (var message in projected)
+			{
+				yield return message;
+			}
+		}
+
+		System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 	}
 
 	private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

@@ -63,35 +63,26 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 			await using var bodyStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
 			var state = new GoogleStreamState(model, stream, startedAt);
-			var parser = SseParser.Create<JsonDocument?>(bodyStream, static (eventType, span) =>
+			var sse = new SseJsonReader();
+			var parser = SseParser.Create<bool>(bodyStream, (eventType, span) =>
 			{
 				if (span.SequenceEqual(DoneMarker))
 				{
-					return null;
+					return false;
 				}
 
-				try
-				{
-					return JsonDocument.Parse(span.ToArray());
-				}
-				catch (JsonException ex)
-				{
-					throw new InvalidOperationException(
-						$"Could not parse provider SSE event '{eventType}': {ex.Message}",
-						ex);
-				}
+				using var document = sse.Parse(eventType, span);
+				options.NotifyStreamEvent(document.RootElement, model);
+				state.Handle(document.RootElement);
+				return true;
 			});
 
 			await foreach (var item in parser.EnumerateAsync(cancellationToken).ConfigureAwait(false))
 			{
-				if (item.Data is null)
+				if (!item.Data)
 				{
-					break;
+					break; // data: [DONE]
 				}
-
-				using var document = item.Data;
-				options.OnProviderStreamEvent?.Invoke(JsonNode.Parse(document.RootElement.GetRawText())!, model);
-				state.Handle(document.RootElement);
 			}
 
 			state.Finish();

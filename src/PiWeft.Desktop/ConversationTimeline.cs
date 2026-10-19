@@ -37,10 +37,14 @@ internal sealed class ConversationTimeline : IDisposable
 	public ScrollViewer Scroll { get; }
 	public IEnumerable<UIElement> VisibleRows => _visible.Select(static host => host.Content).OfType<UIElement>();
 
-	public void SetEntries(IReadOnlyList<ChatEntry> entries, bool rebuild = false)
+	public void SetEntries(
+		IReadOnlyList<ChatEntry> entries,
+		bool rebuild = false,
+		int stablePrefix = 0,
+		bool prefixReused = false)
 	{
 		PruneRecycled();
-		_rows.Update(entries);
+		_rows.Update(entries, stablePrefix, prefixReused);
 		if (!rebuild) return;
 		foreach (var host in _visible.ToArray())
 		{
@@ -190,11 +194,13 @@ internal sealed class ConversationTimeline : IDisposable
 		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
 		public void Clear() => Update([]);
 
-		public void Update(IReadOnlyList<ChatEntry> entries)
+		public void Update(IReadOnlyList<ChatEntry> entries, int stablePrefix = 0, bool prefixReused = false)
 		{
-			var unchanged = 0;
-			while (unchanged < Count && unchanged < entries.Count && SameEntry(_entries[unchanged], entries[unchanged])) unchanged++;
 			var common = Math.Min(Count, entries.Count);
+			// The projector reuses every row before the current turn by reference. Start the
+			// comparison there instead of walking the whole history on every streaming frame.
+			var unchanged = prefixReused ? Math.Min(stablePrefix, common) : 0;
+			while (unchanged < common && SameEntry(_entries[unchanged], entries[unchanged])) unchanged++;
 			if (unchanged < common)
 			{
 				for (var i = unchanged; i < common; i++) _entries[i] = entries[i];

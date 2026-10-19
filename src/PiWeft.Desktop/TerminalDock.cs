@@ -41,10 +41,14 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	/// <summary>为滚动条预留的宽度（控件 + 间距），列数计算时扣除。</summary>
 	private const double ScrollBarReserve = 18;
 
+	/// <summary>重绘时复用的文本 run 上限；终端整屏行数远低于这个数量。</summary>
+	private const int MaxPooledRuns = 512;
+
 	private readonly Func<string> _cwd;
 	private readonly TerminalScreen _screen;
 	private readonly StackPanel _lineHost = new();
 	private readonly List<TextBlock> _lineViews = [];
+	private readonly Stack<Run> _runPool = new();
 	private readonly List<List<TerminalRun>> _lineRuns = [];
 	private readonly List<StringBuilder> _lineBuilders = [];
 	private readonly List<ulong> _lineSignatures = [];
@@ -1682,6 +1686,15 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 			_lineSignatures[row] = signature;
 			var view = _lineViews[row];
+			// Reuse the previous runs instead of allocating one per span on every repaint.
+			foreach (var inline in view.Inlines)
+			{
+				if (inline is Run run && _runPool.Count < MaxPooledRuns)
+				{
+					_runPool.Push(run);
+				}
+			}
+
 			view.Inlines.Clear();
 			foreach (var run in runs)
 			{
@@ -1801,6 +1814,24 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
+	private Run RentRun(string text)
+	{
+		if (!_runPool.TryPop(out var element))
+		{
+			return new Run(text);
+		}
+
+		// Detached free list: reset every property AddRun may have set on a previous paint.
+		element.Text = text;
+		element.Foreground = null;
+		element.Background = null;
+		element.FontWeight = null;
+		element.Italic = false;
+		element.Decoration = TextDecoration.None;
+		element.BaselineOffset = 0;
+		return element;
+	}
+
 	private void AddRun(TextBlock view, TerminalRun run, string text, bool cursor = false)
 	{
 		if (text.Length == 0)
@@ -1831,7 +1862,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		var cursorColor = _paintCursorColor is { } cursorOverride ? FromRgb(cursorOverride) : AppTheme.TerminalCursor;
 		// 失焦时光标由压在文字上的空心方框表示（见 Paint / _cursorOutline）：字符保持原色，不做反白也不染色。
 		var cursorFocused = cursor && _inputFocused;
-		var element = new Run(text);
+		var element = RentRun(text);
 		if (cursorFocused && _paintCursorStyle == TerminalCursorStyle.Block)
 		{
 			// 块状光标：实心强调色，块内文字取终端底色。
@@ -1981,6 +2012,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_disposed = true;
 		_timer.Stop();
 		_timerRunning = false;
+		_runPool.Clear();
 		_resizeTimer?.Dispose();
 		_resizeTimer = null;
 		_scrollBar.ValueChanged -= OnScrollBarChanged;

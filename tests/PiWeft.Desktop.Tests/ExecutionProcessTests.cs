@@ -37,6 +37,51 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void IncrementalProjectionMatchesFullProjectionWhileTailChanges()
+	{
+		var entries = new List<ChatEntry>();
+		for (var i = 0; i < 200; i++)
+		{
+			entries.Add(User($"u{i}"));
+			entries.Add(Answer($"a{i}", $"answer {i}"));
+		}
+		var projector = new ExecutionProcessProjector();
+
+		AssertProjection(entries, true, projector);
+		for (var step = 1; step <= 8; step++)
+		{
+			entries[^1] = entries[^1] with { Text = new string('x', step * 64) };
+			AssertProjection(entries, true, projector);
+		}
+
+		entries.Add(Tool("call", "output", pending: true));
+		AssertProjection(entries, true, projector);
+		entries[^1] = Tool("call", "output");
+		AssertProjection(entries, true, projector);
+
+		entries.Add(User("next"));
+		AssertProjection(entries, true, projector);
+		entries.Add(Answer("next-answer", "done"));
+		AssertProjection(entries, false, projector);
+
+		// A change before the last user turn invalidates the cached prefix and must fall back fully.
+		entries[1] = Answer("a0", "rewritten answer");
+		AssertProjection(entries, false, projector);
+	}
+
+	private static void AssertProjection(IReadOnlyList<ChatEntry> entries, bool busy, ExecutionProcessProjector projector)
+	{
+		var expected = ExecutionProcess.Project(entries, busy);
+		var actual = projector.Project(entries, busy);
+		Assert.Equal(expected.Count, actual.Count);
+		for (var index = 0; index < expected.Count; index++)
+		{
+			Assert.True(ConversationTimeline.SameEntry(expected[index], actual[index]),
+				$"row {index} differs: {expected[index].Role} vs {actual[index].Role}");
+		}
+	}
+
+	[Fact]
 	public void ToolTailDoesNotPromoteAnInterimAnswerAndErrorsAreKeptInOrder()
 	{
 		var error = new ChatEntry { Role = ChatRole.Error, Text = "failed" };

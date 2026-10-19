@@ -59,9 +59,37 @@ PIWEFT_NATIVE_TESTS=1 PIWEFT_SCREENSHOTS=/tmp/piweft-interaction-validation \
 # Set PIWEFT_INTERACTION_APP to a NativeAOT executable to exercise the published app.
 ```
 
+## 增量投影与会话缓存（2026-10-19）
+
+长会话的瓶颈主要不在 Markdown 控件，而在每次消息结束时重新映射整段历史：
+
+- `SessionManager.GetBranch()` 用不可变列表缓存当前分支快照；普通追加只做结构共享的 `Add`，不再每次重建 O(n) 路径。
+- `BuildProjectedMessages()` 在分支只追加消息时复用上一次投影，只把新增条目接到尾部；上下文编辑、压缩、分支摘要和自定义消息仍走完整重建。`CodingAgentSession.Project()` 按 revision 缓存带系统提示词的投影，避免每个消费方重复复制列表。
+- `ChatViewModel.Rebuild()` 只重算最后一个 user 轮次；新增 user 轮次时直接保留旧行，上下文编辑/分支切换才全量重建。`_entryIds` 也按分支尾部增量维护。
+- `ExecutionProcess.Project()` 的流式路径改用 `ExecutionProcessProjector`：历史轮次的折叠结果保持不变，只重投影当前轮。`Summary()`/`GroupSummary()` 由多次 LINQ 扫描改为单遍计数。
+- Provider 的 `OnProviderStreamEvent` 回调改为只在有订阅者时才解析 `JsonNode`；此前 `?.Invoke(JsonNode.Parse(...))` 会为每个 SSE delta 白做一次 DOM 解析，即使回调为 null。
+- 会话 JSONL 追加改用 .NET 10 的 `File.AppendAllBytes(ReadOnlySpan<byte>)` 和可复用的 `ArrayBufferWriter<byte>`，不再为每条消息生成 UTF-16 字符串再编码回 UTF-8。
+- 会话目录扫描改用 `Utf8LineReader` + `Utf8JsonReader`：直接按 UTF-8 行读文件，只取 type/cwd/name/role 与首条用户预览，跳过工具输出正文，不再为每行创建字符串和 `JsonDocument`。
+- Provider SSE 每个流复用一个 UTF-8 缓冲；不再为每个事件 `span.ToArray()`。微基准约 192 B/事件降到 72 B/事件，解析耗时约快 15–20%。
+- 终端重绘复用 `Run` 对象，避免每个变化行、每个颜色段都分配新的 inline run；`MessageRows.Update` 利用投影器给出的稳定前缀从当前轮开始比较；`CodingAgentSession.Project()` 用只读拼接视图代替每次复制完整消息列表。
+
+本机 Release 局部观测（单次，不是所有硬件的保证）：
+
+| 场景 | 优化前 | 优化后 |
+|---|---:|---:|
+| 10,000 条条目追加 2 条后投影 | 4.13 ms / 1.26 MB | 0.016 ms / 9 KB |
+| 1,000 轮会话追加一条 user 后 `ChatViewModel` 重建 | 2.53 ms / 1.25 MB | 0.25–0.6 ms / 36 KB |
+| 2,000 行流式 `ExecutionProcess.Project` | 1.15 ms / 233 KB | 0.07–0.12 ms（含测试字符串分配） |
+| 40 个会话 / 2,000 行目录冷扫描 | 约 39–67 ms / 34.4 MB | 约 19–24 ms / 0.26 MB |
+| 单个 SSE 事件解析 | 192 B/事件 | 72 B/事件 |
+
+`.NET 10` NativeAOT 发布对照：默认 `piweft-desktop` 62,399,168 bytes；`OptimizationPreference=Speed` 为 64,028,176 bytes（+2.6%），适合确认 AOT 代码生成为瓶颈后再开启。`PredefinedCulturesOnly=true` 在当前依赖下没有减小体积，仍保留中文/本地化能力。
+
+**下一批候选**：`SessionManager.ReadFileEntries` 仍是 `File.ReadLines` + `JsonNode` 全量解析；目录扫描已经用 `Utf8JsonReader`，但打开超大历史文件仍会创建完整消息对象。Provider 侧每个 SSE 事件仍构造一次 `JsonDocument`（字节数组分配已消除）；终端在高频全屏重绘时仍会为新增行创建 `Run`（只在缓存未命中时）。
+
 ## 验证与复现
 
-全项目 **993 项测试通过**，其中桌面端 **343 项**（2026-10-16 复核）；Linux NativeAOT 发布无警告。Debug 与 Linux NativeAOT 发布版都通过原生鼠标/键盘演练，覆盖三级开合位置稳定、差异跨行选择、图片留白关闭和本地链接启动模拟编辑器。Windows/macOS 原生界面未在本环境验证。
+全项目 **1139 项测试通过**，其中桌面端 **437 项**（2026-10-19 复核）；Linux NativeAOT 发布无警告。Debug 与 Linux NativeAOT 发布版都通过原生鼠标/键盘演练，覆盖三级开合位置稳定、差异跨行选择、图片留白关闭和本地链接启动模拟编辑器。Windows/macOS 原生界面未在本环境验证。
 
 ```sh
 xvfb-run -a dotnet test PiWeft.slnx

@@ -56,7 +56,7 @@ public sealed class AnthropicProvider : IApiProvider
 			var maxTokens = ResolveMaxTokens(model, options, thinking);
 
 			using var request = BuildRequest(model, messages, tools, options, apiKey, thinking, maxTokens, out var payloadJson);
-			options.OnProviderStreamEvent?.Invoke(JsonNode.Parse(payloadJson)!, model);
+			options.NotifyStreamEvent(payloadJson, model);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
@@ -177,35 +177,26 @@ public sealed class AnthropicProvider : IApiProvider
 		CancellationToken cancellationToken)
 	{
 		var state = new AnthropicStreamState(model, stream, startedAt);
-		var parser = SseParser.Create<JsonDocument?>(body, static (eventType, span) =>
+		var sse = new SseJsonReader();
+		var parser = SseParser.Create<bool>(body, (eventType, span) =>
+		{
+			if (span.SequenceEqual(DoneMarker))
 			{
-				if (span.SequenceEqual(DoneMarker))
-				{
-					return null;
-				}
+				return false;
+			}
 
-				try
-				{
-					return JsonDocument.Parse(span.ToArray());
-				}
-				catch (JsonException ex)
-				{
-					throw new InvalidOperationException(
-						$"Could not parse provider SSE event '{eventType}': {ex.Message}",
-						ex);
-				}
-			});
+			using var document = sse.Parse(eventType, span);
+			options.NotifyStreamEvent(document.RootElement, model);
+			state.Handle(eventType, document.RootElement);
+			return true;
+		});
 
 		await foreach (var item in parser.EnumerateAsync(cancellationToken).ConfigureAwait(false))
 		{
-			if (item.Data is null)
+			if (!item.Data)
 			{
-				break; // 流结束标记，例如 data: [DONE]
+				break; // data: [DONE]
 			}
-
-			using var document = item.Data;
-			options.OnProviderStreamEvent?.Invoke(JsonNode.Parse(document.RootElement.GetRawText())!, model);
-			state.Handle(item.EventType, document.RootElement);
 		}
 
 		state.Finish();

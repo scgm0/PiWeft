@@ -102,6 +102,11 @@ public sealed class ChatViewModel : IDisposable
 	private IReadOnlyList<ChatEntry>? _rowsSnapshot;
 	private SessionManager? _builtSession;
 	private long _builtRevision = -1;
+	private IReadOnlyList<Message>? _rebuiltMessages;
+	private int _rebuiltLastUserIndex = -1;
+	private int _stableEntryCount;
+	private Dictionary<Message, string>? _entryIds;
+	private IReadOnlyList<SessionEntry>? _entryIdsBranch;
 	private readonly List<ToolEntry> _tools = [];
 	private IDisposable? _subscription;
 	private CodingAgentSession? _session;
@@ -160,6 +165,11 @@ public sealed class ChatViewModel : IDisposable
 			_subscription?.Dispose();
 			_session = session;
 			_builtSession = null;
+			_rebuiltMessages = null;
+			_rebuiltLastUserIndex = -1;
+			_stableEntryCount = 0;
+			_entryIds = null;
+			_entryIdsBranch = null;
 			_entries.Clear();
 			_tools.Clear();
 			ResetStreaming();
@@ -185,6 +195,11 @@ public sealed class ChatViewModel : IDisposable
 			_committedRows = [];
 			_rowsSnapshot = null;
 			_builtSession = null;
+			_rebuiltMessages = null;
+			_rebuiltLastUserIndex = -1;
+			_stableEntryCount = 0;
+			_entryIds = null;
+			_entryIdsBranch = null;
 			_tools.Clear();
 			ResetStreaming();
 			_isStreaming = false;
@@ -464,158 +479,363 @@ public sealed class ChatViewModel : IDisposable
 		_tools.Clear();
 		if (_session is not null && ReferenceEquals(_builtSession, _session.Session) &&
 			_builtRevision == _session.Session.Revision) return;
-		_entries.Clear();
-		_committedRows = [];
 
 		if (_session is null)
 		{
+			_entries.Clear();
+			_committedRows = [];
 			return;
 		}
 		_builtSession = _session.Session;
 		_builtRevision = _session.Session.Revision;
 
-		// 会话条目 id 与投影消息的对应关系：投影基本复用原实例，因此按引用匹配即可。
-		var entryIds = new Dictionary<Message, string>(ReferenceEqualityComparer.Instance);
-		foreach (var entry in _session.Session.GetBranch())
+		var messages = _session.Messages;
+		var lastUser = LastUserIndex(messages);
+
+		// Streaming and tool events append to the current turn. Reuse every row before the last
+		// user message and rebuild only that turn; a full mapping of a long session is O(history)
+		// allocations on the UI thread for each new message.
+		if (TryRebuildTail(messages, lastUser))
 		{
-			if (entry is SessionMessageEntry sessionEntry)
+			_committedRows = _entries.ToArray();
+			return;
+		}
+
+		_entries.Clear();
+		_committedRows = [];
+		var entryIds = BuildEntryIds();
+		var results = BuildResults(messages, 0);
+		// 本轮（自上一条用户消息以来）成功修改过的文件，附在助手正文行下方。
+		var turnChanges = new List<string>();
+		var stableEntryCount = 0;
+		for (var index = 0; index < messages.Count; index++)
+		{
+			if (index == lastUser)
 			{
-				entryIds[sessionEntry.Message] = sessionEntry.Id;
+				stableEntryCount = _entries.Count;
+			}
+
+			AppendMessage(messages[index], entryIds, results, turnChanges);
+		}
+
+		_stableEntryCount = lastUser >= 0 ? stableEntryCount : _entries.Count;
+		_rebuiltMessages = messages;
+		_rebuiltLastUserIndex = lastUser;
+		_committedRows = _entries.ToArray();
+	}
+
+	private bool TryRebuildTail(IReadOnlyList<Message> messages, int lastUser)
+	{
+		if (_rebuiltMessages is not { } previous || lastUser < 0)
+		{
+			return false;
+		}
+
+		if (lastUser == _rebuiltLastUserIndex)
+		{
+			if (!PrefixEquals(messages, previous, lastUser))
+			{
+				return false;
+			}
+
+			var retained = Math.Min(_stableEntryCount, _entries.Count);
+			_entries.RemoveRange(retained, _entries.Count - retained);
+			AppendTail(messages, lastUser);
+			_rebuiltMessages = messages;
+			return true;
+		}
+
+		// A new user message after the previously rebuilt history: every old row is stable.
+		if (lastUser == previous.Count && PrefixEquals(messages, previous, previous.Count))
+		{
+			_stableEntryCount = _entries.Count;
+			AppendTail(messages, lastUser);
+			_rebuiltMessages = messages;
+			_rebuiltLastUserIndex = lastUser;
+			return true;
+		}
+
+		return false;
+	}
+
+	private void AppendTail(IReadOnlyList<Message> messages, int start)
+	{
+		var entryIds = BuildEntryIds();
+		var results = BuildResults(messages, start);
+		var turnChanges = new List<string>();
+		for (var index = start; index < messages.Count; index++)
+		{
+			AppendMessage(messages[index], entryIds, results, turnChanges);
+		}
+	}
+
+	private Dictionary<Message, string> BuildEntryIds()
+	{
+		var branch = _session!.Session.GetBranch();
+		if (_entryIds is null || !BranchPrefixEquals(branch, _entryIdsBranch))
+		{
+			// 会话条目 id 与投影消息的对应关系：投影基本复用原实例，因此按引用匹配即可。
+			_entryIds = new Dictionary<Message, string>(ReferenceEqualityComparer.Instance);
+			foreach (var entry in branch)
+			{
+				AddEntryId(_entryIds, entry);
+			}
+		}
+		else
+		{
+			for (var index = _entryIdsBranch!.Count; index < branch.Count; index++)
+			{
+				AddEntryId(_entryIds, branch[index]);
 			}
 		}
 
+		_entryIdsBranch = branch;
+		return _entryIds;
+	}
+
+	private static void AddEntryId(Dictionary<Message, string> entryIds, SessionEntry entry)
+	{
+		if (entry is SessionMessageEntry sessionEntry)
+		{
+			entryIds[sessionEntry.Message] = sessionEntry.Id;
+		}
+	}
+
+	private static bool BranchPrefixEquals(IReadOnlyList<SessionEntry> branch, IReadOnlyList<SessionEntry>? previous)
+	{
+		if (previous is null || branch.Count < previous.Count)
+		{
+			return false;
+		}
+
+		// A branch is a tree path: if the last previously cached entry still sits at the same
+		// depth, its parent chain proves every entry before it is unchanged.
+		return previous.Count == 0 || ReferenceEquals(branch[previous.Count - 1], previous[previous.Count - 1]);
+	}
+
+	private static Dictionary<string, ToolResultMessage> BuildResults(IReadOnlyList<Message> messages, int start)
+	{
 		// 工具结果按调用 id 索引：判断写工具是否真的成功了。
 		var results = new Dictionary<string, ToolResultMessage>(StringComparer.Ordinal);
-		foreach (var message in _session.Messages)
+		for (var index = start; index < messages.Count; index++)
 		{
-			if (message is ToolResultMessage result)
+			if (messages[index] is ToolResultMessage result)
 			{
 				results[result.ToolCallId] = result;
 			}
 		}
 
-		// 本轮（自上一条用户消息以来）成功修改过的文件，附在助手正文行下方。
-		var turnChanges = new List<string>();
+		return results;
+	}
 
-		foreach (var message in _session.Messages)
+	private void AppendMessage(
+		Message message,
+		Dictionary<Message, string> entryIds,
+		Dictionary<string, ToolResultMessage> results,
+		List<string> turnChanges)
+	{
+		switch (message)
 		{
-			switch (message)
-			{
-				case SystemMessage:
-					continue;
+			case SystemMessage:
+				return;
 
-				case UserMessage user:
-					turnChanges.Clear();
-					_entries.Add(new ChatEntry
-					{
-						Role = ChatRole.User,
-						Text = TextOf(user.Content),
-						Images = ImagesOf(user.Content),
-						Timestamp = user.Timestamp,
-						EntryId = entryIds.GetValueOrDefault(message),
-					});
-					break;
-
-				case AssistantMessage assistant:
+			case UserMessage user:
+				turnChanges.Clear();
+				_entries.Add(new ChatEntry
 				{
-					var text = string.Concat(assistant.Content.OfType<TextContent>().Select(static block => block.Text));
-					var thinking = string.Join("\n\n", assistant.Content.OfType<ThinkingContent>()
-						.Where(static block => block.Redacted != true && block.Thinking.Length > 0)
-						.Select(static block => block.Thinking));
-					var calls = assistant.Content.OfType<ToolCall>().ToList();
-					var images = ImagesOfBlocks(assistant.Content);
+					Role = ChatRole.User,
+					Text = TextOf(user.Content),
+					Images = ImagesOf(user.Content),
+					Timestamp = user.Timestamp,
+					EntryId = entryIds.GetValueOrDefault(message),
+				});
+				return;
 
-					// 先累计本轮写工具的成功改动，再给正文行挂上汇总。
-					foreach (var call in calls)
+			case AssistantMessage assistant:
+			{
+				var text = TextOfBlocks(assistant.Content);
+				var thinking = ThinkingOf(assistant.Content);
+				var calls = CallsOf(assistant.Content);
+				var images = ImagesOfBlocks(assistant.Content);
+
+				// 先累计本轮写工具的成功改动，再给正文行挂上汇总。
+				foreach (var call in calls)
+				{
+					if (call.Name is not ("edit" or "write"))
 					{
-						if (call.Name is not ("edit" or "write"))
-						{
-							continue;
-						}
-
-						if (call.Arguments["path"]?.GetValue<string>() is not { Length: > 0 } changedPath)
-						{
-							continue;
-						}
-
-						if (results.TryGetValue(call.Id, out var toolResult) && !toolResult.IsError && !turnChanges.Contains(changedPath, StringComparer.Ordinal))
-						{
-							turnChanges.Add(changedPath);
-						}
+						continue;
 					}
 
-					if (text.Length > 0 || thinking.Length > 0 || images.Count > 0)
+					if (call.Arguments["path"]?.GetValue<string>() is not { Length: > 0 } changedPath)
 					{
-						_entries.Add(new ChatEntry
-						{
-							Role = ChatRole.Assistant,
-							Text = text,
-							Thinking = thinking,
-							DurationMs = assistant.DurationMs,
-							EntryId = entryIds.GetValueOrDefault(message),
-							Images = images,
-							Timestamp = assistant.Timestamp,
-							ChangedFiles = turnChanges.Count > 0 ? [.. turnChanges] : [],
-						});
+						continue;
 					}
 
-					foreach (var call in calls)
+					if (results.TryGetValue(call.Id, out var toolResult) && !toolResult.IsError && !turnChanges.Contains(changedPath, StringComparer.Ordinal))
 					{
-						// 同一份参数序列化一次复用：连续两次 ToJsonString 在工具多的会话里是白做的热路径开销。
-						var arguments = call.Arguments.ToJsonString(PiJson.NodeOptions);
-						_entries.Add(new ChatEntry
-						{
-							Role = ChatRole.Tool,
-							EntryId = $"{entryIds.GetValueOrDefault(message) ?? call.Id}/tool/{call.Id}",
-							ToolName = call.Name,
-							ToolCallId = call.Id,
-							ToolArguments = arguments,
-							IsStreaming = true,
-							Text = arguments,
-						});
+						turnChanges.Add(changedPath);
 					}
-
-					if (assistant.ErrorMessage is { Length: > 0 } error)
-					{
-						_entries.Add(new ChatEntry { Role = ChatRole.Error, Text = error });
-					}
-
-					break;
 				}
 
-				case ToolResultMessage result:
+				if (text.Length > 0 || thinking.Length > 0 || images.Count > 0)
 				{
-					var text = string.Concat(result.Content.OfType<TextContent>().Select(static block => block.Text));
+					_entries.Add(new ChatEntry
+					{
+						Role = ChatRole.Assistant,
+						Text = text,
+						Thinking = thinking,
+						DurationMs = assistant.DurationMs,
+						EntryId = entryIds.GetValueOrDefault(message),
+						Images = images,
+						Timestamp = assistant.Timestamp,
+						ChangedFiles = turnChanges.Count > 0 ? [.. turnChanges] : [],
+					});
+				}
+
+				foreach (var call in calls)
+				{
+					// 同一份参数序列化一次复用：连续两次 ToJsonString 在工具多的会话里是白做的热路径开销。
+					var arguments = call.Arguments.ToJsonString(PiJson.NodeOptions);
 					_entries.Add(new ChatEntry
 					{
 						Role = ChatRole.Tool,
-						EntryId = entryIds.GetValueOrDefault(message),
-						ToolName = result.ToolName,
-						ToolCallId = result.ToolCallId,
-						Text = text,
-						Images = ImagesOfBlocks(result.Content),
-						Timestamp = result.Timestamp,
-						Patch = PatchOf(result.Details),
-						IsError = result.IsError,
-						DurationMs = result.DurationMs,
+						EntryId = $"{entryIds.GetValueOrDefault(message) ?? call.Id}/tool/{call.Id}",
+						ToolName = call.Name,
+						ToolCallId = call.Id,
+						ToolArguments = arguments,
+						IsStreaming = true,
+						Text = arguments,
 					});
-					break;
 				}
 
-				case CustomMessage custom:
+				if (assistant.ErrorMessage is { Length: > 0 } error)
 				{
-					// 压缩检查点和分支摘要各自成行。
-					var text = custom.Content.Text ?? string.Empty;
-					if (text.Length > 0)
-					{
-						_entries.Add(new ChatEntry { Role = ChatRole.Assistant, Text = $"【{custom.CustomRole}】\n{text}" });
-					}
+					_entries.Add(new ChatEntry { Role = ChatRole.Error, Text = error });
+				}
 
-					break;
+				return;
+			}
+
+			case ToolResultMessage result:
+			{
+				_entries.Add(new ChatEntry
+				{
+					Role = ChatRole.Tool,
+					EntryId = entryIds.GetValueOrDefault(message),
+					ToolName = result.ToolName,
+					ToolCallId = result.ToolCallId,
+					Text = TextOfBlocks(result.Content),
+					Images = ImagesOfBlocks(result.Content),
+					Timestamp = result.Timestamp,
+					Patch = PatchOf(result.Details),
+					IsError = result.IsError,
+					DurationMs = result.DurationMs,
+				});
+				return;
+			}
+
+			case CustomMessage custom:
+			{
+				// 压缩检查点和分支摘要各自成行。
+				var text = custom.Content.Text ?? string.Empty;
+				if (text.Length > 0)
+				{
+					_entries.Add(new ChatEntry { Role = ChatRole.Assistant, Text = $"【{custom.CustomRole}】\n{text}" });
+				}
+
+				return;
+			}
+		}
+	}
+
+	private static int LastUserIndex(IReadOnlyList<Message> messages)
+	{
+		for (var index = messages.Count - 1; index >= 0; index--)
+		{
+			if (messages[index] is UserMessage)
+			{
+				return index;
+			}
+		}
+
+		return -1;
+	}
+
+	private static bool PrefixEquals(IReadOnlyList<Message> messages, IReadOnlyList<Message> previous, int count)
+	{
+		if (messages.Count < count || previous.Count < count)
+		{
+			return false;
+		}
+
+		for (var index = 0; index < count; index++)
+		{
+			if (!ReferenceEquals(messages[index], previous[index]))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private static string TextOfBlocks(IReadOnlyList<ContentBlock> blocks)
+	{
+		if (blocks.Count == 0)
+		{
+			return string.Empty;
+		}
+
+		if (blocks.Count == 1 && blocks[0] is TextContent only)
+		{
+			return only.Text;
+		}
+
+		var builder = new StringBuilder();
+		foreach (var block in blocks)
+		{
+			if (block is TextContent text && text.Text.Length > 0)
+			{
+				builder.Append(text.Text);
+			}
+		}
+
+		return builder.ToString();
+	}
+
+	private static string ThinkingOf(IReadOnlyList<ContentBlock> blocks)
+	{
+		StringBuilder? builder = null;
+		foreach (var block in blocks)
+		{
+			if (block is ThinkingContent { Redacted: not true, Thinking.Length: > 0 } thinking)
+			{
+				if (builder is null)
+				{
+					builder = new StringBuilder(thinking.Thinking);
+				}
+				else
+				{
+					builder.Append("\n\n").Append(thinking.Thinking);
 				}
 			}
 		}
-		_committedRows = _entries.ToArray();
+
+		return builder?.ToString() ?? string.Empty;
+	}
+
+	private static List<ToolCall> CallsOf(IReadOnlyList<ContentBlock> blocks)
+	{
+		List<ToolCall>? calls = null;
+		foreach (var block in blocks)
+		{
+			if (block is ToolCall call)
+			{
+				(calls ??= []).Add(call);
+			}
+		}
+
+		return calls ?? [];
 	}
 
 	// Share the immutable historical prefix; a streaming frame allocates only its small tail.
