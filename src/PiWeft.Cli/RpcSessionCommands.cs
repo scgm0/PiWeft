@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
@@ -42,7 +43,33 @@ public sealed partial class CliRunner
 		["tools"] = new JsonArray([.. session.Tools.Select(static tool => (JsonNode?)JsonValue.Create(tool.Name))]),
 		["entryCount"] = session.Session.Entries.Count,
 		["errorMessage"] = session.ErrorMessage,
+		["cacheWarming"] = session.CacheWarmingStatus is { } warming ? CacheWarmingRecord(warming) : null,
 	};
+
+	private static JsonObject CacheWarmingRecord(PiWeft.CodingAgent.Compaction.CacheWarmingStatus status)
+	{
+		var record = new JsonObject
+		{
+			["state"] = status.State,
+			["reason"] = status.Reason,
+			["nextWarmAt"] = status.NextWarmAt?.ToUnixTimeMilliseconds(),
+		};
+		if (status.Decision is { } decision)
+		{
+			record["decision"] = new JsonObject
+			{
+				["phase"] = decision.Idle ? "idle" : "streaming",
+				["warmCost"] = decision.WarmCost,
+				["missCost"] = decision.MissCost,
+				["continuationProbability"] = decision.ContinuationProbability,
+				["expectedSavings"] = decision.ExpectedSavings,
+				["economicsAvailable"] = decision.EconomicsAvailable,
+				["action"] = decision.Action,
+			};
+		}
+
+		return record;
+	}
 
 	private static string QueueModeText(AgentQueueMode mode) => mode == AgentQueueMode.All ? "all" : "one-at-a-time";
 

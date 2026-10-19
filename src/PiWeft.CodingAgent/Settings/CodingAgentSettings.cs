@@ -54,6 +54,9 @@ public sealed record CodingAgentSettings
 
 	public string FollowUpMode { get; init; } = "one-at-a-time";
 
+	/// <summary><c>off</c> / <c>streaming</c> / <c>idle</c>：保持提示缓存热的策略。</summary>
+	public string CacheWarming { get; init; } = "streaming";
+
 	public CompactionSettings Compaction { get; init; } = new();
 
 	public BranchSummarySettings BranchSummary { get; init; } = new();
@@ -356,6 +359,7 @@ public sealed record CodingAgentSettings
 		Write(root, "enabledModels", file.EnabledModels);
 		Write(root, "steeringMode", file.SteeringMode);
 		Write(root, "followUpMode", file.FollowUpMode);
+		Write(root, "cacheWarming", file.CacheWarming);
 		Write(root, "enableSkillCommands", file.EnableSkillCommands);
 		Write(root, "defaultProjectTrust", file.DefaultProjectTrust);
 		Write(root, "timeoutMs", file.TimeoutMs);
@@ -483,6 +487,7 @@ public sealed record CodingAgentSettings
 			: global?.EnabledModels is { Count: > 0 } globalEnabled ? [.. globalEnabled] : [],
 		SteeringMode = project?.SteeringMode ?? global?.SteeringMode ?? "one-at-a-time",
 		FollowUpMode = project?.FollowUpMode ?? global?.FollowUpMode ?? "one-at-a-time",
+		CacheWarming = project?.CacheWarming ?? global?.CacheWarming ?? "streaming",
 		Compaction = new CompactionSettings
 		{
 			Enabled = project?.Compaction?.Enabled ?? global?.Compaction?.Enabled ?? true,
@@ -691,6 +696,7 @@ public sealed record CodingAgentSettings
 		EnabledModels = List(settings.EnabledModels),
 		SteeringMode = settings.SteeringMode,
 		FollowUpMode = settings.FollowUpMode,
+		CacheWarming = settings.CacheWarming,
 		Compaction = new CompactionFile
 		{
 			Enabled = settings.Compaction.Enabled,
@@ -746,6 +752,8 @@ public sealed record SettingsFile
 	public string? SteeringMode { get; init; }
 
 	public string? FollowUpMode { get; init; }
+
+	public string? CacheWarming { get; init; }
 
 	public CompactionFile? Compaction { get; init; }
 

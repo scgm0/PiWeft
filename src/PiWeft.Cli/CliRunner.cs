@@ -1383,6 +1383,22 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			record["inputLimits"] = limits.DeepClone();
 		}
 
+		if (model.PromptCache is { Count: > 0 } cache)
+		{
+			var lifetimes = new JsonObject();
+			foreach (var (tier, seconds) in cache)
+			{
+				lifetimes[tier] = seconds;
+			}
+
+			record["promptCache"] = lifetimes;
+		}
+
+		if (model.SamplingParams is { Count: > 0 } sampling)
+		{
+			record["samplingParams"] = sampling.DeepClone();
+		}
+
 		if (model.ThinkingLevelMap is { Count: > 0 } map)
 		{
 			// 值为 null 表示模型不支持该级别，pi 也会显式发出。
@@ -1841,49 +1857,179 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 			case "/llama":
 			{
-				var parts = rest.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-				var action = parts.Length > 0 ? parts[0] : "list";
-				var model = parts.Length > 1 ? rest[(rest.IndexOf(parts[1], StringComparison.Ordinal))..].Trim() : null;
+				var separator = rest.IndexOf(' ');
+				var action = separator < 0 ? (rest.Length > 0 ? rest : "list") : rest[..separator];
+				var argument = separator < 0 ? null : rest[(separator + 1)..].Trim();
 				try
 				{
+					void Register(IEnumerable<LlamaRouter.ModelInfo> models, bool select)
+					{
+						foreach (var info in models.Where(static model => model.Status is "loaded" or "sleeping"))
+						{
+							var llamaModel = LlamaRouter.ToModel(info);
+							environment.Registry.Add(llamaModel);
+							if (select && argument is { Length: > 0 } &&
+								(string.Equals(info.Id, argument, StringComparison.Ordinal) ||
+								 info.Id.StartsWith(argument + ":", StringComparison.Ordinal)))
+							{
+								session.SetModel(llamaModel);
+								error.WriteLine($"当前模型 → llama.cpp/{info.Id}");
+							}
+						}
+					}
+
 					switch (action)
 					{
 						case "list":
 						case "refresh":
 						{
 							var models = await LlamaRouter.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+							Register(models, select: false);
 							error.WriteLine($"llama.cpp router: {LlamaRouter.BaseUrl}（{models.Count} 个模型）");
 							foreach (var item in models)
 							{
 								error.WriteLine($"  {item.Id}  [{item.Status}]{(item.Name is { Length: > 0 } name ? $"  {name}" : string.Empty)}");
 							}
 
-							error.WriteLine("用法：/llama load <id>、/llama unload <id>、/llama list");
+							error.WriteLine("用法：/llama load|unload|download <id>、/llama search <query>、/llama details <repo>、/llama list");
 							break;
 						}
 
 						case "load":
-						case "unload":
-							if (model is not { Length: > 0 })
+						{
+							if (argument is not { Length: > 0 })
 							{
-								error.WriteLine($"用法：/llama {action} <id>");
+								error.WriteLine("用法：/llama load <id>");
 								break;
 							}
 
-							if (action == "load")
+							await LlamaRouter.LoadAsync(argument, cancellationToken: cancellationToken).ConfigureAwait(false);
+							var models = await LlamaRouter.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+							Register(models, select: true);
+							error.WriteLine($"llama.cpp load: {argument}");
+							break;
+						}
+
+						case "unload":
+							if (argument is not { Length: > 0 })
 							{
-								await LlamaRouter.LoadAsync(model, cancellationToken: cancellationToken).ConfigureAwait(false);
-							}
-							else
-							{
-								await LlamaRouter.UnloadAsync(model, cancellationToken: cancellationToken).ConfigureAwait(false);
+								error.WriteLine("用法：/llama unload <id>");
+								break;
 							}
 
-							error.WriteLine($"llama.cpp {action}: {model}");
+							await LlamaRouter.UnloadAsync(argument, cancellationToken: cancellationToken).ConfigureAwait(false);
+							environment.Registry.Remove("llama.cpp", argument);
+							error.WriteLine($"llama.cpp unload: {argument}");
 							break;
 
+						case "search":
+						{
+							if (argument is not { Length: > 0 })
+							{
+								error.WriteLine("用法：/llama search <query>");
+								break;
+							}
+
+							var results = await LlamaRouter.SearchHuggingFaceAsync(argument, cancellationToken: cancellationToken).ConfigureAwait(false);
+							foreach (var item in results)
+							{
+								error.WriteLine($"  {item.Id}  ({item.Downloads:N0} downloads)");
+							}
+
+							break;
+						}
+
+						case "details":
+						{
+							if (argument is not { Length: > 0 })
+							{
+								error.WriteLine("用法：/llama details <owner/repo>");
+								break;
+							}
+
+							var details = await LlamaRouter.HuggingFaceDetailsAsync(argument, cancellationToken: cancellationToken).ConfigureAwait(false);
+							if (details is null)
+							{
+								error.WriteLine($"pi: 未找到 {argument}");
+								break;
+							}
+
+							error.WriteLine($"{details.Id}  gated={details.Gated}");
+							if (details.Quantizations.Count > 0)
+							{
+								error.WriteLine($"  量化：{string.Join(", ", details.Quantizations)}");
+							}
+
+							break;
+						}
+
+						case "download":
+						{
+							if (argument is not { Length: > 0 })
+							{
+								error.WriteLine("用法：/llama download <owner/repo[:quant]>");
+								break;
+							}
+
+							var repository = argument;
+							var quantization = string.Empty;
+							var colon = argument.LastIndexOf(':');
+							if (colon > 0 && !argument[(colon + 1)..].Contains('/'))
+							{
+								repository = argument[..colon];
+								quantization = argument[(colon + 1)..];
+							}
+
+							if (quantization.Length == 0)
+							{
+								var details = await LlamaRouter.HuggingFaceDetailsAsync(repository, cancellationToken: cancellationToken).ConfigureAwait(false);
+								if (details is { Gated: not "false" } && Environment.GetEnvironmentVariable("HF_TOKEN") is not { Length: > 0 })
+								{
+									error.WriteLine($"pi: {repository} 需要 Hugging Face 访问授权，且未设置 HF_TOKEN。");
+									break;
+								}
+
+								quantization = details?.Quantizations.Contains("Q4_K_M") == true
+									? "Q4_K_M"
+									: details?.Quantizations.FirstOrDefault() ?? string.Empty;
+							}
+
+							var requested = quantization.Length > 0 ? $"{repository}:{quantization}" : repository;
+							error.WriteLine($"开始下载 {requested} …");
+							await LlamaRouter.DownloadAsync(requested, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+							var deadline = DateTimeOffset.UtcNow.AddMinutes(30);
+							IReadOnlyList<LlamaRouter.ModelInfo> models = [];
+							while (DateTimeOffset.UtcNow < deadline)
+							{
+								await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+								models = await LlamaRouter.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+								var current = models.FirstOrDefault(model =>
+									string.Equals(model.Id, repository, StringComparison.Ordinal) ||
+									model.Id.StartsWith(repository + ":", StringComparison.Ordinal));
+								if (current is { Status: "loaded" or "sleeping" })
+								{
+									break;
+								}
+
+								if (current is { Status: "failed" })
+								{
+									error.WriteLine($"pi: 下载失败：{current.Id}");
+									break;
+								}
+							}
+
+							Register(models, select: true);
+							if (models.Any(model => model.Status is "loaded" or "sleeping" && model.Id.StartsWith(repository, StringComparison.Ordinal)))
+							{
+								error.WriteLine($"已下载 {requested}");
+							}
+
+							break;
+						}
+
 						default:
-							error.WriteLine("用法：/llama [list|refresh|load <id>|unload <id>]");
+							error.WriteLine("用法：/llama [list|refresh|load|unload|download|search|details]");
 							break;
 					}
 				}

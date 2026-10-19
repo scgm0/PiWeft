@@ -118,6 +118,7 @@ internal sealed class OpenAiResponsesStreamState
 				break;
 
 			case "response.completed":
+			case "response.done":
 			case "response.incomplete":
 				if (root.TryGetProperty("response", out var response))
 				{

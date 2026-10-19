@@ -39,6 +39,44 @@ public class ModelsFileTests : IDisposable
 	}
 
 	[Fact]
+	public void Load_ParsesVirtualModelRoutes()
+	{
+		WriteUser(
+			"""
+			{
+			  "providers": {
+			    "router": {
+			      "models": [
+			        {
+			          "id": "auto",
+			          "name": "Auto",
+			          "contextWindow": 64000,
+			          "virtual": {
+			            "model": "ollama/qwen2.5-coder:7b",
+			            "thinkingLevel": "high",
+			            "thinkingLevels": ["off", "high"],
+			            "input": ["text"]
+			          }
+			        }
+			      ]
+			    }
+			  }
+			}
+			""");
+
+		var applied = ModelsFileLoader.Load(ProjectCwd, AgentDir);
+
+		Assert.Empty(applied.Models);
+		var definition = Assert.Single(applied.VirtualModels);
+		Assert.Equal("router", definition.Provider);
+		Assert.Equal("auto", definition.Id);
+		Assert.Equal("Auto", definition.Name);
+		Assert.Equal(64000, definition.ContextWindow);
+		Assert.Equal(["off", "high"], definition.ThinkingLevels);
+		Assert.Equal(["text"], definition.Input);
+	}
+
+	[Fact]
 	public void Load_AddsACompatibleEndpoint()
 	{
 		WriteUser(

@@ -92,6 +92,85 @@ public static class AuthCommands
 			}
 		}
 
+		if (string.Equals(provider, OpenAiChatGptOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await OpenAiChatGptOAuth.LoginAsync(input, output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, GitHubCopilotOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await GitHubCopilotOAuth.LoginAsync(input, output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				await PiWeft.CodingAgent.Models.ModelCatalogStore
+					.RefreshAccountCatalogAsync("github-copilot", cancellationToken: cancellationToken)
+					.ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, OpenRouterOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await OpenRouterOAuth.LoginAsync(input, output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				await PiWeft.CodingAgent.Models.ModelCatalogStore
+					.RefreshAccountCatalogAsync("openrouter", cancellationToken: cancellationToken)
+					.ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, MetaOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await MetaOAuth.LoginAsync(output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
+		if (string.Equals(provider, RadiusOAuth.ProviderKey, StringComparison.Ordinal))
+		{
+			try
+			{
+				await RadiusOAuth.LoginAsync(output, cancellationToken: cancellationToken).ConfigureAwait(false);
+				await PiWeft.CodingAgent.Models.ModelCatalogStore
+					.RefreshAccountCatalogAsync("radius", cancellationToken: cancellationToken)
+					.ConfigureAwait(false);
+				return 0;
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException)
+			{
+				error.WriteLine($"pi: {ex.Message}");
+				return 1;
+			}
+		}
+
 		if (provider != CodexAuth.ProviderKey)
 		{
 			// 其余 Provider 走 API key 登录：安全地写入 auth.json，不经过 shell 历史。
@@ -415,6 +494,35 @@ public static class AuthCommands
 			{
 				return KimiOAuth.RefreshAsync(credential, cancellationToken)
 					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, OpenAiChatGptOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return OpenAiChatGptOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, GitHubCopilotOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return GitHubCopilotOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, MetaOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return MetaOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, RadiusOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return RadiusOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
+					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+			}
+
+			if (string.Equals(provider, OpenRouterOAuth.ProviderKey, StringComparison.Ordinal))
+			{
+				return credential.Access;
 			}
 		}
 

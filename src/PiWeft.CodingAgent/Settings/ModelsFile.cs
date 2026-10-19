@@ -57,6 +57,10 @@ public sealed record ModelsOverrideEntry
 	public JsonObject? Compat { get; init; }
 
 	public JsonObject? InputLimits { get; init; }
+
+	public Dictionary<string, int>? PromptCache { get; init; }
+
+	public JsonObject? SamplingParams { get; init; }
 }
 
 /// <summary>modelOverrides 里只覆盖部分价格；未给出的字段保持原值。</summary>
@@ -97,6 +101,9 @@ public static partial class ModelsFileLoader
 	public sealed record Applied
 	{
 		public IReadOnlyList<Model> Models { get; init; } = [];
+
+		/// <summary>models.json 中声明的虚拟模型。</summary>
+		public IReadOnlyList<VirtualModelDefinition> VirtualModels { get; init; } = [];
 
 		/// <summary>provider id 到 API key 的映射，已完成变量插值。</summary>
 		public IReadOnlyDictionary<string, string> ApiKeys { get; init; } = new Dictionary<string, string>();
@@ -156,6 +163,7 @@ public static partial class ModelsFileLoader
 		}
 
 		var models = new List<Model>();
+		var virtualModels = new List<VirtualModelDefinition>();
 		var apiKeys = new Dictionary<string, string>(StringComparer.Ordinal);
 
 		foreach (var (providerId, entry) in providers)
@@ -171,7 +179,14 @@ public static partial class ModelsFileLoader
 
 			foreach (var raw in entry.Models ?? [])
 			{
-				models.Add(ToModel(providerId, entry, raw));
+				if (raw["virtual"] is JsonObject)
+				{
+					virtualModels.Add(ToVirtualDefinition(providerId, raw));
+				}
+				else
+				{
+					models.Add(ToModel(providerId, entry, raw));
+				}
 			}
 		}
 
@@ -189,6 +204,7 @@ public static partial class ModelsFileLoader
 		return new Applied
 		{
 			Models = models,
+			VirtualModels = virtualModels,
 			ApiKeys = apiKeys,
 			OverrideCount = overrides.Count,
 			ProviderEntries = providers,
@@ -222,6 +238,8 @@ public static partial class ModelsFileLoader
 					Headers = MergeHeaders(existing.Headers, entry.Headers),
 					Compat = MergeNodes(existing.Compat, entry.Compat),
 					InputLimits = entry.InputLimits ?? existing.InputLimits,
+					PromptCache = entry.PromptCache ?? existing.PromptCache,
+					SamplingParams = entry.SamplingParams ?? existing.SamplingParams,
 				});
 
 				applied++;
@@ -307,6 +325,53 @@ public static partial class ModelsFileLoader
 		}
 
 		return merged;
+	}
+
+	private static VirtualModelDefinition ToVirtualDefinition(string providerId, JsonObject raw)
+	{
+		var id = raw["id"]?.GetValue<string>()
+			?? throw new InvalidOperationException($"A virtual model of provider '{providerId}' in models.json has no id");
+		if (raw["virtual"] is not JsonObject settings)
+		{
+			throw new InvalidOperationException($"Virtual model '{providerId}/{id}' has no virtual settings");
+		}
+
+		var target = settings["model"]?.GetValue<string>()
+			?? throw new InvalidOperationException($"Virtual model '{providerId}/{id}' has no target model");
+		var thinking = settings["thinkingLevel"]?.GetValue<string>();
+		var levels = StringArray(settings["thinkingLevels"]);
+		var input = StringArray(settings["input"] ?? raw["input"]);
+
+		return new VirtualModelDefinition
+		{
+			Provider = providerId,
+			Id = id,
+			Name = raw["name"]?.GetValue<string>() is { Length: > 0 } name ? name : id,
+			ThinkingLevels = levels.Count > 0 ? levels : [ThinkingLevels.Off],
+			Input = input.Count > 0 ? input : ["text", "image"],
+			ContextWindow = raw["contextWindow"]?.GetValue<int>() ?? 0,
+			MaxTokens = raw["maxTokens"]?.GetValue<int>() ?? 0,
+			Route = VirtualModels.StaticRoute(target, thinking),
+		};
+	}
+
+	private static IReadOnlyList<string> StringArray(JsonNode? node)
+	{
+		if (node is not JsonArray array)
+		{
+			return [];
+		}
+
+		var values = new List<string>();
+		foreach (var item in array)
+		{
+			if (item?.GetValue<string>() is { Length: > 0 } value)
+			{
+				values.Add(value);
+			}
+		}
+
+		return values;
 	}
 
 	private static Model ToModel(string providerId, ModelsProviderEntry provider, JsonObject raw)

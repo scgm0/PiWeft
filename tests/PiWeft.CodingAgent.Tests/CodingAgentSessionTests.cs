@@ -84,6 +84,9 @@ internal sealed class ScriptedStreamFn
 	/// <summary>最近一次请求的选项，便于断言探测参数。</summary>
 	public StreamOptions? LastOptions { get; private set; }
 
+	/// <summary>最近一次请求实际收到的模型。</summary>
+	public Model? LastModel { get; private set; }
+
 	public void EnqueueText(string text) => _responses.Enqueue(model => ScriptedSessions.Text(model, text));
 
 	public void EnqueueError(string message) => _responses.Enqueue(model => ScriptedSessions.Error(model, message));
@@ -96,6 +99,7 @@ internal sealed class ScriptedStreamFn
 		// The loop appends to the live transcript, so snapshot what this request actually saw.
 		Requests.Add([.. messages]);
 		LastOptions = options;
+		LastModel = model;
 		if (_responses.Count == 0)
 		{
 			throw new InvalidOperationException("ScriptedStreamFn ran out of responses");
@@ -132,6 +136,54 @@ public class CodingAgentSessionTests : IDisposable
 			Session = session ?? SessionManager.Create(_root, SessionsDir),
 			Skills = [],
 		});
+
+	[Fact]
+	public async Task VirtualModelRoutesToPhysicalModelAndKeepsVirtualSelection()
+	{
+		var physical = ScriptedSessions.Model("physical");
+		var registry = new ModelRegistry();
+		registry.Add(physical);
+		var definition = new VirtualModelDefinition
+		{
+			Provider = "router",
+			Id = "auto",
+			Name = "Auto",
+			ThinkingLevels = [ThinkingLevels.Off, ThinkingLevels.High],
+			Route = (request, _) =>
+			{
+				Assert.Equal(VirtualRouteReason.User, request.Reason);
+				return Task.FromResult(new VirtualModelRoute
+				{
+					Model = physical,
+					ThinkingLevel = ThinkingLevels.High,
+				});
+			},
+		};
+		registry.AddVirtual(definition);
+		var virtualModel = registry.Get("router", "auto")!;
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("routed");
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = virtualModel,
+			StreamFn = script.Invoke,
+			Registry = registry,
+			Session = SessionManager.Create(_root, SessionsDir),
+			Skills = [],
+		});
+
+		await session.PromptAsync("hello");
+
+		Assert.Equal("physical", script.LastModel!.Id);
+		Assert.Equal(ThinkingLevels.High, script.LastOptions!.ThinkingLevel);
+		var assistant = Assert.IsType<AssistantMessage>(session.Messages.Last(message => message is AssistantMessage));
+		Assert.Equal("test", assistant.Provider);
+		Assert.Equal("physical", assistant.Model);
+		Assert.Equal(ThinkingLevels.High, assistant.ThinkingLevel);
+		Assert.Equal("router", session.Model.Provider);
+		Assert.Equal("auto", session.Model.Id);
+	}
 
 	[Fact]
 	public void SetTools_RebuildsThePromptTheModelSeesButKeepsTheSessionFile()
@@ -846,5 +898,111 @@ public class OpenSessionWriteTests : IDisposable
 
 		// 真正开始对话时记录级别，且只有一条。
 		Assert.Single(session.Session.Entries, entry => entry is ThinkingLevelChangeEntry { ThinkingLevel: "high" });
+	}
+}
+
+public sealed class CacheWarmerTests
+{
+	private static IReadOnlyList<Message> WarmMessages(Model model) =>
+	[
+		new UserMessage { Content = MessageContent.FromText("hi") },
+		new AssistantMessage
+		{
+			Provider = model.Provider,
+			Model = model.Id,
+			Api = model.Api,
+			Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			StopReason = StopReason.Stop,
+			Usage = new Usage { Input = 1_000_000, TotalTokens = 1_000_000 },
+		},
+	];
+
+	[Fact]
+	public void StreamingWarmingStopsWhenAgentSettles()
+	{
+		var model = ScriptedSessions.Model() with { PromptCache = new Dictionary<string, int> { ["short"] = 60 } };
+		using var warmer = new PiWeft.CodingAgent.Compaction.CacheWarmer(
+			static (_, _, _) => ScriptedSessions.Text(ScriptedSessions.Model(), "warm"),
+			static () => "streaming",
+			static _ => { });
+
+		warmer.Start(model, WarmMessages(model), new StreamOptions { CacheRetention = CacheRetentions.Short });
+		Assert.Equal("scheduled", warmer.Status.State);
+		warmer.AgentSettled();
+
+		Assert.Equal("inactive", warmer.Status.State);
+		Assert.Contains("settled", warmer.Status.Reason);
+	}
+
+	[Fact]
+	public void IdleWarmingSurvivesAgentSettled()
+	{
+		var model = ScriptedSessions.Model() with { PromptCache = new Dictionary<string, int> { ["short"] = 60 } };
+		using var warmer = new PiWeft.CodingAgent.Compaction.CacheWarmer(
+			static (_, _, _) => ScriptedSessions.Text(ScriptedSessions.Model(), "warm"),
+			static () => "idle",
+			static _ => { });
+
+		warmer.Start(model, WarmMessages(model), new StreamOptions { CacheRetention = CacheRetentions.Short });
+		warmer.AgentSettled();
+
+		Assert.NotEqual("inactive", warmer.Status.State);
+	}
+
+	[Fact]
+	public void CheapRequestDoesNotWarm()
+	{
+		var model = ScriptedSessions.Model() with
+		{
+			Cost = new ModelCost { Input = 0.001, Output = 0.001 },
+			PromptCache = new Dictionary<string, int> { ["short"] = 60 },
+		};
+		using var warmer = new PiWeft.CodingAgent.Compaction.CacheWarmer(
+			static (_, _, _) => ScriptedSessions.Text(ScriptedSessions.Model(), "warm"),
+			static () => "streaming",
+			static _ => { });
+
+		warmer.Start(model, WarmMessages(model), new StreamOptions { CacheRetention = CacheRetentions.Short });
+
+		Assert.Equal("inactive", warmer.Status.State);
+		Assert.Equal("stop", warmer.Status.Decision!.Action);
+	}
+
+	[Fact]
+	public async Task WarmsWithOneTokenAndRecordsUsage()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("warm");
+		var usages = 0;
+		using var warmer = new PiWeft.CodingAgent.Compaction.CacheWarmer(
+			script.Invoke,
+			static () => "streaming",
+			_ => usages++);
+		var model = ScriptedSessions.Model() with { PromptCache = new Dictionary<string, int> { ["short"] = 11 } };
+
+		warmer.Start(model,
+		[
+			new UserMessage { Content = MessageContent.FromText("hi") },
+			new AssistantMessage
+			{
+				Provider = model.Provider,
+				Model = model.Id,
+				Api = model.Api,
+				Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+				StopReason = StopReason.Stop,
+				Usage = new Usage { Input = 1_000_000, TotalTokens = 1_000_000 },
+			},
+		], new StreamOptions
+		{
+			CacheRetention = CacheRetentions.Short,
+		});
+
+		await Task.Delay(TimeSpan.FromMilliseconds(1500));
+
+		Assert.Single(script.Requests);
+		Assert.Equal(1, script.LastOptions!.MaxTokens);
+		Assert.Equal(1, usages);
+		Assert.Equal("scheduled", warmer.Status.State);
+		Assert.Equal("warm", warmer.Status.Decision!.Action);
 	}
 }

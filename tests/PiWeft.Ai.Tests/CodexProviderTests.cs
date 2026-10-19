@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -266,6 +268,75 @@ public class OpenAiCodexResponsesProviderTests
 		Assert.Equal("https://chatgpt.com/backend-api/codex/responses", OpenAiCodexResponsesProvider.BuildUrl(Model() with { BaseUrl = "https://chatgpt.com/backend-api/codex" }));
 		Assert.Equal("https://chatgpt.com/backend-api/codex/responses", OpenAiCodexResponsesProvider.BuildUrl(Model() with { BaseUrl = "https://chatgpt.com/backend-api/codex/responses" }));
 		Assert.Equal("https://chatgpt.com/backend-api/codex/responses", OpenAiCodexResponsesProvider.BuildUrl(Model() with { BaseUrl = string.Empty }));
+		Assert.Equal("wss://chatgpt.com/backend-api/codex/responses", OpenAiCodexResponsesProvider.BuildWebSocketUrl(Model()));
+	}
+
+	[Fact]
+	public async Task AutoTransportFallsBackToSse()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCodexResponsesProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model() with { BaseUrl = "http://127.0.0.1:1" },
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = AccessToken(), Transport = "auto", TimeoutMs = 1000 });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		var message = await stream.Result;
+		Assert.Equal("codex answer", Assert.IsType<TextContent>(message.Content[0]).Text);
+		Assert.NotNull(handler.LastRequest);
+	}
+
+	[Fact]
+	public async Task WebSocketTransportStreamsCodexEvents()
+	{
+		var probe = new TcpListener(IPAddress.Loopback, 0);
+		probe.Start();
+		var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+		probe.Stop();
+
+		using var listener = new HttpListener();
+		listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+		listener.Start();
+		var server = Task.Run(async () =>
+		{
+			var context = await listener.GetContextAsync();
+			var accepted = await context.AcceptWebSocketAsync(null);
+			var socket = accepted.WebSocket;
+			var buffer = new byte[4096];
+			await socket.ReceiveAsync(buffer, CancellationToken.None);
+
+			foreach (var payload in new[]
+			{
+				"""{"type":"response.created","response":{"id":"resp_ws","model":"gpt-5-codex","status":"in_progress"}}""",
+				"""{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m","role":"assistant","content":[]}}""",
+				"""{"type":"response.output_text.delta","output_index":0,"delta":"websocket answer"}""",
+				"""{"type":"response.completed","response":{"id":"resp_ws","status":"completed","usage":{"input_tokens":6,"output_tokens":3,"total_tokens":9}}}""",
+			})
+			{
+				await socket.SendAsync(Encoding.UTF8.GetBytes(payload), WebSocketMessageType.Text, true, CancellationToken.None);
+			}
+
+			await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+		});
+
+		var provider = new OpenAiCodexResponsesProvider(new HttpClient());
+		var stream = provider.Stream(
+			Model() with { BaseUrl = $"http://127.0.0.1:{port}" },
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = AccessToken(), Transport = "websocket" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		var message = await stream.Result;
+		Assert.Equal("websocket answer", Assert.IsType<TextContent>(message.Content[0]).Text);
+		await server.WaitAsync(TimeSpan.FromSeconds(5));
 	}
 
 	[Fact]
@@ -281,7 +352,7 @@ public class OpenAiCodexResponsesProviderTests
 				SystemPrompt = "be terse",
 				Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }],
 			},
-			new StreamOptions { ApiKey = AccessToken(), SessionId = "session-1" });
+			new StreamOptions { ApiKey = AccessToken(), SessionId = "session-1", Transport = "sse" });
 
 		await foreach (var _ in stream)
 		{

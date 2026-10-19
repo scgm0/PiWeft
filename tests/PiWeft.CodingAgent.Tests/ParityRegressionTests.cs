@@ -63,6 +63,18 @@ public sealed class ParityRegressionTests : IDisposable
 	}
 
 	[Fact]
+	public void CacheWarmingAndQueueModesAreReadFromSettings()
+	{
+		WriteGlobal("""{"cacheWarming":"idle","steeringMode":"all","followUpMode":"all"}""");
+
+		var settings = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+
+		Assert.Equal("idle", settings.CacheWarming);
+		Assert.Equal("all", settings.SteeringMode);
+		Assert.Equal("all", settings.FollowUpMode);
+	}
+
+	[Fact]
 	public void ProjectDefaultToolsAdjustmentsStackOnUserSelection()
 	{
 		var global = new SettingsFile { DefaultTools = ["read", "bash"] };

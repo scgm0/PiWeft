@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.Ai;
+using PiWeft.Ai.Auth;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 
@@ -81,6 +82,34 @@ public static class ModelCatalogStore
 		return added;
 	}
 
+	/// <summary>只刷新一个账号级目录（OpenRouter / Radius / GitHub Copilot）。</summary>
+	public static async Task<bool> RefreshAccountCatalogAsync(
+		string provider,
+		string? agentDir = null,
+		HttpMessageHandler? handler = null,
+		CancellationToken cancellationToken = default)
+	{
+		var root = ReadRoot(agentDir) ?? new JsonObject();
+		var providerNodes = root["providers"] as JsonObject ?? new JsonObject();
+		root["providers"] = providerNodes;
+		using var client = handler is null ? null : new HttpClient(handler);
+		var http = client ?? SharedClient;
+		var updated = provider switch
+		{
+			"openrouter" => await RefreshOpenRouterAsync(http, providerNodes, agentDir, cancellationToken).ConfigureAwait(false),
+			"radius" => await RefreshRadiusAsync(http, providerNodes, agentDir, cancellationToken).ConfigureAwait(false),
+			"github-copilot" => await RefreshGitHubCopilotAsync(http, providerNodes, agentDir, cancellationToken).ConfigureAwait(false),
+			_ => false,
+		};
+
+		if (updated)
+		{
+			WriteRoot(root, agentDir);
+		}
+
+		return updated;
+	}
+
 	/// <summary>强制刷新所有 Provider 的远程目录并写回缓存。</summary>
 	public static async Task<(int Updated, int Failed)> RefreshAllAsync(
 		string? agentDir = null,
@@ -156,12 +185,287 @@ public static class ModelCatalogStore
 			}
 		}
 
+		// 账号级目录：OpenRouter 按 key 过滤，Radius 用 gateway 的 /v1/config。
+		if (await RefreshOpenRouterAsync(http, providerNodes, agentDir, cancellationToken).ConfigureAwait(false))
+		{
+			updated++;
+		}
+
+		if (await RefreshRadiusAsync(http, providerNodes, agentDir, cancellationToken).ConfigureAwait(false))
+		{
+			updated++;
+		}
+
+		if (await RefreshGitHubCopilotAsync(http, providerNodes, agentDir, cancellationToken).ConfigureAwait(false))
+		{
+			updated++;
+		}
+
 		if (updated > 0)
 		{
 			WriteRoot(root, agentDir);
 		}
 
 		return (updated, failed);
+	}
+
+	private static async Task<bool> RefreshOpenRouterAsync(
+		HttpClient http,
+		JsonObject providerNodes,
+		string? agentDir,
+		CancellationToken cancellationToken)
+	{
+		var key = OAuthStore.Read("openrouter", agentDir)?.Access ??
+			AuthStore.ReadApiKey("openrouter", agentDir) ??
+			Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+		if (key is not { Length: > 0 })
+		{
+			return false;
+		}
+
+		using var request = new HttpRequestMessage(HttpMethod.Get, "https://openrouter.ai/api/v1/models/user");
+		request.Headers.TryAddWithoutValidation("accept", "application/json");
+		request.Headers.TryAddWithoutValidation("authorization", $"Bearer {key}");
+		try
+		{
+			using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+			if (!response.IsSuccessStatusCode)
+			{
+				return false;
+			}
+
+			var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+			var models = ParseOpenRouterModels(body);
+			if (models is not { Count: > 0 })
+			{
+				return false;
+			}
+
+			providerNodes["openrouter"] = new JsonObject
+			{
+				["models"] = models,
+				["checkedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			};
+			return true;
+		}
+		catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or JsonException)
+		{
+			return false;
+		}
+	}
+
+	private static JsonArray? ParseOpenRouterModels(string body)
+	{
+		JsonNode? node;
+		try
+		{
+			node = JsonNode.Parse(body);
+		}
+		catch (JsonException)
+		{
+			return null;
+		}
+
+		if (node?["data"] is not JsonArray data)
+		{
+			return null;
+		}
+
+		var result = new JsonArray();
+		foreach (var item in data)
+		{
+			if (item is not JsonObject model || model["id"]?.GetValue<string>() is not { Length: > 0 } id)
+			{
+				continue;
+			}
+
+			var contextWindow = IntOf(model["context_length"]) ?? IntOf(model["top_provider"]?["context_length"]) ?? 128000;
+			var maxTokens = IntOf(model["top_provider"]?["max_completion_tokens"]) ?? 16384;
+			var cost = model["pricing"] as JsonObject;
+			var input = model["architecture"]?["input_modalities"] is JsonArray modalities &&
+				modalities.Any(static value => value?.GetValue<string>() == "image")
+					? new JsonArray("text", "image")
+					: new JsonArray("text");
+			var supported = model["supported_parameters"] is JsonArray parameters &&
+				parameters.Any(static value => value?.GetValue<string>() is "reasoning" or "include_reasoning");
+
+			result.Add((JsonNode)new JsonObject
+			{
+				["id"] = id,
+				["name"] = model["name"]?.GetValue<string>() ?? id,
+				["api"] = "openai-completions",
+				["provider"] = "openrouter",
+				["baseUrl"] = "https://openrouter.ai/api/v1",
+				["reasoning"] = supported,
+				["input"] = input,
+				["contextWindow"] = contextWindow,
+				["maxTokens"] = maxTokens,
+				["cost"] = new JsonObject
+				{
+					["input"] = Price(cost?["prompt"]),
+					["output"] = Price(cost?["completion"]),
+					["cacheRead"] = Price(cost?["input_cache_read"]),
+					["cacheWrite"] = Price(cost?["input_cache_write"]),
+				},
+				["type"] = "chat",
+			});
+		}
+
+		return result;
+	}
+
+	private static async Task<bool> RefreshRadiusAsync(
+		HttpClient http,
+		JsonObject providerNodes,
+		string? agentDir,
+		CancellationToken cancellationToken)
+	{
+		var credential = OAuthStore.Read("radius", agentDir);
+		if (credential is null)
+		{
+			return false;
+		}
+
+		var gateway = (Environment.GetEnvironmentVariable("PI_RADIUS_GATEWAY") is { Length: > 0 } value
+			? value
+			: "https://radius.pi.dev").TrimEnd('/');
+		using var request = new HttpRequestMessage(HttpMethod.Get, $"{gateway}/v1/config");
+		request.Headers.TryAddWithoutValidation("accept", "application/json");
+		request.Headers.TryAddWithoutValidation("authorization", $"Bearer {credential.Access}");
+		try
+		{
+			using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+			if (!response.IsSuccessStatusCode)
+			{
+				return false;
+			}
+
+			var json = JsonNode.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)) as JsonObject;
+			if (json?["models"] is not JsonArray models || json["baseUrl"]?.GetValue<string>() is not { Length: > 0 } baseUrl)
+			{
+				return false;
+			}
+
+			var items = new JsonArray();
+			foreach (var item in models)
+			{
+				if (item is not JsonObject model || model["id"]?.GetValue<string>() is not { Length: > 0 } id)
+				{
+					continue;
+				}
+
+				var copy = (JsonObject)model.DeepClone();
+				copy["provider"] = "radius";
+				copy["api"] = "pi-messages";
+				copy["baseUrl"] = baseUrl;
+				copy["type"] = "chat";
+				items.Add((JsonNode)copy);
+			}
+
+			providerNodes["radius"] = new JsonObject
+			{
+				["models"] = items,
+				["checkedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			};
+			return true;
+		}
+		catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or JsonException)
+		{
+			return false;
+		}
+	}
+
+	private static async Task<bool> RefreshGitHubCopilotAsync(
+		HttpClient http,
+		JsonObject providerNodes,
+		string? agentDir,
+		CancellationToken cancellationToken)
+	{
+		var credential = OAuthStore.Read("github-copilot", agentDir);
+		if (credential is null)
+		{
+			return false;
+		}
+
+		var baseUrl = credential.BaseUrl ?? "https://api.individual.githubcopilot.com";
+		using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/models");
+		request.Headers.TryAddWithoutValidation("accept", "application/json");
+		request.Headers.TryAddWithoutValidation("authorization", $"Bearer {credential.Access}");
+		request.Headers.TryAddWithoutValidation("user-agent", "GitHubCopilotChat/0.35.0");
+		request.Headers.TryAddWithoutValidation("editor-version", "vscode/1.107.0");
+		request.Headers.TryAddWithoutValidation("editor-plugin-version", "copilot-chat/0.35.0");
+		request.Headers.TryAddWithoutValidation("copilot-integration-id", "vscode-chat");
+		request.Headers.TryAddWithoutValidation("x-github-api-version", "2026-06-01");
+		try
+		{
+			using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+			if (!response.IsSuccessStatusCode)
+			{
+				return false;
+			}
+
+			var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+			if ((JsonNode.Parse(body) as JsonObject)?["data"] is not JsonArray data)
+			{
+				return false;
+			}
+
+			var registry = ModelRegistry.LoadDefault();
+			var items = new JsonArray();
+			foreach (var item in data)
+			{
+				if (item is not JsonObject model || model["id"]?.GetValue<string>() is not { Length: > 0 } id)
+				{
+					continue;
+				}
+
+				var template = registry.Resolve("github-copilot", id) ?? registry.List("github-copilot").FirstOrDefault();
+				items.Add((JsonNode)new JsonObject
+				{
+					["id"] = id,
+					["name"] = model["name"]?.GetValue<string>() ?? template?.Name ?? id,
+					["api"] = template?.Api ?? "openai-completions",
+					["provider"] = "github-copilot",
+					["baseUrl"] = baseUrl,
+					["reasoning"] = template?.Reasoning ?? false,
+					["input"] = template?.Input is { Count: > 0 } input
+						? new JsonArray([.. input.Select(static value => (JsonNode?)JsonValue.Create(value))])
+						: new JsonArray("text"),
+					["contextWindow"] = template?.ContextWindow ?? 128000,
+					["maxTokens"] = template?.MaxTokens ?? 16384,
+					["headers"] = template?.Headers is { Count: > 0 } headers
+						? new JsonObject(headers.Select(static pair => new KeyValuePair<string, JsonNode?>(pair.Key, pair.Value)))
+						: null,
+					["type"] = "chat",
+				});
+			}
+
+			providerNodes["github-copilot"] = new JsonObject
+			{
+				["models"] = items,
+				["checkedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			};
+			return true;
+		}
+		catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or JsonException)
+		{
+			return false;
+		}
+	}
+
+	private static int? IntOf(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
+
+	private static double Price(JsonNode? node)
+	{
+		var text = node?.GetValue<string>();
+		if (!double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var perToken) ||
+			perToken < 0)
+		{
+			return 0;
+		}
+
+		return Math.Round(perToken * 1_000_000, 6);
 	}
 
 	private static JsonArray? ParseProviderCatalog(string body)

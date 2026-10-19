@@ -16,6 +16,12 @@ public sealed record OAuthCredential
 	public IReadOnlyList<string>? Scopes { get; init; }
 	public string? AccountId { get; init; }
 
+	/// <summary>Provider 的端点覆盖（例如 Copilot 的 proxy 或自定义 Radius gateway）。</summary>
+	public string? BaseUrl { get; init; }
+
+	/// <summary>GitHub Copilot Enterprise 域名。</summary>
+	public string? EnterpriseUrl { get; init; }
+
 	public DateTimeOffset ExpiresAt => DateTimeOffset.FromUnixTimeSeconds(Expires);
 }
 
@@ -51,6 +57,8 @@ public static class OAuthStore
 			ClientId = entry["clientId"]?.GetValue<string>(),
 			Scopes = scopes,
 			AccountId = entry["accountId"]?.GetValue<string>(),
+			BaseUrl = entry["baseUrl"]?.GetValue<string>(),
+			EnterpriseUrl = entry["enterpriseUrl"]?.GetValue<string>(),
 		};
 	}
 
@@ -82,6 +90,8 @@ public static class OAuthStore
 			["clientId"] = credential.ClientId,
 			["scopes"] = scopes,
 			["accountId"] = credential.AccountId,
+			["baseUrl"] = credential.BaseUrl,
+			["enterpriseUrl"] = credential.EnterpriseUrl,
 		};
 		Write(root, agentDir);
 	}

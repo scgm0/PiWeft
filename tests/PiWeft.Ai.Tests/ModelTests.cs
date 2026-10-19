@@ -39,6 +39,16 @@ public class ModelTests
 	}
 
 	[Fact]
+	public void CatalogPromptCacheLifetimesAreLoaded()
+	{
+		var model = Registry.Resolve("anthropic", "claude-fable-5");
+
+		Assert.NotNull(model);
+		Assert.Equal(300, model!.PromptCache!["short"]);
+		Assert.Equal(3600, model.PromptCache["long"]);
+	}
+
+	[Fact]
 	public void CostCalculator_AppliesPerMillionRates()
 	{
 		var model = new Model

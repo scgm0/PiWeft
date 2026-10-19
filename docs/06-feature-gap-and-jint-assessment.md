@@ -1,6 +1,6 @@
 # 功能缺口与 Jint 技术评估
 
-评估日期：2026-10-14（Jint 探针）；2026-10-19 对照 pi 1.3.0 与当前工作树复核。Ai/Agent/CodingAgent/MCP/CLI 共 729 项测试通过；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。状态：规划输入，尚未批准为实施路线。
+评估日期：2026-10-14（Jint 探针）；2026-10-19 对照 pi 1.3.0 与当前工作树复核。Ai/Agent/CodingAgent/MCP/CLI 共 752 项测试通过；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。状态：规划输入，尚未批准为实施路线。
 
 本文汇总 PiWeft 与 pi / PiDeck 的功能对照，以及 Jint 5 实现 codemode、JS 扩展的可行性和性能探针结果。用于后续确定产品范围、拆分任务、建立依赖与验收标准，不代表相关功能已经实现，也不修改既有产品范围决策。
 
@@ -24,7 +24,7 @@
 | pi_agent_rust / pi-go | 本地同级仓库，作为子代理、IDE、记忆和工具增强参考，不作为原版 pi 的必备契约 |
 | Jint | 当时正式版 4.17.0；5.0.0 开发线固定提交 `8537426f92ee847ccb09af59b1db60079e3a8028` |
 
-功能分析以源码静态核对为主。Jint 探针实际执行了 JIT 与 Linux x64 NativeAOT。2026-10-19 复核重新运行了非桌面测试（729 项通过）与 AOT 冒烟；真实供应商联网测试、Windows/macOS 实机与完整 PiDeck UI e2e 仍未进行，开始实施前仍应重新确认版本、代码路径和缺口状态。
+功能分析以源码静态核对为主。Jint 探针实际执行了 JIT 与 Linux x64 NativeAOT。2026-10-19 复核重新运行了非桌面测试（752 项通过）与 AOT 冒烟；真实供应商联网测试、Windows/macOS 实机与完整 PiDeck UI e2e 仍未进行，开始实施前仍应重新确认版本、代码路径和缺口状态。
 
 ### 1.2 与现有文档的关系
 
@@ -41,7 +41,7 @@
 
 | 领域 | 已有能力 | 不能据此推断 |
 | --- | --- | --- |
-| 模型调用 | 十类 Provider API、流式事件、思考级别、用量和费用；Codex/Anthropic/xAI/Kimi OAuth 与全 Provider API key；pi.dev 目录缓存 | 所有 Provider OAuth、账号级模型目录、WebSocket 传输都可用 |
+| 模型调用 | 十类 Provider API、流式事件、思考级别、用量和费用；Codex/OpenAI ChatGPT/GitHub Copilot/Anthropic/OpenRouter/xAI/Kimi/Meta/Radius OAuth 与全 Provider API key；pi.dev 与账号级目录缓存；虚拟模型、cache warming、Codex WebSocket、生图/分类网关 | 扩展动态路由、连接复用、生图/分类入口及全部账号能力同步可用 |
 | Agent | 八个基础文件/Shell/搜索工具（含 powershell）、串行/并行工具、校验、前后钩子、steering/follow-up、中断、原生 todo/ask_question/计划模式 | 已有 codemode、嵌套工具管线或子代理编排 |
 | 会话 | JSONL 兼容、恢复、fork/clone、分支树/摘要导航、压缩、重试、统计 | 文件回滚、完整历史分页或跨 Agent 原生格式导入 |
 | MCP | stdio/streamable HTTP、工具/资源/模板/提示的基础能力、stdio 工具列表热刷新、exposure 过滤、运行时重连 | OAuth、HTTP 独立通知流、CLI 管理子命令 |
@@ -80,9 +80,9 @@
 | PI-04 | 完整终端 TUI | 当前为按行 REPL，缺少多行编辑、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
 | PI-05 | codemode / tool_search | 缺少脚本编排、结果过滤、延迟工具发现和脚本状态；并行 Agent 工具执行不是 codemode |
 | PI-06 | MCP 高级运行时 | 部分实现：`McpExposure` 实现 pi 同名 `exposure`/`toolExposure`；因无 codemode，`codemode`/`deferred` 暂按 `direct`。已覆盖：pi 形状的 `oauth` 对象（兼容旧 `auth: oauth`）、授权码 + PKCE、客户端凭据、`callbackPort`/`clientName`/`authServerMetadataUrl`、401 刷新重放、HTTP 通知流与服务端反向应答、`mcp list` 连接并报告 state/tools/error。未覆盖：`cimd`、完整 `callbackUrl` 路径、与 pi 共享 `mcp-auth.json` 令牌格式、桌面 MCP 授权入口 |
-| PI-07 | 认证覆盖 | 部分实现：Codex、Anthropic（浏览器 PKCE）、xAI、Kimi 的 OAuth 已落地；其余 Provider 支持 API key 登录（写入 `auth.json`）。命令型凭据与 `auth check` 三态齐备。仍未覆盖 OpenAI ChatGPT、GitHub Copilot、OpenRouter、Meta、Radius 的 OAuth，以及 AWS profile/ECS/IRSA 完整链 |
-| PI-08 | 动态模型目录 | 已实现 pi.dev 目录刷新（`pi update --models`）、`<agentDir>/models-store.json` 离线缓存和启动加载；配置页仍保留按 API 拉取远程模型。未覆盖账号级目录（OpenRouter 按 key、Radius 等）、ETag/刷新节流与能力同步 |
-| PI-09 | 高级模型运行时 | 缺少虚拟路由、分类器/生图模型执行、缓存保温、Codex WebSocket、模型级按思考档位采样配置；`samplingParams`/`promptCache` 仍未建模 |
+| PI-07 | 认证覆盖 | 大部分实现：Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius 的 OAuth 已落地；其余 Provider 支持 API key 登录。命令型凭据、运行时刷新与 `auth check` 三态齐备。余项是 AWS profile/ECS/IRSA 完整 ambient 链与部分企业登录细分 |
+| PI-08 | 动态模型目录 | 已实现 pi.dev 目录刷新、`<agentDir>/models-store.json` 离线缓存、启动加载，以及账号级 OpenRouter/Radius/GitHub Copilot 目录。未覆盖 ETag/刷新节流与更细的账号能力同步 |
+| PI-09 | 高级模型运行时 | 已实现虚拟模型（`pi-virtual` + `models.json` 静态路由）、cache warming（off/streaming/idle、经济学阈值、状态）、模型级 `samplingParams`、Codex Responses WebSocket（auto 回退 SSE）、OpenRouter 生图与 OpenAI Decisions 分类网关。仍缺扩展动态 `route()`/路由状态、`websocket-cached` 连接复用、Codex zstd 与完整 continuation，以及生图/分类入口接线 |
 | PI-10 | 资源配置与主题 | 部分实现：技能/模板/主题按用户、项目、包作用域统一发现（含 settings 的 `skills`/`prompts`/`themes` 与诊断）；pi 主题 JSON 解析完整（hex / oklch / okhsl / ANSI 索引 / 变量引用 / 终端默认，含色域映射），桌面外观页可选择并即时换肤；**主题目录文件监视热重载已实现**（防抖 400ms、坏文件保留旧外观、项目主题受信任门控，`ThemeWatcher`）。`/reload` 与 RPC `reload_resources` 重新解析资源而不重建会话。未覆盖：独立资源管理界面 |
 | PI-11 | 项目信任 | 已实现：`<agentDir>/trust.json`（规范化路径 → true/false）、父目录查找、原子写入；显式 `-a/--na` 优先，其次 trust.json，最后**全局** `settings.defaultProjectTrust`（默认 `ask`，与 pi 一致；项目设置不能自我授权）；不受信时不合并项目设置、不连项目 `.pi/mcp.json`、不加载项目级技能/提示词模板；CLI 交互模式与桌面启动时询问（信任/仅本次/不信任），无 UI 时 `ask` 按不受信处理。测试：`ProjectTrustTests`、`CliEnvironmentTests.Create_GatesProjectSettingsWhenUntrusted`、`McpConfigTests.Load_WithoutProjectTrustIgnoresProjectConfig` |
 

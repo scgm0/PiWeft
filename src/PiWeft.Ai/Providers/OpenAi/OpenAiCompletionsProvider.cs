@@ -52,7 +52,8 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 			// 关闭思考时不下发强度：两个字段同时出现时，端点的开关与档位可能互相矛盾。
 			var reasoningEffort = thinkingMode == ThinkingDisabled ? null : ResolveReasoningEffort(model, options);
 
-			using var request = BuildRequest(model, messages, tools, options, reasoningEffort, thinkingMode);
+			var requestOptions = MergeModelSamplingParams(model, options);
+			using var request = BuildRequest(model, messages, tools, requestOptions, reasoningEffort, thinkingMode);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
@@ -110,6 +111,22 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		{
 			stream.Push(new ErrorEvent { Reason = StopReason.Error, Partial = Failure(model, startedAt, ex.Message) });
 		}
+	}
+
+	private static StreamOptions MergeModelSamplingParams(Model model, StreamOptions options)
+	{
+		if (model.SamplingParams is not { Count: > 0 } modelParams)
+		{
+			return options;
+		}
+
+		var merged = (JsonObject)modelParams.DeepClone();
+		foreach (var (key, value) in options.SamplingParams ?? new JsonObject())
+		{
+			merged[key] = value?.DeepClone();
+		}
+
+		return options with { SamplingParams = merged };
 	}
 
 	private static HttpRequestMessage BuildRequest(

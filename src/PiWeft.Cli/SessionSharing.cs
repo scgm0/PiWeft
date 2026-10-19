@@ -19,9 +19,14 @@ public static class SessionSharing
 		CancellationToken cancellationToken = default)
 	{
 		var shareDestination = destination is "gist" or "radius" ? destination : session.Settings.SessionShareDestination;
+		if (string.Equals(shareDestination, "auto", StringComparison.OrdinalIgnoreCase))
+		{
+			shareDestination = PiWeft.Ai.Auth.OAuthStore.Read("radius") is not null ? "radius" : "gist";
+		}
+
 		if (string.Equals(shareDestination, "radius", StringComparison.OrdinalIgnoreCase))
 		{
-			return (false, null, "Radius 会话上传尚未实现；设置 sessionShareDestination 为 gist 或配置 GitHub token。");
+			return await ShareViaRadiusAsync(session, cancellationToken).ConfigureAwait(false);
 		}
 
 		var content = ReadSessionContent(session);
@@ -78,6 +83,50 @@ public static class SessionSharing
 		catch (JsonException)
 		{
 			return (false, null, "GitHub 返回了无法解析的响应");
+		}
+	}
+
+	private static async Task<(bool Ok, string? Url, string? Error)> ShareViaRadiusAsync(
+		CodingAgentSession session,
+		CancellationToken cancellationToken)
+	{
+		var credential = PiWeft.Ai.Auth.OAuthStore.Read("radius");
+		if (credential is null)
+		{
+			return (false, null, "未登录 Radius；先运行 pi login radius，或把 sessionShareDestination 设为 gist。");
+		}
+
+		var gateway = (Environment.GetEnvironmentVariable("PI_RADIUS_GATEWAY") is { Length: > 0 } value
+			? value
+			: "https://radius.pi.dev").TrimEnd('/');
+		var html = SessionHtml.Render(session);
+		using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+		using var request = new HttpRequestMessage(HttpMethod.Post, $"{gateway}/v1/artifacts?visibility=organization&title=Pi%20session");
+		request.Headers.TryAddWithoutValidation("authorization", $"Bearer {credential.Access}");
+		request.Content = new StringContent(html, Encoding.UTF8, "application/x-ndjson");
+		try
+		{
+			using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+			var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+			JsonNode? json = null;
+			try { json = body.Length > 0 ? JsonNode.Parse(body) : null; } catch (JsonException) { }
+			if (!response.IsSuccessStatusCode)
+			{
+				var detail = json?["error"]?.GetValue<string>() ?? Summarize(body);
+				return (false, null, $"Radius 上传失败：HTTP {(int)response.StatusCode} {detail}");
+			}
+
+			return json?["artifact"]?["canonical_url"]?.GetValue<string>() is { Length: > 0 } url
+				? (true, url, null)
+				: (false, null, "Radius 响应缺少 artifact.canonical_url");
+		}
+		catch (OperationCanceledException)
+		{
+			return (false, null, "上传已取消");
+		}
+		catch (HttpRequestException exception)
+		{
+			return (false, null, exception.Message);
 		}
 	}
 

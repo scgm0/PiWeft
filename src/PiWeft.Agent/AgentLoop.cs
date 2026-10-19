@@ -269,7 +269,7 @@ public static class AgentLoop
 				case DoneEvent or ErrorEvent:
 				{
 					var final = await response.Result.ConfigureAwait(false);
-					final = final with { ThinkingLevel = config.ThinkingLevel };
+					final = final with { ThinkingLevel = final.ThinkingLevel ?? config.ThinkingLevel };
 					if (addedPartial)
 					{
 						context.Messages[^1] = final;
@@ -298,7 +298,7 @@ public static class AgentLoop
 
 		// provider 没发终止事件就结束了流时，仍然要给出一个结果。
 		var fallback = await response.Result.ConfigureAwait(false);
-		fallback = fallback with { ThinkingLevel = config.ThinkingLevel };
+		fallback = fallback with { ThinkingLevel = fallback.ThinkingLevel ?? config.ThinkingLevel };
 		if (addedPartial)
 		{
 			context.Messages[^1] = fallback;

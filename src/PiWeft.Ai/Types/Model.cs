@@ -85,6 +85,12 @@ public sealed record Model
 	/// <summary>provider 兼容性标志，原样保留，便于客户端读取目录中的声明。</summary>
 	public JsonObject? Compat { get; init; }
 
+	/// <summary>提示缓存生命周期（秒），键为 <c>short</c> / <c>long</c>。</summary>
+	public Dictionary<string, int>? PromptCache { get; init; }
+
+	/// <summary>按思考级别覆盖的采样参数。</summary>
+	public JsonObject? SamplingParams { get; init; }
+
 	/// <summary>目录中的输入约束（图片数量与缩放限制），原样保留。</summary>
 	public JsonObject? InputLimits { get; init; }
 

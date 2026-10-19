@@ -23,6 +23,8 @@ public sealed class CliEnvironment
 	private CliEnvironment(
 		ModelRegistry registry,
 		ModelsGateway gateway,
+		ImagesGateway images,
+		ClassifiersGateway classifiers,
 		CodingAgentSettings settings,
 		Model model,
 		IReadOnlyList<AgentTool> tools,
@@ -31,6 +33,8 @@ public sealed class CliEnvironment
 	{
 		Registry = registry;
 		Gateway = gateway;
+		Images = images;
+		Classifiers = classifiers;
 		Settings = settings;
 		Model = model;
 		Tools = tools;
@@ -59,7 +63,11 @@ public sealed class CliEnvironment
 		StreamFn streamFn)
 	{
 		var gateway = new ModelsGateway(registry);
-		return new CliEnvironment(registry, gateway, settings, model, tools, new Dictionary<string, string>(), projectTrusted: true)
+		var images = new ImagesGateway();
+		images.Register(new OpenRouterImagesProvider());
+		var classifiers = new ClassifiersGateway();
+		classifiers.Register(new OpenAiDecisionsProvider());
+		return new CliEnvironment(registry, gateway, images, classifiers, settings, model, tools, new Dictionary<string, string>(), projectTrusted: true)
 		{
 			StreamFnOverride = streamFn,
 		};
@@ -68,6 +76,12 @@ public sealed class CliEnvironment
 	public ModelRegistry Registry { get; }
 
 	public ModelsGateway Gateway { get; }
+
+	/// <summary>生图模型网关；目前注册 OpenRouter 方言。</summary>
+	public ImagesGateway Images { get; }
+
+	/// <summary>分类模型网关；目前注册 OpenAI Decisions 方言。</summary>
+	public ClassifiersGateway Classifiers { get; }
 
 	public CodingAgentSettings Settings { get; }
 
@@ -95,6 +109,7 @@ public sealed class CliEnvironment
 		PiMessagesProvider.ApiId,
 		MistralConversationsProvider.ApiId,
 		OpenAiCodexResponsesProvider.ApiId,
+		VirtualModels.Api,
 	];
 
 	/// <summary>构建环境：设置、目录、provider、模型与工具集。</summary>
@@ -123,9 +138,15 @@ public sealed class CliEnvironment
 		// 远程目录缓存覆盖内置条目；provider 级 baseUrl/compat 再统一作用于所有条目。
 		ModelCatalogStore.LoadCached(registry);
 		ModelsFileLoader.ApplyProviderSettings(registry, userModels, projectModels);
+		ApplyOAuthProviderEndpoints(registry);
 		foreach (var custom in customModels.Models)
 		{
 			registry.Add(custom);
+		}
+
+		foreach (var virtualModel in customModels.VirtualModels)
+		{
+			registry.AddVirtual(virtualModel);
 		}
 
 		if (customModels.OverrideCount > 0)
@@ -148,6 +169,11 @@ public sealed class CliEnvironment
 		gateway.Register(new MistralConversationsProvider(httpClient));
 		gateway.Register(new OpenAiCodexResponsesProvider(httpClient));
 
+		var images = new ImagesGateway();
+		images.Register(new OpenRouterImagesProvider(httpClient));
+		var classifiers = new ClassifiersGateway();
+		classifiers.Register(new OpenAiDecisionsProvider(httpClient));
+
 		var model = ResolveModel(registry, arguments, settings, out var modelError, customModels.ApiKeys);
 		if (model is null)
 		{
@@ -155,7 +181,7 @@ public sealed class CliEnvironment
 		}
 
 		var tools = ResolveTools(arguments, cwd, settings);
-		return (new CliEnvironment(registry, gateway, settings, model, tools, customModels.ApiKeys, projectTrusted), null);
+		return (new CliEnvironment(registry, gateway, images, classifiers, settings, model, tools, customModels.ApiKeys, projectTrusted), null);
 	}
 
 	private static readonly Dictionary<string, string> DefaultModelPerProvider = new(StringComparer.Ordinal)
@@ -433,6 +459,23 @@ public sealed class CliEnvironment
 	public static IReadOnlyList<Model> ListModels(string cwd, string? search) =>
 		ListModels(BuildRegistry(cwd), search);
 
+	/// <summary>把 OAuth 凭据携带的端点（Copilot proxy、自定义 Radius gateway）应用到该 Provider 的全部模型。</summary>
+	private static void ApplyOAuthProviderEndpoints(ModelRegistry registry)
+	{
+		foreach (var provider in registry.Providers)
+		{
+			if (PiWeft.Ai.Auth.OAuthStore.Read(provider)?.BaseUrl is not { Length: > 0 } baseUrl)
+			{
+				continue;
+			}
+
+			foreach (var model in registry.List(provider).ToList())
+			{
+				registry.Add(model with { BaseUrl = baseUrl });
+			}
+		}
+	}
+
 	/// <summary>加载目录并叠加 <c>models.json</c>。</summary>
 	public static ModelRegistry BuildRegistry(string cwd)
 	{
@@ -442,9 +485,15 @@ public sealed class CliEnvironment
 		ModelsFileLoader.ApplyProviderSettings(registry, userModels, projectModels);
 		ModelCatalogStore.LoadCached(registry);
 
-		foreach (var custom in ModelsFileLoader.Load(cwd).Models)
+		var customModels = ModelsFileLoader.Load(cwd);
+		foreach (var custom in customModels.Models)
 		{
 			registry.Add(custom);
+		}
+
+		foreach (var virtualModel in customModels.VirtualModels)
+		{
+			registry.AddVirtual(virtualModel);
 		}
 
 		ModelsFileLoader.ApplyOverrides(registry, userModels, projectModels);
@@ -619,6 +668,8 @@ public sealed class CliEnvironment
 			Cwd = cwd,
 			Model = Model,
 			StreamFn = sessionStream,
+			Registry = Registry,
+			ApiKeyForProvider = provider => arguments.ApiKey ?? ProviderApiKeys.GetValueOrDefault(provider),
 			// null 表示「沿用会话里记录的级别」，恢复会话时因此能记住上次的选择；
 			// 每模型默认值与全局默认值由会话层解析。
 			ThinkingLevel = arguments.ThinkingLevel,

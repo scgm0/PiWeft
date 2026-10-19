@@ -77,6 +77,30 @@ public sealed class NewFeatureTests : IDisposable
 	}
 
 	[Fact]
+	public void LlamaRouterBuildsAnOpenAiCompatibleModel()
+	{
+		var model = LlamaRouter.ToModel(new LlamaRouter.ModelInfo("qwen.gguf", "loaded", "Qwen", 32768, 8192, true));
+
+		Assert.Equal("llama.cpp", model.Provider);
+		Assert.Equal("openai-completions", model.Api);
+		Assert.Equal(LlamaRouter.InferenceBaseUrl, model.BaseUrl);
+		Assert.Equal(32768, model.ContextWindow);
+		Assert.Equal(8192, model.MaxTokens);
+		Assert.Contains("image", model.Input);
+	}
+
+	[Fact]
+	public async Task LlamaRouterSearchesHuggingFace()
+	{
+		var handler = new FakeHandler("""[{"id":"owner/model-GGUF","downloads":1234}]""");
+		var models = await LlamaRouter.SearchHuggingFaceAsync("qwen", handler);
+
+		var model = Assert.Single(models);
+		Assert.Equal("owner/model-GGUF", model.Id);
+		Assert.Equal(1234, model.Downloads);
+	}
+
+	[Fact]
 	public async Task LlamaRouterParsesModelStatus()
 	{
 		var handler = new FakeHandler("""{"data":[{"id":"qwen.gguf","status":{"value":"loaded"},"name":"Qwen"}]}""");

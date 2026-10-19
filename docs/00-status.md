@@ -8,7 +8,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 | 项目 | 职责 |
 |---|---|
-| `src/PiWeft.Ai` | 消息、JSON、模型目录、费用、认证、provider 流式适配 |
+| `src/PiWeft.Ai` | 消息、JSON、模型目录（含虚拟模型）、费用、认证、provider 流式适配、生图/分类 API、Codex WebSocket |
 | `src/PiWeft.Agent` | 代理循环、串行/并行工具、steering、follow-up、事件与中断 |
 | `src/PiWeft.CodingAgent` | 会话、内置工具、资源发现（技能/提示词/主题/包）、设置、压缩、分支摘要、重试与统计 |
 | `src/PiWeft.Mcp` | stdio / streamable HTTP、分页、工具、资源、提示与通知 |
@@ -19,7 +19,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 使用 .NET 10、`LangVersion=preview` 和制表符缩进；中文为文档、界面文案和注释的第一方语言。
 - JSON 使用 `System.Text.Json` 源生成与手写转换器，不依赖 Newtonsoft.Json 或供应商 SDK。保留 trim/AOT 分析器。
 - 核心库无第三方运行时包；宿主使用 ZLogger，桌面使用 MewUI 0.22.1、Markdown 和 SVG 扩展。
-- 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线，`<agentDir>/models-store.json` 缓存 pi.dev 远程目录（`pi update --models` 刷新），自定义端点由 `models.json` 注册。
+- 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线，`<agentDir>/models-store.json` 缓存 pi.dev 远程目录（`pi update --models` 刷新），自定义端点由 `models.json` 注册。`models.json` 的模型条目可写 `"virtual":{"model":"provider/id","thinkingLevel":"high","thinkingLevels":["off","high"]}`，注册为不直接访问 Provider 的虚拟目录项；每次请求由静态目标路由，助手消息仍记录实际物理模型。
 - 不实现 JS 扩展宿主、codemode、mermaid、KaTeX、托盘、桌面通知、自动更新、崩溃上报或内嵌浏览器；终端以独立的 PTY 命令 Dock 提供，不内嵌第三方终端组件。
 
 ## pi 与 PiDeck 兼容
@@ -29,14 +29,14 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 系统提示词只在运行时构造，不能作为历史消息写入会话。工具热更新保留提示章节边界；未知会话字段原样保留。内置工具的短 snippet 与 guidelines 在所有入口（CLI/RPC/桌面）按名称重新挂回，与 pi/PiDeck 提示词一致。
 - 默认工具集与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 PiDeck 依赖的原生 `todo` 与 `ask_question`；pi 默认关闭的 `grep`/`find`/`ls` 需要 `--tools`、`settings.defaultTools` 显式开启。`--tools` 的纯名字列表整体替换默认集、`+name`/`-name` 在默认集上增减、`--exclude-tools` 支持通配，模式始终针对完整内置目录展开。
 - bash 工具向子进程注入 pi 的会话环境变量（`PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，执行前先清除继承值），进程启动时设置 `AI_AGENT=pi` 与 `PI_CODING_AGENT=true`；`settings.shellPath`、`settings.shellCommandPrefix` 分别控制 bash 的 shell 与命令前缀。`!`/`!!` 内联命令（交互模式）不走注入，与 pi 一致。
-- 生效的 settings 键新增：`shellPath`、`shellCommandPrefix`、`sessionDir`（`--session-dir` 优先）、`defaultTools`。其余 pi 键继续原样保留、不生效。
+- 生效的 settings 键新增：`shellPath`、`shellCommandPrefix`、`sessionDir`（`--session-dir` 优先）、`defaultTools`、`cacheWarming`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`sessionShareDestination`。其余 pi 键继续原样保留、不生效。
 - `--system-prompt` 取代默认 preamble，`--append-system-prompt` 追加为 `addendum` 章节，`--no-context-files` 停用 AGENTS.md / CLAUDE.md 发现；三者都接受字面文本或文件路径。
 - `--export <session> [output]` 导出 HTML 后退出（只读，不改会话文件）；`--models <patterns>` 限定 Ctrl+P 模型轮换范围。
 - `pi install <source>`、`pi list`、`pi remove <source>`、`pi update [source]` 管理 pi 包：npm 装到 `<agentDir>/npm/node_modules`、git 克隆到 `<agentDir>/git`、本地路径只登记不复制；`--local/-l` 写项目 `.pi/settings.json`。npm 可执行文件可用 `settings.npmCommand` 覆盖。
 - `pi mcp list|add|remove|login|logout` 管理 MCP 服务器与它们的 OAuth 令牌：`list` 会连接服务器并报告 state/tools/error，启用服务器失败时退出 1；配置写 `<agentDir>/mcp.json`（`--local` 改项目 `.pi/mcp.json`），令牌写 `<agentDir>/mcp-oauth.json`；`login` 走授权码 + PKCE 的回环流程，没有 `clientId` 时按需动态注册。写入是保留式的：保留文件里的其它键、注释与尾逗号，解析失败时拒绝覆盖并报错。
 - CLI `@file` 参数展开为 `<file>` 文本块，图片作为内容块随首条提示发送；print / JSON 模式还会把重定向的 stdin 合入首条提示（交互模式不读管道 stdin）。RPC 模式明确拒绝 `@file`。
-- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开，CLI、RPC 与桌面共享同一语义；RPC 空闲 `prompt` 保留 `images` 内容块。交互模式实现 pi 的内置斜杠命令面：`/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`；`/share`（私有 GitHub gist）、`/llama`（router 列表/加载/卸载）与 `/bug`（脱敏诊断 zip）已实现。`!command` 把输出并入对话，`!!command` 只执行不入模型上下文。
-- 为兼容而接受但不生效的选项（`-e`、`--theme`、`--tui-mode` 等）会在 stderr 提示一次「accepted for compatibility but not implemented」，不再静默降级；`pi config` 列出包来源与可编辑资源键，`pi update --self/--self 别名`、`--extensions`、`--models`、`--all`、`--force` 按 pi 语义解析（自更新交由系统包管理器），`pi mcp add` 支持 pi 形状（`-- <command> [args]`、`--bearer-token-env-var`、`--oauth-client-id/secret`、`--exposure`、`--description`），`pi mcp login --timeout` 限定整个登录过程。
+- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开，CLI、RPC 与桌面共享同一语义；RPC 空闲 `prompt` 保留 `images` 内容块。交互模式实现 pi 的内置斜杠命令面：`/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`；`/share`（Radius artifact 或私有 GitHub gist）、`/llama`（router 管理、HF 搜索/下载、自动注册）与 `/bug`（脱敏诊断 zip）已实现。`!command` 把输出并入对话，`!!command` 只执行不入模型上下文。
+- 为兼容而接受但不生效的选项（`-e`、`--tui-mode` 等）会在 stderr 提示一次「accepted for compatibility but not implemented」，不再静默降级；`pi config` 列出包来源与可编辑资源键，`pi update --self/--self 别名`、`--extensions`、`--models`、`--all`、`--force` 按 pi 语义解析（自更新交由系统包管理器），`pi mcp add` 支持 pi 形状（`-- <command> [args]`、`--bearer-token-env-var`、`--oauth-client-id/secret`、`--exposure`、`--description`），`pi mcp login --timeout` 限定整个登录过程。
 - CLI 启动记录思考级别元数据，与 pi 一致。桌面只读浏览不改文件字节或 mtime，开始对话或主动改级别时再记录。
 - 凭据按显式选项、存储凭据、环境变量解析；每次请求按目标供应商选择凭据，压缩与分支摘要共用该路径。
 - 请求超时只覆盖等待响应头，不切断正常长流。输出上限截断在 print 模式输出部分文本并以 1 退出。
@@ -60,7 +60,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 | 扩展 UI | `ask_question` 发出 `extension_ui_request`（`method: "input"`，PiDeck 批量信封），`extension_ui_response` 唤醒等待中的提问；pi 的对话框方法 `select`/`confirm`/`editor` 与 fire-and-forget 的 `notify` 已按 pi 线协议实现（含 agent 侧 `timeout` 自动解析），`setStatus`/`setWidget`/`setTitle`/`set_editor_text` 尚未发出 |
 | 资源 | `get_resources` 返回已解析的技能/提示词/主题/包与诊断；`reload_resources` 重新解析并刷新系统提示词里的技能章节 |
 
-`get_state` 在 pi 字段之外补充 `cwd`、`tools`、`entryCount` 和 `errorMessage`；消息计数不含运行时系统提示词。
+`get_state` 在 pi 字段之外补充 `cwd`、`tools`、`entryCount`、`errorMessage` 和 `cacheWarming`（state/reason/nextWarmAt/decision）；消息计数不含运行时系统提示词。
 `get_session_stats` 拆分输入、输出、缓存读取和写入，并给出上下文窗口占比。JSON 写入深度为 65536，以容纳深层会话树。
 
 事件族与 pi 对齐（JSON 与 RPC 共用）：每次会话级运行结束发 `agent_settled`（`aborted` 取自最后一次助手消息的中止状态），RPC 的每个 `prompt` 运行结束时也发；`queue_update` 在 steering/follow-up 队列变化（入队、清空、被代理消费）时发全量快照；`thinking_level_changed`、`session_info_changed`、`entry_appended`、`compaction_start`/`compaction_end`（含 `reason`/`result`/`aborted`/`willRetry`/`errorMessage`）齐备；`tool_execution_update`/`tool_execution_end` 携带 `partialResult`/`result`（content + details）与 `durationMs`。
@@ -74,7 +74,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 `azure-openai-responses`、`google-generative-ai`、`google-vertex`、`bedrock-converse-stream`、
 `mistral-conversations`、`pi-messages`。
 
-`pi login` 支持 ChatGPT Codex 设备码、Anthropic 浏览器 PKCE、xAI/Kimi 设备码；其它 Provider 走 API key 登录。`logout` 可移除任意 Provider 的凭据并保留其它条目。
+`pi login` 支持 ChatGPT Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius 的 OAuth；其它 Provider 走 API key 登录。`logout` 可移除任意 Provider 的凭据并保留其它条目。
 `pi auth check` 输出 `ready` / `not_ready` / `invalid`，退出码为 0 / 1 / 2（参数异常为 2）；`invalid` 表示凭据存在但不可用（命令型凭据执行失败、OAuth 刷新失败）。支持供应商、模型、JSON、凭据检查和禁用刷新选项。
 `print-api-key` / `print-bearer-token` 只输出相应凭据；`--min-expiry` 仅适用于后者。
 `auth.json` 的 API Key 支持明文和 `${VAR}` 模板；命令型凭据（`!` 开头）在取值时执行命令取 stdout（10 秒超时、64 KiB 上限，与 pi 一致不缓存），失败时回落到环境变量。写入是原子的，Unix 下仅用户可读写；文件无法解析时拒绝覆盖，避免抹掉其它供应商的凭据。
@@ -89,12 +89,14 @@ HTTP 传输下通知流里带 id 的服务端请求（如 `ping`）会反向 POS
 
 ### 2026-10-19 本轮补全
 
-- **正确性**：Provider 请求前的消息变换层补齐（跨模型 thinking 丢弃、失败回合跳过、孤儿工具调用补结果、工具调用 id 归一、非视觉模型图片降级）；工具参数 JSON 修复与 `argumentsError`；工具回合中途自动压缩、上下文溢出后的 compact+retry、摘要请求重试事件；`/import` 改为替换并 resume；RPC `abort` 等待空闲，补齐 `toolcall_start`/`tool_execution_update`/`agent_end.willRetry`/`cycle_model.isScoped` 字段；compaction/branch summary 的 `details` 改为 pi 的 `{readFiles, modifiedFiles}`。
-- **配置兼容**：`packages` 对象形式与旧版 `skills` 对象不再导致整份 settings 失效；`defaultTools` 支持项目 `+ / -` 继承与显式空列表；`models.json` 支持 provider 级 `modelOverrides`、`baseUrl`、`compat`，以及部分价格覆盖和环境/命令型值；`--no-tools` 同时禁用 MCP。
-- **模型目录与选择**：新增 `<agentDir>/models-store.json` 远程目录缓存，`pi update --models` 会刷新 pi.dev 目录；启动时加载缓存；新增 pi 的 `defaultModelPerProvider` 选择顺序与未知模型 fallback；修正 `kimi-coding` 到 1.3.0 的 `openai-completions` + `/coding/v1`。
+- **正确性**：Provider 请求前的消息变换层补齐（跨模型 thinking 丢弃、失败回合跳过、孤儿工具调用补结果、工具调用 id 归一、非视觉模型图片降级）；工具参数 JSON 修复与 `argumentsError`；工具回合中途自动压缩、上下文溢出后的 compact+retry、摘要请求重试事件；`/import` 改为替换并 resume；RPC `abort` 等待空闲，补齐 `toolcall_start`/`tool_execution_update`/`agent_end.willRetry`/`cycle_model.isScoped` 字段；compaction/branch summary 的 `details` 改为 pi 的 `{readFiles, modifiedFiles}`；MCP 工具无 `content` 时回退到 `structuredContent` JSON。
+- **配置兼容**：`packages` 对象形式与旧版 `skills` 对象不再导致整份 settings 失效；`defaultTools` 支持项目 `+ / -` 继承与显式空列表；`models.json` 支持 provider 级 `modelOverrides`、`baseUrl`、`compat`、`promptCache`、`samplingParams`、部分价格覆盖和环境/命令型值；`--no-tools` 同时禁用 MCP；`--skill`/`--prompt-template`/`--theme` 实际生效。
+- **模型目录**：新增 `<agentDir>/models-store.json` 远程目录缓存，`pi update --models` 刷新 pi.dev 目录；启动时加载缓存；实现账号级 OpenRouter `/models/user`、Radius `/v1/config`、GitHub Copilot `/models` 目录；新增 `defaultModelPerProvider` 与未知模型 fallback；修正 `kimi-coding` 到 1.3.0 的 `openai-completions` + `/coding/v1`。
+- **高级运行时**：实现虚拟模型 `pi-virtual`（`models.json` 的 `virtual.model` 静态路由、目录项、会话级路由、物理响应记录）；`cacheWarming`（off/streaming/idle）按阶段停止/续保，带经济学阈值、状态与 RPC 展示；模型 `promptCache` 生命周期 + 1-token 重放；模型级 `samplingParams`；Codex Responses 增加 WebSocket 传输（`websocket`/`websocket-cached`/`auto`，auto 握手失败回退 SSE）；新增 OpenRouter 生图与 OpenAI Decisions 分类网关。
 - **内置工具**：新增 `powershell`（Windows/装有 pwsh 的平台）；自动加载 `SYSTEM.md` / `APPEND_SYSTEM.md`，上下文文件补齐 `AGENTS.override.md` 与大小写变体。
-- **命令与导出**：`/share` 支持私有 GitHub gist（`GITHUB_TOKEN`/`GH_TOKEN`）；`/llama` 支持 router 列表、load、unload；`/bug` 生成脱敏 zip（环境、配置、错误日志、可选会话）；`/export` 支持 `.jsonl`。
-- **认证**：`pi login` 新增 Anthropic 浏览器 OAuth（PKCE + 回环）、xAI 设备码、Kimi 设备码，并为其余 Provider 提供 API key 登录；`logout` 可移除任意 Provider 的凭据。OpenAI ChatGPT、GitHub Copilot、OpenRouter、Meta、Radius 的 OAuth 仍未实现。
+- **命令与导出**：`/share` 支持 Radius artifact 与私有 GitHub gist（auto 优先 Radius）；`/llama` 支持 router 列表/load/unload、Hugging Face 搜索/详情/下载，并把已加载模型自动注册为 `llama.cpp/*`；`/bug` 生成脱敏 zip（环境、配置、错误日志、可选会话）；`/export` 支持 `.jsonl`。
+- **认证**：`pi login` 已覆盖 OpenAI ChatGPT（动态客户端 + PKCE）、GitHub Copilot（设备码 + Copilot token）、OpenRouter（PKCE 换永久 key）、Meta（设备码 + API key mint）、Radius（gateway 设备码）、Anthropic、xAI、Kimi 与 Codex；其余 Provider 仍支持 API key 登录。`logout` 可移除任意 Provider 的凭据；运行时按需刷新过期 OAuth token。
+- **已知限制**：Radius 登录目前走设备码（未做浏览器选择菜单）；OpenAI ChatGPT 回调固定端口 1455；GitHub Copilot Enterprise 只支持域名输入；`/llama` 下载为轮询等待，无进度条/量化体积选择；虚拟模型只支持 `models.json` 静态目标，尚未接入 JS 扩展的动态 `route()` 与路由状态条目；Codex `websocket-cached` 尚未复用连接/`previous_response_id`；生图/分类网关目前只有 OpenRouter 与 OpenAI Decisions 两种方言，且尚未接到 CLI/TUI/桌面入口；cache warming 未实现扩展决策事件；`cimd`、完整 MCP `callbackUrl` 路径与 pi 的 `mcp-auth.json` 共享格式仍未覆盖。
 
 ## 桌面能力
 
@@ -140,7 +142,7 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-2026-10-19 本轮验证：Ai/Agent/CodingAgent/MCP/CLI 共 729 项测试通过，Linux x64 NativeAOT 冒烟通过（`AOT SMOKE OK`）；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。真实供应商联网与 Windows/macOS 实机仍未验证。
+2026-10-19 本轮验证：Ai/Agent/CodingAgent/MCP/CLI 共 752 项测试通过，Linux x64 NativeAOT 冒烟通过（`AOT SMOKE OK`）；Desktop 436/437 通过，剩余 1 项为 X11 PrimarySelection 环境相关失败。真实供应商联网与 Windows/macOS 实机仍未验证。
 
 GUI 环境可用 `xvfb-run`。真实二进制对照测试要求 PATH 中有 TypeScript `pi`；没有安装时测试失败，不静默跳过。
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。

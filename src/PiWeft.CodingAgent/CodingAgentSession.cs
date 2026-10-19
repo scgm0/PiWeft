@@ -28,6 +28,12 @@ public sealed record CodingAgentSessionOptions
 	/// <summary>流式产出助手回复。接模型网关时用 <c>AgentGatewayStreamFn.For(gateway)</c>。</summary>
 	public required StreamFn StreamFn { get; init; }
 
+	/// <summary>会话使用的模型目录；虚拟模型路由需要它解析物理目标。</summary>
+	public ModelRegistry? Registry { get; init; }
+
+	/// <summary>为路由后的物理 Provider 解析凭据（来自 models.json 的 key）。</summary>
+	public Func<string, string?>? ApiKeyForProvider { get; init; }
+
 	/// <summary>
 	/// 思考级别。为 <c>null</c> 时沿用会话里记录的级别（恢复会话时就是上次的），没有记录则为
 	/// <see cref="ThinkingLevels.Off"/> —— 与 pi 一致：显式指定优先，其次会话记录，最后默认值。
@@ -96,6 +102,7 @@ public sealed record CodingAgentSessionOptions
 public sealed class CodingAgentSession : IDisposable
 {
 	private readonly AgentRuntime _agent;
+	private CacheWarmer? _cacheWarmer;
 
 	/// <summary>系统提示词中最后一次描述过的工具集合。</summary>
 	private IReadOnlyList<BuiltinTool> _promptTools = [];
@@ -109,6 +116,7 @@ public sealed class CodingAgentSession : IDisposable
 	private long _projectedCacheRevision = -1;
 	private SystemMessage? _projectedCachePrompt;
 	private readonly IDisposable _persistence;
+	private readonly IDisposable _cacheWarmLifecycle;
 
 	/// <summary>会话订阅者：代理事件之外，会话自己也会发重试事件。</summary>
 	private readonly List<Func<AgentEvent, ValueTask>> _listeners = [];
@@ -123,6 +131,9 @@ public sealed class CodingAgentSession : IDisposable
 	private bool? _autoRetryOverride;
 	private bool _overflowRecoveryAttempted;
 	private readonly StreamFn _streamFn;
+	private readonly StreamFn _routedStreamFn;
+	private readonly ModelRegistry? _registry;
+	private readonly Func<string, string?>? _apiKeyForProvider;
 	private readonly StreamOptions _streamOptions;
 	private bool _disposed;
 	private readonly Lock _statisticsGate = new();
@@ -238,10 +249,18 @@ public sealed class CodingAgentSession : IDisposable
 		_userBeforeToolCall = options.BeforeToolCall;
 
 		_streamFn = options.StreamFn;
+		_registry = options.Registry;
+		_apiKeyForProvider = options.ApiKeyForProvider;
+		_routedStreamFn = StreamWithVirtualRouting;
 		_streamOptions = options.Options with
 		{
 			TimeoutMs = options.Options.TimeoutMs ?? options.Settings.TimeoutMs,
 		};
+
+		_cacheWarmer = new CacheWarmer(
+			_routedStreamFn,
+			() => Settings.CacheWarming,
+			usage => Session.AppendUsage("cache_warm", _agent!.Model.Provider, _agent.Model.Id, usage, "prompt cache warm"));
 
 		// 恢复会话时，会话文件里记录的思考级别优先于默认值（显式传入的级别仍然最优先）。
 		var requestedThinkingLevel = options.ThinkingLevel
@@ -254,7 +273,7 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			Model = options.Model,
 			ThinkingLevel = ThinkingLevelResolver.Clamp(options.Model, requestedThinkingLevel),
-			StreamFn = options.StreamFn,
+			StreamFn = _routedStreamFn,
 			Tools = [.. builtins.Select(static builtin => builtin.Tool)],
 			ConvertToLlm = CodingMessages.ConvertToLlm,
 			TransformContext = TransformContextAsync,
@@ -278,6 +297,7 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		_persistence = _agent.Subscribe(PersistAsync);
+		_cacheWarmLifecycle = _agent.Subscribe(CacheWarmLifecycleAsync);
 	}
 
 	public string Cwd { get; }
@@ -295,6 +315,9 @@ public sealed class CodingAgentSession : IDisposable
 	public AgentRuntime Agent => _agent;
 
 	public Model Model => _agent.Model;
+
+	/// <summary>当前缓存保温状态；模型没有 promptCache 时也会给出 inactive 原因。</summary>
+	public Compaction.CacheWarmingStatus? CacheWarmingStatus => _cacheWarmer?.Status;
 
 	public string ThinkingLevel => _agent.ThinkingLevel;
 
@@ -428,7 +451,7 @@ public sealed class CodingAgentSession : IDisposable
 		var result = await BranchSummarizer.NavigateWithSummaryAsync(
 			Session,
 			_agent.Model,
-			_streamFn,
+			_routedStreamFn,
 			_streamOptions,
 			Settings.Compaction,
 			Settings.BranchSummary,
@@ -574,7 +597,7 @@ public sealed class CodingAgentSession : IDisposable
 		return BranchSummarizer.SummarizeBranchAsync(
 			Session,
 			_agent.Model,
-			_streamFn,
+			_routedStreamFn,
 			_streamOptions,
 			Settings.Compaction,
 			Settings.BranchSummary,
@@ -618,6 +641,7 @@ public sealed class CodingAgentSession : IDisposable
 			throw new InvalidOperationException("Cannot compact while the session is streaming");
 		}
 
+		_cacheWarmer?.Cancel();
 		IsCompacting = true;
 		Emit(new CompactionStartEvent { Reason = reason });
 		CompactionResult? result;
@@ -627,7 +651,7 @@ public sealed class CodingAgentSession : IDisposable
 				() => Compactor.CompactAsync(
 					Session,
 					_agent.Model,
-					_streamFn,
+					_routedStreamFn,
 					_streamOptions,
 					Settings.Compaction,
 					customInstructions,
@@ -855,7 +879,7 @@ public sealed class CodingAgentSession : IDisposable
 	/// 桌面的「测试连接」与 RPC 的 <c>test_model</c> 共用它。
 	/// </summary>
 	public Task<ProviderTestResult> TestConnectionAsync(CancellationToken cancellationToken = default) =>
-		ProviderProbe.TestAsync(_streamFn, _agent.Model, _streamOptions, cancellationToken);
+		ProviderProbe.TestAsync(_routedStreamFn, _agent.Model, _streamOptions, cancellationToken);
 
 	/// <summary>当前分支的待办计划；按会话 revision 缓存，未变更时零扫描。</summary>
 	public TodoState CurrentTodo()
@@ -979,6 +1003,168 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// 虚拟模型的请求入口：先按当前会话选择路由到物理模型，再把事件原样转发。
+	/// 助手消息因此记录物理 provider/model，而 <c>model_change</c> 仍保留虚拟模型。
+	/// </summary>
+	private AssistantMessageEventStream StreamWithVirtualRouting(
+		Model model,
+		IReadOnlyList<Message> messages,
+		StreamOptions options)
+	{
+		var definition = VirtualModels.IsVirtual(model) && _registry is not null
+			? _registry.Virtual(model.Provider, model.Id)
+			: null;
+		if (definition is null)
+		{
+			return _streamFn(model, messages, options);
+		}
+
+		var stream = new AssistantMessageEventStream();
+		var cancellationToken = options.CancellationToken;
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				var previous = FindPreviousPhysicalResponse(messages);
+				var route = await VirtualModels.RouteAsync(
+					definition,
+					new VirtualModelRequest
+					{
+						Model = model,
+						ThinkingLevel = options.ThinkingLevel ?? _agent?.ThinkingLevel ?? ThinkingLevels.Off,
+						Reason = RouteReason(messages),
+						Messages = messages,
+						Registry = _registry!,
+						PreviousModel = previous?.Model,
+						PreviousThinkingLevel = previous?.ThinkingLevel,
+					},
+					cancellationToken).ConfigureAwait(false);
+
+				var routedOptions = options with
+				{
+					ThinkingLevel = route.ThinkingLevel ?? options.ThinkingLevel,
+				};
+				if (_apiKeyForProvider?.Invoke(route.Model.Provider) is { Length: > 0 } apiKey)
+				{
+					routedOptions = routedOptions with { ApiKey = apiKey };
+				}
+
+				var inner = _streamFn(route.Model, messages, routedOptions);
+				await foreach (var @event in inner.WithCancellation(cancellationToken).ConfigureAwait(false))
+				{
+					stream.Push(@event switch
+					{
+						DoneEvent done => done with { Partial = done.Partial with { ThinkingLevel = route.ThinkingLevel } },
+						ErrorEvent error => error with { Partial = error.Partial with { ThinkingLevel = route.ThinkingLevel } },
+						_ => @event,
+					});
+				}
+
+				if (!stream.IsDone)
+				{
+					var result = await inner.Result.ConfigureAwait(false);
+					stream.End(result with { ThinkingLevel = route.ThinkingLevel });
+				}
+			}
+			catch (OperationCanceledException)
+			{
+				PushRouteFailure(stream, model, "Request aborted", StopReason.Aborted);
+			}
+			catch (Exception exception)
+			{
+				PushRouteFailure(stream, model, exception.Message, StopReason.Error);
+			}
+		}, CancellationToken.None);
+
+		return stream;
+	}
+
+	private (Model Model, string? ThinkingLevel)? FindPreviousPhysicalResponse(IReadOnlyList<Message> messages)
+	{
+		for (var index = messages.Count - 1; index >= 0; index--)
+		{
+			if (messages[index] is not AssistantMessage assistant ||
+				assistant.StopReason is StopReason.Error or StopReason.Aborted ||
+				_registry?.Get(assistant.Provider, assistant.Model) is not { } physical ||
+				VirtualModels.IsVirtual(physical))
+			{
+				continue;
+			}
+
+			return (physical, assistant.ThinkingLevel);
+		}
+
+		return null;
+	}
+
+	private static VirtualRouteReason RouteReason(IReadOnlyList<Message> messages)
+	{
+		for (var index = messages.Count - 1; index >= 0; index--)
+		{
+			if (messages[index] is AssistantMessage)
+			{
+				break;
+			}
+
+			if (messages[index] is UserMessage)
+			{
+				return VirtualRouteReason.User;
+			}
+		}
+
+		return VirtualRouteReason.Continuation;
+	}
+
+	private static void PushRouteFailure(
+		AssistantMessageEventStream stream,
+		Model model,
+		string message,
+		StopReason reason)
+	{
+		var error = new AssistantMessage
+		{
+			Provider = model.Provider,
+			Model = model.Id,
+			Api = model.Api,
+			Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			StopReason = reason,
+			ErrorMessage = message,
+		};
+		stream.Push(new ErrorEvent { Reason = reason, Partial = error });
+	}
+
+	private ValueTask CacheWarmLifecycleAsync(AgentEvent @event)
+	{
+		switch (@event)
+		{
+			case AgentStartEvent:
+				_cacheWarmer?.Cancel();
+				break;
+			case MessageEndEvent { Message: AssistantMessage }:
+				StartCacheWarmer();
+				break;
+			case AgentEndEvent:
+				_cacheWarmer?.AgentSettled();
+				break;
+		}
+
+		return ValueTask.CompletedTask;
+	}
+
+	private void StartCacheWarmer()
+	{
+		try
+		{
+			var messages = Project();
+			_cacheWarmer?.Start(_agent.Model, messages, _streamOptions with { ThinkingLevel = _agent.ThinkingLevel });
+		}
+		catch (Exception)
+		{
+			// 保温是尽力而为，不影响会话。
+		}
+	}
+
 	/// <summary>工具回合结束后检查阈值；需要时在继续同一个运行前压缩。</summary>
 	private async ValueTask<AgentTurnUpdate?> PrepareNextTurnAsync(
 		AgentTurnContext turn,
@@ -1009,6 +1195,7 @@ public sealed class CodingAgentSession : IDisposable
 
 	private async Task CompactDuringRunAsync(string reason, CancellationToken cancellationToken)
 	{
+		_cacheWarmer?.Cancel();
 		IsCompacting = true;
 		Emit(new CompactionStartEvent { Reason = reason });
 		CompactionResult? result;
@@ -1018,7 +1205,7 @@ public sealed class CodingAgentSession : IDisposable
 				() => Compactor.CompactAsync(
 					Session,
 					_agent.Model,
-					_streamFn,
+					_routedStreamFn,
 					_streamOptions,
 					Settings.Compaction,
 					customInstructions: null,
@@ -1229,6 +1416,7 @@ public sealed class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
+		_cacheWarmer?.Cancel();
 		_overflowRecoveryAttempted = false;
 		// 与字符串重载一致：先自动压缩，再按重试策略运行；重试同样走"继续"而不是重新提问。
 		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
@@ -1242,6 +1430,7 @@ public sealed class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> ContinueAsync(CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
+		_cacheWarmer?.Cancel();
 		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
 		return await RunWithRetryAsync(
 			_ => _agent.ContinueAsync(cancellationToken),
@@ -1265,6 +1454,7 @@ public sealed class CodingAgentSession : IDisposable
 	/// <summary>切换模型，并在会话中记录一条 <c>model_change</c> 条目。</summary>
 	public void SetModel(Model model)
 	{
+		_cacheWarmer?.Cancel();
 		ArgumentNullException.ThrowIfNull(model);
 		if (model.Id == _agent.Model.Id && model.Provider == _agent.Model.Provider)
 		{
@@ -1380,6 +1570,8 @@ public sealed class CodingAgentSession : IDisposable
 
 	public void Dispose()
 	{
+		_cacheWarmer?.Dispose();
+		_cacheWarmer = null;
 		if (_disposed)
 		{
 			return;
@@ -1387,6 +1579,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		_disposed = true;
 		_persistence.Dispose();
+		_cacheWarmLifecycle.Dispose();
 		GC.SuppressFinalize(this);
 	}
 

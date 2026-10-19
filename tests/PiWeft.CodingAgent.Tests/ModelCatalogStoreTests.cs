@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using PiWeft.Ai;
+using PiWeft.Ai.Auth;
 using PiWeft.CodingAgent.Models;
 using Xunit;
 
@@ -37,6 +38,48 @@ public sealed class ModelCatalogStoreTests : IDisposable
 		var registry = ModelRegistry.LoadDefault();
 		Assert.True(ModelCatalogStore.LoadCached(registry, _root) > 0);
 		Assert.NotNull(registry.Resolve("anthropic", "remote-only"));
+	}
+
+	[Fact]
+	public async Task OpenRouterAccountCatalogUsesKeySpecificModels()
+	{
+		OAuthStore.Save("openrouter", new OAuthCredential { Access = "key", Refresh = "", Expires = long.MaxValue }, _root);
+		var handler = new FakeCatalogHandler(
+			"""{"data":[{"id":"openrouter/auto","name":"Auto","context_length":200000,"top_provider":{"max_completion_tokens":8192},"pricing":{"prompt":"0.000001","completion":"0.000002","input_cache_read":"0.0000001"},"architecture":{"input_modalities":["text","image"]},"supported_parameters":["reasoning"]}]}""");
+
+		Assert.True(await ModelCatalogStore.RefreshAccountCatalogAsync("openrouter", _root, handler));
+
+		var registry = ModelRegistry.LoadDefault();
+		ModelCatalogStore.LoadCached(registry, _root);
+		var model = registry.Resolve("openrouter", "openrouter/auto")!;
+		Assert.Equal(200000, model.ContextWindow);
+		Assert.Equal(8192, model.MaxTokens);
+		Assert.Contains("image", model.Input);
+		Assert.Equal(1, model.Cost.Input);
+		Assert.Equal(2, model.Cost.Output);
+		Assert.True(model.Reasoning);
+	}
+
+	[Fact]
+	public async Task RadiusAccountCatalogReplacesProviderModels()
+	{
+		OAuthStore.Save("radius", new OAuthCredential
+		{
+			Access = "token",
+			Refresh = "refresh",
+			Expires = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds(),
+		}, _root);
+		var handler = new FakeCatalogHandler(
+			"""{"baseUrl":"https://gateway.example/v1","models":[{"id":"custom","name":"Custom","reasoning":true,"input":["text"],"cost":{"input":1,"output":2,"cacheRead":0,"cacheWrite":0},"contextWindow":64000,"maxTokens":4096}]}""");
+
+		Assert.True(await ModelCatalogStore.RefreshAccountCatalogAsync("radius", _root, handler));
+
+		var registry = ModelRegistry.LoadDefault();
+		ModelCatalogStore.LoadCached(registry, _root);
+		var model = registry.Resolve("radius", "custom")!;
+		Assert.Equal("pi-messages", model.Api);
+		Assert.Equal("https://gateway.example/v1", model.BaseUrl);
+		Assert.Equal(64000, model.ContextWindow);
 	}
 
 	private sealed class FakeCatalogHandler(string body) : HttpMessageHandler
