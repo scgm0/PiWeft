@@ -351,12 +351,27 @@ public static partial class Strings
 	public const string RoleAssistantStreaming = "pi（正在回复…）";
 	public const string RoleError = "错误";
 
-	/// <summary>输入区上方的待办条。</summary>
+	/// <summary>用户长消息的折叠开关。</summary>
+	public const string MessageExpand = "展开全文";
+	public const string MessageCollapse = "收起";
+
+	/// <summary>输入区上方的待办卡。</summary>
 	public const string TodoPlanTitle = "待办";
 
-	public static string TodoPlanProgress(int completed, int total) => $"{TodoPlanTitle} {completed}/{total}";
+	/// <summary>待办进度：只显示非零分段，段间用宽空格 + 中点分隔（PiDeck 同款）。</summary>
+	public static string TodoPlanProgress(int completed, int inProgress, int pending)
+	{
+		var parts = new List<string>(3);
+		if (completed > 0) parts.Add($"{completed} 完成");
+		if (inProgress > 0) parts.Add($"{inProgress} 进行中");
+		if (pending > 0) parts.Add($"{pending} 待处理");
+		return string.Join("\u2002·\u2002", parts);
+	}
 
-	public static string TodoPlanMore(int hidden) => $"… 还有 {hidden} 项";
+	/// <summary>输入区上方的扩展 widget 卡。</summary>
+	public const string ExtensionWidgetsTitle = "扩展";
+
+	public static string ExtensionWidgetsCount(int count) => $"{count} 项";
 
 	/// <summary>ask_question 对话卡片。</summary>
 	public const string AskTitle = "需要你的输入";
@@ -486,21 +501,23 @@ public static partial class Strings
 
 	public static string RoleTool(string? toolName) => $"工具 · {toolName}";
 
-	/// <summary>工具卡片的折叠标题：状态、名称、耗时与一行摘要。</summary>
-	public static string ToolSummary(string toolName, string text, bool isError = false, double? durationMs = null)
-	{
-		// 状态用中文：内置字体不含 ✓/✗，符号回退会让标题与正文的笔画粗细不一致。
-		var mark = isError ? "失败" : "完成";
-		var timing = durationMs is { } ms ? $"  {FormatDuration(ms)}" : string.Empty;
-		return $"{mark} {toolName}{timing} · {Summarize(text)}";
-	}
+	// 工具卡片展开后的分区标题与状态文案。
+	public const string ToolCommandLabel = "命令";
+	public const string ToolResultLabel = "结果";
+	public const string ToolDiffLabel = "差异";
+	public const string ToolRunning = "运行中";
+	public const string ToolCompleted = "完成";
+	public const string ToolFailed = "失败";
+
+	public static string ToolDetail(string text) => Summarize(text);
 
 	/// <summary>把毫秒格式化成便于扫读的时长。</summary>
 	public static string FormatDuration(double milliseconds) => milliseconds switch
 	{
 		< 1000 => $"{milliseconds:0} ms",
 		< 60_000 => $"{milliseconds / 1000:0.#} s",
-		_ => $"{milliseconds / 60_000:0.#} min",
+		< 3_600_000 => $"{(int)(milliseconds / 60_000)}m{(int)(milliseconds % 60_000 / 1000):00}s",
+		_ => $"{(int)(milliseconds / 3_600_000)}h{(int)(milliseconds % 3_600_000 / 60_000):00}m",
 	};
 
 	/// <summary>把多行文本压成一行摘要，过长时截断。</summary>
@@ -558,6 +575,7 @@ public static partial class Strings
 	public const string Streaming = "正在生成…";
 	public const string ThinkingActive = "正在思考…";
 	public const string ThinkingComplete = "思考过程";
+	public static string ThinkingDuration(double milliseconds) => $"思考了 {FormatDuration(milliseconds)}";
 	public static string ResponseDuration(double milliseconds) => $"回复耗时 {FormatDuration(milliseconds)}";
 
 	// 错误与提示

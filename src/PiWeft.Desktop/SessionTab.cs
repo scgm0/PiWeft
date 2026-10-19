@@ -30,6 +30,8 @@ public sealed partial class SessionTab : IDisposable
 	private readonly MultiLineTextBox _composer;
 	private readonly TextBlock _composerHint = new();
 	private readonly Button _sendButton;
+	private readonly Button _sendMenuButton;
+	private readonly Border _sendDivider;
 	private readonly TextBlock _sendLabel = new();
 	private readonly Image _sendIcon = new();
 	private readonly TextBlock _noMatches = new();
@@ -79,11 +81,18 @@ public sealed partial class SessionTab : IDisposable
 	private readonly WrapPanel _commandBar = new();
 	private readonly Border _editNotice;
 
-	/// <summary>输入区上方的待办条：只在计划存在时显示，最多展示固定行数。</summary>
-	private const int TodoStripMaxItems = 6;
-	private readonly Border _todoStrip;
+	/// <summary>输入区上方的待办卡：头部显示分段进度，展开后是限高可滚动的完整计划。</summary>
+	private const double ComposerWidgetListMaxHeight = 180;
+	private readonly ComposerWidgetCard _todoCard;
 	private readonly StackPanel _todoRows = new();
+	private readonly ScrollViewer _todoScroll;
 	private TodoState? _renderedTodo;
+	private TodoPlan? _renderedPlan;
+
+	/// <summary>通用扩展 widget 卡：setWidget 的文本行进这里，和待办卡同列同宽。</summary>
+	private readonly ComposerWidgetCard _extensionCard;
+	private readonly StackPanel _extensionBody = new();
+	private readonly ReadingColumn _widgetColumn = new();
 	private readonly Button _retry;
 	private readonly Button _copyReply;
 	private readonly Button _modelButton;
@@ -177,6 +186,9 @@ public sealed partial class SessionTab : IDisposable
 			})
 			.OnKeyDown(key =>
 			{
+				// 文件引用是行内原子：方向键跳过、Backspace/Delete 整枚删除。
+				if (UserReferenceRichText.TryHandleKey(_composer!, key)) return;
+
 				// Enter 发送，Shift+Enter 换行 —— 与占位符里的提示一致。
 				if (key.Key == Key.Enter && !key.ShiftKey)
 				{
@@ -188,7 +200,25 @@ public sealed partial class SessionTab : IDisposable
 				// 命令分发在按键冒泡之后，这里能先看到 Ctrl/Cmd+V；剪贴板里是图片时就当附件，
 				// 否则交给框架做原有文本粘贴。
 				if (key.Key == Key.V && key.PrimaryKey && !key.AltKey && PasteImageFromClipboard()) key.Handled = true;
-			});
+			})
+			.OnTextInput(input => UserReferenceRichText.TryHandleTextInput(_composer!, input));
+
+		// 草稿里的文件引用用行内 chip 显示；原始 @"..." 仍留在文档里。
+		UserReferenceRichText.Attach(_composer, editable: true);
+
+		// 默认右键菜单的「粘贴」只判断剪贴板有无文本，纯图片剪贴板时菜单项是灰的。
+		// 替换同一个语义命令：菜单、快捷键与工具栏仍走 StandardCommands.Paste，
+		// 但执行时先尝试图片，再回退到文本框自己的文本粘贴。
+		_composer.Commands.Unregister(StandardCommands.Paste);
+		_composer.Commands.Register(StandardCommands.Paste, this,
+			static tab => tab.PasteFromClipboard(),
+			static tab => tab.CanPasteFromClipboard());
+
+		// 剪切选区时先把部分覆盖的引用扩成整枚 chip，菜单与快捷键共用这一条命令。
+		_composer.Commands.Unregister(StandardCommands.Cut);
+		_composer.Commands.Register(StandardCommands.Cut, this,
+			static tab => tab.CutFromComposer(),
+			static tab => !tab._composer.IsReadOnly && tab._composer.SelectionLength > 0);
 
 		_commandBar.Spacing(AppTheme.Space2).Margin(new Thickness(0, 0, 0, 4)).IsVisible(false);
 
@@ -199,9 +229,25 @@ public sealed partial class SessionTab : IDisposable
 				_sendIcon, _sendLabel.Text(Strings.Send).FontSize(AppTheme.FontSizeCaption).OnAccentText()))
 			.OnClick(Send)
 			.Primary().Height(AppTheme.ControlHeightMd)
-			.CornerRadius(AppTheme.RadiusMd)
+			.CornerRadius(0)
 			.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0))
 			.VerticalAlignment(VerticalAlignment.Center);
+		_sendDivider = new Border().Width(1).Height(16).VerticalAlignment(VerticalAlignment.Center)
+			.WithTheme((theme, divider) => divider.Background = AppTheme.For(theme).TextOnAccent.WithAlpha(0x40))
+			.IsVisible(false);
+		_sendMenuButton = new Button()
+			.Content(new GlyphElement().Kind(GlyphKind.ChevronDown).GlyphSize(3)
+				.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).TextOnAccent))
+			.OnClick(ShowSendMenu)
+			.Primary().Height(AppTheme.ControlHeightMd).MinWidth(28)
+			.CornerRadius(0).Padding(new Thickness(5, 0, 7, 0))
+			.VerticalAlignment(VerticalAlignment.Center).IsVisible(false)
+			.HoverTip(Strings.SendOptions);
+		var sendGroup = new Border().CornerRadius(AppTheme.RadiusMd).ClipToBounds(true)
+			.HorizontalAlignment(HorizontalAlignment.Right).VerticalAlignment(VerticalAlignment.Center)
+			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Accent)
+			.Child(new StackPanel().Orientation(Orientation.Horizontal)
+				.VerticalAlignment(VerticalAlignment.Center).Children(_sendButton, _sendDivider, _sendMenuButton));
 
 		var attach = AppIcons.Button("image-plus", Strings.AttachFiles, () => _ = AttachImageAsync());
 		var commands = AppIcons.Button("square-slash", Strings.Commands, () => _composer.Text = "/");
@@ -244,7 +290,7 @@ public sealed partial class SessionTab : IDisposable
 			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
 			.Children(_testButton, _modelButton, _thinkingButton);
 		var toolbar = new DockPanel().LastChildFill()
-			.Children(_sendButton.DockRight(), rightActions.DockRight(), leftActions);
+			.Children(sendGroup.DockRight(), rightActions.DockRight(), leftActions);
 
 		// 上下文占用条：接近窗口上限时一眼可见。
 		_contextBar.Maximum(100).Height(3).Margin(new Thickness(0, 2, 0, 2));
@@ -260,13 +306,31 @@ public sealed partial class SessionTab : IDisposable
 				new TextBlock().Text(Strings.EditPending).FontSize(AppTheme.FontSizeCaption)
 					.MutedText().TextWrapping(TextWrapping.Wrap)));
 
-		_todoRows.Spacing(2);
-		_todoStrip = new Border()
-			.StyleName(AppStyles.Panel)
-			.CornerRadius(AppTheme.RadiusMd)
-			.Padding(new Thickness(AppTheme.Space2, 4, AppTheme.Space2, 4))
+		_todoRows.Spacing(6);
+		_todoScroll = new ScrollViewer()
+			.Content(_todoRows)
+			.AutoVerticalScroll()
+			.NoHorizontalScroll()
+			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
+			.MaxHeight(ComposerWidgetListMaxHeight);
+		_todoCard = new ComposerWidgetCard("list-checks", Strings.TodoPlanTitle);
+		_todoCard.Body.Children(_todoScroll);
+
+		_extensionBody.Spacing(AppTheme.Space2);
+		_extensionCard = new ComposerWidgetCard("package", Strings.ExtensionWidgetsTitle);
+		_extensionCard.Body.Children(new ScrollViewer()
+			.Content(_extensionBody)
+			.AutoVerticalScroll()
+			.NoHorizontalScroll()
+			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
+			.MaxHeight(ComposerWidgetListMaxHeight));
+
+		// 扩展卡与输入卡同宽同列：ReadingColumn 按阅读宽度封顶并撑满可用宽度，
+		// 卡片在自己的列里拉伸，窗口缩放与阅读宽度设置都自动跟随。
+		_widgetColumn.Spacing(AppTheme.Space2)
+			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
 			.IsVisible(false)
-			.Child(_todoRows);
+			.Children(_todoCard.View, _extensionCard.View);
 
 		var composerPane = _composerPane = new Border()
 			.StyleName(AppStyles.Composer)
@@ -277,7 +341,7 @@ public sealed partial class SessionTab : IDisposable
 			.Margin(new Thickness(AppTheme.Space4, AppTheme.Space2, AppTheme.Space4, AppTheme.Space3))
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
-				.Children(_todoStrip, _editNotice, _commandBar, _attachmentBar,
+				.Children(_editNotice, _commandBar, _attachmentBar,
 					new Grid().Children(_composer, _composerHint.Text(Strings.ComposerPlaceholder)
 						.FontSize(AppTheme.FontSizeChat).SubtleText().TextTrimming(TextTrimming.CharacterEllipsis)
 						.Margin(new Thickness(AppTheme.Space2)).IsHitTestVisible(false)
@@ -347,12 +411,13 @@ public sealed partial class SessionTab : IDisposable
 
 		// 输入区整列（提示文本 + 输入框 + 状态栏）：空会话时落在填充行并居中，有消息后回到贴底的自适应行。
 		_extensionLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)
-			.HorizontalAlignment(HorizontalAlignment.Center).IsVisible(false);
+			.HorizontalAlignment(HorizontalAlignment.Center).TextTrimming(TextTrimming.CharacterEllipsis)
+			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0)).IsVisible(false);
 
 		_composerColumn = new StackPanel()
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Stretch)
-			.Children(_extensionLine, _emptyCard.IsVisible(false), composerPane,
+			.Children(_extensionLine, _widgetColumn, _emptyCard.IsVisible(false), composerPane,
 				statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)));
 
 		var layout = new Grid()
@@ -407,6 +472,18 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>本标签的宿主交互（ask_question）；随标签释放一起关闭。</summary>
 	internal DesktopUiHost? UiHost { get; set; }
 
+	/// <summary>待办卡是否占据输入区上方的位置（诊断与契约测试用）。</summary>
+	internal bool TodoCardVisible => _todoCard.View.IsVisible;
+
+	/// <summary>扩展 widget 卡是否占据输入区上方的位置（诊断与契约测试用）。</summary>
+	internal bool ExtensionCardVisible => _extensionCard.View.IsVisible;
+
+	/// <summary>代理事件层是否已进入流式状态（诊断与契约测试用）。</summary>
+	internal bool ChatStreaming => _chat.IsStreaming;
+
+	/// <summary>草稿里已识别的文件引用数（诊断与契约测试用）。</summary>
+	internal int ComposerReferenceCount => UserReferenceRichText.Count(_composer.Text);
+
 	public string Title { get; private set; }
 
 	/// <summary>标签页内容。</summary>
@@ -453,7 +530,7 @@ public sealed partial class SessionTab : IDisposable
 		RefreshExtensionLine();
 	}
 
-	/// <summary>扩展 <c>setWidget</c>：把 widget 的文本行并入输入区上方的提示行。</summary>
+	/// <summary>扩展 <c>setWidget</c>：把 widget 的文本行放进输入区上方的扩展卡。</summary>
 	public void SetExtensionWidget(string key, IReadOnlyList<string>? lines)
 	{
 		if (_disposed)
@@ -470,7 +547,7 @@ public sealed partial class SessionTab : IDisposable
 			_extensionWidgets[key] = lines;
 		}
 
-		RefreshExtensionLine();
+		RefreshExtensionWidgets();
 	}
 
 	/// <summary>扩展 <c>setTitle</c>：更新标签页标题。</summary>
@@ -504,13 +581,12 @@ public sealed partial class SessionTab : IDisposable
 
 	private void RefreshExtensionLine()
 	{
+		// widget 有自己的卡；这一行只保留 setStatus 的短状态，避免和卡片内容重复。
 		var parts = _extensionStatuses.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
 			.Select(static pair => pair.Value)
-			.Concat(_extensionWidgets.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
-				.SelectMany(static pair => pair.Value))
 			.Where(static part => !string.IsNullOrWhiteSpace(part))
 			.ToArray();
-		_extensionLine.Text(string.Join(" · ", parts));
+		_extensionLine.Text(string.Join("  ·  ", parts));
 		_extensionLine.IsVisible(parts.Length > 0);
 	}
 
@@ -643,6 +719,7 @@ public sealed partial class SessionTab : IDisposable
 		if (_disposed) return;
 		_timeline.ApplyReadingWidth();
 		_composerPane.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
+		_widgetColumn.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		_readingStatisticsBar.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		_composer.FontSize(AppTheme.FontSizeChat);
 		_composerHint.FontSize(AppTheme.FontSizeChat);
@@ -1191,7 +1268,8 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>同步当前模型与思考强度铭牌。</summary>
 	private void RefreshPickers()
 	{
-		_modelLabel.Text(Session.Model.Id);
+		var modelName = Session.Model.Name.Length > 0 ? Session.Model.Name : Session.Model.Id;
+		_modelLabel.Text($"{Session.Model.Provider}/{modelName}").TextTrimming(TextTrimming.CharacterEllipsis);
 		_modelButton.HoverTip($"{Session.Model.Provider}/{Session.Model.Id}\n{Strings.ModelCapabilities(Session.Model)}");
 
 		var thinking = Strings.ThinkingLevelName(Session.ThinkingLevel);
@@ -1267,6 +1345,9 @@ public sealed partial class SessionTab : IDisposable
 		}
 		_sendLabel.Text(busy ? Strings.Abort : Strings.Send);
 		_sendIcon.Source(AppIcons.Get(busy ? "x" : "arrow-up", AppTheme.TextOnAccent));
+		_sendMenuButton.IsVisible(busy);
+		_sendMenuButton.IsEnabled = _chat.IsStreaming;
+		_sendDivider.IsVisible(busy);
 		_modelButton.IsEnabled = !busy;
 		_thinkingButton.IsEnabled = !busy;
 		_planLabel.Text(Session.PlanModeEnabled ? Strings.PlanModeOn : Strings.PlanMode);
@@ -1283,13 +1364,13 @@ public sealed partial class SessionTab : IDisposable
 			_conversationScroll.Stop();
 		}
 
-		foreach (var bubble in _timeline.VisibleRows.OfType<Border>())
+		foreach (var row in _timeline.VisibleRows)
 		{
-			if (bubble.Tag is StackPanel actions)
+			if (row is FrameworkElement { Tag: StackPanel actions })
 			{
-				foreach (var action in actions.Children.OfType<Button>().Skip(1))
+				foreach (var action in actions.Children.OfType<Button>())
 				{
-					action.IsEnabled = !busy;
+					action.IsEnabled = !busy || HoverHints.Text(action) == Strings.CopyUserMessage;
 				}
 			}
 		}
@@ -1298,64 +1379,117 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 
-	/// <summary>重建待办条；只在计划对象变化时调用，平时零成本。</summary>
+	/// <summary>重建待办卡；只在计划对象变化时调用，平时零成本。</summary>
 	private void RefreshTodoStrip(TodoState state)
 	{
 		var plan = state.ActivePlan;
 		if (plan is null || plan.Items.Count == 0)
 		{
-			if (_todoStrip.IsVisible)
+			if (_renderedPlan is not null)
 			{
+				_renderedPlan = null;
 				_todoRows.Clear();
-				_todoStrip.IsVisible(false);
 			}
-
+			_todoCard.Show(false);
+			RefreshWidgetColumn();
 			return;
 		}
 
 		var completed = 0;
+		var inProgress = 0;
 		foreach (var item in plan.Items)
 		{
-			if (item.Status == "completed")
+			if (item.Status == "completed") completed++;
+			else if (item.Status == "in_progress") inProgress++;
+		}
+
+		_todoCard.Meta = Strings.TodoPlanProgress(completed, inProgress, plan.Items.Count - completed - inProgress);
+		// 计划没变（例如只是重新渲染）时保留已建的行，避免每 40ms 抖动一次。
+		if (!ReferenceEquals(_renderedPlan, plan))
+		{
+			_renderedPlan = plan;
+			_todoRows.Clear();
+			foreach (var item in plan.Items)
 			{
-				completed++;
+				_todoRows.Children(TodoRow(item));
 			}
 		}
 
-		_todoRows.Clear();
-		_todoRows.Children(new TextBlock()
-			.Text(Strings.TodoPlanProgress(completed, plan.Items.Count))
-			.FontSize(AppTheme.FontSizeMicro)
-			.SubtleText());
-
-		var visible = Math.Min(plan.Items.Count, TodoStripMaxItems);
-		for (var index = 0; index < visible; index++)
-		{
-			var item = plan.Items[index];
-			_todoRows.Children(new TextBlock()
-				.Text($"{TodoMarker(item.Status)} #{item.Id} {item.Text.Replace('\n', ' ')}")
-				.FontSize(AppTheme.FontSizeMicro)
-				.MutedText()
-				.TextTrimming(TextTrimming.CharacterEllipsis));
-		}
-
-		if (plan.Items.Count > visible)
-		{
-			_todoRows.Children(new TextBlock()
-				.Text(Strings.TodoPlanMore(plan.Items.Count - visible))
-				.FontSize(AppTheme.FontSizeMicro)
-				.SubtleText());
-		}
-
-		_todoStrip.IsVisible(true);
+		_todoCard.Show(true);
+		RefreshWidgetColumn();
 	}
 
-	private static string TodoMarker(string status) => status switch
+	/// <summary>一条待办：状态字形 + 可截断的正文，整行悬停显示完整文本。</summary>
+	private static UIElement TodoRow(TodoItem item)
 	{
-		"completed" => "☑",
-		"in_progress" => "◐",
-		_ => "☐",
-	};
+		var text = new TextBlock()
+			.Text(item.Text.Replace('\n', ' '))
+			.FontSize(AppTheme.FontSizeCaption)
+			.MutedText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.TextWrapping(TextWrapping.NoWrap)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(AppTheme.Space2 + 2, 0, 0, 0))
+			.HoverTip(item.Text);
+
+		if (item.Status == "completed") text.SubtleText();
+
+		return new DockPanel()
+			.LastChildFill()
+			.MinHeight(20)
+			.Children(new TodoStatusGlyph(item.Status).DockLeft(), text);
+	}
+
+	/// <summary>扩展 widget 卡：每个 key 一段，先用等宽小字标出 key，再逐行显示文本。</summary>
+	private void RefreshExtensionWidgets()
+	{
+		_extensionBody.Clear();
+		if (_extensionWidgets.Count == 0)
+		{
+			_extensionCard.Show(false);
+			RefreshWidgetColumn();
+			return;
+		}
+
+		foreach (var (key, lines) in _extensionWidgets.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
+		{
+			var section = new StackPanel().Spacing(4);
+			section.Children(new TextBlock()
+				.Text(ExtensionKeyLabel(key))
+				.FontFamily(AppTheme.MonoFont)
+				.FontSize(AppTheme.FontSizeMicro)
+				.SubtleText());
+			foreach (var line in lines)
+			{
+				if (string.IsNullOrWhiteSpace(line)) continue;
+				section.Children(new TextBlock()
+					.Text(line)
+					.FontSize(AppTheme.FontSizeCaption)
+					.MutedText()
+					.TextWrapping(TextWrapping.Wrap));
+			}
+			_extensionBody.Children(section);
+		}
+
+		_extensionCard.Meta = Strings.ExtensionWidgetsCount(_extensionWidgets.Count);
+		_extensionCard.Show(true);
+		RefreshWidgetColumn();
+	}
+
+	private static string ExtensionKeyLabel(string key)
+	{
+		foreach (var prefix in new[] { "pi-deck-", "piweft-", "pi-" })
+		{
+			if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+			{
+				return key[prefix.Length..].Replace('-', ' ').Replace('_', ' ');
+			}
+		}
+
+		return key.Replace('-', ' ').Replace('_', ' ');
+	}
+
+	private void RefreshWidgetColumn() => _widgetColumn.IsVisible(_todoCard.View.IsVisible || _extensionCard.View.IsVisible);
 
 	private SessionStatisticsDisplay StatisticsDisplay()
 	{
@@ -1444,52 +1578,131 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// <summary>
-	/// 用户消息：整块靠右排，与助手回复（左侧正文）一眼分开；元信息行在色块上方（角色铭牌 + 悬停操作）。
-	/// 色块不再带左缘「纬线」——那种强调形态留给错误行。外层 Border 挂 actions（Tag 约定）。
+	/// 用户消息：右侧内嵌气泡，与助手回复（左侧正文）一眼分开；技能上下文收成 chip，
+	/// 文件引用在正文里由投影层显示成行内 chip。正文保持可选中，时间与操作在气泡下方，图片缩略图在气泡上方。
+	/// 外层 StackPanel 挂 actions（Tag 约定）。
 	/// </summary>
 	private UIElement Bubble(ChatEntry entry)
 	{
-		var body = MessageText.Create(entry.Text);
-		_textFocus.Track(body);
+		var (skills, text) = UserMessageText.Parse(entry.Text);
+		var (collapsedText, collapsible) = UserMessageText.Collapse(text);
+		var expanded = false;
 
-		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
-			.Children(AppIcons.Button("copy", Strings.CopyUserMessage, () => CopyText(entry.Text), size: 14));
-
-		var rows = new StackPanel().Spacing(AppTheme.Space2).Children(body);
-		foreach (var image in entry.Images)
+		var bubble = new StackPanel().Spacing(AppTheme.Space2);
+		if (skills.Count > 0)
 		{
-			rows.Children(ImageView(image, PreviewImage));
+			var chips = new WrapPanel().Spacing(AppTheme.Space1).HorizontalAlignment(HorizontalAlignment.Left);
+			foreach (var skill in skills) chips.Children(SkillChip(skill));
+			bubble.Children(chips);
 		}
 
-		if (entry.EntryId is { Length: > 0 } entryId)
+		MultiLineTextBox? body = null;
+		if (text.Length > 0)
 		{
-			actions.Children(
-				AppIcons.Button("pencil", Strings.EditAndResend, () => PrepareEdit(entryId, entry.Text), size: 14)
-					.IsEnabled(!IsStreaming),
-				AppIcons.Button("git-branch", Strings.BranchHere, () => BranchAt(entryId), size: 14)
-					.IsEnabled(!IsStreaming));
+			body = MessageText.Create(collapsible ? collapsedText : text);
+			UserReferenceRichText.Attach(body, editable: false,
+				onOpen: path => Shell.OpenMessageLink(path, Session.Cwd, message => _status.Text(message)));
+			_textFocus.Track(body);
+			bubble.Children(body);
+		}
+
+		if (body is not null && collapsible)
+		{
+			var expandLabel = new TextBlock().Text(Strings.MessageExpand)
+				.FontSize(AppTheme.FontSizeMicro).MutedText();
+			bubble.Children(new Button().Ghost()
+				.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+				.MinHeight(22)
+				.HorizontalAlignment(HorizontalAlignment.Right)
+				.Content(expandLabel)
+				.OnClick(() =>
+				{
+					expanded = !expanded;
+					MessageText.Update(body, expanded ? text : collapsedText);
+					expandLabel.Text(expanded ? Strings.MessageCollapse : Strings.MessageExpand);
+				}));
 		}
 
 		var card = new Border()
 			.StyleName(AppStyles.UserMessage)
-			.BorderThickness(0)
-			.CornerRadius(AppTheme.RadiusSm)
+			.CornerRadius(AppTheme.RadiusMd)
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.MaxWidth(AppTheme.MessageMaxWidth)
 			.HorizontalAlignment(HorizontalAlignment.Right)
-			.Child(rows);
+			.Child(bubble);
+		card.IsVisible(text.Length > 0 || skills.Count > 0);
 
-		card.Tag = actions;
+		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(0);
+		if (entry.Text.Length > 0)
+		{
+			actions.Children(AppIcons.Button("copy", Strings.CopyUserMessage, () => CopyText(entry.Text), size: 14));
+		}
+		if (entry.EntryId is { Length: > 0 } entryId)
+		{
+			if (entry.Text.Length > 0)
+			{
+				actions.Children(
+					AppIcons.Button("pencil", Strings.EditAndResend, () => PrepareEdit(entryId, entry.Text), size: 14)
+						.IsEnabled(!IsStreaming));
+			}
+			actions.Children(
+				AppIcons.Button("git-branch", Strings.BranchHere, () => BranchAt(entryId), size: 14)
+					.IsEnabled(!IsStreaming));
+		}
 
-		return new StackPanel()
+		var time = Timestamp(entry);
+		var footer = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(AppTheme.Space2)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.Margin(new Thickness(0, 0, AppTheme.Space1, 0))
+			.Children(actions);
+		if (time.Length > 0)
+		{
+			footer.Children(new TextBlock().Text(time).FontSize(AppTheme.FontSizeMicro)
+				.FontFamily(AppTheme.MonoFont).SubtleText());
+		}
+		footer.IsVisible(time.Length > 0 || actions.Children.Count > 0);
+
+		var images = new WrapPanel().Spacing(AppTheme.Space2).HorizontalAlignment(HorizontalAlignment.Right);
+		foreach (var image in entry.Images)
+		{
+			images.Children(ChatImages.CreateThumbnail(image, PreviewImage));
+		}
+		images.IsVisible(entry.Images.Count > 0);
+
+		var row = new StackPanel()
 			.Spacing(AppTheme.Space1)
 			.HorizontalAlignment(HorizontalAlignment.Right)
-			.Children(
-				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1)
-					.HorizontalAlignment(HorizontalAlignment.Right)
-					.Children(actions, Header(string.Empty, entry, Strings.RoleUser)),
-				card);
+			.Children(images, card, footer);
+		// 忙碌时由 Render 统一切换复制之外的动作；Tag 保持与旧布局一致。
+		row.Tag = actions;
+		return row;
 	}
+
+	/// <summary>技能上下文 chip：蓝色信息色 + sparkles，tooltip 显示技能文件位置。</summary>
+	private static UIElement SkillChip(UserSkillChip skill)
+	{
+		return new Border()
+			.BorderThickness(0)
+			.CornerRadius(AppTheme.RadiusXs)
+			.Padding(new Thickness(6, 2, 7, 2))
+			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Thinking.WithAlpha(0x1f))
+			.HoverTip(skill.Location.Length > 0 ? skill.Location : skill.Name)
+			.Child(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(4)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					AppIcons.Icon("sparkles", AppStyles.RoleThinking, 12),
+					new TextBlock().Text(skill.Name).FontSize(AppTheme.FontSizeMicro)
+						.ThinkingText().VerticalAlignment(VerticalAlignment.Center)));
+	}
+
+	private static string Timestamp(ChatEntry entry) => entry.Timestamp > 0
+		? DateTimeOffset.FromUnixTimeMilliseconds(entry.Timestamp).ToLocalTime().ToString("HH:mm")
+		: string.Empty;
 
 	/// <summary>
 	/// 回到这条用户消息之前重开一条分支：会话文件会换成新文件（旧文件保留在历史里），
@@ -1529,6 +1742,89 @@ public sealed partial class SessionTab : IDisposable
 	{
 		try { PreviewImage(ChatImages.Source(new ChatImage(image.Data, image.MimeType))); }
 		catch (FormatException) { _status.Text(Strings.BrokenImage); }
+	}
+
+	/// <summary>右键菜单「粘贴」的共享实现：图片优先，纯文本回退到文本框的默认粘贴。</summary>
+	/// <summary>运行中发送键右侧的菜单：引导当前回合、排到下一轮或中断。</summary>
+	private void ShowSendMenu()
+	{
+		if (_disposed) return;
+		if (!_chat.IsStreaming) return;
+
+		HoverHints.Cancel(_sendMenuButton);
+		var menu = new ContextMenu();
+		void Add(string label, Action action)
+		{
+			var command = new Command($"pi.send.{menu.Items.Count}", label);
+			_sendMenuButton.Commands.Register(command, action);
+			menu.Items.Add(new MenuItem(command));
+		}
+
+		Add(Strings.SteerCurrentTurn, () => QueueDraft(steer: true));
+		Add(Strings.QueueNextTurn, () => QueueDraft(steer: false));
+		menu.AddSeparator();
+		Add(Strings.Abort, Send);
+		menu.Show(_sendMenuButton);
+	}
+
+	/// <summary>把当前草稿排入正在运行的代理；保留输入控件，只清空草稿。</summary>
+	internal void QueueDraft(bool steer)
+	{
+		if (_disposed || !_chat.IsStreaming) return;
+		if (_loadingAttachments > 0)
+		{
+			_status.Text(Strings.AttachmentLoading);
+			return;
+		}
+		var text = _composer.Text;
+		if (string.IsNullOrWhiteSpace(text) && _attachments.Count == 0) return;
+		if (_attachments.Count > 0 && !Session.Model.SupportsImages)
+		{
+			_status.Text(Strings.ImageModelRequired);
+			return;
+		}
+
+		try
+		{
+			var images = _attachments.Select(static item => item.Content).ToArray();
+			var queued = steer ? _chat.Steer(text, images) : _chat.FollowUp(text, images);
+			if (!queued) return;
+			_composer.Text = string.Empty;
+			_attachments.Clear();
+			RefreshAttachments();
+			_status.Text(steer ? Strings.SteerQueued : Strings.FollowUpQueued);
+			FocusComposer();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Queue running message", ex);
+			_status.Text(Strings.SendFailed(ex.Message));
+		}
+	}
+
+	private void PasteFromClipboard()
+	{
+		if (_disposed) return;
+		if (PasteImageFromClipboard()) return;
+		UserReferenceRichText.NormalizeForEdit(_composer);
+		_composer.Paste();
+	}
+
+	private void CutFromComposer()
+	{
+		if (_disposed) return;
+		UserReferenceRichText.NormalizeForEdit(_composer);
+		_composer.Cut();
+	}
+
+	/// <summary>粘贴菜单项的可用性：剪贴板有图片或文本时都允许执行。</summary>
+	private bool CanPasteFromClipboard()
+	{
+		if (_disposed || _composer.IsReadOnly) return false;
+		if (ClipboardImages.Service?.HasImage() == true) return true;
+		var clipboard = _composer.ClipboardService ??
+			(Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null);
+		return clipboard?.HasText() == true;
 	}
 
 	/// <summary>剪贴板里是图片时把它附加到输入框；返回是否接管了这次按键。</summary>

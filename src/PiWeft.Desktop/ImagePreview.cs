@@ -54,6 +54,32 @@ internal static class ChatImages
 			return new TextBlock().Text(Strings.BrokenImage).FontSize(AppTheme.FontSizeCaption).Foreground(AppTheme.Error);
 		}
 	}
+
+	/// <summary>
+	/// 用户消息的紧凑缩略图（PiDeck 同款 64–88 DIP 方块）：历史里的大图不再把整条气泡撑满，
+	/// 点击仍打开全尺寸预览。图片按 UniformToFill 居中裁切，透明底用内嵌表面托住。
+	/// </summary>
+	public static UIElement CreateThumbnail(ChatImage image, Action<ImageSource>? preview = null, double size = 88)
+	{
+		try
+		{
+			var source = Source(image);
+			var frame = new Border()
+				.Width(size).Height(size)
+				.CornerRadius(AppTheme.RadiusSm)
+				.ClipToBounds(true)
+				.WithTheme((theme, border) => border.Background = AppTheme.For(theme).CardBackgroundAlt)
+				.Child(new Image().Source(source).StretchMode(Stretch.UniformToFill));
+
+			return preview is null ? frame : new Button().Ghost().Padding(0).CornerRadius(AppTheme.RadiusSm)
+				.Cursor(CursorType.Hand).Content(frame).HoverTip(Strings.ImagePreviewOpen)
+				.OnClick(() => preview(source));
+		}
+		catch (FormatException)
+		{
+			return new TextBlock().Text(Strings.BrokenImage).FontSize(AppTheme.FontSizeCaption).Foreground(AppTheme.Error);
+		}
+	}
 }
 
 /// <summary>窗口级图片预览：适应窗口、遮罩关闭、Escape 关闭，可把当前图片复制回剪贴板；隐藏时释放图片引用。</summary>

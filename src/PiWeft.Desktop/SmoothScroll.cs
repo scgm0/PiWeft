@@ -112,6 +112,10 @@ internal sealed class SmoothScroll : IDisposable
 		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
 		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
 
+		// Virtualized content can grow between arrangements. Pull its current extent into the
+		// viewport before clamping the target, or a stale bar maximum caps the wheel short of the
+		// real end (the reader then cannot reach newly appended rows).
+		SyncMetrics();
 		var current = Offset;
 		var pending = IsAnimating ? new Point(_target.X, _toEnd ? MaxVerticalOffset : _target.Y) : current;
 
@@ -127,12 +131,41 @@ internal sealed class SmoothScroll : IDisposable
 		if (vertical != 0) VerticalInput?.Invoke(vertical);
 	}
 
-	public void ScrollToEnd() => Start(new Point(Offset.X, MaxVerticalOffset), toEnd: true);
+	public void ScrollToEnd()
+	{
+		SyncMetrics();
+		Start(new Point(Offset.X, MaxVerticalOffset), toEnd: true);
+	}
 
 	public void JumpToEnd()
 	{
 		Stop();
+		SyncMetrics();
 		Apply(new Point(Offset.X, MaxVerticalOffset));
+	}
+
+	/// <summary>
+	/// Keeps an already running animation pointed at the end. A wheel animation started a notch
+	/// short of the end would otherwise settle there while the reply keeps growing, with no further
+	/// scroll notification left to resume following.
+	/// </summary>
+	public void FollowEnd()
+	{
+		if (IsAnimating) ScrollToEnd();
+		else JumpToEnd();
+	}
+
+	/// <summary>
+	/// Refreshes the viewport's extent metrics from its scroll content. <see cref="ScrollViewer"/>
+	/// only republishes a virtualized content extent during measure; a row that grew after that
+	/// leaves the bar maximum stale until the next offset write.
+	/// </summary>
+	private void SyncMetrics()
+	{
+		if (_viewport is null) return;
+		IsApplyingOffset = true;
+		try { _viewport.SetScrollOffsets(_viewport.HorizontalOffset, _viewport.VerticalOffset); }
+		finally { IsApplyingOffset = false; _lastOffset = Offset; }
 	}
 
 	private void Start(Point target, bool toEnd)

@@ -31,6 +31,9 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 		if (hint.Text == text) return element;
 		hint.Text = text;
 		CancelOwner(element);
+		// 行内 chip 的提示是在鼠标移动中换文本的；鼠标已经在元素上时直接开始计时，
+		// 否则要等下一次 MouseEnter 才出现，行内悬浮永远看不到。
+		if (!string.IsNullOrEmpty(text) && element.IsMouseOver) Begin(element);
 		return element;
 	}
 

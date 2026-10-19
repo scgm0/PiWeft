@@ -1080,6 +1080,14 @@ public sealed partial class MainWindow : Window
 				case "hints":
 					PrepareHoverSmoke();
 					break;
+				case "references":
+					// 视觉验收入口：同时展示草稿引用条、历史文件 chip 和技能 chip。
+					CurrentTab()?.SetExtensionText("请检查 @\"src/App.cs\" 和 @docs/。");
+					Console.WriteLine("reference-ready");
+					break;
+				case "process":
+					CurrentTab()?.PrepareProcessSmoke();
+					break;
 				case "interactions":
 					CurrentTab()?.PrepareInteractionSmoke();
 					break;

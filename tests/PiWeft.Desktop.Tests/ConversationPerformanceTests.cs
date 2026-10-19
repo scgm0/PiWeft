@@ -72,7 +72,7 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		Layout(timeline.View);
 		// 折叠标题是「状态点 + 摘要文本」的组合，按标题子树里的摘要文本定位这一行。
 		var first = Find<Expander>(timeline.View).Single(expander => expander.Header is { } header &&
-			Find<TextBlock>(header).Any(text => text.Text == Strings.ToolSummary("read", "tool 0", false, null)));
+			Find<TextBlock>(header).Any(text => text.Text == "read") && Find<TextBlock>(header).Any(text => text.Text == "tool 0"));
 		first.IsExpanded = true;
 		var original = first.Content;
 		Assert.Contains(Find<MultiLineTextBox>(original!), text => text.Text == "tool 0");
@@ -112,6 +112,36 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		Assert.Equal(2, Find<MarkdownPresenter>(timeline.View).Count());
 		Assert.Same(thinking, Find<Expander>(timeline.View).Last());
 		Assert.True(thinking.IsExpanded);
+	}
+
+	[Fact]
+	public void StreamingTailUpdatesItsRowWithoutResettingTheMeasuredExtent()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		using var timeline = new ConversationTimeline(entry => entry.Role == ChatRole.Assistant
+			? new AssistantMessageView(entry, _ => { }, focus).View
+			: new Border().Height(100).Child(new TextBlock().Text(entry.Text)));
+		using var conversation = new ConversationScroll(timeline.Scroll, _ => { });
+		var history = Enumerable.Range(0, 20)
+			.Select(i => new ChatEntry { Role = ChatRole.User, Text = $"history {i}", EntryId = $"h{i}" })
+			.ToList();
+		var streaming = new ChatEntry { Role = ChatRole.Assistant, Text = "part", IsStreaming = true, Timestamp = 1, EntryId = "live" };
+		history.Add(streaming);
+		timeline.SetEntries(history);
+		Layout(timeline.View, 600, 500);
+		var changes = new List<ItemsChange>();
+		timeline.View.ItemsSource.Changed += changes.Add;
+		var changed = streaming with { Text = string.Join("\n\n", Enumerable.Range(0, 40).Select(i => $"paragraph {i}")) };
+		history[^1] = changed;
+		timeline.SetEntries(history);
+		// Streaming rows update in place: no Replace, so the virtualized presenter keeps its
+		// measured height instead of collapsing the extent to the generic 120 estimate.
+		Assert.DoesNotContain(changes, change => change.Kind == ItemsChangeKind.Replace);
+		Layout(timeline.View, 600, 500);
+		Assert.Contains(Find<MultiLineTextBox>(timeline.View), text => text.Text.Contains("paragraph 39", StringComparison.Ordinal));
+		Assert.True(conversation.Following);
+		var smooth = SmoothScroll.For(timeline.Scroll);
+		Assert.Equal(smooth.MaxVerticalOffset, timeline.Scroll.VerticalOffset, 1);
 	}
 
 	[Fact]

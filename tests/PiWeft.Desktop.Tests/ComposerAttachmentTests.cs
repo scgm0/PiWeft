@@ -58,6 +58,7 @@ public sealed class ComposerAttachmentTests : IDisposable
 		Assert.Contains(ComposerDrop.Reference(_root), composer.Text);
 		Assert.StartsWith("before ", composer.Text);
 		Assert.EndsWith(" after", composer.Text);
+		Assert.Equal(2, tab.ComposerReferenceCount);
 		await tab.SendAsync(composer.Text);
 		var message = Assert.IsType<UserMessage>(tab.Session.Session.BuildSessionContext().Messages.First());
 		Assert.Single(message.Content.Blocks!.OfType<ImageContent>());

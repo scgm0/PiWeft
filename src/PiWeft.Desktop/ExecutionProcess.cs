@@ -67,11 +67,15 @@ internal static class ExecutionProcess
 				if (entry.Thinking.Length > 0 || entry.IsThinking)
 					process.Add(entry with
 					{
-						EntryId = $"thinking/{entry.EntryId ?? entry.Timestamp.ToString()}", Text = string.Empty, Images = [],
+						EntryId = $"thinking/{entry.EntryId ?? entry.Timestamp.ToString()}", Text = string.Empty, Images = [], Compact = true,
+						// 只有纯思考回复的 DurationMs 才可视为思考耗时；含正文时那是整条回复的耗时。
+						DurationMs = entry.Text.Length == 0 && entry.Images.Count == 0 ? entry.DurationMs : null,
 					});
 				if (ReferenceEquals(entry, answer)) continue;
 				if (entry.Role != ChatRole.Assistant || entry.Text.Length > 0 || entry.Images.Count > 0)
-					process.Add(entry.Thinking.Length == 0 && !entry.IsThinking ? entry : entry with { Thinking = string.Empty, IsThinking = false });
+					process.Add(entry.Thinking.Length == 0 && !entry.IsThinking
+						? entry with { Compact = true }
+						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true });
 			}
 			if (process.Count > 0)
 				rows.Add(new ChatEntry
@@ -79,13 +83,17 @@ internal static class ExecutionProcess
 					Role = ChatRole.Process, Text = string.Empty,
 					EntryId = $"process/{turnId ?? unique[0].EntryId ?? unique[0].Timestamp.ToString()}",
 					Timestamp = unique[0].Timestamp, ProcessEntries = process, IsStreaming = live,
+					// 总耗时取自本轮最终回复；思考/工具行本身没有独立的墙钟时间。
+					DurationMs = unique.LastOrDefault(static entry => entry.Role == ChatRole.Assistant)?.DurationMs,
 				});
 			if (answer is not null) rows.Add(answer.Thinking.Length == 0 && !answer.IsThinking ? answer : answer with { Thinking = string.Empty, IsThinking = false });
 			turn.Clear();
 		}
 	}
 
-	public static string Summary(IReadOnlyList<ChatEntry> entries)
+	public readonly record struct Stats(int Tools, int Thinking, int Interim, int Errors);
+
+	public static Stats Count(IReadOnlyList<ChatEntry> entries)
 	{
 		var tools = 0;
 		var thinking = 0;
@@ -114,16 +122,22 @@ internal static class ExecutionProcess
 			}
 		}
 
-		if (tools + thinking + interim + errors == 0)
+		return new Stats(tools, thinking, interim, errors);
+	}
+
+	public static string Summary(IReadOnlyList<ChatEntry> entries)
+	{
+		var stats = Count(entries);
+		if (stats.Tools + stats.Thinking + stats.Interim + stats.Errors == 0)
 		{
 			return string.Empty;
 		}
 
 		var builder = new System.Text.StringBuilder();
-		Append("工具", tools);
-		Append("思考", thinking);
-		Append("中间回复", interim);
-		Append("失败", errors);
+		Append("工具", stats.Tools);
+		Append("思考", stats.Thinking);
+		Append("中间回复", stats.Interim);
+		Append("失败", stats.Errors);
 		return builder.ToString();
 
 		void Append(string label, int count)

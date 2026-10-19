@@ -258,6 +258,72 @@ public sealed class SmoothScrollTests
 	}
 
 	[Fact]
+	public void ReachingTheEndWhileTheExtentGrowsResumesFollowing()
+	{
+		var view = View();
+		using var conversation = new ConversationScroll(view, _ => { });
+		Layout(view);
+		view.SetScrollOffsets(0, 400);
+		Layout(view);
+		Assert.False(conversation.Following);
+
+		// Grow the virtualized content, then drag to the new end in the same notification:
+		// the maximum changes, but reaching the end is still the reader's follow instruction.
+		((Border)view.Content!).Height(2600);
+		Layout(view);
+		// A direct offset write is what a scrollbar drag produces (not SmoothScroll's own apply).
+		view.SetScrollOffsets(0, 1_000_000);
+		Layout(view);
+		Assert.True(conversation.Following);
+
+		((Border)view.Content!).Height(3200);
+		Layout(view);
+		conversation.FollowContent();
+		Layout(view);
+		Assert.Equal(SmoothScroll.For(view).MaxVerticalOffset, view.VerticalOffset);
+	}
+
+	[Fact]
+	public void FollowContentSteersARunningWheelAnimationToTheNewEnd()
+	{
+		var view = View();
+		using var conversation = new ConversationScroll(view, _ => { });
+		Layout(view);
+		var smooth = SmoothScroll.For(view);
+		smooth.JumpToEnd();
+		view.SetScrollOffsets(0, smooth.MaxVerticalOffset - 10);
+		Layout(view);
+
+		// A downward wheel near the end keeps following and starts a short animation.
+		smooth.ScrollBy(0, 1);
+		Assert.True(conversation.Following);
+		Assert.True(smooth.IsAnimating);
+
+		// The reply grows while that animation runs; the follow request must not be dropped
+		// just because an animation owns the offset.
+		((Border)view.Content!).Height(2600);
+		Layout(view);
+		conversation.FollowContent();
+		Settle(smooth);
+		Assert.Equal(smooth.MaxVerticalOffset, view.VerticalOffset);
+	}
+
+	[Fact]
+	public void FollowEndSteersAnAlreadyRunningAnimation()
+	{
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+		smooth.ScrollBy(0, 1);
+		Assert.True(smooth.IsAnimating);
+		((Border)view.Content!).Height(2800);
+		Layout(view);
+		smooth.FollowEnd();
+		Settle(smooth);
+		Assert.Equal(smooth.MaxVerticalOffset, view.VerticalOffset);
+	}
+
+	[Fact]
 	public void ContentShrinkDoesNotResumeFollowingWhileBrowsing()
 	{
 		var view = View();

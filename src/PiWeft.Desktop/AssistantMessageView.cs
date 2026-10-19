@@ -8,7 +8,10 @@ namespace PiWeft.Desktop;
 internal sealed class AssistantMessageView : IDisposable
 {
 	private readonly TextBlock _header = new();
+	private readonly DockPanel _headerRow;
 	private readonly TextBlock _thinkingHeader = new();
+	private readonly TextBlock _thinkingPreview = new();
+	private readonly Image _thinkingIcon;
 	private readonly MultiLineTextBox _thinkingText = MessageText.Create(muted: true, fontSize: AppTheme.FontSizeCaption);
 	private readonly MultiLineTextBox _streamingText = MessageText.Create();
 	private readonly Expander _thinking;
@@ -25,13 +28,21 @@ internal sealed class AssistantMessageView : IDisposable
 		_focus = focus;
 		_openLink = openLink ?? (url => Shell.OpenMessageLink(url, Environment.CurrentDirectory));
 		_header.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText();
-		_thinkingHeader.FontSize(AppTheme.FontSizeCaption).FontFamily(AppTheme.MonoFont)
+		_thinkingHeader.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium)
 			.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Thinking);
+		_thinkingPreview.FontSize(AppTheme.FontSizeCaption).SubtleText()
+			.TextTrimming(TextTrimming.CharacterEllipsis).VerticalAlignment(VerticalAlignment.Center);
 		_focus.Track(_thinkingText);
 		_focus.Track(_streamingText);
 
+		_thinkingIcon = AppIcons.Icon("sparkles", AppStyles.RoleThinking, 12);
+		var thinkingTitle = new Grid().Columns("Auto,Auto,*").HorizontalAlignment(HorizontalAlignment.Stretch)
+			.Children(
+				_thinkingIcon.Column(0),
+				_thinkingHeader.Column(1).Margin(new Thickness(5, 0, 0, 0)),
+				_thinkingPreview.Column(2).Margin(new Thickness(6, 0, 0, 0)));
 		_thinking = new Expander()
-			.Header(_thinkingHeader)
+			.Header(thinkingTitle)
 			.IsExpanded(false)
 			.Content(new Border()
 				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, AppTheme.Space2))
@@ -39,8 +50,9 @@ internal sealed class AssistantMessageView : IDisposable
 
 		_focus.TrackFold(_thinking);
 		_copy = AppIcons.Button("copy", Strings.CopyMessage, () => copy(_entry?.Text ?? string.Empty), size: 14);
+		_headerRow = new DockPanel().LastChildFill().Children(_copy.DockRight(), _header);
 		var content = new StackPanel().Spacing(AppTheme.Space2).Children(
-			new DockPanel().LastChildFill().Children(_copy.DockRight(), _header),
+			_headerRow,
 			_thinking,
 			_body,
 			_changes.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap).IsVisible(false));
@@ -51,7 +63,7 @@ internal sealed class AssistantMessageView : IDisposable
 		}
 
 		View = new Border()
-			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
+			.Padding(entry.Compact ? new Thickness(0, 0, 0, 0) : new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.MaxWidth(AppTheme.MessageMaxWidth)
 			.HorizontalAlignment(HorizontalAlignment.Stretch)
 			.Child(content);
@@ -78,9 +90,14 @@ internal sealed class AssistantMessageView : IDisposable
 			? $"  ·  {Strings.ResponseDuration(duration)}"
 			: string.Empty;
 		_header.Text(time.Length > 0 ? $"{role}  ·  {time}{timing}" : $"{role}{timing}");
+		_headerRow.IsVisible(!entry.Compact);
 		_thinking.IsVisible(entry.Thinking.Length > 0 || entry.IsThinking);
-		_thinkingHeader.Text(entry.IsThinking ? Strings.ThinkingActive : Strings.ThinkingComplete);
-		var showChanges = !entry.IsStreaming && entry.ChangedFiles.Count > 0;
+		_thinkingIcon.IsVisible(!entry.Compact);
+		_thinkingHeader.Text(entry.IsThinking ? Strings.ThinkingActive
+			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs) : Strings.ThinkingComplete);
+		var preview = Preview(entry.Thinking);
+		_thinkingPreview.Text(preview).IsVisible(preview.Length > 0);
+		var showChanges = !entry.IsStreaming && !entry.Compact && entry.ChangedFiles.Count > 0;
 		_changes.IsVisible(showChanges);
 		if (showChanges)
 		{
@@ -88,7 +105,7 @@ internal sealed class AssistantMessageView : IDisposable
 		}
 		MessageText.Update(_thinkingText, entry.Thinking);
 		_body.IsVisible(entry.Text.Length > 0);
-		_copy.IsVisible(!entry.IsStreaming && entry.Text.Length > 0);
+		_copy.IsVisible(!entry.Compact && !entry.IsStreaming && entry.Text.Length > 0);
 
 		if (entry.IsStreaming)
 		{
@@ -104,6 +121,23 @@ internal sealed class AssistantMessageView : IDisposable
 		}
 
 		_entry = entry;
+	}
+
+	private static string Preview(string thinking)
+	{
+		var remaining = thinking.AsSpan();
+		while (remaining.Length > 0)
+		{
+			var newline = remaining.IndexOf('\n');
+			var line = (newline < 0 ? remaining : remaining[..newline]).Trim();
+			if (line.Length > 0)
+			{
+				return line.Length <= 72 ? line.ToString() : line[..72].ToString() + "…";
+			}
+			if (newline < 0) break;
+			remaining = remaining[(newline + 1)..];
+		}
+		return string.Empty;
 	}
 
 	internal static MultiLineTextBox CreateCodeText(string code, string? language, TextFocusScrollGuard focus)

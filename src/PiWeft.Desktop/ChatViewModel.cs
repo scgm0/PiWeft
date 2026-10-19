@@ -72,6 +72,9 @@ public sealed record ChatEntry
 	/// <summary>该行的消息时间（Unix 毫秒），用于在角色行显示时间。</summary>
 	public long Timestamp { get; init; }
 
+	/// <summary>执行过程内的行：不再重复角色名、时间与复制按钮。</summary>
+	public bool Compact { get; init; }
+
 	/// <summary>工具返回的统一 diff 补丁（<c>edit</c> 工具的细节），界面渲染成 diff 视图。</summary>
 	public string? Patch { get; init; }
 
@@ -363,6 +366,22 @@ public sealed class ChatViewModel : IDisposable
 	}
 
 	public void Abort() => Session?.Abort();
+
+	/// <summary>运行中把一条消息插入当前回合，在下一次模型调用前生效。</summary>
+	public bool Steer(string text, IReadOnlyList<ImageContent>? images = null) => Enqueue(text, images, steer: true);
+
+	/// <summary>运行中把一条消息排到下一轮，当前回复结束后发送。</summary>
+	public bool FollowUp(string text, IReadOnlyList<ImageContent>? images = null) => Enqueue(text, images, steer: false);
+
+	private bool Enqueue(string text, IReadOnlyList<ImageContent>? images, bool steer)
+	{
+		var session = Session;
+		if (session is null) return false;
+		var message = session.PrepareInput(text, images);
+		if (steer) session.Steer(message);
+		else session.FollowUp(message);
+		return true;
+	}
 
 	public void Dispose()
 	{

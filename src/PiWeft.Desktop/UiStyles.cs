@@ -51,6 +51,12 @@ public static class UiStyles
 
 	public static TextBlock OnAccentText(this TextBlock block) => block.Role(AppStyles.RoleOnAccent);
 
+	public static TextBlock InfoText(this TextBlock block) => block.Role(AppStyles.RoleInfo);
+
+	public static TextBlock ThinkingText(this TextBlock block) => block.Role(AppStyles.RoleThinking);
+
+	public static TextBlock ErrorText(this TextBlock block) => block.Role(AppStyles.RoleError);
+
 	private static TextBlock Role(this TextBlock block, string role)
 	{
 		block.Tag = role;

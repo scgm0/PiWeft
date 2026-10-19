@@ -5,6 +5,7 @@ public static partial class Strings
 	public const string ExecutionProcess = "执行过程";
 	public const string ExecutionExpandHint = "展开或收起本轮思考、工具调用和中间回复；最终回答始终显示。";
 	public const string ExecutionGroupHint = "展开或收起这组思考与工具调用。";
+	public static string ExecutionTotal(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
 	public const string SessionStatistics = "会话统计";
 	public const string StatisticsUsage = "累计用量";
 	public const string StatisticsLastReply = "上次模型回复";

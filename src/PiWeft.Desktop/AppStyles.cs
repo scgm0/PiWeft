@@ -102,6 +102,9 @@ public static class AppStyles
 	public const string RoleFaint = "faint";
 	public const string RoleAccent = "accent";
 	public const string RoleOnAccent = "on-accent";
+	public const string RoleInfo = "info";
+	public const string RoleThinking = "thinking";
+	public const string RoleError = "error";
 
 	/// <summary>按角色取当前主题下的文本颜色。</summary>
 	public static Color ColorForRole(string role) => role switch
@@ -112,6 +115,9 @@ public static class AppStyles
 		RoleFaint => AppTheme.TextFaint,
 		RoleAccent => AppTheme.Accent,
 		RoleOnAccent => AppTheme.TextOnAccent,
+		RoleInfo => AppTheme.Info,
+		RoleThinking => AppTheme.Thinking,
+		RoleError => AppTheme.Error,
 		_ => AppTheme.TextPrimary,
 	};
 
@@ -220,7 +226,17 @@ public static class AppStyles
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusLg),
 				],
 			})
-			.With(UserMessage, () => Fill(typeof(Border), p => p.CardBackgroundAlt))
+			// 用户气泡：内嵌表面 + 一条发丝线，和 PiDeck 一样靠边界与色阶区分，不铺大面积纯色。
+			.With(UserMessage, () => new Style(typeof(Border))
+			{
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusMd),
+				],
+			})
 			// 工具调用条：无描边的色调条（图标 + 命令摘要 + 状态），展开后内容再进卡片。
 			.With(ToolMessage, () => Fill(typeof(Border), p => p.CardBackground))
 			.With(ToolError, () => new Style(typeof(Border))

@@ -6,6 +6,50 @@ namespace PiWeft.Desktop;
 
 public sealed partial class SessionTab
 {
+	/// <summary>展开本轮执行过程，供原生截图检查时间线和工具详情。</summary>
+	internal void PrepareProcessSmoke()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(120));
+		var step = 0;
+		timer.Tick += () =>
+		{
+			var run = FindByHint(_messages, Strings.ExecutionExpandHint);
+			if (run is null) return;
+			if (!run.IsExpanded) run.IsExpanded = true;
+			else
+			{
+				var group = run.Content is { } content ? FindByHint(content, Strings.ExecutionGroupHint) : null;
+				if (group is { IsExpanded: false }) group.IsExpanded = true;
+				else
+				{
+					var tool = run.Content is { } expandedContent ? FindByHint(expandedContent, Strings.ToolExpandHint) : null;
+					if (tool is { IsExpanded: false }) tool.IsExpanded = true;
+					else if (tool is { IsExpanded: true })
+					{
+						timer.Stop();
+						Console.WriteLine("process-ready");
+					}
+				}
+			}
+			if (++step > 40) timer.Stop();
+		};
+		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
+		timer.Start();
+	}
+
+	private static Expander? FindByHint(Element root, string hint)
+	{
+		if (root is Expander expander && HoverHints.Text(expander) == hint) return expander;
+		if (root is not IVisualTreeHost host) return null;
+		Expander? found = null;
+		host.VisitChildren(child =>
+		{
+			found ??= FindByHint(child, hint);
+			return found is null;
+		});
+		return found;
+	}
+
 	/// <summary>Native interaction diagnostics only; --ui-smoke interactions uses isolated fixtures.</summary>
 	internal void PrepareInteractionSmoke()
 	{

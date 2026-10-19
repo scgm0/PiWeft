@@ -30,7 +30,7 @@ public sealed partial class SessionTab
 			tool.IsExpanded = true;
 			_themeSmokeToolContent = tool.Content as UIElement;
 		}
-		_themeSmokeUser = _timeline.VisibleRows.OfType<Border>().FirstOrDefault(row => row.Tag is StackPanel);
+		_themeSmokeUser = Find<Border>(_messages).FirstOrDefault(row => row.StyleName == AppStyles.UserMessage);
 	}
 
 	internal bool VerifyThemeSmoke(Color oldPickerColor) =>

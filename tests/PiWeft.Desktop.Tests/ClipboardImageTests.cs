@@ -1,6 +1,7 @@
 using System.Reflection;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Platform;
 using Aprillz.MewUI.Resources;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
@@ -46,6 +47,44 @@ public sealed class ClipboardImageTests : IDisposable
 
 		Assert.Equal("看看这张图", composer.Text);
 		Assert.Contains(Find<Button>(tab.View), button => HoverHints.Text(button) == Strings.RemoveAttachment);
+	}
+
+	[Fact]
+	public async Task ContextMenuPasteCommandAttachesClipboardImages()
+	{
+		using var tab = Tab();
+		var composer = Find<MultiLineTextBox>(tab.View).Single();
+		_ = new Window().Content(tab.View);
+		ClipboardImages.Service = new FakeClipboardImages { Image = true };
+
+		// The default text menu carries StandardCommands.Paste; its CanExecute/Execute
+		// must see the composer's image-aware replacement just like a menu click does.
+		var target = CommandTarget.From(composer);
+		var window = (Window)composer.FindVisualRoot()!;
+		Assert.True(window.CommandRouter.CanExecute(StandardCommands.Paste, target));
+		Assert.True(await window.CommandRouter.ExecuteAsync(StandardCommands.Paste, target));
+		await tab.PendingPaste;
+
+		Assert.Contains(Find<Button>(tab.View), button => HoverHints.Text(button) == Strings.RemoveAttachment);
+	}
+
+	[Fact]
+	public async Task ContextMenuPasteCommandStillPastesText()
+	{
+		using var tab = Tab();
+		var composer = Find<MultiLineTextBox>(tab.View).Single();
+		_ = new Window().Content(tab.View);
+		composer.Text = "prefix ";
+		composer.Select(composer.Text.Length, 0);
+		composer.ClipboardService = new FakeTextClipboard("hello");
+		ClipboardImages.Service = new FakeClipboardImages { Image = false };
+
+		var target = CommandTarget.From(composer);
+		var window = (Window)composer.FindVisualRoot()!;
+		Assert.True(window.CommandRouter.CanExecute(StandardCommands.Paste, target));
+		Assert.True(await window.CommandRouter.ExecuteAsync(StandardCommands.Paste, target));
+
+		Assert.Equal("prefix hello", composer.Text);
 	}
 
 	[Fact]
@@ -144,6 +183,15 @@ public sealed class ClipboardImageTests : IDisposable
 	{
 		ClipboardImages.Service = _previous;
 		Directory.Delete(_root, recursive: true);
+	}
+
+	private sealed class FakeTextClipboard(string text) : IClipboardService
+	{
+		public string Text { get; private set; } = text;
+
+		public bool TrySetText(string text) { Text = text; return true; }
+
+		public bool TryGetText(out string text) { text = Text; return true; }
 	}
 
 	private sealed class FakeClipboardImages : IClipboardImages

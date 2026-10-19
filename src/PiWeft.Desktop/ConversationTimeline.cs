@@ -11,7 +11,10 @@ internal sealed class ConversationTimeline : IDisposable
 	private readonly Dictionary<object, bool[]> _expanded = [];
 	private readonly Dictionary<object, IReadOnlyDictionary<string, bool>> _processStates = [];
 	private readonly HashSet<ReadingRow> _visible = [];
+	private readonly Dictionary<ReadingRow, int> _indexByHost = [];
+	private readonly Dictionary<int, ReadingRow> _hostByIndex = [];
 	private readonly HashSet<ReadingRow> _pendingRelease = [];
+	private readonly List<int> _inPlaceUpdates = [];
 	private bool _releaseQueued;
 	private bool _disposed;
 
@@ -24,7 +27,7 @@ internal sealed class ConversationTimeline : IDisposable
 		View.ItemTemplate = new DelegateTemplate<ChatEntry>(
 			_ => new ReadingRow().MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
 				.HorizontalAlignment(HorizontalAlignment.Center).Margin(new Thickness(0, 0, 0, AppTheme.Space3)),
-			(view, entry, _, _) => Bind((ReadingRow)view, entry),
+			(view, entry, index, _) => Bind((ReadingRow)view, entry, index),
 			(view, _, _, _) => QueueRelease((ReadingRow)view));
 		ScrollViewer? scroll = null;
 		((IVisualTreeHost)View).VisitChildren(child => { scroll = child as ScrollViewer; return false; });
@@ -44,13 +47,21 @@ internal sealed class ConversationTimeline : IDisposable
 		bool prefixReused = false)
 	{
 		PruneRecycled();
-		_rows.Update(entries, stablePrefix, prefixReused);
+		_inPlaceUpdates.Clear();
+		_rows.Update(entries, stablePrefix, prefixReused, _inPlaceUpdates);
+		// A streaming tail changes on every frame. Rebinding just its visible host keeps the
+		// virtualized height cache (and therefore the published extent) instead of resetting the
+		// row to the generic estimate, which made the viewport clamp short of the real bottom.
+		for (var i = 0; i < _inPlaceUpdates.Count; i++)
+		{
+			var index = _inPlaceUpdates[i];
+			if (index < entries.Count && _hostByIndex.TryGetValue(index, out var host)) Bind(host, entries[index], index);
+		}
 		if (!rebuild) return;
 		foreach (var host in _visible.ToArray())
 		{
-			var entry = (ChatEntry)host.Tag!;
-			Release(host);
-			Bind(host, entry);
+			if (_indexByHost.TryGetValue(host, out var index) && index < entries.Count) Bind(host, entries[index], index);
+			else Release(host);
 		}
 		View.InvalidateMeasure();
 	}
@@ -63,9 +74,10 @@ internal sealed class ConversationTimeline : IDisposable
 
 	private static object Key(ChatEntry entry) => (object?)entry.EntryId ?? entry;
 
-	private void Bind(ReadingRow host, ChatEntry entry)
+	private void Bind(ReadingRow host, ChatEntry entry, int index)
 	{
 		_pendingRelease.Remove(host);
+		TrackIndex(host, index);
 		if (host.Tag is ChatEntry previous && SameEntry(previous, entry)) return;
 		if (host.Tag is ChatEntry processEntry && entry.Role == ChatRole.Process &&
 			processEntry.EntryId == entry.EntryId && host.Content is Border { Tag: ExecutionProcessView process })
@@ -87,6 +99,8 @@ internal sealed class ConversationTimeline : IDisposable
 		host.Content = _create(entry);
 		host.Tag = entry;
 		_visible.Add(host);
+		// Release above dropped the previous mapping; the recycled host now belongs to this index.
+		TrackIndex(host, index);
 		if (host.Content is Border { Tag: ExecutionProcessView execution } && _processStates.TryGetValue(Key(entry), out var memory))
 		{
 			execution.Restore(memory);
@@ -97,6 +111,17 @@ internal sealed class ConversationTimeline : IDisposable
 			var expanders = FindExpanders(host.Content).ToArray();
 			for (var i = 0; i < Math.Min(states.Length, expanders.Length); i++) expanders[i].IsExpanded = states[i];
 		}
+	}
+
+	/// <summary>Keeps a cheap host-to-index map so an in-place update can find its realized row.</summary>
+	private void TrackIndex(ReadingRow host, int index)
+	{
+		if (_indexByHost.TryGetValue(host, out var previous) && previous != index && _hostByIndex.TryGetValue(previous, out var mapped) && ReferenceEquals(mapped, host))
+		{
+			_hostByIndex.Remove(previous);
+		}
+		_indexByHost[host] = index;
+		_hostByIndex[index] = host;
 	}
 
 	/// <summary>Unbind also runs immediately before a rebind. Release only rows actually detached after layout.</summary>
@@ -140,6 +165,8 @@ internal sealed class ConversationTimeline : IDisposable
 		host.Content = null;
 		host.Tag = null;
 		_visible.Remove(host);
+		if (_indexByHost.Remove(host, out var index) && _hostByIndex.TryGetValue(index, out var mapped) && ReferenceEquals(mapped, host))
+			_hostByIndex.Remove(index);
 	}
 
 	private static IEnumerable<Expander> FindExpanders(Element root)
@@ -157,7 +184,7 @@ internal sealed class ConversationTimeline : IDisposable
 		left.IsThinking == right.IsThinking && left.IsStreaming == right.IsStreaming &&
 		left.Timestamp == right.Timestamp && left.EntryId == right.EntryId && left.ToolName == right.ToolName &&
 		left.IsError == right.IsError && left.DurationMs == right.DurationMs && left.Patch == right.Patch && left.ToolArguments == right.ToolArguments &&
-		left.Images.SequenceEqual(right.Images) && left.ToolCallId == right.ToolCallId &&
+		left.Images.SequenceEqual(right.Images) && left.ToolCallId == right.ToolCallId && left.Compact == right.Compact &&
 		left.ProcessEntries.Count == right.ProcessEntries.Count && left.ProcessEntries.Zip(right.ProcessEntries).All(pair => SameEntry(pair.First, pair.Second)));
 
 	public void Dispose()
@@ -192,9 +219,18 @@ internal sealed class ConversationTimeline : IDisposable
 		public object GetItem(int index) => _entries[index];
 		public string GetText(int index) => string.Empty;
 		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
-		public void Clear() => Update([]);
+		public void Clear() => Update([], 0, false, []);
 
-		public void Update(IReadOnlyList<ChatEntry> entries, int stablePrefix = 0, bool prefixReused = false)
+		/// <summary>
+		/// Streaming and process rows have a persistent view that can absorb new data without
+		/// rebuilding. Other replacements change identity or presentation and still need a rebind.
+		/// </summary>
+		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
+			Equals(Key(current), Key(next)) && (next.Role == ChatRole.Process ||
+				(current.IsStreaming && next.Role == ChatRole.Assistant && current.Timestamp == next.Timestamp &&
+					current.Images.SequenceEqual(next.Images)));
+
+		public void Update(IReadOnlyList<ChatEntry> entries, int stablePrefix, bool prefixReused, List<int> inPlace)
 		{
 			var common = Math.Min(Count, entries.Count);
 			// The projector reuses every row before the current turn by reference. Start the
@@ -203,8 +239,20 @@ internal sealed class ConversationTimeline : IDisposable
 			while (unchanged < common && SameEntry(_entries[unchanged], entries[unchanged])) unchanged++;
 			if (unchanged < common)
 			{
+				var updatable = true;
+				for (var i = unchanged; i < common; i++)
+				{
+					if (!CanUpdateInPlace(_entries[i], entries[i])) { updatable = false; break; }
+				}
 				for (var i = unchanged; i < common; i++) _entries[i] = entries[i];
-				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, unchanged, common - unchanged));
+				if (updatable)
+				{
+					for (var i = unchanged; i < common; i++) inPlace.Add(i);
+				}
+				else
+				{
+					Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, unchanged, common - unchanged));
+				}
 			}
 			if (entries.Count < Count)
 			{

@@ -43,18 +43,44 @@ internal sealed class ConversationScroll : IDisposable
 	{
 		var offset = _view.VerticalOffset;
 		var maximum = _smooth.MaxVerticalOffset;
-		// Layout can clamp the offset when a block collapses. It is not an instruction to resume follow.
-		if (_readingAnchor is null && !_restoringAnchor && !_smooth.IsApplyingOffset && offset != _lastOffset && maximum == _lastMaximum)
+		var offsetDelta = offset - _lastOffset;
+		var maximumDelta = maximum - _lastMaximum;
+		if (_readingAnchor is null && !_restoringAnchor && !_smooth.IsApplyingOffset)
 		{
-			Following = maximum - offset <= EndThreshold;
+			// A shrinking extent clamps the offset down to the new end. That is layout, not a
+			// reader instruction: keep the previous intent instead of resuming follow.
+			var clampedByShrink = maximumDelta < -0.5 && offset >= maximum - 0.5;
+			if (!clampedByShrink)
+			{
+				if (maximum - offset <= 0.5 && offsetDelta >= -0.5)
+				{
+					// Reaching the end is always an instruction to follow, even when a virtualized
+					// extent grew during the drag that brought the reader here.
+					Following = true;
+				}
+				else if (offsetDelta < -0.5)
+				{
+					// Any upward movement is reading intent, whatever the extent did at the same time.
+					Following = false;
+				}
+				else if (Math.Abs(maximumDelta) <= 0.5 && Math.Abs(offsetDelta) > 0.5)
+				{
+					// A manual move while the extent is stable: follow only if it settled at the end.
+					Following = maximum - offset <= EndThreshold;
+				}
+				// Extent growth with the offset unchanged (or increased by anchor correction) leaves
+				// the current intent alone. Content growth must not cancel a reader's follow request.
+			}
 		}
 		_lastOffset = offset;
 		_lastMaximum = maximum;
-		_showLatest(maximum - offset > EndThreshold);
+		// The affordance is for a detached reader. While following, a temporary layout lag is not
+		// "new messages below" and must not make the button flicker during streaming.
+		_showLatest(!Following && maximum - offset > 1);
 		QueueAnchorRestore();
 		// Arrange publishes the new extent after a message grows. Tracking it here avoids scrolling
 		// against stale metrics in Render(), and keeps a browsing reader at the same offset.
-		if (Following && !_smooth.IsAnimating && !_smooth.IsApplyingOffset && _smooth.MaxVerticalOffset - offset > 0.5)
+		if (Following && !_smooth.IsApplyingOffset && _smooth.MaxVerticalOffset - offset > 0.5)
 		{
 			QueueFollow();
 		}
@@ -74,7 +100,9 @@ internal sealed class ConversationScroll : IDisposable
 		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
 		{
 			_followQueued = false;
-			if (!_disposed && Following && !_smooth.IsAnimating) _smooth.JumpToEnd();
+			// A wheel animation started before the reply grew would settle short of the new end.
+			// Steer it to the end instead of abandoning follow because an animation is running.
+			if (!_disposed && Following) _smooth.FollowEnd();
 		});
 	}
 
@@ -116,7 +144,12 @@ internal sealed class ConversationScroll : IDisposable
 	{
 		// Ensure a fixed-size viewport republishes new content metrics after the next measure pass.
 		_view.InvalidateArrange();
-		if (Following && !_smooth.IsAnimating) _smooth.JumpToEnd();
+		if (!Following) return;
+		// Jump once now for the common case, then ask for one more pass after layout. A virtualized
+		// row can only publish its grown height during arrange, so the first jump may still land on
+		// the previous extent.
+		if (!_smooth.IsAnimating) _smooth.JumpToEnd();
+		QueueFollow();
 	}
 
 	public void ScrollToLatest()
