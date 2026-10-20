@@ -1088,6 +1088,9 @@ public sealed partial class MainWindow : Window
 				case "process":
 					CurrentTab()?.PrepareProcessSmoke();
 					break;
+				case "latest":
+					CurrentTab()?.PrepareLatestSmoke();
+					break;
 				case "interactions":
 					CurrentTab()?.PrepareInteractionSmoke();
 					break;

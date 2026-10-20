@@ -52,6 +52,8 @@ public sealed partial class SessionTab : IDisposable
 	private bool _lastBusy;
 	private readonly WrapPanel _attachmentBar = new();
 	private readonly Button _scrollToLatest;
+	private readonly FloatingShadow _scrollToLatestShadow;
+	private readonly Grid _scrollToLatestShell;
 	private readonly TextBox _searchBox = new TextBox().PrimarySelection();
 	private readonly TextBlock _filterStatus = new();
 	private readonly TextBlock _extensionLine = new();
@@ -128,8 +130,32 @@ public sealed partial class SessionTab : IDisposable
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
 		Func<IReadOnlyList<Model>>? availableModels = null)
 	{
-		_scrollToLatest = AppIcons.Button("arrow-down", Strings.ScrollToLatest, ScrollToLatest);
-		_scrollToLatest.IsVisible(false);
+		_scrollToLatest = new Button()
+			.Content(new Grid().Children(AppIcons.Icon("arrow-down", AppStyles.RolePrimary, 16)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.VerticalAlignment(VerticalAlignment.Center)))
+			.OnClick(ScrollToLatest)
+			.Ghost().Width(36).Height(36).MinWidth(36).MinHeight(36)
+			.Padding(0).CornerRadius(18)
+			.HoverTip(Strings.ScrollToLatest)
+			.Focusable(false).IsHitTestVisible(false)
+			.WithTheme((theme, button) =>
+			{
+				var palette = AppTheme.For(theme);
+				button.Background = palette.CardBackground;
+				// BorderSubtle 在深浅主题里都贴底色；用更亮的 TextFaint 让轮廓真正可见。
+				button.BorderBrush = palette.TextFaint;
+				button.BorderThickness = 1;
+			});
+		_scrollToLatestShadow = new FloatingShadow().IsHitTestVisible(false);
+		_scrollToLatestShell = new Grid().Width(36).Height(36)
+			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Bottom)
+			.Margin(new Thickness(0, 0, 0, AppTheme.Space3))
+			.Children(_scrollToLatestShadow, _scrollToLatest);
+		// 永远参与布局，只用 opacity 隐藏：待办卡展开/收起会改变消息区高度，
+		// 若用 IsVisible 跳过 arrange，重新出现时图标缓存可能停在旧位置，和按钮底分离。
+		_scrollToLatest.Opacity = 0;
+		_scrollToLatestShadow.Opacity = 0;
 
 		Session = session;
 		Title = title;
@@ -168,7 +194,7 @@ public sealed partial class SessionTab : IDisposable
 
 		// Restore focus offsets before follow-state observes the scroll notification.
 		_textFocus = new TextFocusScrollGuard(_scroll, anchor => _conversationScroll!.PreserveAnchor(anchor));
-		_conversationScroll = new ConversationScroll(_scroll, visible => _scrollToLatest.IsVisible(visible));
+		_conversationScroll = new ConversationScroll(_scroll, visible => SetScrollToLatestVisible(visible && _messages.IsVisible));
 
 		_composer = new MultiLineTextBox().PrimarySelection()
 			.FontSize(AppTheme.FontSizeChat)
@@ -236,8 +262,10 @@ public sealed partial class SessionTab : IDisposable
 			.WithTheme((theme, divider) => divider.Background = AppTheme.For(theme).TextOnAccent.WithAlpha(0x40))
 			.IsVisible(false);
 		_sendMenuButton = new Button()
-			.Content(new GlyphElement().Kind(GlyphKind.ChevronDown).GlyphSize(3)
-				.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).TextOnAccent))
+			.Content(new Grid().Children(new GlyphElement().Kind(GlyphKind.ChevronDown).GlyphSize(3)
+				.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).TextOnAccent)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.VerticalAlignment(VerticalAlignment.Center)))
 			.OnClick(ShowSendMenu)
 			.Primary().Height(AppTheme.ControlHeightMd).MinWidth(28)
 			.CornerRadius(0).Padding(new Thickness(5, 0, 7, 0))
@@ -356,6 +384,7 @@ public sealed partial class SessionTab : IDisposable
 		_mainArea.Children(_noMatches.Text(Strings.NoMatches).MutedText()
 			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center).IsVisible(false));
 		_mainArea.Children(_branchPanel.View.IsVisible(false));
+		_mainArea.Children(_scrollToLatestShell);
 
 		var chatView = AppIcons.Button("message-square", Strings.ViewChat, () => ShowView(showChat: true));
 		var branchView = AppIcons.Button("git-branch", Strings.ViewBranches, () => ShowView(showChat: false));
@@ -398,7 +427,7 @@ public sealed partial class SessionTab : IDisposable
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel()
 				.LastChildFill()
-				.Children(viewSwitch.DockRight(), searchToggle.DockRight(), _scrollToLatest.DockRight(),
+				.Children(viewSwitch.DockRight(), searchToggle.DockRight(),
 					_retry.DockRight(), _copyReply.DockRight(), _filterStatus.DockRight(), _status));
 
 		var contextButton = new Button().Content(_contextLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText())
@@ -853,6 +882,18 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>展开/收起会话内搜索框（供无人值守的界面演练调用）。</summary>
 	public void ToggleSearchFromSmoke() => ToggleSearch();
 
+	/// <summary>只切 opacity，保留悬浮按钮的布局位置，避免隐藏期间布局变化后图标与底分离。</summary>
+	private void SetScrollToLatestVisible(bool visible)
+	{
+		var wasHidden = _scrollToLatest.Opacity == 0;
+		_scrollToLatest.Opacity = visible ? 1 : 0;
+		_scrollToLatestShadow.Opacity = visible ? 1 : 0;
+		_scrollToLatest.IsHitTestVisible = visible;
+		_scrollToLatest.Focusable = visible;
+		// 按钮一直参与 arrange；重新出现时再强制一次测量，清掉极端时序下内容层的旧位置。
+		if (visible && wasHidden) _scrollToLatestShell.InvalidateMeasure();
+	}
+
 	/// <summary>回到最新一条消息。</summary>
 	private void ScrollToLatest() => _conversationScroll.ScrollToLatest();
 
@@ -908,10 +949,12 @@ public sealed partial class SessionTab : IDisposable
 
 		if (showChat)
 		{
+			SetScrollToLatestVisible(!_conversationScroll.Following);
 			Render();
 		}
 		else
 		{
+			SetScrollToLatestVisible(false);
 			_branchPanel.Refresh();
 		}
 	}

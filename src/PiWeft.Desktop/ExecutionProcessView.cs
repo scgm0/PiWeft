@@ -181,6 +181,7 @@ internal sealed class ExecutionProcessView
 
 	private Slot Group(string key, IReadOnlyList<ChatEntry> entries)
 	{
+		const int recentSteps = 8;
 		var members = entries;
 		var slots = new List<Slot>();
 		var body = new StackPanel().Spacing(4);
@@ -188,8 +189,28 @@ internal sealed class ExecutionProcessView
 			.VerticalAlignment(VerticalAlignment.Stretch).Margin(new Thickness(10, 0, 0, 0))
 			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Border);
 		var bodyHost = new Grid().Children(bodyRail, body);
+		var olderBase = -1;
+		Expander fold = null!;
+		StackPanel olderHost = null!;
+		var olderButton = new Button().Ghost().Padding(new Thickness(4, 0, 4, 0)).MinHeight(22)
+			.HorizontalAlignment(HorizontalAlignment.Left).IsVisible(false);
+		var olderText = new TextBlock().FontSize(AppTheme.FontSizeMicro).MutedText();
+		olderButton.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(3)
+			.VerticalAlignment(VerticalAlignment.Center).Children(
+				new GlyphElement().Kind(GlyphKind.ChevronUp).GlyphSize(3)
+					.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).TextSubtle),
+				olderText));
+		olderButton.OnClick(() =>
+		{
+			_states[$"older/{key}"] = true;
+			olderBase = -1;
+			BuildMembers();
+		});
+		olderHost = new StackPanel().Spacing(2).Children(olderButton, bodyHost);
 		var header = new TextBlock().FontSize(AppTheme.FontSizeCaption).SubtleText();
-		var fold = new Expander().Header(header).IsExpanded(false).HoverTip(Strings.ExecutionGroupHint);
+		fold = new Expander().Header(new StackPanel().Orientation(Orientation.Horizontal).Spacing(5)
+			.VerticalAlignment(VerticalAlignment.Center).Children(header))
+			.IsExpanded(false).HoverTip(Strings.ExecutionGroupHint);
 		fold.ExpandedChanged += expanded => { if (expanded) BuildMembers(); };
 		Track(key, fold, false, group: true);
 		var host = new Border().Padding(new Thickness(2, 0, 0, 0)).Child(fold);
@@ -200,24 +221,38 @@ internal sealed class ExecutionProcessView
 		void Update(IReadOnlyList<ChatEntry> next)
 		{
 			members = next;
-			header.Text(ExecutionProcess.GroupSummary(next));
+			header.Text($"{ExecutionProcess.GroupSummary(next)}  ·  {Strings.ExecutionSteps(next.Count)}");
 			if (fold.IsExpanded || fold.Content is not null) BuildMembers();
 		}
 		void BuildMembers()
 		{
-			if (fold.Content is null) fold.Content(new Border().Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, 0)).Child(bodyHost));
-			for (var i = slots.Count - 1; i >= members.Count; i--)
+			if (fold.Content is null) fold.Content(new Border().Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, 0)).Child(olderHost));
+			if (olderBase < 0)
+			{
+				olderBase = _states.GetValueOrDefault($"older/{key}") ? 0 : Math.Max(0, members.Count - recentSteps);
+				for (var i = slots.Count - 1; i >= 0; i--)
+				{
+					UiLifetime.Release(slots[i].Host);
+					body.Remove(slots[i].Host);
+					slots.RemoveAt(i);
+				}
+			}
+			olderButton.IsVisible(olderBase > 0);
+			if (olderBase > 0) olderText.Text(Strings.ExecutionEarlierSteps(olderBase));
+			var visible = members.Count - olderBase;
+			for (var i = slots.Count - 1; i >= visible; i--)
 			{
 				UiLifetime.Release(slots[i].Host);
 				body.Remove(slots[i].Host);
 				slots.RemoveAt(i);
 			}
-			for (var i = 0; i < members.Count; i++)
+			for (var i = 0; i < visible; i++)
 			{
-				if (i < slots.Count) slots[i].Update([members[i]]);
+				var member = members[olderBase + i];
+				if (i < slots.Count) slots[i].Update([member]);
 				else
 				{
-					var leaf = Leaf($"{key}/{Id(members[i], i)}", members[i]);
+					var leaf = Leaf($"{key}/{Id(member, olderBase + i)}", member);
 					slots.Add(leaf);
 					body.Children(leaf.Host);
 				}
@@ -299,10 +334,15 @@ internal sealed class ExecutionProcessView
 		public RowRail(ChatEntry entry)
 		{
 			var icon = AppIcons.Icon(IconFor(entry), RoleFor(entry), 14)
-				.Margin(new Thickness(3, 3, 0, 0))
-				.HorizontalAlignment(HorizontalAlignment.Left)
-				.VerticalAlignment(VerticalAlignment.Top);
-			View = new Grid().Children(icon);
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.VerticalAlignment(VerticalAlignment.Center);
+			// 时间线竖线从图标背后穿过；给图标一块窗底色作为遮罩，避免细线切进 SVG 笔画。
+			var badge = new Border().Width(18).Height(18).CornerRadius(9)
+				.HorizontalAlignment(HorizontalAlignment.Left).VerticalAlignment(VerticalAlignment.Top)
+				.Margin(new Thickness(1, 1, 0, 0))
+				.WithTheme((theme, border) => border.Background = AppTheme.For(theme).WindowBackground)
+				.Child(icon);
+			View = new Grid().Children(badge);
 		}
 
 		public Grid View { get; }

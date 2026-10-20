@@ -200,6 +200,26 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void GroupShowsEarlierStepsBehindAFold()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 12).Select(i => Tool($"call-{i}", $"output {i}")).ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		Assert.Equal(8, Find<Expander>(group.Content!).Count(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
+		var earlier = Find<Button>(group.Content!).Single(button => Find<TextBlock>(button).Any(text => text.Text == Strings.ExecutionEarlierSteps(4)));
+		ImagePreviewTests.Click(earlier);
+		Assert.Equal(12, Find<Expander>(group.Content!).Count(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
 	public void ComposerNoLongerContainsBalanceEntry()
 	{
 		using var session = ConversationPerformanceTests.CreateSession(1);

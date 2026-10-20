@@ -265,7 +265,7 @@ public static partial class Strings
 	// 空状态与标签
 	public const string Commands = "命令";
 	public const string SearchInSession = "在对话中搜索";
-	public const string ScrollToLatest = "回到最新";
+	public const string ScrollToLatest = "移动到最新";
 	public const string Git = "Git 状态";
 	public const string ExportSession = "导出会话为 HTML";
 	public const string ExportSessionAndOpen = "导出会话并打开";

@@ -6,6 +6,20 @@ namespace PiWeft.Desktop;
 
 public sealed partial class SessionTab
 {
+	/// <summary>滚到顶部，让「移动到最新」悬浮按钮进入自动显示状态。</summary>
+	internal void PrepareLatestSmoke()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(250));
+		timer.Tick += () =>
+		{
+			timer.Stop();
+			_scroll.SetScrollOffsets(_scroll.HorizontalOffset, 0);
+			Console.WriteLine("latest-ready");
+		};
+		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
+		timer.Start();
+	}
+
 	/// <summary>展开本轮执行过程，供原生截图检查时间线和工具详情。</summary>
 	internal void PrepareProcessSmoke()
 	{

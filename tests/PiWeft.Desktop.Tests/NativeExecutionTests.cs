@@ -53,6 +53,21 @@ public sealed class NativeExecutionTests(ITestOutputHelper output)
 			Content = [new TextContent { Text = "dotnet test --filter FullyQualifiedName~ExecutionProcessTests\n已通过 7/7" }],
 			DurationMs = 150,
 		});
+		for (var i = 0; i < 20; i++)
+		{
+			session.AppendMessage(new ToolResultMessage
+			{
+				ToolCallId = $"call-more-{i}",
+				ToolName = (i % 3) switch { 0 => "bash", 1 => "read", _ => "grep" },
+				Content = [new TextContent { Text = (i % 3) switch
+				{
+					0 => $"cd /home/scgm/RiderProjects/PiWeft && dotnet test --filter ExecutionProcessTests --no-restore #{i}",
+					1 => $"src/PiWeft.Desktop/ExecutionProcessView.cs 第 {i + 1} 段",
+					_ => $"grep -rn \"ExecutionProcess\" src/PiWeft.Desktop --include=*.cs #{i}",
+				} }],
+				DurationMs = 40 + i * 13,
+			});
+		}
 		session.AppendMessage(new AssistantMessage
 		{
 			Content = [new TextContent { Text = "执行过程时间线已经整理完成。" }],

@@ -1,3 +1,4 @@
+using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
@@ -36,6 +37,32 @@ public sealed class EmptySessionLayoutTests
 		ConversationPerformanceTests.Layout(tab.View, Width, Height);
 
 		Assert.True(Composer(tab).Bounds.Y > Height * 0.7);
+	}
+
+	[Fact]
+	public void ScrollToLatestIsAFloatingBottomCenterButton()
+	{
+		using var session = ConversationPerformanceTests.CreateSession(20);
+		using var tab = new SessionTab(session, [session.Model], "history");
+		ConversationPerformanceTests.Layout(tab.View, Width, Height);
+
+		var button = Find<Button>(tab.View).Single(candidate => HoverHints.Text(candidate) == Strings.ScrollToLatest);
+		var shell = Assert.IsType<Grid>(button.Parent);
+		Assert.Equal(HorizontalAlignment.Center, shell.HorizontalAlignment);
+		Assert.Equal(VerticalAlignment.Bottom, shell.VerticalAlignment);
+		Assert.Equal(36, button.Width, 1);
+		Assert.Equal(36, button.Height, 1);
+		Assert.True(button.IsVisible);
+		Assert.Equal(0, button.Opacity);
+		Assert.False(button.IsHitTestVisible);
+
+		// 隐藏期间也必须参与布局；重新出现时图标中心仍与 36 DIP 圆钮中心重合。
+		button.Opacity = 1;
+		ConversationPerformanceTests.Layout(tab.View, Width, Height - 120);
+		ConversationPerformanceTests.Layout(tab.View, Width, Height);
+		var icon = Find<Image>(button).Single();
+		Assert.Equal(button.Bounds.X + button.Bounds.Width / 2, icon.Bounds.X + icon.Bounds.Width / 2, 1);
+		Assert.Equal(button.Bounds.Y + button.Bounds.Height / 2, icon.Bounds.Y + icon.Bounds.Height / 2, 1);
 	}
 
 	[Fact]
