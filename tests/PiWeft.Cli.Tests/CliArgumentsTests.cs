@@ -365,6 +365,14 @@ public class CliEnvironmentTests
 		Assert.Equal(["read", "grep"], tools.Select(static tool => tool.Name));
 	}
 
+	[Fact]
+	public void ResolveTools_EmptySettingsDefaultToolsDisablesEveryTool()
+	{
+		// 显式空数组是 pi 的「禁用全部」；不能因为「空列表等于没配置」退回默认集。
+		var settings = new CodingAgentSettings { DefaultTools = [], DefaultToolsConfigured = true };
+		Assert.Empty(CliEnvironment.ResolveTools(new CliArguments(), Path.GetTempPath(), settings));
+	}
+
 
 	[Fact]
 	public void ResolveModel_BuildsFallbackForAnUnknownModelWithProvider()

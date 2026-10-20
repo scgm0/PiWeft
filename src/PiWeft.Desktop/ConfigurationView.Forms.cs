@@ -234,11 +234,63 @@ internal sealed partial class ConfigurationView
 		var retryChanged = false;
 		compact.OnCheckedChanged(_ => compactChanged = true);
 		retry.OnCheckedChanged(_ => retryChanged = true);
+
+		// 工具与 Codemode：项目层以全局原始条目为基线回验，chips 显示的集合就是保存后运行时解析出的集合。
+		var baseEntries = _project ? ConfigurationTools.ReadEntries(global) : null;
+		var initialEntries = ConfigurationTools.ReadEntries(_root);
+		IReadOnlyList<string>? entries = initialEntries;
+		var chips = new WrapPanel().Spacing(6);
+		var toolsStatus = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText()
+			.VerticalAlignment(VerticalAlignment.Center);
+		var disabledWarning = Hint(Strings.ConfigToolsAllDisabled).IsVisible(false)
+			.WithTheme((theme, block) => block.Foreground = AppTheme.For(theme).Error);
+		Button addTool = null!;
+		addTool = AppIcons.TextButton("plus", Strings.ConfigToolAdd, () => ShowToolMenu());
+		var resetTools = AppIcons.TextButton("rotate-ccw",
+			_project ? Strings.ConfigInheritGlobal : Strings.ConfigToolsReset, () =>
+			{
+				entries = null;
+				SetDirty(true);
+				RefreshTools();
+			});
+		var disableTools = AppIcons.TextButton("x", Strings.ConfigToolsDisableAll, () =>
+		{
+			entries = [];
+			SetDirty(true);
+			RefreshTools();
+		});
+
+		// codemode 子设置：只回写真正改过的键，未知嵌套字段保持原样。
+		var codemode = _root["codemode"] as JsonObject;
+		var modeText = ConfigurationModels.Text(codemode, "mode");
+		var budget = codemode?["inlineBudget"] is JsonValue budgetNode && budgetNode.TryGetValue<int>(out var budgetNumber)
+			? budgetNumber : (int?)null;
+		var mode = new ComboBox().ItemsSource(ItemsView.Create(new[] { Strings.ConfigInherit, "on", "only" })).Width(180);
+		mode.SelectedIndex = modeText switch { "on" => 1, "only" => 2, _ => 0 };
+		var modeChanged = false;
+		mode.SelectionChanged += _ => { modeChanged = true; SetDirty(true); };
+		var budgetInput = Input(budget?.ToString(CultureInfo.InvariantCulture) ?? string.Empty);
+		var budgetChanged = false;
+		budgetInput.OnTextChanged(_ => { budgetChanged = true; SetDirty(true); });
+
 		_body.Children(
 			FormCard(Strings.ConfigDefaults, Strings.ConfigDefaultsHint,
 				Field(Strings.ConfigProvider, provider), Field(Strings.ConfigModelId, model)),
 			FormCard(Strings.ConfigBehavior, Strings.ConfigBehaviorHint,
-				Field(Strings.Thinking, thinking), compact, retry));
+				Field(Strings.Thinking, thinking), compact, retry),
+			FormCard(Strings.ConfigToolsTitle, Strings.ConfigToolsHint,
+				new StackPanel().Spacing(AppTheme.Space2).Children(
+					Label(Strings.ConfigDefaultTools),
+					Hint(Strings.ConfigDefaultToolsHint),
+					chips,
+					new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+						.VerticalAlignment(VerticalAlignment.Center).Children(addTool, resetTools, disableTools, toolsStatus),
+					disabledWarning),
+				Field(Strings.ConfigCodemodeMode, mode),
+				Hint(Strings.ConfigCodemodeModeHint),
+				Field(Strings.ConfigCodemodeBudget, budgetInput),
+				Hint(Strings.ConfigCodemodeBudgetHint)));
+		RefreshTools();
 		_saveForm = () =>
 		{
 			var next = _root.DeepClone().AsObject();
@@ -247,8 +299,82 @@ internal sealed partial class ConfigurationView
 			if (thinkingChanged) SetOptional(next, "defaultThinkingLevel", levels[Math.Max(0, thinking.SelectedIndex)]);
 			if (compactChanged) SetEnabled(next, "compaction", compact.IsChecked == true);
 			if (retryChanged) SetEnabled(next, "retry", retry.IsChecked == true);
+			if (!ConfigurationTools.Same(initialEntries, entries))
+			{
+				if (entries is null) next.Remove("defaultTools");
+				else
+				{
+					// 用数组构造器而不是 JsonArray.Add<T>：泛型 Add 在裁剪/AOT 下会触发 IL2026/IL3050。
+					var nodes = new JsonNode?[entries.Count];
+					for (var index = 0; index < entries.Count; index++) nodes[index] = JsonValue.Create(entries[index]);
+					next["defaultTools"] = new JsonArray(nodes);
+				}
+			}
+			if (modeChanged || budgetChanged)
+			{
+				int? parsedBudget = null;
+				if (budgetChanged)
+				{
+					var raw = budgetInput.Text.Trim();
+					if (raw.Length > 0)
+					{
+						if (!int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var value))
+							throw new ArgumentException(Strings.ConfigCodemodeBudgetInvalid);
+						parsedBudget = value;
+					}
+				}
+				var patched = ConfigurationTools.PatchCodemode(_root["codemode"],
+					modeChanged ? mode.SelectedIndex switch { 1 => "on", 2 => "only", _ => null } : null,
+					parsedBudget, modeChanged, budgetChanged);
+				if (patched is null) next.Remove("codemode"); else next["codemode"] = patched;
+			}
 			Save(next);
 		};
+
+		// 生效集合与运行时同一套解析：默认集、纯名字、+/- 增量、显式空选择。
+		void RefreshTools()
+		{
+			chips.Clear();
+			var effective = ConfigurationTools.ResolveInLayer(baseEntries, entries);
+			foreach (var name in effective)
+			{
+				var tool = name;
+				chips.Children(ToolChip(tool, () =>
+				{
+					entries = ConfigurationTools.SetEnabled(baseEntries, entries, tool, false);
+					SetDirty(true);
+					RefreshTools();
+				}));
+			}
+			toolsStatus.Text(entries is not null
+				? Strings.ConfigToolsEnabledCount(effective.Count)
+				: _project ? Strings.ConfigInheritGlobal : Strings.ConfigToolsUsingDefault);
+			disabledWarning.IsVisible(ConfigurationTools.DisablesAll(entries));
+		}
+
+		void ShowToolMenu()
+		{
+			HoverHints.Cancel(addTool);
+			var check = new IconTemplate(size => new GlyphElement().Kind(GlyphKind.CheckMark).GlyphSize(4)
+				.Foreground(AppTheme.Accent)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.VerticalAlignment(VerticalAlignment.Center));
+			var menu = new ContextMenu();
+			foreach (var name in ConfigurationTools.Catalog)
+			{
+				var tool = name;
+				var enabled = ConfigurationTools.IsEnabled(baseEntries, entries, tool);
+				var command = new Command($"pi.config.tool.{tool}", tool);
+				addTool.Commands.Register(command, () =>
+				{
+					entries = ConfigurationTools.SetEnabled(baseEntries, entries, tool, !enabled);
+					SetDirty(true);
+					RefreshTools();
+				});
+				menu.Items.Add(new MenuItem(command) { Icon = enabled ? check : null });
+			}
+			menu.Show(addTool);
+		}
 	}
 
 	private static bool ReadEnabled(JsonObject root, string key, bool fallback) =>

@@ -540,12 +540,15 @@ public sealed class CliEnvironment
 		}
 
 		// 默认集：settings.defaultTools 的纯名字整体替换 pi 默认集，只有 +/- 时在默认集上增删。
+		// 显式空列表是「禁用全部内置工具」，不能退回默认集（与 pi 的 resolveDefaultTools 一致）。
 		var defaults = settings.DefaultToolsConfigured ? settings.DefaultTools : CodingAgentSettings.DefaultToolNames;
-		var tools = ApplyToolEntries(
-			[.. catalog.Where(tool => CodingAgentSettings.DefaultToolNames.Contains(tool.Name, StringComparer.Ordinal))],
-			catalog,
-			defaults,
-			allowPatterns: false);
+		var tools = settings.DefaultToolsConfigured && defaults.Count == 0
+			? new List<AgentTool>()
+			: ApplyToolEntries(
+				[.. catalog.Where(tool => CodingAgentSettings.DefaultToolNames.Contains(tool.Name, StringComparer.Ordinal))],
+				catalog,
+				defaults,
+				allowPatterns: false);
 
 		if (arguments.Tools.Count > 0)
 		{

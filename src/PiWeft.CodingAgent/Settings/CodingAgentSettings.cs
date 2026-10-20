@@ -557,14 +557,15 @@ public sealed record CodingAgentSettings
 	}
 
 	/// <summary>
-	/// defaultTools 的项目继承：项目只含 +/− 时叠加到用户列表；出现纯名字时整体替换。
-	/// 空列表是合法的“全部禁用”，不能回退到默认值。
+	/// defaultTools 的跨层合并：项目只含 +/− 时叠加到用户列表；出现纯名字时整体替换。
+	/// 空列表是合法的“全部禁用”，不能回退到默认值；两层都未配置时返回 <c>null</c>
+	/// （表示使用 <see cref="DefaultToolNames"/>），设置界面据此区分「继承」与「显式空选择」。
 	/// </summary>
-	private static IReadOnlyList<string> MergeTools(List<string>? global, List<string>? project)
+	public static IReadOnlyList<string>? MergeDefaultToolEntries(IReadOnlyList<string>? global, IReadOnlyList<string>? project)
 	{
 		if (project is null)
 		{
-			return global is null ? [] : [.. global];
+			return global is null ? null : [.. global];
 		}
 
 		if (project.Count == 0)
@@ -587,6 +588,9 @@ public sealed record CodingAgentSettings
 		merged.AddRange(project);
 		return merged;
 	}
+
+	private static IReadOnlyList<string> MergeTools(List<string>? global, List<string>? project) =>
+		MergeDefaultToolEntries(global, project) ?? [];
 
 	/// <summary>合并 packages：项目条目按来源替换用户条目，新条目追加在后面。</summary>
 	private static IReadOnlyList<PackageDeclaration> MergePackages(

@@ -198,6 +198,24 @@ internal sealed partial class ConfigurationView
 	private CheckBox Check(string title, bool value) => new CheckBox().Content(Label(title)).IsChecked(value).OnCheckedChanged(_ => SetDirty(true));
 	private static TextBlock Label(string text) => new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption).PrimaryText();
 	private static StackPanel Field(string title, UIElement input) => new StackPanel().Spacing(4).Children(Label(title), input);
+	/// <summary>字段说明：比正文小一号的弱化文案，换行不撑破卡片。</summary>
+	private static TextBlock Hint(string text) => new TextBlock().Text(text)
+		.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap);
+	/// <summary>工具 chip：等宽名字 + 移除按钮；颜色跟随主题，不写死色值。</summary>
+	private static UIElement ToolChip(string name, Action remove) => new Border()
+		.CornerRadius(AppTheme.RadiusSm).BorderThickness(1)
+		.Padding(new Thickness(8, 1, 2, 1))
+		.WithTheme((theme, border) =>
+		{
+			var palette = AppTheme.For(theme);
+			border.Background = palette.CardBackgroundAlt;
+			border.BorderBrush = palette.BorderSubtle;
+		})
+		.Child(new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Center).Children(
+				new TextBlock().Text(name).FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont)
+					.PrimaryText().VerticalAlignment(VerticalAlignment.Center),
+				AppIcons.Button("x", Strings.ConfigRemoveTool(name), remove, size: 10)));
 	private static Button ActionButton(string title, Action action) => new Button().Content(Label(title)).OnClick(action);
 
 	private static Element FormCard(string title, string hint, params UIElement[] fields) => new Border()

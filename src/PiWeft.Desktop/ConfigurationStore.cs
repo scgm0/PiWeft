@@ -143,6 +143,10 @@ public sealed class ConfigurationStore(string agentDir, string cwd)
 		{
 			StringFields(root, "defaultProvider", "defaultModel", "defaultThinkingLevel");
 			BoolFields(root, "enableSkillCommands");
+			// defaultTools 是字符串条目数组（纯名字或 +/- 增量）；写错了在加载时就提示，而不是静默忽略。
+			StringArray(root, "defaultTools");
+			if (root.ContainsKey("codemode") && root["codemode"] is not JsonObject)
+				throw new ArgumentException(Strings.ConfigInvalidValue("codemode"));
 			foreach (var section in new[] { "compaction", "retry" })
 			{
 				if (!root.ContainsKey(section)) continue;

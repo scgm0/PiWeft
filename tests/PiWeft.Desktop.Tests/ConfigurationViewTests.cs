@@ -79,6 +79,62 @@ public sealed class ConfigurationViewTests : IDisposable
 	}
 
 	[Fact]
+	public async Task AgentToolsAndCodemodeFormRoundTripsThroughSettingsJson()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+		ConversationPerformanceTests.Layout(view.View, 640, 720);
+
+		// 默认工具：「全部禁用」写成显式空数组（pi 语义），而不是退回默认集。
+		ClickText(view.View, Strings.ConfigToolsDisableAll);
+		Assert.True(view.IsDirty);
+		view.SaveDraft();
+		Assert.Empty(Store.Read(ConfigFile.Settings).Parse()["defaultTools"]!.AsArray());
+
+		// Codemode 模式：继承 → only。
+		var combos = Find<ComboBox>(view.View).ToArray();
+		Assert.Equal(3, combos.Length);
+		combos[2].SelectedIndex = 2;
+		view.SaveDraft();
+		Assert.Equal("only", Store.Read(ConfigFile.Settings).Parse()["codemode"]!["mode"]!.GetValue<string>());
+
+		// 声明预算：0 是有效值（只列命名空间）。
+		Find<TextBox>(view.View).ToArray()[2].Text = "0";
+		view.SaveDraft();
+		Assert.Equal(0, Store.Read(ConfigFile.Settings).Parse()["codemode"]!["inlineBudget"]!.GetValue<int>());
+
+		// 回到继承：模式选「继承」、预算留空，codemode 键整体移除。
+		Find<ComboBox>(view.View).ToArray()[2].SelectedIndex = 0;
+		Find<TextBox>(view.View).ToArray()[2].Text = string.Empty;
+		view.SaveDraft();
+		Assert.False(Store.Read(ConfigFile.Settings).Parse().ContainsKey("codemode"));
+	}
+
+	[Fact]
+	public async Task ProjectToolsFormInheritsGlobalAndWritesOnlyTheDelta()
+	{
+		Store.Save(Store.Read(ConfigFile.Settings), """{"defaultTools":["read","bash"]}""");
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+		Find<ComboBox>(view.View).First().SelectedIndex = 1;
+		ConversationPerformanceTests.Layout(view.View, 640, 720);
+
+		// chips 反映继承到的全局集合；项目层本身不写 defaultTools。
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == "read");
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == "bash");
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.ConfigInheritGlobal);
+
+		// 用 chip 的 × 关掉 bash：项目层只落增量，全局文件不动。
+		ImagePreviewTests.Click(Find<Button>(view.View)
+			.First(button => HoverHints.Text(button) == Strings.ConfigRemoveTool("bash")));
+		view.SaveDraft();
+		Assert.Equal(new[] { "-bash" }, Store.Read(ConfigFile.Settings, project: true).Parse()["defaultTools"]!
+			.AsArray().Select(node => node!.GetValue<string>()));
+		Assert.Equal(new[] { "read", "bash" }, Store.Read(ConfigFile.Settings).Parse()["defaultTools"]!
+			.AsArray().Select(node => node!.GetValue<string>()));
+	}
+
+	[Fact]
 	public void SaveAvailabilityTracksTheDraftAndRaisesStateChanges()
 	{
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
@@ -107,6 +163,10 @@ public sealed class ConfigurationViewTests : IDisposable
 		Assert.Empty(password.Password);
 		Assert.Equal("test-key", Store.Read(ConfigFile.Auth).Parse()["local"]!["key"]!.GetValue<string>());
 	}
+
+	/// <summary>按可见文案点击表单里的文字按钮（图标按钮通过 HoverHints 文案定位）。</summary>
+	private static void ClickText(UIElement root, string text) =>
+		ImagePreviewTests.Click(Find<Button>(root).First(button => Find<TextBlock>(button).Any(block => block.Text == text)));
 
 	public void Dispose()
 	{

@@ -192,7 +192,7 @@ public sealed class SettingsView
 			AddNavigationGroup(Strings.ConfigurationGroup, first: true);
 			AddNavigationButton("models", "settings", Strings.ConfigModels);
 			AddNavigationButton("auth", "star", Strings.ConfigAuth);
-			AddNavigationButton("agent", "settings", Strings.ConfigSettings);
+			AddNavigationButton("agent", "wrench", Strings.ConfigSettings);
 			AddNavigationButton("mcp", "terminal", Strings.SettingsMcp);
 			AddNavigationButton("source", "square-pen", Strings.ConfigSource);
 		}
