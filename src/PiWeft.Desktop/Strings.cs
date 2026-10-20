@@ -52,7 +52,7 @@ public static partial class Strings
 	public const string ContentHit = "内容命中";
 
 	// 输入区
-	public const string ComposerPlaceholder = "输入指令，Enter 发送，Shift+Enter 换行";
+	public const string ComposerPlaceholder = "输入消息，@ 引用文件，/ 运行命令，& 引用会话…";
 	public const string Send = "发送";
 	public const string Abort = "中断";
 	public const string CopyLastReply = "复制回复";
@@ -71,6 +71,9 @@ public static partial class Strings
 	public const string ClipboardImageUnavailable = "剪贴板里读不到可用的图片。";
 	public const string BrokenImage = "（图片数据无法解码）";
 	public const string PaletteButton = "命令";
+
+	/// <summary>输入框工具条上的 @ 引用按钮。</summary>
+	public const string ComposerReference = "引用文件（@）";
 	public const string PinnedMark = "★";
 	public const string RemoveAttachment = "移除";
 	public static string AttachFailed(string reason) => $"附加图片失败：{reason}";
@@ -506,7 +509,7 @@ public static partial class Strings
 	public const string ToolResultLabel = "结果";
 	public const string ToolDiffLabel = "差异";
 	public const string ToolRunning = "运行中";
-	public const string ToolCompleted = "完成";
+	public const string ToolCompleted = "已完成";
 	public const string ToolFailed = "失败";
 
 	public static string ToolDetail(string text) => Summarize(text);

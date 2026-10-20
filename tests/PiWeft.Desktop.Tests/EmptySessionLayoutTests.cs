@@ -47,7 +47,7 @@ public sealed class EmptySessionLayoutTests
 		ConversationPerformanceTests.Layout(tab.View, Width, Height);
 
 		var button = Find<Button>(tab.View).Single(candidate => HoverHints.Text(candidate) == Strings.ScrollToLatest);
-		var shell = Assert.IsType<Grid>(button.Parent);
+		var shell = Assert.IsAssignableFrom<Grid>(button.Parent);
 		Assert.Equal(HorizontalAlignment.Center, shell.HorizontalAlignment);
 		Assert.Equal(VerticalAlignment.Bottom, shell.VerticalAlignment);
 		Assert.Equal(36, button.Width, 1);

@@ -54,6 +54,9 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _scrollToLatest;
 	private readonly FloatingShadow _scrollToLatestShadow;
 	private readonly Grid _scrollToLatestShell;
+
+	/// <summary>挂窗后按钮外壳升入装饰层时持有的装饰器（见 <see cref="HandleShellRootChanged"/>）。</summary>
+	private Adorner? _scrollToLatestAdorner;
 	private readonly TextBox _searchBox = new TextBox().PrimarySelection();
 	private readonly TextBlock _filterStatus = new();
 	private readonly TextBlock _extensionLine = new();
@@ -108,6 +111,12 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _thinkingButton;
 	private readonly TextBlock _thinkingLabel = new();
 
+	/// <summary>输入区上方的会话进行态指示行（PiDeck responding 条）：正在执行命令…/正在思考…。</summary>
+	private readonly Border _busyLine;
+	private readonly Image _busyIcon;
+	private readonly TextBlock _busyText = new();
+	private string? _busyKind;
+
 	/// <summary>输入框左群的终端开关键：控制会话底部的终端面板。</summary>
 	private readonly Button _terminalButton;
 	private readonly Border _terminalPane;
@@ -148,7 +157,9 @@ public sealed partial class SessionTab : IDisposable
 				button.BorderThickness = 1;
 			});
 		_scrollToLatestShadow = new FloatingShadow().IsHitTestVisible(false);
-		_scrollToLatestShell = new Grid().Width(36).Height(36)
+		var shell = new FloatingShell();
+		shell.VisualRootChanged = HandleShellRootChanged;
+		_scrollToLatestShell = shell.Width(36).Height(36)
 			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Bottom)
 			.Margin(new Thickness(0, 0, 0, AppTheme.Space3))
 			.Children(_scrollToLatestShadow, _scrollToLatest);
@@ -306,19 +317,29 @@ public sealed partial class SessionTab : IDisposable
 				.Children(_thinkingLabel, thinkingChevron))
 			.OnClick(ShowThinkingMenu);
 
-		// 左群是会改变下一条消息的开关与插入动作（计划、附件、命令、终端），窄窗口自动换行；
-		// 右群是这次请求的目标与代价（连接测试、模型、思考强度），发送/中断永远贴在最右。
-		var leftActions = new WrapPanel().Spacing(4)
-			.Children(_planButton, attach, commands, _terminalButton);
+		// 左群是会改变下一条消息的开关与插入动作（计划、附件、引用、命令、终端），窄窗口自动换行；
+		// 中群是模型与思考强度铭牌（PiDeck 同款：provider/model · max ▾，居中）；
+		// 右群是连接测试与发送/中断，发送永远贴在最右。
+		var reference = new Button().Ghost().MinWidth(28).Padding(new Thickness(4, 2, 4, 2))
+			.Content(new TextBlock().Text("@").FontSize(AppTheme.FontSizeChat).MutedText()
+				.VerticalAlignment(VerticalAlignment.Center))
+			.OnClick(InsertReference)
+			.HoverTip(Strings.ComposerReference);
+		var leftActions = new WrapPanel().Spacing(4).VerticalAlignment(VerticalAlignment.Center)
+			.Children(_planButton, attach, reference, commands, _terminalButton);
+		var centerActions = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(_modelButton, _thinkingButton);
 		var rightActions = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Center)
-			// 思考强度与发送键之间留一段间距：发送是主操按钮，不该贴着文本按钮。
-			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
-			.Children(_testButton, _modelButton, _thinkingButton);
-		var toolbar = new DockPanel().LastChildFill()
-			.Children(sendGroup.DockRight(), rightActions.DockRight(), leftActions);
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.Children(_testButton, sendGroup);
+		var toolbar = new Grid().Columns("1*,Auto,1*")
+			.Children(leftActions.Column(0), centerActions.Column(1), rightActions.Column(2));
 
 		// 上下文占用条：接近窗口上限时一眼可见。
 		_contextBar.Maximum(100).Height(3).Margin(new Thickness(0, 2, 0, 2));
@@ -359,6 +380,17 @@ public sealed partial class SessionTab : IDisposable
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
 			.IsVisible(false)
 			.Children(_todoCard.View, _extensionCard.View);
+
+		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
+		_busyIcon = AppIcons.Icon("terminal", AppStyles.RoleInfo, 13);
+		_busyText.FontSize(AppTheme.FontSizeCaption).MutedText().VerticalAlignment(VerticalAlignment.Center);
+		_busyLine = new Border()
+			.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
+			.IsVisible(false)
+			.Child(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6)
+				.Children(_busyIcon, _busyText));
 
 		var composerPane = _composerPane = new Border()
 			.StyleName(AppStyles.Composer)
@@ -446,7 +478,7 @@ public sealed partial class SessionTab : IDisposable
 		_composerColumn = new StackPanel()
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Stretch)
-			.Children(_extensionLine, _widgetColumn, _emptyCard.IsVisible(false), composerPane,
+			.Children(_extensionLine, _widgetColumn, _emptyCard.IsVisible(false), _busyLine, composerPane,
 				statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)));
 
 		var layout = new Grid()
@@ -894,6 +926,59 @@ public sealed partial class SessionTab : IDisposable
 		if (visible && wasHidden) _scrollToLatestShell.InvalidateMeasure();
 	}
 
+	/// <summary>
+	/// 挂到窗口后把按钮外壳升入装饰层：装饰层与正文是两个独立的绘制根，
+	/// 时间线行在流式/回收中被整块重绘时不会再把与自己重叠的按钮像素盖掉
+	/// （保留场景对正文脏区的重绘不保证回放树序在它之上的兄弟内容）。
+	/// 装饰器按 <c>_mainArea</c> 的 bounds 排布，位置行为与原先作为其子级完全一致；
+	/// 未挂窗（单元测试直接排布 <c>tab.View</c>）时外壳留在主区里，行为不变。
+	/// </summary>
+	private void HandleShellRootChanged(Element? oldRoot, Element? newRoot)
+	{
+		if (newRoot is Window window)
+		{
+			if (_scrollToLatestAdorner is not null) return;
+			if (ReferenceEquals(_scrollToLatestShell.Parent, _mainArea)) _mainArea.Remove(_scrollToLatestShell);
+			_scrollToLatestAdorner = new ScrollToLatestAdorner(_mainArea, _scrollToLatestShell);
+			window.AdornerLayer.Add(_scrollToLatestAdorner);
+		}
+		else if (newRoot is null && _scrollToLatestAdorner is { } adorner)
+		{
+			_scrollToLatestAdorner = null;
+			if (adorner.Parent is Window owner) owner.AdornerLayer.Remove(adorner);
+			if (_scrollToLatestShell.Parent is null) _mainArea.Children(_scrollToLatestShell);
+		}
+	}
+
+	/// <summary>悬浮按钮装饰器：渲染在正文之上，但只有按钮自身可以命中。</summary>
+	private sealed class ScrollToLatestAdorner : Adorner
+	{
+		private readonly UIElement _shell;
+
+		public ScrollToLatestAdorner(UIElement adornedElement, UIElement shell) : base(adornedElement, shell)
+		{
+			_shell = shell;
+			Focusable = false;
+		}
+
+		// Adorner 继承的 Panel 会把整个主区 bounds 都算作命中区，吞掉消息区的点击；
+		// 这里只让按钮 36×36 的范围参与命中，其余位置穿透到正文。
+		protected override UIElement? OnHitTest(Point point) =>
+			IsVisible && IsHitTestVisible ? _shell.HitTest(point) : null;
+	}
+
+	/// <summary>按钮外壳：随视图挂窗/脱窗触发升层与回落。</summary>
+	private sealed class FloatingShell : Grid
+	{
+		public Action<Element?, Element?>? VisualRootChanged;
+
+		protected override void OnVisualRootChanged(Element? oldRoot, Element? newRoot)
+		{
+			base.OnVisualRootChanged(oldRoot, newRoot);
+			VisualRootChanged?.Invoke(oldRoot, newRoot);
+		}
+	}
+
 	/// <summary>回到最新一条消息。</summary>
 	private void ScrollToLatest() => _conversationScroll.ScrollToLatest();
 
@@ -1316,8 +1401,57 @@ public sealed partial class SessionTab : IDisposable
 		_modelButton.HoverTip($"{Session.Model.Provider}/{Session.Model.Id}\n{Strings.ModelCapabilities(Session.Model)}");
 
 		var thinking = Strings.ThinkingLevelName(Session.ThinkingLevel);
-		_thinkingLabel.Text(thinking);
+		// 铭牌跟 PiDeck 同款拼成一行：provider/model · max ▾；级别用原始短名，中文全名放在提示里。
+		_thinkingLabel.Text($"· {Session.ThinkingLevel}");
 		_thinkingButton.HoverTip($"{Strings.ThinkingLevelTitle}：{thinking}");
+	}
+
+	/// <summary>在光标处插入 @，开始一个文件引用。</summary>
+	private void InsertReference()
+	{
+		if (_disposed) return;
+		_composer.Focus();
+		_composer.EnterText(_composer.CaretPosition, 0, "@");
+	}
+
+	/// <summary>
+	/// 会话进行态（PiDeck respondingKind 同语义）：压缩 → 执行工具 → 推流正文 → 思考。
+	/// 从最新条目向回找第一个仍在流式的活动，空闲返回 null。
+	/// </summary>
+	private (string Kind, string Icon, string Role, string Text)? BusyIndicator(IReadOnlyList<ChatEntry> rows)
+	{
+		if (Session.IsCompacting)
+		{
+			return ("compacting", "refresh-cw", AppStyles.RoleSubtle, Strings.Compacting);
+		}
+
+		for (var index = rows.Count - 1; index >= 0; index--)
+		{
+			var row = rows[index];
+			if (row.Role == ChatRole.Process)
+			{
+				var members = row.ProcessEntries;
+				for (var member = members.Count - 1; member >= 0; member--)
+				{
+					var item = members[member];
+					if (item.IsStreaming || item.IsThinking) return KindOf(item);
+				}
+
+				continue;
+			}
+
+			if (row.IsStreaming) return KindOf(row);
+		}
+
+		return null;
+
+		static (string, string, string, string) KindOf(ChatEntry item) => item.Role switch
+		{
+			ChatRole.Tool => ("executing", "terminal", AppStyles.RoleInfo, Strings.BusyExecuting),
+			ChatRole.Assistant when item.Text.Length > 0 || item.Images.Count > 0 =>
+				("responding", "message-square", AppStyles.RoleInfo, Strings.Streaming),
+			_ => ("thinking", "sparkles", AppStyles.RoleThinking, Strings.ThinkingActive),
+		};
 	}
 
 	/// <summary>保留未变化的消息控件和折叠状态，只重绘变化后的尾部。</summary>
@@ -1352,8 +1486,6 @@ public sealed partial class SessionTab : IDisposable
 		_headerRow.IsVisible(entries.Count > 0);
 
 		var status = $"{Session.Model.Provider} / {Session.Model.Id} · {Strings.ThinkingShort(Session.ThinkingLevel)}";
-		if (Session.IsCompacting) status += $" · {Strings.Compacting}";
-		else if (IsStreaming) status += $" · {Strings.Streaming}";
 		if (_chat.Error is { Length: > 0 } error)
 		{
 			status = $"{status}  ·  {Strings.RoleError}: {error}";
@@ -1376,6 +1508,15 @@ public sealed partial class SessionTab : IDisposable
 			RefreshTodoStrip(todo);
 		}
 		var busy = _sending || _chat.IsStreaming;
+		var indicator = BusyIndicator(all);
+		var kindChanged = indicator?.Kind != _busyKind;
+		_busyKind = indicator?.Kind;
+		_busyLine.IsVisible(busy && indicator is not null);
+		if (indicator is { } active && kindChanged)
+		{
+			_busyIcon.Source(AppIcons.Get(active.Icon, AppStyles.ColorForRole(active.Role)));
+			_busyText.Text(active.Text);
+		}
 		if (_statisticsPanel.IsOpen)
 		{
 			_statisticsPanel.Update(display, busy);

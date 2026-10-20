@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace PiWeft.Desktop;
 
 /// <summary>One execution summary per user turn; the trailing answer always stays outside the fold.</summary>
@@ -156,22 +158,25 @@ internal static class ExecutionProcess
 		}
 	}
 
+	/// <summary>
+	/// 组头结束态摘要：只列工具类别（PiDeck 同款，思考不计入；纯思考组由调用方给「已完成分析」）。
+	/// </summary>
 	public static string GroupSummary(IReadOnlyList<ChatEntry> entries)
 	{
 		List<string>? activities = null;
 		HashSet<string>? seen = null;
 		foreach (var entry in entries)
 		{
-			string? activity = entry.Role == ChatRole.Tool ? entry.ToolName switch
-			{
-				"read" => "已读取文件", "write" or "edit" => "修改了文件", "bash" => "执行了命令",
-				"grep" or "find" or "ls" => "搜索了文件", "todo" => "更新了计划", _ => "调用了工具",
-			} : entry.Thinking.Length > 0 || entry.IsThinking ? "思考" : null;
-			if (activity is null)
+			if (entry.Role != ChatRole.Tool)
 			{
 				continue;
 			}
 
+			var activity = entry.ToolName switch
+			{
+				"read" => "已读取文件", "write" => "已写入文件", "edit" => "修改了文件", "bash" => "执行了命令",
+				"grep" or "find" or "ls" => "已搜索代码", "todo" => "更新了计划", _ => "已调用工具",
+			};
 			activities ??= [];
 			seen ??= new HashSet<string>(StringComparer.Ordinal);
 			if (seen.Add(activity))
@@ -181,6 +186,125 @@ internal static class ExecutionProcess
 		}
 
 		return activities is null ? string.Empty : string.Join("、", activities);
+	}
+
+	/// <summary>组头运行态文案：按最新工具类别给「正在…」，纯思考组退回「正在分析请求」。</summary>
+	public static string RunningLabel(IReadOnlyList<ChatEntry> entries)
+	{
+		for (var index = entries.Count - 1; index >= 0; index--)
+		{
+			if (entries[index].Role == ChatRole.Tool)
+			{
+				return RunningLabelFor(entries[index].ToolName);
+			}
+		}
+
+		return Strings.ProcessGroupAnalyzing;
+	}
+
+	private static string RunningLabelFor(string? toolName) => toolName switch
+	{
+		"read" => Strings.ProcessGroupRead,
+		"write" => Strings.ProcessGroupWrite,
+		"edit" => Strings.ProcessGroupEdit,
+		"bash" or "terminal" => Strings.ProcessGroupCommands,
+		"grep" or "find" or "ls" => Strings.ProcessGroupSearch,
+		"todo" => Strings.ProcessGroupTodo,
+		_ => Strings.ProcessGroupTools,
+	};
+
+	/// <summary>组头类别图标：与 <see cref="RunningLabel"/> 同源。</summary>
+	public static string GroupIcon(IReadOnlyList<ChatEntry> entries)
+	{
+		for (var index = entries.Count - 1; index >= 0; index--)
+		{
+			if (entries[index].Role == ChatRole.Tool)
+			{
+				return GroupIconFor(entries[index].ToolName);
+			}
+		}
+
+		return "sparkles";
+	}
+
+	private static string GroupIconFor(string? toolName) => toolName switch
+	{
+		"read" => "file-text",
+		"write" or "edit" => "square-pen",
+		"bash" or "terminal" => "terminal",
+		"grep" or "find" or "ls" => "search",
+		"todo" => "list-checks",
+		_ => "play",
+	};
+
+	/// <summary>组头实时详情：最新成员是工具时给「正在执行 …」，切回思考时消失（PiDeck 同款）。</summary>
+	public static string? RunningDetail(IReadOnlyList<ChatEntry> entries) =>
+		entries.Count > 0 && entries[^1] is { Role: ChatRole.Tool } tool ? ToolAction(tool, running: true) : null;
+
+	/// <summary>工具行动词短语：「正在执行 cd …」/「读取 src/App.cs」；未知工具保留原摘要。</summary>
+	public static string ToolAction(ChatEntry entry, bool running)
+	{
+		var verb = entry.ToolName switch
+		{
+			"bash" or "terminal" => Strings.ToolActionExecute,
+			"read" => Strings.ToolActionRead,
+			"write" or "edit" => Strings.ToolActionEdit,
+			"grep" or "find" or "ls" => Strings.ToolActionSearch,
+			_ => null,
+		};
+		if (verb is null)
+		{
+			return Strings.ToolDetail(entry.ToolArguments is { Length: > 0 } arguments ? arguments : entry.Text);
+		}
+
+		return Strings.ToolAction(verb, DetailPreview(entry), running);
+	}
+
+	/// <summary>行内摘要：bash 取命令，文件类工具取路径，其余退回参数/结果摘要。</summary>
+	private static string DetailPreview(ChatEntry entry)
+	{
+		if (entry.ToolArguments is not { Length: > 0 } arguments)
+		{
+			return Strings.ToolDetail(entry.Text);
+		}
+
+		if (entry.ToolName is "bash" or "terminal" && JsonField(arguments, "command") is { } command)
+		{
+			return Strings.ToolDetail(command);
+		}
+
+		if (entry.ToolName is "read" or "write" or "edit" or "grep" or "find" or "ls")
+		{
+			if (JsonField(arguments, "path", "file_path", "filePath", "pattern") is { } target)
+			{
+				return Strings.ToolDetail(target);
+			}
+		}
+
+		return Strings.ToolDetail(arguments);
+	}
+
+	/// <summary>从工具参数 JSON 里取第一个存在的字符串字段。</summary>
+	private static string? JsonField(string arguments, params string[] names)
+	{
+		try
+		{
+			if (JsonNode.Parse(arguments) is JsonObject root)
+			{
+				foreach (var name in names)
+				{
+					if (root[name]?.GetValue<string>() is { Length: > 0 } value)
+					{
+						return value;
+					}
+				}
+			}
+		}
+		catch (Exception error) when (error is System.Text.Json.JsonException or InvalidOperationException or FormatException)
+		{
+		}
+
+		return null;
 	}
 }
 

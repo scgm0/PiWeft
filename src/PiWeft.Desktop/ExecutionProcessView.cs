@@ -144,6 +144,7 @@ internal sealed class ExecutionProcessView
 		_total.Text(duration is { } value ? Strings.ExecutionTotal(value) : string.Empty);
 		_total.IsVisible(duration is not null);
 		var nodes = Nodes(_entry.ProcessEntries);
+		var latest = nodes.LastOrDefault(node => node.Group)?.Key;
 		var common = Math.Min(nodes.Count, _slots.Count);
 		var reset = 0;
 		while (reset < common && _slots[reset].Key == nodes[reset].Key) reset++;
@@ -159,12 +160,13 @@ internal sealed class ExecutionProcessView
 		for (var i = 0; i < nodes.Count; i++)
 		{
 			var node = nodes[i];
-			if (i < _slots.Count) { _slots[i].Update(node.Entries); continue; }
-			var slot = node.Group ? Group(node.Key, node.Entries) : Leaf(node.Key, node.Entries[0]);
+			// 运行态只属于「正在流式的那一轮里最新的过程组」：它给「正在…」组头，其余组给结束态摘要。
+			var isRunning = _entry.IsStreaming && node.Group && node.Key == latest;
+			if (i < _slots.Count) { _slots[i].Update(node.Entries, isRunning); continue; }
+			var slot = node.Group ? Group(node.Key, node.Entries, isRunning) : Leaf(node.Key, node.Entries[0]);
 			_slots.Add(slot);
 			_body.Children(slot.Host);
 		}
-		var latest = nodes.LastOrDefault(node => node.Group)?.Key;
 		if (_entry.IsStreaming && _fold.IsExpanded && latest != _latestGroup && latest is not null)
 		{
 			_automatic = true;
@@ -179,7 +181,7 @@ internal sealed class ExecutionProcessView
 		_latestGroup = latest;
 	}
 
-	private Slot Group(string key, IReadOnlyList<ChatEntry> entries)
+	private Slot Group(string key, IReadOnlyList<ChatEntry> entries, bool running)
 	{
 		const int recentSteps = 8;
 		var members = entries;
@@ -207,21 +209,49 @@ internal sealed class ExecutionProcessView
 			BuildMembers();
 		});
 		olderHost = new StackPanel().Spacing(2).Children(olderButton, bodyHost);
-		var header = new TextBlock().FontSize(AppTheme.FontSizeCaption).SubtleText();
-		fold = new Expander().Header(new StackPanel().Orientation(Orientation.Horizontal).Spacing(5)
-			.VerticalAlignment(VerticalAlignment.Center).Children(header))
+		// 组头与 PiDeck 过程组同构：类别图标 + 主文案 + 「·」+ 等宽实时详情；运行时图标走强调色。
+		var icon = AppIcons.Icon("terminal", AppStyles.RoleSubtle, 13);
+		var label = new TextBlock().FontSize(AppTheme.FontSizeCaption).SubtleText()
+			.VerticalAlignment(VerticalAlignment.Center);
+		var separator = new TextBlock().Text("·").FontSize(AppTheme.FontSizeMicro).FaintText()
+			.VerticalAlignment(VerticalAlignment.Center).IsVisible(false);
+		var detail = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)
+			.TextTrimming(TextTrimming.CharacterEllipsis).VerticalAlignment(VerticalAlignment.Center).IsVisible(false);
+		var head = new Grid().Columns("Auto,Auto,Auto,*").HorizontalAlignment(HorizontalAlignment.Stretch)
+			.Children(
+				icon.Column(0),
+				label.Column(1).Margin(new Thickness(5, 0, 0, 0)),
+				separator.Column(2).Margin(new Thickness(6, 0, 0, 0)),
+				detail.Column(3).Margin(new Thickness(5, 0, 0, 0)));
+		fold = new Expander().Header(head)
 			.IsExpanded(false).HoverTip(Strings.ExecutionGroupHint);
 		fold.ExpandedChanged += expanded => { if (expanded) BuildMembers(); };
 		Track(key, fold, false, group: true);
 		var host = new Border().Padding(new Thickness(2, 0, 0, 0)).Child(fold);
 		var slot = new Slot(key, host, Update);
-		Update(entries);
+		Update(entries, running);
 		return slot;
 
-		void Update(IReadOnlyList<ChatEntry> next)
+		void Update(IReadOnlyList<ChatEntry> next, bool isRunning)
 		{
 			members = next;
-			header.Text($"{ExecutionProcess.GroupSummary(next)}  ·  {Strings.ExecutionSteps(next.Count)}");
+			if (isRunning)
+			{
+				icon.Source(AppIcons.Get(ExecutionProcess.GroupIcon(next), AppStyles.ColorForRole(AppStyles.RoleAccent)));
+				label.Text(ExecutionProcess.RunningLabel(next));
+				var runningDetail = ExecutionProcess.RunningDetail(next);
+				separator.IsVisible(runningDetail is not null);
+				detail.IsVisible(runningDetail is not null);
+				if (runningDetail is { } text) detail.Text(text);
+			}
+			else
+			{
+				icon.Source(AppIcons.Get(ExecutionProcess.GroupIcon(next), AppStyles.ColorForRole(AppStyles.RoleSubtle)));
+				var summary = ExecutionProcess.GroupSummary(next);
+				label.Text(summary.Length > 0 ? summary : Strings.ProcessGroupAnalyzed);
+				separator.IsVisible(false);
+				detail.IsVisible(false);
+			}
 			if (fold.IsExpanded || fold.Content is not null) BuildMembers();
 		}
 		void BuildMembers()
@@ -249,7 +279,7 @@ internal sealed class ExecutionProcessView
 			for (var i = 0; i < visible; i++)
 			{
 				var member = members[olderBase + i];
-				if (i < slots.Count) slots[i].Update([member]);
+				if (i < slots.Count) slots[i].Update([member], false);
 				else
 				{
 					var leaf = Leaf($"{key}/{Id(member, olderBase + i)}", member);
@@ -267,7 +297,7 @@ internal sealed class ExecutionProcessView
 		var host = new Border().Child(new Grid().Columns("22,*")
 			.Children(rail.View.Column(0), content.Column(1)));
 		ChatEntry? previous = null;
-		var slot = new Slot(key, host, next =>
+		var slot = new Slot(key, host, (next, _) =>
 		{
 			var value = next[0];
 			if (previous is not null && ConversationTimeline.SameEntry(previous, value)) return;
@@ -282,7 +312,7 @@ internal sealed class ExecutionProcessView
 			}
 			previous = value;
 		});
-		slot.Update([entry]);
+		slot.Update([entry], false);
 		return slot;
 	}
 
@@ -374,5 +404,5 @@ internal sealed class ExecutionProcessView
 	}
 
 	private sealed record Node(string Key, IReadOnlyList<ChatEntry> Entries, bool Group);
-	private sealed record Slot(string Key, Border Host, Action<IReadOnlyList<ChatEntry>> Update);
+	private sealed record Slot(string Key, Border Host, Action<IReadOnlyList<ChatEntry>, bool> Update);
 }

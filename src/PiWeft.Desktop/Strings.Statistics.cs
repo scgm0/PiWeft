@@ -7,7 +7,27 @@ public static partial class Strings
 	public const string ExecutionGroupHint = "展开或收起这组思考与工具调用。";
 	public static string ExecutionTotal(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
 	public static string ExecutionEarlierSteps(int count) => $"显示更早的 {count} 条步骤";
-	public static string ExecutionSteps(int count) => $"{count} 步";
+
+	// 过程组组头（PiDeck 同款）：运行态按最新工具类别给「正在…」，纯思考组退回「正在分析请求」。
+	public const string ProcessGroupAnalyzing = "正在分析请求";
+	public const string ProcessGroupAnalyzed = "已完成分析";
+	public const string ProcessGroupRead = "正在读取文件";
+	public const string ProcessGroupSearch = "正在搜索代码";
+	public const string ProcessGroupWrite = "正在写入文件";
+	public const string ProcessGroupEdit = "正在编辑文件";
+	public const string ProcessGroupCommands = "正在运行命令";
+	public const string ProcessGroupTodo = "正在更新计划";
+	public const string ProcessGroupTools = "正在调用工具";
+
+	/// <summary>工具行的动词短语：进行中加「正在」，例如「正在执行 cd …」「读取 src/App.cs」。</summary>
+	public static string ToolAction(string verb, string detail, bool running) => running ? $"正在{verb} {detail}" : $"{verb} {detail}";
+	public const string ToolActionExecute = "执行";
+	public const string ToolActionRead = "读取";
+	public const string ToolActionEdit = "修改";
+	public const string ToolActionSearch = "搜索";
+
+	/// <summary>输入区上方的会话进行态（PiDeck responding 指示条）。</summary>
+	public const string BusyExecuting = "正在执行命令…";
 	public const string SessionStatistics = "会话统计";
 	public const string StatisticsUsage = "累计用量";
 	public const string StatisticsLastReply = "上次模型回复";

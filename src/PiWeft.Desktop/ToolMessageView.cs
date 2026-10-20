@@ -9,26 +9,47 @@ internal sealed class ToolMessageView
 {
 	public ToolMessageView(ChatEntry entry, TextFocusScrollGuard focus, Action<ImageSource>? preview = null)
 	{
+		// 摘要行与 PiDeck 工具卡同构：工具名（弱化）→ 状态徽章 pill → 耗时 → 动词短语（等宽）。
 		var name = new TextBlock().Text(entry.ToolName ?? "工具")
-			.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium).PrimaryText();
-		var state = new TextBlock()
+			.FontSize(AppTheme.FontSizeCaption).SubtleText();
+		var stateText = new TextBlock()
 			.Text(entry.IsStreaming ? Strings.ToolRunning : entry.IsError ? Strings.ToolFailed : Strings.ToolCompleted)
-			.FontSize(AppTheme.FontSizeMicro)
-			.WithTheme((theme, text) => text.Foreground = entry.IsStreaming
-				? AppTheme.For(theme).Info
-				: entry.IsError ? AppTheme.For(theme).Error : AppTheme.For(theme).Success);
+			.FontSize(AppTheme.FontSizeMicro).VerticalAlignment(VerticalAlignment.Center);
+		// 状态徽章 pill：运行中/失败用语义色描边，已完成保持中性灰（PiDeck Badge outline 同款）。
+		var state = new Border().BorderThickness(1).CornerRadius(AppTheme.RadiusXs)
+			.Padding(new Thickness(6, 1, 6, 1))
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Child(stateText)
+			.WithTheme((theme, border) =>
+			{
+				var palette = AppTheme.For(theme);
+				if (entry.IsStreaming || entry.IsError)
+				{
+					var tone = entry.IsStreaming ? palette.Info : palette.Error;
+					border.Background = tone.WithAlpha(0x16);
+					border.BorderBrush = tone.WithAlpha(0x3c);
+					stateText.Foreground = tone;
+				}
+				else
+				{
+					border.Background = palette.CardBackgroundAlt;
+					border.BorderBrush = palette.BorderSubtle;
+					stateText.Foreground = palette.TextMuted;
+				}
+			});
 		var timing = new TextBlock()
 			.Text(entry.DurationMs is { } ms ? Strings.FormatDuration(ms) : string.Empty)
 			.FontSize(AppTheme.FontSizeMicro).SubtleText();
 		var detailSource = DetailSource(entry);
-		var detail = new TextBlock().Text(Strings.ToolDetail(detailSource))
-			.FontSize(AppTheme.FontSizeCaption).MutedText().TextTrimming(TextTrimming.CharacterEllipsis);
+		var detail = new TextBlock().Text(ExecutionProcess.ToolAction(entry, entry.IsStreaming))
+			.FontSize(AppTheme.FontSizeCaption).MutedText().FontFamily(AppTheme.MonoFont)
+			.TextTrimming(TextTrimming.CharacterEllipsis);
 		var header = new Grid().Columns("Auto,Auto,Auto,*")
 			.HorizontalAlignment(HorizontalAlignment.Stretch)
 			.Children(
-				name.Column(0),
+				name.Column(0).VerticalAlignment(VerticalAlignment.Center),
 				state.Column(1).Margin(new Thickness(6, 0, 0, 0)),
-				timing.Column(2).Margin(new Thickness(6, 0, 0, 0)),
+				timing.Column(2).Margin(new Thickness(6, 0, 0, 0)).VerticalAlignment(VerticalAlignment.Center),
 				detail.Column(3).Margin(new Thickness(6, 0, 0, 0)));
 		if (timing.Text.Length == 0) timing.IsVisible(false);
 		if (detail.Text.Length == 0) detail.IsVisible(false);

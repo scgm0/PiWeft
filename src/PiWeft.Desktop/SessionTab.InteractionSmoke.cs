@@ -9,12 +9,38 @@ public sealed partial class SessionTab
 	/// <summary>滚到顶部，让「移动到最新」悬浮按钮进入自动显示状态。</summary>
 	internal void PrepareLatestSmoke()
 	{
-		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(250));
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(2500));
 		timer.Tick += () =>
 		{
 			timer.Stop();
 			_scroll.SetScrollOffsets(_scroll.HorizontalOffset, 0);
 			Console.WriteLine("latest-ready");
+		};
+		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
+		timer.Start();
+	}
+
+	/// <summary>
+	/// 滚到顶部后反复切换输入区上方卡片的展开与可见性，制造消息区高度抖动，
+	/// 复现悬浮按钮「显示不全」的偶发绘制缺陷（外部脚本趁机连拍截图）。
+	/// </summary>
+	internal void PrepareLatestChurnSmoke()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(180));
+		var tick = 0;
+		timer.Tick += () =>
+		{
+			_scroll.SetScrollOffsets(0, 0);
+			switch (tick % 4)
+			{
+				case 0: _todoCard.IsExpanded = false; break;
+				case 1: _todoCard.IsExpanded = true; break;
+				case 2: _todoCard.Show(!_todoCard.View.IsVisible); break;
+				case 3: _todoCard.Show(!_todoCard.View.IsVisible); break;
+			}
+			Render(true);
+			if (tick == 3) Console.WriteLine("churn-ready");
+			if (++tick > 400) timer.Stop();
 		};
 		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
 		timer.Start();

@@ -1091,6 +1091,9 @@ public sealed partial class MainWindow : Window
 				case "latest":
 					CurrentTab()?.PrepareLatestSmoke();
 					break;
+				case "latest-churn":
+					CurrentTab()?.PrepareLatestChurnSmoke();
+					break;
 				case "interactions":
 					CurrentTab()?.PrepareInteractionSmoke();
 					break;
@@ -1168,7 +1171,8 @@ public sealed partial class MainWindow : Window
 			Console.WriteLine($"piweft-desktop: ui smoke 已打开 {view}，标签数={_tabEntries.Count}");
 		});
 
-		await Task.Delay(view == "interactions" ? 18000 : 7000).ConfigureAwait(false);
+		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
+		await Task.Delay(view is "interactions" or "latest" or "latest-churn" ? 30000 : 7000).ConfigureAwait(false);
 		Dispatch(() =>
 		{
 			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();
