@@ -12,6 +12,7 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 	private readonly Window _window;
 	private readonly DispatcherTimer _timer = new(Delay);
 	private FrameworkElement? _owner;
+	private Rect? _anchor;
 	private Popup? _popup;
 
 	private HoverHints(Window window)
@@ -25,11 +26,12 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 		window.KeyDown += OnKeyDown;
 	}
 
-	public static T Set<T>(T element, string? text) where T : FrameworkElement
+	public static T Set<T>(T element, string? text, Rect? anchor = null) where T : FrameworkElement
 	{
 		var hint = Hints.GetValue(element, static owner => new Hint(owner));
-		if (hint.Text == text) return element;
+		if (hint.Text == text && hint.Anchor == anchor) return element;
 		hint.Text = text;
+		hint.Anchor = anchor;
 		CancelOwner(element);
 		// 行内 chip 的提示是在鼠标移动中换文本的；鼠标已经在元素上时直接开始计时，
 		// 否则要等下一次 MouseEnter 才出现，行内悬浮永远看不到。
@@ -38,6 +40,10 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 	}
 
 	internal static string? Text(FrameworkElement element) => Hints.TryGetValue(element, out var hint) ? hint.Text : null;
+
+	/// <summary>提示的锚点；为空时退回整个元素。</summary>
+	internal static Rect? AnchorOf(FrameworkElement element) => Hints.TryGetValue(element, out var hint) ? hint.Anchor : null;
+
 	internal static bool IsOpen(Window window) => window.OverlayLayer.GetService<HoverHints>()?._popup?.IsOpen == true;
 
 	private static void Begin(FrameworkElement owner)
@@ -46,6 +52,7 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 		var service = window.OverlayLayer.GetOrCreateService(_ => new HoverHints(window));
 		service.Cancel();
 		service._owner = owner;
+		service._anchor = AnchorOf(owner);
 		service._timer.Start();
 	}
 
@@ -73,7 +80,13 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 		popup.Content = new Border().StyleName(AppStyles.Card).CornerRadius(AppTheme.RadiusMd)
 			.MaxWidth(420).Padding(new Thickness(10, 6, 10, 6)).IsHitTestVisible(false)
 			.Child(new TextBlock().Text(Text(owner)!).FontSize(AppTheme.FontSizeCaption).PrimaryText().TextWrapping(TextWrapping.Wrap));
-		popup.ShowAt(owner, Anchor(owner), PopupAnchorSide.Below);
+		var anchor = _anchor ?? Anchor(owner);
+		// 行内 chip 的锚点就是 chip 本身：贴着 chip 出现；窗口下半部分向上弹，
+		// 免得盖住输入框底部的工具条。其余元素仍整块铺开，交给 Popup 做边界翻转。
+		var side = _anchor is not null && anchor.Y + anchor.Height / 2 > _window.ClientSize.Height / 2
+			? PopupAnchorSide.Above
+			: PopupAnchorSide.Below;
+		popup.ShowAt(owner, anchor, side);
 	}
 
 	// MewUI arranges descendants in window-absolute coordinates, including scrolled content.
@@ -85,6 +98,7 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 	{
 		_timer.Stop();
 		_owner = null;
+		_anchor = null;
 		_popup?.Close();
 	}
 
@@ -109,6 +123,7 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 	private sealed class Hint
 	{
 		public string? Text;
+		public Rect? Anchor;
 		public Hint(FrameworkElement owner)
 		{
 			owner.MouseEnter += () => Begin(owner);

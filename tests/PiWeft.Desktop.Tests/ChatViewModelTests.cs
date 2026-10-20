@@ -207,6 +207,42 @@ public class ChatViewModelTests : IDisposable
 	}
 
 	[Fact]
+	public void HiddenExtensionContextDoesNotBecomeAUserRow()
+	{
+		var manager = SessionManager.InMemory(_root);
+		// 目标模式注入的内部上下文：参与模型上下文，但 display:false 不该在对话里占气泡。
+		manager.AppendCustomMessage("pi-deck-goal-context",
+			MessageContent.FromText("[GOAL MODE ACTIVE]\nObjective: 修好它\nRound: 1/32"), display: false);
+		manager.AppendMessage(new AssistantMessage
+		{
+			Api = "a", Provider = "p", Model = "m",
+			Content = [new TextContent { Text = "ok" }], StopReason = StopReason.Stop, Timestamp = 2,
+		});
+		using var session = NewSession(manager);
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var entries = viewModel.Entries();
+		Assert.DoesNotContain(entries, static entry => entry.Role == ChatRole.User);
+		Assert.Contains(entries, static entry => entry.Text == "ok");
+		// 注入内容仍送给模型。
+		Assert.Contains(session.Messages, static message => message is UserMessage { Display: false });
+	}
+
+	[Fact]
+	public void VisibleExtensionContextStillBecomesAUserRow()
+	{
+		var manager = SessionManager.InMemory(_root);
+		manager.AppendCustomMessage("subagent-notify", MessageContent.FromText("后台任务完成"), display: true);
+		using var session = NewSession(manager);
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var user = Assert.Single(viewModel.Entries(), static entry => entry.Role == ChatRole.User);
+		Assert.Equal("后台任务完成", user.Text);
+	}
+
+	[Fact]
 	public async Task UserAndAssistantTurnsBecomeRows()
 	{
 		_streams.Enqueue(static model => FakeStreams.Text(model, "hello back"));

@@ -824,6 +824,8 @@ public sealed partial class SessionManager
 				{
 					Content = custom.Content,
 					Timestamp = ToUnixMs(custom.Timestamp),
+					CustomType = custom.CustomType,
+					Display = custom.Display,
 				};
 				messages.Add(replacement is null ? customMessage : ReplaceContent(customMessage, replacement.Value));
 				break;
@@ -998,6 +1000,8 @@ public sealed partial class SessionManager
 			{
 				Content = custom.Content,
 				Timestamp = ToUnixMs(custom.Timestamp),
+				CustomType = custom.CustomType,
+				Display = custom.Display,
 			},
 		],
 		_ => [],

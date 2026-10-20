@@ -13,6 +13,19 @@ public sealed class HoverHintsTests
 		Assert.Equal(TimeSpan.FromMilliseconds(350), HoverHints.Delay);
 	}
 	[Fact]
+	public void ChipAnchorsAreRememberedSoTheHintSitsOnTheChip()
+	{
+		var owner = new Button().Width(40).Height(24);
+		var anchor = new Rect(10, 20, 80, 20);
+		HoverHints.Set(owner, "/tmp/a.cs", anchor);
+		Assert.Equal("/tmp/a.cs", HoverHints.Text(owner));
+		Assert.Equal(anchor, HoverHints.AnchorOf(owner));
+
+		HoverHints.Set(owner, "/tmp/b.cs");
+		Assert.Null(HoverHints.AnchorOf(owner));
+	}
+
+	[Fact]
 	public void NestedHintsUseWindowCoordinatesAndLeaveRoomForPopupFlipping()
 	{
 		var owner = new Button().Width(40).Height(24).HorizontalAlignment(HorizontalAlignment.Left);

@@ -659,7 +659,10 @@ public sealed class ChatViewModel : IDisposable
 				return;
 
 			case UserMessage user:
+				// 扩展注入的内部上下文（目标模式 / 计划模式等 display:false）仍参与模型上下文，
+				// 也仍是一轮的边界，但不占用户气泡：和 PiDeck 一样不把这类注入铺在对话里。
 				turnChanges.Clear();
+				if (!user.Display) return;
 				_entries.Add(new ChatEntry
 				{
 					Role = ChatRole.User,

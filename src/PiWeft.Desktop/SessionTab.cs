@@ -240,8 +240,8 @@ public sealed partial class SessionTab : IDisposable
 			})
 			.OnTextInput(input => UserReferenceRichText.TryHandleTextInput(_composer!, input));
 
-		// 草稿里的文件引用用行内 chip 显示；原始 @"..." 仍留在文档里。
-		UserReferenceRichText.Attach(_composer, editable: true);
+		// 草稿里的文件引用和 /skill:名称 都用行内 chip 显示；原始 @"..." / /skill:... 仍留在文档里。
+		UserReferenceRichText.Attach(_composer, editable: true, cwd: Session.Cwd, skillLocation: SkillLocation);
 
 		// 默认右键菜单的「粘贴」只判断剪贴板有无文本，纯图片剪贴板时菜单项是灰的。
 		// 替换同一个语义命令：菜单、快捷键与工具栏仍走 StandardCommands.Paste，
@@ -1785,7 +1785,8 @@ public sealed partial class SessionTab : IDisposable
 		{
 			body = MessageText.Create(collapsible ? collapsedText : text);
 			UserReferenceRichText.Attach(body, editable: false,
-				onOpen: path => Shell.OpenMessageLink(path, Session.Cwd, message => _status.Text(message)));
+				onOpen: path => Shell.OpenMessageLink(path, Session.Cwd, message => _status.Text(message)),
+				cwd: Session.Cwd, skillLocation: SkillLocation);
 			_textFocus.Track(body);
 			bubble.Children(body);
 		}
@@ -1866,6 +1867,16 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// <summary>技能上下文 chip：蓝色信息色 + sparkles，tooltip 显示技能文件位置。</summary>
+	/// <summary>技能 chip 的悬浮提示用：技能名 → SKILL.md 的绝对路径。</summary>
+	private string? SkillLocation(string name)
+	{
+		foreach (var skill in Session.DiscoveredSkills)
+		{
+			if (string.Equals(skill.Name, name, StringComparison.Ordinal)) return skill.FilePath;
+		}
+		return null;
+	}
+
 	private static UIElement SkillChip(UserSkillChip skill)
 	{
 		return new Border()

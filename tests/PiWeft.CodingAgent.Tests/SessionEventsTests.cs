@@ -133,6 +133,26 @@ public class SessionEventsTests : IDisposable
 	}
 
 	[Fact]
+	public void HiddenCustomMessageKeepsItsDisplayFlagInTheProjectedMessages()
+	{
+		var script = new ScriptedStreamFn();
+		using var session = CreateSession(script);
+
+		session.AppendCustomMessage("pi-deck-goal-context", "[GOAL MODE ACTIVE]", display: false);
+		session.AppendCustomMessage("subagent-notify", "后台任务完成");
+
+		var custom = session.Messages.OfType<UserMessage>().ToArray();
+		Assert.Equal(2, custom.Length);
+		Assert.Equal("pi-deck-goal-context", custom[0].CustomType);
+		Assert.False(custom[0].Display);
+		Assert.Equal("subagent-notify", custom[1].CustomType);
+		Assert.True(custom[1].Display);
+		// 普通用户消息默认可见。
+		Assert.Null(new UserMessage().CustomType);
+		Assert.True(new UserMessage().Display);
+	}
+
+	[Fact]
 	public async Task CompactAsyncEmitsStartAndEndEventsAroundTheRun()
 	{
 		var script = new ScriptedStreamFn();

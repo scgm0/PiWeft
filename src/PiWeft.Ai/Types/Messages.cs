@@ -65,6 +65,18 @@ public sealed record UserMessage : Message
 	public override string Role => "user";
 
 	public MessageContent Content { get; init; } = MessageContent.Empty;
+
+	/// <summary>
+	/// 扩展注入的消息类型（会话文件里的 <c>customType</c>）；用户手写的消息为 <see langword="null"/>。
+	/// 这类消息仍参与模型上下文，但对话里是否显示由 <see cref="Display"/> 决定。
+	/// </summary>
+	public string? CustomType { get; init; }
+
+	/// <summary>
+	/// 是否在对话时间线里显示；对应会话文件的 <c>display</c> 字段。
+	/// 目标模式 / 计划模式这类内部上下文注入是 <see langword="false"/>，不占用户气泡。
+	/// </summary>
+	public bool Display { get; init; } = true;
 }
 
 public sealed record ToolResultMessage : Message

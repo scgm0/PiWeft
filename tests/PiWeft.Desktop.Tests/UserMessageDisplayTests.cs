@@ -134,8 +134,58 @@ public sealed class UserMessageDisplayTests
 		Assert.True(source == reference.Start || source == reference.End);
 
 		var content = composer.TextViewportBounds;
-		var point = new Point(content.X + line.DocumentX + bounds[0].X + bounds[0].Width / 2, content.Y + line.DocumentY + bounds[0].Y + bounds[0].Height / 2);
+		var origin = new Point(content.X - composer.Bounds.X, content.Y - composer.Bounds.Y);
+		var point = new Point(origin.X + line.DocumentX + bounds[0].X + bounds[0].Width / 2, origin.Y + line.DocumentY + bounds[0].Y + bounds[0].Height / 2);
 		Assert.Equal(reference.Path, UserReferenceRichText.ReferenceAtPoint(composer, point)?.Path);
+	}
+
+	[Fact]
+	public void ChipHitTestUsesTextBoxLocalCoordinatesOnAnyLine()
+	{
+		var box = MessageText.Create();
+		UserReferenceRichText.Attach(box, editable: true);
+		box.Text = "第一行没有引用\n第二行看 @\"src/App.cs\" 和 @docs/。";
+
+		// 把文本框放进一个偏离窗口原点的容器：Bounds/TextViewportBounds 是窗口坐标，
+		// 命中测试收的却是文本框局部坐标，两者混用就会永远命中不到 chip。
+		var host = new Border().Padding(new Thickness(48, 32)).Child(box);
+		for (var pass = 0; pass < 8; pass++)
+		{
+			foreach (var element in Find<UIElement>(host).ToArray()) element.InvalidateArrange();
+			host.InvalidateMeasure();
+			host.Measure(new Size(720, 480));
+			host.Arrange(new Rect(140, 96, 720, 480));
+		}
+		Assert.True(box.Bounds.X > 140 && box.Bounds.Y > 96);
+
+		var content = box.TextViewportBounds;
+		var origin = new Point(content.X - box.Bounds.X, content.Y - box.Bounds.Y);
+		var line = box.VisibleTextLines.Single(row => row.LogicalLine.Offset > 0);
+		var references = UserFileReferences.Parse(box.Text.Substring(line.LogicalLine.Offset, line.LogicalLine.Length));
+		Assert.Equal(2, references.Count);
+
+		var start = line.MapSourceOffsetToProjected(references[0].Start);
+		var end = line.MapSourceOffsetToProjected(references[0].End);
+		var bounds = new List<Rect>();
+		line.GetRangeBounds(new TextRange(start, end - start), bounds);
+		Assert.NotEmpty(bounds);
+
+		var chip = new Point(
+			origin.X + line.DocumentX + bounds[0].X + bounds[0].Width / 2,
+			origin.Y + line.DocumentY + bounds[0].Y + bounds[0].Height / 2);
+		Assert.Equal(references[0].Path, UserReferenceRichText.ReferenceAtPoint(box, chip)?.Path);
+
+		// 同一行行首的普通文字不是 chip。
+		Assert.Null(UserReferenceRichText.ReferenceAtPoint(box, new Point(origin.X + line.DocumentX + 2, chip.Y)));
+	}
+
+	[Fact]
+	public void ChipHoverHintResolvesTheAbsolutePath()
+	{
+		Assert.Equal(Path.Combine(Path.GetTempPath(), "src", "App.cs"),
+			UserReferenceRichText.FullPath("src/App.cs", Path.GetTempPath()));
+		Assert.Equal("/abs/spec.pdf", UserReferenceRichText.FullPath("/abs/spec.pdf", "/work/proj"));
+		Assert.Equal("src/App.cs", UserReferenceRichText.FullPath("src/App.cs", null));
 	}
 
 	[Fact]

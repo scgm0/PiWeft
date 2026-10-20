@@ -4,10 +4,14 @@ using System.Text.RegularExpressions;
 namespace PiWeft.Desktop;
 
 /// <summary>用户消息 / 草稿里的一个文件引用：展示短文件名，完整路径留在原文与 tooltip 里。</summary>
-internal sealed record UserFileReference(string Path, string Label, bool IsDirectory, int Start, int End)
+internal sealed record UserFileReference(string Path, string Label, bool IsDirectory, int Start, int End) : IUserChip
 {
 	/// <summary>展示用前缀；文件引用保留 @，和 PiDeck 的 file chip 一致。</summary>
 	public string Display => "@" + Label;
+
+	public UserChipKind Kind => UserChipKind.File;
+
+	public string Value => Path;
 }
 
 /// <summary>
@@ -114,7 +118,7 @@ internal static partial class UserFileReferences
 	}
 
 	/// <summary>URL、围栏代码块和行内代码里的 @ 不参与引用识别。</summary>
-	private static List<(int Start, int End)> ProtectedSpans(string text)
+	internal static List<(int Start, int End)> ProtectedSpans(string text)
 	{
 		var spans = new List<(int Start, int End)>();
 		foreach (Match match in Url().Matches(text))
