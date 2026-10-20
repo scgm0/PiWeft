@@ -3,12 +3,9 @@
 	<PropertyGroup>
 		<RootNamespace>PiWeft.JavaScript</RootNamespace>
 		<AssemblyName>PiWeft.JavaScript</AssemblyName>
-		<!-- Jint 的解释器路径大量使用反射/动态代码，不满足 AOT 分析器要求；
-		     这里只对本项目关闭该分析，宿主项目仍按原样分析。 -->
-		<IsAotCompatible>false</IsAotCompatible>
-		<EnableAotAnalyzer>false</EnableAotAnalyzer>
-		<EnableTrimAnalyzer>false</EnableTrimAnalyzer>
-		<EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+		<!-- 宿主桥全部经 ClrFunction 注册，本项目自身满足 AOT/裁剪分析器要求；
+		     Jint 解释器内部的反射仍会产生程序集级聚合警告（IL2104/IL3053），
+		     由 AOT 发布的宿主项目按第三方依赖统一忽略。 -->
 	</PropertyGroup>
 
 	<ItemGroup>

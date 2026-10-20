@@ -14,6 +14,11 @@
 	<EnableTrimAnalyzer>true</EnableTrimAnalyzer>
 	<EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
 	<InvariantGlobalization>false</InvariantGlobalization>
+
+	<!-- IL2104/IL3053 只表示"被引用的程序集自身带有裁剪/AOT 警告"（目前来自 Jint 5 预览包，
+	     由其作者负责），不含本项目可修的信息；本项目代码的警告（IL2026/IL2111/IL3050 等）
+	     仍会逐条报告。AOT 兼容性由 tools/PiWeft.AotSmoke 发布冒烟兜底。 -->
+	<NoWarn>$(NoWarn);IL2104;IL3053</NoWarn>
   </PropertyGroup>
 
 </Project>

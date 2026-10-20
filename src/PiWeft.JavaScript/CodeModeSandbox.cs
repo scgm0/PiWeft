@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using Jint;
 using Jint.Native;
 using Jint.Runtime;
+using Jint.Runtime.Interop;
 
 namespace PiWeft.JavaScript;
 
@@ -112,21 +113,31 @@ public sealed class CodeModeSandbox
 		using var engine = new Engine(engineOptions);
 		string? finishedJson = null;
 		var pendingCalls = 0;
-		engine.SetValue("__cmFinish", new Action<string>(json => finishedJson = json));
-
-		engine.SetValue("__cmOutput", new Action<string, string, JsValue>((kind, text, mimeType) =>
+		// 宿主桥一律用 ClrFunction 注册：它把回调存成 JsCallDelegate 字段、调用时直接执行，
+		// 不经过 DelegateWrapper 的反射包装（Delegate.CreateDelegate/DynamicInvoke），
+		// 因此不会在 NativeAOT/裁剪分析里产生 IL2026/IL2111 警告，也是 Jint 官方推荐的 AOT 用法。
+		// 参数在回调里显式转换；prelude 已校验过类型，非字符串参数会以异常形式暴露。
+		engine.SetValue("__cmFinish", new ClrFunction(engine, "__cmFinish", (thisArg, args) =>
 		{
-			var mime = mimeType.IsUndefined() || mimeType.IsNull() ? null : mimeType.AsString();
-			if (output.TryAdd(kind, text, mime)) return;
+			finishedJson = args.At(0).AsString();
+			return JsValue.Undefined;
+		}));
+
+		engine.SetValue("__cmOutput", new ClrFunction(engine, "__cmOutput", (thisArg, args) =>
+		{
+			var mime = args.At(2);
+			var mimeType = mime.IsUndefined() || mime.IsNull() ? null : mime.AsString();
+			if (output.TryAdd(args.At(0).AsString(), args.At(1).AsString(), mimeType)) return JsValue.Undefined;
 
 			// 超出输出预算后脚本整体失败：即使它 catch 了这里抛出的错误，结果也会被覆盖。
 			outputLimitError = output.LimitMessage;
 			throw new InvalidOperationException(output.LimitMessage!);
 		}));
 
-		engine.SetValue("__cmCall", new Func<string, string, JsValue>((name, argumentsJson) =>
+		engine.SetValue("__cmCall", new ClrFunction(engine, "__cmCall", (thisArg, args) =>
 		{
 			var manual = engine.Tasks.RegisterPromise();
+			var name = args.At(0).AsString();
 			if (!toolsByName.TryGetValue(name, out var tool))
 			{
 				manual.Reject($"Tool \"{name}\" is not available in this script");
@@ -136,7 +147,7 @@ public sealed class CodeModeSandbox
 			var call = new CallRecord(name);
 			calls.Add(call);
 			Interlocked.Increment(ref pendingCalls);
-			_ = InvokeToolAsync(tool, argumentsJson, call, manual, token, worker, () => Interlocked.Decrement(ref pendingCalls));
+			_ = InvokeToolAsync(tool, args.At(1).AsString(), call, manual, token, worker, () => Interlocked.Decrement(ref pendingCalls));
 			return manual.Promise;
 		}));
 
@@ -147,9 +158,10 @@ public sealed class CodeModeSandbox
 		double modelCost = 0;
 		var generatedImages = 0;
 
-		engine.SetValue("__cmModelCall", new Func<string, string, string, string, JsValue>((operation, provider, id, contextJson) =>
+		engine.SetValue("__cmModelCall", new ClrFunction(engine, "__cmModelCall", (thisArg, args) =>
 		{
 			var manual = engine.Tasks.RegisterPromise();
+			var operation = args.At(0).AsString();
 			if (_options.ModelCall is not { } modelCall)
 			{
 				manual.Reject($"{operation} is not available in this script");
@@ -159,11 +171,11 @@ public sealed class CodeModeSandbox
 			var record = new ModelCallRecord
 			{
 				Name = operation == "classify" ? "models.classify" : "models.generateImages",
-				Model = $"{provider}/{id}",
+				Model = $"{args.At(1).AsString()}/{args.At(2).AsString()}",
 			};
 			lock (modelCalls) modelCalls.Add(record);
 			Interlocked.Increment(ref pendingCalls);
-			_ = InvokeModelAsync(modelCall, operation, provider, id, contextJson, record, manual, token);
+			_ = InvokeModelAsync(modelCall, operation, args.At(1).AsString(), args.At(2).AsString(), args.At(3).AsString(), record, manual, token);
 			return manual.Promise;
 		}));
 
@@ -273,10 +285,11 @@ public sealed class CodeModeSandbox
 			return searchDocuments;
 		}
 
-		engine.SetValue("__cmSearch", new Func<string, int, string?, string>((query, limit, namespaceName) =>
+		engine.SetValue("__cmSearch", new ClrFunction(engine, "__cmSearch", (thisArg, args) =>
 		{
 			var documents = SearchDocuments();
 			List<SearchDocument> filtered;
+			var namespaceName = OptionalString(args.At(2));
 			if (string.IsNullOrEmpty(namespaceName))
 			{
 				filtered = documents;
@@ -291,9 +304,9 @@ public sealed class CodeModeSandbox
 			}
 
 			var ranked = CodeModeSearch.RankTerms(
-				query,
+				args.At(0).AsString(),
 				[.. filtered.Select(static document => (document.Name, document.Terms))],
-				limit);
+				(int)args.At(1).AsNumber());
 			var matches = new JsonArray();
 			foreach (var name in ranked)
 			{
@@ -308,9 +321,10 @@ public sealed class CodeModeSandbox
 			return matches.ToJsonString();
 		}));
 
-		engine.SetValue("__cmDescribeNamespace", new Func<string, string?>(name =>
+		engine.SetValue("__cmDescribeNamespace", new ClrFunction(engine, "__cmDescribeNamespace", (thisArg, args) =>
 		{
 			CodeModeTool? first = null;
+			var name = args.At(0).AsString();
 			var tools = new JsonArray();
 			foreach (var tool in _options.Tools)
 			{
@@ -319,7 +333,7 @@ public sealed class CodeModeSandbox
 				tools.Add((JsonNode?)JsonValue.Create(CodeModeIdentifier.ToIdentifier(tool.Name)));
 			}
 
-			if (first is null) return null;
+			if (first is null) return JsValue.Null;
 
 			var payload = new JsonObject { ["name"] = first.Namespace, ["tools"] = tools };
 			if (first.NamespaceAliases is { Count: > 0 } aliases)
@@ -342,19 +356,23 @@ public sealed class CodeModeSandbox
 			return payload.ToJsonString();
 		}));
 
-		engine.SetValue("__cmDescribe", new Func<string, JsValue>(name =>
+		engine.SetValue("__cmDescribe", new ClrFunction(engine, "__cmDescribe", (thisArg, args) =>
 		{
+			var name = args.At(0).AsString();
 			if (!toolsByName.TryGetValue(name, out var tool)
 				&& !toolsByIdentifier.TryGetValue(CodeModeIdentifier.ToIdentifier(name), out tool))
 			{
 				return JsValue.Undefined;
 			}
 
-			return JsValue.FromObject(engine, tool.Description);
+			return tool.Description;
 		}));
 
-		engine.SetValue("__cmModels", new Func<string, string?, string?, string?, JsValue>((operation, type, provider, id) =>
+		engine.SetValue("__cmModels", new ClrFunction(engine, "__cmModels", (thisArg, args) =>
 		{
+			var operation = args.At(0).AsString();
+			var provider = OptionalString(args.At(2));
+			var id = OptionalString(args.At(3));
 			var query = new CodeModeModelsRequest
 			{
 				Operation = operation switch
@@ -364,7 +382,7 @@ public sealed class CodeModeSandbox
 					"get" => CodeModeModelOperation.Get,
 					_ => throw new ArgumentException($"Unknown models operation \"{operation}\""),
 				},
-				Type = type ?? string.Empty,
+				Type = OptionalString(args.At(1)) ?? string.Empty,
 				Provider = string.IsNullOrEmpty(provider) ? null : provider,
 				Id = string.IsNullOrEmpty(id) ? null : id,
 			};
@@ -372,7 +390,7 @@ public sealed class CodeModeSandbox
 			var models = _options.Models
 				?? throw new InvalidOperationException("models.* is not available in this script");
 			var result = models(query);
-			return result is null ? JsValue.Undefined : JsValue.FromObject(engine, result.ToJsonString());
+			return result is null ? JsValue.Undefined : result.ToJsonString();
 		}));
 
 		try
@@ -522,10 +540,14 @@ public sealed class CodeModeSandbox
 
 	private static bool NamespaceNameMatches(string value, string query) =>
 		string.Equals(value, query, StringComparison.Ordinal)
-			|| string.Equals(
-				CodeModeIdentifier.ToIdentifier(value),
-				CodeModeIdentifier.ToIdentifier(query),
-				StringComparison.Ordinal);
+		|| string.Equals(
+			CodeModeIdentifier.ToIdentifier(value),
+			CodeModeIdentifier.ToIdentifier(query),
+			StringComparison.Ordinal);
+
+	/// <summary>宿主桥的可选字符串参数：<c>undefined</c>/<c>null</c> 归一为 <c>null</c>，与原委托转换一致。</summary>
+	private static string? OptionalString(JsValue value) =>
+		value.IsUndefined() || value.IsNull() ? null : value.AsString();
 
 	/// <summary>检索文档：<see cref="Terms"/> 在首次检索时已分词，多次 <c>searchTools()</c> 复用。</summary>
 	private sealed record SearchDocument(
