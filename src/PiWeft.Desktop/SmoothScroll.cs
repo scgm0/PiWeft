@@ -57,6 +57,9 @@ internal sealed class SmoothScroll : IDisposable
 
 	public static SmoothScroll For(ScrollViewer view) => Controllers.GetValue(view, static view => new SmoothScroll(view));
 	public static SmoothScroll For(MultiLineTextBox view) => Controllers.GetValue(view, static view => new SmoothScroll(view));
+	/// <summary>已安装的控制器；不新建，供滚轮沿祖先链交接时判断谁接管。</summary>
+	internal static SmoothScroll? Find(FrameworkElement view) =>
+		Controllers.TryGetValue(view, out var scroll) ? scroll : null;
 	internal static void Release(Element element)
 	{
 		if (element is FrameworkElement control && Controllers.TryGetValue(control, out var scroll)) scroll.Dispose();
@@ -87,6 +90,19 @@ internal sealed class SmoothScroll : IDisposable
 			(vertical ? _viewport.ViewportHeight : _viewport.ViewportWidth));
 	}
 
+	/// <summary>
+	/// 按滚轮方向返回本视口还能走的偏移增量；已经到边界（或内容装得下）的方向为零。
+	/// </summary>
+	internal Point WheelDelta(double horizontal, double vertical)
+	{
+		var current = IsAnimating ? _target : Offset;
+		var x = horizontal != 0 && (horizontal > 0 ? current.X > 0.5 : current.X < Maximum(vertical: false) - 0.5)
+			? -horizontal : 0;
+		var y = vertical != 0 && (vertical > 0 ? current.Y > 0.5 : current.Y < MaxVerticalOffset - 0.5)
+			? -vertical : 0;
+		return new Point(x, y);
+	}
+
 	internal void RouteWheel(MouseWheelEventArgs args)
 	{
 		if (args.Handled) return;
@@ -97,12 +113,16 @@ internal sealed class SmoothScroll : IDisposable
 			horizontal = vertical;
 			vertical = 0;
 		}
-		var current = IsAnimating ? _target : Offset;
-		var canX = horizontal != 0 && (horizontal > 0 ? current.X > 0 : current.X < Maximum(false));
-		var canY = vertical != 0 && (vertical > 0 ? current.Y > 0 : current.Y < MaxVerticalOffset);
-		if (!canX && !canY) return; // Let an enclosing viewport take over at the edge.
+		var delta = WheelDelta(horizontal, vertical);
+		if (delta.X == 0 && delta.Y == 0)
+		{
+			// 到边界：把这一格交给外层视口（组体 → 会话）。不能只是不处理——ScrollViewer 自带的
+			// OnMouseWheel 会在原地把未处理的事件标记为已处理，外层再也接不到。
+			if (ScrollCascade.Route(_view, horizontal, vertical)) args.Handled = true;
+			return;
+		}
 		HoverHints.Cancel(_view);
-		ScrollBy(canX ? -horizontal : 0, canY ? -vertical : 0);
+		ScrollBy(delta.X, delta.Y);
 		args.Handled = true;
 	}
 
@@ -266,6 +286,36 @@ internal sealed class SmoothScroll : IDisposable
 		if (_viewport is not null) _viewport.ScrollChanged -= OnScrollChanged;
 		if (_text is not null) _text.ScrollOffsetChanged -= OnTextScrollChanged;
 		Controllers.Remove(_view);
+	}
+}
+
+/// <summary>
+/// 嵌套滚动链：内层视口在边界放行后，滚轮沿祖先链找到下一个真正滚得动的视口。
+/// </summary>
+internal static class ScrollCascade
+{
+	/// <summary>
+	/// 从 <paramref name="origin"/> 的父级向上找最近的可滚动祖先视口并接管这次滚轮。
+	/// </summary>
+	/// <param name="origin">起点元素，从它的父级开始查找，本身不会被滚动。</param>
+	/// <param name="horizontal">滚轮横向刻度（+ 表示向左）。</param>
+	/// <param name="vertical">滚轮纵向刻度（+ 表示向上）。</param>
+	/// <returns>接管了滚轮则为 true；整条祖先链都到边界时为 false，事件保持未处理。</returns>
+	public static bool Route(Element origin, double horizontal, double vertical)
+	{
+		if (horizontal == 0 && vertical == 0) return false;
+		for (var parent = origin.Parent; parent is not null; parent = parent.Parent)
+		{
+			if (parent is not ScrollViewer viewport || !viewport.IsVisible) continue;
+			// 只接管已经平滑滚动的视口：不在滚轮路径上顺手给无关容器装控制器。
+			if (SmoothScroll.Find(viewport) is not { } smooth) continue;
+			var delta = smooth.WheelDelta(horizontal, vertical);
+			if (delta.X == 0 && delta.Y == 0) continue;
+			HoverHints.Cancel(viewport);
+			smooth.ScrollBy(delta.X, delta.Y);
+			return true;
+		}
+		return false;
 	}
 }
 

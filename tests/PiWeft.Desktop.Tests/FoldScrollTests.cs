@@ -79,6 +79,39 @@ public sealed class FoldScrollTests
 		}
 	}
 
+	[Fact]
+	public void WheelOverGroupTextScrollsTheGroupBodyBeforeTheConversation()
+	{
+		// 组体里的思考文本/工具输出是可选择的文字控件：它们曾把滚轮直接转给会话，
+		// 于是组体永远滚不动、整段会话跟着动（滚动穿透）。
+		var text = MessageText.Create(string.Join('\n', Enumerable.Range(0, 60).Select(i => $"step {i}")));
+		var group = new ScrollViewer().Content(new StackPanel().Children(text))
+			.AutoVerticalScroll().NoHorizontalScroll().MaxHeight(160).SmoothScrolling();
+		var conversation = new ScrollViewer()
+			.Content(new StackPanel().Children(new Border().Height(600), group, new Border().Height(600)))
+			.AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling();
+		ConversationPerformanceTests.Layout(conversation, 500, 300);
+		using var guard = new TextFocusScrollGuard(conversation);
+		guard.Track(text);
+		var body = SmoothScroll.For(group);
+		var outer = SmoothScroll.For(conversation);
+		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+		Assert.True(body.MaxVerticalOffset > 0);
+
+		var wheel = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
+		guard.RouteWheel(text, wheel);
+		Assert.True(wheel.Handled);
+		Assert.Equal(step, body.TargetVerticalOffset);
+		Assert.False(outer.IsAnimating);
+
+		// 组体到底后，滚轮才沿祖先链回到会话。
+		body.JumpToEnd();
+		wheel = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
+		guard.RouteWheel(text, wheel);
+		Assert.True(wheel.Handled);
+		Assert.Equal(step, outer.TargetVerticalOffset);
+	}
+
 	private static void Toggle(Expander fold, bool keyboard)
 	{
 		if (keyboard)

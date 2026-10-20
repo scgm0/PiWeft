@@ -195,6 +195,9 @@ internal sealed class ExecutionProcessView
 			bodyRail.Column(0), body.Column(1).Margin(new Thickness(12, 0, 0, 0)));
 		var viewport = new ScrollViewer().Content(bodyHost).AutoVerticalScroll().NoHorizontalScroll()
 			.MaxHeight(300).SmoothScrolling();
+		// 组体与整段过程一样是「可滚动的小窗」：内层能滚就滚内层，内层到边界（或内容装得下）
+		// 才把滚轮交还外层会话——由 SmoothScroll 在视口边界上交接（ScrollCascade），
+		// 文字控件也不再越过这一层直接滚会话。
 		var olderBase = -1;
 		Expander fold = null!;
 		StackPanel olderHost = null!;

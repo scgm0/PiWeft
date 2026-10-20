@@ -86,6 +86,34 @@ public sealed class SmoothScrollTests
 	}
 
 	[Fact]
+	public void NestedViewportHandsTheWheelToTheOuterViewportAtItsEdge()
+	{
+		var inner = new ScrollViewer().Content(new Border().Height(1200))
+			.AutoVerticalScroll().NoHorizontalScroll().MaxHeight(100).SmoothScrolling();
+		var outer = new ScrollViewer()
+			.Content(new StackPanel().Children(new Border().Height(400), inner, new Border().Height(400)))
+			.AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling();
+		ConversationPerformanceTests.Layout(outer, 200, 200);
+		using var innerSmooth = SmoothScroll.For(inner);
+		using var outerSmooth = SmoothScroll.For(outer);
+		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+		Assert.True(innerSmooth.MaxVerticalOffset > 0);
+
+		var down = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
+		innerSmooth.RouteWheel(down);
+		Assert.True(down.Handled);
+		Assert.Equal(step, innerSmooth.TargetVerticalOffset);
+		Assert.False(outerSmooth.IsAnimating);
+
+		// 内层到底：Viewport 自带的滚轮处理会在原地标记 Handled，所以必须由内层先交接给外层。
+		innerSmooth.JumpToEnd();
+		down = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
+		innerSmooth.RouteWheel(down);
+		Assert.True(down.Handled);
+		Assert.Equal(step, outerSmooth.TargetVerticalOffset);
+	}
+
+	[Fact]
 	public void WheelMovesOverMultipleFramesAndAccumulatesConsecutiveNotches()
 	{
 		var view = View();

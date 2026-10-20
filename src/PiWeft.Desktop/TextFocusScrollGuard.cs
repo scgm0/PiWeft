@@ -77,6 +77,13 @@ internal sealed class TextFocusScrollGuard : IDisposable
 				}
 			}
 		}
+		// 文字落在可滚动的嵌套小窗里（执行过程的组体）时，纵向滚轮先归那一层：
+		// 它到边界后才会继续沿祖先链往外，最后才轮到会话。直接滚会话会让组体永远滚不动。
+		if (ScrollCascade.Route(text, 0, args.Delta.Y))
+		{
+			args.Handled = true;
+			return;
+		}
 		SmoothScroll.For(_scroll).ScrollBy(0, -args.Delta.Y);
 		args.Handled = true;
 	}

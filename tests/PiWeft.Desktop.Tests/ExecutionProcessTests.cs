@@ -306,6 +306,69 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void GroupBodyOnlyConsumesTheWheelWhileItCanActuallyScroll()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 12).Select(i => Tool($"call-{i}", $"output {i}")).ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => entry.Role == ChatRole.Tool
+			? new ToolMessageView(entry, focus).View : new AssistantMessageView(entry, _ => { }, focus).View);
+		// 组体在真实会话里是嵌套视口：滚轮命中组体后先由内层消费，到边界才沿祖先链回到会话。
+		var conversation = new ScrollViewer()
+			.Content(new StackPanel().Children(new Border().Height(600), view.View, new Border().Height(600)))
+			.AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling();
+		ConversationPerformanceTests.Layout(conversation, 500, 400);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(conversation, 500, 400);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var body = SmoothScroll.For(viewport);
+		var outer = SmoothScroll.For(conversation);
+
+		// 内容装得下：组体没有可滚的余量，滚轮交给会话（该穿透就穿透）。
+		Assert.Equal(0, body.MaxVerticalOffset);
+		Raise(viewport, Wheel(0, -1));
+		Assert.True(outer.IsAnimating, "a body with nothing to scroll must hand the wheel to the conversation");
+		Assert.True(outer.TargetVerticalOffset > 0);
+		outer.JumpToEnd();
+		var settled = outer.MaxVerticalOffset;
+
+		// 内容超高且不在边界：内层已经滚过，会话不动（不该穿透就不穿透）。
+		var earlier = Find<Button>(group.Content!).Single(button => Find<TextBlock>(button)
+			.Any(text => text.Text.StartsWith("显示更早", StringComparison.Ordinal)));
+		ImagePreviewTests.Click(earlier);
+		ConversationPerformanceTests.Layout(conversation, 500, 400);
+		Assert.True(body.MaxVerticalOffset > 0);
+		viewport.SetScrollOffsets(viewport.HorizontalOffset, Math.Min(20, body.MaxVerticalOffset));
+		Raise(viewport, Wheel(0, -1));
+		Assert.True(body.IsAnimating, "a body that really scrolled must keep the wheel");
+		Assert.True(body.TargetVerticalOffset > 20);
+		Assert.False(outer.IsAnimating);
+		Assert.Equal(settled, outer.TargetVerticalOffset);
+
+		// 到顶部后继续向上：该方向没有余量，滚轮再次回到会话。
+		viewport.SetScrollOffsets(viewport.HorizontalOffset, 0);
+		Raise(viewport, Wheel(0, 1));
+		Assert.False(body.IsAnimating);
+		var upward = outer.TargetVerticalOffset;
+		Assert.True(upward < settled, "the conversation must receive the wheel once the body sits at its top edge");
+		// 到底部后继续向下同理。
+		viewport.SetScrollOffsets(viewport.HorizontalOffset, body.MaxVerticalOffset);
+		Raise(viewport, Wheel(0, -1));
+		Assert.False(body.IsAnimating);
+		Assert.True(outer.TargetVerticalOffset > upward, "the conversation must receive the wheel once the body sits at its bottom edge");
+
+		static MouseWheelEventArgs Wheel(double x, double y) =>
+			new(new Point(0, 0), new Point(0, 0), new Vector(x, y));
+		static void Raise(Element target, MouseWheelEventArgs args) =>
+			typeof(UIElement).GetMethod("OnMouseWheel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+				.Invoke(target, [args]);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
 	public void ComposerNoLongerContainsBalanceEntry()
 	{
 		using var session = ConversationPerformanceTests.CreateSession(1);
