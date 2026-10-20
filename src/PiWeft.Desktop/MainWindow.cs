@@ -1097,6 +1097,9 @@ public sealed partial class MainWindow : Window
 				case "interactions":
 					CurrentTab()?.PrepareInteractionSmoke();
 					break;
+				case "outline":
+					CurrentTab()?.PrepareOutlineSmoke();
+					break;
 				case "primary":
 					CurrentTab()?.PreparePrimarySmoke();
 					break;
@@ -1172,7 +1175,7 @@ public sealed partial class MainWindow : Window
 		});
 
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
-		await Task.Delay(view is "interactions" or "latest" or "latest-churn" ? 30000 : 7000).ConfigureAwait(false);
+		await Task.Delay(view is "interactions" or "latest" or "latest-churn" or "outline" ? 30000 : 7000).ConfigureAwait(false);
 		Dispatch(() =>
 		{
 			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();

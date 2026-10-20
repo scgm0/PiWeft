@@ -17,13 +17,15 @@ internal sealed class ConversationTimeline : IDisposable
 	private readonly List<int> _inPlaceUpdates = [];
 	private bool _releaseQueued;
 	private bool _disposed;
+	private int _jumpGeneration;
 
 	public ConversationTimeline(Func<ChatEntry, UIElement> create)
 	{
 		_create = create;
 		View = new ItemsControl().VariableHeightPresenter().ItemsSource(_rows)
 			.ItemHeight(120).ItemPadding(Thickness.Zero).BorderThickness(0).Background(AppTheme.Transparent)
-			.Padding(new Thickness(AppTheme.Space3));
+			// 右缘留出定位刻度的命中区，窄阅读列也不会被刻度盖住。
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, 44, AppTheme.Space3));
 		View.ItemTemplate = new DelegateTemplate<ChatEntry>(
 			_ => new ReadingRow().MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
 				.HorizontalAlignment(HorizontalAlignment.Center).Margin(new Thickness(0, 0, 0, AppTheme.Space3)),
@@ -34,11 +36,29 @@ internal sealed class ConversationTimeline : IDisposable
 		Scroll = scroll ?? throw new InvalidOperationException("The timeline requires a scroll viewport.");
 		Scroll.SmoothScrolling().NoHorizontalScroll();
 		Scroll.ScrollChanged += PruneRecycled;
+		Scroll.MouseDown += CancelJump;
+		Scroll.MouseWheel += CancelJump;
 	}
 
 	public ItemsControl View { get; }
 	public ScrollViewer Scroll { get; }
 	public IEnumerable<UIElement> VisibleRows => _visible.Select(static host => host.Content).OfType<UIElement>();
+
+	/// <summary>视口顶部下方 28 DIP 的实际行；只检查已实现容器，不测量整份历史。</summary>
+	internal int RowAtViewportAnchor()
+	{
+		var anchor = Scroll.Bounds.Y + 28;
+		var active = -1;
+		var first = int.MaxValue;
+		foreach (var host in _visible)
+		{
+			if (host.Tag is not ChatEntry || host.Bounds.Height <= 0 || !host.IsDescendantOf(View) ||
+				!_indexByHost.TryGetValue(host, out var index)) continue;
+			first = Math.Min(first, index);
+			if (host.Bounds.Y <= anchor) active = Math.Max(active, index);
+		}
+		return active >= 0 ? active : first == int.MaxValue ? -1 : first;
+	}
 
 	public void SetEntries(
 		IReadOnlyList<ChatEntry> entries,
@@ -65,6 +85,29 @@ internal sealed class ConversationTimeline : IDisposable
 		}
 		View.InvalidateMeasure();
 	}
+
+	/// <summary>先由虚拟化器实现目标行，再把它对齐到视口上沿；不依赖未测量行的估算高度。</summary>
+	public void JumpToRow(int index)
+	{
+		if (index < 0 || index >= _rows.Count) return;
+		var generation = ++_jumpGeneration;
+		View.ScrollIntoView(index);
+		Align(0);
+		void Align(int pass)
+		{
+			if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
+			dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+			{
+				if (_disposed || generation != _jumpGeneration || !_hostByIndex.TryGetValue(index, out var host)) return;
+				var delta = host.Bounds.Y - Scroll.Bounds.Y - AppTheme.Space3;
+				if (Math.Abs(delta) < 1) return;
+				Scroll.SetScrollOffsets(Scroll.HorizontalOffset, Scroll.VerticalOffset + delta);
+				if (pass < 2) Align(pass + 1);
+			});
+		}
+	}
+
+	private void CancelJump(MouseEventArgs _) => _jumpGeneration++;
 
 	public void ApplyReadingWidth()
 	{
@@ -183,7 +226,7 @@ internal sealed class ConversationTimeline : IDisposable
 		left.Role == right.Role && left.Text == right.Text && left.Thinking == right.Thinking &&
 		left.IsThinking == right.IsThinking && left.IsStreaming == right.IsStreaming &&
 		left.Timestamp == right.Timestamp && left.EntryId == right.EntryId && left.ToolName == right.ToolName &&
-		left.IsError == right.IsError && left.DurationMs == right.DurationMs && left.Patch == right.Patch && left.ToolArguments == right.ToolArguments &&
+		left.IsError == right.IsError && left.IsStopped == right.IsStopped && left.DurationMs == right.DurationMs && left.Patch == right.Patch && left.ToolArguments == right.ToolArguments &&
 		left.Images.SequenceEqual(right.Images) && left.ToolCallId == right.ToolCallId && left.Compact == right.Compact &&
 		left.ProcessEntries.Count == right.ProcessEntries.Count && left.ProcessEntries.Zip(right.ProcessEntries).All(pair => SameEntry(pair.First, pair.Second)));
 
@@ -191,6 +234,8 @@ internal sealed class ConversationTimeline : IDisposable
 	{
 		_disposed = true;
 		Scroll.ScrollChanged -= PruneRecycled;
+		Scroll.MouseDown -= CancelJump;
+		Scroll.MouseWheel -= CancelJump;
 		SmoothScroll.Release(Scroll);
 		View.ItemsSource = ItemsView.Empty;
 		foreach (var host in _visible.ToArray()) Release(host);

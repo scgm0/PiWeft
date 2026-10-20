@@ -3,6 +3,8 @@ namespace PiWeft.Desktop;
 public static partial class Strings
 {
 	public const string ExecutionProcess = "执行过程";
+	public const string ToolStopped = "已中断";
+	public const string OutlineImageMessage = "图片消息";
 	public const string ExecutionExpandHint = "展开或收起本轮思考、工具调用和中间回复；最终回答始终显示。";
 	public const string ExecutionGroupHint = "展开或收起这组思考与工具调用。";
 	public static string ExecutionTotal(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
@@ -18,6 +20,8 @@ public static partial class Strings
 	public const string ProcessGroupCommands = "正在运行命令";
 	public const string ProcessGroupTodo = "正在更新计划";
 	public const string ProcessGroupTools = "正在调用工具";
+	/// <summary>类别超过三个时组头收尾：PiDeck 的「{title} 等」。</summary>
+	public static string ProcessGroupMore(string title) => $"{title} 等";
 
 	/// <summary>工具行的动词短语：进行中加「正在」，例如「正在执行 cd …」「读取 src/App.cs」。</summary>
 	public static string ToolAction(string verb, string detail, bool running) => running ? $"正在{verb} {detail}" : $"{verb} {detail}";

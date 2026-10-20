@@ -19,7 +19,7 @@ internal sealed class ExecutionProcessView
 	private readonly TextBlock _interimCount = new();
 	private readonly TextBlock _errorCount = new();
 	private readonly GlyphElement _ok;
-	private readonly GlyphElement _error;
+	private readonly TextBlock _running = new();
 	private readonly TextBlock _total = new();
 	private readonly Expander _fold;
 	private readonly StackPanel _body = new();
@@ -46,13 +46,12 @@ internal sealed class ExecutionProcessView
 		_ok = new GlyphElement().Kind(GlyphKind.CheckMark).GlyphSize(3)
 			.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).Success)
 			.VerticalAlignment(VerticalAlignment.Center);
-		_error = new GlyphElement().Kind(GlyphKind.Cross).GlyphSize(3)
-			.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).Error)
+		_running.Text(Strings.ToolRunning).FontSize(AppTheme.FontSizeMicro).InfoText()
 			.VerticalAlignment(VerticalAlignment.Center);
 		var headerContent = new StackPanel().Orientation(Orientation.Horizontal).Spacing(6)
 			.VerticalAlignment(VerticalAlignment.Center).Children(
 				AppIcons.Icon("list-checks", AppStyles.RoleSubtle, 14),
-				_header, _stats, _ok, _error);
+				_header, _stats, _ok, _running);
 		var headerPill = new Border().BorderThickness(1).CornerRadius(AppTheme.RadiusSm)
 			.Padding(new Thickness(AppTheme.Space2, 3, AppTheme.Space2 + 2, 3))
 			.HorizontalAlignment(HorizontalAlignment.Left)
@@ -126,8 +125,9 @@ internal sealed class ExecutionProcessView
 		_thinkingStat.IsVisible(stats.Thinking > 0);
 		_interimStat.IsVisible(stats.Interim > 0);
 		_errorStat.IsVisible(stats.Errors > 0);
-		_ok.IsVisible(stats.Errors == 0);
-		_error.IsVisible(stats.Errors > 0);
+		// 错误已在计数里显示，不再追加第二个红叉；运行中也不能预先打成功勾。
+		_ok.IsVisible(!entry.IsStreaming && stats.Errors == 0 && !entry.ProcessEntries.Any(step => step.IsStopped));
+		_running.IsVisible(entry.IsStreaming);
 		if (_fold.IsExpanded || _fold.Content is not null) Build();
 	}
 
@@ -144,7 +144,8 @@ internal sealed class ExecutionProcessView
 		_total.Text(duration is { } value ? Strings.ExecutionTotal(value) : string.Empty);
 		_total.IsVisible(duration is not null);
 		var nodes = Nodes(_entry.ProcessEntries);
-		var latest = nodes.LastOrDefault(node => node.Group)?.Key;
+		// 尾部已经是中间回复/错误时，前一个过程组已经结束，不能仍标「正在…」。
+		var latest = nodes.LastOrDefault() is { Group: true } tail ? tail.Key : null;
 		var common = Math.Min(nodes.Count, _slots.Count);
 		var reset = 0;
 		while (reset < common && _slots[reset].Key == nodes[reset].Key) reset++;
@@ -187,10 +188,13 @@ internal sealed class ExecutionProcessView
 		var members = entries;
 		var slots = new List<Slot>();
 		var body = new StackPanel().Spacing(4);
-		var bodyRail = new Border().Width(1.5).HorizontalAlignment(HorizontalAlignment.Left)
-			.VerticalAlignment(VerticalAlignment.Stretch).Margin(new Thickness(10, 0, 0, 0))
+		// 与 PiDeck 一样，连续竖线独占左列；步骤（图标 + 摘要）在右列，不让线从图标背后穿过。
+		var bodyRail = new Border().Width(1).VerticalAlignment(VerticalAlignment.Stretch)
 			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Border);
-		var bodyHost = new Grid().Children(bodyRail, body);
+		var bodyHost = new Grid().Columns("1,*").Children(
+			bodyRail.Column(0), body.Column(1).Margin(new Thickness(12, 0, 0, 0)));
+		var viewport = new ScrollViewer().Content(bodyHost).AutoVerticalScroll().NoHorizontalScroll()
+			.MaxHeight(300).SmoothScrolling();
 		var olderBase = -1;
 		Expander fold = null!;
 		StackPanel olderHost = null!;
@@ -208,7 +212,7 @@ internal sealed class ExecutionProcessView
 			olderBase = -1;
 			BuildMembers();
 		});
-		olderHost = new StackPanel().Spacing(2).Children(olderButton, bodyHost);
+		olderHost = new StackPanel().Spacing(2).Children(olderButton, viewport);
 		// 组头与 PiDeck 过程组同构：类别图标 + 主文案 + 「·」+ 等宽实时详情；运行时图标走强调色。
 		var icon = AppIcons.Icon("terminal", AppStyles.RoleSubtle, 13);
 		var label = new TextBlock().FontSize(AppTheme.FontSizeCaption).SubtleText()
@@ -293,9 +297,9 @@ internal sealed class ExecutionProcessView
 	private Slot Leaf(string key, ChatEntry entry)
 	{
 		var content = new Border();
-		var rail = new RowRail(entry);
+		var icon = new StepIcon(entry);
 		var host = new Border().Child(new Grid().Columns("22,*")
-			.Children(rail.View.Column(0), content.Column(1)));
+			.Children(icon.View.Column(0), content.Column(1)));
 		ChatEntry? previous = null;
 		var slot = new Slot(key, host, (next, _) =>
 		{
@@ -359,23 +363,17 @@ internal sealed class ExecutionProcessView
 			.Children(AppIcons.Icon(icon, role, 11), count);
 	}
 
-	private sealed class RowRail
+	/// <summary>步骤图标只表示类型，不再承担时间线节点或遮线圆底的职责。</summary>
+	private sealed class StepIcon
 	{
-		public RowRail(ChatEntry entry)
+		public StepIcon(ChatEntry entry)
 		{
-			var icon = AppIcons.Icon(IconFor(entry), RoleFor(entry), 14)
-				.HorizontalAlignment(HorizontalAlignment.Center)
-				.VerticalAlignment(VerticalAlignment.Center);
-			// 时间线竖线从图标背后穿过；给图标一块窗底色作为遮罩，避免细线切进 SVG 笔画。
-			var badge = new Border().Width(18).Height(18).CornerRadius(9)
+			View = AppIcons.Icon(IconFor(entry), RoleFor(entry), 14)
 				.HorizontalAlignment(HorizontalAlignment.Left).VerticalAlignment(VerticalAlignment.Top)
-				.Margin(new Thickness(1, 1, 0, 0))
-				.WithTheme((theme, border) => border.Background = AppTheme.For(theme).WindowBackground)
-				.Child(icon);
-			View = new Grid().Children(badge);
+				.Margin(new Thickness(2, 3, 0, 0));
 		}
 
-		public Grid View { get; }
+		public Image View { get; }
 
 		private static string IconFor(ChatEntry entry) => entry.Role switch
 		{

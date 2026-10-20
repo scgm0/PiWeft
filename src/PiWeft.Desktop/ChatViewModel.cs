@@ -60,6 +60,9 @@ public sealed record ChatEntry
 	/// <summary>工具是否失败，仅工具行有意义。</summary>
 	public bool IsError { get; init; }
 
+	/// <summary>本轮已停止且工具没有结果；不能继续显示为运行中或成功。</summary>
+	public bool IsStopped { get; init; }
+
 	/// <summary>工具执行或整次助手回复的耗时（毫秒），不代表思考耗时。</summary>
 	public double? DurationMs { get; init; }
 

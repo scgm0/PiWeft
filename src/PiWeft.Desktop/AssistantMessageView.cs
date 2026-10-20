@@ -30,12 +30,13 @@ internal sealed class AssistantMessageView : IDisposable
 		_header.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText();
 		_thinkingHeader.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium)
 			.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Thinking);
-		_thinkingPreview.FontSize(AppTheme.FontSizeCaption).SubtleText()
+		_thinkingPreview.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
 			.TextTrimming(TextTrimming.CharacterEllipsis).VerticalAlignment(VerticalAlignment.Center);
 		_focus.Track(_thinkingText);
 		_focus.Track(_streamingText);
 
 		_thinkingIcon = AppIcons.Icon("sparkles", AppStyles.RoleThinking, 12);
+		// Expander 自带折叠箭头，不在标题内再画一个。
 		var thinkingTitle = new Grid().Columns("Auto,Auto,*").HorizontalAlignment(HorizontalAlignment.Stretch)
 			.Children(
 				_thinkingIcon.Column(0),
@@ -47,6 +48,8 @@ internal sealed class AssistantMessageView : IDisposable
 			.Content(new Border()
 				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, AppTheme.Space2))
 				.Child(_thinkingText));
+		_thinking.ExpandedChanged += expanded =>
+			_thinkingPreview.IsVisible = !expanded && _thinkingPreview.Text.Length > 0;
 
 		_focus.TrackFold(_thinking);
 		_copy = AppIcons.Button("copy", Strings.CopyMessage, () => copy(_entry?.Text ?? string.Empty), size: 14);
@@ -96,7 +99,7 @@ internal sealed class AssistantMessageView : IDisposable
 		_thinkingHeader.Text(entry.IsThinking ? Strings.ThinkingActive
 			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs) : Strings.ThinkingComplete);
 		var preview = Preview(entry.Thinking);
-		_thinkingPreview.Text(preview).IsVisible(preview.Length > 0);
+		_thinkingPreview.Text(preview).IsVisible(!_thinking.IsExpanded && preview.Length > 0);
 		var showChanges = !entry.IsStreaming && !entry.Compact && entry.ChangedFiles.Count > 0;
 		_changes.IsVisible(showChanges);
 		if (showChanges)

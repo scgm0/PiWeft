@@ -75,9 +75,14 @@ internal static class ExecutionProcess
 					});
 				if (ReferenceEquals(entry, answer)) continue;
 				if (entry.Role != ChatRole.Assistant || entry.Text.Length > 0 || entry.Images.Count > 0)
-					process.Add(entry.Thinking.Length == 0 && !entry.IsThinking
+				{
+					var item = entry.Thinking.Length == 0 && !entry.IsThinking
 						? entry with { Compact = true }
-						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true });
+						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true };
+					if (!live && item.Role == ChatRole.Tool && item.IsStreaming)
+						item = item with { IsStreaming = false, IsStopped = true };
+					process.Add(item);
+				}
 			}
 			if (process.Count > 0)
 				rows.Add(new ChatEntry
@@ -160,11 +165,13 @@ internal static class ExecutionProcess
 
 	/// <summary>
 	/// 组头结束态摘要：只列工具类别（PiDeck 同款，思考不计入；纯思考组由调用方给「已完成分析」）。
+	/// 类别超过三个时收成「… 等」，否则组头会跟着工具种类无限变长。
 	/// </summary>
 	public static string GroupSummary(IReadOnlyList<ChatEntry> entries)
 	{
 		List<string>? activities = null;
 		HashSet<string>? seen = null;
+		var truncated = false;
 		foreach (var entry in entries)
 		{
 			if (entry.Role != ChatRole.Tool)
@@ -179,13 +186,14 @@ internal static class ExecutionProcess
 			};
 			activities ??= [];
 			seen ??= new HashSet<string>(StringComparer.Ordinal);
-			if (seen.Add(activity))
-			{
-				activities.Add(activity);
-			}
+			if (!seen.Add(activity)) continue;
+			if (activities.Count < 3) activities.Add(activity);
+			else truncated = true;
 		}
 
-		return activities is null ? string.Empty : string.Join("、", activities);
+		if (activities is null) return string.Empty;
+		var summary = string.Join("、", activities);
+		return truncated ? Strings.ProcessGroupMore(summary) : summary;
 	}
 
 	/// <summary>组头运行态文案：按最新工具类别给「正在…」，纯思考组退回「正在分析请求」。</summary>

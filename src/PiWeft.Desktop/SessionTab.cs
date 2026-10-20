@@ -71,6 +71,7 @@ public sealed partial class SessionTab : IDisposable
 
 	private readonly BranchPanel _branchPanel;
 	private readonly Grid _mainArea = new();
+	private readonly ConversationOutline _outline = new();
 
 	/// <summary>待发送的图片附件：文件路径与内容块。</summary>
 	private readonly List<(string Path, ImageContent Content)> _attachments = [];
@@ -206,6 +207,12 @@ public sealed partial class SessionTab : IDisposable
 		// Restore focus offsets before follow-state observes the scroll notification.
 		_textFocus = new TextFocusScrollGuard(_scroll, anchor => _conversationScroll!.PreserveAnchor(anchor));
 		_conversationScroll = new ConversationScroll(_scroll, visible => SetScrollToLatestVisible(visible && _messages.IsVisible));
+
+		// 右缘定位轴：点击刻度跳到那条用户消息，滚动时高亮当前阅读位置。
+		_outline.Jump += JumpToOutline;
+		_outline.View.MouseWheel += args => SmoothScroll.For(_scroll).RouteWheel(args);
+		_scroll.ScrollChanged += OutlineScrolled;
+		_mainArea.SizeChanged += _ => UpdateOutlineVisibility();
 
 		_composer = new MultiLineTextBox().PrimarySelection()
 			.FontSize(AppTheme.FontSizeChat)
@@ -416,6 +423,7 @@ public sealed partial class SessionTab : IDisposable
 		_mainArea.Children(_noMatches.Text(Strings.NoMatches).MutedText()
 			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center).IsVisible(false));
 		_mainArea.Children(_branchPanel.View.IsVisible(false));
+		_mainArea.Children(_outline.View);
 		_mainArea.Children(_scrollToLatestShell);
 
 		var chatView = AppIcons.Button("message-square", Strings.ViewChat, () => ShowView(showChat: true));
@@ -719,6 +727,8 @@ public sealed partial class SessionTab : IDisposable
 		_compactionAbort?.Cancel();
 		HideTransientPanels();
 		_renderTimer.Dispose();
+		_scroll.ScrollChanged -= OutlineScrolled;
+		_outline.Dispose();
 		_conversationScroll.Dispose();
 		_textFocus.Dispose();
 		_timeline.Dispose();
@@ -1028,6 +1038,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		_conversationScroll.Stop();
 		_messages.IsVisible(showChat);
+		UpdateOutlineVisibility();
 		SetEmptyState(showChat && _chat.Entries().Count == 0);
 		_noMatches.IsVisible(showChat && _filter.Length > 0 && _messages.ItemsSource.Count == 0);
 		_branchPanel.View.IsVisible(!showChat);
@@ -1541,6 +1552,7 @@ public sealed partial class SessionTab : IDisposable
 		_copyReply.IsEnabled = all.Any(static row => row.Role == ChatRole.Assistant && row.Text.Length > 0);
 
 		_timeline.SetEntries(entries, force, _projector.LastStablePrefix, _projector.LastPrefixReused);
+		SyncOutline(entries);
 		SetEmptyState(all.Count == 0 && _messages.IsVisible);
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
 		if (all.Count == 0)
@@ -1706,6 +1718,7 @@ public sealed partial class SessionTab : IDisposable
 	}
 	internal void HideTransientPanels()
 	{
+		_outline.HidePreview();
 		_returnToStatistics = false;
 		_imagePreview.Hide();
 		_statisticsPanel.Hide();

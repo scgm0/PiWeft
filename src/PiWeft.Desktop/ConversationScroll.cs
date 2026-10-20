@@ -159,6 +159,14 @@ internal sealed class ConversationScroll : IDisposable
 		_smooth.ScrollToEnd();
 	}
 
+	/// <summary>显式跳转到历史消息：取消在途跟底和折叠锚点，后续流式增长不把用户拉回末尾。</summary>
+	public void Browse()
+	{
+		_readingAnchor = null;
+		Following = false;
+		_smooth.Stop();
+	}
+
 	public void Stop() => _smooth.Stop();
 
 	public void Dispose()

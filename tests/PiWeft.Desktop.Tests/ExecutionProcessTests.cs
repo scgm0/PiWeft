@@ -16,6 +16,19 @@ public sealed class ExecutionProcessTests
 		new() { Role = ChatRole.Tool, EntryId = $"{id}/{(pending ? "call" : "result")}", ToolCallId = id, ToolName = "read", Text = text, IsStreaming = pending };
 
 	[Fact]
+	public void GroupHeadSummaryListsToolKindsAndCollapsesPastThree()
+	{
+		static ChatEntry Call(string name, int index) =>
+			new() { Role = ChatRole.Tool, EntryId = $"tool/{index}", ToolName = name, Text = "ok" };
+
+		Assert.Equal("执行了命令、已读取文件", ExecutionProcess.GroupSummary([Call("bash", 0), Call("read", 1)]));
+		// 超过三个类别时收成「… 等」，组头不会跟着工具种类无限变长。
+		Assert.Equal("执行了命令、已读取文件、修改了文件 等",
+			ExecutionProcess.GroupSummary([Call("bash", 0), Call("read", 1), Call("edit", 2), Call("grep", 3)]));
+		Assert.Equal(string.Empty, ExecutionProcess.GroupSummary([Answer("thinking", string.Empty, "plan")]));
+	}
+
+	[Fact]
 	public void OneFoldPerTurnKeepsFinalAnswerVisibleAndCountsEachToolOnce()
 	{
 		var rows = ExecutionProcess.Project([
@@ -216,6 +229,79 @@ public sealed class ExecutionProcessTests
 		var earlier = Find<Button>(group.Content!).Single(button => Find<TextBlock>(button).Any(text => text.Text == Strings.ExecutionEarlierSteps(4)));
 		ImagePreviewTests.Click(earlier);
 		Assert.Equal(12, Find<Expander>(group.Content!).Count(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void StoppedTurnDoesNotLeaveAResultlessToolRunning()
+	{
+		var process = ExecutionProcess.Project([User("first"), Tool("orphan", "arguments", pending: true)], false)[1];
+		var tool = Assert.Single(process.ProcessEntries);
+		Assert.True(tool.IsStopped);
+		Assert.False(tool.IsStreaming);
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var view = new ToolMessageView(tool, focus);
+		Assert.Contains(Find<TextBlock>(view.View), text => text.Text == Strings.ToolStopped);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void RunningProcessDoesNotClaimSuccessAndAnEarlierGroupIsNotStillRunning()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var process = new ChatEntry
+		{
+			Role = ChatRole.Process, Text = "", IsStreaming = true,
+			ProcessEntries = [Tool("one", "ok"), new() { Role = ChatRole.Error, Text = "retry needed" }],
+		};
+		var view = new ExecutionProcessView(process, entry => entry.Role == ChatRole.Tool
+			? new ToolMessageView(entry, focus).View : new TextBlock().Text(entry.Text));
+		Assert.False(Find<GlyphElement>(view.View).Single(glyph => glyph.Kind == GlyphKind.CheckMark).IsVisible);
+		var group = Find<Expander>(view.View).Single(expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		Assert.Contains(Find<TextBlock>(group.Header!), text => text.Text == "已读取文件");
+		Assert.DoesNotContain(Find<TextBlock>(group.Header!), text => text.Text == Strings.ProcessGroupRead);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ExpandedGroupHasABoundedViewportAndToolHeadersHaveNoDuplicateChevrons()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var process = ExecutionProcess.Project([User("first"), Tool("one", "output")], true)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		var viewport = Find<ScrollViewer>(view.View).Single();
+		Assert.Equal(300, viewport.MaxHeight);
+		var tool = Find<Expander>(view.View).Single(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		Assert.DoesNotContain(Find<GlyphElement>(tool.Header!), glyph => glyph.Kind is GlyphKind.ChevronRight or GlyphKind.ChevronDown);
+		Assert.Null(tool.Content);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ContinuousTimelineHasItsOwnColumnToTheLeftOfEveryStepIcon()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var process = ExecutionProcess.Project([
+			User("first"), Answer("plan", "", "check layout"), Tool("one", "output\nsecond line"), Tool("two", "ok"),
+		], true)[1];
+		var view = new ExecutionProcessView(process, entry => entry.Role == ChatRole.Tool
+			? new ToolMessageView(entry, focus).View : new AssistantMessageView(entry, _ => { }, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+		var viewport = Assert.Single(Find<ScrollViewer>(view.View));
+		var line = Assert.Single(Find<Border>(viewport), border => border.Width == 1);
+		var icons = Find<Image>(viewport).Where(icon => icon.Width == 14 && icon.Margin == new Thickness(2, 3, 0, 0)).ToArray();
+		Assert.Equal(3, icons.Length);
+		Assert.True(line.Bounds.Height > 0);
+		Assert.All(icons, icon => Assert.True(icon.Bounds.X - line.Bounds.Right >= 12,
+			$"The step icon {icon.Bounds} overlaps the timeline {line.Bounds}."));
+
+		// 展开工具输出之后仍是同一条连续竖线，不会在图标处截断或移进图标列。
+		var tool = Find<Expander>(viewport).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.All(icons, icon => Assert.True(icon.Bounds.X - line.Bounds.Right >= 12));
+		Assert.True(line.Bounds.Y <= icons[0].Bounds.Y);
+		Assert.True(line.Bounds.Bottom >= icons[^1].Bounds.Bottom);
 		UiLifetime.Release(view.View);
 	}
 
