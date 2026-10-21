@@ -78,6 +78,10 @@ internal sealed class ConversationTimeline : IDisposable
 			var index = _inPlaceUpdates[i];
 			if (index < entries.Count && _hostByIndex.TryGetValue(index, out var host)) Bind(host, entries[index], index);
 		}
+		// The streaming row invalidates its own measure; the virtualizer only re-measures rows while
+		// arranging, and an ancestor that was already measure-dirty skips that arrange. Invalidate the
+		// arrange as well so the grown row (expanded thinking, streaming body) is actually re-measured.
+		if (_inPlaceUpdates.Count > 0) View.InvalidateArrange();
 		if (!rebuild) return;
 		foreach (var host in _visible.ToArray())
 		{
@@ -142,7 +146,9 @@ internal sealed class ConversationTimeline : IDisposable
 	}
 
 	/// <summary>先由虚拟化器实现目标行，再把它对齐到视口上沿；不依赖未测量行的估算高度。</summary>
-	public void JumpToRow(int index)
+	/// <param name="index">目标行。</param>
+	/// <param name="withinRow">恢复阅读位置时，让目标行顶部比视口上沿高出多少 DIP。</param>
+	public void JumpToRow(int index, double withinRow = 0)
 	{
 		if (index < 0 || index >= _rows.Count) return;
 		var generation = ++_jumpGeneration;
@@ -164,7 +170,7 @@ internal sealed class ConversationTimeline : IDisposable
 					}
 					return;
 				}
-				var delta = host.Bounds.Y - Scroll.Bounds.Y - AppTheme.Space3;
+				var delta = host.Bounds.Y - Scroll.Bounds.Y - AppTheme.Space3 + withinRow;
 				if (Math.Abs(delta) < 1) return;
 				Scroll.SetScrollOffsets(Scroll.HorizontalOffset, Scroll.VerticalOffset + delta);
 				if (pass < 2) Align(pass + 1);
@@ -173,6 +179,40 @@ internal sealed class ConversationTimeline : IDisposable
 	}
 
 	private void CancelJump(MouseEventArgs _) => _jumpGeneration++;
+
+	/// <summary>正在阅读的条目与视口进入它的深度；用于搜索结束后恢复原位置。</summary>
+	internal readonly record struct ReadingPoint(string? EntryId, double WithinRow);
+
+	internal ReadingPoint CurrentReadingAnchor()
+	{
+		ReadingRow? top = null;
+		var topIndex = int.MaxValue;
+		foreach (var host in _visible)
+		{
+			if (host.Tag is not ChatEntry || host.Bounds.Height <= 0 || !host.IsDescendantOf(View) ||
+				!_indexByHost.TryGetValue(host, out var index) || host.Bounds.Bottom <= Scroll.Bounds.Top)
+			{
+				continue;
+			}
+			if (index >= topIndex) continue;
+			top = host;
+			topIndex = index;
+		}
+		if (top?.Tag is not ChatEntry entry) return new ReadingPoint(null, 0);
+		return new ReadingPoint(entry.EntryId, Math.Max(0, Scroll.Bounds.Top - top.Bounds.Top));
+	}
+
+	/// <summary>Current index of an entry id, or -1 when the entry left the projection.</summary>
+	internal int IndexOfEntryId(string? entryId)
+	{
+		if (string.IsNullOrEmpty(entryId)) return -1;
+		for (var index = 0; index < _rows.Count; index++)
+		{
+			if (_rows.GetItem(index) is ChatEntry entry && string.Equals(entry.EntryId, entryId, StringComparison.Ordinal))
+				return index;
+		}
+		return -1;
+	}
 
 	public void ApplyReadingWidth()
 	{
@@ -304,6 +344,7 @@ internal sealed class ConversationTimeline : IDisposable
 		left.Timestamp == right.Timestamp && left.EntryId == right.EntryId && left.ToolName == right.ToolName &&
 		left.IsError == right.IsError && left.IsStopped == right.IsStopped && left.DurationMs == right.DurationMs && left.Patch == right.Patch && left.ToolArguments == right.ToolArguments &&
 		left.Images.SequenceEqual(right.Images) && left.ToolCallId == right.ToolCallId && left.Compact == right.Compact &&
+		left.ChangedFiles.SequenceEqual(right.ChangedFiles) &&
 		left.ProcessEntries.Count == right.ProcessEntries.Count && left.ProcessEntries.Zip(right.ProcessEntries).All(pair => SameEntry(pair.First, pair.Second)));
 
 	public void Dispose()
@@ -360,20 +401,40 @@ internal sealed class ConversationTimeline : IDisposable
 			while (unchanged < common && SameEntry(_entries[unchanged], entries[unchanged])) unchanged++;
 			if (unchanged < common)
 			{
-				var updatable = true;
+				// Notify only the rows that really need a new view. A single Replace spanning to the
+				// end would drop the virtualizer's measured heights for every unchanged row below,
+				// collapsing the extent to an estimate and shifting a browsing reader. In-place rows
+				// are rebound by the host below, so they interrupt a Replace run instead of joining it.
+				var runStart = -1;
 				for (var i = unchanged; i < common; i++)
 				{
-					if (!CanUpdateInPlace(_entries[i], entries[i])) { updatable = false; break; }
+					var current = _entries[i];
+					var next = entries[i];
+					if (SameEntry(current, next))
+					{
+						if (runStart >= 0)
+						{
+							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, i - runStart));
+							runStart = -1;
+						}
+						continue;
+					}
+					_entries[i] = next;
+					if (CanUpdateInPlace(current, next))
+					{
+						inPlace.Add(i);
+						if (runStart >= 0)
+						{
+							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, i - runStart));
+							runStart = -1;
+						}
+					}
+					else if (runStart < 0)
+					{
+						runStart = i;
+					}
 				}
-				for (var i = unchanged; i < common; i++) _entries[i] = entries[i];
-				if (updatable)
-				{
-					for (var i = unchanged; i < common; i++) inPlace.Add(i);
-				}
-				else
-				{
-					Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, unchanged, common - unchanged));
-				}
+				if (runStart >= 0) Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, common - runStart));
 			}
 			if (entries.Count < Count)
 			{

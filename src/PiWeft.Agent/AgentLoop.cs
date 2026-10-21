@@ -83,149 +83,181 @@ public static class AgentLoop
 		var config = initialConfig;
 		AgentTurnContext? lastCompletedTurn = null;
 		var explicitContinuation = false;
+		var turnOpen = true;
 
 		// 调用方等待期间输入的 steering 会在第一次请求之前送达。
-		var pendingMessages = await PollAsync(config.GetSteeringMessages, cancellationToken);
-
-		while (true)
+		try
 		{
-			var hasMoreToolCalls = true;
+			var pendingMessages = await PollAsync(config.GetSteeringMessages, cancellationToken);
 
-			while (hasMoreToolCalls || pendingMessages.Count > 0)
+			while (true)
 			{
-				var preparedMessages = new List<Message>();
+				var hasMoreToolCalls = true;
 
-				if (lastCompletedTurn is not null)
+				while (hasMoreToolCalls || pendingMessages.Count > 0)
 				{
-					if (config.PrepareNextTurn is { } prepareNextTurn)
+					var preparedMessages = new List<Message>();
+
+					if (lastCompletedTurn is not null)
 					{
-						var update = await prepareNextTurn(lastCompletedTurn, cancellationToken);
+						if (config.PrepareNextTurn is { } prepareNextTurn)
+						{
+							var update = await prepareNextTurn(lastCompletedTurn, cancellationToken);
+							if (update is not null)
+							{
+								context = update.Context ?? context;
+								preparedMessages = update.Messages is null ? [] : [.. update.Messages];
+								config = ApplyUpdate(config, update.Model, update.ThinkingLevel);
+							}
+						}
+
+						// 准备工作可能耗时较长（例如压缩），因此要把期间排入的 steering 一并取走。
+						if (pendingMessages.Count == 0)
+						{
+							pendingMessages = await PollAsync(config.GetSteeringMessages, cancellationToken);
+						}
+
+						await emit(new TurnStartEvent());
+						turnOpen = true;
+					}
+
+					foreach (var outgoing in DeclareToolChanges(context, [.. preparedMessages, .. pendingMessages]))
+					{
+						await emit(new MessageStartEvent { Message = outgoing });
+						await emit(new MessageEndEvent { Message = outgoing });
+						context.Messages.Add(outgoing);
+						newMessages.Add(outgoing);
+					}
+
+					pendingMessages = [];
+
+					if (config.PrepareRequest is { } prepareRequest)
+					{
+						var update = await prepareRequest(
+							new PrepareRequestContext
+							{
+								Context = context,
+								Model = config.Model,
+								ThinkingLevel = config.ThinkingLevel,
+							},
+							cancellationToken);
+
 						if (update is not null)
 						{
 							context = update.Context ?? context;
-							preparedMessages = update.Messages is null ? [] : [.. update.Messages];
 							config = ApplyUpdate(config, update.Model, update.ThinkingLevel);
 						}
 					}
 
-					// 准备工作可能耗时较长（例如压缩），因此要把期间排入的 steering 一并取走。
-					if (pendingMessages.Count == 0)
+					var message = await StreamAssistantResponseAsync(context, config, streamFn, emit, cancellationToken);
+					newMessages.Add(message);
+
+					if (message.StopReason is StopReason.Error or StopReason.Aborted)
 					{
-						pendingMessages = await PollAsync(config.GetSteeringMessages, cancellationToken);
-					}
-
-					await emit(new TurnStartEvent());
-				}
-
-				foreach (var outgoing in DeclareToolChanges(context, [.. preparedMessages, .. pendingMessages]))
-				{
-					await emit(new MessageStartEvent { Message = outgoing });
-					await emit(new MessageEndEvent { Message = outgoing });
-					context.Messages.Add(outgoing);
-					newMessages.Add(outgoing);
-				}
-
-				pendingMessages = [];
-
-				if (config.PrepareRequest is { } prepareRequest)
-				{
-					var update = await prepareRequest(
-						new PrepareRequestContext
+						lastCompletedTurn = Turn(message, [], context, newMessages);
+						if (config.FinishTurn is { } onFailure)
 						{
-							Context = context,
-							Model = config.Model,
-							ThinkingLevel = config.ThinkingLevel,
-						},
-						cancellationToken);
+							await onFailure(lastCompletedTurn, cancellationToken);
+						}
 
-					if (update is not null)
+						await emit(new TurnEndEvent { Message = message, ToolResults = [] });
+						turnOpen = false;
+						await emit(new AgentEndEvent
+						{
+							Messages = newMessages,
+							WillRetry = config.WillRetry?.Invoke(message) == true,
+						});
+						return;
+					}
+
+					var toolCalls = message.Content.OfType<ToolCall>().ToList();
+					var toolResults = new List<ToolResultMessage>();
+					hasMoreToolCalls = false;
+
+					if (toolCalls.Count > 0)
 					{
-						context = update.Context ?? context;
-						config = ApplyUpdate(config, update.Model, update.ThinkingLevel);
+						// 停止原因是 "length" 说明输出被截断，此时每个工具调用的参数都可能不完整。
+						// 全部按失败处理，绝不执行残缺的调用。
+						var batch = message.StopReason == StopReason.Length
+							? await FailTruncatedAsync(toolCalls, emit)
+							: await ExecuteToolCallsAsync(context, message, toolCalls, config, emit, cancellationToken);
+
+						toolResults.AddRange(batch.Messages);
+						hasMoreToolCalls = !batch.Terminate;
+
+						foreach (var result in toolResults)
+						{
+							context.Messages.Add(result);
+							newMessages.Add(result);
+						}
+					}
+
+					lastCompletedTurn = Turn(message, toolResults, context, newMessages);
+					var action = config.FinishTurn is { } finishTurn
+						? await finishTurn(lastCompletedTurn, cancellationToken)
+						: AgentTurnAction.Normal;
+
+					await emit(new TurnEndEvent { Message = message, ToolResults = toolResults });
+					turnOpen = false;
+
+					if (action == AgentTurnAction.End)
+					{
+						await emit(new AgentEndEvent { Messages = newMessages });
+						return;
+					}
+
+					explicitContinuation = action == AgentTurnAction.Continue;
+					pendingMessages = await PollAsync(config.GetSteeringMessages, cancellationToken);
+					if (hasMoreToolCalls || pendingMessages.Count > 0)
+					{
+						explicitContinuation = false;
 					}
 				}
 
-				var message = await StreamAssistantResponseAsync(context, config, streamFn, emit, cancellationToken);
-				newMessages.Add(message);
-
-				if (message.StopReason is StopReason.Error or StopReason.Aborted)
-				{
-					lastCompletedTurn = Turn(message, [], context, newMessages);
-					if (config.FinishTurn is { } onFailure)
-					{
-						await onFailure(lastCompletedTurn, cancellationToken);
-					}
-
-					await emit(new TurnEndEvent { Message = message, ToolResults = [] });
-					await emit(new AgentEndEvent
-					{
-						Messages = newMessages,
-						WillRetry = config.WillRetry?.Invoke(message) == true,
-					});
-					return;
-				}
-
-				var toolCalls = message.Content.OfType<ToolCall>().ToList();
-				var toolResults = new List<ToolResultMessage>();
-				hasMoreToolCalls = false;
-
-				if (toolCalls.Count > 0)
-				{
-					// 停止原因是 "length" 说明输出被截断，此时每个工具调用的参数都可能不完整。
-					// 全部按失败处理，绝不执行残缺的调用。
-					var batch = message.StopReason == StopReason.Length
-						? await FailTruncatedAsync(toolCalls, emit)
-						: await ExecuteToolCallsAsync(context, message, toolCalls, config, emit, cancellationToken);
-
-					toolResults.AddRange(batch.Messages);
-					hasMoreToolCalls = !batch.Terminate;
-
-					foreach (var result in toolResults)
-					{
-						context.Messages.Add(result);
-						newMessages.Add(result);
-					}
-				}
-
-				lastCompletedTurn = Turn(message, toolResults, context, newMessages);
-				var action = config.FinishTurn is { } finishTurn
-					? await finishTurn(lastCompletedTurn, cancellationToken)
-					: AgentTurnAction.Normal;
-
-				await emit(new TurnEndEvent { Message = message, ToolResults = toolResults });
-
-				if (action == AgentTurnAction.End)
-				{
-					await emit(new AgentEndEvent { Messages = newMessages });
-					return;
-				}
-
-				explicitContinuation = action == AgentTurnAction.Continue;
-				pendingMessages = await PollAsync(config.GetSteeringMessages, cancellationToken);
-				if (hasMoreToolCalls || pendingMessages.Count > 0)
+				var followUp = await PollAsync(config.GetFollowUpMessages, cancellationToken);
+				if (followUp.Count > 0)
 				{
 					explicitContinuation = false;
+					pendingMessages = followUp;
+					continue;
 				}
+
+				if (explicitContinuation)
+				{
+					explicitContinuation = false;
+					continue;
+				}
+
+				break;
 			}
 
-			var followUp = await PollAsync(config.GetFollowUpMessages, cancellationToken);
-			if (followUp.Count > 0)
-			{
-				explicitContinuation = false;
-				pendingMessages = followUp;
-				continue;
-			}
-
-			if (explicitContinuation)
-			{
-				explicitContinuation = false;
-				continue;
-			}
-
-			break;
+			await emit(new AgentEndEvent { Messages = newMessages });
 		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			// 取消也可能发生在自动压缩、请求准备或回合钩子里；这些路径没有经过 provider，
+			// 仍需补一条 aborted 助手消息并发出 turn_end / agent_end，避免客户端永远等不到本次运行结束。
+			AssistantMessage aborted;
+			if (context.Messages.Count > 0 && context.Messages[^1] is AssistantMessage { StopReason: StopReason.Aborted } existing)
+			{
+				aborted = existing;
+			}
+			else
+			{
+				aborted = AbortedAssistant(partial: null, config, elapsedMs: 0);
+				context.Messages.Add(aborted);
+				newMessages.Add(aborted);
+				await emit(new MessageStartEvent { Message = aborted });
+				await emit(new MessageEndEvent { Message = aborted });
+			}
 
-		await emit(new AgentEndEvent { Messages = newMessages });
+			if (turnOpen)
+			{
+				await emit(new TurnEndEvent { Message = aborted, ToolResults = [] });
+			}
+
+			await emit(new AgentEndEvent { Messages = newMessages });
+		}
 	}
 
 	private static async Task<AssistantMessage> StreamAssistantResponseAsync(
@@ -250,50 +282,84 @@ public static class AgentLoop
 			CancellationToken = cancellationToken,
 		};
 
+		if (cancellationToken.IsCancellationRequested)
+		{
+			// 在进入 provider 之前就被取消（例如刚结束工具批次）：不要再发请求，
+			// 直接落一条 aborted 助手消息，让运行走正常的失败收尾。
+			var abortedBeforeStart = AbortedAssistant(partial: null, config, elapsedMs: 0);
+			context.Messages.Add(abortedBeforeStart);
+			await emit(new MessageStartEvent { Message = abortedBeforeStart });
+			await emit(new MessageEndEvent { Message = abortedBeforeStart });
+			return abortedBeforeStart;
+		}
+
 		var response = streamFn(config.Model, llmMessages, options);
 
 		AssistantMessage? partial = null;
 		var addedPartial = false;
+		var startedAt = Stopwatch.GetTimestamp();
 
-		await foreach (var @event in response.WithCancellation(cancellationToken).ConfigureAwait(false))
+		try
 		{
-			switch (@event)
+			await foreach (var @event in response.WithCancellation(cancellationToken).ConfigureAwait(false))
 			{
-				case StartEvent start:
-					partial = start.Partial;
-					context.Messages.Add(partial);
-					addedPartial = true;
-					await emit(new MessageStartEvent { Message = partial });
-					break;
-
-				case DoneEvent or ErrorEvent:
+				switch (@event)
 				{
-					var final = await response.Result.ConfigureAwait(false);
-					final = final with { ThinkingLevel = final.ThinkingLevel ?? config.ThinkingLevel };
-					if (addedPartial)
+					case StartEvent start:
+						partial = start.Partial;
+						context.Messages.Add(partial);
+						addedPartial = true;
+						await emit(new MessageStartEvent { Message = partial });
+						break;
+
+					case DoneEvent or ErrorEvent:
 					{
-						context.Messages[^1] = final;
-					}
-					else
-					{
-						context.Messages.Add(final);
-						await emit(new MessageStartEvent { Message = final });
+						var final = await response.Result.ConfigureAwait(false);
+						final = final with { ThinkingLevel = final.ThinkingLevel ?? config.ThinkingLevel };
+						if (addedPartial)
+						{
+							context.Messages[^1] = final;
+						}
+						else
+						{
+							context.Messages.Add(final);
+							await emit(new MessageStartEvent { Message = final });
+						}
+
+						await emit(new MessageEndEvent { Message = final });
+						return final;
 					}
 
-					await emit(new MessageEndEvent { Message = final });
-					return final;
+					default:
+						partial = @event.Partial;
+						if (addedPartial)
+						{
+							context.Messages[^1] = partial;
+						}
+
+						await emit(new MessageUpdateEvent { Message = partial, AssistantMessageEvent = @event });
+						break;
 				}
-
-				default:
-					partial = @event.Partial;
-					if (addedPartial)
-					{
-						context.Messages[^1] = partial;
-					}
-
-					await emit(new MessageUpdateEvent { Message = partial, AssistantMessageEvent = @event });
-					break;
 			}
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			// 取消先打断了 channel 的读取，provider 随后推送的 aborted 事件往往读不到。
+			// 必须在这里把已经收到的部分落成 aborted 消息：否则本次运行没有 message_end /
+			// agent_end，会话不落盘，桌面也会一直停在「运行中」而无法再次发送。
+			var aborted = AbortedAssistant(partial, config, Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
+			if (addedPartial)
+			{
+				context.Messages[^1] = aborted;
+			}
+			else
+			{
+				context.Messages.Add(aborted);
+				await emit(new MessageStartEvent { Message = aborted });
+			}
+
+			await emit(new MessageEndEvent { Message = aborted });
+			return aborted;
 		}
 
 		// provider 没发终止事件就结束了流时，仍然要给出一个结果。
@@ -652,6 +718,37 @@ public static class AgentLoop
 			Result = result,
 			IsError = isError,
 			DurationMs = executed.DurationMs,
+		};
+	}
+
+	/// <summary>
+	/// 把取消时的部分回复补成一条完整的 aborted 消息。provider 自己推送的终止事件可能
+	/// 因为取消先打断读取而丢失，桌面端需要这条消息来清空流式状态并落盘本次运行。
+	/// </summary>
+	private static AssistantMessage AbortedAssistant(AssistantMessage? partial, AgentLoopConfig config, double elapsedMs)
+	{
+		var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+		if (partial is null)
+		{
+			return new AssistantMessage
+			{
+				Api = config.Model.Api,
+				Provider = config.Model.Provider,
+				Model = config.Model.Id,
+				Timestamp = now,
+				StopReason = StopReason.Aborted,
+				ErrorMessage = "Request aborted",
+				ThinkingLevel = config.ThinkingLevel,
+				DurationMs = elapsedMs,
+			};
+		}
+
+		return partial with
+		{
+			StopReason = StopReason.Aborted,
+			ErrorMessage = partial.ErrorMessage ?? "Request aborted",
+			ThinkingLevel = partial.ThinkingLevel ?? config.ThinkingLevel,
+			DurationMs = partial.DurationMs ?? elapsedMs,
 		};
 	}
 

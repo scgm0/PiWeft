@@ -85,6 +85,29 @@ public sealed class ModelPickerTests
 	}
 
 	[Fact]
+	public void SearchingAfterScrollingStartsAtTheFirstResult()
+	{
+		var models = Enumerable.Range(0, 1000).Select(index => Model($"model-{index:D4}")).ToArray();
+		var picker = new ModelPicker(() => models, () => models[0], _ => { });
+		var window = new Window();
+		picker.Show(window);
+		picker.View.Measure(new Size(900, 700));
+		picker.View.Arrange(new Rect(0, 0, 900, 700));
+		var tree = Find<TreeView>(picker.View).Single();
+		var scroll = Find<ScrollViewer>(tree).First();
+		scroll.SetScrollOffsets(0, 900);
+		picker.View.Measure(new Size(900, 700));
+		picker.View.Arrange(new Rect(0, 0, 900, 700));
+		Assert.True(scroll.VerticalOffset > 0);
+
+		Find<TextBox>(picker.View).Single().Text = "model-0999";
+		picker.View.Measure(new Size(900, 700));
+		picker.View.Arrange(new Rect(0, 0, 900, 700));
+		Assert.Equal(0, scroll.VerticalOffset, 1);
+		picker.Hide();
+	}
+
+	[Fact]
 	public void ModelPanelFitsNarrowWindows()
 	{
 		var model = Model("current");

@@ -25,6 +25,9 @@ internal sealed class AssistantMessageView : IDisposable
 	private ChatEntry? _entry;
 	// 展开中的思考是否正在跟随内容增长：只在流式思考期间保持，避免结束后把阅读位置拉走。
 	private bool _followingThinking;
+	// 流式思考的 Markdown 重解析限频；定稿时立即用最终文本刷新。
+	private const int ThinkingUpdateIntervalMs = 120;
+	private long _thinkingRenderedAt;
 
 	public AssistantMessageView(ChatEntry entry, Action<string> copy, TextFocusScrollGuard focus, Action<ImageSource>? preview = null,
 		Action<string>? openLink = null)
@@ -214,11 +217,19 @@ internal sealed class AssistantMessageView : IDisposable
 				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, AppTheme.Space2))
 				.Child(_thinkingMarkdown));
 		}
-		// 流式追加时合并连续 token；定稿后立即解析，选择/复制不必等后台任务。
-		var delay = current?.IsStreaming == true ? TimeSpan.FromMilliseconds(80) : TimeSpan.Zero;
-		if (_thinkingMarkdown.ParseDelay != delay) _thinkingMarkdown.ParseDelay = delay;
-		if (!string.Equals(_thinkingMarkdown.Markdown, thinking, StringComparison.Ordinal))
-			_thinkingMarkdown.Markdown = thinking;
+		// 展开的思考必须跟着流式增量实时更新。MarkdownPresenter 的后台解析会在每次源文变化时
+		// 取消上一轮解析，而流式增量比它的防抖更密（桌面按 40 ms 合并刷新），持续输出时解析会
+		// 一直被取消、正文停在展开那一刻。这里改为同步解析（单个思考块很小）并在流式期间限频。
+		if (_thinkingMarkdown.ParseDelay != TimeSpan.Zero) _thinkingMarkdown.ParseDelay = TimeSpan.Zero;
+		if (string.Equals(_thinkingMarkdown.Markdown, thinking, StringComparison.Ordinal)) return;
+		var now = Environment.TickCount64;
+		if (current?.IsStreaming == true && Application.IsRunning &&
+			now - _thinkingRenderedAt < ThinkingUpdateIntervalMs)
+		{
+			return;
+		}
+		_thinkingMarkdown.Markdown = thinking;
+		_thinkingRenderedAt = now;
 	}
 
 	internal static MultiLineTextBox CreateCodeText(string code, string? language, TextFocusScrollGuard focus)

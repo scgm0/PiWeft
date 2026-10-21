@@ -739,6 +739,39 @@ public class AutoRetryTests : IDisposable
 		Assert.Equal(0, session.RetryAttempt);
 	}
 
+	[Fact]
+	public async Task AbortDuringRetryBackoffStopsTheRun()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueError("Service Unavailable");
+		script.EnqueueText("should not run");
+
+		// 退避时间给足，确保取消只能来自 Abort() 而不是自然到点。
+		using var session = CreateSession(script, new RetryPolicy(BaseDelayMs: 5_000, MaxRetries: 3));
+		var retryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		using var subscription = session.Subscribe(@event =>
+		{
+			if (@event is AutoRetryStartEvent)
+			{
+				retryStarted.TrySetResult();
+			}
+
+			return ValueTask.CompletedTask;
+		});
+
+		var prompt = session.PromptAsync("hi");
+		await retryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.True(session.IsRetrying);
+
+		session.Abort();
+		var messages = await prompt.WaitAsync(TimeSpan.FromSeconds(2));
+
+		Assert.Single(script.Requests);
+		Assert.False(session.IsRetrying);
+		Assert.False(session.IsRunning);
+		Assert.IsType<AssistantMessage>(messages[^1]);
+	}
+
 	/// <summary>事件断言用的记录。</summary>
 	private sealed record Piece(string Kind, int Attempt, int MaxAttempts, int DelayMs, string Error);
 }

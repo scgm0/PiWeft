@@ -124,6 +124,28 @@ public sealed class SessionSearchPaletteTests
 	}
 
 	[Fact]
+	public void HugeCatalogsRenderABoundedListAndSaySo()
+	{
+		var many = Enumerable.Range(0, 1200)
+			.Select(index => Item($"session-{index:D4}", "/work/big"))
+			.ToArray();
+		var owner = new Border();
+		var window = new Window().Content(owner);
+		var palette = new SessionSearchPalette(() => many, static _ => { });
+		palette.Show(owner);
+
+		// 有界列表：不因为会话多就构造上千个带 hover 提示的行。
+		Assert.Equal(200, palette.Matches.Count);
+		Assert.Contains(Find<TextBlock>(palette.View), text => text.IsVisible && text.Text.Contains("1200", StringComparison.Ordinal));
+
+		// 键盘选择仍在本段内移动，不会越界到未渲染的行。
+		var query = Find<TextBox>(palette.View).First();
+		for (var step = 0; step < 5; step++) Press(query, Key.Down);
+		Press(query, Key.Enter);
+		palette.Hide();
+	}
+
+	[Fact]
 	public void DetachedOwnersDoNotOpenThePalette()
 	{
 		var palette = new SessionSearchPalette(() => Catalog, static _ => { });

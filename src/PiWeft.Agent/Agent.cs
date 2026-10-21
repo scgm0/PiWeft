@@ -308,9 +308,20 @@ public sealed class Agent
 	/// <summary>取消当前运行；助手消息会以停止原因 <c>aborted</c> 结束。</summary>
 	public void Abort()
 	{
+		CancellationTokenSource? cancellation;
 		lock (_gate)
 		{
-			_cancellation?.Cancel();
+			cancellation = _cancellation;
+		}
+
+		// 不要在持有 _gate 时 Cancel：取消回调可能同步推进运行收尾，而收尾需要同一把锁。
+		try
+		{
+			cancellation?.Cancel();
+		}
+		catch (ObjectDisposedException)
+		{
+			// 运行刚好结束并释放了 CTS。
 		}
 	}
 

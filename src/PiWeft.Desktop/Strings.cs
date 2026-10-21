@@ -29,6 +29,9 @@ public static partial class Strings
 	public const string CloseTabsToRight = "关闭右侧标签";
 	public const string KeepCurrentTab = "保留此标签";
 	public static string ModelResultCount(int shown, int total) => $"{shown} / {total} 个模型";
+
+	/// <summary>会话搜索结果超过有界列表时提示截断，并给出继续缩小范围的建议。</summary>
+	public static string SessionSearchTruncated(int shown, int total) => $"显示前 {shown} / {total} 个会话，继续输入以缩小范围";
 	public static string ProjectOpenFailed(string reason) => $"打开项目失败：{reason}";
 	public static string ModelCapabilities(PiWeft.Ai.Model model) =>
 		$"{model.Provider} · {model.ContextWindow / 1000.0:0.#}k · {(model.SupportsImages ? ModelVision : ModelTextOnly)}{(model.Reasoning ? $" · {ModelReasoning}" : string.Empty)}";

@@ -12,6 +12,9 @@ public sealed class SessionSearchPalette
 {
 	private const double RowHeight = 50;
 	private const double PanelWidth = 640;
+	// 结果列表不是虚拟化控件（每行都是带 hover 提示的按钮）：会话很多时只铺有界的一段，
+	// 剩下的靠继续输入缩小范围。这与 PiDeck 的有界结果列表一致，避免一次搜索构造上千行。
+	private const int MaxRows = 200;
 	private readonly Func<IReadOnlyList<SessionListItem>> _sessions;
 	private readonly Action<SessionListItem> _open;
 	private readonly TextBox _query;
@@ -193,6 +196,7 @@ public sealed class SessionSearchPalette
 		string? group = null;
 		foreach (var item in metadata)
 		{
+			if (_targets.Count >= MaxRows) break;
 			var folder = Folder(item);
 			var showFolder = !string.Equals(folder, group, StringComparison.Ordinal);
 			group = folder;
@@ -202,6 +206,7 @@ public sealed class SessionSearchPalette
 		var seen = metadata.Select(static item => item.Path).ToHashSet(StringComparer.Ordinal);
 		foreach (var match in content)
 		{
+			if (_targets.Count >= MaxRows) break;
 			if (!seen.Add(match.Session.Path)) continue;
 			AddRow(match.Session, "file-text", match.Session.Display, $"{Strings.ContentHit} · {match.Excerpt}");
 		}
@@ -212,7 +217,16 @@ public sealed class SessionSearchPalette
 			return;
 		}
 
-		_status.IsVisible(false);
+		// 命中超过上限时明确说明已截断，读者知道还能靠继续输入缩小范围。
+		var total = metadata.Count;
+		if (total > _targets.Count)
+		{
+			_status.Text(Strings.SessionSearchTruncated(_targets.Count, total)).IsVisible(true);
+		}
+		else
+		{
+			_status.IsVisible(false);
+		}
 		Select(0);
 	}
 

@@ -29,13 +29,6 @@ public sealed partial class SessionTab
 				var point = window.ClientToScreen(new Point(inner.Bounds.X + inner.Bounds.Width / 2, inner.Bounds.Y + inner.Bounds.Height / 2));
 				Report("group-body", $"{point.X:0},{point.Y:0},{inner.VerticalOffset:0},{SmoothScroll.For(inner).MaxVerticalOffset:0}");
 			}
-			var earlier = Find<Button>(_messages).FirstOrDefault(button => Find<TextBlock>(button)
-				.Any(text => text.Text.StartsWith("显示更早", StringComparison.Ordinal)));
-			if (earlier is not null && earlier.Bounds.Width > 0)
-			{
-				var point = window.ClientToScreen(new Point(earlier.Bounds.X + earlier.Bounds.Width / 2, earlier.Bounds.Y + earlier.Bounds.Height / 2));
-				Report("older-steps", $"{point.X:0},{point.Y:0}");
-			}
 			if (_outline.IsPreviewOpen) Report("outline-preview", _outline.PreviewTitle);
 			// 过程组内部所有可滚动层：原生测试据此定位「内容层」并检查谁在响应滚轮。
 			var layer = 0;

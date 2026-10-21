@@ -7,6 +7,12 @@ namespace PiWeft.Desktop;
 internal sealed class ConversationScroll : IDisposable
 {
 	private const double EndThreshold = 40;
+	// 明确离开末尾：必须高于近底带，弹簧/布局滞后到不了这里。
+	private const double FarFromBottom = EndThreshold * 3.5;
+	// 读者自己累计的上滚位移；与 PiDeck 的 AT_BOTTOM_TOLERANCE_PX 一致。
+	private const double ReaderEscapePixels = 25;
+	// 触控板 1–2 px 的抖动与真实滚轮刻度分开累计：前者只算短窗口，后者跨慢速手势累计。
+	private const double ReaderJitterPixels = 2;
 	private readonly ScrollViewer _view;
 	private readonly SmoothScroll _smooth;
 	private readonly Action<bool> _showLatest;
@@ -20,6 +26,11 @@ internal sealed class ConversationScroll : IDisposable
 	private bool _restoringAnchor;
 	// 自己发起的「回到最新」跳跃：随后那次 ScrollChanged 不是读者的滚动意图。
 	private bool _followingJump;
+	private bool _extentSyncQueued;
+	private double _upwardPixels;
+	private long _lastUpwardInputAt;
+	private bool _upwardJitter;
+	private bool _followSuspended;
 
 	public ConversationScroll(ScrollViewer view, Action<bool> showLatest)
 	{
@@ -30,15 +41,69 @@ internal sealed class ConversationScroll : IDisposable
 		_lastMaximum = _smooth.MaxVerticalOffset;
 		view.ScrollChanged += OnScrollChanged;
 		_smooth.VerticalInput += OnVerticalInput;
+		if (_smooth.VerticalBar is { } bar) bar.MouseDown += OnScrollBarPointer;
 	}
 
 	public bool Following { get; private set; } = true;
 
-	private void OnVerticalInput(double notches)
+	/// <summary>
+	/// Search results are a reading surface of their own: reaching their end must not silently
+	/// re-lock tail following. An explicit "move to latest" clears the suspension.
+	/// </summary>
+	public bool FollowSuspended
+	{
+		get => _followSuspended;
+		set
+		{
+			_followSuspended = value;
+			if (!value) return;
+			Following = false;
+			_upwardPixels = 0;
+			_smooth.Stop();
+		}
+	}
+
+	/// <summary>Clicking or dragging the scrollbar is explicit reader intent: leave the tail now.</summary>
+	private void OnScrollBarPointer(MouseEventArgs _) => Browse();
+
+	private void OnVerticalInput(double pixels)
 	{
 		_readingAnchor = null;
-		// Disable follow on the first upward wheel event, before an animation frame or stream update.
-		Following = notches > 0 && _smooth.MaxVerticalOffset - _smooth.TargetVerticalOffset <= EndThreshold;
+		if (pixels < 0)
+		{
+			// 与 PiDeck 相同的两档判定：明确离开末尾时真实滚轮立即逃逸；仍贴着末尾时，
+			// 只有读者自己累计的不止 1–2 px 抖动，才取消跟底。流式布局与触控板噪声都不能
+			// 把「正在跟底」误判成「正在浏览」。
+			var now = Environment.TickCount64;
+			var upward = -pixels;
+			var window = upward <= ReaderJitterPixels ? 250 : 2000;
+			if (now - _lastUpwardInputAt > window) _upwardPixels = 0;
+			_lastUpwardInputAt = now;
+			_upwardPixels += upward;
+			var distance = _smooth.MaxVerticalOffset - _smooth.TargetVerticalOffset;
+			if ((upward > ReaderJitterPixels && distance > FarFromBottom) || _upwardPixels >= ReaderEscapePixels)
+			{
+				Following = false;
+				_upwardJitter = false;
+			}
+			else
+			{
+				// The offset this input just moved is a layout notification away; keep the
+				// geometry path from mistaking the same jitter for reader intent.
+				_upwardJitter = true;
+			}
+		}
+		else if (pixels > 0)
+		{
+			_upwardPixels = 0;
+			_upwardJitter = false;
+			// 向下回到末尾附近才重新锁定跟随；浏览中途的下滚不算跟底指令。
+			if (!_followSuspended && _smooth.MaxVerticalOffset - _smooth.TargetVerticalOffset <= EndThreshold)
+			{
+				Following = true;
+				_upwardPixels = 0;
+			}
+		}
 	}
 
 	private void OnScrollChanged()
@@ -61,17 +126,24 @@ internal sealed class ConversationScroll : IDisposable
 				{
 					// Reaching the end is always an instruction to follow, even when a virtualized
 					// extent grew during the drag that brought the reader here.
-					Following = true;
+					Following = !_followSuspended;
+					_upwardPixels = 0;
 				}
-				else if (offsetDelta < -0.5)
+				else if (offsetDelta < -0.5 && maximumDelta <= 0.5 &&
+					!(_upwardJitter && Environment.TickCount64 - _lastUpwardInputAt <= 250))
 				{
-					// Any upward movement is reading intent, whatever the extent did at the same time.
+					// Upward movement with a stable extent is reading intent. Extent growth in the
+					// same frame is a virtualizer anchor correction (rows above re-measured); the
+					// reader's own wheel, key and scrollbar gestures set the intent explicitly, so
+					// layout must not silently cancel following here. A sub-threshold trackpad
+					// jitter is still the same input, not a new reading position.
 					Following = false;
 				}
 				else if (Math.Abs(maximumDelta) <= 0.5 && Math.Abs(offsetDelta) > 0.5)
 				{
 					// A manual move while the extent is stable: follow only if it settled at the end.
-					Following = maximum - offset <= EndThreshold;
+					Following = !_followSuspended && maximum - offset <= EndThreshold;
+					if (Following) _upwardPixels = 0;
 				}
 				// Extent growth with the offset unchanged (or increased by anchor correction) leaves
 				// the current intent alone. Content growth must not cancel a reader's follow request.
@@ -116,6 +188,24 @@ internal sealed class ConversationScroll : IDisposable
 				_view.InvalidateArrange();
 				QueueFollow(attempt + 1);
 			}
+		});
+	}
+
+	/// <summary>
+	/// Republishes the scroll extent once layout has settled. A row that grew during arrange updates
+	/// the virtualizer's height cache after the owner published its metrics; without this the bar
+	/// maximum stays at the pre-growth value until the reader scrolls.
+	/// </summary>
+	internal void SyncExtentAfterLayout() => _smooth.SyncExtent();
+
+	private void QueueExtentSync()
+	{
+		if (_extentSyncQueued || !Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
+		_extentSyncQueued = true;
+		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+		{
+			_extentSyncQueued = false;
+			if (!_disposed) _smooth.SyncExtent();
 		});
 	}
 
@@ -173,7 +263,13 @@ internal sealed class ConversationScroll : IDisposable
 	{
 		// Ensure a fixed-size viewport republishes new content metrics after the next measure pass.
 		_view.InvalidateArrange();
-		if (!Following) return;
+		if (!Following)
+		{
+			// 浏览时行高增长只改变滚动范围（滚动条长度与可滚到的末尾），阅读位置本身不动：
+			// 布局落定后把虚拟化 extent 重新发布一次，滚动条不会停在增长前的旧范围上。
+			QueueExtentSync();
+			return;
+		}
 		// Jump once now for the common case, then ask for one more pass after layout. A virtualized
 		// row can only publish its grown height during arrange, so the first jump may still land on
 		// the previous extent.
@@ -184,7 +280,10 @@ internal sealed class ConversationScroll : IDisposable
 	public void ScrollToLatest()
 	{
 		_readingAnchor = null;
+		_followSuspended = false;
 		Following = true;
+		_upwardPixels = 0;
+		_upwardJitter = false;
 		// 远端行还没被测量时，末端只是估算；先重排再滚，落位后由 QueueFollow 收敛到真正的末尾。
 		_view.InvalidateArrange();
 		_smooth.ScrollToEnd();
@@ -197,6 +296,8 @@ internal sealed class ConversationScroll : IDisposable
 	{
 		_readingAnchor = null;
 		Following = false;
+		_upwardPixels = 0;
+		_upwardJitter = false;
 		_smooth.Stop();
 	}
 
@@ -208,6 +309,7 @@ internal sealed class ConversationScroll : IDisposable
 		_readingAnchor = null;
 		_view.ScrollChanged -= OnScrollChanged;
 		_smooth.VerticalInput -= OnVerticalInput;
+		if (_smooth.VerticalBar is { } bar) bar.MouseDown -= OnScrollBarPointer;
 		_smooth.Dispose();
 	}
 }

@@ -11,7 +11,8 @@ namespace PiWeft.Desktop;
 public sealed class FileBrowserView
 {
 	private readonly Func<string> _cwd;
-	private readonly StackPanel _list = new();
+	private readonly ItemsControl _list = new();
+	private readonly TextBlock _empty = new();
 	private readonly MultiLineTextBox _editor = new();
 	private readonly TextBlock _title = new();
 	private readonly Button _save;
@@ -27,7 +28,13 @@ public sealed class FileBrowserView
 	public FileBrowserView(Func<string> cwd)
 	{
 		_cwd = cwd;
-		_list.Spacing(1);
+		// 目录可能有上千个条目：只实现视口附近的行，虚拟化行复用按钮与文本控件。
+		_list.FixedHeightPresenter(28).ItemPadding(Thickness.Zero).BorderThickness(0)
+			.Background(AppTheme.Transparent).Padding(Thickness.Zero).SmoothScrolling();
+		_list.ItemTemplate = new DelegateTemplate<FileRow>(
+			_ => RowView(),
+			(view, row, _, _) => BindRow((Button)view, row));
+		_empty.FontSize(AppTheme.FontSizeCaption).MutedText().IsVisible(false);
 
 		// 顶栏是唯一的位置提示：列表模式显示目录，编辑模式显示文件；完整路径放悬停提示。
 		_title.FontFamily(AppTheme.MonoFont)
@@ -59,10 +66,7 @@ public sealed class FileBrowserView
 
 		_listHost = new Border()
 			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0))
-			.Child(new ScrollViewer().SmoothScrolling()
-				.Content(_list)
-				.AutoVerticalScroll()
-				.NoHorizontalScroll());
+			.Child(new Grid().Children(_list, _empty.VerticalAlignment(VerticalAlignment.Top)));
 
 		_editorHost = new Border()
 			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))
@@ -98,83 +102,81 @@ public sealed class FileBrowserView
 			_title.HoverTip(_relativeDir.Length == 0 ? cwd : Path.Combine(cwd, _relativeDir));
 		}
 
-		foreach (var child in _list.Children.ToArray())
-		{
-			UiLifetime.Release(child);
-		}
-
-		_list.Clear();
-
+		var rows = new List<FileRow>();
 		if (_relativeDir.Length > 0)
 		{
-			_list.Children(Row("\u2191", Strings.FileBrowserParent, string.Empty, () => Navigate(ParentOf(_relativeDir))));
+			rows.Add(new FileRow("\u2191", Strings.FileBrowserParent, string.Empty, string.Empty));
 		}
 
 		var entries = ProjectFiles.List(cwd, _relativeDir, GitStatuses(cwd));
-		if (entries.Count == 0)
-		{
-			_list.Children(new TextBlock().Text(Strings.FileBrowserEmpty).FontSize(AppTheme.FontSizeCaption).MutedText());
-			return;
-		}
-
 		foreach (var entry in entries)
 		{
-			var captured = entry;
-			_list.Children(Row(
+			rows.Add(new FileRow(
 				entry.IsDirectory ? "\u25b8" : " ",
 				entry.Name + (entry.IsDirectory ? "/" : string.Empty),
 				entry.Status,
-				() =>
-				{
-					if (captured.IsDirectory)
-					{
-						Navigate(captured.RelativePath);
-					}
-					else
-					{
-						OpenFile(captured.RelativePath);
-					}
-				}));
+				entry.RelativePath));
+		}
+
+		_list.ItemsSource = ItemsView.Create(rows, static row => row.Name);
+		_list.IsVisible(rows.Count > 0);
+		_empty.Text(Strings.FileBrowserEmpty).IsVisible(rows.Count == 0);
+		// 进入目录/刷新是换一份列表，从顶部开始；同一目录的手动刷新也回到顶部。
+		_list.SetScrollOffsets(0, 0);
+	}
+
+	/// <summary>虚拟化行的骨架：前缀、名称、Git 状态只建一次，绑定只改文本。</summary>
+	private Button RowView()
+	{
+		var prefix = new TextBlock().FontSize(AppTheme.FontSizeMicro).Width(12).AccentText();
+		var name = new TextBlock().FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeCaption)
+			.MutedText().TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis);
+		var status = new TextBlock().FontSize(AppTheme.FontSizeMicro).AccentText()
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(AppTheme.Space2, 0, 0, 0)).IsVisible(false).DockRight();
+		var parts = new RowParts(prefix, name, status);
+		var button = new Button()
+			.StyleName(AppStyles.GhostButton)
+			.Padding(new Thickness(AppTheme.Space2, 4, AppTheme.Space2, 4))
+			.OnClick(() => Activate(parts.Row));
+		button.Tag = parts;
+		button.Content(new DockPanel().LastChildFill().Children(status, prefix.DockLeft(), name));
+		return button;
+	}
+
+	private static void BindRow(Button button, FileRow row)
+	{
+		var parts = (RowParts)button.Tag!;
+		parts.Row = row;
+		parts.Prefix.Text(row.Prefix);
+		parts.Name.Text(row.Name);
+		parts.Status.Text(row.Status).IsVisible(row.Status.Length > 0);
+		button.HoverTip(row.Name);
+	}
+
+	private void Activate(FileRow? row)
+	{
+		if (row is null) return;
+		if (row.RelativePath.Length == 0)
+		{
+			Navigate(ParentOf(_relativeDir));
+		}
+		else if (row.Name.EndsWith('/'))
+		{
+			Navigate(row.RelativePath);
+		}
+		else
+		{
+			OpenFile(row.RelativePath);
 		}
 	}
 
-	/// <summary>一行一个条目：前缀图标、名称撑满、Git 状态贴在右缘。</summary>
-	private static UIElement Row(string prefix, string name, string status, Action onClick)
+	/// <summary>一行一个条目：父目录（空路径）、目录（名称以 / 结尾）或文件。</summary>
+	private sealed record FileRow(string Prefix, string Name, string Status, string RelativePath);
+
+	private sealed record RowParts(TextBlock Prefix, TextBlock Name, TextBlock Status)
 	{
-		var content = new DockPanel().LastChildFill();
-
-		if (status.Length > 0)
-		{
-			content.Children(new TextBlock()
-				.Text(status)
-				.FontSize(AppTheme.FontSizeMicro)
-				.AccentText()
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Margin(new Thickness(AppTheme.Space2, 0, 0, 0))
-				.DockRight());
-		}
-
-		content.Children(
-			new TextBlock()
-				.Text(prefix)
-				.FontSize(AppTheme.FontSizeMicro)
-				.Width(12)
-				.AccentText()
-				.DockLeft(),
-			new TextBlock()
-				.Text(name)
-				.FontFamily(AppTheme.MonoFont)
-				.FontSize(AppTheme.FontSizeCaption)
-				.MutedText()
-				.TextWrapping(TextWrapping.NoWrap)
-				.TextTrimming(TextTrimming.CharacterEllipsis));
-
-		// 列表行用导航行样式：默认不铺底，悬停才浮起一层，窄面板里不会堆成一排卡片。
-		return new Button()
-			.StyleName(AppStyles.GhostButton)
-			.Padding(new Thickness(AppTheme.Space2, 4, AppTheme.Space2, 4))
-			.OnClick(onClick)
-			.Content(content);
+		public FileRow? Row { get; set; }
 	}
 
 	/// <summary>Git 状态标记：相对路径 → 单字状态。</summary>

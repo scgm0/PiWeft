@@ -394,4 +394,53 @@ public sealed class SmoothScrollTests
 		Layout(view);
 		Assert.Equal(clamped, view.VerticalOffset);
 	}
+
+	[Fact]
+	public void KeyboardScrollingMovesTheViewportAndLeavesHandledKeysAlone()
+	{
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+		var pageDown = new KeyEventArgs(Key.PageDown, 0);
+		typeof(UIElement).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(view, [pageDown]);
+		Assert.True(pageDown.Handled);
+		Assert.True(smooth.IsAnimating);
+		Settle(smooth);
+		Assert.True(view.VerticalOffset > 0);
+
+		var end = new KeyEventArgs(Key.End, 0);
+		typeof(UIElement).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(view, [end]);
+		Assert.True(end.Handled);
+		Settle(smooth);
+		Assert.Equal(smooth.MaxVerticalOffset, view.VerticalOffset, 1);
+
+		var before = view.VerticalOffset;
+		var handled = new KeyEventArgs(Key.Up, 0) { Handled = true };
+		typeof(UIElement).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(view, [handled]);
+		Assert.Equal(before, view.VerticalOffset);
+	}
+
+	[Fact]
+	public void KeyboardScrollingUpdatesTheConversationFollowIntent()
+	{
+		var view = View();
+		using var conversation = new ConversationScroll(view, _ => { });
+		Layout(view);
+		var smooth = SmoothScroll.For(view);
+		smooth.JumpToEnd();
+		Assert.True(conversation.Following);
+
+		var pageUp = new KeyEventArgs(Key.PageUp, 0);
+		typeof(UIElement).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(view, [pageUp]);
+		Assert.False(conversation.Following);
+
+		var end = new KeyEventArgs(Key.End, 0);
+		typeof(UIElement).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(view, [end]);
+		Assert.True(conversation.Following);
+	}
 }

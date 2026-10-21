@@ -23,6 +23,8 @@ public sealed partial class SessionTab : IDisposable
 	private Task _pendingSend = Task.CompletedTask;
 	private Task _pendingPaste = Task.CompletedTask;
 	private CancellationTokenSource? _compactionAbort;
+	private readonly Lock _sendAbortGate = new();
+	private CancellationTokenSource? _sendAbort;
 	private readonly ItemsControl _messages;
 	private readonly ScrollViewer _scroll;
 	private readonly ConversationScroll _conversationScroll;
@@ -65,6 +67,9 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Dictionary<string, string> _extensionStatuses = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, IReadOnlyList<string>> _extensionWidgets = new(StringComparer.Ordinal);
 	private string _filter = string.Empty;
+	// 开始搜索前读者所在的行：清空过滤后回到原位置，而不是被重新投影的列表甩到末尾。
+	private ConversationTimeline.ReadingPoint _filterAnchor;
+	private bool _filterWasFollowing;
 	private IReadOnlyList<ChatEntry>? _projectedSource;
 	private IReadOnlyList<ChatEntry> _projectedRows = [];
 	private readonly ExecutionProcessProjector _projector = new();
@@ -461,11 +466,7 @@ public sealed partial class SessionTab : IDisposable
 			.Placeholder(Strings.SearchInSession)
 			.Width(240)
 			.IsVisible(false)
-			.OnTextChanged(_ =>
-			{
-				_filter = _searchBox.Text?.Trim() ?? string.Empty;
-				Render();
-			})
+			.OnTextChanged(_ => ApplyFilter(_searchBox.Text?.Trim() ?? string.Empty))
 			.OnKeyDown(key =>
 			{
 				if (key.Key == Key.Escape)
@@ -710,6 +711,7 @@ public sealed partial class SessionTab : IDisposable
 		// 用户主动关闭走 CloseAsync，会等这轮收尾落盘。
 		try
 		{
+			CancelPendingSend();
 			Session.Abort();
 		}
 		catch (ObjectDisposedException)
@@ -731,6 +733,7 @@ public sealed partial class SessionTab : IDisposable
 		{
 			if (IsStreaming)
 			{
+				CancelPendingSend();
 				Session.Abort();
 				await _pendingSend.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(true);
 			}
@@ -791,6 +794,7 @@ public sealed partial class SessionTab : IDisposable
 		if (_sending || _chat.IsStreaming)
 		{
 			_compactionAbort?.Cancel();
+			CancelPendingSend();
 			_chat.Abort();
 			return;
 		}
@@ -894,6 +898,13 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_sending = true;
+		var sendAbort = new CancellationTokenSource();
+		lock (_sendAbortGate)
+		{
+			_sendAbort = sendAbort;
+		}
+
+		var cancellationToken = sendAbort.Token;
 		string? failure = null;
 		Render();
 		StateChanged?.Invoke(this);
@@ -902,7 +913,10 @@ public sealed partial class SessionTab : IDisposable
 		{
 			// 发送前自动打一个检查点（每仓库每分钟最多一次，且工作区有改动才打），
 			// 让模型的改动可以回滚；快照走后台，避免阻塞界面。
-			await Task.Run(() => Checkpoints.AutoSnapshot(Session.Cwd, TimeSpan.FromMinutes(1))).ConfigureAwait(false);
+			await Task.Run(() => Checkpoints.AutoSnapshot(Session.Cwd, TimeSpan.FromMinutes(1)), cancellationToken).ConfigureAwait(false);
+			// 检查点期间用户也可能按下中断：此时 agent 还没开始，必须在这里就停下，
+			// 否则中断按钮看似生效，消息仍会在快照结束后发出去。
+			cancellationToken.ThrowIfCancellationRequested();
 
 			// 编辑重发：先回到原提问之前（新会话文件），再发送修改后的内容。
 			if (_pendingBranchEntryId is { Length: > 0 } branchId)
@@ -922,11 +936,11 @@ public sealed partial class SessionTab : IDisposable
 				_attachments.Clear();
 				Dispatch(RefreshAttachments);
 
-				await Session.PromptAsync(message).ConfigureAwait(false);
+				await Session.PromptAsync(message, cancellationToken).ConfigureAwait(false);
 			}
 			else
 			{
-				await _chat.SendAsync(text).ConfigureAwait(false);
+				await _chat.SendAsync(text, cancellationToken).ConfigureAwait(false);
 			}
 		}
 		catch (OperationCanceledException)
@@ -939,6 +953,15 @@ public sealed partial class SessionTab : IDisposable
 		}
 		finally
 		{
+			lock (_sendAbortGate)
+			{
+				if (ReferenceEquals(_sendAbort, sendAbort))
+				{
+					_sendAbort = null;
+				}
+			}
+
+			sendAbort.Dispose();
 			Dispatch(() =>
 			{
 				_sending = false;
@@ -959,8 +982,37 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
+	/// <summary>取消发送前的准备工作（检查点、分支切换等），并让正在进行的运行收到取消信号。</summary>
+	private void CancelPendingSend()
+	{
+		CancellationTokenSource? cancellation;
+		lock (_sendAbortGate)
+		{
+			cancellation = _sendAbort;
+		}
+
+		if (cancellation is null)
+		{
+			return;
+		}
+
+		try
+		{
+			cancellation.Cancel();
+		}
+		catch (ObjectDisposedException)
+		{
+			// 发送刚好结束并释放了 CTS。
+		}
+	}
+
 	/// <summary>展开/收起会话内搜索框（供无人值守的界面演练调用）。</summary>
 	public void ToggleSearchFromSmoke() => ToggleSearch();
+
+	/// <summary>测试入口：走与输入框相同的过滤路径。</summary>
+	internal void SetFilterFromTests(string value) => _searchBox.Text = value;
+	internal ConversationTimeline TimelineFromTests => _timeline;
+	internal bool FollowingFromTests => _conversationScroll.Following;
 
 	/// <summary>只切 opacity，保留悬浮按钮的布局位置，避免隐藏期间布局变化后图标与底分离。</summary>
 	private void SetScrollToLatestVisible(bool visible)
@@ -1077,17 +1129,62 @@ public sealed partial class SessionTab : IDisposable
 			return;
 		}
 
-		_searchBox.Text = string.Empty;
-		_filter = string.Empty;
-		Render();
+		// 输入框的文本变化会走 ApplyFilter，清空后恢复到搜索前的阅读位置。
+		if (_searchBox.Text is { Length: > 0 }) _searchBox.Text = string.Empty;
+		else ApplyFilter(string.Empty);
 	}
 
-	/// <summary>一条聊天记录是否命中当前过滤关键字（正文或工具名）。</summary>
-	private static bool Matches(ChatEntry entry, string filter) =>
+	/// <summary>
+	/// 会话内过滤是显式搜索：进入时取消跟底并回到第一条命中，清空时回到搜索前的行（或末尾）。
+	/// 否则虚拟化列表按旧偏移重新投影，读者会落在与搜索无关的位置。
+	/// </summary>
+	private void ApplyFilter(string next)
+	{
+		if (string.Equals(next, _filter, StringComparison.Ordinal)) return;
+		var entering = _filter.Length == 0 && next.Length > 0;
+		var leaving = _filter.Length > 0 && next.Length == 0;
+		if (entering)
+		{
+			_filterAnchor = _timeline.CurrentReadingAnchor();
+			_filterWasFollowing = _conversationScroll.Following;
+		}
+
+		_filter = next;
+		if (next.Length > 0)
+		{
+			_conversationScroll.FollowSuspended = true;
+			_conversationScroll.Browse();
+			Render();
+			// 过滤后的第一行才是搜索结果的开头；不沿用旧偏移，也不追随原会话末尾。
+			_timeline.JumpToRow(0);
+			return;
+		}
+
+		_conversationScroll.FollowSuspended = false;
+		Render();
+		if (!leaving) return;
+		if (_filterWasFollowing)
+		{
+			_conversationScroll.ScrollToLatest();
+		}
+		else if (_timeline.IndexOfEntryId(_filterAnchor.EntryId) is var index && index >= 0)
+		{
+			_conversationScroll.Browse();
+			_timeline.JumpToRow(index, _filterAnchor.WithinRow);
+		}
+		_filterAnchor = default;
+	}
+
+	/// <summary>
+	/// 一条聊天记录是否命中当前过滤关键字（正文、思考、工具名，以及执行过程里的步骤）。
+	/// 过程组行本身不带正文，不展开成员会让工具输出成为搜索盲区。
+	/// </summary>
+	internal static bool Matches(ChatEntry entry, string filter) =>
 		filter.Length == 0 ||
 		entry.Text.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
 		entry.Thinking.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
-		(entry.ToolName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false);
+		(entry.ToolName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false) ||
+		entry.ProcessEntries.Any(member => Matches(member, filter));
 
 	/// <summary>切到分支树视图。</summary>
 	public void ShowBranches() => ShowView(showChat: false);

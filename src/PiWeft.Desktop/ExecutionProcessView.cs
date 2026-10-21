@@ -8,6 +8,7 @@ internal sealed class ExecutionProcessView
 {
 	private readonly Func<ChatEntry, UIElement> _create;
 	private readonly TextFocusScrollGuard? _focus;
+	private bool _metricsQueued;
 	private readonly TextBlock _header = new();
 	private readonly WrapPanel _stats = new();
 	private readonly StackPanel _toolStat;
@@ -89,6 +90,60 @@ internal sealed class ExecutionProcessView
 	}
 
 	public Border View { get; }
+
+	/// <summary>
+	/// The step list only re-measures rows while arranging, and an ancestor that was already
+	/// measure-dirty leaves the arrange clean — a row that grows (expanded step, streaming thinking)
+	/// would then keep its old height and the body would neither grow nor scroll to it. Invalidate the
+	/// arrange of every open body and republish the virtualized extent once layout has settled.
+	/// </summary>
+	private void KickBodyLayout()
+	{
+		foreach (var viewport in BodyViewports())
+		{
+			viewport.InvalidateArrange();
+			// ScrollViewer itself is not an invalidation host: the presenter (virtualized) or the
+			// stack panel inside it must be arrange-dirty too, or it keeps its previous arrange.
+			viewport.Content?.InvalidateArrange();
+		}
+		if (_metricsQueued || !Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
+		_metricsQueued = true;
+		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+		{
+			_metricsQueued = false;
+			SyncBodyMetrics();
+		});
+	}
+
+	/// <summary>Republishes each open body's extent and keeps a growth-following body pinned to its end.</summary>
+	internal void SyncBodyMetrics()
+	{
+		foreach (var viewport in BodyViewports())
+		{
+			viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
+			if (SmoothScroll.Find(viewport) is { IsFollowingGrowth: true } smooth) smooth.FollowGrowth();
+		}
+	}
+
+	private List<ScrollViewer> BodyViewports()
+	{
+		var viewports = new List<ScrollViewer>();
+		Collect(View);
+		return viewports;
+
+		void Collect(Element element)
+		{
+			if (element is ScrollViewer viewport)
+			{
+				if (viewport.IsVisible && viewport.Bounds.Height > 0) viewports.Add(viewport);
+				return;
+			}
+			if (element is not IVisualTreeHost host) return;
+			var children = new List<Element>();
+			host.VisitChildren(child => { children.Add(child); return true; });
+			foreach (var child in children) Collect(child);
+		}
+	}
 	public IReadOnlyDictionary<string, bool> State
 	{
 		get
@@ -261,6 +316,9 @@ internal sealed class ExecutionProcessView
 		// 展开/收起步骤后把它的预览行固定在原屏幕位置，而不是滚向内容末尾。
 		Grid? anchorRow = null;
 		double anchorOffset = 0;
+		// 流式思考/正文只原位更新已实现的那一行，不向虚拟化器发 Replace：
+		// Replace 会把该行已测高度作废成估算值，组体 extent 先缩后涨，看起来就是进度跳变。
+		var inPlaceRows = new List<int>();
 		// 组头与 PiDeck 过程组同构：类别图标 + 主文案 + 「·」+ 等宽实时详情；运行时图标走强调色。
 		var icon = AppIcons.Icon("terminal", AppStyles.RoleSubtle, 13);
 		var label = new TextBlock().FontSize(AppTheme.FontSizeCaption).SubtleText()
@@ -343,11 +401,7 @@ internal sealed class ExecutionProcessView
 				.Height(bodyMaxHeight);
 			list.ItemTemplate = new DelegateTemplate<ChatEntry>(
 				_ => StepRowHost(),
-				(host, entry, index, _) => BindStep((Grid)host, entry, index, key, expanded =>
-				{
-					if (expanded && entry.Role == ChatRole.Tool) StopGroupFollow();
-					InvalidateRow((Grid)host, expanded);
-				}),
+				(host, entry, index, _) => BindStepRow((Grid)host, entry, index),
 				(host, _, _, _) => UnbindStep((Grid)host, key));
 			((IVisualTreeHost)list).VisitChildren(child =>
 			{
@@ -394,17 +448,20 @@ internal sealed class ExecutionProcessView
 			for (var index = 0; index < members.Count; index++)
 			{
 				var row = StepRowHost();
-				var entry = members[index];
-				BindStep(row, entry, index, key, expanded =>
-				{
-					if (expanded && entry.Role == ChatRole.Tool) StopGroupFollow();
-					InvalidateRow(row, expanded);
-				});
+				BindStepRow(row, members[index], index);
 				stack.Children(row);
-				stackEntries.Add(entry);
+				stackEntries.Add(members[index]);
 				stackHosts.Add(row);
 			}
 		}
+
+		/// <summary>步骤行的绑定入口：展开/收起只重测这一行并让它的预览行停在原地。</summary>
+		void BindStepRow(Grid row, ChatEntry entry, int index) =>
+			BindStep(row, entry, index, key, expanded =>
+			{
+				if (expanded && entry.Role == ChatRole.Tool) StopGroupFollow();
+				InvalidateRow(row, expanded);
+			});
 
 		/// <summary>同步栈里的步骤行；同一位置的步骤只更新内容，不重建行。</summary>
 		void SyncStackRows()
@@ -439,14 +496,8 @@ internal sealed class ExecutionProcessView
 			{
 				// BindStep 遇到相同内容会直接返回；流式更新则保留展开状态原地更新。
 				// 注意：不能把循环变量 index 带进回调；展开回调在循环结束后才触发，会拿到越界索引。
-				var row = stackHosts[index];
-				var entry = members[index];
-				BindStep(row, entry, index, key, expanded =>
-				{
-					if (expanded && entry.Role == ChatRole.Tool) StopGroupFollow();
-					InvalidateRow(row, expanded);
-				});
-				stackEntries[index] = entry;
+				BindStepRow(stackHosts[index], members[index], index);
+				stackEntries[index] = members[index];
 			}
 		}
 
@@ -517,8 +568,52 @@ internal sealed class ExecutionProcessView
 
 		void SyncRows()
 		{
-			if (list is not null) rows?.Set(members);
+			if (list is not null)
+			{
+				inPlaceRows.Clear();
+				rows?.Set(members, inPlaceRows);
+				// 原位更新的行不经过 ItemsChange，因此虚拟化器不会重新绑定它们；
+				// 这里直接更新已实现的宿主，保留各自的已测高度。
+				for (var i = 0; i < inPlaceRows.Count; i++)
+				{
+					var index = inPlaceRows[i];
+					if (index >= members.Count || RealizedRow(index) is not { } row) continue;
+
+					ConversationTimeline.InvalidateMeasureTree(row);
+					BindStepRow(row, members[index], index);
+				}
+			}
 			else SyncStackRows();
+			// 流式思考/正文在组体里增长时同样要走 arrange 重测，否则行高停在展开时的那一版。
+			if (body is not null) KickBodyLayout();
+		}
+
+		/// <summary>当前虚拟化器已实现的宿主；行滚出视口会被回收，因此只用于原位更新时查找。</summary>
+		Grid? RealizedRow(int index)
+		{
+			if (list is null) return null;
+			Grid? found = null;
+			Visit(list);
+			return found;
+
+			void Visit(Element element)
+			{
+				if (found is not null) return;
+				// 只认容器层：不要为了找一个索引把每一行的正文/Markdown 子树都走一遍。
+				if (element is ItemContainer container)
+				{
+					if (container.Index == index) found = container.Content as Grid;
+					return;
+				}
+				if (element is not IVisualTreeHost host) return;
+				var children = new List<Element>();
+				host.VisitChildren(child => { children.Add(child); return true; });
+				foreach (var child in children)
+				{
+					Visit(child);
+					if (found is not null) return;
+				}
+			}
 		}
 
 		/// <summary>步骤行展开/收起改变了行高：重测这一行，并让它的预览行停在原地。</summary>
@@ -527,8 +622,8 @@ internal sealed class ExecutionProcessView
 			if (body is null) return;
 			ConversationTimeline.InvalidateMeasureTree(row);
 			list?.InvalidateMeasure();
-			// 栈布局靠内容测量更新组体高度，虚拟化列表靠重算行高缓存更新 extent；两者都先刷新一次滚动范围。
-			viewport?.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
+			// 栈布局靠内容测量更新组体高度，虚拟化列表靠 arrange 重测行高并重算 extent。
+			KickBodyLayout();
 			// 自动跟底（流式思考/最新组）优先：此时读者看的就是内容末尾，不应该把视口钉回标题。
 			var following = viewport is not null && SmoothScroll.Find(viewport)?.IsFollowingGrowth == true;
 			anchorRow = following ? null : row;
@@ -804,7 +899,7 @@ internal sealed class ExecutionProcessView
 	/// <summary>组内步骤的虚拟化数据源：只为视口建行，尾部变化用 Replace 而不是整表重置。</summary>
 	private sealed class StepRows : IItemsView
 	{
-		private IReadOnlyList<ChatEntry> _items = [];
+		private readonly List<ChatEntry> _items = [];
 
 		public int Count => _items.Count;
 		public Func<object?, object?>? KeySelector { get; } =
@@ -816,38 +911,111 @@ internal sealed class ExecutionProcessView
 		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
 
 		/// <summary>丢弃内容但不通知：调用方正在销毁整个列表。</summary>
-		public void Reset() => _items = [];
+		public void Reset() => _items.Clear();
 
-		public void Set(IReadOnlyList<ChatEntry> items)
+		/// <summary>
+		/// 更新步骤列表。<paramref name="inPlace"/> 收集只原位更新、不向虚拟化器发通知的索引；
+		/// 调用方随后直接重绑这些已实现行的内容。
+		/// </summary>
+		public void Set(IReadOnlyList<ChatEntry> items, List<int>? inPlace = null)
 		{
-			var previous = _items;
-			_items = items;
-			if (previous.Count == 0)
+			inPlace?.Clear();
+			var previousCount = _items.Count;
+			if (previousCount == 0)
 			{
+				_items.AddRange(items);
 				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, items.Count));
 				return;
 			}
-			if (items.Count == previous.Count)
+			if (items.Count == previousCount)
 			{
-				// 流式时通常只有尾部一行变化：只重绑这一段，滚动位置与已测高度都留着。
-				var first = 0;
-				while (first < items.Count && ConversationTimeline.SameEntry(previous[first], items[first])) first++;
-				if (first == items.Count) return;
-				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, first, items.Count - first));
+				// 只重绑真正变化的连续行段：把“第一处差异一直到末尾”整段作废会让
+				// 后面未变化行的高度缓存回落成估算值，组体的滚动范围随之抖动。
+				var runStart = -1;
+				for (var index = 0; index < items.Count; index++)
+				{
+					var previous = _items[index];
+					var next = items[index];
+					if (ConversationTimeline.SameEntry(previous, next))
+					{
+						if (runStart >= 0)
+						{
+							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, index - runStart));
+							runStart = -1;
+						}
+						continue;
+					}
+
+					_items[index] = next;
+					if (CanUpdateInPlace(previous, next))
+					{
+						inPlace?.Add(index);
+						if (runStart >= 0)
+						{
+							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, index - runStart));
+							runStart = -1;
+						}
+					}
+					else if (runStart < 0)
+					{
+						runStart = index;
+					}
+				}
+				if (runStart >= 0) Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, items.Count - runStart));
 				return;
 			}
-			if (items.Count > previous.Count)
+			if (items.Count > previousCount)
 			{
-				var prefix = 0;
-				while (prefix < previous.Count && ConversationTimeline.SameEntry(previous[prefix], items[prefix])) prefix++;
-				if (prefix == previous.Count)
+				// 追加新步骤时，前缀里也可能同时有流式行在增长。先把前缀变化拆成
+				// 原位更新 / 局部 Replace，最后再发 Add：虚拟化器的 Add 会先扩高
+				// 度缓存并重映射已实现行，若先发 Replace，它会因计数未同步而整表
+				// ResetHeights，把前面所有已测行高打回估算值。
+				var replacements = new List<ItemsChange>();
+				var runStart = -1;
+				for (var index = 0; index < previousCount; index++)
 				{
-					Changed?.Invoke(new ItemsChange(ItemsChangeKind.Add, prefix, items.Count - prefix));
-					return;
+					var previous = _items[index];
+					var next = items[index];
+					if (ConversationTimeline.SameEntry(previous, next)) { Flush(index); continue; }
+
+					_items[index] = next;
+					if (CanUpdateInPlace(previous, next))
+					{
+						inPlace?.Add(index);
+						Flush(index);
+					}
+					else if (runStart < 0)
+					{
+						runStart = index;
+					}
+				}
+				Flush(previousCount);
+
+				for (var index = previousCount; index < items.Count; index++) _items.Add(items[index]);
+				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Add, previousCount, items.Count - previousCount));
+				foreach (var replacement in replacements) Changed?.Invoke(replacement);
+				return;
+
+				void Flush(int end)
+				{
+					if (runStart < 0) return;
+					replacements.Add(new ItemsChange(ItemsChangeKind.Replace, runStart, end - runStart));
+					runStart = -1;
 				}
 			}
+			_items.Clear();
+			_items.AddRange(items);
 			Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, items.Count));
 		}
+
+		/// <summary>
+		/// 流式助手步骤有持久视图，能原地吸收新的思考/正文，包括“流式行 → 落盘后的最终行”
+		/// （两者的 EntryId 会从临时的 live-assistant 变成会话条目 id，但时间戳与图片不变）。
+		/// 其余步骤改变内容时仍要重绑：工具行的摘要与展开体在创建时固定，不能靠 Update 追加。
+		/// </summary>
+		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
+			current.Role == ChatRole.Assistant && current.IsStreaming && next.Role == ChatRole.Assistant &&
+			current.Timestamp == next.Timestamp && current.Images.SequenceEqual(next.Images);
 	}
 
 	private sealed record Node(string Key, IReadOnlyList<ChatEntry> Entries, bool Group);

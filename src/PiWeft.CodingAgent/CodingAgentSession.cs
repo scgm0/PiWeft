@@ -150,6 +150,10 @@ public sealed class CodingAgentSession : IDisposable
 	/// <summary>退避等待的中止开关。</summary>
 	private CancellationTokenSource? _retryAbort;
 
+	/// <summary>整次运行（自动压缩、请求、重试退避）的中止开关。</summary>
+	private readonly Lock _abortGate = new();
+	private CancellationTokenSource? _runAbort;
+
 	/// <summary>RPC 的 <c>set_auto_retry</c> 覆盖值；为 null 时用设置里的默认。</summary>
 	private bool? _autoRetryOverride;
 	private bool _overflowRecoveryAttempted;
@@ -833,15 +837,92 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	public void Abort() => _agent.Abort();
+	public void Abort()
+	{
+		_agent.Abort();
+		CancelQuietly(_retryAbort);
+
+		CancellationTokenSource? run;
+		lock (_abortGate)
+		{
+			run = _runAbort;
+		}
+
+		// 自动压缩与重试退避期间 agent 本身并未流式运行，只取消 agent 不会停下这些阶段。
+		CancelQuietly(run);
+	}
 
 	/// <summary>中止当前运行并等到会话真正空闲，供 RPC 的 abort 命令使用。</summary>
 	public async Task AbortAsync(CancellationToken cancellationToken = default)
 	{
-		_agent.Abort();
-		while (_agent.IsStreaming && !cancellationToken.IsCancellationRequested)
+		Abort();
+		while (IsRunning && !cancellationToken.IsCancellationRequested)
 		{
 			await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+		}
+	}
+
+	/// <summary>是否有一次 Prompt/Continue 运行尚未收尾（含压缩与重试退避）。</summary>
+	public bool IsRunning
+	{
+		get
+		{
+			lock (_abortGate)
+			{
+				return _runAbort is not null;
+			}
+		}
+	}
+
+	private CancellationTokenSource BeginRun(CancellationToken cancellationToken)
+	{
+		var run = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		lock (_abortGate)
+		{
+			_runAbort = run;
+		}
+
+		return run;
+	}
+
+	private void EndRun(CancellationTokenSource run)
+	{
+		lock (_abortGate)
+		{
+			if (ReferenceEquals(_runAbort, run))
+			{
+				_runAbort = null;
+			}
+		}
+	}
+
+	/// <summary>
+	/// 外部调用方的取消令牌被取消时，即使本轮已经落定 aborted 消息并收尾，也把取消继续向上传递：
+	/// CLI 需要据此返回 130，桌面会用同一信号清掉发送状态。会话内部的 <see cref="Abort"/>（例如 RPC
+	/// 的 abort 命令）不会取消调用方令牌，因此仍按正常收尾返回。
+	/// </summary>
+	private static void ThrowIfCallerCancelled(CancellationToken cancellationToken)
+	{
+		if (cancellationToken.IsCancellationRequested)
+		{
+			throw new OperationCanceledException(cancellationToken);
+		}
+	}
+
+	private static void CancelQuietly(CancellationTokenSource? cancellation)
+	{
+		if (cancellation is null)
+		{
+			return;
+		}
+
+		try
+		{
+			cancellation.Cancel();
+		}
+		catch (ObjectDisposedException)
+		{
+			// 运行刚好收尾并释放了 CTS。
 		}
 	}
 
@@ -1865,13 +1946,23 @@ public sealed class CodingAgentSession : IDisposable
 		ThrowIfDisposed();
 		// 展开技能命令与提示词模板，让 CLI、RPC、桌面与交互模式共享同一语义。
 		var message = PrepareInput(text);
-		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
-		return await RunWithRetryAsync(
-			// 只有首次才追加用户消息；重试时它已经在投影里，再 PromptAsync 会写第二份进内存与 JSONL。
-			attempt => attempt == 0
-				? _agent.PromptAsync(message, cancellationToken)
-				: _agent.ContinueAsync(cancellationToken),
-			cancellationToken).ConfigureAwait(false);
+		using var run = BeginRun(cancellationToken);
+		try
+		{
+			await AutoCompactAsync(run.Token).ConfigureAwait(false);
+			var messages = await RunWithRetryAsync(
+				// 只有首次才追加用户消息；重试时它已经在投影里，再 PromptAsync 会写第二份进内存与 JSONL。
+				attempt => attempt == 0
+					? _agent.PromptAsync(message, run.Token)
+					: _agent.ContinueAsync(run.Token),
+				run.Token).ConfigureAwait(false);
+			ThrowIfCallerCancelled(cancellationToken);
+			return messages;
+		}
+		finally
+		{
+			EndRun(run);
+		}
 	}
 
 	// ------------------------------------------------------------ 自动重试
@@ -1889,7 +1980,7 @@ public sealed class CodingAgentSession : IDisposable
 	public bool IsRetrying => _retryAbort is not null;
 
 	/// <summary>中止正在进行的重试等待，对应 RPC 的 <c>abort_retry</c>。</summary>
-	public void AbortRetry() => _retryAbort?.Cancel();
+	public void AbortRetry() => CancelQuietly(_retryAbort);
 
 	private async Task<CompactionResult?> RunSummarizationWithRetryAsync(
 		Func<Task<CompactionResult?>> run,
@@ -2337,7 +2428,7 @@ public sealed class CodingAgentSession : IDisposable
 				// 把失败的那次尝试从投影里去掉（文件里保留）。
 				OmitFromContext(last);
 
-				using var abort = new CancellationTokenSource();
+				using var abort = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 				_retryAbort = abort;
 				try
 				{
@@ -2450,23 +2541,43 @@ public sealed class CodingAgentSession : IDisposable
 		ThrowIfDisposed();
 		_cacheWarmer?.Cancel();
 		_overflowRecoveryAttempted = false;
-		// 与字符串重载一致：先自动压缩，再按重试策略运行；重试同样走"继续"而不是重新提问。
-		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
-		return await RunWithRetryAsync(
-			attempt => attempt == 0
-				? _agent.PromptAsync(message, cancellationToken)
-				: _agent.ContinueAsync(cancellationToken),
-			cancellationToken).ConfigureAwait(false);
+		using var run = BeginRun(cancellationToken);
+		try
+		{
+			// 与字符串重载一致：先自动压缩，再按重试策略运行；重试同样走"继续"而不是重新提问。
+			await AutoCompactAsync(run.Token).ConfigureAwait(false);
+			var messages = await RunWithRetryAsync(
+				attempt => attempt == 0
+					? _agent.PromptAsync(message, run.Token)
+					: _agent.ContinueAsync(run.Token),
+				run.Token).ConfigureAwait(false);
+			ThrowIfCallerCancelled(cancellationToken);
+			return messages;
+		}
+		finally
+		{
+			EndRun(run);
+		}
 	}
 
 	public async Task<IReadOnlyList<Message>> ContinueAsync(CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
 		_cacheWarmer?.Cancel();
-		await AutoCompactAsync(cancellationToken).ConfigureAwait(false);
-		return await RunWithRetryAsync(
-			_ => _agent.ContinueAsync(cancellationToken),
-			cancellationToken).ConfigureAwait(false);
+		using var run = BeginRun(cancellationToken);
+		try
+		{
+			await AutoCompactAsync(run.Token).ConfigureAwait(false);
+			var messages = await RunWithRetryAsync(
+				_ => _agent.ContinueAsync(run.Token),
+				run.Token).ConfigureAwait(false);
+			ThrowIfCallerCancelled(cancellationToken);
+			return messages;
+		}
+		finally
+		{
+			EndRun(run);
+		}
 	}
 
 	/// <summary>排入一条消息，在当前工具批次结束后引导正在运行的代理。</summary>

@@ -354,7 +354,14 @@ public sealed class ChatViewModel : IDisposable
 		}
 		catch (OperationCanceledException)
 		{
-			// 用户主动中断属于正常操作，不当作错误展示。
+			// 用户主动中断属于正常操作，不当作错误展示；但必须清掉流式状态，
+			// 否则桌面会一直停在「中断」按钮上，后续消息也发不出去。
+			lock (_gate)
+			{
+				_isStreaming = false;
+				ResetStreaming();
+				Rebuild();
+			}
 		}
 		catch (Exception ex)
 		{
@@ -733,7 +740,7 @@ public sealed class ChatViewModel : IDisposable
 					});
 				}
 
-				if (assistant.ErrorMessage is { Length: > 0 } error)
+				if (assistant.StopReason == StopReason.Error && assistant.ErrorMessage is { Length: > 0 } error)
 				{
 					_entries.Add(new ChatEntry { Role = ChatRole.Error, Text = error });
 				}

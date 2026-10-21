@@ -88,12 +88,16 @@ internal static class FakeStreams
 /// <summary>A provider that answers with whatever the test queued.</summary>
 internal sealed class QueuedStreams
 {
-	private readonly Queue<Func<Model, AssistantMessageEventStream>> _responses = new();
+	private readonly Queue<Func<Model, StreamOptions, AssistantMessageEventStream>> _responses = new();
 
-	public void Enqueue(Func<Model, AssistantMessageEventStream> response) => _responses.Enqueue(response);
+	public void Enqueue(Func<Model, AssistantMessageEventStream> response) =>
+		_responses.Enqueue((model, _) => response(model));
+
+	public void Enqueue(Func<Model, StreamOptions, AssistantMessageEventStream> response) =>
+		_responses.Enqueue(response);
 
 	public AssistantMessageEventStream Invoke(Model model, IReadOnlyList<Message> messages, StreamOptions options) =>
-		_responses.Count > 0 ? _responses.Dequeue()(model) : FakeStreams.Text(model, "ok");
+		_responses.Count > 0 ? _responses.Dequeue()(model, options) : FakeStreams.Text(model, "ok");
 }
 
 public class ChatViewModelTests : IDisposable
@@ -113,18 +117,82 @@ public class ChatViewModelTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	private CodingAgentSession NewSession(SessionManager? manager = null) =>
+	private CodingAgentSession NewSession(SessionManager? manager = null, StreamFn? streamFn = null) =>
 		new(new CodingAgentSessionOptions
 		{
 			Cwd = _root,
 			Model = FakeStreams.Model(),
-			StreamFn = _streams.Invoke,
+			StreamFn = streamFn ?? _streams.Invoke,
 			ThinkingLevel = "off",
 			Session = manager ?? SessionManager.InMemory(_root),
 			Persist = false,
 			Skills = [],
 			Settings = new CodingAgentSettings(),
 		});
+
+	[Fact]
+	public async Task AbortStopsStreamingAndAllowsTheNextPrompt()
+	{
+		var model = FakeStreams.Model();
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var partial = new AssistantMessage
+		{
+			Api = model.Api,
+			Provider = model.Provider,
+			Model = model.Id,
+			Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+		};
+
+		_streams.Enqueue((streamModel, options) =>
+		{
+			var stream = new AssistantMessageEventStream();
+			stream.Push(new StartEvent { Partial = partial });
+			partial = partial with { Content = [new TextContent { Text = "half an answer" }] };
+			stream.Push(new TextDeltaEvent { ContentIndex = 0, Delta = "half an answer", Partial = partial });
+			started.TrySetResult();
+			_ = Task.Run(async () =>
+			{
+				try
+				{
+					await Task.Delay(Timeout.Infinite, options.CancellationToken);
+				}
+				catch (OperationCanceledException)
+				{
+					// 与真实 provider 一样在取消后补终止事件；阅读端可能已经先退出。
+					stream.Push(new ErrorEvent
+					{
+						Reason = StopReason.Aborted,
+						Partial = partial with { StopReason = StopReason.Aborted, ErrorMessage = "Request aborted" },
+					});
+				}
+			});
+			return stream;
+		});
+
+		using var session = NewSession();
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var send = viewModel.SendAsync("hello");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.True(viewModel.IsStreaming);
+
+		viewModel.Abort();
+		await send.WaitAsync(TimeSpan.FromSeconds(5));
+
+		// 中断后必须回到可发送状态，并且不把「用户主动中断」当作错误行。
+		Assert.False(viewModel.IsStreaming);
+		Assert.Contains(viewModel.Entries(), entry =>
+			entry.Role == ChatRole.Assistant && entry.Text.Contains("half an answer", StringComparison.Ordinal));
+		Assert.DoesNotContain(viewModel.Entries(), entry => entry.Role == ChatRole.Error);
+
+		_streams.Enqueue(streamModel => FakeStreams.Text(streamModel, "after abort"));
+		await viewModel.SendAsync("again").WaitAsync(TimeSpan.FromSeconds(5));
+
+		Assert.False(viewModel.IsStreaming);
+		Assert.Contains(viewModel.Entries(), entry =>
+			entry.Role == ChatRole.Assistant && entry.Text.Contains("after abort", StringComparison.Ordinal));
+	}
 
 	[Fact]
 	public void AssistantRowSummarizesFilesChangedThisTurn()

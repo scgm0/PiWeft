@@ -22,6 +22,7 @@ internal sealed class SmoothScroll : IDisposable
 
 	private Point _target;
 	private Point _lastOffset;
+	private double _lastMaximum;
 	private bool _toEnd;
 	private bool _disposed;
 	// 展开正在流式输出的内容（例如思考）后持续贴住内容末尾；读者自己滚动或显式结束即解除。
@@ -68,12 +69,14 @@ internal sealed class SmoothScroll : IDisposable
 		_verticalBar = verticalBar;
 		_horizontalBar = horizontalBar;
 		_lastOffset = Offset;
+		_lastMaximum = MaxVerticalOffset;
 		_clock.TickCallback = Advance;
 		view.MouseWheel += RouteWheel;
 		view.MouseDown += OnMouseDown;
 		view.KeyDown += OnKeyDown;
 		if (_viewport is not null) _viewport.ScrollChanged += OnScrollChanged;
 		if (_text is not null) _text.ScrollOffsetChanged += OnTextScrollChanged;
+		if (_verticalBar is not null) _verticalBar.MouseDown += OnScrollBarDown;
 	}
 
 	public static SmoothScroll For(ScrollViewer view) => Controllers.GetValue(view, static view => new SmoothScroll(view));
@@ -92,7 +95,10 @@ internal sealed class SmoothScroll : IDisposable
 	public bool IsFollowingGrowth => _followGrowth;
 	public double MaxVerticalOffset => Maximum(vertical: true);
 	public double TargetVerticalOffset => IsAnimating ? (_toEnd ? MaxVerticalOffset : _target.Y) : Offset.Y;
+	/// <summary>Wheel/keyboard scroll input in DIPs (positive = toward the end).</summary>
 	public event Action<double>? VerticalInput;
+	/// <summary>The scrollbar owned by this viewport, if any; its pointer gestures are reader intent.</summary>
+	internal ScrollBar? VerticalBar => _verticalBar;
 	private Point Offset => _text?.ScrollOffset ?? new Point(_viewport!.HorizontalOffset, _viewport.VerticalOffset);
 	private bool CanScrollHorizontally => _text is not null ? !_text.Wrap : _viewport!.HorizontalScroll != ScrollMode.Disabled;
 
@@ -159,7 +165,15 @@ internal sealed class SmoothScroll : IDisposable
 	/// </summary>
 	public void ScrollBy(double horizontal, double vertical)
 	{
+		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
+		ScrollByPixels(horizontal * step, vertical * step);
+	}
+
+	/// <summary>Scrolls by DIPs; used by the wheel after converting notches and by keyboard scrolling.</summary>
+	private void ScrollByPixels(double horizontal, double vertical)
+	{
 		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
+		if (horizontal == 0 && vertical == 0) return;
 		// 读者滚动会接管滚动位置：立即结束对内容增长的跟随，下一帧不再把他拉回末尾。
 		_followGrowth = false;
 		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
@@ -175,16 +189,16 @@ internal sealed class SmoothScroll : IDisposable
 		var x = horizontal * (pending.X - current.X) < 0 ? current.X : pending.X;
 		var y = vertical * (pending.Y - current.Y) < 0 ? current.Y : pending.Y;
 
-		var target = new Point(Math.Clamp(x + horizontal * step, 0, Maximum(false)),
-			Math.Clamp(y + vertical * step, 0, MaxVerticalOffset));
+		var target = new Point(Math.Clamp(x + horizontal, 0, Maximum(false)),
+			Math.Clamp(y + vertical, 0, MaxVerticalOffset));
 
 		// 触控板：增量本身就是高频连续的，浏览器（Chromium）对它 1:1 直接滚动、不做补间动画；
 		// 给每一小步都套 100ms+ 的缓动只会让手指和画面之间多出一段黏滞感。
-		if (Math.Max(Math.Abs(horizontal), Math.Abs(vertical)) < TrackpadNotchThreshold)
+		if (Math.Max(Math.Abs(horizontal), Math.Abs(vertical)) < TrackpadNotchThreshold * step)
 		{
 			Stop();
-			Apply(new Point(Math.Clamp(current.X + horizontal * step, 0, Maximum(false)),
-				Math.Clamp(current.Y + vertical * step, 0, MaxVerticalOffset)));
+			Apply(new Point(Math.Clamp(current.X + horizontal, 0, Maximum(false)),
+				Math.Clamp(current.Y + vertical, 0, MaxVerticalOffset)));
 		}
 		else
 		{
@@ -237,6 +251,13 @@ internal sealed class SmoothScroll : IDisposable
 	public void StopFollowingGrowth() => _followGrowth = false;
 
 	/// <summary>
+	/// Republishes the virtualized extent to the scroll owner. Rows measured during arrange update
+	/// the presenter's extent after the owner already published its metrics, so the bar maximum
+	/// (and therefore the reachable end) would otherwise stay at the pre-growth value.
+	/// </summary>
+	internal void SyncExtent() => SyncMetrics();
+
+	/// <summary>
 	/// Refreshes the viewport's extent metrics from its scroll content. <see cref="ScrollViewer"/>
 	/// only republishes a virtualized content extent during measure; a row that grew after that
 	/// leaves the bar maximum stale until the next offset write.
@@ -246,7 +267,12 @@ internal sealed class SmoothScroll : IDisposable
 		if (_viewport is null) return;
 		IsApplyingOffset = true;
 		try { _viewport.SetScrollOffsets(_viewport.HorizontalOffset, _viewport.VerticalOffset); }
-		finally { IsApplyingOffset = false; _lastOffset = Offset; }
+		finally
+		{
+			IsApplyingOffset = false;
+			_lastOffset = Offset;
+			_lastMaximum = MaxVerticalOffset;
+		}
 	}
 
 	private void Start(Point target, bool toEnd)
@@ -346,7 +372,12 @@ internal sealed class SmoothScroll : IDisposable
 				if (_verticalBar is not null) _verticalBar.Value = offset.Y;
 			}
 		}
-		finally { IsApplyingOffset = false; _lastOffset = Offset; }
+		finally
+		{
+			IsApplyingOffset = false;
+			_lastOffset = Offset;
+			_lastMaximum = MaxVerticalOffset;
+		}
 	}
 
 	private void OnScrollChanged()
@@ -356,20 +387,31 @@ internal sealed class SmoothScroll : IDisposable
 			// 跟底动画期间，布局可能把偏移夹回当前末端（行还没测完）；那不是读者接管滚动，
 			// 动画要继续重读末端并追下去。
 			_lastOffset = Offset;
+			_lastMaximum = MaxVerticalOffset;
 			return;
 		}
 		var offset = Offset;
-		// Scrollbar dragging, focus navigation and explicit offsets take ownership from an active animation.
+		var maximum = MaxVerticalOffset;
+		// 滚动条拖动、焦点导航与显式 SetScrollOffsets 接管了滚动位置：停止动画。
 		if (!IsApplyingOffset && offset != _lastOffset)
 		{
-			// 读者接管滚动：一次位移就足够结束对内容增长的跟随（含拖动滚动条与键盘滚动）。
-			_followGrowth = false;
-			Stop();
+			// 虚拟化行在 arrange 阶段被重新测高时，presenter 会请求一次锚点校正并把远端
+			// extent 一起改大。这属于布局，不是读者意图；若把它当成上滚，跟底会在第一帧
+			// 被静默取消，组体进度随即停在半路。只有 extent 没变的手工位移才算接管。
+			var extentChanged = Math.Abs(maximum - _lastMaximum) > 0.5;
+			if (!_followGrowth || !extentChanged)
+			{
+				_followGrowth = false;
+				Stop();
+			}
 		}
 		_lastOffset = offset;
+		_lastMaximum = maximum;
 		// 内容还在变高：布局期间不能改偏移，等这一帧发布完 extent 再落位。
-		if (_followGrowth && !IsApplyingOffset && MaxVerticalOffset - offset.Y > 0.5) QueueGrowthFollow();
+		if (_followGrowth && !IsApplyingOffset && maximum - offset.Y > 0.5) QueueGrowthFollow();
 	}
+
+	private void OnScrollBarDown(MouseEventArgs _) => StopFollowingGrowth();
 
 	/// <summary>把跟随增长的重夹排到布局之后；一帧里只排一次。</summary>
 	private void QueueGrowthFollow()
@@ -393,7 +435,39 @@ internal sealed class SmoothScroll : IDisposable
 
 	private void OnTextScrollChanged(Aprillz.MewUI.Text.ITextViewHost _) => OnScrollChanged();
 	private void OnMouseDown(MouseEventArgs args) { _followGrowth = false; Stop(); }
-	private void OnKeyDown(KeyEventArgs args) { _followGrowth = false; Stop(); }
+	private void OnKeyDown(KeyEventArgs args)
+	{
+		_followGrowth = false;
+		Stop();
+		// Ctrl+PageUp/PageDown are tab-navigation chords; a focused editor leaves them unhandled
+		// on purpose, so the viewport must not consume them either.
+		if (args.Handled || args.ControlKey) return;
+		// Only keys the focused control left unhandled reach the viewport: those really scroll it.
+		var viewportHeight = _viewport?.ViewportHeight ?? 0;
+		var line = 40.0;
+		var page = Math.Max(line, viewportHeight - line);
+		var target = args.Key switch
+		{
+			Key.Up => Offset.Y - line,
+			Key.Down => Offset.Y + line,
+			Key.PageUp => Offset.Y - page,
+			Key.PageDown => Offset.Y + page,
+			Key.Home => 0,
+			Key.End => MaxVerticalOffset,
+			_ => double.NaN,
+		};
+		if (double.IsNaN(target)) return;
+		var delta = target - Offset.Y;
+		if (Math.Abs(delta) < 0.5)
+		{
+			// Already at that edge. Still report the reader's direction so an explicit End/PageDown
+			// can re-lock following at the tail; leave the key itself for an ancestor viewport.
+			VerticalInput?.Invoke(args.Key is Key.Up or Key.PageUp or Key.Home ? -line : line);
+			return;
+		}
+		ScrollByPixels(0, delta);
+		args.Handled = true;
+	}
 	public void Stop() { _clock.Stop(); _toEnd = false; }
 
 	// 对于以时间为基准的物理循环，内置 Easing 提供恒等映射即可
@@ -439,6 +513,7 @@ internal sealed class SmoothScroll : IDisposable
 		_view.KeyDown -= OnKeyDown;
 		if (_viewport is not null) _viewport.ScrollChanged -= OnScrollChanged;
 		if (_text is not null) _text.ScrollOffsetChanged -= OnTextScrollChanged;
+		if (_verticalBar is not null) _verticalBar.MouseDown -= OnScrollBarDown;
 		Controllers.Remove(_view);
 	}
 }

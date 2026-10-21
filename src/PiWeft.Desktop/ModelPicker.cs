@@ -152,6 +152,8 @@ internal sealed class ModelPicker
 		_matches = [.. nodes.SelectMany(static node => node.Children)];
 		_index = 0;
 		_tree.SelectedNode = _matches.Count > 0 ? _matches[0] : null;
+		// 过滤重建后旧偏移会落在新列表的中段甚至末尾；搜索/刷新都要从第一行开始。
+		_tree.ScrollIntoView(0);
 		_count.Text(Strings.ModelResultCount(matches.Length, _snapshot.Count));
 		_tree.IsVisible(matches.Length > 0);
 		_empty.Text(_snapshot.Count == 0 ? Strings.ModelNoneAvailable : Strings.ModelNoMatch).IsVisible(matches.Length == 0);

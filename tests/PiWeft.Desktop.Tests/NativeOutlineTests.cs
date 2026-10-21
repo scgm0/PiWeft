@@ -67,7 +67,6 @@ public sealed class NativeOutlineTests(ITestOutputHelper output)
 		var state = "";
 		var preview = "";
 		var groupBody = "";
-		var olderSteps = "";
 		using var process = new Process { StartInfo = info };
 		process.OutputDataReceived += (_, args) =>
 		{
@@ -81,7 +80,6 @@ public sealed class NativeOutlineTests(ITestOutputHelper output)
 			if (line.StartsWith("outline-state:", StringComparison.Ordinal)) Volatile.Write(ref state, line[14..]);
 			if (line.StartsWith("outline-preview:", StringComparison.Ordinal)) Volatile.Write(ref preview, line[16..]);
 			if (line.StartsWith("group-body:", StringComparison.Ordinal)) Volatile.Write(ref groupBody, line[11..]);
-			if (line.StartsWith("older-steps:", StringComparison.Ordinal)) Volatile.Write(ref olderSteps, line[12..]);
 		};
 		try
 		{
@@ -117,22 +115,18 @@ public sealed class NativeOutlineTests(ITestOutputHelper output)
 			await Wait(() => Volatile.Read(ref groupBody).Length > 0, "expanded group body reports its viewport");
 			await Task.Delay(400);
 			await Screenshot("execution-compact");
-			// 组体装得下时滚轮穿透：会话必须滚动。
+			// 24 条步骤用内容驱动的栈布局，高度超过组体上限后组内可滚。
 			var body = Volatile.Read(ref groupBody).Split(',');
-			Assert.Equal(0, double.Parse(body[3]));
+			Assert.True(double.Parse(body[3]) > 0.5, $"group body should be scrollable at its top; max={body[3]}");
+			// 组体已在顶部：继续上滚应交给会话。
 			var outerBeforePass = int.Parse(State()[4]);
 			await Run("xdotool", "mousemove", "--sync", body[0], body[1]);
 			for (var step = 0; step < 4; step++) { await Run("xdotool", "click", "4"); await Task.Delay(40); }
-			await Wait(() => int.Parse(State()[4]) < outerBeforePass - 20, "a fitting group body passes the wheel through to the conversation");
-			// 回到最后一问（滚动过一段，布局已偏移），再展开更早的步骤让组体真的可滚。
+			await Wait(() => int.Parse(State()[4]) < outerBeforePass - 20, "at the group top the wheel passes through to the conversation");
+			// 回到最后一问，再向下滚：内层还有余量时必须只滚组体，会话不动。
 			await Run("xdotool", "mousemove", "--sync", points[23][1].ToString(), points[23][2].ToString());
 			await Run("xdotool", "click", "1");
-			await Task.Delay(900);
-			await Wait(() => Volatile.Read(ref olderSteps).Length > 0, "earlier-steps entry is reported");
-			var older = Volatile.Read(ref olderSteps).Split(',');
-			await Run("xdotool", "mousemove", "--sync", older[0], older[1]);
-			await Run("xdotool", "click", "1");
-			await Wait(() => double.Parse(Volatile.Read(ref groupBody).Split(',')[3]) > 0.5, "group body becomes scrollable");
+			await Wait(() => double.Parse(Volatile.Read(ref groupBody).Split(',')[3]) > 0.5, "group body is scrollable again");
 			body = Volatile.Read(ref groupBody).Split(',');
 			var innerBefore = double.Parse(body[2]);
 			var outerBeforeInner = int.Parse(State()[4]);
