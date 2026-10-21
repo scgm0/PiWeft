@@ -39,7 +39,8 @@ internal sealed class ToolMessageView
 		if (detail.Text.Length == 0) detail.IsVisible(false);
 
 		var expander = new Expander().Header(header).IsExpanded(false).HoverTip(Strings.ToolExpandHint);
-		focus.TrackFold(expander);
+		// 组体内的步骤由组体自己的预览行锚点负责；再让外层会话追随会改变会话滚动进度。
+		focus.TrackFold(expander, preserveAnchor: false);
 		expander.ExpandedChanged += expanded =>
 		{
 			if (!expanded || expander.Content is not null) return;

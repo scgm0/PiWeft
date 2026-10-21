@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Input;
 using Aprillz.MewUI.Markdown;
 using Aprillz.MewUI.Platform;
 using PiWeft.Ai;
@@ -31,6 +32,8 @@ public sealed class MessageInteractionTests
 		Assert.Equal(original, text.Text);
 		Assert.True(text.SizeToDocument);
 		Assert.Equal(0, text.BorderThickness);
+		// 只读正文不参与输入法组合，避免组合范围在文本替换后过期。
+		Assert.Equal(ImeMode.Disabled, text.ImeMode);
 	}
 
 	[Fact]

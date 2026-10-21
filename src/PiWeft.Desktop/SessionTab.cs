@@ -220,6 +220,9 @@ public sealed partial class SessionTab : IDisposable
 		_textFocus = new TextFocusScrollGuard(_scroll, anchor => _conversationScroll!.PreserveAnchor(anchor));
 		// 折叠开关改变行高：会话视图自己收敛一次，不能等用户滚动才发现内容没了。
 		_textFocus.LayoutInvalidated = fold => _timeline.RefreshLayout(fold);
+		// 展开正在流式的思考时，外层会话重新贴住内容末尾（嵌套的组体则由它自己的视口跟随）。
+		_textFocus.FollowConversation = () => _conversationScroll!.ScrollToLatest();
+		_textFocus.PauseFollowing = () => _conversationScroll!.Browse();
 		_conversationScroll = new ConversationScroll(_scroll, visible => SetScrollToLatestVisible(visible && _messages.IsVisible));
 
 		// 右缘定位轴：点击刻度跳到那条用户消息，滚动时高亮当前阅读位置。

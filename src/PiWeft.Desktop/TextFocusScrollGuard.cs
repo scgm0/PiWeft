@@ -44,7 +44,48 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	/// <summary>折叠开关改变了行高：宿主据此重排会话视图（与手动滚动同样的收敛）。</summary>
 	public Action<FrameworkElement>? LayoutInvalidated { get; set; }
 
-	public void TrackFold(Expander fold)
+	/// <summary>展开正在流式输出的内容（思考）时请求会话重新进入跟底。</summary>
+	public Action? FollowConversation { get; set; }
+
+	/// <summary>组内步骤的折叠是阅读行为：暂停外层跟底，但不移动外层滚动位置。</summary>
+	public Action? PauseFollowing { get; set; }
+
+	/// <summary>恢复折叠状态时抑制「跟随内容增长」，避免滚动中的虚拟化行重建后把读者拽回末尾。</summary>
+	public bool SuppressGrowthFollow { get; set; }
+
+	/// <summary>
+	/// 展开流式内容后让最近的滚动视口跟住内容末尾：会话本身交给 <see cref="FollowConversation"/>，
+	/// 过程组的组体这类嵌套视口由自己的 <see cref="SmoothScroll"/> 持续贴底。
+	/// </summary>
+	public void FollowGrowth(Element origin)
+	{
+		if (NearestViewport(origin) is not { } viewport) return;
+		if (ReferenceEquals(viewport, _scroll))
+		{
+			FollowConversation?.Invoke();
+			return;
+		}
+		// 组体小窗先跟住思考末尾；组体在会话里时，会话本身也要跟到最新，
+		// 否则组体内部在滚、外层仍停在思考标题上。
+		SmoothScroll.Find(viewport)?.FollowGrowth();
+		if (origin.IsDescendantOf(_scroll)) FollowConversation?.Invoke();
+	}
+
+	/// <summary>折叠流式内容时停止跟随增长，视口停在读者看到的位置。</summary>
+	public void StopGrowth(Element origin)
+	{
+		if (NearestViewport(origin) is not { } viewport || ReferenceEquals(viewport, _scroll)) return;
+		SmoothScroll.Find(viewport)?.StopFollowingGrowth();
+	}
+
+	private static ScrollViewer? NearestViewport(Element origin)
+	{
+		for (var parent = origin.Parent; parent is not null; parent = parent.Parent)
+			if (parent is ScrollViewer { IsVisible: true } viewport) return viewport;
+		return null;
+	}
+
+	public void TrackFold(Expander fold, bool preserveAnchor = true)
 	{
 		// Focusing the whole expanded subtree must not scroll its bottom into view.
 		ProtectFocus(fold);
@@ -53,6 +94,11 @@ internal sealed class TextFocusScrollGuard : IDisposable
 			if (expanded && fold.Content is { } content) TrackTree(content);
 			LayoutInvalidated?.Invoke(fold);
 		};
+		void ReadingIntent()
+		{
+			if (preserveAnchor) _preserveAnchor?.Invoke(fold);
+			else PauseFollowing?.Invoke();
+		}
 		fold.MouseDown += args =>
 		{
 			if (fold.FindVisualRoot() is not Window { Handle: not 0 }) return;
@@ -60,11 +106,11 @@ internal sealed class TextFocusScrollGuard : IDisposable
 			var header = new Rect(inner.X, inner.Y, inner.Width, Math.Max(20, fold.Header?.DesiredSize.Height ?? 20));
 			var local = args.GetPosition(fold);
 			var point = new Point(fold.Bounds.X + local.X, fold.Bounds.Y + local.Y);
-			if (args.Button == MouseButton.Left && header.Contains(point)) _preserveAnchor?.Invoke(fold);
+			if (args.Button == MouseButton.Left && header.Contains(point)) ReadingIntent();
 		};
 		fold.KeyUp += args =>
 		{
-			if (!args.Handled && args.Key is Key.Space or Key.Enter) _preserveAnchor?.Invoke(fold);
+			if (!args.Handled && args.Key is Key.Space or Key.Enter) ReadingIntent();
 		};
 	}
 

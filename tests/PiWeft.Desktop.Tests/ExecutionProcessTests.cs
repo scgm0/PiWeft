@@ -366,8 +366,10 @@ public sealed class ExecutionProcessTests
 			Text = $"output {index}" + string.Concat(Enumerable.Repeat("\nline", 10)),
 		};
 		// 中间回复把过程切成两组：每组的追帧状态必须各自独立。
+		// 每组 12 步（超过 300 的组体高度）才能让「展开后滚动范围变大」这个断言成立。
 		var process = ExecutionProcess.Project([
-			User("first"), Step(0), Step(1), Answer("interim", "continue"), Step(2), Step(3), Answer("final", "done"),
+			User("first"), .. Enumerable.Range(0, 12).Select(Step), Answer("interim", "continue"),
+			.. Enumerable.Range(12, 12).Select(Step), Answer("final", "done"),
 		], false)[1];
 		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
 		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
@@ -534,6 +536,425 @@ public sealed class ExecutionProcessTests
 		static void Raise(Element target, MouseWheelEventArgs args) =>
 			typeof(UIElement).GetMethod("OnMouseWheel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
 				.Invoke(target, [args]);
+	}
+
+	[Fact]
+	public void GroupBodyGrowsAndShrinksWithAStepExpansion()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 4)
+			.Select(i => Tool($"call-{i}", $"output {i}\n" + string.Join('\n', Enumerable.Repeat("line", 12))))
+			.ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var collapsed = viewport.ViewportHeight;
+		Assert.True(collapsed > 0);
+		Assert.Equal(0, SmoothScroll.For(viewport).MaxVerticalOffset);
+
+		var tool = Find<Expander>(viewport).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+
+		// 小组的组体由内容撑高：步骤展开后必须跟着长，而不是停在折叠时的几行高度。
+		Assert.True(viewport.ViewportHeight > collapsed + 60,
+			$"group body did not grow: {collapsed} -> {viewport.ViewportHeight}");
+		Assert.True(viewport.ViewportHeight <= 302,
+			$"group body exceeded its 300 DIP cap: {viewport.ViewportHeight}");
+		Assert.True(SmoothScroll.For(viewport).MaxVerticalOffset > 0);
+
+		// 收起后组体也要缩回内容高度，并把偏移夹进新的范围。
+		tool.IsExpanded = false;
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.True(Math.Abs(viewport.ViewportHeight - collapsed) <= 2,
+			$"group body did not shrink back: {collapsed} -> {viewport.ViewportHeight}");
+		Assert.Equal(0, SmoothScroll.For(viewport).MaxVerticalOffset);
+		Assert.Equal(0, viewport.VerticalOffset);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void WheelOverTheGroupBodyStaysInsideUntilTheBodyCannotScroll()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 4)
+			.Select(i => Tool($"call-{i}", $"output {i}\n" + string.Join('\n', Enumerable.Repeat("line", 12))))
+			.ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		var conversation = new ScrollViewer()
+			.Content(new StackPanel().Children(new Border().Height(500), view.View, new Border().Height(500)))
+			.AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling();
+		ConversationPerformanceTests.Layout(conversation, 520, 380);
+		var outer = SmoothScroll.For(conversation);
+		conversation.SetScrollOffsets(0, 300);
+
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(conversation, 520, 380);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var body = SmoothScroll.For(viewport);
+		var tool = Find<Expander>(viewport).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(conversation, 520, 380);
+		Assert.True(body.MaxVerticalOffset > 0);
+
+		// 滚轮落在组体的空白/竖线区域（不是内层视口本身）时，也要先归组体。
+		var bodyHost = (Element)group.Content!;
+		outer.Stop();
+		var outerBefore = outer.TargetVerticalOffset;
+		RaiseWheel(bodyHost, 0, -1);
+		Assert.True(body.IsAnimating, "the wheel over the group body leaked to the conversation");
+		Assert.False(outer.IsAnimating);
+		Assert.Equal(outerBefore, outer.TargetVerticalOffset);
+
+		// 组体装不下任何内容时（步骤全部收起），同一位置的滚轮应交给会话。
+		tool.IsExpanded = false;
+		ConversationPerformanceTests.Layout(conversation, 520, 380);
+		Assert.Equal(0, body.MaxVerticalOffset);
+		body.Stop();
+		var unhandled = RaiseWheel(bodyHost, 0, -1);
+		// 不消费即表示这一格会继续沿祖先链交给会话，组体不会把滚轮锁住。
+		Assert.False(unhandled.Handled);
+		Assert.False(body.IsAnimating);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void GrowingPastTheStackLimitKeepsTheGroupBodyCapped()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var first = Enumerable.Range(0, 24).Select(i => Tool($"call-{i}", $"output {i}")).ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. first, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var stackViewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var capped = stackViewport.ViewportHeight;
+		Assert.InRange(capped, 0, 302);
+		stackViewport.SetScrollOffsets(0, 50);
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.Equal(50, stackViewport.VerticalOffset, 1);
+
+		// 流式过程中步骤数越过栈上限：切换成虚拟化列表，组体仍保持限高，不出现高度跳变。
+		var next = ExecutionProcess.Project([
+			User("first"), .. Enumerable.Range(0, 25).Select(i => Tool($"call-{i}", $"output {i}")), Answer("final", "done"),
+		], false)[1];
+		view.Update(next);
+		ConversationPerformanceTests.Layout(view.View);
+		var switched = Assert.Single(Find<ScrollViewer>(group.Content!));
+		Assert.InRange(switched.ViewportHeight, capped - 2, capped + 2);
+		Assert.True(SmoothScroll.For(switched).MaxVerticalOffset > 0);
+		// 换 presenter 不应把组体弹回顶部。
+		Assert.Equal(50, switched.VerticalOffset, 1);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ExpandingAStepAfterAStreamingRebindKeepsTheRowCallbackValid()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 4)
+			.Select(i => Tool($"call-{i}", $"output {i}\n" + string.Join('\n', Enumerable.Repeat("line", 4))))
+			.ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+
+		// 流式更新会让栈布局重新绑定每一行：回调必须捕获对应的行，而不是循环结束后越界的索引。
+		var changed = Enumerable.Range(0, 4)
+			.Select(i => Tool($"call-{i}", $"changed {i}\n" + string.Join('\n', Enumerable.Repeat("line", 4))))
+			.ToArray();
+		view.Update(ExecutionProcess.Project([User("first"), .. changed, Answer("final", "done")], false)[1]);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var tool = Find<Expander>(viewport).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.True(tool.IsExpanded);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ExpandingAStreamingThinkingStepFollowsTheGroupBodyTail()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var thinkingText = string.Join('\n', Enumerable.Repeat("思考中的一行内容", 60));
+		var process = ExecutionProcess.Project([
+			User("first"),
+			new ChatEntry { Role = ChatRole.Assistant, EntryId = "think", Text = string.Empty, Thinking = thinkingText, IsThinking = true, IsStreaming = true },
+		], true)[1];
+		var view = new ExecutionProcessView(process, entry => new AssistantMessageView(entry, _ => { }, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var body = SmoothScroll.For(viewport);
+		var thinking = Assert.Single(Find<Expander>(viewport));
+
+		thinking.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.True(body.IsFollowingGrowth, "expanding streaming thinking should make the group body follow its tail");
+
+		// 思考继续增长：组体保持在新的末尾，而不是停在展开时的位置。
+		view.Update(ExecutionProcess.Project([
+			User("first"),
+			new ChatEntry { Role = ChatRole.Assistant, EntryId = "think", Text = string.Empty, Thinking = thinkingText + "\n" + thinkingText, IsThinking = true, IsStreaming = true },
+		], true)[1]);
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.True(body.IsFollowingGrowth);
+		Assert.InRange(body.MaxVerticalOffset - viewport.VerticalOffset, 0, 1);
+
+		thinking.IsExpanded = false;
+		Assert.False(body.IsFollowingGrowth);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ExpandingAStandaloneStreamingThinkingBlockFollowsTheConversation()
+	{
+		var host = new Border();
+		var conversation = new ScrollViewer().Content(host)
+			.AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling();
+		using var focus = new TextFocusScrollGuard(conversation);
+		var followed = false;
+		focus.FollowConversation = () => followed = true;
+		var entry = new ChatEntry
+		{
+			Role = ChatRole.Assistant, EntryId = "live", Timestamp = 1, Text = string.Empty,
+			Thinking = string.Join('\n', Enumerable.Repeat("思考内容", 40)), IsThinking = true, IsStreaming = true,
+		};
+		var view = new AssistantMessageView(entry, _ => { }, focus);
+		host.Child(view.View);
+		ConversationPerformanceTests.Layout(conversation, 520, 380);
+		var thinking = Assert.Single(Find<Expander>(view.View));
+		thinking.IsExpanded = true;
+		Assert.True(followed, "expanding a streaming thinking block should ask the conversation to follow");
+		Assert.True(thinking.IsExpanded);
+		view.Dispose();
+	}
+
+	[Fact]
+	public void ExpandingAStepKeepsTheReadingPositionAtItsPreviewRow()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 6)
+			.Select(i => Tool($"call-{i}", $"output {i}\n" + string.Join('\n', Enumerable.Repeat("line", 12))))
+			.ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		viewport.SetScrollOffsets(0, 0);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var tool = Find<Expander>(viewport).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		var previewTop = tool.Bounds.Y;
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+
+		// 展开的是第一行的预览；进度必须仍停在这一行，不能自动滚到工具输出的末尾。
+		Assert.Equal(0, viewport.VerticalOffset, 1);
+		Assert.InRange(tool.Bounds.Y, previewTop - 1, previewTop + 1);
+		Assert.True(tool.Bounds.Y >= viewport.Bounds.Y - 1);
+		Assert.True(SmoothScroll.For(viewport).MaxVerticalOffset > 0);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ExpandingAStepInAVirtualizedGroupAlsoKeepsThePreviewRow()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 30)
+			.Select(i => Tool($"call-{i}", $"output {i}\n" + string.Join('\n', Enumerable.Repeat("line", 12))))
+			.ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		viewport.SetScrollOffsets(0, 0);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var tool = Find<Expander>(viewport).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		var previewTop = tool.Bounds.Y;
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+
+		// 虚拟化组也要停在被点击的预览行；不能因为行高缓存修正而滚到展开内容末尾。
+		Assert.InRange(tool.Bounds.Y, previewTop - 1, previewTop + 1);
+		Assert.True(tool.Bounds.Y >= viewport.Bounds.Y - 1);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void StreamingLatestGroupFollowsItsTailAndToolExpansionStopsIt()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 30).Select(i => Tool($"call-{i}", $"output {i}")).ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools], true)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var body = SmoothScroll.For(viewport);
+		// 流式最新组自动展开时跟住最新步骤，和 PiDeck 的自动通道一致。
+		Assert.True(body.IsFollowingGrowth);
+		Assert.InRange(body.MaxVerticalOffset - viewport.VerticalOffset, 0, 1);
+
+		// 用户展开一个工具步骤是阅读行为：停止跟随，进度留在预览行，不滚到输出末尾。
+		var tool = Find<Expander>(viewport)
+			.Last(expander => HoverHints.Text(expander) == Strings.ToolExpandHint &&
+				expander.Bounds.Y >= viewport.Bounds.Y && expander.Bounds.Y < viewport.Bounds.Bottom);
+		var previewTop = tool.Bounds.Y;
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.False(body.IsFollowingGrowth);
+		Assert.True(tool.Bounds.Y >= viewport.Bounds.Y - 1);
+		Assert.InRange(tool.Bounds.Y, previewTop - 1, previewTop + 1);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ExpandingStreamingThinkingInAGroupAlsoFollowsTheConversation()
+	{
+		var host = new Border();
+		var conversation = new ScrollViewer().Content(host)
+			.AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling();
+		using var focus = new TextFocusScrollGuard(conversation);
+		var followed = false;
+		focus.FollowConversation = () => followed = true;
+		var thinkingText = string.Join('\n', Enumerable.Repeat("思考中的一行内容", 60));
+		var process = ExecutionProcess.Project([
+			User("first"),
+			new ChatEntry { Role = ChatRole.Assistant, EntryId = "think", Text = string.Empty, Thinking = thinkingText, IsThinking = true, IsStreaming = true },
+		], true)[1];
+		var view = new ExecutionProcessView(process, entry => new AssistantMessageView(entry, _ => { }, focus).View);
+		host.Child(view.View);
+		ConversationPerformanceTests.Layout(conversation, 520, 380);
+
+		var thinking = Find<Expander>(view.View).First(expander =>
+			expander.Header is { } header && Find<TextBlock>(header).Any(text => text.Text == Strings.ThinkingActive));
+		thinking.IsExpanded = true;
+		Assert.True(followed, "expanding live thinking inside a group should also make the conversation follow");
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ReopeningAGroupRestoresExpandedThinkingWithoutYankingToTheTail()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var thinkingText = string.Join('\n', Enumerable.Repeat("思考中的一行内容", 60));
+		var process = ExecutionProcess.Project([
+			User("first"),
+			new ChatEntry { Role = ChatRole.Assistant, EntryId = "think", Text = string.Empty, Thinking = thinkingText, IsThinking = true, IsStreaming = true },
+		], true)[1];
+		var view = new ExecutionProcessView(process, entry => new AssistantMessageView(entry, _ => { }, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var thinking = Assert.Single(Find<Expander>(viewport));
+		thinking.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.True(SmoothScroll.For(viewport).IsFollowingGrowth);
+
+		// 折叠组体销毁行；再展开时按记录恢复思考的展开状态。恢复不是用户展开，
+		// 不能因为这个动作把读者从组体当前位置拽到思考末尾。
+		group.IsExpanded = false;
+		ConversationPerformanceTests.Layout(view.View);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var restoredViewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var restoredThinking = Assert.Single(Find<Expander>(restoredViewport));
+		Assert.True(restoredThinking.IsExpanded);
+		Assert.False(SmoothScroll.For(restoredViewport).IsFollowingGrowth);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void CollapsingTheLastStepDoesNotMoveTheOuterConversation()
+	{
+		var host = new Border();
+		var conversation = new ScrollViewer().Content(host)
+			.AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling();
+		using var conversationScroll = new ConversationScroll(conversation, _ => { });
+		using var focus = new TextFocusScrollGuard(conversation);
+		focus.PauseFollowing = conversationScroll.Browse;
+		var tools = Enumerable.Range(0, 3)
+			.Select(i => Tool($"call-{i}", $"output {i}\n" + string.Join('\n', Enumerable.Repeat("line", 12))))
+			.ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools, Answer("final", "done")], false)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		focus.LayoutInvalidated = fold => view.View.InvalidateMeasure();
+		host.Child(new StackPanel().Children(new Border().Height(900), view.View, new Border().Height(600)));
+		ConversationPerformanceTests.Layout(conversation, 700, 500);
+
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		run.IsExpanded = true;
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(conversation, 700, 500);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		SmoothScroll.For(viewport).JumpToEnd();
+		ConversationPerformanceTests.Layout(conversation, 700, 500);
+
+		var tool = Find<Expander>(viewport).Last(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(conversation, 700, 500);
+		SmoothScroll.For(viewport).ScrollBy(0, 2);
+		ConversationPerformanceTests.Layout(conversation, 700, 500);
+		conversation.SetScrollOffsets(0, 900);
+		ConversationPerformanceTests.Layout(conversation, 700, 500);
+
+		var outer = conversation.VerticalOffset;
+		var preview = tool.Bounds.Y;
+		// 组内步骤的折叠只暂停外层跟随，不建立外层锚点：外部会话进度保持不变。
+		focus.PauseFollowing!();
+		tool.IsExpanded = false;
+		ConversationPerformanceTests.Layout(conversation, 700, 500);
+
+		Assert.Equal(outer, conversation.VerticalOffset, 1);
+		Assert.InRange(tool.Bounds.Y, preview - 1, preview + 1);
+		Assert.False(conversationScroll.Following);
+		UiLifetime.Release(view.View);
+	}
+
+	private static MouseWheelEventArgs RaiseWheel(Element target, double horizontal, double vertical)
+	{
+		var args = new MouseWheelEventArgs(new Point(0, 0), new Point(0, 0), new Vector(horizontal, vertical));
+		typeof(UIElement).GetMethod("OnMouseWheel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(target, [args]);
+		return args;
 	}
 
 	[Fact]

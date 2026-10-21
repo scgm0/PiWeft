@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Input;
 using Aprillz.MewUI.Rendering;
 using Aprillz.MewUI.Text;
 using Aprillz.MewUI.Text.Editing;
@@ -29,13 +30,60 @@ internal static class UserReferenceRichText
 	{
 		if (Attached.TryGetValue(box, out _)) return;
 		Attached.Add(box, new object());
-		box.Extensions.Projections.Add(new ReferenceProjection());
-		box.Extensions.ElementGenerators.Add(new ReferenceElementGenerator());
+		var projection = new ReferenceProjection();
+		var generator = new ReferenceElementGenerator();
+		box.Extensions.Projections.Add(projection);
+		box.Extensions.ElementGenerators.Add(generator);
 		box.Extensions.Revision++;
 		if (editable)
 		{
 			box.EditableRegions = new ReferenceEditableRegions(box);
-			box.TextCompositionStart += _ => NormalizeCaret(box);
+			var client = (ITextCompositionClient)box;
+			var composing = false;
+			var suspended = false;
+			// MewUI 0.22.1 的组合输入下划线仍按源文偏移绘制，不会映射投影后的 chip 偏移；
+			// 组合期间临时撤掉引用投影与元素生成器，等组合提交后再恢复，避免 GetRangeBounds 越界。
+			void SuspendProjection()
+			{
+				if (suspended) return;
+				// 没有真实 chip 时投影是恒等的，不必为普通中文输入重建文本视图。
+				if (UserChips.Parse(box.Text).Count == 0) return;
+				suspended = true;
+				box.Extensions.Projections.Remove(projection);
+				box.Extensions.ElementGenerators.Remove(generator);
+				box.InvalidateTextView();
+			}
+			void RestoreProjection()
+			{
+				if (!suspended) return;
+				suspended = false;
+				box.Extensions.Projections.Add(projection);
+				box.Extensions.ElementGenerators.Add(generator);
+				box.InvalidateTextView();
+			}
+			box.TextCompositionStart += _ =>
+			{
+				NormalizeCaret(box);
+				composing = true;
+				SuspendProjection();
+			};
+			box.TextCompositionEnd += _ =>
+			{
+				composing = false;
+				// End 事件早于 CommitComposition；有调度器时等提交完成再恢复。
+				if (Application.IsRunning && Application.Current.Dispatcher is { } dispatcher)
+					dispatcher.BeginInvoke(DispatcherPriority.Render, () => { if (!composing) RestoreProjection(); });
+			};
+			// 无调度器（测试）或 End 未触发时，编辑器状态收敛后恢复。
+			box.EditingStateChanged += () =>
+			{
+				if (!composing && suspended && !client.IsComposing) RestoreProjection();
+			};
+			box.LostFocus += () =>
+			{
+				composing = false;
+				RestoreProjection();
+			};
 		}
 		IUserChip? hint = null;
 		box.MouseMove += args =>

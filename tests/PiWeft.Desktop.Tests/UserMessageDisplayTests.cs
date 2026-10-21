@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Input;
 using Aprillz.MewUI.Text;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
@@ -177,6 +178,28 @@ public sealed class UserMessageDisplayTests
 
 		// 同一行行首的普通文字不是 chip。
 		Assert.Null(UserReferenceRichText.ReferenceAtPoint(box, new Point(origin.X + line.DocumentX + 2, chip.Y)));
+	}
+
+	[Fact]
+	public void CompositionSuspendsReferenceProjectionAndRestoresItAfterCommit()
+	{
+		var box = new MultiLineTextBox().Text("看 @\"src/App.cs\" 后继续输入");
+		UserReferenceRichText.Attach(box, editable: true);
+		Assert.Single(box.Extensions.Projections);
+		Assert.Single(box.Extensions.ElementGenerators);
+
+		// 组合输入的装饰范围按源文偏移绘制，投影压缩过路径；组合期间临时撤掉投影，
+		// 避免 MewUI 0.22.1 的 GetRangeBounds 在切片/投影文本上越界。
+		var client = (ITextCompositionClient)box;
+		client.HandleTextCompositionStart(new TextCompositionEventArgs());
+		Assert.Empty(box.Extensions.Projections);
+		Assert.Empty(box.Extensions.ElementGenerators);
+		client.HandleTextCompositionUpdate(new TextCompositionEventArgs("继"));
+		Assert.Empty(box.Extensions.Projections);
+
+		client.HandleTextCompositionEnd(new TextCompositionEventArgs("继续"));
+		Assert.Single(box.Extensions.Projections);
+		Assert.Single(box.Extensions.ElementGenerators);
 	}
 
 	[Fact]

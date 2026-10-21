@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Input;
 
 namespace PiWeft.Desktop;
 
@@ -25,6 +26,9 @@ internal static class MessageText
 		{
 			Text = text,
 			IsReadOnly = true,
+			// 只读正文/代码不需要输入法：避免在代码块或工具输出上误触发组合输入，
+			// 也避免组合范围在文本被流式替换后变成过期的渲染装饰。
+			ImeMode = ImeMode.Disabled,
 			SizeToDocument = true,
 			Wrap = wrap,
 			Background = AppTheme.Transparent,

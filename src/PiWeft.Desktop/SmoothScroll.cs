@@ -24,6 +24,9 @@ internal sealed class SmoothScroll : IDisposable
 	private Point _lastOffset;
 	private bool _toEnd;
 	private bool _disposed;
+	// 展开正在流式输出的内容（例如思考）后持续贴住内容末尾；读者自己滚动或显式结束即解除。
+	private bool _followGrowth;
+	private bool _growthFollowQueued;
 
 	// 跟底（内容增长）用指数衰减：目标每帧都在变，衰减不会因为重排而反复重启。
 	private const double DecayRate = 18.0;
@@ -85,6 +88,8 @@ internal sealed class SmoothScroll : IDisposable
 
 	public bool IsAnimating => _clock.IsRunning;
 	public bool IsApplyingOffset { get; private set; }
+	/// <summary>是否正在跟随内容增长（展开流式内容后保持贴底）。</summary>
+	public bool IsFollowingGrowth => _followGrowth;
 	public double MaxVerticalOffset => Maximum(vertical: true);
 	public double TargetVerticalOffset => IsAnimating ? (_toEnd ? MaxVerticalOffset : _target.Y) : Offset.Y;
 	public event Action<double>? VerticalInput;
@@ -149,10 +154,14 @@ internal sealed class SmoothScroll : IDisposable
 	// 低于这个刻度视为触控板/高精度输入：浏览器对它不做动画，直接 1:1 落位。
 	private const double TrackpadNotchThreshold = 0.5;
 
-	/// <summary>Wheel deltas are notch counts, including fractional trackpad movement.</summary>
+	/// <summary>
+	/// Wheel deltas are notch counts, including fractional trackpad movement.
+	/// </summary>
 	public void ScrollBy(double horizontal, double vertical)
 	{
 		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
+		// 读者滚动会接管滚动位置：立即结束对内容增长的跟随，下一帧不再把他拉回末尾。
+		_followGrowth = false;
 		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
 
 		// Virtualized content can grow between arrangements. Pull its current extent into the
@@ -208,6 +217,24 @@ internal sealed class SmoothScroll : IDisposable
 		if (IsAnimating) ScrollToEnd();
 		else JumpToEnd();
 	}
+
+	/// <summary>
+	/// 展开正在流式输出的内容后，让视口持续贴住内容末尾：立即露出当前末尾，之后每次内容变高
+	/// （思考的 Markdown 解析、行高变化）都在布局落定后再落位。与 <see cref="FollowEnd"/> 不同，
+	/// 它不依赖动画，所以长内容每帧增长时也能跟上。
+	/// </summary>
+	public void FollowGrowth()
+	{
+		if (_disposed) return;
+		// 立即贴底，不能被上一次滚轮动画拉回旧目标。
+		Stop();
+		_followGrowth = true;
+		SyncMetrics();
+		Apply(new Point(Offset.X, MaxVerticalOffset));
+	}
+
+	/// <summary>停止跟随内容增长，视口停在当前位置（折叠流式内容或读者接管时）。</summary>
+	public void StopFollowingGrowth() => _followGrowth = false;
 
 	/// <summary>
 	/// Refreshes the viewport's extent metrics from its scroll content. <see cref="ScrollViewer"/>
@@ -331,14 +358,42 @@ internal sealed class SmoothScroll : IDisposable
 			_lastOffset = Offset;
 			return;
 		}
+		var offset = Offset;
 		// Scrollbar dragging, focus navigation and explicit offsets take ownership from an active animation.
-		if (!IsApplyingOffset && Offset != _lastOffset) Stop();
-		_lastOffset = Offset;
+		if (!IsApplyingOffset && offset != _lastOffset)
+		{
+			// 读者接管滚动：一次位移就足够结束对内容增长的跟随（含拖动滚动条与键盘滚动）。
+			_followGrowth = false;
+			Stop();
+		}
+		_lastOffset = offset;
+		// 内容还在变高：布局期间不能改偏移，等这一帧发布完 extent 再落位。
+		if (_followGrowth && !IsApplyingOffset && MaxVerticalOffset - offset.Y > 0.5) QueueGrowthFollow();
+	}
+
+	/// <summary>把跟随增长的重夹排到布局之后；一帧里只排一次。</summary>
+	private void QueueGrowthFollow()
+	{
+		if (_growthFollowQueued) return;
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		{
+			SyncMetrics();
+			Apply(new Point(Offset.X, MaxVerticalOffset));
+			return;
+		}
+		_growthFollowQueued = true;
+		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+		{
+			_growthFollowQueued = false;
+			if (_disposed || !_followGrowth) return;
+			SyncMetrics();
+			Apply(new Point(Offset.X, MaxVerticalOffset));
+		});
 	}
 
 	private void OnTextScrollChanged(Aprillz.MewUI.Text.ITextViewHost _) => OnScrollChanged();
-	private void OnMouseDown(MouseEventArgs args) => Stop();
-	private void OnKeyDown(KeyEventArgs args) => Stop();
+	private void OnMouseDown(MouseEventArgs args) { _followGrowth = false; Stop(); }
+	private void OnKeyDown(KeyEventArgs args) { _followGrowth = false; Stop(); }
 	public void Stop() { _clock.Stop(); _toEnd = false; }
 
 	// 对于以时间为基准的物理循环，内置 Easing 提供恒等映射即可

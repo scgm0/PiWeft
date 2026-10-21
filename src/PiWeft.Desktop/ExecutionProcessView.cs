@@ -32,6 +32,8 @@ internal sealed class ExecutionProcessView
 	private ChatEntry _entry;
 	private string? _latestGroup;
 	private bool _automatic;
+	// 只在「流式最新组自动展开」这一条通道上跟随末尾；手动展开/恢复展开不跟随。
+	private bool _autoExpandingGroup;
 
 	public ExecutionProcessView(ChatEntry entry, Func<ChatEntry, UIElement> create, TextFocusScrollGuard? focus = null)
 	{
@@ -134,11 +136,20 @@ internal sealed class ExecutionProcessView
 		_stepStates[stepKey] = array;
 	}
 
+	/// <summary>代码恢复折叠状态时不让流式思考重新请求贴底；用户点击/键盘切开的路径不受影响。</summary>
+	private void SetExpandedWithoutFollowing(Expander expander, bool expanded)
+	{
+		var previous = _focus?.SuppressGrowthFollow ?? false;
+		if (_focus is not null) _focus.SuppressGrowthFollow = true;
+		try { expander.IsExpanded = expanded; }
+		finally { if (_focus is not null) _focus.SuppressGrowthFollow = previous; }
+	}
+
 	private void Track(string key, Expander expander, bool initial, bool group = false)
 	{
 		_controls[key] = expander;
 		if (key == "run" || group) _focus?.TrackFold(expander);
-		expander.IsExpanded = _states.GetValueOrDefault(key, initial);
+		SetExpandedWithoutFollowing(expander, _states.GetValueOrDefault(key, initial));
 		_states[key] = expander.IsExpanded;
 		expander.ExpandedChanged += expanded =>
 		{
@@ -210,7 +221,12 @@ internal sealed class ExecutionProcessView
 			{
 				if (_latestGroup is { } previous && !_states.GetValueOrDefault($"manual/{previous}") && _controls.TryGetValue(previous, out var old))
 					old.IsExpanded = false;
-				if (!_states.GetValueOrDefault($"manual/{latest}") && _controls.TryGetValue(latest, out var current)) current.IsExpanded = true;
+				if (!_states.GetValueOrDefault($"manual/{latest}") && _controls.TryGetValue(latest, out var current))
+				{
+					_autoExpandingGroup = true;
+					try { current.IsExpanded = true; }
+					finally { _autoExpandingGroup = false; }
+				}
 			}
 			finally { _automatic = false; }
 		}
@@ -219,17 +235,32 @@ internal sealed class ExecutionProcessView
 
 	private Slot Group(string key, IReadOnlyList<ChatEntry> entries, bool running)
 	{
+		// 小组用内容驱动的栈：展开一行，组体就跟着长高（最高 300）。
+		// 步骤多到一屏放不下时改走虚拟化列表，此时内容必然超过 300，组体固定限高才不会因为
+		// ItemsControl 的估算行高停在折叠高度上。
+		const int stackLimit = 24;
+		const double bodyMaxHeight = 300;
 		var members = entries;
-		var rows = new StepRows();
+		var runningGroup = running;
+		StepRows? rows = null;
 		// 折叠时把组体换成它：Expander.Content 不接受 null，用一个零高度占位保持「已展开才建树」。
 		var collapsedBody = new Border { Height = 0 };
 		Border? body = null;
 		ItemsControl? list = null;
+		StackPanel? stack = null;
+		var stackEntries = new List<ChatEntry>();
+		var stackHosts = new List<Grid>();
+		// 组体的滚动视口：栈布局是外层 ScrollViewer，虚拟化时是 ItemsControl 内层视口。
 		ScrollViewer? viewport = null;
 		// 每个过程组各自持有追帧状态：一个视图里可能有多组（中间回复会把过程切成多段），
 		// 共用一份标志会让后一组的重夹/露出被前一组吞掉。
 		var reclampQueued = false;
-		Grid? revealRow = null;
+		var switchQueued = false;
+		// 自动展开的「正在运行」组跟住最新步骤；手动展开的组从头看。
+		var followOnOpen = false;
+		// 展开/收起步骤后把它的预览行固定在原屏幕位置，而不是滚向内容末尾。
+		Grid? anchorRow = null;
+		double anchorOffset = 0;
 		// 组头与 PiDeck 过程组同构：类别图标 + 主文案 + 「·」+ 等宽实时详情；运行时图标走强调色。
 		var icon = AppIcons.Icon("terminal", AppStyles.RoleSubtle, 13);
 		var label = new TextBlock().FontSize(AppTheme.FontSizeCaption).SubtleText()
@@ -249,7 +280,11 @@ internal sealed class ExecutionProcessView
 		fold.ExpandedChanged += expanded =>
 		{
 			// 展开时按视口建步骤行；折叠时整块释放，不留不可见的视图占内存。
-			if (expanded) BuildBody();
+			if (expanded)
+			{
+				followOnOpen = _autoExpandingGroup && runningGroup;
+				BuildBody();
+			}
 			else DestroyBody();
 		};
 		Track(key, fold, false, group: true);
@@ -262,16 +297,57 @@ internal sealed class ExecutionProcessView
 		{
 			if (body is not null)
 			{
-				rows.Set(members);
-				return;
+				SyncRows();
 			}
+			else if (members.Count > stackLimit) BuildVirtualBody();
+			else BuildStackBody();
+
+			// 自动通道（流式最新组）展开后先跟住末尾，后续增长由 SmoothScroll 的跟随增长接管；
+			// 手动点开的组保持顶部，不把读者拽到最后。
+			if (!followOnOpen) return;
+			followOnOpen = false;
+			FollowGroup();
+		}
+
+		void FollowGroup()
+		{
+			if (viewport is not null) SmoothScroll.Find(viewport)?.FollowGrowth();
+		}
+
+		void StopGroupFollow()
+		{
+			// 工具步骤展开是阅读行为：进度停在预览行，不跟着展开内容滚到末尾。
+			if (viewport is not null) SmoothScroll.Find(viewport)?.StopFollowingGrowth();
+		}
+
+		void BuildStackBody()
+		{
+			stack = new StackPanel().Spacing(4);
+			stackEntries.Clear();
+			stackHosts.Clear();
+			AddStackRows();
+			// 栈布局把全部行都实现出来（上限 24 行），高度由内容决定，展开/收起自然带动组体。
+			viewport = new ScrollViewer().Content(stack).MaxHeight(bodyMaxHeight)
+				.SmoothScrolling().NoHorizontalScroll();
+			CompleteBody(viewport);
+		}
+
+		void BuildVirtualBody()
+		{
+			rows = new StepRows();
+			viewport = null;
 			list = new ItemsControl().VariableHeightPresenter().ItemsSource(rows)
 				.ItemHeight(28).ItemPadding(Thickness.Zero).BorderThickness(0)
-				.Background(AppTheme.Transparent).Padding(Thickness.Zero);
+				.Background(AppTheme.Transparent).Padding(Thickness.Zero)
+				// 能走到虚拟化说明行数已经超过一屏；固定组体高度，滚轮与追帧都只作用在内层。
+				.Height(bodyMaxHeight);
 			list.ItemTemplate = new DelegateTemplate<ChatEntry>(
 				_ => StepRowHost(),
-				(host, entry, index, _) => BindStep((Grid)host, entry, index, key,
-					expanded => InvalidateRow((Grid)host, expanded)),
+				(host, entry, index, _) => BindStep((Grid)host, entry, index, key, expanded =>
+				{
+					if (expanded && entry.Role == ChatRole.Tool) StopGroupFollow();
+					InvalidateRow((Grid)host, expanded);
+				}),
 				(host, _, _, _) => UnbindStep((Grid)host, key));
 			((IVisualTreeHost)list).VisitChildren(child =>
 			{
@@ -280,51 +356,214 @@ internal sealed class ExecutionProcessView
 			});
 			// 组体与整段过程一样是「可滚动的小窗」：内层能滚就滚内层，内层到边界（或内容装得下）
 			// 才把滚轮交还外层会话——由 SmoothScroll 在视口边界上交接（ScrollCascade）。
-			viewport?.MaxHeight(300).SmoothScrolling().NoHorizontalScroll();
+			viewport?.MaxHeight(bodyMaxHeight).SmoothScrolling().NoHorizontalScroll();
+			CompleteBody(list);
+			rows.Set(members);
+		}
+
+		void CompleteBody(FrameworkElement content)
+		{
 			// 与 PiDeck 一样，连续竖线独占左列；步骤（图标 + 摘要）在右列，不让线从图标背后穿过。
 			var rail = new Border().Width(1).VerticalAlignment(VerticalAlignment.Stretch)
 				.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Border);
 			var bodyHost = new Grid().Columns("1,*").Children(
-				rail.Column(0), list.Column(1).Margin(new Thickness(12, 0, 0, 0)));
+				rail.Column(0), content.Column(1).Margin(new Thickness(12, 0, 0, 0)));
 			body = new Border().Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, 0))
 				.HorizontalAlignment(HorizontalAlignment.Stretch).Child(bodyHost);
+			body.MouseWheel += RouteBodyWheel;
 			fold.Content(body);
-			rows.Set(members);
 		}
 
-		/// <summary>步骤行展开/收起改变了行高：让虚拟化器重测这一行，并刷新组体的可滚范围。</summary>
+		/// <summary>滚轮落在组体空白处时也要先归组体；装得下或到边界才留给外层会话。</summary>
+		void RouteBodyWheel(MouseWheelEventArgs args)
+		{
+			if (args.Handled || viewport is null) return;
+			// 布局刚变过时滚动条范围可能还落后一帧，先按最新 extent 刷新一次再判断归属。
+			viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
+			if (SmoothScroll.Find(viewport) is not { } smooth) return;
+			var delta = smooth.WheelDelta(args.Delta.X, args.Delta.Y);
+			if (delta.X == 0 && delta.Y == 0) return;
+			HoverHints.Cancel(viewport);
+			smooth.ScrollBy(delta.X, delta.Y);
+			args.Handled = true;
+		}
+
+		void AddStackRows()
+		{
+			if (stack is null) return;
+			for (var index = 0; index < members.Count; index++)
+			{
+				var row = StepRowHost();
+				var entry = members[index];
+				BindStep(row, entry, index, key, expanded =>
+				{
+					if (expanded && entry.Role == ChatRole.Tool) StopGroupFollow();
+					InvalidateRow(row, expanded);
+				});
+				stack.Children(row);
+				stackEntries.Add(entry);
+				stackHosts.Add(row);
+			}
+		}
+
+		/// <summary>同步栈里的步骤行；同一位置的步骤只更新内容，不重建行。</summary>
+		void SyncStackRows()
+		{
+			if (stack is null) return;
+			if (members.Count > stackLimit)
+			{
+				// 流式更新可能恰好发生在会话列表的测量/排布里；此时换 presenter 会重建整棵组体，
+				// 排到 Render 再做，避免在布局过程中重新种树。测试等无消息循环的场景直接切换。
+				if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+				{
+					SwitchToVirtualBody();
+					return;
+				}
+				if (!switchQueued)
+				{
+					switchQueued = true;
+					dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+					{
+						switchQueued = false;
+						if (body is not null && stack is not null && members.Count > stackLimit) SwitchToVirtualBody();
+					});
+				}
+				return;
+			}
+			if (!StackMatches())
+			{
+				RebuildStack();
+				return;
+			}
+			for (var index = 0; index < members.Count; index++)
+			{
+				// BindStep 遇到相同内容会直接返回；流式更新则保留展开状态原地更新。
+				// 注意：不能把循环变量 index 带进回调；展开回调在循环结束后才触发，会拿到越界索引。
+				var row = stackHosts[index];
+				var entry = members[index];
+				BindStep(row, entry, index, key, expanded =>
+				{
+					if (expanded && entry.Role == ChatRole.Tool) StopGroupFollow();
+					InvalidateRow(row, expanded);
+				});
+				stackEntries[index] = entry;
+			}
+		}
+
+		bool StackMatches()
+		{
+			if (stackHosts.Count != members.Count) return false;
+			for (var index = 0; index < members.Count; index++)
+			{
+				var left = stackEntries[index];
+				var right = members[index];
+				if (!ReferenceEquals(left, right) &&
+					(left.Role != right.Role || left.ToolCallId != right.ToolCallId || left.EntryId != right.EntryId))
+					return false;
+			}
+			return true;
+		}
+
+		void RebuildStack()
+		{
+			if (stack is null) return;
+			stack.Clear();
+			foreach (var row in stackHosts)
+			{
+				UnbindStep(row, key);
+				UiLifetime.Release(row);
+			}
+			stackEntries.Clear();
+			stackHosts.Clear();
+			AddStackRows();
+		}
+
+		void SwitchToVirtualBody()
+		{
+			var offset = viewport?.VerticalOffset ?? 0;
+			var atEnd = viewport is not null && SmoothScroll.Find(viewport) is { } smooth &&
+				offset >= smooth.MaxVerticalOffset - 0.5;
+			DestroyBody();
+			BuildVirtualBody();
+			if (viewport is { } target) RestoreOffset(target, offset, atEnd);
+		}
+
+		/// <summary>换 presenter 后把原来的阅读位置放回去；等新列表真正量出 extent 再落位。</summary>
+		void RestoreOffset(ScrollViewer target, double offset, bool atEnd)
+		{
+			if (offset <= 0) return;
+			var applied = false;
+			void Apply()
+			{
+				if (applied) return;
+				if (body is null || !ReferenceEquals(viewport, target))
+				{
+					target.SizeChanged -= OnSize;
+					return;
+				}
+				var max = SmoothScroll.Find(target)?.MaxVerticalOffset ?? 0;
+				// 新列表还没有可滚余量，说明它还没量完（越过 24 步时内容必然超高），等下一次尺寸通知。
+				if (max <= 0.5) return;
+				applied = true;
+				target.SizeChanged -= OnSize;
+				target.SetScrollOffsets(target.HorizontalOffset, atEnd ? max : Math.Min(offset, max));
+			}
+			void OnSize(SizeChangedEventArgs _) => Apply();
+			target.SizeChanged += OnSize;
+			if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
+			// 兜底：尺寸没变（例如切换前后高度相同）时也按当前 extent 落位。
+			dispatcher.BeginInvoke(DispatcherPriority.Render, Apply);
+		}
+
+		void SyncRows()
+		{
+			if (list is not null) rows?.Set(members);
+			else SyncStackRows();
+		}
+
+		/// <summary>步骤行展开/收起改变了行高：重测这一行，并让它的预览行停在原地。</summary>
 		void InvalidateRow(Grid row, bool expanded)
 		{
 			if (body is null) return;
 			ConversationTimeline.InvalidateMeasureTree(row);
 			list?.InvalidateMeasure();
-			// 组体是固定高度的滚动视口：内容变高后要重新发布 extent，否则滚不到新增的部分。
+			// 栈布局靠内容测量更新组体高度，虚拟化列表靠重算行高缓存更新 extent；两者都先刷新一次滚动范围。
 			viewport?.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
-			QueueReclamp(row, expanded);
+			// 自动跟底（流式思考/最新组）优先：此时读者看的就是内容末尾，不应该把视口钉回标题。
+			var following = viewport is not null && SmoothScroll.Find(viewport)?.IsFollowingGrowth == true;
+			anchorRow = following ? null : row;
+			anchorOffset = anchorRow is not null && viewport is not null ? row.Bounds.Y - viewport.Bounds.Y : 0;
+			QueueClamp();
 		}
 
-		void QueueReclamp(Grid row, bool expanded)
+		void QueueClamp()
 		{
-			if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
-			// 同一帧里多次展开：记下最后一次要露出的行，只排一次追帧。
-			revealRow = expanded ? row : null;
-			if (reclampQueued) return;
+			if (reclampQueued || viewport is null) return;
 			reclampQueued = true;
-			// 行高只有测完才准：布局落定后再夹一次范围，并把刚展开的内容露出来。
-			dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+			// 行高只有测完才准。必须在 ScrollViewer 完成本轮排布时立即还原预览行：
+			// 内层偏移会改变预览行的窗口坐标，若拖到 Render 阶段再改，会话的锚点恢复
+			// 已经按旧坐标完成，表现为外部会话进度跳动。ScrollChanged 在 arrange 末尾触发，
+			// 早于 Render 回调，正好早于会话锚点。
+			void OnScrollChanged()
 			{
+				viewport.ScrollChanged -= OnScrollChanged;
 				reclampQueued = false;
-				var reveal = revealRow;
-				revealRow = null;
-				if (body is null || viewport is null || list is null) return;
-				viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
-				// 期间组体可能被折叠重建：旧行已经释放，不能再拿它的坐标去滚。
-				if (reveal is null || reveal.Bounds.Height <= 0 || !reveal.IsDescendantOf(list)) return;
-				// 展开出来的内容在视口下方时，组体往下带一段，别让读者自己猜还能不能滚。
-				var overflow = reveal.Bounds.Bottom - viewport.Bounds.Bottom;
-				if (overflow > 0.5)
-					viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset + overflow);
-			});
+				ApplyAnchorClamp();
+			}
+			viewport.ScrollChanged += OnScrollChanged;
+		}
+
+		void ApplyAnchorClamp()
+		{
+			var anchor = anchorRow;
+			var targetOffset = anchorOffset;
+			anchorRow = null;
+			if (body is null || viewport is null) return;
+			viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
+			if (anchor is null || anchor.Bounds.Height <= 0 || !anchor.IsDescendantOf(viewport)) return;
+			var delta = anchor.Bounds.Y - viewport.Bounds.Y - targetOffset;
+			if (Math.Abs(delta) > 0.5)
+				viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset + delta);
 		}
 
 		void DestroyBody()
@@ -332,8 +571,12 @@ internal sealed class ExecutionProcessView
 			if (body is not { } content) return;
 			body = null;
 			list = null;
+			stack = null;
+			stackEntries.Clear();
+			stackHosts.Clear();
 			viewport = null;
-			rows.Reset();
+			rows?.Reset();
+			rows = null;
 			fold.Content(collapsedBody);
 			UiLifetime.Release(content);
 		}
@@ -341,6 +584,7 @@ internal sealed class ExecutionProcessView
 		void Update(IReadOnlyList<ChatEntry> next, bool isRunning)
 		{
 			members = next;
+			runningGroup = isRunning;
 			if (isRunning)
 			{
 				icon.Source(AppIcons.Get(ExecutionProcess.GroupIcon(next), AppStyles.ColorForRole(AppStyles.RoleAccent)));
@@ -358,7 +602,7 @@ internal sealed class ExecutionProcessView
 				separator.IsVisible(false);
 				detail.IsVisible(false);
 			}
-			if (body is not null) rows.Set(members);
+			if (body is not null) SyncRows();
 		}
 	}
 
@@ -418,7 +662,7 @@ internal sealed class ExecutionProcessView
 		{
 			var position = index++;
 			if (_stepStates.TryGetValue(stepKey, out var saved) && position < saved.Length && saved[position])
-				expander.IsExpanded = true;
+				SetExpandedWithoutFollowing(expander, true);
 			expander.ExpandedChanged += expanded =>
 			{
 				RecordStepState(stepKey, position, expanded);

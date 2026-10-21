@@ -23,6 +23,8 @@ internal sealed class AssistantMessageView : IDisposable
 	private readonly TextFocusScrollGuard _focus;
 	private readonly Action<string> _openLink;
 	private ChatEntry? _entry;
+	// 展开中的思考是否正在跟随内容增长：只在流式思考期间保持，避免结束后把阅读位置拉走。
+	private bool _followingThinking;
 
 	public AssistantMessageView(ChatEntry entry, Action<string> copy, TextFocusScrollGuard focus, Action<ImageSource>? preview = null,
 		Action<string>? openLink = null)
@@ -48,10 +50,25 @@ internal sealed class AssistantMessageView : IDisposable
 		_thinking.ExpandedChanged += expanded =>
 		{
 			_thinkingPreview.IsVisible = !expanded && _thinkingPreview.Text.Length > 0;
-			if (expanded) EnsureThinkingMarkdown();
+			if (!expanded)
+			{
+				_followingThinking = false;
+				_focus.StopGrowth(_thinking);
+				return;
+			}
+			EnsureThinkingMarkdown();
+			// 用户展开：记住这次阅读意图。若思考正在流式输出就立即贴住末尾；
+			// 尚未开始时由后续 Update 在首个 thinking delta 到来后接管。
+			// 从回收缓存恢复状态时不算一次用户展开，不重新贴底。
+			if (!_focus.SuppressGrowthFollow)
+			{
+				_followingThinking = true;
+				if (_entry?.IsThinking == true) _focus.FollowGrowth(_thinking);
+			}
 		};
 
-		_focus.TrackFold(_thinking);
+		// 思考行内部由组体/跟随增长处理；不要用外层锚点把会话滚动位置带走。
+		_focus.TrackFold(_thinking, preserveAnchor: false);
 		_copy = AppIcons.Button("copy", Strings.CopyMessage, () => copy(_entry?.Text ?? string.Empty), size: 14);
 		_headerRow = new DockPanel().LastChildFill().Children(_copy.DockRight(), _header);
 		var content = new StackPanel().Spacing(AppTheme.Space2).Children(
@@ -108,7 +125,24 @@ internal sealed class AssistantMessageView : IDisposable
 			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs) : Strings.ThinkingComplete);
 		var preview = Preview(entry.Thinking);
 		_thinkingPreview.Text(preview).IsVisible(!_thinking.IsExpanded && preview.Length > 0);
-		if (_thinking.IsExpanded) EnsureThinkingMarkdown(entry);
+		if (_thinking.IsExpanded)
+		{
+			EnsureThinkingMarkdown(entry);
+			// 已经由用户展开并进入跟随的思考继续贴住末尾；恢复出来的展开状态不自动开始跟随。
+			if (entry.IsThinking)
+			{
+				if (_followingThinking) _focus.FollowGrowth(_thinking);
+			}
+			else if (_followingThinking)
+			{
+				_followingThinking = false;
+				_focus.StopGrowth(_thinking);
+			}
+		}
+		else
+		{
+			_followingThinking = false;
+		}
 		var showChanges = !entry.IsStreaming && !entry.Compact && entry.ChangedFiles.Count > 0;
 		_changes.IsVisible(showChanges);
 		if (showChanges)
