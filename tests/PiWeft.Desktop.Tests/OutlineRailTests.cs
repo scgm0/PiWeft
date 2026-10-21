@@ -152,4 +152,24 @@ public sealed class OutlineRailTests
 		Assert.Equal("检查布局", SessionTab.OutlineTitle(entry));
 		Assert.Equal(Strings.OutlineImageMessage, SessionTab.OutlineTitle(entry with { Text = "", Images = [new("data", "image/png")] }));
 	}
+
+	[Fact]
+	public void HoveringATickWaitsForTheSharedHoverDelayBeforePreviewing()
+	{
+		using var outline = new ConversationOutline();
+		outline.SetItems([new(2, "第一条", "10/20 10:00"), new(18, "第二条", "10/20 10:05")]);
+
+		// 刻度高亮跟着指针立刻走，文字预览则和其它悬停提示一样等 350ms。
+		outline.Hover(1);
+		Assert.True(outline.PreviewPending);
+		Assert.Equal("第二条", outline.PreviewTitle);
+		Assert.Equal("10/20 10:05", outline.PreviewTime);
+
+		// 光标离开会取消这次等待；键盘聚焦仍然立即预览。
+		outline.HidePreview();
+		Assert.False(outline.PreviewPending);
+		outline.Preview(0);
+		Assert.False(outline.PreviewPending);
+		Assert.Equal("第一条", outline.PreviewTitle);
+	}
 }

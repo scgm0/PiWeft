@@ -38,6 +38,9 @@ public static class AppFonts
 	/// <summary>等宽字体族（Nerd Font 版，含 powerline 图标）。</summary>
 	public const string MonoFamily = "Maple Mono NF CN";
 
+	/// <summary>一格滚轮的位移（DIP）：与 Chromium/Electron 的 ~100px 对齐。</summary>
+	internal const double ScrollWheelStepDip = 100;
+
 	private static bool _registered;
 	private static bool _uiLoaded;
 	private static bool _regularLoaded;
@@ -82,15 +85,19 @@ public static class AppFonts
 
 		// 正文是全局默认字体：由 ThemeMetrics 下发到每个控件，MewUI 自己画的对话框也跟着变。
 		// 用 Regular 的显式别名，确保默认字重拿到官方 Regular 文件。
+		// 滚轮步长同时对齐浏览器（Chromium/Electron 一格约 100 DIP）：MewUI 默认 50 DIP 偏小，
+		// 同样的手势要走两倍格数，手感会显得「拖」。
+		var metrics = ThemeMetrics.Default with { ScrollWheelStep = ScrollWheelStepDip };
 		if (_regularLoaded)
 		{
-			ThemeManager.DefaultMetrics = ThemeMetrics.Default with
+			metrics = metrics with
 			{
 				FontFamily = DefaultUiFamily,
 				FontSize = AppTheme.FontSizeControl,
 				FontWeight = FontWeight.Normal,
 			};
 		}
+		ThemeManager.DefaultMetrics = metrics;
 	}
 
 	private static bool RegisterFont(string fileName, string? nameHint = null)

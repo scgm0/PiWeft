@@ -16,7 +16,6 @@ internal sealed class UsageStatsView
 	private readonly Func<string, string, ModelCostRates?> _rates;
 	private readonly StackPanel _content = new();
 	private readonly TextBlock _summary = new();
-	private readonly TextBlock _notice = new();
 	private readonly Button _refresh;
 	private CancellationTokenSource? _abort;
 	private int _generation;
@@ -39,7 +38,6 @@ internal sealed class UsageStatsView
 						new TextBlock().Text(Strings.UsageStatsTitle).FontSize(18).FontWeight(FontWeight.Bold).PrimaryText(),
 						new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 							.Children(_refresh, _summary.FontSize(AppTheme.FontSizeCaption).SubtleText()),
-						_notice.FontSize(AppTheme.FontSizeCaption).AccentText().IsVisible(false),
 						_content))
 				.AutoVerticalScroll()
 				.NoHorizontalScroll());
@@ -104,11 +102,10 @@ internal sealed class UsageStatsView
 			if (report is null)
 			{
 				_summary.Text(string.Empty);
-				_notice.Text(error ?? Strings.UsageStatsUnavailable).IsVisible(true);
+				Toasts.Error(View, error ?? Strings.UsageStatsUnavailable);
 				return;
 			}
 
-			_notice.IsVisible(false);
 			Render(report);
 		}
 

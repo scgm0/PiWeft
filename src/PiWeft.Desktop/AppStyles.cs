@@ -122,6 +122,22 @@ public static class AppStyles
 	};
 
 	/// <summary>
+	/// 换肤后重建文本视图，并显式失效排布。
+	/// </summary>
+	/// <remarks>
+	/// MewUI 0.22.1 的 <c>MultiLineTextBox</c> 在换肤重建视图时只调用 <c>InvalidateMeasure</c>；
+	/// 若控件此前已被标成测量失效（换肤广播通常如此），这次调用会提前返回，排布标记不会被重新置位。
+	/// 外层横向 ScrollViewer 以无限宽测量时，新视图的视口宽度仍停在 0，<c>TextViewLayout</c>
+	/// 不会物化任何行，代码块/差异文本就只剩背景。这里补一次排布失效，让 ArrangeContent
+	/// 把真实宽度写回视口后再绘制。
+	/// </remarks>
+	public static void RefreshTextView(MultiLineTextBox view)
+	{
+		view.InvalidateTextView();
+		view.InvalidateArrange();
+	}
+
+	/// <summary>
 	/// 遍历子树，把带角色标记的文本重新上色。换主题时调用，比重建界面便宜得多
 	/// （只改颜色，不重新创建控件、也不重新解析 Markdown）。
 	/// </summary>

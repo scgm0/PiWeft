@@ -54,9 +54,11 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _scrollToLatest;
 	private readonly FloatingShadow _scrollToLatestShadow;
 	private readonly Grid _scrollToLatestShell;
+	private readonly ShellRootWatcher _scrollToLatestWatcher;
 
 	/// <summary>挂窗后按钮外壳升入装饰层时持有的装饰器（见 <see cref="HandleShellRootChanged"/>）。</summary>
-	private Adorner? _scrollToLatestAdorner;
+	private bool _scrollToLatestHosted;
+	private Window? _scrollToLatestWindow;
 	private readonly TextBox _searchBox = new TextBox().PrimarySelection();
 	private readonly TextBlock _filterStatus = new();
 	private readonly TextBlock _extensionLine = new();
@@ -157,13 +159,23 @@ public sealed partial class SessionTab : IDisposable
 				button.BorderBrush = palette.TextFaint;
 				button.BorderThickness = 1;
 			});
+		// 阴影画布要比圆钮大一圈：光晕（模糊 7 + 下移 2）画在自己的 bounds 里才不会出现硬边黑带。
+		const double shadowInset = 10;
 		_scrollToLatestShadow = new FloatingShadow().IsHitTestVisible(false);
 		var shell = new FloatingShell();
-		shell.VisualRootChanged = HandleShellRootChanged;
-		_scrollToLatestShell = shell.Width(36).Height(36)
+		_scrollToLatestWatcher = new ShellRootWatcher
+		{
+			Changed = HandleShellRootChanged, IsHitTestVisible = false,
+			Width = 0, Height = 0,
+			HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+		};
+		_scrollToLatestShell = shell.Width(36 + shadowInset * 2).Height(36 + shadowInset * 2)
 			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Bottom)
-			.Margin(new Thickness(0, 0, 0, AppTheme.Space3))
-			.Children(_scrollToLatestShadow, _scrollToLatest);
+			// 圆钮相对窗口底边的位置保持原样（原来的 12 = 2 + 10）。
+			.Margin(new Thickness(0, 0, 0, Math.Max(0, AppTheme.Space3 - shadowInset)))
+			.Children(_scrollToLatestShadow,
+				_scrollToLatest.HorizontalAlignment(HorizontalAlignment.Center)
+					.VerticalAlignment(VerticalAlignment.Center));
 		// 永远参与布局，只用 opacity 隐藏：待办卡展开/收起会改变消息区高度，
 		// 若用 IsVisible 跳过 arrange，重新出现时图标缓存可能停在旧位置，和按钮底分离。
 		_scrollToLatest.Opacity = 0;
@@ -206,13 +218,19 @@ public sealed partial class SessionTab : IDisposable
 
 		// Restore focus offsets before follow-state observes the scroll notification.
 		_textFocus = new TextFocusScrollGuard(_scroll, anchor => _conversationScroll!.PreserveAnchor(anchor));
+		// 折叠开关改变行高：会话视图自己收敛一次，不能等用户滚动才发现内容没了。
+		_textFocus.LayoutInvalidated = fold => _timeline.RefreshLayout(fold);
 		_conversationScroll = new ConversationScroll(_scroll, visible => SetScrollToLatestVisible(visible && _messages.IsVisible));
 
 		// 右缘定位轴：点击刻度跳到那条用户消息，滚动时高亮当前阅读位置。
 		_outline.Jump += JumpToOutline;
 		_outline.View.MouseWheel += args => SmoothScroll.For(_scroll).RouteWheel(args);
 		_scroll.ScrollChanged += OutlineScrolled;
-		_mainArea.SizeChanged += _ => UpdateOutlineVisibility();
+		_mainArea.SizeChanged += _ =>
+		{
+			UpdateOutlineVisibility();
+			UpdateFloatingShellMargins();
+		};
 
 		_composer = new MultiLineTextBox().PrimarySelection()
 			.FontSize(AppTheme.FontSizeChat)
@@ -425,6 +443,9 @@ public sealed partial class SessionTab : IDisposable
 		_mainArea.Children(_branchPanel.View.IsVisible(false));
 		_mainArea.Children(_outline.View);
 		_mainArea.Children(_scrollToLatestShell);
+		// 外壳升到窗口 OverlayLayer 后不再跟随本标签页的视觉根；单独留一个零尺寸观察者，
+		// 标签页被切走时才能把旧外壳摘掉，避免多个会话的「移动到最新」按钮叠在一起。
+		_mainArea.Children(_scrollToLatestWatcher);
 
 		var chatView = AppIcons.Button("message-square", Strings.ViewChat, () => ShowView(showChat: true));
 		var branchView = AppIcons.Button("git-branch", Strings.ViewBranches, () => ShowView(showChat: false));
@@ -526,9 +547,11 @@ public sealed partial class SessionTab : IDisposable
 				Render();
 			}
 		};
-		_imagePreview.Status = message =>
+		_imagePreview.Status = (message, ok) =>
 		{
-			if (!_disposed) _status.Text(message);
+			if (_disposed) return;
+			if (ok) Toasts.Success(View, message);
+			else NotifyError(message);
 		};
 		_chat.Attach(session);
 
@@ -722,6 +745,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		if (_disposed) return;
 		_disposed = true;
+		DetachFloatingShell();
 		ReadingPreferences.Changed -= ApplyReadingPreferences;
 		UiHost?.Hide();
 		_compactionAbort?.Cancel();
@@ -770,7 +794,7 @@ public sealed partial class SessionTab : IDisposable
 
 		if (_loadingAttachments > 0)
 		{
-			_status.Text(Strings.AttachmentLoading);
+			Notify(Strings.AttachmentLoading);
 			return;
 		}
 		var text = _composer.Text;
@@ -801,6 +825,12 @@ public sealed partial class SessionTab : IDisposable
 	public void ApplyTheme()
 	{
 		AppStyles.ApplyTextColors((Element)View);
+		// 「移动到最新」有时挂在 AdornerLayer（不在 View 的视觉树里），换肤要单独刷新，
+		// 否则浅色主题下会留下一个深色圆钮。
+		_scrollToLatest.Background = AppTheme.CardBackground;
+		_scrollToLatest.BorderBrush = AppTheme.TextFaint;
+		AppStyles.ApplyTextColors((Element)_scrollToLatestShell);
+		_scrollToLatestShadow.InvalidateVisual();
 		_status.Foreground(AppStyles.ColorForRole(AppStyles.RoleSubtle));
 		AppStyles.ApplyTextColors(_modelPicker.View);
 		AppStyles.ApplyTextColors(_statisticsPanel.View);
@@ -810,6 +840,11 @@ public sealed partial class SessionTab : IDisposable
 		_terminal?.ApplyTheme();
 	}
 
+	/// <summary>临时消息统一走窗口级 toast；头部铭牌只留给模型与思考级别。</summary>
+	private void Notify(string message) => Toasts.Show(View, message);
+
+	/// <summary>失败类提示：红色图标，停留时间按文案长度。</summary>
+	private void NotifyError(string message) => Toasts.Error(View, message);
 
 	/// <summary>宿主快捷键：发送当前输入框内容；正在运行则中断。</summary>
 	public void SendFromShortcut() => Send();
@@ -845,12 +880,12 @@ public sealed partial class SessionTab : IDisposable
 		}
 		if (_loadingAttachments > 0)
 		{
-			_status.Text(Strings.AttachmentLoading);
+			Notify(Strings.AttachmentLoading);
 			return;
 		}
 		if (_attachments.Count > 0 && !Session.Model.SupportsImages)
 		{
-			_status.Text(Strings.ImageModelRequired);
+			NotifyError(Strings.ImageModelRequired);
 			_composer.Text = text;
 			return;
 		}
@@ -912,7 +947,7 @@ public sealed partial class SessionTab : IDisposable
 				Render();
 				if (failure is not null)
 				{
-					_status.Text(Strings.SendFailed(failure));
+					NotifyError(Strings.SendFailed(failure));
 				}
 
 				RefreshTitle();
@@ -943,49 +978,84 @@ public sealed partial class SessionTab : IDisposable
 	/// 装饰器按 <c>_mainArea</c> 的 bounds 排布，位置行为与原先作为其子级完全一致；
 	/// 未挂窗（单元测试直接排布 <c>tab.View</c>）时外壳留在主区里，行为不变。
 	/// </summary>
+	/// <summary>
+	/// 浮层按整个窗口客户区排布：把外壳的边距对齐到消息区列，
+	/// 按钮才始终居中在正文上方、贴住输入区上沿（而不是窗口底边）。
+	/// </summary>
+	private void UpdateFloatingShellMargins()
+	{
+		if (!_scrollToLatestHosted) return;
+		var area = _mainArea.Bounds;
+		// 挂层可能发生在首次布局前：此时还没有有效边界，等布局收敛后再对齐。
+		if (area.Width <= 0 || area.Height <= 0) return;
+		// Bounds 是窗口客户区坐标，浮层也按客户区排布：直接用主区边界做边距，
+		// 不能再减 View 的偏移（侧栏在 View 外面，减了会把按钮推到整窗居中）。
+		var left = Math.Max(0, area.Left);
+		var right = Math.Max(0, View.Bounds.Right - area.Right);
+		var bottom = Math.Max(0, View.Bounds.Bottom - area.Bottom) + 2;
+		var margin = new Thickness(left, 0, right, bottom);
+		if (_scrollToLatestShell.Margin == margin) return;
+		_scrollToLatestShell.Margin(margin);
+	}
+
 	private void HandleShellRootChanged(Element? oldRoot, Element? newRoot)
 	{
+		// 挂到窗口级 OverlayLayer 而不是 Adorner：浮层在每帧都会重排重绘、且绘制在正文之上，
+		// 不会像装饰层那样在保留合成的局部重绘里丢掉背景与阴影（偶发“只剩图标”）。
 		if (newRoot is Window window)
 		{
-			if (_scrollToLatestAdorner is not null) return;
+			if (_scrollToLatestHosted)
+			{
+				if (ReferenceEquals(_scrollToLatestWindow, window)) return;
+				DetachFloatingShell();
+			}
 			if (ReferenceEquals(_scrollToLatestShell.Parent, _mainArea)) _mainArea.Remove(_scrollToLatestShell);
-			_scrollToLatestAdorner = new ScrollToLatestAdorner(_mainArea, _scrollToLatestShell);
-			window.AdornerLayer.Add(_scrollToLatestAdorner);
+			window.OverlayLayer.Add(_scrollToLatestShell);
+			_scrollToLatestWindow = window;
+			_scrollToLatestHosted = true;
+			UpdateFloatingShellMargins();
 		}
-		else if (newRoot is null && _scrollToLatestAdorner is { } adorner)
+		else if (newRoot is null)
 		{
-			_scrollToLatestAdorner = null;
-			if (adorner.Parent is Window owner) owner.AdornerLayer.Remove(adorner);
-			if (_scrollToLatestShell.Parent is null) _mainArea.Children(_scrollToLatestShell);
+			DetachFloatingShell();
 		}
 	}
 
-	/// <summary>悬浮按钮装饰器：渲染在正文之上，但只有按钮自身可以命中。</summary>
-	private sealed class ScrollToLatestAdorner : Adorner
+	private void DetachFloatingShell()
 	{
-		private readonly UIElement _shell;
-
-		public ScrollToLatestAdorner(UIElement adornedElement, UIElement shell) : base(adornedElement, shell)
-		{
-			_shell = shell;
-			Focusable = false;
-		}
-
-		// Adorner 继承的 Panel 会把整个主区 bounds 都算作命中区，吞掉消息区的点击；
-		// 这里只让按钮 36×36 的范围参与命中，其余位置穿透到正文。
-		protected override UIElement? OnHitTest(Point point) =>
-			IsVisible && IsHitTestVisible ? _shell.HitTest(point) : null;
+		if (!_scrollToLatestHosted) return;
+		_scrollToLatestHosted = false;
+		_scrollToLatestWindow?.OverlayLayer.Remove(_scrollToLatestShell);
+		_scrollToLatestWindow = null;
+		if (_scrollToLatestShell.Parent is null) _mainArea.Children(_scrollToLatestShell);
 	}
 
-	/// <summary>按钮外壳：随视图挂窗/脱窗触发升层与回落。</summary>
+	/// <summary>按钮外壳：外圈是阴影画布，自身不参与命中，只有圆钮可点。</summary>
 	private sealed class FloatingShell : Grid
 	{
-		public Action<Element?, Element?>? VisualRootChanged;
+		protected override UIElement? OnHitTest(Point point)
+		{
+			UIElement? hit = null;
+			for (var index = 0; index < Children.Count && hit is null; index++)
+			{
+				if (Children[index] is UIElement { IsVisible: true, IsHitTestVisible: true } child)
+				{
+					hit = child.HitTest(point);
+				}
+			}
+			return hit;
+		}
+	}
+
+	/// <summary>零尺寸观察者：只跟踪所在标签页的视觉根，不参与布局与命中。</summary>
+	private sealed class ShellRootWatcher : Grid
+	{
+		public Action<Element?, Element?>? Changed;
 
 		protected override void OnVisualRootChanged(Element? oldRoot, Element? newRoot)
 		{
 			base.OnVisualRootChanged(oldRoot, newRoot);
-			VisualRootChanged?.Invoke(oldRoot, newRoot);
+			Changed?.Invoke(oldRoot, newRoot);
 		}
 	}
 
@@ -1089,7 +1159,7 @@ public sealed partial class SessionTab : IDisposable
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<SessionTab>(), "Choose image attachment", ex);
-			_status.Text(Strings.AttachFailed(ex.Message));
+			NotifyError(Strings.AttachFailed(ex.Message));
 			return;
 		}
 
@@ -1134,18 +1204,19 @@ public sealed partial class SessionTab : IDisposable
 		var text = _chat.LastAssistantText();
 		if (string.IsNullOrEmpty(text))
 		{
-			_status.Text(Strings.NothingToCopy);
+			Notify(Strings.NothingToCopy);
 			return;
 		}
 
 		CopyText(text);
 	}
 
-	/// <summary>复制一段文本，并在状态行给出反馈。</summary>
+	/// <summary>复制一段文本，并用 toast 告知结果。</summary>
 	private void CopyText(string text)
 	{
 		var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
-		_status.Text(clipboard?.TrySetText(text) == true ? Strings.Copied : Strings.ClipboardUnavailable);
+		if (clipboard?.TrySetText(text) == true) Toasts.Success(View, Strings.Copied);
+		else NotifyError(Strings.ClipboardUnavailable);
 	}
 
 	/// <summary>重新发送最后一条用户消息（会话历史保留，等同于再问一次）。</summary>
@@ -1190,7 +1261,7 @@ public sealed partial class SessionTab : IDisposable
 		Render();
 	}
 
-	/// <summary>测试当前模型的连通性，结果写到状态行。</summary>
+	/// <summary>测试当前模型的连通性，结果用 toast 提示。</summary>
 	private async Task TestConnectionAsync()
 	{
 		if (_testing || _sending || _chat.IsStreaming || _disposed)
@@ -1199,13 +1270,17 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_testing = true;
-		Dispatch(() => _status.Text(Strings.TestingConnection));
+		Dispatch(() => Notify(Strings.TestingConnection));
 		try
 		{
 			var result = await Session.TestConnectionAsync().ConfigureAwait(false);
-			Dispatch(() => _status.Text(result.Ok
-				? Strings.ConnectionOk(Session.Model.Provider, Session.Model.Id, result.LatencyMs)
-				: Strings.ConnectionFailed(result.Error ?? "unknown")));
+			Dispatch(() =>
+			{
+				if (result.Ok)
+					Toasts.Success(View, Strings.ConnectionOk(Session.Model.Provider, Session.Model.Id, result.LatencyMs));
+				else
+					NotifyError(Strings.ConnectionFailed(result.Error ?? "unknown"));
+			});
 		}
 		finally
 		{
@@ -1755,7 +1830,7 @@ public sealed partial class SessionTab : IDisposable
 				_sending = false;
 				if (_disposed) return;
 				Render();
-				if (failure is not null) _status.Text(Strings.SendFailed(failure));
+				if (failure is not null) NotifyError(Strings.SendFailed(failure));
 			});
 		}
 	}
@@ -1798,7 +1873,7 @@ public sealed partial class SessionTab : IDisposable
 		{
 			body = MessageText.Create(collapsible ? collapsedText : text);
 			UserReferenceRichText.Attach(body, editable: false,
-				onOpen: path => Shell.OpenMessageLink(path, Session.Cwd, message => _status.Text(message)),
+				onOpen: path => Shell.OpenMessageLink(path, Session.Cwd, message => NotifyError(message)),
 				cwd: Session.Cwd, skillLocation: SkillLocation);
 			_textFocus.Track(body);
 			bubble.Children(body);
@@ -1930,26 +2005,26 @@ public sealed partial class SessionTab : IDisposable
 			Render();
 			RefreshTitle();
 			Forked?.Invoke(this);
-			_status.Text(Strings.Branched(Session.Session.SessionFile ?? string.Empty));
+			Toasts.Success(View, Strings.Branched(Session.Session.SessionFile ?? string.Empty));
 		}
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<SessionTab>(), "Fork session", ex);
-			_status.Text(Strings.BranchFailed(ex.Message));
+			NotifyError(Strings.BranchFailed(ex.Message));
 		}
 	}
 
 	/// <summary>消息缩略图与预览复用同一个图片源。</summary>
 	internal static UIElement ImageView(ChatImage image, Action<ImageSource>? preview = null) => ChatImages.Create(image, preview);
 
-	private void OpenMessageLink(string url) => Shell.OpenMessageLink(url, Session.Cwd, message => _status.Text(message));
+	private void OpenMessageLink(string url) => Shell.OpenMessageLink(url, Session.Cwd, message => NotifyError(message));
 
 	private void PreviewImage(ImageSource source) => _imagePreview.Show(View, source);
 
 	private void PreviewAttachment(ImageContent image)
 	{
 		try { PreviewImage(ChatImages.Source(new ChatImage(image.Data, image.MimeType))); }
-		catch (FormatException) { _status.Text(Strings.BrokenImage); }
+		catch (FormatException) { NotifyError(Strings.BrokenImage); }
 	}
 
 	/// <summary>右键菜单「粘贴」的共享实现：图片优先，纯文本回退到文本框的默认粘贴。</summary>
@@ -1981,14 +2056,14 @@ public sealed partial class SessionTab : IDisposable
 		if (_disposed || !_chat.IsStreaming) return;
 		if (_loadingAttachments > 0)
 		{
-			_status.Text(Strings.AttachmentLoading);
+			Notify(Strings.AttachmentLoading);
 			return;
 		}
 		var text = _composer.Text;
 		if (string.IsNullOrWhiteSpace(text) && _attachments.Count == 0) return;
 		if (_attachments.Count > 0 && !Session.Model.SupportsImages)
 		{
-			_status.Text(Strings.ImageModelRequired);
+			NotifyError(Strings.ImageModelRequired);
 			return;
 		}
 
@@ -2000,13 +2075,13 @@ public sealed partial class SessionTab : IDisposable
 			_composer.Text = string.Empty;
 			_attachments.Clear();
 			RefreshAttachments();
-			_status.Text(steer ? Strings.SteerQueued : Strings.FollowUpQueued);
+			Notify(steer ? Strings.SteerQueued : Strings.FollowUpQueued);
 			FocusComposer();
 		}
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<SessionTab>(), "Queue running message", ex);
-			_status.Text(Strings.SendFailed(ex.Message));
+			NotifyError(Strings.SendFailed(ex.Message));
 		}
 	}
 
@@ -2060,14 +2135,14 @@ public sealed partial class SessionTab : IDisposable
 		catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
 		{
 			AppLog.Failure(AppLog.For<SessionTab>(), "Paste clipboard image", ex);
-			Dispatch(() => { if (!_disposed) _status.Text(Strings.ClipboardImageUnavailable); });
+			Dispatch(() => { if (!_disposed) NotifyError(Strings.ClipboardImageUnavailable); });
 			return;
 		}
 
 		if (_disposed) return;
 		if (attachments.Count == 0)
 		{
-			_status.Text(Strings.ClipboardImageUnavailable);
+			NotifyError(Strings.ClipboardImageUnavailable);
 			return;
 		}
 

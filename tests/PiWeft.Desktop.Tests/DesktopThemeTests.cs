@@ -30,6 +30,40 @@ public class DesktopThemeTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
+	[Fact]
+	public void LightThemeKeepsCodeSurfacesLightAndReadable()
+	{
+		// 工具输出/代码块在浅色主题下要跟界面一起变浅：浅底深字，对比度够读。
+		var light = AppPalette.Light;
+		Assert.True(Luminance(light.CodeBackground) > 0.75, $"code surface {light.CodeBackground} is not light");
+		Assert.True(Luminance(light.CodeText) < 0.2, $"code text {light.CodeText} is not dark");
+		Assert.True(Contrast(light.CodeText, light.CodeBackground) > 7, "light code text needs readable contrast");
+	}
+
+	[Fact]
+	public void DarkThemeKeepsCodeSurfacesDarkAndReadable()
+	{
+		var dark = AppPalette.Dark;
+		Assert.True(Luminance(dark.CodeBackground) < 0.2);
+		Assert.True(Luminance(dark.CodeText) > 0.7);
+		Assert.True(Contrast(dark.CodeText, dark.CodeBackground) > 7);
+	}
+
+	private static double Luminance(Color color) =>
+		0.2126 * Channel(color.R) + 0.7152 * Channel(color.G) + 0.0722 * Channel(color.B);
+
+	private static double Channel(byte value)
+	{
+		var channel = value / 255.0;
+		return channel <= 0.03928 ? channel / 12.92 : Math.Pow((channel + 0.055) / 1.055, 2.4);
+	}
+
+	private static double Contrast(Color left, Color right)
+	{
+		var (lighter, darker) = (Luminance(left), Luminance(right));
+		return (Math.Max(lighter, darker) + 0.05) / (Math.Min(lighter, darker) + 0.05);
+	}
+
 	[Theory]
 	[InlineData(DesktopPreference.DarkTheme, ThemeVariant.Dark)]
 	[InlineData(DesktopPreference.LightTheme, ThemeVariant.Light)]

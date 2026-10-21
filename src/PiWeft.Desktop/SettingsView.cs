@@ -45,7 +45,6 @@ public sealed class SettingsView
 {
 	private readonly Func<SettingsSnapshot> _snapshot;
 	private readonly StackPanel _content = new();
-	private readonly TextBlock _toast = new();
 	private readonly StackPanel _navigation = new();
 	private readonly Lazy<ConfigurationView> _configuration;
 	private readonly Grid _main;
@@ -85,8 +84,6 @@ public sealed class SettingsView
 			view.StateChanged += () => StateChanged?.Invoke();
 			return view;
 		});
-		_toast.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap)
-			.MaxWidth(420).VerticalAlignment(VerticalAlignment.Center).IsVisible(false);
 		_content.Spacing(AppTheme.Space4).MaxWidth(960);
 		_systemView = new ScrollViewer().SmoothScrolling().Content(_content).AutoVerticalScroll().NoHorizontalScroll();
 		var main = _main = new Grid().Children(_systemView);
@@ -101,7 +98,7 @@ public sealed class SettingsView
 		// 右侧内容区：分区标题固定在顶部，只有卡片列表滚动。
 		var sectionHeader = new DockPanel().LastChildFill()
 			.Margin(new Thickness(0, 0, 0, AppTheme.Space3))
-			.Children(_toast.DockRight(), _sectionTitle.FontSize(AppTheme.FontSizeTitle)
+			.Children(_sectionTitle.FontSize(AppTheme.FontSizeTitle)
 				.FontWeight(FontWeight.SemiBold).PrimaryText().VerticalAlignment(VerticalAlignment.Center));
 		var contentColumn = new Border().StyleName(AppStyles.DialogContent)
 			.Padding(new Thickness(AppTheme.Space4 + 4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space4))
@@ -291,12 +288,8 @@ public sealed class SettingsView
 		FocusNavigation();
 	}
 
-	/// <summary>在面板顶部提示一句话（例如「已设为默认模型」）。</summary>
-	private void Toast(string message)
-	{
-		_toast.Text(message);
-		_toast.IsVisible(true);
-	}
+	/// <summary>操作反馈统一走窗口级 toast（例如「已设为默认模型」）。</summary>
+	private void Toast(string message, ToastKind kind = ToastKind.Info) => Toasts.Show(_sectionTitle, message, kind);
 
 	/// <summary>
 	/// 最近一次分区构建失败的原因；正常时为 <c>null</c>。
@@ -452,7 +445,7 @@ public sealed class SettingsView
 			if (font.SelectedIndex < 0 || width.SelectedIndex < 0) return;
 			var next = DesktopPreference.Load() with { ChatFontSize = sizes[font.SelectedIndex], ReadingWidth = widths[width.SelectedIndex] };
 			try { next.Save(); }
-			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Toast(Strings.ConfigFailed); return; }
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Toast(Strings.ConfigFailed, ToastKind.Error); return; }
 			ReadingPreferences.Apply(next);
 			sample.FontSize(next.ChatFontSize);
 		}
@@ -524,11 +517,11 @@ public sealed class SettingsView
 			try
 			{
 				await _reloadResources();
-				Toast(Strings.ResourcesReloaded);
+				Toast(Strings.ResourcesReloaded, ToastKind.Success);
 			}
 			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
 			{
-				Toast(Strings.ConfigFailed);
+				Toast(Strings.ConfigFailed, ToastKind.Error);
 			}
 		}
 	}
@@ -571,12 +564,12 @@ public sealed class SettingsView
 		{
 			if (!Shell.OpenInEditor(path))
 			{
-				Toast(Strings.ConfigFailed);
+				Toast(Strings.ConfigFailed, ToastKind.Error);
 			}
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
 		{
-			Toast(Strings.ConfigFailed);
+			Toast(Strings.ConfigFailed, ToastKind.Error);
 		}
 	}
 
@@ -597,7 +590,8 @@ public sealed class SettingsView
 				AppIcons.Button("copy", Strings.CopyLogDirectory, () =>
 				{
 					var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
-					Toast(clipboard?.TrySetText(AppLog.DirectoryPath) == true ? Strings.Copied : Strings.ClipboardUnavailable);
+					if (clipboard?.TrySetText(AppLog.DirectoryPath) == true) Toast(Strings.Copied, ToastKind.Success);
+					else Toast(Strings.ClipboardUnavailable, ToastKind.Error);
 				}).DockRight(),
 				new TextBlock().Text($"{Strings.LogLevel}：{AppLog.MinimumLevel}")
 					.FontSize(AppTheme.FontSizeMicro).SubtleText())));
@@ -610,13 +604,13 @@ public sealed class SettingsView
 			Directory.CreateDirectory(AppLog.DirectoryPath);
 			if (!Shell.Open(AppLog.DirectoryPath))
 			{
-				Toast(Strings.OpenFailed(AppLog.DirectoryPath));
+				Toast(Strings.OpenFailed(AppLog.DirectoryPath), ToastKind.Error);
 			}
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{
 			AppLog.Failure(AppLog.For<SettingsView>(), "Open log directory", ex);
-			Toast(Strings.OpenFailed(AppLog.DirectoryPath));
+			Toast(Strings.OpenFailed(AppLog.DirectoryPath), ToastKind.Error);
 		}
 	}
 
@@ -692,16 +686,16 @@ public sealed class SettingsView
 
 	private async Task ReconnectAsync(Func<Task> reconnect)
 	{
-		_toast.Text(Strings.SettingsMcpReconnecting).IsVisible(true);
+		Toast(Strings.SettingsMcpReconnecting);
 		try
 		{
 			await reconnect().ConfigureAwait(true);
-			_toast.Text(Strings.SettingsMcpReconnected).IsVisible(true);
+			Toast(Strings.SettingsMcpReconnected, ToastKind.Success);
 			Refresh();
 		}
 		catch (Exception ex)
 		{
-			_toast.Text($"{Strings.SettingsMcpReconnect}：{ex.Message}").IsVisible(true);
+			Toast($"{Strings.SettingsMcpReconnect}：{ex.Message}", ToastKind.Error);
 		}
 	}
 
@@ -812,7 +806,6 @@ public sealed class SettingsView
 	public void BeginCapture(string id)
 	{
 		CapturingId = id;
-		_toast.IsVisible(false);
 		Refresh();
 	}
 
@@ -842,8 +835,7 @@ public sealed class SettingsView
 		var usable = key is >= Key.F1 and <= Key.F24 || (modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0;
 		if (!usable)
 		{
-			_toast.Text(Strings.ShortcutsNeedsModifier);
-			_toast.IsVisible(true);
+			Toast(Strings.ShortcutsNeedsModifier, ToastKind.Error);
 			return false;
 		}
 
@@ -864,14 +856,13 @@ public sealed class SettingsView
 		}
 		else if (!map.Rebind(id, text))
 		{
-			Toast(Strings.ShortcutsInvalid);
+			Toast(Strings.ShortcutsInvalid, ToastKind.Error);
 			return;
 		}
 
 		DesktopPreference.Load().WithShortcuts(map.Overrides).Save();
 		_shortcuts = map;
-		_toast.Text(Strings.ShortcutsRestart);
-		_toast.IsVisible(true);
+		Toast(Strings.ShortcutsRestart, ToastKind.Success);
 		Refresh();
 	}
 
@@ -1021,11 +1012,11 @@ public sealed class SettingsView
 						root["defaultModel"] = model.Id;
 						store.Save(document, root.ToJsonString());
 						_saved(ConfigFile.Settings);
-						Toast(Strings.DefaultModelSaved(model.Provider, model.Id));
+						Toast(Strings.DefaultModelSaved(model.Provider, model.Id), ToastKind.Success);
 					}
 					catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
 					{
-						Toast(ex is ConfigurationConflictException ? Strings.ConfigConflict : Strings.ConfigFailed);
+						Toast(ex is ConfigurationConflictException ? Strings.ConfigConflict : Strings.ConfigFailed, ToastKind.Error);
 					}
 				},
 				size: 13));

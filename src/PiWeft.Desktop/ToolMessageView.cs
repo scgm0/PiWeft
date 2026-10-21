@@ -48,7 +48,12 @@ internal sealed class ToolMessageView
 			{
 				body.Children(SectionLabel(Strings.ToolCommandLabel));
 				var input = MessageText.Create(detailSource, muted: true, mono: true, fontSize: AppTheme.FontSizeCaption);
-				input.Foreground = AppTheme.CodeText;
+				// 代码表面随主题在深浅之间切换，文字颜色必须一起跟着换，不能停在创建时的快照上。
+				input.WithTheme((theme, text) =>
+				{
+					text.Foreground = AppTheme.For(theme).CodeText;
+					AppStyles.RefreshTextView(text);
+				});
 				input.Tag = null;
 				focus.Track(input);
 				body.Children(input);
@@ -66,8 +71,12 @@ internal sealed class ToolMessageView
 			{
 				body.Children(SectionLabel(Strings.ToolResultLabel));
 				var text = MessageText.Create(entry.Text, muted: true, mono: true, fontSize: AppTheme.FontSizeCaption);
-				text.Foreground = AppTheme.CodeText;
-				text.Tag = null;
+			text.WithTheme((theme, block) =>
+			{
+				block.Foreground = AppTheme.For(theme).CodeText;
+				AppStyles.RefreshTextView(block);
+			});
+			text.Tag = null;
 				focus.Track(text);
 				body.Children(text);
 			}

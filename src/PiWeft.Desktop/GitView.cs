@@ -12,13 +12,11 @@ public sealed class GitView
 	private readonly Func<string> _cwd;
 	private readonly StackPanel _content = new();
 	private readonly TextBlock _summary = new();
-	private readonly TextBlock _notice = new();
 	private string? _selectedPath;
 
 	/// <summary>跨刷新保留的草稿，避免提交信息在状态刷新时被清掉。</summary>
 	private string _commitDraft = string.Empty;
 	private string _branchDraft = string.Empty;
-	private string? _statusMessage;
 
 	public GitView(Func<string> cwd)
 	{
@@ -40,7 +38,6 @@ public sealed class GitView
 						new DockPanel()
 							.LastChildFill()
 							.Children(refresh.DockRight(), _summary),
-						_notice.FontSize(AppTheme.FontSizeCaption).AccentText().IsVisible(false),
 						_content))
 				.AutoVerticalScroll()
 				.NoHorizontalScroll());
@@ -58,8 +55,6 @@ public sealed class GitView
 	{
 		var status = GitStatusReader.Read(_cwd());
 		_summary.Text(status.Summary());
-		_notice.Text(_statusMessage ?? string.Empty).IsVisible(_statusMessage is { Length: > 0 });
-		_statusMessage = null;
 
 		foreach (var child in _content.Children.ToArray()) UiLifetime.Release(child);
 		_content.Clear();
@@ -152,10 +147,11 @@ public sealed class GitView
 		var create = AppIcons.Button("plus", Strings.CreateCheckpoint, () =>
 		{
 			var checkpoint = Checkpoints.Create(cwd);
-			_statusMessage = checkpoint is null ? Strings.CheckpointMissing : Strings.CheckpointCreated;
-			if (checkpoint is not null)
+			if (checkpoint is null) Toasts.Error(View, Strings.CheckpointMissing);
+			else
 			{
 				Checkpoints.Prune(cwd);
+				Toasts.Success(View, Strings.CheckpointCreated);
 			}
 
 			Refresh();
@@ -182,7 +178,9 @@ public sealed class GitView
 			_content.Children(new DockPanel().LastChildFill().Children(
 				AppIcons.Button("rotate-ccw", Strings.RestoreCheckpoint, () =>
 				{
-					_statusMessage = Checkpoints.Restore(cwd, captured.Sha) ?? Strings.CheckpointRestored;
+					var error = Checkpoints.Restore(cwd, captured.Sha);
+					if (error is null) Toasts.Success(View, Strings.CheckpointRestored);
+					else Toasts.Error(View, error);
 					Refresh();
 				}).DockRight(),
 				new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption).MutedText()));
@@ -271,9 +269,11 @@ public sealed class GitView
 
 	private void ApplyResult(GitResult result)
 	{
-		_statusMessage = result.Ok
+		var message = result.Ok
 			? (result.Message.Length > 0 ? result.Message : Strings.GitDone)
 			: result.Message;
+		if (result.Ok) Toasts.Success(View, message);
+		else Toasts.Error(View, message);
 
 		if (result.Ok)
 		{

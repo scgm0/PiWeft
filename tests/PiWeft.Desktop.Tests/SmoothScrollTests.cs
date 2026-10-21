@@ -59,10 +59,34 @@ public sealed class SmoothScrollTests
 		Frame(45);
 		Assert.InRange(text.VerticalOffset, 1, ThemeManager.DefaultMetrics.ScrollWheelStep - 1);
 		Settle(smoothText);
-		Assert.Equal(ThemeManager.DefaultMetrics.ScrollWheelStep, text.VerticalOffset);
+		// 文本视口的末端带小数（行高累积），落位允许亚像素误差。
+		Assert.Equal(ThemeManager.DefaultMetrics.ScrollWheelStep, text.VerticalOffset, 0.5);
 		Assert.Equal(original, text.Text);
 		text.ScrollToCaret();
 		Assert.False(smoothText.IsAnimating);
+	}
+
+	[Fact]
+	public void TrackpadDeltasApplyImmediatelyWhileWheelNotchesGlide()
+	{
+		var view = View();
+		using var smooth = SmoothScroll.For(view);
+		Layout(view);
+
+		// 触控板（高精度小数刻度）：与浏览器一致，直接 1:1 落位，不排队动画。
+		smooth.ScrollBy(0, 0.2);
+		Assert.False(smooth.IsAnimating);
+		Assert.True(view.VerticalOffset > 0, "a fractional trackpad delta must move the viewport immediately");
+
+		// 鼠标滚轮（整格）：走 Chromium 曲线，一帧只走一部分，最终精确落位。
+		var start = view.VerticalOffset;
+		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+		smooth.ScrollBy(0, 1);
+		Assert.True(smooth.IsAnimating);
+		Frame(16);
+		Assert.InRange(view.VerticalOffset - start, 0.5, step - 0.5);
+		Settle(smooth);
+		Assert.Equal(start + step, view.VerticalOffset, 0.5);
 	}
 
 	[Fact]

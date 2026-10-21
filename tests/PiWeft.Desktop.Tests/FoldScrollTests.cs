@@ -44,6 +44,36 @@ public sealed class FoldScrollTests
 	}
 
 	[Fact]
+	public void ScrollToLatestFromFarUpReachesTheMeasuredEnd()
+	{
+		using var session = ConversationPerformanceTests.CreateSession(300);
+		using var tab = new SessionTab(session, [session.Model], "latest");
+		ConversationPerformanceTests.Layout(tab);
+		var scroll = VisualTree.Find<ScrollViewer>(tab.View).First();
+		using var conversation = new ConversationScroll(scroll, _ => { });
+		var smooth = SmoothScroll.For(scroll);
+
+		// 停在很早的位置：远端行没被测量，末端只是估算。
+		scroll.SetScrollOffsets(0, 0);
+		ConversationPerformanceTests.Layout(tab);
+		Assert.True(smooth.MaxVerticalOffset > 1000);
+
+		conversation.ScrollToLatest();
+		for (var frame = 0; frame < 40; frame++)
+		{
+			Thread.Sleep(4);
+			AnimationFrames.Advance(16);
+			ConversationPerformanceTests.Layout(tab);
+			// 应用里这一步由 Render 优先级的回调完成；测试里手动驱动同样的收敛。
+			conversation.FollowAfterLayout();
+			if (!smooth.IsAnimating && Math.Abs(smooth.MaxVerticalOffset - scroll.VerticalOffset) <= 1) break;
+		}
+
+		Assert.True(conversation.Following);
+		Assert.Equal(smooth.MaxVerticalOffset, scroll.VerticalOffset, 1.0);
+	}
+
+	[Fact]
 	public void VirtualizedProcessDoesNotJumpToTheAnswerWhenExpandedAtTheBottom()
 	{
 		ConversationScroll? conversation = null;
@@ -111,6 +141,142 @@ public sealed class FoldScrollTests
 		Assert.True(wheel.Handled);
 		Assert.Equal(step, outer.TargetVerticalOffset);
 	}
+
+	[Fact]
+	public void CollapsingALongProcessGroupRestoresTheRowsBelow()
+	{
+		ConversationScroll? conversation = null;
+		TextFocusScrollGuard? guard = null;
+		using var timeline = new ConversationTimeline(entry =>
+		{
+			if (entry.Role == ChatRole.Process)
+				return new ExecutionProcessView(entry, e => new AssistantMessageView(e, _ => { }, guard!).View, guard).View;
+			return new AssistantMessageView(entry, _ => { }, guard!).View;
+		});
+		guard = new TextFocusScrollGuard(timeline.Scroll, anchor => conversation!.PreserveAnchor(anchor));
+		conversation = new ConversationScroll(timeline.Scroll, _ => { });
+		using (guard)
+		using (conversation)
+		{
+			var longText = string.Join("\n\n", Enumerable.Range(0, 40).Select(i => $"## 段落 {i}\n\n这是一段用于撑高过程组体的正文，第 {i} 段。"));
+			var rows = Enumerable.Range(0, 24)
+				.Select(i => new ChatEntry { Role = ChatRole.User, Text = $"history {i}", EntryId = $"h{i}" }).ToList();
+			rows.Add(new ChatEntry { Role = ChatRole.Process, Text = "", EntryId = "p", ProcessEntries = Enumerable.Range(0, 3)
+				.Select(i => new ChatEntry { Role = ChatRole.Assistant, Thinking = "先梳理一下", Text = longText, EntryId = $"s{i}" }).ToArray() });
+			rows.Add(new ChatEntry { Role = ChatRole.Assistant, Text = "answer", EntryId = "a" });
+			timeline.SetEntries(rows);
+			Pump(timeline.View);
+			// 用户是在底部（跟流）展开的：展开后仍贴底。
+			SmoothScroll.For(timeline.Scroll).JumpToEnd();
+			Pump(timeline.View);
+
+			var run = VisualTree.Find<Expander>(timeline.View).Single(expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+			Toggle(run, keyboard: true);
+			Pump(timeline.View);
+			var group = VisualTree.Find<Expander>(run.Content!).Single(expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+			Toggle(group, keyboard: true);
+			Pump(timeline.View);
+			SmoothScroll.For(timeline.Scroll).JumpToEnd();
+			Pump(timeline.View);
+
+			Toggle(run, keyboard: true);
+			Pump(timeline.View);
+			var offset = timeline.Scroll.VerticalOffset;
+			var maximum = SmoothScroll.For(timeline.Scroll).MaxVerticalOffset;
+			// 收起后内容变短：偏移必须跟着新范围收回，否则视口停在内容之外，表现为一片空白。
+			Assert.True(offset <= maximum + 0.5,
+				$"offset {offset} left beyond the shrunken extent {maximum}");
+			var real = timeline.VisibleRows.OfType<UIElement>()
+				.Count(row => row.Bounds.Bottom > timeline.Scroll.Bounds.Y && row.Bounds.Y < timeline.Scroll.Bounds.Bottom);
+			Assert.True(real > 0, $"the viewport is blank after collapsing; offset {offset}, max {maximum}");
+		}
+	}
+
+	[Fact]
+	public void RebuildingWithFewerMessagesNeverLeavesABlankRow()
+	{
+		using var timeline = new ConversationTimeline(entry => new Border().Height(100).Child(new TextBlock().Text(entry.Text)));
+		var rows = Enumerable.Range(0, 8)
+			.Select(i => new ChatEntry { Role = ChatRole.User, Text = $"m{i}", EntryId = $"e{i}" }).ToList();
+		timeline.SetEntries(rows);
+		Pump(timeline.View);
+
+		timeline.SetEntries(rows.Take(3).ToList(), rebuild: true);
+		Pump(timeline.View);
+
+		// 已实现且落在视口里的行不能是「有位置、没内容」的空壳。
+		var blank = VisualTree.Find<ContentControl>(timeline.View)
+			.Where(host => host.Content is null && host.Bounds.Height > 0 &&
+				host.Bounds.Bottom > timeline.Scroll.Bounds.Y && host.Bounds.Y < timeline.Scroll.Bounds.Bottom)
+			.ToArray();
+		Assert.Empty(blank);
+	}
+
+	[Fact]
+	public void FoldTogglesAskTheHostToRefreshTheTimeline()
+	{
+		using var scroll = new ScrollViewer();
+		using var guard = new TextFocusScrollGuard(scroll);
+		var refreshes = 0;
+		FrameworkElement? source = null;
+		guard.LayoutInvalidated = element => { refreshes++; source = element; };
+		var fold = new Expander().IsExpanded(false).Content(new Border().Height(200));
+		guard.TrackFold(fold);
+
+		fold.IsExpanded = true;
+		Assert.Equal(1, refreshes);
+		// 时间线据此只重排受影响的那一行（折叠行不一定把失效传到行根）。
+		Assert.Same(fold, source);
+		fold.IsExpanded = false;
+		Assert.Equal(2, refreshes);
+		Assert.Same(fold, source);
+	}
+
+	[Fact]
+	public void CollapsingAHugeFoldMidScrollLeavesRealizedRowsInTheViewport()
+	{
+		// 中途滚动时收起一个很高的折叠行：视口必须仍落在内容上，
+		// 否则看起来就是「一片空白，滚动一下才恢复」。
+		Expander? fold = null;
+		using var timeline = new ConversationTimeline(entry =>
+		{
+			if (entry.EntryId != "u") return new Border().Height(100).Child(new TextBlock().Text(entry.Text));
+			fold = new Expander().IsExpanded(false).Content(new Border().Height(4000));
+			return fold;
+		});
+		timeline.SetEntries([
+			new() { Role = ChatRole.User, Text = "q", EntryId = "u" },
+			new() { Role = ChatRole.Assistant, Text = "answer", EntryId = "a" },
+		]);
+		Pump(timeline.View);
+		fold!.IsExpanded = true;
+		Pump(timeline.View);
+		Pump(timeline.View);
+		timeline.Scroll.SetScrollOffsets(0, 1500);
+		Pump(timeline.View);
+
+		fold.IsExpanded = false;
+		Pump(timeline.View);
+		timeline.RefreshLayout();
+		Pump(timeline.View);
+
+		var visible = timeline.VisibleRows.OfType<UIElement>()
+			.Where(row => row.Bounds.Bottom > timeline.Scroll.Bounds.Y && row.Bounds.Y < timeline.Scroll.Bounds.Bottom)
+			.ToArray();
+		Assert.NotEmpty(visible);
+		Assert.All(visible, row => Assert.True(row.Bounds.Height > 0));
+	}
+
+	/// <summary>只跑一次真实的 measure/arrange：不手动清洗子树缓存，才能暴露漏掉的失效。</summary>
+	private static void Pump(UIElement view, double width = 500, double height = 400)
+	{
+		view.Measure(new Size(width, height));
+		view.Arrange(new Rect(0, 0, width, height));
+	}
+
+	private static UIElement RowHost(ConversationTimeline timeline, string id) =>
+		VisualTree.Find<ContentControl>(timeline.View)
+			.Single(host => host.Tag is ChatEntry { EntryId: var entryId } && entryId == id);
 
 	private static void Toggle(Expander fold, bool keyboard)
 	{

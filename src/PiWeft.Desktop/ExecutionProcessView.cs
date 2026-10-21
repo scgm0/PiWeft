@@ -26,6 +26,8 @@ internal sealed class ExecutionProcessView
 	private readonly StackPanel _footer;
 	private readonly Dictionary<string, bool> _states = [];
 	private readonly Dictionary<string, Expander> _controls = [];
+	// 组内步骤是虚拟化的：行销毁时按步骤键记住折叠状态，重建后恢复。
+	private readonly Dictionary<string, bool[]> _stepStates = [];
 	private readonly List<Slot> _slots = [];
 	private ChatEntry _entry;
 	private string? _latestGroup;
@@ -85,7 +87,20 @@ internal sealed class ExecutionProcessView
 	}
 
 	public Border View { get; }
-	public IReadOnlyDictionary<string, bool> State => new Dictionary<string, bool>(_states);
+	public IReadOnlyDictionary<string, bool> State
+	{
+		get
+		{
+			var states = new Dictionary<string, bool>(_states);
+			// 组内步骤是虚拟化的：它们的展开状态按步骤键单独记着，随消息一起带过回收。
+			foreach (var (stepKey, values) in _stepStates)
+			{
+				for (var index = 0; index < values.Length; index++)
+					if (values[index]) states[StepStateKey(stepKey, index)] = true;
+			}
+			return states;
+		}
+	}
 
 	public void Restore(IReadOnlyDictionary<string, bool> states)
 	{
@@ -93,10 +108,30 @@ internal sealed class ExecutionProcessView
 		try
 		{
 			foreach (var (key, expanded) in states) _states[key] = expanded;
+			foreach (var (key, expanded) in states)
+			{
+				if (key.StartsWith(StepStatePrefix, StringComparison.Ordinal)) RestoreStepState(key, expanded);
+			}
 			foreach (var (key, control) in _controls.ToArray())
 				if (_states.TryGetValue(key, out var expanded)) control.IsExpanded = expanded;
 		}
 		finally { _automatic = false; }
+	}
+
+	/// <summary>把序列化回来的 <c>step/…/n</c> 状态还原成按步骤键索引的展开表。</summary>
+	private void RestoreStepState(string key, bool expanded)
+	{
+		if (!expanded) return;
+		var rest = key[StepStatePrefix.Length..];
+		var slash = rest.LastIndexOf('/');
+		if (slash <= 0 || !int.TryParse(rest[(slash + 1)..], out var index) || index < 0) return;
+		var stepKey = rest[..slash];
+		var existing = _stepStates.TryGetValue(stepKey, out var found) ? found : null;
+		var length = Math.Max(index + 1, existing?.Length ?? 0);
+		var array = new bool[length];
+		if (existing is not null) Array.Copy(existing, array, existing.Length);
+		array[index] = true;
+		_stepStates[stepKey] = array;
 	}
 
 	private void Track(string key, Expander expander, bool initial, bool group = false)
@@ -184,38 +219,17 @@ internal sealed class ExecutionProcessView
 
 	private Slot Group(string key, IReadOnlyList<ChatEntry> entries, bool running)
 	{
-		const int recentSteps = 8;
 		var members = entries;
-		var slots = new List<Slot>();
-		var body = new StackPanel().Spacing(4);
-		// 与 PiDeck 一样，连续竖线独占左列；步骤（图标 + 摘要）在右列，不让线从图标背后穿过。
-		var bodyRail = new Border().Width(1).VerticalAlignment(VerticalAlignment.Stretch)
-			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Border);
-		var bodyHost = new Grid().Columns("1,*").Children(
-			bodyRail.Column(0), body.Column(1).Margin(new Thickness(12, 0, 0, 0)));
-		var viewport = new ScrollViewer().Content(bodyHost).AutoVerticalScroll().NoHorizontalScroll()
-			.MaxHeight(300).SmoothScrolling();
-		// 组体与整段过程一样是「可滚动的小窗」：内层能滚就滚内层，内层到边界（或内容装得下）
-		// 才把滚轮交还外层会话——由 SmoothScroll 在视口边界上交接（ScrollCascade），
-		// 文字控件也不再越过这一层直接滚会话。
-		var olderBase = -1;
-		Expander fold = null!;
-		StackPanel olderHost = null!;
-		var olderButton = new Button().Ghost().Padding(new Thickness(4, 0, 4, 0)).MinHeight(22)
-			.HorizontalAlignment(HorizontalAlignment.Left).IsVisible(false);
-		var olderText = new TextBlock().FontSize(AppTheme.FontSizeMicro).MutedText();
-		olderButton.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(3)
-			.VerticalAlignment(VerticalAlignment.Center).Children(
-				new GlyphElement().Kind(GlyphKind.ChevronUp).GlyphSize(3)
-					.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).TextSubtle),
-				olderText));
-		olderButton.OnClick(() =>
-		{
-			_states[$"older/{key}"] = true;
-			olderBase = -1;
-			BuildMembers();
-		});
-		olderHost = new StackPanel().Spacing(2).Children(olderButton, viewport);
+		var rows = new StepRows();
+		// 折叠时把组体换成它：Expander.Content 不接受 null，用一个零高度占位保持「已展开才建树」。
+		var collapsedBody = new Border { Height = 0 };
+		Border? body = null;
+		ItemsControl? list = null;
+		ScrollViewer? viewport = null;
+		// 每个过程组各自持有追帧状态：一个视图里可能有多组（中间回复会把过程切成多段），
+		// 共用一份标志会让后一组的重夹/露出被前一组吞掉。
+		var reclampQueued = false;
+		Grid? revealRow = null;
 		// 组头与 PiDeck 过程组同构：类别图标 + 主文案 + 「·」+ 等宽实时详情；运行时图标走强调色。
 		var icon = AppIcons.Icon("terminal", AppStyles.RoleSubtle, 13);
 		var label = new TextBlock().FontSize(AppTheme.FontSizeCaption).SubtleText()
@@ -230,14 +244,99 @@ internal sealed class ExecutionProcessView
 				label.Column(1).Margin(new Thickness(5, 0, 0, 0)),
 				separator.Column(2).Margin(new Thickness(6, 0, 0, 0)),
 				detail.Column(3).Margin(new Thickness(5, 0, 0, 0)));
-		fold = new Expander().Header(head)
+		var fold = new Expander().Header(head)
 			.IsExpanded(false).HoverTip(Strings.ExecutionGroupHint);
-		fold.ExpandedChanged += expanded => { if (expanded) BuildMembers(); };
+		fold.ExpandedChanged += expanded =>
+		{
+			// 展开时按视口建步骤行；折叠时整块释放，不留不可见的视图占内存。
+			if (expanded) BuildBody();
+			else DestroyBody();
+		};
 		Track(key, fold, false, group: true);
 		var host = new Border().Padding(new Thickness(2, 0, 0, 0)).Child(fold);
 		var slot = new Slot(key, host, Update);
 		Update(entries, running);
 		return slot;
+
+		void BuildBody()
+		{
+			if (body is not null)
+			{
+				rows.Set(members);
+				return;
+			}
+			list = new ItemsControl().VariableHeightPresenter().ItemsSource(rows)
+				.ItemHeight(28).ItemPadding(Thickness.Zero).BorderThickness(0)
+				.Background(AppTheme.Transparent).Padding(Thickness.Zero);
+			list.ItemTemplate = new DelegateTemplate<ChatEntry>(
+				_ => StepRowHost(),
+				(host, entry, index, _) => BindStep((Grid)host, entry, index, key,
+					expanded => InvalidateRow((Grid)host, expanded)),
+				(host, _, _, _) => UnbindStep((Grid)host, key));
+			((IVisualTreeHost)list).VisitChildren(child =>
+			{
+				viewport ??= child as ScrollViewer;
+				return viewport is null;
+			});
+			// 组体与整段过程一样是「可滚动的小窗」：内层能滚就滚内层，内层到边界（或内容装得下）
+			// 才把滚轮交还外层会话——由 SmoothScroll 在视口边界上交接（ScrollCascade）。
+			viewport?.MaxHeight(300).SmoothScrolling().NoHorizontalScroll();
+			// 与 PiDeck 一样，连续竖线独占左列；步骤（图标 + 摘要）在右列，不让线从图标背后穿过。
+			var rail = new Border().Width(1).VerticalAlignment(VerticalAlignment.Stretch)
+				.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Border);
+			var bodyHost = new Grid().Columns("1,*").Children(
+				rail.Column(0), list.Column(1).Margin(new Thickness(12, 0, 0, 0)));
+			body = new Border().Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, 0))
+				.HorizontalAlignment(HorizontalAlignment.Stretch).Child(bodyHost);
+			fold.Content(body);
+			rows.Set(members);
+		}
+
+		/// <summary>步骤行展开/收起改变了行高：让虚拟化器重测这一行，并刷新组体的可滚范围。</summary>
+		void InvalidateRow(Grid row, bool expanded)
+		{
+			if (body is null) return;
+			ConversationTimeline.InvalidateMeasureTree(row);
+			list?.InvalidateMeasure();
+			// 组体是固定高度的滚动视口：内容变高后要重新发布 extent，否则滚不到新增的部分。
+			viewport?.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
+			QueueReclamp(row, expanded);
+		}
+
+		void QueueReclamp(Grid row, bool expanded)
+		{
+			if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
+			// 同一帧里多次展开：记下最后一次要露出的行，只排一次追帧。
+			revealRow = expanded ? row : null;
+			if (reclampQueued) return;
+			reclampQueued = true;
+			// 行高只有测完才准：布局落定后再夹一次范围，并把刚展开的内容露出来。
+			dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+			{
+				reclampQueued = false;
+				var reveal = revealRow;
+				revealRow = null;
+				if (body is null || viewport is null || list is null) return;
+				viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
+				// 期间组体可能被折叠重建：旧行已经释放，不能再拿它的坐标去滚。
+				if (reveal is null || reveal.Bounds.Height <= 0 || !reveal.IsDescendantOf(list)) return;
+				// 展开出来的内容在视口下方时，组体往下带一段，别让读者自己猜还能不能滚。
+				var overflow = reveal.Bounds.Bottom - viewport.Bounds.Bottom;
+				if (overflow > 0.5)
+					viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset + overflow);
+			});
+		}
+
+		void DestroyBody()
+		{
+			if (body is not { } content) return;
+			body = null;
+			list = null;
+			viewport = null;
+			rows.Reset();
+			fold.Content(collapsedBody);
+			UiLifetime.Release(content);
+		}
 
 		void Update(IReadOnlyList<ChatEntry> next, bool isRunning)
 		{
@@ -259,44 +358,98 @@ internal sealed class ExecutionProcessView
 				separator.IsVisible(false);
 				detail.IsVisible(false);
 			}
-			if (fold.IsExpanded || fold.Content is not null) BuildMembers();
-		}
-		void BuildMembers()
-		{
-			if (fold.Content is null) fold.Content(new Border().Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, 0)).Child(olderHost));
-			if (olderBase < 0)
-			{
-				olderBase = _states.GetValueOrDefault($"older/{key}") ? 0 : Math.Max(0, members.Count - recentSteps);
-				for (var i = slots.Count - 1; i >= 0; i--)
-				{
-					UiLifetime.Release(slots[i].Host);
-					body.Remove(slots[i].Host);
-					slots.RemoveAt(i);
-				}
-			}
-			olderButton.IsVisible(olderBase > 0);
-			if (olderBase > 0) olderText.Text(Strings.ExecutionEarlierSteps(olderBase));
-			var visible = members.Count - olderBase;
-			for (var i = slots.Count - 1; i >= visible; i--)
-			{
-				UiLifetime.Release(slots[i].Host);
-				body.Remove(slots[i].Host);
-				slots.RemoveAt(i);
-			}
-			for (var i = 0; i < visible; i++)
-			{
-				var member = members[olderBase + i];
-				if (i < slots.Count) slots[i].Update([member], false);
-				else
-				{
-					var leaf = Leaf($"{key}/{Id(member, olderBase + i)}", member);
-					slots.Add(leaf);
-					body.Children(leaf.Host);
-				}
-			}
+			if (body is not null) rows.Set(members);
 		}
 	}
 
+	/// <summary>
+	/// 组内的步骤行：只为视口建摘要，展开时才建具体内容；折叠/滚出视口即释放。
+	/// </summary>
+	private Grid StepRowHost() => new Grid().Columns("22,*");
+
+	private void BindStep(Grid host, ChatEntry entry, int index, string groupKey, Action<bool> layoutChanged)
+	{
+		var icon = host.Children.Count > 0 && host.Children[0] is Image existingIcon
+			? existingIcon
+			: AppIcons.Icon(StepIcon.IconFor(entry), StepIcon.RoleFor(entry), 14)
+				.HorizontalAlignment(HorizontalAlignment.Left).VerticalAlignment(VerticalAlignment.Top)
+				.Margin(new Thickness(2, 3, 0, 0));
+		var content = host.Children.Count > 1 && host.Children[1] is Border existingContent
+			? existingContent
+			: new Border();
+		if (icon.Parent is null) host.Children(icon.Column(0), content.Column(1));
+		icon.Source(AppIcons.Get(StepIcon.IconFor(entry), AppStyles.ColorForRole(StepIcon.RoleFor(entry))));
+
+		var stepKey = $"{groupKey}/{Id(entry, index)}";
+		if (content.Tag is ChatEntry previous && ConversationTimeline.SameEntry(previous, entry)) return;
+		if (content.Tag is ChatEntry { IsStreaming: true } streaming && entry.Role == ChatRole.Assistant &&
+			streaming.Timestamp == entry.Timestamp && streaming.Images.SequenceEqual(entry.Images) &&
+			content.Child is Border { Tag: AssistantMessageView assistant })
+		{
+			// 流式思考只更新既有视图，不重建行。
+			assistant.Update(entry);
+			content.Tag = entry;
+			return;
+		}
+		if (content.Child is { } old) UiLifetime.Release(old);
+		var view = _create(entry);
+		content.Child(view);
+		content.Tag = entry;
+		TrackStepStates(stepKey, view, layoutChanged);
+	}
+
+	private void UnbindStep(Grid host, string groupKey)
+	{
+		if (host.Children.Count < 2 || host.Children[1] is not Border content) return;
+		if (content.Child is { } old) UiLifetime.Release(old);
+		content.Child = null;
+		content.Tag = null;
+	}
+
+	/// <summary>记住这一步里每个折叠开关的展开状态：行被回收后重建仍能恢复。</summary>
+	private void TrackStepStates(string stepKey, Element view, Action<bool>? layoutChanged = null)
+	{
+		// 恢复状态发生在虚拟化器创建这一行的时候（测量途中）。此时再让上层失效排布会
+		// 在测量内部重入，行高缓存可能停在「内容还没建好」的那一版，表现为偶发的高度不对。
+		// 行本来就是新建的，这一轮测量一定会带上新内容，所以恢复期间不触发重排。
+		var restoring = true;
+		var index = 0;
+		foreach (var expander in Expanders(view))
+		{
+			var position = index++;
+			if (_stepStates.TryGetValue(stepKey, out var saved) && position < saved.Length && saved[position])
+				expander.IsExpanded = true;
+			expander.ExpandedChanged += expanded =>
+			{
+				RecordStepState(stepKey, position, expanded);
+				if (restoring) return;
+				// 行内容变高/变矮：组体的行高缓存与可滚范围都要重算。
+				layoutChanged?.Invoke(expanded);
+			};
+		}
+		restoring = false;
+	}
+
+	private void RecordStepState(string stepKey, int index, bool expanded)
+	{
+		var existing = _stepStates.TryGetValue(stepKey, out var found) ? found : null;
+		if (!expanded)
+		{
+			if (existing is not null && index < existing.Length) existing[index] = false;
+			return;
+		}
+		var length = Math.Max(index + 1, existing?.Length ?? 0);
+		var array = new bool[length];
+		if (existing is not null) Array.Copy(existing, array, existing.Length);
+		array[index] = true;
+		_stepStates[stepKey] = array;
+	}
+
+	private const string StepStatePrefix = "step/";
+
+	private static string StepStateKey(string stepKey, int index) => $"{StepStatePrefix}{stepKey}/{index}";
+
+	/// <summary>非过程组节点的单行视图（中间回复/错误）：一行一个，不需要虚拟化。</summary>
 	private Slot Leaf(string key, ChatEntry entry)
 	{
 		var content = new Border();
@@ -378,7 +531,7 @@ internal sealed class ExecutionProcessView
 
 		public Image View { get; }
 
-		private static string IconFor(ChatEntry entry) => entry.Role switch
+		internal static string IconFor(ChatEntry entry) => entry.Role switch
 		{
 			ChatRole.Tool => entry.ToolName switch
 			{
@@ -395,13 +548,62 @@ internal sealed class ExecutionProcessView
 			_ => "ellipsis",
 		};
 
-		private static string RoleFor(ChatEntry entry) => entry.Role switch
+		internal static string RoleFor(ChatEntry entry) => entry.Role switch
 		{
 			ChatRole.Assistant when entry.Thinking.Length > 0 || entry.IsThinking => AppStyles.RoleThinking,
 			ChatRole.Assistant => AppStyles.RoleInfo,
 			ChatRole.Error => AppStyles.RoleSubtle,
 			_ => AppStyles.RoleSubtle,
 		};
+	}
+
+	/// <summary>组内步骤的虚拟化数据源：只为视口建行，尾部变化用 Replace 而不是整表重置。</summary>
+	private sealed class StepRows : IItemsView
+	{
+		private IReadOnlyList<ChatEntry> _items = [];
+
+		public int Count => _items.Count;
+		public Func<object?, object?>? KeySelector { get; } =
+			static item => item is ChatEntry entry ? (object?)entry.EntryId ?? entry : null;
+		public event Action<ItemsChange>? Changed;
+
+		public object GetItem(int index) => _items[index];
+		public string GetText(int index) => string.Empty;
+		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
+
+		/// <summary>丢弃内容但不通知：调用方正在销毁整个列表。</summary>
+		public void Reset() => _items = [];
+
+		public void Set(IReadOnlyList<ChatEntry> items)
+		{
+			var previous = _items;
+			_items = items;
+			if (previous.Count == 0)
+			{
+				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, items.Count));
+				return;
+			}
+			if (items.Count == previous.Count)
+			{
+				// 流式时通常只有尾部一行变化：只重绑这一段，滚动位置与已测高度都留着。
+				var first = 0;
+				while (first < items.Count && ConversationTimeline.SameEntry(previous[first], items[first])) first++;
+				if (first == items.Count) return;
+				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, first, items.Count - first));
+				return;
+			}
+			if (items.Count > previous.Count)
+			{
+				var prefix = 0;
+				while (prefix < previous.Count && ConversationTimeline.SameEntry(previous[prefix], items[prefix])) prefix++;
+				if (prefix == previous.Count)
+				{
+					Changed?.Invoke(new ItemsChange(ItemsChangeKind.Add, prefix, items.Count - prefix));
+					return;
+				}
+			}
+			Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, items.Count));
+		}
 	}
 
 	private sealed record Node(string Key, IReadOnlyList<ChatEntry> Entries, bool Group);

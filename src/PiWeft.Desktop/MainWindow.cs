@@ -50,6 +50,8 @@ public sealed partial class MainWindow : Window
 
 	private UsageStatsView? _usageStatsView;
 	private string? _pendingNotice;
+	private DesktopPreference? _queuedThemePreference;
+	private DispatcherTimer? _themeApplyGate;
 	private readonly Dictionary<string, CliEnvironment> _environments = new(StringComparer.Ordinal);
 	private CliEnvironment? _environment;
 	private IReadOnlyList<SessionListItem> _sessions = [];
@@ -1088,6 +1090,54 @@ public sealed partial class MainWindow : Window
 				case "process":
 					CurrentTab()?.PrepareProcessSmoke();
 					break;
+				case "collapse":
+					CurrentTab()?.PrepareCollapseSmoke();
+					break;
+				case "theme-churn":
+					// 连续快速切换主题：复现代码块丢文本渲染。
+					var churnThemeTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(150));
+					var churnThemeTick = 0;
+					churnThemeTimer.Tick += () =>
+					{
+						churnThemeTick++;
+						var light = churnThemeTick % 2 == 0;
+						(DesktopPreference.Load() with
+						{
+							Theme = light ? DesktopPreference.LightTheme : DesktopPreference.DarkTheme,
+						}).Save();
+						Application.Current.SetTheme(light ? ThemeVariant.Light : ThemeVariant.Dark);
+						if (churnThemeTick >= 8)
+						{
+							churnThemeTimer.Stop();
+							Console.WriteLine("theme-churn-done");
+						}
+					};
+					churnThemeTimer.Start();
+					break;
+				case "toast-demo":
+					var demoTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(1600));
+					demoTimer.Tick += () =>
+					{
+						demoTimer.Stop();
+						this.ShowToast("演示 toast 通知。");
+						Console.WriteLine("toast-shown");
+					};
+					demoTimer.Start();
+					break;
+				case "theme-notice":
+					// 延后一点再切：外部脚本要在 toast 停留期内截图。
+					var noticeTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(1600));
+					noticeTimer.Tick += () =>
+					{
+						noticeTimer.Stop();
+						ToggleTheme();
+						Console.WriteLine($"theme-toggled: toasts={Toasts.Recent.Count}");
+					};
+					noticeTimer.Start();
+					break;
+				case "latest-theme":
+					CurrentTab()?.PrepareLatestThemeSmoke();
+					break;
 				case "latest":
 					CurrentTab()?.PrepareLatestSmoke();
 					break;
@@ -1175,7 +1225,7 @@ public sealed partial class MainWindow : Window
 		});
 
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
-		await Task.Delay(view is "interactions" or "latest" or "latest-churn" or "outline" ? 30000 : 7000).ConfigureAwait(false);
+		await Task.Delay(view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" ? 30000 : 7000).ConfigureAwait(false);
 		Dispatch(() =>
 		{
 			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();
@@ -1528,6 +1578,30 @@ public sealed partial class MainWindow : Window
 			_pendingNotice = Strings.ThemeChangeFailed(ex.Message);
 		}
 
+		// 连续点击只应用最后一次：每次 SetTheme 都会触发整树重排重绘，
+		// 高频连发可能让虚拟化行里的文本视图重建到一半又被下一次打断（代码块丢文本）。
+		_queuedThemePreference = preference;
+		_themeApplyGate ??= CreateThemeApplyGate();
+		_themeApplyGate.Stop();
+		_themeApplyGate.Start();
+	}
+
+	private DispatcherTimer CreateThemeApplyGate()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(120));
+		timer.Tick += () =>
+		{
+			timer.Stop();
+			var preference = _queuedThemePreference;
+			_queuedThemePreference = null;
+			if (preference is null) return;
+			ApplyThemePreference(preference);
+		};
+		return timer;
+	}
+
+	private void ApplyThemePreference(DesktopPreference preference)
+	{
 		var name = preference.Theme switch
 		{
 			DesktopPreference.LightTheme => Strings.ThemeLight,
@@ -1535,13 +1609,14 @@ public sealed partial class MainWindow : Window
 			_ => Strings.ThemeDark,
 		};
 
-		_pendingNotice ??= Strings.ThemeChanged(name);
-
 		if (Application.IsRunning)
 		{
 			DesktopTheme.Apply(DesktopTheme.Resolve(preference.Theme, _cwd, SessionPaths.GetAgentDir()));
 		}
-		_banner.Text(_pendingNotice);
+
+		// 主题切换的反馈走窗口级 toast；欢迎页横幅只留给启动/打开会话这类持续错误。
+		if (_pendingNotice is { } failure) Toasts.Error(this, failure);
+		else Toasts.Success(this, Strings.ThemeChanged(name));
 		_pendingNotice = null;
 	}
 

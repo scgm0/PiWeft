@@ -10,6 +10,7 @@ internal sealed partial class ConfigurationView
 	private readonly ConfigurationStore _store;
 	private readonly Action<ConfigFile> _saved;
 	private readonly StackPanel _body = new();
+	/// <summary>只承载「这个文件本身坏了」这类持续状态；操作反馈走 toast。</summary>
 	private readonly TextBlock _notice = new();
 	private readonly TextBlock _path = new();
 	private readonly TextBlock _dirtyLabel = new();
@@ -124,14 +125,15 @@ internal sealed partial class ConfigurationView
 		StateChanged?.Invoke();
 	}
 
-	private void Save(JsonObject next)
+	/// <summary><paramref name="notify"/> 为 false 时由调用方自己给出一条更具体的提示。</summary>
+	private void Save(JsonObject next, bool notify = true)
 	{
 		if (_document is null) return;
 		_document = _store.Save(_document, next.ToJsonString(ConfigurationStore.WriteOptions));
 		_root = _document.Parse();
 		SetDirty(false);
 		Build();
-		_notice.Text(Strings.ConfigSaved);
+		if (notify) Toasts.Success(View, Strings.ConfigSaved);
 		_saved(_file);
 	}
 
@@ -145,18 +147,18 @@ internal sealed partial class ConfigurationView
 	private void Guard(Action action)
 	{
 		try { action(); }
-		catch (ConfigurationConflictException) { _notice.Text(Strings.ConfigConflict); }
-		catch (ArgumentException ex) { _notice.Text(ex.Message); }
+		catch (ConfigurationConflictException) { Toasts.Error(View, Strings.ConfigConflict); }
+		catch (ArgumentException ex) { Toasts.Error(View, ex.Message); }
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
 		{
 			// Do not emit exceptions from JSON/credential operations: their messages can contain secrets.
-			_notice.Text(Strings.ConfigFailed);
+			Toasts.Error(View, Strings.ConfigFailed);
 		}
 	}
 
 	private void OpenFile() => Guard(() =>
 	{
-		if (_document is not null && File.Exists(_document.Path) && !Shell.OpenInEditor(_document.Path)) _notice.Text(Strings.ConfigFailed);
+		if (_document is not null && File.Exists(_document.Path) && !Shell.OpenInEditor(_document.Path)) Toasts.Error(View, Strings.ConfigFailed);
 	});
 
 	private void BuildSource()
@@ -237,7 +239,7 @@ internal sealed partial class ConfigurationView
 			var path = await FileDialog.SaveFileAsync(new SaveFileDialogOptions { Title = Strings.ConfigExport, FileName = "models.json", DefaultExtension = "json" });
 			if (path is not null) File.WriteAllText(path, ConfigurationModels.Export(_root));
 		}
-		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { _notice.Text(Strings.ConfigFailed); }
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { Toasts.Error(View, Strings.ConfigFailed); }
 	}
 
 	private async Task ImportAsync()
@@ -248,7 +250,7 @@ internal sealed partial class ConfigurationView
 			var document = _document;
 			var path = await FileDialog.OpenFileAsync(new OpenFileDialogOptions { Title = Strings.ConfigImport, Filters = [new FileFilter("JSON", "*.json")] });
 			if (path is null || document is null || !ReferenceEquals(document, _document)) return;
-			if (new FileInfo(path).Length > ConfigurationStore.MaxBytes) { _notice.Text(Strings.ConfigTooLarge); return; }
+			if (new FileInfo(path).Length > ConfigurationStore.MaxBytes) { Toasts.Error(View, Strings.ConfigTooLarge); return; }
 			var imported = ConfigurationStore.ParseObject(File.ReadAllText(path));
 			if (imported["providers"] is not JsonObject additions) throw new ArgumentException(Strings.ConfigProvidersRequired);
 			var next = _root.DeepClone().AsObject();
@@ -264,7 +266,7 @@ internal sealed partial class ConfigurationView
 			SetDirty(true);
 			BuildProviders();
 		}
-		catch (ArgumentException ex) { _notice.Text(ex.Message); }
-		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { _notice.Text(Strings.ConfigFailed); }
+		catch (ArgumentException ex) { Toasts.Error(View, ex.Message); }
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { Toasts.Error(View, Strings.ConfigFailed); }
 	}
 }

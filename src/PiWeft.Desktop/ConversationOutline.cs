@@ -5,7 +5,8 @@ namespace PiWeft.Desktop;
 
 /// <summary>
 /// 消息区右缘的定位轴：一条真实用户消息一枚刻度，悬浮/键盘聚焦预览，点击跳转。
-/// 预览交给 Popup 定位，不参与消息测量，也不拦截正文的鼠标命中。
+/// 悬浮预览按 <see cref="HoverHints.Delay"/> 延迟出现（与其它悬停提示一致），
+/// 键盘聚焦则立即出现；预览交给 Popup 定位，不参与消息测量，也不拦截正文的鼠标命中。
 /// </summary>
 internal sealed class ConversationOutline : IDisposable
 {
@@ -26,6 +27,8 @@ internal sealed class ConversationOutline : IDisposable
 	private int _activeSource = -1;
 	private int _activeRail = -1;
 	private int _previewIndex = -1;
+	private int _pendingRail = -1;
+	private readonly DispatcherTimer _hoverDelay = new(HoverHints.Delay);
 	private Popup? _popup;
 	private Window? _window;
 
@@ -44,6 +47,14 @@ internal sealed class ConversationOutline : IDisposable
 		_view.Tag = this;
 		_view.MouseLeave += HidePreview;
 		_view.MouseWheel += _ => HidePreview();
+		_hoverDelay.Tick += () =>
+		{
+			_hoverDelay.Stop();
+			var rail = _pendingRail;
+			_pendingRail = -1;
+			// 指针已经离开或移到别的刻度：这一刻不需要再弹预览。
+			if (rail >= 0 && rail == _previewIndex) ShowPreview(rail);
+		};
 		_view.SizeChanged += args =>
 		{
 			if (Math.Abs(args.NewSize.Height - _availableHeight) < 0.5) return;
@@ -59,6 +70,7 @@ internal sealed class ConversationOutline : IDisposable
 	internal int ActiveRow => _activeRail >= 0 ? _renderedRows[_activeRail] : -1;
 	internal bool IsPreviewOpen => _popup?.IsOpen == true;
 	internal string PreviewTitle => _title.Text;
+	internal string PreviewTime => _time.Text;
 	internal IEnumerable<(int Row, Rect Bounds)> Ticks => _rows.Select((row, index) => (_renderedRows[index], row.Bounds));
 
 	public void SetVisible(bool visible)
@@ -111,8 +123,9 @@ internal sealed class ConversationOutline : IDisposable
 			var row = new Button().Ghost().Padding(0).MinHeight(0).Height(_pitch).Width(RailWidth)
 				.Cursor(CursorType.Hand).Content(bar).OnClick(() => Select(railIndex));
 			row.Tag = _rendered[index];
-			row.MouseEnter += () => Preview(railIndex);
+			row.MouseEnter += () => Hover(railIndex);
 			row.MouseLeave += HidePreview;
+			// 键盘导航本来就慢，聚焦立即给预览，不叠加鼠标那套延迟。
 			row.GotFocus += () => Preview(railIndex);
 			row.LostFocus += HidePreview;
 			row.KeyDown += args => Navigate(args, railIndex);
@@ -157,15 +170,42 @@ internal sealed class ConversationOutline : IDisposable
 		_rows[next].Focus();
 	}
 
+	/// <summary>指针悬浮：刻度立即高亮（与按钮悬停一致），文字预览等 <see cref="HoverHints.Delay"/>。</summary>
+	internal void Hover(int railIndex)
+	{
+		if (!SelectRail(railIndex)) return;
+		_pendingRail = railIndex;
+		_hoverDelay.Stop();
+		_hoverDelay.Start();
+	}
+
+	/// <summary>键盘聚焦与测试入口：立即显示预览，不叠加鼠标的悬停延迟。</summary>
 	internal void Preview(int railIndex)
 	{
-		if (railIndex < 0 || railIndex >= _rendered.Length) return;
+		if (!SelectRail(railIndex)) return;
+		_pendingRail = -1;
+		_hoverDelay.Stop();
+		ShowPreview(railIndex);
+	}
+
+	/// <summary>是否有一个悬浮预览正在等待延迟到达。</summary>
+	internal bool PreviewPending => _pendingRail >= 0;
+
+	/// <summary>记录当前刻度并更新标题/时间与高亮；越界时返回 false。</summary>
+	private bool SelectRail(int railIndex)
+	{
+		if (railIndex < 0 || railIndex >= _rendered.Length) return false;
 		var previous = _previewIndex;
 		_previewIndex = railIndex;
 		RefreshTick(previous);
 		RefreshTick(railIndex);
 		_title.Text(_rendered[railIndex].Title);
 		_time.Text(_rendered[railIndex].Time);
+		return true;
+	}
+
+	private void ShowPreview(int railIndex)
+	{
 		if (!Application.IsRunning || _view.FindVisualRoot() is not Window window || window.Handle == 0) return;
 		if (!ReferenceEquals(_window, window))
 		{
@@ -181,6 +221,8 @@ internal sealed class ConversationOutline : IDisposable
 
 	public void HidePreview()
 	{
+		_hoverDelay.Stop();
+		_pendingRail = -1;
 		var previous = _previewIndex;
 		_previewIndex = -1;
 		_popup?.Close();
@@ -190,6 +232,7 @@ internal sealed class ConversationOutline : IDisposable
 	public void Dispose()
 	{
 		HidePreview();
+		_hoverDelay.Dispose();
 		if (_window is not null) _window.Deactivated -= HidePreview;
 		UiLifetime.Release(_card);
 		_popup?.Dispose();

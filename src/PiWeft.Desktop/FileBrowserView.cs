@@ -13,7 +13,6 @@ public sealed class FileBrowserView
 	private readonly Func<string> _cwd;
 	private readonly StackPanel _list = new();
 	private readonly MultiLineTextBox _editor = new();
-	private readonly TextBlock _notice = new();
 	private readonly TextBlock _title = new();
 	private readonly Button _save;
 	private readonly Button _back;
@@ -29,8 +28,6 @@ public sealed class FileBrowserView
 	{
 		_cwd = cwd;
 		_list.Spacing(1);
-
-		_notice.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap).IsVisible(false);
 
 		// 顶栏是唯一的位置提示：列表模式显示目录，编辑模式显示文件；完整路径放悬停提示。
 		_title.FontFamily(AppTheme.MonoFont)
@@ -78,7 +75,6 @@ public sealed class FileBrowserView
 				.LastChildFill()
 				.Children(
 					toolbar.Margin(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2)).DockTop(),
-					_notice.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)).DockBottom(),
 					new Grid().Children(_listHost, _editorHost)));
 
 		Refresh();
@@ -216,7 +212,7 @@ public sealed class FileBrowserView
 		var (content, ticks, error) = ProjectFiles.Read(_cwd(), relativePath);
 		if (error is not null)
 		{
-			Notice(error);
+			Notice(error, ToastKind.Error);
 			return;
 		}
 
@@ -252,7 +248,6 @@ public sealed class FileBrowserView
 		_back.IsVisible(false);
 		_refresh.IsVisible(true);
 		_save.IsVisible(false);
-		_notice.IsVisible(false);
 		Refresh();
 	}
 
@@ -260,22 +255,22 @@ public sealed class FileBrowserView
 	{
 		if (_openFile is not { Length: > 0 } path)
 		{
-			Notice(Strings.FileBrowserNoFile);
+			Notice(Strings.FileBrowserNoFile, ToastKind.Error);
 			return;
 		}
 
 		var error = ProjectFiles.Write(_cwd(), path, _editor.Text ?? string.Empty, _openTicks);
 		if (error is not null)
 		{
-			Notice(error);
+			Notice(error, ToastKind.Error);
 			return;
 		}
 
 		// 写回后刷新时间戳，后续保存仍能检测到外部修改。
 		var (_, ticks, _) = ProjectFiles.Read(_cwd(), path);
 		_openTicks = ticks;
-		Notice(Strings.FileBrowserSaved(path));
+		Notice(Strings.FileBrowserSaved(path), ToastKind.Success);
 	}
 
-	private void Notice(string text) => _notice.Text(text).IsVisible(true);
+	private void Notice(string text, ToastKind kind = ToastKind.Info) => Toasts.Show(View, text, kind);
 }

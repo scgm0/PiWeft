@@ -16,6 +16,7 @@ internal sealed class ConversationTimeline : IDisposable
 	private readonly HashSet<ReadingRow> _pendingRelease = [];
 	private readonly List<int> _inPlaceUpdates = [];
 	private bool _releaseQueued;
+	private bool _refreshQueued;
 	private bool _disposed;
 	private int _jumpGeneration;
 
@@ -35,7 +36,7 @@ internal sealed class ConversationTimeline : IDisposable
 		((IVisualTreeHost)View).VisitChildren(child => { scroll = child as ScrollViewer; return false; });
 		Scroll = scroll ?? throw new InvalidOperationException("The timeline requires a scroll viewport.");
 		Scroll.SmoothScrolling().NoHorizontalScroll();
-		Scroll.ScrollChanged += PruneRecycled;
+		Scroll.ScrollChanged += RequestPrune;
 		Scroll.MouseDown += CancelJump;
 		Scroll.MouseWheel += CancelJump;
 	}
@@ -81,9 +82,63 @@ internal sealed class ConversationTimeline : IDisposable
 		foreach (var host in _visible.ToArray())
 		{
 			if (_indexByHost.TryGetValue(host, out var index) && index < entries.Count) Bind(host, entries[index], index);
-			else Release(host);
+			// 索引失效时先挂起释放：宿主可能还是容器正在显示的那一行，
+			// 立刻清空内容会让它变成一条空白行，只能等下次滚动重绑才恢复。
+			else QueueRelease(host);
 		}
 		View.InvalidateMeasure();
+	}
+
+	/// <summary>
+	/// 折叠开关改变行高后立刻重排一次，并按新内容重算滚动范围、把偏移收回到末尾之内。
+	/// 手动滚动或改窗口大小本来会顺手做这件事；不主动做的话，虚拟化器会继续用旧的行高，
+	/// 表现为折叠内容下方空出一块、直到重排才恢复。
+	/// </summary>
+	/// <param name="source">触发重排的元素（折叠开关）；给出时只刷新它所在的那一行。</param>
+	public void RefreshLayout(Element? source = null)
+	{
+		// 只让 ItemsControl 失效还不够：已实现行的测量缓存仍然有效，虚拟化器的 element.Measure
+		// 会直接复用旧 DesiredSize（旧行高）。窗口大小变化能修好，正是因为它改了测量约束。
+		if (HostOf(source) is { } host) InvalidateMeasureTree(host);
+		else foreach (var visible in _visible) InvalidateMeasureTree(visible);
+		View.InvalidateMeasure();
+		// 先按现有指标夹一次，等这一帧布局落定后再夹一次：内容变短只有在重排后才算得准。
+		Reclamp();
+		View.InvalidateVisual();
+		if (_refreshQueued || !Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
+		// 一次布局里可能连续恢复多个折叠状态，追帧修正只排一次。
+		_refreshQueued = true;
+		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+		{
+			_refreshQueued = false;
+			if (!_disposed) Reclamp();
+		});
+	}
+
+	/// <summary>
+	/// 把偏移收回当前内容末尾之内。SetScrollOffsets 会先从滚动内容取一次最新范围再夹取，
+	/// 和用户滚一下触发的修正完全同一条路径。
+	/// </summary>
+	private void Reclamp() => Scroll.SetScrollOffsets(Scroll.HorizontalOffset, Scroll.VerticalOffset);
+
+	/// <summary>元素所在的、当前已实现的行；不在时间线里时返回 <c>null</c>。</summary>
+	private ReadingRow? HostOf(Element? element)
+	{
+		for (var current = element; current is not null; current = current.Parent)
+			if (current is ReadingRow host && _visible.Contains(host)) return host;
+		return null;
+	}
+
+	/// <summary>让一行（含子树）重新测量：折叠改变了内部高度的元素不一定把失效传到行根。</summary>
+	internal static void InvalidateMeasureTree(Element element)
+	{
+		if (element is UIElement ui) ui.InvalidateMeasure();
+		if (element is not IVisualTreeHost tree) return;
+		tree.VisitChildren(child =>
+		{
+			InvalidateMeasureTree(child);
+			return true;
+		});
 	}
 
 	/// <summary>先由虚拟化器实现目标行，再把它对齐到视口上沿；不依赖未测量行的估算高度。</summary>
@@ -98,7 +153,17 @@ internal sealed class ConversationTimeline : IDisposable
 			if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
 			dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
 			{
-				if (_disposed || generation != _jumpGeneration || !_hostByIndex.TryGetValue(index, out var host)) return;
+				if (_disposed || generation != _jumpGeneration) return;
+				if (!_hostByIndex.TryGetValue(index, out var host))
+				{
+					// 行高刚变化时虚拟化器偶尔会丢掉一次 ScrollIntoView；重发一次，别让刻度点击没有反应。
+					if (pass < 2)
+					{
+						View.ScrollIntoView(index);
+						Align(pass + 1);
+					}
+					return;
+				}
 				var delta = host.Bounds.Y - Scroll.Bounds.Y - AppTheme.Space3;
 				if (Math.Abs(delta) < 1) return;
 				Scroll.SetScrollOffsets(Scroll.HorizontalOffset, Scroll.VerticalOffset + delta);
@@ -171,9 +236,20 @@ internal sealed class ConversationTimeline : IDisposable
 	private void QueueRelease(ReadingRow host)
 	{
 		_pendingRelease.Add(host);
+		RequestPrune();
+	}
+
+	/// <summary>
+	/// 释放检查只能放在本次布局之后：虚拟化器在一次布局里会先摘下容器、随后又按 key 收回
+	/// （Reset 的 hold/回挂），此刻 <c>Parent</c> 为空并不代表这行真的离开了视图。
+	/// 在布局中途同步释放会把仍要显示的行清空，表现就是一条只占了位置、没有内容的空白行。
+	/// </summary>
+	private void RequestPrune()
+	{
+		if (_pendingRelease.Count == 0) return;
 		if (_releaseQueued || !Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher) return;
 		_releaseQueued = true;
-		dispatcher.BeginInvoke(() =>
+		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
 		{
 			_releaseQueued = false;
 			if (!_disposed) PruneRecycled();
@@ -233,7 +309,7 @@ internal sealed class ConversationTimeline : IDisposable
 	public void Dispose()
 	{
 		_disposed = true;
-		Scroll.ScrollChanged -= PruneRecycled;
+		Scroll.ScrollChanged -= RequestPrune;
 		Scroll.MouseDown -= CancelJump;
 		Scroll.MouseWheel -= CancelJump;
 		SmoothScroll.Release(Scroll);

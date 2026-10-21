@@ -8,7 +8,6 @@ public static partial class Strings
 	public const string ExecutionExpandHint = "展开或收起本轮思考、工具调用和中间回复；最终回答始终显示。";
 	public const string ExecutionGroupHint = "展开或收起这组思考与工具调用。";
 	public static string ExecutionTotal(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
-	public static string ExecutionEarlierSteps(int count) => $"显示更早的 {count} 条步骤";
 
 	// 过程组组头（PiDeck 同款）：运行态按最新工具类别给「正在…」，纯思考组退回「正在分析请求」。
 	public const string ProcessGroupAnalyzing = "正在分析请求";

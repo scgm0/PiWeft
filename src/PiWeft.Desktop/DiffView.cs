@@ -35,14 +35,20 @@ public static class DiffView
 
 		// One document allows dragging a selection across added, deleted and context lines.
 		var text = MessageText.Create(normalized, mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro);
-		text.Foreground = AppPalette.Dark.TextMuted;
+		text.Foreground = AppTheme.TextMuted;
 		text.Tag = null;
 		text.Extensions.Classifiers.Add(new DiffClassifier());
 		text.InvalidateTextView();
+		// 换肤后重新分类一次：语义色取当前配色，否则深色那一套会留在浅色代码底上。
+		text.WithTheme((theme, view) =>
+		{
+			view.Foreground = AppTheme.For(theme).TextMuted;
+			AppStyles.RefreshTextView(view);
+		});
 		focus?.Track(text);
 		var gutter = MessageText.Create(string.Join('\n', numbers), mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro)
 			.Width(40).Focusable(false).IsHitTestVisible(false);
-		gutter.Foreground = AppPalette.Dark.TextFaint;
+		gutter.WithTheme((theme, block) => block.Foreground = AppTheme.For(theme).TextFaint);
 		gutter.Tag = null;
 		var horizontal = new ScrollViewer().BorderThickness(0).Background(AppTheme.Transparent)
 			.Content(text).AutoHorizontalScroll().NoVerticalScroll().SmoothScrolling();
@@ -86,15 +92,20 @@ public static class DiffView
 		var text = string.Join('\n', rows.Select(row => Line(row, old)));
 
 		var body = MessageText.Create(text, mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro);
-		body.Foreground = AppPalette.Dark.TextMuted;
+		body.Foreground = AppTheme.TextMuted;
 		body.Tag = null;
 		body.Extensions.Classifiers.Add(new DiffClassifier());
 		body.InvalidateTextView();
+		body.WithTheme((theme, view) =>
+		{
+			view.Foreground = AppTheme.For(theme).TextMuted;
+			AppStyles.RefreshTextView(view);
+		});
 		focus?.Track(body);
 
 		var gutter = MessageText.Create(numbers, mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro)
 			.Width(40).Focusable(false).IsHitTestVisible(false);
-		gutter.Foreground = AppPalette.Dark.TextFaint;
+		gutter.WithTheme((theme, block) => block.Foreground = AppTheme.For(theme).TextFaint);
 		gutter.Tag = null;
 
 		return new Border().Width(width)
@@ -142,9 +153,10 @@ public static class DiffView
 		{
 			var text = context.Text.Span;
 			if (text.IsEmpty) return;
-			var color = text.StartsWith("@@", StringComparison.Ordinal) ? AppPalette.Dark.Accent :
-				text.StartsWith("+++", StringComparison.Ordinal) || text.StartsWith("---", StringComparison.Ordinal) ? AppPalette.Dark.TextFaint :
-				text[0] == '+' ? AppPalette.Dark.Success : text[0] == '-' ? AppPalette.Dark.Error : AppPalette.Dark.TextMuted;
+			// 代码表面在浅色主题下是浅底，diff 的语义色必须取当前配色，不能写死深色一套。
+			var color = text.StartsWith("@@", StringComparison.Ordinal) ? AppTheme.TextPrimary :
+				text.StartsWith("+++", StringComparison.Ordinal) || text.StartsWith("---", StringComparison.Ordinal) ? AppTheme.TextFaint :
+				text[0] == '+' ? AppTheme.Success : text[0] == '-' ? AppTheme.Error : AppTheme.TextMuted;
 			output.Add(new TextPaintSpan(new TextRange(0, text.Length), color));
 		}
 	}

@@ -18,6 +18,8 @@ internal sealed class ConversationScroll : IDisposable
 	private double _anchorY;
 	private bool _anchorQueued;
 	private bool _restoringAnchor;
+	// 自己发起的「回到最新」跳跃：随后那次 ScrollChanged 不是读者的滚动意图。
+	private bool _followingJump;
 
 	public ConversationScroll(ScrollViewer view, Action<bool> showLatest)
 	{
@@ -45,7 +47,10 @@ internal sealed class ConversationScroll : IDisposable
 		var maximum = _smooth.MaxVerticalOffset;
 		var offsetDelta = offset - _lastOffset;
 		var maximumDelta = maximum - _lastMaximum;
-		if (_readingAnchor is null && !_restoringAnchor && !_smooth.IsApplyingOffset)
+		// 自己发起的跳跃与跟底动画都会改变偏移：那不是读者的滚动意图，不能用来推翻 Following。
+		var ownMove = _followingJump || _smooth.IsAnimating;
+		if (_followingJump) _followingJump = false;
+		if (!ownMove && _readingAnchor is null && !_restoringAnchor && !_smooth.IsApplyingOffset)
 		{
 			// A shrinking extent clamps the offset down to the new end. That is layout, not a
 			// reader instruction: keep the previous intent instead of resuming follow.
@@ -80,17 +85,18 @@ internal sealed class ConversationScroll : IDisposable
 		QueueAnchorRestore();
 		// Arrange publishes the new extent after a message grows. Tracking it here avoids scrolling
 		// against stale metrics in Render(), and keeps a browsing reader at the same offset.
-		if (Following && !_smooth.IsApplyingOffset && _smooth.MaxVerticalOffset - offset > 0.5)
+		// 动画在跑时它每帧都会重读末端，这里不要再插一次跳转（会打断动画）。
+		if (Following && !_smooth.IsApplyingOffset && !_smooth.IsAnimating && maximum - offset > 0.5)
 		{
 			QueueFollow();
 		}
 	}
 
-	private void QueueFollow()
+	private void QueueFollow(int attempt = 0)
 	{
 		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
-			_smooth.JumpToEnd();
+			JumpToEndKeepingIntent();
 			return;
 		}
 		if (_followQueued) return;
@@ -100,10 +106,33 @@ internal sealed class ConversationScroll : IDisposable
 		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
 		{
 			_followQueued = false;
+			if (_disposed) return;
 			// A wheel animation started before the reply grew would settle short of the new end.
 			// Steer it to the end instead of abandoning follow because an animation is running.
-			if (!_disposed && Following) _smooth.FollowEnd();
+			FollowAfterLayout();
+			// 虚拟化时间线的末端要到行被测量后才成立：落位后若仍有差距，再排一次（有上限）。
+			if (attempt < 3 && _smooth.MaxVerticalOffset - _smooth.TargetVerticalOffset > 0.5)
+			{
+				_view.InvalidateArrange();
+				QueueFollow(attempt + 1);
+			}
 		});
+	}
+
+	/// <summary>布局落定后把偏移对齐到最新末端；虚拟化时间线的末端只有测量后才成立。</summary>
+	internal void FollowAfterLayout()
+	{
+		if (!Following) return;
+		// 滑行还在进行时先让它跑完；落位后再补一次到真正的末端。
+		if (_smooth.IsAnimating) return;
+		JumpToEndKeepingIntent();
+	}
+
+	/// <summary>跳到最新，并把这次位移标记成自己的动作，避免被当成读者滚动而取消跟随。</summary>
+	private void JumpToEndKeepingIntent()
+	{
+		_followingJump = true;
+		_smooth.JumpToEnd();
 	}
 
 	/// <summary>A manual fold is reading intent, not a request to follow a growing reply.</summary>
@@ -148,7 +177,7 @@ internal sealed class ConversationScroll : IDisposable
 		// Jump once now for the common case, then ask for one more pass after layout. A virtualized
 		// row can only publish its grown height during arrange, so the first jump may still land on
 		// the previous extent.
-		if (!_smooth.IsAnimating) _smooth.JumpToEnd();
+		if (!_smooth.IsAnimating) JumpToEndKeepingIntent();
 		QueueFollow();
 	}
 
@@ -156,7 +185,11 @@ internal sealed class ConversationScroll : IDisposable
 	{
 		_readingAnchor = null;
 		Following = true;
+		// 远端行还没被测量时，末端只是估算；先重排再滚，落位后由 QueueFollow 收敛到真正的末尾。
+		_view.InvalidateArrange();
 		_smooth.ScrollToEnd();
+		// 有调度器时再排一次落位后的对齐；无窗口（测试）时交给动画本身。
+		if (Application.IsRunning) QueueFollow();
 	}
 
 	/// <summary>显式跳转到历史消息：取消在途跟底和折叠锚点，后续流式增长不把用户拉回末尾。</summary>

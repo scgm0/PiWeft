@@ -41,7 +41,7 @@ public sealed partial class SessionTab
 			AddImage(image.Path, image.Content);
 			FocusComposer();
 		}
-		catch (IOException) { _status.Text(Strings.AttachmentLimit); }
+		catch (IOException) { NotifyError(Strings.AttachmentLimit); }
 	}
 
 
@@ -71,7 +71,7 @@ public sealed partial class SessionTab
 				}
 				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
 				{
-					Dispatch(() => { if (!_disposed) _status.Text(Strings.AttachmentReadFailed); });
+					Dispatch(() => { if (!_disposed) NotifyError(Strings.AttachmentReadFailed); });
 				}
 			}
 		}
@@ -84,7 +84,7 @@ public sealed partial class SessionTab
 		var total = _attachments.Sum(item => item.Content.Data.Length * 3L / 4);
 		if (_attachments.Count >= ComposerDrop.MaxImages || total + content.Data.Length * 3L / 4 > ComposerDrop.MaxTotalBytes)
 		{
-			_status.Text(Strings.AttachmentLimit);
+			NotifyError(Strings.AttachmentLimit);
 			return;
 		}
 		_attachments.Add((path, content));

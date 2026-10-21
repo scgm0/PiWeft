@@ -34,6 +34,26 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 	}
 
 	[Fact]
+	public void SwitchingSessionTabsLeavesOnlyOneScrollToLatestOverlay()
+	{
+		using var firstSession = CreateSession(0);
+		using var secondSession = CreateSession(0);
+		using var first = new SessionTab(firstSession, [firstSession.Model], "first");
+		using var second = new SessionTab(secondSession, [secondSession.Model], "second");
+		using var window = new Window();
+		var tabs = new TabControl();
+		tabs.AddTab(new TabItem().Header(new TextBlock().Text("first")).Content(first.View));
+		tabs.AddTab(new TabItem().Header(new TextBlock().Text("second")).Content(second.View));
+		window.Content = tabs;
+
+		Assert.Equal(1, window.OverlayLayer.Count);
+		tabs.SelectedIndex = 1;
+		Assert.Equal(1, window.OverlayLayer.Count);
+		tabs.SelectedIndex = 0;
+		Assert.Equal(1, window.OverlayLayer.Count);
+	}
+
+	[Fact]
 	public void ThemeRefreshKeepsMarkdownSelectionAndExpandedToolContent()
 	{
 		using var session = CreateSession(0);
@@ -97,19 +117,20 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		var streaming = new ChatEntry { Role = ChatRole.Assistant, Text = "part", Thinking = "reasoning", IsStreaming = true, Timestamp = 1 };
 		timeline.SetEntries([history, streaming]);
 		Layout(timeline.View);
-		var markdown = Find<MarkdownPresenter>(timeline.View).Single();
+		var markdown = Find<MarkdownPresenter>(timeline.View).Single(view => view.Markdown == "previous answer");
 		markdown.SelectAll();
 		var thinking = Find<Expander>(timeline.View).Last();
 		thinking.IsExpanded = true;
 		timeline.SetEntries([history, streaming with { Text = "partial answer" }]);
 		Layout(timeline.View);
-		Assert.Same(markdown, Find<MarkdownPresenter>(timeline.View).Single());
+		Assert.Same(markdown, Find<MarkdownPresenter>(timeline.View).Single(view => view.Markdown == "previous answer"));
 		Assert.Equal("previous answer", markdown.SelectedText);
 		Assert.Contains(Find<MultiLineTextBox>(timeline.View), text => text.Text == "partial answer");
 		Assert.True(thinking.IsExpanded);
 		timeline.SetEntries([history, streaming with { Text = "completed answer", IsStreaming = false }]);
 		Layout(timeline.View);
-		Assert.Equal(2, Find<MarkdownPresenter>(timeline.View).Count());
+		// 历史回复、思考正文和完成后的回复各有一个 Markdown。
+		Assert.Equal(3, Find<MarkdownPresenter>(timeline.View).Count());
 		Assert.Same(thinking, Find<Expander>(timeline.View).Last());
 		Assert.True(thinking.IsExpanded);
 	}

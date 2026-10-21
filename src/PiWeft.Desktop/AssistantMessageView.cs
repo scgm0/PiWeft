@@ -12,8 +12,10 @@ internal sealed class AssistantMessageView : IDisposable
 	private readonly TextBlock _thinkingHeader = new();
 	private readonly TextBlock _thinkingPreview = new();
 	private readonly Image _thinkingIcon;
-	private readonly MultiLineTextBox _thinkingText = MessageText.Create(muted: true, fontSize: AppTheme.FontSizeCaption);
-	private readonly MultiLineTextBox _streamingText = MessageText.Create();
+	private MarkdownPresenter? _thinkingMarkdown;
+	// 流式正文只在真正有流式文本时才建：过程组里的紧凑思考行是虚拟化的，
+	// 每行都预建一个 MultiLineTextBox 会白白占住文本视图与布局资源。
+	private MultiLineTextBox? _streamingText;
 	private readonly Expander _thinking;
 	private readonly Border _body = new();
 	private readonly TextBlock _changes = new();
@@ -32,8 +34,6 @@ internal sealed class AssistantMessageView : IDisposable
 			.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Thinking);
 		_thinkingPreview.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
 			.TextTrimming(TextTrimming.CharacterEllipsis).VerticalAlignment(VerticalAlignment.Center);
-		_focus.Track(_thinkingText);
-		_focus.Track(_streamingText);
 
 		_thinkingIcon = AppIcons.Icon("sparkles", AppStyles.RoleThinking, 12);
 		// Expander 自带折叠箭头，不在标题内再画一个。
@@ -44,12 +44,12 @@ internal sealed class AssistantMessageView : IDisposable
 				_thinkingPreview.Column(2).Margin(new Thickness(6, 0, 0, 0)));
 		_thinking = new Expander()
 			.Header(thinkingTitle)
-			.IsExpanded(false)
-			.Content(new Border()
-				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, AppTheme.Space2))
-				.Child(_thinkingText));
+			.IsExpanded(false);
 		_thinking.ExpandedChanged += expanded =>
+		{
 			_thinkingPreview.IsVisible = !expanded && _thinkingPreview.Text.Length > 0;
+			if (expanded) EnsureThinkingMarkdown();
+		};
 
 		_focus.TrackFold(_thinking);
 		_copy = AppIcons.Button("copy", Strings.CopyMessage, () => copy(_entry?.Text ?? string.Empty), size: 14);
@@ -79,8 +79,16 @@ internal sealed class AssistantMessageView : IDisposable
 	public void Dispose()
 	{
 		// Streaming text leaves the visual tree when Markdown takes over, but still owns text resources.
-		UiLifetime.Release(_streamingText);
-		UiLifetime.Release(_thinkingText);
+		if (_streamingText is not null)
+		{
+			UiLifetime.Release(_streamingText);
+			_streamingText = null;
+		}
+		if (_thinkingMarkdown is not null)
+		{
+			UiLifetime.Release(_thinkingMarkdown);
+			_thinkingMarkdown = null;
+		}
 	}
 
 	public void Update(ChatEntry entry)
@@ -100,27 +108,33 @@ internal sealed class AssistantMessageView : IDisposable
 			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs) : Strings.ThinkingComplete);
 		var preview = Preview(entry.Thinking);
 		_thinkingPreview.Text(preview).IsVisible(!_thinking.IsExpanded && preview.Length > 0);
+		if (_thinking.IsExpanded) EnsureThinkingMarkdown(entry);
 		var showChanges = !entry.IsStreaming && !entry.Compact && entry.ChangedFiles.Count > 0;
 		_changes.IsVisible(showChanges);
 		if (showChanges)
 		{
 			_changes.Text(Strings.ChangedFilesSummary(entry.ChangedFiles));
 		}
-		MessageText.Update(_thinkingText, entry.Thinking);
 		_body.IsVisible(entry.Text.Length > 0);
 		_copy.IsVisible(!entry.Compact && !entry.IsStreaming && entry.Text.Length > 0);
 
 		if (entry.IsStreaming)
 		{
+			_streamingText ??= Track(MessageText.Create());
 			MessageText.Update(_streamingText, entry.Text);
 			if (!ReferenceEquals(_body.Child, _streamingText))
 			{
+				var previous = _body.Child;
 				_body.Child(_streamingText);
+				if (previous is not null) UiLifetime.Release(previous);
 			}
 		}
 		else if (_entry is null || _entry.IsStreaming || _entry.Text != entry.Text)
 		{
+			var previous = _body.Child;
 			_body.Child(Markdown(entry.Text));
+			// 文本被再次替换时旧 Markdown 已脱离视觉树，必须显式释放其中的文本/代码视图。
+			if (previous is not null && !ReferenceEquals(previous, _streamingText)) UiLifetime.Release(previous);
 		}
 
 		_entry = entry;
@@ -143,23 +157,58 @@ internal sealed class AssistantMessageView : IDisposable
 		return string.Empty;
 	}
 
+	private MultiLineTextBox Track(MultiLineTextBox text)
+	{
+		_focus.Track(text);
+		return text;
+	}
+
+	/// <summary>思考正文按 Markdown 渲染；折叠时仍只显示纯文本首行，避免为不可见内容建树。</summary>
+	private void EnsureThinkingMarkdown(ChatEntry? entry = null)
+	{
+		var current = entry ?? _entry;
+		var thinking = current?.Thinking ?? string.Empty;
+		if (thinking.Length == 0 && !(current?.IsThinking ?? false))
+		{
+			if (_thinkingMarkdown is not null) _thinkingMarkdown.Markdown = string.Empty;
+			return;
+		}
+		if (_thinkingMarkdown is null)
+		{
+			_thinkingMarkdown = CreateMarkdownViewer(AppTheme.FontSizeCaption, muted: true);
+			_thinking.Content(new Border()
+				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, AppTheme.Space2))
+				.Child(_thinkingMarkdown));
+		}
+		// 流式追加时合并连续 token；定稿后立即解析，选择/复制不必等后台任务。
+		var delay = current?.IsStreaming == true ? TimeSpan.FromMilliseconds(80) : TimeSpan.Zero;
+		if (_thinkingMarkdown.ParseDelay != delay) _thinkingMarkdown.ParseDelay = delay;
+		if (!string.Equals(_thinkingMarkdown.Markdown, thinking, StringComparison.Ordinal))
+			_thinkingMarkdown.Markdown = thinking;
+	}
+
 	internal static MultiLineTextBox CreateCodeText(string code, string? language, TextFocusScrollGuard focus)
 	{
 		var text = MessageText.Create(code, mono: true, wrap: false, fontSize: AppTheme.FontSizeCaption);
 		focus.Track(text);
 		text.Extensions.Classifiers.Add(new KeywordClassifier(language));
+		// 换肤后重建视图并重新排布，避免代码块只剩背景（见 AppStyles.RefreshTextView）。
+		text.WithTheme((theme, view) => AppStyles.RefreshTextView(view));
 		return text;
 	}
 
-	private MarkdownPresenter Markdown(string text)
+	private MarkdownPresenter Markdown(string text) => CreateMarkdownViewer(AppTheme.FontSizeChat).Markdown(text);
+
+	private MarkdownPresenter CreateMarkdownViewer(double fontSize, bool muted = false)
 	{
 		// 会话本身已经有纵向视口，每条回复只负责排版，避免嵌套滚动与焦点联动。
-		var viewer = new MarkdownPresenter().FontSize(AppTheme.FontSizeChat).FontWeight(FontWeight.Normal);
+		var viewer = new MarkdownPresenter().FontSize(fontSize).FontWeight(FontWeight.Normal);
 		viewer.SelectionChanged += () => PrimarySelectionText.Service?.Publish(
 			viewer.SelectedText.Length <= LinuxPrimarySelection.MaxCharacters ? viewer.SelectedText : string.Empty);
 		_focus.Track(viewer);
 		viewer.CodeBlockFactory = (code, language) => CreateCodeText(code ?? string.Empty, language, _focus);
 		viewer.OnLinkRequested(link => _openLink(link.Url));
-		return viewer.Markdown(text).SmoothScrolling();
+		if (muted) viewer.WithTheme((theme, view) => view.Foreground = AppTheme.For(theme).TextMuted);
+		return viewer.SmoothScrolling();
 	}
 }

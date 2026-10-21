@@ -97,9 +97,10 @@ internal sealed class ImagePreview
 	{
 		// 预览遮罩始终是深色：按钮用代码表面的浅色前景与低透明度白色悬停，
 		// 不能用浅色主题的 Ghost 前景/底色，否则按钮会消失在遮罩里。
-		_close = AppIcons.Button("x", Strings.ImagePreviewClose, Hide, tint: AppTheme.CodeText)
+		// 遮罩永远是深色，所以这里取深色配色的前景，不跟着浅色主题变暗。
+		_close = AppIcons.Button("x", Strings.ImagePreviewClose, Hide, tint: AppPalette.Dark.CodeText)
 			.StyleName(AppStyles.CodeButton).Padding(Thickness.Zero);
-		_copy = AppIcons.Button("copy", Strings.CopyImage, CopyImage, tint: AppTheme.CodeText)
+		_copy = AppIcons.Button("copy", Strings.CopyImage, CopyImage, tint: AppPalette.Dark.CodeText)
 			.StyleName(AppStyles.CodeButton).Padding(Thickness.Zero);
 		_actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 			.HorizontalAlignment(HorizontalAlignment.Right).VerticalAlignment(VerticalAlignment.Top)
@@ -116,8 +117,8 @@ internal sealed class ImagePreview
 	public UIElement View { get; }
 	public bool IsOpen => View.IsVisible;
 
-	/// <summary>写剪贴板的结果反馈出口；由宿主接到状态行，未接时静默。</summary>
-	public Action<string>? Status { get; set; }
+	/// <summary>写剪贴板的结果反馈出口（文案, 是否成功）；由宿主接到 toast，未接时静默。</summary>
+	public Action<string, bool>? Status { get; set; }
 
 	public void Show(UIElement owner, ImageSource source)
 	{
@@ -151,7 +152,7 @@ internal sealed class ImagePreview
 		if (_payload is not { } payload) return;
 		if (ClipboardImages.Service is not { } service)
 		{
-			Status?.Invoke(Strings.ClipboardUnavailable);
+			Status?.Invoke(Strings.ClipboardUnavailable, false);
 			return;
 		}
 
@@ -171,6 +172,6 @@ internal sealed class ImagePreview
 		}
 
 		if (!IsOpen) return;
-		Status?.Invoke(copied ? Strings.Copied : Strings.ClipboardUnavailable);
+		Status?.Invoke(copied ? Strings.Copied : Strings.ClipboardUnavailable, copied);
 	}
 }

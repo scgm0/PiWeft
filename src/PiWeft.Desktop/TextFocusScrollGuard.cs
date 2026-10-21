@@ -41,11 +41,18 @@ internal sealed class TextFocusScrollGuard : IDisposable
 		control.GotFocus += Preserve;
 	}
 
+	/// <summary>折叠开关改变了行高：宿主据此重排会话视图（与手动滚动同样的收敛）。</summary>
+	public Action<FrameworkElement>? LayoutInvalidated { get; set; }
+
 	public void TrackFold(Expander fold)
 	{
 		// Focusing the whole expanded subtree must not scroll its bottom into view.
 		ProtectFocus(fold);
-		fold.ExpandedChanged += expanded => { if (expanded && fold.Content is { } content) TrackTree(content); };
+		fold.ExpandedChanged += expanded =>
+		{
+			if (expanded && fold.Content is { } content) TrackTree(content);
+			LayoutInvalidated?.Invoke(fold);
+		};
 		fold.MouseDown += args =>
 		{
 			if (fold.FindVisualRoot() is not Window { Handle: not 0 }) return;

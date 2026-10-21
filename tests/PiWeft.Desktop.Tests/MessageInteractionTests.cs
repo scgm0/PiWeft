@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Markdown;
 using Aprillz.MewUI.Platform;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
@@ -60,18 +61,25 @@ public sealed class MessageInteractionTests
 		});
 		using var tab = new SessionTab(session, [session.Model], "test");
 		ConversationPerformanceTests.Layout(tab);
-		// Each expansion materializes the next level: run, process group, then tool/thinking detail.
+		// Each expansion materializes the next level: run, process group (virtualized rows), then tool detail.
 		for (var depth = 0; depth < 3; depth++)
+		{
 			foreach (var expander in Find<Expander>(tab.View).ToArray()) expander.IsExpanded = true;
+			ConversationPerformanceTests.Layout(tab);
+		}
 		var messages = Find<MultiLineTextBox>(tab.View)
 			.Concat(Find<Expander>(tab.View).SelectMany(expander => Find<MultiLineTextBox>(expander.Content!)))
 			.Where(text => text.IsReadOnly).Distinct().ToArray();
-		foreach (var expected in new[] { "user **literal**", "thinking text", "tool output" })
+		foreach (var expected in new[] { "user **literal**", "tool output" })
 		{
 			var text = Assert.Single(messages, text => text.Text == expected);
 			text.SelectAll();
 			Assert.Equal(expected, text.SelectedText);
 		}
+		// 思考正文已改为 Markdown，仍可整体选择复制原文。
+		var thinking = Find<MarkdownPresenter>(tab.View).Single(view => view.Markdown == "thinking text");
+		thinking.SelectAll();
+		Assert.Equal("thinking text", thinking.SelectedText);
 	}
 
 	[Fact]
@@ -106,6 +114,60 @@ public sealed class MessageInteractionTests
 		Assert.Contains("line 99", text.Text);
 		text.SelectAll();
 		Assert.Equal(text.Text, text.SelectedText);
+	}
+
+	[Fact]
+	public void ThinkingBodyRendersMarkdownWhileCollapsedPreviewStaysPlainText()
+	{
+		var entry = new ChatEntry
+		{
+			Role = ChatRole.Assistant,
+			Text = string.Empty,
+			Thinking = "**bold**\n\n- item",
+			EntryId = "thinking",
+		};
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var view = new AssistantMessageView(entry, _ => { }, focus);
+		try
+		{
+			ConversationPerformanceTests.Layout(view.View);
+			var thinking = Find<Expander>(view.View).Single(expander =>
+				expander.Header is { } header && Find<TextBlock>(header).Any(text => text.Text == Strings.ThinkingComplete));
+			var preview = Find<TextBlock>(thinking.Header!).Single(text => text.Text == "**bold**");
+			Assert.True(preview.IsVisible);
+			Assert.DoesNotContain(Find<MarkdownPresenter>(view.View), markdown => markdown.Markdown.Contains("**bold**", StringComparison.Ordinal));
+
+			thinking.IsExpanded = true;
+			ConversationPerformanceTests.Layout(view.View);
+
+			Assert.Contains(Find<MarkdownPresenter>(view.View), markdown => markdown.Markdown.Contains("**bold**", StringComparison.Ordinal));
+			Assert.False(preview.IsVisible);
+		}
+		finally
+		{
+			UiLifetime.Release(view.View);
+		}
+	}
+
+	[Fact]
+	public void CodeTextThemeRefreshRevalidatesArrangeAfterADirtyMeasure()
+	{
+		var text = AssistantMessageView.CreateCodeText("line 1\nline 2", "text", new TextFocusScrollGuard(new ScrollViewer()));
+		var host = new ScrollViewer { HorizontalScroll = ScrollMode.Auto, VerticalScroll = ScrollMode.Disabled, Content = text };
+		host.Measure(new Size(600, 400));
+		host.Arrange(new Rect(0, 0, 600, 400));
+		Assert.False(text.IsArrangeDirty);
+
+		// 换肤时 MewUI 已把文本视图标成测量失效；此时再调用 InvalidateMeasure 不会重新置排布失效，
+		// 新视图的视口宽度停在 0，代码块只会画背景。刷新必须显式失效排布。
+		text.InvalidateMeasure();
+		text.Arrange(text.Bounds);
+		Assert.True(text.IsMeasureDirty);
+		Assert.False(text.IsArrangeDirty);
+
+		AppStyles.RefreshTextView(text);
+
+		Assert.True(text.IsArrangeDirty);
 	}
 
 	[Theory]

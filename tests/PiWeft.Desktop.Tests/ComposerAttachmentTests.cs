@@ -36,10 +36,12 @@ public sealed class ComposerAttachmentTests : IDisposable
 		File.WriteAllBytes(path, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j7XcAAAAASUVORK5CYII="));
 		await tab.AddFilesAsync([path]);
 		ImagePreviewTests.Click(Find<Button>(tab.View).Single(button => HoverHints.Text(button) == Strings.ImagePreviewOpen));
-		Assert.Equal(1, window.OverlayLayer.Count);
+		Assert.True(tab.ImagePreview.IsOpen);
+		Assert.True(window.OverlayLayer.Contains(tab.ImagePreview.View));
 		Assert.Contains(Find<Button>(tab.View), button => HoverHints.Text(button) == Strings.RemoveAttachment);
 		tab.DisposeView();
-		Assert.Equal(0, window.OverlayLayer.Count);
+		Assert.False(tab.ImagePreview.IsOpen);
+		Assert.False(window.OverlayLayer.Contains(tab.ImagePreview.View));
 	}
 
 	[Fact]
@@ -83,10 +85,11 @@ public sealed class ComposerAttachmentTests : IDisposable
 		var image = Path.Combine(_root, "photo.png");
 		File.WriteAllBytes(image, [1, 2, 3]);
 		await tab.AddFilesAsync([image]);
+		Toasts.ClearRecent();
 		await tab.SendAsync("inspect");
 		Assert.Empty(tab.Session.Session.BuildSessionContext().Messages);
 		Assert.Equal("inspect", Find<MultiLineTextBox>(tab.View).Single().Text);
-		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == Strings.ImageModelRequired);
+		Assert.Contains(Toasts.Recent, item => item.Message == Strings.ImageModelRequired && item.Kind == ToastKind.Error);
 	}
 
 	[Fact]

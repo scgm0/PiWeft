@@ -21,6 +21,57 @@ public sealed partial class SessionTab
 	}
 
 	/// <summary>
+	/// 仅供 --ui-smoke latest-theme：先上滚让「移动到最新」按钮浮出，再动态切到浅色主题，
+	/// 供外部脚本前后截图核对按钮与正文的配色（长会话 + 运行中换肤才会暴露）。
+	/// </summary>
+	internal void PrepareLatestThemeSmoke()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(700));
+		var step = 0;
+		timer.Tick += () =>
+		{
+			step++;
+			switch (step)
+			{
+				case 2:
+					// 离开底部：按钮浮出，同时切到「非跟随」状态。
+					_scroll.SetScrollOffsets(0, Math.Max(0, _scroll.VerticalOffset - 900));
+					break;
+				case 3:
+					if (FindByHint(_messages, Strings.ExecutionExpandHint) is { } run) run.IsExpanded = true;
+					break;
+				case 4:
+					if (FindByHint(_messages, Strings.ExecutionGroupHint) is { } group) group.IsExpanded = true;
+					break;
+				case 5:
+					if (FindByHint(_messages, Strings.ToolExpandHint) is { } tool) tool.IsExpanded = true;
+					break;
+				case 6:
+					// 把展开的工具行对齐到视口上沿，换肤前后都看得到同一块代码表面。
+					if (FindByHint(_messages, Strings.ToolExpandHint) is { } expanded)
+						_scroll.SetScrollOffsets(0, Math.Max(0,
+							_scroll.VerticalOffset + expanded.Bounds.Y - _scroll.Bounds.Y - 60));
+					Console.WriteLine("latest-ready");
+					break;
+				case 8:
+					(DesktopPreference.Load() with { Theme = DesktopPreference.LightTheme }).Save();
+					if (Application.IsRunning) Application.Current.SetTheme(ThemeVariant.Light);
+					break;
+				case 10:
+					// 换肤后再离开底部一点：确认「移动到最新」重新浮出时是当前主题的颜色。
+					_scroll.SetScrollOffsets(0, Math.Max(0, _scroll.VerticalOffset - 300));
+					break;
+				case 12:
+					Console.WriteLine("theme-light");
+					timer.Stop();
+					break;
+			}
+		};
+		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
+		timer.Start();
+	}
+
+	/// <summary>
 	/// 滚到顶部后反复切换输入区上方卡片的展开与可见性，制造消息区高度抖动，
 	/// 复现悬浮按钮「显示不全」的偶发绘制缺陷（外部脚本趁机连拍截图）。
 	/// </summary>
@@ -77,6 +128,82 @@ public sealed partial class SessionTab
 		timer.Start();
 	}
 
+	/// <summary>
+	/// 仅供 --ui-smoke collapse：按用户路径展开过程组与工具调用，报告滚动范围、已实现行与空白行，
+	/// 用于定位「展开/收起长内容后正文不渲染，滚动一下才恢复」。
+	/// </summary>
+	internal void PrepareCollapseSmoke()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(300));
+		var step = 0;
+		timer.Tick += () =>
+		{
+			step++;
+			var run = FindByHint(_messages, Strings.ExecutionExpandHint);
+			if (run is null)
+			{
+				// 还没实现出过程行：往上找，直到视口里出现一条（真实会话底部可能没有）。
+				step--;
+				_scroll.SetScrollOffsets(0, Math.Max(0, _scroll.VerticalOffset - 800));
+				return;
+			}
+			Expander? group = run.Content is { } runContent ? FindByHint(runContent, Strings.ExecutionGroupHint) : null;
+			Expander? tool = group?.Content is { } groupContent ? FindByHint(groupContent, Strings.ToolExpandHint) : null;
+			switch (step)
+			{
+				case 1:
+					// 先贴底，再往上滚一点：用户是在「向上浏览」时展开的，跟流已关闭。
+					SmoothScroll.For(_scroll).JumpToEnd();
+					_scroll.SetScrollOffsets(0, Math.Max(0, _scroll.VerticalOffset - 200));
+					break;
+				case 2:
+					run.IsExpanded = true;
+					break;
+				case 3:
+					if (group is not null) { _conversationScroll.PreserveAnchor(group); group.IsExpanded = true; }
+					break;
+				case 4:
+					Report("group-expanded");
+					if (tool is not null) { _conversationScroll.PreserveAnchor(tool); tool.IsExpanded = true; }
+					break;
+				case 6:
+					Report("tool-expanded");
+					if (tool is not null) { _conversationScroll.PreserveAnchor(tool); tool.IsExpanded = false; }
+					break;
+				case 8:
+					Report("tool-collapsed");
+					timer.Stop();
+					Console.WriteLine("collapse-ready");
+					break;
+			}
+		};
+		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
+		timer.Start();
+
+		void Report(string phase)
+		{
+			var smooth = SmoothScroll.For(_scroll);
+			var hosts = Find<ContentControl>(_messages).ToArray();
+			// 只统计「绑定了条目却没有内容」的行；容器池里未使用的空壳不算。
+			var blankHosts = hosts.Where(host => host.Tag is ChatEntry && host.Content is null && host.Bounds.Height > 0 &&
+				host.Bounds.Bottom > _scroll.Bounds.Top && host.Bounds.Top < _scroll.Bounds.Bottom).ToArray();
+			var blank = blankHosts.Length;
+			var blankTags = string.Join(",", blankHosts.Select(host =>
+				host.Tag is ChatEntry entry ? entry.EntryId : host.Tag?.GetType().Name ?? "null"));
+			var rows = hosts
+				.Where(row => row.Tag is ChatEntry)
+				.Select(row =>
+				{
+					var entry = (ChatEntry)row.Tag!;
+					var inside = row.Bounds.Bottom > _scroll.Bounds.Top && row.Bounds.Top < _scroll.Bounds.Bottom;
+					var content = row.Content?.DesiredSize.Height ?? -1;
+					return $"{entry.EntryId}@{row.Bounds.Y:0}+{row.Bounds.Height:0}/c{content:0}{(inside ? "*" : string.Empty)}";
+				});
+			Console.WriteLine($"collapse:{phase}:offset={_scroll.VerticalOffset:0.##}:max={smooth.MaxVerticalOffset:0.##}:" +
+				$"viewport={_scroll.ViewportHeight:0.##}:blank={blank}[{blankTags}]:rows={string.Join("|", rows)}");
+		}
+	}
+
 	private static Expander? FindByHint(Element root, string hint)
 	{
 		if (root is Expander expander && HoverHints.Text(expander) == hint) return expander;
@@ -122,6 +249,9 @@ public sealed partial class SessionTab
 			}
 			var link = Find<MarkdownPresenter>(_messages).LastOrDefault(text => text.Markdown.StartsWith("[sample]", StringComparison.Ordinal));
 			if (link is not null) Report("link", new Point(link.Bounds.X + 25, link.Bounds.Y + 10), "ready");
+			// 悬浮按钮的状态与位置：外部脚本据此在「可见」的瞬间连拍，核对渲染是否完整。
+			Report("latest", new Point(_scrollToLatest.Bounds.X + 18, _scrollToLatest.Bounds.Y + 18),
+				_scrollToLatest.Opacity.ToString("0.##"));
 			Report("preview", new Point(60, window.ClientSize.Height / 2), _imagePreview.IsOpen.ToString());
 
 			void Report(string name, Point client, string state)

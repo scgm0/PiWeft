@@ -145,11 +145,11 @@ internal sealed partial class ConfigurationView
 		var api = ConfigurationModels.Text(entry, "api");
 		if (!RemoteModelCatalog.Supports(api))
 		{
-			_notice.Text(Strings.ConfigFetchUnsupported(api));
+			Toasts.Error(View, Strings.ConfigFetchUnsupported(api));
 			return;
 		}
 
-		_notice.Text(Strings.ConfigFetchingModels);
+		Toasts.Show(View, Strings.ConfigFetchingModels);
 		try
 		{
 			var result = await RemoteModelCatalog
@@ -158,24 +158,25 @@ internal sealed partial class ConfigurationView
 
 			if (!result.Ok)
 			{
-				_notice.Text(Strings.ConfigFetchFailed(result.Error ?? string.Empty));
+				Toasts.Error(View, Strings.ConfigFetchFailed(result.Error ?? string.Empty));
 				return;
 			}
 
 			var (next, added) = ConfigurationModels.AddMissingModels(_root, provider, result.Models);
 			if (added > 0)
 			{
-				Save(next);
-				_notice.Text(Strings.ConfigFetchDone(added, result.Models.Count));
+				// 保存本身不再提示，改成一条说明拉到了几个模型。
+				Save(next, notify: false);
+				Toasts.Success(View, Strings.ConfigFetchDone(added, result.Models.Count));
 			}
 			else
 			{
-				_notice.Text(Strings.ConfigFetchNoNew);
+				Toasts.Show(View, Strings.ConfigFetchNoNew);
 			}
 		}
 		catch (Exception ex)
 		{
-			_notice.Text(Strings.ConfigFetchFailed(ex.Message));
+			Toasts.Error(View, Strings.ConfigFetchFailed(ex.Message));
 		}
 	}
 

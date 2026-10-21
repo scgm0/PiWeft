@@ -113,10 +113,12 @@ public sealed class ClipboardImageTests : IDisposable
 		var composer = Find<MultiLineTextBox>(tab.View).Single();
 		ClipboardImages.Service = new FakeClipboardImages { Image = true, Result = [] };
 
+		Toasts.ClearRecent();
 		Press(composer, new KeyEventArgs(Key.V, 0, ModifierKeys.Control));
 		await tab.PendingPaste;
 
-		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == Strings.ClipboardImageUnavailable);
+		Assert.Contains(Toasts.Recent, item =>
+			item.Message == Strings.ClipboardImageUnavailable && item.Kind == ToastKind.Error);
 	}
 
 	[Fact]
@@ -132,13 +134,15 @@ public sealed class ClipboardImageTests : IDisposable
 		await tab.AddFilesAsync([path]);
 
 		ImagePreviewTests.Click(Find<Button>(tab.View).Single(button => HoverHints.Text(button) == Strings.ImagePreviewOpen));
-		Assert.Equal(1, window.OverlayLayer.Count);
+		Assert.True(tab.ImagePreview.IsOpen);
+		Assert.True(window.OverlayLayer.Contains(tab.ImagePreview.View));
+		Toasts.ClearRecent();
 		ImagePreviewTests.Click(Find<Button>(tab.ImagePreview.View).Single(button => HoverHints.Text(button) == Strings.CopyImage));
 
 		var written = Assert.Single(service.Written);
 		Assert.Equal("image/png", written.MimeType);
 		Assert.Equal(png, written.Data);
-		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == Strings.Copied);
+		Assert.Contains(Toasts.Recent, item => item.Message == Strings.Copied && item.Kind == ToastKind.Success);
 	}
 
 	[Fact]
