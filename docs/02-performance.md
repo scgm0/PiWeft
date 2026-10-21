@@ -69,10 +69,34 @@ dotnet run --project tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj
 - 历史变更按尾部替换、追加、删除通知，保留既有消息与高度缓存；流式尾部只在可见宿主上原位更新，不发送 Replace 通知，因此虚拟化高度缓存不会回落成 120 DIP 估算值，滚动条与视口不会被短暂压短后停在真实底部之前。流式消息落盘时仍原位替换正文为 Markdown。
 - Replace 通知按“真正需要重建的连续行段”拆分，而不是从第一处差异一直覆盖到末尾；一轮结束、单行元数据变化不会再让其后的已测高度全部作废。执行过程里的工具/思考行仍然原位更新，不进入 Replace 段；组内虚拟化步骤列表的流式思考/正文也原位更新（包括流式行落盘后 EntryId 变化、但时间戳不变的收尾），只重测该行，组体 extent 与滚动进度不会先缩后涨。
 - 分支面板首次打开时才构建完整树。会话文件已打开时直接选中标签，不再先重复读取 JSONL；启动目录复用已有环境。
+- 打开会话走后台线程，UI 线程只建标签页。45 MiB / 26,985 行（26,984 条目）的真实会话实测（x64 Debug / Xvfb）：
+
+| 阶段 | 是否 UI 线程 | 耗时 |
+|---|---|---:|
+| `SessionManager.Open` 逐行解析 | 后台 | 0.84–0.88 s（冷启动 1.39–1.94 s） |
+| 建会话 + `ChatViewModel.Attach` 聊天记录投影 | 后台 | 0.27–0.36 s |
+| `ExecutionProcess.Project`（1741 行） | 后台（随投影） | 0.03–0.07 s |
+| `SessionTab` 构造 + 首次布局 | UI | 0.35–0.73 s（冷启动）/ 约 0.04 s（热） |
+
+  解析同时改成 `Utf8LineReader` + `SessionJson.ParseLine(ReadOnlySpan<byte>)`：45 MiB 不再把每一行先解码成 `string`（整份文件规模的分配），快约 10–15%，更重要的是能按字节位置汇报进度。`SessionManager.Open` 因此新增可选的 `IProgress<SessionReadProgress>` 与 `CancellationToken`（每 256 行或 4 MiB 汇报一次，逐行检查取消）；旧的同步重载保持不变，CLI 与守护进程调用点零改动。
+  UI 侧的加载提示**就是准备阶段会话面板自身的内容**（`SessionLoadingPanel`：欢迎面板 StackPanel 里的一段，加载中与「开始一次会话」文案互斥切换），不是窗口级遮罩也不是浮层卡片，更没有中止按钮。
+  **加载中旧会话必须整体让位**（历史缺陷：在主区已有一个会话时打开另一个，加载段落直接浮在旧会话正文之上——`UpdateStatus` 只把准备阶段面板设为可见，却没把 `_tabControl`、右侧面板与欢迎页状态行收起，两层内容同时在场）。现在 `SessionLoadingPanel.Showing` 期间：`_tabControl`、`_panelHost`、`_status` 全部收起，主区只剩加载提示；`SessionLoadingPanelTests` 之外另有 `SessionLoadingSmokeTests` 常驻演练（`--ui-smoke loading`）断言 `tabVisible=False welcomeVisible=True prompt=True panels=False` 与收尾的 `tabs=2 welcomeVisible=False prompt=False tabVisible=True`。：解析阶段显示文件名 + 百分比 + 已读行数（`Strings.OpeningSessionProgress`），随后「正在准备会话…」；文件长度未知时退回不定进度，只汇报行数。段落按在途操作计数收放，打开与改名叠在一起也不会提前收起；加载中准备阶段面板强制可见（`UpdateStatus`），所以从已有标签页再开第二个会话时提示也落在同一处。**加载失败就地显示在同一段落里**：红色标题「打开会话失败」+ 原始异常信息 + 「关闭」，不再挤到顶部横幅，错误态一直留到用户关闭或开始下一次操作（错误态会收起进度轨道，免得看着像分割线）。同一份文件在解析期间重复点击只跑一份；窗口关闭（`_sessionAbort` + `_sessionHostClosed`，不再往已关的窗口塞标签页）或失败时会释放已经建好的会话与投影（会话持有 JSONL 写入句柄）。改名的 `session_info` 追加同样需要读完整份会话，因此也移到后台，只在文件大于 2 MiB 时才占用这段提示，避免小会话闪一下。
+  因为启动时自动打开的会话不再保证「立刻就有标签页」，`--theme-smoke`、`--ui-smoke`、`--smoke-tab` 改为显式等待在途打开结束（`WaitForSessionOpensAsync`），而不是靠固定延时猜；加载提示会阻止关窗，退出前也先排空在途打开。
 - 窄屏输入框由 96 DIP 缩为 56 DIP，保留草稿和选区。追随最新消息使用滚动偏移，避免将高于视口的整条回复反复滚入视图；滚动前先从滚动内容同步最新 extent，并把正在进行的动画目标改指向末尾，避免虚拟化高度变化时停在旧底部。
-- 跟随意图与布局解耦（对齐 PiDeck 的状态机）：滚轮/触控板/键盘/滚动条才是读者输入，行高变化引起的锚点校正不改变跟随态；近底带内的上滚先累计读者自己的位移（25 DIP 逃逸），1–2 px 的触控板抖动不会退出跟随。执行过程组体这类嵌套视口同样区分「extent 变化的布局校正」与「extent 稳定的手工位移」，流式行重测高不会静默取消组体跟底。Arrow/PageUp/PageDown/Home/End 在焦点控件未处理时滚动会话，嵌套视口到边界后再交还祖先。
+- 跟随意图与布局解耦（对齐 PiDeck 的状态机）：滚轮/触控板/键盘/滚动条才是读者输入，行高变化引起的锚点校正不改变跟随态；近底带内的上滚先累计读者自己的位移（25 DIP 逃逸），1–2 px 的触控板抖动不会退出跟随。Arrow/PageUp/PageDown/Home/End 在焦点控件未处理时滚动会话，嵌套视口到边界后再交还祖先。
+- 执行过程组体的跟底由**几何**决定（`SmoothScroll.AutoFollowAtEnd`）：滚动条停在底部（4 DIP 容差）就跟随最新步骤，只有读者明确上滚（滚轮/键盘向上、拖动滚动条、恢复历史位置）才离开，回到末尾自动重新锁底。布局测高、栈→虚拟化 presenter 切换、展开/折叠步骤引起的 extent 与偏移变化都不再永久关闭跟底——此前这些路径会静默清掉跟随状态，表现为「置底也不跟」。展开步骤时用 `StopFollowingGrowth` 只清本次跟随，并把预览行在同一帧的 `SyncBodyMetrics` 里钉回原位，不留到下一次无关更新。展开流式思考仅在读者本就位于末尾时才继续贴底。
 - 会话内搜索进入时取消跟底并定位第一条命中，清空后按“搜索前的行 + 行内深度”恢复阅读位置（长回复中间也不会跳回行首）；过程组里的工具名与输出也参与匹配。
-- 展开的思考用同步解析 + 限频（120 ms）刷新：MewUI 的后台 Markdown 解析会在每次源文变化时取消上一轮，而流式增量比它的防抖更密，持续输出时正文会停在展开那一刻。定稿时立即用最终文本刷新。
+- 展开的思考分两阶段渲染：流式期间用可增量追加的只读文本视图逐帧更新，思考结束后一次性换成 Markdown。MewUI 的 `MarkdownPresenter` 每次源文变化都会丢弃并重建整棵文档控件树（Markdig 解析本身只占 0.1–1.3 ms，成本在重建与重新测量）。
+- 流式文本用 `StreamingTextView`（`MultiLineTextBox` + 自有 `EditableTextDocument`）：纯追加走 `ReplaceRange` 的区间增量编辑，只重排受影响的行；撤销历史对只读展示无意义，`UndoSizeLimit = 0` 让每帧不产生编辑记录。前缀被缩短或改写（重发、改写历史）才退回整篇替换。实测（x64 Debug / Xvfb，520 DIP 宽，含 measure + arrange，逐帧追加一段）：
+
+| 文本长度 | `Text=` 全量替换 | `StreamingTextView` 增量追加 |
+|---:|---:|---:|
+| 16 K | 72.3 ms（中位 51.0） | 0.87 ms（中位 0.90） |
+| 32 K | 42.5 ms（中位 42.3） | 0.78 ms（中位 0.51） |
+| 64 K | 77.2 ms（中位 74.1） | 0.97 ms（中位 0.60） |
+
+  参照：`TextBlock.Text` 全量替换 8 K/16 K/32 K/64 K 分别约 22/23/37/54 ms；固定高度 `MultiLineTextBox`（行虚拟化）约 1.3–2.7 ms。差异几乎全部来自是否重建整篇文档，而不是控件类型，因此 32 K 以上也能逐帧更新，不需要再按长度降频。定稿时一次性换成 Markdown，且保持展开状态不自动折叠。
+- 定稿保留 `MarkdownPresenter` 默认的 `ParseDelay = 0`（同步解析）。定稿只发生一次，不会被流式增量反复取消；而 Markdig 解析本身只占 1.3 ms（32 K），真正贵的是随后在 UI 线程重建控件树（约 40 ms），后台解析绕不开这部分；新建的 presenter 在首个文档到达前无树可画，异步反而会多出一帧空白或旧内容。
 - 虚拟化行的高度只在 arrange 阶段重测。MewUI 0.22.1 里 `InvalidateMeasure` 命中「祖先已 dirty」分支时不会同时置 arrange dirty，行高变化会被跳过（表现为展开最后一步/展开思考后组体滚不到新内容；该缺陷在 0.22.1 与当前 main 上都能复现，已在框架仓库补了回归测试与修复）。ExecutionProcessView 与时间线在行内更新后显式 `InvalidateArrange`（含视口内容），布局落定后重新发布 extent，并把正在跟随增长的组体重新贴到底部；升级到含修复的 MewUI 后这些显式失效依然安全。会话搜索弹窗的行是带 hover 提示的按钮，不做虚拟化，因此结果按 200 行封顶并在状态行说明截断（`SessionSearchTruncated`），避免一次检索构造上千个控件。
 
 同一 1000 轮、2000 条消息 fixture 的局部冷启动观测（包含 `SessionTab` 构造及 960×720 控件布局，不包括 JSONL 解析、模型环境初始化或网络请求）：
@@ -134,6 +158,10 @@ Linux NativeAOT 发布版、Xvfb/Mesa、1280×820 的实际会话演练中：60 
 
 ```sh
 xvfb-run -a dotnet test PiWeft.slnx
+xvfb-run -a dotnet test tests/PiWeft.CodingAgent.Tests --filter FullyQualifiedName~SessionOpenProgressTests
+xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~SessionLoadingPanelTests
+xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~SessionLoadingSmokeTests   # 需要 DISPLAY
+xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~SessionTabChatHandoffTests
 xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~ConversationPerformanceTests --logger 'console;verbosity=detailed'
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64 -o artifacts/desktop-optimized-linux-x64
 PI_WORKSPACE_SMOKE_APP="$PWD/artifacts/desktop-optimized-linux-x64/piweft-desktop" \

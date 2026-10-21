@@ -13,9 +13,13 @@ internal sealed class AssistantMessageView : IDisposable
 	private readonly TextBlock _thinkingPreview = new();
 	private readonly Image _thinkingIcon;
 	private MarkdownPresenter? _thinkingMarkdown;
+	// 流式思考先用轻量纯文本视图逐帧更新；定稿后再换成 Markdown。
+	// MarkdownPresenter 每次源文变化都会重建整棵文档控件树，长思考逐帧重解析
+	// 会把 UI 线程占满（实测 8 KB 约 40 ms/帧）；纯文本只需文本布局。
+	private StreamingTextView? _thinkingText;
 	// 流式正文只在真正有流式文本时才建：过程组里的紧凑思考行是虚拟化的，
 	// 每行都预建一个 MultiLineTextBox 会白白占住文本视图与布局资源。
-	private MultiLineTextBox? _streamingText;
+	private StreamingTextView? _streamingText;
 	private readonly Expander _thinking;
 	private readonly Border _body = new();
 	private readonly TextBlock _changes = new();
@@ -25,9 +29,6 @@ internal sealed class AssistantMessageView : IDisposable
 	private ChatEntry? _entry;
 	// 展开中的思考是否正在跟随内容增长：只在流式思考期间保持，避免结束后把阅读位置拉走。
 	private bool _followingThinking;
-	// 流式思考的 Markdown 重解析限频；定稿时立即用最终文本刷新。
-	private const int ThinkingUpdateIntervalMs = 120;
-	private long _thinkingRenderedAt;
 
 	public AssistantMessageView(ChatEntry entry, Action<string> copy, TextFocusScrollGuard focus, Action<ImageSource>? preview = null,
 		Action<string>? openLink = null)
@@ -59,7 +60,7 @@ internal sealed class AssistantMessageView : IDisposable
 				_focus.StopGrowth(_thinking);
 				return;
 			}
-			EnsureThinkingMarkdown();
+			EnsureThinkingBody();
 			// 用户展开：记住这次阅读意图。若思考正在流式输出就立即贴住末尾；
 			// 尚未开始时由后续 Update 在首个 thinking delta 到来后接管。
 			// 从回收缓存恢复状态时不算一次用户展开，不重新贴底。
@@ -99,9 +100,14 @@ internal sealed class AssistantMessageView : IDisposable
 	public void Dispose()
 	{
 		// Streaming text leaves the visual tree when Markdown takes over, but still owns text resources.
+		if (_thinkingText is not null)
+		{
+			UiLifetime.Release(_thinkingText.View);
+			_thinkingText = null;
+		}
 		if (_streamingText is not null)
 		{
-			UiLifetime.Release(_streamingText);
+			UiLifetime.Release(_streamingText.View);
 			_streamingText = null;
 		}
 		if (_thinkingMarkdown is not null)
@@ -130,7 +136,7 @@ internal sealed class AssistantMessageView : IDisposable
 		_thinkingPreview.Text(preview).IsVisible(!_thinking.IsExpanded && preview.Length > 0);
 		if (_thinking.IsExpanded)
 		{
-			EnsureThinkingMarkdown(entry);
+			EnsureThinkingBody(entry);
 			// 已经由用户展开并进入跟随的思考继续贴住末尾；恢复出来的展开状态不自动开始跟随。
 			if (entry.IsThinking)
 			{
@@ -138,8 +144,10 @@ internal sealed class AssistantMessageView : IDisposable
 			}
 			else if (_followingThinking)
 			{
+				// 思考结束只停止“思考自身的跟底”，不要把已置底的组体自动跟随也关掉：
+				// 组体滚动条仍在底部时，后续工具步骤应继续贴底；用户上滚时 SmoothScroll
+				// 自己会退出跟底。
 				_followingThinking = false;
-				_focus.StopGrowth(_thinking);
 			}
 		}
 		else
@@ -157,21 +165,38 @@ internal sealed class AssistantMessageView : IDisposable
 
 		if (entry.IsStreaming)
 		{
-			_streamingText ??= Track(MessageText.Create());
-			MessageText.Update(_streamingText, entry.Text);
-			if (!ReferenceEquals(_body.Child, _streamingText))
+			if (entry.Text.Length > 0)
 			{
+				_streamingText ??= Track(new StreamingTextView());
+				_streamingText.Update(entry.Text);
+				if (!ReferenceEquals(_body.Child, _streamingText.View))
+				{
+					var previous = _body.Child;
+					_body.Child(_streamingText.View);
+					if (previous is not null) UiLifetime.Release(previous);
+				}
+			}
+			else
+			{
+				// 只有思考、还没有正文时不要预建空的流式文本框（过程组里每行都建一个是白烧布局）。
 				var previous = _body.Child;
-				_body.Child(_streamingText);
-				if (previous is not null) UiLifetime.Release(previous);
+				if (previous is not null)
+				{
+					_body.Child(null);
+					UiLifetime.Release(previous);
+					if (ReferenceEquals(previous, _streamingText?.View))
+					{
+						_streamingText = null;
+					}
+				}
 			}
 		}
-		else if (_entry is null || _entry.IsStreaming || _entry.Text != entry.Text)
+		else if (entry.Text.Length > 0 && (_entry is null || _entry.IsStreaming || _entry.Text != entry.Text))
 		{
 			var previous = _body.Child;
 			_body.Child(Markdown(entry.Text));
 			// 文本被再次替换时旧 Markdown 已脱离视觉树，必须显式释放其中的文本/代码视图。
-			if (previous is not null && !ReferenceEquals(previous, _streamingText)) UiLifetime.Release(previous);
+			if (previous is not null && !ReferenceEquals(previous, _streamingText?.View)) UiLifetime.Release(previous);
 		}
 
 		_entry = entry;
@@ -194,10 +219,48 @@ internal sealed class AssistantMessageView : IDisposable
 		return string.Empty;
 	}
 
-	private MultiLineTextBox Track(MultiLineTextBox text)
+	private StreamingTextView Track(StreamingTextView text)
 	{
-		_focus.Track(text);
+		_focus.Track(text.View);
 		return text;
+	}
+
+	/// <summary>
+	/// 展开的思考：流式阶段用纯文本逐帧更新，定稿后一次性换成 Markdown。
+	/// MarkdownPresenter 每次 Markdown 变化都会丢弃并重建整棵文档树（Markdig 解析本身
+	/// 只占很小一部分），长思考逐帧重建会超过帧预算；纯文本布局则便宜得多。
+	/// </summary>
+	private void EnsureThinkingBody(ChatEntry? entry = null)
+	{
+		var current = entry ?? _entry;
+		if (current is null) return;
+		if (current.IsThinking) EnsureThinkingText(current);
+		else EnsureThinkingMarkdown(current);
+	}
+
+	private void EnsureThinkingText(ChatEntry current)
+	{
+		var thinking = current.Thinking;
+		if (_thinkingText is null)
+		{
+			if (_thinkingMarkdown is not null)
+			{
+				UiLifetime.Release(_thinkingMarkdown);
+				_thinkingMarkdown = null;
+			}
+			_thinkingText = Track(new StreamingTextView(fontSize: AppTheme.FontSizeCaption, muted: true));
+		}
+		SetThinkingContent(_thinkingText.View);
+		// 只追加不改前缀时是文档增量编辑，成本与总长度无关（实测 64 K 约 1 ms），可以逐帧更新。
+		_thinkingText.Update(thinking);
+	}
+
+	private void SetThinkingContent(UIElement content)
+	{
+		if (_thinking.Content is Border { Child: var current } && ReferenceEquals(current, content)) return;
+		_thinking.Content(new Border()
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, AppTheme.Space2))
+			.Child(content));
 	}
 
 	/// <summary>思考正文按 Markdown 渲染；折叠时仍只显示纯文本首行，避免为不可见内容建树。</summary>
@@ -210,26 +273,22 @@ internal sealed class AssistantMessageView : IDisposable
 			if (_thinkingMarkdown is not null) _thinkingMarkdown.Markdown = string.Empty;
 			return;
 		}
+		if (_thinkingText is not null)
+		{
+			UiLifetime.Release(_thinkingText.View);
+			_thinkingText = null;
+		}
 		if (_thinkingMarkdown is null)
 		{
 			_thinkingMarkdown = CreateMarkdownViewer(AppTheme.FontSizeCaption, muted: true);
-			_thinking.Content(new Border()
-				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, 0, AppTheme.Space2))
-				.Child(_thinkingMarkdown));
 		}
-		// 展开的思考必须跟着流式增量实时更新。MarkdownPresenter 的后台解析会在每次源文变化时
-		// 取消上一轮解析，而流式增量比它的防抖更密（桌面按 40 ms 合并刷新），持续输出时解析会
-		// 一直被取消、正文停在展开那一刻。这里改为同步解析（单个思考块很小）并在流式期间限频。
-		if (_thinkingMarkdown.ParseDelay != TimeSpan.Zero) _thinkingMarkdown.ParseDelay = TimeSpan.Zero;
+		SetThinkingContent(_thinkingMarkdown);
+		// 定稿保留框架默认的同步解析（ParseDelay 默认就是 0）：这一步只发生一次，不会被
+		// 流式增量反复取消；改成后台解析反而省不了什么——32 K 文本 Markdig 解析约 1.3 ms，
+		// 真正贵的是随后在 UI 线程重建控件树（约 40 ms），异步绕不开；而新建的 presenter
+		// 在首个文档到达前没有树可画，异步会多出一帧空白。
 		if (string.Equals(_thinkingMarkdown.Markdown, thinking, StringComparison.Ordinal)) return;
-		var now = Environment.TickCount64;
-		if (current?.IsStreaming == true && Application.IsRunning &&
-			now - _thinkingRenderedAt < ThinkingUpdateIntervalMs)
-		{
-			return;
-		}
 		_thinkingMarkdown.Markdown = thinking;
-		_thinkingRenderedAt = now;
 	}
 
 	internal static MultiLineTextBox CreateCodeText(string code, string? language, TextFocusScrollGuard focus)
@@ -247,6 +306,8 @@ internal sealed class AssistantMessageView : IDisposable
 	private MarkdownPresenter CreateMarkdownViewer(double fontSize, bool muted = false)
 	{
 		// 会话本身已经有纵向视口，每条回复只负责排版，避免嵌套滚动与焦点联动。
+		// 保留默认的 ParseDelay = 0（同步解析）：正文与思考都只换一次 Markdown，解析本身很便宜
+		// （32 K 约 1.3 ms），改成后台解析反而会先空一帧再补内容。
 		var viewer = new MarkdownPresenter().FontSize(fontSize).FontWeight(FontWeight.Normal);
 		viewer.SelectionChanged += () => PrimarySelectionText.Service?.Publish(
 			viewer.SelectedText.Length <= LinuxPrimarySelection.MaxCharacters ? viewer.SelectedText : string.Empty);

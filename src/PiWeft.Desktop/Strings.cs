@@ -587,6 +587,17 @@ public static partial class Strings
 	// 错误与提示
 	public static string StartupFailed(string reason) => $"启动失败：{reason}";
 	public static string OpenSessionFailed(string reason) => $"无法打开会话：{reason}";
+
+	// 打开长会话时的加载提示：解析整份 JSONL 要上百毫秒到数秒，必须让 UI 有话可说。
+	// 提示与错误都显示在会话面板中央的加载卡片上，不进横幅。
+	public static string OpeningSession(string name) => $"正在打开会话「{name}」…";
+	public static string OpeningSessionProgress(string name, int percent, int lines) =>
+		$"正在读取「{name}」{percent}%（{lines} 行）";
+	public static string OpeningSessionLines(int lines) => $"正在读取 {lines} 行…";
+	public const string PreparingSession = "正在准备会话…";
+	public const string RenamingSession = "正在保存会话名称…";
+	public const string OpenSessionFailedTitle = "打开会话失败";
+	public const string RenameSessionFailedTitle = "保存会话名称失败";
 	public const string AnotherInstance = "该目录已经打开了一个窗口。";
 	public static string NoSuchDirectory(string path) => $"目录不存在：{path}";
 	public static string WindowStartFailed(string reason) => $"无法打开窗口：{reason}";

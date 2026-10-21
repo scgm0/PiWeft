@@ -3,6 +3,12 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Session;
 
+/// <summary>打开会话文件时的读取进度；<see cref="TotalBytes"/> 为 0 表示长度未知。</summary>
+public readonly record struct SessionReadProgress(long BytesRead, long TotalBytes, int Lines)
+{
+	public double Fraction => TotalBytes <= 0 ? 0 : Math.Clamp((double)BytesRead / TotalBytes, 0, 1);
+}
+
 /// <summary>
 /// 读写 pi 的会话文件：用 <c>id</c>/<c>parentId</c> 串联的仅追加 JSONL 树，感知压缩的
 /// 上下文构建，以及分支导航。磁盘格式与 pi 二进制线上兼容。
@@ -120,9 +126,22 @@ public sealed partial class SessionManager
 		string? sessionDir = null,
 		string? cwdOverride = null,
 		string? cwdFallback = null)
+		=> Open(path, sessionDir, cwdOverride, cwdFallback, progress: null, cancellationToken: default);
+
+	/// <summary>
+	/// 同上，并支持进度回调与取消。长会话（几十 MB）解析要上百毫秒到数秒，
+	/// 桌面把它放到后台线程并显示进度；<paramref name="progress"/> 会在读取线程上被调用。
+	/// </summary>
+	public static SessionManager Open(
+		string path,
+		string? sessionDir,
+		string? cwdOverride,
+		string? cwdFallback,
+		IProgress<SessionReadProgress>? progress,
+		CancellationToken cancellationToken)
 	{
 		var resolved = Path.GetFullPath(path);
-		var entries = ReadFileEntries(resolved);
+		var entries = ReadFileEntries(resolved, progress, cancellationToken);
 
 		var header = entries.OfType<SessionHeader>().FirstOrDefault();
 		var cwd = NormalizeCwd(cwdOverride)
@@ -229,7 +248,10 @@ public sealed partial class SessionManager
 		RebuildIndex();
 	}
 
-	private static List<object> ReadFileEntries(string path)
+	private static List<object> ReadFileEntries(
+		string path,
+		IProgress<SessionReadProgress>? progress = null,
+		CancellationToken cancellationToken = default)
 	{
 		var entries = new List<object>();
 		if (!File.Exists(path))
@@ -237,18 +259,41 @@ public sealed partial class SessionManager
 			return entries;
 		}
 
-		foreach (var line in File.ReadLines(path))
+		var totalBytes = new FileInfo(path).Length;
+		var lines = 0;
+		long reportedBytes = 0;
+
+		// 逐行转成 string 再解析会让几十 MB 的文件多一次整文件规模的分配；
+		// Utf8LineReader 直接给 UTF-8 字节跨度，JsonNode 自己解码。
+		using (var reader = new Utf8LineReader(path))
 		{
-			try
+			while (reader.TryReadLine(out var line))
 			{
-				if (SessionJson.ParseLine(line) is { } parsed)
+				cancellationToken.ThrowIfCancellationRequested();
+				try
 				{
-					entries.Add(parsed);
+					if (SessionJson.ParseLine(line) is { } parsed)
+					{
+						entries.Add(parsed);
+					}
+				}
+				catch (System.Text.Json.JsonException)
+				{
+					// 跳过格式错误的行，而不是丢掉后面的会话内容。
+				}
+
+				lines++;
+				// 每 256 行或 4 MB 汇报一次：进度条不必逐行更新，回调本身也要钱。
+				if (progress is not null && (lines % 256 == 0 || reader.BytesRead - reportedBytes >= 4 * 1024 * 1024))
+				{
+					reportedBytes = reader.BytesRead;
+					progress.Report(new SessionReadProgress(reportedBytes, totalBytes, lines));
 				}
 			}
-			catch (System.Text.Json.JsonException)
+
+			if (progress is not null)
 			{
-				// 跳过格式错误的行，而不是丢掉后面的会话内容。
+				progress.Report(new SessionReadProgress(Math.Max(reportedBytes, totalBytes), totalBytes, lines));
 			}
 		}
 

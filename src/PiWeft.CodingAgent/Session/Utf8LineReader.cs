@@ -33,6 +33,9 @@ public sealed class Utf8LineReader : IDisposable
 		_lineBuffer = ArrayPool<byte>.Shared.Rent(InitialLineCapacity);
 	}
 
+	/// <summary>已消费到的字节位置（含尚未交付的缓冲），用于读取进度。</summary>
+	public long BytesRead => _stream.Position - (_readEnd - _readStart);
+
 	public bool TryReadLine(out ReadOnlySpan<byte> line)
 	{
 		_lineLength = 0;

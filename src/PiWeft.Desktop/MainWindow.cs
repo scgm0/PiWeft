@@ -68,6 +68,17 @@ public sealed partial class MainWindow : Window
 	private bool _projectsTab;
 	private string? _renamingPath;
 	private readonly HashSet<string> _removedProjects = new(StringComparer.Ordinal);
+	// 正在后台解析的会话文件：同一份文件只允许一次打开，连点也不会排队重复读几十 MB。
+	private readonly HashSet<string> _openingSessions = new(StringComparer.Ordinal);
+	// 准备阶段会话面板里的加载段落（打开会话 / 写回会话名称），以及窗口关闭时中断后台读取的令牌源。
+	private readonly SessionLoadingPanel _sessionLoading = new();
+	private TextBlock _welcomeTitle = null!;
+	private TextBlock _welcomeBody = null!;
+	private readonly CancellationTokenSource _sessionAbort = new();
+	// 窗口已关闭：后台打开可能在取消落地前就跑完了，不能再往死窗口里塞标签页。
+	private bool _sessionHostClosed;
+	// 在途的后台打开数量；自检与无人值守演练用它等标签页就位，而不是猜固定延时。
+	private int _pendingSessionOpens;
 	private IReadOnlyList<SessionListItem> _allSessions = [];
 	private IReadOnlyList<Model> _models = [];
 
@@ -405,28 +416,33 @@ public sealed partial class MainWindow : Window
 			.WithTheme((theme, tabs) => tabs.Background = AppTheme.For(theme).WindowBackground);
 		_tabControl.SelectionChanged += _ => UpdateStatus();
 
+		// 准备阶段的会话面板：加载提示不是叠在上面的卡片，而是这个面板自己的内容之一，
+		// 加载中用进度段落替掉欢迎文案，结束后再换回来。
+		_welcomeTitle = new TextBlock()
+			.Text(Strings.WelcomeTitle)
+			.FontSize(20)
+			.FontWeight(FontWeight.Medium)
+			.PrimaryText()
+			.HorizontalAlignment(HorizontalAlignment.Center);
+		_welcomeBody = new TextBlock()
+			.Text(Strings.WelcomeBody)
+			.FontSize(AppTheme.FontSizeCaption)
+			.MutedText()
+			.TextAlignment(TextAlignment.Center)
+			.MaxWidth(420)
+			.TextWrapping(TextWrapping.Wrap)
+			.HorizontalAlignment(HorizontalAlignment.Center);
+		_sessionLoading.Changed = SyncWelcomeLoading;
+		_sessionLoading.View.IsVisible(false);
 		_welcome = new Border()
 			.StyleName(AppStyles.Window)
+			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).WindowBackground)
 			.Padding(new Thickness(AppTheme.Space6))
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space3)
 				.HorizontalAlignment(HorizontalAlignment.Center)
 				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(
-					new TextBlock()
-						.Text(Strings.WelcomeTitle)
-						.FontSize(20)
-						.FontWeight(FontWeight.Medium)
-						.PrimaryText()
-						.HorizontalAlignment(HorizontalAlignment.Center),
-					new TextBlock()
-						.Text(Strings.WelcomeBody)
-						.FontSize(AppTheme.FontSizeCaption)
-						.MutedText()
-						.TextAlignment(TextAlignment.Center)
-						.MaxWidth(420)
-						.TextWrapping(TextWrapping.Wrap)
-						.HorizontalAlignment(HorizontalAlignment.Center),
+				.Children(_welcomeTitle, _welcomeBody, _sessionLoading.View,
 					_status.HorizontalAlignment(HorizontalAlignment.Center)));
 
 		_palette = new CommandPalette(PaletteCommands);
@@ -554,6 +570,9 @@ public sealed partial class MainWindow : Window
 		// 关闭时记住窗口状态，下次打开原位恢复。
 		this.OnClosed(() =>
 		{
+			// 窗口都没了，后台读取与投影不必再跑完。
+			_sessionHostClosed = true;
+			_sessionAbort.Cancel();
 			_usageStatsView?.Close();
 			_themeWatcher?.Dispose();
 			// 每个会话面板里的伪终端都要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
@@ -612,16 +631,7 @@ public sealed partial class MainWindow : Window
 
 		if (SmokeTab is { Length: > 0 } smokeTab)
 		{
-			// 外部工具（xdotool 等）往这个后端注入键盘/指针事件并不可靠，
-			// 因此把「打开某个面板」做成启动参数，便于无人值守截图检查。
-			if (string.Equals(smokeTab, "git", StringComparison.OrdinalIgnoreCase))
-			{
-				ShowGitPanel();
-			}
-			else
-			{
-				OpenSettingsDialog();
-			}
+			_ = RunSmokeTabAsync(smokeTab);
 		}
 
 		if (ThemeSmoke)
@@ -636,6 +646,27 @@ public sealed partial class MainWindow : Window
 	}
 
 	// ------------------------------------------------------------- 会话列表
+
+	/// <summary>
+	/// 外部工具（xdotool 等）往这个后端注入键盘/指针事件并不可靠，
+	/// 因此把「打开某个面板」做成启动参数，便于无人值守截图检查。
+	/// </summary>
+	private async Task RunSmokeTabAsync(string smokeTab)
+	{
+		// 面板要挂在自动打开的会话上，先等它在后台建好。
+		await WaitForSessionOpensAsync().ConfigureAwait(false);
+		Dispatch(() =>
+		{
+			if (string.Equals(smokeTab, "git", StringComparison.OrdinalIgnoreCase))
+			{
+				ShowGitPanel();
+			}
+			else
+			{
+				OpenSettingsDialog();
+			}
+		});
+	}
 
 	/// <summary>重建侧栏列表。目录快照始终包含全部会话，侧栏再按聊天目录分成「对话」与「项目」两段。</summary>
 	private void RefreshSessions()
@@ -751,15 +782,8 @@ public sealed partial class MainWindow : Window
 
 		_nameBox.Text = selected.Name;
 
-		try
-		{
-			OpenSessionPath(selected.Path);
-		}
-		catch (Exception ex)
-		{
-			AppLog.Failure(AppLog.For<MainWindow>(), "Open session", ex);
-			_banner.Text(Strings.OpenSessionFailed(ex.Message));
-		}
+		// 打开失败由会话面板上的加载卡片就地显示，这里不抢话。
+		OpenSessionPath(selected.Path);
 	}
 
 	/// <summary>「搜索会话」弹窗里选中的会话：按路径打开，已打开则切到那个标签。</summary>
@@ -767,15 +791,7 @@ public sealed partial class MainWindow : Window
 	{
 		_nameBox.Text = item.Name;
 
-		try
-		{
-			OpenSessionPath(item.Path);
-		}
-		catch (Exception ex)
-		{
-			AppLog.Failure(AppLog.For<MainWindow>(), "Open session", ex);
-			_banner.Text(Strings.OpenSessionFailed(ex.Message));
-		}
+		OpenSessionPath(item.Path);
 	}
 
 	/// <summary>侧栏当前选中的会话：取可见分段的选中行，避免命中另一棵树的旧选择。</summary>
@@ -792,7 +808,13 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>把输入框里的名称写给选中的会话，并刷新列表与标签标题。</summary>
-	private void RenameSelected()
+	private void RenameSelected() => _ = RenameSelectedAsync();
+
+	/// <summary>
+	/// 改名要读完整份会话才能追加一条 <c>session_info</c>，大文件不能在 UI 线程读；
+	/// 只有确实需要等一会儿（>2 MB）才弹加载提示，小会话直接后台跑完避免闪烁。
+	/// </summary>
+	private async Task RenameSelectedAsync()
 	{
 		var path = _renamingPath ?? SelectedSession()?.Path;
 		if (path is null)
@@ -801,9 +823,14 @@ public sealed partial class MainWindow : Window
 			return;
 		}
 
+		var name = _nameBox.Text?.Trim();
+		// 小会话瞬间就完成，不必闪一下卡片；出错时才把错误显示到会话面板上。
+		var card = File.Exists(path) && new FileInfo(path).Length > 2 * 1024 * 1024;
+		var shown = false;
 		try
 		{
-			_catalog.Rename(path, _nameBox.Text?.Trim());
+			if (card) _sessionLoading.Begin(Strings.RenamingSession);
+			await Task.Run(() => _catalog.Rename(path, name)).ConfigureAwait(true);
 			_renamingPath = null;
 			RefreshSessions();
 
@@ -818,7 +845,12 @@ public sealed partial class MainWindow : Window
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Rename session", ex);
-			_banner.Text(Strings.OpenSessionFailed(ex.Message));
+			_sessionLoading.Fail(Strings.RenameSessionFailedTitle, ex.Message);
+			shown = true;
+		}
+		finally
+		{
+			if (card && !shown) _sessionLoading.Complete();
 		}
 	}
 
@@ -896,18 +928,126 @@ public sealed partial class MainWindow : Window
 	// --------------------------------------------------------------- 标签页
 
 	/// <summary>先选中已打开的标签，避免重复反序列化整个 JSONL 文件。</summary>
-	private void OpenSessionPath(string path)
+	private void OpenSessionPath(string path) => _ = OpenSessionPathAsync(path);
+
+	/// <summary>
+	/// 打开会话。长会话（几十 MB、数万行）解析要近一秒，聊天记录投影再要 200+ 毫秒，
+	/// 这些都放到后台线程，期间用 BusyIndicator 显示读取进度；UI 线程只建标签页。
+	/// </summary>
+	private async Task OpenSessionPathAsync(string path)
 	{
 		var resolved = Path.GetFullPath(path);
-		var existing = _tabEntries.OfType<SessionTab>().FirstOrDefault(tab => tab.Session.Session.SessionFile == resolved);
-		if (existing is not null)
+		if (SelectOpenTab(resolved) is not null)
 		{
-			_tabControl.SelectedIndex = _tabEntries.IndexOf(existing);
-			existing.FocusComposer();
 			return;
 		}
-		// 外部会话的头部可能没有 cwd；桌面用当前项目兜底，而不是守护进程的启动目录。
-		OpenSession(_catalog.Open(resolved, _cwd));
+
+		// 解析期间重复点击同一份文件：忽略，不排队再读一遍。
+		if (!_openingSessions.Add(resolved))
+		{
+			return;
+		}
+
+		Interlocked.Increment(ref _pendingSessionOpens);
+
+		var name = Path.GetFileNameWithoutExtension(resolved);
+		// 加载提示就在会话面板中央，不带中止按钮；只有窗口关闭才中断后台读取。
+		var token = _sessionAbort.Token;
+		_sessionLoading.Begin(Strings.OpeningSession(name));
+		// 中途取消或报错时，已经建好的会话要释放（它持有会话文件的写入句柄）。
+		(CodingAgentSession Session, ChatViewModel Chat)? prepared = null;
+		var shown = false;
+		try
+		{
+			var progress = new UiProgress<SessionReadProgress>(value =>
+			{
+				// 长度未知时用不定进度，但行数仍然汇报，别让卡片看起来卡死。
+				_sessionLoading.Update(
+					value.TotalBytes <= 0
+						? Strings.OpeningSessionLines(value.Lines)
+						: Strings.OpeningSessionProgress(name, (int)Math.Round(value.Fraction * 100), value.Lines),
+					value.TotalBytes <= 0 ? null : value.Fraction);
+			});
+
+			// 外部会话的头部可能没有 cwd；桌面用当前项目兜底，而不是守护进程的启动目录。
+			var manager = await Task.Run(
+				() => _catalog.Open(resolved, _cwd, progress, token), token).ConfigureAwait(true);
+
+			// 环境解析会写横幅，留在 UI 线程；建会话与投影聊天记录放后台。
+			var environment = EnvironmentFor(manager.Cwd);
+			var extraTools = McpToolsFor(manager.Cwd);
+			// 问询卡片需要标签的视图来定位窗口，因此先建宿主、构造会话，再把视图挂回去。
+			var uiHost = new DesktopUiHost();
+			_sessionLoading.Update(Strings.PreparingSession, null);
+			prepared = await Task.Run(
+				() =>
+				{
+					var session = environment.CreateSession(
+						_arguments, manager.Cwd, session: manager, extraTools: extraTools,
+						recordInitialThinkingLevel: false, uiHost: uiHost);
+					// 聊天记录投影是纯模型工作（无 UI 依赖），提前在后台做完，标签页直接接手。
+					var chat = new ChatViewModel();
+					chat.Attach(session);
+					return (session, chat);
+				},
+				token).ConfigureAwait(true);
+
+			OpenPreparedSession(prepared.Value.Session, uiHost, prepared.Value.Chat);
+			prepared = null;
+		}
+		catch (OperationCanceledException)
+		{
+			// 关窗导致的中断：没有界面可读，只记日志。
+			AppLog.For<MainWindow>().ZLogInformation($"Session open cancelled: {resolved}");
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Open session", ex);
+			// 错误就地显示在准备阶段的会话面板上，不再挤到横幅里。
+			_sessionLoading.Fail(Strings.OpenSessionFailedTitle, ex.Message);
+			shown = true;
+		}
+		finally
+		{
+			if (prepared is { } leftover)
+			{
+				leftover.Chat.Dispose();
+				leftover.Session.Dispose();
+			}
+
+			// shown 时 Fail 已经落账，这里不再减一次。
+			if (!shown) _sessionLoading.Complete();
+			_openingSessions.Remove(resolved);
+			Interlocked.Decrement(ref _pendingSessionOpens);
+		}
+	}
+
+	/// <summary>
+	/// 等待在途的后台打开结束。会话打开改成异步后，启动时「立刻就有标签页」不再成立；
+	/// 自检与演练流程必须显式等待，否则在满载机器上会读到空标签页。
+	/// </summary>
+	private async Task WaitForSessionOpensAsync(int timeoutMs = 30_000)
+	{
+		var waited = 0;
+		while (Volatile.Read(ref _pendingSessionOpens) > 0 && waited < timeoutMs)
+		{
+			await Task.Delay(25).ConfigureAwait(false);
+			waited += 25;
+		}
+	}
+
+	/// <summary>命中已打开的标签就选中它并返回，避免重复反序列化整个 JSONL 文件。</summary>
+	private SessionTab? SelectOpenTab(string path)
+	{
+		var existing = _tabEntries.OfType<SessionTab>().FirstOrDefault(tab => tab.Session.Session.SessionFile == path);
+		if (existing is null)
+		{
+			return null;
+		}
+
+		_tabControl.SelectedIndex = _tabEntries.IndexOf(existing);
+		existing.FocusComposer();
+		return existing;
 	}
 
 	/// <summary>打开一个会话：已打开则选中，否则新建标签页。</summary>
@@ -920,26 +1060,33 @@ public sealed partial class MainWindow : Window
 
 		// 同一个会话文件只开一个标签。
 		var path = manager.SessionFile;
-		if (path is not null)
+		if (path is not null && SelectOpenTab(path) is not null)
 		{
-			var existing = _tabEntries.OfType<SessionTab>().FirstOrDefault(tab => tab.Session.Session.SessionFile == path);
-			if (existing is not null)
-			{
-				_tabControl.SelectedIndex = _tabEntries.IndexOf(existing);
-				existing.FocusComposer();
-				return;
-			}
+			return;
 		}
 
 		// 会话可能属于别的项目：为该工作目录准备（并缓存）一套环境，工具与会话一样以它的 cwd 为基准。
 		var environment = EnvironmentFor(manager.Cwd);
-		var extraTools = McpToolsFor(manager.Cwd);
 		// 问询卡片需要标签的视图来定位窗口，因此先建宿主、构造会话，再把视图挂回去。
 		var uiHost = new DesktopUiHost();
-		var session = environment.CreateSession(
-			_arguments, manager.Cwd, session: manager, extraTools: extraTools, recordInitialThinkingLevel: false, uiHost: uiHost);
+		OpenPreparedSession(
+			environment.CreateSession(_arguments, manager.Cwd, session: manager, extraTools: McpToolsFor(manager.Cwd),
+				recordInitialThinkingLevel: false, uiHost: uiHost),
+			uiHost);
+	}
 
-		var tab = AttachTab(session);
+	/// <summary>把已经建好的会话挂成标签页；<paramref name="session"/> 可以在后台线程创建。</summary>
+	private void OpenPreparedSession(CodingAgentSession session, DesktopUiHost uiHost, ChatViewModel? chat = null)
+	{
+		// 取消令牌可能在投影跑完后才落地：窗口已经关了，直接释放，不建标签页。
+		if (_sessionHostClosed)
+		{
+			chat?.Dispose();
+			session.Dispose();
+			return;
+		}
+
+		var tab = AttachTab(session, chat);
 		uiHost.Attach(tab);
 		tab.UiHost = uiHost;
 		AppLog.For<MainWindow>().ZLogInformation($"Session opened: session={session.Session.SessionId}");
@@ -949,13 +1096,13 @@ public sealed partial class MainWindow : Window
 		tab.FocusComposer();
 	}
 
-	/// <summary>为已有会话创建一个标签页。</summary>
-	private SessionTab AttachTab(CodingAgentSession session)
+	/// <summary>为已有会话创建一个标签页；<paramref name="chat"/> 是后台已经投影好的聊天记录。</summary>
+	private SessionTab AttachTab(CodingAgentSession session, ChatViewModel? chat = null)
 	{
 		// 选择器与会话沿用同一启动环境，避免热重载后列出当前会话尚不能调用的新端点。
 		var environment = EnvironmentFor(session.Cwd);
 		var tab = new SessionTab(session, environment.ListAvailableModels(_arguments.ApiKey), SessionTab.TitleFor(session),
-			() => environment.ListAvailableModels(_arguments.ApiKey));
+			() => environment.ListAvailableModels(_arguments.ApiKey), chat);
 		tab.TitleChanged += _ => UpdateTabHeaders();
 		tab.StateChanged += _ =>
 		{
@@ -1036,14 +1183,29 @@ public sealed partial class MainWindow : Window
 		UpdateStatus();
 	}
 
+	/// <summary>加载段落与欢迎文案互斥；状态变化后重算面板可见性。</summary>
+	private void SyncWelcomeLoading()
+	{
+		var showing = _sessionLoading.Showing;
+		_welcomeTitle.IsVisible(!showing);
+		_welcomeBody.IsVisible(!showing);
+		_sessionLoading.View.IsVisible(showing);
+		UpdateStatus();
+	}
+
 	private void UpdateStatus()
 	{
 		var index = _tabControl.SelectedIndex;
 		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
 		if (_lastSessionTab is { } previous && !ReferenceEquals(entry, previous)) previous.HideTransientPanels();
 
-		_welcome.IsVisible(entry is null);
-		_tabControl.IsVisible(entry is not null);
+		// 加载中（或停在错误态）时准备阶段面板必须可见，加载段落才有地方显示；
+		// 同时旧会话视图整体让位——这段时间屏幕上只该有加载提示，不该透出上一个会话。
+		var loading = _sessionLoading.Showing;
+		_welcome.IsVisible(entry is null || loading);
+		_tabControl.IsVisible(entry is not null && !loading);
+		// 加载提示是这个阶段主区里唯一的内容，欢迎页的状态行也一起让位。
+		_status.IsVisible(!loading);
 		ApplySidebarLayout();
 		SyncPanelLayout();
 		SyncTitleBarTabs();
@@ -1073,14 +1235,35 @@ public sealed partial class MainWindow : Window
 	/// </summary>
 	private async Task RunUiSmokeAsync(string view)
 	{
+		// 启动时自动打开的会话现在在后台解析，先等它建好标签页再演练。
+		await WaitForSessionOpensAsync().ConfigureAwait(false);
 		await Task.Delay(1500).ConfigureAwait(false);
 
+		var loadingTarget = _sessions.FirstOrDefault(item => item.Path != CurrentTab()?.Session.Session.SessionFile);
 		Dispatch(() =>
 		{
 			switch (view)
 			{
 				case "hints":
 					PrepareHoverSmoke();
+					break;
+				case "loading":
+					// 在已有标签页之上再打开一个会话：后台解析期间主区必须只剩加载提示，
+					// 不能把上一个会话透出来（历史缺陷：加载段落直接浮在旧会话正文上）。
+					if (loadingTarget is { } other)
+					{
+						_ = OpenSessionPathAsync(other.Path);
+						Console.WriteLine(
+							$"piweft-desktop: loading in-flight tabVisible={_tabControl.IsVisible} " +
+							$"welcomeVisible={_welcome.IsVisible} prompt={_sessionLoading.Showing} " +
+							$"panels={_panelHost.IsVisible}");
+					}
+					else
+					{
+						Console.Error.WriteLine("piweft-desktop: loading smoke 没有第二个会话");
+						Environment.ExitCode = 1;
+					}
+
 					break;
 				case "references":
 					// 视觉验收入口：同时展示草稿引用条、历史文件 chip 和技能 chip。
@@ -1226,6 +1409,8 @@ public sealed partial class MainWindow : Window
 
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
 		await Task.Delay(view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" ? 30000 : 7000).ConfigureAwait(false);
+		// 加载提示会阻止关窗；退出前先确认没有在途的打开。
+		await WaitForSessionOpensAsync().ConfigureAwait(false);
 		Dispatch(() =>
 		{
 			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();
@@ -1235,6 +1420,14 @@ public sealed partial class MainWindow : Window
 				// 资源页构建失败（例如引用了不存在的内嵌图标）必须在无人值守演练里暴露出来。
 				Console.Error.WriteLine($"piweft-desktop: resources smoke failed: {error}");
 				Environment.ExitCode = 1;
+			}
+
+			if (view == "loading")
+			{
+				Console.WriteLine(
+					$"piweft-desktop: loading settled tabs={_tabEntries.Count} " +
+					$"welcomeVisible={_welcome.IsVisible} prompt={_sessionLoading.Showing} " +
+					$"tabVisible={_tabControl.IsVisible}");
 			}
 
 			Console.WriteLine("piweft-desktop: ui smoke ok");
@@ -1252,6 +1445,8 @@ public sealed partial class MainWindow : Window
 		SessionTab? originalTab = null;
 		try
 		{
+			// 启动时自动打开的会话现在在后台解析，先等标签页出现再演练换肤。
+			await WaitForSessionOpensAsync().ConfigureAwait(false);
 			// 固定从深色开始，这样「切换后是浅色」才有意义（否则起点可能是跟随系统）。
 			await Task.Delay(800).ConfigureAwait(false);
 			Dispatch(() =>
@@ -1283,8 +1478,11 @@ public sealed partial class MainWindow : Window
 				Console.WriteLine(valid ? "theme controls ok: selection, picker, border, draft, caret" : "theme controls FAILED");
 				Console.WriteLine(valid ? "piweft-desktop: theme smoke ok" : "piweft-desktop: theme smoke failed");
 				if (!valid) Environment.ExitCode = 1;
-				Application.Shutdown();
 			});
+
+			// 加载提示会阻止关窗：等在途的打开结束再退出。
+			await WaitForSessionOpensAsync().ConfigureAwait(false);
+			Dispatch(() => Application.Shutdown());
 		}
 		catch (Exception ex)
 		{
@@ -1487,7 +1685,8 @@ public sealed partial class MainWindow : Window
 
 		var active = CurrentTab();
 		var activePanel = active is not null && _sessionPanels.TryGetValue(active, out var found) ? found : null;
-		var open = activePanel?.IsOpen == true;
+		// 加载中整个工作区只留加载提示，右侧面板也一起收起。
+		var open = activePanel?.IsOpen == true && !_sessionLoading.Showing;
 
 		foreach (var (tab, panel) in _sessionPanels)
 		{
@@ -2155,6 +2354,15 @@ public sealed partial class MainWindow : Window
 		var trimmed = cwd.TrimEnd(Path.DirectorySeparatorChar);
 		var name = Path.GetFileName(trimmed);
 		return name.Length > 0 ? name : trimmed;
+	}
+
+	/// <summary>
+	/// 把后台线程的进度汇报转到 UI 线程。<see cref="Progress{T}"/> 依赖同步上下文，
+	/// 而 MewUI 不安装它，回调会落在线程池上直接碰 BusyIndicator —— 所以自己调度。
+	/// </summary>
+	private sealed class UiProgress<T>(Action<T> apply) : IProgress<T>
+	{
+		public void Report(T value) => Dispatch(() => apply(value));
 	}
 
 	/// <summary>把动作调度到 UI 线程；应用尚未运行时直接执行。</summary>

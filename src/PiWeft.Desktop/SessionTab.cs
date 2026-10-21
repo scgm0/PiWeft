@@ -14,7 +14,8 @@ namespace PiWeft.Desktop;
 /// </summary>
 public sealed partial class SessionTab : IDisposable
 {
-	private readonly ChatViewModel _chat = new();
+	// 会话模型可以是后台预建的（长会话的投影要上百毫秒），默认自己新建一个。
+	private readonly ChatViewModel _chat;
 	private readonly ConversationTimeline _timeline;
 	private readonly DispatcherTimer _renderTimer = new(TimeSpan.FromMilliseconds(40));
 	private int _renderPending;
@@ -145,8 +146,10 @@ public sealed partial class SessionTab : IDisposable
 	public event Action<SessionTab>? StateChanged;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
-		Func<IReadOnlyList<Model>>? availableModels = null)
+		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null)
 	{
+		// 后台已经 Attach 过就直接接手，否则 UI 线程要再投影一遍整个会话。
+		_chat = chat ?? new ChatViewModel();
 		_scrollToLatest = new Button()
 			.Content(new Grid().Children(AppIcons.Icon("arrow-down", AppStyles.RolePrimary, 16)
 				.HorizontalAlignment(HorizontalAlignment.Center)
@@ -557,7 +560,7 @@ public sealed partial class SessionTab : IDisposable
 			if (ok) Toasts.Success(View, message);
 			else NotifyError(message);
 		};
-		_chat.Attach(session);
+		if (!ReferenceEquals(_chat.Session, session)) _chat.Attach(session);
 
 		RefreshPickers();
 		Render();
@@ -575,6 +578,9 @@ public sealed partial class SessionTab : IDisposable
 	internal bool ExtensionCardVisible => _extensionCard.View.IsVisible;
 
 	/// <summary>代理事件层是否已进入流式状态（诊断与契约测试用）。</summary>
+	/// <summary>标签页使用的聊天记录模型；宿主可以在后台预建后交接过来。</summary>
+	internal ChatViewModel Chat => _chat;
+
 	internal bool ChatStreaming => _chat.IsStreaming;
 
 	/// <summary>草稿里已识别的文件引用数（诊断与契约测试用）。</summary>

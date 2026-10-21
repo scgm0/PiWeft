@@ -57,6 +57,10 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	/// 展开流式内容后让最近的滚动视口跟住内容末尾：会话本身交给 <see cref="FollowConversation"/>，
 	/// 过程组的组体这类嵌套视口由自己的 <see cref="SmoothScroll"/> 持续贴底。
 	/// </summary>
+	/// <remarks>
+	/// 只有在读者本就看着末尾时才继续贴底：正在向上浏览时展开思考，不应该把读者拽到末尾。
+	/// 这也与组体的「置底才跟随」一致——上滚之后展开/折叠不能抢走阅读位置。
+	/// </remarks>
 	public void FollowGrowth(Element origin)
 	{
 		if (NearestViewport(origin) is not { } viewport) return;
@@ -67,9 +71,16 @@ internal sealed class TextFocusScrollGuard : IDisposable
 		}
 		// 组体小窗先跟住思考末尾；组体在会话里时，会话本身也要跟到最新，
 		// 否则组体内部在滚、外层仍停在思考标题上。
-		SmoothScroll.Find(viewport)?.FollowGrowth();
+		if (SmoothScroll.Find(viewport) is { } smooth &&
+			(smooth.IsFollowingGrowth || smooth.MaxVerticalOffset - viewport.VerticalOffset <= AtTailTolerance))
+		{
+			smooth.FollowGrowth();
+		}
 		if (origin.IsDescendantOf(_scroll)) FollowConversation?.Invoke();
 	}
+
+	/// <summary>判定视口是否停在末尾的容差（DIP）。</summary>
+	internal const double AtTailTolerance = 4;
 
 	/// <summary>折叠流式内容时停止跟随增长，视口停在读者看到的位置。</summary>
 	public void StopGrowth(Element origin)

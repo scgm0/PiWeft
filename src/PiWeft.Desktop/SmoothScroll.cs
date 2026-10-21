@@ -28,6 +28,21 @@ internal sealed class SmoothScroll : IDisposable
 	// 展开正在流式输出的内容（例如思考）后持续贴住内容末尾；读者自己滚动或显式结束即解除。
 	private bool _followGrowth;
 	private bool _growthFollowQueued;
+	// 置底自动跟随：组体这类嵌套视口只要滚动条停在底部就跟随最新内容，
+	// 由 ExecutionProcessView 显式启用；外层会话仍用 ConversationScroll 的状态机。
+	private const double AutoFollowTolerance = 4;
+	internal bool AutoFollowAtEnd { get; set; }
+	// 读者明确上滚过（滚轮/键盘/滚动条/恢复历史位置）。只有这种意图能挡住「置底即跟底」；
+	// 布局测高、presenter 切换、展开折叠引起的位移都不算，否则跟底会被静默关掉且再不恢复。
+	private bool _readerEscaped;
+
+	/// <summary>恢复历史状态后的首个组体：保持阅读位置，等读者滚到底或显式展开再重新锁底。</summary>
+	internal void SuppressAutoFollow()
+	{
+		_readerEscaped = true;
+		_followGrowth = false;
+		Stop();
+	}
 
 	// 跟底（内容增长）用指数衰减：目标每帧都在变，衰减不会因为重排而反复重启。
 	private const double DecayRate = 18.0;
@@ -175,7 +190,9 @@ internal sealed class SmoothScroll : IDisposable
 		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
 		if (horizontal == 0 && vertical == 0) return;
 		// 读者滚动会接管滚动位置：立即结束对内容增长的跟随，下一帧不再把他拉回末尾。
+		// 只有向上才是「离开末尾」的意图；向下滚回底部由几何判定重新锁底。
 		_followGrowth = false;
+		if (vertical < 0) _readerEscaped = true;
 		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
 
 		// Virtualized content can grow between arrangements. Pull its current extent into the
@@ -210,12 +227,14 @@ internal sealed class SmoothScroll : IDisposable
 
 	public void ScrollToEnd()
 	{
+		_readerEscaped = false;
 		SyncMetrics();
 		Start(new Point(Offset.X, MaxVerticalOffset), toEnd: true);
 	}
 
 	public void JumpToEnd()
 	{
+		_readerEscaped = false;
 		Stop();
 		SyncMetrics();
 		Apply(new Point(Offset.X, MaxVerticalOffset));
@@ -240,6 +259,8 @@ internal sealed class SmoothScroll : IDisposable
 	public void FollowGrowth()
 	{
 		if (_disposed) return;
+		// 显式跟随（自动展开最新组、展开流式思考）优先于恢复态的抑制。
+		_readerEscaped = false;
 		// 立即贴底，不能被上一次滚轮动画拉回旧目标。
 		Stop();
 		_followGrowth = true;
@@ -392,13 +413,38 @@ internal sealed class SmoothScroll : IDisposable
 		}
 		var offset = Offset;
 		var maximum = MaxVerticalOffset;
-		// 滚动条拖动、焦点导航与显式 SetScrollOffsets 接管了滚动位置：停止动画。
-		if (!IsApplyingOffset && offset != _lastOffset)
+		var extentChanged = Math.Abs(maximum - _lastMaximum) > 0.5;
+		if (AutoFollowAtEnd)
+		{
+			// 跟随态由几何决定：滚动条停在底部就跟随，读者明确上滚才离开。
+			// 这样 presenter 切换、行高重测、展开/折叠都不会把跟随永久关掉；
+			// 「展开步骤后停在预览行」靠 StopFollowingGrowth 清掉本次跟随，再由几何保持。
+			var distance = maximum - offset.Y;
+			if (maximum > AutoFollowTolerance)
+			{
+				if (distance <= AutoFollowTolerance)
+				{
+					_readerEscaped = false;
+					_followGrowth = true;
+				}
+				else if (_readerEscaped)
+				{
+					_followGrowth = false;
+				}
+				else if (!extentChanged)
+				{
+					// extent 稳定却被外部移动（滚动条拖动、焦点、程序化定位）：离开末尾。
+					_followGrowth = false;
+					if (!IsApplyingOffset) Stop();
+				}
+				// extent 增长且读者没上滚：保持现状，不把布局校正误判成离开。
+			}
+		}
+		else if (!IsApplyingOffset && offset != _lastOffset)
 		{
 			// 虚拟化行在 arrange 阶段被重新测高时，presenter 会请求一次锚点校正并把远端
 			// extent 一起改大。这属于布局，不是读者意图；若把它当成上滚，跟底会在第一帧
 			// 被静默取消，组体进度随即停在半路。只有 extent 没变的手工位移才算接管。
-			var extentChanged = Math.Abs(maximum - _lastMaximum) > 0.5;
 			if (!_followGrowth || !extentChanged)
 			{
 				_followGrowth = false;
@@ -411,7 +457,12 @@ internal sealed class SmoothScroll : IDisposable
 		if (_followGrowth && !IsApplyingOffset && maximum - offset.Y > 0.5) QueueGrowthFollow();
 	}
 
-	private void OnScrollBarDown(MouseEventArgs _) => StopFollowingGrowth();
+	private void OnScrollBarDown(MouseEventArgs _)
+	{
+		// 拖动/点击滚动条是显式阅读意图：先退出跟底，之后停到底部再由几何重新锁底。
+		_readerEscaped = true;
+		StopFollowingGrowth();
+	}
 
 	/// <summary>把跟随增长的重夹排到布局之后；一帧里只排一次。</summary>
 	private void QueueGrowthFollow()
@@ -437,6 +488,8 @@ internal sealed class SmoothScroll : IDisposable
 	private void OnMouseDown(MouseEventArgs args) { _followGrowth = false; Stop(); }
 	private void OnKeyDown(KeyEventArgs args)
 	{
+		// 向上翻页/回到开头是离开末尾的意图；向下按键交给几何判定是否回到底部。
+		if (args.Key is Key.Up or Key.PageUp or Key.Home) _readerEscaped = true;
 		_followGrowth = false;
 		Stop();
 		// Ctrl+PageUp/PageDown are tab-navigation chords; a focused editor leaves them unhandled

@@ -9,6 +9,9 @@ internal sealed class ExecutionProcessView
 	private readonly Func<ChatEntry, UIElement> _create;
 	private readonly TextFocusScrollGuard? _focus;
 	private bool _metricsQueued;
+	// 展开/收起步骤后"把预览行钉在原位"的收尾动作：必须在本帧布局之后立刻执行，
+	// 不能等到下一次无关的 ScrollChanged —— 那时行已经移位，读者会看到一次迟到跳动。
+	private readonly List<Action> _pendingClamps = [];
 	private readonly TextBlock _header = new();
 	private readonly WrapPanel _stats = new();
 	private readonly StackPanel _toolStat;
@@ -123,6 +126,22 @@ internal sealed class ExecutionProcessView
 			viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
 			if (SmoothScroll.Find(viewport) is { IsFollowingGrowth: true } smooth) smooth.FollowGrowth();
 		}
+		RunPendingClamps();
+	}
+
+	/// <summary>布局落定后执行待收尾的阅读位置修正；每个动作只跑一次。</summary>
+	private void RunPendingClamps()
+	{
+		if (_pendingClamps.Count == 0) return;
+		var pending = _pendingClamps.ToArray();
+		_pendingClamps.Clear();
+		foreach (var apply in pending) apply();
+	}
+
+	private void QueuePendingClamp(Action apply)
+	{
+		if (!_pendingClamps.Contains(apply)) _pendingClamps.Add(apply);
+		KickBodyLayout();
 	}
 
 	private List<ScrollViewer> BodyViewports()
@@ -171,6 +190,12 @@ internal sealed class ExecutionProcessView
 			}
 			foreach (var (key, control) in _controls.ToArray())
 				if (_states.TryGetValue(key, out var expanded)) control.IsExpanded = expanded;
+			// 从缓存恢复展开状态不是用户本次的阅读动作：先保持原位置，等读者滚到底
+			// 或显式展开再重新锁底，避免重开组体时被拽到末尾。
+			foreach (var viewport in BodyViewports())
+			{
+				if (SmoothScroll.Find(viewport) is { } smooth) smooth.SuppressAutoFollow();
+			}
 		}
 		finally { _automatic = false; }
 	}
@@ -362,6 +387,7 @@ internal sealed class ExecutionProcessView
 
 			// 自动通道（流式最新组）展开后先跟住末尾，后续增长由 SmoothScroll 的跟随增长接管；
 			// 手动点开的组保持顶部，不把读者拽到最后。
+			KickBodyLayout();
 			if (!followOnOpen) return;
 			followOnOpen = false;
 			FollowGroup();
@@ -417,6 +443,11 @@ internal sealed class ExecutionProcessView
 
 		void CompleteBody(FrameworkElement content)
 		{
+			// 组体是“最新步骤”的窗口：滚动条置底时持续跟随新步骤；用户上滚后暂停，
+			// 回到底部（滚轮/键盘/拖动滚动条）自动重新锁底。
+			// 组体就是“最新步骤”的窗口：置底即跟随。这里不能做任何抑制——栈/虚拟化切换、
+			// 步骤行回收后的重建都只是布局，不是读者的阅读意图；恢复态在 Restore 里单独处理。
+			if (viewport is not null) SmoothScroll.For(viewport).AutoFollowAtEnd = true;
 			// 与 PiDeck 一样，连续竖线独占左列；步骤（图标 + 摘要）在右列，不让线从图标背后穿过。
 			var rail = new Border().Width(1).VerticalAlignment(VerticalAlignment.Stretch)
 				.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Border);
@@ -633,19 +664,25 @@ internal sealed class ExecutionProcessView
 
 		void QueueClamp()
 		{
-			if (reclampQueued || viewport is null) return;
-			reclampQueued = true;
-			// 行高只有测完才准。必须在 ScrollViewer 完成本轮排布时立即还原预览行：
-			// 内层偏移会改变预览行的窗口坐标，若拖到 Render 阶段再改，会话的锚点恢复
-			// 已经按旧坐标完成，表现为外部会话进度跳动。ScrollChanged 在 arrange 末尾触发，
-			// 早于 Render 回调，正好早于会话锚点。
-			void OnScrollChanged()
+			if (anchorRow is null || viewport is null) return;
+			// 行高只有测完才准。优先在 ScrollViewer 完成本轮排布时立即还原预览行：
+			// ScrollChanged 在 arrange 末尾触发，早于 Render 回调，也早于会话锚点恢复。
+			// 若这一轮没有偏移变化（例如只是行变高、extent 未变），ScrollChanged 不会触发，
+			// 此时由同一帧的 Render 回调（ExecutionProcessView.SyncBodyMetrics）收尾，
+			// 绝不留到下一次无关更新才应用——那是迟到的跳动。
+			if (!reclampQueued)
 			{
-				viewport.ScrollChanged -= OnScrollChanged;
-				reclampQueued = false;
-				ApplyAnchorClamp();
+				reclampQueued = true;
+				void OnScrollChanged()
+				{
+					viewport.ScrollChanged -= OnScrollChanged;
+					reclampQueued = false;
+					_pendingClamps.Remove(ApplyAnchorClamp);
+					ApplyAnchorClamp();
+				}
+				viewport.ScrollChanged += OnScrollChanged;
 			}
-			viewport.ScrollChanged += OnScrollChanged;
+			QueuePendingClamp(ApplyAnchorClamp);
 		}
 
 		void ApplyAnchorClamp()

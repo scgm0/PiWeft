@@ -63,13 +63,18 @@ internal static class ExecutionProcess
 			}
 			var last = unique[^1];
 			var answer = last.Role == ChatRole.Assistant && (last.Text.Length > 0 || last.Images.Count > 0) ? last : null;
+			var turnKey = turnId ?? unique[0].EntryId ?? unique[0].Timestamp.ToString();
+			// 思考步骤的键必须跨「流式行 → 落盘后的最终行」稳定：源 EntryId 会从
+			// live-assistant/... 变成会话条目 id，用轮次 + 序号代替。否则组键/步骤键
+			// 在思考结束的瞬间变化，虚拟化行被重建、展开的思考也随之折叠。
+			var thinkingSequence = 0;
 			var process = new List<ChatEntry>();
 			foreach (var entry in unique)
 			{
 				if (entry.Thinking.Length > 0 || entry.IsThinking)
 					process.Add(entry with
 					{
-						EntryId = $"thinking/{entry.EntryId ?? entry.Timestamp.ToString()}", Text = string.Empty, Images = [], Compact = true,
+						EntryId = $"thinking/{turnKey}/{thinkingSequence++}", Text = string.Empty, Images = [], Compact = true,
 						// 只有纯思考回复的 DurationMs 才可视为思考耗时；含正文时那是整条回复的耗时。
 						DurationMs = entry.Text.Length == 0 && entry.Images.Count == 0 ? entry.DurationMs : null,
 					});
@@ -81,6 +86,10 @@ internal static class ExecutionProcess
 						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true };
 					if (!live && item.Role == ChatRole.Tool && item.IsStreaming)
 						item = item with { IsStreaming = false, IsStopped = true };
+					// 工具步骤也用调用 id 而不是消息条目 id 作键：流式消息落盘后
+					// ChatViewModel 会换掉行 EntryId，否则组键/展开态会跟着重建。
+					if (item.Role == ChatRole.Tool && item.ToolCallId is { Length: > 0 } toolCallId)
+						item = item with { EntryId = $"tool/{toolCallId}" };
 					process.Add(item);
 				}
 			}
@@ -88,7 +97,7 @@ internal static class ExecutionProcess
 				rows.Add(new ChatEntry
 				{
 					Role = ChatRole.Process, Text = string.Empty,
-					EntryId = $"process/{turnId ?? unique[0].EntryId ?? unique[0].Timestamp.ToString()}",
+					EntryId = $"process/{turnKey}",
 					Timestamp = unique[0].Timestamp, ProcessEntries = process, IsStreaming = live,
 					// 总耗时取自本轮最终回复；思考/工具行本身没有独立的墙钟时间。
 					DurationMs = unique.LastOrDefault(static entry => entry.Role == ChatRole.Assistant)?.DurationMs,

@@ -202,13 +202,36 @@ public static class SessionJson
 			return null;
 		}
 
-		var node = JsonNode.Parse(line);
-		if (node is not JsonObject obj)
+		return ParseNode(JsonNode.Parse(line));
+	}
+
+	/// <summary>
+	/// 直接从 UTF-8 字节解析一行。会话文件动辄几十 MB，逐行转成 string 再解析会多一次
+	/// 整文件规模的分配；这里让 <see cref="JsonNode"/> 自己解码。
+	/// </summary>
+	public static object? ParseLine(ReadOnlySpan<byte> utf8Line)
+	{
+		if (utf8Line.IsEmpty || IsWhiteSpace(utf8Line))
 		{
 			return null;
 		}
 
-		return ParseObject(obj);
+		return ParseNode(JsonNode.Parse(utf8Line));
+	}
+
+	private static object? ParseNode(JsonNode? node) => node is JsonObject obj ? ParseObject(obj) : null;
+
+	private static bool IsWhiteSpace(ReadOnlySpan<byte> line)
+	{
+		foreach (var value in line)
+		{
+			if (value is not ((byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+			{
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	public static object? ParseObject(JsonObject obj)
