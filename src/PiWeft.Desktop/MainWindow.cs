@@ -76,6 +76,8 @@ public sealed partial class MainWindow : Window
 	// 侧栏摘要扫描按需触发：收起状态下根本不扫（省掉全部读盘），展开或搜索时才加载。
 	private Task? _sessionsLoad;
 	private bool _sessionsLoaded;
+	// 侧栏里展开过的项目（工作目录）。默认折叠，只有这里记录过的才自动展开。
+	private readonly HashSet<string> _expandedProjects = new(StringComparer.Ordinal);
 	// 准备阶段会话面板里的加载段落（打开会话 / 写回会话名称），以及窗口关闭时中断后台读取的令牌源。
 	private readonly SessionLoadingPanel _sessionLoading = new();
 	private TextBlock _welcomeTitle = null!;
@@ -127,6 +129,7 @@ public sealed partial class MainWindow : Window
 		var preference = DesktopPreference.Load();
 		// 诊断要覆盖启动本身：环境构建、首个会话解析与标签页布局都在开启之后才发生。
 		Diagnostics.SetEnabled(preference.Diagnostics);
+		foreach (var expandedProject in preference.ExpandedProjects) _expandedProjects.Add(expandedProject);
 		_chatWorkspace = preference.ResolveChatWorkspace();
 		this.Resizable(preference.WindowWidth ?? 1280, preference.WindowHeight ?? 820);
 		this.Padding(Thickness.Zero);
@@ -326,6 +329,10 @@ public sealed partial class MainWindow : Window
 		// 「对话」tab：聊天目录里的会话（不属于任何项目）；「项目」tab：按项目分组的任务树。
 		_chatsTree = new TreeView().FontSize(AppTheme.FontSizeControl)
 			.BorderThickness(0).Background(AppTheme.Transparent);
+		// 项目的展开/折叠是用户显式动作：记下来，下次启动按记录恢复（没记录过的一律折叠）。
+		// 程序化重建时的同值调用不会触发这两个事件，因此不会把默认状态写进偏好。
+		_sessionTree.Expanding += args => RememberProjectExpanded(args.Item, expanded: true);
+		_sessionTree.Collapsing += args => RememberProjectExpanded(args.Item, expanded: false);
 		ConfigureChatsRows();
 		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
@@ -818,9 +825,23 @@ public sealed partial class MainWindow : Window
 		_sessionNodes = nodes;
 		_sessionTree.ItemsSource(nodes);
 
+		// 默认折叠：只展开「上次展开过」的项目，以及当前选中会话所在的项目
+		// （否则高亮项被折在看不见的地方，用户会以为没选中）。
+		var expandedProjects = preference.ExpandedProjects;
 		foreach (var node in nodes)
 		{
-			_sessionTree.Expand(node);
+			var expand = ShouldExpandProject(
+				node.Tag as string,
+				ContainsSession(node, CurrentTab()?.Session.Session.SessionFile),
+				expandedProjects);
+			if (expand)
+			{
+				_sessionTree.Expand(node);
+			}
+			else
+			{
+				_sessionTree.Collapse(node);
+			}
 		}
 
 		// 「对话」分段：聊天目录里的会话按置顶、最近修改平铺，不分组。
@@ -2327,6 +2348,55 @@ public sealed partial class MainWindow : Window
 		SetProjectCaption(ShortCwd(cwd), cwd);
 	}
 
+
+	/// <summary>
+	/// 侧栏项目是否默认展开：只认「用户上次展开过」与「包含当前选中会话」两种。
+	/// 默认折叠——会话多的机器上全展开等于每次启动都把整份清单铺出来。
+	/// </summary>
+	internal static bool ShouldExpandProject(string? projectCwd, bool containsSelected, IReadOnlyList<string> expandedProjects) =>
+		projectCwd is { Length: > 0 } && (containsSelected || expandedProjects.Contains(projectCwd, StringComparer.Ordinal));
+
+	/// <summary>
+	/// 该项目节点里是否有当前会话。按路径比对而不是会话 id：外部工具生成的会话
+	/// 头部 id 可能与文件名里的 uuid 不一致，用 id 会漏判、把选中项折在看不见的地方。
+	/// </summary>
+	private static bool ContainsSession(TreeViewNode project, string? sessionPath)
+	{
+		if (sessionPath is null) return false;
+		foreach (var child in project.Children)
+		{
+			if (child.Tag is SessionListItem item &&
+				string.Equals(item.Path, sessionPath, StringComparison.Ordinal))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>用户展开/折叠项目时记一笔并落盘；程序化重建时的同值操作不写文件。</summary>
+	private void RememberProjectExpanded(object? item, bool expanded)
+	{
+		if (item is not TreeViewNode { Tag: string cwd } || cwd.Length == 0)
+		{
+			return;
+		}
+
+		if (expanded ? !_expandedProjects.Add(cwd) : !_expandedProjects.Remove(cwd))
+		{
+			return;
+		}
+
+		try
+		{
+			(DesktopPreference.Load() with { ExpandedProjects = [.. _expandedProjects] }).Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Save expanded projects", ex);
+		}
+	}
 
 	/// <summary>在列表重建后把选中项恢复到指定会话；「对话」与「项目」两个分段都要找。</summary>
 	private void RestoreSelection(string sessionId)

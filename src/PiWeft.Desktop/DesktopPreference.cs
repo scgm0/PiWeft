@@ -25,6 +25,12 @@ public sealed record DesktopPreference
 	/// <summary>被置顶的会话 id；置顶的排在侧栏最前面。</summary>
 	public IReadOnlyList<string> Pinned { get; init; } = [];
 
+	/// <summary>
+	/// 侧栏「项目」分段里展开过的项目（按工作目录记录）。默认全部折叠：
+	/// 会话多的机器上，全部展开等于每次都要把整份清单铺出来。
+	/// </summary>
+	public IReadOnlyList<string> ExpandedProjects { get; init; } = [];
+
 	/// <summary>最近打开的项目和使用的模型，最新的在前，最多各八项。</summary>
 	public IReadOnlyList<string> RecentProjects { get; init; } = [];
 	public IReadOnlyList<string> RecentModels { get; init; } = [];
@@ -139,6 +145,7 @@ public sealed record DesktopPreference
 					: new DesktopPreference().SidebarCollapsed,
 				SidebarWidth = Math.Clamp(Number(root, "sidebarWidth", positive: true) ?? AppTheme.SidebarWidth, 200, 480),
 				SidebarProjects = root?["sidebarProjects"] is JsonValue tab && tab.TryGetValue<bool>(out var projects) && projects,
+				ExpandedProjects = ReadStringArray(root?["expandedProjects"]),
 				Diagnostics = root?["diagnostics"] is JsonValue diagnostics && diagnostics.TryGetValue<bool>(out var on) && on,
 				RightPanelWidth = Math.Clamp(Number(root, "rightPanelWidth", positive: true) ?? AppTheme.RightPanelWidth,
 					AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth),
@@ -189,6 +196,15 @@ public sealed record DesktopPreference
 		root["theme"] = Theme;
 		root["sidebarCollapsed"] = SidebarCollapsed;
 		root["sidebarProjects"] = SidebarProjects;
+		// 折叠是默认状态，展开过的项目才落盘；都折起来时直接删键。
+		if (ExpandedProjects.Count == 0)
+		{
+			root.Remove("expandedProjects");
+		}
+		else
+		{
+			root["expandedProjects"] = new JsonArray([.. ExpandedProjects.Select(static cwd => (JsonNode)JsonValue.Create(cwd)!)]);
+		}
 		// 诊断默认关闭：只在打开时才落盘，避免每次启动都写一个 false。
 		if (Diagnostics)
 		{
@@ -372,6 +388,22 @@ public sealed record DesktopPreference
 		}
 
 		return shortcuts;
+	}
+
+	/// <summary>读字符串数组；形状不对的项直接跳过，坏文件不该让偏好整份失效。</summary>
+	private static IReadOnlyList<string> ReadStringArray(JsonNode? node)
+	{
+		if (node is not JsonArray array) return [];
+		var values = new List<string>(array.Count);
+		foreach (var item in array)
+		{
+			if (item is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > 0)
+			{
+				values.Add(text);
+			}
+		}
+
+		return values;
 	}
 
 	private static double? Number(JsonObject? root, string name, bool positive = false) =>

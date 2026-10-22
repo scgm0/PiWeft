@@ -251,6 +251,17 @@ AOT 实机数据（`timings-20261022-150604.jsonl`，78 份会话 / 304 MB）暴
 
 跨进程复用摘要索引也试过（`<agentDir>/sessions/.piweft-catalog.json`，命中后侧栏 13.5 ms），但它引入一份额外的磁盘状态、还要处理多实例并发写，收益只是「侧栏秒开」而不是「能用」——按评估结论**不采用**，改为上面这套无状态方案。
 
+## 第四轮：侧栏项目的展开状态
+
+侧栏「项目」分段原来每次重建都把全部项目展开（`foreach (node) _sessionTree.Expand(node)`），会话多的机器上一打开就是几十个项目、上百条会话铺满屏幕。
+
+- **默认折叠**：只有两类项目会展开 —— 用户上次展开过的（`DesktopPreference.ExpandedProjects`，按工作目录记录），以及**当前选中会话所在的项目**（否则高亮项被折在看不见的地方，用户会以为没选中）。
+- **记录展开状态**：`TreeView.Expanding` / `Collapsing` 只在用户显式操作时触发（程序化重建时的同值调用会被框架短路），因此在事件里记一笔并落盘即可，不会把默认折叠状态写进偏好。全部折起来时直接删掉 `expandedProjects` 键。
+- **选中判定按路径而不是会话 id**：外部工具生成的会话，头部 id 可能与文件名里的 uuid 不一致，用 id 会漏判、把选中项折起来。
+- 判据抽成 `MainWindow.ShouldExpandProject(cwd, containsSelected, expandedProjects)`，单测覆盖四种组合。
+
+实测（5 份会话 / 2 个项目）：启动后两个项目都是折叠态；点开 `other` 后 `desktop.json` 出现 `"expandedProjects":["/tmp/sidebar/other"]`；重启后 `other` 保持展开、`cwd` 保持折叠。
+
 ## 性能诊断（设置 → 维护 → 性能诊断）
 
 对齐 PiDeck 的同名开关：默认关闭，关闭时每个调用点只做一次布尔判断（连秒表都不分配）；打开后无需重启即可开始记录，再关即停。

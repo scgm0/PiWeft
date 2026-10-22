@@ -403,3 +403,82 @@ public class ShortcutMapTests
 		Assert.Empty(map.Overrides);
 	}
 }
+
+/// <summary>
+/// 侧栏项目的展开状态：默认全折叠，只有用户展开过的项目才记录；
+/// 坏数据不能把整份偏好弄坏。
+/// </summary>
+public sealed class ExpandedProjectsPreferenceTests : IDisposable
+{
+	private readonly string _agentDir = Path.Combine(Path.GetTempPath(), "piweft-expanded-" + Guid.NewGuid().ToString("N")[..8]);
+
+	public ExpandedProjectsPreferenceTests() => Directory.CreateDirectory(_agentDir);
+
+	public void Dispose()
+	{
+		if (Directory.Exists(_agentDir))
+		{
+			Directory.Delete(_agentDir, recursive: true);
+		}
+
+		GC.SuppressFinalize(this);
+	}
+
+	[Fact]
+	public void ProjectsAreCollapsedByDefaultAndNothingIsWritten()
+	{
+		var preference = DesktopPreference.Load(_agentDir);
+		Assert.Empty(preference.ExpandedProjects);
+
+		preference.Save(_agentDir);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		// 折叠是默认状态：不落盘一个空数组。
+		Assert.False(raw.ContainsKey("expandedProjects"));
+	}
+
+	[Fact]
+	public void ExpandedProjectsRoundTrip()
+	{
+		(DesktopPreference.Load(_agentDir) with { ExpandedProjects = ["/work/alpha", "/work/beta"] }).Save(_agentDir);
+		var loaded = DesktopPreference.Load(_agentDir);
+		Assert.Equal(["/work/alpha", "/work/beta"], loaded.ExpandedProjects);
+
+		(loaded with { ExpandedProjects = [] }).Save(_agentDir);
+		Assert.Empty(DesktopPreference.Load(_agentDir).ExpandedProjects);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw.ContainsKey("expandedProjects"));
+	}
+
+	[Fact]
+	public void MalformedEntriesAreSkippedInsteadOfBreakingTheWholeFile()
+	{
+		File.WriteAllText(DesktopPreference.Path(_agentDir),
+			"""{"theme":"light","expandedProjects":["/ok",42,null,"",{"a":1}]}""");
+		var preference = DesktopPreference.Load(_agentDir);
+		Assert.Equal(["/ok"], preference.ExpandedProjects);
+		// 同一份文件里的其它字段照常生效。
+		Assert.Equal(DesktopPreference.LightTheme, preference.Theme);
+
+		File.WriteAllText(DesktopPreference.Path(_agentDir), """{"expandedProjects":"not-an-array"}""");
+		Assert.Empty(DesktopPreference.Load(_agentDir).ExpandedProjects);
+	}
+}
+
+/// <summary>哪些项目默认展开：只认「记录过」与「含选中会话」。</summary>
+public class ProjectExpansionRuleTests
+{
+	[Fact]
+	public void OnlyRememberedOrSelectedProjectsStartExpanded()
+	{
+		string[] remembered = ["/work/alpha"];
+
+		Assert.True(MainWindow.ShouldExpandProject("/work/alpha", containsSelected: false, remembered));
+		// 没记录过但有选中会话：必须展开，否则高亮项被折在看不见的地方。
+		Assert.True(MainWindow.ShouldExpandProject("/work/beta", containsSelected: true, remembered));
+		// 都没命中：折叠。
+		Assert.False(MainWindow.ShouldExpandProject("/work/beta", containsSelected: false, remembered));
+		// 没有工作目录的「?」分组不参与记忆。
+		Assert.False(MainWindow.ShouldExpandProject(null, containsSelected: false, remembered));
+		Assert.False(MainWindow.ShouldExpandProject(string.Empty, containsSelected: false, remembered));
+	}
+}
