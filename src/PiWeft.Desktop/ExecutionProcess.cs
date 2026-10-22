@@ -343,6 +343,11 @@ internal sealed class ExecutionProcessProjector
 	/// <summary>Whether those rows are reference-identical to the previous projection.</summary>
 	public bool LastPrefixReused { get; private set; }
 
+	/// <summary>增量（只重投最后轮）与整段重投的次数。诊断页用它判断缓存有没有真的生效。</summary>
+	public long TailPasses { get; private set; }
+
+	public long FullPasses { get; private set; }
+
 	public IReadOnlyList<ChatEntry> Project(IReadOnlyList<ChatEntry> entries, bool busy)
 	{
 		var lastUser = LastUserIndex(entries);
@@ -350,6 +355,7 @@ internal sealed class ExecutionProcessProjector
 			PrefixEquals(entries, _source, lastUser))
 		{
 			// Turn boundaries are independent, so the rows of every earlier turn are still valid.
+			TailPasses++;
 			var tail = ExecutionProcess.ProjectRange(entries, lastUser, busy, out _);
 			var rows = new ChatEntry[_prefixRows + tail.Count];
 			_projected.AsSpan(0, _prefixRows).CopyTo(rows);
@@ -360,6 +366,7 @@ internal sealed class ExecutionProcessProjector
 			return rows;
 		}
 
+		FullPasses++;
 		var full = ExecutionProcess.ProjectRange(entries, 0, busy, out var lastTurnStart);
 		_source = [.. entries];
 		_projected = [.. full];

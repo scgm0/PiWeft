@@ -44,9 +44,12 @@ public sealed class SessionCatalog
 {
 	private readonly Dictionary<string, SummaryStamp> _summaries = new(StringComparer.Ordinal);
 	// 诊断计数：一次列表构建里真正重扫了多少文件、花了多少时间（侧栏慢通常是重扫整个 JSONL）。
-	private double _scanMs;
-	private int _scanCount;
+	// 按文件并行后这些计数会被多个线程更新，因此走 Interlocked。
+	private long _scanTicks;
+	private long _scanCount;
 	private long _scanBytes;
+	// 摘要缓存被并行扫描读写；扫描本身在锁外，只有查表与写回加锁。
+	private readonly Lock _summaryGate = new();
 	/// <summary>
 	/// 侧栏一行的缓存。会话文件是只追加的，因此除了长度/时间戳之外还记住
 	/// 上次扫到的行边界与首行指纹：文件变长时只扫新增的字节，不重读整份几十 MB。
@@ -60,33 +63,116 @@ public sealed class SessionCatalog
 	private IReadOnlyList<SessionListItem> ListCore(bool archived, string? cwdFilter, int limit)
 	{
 		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-		_scanMs = 0;
-		_scanCount = 0;
-		_scanBytes = 0;
+		Interlocked.Exchange(ref _scanTicks, 0);
+		Interlocked.Exchange(ref _scanCount, 0);
+		Interlocked.Exchange(ref _scanBytes, 0);
 		var root = Path.Combine(SessionPaths.GetAgentDir(), "sessions");
-		if (!Directory.Exists(root)) { _summaries.Clear(); return []; }
+		if (!Directory.Exists(root))
+		{
+			lock (_summaryGate) _summaries.Clear();
+			return [];
+		}
+
 		var paths = Directory.EnumerateFiles(root, "*" + SessionFormat.Extension, SearchOption.AllDirectories).ToArray();
 		var alive = paths.ToHashSet(StringComparer.Ordinal);
-		foreach (var path in _summaries.Keys.Where(path => !alive.Contains(path)).ToArray()) _summaries.Remove(path);
+		lock (_summaryGate)
+		{
+			foreach (var path in _summaries.Keys.Where(path => !alive.Contains(path)).ToArray()) _summaries.Remove(path);
+		}
+
 		var trash = $"{Path.DirectorySeparatorChar}.trash{Path.DirectorySeparatorChar}";
-		var result = paths.Where(path => path.Contains(trash, StringComparison.Ordinal) == archived)
-			.Select(ToItem).Where(item => cwdFilter is null || string.Equals(item.Cwd, cwdFilter, StringComparison.Ordinal))
+		var candidates = paths.Where(path => path.Contains(trash, StringComparison.Ordinal) == archived).ToArray();
+
+		// 只扫「会显示出来的那些」：侧栏按修改时间倒序取前 limit 条，
+		// 所以先只 stat 排序、再对头部做摘要扫描。会话上千份的机器上，
+		// 这一步把要读的字节数从「全部」降到「前 200 份」——不需要任何磁盘缓存。
+		if (cwdFilter is null && candidates.Length > limit && limit > 0)
+		{
+			candidates = [.. candidates
+				.Select(static path => (Path: path, Write: LastWriteOf(path)))
+				.OrderByDescending(static entry => entry.Write)
+				.Take(limit)
+				.Select(static entry => entry.Path)];
+		}
+
+		var items = new SessionListItem[candidates.Length];
+
+		// 会话之间互不依赖：一份会话就是一个文件，摘要扫描按文件并行。
+		// 这是启动时最大的一笔 IO+解析（实测 78 份 / 304 MB / 单线程约 900 ms），
+		// 并行后随核数下降，而 UI 线程全程不参与。
+		if (candidates.Length > 1 && ScanParallelism(candidates.Length) > 1)
+		{
+			Parallel.For(
+				0,
+				candidates.Length,
+				new ParallelOptions { MaxDegreeOfParallelism = ScanParallelism(candidates.Length) },
+				index => items[index] = ToItem(candidates[index]));
+		}
+		else
+		{
+			for (var index = 0; index < candidates.Length; index++) items[index] = ToItem(candidates[index]);
+		}
+
+		var result = items
+			.Where(item => cwdFilter is null || string.Equals(item.Cwd, cwdFilter, StringComparison.Ordinal))
 			.OrderByDescending(static item => item.Modified).Take(limit).ToArray();
+
 		// A machine may have thousands of old sessions; cap the metadata cache as well as the visible list.
-		if (_summaries.Count > 4096)
-			foreach (var path in _summaries.OrderByDescending(static entry => entry.Value.LastWrite).Skip(4096).Select(static entry => entry.Key).ToArray())
-				_summaries.Remove(path);
+		lock (_summaryGate)
+		{
+			if (_summaries.Count > 4096)
+			{
+				foreach (var path in _summaries.OrderByDescending(static entry => entry.Value.LastWrite)
+					.Skip(4096).Select(static entry => entry.Key).ToArray())
+				{
+					_summaries.Remove(path);
+				}
+			}
+		}
+
+		var rescans = Interlocked.Read(ref _scanCount);
 		if (watch is not null)
 		{
+			var scanned = Interlocked.Read(ref _scanBytes);
 			Diagnostics.Record("sidebar.list", watch,
-				$"files={paths.Length}, rows={result.Length}, rescans={_scanCount}, scanMs={_scanMs:0.0}, scanBytes={_scanBytes}");
+				$"files={paths.Length}, rows={result.Length}, rescans={rescans}, " +
+				$"scanMs={Interlocked.Read(ref _scanTicks) / (double)Stopwatch.Frequency * 1000:0.0}, " +
+				$"scanBytes={scanned}, workers={ScanParallelism(candidates.Length)}");
 		}
 
 		return result;
 	}
 
-	/// <summary>本次扫描结束时的字节边界；紧跟在扫描循环后使用（同一线程、单次调用）。</summary>
-	private long _lastScannedBytes;
+	/// <summary>读文件的修改时间；读不到的（刚好被删）排到最后，不参与截断。</summary>
+	private static DateTime LastWriteOf(string path)
+	{
+		try
+		{
+			return File.GetLastWriteTimeUtc(path);
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			return DateTime.MinValue;
+		}
+	}
+
+	/// <summary>
+	/// 扫描并行度：文件数量够多才值得开线程（每份会话都要读全文，属 IO+CPU 混合）。
+	/// 留一个核给 UI 线程，别让打开会话时的时间线布局抢不到 CPU。
+	/// </summary>
+	private static int ScanParallelism(int fileCount)
+	{
+		if (fileCount <= 1) return 1;
+		var limit = Environment.ProcessorCount switch
+		{
+			<= 2 => 1,
+			<= 4 => 2,
+			<= 8 => 4,
+			_ => 6,
+		};
+
+		return Math.Min(limit, fileCount);
+	}
 
 	/// <summary>只读首行算指纹：文件是追加式的，首行没变就说明前缀可以直接复用。</summary>
 	private static bool HeadMatches(string path, long expected)
@@ -424,7 +510,13 @@ public sealed class SessionCatalog
 		var info = new FileInfo(path);
 		var modified = info.LastWriteTimeUtc;
 		var length = info.Exists ? info.Length : 0;
-		if (_summaries.TryGetValue(path, out var cached) && cached.LastWrite == modified && cached.Length == length) return cached.Item;
+		SummaryStamp? cached;
+		lock (_summaryGate)
+		{
+			_summaries.TryGetValue(path, out cached);
+		}
+
+		if (cached is not null && cached.LastWrite == modified && cached.Length == length) return cached.Item;
 		var id = Path.GetFileNameWithoutExtension(path);
 
 		// 文件名是 <时间戳>_<uuid>，取最后一个下划线之后的部分作为 id。
@@ -438,7 +530,13 @@ public sealed class SessionCatalog
 		CatalogScan scan;
 		var resumeFrom = 0L;
 		var headHash = 0L;
-		if (_summaries.TryGetValue(path, out var known) && length > known.Length)
+		SummaryStamp? known;
+		lock (_summaryGate)
+		{
+			_summaries.TryGetValue(path, out known);
+		}
+
+		if (known is not null && length > known.Length)
 		{
 			var previous = known.Item;
 			scan = new CatalogScan
@@ -458,6 +556,8 @@ public sealed class SessionCatalog
 
 		var readSucceeded = false;
 		var watchedBytes = 0L;
+		// 续扫的起点边界必须是本次扫描的局部值：按文件并行后，实例字段会被别的文件覆盖。
+		var scannedTo = 0L;
 		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 
 		try
@@ -506,7 +606,7 @@ public sealed class SessionCatalog
 					continue; // Ignore interrupted writes and malformed records without poisoning the rest of the file.
 				}
 			}
-			_lastScannedBytes = lines.BytesRead;
+			scannedTo = lines.BytesRead;
 			readSucceeded = true;
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -526,15 +626,21 @@ public sealed class SessionCatalog
 		};
 		if (watch is not null)
 		{
-			_scanMs += watch.Elapsed.TotalMilliseconds;
-			_scanCount++;
-			_scanBytes += watchedBytes;
+			Interlocked.Add(ref _scanTicks, watch.ElapsedTicks);
+			Interlocked.Increment(ref _scanCount);
+			Interlocked.Add(ref _scanBytes, watchedBytes);
 		}
 
 		info.Refresh();
 		// A writer may have appended while we scanned. Cache only a complete, stable snapshot.
 		if (readSucceeded && headHash != 0 && info.Exists && info.Length == length && info.LastWriteTimeUtc == modified)
-			_summaries[path] = new SummaryStamp(length, modified, item, _lastScannedBytes, headHash);
+		{
+			lock (_summaryGate)
+			{
+				_summaries[path] = new SummaryStamp(length, modified, item, scannedTo, headHash);
+			}
+		}
+
 		return item;
 	}
 

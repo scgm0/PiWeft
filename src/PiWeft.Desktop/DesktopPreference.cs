@@ -42,8 +42,11 @@ public sealed record DesktopPreference
 
 	public double? WindowTop { get; init; }
 
-	/// <summary>工作区侧栏状态与拖拽宽度（DIP）。</summary>
-	public bool SidebarCollapsed { get; init; }
+	/// <summary>
+	/// 工作区侧栏状态与拖拽宽度（DIP）。默认收起：侧栏展开要扫一遍全部会话摘要
+	/// （几百份时是上百 MB 的读盘），收着就先不付这笔钱，展开时再加载。
+	/// </summary>
+	public bool SidebarCollapsed { get; init; } = true;
 	public double SidebarWidth { get; init; } = AppTheme.SidebarWidth;
 
 	/// <summary>侧栏上次停在「项目」分段；默认是「对话」。</summary>
@@ -130,7 +133,10 @@ public sealed record DesktopPreference
 			{
 				// 取值可以是内建名，也可以是自定义 pi 主题名；解析失败时由 DesktopTheme 回退。
 				Theme = string.IsNullOrWhiteSpace(theme) ? DarkTheme : theme,
-				SidebarCollapsed = root?["sidebarCollapsed"] is JsonValue collapsed && collapsed.TryGetValue<bool>(out var hidden) && hidden,
+				// 键缺失时保留默认值（收起），不能因为「读不到」就当成展开。
+				SidebarCollapsed = root?["sidebarCollapsed"] is JsonValue collapsed && collapsed.TryGetValue<bool>(out var hidden)
+					? hidden
+					: new DesktopPreference().SidebarCollapsed,
 				SidebarWidth = Math.Clamp(Number(root, "sidebarWidth", positive: true) ?? AppTheme.SidebarWidth, 200, 480),
 				SidebarProjects = root?["sidebarProjects"] is JsonValue tab && tab.TryGetValue<bool>(out var projects) && projects,
 				Diagnostics = root?["diagnostics"] is JsonValue diagnostics && diagnostics.TryGetValue<bool>(out var on) && on,

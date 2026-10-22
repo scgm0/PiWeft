@@ -33,6 +33,10 @@ internal sealed class ExecutionProcessView
 	// 组内步骤是虚拟化的：行销毁时按步骤键记住折叠状态，重建后恢复。
 	private readonly Dictionary<string, bool[]> _stepStates = [];
 	private readonly List<Slot> _slots = [];
+	// Nodes() 的复用缓冲：流式期每帧都会重建节点列表，不能每次都新建对象。
+	private readonly List<Node> _nodes = [];
+	private readonly List<ChatEntry> _memberScratch = [];
+	private int _nodeCount;
 	private ChatEntry _entry;
 	private string? _latestGroup;
 	private bool _automatic;
@@ -269,10 +273,12 @@ internal sealed class ExecutionProcessView
 		var duration = _entry.DurationMs;
 		_total.Text(duration is { } value ? Strings.ExecutionTotal(value) : string.Empty);
 		_total.IsVisible(duration is not null);
-		var nodes = Nodes(_entry.ProcessEntries);
+		Nodes(_entry.ProcessEntries);
+		var nodes = _nodes;
+		var nodeCount = _nodeCount;
 		// 尾部已经是中间回复/错误时，前一个过程组已经结束，不能仍标「正在…」。
-		var latest = nodes.LastOrDefault() is { Group: true } tail ? tail.Key : null;
-		var common = Math.Min(nodes.Count, _slots.Count);
+		var latest = nodeCount > 0 && nodes[nodeCount - 1].Group ? nodes[nodeCount - 1].Key : null;
+		var common = Math.Min(nodeCount, _slots.Count);
 		var reset = 0;
 		while (reset < common && _slots[reset].Key == nodes[reset].Key) reset++;
 		for (var i = _slots.Count - 1; i >= reset; i--)
@@ -284,7 +290,7 @@ internal sealed class ExecutionProcessView
 			foreach (var key in _controls.Keys.Where(key => key.StartsWith(slot.Key + "/", StringComparison.Ordinal) || key == slot.Key).ToArray())
 				_controls.Remove(key);
 		}
-		for (var i = 0; i < nodes.Count; i++)
+		for (var i = 0; i < nodeCount; i++)
 		{
 			var node = nodes[i];
 			// 运行态只属于「正在流式的那一轮里最新的过程组」：它给「正在…」组头，其余组给结束态摘要。
@@ -863,27 +869,70 @@ internal sealed class ExecutionProcessView
 	}
 
 	private static string Id(ChatEntry entry, int index) => entry.EntryId ?? $"{entry.Role}/{entry.Timestamp}/{index}";
-	private static List<Node> Nodes(IReadOnlyList<ChatEntry> entries)
+
+	/// <summary>
+	/// 把过程条目切成「过程组 / 中间回复」。节点对象与成员缓冲按索引复用：
+	/// 流式期每帧都会走这里，反复 new 列表与数组纯属给 GC 添活。
+	/// </summary>
+	private List<Node> Nodes(IReadOnlyList<ChatEntry> entries)
 	{
-		var nodes = new List<Node>();
-		var members = new List<ChatEntry>();
+		var nodes = _nodes;
+		var used = 0;
+		var members = _memberScratch;
+		members.Clear();
 		for (var i = 0; i < entries.Count; i++)
 		{
 			var entry = entries[i];
 			if (entry.Role == ChatRole.Tool || entry.Thinking.Length > 0 || entry.IsThinking) members.Add(entry);
 			else
 			{
-				Flush();
-				nodes.Add(new Node($"interim/{Id(entry, i)}", [entry], false));
+				FlushGroup();
+				var node = Take($"interim/{Id(entry, i)}", group: false);
+				node.Entries = [entry];
+				node.Version++;
+				used++;
 			}
 		}
-		Flush();
+
+		FlushGroup();
+		// 多余的旧节点留着复用（下次组数变多时直接取），但不再参与本轮。
+		for (var i = used; i < nodes.Count; i++) nodes[i].Version++;
+		_nodeCount = used;
 		return nodes;
-		void Flush()
+		void FlushGroup()
 		{
 			if (members.Count == 0) return;
-			nodes.Add(new Node($"group/{Id(members[0], nodes.Count)}", members.ToArray(), true));
+			var node = Take($"group/{Id(members[0], used)}", group: true);
+			node.Buffer.Clear();
+			node.Buffer.AddRange(members);
+			// 成员数量与上一次相同就继续用同一份数组：稳定后这一步不再分配。
+			if (node.Entries is not ChatEntry[] previous || previous.Length != node.Buffer.Count)
+			{
+				node.Entries = node.Buffer.ToArray();
+			}
+			else
+			{
+				for (var index = 0; index < previous.Length; index++) previous[index] = node.Buffer[index];
+			}
+
+			node.Version++;
 			members.Clear();
+			used++;
+		}
+
+		Node Take(string key, bool group)
+		{
+			if (used < nodes.Count)
+			{
+				var existing = nodes[used];
+				existing.Key = key;
+				existing.Group = group;
+				return existing;
+			}
+
+			var created = new Node { Key = key, Group = group };
+			nodes.Add(created);
+			return created;
 		}
 	}
 
@@ -1055,6 +1104,18 @@ internal sealed class ExecutionProcessView
 			current.Timestamp == next.Timestamp && current.Images.SequenceEqual(next.Images);
 	}
 
-	private sealed record Node(string Key, IReadOnlyList<ChatEntry> Entries, bool Group);
+	/// <summary>
+	/// 过程组/中间回复的节点。做成可变类是为了让 <see cref="Nodes"/> 在流式期原地复用：
+	/// 每帧新建 Node + 成员数组 + 插值键，在长会话里就是持续的 GC 压力。
+	/// </summary>
+	private sealed class Node
+	{
+		public string Key = string.Empty;
+		public IReadOnlyList<ChatEntry> Entries = [];
+		public bool Group;
+		// 复用时的成员缓冲；只在内容真的变化时才换新数组，稳定后就一直用同一份。
+		internal readonly List<ChatEntry> Buffer = [];
+		internal int Version;
+	}
 	private sealed record Slot(string Key, Border Host, Action<IReadOnlyList<ChatEntry>, bool> Update);
 }

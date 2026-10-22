@@ -48,6 +48,7 @@ public static partial class Strings
 	public static string DeleteConfirm(string name) => $"把会话「{name}」移到 .trash 目录？文件会被保留，可手动恢复。";
 	public static string Deleted(string path) => $"已移动到 {path}";
 	public const string NoSessions = "此目录下暂无会话，点「新建」开始一个。";
+	public const string SessionsScanning = "正在读取会话列表…";
 	/// <summary>侧栏入口与搜索弹窗的输入提示共用一个短名。</summary>
 	public const string SessionSearch = "搜索会话";
 	public static string EnvironmentFallback(string cwd, string reason) => $"目录 {cwd} 的环境不可用（{reason}），已回退到启动环境。";

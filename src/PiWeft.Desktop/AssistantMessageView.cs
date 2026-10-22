@@ -120,21 +120,41 @@ internal sealed class AssistantMessageView : IDisposable
 
 	public void Update(ChatEntry entry)
 	{
-		var time = entry.Timestamp > 0
-			? DateTimeOffset.FromUnixTimeMilliseconds(entry.Timestamp).ToLocalTime().ToString("HH:mm")
-			: string.Empty;
-		var role = entry.IsStreaming ? Strings.RoleAssistantStreaming : Strings.RoleAssistant;
-		var timing = !entry.IsStreaming && entry.DurationMs is { } duration
-			? $"  ·  {Strings.ResponseDuration(duration)}"
-			: string.Empty;
-		_header.Text(time.Length > 0 ? $"{role}  ·  {time}{timing}" : $"{role}{timing}");
+		// 头部文本的输入只有这三项：流式期每帧都重新格式化并转换时区，是纯粹的字符串垃圾。
+		var headerKey = (entry.Timestamp, entry.IsStreaming, entry.DurationMs);
+		if (headerKey != _headerKey)
+		{
+			_headerKey = headerKey;
+			var time = entry.Timestamp > 0
+				? DateTimeOffset.FromUnixTimeMilliseconds(entry.Timestamp).ToLocalTime().ToString("HH:mm")
+				: string.Empty;
+			var role = entry.IsStreaming ? Strings.RoleAssistantStreaming : Strings.RoleAssistant;
+			var timing = !entry.IsStreaming && entry.DurationMs is { } duration
+				? $"  ·  {Strings.ResponseDuration(duration)}"
+				: string.Empty;
+			_header.Text(time.Length > 0 ? $"{role}  ·  {time}{timing}" : $"{role}{timing}");
+		}
 		_headerRow.IsVisible(!entry.Compact);
 		_thinking.IsVisible(entry.Thinking.Length > 0 || entry.IsThinking);
 		_thinkingIcon.IsVisible(!entry.Compact);
-		_thinkingHeader.Text(entry.IsThinking ? Strings.ThinkingActive
-			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs) : Strings.ThinkingComplete);
-		var preview = Preview(entry.Thinking);
-		_thinkingPreview.Text(preview).IsVisible(!_thinking.IsExpanded && preview.Length > 0);
+		var thinkingLabel = entry.IsThinking ? Strings.ThinkingActive
+			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs) : Strings.ThinkingComplete;
+		if (!ReferenceEquals(thinkingLabel, _thinkingLabel))
+		{
+			_thinkingLabel = thinkingLabel;
+			_thinkingHeader.Text(thinkingLabel);
+		}
+
+		// 折叠预览只看首行：展开时不算，取到完整首行后也不再算 —— 以前每帧从头扫一遍思考正文。
+		if (!_thinking.IsExpanded && !_previewSettled)
+		{
+			var preview = Preview(entry.Thinking, out var settled);
+			_previewSettled = settled;
+			_previewText = preview;
+			_thinkingPreview.Text(preview);
+		}
+
+		_thinkingPreview.IsVisible(!_thinking.IsExpanded && _previewText.Length > 0);
 		if (_thinking.IsExpanded)
 		{
 			EnsureThinkingBody(entry);
@@ -203,15 +223,21 @@ internal sealed class AssistantMessageView : IDisposable
 		_entry = entry;
 	}
 
-	private static string Preview(string thinking)
+	/// <summary>取首行摘要；<paramref name="settled"/> 为 true 表示后面再长的思考也不会改变它。</summary>
+	private static string Preview(string thinking, out bool settled)
 	{
-		var remaining = thinking.AsSpan();
+		settled = false;
+		// 只在有限窗口里找：流式期每帧都会调用，扫描整个已到达的思考正文是白烧。
+		var window = thinking.Length <= PreviewScanLimit ? thinking.AsSpan() : thinking[..PreviewScanLimit].AsSpan();
+		if (thinking.Length > PreviewScanLimit) settled = true;
+		var remaining = window;
 		while (remaining.Length > 0)
 		{
 			var newline = remaining.IndexOf('\n');
 			var line = (newline < 0 ? remaining : remaining[..newline]).Trim();
 			if (line.Length > 0)
 			{
+				settled = true;
 				return line.Length <= 72 ? line.ToString() : line[..72].ToString() + "…";
 			}
 			if (newline < 0) break;
@@ -219,6 +245,13 @@ internal sealed class AssistantMessageView : IDisposable
 		}
 		return string.Empty;
 	}
+
+	private const int PreviewScanLimit = 4096;
+
+	private (long Timestamp, bool Streaming, double? Duration) _headerKey;
+	private string? _thinkingLabel;
+	private string _previewText = string.Empty;
+	private bool _previewSettled;
 
 	private StreamingTextView Track(StreamingTextView text)
 	{

@@ -165,15 +165,24 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void SidebarIsCollapsedByDefault()
+	{
+		// 默认收起：启动时不扫会话摘要，展开或搜索时才加载。
+		Assert.True(new DesktopPreference().SidebarCollapsed);
+		Assert.True(DesktopPreference.Load(_agentDir).SidebarCollapsed);
+	}
+
+	[Fact]
 	public void SidebarStateRoundTripsAndInvalidWidthIsClamped()
 	{
 		new DesktopPreference { SidebarCollapsed = true, SidebarWidth = 336 }.Save(_agentDir);
 		var preference = DesktopPreference.Load(_agentDir);
 		Assert.True(preference.SidebarCollapsed);
 		Assert.Equal(336, preference.SidebarWidth);
+		// 非布尔的脏值按「没写」处理：回落到默认的收起状态，而不是意外展开。
 		File.WriteAllText(DesktopPreference.Path(_agentDir), "{\"sidebarWidth\":99999,\"sidebarCollapsed\":42}");
 		preference = DesktopPreference.Load(_agentDir);
-		Assert.False(preference.SidebarCollapsed);
+		Assert.True(preference.SidebarCollapsed);
 		Assert.Equal(480, preference.SidebarWidth);
 	}
 

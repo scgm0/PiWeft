@@ -236,7 +236,7 @@ public sealed partial class MainWindow
 	{
 		// 没有工作目录的旧会话会聚成「?」分组：给它开新任务时退回窗口目录，避免空路径。
 		OpenSession(_catalog.Create(string.IsNullOrWhiteSpace(cwd) ? _cwd : cwd));
-		RefreshSessions();
+		RefreshSessions(force: true);
 	}
 
 	/// <summary>从会话行发起的重命名优先于「选中项」。</summary>
@@ -261,7 +261,7 @@ public sealed partial class MainWindow
 				CloseTab(tab);
 			}
 
-			RefreshSessions();
+			RefreshSessions(force: true);
 			_banner.Text(Strings.SessionArchived);
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
@@ -285,7 +285,7 @@ public sealed partial class MainWindow
 			preference.Save();
 		}
 
-		RefreshSessions();
+		RefreshSessions(force: true);
 		_banner.Text(Strings.ProjectRemoved);
 	}
 }

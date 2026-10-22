@@ -49,6 +49,12 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ProviderUsageSummary _usageSummary;
 	private bool _returnToStatistics;
 	private SessionStatisticsDisplay? _renderedStatistics;
+	// 发送/复制按钮可用性的缓存：随投影结果更新，不必每帧整表扫描。
+	private int _chromeRowCount = -1;
+	private string _chromeFilter = string.Empty;
+	private bool _rowsHaveUser;
+	private bool _rowsHaveReply;
+	private (string Id, string Provider, string Thinking, string? Error) _statusKey;
 	private SessionStatisticsDisplay? _statisticsDisplay;
 	private PiWeft.CodingAgent.Session.SessionManager? _statisticsManager;
 	private long _statisticsRevision = -1;
@@ -1686,7 +1692,9 @@ public sealed partial class SessionTab : IDisposable
 			_projectedRows = _projector.Project(matched, IsStreaming);
 			if (project is not null)
 			{
-				Diagnostics.Record("timeline.project", project, $"rows={_projectedRows.Count}");
+				Diagnostics.Record("timeline.project", project,
+					$"rows={_projectedRows.Count}, mode={(_projector.LastPrefixReused ? "tail" : "full")}, " +
+					$"tail={_projector.TailPasses}, full={_projector.FullPasses}");
 			}
 
 			_projectedSource = all;
@@ -1707,13 +1715,18 @@ public sealed partial class SessionTab : IDisposable
 
 		_headerRow.IsVisible(entries.Count > 0);
 
-		var status = $"{Session.Model.Provider} / {Session.Model.Id} · {Strings.ThinkingShort(Session.ThinkingLevel)}";
-		if (_chat.Error is { Length: > 0 } error)
+		var statusKey = (Session.Model.Id, Session.Model.Provider, Session.ThinkingLevel, _chat.Error);
+		if (statusKey != _statusKey)
 		{
-			status = $"{status}  ·  {Strings.RoleError}: {error}";
-		}
+			_statusKey = statusKey;
+			var status = $"{Session.Model.Provider} / {Session.Model.Id} · {Strings.ThinkingShort(Session.ThinkingLevel)}";
+			if (_chat.Error is { Length: > 0 } error)
+			{
+				status = $"{status}  ·  {Strings.RoleError}: {error}";
+			}
 
-		_status.Text(status).HoverTip(status);
+			_status.Text(status).HoverTip(status);
+		}
 		var statsWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		var display = StatisticsDisplay();
 		if (!ReferenceEquals(_renderedStatistics, display))
@@ -1755,22 +1768,42 @@ public sealed partial class SessionTab : IDisposable
 			_lastBusy = busy;
 			StateChanged?.Invoke(this);
 		}
-		_sendLabel.Text(busy ? Strings.Abort : Strings.Send);
-		_sendIcon.Source(AppIcons.Get(busy ? "x" : "arrow-up", AppTheme.TextOnAccent));
-		_sendMenuButton.IsVisible(busy);
+		if (_lastBusy != busy || _sendLabel.Text != (busy ? Strings.Abort : Strings.Send))
+		{
+			_sendLabel.Text(busy ? Strings.Abort : Strings.Send);
+			_sendIcon.Source(AppIcons.Get(busy ? "x" : "arrow-up", AppTheme.TextOnAccent));
+			_sendMenuButton.IsVisible(busy);
+			_sendDivider.IsVisible(busy);
+		}
+
 		_sendMenuButton.IsEnabled = _chat.IsStreaming;
-		_sendDivider.IsVisible(busy);
 		_modelButton.IsEnabled = !busy;
 		_thinkingButton.IsEnabled = !busy;
 		_planLabel.Text(Session.PlanModeEnabled ? Strings.PlanModeOn : Strings.PlanMode);
 		_planButton.IsEnabled = !busy;
 		_testButton.IsEnabled = !busy && !_testing;
-		_retry.IsEnabled = !busy && all.Any(static row => row.Role == ChatRole.User);
-		_copyReply.IsEnabled = all.Any(static row => row.Role == ChatRole.Assistant && row.Text.Length > 0);
+		// 这两个开关以前每帧都整表扫描一遍（流式期就是每 40 ms 扫两千行，还各分配一个枚举器）。
+		// 用户行与「有没有正文」只随投影结果变化，按行数与过滤条件缓存即可。
+		if (entries.Count != _chromeRowCount || _filter != _chromeFilter)
+		{
+			_chromeRowCount = entries.Count;
+			_chromeFilter = _filter;
+			_rowsHaveUser = false;
+			_rowsHaveReply = false;
+			foreach (var row in entries)
+			{
+				if (row.Role == ChatRole.User) _rowsHaveUser = true;
+				else if (row.Role == ChatRole.Assistant && row.Text.Length > 0) _rowsHaveReply = true;
+				if (_rowsHaveUser && _rowsHaveReply) break;
+			}
+		}
+
+		_retry.IsEnabled = !busy && _rowsHaveUser;
+		_copyReply.IsEnabled = _rowsHaveReply;
 
 		var realize = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		_timeline.SetEntries(entries, force, _projector.LastStablePrefix, _projector.LastPrefixReused);
-		SyncOutline(entries);
+		SyncOutline(entries, _projector.LastStablePrefix);
 		if (realize is not null)
 		{
 			Diagnostics.Record("timeline.realize", realize, $"rows={entries.Count}");

@@ -48,6 +48,31 @@ public sealed class SessionSearchPaletteTests
 	}
 
 	[Fact]
+	public void MissingCatalogSaysScanningInsteadOfNoSessions()
+	{
+		// 侧栏摘要按需加载：列表还没到时打开搜索，不能显示「暂无会话」。
+		var owner = new Border();
+		var window = new Window().Content(owner);
+		var loading = true;
+		IReadOnlyList<SessionListItem> items = [];
+		var palette = new SessionSearchPalette(() => items, static _ => { }, () => loading);
+		palette.Show(owner);
+
+		Assert.Contains(Find<TextBlock>(palette.View), block => block.Text == Strings.SessionsScanning);
+
+		// 扫描完成：宿主把数据挂上并让弹窗按当前关键字重跑，提示随之消失。
+		items = Catalog;
+		loading = false;
+		palette.Reload();
+		// 有结果时状态行收起（文本可能留着上一次的值，但不再可见）。
+		Assert.All(
+			Find<TextBlock>(palette.View).Where(block => block.Text == Strings.SessionsScanning),
+			block => Assert.False(block.IsVisible));
+		Assert.Equal(Catalog.Count, palette.Matches.Count);
+		palette.Hide();
+	}
+
+	[Fact]
 	public void OpeningThePaletteClosesTheCommandPaletteLikeTheOtherOverlays()
 	{
 		var window = new Window();

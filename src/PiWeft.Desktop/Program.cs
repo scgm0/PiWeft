@@ -96,9 +96,15 @@ public static class Program
 			args.Handled = true;
 		};
 
+		// 诊断要在建窗口之前就开：启动各段（字体、平台宿主、窗口构造、首帧）都值得量。
+		// 偏好文件读起来很便宜，读不到就按默认关闭。
+		Diagnostics.SetEnabled(DesktopPreference.Load().Diagnostics);
+		var startupWatch = System.Diagnostics.Stopwatch.StartNew();
+
 		ApplyTheme();
 		AppFonts.Register();
 		MewUiLocalization.ApplyChinese();
+		Diagnostics.Record("startup.theme-and-fonts", startupWatch);
 
 		// 无窗口自检：检查模型、会话与设置是否装配正确，供 CI 与故障排查使用。
 		if (selfCheck)
@@ -127,12 +133,29 @@ public static class Program
 		using var clipboardImages = ClipboardImages.Create();
 		ClipboardImages.Service = clipboardImages;
 
+		var buildWatch = System.Diagnostics.Stopwatch.StartNew();
 		var window = new MainWindow(cwd) { ThemeSmoke = themeSmoke, SmokeTab = smokeTab, UiSmoke = uiSmoke };
+		Diagnostics.Record("startup.window-build", buildWatch);
 		instance.Listen(() => Application.Current.Dispatcher?.BeginInvoke(window.Activate));
 
 		try
 		{
-			Application.Run(window);
+			// startup 回调在 UI 线程、dispatcher 就绪之后、窗口显示之前触发：
+			// 在这里挂一个 Render 优先级的工作项，它一定排在首帧绘制之后，用来量首屏时延。
+			Application.Run(window, () =>
+			{
+				if (!Diagnostics.Enabled || Application.Current?.Dispatcher is not { } dispatcher)
+				{
+					return;
+				}
+
+				var firstPaint = System.Diagnostics.Stopwatch.StartNew();
+				dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+				{
+					Diagnostics.Record("startup.first-paint", firstPaint);
+					Console.WriteLine($"piweft-desktop: first-paint {firstPaint.Elapsed.TotalMilliseconds:0} ms");
+				});
+			});
 		}
 		catch (Exception ex)
 		{

@@ -17,6 +17,8 @@ public sealed class SessionSearchPalette
 	private const int MaxRows = 200;
 	private readonly Func<IReadOnlyList<SessionListItem>> _sessions;
 	private readonly Action<SessionListItem> _open;
+	// 侧栏摘要改成按需加载后，搜索可能先于列表就绪打开：此时给出「正在读取」而不是「没有匹配」。
+	private readonly Func<bool> _loading;
 	private readonly TextBox _query;
 	private readonly TextBlock _hint;
 	private readonly StackPanel _results = new();
@@ -33,10 +35,12 @@ public sealed class SessionSearchPalette
 	/// <summary>收起后触发，宿主据此把焦点还给内容区。</summary>
 	public event Action? Closed;
 
-	public SessionSearchPalette(Func<IReadOnlyList<SessionListItem>> sessions, Action<SessionListItem> open)
+	public SessionSearchPalette(
+		Func<IReadOnlyList<SessionListItem>> sessions, Action<SessionListItem> open, Func<bool>? loading = null)
 	{
 		_sessions = sessions;
 		_open = open;
+		_loading = loading ?? (static () => false);
 
 		// 提示文本自己画：框架的 Placeholder 聚焦即隐藏，而弹窗一打开就聚焦在输入框上。
 		_hint = new TextBlock().Text(Strings.SessionSearch)
@@ -174,6 +178,13 @@ public sealed class SessionSearchPalette
 		_open(session);
 	}
 
+	/// <summary>列表就绪后由宿主调用，用当前关键字重跑一次过滤。</summary>
+	internal void Reload()
+	{
+		if (!IsOpen) return;
+		Refresh();
+	}
+
 	/// <summary>元数据命中先上屏；正文命中异步回来后再补进列表。</summary>
 	private void Refresh(string? queryText = null)
 	{
@@ -213,7 +224,11 @@ public sealed class SessionSearchPalette
 
 		if (_targets.Count == 0)
 		{
-			_status.Text(_sessions().Count == 0 ? Strings.NoSessions : Strings.NoMatches).IsVisible(true);
+			// 列表还在后台扫：说「正在读取」，不要说「暂无会话」。
+			var text = _loading()
+				? Strings.SessionsScanning
+				: _sessions().Count == 0 ? Strings.NoSessions : Strings.NoMatches;
+			_status.Text(text).IsVisible(true);
 			return;
 		}
 

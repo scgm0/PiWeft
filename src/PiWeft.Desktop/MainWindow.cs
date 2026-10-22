@@ -73,6 +73,9 @@ public sealed partial class MainWindow : Window
 	private readonly HashSet<string> _openingSessions = new(StringComparer.Ordinal);
 	// 启动时提前并行解析的首个会话：侧栏摘要扫描和它读的是同一份文件，别让打开流程再读一遍。
 	private (string Path, SessionManager Manager)? _prefetchedOpen;
+	// 侧栏摘要扫描按需触发：收起状态下根本不扫（省掉全部读盘），展开或搜索时才加载。
+	private Task? _sessionsLoad;
+	private bool _sessionsLoaded;
 	// 准备阶段会话面板里的加载段落（打开会话 / 写回会话名称），以及窗口关闭时中断后台读取的令牌源。
 	private readonly SessionLoadingPanel _sessionLoading = new();
 	private TextBlock _welcomeTitle = null!;
@@ -295,7 +298,8 @@ public sealed partial class MainWindow : Window
 		// ------------------------------------------------------------ 侧栏
 		// 新建会话 + 搜索会话（两条与侧栏同色的导航行）+ 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
 		// 「搜索会话」不是常驻输入框：点击打开搜索弹窗（Ctrl+K），结果按名称、路径与正文过滤。
-		_sessionSearch = new SessionSearchPalette(() => _allSessions, OpenSessionFromSearch);
+		_sessionSearch = new SessionSearchPalette(
+			() => _allSessions, OpenSessionFromSearch, () => !_sessionsLoaded);
 		_sessionSearch.Closed += FocusActiveEntry;
 		_searchButton = AppIcons.TextButton("search", Strings.SessionSearch, () => _sessionSearch.Toggle(this), strong: true)
 			.MinHeight(AppTheme.ControlHeightLg)
@@ -607,26 +611,18 @@ public sealed partial class MainWindow : Window
 	{
 		CliEnvironment? environment = null;
 		string? startupError = null;
-		IReadOnlyList<SessionListItem> sessions = [];
 		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 
-		// 没有置顶会话时，启动自动打开的就是「最近修改」那一份：先只 stat 目录拿到路径，
-		// 立刻在后台解析，与侧栏摘要扫描并行，省掉一整段串行的几十 MB 冷读。
+		// 三条互不依赖的后台任务：环境、侧栏摘要扫描、首个会话的解析。
+		// 关键是它们不能串成一条链 —— 侧栏在会话多的机器上要扫上百 MB（实测 78 份 / 304 MB / 约 900 ms），
+		// 而开会话只需要环境；以前把三者打包进一个 Task.Run，等于让首个会话陪着扫完整个目录。
 		var prefetchPath = preference.Pinned.Count == 0 ? _catalog.MostRecentPath() : null;
 		var prefetch = prefetchPath is null ? null : Task.Run(() => _catalog.Open(prefetchPath, _cwd));
 		try
 		{
-			var (created, error, listed) = await Task.Run(() =>
-			{
-				var (built, buildError) = CliEnvironment.Create(_arguments, _cwd);
-				// 侧栏扫描是按文件读整份 JSONL：与模型清单同批在后台预热，
-				// 回来后 RefreshSessions 只建列表，不再在 UI 线程扫几十 MB。
-				var listed = _catalog.List();
-				return (built, buildError, listed);
-			}).ConfigureAwait(true);
+			var (created, error) = await Task.Run(() => CliEnvironment.Create(_arguments, _cwd)).ConfigureAwait(true);
 			environment = created;
 			startupError = error;
-			sessions = listed;
 
 			if (prefetch is not null && prefetchPath is not null)
 			{
@@ -649,7 +645,7 @@ public sealed partial class MainWindow : Window
 
 		if (watch is not null)
 		{
-			Diagnostics.Record("environment.create", watch, $"tools={environment?.Tools.Count ?? 0}, sessions={sessions.Count}");
+			Diagnostics.Record("environment.create", watch, $"tools={environment?.Tools.Count ?? 0}");
 		}
 
 		if (environment is null)
@@ -673,20 +669,42 @@ public sealed partial class MainWindow : Window
 		_models = environment.ListAvailableModels(_arguments.ApiKey);
 		AppLog.For<MainWindow>().ZLogInformation($"Desktop ready: models={_models.Count}, tools={environment.Tools.Count}");
 
-		RefreshSessions();
+		// 侧栏收起时完全不扫摘要：首个会话用 stat 出来的路径直接开，列表等展开或搜索时再加载。
+		// 侧栏展开（或存在置顶会话，需要按置顶顺序选首个）时才加载。
+		if (preference.Pinned.Count > 0)
+		{
+			await EnsureSessionsLoadedAsync().ConfigureAwait(true);
+		}
+
+		var opening = _prefetchedOpen is not null;
+		if (opening)
+		{
+			OpenSessionPath(_prefetchedOpen!.Value.Path);
+		}
+
+		if (!preference.SidebarCollapsed)
+		{
+			await EnsureSessionsLoadedAsync().ConfigureAwait(true);
+		}
+
+		if (opening && _sessionsLoaded)
+		{
+			// 侧栏行在会话之后才到：用它把选中项补上高亮。
+			RestoreSelection(CurrentTab()?.Session.Session.SessionId ?? string.Empty);
+		}
 
 		// MCP 服务器在后台连接：连上后把工具注入所有已打开的会话，设置面板同步显示状态。
 		_ = ConnectMcpAsync();
 
-		if (_sessions.Count > 0)
+		if (!opening && _sessions.Count > 0)
 		{
 			OpenSessionPath(_sessions[0].Path);
 		}
-		else if (preference.SidebarProjects)
+		else if (!opening && preference.SidebarProjects)
 		{
 			NewSessionIn(_cwd);
 		}
-		else
+		else if (!opening)
 		{
 			// 首次启动停在「对话」：在聊天目录里开一个，而不是往当前项目里塞一个空会话。
 			NewChatSession();
@@ -717,6 +735,7 @@ public sealed partial class MainWindow : Window
 	private async Task RunSmokeTabAsync(string smokeTab)
 	{
 		// 面板要挂在自动打开的会话上，先等它在后台建好。
+		await WaitForSidebarAsync().ConfigureAwait(false);
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
 		Dispatch(() =>
 		{
@@ -732,8 +751,18 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>重建侧栏列表。目录快照始终包含全部会话，侧栏再按聊天目录分成「对话」与「项目」两段。</summary>
-	private void RefreshSessions()
+	/// <param name="force">
+	/// 明确要求刷新（改名、删除、归档、手动刷新）时即使侧栏还没加载过也要加载；
+	/// 流式结束这类后台刷新则不主动付这笔扫描成本。
+	/// </param>
+	private void RefreshSessions(bool force = false)
 	{
+		if (!_sessionsLoaded)
+		{
+			if (force) _ = EnsureSessionsLoadedAsync();
+			return;
+		}
+
 		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		// 搜索弹窗需要全部会话；侧栏的两个分段在 UpdateSessionList 里分流。
 		_allSessions = _catalog.List();
@@ -900,7 +929,7 @@ public sealed partial class MainWindow : Window
 			if (card) _sessionLoading.Begin(Strings.RenamingSession);
 			await Task.Run(() => _catalog.Rename(path, name)).ConfigureAwait(true);
 			_renamingPath = null;
-			RefreshSessions();
+			RefreshSessions(force: true);
 
 			foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => tab.Session.Session.SessionFile == path))
 			{
@@ -947,7 +976,7 @@ public sealed partial class MainWindow : Window
 			}
 
 			var moved = _catalog.Delete(selected.Path);
-			RefreshSessions();
+			RefreshSessions(force: true);
 			_banner.Text(Strings.Deleted(moved));
 		}
 		catch (Exception ex)
@@ -1127,6 +1156,60 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>
+	/// 需要侧栏数据时才加载（展开侧栏、打开搜索、或需要按置顶顺序选首个会话）。
+	/// 重复调用共用同一个在途任务，展开-收起-再展开不会重复扫描。
+	/// </summary>
+	private Task EnsureSessionsLoadedAsync()
+	{
+		if (_sessionsLoaded) return Task.CompletedTask;
+		if (_sessionsLoad is { } running) return running;
+		var task = LoadSessionsAsync(DesktopPreference.Load());
+		_sessionsLoad = task;
+		return task;
+	}
+
+	/// <summary>扫描并挂上侧栏摘要；失败只记日志并把提示改成「暂无会话」，不影响已打开的会话。</summary>
+	private async Task LoadSessionsAsync(DesktopPreference preference)
+	{
+		// 扫描期间先说明在干什么，避免展开侧栏看到空列表以为没有会话。
+		if (!_projectsTab) _chatsEmpty.Text(Strings.SessionsScanning).IsVisible(true);
+		IReadOnlyList<SessionListItem> listed;
+		try
+		{
+			listed = await Task.Run(() => _catalog.List()).ConfigureAwait(true);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "List sessions", ex);
+			_sessionsLoad = null;
+			if (!_projectsTab) _chatsEmpty.Text(Strings.ChatsEmpty);
+			return;
+		}
+
+		_sessionsLoaded = true;
+		_sessionsLoad = null;
+		if (!_projectsTab) _chatsEmpty.Text(Strings.ChatsEmpty);
+
+		_allSessions = listed;
+		// 置顶的会话排在最前，其余保持最近修改优先。
+		_allSessions =
+		[
+			.. _allSessions.Where(item => preference.IsPinned(item.Id)),
+			.. _allSessions.Where(item => !preference.IsPinned(item.Id)),
+		];
+		FilterSessions(preference);
+
+		// 搜索可能先于列表打开：拿到数据后按当前关键字重跑一次。
+		_sessionSearch.Reload();
+	}
+
+	/// <summary>等待侧栏扫描落地（自检与演练用；正常交互不需要等）。</summary>
+	private async Task WaitForSidebarAsync(int timeoutMs = 30_000)
+	{
+		await Task.WhenAny(EnsureSessionsLoadedAsync(), Task.Delay(timeoutMs)).ConfigureAwait(false);
+	}
+
+	/// <summary>
 	/// 等待在途的后台打开结束。会话打开改成异步后，启动时「立刻就有标签页」不再成立；
 	/// 自检与演练流程必须显式等待，否则在满载机器上会读到空标签页。
 	/// </summary>
@@ -1243,7 +1326,7 @@ public sealed partial class MainWindow : Window
 				RefreshSessions();
 			}
 		};
-		tab.Forked += _ => RefreshSessions();
+		tab.Forked += _ => RefreshSessions(force: true);
 
 		_tabEntries.Add(tab);
 		AddTab(header: null!, content: tab.View, entry: tab);
@@ -1366,8 +1449,15 @@ public sealed partial class MainWindow : Window
 	/// </summary>
 	private async Task RunUiSmokeAsync(string view)
 	{
-		// 启动时自动打开的会话现在在后台解析，先等它建好标签页再演练。
+		// 首个会话在后台解析：先等它建好标签页再演练。
+		// 侧栏摘要按需加载，演练不主动等它（需要它的演练目标自己展开侧栏）。
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
+		if (view == "loading")
+		{
+			// 这个演练要「在已有标签页之上再开一个会话」，得先有会话列表才能挑目标。
+			await EnsureSessionsLoadedAsync().ConfigureAwait(false);
+		}
+
 		await Task.Delay(1500).ConfigureAwait(false);
 
 		var loadingTarget = _sessions.FirstOrDefault(item => item.Path != CurrentTab()?.Session.Session.SessionFile);
@@ -1581,7 +1671,8 @@ public sealed partial class MainWindow : Window
 		SessionTab? originalTab = null;
 		try
 		{
-			// 启动时自动打开的会话现在在后台解析，先等标签页出现再演练换肤。
+			// 启动时自动打开的会话与侧栏都在后台准备，先等它们落地再演练换肤。
+			await WaitForSidebarAsync().ConfigureAwait(false);
 			await WaitForSessionOpensAsync().ConfigureAwait(false);
 			// 固定从深色开始，这样「切换后是浅色」才有意义（否则起点可能是跟随系统）。
 			await Task.Delay(800).ConfigureAwait(false);
@@ -1769,6 +1860,8 @@ public sealed partial class MainWindow : Window
 		_sidebarPreferred = !_sidebarPreferred;
 		ApplySidebarLayout();
 		SaveWindowState();
+		// 展开即加载：收着的时候一直不扫摘要。
+		if (_sidebarPreferred) _ = EnsureSessionsLoadedAsync();
 	}
 
 	// ------------------------------------------------------- 右侧功能面板
@@ -2119,7 +2212,7 @@ public sealed partial class MainWindow : Window
 			new(Strings.ExportSession, Strings.ShortcutExportSession, () => ExportCurrentSession(open: false)),
 			new(Strings.ExportSessionAndOpen, Strings.ShortcutExportAndOpen, () => ExportCurrentSession(open: true)),
 			new(Strings.ToggleTheme, Strings.ShortcutTheme, ToggleTheme),
-			new(Strings.RefreshSessions, Strings.ShortcutRefresh, RefreshSessions),
+			new(Strings.RefreshSessions, Strings.ShortcutRefresh, () => RefreshSessions(force: true)),
 			new(Strings.CloseCurrentTab, Strings.ShortcutCloseTab, CloseCurrentTab),
 			new(Strings.ViewBranches, Strings.ShortcutBranches, () =>
 			{
@@ -2217,7 +2310,7 @@ public sealed partial class MainWindow : Window
 		{
 			var preference = DesktopPreference.Load().TogglePinned(selected.Id);
 			preference.Save();
-			RefreshSessions();
+			RefreshSessions(force: true);
 			RestoreSelection(selected.Id);
 			_banner.Text(preference.IsPinned(selected.Id) ? Strings.Pinned(selected.Display) : Strings.Unpinned(selected.Display));
 		}

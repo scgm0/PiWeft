@@ -182,6 +182,75 @@ Linux NativeAOT 发布版、Xvfb/Mesa、1280×820 的实际会话演练中：60 
 
 下一步的已知对象：`session.open.tab` 的 240 ms 里首帧约 100 ms（`timeline.realize` 55 ms + `timeline.project` 26 ms），其余是标签页控件树本身；以及 27k 条会话条目常驻带来的 200 MiB 托管堆——那需要动数据结构（分页读历史或惰性 extras），不在本轮范围。
 
+## 第二轮：首屏、实时帧与控件树
+
+在同一台机器上用诊断数据继续压榨，测量方式见文末「性能诊断」一节。
+
+### 启动与首屏
+
+| 阶段 | 耗时（x64 Debug / Xvfb，3 次中位） | 是否阻塞首屏 |
+|---|---:|---|
+| 主题解析 + 内嵌字体注册 + 内置文案 | 109 ms | 是 |
+| `MainWindow` 构造（整套控件树） | 53 ms | 是 |
+| 窗口创建 → 首帧绘制（X11 + MewVG GL 上下文、字体图集） | ~880 ms | 是（框架/驱动侧） |
+| 首屏可见（`startup.first-paint`） | **1.05 s** | — |
+| 环境 + 侧栏摘要 + 首个会话解析（后台，与首屏并行） | 0.8–1.0 s | 否 |
+| 会话就绪（`session.open.*` 全部完成） | **2.28–2.42 s** | 否 |
+
+关键是这两条已经**解耦**：首屏只等控件树，不等任何 IO。首帧之后主区显示准备阶段面板与加载段落，后台把环境、侧栏与首个会话补齐；`session.open.read` 在预解析命中时记 0 ms（侧栏扫描已经读过同一份文件）。剩下的 ~880 ms 在窗口/GL 上下文初始化里，属于框架与驱动，不在应用代码内。
+
+### 实时对话的每帧成本
+
+1000 轮历史、400 个 token 帧、每 40 ms 合并一次渲染（x64 Debug / Xvfb，`BenchProductionFrameStages` 同款量法）：
+
+| 帧内阶段 | 优化前 | 优化后 |
+|---|---:|---:|
+| `chat.Entries()`（快照） | 0.03 ms / 2 KB | 0.02 ms / 2 KB |
+| 执行过程投影（增量只重投最后一轮） | 0.18 ms / 33 KB | 0.16 ms / 32 KB |
+| `SetEntries`（行更新 + 原位重绑） | 2.96 ms / 214 KB | 3.14 ms / 217 KB |
+| 布局（整窗 measure + arrange） | 10.97 ms / 751 KB | 10.20 ms / 632 KB |
+| 整帧渲染合计（`Render` 平均值） | 4.37 ms | 3.75 ms |
+
+这一轮砍掉的是每帧的**无谓分配与重复计算**：
+
+- **右侧定位轴不再每帧整表重建。** `SyncOutline` 以前为上千行新建两个列表、再 `SequenceEqual` 整表比较（1000 轮历史约 60 KB/帧）。现在利用投影器已经保证的「稳定前缀引用不变」，只在尾部增删用户行；token 帧通常一行都不用扫。
+- **`SameEntry` 去掉 `Zip(...).All(...)`**：过程组逐成员比较改成按下标循环，零枚举器分配。这个方法在每次行绑定、每次投影比较里都会调用。
+- **`ExecutionProcessView.Nodes` 复用节点与成员缓冲**：原来每帧新建 `List<Node>` + 每组一个数组 + 插值键，现在节点对象按索引复用、成员数组在数量不变时原地覆盖。
+- **发送/复制按钮的可用性不再每帧整表扫描**（两次 `all.Any(...)`，流式期每 40 ms 各扫两千行），按投影行数缓存。
+- **状态条与消息头只在输入变化时重建字符串**：`_status.Text`、助手消息头（时间/角色/耗时）以前每帧重新格式化 + 时区转换；折叠预览以前每帧从头扫一遍思考正文，现在只在 4 KB 窗口内找首行，取到即定格。
+- **助手消息头的 `DurationMs`/时间戳/流式标志**做成键比较，命中就直接跳过。
+
+### 常驻内存
+
+打开 45 MiB / 26,985 行的会话后，托管堆峰值 200 MiB、RSS 约 490 MiB，**这一轮没有实质下降**，原因值得记下来：
+
+- 47 MB 的 UTF-8 正文解码成 UTF-16 `string` 后就约 94 MB，加上 27k 条 `SessionMessageEntry`/`Message`/`ContentBlock` 的对象头，就是 150–200 MiB 的主体。`ChatEntry` 行本身很便宜（实测每个 136 字节，空集合用 `Array.Empty<T>()`，不多带数组）。
+- 想再压下去只能改数据结构：按文件偏移惰性解码正文、或对历史做分页。这会影响「整段历史随时可发给模型」的语义，属于架构级改动，本轮不做。
+- 唯一拿掉的是**进程级常驻大块**：`Utf8LineReader` 的行缓冲会跟着最大的一行长膨胀（几 MB 正文很常见），原来无条件还给 `ArrayPool` 等于让进程永久留着；现在超过 256 KB 交给 GC。
+
+## 第三轮：侧栏按需加载（默认收起）
+
+AOT 实机数据（`timings-20261022-150604.jsonl`，78 份会话 / 304 MB）暴露了一处串行依赖：`environment.create` 950 ms、`sidebar.list` **897 ms**，而「首个会话就绪」要等两者都完成。拆开之后又发现，**启动时根本不必扫侧栏**。
+
+### 改动
+
+- **侧栏默认收起**（`DesktopPreference.SidebarCollapsed` 默认 `true`）。收起状态下启动完全不读会话摘要：首个会话用「只 stat 目录」得到的路径直接开，列表等展开侧栏或打开搜索时才加载（`EnsureSessionsLoadedAsync`，重复调用共用同一个在途任务）。旧偏好里显式写过 `false` 的用户保持展开。
+- **侧栏摘要与首个会话解耦**：`_catalog.List()` 不再和环境构建、预解析打包在同一个 `Task.Run` 里。三者各自并行，会话不再陪侧栏扫完整个目录。
+- **摘要扫描按文件并行**（`ScanParallelism`，留一个核给 UI）：66 份 / 285 MB 从 2043 ms 降到 1128 ms。
+- **只扫「会显示出来的那些」**：文件数超过 `limit`（侧栏 200 条）时，先只 stat 排序、再对头部做摘要扫描。300 份 / 275 MB 的场景下要读的字节数从 275 MB 降到 2.3 MB（**35 ms**）。
+- **搜索不受影响**：搜索弹窗仍在需要时触发加载，列表未就绪时显示「正在读取会话列表…」而不是「暂无会话」；数据到位后 `Reload()` 用当前关键字重跑过滤。
+- 明确动作（改名、删除、归档、置顶、新建会话、手动刷新、分支）走 `RefreshSessions(force: true)`，不会因为「还没加载过」被静默跳过；流式结束这类后台刷新则不再主动付扫描成本。
+
+### 实测（300 份会话 / 275 MB，x64 Debug / Xvfb）
+
+| 指标 | 侧栏展开 | 侧栏收起（默认） |
+|---|---:|---:|
+| `sidebar.list` | 30–67 ms（200 份 / 2.3 MB） | **不发生** |
+| 首屏 | ~0.7 s | ~0.7 s |
+| 首个会话就绪 | ~1.1 s | **~1.1 s** |
+
+跨进程复用摘要索引也试过（`<agentDir>/sessions/.piweft-catalog.json`，命中后侧栏 13.5 ms），但它引入一份额外的磁盘状态、还要处理多实例并发写，收益只是「侧栏秒开」而不是「能用」——按评估结论**不采用**，改为上面这套无状态方案。
+
 ## 性能诊断（设置 → 维护 → 性能诊断）
 
 对齐 PiDeck 的同名开关：默认关闭，关闭时每个调用点只做一次布尔判断（连秒表都不分配）；打开后无需重启即可开始记录，再关即停。
@@ -189,7 +258,7 @@ Linux NativeAOT 发布版、Xvfb/Mesa、1280×820 的实际会话演练中：60 
 - 采样：1 秒一次的线程池定时器读工作集 / 私有内存 / 托管堆 / 碎片 / 累计分配 / GC 次数，并从池线程向 UI 线程投递一个探针，量它被接手前排了多久 —— 这就是 PiDeck 里 `setImmediate` 往返的等价物，≥ 50 ms 直接落一条警告日志（「谁把 UI 线程占住了」）。UI 队列延迟只在运行时可测，无头测试里为 0。
 - 落盘：每条耗时一行 JSONL 写进 `<agentDir>/diagnostics/timings-<本地时间戳>.jsonl`，同时带上当时的 RSS / 托管堆，把「这一步慢」和「当时涨到多少」对在一起。250 ms 一批 flush，关闭时先把缓冲写完再释放句柄；单条 ≥ 200 ms 额外记 `Slow path` 警告。
 - 聚合：内存里按名称累计次数 / 总耗时 / 最大 / 最近，设置页展示聚合表 + 最近 20 条原始记录；重新开启会清零聚合并换一份新文件，避免上一轮的慢路径混进这一轮对照。「清空统计」用于同一轮里分段对照。
-- 计时点：`environment.create`（启动构建环境）、`mcp.connect`、`sidebar.refresh`（侧栏全量刷新）、`session.open.read`（解析整份 JSONL，带 bytes/lines/entries）、`session.open.prepare`（建会话 + 聊天记录投影，带 entries/messages）、`chat.project`（整段投影）、`session.open.tab`（标签页构造）、`ui.render`（只记 ≥ 8 ms 的帧，带 rows/visible）、`markdown.finalize`（思考定稿重建文档树，带 chars）。
+- 计时点：`startup.theme-and-fonts`、`startup.window-build`、`startup.first-paint`（首屏时延，`Application.Run` 的 startup 回调里挂一个 Render 优先级工作项来量）、`environment.create`（启动构建环境）、`mcp.connect`、`sidebar.refresh`（侧栏全量刷新）、`session.open.read`（解析整份 JSONL，带 bytes/lines/entries）、`session.open.prepare`（建会话 + 聊天记录投影，带 entries/messages）、`chat.project`（整段投影）、`session.open.tab`（标签页构造）、`ui.render`（只记 ≥ 8 ms 的帧，带 rows/visible）、`markdown.finalize`（思考定稿重建文档树，带 chars）。
 
 45 MiB / 26,985 行真实会话在诊断页实测到的一轮（x64 Debug / Xvfb，值随冷热波动）：
 

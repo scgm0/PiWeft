@@ -231,3 +231,111 @@ public sealed class SessionCatalogFastScanTests
 			"""{"id":"a1","parentId":"x1","type":"message","timestamp":"t","message":{"role":"assistant","content":"答"}}""");
 	}
 }
+
+/// <summary>
+/// 侧栏只扫「会显示出来的那些」：文件数超过 limit 时按修改时间截断，
+/// 但不能改变排序语义，也不能让截断之外的文件影响结果。
+/// </summary>
+// 改了进程级 PI_CODING_AGENT_DIR：必须与其它同类测试串行，否则会互相读到对方的会话目录。
+[Collection("process-environment")]
+public sealed class SessionCatalogTruncationTests : IDisposable
+{
+	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-catalog-limit-" + Guid.NewGuid().ToString("N")[..8]);
+	private readonly Dictionary<string, string> _previousAgentDir = new(StringComparer.Ordinal);
+
+	public SessionCatalogTruncationTests()
+	{
+		Directory.CreateDirectory(_root);
+	}
+
+	public void Dispose()
+	{
+		foreach (var (key, value) in _previousAgentDir)
+		{
+			Environment.SetEnvironmentVariable(key, value.Length == 0 ? null : value);
+		}
+
+		if (Directory.Exists(_root))
+		{
+			Directory.Delete(_root, recursive: true);
+		}
+
+		GC.SuppressFinalize(this);
+	}
+
+	[Fact]
+	public void ListReturnsTheNewestRowsInOrderEvenWhenOlderFilesAreSkipped()
+	{
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		// 8 份会话，修改时间从旧到新；limit=3 只应返回最新 3 份。
+		var paths = new List<string>();
+		for (var index = 0; index < 8; index++)
+		{
+			var path = Path.Combine(sessions, $"2026-01-0{index + 1}T00-00-00-000Z_session{index:00}.jsonl");
+			File.WriteAllLines(path,
+			[
+				"""{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp/x"}""",
+				"{\"id\":\"u" + index + "\",\"parentId\":\"s\",\"type\":\"message\",\"timestamp\":\"t\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"问题 " + index + "\"}],\"timestamp\":1}}",
+			]);
+			File.SetLastWriteTimeUtc(path, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(index));
+			paths.Add(path);
+		}
+
+		var catalog = new SessionCatalog();
+		var limited = catalog.List(limit: 3);
+
+		Assert.Equal(3, limited.Count);
+		Assert.Equal([paths[7], paths[6], paths[5]], limited.Select(static item => item.Path));
+		// 预览仍然正确（截断不影响扫描质量）。
+		Assert.Equal("问题 7", limited[0].Preview);
+
+		// limit 大于文件数时退回全量，顺序不变。
+		var all = catalog.List(limit: 99);
+		Assert.Equal(8, all.Count);
+		Assert.Equal(paths[7], all[0].Path);
+		Assert.Equal(paths[0], all[^1].Path);
+	}
+
+	[Fact]
+	public void RepeatedListReusesSummariesInsteadOfRescanning()
+	{
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		for (var index = 0; index < 3; index++)
+		{
+			File.WriteAllLines(Path.Combine(sessions, $"2026-02-0{index + 1}T00-00-00-000Z_reuse{index}.jsonl"),
+			[
+				"""{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp/x"}""",
+				"""{"id":"u","parentId":"s","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"hi"}],"timestamp":1}}""",
+			]);
+		}
+
+		var catalog = new SessionCatalog();
+		var first = catalog.List();
+		var second = catalog.List();
+
+		Assert.Equal(3, first.Count);
+		// 第二次完全命中缓存：对象复用、内容一致（缓存键是长度 + 修改时间 + 首行指纹）。
+		Assert.Equal(first.Select(static item => item.Path), second.Select(static item => item.Path));
+		Assert.All(second, item => Assert.True(item.Modified <= DateTimeOffset.UtcNow));
+
+		// 追加内容后同一份会话要重新扫出新的条数。
+		var target = first[0].Path;
+		File.AppendAllLines(target,
+		[
+			"""{"id":"u2","parentId":"u","type":"message","timestamp":"t","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"timestamp":2}}""",
+		]);
+		var third = catalog.List();
+		var before = first.Single(item => item.Path == target).MessageCount;
+		Assert.Equal(before + 1, third.Single(item => item.Path == target).MessageCount);
+	}
+}

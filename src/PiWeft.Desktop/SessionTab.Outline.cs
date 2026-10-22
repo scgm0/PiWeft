@@ -4,34 +4,47 @@ namespace PiWeft.Desktop;
 
 public sealed partial class SessionTab
 {
-	private IReadOnlyList<ConversationOutline.Item> _outlineItems = [];
+	private readonly List<ConversationOutline.Item> _outlineItems = [];
 	private readonly List<(int Row, ChatEntry Entry)> _outlineSources = [];
 	private int[] _outlineUserRows = [];
 	private bool _outlineActiveQueued;
 
-	private void SyncOutline(IReadOnlyList<ChatEntry> entries)
+	/// <summary>
+	/// 右侧定位轴只由用户行决定，而 <paramref name="stablePrefix"/> 之前的行投影器已经保证与上一次
+	/// 引用一致，所以那里的大纲条目原样留着，只校验尾部、只补新增的用户行。
+	/// 以前这里每帧为上千行重建两个列表并整表比较（1000 轮历史约 60 KB/帧的纯浪费），
+	/// 流式期最明显的无谓分配就是它。
+	/// </summary>
+	private void SyncOutline(IReadOnlyList<ChatEntry> entries, int stablePrefix)
 	{
-		var items = new List<ConversationOutline.Item>();
-		var sources = new List<(int Row, ChatEntry Entry)>();
-		for (var row = 0; row < entries.Count; row++)
+		var changed = false;
+
+		// 尾部倒着收：行号越界或引用变了的用户行丢掉，遇到仍然成立的就停下。
+		while (_outlineSources.Count > 0 && _outlineSources[^1].Row >= stablePrefix)
 		{
-			var entry = entries[row];
-			if (entry.Role != ChatRole.User) continue;
-			var ordinal = items.Count;
-			// 流式帧不重新解析历史问题里的技能上下文，也不反复格式化时间。
-			var unchanged = ordinal < _outlineSources.Count && _outlineSources[ordinal].Row == row &&
-				ReferenceEquals(_outlineSources[ordinal].Entry, entry);
-			items.Add(unchanged ? _outlineItems[ordinal] : new(row, OutlineTitle(entry), OutlineTime(entry.Timestamp)));
-			sources.Add((row, entry));
+			var (row, entry) = _outlineSources[^1];
+			if (row < entries.Count && ReferenceEquals(entries[row], entry)) break;
+			_outlineSources.RemoveAt(_outlineSources.Count - 1);
+			_outlineItems.RemoveAt(_outlineItems.Count - 1);
+			changed = true;
 		}
-		if (!_outlineItems.SequenceEqual(items))
+
+		// 从最后一条已确认的用户行往后补：token 帧通常一行都不用扫。
+		var from = _outlineSources.Count > 0 ? _outlineSources[^1].Row + 1 : 0;
+		for (var row = from; row < entries.Count; row++)
 		{
-			_outlineItems = items;
-			_outlineUserRows = items.Select(item => item.RowIndex).ToArray();
-			_outline.SetItems(items);
+			if (entries[row].Role != ChatRole.User) continue;
+			_outlineSources.Add((row, entries[row]));
+			_outlineItems.Add(new ConversationOutline.Item(row, OutlineTitle(entries[row]), OutlineTime(entries[row].Timestamp)));
+			changed = true;
 		}
-		_outlineSources.Clear();
-		_outlineSources.AddRange(sources);
+
+		if (changed)
+		{
+			_outlineUserRows = [.. _outlineItems.Select(item => item.RowIndex)];
+			_outline.SetItems(_outlineItems);
+		}
+
 		UpdateOutlineVisibility();
 		QueueOutlineActive();
 	}

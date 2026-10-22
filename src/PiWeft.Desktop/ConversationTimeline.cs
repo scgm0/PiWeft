@@ -341,14 +341,35 @@ internal sealed class ConversationTimeline : IDisposable
 			foreach (var found in FindExpanders(child)) yield return found;
 	}
 
-	internal static bool SameEntry(ChatEntry left, ChatEntry right) => ReferenceEquals(left, right) || (
-		left.Role == right.Role && left.Text == right.Text && left.Thinking == right.Thinking &&
-		left.IsThinking == right.IsThinking && left.IsStreaming == right.IsStreaming &&
-		left.Timestamp == right.Timestamp && left.EntryId == right.EntryId && left.ToolName == right.ToolName &&
-		left.IsError == right.IsError && left.IsStopped == right.IsStopped && left.DurationMs == right.DurationMs && left.Patch == right.Patch && left.ToolArguments == right.ToolArguments &&
-		left.Images.SequenceEqual(right.Images) && left.ToolCallId == right.ToolCallId && left.Compact == right.Compact &&
-		left.ChangedFiles.SequenceEqual(right.ChangedFiles) &&
-		left.ProcessEntries.Count == right.ProcessEntries.Count && left.ProcessEntries.Zip(right.ProcessEntries).All(pair => SameEntry(pair.First, pair.Second)));
+	internal static bool SameEntry(ChatEntry left, ChatEntry right)
+	{
+		if (ReferenceEquals(left, right)) return true;
+		if (left.Role != right.Role || left.Text != right.Text || left.Thinking != right.Thinking ||
+			left.IsThinking != right.IsThinking || left.IsStreaming != right.IsStreaming ||
+			left.Timestamp != right.Timestamp || left.EntryId != right.EntryId || left.ToolName != right.ToolName ||
+			left.IsError != right.IsError || left.IsStopped != right.IsStopped ||
+			left.DurationMs != right.DurationMs || left.Patch != right.Patch ||
+			left.ToolArguments != right.ToolArguments || left.ToolCallId != right.ToolCallId ||
+			left.Compact != right.Compact ||
+			!left.Images.SequenceEqual(right.Images) || !left.ChangedFiles.SequenceEqual(right.ChangedFiles) ||
+			left.ProcessEntries.Count != right.ProcessEntries.Count)
+		{
+			return false;
+		}
+
+		// 过程组要逐成员比较。原来用 Zip(...).All(...)：每帧每行都分配一对枚举器，
+		// 流式期（每 40 ms 一次）这些垃圾全进了 GC。改成按下标循环，零分配。
+		var count = left.ProcessEntries.Count;
+		if (count == 0) return true;
+		var leftSteps = left.ProcessEntries;
+		var rightSteps = right.ProcessEntries;
+		for (var index = 0; index < count; index++)
+		{
+			if (!SameEntry(leftSteps[index], rightSteps[index])) return false;
+		}
+
+		return true;
+	}
 
 	public void Dispose()
 	{
