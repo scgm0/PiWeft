@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
@@ -12,9 +13,41 @@ public sealed record SessionStatisticsDisplay(SessionStatistics Totals, long Con
 {
 	public double? ContextPercent => ContextWindow > 0 ? 100.0 * ContextTokens / ContextWindow : null;
 
-	public static SessionStatisticsDisplay Create(CodingAgentSession session) => new(
-		session.Statistics(), session.ContextTokens().Tokens, session.Model.ContextWindow,
-		session.Session.GetBranch().Count(static entry => entry is SessionMessageEntry { Message: UserMessage }));
+	public static SessionStatisticsDisplay Create(CodingAgentSession session)
+	{
+		// 这一段以前整块藏在渲染里：拆成三段计时才能看出 200 ms 到底花在谁身上。
+		var totalsWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+		var totals = session.Statistics();
+		if (totalsWatch is not null)
+		{
+			Diagnostics.Record("stats.totals", totalsWatch, $"entries={session.Session.EntryCount}");
+		}
+
+		// 投影与估算分开计时：长会话里「重建整段投影」和「重扫历史估 token」是两件事，
+		// 混在一起就分不清该修哪一个。先取投影（会填内部缓存），ContextTokens 只会剩估算。
+		var projectWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+		var projected = session.Session.BuildProjectedMessages();
+		if (projectWatch is not null)
+		{
+			Diagnostics.Record("stats.project", projectWatch, $"messages={projected.Count}");
+		}
+
+		var contextWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+		var context = session.ContextTokens().Tokens;
+		if (contextWatch is not null)
+		{
+			Diagnostics.Record("stats.context", contextWatch, $"tokens={context}");
+		}
+
+		var turnsWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+		var turns = session.Session.GetBranch().Count(static entry => entry is SessionMessageEntry { Message: UserMessage });
+		if (turnsWatch is not null)
+		{
+			Diagnostics.Record("stats.turns", turnsWatch, $"turns={turns}");
+		}
+
+		return new SessionStatisticsDisplay(totals, context, session.Model.ContextWindow, turns);
+	}
 
 	public string ContextLabel => $"{Strings.Context} {Percent(ContextPercent)}";
 

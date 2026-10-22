@@ -33,6 +33,23 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void DiagnosticsFlagRoundTripsAndIsDroppedWhenTurnedOff()
+	{
+		// 默认关闭：不改偏好文件也不该因为一次开关留下 true 之外的垃圾键。
+		Assert.False(DesktopPreference.Load(_agentDir).Diagnostics);
+
+		(DesktopPreference.Load(_agentDir) with { Diagnostics = true }).Save(_agentDir);
+		Assert.True(DesktopPreference.Load(_agentDir).Diagnostics);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.True(raw["diagnostics"]!.GetValue<bool>());
+
+		(DesktopPreference.Load(_agentDir) with { Diagnostics = false }).Save(_agentDir);
+		Assert.False(DesktopPreference.Load(_agentDir).Diagnostics);
+		raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw.ContainsKey("diagnostics"));
+	}
+
+	[Fact]
 	public void CycleGoesDarkLightSystemAndRoundTripsThroughTheFile()
 	{
 		var light = DesktopPreference.Load(_agentDir).Cycle();

@@ -108,6 +108,36 @@ public static partial class Strings
 	public const string SettingsTitle = "设置与环境";
 	public const string SettingsEnvironment = "运行环境";
 	public const string SettingsLogs = "日志";
+
+	// 性能诊断（对齐 PiDeck 设置里的同名开关）
+	public const string SettingsDiagnostics = "性能诊断";
+	public const string DiagnosticsDesc =
+		"记录进程内存、UI 队列延迟，以及打开会话、聊天记录投影、每帧渲染、Markdown 定稿等关键耗时。" +
+		"数据写到应用数据目录的 diagnostics 文件夹，用来做优化前后对照与追查卡顿；默认关闭，关闭时调用点零开销。";
+	public const string DiagnosticsRefresh = "刷新采样";
+	public const string DiagnosticsOpenFolder = "打开诊断目录";
+	public const string DiagnosticsReset = "清空统计";
+	public const string DiagnosticsMemory = "内存";
+	public const string DiagnosticsQueueLag = "UI 队列延迟";
+	public const string DiagnosticsOff = "采样未开启：打开开关后再操作一次，就能看到各阶段的耗时。";
+	public const string DiagnosticsNoData = "还没有记录到耗时；开关打开后的操作才会被记下来。";
+	public const string DiagnosticsStatsHeader = "按名称汇总（次数 · 总耗时 · 最大 · 最近）";
+	public const string DiagnosticsRecentHeader = "最近耗时";
+	public const string DiagnosticsPath = "耗时文件";
+	public const string DiagnosticsStarted = "性能诊断已开始采样";
+	public const string DiagnosticsStopped = "性能诊断已停止";
+	public static string DiagnosticsMemoryLine(string rss, string heap, string allocated, int gen0, int gen2) =>
+		$"工作集 {rss} · 托管堆 {heap} · 累计分配 {allocated} · GC gen0 {gen0} / gen2 {gen2}";
+	public static string DiagnosticsLagLine(string lag, string max) =>
+		$"最近 {lag} · 窗口内最大 {max}（≥ 50 ms 说明 UI 线程被占住）";
+	public static string FormatBytes(long bytes) => bytes switch
+	{
+		>= 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):0.##} GiB",
+		>= 1024L * 1024 => $"{bytes / (1024.0 * 1024):0.#} MiB",
+		>= 1024 => $"{bytes / 1024.0:0} KiB",
+		_ => $"{bytes} B",
+	};
+
 	public const string OpenLogDirectory = "打开日志目录";
 	public const string CopyLogDirectory = "复制日志目录";
 	public const string LogLevel = "日志级别";

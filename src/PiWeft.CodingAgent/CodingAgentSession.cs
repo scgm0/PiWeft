@@ -181,6 +181,11 @@ public sealed class CodingAgentSession : IDisposable
 	private bool _planModeFromMarker;
 	private IReadOnlyList<Message>? _contextMessages;
 	private (long Tokens, int? LastUsageIndex) _contextTokens;
+	// 逐条估算的增量缓存：上下文估算在长会话里要 100+ 毫秒，而投影几乎只是往后追加。
+	private IReadOnlyList<Message>? _estimateSource;
+	private long[] _estimateValues = [];
+	private long _estimateTotal;
+	private int _estimateCount;
 
 	/// <summary>当前生效的完整工具集（不受计划模式过滤影响）。</summary>
 	private IReadOnlyList<BuiltinTool> _fullTools = [];
@@ -676,11 +681,67 @@ public sealed class CodingAgentSession : IDisposable
 			var messages = Session.BuildProjectedMessages();
 			if (!ReferenceEquals(messages, _contextMessages))
 			{
-				_contextTokens = Compaction.ContextTokens.EstimateContextTokens(messages);
+				_contextTokens = EstimateContextIncrementally(messages);
 				_contextMessages = messages;
 			}
 			return _contextTokens;
 		}
+	}
+
+	/// <summary>
+	/// 与 <see cref="Compaction.ContextTokens.EstimateContextTokens"/> 同语义，但按消息引用复用已估算的
+	/// 前缀：追加一条消息只重新估算那一条，而不是整段历史。26,983 条的真实会话里，这一步从
+	/// 约 124 ms（UI 线程）降到不足 1 ms；分支导航或上下文编辑改写了前缀时，退回到第一个不一致处重算。
+	/// </summary>
+	private (long Tokens, int? LastUsageIndex) EstimateContextIncrementally(IReadOnlyList<Message> messages)
+	{
+		var reusable = 0;
+		if (ReferenceEquals(_estimateSource, messages))
+		{
+			reusable = Math.Min(_estimateCount, messages.Count);
+		}
+		else if (_estimateSource is { } previous)
+		{
+			var limit = Math.Min(Math.Min(previous.Count, messages.Count), _estimateCount);
+			while (reusable < limit && ReferenceEquals(previous[reusable], messages[reusable])) reusable++;
+		}
+
+		if (_estimateValues.Length < messages.Count)
+		{
+			// 追加式增长：按倍增扩容，避免每条新消息都重分配整段数组。
+			Array.Resize(ref _estimateValues, Math.Max(messages.Count, _estimateValues.Length * 2 + 64));
+		}
+
+		for (var i = reusable; i < messages.Count; i++)
+		{
+			_estimateValues[i] = Compaction.ContextTokens.EstimateTokens(messages[i]);
+		}
+
+		_estimateSource = messages;
+		_estimateCount = messages.Count;
+
+		long total = 0;
+		for (var i = 0; i < messages.Count; i++)
+		{
+			total += _estimateValues[i];
+		}
+
+		_estimateTotal = total;
+
+		var anchor = Compaction.ContextTokens.LastAssistantUsage(messages);
+		if (anchor is null)
+		{
+			return (total, null);
+		}
+
+		// 有可用用量时：锚点及其之前按真实用量，之后按估算累加。
+		long before = 0;
+		for (var i = 0; i <= anchor.Value.Index; i++)
+		{
+			before += _estimateValues[i];
+		}
+
+		return (Compaction.ContextTokens.CalculateContextTokens(anchor.Value.Usage) + (total - before), anchor.Value.Index);
 	}
 
 	/// <summary>上下文是否超过当前模型的压缩阈值。</summary>

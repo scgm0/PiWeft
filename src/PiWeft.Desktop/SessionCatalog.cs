@@ -43,7 +43,15 @@ public sealed record SessionListItem
 public sealed class SessionCatalog
 {
 	private readonly Dictionary<string, SummaryStamp> _summaries = new(StringComparer.Ordinal);
-	private sealed record SummaryStamp(long Length, DateTime LastWrite, SessionListItem Item);
+	// 诊断计数：一次列表构建里真正重扫了多少文件、花了多少时间（侧栏慢通常是重扫整个 JSONL）。
+	private double _scanMs;
+	private int _scanCount;
+	private long _scanBytes;
+	/// <summary>
+	/// 侧栏一行的缓存。会话文件是只追加的，因此除了长度/时间戳之外还记住
+	/// 上次扫到的行边界与首行指纹：文件变长时只扫新增的字节，不重读整份几十 MB。
+	/// </summary>
+	private sealed record SummaryStamp(long Length, DateTime LastWrite, SessionListItem Item, long Offset, long HeadHash);
 
 	/// <summary>agent 目录下的全部会话，最近的在前；可按工作目录过滤。</summary>
 	public IReadOnlyList<SessionListItem> List(string? cwdFilter = null, int limit = 200) => ListCore(false, cwdFilter, limit);
@@ -51,6 +59,10 @@ public sealed class SessionCatalog
 	/// <summary>Reuse unchanged summaries and prune deleted paths; cached data never retains message bodies.</summary>
 	private IReadOnlyList<SessionListItem> ListCore(bool archived, string? cwdFilter, int limit)
 	{
+		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+		_scanMs = 0;
+		_scanCount = 0;
+		_scanBytes = 0;
 		var root = Path.Combine(SessionPaths.GetAgentDir(), "sessions");
 		if (!Directory.Exists(root)) { _summaries.Clear(); return []; }
 		var paths = Directory.EnumerateFiles(root, "*" + SessionFormat.Extension, SearchOption.AllDirectories).ToArray();
@@ -64,7 +76,41 @@ public sealed class SessionCatalog
 		if (_summaries.Count > 4096)
 			foreach (var path in _summaries.OrderByDescending(static entry => entry.Value.LastWrite).Skip(4096).Select(static entry => entry.Key).ToArray())
 				_summaries.Remove(path);
+		if (watch is not null)
+		{
+			Diagnostics.Record("sidebar.list", watch,
+				$"files={paths.Length}, rows={result.Length}, rescans={_scanCount}, scanMs={_scanMs:0.0}, scanBytes={_scanBytes}");
+		}
+
 		return result;
+	}
+
+	/// <summary>本次扫描结束时的字节边界；紧跟在扫描循环后使用（同一线程、单次调用）。</summary>
+	private long _lastScannedBytes;
+
+	/// <summary>只读首行算指纹：文件是追加式的，首行没变就说明前缀可以直接复用。</summary>
+	private static bool HeadMatches(string path, long expected)
+	{
+		try
+		{
+			using var lines = new Utf8LineReader(path);
+			return lines.TryReadLine(out var first) && Fnv1a(first) == expected;
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			return false;
+		}
+	}
+
+	private static long Fnv1a(ReadOnlySpan<byte> value)
+	{
+		var hash = 1469598103934665603L;
+		foreach (var b in value)
+		{
+			hash = (hash ^ b) * 1099511628211L;
+		}
+
+		return hash;
 	}
 
 	/// <summary>按关键字过滤会话：匹配名称、id、工作目录或文件名（不含 .jsonl 后缀，否则搜 "json" 会命中全部），忽略大小写。</summary>
@@ -290,6 +336,51 @@ public sealed class SessionCatalog
 		}
 	}
 
+	/// <summary>
+	/// 最近修改的会话文件路径：只 stat 目录，不读任何内容。
+	/// 启动时用它提前并行解析首个会话，而不必等整份侧栏摘要扫完。
+	/// </summary>
+	public string? MostRecentPath()
+	{
+		var root = Path.Combine(SessionPaths.GetAgentDir(), "sessions");
+		if (!Directory.Exists(root))
+		{
+			return null;
+		}
+
+		string? newest = null;
+		DateTime newestWrite = default;
+		try
+		{
+			foreach (var path in Directory.EnumerateFiles(root, "*" + SessionFormat.Extension, SearchOption.AllDirectories))
+			{
+				if (path.Contains($"{Path.DirectorySeparatorChar}.trash{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				try
+				{
+					var write = File.GetLastWriteTimeUtc(path);
+					if (newest is null || write > newestWrite)
+					{
+						newest = path;
+						newestWrite = write;
+					}
+				}
+				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+				{
+				}
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<SessionCatalog>(), "Scan newest session", ex);
+		}
+
+		return newest;
+	}
+
 	/// <summary>按文件路径打开会话，恢复其中的模型与思考级别。</summary>
 	public SessionManager Open(string path, string? cwdFallback = null) => SessionManager.Open(path, cwdFallback: cwdFallback);
 
@@ -343,15 +434,61 @@ public sealed class SessionCatalog
 			id = id[(separator + 1)..];
 		}
 
-		var scan = new CatalogScan();
+		// 缓存里那一行就是文件前缀的扫描结果：文件变长时把它当续扫起点。
+		CatalogScan scan;
+		var resumeFrom = 0L;
+		var headHash = 0L;
+		if (_summaries.TryGetValue(path, out var known) && length > known.Length)
+		{
+			var previous = known.Item;
+			scan = new CatalogScan
+			{
+				Name = previous.Name.Length == 0 ? null : previous.Name,
+				Cwd = previous.Cwd.Length == 0 ? string.Empty : previous.Cwd,
+				Preview = previous.Preview.Length == 0 ? null : previous.Preview,
+				Messages = previous.MessageCount,
+			};
+			resumeFrom = known.Offset;
+			headHash = known.HeadHash;
+		}
+		else
+		{
+			scan = new CatalogScan();
+		}
+
 		var readSucceeded = false;
+		var watchedBytes = 0L;
+		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 
 		try
 		{
-			using var lines = new Utf8LineReader(path);
+			// 续扫前先验明正身：同名文件被整份替换过（长度恰好也变了）时不能拿旧前缀当起点。
+			var start = resumeFrom;
+			if (start > 0 && !HeadMatches(path, headHash))
+			{
+				start = 0;
+				headHash = 0;
+				scan = new CatalogScan();
+			}
+
+			using var lines = new Utf8LineReader(path, start);
 			while (lines.TryReadLine(out var line))
 			{
+				if (start == 0)
+				{
+					// 首行（会话头部）的指纹用来判断能不能续扫。
+					headHash = Fnv1a(line);
+				}
+
+				watchedBytes += line.Length + 1;
 				if (line.Length == 0 || line[0] != (byte)'{')
+				{
+					continue;
+				}
+
+				// 目录行只需要标题、cwd、预览和条数：绝大多数行按字节确认类别就够了，
+				// 为 47 MB 的会话逐行建 JsonNode 树纯属浪费（实测整份扫描的九成时间花在这里）。
+				if (FastScanLine(line, ref scan))
 				{
 					continue;
 				}
@@ -369,6 +506,7 @@ public sealed class SessionCatalog
 					continue; // Ignore interrupted writes and malformed records without poisoning the rest of the file.
 				}
 			}
+			_lastScannedBytes = lines.BytesRead;
 			readSucceeded = true;
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -386,10 +524,17 @@ public sealed class SessionCatalog
 			MessageCount = scan.Messages,
 			Preview = scan.Preview ?? string.Empty,
 		};
+		if (watch is not null)
+		{
+			_scanMs += watch.Elapsed.TotalMilliseconds;
+			_scanCount++;
+			_scanBytes += watchedBytes;
+		}
+
 		info.Refresh();
 		// A writer may have appended while we scanned. Cache only a complete, stable snapshot.
-		if (readSucceeded && info.Exists && info.Length == length && info.LastWriteTimeUtc == modified)
-			_summaries[path] = new SummaryStamp(length, modified, item);
+		if (readSucceeded && headHash != 0 && info.Exists && info.Length == length && info.LastWriteTimeUtc == modified)
+			_summaries[path] = new SummaryStamp(length, modified, item, _lastScannedBytes, headHash);
 		return item;
 	}
 
@@ -399,6 +544,114 @@ public sealed class SessionCatalog
 		public string? Cwd;
 		public string? Preview;
 		public int Messages;
+	}
+
+	/// <summary>
+	/// 不用 JSON 解析判断一行对目录有没有影响。返回 false 表示必须走完整的 <see cref="ScanLine"/>
+	/// （会话头部、session_info、需要预览的首条用户消息，以及任何形状不合常规的行）。
+	/// 兼容两种真实写法：pi 的 <c>{"id":"…",…,"type":"message"…}</c> 与外部导出的
+	/// <c>{"type": "message", …}</c>（键后带空格）。只读行首窗口里的头几个键，正文一概不碰；
+	/// 尾部被截断（不以 <c>}</c> 结束）或键序异常的行退回完整解析，容错与原来一致。
+	/// </summary>
+	private static bool FastScanLine(ReadOnlySpan<byte> line, ref CatalogScan scan)
+	{
+		if (line.Length < 24 || line[^1] != (byte)'}')
+		{
+			return false;
+		}
+
+		var head = line[..Math.Min(line.Length, 160)];
+		if (!StartsForKey(head, "id"u8) && !StartsForKey(head, "type"u8))
+		{
+			return false;
+		}
+
+		if (!TryReadStringField(head, "type"u8, out var type))
+		{
+			return false;
+		}
+
+		if (!type.SequenceEqual("message"u8))
+		{
+			// 头部、session_info 与其它条目交给完整解析：一份文件里它们只占极少数行。
+			return false;
+		}
+
+		if (!TryReadStringField(head, "role"u8, out var role))
+		{
+			return false;
+		}
+
+		if (!role.SequenceEqual("user"u8) && !role.SequenceEqual("assistant"u8) && !role.SequenceEqual("toolResult"u8))
+		{
+			return false;
+		}
+
+		if (role.SequenceEqual("user"u8) && string.IsNullOrEmpty(scan.Preview))
+		{
+			// 预览要真读正文：第一条还没拿到预览的用户消息才走完整解析。
+			return false;
+		}
+
+		scan.Messages++;
+		return true;
+	}
+
+	/// <summary>行首是否是 <c>{"key"</c>（pi 与常见导出都把 id 或 type 放在第一个键）。</summary>
+	private static bool StartsForKey(ReadOnlySpan<byte> head, ReadOnlySpan<byte> key)
+	{
+		if (head.Length < key.Length + 3 || head[0] != (byte)'{' || head[1] != (byte)'\'')
+		{
+			return false;
+		}
+
+		return head.Slice(2, key.Length).SequenceEqual(key) && head[2 + key.Length] == (byte)'\"';
+	}
+
+	/// <summary>
+	/// 在行首窗口里读 <c>"key" : "value"</c>，容忍冒号前后的空白。
+	/// 只扫到第一个 <c>"content"</c> 之前，避免把正文里的同名字段当头部键。
+	/// </summary>
+	private static bool TryReadStringField(ReadOnlySpan<byte> head, ReadOnlySpan<byte> key, out ReadOnlySpan<byte> value)
+	{
+		value = default;
+		var limit = head.IndexOf("\"content\""u8);
+		if (limit < 0) limit = head.Length;
+		var at = head[..limit].IndexOf(key);
+		if (at < 1 || head[at - 1] != (byte)'\"')
+		{
+			return false;
+		}
+
+		var i = at + key.Length;
+		if (i >= limit || head[i] != (byte)'\"')
+		{
+			return false;
+		}
+
+		i++;
+		while (i < limit && (head[i] == (byte)' ' || head[i] == (byte)'\t')) i++;
+		if (i >= limit || head[i] != (byte)':')
+		{
+			return false;
+		}
+
+		i++;
+		while (i < limit && (head[i] == (byte)' ' || head[i] == (byte)'\t')) i++;
+		if (i >= limit || head[i] != (byte)'\"')
+		{
+			return false;
+		}
+
+		var start = i + 1;
+		var end = head[start..limit].IndexOf((byte)'\"');
+		if (end <= 0)
+		{
+			return false;
+		}
+
+		value = head.Slice(start, end);
+		return true;
 	}
 
 	private static void ScanLine(ReadOnlySpan<byte> line, ref CatalogScan scan)
@@ -607,6 +860,40 @@ public sealed class SessionCatalog
 	/// <summary>窗口less 测试用：扫描一行会话摘要。</summary>
 	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLineForTest(string line) =>
 		ScanLinesForTest([line]);
+
+	/// <summary>
+	/// 窗口less 测试用：按真实读盘顺序扫描——先走快速字节判定，判定不了才完整解析。
+	/// 与 <see cref="ScanLinesForTest"/> 的结果必须逐字段相同，否则快速路径改写了目录语义。
+	/// </summary>
+	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLinesFastForTest(IEnumerable<string> lines)
+	{
+		var scan = new CatalogScan();
+		foreach (var raw in lines)
+		{
+			var line = System.Text.Encoding.UTF8.GetBytes(raw);
+			if (line.Length == 0 || line[0] != (byte)'{')
+			{
+				continue;
+			}
+
+			if (FastScanLine(line, ref scan))
+			{
+				continue;
+			}
+
+			try
+			{
+				var candidate = scan;
+				ScanLine(line, ref candidate);
+				scan = candidate;
+			}
+			catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+			{
+			}
+		}
+
+		return (scan.Cwd, scan.Name, scan.Preview, scan.Messages);
+	}
 
 	/// <summary>窗口less 测试用：按文件顺序扫描多行会话摘要。</summary>
 	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLinesForTest(IEnumerable<string> lines)

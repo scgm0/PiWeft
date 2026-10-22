@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Markdown;
@@ -288,7 +289,13 @@ internal sealed class AssistantMessageView : IDisposable
 		// 真正贵的是随后在 UI 线程重建控件树（约 40 ms），异步绕不开；而新建的 presenter
 		// 在首个文档到达前没有树可画，异步会多出一帧空白。
 		if (string.Equals(_thinkingMarkdown.Markdown, thinking, StringComparison.Ordinal)) return;
+		// 定稿要在 UI 线程重建整棵文档树，是「思考结束那一下卡一下」的主因，单独计时。
+		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		_thinkingMarkdown.Markdown = thinking;
+		if (watch is not null)
+		{
+			Diagnostics.Record("markdown.finalize", watch, $"chars={thinking.Length}");
+		}
 	}
 
 	internal static MultiLineTextBox CreateCodeText(string code, string? language, TextFocusScrollGuard focus)

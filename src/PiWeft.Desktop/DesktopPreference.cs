@@ -50,6 +50,12 @@ public sealed record DesktopPreference
 	public bool SidebarProjects { get; init; }
 
 	/// <summary>
+	/// 性能诊断：默认关闭（生产零开销）。打开后按秒采样内存与 UI 队列延迟，
+	/// 并把关键路径耗时写进 <c>&lt;agentDir&gt;/diagnostics/</c>，用于优化前后对照。
+	/// </summary>
+	public bool Diagnostics { get; init; }
+
+	/// <summary>
 	/// 右侧功能面板的拖拽宽度（DIP）。面板本身属于会话、默认收起，因此折叠状态与分段
 	/// 不落盘；只有宽度是窗口级、跨会话共享的偏好。
 	/// </summary>
@@ -127,6 +133,7 @@ public sealed record DesktopPreference
 				SidebarCollapsed = root?["sidebarCollapsed"] is JsonValue collapsed && collapsed.TryGetValue<bool>(out var hidden) && hidden,
 				SidebarWidth = Math.Clamp(Number(root, "sidebarWidth", positive: true) ?? AppTheme.SidebarWidth, 200, 480),
 				SidebarProjects = root?["sidebarProjects"] is JsonValue tab && tab.TryGetValue<bool>(out var projects) && projects,
+				Diagnostics = root?["diagnostics"] is JsonValue diagnostics && diagnostics.TryGetValue<bool>(out var on) && on,
 				RightPanelWidth = Math.Clamp(Number(root, "rightPanelWidth", positive: true) ?? AppTheme.RightPanelWidth,
 					AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth),
 				ChatWorkspace = root?["chatWorkspace"] is JsonValue chat && chat.TryGetValue<string>(out var chatWorkspace) ? chatWorkspace : string.Empty,
@@ -176,6 +183,15 @@ public sealed record DesktopPreference
 		root["theme"] = Theme;
 		root["sidebarCollapsed"] = SidebarCollapsed;
 		root["sidebarProjects"] = SidebarProjects;
+		// 诊断默认关闭：只在打开时才落盘，避免每次启动都写一个 false。
+		if (Diagnostics)
+		{
+			root["diagnostics"] = true;
+		}
+		else
+		{
+			root.Remove("diagnostics");
+		}
 		root["sidebarWidth"] = double.IsFinite(SidebarWidth) ? Math.Clamp(SidebarWidth, 200, 480) : AppTheme.SidebarWidth;
 		root["rightPanelWidth"] = double.IsFinite(RightPanelWidth)
 			? Math.Clamp(RightPanelWidth, AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth)

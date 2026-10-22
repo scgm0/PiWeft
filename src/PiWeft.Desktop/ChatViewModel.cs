@@ -182,7 +182,8 @@ public sealed class ChatViewModel : IDisposable
 			_error = null;
 			_isStreaming = false;
 			_isCompacting = false;
-			Rebuild();
+			// 打开会话时的首次投影就从这里走：长会话整段映射要 200+ 毫秒，必须计时。
+			RebuildTimed(session);
 			_subscription = session.Subscribe(OnAgentEvent);
 		}
 
@@ -220,8 +221,12 @@ public sealed class ChatViewModel : IDisposable
 	{
 		lock (_gate)
 		{
+			// 投影是长会话里最贵的 UI 前置工作之一：整段重建时记一次，供诊断页对照。
 			if (_session is { } session &&
-				(!ReferenceEquals(_builtSession, session.Session) || _builtRevision != session.Session.Revision)) Rebuild();
+				(!ReferenceEquals(_builtSession, session.Session) || _builtRevision != session.Session.Revision))
+			{
+				RebuildTimed(session);
+			}
 			if (_rowsSnapshot is { } cached) return cached;
 			var rows = new List<ChatEntry>(_tools.Count + 1);
 
@@ -502,6 +507,20 @@ public sealed class ChatViewModel : IDisposable
 	}
 
 	/// <summary>从会话投影重建已落盘的行。调用时必须持有锁。</summary>
+	/// <summary>重建投影并计时：关闭诊断时只是多一个分支，不分配秒表。</summary>
+	private void RebuildTimed(CodingAgentSession session)
+	{
+		if (!Diagnostics.Enabled)
+		{
+			Rebuild();
+			return;
+		}
+
+		var watch = System.Diagnostics.Stopwatch.StartNew();
+		Rebuild();
+		Diagnostics.Record("chat.project", watch, $"messages={session.Messages.Count}, rows={_entries.Count}");
+	}
+
 	private void Rebuild()
 	{
 		_rowsSnapshot = null;

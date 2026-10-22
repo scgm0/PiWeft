@@ -205,6 +205,7 @@ public sealed class SettingsView
 			AddNavigationGroup(Strings.MaintenanceGroup, first: false);
 			AddNavigationButton("archive", "trash", Strings.SettingsArchive);
 			AddNavigationButton("logs", "folder-open", Strings.SettingsLogs);
+			AddNavigationButton("diagnostics", "list-checks", Strings.SettingsDiagnostics);
 			AddNavigationButton("about", "settings", Strings.SettingsAbout);
 		}
 
@@ -223,6 +224,7 @@ public sealed class SettingsView
 		"session" => Strings.SettingsSession,
 		"archive" => Strings.SettingsArchive,
 		"shortcuts" => Strings.SettingsShortcuts,
+		"diagnostics" => Strings.SettingsDiagnostics,
 		"logs" => Strings.SettingsLogs,
 		"about" => Strings.SettingsAbout,
 		_ => Strings.ConfigOverview,
@@ -317,6 +319,7 @@ public sealed class SettingsView
 				case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
 				case "shortcuts": _content.Children(ShortcutSection()); break;
 				case "logs": _content.Children(LogSection()); break;
+				case "diagnostics": _content.Children(DiagnosticsSection()); break;
 				case "about": _content.Children(AboutSection()); break;
 				default:
 					_content.Children(Section(Strings.SettingsEnvironment, [
@@ -595,6 +598,128 @@ public sealed class SettingsView
 				}).DockRight(),
 				new TextBlock().Text($"{Strings.LogLevel}：{AppLog.MinimumLevel}")
 					.FontSize(AppTheme.FontSizeMicro).SubtleText())));
+	}
+
+	/// <summary>
+	/// 性能诊断：开关 + 即时快照 + 按名称聚合的耗时。面板本身不轮询，
+	/// 采样在 <see cref="Diagnostics"/> 的定时器里做，这里只在打开开关或点「刷新采样」时取一次快照。
+	/// </summary>
+	private Element DiagnosticsSection()
+	{
+		var snapshot = _snapshot();
+		// 读的是这份快照的 agent 目录：设置页永远显示它自己那份偏好，不跟着环境变量飘。
+		var preference = DesktopPreference.Load(snapshot.AgentDir);
+		var body = new StackPanel().Spacing(AppTheme.Space3);
+
+		var toggle = new CheckBox().Content(new TextBlock()
+			.Text(Strings.DiagnosticsDesc)
+			.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
+			.MaxWidth(760));
+		// 勾选框放在说明前面：整段文案就是这一项的描述，与 PiDeck 的行式布局一致。
+		toggle.IsChecked(preference.Diagnostics);
+		toggle.OnCheckedChanged(_ =>
+		{
+			var enabled = toggle.IsChecked == true;
+			try
+			{
+				(preference with { Diagnostics = enabled }).Save(snapshot.AgentDir);
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				AppLog.Failure(AppLog.For<SettingsView>(), "Save diagnostics preference", ex);
+				Toast(Strings.ThemeChangeFailed(ex.Message), ToastKind.Error);
+				return;
+			}
+
+			Diagnostics.SetEnabled(enabled, snapshot.AgentDir);
+			Toast(enabled ? Strings.DiagnosticsStarted : Strings.DiagnosticsStopped,
+				enabled ? ToastKind.Success : ToastKind.Info);
+			// 重建分区：开关关掉时不该继续显示一份过期的采样数据。
+			Refresh();
+		});
+		body.Children(toggle);
+
+		if (!preference.Diagnostics)
+		{
+			body.Children(new TextBlock().Text(Strings.DiagnosticsOff)
+				.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap));
+			return Group("list-checks", Strings.SettingsDiagnostics, body);
+		}
+
+		var fresh = Diagnostics.TakeSnapshot();
+		body.Children(new TextBlock()
+			.Text(Strings.DiagnosticsMemoryLine(
+				Strings.FormatBytes(fresh.WorkingSetBytes), Strings.FormatBytes(fresh.HeapBytes),
+				Strings.FormatBytes(fresh.AllocatedBytes), fresh.Gen0Collections, fresh.Gen2Collections))
+			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
+			.TextWrapping(TextWrapping.Wrap));
+		body.Children(new TextBlock()
+			.Text(Strings.DiagnosticsLagLine($"{fresh.QueueLagMs:0.0} ms", $"{fresh.QueueLagMaxMs:0.0} ms"))
+			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
+			.TextWrapping(TextWrapping.Wrap));
+		body.Children(new TextBlock()
+			.Text($"{Strings.DiagnosticsPath}：{fresh.TimingsPath ?? "—"}")
+			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
+			.TextWrapping(TextWrapping.Wrap).HoverTip(fresh.TimingsPath ?? string.Empty));
+
+		body.Children(new DockPanel().LastChildFill().Children(
+			AppIcons.Button("folder-open", Strings.DiagnosticsOpenFolder, OpenDiagnosticsFolder).DockRight(),
+			AppIcons.Button("rotate-ccw", Strings.DiagnosticsReset, () =>
+			{
+				Diagnostics.Reset();
+				Refresh();
+			}).DockRight(),
+			AppIcons.Button("refresh-cw", Strings.DiagnosticsRefresh, () => Refresh()).DockRight(),
+			new TextBlock().Text(string.Empty)));
+
+		if (fresh.Stats.Count == 0)
+		{
+			body.Children(new TextBlock().Text(Strings.DiagnosticsNoData)
+				.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap));
+			return Group("list-checks", Strings.SettingsDiagnostics, body);
+		}
+
+		// 聚合视图才是用来对照优化的：同一段路径跑了几次、总耗时多少、最慢一次是多少。
+		body.Children(new TextBlock().Text(Strings.DiagnosticsStatsHeader)
+			.FontSize(AppTheme.FontSizeMicro).SubtleText());
+		foreach (var stat in fresh.Stats.Take(14))
+		{
+			body.Children(new TextBlock()
+				.Text($"{stat.Name}  ×{stat.Count}  Σ {stat.TotalMs:0.0} ms  max {stat.MaxMs:0.0} ms  last {stat.LastMs:0.0} ms")
+				.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).PrimaryText()
+				.TextWrapping(TextWrapping.Wrap));
+		}
+
+		body.Children(new TextBlock().Text(Strings.DiagnosticsRecentHeader)
+			.FontSize(AppTheme.FontSizeMicro).SubtleText());
+		foreach (var timing in fresh.Recent.Take(20))
+		{
+			body.Children(new TextBlock()
+				.Text($"{timing.StartedAt:HH:mm:ss}  {timing.DurationMs,8:0.0} ms  {timing.Name}" +
+					(timing.Detail is { Length: > 0 } detail ? $"  ({detail})" : string.Empty))
+				.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
+				.TextWrapping(TextWrapping.Wrap));
+		}
+
+		return Group("list-checks", Strings.SettingsDiagnostics, body);
+	}
+
+	private void OpenDiagnosticsFolder()
+	{
+		var directory = Diagnostics.DirectoryPath(_snapshot().AgentDir);
+		try
+		{
+			Directory.CreateDirectory(directory);
+			if (!Shell.Open(directory))
+			{
+				Toast(Strings.OpenFailed(directory), ToastKind.Error);
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<SettingsView>(), "Open diagnostics folder", ex);
+			Toast(Strings.OpenFailed(directory), ToastKind.Error);
+		}
 	}
 
 	private void OpenLogDirectory()

@@ -260,52 +260,139 @@ public sealed partial class SessionManager
 		}
 
 		var totalBytes = new FileInfo(path).Length;
-		var lines = 0;
-		long reportedBytes = 0;
-
-		// 逐行转成 string 再解析会让几十 MB 的文件多一次整文件规模的分配；
-		// Utf8LineReader 直接给 UTF-8 字节跨度，JsonNode 自己解码。
-		using (var reader = new Utf8LineReader(path))
+		var chunks = ChunkCount(totalBytes);
+		if (chunks <= 1)
 		{
-			while (reader.TryReadLine(out var line))
+			var counted = 0;
+			long consumedTotal = 0;
+			long reported = 0;
+			ScanRange(path, 0, totalBytes, entries, cancellationToken, (delta, lines) =>
 			{
-				cancellationToken.ThrowIfCancellationRequested();
-				try
-				{
-					if (SessionJson.ParseLine(line) is { } parsed)
-					{
-						entries.Add(parsed);
-					}
-				}
-				catch (System.Text.Json.JsonException)
-				{
-					// 跳过格式错误的行，而不是丢掉后面的会话内容。
-				}
-
-				lines++;
+				consumedTotal += delta;
+				counted += lines;
 				// 每 256 行或 4 MB 汇报一次：进度条不必逐行更新，回调本身也要钱。
-				if (progress is not null && (lines % 256 == 0 || reader.BytesRead - reportedBytes >= 4 * 1024 * 1024))
+				if (progress is not null && (counted % 256 == 0 || consumedTotal - reported >= 4 * 1024 * 1024))
 				{
-					reportedBytes = reader.BytesRead;
-					progress.Report(new SessionReadProgress(reportedBytes, totalBytes, lines));
+					reported = consumedTotal;
+					progress.Report(new SessionReadProgress(reported, totalBytes, counted));
 				}
-			}
+			});
 
-			if (progress is not null)
+			progress?.Report(new SessionReadProgress(totalBytes, totalBytes, counted));
+			EnsureTrailingNewline(path);
+			return entries;
+		}
+
+		// 会话文件是行式 JSON，条目之间只靠 parentId 关联，解析阶段互不依赖：
+		// 按字节切成几段并行扫，结果按段序拼接，顺序与单线程读完全一致。
+		var parts = new List<object>?[chunks];
+		for (var index = 0; index < chunks; index++)
+		{
+			parts[index] = new List<object>();
+		}
+
+		long bytesRead = 0;
+		long linesRead = 0;
+		long reportedBytes = 0;
+		Parallel.For(
+			0,
+			chunks,
+			new ParallelOptions { CancellationToken = cancellationToken, MaxDegreeOfParallelism = chunks },
+			index =>
 			{
-				progress.Report(new SessionReadProgress(Math.Max(reportedBytes, totalBytes), totalBytes, lines));
+				var from = (long)index * totalBytes / chunks;
+				var to = index + 1 < chunks ? (long)(index + 1) * totalBytes / chunks : totalBytes;
+				ScanRange(
+					path, from, to, parts[index]!, cancellationToken,
+					(delta, lines) =>
+					{
+						var done = Interlocked.Add(ref bytesRead, delta);
+						var seen = Interlocked.Add(ref linesRead, lines);
+						if (progress is not null && done - Interlocked.Read(ref reportedBytes) >= 4 * 1024 * 1024)
+						{
+							Interlocked.Exchange(ref reportedBytes, done);
+							progress.Report(new SessionReadProgress(Math.Min(done, totalBytes), totalBytes, (int)seen));
+						}
+					});
+			});
+
+		foreach (var part in parts)
+		{
+			if (part is { Count: > 0 } parsed)
+			{
+				entries.AddRange(parsed);
 			}
 		}
 
+		progress?.Report(new SessionReadProgress(totalBytes, totalBytes, (int)Interlocked.Read(ref linesRead)));
 		EnsureTrailingNewline(path);
 		return entries;
 	}
 
 	/// <summary>
-	/// 上次崩溃可能留下没有换行的半行记录：后续追加会把新记录直接拼上去，合成一行非法 JSON，
-	/// 导致新旧两条一起被跳过。打开会话时补一个换行把它封口。
+	/// 只有几十 MB 级别的文件才值得并行：小文件切段后，句柄与调度开销比省下的时间还多。
+	/// 并行度也留余量 —— 打开会话时 UI 线程还要建树，不该把整机核数吃满。
 	/// </summary>
-	private static void EnsureTrailingNewline(string path)
+	private static int ChunkCount(long totalBytes)
+	{
+		if (totalBytes < 8 * 1024 * 1024)
+		{
+			return 1;
+		}
+
+		var limit = Environment.ProcessorCount switch
+		{
+			<= 2 => 1,
+			<= 4 => 2,
+			<= 8 => 3,
+			_ => 4,
+		};
+
+		return Math.Min(limit, Math.Max(1, (int)(totalBytes / (4 * 1024 * 1024))));
+	}
+
+	/// <summary>
+	/// 扫描 <paramref name="from"/>..<paramref name="to"/> 之间的整行。非首段先丢掉被切开的那半行
+	/// （它归上一段），所以每行恰好被解析一次；<paramref name="onLine"/> 收到该行的字节增量与行数。
+	/// </summary>
+	private static void ScanRange(
+		string path,
+		long from,
+		long to,
+		List<object> sink,
+		CancellationToken cancellationToken,
+		Action<int, int>? onLine = null)
+	{
+		// 段首的半行由 reader 自己跳掉：它归上一段，这里只消费整行。
+		using var reader = new Utf8LineReader(path, from);
+		var previousBytes = reader.BytesRead;
+		while (reader.TryReadLine(out var line))
+		{
+			var consumed = reader.BytesRead;
+			var delta = (int)Math.Max(1, consumed - previousBytes);
+			previousBytes = consumed;
+			cancellationToken.ThrowIfCancellationRequested();
+			try
+			{
+				if (SessionJson.ParseLine(line) is { } parsed)
+				{
+					sink.Add(parsed);
+				}
+			}
+			catch (System.Text.Json.JsonException)
+			{
+				// 跳过格式错误的行，而不是丢掉后面的会话内容。
+			}
+
+			onLine?.Invoke(delta, 1);
+			if (consumed >= to)
+			{
+				break;
+			}
+		}
+	}
+
+		private static void EnsureTrailingNewline(string path)
 	{
 		try
 		{

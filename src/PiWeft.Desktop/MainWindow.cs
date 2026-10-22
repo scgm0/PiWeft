@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
@@ -70,6 +71,8 @@ public sealed partial class MainWindow : Window
 	private readonly HashSet<string> _removedProjects = new(StringComparer.Ordinal);
 	// 正在后台解析的会话文件：同一份文件只允许一次打开，连点也不会排队重复读几十 MB。
 	private readonly HashSet<string> _openingSessions = new(StringComparer.Ordinal);
+	// 启动时提前并行解析的首个会话：侧栏摘要扫描和它读的是同一份文件，别让打开流程再读一遍。
+	private (string Path, SessionManager Manager)? _prefetchedOpen;
 	// 准备阶段会话面板里的加载段落（打开会话 / 写回会话名称），以及窗口关闭时中断后台读取的令牌源。
 	private readonly SessionLoadingPanel _sessionLoading = new();
 	private TextBlock _welcomeTitle = null!;
@@ -119,6 +122,8 @@ public sealed partial class MainWindow : Window
 	{
 		_cwd = cwd;
 		var preference = DesktopPreference.Load();
+		// 诊断要覆盖启动本身：环境构建、首个会话解析与标签页布局都在开启之后才发生。
+		Diagnostics.SetEnabled(preference.Diagnostics);
 		_chatWorkspace = preference.ResolveChatWorkspace();
 		this.Resizable(preference.WindowWidth ?? 1280, preference.WindowHeight ?? 820);
 		this.Padding(Thickness.Zero);
@@ -573,6 +578,8 @@ public sealed partial class MainWindow : Window
 			// 窗口都没了，后台读取与投影不必再跑完。
 			_sessionHostClosed = true;
 			_sessionAbort.Cancel();
+			// 落盘并释放诊断文件句柄；开关状态仍留在偏好里，下次启动继续采。
+			Diagnostics.Close();
 			_usageStatsView?.Close();
 			_themeWatcher?.Dispose();
 			// 每个会话面板里的伪终端都要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
@@ -588,11 +595,67 @@ public sealed partial class MainWindow : Window
 			_ = ConfirmSettingsCloseAsync(settings, args, deferral);
 		});
 
-		var (environment, error) = CliEnvironment.Create(_arguments, _cwd);
+		// 启动最贵的三段（环境构建、模型清单、侧栏摘要扫描）都是纯 IO/解析：
+		// 放后台跑完再回到 UI 线程建会话，窗口能立刻可交互，也不再阻塞首帧。
+		_ = BootstrapAsync(preference);
+	}
+
+	/// <summary>
+	/// 启动后半程：后台准备环境与侧栏数据，回 UI 线程挂首个会话与演练入口。
+	/// </summary>
+	private async Task BootstrapAsync(DesktopPreference preference)
+	{
+		CliEnvironment? environment = null;
+		string? startupError = null;
+		IReadOnlyList<SessionListItem> sessions = [];
+		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+
+		// 没有置顶会话时，启动自动打开的就是「最近修改」那一份：先只 stat 目录拿到路径，
+		// 立刻在后台解析，与侧栏摘要扫描并行，省掉一整段串行的几十 MB 冷读。
+		var prefetchPath = preference.Pinned.Count == 0 ? _catalog.MostRecentPath() : null;
+		var prefetch = prefetchPath is null ? null : Task.Run(() => _catalog.Open(prefetchPath, _cwd));
+		try
+		{
+			var (created, error, listed) = await Task.Run(() =>
+			{
+				var (built, buildError) = CliEnvironment.Create(_arguments, _cwd);
+				// 侧栏扫描是按文件读整份 JSONL：与模型清单同批在后台预热，
+				// 回来后 RefreshSessions 只建列表，不再在 UI 线程扫几十 MB。
+				var listed = _catalog.List();
+				return (built, buildError, listed);
+			}).ConfigureAwait(true);
+			environment = created;
+			startupError = error;
+			sessions = listed;
+
+			if (prefetch is not null && prefetchPath is not null)
+			{
+				try
+				{
+					_prefetchedOpen = (prefetchPath, await prefetch.ConfigureAwait(true));
+				}
+				catch (Exception ex)
+				{
+					// 预解析失败不影响启动：后面按正常路径再开一次。
+					AppLog.Failure(AppLog.For<MainWindow>(), "Prefetch newest session", ex);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Prepare desktop environment", ex);
+			startupError = ex.Message;
+		}
+
+		if (watch is not null)
+		{
+			Diagnostics.Record("environment.create", watch, $"tools={environment?.Tools.Count ?? 0}, sessions={sessions.Count}");
+		}
+
 		if (environment is null)
 		{
-			_banner.Text(Strings.StartupFailed(error ?? Strings.NoSession));
-			_status.Text(error ?? Strings.NoSession);
+			_banner.Text(Strings.StartupFailed(startupError ?? Strings.NoSession));
+			_status.Text(startupError ?? Strings.NoSession);
 			return;
 		}
 
@@ -671,6 +734,7 @@ public sealed partial class MainWindow : Window
 	/// <summary>重建侧栏列表。目录快照始终包含全部会话，侧栏再按聊天目录分成「对话」与「项目」两段。</summary>
 	private void RefreshSessions()
 	{
+		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		// 搜索弹窗需要全部会话；侧栏的两个分段在 UpdateSessionList 里分流。
 		_allSessions = _catalog.List();
 
@@ -683,6 +747,10 @@ public sealed partial class MainWindow : Window
 		];
 
 		FilterSessions(preference);
+		if (watch is not null)
+		{
+			Diagnostics.Record("sidebar.refresh", watch, $"sessions={_allSessions.Count}");
+		}
 	}
 
 	/// <summary>侧栏列表与目录快照同步；正文搜索移到了「搜索会话」弹窗里。</summary>
@@ -955,7 +1023,7 @@ public sealed partial class MainWindow : Window
 		var token = _sessionAbort.Token;
 		_sessionLoading.Begin(Strings.OpeningSession(name));
 		// 中途取消或报错时，已经建好的会话要释放（它持有会话文件的写入句柄）。
-		(CodingAgentSession Session, ChatViewModel Chat)? prepared = null;
+		(CodingAgentSession Session, ChatViewModel Chat, SessionStatisticsDisplay Statistics)? prepared = null;
 		var shown = false;
 		try
 		{
@@ -970,8 +1038,33 @@ public sealed partial class MainWindow : Window
 			});
 
 			// 外部会话的头部可能没有 cwd；桌面用当前项目兜底，而不是守护进程的启动目录。
-			var manager = await Task.Run(
-				() => _catalog.Open(resolved, _cwd, progress, token), token).ConfigureAwait(true);
+			var lines = 0;
+			var counting = new UiProgress<SessionReadProgress>(value => Volatile.Write(ref lines, value.Lines));
+			var read = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+			// 启动预解析命中同一个文件时直接接手，不再重读几十 MB。
+			SessionManager? manager = null;
+			if (_prefetchedOpen is { } prefetched && string.Equals(prefetched.Path, resolved, StringComparison.Ordinal))
+			{
+				_prefetchedOpen = null;
+				manager = prefetched.Manager;
+				if (read is not null)
+				{
+					Diagnostics.Record("session.open.read", 0, "prefetched=true");
+				}
+			}
+
+			manager ??= await Task.Run(
+				() =>
+				{
+					var opened = _catalog.Open(resolved, _cwd, Composite(progress, counting), token);
+					if (read is not null)
+					{
+						Diagnostics.Record("session.open.read", read,
+							$"bytes={new FileInfo(resolved).Length}, lines={Volatile.Read(ref lines)}, entries={opened.Entries.Count}");
+					}
+
+					return opened;
+				}, token).ConfigureAwait(true);
 
 			// 环境解析会写横幅，留在 UI 线程；建会话与投影聊天记录放后台。
 			var environment = EnvironmentFor(manager.Cwd);
@@ -979,6 +1072,7 @@ public sealed partial class MainWindow : Window
 			// 问询卡片需要标签的视图来定位窗口，因此先建宿主、构造会话，再把视图挂回去。
 			var uiHost = new DesktopUiHost();
 			_sessionLoading.Update(Strings.PreparingSession, null);
+			var prepare = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 			prepared = await Task.Run(
 				() =>
 				{
@@ -988,11 +1082,21 @@ public sealed partial class MainWindow : Window
 					// 聊天记录投影是纯模型工作（无 UI 依赖），提前在后台做完，标签页直接接手。
 					var chat = new ChatViewModel();
 					chat.Attach(session);
-					return (session, chat);
+					var rows = chat.Entries().Count;
+					// 状态条那一段（真实用量、上下文估算、轮数）以前在 UI 线程首帧算，长会话要 150+ 毫秒；
+					// 现在连着投影一起在后台算好，标签页接手就是现成的。
+					var statistics = SessionStatisticsDisplay.Create(session);
+					if (prepare is not null)
+					{
+						Diagnostics.Record("session.open.prepare", prepare,
+							$"entries={rows}, messages={session.Messages.Count}");
+					}
+
+					return (session, chat, statistics);
 				},
 				token).ConfigureAwait(true);
 
-			OpenPreparedSession(prepared.Value.Session, uiHost, prepared.Value.Chat);
+			OpenPreparedSession(prepared.Value.Session, uiHost, prepared.Value.Chat, prepared.Value.Statistics);
 			prepared = null;
 		}
 		catch (OperationCanceledException)
@@ -1036,6 +1140,24 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
+	/// <summary>
+	/// 把多个进度消费者合成一个：<c>Diagnostics</c> 需要行数，界面需要百分比，
+	/// 但 <see cref="SessionManager"/> 只接受一个 <see cref="IProgress{T}"/>。
+	/// </summary>
+	private static IProgress<SessionReadProgress> Composite(
+		IProgress<SessionReadProgress> first, IProgress<SessionReadProgress> second) =>
+		new Combiner(first, second);
+
+	private sealed class Combiner(
+		IProgress<SessionReadProgress> first, IProgress<SessionReadProgress> second) : IProgress<SessionReadProgress>
+	{
+		public void Report(SessionReadProgress value)
+		{
+			first.Report(value);
+			second.Report(value);
+		}
+	}
+
 	/// <summary>命中已打开的标签就选中它并返回，避免重复反序列化整个 JSONL 文件。</summary>
 	private SessionTab? SelectOpenTab(string path)
 	{
@@ -1076,8 +1198,11 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>把已经建好的会话挂成标签页；<paramref name="session"/> 可以在后台线程创建。</summary>
-	private void OpenPreparedSession(CodingAgentSession session, DesktopUiHost uiHost, ChatViewModel? chat = null)
+	private void OpenPreparedSession(
+		CodingAgentSession session, DesktopUiHost uiHost, ChatViewModel? chat = null,
+		SessionStatisticsDisplay? statistics = null)
 	{
+		var tabWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		// 取消令牌可能在投影跑完后才落地：窗口已经关了，直接释放，不建标签页。
 		if (_sessionHostClosed)
 		{
@@ -1086,9 +1211,14 @@ public sealed partial class MainWindow : Window
 			return;
 		}
 
-		var tab = AttachTab(session, chat);
+		var tab = AttachTab(session, chat, statistics);
 		uiHost.Attach(tab);
 		tab.UiHost = uiHost;
+		if (tabWatch is not null)
+		{
+			Diagnostics.Record("session.open.tab", tabWatch, $"messages={session.Messages.Count}");
+		}
+
 		AppLog.For<MainWindow>().ZLogInformation($"Session opened: session={session.Session.SessionId}");
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateTabHeaders();
@@ -1097,12 +1227,13 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>为已有会话创建一个标签页；<paramref name="chat"/> 是后台已经投影好的聊天记录。</summary>
-	private SessionTab AttachTab(CodingAgentSession session, ChatViewModel? chat = null)
+	private SessionTab AttachTab(
+		CodingAgentSession session, ChatViewModel? chat = null, SessionStatisticsDisplay? statistics = null)
 	{
 		// 选择器与会话沿用同一启动环境，避免热重载后列出当前会话尚不能调用的新端点。
 		var environment = EnvironmentFor(session.Cwd);
 		var tab = new SessionTab(session, environment.ListAvailableModels(_arguments.ApiKey), SessionTab.TitleFor(session),
-			() => environment.ListAvailableModels(_arguments.ApiKey), chat);
+			() => environment.ListAvailableModels(_arguments.ApiKey), chat, statistics);
 		tab.TitleChanged += _ => UpdateTabHeaders();
 		tab.StateChanged += _ =>
 		{
@@ -1378,6 +1509,11 @@ public sealed partial class MainWindow : Window
 					OpenSettingsDialog();
 					if (_settingsView is { } resourceView) _ = resourceView.SelectSectionAsync("resources");
 					break;
+				case "diagnostics":
+					// 性能诊断分区：截图验收要看的是真实采样出来的耗时，不是空壳。
+					OpenSettingsDialog();
+					if (_settingsView is { } diagnosticsView) _ = diagnosticsView.SelectSectionAsync("diagnostics");
+					break;
 				case "branch":
 					CurrentTab()?.ShowBranches();
 					break;
@@ -1458,7 +1594,7 @@ public sealed partial class MainWindow : Window
 			await Task.Delay(800).ConfigureAwait(false);
 			Dispatch(() =>
 			{
-				var started = System.Diagnostics.Stopwatch.StartNew();
+				var started = Stopwatch.StartNew();
 				Console.WriteLine($"piweft-desktop: 切换前 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
 				oldSelection = Application.Current.Theme.Palette.SelectionBackground;
 				originalTab = CurrentTab();
@@ -2218,10 +2354,16 @@ public sealed partial class MainWindow : Window
 	{
 		try
 		{
+			var mcpWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 			var connection = await McpServers.ConnectConfiguredAsync(
 				_cwd,
 				onError: message => Dispatch(() => _banner.Text($"MCP：{message}")),
 				includeProject: _environment?.ProjectTrusted ?? true).ConfigureAwait(false);
+
+			if (mcpWatch is not null)
+			{
+				Diagnostics.Record("mcp.connect", mcpWatch, $"servers={connection.Servers.Count}, errors={connection.Errors.Count}");
+			}
 
 			var resourceTools = McpResourceTools.Create(() => connection.ResourceServers);
 

@@ -154,11 +154,66 @@ Linux NativeAOT 发布版、Xvfb/Mesa、1280×820 的实际会话演练中：60 
 - 图片预览按图像纵横比居中布局，图片之外的留白命中遮罩并关闭；图片内部点击不关闭。
 - Markdown 文件链接按会话目录解析相对路径，支持绝对路径、`file://`、`~/`、URL 编码以及 `:行:列` / `#L行C列`。文件交给编辑器、目录交给默认程序，错误在状态栏显示；拒绝非 HTTP/HTTPS/file 协议和远程文件共享。
 
+## 用诊断数据做的一轮优化（45 MiB / 26,985 行真实会话）
+
+打开同一个会话，优化前后各测三次（x64 Debug / Xvfb，冷启进程）：
+
+| 指标 | 优化前 | 优化后 |
+|---|---:|---:|
+| 进程启动 → 会话就绪 | 3.1–3.9 s | 2.56–2.67 s |
+| 这一轮里 UI 线程被占住 | 环境构建 519 ms + 侧栏扫描 190–582 ms + 标签页构造 422 ms + 状态条快照 193 ms | 标签页构造 240–251 ms + 侧栏建列表 15–18 ms |
+| 侧栏刷新（流式期每条消息一次） | 重扫整份 JSONL：190–582 ms | 续扫新增字节：0.3 ms |
+| 上下文 token 估算 | 每次投影变化整段重扫 ~150 ms（UI 线程） | 按消息引用复用前缀，追加一条 < 1 ms |
+| 会话 JSONL 解析（后台） | 单段 1511 ms | 3 段并行 605–690 ms |
+| RSS / 托管堆峰值 | 490 MiB / 200 MiB | 487 MiB / 200 MiB（未动数据结构，持平） |
+
+改了什么：
+
+- **启动不再串行读两遍。** `MainWindow` 构造的后半段拆成 `BootstrapAsync`：环境构建、模型清单、侧栏摘要扫描全部在后台跑；同时用 `SessionCatalog.MostRecentPath()`（只 stat 目录，不读内容）先一步把「启动会自动打开的那份」交给后台解析，与侧栏扫描并行，解析结果直接给打开流程接手（`session.open.read` 记 `prefetched=true`），不再重读几十 MB。无置顶会话时才预解析，置顶时不猜错。
+- **侧栏摘要改成续扫，不再整份重读。** 会话文件是只追加的，缓存里除了长度/时间戳还记住上次扫到的行边界与首行指纹（FNV-1a）。文件变长时只喂新增字节；首行指纹不匹配（同名文件被整份替换）才回退整扫。以前流式期每次 `RefreshSessions` 都会在 UI 线程重扫整份几十 MB。
+- **目录行不建 JSON 树。** `FastScanLine` 只读行首窗口里的 `type`/`role` 两个键就判定这行对目录有没有影响，兼容 pi 的 `{"id":…,"type":"message"…}` 与外部导出的 `{"type": "message", …}`（冒号带空格）；正文一律不碰。头部、`session_info`、需要预览的首条用户消息、断行、超长前缀、键序异常都退回完整解析，`SessionCatalogFastScanTests` 逐形状断言快速路径与完整解析**逐字段一致**（含正文里写着 `"type":"message"` 的坑）。
+- **`Utf8LineReader` 零拷贝快路径。** 整行本来就在读缓冲里时直接返回该缓冲的切片，不再抄进 `_lineBuffer`——那等于给几十 MB 多走一遍内存。返回跨度的有效期仍是「到下一次调用为止」，两个消费者都当场用完。读+分行 47 MB 从 ~400 ms 降到 11.5 ms（暖缓存，隔离基准）。
+- **会话 JSONL 分段并行解析。** `SessionManager.ReadFileEntries` 按字节切成 2–3 段（`ChunkCount` 依核数与文件大小封顶，小文件与 ≤2 核不切），每段从下一个整行开始、读到下一段边界为止，结果按段序拼接，顺序与单线程逐行完全一致；进度按已完成字节合并汇报，仍然单调。`SessionParallelReadTests` 用**自己写的单段读**当基线比对 id 序列（>8 MiB 才生效，防止基准退化），并覆盖「一条 6 MB 的巨型行横跨段界」。
+- **上下文估算增量化。** `CodingAgentSession.ContextTokens` 按消息引用复用已估算的前缀，只估算新增/改写的尾部；分支切换、上下文编辑都能正确回退重算（`ContextEstimateIncrementalTests` 三个场景与参考实现逐位一致）。这条把「每条消息都要重扫 27k 条历史」的 O(n²) 苗头掐掉。
+- **状态条快照挪到后台。** 真实用量、上下文估算、轮数原先在标签页首帧的 UI 线程算（193 ms），现在随 `session.open.prepare` 一起算好交给 `SessionTab`；流式期后续 revision 变化命中增量估算，`render.stats` 只剩个位数毫秒。
+
+- **不把几 MB 的行缓冲塞进数组池。** `Utf8LineReader` 的行缓冲会跟着最大的一行长膨胀（几 MB 的正文很常见），原来无条件 `ArrayPool.Return` 等于让进程永久留着这块；现在超过 256 KB 就交给 GC，池里只留正常尺寸的分桶。解析一次的瞬时分配约 259 MB（与会话大小同阶，与并行度无关，实测过），这部分要靠数据结构分页才能压下来。
+- 顺带把三个从未指向问题的细粒度计时（`render.entries`/`render.state`/`render.follow`/`render.chrome`）从诊断里去掉，面板只留有信息量的行。
+
+下一步的已知对象：`session.open.tab` 的 240 ms 里首帧约 100 ms（`timeline.realize` 55 ms + `timeline.project` 26 ms），其余是标签页控件树本身；以及 27k 条会话条目常驻带来的 200 MiB 托管堆——那需要动数据结构（分页读历史或惰性 extras），不在本轮范围。
+
+## 性能诊断（设置 → 维护 → 性能诊断）
+
+对齐 PiDeck 的同名开关：默认关闭，关闭时每个调用点只做一次布尔判断（连秒表都不分配）；打开后无需重启即可开始记录，再关即停。
+
+- 采样：1 秒一次的线程池定时器读工作集 / 私有内存 / 托管堆 / 碎片 / 累计分配 / GC 次数，并从池线程向 UI 线程投递一个探针，量它被接手前排了多久 —— 这就是 PiDeck 里 `setImmediate` 往返的等价物，≥ 50 ms 直接落一条警告日志（「谁把 UI 线程占住了」）。UI 队列延迟只在运行时可测，无头测试里为 0。
+- 落盘：每条耗时一行 JSONL 写进 `<agentDir>/diagnostics/timings-<本地时间戳>.jsonl`，同时带上当时的 RSS / 托管堆，把「这一步慢」和「当时涨到多少」对在一起。250 ms 一批 flush，关闭时先把缓冲写完再释放句柄；单条 ≥ 200 ms 额外记 `Slow path` 警告。
+- 聚合：内存里按名称累计次数 / 总耗时 / 最大 / 最近，设置页展示聚合表 + 最近 20 条原始记录；重新开启会清零聚合并换一份新文件，避免上一轮的慢路径混进这一轮对照。「清空统计」用于同一轮里分段对照。
+- 计时点：`environment.create`（启动构建环境）、`mcp.connect`、`sidebar.refresh`（侧栏全量刷新）、`session.open.read`（解析整份 JSONL，带 bytes/lines/entries）、`session.open.prepare`（建会话 + 聊天记录投影，带 entries/messages）、`chat.project`（整段投影）、`session.open.tab`（标签页构造）、`ui.render`（只记 ≥ 8 ms 的帧，带 rows/visible）、`markdown.finalize`（思考定稿重建文档树，带 chars）。
+
+45 MiB / 26,985 行真实会话在诊断页实测到的一轮（x64 Debug / Xvfb，值随冷热波动）：
+
+| 计时点 | 耗时 | 说明 |
+|---|---:|---|
+| `session.open.read` | 1192.7 ms | 后台线程，不占 UI |
+| `session.open.tab` | 375.6 ms | UI 线程，标签页构造 |
+| `session.open.prepare` | 312.0 ms | 后台线程 |
+| `ui.render` | 259.5 ms | UI 线程，首帧（含虚拟化建树） |
+| `chat.project` | 249.1 ms | 后台线程（随 prepare） |
+| `sidebar.refresh` | 200.5 ms | **UI 线程**，侧栏全量刷新：下一步的优化对象 |
+| `environment.create` | 86.2 ms | UI 线程，启动一次 |
+| `mcp.connect` | 4.3 ms | 后台 |
+
+  同一轮 UI 队列延迟最大 41.1 ms、工作集 494 MiB、托管堆 282 MiB —— 这类数字就是用来判断「该把哪段挪出 UI 线程」的，而不是靠肉眼猜。
+
 ## 验证与复现
 
 ```sh
 xvfb-run -a dotnet test PiWeft.slnx
 xvfb-run -a dotnet test tests/PiWeft.CodingAgent.Tests --filter FullyQualifiedName~SessionOpenProgressTests
+xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~DiagnosticsTests
+# 诊断分区截图验收（需要 DISPLAY）：偏好里先写 {"diagnostics":true}
+PIWEFT_SCREENSHOTS=/tmp/piweft-diagnostics xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~SessionLoadingSmokeTests
 xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~SessionLoadingPanelTests
 xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~SessionLoadingSmokeTests   # 需要 DISPLAY
 xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~SessionTabChatHandoffTests

@@ -45,6 +45,9 @@ internal sealed class ConversationTimeline : IDisposable
 	public ScrollViewer Scroll { get; }
 	public IEnumerable<UIElement> VisibleRows => _visible.Select(static host => host.Content).OfType<UIElement>();
 
+	/// <summary>当前视口里真正建了内容的行数；诊断页用它区分「行多」与「行贵」。</summary>
+	internal int VisibleRowCount => _visible.Count;
+
 	/// <summary>视口顶部下方 28 DIP 的实际行；只检查已实现容器，不测量整份历史。</summary>
 	internal int RowAtViewportAnchor()
 	{

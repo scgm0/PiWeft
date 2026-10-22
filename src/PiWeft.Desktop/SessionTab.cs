@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Platform;
@@ -146,10 +147,19 @@ public sealed partial class SessionTab : IDisposable
 	public event Action<SessionTab>? StateChanged;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
-		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null)
+		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null,
+		SessionStatisticsDisplay? statistics = null)
 	{
 		// 后台已经 Attach 过就直接接手，否则 UI 线程要再投影一遍整个会话。
 		_chat = chat ?? new ChatViewModel();
+		if (statistics is not null)
+		{
+			// 状态条快照也是后台算好的：首帧不再在 UI 线程重扫整段历史。
+			_statisticsDisplay = statistics;
+			_statisticsManager = session.Session;
+			_statisticsRevision = session.Session.Revision;
+			_statisticsWindow = session.Model.ContextWindow;
+		}
 		_scrollToLatest = new Button()
 			.Content(new Grid().Children(AppIcons.Icon("arrow-down", AppStyles.RolePrimary, 16)
 				.HorizontalAlignment(HorizontalAlignment.Center)
@@ -562,8 +572,19 @@ public sealed partial class SessionTab : IDisposable
 		};
 		if (!ReferenceEquals(_chat.Session, session)) _chat.Attach(session);
 
+		var pickers = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		RefreshPickers();
+		if (pickers is not null)
+		{
+			Diagnostics.Record("tab.pickers", pickers);
+		}
+
+		var first = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		Render();
+		if (first is not null)
+		{
+			Diagnostics.Record("tab.first-render", first, $"rows={_projectedRows.Count}");
+		}
 	}
 
 	public CodingAgentSession Session { get; }
@@ -1654,11 +1675,20 @@ public sealed partial class SessionTab : IDisposable
 			return;
 		}
 
+		// 流式期每 40 ms 合并一次渲染；只把真正贵的帧记进诊断，否则文件会被无害的抖动填满。
+		var renderWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+
 		var all = _chat.Entries();
 		var matched = _filter.Length == 0 ? all : [.. all.Where(entry => Matches(entry, _filter))];
 		if (!ReferenceEquals(_projectedSource, all) || _projectedFilter != _filter || _projectedBusy != IsStreaming)
 		{
+			var project = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 			_projectedRows = _projector.Project(matched, IsStreaming);
+			if (project is not null)
+			{
+				Diagnostics.Record("timeline.project", project, $"rows={_projectedRows.Count}");
+			}
+
 			_projectedSource = all;
 			_projectedFilter = _filter;
 			_projectedBusy = IsStreaming;
@@ -1684,6 +1714,7 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_status.Text(status).HoverTip(status);
+		var statsWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		var display = StatisticsDisplay();
 		if (!ReferenceEquals(_renderedStatistics, display))
 		{
@@ -1699,6 +1730,11 @@ public sealed partial class SessionTab : IDisposable
 			_renderedTodo = todo;
 			RefreshTodoStrip(todo);
 		}
+		if (statsWatch is not null)
+		{
+			Diagnostics.Record("render.stats", statsWatch, $"rows={all.Count}");
+		}
+
 		var busy = _sending || _chat.IsStreaming;
 		var indicator = BusyIndicator(all);
 		var kindChanged = indicator?.Kind != _busyKind;
@@ -1732,8 +1768,13 @@ public sealed partial class SessionTab : IDisposable
 		_retry.IsEnabled = !busy && all.Any(static row => row.Role == ChatRole.User);
 		_copyReply.IsEnabled = all.Any(static row => row.Role == ChatRole.Assistant && row.Text.Length > 0);
 
+		var realize = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		_timeline.SetEntries(entries, force, _projector.LastStablePrefix, _projector.LastPrefixReused);
 		SyncOutline(entries);
+		if (realize is not null)
+		{
+			Diagnostics.Record("timeline.realize", realize, $"rows={entries.Count}");
+		}
 		SetEmptyState(all.Count == 0 && _messages.IsVisible);
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
 		if (all.Count == 0)
@@ -1753,6 +1794,15 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_conversationScroll.FollowContent();
+
+		if (renderWatch is not null)
+		{
+			var elapsed = renderWatch.Elapsed.TotalMilliseconds;
+			if (elapsed >= 8)
+			{
+				Diagnostics.Record("ui.render", elapsed, $"rows={entries.Count}, visible={_timeline.VisibleRowCount}");
+			}
+		}
 	}
 
 
