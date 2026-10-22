@@ -299,18 +299,18 @@ public sealed class TerminalScreenTests
 	}
 
 	[Fact]
-	public void CombiningMarksAreNeverSplitAcrossRuns()
+	public void CombiningMarksStayInTheSameCell()
 	{
 		var screen = NewScreen(columns: 10, rows: 2);
 
-		// é = e + 组合重音：选区边界落在两者之间时，run 也不能拆开。
+		// é = e + 组合重音：一个文本元素占一格，光标只前进一格。
 		screen.Feed("e\u0301x".AsSpan());
-		screen.BeginSelection(0, 0);
-		screen.ExtendSelection(0, 0);
 
 		var runs = screen.GetRuns(0, []);
-		Assert.Equal("e\u0301", runs[0].Text);
-		Assert.Equal("x", runs[1].Text);
+		Assert.Equal("e\u0301x", Assert.Single(runs).Text);
+		Assert.Equal(2, runs[0].Cells);
+		Assert.Equal(2, screen.CursorColumn);
+		Assert.Equal("e\u0301x", screen.GetText());
 	}
 
 	[Fact]
@@ -323,20 +323,115 @@ public sealed class TerminalScreenTests
 		var runs = screen.GetRuns(0, []);
 		Assert.Equal("你a", runs[0].Text);
 		Assert.Equal(0, runs[0].Column);
-		Assert.Equal(3, TerminalDock.CellWidth(runs[0].Text));
+		Assert.Equal(3, runs[0].Cells);
+		Assert.Equal(3, screen.CursorColumn);
 	}
 
 	[Fact]
-	public void CursorCellMapsToAWholeWideCharacter()
+	public void CursorSplitsAtAWholeWideCharacter()
 	{
-		// "a你b"：单元格 0=a、1–2=你、3=b；落在中文两格中的任一格都选整个字符。
-		Assert.Equal((0, 1), TerminalDock.TextElementAtCell("a你b", 0));
-		Assert.Equal((1, 2), TerminalDock.TextElementAtCell("a你b", 1));
-		Assert.Equal((1, 2), TerminalDock.TextElementAtCell("a你b", 2));
-		Assert.Equal((2, 3), TerminalDock.TextElementAtCell("a你b", 3));
+		// "a你b"：单元格 0=a、1–2=你、3=b；光标落在中文右半格（列 2）时归到左半（列 1），整字一起高亮。
+		var screen = NewScreen(columns: 10, rows: 2);
+		screen.Feed("a你b".AsSpan());
 
-		Assert.Equal(4, TerminalDock.CellWidth("a你b"));
-		Assert.Equal(3, TerminalDock.CellWidth("\U0001F600a"));
+		var runs = screen.GetRuns(0, [], 2);
+
+		Assert.Equal(["a", "你", "b"], runs.Select(run => run.Text));
+		Assert.Equal([0, 1, 3], runs.Select(run => run.Column));
+		Assert.Equal([1, 2, 1], runs.Select(run => run.Cells));
+		Assert.Equal([false, true, false], runs.Select(run => run.Cursor));
+	}
+
+	[Fact]
+	public void ZwjEmojiSequenceTakesTwoCells()
+	{
+		var screen = NewScreen(columns: 10, rows: 2);
+
+		// 👨‍👩‍👧：5 个码点、8 个 UTF-16 码元，显示上仍是一个两格宽的簇。
+		screen.Feed("\U0001F468\u200D\U0001F469\u200D\U0001F467x".AsSpan());
+
+		var runs = screen.GetRuns(0, []);
+		Assert.Equal("\U0001F468\u200D\U0001F469\u200D\U0001F467x", runs[0].Text);
+		Assert.Equal(3, runs[0].Cells);
+		Assert.Equal(3, screen.CursorColumn);
+	}
+
+	[Fact]
+	public void SkinToneModifierJoinsTheEmojiCell()
+	{
+		var screen = NewScreen(columns: 10, rows: 2);
+
+		screen.Feed("\U0001F44D\U0001F3FD".AsSpan());
+
+		Assert.Equal(2, screen.CursorColumn);
+		Assert.Equal(2, Assert.Single(screen.GetRuns(0, [])).Cells);
+	}
+
+	[Fact]
+	public void RegionalIndicatorsPairIntoOneFlagCell()
+	{
+		var screen = NewScreen(columns: 10, rows: 2);
+
+		// 🇨🇳🇯🇵：四个区域指示符配成两面旗，占四格而不是八格。
+		screen.Feed("\U0001F1E8\U0001F1F3\U0001F1EF\U0001F1F5".AsSpan());
+
+		var run = Assert.Single(screen.GetRuns(0, []));
+		Assert.Equal(4, run.Cells);
+		Assert.Equal(4, screen.CursorColumn);
+	}
+
+	[Fact]
+	public void HangulJamoComposesIntoSingleSyllable()
+	{
+		var screen = NewScreen(columns: 10, rows: 2);
+
+		// 初声（宽）+ 中声 + 终声（零宽）= 한，占两格。
+		screen.Feed("\u1112\u1161\u11AB".AsSpan());
+
+		var run = Assert.Single(screen.GetRuns(0, []));
+		Assert.Equal("\u1112\u1161\u11AB", run.Text);
+		Assert.Equal(2, run.Cells);
+		Assert.Equal(2, screen.CursorColumn);
+	}
+
+	[Fact]
+	public void LeadingCombiningMarkIsDroppedInsteadOfTakingACell()
+	{
+		var screen = NewScreen(columns: 10, rows: 2);
+
+		// 行首没有可附着的格子：组合符号不占格，后面的文本也不能被顶偏。
+		screen.Feed("\u0301ab".AsSpan());
+
+		Assert.Equal("ab", screen.GetText());
+		Assert.Equal(2, screen.CursorColumn);
+	}
+
+	[Fact]
+	public void ClusterSplitAcrossChunksStillJoins()
+	{
+		var screen = NewScreen(columns: 10, rows: 2);
+
+		// PTY 读块会把簇劈开：组合符号与代理对都必须跨块续接。
+		screen.Feed("e".AsSpan());
+		screen.Feed("\u0301".AsSpan());
+		screen.Feed("\uD83D".AsSpan());
+		screen.Feed("\uDE00".AsSpan());
+
+		Assert.Equal("e\u0301\U0001F600", screen.GetText());
+		Assert.Equal(3, screen.CursorColumn);
+	}
+
+	[Fact]
+	public void ReflowKeepsWideCharacterContinuations()
+	{
+		var screen = NewScreen(columns: 4, rows: 3);
+
+		screen.Feed("中文字".AsSpan());
+		screen.Resize(6, 3);
+
+		// 重排后右半格必须还是占位格：写成空格会让整行多出一个空格。
+		Assert.Equal("中文字", screen.GetText());
+		Assert.Equal(6, Assert.Single(screen.GetRuns(0, [])).Cells);
 	}
 
 	[Fact]

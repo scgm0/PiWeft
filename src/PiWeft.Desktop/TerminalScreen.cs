@@ -22,10 +22,14 @@ internal readonly record struct TerminalColor(TerminalColorKind Kind, byte Index
 		new(TerminalColorKind.Rgb, 0, (uint)((r << 16) | (g << 8) | b));
 }
 
-/// <summary>渲染端可绘制的一段同色文本；<see cref="Column"/> 是它起始的单元格列（宽字符占两格）。</summary>
+/// <summary>
+/// 渲染端可绘制的一段同色文本；<see cref="Column"/> 是它起始的单元格列，<see cref="Cells"/> 是它占的格数
+/// （宽字符与 emoji 占两格，组合符号零格）。渲染端按格数而不是字符数算列，簇里有多少码元都不影响对齐。
+/// </summary>
 internal readonly record struct TerminalRun(
 	string Text,
 	int Column,
+	int Cells,
 	TerminalColor Foreground,
 	TerminalColor Background,
 	bool Bold,
@@ -36,11 +40,12 @@ internal readonly record struct TerminalRun(
 	bool Hidden,
 	bool Reverse,
 	bool Link,
-	bool Selected)
+	bool Selected,
+	bool Cursor)
 {
 	public static readonly TerminalRun Empty =
-		new(string.Empty, 0, TerminalColor.Default, TerminalColor.Default,
-			false, false, false, false, false, false, false, false, false);
+		new(string.Empty, 0, 1, TerminalColor.Default, TerminalColor.Default,
+			false, false, false, false, false, false, false, false, false, false);
 }
 
 /// <summary>应用请求的鼠标上报模式（DECSET 1000/1002/1003）。</summary>
@@ -112,6 +117,16 @@ internal sealed class TerminalScreen
 	private bool _hasParameter;
 	private char _csiMarker;
 	private string _osc = string.Empty;
+
+	/// <summary>上一块输出末尾留下的半个代理对：PTY 读块可能把一个码点劈成两半。</summary>
+	private char _pendingHighSurrogate;
+
+	/// <summary>上一个写入的码元是 ZWJ：下一个字符并进同一格，不另起一格。</summary>
+	private bool _joinNext;
+
+	/// <summary>最近写入的格子（绝对行 + 列），供组合符号、ZWJ 链、区域指示符回填进同一簇。</summary>
+	private int _lastCellRow = -1;
+	private int _lastCellColumn = -1;
 
 	private (int Row, int Column) _savedCursor;
 	private (int Row, int Column) _savedPrimaryCursor;
@@ -640,6 +655,16 @@ internal sealed class TerminalScreen
 		{
 			versions[index] = ++_lineVersion;
 		}
+
+		// 整屏行被搬动/重排：上一格的位置已经不可信，组合符号不要再回填到那里。
+		InvalidateLastCell();
+	}
+
+	/// <summary>丢弃「最近写入的格子」：行被搬动、清屏或重排后，续接码元必须重新开始。</summary>
+	private void InvalidateLastCell()
+	{
+		_lastCellRow = -1;
+		_lastCellColumn = -1;
 	}
 
 	/// <summary>行缓冲与行版本必须同步增删，否则行级缓存会串行。</summary>
@@ -676,7 +701,13 @@ internal sealed class TerminalScreen
 	{
 		if (line.Length != columns)
 		{
+			var previous = line.Length;
 			Array.Resize(ref line, columns);
+			// 新长出来的格子必须是空格：默认 struct 的 '\0' 是宽字符右半的占位标记，不能拿来做空。
+			for (var index = previous; index < columns; index++)
+			{
+				line[index] = TerminalCell.Blank;
+			}
 		}
 	}
 
@@ -732,7 +763,7 @@ internal sealed class TerminalScreen
 						continue;
 					}
 
-					var width = IsWide(cell.Text) ? 2 : 1;
+					var width = CellWidthAt(line, column);
 					if (used + width > _columns && used > 0)
 					{
 						rebuilt.Add(current);
@@ -750,7 +781,8 @@ internal sealed class TerminalScreen
 					current[used] = cell;
 					if (width == 2 && used + 1 < _columns)
 					{
-						current[used + 1] = TerminalCell.Blank;
+						// 右半格必须是占位格：写成普通空格会被当成真字符输出，整行多一个空格。
+						current[used + 1] = cell with { Text = '\0', Trailers = null };
 					}
 
 					used += width;
@@ -802,8 +834,15 @@ internal sealed class TerminalScreen
 		return length;
 	}
 
+	/// <summary>某格的显示宽度：右半占位格为 0，宽字符（下一格是占位）为 2，其余为 1。</summary>
+	private static int CellWidthAt(TerminalCell[] line, int column) =>
+		line[column].Text == '\0'
+			? 0
+			: column + 1 < line.Length && line[column + 1].Text == '\0' ? 2 : 1;
+
 	private static bool IsDefaultCell(in TerminalCell cell) =>
 		cell.Text is ' ' or '\0' &&
+		cell.Trailers is null &&
 		cell.Foreground.Kind == TerminalColorKind.Default &&
 		cell.Background.Kind == TerminalColorKind.Default &&
 		!cell.Bold && !cell.Italic && !cell.Underline && !cell.Strikethrough &&
@@ -940,22 +979,45 @@ internal sealed class TerminalScreen
 		return SearchValues.Create(chars);
 	}
 
-	/// <summary>批量写入一段可打印文本；字符集未开启时省掉逐字符映射。</summary>
+	/// <summary>
+	/// 批量写入一段可打印文本。按码点而不是按 char 走：代理对、组合符号、ZWJ 链都归一个簇、占一格。
+	/// 末尾那个孤立高代理留到下一块再拼——PTY 读块会把它劈开。
+	/// </summary>
 	private void WriteSpan(ReadOnlySpan<char> text)
 	{
-		if (_graphicsCharset[_activeCharset] || _singleShift is not null)
+		if (_pendingHighSurrogate != '\0')
 		{
-			foreach (var c in text)
+			var high = _pendingHighSurrogate;
+			_pendingHighSurrogate = '\0';
+			if (!text.IsEmpty && char.IsLowSurrogate(text[0]))
 			{
-				Write(MapCharset(c));
+				WriteRune(high, text[0]);
+				text = text[1..];
 			}
-
-			return;
+			else
+			{
+				WriteRune(high, '\0');
+			}
 		}
 
-		foreach (var c in text)
+		while (!text.IsEmpty)
 		{
-			Write(c);
+			var first = text[0];
+			if (char.IsHighSurrogate(first))
+			{
+				if (text.Length < 2)
+				{
+					_pendingHighSurrogate = first;
+					return;
+				}
+
+				WriteRune(first, text[1]);
+				text = text[2..];
+				continue;
+			}
+
+			WriteRune(first, '\0');
+			text = text[1..];
 		}
 	}
 
@@ -1081,7 +1143,7 @@ internal sealed class TerminalScreen
 			return;
 		}
 
-		Write(MapCharset(c));
+		WriteRune(c, '\0');
 	}
 
 	private void FeedEscape(char c)
@@ -1747,9 +1809,11 @@ internal sealed class TerminalScreen
 
 	// ------------------------------------------------------------------ 单元格写入
 
-	private void Write(char c)
+	/// <summary>
+	/// 把一个簇写进当前格；宽字符再占一格右半占位。<paramref name="second"/> 为 <c>\0</c> 表示单字符。
+	/// </summary>
+	private void WriteCell(char first, char second, int width)
 	{
-		var width = IsWide(c) ? 2 : 1;
 		if (_wrapPending || (_cursorColumn + width > _columns && _autoWrap))
 		{
 			// 自动换行是软换行：记下来，窗口缩放时才能把长行拼回去。
@@ -1775,7 +1839,8 @@ internal sealed class TerminalScreen
 
 		line[_cursorColumn] = new TerminalCell
 		{
-			Text = c,
+			Text = first,
+			Trailers = second == '\0' ? null : second.ToString(),
 			Foreground = _pen.Foreground,
 			Background = _pen.Background,
 			Bold = _pen.Bold,
@@ -1790,9 +1855,11 @@ internal sealed class TerminalScreen
 
 		if (width == 2)
 		{
-			line[_cursorColumn + 1] = line[_cursorColumn] with { Text = '\0' };
+			line[_cursorColumn + 1] = line[_cursorColumn] with { Text = '\0', Trailers = null };
 		}
 
+		_lastCellRow = AbsoluteRow;
+		_lastCellColumn = _cursorColumn;
 		_cursorColumn += width;
 		if (_cursorColumn >= _columns)
 		{
@@ -1801,6 +1868,124 @@ internal sealed class TerminalScreen
 		}
 
 		MarkLine(AbsoluteRow);
+	}
+
+	/// <summary>
+	/// 写入一个码点。零宽续接码元（组合符号、变体选择符、ZWJ 链、肤色修饰、Hangul 中/终声、
+	/// 区域指示符的第二半）并进上一格而不开新格——列号不再因为“一个簇好几个码元”而漂移。
+	/// </summary>
+	private void WriteRune(char first, char second)
+	{
+		var mapped = MapCharset(first);
+		int codepoint;
+		if (second == '\0')
+		{
+			codepoint = mapped;
+		}
+		else if (char.IsHighSurrogate(mapped) && char.IsLowSurrogate(second))
+		{
+			codepoint = char.ConvertToUtf32(mapped, second);
+		}
+		else
+		{
+			// 代理对不完整（孤立的半对）：按替换字符写一格，不把后面的文本带偏。
+			mapped = '\uFFFD';
+			second = '\0';
+			codepoint = mapped;
+		}
+
+		if ((_joinNext || TerminalText.IsExtend(codepoint) || TerminalText.IsRegionalIndicator(codepoint)) &&
+			TryJoinLastCell(codepoint, mapped, second))
+		{
+			_joinNext = codepoint == TerminalText.Zwj;
+			return;
+		}
+
+		_joinNext = false;
+		var width = TerminalText.RuneWidth(codepoint);
+		if (width <= 0)
+		{
+			// 行首孤立的组合符号没有可附着的格子：丢掉比占一格更接近 xterm 的行为。
+			return;
+		}
+
+		WriteCell(mapped, second, width);
+	}
+
+	/// <summary>
+	/// 把续接码元并进最近写入的格子。光标必须还紧挨着那一格：<c>\r</c>、CSI 定位、滚动都会让光标跑掉，
+	/// 这时宁可当新字符写，也不能回填到别处去。
+	/// </summary>
+	private bool TryJoinLastCell(int codepoint, char first, char second)
+	{
+		if (_lastCellRow < 0 || _lastCellRow != AbsoluteRow)
+		{
+			return false;
+		}
+
+		var lines = ActiveLines;
+		if (_lastCellRow >= lines.Count)
+		{
+			return false;
+		}
+
+		var line = lines[_lastCellRow];
+		var column = _lastCellColumn;
+		if (column < 0 || column >= line.Length)
+		{
+			return false;
+		}
+
+		// 光标要正好停在这一格右边；宽字符是两格。
+		var cellWidth = column + 1 < line.Length && line[column + 1].Text == '\0' ? 2 : 1;
+		if (_wrapPending || _cursorColumn != column + cellWidth)
+		{
+			return false;
+		}
+
+		// 区域指示符只在「上一格是一个孤立指示符」时配对，否则 🇨🇳🇯🇵 会挤成一格。
+		if (TerminalText.IsRegionalIndicator(codepoint) && !IsLoneRegionalIndicator(line, column))
+		{
+			return false;
+		}
+
+		Span<char> units = stackalloc char[2];
+		units[0] = first;
+		var length = 1;
+		if (second != '\0')
+		{
+			units[1] = second;
+			length = 2;
+		}
+
+		var trailers = line[column].Trailers;
+		line[column].Trailers = trailers is null
+			? new string(units[..length])
+			: string.Concat(trailers, units[..length]);
+		MarkLine(_lastCellRow);
+		return true;
+	}
+
+	/// <summary>这一格是不是一个还没配对的区域指示符（国旗的左半）。</summary>
+	private static bool IsLoneRegionalIndicator(TerminalCell[] line, int column)
+	{
+		var cell = line[column];
+		if (cell.Trailers is { Length: > 1 })
+		{
+			return false;
+		}
+
+		if (!char.IsHighSurrogate(cell.Text))
+		{
+			return false;
+		}
+
+		if (cell.Trailers is not { Length: 1 } trailer || !char.IsLowSurrogate(trailer[0]))
+		{
+			return false;
+		}
+
+		return TerminalText.IsRegionalIndicator(char.ConvertToUtf32(cell.Text, trailer[0]));
 	}
 
 	/// <summary>DEC Special Graphics：只有 G0/G1 被 <c>ESC ( 0</c> 切换时生效。</summary>
@@ -2088,6 +2273,7 @@ internal sealed class TerminalScreen
 
 	private void ResetAll()
 	{
+		InvalidateLastCell();
 		foreach (var line in _primary)
 		{
 			Array.Fill(line, TerminalCell.Blank);
@@ -2459,14 +2645,28 @@ internal sealed class TerminalScreen
 		return id >= 1 && id <= _links.Count ? _links[id - 1] : null;
 	}
 
-	private static TerminalCell[] NewLine(int columns) => new TerminalCell[Math.Max(MinColumns, columns)];
+	/// <summary>新行：全部填成空格。<c>\0</c> 只用来标记宽字符右半格，不能当空单元格。</summary>
+	private static TerminalCell[] NewLine(int columns)
+	{
+		var line = new TerminalCell[Math.Max(MinColumns, columns)];
+		Array.Fill(line, TerminalCell.Blank);
+		return line;
+	}
 
-	/// <summary>某一行按颜色与选区合并后的 runs；宽字符右半（<c>\0</c>）不输出。</summary>
+	/// <summary>某一行按颜色与选区合并后的 runs；宽字符右半（<c>\0</c>）不单独输出，但计入格数。</summary>
 	public List<TerminalRun> GetRuns(int viewportRow, List<TerminalRun> runs) =>
-		GetRuns(viewportRow, runs, new StringBuilder());
+		GetRuns(viewportRow, runs, new StringBuilder(), -1);
 
-	/// <summary>同上，但复用调用方的 <see cref="StringBuilder"/>，渲染循环里每行零额外分配。</summary>
-	public List<TerminalRun> GetRuns(int viewportRow, List<TerminalRun> runs, StringBuilder builder)
+	/// <summary>同上，并把 <paramref name="cursorColumn"/> 那一格单独切出来（<see cref="TerminalRun.Cursor"/>）。</summary>
+	public List<TerminalRun> GetRuns(int viewportRow, List<TerminalRun> runs, int cursorColumn) =>
+		GetRuns(viewportRow, runs, new StringBuilder(), cursorColumn);
+
+	/// <summary>
+	/// 同上，但复用调用方的 <see cref="StringBuilder"/>，渲染循环里每行零额外分配。
+	/// <paramref name="cursorColumn"/> 是要单独切出来的光标格（-1 表示不切）：渲染端不必再按文本元素
+	/// 自己算簇边界，光标格永远落在一个完整簇上。
+	/// </summary>
+	public List<TerminalRun> GetRuns(int viewportRow, List<TerminalRun> runs, StringBuilder builder, int cursorColumn = -1)
 	{
 		runs.Clear();
 		builder.Clear();
@@ -2482,11 +2682,26 @@ internal sealed class TerminalScreen
 		}
 
 		var selection = GetSelectionRange(viewportRow);
-		var start = 0;
-
-		void Flush(int end)
+		// 光标落在宽字符右半格时归到左半：整个字符一起高亮，不把一个簇切开。
+		if (cursorColumn > 0 && cursorColumn < line.Length && line[cursorColumn].Text == '\0')
 		{
-			if (builder.Length == 0)
+			cursorColumn--;
+		}
+
+		var start = 0;
+		var cells = 0;
+
+		// 行尾的空白是填充，不参与渲染：否则每行都会多出一段无意义的空格 run。
+		var end = LineContentLength(line);
+		if (end < line.Length && line[end].Text == '\0')
+		{
+			// 末格是宽字符时，右半占位格也属于这一行。
+			end++;
+		}
+
+		void Flush()
+		{
+			if (cells == 0)
 			{
 				return;
 			}
@@ -2495,6 +2710,7 @@ internal sealed class TerminalScreen
 			runs.Add(new TerminalRun(
 				builder.ToString(),
 				start,
+				cells,
 				first.Foreground,
 				first.Background,
 				first.Bold,
@@ -2505,70 +2721,50 @@ internal sealed class TerminalScreen
 				first.Hidden,
 				first.Reverse,
 				first.Link != 0,
-				selection is { } range && start >= range.From && start <= range.To));
+				selection is { } range && start >= range.From && start <= range.To,
+				start == cursorColumn));
 			builder.Clear();
+			cells = 0;
 		}
 
-		for (var column = 0; column < _columns; column++)
+		for (var column = 0; column < end; column++)
 		{
 			var cell = line[column];
 			if (cell.Text == '\0')
 			{
+				// 宽字符右半格：并进当前 run 的格数，但不重复输出文本。
+				cells++;
 				continue;
 			}
 
-			// 代理对与组合字符是一个 Unicode 文本元素：样式或选区在中间变化时也不能拆 run，
-			// 否则 MewUI 的 TextLayout 会拒绝落在文本元素中间的 run 边界。
-			var continuesTextElement = column > 0 && ContinuesTextElement(line[column - 1].Text, cell.Text);
-
-			if (builder.Length == 0)
-			{
-				start = column;
-			}
-			else if (!continuesTextElement)
+			// 每个格子正好是一个 Unicode 文本元素（簇），所以格边界就是合法的 run 边界。
+			if (cells > 0)
 			{
 				var previous = line[start];
 				var sameSelection = selection is not { } r || (start >= r.From && start <= r.To) == (column >= r.From && column <= r.To);
-				if (!SameStyle(previous, cell) || !sameSelection)
+				var cursorBoundary = column == cursorColumn || (start == cursorColumn && column > cursorColumn);
+				if (!SameStyle(previous, cell) || !sameSelection || cursorBoundary)
 				{
-					Flush(column);
-					start = column;
+					Flush();
 				}
 			}
 
+			if (cells == 0)
+			{
+				start = column;
+			}
+
 			builder.Append(cell.Text);
+			if (cell.Trailers is { } trailers)
+			{
+				builder.Append(trailers);
+			}
+
+			cells++;
 		}
 
-		Flush(_columns);
+		Flush();
 		return runs;
-	}
-
-	/// <summary>
-	/// 相邻两格是否属于同一个 Unicode 文本元素（代理对、组合标记、变体选择符、ZWJ 连接）。
-	/// 拆 run 时必须避开这些位置，MewUI 的 TextLayout 只接受文本元素边界。
-	/// </summary>
-	internal static bool ContinuesTextElement(char previous, char current)
-	{
-		if (char.IsLowSurrogate(current) && char.IsHighSurrogate(previous))
-		{
-			return true;
-		}
-
-		if (current == '\u200d' || previous == '\u200d')
-		{
-			return true;
-		}
-
-		// U+FE00–U+FE0F：emoji 变体选择符。
-		if (current is >= '\ufe00' and <= '\ufe0f')
-		{
-			return true;
-		}
-
-		return CharUnicodeInfo.GetUnicodeCategory(current) is
-			UnicodeCategory.NonSpacingMark or
-			UnicodeCategory.SpacingCombiningMark or
-			UnicodeCategory.EnclosingMark;
 	}
 
 	private static bool SameStyle(in TerminalCell left, in TerminalCell right) =>
@@ -2593,7 +2789,7 @@ internal sealed class TerminalScreen
 		from = Math.Clamp(from, 0, _columns - 1);
 		to = Math.Clamp(to, 0, _columns - 1);
 		var end = to + 1;
-		while (end > from && line[end - 1].Text is '\0' or ' ')
+		while (end > from && (line[end - 1].Text is '\0' or ' ') && line[end - 1].Trailers is null)
 		{
 			end--;
 		}
@@ -2603,19 +2799,13 @@ internal sealed class TerminalScreen
 			if (line[column].Text != '\0')
 			{
 				builder.Append(line[column].Text);
+				if (line[column].Trailers is { } trailers)
+				{
+					builder.Append(trailers);
+				}
 			}
 		}
 	}
-
-	/// <summary>东亚宽字符：占两格。<c>\0</c> 作为右半占位由 <see cref="Write"/> 写入。</summary>
-	internal static bool IsWide(char c) =>
-		c is >= '\u1100' and <= '\u115f' ||
-		c is >= '\u2e80' and <= '\ua4cf' ||
-		c is >= '\uac00' and <= '\ud7a3' ||
-		c is >= '\uf900' and <= '\ufaff' ||
-		c is >= '\ufe30' and <= '\ufe6f' ||
-		c is >= '\uff00' and <= '\uff60' ||
-		c is >= '\uffe0' and <= '\uffe6';
 
 	private enum ParseState
 	{
@@ -2637,7 +2827,15 @@ internal sealed class TerminalScreen
 			Background = TerminalColor.Default,
 		};
 
+		/// <summary>簇的首个 UTF-16 码元；<c>\0</c> 表示宽字符的右半占位。</summary>
 		public char Text;
+
+		/// <summary>
+		/// 同一簇里跟在首码元后面的码元：低代理、组合符号、变体选择符、ZWJ 链、肤色修饰……
+		/// 整簇只占一格（宽字符两格），渲染时拼回去。null 表示就是一个字符，这是绝大多数格子的情形。
+		/// </summary>
+		public string? Trailers;
+
 		public TerminalColor Foreground;
 		public TerminalColor Background;
 		public bool Bold;

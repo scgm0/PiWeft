@@ -1643,7 +1643,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 					continue;
 				}
 
-				_screen.GetRuns(row, _lineRuns[row], _lineBuilders[row]);
+				// 只有聚焦时把光标烘进 runs（实心块/下划线）；失焦的空心框由浮层描边画，不扰动文本。
+				_screen.GetRuns(row, _lineRuns[row], _lineBuilders[row], _inputFocused ? cursorInRow : -1);
 				_cachedBufferRows[row] = bufferRow;
 				_cachedLineVersions[row] = lineVersion;
 				_cachedCursorColumns[row] = cursorInRow;
@@ -1698,81 +1699,16 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			view.Inlines.Clear();
 			foreach (var run in runs)
 			{
-				// 光标列是单元格列；宽字符在 run 文本里只占一个 char，必须按显示宽度换算。
-				var runCells = CellWidth(run.Text);
-				if (row == cursorRow && cursorColumn >= run.Column && cursorColumn < run.Column + runCells)
-				{
-					var (atomStart, atomEnd) = TextElementAtCell(run.Text, cursorColumn - run.Column);
-
-					if (atomStart > 0)
-					{
-						AddRun(view, run, run.Text[..atomStart]);
-					}
-
-					AddRun(view, run, run.Text[atomStart..atomEnd], cursor: true);
-					if (atomEnd < run.Text.Length)
-					{
-						AddRun(view, run, run.Text[atomEnd..]);
-					}
-				}
-				else
-				{
-					AddRun(view, run, run.Text);
-				}
+				// 光标格由屏幕自己切出来（run.Cursor）：一个簇永远整格高亮，不会在组合符号中间断开。
+				AddRun(view, run, run.Text, run.Cursor);
 			}
 
-			var lineCells = runs.Count == 0 ? 0 : runs[^1].Column + CellWidth(runs[^1].Text);
+			var lineCells = runs.Count == 0 ? 0 : runs[^1].Column + runs[^1].Cells;
 			if (row == cursorRow && cursorColumn >= lineCells)
 			{
 				AddRun(view, TerminalRun.Empty, " ", cursor: true);
 			}
 		}
-	}
-
-	/// <summary>终端单元格宽度：宽字符与代理对各占两格。</summary>
-	internal static int CellWidth(string text)
-	{
-		var width = 0;
-		for (var index = 0; index < text.Length; index++)
-		{
-			if (char.IsHighSurrogate(text[index]) && index + 1 < text.Length && char.IsLowSurrogate(text[index + 1]))
-			{
-				width += 2;
-				index++;
-				continue;
-			}
-
-			width += TerminalScreen.IsWide(text[index]) ? 2 : 1;
-		}
-
-		return width;
-	}
-
-	/// <summary>把单元格偏移换算成文本元素区间（含起点、不含终点），宽字符不会被切开。</summary>
-	internal static (int Start, int End) TextElementAtCell(string text, int cellOffset)
-	{
-		var index = 0;
-		var cell = 0;
-		while (index < text.Length)
-		{
-			var pair = char.IsHighSurrogate(text[index]) && index + 1 < text.Length && char.IsLowSurrogate(text[index + 1]);
-			var width = pair || TerminalScreen.IsWide(text[index]) ? 2 : 1;
-			if (cell + width > cellOffset)
-			{
-				break;
-			}
-
-			cell += width;
-			index += pair ? 2 : 1;
-		}
-
-		if (index >= text.Length)
-		{
-			index = Math.Max(0, text.Length - 1);
-		}
-
-		var length = char.IsHighSurrogate(text[index]) && index + 1 < text.Length ? 2 : 1;
-		return (index, Math.Min(text.Length, index + length));
 	}
 
 	private void SyncScrollBar(int maxOffset, int viewOffset)
@@ -1965,6 +1901,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		foreach (var run in runs)
 		{
 			hash.Add(run.Column);
+			hash.Add(run.Cells);
 			hash.Add(run.Text);
 			hash.Add(run.Foreground);
 			hash.Add(run.Background);
@@ -1977,6 +1914,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			hash.Add(run.Reverse);
 			hash.Add(run.Link);
 			hash.Add(run.Selected);
+			hash.Add(run.Cursor);
 		}
 
 		return (ulong)hash.ToHashCode();
