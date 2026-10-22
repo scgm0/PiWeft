@@ -102,6 +102,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private bool _timerRunning;
 	private int _idleTicks;
 	private bool _blinkHidden;
+	// 触控板按分数刻度发事件：按 3 行/刻度累积，不能每个事件都跳 3 行。
+	private double _wheelRemainder;
 	private bool _blinkDirty;
 	private int _blinkTicks;
 	private bool _inputFocused;
@@ -1266,7 +1268,22 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			return;
 		}
 
-		ScrollView(e.Delta.Y > 0 ? 3 : -3);
+		var lines = WheelLines(ref _wheelRemainder, e.Delta.Y);
+		if (lines != 0) ScrollView(lines);
+	}
+
+	/// <summary>把分数滚轮刻度累积成整行；一格滚轮 = 3 行，与旧行为一致。</summary>
+	internal static int WheelLines(ref double remainder, double notches)
+	{
+		if (!double.IsFinite(notches) || notches == 0) return 0;
+		remainder += notches * 3.0;
+		// 分数刻度累积会有 1e-16 级误差；先吸附到整行，否则反向滚动会少一行。
+		var lines = (int)(remainder >= 0
+			? Math.Floor(remainder + 1e-9)
+			: Math.Ceiling(remainder - 1e-9));
+		remainder -= lines;
+		if (Math.Abs(remainder) < 1e-9) remainder = 0;
+		return lines;
 	}
 
 	private bool ShouldReportMouse(ModifierKeys modifiers)

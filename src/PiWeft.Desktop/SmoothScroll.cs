@@ -6,7 +6,7 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Frame-driven scrolling with exponential decay physics, natively supporting both high-frequency trackpads and discrete mouse wheels.</summary>
+/// <summary>Frame-driven scrolling with retargetable input curves and exponential end-follow, for both high-frequency trackpads and discrete mouse wheels.</summary>
 internal sealed class SmoothScroll : IDisposable
 {
 	private static readonly ConditionalWeakTable<FrameworkElement, SmoothScroll> Controllers = new();
@@ -45,9 +45,11 @@ internal sealed class SmoothScroll : IDisposable
 	}
 
 	// 跟底（内容增长）用指数衰减：目标每帧都在变，衰减不会因为重排而反复重启。
-	private const double DecayRate = 18.0;
-	private const double MaxGlideMilliseconds = 260;
-	private double _glideMilliseconds;
+	// 距离越远衰减越快：既保留近距的柔和尾巴，又让几万 DIP 的「回到最新」在几百毫秒内
+	// 收敛到阈值，而不是靠一个固定时长上限突然落位。
+	private const double MinDecayRate = 18.0;
+	private const double MaxDecayBoost = 24.0;
+	private const double DecayDistanceScale = 1.8;
 
 	// 输入驱动的滚动复刻 Chromium 的 ScrollOffsetAnimationCurve：固定起步时长 + 距离项，
 	// 配 CSS ease（cubic-bezier(0.25, 0.1, 0.25, 1)）——正是 PiDeck（Electron/Chromium）
@@ -62,8 +64,22 @@ internal sealed class SmoothScroll : IDisposable
 	private const double EaseY1 = 0.1;
 	private const double EaseY2 = 1.0;
 	private Point _from;
+	// 重定向时沿用上一帧速度：连续滚轮/按键在曲线中途续接，而不是每次从零速重新起一条 ease。
+	private Point _fromVelocity;
+	private Point _velocity;
+	private bool _hermite;
 	private double _durationSeconds;
 	private double _elapsedSeconds;
+
+	// 触控板事件流：上一帧是分数增量时，紧随其后的偏大增量仍按连续输入处理，
+	// 避免快速滑动被误判成离散滚轮而重启缓动。
+	private const double TrackpadStreamIntervalMs = 100;
+	private long _lastWheelAt;
+	private bool _lastWheelPrecise;
+	// 同一帧内的滚轮/触控板事件合并成一次偏移写入，避免高回报率设备一帧重排多次。
+	private Point _pendingWheel;
+	private bool _pendingWheelPrecise = true;
+	private bool _wheelFlushQueued;
 
 	private SmoothScroll(FrameworkElement view)
 	{
@@ -91,7 +107,12 @@ internal sealed class SmoothScroll : IDisposable
 		view.KeyDown += OnKeyDown;
 		if (_viewport is not null) _viewport.ScrollChanged += OnScrollChanged;
 		if (_text is not null) _text.ScrollOffsetChanged += OnTextScrollChanged;
-		if (_verticalBar is not null) _verticalBar.MouseDown += OnScrollBarDown;
+		if (_verticalBar is not null)
+		{
+			_verticalBar.MouseDown += OnScrollBarDown;
+			_verticalBar.MouseWheel += OnScrollBarWheel;
+		}
+		if (_horizontalBar is not null) _horizontalBar.MouseWheel += OnScrollBarWheel;
 	}
 
 	public static SmoothScroll For(ScrollViewer view) => Controllers.GetValue(view, static view => new SmoothScroll(view));
@@ -109,7 +130,9 @@ internal sealed class SmoothScroll : IDisposable
 	/// <summary>是否正在跟随内容增长（展开流式内容后保持贴底）。</summary>
 	public bool IsFollowingGrowth => _followGrowth;
 	public double MaxVerticalOffset => Maximum(vertical: true);
-	public double TargetVerticalOffset => IsAnimating ? (_toEnd ? MaxVerticalOffset : _target.Y) : Offset.Y;
+	public double TargetVerticalOffset => Math.Clamp(
+		(IsAnimating ? (_toEnd ? MaxVerticalOffset : _target.Y) : Offset.Y) + _pendingWheel.Y,
+		0, MaxVerticalOffset);
 	/// <summary>Wheel/keyboard scroll input in DIPs (positive = toward the end).</summary>
 	public event Action<double>? VerticalInput;
 	/// <summary>The scrollbar owned by this viewport, if any; its pointer gestures are reader intent.</summary>
@@ -141,7 +164,7 @@ internal sealed class SmoothScroll : IDisposable
 	/// </summary>
 	internal Point WheelDelta(double horizontal, double vertical)
 	{
-		var current = IsAnimating ? _target : Offset;
+		var current = IsAnimating ? _target : new Point(Offset.X + _pendingWheel.X, Offset.Y + _pendingWheel.Y);
 		var x = horizontal != 0 && (horizontal > 0 ? current.X > 0.5 : current.X < Maximum(vertical: false) - 0.5)
 			? -horizontal : 0;
 		var y = vertical != 0 && (vertical > 0 ? current.Y > 0.5 : current.Y < MaxVerticalOffset - 0.5)
@@ -172,7 +195,7 @@ internal sealed class SmoothScroll : IDisposable
 		args.Handled = true;
 	}
 
-	// 低于这个刻度视为触控板/高精度输入：浏览器对它不做动画，直接 1:1 落位。
+	// 低于这个刻度视为触控板/高精度输入；紧随分数流之后的偏大增量由 IsPreciseWheel 继续按连续流处理。
 	private const double TrackpadNotchThreshold = 0.5;
 
 	/// <summary>
@@ -180,12 +203,77 @@ internal sealed class SmoothScroll : IDisposable
 	/// </summary>
 	public void ScrollBy(double horizontal, double vertical)
 	{
+		if (!double.IsFinite(horizontal) || !double.IsFinite(vertical) || (horizontal == 0 && vertical == 0)) return;
 		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
-		ScrollByPixels(horizontal * step, vertical * step);
+		EnqueueWheelPixels(horizontal * step, vertical * step);
+
+		// 没有窗口/调度器（测试或无头场景）时同步落位；有渲染循环时等这一帧合并后再写偏移。
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		{
+			FlushPendingWheel();
+			return;
+		}
+		if (_wheelFlushQueued) return;
+		_wheelFlushQueued = true;
+		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+		{
+			_wheelFlushQueued = false;
+			FlushPendingWheel();
+		});
+	}
+
+	/// <summary>把一次滚轮输入累加进本帧的待处理位移；不立即写视口。</summary>
+	internal void EnqueueWheelPixels(double horizontal, double vertical)
+	{
+		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
+		if (horizontal == 0 && vertical == 0) return;
+		_followGrowth = false;
+		if (vertical < 0) _readerEscaped = true;
+		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
+		_pendingWheel = new Point(_pendingWheel.X + horizontal, _pendingWheel.Y + vertical);
+		_pendingWheelPrecise &= IsPreciseWheel(horizontal, vertical, step);
+		if (vertical != 0) VerticalInput?.Invoke(vertical);
+	}
+
+	/// <summary>把本帧累积的滚轮位移一次写入视口。</summary>
+	internal void FlushPendingWheel()
+	{
+		if (_disposed) return;
+		var horizontal = _pendingWheel.X;
+		var vertical = _pendingWheel.Y;
+		var precise = _pendingWheelPrecise;
+		_pendingWheel = default;
+		_pendingWheelPrecise = true;
+		if (horizontal == 0 && vertical == 0) return;
+
+		SyncMetrics();
+		var current = Offset;
+		var pending = IsAnimating ? new Point(_target.X, _toEnd ? MaxVerticalOffset : _target.Y) : current;
+
+		// Reversing the wheel should respond now instead of consuming a backlog in the previous direction.
+		var x = horizontal * (pending.X - current.X) < 0 ? current.X : pending.X;
+		var y = vertical * (pending.Y - current.Y) < 0 ? current.Y : pending.Y;
+
+		var target = new Point(Math.Clamp(x + horizontal, 0, Maximum(false)),
+			Math.Clamp(y + vertical, 0, MaxVerticalOffset));
+
+		if (precise)
+		{
+			StopAnimation();
+			Apply(new Point(Math.Clamp(current.X + horizontal, 0, Maximum(false)),
+				Math.Clamp(current.Y + vertical, 0, MaxVerticalOffset)));
+		}
+		else
+		{
+			Start(target, toEnd: false);
+		}
 	}
 
 	/// <summary>Scrolls by DIPs; used by the wheel after converting notches and by keyboard scrolling.</summary>
-	private void ScrollByPixels(double horizontal, double vertical)
+	/// <param name="animate">
+	/// 键盘自动重复直接落位：每次重复都从零速重开曲线会把长按方向键压成几分之一的速度。
+	/// </param>
+	private void ScrollByPixels(double horizontal, double vertical, bool animate = true)
 	{
 		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
 		if (horizontal == 0 && vertical == 0) return;
@@ -193,7 +281,7 @@ internal sealed class SmoothScroll : IDisposable
 		// 只有向上才是「离开末尾」的意图；向下滚回底部由几何判定重新锁底。
 		_followGrowth = false;
 		if (vertical < 0) _readerEscaped = true;
-		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
+		if (!animate) Stop();
 
 		// Virtualized content can grow between arrangements. Pull its current extent into the
 		// viewport before clamping the target, or a stale bar maximum caps the wheel short of the
@@ -209,11 +297,9 @@ internal sealed class SmoothScroll : IDisposable
 		var target = new Point(Math.Clamp(x + horizontal, 0, Maximum(false)),
 			Math.Clamp(y + vertical, 0, MaxVerticalOffset));
 
-		// 触控板：增量本身就是高频连续的，浏览器（Chromium）对它 1:1 直接滚动、不做补间动画；
-		// 给每一小步都套 100ms+ 的缓动只会让手指和画面之间多出一段黏滞感。
-		if (Math.Max(Math.Abs(horizontal), Math.Abs(vertical)) < TrackpadNotchThreshold * step)
+		// 键盘路径：首次按键走缓动，自动重复直接落位。
+		if (!animate)
 		{
-			Stop();
 			Apply(new Point(Math.Clamp(current.X + horizontal, 0, Maximum(false)),
 				Math.Clamp(current.Y + vertical, 0, MaxVerticalOffset)));
 		}
@@ -225,9 +311,25 @@ internal sealed class SmoothScroll : IDisposable
 		if (vertical != 0) VerticalInput?.Invoke(vertical);
 	}
 
+	/// <summary>
+	/// 分数增量或紧跟在分数流之后的偏大增量视为触控板；离散滚轮刻度仍走缓动。
+	/// </summary>
+	private bool IsPreciseWheel(double horizontal, double vertical, double step)
+	{
+		var magnitude = Math.Max(Math.Abs(horizontal), Math.Abs(vertical));
+		var now = Environment.TickCount64;
+		var precise = magnitude < TrackpadNotchThreshold * step ||
+			(_lastWheelPrecise && magnitude < 0.9 * step &&
+			 _lastWheelAt != 0 && now - _lastWheelAt <= TrackpadStreamIntervalMs);
+		_lastWheelPrecise = precise;
+		_lastWheelAt = now;
+		return precise;
+	}
+
 	public void ScrollToEnd()
 	{
 		_readerEscaped = false;
+		ClearPendingWheel();
 		SyncMetrics();
 		Start(new Point(Offset.X, MaxVerticalOffset), toEnd: true);
 	}
@@ -236,6 +338,7 @@ internal sealed class SmoothScroll : IDisposable
 	{
 		_readerEscaped = false;
 		Stop();
+		ClearPendingWheel();
 		SyncMetrics();
 		Apply(new Point(Offset.X, MaxVerticalOffset));
 	}
@@ -263,6 +366,7 @@ internal sealed class SmoothScroll : IDisposable
 		_readerEscaped = false;
 		// 立即贴底，不能被上一次滚轮动画拉回旧目标。
 		Stop();
+		ClearPendingWheel();
 		_followGrowth = true;
 		SyncMetrics();
 		Apply(new Point(Offset.X, MaxVerticalOffset));
@@ -299,24 +403,42 @@ internal sealed class SmoothScroll : IDisposable
 	private void Start(Point target, bool toEnd)
 	{
 		if (_disposed) return;
+		// 只有输入驱动的在途动画才续接速度；跳到底/跟底动画始终从当前位置重新开始。
+		var retarget = !toEnd && _clock.IsRunning && !_toEnd;
 		_target = target;
 		_toEnd = toEnd;
-		_glideMilliseconds = 0;
 
 		var current = Offset;
 		if (Math.Abs(target.X - current.X) < 0.5 && Math.Abs(target.Y - current.Y) < 0.5)
 		{
-			Stop();
+			StopAnimation();
 			Apply(target);
 			return;
 		}
 
-		// 从当前位置重新计时（连续滚轮 = 一次新的曲线，而不是叠加的长尾）。
 		_from = current;
 		_elapsedSeconds = 0;
 		_durationSeconds = Math.Clamp(
 			BaseDurationSeconds + Math.Max(Math.Abs(target.X - current.X), Math.Abs(target.Y - current.Y)) * DurationPerDip,
 			MinDurationSeconds, MaxDurationSeconds);
+
+		if (retarget)
+		{
+			// 反向输入不保留前向速度，立即响应；同向则从当前速度续接。
+			var vx = _velocity.X;
+			var vy = _velocity.Y;
+			var dx = target.X - current.X;
+			var dy = target.Y - current.Y;
+			if (dx * vx < 0) vx = 0;
+			if (dy * vy < 0) vy = 0;
+			_fromVelocity = new Point(vx, vy);
+			_hermite = true;
+		}
+		else
+		{
+			_fromVelocity = default;
+			_hermite = false;
+		}
 
 		if (!_clock.IsRunning)
 		{
@@ -346,39 +468,52 @@ internal sealed class SmoothScroll : IDisposable
 
 		if (!_toEnd)
 		{
-			// 输入驱动：按时间走 ease-out 曲线，到点精确落位（Chromium 的滚动曲线）。
+			// 输入驱动：第一段用 Chromium 的 CSS ease；动画中途再次输入时用 Hermite 续接
+			// 当前速度，避免每次滚轮刻度都把速度归零。
 			_elapsedSeconds += dt;
 			double elapsed01 = _durationSeconds <= 0 ? 1 : Math.Clamp(_elapsedSeconds / _durationSeconds, 0, 1);
-			double eased = ChromiumEase(elapsed01);
-			var next = new Point(
-				_from.X + (targetX - _from.X) * eased,
-				_from.Y + (targetY - _from.Y) * eased);
+			double nextX, nextY;
+			if (_hermite)
+			{
+				var m0x = ClampTangent(targetX - _from.X, _fromVelocity.X * _durationSeconds);
+				var m0y = ClampTangent(targetY - _from.Y, _fromVelocity.Y * _durationSeconds);
+				nextX = Hermite(elapsed01, _from.X, m0x, targetX);
+				nextY = Hermite(elapsed01, _from.Y, m0y, targetY);
+			}
+			else
+			{
+				double eased = ChromiumEase(elapsed01);
+				nextX = _from.X + (targetX - _from.X) * eased;
+				nextY = _from.Y + (targetY - _from.Y) * eased;
+			}
 			if (elapsed01 >= 1)
 			{
 				Apply(new Point(targetX, targetY));
-				Stop();
+				StopAnimation();
 				return;
 			}
-			Apply(next);
+			Apply(new Point(nextX, nextY));
+			if (dt > 0) _velocity = new Point((nextX - current.X) / dt, (nextY - current.Y) / dt);
 			return;
 		}
 
-		// 指数平滑方程 (Exponential Smoothing)：完美衔接低频的大段离散滚轮与高频细小的触控板滚轮
-		double factor = 1 - Math.Exp(-DecayRate * dt);
-		double nextX = current.X + (targetX - current.X) * factor;
-		double nextY = current.Y + (targetY - current.Y) * factor;
+		// 指数平滑方程 (Exponential Smoothing)：完美衔接低频的大段离散滚轮与高频细小的触控板滚轮。
+		// 衰减率随剩余距离增大，远距离不会拖出长尾，也不需要固定时长上限。
+		var distance = Math.Max(Math.Abs(targetX - current.X), Math.Abs(targetY - current.Y));
+		var rate = MinDecayRate + Math.Min(MaxDecayBoost, Math.Log(1 + distance) * DecayDistanceScale);
+		double factor = 1 - Math.Exp(-rate * dt);
+		double glideX = current.X + (targetX - current.X) * factor;
+		double glideY = current.Y + (targetY - current.Y) * factor;
 
-		_glideMilliseconds += dt * 1000;
-
-		// 检查衰减极限，到达阈值或超过滑行上限时直接落位
-		if ((Math.Abs(targetX - nextX) < 0.5 && Math.Abs(targetY - nextY) < 0.5) || _glideMilliseconds >= MaxGlideMilliseconds)
+		// 到达阈值直接精确落位；没有固定时长上限，不会在最后一帧跳几十 DIP。
+		if (Math.Abs(targetX - glideX) < 0.5 && Math.Abs(targetY - glideY) < 0.5)
 		{
 			Apply(new Point(targetX, targetY));
-			Stop();
+			StopAnimation();
 			return;
 		}
 
-		Apply(new Point(nextX, nextY));
+		Apply(new Point(glideX, glideY));
 	}
 
 	private void Apply(Point offset)
@@ -435,7 +570,7 @@ internal sealed class SmoothScroll : IDisposable
 				{
 					// extent 稳定却被外部移动（滚动条拖动、焦点、程序化定位）：离开末尾。
 					_followGrowth = false;
-					if (!IsApplyingOffset) Stop();
+					if (!IsApplyingOffset) StopAnimation();
 				}
 				// extent 增长且读者没上滚：保持现状，不把布局校正误判成离开。
 			}
@@ -448,7 +583,7 @@ internal sealed class SmoothScroll : IDisposable
 			if (!_followGrowth || !extentChanged)
 			{
 				_followGrowth = false;
-				Stop();
+				StopAnimation();
 			}
 		}
 		_lastOffset = offset;
@@ -462,6 +597,19 @@ internal sealed class SmoothScroll : IDisposable
 		// 拖动/点击滚动条是显式阅读意图：先退出跟底，之后停到底部再由几何重新锁底。
 		_readerEscaped = true;
 		StopFollowingGrowth();
+		Stop();
+		ClearPendingWheel();
+	}
+
+	/// <summary>
+	/// 滚轮落在滚动条上时仍由视口接管：否则 MewUI 的 ScrollBar 会按 SmallChange（24 DIP）
+	/// 立即跳变，和内容区的 100 DIP 平滑滚动不一致。
+	/// </summary>
+	private void OnScrollBarWheel(MouseWheelEventArgs args)
+	{
+		if (args.Handled) return;
+		RouteWheel(args);
+		args.Handled = true;
 	}
 
 	/// <summary>把跟随增长的重夹排到布局之后；一帧里只排一次。</summary>
@@ -518,10 +666,29 @@ internal sealed class SmoothScroll : IDisposable
 			VerticalInput?.Invoke(args.Key is Key.Up or Key.PageUp or Key.Home ? -line : line);
 			return;
 		}
-		ScrollByPixels(0, delta);
+		ScrollByPixels(0, delta, animate: !args.IsRepeat);
 		args.Handled = true;
 	}
-	public void Stop() { _clock.Stop(); _toEnd = false; }
+	public void Stop()
+	{
+		StopAnimation();
+		ClearPendingWheel();
+	}
+
+	/// <summary>只停曲线，保留本帧待处理的滚轮输入（布局校正不该吞掉读者刚发出的滚动）。</summary>
+	private void StopAnimation()
+	{
+		_clock.Stop();
+		_toEnd = false;
+		_velocity = default;
+		_hermite = false;
+	}
+
+	private void ClearPendingWheel()
+	{
+		_pendingWheel = default;
+		_pendingWheelPrecise = true;
+	}
 
 	// 对于以时间为基准的物理循环，内置 Easing 提供恒等映射即可
 	private static double LinearEase(double progress) => progress;
@@ -555,6 +722,22 @@ internal sealed class SmoothScroll : IDisposable
 		return 3 * u * u * p1 + 6 * u * t * (p2 - p1) + 3 * t * t * (1 - p2);
 	}
 
+	/// <summary>三次 Hermite：起点速度 m0、终点速度为 0，到点精确落位。</summary>
+	private static double Hermite(double t, double from, double m0, double target)
+	{
+		double t2 = t * t;
+		double t3 = t2 * t;
+		return (2 * t3 - 3 * t2 + 1) * from + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * target;
+	}
+
+	/// <summary>限制起点切线，保证同向时曲线不越过目标。</summary>
+	private static double ClampTangent(double distance, double tangent)
+	{
+		if (distance > 0) return Math.Clamp(tangent, 0, 3 * distance);
+		if (distance < 0) return Math.Clamp(tangent, 3 * distance, 0);
+		return 0;
+	}
+
 	public void Dispose()
 	{
 		if (_disposed) return;
@@ -566,7 +749,12 @@ internal sealed class SmoothScroll : IDisposable
 		_view.KeyDown -= OnKeyDown;
 		if (_viewport is not null) _viewport.ScrollChanged -= OnScrollChanged;
 		if (_text is not null) _text.ScrollOffsetChanged -= OnTextScrollChanged;
-		if (_verticalBar is not null) _verticalBar.MouseDown -= OnScrollBarDown;
+		if (_verticalBar is not null)
+		{
+			_verticalBar.MouseDown -= OnScrollBarDown;
+			_verticalBar.MouseWheel -= OnScrollBarWheel;
+		}
+		if (_horizontalBar is not null) _horizontalBar.MouseWheel -= OnScrollBarWheel;
 		Controllers.Remove(_view);
 	}
 }

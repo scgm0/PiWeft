@@ -38,6 +38,24 @@ public sealed class TerminalDockTests
 	}
 
 	[Fact]
+	public void FractionalWheelNotchesAccumulateIntoWholeLines()
+	{
+		// 触控板按分数刻度发滚轮；旧实现每个事件都滚 3 行，手指轻轻一划就会飞过整屏。
+		double remainder = 0;
+		Assert.Equal(0, TerminalDock.WheelLines(ref remainder, 0.2));
+		Assert.Equal(1, TerminalDock.WheelLines(ref remainder, 0.2));
+		Assert.Equal(0, TerminalDock.WheelLines(ref remainder, 0.2));
+		Assert.Equal(1, TerminalDock.WheelLines(ref remainder, 0.2));
+		Assert.Equal(1, TerminalDock.WheelLines(ref remainder, 0.2));
+		Assert.Equal(0, remainder, 9);
+
+		// 离散滚轮仍是一格三行，反向也对称。
+		Assert.Equal(3, TerminalDock.WheelLines(ref remainder, 1));
+		Assert.Equal(-3, TerminalDock.WheelLines(ref remainder, -1));
+		Assert.Equal(0, remainder);
+	}
+
+	[Fact]
 	public void PasteConfirmationOnlyTriggersOnLineBreaks()
 	{
 		Assert.False(TerminalDock.NeedsPasteConfirmation("ls -la"));

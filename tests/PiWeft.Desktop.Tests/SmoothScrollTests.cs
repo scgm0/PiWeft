@@ -36,6 +36,10 @@ public sealed class SmoothScrollTests
 		}
 	}
 
+	private static void KeyDown(Element view, KeyEventArgs args) =>
+		typeof(UIElement).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(view, [args]);
+
 	[Fact]
 	public void TreeViewportAndTextEditorsAnimateWithoutReplacingTheirContent()
 	{
@@ -393,6 +397,104 @@ public sealed class SmoothScrollTests
 		((Border)view.Content!).Height(2000);
 		Layout(view);
 		Assert.Equal(clamped, view.VerticalOffset);
+	}
+
+	[Fact]
+	public void RepeatedKeyPressesStepImmediatelyWithoutRestartingTheCurve()
+	{
+		// 长按方向键时平台会重复发 KeyDown。每次重复都从零速重开曲线，会让位移只剩
+		// 单次曲线的第一小段；重复键直接落位，速度才与浏览器一致。
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+
+		KeyDown(view, new KeyEventArgs(Key.Down, 0));
+		Assert.True(smooth.IsAnimating);
+		Frame(20);
+		var before = view.VerticalOffset;
+
+		KeyDown(view, new KeyEventArgs(Key.Down, 0, ModifierKeys.None, isRepeat: true));
+		Assert.False(smooth.IsAnimating);
+		Assert.InRange(view.VerticalOffset - before, 39.5, 40.5);
+
+		var after = view.VerticalOffset;
+		KeyDown(view, new KeyEventArgs(Key.Down, 0, ModifierKeys.None, isRepeat: true));
+		Assert.False(smooth.IsAnimating);
+		Assert.InRange(view.VerticalOffset - after, 39.5, 40.5);
+	}
+
+	[Fact]
+	public void WheelOverTheScrollBarUsesTheViewportStepAndAnimation()
+	{
+		// 滚动条自己处理滚轮时会按 SmallChange（24 DIP）立即跳；悬停在右缘不应该
+		// 让速度和缓动都变成另一套。
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+		var bar = VisualTree.Find<ScrollBar>(view).Single(candidate => candidate.Orientation == Orientation.Vertical);
+		var wheel = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
+		var method = typeof(ScrollBar).GetMethod("OnMouseWheel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+		method.Invoke(bar, [wheel]);
+
+		Assert.True(wheel.Handled);
+		Assert.True(smooth.IsAnimating);
+		Assert.Equal(ThemeManager.DefaultMetrics.ScrollWheelStep, smooth.TargetVerticalOffset, 1);
+		Settle(smooth);
+		Assert.Equal(ThemeManager.DefaultMetrics.ScrollWheelStep, view.VerticalOffset, 1);
+	}
+
+	[Fact]
+	public void WheelBurstsAreAppliedOncePerFrame()
+	{
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+
+		// 同一帧内的多个刻度只写一次偏移；目标先累计，视口不动。
+		smooth.EnqueueWheelPixels(0, step);
+		smooth.EnqueueWheelPixels(0, step);
+		Assert.Equal(0, view.VerticalOffset);
+		Assert.Equal(step * 2, smooth.TargetVerticalOffset, 1);
+
+		smooth.FlushPendingWheel();
+		Assert.True(smooth.IsAnimating);
+		Settle(smooth);
+		Assert.Equal(step * 2, view.VerticalOffset, 1);
+
+		// 分数增量合并后仍走 1:1 落位，不产生补间；两次输入只发一次 ScrollChanged。
+		var changes = 0;
+		view.ScrollChanged += () => changes++;
+		smooth.EnqueueWheelPixels(0, step * 0.2);
+		smooth.EnqueueWheelPixels(0, step * 0.2);
+		Assert.Equal(0, changes);
+		smooth.FlushPendingWheel();
+		Assert.False(smooth.IsAnimating);
+		Assert.Equal(step * 2.4, view.VerticalOffset, 1);
+		Assert.Equal(1, changes);
+	}
+
+	[Fact]
+	public void FastTrackpadEventsStayImmediateUntilAWholeNotchArrives()
+	{
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+
+		// 分数增量建立连续流；紧随其后的 0.7 格仍属于同一次触控板手势，不能重启缓动。
+		smooth.ScrollBy(0, 0.2);
+		Assert.False(smooth.IsAnimating);
+		var before = view.VerticalOffset;
+		smooth.ScrollBy(0, 0.7);
+		Assert.False(smooth.IsAnimating);
+		Assert.InRange(view.VerticalOffset - before, step * 0.7 - 0.5, step * 0.7 + 0.5);
+
+		// 整格滚轮即使紧跟触控板，也必须回到缓动路径。
+		smooth.ScrollBy(0, 1);
+		Assert.True(smooth.IsAnimating);
+		Assert.Equal(step * 1.9, smooth.TargetVerticalOffset, 1);
 	}
 
 	[Fact]
