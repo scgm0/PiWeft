@@ -1,6 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Markdown;
+using PiWeft.Markdown;
 
 namespace PiWeft.Desktop;
 
@@ -247,7 +247,7 @@ public sealed partial class SessionTab
 				Report("diff-start", new Point(diff.Bounds.X + 10, diff.Bounds.Y + diff.DefaultLineHeight * 1.4), diff.SelectionLength.ToString());
 				Report("diff-end", new Point(diff.Bounds.X + 65, diff.Bounds.Y + diff.DefaultLineHeight * 2.5), diff.SelectionLength.ToString());
 			}
-			var link = Find<MarkdownPresenter>(_messages).LastOrDefault(text => text.Markdown.StartsWith("[sample]", StringComparison.Ordinal));
+			var link = Find<MarkdownView>(_messages).LastOrDefault(text => text.Source.StartsWith("[sample]", StringComparison.Ordinal));
 			if (link is not null) Report("link", new Point(link.Bounds.X + 25, link.Bounds.Y + 10), "ready");
 			// 悬浮按钮的状态与位置：外部脚本据此在「可见」的瞬间连拍，核对渲染是否完整。
 			Report("latest", new Point(_scrollToLatest.Bounds.X + 18, _scrollToLatest.Bounds.Y + 18),

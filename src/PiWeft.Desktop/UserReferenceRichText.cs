@@ -3,6 +3,7 @@ using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Input;
 using Aprillz.MewUI.Rendering;
+using Aprillz.MewUI.Resources;
 using Aprillz.MewUI.Text;
 using Aprillz.MewUI.Text.Editing;
 
@@ -436,10 +437,11 @@ internal static class UserReferenceRichText
 			context.Graphics.FillRoundedRectangle(
 				new Rect(origin.X, origin.Y, width, ChipHeight), AppTheme.RadiusXs, AppTheme.RadiusXs, accent.WithAlpha(0x1f));
 
-			var iconOrigin = new Point(origin.X + PaddingLeft, origin.Y + (ChipHeight - IconSize) / 2);
-			if (chip.Kind == UserChipKind.Skill) DrawSparklesIcon(context.Graphics, iconOrigin, accent);
-			else if (chip.IsDirectory) DrawFolderIcon(context.Graphics, iconOrigin, accent);
-			else DrawFileIcon(context.Graphics, iconOrigin, accent);
+			// 图标取自内嵌 Lucide SVG（sparkles / file-text / folder-open）：自己画的四角星与
+			// 文件/文件夹轮廓和全应用其它图标笔触不一致，也跟不上 Lucide 的形状。
+			DrawChipIcon(context.Graphics,
+				chip.Kind == UserChipKind.Skill ? "sparkles" : chip.IsDirectory ? "folder-open" : "file-text",
+				new Point(origin.X + PaddingLeft, origin.Y + (ChipHeight - IconSize) / 2), accent);
 
 			if (EnsureLabelLayout() is not { } layout) return;
 			var textOrigin = new Point(
@@ -470,41 +472,15 @@ internal static class UserReferenceRichText
 			return _labelLayout;
 		}
 
-		private static void DrawFileIcon(IGraphicsContext graphics, Point origin, Color color)
+		/// <summary>把一枚 Lucide 图标画进 chip 的图标位；SVG 自己按 24 视口缩放，12px 下笔画仍然清楚。</summary>
+		private static void DrawChipIcon(IGraphicsContext graphics, string icon, Point origin, Color color)
 		{
-			graphics.DrawRoundedRectangle(new Rect(origin.X + 2, origin.Y + 1, 8, 10), 1, 1, color, 1.1);
-			graphics.DrawLine(new Point(origin.X + 7, origin.Y + 1), new Point(origin.X + 7, origin.Y + 4), color, 1.1);
-			graphics.DrawLine(new Point(origin.X + 7, origin.Y + 4), new Point(origin.X + 10, origin.Y + 4), color, 1.1);
-		}
+			if (AppIcons.Get(icon, color) is not IVectorImageSource vector)
+			{
+				return;
+			}
 
-		/// <summary>四角星 + 右上小十字（对齐 lucide sparkles 的轮廓），12px 下仍能认出是技能。</summary>
-		private static void DrawSparklesIcon(IGraphicsContext graphics, Point origin, Color color)
-		{
-			var cx = origin.X + 5.4;
-			var cy = origin.Y + 7.4;
-			const double radius = 4.6;
-			// 控制点沿对角线外移一点，花瓣比纯中心控制更饱满，12px 下不会细成一条线。
-			var waist = radius * 0.16;
-			var star = new PathGeometry();
-			star.MoveTo(cx, cy - radius);
-			star.QuadTo(cx + waist, cy - waist, cx + radius, cy);
-			star.QuadTo(cx + waist, cy + waist, cx, cy + radius);
-			star.QuadTo(cx - waist, cy + waist, cx - radius, cy);
-			star.QuadTo(cx - waist, cy - waist, cx, cy - radius);
-			star.Close();
-			graphics.FillPath(star, color);
-
-			// 右上角的小十字，和 lucide sparkles 的辅助星一致。
-			graphics.DrawLine(new Point(cx + 3.6, cy - 6.0), new Point(cx + 3.6, cy - 3.0), color, 1.0);
-			graphics.DrawLine(new Point(cx + 2.1, cy - 4.5), new Point(cx + 5.1, cy - 4.5), color, 1.0);
-		}
-
-		private static void DrawFolderIcon(IGraphicsContext graphics, Point origin, Color color)
-		{
-			graphics.DrawRoundedRectangle(new Rect(origin.X + 1, origin.Y + 5, 10, 6), 1, 1, color, 1.1);
-			graphics.DrawLine(new Point(origin.X + 1, origin.Y + 5), new Point(origin.X + 1, origin.Y + 3), color, 1.1);
-			graphics.DrawLine(new Point(origin.X + 1, origin.Y + 3), new Point(origin.X + 5, origin.Y + 3), color, 1.1);
-			graphics.DrawLine(new Point(origin.X + 5, origin.Y + 3), new Point(origin.X + 6, origin.Y + 5), color, 1.1);
+			vector.Render(graphics, new Rect(origin.X, origin.Y, IconSize, IconSize));
 		}
 	}
 }

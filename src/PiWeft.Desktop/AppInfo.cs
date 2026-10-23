@@ -7,7 +7,7 @@ public static class AppInfo
 	public const string Version = "0.1.0";
 
 	/// <summary>界面框架与扩展包。</summary>
-	public const string Framework = "Aprillz.MewUI 0.22.1（Core + X11 + MewVG + Svg + Markdown）";
+	public const string Framework = "Aprillz.MewUI 0.22.1（Core + X11 + MewVG + Svg）+ PiWeft.Markdown";
 
 	/// <summary>图标来源。</summary>
 	public const string Icons = "Lucide（ISC）";

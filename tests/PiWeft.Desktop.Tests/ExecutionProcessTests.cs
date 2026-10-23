@@ -1,6 +1,5 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Markdown;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
 
@@ -811,6 +810,98 @@ public sealed class ExecutionProcessTests
 		// 虚拟化组也要停在被点击的预览行；不能因为行高缓存修正而滚到展开内容末尾。
 		Assert.InRange(tool.Bounds.Y, previewTop - 1, previewTop + 1);
 		Assert.True(tool.Bounds.Y >= viewport.Bounds.Y - 1);
+		UiLifetime.Release(view.View);
+	}
+
+
+
+	[Fact]
+	public void ExpandingAToolRowThatIsReboundByTheVirtualizerKeepsItsPreviewPinned()
+	{
+		// 展开步骤后，同一步骤在下一帧落盘：虚拟化器会 Replace 这一行并重新绑定宿主。
+		// 预览行仍要停在原屏幕位置。只记行宿主引用的旧实现在宿主被换掉后立刻丢掉锚点，
+		// 表现为偶发的「展开步骤时组体进度没钉在预览行」。
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 30).Select(i => Tool($"call-{i}", $"output {i}")).ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools], true)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		// 离开末尾：这是读者的阅读位置，展开步骤不能把人拽到末尾。
+		viewport.SetScrollOffsets(0, 240);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var row = Find<ItemContainer>(viewport)
+			.First(container => container.Bounds.Y >= viewport.Bounds.Y &&
+				container.Bounds.Bottom <= viewport.Bounds.Bottom &&
+				Find<Expander>(container).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
+		var position = row.Index;
+		var tool = Find<Expander>(row).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
+		var previewTop = row.Bounds.Y - viewport.Bounds.Y;
+		tool.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.InRange(row.Bounds.Y - viewport.Bounds.Y, previewTop - 1, previewTop + 1);
+
+		// 该步骤的输出在这一帧到达：只 Replace 这一行，其余成员保持原对象。
+		var members = process.ProcessEntries.ToArray();
+		var entry = members[position];
+		members[position] = entry with { Text = "输出已落盘\n" + string.Join('\n', Enumerable.Repeat("line", 8)) };
+		view.Update(process with { ProcessEntries = [.. members] });
+		ConversationPerformanceTests.Layout(view.View);
+		view.SyncBodyMetrics();
+		ConversationPerformanceTests.Layout(view.View);
+
+		var rebound = Find<ItemContainer>(viewport).First(container => container.Index == position);
+		Assert.True(Find<Expander>(rebound).Any(expander => expander.IsExpanded),
+			$"row {position} must stay expanded: offset={viewport.VerticalOffset:0.#}");
+		Assert.InRange(rebound.Bounds.Y - viewport.Bounds.Y, previewTop - 1, previewTop + 1);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ExpandingAToolRowWhileParkedAtTheTailPinsItsPreviewRow()
+	{
+		// 组体滚动条正好停在末尾（几何上属于「跟随最新」）时点开一个靠上的工具步骤：
+		// 阅读位置必须留在预览行。旧实现把「正在跟随」当成不钉锚的理由，展开的正文
+		// 会把视口一路顶到新末尾，表现为偶发的「展开步骤行时组体进度没固定在步骤行预览」。
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var tools = Enumerable.Range(0, 30)
+			.Select(i => Tool($"call-{i}", $"output {i}\n" + string.Join('\n', Enumerable.Repeat("line", 12))))
+			.ToArray();
+		var process = ExecutionProcess.Project([User("first"), .. tools], true)[1];
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		var group = Assert.Single(Find<Expander>(run.Content!), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var smooth = SmoothScroll.For(viewport);
+		viewport.SetScrollOffsets(0, smooth.MaxVerticalOffset);
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.True(smooth.IsFollowingGrowth, "the body parked at its end follows growth");
+
+		var row = Find<ItemContainer>(viewport)
+			.Where(container => container.Bounds.Y > viewport.Bounds.Y &&
+				container.Bounds.Bottom <= viewport.Bounds.Bottom &&
+				Find<Expander>(container).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint))
+			.OrderBy(container => container.Bounds.Y)
+			.First();
+		var position = row.Index;
+		var previewTop = row.Bounds.Y - viewport.Bounds.Y;
+		var reading = viewport.VerticalOffset;
+		Find<Expander>(row).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint).IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+
+		Assert.False(smooth.IsFollowingGrowth, "expanding a tool step is a reading action");
+		Assert.True(smooth.MaxVerticalOffset > reading + 20,
+			$"the expanded body must have grown: {reading:0.#} -> {smooth.MaxVerticalOffset:0.#}");
+		var expanded = Find<ItemContainer>(viewport).First(container => container.Index == position);
+		Assert.InRange(expanded.Bounds.Y - viewport.Bounds.Y, previewTop - 1, previewTop + 1);
+		Assert.True(viewport.VerticalOffset <= reading + 1,
+			$"the reading position was dragged toward the tail: {reading:0.#} -> {viewport.VerticalOffset:0.#}");
 		UiLifetime.Release(view.View);
 	}
 

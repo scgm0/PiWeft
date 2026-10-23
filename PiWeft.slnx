@@ -6,6 +6,7 @@
 	<Project Path="src/PiWeft.JavaScript/PiWeft.JavaScript.csproj" />
 	<Project Path="src/PiWeft.Cli/PiWeft.Cli.csproj" />
 	<Project Path="src/PiWeft.Mcp/PiWeft.Mcp.csproj" />
+	<Project Path="src/PiWeft.Markdown/PiWeft.Markdown.csproj" />
 	<Project Path="src/PiWeft.Desktop/PiWeft.Desktop.csproj" />
   </Folder>
   <Folder Name="/tests/">

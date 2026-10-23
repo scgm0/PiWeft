@@ -10,22 +10,30 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	private readonly ScrollViewer _scroll;
 	private readonly Action<UIElement>? _preserveAnchor;
 	private readonly ConditionalWeakTable<UIElement, object> _trackedFocus = new();
-	private Point _offset;
+	private readonly ConditionalWeakTable<UIElement, object> _trackedWheel = new();
+	// Focus-into-view walks every ancestor ScrollViewer, including the execution group body and
+	// the conversation itself. Preserve all of them for the focus transaction: a MarkdownView is
+	// often taller than the viewport, so letting the framework "show" the whole focused view
+	// scrolls the group body to its top/bottom and looks like a progress jump.
+	private readonly List<PreservedViewport> _preserved = [];
 	private bool _preserving;
 	private bool _restoring;
-	private bool _clearQueued;
+	private int _preservationVersion;
 
 	public TextFocusScrollGuard(ScrollViewer scroll, Action<UIElement>? preserveAnchor = null)
 	{
 		_scroll = scroll;
 		_preserveAnchor = preserveAnchor;
-		scroll.ScrollChanged += Restore;
 	}
 
 	public void Track(UIElement text)
 	{
 		ProtectFocus(text);
-		text.MouseWheel += args => RouteWheel(text, args);
+		if (!_trackedWheel.TryGetValue(text, out _))
+		{
+			_trackedWheel.Add(text, new object());
+			text.MouseWheel += args => RouteWheel(text, args);
+		}
 	}
 
 	public void TrackTree(Element root)
@@ -38,7 +46,7 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	{
 		if (_trackedFocus.TryGetValue(control, out _)) return;
 		_trackedFocus.Add(control, new object());
-		control.GotFocus += Preserve;
+		control.GotFocus += () => Preserve(control);
 	}
 
 	/// <summary>折叠开关改变了行高：宿主据此重排会话视图（与手动滚动同样的收敛）。</summary>
@@ -128,6 +136,8 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	internal void RouteWheel(UIElement text, MouseWheelEventArgs args)
 	{
 		if (args.Handled || args.Delta.Y == 0) return;
+		// 滚轮落在文本/代码上时被这里接管，不会继续冒泡到窗口根：延迟取样点必须放在这里。
+		Diagnostics.NoteInput();
 		if (args.ShiftKey)
 		{
 			// Shift+滚轮只用于代码横向浏览，普通纵向滚轮始终由会话列表处理。
@@ -152,33 +162,67 @@ internal sealed class TextFocusScrollGuard : IDisposable
 		args.Handled = true;
 	}
 
-	private void Preserve()
+	private void Preserve(UIElement focused)
 	{
-		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		EndPreservation();
+		int version = ++_preservationVersion;
+		_preserving = true;
+		// Capture the nearest viewport first; restoring inner scrolls before the outer ones keeps
+		// the focused element's window position stable when both hosts react to the same focus.
+		for (Element? current = focused; current is not null; current = current.Parent)
+		{
+			if (current is not ScrollViewer viewport)
+			{
+				continue;
+			}
+			AddPreserved(viewport);
+		}
+		AddPreserved(_scroll);
+
+		if (_preserved.Count == 0 || !Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
 			return;
 		}
-
-		_offset = new Point(_scroll.HorizontalOffset, _scroll.VerticalOffset);
-		_preserving = true;
-		if (!_clearQueued)
+		dispatcher.BeginInvoke(() =>
 		{
-			_clearQueued = true;
-			dispatcher.BeginInvoke(() =>
+			// A later focus in the same frame supersedes this preservation; its own callback clears.
+			if (version == _preservationVersion)
 			{
-				_preserving = false;
-				_clearQueued = false;
-			});
-		}
+				EndPreservation();
+			}
+		});
 	}
 
-	public void Dispose() => _scroll.ScrollChanged -= Restore;
+	private void AddPreserved(ScrollViewer viewport)
+	{
+		foreach (var preserved in _preserved)
+		{
+			if (ReferenceEquals(preserved.Viewport, viewport))
+			{
+				return;
+			}
+		}
+		_preserved.Add(new PreservedViewport(viewport, viewport.HorizontalOffset, viewport.VerticalOffset));
+		viewport.ScrollChanged += Restore;
+	}
+
+	private void EndPreservation()
+	{
+		_preservationVersion++;
+		_preserving = false;
+		foreach (var preserved in _preserved)
+		{
+			preserved.Viewport.ScrollChanged -= Restore;
+		}
+		_preserved.Clear();
+	}
+
+	public void Dispose() => EndPreservation();
 
 	private void Restore()
 	{
 		// MewUI 在 GotFocus 之后同步通知祖先滚动容器。只撤回这次焦点事务引起的位移。
-		if (!_preserving || _restoring ||
-			(_scroll.HorizontalOffset == _offset.X && _scroll.VerticalOffset == _offset.Y))
+		if (!_preserving || _restoring)
 		{
 			return;
 		}
@@ -186,11 +230,21 @@ internal sealed class TextFocusScrollGuard : IDisposable
 		_restoring = true;
 		try
 		{
-			_scroll.SetScrollOffsets(_offset.X, _offset.Y);
+			foreach (var preserved in _preserved)
+			{
+				ScrollViewer viewport = preserved.Viewport;
+				if (viewport.HorizontalOffset != preserved.Horizontal ||
+					viewport.VerticalOffset != preserved.Vertical)
+				{
+					viewport.SetScrollOffsets(preserved.Horizontal, preserved.Vertical);
+				}
+			}
 		}
 		finally
 		{
 			_restoring = false;
 		}
 	}
+
+	private sealed record PreservedViewport(ScrollViewer Viewport, double Horizontal, double Vertical);
 }

@@ -2,7 +2,7 @@
 
 PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .NET 10，提供 NativeAOT CLI `pi` 和 MewUI 桌面工作台 `piweft-desktop`。会话文件与 pi、PiDeck 互通，但不等于完整移植 pi 或 PiDeck 的所有功能。
 
-构建、运行与打包见 [README](../README.md)。兼容边界与剩余差距见 [pi / PiDeck 兼容](01-parity.md)，统计与渲染性能见 [性能与基准](02-performance.md)，codemode/Jint 见 [codemode 与 Jint](03-codemode.md)。
+构建、运行与打包见 [README](../README.md)。兼容边界与剩余差距见 [pi / PiDeck 兼容](01-parity.md)，统计与渲染性能见 [性能与基准](02-performance.md)，codemode/Jint 见 [codemode 与 Jint](03-codemode.md)，增量 Markdown 控件见 [PiWeft.Markdown](04-markdown.md)。
 
 ## 架构与约束
 
@@ -14,12 +14,13 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 | `src/PiWeft.JavaScript` | Jint 5 沙箱、codemode 源码解析与 TypeScript 声明渲染 |
 | `src/PiWeft.Mcp` | stdio / streamable HTTP、分页、工具、资源、提示与通知 |
 | `src/PiWeft.Cli` | 参数与环境装配、text / print / JSON / RPC、认证、HTML 导出、宿主日志 |
+| `src/PiWeft.Markdown` | 增量 Markdown 文档模型、块级 diff、分块段落布局与精确高度块回收 |
 | `src/PiWeft.Desktop` | 多项目、多会话工作台，进程内驱动 `CodingAgentSession` |
 | `tools/` | NativeAOT 冒烟、MCP fixture、会话/桌面基准、桌面截图脚本、Lucide 图标获取 |
 
 - 使用 .NET 10、`LangVersion=preview` 和制表符缩进；中文为文档、界面文案和注释的第一方语言。
 - JSON 使用 `System.Text.Json` 源生成与手写转换器，不依赖 Newtonsoft.Json 或供应商 SDK。保留 trim/AOT 分析器。
-- 核心库无第三方运行时包，唯一例外是 codemode 所需的 Jint 5 预览版（版本固定在 `Directory.Packages.props`，包来自 `nuget.config` 里的 `Jint-preview` 源）；宿主使用 ZLogger，桌面使用 MewUI 0.22.1、Markdown 和 SVG 扩展。
+- 核心库无第三方运行时包，唯一例外是 codemode 所需的 Jint 5 预览版（版本固定在 `Directory.Packages.props`，包来自 `nuget.config` 里的 `Jint-preview` 源）；宿主使用 ZLogger，桌面使用 MewUI 0.22.1 的 Core/SVG 扩展和自有 `PiWeft.Markdown`（Markdig）；`Aprillz.MewUI.Markdown` 只保留在测试中作参考实现。
 - 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线，`<agentDir>/models-store.json` 缓存 pi.dev 远程目录（`pi update --models` 刷新），自定义端点由 `models.json` 注册。模型条目可写 `"virtual":{"model":"provider/id","thinkingLevel":"high","thinkingLevels":["off","high"]}` 静态路由，或 `"virtual":{"route":"return { model: ctx.modelRegistry.find(...) }","thinkingLevels":[...]}` 动态 JS 路由；每次请求由 route 选出物理模型，助手消息仍记录实际物理模型，路由状态写成 `pi.virtual-model-state` 自定义条目。
 - 不实现 JS 扩展宿主、mermaid、KaTeX、托盘、桌面通知、自动更新、崩溃上报或内嵌浏览器；终端以独立的 PTY 命令 Dock 提供，不内嵌第三方终端组件。codemode 已实现为内置工具，默认不启用。
 

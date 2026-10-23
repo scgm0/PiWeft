@@ -85,10 +85,10 @@ dotnet run --project tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj
 - 窄屏输入框由 96 DIP 缩为 56 DIP，保留草稿和选区。追随最新消息使用滚动偏移，避免将高于视口的整条回复反复滚入视图；滚动前先从滚动内容同步最新 extent，并把正在进行的动画目标改指向末尾，避免虚拟化高度变化时停在旧底部。
 - 跟随意图与布局解耦（对齐 PiDeck 的状态机）：滚轮/触控板/键盘/滚动条才是读者输入，行高变化引起的锚点校正不改变跟随态；近底带内的上滚先累计读者自己的位移（25 DIP 逃逸），1–2 px 的触控板抖动不会退出跟随。Arrow/PageUp/PageDown/Home/End 在焦点控件未处理时滚动会话，嵌套视口到边界后再交还祖先。
 - 平滑滚动输入按帧合并：同一帧的 wheel/trackpad 增量先累加，再一次性写入偏移，避免高回报率设备一帧触发多次重排。动画中途再次输入时用 Hermite 曲线从当前速度续接，不再每次从零速重开 ease；键盘自动重复（`KeyEventArgs.IsRepeat`）直接落位，长按方向键不再被压成单次曲线的第一小段。滚轮落在滚动条上仍由视口按 100 DIP 平滑滚动，不再走 `ScrollBar` 的 24 DIP 立即跳变；终端滚轮把分数刻度累积成整行（一格 3 行），触控板不会每个事件都跳 3 行。跟底滑行不再使用固定 260ms 上限，而是按剩余距离提高指数衰减率：近距离保持柔和尾巴，几万 DIP 的「回到最新」在几百毫秒内收敛到阈值，避免最后一帧突然跳几十 DIP。以上仍是应用层优化，滚动帧依旧会触发 MewUI 的 arrange；真正的 placement-only 滚动需要框架改动。
-- 执行过程组体的跟底由**几何**决定（`SmoothScroll.AutoFollowAtEnd`）：滚动条停在底部（4 DIP 容差）就跟随最新步骤，只有读者明确上滚（滚轮/键盘向上、拖动滚动条、恢复历史位置）才离开，回到末尾自动重新锁底。布局测高、栈→虚拟化 presenter 切换、展开/折叠步骤引起的 extent 与偏移变化都不再永久关闭跟底——此前这些路径会静默清掉跟随状态，表现为「置底也不跟」。展开步骤时用 `StopFollowingGrowth` 只清本次跟随，并把预览行在同一帧的 `SyncBodyMetrics` 里钉回原位，不留到下一次无关更新。展开流式思考仅在读者本就位于末尾时才继续贴底。
+- 执行过程组体的跟底由**几何**决定（`SmoothScroll.AutoFollowAtEnd`）：滚动条停在底部（4 DIP 容差）就跟随最新步骤，只有读者明确上滚（滚轮/键盘向上、拖动滚动条、恢复历史位置）才离开，回到末尾自动重新锁底。布局测高、栈→虚拟化 presenter 切换、展开/折叠步骤引起的 extent 与偏移变化都不再永久关闭跟底——此前这些路径会静默清掉跟随状态，表现为「置底也不跟」。展开步骤时用 `StopFollowingGrowth` 只清本次跟随，并把预览行在同一帧的 `SyncBodyMetrics` 里钉回原位，不留到下一次无关更新。钉锚同时记录**步骤索引**而不只是行宿主：虚拟化器会在流式帧里 Replace 该行并换掉宿主，只认引用会让锚点提前失效（表现为偶发的「展开步骤行时组体进度没固定在预览行」）；渲染阶段的收尾最多补两次，且一旦发现偏移不是自己写的（读者滚轮/键盘/滚动条已接管）立刻放弃钉锚，绝不和读者抢滚动。工具步骤的开合一律钉住预览行——即使滚动条正好停在末尾（几何上属于跟随态），展开的正文也不该把阅读位置顶走；流式思考/正文的开合仍交给跟底通道。流式行重测期间保留布局前的跟底意图，避免被虚拟化 anchor 校正误判成读者上滚，只有滚轮/键盘/滚动条才取消。展开流式思考仅在读者本就位于末尾时才继续贴底。
 - 会话内搜索进入时取消跟底并定位第一条命中，清空后按“搜索前的行 + 行内深度”恢复阅读位置（长回复中间也不会跳回行首）；过程组里的工具名与输出也参与匹配。
-- 展开的思考分两阶段渲染：流式期间用可增量追加的只读文本视图逐帧更新，思考结束后一次性换成 Markdown。MewUI 的 `MarkdownPresenter` 每次源文变化都会丢弃并重建整棵文档控件树（Markdig 解析本身只占 0.1–1.3 ms，成本在重建与重新测量）。
-- 流式文本用 `StreamingTextView`（`MultiLineTextBox` + 自有 `EditableTextDocument`）：纯追加走 `ReplaceRange` 的区间增量编辑，只重排受影响的行；撤销历史对只读展示无意义，`UndoSizeLimit = 0` 让每帧不产生编辑记录。前缀被缩短或改写（重发、改写历史）才退回整篇替换。实测（x64 Debug / Xvfb，520 DIP 宽，含 measure + arrange，逐帧追加一段）：
+- 正文与展开的思考改用 `PiWeft.Markdown`：纯追加时只重新解析最后一个顶层块（链接引用定义回退全量），再按**块模型哈希**做前缀/后缀 diff，未变块复用元素与文本布局；段落按已闭合行分块，只重排开放尾块；代码块用 `ReplaceRange` 追加。定稿只切换 `IsStreaming`，不再做纯文本→Markdown 的替换，也没有“结束那一下重建整棵树”的卡顿。架构见 [PiWeft.Markdown](04-markdown.md)。
+- 工具输出、过程步骤和终端等纯文本仍用 `StreamingTextView`（`MultiLineTextBox` + 自有 `EditableTextDocument`）：纯追加走 `ReplaceRange` 的区间增量编辑，只重排受影响的行；撤销历史对只读展示无意义，`UndoSizeLimit = 0` 让每帧不产生编辑记录。前缀被缩短或改写（重发、改写历史）才退回整篇替换。实测（x64 Debug / Xvfb，520 DIP 宽，含 measure + arrange，逐帧追加一段）：
 
 | 文本长度 | `Text=` 全量替换 | `StreamingTextView` 增量追加 |
 |---:|---:|---:|
@@ -96,8 +96,23 @@ dotnet run --project tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj
 | 32 K | 42.5 ms（中位 42.3） | 0.78 ms（中位 0.51） |
 | 64 K | 77.2 ms（中位 74.1） | 0.97 ms（中位 0.60） |
 
-  参照：`TextBlock.Text` 全量替换 8 K/16 K/32 K/64 K 分别约 22/23/37/54 ms；固定高度 `MultiLineTextBox`（行虚拟化）约 1.3–2.7 ms。差异几乎全部来自是否重建整篇文档，而不是控件类型，因此 32 K 以上也能逐帧更新，不需要再按长度降频。定稿时一次性换成 Markdown，且保持展开状态不自动折叠。
-- 定稿保留 `MarkdownPresenter` 默认的 `ParseDelay = 0`（同步解析）。定稿只发生一次，不会被流式增量反复取消；而 Markdig 解析本身只占 1.3 ms（32 K），真正贵的是随后在 UI 线程重建控件树（约 40 ms），后台解析绕不开这部分；新建的 presenter 在首个文档到达前无树可画，异步反而会多出一帧空白或旧内容。
+  参照：`TextBlock.Text` 全量替换 8 K/16 K/32 K/64 K 分别约 22/23/37/54 ms；固定高度 `MultiLineTextBox`（行虚拟化）约 1.3–2.7 ms。差异几乎全部来自是否重建整篇文档，而不是控件类型，因此 32 K 以上也能逐帧更新，不需要再按长度降频。
+
+### PiWeft.Markdown 增量渲染
+
+`src/PiWeft.Markdown` 的测试基准（x64 Debug / Xvfb / MewVG X11，520 DIP 宽，见 `tests/PiWeft.Desktop.Tests/MarkdownViewTests.cs`）：
+
+| 场景 | 中位 | p90 | 每帧分配 |
+|---|---:|---:|---:|
+| 32 K、180 个块，尾部新增一段（只解析尾块） | 约 0.7–2 ms | 约 1–4 ms | ~0.1 MiB |
+| 24 K 单段落逐段追加（开放尾块分块） | 约 4–7 ms | 约 8–15 ms | ~0.5 MiB |
+| 24 K 单段落定稿（只切 `IsStreaming`） | 0.1 ms | — | — |
+| 200 项列表尾部追加（行高缓存 + 尾项原位更新） | 约 6–12 ms | 约 10–25 ms | — |
+| 32 K 单段落一次性全量布局（改造前基线） | ~79 ms | ~119 ms | ~4.4 MiB |
+
+32 K 单段落一次性全量布局仍是历史消息首次进入时的成本；流式路径从第一帧起就按开放尾块增长，不会走到它。分块布局与整段布局的行数、行高、baseline 和总高度在测试中逐行比对一致；块回收只保留外层视口附近的元素，总高度保持精确，因此外层可变高度虚拟化的行高缓存不会因回收而失效。
+
+流式渲染不再替换段落/列表/表格元素：尾块原位更新，新增列表项/表格行/引用段落直接追加到现有容器；视口内及上下各 2 个块保持已附着，视口外再保留 ±12 个已测块，避免边界抖动反复 attach/detach。这些是消除“增量更新时文本块一直闪烁”的关键。
 - 虚拟化行的高度只在 arrange 阶段重测。MewUI 0.22.1 里 `InvalidateMeasure` 命中「祖先已 dirty」分支时不会同时置 arrange dirty，行高变化会被跳过（表现为展开最后一步/展开思考后组体滚不到新内容；该缺陷在 0.22.1 与当前 main 上都能复现，已在框架仓库补了回归测试与修复）。ExecutionProcessView 与时间线在行内更新后显式 `InvalidateArrange`（含视口内容），布局落定后重新发布 extent，并把正在跟随增长的组体重新贴到底部；升级到含修复的 MewUI 后这些显式失效依然安全。会话搜索弹窗的行是带 hover 提示的按钮，不做虚拟化，因此结果按 200 行封顶并在状态行说明截断（`SessionSearchTruncated`），避免一次检索构造上千个控件。
 
 同一 1000 轮、2000 条消息 fixture 的局部冷启动观测（包含 `SessionTab` 构造及 960×720 控件布局，不包括 JSONL 解析、模型环境初始化或网络请求）：
@@ -150,7 +165,8 @@ Linux NativeAOT 发布版、Xvfb/Mesa、1280×820 的实际会话演练中：60 
 - `NativeHoverTests` 在独立 Xvfb 中驱动实际鼠标，检查延迟、顶部和底部提示、移出与滚动关闭，以及执行过程开合。
 - 会话统计与余额配置使用原生 `Border`、`DockPanel`、`ScrollViewer` 分配剩余高度，不在 `MeasureContent` 中修改 `MaxHeight` 等布局属性。
 - 余额请求在启动时捕获 UI Dispatcher，返回结果经该 Dispatcher 更新控件；表单和统计行重建时显式释放旧控件。
-- 会话阅读区统一抑制文本、折叠栏及按钮获得焦点时触发的外层滚动。手动开合执行过程、过程组时暂停底部追随，在布局收敛后恢复被点击标题的屏幕锚点；组内步骤折叠只暂停跟随、不建立外层锚点，避免改变外部会话进度；流式思考展开则主动跟到末尾。只读正文/代码禁用输入法组合；可编辑引用输入框在组合期间临时撤掉 chip 投影并在提交后恢复，避免组合装饰范围按源文偏移越界。
+- `PiWeft.Markdown` 的块回收以「外层视口 + 自身 Bounds」算可见范围；行被虚拟化器摘下再挂回时强制重测量，避免沿用回收前的缓存测量而留下空白正文（要点一次滚动才恢复的成因）。
+- 会话阅读区统一抑制文本、折叠栏及按钮获得焦点时触发的滚动；焦点守卫会记录并恢复**所有祖先** `ScrollViewer`（执行过程组体、代码横向视口与会话本身）。手动开合执行过程、过程组时暂停底部追随，在布局收敛后恢复被点击标题的屏幕锚点；组内步骤折叠只暂停跟随、不建立外层锚点，避免改变外部会话进度；流式思考展开则主动跟到末尾。只读正文/代码禁用输入法组合；可编辑引用输入框在组合期间临时撤掉 chip 投影并在提交后恢复，避免组合装饰范围按源文偏移越界。
 - 差异正文使用一份只读 `MultiLineTextBox` 与 `ITextClassifier`，可跨增删行拖选、复制；行号置于不可命中的独立文本列。普通滚轮由会话处理，Shift+滚轮浏览长行。
 - 图片预览按图像纵横比居中布局，图片之外的留白命中遮罩并关闭；图片内部点击不关闭。
 - Markdown 文件链接按会话目录解析相对路径，支持绝对路径、`file://`、`~/`、URL 编码以及 `:行:列` / `#L行C列`。文件交给编辑器、目录交给默认程序，错误在状态栏显示；拒绝非 HTTP/HTTPS/file 协议和远程文件共享。
@@ -267,10 +283,24 @@ AOT 实机数据（`timings-20261022-150604.jsonl`，78 份会话 / 304 MB）暴
 
 对齐 PiDeck 的同名开关：默认关闭，关闭时每个调用点只做一次布尔判断（连秒表都不分配）；打开后无需重启即可开始记录，再关即停。
 
-- 采样：1 秒一次的线程池定时器读工作集 / 私有内存 / 托管堆 / 碎片 / 累计分配 / GC 次数，并从池线程向 UI 线程投递一个探针，量它被接手前排了多久 —— 这就是 PiDeck 里 `setImmediate` 往返的等价物，≥ 50 ms 直接落一条警告日志（「谁把 UI 线程占住了」）。UI 队列延迟只在运行时可测，无头测试里为 0。
+采样分三档，成本依次递增，越靠热路径越便宜（下列单次成本是这台机器 x64 .NET 10 的实测值）：
+
+| 档 | 调用点做什么 | 单次成本 | 分配 |
+|---|---|---:|---:|
+| 帧档 | `Diagnostics.ObserveFrame`：写两个 2048 槽环形缓冲 + 几个 `Interlocked` | ~66 ns（含 GC 读数 ~120 ns） | 0 B |
+| 计数档 | `Diagnostics.Count` / `Diagnostics.Slow`：桶内 `Interlocked.Add`，只有超过阈值才落明细 | 30–50 ns | 0 B |
+| 明细档 | `Diagnostics.Record`：`DateTime.Now` + 锁 + 聚合 + JSON 序列化 + 入队 | ~2.1–2.7 µs | ~870 B |
+
+- 帧档：接 `Window.FrameRendered`（MewUI 每帧渲染后触发）与 `Window.LastFrameStats`（框架本来就每帧无条件填好，所以绘制量是白拿的）。产出帧间隔的 p50/p95/最大、FPS（按典型帧中位数换算，不让一两帧建树把算术平均压成个位数）、掉帧（≥20 ms）/长帧（≥50 ms）计数、每帧分配字节、GC 暂停占比、输入→绘制延迟，以及 draw calls / 剔除 / 文本 / 形状 / 图片 / 裁剪计数。输入取样点挂在窗口级 `PreviewKeyDown`/`MouseDown`、会话滚动容器，以及阅读守卫接管的滚轮上（下游控件通常已经把事件处理掉，冒泡不到窗口根）。两帧之间超过 400 ms 不算帧样本而记成**停顿**：渲染循环是按请求跑的，空闲后的第一次重绘只说明「刚才没人要求重绘」，混进样本会让 FPS 与 GC 占比全部失真。分位数只在读面板/落盘时从环形缓冲算，热路径只写一个槽位；长帧另有限流 1 秒一条的 `Long frame` 警告日志。
+- 计数档：给「每帧都会发生」的路径用 —— 行构建/回收（`row.build` / `row.release`）、流式期原位更新的行数（`row.inplace`）、`render.stats` / `timeline.realize` / `ui.render` 的重建轮次。设置页在耗时表前面显示这些计数，它们才是「重建 vs 复用」的直接对照量；改造前每帧两条明细记录约等于每秒上百 KB 垃圾，现在同一位置只是 `Interlocked.Add`。
+- 明细档：只留给低频粗路径与慢于阈值的样本，逐条写 JSONL。
+- 采样：1 秒一次的线程池定时器读工作集 / 私有内存 / 托管堆 / 碎片 / 累计分配 / GC 次数，加上 CPU 占比、提交内存、pinned 对象、待终结对象、线程池线程数与排队工作项，并从池线程向 UI 线程投递一个探针，量它被接手前排了多久 —— 这就是 PiDeck 里 `setImmediate` 往返的等价物，≥ 50 ms 直接落一条警告日志（「谁把 UI 线程占住了」）。UI 队列延迟只在运行时可测，无头测试里为 0。
+- 逐秒曲线：每秒写一行 `name="runtime.window"`（`frames/fps/p50/p95/max/dropped/long/stall/alloc-per-frame/gc + heap/loh/gen0/gen2/finq/pinned/rss + draw/cull/text/input/lag/cpu/pending/counters`）。**空闲也写**：判断「堆是不是一直在长」恰恰要看没有重绘的那段时间。设置页的「压一次堆」走 `GC.GetTotalMemory(forceFullCollection)`，直接给出回收前后的差值 —— 堆掉不回基线才是泄漏。
 - 落盘：每条耗时一行 JSONL 写进 `<agentDir>/diagnostics/timings-<本地时间戳>.jsonl`，同时带上当时的 RSS / 托管堆，把「这一步慢」和「当时涨到多少」对在一起。250 ms 一批 flush，关闭时先把缓冲写完再释放句柄；单条 ≥ 200 ms 额外记 `Slow path` 警告。
-- 聚合：内存里按名称累计次数 / 总耗时 / 最大 / 最近，设置页展示聚合表 + 最近 20 条原始记录；重新开启会清零聚合并换一份新文件，避免上一轮的慢路径混进这一轮对照。「清空统计」用于同一轮里分段对照。
-- 计时点：`startup.theme-and-fonts`、`startup.window-build`、`startup.first-paint`（首屏时延，`Application.Run` 的 startup 回调里挂一个 Render 优先级工作项来量）、`environment.create`（启动构建环境）、`mcp.connect`、`sidebar.refresh`（侧栏全量刷新）、`session.open.read`（解析整份 JSONL，带 bytes/lines/entries）、`session.open.prepare`（建会话 + 聊天记录投影，带 entries/messages）、`chat.project`（整段投影）、`session.open.tab`（标签页构造）、`ui.render`（只记 ≥ 8 ms 的帧，带 rows/visible）、`markdown.finalize`（思考定稿重建文档树，带 chars）。
+- FPS 的读法：FPS 由**帧间隔中位数**换算，而 MewUI 的渲染循环是「按请求重绘」。启动那几秒是背靠背的布局帧（间隔 7 ms → 报出 138），稳定后只剩真实重绘的间隔（含 vsync 等待 → 75 左右），不是掉速。面板因此同时给出「节奏」行（连续/按请求 · VSync · 目标帧率）与每秒帧数，`stall` 计数把 >400 ms 的空档从样本里剔除。
+- 聚合：内存里按名称累计次数 / 总耗时 / 最大 / 最近，设置页按顺序展示「概览指标块 → 帧时间条 → 渲染循环 → 内存与 GC → 事件计数 → 耗时聚合 → 最近明细」；指标块用两列两行避免文字被裁，长备注只进悬浮提示；重新开启会清零聚合并换一份新文件，避免上一轮的慢路径混进这一轮对照。「清空统计」用于同一轮里分段对照。
+- 免代码的更狠一档：Debug 构建里 MewUI 自带 DevTools（`<MewUIDevTools>` 在 Debug 默认为 true），`Ctrl+Shift+P` 是帧档叠层（FPS/帧分解/draw calls/每帧分配/GC 次数）、`Ctrl+Alt+Shift+P` 是逐帧 profiler、`Ctrl+Shift+T` 视觉树、`Ctrl+Shift+I` 元素拾取；trimmed 与 NativeAOT 发布会自动把它折叠掉（发布产物里 `Aprillz.MewUI.DevTools.Enabled=false`），所以设置页那份自持面板仍然必要。CPU 采样、GC 堆转储、ETW/perf 这类重活一律交给外部工具（`dotnet-trace`、`dotnet-gcdump`、`perf`），不在应用里自建。
+- 计时点：`startup.theme-and-fonts`、`startup.window-build`、`startup.first-paint`（首屏时延，`Application.Run` 的 startup 回调里挂一个 Render 优先级工作项来量）、`environment.create`（启动构建环境）、`mcp.connect`、`sidebar.refresh`（侧栏全量刷新）、`session.open.read`（解析整份 JSONL，带 bytes/lines/entries）、`session.open.prepare`（建会话 + 聊天记录投影，带 entries/messages）、`chat.project`（整段投影）、`session.open.tab`（标签页构造）、`ui.render`（计数每次，明细只记 ≥ 8 ms 的帧，带 rows/visible）、`markdown.finalize`（思考定稿重建文档树，带 chars）。
 
 45 MiB / 26,985 行真实会话在诊断页实测到的一轮（x64 Debug / Xvfb，值随冷热波动）：
 
@@ -286,6 +316,26 @@ AOT 实机数据（`timings-20261022-150604.jsonl`，78 份会话 / 304 MB）暴
 | `mcp.connect` | 4.3 ms | 后台 |
 
   同一轮 UI 队列延迟最大 41.1 ms、工作集 494 MiB、托管堆 282 MiB —— 这类数字就是用来判断「该把哪段挪出 UI 线程」的，而不是靠肉眼猜。
+
+同一份 11 MB 会话在打开并滚动时的逐秒实录（x64 Debug / Xvfb，`runtime.window`）：
+
+```text
+07:52:53 frames=5  fps=26.7 p50=19.6  p95=89.3  max=89.3   dropped=1 long=1 stall=0/0.0ms
+         alloc/frame=926560B gc=0.03% draw=6 cull=0 text=0 counters=[row.build:14,row.release:11,...]
+07:53:06 frames=1  fps=10.6 p50=29.9  p95=376.7 max=376.7  dropped=2 long=3 stall=24/517.7ms
+```
+
+以及一轮 3 分半「反复上下滚各 12 格」的压力采样（每 8 秒取一点）：
+
+| 时刻 | 托管堆 | 大对象堆 | 工作集 | gen0 / gen2 | 待终结 |
+|---|---:|---:|---:|---|---:|
+| 15:30:36 | 104 MiB | 52 MiB | 368 MiB | 15 / 3 | 42 |
+| 15:31:15 | 106 MiB | 52 MiB | 421 MiB | 24 / 3 | 1884 |
+| 15:32:20 | 107 MiB | 52 MiB | 429 MiB | 41 / 3 | 837 |
+| 15:33:25 | 109 MiB | 52 MiB | 433 MiB | 58 / 3 | 519 |
+| 15:34:17 | 111 MiB | 52 MiB | 438 MiB | 70 / 3 | 663 |
+
+读法：托管堆 3 分半只涨 7 MiB、大对象堆完全不动、gen2 始终是 3（还没到期收）、待终结队列涨到 1884 又落回 519 —— 是**回收滞后 + 终结器排队**，不是泄漏；工作集涨的那几十 MiB 是原生侧（Skia 字形/位图缓存与保留场景），要判泄漏就点「压一次堆」看剩余，或者把同一操作重复几轮看剩余是不是一路抬高。这类结论靠每帧明细看不出来，靠帧档 + 计数档才成立，而它占掉的墙钟时间不到 0.05%。
 
 ## 验证与复现
 

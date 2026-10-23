@@ -105,6 +105,7 @@ public static class AppStyles
 	public const string RoleInfo = "info";
 	public const string RoleThinking = "thinking";
 	public const string RoleError = "error";
+	public const string RoleSuccess = "success";
 
 	/// <summary>按角色取当前主题下的文本颜色。</summary>
 	public static Color ColorForRole(string role) => role switch
@@ -118,6 +119,7 @@ public static class AppStyles
 		RoleInfo => AppTheme.Info,
 		RoleThinking => AppTheme.Thinking,
 		RoleError => AppTheme.Error,
+		RoleSuccess => AppTheme.Success,
 		_ => AppTheme.TextPrimary,
 	};
 

@@ -1,0 +1,83 @@
+using Aprillz.MewUI;
+using Aprillz.MewUI.Controls;
+
+namespace PiWeft.Markdown;
+
+/// <summary>Document metrics and optional colors; null colors follow the current UI theme.</summary>
+public sealed record MarkdownTheme
+{
+	/// <summary>Gap between top-level blocks in DIPs.</summary>
+	public double BlockSpacing { get; init; } = 8;
+
+	/// <summary>Hanging indent reserved for each list nesting level in DIPs.</summary>
+	public double ListIndent { get; init; } = 32;
+
+	/// <summary>Font family for inline and block code.</summary>
+	public string CodeFontFamily { get; init; } = "monospace";
+
+	/// <summary>Optional link foreground.</summary>
+	public Color? LinkForeground { get; init; }
+
+	/// <summary>Optional code background.</summary>
+	public Color? CodeBackground { get; init; }
+
+	/// <summary>Optional theme-aware code background; takes precedence over <see cref="CodeBackground"/>.</summary>
+	public Func<Theme, Color>? CodeBackgroundSelector { get; init; }
+
+	/// <summary>Optional inline-code chip background.</summary>
+	public Color? InlineCodeBackground { get; init; }
+
+	/// <summary>Optional theme-aware inline-code chip background; takes precedence over <see cref="InlineCodeBackground"/>.</summary>
+	public Func<Theme, Color>? InlineCodeBackgroundSelector { get; init; }
+
+	/// <summary>Optional inline-code chip border.</summary>
+	public Color? InlineCodeBorder { get; init; }
+
+	/// <summary>Optional theme-aware inline-code chip border; takes precedence over <see cref="InlineCodeBorder"/>.</summary>
+	public Func<Theme, Color>? InlineCodeBorderSelector { get; init; }
+
+	/// <summary>Horizontal padding around an inline-code run in DIPs.</summary>
+	public double InlineCodePadding { get; init; } = 4;
+
+	/// <summary>Vertical padding around an inline-code run in DIPs.</summary>
+	public double InlineCodeVerticalPadding { get; init; } = 1;
+
+	/// <summary>Corner radius of an inline-code chip in DIPs.</summary>
+	public double InlineCodeCornerRadius { get; init; } = 5;
+
+	/// <summary>Font scale applied to inline code relative to its surrounding text.</summary>
+	public double InlineCodeFontScale { get; init; } = 0.92;
+
+	/// <summary>Corner radius of fenced-code and table cards in DIPs.</summary>
+	public double CardCornerRadius { get; init; } = 10;
+
+	/// <summary>Scale applied to table cell text relative to the document font size.</summary>
+	public double TableFontSizeScale { get; init; } = 0.9;
+
+	/// <summary>Optional marked-text background.</summary>
+	public Color? MarkedBackground { get; init; }
+
+	/// <summary>Scale applied to the control font size for fenced code.</summary>
+	public double CodeFontSizeScale { get; init; } = 0.92;
+
+	/// <summary>Exact fenced-code font size; overrides <see cref="CodeFontSizeScale"/> when set.</summary>
+	public double? CodeFontSize { get; init; }
+
+	/// <summary>Label on the default code copy button.</summary>
+	public string CodeCopyLabel { get; init; } = "Copy";
+
+	/// <summary>Tooltip on the default code copy button.</summary>
+	public string CodeCopyTooltip { get; init; } = "Copy code";
+
+	/// <summary>
+	/// 复制按钮的图标由宿主提供（桌面端是 Lucide 内嵌 SVG）：控件库不自己画图标，
+	/// 也不引 SVG 依赖。给了图标就用图标，没给就退回 <see cref="CodeCopyLabel"/> 文本。
+	/// </summary>
+	public Func<double, FrameworkElement?>? CodeCopyIcon { get; init; }
+
+	/// <summary>复制成功后的确认图标；缺省时不切换内容，只保留提示。</summary>
+	public Func<double, FrameworkElement?>? CodeCopiedIcon { get; init; }
+
+	/// <summary>图标按钮里的图标边长（DIP）。</summary>
+	public double CodeCopyIconSize { get; init; } = 14;
+}

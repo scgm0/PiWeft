@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Markdown;
 using Xunit;
 
 namespace PiWeft.Desktop.Tests;
@@ -119,16 +120,16 @@ public sealed class StreamingTextViewTests
 		var thinking = VisualTree.Find<Expander>(message.View).Single();
 		thinking.IsExpanded = true;
 
-		var text = VisualTree.Find<MultiLineTextBox>(message.View).Single();
+		var markdown = VisualTree.Find<MarkdownView>(message.View).Single();
 		var longText = string.Join('\n', Enumerable.Range(0, 4_000).Select(index => $"思考内容 {index}"));
 		message.Update(entry with { Thinking = longText });
 		message.View.Measure(new Size(420, double.PositiveInfinity));
 		message.View.Arrange(new Rect(0, 0, 420, message.View.DesiredSize.Height));
 
-		// 32 K 级别的思考在流式阶段仍是同一个文本视图（没有 Markdown 重建）。
-		Assert.Same(text, VisualTree.Find<MultiLineTextBox>(message.View).Single());
-		Assert.Equal(longText, text.Text);
-		Assert.Empty(VisualTree.Find<Aprillz.MewUI.Markdown.MarkdownPresenter>(message.View));
+		// 32 K 级别的思考在流式阶段仍是同一个增量视图：只更新尾块，不重建整棵文档。
+		Assert.Same(markdown, VisualTree.Find<MarkdownView>(message.View).Single());
+		Assert.Equal(longText, markdown.Source);
+		Assert.True(markdown.IsStreaming);
 		message.Dispose();
 	}
 }

@@ -1,6 +1,6 @@
 # PiWeft
 
-PiWeft 是一个基于 C# / .NET 10 的编码智能体（coding agent），带有 NativeAOT CLI（`pi`）和 MewUI 桌面工作区（`piweft-desktop`）。会话文件与 pi 保持兼容。当前实现见[项目状态](docs/00-status.md)，兼容边界与差距见[pi / PiDeck 兼容](docs/01-parity.md)，性能基准见[性能与基准](docs/02-performance.md)，codemode/Jint 见[codemode 与 Jint](docs/03-codemode.md)。
+PiWeft 是一个基于 C# / .NET 10 的编码智能体（coding agent），带有 NativeAOT CLI（`pi`）和 MewUI 桌面工作区（`piweft-desktop`）。会话文件与 pi 保持兼容。当前实现见[项目状态](docs/00-status.md)，兼容边界与差距见[pi / PiDeck 兼容](docs/01-parity.md)，性能基准见[性能与基准](docs/02-performance.md)，codemode/Jint 见[codemode 与 Jint](docs/03-codemode.md)，增量 Markdown 控件见[PiWeft.Markdown](docs/04-markdown.md)。
 
 CLI 项目为 `PiWeft.Cli`，其构建输出为 `pi` / `pi.exe`（带有作为托管程序集的 `pi.dll`）。`pi` 制品保留其参数、RPC JSONL 协议以及 pi 兼容版本。环境变量 `PI_CODING_AGENT_DIR` 和 `PI_LOG_LEVEL`、`~/.pi/agent` 和项目 `.pi` 目录、配置文件名以及会话格式保持不变。
 

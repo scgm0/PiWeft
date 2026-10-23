@@ -1,7 +1,7 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Input;
-using Aprillz.MewUI.Markdown;
+using PiWeft.Markdown;
 using Aprillz.MewUI.Platform;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
@@ -50,6 +50,37 @@ public sealed class MessageInteractionTests
 	}
 
 	[Fact]
+	public void CodeBlockCopyButtonUsesTheLucideIconSet()
+	{
+		// 图标必须来自 tools/fetch-lucide-icons.sh 下载并内嵌的 Lucide SVG，而不是控件自己
+		// 用路径画的图形：笔画风格要与全应用一致，还要跟主题换色（AppIcons 的 role 跟踪）。
+		using var guard = new TextFocusScrollGuard(new ScrollViewer());
+		var entry = new ChatEntry
+		{
+			Role = ChatRole.Assistant, EntryId = "code", Timestamp = 1,
+			Text = "```csharp\nif (!args.IsRepeat) _activate?.Invoke(_links[_focusedLink].Run);\n```",
+		};
+		var view = new AssistantMessageView(entry, _ => { }, guard);
+		ConversationPerformanceTests.Layout(view.View);
+
+		var code = Find<PiWeft.Markdown.MarkdownCodeBlockView>(view.View).Single();
+		var copy = Find<Button>(code).Single();
+		Assert.Equal("复制代码", Assert.IsType<TextBlock>(copy.ToolTip).Text);
+		var icon = Assert.IsType<Image>(copy.Content);
+		Assert.NotNull(icon.Source);
+		Assert.Equal(14, icon.Width);
+		Assert.Equal(14, icon.Height);
+		// 用户报的就是这枚图标贴在按钮左侧：动作内容必须在按钮里两向居中。
+		Assert.Equal(Math.Round(copy.Bounds.X + copy.Bounds.Width / 2, 1),
+			Math.Round(icon.Bounds.X + icon.Bounds.Width / 2, 1), 0.6);
+		Assert.Equal(Math.Round(copy.Bounds.Y + copy.Bounds.Height / 2, 1),
+			Math.Round(icon.Bounds.Y + icon.Bounds.Height / 2, 1), 0.6);
+		// 顶栏里不再有文字按钮：只有宿主给的那一枚图标。
+		Assert.DoesNotContain("复制", Find<TextBlock>(code).Select(block => block.Text));
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
 	public void UserToolAndThinkingRowsUseSelectableOriginalText()
 	{
 		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
@@ -80,7 +111,7 @@ public sealed class MessageInteractionTests
 			Assert.Equal(expected, text.SelectedText);
 		}
 		// 思考正文已改为 Markdown，仍可整体选择复制原文。
-		var thinking = Find<MarkdownPresenter>(tab.View).Single(view => view.Markdown == "thinking text");
+		var thinking = Find<MarkdownView>(tab.View).Single(view => view.Source == "thinking text");
 		thinking.SelectAll();
 		Assert.Equal("thinking text", thinking.SelectedText);
 	}
@@ -138,12 +169,12 @@ public sealed class MessageInteractionTests
 				expander.Header is { } header && Find<TextBlock>(header).Any(text => text.Text == Strings.ThinkingComplete));
 			var preview = Find<TextBlock>(thinking.Header!).Single(text => text.Text == "**bold**");
 			Assert.True(preview.IsVisible);
-			Assert.DoesNotContain(Find<MarkdownPresenter>(view.View), markdown => markdown.Markdown.Contains("**bold**", StringComparison.Ordinal));
+			Assert.DoesNotContain(Find<MarkdownView>(view.View), markdown => markdown.Source.Contains("**bold**", StringComparison.Ordinal));
 
 			thinking.IsExpanded = true;
 			ConversationPerformanceTests.Layout(view.View);
 
-			Assert.Contains(Find<MarkdownPresenter>(view.View), markdown => markdown.Markdown.Contains("**bold**", StringComparison.Ordinal));
+			Assert.Contains(Find<MarkdownView>(view.View), markdown => markdown.Source.Contains("**bold**", StringComparison.Ordinal));
 			Assert.False(preview.IsVisible);
 		}
 		finally

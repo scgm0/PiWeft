@@ -604,6 +604,8 @@ public sealed class SettingsView
 	/// 性能诊断：开关 + 即时快照 + 按名称聚合的耗时。面板本身不轮询，
 	/// 采样在 <see cref="Diagnostics"/> 的定时器里做，这里只在打开开关或点「刷新采样」时取一次快照。
 	/// </summary>
+	private string _compactResult = string.Empty;
+
 	private Element DiagnosticsSection()
 	{
 		var snapshot = _snapshot();
@@ -647,61 +649,216 @@ public sealed class SettingsView
 		}
 
 		var fresh = Diagnostics.TakeSnapshot();
-		body.Children(new TextBlock()
-			.Text(Strings.DiagnosticsMemoryLine(
-				Strings.FormatBytes(fresh.WorkingSetBytes), Strings.FormatBytes(fresh.HeapBytes),
-				Strings.FormatBytes(fresh.AllocatedBytes), fresh.Gen0Collections, fresh.Gen2Collections))
-			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
-			.TextWrapping(TextWrapping.Wrap));
-		body.Children(new TextBlock()
-			.Text(Strings.DiagnosticsLagLine($"{fresh.QueueLagMs:0.0} ms", $"{fresh.QueueLagMaxMs:0.0} ms"))
-			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
-			.TextWrapping(TextWrapping.Wrap));
+		if (fresh.Counters.Count == 0 && fresh.Stats.Count == 0 && fresh.Frame.Frames == 0)
+		{
+			body.Children(new TextBlock().Text(Strings.DiagnosticsNoData)
+				.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap));
+			body.Children(DiagnosticsButtons(fresh));
+			return Group("list-checks", Strings.SettingsDiagnostics, body);
+		}
+
+		body.Children(DiagnosticsButtons(fresh));
+
+		// 概览：一眼看清「卡不卡、涨不涨」，细节都放到下面的分组里。
+		var frame = fresh.Frame;
+		// 两列两行：四列时提示文字会被裁掉，指标板就白做了。
+		var tiles = new Grid().Columns("*,*").Rows("Auto,Auto")
+			.Children(
+				MetricTile(Strings.LabelFrameGap, frame.Frames > 0 ? $"{frame.P50Ms:0.0} / {frame.P95Ms:0.0} ms" : "—",
+					frame.Frames > 0 ? $"p50 / p95 · FPS {frame.Fps:0.#}" : "等待第一次采样", 0, 0),
+				MetricTile(Strings.LabelFrameCounts, $"{frame.DroppedFrames} / {frame.LongFrames} / {frame.IdleGaps}",
+					$"最长停顿 {frame.MaxGapMs:0} ms · 峰值 {frame.MaxMs:0.0} ms", 1, 0),
+				MetricTile(Strings.LabelWorkingSet, Strings.FormatBytes(fresh.WorkingSetBytes),
+					$"提交 {Strings.FormatBytes(fresh.CommittedBytes)} · {Strings.LabelCpu} {fresh.CpuPercent:0.#}%", 0, 1),
+				MetricTile(Strings.LabelHeap, Strings.FormatBytes(fresh.HeapBytes),
+					$"{Strings.LabelLoh} {Strings.FormatBytes(fresh.LargeObjectHeapBytes)} · {Strings.LabelFragmented} {Strings.FormatBytes(fresh.FragmentedBytes)}", 1, 1));
+
+		var panel = new StackPanel().Spacing(AppTheme.Space2)
+			.Children(
+				new TextBlock().Text(Strings.DiagnosticsOverview)
+					.FontSize(AppTheme.FontSizeMicro).SubtleText(),
+				tiles);
+		body.Children(panel);
+		body.Children(new TextBlock().Text(Strings.DiagnosticsLoopHint)
+			.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+
+		// 帧时间条：柱子按预算上色，蓝色那条是 16.7 ms 参考线。
+		if (frame.Frames > 0)
+		{
+			var strip = new FrameTimeStrip();
+			strip.SetSamples(frame.Samples);
+			body.Children(new StackPanel().Spacing(2).Children(
+				new TextBlock().Text(Strings.DiagnosticsFrameHeader)
+					.FontSize(AppTheme.FontSizeMicro).SubtleText(),
+				strip,
+				new TextBlock()
+					.Text($"● {Strings.LabelFrameBudget} · ● >16.7 ms · ● ≥{Diagnostics.LongFrameReportMs:0} ms" +
+						$" · 最近 {frame.LastMs:0.0} ms · 最大 {frame.MaxMs:0.0} ms · {Strings.LabelAllocPerFrame} " +
+						$"{Strings.FormatBytes((long)Math.Round(frame.AllocBytesPerFrame))} · {Strings.LabelGcPause} {frame.GcPausePercent:0.##}%")
+					.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
+					.TextWrapping(TextWrapping.Wrap)));
+		}
+
+		body.Children(DiagnosticsRows(Strings.DiagnosticsLoopHeader, [
+
+			("节奏", fresh.FramesPerSecond > 0
+				? $"{fresh.FramesPerSecond:0} 帧/秒 · {(fresh.ContinuousLoop ? "连续" : "按请求")}" +
+					$" · VSync {(fresh.VSync ? "开" : "关")} · 目标 {(fresh.TargetFps > 0 ? fresh.TargetFps.ToString() : "跟随刷新率")}"
+				: "等待第一次采样"),
+			(Strings.LabelInputLatency, frame.Inputs > 0
+				? $"p95 {frame.InputP95Ms:0.0} ms · 最大 {frame.InputMaxMs:0.0} ms（样本 {frame.Inputs}）"
+				: "还没有按键/滚轮样本"),
+			(Strings.LabelQueueLag, fresh.QueueLagMaxMs >= Diagnostics.LagWarnMs
+				? $"最近 {fresh.QueueLagMs:0.0} ms · 窗口内最大 {fresh.QueueLagMaxMs:0.0} ms（≥50 ms 表示 UI 线程被占住）"
+				: $"最近 {fresh.QueueLagMs:0.0} ms · 窗口内最大 {fresh.QueueLagMaxMs:0.0} ms"),
+			(Strings.LabelDrawCalls, frame.DrawCalls > 0
+				? $"{frame.DrawCalls} 调用 · 剔除 {frame.CulledCalls} · 文本 {frame.TextDraws} · 形状 {frame.ShapeDraws}" +
+					$" · 图片 {frame.ImageDraws} · 裁剪 {frame.ClipCount}"
+				: "—"),
+		]));
+
+		body.Children(DiagnosticsRows(Strings.DiagnosticsMemoryHeader, [
+			(Strings.LabelHeap, $"{Strings.FormatBytes(fresh.HeapBytes)} · {Strings.LabelLoh} " +
+				$"{Strings.FormatBytes(fresh.LargeObjectHeapBytes)}"),
+			(Strings.LabelAllocated, $"{Strings.FormatBytes(fresh.AllocatedBytes)} · gen0 {fresh.Gen0Collections} / gen2 {fresh.Gen2Collections}"),
+			(Strings.LabelFragmented, Strings.FormatBytes(fresh.FragmentedBytes)),
+			(Strings.LabelPinned, $"{fresh.PinnedObjects} · {Strings.LabelFinalizers} {fresh.FinalizationPending}"),
+			(Strings.LabelCpu, $"{fresh.CpuPercent:0.#}% · {Strings.LabelPool} {fresh.PoolThreads} · 排队 {fresh.PoolPendingWork}"),
+			(Strings.DiagnosticsCompactHint, Strings.DiagnosticsMemoryHint),
+		]));
+
+		if (fresh.Counters.Count > 0)
+		{
+			var counters = new StackPanel().Spacing(2);
+			counters.Children(new TextBlock().Text(Strings.DiagnosticsCountersHeader)
+				.FontSize(AppTheme.FontSizeMicro).SubtleText());
+			foreach (var counter in fresh.Counters.Take(12))
+			{
+				counters.Children(MetricLine(counter.Name,
+					counter.TotalMs > 0 ? $"×{counter.Value} · Σ {counter.TotalMs:0.0} ms" : $"×{counter.Value}",
+					counter.TotalMs > 0 ? "明细只含慢样本" : null));
+			}
+
+			body.Children(counters);
+		}
+
+		// 聚合视图才是用来对照优化的：同一段路径跑了几次、总耗时多少、最慢一次是多少。
+		var stats = new StackPanel().Spacing(2);
+		stats.Children(new TextBlock().Text(Strings.DiagnosticsStatsHeader)
+			.FontSize(AppTheme.FontSizeMicro).SubtleText());
+		foreach (var stat in fresh.Stats.Take(14))
+		{
+			stats.Children(MetricLine(stat.Name, $"×{stat.Count} · Σ {stat.TotalMs:0.0} ms",
+				$"max {stat.MaxMs:0.0} · last {stat.LastMs:0.0}"));
+		}
+
+		body.Children(stats);
+
+		var recent = new StackPanel().Spacing(2);
+		recent.Children(new TextBlock().Text(Strings.DiagnosticsRecentHeader)
+			.FontSize(AppTheme.FontSizeMicro).SubtleText());
+		foreach (var timing in fresh.Recent.Take(10))
+		{
+			recent.Children(MetricLine($"{timing.StartedAt:HH:mm:ss}  {timing.Name}",
+				$"{timing.DurationMs:0.0} ms", timing.Detail));
+		}
+
+		body.Children(recent);
+
 		body.Children(new TextBlock()
 			.Text($"{Strings.DiagnosticsPath}：{fresh.TimingsPath ?? "—"}")
 			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
 			.TextWrapping(TextWrapping.Wrap).HoverTip(fresh.TimingsPath ?? string.Empty));
 
-		body.Children(new DockPanel().LastChildFill().Children(
-			AppIcons.Button("folder-open", Strings.DiagnosticsOpenFolder, OpenDiagnosticsFolder).DockRight(),
-			AppIcons.Button("rotate-ccw", Strings.DiagnosticsReset, () =>
-			{
-				Diagnostics.Reset();
-				Refresh();
-			}).DockRight(),
-			AppIcons.Button("refresh-cw", Strings.DiagnosticsRefresh, () => Refresh()).DockRight(),
-			new TextBlock().Text(string.Empty)));
-
-		if (fresh.Stats.Count == 0)
-		{
-			body.Children(new TextBlock().Text(Strings.DiagnosticsNoData)
-				.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap));
-			return Group("list-checks", Strings.SettingsDiagnostics, body);
-		}
-
-		// 聚合视图才是用来对照优化的：同一段路径跑了几次、总耗时多少、最慢一次是多少。
-		body.Children(new TextBlock().Text(Strings.DiagnosticsStatsHeader)
-			.FontSize(AppTheme.FontSizeMicro).SubtleText());
-		foreach (var stat in fresh.Stats.Take(14))
-		{
-			body.Children(new TextBlock()
-				.Text($"{stat.Name}  ×{stat.Count}  Σ {stat.TotalMs:0.0} ms  max {stat.MaxMs:0.0} ms  last {stat.LastMs:0.0} ms")
-				.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).PrimaryText()
-				.TextWrapping(TextWrapping.Wrap));
-		}
-
-		body.Children(new TextBlock().Text(Strings.DiagnosticsRecentHeader)
-			.FontSize(AppTheme.FontSizeMicro).SubtleText());
-		foreach (var timing in fresh.Recent.Take(20))
-		{
-			body.Children(new TextBlock()
-				.Text($"{timing.StartedAt:HH:mm:ss}  {timing.DurationMs,8:0.0} ms  {timing.Name}" +
-					(timing.Detail is { Length: > 0 } detail ? $"  ({detail})" : string.Empty))
-				.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
-				.TextWrapping(TextWrapping.Wrap));
-		}
-
 		return Group("list-checks", Strings.SettingsDiagnostics, body);
+	}
+
+	/// <summary>诊断区的操作按钮：刷新、压一次堆（判泄漏）、清空统计、打开目录。</summary>
+	private Element DiagnosticsButtons(Diagnostics.Snapshot fresh)
+	{
+		var compacted = new TextBlock()
+			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
+			.TextWrapping(TextWrapping.Wrap)
+			.Text(string.IsNullOrEmpty(_compactResult) ? Strings.DiagnosticsMemoryHint : _compactResult);
+		return new StackPanel().Spacing(AppTheme.Space2).Children(
+			new WrapPanel().Spacing(AppTheme.Space2).Children(
+				AppIcons.TextButton("refresh-cw", Strings.DiagnosticsRefresh, () => Refresh()),
+				AppIcons.TextButton("arrow-down", Strings.DiagnosticsCompact, () =>
+				{
+					var (before, after, pauseMs) = Diagnostics.Compact();
+					_compactResult = Strings.DiagnosticsCompactResult(before, after, pauseMs);
+					Toast(_compactResult, ToastKind.Info);
+					Refresh();
+				}, strong: false),
+				AppIcons.TextButton("rotate-ccw", Strings.DiagnosticsReset, () =>
+				{
+					Diagnostics.Reset();
+					_compactResult = string.Empty;
+					Refresh();
+				}),
+				AppIcons.TextButton("folder-open", Strings.DiagnosticsOpenFolder, OpenDiagnosticsFolder)),
+			compacted);
+	}
+
+	/// <summary>
+	/// 诊断卡内的小节：小标题 + 发丝线 + 对齐行。不再嵌一层卡片，避免「盒中盒」把版面切碎。
+	/// </summary>
+	private static Element DiagnosticsRows(string title, IReadOnlyList<(string Label, string Value)> rows)
+	{
+		var body = new StackPanel().Spacing(2);
+		body.Children(new TextBlock().Text(title).FontSize(AppTheme.FontSizeMicro).SubtleText());
+		body.Children(new Border().Height(1).Margin(new Thickness(0, 2, 0, 4))
+			.WithTheme(static (theme, line) => line.Background = theme.Palette.ControlBorder));
+		foreach (var (label, value) in rows)
+		{
+			body.Children(MetricLine(label, value, null));
+		}
+
+		return body;
+	}
+
+	/// <summary>概览里的一枚指标块：小标签 + 等宽数值 + 一行补充说明。</summary>
+	private static Element MetricTile(string label, string value, string? hint, int column, int row)
+	{
+		var tile = new Border()
+		.Margin(new Thickness(column == 0 ? 0 : 3, 0, column == 0 ? 3 : 0, row == 0 ? 0 : 3))
+		.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
+		.CornerRadius(AppTheme.RadiusSm)
+		.BorderThickness(1)
+		.WithTheme(static (theme, border) =>
+		{
+			border.Background = theme.Palette.ContainerBackground;
+			border.BorderBrush = theme.Palette.ControlBorder;
+		})
+		.Child(new StackPanel().Spacing(2).Children(
+			new TextBlock().Text(label).FontSize(AppTheme.FontSizeMicro).SubtleText(),
+			new TextBlock().Text(value).FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium)
+				.FontFamily(AppTheme.MonoFont).PrimaryText().TextTrimming(TextTrimming.CharacterEllipsis),
+			new TextBlock().Text(hint ?? string.Empty).FontSize(AppTheme.FontSizeMicro)
+				.FontFamily(AppTheme.MonoFont).FaintText()
+				.TextWrapping(TextWrapping.Wrap).TextTrimming(TextTrimming.CharacterEllipsis)));
+		Grid.SetColumn(tile, column);
+		Grid.SetRow(tile, row);
+		return tile;
+	}
+
+	/// <summary>
+	/// 一行「名称 …… 数值」：名称靠左、数值靠右对齐成表，备注只进悬浮提示 ——
+	/// 三列同屏会把名称挤成省略号，反而看不清是谁的耗时。
+	/// </summary>
+	private static Element MetricLine(string name, string value, string? note)
+	{
+		var row = new DockPanel().LastChildFill().Children(
+			new TextBlock().Text(value).FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
+				.PrimaryText().DockRight().Margin(new Thickness(AppTheme.Space3, 0, 0, 0)),
+			new TextBlock().Text(name).FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
+				.SubtleText().TextTrimming(TextTrimming.CharacterEllipsis));
+		if (!string.IsNullOrEmpty(note))
+		{
+			row.ToolTip = new TextBlock { Text = note };
+		}
+
+		return row;
 	}
 
 	private void OpenDiagnosticsFolder()

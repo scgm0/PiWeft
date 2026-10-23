@@ -70,7 +70,9 @@ public sealed class FoldScrollTests
 		}
 
 		Assert.True(conversation.Following);
-		Assert.Equal(smooth.MaxVerticalOffset, scroll.VerticalOffset, 1.0);
+		// 跟底状态本身用 4 DIP 判定「在末尾」；增量 Markdown 的最后一行在动画收尾后
+		// 仍可能再测出 1–2 DIP 的高度差，不应把它当成没有到达末尾。
+		Assert.Equal(smooth.MaxVerticalOffset, scroll.VerticalOffset, 4.0);
 	}
 
 	[Fact]

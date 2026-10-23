@@ -1745,7 +1745,8 @@ public sealed partial class SessionTab : IDisposable
 		}
 		if (statsWatch is not null)
 		{
-			Diagnostics.Record("render.stats", statsWatch, $"rows={all.Count}");
+			// 渲染每帧都发生：常态只计数，真正慢的那几次才落明细（否则诊断自身就是垃圾源）。
+			Diagnostics.Slow("render.stats", statsWatch, 8, $"rows={all.Count}");
 		}
 
 		var busy = _sending || _chat.IsStreaming;
@@ -1806,7 +1807,7 @@ public sealed partial class SessionTab : IDisposable
 		SyncOutline(entries, _projector.LastStablePrefix);
 		if (realize is not null)
 		{
-			Diagnostics.Record("timeline.realize", realize, $"rows={entries.Count}");
+			Diagnostics.Slow("timeline.realize", realize, 8, $"rows={entries.Count}");
 		}
 		SetEmptyState(all.Count == 0 && _messages.IsVisible);
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
@@ -1831,10 +1832,7 @@ public sealed partial class SessionTab : IDisposable
 		if (renderWatch is not null)
 		{
 			var elapsed = renderWatch.Elapsed.TotalMilliseconds;
-			if (elapsed >= 8)
-			{
-				Diagnostics.Record("ui.render", elapsed, $"rows={entries.Count}, visible={_timeline.VisibleRowCount}");
-			}
+			Diagnostics.Slow("ui.render", elapsed, 8, $"rows={entries.Count}, visible={_timeline.VisibleRowCount}");
 		}
 	}
 

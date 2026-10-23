@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Markdown;
+using PiWeft.Markdown;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Session;
@@ -23,14 +23,14 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		var started = Stopwatch.StartNew();
 		using var tab = new SessionTab(session, [session.Model], "history");
 		Layout(tab);
-		output.WriteLine($"Open 2000 rows: {started.Elapsed.TotalMilliseconds:F2} ms; allocated {GC.GetAllocatedBytesForCurrentThread() - allocated:N0} bytes; Markdown views {Find<MarkdownPresenter>(tab.View).Count()}");
-		Assert.InRange(Find<MarkdownPresenter>(tab.View).Count(), 1, 20);
-		Assert.Contains(Find<MarkdownPresenter>(tab.View), view => view.Markdown.Contains("answer 999", StringComparison.Ordinal));
+		output.WriteLine($"Open 2000 rows: {started.Elapsed.TotalMilliseconds:F2} ms; allocated {GC.GetAllocatedBytesForCurrentThread() - allocated:N0} bytes; Markdown views {Find<MarkdownView>(tab.View).Count()}");
+		Assert.InRange(Find<MarkdownView>(tab.View).Count(), 1, 20);
+		Assert.Contains(Find<MarkdownView>(tab.View), view => view.Source.Contains("answer 999", StringComparison.Ordinal));
 		var scroll = Find<ScrollViewer>(tab.View).First();
 		scroll.SetScrollOffsets(0, 0);
 		Layout(tab);
 		Assert.Contains(Find<MultiLineTextBox>(tab.View), view => view.Text == "question 0");
-		Assert.InRange(Find<MarkdownPresenter>(tab.View).Count(), 1, 20);
+		Assert.InRange(Find<MarkdownView>(tab.View).Count(), 1, 20);
 	}
 
 	[Fact]
@@ -62,7 +62,7 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		session.Session.AppendMessage(new AssistantMessage { Content = [new TextContent { Text = "final answer" }] });
 		using var tab = new SessionTab(session, [session.Model], "history");
 		Layout(tab);
-		var markdown = Find<MarkdownPresenter>(tab.View).Single();
+		var markdown = Find<MarkdownView>(tab.View).Single();
 		markdown.SelectAll();
 		var selected = markdown.SelectedText;
 		for (var depth = 0; depth < 2; depth++)
@@ -72,7 +72,7 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		var content = tool.Content;
 		tab.ApplyTheme();
 		Layout(tab);
-		Assert.Same(markdown, Find<MarkdownPresenter>(tab.View).Single());
+		Assert.Same(markdown, Find<MarkdownView>(tab.View).Single());
 		Assert.Equal(selected, markdown.SelectedText);
 		Assert.True(tool.IsExpanded);
 		Assert.Same(content, tool.Content);
@@ -117,20 +117,20 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		var streaming = new ChatEntry { Role = ChatRole.Assistant, Text = "part", Thinking = "reasoning", IsStreaming = true, Timestamp = 1 };
 		timeline.SetEntries([history, streaming]);
 		Layout(timeline.View);
-		var markdown = Find<MarkdownPresenter>(timeline.View).Single(view => view.Markdown == "previous answer");
+		var markdown = Find<MarkdownView>(timeline.View).Single(view => view.Source == "previous answer");
 		markdown.SelectAll();
 		var thinking = Find<Expander>(timeline.View).Last();
 		thinking.IsExpanded = true;
 		timeline.SetEntries([history, streaming with { Text = "partial answer" }]);
 		Layout(timeline.View);
-		Assert.Same(markdown, Find<MarkdownPresenter>(timeline.View).Single(view => view.Markdown == "previous answer"));
+		Assert.Same(markdown, Find<MarkdownView>(timeline.View).Single(view => view.Source == "previous answer"));
 		Assert.Equal("previous answer", markdown.SelectedText);
-		Assert.Contains(Find<MultiLineTextBox>(timeline.View), text => text.Text == "partial answer");
+		Assert.Contains(Find<MarkdownView>(timeline.View), view => view.Source == "partial answer");
 		Assert.True(thinking.IsExpanded);
 		timeline.SetEntries([history, streaming with { Text = "completed answer", IsStreaming = false }]);
 		Layout(timeline.View);
 		// 历史回复、思考正文和完成后的回复各有一个 Markdown。
-		Assert.Equal(3, Find<MarkdownPresenter>(timeline.View).Count());
+		Assert.Equal(3, Find<MarkdownView>(timeline.View).Count());
 		Assert.Same(thinking, Find<Expander>(timeline.View).Last());
 		Assert.True(thinking.IsExpanded);
 	}
@@ -159,7 +159,7 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		// measured height instead of collapsing the extent to the generic 120 estimate.
 		Assert.DoesNotContain(changes, change => change.Kind == ItemsChangeKind.Replace);
 		Layout(timeline.View, 600, 500);
-		Assert.Contains(Find<MultiLineTextBox>(timeline.View), text => text.Text.Contains("paragraph 39", StringComparison.Ordinal));
+		Assert.Contains(Find<MarkdownView>(timeline.View), view => view.Source.Contains("paragraph 39", StringComparison.Ordinal));
 		Assert.True(conversation.Following);
 		var smooth = SmoothScroll.For(timeline.Scroll);
 		Assert.Equal(smooth.MaxVerticalOffset, timeline.Scroll.VerticalOffset, 1);
@@ -179,7 +179,7 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		Assert.Equal(3, composer.SelectionLength);
 		var scroll = Find<ScrollViewer>(tab.View).First();
 		Assert.True(scroll.ViewportHeight >= 100);
-		Assert.Contains(Find<MarkdownPresenter>(tab.View), view => view.Markdown.Contains("answer 59", StringComparison.Ordinal));
+		Assert.Contains(Find<MarkdownView>(tab.View), view => view.Source.Contains("answer 59", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -191,10 +191,10 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		using var tab = new SessionTab(session, [session.Model], "long reply");
 		Layout(tab.View, 500, 420);
 		var scroll = Find<ScrollViewer>(tab.View).First();
-		var reply = Find<MarkdownPresenter>(tab.View).Single(view => view.Markdown == text);
+		var reply = Find<MarkdownView>(tab.View).Single(view => view.Source == text);
 		Assert.True(reply.ActualHeight > scroll.ViewportHeight);
 		Assert.True(reply.Bounds.Top < scroll.Bounds.Bottom && reply.Bounds.Bottom > scroll.Bounds.Top);
-		Assert.InRange(Find<MarkdownPresenter>(tab.View).Count(), 1, 10);
+		Assert.InRange(Find<MarkdownView>(tab.View).Count(), 1, 10);
 	}
 
 	internal static void Layout(SessionTab tab) => Layout(tab.View);

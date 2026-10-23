@@ -1,6 +1,6 @@
 using System.Reflection;
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Markdown;
+using PiWeft.Markdown;
 using Xunit;
 
 namespace PiWeft.Desktop.Tests;
@@ -78,15 +78,10 @@ public sealed class MarkdownLinkInteractionTests
 		{
 			Role = ChatRole.Assistant, Text = "[file](src/file.cs:12) [web](https://example.com)",
 		}, _ => { }, focus, openLink: opened.Add);
-		var markdown = VisualTree.Find<MarkdownPresenter>(view.View).Single();
-		// Invoke the framework link event using its real event arguments, without launching an editor.
-		var eventField = typeof(MarkdownPresenter).GetField("LinkRequested", BindingFlags.Instance | BindingFlags.NonPublic)!;
-		var handler = Assert.IsType<Action<MarkdownLinkRequestedEventArgs>>(eventField.GetValue(markdown));
+		var markdown = VisualTree.Find<MarkdownView>(view.View).Single();
 		foreach (var url in new[] { "src/file.cs:12", "https://example.com" })
 		{
-			var args = (MarkdownLinkRequestedEventArgs)Activator.CreateInstance(typeof(MarkdownLinkRequestedEventArgs),
-				BindingFlags.Instance | BindingFlags.NonPublic, null, [url, null, null, 0, 1], null)!;
-			handler(args);
+			markdown.RaiseLinkForTest(url);
 		}
 		Assert.Equal(new[] { "src/file.cs:12", "https://example.com" }, opened);
 		UiLifetime.Release(view.View);

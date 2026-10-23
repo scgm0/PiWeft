@@ -39,6 +39,10 @@ internal sealed class ConversationTimeline : IDisposable
 		Scroll.ScrollChanged += RequestPrune;
 		Scroll.MouseDown += CancelJump;
 		Scroll.MouseWheel += CancelJump;
+		// 输入→绘制延迟的取样点：指针与滚轮在会话这一层最先被看到（下游控件常把事件处理掉，
+		// 冒泡不到窗口根），这里记一次时间戳，下一帧由诊断的帧档算出延迟。
+		Scroll.MouseDown += _ => Diagnostics.NoteInput();
+		Scroll.MouseWheel += _ => Diagnostics.NoteInput();
 	}
 
 	public ItemsControl View { get; }
@@ -73,6 +77,8 @@ internal sealed class ConversationTimeline : IDisposable
 		PruneRecycled();
 		_inPlaceUpdates.Clear();
 		_rows.Update(entries, stablePrefix, prefixReused, _inPlaceUpdates);
+		// churn 计数（零分配）：流式期原位更新的行数，是「重建 vs 复用」最直接的对照量。
+		if (_inPlaceUpdates.Count > 0) Diagnostics.Count("row.inplace", _inPlaceUpdates.Count);
 		// A streaming tail changes on every frame. Rebinding just its visible host keeps the
 		// virtualized height cache (and therefore the published extent) instead of resetting the
 		// row to the generic estimate, which made the viewport clamp short of the real bottom.
@@ -246,6 +252,7 @@ internal sealed class ConversationTimeline : IDisposable
 			return;
 		}
 		Release(host);
+		Diagnostics.Count("row.build");
 		host.MaxWidth = AppTheme.MessageMaxWidth + AppTheme.Space6;
 		host.Content = _create(entry);
 		host.Tag = entry;
@@ -322,6 +329,7 @@ internal sealed class ConversationTimeline : IDisposable
 			if (states.Any(static expanded => expanded)) _expanded[Key(entry)] = states;
 			else _expanded.Remove(Key(entry));
 			UiLifetime.Release(child);
+			Diagnostics.Count("row.release");
 		}
 		// The framework pools the small host, never the expensive message subtree.
 		host.Content = null;

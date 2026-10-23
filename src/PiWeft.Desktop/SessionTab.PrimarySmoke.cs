@@ -1,7 +1,7 @@
 using System.Text;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Markdown;
+using PiWeft.Markdown;
 
 namespace PiWeft.Desktop;
 
@@ -11,7 +11,7 @@ public sealed partial class SessionTab
 	internal void PreparePrimarySmoke()
 	{
 		_composer.Text = "before after";
-		var viewer = Find<MarkdownPresenter>(_messages).Last();
+		var viewer = Find<MarkdownView>(_messages).Last();
 		viewer.SelectAll();
 		Console.WriteLine("primary-source:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(viewer.SelectedText)));
 		var point = _composer.GetCharRectInWindow(7);
@@ -23,7 +23,7 @@ public sealed partial class SessionTab
 		Console.WriteLine($"timeline: viewport={_scroll.ViewportWidth:0}x{_scroll.ViewportHeight:0}, offset={_scroll.VerticalOffset:0}/{SmoothScroll.For(_scroll).MaxVerticalOffset:0}, bounds={_scroll.Bounds}, presenter={_scroll.Content?.Bounds}");
 		var last = _chat.Entries().LastOrDefault();
 		var visible = last is not { Role: ChatRole.Assistant, Text.Length: > 0 } ||
-			Find<MarkdownPresenter>(_messages).Any(markdown => markdown.Markdown == last.Text &&
+			Find<MarkdownView>(_messages).Any(markdown => markdown.Source == last.Text &&
 				markdown.Bounds.Bottom > _scroll.Bounds.Top && markdown.Bounds.Top < _scroll.Bounds.Bottom);
 		Console.WriteLine($"timeline latest visible: {visible}");
 	}

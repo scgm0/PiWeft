@@ -32,6 +32,9 @@ internal sealed class SmoothScroll : IDisposable
 	// 由 ExecutionProcessView 显式启用；外层会话仍用 ConversationScroll 的状态机。
 	private const double AutoFollowTolerance = 4;
 	internal bool AutoFollowAtEnd { get; set; }
+
+	/// <summary>True after an explicit wheel/keyboard/scrollbar escape from the tail.</summary>
+	internal bool ReaderEscaped => _readerEscaped;
 	// 读者明确上滚过（滚轮/键盘/滚动条/恢复历史位置）。只有这种意图能挡住「置底即跟底」；
 	// 布局测高、presenter 切换、展开折叠引起的位移都不算，否则跟底会被静默关掉且再不恢复。
 	private bool _readerEscaped;

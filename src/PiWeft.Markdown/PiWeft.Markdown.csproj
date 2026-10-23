@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<RootNamespace>PiWeft.Markdown</RootNamespace>
+		<AssemblyName>PiWeft.Markdown</AssemblyName>
+		<Description>Incremental, streaming Markdown control for PiWeft Desktop.</Description>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Aprillz.MewUI.Core" />
+		<PackageReference Include="Markdig" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="PiWeft.Desktop.Tests" />
+		<InternalsVisibleTo Include="PiWeft.Markdown.Tests" />
+	</ItemGroup>
+
+</Project>

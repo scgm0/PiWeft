@@ -1,6 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Markdown;
+using PiWeft.Markdown;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
 
@@ -76,6 +76,57 @@ public sealed class StreamingThinkingTests
 			view.VerticalScroll != ScrollMode.Disabled);
 
 	[Fact]
+	public void ExpandingAToolRowAfterAQueuedStreamingFollowKeepsTheReadingPosition()
+	{
+		// 流式思考那一帧把「布局后继续跟底」排进了队列；同一帧里读者点开了另一个工具步骤。
+		// 展开是阅读行为，必须取消还在排队的跟底动作，否则预览行会被拽到新的末尾 ——
+		// 这就是「偶发：展开步骤行时组体进度没固定在步骤行预览」。
+		using var guard = new TextFocusScrollGuard(new ScrollViewer());
+		var members = Enumerable.Range(0, 30).Select(Tool).ToList();
+		members[6] = Thinking("初始思考");
+		var process = new ChatEntry
+		{
+			Role = ChatRole.Process, Text = string.Empty, EntryId = "process", IsStreaming = true,
+			ProcessEntries = [.. members],
+		};
+		var view = new ExecutionProcessView(process, entry => entry.Role == ChatRole.Assistant
+			? new AssistantMessageView(entry, _ => { }, guard).View
+			: new ToolMessageView(entry, guard).View, guard);
+		Pump(view.View);
+		ExpandGroups(view.View);
+
+		var body = BodyOf(view);
+		var smooth = SmoothScroll.For(body);
+		body.SetScrollOffsets(0, smooth.MaxVerticalOffset);
+		Settle(view);
+		Assert.True(smooth.IsFollowingGrowth, "the body parked at its end follows the streaming thinking");
+
+		// 1) 思考又长了一截：SyncRows 记下跟随意图，把跟底动作排到布局之后。
+		members[6] = Thinking(string.Join("\n\n", Enumerable.Range(0, 6).Select(index => $"思考段落 {index}")));
+		view.Update(process with { ProcessEntries = [.. members] });
+		Pump(view.View);
+
+		// 2) 同一帧里读者点开一个靠上的工具步骤。
+		var row = Find<ItemContainer>(body)
+			.First(container => container.Bounds.Y > body.Bounds.Y &&
+				container.Bounds.Bottom <= body.Bounds.Bottom &&
+				Find<Expander>(container).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
+		var position = row.Index;
+		var previewTop = row.Bounds.Y - body.Bounds.Y;
+		Find<Expander>(row).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint).IsExpanded = true;
+
+		view.SyncBodyMetrics();
+		Pump(view.View);
+		view.SyncBodyMetrics();
+		Pump(view.View);
+
+		Assert.False(smooth.IsFollowingGrowth, "expanding a tool step cancels the queued follow");
+		var expanded = Find<ItemContainer>(body).First(container => container.Index == position);
+		Assert.InRange(expanded.Bounds.Y - body.Bounds.Y, previewTop - 1, previewTop + 1);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
 	public void ExpandedStreamingThinkingUpdatesPerFrameAndRendersMarkdownWhenSettled()
 	{
 		using var guard = new TextFocusScrollGuard(new ScrollViewer());
@@ -86,10 +137,10 @@ public sealed class StreamingThinkingTests
 		thinking.IsExpanded = true;
 		Pump(view.View);
 
-		// 流式阶段用轻量纯文本视图：长思考逐帧重建 Markdown 控件树会超过帧预算。
-		Assert.Empty(Find<MarkdownPresenter>(view.View));
-		var text = Assert.Single(Find<MultiLineTextBox>(view.View));
-		Assert.Contains("step 0", text.Text, StringComparison.Ordinal);
+		// 流式阶段就用增量 Markdown 视图：只重排开放尾块，不再先纯文本再替换。
+		var markdown = Assert.Single(Find<MarkdownView>(view.View));
+		Assert.True(markdown.IsStreaming);
+		Assert.Contains("step 0", markdown.Source, StringComparison.Ordinal);
 
 		for (var step = 1; step <= 6; step++)
 		{
@@ -97,15 +148,16 @@ public sealed class StreamingThinkingTests
 			view.Update(entry);
 			Pump(view.View);
 			// 展开的思考必须跟着流式增量走，而不是停在展开时的那一版。
-			Assert.Equal(entry.Thinking, text.Text);
+			Assert.Equal(entry.Thinking, markdown.Source);
 		}
 
-		// 思考结束：一次性换成 Markdown，展开状态保持不变。
+		// 思考结束：同一个视图只切换流式状态，不重建、不换控件。
 		entry = entry with { IsThinking = false, IsStreaming = false };
 		view.Update(entry);
 		Pump(view.View);
-		var markdown = Assert.Single(Find<MarkdownPresenter>(view.View));
-		Assert.Equal(entry.Thinking, markdown.Markdown);
+		Assert.Same(markdown, Assert.Single(Find<MarkdownView>(view.View)));
+		Assert.False(markdown.IsStreaming);
+		Assert.Equal(entry.Thinking, markdown.Source);
 		Assert.True(thinking.IsExpanded);
 	}
 
@@ -121,10 +173,10 @@ public sealed class StreamingThinkingTests
 		var thinking = Find<Expander>(group.View).Single(expander => HoverHints.Text(expander) is null or "");
 		thinking.IsExpanded = true;
 		Settle(group);
-		var text = Assert.Single(Find<MultiLineTextBox>(group.View));
+		var markdown = Assert.Single(Find<MarkdownView>(group.View));
 		var body = BodyOf(group);
 		var smooth = SmoothScroll.For(body);
-		var heightBefore = text.Bounds.Height;
+		var heightBefore = markdown.Bounds.Height;
 
 		var entry = Thinking("step 0");
 		for (var step = 1; step <= 8; step++)
@@ -132,12 +184,12 @@ public sealed class StreamingThinkingTests
 			entry = Thinking(string.Join("\n\n", Enumerable.Range(0, step * 2 + 1).Select(i => $"reasoning paragraph {i}")));
 			group.Update(Process(entry));
 			Pump(group.View);
-			Assert.Equal(entry.Thinking, text.Text);
+			Assert.Equal(entry.Thinking, markdown.Source);
 		}
 
 		Settle(group);
-		Assert.True(text.Bounds.Height > heightBefore + 20,
-			$"expanded thinking did not grow on screen: {heightBefore:0.#} -> {text.Bounds.Height:0.#}");
+		Assert.True(markdown.Bounds.Height > heightBefore + 20,
+			$"expanded thinking did not grow on screen: {heightBefore:0.#} -> {markdown.Bounds.Height:0.#}");
 		Assert.True(smooth.MaxVerticalOffset > 0, "the grown thinking row must be reachable inside the group body");
 	}
 
@@ -188,11 +240,14 @@ public sealed class StreamingThinkingTests
 		thinking.IsExpanded = true;
 		Pump(view.View);
 
-		// 定稿：同一次刷新里就该换成已解析好的 Markdown，不留一帧空白/旧纯文本。
+		// 定稿：同一个视图只切状态，内容在流式期间已经排好，不留一帧空白/旧纯文本。
+		var streaming = Assert.Single(Find<MarkdownView>(view.View));
 		view.Update(live with { IsThinking = false, IsStreaming = false });
 		Pump(view.View);
-		var markdown = Assert.Single(Find<MarkdownPresenter>(view.View));
-		Assert.Equal(live.Thinking, markdown.Markdown);
+		var markdown = Assert.Single(Find<MarkdownView>(view.View));
+		Assert.Same(streaming, markdown);
+		Assert.False(markdown.IsStreaming);
+		Assert.Equal(live.Thinking, markdown.Source);
 		Assert.True(markdown.DesiredSize.Height > 0, "the markdown tree must exist in the same frame");
 		UiLifetime.Release(view.View);
 	}
@@ -290,6 +345,64 @@ public sealed class StreamingThinkingTests
 		view.SyncBodyMetrics();
 		Pump(view.View);
 		Assert.Empty(changes);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void ScrollingTheGroupBodyBackToAThinkingRowRendersItsMarkdownAtOnce()
+	{
+		// 思考行滚出组体视口后块会被回收；滚回来时必须**同一帧**就重新 realize 出正文。
+		// 旧实现里 MarkdownView 带着回收前的缓存测量回来，RealizeRange 用过期视口窗口算出
+		// 空范围，于是点击/滚动后偶发只剩空白，要再滚一下才恢复。
+		using var guard = new TextFocusScrollGuard(new ScrollViewer());
+		var thinkingText = string.Join("\n\n", Enumerable.Range(0, 40).Select(index =>
+			$"思考段落 {index} " + string.Join(" ", Enumerable.Repeat("内容", 24))));
+		ChatEntry Assistant(string text) => new()
+		{
+			Role = ChatRole.Assistant, Text = string.Empty, Thinking = text,
+			EntryId = "live", Timestamp = 1, IsStreaming = false,
+		};
+		var process = new ChatEntry
+		{
+			Role = ChatRole.Process, Text = string.Empty, EntryId = "process",
+			ProcessEntries = [.. Enumerable.Range(0, 30).Select(Tool), Assistant(thinkingText)],
+		};
+		var view = new ExecutionProcessView(process, entry => entry.Role == ChatRole.Assistant
+			? new AssistantMessageView(entry, _ => { }, guard).View
+			: new ToolMessageView(entry, guard).View, guard);
+		using var window = new Window().Content(view.View);
+		Pump(view.View);
+		ExpandGroups(view.View);
+
+		var body = BodyOf(view);
+		var list = Find<ItemsControl>(view.View).Single();
+		list.ScrollIntoView(list.ItemsSource.Count - 1);
+		Pump(view.View);
+		view.SyncBodyMetrics();
+		Pump(view.View);
+
+		var thinking = Find<Expander>(body).Last(expander => HoverHints.Text(expander) is null or "");
+		thinking.IsExpanded = true;
+		Settle(view);
+		var markdown = Find<MarkdownView>(view.View).Single(candidate => candidate.Source == thinkingText);
+		guard.Track(markdown);
+		Assert.True(markdown.RealizedBlockCount > 0, "the thinking Markdown must render when expanded");
+
+		// 滚到组体另一端，让思考行整行离开视口（块被回收），再一帧滚回来。
+		body.SetScrollOffsets(0, 0);
+		Pump(view.View);
+		view.SyncBodyMetrics();
+		Pump(view.View);
+		body.SetScrollOffsets(0, double.MaxValue);
+		Pump(view.View);
+		view.SyncBodyMetrics();
+		Pump(view.View);
+
+		var paragraphs = Find<MarkdownParagraphView>(markdown).ToArray();
+		Assert.NotEmpty(paragraphs);
+		Assert.Contains(paragraphs, paragraph => paragraph.Bounds.Height > 0 &&
+			paragraph.Bounds.Bottom > body.Bounds.Y && paragraph.Bounds.Y < body.Bounds.Bottom &&
+			!string.IsNullOrEmpty(paragraph.Text));
 		UiLifetime.Release(view.View);
 	}
 
@@ -576,4 +689,79 @@ public sealed class StreamingThinkingTests
 		Assert.True(lastRow.Bounds.Bottom <= body.Bounds.Bottom + 1,
 			"the expanded last step must stay reachable inside the group body");
 	}
+
+	[Fact]
+	public void ClickingLongExpandedThinkingDoesNotJumpTheGroupBodyOrLoseItsMarkdown()
+	{
+		using var guard = new TextFocusScrollGuard(new ScrollViewer());
+		var thinkingText = string.Join("\n\n", Enumerable.Range(0, 50).Select(index =>
+			$"思考段落 {index} " + string.Join(" ", Enumerable.Repeat("内容", 20)) + $" [链接](https://example.com/{index})"));
+		ChatEntry Assistant(string text) => new()
+		{
+			Role = ChatRole.Assistant, Text = string.Empty, Thinking = text,
+			EntryId = "live", Timestamp = 1, IsStreaming = true, IsThinking = true,
+		};
+		var tools = Enumerable.Range(0, 30).Select(Tool).ToArray();
+		var process = new ChatEntry
+		{
+			Role = ChatRole.Process, Text = string.Empty, EntryId = "process", IsStreaming = true,
+			ProcessEntries = [.. tools, Assistant(thinkingText)],
+		};
+		var view = new ExecutionProcessView(process, entry => entry.Role == ChatRole.Assistant
+			? new AssistantMessageView(entry, _ => { }, guard).View
+			: new ToolMessageView(entry, guard).View, guard);
+		using var window = new Window().Content(view.View);
+		Pump(view.View);
+		ExpandGroups(view.View);
+		var body = BodyOf(view);
+		var smooth = SmoothScroll.For(body);
+		var list = Find<ItemsControl>(view.View).Single();
+		list.ScrollIntoView(list.ItemsSource.Count - 1);
+		Pump(view.View);
+		view.SyncBodyMetrics();
+		Pump(view.View);
+		var thinkingFold = Find<Expander>(body)
+			.Last(expander => HoverHints.Text(expander) is null or "");
+		thinkingFold.IsExpanded = true;
+		Settle(view);
+		var markdown = Assert.Single(Find<MarkdownView>(view.View), candidate => candidate.Source == thinkingText);
+		guard.Track(markdown);
+
+		// Put the middle of the long thinking Markdown in the middle of the group body.
+		var desired = Math.Clamp(
+			markdown.Bounds.Y - body.Bounds.Y + markdown.Bounds.Height / 2 - body.ViewportHeight / 2,
+			0, smooth.MaxVerticalOffset);
+		body.SetScrollOffsets(0, desired);
+		Settle(view);
+		var offset = body.VerticalOffset;
+		var paragraph = Find<MarkdownParagraphView>(markdown)
+			.First(candidate => candidate.Bounds.Bottom > body.Bounds.Y && candidate.Bounds.Y < body.Bounds.Bottom);
+		Assert.True(markdown.BeginSelectionAtForTest(new Point(paragraph.Bounds.X + 2, paragraph.Bounds.Y + 4)));
+
+		// Clicking a MarkdownView focuses the whole (viewport-taller) view. MewUI's focus-into-view
+		// would scroll the group body to the view's top/bottom, jumping the progress and temporarily
+		// releasing the virtualized step row. The focus guard must preserve every ancestor viewport.
+		Assert.True(markdown.Focus());
+		Pump(view.View);
+		view.SyncBodyMetrics();
+		Pump(view.View);
+
+		Assert.InRange(body.VerticalOffset, offset - 1, offset + 1);
+		Assert.True(markdown.RealizedBlockCount > 0, "clicking the thinking text must not blank the Markdown");
+		Assert.Contains(Find<MarkdownParagraphView>(markdown),
+			candidate => candidate.Bounds.Height > 0 && !string.IsNullOrEmpty(candidate.Text));
+
+		// Link paragraphs are independent focus targets; they must preserve the same ancestor
+		// viewports instead of letting focus-into-view move the group body.
+		var linkParagraph = Find<MarkdownParagraphView>(markdown)
+			.First(candidate => candidate.Focusable);
+		Assert.True(linkParagraph.Focus());
+		Pump(view.View);
+		view.SyncBodyMetrics();
+		Pump(view.View);
+		Assert.InRange(body.VerticalOffset, offset - 1, offset + 1);
+		Assert.True(markdown.RealizedBlockCount > 0);
+		UiLifetime.Release(view.View);
+	}
+
 }

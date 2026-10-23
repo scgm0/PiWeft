@@ -272,8 +272,8 @@ public sealed class VirtualizationAuditTests
 		tab.SetFilterFromTests("answer 70");
 		ConversationPerformanceTests.Layout(tab);
 		Assert.False(tab.FollowingFromTests);
-		Assert.Contains(VisualTree.Find<Aprillz.MewUI.Markdown.MarkdownPresenter>(tab.View),
-			view => view.Markdown.Contains("answer 70", StringComparison.Ordinal));
+		Assert.Contains(VisualTree.Find<PiWeft.Markdown.MarkdownView>(tab.View),
+			view => view.Source.Contains("answer 70", StringComparison.Ordinal));
 		Assert.Equal(0, scroll.VerticalOffset, 1);
 
 		tab.SetFilterFromTests(string.Empty);

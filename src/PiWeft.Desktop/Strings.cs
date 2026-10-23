@@ -113,8 +113,10 @@ public static partial class Strings
 	// 性能诊断（对齐 PiDeck 设置里的同名开关）
 	public const string SettingsDiagnostics = "性能诊断";
 	public const string DiagnosticsDesc =
-		"记录进程内存、UI 队列延迟，以及打开会话、聊天记录投影、每帧渲染、Markdown 定稿等关键耗时。" +
-		"数据写到应用数据目录的 diagnostics 文件夹，用来做优化前后对照与追查卡顿；默认关闭，关闭时调用点零开销。";
+		"三档采样：帧档（每帧约 0.1 µs、零分配，给帧间隔 p50/p95、掉帧/长帧/停顿、每帧分配、GC 占比、输入→绘制延迟与绘制量）、" +
+		"计数档（行构建/回收、重建轮次等 churn 次数）、明细档（打开会话、投影、慢帧、Markdown 定稿等关键耗时，逐条落盘）。" +
+		"数据写到应用数据目录的 diagnostics 文件夹，并每秒追加一行帧档摘要，用来做优化前后对照与追查卡顿；" +
+		"默认关闭，关闭时调用点只剩一次布尔判断。";
 	public const string DiagnosticsRefresh = "刷新采样";
 	public const string DiagnosticsOpenFolder = "打开诊断目录";
 	public const string DiagnosticsReset = "清空统计";
@@ -127,10 +129,39 @@ public static partial class Strings
 	public const string DiagnosticsPath = "耗时文件";
 	public const string DiagnosticsStarted = "性能诊断已开始采样";
 	public const string DiagnosticsStopped = "性能诊断已停止";
-	public static string DiagnosticsMemoryLine(string rss, string heap, string allocated, int gen0, int gen2) =>
-		$"工作集 {rss} · 托管堆 {heap} · 累计分配 {allocated} · GC gen0 {gen0} / gen2 {gen2}";
-	public static string DiagnosticsLagLine(string lag, string max) =>
-		$"最近 {lag} · 窗口内最大 {max}（≥ 50 ms 说明 UI 线程被占住）";
+	public const string DiagnosticsFrameHeader = "帧档（每帧约 0.1 µs、零分配）";
+	public const string DiagnosticsOverview = "概览";
+	public const string DiagnosticsMemoryHeader = "内存与 GC";
+	public const string DiagnosticsMemoryHint =
+		"托管堆只会在 GC 需要时才回收：gen2 次数几乎不动而堆持续变大，是「还没收」而不是「漏了」。" +
+		"要判定泄漏，点「压一次堆」看剩余；同一个操作重复做，剩余一路抬高才是泄漏。";
+	public const string DiagnosticsLoopHeader = "渲染循环";
+	public const string DiagnosticsLoopHint =
+		"FPS 由帧间隔中位数换算：开局是背靠背的连续重绘，稳定后只剩按请求重绘的那几帧，两者不可直接比。";
+	public const string DiagnosticsCompact = "压一次堆";
+	public const string DiagnosticsCompactHint = "完整回收并显示剩余托管堆";
+	public static string DiagnosticsCompactResult(long before, long after, double pauseMs) =>
+		$"回收前 {FormatBytes(before)} → 剩余 {FormatBytes(after)}（GC 用了 {pauseMs:0} ms）";
+	public const string LabelWorkingSet = "工作集";
+	public const string LabelHeap = "托管堆";
+	public const string LabelLoh = "大对象堆";
+	public const string LabelAllocated = "累计分配";
+	public const string LabelCommitted = "提交内存";
+	public const string LabelFragmented = "堆碎片";
+	public const string LabelGcCounts = "GC 次数";
+	public const string LabelGcPause = "GC 暂停占比";
+	public const string LabelFinalizers = "待终结对象";
+	public const string LabelPinned = "固定对象";
+	public const string LabelCpu = "CPU 占比";
+	public const string LabelPool = "线程池";
+	public const string LabelQueueLag = "UI 队列延迟";
+	public const string LabelInputLatency = "输入→绘制";
+	public const string LabelFrameGap = "帧间隔";
+	public const string LabelFrameBudget = "预算 16.7 ms";
+	public const string LabelFrameCounts = "掉帧 / 长帧 / 停顿";
+	public const string LabelAllocPerFrame = "每帧分配";
+	public const string LabelDrawCalls = "绘制调用";
+	public const string DiagnosticsCountersHeader = "事件计数（帧档与 churn 档）";
 	public static string FormatBytes(long bytes) => bytes switch
 	{
 		>= 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):0.##} GiB",

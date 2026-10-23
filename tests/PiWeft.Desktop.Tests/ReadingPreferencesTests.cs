@@ -1,5 +1,5 @@
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Markdown;
+using PiWeft.Markdown;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Session;
@@ -35,7 +35,7 @@ public sealed class ReadingPreferencesTests
 			Assert.Equal(2, composer.SelectionStart);
 			Assert.Equal(5, composer.SelectionLength);
 			Assert.Equal(20, composer.FontSize);
-			Assert.Equal(20, Find<MarkdownPresenter>(tab.View).Single().FontSize);
+			Assert.Equal(20, Find<MarkdownView>(tab.View).Single().FontSize);
 			Assert.All(Find<ReadingColumn>(tab.View), column => Assert.Equal(1360 + AppTheme.Space6, column.MaxWidth));
 		}
 		finally { ReadingPreferences.Apply(original); }

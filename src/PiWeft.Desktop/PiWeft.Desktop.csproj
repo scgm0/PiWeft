@@ -35,7 +35,6 @@
 	<ItemGroup>
 		<PackageReference Include="Aprillz.MewUI.Core" />
 		<PackageReference Include="Aprillz.MewUI.Svg" />
-		<PackageReference Include="Aprillz.MewUI.Markdown" />
 		<PackageReference Include="MiniPty" />
 	</ItemGroup>
 
@@ -66,6 +65,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<ProjectReference Include="../PiWeft.Markdown/PiWeft.Markdown.csproj" />
 		<ProjectReference Include="../PiWeft.CodingAgent/PiWeft.CodingAgent.csproj" />
 		<ProjectReference Include="../PiWeft.Mcp/PiWeft.Mcp.csproj" />
 		<ProjectReference Include="../PiWeft.Cli/PiWeft.Cli.csproj" />

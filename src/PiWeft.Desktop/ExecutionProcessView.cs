@@ -127,6 +127,9 @@ internal sealed class ExecutionProcessView
 	{
 		foreach (var viewport in BodyViewports())
 		{
+			// Capture intent before SetScrollOffsets: a virtualized presenter can still expose
+			// the previous extent for one pass, and the resulting clamp/ScrollChanged would
+			// otherwise clear the tail-follow flag before we get a chance to follow the new end.
 			viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
 			if (SmoothScroll.Find(viewport) is { IsFollowingGrowth: true } smooth) smooth.FollowGrowth();
 		}
@@ -345,8 +348,16 @@ internal sealed class ExecutionProcessView
 		// 自动展开的「正在运行」组跟住最新步骤；手动展开的组从头看。
 		var followOnOpen = false;
 		// 展开/收起步骤后把它的预览行固定在原屏幕位置，而不是滚向内容末尾。
+		// 虚拟化行可能在重测过程中被换掉，因此同时记住步骤索引，布局后再解析当前宿主。
 		Grid? anchorRow = null;
 		double anchorOffset = 0;
+		// The offset this clamp wrote last; anything else moved it (reader intent) → give up.
+		double anchorApplied = double.NaN;
+		var anchorIndex = -1;
+		var anchorAttempts = 0;
+		// A virtualized presenter may correct the viewport offset while a streaming row is
+		// remeasured. Reassert the pre-layout follow intent in the Render-stage settle.
+		var followAfterLayout = false;
 		// 流式思考/正文只原位更新已实现的那一行，不向虚拟化器发 Replace：
 		// Replace 会把该行已测高度作废成估算值，组体 extent 先缩后涨，看起来就是进度跳变。
 		var inPlaceRows = new List<int>();
@@ -407,6 +418,10 @@ internal sealed class ExecutionProcessView
 		void StopGroupFollow()
 		{
 			// 工具步骤展开是阅读行为：进度停在预览行，不跟着展开内容滚到末尾。
+			// 同时取消可能尚未执行的「布局后跟底」动作，否则展开工具后的下一帧
+			// 仍可能被上一次流式思考的跟随意图拉回末尾。
+			followAfterLayout = false;
+			_pendingClamps.Remove(FollowAfterLayout);
 			if (viewport is not null) SmoothScroll.Find(viewport)?.StopFollowingGrowth();
 		}
 
@@ -469,6 +484,10 @@ internal sealed class ExecutionProcessView
 		void RouteBodyWheel(MouseWheelEventArgs args)
 		{
 			if (args.Handled || viewport is null) return;
+			// A wheel gesture is reader intent; don't let a still-pending expansion clamp
+			// pull the viewport back to the old preview row afterwards.
+			followAfterLayout = false;
+			ClearAnchor();
 			// 布局刚变过时滚动条范围可能还落后一帧，先按最新 extent 刷新一次再判断归属。
 			viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
 			if (SmoothScroll.Find(viewport) is not { } smooth) return;
@@ -496,8 +515,12 @@ internal sealed class ExecutionProcessView
 		void BindStepRow(Grid row, ChatEntry entry, int index) =>
 			BindStep(row, entry, index, key, expanded =>
 			{
-				if (expanded && entry.Role == ChatRole.Tool) StopGroupFollow();
-				InvalidateRow(row, expanded);
+				// A tool detail is a reading action: keep its preview row pinned. A thinking
+				// block, on the other hand, is streamed content and should keep following the
+				// group tail; pinning it here would fight SmoothScroll on every growth frame.
+				var preservePreview = entry.Role == ChatRole.Tool;
+				if (expanded && preservePreview) StopGroupFollow();
+				InvalidateRow(row, index, preservePreview);
 			});
 
 		/// <summary>同步栈里的步骤行；同一位置的步骤只更新内容，不重建行。</summary>
@@ -603,8 +626,35 @@ internal sealed class ExecutionProcessView
 			dispatcher.BeginInvoke(DispatcherPriority.Render, Apply);
 		}
 
+		void FollowAfterLayout()
+		{
+			if (!followAfterLayout) return;
+			followAfterLayout = false;
+			if (viewport is not null && SmoothScroll.Find(viewport) is { } smooth && !smooth.ReaderEscaped)
+			{
+				smooth.FollowGrowth();
+			}
+		}
+
 		void SyncRows()
 		{
+			// A streaming row can emit a transient ScrollChanged while it is being remeasured,
+			// which would otherwise clear the group's tail-follow intent. Remember it across the
+			// update and reassert it after layout; a real wheel/scrollbar gesture still wins later
+			// in the same frame.
+			var following = viewport is not null && SmoothScroll.Find(viewport)?.IsFollowingGrowth == true;
+			if (following)
+			{
+				followAfterLayout = true;
+				QueuePendingClamp(FollowAfterLayout);
+			}
+			else
+			{
+				// The reader scrolled away between updates: do not let an old layout-follow
+				// action pull the body back to the tail.
+				followAfterLayout = false;
+				_pendingClamps.Remove(FollowAfterLayout);
+			}
 			if (list is not null)
 			{
 				inPlaceRows.Clear();
@@ -623,6 +673,10 @@ internal sealed class ExecutionProcessView
 			else SyncStackRows();
 			// 流式思考/正文在组体里增长时同样要走 arrange 重测，否则行高停在展开时的那一版。
 			if (body is not null) KickBodyLayout();
+			if (following && viewport is not null && SmoothScroll.Find(viewport) is { } smooth)
+			{
+				smooth.FollowGrowth();
+			}
 		}
 
 		/// <summary>当前虚拟化器已实现的宿主；行滚出视口会被回收，因此只用于原位更新时查找。</summary>
@@ -654,28 +708,35 @@ internal sealed class ExecutionProcessView
 		}
 
 		/// <summary>步骤行展开/收起改变了行高：重测这一行，并让它的预览行停在原地。</summary>
-		void InvalidateRow(Grid row, bool expanded)
+		void InvalidateRow(Grid row, int index, bool preservePreview)
 		{
 			if (body is null) return;
 			ConversationTimeline.InvalidateMeasureTree(row);
 			list?.InvalidateMeasure();
 			// 栈布局靠内容测量更新组体高度，虚拟化列表靠 arrange 重测行高并重算 extent。
 			KickBodyLayout();
-			// 自动跟底（流式思考/最新组）优先：此时读者看的就是内容末尾，不应该把视口钉回标题。
-			var following = viewport is not null && SmoothScroll.Find(viewport)?.IsFollowingGrowth == true;
-			anchorRow = following ? null : row;
-			anchorOffset = anchorRow is not null && viewport is not null ? row.Bounds.Y - viewport.Bounds.Y : 0;
+			if (!preservePreview)
+			{
+				ClearAnchor();
+				return;
+			}
+			// 工具正文的开合是阅读行为：即使滚动条正好停在末尾（几何上属于跟随态），也要把
+			// 预览行钉在原屏幕位置，否则展开的那一步会被「贴住内容末尾」吞掉。
+			// 流式思考/最新组的自动通道不钉锚：读者看的就是末尾，增长要贴住它（见上分支）。
+			anchorRow = row;
+			anchorIndex = index;
+			anchorAttempts = 0;
+			anchorApplied = double.NaN;
+			anchorOffset = viewport is not null ? row.Bounds.Y - viewport.Bounds.Y : 0;
 			QueueClamp();
 		}
 
 		void QueueClamp()
 		{
-			if (anchorRow is null || viewport is null) return;
-			// 行高只有测完才准。优先在 ScrollViewer 完成本轮排布时立即还原预览行：
-			// ScrollChanged 在 arrange 末尾触发，早于 Render 回调，也早于会话锚点恢复。
-			// 若这一轮没有偏移变化（例如只是行变高、extent 未变），ScrollChanged 不会触发，
-			// 此时由同一帧的 Render 回调（ExecutionProcessView.SyncBodyMetrics）收尾，
-			// 绝不留到下一次无关更新才应用——那是迟到的跳动。
+			if (viewport is null || (anchorRow is null && anchorIndex < 0)) return;
+			// 行高只有测完才准。ScrollChanged 在 arrange 末尾触发时先做一次；
+			// Render 阶段的 SyncBodyMetrics 再做最终收尾，避免虚拟化行在后续 layout pass
+			// 又被重测/替换后锚点已经提前清掉。
 			if (!reclampQueued)
 			{
 				reclampQueued = true;
@@ -683,25 +744,92 @@ internal sealed class ExecutionProcessView
 				{
 					viewport.ScrollChanged -= OnScrollChanged;
 					reclampQueued = false;
-					_pendingClamps.Remove(ApplyAnchorClamp);
-					ApplyAnchorClamp();
+					ApplyAnchorClamp(settle: false);
 				}
 				viewport.ScrollChanged += OnScrollChanged;
 			}
-			QueuePendingClamp(ApplyAnchorClamp);
+			QueuePendingClamp(ApplyAnchorClampFinal);
 		}
 
-		void ApplyAnchorClamp()
+		void ApplyAnchorClampFinal() => ApplyAnchorClamp(settle: true);
+
+		void ApplyAnchorClamp(bool settle)
 		{
-			var anchor = anchorRow;
-			var targetOffset = anchorOffset;
-			anchorRow = null;
-			if (body is null || viewport is null) return;
+			if (body is null || viewport is null)
+			{
+				ClearAnchor();
+				return;
+			}
+			Grid? anchor = anchorRow;
+			if (anchor is null && anchorIndex >= 0)
+			{
+				anchor = RealizedRow(anchorIndex);
+				anchorRow = anchor;
+			}
+			if (anchor is null)
+			{
+				if (settle && anchorAttempts++ < 2)
+				{
+					QueuePendingClamp(ApplyAnchorClampFinal);
+					KickBodyLayout();
+				}
+				else
+				{
+					ClearAnchor();
+				}
+				return;
+			}
+
+			// The offset moved without this clamp writing it: the reader (or another owner) took
+			// over the viewport, so a late anchor correction would fight them.
+			if (!double.IsNaN(anchorApplied) && Math.Abs(viewport.VerticalOffset - anchorApplied) > 1)
+			{
+				ClearAnchor();
+				return;
+			}
 			viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset);
-			if (anchor is null || anchor.Bounds.Height <= 0 || !anchor.IsDescendantOf(viewport)) return;
-			var delta = anchor.Bounds.Y - viewport.Bounds.Y - targetOffset;
+			if (anchor.Bounds.Height <= 0 || !anchor.IsDescendantOf(viewport))
+			{
+				if (settle)
+				{
+					ClearAnchor();
+				}
+				return;
+			}
+			var delta = anchor.Bounds.Y - viewport.Bounds.Y - anchorOffset;
 			if (Math.Abs(delta) > 0.5)
-				viewport.SetScrollOffsets(viewport.HorizontalOffset, viewport.VerticalOffset + delta);
+			{
+				var target = viewport.VerticalOffset + delta;
+				viewport.SetScrollOffsets(viewport.HorizontalOffset, target);
+				anchorApplied = viewport.VerticalOffset;
+			}
+			else
+			{
+				anchorApplied = viewport.VerticalOffset;
+			}
+			if (!settle)
+			{
+				return;
+			}
+
+			// One frame may need a second pass when a virtualized row is measured/recreated
+			// after the first clamp. Keep the anchor for one retry instead of dropping it.
+			if (Math.Abs(delta) > 0.5 && anchorAttempts++ < 2)
+			{
+				QueuePendingClamp(ApplyAnchorClampFinal);
+				KickBodyLayout();
+				return;
+			}
+			ClearAnchor();
+		}
+
+		void ClearAnchor()
+		{
+			anchorRow = null;
+			anchorIndex = -1;
+			anchorAttempts = 0;
+			anchorApplied = double.NaN;
+			_pendingClamps.Remove(ApplyAnchorClampFinal);
 		}
 
 		void DestroyBody()
