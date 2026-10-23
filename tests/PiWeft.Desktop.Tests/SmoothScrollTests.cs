@@ -526,6 +526,54 @@ public sealed class SmoothScrollTests
 	}
 
 	[Fact]
+	public void UnrelatedKeysDoNotCancelGrowthFollowOrDiscardQueuedWheel()
+	{
+		// 与滚动无关的按键（含被内层控件处理过的）不是阅读意图：不能取消跟底，
+		// 也不能吞掉本帧已入队、尚未落位的滚轮输入。
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+		view.SetScrollOffsets(0, 500);
+
+		KeyDown(view, new KeyEventArgs(Key.Left, 0));
+		KeyDown(view, new KeyEventArgs(Key.Space, 0) { Handled = true });
+		smooth.EnqueueWheelPixels(0, step);
+		KeyDown(view, new KeyEventArgs(Key.Left, 0));
+		Assert.Equal(500 + step, smooth.TargetVerticalOffset, 1);
+
+		smooth.FlushPendingWheel();
+		smooth.FollowGrowth();
+		Assert.True(smooth.IsFollowingGrowth);
+		KeyDown(view, new KeyEventArgs(Key.Left, 0));
+		KeyDown(view, new KeyEventArgs(Key.Space, 0) { Handled = true });
+		Assert.True(smooth.IsFollowingGrowth, "an unrelated key must not cancel growth follow");
+	}
+
+	[Fact]
+	public void ClickingTheContentDoesNotCancelGrowthFollowOrDiscardQueuedWheel()
+	{
+		// 点击/选择正文不是滚动意图：跟底保留，本帧已入队的滚轮输入也不丢。
+		var view = View();
+		Layout(view);
+		using var smooth = SmoothScroll.For(view);
+		var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+		view.SetScrollOffsets(0, 500);
+
+		smooth.EnqueueWheelPixels(0, step);
+		typeof(UIElement).GetMethod("OnMouseDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(view, [new MouseEventArgs(new Point(10, 10), new Point(10, 10), MouseButton.Left)]);
+		Assert.Equal(500 + step, smooth.TargetVerticalOffset, 1);
+
+		smooth.FlushPendingWheel();
+		smooth.FollowGrowth();
+		Assert.True(smooth.IsFollowingGrowth);
+		typeof(UIElement).GetMethod("OnMouseDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+			.Invoke(view, [new MouseEventArgs(new Point(10, 10), new Point(10, 10), MouseButton.Left)]);
+		Assert.True(smooth.IsFollowingGrowth, "a content click must not cancel growth follow");
+	}
+
+	[Fact]
 	public void KeyboardScrollingUpdatesTheConversationFollowIntent()
 	{
 		var view = View();

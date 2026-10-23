@@ -281,6 +281,14 @@ internal sealed class AssistantMessageView : IDisposable
 	private static void ConfigureCodeText(MultiLineTextBox text, string? language, TextFocusScrollGuard focus, bool muted)
 	{
 		focus.Track(text);
+		// 代码块的横向视口在 Markdown 建块时才出现（MarkdownView 建树早于它）：
+		// 这里补装同一个平滑滚动控制器，触控板横向滑动才不会落进 ScrollViewer 的即时跳变。
+		for (var parent = text.Parent; parent is not null; parent = parent.Parent)
+		{
+			if (parent is not ScrollViewer viewport) continue;
+			viewport.SmoothScrolling();
+			break;
+		}
 		text.Tag = muted ? AppStyles.RoleMuted : AppStyles.RolePrimary;
 		text.Extensions.Classifiers.Add(new KeywordClassifier(language));
 		// 换肤后重建视图并重新排布，避免代码块只剩背景（见 AppStyles.RefreshTextView）。

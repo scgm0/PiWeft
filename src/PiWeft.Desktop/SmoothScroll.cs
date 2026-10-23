@@ -636,17 +636,16 @@ internal sealed class SmoothScroll : IDisposable
 	}
 
 	private void OnTextScrollChanged(Aprillz.MewUI.Text.ITextViewHost _) => OnScrollChanged();
-	private void OnMouseDown(MouseEventArgs args) { _followGrowth = false; Stop(); }
+
+	// 点击/选择正文不是滚动意图：只停掉在途动画（按住选择时内容不该继续滑走），
+	// 跟随增长与本帧已入队的滚轮输入都保留。滚动条上的按下由 OnScrollBarDown 单独处理。
+	private void OnMouseDown(MouseEventArgs args) => StopAnimation();
 	private void OnKeyDown(KeyEventArgs args)
 	{
-		// 向上翻页/回到开头是离开末尾的意图；向下按键交给几何判定是否回到底部。
-		if (args.Key is Key.Up or Key.PageUp or Key.Home) _readerEscaped = true;
-		_followGrowth = false;
-		Stop();
 		// Ctrl+PageUp/PageDown are tab-navigation chords; a focused editor leaves them unhandled
-		// on purpose, so the viewport must not consume them either.
+		// on purpose, so the viewport must not consume them either. Keys a child already handled
+		// are likewise not scrolling.
 		if (args.Handled || args.ControlKey) return;
-		// Only keys the focused control left unhandled reach the viewport: those really scroll it.
 		var viewportHeight = _viewport?.ViewportHeight ?? 0;
 		var line = 40.0;
 		var page = Math.Max(line, viewportHeight - line);
@@ -660,7 +659,13 @@ internal sealed class SmoothScroll : IDisposable
 			Key.End => MaxVerticalOffset,
 			_ => double.NaN,
 		};
+		// 与滚动无关的按键（方向以外的字符键、快捷键残留）不是阅读意图：
+		// 不取消跟底，也不吞掉本帧已入队的滚轮输入。
 		if (double.IsNaN(target)) return;
+		// 向上翻页/回到开头是离开末尾的意图；向下按键交给几何判定是否回到底部。
+		if (args.Key is Key.Up or Key.PageUp or Key.Home) _readerEscaped = true;
+		_followGrowth = false;
+		Stop();
 		var delta = target - Offset.Y;
 		if (Math.Abs(delta) < 0.5)
 		{

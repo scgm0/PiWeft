@@ -404,7 +404,7 @@ internal sealed class ConversationTimeline : IDisposable
 	}
 
 	/// <summary>Granular tail changes retain measured heights and existing selections during streaming.</summary>
-	private sealed class MessageRows : IItemsView
+	internal sealed class MessageRows : IItemsView
 	{
 		private readonly List<ChatEntry> _entries = [];
 		public int Count => _entries.Count;
@@ -418,11 +418,14 @@ internal sealed class ConversationTimeline : IDisposable
 		/// <summary>
 		/// Streaming and process rows have a persistent view that can absorb new data without
 		/// rebuilding. Other replacements change identity or presentation and still need a rebind.
+		/// 流式行落盘时 EntryId 会从 live-assistant/… 变成会话条目 id（时间戳与图片不变）：
+		/// 这仍是一次原位收尾——发 Replace 会把该行已测高度作废成估算值，长回复定稿的一瞬
+		/// 滚动范围先缩后涨，跟底读者看到一次跳动（组内步骤列表见 StepRows 的同一处理）。
 		/// </summary>
 		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
-			Equals(Key(current), Key(next)) && (next.Role == ChatRole.Process ||
-				(current.IsStreaming && next.Role == ChatRole.Assistant && current.Timestamp == next.Timestamp &&
-					current.Images.SequenceEqual(next.Images)));
+			(Equals(Key(current), Key(next)) && next.Role == ChatRole.Process) ||
+			(current.IsStreaming && next.Role == ChatRole.Assistant && current.Timestamp == next.Timestamp &&
+				current.Images.SequenceEqual(next.Images));
 
 		public void Update(IReadOnlyList<ChatEntry> entries, int stablePrefix, bool prefixReused, List<int> inPlace)
 		{
