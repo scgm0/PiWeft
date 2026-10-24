@@ -931,7 +931,11 @@ public sealed class ChatViewModel : IDisposable
 		bool IsError,
 		double? DurationMs)
 	{
-		public ChatEntry ToEntry() => new()
+		// 流式期每帧都会重投影：已完成的工具结果可能几十 KB，逐帧重拼一遍纯属垃圾。
+		// 条目本身不可变（事件到达时换新实例），缓存一次投影即安全。
+		private ChatEntry? _projected;
+
+		public ChatEntry ToEntry() => _projected ??= new ChatEntry
 		{
 			Role = ChatRole.Tool,
 			ToolName = ToolName,

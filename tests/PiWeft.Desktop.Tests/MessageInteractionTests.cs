@@ -65,7 +65,9 @@ public sealed class MessageInteractionTests
 
 		var code = Find<PiWeft.Markdown.MarkdownCodeBlockView>(view.View).Single();
 		var copy = Find<Button>(code).Single();
-		Assert.Equal("复制代码", Assert.IsType<TextBlock>(copy.ToolTip).Text);
+		// 提示与全应用统一走 350 ms 延迟悬浮层，不再用悬停立即弹出的内建 ToolTip。
+		Assert.Equal(Strings.CopyCodeTooltip, HoverHints.Text(copy));
+		Assert.Null(copy.ToolTip);
 		var icon = Assert.IsType<Image>(copy.Content);
 		Assert.NotNull(icon.Source);
 		Assert.Equal(14, icon.Width);

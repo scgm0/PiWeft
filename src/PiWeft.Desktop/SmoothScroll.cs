@@ -31,6 +31,9 @@ internal sealed class SmoothScroll : IDisposable
 	// 置底自动跟随：组体这类嵌套视口只要滚动条停在底部就跟随最新内容，
 	// 由 ExecutionProcessView 显式启用；外层会话仍用 ConversationScroll 的状态机。
 	private const double AutoFollowTolerance = 4;
+	// 视为布局校正（像素舍入/锚点微调）的外部位移上限：超过才算读者接管并结束在途动画。
+	// 真实应用里虚拟化 presenter 的校正为亚 DIP 到 ±2 DIP（组体 extent 抖动实测 1018↔1020）。
+	private const double CorrectionTolerance = 2;
 	internal bool AutoFollowAtEnd { get; set; }
 
 	/// <summary>True after an explicit wheel/keyboard/scrollbar escape from the tail.</summary>
@@ -138,6 +141,25 @@ internal sealed class SmoothScroll : IDisposable
 		0, MaxVerticalOffset);
 	/// <summary>Wheel/keyboard scroll input in DIPs (positive = toward the end).</summary>
 	public event Action<double>? VerticalInput;
+
+	/// <summary>
+	/// 本视口消费了滚轮输入、且祖先链上还有另一个受控视口（嵌套滚动，如执行过程的组体）
+	/// 时，把本视口报给最近那个受控祖先。外层会话的跟底状态机看不见嵌套输入，
+	/// 需要这份通知判断「读者正在嵌套视口里离开末尾阅读」。
+	/// </summary>
+	internal event Action<ScrollViewer>? NestedInput;
+
+	private void NotifyNestedAncestor()
+	{
+		if (_viewport is null) return;
+		for (var parent = _view.Parent; parent is not null; parent = parent.Parent)
+		{
+			if (parent is not ScrollViewer ancestor || !ancestor.IsVisible) continue;
+			if (Find(ancestor) is not { } controller) continue;
+			controller.NestedInput?.Invoke(_viewport);
+			return;
+		}
+	}
 	/// <summary>The scrollbar owned by this viewport, if any; its pointer gestures are reader intent.</summary>
 	internal ScrollBar? VerticalBar => _verticalBar;
 	private Point Offset => _text?.ScrollOffset ?? new Point(_viewport!.HorizontalOffset, _viewport.VerticalOffset);
@@ -232,6 +254,7 @@ internal sealed class SmoothScroll : IDisposable
 		if (horizontal == 0 && vertical == 0) return;
 		_followGrowth = false;
 		if (vertical < 0) _readerEscaped = true;
+		NotifyNestedAncestor();
 		var step = Application.IsRunning ? Application.Current.Theme.Metrics.ScrollWheelStep : ThemeManager.DefaultMetrics.ScrollWheelStep;
 		_pendingWheel = new Point(_pendingWheel.X + horizontal, _pendingWheel.Y + vertical);
 		_pendingWheelPrecise &= IsPreciseWheel(horizontal, vertical, step);
@@ -573,7 +596,10 @@ internal sealed class SmoothScroll : IDisposable
 				{
 					// extent 稳定却被外部移动（滚动条拖动、焦点、程序化定位）：离开末尾。
 					_followGrowth = false;
-					if (!IsApplyingOffset) StopAnimation();
+					// 像素舍入/锚点校正量级的微位移（虚拟化 presenter 重排时直接写视口）不是读者
+					// 接管：停掉动画会把置顶阅读的连续滚轮打成一顿一顿，直到读者上滚设置 escape
+					// 才恢复。可见幅度的外部位移仍按接管处理，立即结束在途动画。
+					if (!IsApplyingOffset && Math.Abs(offset.Y - _lastOffset.Y) > CorrectionTolerance) StopAnimation();
 				}
 				// extent 增长且读者没上滚：保持现状，不把布局校正误判成离开。
 			}

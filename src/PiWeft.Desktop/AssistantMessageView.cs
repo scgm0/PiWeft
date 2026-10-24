@@ -308,12 +308,15 @@ internal sealed class AssistantMessageView : IDisposable
 			{
 				CodeFontFamily = AppTheme.MonoFont,
 				CodeFontSize = AppTheme.FontSizeCaption,
-				CodeCopyLabel = "复制",
-				CodeCopyTooltip = "复制代码",
+				CodeCopyLabel = Strings.TerminalCopy,
+				CodeCopyTooltip = Strings.CopyCodeTooltip,
 				// 图标一律走 Lucide 内嵌 SVG（tools/fetch-lucide-icons.sh 取的那一套），
 				// 控件库自己不画图标；复制成功换成对勾，1.1 秒后退回复制图标。
 				CodeCopyIcon = size => AppIcons.Icon("copy", AppStyles.RoleSubtle, size),
 				CodeCopiedIcon = size => AppIcons.Icon("check", AppStyles.RoleSuccess, size),
+				// 悬浮提示统一走应用的延迟悬浮层（350 ms），与其它提示同一套延迟与样式；
+				// 库里缺省的内建 ToolTip 是悬停立即弹出。
+				AttachToolTip = (element, text) => element.HoverTip(text),
 				BlockSpacing = AppTheme.Space2,
 				ListIndent = 28,
 				CardCornerRadius = AppTheme.RadiusXl,

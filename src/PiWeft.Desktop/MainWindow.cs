@@ -1524,6 +1524,10 @@ public sealed partial class MainWindow : Window
 				case "process":
 					CurrentTab()?.PrepareProcessSmoke();
 					break;
+				case "wheel":
+					// 滚动性能采样演练：展开执行过程后持续滚轮压测，供外部剖析对照。
+					CurrentTab()?.PrepareWheelSmoke();
+					break;
 				case "collapse":
 					CurrentTab()?.PrepareCollapseSmoke();
 					break;
@@ -1664,7 +1668,7 @@ public sealed partial class MainWindow : Window
 		});
 
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
-		await Task.Delay(view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" ? 30000 : 7000).ConfigureAwait(false);
+		await Task.Delay(view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" ? 30000 : 7000).ConfigureAwait(false);
 		// 加载提示会阻止关窗；退出前先确认没有在途的打开。
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
 		Dispatch(() =>

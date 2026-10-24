@@ -41,6 +41,7 @@ internal sealed class ConversationScroll : IDisposable
 		_lastMaximum = _smooth.MaxVerticalOffset;
 		view.ScrollChanged += OnScrollChanged;
 		_smooth.VerticalInput += OnVerticalInput;
+		_smooth.NestedInput += OnNestedInput;
 		if (_smooth.VerticalBar is { } bar) bar.MouseDown += OnScrollBarPointer;
 	}
 
@@ -65,6 +66,23 @@ internal sealed class ConversationScroll : IDisposable
 
 	/// <summary>Clicking or dragging the scrollbar is explicit reader intent: leave the tail now.</summary>
 	private void OnScrollBarPointer(MouseEventArgs _) => Browse();
+
+	private void OnNestedInput(ScrollViewer nested) => NoteNestedWheel(nested);
+
+	/// <summary>
+	/// 嵌套视口（执行过程的组体）消费了一次滚轮：会话自己的输入通道看不见这次输入，
+	/// 而跟底的每帧跳变会把读者正在读的组体持续往上顶（组下方的流式回答在增长）——
+	/// 表现为「组体内滚轮缓慢/读的行总在往上跑」。读者仍贴着嵌套视口自己的末尾时
+	/// （跟着最新步骤）与跟底同向，跟随不动；离开末尾读历史步骤则立即停追，
+	/// 滚回末尾或点「回到最新」照常恢复。
+	/// </summary>
+	internal void NoteNestedWheel(ScrollViewer nested)
+	{
+		if (!Following) return;
+		var smooth = SmoothScroll.Find(nested);
+		if (smooth is null || smooth.MaxVerticalOffset - nested.VerticalOffset <= EndThreshold) return;
+		Browse();
+	}
 
 	private void OnVerticalInput(double pixels)
 	{
@@ -309,6 +327,7 @@ internal sealed class ConversationScroll : IDisposable
 		_readingAnchor = null;
 		_view.ScrollChanged -= OnScrollChanged;
 		_smooth.VerticalInput -= OnVerticalInput;
+		_smooth.NestedInput -= OnNestedInput;
 		if (_smooth.VerticalBar is { } bar) bar.MouseDown -= OnScrollBarPointer;
 		_smooth.Dispose();
 	}

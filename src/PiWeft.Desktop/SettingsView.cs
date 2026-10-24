@@ -303,6 +303,10 @@ public sealed class SettingsView
 	public void Refresh()
 	{
 		if (_configMode) return;
+		// 诊断分区的每秒脉冲跟随分区生命周期：重建前先停掉，避免旧面板的定时器继续跑。
+		_diagnosticsPulse?.Stop();
+		_diagnosticsPulse = null;
+		_diagnosticsLiveHost = null;
 		var snapshot = _snapshot();
 		_content.Clear();
 		SmoothScroll.For(_systemView).Stop();
@@ -605,6 +609,9 @@ public sealed class SettingsView
 	/// 采样在 <see cref="Diagnostics"/> 的定时器里做，这里只在打开开关或点「刷新采样」时取一次快照。
 	/// </summary>
 	private string _compactResult = string.Empty;
+	// 诊断分区的每秒脉冲：只重建「实时区」（概览/帧条/循环/内存/聚合），静态部分不动。
+	private DispatcherTimer? _diagnosticsPulse;
+	private StackPanel? _diagnosticsLiveHost;
 
 	private Element DiagnosticsSection()
 	{
@@ -659,13 +666,59 @@ public sealed class SettingsView
 
 		body.Children(DiagnosticsButtons(fresh));
 
+		// 实时区：每秒取一次快照重建。诊断面板的意义就是「现在卡不卡」，
+		// 静态快照打开即过期；重建的只是几十个文本行，稳态约 2 ms。
+		var live = _diagnosticsLiveHost = new StackPanel().Spacing(AppTheme.Space3);
+		FillDiagnosticsLive(live, fresh);
+		body.Children(live);
+		var pulse = _diagnosticsPulse = new DispatcherTimer(TimeSpan.FromSeconds(1));
+		pulse.Tick += PulseDiagnostics;
+		pulse.Start();
+
+		body.Children(new TextBlock()
+			.Text($"{Strings.DiagnosticsPath}：{fresh.TimingsPath ?? "—"}")
+			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
+			.TextWrapping(TextWrapping.Wrap).HoverTip(fresh.TimingsPath ?? string.Empty));
+
+		return Group("list-checks", Strings.SettingsDiagnostics, body);
+	}
+
+	/// <summary>
+	/// 诊断分区的每秒脉冲：重建实时区。分区已被替换（重建/切走）或从视觉树摘下（面板关闭）时，
+	/// 脉冲自行退场，不跟着无主树继续跑。
+	/// </summary>
+	internal void PulseDiagnostics()
+	{
+		var host = _diagnosticsLiveHost;
+		var pulse = _diagnosticsPulse;
+		if (host is null || pulse is null)
+		{
+			pulse?.Stop();
+			return;
+		}
+		if (host.FindVisualRoot() is null)
+		{
+			pulse.Stop();
+			_diagnosticsPulse = null;
+			_diagnosticsLiveHost = null;
+			return;
+		}
+		host.Clear();
+		FillDiagnosticsLive(host, Diagnostics.TakeSnapshot());
+	}
+
+	/// <summary>填充诊断分区的实时部分；每秒由 <see cref="_diagnosticsPulse"/> 重建一次。</summary>
+	private void FillDiagnosticsLive(StackPanel live, Diagnostics.Snapshot fresh)
+	{
 		// 概览：一眼看清「卡不卡、涨不涨」，细节都放到下面的分组里。
 		var frame = fresh.Frame;
 		// 两列两行：四列时提示文字会被裁掉，指标板就白做了。
 		var tiles = new Grid().Columns("*,*").Rows("Auto,Auto")
 			.Children(
 				MetricTile(Strings.LabelFrameGap, frame.Frames > 0 ? $"{frame.P50Ms:0.0} / {frame.P95Ms:0.0} ms" : "—",
-					frame.Frames > 0 ? $"p50 / p95 · FPS {frame.Fps:0.#}" : "等待第一次采样", 0, 0),
+					frame.Frames > 0
+						? $"p50 / p95 · 实时 {fresh.FramesPerSecond:0} fps · 典型 {frame.Fps:0.#}"
+						: "等待第一次采样", 0, 0),
 				MetricTile(Strings.LabelFrameCounts, $"{frame.DroppedFrames} / {frame.LongFrames} / {frame.IdleGaps}",
 					$"最长停顿 {frame.MaxGapMs:0} ms · 峰值 {frame.MaxMs:0.0} ms", 1, 0),
 				MetricTile(Strings.LabelWorkingSet, Strings.FormatBytes(fresh.WorkingSetBytes),
@@ -678,8 +731,8 @@ public sealed class SettingsView
 				new TextBlock().Text(Strings.DiagnosticsOverview)
 					.FontSize(AppTheme.FontSizeMicro).SubtleText(),
 				tiles);
-		body.Children(panel);
-		body.Children(new TextBlock().Text(Strings.DiagnosticsLoopHint)
+		live.Children(panel);
+		live.Children(new TextBlock().Text(Strings.DiagnosticsLoopHint)
 			.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
 
 		// 帧时间条：柱子按预算上色，蓝色那条是 16.7 ms 参考线。
@@ -687,7 +740,7 @@ public sealed class SettingsView
 		{
 			var strip = new FrameTimeStrip();
 			strip.SetSamples(frame.Samples);
-			body.Children(new StackPanel().Spacing(2).Children(
+			live.Children(new StackPanel().Spacing(2).Children(
 				new TextBlock().Text(Strings.DiagnosticsFrameHeader)
 					.FontSize(AppTheme.FontSizeMicro).SubtleText(),
 				strip,
@@ -699,10 +752,10 @@ public sealed class SettingsView
 					.TextWrapping(TextWrapping.Wrap)));
 		}
 
-		body.Children(DiagnosticsRows(Strings.DiagnosticsLoopHeader, [
+		live.Children(DiagnosticsRows(Strings.DiagnosticsLoopHeader, [
 
-			("节奏", fresh.FramesPerSecond > 0
-				? $"{fresh.FramesPerSecond:0} 帧/秒 · {(fresh.ContinuousLoop ? "连续" : "按请求")}" +
+			("帧率（最近一秒）", fresh.FramesPerSecond > 0
+				? $"{fresh.FramesPerSecond:0} 帧/秒 · 间隔中位数 {1000 / Math.Max(frame.Fps, 0.1):0.0} ms · {(fresh.ContinuousLoop ? "连续" : "按请求")}" +
 					$" · VSync {(fresh.VSync ? "开" : "关")} · 目标 {(fresh.TargetFps > 0 ? fresh.TargetFps.ToString() : "跟随刷新率")}"
 				: "等待第一次采样"),
 			(Strings.LabelInputLatency, frame.Inputs > 0
@@ -717,7 +770,7 @@ public sealed class SettingsView
 				: "—"),
 		]));
 
-		body.Children(DiagnosticsRows(Strings.DiagnosticsMemoryHeader, [
+		live.Children(DiagnosticsRows(Strings.DiagnosticsMemoryHeader, [
 			(Strings.LabelHeap, $"{Strings.FormatBytes(fresh.HeapBytes)} · {Strings.LabelLoh} " +
 				$"{Strings.FormatBytes(fresh.LargeObjectHeapBytes)}"),
 			(Strings.LabelAllocated, $"{Strings.FormatBytes(fresh.AllocatedBytes)} · gen0 {fresh.Gen0Collections} / gen2 {fresh.Gen2Collections}"),
@@ -739,7 +792,7 @@ public sealed class SettingsView
 					counter.TotalMs > 0 ? "明细只含慢样本" : null));
 			}
 
-			body.Children(counters);
+			live.Children(counters);
 		}
 
 		// 聚合视图才是用来对照优化的：同一段路径跑了几次、总耗时多少、最慢一次是多少。
@@ -752,7 +805,7 @@ public sealed class SettingsView
 				$"max {stat.MaxMs:0.0} · last {stat.LastMs:0.0}"));
 		}
 
-		body.Children(stats);
+		live.Children(stats);
 
 		var recent = new StackPanel().Spacing(2);
 		recent.Children(new TextBlock().Text(Strings.DiagnosticsRecentHeader)
@@ -763,14 +816,7 @@ public sealed class SettingsView
 				$"{timing.DurationMs:0.0} ms", timing.Detail));
 		}
 
-		body.Children(recent);
-
-		body.Children(new TextBlock()
-			.Text($"{Strings.DiagnosticsPath}：{fresh.TimingsPath ?? "—"}")
-			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
-			.TextWrapping(TextWrapping.Wrap).HoverTip(fresh.TimingsPath ?? string.Empty));
-
-		return Group("list-checks", Strings.SettingsDiagnostics, body);
+		live.Children(recent);
 	}
 
 	/// <summary>诊断区的操作按钮：刷新、压一次堆（判泄漏）、清空统计、打开目录。</summary>
@@ -855,7 +901,7 @@ public sealed class SettingsView
 				.SubtleText().TextTrimming(TextTrimming.CharacterEllipsis));
 		if (!string.IsNullOrEmpty(note))
 		{
-			row.ToolTip = new TextBlock { Text = note };
+			row.HoverTip(note);
 		}
 
 		return row;

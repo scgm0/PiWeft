@@ -160,7 +160,7 @@ internal sealed class UsageStatsView
 					.Height(12)
 					.CornerRadius(2)
 					.WithTheme((theme, border) => border.Background = LevelColor(cell.Level, theme.IsDark));
-				square.ToolTip($"{cell.Date} · {FormatTokens(cell.Tokens)}");
+				square.HoverTip($"{cell.Date} · {FormatTokens(cell.Tokens)}");
 				row.Children(square);
 			}
 

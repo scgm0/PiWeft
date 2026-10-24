@@ -80,4 +80,10 @@ public sealed record MarkdownTheme
 
 	/// <summary>图标按钮里的图标边长（DIP）。</summary>
 	public double CodeCopyIconSize { get; init; } = 14;
+
+	/// <summary>
+	/// 宿主的提示挂接（例如桌面端的延迟悬浮层）。为空时退回内建 <c>ToolTip</c>——
+	/// 它在悬停瞬间出现，与宿主统一的显示延迟不一致，因此桌面宿主应始终提供。
+	/// </summary>
+	public Action<FrameworkElement, string>? AttachToolTip { get; init; }
 }

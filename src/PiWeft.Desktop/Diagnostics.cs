@@ -190,6 +190,7 @@ internal sealed class Diagnostics
 	private static long _inputPendingTicks;
 	private static long _inputCount;
 	private static long _jankWarnTicks;
+	private static long _attributionTicks;
 	private static long _windowFrameBaseline;
 	private static int _frameDrawCalls;
 	private static int _frameCullCount;
@@ -289,6 +290,17 @@ internal sealed class Diagnostics
 		Record(name, Elapsed(watch), detail);
 	}
 
+	// 长帧归因：框架的 PerformanceProfiler 相位分解在发行包里被 DevToolsGate 关闭，读出来恒为零；
+	// 这里记录本帧已经无条件可得的绘制量，把「应用侧绘制多 vs 帧间空白」分开。
+	// 采样剖析（dotnet-trace）显示慢帧的大头是交换缓冲在 UI 线程里的阻塞，见 docs/02-performance.md。
+	private static void AttributeLongFrame(double ms, in RenderStats stats)
+	{
+		Record("frame.long", ms,
+			$"draws={stats.DrawCalls} cull={stats.CullCount} text={stats.PrimitiveStats.DrawTextCount} " +
+			$"shape={stats.PrimitiveStats.FillPathCount + stats.PrimitiveStats.DrawPathCount} " +
+			$"clip={stats.PrimitiveStats.ClipCount}");
+	}
+
 	/// <summary>
 	/// 每帧一次（接 <see cref="Window.FrameRendered"/>）：只写两个定长槽位和几个 Interlocked 计数。
 	/// 关闭时是一次 volatile 判断；开着时一帧约百纳秒、零分配，所以可以常驻而不必担心测出「观测者效应」。
@@ -339,6 +351,13 @@ internal sealed class Diagnostics
 					AppLog.For<Diagnostics>().ZLogWarning(
 						$"Long frame: {ms:0.0} ms (dropped {Interlocked.Read(ref _droppedFrames)}, " +
 						$"long {Interlocked.Read(ref _longFrames)}, queue lag {BitsToDouble(Volatile.Read(ref _queueLagMaxBits)):0.0} ms)");
+					// 相位归因单独限流（每秒最多两条）：长帧高频出现时也能留下足够的样本分布。
+					var previousAttribution = Interlocked.Read(ref _attributionTicks);
+					if (now - previousAttribution >= Stopwatch.Frequency / 2 &&
+						Interlocked.CompareExchange(ref _attributionTicks, now, previousAttribution) == previousAttribution)
+					{
+						AttributeLongFrame(ms, stats);
+					}
 				}
 			}
 			else if (ms >= DroppedFrameMs)

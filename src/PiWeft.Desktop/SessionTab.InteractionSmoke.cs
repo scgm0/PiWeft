@@ -97,6 +97,57 @@ public sealed partial class SessionTab
 		timer.Start();
 	}
 
+	/// <summary>
+	/// 仅供 --ui-smoke wheel：展开执行过程组体后沿真实滚轮入口持续波浪滚动 ~24 秒，
+	/// 供外部脚本采性能样本（dotnet-trace / 诊断 timings）对照长帧治理效果。
+	/// </summary>
+	internal void PrepareWheelSmoke()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(120));
+		var step = 0;
+		timer.Tick += () =>
+		{
+			var run = FindByHint(_messages, Strings.ExecutionExpandHint);
+			if (run is null) return;
+			if (!run.IsExpanded) run.IsExpanded = true;
+			else
+			{
+				var group = run.Content is { } content ? FindByHint(content, Strings.ExecutionGroupHint) : null;
+				if (group is { IsExpanded: false }) group.IsExpanded = true;
+				else
+				{
+					timer.Stop();
+					StartWheelPump(group);
+				}
+			}
+			if (++step > 40) timer.Stop();
+		};
+		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
+		timer.Start();
+
+		void StartWheelPump(Expander? group)
+		{
+			var body = group?.Content is { } groupContent
+				? Find<ScrollViewer>(groupContent).FirstOrDefault(viewer => viewer.VerticalScroll != ScrollMode.Disabled)
+				: null;
+			var smooth = body is null ? null : SmoothScroll.For(body);
+			Console.WriteLine($"wheel-pump: body={(body is not null)}:max={smooth?.MaxVerticalOffset ?? -1:0}:start={body?.VerticalOffset:0}");
+			var pump = new DispatcherTimer(TimeSpan.FromMilliseconds(16));
+			var tick = 0;
+			pump.Tick += () =>
+			{
+				// 波浪滚动：32 拍向下、8 拍向上，让组体视口持续处于动画与行实现压力下。
+				var dir = tick % 40 < 32 ? 1 : -1;
+				smooth?.ScrollBy(0, dir);
+				if (++tick >= 1500) pump.Stop();
+				if (tick % 250 == 0)
+					Console.WriteLine($"wheel-pump: tick={tick}:offset={body?.VerticalOffset:0}/{smooth?.MaxVerticalOffset:0}:anim={smooth?.IsAnimating}");
+			};
+			if (View.FindVisualRoot() is Window pumpWindow) pumpWindow.Closed += pump.Dispose;
+			pump.Start();
+		}
+	}
+
 	/// <summary>展开本轮执行过程，供原生截图检查时间线和工具详情。</summary>
 	internal void PrepareProcessSmoke()
 	{

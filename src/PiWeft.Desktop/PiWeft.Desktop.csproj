@@ -58,6 +58,13 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- 流式期间每帧都要把累积中的回复整份物化成字符串；长回复的单份就超过默认 85 KB 的
+		     LOH 门槛，持续落入只随 Gen2 回收的大对象堆（实测 89 MiB / 37.9 MiB 碎片）。
+		     把门槛提到 1 MiB：这些字符串改走可压缩的分代堆，Gen0/Gen2 都能便宜地收走。 -->
+		<RuntimeHostConfigurationOption Include="System.GC.LOHThreshold" Value="1048576" Trim="false" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<EmbeddedResource Include="Resources/fonts/*.ttf" />
 		<EmbeddedResource Include="Resources/icons/*.svg" />
 		<None Include="Resources/fonts/LICENSE-*.txt" />

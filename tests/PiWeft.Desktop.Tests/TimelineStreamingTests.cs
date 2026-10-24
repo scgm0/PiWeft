@@ -43,6 +43,27 @@ public sealed class TimelineStreamingTests
 	}
 
 	/// <summary>
+	/// 提示统一走宿主的延迟悬浮层：全应用 43 处 HoverTip 都是 350 ms 延迟，
+	/// 代码块复制按钮不能是仅有的「悬停立即弹出」（内建 ToolTip 无延迟）。
+	/// </summary>
+	[Fact]
+	public void CodeBlockToolTipsGoThroughTheDelayedHostLayer()
+	{
+		using var guard = new TextFocusScrollGuard(new ScrollViewer());
+		var entry = Live("```csharp\nvar x = 1;\n```");
+		using var message = new AssistantMessageView(entry, _ => { }, guard);
+		message.View.Measure(new Size(500, 400));
+		message.View.Arrange(new Rect(0, 0, 500, 400));
+
+		var copyButton = Find<Aprillz.MewUI.Controls.Button>(message.View)
+			.SingleOrDefault(button => HoverHints.Text(button) == Strings.CopyCodeTooltip);
+		Assert.NotNull(copyButton);
+		// 内建 ToolTip 必须保持未设置：两套提示并存会同时弹两层。
+		Assert.Null(copyButton.ToolTip);
+		UiLifetime.Release(message.View);
+	}
+
+	/// <summary>
 	/// 流式行落盘时 EntryId 从 live-assistant/… 变成会话条目 id（时间戳与图片不变）：
 	/// 这仍是一次原位收尾。发 Replace 会把该行已测高度作废成估算值，长回复定稿的
 	/// 一瞬间滚动范围先缩后涨，跟底读者看到一次跳动。

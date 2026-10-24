@@ -102,11 +102,17 @@ internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 			CornerRadius = 5,
 			StyleName = BuiltInStyles.FlatButton,
 			Opacity = IdleActionOpacity,
-			ToolTip = new TextBlock
-			{
-				Text = string.IsNullOrWhiteSpace(theme.CodeCopyTooltip) ? theme.CodeCopyLabel : theme.CodeCopyTooltip
-			}
 		};
+		// 宿主提供提示挂接时走宿主的悬浮层（统一的显示延迟与样式）；否则退回内建 ToolTip。
+		var copyTip = string.IsNullOrWhiteSpace(theme.CodeCopyTooltip) ? theme.CodeCopyLabel : theme.CodeCopyTooltip;
+		if (theme.AttachToolTip is { } attachTip)
+		{
+			attachTip(_copy, copyTip);
+		}
+		else
+		{
+			_copy.ToolTip = new TextBlock { Text = copyTip };
+		}
 		_copy.Click += CopyCode;
 		_copy.WithTheme((uiTheme, button) => button.Foreground = ActionText(uiTheme));
 		_copy.MouseEnter += () => _copy.Opacity = 1;

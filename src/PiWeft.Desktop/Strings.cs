@@ -510,6 +510,9 @@ public static partial class Strings
 
 	public const string TerminalCopy = "复制";
 
+	/// <summary>Markdown 代码块复制按钮的悬浮提示（也用作无图标时的按钮文案来源）。</summary>
+	public const string CopyCodeTooltip = "复制代码";
+
 	public const string TerminalPaste = "粘贴";
 
 	public static string TerminalPasteConfirm(int lines) => $"粘贴 {lines} 行内容？（可能直接执行）";

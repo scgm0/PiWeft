@@ -94,6 +94,45 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void BusyFlipsAndNewTurnsReuseTheProjectedPrefixWithoutFullPasses()
+	{
+		// 回合起止（busy 翻转）与新一轮用户消息只影响最后一轮的投影；长会话上一次
+		// 全量要一百多毫秒，恰好落在 UI 线程的每回合起止帧上。
+		var entries = new List<ChatEntry>();
+		for (var i = 0; i < 120; i++)
+		{
+			entries.Add(User($"u{i}"));
+			entries.Add(Answer($"a{i}", $"answer {i}"));
+		}
+		var projector = new ExecutionProcessProjector();
+		AssertProjection(entries, false, projector);
+		var fullAfterFirst = projector.FullPasses;
+		Assert.Equal(1, fullAfterFirst);
+
+		// 回合开始（busy 翻转）：只重投尾部。
+		AssertProjection(entries, true, projector);
+		Assert.Equal(fullAfterFirst, projector.FullPasses);
+
+		// 流式尾部推进与新一轮用户消息：仍然只重投尾部。
+		entries.Add(Answer("live", "partial"));
+		AssertProjection(entries, true, projector);
+		entries[^1] = Answer("live", "partial, more");
+		AssertProjection(entries, true, projector);
+		entries.Add(User("next"));
+		entries.Add(Answer("live2", "second"));
+		AssertProjection(entries, true, projector);
+		// 回合结束：上一轮的运行态标记收敛为定稿，依旧只重投尾部。
+		AssertProjection(entries, false, projector);
+		Assert.Equal(fullAfterFirst, projector.FullPasses);
+		Assert.True(projector.TailPasses >= 5);
+
+		// 历史前缀被改写（分支/编辑）：缓存失效，必须回退全量。
+		entries[1] = Answer("a0", "rewritten");
+		AssertProjection(entries, false, projector);
+		Assert.True(projector.FullPasses > fullAfterFirst);
+	}
+
+	[Fact]
 	public void ToolTailDoesNotPromoteAnInterimAnswerAndErrorsAreKeptInOrder()
 	{
 		var error = new ChatEntry { Role = ChatRole.Error, Text = "failed" };

@@ -351,27 +351,39 @@ internal sealed class ExecutionProcessProjector
 	public IReadOnlyList<ChatEntry> Project(IReadOnlyList<ChatEntry> entries, bool busy)
 	{
 		var lastUser = LastUserIndex(entries);
-		if (lastUser >= 0 && lastUser == _lastUserSourceIndex && busy == _busy &&
-			PrefixEquals(entries, _source, lastUser))
+		// 缓存能担保的前缀是「上一次投影时的最后一个用户消息」之前的行：那些轮次早已定稿，
+		// 投影结果与 busy 无关。因此 busy 翻转（回合开始/结束）与新用户消息都只需要从旧的
+		// 轮次边界重投尾部——长会话上一次全量要一百多毫秒，恰好发生在每回合的起止帧。
+		if (lastUser >= 0 && _lastUserSourceIndex >= 0 && lastUser >= _lastUserSourceIndex &&
+			PrefixEquals(entries, _source, _lastUserSourceIndex))
 		{
 			// Turn boundaries are independent, so the rows of every earlier turn are still valid.
 			TailPasses++;
-			var tail = ExecutionProcess.ProjectRange(entries, lastUser, busy, out _);
+			var tail = ExecutionProcess.ProjectRange(entries, _lastUserSourceIndex, busy, out var lastTurnStart);
 			var rows = new ChatEntry[_prefixRows + tail.Count];
 			_projected.AsSpan(0, _prefixRows).CopyTo(rows);
 			tail.CopyTo(rows.AsSpan(_prefixRows));
 			_projected = rows;
+			if (lastUser != _lastUserSourceIndex)
+			{
+				// 新一轮开始：前一次的流式尾部随本轮定稿，从现在起由新边界担保。
+				// lastTurnStart 是相对本次重投起点的行号，转成绝对前缀长度要加上旧前缀。
+				_source = [.. entries];
+				_prefixRows += lastTurnStart;
+				_lastUserSourceIndex = lastUser;
+			}
+			_busy = busy;
 			LastStablePrefix = _prefixRows;
 			LastPrefixReused = true;
 			return rows;
 		}
 
 		FullPasses++;
-		var full = ExecutionProcess.ProjectRange(entries, 0, busy, out var lastTurnStart);
+		var full = ExecutionProcess.ProjectRange(entries, 0, busy, out var lastTurnStartFull);
 		_source = [.. entries];
 		_projected = [.. full];
 		_lastUserSourceIndex = lastUser;
-		_prefixRows = lastUser >= 0 ? lastTurnStart : 0;
+		_prefixRows = lastUser >= 0 ? lastTurnStartFull : 0;
 		_busy = busy;
 		LastStablePrefix = _prefixRows;
 		LastPrefixReused = false;
