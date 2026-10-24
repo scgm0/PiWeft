@@ -9,6 +9,20 @@ public sealed record MarkdownTheme
 	/// <summary>Gap between top-level blocks in DIPs.</summary>
 	public double BlockSpacing { get; init; } = 8;
 
+	/// <summary>
+	/// 正文（段落 / 列表 / 引用 / 表格单元）的行高，按字号倍率给出，与 PiDeck
+	/// <c>--line-height-chat</c> 同源（1.6）。倍率随字号缩放，改会话字号时行距同步走，
+	/// 不会出现「字号变大、行挤在一起」。小于字体自然行高时按自然行高排版（不压字）。
+	/// 置 0 或负值＝关闭，退回字体自然行高。
+	/// </summary>
+	public double LineHeightScale { get; init; } = 1.6;
+
+	/// <summary>
+	/// 标题行高倍率。标题字号大，需要比正文更紧的行距才不至于把一行拉成一片空白，
+	/// 取 PiDeck <c>.markdown-body h1..h6</c> 的 1.3。
+	/// </summary>
+	public double HeadingLineHeightScale { get; init; } = 1.3;
+
 	/// <summary>Hanging indent reserved for each list nesting level in DIPs.</summary>
 	public double ListIndent { get; init; } = 32;
 

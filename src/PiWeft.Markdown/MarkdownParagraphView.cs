@@ -32,6 +32,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 
 	private readonly List<Chunk> _chunks = [];
 	private readonly List<Rect> _rangeBounds = [];
+	private readonly List<Rect> _selectionRects = [];
 	private readonly List<ImageSlot> _images = [];
 	private readonly Dictionary<string, ImageSource?> _resolvedImages = [];
 	private readonly HashSet<string> _pendingImages = [];
@@ -49,6 +50,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 	private Uri? _baseUri;
 	private double _width = double.NaN;
 	private uint _dpi;
+	private double _lineSpacing;
 	private TextRunStyle _style;
 	private ITextEngine? _engine;
 	private int _selectionStart;
@@ -618,6 +620,9 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			FontWeight,
 			FontStyle == FontStyle.Italic);
 		uint dpi = GetDpi();
+		// Every chunk of this paragraph shares one leading value: it is a property of the block's
+		// font size, not of the text, so it is resolved once per layout pass.
+		_lineSpacing = ResolveLineSpacing(engine, style, dpi);
 
 		if (_engine is not null && !ReferenceEquals(_engine, engine))
 		{
@@ -667,6 +672,14 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			Chunk chunk = _chunks[index];
 			chunk.Top = top;
 			top += chunk.Layout!.ContentHeight;
+			// A chunk boundary is a line boundary, and the engine only puts leading *between* the
+			// lines it knows about: without this the frozen chunk swallows the gap that a single
+			// pass would have produced, and a streamed paragraph ends up shorter than the same
+			// text laid out at once.
+			if (index < _chunks.Count - 1)
+			{
+				top += _lineSpacing;
+			}
 		}
 	}
 
@@ -699,10 +712,27 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			{
 				MaxWidth = width,
 				Wrapping = _wrap ? TextWrapping.Wrap : TextWrapping.NoWrap,
-				Alignment = _block.Alignment
+				Alignment = _block.Alignment,
+				LineSpacing = _lineSpacing
 			}
 		}, TextLayoutCachePolicy.Owner, chunk);
 	}
+
+	/// <summary>
+	/// Extra leading between the lines of this block, in DIPs, from <see cref="MarkdownMetrics"/>:
+	/// the theme's line-height multiplier applied to the rendered font size, minus the height the
+	/// font already reserves. Never negative, because a multiplier below the font's natural height
+	/// would make lines overlap - CJK fonts ask for more room than Latin ones, so "tighten" stays a
+	/// no-op there instead of cutting glyphs. The gap sits between lines only, so a block's top and
+	/// bottom edges stay flush with the text and <see cref="MarkdownTheme.BlockSpacing"/> keeps
+	/// describing the real distance between blocks.
+	/// </summary>
+	private double ResolveLineSpacing(ITextEngine engine, TextRunStyle style, uint dpi)
+		=> MarkdownMetrics.LineSpacing(
+			engine,
+			style,
+			dpi,
+			_block.Kind == MarkdownBlockKind.Heading ? _theme.HeadingLineHeightScale : _theme.LineHeightScale);
 
 	private bool TrySplitOpenChunk(ITextEngine engine, TextRunStyle style, uint dpi, double width)
 	{
@@ -848,6 +878,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			Chunk chunk = _chunks[index];
 			ITextLayout layout = chunk.Layout!;
 			DrawInlineCodeChips(context, chunk);
+			DrawSelection(context, chunk);
 			List<TextPaintSpan> paints = [];
 			for (int runIndex = 0; runIndex < _runs.Length; runIndex++)
 			{
@@ -873,19 +904,6 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 					link ? TextDecoration.Underline : TextDecoration.None));
 			}
 
-			if (_selectionEnd > _selectionStart)
-			{
-				int from = Math.Max(_selectionStart, chunk.Start);
-				int to = Math.Min(_selectionEnd, chunk.End);
-				if (to > from)
-				{
-					paints.Add(new TextPaintSpan(
-						new TextRange(from - chunk.Start, to - from),
-						null,
-						Theme.Palette.SelectionBackground));
-				}
-			}
-
 			var options = new TextDrawOptions(
 				Foreground,
 				paints.Count == 0 ? default : paints.ToArray(),
@@ -904,6 +922,68 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			slot.Element?.Render(context);
 		}
 	}
+
+	/// <summary>
+	/// 选区底色按「行框」铺，不按「字形带」铺：MewUI 的行范围矩形只有一行的自然高度，
+	/// 加了行间距后逐行选区会变成一条条横纹（浏览器/PiDeck 把半行距也涂进去，选区是连续的）。
+	/// 上下各扩半个行间距后，行与行之间正好接上；块与块之间只会伸进 BlockSpacing 一半，
+	/// 不会盖到相邻块的文字（BlockSpacing 8 ≥ 半行间距 ≤ 3.3 @16px）。
+	/// </summary>
+	private void DrawSelection(IGraphicsContext context, Chunk chunk)
+	{
+		Color selection = Theme.Palette.SelectionBackground;
+		if (selection.A == 0)
+		{
+			return;
+		}
+		_selectionRects.Clear();
+		CollectSelectionRects(chunk, _selectionRects);
+		foreach (Rect rect in _selectionRects)
+		{
+			context.FillRectangle(
+				new Rect(Bounds.X + rect.X, Bounds.Y + rect.Y, rect.Width, rect.Height),
+				selection);
+		}
+	}
+
+	/// <summary>本段落选区要涂的矩形（坐标相对段落左上，含行间距扩展）。</summary>
+	internal IReadOnlyList<Rect> SelectionRectsForTest()
+	{
+		_selectionRects.Clear();
+		foreach (Chunk chunk in _chunks)
+		{
+			CollectSelectionRects(chunk, _selectionRects);
+		}
+		return _selectionRects;
+	}
+
+	private void CollectSelectionRects(Chunk chunk, List<Rect> into)
+	{
+		int from = Math.Max(_selectionStart, chunk.Start);
+		int to = Math.Min(_selectionEnd, chunk.End);
+		if (to <= from || chunk.Layout is null)
+		{
+			return;
+		}
+		double inflate = _lineSpacing / 2;
+		_rangeBounds.Clear();
+		chunk.Layout.GetRangeBounds(from - chunk.Start, to - from, _rangeBounds);
+		foreach (Rect rectangle in _rangeBounds)
+		{
+			if (rectangle.Width <= 0 || rectangle.Height <= 0)
+			{
+				continue;
+			}
+			Rect box = InflateLine(rectangle, inflate);
+			into.Add(new Rect(box.X, chunk.Top + box.Y, box.Width, box.Height));
+		}
+	}
+
+	/// <summary>把一行的选区矩形上下各扩 inflate（行间距的一半），使逐行选区连成一片。</summary>
+	internal static Rect InflateLine(Rect line, double inflate)
+		=> inflate <= 0
+			? line
+			: new Rect(line.X, line.Y - inflate, line.Width, line.Height + inflate * 2);
 
 	private void DrawInlineCodeChips(IGraphicsContext context, Chunk chunk)
 	{

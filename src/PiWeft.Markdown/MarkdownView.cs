@@ -745,7 +745,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	private void AppendListRow(MarkdownListPanel list, MarkdownBlock item, bool loose)
 	{
 		(FrameworkElement marker, FrameworkElement content) = CreateListRow(item, loose);
-		list.AddRow(marker, content);
+		list.AddRow(marker, content, ListItemLeading());
 	}
 
 	private bool TryUpdateListItem(MarkdownListPanel list, int index, MarkdownBlock oldItem, MarkdownBlock newItem)
@@ -1116,12 +1116,25 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	private FrameworkElement CreateList(MarkdownBlock block)
 	{
 		MarkdownListPanel panel = new(_theme.ListIndent);
+		double leading = ListItemLeading();
 		foreach (MarkdownBlock item in block.Children)
 		{
 			(FrameworkElement marker, FrameworkElement content) = CreateListRow(item, block.Loose);
-			panel.AddRow(marker, content);
+			panel.AddRow(marker, content, leading);
 		}
 		return panel;
+	}
+
+	/// <summary>
+	/// 列表条目要补的那一份行间距，与正文段落同一个口径（字号 × 倍率 − 字体自然行高）。
+	/// 段落内部的行距由 <see cref="MarkdownParagraphView"/> 加在行与行之间，而单行条目没有
+	/// 「行与行之间」，不补就会被正文抢先：同样 16 px 字号，正文 25.6 DIP、条目只有 19 DIP。
+	/// 嵌套列表的条目再走一次这里，所以多层列表的行距与正文保持一致。
+	/// </summary>
+	private double ListItemLeading()
+	{
+		TextRunStyle style = new(FontFamily, FontSize, FontWeight, FontStyle == FontStyle.Italic);
+		return MarkdownMetrics.LineSpacing(GetGraphicsFactory().TextEngine, style, GetDpi(), _theme.LineHeightScale);
 	}
 
 	private (FrameworkElement Marker, FrameworkElement Content) CreateListRow(MarkdownBlock item, bool loose)

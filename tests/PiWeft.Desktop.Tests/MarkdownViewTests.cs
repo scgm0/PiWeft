@@ -311,6 +311,10 @@ public sealed class MarkdownViewTests
 		var text = string.Join(" ", Enumerable.Range(0, 900).Select(index =>
 			$"sentence {index} has enough plain words to wrap several lines in a reading column"));
 		var view = new MarkdownView { FontSize = 14 };
+		// MewUI 的 MarkdownPresenter 没有行距开关，拿它当“一次成型”的参照时，只能把本控件的
+		// 默认行距关掉（行距本身由 MarkdownLineSpacingTests 负责）：这里要验的是分块排版与
+		// 整体排版高度一致，不是两个控件的字距节奏一致。
+		view.MarkdownTheme = new PiWeft.Markdown.MarkdownTheme { LineHeightScale = 0, HeadingLineHeightScale = 0 };
 		view.Source = text;
 		Pump(view, 520, 20_000);
 

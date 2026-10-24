@@ -121,7 +121,9 @@ Options 与 Theme 实例**（桌面端为 `AssistantMessageView.SharedMarkdownOp
 - 开放 chunk 超过 2 K 字符或 64 行时，在最后一个已闭合行处切出新的冻结 chunk；
 - 尾部改写（关闭 `**`、反引号、链接等）从第一个变化偏移所在的 chunk 开始重排，前面的冻结 chunk 保留；
 - 冻结 chunk 用 `TextLayoutCachePolicy.Owner` 缓存，绘制时按 `chunk.Top` 堆叠；
-- 选区、链接命中、行内代码背景按 chunk 求交，全局偏移 = `chunk.Start + localOffset`。
+- 选区、链接命中、行内代码背景按 chunk 求交，全局偏移 = `chunk.Start + localOffset`；
+- chunk 边界就是行边界，而行间距只存在于“行与行之间”：因此堆叠时除最后一个 chunk 外都要补上
+  一份行间距，否则流式拼接出来的段落会比一次成型的目标矮一截（每丢一个边界少一行间距）。
 
 分块布局与整段布局的行数、行高、baseline 和总高度在测试中逐行比对一致。
 
@@ -181,6 +183,48 @@ Options 与 Theme 实例**（桌面端为 `AssistantMessageView.SharedMarkdownOp
   和会话滚到视图顶部/底部，看起来像进度跳变；虚拟化行还可能被暂时释放，直到滚动后才重建。
 - 主题换色走 MewUI 的 `WithTheme`；字号/DPI 变化会重建元素，因为代码块和列表标记把字体烘焙进了子元素。
 - 代码块背景通过 `MarkdownTheme.CodeBackgroundSelector` 跟随 UI 主题。
+
+### 12. 行距（默认视觉节奏）
+
+正文行距以**字号倍率**给出，对齐 PiDeck 的 `--line-height-chat`（1.6）与 `.markdown-body` 标题（1.3）：
+
+| 属性 | 默认 | 作用 |
+|---|---:|---|
+| `MarkdownTheme.LineHeightScale` | 1.6 | 段落 / 列表 / 引用 / 表格单元的行高倍率 |
+| `MarkdownTheme.HeadingLineHeightScale` | 1.3 | 标题行高倍率（字号大，需要更紧的行距） |
+
+倍率最终落到 MewUI 段落样式的 `LineSpacing`（附加行间距，DIP）上：控件先用一个只探索性布局（按
+字族/字号/字重/斜体/DPI 缓存，进程内一次）量出字体**自然行高**（HarmonyOS Sans SC 实测 ≈ 1.19 em），
+再按 `max(0, 字号 × 倍率 − 自然行高)` 补差。这样定下的几条性质都是有意为之：
+
+- **随字号走**：用户把会话字号从 14 调到 22，行距同步放大，不会出现“字大了、行挤了”；
+- **永不压字**：倍率小于字体自然行高（比如某些 CJK 字体本来就 1.5+）时补差为 0，不会让上下行咬在
+  一起，也不会裁掉字形；置 0 或负值即关闭行距，退回字体自然行高；
+- **块间距仍是块间距**：行间距只加在行与行之间，块的上下缘贴着文字，`BlockSpacing` 继续描述块之间
+  的真实空白，不会因行高变大而把段落间距一起撑开；
+- **不影响代码块**：代码体是只读 `MultiLineTextBox`，MewUI 0.22.1 没有给它行高开关；
+- **选区跟着行框走，不跟着字形带走**：MewUI 的行范围矩形只有一行的自然高度，行间距拉开后
+  逐行选区会变成一条条横纹。所以选区底色由 `MarkdownParagraphView` 自己铺（不再走 `TextPaintSpan`），
+  每行矩形上下各扩半个行间距：行与行之间无缝相接，单行选区正好一个行框高（16 px → 25.6 DIP）。
+  块边缘只会伸进 `BlockSpacing` 一半（≤ 3.3 DIP < 8 DIP），不会盖到相邻块的文字。
+  行内代码 chip、`==标记==` 底色与链接下划线的绘制顺序不变（chip → 选区 → 文本绘制）。
+  测试见 `SelectionOfAWrappedParagraphHasNoGapsBetweenLines`（逐行 `Bottom == 下一行 Y`）。
+
+**列表条目单独补一份**。行距只存在于“行与行之间”，所以**单行条目**自己拿不到任何行距：不补的话，
+字号 16 时正文一行走 25.6 DIP，列表一行只走 19 DIP，列表反而比正文挤；条目里的行内代码 chip
+（字高 + 上下内边距 + 1 px 描边，约等于一整行高）会跟相邻条目/chip 直接贴上——这就是“单行代码挤在
+一起”的观感。因此 `MarkdownView` 把同一口径的 `ListItemLeading()` 交给 `MarkdownListPanel.AddRow`，
+行高等于「子元素高 + 一个行间距」，上下各滞半个行距，标记（弹头 / 序号 / 任务复选框）与内容一起下移，
+仍与第一行对齐。于是：
+
+- 单行条目 = 1 个行框（= 正文行距），多行条目 = N 个行框，不会按行重复加；
+- 嵌套列表的条目走同一条路径，各层行距与正文一致；
+- 松散列表（loose）条目之间的 `BlockSpacing` 与 4 DIP 收尾间距不变。
+
+宿主想改节奏就在共享的主题实例上 `with`：`SharedMarkdownTheme with { LineHeightScale = 1.45 }`。
+行距倍率属于 `MarkdownTheme`，而主题记录进了高度缓存的 `MeasureKey`，改值会自动使全部已测高度作废。
+测试见 `MarkdownLineSpacingTests`（正文/标题倍率、字号跟随、不压字、关闭退回、换主题重排，
+以及列表条目行距、标记与行框对齐）。
 
 ## 实测
 
