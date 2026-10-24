@@ -6,7 +6,111 @@ namespace PiWeft.Desktop;
 
 public sealed partial class SessionTab
 {
+	/// <summary>是否打印 scroll-sweep 的高频状态探针（PIWEFT_SWEEP_PROBE=1）。</summary>
+	private static bool SweepProbe => Environment.GetEnvironmentVariable("PIWEFT_SWEEP_PROBE") == "1";
+
 	/// <summary>滚到顶部，让「移动到最新」悬浮按钮进入自动显示状态。</summary>
+	/// <summary>
+	/// 仅供 --ui-smoke scroll-sweep：从会话底部按步长向上滚动，覆盖整条会话，
+	/// 每步打印 offset 供外部脚本对齐截图帧。步长小于视口，任何一帧里
+	/// 「两块已渲染内容之间出现成段空白」都会被像素检测抓到。
+	/// </summary>
+	internal void PrepareScrollSweepSmoke()
+	{
+		PiWeft.Markdown.MarkdownView.PaintProbeEnabled = SweepProbe;
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(900));
+		DispatcherTimer? probe = null;
+		var step = 0;
+		if (Environment.GetEnvironmentVariable("PIWEFT_SWEEP_DOWN") == "1")
+		{
+			_scroll.SetScrollOffsets(0, 0);
+		}
+		timer.Tick += () =>
+		{
+			step++;
+			double direction = Environment.GetEnvironmentVariable("PIWEFT_SWEEP_DOWN") == "1" ? 1 : -1;
+			double target = direction < 0
+				? Math.Max(0, _scroll.VerticalOffset - 520)
+				: _scroll.VerticalOffset + 520;
+			_scroll.SetScrollOffsets(0, target);
+			if (SweepProbe)
+			{
+				Console.WriteLine($"sweep-step {step} at={System.Diagnostics.Stopwatch.GetTimestamp()} offset={target:F0}");
+			}
+			if (!SweepProbe)
+			{
+				return;
+			}
+			// 跳滚后的高频采样：区分「corrective 布局迟到」与「布局已跑但重绘迟到」。
+			var sample = 0;
+			probe?.Stop();
+			probe = new DispatcherTimer(TimeSpan.FromMilliseconds(16));
+			probe.Tick += () =>
+			{
+				sample++;
+				var realized = new System.Text.StringBuilder();
+				foreach (var markdown in EnumerateMarkdownViews())
+				{
+					realized.Append(markdown.RealizedBlockCount).Append('/').Append(markdown.BlockCount).Append(' ');
+				}
+				Console.WriteLine(
+					$"probe s{step}.{sample} offset={_scroll.VerticalOffset:F0} scrollY={_scroll.Bounds.Y:F0} rows={_timeline.VisibleRowCount} md=[{realized}]");
+				if (sample % 2 == 0)
+				{
+					foreach (var markdown in EnumerateMarkdownViews())
+					{
+						var (first, last, boundsY) = markdown.RealizeStateForTest;
+						var slots = new System.Text.StringBuilder();
+						for (var index = 0; index < markdown.BlockCount; index++)
+						{
+							slots.Append(index).Append(':').Append(markdown.GetBlockTopForTest(index).ToString("F0"))
+								.Append(markdown.IsBlockAttachedForTest(index) ? '+' : '-').Append(' ');
+						}
+						Console.WriteLine($"state s{step}.{sample} md boundsY={boundsY:F0} window=[{first}..{last}] total={markdown.TotalHeight:F0} slots={slots}");
+						if (sample == 2)
+						{
+							Console.WriteLine($"blocks md {markdown.DescribeBlocksForTest()}");
+						}
+					}
+				}
+				if (sample >= 14)
+				{
+					probe.Stop();
+				}
+			};
+			probe.Start();
+			if (target <= 0 || step >= 48)
+			{
+				timer.Stop();
+				Console.WriteLine("sweep-done");
+			}
+		};
+		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
+		timer.Start();
+	}
+
+	private System.Collections.Generic.IEnumerable<PiWeft.Markdown.MarkdownView> EnumerateMarkdownViews()
+	{
+		var pending = new System.Collections.Generic.Stack<Element>();
+		foreach (var row in _timeline.VisibleRows)
+		{
+			if (row is Element root) pending.Push(root);
+		}
+		while (pending.Count > 0)
+		{
+			var current = pending.Pop();
+			if (current is PiWeft.Markdown.MarkdownView markdown) yield return markdown;
+			if (current is IVisualTreeHost host)
+			{
+				host.VisitChildren(child =>
+				{
+					pending.Push(child);
+					return true;
+				});
+			}
+		}
+	}
+
 	internal void PrepareLatestSmoke()
 	{
 		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(2500));

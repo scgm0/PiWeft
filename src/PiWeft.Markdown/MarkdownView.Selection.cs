@@ -323,8 +323,142 @@ public sealed partial class MarkdownView
 		{
 			ClearSelection();
 			args.Handled = true;
+			return;
+		}
+		if (args.Key == Key.Tab && IsEffectivelyEnabled &&
+			TryMoveLinkFocus(!args.Modifiers.HasFlag(ModifierKeys.Shift)))
+		{
+			args.Handled = true;
 		}
 	}
+
+	private (int Unit, bool Forward)? _pendingLinkFocus;
+
+	/// <summary>
+	/// Moves keyboard focus from the current paragraph's links to the first (or last) link of
+	/// the next (or previous) text unit that has one, realizing the target block first if
+	/// needed. Returns false when focus is not on a link paragraph of this view or no further
+	/// link exists, so Tab keeps its default focus-navigation meaning.
+	/// </summary>
+	private bool TryMoveLinkFocus(bool forward)
+	{
+		if (_document is null ||
+			FindVisualRoot() is not Window window ||
+			window.FocusManager.FocusedElement is not MarkdownParagraphView current ||
+			current.TextUnit < 0 ||
+			!VisualTree.IsInSubtreeOf(current, this))
+		{
+			return false;
+		}
+
+		int target = NextLinkUnit(current.TextUnit, forward);
+		if (target < 0)
+		{
+			return false;
+		}
+
+		foreach (ISelectableText selectable in RealizedSelectableElements())
+		{
+			if (selectable is MarkdownParagraphView paragraph && selectable.TextUnit == target)
+			{
+				paragraph.FocusLink(forward ? 0 : paragraph.LinkCount - 1);
+				return true;
+			}
+		}
+
+		return ScrollToTextUnitForFocus(target, forward);
+	}
+
+	private int NextLinkUnit(int fromUnit, bool forward)
+	{
+		IReadOnlyList<MarkdownTextUnit> units = _document!.TextUnits;
+		for (int unit = forward ? fromUnit + 1 : fromUnit - 1; unit >= 0 && unit < units.Count; unit += forward ? 1 : -1)
+		{
+			if (units[unit].HasLinks)
+			{
+				return unit;
+			}
+		}
+		return -1;
+	}
+
+	private bool ScrollToTextUnitForFocus(int unit, bool forward)
+	{
+		if (_scroll is null)
+		{
+			return false;
+		}
+		int topIndex = _document!.TextUnits[unit].TopIndex;
+		if (topIndex < 0 || topIndex >= _slots.Count)
+		{
+			return false;
+		}
+		EnsurePrefix();
+		double viewportTop = _scroll.Bounds.Y + _scroll.Padding.Top;
+		double blockTop = _slots[topIndex].Top + Bounds.Y;
+		double blockHeight = double.IsNaN(_slots[topIndex].Height)
+			? FallbackEstimate
+			: _slots[topIndex].Height;
+		double target = forward
+			? _scroll.VerticalOffset + (blockTop - viewportTop)
+			: _scroll.VerticalOffset + (blockTop + blockHeight - viewportTop - _scroll.ViewportHeight);
+		_pendingLinkFocus = (unit, forward);
+		_scroll.SetScrollOffsets(_scroll.HorizontalOffset, Math.Max(0, target));
+		InvalidateMeasure();
+		// The block may already exist in the detached cache; otherwise the dispatcher callbacks
+		// queued below pick it up after the layout pass triggered by the scroll.
+		FlushPendingLinkFocus();
+		ScheduleLinkFocusFlush();
+		return true;
+	}
+
+	private void FlushPendingLinkFocus()
+	{
+		if (_pendingLinkFocus is not (int unit, bool forward) || _document is null)
+		{
+			return;
+		}
+		if (unit >= _document.TextUnits.Count || !_document.TextUnits[unit].HasLinks)
+		{
+			_pendingLinkFocus = null;
+			return;
+		}
+		foreach (ISelectableText selectable in RealizedSelectableElements())
+		{
+			if (selectable is MarkdownParagraphView paragraph && selectable.TextUnit == unit)
+			{
+				_pendingLinkFocus = null;
+				paragraph.FocusLink(forward ? 0 : paragraph.LinkCount - 1);
+				return;
+			}
+		}
+	}
+
+	private void ScheduleLinkFocusFlush()
+	{
+		if (!Application.IsRunning || Application.Current?.Dispatcher is not { } dispatcher)
+		{
+			return;
+		}
+		// Bounded burst: every callback no-ops once the pending focus is served, and the series
+		// ends after layout has clearly had a chance to run.
+		for (int attempt = 0; attempt < 8; attempt++)
+		{
+			dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+			{
+				if (_pendingLinkFocus.HasValue)
+				{
+					FlushPendingLinkFocus();
+				}
+			});
+		}
+	}
+
+	internal void FlushPendingLinkFocusForTest() => FlushPendingLinkFocus();
+
+	internal bool IsWaitingForLinkFocus => _pendingLinkFocus.HasValue;
+
+	internal bool TryMoveLinkFocusForTest(bool forward) => TryMoveLinkFocus(forward);
 
 	private void ShowDefaultContextMenu(MouseEventArgs args)
 	{

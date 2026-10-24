@@ -1058,6 +1058,28 @@ public sealed partial class MainWindow : Window
 	private void OpenSessionPath(string path) => _ = OpenSessionPathAsync(path);
 
 	/// <summary>
+	/// 仅供 --ui-smoke scroll-sweep：打开 fixture 目录里最新的会话，然后让会话标签分步滚动，
+	/// 供外部脚本逐帧截图排查「长消息部分情况下渲染消失」。
+	/// </summary>
+	private async Task RunScrollSweepSmokeAsync()
+	{
+		var dir = SessionPaths.GetDefaultSessionDir(_cwd);
+		var file = Directory.Exists(dir)
+			? new DirectoryInfo(dir).GetFiles("*.jsonl").OrderByDescending(static item => item.Name, StringComparer.Ordinal).FirstOrDefault()
+			: null;
+		if (file is null)
+		{
+			Console.WriteLine("sweep-missing-session");
+			return;
+		}
+		await OpenSessionPathAsync(file.FullName);
+		if (CurrentTab() is { } tab)
+		{
+			tab.PrepareScrollSweepSmoke();
+		}
+	}
+
+	/// <summary>
 	/// 打开会话。长会话（几十 MB、数万行）解析要近一秒，聊天记录投影再要 200+ 毫秒，
 	/// 这些都放到后台线程，期间用 BusyIndicator 显示读取进度；UI 线程只建标签页。
 	/// </summary>
@@ -1579,6 +1601,9 @@ public sealed partial class MainWindow : Window
 				case "latest":
 					CurrentTab()?.PrepareLatestSmoke();
 					break;
+				case "scroll-sweep":
+					_ = RunScrollSweepSmokeAsync();
+					break;
 				case "latest-churn":
 					CurrentTab()?.PrepareLatestChurnSmoke();
 					break;
@@ -1668,7 +1693,10 @@ public sealed partial class MainWindow : Window
 		});
 
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
-		await Task.Delay(view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" ? 30000 : 7000).ConfigureAwait(false);
+		// scroll-sweep 从会话底部按 0.9 s 一步扫完整条会话，需要更长的驻留。
+		await Task.Delay(view is "scroll-sweep" ? 50000
+			: view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" ? 30000
+			: 7000).ConfigureAwait(false);
 		// 加载提示会阻止关窗；退出前先确认没有在途的打开。
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
 		Dispatch(() =>

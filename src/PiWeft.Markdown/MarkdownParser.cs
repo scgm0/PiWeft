@@ -3,8 +3,12 @@ using System.Text;
 using Aprillz.MewUI;
 using Markdig;
 using Markdig.Extensions.EmphasisExtras;
+using Markdig.Extensions.Footnotes;
+using Markdig.Extensions.Emoji;
+using Markdig.Extensions.Mathematics;
 using Markdig.Extensions.Tables;
 using Markdig.Extensions.TaskLists;
+using Markdig.Extensions.Yaml;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 
@@ -20,39 +24,72 @@ public static class MarkdownParser
 	private static readonly ConditionalWeakTable<MarkdownOptions, MarkdownPipeline> Pipelines = [];
 	private static readonly MarkdownOptions DefaultOptions = new();
 
-	public static MarkdownDocument Parse(string source, MarkdownOptions? options = null)
-		=> Parse(source, options, previous: null);
-
 	/// <summary>
 	/// Parses <paramref name="source"/>, reusing the tail of <paramref name="previous"/> when the new
 	/// text only appended to it. Only the last top-level block is re-parsed, so a streamed frame
-	/// costs time proportional to the appended text instead of the whole message.
+	/// costs time proportional to the appended text instead of the whole message. While
+	/// <paramref name="streaming"/> is set, the unfinished tail receives provisional closers so
+	/// unclosed syntax renders like the finished document.
 	/// </summary>
-	public static MarkdownDocument Parse(string source, MarkdownOptions? options, MarkdownDocument? previous)
+	public static MarkdownDocument Parse(string source, MarkdownOptions? options = null, MarkdownDocument? previous = null, bool streaming = false)
 	{
 		ArgumentNullException.ThrowIfNull(source);
 		options ??= DefaultOptions;
 
-		if (TryParseIncremental(source, options, previous, out MarkdownDocument? incremental))
+		if (TryParseTail(source, builder: null, options, previous, streaming, out MarkdownDocument? incremental))
 		{
 			return incremental;
 		}
 
-		MarkdownPipeline pipeline = Pipelines.GetValue(options, static value => BuildPipeline(value));
-		Markdig.Syntax.MarkdownDocument parsed = Markdig.Markdown.Parse(source, pipeline);
-		HashSet<string> anchors = new(StringComparer.Ordinal);
-		List<MarkdownBlock> blocks = MapChildren(parsed, source, options, anchors);
-		MarkdownHashBuilder.Assign(blocks);
-		return new MarkdownDocument(source, blocks, options)
+		return ParseFull(source, options, streaming);
+	}
+
+	/// <summary>
+	/// Parses a source that only grows by appends. Reference equality with the previous
+	/// document's builder proves the append-only property, so the incremental path needs neither
+	/// a full-source prefix comparison nor a full-string materialization.
+	/// </summary>
+	public static MarkdownDocument Parse(StringBuilder source, MarkdownOptions? options = null, MarkdownDocument? previous = null, bool streaming = false)
+	{
+		ArgumentNullException.ThrowIfNull(source);
+		options ??= DefaultOptions;
+
+		if (TryParseTail(null, source, options, previous, streaming, out MarkdownDocument? incremental))
 		{
-			HasLinkReferenceDefinitions = ContainsLinkReferenceDefinition(source.AsSpan())
+			return incremental;
+		}
+
+		// Full parse: blocks come from the materialized text, but the document stays
+		// builder-backed so later appends keep the tail fast path.
+		return ParseFull(source.ToString(), options, streaming, source);
+	}
+
+	private static MarkdownDocument ParseFull(string source, MarkdownOptions options, bool streaming, StringBuilder? builder = null)
+	{
+		MarkdownPipeline pipeline = Pipelines.GetValue(options, static value => BuildPipeline(value));
+		string parseSource = source;
+		string suffix = streaming ? MarkdownStreamRepair.ComputeSuffix(source) : string.Empty;
+		if (suffix.Length > 0)
+		{
+			parseSource = source + suffix;
+		}
+		Markdig.Syntax.MarkdownDocument parsed = Markdig.Markdown.Parse(parseSource, pipeline);
+		HashSet<string> anchors = new(StringComparer.Ordinal);
+		List<MarkdownBlock> blocks = MapChildren(parsed, parseSource, options, anchors);
+		MarkdownHashBuilder.Assign(blocks);
+		return new MarkdownDocument(source, builder, blocks, options)
+		{
+			HasLinkReferenceDefinitions = ContainsLinkReferenceDefinition(source.AsSpan()),
+			TailRepaired = suffix.Length > 0
 		};
 	}
 
-	private static bool TryParseIncremental(
-		string source,
+	private static bool TryParseTail(
+		string? source,
+		StringBuilder? builder,
 		MarkdownOptions options,
 		MarkdownDocument? previous,
+		bool streaming,
 		out MarkdownDocument document)
 	{
 		document = null!;
@@ -63,32 +100,64 @@ public static class MarkdownParser
 		{
 			return false;
 		}
-		string oldSource = previous.Source;
-		if (source.Length < oldSource.Length ||
-			!source.StartsWith(oldSource, StringComparison.Ordinal))
+
+		int previousLength = previous.SourceLength;
+		if (builder is not null)
+		{
+			if (!ReferenceEquals(previous.SourceBuilder, builder) || builder.Length < previousLength)
+			{
+				return false;
+			}
+		}
+		else if (source!.Length < previousLength ||
+			!source.StartsWith(previous.Source, StringComparison.Ordinal))
 		{
 			return false;
 		}
 
+		int currentLength = builder?.Length ?? source!.Length;
+		if (currentLength == previousLength)
+		{
+			if (!previous.TailRepaired || streaming)
+			{
+				// Nothing new to parse; the previous document is still the best model.
+				document = previous;
+				return true;
+			}
+			// Finalize after a repaired tail: re-parse the tail once without repair so the
+			// final model is exact even when the provisional closers guessed differently.
+		}
+
 		int tailStart = previous.Blocks[^1].SourceStart;
-		if (tailStart <= 0 || tailStart > oldSource.Length)
+		if (tailStart <= 0 || tailStart > previousLength)
 		{
 			return false;
 		}
 		// A link reference definition anywhere in the tail can resolve links in earlier blocks,
 		// so those frames take the full path.
-		if (ContainsLinkReferenceDefinition(source.AsSpan(tailStart)))
+		string tail = builder is not null
+			? builder.ToString(tailStart, currentLength - tailStart)
+			: source![tailStart..];
+		if (ContainsLinkReferenceDefinition(tail))
 		{
 			return false;
+		}
+
+		// While streaming, close whatever construct is still open at the end of the tail so the
+		// unfinished last block renders like the finished document. The suffix only appends
+		// invisible markup characters; the finalized parse replaces it wholesale.
+		string suffix = streaming ? MarkdownStreamRepair.ComputeSuffix(tail) : string.Empty;
+		if (suffix.Length > 0)
+		{
+			tail += suffix;
 		}
 
 		// Parse only the tail. The last block starts at a real top-level boundary, so parsing the
 		// substring is equivalent to parsing the whole source from that boundary, and the cost is
 		// proportional to the tail rather than the message. Markdig spans are relative to the
 		// substring; shift them back to original source offsets after mapping.
-		string tailSource = source[tailStart..];
 		MarkdownPipeline pipeline = Pipelines.GetValue(options, static value => BuildPipeline(value));
-		Markdig.Syntax.MarkdownDocument parsed = Markdig.Markdown.Parse(tailSource, pipeline);
+		Markdig.Syntax.MarkdownDocument parsed = Markdig.Markdown.Parse(tail, pipeline);
 
 		// Seed uniqueness from the blocks that are not re-parsed: the last block is replaced by the
 		// freshly parsed tail, so its old anchors must not reserve their own slugs.
@@ -98,21 +167,24 @@ public static class MarkdownParser
 			CollectAnchors(previous.Blocks[index], anchors);
 		}
 
-		List<MarkdownBlock> tail = MapChildren(parsed, tailSource, options, anchors);
-		foreach (MarkdownBlock block in tail)
+		List<MarkdownBlock> tailBlocks = MapChildren(parsed, tail, options, anchors);
+		foreach (MarkdownBlock block in tailBlocks)
 		{
 			ShiftSourceOffsets(block, tailStart);
 		}
-		MarkdownHashBuilder.Assign(tail);
+		MarkdownHashBuilder.Assign(tailBlocks);
 
-		List<MarkdownBlock> blocks = new(previous.Blocks.Count + tail.Count);
+		List<MarkdownBlock> blocks = new(previous.Blocks.Count + tailBlocks.Count);
 		for (int index = 0; index < previous.Blocks.Count - 1; index++)
 		{
 			blocks.Add(previous.Blocks[index]);
 		}
-		blocks.AddRange(tail);
+		blocks.AddRange(tailBlocks);
 
-		document = new MarkdownDocument(source, blocks, options);
+		document = new MarkdownDocument(source, builder, blocks, options)
+		{
+			TailRepaired = suffix.Length > 0
+		};
 		return true;
 	}
 
@@ -215,6 +287,7 @@ public static class MarkdownParser
 			builder.UseEmphasisExtras(emphasis);
 		}
 
+		options.ConfigurePipeline?.Invoke(builder);
 		return builder.Build();
 	}
 
@@ -247,9 +320,15 @@ public static class MarkdownParser
 	{
 		switch (block)
 		{
+			// Front matter is document metadata, not content (reachable when the host enables the
+			// YAML extension via ConfigurePipeline). It derives from CodeBlock and must be
+			// intercepted before the generic code case.
+			case YamlFrontMatterBlock:
+				return null;
+
 			case HeadingBlock heading:
 			{
-				List<MarkdownRun> runs = MapInlines(heading.Inline, options);
+				List<MarkdownRun> runs = MapInlines(heading.Inline, options, source);
 				string text = Concat(runs);
 				return new MarkdownBlock
 				{
@@ -266,13 +345,22 @@ public static class MarkdownParser
 			}
 
 			case QuoteBlock quote:
+			{
+				List<MarkdownBlock> children = MapChildren(quote, source, options, anchors, alignment);
+				string? alert = DetectAlert(children);
+				if (alert is not null)
+				{
+					children = StripAlertMarker(children, alert);
+				}
 				return new MarkdownBlock
 				{
 					Kind = MarkdownBlockKind.Quote,
-					Children = MapChildren(quote, source, options, anchors, alignment),
+					Alert = alert,
+					Children = children,
 					SourceStart = GetStart(quote),
 					SourceLength = GetLength(quote)
 				};
+			}
 
 			case ListBlock list:
 			{
@@ -314,6 +402,22 @@ public static class MarkdownParser
 					SourceStart = GetStart(item),
 					SourceLength = GetLength(item)
 				};
+
+			case MathBlock math:
+			{
+				// MathBlock derives from CodeBlock and would otherwise be claimed by the generic
+				// code case; host renderers key on the node type name.
+				string content = math.Lines.ToString();
+				return new MarkdownBlock
+				{
+					Kind = MarkdownBlockKind.Custom,
+					CustomKind = nameof(MathBlock),
+					Text = content,
+					Runs = [new MarkdownRun(content, SourceStart: GetStart(math), SourceLength: GetLength(math))],
+					SourceStart = GetStart(math),
+					SourceLength = GetLength(math)
+				};
+			}
 
 			case FencedCodeBlock fenced:
 			{
@@ -380,9 +484,14 @@ public static class MarkdownParser
 					SourceLength = GetLength(html)
 				};
 
+			// Footnote definitions are stored twice by Markdig (here and in the footnote group);
+			// this copy is parsing metadata, not presentation.
+			case LinkReferenceDefinitionGroup:
+				return null;
+
 			case LeafBlock leaf when leaf.Inline is not null:
 			{
-				List<MarkdownRun> runs = MapInlines(leaf.Inline, options);
+				List<MarkdownRun> runs = MapInlines(leaf.Inline, options, source);
 				return new MarkdownBlock
 				{
 					Kind = MarkdownBlockKind.Paragraph,
@@ -405,10 +514,14 @@ public static class MarkdownParser
 
 			default:
 			{
+				// A leaf block without a built-in mapping (a math block, a host extension, ...):
+				// keep the raw source as payload and expose the node type so host renderers can
+				// present it. Without a registration the view falls back to literal text.
 				string text = GetSourceText(block, source);
 				return new MarkdownBlock
 				{
-					Kind = MarkdownBlockKind.Paragraph,
+					Kind = MarkdownBlockKind.Custom,
+					CustomKind = block.GetType().Name,
 					Alignment = alignment,
 					Runs = [new MarkdownRun(text, SourceStart: GetStart(block), SourceLength: GetLength(block))],
 					Text = text,
@@ -501,10 +614,158 @@ public static class MarkdownParser
 		};
 	}
 
-	private static List<MarkdownRun> MapInlines(ContainerInline? inline, MarkdownOptions options)
+	private static readonly string[] AlertMarkers =
+	[
+		"[!NOTE]", "[!TIP]", "[!IMPORTANT]", "[!WARNING]", "[!CAUTION]",
+	];
+
+	/// <summary>
+	/// GitHub alerts arrive as a plain QuoteBlock in Markdig 1.x: the first paragraph starts with
+	/// the marker. Detection reads the mapped model text, which is robust against the inline
+	/// parser splitting the marker across literal runs.
+	/// </summary>
+	private static string? DetectAlert(List<MarkdownBlock> children)
+	{
+		if (children.Count == 0 || children[0].Kind is not (MarkdownBlockKind.Paragraph or MarkdownBlockKind.Heading))
+		{
+			return null;
+		}
+		string text = children[0].Text;
+		foreach (string marker in AlertMarkers)
+		{
+			if (text.StartsWith(marker, StringComparison.OrdinalIgnoreCase))
+			{
+				return marker[2..^1];
+			}
+		}
+		return null;
+	}
+
+	private static List<MarkdownBlock> StripAlertMarker(List<MarkdownBlock> children, string alert)
+	{
+		int markerLength = alert.Length + 3;
+		MarkdownBlock first = children[0];
+		List<MarkdownRun> runs = new(first.Runs.Count);
+		int position = 0;
+		bool eatGap = true;
+		foreach (MarkdownRun run in first.Runs)
+		{
+			string text = run.Text;
+			int start = 0;
+			if (position < markerLength)
+			{
+				start = Math.Min(markerLength - position, text.Length);
+				if (start < text.Length)
+				{
+					// The marker ends inside this run: eat the gap right here.
+					while (start < text.Length && (text[start] == ' ' || text[start] == '\t'))
+					{
+						start++;
+					}
+					eatGap = false;
+				}
+				// start == text.Length: the run was fully consumed and the marker may continue in
+				// the next run, which then eats the gap via the branch below.
+			}
+			else if (eatGap)
+			{
+				// The gap after the marker can straddle run boundaries: keep eating across
+				// whitespace-only runs until real content appears.
+				int probe = start;
+				while (probe < text.Length && (text[probe] == ' ' || text[probe] == '\t'))
+				{
+					probe++;
+				}
+				if (probe < text.Length)
+				{
+					start = probe;
+					eatGap = false;
+				}
+				else
+				{
+					// The whole run is gap: drop it.
+					position += text.Length;
+					continue;
+				}
+			}
+			position += text.Length;
+			if (start >= text.Length)
+			{
+				continue;
+			}
+			runs.Add(run with
+			{
+				Text = text[start..],
+				SourceStart = run.SourceStart >= 0 ? run.SourceStart + start : run.SourceStart,
+				SourceLength = Math.Max(0, run.SourceLength - start),
+			});
+		}
+
+		if (runs.Count == 0)
+		{
+			// The marker was the whole first line; the content lives in the following paragraphs.
+			return children.Skip(1).ToList();
+		}
+		var builder = new StringBuilder();
+		foreach (MarkdownRun run in runs)
+		{
+			builder.Append(MarkdownDocument.VisualText(run));
+		}
+		List<MarkdownBlock> result = [CloneWithRuns(first, runs, builder.ToString())];
+		result.AddRange(children.Skip(1));
+		return result;
+	}
+
+	private static MarkdownBlock CloneWithRuns(MarkdownBlock block, List<MarkdownRun> runs, string text)
+		=> new()
+		{
+			Kind = block.Kind,
+			Runs = runs,
+			Children = block.Children,
+			Level = block.Level,
+			Info = block.Info,
+			Marker = block.Marker,
+			Header = block.Header,
+			Loose = block.Loose,
+			Alignment = block.Alignment,
+			Anchor = block.Anchor,
+			Aliases = block.Aliases,
+			SourceStart = block.SourceStart,
+			SourceLength = block.SourceLength,
+			Text = text,
+			CodeLanguage = block.CodeLanguage,
+			CustomKind = block.CustomKind,
+			Alert = block.Alert,
+		};
+
+	/// <summary>
+	/// Scheme gate for <see cref="MarkdownOptions.LinkSchemes"/>: absolute URLs with a scheme
+	/// outside the allowlist render as plain text (links and images alike); anchors, relative
+	/// URLs and unset options always pass. The host still decides what to open on activation.
+	/// </summary>
+	private static bool IsLinkAllowed(MarkdownOptions options, string? url)
+	{
+		if (options.LinkSchemes is not { } schemes || string.IsNullOrEmpty(url) || url.StartsWith('#'))
+		{
+			return true;
+		}
+		int colon = url.IndexOf(':');
+		if (colon <= 0)
+		{
+			return true;
+		}
+		int slash = url.IndexOf('/');
+		if (slash >= 0 && slash < colon)
+		{
+			return true;
+		}
+		return schemes.Contains(url[..colon].ToLowerInvariant());
+	}
+
+	private static List<MarkdownRun> MapInlines(ContainerInline? inline, MarkdownOptions options, string source)
 	{
 		List<MarkdownRun> runs = [];
-		VisitInlines(inline?.FirstChild, default, options, runs);
+		VisitInlines(inline?.FirstChild, default, options, source, runs);
 		return runs;
 	}
 
@@ -512,12 +773,19 @@ public static class MarkdownParser
 		Inline? inline,
 		MarkdownInlineState state,
 		MarkdownOptions options,
+		string source,
 		List<MarkdownRun> runs)
 	{
 		for (Inline? current = inline; current is not null; current = current.NextSibling)
 		{
 			switch (current)
 			{
+				// Unlike other extension inlines, ToString() carries the rendered character.
+				// EmojiInline derives from CodeInline, so it must be matched before the code case.
+				case Markdig.Extensions.Emoji.EmojiInline emoji:
+					AddRun(emoji.ToString(), state, emoji, runs);
+					break;
+
 				case LiteralInline literal:
 					AddRun(literal.Content.ToString(), state, literal, runs);
 					break;
@@ -542,11 +810,11 @@ public static class MarkdownParser
 					break;
 
 				case LinkInline link:
-					VisitLink(link, state, options, runs);
+					VisitLink(link, state, options, source, runs);
 					break;
 
 				case EmphasisInline emphasis:
-					VisitEmphasis(emphasis, state, options, runs);
+					VisitEmphasis(emphasis, state, options, source, runs);
 					break;
 
 				case AutolinkInline autolink:
@@ -556,7 +824,7 @@ public static class MarkdownParser
 					{
 						url = "mailto:" + url;
 					}
-					AddRun(url, state with { Url = url }, autolink, runs);
+					AddRun(url, IsLinkAllowed(options, url) ? state with { Url = url } : state, autolink, runs);
 					break;
 				}
 
@@ -574,30 +842,107 @@ public static class MarkdownParser
 					break;
 
 				case HtmlInline html:
+					if (options.UseHtmlFormatting && ApplyHtmlTag(html, ref state, runs))
+					{
+						break;
+					}
 					AddRun(html.Tag, state, html, runs);
 					break;
 
 				case ContainerInline container:
-					VisitInlines(container.FirstChild, state, options, runs);
+					VisitInlines(container.FirstChild, state, options, source, runs);
 					break;
 
 				default:
-					AddRun(current.ToString() ?? string.Empty, state, current, runs);
+					// Unknown inline nodes (math, footnotes, host extensions) have unreliable
+					// ToString() output; their span is the honest source text.
+					AddRun(GetSourceText(current, source), state, current, runs);
 					break;
 			}
 		}
+	}
+
+	/// <summary>
+	/// Maps one inline HTML tag of the <see cref="MarkdownOptions.UseHtmlFormatting"/> whitelist to
+	/// run styling. Returns false for anything outside the whitelist so it stays literal. Opening
+	/// and closing tags adjust <paramref name="state"/>; a whole comment node is simply dropped.
+	/// </summary>
+	private static bool ApplyHtmlTag(HtmlInline html, ref MarkdownInlineState state, List<MarkdownRun> runs)
+	{
+		string tag = html.Tag ?? string.Empty;
+		if (tag.Length == 0)
+		{
+			return false;
+		}
+		if (tag.StartsWith("<!--", StringComparison.Ordinal))
+		{
+			// Markdig delivers a complete inline comment as one node.
+			return true;
+		}
+
+		bool closing = tag.StartsWith("</", StringComparison.Ordinal);
+		int nameStart = closing ? 2 : 1;
+		int nameEnd = nameStart;
+		while (nameEnd < tag.Length && char.IsAsciiLetter(tag[nameEnd]))
+		{
+			nameEnd++;
+		}
+		if (nameEnd == nameStart)
+		{
+			return false;
+		}
+		string name = tag.Substring(nameStart, nameEnd - nameStart).ToLowerInvariant();
+
+		if (name == "br")
+		{
+			if (!closing)
+			{
+				AddRun("\n", state, html, runs);
+			}
+			return true;
+		}
+
+		MarkdownRunStyle bits = name switch
+		{
+			"b" or "strong" => MarkdownRunStyle.Bold,
+			"i" or "em" => MarkdownRunStyle.Italic,
+			"u" => MarkdownRunStyle.Underline,
+			"s" or "strike" or "del" => MarkdownRunStyle.Strike,
+			"mark" => MarkdownRunStyle.Marked,
+			"ins" => MarkdownRunStyle.Inserted,
+			"code" or "tt" => MarkdownRunStyle.Code,
+			"sub" or "sup" => MarkdownRunStyle.Script,
+			_ => 0,
+		};
+		if (bits == 0 && name is not ("span" or "font"))
+		{
+			return false;
+		}
+		if (bits != 0)
+		{
+			state = closing
+				? state with { Style = state.Style & ~bits }
+				: state with { Style = state.Style | bits };
+		}
+		return true;
 	}
 
 	private static void VisitLink(
 		LinkInline link,
 		MarkdownInlineState state,
 		MarkdownOptions options,
+		string source,
 		List<MarkdownRun> runs)
 	{
 		string? url = link.Url?.ToString();
 		string? title = link.Title?.ToString();
+		if (!IsLinkAllowed(options, url))
+		{
+			url = null;
+			title = null;
+		}
 		int start = runs.Count;
-		VisitInlines(link.FirstChild, state with { Url = url, Title = title, Image = link.IsImage }, options, runs);
+		VisitInlines(link.FirstChild, state with { Url = url, Title = title, Image = link.IsImage }, options, source, runs);
 
 		if (link.IsImage)
 		{
@@ -630,6 +975,7 @@ public static class MarkdownParser
 		EmphasisInline emphasis,
 		MarkdownInlineState state,
 		MarkdownOptions options,
+		string source,
 		List<MarkdownRun> runs)
 	{
 		bool asterisk = emphasis.DelimiterChar is '*' or '_';
@@ -655,7 +1001,7 @@ public static class MarkdownParser
 			style |= MarkdownRunStyle.Marked;
 		}
 
-		VisitInlines(emphasis.FirstChild, state with { Style = style }, options, runs);
+		VisitInlines(emphasis.FirstChild, state with { Style = style }, options, source, runs);
 	}
 
 	private static void AddInlineCodeMargin(MarkdownInlineState state, List<MarkdownRun> runs)
@@ -798,6 +1144,8 @@ internal static class MarkdownHashBuilder
 		hash = MarkdownHash.Add(hash, (int)block.Alignment);
 		hash = MarkdownHash.Add(hash, block.Anchor);
 		hash = MarkdownHash.Add(hash, block.CodeLanguage);
+		hash = MarkdownHash.Add(hash, block.CustomKind);
+		hash = MarkdownHash.Add(hash, block.Alert);
 		hash = MarkdownHash.Add(hash, block.Text);
 		foreach (string alias in block.Aliases)
 		{

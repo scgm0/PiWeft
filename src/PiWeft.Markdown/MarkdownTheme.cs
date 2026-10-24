@@ -57,6 +57,18 @@ public sealed record MarkdownTheme
 	/// <summary>Scale applied to table cell text relative to the document font size.</summary>
 	public double TableFontSizeScale { get; init; } = 0.9;
 
+	/// <summary>Vertical gap between the text line and a resolved image, and between images, in DIPs.</summary>
+	public double ImageSpacing { get; init; } = 6;
+
+	/// <summary>Fixed alert color for GitHub alerts (kind names "NOTE"/"TIP"/"IMPORTANT"/"WARNING"/"CAUTION").</summary>
+	public Func<string, Color?>? AlertColor { get; init; }
+
+	/// <summary>Theme-aware alert color; takes precedence over <see cref="AlertColor"/>.</summary>
+	public Func<Theme, string, Color?>? AlertColorSelector { get; init; }
+
+	/// <summary>Localized alert label; defaults to the kind name itself ("NOTE" renders as "Note").</summary>
+	public Func<string, string?>? AlertLabel { get; init; }
+
 	/// <summary>Optional marked-text background.</summary>
 	public Color? MarkedBackground { get; init; }
 

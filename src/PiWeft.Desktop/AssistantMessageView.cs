@@ -16,12 +16,17 @@ internal sealed class AssistantMessageView : IDisposable
 	// 思考与正文各持有一个增量 Markdown 视图：流式期间只更新尾块，定稿只切状态。
 	private MarkdownView? _thinkingMarkdown;
 	private MarkdownView? _bodyMarkdown;
+	private MarkdownView? _fedBodyView;
+	private string? _fedBodyText;
+	private MarkdownView? _fedThinkingView;
+	private string? _fedThinkingText;
 	private readonly Expander _thinking;
 	private readonly Border _body = new();
 	private readonly TextBlock _changes = new();
 	private readonly Button _copy;
 	private readonly TextFocusScrollGuard _focus;
 	private readonly Action<string> _openLink;
+	private readonly Action<ImageSource>? _previewImage;
 	private ChatEntry? _entry;
 	// 展开中的思考是否正在跟随内容增长：只在流式思考期间保持，避免结束后把阅读位置拉走。
 	private bool _followingThinking;
@@ -31,6 +36,7 @@ internal sealed class AssistantMessageView : IDisposable
 	{
 		_focus = focus;
 		_openLink = openLink ?? (url => Shell.OpenMessageLink(url, Environment.CurrentDirectory));
+		_previewImage = preview;
 		_header.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText();
 		_thinkingHeader.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium)
 			.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Thinking);
@@ -105,6 +111,10 @@ internal sealed class AssistantMessageView : IDisposable
 			UiLifetime.Release(_thinkingMarkdown);
 			_thinkingMarkdown = null;
 		}
+		_fedBodyView = null;
+		_fedBodyText = null;
+		_fedThinkingView = null;
+		_fedThinkingText = null;
 	}
 
 	public void Update(ChatEntry entry)
@@ -183,15 +193,7 @@ internal sealed class AssistantMessageView : IDisposable
 				if (previous is not null) UiLifetime.Release(previous);
 			}
 			view.IsStreaming = entry.IsStreaming;
-			if (!string.Equals(view.Source, entry.Text, StringComparison.Ordinal))
-			{
-				var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-				view.Source = entry.Text;
-				if (watch is not null)
-				{
-					Diagnostics.Record(entry.IsStreaming ? "markdown.stream" : "markdown.finalize", watch, $"chars={entry.Text.Length}");
-				}
-			}
+			FeedMarkdown(view, entry.Text, entry.IsStreaming, "markdown.stream", "markdown.finalize", ref _fedBodyView, ref _fedBodyText);
 		}
 		else
 		{
@@ -249,18 +251,65 @@ internal sealed class AssistantMessageView : IDisposable
 		if (thinking.Length == 0 && !current.IsThinking)
 		{
 			if (_thinkingMarkdown is not null) _thinkingMarkdown.Source = string.Empty;
+			_fedThinkingText = null;
 			return;
 		}
 		_thinkingMarkdown ??= CreateMarkdownView(AppTheme.FontSizeCaption, muted: true);
 		SetThinkingContent(_thinkingMarkdown);
 		_thinkingMarkdown.IsStreaming = current.IsThinking;
-		if (string.Equals(_thinkingMarkdown.Source, thinking, StringComparison.Ordinal)) return;
-		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-		_thinkingMarkdown.Source = thinking;
-		if (watch is not null)
+		if (ReferenceEquals(_fedThinkingView, _thinkingMarkdown) &&
+			string.Equals(_fedThinkingText, thinking, StringComparison.Ordinal))
 		{
-			Diagnostics.Record(current.IsThinking ? "markdown.thinking.stream" : "markdown.thinking.finalize", watch, $"chars={thinking.Length}");
+			return;
 		}
+		FeedMarkdown(
+			_thinkingMarkdown, thinking, current.IsThinking,
+			"markdown.thinking.stream", "markdown.thinking.finalize",
+			ref _fedThinkingView, ref _fedThinkingText);
+	}
+
+	/// <summary>
+	/// 流式帧走 Append：只把增量交给 Markdown 视图，解析仍由控件按尾块增量完成，宿主不再做
+	/// 整串比较与整串赋值。文本不是已喂入内容的纯追加（编辑重发、换行绑定、收缩）时回退整体
+	/// 赋值；同一文本重复到达（定稿后的状态帧）时不做任何更新。
+	/// </summary>
+	private void FeedMarkdown(
+		MarkdownView view,
+		string text,
+		bool streaming,
+		string streamEvent,
+		string finalizeEvent,
+		ref MarkdownView? fedView,
+		ref string? fedText)
+	{
+		if (ReferenceEquals(view, fedView) && string.Equals(fedText, text, StringComparison.Ordinal))
+		{
+			return;
+		}
+		if (streaming &&
+			ReferenceEquals(view, fedView) &&
+			fedText is not null &&
+			text.Length >= fedText.Length &&
+			text.StartsWith(fedText, StringComparison.Ordinal))
+		{
+			var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+			view.Append(text[fedText.Length..]);
+			if (watch is not null)
+			{
+				Diagnostics.Record(streamEvent, watch, $"delta={text.Length - fedText.Length} chars={text.Length}");
+			}
+		}
+		else
+		{
+			var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+			view.Source = text;
+			if (watch is not null)
+			{
+				Diagnostics.Record(streaming ? streamEvent : finalizeEvent, watch, $"chars={text.Length}");
+			}
+		}
+		fedView = view;
+		fedText = text;
 	}
 
 	private void SetThinkingContent(UIElement content)
@@ -297,6 +346,56 @@ internal sealed class AssistantMessageView : IDisposable
 
 	private MarkdownView EnsureBodyMarkdown() => _bodyMarkdown ??= CreateMarkdownView(AppTheme.FontSizeChat);
 
+	/// <summary>
+	/// 全部消息视图共享同一份 Options 与 Theme 实例：两者都进高度缓存的 MeasureKey，而 record
+	/// 对 HashSet/委托字段按实例比较——每视图新建一份会让跨实例缓存永不命中。
+	/// </summary>
+	internal static readonly MarkdownOptions SharedMarkdownOptions = new()
+	{
+		// 与应用层「链接只放行 http/https」一致，下沉为控件库的第二道闸门（图片同样受限）。
+		LinkSchemes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "http", "https" },
+	};
+
+	internal static readonly MarkdownTheme SharedMarkdownTheme = new()
+	{
+		CodeFontFamily = AppTheme.MonoFont,
+		CodeFontSize = AppTheme.FontSizeCaption,
+		CodeCopyLabel = Strings.TerminalCopy,
+		CodeCopyTooltip = Strings.CopyCodeTooltip,
+		// 图标一律走 Lucide 内嵌 SVG（tools/fetch-lucide-icons.sh 取的那一套），
+		// 控件库自己不画图标；复制成功换成对勾，1.1 秒后退回复制图标。
+		CodeCopyIcon = size => AppIcons.Icon("copy", AppStyles.RoleSubtle, size),
+		CodeCopiedIcon = size => AppIcons.Icon("check", AppStyles.RoleSuccess, size),
+		// 悬浮提示统一走应用的延迟悬浮层（350 ms），与其它提示同一套延迟与样式；
+		// 库里缺省的内建 ToolTip 是悬停立即弹出。
+		AttachToolTip = (element, text) => element.HoverTip(text),
+		BlockSpacing = AppTheme.Space2,
+		ListIndent = 28,
+		CardCornerRadius = AppTheme.RadiusXl,
+		CodeBackgroundSelector = theme => AppTheme.For(theme).CodeBackground,
+		InlineCodeBackgroundSelector = theme => AppTheme.For(theme).CardBackgroundAlt,
+		InlineCodeBorderSelector = theme => AppTheme.For(theme).Border,
+		// GFM alerts：NOTE/TIP/IMPORTANT/WARNING/CAUTION 的语义色与中文标签。
+		AlertColorSelector = (theme, kind) => kind switch
+		{
+			"NOTE" => AppTheme.Info,
+			"TIP" => AppTheme.Success,
+			"IMPORTANT" => AppTheme.Thinking,
+			"WARNING" => AppTheme.Error.Lerp(AppTheme.Accent, 0.45),
+			"CAUTION" => AppTheme.Error,
+			_ => null,
+		},
+		AlertLabel = kind => kind switch
+		{
+			"NOTE" => Strings.AlertNote,
+			"TIP" => Strings.AlertTip,
+			"IMPORTANT" => Strings.AlertImportant,
+			"WARNING" => Strings.AlertWarning,
+			"CAUTION" => Strings.AlertCaution,
+			_ => null,
+		},
+	};
+
 	private MarkdownView CreateMarkdownView(double fontSize, bool muted = false)
 	{
 		// 会话本身已经有纵向视口，每条回复只负责排版；块回收由外层视口驱动。
@@ -304,26 +403,15 @@ internal sealed class AssistantMessageView : IDisposable
 		{
 			FontSize = fontSize,
 			FontWeight = FontWeight.Normal,
-			MarkdownTheme = new MarkdownTheme
-			{
-				CodeFontFamily = AppTheme.MonoFont,
-				CodeFontSize = AppTheme.FontSizeCaption,
-				CodeCopyLabel = Strings.TerminalCopy,
-				CodeCopyTooltip = Strings.CopyCodeTooltip,
-				// 图标一律走 Lucide 内嵌 SVG（tools/fetch-lucide-icons.sh 取的那一套），
-				// 控件库自己不画图标；复制成功换成对勾，1.1 秒后退回复制图标。
-				CodeCopyIcon = size => AppIcons.Icon("copy", AppStyles.RoleSubtle, size),
-				CodeCopiedIcon = size => AppIcons.Icon("check", AppStyles.RoleSuccess, size),
-				// 悬浮提示统一走应用的延迟悬浮层（350 ms），与其它提示同一套延迟与样式；
-				// 库里缺省的内建 ToolTip 是悬停立即弹出。
-				AttachToolTip = (element, text) => element.HoverTip(text),
-				BlockSpacing = AppTheme.Space2,
-				ListIndent = 28,
-				CardCornerRadius = AppTheme.RadiusXl,
-				CodeBackgroundSelector = theme => AppTheme.For(theme).CodeBackground,
-				InlineCodeBackgroundSelector = theme => AppTheme.For(theme).CardBackgroundAlt,
-				InlineCodeBorderSelector = theme => AppTheme.For(theme).Border,
-			}
+			Options = SharedMarkdownOptions,
+			MarkdownTheme = SharedMarkdownTheme,
+		};
+		// Markdown 图片：data/本地文件/https 走共享 loader（有上限与失败缓存），
+		// 点击交给与附件同一套全尺寸预览。
+		view.ImageResolver = MarkdownImageLoader.Shared;
+		view.ImageRequested += args =>
+		{
+			if (args.Image is { } source) _previewImage?.Invoke(source);
 		};
 		// 丢渲染一旦发生就要在 timings 里留下现场（窗口/偏移/高度），否则只能靠猜：
 		// 正常情况下这条分支永远不走，成本为零。

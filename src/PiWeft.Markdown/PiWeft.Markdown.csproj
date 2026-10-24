@@ -12,6 +12,9 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<InternalsVisibleTo Include="PiWeft.Desktop" />
+		<!-- 桌面程序集名带连字符：IVT 按程序集名匹配，不是项目名。 -->
+		<InternalsVisibleTo Include="piweft-desktop" />
 		<InternalsVisibleTo Include="PiWeft.Desktop.Tests" />
 		<InternalsVisibleTo Include="PiWeft.Markdown.Tests" />
 	</ItemGroup>

@@ -36,7 +36,83 @@
 直接向现有容器追加子元素，已有项不重建；只有删除/在中间插入项时才整块重建一次。这消除了逐 token
 重建导致的闪烁。
 
-### 3. 段内分块布局
+### 3. 流式尾块修补与 Append 输入
+
+流式期间（`IsStreaming = true`）解析尾块前，`MarkdownStreamRepair` 先扫描尾串，把 EOF 处仍未闭合的
+行内语法临时闭合：未闭合的 `**`/`*`/`_`、反引号代码段、`](` URL 和 `~~`/`==`/`++` 配对，在帧末追加
+等长的**不可见闭合符**（`**`、`` ` ``、`)`）。修补只追加标记字符、不产生可见文本、不能新建块，因此：
+
+- 渲染上，"hello **wor" 在流式期间直接显示为粗体 "wor"，闭合瞬间不再从字面星号翻转为粗体；
+- 围栏与缩进代码块不修：未闭合时本来就把余下内容当代码显示，追加闭合栅栏是无效操作；
+- HTML 标记（含注释）不修：Markdig 不让段落内的行内注释中断块结构，尾块局部扫描无法与全量解析的
+  注释吞噬语义保持一致，差分恒等式（流式解析 ≡ 全量解析修补后的源文）会在跨行未闭合注释上破裂；
+- 扫描是保守启发式：行内代码段只在本行找闭合、空行与块起始清空未闭合栈、反斜杠转义与左右
+  flanking 规则参与判定。修补结果可能猜错（作者本意是字面星号时），定稿帧整体纠正。
+
+修补与定稿通过 `MarkdownDocument.TailRepaired` 衔接：流式帧打了修补，`IsStreaming` 切回 false 时
+按同一 `tailStart` 再做一次**无修补**的尾块解析（O(tail)）；最终模型总是全量解析的精确结果，
+且修补猜对时哈希不变、元素零重建。
+
+`Append(delta)` 是流式输入的首选入口：源文累积在控件内部的 `StringBuilder` 里，帧与帧之间用
+builder 引用相等证明“纯追加”，跳过整串前缀比较；`MarkdownDocument.Source` 变为惰性物化，流式帧
+不产生整串字符串拷贝。`Source` 赋值与 `Append` 可混用，切换时自动回退全量解析。桌面端
+`AssistantMessageView.FeedMarkdown` 已接入：流式帧只喂增量，编辑重发/收缩/换行绑定自动回退整体
+赋值，同一文本重复到达的状态帧不再触发任何更新。
+
+### 4. 扩展点：ConfigurePipeline 与自定义块渲染器
+
+`MarkdownOptions.ConfigurePipeline` 接收 Markdig 管线 builder，可启用 `UseMathematics()`、
+`UseFootnotes()` 等扩展（每份 options 实例缓存一条管线，弱引用回收；含委托的实例按引用比较）。
+没有内建映射的叶子块映射为 `MarkdownBlockKind.Custom`，`CustomKind` 携带 Markdig 节点类型名，
+`MarkdownRenderers.RegisterBlock(类型名, 工厂)` 提供呈现；工厂返回 null 或未注册时退回字面文本
+（有子块则渲染子块）。`MarkdownRenderContext` 携带视图、主题、模型，`RenderChildren()` 把子块交给
+内建管线。自定义元素实现 `IMarkdownCustomView` 即可参与尾块原位更新（流式中的数学块每帧收到新模型），
+否则按模型哈希变化整块重建；未注册的自定义块按段落渲染字面文本。注意 `MathBlock` 继承自
+`CodeBlock`，映射顺序上必须在通用代码分支之前拦截；Markdig 未知行内节点的 `ToString()` 是类型名，
+因此行内回退一律取源文 span。
+
+内建 HTML 处理只有一层**行内白名单**（`UseHtmlFormatting`，默认开）：`<br>` 转硬换行，
+`b/strong/i/em/u/s/strike/del/mark/ins/code/tt` 映射到样式位，`sub/sup` 缩小字号（文本引擎没有
+基线偏移），`span/font` 透明、属性一律不解释，完整行内注释节点直接隐藏。未知标签和块级 HTML 保持
+字面文本，链接、图片、脚本无法通过该通道进入渲染。
+
+### 5. 图片与 resolver
+
+图片走宿主提供的 `IMarkdownImageResolver` 异步加载：没有 resolver 时不碰文件系统与网络，图片只显示
+alt 文本。resolver 自持解码、策略（协议白名单、字节上限）与缓存；视图按段落缓存结果（含失败——
+坏 URL 不会在流式帧里反复请求），段落销毁即取消在途请求。渲染上，图片 run 仍是行内 run（选区/复制
+继续看到 alt 文本），解码完成后在段落文本下方按原始宽高缩放绘制（不超过段落宽度，不放大），到达
+瞬间置空对应顶层块的缓存高度并触发重测——嵌套段落（列表/表格/引用）沿视觉树找到宿主块。流式期间
+run 逐帧重映射，图片元素与已解码源按 URL 复用。点击已解析图片经 `ImageRequested`（带原始 URL、
+解析后 URL 与 `ImageSource`）交给宿主；桌面端接与附件同一套全尺寸预览。桌面 `MarkdownImageLoader`
+支持 data URI（复用 `ChatImages` 去重与复制字节）、本地 file URI 与 http(s)（10 s 超时、8 MiB 上限，
+禁用之外协议），LRU 缓存 48 条；data URI 一律从源文原始字符串解析，`Uri` 规范化会损坏 base64。
+
+### 6. GFM Alerts、front matter 与链接白名单
+
+Markdig 1.x 不识别 GitHub alerts（`> [!NOTE]`），解析器在映射 QuoteBlock 时自行识别：首段文本以
+`[!NOTE]`/`[!TIP]`/`[!IMPORTANT]`/`[!WARNING]`/`[!CAUTION]`（大小写不敏感）开头即打上
+`MarkdownBlock.Alert` 并把标记（含其后空白，可跨 run）从首段剥掉；标记独占一行时首段整体移除。
+视图侧渲染彩色左缘 + 同色淡底 + 加粗标签行（标签是装饰，不进文本单元；容器复用与原位更新按标签行
+偏移对位，标记增删或更换类种时整块重建），颜色与文案经
+`MarkdownTheme.AlertColorSelector` / `AlertLabel` 注入，未注入时回退 Accent 与英文首字母大写。
+`YamlFrontMatterBlock`（继承自 CodeBlock，须在通用代码分支前拦截）在宿主启用 YAML 扩展时整块跳过；
+`EmojiInline`（继承自 CodeInline，同理先行匹配）用 `ToString()` 的字符而不是源文 span。
+`MarkdownOptions.LinkSchemes` 把链接协议白名单下沉到控件库：设置后，白名单之外的绝对协议渲染为
+纯文本、图片 run 不会进入 resolver（锚点与相对 URL 恒通过）；null 保持旧行为，宿主的打开侧校验
+仍然是最后一道。
+
+### 7. 跨实例块高度缓存
+
+首次进入超大历史消息必须测量全部块（精确高度的代价）；重进同一消息不需要。`MarkdownView` 维护一个
+进程级 LRU（4096 条）高度缓存，键为「块模型哈希 + 字体/主题/DPI + 精确宽度」——键命中的高度与重新
+测量逐像素一致，因此离屏块不再创建元素即可拿到高度，重进成本从 O(全部块) 降为 O(视口)。含图片的
+块不入缓存：其高度依赖异步解析，模型哈希不覆盖。流式期间（`IsStreaming`）一概不入缓存：尾块每帧
+都是新哈希，会把历史条目挤出 LRU。主题记录带委托字段按引用比较——**宿主必须全视图共享同一份
+Options 与 Theme 实例**（桌面端为 `AssistantMessageView.SharedMarkdownOptions/SharedMarkdownTheme`），
+每视图新建一份会让跨实例缓存永不命中。
+
+### 8. 段内分块布局
 
 `MarkdownParagraphView` 把段落切成若干 `Chunk`：
 
@@ -49,7 +125,7 @@
 
 分块布局与整段布局的行数、行高、baseline 和总高度在测试中逐行比对一致。
 
-### 4. 代码块
+### 9. 代码块
 
 `MarkdownCodeBlockView` 使用只读 `MultiLineTextBox` + 水平 `ScrollViewer`：
 
@@ -71,7 +147,7 @@
 字号按 `InlineCodeFontScale`（默认 0.92）缩放，颜色通过 `InlineCodeBackgroundSelector`
 和 `InlineCodeBorderSelector` 跟随浅色/深色主题（默认取主题的按钮面与控件边框）。
 
-### 5. 精确高度块回收
+### 10. 精确高度块回收
 
 `MarkdownView` 只回收**顶层块元素**，不内嵌滚动视口：
 
@@ -89,13 +165,16 @@
 这与 `MarkdownViewer` 的估算高度虚拟化不同：后者拥有自己的视口，可以用估算值并修正滚动偏移；
 消息行内部的回收必须保持行高稳定，否则会和外层虚拟化的 anchor 逻辑互相拉扯。
 
-### 6. 选区、链接与主题
+### 11. 选区、链接与主题
 
 - 选区是文档级的 `(TextUnit, Offset)` 范围；`SelectedText` 从文档模型构建，因此包含未 realize 的块。
 - 列表、表格、引用内部的每个段落各自持有 `TextUnit`；容器被复用时按位置重新分配文本单元，因此这些嵌套文本与正文一样参与鼠标拖选、双击选词、全选和 PRIMARY 发布。
 - 源文变化时如果新旧文本共享足够前缀（纯追加、尾部改写、任务切换），保留选区并从新模型重新计算 `SelectedText`；只有整篇替换才清空选区。
 - 复制/全选通过 `StandardCommands.Copy` / `StandardCommands.SelectAll` 注册，右键菜单提供同样入口。
 - 链接由段落视图命中，`LinkRequested` 交给宿主；`#anchor` 在控件内滚动到目标块。
+- 键盘链接遍历：Tab/Shift+Tab 先在段落内的链接间移动，段落边缘冒泡到视图后跨块移动到下一个（或上一个）
+  含链接的文本单元；目标块未 realize 时先按前向顶对齐/反向底对齐滚动，Background 优先级的 dispatcher
+  回调在布局完成后补挂焦点。Enter/Space 激活当前链接。文档两端交还默认焦点导航，不影响 Tab 移出控件。
 - 控件本身和链接段落都可以获得焦点。宿主通过 `FocusableElementCreated` 给段落挂焦点守卫（桌面端见
   `TextFocusScrollGuard`）；守卫在焦点进入阅读控件时记录**所有祖先 ScrollViewer**，并撤回这次焦点事务
   引起的位移。否则一个比执行过程组体还高的 `MarkdownView` 被聚焦时，MewUI 的 focus-into-view 会把组体
@@ -124,10 +203,11 @@
 
 - 解析在 UI 线程同步执行；32 K 量级足够快。若单条消息达到数百 KB，可加入后台解析 + revision 合并。
 - 纯追加时只解析最后一个顶层块；链接引用定义会让该帧回退全量解析（避免早先链接解析结果失效）。
-- `MarkdownIncrementalParserTests` 对每 5 个字符的流式前缀做增量解析与全量解析的逐块哈希/纯文本比对；`MarkdownEdgeCaseTests` 覆盖空文档、CRLF、标题/表头加粗、嵌套列表、任务切换、代码改写、跨容器选区等边界。
-- 未实现 CommonMark 之外的 HTML 格式化、脚注、定义列表和图片解码；HTML 按字面文本显示，图片显示 alt 文本。
-- 未闭合的强调/链接在闭合前按字面显示（与 Markdig 行为一致），没有做 Streamdown 式的尾块语法修补。
+- `MarkdownIncrementalParserTests` 对每 5 个字符的流式前缀做增量解析与全量解析的逐块哈希/纯文本比对；`MarkdownStreamRepairTests` 对流式前缀做三元差分（流式解析 ≡ 全量解析(源文 + 修补后缀)，且除尾块外 ≡ 无修补全量解析）；`MarkdownEdgeCaseTests` 覆盖空文档、CRLF、标题/表头加粗、嵌套列表、任务切换、代码改写、跨容器选区等边界。
+- 行内 HTML 只有白名单格式化（见扩展点一节）；块级 HTML、脚注编号/回链的正式视图未实现：脚注/定义列表可经 `ConfigurePipeline` 启用，脚注定义由 FootnoteGroup 以普通段落渲染，polished 视图走 `MarkdownRenderers`。图片按 resolver 结果绘制在文本下方（不与文字同排混排），空 alt 的图片 run 在文本行里仍是 U+FFFC 占位字形；点击在语义上是图片激活，不参与链接 Tab 遍历。
+- 流式尾块修补是保守启发式（`MarkdownStreamRepair`）：只修强调/代码段/链接 URL 等行内配对语法；围栏、缩进代码和 HTML 标记不修。修补与作者本意不符时由定稿帧的无修补重解析纠正。修补过的链接 run 的 SourceLength 可能短暂越过真实源文末尾，宿主应只把它用于诊断定位。
 - 列表/表格/引用支持尾项原位更新和行/子块追加；删除或在中间插入项时仍整块重建一次。
+- 后台解析 + revision 合并仍缓行：32 K 量级同步解析足够快，流式热路径的风险大于收益；数百 KB 单条消息出现时再做。
 - 块回收首次进入超大历史消息时仍需测量全部块；这是精确高度的代价，后续可用分批测量或估算模式优化。
 
 ## 使用
@@ -136,6 +216,10 @@
 var view = new MarkdownView
 {
     FontSize = AppTheme.FontSizeChat,
+    Options = new MarkdownOptions
+    {
+        ConfigurePipeline = builder => builder.UseMathematics(),
+    },
     MarkdownTheme = new MarkdownTheme
     {
         CodeFontFamily = AppTheme.MonoFont,
@@ -158,10 +242,29 @@ view.CodeTextCreated = (text, language) =>
     text.Extensions.Classifiers.Add(new KeywordClassifier(language));
     text.Tag = AppStyles.RolePrimary;
 };
+view.ImageResolver = imageLoader;   // 不设置则永不读盘/联网，图片只显示 alt 文本
+view.ImageRequested += args => { if (args.Image is { } source) Preview(source); };
+// GFM alerts 的语义色与中文标签（缺省回退 Accent 与 "Note" 式英文标签）。
+view.MarkdownTheme = view.MarkdownTheme with
+{
+    AlertColorSelector = (theme, kind) => kind switch
+    {
+        "NOTE" => AppTheme.Info,
+        "CAUTION" => AppTheme.Error,
+        _ => null,
+    },
+    AlertLabel = kind => kind switch { "NOTE" => Strings.AlertNote, _ => null },
+};
+// 链接协议白名单（第二道闸门；宿主的打开侧校验仍是最后一道）。
+view.Options = view.Options with { LinkSchemes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "http", "https" } };
 view.SelectionChanged += () => PublishPrimary(view.SelectedText);
+// 自定义块（例如经 ConfigurePipeline 启用的数学块）：按 Markdig 节点类型名注册。
+view.Renderers = new MarkdownRenderers()
+    .RegisterBlock("MathBlock", (block, _) => new MathView().Source(block.Text));
 
 view.Source = text;
 view.IsStreaming = true;  // 流式
+view.Append(delta);       // 流式帧首选：只喂增量，尾块未闭合语法会被临时修补
 // ...
-view.IsStreaming = false; // 定稿：不重建，只切状态
+view.IsStreaming = false; // 定稿：切状态；修补过的尾块做一次 O(tail) 无修补重解析
 ```

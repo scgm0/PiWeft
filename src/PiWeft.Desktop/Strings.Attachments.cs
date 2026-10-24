@@ -3,6 +3,11 @@ namespace PiWeft.Desktop;
 public static partial class Strings
 {
 	public const string ImagePreviewOpen = "点击放大查看图片";
+	public const string AlertNote = "说明";
+	public const string AlertTip = "提示";
+	public const string AlertImportant = "重要";
+	public const string AlertWarning = "警告";
+	public const string AlertCaution = "危险";
 	public const string ImagePreviewClose = "关闭图片预览";
 	public const string AttachFiles = "添加文件或图片";
 	public const string AllFiles = "所有文件";

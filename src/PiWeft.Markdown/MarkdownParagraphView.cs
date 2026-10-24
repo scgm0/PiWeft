@@ -1,6 +1,7 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Rendering;
+using Aprillz.MewUI.Resources;
 using Aprillz.MewUI.Text;
 
 namespace PiWeft.Markdown;
@@ -19,8 +20,10 @@ internal interface ISelectableText
 /// <summary>
 /// A paragraph laid out in stable chunks. Only the last chunk (the open line) is re-laid out when
 /// text is appended; chunks ending on a closed line are frozen and their text layouts are reused.
+/// Image runs render as scaled images stacked below the text; each is loaded through the host
+/// resolver and re-measures the enclosing block when it arrives.
 /// </summary>
-internal sealed class MarkdownParagraphView : TextElement, ISelectableText
+internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVisualTreeHost
 {
 	// The open chunk stays small enough that one append costs a few milliseconds at most.
 	private const int MaxOpenChars = 2048;
@@ -29,6 +32,10 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 
 	private readonly List<Chunk> _chunks = [];
 	private readonly List<Rect> _rangeBounds = [];
+	private readonly List<ImageSlot> _images = [];
+	private readonly Dictionary<string, ImageSource?> _resolvedImages = [];
+	private readonly HashSet<string> _pendingImages = [];
+	private CancellationTokenSource? _imageCancellation;
 	private MarkdownBlock _block = null!;
 	private string _text = string.Empty;
 	private MarkdownRun[] _runs = [];
@@ -36,6 +43,9 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 	private LinkRun[] _links = [];
 	private MarkdownTheme _theme = new();
 	private Action<MarkdownRun>? _activate;
+	private Func<MarkdownImageRequest, CancellationToken, ValueTask<ImageSource?>>? _resolveImage;
+	private Action<MarkdownParagraphView>? _imageLayoutChanged;
+	private Action<MarkdownRun, ImageSource?>? _activateImage;
 	private Uri? _baseUri;
 	private double _width = double.NaN;
 	private uint _dpi;
@@ -45,6 +55,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 	private int _selectionEnd;
 	private int _focusedLink;
 	private int _pressedLink = -1;
+	private int _pressedImage = -1;
 	private bool _plainCode;
 	private bool _wrap = true;
 	private double _fontScale = 1;
@@ -127,6 +138,9 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 		return true;
 	}
 	internal (int Start, int End) SelectionRange => (_selectionStart, _selectionEnd);
+	/// <summary>Layout width assigned by EnsureLayout; NaN until the paragraph was measured, so a
+	/// NaN here on a realized element means it would render blank.</summary>
+	internal double LayoutWidthForTest => _width;
 	internal bool IsStreaming { get; set; }
 	internal IReadOnlyList<MarkdownRun> Runs => _runs;
 	internal void SetBlock(
@@ -266,6 +280,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 		_runs = block.Runs.Count == 0 ? [] : block.Runs.ToArray();
 		_runStarts = new int[_runs.Length];
 		List<LinkRun> links = [];
+		List<ImageSlot> images = [];
 		int offset = 0;
 		for (int index = 0; index < _runs.Length; index++)
 		{
@@ -276,12 +291,194 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 			{
 				links.Add(new LinkRun(offset, length, run));
 			}
+			if (run.Image && run.Url is not null && length > 0)
+			{
+				images.Add(new ImageSlot(run));
+			}
 			offset += length;
 		}
 		_links = links.Count == 0 ? [] : links.ToArray();
+		RebuildImages(images);
 		_focusedLink = _links.Length == 0 ? 0 : Math.Clamp(_focusedLink, 0, _links.Length - 1);
 		_pressedLink = -1;
+		_pressedImage = -1;
 		Focusable = _links.Length > 0;
+		BeginImageResolution();
+	}
+
+	private void AttachImageElement(ImageSlot slot)
+	{
+		Image image = new()
+		{
+			StretchMode = Stretch.Uniform,
+			IsVisible = false,
+		};
+		slot.Element = image;
+		AttachChild(image);
+		if (_resolvedImages.TryGetValue(slot.Run.Url!, out ImageSource? source))
+		{
+			ApplyImageSource(slot, source);
+		}
+	}
+
+	private void ApplyImageSource(ImageSlot slot, ImageSource? source)
+	{
+		slot.Source = source;
+		if (slot.Element is { } image)
+		{
+			image.Source = source;
+			image.IsVisible = source is not null;
+		}
+	}
+
+	private void ReleaseImages()
+	{
+		foreach (ImageSlot slot in _images)
+		{
+			if (slot.Element is { } image)
+			{
+				slot.Element = null;
+				DetachChild(image);
+				DisposeTreeOf(image);
+			}
+		}
+		_images.Clear();
+	}
+
+	private void DisposeTreeOf(Element element)
+	{
+		(element as IDisposable)?.Dispose();
+	}
+
+	/// <summary>
+	/// Rebuilds the image slots after a run remap. Elements for URLs that persist across
+	/// revisions are reused — a streaming tail re-maps the paragraph's runs every frame, and the
+	/// image element plus its decoded source must survive that.
+	/// </summary>
+	private void RebuildImages(List<ImageSlot> next)
+	{
+		Dictionary<string, ImageSlot> reusable = new(StringComparer.Ordinal);
+		foreach (ImageSlot slot in _images)
+		{
+			if (slot.Run.Url is { } url)
+			{
+				reusable[url] = slot;
+			}
+		}
+		List<ImageSlot> stale = [.. _images];
+		_images.Clear();
+		foreach (ImageSlot slot in next)
+		{
+			if (slot.Run.Url is { } url && reusable.TryGetValue(url, out ImageSlot? existing))
+			{
+				slot.Element = existing.Element;
+				slot.Source = existing.Source;
+				stale.Remove(existing);
+			}
+			_images.Add(slot);
+		}
+		foreach (ImageSlot slot in stale)
+		{
+			if (slot.Element is { } image)
+			{
+				slot.Element = null;
+				DetachChild(image);
+				DisposeTreeOf(image);
+			}
+		}
+		foreach (ImageSlot slot in _images)
+		{
+			if (slot.Element is null)
+			{
+				AttachImageElement(slot);
+			}
+		}
+	}
+
+	private void BeginImageResolution()
+	{
+		if (_resolveImage is null || _images.Count == 0)
+		{
+			return;
+		}
+		_imageCancellation ??= new CancellationTokenSource();
+		foreach (ImageSlot slot in _images)
+		{
+			string url = slot.Run.Url!;
+			if (slot.Source is not null || _resolvedImages.ContainsKey(url) || !_pendingImages.Add(url))
+			{
+				continue;
+			}
+			_ = ResolveImageSlotAsync(slot);
+		}
+	}
+
+	private async Task ResolveImageSlotAsync(ImageSlot slot)
+	{
+		string url = slot.Run.Url!;
+		CancellationToken cancellation = _imageCancellation?.Token ?? default;
+		try
+		{
+			var request = new MarkdownImageRequest(url, ResolveImageUri(url, _baseUri), _width);
+			ImageSource? source = await _resolveImage!(request, cancellation);
+			if (cancellation.IsCancellationRequested)
+			{
+				return;
+			}
+			_pendingImages.Remove(url);
+			_resolvedImages[url] = source;
+			bool changed = false;
+			foreach (ImageSlot current in _images)
+			{
+				if (string.Equals(current.Run.Url, url, StringComparison.Ordinal))
+				{
+					changed |= !ReferenceEquals(current.Source, source);
+					ApplyImageSource(current, source);
+				}
+			}
+			if (changed)
+			{
+				InvalidateMeasure();
+				InvalidateVisual();
+				_imageLayoutChanged?.Invoke(this);
+			}
+		}
+		catch (OperationCanceledException)
+		{
+			_pendingImages.Remove(url);
+		}
+		catch (Exception)
+		{
+			// Remember the failure so a broken URL is not re-requested on every streaming frame.
+			_pendingImages.Remove(url);
+			_resolvedImages[url] = null;
+		}
+	}
+
+	private static Uri? ResolveImageUri(string url, Uri? baseUri)
+	{
+		if (Uri.TryCreate(url, UriKind.Absolute, out Uri? absolute))
+		{
+			return absolute;
+		}
+		return baseUri?.IsAbsoluteUri == true && Uri.TryCreate(baseUri, url, out Uri? resolved) ? resolved : null;
+	}
+
+	private int HitImage(Point position)
+	{
+		if (!Bounds.Contains(position))
+		{
+			return -1;
+		}
+		for (int index = 0; index < _images.Count; index++)
+		{
+			ImageSlot slot = _images[index];
+			if (slot.Source is not null && slot.Bounds.Contains(position))
+			{
+				return index;
+			}
+		}
+		return -1;
 	}
 
 	private static string VisualText(MarkdownRun run) => run.Image && run.Text.Length == 0 ? "\uFFFC" : run.Text;
@@ -306,6 +503,32 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 		_focusedLink = Math.Clamp(index, 0, _links.Length - 1);
 		Focus();
 		InvalidateVisual();
+	}
+
+	/// <summary>
+	/// Wires image loading. Called once when the view creates the element; the delegates survive
+	/// every block refresh.
+	/// </summary>
+	internal void ConfigureImages(
+		Func<MarkdownImageRequest, CancellationToken, ValueTask<ImageSource?>>? resolveImage,
+		Action<MarkdownParagraphView>? imageLayoutChanged,
+		Action<MarkdownRun, ImageSource?>? activateImage)
+	{
+		_resolveImage = resolveImage;
+		_imageLayoutChanged = imageLayoutChanged;
+		_activateImage = activateImage;
+	}
+
+	bool IVisualTreeHost.VisitChildren(Func<Element, bool> visitor)
+	{
+		foreach (ImageSlot slot in _images)
+		{
+			if (slot.Element is { } image && !visitor(image))
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 
 	public int OffsetAt(Point windowPoint)
@@ -534,14 +757,28 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 	private TextRunStyle ResolveStyle(TextRunStyle style, MarkdownRun run)
 	{
 		bool code = (run.Style & MarkdownRunStyle.Code) != 0;
+		bool script = (run.Style & MarkdownRunStyle.Script) != 0;
+		double fontSize = style.FontSize;
+		if (code)
+		{
+			fontSize *= _theme.InlineCodeFontScale;
+		}
+		if (script)
+		{
+			// Sub/sup from the inline HTML whitelist: the text engine has no baseline shift, so
+			// scripts render one step smaller on the shared baseline.
+			fontSize *= 0.75;
+		}
 		return style with
 		{
 			FontFamily = code ? _theme.CodeFontFamily : style.FontFamily,
-			FontSize = code ? style.FontSize * _theme.InlineCodeFontScale : style.FontSize,
+			FontSize = fontSize,
 			Weight = (run.Style & MarkdownRunStyle.Bold) != 0 ? FontWeight.Bold : style.Weight,
 			Italic = (run.Style & MarkdownRunStyle.Italic) != 0 || style.Italic,
 			Decoration = ((run.Style & MarkdownRunStyle.Strike) != 0 ? TextDecoration.Strikethrough : TextDecoration.None) |
-				((run.Style & MarkdownRunStyle.Inserted) != 0 ? TextDecoration.Underline : TextDecoration.None)
+				((run.Style & MarkdownRunStyle.Inserted) != 0 || (run.Style & MarkdownRunStyle.Underline) != 0
+					? TextDecoration.Underline
+					: TextDecoration.None)
 		};
 	}
 
@@ -556,6 +793,29 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 			height = chunk.Top + chunk.Layout.ContentHeight;
 		}
 		double scale = GetDpi() / 96.0;
+		double imageSpacing = Math.Max(0, _theme.ImageSpacing);
+		double availableWidth = double.IsFinite(availableSize.Width) ? Math.Max(1, availableSize.Width) : width;
+		foreach (ImageSlot slot in _images)
+		{
+			if (slot.Source is not { } source)
+			{
+				continue;
+			}
+			double naturalWidth = Math.Max(1, source.PixelWidth) / scale;
+			double naturalHeight = Math.Max(1, source.PixelHeight) / scale;
+			double imageWidth = Math.Min(naturalWidth, availableWidth);
+			double imageHeight = imageWidth * naturalHeight / naturalWidth;
+			if (slot.Element is { } image)
+			{
+				image.Width = imageWidth;
+				image.Height = imageHeight;
+				image.Measure(new Size(imageWidth, double.PositiveInfinity));
+			}
+			slot.ImageTop = height + (height > 0 ? imageSpacing : 0);
+			slot.Bounds = new Rect(Bounds.X, Bounds.Y + slot.ImageTop, imageWidth, imageHeight);
+			height = slot.ImageTop + imageHeight;
+			width = Math.Max(width, imageWidth);
+		}
 		double measuredWidth = scale > 0 ? Math.Ceiling(width * scale) / scale + 1 / scale : width;
 		return new Size(measuredWidth, height);
 	}
@@ -565,6 +825,14 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 		if (_wrap && double.IsFinite(bounds.Width) && Math.Abs(bounds.Width - _width) > 0.01)
 		{
 			InvalidateMeasure();
+		}
+		foreach (ImageSlot slot in _images)
+		{
+			if (slot.Source is not null && slot.Element is { } image)
+			{
+				slot.Bounds = new Rect(bounds.X, bounds.Y + slot.ImageTop, image.Width, image.Height);
+				image.Arrange(slot.Bounds);
+			}
 		}
 	}
 
@@ -629,6 +897,11 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 		if (IsFocused && _links.Length > 0)
 		{
 			DrawFocusedLink(context);
+		}
+
+		foreach (ImageSlot slot in _images)
+		{
+			slot.Element?.Render(context);
 		}
 	}
 
@@ -756,7 +1029,9 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 	protected override void OnMouseMove(MouseEventArgs args)
 	{
 		base.OnMouseMove(args);
-		Cursor = IsEffectivelyEnabled && HitLink(WindowPosition(args)) >= 0 ? CursorType.Hand : null;
+		Cursor = IsEffectivelyEnabled && (HitLink(WindowPosition(args)) >= 0 || HitImage(WindowPosition(args)) >= 0)
+			? CursorType.Hand
+			: null;
 	}
 
 	protected override void OnMouseDown(MouseEventArgs args)
@@ -773,19 +1048,36 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 			Focus();
 			InvalidateVisual();
 			args.Handled = true;
+			return;
+		}
+		_pressedImage = HitImage(WindowPosition(args));
+		if (_pressedImage >= 0)
+		{
+			args.Handled = true;
 		}
 	}
 
 	protected override void OnMouseUp(MouseEventArgs args)
 	{
 		base.OnMouseUp(args);
+		Point position = WindowPosition(args);
 		int pressed = _pressedLink;
 		_pressedLink = -1;
 		if (!args.Handled && IsEffectivelyEnabled && args.Button == MouseButton.Left &&
-			pressed >= 0 && pressed < _links.Length && HitLink(WindowPosition(args)) == pressed)
+			pressed >= 0 && pressed < _links.Length && HitLink(position) == pressed)
 		{
 			args.Handled = true;
 			_activate?.Invoke(_links[pressed].Run);
+			return;
+		}
+		int pressedImage = _pressedImage;
+		_pressedImage = -1;
+		if (!args.Handled && IsEffectivelyEnabled && args.Button == MouseButton.Left &&
+			pressedImage >= 0 && pressedImage < _images.Count && HitImage(position) == pressedImage)
+		{
+			args.Handled = true;
+			ImageSlot image = _images[pressedImage];
+			_activateImage?.Invoke(image.Run, image.Source);
 		}
 	}
 
@@ -793,6 +1085,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 	{
 		base.OnMouseLeave();
 		_pressedLink = -1;
+		_pressedImage = -1;
 		Cursor = null;
 	}
 
@@ -838,6 +1131,12 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 
 	protected override void OnDispose()
 	{
+		_imageCancellation?.Cancel();
+		_imageCancellation?.Dispose();
+		_imageCancellation = null;
+		ReleaseImages();
+		_pendingImages.Clear();
+		_resolvedImages.Clear();
 		ReleaseChunks();
 		_chunks.Clear();
 		_engine = null;
@@ -851,6 +1150,16 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText
 		public string? Text { get; set; }
 		public ITextLayout? Layout { get; set; }
 		public double Top { get; set; }
+	}
+
+	/// <summary>One image run and its resolved element; kept across run remaps by URL.</summary>
+	private sealed class ImageSlot(MarkdownRun run)
+	{
+		public MarkdownRun Run { get; } = run;
+		public ImageSource? Source;
+		public Image? Element;
+		public double ImageTop;
+		public Rect Bounds;
 	}
 
 	private readonly record struct LinkRun(int Start, int Length, MarkdownRun Run);

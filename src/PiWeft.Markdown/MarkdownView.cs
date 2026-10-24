@@ -54,10 +54,16 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		nameof(MarkdownTheme), new MarkdownTheme(), MewPropertyOptions.AffectsLayout,
 		static (self, _, value) => self.OnMarkdownThemeChanged(value));
 
+	public static readonly MewProperty<MarkdownRenderers?> RenderersProperty = MewProperty<MarkdownRenderers?>.Register<MarkdownView>(
+		nameof(Renderers), null, MewPropertyOptions.AffectsLayout,
+		static (self, _, _) => self.InvalidateSource(forceRebuild: true));
+
 	private readonly List<BlockSlot> _slots = [];
 	private readonly List<Rect> _rangeBounds = [];
 	private MarkdownDocument? _document;
 	private MarkdownTheme _theme = new();
+	private StringBuilder? _streamSource;
+	private string? _streamMaterialized;
 	private double[] _prefix = [];
 	private bool _prefixValid;
 	private bool _sourceDirty;
@@ -91,8 +97,40 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 	public string Source
 	{
-		get => GetValue(SourceProperty);
-		set => SetValue(SourceProperty, value ?? string.Empty);
+		get
+		{
+			if (_streamSource is null)
+			{
+				return GetValue(SourceProperty);
+			}
+			return _streamMaterialized ??= _streamSource.ToString();
+		}
+		set
+		{
+			_streamSource = null;
+			_streamMaterialized = null;
+			SetValue(SourceProperty, value ?? string.Empty);
+		}
+	}
+
+	/// <summary>
+	/// Appends a streamed delta to the source. Equivalent to setting Source to the concatenation,
+	/// but each frame materializes only the parsed tail: the accumulated source stays in one
+	/// builder, the document model is never handed the full string, and the previous frame's
+	/// text is not re-scanned or re-copied. Repair of an unfinished tail follows
+	/// <see cref="IsStreaming"/>.
+	/// </summary>
+	public void Append(string delta)
+	{
+		ArgumentNullException.ThrowIfNull(delta);
+		if (delta.Length == 0 || _disposed)
+		{
+			return;
+		}
+		_streamSource ??= new StringBuilder(GetValue(SourceProperty));
+		_streamSource.Append(delta);
+		_streamMaterialized = null;
+		InvalidateSource();
 	}
 
 	public bool IsStreaming
@@ -121,9 +159,35 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 	}
 
+	/// <summary>Host presentation for custom blocks; assigning a new instance rebuilds the document.</summary>
+	public MarkdownRenderers? Renderers
+	{
+		get => GetValue(RenderersProperty);
+		set => SetValue(RenderersProperty, value);
+	}
+
 	public Uri? BaseUri { get; set; }
 	public Func<string, string?, FrameworkElement?>? CodeBlockFactory { get; set; }
 	public Action<MultiLineTextBox, string?>? CodeTextCreated { get; set; }
+
+	/// <summary>
+	/// Host-controlled image loading. Without it, images render their alt text and nothing is
+	/// fetched from disk or network. Changing it rebuilds the document.
+	/// </summary>
+	public IMarkdownImageResolver? ImageResolver
+	{
+		get => _imageResolver;
+		set
+		{
+			if (ReferenceEquals(_imageResolver, value))
+			{
+				return;
+			}
+			_imageResolver = value;
+			InvalidateSource(forceRebuild: true);
+		}
+	}
+	private IMarkdownImageResolver? _imageResolver;
 
 	/// <summary>
 	/// Called when a paragraph or heading is created. Hosts use this to attach focus guards to
@@ -133,6 +197,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	public Action<FrameworkElement>? FocusableElementCreated { get; set; }
 
 	public event Action<MarkdownLinkRequestedEventArgs>? LinkRequested;
+
+	/// <summary>Raised when the user clicks a resolved image (open a preview, download, ...).</summary>
+	public event Action<MarkdownImageRequestedEventArgs>? ImageRequested;
 
 	/// <summary>
 	/// Raised when a layout pass found nothing to realize although the document is non-empty:
@@ -188,6 +255,31 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	internal double GetBlockHeight(int index)
 		=> index >= 0 && index < _slots.Count ? _slots[index].Height : double.NaN;
 
+	internal double GetBlockTopForTest(int index)
+		=> index >= 0 && index < _slots.Count ? _slots[index].Top : double.NaN;
+
+	internal bool IsBlockAttachedForTest(int index)
+		=> index >= 0 && index < _slots.Count && _slots[index].Attached && _slots[index].Element is not null;
+
+	/// <summary> realise 窗口与几何诊断（--ui-smoke scroll-sweep 用）。</summary>
+	internal (int First, int Last, double BoundsY) RealizeStateForTest
+		=> (_visibleFirst, _visibleLast, Bounds.Y);
+
+	/// <summary>每个顶层块的类型、文本前缀与高度（--ui-smoke scroll-sweep 用）。</summary>
+	internal string DescribeBlocksForTest()
+	{
+		var builder = new System.Text.StringBuilder();
+		for (var index = 0; index < _slots.Count; index++)
+		{
+			MarkdownBlock block = _slots[index].Block;
+			var preview = block.Text.Length > 14 ? block.Text[..14].Replace("\n", "|") : block.Text.Replace("\n", "|");
+			builder.Append(index).Append(':').Append(block.Kind);
+			if (block.Alert is not null) builder.Append('(').Append(block.Alert).Append(')');
+			builder.Append(" '").Append(preview).Append("' h=").Append(double.IsNaN(_slots[index].Height) ? "NaN" : _slots[index].Height.ToString("F0")).Append(' ');
+		}
+		return builder.ToString();
+	}
+
 	/// <summary>Exact total height of the document in DIPs.</summary>
 	public double TotalHeight
 	{
@@ -238,6 +330,14 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 	private void OnStreamingChanged()
 	{
+		if (!IsStreaming && _document?.TailRepaired == true)
+		{
+			// The streaming tail carries provisional closers; re-parse it once without repair
+			// so the final model is exact. The incremental path does this in O(tail).
+			_sourceDirty = true;
+			InvalidateMeasure();
+		}
+
 		// Finalizing does not rebuild: the tail is already laid out. It only stops treating the
 		// open paragraph chunk as transient, so static content can use the backend text caches.
 		// Detached elements are included: they may be re-attached after the stream ends.
@@ -281,15 +381,29 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			return;
 		}
 		_sourceDirty = false;
-		string source = Source ?? string.Empty;
 		MarkdownDocument? previous = _document;
-		bool appended = previous is not null && source.Length >= previous.Source.Length &&
-			source.StartsWith(previous.Source, StringComparison.Ordinal);
-		bool preserveSelection = previous is not null &&
-			(appended || ShouldPreserveSelection(previous.Source, source));
 		try
 		{
-			MarkdownDocument document = MarkdownParser.Parse(source, Options, previous);
+			MarkdownDocument document;
+			bool preserveSelection;
+			if (_streamSource is { } builder)
+			{
+				// Builder identity proves the source only grew by appends, so the selection can
+				// be preserved without comparing or materializing any text.
+				bool appended = previous is not null && ReferenceEquals(previous.SourceBuilder, builder);
+				preserveSelection = appended || (previous is not null &&
+					ShouldPreserveSelection(previous.Source, builder.ToString()));
+				document = MarkdownParser.Parse(builder, Options, previous, IsStreaming);
+			}
+			else
+			{
+				string source = Source ?? string.Empty;
+				bool appended = previous is not null && source.Length >= previous.SourceLength &&
+					source.StartsWith(previous.Source, StringComparison.Ordinal);
+				preserveSelection = previous is not null &&
+					(appended || ShouldPreserveSelection(previous.Source, source));
+				document = MarkdownParser.Parse(source, Options, previous, IsStreaming);
+			}
 			ApplyDocument(document, preserveSelection, _forceRebuild);
 			_forceRebuild = false;
 		}
@@ -429,7 +543,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			case MarkdownBlockKind.Quote:
 				if (element is Border { Child: StackPanel quote })
 				{
-					AssignStackTextUnits(quote, block.Children);
+					AssignStackTextUnits(quote, block.Children, block.Alert is null ? 0 : 1);
 				}
 				return;
 
@@ -477,12 +591,13 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 	}
 
-	private void AssignStackTextUnits(StackPanel panel, IReadOnlyList<MarkdownBlock> children)
+	private void AssignStackTextUnits(StackPanel panel, IReadOnlyList<MarkdownBlock> children, int elementStart = 0)
 	{
-		int count = Math.Min(panel.Children.Count, children.Count);
+		// elementStart skips decorative rows (the alert label) that are not block children.
+		int count = Math.Min(panel.Children.Count - elementStart, children.Count);
 		for (int index = 0; index < count; index++)
 		{
-			AssignTextUnits(panel.Children[index], children[index]);
+			AssignTextUnits(panel.Children[elementStart + index], children[index]);
 		}
 	}
 
@@ -526,8 +641,14 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 				return true;
 
 			case MarkdownBlockKind.Quote:
+				// A gained/changed/lost alert marker changes the label row: rebuild instead of
+				// patching a panel whose decorative header no longer matches.
+				if (!string.Equals(oldBlock.Alert, newBlock.Alert, StringComparison.Ordinal))
+				{
+					return false;
+				}
 				return element is Border { Child: StackPanel quote } &&
-					TryUpdateStack(quote, oldBlock.Children, newBlock.Children);
+					TryUpdateStack(quote, oldBlock.Children, newBlock.Children, oldBlock.Alert is null ? 0 : 1);
 
 			case MarkdownBlockKind.Group:
 				return element is StackPanel group &&
@@ -539,6 +660,11 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			case MarkdownBlockKind.Table:
 				return element is Border { Child: Grid table } && TryUpdateTable(table, oldBlock, newBlock);
 
+			case MarkdownBlockKind.Custom:
+				// Custom elements opt into in-place updates; otherwise the block rebuilds so the
+				// host renderer sees the new model.
+				return element is IMarkdownCustomView custom && custom.TryUpdate(newBlock);
+
 			default:
 				return false;
 		}
@@ -547,9 +673,13 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	private bool TryUpdateStack(
 		StackPanel panel,
 		IReadOnlyList<MarkdownBlock> oldChildren,
-		IReadOnlyList<MarkdownBlock> newChildren)
+		IReadOnlyList<MarkdownBlock> newChildren,
+		int elementStart = 0)
 	{
-		if (newChildren.Count < oldChildren.Count || panel.Children.Count != oldChildren.Count)
+		// elementStart skips decorative rows (the alert label): panel.Children[elementStart + i]
+		// presents oldChildren[i]. Appended rows are added after the existing block rows, which
+		// keeps the label at the top.
+		if (newChildren.Count < oldChildren.Count || panel.Children.Count - elementStart != oldChildren.Count)
 		{
 			return false;
 		}
@@ -560,7 +690,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			{
 				continue;
 			}
-			if (panel.Children[index] is not FrameworkElement child ||
+			if (panel.Children[elementStart + index] is not FrameworkElement child ||
 				!TryUpdateElement(child, oldChildren[index], newChildren[index]))
 			{
 				return false;
@@ -786,6 +916,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			case MarkdownBlockKind.Heading:
 			{
 				MarkdownParagraphView paragraph = new();
+				// Images must be wired before SetBlock: resolution starts inside it.
+				ConfigureParagraphImages(paragraph);
 				paragraph.SetBlock(
 					block,
 					_theme,
@@ -837,22 +969,85 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 					.WithTheme(static (theme, border) => border.Background = theme.Palette.ControlBorder);
 
 			case MarkdownBlockKind.Quote:
+			{
+				StackPanel content = new() { Spacing = Math.Max(0, _theme.BlockSpacing) };
+				string? alert = block.Alert;
+				if (alert is not null)
+				{
+					// GitHub alert look: colored left border, a faint tint of the same color, and a
+					// bold label row. The label is decorative and stays out of the text units.
+					content.Add(new TextBlock
+					{
+						Text = _theme.AlertLabel?.Invoke(alert) ?? TitleCase(alert),
+						FontWeight = FontWeight.Medium,
+						Margin = new Thickness(0, 2, 0, 2),
+					}.WithTheme((theme, label) => label.Foreground = AlertColor(alert)));
+				}
+				foreach (MarkdownBlock child in block.Children)
+				{
+					content.Add(CreateBlockElement(child));
+				}
 				return new Border
 				{
 					Padding = new Thickness(12, 4),
 					NonUniformBorderThickness = new Thickness(4, 0, 0, 0),
-					Child = CreateChildStack(block.Children, _theme.BlockSpacing)
-				}.WithTheme(static (theme, border) =>
+					Child = content
+				}.WithTheme((theme, border) =>
 				{
-					border.BorderBrush = theme.Palette.ControlBorder;
-					border.Background = theme.Palette.ButtonFace;
+					// The tint must be recomputed inside the theme callback: a captured value goes
+					// stale when the application theme switches without rebuilding the document.
+					if (alert is null)
+					{
+						border.BorderBrush = theme.Palette.ControlBorder;
+						border.Background = theme.Palette.ButtonFace;
+					}
+					else
+					{
+						Color alertColor = AlertColor(alert);
+						border.BorderBrush = alertColor;
+						border.Background = alertColor.WithAlpha(20);
+					}
 				});
+			}
 
 			case MarkdownBlockKind.List:
 				return CreateList(block);
 
 			case MarkdownBlockKind.Table:
 				return CreateTable(block);
+
+			case MarkdownBlockKind.Custom:
+			{
+				if (GetValue(RenderersProperty) is MarkdownRenderers renderers &&
+					block.CustomKind is { } kind &&
+					renderers.TryGetBlock(kind, out Func<MarkdownBlock, MarkdownRenderContext, FrameworkElement?>? factory))
+				{
+					FrameworkElement? custom = factory(block, new MarkdownRenderContext(this, _theme, block));
+					if (custom is not null)
+					{
+						return custom;
+					}
+				}
+				// No registration (or it declined): literal text, and children keep rendering.
+				if (block.Children.Count > 0)
+				{
+					return CreateChildStack(block.Children, _theme.BlockSpacing);
+				}
+				MarkdownParagraphView paragraph = new();
+				ConfigureParagraphImages(paragraph);
+				paragraph.SetBlock(
+					block,
+					_theme,
+					ActivateLink,
+					BaseUri,
+					plainCode: false,
+					wrap: true,
+					fontScale: 1);
+				paragraph.TextUnit = _document?.GetTextUnit(block) ?? -1;
+				ApplySelectionTo(paragraph);
+				FocusableElementCreated?.Invoke(paragraph);
+				return paragraph;
+			}
 
 			default:
 				return CreateChildStack(block.Children, _theme.BlockSpacing);
@@ -867,6 +1062,55 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			panel.Add(CreateBlockElement(child));
 		}
 		return panel;
+	}
+
+	internal FrameworkElement? RenderChildrenInternal(MarkdownBlock block)
+		=> block.Children.Count == 0 ? null : CreateChildStack(block.Children, _theme.BlockSpacing);
+
+	private void ConfigureParagraphImages(MarkdownParagraphView paragraph)
+	{
+		if (_imageResolver is not { } resolver)
+		{
+			return;
+		}
+		paragraph.ConfigureImages(
+			(request, cancellation) => resolver.ResolveAsync(request, cancellation),
+			InvalidateSlotOfElement,
+			ActivateImage);
+	}
+
+	private void ActivateImage(MarkdownRun run, ImageSource? image)
+	{
+		string url = run.Url ?? string.Empty;
+		ImageRequested?.Invoke(new MarkdownImageRequestedEventArgs(url, ResolveUri(url, BaseUri), run.Title, image));
+	}
+
+	private Color AlertColor(string kind)
+		=> _theme.AlertColorSelector?.Invoke(Theme, kind)
+			?? _theme.AlertColor?.Invoke(kind)
+			?? Theme.Palette.Accent;
+
+	private static string TitleCase(string kind)
+		=> kind.Length == 0 ? kind : char.ToUpperInvariant(kind[0]) + kind[1..].ToLowerInvariant();
+
+	/// <summary>
+	/// An image arrived (or its paragraph re-measured): the owning top-level slot must re-measure
+	/// even though its cached height predates the image. Nested paragraphs walk up to their slot.
+	/// </summary>
+	private void InvalidateSlotOfElement(FrameworkElement element)
+	{
+		for (Element? current = element; current is not null; current = current.Parent)
+		{
+			for (int index = 0; index < _slots.Count; index++)
+			{
+				if (ReferenceEquals(_slots[index].Element, current))
+				{
+					_slots[index].Height = double.NaN;
+					InvalidateMeasure();
+					return;
+				}
+			}
+		}
 	}
 
 	private FrameworkElement CreateList(MarkdownBlock block)
@@ -1080,6 +1324,107 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			? Math.Max(1.05, 2.0 - (block.Level - 1) * 0.18)
 			: 1;
 
+	private static bool HasImages(MarkdownBlock block)
+	{
+		foreach (MarkdownRun run in block.Runs)
+		{
+			if (run.Image && run.Url is not null)
+			{
+				return true;
+			}
+		}
+		foreach (MarkdownBlock child in block.Children)
+		{
+			if (HasImages(child))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static double TryCachedHeight(MarkdownBlock block, in HeightKey key)
+	{
+		if (HasImages(block) || !HeightCache.TryGet(key, out double height))
+		{
+			return double.NaN;
+		}
+		return height;
+	}
+
+	/// <summary>
+	/// Cross-instance block heights. Re-entering a large historical message re-measures every
+	/// block from scratch; keyed by model hash + font/theme/DPI + exact width, a cached height is
+	/// exactly what a fresh measure would produce, so elements are only built for realized
+	/// blocks. Bounded LRU; image-bearing blocks never enter it (async height).
+	/// </summary>
+	private static class HeightCache
+	{
+		private const int Capacity = 4096;
+
+		private static readonly object Lock = new();
+		private static readonly Dictionary<HeightKey, double> Heights = [];
+		private static readonly LinkedList<HeightKey> Lru = [];
+
+		public static bool TryGet(in HeightKey key, out double height)
+		{
+			lock (Lock)
+			{
+				if (Heights.TryGetValue(key, out height))
+				{
+					Lru.Remove(key);
+					Lru.AddLast(key);
+					return true;
+				}
+				return false;
+			}
+		}
+
+		public static void Store(in HeightKey key, double height)
+		{
+			lock (Lock)
+			{
+				if (!Heights.TryAdd(key, height))
+				{
+					Heights[key] = height;
+					Lru.Remove(key);
+				}
+				Lru.AddLast(key);
+				while (Lru.Count > Capacity && Lru.First is { } oldest)
+				{
+					Heights.Remove(oldest.Value);
+					Lru.RemoveFirst();
+				}
+			}
+		}
+
+		internal static void ClearForTest()
+		{
+			lock (Lock)
+			{
+				Heights.Clear();
+				Lru.Clear();
+			}
+		}
+
+		internal static int EntryCountForTest
+		{
+			get
+			{
+				lock (Lock)
+				{
+					return Heights.Count;
+				}
+			}
+		}
+	}
+
+	internal static void ClearHeightCacheForTest() => HeightCache.ClearForTest();
+
+	internal static int HeightCacheEntryCountForTest => HeightCache.EntryCountForTest;
+
+	private readonly record struct HeightKey(ulong Hash, MeasureKey Key, double Width);
+
 	protected override Size MeasureContent(Size availableSize)
 	{
 		EnsureDocument();
@@ -1124,6 +1469,16 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			{
 				continue;
 			}
+			// Re-entering a historical message pays the full measure again; the cross-instance
+			// cache keyed by model hash + font/theme/DPI + width turns that into O(1) per block.
+			// Image-bearing blocks are excluded: their height depends on async resolution, which
+			// the model hash does not cover.
+			var heightKey = new HeightKey(slot.Block.Hash, measureKey, width);
+			if (!double.IsNaN(slot.Height = TryCachedHeight(slot.Block, heightKey)))
+			{
+				_prefixValid = false;
+				continue;
+			}
 			EnsureElement(slot);
 			// Attach before measuring so inherited font/foreground/theme resolve from this view.
 			if (!slot.Attached)
@@ -1133,6 +1488,12 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			}
 			slot.Element!.Measure(new Size(width, double.PositiveInfinity));
 			slot.Height = LayoutRounding.RoundToPixel(Math.Max(0, slot.Element.DesiredSize.Height), dpiScale);
+			// 流式帧不入缓存：尾块每帧都是新哈希（修补后缀在变），会把历史条目挤出 LRU；
+			// 非尾块的高度本来就在槽位上，无需预热。
+			if (!IsStreaming && !HasImages(slot.Block))
+			{
+				HeightCache.Store(heightKey, slot.Height);
+			}
 			_prefixValid = false;
 		}
 
@@ -1140,6 +1501,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		(double visibleTop, double visibleBottom) = GetVisibleRange();
 		RealizeRange(visibleTop, visibleBottom, width, dpiScale);
 		EnsurePrefix();
+
 		return new Size(width, TotalHeight);
 	}
 
@@ -1306,8 +1668,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 		// 布局中间态保护：外层视口或本控件的位置只有一边是新的（滚动已生效、本控件还没重新
 		// arrange，或反过来），于是算出的窗口会整体落在文档之外。照那种窗口 realize 会把
-		// 可见块换成文档一端的少数块，正文瞬间空白。这里沿用上一次的窗口，等本轮 arrange
-		// 把几何对齐后，ArrangeContent 会察觉窗口变化并再测一次。
+		// 可见块换成文档一端的少数块，正文瞬间空白。这里沿用上一次的窗口；本轮 arrange 拿到
+		// 最终几何后，ArrangeContent 会按真实窗口就地补齐（见 ArrangeContent 的注释）。
 		double total = _prefixValid && _slots.Count > 0 ? _prefix[_slots.Count] : 0;
 		if (total > 0 && _visibleFirst >= 0 && (bottom < 0 || top > total))
 		{
@@ -1320,6 +1682,54 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 	protected override void ArrangeContent(Rect bounds)
 	{
+		ArrangeAttachedContent(bounds);
+
+		if (_slots.Count == 0)
+		{
+			return;
+		}
+
+		(double top, double bottom) = GetVisibleRange();
+		int first = Math.Max(0, FindIndexByY(top));
+		int last = Math.Min(_slots.Count - 1, FindIndexByY(bottom));
+		if (first == _visibleFirst && last == _visibleLast)
+		{
+			return;
+		}
+
+		// 没有真实外层视口时（单测里直接 Pump 的孤立刻，或控件还没挂进 ScrollViewer），
+		// GetVisibleRange 会退化到“整个控件当视口”，就地补齐会变成全部 realize。
+		// 须回退到原有语义：标脏等下一轮 measure。
+		if (_scroll is not { ViewportHeight: > 0 })
+		{
+			InvalidateMeasure();
+			return;
+		}
+
+		// 就地补齐，不等下一轮 measure。
+		//
+		// RealizeRange 在 measure 阶段跑，那时本控件的 Bounds 还是上一轮 arrange 的位置；跳滚叠加
+		// 外层变高虚拟化呈现修正行高后，算出的窗口会整体偏离视口一个步长，把视口上方的块 detach 掉，
+		// 本帧就呈现为成段空白（分析见 docs/issues/scroll-up-blank-realize-window-lag.md）。
+		// 到 arrange 这一步 bounds 已经是本轮的最终值（框架先写 Bounds 再进 ArrangeCore），所以在这里
+		// 按真实窗口把块补回来并直接就位，呈现前正文就是完整的。
+		//
+		// 这里不改成「只 InvalidateMeasure 等下一轮」：实测在「变高呈现 → 条目容器 → 本控件」这条链上，
+		// 标脏确实传到了 Window、循环也多跑了一轮，但那一轮没有重新走进本控件（外层按相同约束短路），
+		// 帧仍然带着旧窗口呈现出去。简化场景下框架会补测，跨虚拟化祖先时不成立，所以补齐必须就地做完。
+		//
+		// 宽度沿用 measure 用的那个（_measureWidth），避免拿 arrange 宽与 wrap 宽不一致反复改高。
+		double realizeWidth = double.IsFinite(_measureWidth) && _measureWidth > 0 ? _measureWidth : bounds.Width;
+		RealizeRange(top, bottom, realizeWidth, GetDpi() / 96.0);
+		EnsurePrefix();
+		ArrangeAttachedContent(bounds);
+
+		// 新补回来的块可能报出与估算不同的真实高度：总高变了，要让外层 extent 走正常路径更新。
+		InvalidateMeasure();
+	}
+
+	private void ArrangeAttachedContent(Rect bounds)
+	{
 		foreach (BlockSlot slot in _slots)
 		{
 			if (slot.Attached && slot.Element is not null)
@@ -1327,23 +1737,15 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 				slot.Element.Arrange(new Rect(bounds.X, bounds.Y + slot.Top, bounds.Width, slot.Height));
 			}
 		}
-
-		if (_slots.Count == 0)
-		{
-			return;
-		}
-		(double top, double bottom) = GetVisibleRange();
-		int first = Math.Max(0, FindIndexByY(top));
-		int last = Math.Min(_slots.Count - 1, FindIndexByY(bottom));
-		if (first != _visibleFirst || last != _visibleLast)
-		{
-			// Scrolling only arranges; the next measure realizes what the viewport now covers.
-			InvalidateMeasure();
-		}
 	}
 
 	protected override void RenderSubtree(IGraphicsContext context)
 	{
+		if (PaintProbeEnabled)
+		{
+			Console.WriteLine(
+				$"paint {System.Diagnostics.Stopwatch.GetTimestamp()} boundsY={Bounds.Y:F0} attached={RealizedBlockCount}/{_slots.Count}");
+		}
 		foreach (BlockSlot slot in _slots)
 		{
 			if (slot.Attached && slot.Element is not null)
@@ -1352,6 +1754,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			}
 		}
 	}
+
+	/// <summary>--ui-smoke scroll-sweep 的绘制探针开关（临时诊断）。</summary>
+	internal static bool PaintProbeEnabled;
 
 	bool IVisualTreeHost.VisitChildren(Func<Element, bool> visitor)
 	{
@@ -1403,6 +1808,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		{
 			return;
 		}
+
 		InvalidateMeasure();
 	}
 
@@ -1484,12 +1890,17 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 		_slots.Clear();
 		_document = null;
+		_streamSource = null;
+		_streamMaterialized = null;
+		_pendingLinkFocus = null;
 		_defaultContextMenu?.Dispose();
 		_defaultContextMenu = null;
 		FocusableElementCreated = null;
 		CodeTextCreated = null;
 		CodeBlockFactory = null;
+		_imageResolver = null;
 		LinkRequested = null;
+		ImageRequested = null;
 		SelectionChanged = null;
 		Copying = null;
 		ParseFailed = null;

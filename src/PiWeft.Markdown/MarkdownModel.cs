@@ -16,7 +16,10 @@ public enum MarkdownBlockKind
 	Table,
 	TableRow,
 	TableCell,
-	Group
+	Group,
+
+	/// <summary>A block without a built-in mapping (e.g. a math block); <see cref="MarkdownBlock.CustomKind"/> carries the Markdig node type name.</summary>
+	Custom
 }
 
 /// <summary>Inline style flags carried by a <see cref="MarkdownRun"/>.</summary>
@@ -29,7 +32,11 @@ public enum MarkdownRunStyle
 	Strike = 1 << 2,
 	Inserted = 1 << 3,
 	Marked = 1 << 4,
-	Code = 1 << 5
+	Code = 1 << 5,
+	Underline = 1 << 6,
+
+	/// <summary>Subscript/superscript text from the inline HTML whitelist: smaller font, same baseline.</summary>
+	Script = 1 << 7
 }
 
 /// <summary>
@@ -69,6 +76,15 @@ public sealed class MarkdownBlock
 	/// <summary>Normalized fence language for code blocks.</summary>
 	public string? CodeLanguage { get; init; }
 
+	/// <summary>Markdig node type name for <see cref="MarkdownBlockKind.Custom"/> blocks; null otherwise.</summary>
+	public string? CustomKind { get; init; }
+
+	/// <summary>
+	/// GitHub alert kind ("NOTE"/"TIP"/"IMPORTANT"/"WARNING"/"CAUTION") for quote blocks whose
+	/// first line carries the marker; the marker itself is stripped from the content.
+	/// </summary>
+	public string? Alert { get; init; }
+
 	/// <summary>Stable 64-bit hash of every input that affects presentation.</summary>
 	public ulong Hash { get; internal set; }
 }
@@ -86,15 +102,26 @@ public sealed record MarkdownTextUnit(
 public sealed class MarkdownDocument
 {
 	private readonly Dictionary<MarkdownBlock, int> _unitIndex = new(ReferenceEqualityComparer.Instance);
+	private readonly string? _sourceText;
+	private readonly StringBuilder? _sourceBuilder;
 
+	/// <summary>
+	/// String-backed documents carry the full text; builder-backed documents hold the growing
+	/// <see cref="StringBuilder"/> instead, so streaming frames never materialize the whole
+	/// source. A builder-backed document may still carry a materialized snapshot from its
+	/// latest full parse.
+	/// </summary>
 	internal MarkdownDocument(
-		string source,
+		string? sourceText,
+		StringBuilder? sourceBuilder,
 		IReadOnlyList<MarkdownBlock> blocks,
 		MarkdownOptions options)
 	{
-		Source = source;
-		Blocks = blocks;
+		_sourceText = sourceText;
+		_sourceBuilder = sourceBuilder;
+		SourceLength = sourceText?.Length ?? sourceBuilder?.Length ?? 0;
 		Options = options;
+		Blocks = blocks;
 
 		Dictionary<string, int> anchorBlocks = new(StringComparer.OrdinalIgnoreCase);
 		List<MarkdownTextUnit> units = [];
@@ -108,7 +135,17 @@ public sealed class MarkdownDocument
 		TextUnits = units;
 	}
 
-	public string Source { get; }
+	/// <summary>Length of the source this document was parsed from, without materializing it.</summary>
+	internal int SourceLength { get; }
+
+	/// <summary>The builder this document was parsed from, when it is append-only backed.</summary>
+	internal StringBuilder? SourceBuilder => _sourceBuilder;
+
+	/// <summary>True when the last block was parsed with a provisional streaming repair suffix.</summary>
+	internal bool TailRepaired { get; set; }
+
+	public string Source => _sourceText ?? _sourceBuilder?.ToString() ?? string.Empty;
+
 	public IReadOnlyList<MarkdownBlock> Blocks { get; }
 
 	/// <summary>True when the source contains a link reference definition; incremental parsing is then unsafe.</summary>
