@@ -210,8 +210,16 @@ internal sealed class SmoothScroll : IDisposable
 		var delta = WheelDelta(horizontal, vertical);
 		if (delta.X == 0 && delta.Y == 0)
 		{
-			// 到边界：把这一格交给外层视口（组体 → 会话）。不能只是不处理——ScrollViewer 自带的
-			// OnMouseWheel 会在原地把未处理的事件标记为已处理，外层再也接不到。
+			// 目标已顶到边界、而偏移还在向它收敛（在途动画或本帧待处理量）：这一格的信息
+			// 已被在途滚动完全覆盖，直接吞掉。不能不处理——事件会继续冒泡到本视口自己的
+			// 内建 OnMouseWheel，ScrollBy 会把偏移瞬间推一格，和还在收敛的动画抢同一个
+			// 视口：快速滚动一下一下地跳（短页面目标几乎立刻触边，必现）。只有偏移也
+			// 真正停稳在边界时才把这一格交给外层视口（组体 → 会话）。
+			if (IsAnimating || _pendingWheel.X != 0 || _pendingWheel.Y != 0)
+			{
+				args.Handled = true;
+				return;
+			}
 			if (ScrollCascade.Route(_view, horizontal, vertical)) args.Handled = true;
 			return;
 		}
@@ -481,12 +489,11 @@ internal sealed class SmoothScroll : IDisposable
 			if (element is UIElement { IsVisible: false }) { Stop(); return; }
 		}
 
-		// 根据自上一帧流逝的真实时间计算指数衰减系数
+		// 根据自上一帧流逝的真实时间计算指数衰减系数。卡顿之后按真实时长推进：输入曲线
+		// 直接落位到目标、衰减曲线一步收敛。不要在这里钳制 dt——钳制会把每次主线程停顿
+		// 拉长成数倍时长的追赶，滚动中忽快忽慢、松手后拖出可见的滑行尾巴（漂移）。
 		double dt = _renderClock.Elapsed.TotalSeconds;
 		_renderClock.Restart();
-
-		// 防御性拦截：如果主线程卡顿引起 dt 过大，限制单帧最大平滑跳跃步长以防抖
-		if (dt > 0.05) dt = 0.05;
 
 		var current = Offset;
 		var targetX = Math.Min(_target.X, Maximum(false));
@@ -609,7 +616,11 @@ internal sealed class SmoothScroll : IDisposable
 			// 虚拟化行在 arrange 阶段被重新测高时，presenter 会请求一次锚点校正并把远端
 			// extent 一起改大。这属于布局，不是读者意图；若把它当成上滚，跟底会在第一帧
 			// 被静默取消，组体进度随即停在半路。只有 extent 没变的手工位移才算接管。
-			if (!_followGrowth || !extentChanged)
+			// 非跟底视口（设置页等）同样适用：动画写的是分数偏移，arrange 每次把它吸附到
+			// 像素网格都会产生一次亚 DIP 的外部位移——没有容差，平滑滚动每个刻度都会被
+			// 拦腰打断，只剩下一格格的重新起步（一顿一顿 + 半路丢距离）。
+			var correction = Math.Max(Math.Abs(offset.X - _lastOffset.X), Math.Abs(offset.Y - _lastOffset.Y));
+			if ((!_followGrowth || !extentChanged) && correction > CorrectionTolerance)
 			{
 				_followGrowth = false;
 				StopAnimation();
