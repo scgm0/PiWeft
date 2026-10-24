@@ -51,6 +51,9 @@ public sealed record MarkdownTheme
 	/// <summary>Corner radius of fenced-code and table cards in DIPs.</summary>
 	public double CardCornerRadius { get; init; } = 10;
 
+	/// <summary>Whether fenced-code blocks show a line-number gutter.</summary>
+	public bool ShowCodeLineNumbers { get; init; } = true;
+
 	/// <summary>Scale applied to table cell text relative to the document font size.</summary>
 	public double TableFontSizeScale { get; init; } = 0.9;
 

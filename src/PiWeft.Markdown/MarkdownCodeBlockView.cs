@@ -31,6 +31,7 @@ internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 	private readonly MarkdownTheme _theme;
 	private DispatcherTimer? _copyReset;
 	private readonly ScrollViewer _scroll;
+	private readonly MarkdownCodeGutter? _gutter;
 	private readonly Grid _grid;
 	private readonly Border _chrome;
 	private readonly Color _background;
@@ -137,19 +138,30 @@ internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 
 		_scroll = new ScrollViewer
 		{
-			Padding = new Thickness(BodyPadding),
+			Padding = theme.ShowCodeLineNumbers
+				? new Thickness(0, BodyPadding, BodyPadding, BodyPadding)
+				: new Thickness(BodyPadding),
 			HorizontalScroll = ScrollMode.Auto,
 			VerticalScroll = ScrollMode.Disabled,
 			Background = Color.Transparent,
 			Content = _text
 		};
+		// 行号列与代码区同排：行号横向不随代码滚动，纵向按代码行自己的 Y 对齐。
+		FrameworkElement body = _scroll;
+		if (theme.ShowCodeLineNumbers)
+		{
+			_gutter = new MarkdownCodeGutter(_text, CodeBackground);
+			body = new Grid().Columns("Auto,*").Children(
+				_gutter.Column(0),
+				_scroll.Column(1));
+		}
 		_grid = new Grid();
 		_grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Pixels(HeaderHeight) });
 		_grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 		Grid.SetRow(_header, 0);
-		Grid.SetRow(_scroll, 1);
+		Grid.SetRow(body, 1);
 		_grid.Add(_header);
-		_grid.Add(_scroll);
+		_grid.Add(body);
 
 		_chrome = new Border
 		{
@@ -194,6 +206,8 @@ internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 	}
 
 	internal MultiLineTextBox TextView => _text;
+
+	internal MarkdownCodeGutter? Gutter => _gutter;
 
 	internal Border Chrome => _chrome;
 

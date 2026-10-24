@@ -161,7 +161,8 @@ public sealed class MarkdownViewTests
 		var header = VisualTree.Find<Border>(code).First(border => border.Height == 34);
 		Assert.Equal(34, header.DesiredSize.Height, 1);
 		var body = VisualTree.Find<ScrollViewer>(code).Single();
-		Assert.Equal(12, body.Padding.Left);
+		// 左侧留白由行号列提供（ShowCodeLineNumbers=false 时才回到 12），右侧仍是内边距。
+		Assert.Equal(0, body.Padding.Left);
 		Assert.Equal(12, body.Padding.Right);
 	}
 
