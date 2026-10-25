@@ -62,13 +62,13 @@ public sealed partial class SessionTab : IDisposable
 	private bool _lastBusy;
 	private readonly WrapPanel _attachmentBar = new();
 	private readonly Button _scrollToLatest;
-	private readonly FloatingShadow _scrollToLatestShadow;
-	private readonly Grid _scrollToLatestShell;
-	private readonly ShellRootWatcher _scrollToLatestWatcher;
+	private readonly ShadowDecorator _scrollToLatestFloat;
+	private readonly FloatingAnchor _scrollToLatestFloatHost;
+	private readonly FloatingTracker _scrollToLatestWatcher;
 
-	/// <summary>挂窗后按钮外壳升入装饰层时持有的装饰器（见 <see cref="HandleShellRootChanged"/>）。</summary>
-	private bool _scrollToLatestHosted;
-	private Window? _scrollToLatestWindow;
+	/// <summary>挂窗后浮层宿主升入窗口 OverlayLayer（见 <see cref="HandleFloatingRootChanged"/>）。</summary>
+	private bool _floatingHosted;
+	private Window? _floatingWindow;
 	private readonly TextBox _searchBox = new TextBox().PrimarySelection();
 	private readonly TextBlock _filterStatus = new();
 	private readonly TextBlock _extensionLine = new();
@@ -183,27 +183,39 @@ public sealed partial class SessionTab : IDisposable
 				button.BorderBrush = palette.TextFaint;
 				button.BorderThickness = 1;
 			});
-		// 阴影画布要比圆钮大一圈：光晕（模糊 7 + 下移 2）画在自己的 bounds 里才不会出现硬边黑带。
-		const double shadowInset = 10;
-		_scrollToLatestShadow = new FloatingShadow().IsHitTestVisible(false);
-		var shell = new FloatingShell();
-		_scrollToLatestWatcher = new ShellRootWatcher
+		// 圆钮与它的投影合成一个元素：阴影由框架的 ShadowDecorator 画在自己的画布内，
+		// 圆钮是其唯一子级、由装饰器排布。旧的「阴影画布 + 居中子级」是两块互相独立的录制，
+		// 局部重绘里会出现只剩图标或只剩阴影的分层残缺。
+		_scrollToLatestFloat = new ShadowDecorator
 		{
-			Changed = HandleShellRootChanged, IsHitTestVisible = false,
-			Width = 0, Height = 0,
-			HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+			Child = _scrollToLatest,
+			CornerRadius = 18,
+			BlurRadius = 7,
+			OffsetY = 2,
 		};
-		_scrollToLatestShell = shell.Width(36 + shadowInset * 2).Height(36 + shadowInset * 2)
-			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Bottom)
-			// 圆钮相对窗口底边的位置保持原样（原来的 12 = 2 + 10）。
-			.Margin(new Thickness(0, 0, 0, Math.Max(0, AppTheme.Space3 - shadowInset)))
-			.Children(_scrollToLatestShadow,
-				_scrollToLatest.HorizontalAlignment(HorizontalAlignment.Center)
-					.VerticalAlignment(VerticalAlignment.Center));
-		// 永远参与布局，只用 opacity 隐藏：待办卡展开/收起会改变消息区高度，
-		// 若用 IsVisible 跳过 arrange，重新出现时图标缓存可能停在旧位置，和按钮底分离。
-		_scrollToLatest.Opacity = 0;
-		_scrollToLatestShadow.Opacity = 0;
+		// 浮层宿主是唯一的位置计算处：每轮 arrange 按锚点的实时 Bounds 摆位，
+		// 不再有把边界换算成 margin 存起来的第二处代码，也没有「挂载早于首次布局就拿不到边界」的特例。
+		_scrollToLatestFloatHost = new FloatingAnchor
+		{
+			Anchor = _mainArea,
+			// 圆钮下缘越过正文区下边的距离，保持与旧实现一致。
+			Overlap = 3,
+		}.Children(_scrollToLatestFloat);
+		// 正文区几何变化的驱动器：铺满 _mainArea（无背景、不吃命中、DesiredSize 为 0 不影响布局）。
+		// 浮层挂在窗口 OverlayLayer 上，自己的 Bounds 始终是整个客户区，正文区变化时框架会跳过它的
+		// arrange —— 没有这个驱动器，圆钮就停在旧位置、不跟随待办卡展开/搜索条出现/分栏拖动。
+		_scrollToLatestWatcher = new FloatingTracker
+		{
+			Changed = HandleFloatingRootChanged,
+			Arranged = () => _scrollToLatestFloatHost.InvalidateArrange(),
+			IsHitTestVisible = false,
+		};
+		ApplyFloatingShadow();
+		// 浮层一直参与布局，只用 opacity 隐藏：待办卡展开/收起会改变消息区高度，若用 IsVisible
+		// 跳过 arrange，重新出现时图标缓存可能停在旧位置、和按钮底分离。
+		// 隐藏只切这一个节点的 opacity，且只有 0 与 1 两个值（本按钮没有 opacity 过渡），
+		// 因此不会把浮层带进 0<opacity<1 的合成分支。
+		_scrollToLatestFloat.Opacity = 0;
 
 		Session = session;
 		Title = title;
@@ -253,11 +265,7 @@ public sealed partial class SessionTab : IDisposable
 		_outline.Jump += JumpToOutline;
 		_outline.View.MouseWheel += args => SmoothScroll.For(_scroll).RouteWheel(args);
 		_scroll.ScrollChanged += OutlineScrolled;
-		_mainArea.SizeChanged += _ =>
-		{
-			UpdateOutlineVisibility();
-			UpdateFloatingShellMargins();
-		};
+		_mainArea.SizeChanged += _ => UpdateOutlineVisibility();
 
 		_composer = new MultiLineTextBox().PrimarySelection()
 			.FontSize(AppTheme.FontSizeChat)
@@ -469,10 +477,11 @@ public sealed partial class SessionTab : IDisposable
 			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center).IsVisible(false));
 		_mainArea.Children(_branchPanel.View.IsVisible(false));
 		_mainArea.Children(_outline.View);
-		_mainArea.Children(_scrollToLatestShell);
-		// 外壳升到窗口 OverlayLayer 后不再跟随本标签页的视觉根；单独留一个零尺寸观察者，
-		// 标签页被切走时才能把旧外壳摘掉，避免多个会话的「移动到最新」按钮叠在一起。
+		// 宿主升入窗口 OverlayLayer 后不再跟随本标签页的视觉根，也不跟随正文区的重新摆位；
+		// 所以留一个铺满正文区的驱动器：标签页被切走时摘掉旧浮层（避免多个会话的圆钮叠在一起），
+		// 正文区几何变化时要求浮层重排。放在宿主之前，圆钮始终盖在正文之上。
 		_mainArea.Children(_scrollToLatestWatcher);
+		_mainArea.Children(_scrollToLatestFloatHost);
 
 		var chatView = AppIcons.Button("message-square", Strings.ViewChat, () => ShowView(showChat: true));
 		var branchView = AppIcons.Button("git-branch", Strings.ViewBranches, () => ShowView(showChat: false));
@@ -784,7 +793,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		if (_disposed) return;
 		_disposed = true;
-		DetachFloatingShell();
+		DetachFloatingButton();
 		ReadingPreferences.Changed -= ApplyReadingPreferences;
 		UiHost?.Hide();
 		_compactionAbort?.Cancel();
@@ -865,12 +874,12 @@ public sealed partial class SessionTab : IDisposable
 	public void ApplyTheme()
 	{
 		AppStyles.ApplyTextColors((Element)View);
-		// 「移动到最新」有时挂在 AdornerLayer（不在 View 的视觉树里），换肤要单独刷新，
+		// 浮层可能挂在窗口 OverlayLayer（不在 View 的视觉树里），换肤要单独刷新，
 		// 否则浅色主题下会留下一个深色圆钮。
 		_scrollToLatest.Background = AppTheme.CardBackground;
 		_scrollToLatest.BorderBrush = AppTheme.TextFaint;
-		AppStyles.ApplyTextColors((Element)_scrollToLatestShell);
-		_scrollToLatestShadow.InvalidateVisual();
+		AppStyles.ApplyTextColors((Element)_scrollToLatestFloatHost);
+		ApplyFloatingShadow();
 		_status.Foreground(AppStyles.ColorForRole(AppStyles.RoleSubtle));
 		AppStyles.ApplyTextColors(_modelPicker.View);
 		AppStyles.ApplyTextColors(_statisticsPanel.View);
@@ -1050,100 +1059,157 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>只切 opacity，保留悬浮按钮的布局位置，避免隐藏期间布局变化后图标与底分离。</summary>
 	private void SetScrollToLatestVisible(bool visible)
 	{
-		var wasHidden = _scrollToLatest.Opacity == 0;
-		_scrollToLatest.Opacity = visible ? 1 : 0;
-		_scrollToLatestShadow.Opacity = visible ? 1 : 0;
+		var wasHidden = _scrollToLatestFloat.Opacity == 0;
+		_scrollToLatestFloat.Opacity = visible ? 1 : 0;
 		_scrollToLatest.IsHitTestVisible = visible;
 		_scrollToLatest.Focusable = visible;
-		// 按钮一直参与 arrange；重新出现时再强制一次测量，清掉极端时序下内容层的旧位置。
-		if (visible && wasHidden) _scrollToLatestShell.InvalidateMeasure();
+		// 浮层一直参与 arrange；重新出现时再强制一次测量，清掉极端时序下内容层的旧位置。
+		if (visible && wasHidden) _scrollToLatestFloatHost.InvalidateMeasure();
 	}
 
+	/// <summary>阴影按当前配色取深浅两档：浅色主题下重阴影会糊成一圈灰边。浮层收不到窗口的换肤通知，所以显式刷。</summary>
+	private void ApplyFloatingShadow() =>
+		_scrollToLatestFloat.ShadowColor = Color.FromArgb(AppTheme.IsLightTheme ? (byte)0x22 : (byte)0x96, 0, 0, 0);
+
 	/// <summary>
-	/// 挂到窗口后把按钮外壳升入装饰层：装饰层与正文是两个独立的绘制根，
+	/// 挂到窗口后把浮层宿主升入窗口的 OverlayLayer：浮层与正文是两个独立的绘制根，
 	/// 时间线行在流式/回收中被整块重绘时不会再把与自己重叠的按钮像素盖掉
 	/// （保留场景对正文脏区的重绘不保证回放树序在它之上的兄弟内容）。
-	/// 装饰器按 <c>_mainArea</c> 的 bounds 排布，位置行为与原先作为其子级完全一致；
-	/// 未挂窗（单元测试直接排布 <c>tab.View</c>）时外壳留在主区里，行为不变。
+	/// 未挂窗（单元测试直接排布 <c>tab.View</c>）时宿主留在主区里，位置算法完全相同。
 	/// </summary>
-	/// <summary>
-	/// 浮层按整个窗口客户区排布：把外壳的边距对齐到消息区列，
-	/// 按钮才始终居中在正文上方、贴住输入区上沿（而不是窗口底边）。
-	/// </summary>
-	private void UpdateFloatingShellMargins()
+	private void HandleFloatingRootChanged(Element? oldRoot, Element? newRoot)
 	{
-		if (!_scrollToLatestHosted) return;
-		var area = _mainArea.Bounds;
-		// 挂层可能发生在首次布局前：此时还没有有效边界，等布局收敛后再对齐。
-		if (area.Width <= 0 || area.Height <= 0) return;
-		// Bounds 是窗口客户区坐标，浮层也按客户区排布：直接用主区边界做边距，
-		// 不能再减 View 的偏移（侧栏在 View 外面，减了会把按钮推到整窗居中）。
-		var left = Math.Max(0, area.Left);
-		var right = Math.Max(0, View.Bounds.Right - area.Right);
-		var bottom = Math.Max(0, View.Bounds.Bottom - area.Bottom) + 2;
-		var margin = new Thickness(left, 0, right, bottom);
-		if (_scrollToLatestShell.Margin == margin) return;
-		_scrollToLatestShell.Margin(margin);
-	}
-
-	private void HandleShellRootChanged(Element? oldRoot, Element? newRoot)
-	{
-		// 挂到窗口级 OverlayLayer 而不是 Adorner：浮层在每帧都会重排重绘、且绘制在正文之上，
-		// 不会像装饰层那样在保留合成的局部重绘里丢掉背景与阴影（偶发“只剩图标”）。
 		if (newRoot is Window window)
 		{
-			if (_scrollToLatestHosted)
+			if (_floatingHosted)
 			{
-				if (ReferenceEquals(_scrollToLatestWindow, window)) return;
-				DetachFloatingShell();
+				if (ReferenceEquals(_floatingWindow, window)) return;
+				DetachFloatingButton();
 			}
-			if (ReferenceEquals(_scrollToLatestShell.Parent, _mainArea)) _mainArea.Remove(_scrollToLatestShell);
-			window.OverlayLayer.Add(_scrollToLatestShell);
-			_scrollToLatestWindow = window;
-			_scrollToLatestHosted = true;
-			UpdateFloatingShellMargins();
+
+			if (ReferenceEquals(_scrollToLatestFloatHost.Parent, _mainArea)) _mainArea.Remove(_scrollToLatestFloatHost);
+			window.OverlayLayer.Add(_scrollToLatestFloatHost);
+			_floatingWindow = window;
+			_floatingHosted = true;
+			// 换根后客户区坐标下的锚点边界要立刻生效，不等下一次尺寸变化。
+			_scrollToLatestFloatHost.InvalidateArrange();
 		}
 		else if (newRoot is null)
 		{
-			DetachFloatingShell();
+			DetachFloatingButton();
 		}
 	}
 
-	private void DetachFloatingShell()
+	private void DetachFloatingButton()
 	{
-		if (!_scrollToLatestHosted) return;
-		_scrollToLatestHosted = false;
-		_scrollToLatestWindow?.OverlayLayer.Remove(_scrollToLatestShell);
-		_scrollToLatestWindow = null;
-		if (_scrollToLatestShell.Parent is null) _mainArea.Children(_scrollToLatestShell);
+		if (!_floatingHosted) return;
+		_floatingHosted = false;
+		_floatingWindow?.OverlayLayer.Remove(_scrollToLatestFloatHost);
+		_floatingWindow = null;
+		if (_scrollToLatestFloatHost.Parent is null) _mainArea.Children(_scrollToLatestFloatHost);
 	}
 
-	/// <summary>按钮外壳：外圈是阴影画布，自身不参与命中，只有圆钮可点。</summary>
-	private sealed class FloatingShell : Grid
+	/// <summary>
+	/// 浮层宿主：把圆钮摆在 <see cref="Anchor"/> 的水平居中、下缘越过其底边 <see cref="Overlap"/> 的位置。
+	/// 摆位在每轮 arrange 里按锚点的实时 Bounds 计算 —— 正文区宽/高怎么变（分栏拖动、侧栏折叠、
+	/// 待办卡展开收起、窗口缩放）都不需要同步代码；OverlayLayer 只给客户区矩形这一个约束，
+	/// 所以锚点必须自己读，而不是把边界换算成 margin 存起来。
+	/// 自身对命中透明：只有圆钮（经由 ShadowDecorator 转发给子级）可点，其余区域照常滚正文。
+	/// </summary>
+	private sealed class FloatingAnchor : Panel
 	{
+		internal Element? Anchor;
+
+		/// <summary>圆钮下缘越过锚点区下边的距离（DIP）。</summary>
+		internal double Overlap;
+
+		protected override Size MeasureContent(Size availableSize)
+		{
+			var constraint = double.IsFinite(availableSize.Width) && double.IsFinite(availableSize.Height)
+				? availableSize
+				: new Size(10_000, 10_000);
+			foreach (Element child in Children)
+			{
+				child.Measure(constraint);
+			}
+
+			// 浮层不给父级添尺寸负担：摆位只看锚点的实时边界。
+			return Size.Empty;
+		}
+
+		protected override void ArrangeContent(Rect bounds)
+		{
+			// 锚点还没布局时退回自己的槽位：正文区在浮层之前排版，正常路径拿到的总是实时边界，
+			// 但首轮不能因为拿到空矩形就整个不摆（那会让圆钮第一帧不出现）。
+			var area = Anchor?.Bounds is { Width: > 0, Height: > 0 } anchorArea ? anchorArea : bounds;
+			if (area.Width <= 0 || area.Height <= 0)
+			{
+				return;
+			}
+
+			foreach (Element element in Children)
+			{
+				if (element is not UIElement child)
+				{
+					continue;
+				}
+
+				var size = child.DesiredSize;
+				if (size.Width <= 0 || size.Height <= 0)
+				{
+					continue;
+				}
+
+				// DesiredSize 含阴影留白：按圆钮（去掉底部留白）的下缘定位，才与正文区底边对齐。
+				double padBottom = child is ShadowDecorator decorator ? decorator.ShadowPadding.Bottom : 0;
+				double top = area.Bottom + Overlap + padBottom - size.Height;
+				double left = area.X + (area.Width - size.Width) / 2;
+				child.Arrange(new Rect(left, top, size.Width, size.Height));
+			}
+		}
+
+		/// <summary>
+		/// 宿主铺满正文区，但只有圆钮可命中：其余位置一律穿透，滚轮与悬停照常落到正文，
+		/// 不会像 Panel 的默认实现那样把自己当作命中结果。
+		/// </summary>
 		protected override UIElement? OnHitTest(Point point)
 		{
-			UIElement? hit = null;
-			for (var index = 0; index < Children.Count && hit is null; index++)
+			if (!IsVisible || !IsHitTestVisible)
 			{
-				if (Children[index] is UIElement { IsVisible: true, IsHitTestVisible: true } child)
+				return null;
+			}
+
+			for (var index = Children.Count - 1; index >= 0; index--)
+			{
+				if (Children[index] is UIElement child && child.HitTest(point) is { } hit)
 				{
-					hit = child.HitTest(point);
+					return hit;
 				}
 			}
-			return hit;
+
+			return null;
 		}
 	}
 
-	/// <summary>零尺寸观察者：只跟踪所在标签页的视觉根，不参与布局与命中。</summary>
-	private sealed class ShellRootWatcher : Grid
+	/// <summary>
+	/// 浮层驱动器：两件事——跟踪本标签页的视觉根（挂层/摘层），以及在正文区被重新摆位时要求浮层重排。
+	/// 它自己铺满正文区，因此正文区的任何移动或缩放都会走到它的 ArrangeContent。
+	/// </summary>
+	private sealed class FloatingTracker : Grid
 	{
 		public Action<Element?, Element?>? Changed;
+		public Action? Arranged;
 
 		protected override void OnVisualRootChanged(Element? oldRoot, Element? newRoot)
 		{
 			base.OnVisualRootChanged(oldRoot, newRoot);
 			Changed?.Invoke(oldRoot, newRoot);
+		}
+
+		protected override void ArrangeContent(Rect bounds)
+		{
+			base.ArrangeContent(bounds);
+			Arranged?.Invoke();
 		}
 	}
 

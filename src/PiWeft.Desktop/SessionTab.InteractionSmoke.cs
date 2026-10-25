@@ -193,7 +193,17 @@ public sealed partial class SessionTab
 				case 2: _todoCard.Show(!_todoCard.View.IsVisible); break;
 				case 3: _todoCard.Show(!_todoCard.View.IsVisible); break;
 			}
+			// 本演练专挑会挪动正文区的动作：待办卡展开/收起 + 搜索条 + 底部终端坞。
+			// 只有让正文区真的移动/变矮，才能验出「浮层停在旧位置」这类缺陷。
+			if (tick % 2 == 1) ToggleSearch();
+			if (tick % 6 == 2) ToggleTerminal();
 			Render(true);
+			if (SweepProbe)
+			{
+				Console.WriteLine(
+					$"churn {tick} btn=({_scrollToLatest.Bounds.X:F0},{_scrollToLatest.Bounds.Y:F0}+{_scrollToLatest.Bounds.Width:F0}x{_scrollToLatest.Bounds.Height:F0}) " +
+					$"mainBottom={_mainArea.Bounds.Bottom:F0} hosted={_floatingHosted} op={_scrollToLatestFloat.Opacity:F2}");
+			}
 			if (tick == 3) Console.WriteLine("churn-ready");
 			if (++tick > 400) timer.Stop();
 		};

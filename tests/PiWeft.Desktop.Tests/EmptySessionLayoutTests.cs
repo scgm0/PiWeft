@@ -47,23 +47,54 @@ public sealed class EmptySessionLayoutTests
 		ConversationPerformanceTests.Layout(tab.View, Width, Height);
 
 		var button = Find<Button>(tab.View).Single(candidate => HoverHints.Text(candidate) == Strings.ScrollToLatest);
-		var shell = Assert.IsAssignableFrom<Grid>(button.Parent);
-		Assert.Equal(HorizontalAlignment.Center, shell.HorizontalAlignment);
-		Assert.Equal(VerticalAlignment.Bottom, shell.VerticalAlignment);
+		// 圆钮与投影合成一个整体：ShadowDecorator 画阴影并排布这个唯一子级，不再分两块独立录制。
+		var floating = Assert.IsAssignableFrom<ShadowDecorator>(button.Parent);
+		// 宿主每轮 arrange 都按正文区的实时 Bounds 摆位，位置不靠外部同步。
+		// 子级必须由 Panel 摆放：非 Panel 的宿主手工从绝对矩形挂子级时，保留合成会按面板槽位裁掉子级，
+		// 圆钮就只剩下半个（实测稳定复现「半圆」）。
+		var host = Assert.IsAssignableFrom<Panel>(floating.Parent);
+
 		Assert.Equal(36, button.Width, 1);
 		Assert.Equal(36, button.Height, 1);
 		Assert.True(button.IsVisible);
-		Assert.Equal(0, button.Opacity);
+		Assert.Equal(0, floating.Opacity);
 		Assert.False(button.IsHitTestVisible);
 
-		// 隐藏期间也必须参与布局；重新出现时图标中心仍与 36 DIP 圆钮中心重合。
-		button.Opacity = 1;
-		ConversationPerformanceTests.Layout(tab.View, Width, Height - 120);
+		var area = host.Bounds;
+		Assert.True(area.Width > 0 && area.Height > 0);
+		Assert.Equal(area.X + area.Width / 2, button.Bounds.X + button.Bounds.Width / 2, 1);
+		Assert.Equal(area.Bottom + FloatingOverlap, button.Bounds.Bottom, 1);
+
+		// 隐藏期间也必须参与布局；重新出现并换过尺寸后，图标中心仍与 36 DIP 圆钮中心重合，
+		// 且圆钮跟着正文区一起移动（旧实现要等一次 SizeChanged 同步 margin 才对）。
+		floating.Opacity = 1;
+		ConversationPerformanceTests.Layout(tab.View, Width - 260, Height);
+		ConversationPerformanceTests.Layout(tab.View, Width - 260, Height - 120);
 		ConversationPerformanceTests.Layout(tab.View, Width, Height);
 		var icon = Find<Image>(button).Single();
 		Assert.Equal(button.Bounds.X + button.Bounds.Width / 2, icon.Bounds.X + icon.Bounds.Width / 2, 1);
 		Assert.Equal(button.Bounds.Y + button.Bounds.Height / 2, icon.Bounds.Y + icon.Bounds.Height / 2, 1);
+
+		area = host.Bounds;
+		Assert.Equal(area.X + area.Width / 2, button.Bounds.X + button.Bounds.Width / 2, 1);
+		Assert.Equal(area.Bottom + FloatingOverlap, button.Bounds.Bottom, 1);
+
+		// 命中：只有圆钮吃事件，浮层其余区域照常落到正文。
+		floating.Opacity = 1;
+		button.IsHitTestVisible = true;
+		ConversationPerformanceTests.Layout(tab.View, Width, Height);
+		var center = new Point(button.Bounds.X + button.Bounds.Width / 2, button.Bounds.Y + button.Bounds.Height / 2);
+		Assert.NotNull(host.HitTest(center));
+		Assert.Null(host.HitTest(new Point(area.X + 10, center.Y)));
+
+		floating.Opacity = 0;
+		button.IsHitTestVisible = false;
+		ConversationPerformanceTests.Layout(tab.View, Width, Height);
+		Assert.Null(host.HitTest(center));
 	}
+
+	/// <summary>圆钮下缘越过正文区下边的距离，与 SessionTab 的 FloatingAnchor.Overlap 一致。</summary>
+	private const double FloatingOverlap = 3;
 
 	[Fact]
 	public void ComposerNeverShowsTheWorkspacePath()
