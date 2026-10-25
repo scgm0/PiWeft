@@ -50,7 +50,7 @@ MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win3
 | MCP | 启动连接、状态、stdio 工具热刷新、设置面板手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、diff、在编辑器中打开、暂存/取消暂存、提交、分支切换/新建、检查点创建/恢复 | 推送/拉取、历史图谱、冲突解决界面 |
 | 文件 | 目录导航、Git 标记、内置文本编辑器与冲突检测保存、回答级修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
-| 终端 | MiniPty 伪终端、交互式 shell、Shell 选择、scrollback、选择、SGR/滚动区域/字符集/备用屏、缩放重排、字素簇按格对齐（组合符号/ZWJ emoji/国旗/肤色/Hangul，含跨读块拼接）、DECSCUSR/DECSCNM/DECALN/DECRQM、OSC 4/10/11/12、OSC 8/52、鼠标上报、bracketed paste、IME、Ctrl+C/V、PRIMARY、右键菜单 | 完整 VT100 边界行为、终端内搜索、终端多标签、快照回放 |
+| 终端 | MiniPty 伪终端、交互式 shell、Shell 选择、scrollback、选择、SGR/滚动区域/字符集/备用屏、缩放重排、字素簇按格对齐（组合符号/ZWJ emoji/国旗/肤色/Hangul，含跨读块拼接）、光标按字格几何绘制（DECSCUSR 块/竖线/下划线、失焦空心框，边贴设备像素、横向跟该行真实排布）、DECSCUSR/DECSCNM/DECALN/DECRQM、OSC 4/10/11/12、OSC 8/52、鼠标上报、bracketed paste、IME、Ctrl+C/V、PRIMARY、右键菜单 | 完整 VT100 边界行为、终端内搜索、终端多标签、快照回放 |
 | 主题与窗口 | 深浅/系统主题预览、侧栏收起与宽度恢复、尺寸与零/负位置恢复、单实例 | 自定义强调色、多显示器可见性/最大化恢复 |
 
 内嵌浏览器、自动更新、托盘、通知等不在实现范围内（命令 Dock 是基于 MiniPty 的伪终端，但不是完整终端仿真器）。

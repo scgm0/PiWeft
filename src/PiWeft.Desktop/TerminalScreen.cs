@@ -41,12 +41,7 @@ internal readonly record struct TerminalRun(
 	bool Reverse,
 	bool Link,
 	bool Selected,
-	bool Cursor)
-{
-	public static readonly TerminalRun Empty =
-		new(string.Empty, 0, 1, TerminalColor.Default, TerminalColor.Default,
-			false, false, false, false, false, false, false, false, false, false);
-}
+	bool Cursor);
 
 /// <summary>应用请求的鼠标上报模式（DECSET 1000/1002/1003）。</summary>
 internal enum TerminalMouseMode
@@ -1399,9 +1394,10 @@ internal sealed class TerminalScreen
 				ClearTabStops(_parameters.Count > 0 ? _parameters[0] : 0);
 				return;
 
-			case 'q' when _csiIntermediate == ' ':
+			case 'q' when _csiIntermediate is '\0' or ' ' && _csiMarker == '\0':
 			{
 				// DECSCUSR：1/2 块、3/4 下划线、5/6 竖线，奇数位闪烁；0 回默认（实心块）。
+				// 规范写法是 CSI Ps SP q，但 vim/kitty 这类也常发不带空格的 CSI Ps q，一并受理。
 				var shape = _parameters.Count > 0 ? _parameters[0] : 0;
 				_cursorStyle = shape switch
 				{

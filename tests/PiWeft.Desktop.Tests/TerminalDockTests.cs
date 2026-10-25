@@ -22,19 +22,167 @@ public sealed class TerminalDockTests
 		Assert.DoesNotContain(Find<TextBlock>(dock.View), block => block.Text.Contains("伪终端", StringComparison.Ordinal));
 	}
 
+	/// <summary>
+	/// 在指定行的指定列写一段文本，再把光标停到指定列上。用绝对定位写，避开 shell 自己那行的
+	/// 提示符，测试结果与机器上装的是什么 shell 无关。
+	/// </summary>
+	private static async Task WriteOnRowAsync(
+		TerminalDock dock,
+		int row,
+		int column,
+		string text,
+		int cursorColumn)
+	{
+		// 先等 shell 打出提示符；之后不再输入，shell 不会自己重画这一行。
+		await WaitForAsync(() => dock.ScreenText.Length > 0);
+		dock.FeedForTest($"\u001b[{row + 1};{column + 1}H{text}\u001b[{row + 1};{cursorColumn + 1}H");
+		dock.SetFocusForTest(true);
+	}
+
 	[Fact]
-	public void UnfocusedCursorBecomesAHollowOutline()
+	public async Task CursorIsACellShapeRatherThanRecolouredText()
 	{
 		using var dock = new TerminalDock(() => ShellDirectory);
+		var (cellWidth, cellHeight) = dock.CellSizeForTest;
+		await WriteOnRowAsync(dock, 5, 0, "hello", 0);
 
-		// 失焦不把光标涂成灰块：字符颜色保持不变，只按光标格压一圈空心方框。
+		// 聚焦：整格实心块，走文本底下的那层 —— 块是「格子的背景」，不是把字符染色。
+		Assert.True(dock.CursorVisibleForTest);
+		Assert.True(dock.CursorSolidBlockForTest);
+		Assert.False(dock.CursorHollowForTest);
+		var cell = dock.CursorCellForTest;
+		Assert.Equal(cellWidth, cell.Width, 6);
+		Assert.Equal(cellHeight, cell.Height, 6);
+
+		// 失焦：同一格改画一整圈空心框，走文本之上那层；格子与颜色都不变。
 		dock.SetFocusForTest(false);
-		Assert.True(dock.CursorOutlineVisible);
+		Assert.True(dock.CursorVisibleForTest);
+		Assert.False(dock.CursorSolidBlockForTest);
+		Assert.True(dock.CursorHollowForTest);
+		Assert.Equal(cell, dock.CursorCellForTest);
 		// 描边就是光标色：失焦只从实心变空心，亮度不降。
-		Assert.Equal(AppTheme.TerminalCursor, dock.CursorOutlineBrush);
+		Assert.Equal(AppTheme.TerminalCursor, dock.CursorColorForTest);
+	}
 
+	[Fact]
+	public async Task CursorCellStepsExactlyOneCellPerColumn()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+		var (cellWidth, cellHeight) = dock.CellSizeForTest;
+		await WriteOnRowAsync(dock, 6, 0, "abcdefghij", 1);
+		var atOne = dock.CursorCellForTest;
+
+		dock.FeedForTest("\u001b[7;5H");
 		dock.SetFocusForTest(true);
-		Assert.False(dock.CursorOutlineVisible);
+		var atFour = dock.CursorCellForTest;
+
+		// 光标格严格按列走：跨三列就是三个格宽。块不会再缩成「那个 run 自己的排布宽度」，
+		// 那正是旧实现里光标看起来偏在字符左边的原因。
+		Assert.Equal(atOne.X + (3 * cellWidth), atFour.X, 6);
+		Assert.Equal(atOne.Y, atFour.Y, 6);
+
+		// 换行：行位移正好一个行高，块贴在所属文本行上，不飘到上一行或下一行。
+		dock.FeedForTest("\u001b[10;5H");
+		dock.SetFocusForTest(true);
+		Assert.Equal(atFour.Y + (3 * cellHeight), dock.CursorCellForTest.Y, 6);
+		Assert.Equal(atFour.X, dock.CursorCellForTest.X, 6);
+	}
+
+	[Fact]
+	public async Task EmptyRowCursorStaysAtItsOwnColumn()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+		var (cellWidth, cellHeight) = dock.CellSizeForTest;
+		await WriteOnRowAsync(dock, 9, 0, "", 12);
+
+		// 行尾根本没有字形可量，旧实现补的那个 run 会把光标拽到行内容末尾 ——
+		// 看起来就是光标整块偏左。现在直接按列号落在自己那一格。
+		Assert.Equal(12, dock.Screen.CursorColumn);
+		Assert.Equal(12 * cellWidth, dock.CursorCellForTest.X, 6);
+		Assert.Equal(cellWidth, dock.CursorCellForTest.Width, 6);
+		Assert.Equal(9 * cellHeight, dock.CursorCellForTest.Y, 6);
+	}
+
+	[Fact]
+	public async Task WideClusterCursorCoversBothCells()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+		var (cellWidth, _) = dock.CellSizeForTest;
+		// 「中文」各占两格，光标落在「文」上：高亮至少两格宽，不能只盖住半个字。
+		await WriteOnRowAsync(dock, 7, 0, "中文abc", 2);
+		Assert.Equal(2, dock.Screen.CursorColumn);
+		Assert.Equal(2 * cellWidth, dock.CursorCellForTest.Width, 6);
+
+		// 宽字符的右半格属于同一簇：光标停在列 3 时，块仍从整簇的左沿开始、仍是两格宽。
+		dock.FeedForTest("\u001b[8;4H");
+		dock.SetFocusForTest(true);
+		Assert.Equal(3, dock.Screen.CursorColumn);
+		Assert.Equal(2 * cellWidth, dock.CursorCellForTest.Width, 6);
+		Assert.Equal(dock.CursorCellForTest.X + (2 * cellWidth), dock.CursorCellForTest.Right, 6);
+	}
+
+	[Fact]
+	public async Task EolAndColouredCellCursorsKeepAFullCell()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+		var (cellWidth, _) = dock.CellSizeForTest;
+		// 光标在行尾之后：这一格本来没有字符，仍要画出整格宽的光标，不能塌成零宽。
+		await WriteOnRowAsync(dock, 8, 0, "abc", 3);
+		Assert.Equal(cellWidth, dock.CursorCellForTest.Width, 6);
+
+		// 光标压在自带背景色的单元格上（vim 高亮行、状态栏）：块按整格画，颜色是光标色。
+		dock.FeedForTest("\u001b[10;1H\u001b[41mX\u001b[0m\u001b[10;1H");
+		dock.SetFocusForTest(true);
+		Assert.Equal(cellWidth, dock.CursorCellForTest.Width, 6);
+		Assert.Equal(AppTheme.TerminalCursor, dock.CursorColorForTest);
+	}
+
+	[Fact]
+	public async Task ThinShapesAreRoutedToTheLayerAboveTheText()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+		await WriteOnRowAsync(dock, 11, 0, "abc", 1);
+
+		// 实心块走文本底下，块下那个字符才能按底色反白；
+		// 竖线/下划线不遮字，走文本之上，单元格自带背景色时也不会被盖掉。
+		Assert.True(dock.CursorSolidBlockForTest);
+
+		dock.FeedForTest("\u001b[6 q");
+		dock.SetFocusForTest(true);
+		Assert.True(dock.CursorVisibleForTest);
+		Assert.False(dock.CursorSolidBlockForTest);
+		Assert.False(dock.CursorHollowForTest);
+
+		dock.FeedForTest("\u001b[4 q");
+		dock.SetFocusForTest(true);
+		Assert.True(dock.CursorVisibleForTest);
+		Assert.False(dock.CursorSolidBlockForTest);
+
+		// 失焦：无论应用要哪种形态，都只画一整圈空心框，颜色仍是光标色。
+		dock.SetFocusForTest(false);
+		Assert.True(dock.CursorHollowForTest);
+		Assert.False(dock.CursorSolidBlockForTest);
+		Assert.Equal(AppTheme.TerminalCursor, dock.CursorColorForTest);
+	}
+
+
+	[Fact]
+	public async Task CursorTracksTheCellInsideALaidOutTerminal()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+		var (cellWidth, cellHeight) = dock.CellSizeForTest;
+
+		// 真实排布一次：光标格要贴在 arrange 之后的文本行上，而不是另算一套浮点位置。
+		dock.View.Measure(new Size(600, 400));
+		dock.View.Arrange(new Rect(0, 0, 600, 400));
+		await WriteOnRowAsync(dock, 2, 0, "xy", 1);
+		var cell = dock.CursorCellForTest;
+		Assert.Equal(cellWidth, cell.Width, 6);
+		Assert.Equal(cellHeight, cell.Height, 6);
+
+		// 候选窗定位与光标格同源：两者必须落在同一格，否则输入法候选窗会飘到别处。
+		Assert.Equal(cell.X, dock.CursorRect.X, 6);
+		Assert.Equal(cell.Y, dock.CursorRect.Y, 6);
 	}
 
 	[Fact]

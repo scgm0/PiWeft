@@ -592,11 +592,29 @@ public sealed class TerminalScreenTests
 
 		screen.Feed("\u001b[3 q".AsSpan());
 		Assert.Equal(TerminalCursorStyle.Underline, screen.CursorStyle);
+		Assert.True(screen.CursorBlink);
 
 		screen.Feed("\u001b[5 q".AsSpan());
 		Assert.Equal(TerminalCursorStyle.Bar, screen.CursorStyle);
 
 		screen.Feed("\u001b[1 q".AsSpan());
+		Assert.Equal(TerminalCursorStyle.Block, screen.CursorStyle);
+
+		// 稳定形态（偶数）不闪；光标层靠它决定要不要走闪烁隐藏相位。
+		screen.Feed("\u001b[6 q".AsSpan());
+		Assert.Equal(TerminalCursorStyle.Bar, screen.CursorStyle);
+		Assert.False(screen.CursorBlink);
+
+		// 不带空格的常见变体同样受理（vim / kitty 的插入·替换态切换）。
+		screen.Feed("\u001b[2 q".AsSpan());
+		Assert.Equal(TerminalCursorStyle.Block, screen.CursorStyle);
+		screen.Feed("\u001b[4q".AsSpan());
+		Assert.Equal(TerminalCursorStyle.Underline, screen.CursorStyle);
+		screen.Feed("\u001b[6q".AsSpan());
+		Assert.Equal(TerminalCursorStyle.Bar, screen.CursorStyle);
+
+		// 无参 = 回到默认实心块。
+		screen.Feed("\u001b[q".AsSpan());
 		Assert.Equal(TerminalCursorStyle.Block, screen.CursorStyle);
 	}
 

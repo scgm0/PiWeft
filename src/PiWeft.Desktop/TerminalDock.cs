@@ -77,8 +77,19 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private readonly TextBlock _imeLabel = new();
 	private bool _imeActive;
 
-	/// <summary>失焦光标：空心方框，只描边、不改字符颜色（对齐 VS Code 的 outline 光标）。</summary>
-	private readonly Border _cursorOutline;
+	/// <summary>文本行底下的光标层：只画块光标的实心矩形，块下那个字符仍由文本行绘制。</summary>
+	private readonly TerminalCursorLayer _cursorUnder;
+
+	/// <summary>文本行之上的光标层：竖线、底线，以及失焦时的空心框。</summary>
+	private readonly TerminalCursorLayer _cursorOver;
+
+	/// <summary>本帧算出的光标格（窗口坐标）；候选窗定位与测试都读它。</summary>
+	private Rect _cursorCell;
+
+	/// <summary>量光标格用的本行文本与样式 run（每帧复用，不分配）。</summary>
+	private readonly StringBuilder _cursorText = new();
+	private readonly List<GeometryStyleRun> _cursorStyles = [];
+	private readonly List<Rect> _cursorBounds = [];
 	private readonly ScrollBar _scrollBar;
 	private readonly DispatcherTimer _timer;
 	private readonly Lock _gate = new();
@@ -202,20 +213,13 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			.VerticalAlignment(VerticalAlignment.Top)
 			.Child(_imeLabel);
 
-		// 失焦光标：压在文字之上的一圈空心方框，描边跟聚焦时的光标同色（不降亮），字符保持原色不被反白。
-		// 颜色在 Paint 里按主题/OSC 12 覆盖同步，位置每帧按光标格写进 Margin。
-		_cursorOutline = new Border()
-			.BorderThickness(1)
-			.Background(AppTheme.Transparent)
-			.BorderBrush(AppTheme.TerminalCursor)
-			.Width(_cellWidth)
-			.Height(_lineHeight)
-			.IsVisible(false)
-			.IsHitTestVisible(false)
-			.HorizontalAlignment(HorizontalAlignment.Left)
-			.VerticalAlignment(VerticalAlignment.Top);
+		// 光标不再靠「给 run 铺背景 / 把字符染色加下划线」近似：形状由光标层按字格几何画。
+		// 实心块是「格子的背景」，排在文本行底下，块下那个字符仍读得出来；
+		// 竖线、底线与失焦的空心框不遮字，排在文本行之上，单元格自带背景色时也不会被盖掉。
+		_cursorUnder = new TerminalCursorLayer();
+		_cursorOver = new TerminalCursorLayer();
 
-		var surface = new Grid().Children(_lineHost, _input, _cursorOutline, _imePreview).Column(0);
+		var surface = new Grid().Children(_cursorUnder, _lineHost, _input, _cursorOver, _imePreview).Column(0);
 		_pastePrompt = BuildPastePrompt();
 		surface.Children(_pastePrompt);
 		_panel.Child = new Grid()
@@ -393,11 +397,24 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		PaintIfDirty(force: true);
 	}
 
-	/// <summary>窗口less 测试用：失焦时的空心光标当前是否可见。</summary>
-	internal bool CursorOutlineVisible => _cursorOutline.IsVisible;
+	/// <summary>窗口less 测试用：光标当前是否画得出来（含闪烁的隐藏相位）。</summary>
+	internal bool CursorVisibleForTest => _cursorUnder.CursorVisible || _cursorOver.CursorVisible;
 
-	/// <summary>窗口less 测试用：空心光标的描边颜色。</summary>
-	internal Color CursorOutlineBrush => _cursorOutline.BorderBrush;
+	/// <summary>窗口less 测试用：失焦光标是否走「一圈空心框」画法。</summary>
+	internal bool CursorHollowForTest => _cursorOver.CursorVisible && !_cursorOver.CursorFocused;
+
+	/// <summary>窗口less 测试用：聚焦块光标是否走「整格实心」画法。</summary>
+	internal bool CursorSolidBlockForTest => _cursorUnder.CursorVisible;
+
+	/// <summary>窗口less 测试用：光标色（含 OSC 12 覆盖）。</summary>
+	internal Color CursorColorForTest =>
+		_cursorOver.CursorVisible ? _cursorOver.CursorColor : _cursorUnder.CursorColor;
+
+	/// <summary>窗口less 测试用：当前光标格（窗口坐标）。</summary>
+	internal Rect CursorCellForTest => _cursorCell;
+
+	/// <summary>窗口less 测试用：当前字格尺寸。</summary>
+	internal (double Width, double Height) CellSizeForTest => (_cellWidth, _lineHeight);
 
 	// ------------------------------------------------------------------ PTY
 
@@ -777,6 +794,14 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	{
 		get
 		{
+			// 本帧已经画出来的那一格：候选窗必须跟屏幕上的光标同一位置，
+			// 而不是拿可能过期的行内容再量一次。
+			var painted = _cursorCell;
+			if (painted.Width > 0 && painted.Height > 0)
+			{
+				return painted;
+			}
+
 			int row;
 			int column;
 			lock (_gate)
@@ -790,12 +815,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 				column = _screen.CursorColumn;
 			}
 
-			var bounds = _input.Bounds;
-			return new Rect(
-				bounds.X + (column * _cellWidth),
-				bounds.Y + (row * _lineHeight),
-				_cellWidth,
-				_lineHeight);
+			return CursorCellRect(row, column);
 		}
 	}
 
@@ -1660,8 +1680,9 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 					continue;
 				}
 
-				// 只有聚焦时把光标烘进 runs（实心块/下划线）；失焦的空心框由浮层描边画，不扰动文本。
-				_screen.GetRuns(row, _lineRuns[row], _lineBuilders[row], _inputFocused ? cursorInRow : -1);
+				// 光标那一格永远单独切一个 run（run.Cursor）：一个簇要么整格高亮、要么整格不碰，
+				// 不会在组合符号中间断开。失焦时也要切：光标层要靠这个边界量出那一格在哪。
+				_screen.GetRuns(row, _lineRuns[row], _lineBuilders[row], cursorInRow);
 				_cachedBufferRows[row] = bufferRow;
 				_cachedLineVersions[row] = lineVersion;
 				_cachedCursorColumns[row] = cursorInRow;
@@ -1670,22 +1691,27 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 		SyncScrollBar(maxOffset, viewOffset);
 
-		// 失焦光标是压在文字上的空心方框：跟随光标格移动，看历史或输入法组合时隐藏。
-		// 只有聚焦时才把光标画进文本 run（实心块 / 下划线），失焦一行文字都不会变。
-		// 描边取光标自身颜色（含 OSC 12 覆盖）：失焦只是从实心变空心，不把光标调暗。
-		var outlineColor = _paintCursorColor is { } outlineOverride ? FromRgb(outlineOverride) : AppTheme.TerminalCursor;
-		if (_cursorOutline.BorderBrush != outlineColor)
-		{
-			_cursorOutline.BorderBrush = outlineColor;
-		}
-
-		var outlineVisible = cursorVisible && !_inputFocused && cursorRow >= 0;
-		if (outlineVisible)
-		{
-			_cursorOutline.Margin(new Thickness(cursorColumn * _cellWidth, cursorRow * _lineHeight, 0, 0));
-		}
-
-		_cursorOutline.IsVisible(outlineVisible);
+		// 光标交给光标层按字格几何画：聚焦是实心块/竖线/底线，失焦是一整圈空心框。
+		// 颜色都取光标自身（含 OSC 12 覆盖）：失焦只是从实心变空心，不把光标调暗，也不改字符颜色。
+		var cursorPaintColor = _paintCursorColor is { } cursorOverride
+			? FromRgb(cursorOverride)
+			: AppTheme.TerminalCursor;
+		var cursorShown = cursorVisible && cursorRow >= 0;
+		_cursorCell = cursorShown ? CursorCellRect(cursorRow, cursorColumn) : default;
+		// 实心块走底层，其余形状（竖线 / 底线 / 失焦空心框）走上层：同一帧只有一层画得出来。
+		var solidBlock = cursorShown && _inputFocused && _paintCursorStyle == TerminalCursorStyle.Block;
+		_cursorUnder.SetCursor(
+			_cursorCell,
+			cursorPaintColor,
+			TerminalCursorStyle.Block,
+			focused: true,
+			visible: solidBlock);
+		_cursorOver.SetCursor(
+			_cursorCell,
+			cursorPaintColor,
+			_paintCursorStyle,
+			focused: _inputFocused,
+			visible: cursorShown && !solidBlock);
 
 		for (var row = 0; row < rows && row < _lineViews.Count; row++)
 		{
@@ -1717,13 +1743,9 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			foreach (var run in runs)
 			{
 				// 光标格由屏幕自己切出来（run.Cursor）：一个簇永远整格高亮，不会在组合符号中间断开。
-				AddRun(view, run, run.Text, run.Cursor);
-			}
-
-			var lineCells = runs.Count == 0 ? 0 : runs[^1].Column + runs[^1].Cells;
-			if (row == cursorRow && cursorColumn >= lineCells)
-			{
-				AddRun(view, TerminalRun.Empty, " ", cursor: true);
+				// 只有聚焦才把块下那个字符按底色画；失焦时文本一个字也不动，空心框是纯几何。
+				// 行尾之外的光标不再补一个 run：格子由光标层按列号画，补位只会把块拽到行内容末尾。
+				AddRun(view, run, run.Text, run.Cursor && focusedCursor);
 			}
 		}
 	}
@@ -1764,6 +1786,143 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		finally
 		{
 			_syncingScroll = false;
+		}
+	}
+
+	/// <summary>
+	/// 光标格矩形（窗口坐标）。横向跟着本行的真实排布量：回退字体的字宽、宽字符、粗体都会让
+	/// 「列号 × 格宽」与字符实际位置对不上，只有按排布量，光标才压得住它所属那一格；
+	/// 纵向用该行 arrange 后的实际位置，行高与文本行严格一致。量不到时退回格网数学。
+	/// </summary>
+	private Rect CursorCellRect(int viewportRow, int column)
+	{
+		var row = CursorRowBounds(viewportRow);
+		if (TryBuildCursorRow(viewportRow, out var charIndex, out var charLength, out var cells) &&
+			TryMeasureCluster(charIndex, charLength, out var measured))
+		{
+			// 横向跟着该行的真实排布量：回退字体、emoji 这类「字形宽度与占格数对不上」的簇，
+			// 只有按排布量才不会画在邻居字符上。宽度不小于它占的格数，整字（含整格）都盖住。
+			return new Rect(
+				row.X + measured.X,
+				row.Y,
+				Math.Max(measured.Width, cells * _cellWidth),
+				row.Height);
+		}
+
+		// 量不到排布（光标落在行尾空白里、那些格根本没有字形；或首帧还没排版）：按格网算。
+		// 旧实现在这里给行尾光标补一个 run，于是块画在「最后一个有字形的格子」后面，
+		// 光标越往右走块偏得越多 —— 看起来就是光标整块偏左。
+		return new Rect(
+			row.X + (column * _cellWidth),
+			row.Y,
+			cells * _cellWidth,
+			row.Height);
+	}
+
+	/// <summary>该文本行 arrange 后的矩形；还没排布（首帧、窗口less 测试）时退回行号 × 行高。</summary>
+	private Rect CursorRowBounds(int viewportRow)
+	{
+		if (viewportRow >= 0 && viewportRow < _lineViews.Count)
+		{
+			var arranged = _lineViews[viewportRow].Bounds;
+			if (arranged.Height > 0)
+			{
+				return arranged;
+			}
+		}
+
+		var surface = _input.Bounds;
+		return new Rect(
+			surface.X,
+			surface.Y + (viewportRow * _lineHeight),
+			surface.Width,
+			_lineHeight);
+	}
+
+	/// <summary>
+	/// 复制光标行的排布输入：文本与各格样式 run 都照 <see cref="AddRun"/> 的写法拼出来，
+	/// 同时给出光标那一格在文本里的码元区间。行内量不到光标格时返回 false。
+	/// </summary>
+	private bool TryBuildCursorRow(int viewportRow, out int charIndex, out int charLength, out int cells)
+	{
+		charIndex = 0;
+		charLength = 0;
+		cells = 1;
+		_cursorText.Clear();
+		_cursorStyles.Clear();
+
+		if (viewportRow < 0 || viewportRow >= _lineRuns.Count)
+		{
+			return false;
+		}
+
+		foreach (var run in _lineRuns[viewportRow])
+		{
+			if (run.Cursor && charLength == 0)
+			{
+				charIndex = _cursorText.Length;
+				charLength = run.Text.Length;
+				cells = Math.Max(1, run.Cells);
+			}
+
+			_cursorText.Append(run.Text);
+			if (run.Bold || run.Italic)
+			{
+				_cursorStyles.Add(new GeometryStyleRun(
+					_cursorText.Length - run.Text.Length,
+					run.Text.Length,
+					new TextRunStyle(AppTheme.MonoFont, AppTheme.FontSizeCaption)
+					{
+						Weight = run.Bold ? FontWeight.Bold : FontWeight.Normal,
+						Italic = run.Italic,
+					}));
+			}
+		}
+
+		return charLength > 0;
+	}
+
+	/// <summary>把上面拼出的行交给文本引擎量一格的实际位置；内容一致时命中引擎缓存，不重复排版。</summary>
+	private bool TryMeasureCluster(int charIndex, int charLength, out Rect bounds)
+	{
+		bounds = default;
+		if (_cursorText.Length == 0 ||
+			charIndex < 0 ||
+			charIndex + charLength > _cursorText.Length) 
+		{
+			return false;
+		}
+
+		try
+		{
+			var layout = Application.DefaultGraphicsFactory.TextEngine.GetOrCreateLayout(
+				new TextLayoutRequest
+				{
+					Text = _cursorText.ToString().AsMemory(),
+					DefaultStyle = new TextRunStyle(AppTheme.MonoFont, AppTheme.FontSizeCaption),
+					Runs = _cursorStyles.Count == 0 ? [] : [.. _cursorStyles],
+					Paragraph = new TextParagraphStyle
+					{
+						Wrapping = TextWrapping.NoWrap,
+						Trimming = TextTrimming.None,
+					},
+				},
+				TextLayoutCachePolicy.Owner,
+				_cursorOver);
+			_cursorBounds.Clear();
+			layout.GetRangeBounds(charIndex, charLength, _cursorBounds);
+			if (_cursorBounds.Count == 0)
+			{
+				return false;
+			}
+
+			bounds = _cursorBounds[0];
+			return bounds.Width > 0;
+		}
+		catch (Exception)
+		{
+			// 渲染后端未就绪（窗口less 测试）或排布异常：宁可用格网数学，也不让光标消失。
+			return false;
 		}
 	}
 
@@ -1812,15 +1971,18 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			(foreground, background) = (background, foreground);
 		}
 
-		var cursorColor = _paintCursorColor is { } cursorOverride ? FromRgb(cursorOverride) : AppTheme.TerminalCursor;
-		// 失焦时光标由压在文字上的空心方框表示（见 Paint / _cursorOutline）：字符保持原色，不做反白也不染色。
+		// 失焦时光标只是一圈空心框（由光标层画），字符保持原色，不做反白也不染色。
 		var cursorFocused = cursor && _inputFocused;
 		var element = RentRun(text);
 		if (cursorFocused && _paintCursorStyle == TerminalCursorStyle.Block)
 		{
-			// 块状光标：实心强调色，块内文字取终端底色。
-			element.Background = cursorColor;
-			element.Foreground = defaultBackground;
+			// 块状光标：整格的实心矩形由光标层画在文本底下；这里再给那一格铺一层同色，
+			// 让本身就带背景色的单元格（vim 高亮行、状态栏）不会把块盖掉。
+			// 块下的字符取该格自己的底色，反白后仍读得出来；竖线/下划线不遮字，字符一律不动色。
+			element.Background = _paintCursorColor is { } blockOverride
+				? FromRgb(blockOverride)
+				: AppTheme.TerminalCursor;
+			element.Foreground = background;
 		}
 		else
 		{
@@ -1836,17 +1998,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 				element.Background = background;
 			}
 
-			if (cursorFocused)
-			{
-				// 下划线/竖线光标不遮字，用光标色标识（竖线以下划线近似）。
-				element.Foreground = cursorColor;
-				if (_paintCursorStyle is TerminalCursorStyle.Underline or TerminalCursorStyle.Bar)
-				{
-					// MewUI 的 Run 没有竖线装饰，Bar 与 Underline 都以下划线近似。
-					element.Decoration |= TextDecoration.Underline;
-				}
-			}
-			else if (run.Link && run.Foreground.Kind == TerminalColorKind.Default)
+			if (run.Link && run.Foreground.Kind == TerminalColorKind.Default)
 			{
 				element.Foreground = AppTheme.TerminalLink;
 			}
@@ -1968,6 +2120,15 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_timer.Stop();
 		_timerRunning = false;
 		_runPool.Clear();
+		try
+		{
+			// 光标格测量用的那份排布挂在光标层上，随宿主一起释放。
+			Application.DefaultGraphicsFactory.TextEngine.ManagedCache.ReleaseOwner(_cursorOver);
+		}
+		catch (Exception)
+		{
+			// 后端已销毁：没有可释放的排布。
+		}
 		_resizeTimer?.Dispose();
 		_resizeTimer = null;
 		_scrollBar.ValueChanged -= OnScrollBarChanged;
