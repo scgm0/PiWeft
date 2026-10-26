@@ -5,6 +5,12 @@ namespace PiWeft.Desktop;
 /// <summary>工作区里一个被改动的文件。</summary>
 public sealed record GitChange(string IndexStatus, string WorkTreeStatus, string Path)
 {
+	/// <summary>索引里有这个文件的改动（已暂存）。<c>MM</c> 这种「已暂存又改过」两边都算。</summary>
+	public bool HasStaged => IndexStatus is not (" " or "?");
+
+	/// <summary>工作区里有这个文件的改动（未暂存）；未跟踪文件只落在这一侧。</summary>
+	public bool HasWorkTree => WorkTreeStatus is not " " || IndexStatus == "?";
+
 	/// <summary>面向用户的单字状态：新增/修改/删除/改名/冲突/未跟踪。</summary>
 	public string Label => (IndexStatus, WorkTreeStatus) switch
 	{
@@ -33,6 +39,15 @@ public sealed record GitStatus
 	public bool IsRepository { get; init; }
 
 	public string? Error { get; init; }
+
+	/// <summary>当前分支是否已配置上游（<c>branch.&lt;name&gt;.merge</c>）。推送/拉取的可用性判据。</summary>
+	public bool HasUpstream { get; init; }
+
+	/// <summary>仓库是否配置了任何远端。<c>false</c> 时推送/拉取/获取都没有意义。</summary>
+	public bool HasRemotes { get; init; }
+
+	/// <summary>分离头指针：没有分支可推，也没有上游。</summary>
+	public bool Detached { get; init; }
 
 	/// <summary>一行摘要，例如「main · 3 个改动 ↑1」；不是仓库时给一句简短说明。</summary>
 	public string Summary()
@@ -71,6 +86,12 @@ public sealed record GitStatus
 	}
 }
 
+/// <summary>当前分支与它的上游跟踪分支。</summary>
+public sealed record GitUpstream(string Branch, string Upstream)
+{
+	public bool HasUpstream => Upstream.Length > 0;
+}
+
 /// <summary>
 /// 只读的 Git 状态：调用系统 <c>git</c> 并解析 <c>--porcelain=v1 -b</c> 的输出。
 /// 写操作（暂存、提交、分支）见 <see cref="GitWriter"/>。
@@ -88,9 +109,11 @@ public static class GitStatusReader
 			WorkingDirectory = Directory.Exists(cwd) ? cwd : Environment.CurrentDirectory,
 		};
 
+		ApplyLocale(startInfo);
 		startInfo.ArgumentList.Add("status");
 		startInfo.ArgumentList.Add("--porcelain=v1");
 		startInfo.ArgumentList.Add("-b");
+		startInfo.ArgumentList.Add("-z");
 		startInfo.ArgumentList.Add("--untracked-files=all");
 
 		try
@@ -128,7 +151,10 @@ public static class GitStatusReader
 				return new GitStatus { Error = stderr.Trim().Length > 0 ? stderr.Trim() : Strings.GitNotRepository };
 			}
 
-			return Parse(stdout);
+			var status = Parse(stdout);
+			// 远端列表要多一次进程调用，但它决定「推送/拉取」按钮的可用性；面板刷新是用户动作
+			// 驱动的，这点开销可以接受。探测失败按「没有远端」处理，按钮退化成不可用而不是报错。
+			return status with { HasRemotes = HasRemotes(cwd) };
 		}
 		catch (System.ComponentModel.Win32Exception)
 		{
@@ -138,6 +164,24 @@ public static class GitStatusReader
 		{
 			return new GitStatus { Error = Strings.GitUnavailable };
 		}
+	}
+
+	/// <summary>当前分支与它的上游；没有上游时 <see cref="GitUpstream.Upstream"/> 为空。</summary>
+	public static GitUpstream Upstream(string cwd)
+	{
+		// rev-parse 在没有上游时以非 0 退出，这是正常情况而不是错误。
+		var (branchOutput, _) = Run(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+		var branch = branchOutput.Trim();
+		var (upstreamOutput, exitCode) = Run(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+		var upstream = exitCode == 0 ? upstreamOutput.Trim() : string.Empty;
+		return new GitUpstream(branch, upstream);
+	}
+
+	/// <summary>仓库是否配置了任何远端。</summary>
+	public static bool HasRemotes(string cwd)
+	{
+		var (output, exitCode) = Run(cwd, ["remote"]);
+		return exitCode == 0 && output.Trim().Length > 0;
 	}
 
 	/// <summary>
@@ -178,6 +222,7 @@ public static class GitStatusReader
 			WorkingDirectory = Directory.Exists(cwd) ? cwd : Environment.CurrentDirectory,
 		};
 
+		ApplyLocale(startInfo);
 		foreach (var argument in arguments)
 		{
 			startInfo.ArgumentList.Add(argument);
@@ -205,17 +250,41 @@ public static class GitStatusReader
 		}
 	}
 
-	/// <summary>解析 <c>git status --porcelain=v1 -b</c> 的输出。</summary>
+	/// <summary>
+	/// 让 git 说英文。失败分类（<see cref="GitFailure"/>）按英文特征串匹配，用户机器上的
+	/// 本地化输出会让它静默失配 —— 中文环境里 <c>git pull</c> 的报错是「无法快进」而不是
+	/// "Not possible to fast-forward"。这里只影响 git 自己的消息，不影响路径与内容字节。
+	/// </summary>
+	internal static void ApplyLocale(ProcessStartInfo startInfo)
+	{
+		startInfo.Environment["LC_ALL"] = "C";
+		startInfo.Environment["LANG"] = "C";
+		startInfo.Environment["LANGUAGE"] = "C";
+	}
+
+	/// <summary>
+	/// 解析 <c>git status --porcelain=v1 -b -z</c> 的输出（字段以 NUL 分隔）。
+	/// <para>
+	/// 必须是 <c>-z</c> 形态：非 <c>-z</c> 时 git 会对非 ASCII 路径做八进制转义
+	/// （<c>"\344\270\255..."</c>），给带空格的路径加引号，而解析按固定列取子串 ——
+	/// 中文或 emoji 文件名会拿到一串转义文本，后续「暂存 / 打开」全部指向不存在的路径。
+	/// <c>-z</c> 输出原始 UTF-8 字节且不带引号，是 git 唯一保证机器可读的形态。
+	/// </para>
+	/// </summary>
 	public static GitStatus Parse(string output)
 	{
 		var branch = string.Empty;
 		var ahead = 0;
 		var behind = 0;
+		var hasUpstream = false;
+		var detached = false;
 		var changes = new List<GitChange>();
 
-		foreach (var raw in output.Split('\n'))
+		// 尾随 NUL 会切出一个空字段；改名条目多出一个「原路径」字段，按需跳过。
+		var fields = output.Split('\0');
+		for (var position = 0; position < fields.Length; position++)
 		{
-			var line = raw.TrimEnd('\r');
+			var line = fields[position];
 			if (line.Length == 0)
 			{
 				continue;
@@ -223,7 +292,7 @@ public static class GitStatusReader
 
 			if (line.StartsWith("## ", StringComparison.Ordinal))
 			{
-				(branch, ahead, behind) = ParseBranchLine(line[3..]);
+				(branch, ahead, behind, hasUpstream, detached) = ParseBranchLine(line[3..]);
 				continue;
 			}
 
@@ -236,11 +305,11 @@ public static class GitStatusReader
 			var workTree = line[1].ToString();
 			var path = line[3..];
 
-			// 改名会写成 "old -> new"，展示目标路径更有用。
-			var arrow = path.IndexOf(" -> ", StringComparison.Ordinal);
-			if (arrow >= 0)
+			// -z 形态下改名/复制把原路径放在紧随其后的独立字段里（顺序与文本形态的 "old -> new" 相反，
+			// 目标路径反而在前）。展示目标路径更有用，原路径直接跳过。
+			if (line[0] is 'R' or 'C' || line[1] is 'R' or 'C')
 			{
-				path = path[(arrow + 4)..];
+				position++;
 			}
 
 			changes.Add(new GitChange(index, workTree, path));
@@ -252,16 +321,23 @@ public static class GitStatusReader
 			Branch = branch,
 			Ahead = ahead,
 			Behind = behind,
+			HasUpstream = hasUpstream,
+			Detached = detached,
 			Changes = changes,
 		};
 	}
 
-	/// <summary>解析 <c>## main...origin/main [ahead 1, behind 2]</c>。</summary>
-	private static (string Branch, int Ahead, int Behind) ParseBranchLine(string text)
+	/// <summary>
+	/// 解析 <c>## main...origin/main [ahead 1, behind 2]</c>。
+	/// 无上游时是 <c>## main</c>；分离头指针是 <c>## HEAD (no branch)</c>。
+	/// </summary>
+	private static (string Branch, int Ahead, int Behind, bool HasUpstream, bool Detached) ParseBranchLine(string text)
 	{
 		var branch = text;
 		var ahead = 0;
 		var behind = 0;
+		var hasUpstream = false;
+		var detached = false;
 
 		var bracket = text.IndexOf('[', StringComparison.Ordinal);
 		if (bracket >= 0)
@@ -286,13 +362,29 @@ public static class GitStatusReader
 			}
 		}
 
-		// "main...origin/main" → "main"；无上游时可能是 "main" 或 "(no branch)"。
+		// "main...origin/main" → "main"，且说明存在上游；无上游时只有 "main"。
 		var dots = branch.IndexOf("...", StringComparison.Ordinal);
 		if (dots > 0)
 		{
+			hasUpstream = branch[(dots + 3)..].Trim().Length > 0;
 			branch = branch[..dots];
 		}
 
-		return (branch.Trim(), ahead, behind);
+		branch = branch.Trim();
+
+		// 分离头指针时提交头写的是 "HEAD (no branch)"。以前这里原样当成分支名，结果它出现在
+		// 分支下拉里还能被「切换」，而推送按钮也照样可点。统一成空分支名（界面回落到 "HEAD"）。
+		if (branch == "HEAD (no branch)" || branch == "(no branch)")
+		{
+			detached = true;
+			branch = string.Empty;
+		}
+		else if (branch.StartsWith("No commits yet on ", StringComparison.Ordinal))
+		{
+			// 全新仓库：分支还不存在，但名字已经定了。不当作分离头指针。
+			branch = branch["No commits yet on ".Length..].Trim();
+		}
+
+		return (branch, ahead, behind, hasUpstream, detached);
 	}
 }

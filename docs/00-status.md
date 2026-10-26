@@ -95,7 +95,7 @@ OAuth 支持授权码 + PKCE、动态注册、回环回调、401 刷新重放与
 - 原生 `todo` / `ask_question` / 计划模式：todo 按会话分支持久化为 PiDeck v3 自定义条目（`customType: "pi-deck-todo"`），切换分支自动恢复；`ask_question` 的线协议与 PiDeck 批量信封一致；计划模式停用 `edit`/`write`、附加 `plan_mode` 章节并用只读 shell 白名单拦截破坏性命令。
 - 资源与主题：按 pi 约定发现技能/提示词模板/主题/pi 包，优先级为项目 settings 声明(0) > 项目自动发现(1) > 用户 settings 声明(2) > 用户目录自动发现(3) > 包(4)，同名资源先发现者胜出。主题目录文件监视热重载（防抖 400 ms，项目主题只在受信任时监视）；`/reload` 与 RPC `reload_resources` 重新解析而不重建会话。
 - 模型连接测试与远程模型目录：1-token 探测（RPC `test_model`）与按 API 拉取 `GET /models`（RPC `fetch_remote_models`），入口在配置页与输入框工具栏。
-- Git 状态/diff、暂存/取消暂存、提交、分支切换/新建、检查点与回滚、命令 Dock（PTY 终端）、跨会话用量统计与余额查询、实时会话统计、深浅主题与内嵌字体/图标。
+- Git 状态/diff、暂存/取消暂存、提交、分支切换/新建、检查点与回滚、远端同步（fetch / pull `--ff-only` / push，首次推送自动建立上游跟踪）、stash 收起与应用/丢弃（面板按未暂存/已暂存分节，带批量暂存与提交禁用态）、命令 Dock（PTY 终端）、跨会话用量统计与余额查询、实时会话统计、深浅主题与内嵌字体/图标。所有 git 子进程钉住 `LC_ALL=C`，失败按输出特征分类成可操作的中文提示、原始输出留在详情里；状态读取用 `--porcelain=v1 -z`，中文 / 空格 / emoji / 换行路径都按原始 UTF-8 解析。
 - 供应商/模型、API Key、Agent 设置、MCP 和 JSON 配置管理；全局/项目作用域、未知字段保留、原子写入和冲突检查。设置是窗口级模态弹窗，未保存修改受保护。
 - 按工作目录单实例；后台有界日志；`--self-check`、`--theme-smoke` 及截图脚本用于验证。
 
@@ -121,6 +121,6 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。2026-10-26 全量测试：非桌面 898 项（Agent 23 / Ai 192 / JavaScript 56 / Mcp 86 / Cli 126 / CodingAgent 415）、Desktop 872 项，共 1770 项，全部通过；连续多轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
+GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。2026-10-26 全量测试：非桌面 898 项（Agent 23 / Ai 192 / JavaScript 56 / Mcp 86 / Cli 126 / CodingAgent 415）、Desktop 921 项，共 1819 项，全部通过；连续多轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
 
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。真实数据互操作测试受本机会话/技能数据是否存在影响；provider 使用打桩服务，不能替代真实供应商联网验证。

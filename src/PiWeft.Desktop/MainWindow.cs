@@ -1624,6 +1624,12 @@ public sealed partial class MainWindow : Window
 					break;
 				case "git":
 					ShowGitPanel();
+					// 视觉验收也要看到 diff 区：选中第一个改动。
+					if (CurrentTab() is { } gitTab && _sessionPanels.TryGetValue(gitTab, out var gitPanel))
+					{
+						gitPanel.SelectFirstGitChangeForSmoke();
+					}
+
 					break;
 				case "terminal":
 					ToggleTerminalPanel();

@@ -59,9 +59,13 @@ public sealed class FoldScrollTests
 		Assert.True(smooth.MaxVerticalOffset > 1000);
 
 		conversation.ScrollToLatest();
-		for (var frame = 0; frame < 40; frame++)
+		// 收敛判据是「动画停下且真的到末尾」，不是「跑够 N 帧就算完」：跟底每帧都会重测行高，
+		// 目标 MaxVerticalOffset 会被不断推后，动画随之延长；而 16ms 只是虚拟时间的一帧，
+		// 并行跑整套测试时每帧推进的行数会变。固定 40 帧在满负载下不够（实测会稳定变红），
+		// 所以按虚拟时间给足预算，收敛即退出。
+		for (var frame = 0; frame < 400; frame++)
 		{
-			Thread.Sleep(4);
+			Thread.Sleep(2);
 			AnimationFrames.Advance(16);
 			ConversationPerformanceTests.Layout(tab);
 			// 应用里这一步由 Render 优先级的回调完成；测试里手动驱动同样的收敛。

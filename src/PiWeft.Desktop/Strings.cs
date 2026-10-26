@@ -381,9 +381,76 @@ public static partial class Strings
 
 	public const string GitBranchPlaceholder = "新分支名";
 
+	public const string GitStageAll = "全部暂存";
+
+	public const string GitUnstageAll = "全部取消暂存";
+
 	public const string GitStaged = "已暂存";
 
 	public const string GitUnstaged = "未暂存";
+
+	// 远端同步与 stash（D-04）。失败提示按「用户能照着做」来写，而不是转述 git 的英文报错。
+	public const string GitPull = "拉取";
+
+	public const string GitPush = "推送";
+
+	public const string GitFetch = "获取远端";
+
+	public const string GitStash = "暂存改动";
+
+	public const string GitStashPop = "应用";
+
+	public const string GitStashResolved = "丢弃";
+
+	public const string GitRemotes = "远端同步";
+
+	public const string GitStashes = "stash";
+
+	public const string GitStashCreated = "工作区改动已收进 stash。";
+
+	public const string GitStashPopped = "已应用最近一条 stash。";
+
+	public const string GitStashNothing = "工作区没有可暂存的改动。";
+
+	public const string GitStashEmpty = "没有 stash 条目。";
+
+	public const string GitNoInitialCommit = "仓库还没有第一个提交，暂存改动需要一个基线提交。先提交一次。";
+
+	public const string GitStashReferenceInvalid = "stash 引用不合法。";
+
+	public const string GitNoRemote = "这个仓库没有配置远端，推送/拉取都用不了。先 git remote add origin <url>。";
+
+	public const string GitNoUpstream = "当前分支没有上游分支。可以先推送一次建立跟踪，或 git branch --set-upstream-to。";
+
+	public const string GitDetachedHead = "处于分离头指针状态，没有可推送的分支。先切回一个分支。";
+
+	public const string GitUpToDate = "已经是最新的。";
+
+	public const string GitPullDone = "已拉取到最新。";
+
+	public const string GitPushDone = "已推送。";
+
+	public const string GitFetchDone = "已获取远端更新。";
+
+	public const string GitNothingToCommit = "没有可提交的改动。";
+
+	public const string GitNothingStaged = "还没有暂存的改动。勾选要提交的文件，或用「全部暂存」。";
+
+	public const string GitPushRejected = "远端有你本地没有的提交，推送被拒绝。先拉取再推送。";
+
+	public const string GitAuthFailed = "认证失败：这台机器上没有可用的凭据。先在终端里 git push 一次完成登录，或配置 credential helper / SSH key。";
+
+	public const string GitNetworkFailed = "连不上远端：检查网络、代理与远端地址。";
+
+	public const string GitLocalChangesBlock = "本地改动会被覆盖，拉取中止。先把改动提交或「暂存改动」后再拉取。";
+
+	public const string GitNotFastForward = "分支已分叉，不能快进合入。这一步需要人工决定合并还是变基，请在终端处理。";
+
+	public const string GitConflict = "有冲突。请在终端解决后提交；stash 应用的冲突会让条目保留下来。";
+
+	public const string GitFailed = "操作失败。";
+
+	public const string GitPushUpstreamCreated = "已推送并建立上游跟踪。";
 
 	/// <summary>远程模型目录拉取。</summary>
 	public const string ConfigFetchModels = "拉取远程模型";
@@ -409,6 +476,9 @@ public static partial class Strings
 
 	public static string ConfigFetchFailed(string reason) => $"拉取失败：{reason}";
 	public static string GitChangeCount(int count) => $"{count} 个改动";
+
+	/// <summary>diff 标题行的增删统计，与 PiDeck 的「+n −m」一致。</summary>
+	public static string GitDiffStat(int added, int removed) => $"+{added} −{removed}";
 	public static string FilterMatches(int matched, int total) => $"{matched} / {total} 条匹配";
 	public const string CloseTab = "关闭";
 	public const string NoOpenSession = "从左侧选择一个会话，或点「新建」开始。";

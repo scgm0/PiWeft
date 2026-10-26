@@ -4,22 +4,26 @@ using Xunit;
 namespace PiWeft.Desktop.Tests;
 
 /// <summary>
-/// Git 状态解析。<c>git status --porcelain=v1 -b</c> 的输出是稳定的行格式，直接喂样本断言，
-/// 不需要真的建仓库。
+/// Git 状态解析。<c>git status --porcelain=v1 -b -z</c> 是稳定的 NUL 分隔格式，直接喂样本断言，
+/// 不需要真的建仓库。真实仓库上的中文 / 空格 / emoji 路径见 <c>GitStatusPathTests</c>。
 /// </summary>
 public class GitStatusTests
 {
+	/// <summary>把可读的多行样本拼成 -z 形态（每行以 NUL 结尾，含尾随 NUL）。</summary>
+	private static string Z(params string[] fields) => string.Concat(fields.Select(static field => field + "\0"));
+
 	[Fact]
 	public void ParsesBranchAheadBehindAndChanges()
 	{
-		const string output = """
-			## main...origin/main [ahead 1, behind 2]
-			 M src/PiWeft.Desktop/MainWindow.cs
-			?? src/PiWeft.Desktop/GitView.cs
-			A  tests/PiWeft.Desktop.Tests/GitStatusTests.cs
-			D  old/file.txt
-			R  old/name.txt -> new/name.txt
-			""";
+		var output = Z(
+			"## main...origin/main [ahead 1, behind 2]",
+			" M src/PiWeft.Desktop/MainWindow.cs",
+			"?? src/PiWeft.Desktop/GitView.cs",
+			"A  tests/PiWeft.Desktop.Tests/GitStatusTests.cs",
+			"D  old/file.txt",
+			// -z 形态：改名条目后面紧跟一个独立字段放原路径。
+			"R  new/name.txt",
+			"old/name.txt");
 
 		var status = GitStatusReader.Parse(output);
 
@@ -43,7 +47,7 @@ public class GitStatusTests
 	[Fact]
 	public void ParsesABranchWithoutUpstream()
 	{
-		var status = GitStatusReader.Parse("## feature/desktop\n");
+		var status = GitStatusReader.Parse(Z("## feature/desktop"));
 
 		Assert.Equal("feature/desktop", status.Branch);
 		Assert.Equal(0, status.Ahead);
@@ -54,21 +58,45 @@ public class GitStatusTests
 	[Fact]
 	public void ParsesDetachedHeadAndConflictStatuses()
 	{
-		var status = GitStatusReader.Parse("## HEAD (no branch)\nUU src/conflict.cs\n");
+		var status = GitStatusReader.Parse(Z("## HEAD (no branch)", "UU src/conflict.cs"));
 
-		Assert.Equal("HEAD (no branch)", status.Branch);
+		// 分离头指针不能表现成一个叫 "HEAD (no branch)" 的分支：它会被列进分支下拉、还能被「切换」。
+		Assert.True(status.Detached);
+		Assert.Equal(string.Empty, status.Branch);
 		Assert.Equal("冲突", Assert.Single(status.Changes).Label);
+	}
+
+	[Fact]
+	public void ParsesAFreshRepositoryWithoutCommits()
+	{
+		var status = GitStatusReader.Parse(Z("## No commits yet on main", "?? a.txt"));
+
+		Assert.Equal("main", status.Branch);
+		Assert.False(status.Detached);
+		Assert.False(status.HasUpstream);
+	}
+
+	[Fact]
+	public void RenameConsumesTheOriginalPathField()
+	{
+		// 原路径是独立字段，漏掉它会让紧随其后的真实条目被丢掉或错位。
+		var status = GitStatusReader.Parse(Z("## main", "R  new.txt", "old.txt", " M after.txt"));
+
+		Assert.Equal(2, status.Changes.Count);
+		Assert.Equal("new.txt", status.Changes[0].Path);
+		Assert.Equal("改名", status.Changes[0].Label);
+		Assert.Equal("after.txt", status.Changes[1].Path);
 	}
 
 	[Fact]
 	public void SummaryMentionsCleanAndAhead()
 	{
-		var clean = GitStatusReader.Parse("## main...origin/main [ahead 3]\n");
+		var clean = GitStatusReader.Parse(Z("## main...origin/main [ahead 3]"));
 		Assert.Contains("main", clean.Summary());
 		Assert.Contains("工作区干净", clean.Summary());
 		Assert.Contains("↑3", clean.Summary());
 
-		var dirty = GitStatusReader.Parse("## main\n M a.txt\n");
+		var dirty = GitStatusReader.Parse(Z("## main", " M a.txt"));
 		Assert.Contains("1 个改动", dirty.Summary());
 	}
 
