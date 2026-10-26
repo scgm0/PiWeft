@@ -9,6 +9,7 @@ using PiWeft.Ai.Utils;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Resources;
+using PiWeft.CodingAgent.Security;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
@@ -368,6 +369,9 @@ public sealed class CodingAgentSession : IDisposable
 	public string Cwd { get; }
 
 	public CodingAgentSettings Settings { get; }
+
+	/// <summary>当前生效的工具调用安全门（来自 <c>settings.security</c>）。</summary>
+	public ToolSecurity Security => Settings.Security;
 
 	/// <summary>宿主交互界面（RPC / CLI / 桌面）；为 null 时 ask_question 报告不可用。</summary>
 	public IUiHost? UiHost { get; }
@@ -1178,6 +1182,14 @@ public sealed class CodingAgentSession : IDisposable
 			{
 				return new BeforeToolCallResult { Block = true, Reason = "plan mode: only read-only shell commands are allowed" };
 			}
+		}
+
+		// 安全门在用户钩子之前：宿主钩子拿到的是已经过安全判定的调用。
+		// 这里是所有工具调用的唯一汇合点 —— 直接调用、codemode 里的嵌套调用、以及 MCP 工具
+		// 都经过它（见 ExecuteNestedToolAsync），所以只需在这里拦一次。
+		if (Settings.Security.BlockingReason(context.ToolCall.Name, context.Arguments, Cwd) is { } blockedReason)
+		{
+			return new BeforeToolCallResult { Block = true, Reason = blockedReason };
 		}
 
 		return _userBeforeToolCall is null

@@ -31,7 +31,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 系统提示词只在运行时构造，不能作为历史消息写入会话。工具热更新保留提示章节边界；未知会话字段原样保留：会话头、条目顶层字段、以及四种已知角色（system/user/assistant/toolResult）消息各自的未建模字段都会原样写回（`Message.Extra` / `SessionEntry.Extra` / `SessionHeader.Extra`），未知消息角色整体进 `CustomMessage.Raw`，未知条目类型由 `UnknownSessionEntry` 整行输出。新增上游字段（pi 的 `nestedCalls`、`hermesExtras` 就是实例）不需要改转换器也不会在 `fork`/导入落盘时丢失；新增字段落到已建模角色上时，必须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys` 的字段名单，否则该字段会被当作未知字段重复输出。内置工具的短 snippet 与 guidelines 在所有入口（CLI/RPC/桌面）按名称重新挂回。
 - 默认工具集与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 PiDeck 依赖的原生 `todo` 与 `ask_question`；Windows 上默认目录还包含 `powershell`。`grep`/`find`/`ls` 与 `codemode` 需要 `--tools`、`settings.defaultTools` 显式开启。`--tools` 的纯名字列表整体替换默认集、`+name`/`-name` 在默认集上增减、`--exclude-tools` 支持通配，模式始终针对完整内置目录展开。
 - bash 工具向子进程注入 pi 的会话环境变量（`PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，执行前先清除继承值），进程启动时设置 `AI_AGENT=pi` 与 `PI_CODING_AGENT=true`；`settings.shellPath`、`settings.shellCommandPrefix` 分别控制 bash 的 shell 与命令前缀。`!`/`!!` 内联命令（交互模式）不走注入。
-- 生效的 settings 键：`shellPath`、`shellCommandPrefix`、`sessionDir`（`--session-dir` 优先）、`defaultTools`、`cacheWarming`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`sessionShareDestination`、`codemode`。其余 pi 键原样保留、不生效。
+- 生效的 settings 键：`shellPath`、`shellCommandPrefix`、`sessionDir`（`--session-dir` 优先）、`defaultTools`、`cacheWarming`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`sessionShareDestination`、`codemode`、`security`。其余 pi 键原样保留、不生效。`security` 是本端口新增的键（pi 没有），语义与 PiDeck 的 `security-policy.json` 一致，详见[工具调用安全门](01-parity.md#工具调用安全门)。
 - `--system-prompt` 取代默认 preamble，`--append-system-prompt` 追加为 `addendum` 章节，`--no-context-files` 停用 AGENTS.md / CLAUDE.md 发现；三者都接受字面文本或文件路径。`--export <session> [output]` 导出 HTML/JSONL 后退出（只读）；`--models <patterns>` 限定模型轮换范围。
 - `pi install <source>`、`pi list`、`pi remove <source>`、`pi update [source]` 管理 pi 包：npm 装到 `<agentDir>/npm/node_modules`、git 克隆到 `<agentDir>/git`、本地路径只登记不复制；`--local/-l` 写项目 `.pi/settings.json`。`settings.npmCommand` 可覆盖 npm 可执行文件。
 - `pi mcp list|add|remove|login|logout` 管理 MCP 服务器与 OAuth 令牌：配置写 `<agentDir>/mcp.json`（`--local` 改项目 `.pi/mcp.json`），令牌写 `<agentDir>/mcp-oauth.json`；写入保留其它键、注释与尾逗号，解析失败时拒绝覆盖。
@@ -104,6 +104,7 @@ OAuth 支持授权码 + PKCE、动态注册、回环回调、401 刷新重放与
 ## 已知限制
 
 - 未实现完整 JS/TS 扩展宿主与扩展 renderer；fire-and-forget UI 方法已就绪，但目前没有进程内 JS 扩展调用方。
+- 工具调用安全门只有「放行 / 拒绝」，没有「先问用户再执行」的审批窗口。PiDeck 的 `ask` 动作在这里退化为拒绝，因此默认危险命令表只收不可逆的破坏性命令，日常动作（`rm -rf node_modules`、`npm install`、`git commit`）一律放行。安全门默认等级是 `off`，不显式配置就完全放行。
 - CLI 仍是按行 REPL，没有完整 TUI、多行编辑、`$EDITOR`、键位绑定与终端图片。
 - 生图/分类网关目前只有 OpenRouter 与 OpenAI Decisions 两种方言，尚未接到 CLI/TUI/桌面入口；虚拟模型已支持 `models.json` 动态 JS route 与状态条目，但扩展宿主动态注册仍未接入；Codex `websocket-cached` 尚未复用连接。cache warming 已有 `cache_warming_decision` 回调；`cimd`、完整 MCP `callbackUrl` 路径与 pi 的 `mcp-auth.json` 共享格式仍未覆盖。
 - `Radius` 登录目前走设备码（未做浏览器选择菜单）；OpenAI ChatGPT 回调固定端口 1455；GitHub Copilot Enterprise 只支持域名输入；`/llama` 下载为轮询等待，无进度条/量化体积选择。
@@ -120,6 +121,6 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。2026-10-26 全量测试：非桌面 858 项（Agent 23 / Ai 192 / JavaScript 56 / Mcp 86 / Cli 126 / CodingAgent 375）、Desktop 872 项，共 1730 项，全部通过；连续 6 轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
+GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。2026-10-26 全量测试：非桌面 898 项（Agent 23 / Ai 192 / JavaScript 56 / Mcp 86 / Cli 126 / CodingAgent 415）、Desktop 872 项，共 1770 项，全部通过；连续多轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
 
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。真实数据互操作测试受本机会话/技能数据是否存在影响；provider 使用打桩服务，不能替代真实供应商联网验证。

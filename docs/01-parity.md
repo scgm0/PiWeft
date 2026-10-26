@@ -46,7 +46,7 @@ MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win3
 | 输入与模型 | 斜杠命令、命令面板、可改快捷键、可用模型筛选、供应商分组/折叠、搜索/刷新、最近模型优先、中文思考级别 | 模型收藏 |
 | 附件 | 路径引用、图片文件/原生字节、剪贴板图片粘贴、复制预览图片、仅图片发送 | 更多媒体类型、把回复整体复制为图片 |
 | 用量 | 会话统计、上下文、费用、缓存与计时、手动压缩；余额/积分查询；跨会话统计与 26 周热力图 | 完整供应商订阅窗口、热力图下钻 |
-| 设置 | 模型/供应商、API Key、Agent、MCP、JSON、作用域与草稿保护 | 桌面 OAuth、技能/提示词管理、商店 |
+| 设置 | 模型/供应商、API Key、Agent、MCP、JSON、作用域与草稿保护、工具调用安全门（`settings.security`） | 桌面 OAuth、技能/提示词管理、商店、安全门的图形化编辑与交互式审批 |
 | MCP | 启动连接、状态、stdio 工具热刷新、设置面板手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、diff、在编辑器中打开、暂存/取消暂存、提交、分支切换/新建、检查点创建/恢复 | 推送/拉取、历史图谱、冲突解决界面 |
 | 文件 | 目录导航、Git 标记、内置文本编辑器与冲突检测保存、回答级修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
@@ -126,6 +126,38 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 - 导出移除 API Key、认证相关字段、全部 headers/env/OAuth 和 URL 的查询、userinfo；不会自动导出 auth.json。源文件可能含密钥，默认不显示；配置操作不向日志输出异常原文或配置内容。
 - 模型目录/Agent 设置更新作用于新会话；已有会话不进行运行时替换。MCP 保存不自动重连，设置面板提供手动「重连 MCP」。
 
+### 工具调用安全门
+
+PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 的 `security/policy.ts` + 内置扩展 `pi-deck-security-gate.ts`，实现在 `src/PiWeft.CodingAgent/Security/ToolSecurity.cs`，挂在**所有工具调用的唯一汇合点** `GuardedBeforeToolCallAsync`（计划模式检查之后、宿主钩子之前）。直接调用、codemode 里的嵌套调用、MCP 工具都走这条路 —— 嵌套调用不是绕过口。
+
+| `level` | 行为 |
+|---|---|
+| `off`（默认） | 完全放行。引入安全门不改变任何既有行为，也不破坏 pi 兼容语义 |
+| `standard` | 敏感文件读写均拒绝；匹配危险模式的 shell 命令拒绝；目录不限制 |
+| `strict` | 在 `standard` 之上加工作目录边界：**写入**目录外一律拒绝，**读**降级放行（与 PiDeck 一致） |
+
+```json
+{
+  "security": {
+    "level": "strict",
+    "pathPolicy": "custom",
+    "customAllowDirs": ["~/work/shared"],
+    "denyDirs": ["~/work/secrets"],
+    "protectSensitivePaths": true,
+    "denyBashPatterns": ["\\brm\\s+-[a-z]*[rf]"]
+  }
+}
+```
+
+- **只读全局设置**：项目里的 `.pi/settings.json` 可以随仓库分发，能改自己的安全等级等于让仓库关掉用户的防护。`level` 写错（如 `strcit`）或缺失一律按 `off` 处理 —— 写错的配置不该反向把用户的工作流卡死。
+- **敏感路径**与 PiDeck 的 `DEFAULT_SENSITIVE_PATH_PATTERNS` 逐条一致：`.env` 家族、`.git` 元数据、`id_rsa`/`id_ed25519`/`id_ecdsa`、包管理凭据、`.pem`/`.key`/`.p12`。按**解析过符号链接的真实路径**匹配，所以 `notes.txt` 软链到 `.env` 也会命中。
+- **目录边界同样解析真实路径**：不存在的尾部按「已存在的最近祖先是真实路径」拼回，`../` 与软链目录都绕不过去。Windows/macOS 大小写不敏感，Linux 敏感。
+- **`denyDirs` 没有绕过出口**：读写都拒绝，与 PiDeck 一致。空行与空串在配置边界被丢掉 —— 空目录会被当成「根为 `/`」从而匹配一切。
+- **危险命令表刻意只收不可逆动作**：删除根/家目录、`mkfs`、直接写块设备、fork bomb、关机、提权式改根权限、Windows 的 `format`/`rd /s /q` 根目录。`cp`/`mv`/`npm install`/`git commit` 这类在 PiDeck 里是「问一下」，本端口没有审批窗口，拒绝它们会直接毁掉正常工作流。
+- **不是全覆盖**：MCP 与自定义工具没有可判定的路径语义，一律放行（与 PiDeck 只覆盖 `SECURITY_TOOL_LABELS` 里那几个工具一致）。bash 只能按命令文本匹配，不能约束它实际碰到的路径。
+- 配置入口：桌面设置 → 配置管理 → 源文件 → `settings.json`（与其它 pi 原生配置同一处编辑）。
+- 测试：`tests/PiWeft.CodingAgent.Tests/ToolSecurityTests.cs`（纯策略 35 项）+ `ToolSecuritySessionTests.cs`（接线 5 项：`off` 不干预、`strict` 拦住越界写、`standard` 拦敏感读与危险命令、codemode 嵌套调用同门、设置驱动）。
+
 ## 虚拟模型 route 与状态
 
 `models.json` 的虚拟模型既支持静态目标，也支持动态 JS 路由：
@@ -190,6 +222,7 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 | D-11 | 远程/自动化 | 缺少局域网 Web、实时推送、外网访问令牌/隧道、飞书和定时任务 |
 | D-12 | 桌面集成 | 缺少托盘、系统通知/历史、自动更新、快捷任务浮窗、桌面宠物；代理、进程监控和诊断包也未完整对齐 |
 | D-13 | 交互/长历史 | 缺少项目级置顶/排序、标签拖拽/分屏、完整消息编辑删除、Mermaid/KaTeX；JSONL 历史仍全量保存在内存 |
+| D-14 | 工具调用审批 | 已实现安全门（`settings.security`：`off`/`standard`/`strict`，敏感文件、目录边界、危险命令）；未覆盖「先弹框问用户再执行」的交互式审批，因此 PiDeck 的 `ask` 动作在本端口退化为拒绝，也没有按会话覆盖等级与设置页图形化编辑 |
 | X-01 | 原生子代理、并行/链式编排、worktree 隔离 | 高价值但涉及执行所有权、取消、凭据和补丁合并 |
 | X-02 | ACP、IDE 集成 | 与 D-09 有关联；服务端协议与桌面接入外部后端应分别规划 |
 | X-03 | LSP/AST/DAP | 语义检索、诊断、结构化编辑、调试；不是基础工具的直接兼容要求 |
