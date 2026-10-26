@@ -1018,7 +1018,11 @@ public sealed class CacheWarmerTests
 			});
 
 		warmer.Start(model, WarmMessages(model), new StreamOptions { CacheRetention = CacheRetentions.Short });
-		await Task.Delay(TimeSpan.FromMilliseconds(1300));
+
+		// 等到扩展真的把动作改成 stop 并收口；不靠固定睡眠。
+		await Eventually.IsTrue(
+			() => warmer.Status is { State: "inactive", Reason: "stopped by extension" },
+			"扩展的 stop 决策没有收口保温状态");
 
 		Assert.Single(events);
 		Assert.Equal("cache_warming_decision", events[0].Type);
@@ -1045,7 +1049,12 @@ public sealed class CacheWarmerTests
 			static (_, _) => Task.FromResult<string?>("warm"));
 
 		warmer.Start(model, WarmMessages(model), new StreamOptions { CacheRetention = CacheRetentions.Short });
-		await Task.Delay(TimeSpan.FromMilliseconds(1300));
+
+		// Start 时状态就是 scheduled，但 ExtensionOverride 为 false；这条只在扩展
+		// 真实介入并完成一次刷新之后才成立。
+		await Eventually.IsTrue(
+			() => warmer.Status is { State: "scheduled", ExtensionOverride: true },
+			"扩展的 warm 覆盖没有完成一次保温刷新");
 
 		Assert.Single(script.Requests);
 		Assert.Equal("scheduled", warmer.Status.State);
@@ -1058,10 +1067,26 @@ public sealed class CacheWarmerTests
 		var script = new ScriptedStreamFn();
 		script.EnqueueText("warm");
 		var usages = 0;
+		var scheduledTransitions = 0;
+		PiWeft.CodingAgent.Compaction.CacheWarmingStatus? afterFirstRefresh = null;
+
+		// 刷新间隔只有 1 秒（缓存寿命 11 秒、预留 10 秒余量），所以在「第几次刷新」这个维度上
+		// 轮询必然踩到竞态：刚看到 usages==1，第二次刷新就已经把 Requests 加了第二条。
+		// 改成在状态回调里数 scheduled 的次数——Start 先置一次，第二次就代表第一次刷新收尾，
+		// 那一刻把状态快照下来，之后所有断言都基于这份快照。
+		var firstRefreshDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		using var warmer = new PiWeft.CodingAgent.Compaction.CacheWarmer(
 			script.Invoke,
 			static () => "streaming",
-			_ => usages++);
+			_ => Interlocked.Increment(ref usages),
+			statusChanged: status =>
+			{
+				if (status.State == "scheduled" && Interlocked.Increment(ref scheduledTransitions) == 2)
+				{
+					afterFirstRefresh = status;
+					firstRefreshDone.TrySetResult();
+				}
+			});
 		var model = ScriptedSessions.Model() with { PromptCache = new Dictionary<string, int> { ["short"] = 11 } };
 
 		warmer.Start(model,
@@ -1081,12 +1106,13 @@ public sealed class CacheWarmerTests
 			CacheRetention = CacheRetentions.Short,
 		});
 
-		await Task.Delay(TimeSpan.FromMilliseconds(1500));
+		await firstRefreshDone.Task.WaitAsync(TimeSpan.FromSeconds(20));
+		warmer.Cancel();
 
-		Assert.Single(script.Requests);
+		Assert.Equal(1, Volatile.Read(ref usages));
 		Assert.Equal(1, script.LastOptions!.MaxTokens);
-		Assert.Equal(1, usages);
-		Assert.Equal("scheduled", warmer.Status.State);
-		Assert.Equal("warm", warmer.Status.Decision!.Action);
+		Assert.NotNull(afterFirstRefresh);
+		Assert.Equal("scheduled", afterFirstRefresh!.State);
+		Assert.Equal("warm", afterFirstRefresh.Decision!.Action);
 	}
 }

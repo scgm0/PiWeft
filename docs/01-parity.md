@@ -95,6 +95,8 @@ Linux 上选中的原文、Markdown、代码和工具输出，以及普通输入
 xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 ```
 
+`PrimarySelectionTests.IncrementalTransferCarriesTextLargerThanOneRequest` 的「外部 xclip owner → 本端口接收」那一段要求宿主的 X server 自己能服务大块 INCR：同一份 xclip 二进制在 Xvfb 下正常，在真实桌面会话里可能收下 2 MB 后任何客户端都读不回来（连 xclip→xclip 往返都是 0 字节）。测试因此先用**同一段文本**做一次 xclip→xclip 往返探测，走不通就跳过——这是宿主环境限制，不应报成产品回归。单次 `ReadAsync` 的读超时是 2 秒，所以任何「重试到拿到为止」的测试都必须自己带总预算，否则每次超时叠起来会把一条断言拖成一分钟。
+
 图片剪贴板按 Ctrl+V/Cmd+V 时，如果剪贴板里有图片就按附件处理；没有图片时按键原样交给框架做文本粘贴。输入框默认右键菜单的「粘贴」替换为同一条图片优先命令，因此纯图片剪贴板时菜单项可用，与快捷键一致；只有文本时仍回退到文本框的默认文本粘贴。图片预览浮层提供「复制图片」，把原始编码字节写回系统剪贴板。MewUI 的 `IClipboardService` 只有文本，桌面侧新增 `IClipboardImages`（`HasImage` / `ReadAsync` / `TrySetImageAsync`），测试注入假实现即可覆盖交互。
 
 - Linux：`xclip` 读写 PNG/JPEG/WebP/GIF；写入后保留 xclip 进程作为 owner，`xsel` 不支持图片类型。

@@ -293,6 +293,13 @@ internal sealed class TerminalScreen
 			EnsureAlternateHeight(rows);
 		}
 
+		// 只改高度时，先把上一次为撑满视口补在末尾的空行收回去，再重映光标：
+		// 底部锚定的视口（BufferBase = Count - rows）不能把空行当成历史。
+		if (!widthChanged && !_alternateActive)
+		{
+			TrimViewportPadding(cursorBufferRow);
+		}
+
 		if (reflowCursorRow >= 0)
 		{
 			_cursorRow = Math.Clamp(reflowCursorRow - BufferBase, 0, rows - 1);
@@ -604,6 +611,41 @@ internal sealed class TerminalScreen
 			_primaryVersions.Add(0);
 			_primaryWrapped.Add(false);
 		}
+	}
+
+	/// <summary>
+	/// 收回撑满视口用的尾部空行。视口底部锚定（BufferBase = Count - rows），这些空行留着
+	/// 就被当成真实历史：拖分隔条把终端拉高再缩回时，提示符会被顶出视口、光标被映到别的行，
+	/// shell 收到 SIGWINCH 重画提示符就留下几行重复文本。
+	/// 只收回「整行没内容、在光标行以下、且缓冲区仍不短于视口」的末尾行，光标绝对行不变。
+	/// </summary>
+	private void TrimViewportPadding(int cursorAbsoluteRow)
+	{
+		var keep = Math.Max(_rows, Math.Min(_primary.Count, cursorAbsoluteRow + 1));
+		var trimmed = 0;
+		while (_primary.Count > keep && LineContentLength(_primary[^1]) == 0)
+		{
+			_primary.RemoveAt(_primary.Count - 1);
+			_primaryVersions.RemoveAt(_primaryVersions.Count - 1);
+			_primaryWrapped.RemoveAt(_primaryWrapped.Count - 1);
+			trimmed++;
+		}
+
+		if (trimmed == 0)
+		{
+			return;
+		}
+
+		// 只有「上一格」正好落在被收走的行里才作废，否则组合符号会回填到不存在的行；
+		// 光标自己那一行没动时不干预跨读块拼接。
+		if (_lastCellRow >= _primary.Count)
+		{
+			InvalidateLastCell();
+		}
+
+		// 正往上翻历史时，视图顶部那一行不能因为收回空行而漂走。
+		_viewOffset = Math.Max(0, _viewOffset - trimmed);
+		Touch();
 	}
 
 	private void EnsureAlternateHeight(int rows)

@@ -833,6 +833,41 @@ public sealed class TerminalScreenTests
 	}
 
 	[Fact]
+	public void GrowingThenShrinkingHeightDoesNotInventHistory()
+	{
+		var screen = NewScreen(columns: 20, rows: 6);
+
+		// 提示符占两行，剩下的都是没写过的空行。
+		screen.Feed("~/repo on main\r\n$ ".AsSpan());
+		Assert.Equal(0, screen.ScrollbackLines);
+		var promptRow = screen.CursorRow;
+
+		// 拉高：多出的行只能当空行用，不能变成「历史」。
+		screen.Resize(20, 10);
+		Assert.Equal(0, screen.ScrollbackLines);
+		Assert.Equal(promptRow, screen.CursorRow);
+
+		// 缩回原高度：为撑高补的空行必须收回去。拖着分隔条来回过冲时，
+		// 假历史会把提示符顶出视口、把光标映到别的行，shell 收到 SIGWINCH 重画
+		// 提示符就留下几行重复文本。
+		screen.Resize(20, 6);
+		Assert.Equal(0, screen.ScrollbackLines);
+		Assert.Equal(promptRow, screen.CursorRow);
+
+		// 提示符在视口里只有一份：没被顶出屏幕，shell 重画时才会盖住自己而不是另起一份。
+		var text = screen.GetText();
+		Assert.Equal(1, text.Split('\n').Count(line => line.StartsWith("~/repo", StringComparison.Ordinal)));
+		Assert.Equal("~/repo on main\n$", text.TrimEnd('\n'));
+
+		// shell 收到 SIGWINCH 后按「光标现在在哪行」重画：擦到屏尾再重打。
+		// 光标没跑行，这一步才会盖住旧提示符；旧实现里光标被假历史顶到别的行，
+		// 于是屏幕上会堆出一模一样的好几行提示符。
+		screen.Feed("\u001b[J~/repo on main\r\n$ ".AsSpan());
+		Assert.Equal(1, screen.GetText().Split('\n')
+			.Count(line => line.StartsWith("~/repo", StringComparison.Ordinal)));
+	}
+
+	[Fact]
 	public void HeightChangeKeepsTheCursorOnItsLine()
 	{
 		var screen = NewScreen(columns: 10, rows: 4);

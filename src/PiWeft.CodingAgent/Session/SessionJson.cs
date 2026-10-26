@@ -83,12 +83,19 @@ public static class SessionJson
 			writer.WriteString("parentSession", parent);
 		}
 
-		WriteExtras(writer, header.Extra);
+		PiJsonValue.WriteExtras(writer, header.Extra);
 		writer.WriteEndObject();
 	}
 
 	public static void WriteEntry(Utf8JsonWriter writer, SessionEntry entry)
 	{
+		if (entry is UnknownSessionEntry { Raw: { } unknownRaw })
+		{
+			// 未知类型的行整体原样输出：拆开重写会改变它的语义（见 UnknownSessionEntry）。
+			unknownRaw.WriteTo(writer);
+			return;
+		}
+
 		writer.WriteStartObject();
 		writer.WriteString("type", entry.Type);
 		writer.WriteString("id", entry.Id);
@@ -191,6 +198,7 @@ public static class SessionJson
 				break;
 		}
 
+		PiJsonValue.WriteExtras(writer, entry.Extra);
 		writer.WriteEndObject();
 	}
 
@@ -252,7 +260,7 @@ public static class SessionJson
 		Timestamp = PiJsonValue.Str(obj, "timestamp") ?? string.Empty,
 		Cwd = PiJsonValue.Str(obj, "cwd") ?? string.Empty,
 		ParentSession = PiJsonValue.Str(obj, "parentSession"),
-		Extra = ExtractExtras(obj, "type", "version", "id", "timestamp", "cwd", "parentSession"),
+		Extra = PiJsonValue.ReadExtras(obj, "type", "version", "id", "timestamp", "cwd", "parentSession"),
 	};
 
 	public static SessionEntry ParseEntry(JsonObject obj, string type)
@@ -339,50 +347,57 @@ public static class SessionJson
 			{
 				Name = PiJsonValue.Str(obj, "name"),
 			},
-			_ => new CustomEntry { CustomType = type, Data = obj.DeepClone() },
+			_ => new UnknownSessionEntry { Raw = (JsonObject)obj.DeepClone() },
 		};
 
-		return entry with { Id = id, ParentId = parentId, Timestamp = timestamp };
+		// 未知类型已经把整行放进 Raw，不再重复收集未知字段（写回时也整行输出）。
+		return entry is UnknownSessionEntry
+			? entry with { Id = id, ParentId = parentId, Timestamp = timestamp }
+			: entry with { Id = id, ParentId = parentId, Timestamp = timestamp, Extra = PiJsonValue.ReadExtras(obj, KnownKeys(type)) };
 	}
 
-	/// <summary>收集未知的顶层字段，重写时原样保留。</summary>
-	private static JsonObject? ExtractExtras(JsonObject obj, params string[] known)
+	// 每种条目类型自己消费的顶层字段名单。名单外的进 SessionEntry.Extra。
+	// 新增字段时必须同步这里，否则该字段会在重写时被当成未知字段重复输出。
+	private static readonly string[] BaseKeys = ["type", "id", "parentId", "timestamp"];
+
+	private static readonly string[] MessageKeys = [.. BaseKeys, "message"];
+
+	private static readonly string[] ModelChangeKeys = [.. BaseKeys, "provider", "modelId"];
+
+	private static readonly string[] ThinkingLevelKeys = [.. BaseKeys, "thinkingLevel"];
+
+	private static readonly string[] UsageKeys = [.. BaseKeys, "kind", "provider", "model", "usage", "note"];
+
+	private static readonly string[] CompactionKeys =
+		[.. BaseKeys, "summary", "firstKeptEntryId", "tokensBefore", "details", "usage", "fromHook", "systemMessage"];
+
+	private static readonly string[] BranchSummaryKeys = [.. BaseKeys, "fromId", "summary", "details", "usage", "fromHook"];
+
+	private static readonly string[] CustomKeys = [.. BaseKeys, "customType", "data"];
+
+	private static readonly string[] CustomMessageKeys = [.. BaseKeys, "customType", "content", "details", "display"];
+
+	private static readonly string[] ContextEditKeys = [.. BaseKeys, "targetId", "replacement"];
+
+	private static readonly string[] LabelKeys = [.. BaseKeys, "targetId", "label"];
+
+	private static readonly string[] SessionInfoKeys = [.. BaseKeys, "name"];
+
+	private static string[] KnownKeys(string type) => type switch
 	{
-		JsonObject? extras = null;
-		foreach (var (key, value) in obj)
-		{
-			if (Array.IndexOf(known, key) >= 0)
-			{
-				continue;
-			}
-
-			extras ??= new JsonObject();
-			extras[key] = value?.DeepClone();
-		}
-
-		return extras;
-	}
-
-	private static void WriteExtras(Utf8JsonWriter writer, JsonObject? extras)
-	{
-		if (extras is null)
-		{
-			return;
-		}
-
-		foreach (var (key, value) in extras)
-		{
-			if (value is null)
-			{
-				writer.WriteNull(key);
-			}
-			else
-			{
-				writer.WritePropertyName(key);
-				value.WriteTo(writer);
-			}
-		}
-	}
+		"message" => MessageKeys,
+		"model_change" => ModelChangeKeys,
+		"thinking_level_change" => ThinkingLevelKeys,
+		"usage" => UsageKeys,
+		"compaction" => CompactionKeys,
+		"branch_summary" => BranchSummaryKeys,
+		"custom" => CustomKeys,
+		"custom_message" => CustomMessageKeys,
+		"context_edit" => ContextEditKeys,
+		"label" => LabelKeys,
+		"session_info" => SessionInfoKeys,
+		_ => [],
+	};
 
 	private static void WriteOptionalNode(Utf8JsonWriter writer, string name, JsonNode? node)
 	{

@@ -180,9 +180,35 @@ public sealed class TerminalDockTests
 		Assert.Equal(cellWidth, cell.Width, 6);
 		Assert.Equal(cellHeight, cell.Height, 6);
 
-		// 候选窗定位与光标格同源：两者必须落在同一格，否则输入法候选窗会飘到别处。
-		Assert.Equal(cell.X, dock.CursorRect.X, 6);
-		Assert.Equal(cell.Y, dock.CursorRect.Y, 6);
+		// 存的是「相对表面」的坐标，绝对坐标在渲染时按当前 arrange 结果现算；
+		// 候选窗与光标必须落在同一格，否则输入法候选窗会飘到别处。
+		var surface = dock.CursorSurfaceForTest;
+		Assert.True(surface.Height > 0);
+		Assert.Equal(surface.X + cell.X, dock.CursorRect.X, 6);
+		Assert.Equal(surface.Y + cell.Y, dock.CursorRect.Y, 6);
+		Assert.True(dock.CursorSitsOnItsRowForTest);
+	}
+
+	[Fact]
+	public async Task CursorFollowsItsRowWhileThePanelIsDragged()
+	{
+		using var dock = new TerminalDock(() => ShellDirectory);
+		await WriteOnRowAsync(dock, 2, 0, "xy", 1);
+		dock.SetFocusForTest(true);
+
+		dock.View.Measure(new Size(600, 400));
+		dock.View.Arrange(new Rect(0, 0, 600, 400));
+		Assert.True(dock.CursorSitsOnItsRowForTest);
+
+		// 拖分隔条：面板尺寸一变再变。布局回调跑在子元素 arrange 之前，
+		// 绝对坐标要是提前算好存下，光标就会停在旧行上（拉高时尤其明显）。
+		// 现在只能现算：每安排一次，光标都得重新压在它所属的那一行上。
+		foreach (var height in new[] { 560.0, 700.0, 460.0, 640.0, 500.0 })
+		{
+			dock.View.Measure(new Size(600, height));
+			dock.View.Arrange(new Rect(0, 0, 600, height));
+			Assert.True(dock.CursorSitsOnItsRowForTest, $"高度 {height} 时光标脱离了它所在的文本行");
+		}
 	}
 
 	[Fact]

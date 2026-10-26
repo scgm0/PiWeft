@@ -124,9 +124,10 @@ public sealed class SessionParallelReadTests : IDisposable
 	public void ParallelReadReportsMonotonicProgressToTheFullFraction()
 	{
 		var manager = BuildLarge(4000, 1600);
-		var reports = new List<SessionReadProgress>();
-		var reopened = SessionManager.Open(manager.SessionFile!, null, null, null, new Collector(reports), CancellationToken.None);
+		var collector = new Collector();
+		var reopened = SessionManager.Open(manager.SessionFile!, null, null, null, collector, CancellationToken.None);
 
+		var reports = collector.Snapshot;
 		Assert.NotEmpty(reports);
 		for (var i = 1; i < reports.Count; i++)
 		{
@@ -139,8 +140,32 @@ public sealed class SessionParallelReadTests : IDisposable
 		Assert.Equal(manager.Entries.Count, reopened.Entries.Count);
 	}
 
-	private sealed class Collector(List<SessionReadProgress> sink) : IProgress<SessionReadProgress>
+	/// <summary>
+	/// 并行分段读会真的从多个线程调 <see cref="IProgress{T}.Report"/>，收集器必须自己保证线程安全——
+	/// 裸 <c>List.Add</c> 并发写会丢元素甚至把内部数组搅乱，表现为「进度不能倒退」随机变红。
+	/// </summary>
+	private sealed class Collector : IProgress<SessionReadProgress>
 	{
-		public void Report(SessionReadProgress value) => sink.Add(value);
+		private readonly List<SessionReadProgress> _reports = [];
+		private readonly Lock _gate = new();
+
+		public IReadOnlyList<SessionReadProgress> Snapshot
+		{
+			get
+			{
+				lock (_gate)
+				{
+					return [.. _reports];
+				}
+			}
+		}
+
+		public void Report(SessionReadProgress value)
+		{
+			lock (_gate)
+			{
+				_reports.Add(value);
+			}
+		}
 	}
 }

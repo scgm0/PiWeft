@@ -83,7 +83,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	/// <summary>文本行之上的光标层：竖线、底线，以及失焦时的空心框。</summary>
 	private readonly TerminalCursorLayer _cursorOver;
 
-	/// <summary>本帧算出的光标格（窗口坐标）；候选窗定位与测试都读它。</summary>
+	/// <summary>本帧算出的光标格（相对终端表面左上角）；候选窗定位与测试都读它。</summary>
 	private Rect _cursorCell;
 
 	/// <summary>量光标格用的本行文本与样式 run（每帧复用，不分配）。</summary>
@@ -273,7 +273,14 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 						? Thickness.Zero
 						: new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))));
 
-		_panel.OnLayoutSizeChanged(_ => SyncViewport());
+		_panel.OnLayoutSizeChanged(_ =>
+		{
+			SyncViewport();
+			// 行列没变但表面换了位置（拖分隔条、窗口拖动）时也要重画：
+			// 光标层用自身 Bounds 现算绝对坐标，重画一次就与文字同帧对齐。
+			_cursorUnder.InvalidateVisual();
+			_cursorOver.InvalidateVisual();
+		});
 
 		RebuildRows();
 		StartShell();
@@ -410,8 +417,44 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	internal Color CursorColorForTest =>
 		_cursorOver.CursorVisible ? _cursorOver.CursorColor : _cursorUnder.CursorColor;
 
-	/// <summary>窗口less 测试用：当前光标格（窗口坐标）。</summary>
+	/// <summary>窗口less 测试用：当前光标格（相对终端表面左上角）。</summary>
 	internal Rect CursorCellForTest => _cursorCell;
+
+	/// <summary>窗口less 测试用：终端表面的 arrange 结果（光标格相对它的坐标）。</summary>
+	internal Rect CursorSurfaceForTest => _lineHost.Bounds;
+
+	/// <summary>
+	/// 窗口less 测试用：光标格是否正好压在它所属的那个文本行上。
+	/// 拖高时布局回调先于子元素 arrange，绝对坐标只能在渲染时现算，否则光标停在旧行。
+	/// </summary>
+	internal bool CursorSitsOnItsRowForTest
+	{
+		get
+		{
+			int row;
+			lock (_gate)
+			{
+				if (_screen.ViewOffset != 0 || !_screen.CursorVisible)
+				{
+					return false;
+				}
+
+				row = _screen.CursorRow;
+			}
+
+			if (row < 0 || row >= _lineViews.Count)
+			{
+				return false;
+			}
+
+			var line = _lineViews[row].Bounds;
+			var cell = CursorRect;
+			return line.Height > 0 &&
+				Math.Abs(cell.Y - line.Y) < 0.5 &&
+				Math.Abs(cell.Height - line.Height) < 0.5 &&
+				cell.X >= line.X - 0.5;
+		}
+	}
 
 	/// <summary>窗口less 测试用：当前字格尺寸。</summary>
 	internal (double Width, double Height) CellSizeForTest => (_cellWidth, _lineHeight);
@@ -794,9 +837,13 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	{
 		get
 		{
-			// 本帧已经画出来的那一格：候选窗必须跟屏幕上的光标同一位置，
-			// 而不是拿可能过期的行内容再量一次。
-			var painted = _cursorCell;
+			// 绝对坐标由光标层按当前 arrange 结果现算：拖高、换行、重排都跟得上，不会停在旧行。
+			var painted = _cursorOver.Cell;
+			if (painted.Width <= 0)
+			{
+				painted = _cursorUnder.Cell;
+			}
+
 			if (painted.Width > 0 && painted.Height > 0)
 			{
 				return painted;
@@ -815,7 +862,10 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 				column = _screen.CursorColumn;
 			}
 
-			return CursorCellRect(row, column);
+			// 还没画过（首帧、光标本帧不显示）：按当前屏幕状态量一次，再抬到表面原点。
+			var surface = _lineHost.Bounds;
+			var cell = CursorCellRect(row, column);
+			return new Rect(surface.X + cell.X, surface.Y + cell.Y, cell.Width, cell.Height);
 		}
 	}
 
@@ -878,7 +928,10 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			return;
 		}
 
-		_imePreview.Margin(new Thickness(column * _cellWidth, row * _lineHeight, 0, 0));
+		// 预编辑浮层跟着光标格走；滚到历史时隐藏。
+		// 用与光标格同一套坐标（相对表面左上角）：候选字要盖住的就是那一格，
+		// 回退字体把文字拽偏时也不会跑位。
+		_imePreview.Margin(new Thickness(CursorCellRect(row, column).X, row * _lineHeight, 0, 0));
 	}
 
 	private void CopySelection()
@@ -1790,52 +1843,33 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	}
 
 	/// <summary>
-	/// 光标格矩形（窗口坐标）。横向跟着本行的真实排布量：回退字体的字宽、宽字符、粗体都会让
-	/// 「列号 × 格宽」与字符实际位置对不上，只有按排布量，光标才压得住它所属那一格；
-	/// 纵向用该行 arrange 后的实际位置，行高与文本行严格一致。量不到时退回格网数学。
+	/// 光标格（**相对于终端表面左上角**）。横向跟着本行的真实排布量：回退字体的字宽、宽字符、
+	/// 粗体都会让「列号 × 格宽」与字符实际位置对不上，只有按排布量才压得住它所属那一格；
+	/// 纵向用「视口行 × 行高」：所有文本行与两层光标共用同一个栅格单元，行高固定、间距为 0，
+	/// 这个相对位置天然跟得住。绝对坐标交给光标层在渲染时按当前 Bounds 现算 ——
+	/// 要是在重绘前就把它算死，拖高时 arrange 发生在绘制之后，光标会一直停在旧行上。
+	/// 量不到排布时退回格网数学。
 	/// </summary>
 	private Rect CursorCellRect(int viewportRow, int column)
 	{
-		var row = CursorRowBounds(viewportRow);
 		if (TryBuildCursorRow(viewportRow, out var charIndex, out var charLength, out var cells) &&
 			TryMeasureCluster(charIndex, charLength, out var measured))
 		{
-			// 横向跟着该行的真实排布量：回退字体、emoji 这类「字形宽度与占格数对不上」的簇，
-			// 只有按排布量才不会画在邻居字符上。宽度不小于它占的格数，整字（含整格）都盖住。
+			// 宽度不小于它占的格数：整字（含整格）都盖住，不会只亮半个。
 			return new Rect(
-				row.X + measured.X,
-				row.Y,
+				measured.X,
+				viewportRow * _lineHeight,
 				Math.Max(measured.Width, cells * _cellWidth),
-				row.Height);
+				_lineHeight);
 		}
 
-		// 量不到排布（光标落在行尾空白里、那些格根本没有字形；或首帧还没排版）：按格网算。
+		// 量不到排布（光标落在行尾空白里，那些格根本没有字形）：按格网算。
 		// 旧实现在这里给行尾光标补一个 run，于是块画在「最后一个有字形的格子」后面，
 		// 光标越往右走块偏得越多 —— 看起来就是光标整块偏左。
 		return new Rect(
-			row.X + (column * _cellWidth),
-			row.Y,
+			column * _cellWidth,
+			viewportRow * _lineHeight,
 			cells * _cellWidth,
-			row.Height);
-	}
-
-	/// <summary>该文本行 arrange 后的矩形；还没排布（首帧、窗口less 测试）时退回行号 × 行高。</summary>
-	private Rect CursorRowBounds(int viewportRow)
-	{
-		if (viewportRow >= 0 && viewportRow < _lineViews.Count)
-		{
-			var arranged = _lineViews[viewportRow].Bounds;
-			if (arranged.Height > 0)
-			{
-				return arranged;
-			}
-		}
-
-		var surface = _input.Bounds;
-		return new Rect(
-			surface.X,
-			surface.Y + (viewportRow * _lineHeight),
-			surface.Width,
 			_lineHeight);
 	}
 

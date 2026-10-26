@@ -406,18 +406,19 @@ public class HeaderOnlyTimeoutTests
 {
 	private sealed class SlowBodyHandler(string body, TimeSpan bodyDelay) : HttpMessageHandler
 	{
-		protected override async Task<HttpResponseMessage> SendAsync(
+		protected override Task<HttpResponseMessage> SendAsync(
 			HttpRequestMessage request,
 			CancellationToken cancellationToken)
 		{
-			// 头部立即返回；正文在延迟之后才产出。
-			await Task.Yield();
+			// 头部必须真的「立刻」返回。这里不能 `await Task.Yield()`——线程池繁忙时它能把
+			// 头部推迟到超过配置的 50 ms 请求超时，超时就真的在「等头部」阶段触发，
+			// 测试于是在验证一个它没打算验证的场景，随机变红。
 			cancellationToken.ThrowIfCancellationRequested();
 
 			var content = new StreamContent(new SlowStream(body, bodyDelay));
 			content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/event-stream");
 
-			return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+			return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
 		}
 	}
 

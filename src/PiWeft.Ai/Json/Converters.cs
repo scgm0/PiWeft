@@ -32,6 +32,54 @@ internal static class PiJsonValue
 	public static List<JsonNode?>? Array(JsonObject obj, string name) =>
 		obj.TryGetPropertyValue(name, out var node) && node is JsonArray array ? [.. array] : null;
 
+	/// <summary>
+	/// 收集未被建模的字段，重写时原样输出。
+	/// <para>
+	/// pi 与各类会话工具会往消息对象里加字段（例如 codemode 在 toolResult 上写
+	/// <c>nestedCalls</c>），模型层不认识它们就该原样搬运，而不是静默丢弃——
+	/// 丢弃等于改写用户的历史：<c>fork</c>、导入后再写回，那些数据就永久没了。
+	/// 这与配置侧「未知字段保留」是同一条纪律。
+	/// </para>
+	/// </summary>
+	public static JsonObject? ReadExtras(JsonObject obj, params ReadOnlySpan<string> known)
+	{
+		JsonObject? extras = null;
+		foreach (var (key, value) in obj)
+		{
+			if (known.Contains(key))
+			{
+				continue;
+			}
+
+			extras ??= new JsonObject();
+			extras[key] = value?.DeepClone();
+		}
+
+		return extras;
+	}
+
+	/// <summary>把 <see cref="ReadExtras"/> 收集到的字段写回当前对象作用域。</summary>
+	public static void WriteExtras(Utf8JsonWriter writer, JsonObject? extras)
+	{
+		if (extras is null)
+		{
+			return;
+		}
+
+		foreach (var (key, value) in extras)
+		{
+			if (value is null)
+			{
+				writer.WriteNull(key);
+			}
+			else
+			{
+				writer.WritePropertyName(key);
+				value.WriteTo(writer);
+			}
+		}
+	}
+
 	public static ContentBlock ReadBlock(JsonObject obj)
 	{
 		var type = Str(obj, "type") ?? throw new JsonException("content block is missing its type");
@@ -345,6 +393,22 @@ internal sealed class MessageContentJsonConverter : JsonConverter<MessageContent
 
 internal sealed class MessageJsonConverter : JsonConverter<Message>
 {
+	// 每种角色自己消费的字段名单。名单外的字段进 Message.Extra，写回时原样输出。
+	// 新增字段时必须同步名单，否则该字段会在重写时被当成未知字段重复输出。
+	private static readonly string[] SystemKeys = ["role", "content", "sections", "toolsAdded", "toolsRemoved", "timestamp"];
+
+	private static readonly string[] UserKeys = ["role", "content", "timestamp"];
+
+	private static readonly string[] AssistantKeys =
+	[
+		"role", "content", "api", "provider", "model", "responseModel", "responseId",
+		"providerThinkingLevel", "thinkingLevel", "usage", "stopReason", "errorMessage",
+		"rawStopReason", "endTurn", "durationMs", "firstTokenMs", "streamingDurationMs", "timestamp",
+	];
+
+	private static readonly string[] ToolResultKeys =
+		["role", "toolCallId", "toolName", "content", "details", "usage", "isError", "durationMs", "timestamp"];
+
 	public override Message Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
 	{
 		var node = JsonNode.Parse(ref reader);
@@ -394,6 +458,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 			? removedTools
 			: null,
 		Timestamp = PiJsonValue.Long(obj, "timestamp") ?? 0,
+		Extra = PiJsonValue.ReadExtras(obj, SystemKeys),
 	};
 
 	private static UserMessage ReadUser(JsonObject obj) => new()
@@ -404,6 +469,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 				: MessageContent.FromBlocks(PiJsonValue.ReadBlocks(content))
 			: MessageContent.Empty,
 		Timestamp = PiJsonValue.Long(obj, "timestamp") ?? 0,
+		Extra = PiJsonValue.ReadExtras(obj, UserKeys),
 	};
 
 	private static AssistantMessage ReadAssistant(JsonObject obj) => new()
@@ -425,6 +491,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 		DurationMs = PiJsonValue.Double(obj, "durationMs"),
 		FirstTokenMs = PiJsonValue.Double(obj, "firstTokenMs"),
 		StreamingDurationMs = PiJsonValue.Double(obj, "streamingDurationMs"),
+		Extra = PiJsonValue.ReadExtras(obj, AssistantKeys),
 	};
 
 	private static ToolResultMessage ReadToolResult(JsonObject obj) => new()
@@ -438,6 +505,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 		IsError = PiJsonValue.Bool(obj, "isError") ?? false,
 		Timestamp = PiJsonValue.Long(obj, "timestamp") ?? 0,
 		DurationMs = PiJsonValue.Double(obj, "durationMs"),
+		Extra = PiJsonValue.ReadExtras(obj, ToolResultKeys),
 	};
 
 	public override void Write(Utf8JsonWriter writer, Message value, JsonSerializerOptions options) =>
@@ -575,6 +643,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 		}
 
 		writer.WriteNumber("timestamp", value.Timestamp);
+		PiJsonValue.WriteExtras(writer, value.Extra);
 		writer.WriteEndObject();
 	}
 

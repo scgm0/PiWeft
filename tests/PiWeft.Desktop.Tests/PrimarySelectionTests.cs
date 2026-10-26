@@ -135,26 +135,60 @@ public sealed class PrimarySelectionTests : IDisposable
 			"fixture must exceed one request chunk so the INCR path is exercised");
 		owner.Publish(expected);
 		await owner.PendingPublish;
-		var received = await ReadEventually(reader!, expected);
+		var received = await ReadEventually(reader!, expected, TimeSpan.FromSeconds(20));
 		Assert.True(received == expected, $"incremental owner mismatch, length={(received?.Length).GetValueOrDefault()}");
 
 		if (!File.Exists("/usr/bin/xclip")) return;
 		// 反向：外部 owner 交出大文本时，接收端同样要经 INCR 累积后再解码。
+		// 前提是这台机器的 X server + xclip 走得通 INCR 服务端路径。桌面会话上它可能
+		// 完全失效——xclip 收下 2MB 后任何客户端都读不回来，连 xclip→xclip 往返都是 0 字节
+		// （同一份二进制在 Xvfb 下正常）。用同一段文本先做 xclip→xclip 往返探测，
+		// 走不通就跳过：那是宿主环境故障，不应报成产品回归，也不该让一条断言耗掉一分钟。
 		var external = string.Concat(Enumerable.Repeat("xclip大文本-", 150_000));
+		if (!await XclipRoundTrips(external)) return;
+
 		await SetPrimaryWithXclip(external);
-		var fromXclip = await ReadEventually(reader!, external);
+		var fromXclip = await ReadEventually(reader!, external, TimeSpan.FromSeconds(20));
 		Assert.True(fromXclip == external, $"incremental receive mismatch, length={(fromXclip?.Length).GetValueOrDefault()}");
 	}
 
-	private static async Task<string?> ReadEventually(IPrimarySelection selection, string expected)
+	/// <summary>用 xclip 把 <paramref name="text"/> 写进 PRIMARY 再由 xclip 自己读回，验证宿主能否服务这么大的 INCR 传输。</summary>
+	private static async Task<bool> XclipRoundTrips(string text)
 	{
+		try
+		{
+			await SetPrimaryWithXclip(text);
+			using var process = StartXclip("-selection", "primary", "-out");
+			var read = process.StandardOutput.ReadToEndAsync();
+			if (!process.WaitForExit(TimeSpan.FromSeconds(5)))
+			{
+				try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+				return false;
+			}
+
+			return await read == text;
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// 反复读直到拿到期望值或总预算耗尽。单次 <c>ReadAsync</c> 自带 2 秒超时，
+	/// 所以必须按总预算收敛——否则每次超时叠起来会把一条断言拖成一分钟。
+	/// </summary>
+	private static async Task<string?> ReadEventually(IPrimarySelection selection, string expected, TimeSpan? budget = null)
+	{
+		var deadline = Environment.TickCount64 + (long)(budget ?? TimeSpan.FromSeconds(1)).TotalMilliseconds;
 		string? text = null;
-		for (var attempt = 0; attempt < 40; attempt++)
+		while (Environment.TickCount64 < deadline)
 		{
 			text = await selection.ReadAsync();
-			if (text == expected) break;
+			if (text == expected) return text;
 			await Task.Delay(25);
 		}
+
 		return text;
 	}
 

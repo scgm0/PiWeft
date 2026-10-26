@@ -104,10 +104,12 @@ public sealed class CacheWarmer : IDisposable
 
 	public CacheWarmingStatus Status
 	{
-		get => _status;
+		// 保温跑在后台任务里，状态却被 RPC / 桌面从别的线程读。普通字段读到旧值会让
+		// 状态卡在上一个阶段（也直接制造了时序敏感的测试抖动），所以按 volatile 访问。
+		get => Volatile.Read(ref _status);
 		private set
 		{
-			_status = value;
+			Volatile.Write(ref _status, value);
 			try
 			{
 				_statusChanged?.Invoke(value);

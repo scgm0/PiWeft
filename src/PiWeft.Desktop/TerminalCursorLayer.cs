@@ -20,7 +20,11 @@ namespace PiWeft.Desktop;
 /// </list>
 /// 现在形状全部由矩形几何画出，并且：
 /// <list type="bullet">
-/// <item>格子矩形横向取自本行真实排布（那个字符在哪，光标就压在哪），纵向取自该行 arrange 后的实际位置；</item>
+/// <item>格子矩形横向取自本行真实排布（那个字符在哪，光标就压在哪），纵向用「视口行 × 行高」
+/// 的**相对**坐标：本层与文本行占同一个栅格单元，行高固定且间距为 0，两者天然对齐；</item>
+/// <item>绝对位置在 <see cref="OnRender"/> 里用 <see cref="Element.Bounds"/> 现算：
+/// 拖拽改变面板尺寸时，排版与重绘是同一轮，光标跟着文字同帧移动；
+/// 要是把绝对坐标在重绘前算好存下，拖高时 arrange 在绘制之后，光标就会停在旧行上。</item>
 /// <item>四条边都贴到设备像素，描边按一个物理像素计 —— 失焦就是完整的一圈空心框；</item>
 /// <item>同一个类用两份：实心块那份排在文本行底下（块是「格子背景」，块下那个字符由文本层
 /// 按底色绘制，仍然读得出来）；竖线/底线/失焦空心框那份排在文本行之上，不遮字，
@@ -46,7 +50,9 @@ internal sealed class TerminalCursorLayer : FrameworkElement
 		IsHitTestVisible = false;
 		HorizontalAlignment = HorizontalAlignment.Stretch;
 		VerticalAlignment = VerticalAlignment.Stretch;
-		IsVisible = false;
+		// 不靠 IsVisible 开关：不可见的元素不参与 arrange，Bounds 会停在旧位置，
+		// 下次显形时光标就落在旧的行上。没光标时只在 OnRender 里什么都不画。
+		IsVisible = true;
 	}
 
 	/// <summary>窗口less 测试用：光标当前是否画得出来。</summary>
@@ -58,25 +64,43 @@ internal sealed class TerminalCursorLayer : FrameworkElement
 	/// <summary>窗口less 测试用：光标色。</summary>
 	internal Color CursorColor => _color;
 
-	/// <summary>窗口less 测试用：当前光标格（窗口坐标，未做像素对齐）。</summary>
-	internal Rect CursorCell => _cell;
+	/// <summary>光标格相对于本层左上角的位置（本层与文本行占同一个栅格单元）。</summary>
+	internal Rect RelativeCell => _cell;
 
-	/// <summary>写入本帧要画的光标；几何与终端一致、只是没对齐到像素，对齐在 <see cref="OnRender"/> 里做。</summary>
-	internal void SetCursor(Rect cell, Color color, TerminalCursorStyle style, bool focused, bool visible)
+	/// <summary>光标格的窗口绝对位置：用当前 arrange 结果现算，所以拖拽时与文字同步。</summary>
+	internal Rect Cell
+	{
+		get
+		{
+			var bounds = Bounds;
+			if (bounds.Width <= 0 || bounds.Height <= 0 || _cell.Width <= 0 || _cell.Height <= 0)
+			{
+				return default;
+			}
+
+			return new Rect(
+				bounds.X + _cell.X,
+				bounds.Y + _cell.Y,
+				_cell.Width,
+				_cell.Height);
+		}
+	}
+
+	/// <summary>写入本帧要画的光标格（相对本层左上角）；绝对位置在 <see cref="OnRender"/> 里按当前 Bounds 现算。</summary>
+	internal void SetCursor(Rect relativeCell, Color color, TerminalCursorStyle style, bool focused, bool visible)
 	{
 		var changed = visible != _visible || focused != _focused ||
-			style != _style || color != _color || cell != _cell;
+			style != _style || color != _color || relativeCell != _cell;
 		if (!changed)
 		{
 			return;
 		}
 
-		_cell = cell;
+		_cell = relativeCell;
 		_color = color;
 		_style = style;
 		_focused = focused;
 		_visible = visible;
-		IsVisible = visible;
 		InvalidateVisual();
 	}
 
@@ -94,9 +118,13 @@ internal sealed class TerminalCursorLayer : FrameworkElement
 			return;
 		}
 
+		// 绝对位置到这一刻才确定：排版已经把本层与文本行摆到新位置，光标与文字同帧。
+		var bounds = Bounds;
+		var cell = new Rect(bounds.X + _cell.X, bounds.Y + _cell.Y, _cell.Width, _cell.Height);
+
 		// 边贴到设备像素，线条按物理像素计：小数坐标上的 1 DIP 描边会被抗锯齿糊掉半边。
 		var scale = context.DpiScale;
-		var cell = LayoutRounding.SnapRectEdgesToPixels(_cell, scale);
+		cell = LayoutRounding.SnapRectEdgesToPixels(cell, scale);
 		var pixel = 1.0 / scale;
 		var thickness = Math.Max(1, Math.Round(scale)) / scale;
 

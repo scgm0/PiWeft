@@ -39,6 +39,17 @@ public abstract record Message
 
 	/// <summary>Unix 时间戳，单位毫秒。</summary>
 	public long Timestamp { get; init; }
+
+	/// <summary>
+	/// 读取时未被建模的字段，写回时原样输出。
+	/// <para>
+	/// pi 与第三方工具会往消息里加字段（codemode 的 <c>nestedCalls</c> 就是一例），
+	/// 丢弃它们等于改写用户的历史：<c>fork</c> 或导入后再写回，那些数据就永久没了。
+	/// 已知角色的消息按角色收集，未知角色整体落在 <see cref="CustomMessage.Raw"/>。
+	/// </para>
+	/// </summary>
+	[JsonIgnore]
+	public JsonObject? Extra { get; init; }
 }
 
 public sealed record SystemMessage : Message

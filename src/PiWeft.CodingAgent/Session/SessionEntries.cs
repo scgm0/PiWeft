@@ -1,4 +1,5 @@
 using PiWeft.Ai;
+using PiWeft.Ai.Json;
 
 namespace PiWeft.CodingAgent.Session;
 
@@ -34,6 +35,12 @@ public abstract record SessionEntry
 
 	/// <summary>ISO 8601 时间戳。</summary>
 	public string Timestamp { get; init; } = string.Empty;
+
+	/// <summary>
+	/// 该条目类型没建模的顶层字段，写回时原样输出。
+	/// 新增字段时不丢数据靠这里，而不是手写转换补丁。
+	/// </summary>
+	public System.Text.Json.Nodes.JsonObject? Extra { get; init; }
 }
 
 public sealed record SessionMessageEntry : SessionEntry
@@ -163,6 +170,22 @@ public sealed record SessionInfoEntry : SessionEntry
 	public override string Type => "session_info";
 
 	public string? Name { get; init; }
+}
+
+/// <summary>
+/// 未知条目类型：整行原样保留。
+/// <para>
+/// 以前未知类型会被当 <see cref="CustomEntry"/> 收下，但 <see cref="CustomEntry.Type"/> 恒为
+/// <c>custom</c>，写回就成了 <c>{"type":"custom","customType":"&lt;原类型&gt;","data":{整行}}</c>——
+/// 一次重写就把这行改写成完全不同的语义。新增条目类型时这里保持原样，等模型补齐。
+/// </para>
+/// </summary>
+public sealed record UnknownSessionEntry : SessionEntry
+{
+	/// <summary>原始行对象，写回时逐字输出。</summary>
+	public required System.Text.Json.Nodes.JsonObject Raw { get; init; }
+
+	public override string Type => PiJsonValue.Str(Raw, "type") ?? "unknown";
 }
 
 /// <summary>读写两端共用的会话常量。</summary>

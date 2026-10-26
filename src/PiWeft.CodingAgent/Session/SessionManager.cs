@@ -294,6 +294,41 @@ public sealed partial class SessionManager
 		long bytesRead = 0;
 		long linesRead = 0;
 		long reportedBytes = 0;
+		var reportGate = new object();
+
+		// 进度只能单调向前。各分片同时在扫，"算完字节数"与"发出去"之间存在窗口：
+		// 先算到 12 MB 的线程可能比算到 8 MB 的那个晚调用 Report，界面上的进度条就会
+		// 倒退一格。所以在闸门里重读计数、只允许更大值出去，Report 也顺带变成单线程调用。
+		void PublishProgress()
+		{
+			if (progress is null)
+			{
+				return;
+			}
+
+			// 快路径：绝大多数行都还没跑够 4 MB，不进锁。（读旧值只会让我们多进一次锁，
+			// 不影响单调性——判断真伪都在锁内重做。）
+			if (Interlocked.Read(ref bytesRead) - Volatile.Read(ref reportedBytes) < 4 * 1024 * 1024)
+			{
+				return;
+			}
+
+			lock (reportGate)
+			{
+				var done = Interlocked.Read(ref bytesRead);
+				if (done - reportedBytes < 4 * 1024 * 1024)
+				{
+					return;
+				}
+
+				reportedBytes = done;
+				progress.Report(new SessionReadProgress(
+					Math.Min(done, totalBytes),
+					totalBytes,
+					(int)Interlocked.Read(ref linesRead)));
+			}
+		}
+
 		Parallel.For(
 			0,
 			chunks,
@@ -306,13 +341,9 @@ public sealed partial class SessionManager
 					path, from, to, parts[index]!, cancellationToken,
 					(delta, lines) =>
 					{
-						var done = Interlocked.Add(ref bytesRead, delta);
-						var seen = Interlocked.Add(ref linesRead, lines);
-						if (progress is not null && done - Interlocked.Read(ref reportedBytes) >= 4 * 1024 * 1024)
-						{
-							Interlocked.Exchange(ref reportedBytes, done);
-							progress.Report(new SessionReadProgress(Math.Min(done, totalBytes), totalBytes, (int)seen));
-						}
+						Interlocked.Add(ref bytesRead, delta);
+						Interlocked.Add(ref linesRead, lines);
+						PublishProgress();
 					});
 			});
 

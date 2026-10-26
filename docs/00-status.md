@@ -28,7 +28,7 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 - CLI 产物与程序集名保持 `pi`；`--version` 报告 RPC 契约版本 **1.3.0**，不是桌面构建号。
 - 保留 `PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、项目 `.pi`、配置文件名及 version 3 JSONL 会话格式。打开外部会话时，头部 `cwd` 为空或路径损坏会回退到当前工作目录，避免整窗启动失败。
-- 系统提示词只在运行时构造，不能作为历史消息写入会话。工具热更新保留提示章节边界；未知会话字段原样保留。内置工具的短 snippet 与 guidelines 在所有入口（CLI/RPC/桌面）按名称重新挂回。
+- 系统提示词只在运行时构造，不能作为历史消息写入会话。工具热更新保留提示章节边界；未知会话字段原样保留：会话头、条目顶层字段、以及四种已知角色（system/user/assistant/toolResult）消息各自的未建模字段都会原样写回（`Message.Extra` / `SessionEntry.Extra` / `SessionHeader.Extra`），未知消息角色整体进 `CustomMessage.Raw`，未知条目类型由 `UnknownSessionEntry` 整行输出。新增上游字段（pi 的 `nestedCalls`、`hermesExtras` 就是实例）不需要改转换器也不会在 `fork`/导入落盘时丢失；新增字段落到已建模角色上时，必须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys` 的字段名单，否则该字段会被当作未知字段重复输出。内置工具的短 snippet 与 guidelines 在所有入口（CLI/RPC/桌面）按名称重新挂回。
 - 默认工具集与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 PiDeck 依赖的原生 `todo` 与 `ask_question`；Windows 上默认目录还包含 `powershell`。`grep`/`find`/`ls` 与 `codemode` 需要 `--tools`、`settings.defaultTools` 显式开启。`--tools` 的纯名字列表整体替换默认集、`+name`/`-name` 在默认集上增减、`--exclude-tools` 支持通配，模式始终针对完整内置目录展开。
 - bash 工具向子进程注入 pi 的会话环境变量（`PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，执行前先清除继承值），进程启动时设置 `AI_AGENT=pi` 与 `PI_CODING_AGENT=true`；`settings.shellPath`、`settings.shellCommandPrefix` 分别控制 bash 的 shell 与命令前缀。`!`/`!!` 内联命令（交互模式）不走注入。
 - 生效的 settings 键：`shellPath`、`shellCommandPrefix`、`sessionDir`（`--session-dir` 优先）、`defaultTools`、`cacheWarming`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`sessionShareDestination`、`codemode`。其余 pi 键原样保留、不生效。
@@ -120,6 +120,6 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。2026-10-19 精简后全量测试通过：非桌面 832 项、Desktop 433 项，共 1265 项。X11 PrimarySelection 在并行全量运行下偶发失败，单独运行稳定。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
+GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。2026-10-26 全量测试：非桌面 858 项（Agent 23 / Ai 192 / JavaScript 56 / Mcp 86 / Cli 126 / CodingAgent 375）、Desktop 872 项，共 1730 项，全部通过；连续 6 轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
 
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。真实数据互操作测试受本机会话/技能数据是否存在影响；provider 使用打桩服务，不能替代真实供应商联网验证。
