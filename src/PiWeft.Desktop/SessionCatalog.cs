@@ -56,6 +56,74 @@ public sealed class SessionCatalog
 	/// </summary>
 	private sealed record SummaryStamp(long Length, DateTime LastWrite, SessionListItem Item, long Offset, long HeadHash);
 
+	/// <summary>磁盘摘要是否已装载：第一次构建列表时才读，避免构造期做 IO。</summary>
+	private bool _persistedLoaded;
+
+	/// <summary>本次构建有没有产生新摘要（需要写回磁盘）。</summary>
+	private bool _summariesDirty;
+
+	/// <summary>把上一轮运行留下的摘要装进内存缓存。文件已变的情况下由既有的长度/mtime/指纹判据自然失效。</summary>
+	private void EnsurePersistedLoaded()
+	{
+		lock (_summaryGate)
+		{
+			if (_persistedLoaded) return;
+			_persistedLoaded = true;
+
+			foreach (var (path, stamp) in SessionSummaryStore.Load())
+			{
+				// 内存里已经有更新的就以内存为准（同一次运行里刚扫过）。
+				if (_summaries.ContainsKey(path)) continue;
+				_summaries[path] = new SummaryStamp(
+					stamp.Length,
+					new DateTime(stamp.LastWriteTicks, DateTimeKind.Utc),
+					new SessionListItem
+					{
+						Path = path,
+						Id = stamp.Id,
+						Name = stamp.Name,
+						Cwd = stamp.Cwd,
+						// 与扫描路径一致：ListItem.Modified 一律是 UTC（info.LastWriteTimeUtc）。
+						// 这里若转本地时间，会和扫描出来的行混着排序；而且 ToLocalTime 逐条很贵
+						// （实测 92 条要 133 ms，正好把缓存省下的时间还回去）。
+						Modified = new DateTime(stamp.LastWriteTicks, DateTimeKind.Utc),
+						MessageCount = stamp.MessageCount,
+						Preview = stamp.Preview,
+					},
+					stamp.Offset,
+					stamp.HeadHash);
+			}
+		}
+	}
+
+	/// <summary>把内存摘要写回磁盘（只写仍然存在的文件）。</summary>
+	private void PersistSummaries()
+	{
+		Dictionary<string, SessionSummaryStamp> snapshot;
+		lock (_summaryGate)
+		{
+			if (!_summariesDirty) return;
+			_summariesDirty = false;
+			snapshot = _summaries.ToDictionary(
+				static entry => entry.Key,
+				static entry => new SessionSummaryStamp
+				{
+					Length = entry.Value.Length,
+					LastWriteTicks = entry.Value.LastWrite.Ticks,
+					HeadHash = entry.Value.HeadHash,
+					Offset = entry.Value.Offset,
+					Id = entry.Value.Item.Id,
+					Name = entry.Value.Item.Name,
+					Cwd = entry.Value.Item.Cwd,
+					MessageCount = entry.Value.Item.MessageCount,
+					Preview = entry.Value.Item.Preview,
+				},
+				StringComparer.Ordinal);
+		}
+
+		SessionSummaryStore.Save(snapshot);
+	}
+
 	/// <summary>agent 目录下的全部会话，最近的在前；可按工作目录过滤。</summary>
 	public IReadOnlyList<SessionListItem> List(string? cwdFilter = null, int limit = 200) => ListCore(false, cwdFilter, limit);
 
@@ -66,10 +134,18 @@ public sealed class SessionCatalog
 		Interlocked.Exchange(ref _scanTicks, 0);
 		Interlocked.Exchange(ref _scanCount, 0);
 		Interlocked.Exchange(ref _scanBytes, 0);
+		EnsurePersistedLoaded();
+
 		var root = Path.Combine(SessionPaths.GetAgentDir(), "sessions");
 		if (!Directory.Exists(root))
 		{
-			lock (_summaryGate) _summaries.Clear();
+			lock (_summaryGate)
+			{
+				_summaries.Clear();
+				_summariesDirty = true;
+			}
+
+			PersistSummaries();
 			return [];
 		}
 
@@ -77,7 +153,11 @@ public sealed class SessionCatalog
 		var alive = paths.ToHashSet(StringComparer.Ordinal);
 		lock (_summaryGate)
 		{
-			foreach (var path in _summaries.Keys.Where(path => !alive.Contains(path)).ToArray()) _summaries.Remove(path);
+			foreach (var path in _summaries.Keys.Where(path => !alive.Contains(path)).ToArray())
+			{
+				_summaries.Remove(path);
+				_summariesDirty = true;
+			}
 		}
 
 		var trash = $"{Path.DirectorySeparatorChar}.trash{Path.DirectorySeparatorChar}";
@@ -120,15 +200,19 @@ public sealed class SessionCatalog
 		// A machine may have thousands of old sessions; cap the metadata cache as well as the visible list.
 		lock (_summaryGate)
 		{
-			if (_summaries.Count > 4096)
+			if (_summaries.Count > SessionSummaryStore.MaxEntries)
 			{
 				foreach (var path in _summaries.OrderByDescending(static entry => entry.Value.LastWrite)
-					.Skip(4096).Select(static entry => entry.Key).ToArray())
+					.Skip(SessionSummaryStore.MaxEntries).Select(static entry => entry.Key).ToArray())
 				{
 					_summaries.Remove(path);
 				}
+
+				_summariesDirty = true;
 			}
 		}
+
+		PersistSummaries();
 
 		var rescans = Interlocked.Read(ref _scanCount);
 		if (watch is not null)
@@ -428,6 +512,8 @@ public sealed class SessionCatalog
 	/// </summary>
 	public string? MostRecentPath()
 	{
+		EnsurePersistedLoaded();
+
 		var root = Path.Combine(SessionPaths.GetAgentDir(), "sessions");
 		if (!Directory.Exists(root))
 		{
@@ -638,6 +724,7 @@ public sealed class SessionCatalog
 			lock (_summaryGate)
 			{
 				_summaries[path] = new SummaryStamp(length, modified, item, scannedTo, headHash);
+				_summariesDirty = true;
 			}
 		}
 

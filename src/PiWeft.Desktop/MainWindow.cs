@@ -100,6 +100,7 @@ public sealed partial class MainWindow : Window
 	private TextBlock _chatsEmpty = null!;
 
 	private SessionSearchPalette _sessionSearch = null!;
+	private SessionImportDialog _importDialog = null!;
 	private Button _searchButton = null!;
 	private TextBox _nameBox = null!;
 	private TreeView _sessionTree = null!;
@@ -313,6 +314,10 @@ public sealed partial class MainWindow : Window
 		_sessionSearch = new SessionSearchPalette(
 			() => _allSessions, OpenSessionFromSearch, () => !_sessionsLoaded);
 		_sessionSearch.Closed += FocusActiveEntry;
+
+		// 导入外部会话：导入后立刻刷新侧栏，新会话马上能打开。
+		_importDialog = new SessionImportDialog(() => RefreshSessions(force: true));
+		_importDialog.Closed += FocusActiveEntry;
 		_searchButton = AppIcons.TextButton("search", Strings.SessionSearch, () => _sessionSearch.Toggle(this), strong: true)
 			.MinHeight(AppTheme.ControlHeightLg)
 			.CornerRadius(AppTheme.RadiusMd);
@@ -1622,6 +1627,10 @@ public sealed partial class MainWindow : Window
 				case "model":
 					CurrentTab()?.ShowModelPicker();
 					break;
+				case "import":
+					// 导入弹窗的视觉验收：列表与空态都要能截图。
+					_importDialog.Show(this);
+					break;
 				case "git":
 					ShowGitPanel();
 					// 视觉验收也要看到 diff 区：选中第一个改动。
@@ -2268,6 +2277,7 @@ public sealed partial class MainWindow : Window
 			new(Strings.NewSession, Strings.ShortcutNewSession, NewSessionFromCurrentView),
 			new(Strings.SessionSearch, Strings.ShortcutSearchSessions, () => _sessionSearch.Toggle(this)),
 			new(Strings.OpenProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
+			new(Strings.ImportTitle, string.Empty, () => _importDialog.Show(this)),
 			new(Strings.SelectModel, "Ctrl+M", () => CurrentTab()?.ShowModelPicker()),
 			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsDialog),
 			new(Strings.Git, Strings.ShortcutGit, ShowGitPanel),

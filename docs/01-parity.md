@@ -46,7 +46,7 @@ MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win3
 | 输入与模型 | 斜杠命令、命令面板、可改快捷键、可用模型筛选、供应商分组/折叠、搜索/刷新、最近模型优先、中文思考级别 | 模型收藏 |
 | 附件 | 路径引用、图片文件/原生字节、剪贴板图片粘贴、复制预览图片、仅图片发送 | 更多媒体类型、把回复整体复制为图片 |
 | 用量 | 会话统计、上下文、费用、缓存与计时、手动压缩；余额/积分查询；跨会话统计与 26 周热力图 | 完整供应商订阅窗口、热力图下钻 |
-| 设置 | 模型/供应商、API Key、Agent、MCP、JSON、作用域与草稿保护、工具调用安全门（`settings.security`） | 桌面 OAuth、技能/提示词管理、商店、安全门的图形化编辑与交互式审批 |
+| 设置 | 模型/供应商、API Key、Agent、MCP、JSON、作用域与草稿保护、工具调用安全门（`settings.security`）、外部会话导入 | 桌面 OAuth、技能/提示词管理、商店、安全门的图形化编辑与交互式审批 |
 | MCP | 启动连接、状态、stdio 工具热刷新、设置面板手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、diff、在编辑器中打开、暂存/取消暂存、提交、分支切换/新建、检查点创建/恢复、fetch/pull（`--ff-only`）/push（首次自动建跟踪）、stash 收起/应用/丢弃、失败分类提示 | 历史图谱、冲突解决界面、rebase/cherry-pick 等改写历史的操作、多远端选择 |
 | 文件 | 目录导航、Git 标记、内置文本编辑器与冲突检测保存、回答级修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
@@ -58,7 +58,7 @@ MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win3
 ## 桌面交互与约束
 
 - 正文与输入区居中并限制阅读宽度；默认 1060 DIP，可在外观页选择 760/1060/1360。正文与输入字号默认 16，可选 14–22；修改立即应用、记住偏好，不替换输入框、不清空草稿或选区。
-- 消息时间线使用可变高度虚拟化，只构建视口附近控件；离开视口释放正文、Markdown 和图片，再次浏览恢复工具/思考展开状态。分支树延迟到首次打开时构建。核心历史仍保存在内存，尚未实现 JSONL 分页。局部更新只让真正变化的行段失效，已测行高与滚动范围不会因单行变化整体回退成估算值。
+- 消息时间线使用可变高度虚拟化，只构建视口附近控件；离开视口释放正文、Markdown 和图片，再次浏览恢复工具/思考展开状态。分支树延迟到首次打开时构建。时间线整份打开会话（实测中位 ~5 ms、p90 80 ms，故未做首屏分页，理由见[性能与基准](02-performance.md#为什么没有做字节偏移索引--历史分页)）。局部更新只让真正变化的行段失效，已测行高与滚动范围不会因单行变化整体回退成估算值。
 - 文件浏览面板同样使用固定高度虚拟化列表（目录最多 2000 条），只为视口建行；进入子目录、刷新与返回都从列表顶部开始。模型选择的搜索结果重建后回到第一行。
 - 侧栏使用 14 DIP 标题和固定时间列；标题超宽省略。侧栏可收起，宽度与状态写入 `desktop.json`，搜索快捷键自动展开。
 - 顶部状态只显示供应商、模型、思考档和忙碌状态；用量摘要统一放在输入区下方。统计浮层默认「概览」，明细按快照增量更新；缺失计时显示 `-`。
@@ -104,6 +104,25 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 - macOS：`NSPasteboard` 的 `public.png`/`public.jpeg`；`public.tiff` 经 `NSBitmapImageRep` 转 PNG。
 
 解码统一使用 MewUI 的 `ImageDecoders` / `ImageSource.CopyPixels`。Windows 的 DIB↔PNG 互转自带最小实现（`DibCodec`、`PngCodec`），都是纯托管代码并用框架解码器交叉验证。
+
+## 外部会话导入
+
+`pi import`（CLI）与桌面「导入外部会话」弹窗共用 `src/PiWeft.CodingAgent/Import/` 的同一套管线：
+发现 → 转换 → 写成 pi v3 JSONL。
+
+| 来源 | 根目录 | 形态 |
+|---|---|---|
+| Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl` | `type: user/assistant` + `message.content` 块（text / thinking / tool_use / tool_result） |
+| Codex CLI | `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` | `session_meta` + `response_item`（message / reasoning / function_call / function_call_output），兼容旧版 `event_msg/user_message` |
+
+- **列举有界、只读头部**：摘要只需要 `sessionId`/`cwd`/首条用户消息，都在文件前部；每个文件最多读 256 KiB（按最后一个换行截断，避免半行），单来源最多 500 条。真实整读只在导入时发生，且逐行流式。
+- **转换保真**：`tool_result` 必须还原成 pi 的 `toolResult` 而不是用户文本（否则模型看到工具的原始 JSON，toolCall ↔ toolResult 也断了配对）；一个 `tool_use` 收尾一条助手消息，保证调用与结果相邻可配对；`isSidechain`（子代理旁支）与 `isMeta`（宿主机元信息）跳过；模型、用量（含 cache read/write）与时间戳按源 transcript 保留，Codex 只有 call/output 时间戳时补一个派生 `durationMs`。
+- **落盘**：同目录 `.importing` 临时文件 + rename 原子替换；导入标记 `piweft-import` 记来源路径与 `converterVersion`。
+- **标记必须挂在链尾**：自定义条目若 `parentId: null` 就会成为文件最后一行 = 分支叶子，父链断在那里，打开后整个对话都投影不出来（这条有回归测试）。
+- **重复导入不覆盖**：每次产出新的会话 id 与文件名，所以在清单里点两次会得到两份产物 —— 这是刻意的，用户可能想对比两次转换的结果；要清理就直接删会话。
+- **不做的事**：只读源文件，绝不改动原工具的会话库；不写回 `~/.claude` / `~/.codex`；没有 SQLite 依赖，因此 OpenCode / ZCode / Cursor / Kimi 这类以数据库存放会话的来源暂不支持。
+- 视觉验收：`xvfb-run -a bash tools/desktop-import-smoke.sh`（夹具家目录 + 弹窗截图，不碰真实数据）。
+- 测试：`tests/PiWeft.CodingAgent.Tests/SessionImportTests.cs`（发现/转换/落盘 12 项，含产物必须能被 `SessionManager` 正常打开）、`tests/PiWeft.Cli.Tests/ImportCommandTests.cs`（命令面 8 项）、`tests/PiWeft.Desktop.Tests/SessionImportDialogTests.cs`（弹窗 5 项）。
 
 ## Git 远端同步与 stash
 
@@ -252,11 +271,11 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 | D-06 | 配置深度 | 已实现连接测试、远程模型拉取、价格表单；未覆盖供应商迁移、收藏/隐藏/排序、Azure/Vertex/Bedrock 专用目录接口、桌面 OAuth |
 | D-07 | 用量系统 | 已实现余额/积分查询、跨会话统计与热力图；未覆盖订阅窗口/重置时间、火山 AK/SK 等专用解析、热力图下钻 |
 | D-08 | 技能/插件生态 | 已实现资源发现与资源页；缺少商店、中文提示词库、包安装可视化入口和 PiDeck 独立宿主插件系统 |
-| D-09 | 多后端/导入 | 缺少 DSH、ACP 外部 Agent 后端，以及 Codex/Claude 等原生会话转换导入 |
+| D-09 | 多后端/导入 | 已实现 Claude Code 与 Codex CLI 的会话导入（`pi import` + 桌面弹窗）；缺少 DSH、ACP 外部 Agent 后端，以及 OpenCode / ZCode / Cursor / Kimi 等其余格式（这些源是 SQLite 库，本端口没有 SQLite 依赖） |
 | D-10 | 多模态工作流 | 图片输入/预览已有；缺少视觉桥、独立生图入口、语音转写/视频生成工作流 |
 | D-11 | 远程/自动化 | 缺少局域网 Web、实时推送、外网访问令牌/隧道、飞书和定时任务 |
 | D-12 | 桌面集成 | 缺少托盘、系统通知/历史、自动更新、快捷任务浮窗、桌面宠物；代理、进程监控和诊断包也未完整对齐 |
-| D-13 | 交互/长历史 | 缺少项目级置顶/排序、标签拖拽/分屏、完整消息编辑删除、Mermaid/KaTeX；JSONL 历史仍全量保存在内存 |
+| D-13 | 交互/长历史 | 缺少项目级置顶/排序、标签拖拽/分屏、完整消息编辑删除、Mermaid/KaTeX。历史分页**经实测后决定不做**（中位会话打开约 5 ms、p90 80 ms，且条数切页不构成内存上界），全部历史仍整份在内存；侧栏摘要改为磁盘持久化（启动 1046 ms → 52 ms） |
 | D-14 | 工具调用审批 | 已实现安全门（`settings.security`：`off`/`standard`/`strict`，敏感文件、目录边界、危险命令）；未覆盖「先弹框问用户再执行」的交互式审批，因此 PiDeck 的 `ask` 动作在本端口退化为拒绝，也没有按会话覆盖等级与设置页图形化编辑 |
 | X-01 | 原生子代理、并行/链式编排、worktree 隔离 | 高价值但涉及执行所有权、取消、凭据和补丁合并 |
 | X-02 | ACP、IDE 集成 | 与 D-09 有关联；服务端协议与桌面接入外部后端应分别规划 |

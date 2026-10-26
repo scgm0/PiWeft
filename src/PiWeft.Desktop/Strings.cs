@@ -385,6 +385,33 @@ public static partial class Strings
 
 	public const string GitUnstageAll = "全部取消暂存";
 
+	// 外部会话导入（D-09）。
+	public const string ImportTitle = "导入外部会话";
+
+	public const string ImportAll = "全部导入";
+
+	public const string ImportOne = "导入";
+
+	public const string ImportAllSources = "全部来源";
+
+	public const string ImportUntitled = "（无标题）";
+
+	public const string ImportScanning = "正在扫描本机的外部会话…";
+
+	public const string ImportHint = "导入只读取源文件，不会修改原工具的会话库。重复导入会再留一份产物，不覆盖上一次的转换结果。";
+
+	public const string ImportEmptyHint = "本机没有找到可导入的外部会话。Claude Code 的会话在 ~/.claude/projects，Codex CLI 的在 ~/.codex/sessions。";
+
+	public static string ImportDone(string label, int messages) => $"已导入 {label} 会话（{messages} 条消息）。";
+
+	public static string ImportFailed(string reason) => $"导入失败：{reason}";
+
+	public static string ImportAllDone(int count) => $"已导入 {count} 条会话。";
+
+	public static string ImportAllPartial(int imported, int failed) => $"导入 {imported} 条成功、{failed} 条失败。";
+
+	public static string ImportScanFailed(string reason) => $"扫描失败：{reason}";
+
 	public const string GitStaged = "已暂存";
 
 	public const string GitUnstaged = "未暂存";

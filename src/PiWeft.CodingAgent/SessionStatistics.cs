@@ -40,6 +40,125 @@ public sealed record ReplyPerformance(double? FirstTokenMs, double? DurationMs, 
 			? tokens * 1000.0 / milliseconds.Value : null;
 }
 
+/// <summary>
+/// 会话统计的累加器。抽成对象是为了让「增量累加」只维护一份状态，而不是在缓存里摊成十几个局部变量。
+/// </summary>
+internal sealed class StatisticsAccumulator
+{
+	private double _hitSum;
+	private double _firstTokenSum;
+
+	public long Input { get; private set; }
+
+	public long Output { get; private set; }
+
+	public long CacheRead { get; private set; }
+
+	public long CacheWrite { get; private set; }
+
+	public long Tokens { get; private set; }
+
+	public double Cost { get; private set; }
+
+	public int UserMessages { get; private set; }
+
+	public int AssistantMessages { get; private set; }
+
+	public int ToolResults { get; private set; }
+
+	public int ToolErrors { get; private set; }
+
+	public double LlmDurationMs { get; private set; }
+
+	public double ToolDurationMs { get; private set; }
+
+	public int CacheHitSamples { get; private set; }
+
+	public int FirstTokenSamples { get; private set; }
+
+	public double? LatestCacheHitPercent { get; private set; }
+
+	public ReplyPerformance? LatestReply { get; private set; }
+
+	public void Add(SessionEntry entry)
+	{
+		Usage? usage = null;
+		switch (entry)
+		{
+			case SessionMessageEntry { Message: UserMessage }:
+				UserMessages++;
+				break;
+			case SessionMessageEntry { Message: AssistantMessage assistant }:
+				AssistantMessages++;
+				usage = assistant.Usage;
+				var prompt = usage.Input + usage.CacheRead + usage.CacheWrite;
+				if (prompt > 0)
+				{
+					LatestCacheHitPercent = 100.0 * usage.CacheRead / prompt;
+					_hitSum += LatestCacheHitPercent.Value;
+					CacheHitSamples++;
+				}
+
+				var duration = Valid(assistant.DurationMs);
+				var first = Valid(assistant.FirstTokenMs);
+				var streaming = Valid(assistant.StreamingDurationMs);
+				LlmDurationMs += duration ?? 0;
+				if (first is { } ttft)
+				{
+					_firstTokenSum += ttft;
+					FirstTokenSamples++;
+				}
+
+				LatestReply = new(first, duration, streaming, usage.Output);
+				break;
+			case SessionMessageEntry { Message: ToolResultMessage tool }:
+				ToolResults++;
+				ToolErrors += tool.IsError ? 1 : 0;
+				ToolDurationMs += Valid(tool.DurationMs) ?? 0;
+				break;
+			case UsageEntry extra:
+				usage = extra.Usage;
+				break;
+		}
+
+		if (usage is null)
+		{
+			return;
+		}
+
+		Input += usage.Input;
+		Output += usage.Output;
+		CacheRead += usage.CacheRead;
+		CacheWrite += usage.CacheWrite;
+		Tokens += usage.TotalTokens;
+		Cost += usage.Cost.Total;
+	}
+
+	public SessionStatistics ToStatistics() => new()
+	{
+		Input = Input,
+		Output = Output,
+		CacheRead = CacheRead,
+		CacheWrite = CacheWrite,
+		Tokens = Tokens,
+		Cost = Cost,
+		UserMessages = UserMessages,
+		AssistantMessages = AssistantMessages,
+		ToolResults = ToolResults,
+		ToolErrors = ToolErrors,
+		LlmDurationMs = LlmDurationMs,
+		ToolDurationMs = ToolDurationMs,
+		LatestCacheHitPercent = LatestCacheHitPercent,
+		AverageCacheHitPercent = CacheHitSamples > 0 ? _hitSum / CacheHitSamples : null,
+		CacheHitSamples = CacheHitSamples,
+		FirstTokenSamples = FirstTokenSamples,
+		AverageFirstTokenMs = FirstTokenSamples > 0 ? _firstTokenSum / FirstTokenSamples : null,
+		LatestReply = LatestReply,
+	};
+
+	private static double? Valid(double? value) => value is >= 0 && double.IsFinite(value.Value) ? value : null;
+}
+
 /// <summary>追加时仅消费新条目，派生/重置/重载时重新计数，不持有历史命中率数组。</summary>
 internal sealed class SessionStatisticsCache
 {
@@ -48,13 +167,19 @@ internal sealed class SessionStatisticsCache
 	private SessionEntry? _lastEntry;
 	private int _count;
 	private long _revision = -1;
+	private StatisticsAccumulator _accumulator = new();
 	private SessionStatistics _value = new();
-	private double _hitSum;
-	private double _firstTokenSum;
 
 	public SessionStatistics Get(SessionManager manager)
 	{
-		if (ReferenceEquals(_manager, manager) && _revision == manager.Revision) return _value;
+		// 版本没变就返回同一个实例：UI 每帧都会问一次，重建对象等于给稳定的统计数据制造抖动。
+		if (ReferenceEquals(_manager, manager) && _revision == manager.Revision)
+		{
+			return _value;
+		}
+
+
+
 		var snapshot = manager.CaptureEntries();
 		var entries = snapshot.Entries;
 		if (!ReferenceEquals(_manager, manager) || _sessionId != snapshot.SessionId || entries.Count < _count ||
@@ -62,73 +187,12 @@ internal sealed class SessionStatisticsCache
 		{
 			_count = 0;
 			_value = new();
-			_hitSum = 0;
-			_firstTokenSum = 0;
+			_accumulator = new StatisticsAccumulator();
 		}
-
-		var input = _value.Input;
-		var output = _value.Output;
-		var read = _value.CacheRead;
-		var write = _value.CacheWrite;
-		var tokens = _value.Tokens;
-		var cost = _value.Cost;
-		var users = _value.UserMessages;
-		var assistants = _value.AssistantMessages;
-		var tools = _value.ToolResults;
-		var errors = _value.ToolErrors;
-		var llmMs = _value.LlmDurationMs;
-		var toolMs = _value.ToolDurationMs;
-		var hitSamples = _value.CacheHitSamples;
-		var firstSamples = _value.FirstTokenSamples;
-		var latestHit = _value.LatestCacheHitPercent;
-		var latestReply = _value.LatestReply;
 
 		for (var i = _count; i < entries.Count; i++)
 		{
-			Usage? usage = null;
-			switch (entries[i])
-			{
-				case SessionMessageEntry { Message: UserMessage }:
-					users++;
-					break;
-				case SessionMessageEntry { Message: AssistantMessage assistant }:
-					assistants++;
-					usage = assistant.Usage;
-					var prompt = usage.Input + usage.CacheRead + usage.CacheWrite;
-					if (prompt > 0)
-					{
-						latestHit = 100.0 * usage.CacheRead / prompt;
-						_hitSum += latestHit.Value;
-						hitSamples++;
-					}
-					var duration = Valid(assistant.DurationMs);
-					var first = Valid(assistant.FirstTokenMs);
-					var streaming = Valid(assistant.StreamingDurationMs);
-					llmMs += duration ?? 0;
-					if (first is { } ttft)
-					{
-						_firstTokenSum += ttft;
-						firstSamples++;
-					}
-					latestReply = new(first, duration, streaming, usage.Output);
-					break;
-				case SessionMessageEntry { Message: ToolResultMessage tool }:
-					tools++;
-					errors += tool.IsError ? 1 : 0;
-					toolMs += Valid(tool.DurationMs) ?? 0;
-					break;
-				case UsageEntry extra:
-					usage = extra.Usage;
-					break;
-			}
-
-			if (usage is null) continue;
-			input += usage.Input;
-			output += usage.Output;
-			read += usage.CacheRead;
-			write += usage.CacheWrite;
-			tokens += usage.TotalTokens;
-			cost += usage.Cost.Total;
+			_accumulator.Add(entries[i]);
 		}
 
 		_manager = manager;
@@ -136,16 +200,6 @@ internal sealed class SessionStatisticsCache
 		_revision = snapshot.Revision;
 		_count = entries.Count;
 		_lastEntry = entries.Count > 0 ? entries[^1] : null;
-		return _value = new SessionStatistics
-		{
-			Input = input, Output = output, CacheRead = read, CacheWrite = write, Tokens = tokens, Cost = cost,
-			UserMessages = users, AssistantMessages = assistants, ToolResults = tools, ToolErrors = errors,
-			LlmDurationMs = llmMs, ToolDurationMs = toolMs,
-			LatestCacheHitPercent = latestHit, AverageCacheHitPercent = hitSamples > 0 ? _hitSum / hitSamples : null,
-			CacheHitSamples = hitSamples, FirstTokenSamples = firstSamples,
-			AverageFirstTokenMs = firstSamples > 0 ? _firstTokenSum / firstSamples : null, LatestReply = latestReply,
-		};
+		return _value = _accumulator.ToStatistics();
 	}
-
-	private static double? Valid(double? value) => value is >= 0 && double.IsFinite(value.Value) ? value : null;
 }

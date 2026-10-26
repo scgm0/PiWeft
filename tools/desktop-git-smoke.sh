@@ -17,7 +17,7 @@ trap cleanup EXIT
 for theme in dark light; do
   work="$output/$theme/project"
   remote="$output/$theme/remote.git"
-  mkdir -p "$work" "$output/$theme/agent"
+  mkdir -p "$work" "$output/$theme/agent" "$output/$theme/home/.local/share" "$output/$theme/home/.config"
   git init -q --bare -b main "$remote"
   git -C "$work" init -q -b main
   git -C "$work" config user.email smoke@example.com
@@ -56,7 +56,7 @@ for theme in dark light; do
   # （草稿会话落在「对话」分段的聊天目录里，所以要把它指到仓库上）。
   jq --arg workspace "$work" '. + {chatWorkspace: $workspace}' \
     "$root/tests/PiWeft.Desktop.Tests/Fixtures/desktop-$theme.json" >"$output/$theme/agent/desktop.json"
-  PI_CODING_AGENT_DIR="$output/$theme/agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
+  HOME="$output/$theme/home" PI_CODING_AGENT_DIR="$output/$theme/agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
     --cwd "$work" --ui-smoke git >"$output/$theme/stdout.log" 2>"$output/$theme/stderr.log" &
   app_pid=$!
   sleep 5

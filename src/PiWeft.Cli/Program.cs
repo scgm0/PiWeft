@@ -74,6 +74,16 @@ if (args.Length > 0 && args[0] == "mcp")
 	}
 }
 
+// 外部会话导入同样在解析前分发：自带 --from/--project/--cwd/--all 开关。
+if (args.Length > 0 && args[0] == "import")
+{
+	return ImportCommands.Run(
+		args.Length > 1 ? args[1..] : [],
+		Console.Out,
+		Console.Error,
+		Directory.GetCurrentDirectory());
+}
+
 // 包命令同样在解析前分发：pi install/remove/update 自带 --local/-l/--json 开关。
 if (args.Length > 0 && args[0] is "install" or "remove" or "uninstall" or "list" or "update" or "config")
 {
