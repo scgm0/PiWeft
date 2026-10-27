@@ -243,6 +243,7 @@ public static partial class Strings
 	public const string SettingsMcpReconnected = "MCP 已重连";
 
 	/// <summary>资源管理（技能 / 提示词模板 / 主题 / pi 包）。</summary>
+	public const string SettingsGit = "Git 提交摘要";
 	public const string SettingsResources = "资源";
 	public const string ResourcesPrompts = "提示词模板";
 	public const string ResourcesThemes = "主题";
@@ -360,7 +361,7 @@ public static partial class Strings
 	public const string CopySessionId = "复制会话 ID";
 	public const string ShortcutCopyPath = "便于在终端里继续查看或分享";
 	public const string ShortcutCopyId = "用于在别处引用这个会话";
-	public static string GitNotRepositoryHint(string cwd) => $"{cwd} 不在 Git 仓库里；在终端运行 git init 后这里会列出改动。";
+	public static string GitNotRepositoryHint(string cwd) => $"{cwd} 不在 Git 仓库里；点下面的按钮初始化，或在终端运行 git init。";
 	public const string RefreshGit = "刷新 Git 状态";
 
 	public const string GitNoSelection = "请先选择要操作的改动。";
@@ -488,6 +489,83 @@ public static partial class Strings
 	public const string GitFailed = "操作失败。";
 
 	public const string GitPushUpstreamCreated = "已推送并建立上游跟踪。";
+
+	// Git 面板（PiDeck 式三段布局）：紧凑分支栏、变更树、提交摘要、折叠更多区。
+	public const string GitChanges = "更改";
+
+	public const string GitMore = "更多";
+
+	public const string GitDiff = "差异";
+
+	public const string GitNoPendingChanges = "没有待处理的更改。";
+
+	public const string GitMergeChanges = "合并冲突";
+
+	public const string GitStageDirectory = "暂存此目录";
+
+	public const string GitUnstageDirectory = "取消暂存此目录";
+
+	public const string GitCloseDiff = "关闭差异";
+
+	public const string GitBranchMenu = "切换分支";
+
+	public const string GitNewBranchMenu = "新建分支…";
+
+	public static string GitCommitPlaceholderTo(string branch) => $"消息（Ctrl+Enter 提交到“{branch}”）";
+
+	public const string GitInit = "初始化 Git 仓库";
+
+	public const string GitInitDone = "已初始化 Git 仓库。";
+
+	public const string GitSummary = "提交摘要";
+
+	public const string GitGenerateCommitSummary = "AI 生成提交摘要";
+
+	public const string GitGeneratingCommitSummary = "正在生成提交摘要…";
+
+	public const string GitStageBeforeGenerate = "先暂存要提交的更改，再生成提交摘要。";
+
+	public const string GitSummaryEmpty = "模型没有返回提交摘要。";
+
+	public const string GitSummaryBusy = "会话正在运行，完成后再生成提交摘要。";
+
+	public const string GitLastFailure = "上次操作失败";
+
+	public const string GitSummaryFailed = "生成提交摘要失败。";
+
+	public const string GitSummaryGenerated = "已生成提交摘要。";
+
+	public static string GitSummaryFailedReason(string reason) => $"生成提交摘要失败：{reason}";
+
+	public const string GitSummaryModel = "模型";
+
+	public const string GitSummaryThinking = "思考级别";
+
+	public const string GitFollowSession = "跟随当前会话";
+
+	public const string GitSummarySettings = "提交摘要默认配置";
+
+	public const string GitSummarySettingsHint = "Git 面板的 AI 按钮默认使用当前会话模型与思考级别；在这里可以改成固定模型/级别。";
+
+	public const string GitSummarySettingsOpen = "更改默认配置";
+
+	public const string GitSummarySettingsSaved = "已保存提交摘要默认配置。";
+
+	public static string GitSummaryCurrent(string model, string thinking) => $"{model} · 思考 {thinking}";
+
+	public const string GitBusy = "正在执行 Git 操作…";
+
+	public const string GitCommitBusy = "正在提交…";
+
+	public const string GitSummaryTimeout = "生成提交摘要超时。";
+
+	public const string GitFetchBusy = "正在获取远端…";
+
+	public const string GitPullBusy = "正在拉取…";
+
+	public const string GitPushBusy = "正在推送…";
+
+	public const string GitSummaryNoModel = "没有可用模型";
 
 	// 安全门设置页（设置 → 运行 → 安全门）。文案对齐 PiDeck 的安全管理面板。
 	public const string SettingsSecurity = "安全门";

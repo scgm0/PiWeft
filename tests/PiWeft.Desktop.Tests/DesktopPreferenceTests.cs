@@ -205,6 +205,29 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void GitCommitSummaryPreferencesRoundTripAndFollowSessionClearsKeys()
+	{
+		DesktopPreference.Load(_agentDir)
+			.WithGitCommitModel("openai/gpt-5")
+			.WithGitCommitThinking("high")
+			.Save(_agentDir);
+
+		var loaded = DesktopPreference.Load(_agentDir);
+		Assert.Equal("openai/gpt-5", loaded.GitCommitModel);
+		Assert.Equal("high", loaded.GitCommitThinking);
+
+		// 清空表示跟随当前会话：不写出空字符串键。
+		DesktopPreference.Load(_agentDir)
+			.WithGitCommitModel("")
+			.WithGitCommitThinking("")
+			.Save(_agentDir);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw.ContainsKey("gitCommitModel"));
+		Assert.False(raw.ContainsKey("gitCommitThinking"));
+		Assert.Equal(string.Empty, DesktopPreference.Load(_agentDir).GitCommitModel);
+	}
+
+	[Fact]
 	public void ReadingPreferencesRoundTripAndRejectInvalidNumbers()
 	{
 		new DesktopPreference { ChatFontSize = 20, ReadingWidth = 1360 }.Save(_agentDir);

@@ -127,6 +127,9 @@ public static class GitWriter
 	/// <summary>网络操作的上限：克隆大仓或慢链路正常也要几十秒。</summary>
 	private static readonly TimeSpan NetworkTimeout = TimeSpan.FromSeconds(120);
 
+	/// <summary>初始化一个 Git 仓库；用于「不是 Git 仓库」空态里的入口。</summary>
+	public static GitResult Init(string cwd) => Run(cwd, ["init"], Strings.GitInitDone);
+
 	public static GitResult Stage(string cwd, IReadOnlyList<string> paths)
 	{
 		if (!HasPaths(paths))

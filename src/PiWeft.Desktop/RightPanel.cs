@@ -27,6 +27,8 @@ public sealed class RightPanel : IDisposable
 	private readonly Border _header;
 	private readonly List<TabView> _tabs = [];
 	private readonly Dictionary<RightPanelSection, UIElement> _views = [];
+	private readonly GitCommitAssistant? _gitAssistant;
+	private readonly Action? _openGitSettings;
 	private FileBrowserView? _files;
 	private GitView? _git;
 	private RightPanelSection _section;
@@ -34,9 +36,15 @@ public sealed class RightPanel : IDisposable
 	private bool _open;
 	private bool _disposed;
 
-	public RightPanel(Func<string> cwd, RightPanelSection section = RightPanelSection.Files)
+	public RightPanel(
+		Func<string> cwd,
+		GitCommitAssistant? gitAssistant = null,
+		Action? openGitSettings = null,
+		RightPanelSection section = RightPanelSection.Files)
 	{
 		_cwd = cwd;
+		_gitAssistant = gitAssistant;
+		_openGitSettings = openGitSettings;
 		_section = section;
 
 		var tabs = new StackPanel()
@@ -185,7 +193,7 @@ public sealed class RightPanel : IDisposable
 			UIElement view = section switch
 			{
 				RightPanelSection.Files => (_files = new FileBrowserView(_cwd)).View,
-				_ => (_git = new GitView(_cwd)).View,
+				_ => (_git = new GitView(_cwd, _gitAssistant, _openGitSettings)).View,
 			};
 
 			_views[section] = view;
@@ -236,6 +244,7 @@ public sealed class RightPanel : IDisposable
 		}
 
 		_disposed = true;
+		_git?.Dispose();
 	}
 
 	private sealed record TabView(

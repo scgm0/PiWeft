@@ -80,6 +80,14 @@ public sealed record DesktopPreference
 	public double ReadingWidth { get; init; } = 880;
 
 	/// <summary>
+	/// Git 提交摘要默认模型，形如 <c>provider/id</c>；空表示跟随当前会话的模型。
+	/// 思考级别同理，空表示跟随当前会话。
+	/// </summary>
+	public string GitCommitModel { get; init; } = string.Empty;
+
+	public string GitCommitThinking { get; init; } = string.Empty;
+
+	/// <summary>
 	/// 命令 Dock 使用的 shell 可执行文件；空表示自动（<c>$SHELL</c> → bash → sh）。
 	/// 只影响终端面板，不改动系统登录 shell。
 	/// </summary>
@@ -152,6 +160,12 @@ public sealed record DesktopPreference
 				ChatWorkspace = root?["chatWorkspace"] is JsonValue chat && chat.TryGetValue<string>(out var chatWorkspace) ? chatWorkspace : string.Empty,
 				ChatFontSize = Math.Clamp(Number(root, "chatFontSize", positive: true) ?? 16, 14, 22),
 				ReadingWidth = Math.Clamp(Number(root, "readingWidth", positive: true) ?? 880, 760, 1360),
+				GitCommitModel = root?["gitCommitModel"] is JsonValue commitModel && commitModel.TryGetValue<string>(out var commitModelText)
+					? commitModelText.Trim()
+					: string.Empty,
+				GitCommitThinking = root?["gitCommitThinking"] is JsonValue commitThinking && commitThinking.TryGetValue<string>(out var commitThinkingText)
+					? commitThinkingText.Trim()
+					: string.Empty,
 				TerminalShell = root?["terminalShell"] is JsonValue shell && shell.TryGetValue<string>(out var shellPath)
 					? shellPath.Trim()
 					: string.Empty,
@@ -232,6 +246,22 @@ public sealed record DesktopPreference
 		}
 		root["chatFontSize"] = double.IsFinite(ChatFontSize) ? Math.Clamp(ChatFontSize, 14, 22) : 16;
 		root["readingWidth"] = double.IsFinite(ReadingWidth) ? Math.Clamp(ReadingWidth, 760, 1360) : 1060;
+		if (string.IsNullOrWhiteSpace(GitCommitModel))
+		{
+			root.Remove("gitCommitModel");
+		}
+		else
+		{
+			root["gitCommitModel"] = GitCommitModel.Trim();
+		}
+		if (string.IsNullOrWhiteSpace(GitCommitThinking))
+		{
+			root.Remove("gitCommitThinking");
+		}
+		else
+		{
+			root["gitCommitThinking"] = GitCommitThinking.Trim();
+		}
 		if (string.IsNullOrWhiteSpace(TerminalShell))
 		{
 			root.Remove("terminalShell");
@@ -306,6 +336,12 @@ public sealed record DesktopPreference
 
 	/// <summary>命令 Dock 使用的 shell；空字符串表示自动。</summary>
 	public DesktopPreference WithTerminalShell(string shell) => this with { TerminalShell = shell ?? string.Empty };
+
+	/// <summary>Git 提交摘要默认模型；空字符串表示跟随当前会话。</summary>
+	public DesktopPreference WithGitCommitModel(string model) => this with { GitCommitModel = (model ?? string.Empty).Trim() };
+
+	/// <summary>Git 提交摘要默认思考级别；空字符串表示跟随当前会话。</summary>
+	public DesktopPreference WithGitCommitThinking(string level) => this with { GitCommitThinking = (level ?? string.Empty).Trim() };
 
 	public DesktopPreference TogglePinned(string sessionId)
 	{

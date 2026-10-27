@@ -11,6 +11,13 @@ public sealed record GitChange(string IndexStatus, string WorkTreeStatus, string
 	/// <summary>工作区里有这个文件的改动（未暂存）；未跟踪文件只落在这一侧。</summary>
 	public bool HasWorkTree => WorkTreeStatus is not " " || IndexStatus == "?";
 
+	/// <summary>合并冲突：两边都不能直接提交，界面把它单独成节。</summary>
+	public bool IsConflict => (IndexStatus, WorkTreeStatus) switch
+	{
+		("U", _) or (_, "U") or ("A", "A") or ("D", "D") => true,
+		_ => false,
+	};
+
 	/// <summary>面向用户的单字状态：新增/修改/删除/改名/冲突/未跟踪。</summary>
 	public string Label => (IndexStatus, WorkTreeStatus) switch
 	{
@@ -21,6 +28,39 @@ public sealed record GitChange(string IndexStatus, string WorkTreeStatus, string
 		("U", _) or (_, "U") or ("A", "A") or ("D", "D") => "冲突",
 		_ => "修改",
 	};
+
+	/// <summary>变更列表行首的单字母状态；<paramref name="staged"/> 选择索引侧或工作区侧。</summary>
+	public string StatusLetter(bool staged)
+	{
+		if (IndexStatus == "?" && WorkTreeStatus == "?") return "?";
+		if (IsConflict) return "U";
+		var code = (staged ? IndexStatus : WorkTreeStatus).Trim();
+		return code switch
+		{
+			"A" => "A",
+			"D" => "D",
+			"R" => "R",
+			"C" => "C",
+			"T" => "T",
+			"M" => "M",
+			_ => "M",
+		};
+	}
+
+	/// <summary>文件名（不含目录），用于紧凑树行。</summary>
+	public string FileName => Path.Length == 0
+		? Path
+		: Path[(Path.Replace('\\', '/').LastIndexOf('/') + 1)..];
+
+	/// <summary>目录部分；根目录文件返回空串。</summary>
+	public string Directory
+	{
+		get
+		{
+			var slash = Path.Replace('\\', '/').LastIndexOf('/');
+			return slash >= 0 ? Path[..slash] : string.Empty;
+		}
+	}
 }
 
 /// <summary>一次 <c>git status</c> 的结果。</summary>
@@ -184,6 +224,44 @@ public static class GitStatusReader
 		return exitCode == 0 && output.Trim().Length > 0;
 	}
 
+	/// <summary>一次 diff 读取的结果；<see cref="Error"/> 非空表示 git 调用失败而不是「没有差异」。</summary>
+	public sealed record DiffContent(string Text, string? Error)
+	{
+		public bool Ok => Error is null;
+	}
+
+	/// <summary>某个文件的暂存区 diff（HEAD ↔ index）。</summary>
+	public static string StagedDiff(string cwd, string path, int maxLines = 400)
+	{
+		var (output, _, exitCode) = RunDetailed(cwd, ["diff", "--staged", "--no-color", "--", path]);
+		return exitCode == 0 ? Truncate(output, maxLines) : string.Empty;
+	}
+
+	/// <summary>
+	/// 整个暂存区的 diff，供 AI 生成提交摘要。空暂存区返回空串且 <see cref="DiffContent.Ok"/> 为 true；
+	/// git 调用失败通过 <see cref="DiffContent.Error"/> 区分，避免把失败误报成「模型没返回」。
+	/// </summary>
+	public static DiffContent StagedDiffAll(string cwd, int maxCharacters = 8000)
+	{
+		var (output, error, exitCode) = RunDetailed(
+			cwd,
+			["diff", "--staged", "--no-color", "--unified=3"],
+			maxOutputCharacters: maxCharacters + 1024);
+		if (exitCode != 0)
+		{
+			return new DiffContent(string.Empty, error.Length > 0 ? error.Trim() : Strings.GitFailed);
+		}
+
+		if (output.Length == 0)
+		{
+			return new DiffContent(string.Empty, null);
+		}
+
+		return new DiffContent(
+			output.Length <= maxCharacters ? output : output[..maxCharacters] + "\n… (diff truncated)",
+			null);
+	}
+
 	/// <summary>
 	/// 读取某个文件的 diff 文本。<paramref name="maxLines"/> 用于限制体积（界面里只看前若干行），
 	/// 未跟踪文件没有 diff，改为把文件内容当成整段新增显示。
@@ -261,6 +339,16 @@ public static class GitStatusReader
 	/// <summary>运行一条 git 命令并返回标准输出与退出码。</summary>
 	private static (string Output, int ExitCode) Run(string cwd, string[] arguments)
 	{
+		var (output, _, exitCode) = RunDetailed(cwd, arguments);
+		return (output, exitCode);
+	}
+
+	/// <summary>运行一条 git 命令并同时保留 stderr；读取层需要区分「空结果」与「命令失败」。</summary>
+	private static (string Output, string Error, int ExitCode) RunDetailed(
+		string cwd,
+		string[] arguments,
+		int maxOutputCharacters = 0)
+	{
 		var startInfo = new ProcessStartInfo("git")
 		{
 			RedirectStandardOutput = true,
@@ -280,21 +368,58 @@ public static class GitStatusReader
 			using var process = Process.Start(startInfo);
 			if (process is null)
 			{
-				return (string.Empty, -1);
+				return (string.Empty, Strings.GitUnavailable, -1);
 			}
 
 			// 两路并发读：先 stdout 再 stderr 时，子进程写满 stderr 缓冲会阻塞，WaitForExit 永远等不到。
-			var stdoutTask = process.StandardOutput.ReadToEndAsync();
+			var stdoutTask = ReadBoundedAsync(process.StandardOutput, maxOutputCharacters);
 			var stderrTask = process.StandardError.ReadToEndAsync();
 			process.WaitForExit(10_000);
 			var output = stdoutTask.GetAwaiter().GetResult();
-			_ = stderrTask.GetAwaiter().GetResult();
-			return (output, process.ExitCode);
+			var error = stderrTask.GetAwaiter().GetResult();
+			return (output, error, process.ExitCode);
 		}
 		catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
 		{
-			return (string.Empty, -1);
+			return (string.Empty, Strings.GitUnavailable, -1);
 		}
+	}
+
+	/// <summary>
+	/// 读完 stdout，但最多保留 <paramref name="cap"/> 个字符。超限后继续排空管道，
+	/// 子进程不会因为写满缓冲而卡到超时；调用方拿到的文本已带截断标记。
+	/// </summary>
+	private static async Task<string> ReadBoundedAsync(StreamReader reader, int cap)
+	{
+		if (cap <= 0)
+		{
+			return await reader.ReadToEndAsync().ConfigureAwait(false);
+		}
+
+		var buffer = new char[8192];
+		var builder = new System.Text.StringBuilder(Math.Min(cap, 8192));
+		var truncated = false;
+		while (true)
+		{
+			var read = await reader.ReadAsync(buffer.AsMemory()).ConfigureAwait(false);
+			if (read == 0)
+			{
+				break;
+			}
+
+			var room = cap - builder.Length;
+			if (room > 0)
+			{
+				builder.Append(buffer, 0, Math.Min(room, read));
+			}
+
+			if (read > room)
+			{
+				truncated = true;
+			}
+		}
+
+		return truncated ? builder.ToString() + "\n… (truncated)" : builder.ToString();
 	}
 
 	/// <summary>

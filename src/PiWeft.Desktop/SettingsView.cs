@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
@@ -19,6 +20,9 @@ public sealed record SettingsSnapshot
 	public required string Cwd { get; init; }
 
 	public required int ModelCount { get; init; }
+
+	/// <summary>可选模型目录；Git 提交摘要的默认模型选择器使用。</summary>
+	public IReadOnlyList<Model> Models { get; init; } = [];
 
 	public required IReadOnlyList<string> Tools { get; init; }
 
@@ -199,6 +203,7 @@ public sealed class SettingsView
 			AddNavigationGroup(Strings.SettingsGroupGeneral, first: true);
 			AddNavigationButton("overview", "settings", Strings.ConfigOverview);
 			AddNavigationButton("appearance", "contrast", Strings.ConfigAppearance);
+			AddNavigationButton("git", "git-branch", Strings.SettingsGit);
 			AddNavigationGroup(Strings.SettingsGroupRuntime, first: false);
 			AddNavigationButton("resources", "book-open", Strings.SettingsResources);
 			AddNavigationButton("session", "message-square", Strings.SettingsSession);
@@ -222,6 +227,7 @@ public sealed class SettingsView
 		"mcp" => Strings.SettingsMcp,
 		"source" => Strings.ConfigSource,
 		"appearance" => Strings.ConfigAppearance,
+		"git" => Strings.SettingsGit,
 		"resources" => Strings.SettingsResources,
 		"session" => Strings.SettingsSession,
 		"security" => Strings.SettingsSecurity,
@@ -321,6 +327,7 @@ public sealed class SettingsView
 			switch (_section)
 			{
 				case "appearance": _content.Children(AppearanceSection()); break;
+				case "git": _content.Children(GitSection()); break;
 				case "resources": _content.Children(ResourcesSection()); break;
 				case "session": _content.Children(SessionSection(snapshot.Session)); break;
 				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
@@ -473,6 +480,126 @@ public sealed class SettingsView
 
 	private static TextBlock LabelForPreview(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeControl).PrimaryText();
+
+	/// <summary>Git 提交摘要：默认跟随当前会话，也可以固定模型与思考级别。</summary>
+	private Element GitSection()
+	{
+		var snapshot = _snapshot();
+		var preference = DesktopPreference.Load(snapshot.AgentDir);
+		var models = snapshot.Models
+			.Where(static model => model.Type == ModelType.Chat)
+			.OrderBy(static model => model.Provider, StringComparer.OrdinalIgnoreCase)
+			.ThenBy(static model => model.Id, StringComparer.OrdinalIgnoreCase)
+			.ToList();
+
+		var modelLabels = new List<string> { Strings.GitFollowSession };
+		modelLabels.AddRange(models.Select(static model => $"{model.Provider}/{model.Id}"));
+		var fixedModelKey = preference.GitCommitModel.Trim();
+		var selectedModel = fixedModelKey.Length == 0
+			? null
+			: models.FirstOrDefault(model => string.Equals($"{model.Provider}/{model.Id}", fixedModelKey, StringComparison.Ordinal));
+
+		var modelPicker = new ComboBox().ItemsSource(ItemsView.Create(modelLabels.ToArray())).Width(360);
+		modelPicker.SelectedIndex = selectedModel is null
+			? 0
+			: Math.Max(0, models.IndexOf(selectedModel) + 1);
+
+		var thinkingModel = selectedModel ?? snapshot.Session?.Model;
+		var levels = thinkingModel is null
+			? ThinkingLevels.Model
+			: ThinkingLevelResolver.GetSupported(thinkingModel);
+		var thinkingLabels = new List<string> { Strings.GitFollowSession };
+		thinkingLabels.AddRange(levels.Select(Strings.ThinkingLevelName));
+		var fixedThinking = preference.GitCommitThinking.Trim();
+		var thinkingPicker = new ComboBox().ItemsSource(ItemsView.Create(thinkingLabels.ToArray())).Width(220);
+		thinkingPicker.SelectedIndex = fixedThinking.Length == 0
+			? 0
+			: Math.Max(0, levels.ToList().FindIndex(level => string.Equals(level, fixedThinking, StringComparison.Ordinal)) + 1);
+
+		var applying = false;
+		void SavePreference(DesktopPreference next)
+		{
+			try
+			{
+				next.Save(snapshot.AgentDir);
+				Toast(Strings.GitSummarySettingsSaved, ToastKind.Success);
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				Toast(Strings.ConfigFailed, ToastKind.Error);
+			}
+		}
+
+		modelPicker.SelectionChanged += _ =>
+		{
+			if (applying || modelPicker.SelectedIndex < 0)
+			{
+				return;
+			}
+
+			applying = true;
+			try
+			{
+				var value = modelPicker.SelectedIndex == 0
+					? string.Empty
+					: $"{models[modelPicker.SelectedIndex - 1].Provider}/{models[modelPicker.SelectedIndex - 1].Id}";
+				SavePreference(DesktopPreference.Load(snapshot.AgentDir).WithGitCommitModel(value));
+				// 固定模型后思考级别选项按该模型重算；重建分区比手工维护两个 ComboBox 的联动可靠。
+				Refresh();
+			}
+			finally
+			{
+				applying = false;
+			}
+		};
+
+		thinkingPicker.SelectionChanged += _ =>
+		{
+			if (applying || thinkingPicker.SelectedIndex < 0)
+			{
+				return;
+			}
+
+			applying = true;
+			try
+			{
+				var value = thinkingPicker.SelectedIndex == 0
+					? string.Empty
+					: levels[thinkingPicker.SelectedIndex - 1];
+				SavePreference(DesktopPreference.Load(snapshot.AgentDir).WithGitCommitThinking(value));
+			}
+			finally
+			{
+				applying = false;
+			}
+		};
+
+		var current = snapshot.Session;
+		var body = new StackPanel().Spacing(AppTheme.Space3)
+			.Children(
+				new TextBlock().Text(Strings.GitSummarySettingsHint)
+					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap),
+				SettingField(Strings.GitSummaryModel, modelPicker),
+				SettingField(Strings.GitSummaryThinking, thinkingPicker));
+
+		if (current is null)
+		{
+			body.Children(new TextBlock().Text(Strings.NoOpenSession)
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+		}
+		else
+		{
+			body.Children(new TextBlock()
+				.Text($"{Strings.GitFollowSession}：{current.Model.Provider}/{current.Model.Id} · {Strings.ThinkingLevelName(current.ThinkingLevel)}")
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+		}
+
+		return Group("git-branch", Strings.SettingsGit, body);
+	}
+
+	private static Element SettingField(string label, UIElement control) => new StackPanel().Spacing(4).Children(
+		new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption).SubtleText(),
+		control);
 
 	/// <summary>资源管理：技能、提示词模板、主题与 pi 包的来源、路径与解析结果。</summary>
 	/// <summary>

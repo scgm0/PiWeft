@@ -1,51 +1,50 @@
+using System.Net.Http;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
+using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
 /// <summary>
-/// Git 面板：分支切换/新建、暂存与取消暂存、提交，以及每个文件的 diff。
-/// 写操作走 <see cref="GitWriter"/>（参数列表传参、有界输出、命令超时）。
+/// Git 面板（参考 PiDeck 的 SCM 布局）：紧凑分支/同步栏、提交摘要、暂存/未暂存目录树、
+/// 可折叠的差异与更多区。写操作走 <see cref="GitWriter"/>，只读查询走 <see cref="GitStatusReader"/>。
 /// </summary>
-public sealed class GitView
+public sealed class GitView : IDisposable
 {
 	private readonly Func<string> _cwd;
-	private readonly StackPanel _content = new();
-	private readonly TextBlock _summary = new();
-	private string? _selectedPath;
+	private readonly GitCommitAssistant? _assistant;
+	private readonly Action? _openSettings;
 
-	/// <summary>跨刷新保留的草稿，避免提交信息在状态刷新时被清掉。</summary>
+	private readonly Grid _host = new();
+	private readonly HashSet<string> _collapsedDirectories = new(StringComparer.Ordinal);
+
+	private string? _selectedPath;
+	private bool _selectedStaged;
 	private string _commitDraft = string.Empty;
 	private string _branchDraft = string.Empty;
-
-	/// <summary>上一次失败操作里 git 的原始输出。分类后的提示往往很概括，原文得留在面板里可查。</summary>
+	private string? _lastFailureMessage;
 	private string? _lastFailureDetail;
+	private bool _branchEditorVisible;
+	private bool _changesExpanded = true;
+	private bool _moreExpanded;
+	private bool _busy;
+	private string _busyMessage = string.Empty;
+	private bool _generating;
+	private bool _focusCommitAfterBuild;
+	private bool _focusBranchInputAfterBuild;
+	private TextBox? _branchInput;
+	private CancellationTokenSource? _summaryAbort;
+	private bool _disposed;
+	private MultiLineTextBox? _commitInput;
 
-	public GitView(Func<string> cwd)
+	public GitView(Func<string> cwd, GitCommitAssistant? assistant = null, Action? openSettings = null)
 	{
 		_cwd = cwd;
-		_content.Spacing(AppTheme.Space2);
-
-		var refresh = AppIcons.Button("refresh-cw", Strings.RefreshGit, Refresh);
-		_summary.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap)
-			.VerticalAlignment(VerticalAlignment.Center);
-
-		// 面板页签已经写着「Git」，这里不再重复大标题：第一行直接是分支与改动摘要 + 刷新。
-		// 底色由右侧面板统一给（与左侧栏同色）。
-		View = new Border()
-			.Child(new ScrollViewer().SmoothScrolling()
-				.Content(new StackPanel()
-					.Spacing(AppTheme.Space3)
-					.Padding(new Thickness(AppTheme.Space3))
-					.Children(
-						new DockPanel()
-							.LastChildFill()
-							.Children(refresh.DockRight(), _summary),
-						_content))
-				.AutoVerticalScroll()
-				.NoHorizontalScroll());
-
-		Refresh();
+		_assistant = assistant;
+		_openSettings = openSettings;
+		View = _host;
+		Rebuild();
 	}
 
 	public UIElement View { get; }
@@ -53,56 +52,203 @@ public sealed class GitView
 	/// <summary>主题切换后刷新角色文本颜色；图形在各自 WithTheme 里跟随。</summary>
 	public void ApplyTheme() => AppStyles.ApplyTextColors(View);
 
-	/// <summary>重新读取 Git 状态并重建清单。</summary>
+	/// <summary>重新读取 Git 状态并重建面板；草稿、折叠状态与阅读位置保留。</summary>
 	public void Refresh()
 	{
-		var status = GitStatusReader.Read(_cwd());
-		_summary.Text(status.Summary());
+		if (_disposed)
+		{
+			return;
+		}
 
-		foreach (var child in _content.Children.ToArray()) UiLifetime.Release(child);
-		_content.Clear();
+		Rebuild();
+	}
+
+	private void Rebuild()
+	{
+		_commitInput = null;
+		_branchInput = null;
+		var status = GitStatusReader.Read(_cwd());
+		if (_selectedPath is { Length: > 0 } selected &&
+			!status.Changes.Any(change => string.Equals(change.Path, selected, StringComparison.Ordinal)))
+		{
+			_selectedPath = null;
+		}
+
+		foreach (var child in _host.Children.ToArray())
+		{
+			_host.Remove(child);
+			UiLifetime.Release(child);
+		}
+
+		try
+		{
+			_host.Children(BuildContent(status));
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or NullReferenceException)
+		{
+			// 单个控件构建失败不该让整个面板空白；保留可见错误并写日志，用户能复制给维护者。
+			AppLog.Failure(AppLog.For<GitView>(), "Build Git panel", ex);
+			_host.Children(new TextBlock().Text(ex.Message)
+				.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap));
+		}
+		_host.InvalidateMeasure();
+		if (_focusCommitAfterBuild && _commitInput is not null)
+		{
+			_focusCommitAfterBuild = false;
+			_commitInput.Focus();
+		}
+		else if (_focusBranchInputAfterBuild && _branchInput is not null)
+		{
+			_focusBranchInputAfterBuild = false;
+			_branchInput.Focus();
+		}
+	}
+
+	private UIElement BuildContent(GitStatus status)
+	{
+		var root = new DockPanel().LastChildFill();
+		root.Children(BuildBranchBar(status).DockTop());
 
 		if (!status.IsRepository)
 		{
-			_content.Children(new TextBlock()
-				.Text(Strings.GitNotRepositoryHint(_cwd()))
-				.FontSize(AppTheme.FontSizeCaption)
-				.MutedText());
-
-			if (status.Error is { Length: > 0 } detail)
-			{
-				_content.Children(new TextBlock()
-					.Text(detail)
-					.FontFamily(AppTheme.MonoFont)
-					.FontSize(AppTheme.FontSizeMicro)
-					.FaintText()
-					.TextWrapping(TextWrapping.Wrap));
-			}
-
-			return;
+			root.Children(BuildNotRepository(status));
+			return root;
 		}
 
-		BuildBranchControls(status);
-		BuildRemoteControls(status);
-		BuildCheckpointControls();
-		BuildFailureDetail();
-
-		if (status.Changes.Count == 0)
-		{
-			_content.Children(new TextBlock()
-				.Text(Strings.GitCleanHint)
-				.FontSize(AppTheme.FontSizeCaption)
-				.MutedText());
-			BuildStashControls();
-			return;
-		}
-
-		BuildCommitControls(status);
-		BuildChangeList(status);
-		BuildStashControls();
+		root.Children(BuildMorePane(status).DockBottom());
+		root.Children(BuildChangesPane(status));
+		return root;
 	}
 
-	private void BuildBranchControls(GitStatus status)
+	// ----------------------------------------------------------------- 分支栏
+
+	private UIElement BuildBranchBar(GitStatus status)
+	{
+		var bar = Separator(
+			new Border()
+				.Height(36)
+				.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space1, 0))
+				.Child(BuildBranchBarContent(status)),
+			new Thickness(0, 0, 0, 1));
+
+		if (!_branchEditorVisible)
+		{
+			return bar;
+		}
+
+		return new StackPanel().Spacing(0).Children(bar, BuildNewBranchEditor());
+	}
+
+	private UIElement BuildBranchBarContent(GitStatus status)
+	{
+		var right = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(1)
+			.VerticalAlignment(VerticalAlignment.Center);
+
+		if (_busy)
+		{
+			right.Children(new TextBlock()
+				.Text(_busyMessage.Length > 0 ? _busyMessage : Strings.GitBusy)
+				.FontSize(AppTheme.FontSizeMicro)
+				.TextWrapping(TextWrapping.NoWrap)
+				.Margin(new Thickness(0, 0, AppTheme.Space1, 0))
+				.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Info));
+		}
+
+		var refresh = ToolbarButton("refresh-cw", Strings.RefreshGit, Refresh);
+		refresh.IsEnabled = !_busy && !_generating;
+		right.Children(refresh);
+
+		if (status.IsRepository)
+		{
+			var fetch = ToolbarButton("download", Strings.GitFetch, () => _ = RunGitAsync(() => GitWriter.Fetch(_cwd()), Strings.GitFetchBusy));
+			fetch.IsEnabled = status.HasRemotes && !_busy && !_generating;
+			right.Children(fetch);
+
+			var pull = ToolbarButton("arrow-down", Strings.GitPull, () => _ = RunGitAsync(() => GitWriter.Pull(_cwd()), Strings.GitPullBusy));
+			pull.IsEnabled = status.HasRemotes && status.HasUpstream && !status.Detached && !_busy && !_generating;
+			right.Children(pull);
+
+			var push = ToolbarButton("arrow-up", Strings.GitPush, () => _ = RunGitAsync(() => GitWriter.Push(_cwd()), Strings.GitPushBusy));
+			push.IsEnabled = status.HasRemotes && !status.Detached && !_busy && !_generating;
+			right.Children(push);
+		}
+
+		var branch = status.Branch.Length > 0 ? status.Branch : "HEAD";
+		var branchContent = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(5)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(
+				AppIcons.Icon("git-branch", AppStyles.RoleSubtle, 13),
+				new TextBlock().Text(branch).FontSize(AppTheme.FontSizeCaption).PrimaryText()
+					.MaxWidth(146).TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
+				ThemedGlyph(GlyphKind.ChevronDown, AppStyles.RoleFaint, 3));
+		var tracking = new List<string>();
+		if (status.Ahead > 0) tracking.Add($"↑{status.Ahead}");
+		if (status.Behind > 0) tracking.Add($"↓{status.Behind}");
+		if (tracking.Count > 0)
+		{
+			branchContent.Children(new TextBlock().Text(string.Join(' ', tracking))
+				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).FaintText());
+		}
+
+		Button? branchButton = null;
+		branchButton = new Button()
+			.Ghost()
+			.Height(AppTheme.ControlHeightSm)
+			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+			.Content(branchContent);
+		branchButton.IsEnabled = status.IsRepository && !_busy && !_generating;
+		branchButton.HoverTip(Strings.GitBranchMenu);
+		// 闭包需要按钮本身作为菜单锚点；先建按钮再挂事件。
+		branchButton.OnClick(() => ShowBranchMenu(branchButton!, status));
+
+		return new DockPanel().LastChildFill().Children(right.DockRight(), branchButton);
+	}
+
+	private UIElement BuildNewBranchEditor()
+	{
+		TextBox? input = null;
+		input = new TextBox()
+			.Text(_branchDraft)
+			.Placeholder(Strings.GitBranchPlaceholder)
+			.Height(AppTheme.ControlHeightSm)
+			.FontSize(AppTheme.FontSizeCaption)
+			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0))
+			.StyleName(AppStyles.TextInputLine)
+			.OnTextChanged(value => _branchDraft = value)
+			.OnKeyDown(key =>
+			{
+				if (key.Key == Key.Enter)
+				{
+					key.Handled = true;
+					CreateBranch(input?.Text);
+				}
+				else if (key.Key == Key.Escape)
+				{
+					key.Handled = true;
+					_branchEditorVisible = false;
+					Refresh();
+				}
+			});
+		_branchInput = input;
+
+		var create = new Button()
+			.Content(Label(Strings.GitNewBranch))
+			.Height(AppTheme.ControlHeightSm)
+			.OnClick(() => CreateBranch(input?.Text));
+
+		return new Border()
+			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space2))
+			.Child(new DockPanel().LastChildFill().Children(
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1)
+					.Children(create, CancelButton()).DockRight(),
+				input.Margin(new Thickness(0, 0, AppTheme.Space1, 0))));
+	}
+
+	private void ShowBranchMenu(Button owner, GitStatus status)
 	{
 		var branches = GitWriter.Branches(_cwd()).ToList();
 		if (branches.Count == 0 && status.Branch.Length > 0)
@@ -110,364 +256,1012 @@ public sealed class GitView
 			branches.Add(status.Branch);
 		}
 
-		var branchBox = new ComboBox().ItemsSource(ItemsView.Create(branches)).MinWidth(120);
-		branchBox.SelectedIndex = Math.Max(0, branches.IndexOf(status.Branch));
-		branchBox.SelectionChanged += _ =>
+		var checkIcon = new IconTemplate(size => new GlyphElement()
+			.Kind(GlyphKind.CheckMark)
+			.GlyphSize(4)
+			.Foreground(AppTheme.Accent)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.VerticalAlignment(VerticalAlignment.Center));
+
+		var menu = new ContextMenu();
+		for (var index = 0; index < branches.Count; index++)
 		{
-			var index = branchBox.SelectedIndex;
-			if (index < 0 || index >= branches.Count || branches[index] == status.Branch)
+			var name = branches[index];
+			var command = new Command($"pi.git.branch.{index}", name);
+			owner.Commands.Register(command, () =>
 			{
-				return;
-			}
+				if (string.Equals(name, status.Branch, StringComparison.Ordinal))
+				{
+					return;
+				}
 
-			ApplyResult(GitWriter.SwitchBranch(_cwd(), branches[index]));
-		};
+				_ = RunGitAsync(() => GitWriter.SwitchBranch(_cwd(), name), Strings.GitBusy);
+			});
+			menu.Items.Add(new MenuItem(command)
+			{
+				Icon = string.Equals(name, status.Branch, StringComparison.Ordinal) ? checkIcon : null,
+			});
+		}
 
-		var newBranch = new TextBox().Text(_branchDraft).Placeholder(Strings.GitBranchPlaceholder);
-		newBranch.OnTextChanged(value => _branchDraft = value);
-		var create = new Button().Content(Label(Strings.GitNewBranch)).OnClick(() =>
+		if (branches.Count > 0)
 		{
-			var result = GitWriter.CreateBranch(_cwd(), newBranch.Text?.Trim() ?? string.Empty);
-			if (result.Ok)
-			{
-				_branchDraft = string.Empty;
-			}
+			menu.Items.Add(MenuSeparator.Instance);
+		}
 
-			ApplyResult(result);
+		var create = new Command("pi.git.branch.new", Strings.GitNewBranchMenu);
+		owner.Commands.Register(create, () =>
+		{
+			_branchEditorVisible = true;
+			_focusBranchInputAfterBuild = true;
+			Refresh();
 		});
-
-		// 窄面板里控件竖排：分支名一栏，新建分支一栏。
-		_content.Children(new StackPanel()
-			.Spacing(AppTheme.Space1)
-			.Children(
-				Label(Strings.GitBranch),
-				branchBox,
-				new DockPanel()
-					.LastChildFill()
-					.Children(create.DockRight(), newBranch.Margin(new Thickness(0, 0, AppTheme.Space2, 0)))));
+		menu.Items.Add(new MenuItem(create));
+		menu.Placement = MenuPlacement.Below;
+		menu.MaxMenuHeight = 320;
+		menu.Show(owner);
 	}
 
-	/// <summary>
-	/// 远端同步：获取 / 拉取 / 推送。按钮的可用性由「有没有远端」「有没有上游」「有没有可推可拉的差异」
-	/// 决定 —— 把按钮变灰比让用户点下去看报错好。
-	/// </summary>
-	private void BuildRemoteControls(GitStatus status)
+	private void CreateBranch(string? name)
 	{
-		var cwd = _cwd();
-
-		var fetch = AppIcons.Button("download", Strings.GitFetch, () =>
+		var result = GitWriter.CreateBranch(_cwd(), name?.Trim() ?? string.Empty);
+		if (result.Ok)
 		{
-			ApplyResult(GitWriter.Fetch(cwd));
-		});
-		fetch.IsEnabled = status.HasRemotes;
-		// 同一行里图标按钮与文字按钮混排：高度不统一会看出错位。
-		fetch.Height(AppTheme.ControlHeightSm);
+			_branchDraft = string.Empty;
+			_branchEditorVisible = false;
+		}
 
-		var pull = new Button().Content(Label(Strings.GitPull)).OnClick(() =>
+		ApplyResult(result);
+	}
+
+	// ----------------------------------------------------------------- 更改区
+
+	private UIElement BuildChangesPane(GitStatus status)
+	{
+		var pane = new DockPanel().LastChildFill();
+		pane.Children(BuildChangesHeader(status).DockTop());
+		if (!_changesExpanded)
 		{
-			ApplyResult(GitWriter.Pull(cwd));
-		});
-		pull.Height(AppTheme.ControlHeightSm);
-		pull.IsEnabled = status.HasRemotes && status.HasUpstream && !status.Detached;
+			return pane;
+		}
 
-		var push = new Button().Primary().Content(
-			new TextBlock().Text(Strings.GitPush).FontSize(AppTheme.FontSizeCaption).OnAccentText()).OnClick(() =>
+		if (BuildFailureStrip() is { } failure)
 		{
-			ApplyResult(GitWriter.Push(cwd));
-		});
-		push.Height(AppTheme.ControlHeightSm);
-		// 无上游时也允许点：首次推送就是我们帮他建立跟踪的时刻，比让用户自己去终端 -u 强。
-		push.IsEnabled = status.HasRemotes && !status.Detached;
-
-		_content.Children(new DockPanel().LastChildFill().Children(
-			new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(AppTheme.Space1)
-				.Children(fetch, pull, push)
-				.DockRight(),
-			Label(Strings.GitRemotes)));
-
-		if (!status.HasRemotes)
+			pane.Children(failure.DockTop());
+		}
+		pane.Children(BuildCommitComposer(status).DockTop());
+		if (BuildDiffPane(status) is { } diff)
 		{
-			_content.Children(new TextBlock()
-				.Text(Strings.GitNoRemote)
+			pane.Children(diff.DockBottom());
+		}
+
+		pane.Children(BuildChangeList(status));
+		return pane;
+	}
+
+	private UIElement BuildChangesHeader(GitStatus status)
+	{
+		var headerContent = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(6)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(
+				ThemedGlyph(_changesExpanded ? GlyphKind.ChevronDown : GlyphKind.ChevronRight, AppStyles.RoleSubtle, 3),
+				new TextBlock().Text(Strings.GitChanges).FontSize(AppTheme.FontSizeCaption)
+					.FontWeight(FontWeight.SemiBold).PrimaryText());
+		if (status.Changes.Count > 0)
+		{
+			headerContent.Children(new TextBlock().Text(status.Changes.Count.ToString())
+				.FontSize(AppTheme.FontSizeMicro).FaintText());
+		}
+
+		var headerButton = new Button()
+			.Ghost()
+			.Height(28)
+			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space2, 0))
+			.OnClick(() =>
+			{
+				_changesExpanded = !_changesExpanded;
+				Refresh();
+			})
+			.Content(headerContent);
+
+		return Separator(
+			new Border()
+				.Height(30)
+				.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+				.Child(headerButton),
+			new Thickness(0, 0, 0, 1));
+	}
+
+	private UIElement? BuildFailureStrip()
+	{
+		if (_lastFailureMessage is null && _lastFailureDetail is null)
+		{
+			return null;
+		}
+
+		var body = new StackPanel().Spacing(4)
+			.Children(new TextBlock()
+				.Text(_lastFailureMessage is { Length: > 0 } message ? message : Strings.GitFailed)
+				.FontSize(AppTheme.FontSizeMicro).TextWrapping(TextWrapping.Wrap)
+				.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Error));
+
+		if (_lastFailureDetail is { Length: > 0 } detail)
+		{
+			body.Children(new TextBlock()
+				.Text(detail)
+				.FontFamily(AppTheme.MonoFont)
 				.FontSize(AppTheme.FontSizeMicro)
 				.FaintText()
 				.TextWrapping(TextWrapping.Wrap));
 		}
+
+		return Separator(
+			new Border()
+				.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1))
+				.Child(new Expander()
+					.Header(new TextBlock().Text(Strings.GitLastFailure).FontSize(AppTheme.FontSizeMicro).MutedText())
+					.IsExpanded(false)
+					.Content(body)),
+			new Thickness(0, 0, 0, 1));
 	}
 
-	/// <summary>把工作区改动收进 stash，并列出已有条目可以应用。</summary>
-	private void BuildStashControls()
+	private UIElement BuildCommitComposer(GitStatus status)
+	{
+		var staged = status.Changes.Count(static change => change.HasStaged && !change.IsConflict);
+		var canCommit = staged > 0 && !_busy && !_generating;
+		var branch = status.Branch.Length > 0 ? status.Branch : "HEAD";
+
+		_commitInput = new MultiLineTextBox()
+			.Text(_commitDraft)
+			.Placeholder(Strings.GitCommitPlaceholderTo(branch))
+			.Height(58)
+			.FontSize(AppTheme.FontSizeCaption)
+			.Padding(new Thickness(AppTheme.Space2, 6, AppTheme.Space2, 6))
+			.StyleName(AppStyles.TextInput)
+			.OnTextChanged(value => _commitDraft = value)
+			.OnKeyDown(key =>
+			{
+				if (key.Key != Key.Enter || !key.ControlKey)
+				{
+					return;
+				}
+
+				key.Handled = true;
+				_ = CommitDraftAsync(_commitInput?.Text);
+			});
+
+		var actions = new Grid().Columns("auto,*").Spacing(AppTheme.Space2);
+		actions.Children(BuildAssistantButton(staged).Column(0));
+
+		var commit = new Button()
+			.Primary()
+			.Height(AppTheme.ControlHeightMd)
+			.Content(new TextBlock().Text(Strings.GitCommit).FontSize(AppTheme.FontSizeCaption).OnAccentText())
+			.IsEnabled(canCommit)
+			.OnClick(() => _ = CommitDraftAsync(_commitInput?.Text))
+			.HoverTip(canCommit ? Strings.GitCommit : Strings.GitNothingStaged);
+		actions.Children(commit.Column(1));
+
+		var body = new StackPanel().Spacing(AppTheme.Space1).Children(_commitInput, actions);
+		if (staged == 0 && !_busy && !_generating)
+		{
+			body.Children(new TextBlock()
+				.Text(Strings.GitNothingStaged)
+				.FontSize(AppTheme.FontSizeMicro)
+				.FaintText()
+				.TextWrapping(TextWrapping.Wrap));
+		}
+		else if (staged > 0 && !_generating && _assistant?.IsBusy() == true)
+		{
+			body.Children(new TextBlock()
+				.Text(Strings.GitSummaryBusy)
+				.FontSize(AppTheme.FontSizeMicro)
+				.FaintText()
+				.TextWrapping(TextWrapping.Wrap));
+		}
+
+		if (_generating)
+		{
+			body.Children(new ProgressBar()
+				.IsIndeterminate(true)
+				.Height(2)
+				.Margin(new Thickness(0, AppTheme.Space1, 0, 0)));
+		}
+
+		return Separator(
+			new Border()
+				.Padding(new Thickness(AppTheme.Space2, AppTheme.Space2, AppTheme.Space2, AppTheme.Space2))
+				.Child(body),
+			new Thickness(0, 0, 0, 1));
+	}
+
+	private UIElement BuildAssistantButton(int staged)
+	{
+		var busy = _assistant?.IsBusy() == true;
+		var enabled = _assistant is not null && staged > 0 && !_busy && !_generating && !busy;
+		var tooltip = _assistant is null
+			? Strings.GitSummary
+			: _generating
+				? Strings.GitGeneratingCommitSummary
+				: busy
+					? Strings.GitSummaryBusy
+					: staged == 0
+						? Strings.GitStageBeforeGenerate
+						: ModelTooltip();
+
+		var icon = AppIcons.Icon("sparkles", AppStyles.RoleSubtle, 15);
+		var button = new Button()
+			.Ghost()
+			.Width(AppTheme.ControlHeightMd)
+			.Height(AppTheme.ControlHeightMd)
+			.Padding(0)
+			.CornerRadius(AppTheme.RadiusSm)
+			.BorderThickness(1)
+			.WithTheme((theme, button) => button.BorderBrush = AppTheme.For(theme).BorderSubtle)
+			.Content(icon.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center))
+			.IsEnabled(enabled)
+			.OnClick(() => _ = GenerateCommitSummaryAsync())
+			.HoverTip(tooltip);
+		button.Tag = Strings.GitGenerateCommitSummary;
+		return button;
+	}
+
+	private string ModelTooltip()
+	{
+		var resolved = ResolveAssistant();
+		return $"{Strings.GitGenerateCommitSummary}（{resolved.Model.Provider}/{resolved.Model.Id} · {Strings.ThinkingLevelName(resolved.Thinking)}）";
+	}
+
+	private async Task CommitDraftAsync(string? message)
+	{
+		if (_busy || _generating || _disposed)
+		{
+			return;
+		}
+
+		if (string.IsNullOrWhiteSpace(message))
+		{
+			Toasts.Error(View, Strings.GitCommitMessageRequired);
+			return;
+		}
+
+		var status = GitStatusReader.Read(_cwd());
+		if (!status.Changes.Any(static change => change.HasStaged && !change.IsConflict))
+		{
+			Toasts.Show(View, Strings.GitNothingStaged);
+			return;
+		}
+
+		var draft = message.Trim();
+		await RunGitAsync(() => GitWriter.Commit(_cwd(), draft), Strings.GitCommitBusy, onSuccess: () => _commitDraft = string.Empty);
+	}
+
+	private UIElement BuildChangeList(GitStatus status)
+	{
+		var list = new StackPanel().Spacing(2);
+		var conflicts = status.Changes.Where(static change => change.IsConflict).ToList();
+		var staged = status.Changes.Where(static change => change.HasStaged && !change.IsConflict).ToList();
+		var unstaged = status.Changes.Where(static change => change.HasWorkTree && !change.IsConflict).ToList();
+
+		if (conflicts.Count == 0 && staged.Count == 0 && unstaged.Count == 0)
+		{
+			list.Children(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(6)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3, AppTheme.Space3))
+				.Children(
+					AppIcons.Icon("circle-check", AppStyles.RoleSuccess, 14),
+					new TextBlock().Text(Strings.GitNoPendingChanges).FontSize(AppTheme.FontSizeCaption).MutedText()));
+		}
+		else
+		{
+			if (conflicts.Count > 0)
+			{
+				list.Children(BuildChangeSection(Strings.GitMergeChanges, conflicts, stagedSide: false, bulkLabel: null, bulk: null, conflict: true, allowActions: false));
+			}
+
+			if (staged.Count > 0)
+			{
+				list.Children(BuildChangeSection(
+					Strings.GitStaged,
+					staged,
+					stagedSide: true,
+					bulkLabel: Strings.GitUnstageAll,
+					bulk: () => ApplyResult(GitWriter.Unstage(_cwd(), [.. staged.Select(static change => change.Path)])),
+					conflict: false,
+					allowActions: true));
+			}
+
+			if (unstaged.Count > 0)
+			{
+				list.Children(BuildChangeSection(
+					Strings.GitUnstaged,
+					unstaged,
+					stagedSide: false,
+					bulkLabel: Strings.GitStageAll,
+					bulk: () => ApplyResult(GitWriter.Stage(_cwd(), [.. unstaged.Select(static change => change.Path)])),
+					conflict: false,
+					allowActions: true));
+			}
+		}
+
+		return new ScrollViewer()
+			.SmoothScrolling()
+			.Content(list)
+			.AutoVerticalScroll()
+			.NoHorizontalScroll();
+	}
+
+	private UIElement BuildChangeSection(
+		string title,
+		IReadOnlyList<GitChange> changes,
+		bool stagedSide,
+		string? bulkLabel,
+		Action? bulk,
+		bool conflict,
+		bool allowActions)
+	{
+		var section = new StackPanel().Spacing(1);
+		var header = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(6)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(
+				new TextBlock().Text(title).FontSize(AppTheme.FontSizeMicro)
+					.FontWeight(FontWeight.SemiBold)
+					.WithTheme((theme, text) => text.Foreground = conflict ? AppTheme.For(theme).Error : AppTheme.For(theme).TextPrimary),
+				new TextBlock().Text(changes.Count.ToString()).FontSize(AppTheme.FontSizeMicro).FaintText());
+
+		var row = new DockPanel().LastChildFill().Margin(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, 0));
+		if (bulk is not null && bulkLabel is not null)
+		{
+			var action = SmallTextButton(bulkLabel, bulk);
+			action.IsEnabled = !_busy && !_generating;
+			row.Children(action.DockRight());
+		}
+
+		row.Children(header);
+		section.Children(row);
+		foreach (var treeRow in GitChangeTree.Build(changes, _collapsedDirectories))
+		{
+			section.Children(treeRow.IsDirectory
+				? BuildDirectoryRow(treeRow, stagedSide, allowActions)
+				: BuildFileRow(treeRow.File!, treeRow.Depth, stagedSide, conflict, allowActions));
+		}
+
+		return section;
+	}
+
+	private UIElement BuildDirectoryRow(GitTreeRow row, bool stagedSide, bool allowActions)
+	{
+		var collapsed = _collapsedDirectories.Contains(row.Path);
+		var directoryButton = new Button()
+			.Ghost()
+			.Height(26)
+			.Padding(new Thickness(AppTheme.Space2 + row.Depth * 10, 0, AppTheme.Space1, 0))
+			.OnClick(() =>
+			{
+				if (!_collapsedDirectories.Remove(row.Path))
+				{
+					_collapsedDirectories.Add(row.Path);
+				}
+
+				Refresh();
+			})
+			.Content(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(5)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					ThemedGlyph(collapsed ? GlyphKind.ChevronRight : GlyphKind.ChevronDown, AppStyles.RoleFaint, 2.5),
+					AppIcons.Icon("folder-open", AppStyles.RoleSubtle, 13),
+					new TextBlock().Text(row.Label).FontSize(AppTheme.FontSizeCaption).MutedText()
+						.MaxWidth(Math.Max(80, 220 - row.Depth * 10))
+						.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
+					new TextBlock().Text(row.Changes.Count.ToString()).FontSize(AppTheme.FontSizeMicro).FaintText()));
+
+		var action = GlyphButton(
+			stagedSide ? GlyphKind.Minus : GlyphKind.Plus,
+			stagedSide ? Strings.GitUnstageDirectory : Strings.GitStageDirectory,
+			() =>
+			{
+				var paths = row.Changes.Select(static change => change.Path).ToArray();
+				ApplyResult(stagedSide ? GitWriter.Unstage(_cwd(), paths) : GitWriter.Stage(_cwd(), paths));
+			});
+		action.IsEnabled = !_busy && !_generating;
+		action.IsVisible = allowActions;
+
+		return new DockPanel().LastChildFill().Children(action.DockRight(), directoryButton);
+	}
+
+	private UIElement BuildFileRow(GitChange change, int depth, bool stagedSide, bool conflict, bool allowActions)
+	{
+		var selected = string.Equals(_selectedPath, change.Path, StringComparison.Ordinal) && _selectedStaged == stagedSide;
+		var letter = conflict ? "U" : change.StatusLetter(stagedSide);
+		var letterRole = letter switch
+		{
+			"A" => AppStyles.RoleSuccess,
+			"D" or "U" => AppStyles.RoleError,
+			"R" or "C" or "M" or "T" => AppStyles.RoleInfo,
+			_ => AppStyles.RoleFaint,
+		};
+
+		var row = new Button()
+			.StyleName(AppStyles.GhostButton)
+			.Height(27)
+			.Padding(new Thickness(AppTheme.Space2 + depth * 10, 0, AppTheme.Space1, 0))
+			.OnClick(() => SelectDiff(change, stagedSide))
+			.Content(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(6)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					new TextBlock().Text(letter)
+						.FontFamily(AppTheme.MonoFont)
+						.FontSize(AppTheme.FontSizeMicro)
+						.Width(14)
+						.WithTheme((theme, text) => text.Foreground = RoleColor(AppTheme.For(theme), letterRole)),
+					new TextBlock().Text(change.FileName)
+						.FontSize(AppTheme.FontSizeCaption)
+						.MutedText()
+						.MaxWidth(Math.Max(80, 240 - depth * 10))
+						.TextWrapping(TextWrapping.NoWrap)
+						.TextTrimming(TextTrimming.CharacterEllipsis)))
+			.HoverTip($"{change.Path}\n{change.Label}");
+		row.Tag = change;
+
+		var action = GlyphButton(
+			stagedSide ? GlyphKind.Minus : GlyphKind.Plus,
+			stagedSide ? Strings.GitUnstage : Strings.GitStage,
+			() => ApplyResult(stagedSide ? GitWriter.Unstage(_cwd(), [change.Path]) : GitWriter.Stage(_cwd(), [change.Path])));
+		action.IsEnabled = !_busy && !_generating;
+		action.IsVisible = allowActions;
+		action.Tag = change;
+
+		var content = new DockPanel().LastChildFill().Children(action.DockRight(), row);
+		return new Border()
+			.CornerRadius(AppTheme.RadiusXs)
+			.WithTheme((theme, border) => border.Background = selected
+				? AppTheme.For(theme).CardBackgroundAlt
+				: AppTheme.Transparent)
+			.Child(content);
+	}
+
+	private void SelectDiff(GitChange change, bool stagedSide)
+	{
+		if (string.Equals(_selectedPath, change.Path, StringComparison.Ordinal) && _selectedStaged == stagedSide)
+		{
+			_selectedPath = null;
+		}
+		else
+		{
+			_selectedPath = change.Path;
+			_selectedStaged = stagedSide;
+		}
+
+		Refresh();
+	}
+
+	private UIElement? BuildDiffPane(GitStatus status)
+	{
+		if (_selectedPath is not { Length: > 0 } path)
+		{
+			return null;
+		}
+
+		var change = status.Changes.FirstOrDefault(item => string.Equals(item.Path, path, StringComparison.Ordinal));
+		if (change is null)
+		{
+			return null;
+		}
+
+		var untracked = change.IndexStatus == "?" && change.WorkTreeStatus == "?";
+		var diff = _selectedStaged
+			? GitStatusReader.StagedDiff(_cwd(), path)
+			: GitStatusReader.Diff(_cwd(), path, untracked);
+		var (added, removed) = CountDiffLines(diff);
+
+		var header = new DockPanel().LastChildFill().Children(
+			new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(2)
+				.Children(
+					AppIcons.Button("square-pen", Strings.OpenInEditor, () => OpenInEditor(path)),
+					AppIcons.Button("x", Strings.GitCloseDiff, () =>
+					{
+						_selectedPath = null;
+						Refresh();
+					})).DockRight(),
+			new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(6)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					new TextBlock().Text(Strings.GitDiff).FontSize(AppTheme.FontSizeMicro)
+						.FontWeight(FontWeight.SemiBold).PrimaryText(),
+					new TextBlock().Text(path).FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
+						.MaxWidth(210).SubtleText().TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
+					new TextBlock().Text(GitDiffStat(added, removed)).FontFamily(AppTheme.MonoFont)
+						.FontSize(AppTheme.FontSizeMicro).FaintText()));
+
+		var pane = new StackPanel().Spacing(AppTheme.Space1)
+			.Children(
+				Separator(
+					new Border()
+						.Height(30)
+						.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space1, 0))
+						.Child(header),
+					new Thickness(0, 1, 0, 1)),
+				new ScrollViewer()
+					.SmoothScrolling()
+					.MaxHeight(260)
+					.Content(DiffView.Render(diff.Length > 0 ? diff : Strings.GitNoDiff))
+					.AutoVerticalScroll()
+					.NoHorizontalScroll());
+
+		return new Border().Padding(new Thickness(0, 0, 0, AppTheme.Space1)).Child(pane);
+	}
+
+	// ----------------------------------------------------------------- 更多区
+
+	private UIElement BuildMorePane(GitStatus status)
+	{
+		var headerButton = new Button()
+			.Ghost()
+			.Height(28)
+			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space2, 0))
+			.OnClick(() =>
+			{
+				_moreExpanded = !_moreExpanded;
+				Refresh();
+			})
+			.Content(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(6)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					ThemedGlyph(_moreExpanded ? GlyphKind.ChevronDown : GlyphKind.ChevronRight, AppStyles.RoleSubtle, 3),
+					new TextBlock().Text(Strings.GitMore).FontSize(AppTheme.FontSizeMicro)
+						.FontWeight(FontWeight.SemiBold).MutedText()));
+
+		var header = Separator(
+			new Border()
+				.Height(30)
+				.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+				.Child(headerButton),
+			new Thickness(0, 1, 0, 0));
+
+		if (!_moreExpanded)
+		{
+			return header;
+		}
+
+		var content = new StackPanel().Spacing(AppTheme.Space2)
+			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space2));
+
+		content.Children(BuildAssistantSettingsRow());
+		content.Children(BuildStashSection());
+		if (!status.HasRemotes)
+		{
+			content.Children(new TextBlock().Text(Strings.GitNoRemote)
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+		}
+
+		return new StackPanel().Spacing(0)
+			.Children(header, new ScrollViewer()
+				.SmoothScrolling()
+				.MaxHeight(300)
+				.Content(content)
+				.AutoVerticalScroll()
+				.NoHorizontalScroll());
+	}
+
+	private UIElement BuildAssistantSettingsRow()
+	{
+		var body = new StackPanel().Spacing(3);
+		if (_assistant is null)
+		{
+			body.Children(new TextBlock().Text(Strings.GitSummary).FontSize(AppTheme.FontSizeMicro).MutedText());
+			body.Children(new TextBlock().Text(Strings.GitSummaryNoModel).FontSize(AppTheme.FontSizeMicro).FaintText());
+			return body;
+		}
+
+		var resolved = ResolveAssistant();
+		body.Children(new TextBlock().Text(Strings.GitSummary).FontSize(AppTheme.FontSizeMicro).MutedText());
+		body.Children(new TextBlock()
+			.Text(Strings.GitSummaryCurrent($"{resolved.Model.Provider}/{resolved.Model.Id}", Strings.ThinkingLevelName(resolved.Thinking)))
+			.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+		if (_openSettings is not null)
+		{
+			body.Children(SmallTextButton(Strings.GitSummarySettingsOpen, _openSettings));
+		}
+
+		return body;
+	}
+
+	private UIElement BuildStashSection()
 	{
 		var cwd = _cwd();
-		var push = AppIcons.Button("package", Strings.GitStash, () => ApplyResult(GitWriter.StashPush(cwd)));
-
-		_content.Children(new DockPanel().LastChildFill().Children(push.DockRight(), Label(Strings.GitStashes)));
+		var section = new StackPanel().Spacing(2);
+		var push = ToolbarButton("package", Strings.GitStash, () => _ = RunGitAsync(() => GitWriter.StashPush(cwd), Strings.GitBusy));
+		push.IsEnabled = !_busy && !_generating;
+		section.Children(new DockPanel().LastChildFill().Children(push.DockRight(),
+			new TextBlock().Text(Strings.GitStashes).FontSize(AppTheme.FontSizeMicro)
+				.FontWeight(FontWeight.SemiBold).MutedText()));
 
 		var stashes = GitWriter.Stashes(cwd);
 		if (stashes.Count == 0)
 		{
-			_content.Children(new TextBlock().Text(Strings.GitStashEmpty).FontSize(AppTheme.FontSizeCaption).MutedText());
-			return;
+			section.Children(new TextBlock().Text(Strings.GitStashEmpty)
+				.FontSize(AppTheme.FontSizeMicro).FaintText());
+			return section;
 		}
 
 		foreach (var stash in stashes)
 		{
 			var captured = stash;
-			_content.Children(new DockPanel().LastChildFill().Children(
-				new StackPanel()
-					.Orientation(Orientation.Horizontal)
-					.Spacing(AppTheme.Space1)
-					.Children(
-						AppIcons.Button("rotate-ccw", Strings.GitStashPop, () => ApplyResult(GitWriter.StashPop(cwd))),
-						AppIcons.Button("trash", Strings.GitStashResolved, () => ApplyResult(GitWriter.StashDrop(cwd, captured.Reference))))
-					.DockRight(),
+			var pop = ToolbarButton("rotate-ccw", Strings.GitStashPop, () => _ = RunGitAsync(() => GitWriter.StashPop(cwd), Strings.GitBusy));
+			var drop = ToolbarButton("trash", Strings.GitStashResolved, () => _ = RunGitAsync(() => GitWriter.StashDrop(cwd, captured.Reference), Strings.GitBusy));
+			pop.IsEnabled = !_busy && !_generating;
+			drop.IsEnabled = !_busy && !_generating;
+			var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(1).Children(pop, drop);
+			section.Children(new DockPanel().LastChildFill().Children(actions.DockRight(),
 				new TextBlock()
 					.Text(captured.Description.Length > 0 ? captured.Description : captured.Reference)
-					.FontFamily(AppTheme.MonoFont)
-					.FontSize(AppTheme.FontSizeMicro)
-					.MutedText()
-					.TextWrapping(TextWrapping.NoWrap)));
+					.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).MutedText()
+					.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis)));
 		}
+
+		return section;
 	}
 
-	/// <summary>检查点：创建与恢复。快照写入低层引用，不产生分支或提交。</summary>
-	private void BuildCheckpointControls()
+	// ----------------------------------------------------------------- 非仓库 / 通用
+
+	private UIElement BuildNotRepository(GitStatus status)
 	{
-		var cwd = _cwd();
-		var create = AppIcons.Button("plus", Strings.CreateCheckpoint, () =>
+		var unavailable = string.Equals(status.Error, Strings.GitUnavailable, StringComparison.Ordinal);
+		var timedOut = string.Equals(status.Error, Strings.GitTimeout, StringComparison.Ordinal);
+		var nonRepository = status.Error is not { Length: > 0 } error ||
+			error.Contains("not a git repository", StringComparison.OrdinalIgnoreCase);
+		var canInit = !unavailable && !timedOut && nonRepository;
+
+		var body = new StackPanel().Spacing(AppTheme.Space2)
+			.Padding(new Thickness(AppTheme.Space4, AppTheme.Space4, AppTheme.Space4, AppTheme.Space4))
+			.Children(
+				AppIcons.Icon("git-branch", AppStyles.RoleSubtle, 22),
+				new TextBlock().Text(unavailable ? Strings.GitUnavailable : Strings.GitNotRepository)
+					.FontSize(AppTheme.FontSizeControl).FontWeight(FontWeight.SemiBold).PrimaryText(),
+				new TextBlock().Text(canInit ? Strings.GitNotRepositoryHint(_cwd()) : Strings.GitNotRepository)
+					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
+
+		if (canInit)
 		{
-			var checkpoint = Checkpoints.Create(cwd);
-			if (checkpoint is null) Toasts.Error(View, Strings.CheckpointMissing);
-			else
-			{
-				Checkpoints.Prune(cwd);
-				Toasts.Success(View, Strings.CheckpointCreated);
-			}
+			body.Children(new Button()
+				.Primary()
+				.Height(AppTheme.ControlHeightMd)
+				.Content(new TextBlock().Text(Strings.GitInit).FontSize(AppTheme.FontSizeCaption).OnAccentText())
+				.OnClick(() => ApplyResult(GitWriter.Init(_cwd()))));
+		}
 
-			Refresh();
-		});
-
-		_content.Children(new DockPanel()
-			.LastChildFill()
-			.Children(create.DockRight(), Label(Strings.Checkpoints)));
-
-		var checkpoints = Checkpoints.List(cwd);
-		if (checkpoints.Count == 0)
+		if (status.Error is { Length: > 0 } detail)
 		{
-			_content.Children(new TextBlock().Text(Strings.CheckpointEmpty).FontSize(AppTheme.FontSizeCaption).MutedText());
+			body.Children(new TextBlock().Text(detail)
+				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
+				.FaintText().TextWrapping(TextWrapping.Wrap));
+		}
+
+		return new ScrollViewer().SmoothScrolling().Content(body).AutoVerticalScroll().NoHorizontalScroll();
+	}
+
+	private void ApplyResult(GitResult result)
+	{
+		var message = result.Message.Length > 0 ? result.Message : Strings.GitDone;
+		if (result.Ok)
+		{
+			Toasts.Success(View, message);
+			_lastFailureMessage = null;
+			_lastFailureDetail = null;
+			_selectedPath = null;
+		}
+		else
+		{
+			Toasts.Error(View, message);
+			_lastFailureMessage = message;
+			_lastFailureDetail = result.Detail;
+		}
+
+		Refresh();
+	}
+
+	private async Task RunGitAsync(Func<GitResult> action, string busyMessage, Action? onSuccess = null)
+	{
+		if (_busy || _generating || _disposed)
+		{
 			return;
 		}
 
-		foreach (var checkpoint in checkpoints)
+		// 无窗口的布局测试没有调度器：同步执行，按钮点击后状态必须立即可见。
+		if (_host.FindVisualRoot() is not Window)
 		{
-			var captured = checkpoint;
-			var title = captured.Label.Length > 0
-				? $"{captured.Created.LocalDateTime:MM-dd HH:mm:ss}  {captured.Label}"
-				: $"{captured.Created.LocalDateTime:MM-dd HH:mm:ss}";
+			GitResult direct;
+			try
+			{
+				direct = action();
+			}
+			catch (Exception ex)
+			{
+				direct = GitResult.Failure(ex.Message);
+			}
 
-			_content.Children(new DockPanel().LastChildFill().Children(
-				AppIcons.Button("rotate-ccw", Strings.RestoreCheckpoint, () =>
-				{
-					var error = Checkpoints.Restore(cwd, captured.Sha);
-					if (error is null) Toasts.Success(View, Strings.CheckpointRestored);
-					else Toasts.Error(View, error);
-					Refresh();
-				}).DockRight(),
-				new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption).MutedText()));
+			if (direct.Ok)
+			{
+				onSuccess?.Invoke();
+			}
+
+			ApplyResult(direct);
+			return;
 		}
-	}
 
-	private void BuildCommitControls(GitStatus status)
-	{
-		var staged = status.Changes.Count(static change => change.HasStaged);
-		var message = new TextBox().Text(_commitDraft).Placeholder(Strings.GitCommitPlaceholder);
-		message.OnTextChanged(value => _commitDraft = value);
+		_busy = true;
+		_busyMessage = busyMessage;
+		Refresh();
 
-		// 主按钮是反色底：标签必须用强调色上的文字色，普通正文色会白底白字看不见。
-		var commit = new Button().Primary().Content(
-			new TextBlock().Text(Strings.GitCommit).FontSize(AppTheme.FontSizeCaption).OnAccentText()).OnClick(() =>
+		GitResult result;
+		try
 		{
-			var result = GitWriter.Commit(_cwd(), message.Text?.Trim() ?? string.Empty);
+			result = await Task.Run(action).ConfigureAwait(false);
+		}
+		catch (Exception ex)
+		{
+			result = GitResult.Failure(ex.Message);
+		}
+
+		void Complete()
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			_busy = false;
+			_busyMessage = string.Empty;
 			if (result.Ok)
 			{
-				_commitDraft = string.Empty;
+				onSuccess?.Invoke();
 			}
 
 			ApplyResult(result);
-		});
-
-		// 输入框与主按钮同高（DESIGN.md 的控件高度档）：默认高度不一致会让这一行歪一档。
-		message.Height(AppTheme.ControlHeightMd);
-		commit.Height(AppTheme.ControlHeightMd);
-
-		// 没有已暂存的改动时提交必然失败（"nothing to commit"）。主按钮变灰 + 一句提示，
-		// 比让用户填完提交信息再被拒好。
-		commit.IsEnabled = staged > 0;
-		if (staged == 0)
-		{
-			_content.Children(new TextBlock()
-				.Text(Strings.GitNothingStaged)
-				.FontSize(AppTheme.FontSizeMicro)
-				.FaintText());
 		}
 
-		_content.Children(new DockPanel().LastChildFill().Children(
-			commit.DockRight(),
-			message.Margin(new Thickness(0, 0, AppTheme.Space2, 0))));
-	}
-
-	/// <summary>
-	/// 改动列表按「未暂存 / 已暂存」分两节，与 PiDeck 的资源树同构。
-	/// 之前是平铺一行行、靠左侧一个「已暂存 / 未暂存」标签区分 —— 面板里改动一多，
-	/// 想确认「我要提交的东西齐了吗」就得逐行读。
-	/// <para>
-	/// 未暂存在前：那是每次打开面板主要要处理的一堆，已暂存多数时候只是复核。
-	/// </para>
-	/// </summary>
-	private void BuildChangeList(GitStatus status)
-	{
-		var unstaged = status.Changes.Where(static change => change.HasWorkTree).ToList();
-		var staged = status.Changes.Where(static change => change.HasStaged).ToList();
-
-		if (unstaged.Count > 0)
+		if (Application.IsRunning && Application.Current.Dispatcher is { } dispatcher)
 		{
-			BuildChangeSection(
-				Strings.GitUnstaged,
-				unstaged,
-				stagedSide: false,
-				bulkLabel: Strings.GitStageAll,
-				bulkAction: () => ApplyResult(GitWriter.Stage(_cwd(), [.. unstaged.Select(static change => change.Path)])));
+			dispatcher.BeginInvoke(Complete);
 		}
-
-		if (staged.Count > 0)
+		else
 		{
-			BuildChangeSection(
-				Strings.GitStaged,
-				staged,
-				stagedSide: true,
-				bulkLabel: Strings.GitUnstageAll,
-				bulkAction: () => ApplyResult(GitWriter.Unstage(_cwd(), [.. staged.Select(static change => change.Path)])));
-		}
-
-		BuildDiffPane(status);
-	}
-
-	/// <summary>一节改动：节头（标题 + 计数 + 批量动作）加裸行列表。</summary>
-	private void BuildChangeSection(
-		string title,
-		IReadOnlyList<GitChange> changes,
-		bool stagedSide,
-		string bulkLabel,
-		Action bulkAction)
-	{
-		// 批量动作用文字标签而不是图标：行内动作是图标（逐个文件），节头再放一个同样的图标
-		// 上下叠着会分不清「这一下是整节还是这一行」。
-		var bulk = new Button()
-			.StyleName(AppStyles.GhostButton)
-			.Height(AppTheme.ControlHeightSm)
-			.Content(new TextBlock().Text(bulkLabel).FontSize(AppTheme.FontSizeMicro).SubtleText())
-			.OnClick(bulkAction)
-			.HoverTip(bulkLabel);
-
-		var header = new DockPanel().LastChildFill().Children(
-			bulk.DockRight(),
-			new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(AppTheme.Space1)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(
-					new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.SemiBold).PrimaryText(),
-					new TextBlock().Text(changes.Count.ToString()).FontSize(AppTheme.FontSizeMicro).FaintText()));
-
-		_content.Children(header);
-
-		foreach (var change in changes)
-		{
-			BuildChangeRow(change, stagedSide);
+			Complete();
 		}
 	}
 
-	/// <summary>
-	/// 一行改动：裸行（默认不铺底色、悬停才浮起）+ 右侧行内动作。
-	/// 以前每行是一张卡片，一屏十几个文件名就成了十几块卡片，与 DESIGN.md 的「表面靠色阶 + 发丝线」相悖。
-	/// </summary>
-	private void BuildChangeRow(GitChange change, bool stagedSide)
+	private async Task GenerateCommitSummaryAsync()
 	{
-		var captured = change;
-		var selected = string.Equals(_selectedPath, change.Path, StringComparison.Ordinal);
-
-		var action = stagedSide
-			? AppIcons.Button("rotate-ccw", Strings.GitUnstage, () => ApplyResult(GitWriter.Unstage(_cwd(), [captured.Path])))
-			: AppIcons.Button("plus", Strings.GitStage, () => ApplyResult(GitWriter.Stage(_cwd(), [captured.Path])));
-
-		var row = new Button()
-			.StyleName(selected ? AppStyles.SelectedButton : AppStyles.GhostButton)
-			.Height(AppTheme.ControlHeightSm)
-			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
-			.OnClick(() => ToggleDiff(captured))
-			.Content(new DockPanel()
-				.LastChildFill()
-				.Children(
-					new TextBlock()
-						.Text(change.Label)
-						.FontSize(AppTheme.FontSizeMicro)
-						.Width(40)
-						.SubtleText()
-						.VerticalAlignment(VerticalAlignment.Center)
-						.DockLeft(),
-					new TextBlock()
-						.Text(change.Path)
-						.FontFamily(AppTheme.MonoFont)
-						.FontSize(AppTheme.FontSizeCaption)
-						.MutedText()
-						.TextWrapping(TextWrapping.NoWrap)
-						.VerticalAlignment(VerticalAlignment.Center)));
-
-		_content.Children(new DockPanel().LastChildFill().Children(
-			action.DockRight(),
-			row.Margin(new Thickness(0, 0, AppTheme.Space1, 0))));
-	}
-
-	/// <summary>选中文件的 diff：标题行给路径与增删统计，正文交给统一的 diff 渲染。</summary>
-	private void BuildDiffPane(GitStatus status)
-	{
-		if (_selectedPath is not { Length: > 0 } path)
+		if (_assistant is not { } assistant || _busy || _generating || _disposed)
 		{
 			return;
 		}
 
-		var untracked = status.Changes.FirstOrDefault(change =>
-			string.Equals(change.Path, path, StringComparison.Ordinal))?.Label == "未跟踪";
+		if (assistant.IsBusy())
+		{
+			Toasts.Show(View, Strings.GitSummaryBusy);
+			return;
+		}
 
-		var captured = path;
-		var diff = GitStatusReader.Diff(_cwd(), path, untracked);
-		var (added, removed) = CountDiffLines(diff);
+		var status = GitStatusReader.Read(_cwd());
+		if (!status.Changes.Any(static change => change.HasStaged && !change.IsConflict))
+		{
+			Toasts.Show(View, Strings.GitStageBeforeGenerate);
+			return;
+		}
 
-		_content.Children(new DockPanel().LastChildFill().Children(
-			AppIcons.Button("square-pen", Strings.OpenInEditor, () => OpenInEditor(captured)).DockRight(),
-			new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(AppTheme.Space2)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(
-					new TextBlock()
-						.Text(captured)
-						.FontFamily(AppTheme.MonoFont)
-						.FontSize(AppTheme.FontSizeMicro)
-						.SubtleText()
-						.TextWrapping(TextWrapping.NoWrap),
-					new TextBlock()
-						.Text(GitDiffStat(added, removed))
-						.FontFamily(AppTheme.MonoFont)
-						.FontSize(AppTheme.FontSizeMicro)
-						.FaintText())));
+		var diff = GitStatusReader.StagedDiffAll(_cwd(), GitCommitMessage.MaxDiffCharacters);
+		if (!diff.Ok)
+		{
+			_lastFailureMessage = Strings.GitSummaryFailed;
+			_lastFailureDetail = diff.Error;
+			Toasts.Error(View, Strings.GitSummaryFailedReason(diff.Error ?? Strings.GitFailed));
+			Refresh();
+			return;
+		}
 
-		_content.Children(DiffView.Render(diff.Length > 0 ? diff : Strings.GitNoDiff));
+		if (diff.Text.Trim().Length == 0)
+		{
+			Toasts.Show(View, Strings.GitStageBeforeGenerate);
+			return;
+		}
+
+		var resolved = ResolveAssistant();
+		var abort = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+		_summaryAbort = abort;
+		_generating = true;
+		Refresh();
+
+		string? generated = null;
+		string? failure = null;
+		try
+		{
+			// 无窗口测试直接走生成委托；真实窗口把它丢到线程池，保持 UI 可交互。
+			var generation = _host.FindVisualRoot() is Window
+				? Task.Run(() => assistant.Generate(resolved.Model, resolved.Thinking, diff.Text, abort.Token), abort.Token)
+				: assistant.Generate(resolved.Model, resolved.Thinking, diff.Text, abort.Token);
+			generated = await generation.ConfigureAwait(false);
+		}
+		catch (OperationCanceledException)
+		{
+			failure = Strings.GitSummaryTimeout;
+		}
+		catch (Exception ex)
+		{
+			failure = ex.Message;
+		}
+		finally
+		{
+			abort.Dispose();
+			if (ReferenceEquals(_summaryAbort, abort))
+			{
+				_summaryAbort = null;
+			}
+		}
+
+		void Complete()
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			_generating = false;
+			if (failure is null && generated is { Length: > 0 } message)
+			{
+				_commitDraft = message;
+				_focusCommitAfterBuild = true;
+				Toasts.Success(View, Strings.GitSummaryGenerated);
+			}
+			else
+			{
+				_lastFailureMessage = Strings.GitSummaryFailed;
+				_lastFailureDetail = failure ?? Strings.GitSummaryEmpty;
+				Toasts.Error(View, failure is { Length: > 0 } ? Strings.GitSummaryFailedReason(failure) : Strings.GitSummaryEmpty);
+			}
+
+			Refresh();
+		}
+
+		if (Application.IsRunning && Application.Current.Dispatcher is { } dispatcher)
+		{
+			dispatcher.BeginInvoke(Complete);
+		}
+		else
+		{
+			Complete();
+		}
 	}
 
-	/// <summary>数 diff 的增删行，跳过 <c>+++</c>/<c>---</c> 文件头。</summary>
+	private (Model Model, string Thinking) ResolveAssistant()
+	{
+		if (_assistant is not { } assistant)
+		{
+			throw new InvalidOperationException(Strings.GitSummaryNoModel);
+		}
+
+		var preference = DesktopPreference.Load();
+		var current = assistant.CurrentModel();
+		var models = assistant.Models();
+		var model = current;
+		if (preference.GitCommitModel is { Length: > 0 } fixedModel)
+		{
+			model = models.FirstOrDefault(candidate =>
+				string.Equals($"{candidate.Provider}/{candidate.Id}", fixedModel, StringComparison.Ordinal)) ?? current;
+		}
+
+		var thinking = preference.GitCommitThinking is { Length: > 0 } fixedThinking
+			? fixedThinking
+			: assistant.CurrentThinking();
+		return (model, thinking);
+	}
+
+	private void OpenInEditor(string path)
+	{
+		var full = Path.IsPathRooted(path) ? path : Path.Combine(_cwd(), path);
+		if (!File.Exists(full))
+		{
+			Toasts.Error(View, Strings.FileMissing(full));
+			return;
+		}
+
+		if (Shell.OpenInEditor(full))
+		{
+			Toasts.Success(View, Strings.OpenedInEditor(full));
+		}
+		else
+		{
+			Toasts.Error(View, Strings.OpenFailed(full));
+		}
+	}
+
+	// ----------------------------------------------------------------- 小部件
+
+	private static Border Separator(Border border, Thickness thickness) =>
+		border.BorderThickness(thickness)
+			.WithTheme((theme, element) => element.BorderBrush = AppTheme.For(theme).BorderSubtle);
+
+	private static TextBlock Label(string text) =>
+		new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption)
+			.FontWeight(FontWeight.SemiBold).PrimaryText();
+
+	private static Button ToolbarButton(string icon, string tooltip, Action action)
+	{
+		var button = AppIcons.Button(icon, tooltip, action, size: 14);
+		button.Width(26).Height(26).Padding(Thickness.Zero);
+		return button;
+	}
+
+	private static Button SmallTextButton(string text, Action action) =>
+		new Button()
+			.Ghost()
+			.Height(22)
+			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+			.Content(new TextBlock().Text(text).FontSize(AppTheme.FontSizeMicro).SubtleText())
+			.OnClick(action)
+			.HoverTip(text);
+
+	private Button CancelButton() =>
+		new Button()
+			.Ghost()
+			.Height(AppTheme.ControlHeightSm)
+			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+			.Content(new TextBlock().Text(Strings.Cancel).FontSize(AppTheme.FontSizeMicro).MutedText())
+			.OnClick(() =>
+			{
+				_branchEditorVisible = false;
+				Refresh();
+			});
+
+	private static Button GlyphButton(GlyphKind kind, string tooltip, Action action)
+	{
+		var glyph = ThemedGlyph(kind, AppStyles.RoleSubtle, 3);
+		return new Button()
+			.Ghost()
+			.Width(24)
+			.Height(24)
+			.Padding(0)
+			.Content(glyph)
+			.OnClick(action)
+			.HoverTip(tooltip);
+	}
+
+	private static GlyphElement ThemedGlyph(GlyphKind kind, string role, double size) =>
+		new GlyphElement()
+			.Kind(kind)
+			.GlyphSize(size)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.WithTheme((theme, glyph) => glyph.Foreground = RoleColor(AppTheme.For(theme), role));
+
+	private static Color RoleColor(AppPalette palette, string role) => role switch
+	{
+		AppStyles.RolePrimary => palette.TextPrimary,
+		AppStyles.RoleMuted => palette.TextMuted,
+		AppStyles.RoleSubtle => palette.TextSubtle,
+		AppStyles.RoleFaint => palette.TextFaint,
+		AppStyles.RoleAccent => palette.Accent,
+		AppStyles.RoleInfo => palette.Info,
+		AppStyles.RoleSuccess => palette.Success,
+		AppStyles.RoleError => palette.Error,
+		_ => palette.TextMuted,
+	};
+
 	private static (int Added, int Removed) CountDiffLines(string diff)
 	{
 		var added = 0;
@@ -494,54 +1288,6 @@ public sealed class GitView
 
 	private static string GitDiffStat(int added, int removed) => Strings.GitDiffStat(added, removed);
 
-	private void ApplyResult(GitResult result)
-	{
-		var message = result.Message.Length > 0 ? result.Message : Strings.GitDone;
-		if (result.Ok)
-		{
-			Toasts.Success(View, message);
-			_selectedPath = null;
-			_lastFailureDetail = null;
-		}
-		else
-		{
-			Toasts.Error(View, message);
-			_lastFailureDetail = result.Detail;
-		}
-
-		Refresh();
-	}
-
-	/// <summary>把上一次失败的原始终端输出排在面板末尾：分类提示用来「知道该做什么」，原文用来「排查为什么」。</summary>
-	private void BuildFailureDetail()
-	{
-		if (_lastFailureDetail is not { Length: > 0 } detail)
-		{
-			return;
-		}
-
-		_content.Children(new TextBlock()
-			.Text(detail)
-			.FontFamily(AppTheme.MonoFont)
-			.FontSize(AppTheme.FontSizeMicro)
-			.FaintText()
-			.TextWrapping(TextWrapping.Wrap));
-	}
-
-	/// <summary>在用户的编辑器里打开这个文件（$VISUAL/$EDITOR，其次系统默认程序）。</summary>
-	private void OpenInEditor(string path)
-	{
-		var full = Path.IsPathRooted(path) ? path : Path.Combine(_cwd(), path);
-
-		if (!File.Exists(full))
-		{
-			_summary.Text(Strings.FileMissing(full));
-			return;
-		}
-
-		_summary.Text(Shell.OpenInEditor(full) ? Strings.OpenedInEditor(full) : Strings.OpenFailed(full));
-	}
-
 	/// <summary>视觉验收用：选中第一个改动，让 diff 区一起出现在截图里。</summary>
 	public void SelectFirstChangeForSmoke()
 	{
@@ -549,18 +1295,29 @@ public sealed class GitView
 		if (status.Changes.FirstOrDefault() is { } first)
 		{
 			_selectedPath = first.Path;
+			_selectedStaged = first.HasStaged;
 			Refresh();
 		}
 	}
 
-	/// <summary>点开或收起某个文件的 diff。</summary>
-	private void ToggleDiff(GitChange change)
+	public void Dispose()
 	{
-		_selectedPath = string.Equals(_selectedPath, change.Path, StringComparison.Ordinal) ? null : change.Path;
-		Refresh();
-	}
+		if (_disposed)
+		{
+			return;
+		}
 
-	/// <summary>分区标题。与改动分节的节头同字重，面板里的层级才有一致的读法。</summary>
-	private static TextBlock Label(string text) =>
-		new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.SemiBold).PrimaryText();
+		_disposed = true;
+		try
+		{
+			_summaryAbort?.Cancel();
+		}
+		catch (ObjectDisposedException)
+		{
+			// 生成任务已经结束并释放了 CTS。
+		}
+
+		_summaryAbort?.Dispose();
+		_summaryAbort = null;
+	}
 }

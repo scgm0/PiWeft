@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
 using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Skills;
@@ -45,6 +46,25 @@ public sealed class SettingsNavigationTests : IDisposable
 		view.BeginCapture(ShortcutActions.Palette);
 		view.ApplyTheme();
 		Assert.Equal(ShortcutActions.Palette, view.CapturingId);
+	}
+
+	[Fact]
+	public async Task GitSectionOffersModelAndThinkingPickers()
+	{
+		var model = new Model { Id = "summary", Provider = "test", Api = "test", Name = "Summary" };
+		var view = new SettingsView(() => new SettingsSnapshot
+		{
+			AgentDir = Path.Combine(_root, "agent"), Cwd = _root, ModelCount = 1,
+			Models = [model], Tools = [], Skills = [], McpServers = [], Resources = ResourceSnapshot.Empty,
+		});
+
+		await view.SelectSectionAsync("git");
+
+		Assert.Null(view.LastSectionError);
+		Assert.Equal(2, Find<ComboBox>(view.View).Count());
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.GitSummarySettingsHint);
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.GitSummaryModel);
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.GitSummaryThinking);
 	}
 
 	[Fact]

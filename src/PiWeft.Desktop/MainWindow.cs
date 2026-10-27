@@ -1390,7 +1390,7 @@ public sealed partial class MainWindow : Window
 
 		// 这个会话自己的右侧面板：文件 / Git / 终端都以它的工作目录为基准，默认收起。
 		// 面板视图挂在共享宿主里，切换会话只切可见性，终端等状态不会丢。
-		var panel = new RightPanel(() => session.Cwd);
+		var panel = new RightPanel(() => session.Cwd, CreateGitAssistant(session, environment), OpenGitAssistantSettings);
 		panel.SetHeaderRightInset(_panelHeaderRightInset);
 		_sessionPanels[tab] = panel;
 		_panelHost.Children(panel.View);
@@ -1639,6 +1639,9 @@ public sealed partial class MainWindow : Window
 						gitPanel.SelectFirstGitChangeForSmoke();
 					}
 
+					break;
+				case "git-settings":
+					OpenGitAssistantSettings();
 					break;
 				case "terminal":
 					ToggleTerminalPanel();
@@ -2234,7 +2237,15 @@ public sealed partial class MainWindow : Window
 				_settingsView.SecurityChanged += ApplySecurityToSessions;
 			}
 			_settingsDialog = new SettingsDialog(_settingsView);
-			_settingsDialog.Closed += FocusActiveEntry;
+			_settingsDialog.Closed += () =>
+			{
+				FocusActiveEntry();
+				// Git 提交摘要的默认模型/思考级别可能在设置里刚改过；打开着的面板重读一次。
+				foreach (var panel in _sessionPanels.Values)
+				{
+					panel.Refresh();
+				}
+			};
 		}
 
 		_settingsDialog.Show(this);
@@ -2569,6 +2580,32 @@ public sealed partial class MainWindow : Window
 		return index >= 0 && index < _tabEntries.Count ? _tabEntries[index] as SessionTab : null;
 	}
 
+	/// <summary>Git 面板的 AI 提交摘要能力：默认跟随会话；模型/思考级别由偏好覆盖。</summary>
+	private GitCommitAssistant CreateGitAssistant(CodingAgentSession session, CliEnvironment environment) => new(
+		() => _models,
+		() => session.Model,
+		() => session.ThinkingLevel,
+		(model, thinking, diff, cancellationToken) => GitCommitMessage.GenerateAsync(
+			environment.Gateway,
+			environment.Registry,
+			model,
+			thinking,
+			diff,
+			provider => _arguments.ApiKey ?? environment.ProviderApiKeys.GetValueOrDefault(provider),
+			cancellationToken),
+		() => session.IsRunning,
+		OpenGitAssistantSettings);
+
+	/// <summary>从 Git 面板的「更改默认配置」打开设置，并落到 Git 提交摘要分区。</summary>
+	private void OpenGitAssistantSettings()
+	{
+		OpenSettingsDialog();
+		if (_settingsView is not null)
+		{
+			_ = _settingsView.SelectSectionAsync("git");
+		}
+	}
+
 	/// <summary>设置面板的数据快照。</summary>
 	private SettingsSnapshot Snapshot() => new()
 	{
@@ -2576,6 +2613,7 @@ public sealed partial class MainWindow : Window
 		LoadArchived = () => _catalog.ListDeleted(),
 		Cwd = CurrentSession()?.Cwd ?? _cwd,
 		ModelCount = _models.Count,
+		Models = _models,
 		Tools = [.. CurrentSession()?.Tools.Select(static tool => tool.Name) ?? []],
 		Skills = [.. CurrentSession()?.DiscoveredSkills.Select(static skill => skill.Name) ?? []],
 		Resources = CurrentSession()?.Resources ?? ResourceResolver.Resolve(
