@@ -10,7 +10,7 @@ namespace PiWeft.Desktop;
 /// Git 面板（参考 PiDeck 的 SCM 布局）：紧凑分支/同步栏、提交摘要、暂存/未暂存目录树、
 /// 可折叠的差异与更多区。写操作走 <see cref="GitWriter"/>，只读查询走 <see cref="GitStatusReader"/>。
 /// </summary>
-public sealed class GitView : IDisposable
+public sealed partial class GitView : IDisposable
 {
 	private readonly Func<string> _cwd;
 	private readonly GitCommitAssistant? _assistant;
@@ -19,8 +19,28 @@ public sealed class GitView : IDisposable
 	private readonly Grid _host = new();
 	private readonly HashSet<string> _collapsedDirectories = new(StringComparer.Ordinal);
 
-	private string? _selectedPath;
-	private bool _selectedStaged;
+	private GitDiffRequest? _diffRequest;
+	private bool _graphExpanded = true;
+	private bool _compareExpanded;
+	private string _graphRef = string.Empty;
+	private int _graphPage = 40;
+	private bool _branchesLoaded;
+	private bool _branchesDirty = true;
+	private IReadOnlyList<string> _branches = [];
+	private bool _graphLoaded;
+	private bool _graphDirty = true;
+	private IReadOnlyList<GitCommitEntry> _graphCommits = [];
+	private int _graphTotal;
+	private string? _graphError;
+	private readonly HashSet<string> _expandedCommits = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, GitCommitDetail> _commitDetails = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, string> _commitErrors = new(StringComparer.Ordinal);
+	private string _compareBase = string.Empty;
+	private string _compareTarget = string.Empty;
+	private GitBranchComparison? _compareResult;
+	private string _compareResultBase = string.Empty;
+	private string _compareResultTarget = string.Empty;
+	private string? _compareError;
 	private string _commitDraft = string.Empty;
 	private string _branchDraft = string.Empty;
 	private string? _lastFailureMessage;
@@ -68,10 +88,10 @@ public sealed class GitView : IDisposable
 		_commitInput = null;
 		_branchInput = null;
 		var status = GitStatusReader.Read(_cwd());
-		if (_selectedPath is { Length: > 0 } selected &&
-			!status.Changes.Any(change => string.Equals(change.Path, selected, StringComparison.Ordinal)))
+		if (_diffRequest is { Kind: GitDiffKind.WorkingTree or GitDiffKind.Staged } request &&
+			!status.Changes.Any(change => string.Equals(change.Path, request.Path, StringComparison.Ordinal)))
 		{
-			_selectedPath = null;
+			_diffRequest = null;
 		}
 
 		foreach (var child in _host.Children.ToArray())
@@ -115,12 +135,27 @@ public sealed class GitView : IDisposable
 			return root;
 		}
 
-		root.Children(BuildMorePane(status).DockBottom());
+		var branches = status.IsRepository && (_graphExpanded || _compareExpanded)
+			? CurrentBranches()
+			: [];
+		root.Children(BuildBottomPanes(status, branches).DockBottom());
 		root.Children(BuildChangesPane(status));
 		return root;
 	}
 
 	// ----------------------------------------------------------------- 分支栏
+
+	private IReadOnlyList<string> CurrentBranches()
+	{
+		if (!_branchesLoaded || _branchesDirty)
+		{
+			_branches = GitWriter.Branches(_cwd());
+			_branchesLoaded = true;
+			_branchesDirty = false;
+		}
+
+		return _branches;
+	}
 
 	private UIElement BuildBranchBar(GitStatus status)
 	{
@@ -156,7 +191,12 @@ public sealed class GitView : IDisposable
 				.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Info));
 		}
 
-		var refresh = ToolbarButton("refresh-cw", Strings.RefreshGit, Refresh);
+		var refresh = ToolbarButton("refresh-cw", Strings.RefreshGit, () =>
+		{
+			_branchesDirty = true;
+			_graphDirty = true;
+			Refresh();
+		});
 		refresh.IsEnabled = !_busy && !_generating;
 		right.Children(refresh);
 
@@ -329,7 +369,7 @@ public sealed class GitView : IDisposable
 			pane.Children(failure.DockTop());
 		}
 		pane.Children(BuildCommitComposer(status).DockTop());
-		if (BuildDiffPane(status) is { } diff)
+		if (BuildDiffPane() is { } diff)
 		{
 			pane.Children(diff.DockBottom());
 		}
@@ -678,15 +718,9 @@ public sealed class GitView : IDisposable
 
 	private UIElement BuildFileRow(GitChange change, int depth, bool stagedSide, bool conflict, bool allowActions)
 	{
-		var selected = string.Equals(_selectedPath, change.Path, StringComparison.Ordinal) && _selectedStaged == stagedSide;
+		var selected = _diffRequest?.MatchesWorkingTree(change.Path, stagedSide) == true;
 		var letter = conflict ? "U" : change.StatusLetter(stagedSide);
-		var letterRole = letter switch
-		{
-			"A" => AppStyles.RoleSuccess,
-			"D" or "U" => AppStyles.RoleError,
-			"R" or "C" or "M" or "T" => AppStyles.RoleInfo,
-			_ => AppStyles.RoleFaint,
-		};
+		var letterRole = LetterRole(letter);
 
 		var row = new Button()
 			.StyleName(AppStyles.GhostButton)
@@ -731,60 +765,87 @@ public sealed class GitView : IDisposable
 
 	private void SelectDiff(GitChange change, bool stagedSide)
 	{
-		if (string.Equals(_selectedPath, change.Path, StringComparison.Ordinal) && _selectedStaged == stagedSide)
+		var untracked = change.IndexStatus == "?" && change.WorkTreeStatus == "?";
+		_diffRequest = _diffRequest?.MatchesWorkingTree(change.Path, stagedSide) == true
+			? null
+			: GitDiffRequest.WorkingTree(change.Path, stagedSide, untracked);
+		if (_diffRequest is not null)
 		{
-			_selectedPath = null;
-		}
-		else
-		{
-			_selectedPath = change.Path;
-			_selectedStaged = stagedSide;
+			_changesExpanded = true;
 		}
 
 		Refresh();
 	}
 
-	private UIElement? BuildDiffPane(GitStatus status)
+	private UIElement? BuildDiffPane()
 	{
-		if (_selectedPath is not { Length: > 0 } path)
+		if (_diffRequest is not { } request)
 		{
 			return null;
 		}
 
-		var change = status.Changes.FirstOrDefault(item => string.Equals(item.Path, path, StringComparison.Ordinal));
-		if (change is null)
+		var path = request.Path;
+		string diff;
+		string? error = null;
+		switch (request.Kind)
 		{
-			return null;
+			case GitDiffKind.Staged:
+				diff = GitStatusReader.StagedDiff(_cwd(), path);
+				break;
+			case GitDiffKind.Commit:
+			{
+				var content = GitHistoryReader.CommitFileDiff(
+					_cwd(), request.CommitHash ?? string.Empty, request.BaseHash, path, request.OriginalPath);
+				diff = content.Text;
+				error = content.Error;
+				break;
+			}
+			case GitDiffKind.Compare:
+			{
+				var content = GitHistoryReader.CompareFileDiff(
+					_cwd(), request.BaseHash ?? string.Empty, request.TargetHash ?? string.Empty,
+					path, request.OriginalPath);
+				diff = content.Text;
+				error = content.Error;
+				break;
+			}
+			default:
+				diff = GitStatusReader.Diff(_cwd(), path, request.Untracked);
+				break;
 		}
 
-		var untracked = change.IndexStatus == "?" && change.WorkTreeStatus == "?";
-		var diff = _selectedStaged
-			? GitStatusReader.StagedDiff(_cwd(), path)
-			: GitStatusReader.Diff(_cwd(), path, untracked);
 		var (added, removed) = CountDiffLines(diff);
+		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2);
+		// 提交/比较的 diff 是历史内容，打开工作区文件会看错版本；这两个来源只给关闭。
+		if (request.Kind is GitDiffKind.WorkingTree or GitDiffKind.Staged)
+		{
+			actions.Children(AppIcons.Button("square-pen", Strings.OpenInEditor, () => OpenInEditor(path)));
+		}
 
-		var header = new DockPanel().LastChildFill().Children(
-			new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(2)
-				.Children(
-					AppIcons.Button("square-pen", Strings.OpenInEditor, () => OpenInEditor(path)),
-					AppIcons.Button("x", Strings.GitCloseDiff, () =>
-					{
-						_selectedPath = null;
-						Refresh();
-					})).DockRight(),
+		actions.Children(AppIcons.Button("x", Strings.GitCloseDiff, () =>
+		{
+			_diffRequest = null;
+			Refresh();
+		}));
+		var header = new DockPanel().LastChildFill().Children(actions.DockRight(),
 			new StackPanel()
 				.Orientation(Orientation.Horizontal)
 				.Spacing(6)
 				.VerticalAlignment(VerticalAlignment.Center)
 				.Children(
-					new TextBlock().Text(Strings.GitDiff).FontSize(AppTheme.FontSizeMicro)
-						.FontWeight(FontWeight.SemiBold).PrimaryText(),
+					new TextBlock().Text(request.Title).FontSize(AppTheme.FontSizeMicro)
+						.MaxWidth(90).FontWeight(FontWeight.SemiBold).PrimaryText()
+						.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
 					new TextBlock().Text(path).FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
-						.MaxWidth(210).SubtleText().TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
+						.MaxWidth(170).SubtleText().TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
 					new TextBlock().Text(GitDiffStat(added, removed)).FontFamily(AppTheme.MonoFont)
 						.FontSize(AppTheme.FontSizeMicro).FaintText()));
+
+		UIElement body = error is not null
+			? new TextBlock().Text(Strings.GitDiffFailedReason(error))
+				.FontSize(AppTheme.FontSizeMicro).TextWrapping(TextWrapping.Wrap)
+				.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Error)
+			: DiffView.Render(diff.Length > 0 ? diff : Strings.GitNoDiff);
 
 		var pane = new StackPanel().Spacing(AppTheme.Space1)
 			.Children(
@@ -796,8 +857,8 @@ public sealed class GitView : IDisposable
 					new Thickness(0, 1, 0, 1)),
 				new ScrollViewer()
 					.SmoothScrolling()
-					.MaxHeight(260)
-					.Content(DiffView.Render(diff.Length > 0 ? diff : Strings.GitNoDiff))
+					.MaxHeight(180)
+					.Content(body)
 					.AutoVerticalScroll()
 					.NoHorizontalScroll());
 
@@ -963,7 +1024,9 @@ public sealed class GitView : IDisposable
 			Toasts.Success(View, message);
 			_lastFailureMessage = null;
 			_lastFailureDetail = null;
-			_selectedPath = null;
+			_diffRequest = null;
+			_branchesDirty = true;
+			_graphDirty = true;
 		}
 		else
 		{
@@ -1288,14 +1351,38 @@ public sealed class GitView : IDisposable
 
 	private static string GitDiffStat(int added, int removed) => Strings.GitDiffStat(added, removed);
 
+	/// <summary>视觉验收用：打印泳道与面板根的窗口坐标，供像素检查脚本对齐。</summary>
+	internal void ReportGraphGeometryForSmoke()
+	{
+		var lanes = new List<Rect>();
+
+		void Walk(Element element)
+		{
+			if (element is CommitGraphLanes)
+			{
+				lanes.Add(element.Bounds);
+			}
+
+			if (element is IVisualTreeHost host)
+			{
+				host.VisitChildren(child => { Walk(child); return true; });
+			}
+		}
+
+		Walk(View);
+		Console.WriteLine(
+			$"git-graph root={((FrameworkElement)View).Bounds} commits={_graphCommits.Count}/{_graphTotal} " +
+			$"branches={CurrentBranches().Count} error={_graphError ?? "-"} lanes=[{string.Join(" ", lanes)}]");
+	}
+
 	/// <summary>视觉验收用：选中第一个改动，让 diff 区一起出现在截图里。</summary>
 	public void SelectFirstChangeForSmoke()
 	{
 		var status = GitStatusReader.Read(_cwd());
 		if (status.Changes.FirstOrDefault() is { } first)
 		{
-			_selectedPath = first.Path;
-			_selectedStaged = first.HasStaged;
+			var untracked = first.IndexStatus == "?" && first.WorkTreeStatus == "?";
+			_diffRequest = GitDiffRequest.WorkingTree(first.Path, first.HasStaged, untracked);
 			Refresh();
 		}
 	}

@@ -34,6 +34,14 @@ for theme in dark light; do
   printf 'scratch\n' >"$work/scratch.txt"
   git -C "$work" stash push -q -u -m "smoke stash"
 
+  # 提交图要有分叉与合并才测得出泳道：一条 side 分支 + 一次 --no-ff 合并。
+  git -C "$work" switch -q -c side
+  printf 'side\n' >"$work/side.txt"
+  git -C "$work" add -- side.txt
+  git -C "$work" commit -qm "side work"
+  git -C "$work" switch -q main
+  git -C "$work" merge -q --no-ff --no-edit side
+
   # 再铺开三种状态：已暂存（新增）、未暂存（修改，也是 diff 区要展示的那份）、未跟踪。
   mkdir -p "$work/src"
   printf 'namespace Demo;\n\npublic static class Staged\n{\n}\n' >"$work/src/Staged.cs"

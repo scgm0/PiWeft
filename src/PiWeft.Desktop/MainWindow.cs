@@ -1637,6 +1637,7 @@ public sealed partial class MainWindow : Window
 					if (CurrentTab() is { } gitTab && _sessionPanels.TryGetValue(gitTab, out var gitPanel))
 					{
 						gitPanel.SelectFirstGitChangeForSmoke();
+						gitPanel.ReportGitGraphGeometryForSmoke();
 					}
 
 					break;
@@ -1728,6 +1729,11 @@ public sealed partial class MainWindow : Window
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
 		Dispatch(() =>
 		{
+			if (view == "git" && CurrentTab() is { } geometryTab && _sessionPanels.TryGetValue(geometryTab, out var geometryPanel))
+			{
+				geometryPanel.ReportGitGraphGeometryForSmoke();
+			}
+
 			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();
 			if (view == "chat") CurrentTab()?.ReportConversationSmoke();
 			if (view == "resources" && _settingsView?.LastSectionError is { Length: > 0 } error)

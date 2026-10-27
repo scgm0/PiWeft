@@ -344,7 +344,7 @@ public static class GitStatusReader
 	}
 
 	/// <summary>运行一条 git 命令并同时保留 stderr；读取层需要区分「空结果」与「命令失败」。</summary>
-	private static (string Output, string Error, int ExitCode) RunDetailed(
+	internal static (string Output, string Error, int ExitCode) RunDetailed(
 		string cwd,
 		string[] arguments,
 		int maxOutputCharacters = 0)

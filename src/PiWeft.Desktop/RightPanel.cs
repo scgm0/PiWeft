@@ -155,6 +155,10 @@ public sealed class RightPanel : IDisposable
 	/// <summary>视觉验收：Git 分段选中第一个改动。</summary>
 	public void SelectFirstGitChangeForSmoke() => _git?.SelectFirstChangeForSmoke();
 
+	/// <summary>视觉验收：打印泳道几何。</summary>
+	public void ReportGitGraphGeometryForSmoke() => _git?.ReportGraphGeometryForSmoke();
+
+
 	/// <summary>重读当前分段（文件列表 / Git 状态）；终端由自己的定时器重绘。</summary>
 	public void Refresh()
 	{

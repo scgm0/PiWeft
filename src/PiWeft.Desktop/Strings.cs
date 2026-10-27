@@ -535,6 +535,64 @@ public static partial class Strings
 
 	public const string GitSummaryGenerated = "已生成提交摘要。";
 
+	// 源代码管理图 / 比较更改
+	public const string GitGraph = "源代码管理图";
+
+	public const string GitGraphFilterAll = "全部";
+
+	public const string GitGraphFilter = "筛选引用";
+
+	public const string GitGraphEmpty = "没有提交。";
+
+	public const string GitGraphNoFilteredCommits = "当前筛选没有提交。";
+
+	public const string GitGraphLoadMore = "加载更多";
+
+	public const string GitCommitDetailUnavailable = "无法读取提交详情。";
+
+	public const string GitNoCommitFiles = "没有文件变更。";
+
+	public const string GitNoCommitMessage = "（无提交信息）";
+
+	public const string GitCompare = "比较更改";
+
+	public const string GitCompareBase = "基准";
+
+	public const string GitCompareTarget = "目标";
+
+	public const string GitCompareAction = "比较";
+
+	public const string GitCompareNeedsBranches = "至少需要两个本地分支才能比较。";
+
+	public const string GitCompareHint = "选择基准与目标分支后点比较。";
+
+	public const string GitCompareEmpty = "两个分支之间没有差异。";
+
+	public const string GitCompareFailed = "比较失败。";
+
+	public static string GitCompareFailedReason(string reason) => $"比较失败：{reason}";
+
+	public static string GitAheadBehind(int ahead, int behind) => $"领先 {ahead} · 落后 {behind}";
+
+	public static string GitCommitFiles(int files, int insertions, int deletions) =>
+		$"{files} 个文件 · +{insertions} −{deletions}";
+
+	public const string GitDiffFailed = "读取差异失败。";
+
+	public static string GitDiffFailedReason(string reason) => $"读取差异失败：{reason}";
+
+	public const string GitJustNow = "刚刚";
+
+	public static string GitMinutesAgo(int count) => $"{count} 分钟前";
+
+	public static string GitHoursAgo(int count) => $"{count} 小时前";
+
+	public static string GitDaysAgo(int count) => $"{count} 天前";
+
+	public static string GitMonthsAgo(int count) => $"{count} 个月前";
+
+	public static string GitYearsAgo(int count) => $"{count} 年前";
+
 	public static string GitSummaryFailedReason(string reason) => $"生成提交摘要失败：{reason}";
 
 	public const string GitSummaryModel = "模型";

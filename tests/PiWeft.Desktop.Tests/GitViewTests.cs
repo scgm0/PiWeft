@@ -290,6 +290,62 @@ public sealed class GitViewTests : IDisposable
 	}
 
 	[Fact]
+	public void GraphExpandsACommitAndOpensItsFileDiff()
+	{
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "first");
+		File.WriteAllText(Path.Combine(_root, "a.txt"), "changed");
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "second");
+
+		var view = View(_root);
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.GitGraph);
+		var commit = ButtonWithText(view, "second");
+		Assert.NotNull(commit);
+		ImagePreviewTests.Click(commit!);
+
+		var file = ButtonWithText(view, "a.txt");
+		Assert.NotNull(file);
+		ImagePreviewTests.Click(file!);
+
+		Assert.Contains(Find<MultiLineTextBox>(view.View),
+			text => text.Text.Contains("+changed", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void CompareChangesListsBranchFilesAndOpensTheirDiff()
+	{
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "base");
+		RunGit("branch", "feature");
+		RunGit("switch", "-q", "feature");
+		File.WriteAllText(Path.Combine(_root, "feature.txt"), "feature");
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "feature");
+		RunGit("switch", "-q", "main");
+
+		var view = View(_root);
+		var compareHeader = ButtonWithText(view, Strings.GitCompare);
+		Assert.NotNull(compareHeader);
+		ImagePreviewTests.Click(compareHeader!);
+
+		var pickers = Find<ComboBox>(view.View).ToArray();
+		Assert.Equal(2, pickers.Length);
+		pickers[0].SelectedIndex = 0; // main
+		pickers[1].SelectedIndex = 1; // feature
+		var compare = ButtonWithText(view, Strings.GitCompareAction);
+		Assert.NotNull(compare);
+		ImagePreviewTests.Click(compare!);
+
+		var file = ButtonWithText(view, "feature.txt");
+		Assert.NotNull(file);
+		ImagePreviewTests.Click(file!);
+
+		Assert.Contains(Find<MultiLineTextBox>(view.View),
+			text => text.Text.Contains("+feature", StringComparison.Ordinal));
+	}
+
+	[Fact]
 	public void StagedDiffAllReadsOnlyTheIndexAndReportsEmptyState()
 	{
 		RunGit("add", "--all");
@@ -427,6 +483,10 @@ public sealed class GitViewTests : IDisposable
 			button.Tag is string tag && tag == Strings.GitGenerateCommitSummary);
 		Assert.False(ai.IsEnabled);
 	}
+
+	private static Button? ButtonWithText(GitView view, string text) =>
+		Find<Button>(view.View).FirstOrDefault(button =>
+			Find<TextBlock>(button).Any(block => string.Equals(block.Text, text, StringComparison.Ordinal)));
 
 	private static string? ContentText(Button button) =>
 		button.Content switch
