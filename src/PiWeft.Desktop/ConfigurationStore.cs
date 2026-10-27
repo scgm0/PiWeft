@@ -19,9 +19,22 @@ public sealed record ConfigurationDocument(ConfigFile File, bool Project, string
 public sealed class ConfigurationConflictException() : IOException(Strings.ConfigConflict);
 
 /// <summary>Configuration writes use revision checks and same-directory atomic replacement.</summary>
-public sealed class ConfigurationStore(string agentDir, string cwd)
+public sealed class ConfigurationStore
 {
+	public ConfigurationStore(string agentDir, string cwd)
+	{
+		AgentDir = agentDir;
+		_cwd = cwd;
+	}
+
+	// 构造函数参数不能直接被成员初始化捕获（C# 会警告「参数被捕获到封闭类型状态」），
+	// 所以显式声明字段。
+	private readonly string _cwd;
+
 	public const int MaxBytes = 2 * 1024 * 1024;
+
+	/// <summary>全局配置所在目录；MCP 授权令牌也存在这里，跨模块要用同一个根。</summary>
+	public string AgentDir { get; }
 	private static readonly JsonDocumentOptions ReadOptions = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
 	public static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -29,7 +42,7 @@ public sealed class ConfigurationStore(string agentDir, string cwd)
 	{
 		if (project && file == ConfigFile.Auth) throw new ArgumentException(Strings.ConfigAuthGlobalOnly);
 		var name = file switch { ConfigFile.Models => "models.json", ConfigFile.Auth => "auth.json", ConfigFile.Settings => "settings.json", ConfigFile.Usage => "usage-queries.json", _ => "mcp.json" };
-		var path = System.IO.Path.Combine(project ? System.IO.Path.Combine(System.IO.Path.GetFullPath(cwd), ".pi") : System.IO.Path.GetFullPath(agentDir), name);
+		var path = System.IO.Path.Combine(project ? System.IO.Path.Combine(System.IO.Path.GetFullPath(_cwd), ".pi") : System.IO.Path.GetFullPath(AgentDir), name);
 		var (raw, revision) = ReadRaw(path);
 		string? error = null;
 		if (revision != "missing")

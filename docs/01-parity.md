@@ -124,6 +124,33 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 - 视觉验收：`xvfb-run -a bash tools/desktop-import-smoke.sh`（夹具家目录 + 弹窗截图，不碰真实数据）。
 - 测试：`tests/PiWeft.CodingAgent.Tests/SessionImportTests.cs`（发现/转换/落盘 12 项，含产物必须能被 `SessionManager` 正常打开）、`tests/PiWeft.Cli.Tests/ImportCommandTests.cs`（命令面 8 项）、`tests/PiWeft.Desktop.Tests/SessionImportDialogTests.cs`（弹窗 5 项）。
 
+## 进程内扩展宿主（PI-01 / PI-02）
+
+`src/PiWeft.CodingAgent/Extensions/`。一个扩展 = 一个 Jint 引擎 + 一条专属线程，
+注册期与所有回调都投递到那条线程上执行（Jint 引擎不是线程安全的，而工具与事件来自主机线程）。
+
+- **发现**：`<agentDir>/extensions` 与（仅在项目受信任时）`<cwd>/.pi/extensions`，认 `.js/.mjs/.cjs` 与 `.ts/.mts/.cts/.tsx`；
+  `.d.ts` 与目录里的杂文件不算扩展。
+- **注册面**：`pi.on(event, handler)`、`pi.registerTool({name,label,description,parameters,execute})`、
+  `pi.registerCommand(name, {description, handler})`（也收 `(name, description, handler)` 的位置写法）、`pi.ui.*`。
+- **可派发事件**：`tool_call`、`tool_result`、`before_agent_start`、`agent_end`。
+  监听别的事件在**注册时就报诊断**并出现在 `UnsupportedEvents` —— 悄悄收下却永不触发是最难查的失效模式。
+- **沙箱**：扩展没有 `fs` / `net` / `require` / 动态 import。唯一出口是显式注册的 `__pi*` 宿主函数，
+  `pi` 对象由这些函数在 JS 侧组装（与 `CodeModePrelude` 同一手法）。桥一律 `ClrFunction`，
+  因此 NativeAOT/裁剪零告警（AOT 冒烟里有一 stage 专门跑扩展宿主）。
+- **安全边界**：扩展的 `tool_call` 钩子排在安全门**之前**（扩展可以主动拦调用），
+  但它放行的调用仍要过档位检查 —— 扩展不能变成绕过安全门的口子。内置工具优先于扩展同名工具。
+- **可见性**：资源页新增「扩展」一节，逐条列出来源与**未生效原因**（TypeScript 需转译、语法错误等）。
+  只发现不执行；执行属于会话建立时。
+- **`/reload` 重建扩展宿主**（RPC `reload_resources` 与桌面的重载按钮都走它）：改完扩展文件还要重启应用
+  才生效等于没有热更新。只有宿主自己加载的才重建 —— **注入进来的**（`options.Extensions`）生命周期归注入方，
+  会话擅自 Dispose 别人的宿主是越界。并表始终从内置基线出发，否则 reload 会把扩展工具越加越多。
+- **失败隔离**：一个扩展抛错只记在它自己的诊断里，其余扩展与会话照常；
+  卡死的扩展被 10 秒超时切断并报告，不拖住会话。
+- **两条明确限制**：① 只执行 JavaScript（TS 需要构建期转译，本端口不内置转译器）；
+  ② 处理器必须同步 —— 返回 Promise 会被**明确报告**并丢弃返回值（异步要等事件循环泵接进宿主）。
+  这两条都在界面上可见，不会静默降级。
+
 ## Git 远端同步与 stash
 
 `GitWriter` 覆盖 fetch / pull / push / stash 收起·应用·丢弃，全部用 `ArgumentList` 传参（不拼 shell），
@@ -134,7 +161,7 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 
 - **pull 只用 `--ff-only`**。这里没有冲突解决界面，自动 merge 或 rebase 会把仓库推进到一个用户无法从界面
   收拾的状态（半完成的合并、未解决的 `<<<<<<<` 标记）。不能快进时宁可报错并让用户去终端决定合并还是变基。
-- **首次推送自动建跟踪**：没有上游时执行 `push --set-upstream origin <当前分支>`。`git push` 在无上游时的
+- **首次推送自动建跟踪**：没有上游时执行 `push --set-upstream <远端> <当前分支>`。远端不能写死 `origin` —— 不少仓库的远端叫 `upstream` / `github`，写死会让一次本该成功的推送报成「'origin' does not appear to be a git repository」。选择规则：只有一个远端就用它；有多个且其中有 `origin` 就用 `origin`（约定俗成的目标）；有多个且都没有 `origin` **不猜**，提示用户自己 `--set-upstream-to`（推错远端比不推难查得多）。`git push` 在无上游时的
   报错是新手最容易卡住的地方，而按钮的语义就是「把当前分支推上去」。分离头指针下拒绝（会造出用户没预期的分支名）。
 - **没有远端 / 没有上游时按钮变灰**，并说明原因；面板不靠「点下去看报错」来教学。
 - **网络操作关掉终端提示**（`GIT_TERMINAL_PROMPT=0`）：把「等用户输入密码」从挂满 120 秒超时变成立刻返回
@@ -144,6 +171,7 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
   `git pull --ff-only` 失败时首行是「来自 /tmp/remote」而不是 `fatal: Not possible to fast-forward`。
   钉住之后用户看到的是翻译过的中文提示，原始英文输出留在 `GitResult.Detail` 里（面板末尾展示）。
   这条约束有源码契约测试兜底，漏掉任何一处 git 子进程都会红。
+- **未跟踪文件的 diff 不经过 git**：以前用 `git diff --no-index /dev/null <path>`，而 `/dev/null` 只在 POSIX 上存在（Git for Windows 是否认这个字面量取决于版本），Windows 上会直接失败、面板显示「没有可显示的 diff」。现在自己合成一份「整份新增」的 unified diff（只读界面要显示的前若干行，二进制给一句说明），跨平台一致且少起一个进程。
 - **状态读取必须走 `--porcelain=v1 -z`**：非 `-z` 时 git 会对非 ASCII 路径做八进制转义
   （`"\344\270\255..."`）、给带空格的路径加引号，而解析按固定列取子串 —— 中文 / emoji 文件名会变成
   一串不存在的路径，于是「点暂存没反应」「点开文件说没有」。`-z` 输出原始 UTF-8 且不带引号，是 git 唯一
@@ -181,6 +209,30 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 - 模型目录/Agent 设置更新作用于新会话；已有会话不进行运行时替换。MCP 保存不自动重连，设置面板提供手动「重连 MCP」。
 
 ### 工具调用安全门
+
+配置容器是 `SecurityConfig`（总开关 + 默认档 + 档位表 + `sessionLevels`），单个档位的策略是 `ToolSecurity`。
+判定入口 `ToolSecurity.Evaluate(tool, args, cwd)` 返回 `Allow` / `Ask` / `Deny` 三态，
+挂在 `CodingAgentSession.GuardedBeforeToolCallAsync`（直接调用、codemode 嵌套调用、MCP 工具的唯一汇合点）。
+
+三态的语义，与 PiDeck 的差异都写在类型注释里：
+
+- **`ask` 有宿主就弹确认，没有宿主就拒绝**（RPC / print / 守护进程直连属于这一类）。
+  无审批人在场却放行，等于这道门只在有人看着时才关上 —— 最坏的一种失效模式。
+- `ask` 之前**先过路径边界与危险命令检查**：不可逆操作不该靠一次回车放行，所以「要问一下」不会把
+  「本来就该拒绝」提升成「问一句」。
+- 确认对话框里选了允许，按**工具名**在本会话内记住（`_securityApprovedTools`），不跨会话、不落盘。
+- 会话级覆盖存在同一份全局设置里（`security.sessionLevels`，键是会话文件路径），
+  而不是项目 `.pi/settings.json`：项目设置能改自己的安全档位等于让一个仓库关掉本机防护。
+- 界面入口两处：设置 → 运行 → **安全门**（总开关、默认档、档位编辑、`新建自定义档位`/删除、按会话覆盖列表），
+  以及会话输入框左群的 **shield** 按钮（跟随档位）。分区改动即时写盘并推给所有已打开的会话
+  （`SettingsView.SecurityChanged` → `MainWindow.ApplySecurityToSessions`），不留「草稿 + 统一保存」的脏状态。
+- 视觉验收：`xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-security-smoke.sh`
+  （预置非默认配置 + 自定义档 + 会话覆盖，按深浅主题各截一张，并断言分区真的被选中）。
+- 一个踩过的实现约束：`ToolSecurity` 的模式表（敏感路径、危险命令）必须声明在档位快照
+  （`Off`/`Standard`/`Strict`/`Builtins`）**之前** —— 静态属性按文本顺序初始化，反了就会让
+  `Standard.DenyBashPatterns` 静默变成 null，表现为「危险命令表失效」而不是编译错误
+  （这个坑在本仓库出现过两次，`StaticPatternTablesAreLoaded` 是它的守卫）。
+
 
 PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 的 `security/policy.ts` + 内置扩展 `pi-deck-security-gate.ts`，实现在 `src/PiWeft.CodingAgent/Security/ToolSecurity.cs`，挂在**所有工具调用的唯一汇合点** `GuardedBeforeToolCallAsync`（计划模式检查之后、宿主钩子之前）。直接调用、codemode 里的嵌套调用、MCP 工具都走这条路 —— 嵌套调用不是绕过口。
 
@@ -248,14 +300,14 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 
 | 编号 | 能力 | 状态与剩余差距 |
 |---|---|---|
-| PI-01 | JS/TS 扩展宿主 | 未开始；已有 Jint codemode，但没有扩展加载、注册、生命周期、动态能力、重载与清理 |
-| PI-02 | 扩展 UI 协议 | 对话框与 fire-and-forget 方法（`setStatus`/`setWidget`/`setTitle`/`set_editor_text`）均已按 pi 顶层字段实现，RPC/控制台/桌面有对应落点；缺少进程内 JS 扩展宿主与自定义 renderer |
+| PI-01 | JS/TS 扩展宿主 | **JavaScript 扩展已可用**：按 pi 约定发现（全局 `<agentDir>/extensions` + 受信任项目的 `.pi/extensions`），每扩展一个 Jint 引擎跑在专属线程上，注册工具/命令/事件钩子，工具调用前派发 `tool_call`；`/reload` 与关闭会话时释放。**TypeScript 仍不支持**（本端口无转译器），但会逐条说明原因而不是静默不加载 |
+| PI-02 | 扩展 UI 协议 | 对话框与 fire-and-forget 方法（`setStatus`/`setWidget`/`setTitle`/`set_editor_text`）均已按 pi 顶层字段实现，RPC/控制台/桌面有对应落点；**扩展宿主已接上**：`pi.ui.notify/confirm/input/select/setStatus/setWidget/setTitle` 可由扩展调用（没有宿主界面时交互方法按取消处理并记诊断）。仍未覆盖：自定义 renderer、`setEditorText` 的扩展侧入口 |
 | PI-03 | Pi 包管理 | 已实现 settings `packages` 来源解析、npm/git/本地安装与 `pi install/list/remove/update`；未覆盖 npm 依赖冲突治理、包图库与资源筛选界面 |
 | PI-04 | 完整终端 TUI | 仍为按行 REPL；缺少多行编辑、`$EDITOR`、剪贴板图片粘贴进 TUI、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
 | PI-05 | codemode / tool_search | 已实现；余项是 pi prelude 的 lockdown（见 [codemode 与 Jint](03-codemode.md)） |
-| PI-06 | MCP 高级运行时 | 已覆盖 OAuth 授权码 + PKCE、客户端凭据、`oauth` 对象、`callbackPort`/`clientName`/`authServerMetadataUrl`、401 刷新重放、HTTP 通知流与反向应答；未覆盖 `cimd`、完整 `callbackUrl` 路径、与 pi 共享 `mcp-auth.json` 令牌格式、桌面 MCP 授权入口 |
+| PI-06 | MCP 高级运行时 | 已覆盖 OAuth 授权码 + PKCE、客户端凭据、`oauth` 对象、`callbackPort`/`clientName`/`authServerMetadataUrl`、401 刷新重放、HTTP 通知流与反向应答；**授权流程抽成 `McpLogin` 由 CLI 与桌面共用**（桌面配置页每个 HTTP 服务器一行显示 未授权/已授权/令牌已过期，带授权·重新授权·清除凭据）；未覆盖 `cimd`、完整 `callbackUrl` 路径、与 pi 共享 `mcp-auth.json` 令牌格式 |
 | PI-07 | 认证覆盖 | 已支持 Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius OAuth 与全 Provider API key；余项是 AWS profile/ECS/IRSA 完整 ambient 链与部分企业登录细分 |
-| PI-08 | 动态模型目录 | 已实现 pi.dev 目录刷新、离线缓存、账号级 OpenRouter/Radius/GitHub Copilot 目录；余项是 ETag/刷新节流与更细的账号能力同步 |
+| PI-08 | 动态模型目录 | 已实现 pi.dev 目录刷新、离线缓存、账号级 OpenRouter/Radius/GitHub Copilot 目录、**条件请求（If-None-Match / If-Modified-Since，304 不重传不覆盖）与 6 小时刷新节流**（`pi update --models` 用 `force` 绕过）；余项是更细的账号能力同步与目录增量合并 |
 | PI-09 | 高级模型运行时 | 已实现虚拟模型（静态目标 + `models.json` 动态 JS route + 路由状态条目）、cache warming（含 `cache_warming_decision` 扩展回调）、模型级 `samplingParams`、Codex WebSocket、生图/分类网关；余项是扩展宿主动态注册 route、`websocket-cached` 连接复用、Codex zstd 与完整 continuation，以及生图/分类入口接线 |
 | PI-10 | 资源配置与主题 | 资源发现、主题 JSON 解析、主题目录热重载与资源页已实现；余项是独立资源编辑界面与包资源筛选可视化 |
 | PI-11 | 项目信任 | 已实现 `trust.json`、父目录查找、显式覆盖、默认 `ask`、项目资源门控与启动询问 |
@@ -276,7 +328,7 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 | D-11 | 远程/自动化 | 缺少局域网 Web、实时推送、外网访问令牌/隧道、飞书和定时任务 |
 | D-12 | 桌面集成 | 缺少托盘、系统通知/历史、自动更新、快捷任务浮窗、桌面宠物；代理、进程监控和诊断包也未完整对齐 |
 | D-13 | 交互/长历史 | 缺少项目级置顶/排序、标签拖拽/分屏、完整消息编辑删除、Mermaid/KaTeX。历史分页**经实测后决定不做**（中位会话打开约 5 ms、p90 80 ms，且条数切页不构成内存上界），全部历史仍整份在内存；侧栏摘要改为磁盘持久化（启动 1046 ms → 52 ms） |
-| D-14 | 工具调用审批 | 已实现安全门（`settings.security`：`off`/`standard`/`strict`，敏感文件、目录边界、危险命令）；未覆盖「先弹框问用户再执行」的交互式审批，因此 PiDeck 的 `ask` 动作在本端口退化为拒绝，也没有按会话覆盖等级与设置页图形化编辑 |
+| D-14 | 工具调用审批 | 已实现完整安全门：`allow`/`ask`/`deny` 工具动作矩阵（ask 走宿主确认对话框，没有审批人时按拒绝处理）、敏感文件、目录边界、危险命令表、禁地；设置 → 运行 → 安全门 提供总开关、默认档、档位编辑与自定义档增删；会话输入框的「安全」按钮按会话覆盖档位（`sessionLevels`）。未覆盖：PiDeck 的「按会话」独立存储位置（本项目存在全局 settings 的 security 段）与 CLI 侧的档位切换命令 |
 | X-01 | 原生子代理、并行/链式编排、worktree 隔离 | 高价值但涉及执行所有权、取消、凭据和补丁合并 |
 | X-02 | ACP、IDE 集成 | 与 D-09 有关联；服务端协议与桌面接入外部后端应分别规划 |
 | X-03 | LSP/AST/DAP | 语义检索、诊断、结构化编辑、调试；不是基础工具的直接兼容要求 |

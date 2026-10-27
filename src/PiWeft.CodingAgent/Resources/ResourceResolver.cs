@@ -10,6 +10,12 @@ namespace PiWeft.CodingAgent.Resources;
 public sealed record ResourceRoot(string Path, ResourceOrigin Origin);
 
 /// <summary>一次资源解析的结果：技能、提示词模板、主题、包与诊断。</summary>
+/// <summary>
+/// 资源页显示的一个扩展条目。<see cref="Note"/> 承载「为什么没生效」——
+/// 加载失败或 TypeScript 未转译的扩展如果只字不提，用户会以为它在跑。
+/// </summary>
+public sealed record ExtensionEntry(string Name, string Path, string Origin, bool Loaded, string Note);
+
 public sealed record ResourceSnapshot
 {
 	public IReadOnlyList<Skill> Skills { get; init; } = [];
@@ -19,6 +25,9 @@ public sealed record ResourceSnapshot
 	public IReadOnlyList<ThemeEntry> Themes { get; init; } = [];
 
 	public IReadOnlyList<PiPackage> Packages { get; init; } = [];
+
+	/// <summary>发现的扩展（含加载失败与不支持的形态）。</summary>
+	public IReadOnlyList<ExtensionEntry> Extensions { get; init; } = [];
 
 	/// <summary>解析期间的诊断（冲突、无效主题、未安装的包等）。</summary>
 	public IReadOnlyList<string> Diagnostics { get; init; } = [];
@@ -49,6 +58,16 @@ public static class ResourceResolver
 			Templates = Prompts.PromptTemplates.Discover(PromptRoots(cwd, resolvedAgentDir, includeProject, packages)),
 			Themes = ThemeCatalog.Discover(ThemeRoots(cwd, resolvedAgentDir, includeProject, packages), diagnostics),
 			Packages = packages,
+			// 只发现、不执行：资源页要在会话建立之前就能列出扩展并说明状态，
+			// 而执行扩展代码属于宿主的事（ExtensionHost）。
+			Extensions = [.. PiWeft.CodingAgent.Extensions.ExtensionDescriptor
+				.Discover(cwd, includeProject, resolvedAgentDir)
+				.Select(static descriptor => new ExtensionEntry(
+					Path.GetFileNameWithoutExtension(descriptor.FilePath),
+					descriptor.FilePath,
+					descriptor.Origin,
+					Loaded: false,
+					Note: descriptor.Supported ? string.Empty : descriptor.UnsupportedReason ?? "未加载"))],
 			Diagnostics = diagnostics,
 		};
 	}

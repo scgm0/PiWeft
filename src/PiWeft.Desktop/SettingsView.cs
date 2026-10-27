@@ -47,6 +47,7 @@ public sealed class SettingsView
 	private readonly StackPanel _content = new();
 	private readonly StackPanel _navigation = new();
 	private readonly Lazy<ConfigurationView> _configuration;
+	private SecuritySection? _security;
 	private readonly Grid _main;
 	private readonly TextBlock _sectionTitle = new();
 	private readonly Action<ConfigFile> _saved;
@@ -201,6 +202,7 @@ public sealed class SettingsView
 			AddNavigationGroup(Strings.SettingsGroupRuntime, first: false);
 			AddNavigationButton("resources", "book-open", Strings.SettingsResources);
 			AddNavigationButton("session", "message-square", Strings.SettingsSession);
+			AddNavigationButton("security", "shield", Strings.SettingsSecurity);
 			AddNavigationButton("shortcuts", "terminal", Strings.SettingsShortcuts);
 			AddNavigationGroup(Strings.MaintenanceGroup, first: false);
 			AddNavigationButton("archive", "trash", Strings.SettingsArchive);
@@ -222,6 +224,7 @@ public sealed class SettingsView
 		"appearance" => Strings.ConfigAppearance,
 		"resources" => Strings.SettingsResources,
 		"session" => Strings.SettingsSession,
+		"security" => Strings.SettingsSecurity,
 		"archive" => Strings.SettingsArchive,
 		"shortcuts" => Strings.SettingsShortcuts,
 		"diagnostics" => Strings.SettingsDiagnostics,
@@ -320,6 +323,7 @@ public sealed class SettingsView
 				case "appearance": _content.Children(AppearanceSection()); break;
 				case "resources": _content.Children(ResourcesSection()); break;
 				case "session": _content.Children(SessionSection(snapshot.Session)); break;
+				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
 				case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
 				case "shortcuts": _content.Children(ShortcutSection()); break;
 				case "logs": _content.Children(LogSection()); break;
@@ -471,6 +475,27 @@ public sealed class SettingsView
 		.FontSize(AppTheme.FontSizeControl).PrimaryText();
 
 	/// <summary>资源管理：技能、提示词模板、主题与 pi 包的来源、路径与解析结果。</summary>
+	/// <summary>
+	/// 安全门分区。分区自己写 <c>settings.json</c>；保存成功后通过 <see cref="SecurityChanged"/>
+	/// 通知宿主把新配置推给所有已打开的会话 —— 只刷新设置页等于改了个看不见的开关。
+	/// </summary>
+	private Element SecuritySection(string agentDir)
+	{
+		_security ??= new SecuritySection(() => agentDir, () => SecurityChanged?.Invoke());
+		_security.Reload();
+		return _security.View;
+	}
+
+	/// <summary>视觉验收入口：选中安全门分区并展开第一个档位编辑器。</summary>
+	internal Task SelectSectionForSecurityEditAsync()
+	{
+		_security ??= new SecuritySection(() => _snapshot().AgentDir, () => SecurityChanged?.Invoke());
+		return SelectSectionAsync("security");
+	}
+
+	/// <summary>安全配置发生变化的宿主回调。</summary>
+	public event Action? SecurityChanged;
+
 	private Element ResourcesSection()
 	{
 		var snapshot = _snapshot();
@@ -499,6 +524,29 @@ public sealed class SettingsView
 				package.Source,
 				package.Scope == ResourceScope.Project ? Strings.ConfigProject : Strings.ConfigGlobal,
 				package.Root))))));
+
+		// 扩展单列一节：加载失败或 TypeScript 未转译的扩展必须看得见原因，
+		// 否则用户会以为它正在生效。
+		if (resources.Extensions.Count > 0)
+		{
+			var extensionRows = new List<ResourceRow>();
+			foreach (var extension in resources.Extensions)
+			{
+				// 加载失败或需要转译的原因直接接在名字后面：这些扩展看起来「在列表里」，
+				// 不写原因就等于告诉用户它在生效。
+				var name = extension.Note.Length > 0
+					? extension.Name + " · " + extension.Note
+					: extension.Name;
+				extensionRows.Add(new ResourceRow(name, string.Empty, extension.Origin, extension.Path));
+			}
+
+			panel.Children(Group(
+				"package",
+				Strings.ResourcesExtensions,
+				new StackPanel().Spacing(AppTheme.Space3).Children(
+					Hint(Strings.ResourcesExtensionHint),
+					ResourceList(extensionRows))));
+		}
 
 		if (resources.Diagnostics.Count > 0)
 		{

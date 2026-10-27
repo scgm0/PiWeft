@@ -100,12 +100,16 @@ public static class PackageCommands
 
 		if (parsed.Models)
 		{
-			var (updated, catalogFailures) = await ModelCatalogStore.RefreshAllAsync(
+			// 显式的 pi update --models 必须真的打网络：节流是给自动刷新用的，
+			// 用户主动要求刷新时还回一句「没到时间」等于命令失灵。
+			var outcome = await ModelCatalogStore.RefreshAllAsync(
 				onError: message => error.WriteLine($"pi: model catalog {message}"),
+				force: true,
 				cancellationToken: cancellationToken).ConfigureAwait(false);
-			output.WriteLine($"模型目录已刷新：{updated} 个 Provider 更新，{catalogFailures} 个失败。");
+			var skipped = outcome.NotModified > 0 ? $"，{outcome.NotModified} 个未变化（304）" : string.Empty;
+			output.WriteLine($"模型目录已刷新：{outcome.Updated} 个 Provider 更新，{outcome.Failed} 个失败{skipped}。");
 			output.WriteLine($"缓存：{ModelCatalogStore.PathFor()}");
-			return catalogFailures == 0 ? 0 : 1;
+			return outcome.Failed == 0 ? 0 : 1;
 		}
 
 		// `pi update`（无来源）、--extensions 与 --all 都表示「更新全部已声明包」。

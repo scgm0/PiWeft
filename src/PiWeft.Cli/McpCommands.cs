@@ -402,40 +402,10 @@ public static class McpCommands
 		TextWriter error,
 		CancellationToken cancellationToken)
 	{
-		var challenge = await ProbeChallengeAsync(server.Url!, cancellationToken).ConfigureAwait(false);
-		var metadata = await McpOAuth.DiscoverAsync(
+		// 流程本身在 PiWeft.Mcp.McpLogin：桌面配置页走同一条路，避免两边行为分叉。
+		var outcome = await McpLogin.RunAsync(
 			Http,
-			server.Url!,
-			challenge,
-			cancellationToken,
-			server.OAuth?.AuthServerMetadataUrl).ConfigureAwait(false);
-		if (metadata is null)
-		{
-			error.WriteLine("pi: 无法发现授权服务器元数据（检查网络或服务器的 WWW-Authenticate）");
-			return 1;
-		}
-
-		// 配置了 clientId + clientSecret 的服务器直接走客户端凭据授权，无需浏览器参与。
-		if (McpOAuth.UsesClientCredentials(server))
-		{
-			var granted = await McpOAuth
-				.ClientCredentialsAsync(Http, server.Url!, server, agentDir, cancellationToken, metadata)
-				.ConfigureAwait(false);
-			if (!granted.Ok)
-			{
-				error.WriteLine($"pi: 客户端凭据授权失败：{granted.Error}");
-				return 1;
-			}
-
-			output.WriteLine($"已登录 {name}（客户端凭据授权），令牌保存在 {McpOAuthStore.Path(agentDir)}");
-			return 0;
-		}
-
-		var result = await McpOAuth.AuthorizeAsync(
-			Http,
-			server.Url!,
 			server,
-			metadata,
 			agentDir,
 			url =>
 			{
@@ -445,13 +415,13 @@ public static class McpCommands
 			},
 			cancellationToken).ConfigureAwait(false);
 
-		if (!result.Ok)
+		if (!outcome.Ok)
 		{
-			error.WriteLine($"pi: 授权失败：{result.Error}");
+			error.WriteLine($"pi: {outcome.Message}");
 			return 1;
 		}
 
-		output.WriteLine($"已登录 {name}，令牌保存在 {McpOAuthStore.Path(agentDir)}");
+		output.WriteLine($"已登录 {name}：{outcome.Message}");
 		return 0;
 	}
 
@@ -480,28 +450,6 @@ public static class McpCommands
 	}
 
 	/// <summary>发一次不带令牌的 initialize，从 401 响应里取出 <c>WWW-Authenticate</c>。</summary>
-	private static async Task<string?> ProbeChallengeAsync(string url, CancellationToken cancellationToken)
-	{
-		try
-		{
-			using var request = new HttpRequestMessage(HttpMethod.Post, url)
-			{
-				Content = new StringContent(
-					"""{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"PiWeft","version":"0.1.0"}}}""",
-					Encoding.UTF8,
-					"application/json"),
-			};
-			request.Headers.TryAddWithoutValidation("accept", "application/json, text/event-stream");
-
-			using var response = await Http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-			return response.Headers.TryGetValues("WWW-Authenticate", out var values) ? string.Join(' ', values) : null;
-		}
-		catch (HttpRequestException)
-		{
-			return null;
-		}
-	}
-
 	/// <summary>
 	/// 解析子命令参数。<c>--</c> 之后的参数原样进入 <paramref name="trailing"/>（pi 的
 	/// <c>pi mcp add name -- command args...</c> 形式），不再当成选项或位置参数。

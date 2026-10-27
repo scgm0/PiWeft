@@ -69,10 +69,10 @@ public sealed record CodingAgentSettings
 	public CodemodeSettings Codemode { get; init; } = new();
 
 	/// <summary>
-	/// 工具调用安全门，对应 <c>settings.security</c>。默认 <c>off</c>：完全放行，
-	/// 行为与没有这道门时一致；见 <see cref="ToolSecurity"/>。
+	/// 工具调用安全门，对应 <c>settings.security</c>。默认等于没装这道门（<c>off</c> 档、完全放行）；
+	/// 只从<strong>全局</strong>设置读取，见 <see cref="SecurityConfig.Load"/>。
 	/// </summary>
-	public ToolSecurity Security { get; init; } = ToolSecurity.Off;
+	public SecurityConfig Security { get; init; } = SecurityConfig.Off;
 
 	public bool EnableSkillCommands { get; init; } = true;
 
@@ -139,7 +139,8 @@ public sealed record CodingAgentSettings
 		var global = ReadFile(GlobalPath(agentDir));
 		// 不受信时只取全局设置，项目里的 .pi/settings.json 不参与。
 		var project = includeProject ? ReadFile(ProjectPath(cwd)) : null;
-		return Merge(global, project);
+		// 安全门只认全局设置，而且要读原始 JSON：档位表与会话覆盖都不是扁平字段。
+		return Merge(global, project) with { Security = SecurityConfig.Load(agentDir) };
 	}
 
 	/// <summary>
@@ -539,7 +540,6 @@ public sealed record CodingAgentSettings
 		},
 		// 安全门只认全局设置：项目里的 .pi/settings.json 可以随仓库一起分发，
 		// 让它能改自己的安全等级等于让仓库关掉用户的防护。
-		Security = SecurityFrom(global?.Security),
 		Retry = new RetryPolicy(
 			Enabled: project?.Retry?.Enabled ?? global?.Retry?.Enabled ?? true,
 			MaxRetries: project?.Retry?.MaxRetries ?? global?.Retry?.MaxRetries ?? 3,
@@ -777,51 +777,8 @@ public sealed record CodingAgentSettings
 	/// <summary>settings.codemode.inlineBudget：负数按默认值处理。</summary>
 	private static int NormalizeCodemodeBudget(int? value) => value is >= 0 ? value.Value : CodemodeSettings.DefaultInlineBudget;
 
-	/// <summary>把 <c>settings.security</c> 折叠成安全门策略；没有该段时保持 <c>off</c>。</summary>
-	private static ToolSecurity SecurityFrom(SecurityFile? file)
-	{
-		if (file is null)
-		{
-			return ToolSecurity.Off;
-		}
 
-		return ToolSecurity.FromLevel(
-			file.Level,
-			file.ProtectSensitivePaths,
-			ParsePathPolicy(file.PathPolicy),
-			CleanList(file.CustomAllowDirs),
-			CleanList(file.DenyDirs),
-			CleanList(file.DenyBashPatterns));
-	}
 
-	/// <summary>未识别或缺失按「不限制」处理；与等级一致，写错的配置不该悄悄变严格。</summary>
-	private static ToolPathPolicy? ParsePathPolicy(string? value) => value?.Trim().ToLowerInvariant() switch
-	{
-		"unrestricted" => ToolPathPolicy.Unrestricted,
-		"workspace" => ToolPathPolicy.Workspace,
-		"custom" => ToolPathPolicy.Custom,
-		_ => null,
-	};
-
-	/// <summary>逐行去空白、丢空串；返回 null 表示「没配置这一项」（交给等级默认值）。</summary>
-	private static IReadOnlyList<string>? CleanList(List<string>? values)
-	{
-		if (values is null)
-		{
-			return null;
-		}
-
-		var cleaned = new List<string>(values.Count);
-		foreach (var value in values)
-		{
-			if (!string.IsNullOrWhiteSpace(value))
-			{
-				cleaned.Add(value.Trim());
-			}
-		}
-
-		return cleaned;
-	}
 }
 
 /// <summary>codemode 工具设置，对应 pi 的 <c>settings.codemode</c>。</summary>
@@ -896,30 +853,8 @@ public sealed record SettingsFile
 	public RetryFile? Retry { get; init; }
 
 	public CodemodeFile? Codemode { get; init; }
-
-	public SecurityFile? Security { get; init; }
 }
 
-/// <summary><c>settings.security</c> 的磁盘形状。所有字段可选：只写想覆盖的部分。</summary>
-public sealed record SecurityFile
-{
-	/// <summary><c>off</c>（默认）/ <c>standard</c> / <c>strict</c>。</summary>
-	public string? Level { get; init; }
-
-	public bool? ProtectSensitivePaths { get; init; }
-
-	/// <summary><c>unrestricted</c> / <c>workspace</c> / <c>custom</c>。</summary>
-	public string? PathPolicy { get; init; }
-
-	[JsonConverter(typeof(FlexibleStringListJsonConverter))]
-	public List<string>? CustomAllowDirs { get; init; }
-
-	[JsonConverter(typeof(FlexibleStringListJsonConverter))]
-	public List<string>? DenyDirs { get; init; }
-
-	[JsonConverter(typeof(FlexibleStringListJsonConverter))]
-	public List<string>? DenyBashPatterns { get; init; }
-}
 
 /// <summary><c>settings.codemode</c> 的磁盘形状。</summary>
 public sealed record CodemodeFile

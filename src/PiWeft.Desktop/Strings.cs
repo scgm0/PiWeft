@@ -246,6 +246,10 @@ public static partial class Strings
 	public const string SettingsResources = "资源";
 	public const string ResourcesPrompts = "提示词模板";
 	public const string ResourcesThemes = "主题";
+	public const string ResourcesExtensions = "扩展";
+
+	public const string ResourcesExtensionHint = "按 pi 约定发现的全局与项目扩展。这里只列举，不执行；加载失败或需要转译的扩展会写出原因。";
+
 	public const string ResourcesPackages = "pi 包";
 
 	public const string ResourcesSkillHint = "技能按描述在任务匹配时进入系统提示词；也可以用 /skill:name 显式触发。";
@@ -408,6 +412,8 @@ public static partial class Strings
 
 	public static string ImportAllDone(int count) => $"已导入 {count} 条会话。";
 
+	public static string ImportImporting(int count) => $"正在导入 {count} 条会话…";
+
 	public static string ImportAllPartial(int imported, int failed) => $"导入 {imported} 条成功、{failed} 条失败。";
 
 	public static string ImportScanFailed(string reason) => $"扫描失败：{reason}";
@@ -449,6 +455,10 @@ public static partial class Strings
 
 	public const string GitNoUpstream = "当前分支没有上游分支。可以先推送一次建立跟踪，或 git branch --set-upstream-to。";
 
+	public const string GitUnknownRemote = "远端名不存在：这个仓库没有对应的 remote，先用 git remote add 配置。";
+
+	public const string GitAmbiguousRemote = "这个仓库有多个远端且没有 origin，无法自动选择推送目标。请先 git branch --set-upstream-to 指定。";
+
 	public const string GitDetachedHead = "处于分离头指针状态，没有可推送的分支。先切回一个分支。";
 
 	public const string GitUpToDate = "已经是最新的。";
@@ -478,6 +488,105 @@ public static partial class Strings
 	public const string GitFailed = "操作失败。";
 
 	public const string GitPushUpstreamCreated = "已推送并建立上游跟踪。";
+
+	// 安全门设置页（设置 → 运行 → 安全门）。文案对齐 PiDeck 的安全管理面板。
+	public const string SettingsSecurity = "安全门";
+
+	public const string SecurityScope = "改动立即写入全局 settings.json 的 security 段，并对后续工具调用生效；项目级设置里的 security 段被忽略（仓库不该能关掉本机防护）。";
+
+	public const string SecurityGroup = "安全门";
+
+	public const string SecurityEnabled = "启用安全门";
+
+	public const string SecurityEnabledTip = "关闭时完全放行";
+
+	public const string SecurityEnabledHint = "总开关。关闭时无论档位怎么设都完全放行。";
+
+	public const string SecurityDefaultLevel = "默认档位";
+
+	public const string SecurityLevels = "档位";
+
+	public const string SecurityLevelDefault = "默认";
+
+	public const string SecurityLevelBuiltin = "内建";
+
+	public const string SecurityLevelCustom = "自定义";
+
+	public const string SecurityLevelDefaultName = "自定义档";
+
+	public const string SecurityLevelNamePlaceholder = "档位名";
+
+	public const string SecurityMakeDefault = "设为默认";
+
+	public const string SecurityDeleteLevel = "删除档位";
+
+	public const string SecurityExpand = "编辑";
+
+	public const string SecurityCollapse = "收起";
+
+	public const string SecurityNewLevel = "新建自定义档位";
+
+	public const string SecurityRename = "应用名称";
+
+	public const string SecurityProtectSensitive = "保护敏感文件（.env、密钥、.git 元数据一律拒绝读写）";
+
+	public const string SecurityPathPolicy = "路径边界";
+
+	public const string SecurityPolicyUnrestricted = "不限制";
+
+	public const string SecurityPolicyWorkspace = "仅限工作目录";
+
+	public const string SecurityPolicyCustom = "工作目录 + 允许目录";
+
+	public const string SecurityCustomAllowDirs = "额外允许的目录";
+
+	public const string SecurityCustomAllowDirsHint = "一行一条，仅在路径边界为「工作目录 + 允许目录」时生效；支持 ~ 与相对会话工作目录的路径。";
+
+	public const string SecurityDenyDirs = "禁地（无条件拒绝）";
+
+	public const string SecurityDenyDirsHint = "一行一条。命中的路径读写都拒绝，且没有绕过出口；空行会被忽略。";
+
+	public const string SecurityDenyBash = "危险命令模式";
+
+	public const string SecurityDenyBashHint = "一行一条正则（忽略大小写），命中即拒绝执行。内建档自带一张「只含不可逆操作」的表，清空它就等于不拦任何命令。";
+
+	public const string SecurityApplyList = "应用列表";
+
+	public const string SecurityToolActions = "工具动作";
+
+	public const string SecurityToolActionsHint = "放行 / 确认 / 拒绝。确认会弹框问用户；没有可用来确认的界面时按拒绝处理。路径边界与危险命令的检查独立于这里，任何动作下都会生效。";
+
+	public const string SecurityDefaultAction = "其它工具（含 MCP 与自定义工具）";
+
+	public const string SecurityActionAllow = "放行";
+
+	public const string SecurityActionAsk = "确认";
+
+	public const string SecurityActionDeny = "拒绝";
+
+	public const string SecuritySessionLevels = "按会话覆盖";
+
+	public const string SecuritySessionHint = "以下会话使用各自的档位（在会话输入框的「安全」按钮上切换），其余会话用默认档。";
+
+	public const string SecurityClearOverride = "清除该会话的覆盖";
+
+	public static string SecurityLoadFailedText(string reason) => $"读取安全配置失败，暂按默认档位显示：{reason}";
+
+	public const string SecurityFollowDefault = "跟随默认档位";
+
+	public const string SecurityTitle = "安全档位";
+
+	public const string SecurityDisabledHint = "安全门总开关已关闭，所有工具调用直接放行。到设置 → 安全门里开启。";
+
+	public static string SecurityLevelOption(string name, bool builtin) => builtin ? name : $"{name}（自定义）";
+
+	public static string SecurityFollowHint(string name, string description) =>
+		$"安全档位：跟随默认「{name}」\n{description}\n点击按本会话切换档位";
+
+	public static string SecurityOverrideHint(string name, string description) =>
+		$"安全档位：本会话「{name}」\n{description}\n点击按本会话切换档位";
+
+	public static string SecuritySaveFailed(string reason) => $"保存安全配置失败：{reason}";
 
 	/// <summary>远程模型目录拉取。</summary>
 	public const string ConfigFetchModels = "拉取远程模型";

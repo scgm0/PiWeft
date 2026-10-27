@@ -98,17 +98,17 @@ OAuth 支持授权码 + PKCE、动态注册、回环回调、401 刷新重放与
 - 资源与主题：按 pi 约定发现技能/提示词模板/主题/pi 包，优先级为项目 settings 声明(0) > 项目自动发现(1) > 用户 settings 声明(2) > 用户目录自动发现(3) > 包(4)，同名资源先发现者胜出。主题目录文件监视热重载（防抖 400 ms，项目主题只在受信任时监视）；`/reload` 与 RPC `reload_resources` 重新解析而不重建会话。
 - 模型连接测试与远程模型目录：1-token 探测（RPC `test_model`）与按 API 拉取 `GET /models`（RPC `fetch_remote_models`），入口在配置页与输入框工具栏。
 - Git 状态/diff、暂存/取消暂存、提交、分支切换/新建、检查点与回滚、远端同步（fetch / pull `--ff-only` / push，首次推送自动建立上游跟踪）、stash 收起与应用/丢弃（面板按未暂存/已暂存分节，带批量暂存与提交禁用态）、命令 Dock（PTY 终端）、跨会话用量统计与余额查询、实时会话统计、深浅主题与内嵌字体/图标。所有 git 子进程钉住 `LC_ALL=C`，失败按输出特征分类成可操作的中文提示、原始输出留在详情里；状态读取用 `--porcelain=v1 -z`，中文 / 空格 / emoji / 换行路径都按原始 UTF-8 解析。
-- 供应商/模型、API Key、Agent 设置、MCP 和 JSON 配置管理；全局/项目作用域、未知字段保留、原子写入和冲突检查。设置是窗口级模态弹窗，未保存修改受保护。
+- 供应商/模型、API Key、Agent 设置、MCP 和 JSON 配置管理（MCP 服务器行内显示授权状态，可 授权 / 重新授权 / 清除凭据；授权流程与 CLI 共用 `PiWeft.Mcp.McpLogin`）；全局/项目作用域、未知字段保留、原子写入和冲突检查。设置是窗口级模态弹窗，未保存修改受保护。
 - 按工作目录单实例；后台有界日志；`--self-check`、`--theme-smoke` 及截图脚本用于验证。
 
 桌面功能对照、交互约束、Linux PRIMARY、图片剪贴板与配置安全边界见 [pi / PiDeck 兼容](01-parity.md)。
 
 ## 已知限制
 
-- 未实现完整 JS/TS 扩展宿主与扩展 renderer；fire-and-forget UI 方法已就绪，但目前没有进程内 JS 扩展调用方。
+- 扩展宿主支持 **JavaScript** 扩展（发现/注册工具与命令/事件钩子/`pi.ui.*`/失败隔离，每扩展一个 Jint 引擎跑在专属线程）；**TypeScript 扩展不支持**（无转译器，逐条说明原因），**处理器必须同步**（返回 Promise 会明确报告而不是静默丢结果），仍无扩展自定义 renderer。详见[兼容文档](01-parity.md#进程内扩展宿主pi-01--pi-02)。
 - 工具调用安全门只有「放行 / 拒绝」，没有「先问用户再执行」的审批窗口。PiDeck 的 `ask` 动作在这里退化为拒绝，因此默认危险命令表只收不可逆的破坏性命令，日常动作（`rm -rf node_modules`、`npm install`、`git commit`）一律放行。安全门默认等级是 `off`，不显式配置就完全放行。
 - CLI 仍是按行 REPL，没有完整 TUI、多行编辑、`$EDITOR`、键位绑定与终端图片。
-- 生图/分类网关目前只有 OpenRouter 与 OpenAI Decisions 两种方言，尚未接到 CLI/TUI/桌面入口；虚拟模型已支持 `models.json` 动态 JS route 与状态条目，但扩展宿主动态注册仍未接入；Codex `websocket-cached` 尚未复用连接。cache warming 已有 `cache_warming_decision` 回调；`cimd`、完整 MCP `callbackUrl` 路径与 pi 的 `mcp-auth.json` 共享格式仍未覆盖。
+- 生图与分类网关（OpenRouter images、OpenAI Decisions 两种方言）已通过 `CliEnvironment` 注入会话，并由 codemode 的 `models.call`（`generateImages` / `classify`，`autoEnable` 默认为真）调用；缺的是一级入口：没有 `/image` 之类的斜杠命令或桌面生图面板，不用 codemode 的调用方就用不到。虚拟模型已支持 `models.json` 动态 JS route 与状态条目，但扩展宿主动态注册仍未接入；Codex `websocket-cached` 尚未复用连接。cache warming 已有 `cache_warming_decision` 回调；`cimd`、完整 MCP `callbackUrl` 路径与 pi 的 `mcp-auth.json` 共享格式仍未覆盖。
 - `Radius` 登录目前走设备码（未做浏览器选择菜单）；OpenAI ChatGPT 回调固定端口 1455；GitHub Copilot Enterprise 只支持域名输入；`/llama` 下载为轮询等待，无进度条/量化体积选择。
 - 桌面 JSONL 历史仍全量保存在内存（打开会话要拿到全部条目：分支、fork/编辑、会话内搜索、todo 状态、`context_edit` 重放都依赖全量历史）。实测中位会话打开约 5 ms、p90 80 ms，因此不做历史分页；唯一 1.7 s 的样本是 45 MiB 的外部 transcript 导入产物。完整 VT100 边界行为、终端多标签与快照回放同样未覆盖。
 - Windows/macOS 原生窗口、发布包、真实供应商联网与 PiDeck 完整 e2e 仍需实机验证。
@@ -123,6 +123,6 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。2026-10-26 全量测试：非桌面 918 项（Agent 23 / Ai 192 / JavaScript 56 / Mcp 86 / Cli 134 / CodingAgent 427）、Desktop 935 项，共 1853 项，全部通过；连续多轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
+GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。2026-10-26 全量测试：非桌面 954 项（Agent 23 / Ai 192 / JavaScript 56 / Mcp 91 / Cli 134 / CodingAgent 458）、Desktop 945 项，共 1899 项，全部通过；连续多轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
 
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。真实数据互操作测试受本机会话/技能数据是否存在影响；provider 使用打桩服务，不能替代真实供应商联网验证。

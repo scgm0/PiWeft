@@ -155,6 +155,14 @@ public sealed class SessionImportDialogTests : IDisposable
 		dialog.ReloadSync();
 		ImagePreviewTests.Click(Find<Button>(dialog.View).Single(button => ContentText(button) == Strings.ImportAll));
 
+		// 导入跑在后台线程（几百条不能在 UI 线程上同步跑完），这里等它落地。
+		var deadline = Environment.TickCount64 + 20_000;
+		while (Environment.TickCount64 < deadline &&
+			(!Directory.Exists(_sessions) || Directory.GetFiles(_sessions, "*.jsonl").Length < 2))
+		{
+			Thread.Sleep(20);
+		}
+
 		Assert.Equal(2, Directory.GetFiles(_sessions, "*.jsonl").Length);
 	}
 

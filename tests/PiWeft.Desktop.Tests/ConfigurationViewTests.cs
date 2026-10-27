@@ -172,4 +172,71 @@ public sealed class ConfigurationViewTests : IDisposable
 	{
 		if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
 	}
+
+	/// <summary>
+	/// MCP 授权入口的渲染规则：HTTP 服务器才有授权行（stdio 没有 OAuth，放个按钮只会误导人），
+	/// 状态文案要跟磁盘上的凭据一致，「清除凭据」只在真有待清除的东西时出现。
+	/// </summary>
+	/// <summary>按钮标签按内容文本匹配：AppIcons.TextButton 把文字放在内容里，HoverTip 只有图标按钮才有。</summary>
+	private static List<Button> ButtonsLabeled(ConfigurationView view, string label) =>
+		[.. Find<Button>(view.View).Where(button =>
+			button.Content is StackPanel panel && Find<TextBlock>(panel).Any(block => block.Text == label))];
+
+	private static int CountButtonsLabeled(ConfigurationView view, string label) => ButtonsLabeled(view, label).Count;
+
+	[Fact]
+	public async Task McpRowShowsAuthorizationStatusOnlyForHttpServers()
+	{
+		Directory.CreateDirectory(AgentDir);
+		File.WriteAllText(Path.Combine(AgentDir, "mcp.json"),
+			"""{"mcpServers":{"local":{"command":"srv","args":[],"enabled":true},"remote":{"url":"https://mcp.example/mcp","enabled":true}}}""");
+
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Mcp);
+
+		var texts = Find<TextBlock>(view.View).Select(static block => block.Text).ToHashSet(StringComparer.Ordinal);
+		Assert.Contains(Strings.McpNotAuthorized, texts);
+		Assert.Contains(Strings.McpAuthorize, texts);
+		// 只有一个服务器需要授权（另一个是 stdio），所以授权按钮也只该有一个。
+		// TextButton 的标签在内容里、不在 HoverTip 里，按内容找。
+		Assert.Equal(1, CountButtonsLabeled(view, Strings.McpAuthorize));
+		// 没凭据可清除时「清除凭据」保持不可见：留一个能点的空按钮只会让人点了没反应。
+		Assert.False(ButtonsLabeled(view, Strings.McpSignout).Single().IsVisible);
+
+		// 授权按钮必须真的能占到位：之前出现过它在树里、却因为被塞进一个零宽容器而在界面上看不见。
+		var authorize = ButtonsLabeled(view, Strings.McpAuthorize).Single();
+		Element? row = authorize.Parent;
+		while (row is not DockPanel)
+		{
+			row = row?.Parent;
+		}
+
+		Assert.NotNull(row);
+		row!.Measure(new Size(620, 60));
+		row.Arrange(new Rect(0, 0, 620, 60));
+		Assert.True(authorize.Bounds.Width > 24, $"授权按钮宽度 {authorize.Bounds.Width}：看不见等同于没有这个入口");
+		Assert.InRange(authorize.Bounds.Right, 0, 621);
+
+		// 存好凭据后状态与按钮文案都要跟上（界面上「未授权」会让人反复去点登录）。
+		PiWeft.Mcp.McpOAuthStore.Save("https://mcp.example/mcp", new PiWeft.Mcp.McpOAuthToken
+		{
+			Access = "live",
+			ExpiresAt = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds(),
+		}, AgentDir);
+
+		view.Discard(); // 重新读盘：磁盘上的凭据变了，状态行不能停留在旧值
+		texts = Find<TextBlock>(view.View).Select(static block => block.Text).ToHashSet(StringComparer.Ordinal);
+		Assert.Contains(Strings.McpAuthorized, texts);
+		Assert.Contains(Strings.McpReauthorize, texts);
+		Assert.True(ButtonsLabeled(view, Strings.McpSignout).Single().IsVisible);
+
+		// 令牌过期要报「已过期」而不是笼统的「已授权」：两者的处理动作不同。
+		PiWeft.Mcp.McpOAuthStore.Save("https://mcp.example/mcp", new PiWeft.Mcp.McpOAuthToken
+		{
+			Access = "stale",
+			ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds(),
+		}, AgentDir);
+		view.Discard(); // 重新读盘：磁盘上的凭据变了，状态行不能停留在旧值
+		Assert.Contains(Strings.McpTokenExpired, Find<TextBlock>(view.View).Select(static block => block.Text));
+	}
 }

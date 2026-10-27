@@ -10,6 +10,7 @@ using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Security;
+using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
@@ -32,6 +33,15 @@ namespace PiWeft.CodingAgent;
 
 public sealed record CodingAgentSessionOptions
 {
+	/// <summary>
+	/// 是否按 pi 约定发现并加载扩展（全局 + 受信任项目的 <c>extensions/</c>）。
+	/// 默认开：没有扩展目录时开销只是几次目录存在性检查。
+	/// </summary>
+	public bool LoadExtensions { get; init; } = true;
+
+	/// <summary>注入已建好的扩展宿主（测试或宿主自己管生命周期时用）；非空时忽略 <see cref="LoadExtensions"/>。</summary>
+	public ExtensionHost? Extensions { get; init; }
+
 	public required string Cwd { get; init; }
 
 	public required Model Model { get; init; }
@@ -203,12 +213,29 @@ public sealed class CodingAgentSession : IDisposable
 	/// <summary>宿主提供的 afterToolCall 钩子；嵌套的 codemode 调用也走同一个钩子。</summary>
 	private readonly Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? _userAfterToolCall;
 
+	/// <summary>
+	/// 进程内 JS 扩展宿主。默认按 pi 约定发现全局与项目扩展；宿主可以传 <c>extensions: null</c>
+	/// 关掉（测试与一次性会话用）。
+	/// </summary>
+	public ExtensionHost? Extensions { get; private set; }
+
+	/// <summary>注入的扩展宿主由宿主释放，自己加载的才归本会话重载与释放。</summary>
+	private bool _ownsExtensions = true;
+
+	/// <summary>不含扩展工具的内置基线：并表与重载都从它出发，避免重复追加。</summary>
+	private IReadOnlyList<BuiltinTool> _builtinTools = [];
+
+	/// <summary>构造参数留一份给 <c>ReloadResources</c> 重建扩展用。</summary>
+	private CodingAgentSessionOptions? _sessionOptions;
+
 	public CodingAgentSession(CodingAgentSessionOptions options)
 	{
 		ArgumentNullException.ThrowIfNull(options);
 
 		Cwd = Path.GetFullPath(options.Cwd);
 		Settings = options.Settings;
+		// 安全门跟着会话走：档位可以按会话文件路径覆盖，界面改档也直接落在这里。
+		Security = options.Settings.Security;
 		UiHost = options.UiHost;
 		ProjectTrusted = options.ProjectTrusted;
 		_images = options.Images;
@@ -278,6 +305,8 @@ public sealed class CodingAgentSession : IDisposable
 			}
 		}
 
+		// 扩展工具并表要在内置工具集定好之后、代理建立之前：
+		// 早了会被 _fullTools 的赋值覆盖，晚了 ApplyTools 还没有 _agent 可用。
 		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
 		// 写进去的话，真实 pi 读这个会话时会把 role:system 的消息当成历史，污染上下文。
 		_systemPromptSections = new SystemPromptOptions
@@ -303,8 +332,15 @@ public sealed class CodingAgentSession : IDisposable
 		_toolSearch = new Lazy<AgentTool>(CreateToolSearchTool);
 
 		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
+		// 扩展工具并表要在内置工具集定稿之后、代理建立之前：早了会被覆盖，
+		// 晚了 ApplyTools 还没有 _agent 可用（第一版就在这里 NRE）。
+		_sessionOptions = options;
+		_builtinTools = builtins;
 		_fullTools = builtins;
-		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(builtins));
+		LoadExtensions(options);
+		// 提示词按并表后的工具集构造：扩展注册的工具也要出现在给模型的声明里，
+		// 否则工具能被执行、模型却不知道它存在。
+		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(_fullTools));
 		_userBeforeToolCall = options.BeforeToolCall;
 		_userAfterToolCall = options.AfterToolCall;
 
@@ -337,7 +373,9 @@ public sealed class CodingAgentSession : IDisposable
 			Model = options.Model,
 			ThinkingLevel = ThinkingLevelResolver.Clamp(options.Model, requestedThinkingLevel),
 			StreamFn = _routedStreamFn,
-			Tools = [.. builtins.Select(static builtin => builtin.Tool)],
+			// 用 _fullTools 而不是局部的 builtins：扩展注册的工具在 LoadExtensions 里并进了
+			// _fullTools，用局部变量会把它们从代理的工具集里丢掉（工具能被执行却不出现在声明里）。
+			Tools = [.. _fullTools.Select(static builtin => builtin.Tool)],
 			ConvertToLlm = CodingMessages.ConvertToLlm,
 			TransformContext = TransformContextAsync,
 			BeforeToolCall = GuardedBeforeToolCallAsync,
@@ -370,8 +408,17 @@ public sealed class CodingAgentSession : IDisposable
 
 	public CodingAgentSettings Settings { get; }
 
-	/// <summary>当前生效的工具调用安全门（来自 <c>settings.security</c>）。</summary>
-	public ToolSecurity Security => Settings.Security;
+	/// <summary>
+	/// 当前生效的安全门配置。启动时来自 <c>settings.security</c>（只读全局），
+	/// 用户在界面上改档位时就地替换 —— 换档不该重建会话，也不该要求重启。
+	/// </summary>
+	public SecurityConfig Security { get; set; } = SecurityConfig.Off;
+
+	/// <summary>本会话当前档位的 id（<c>off</c> / <c>standard</c> / <c>strict</c> 或自定义）。</summary>
+	public string SecurityLevelId => Security.Resolve(Session.SessionFile).Level;
+
+	/// <summary>本会话内已经「总是允许」过的工具名；只在当前会话生命周期内有效。</summary>
+	private readonly HashSet<string> _securityApprovedTools = new(StringComparer.Ordinal);
 
 	/// <summary>宿主交互界面（RPC / CLI / 桌面）；为 null 时 ask_question 报告不可用。</summary>
 	public IUiHost? UiHost { get; }
@@ -444,6 +491,16 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			Skills = Skills.Skills.FormatForPrompt(Resources.Skills),
 		};
+
+		// 扩展也要重载：改完扩展文件还要重启应用才生效，等于没有热更新。
+		// 只有宿主自己加载的才重建 —— 注入进来的（options.Extensions）生命周期归宿主，
+		// 这里擅自 Dispose 别人的宿主是越界。
+		if (_ownsExtensions)
+		{
+			Extensions?.Dispose();
+			Extensions = null;
+			LoadExtensions(_sessionOptions! with { Extensions = null });
+		}
 
 		ApplyTools();
 	}
@@ -1184,17 +1241,164 @@ public sealed class CodingAgentSession : IDisposable
 			}
 		}
 
+		// 扩展的 tool_call 钩子在安全门之前：扩展可以主动拦下调用（例如禁止某类写），
+		// 但**不能绕过**安全门 —— 被它放行的调用仍要过档位检查。
+		if (Extensions is { } extensions && extensions.ListensTo("tool_call"))
+		{
+			var payload = new System.Text.Json.Nodes.JsonObject
+			{
+				["toolName"] = context.ToolCall.Name,
+				["arguments"] = System.Text.Json.Nodes.JsonNode.Parse(context.Arguments.ToJsonString()),
+			};
+			// 必须用返回值：处理器在 JS 侧改的是那一份对象，宿主拿回的是重新解析出来的副本，
+			// 读原 payload 会永远看不到扩展的改写（第一版就在这里漏掉了拦截）。
+			var outcome = extensions.Dispatch("tool_call", payload);
+			if (outcome["block"]?.GetValue<bool>() == true)
+			{
+				var blockReason = outcome["reason"]?.GetValue<string>();
+				return new BeforeToolCallResult { Block = true, Reason = blockReason ?? $"扩展阻止了这次 `{context.ToolCall.Name}` 调用。" };
+			}
+		}
+
 		// 安全门在用户钩子之前：宿主钩子拿到的是已经过安全判定的调用。
 		// 这里是所有工具调用的唯一汇合点 —— 直接调用、codemode 里的嵌套调用、以及 MCP 工具
 		// 都经过它（见 ExecuteNestedToolAsync），所以只需在这里拦一次。
-		if (Settings.Security.BlockingReason(context.ToolCall.Name, context.Arguments, Cwd) is { } blockedReason)
+		if (await SecurityGateAsync(context, cancellationToken).ConfigureAwait(false) is { } gated)
 		{
-			return new BeforeToolCallResult { Block = true, Reason = blockedReason };
+			return gated;
 		}
 
 		return _userBeforeToolCall is null
 			? null
 			: await _userBeforeToolCall(context, cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// 发现并加载扩展，把注册的工具并进本会话的工具集。
+	/// <para>
+	/// 项目扩展只在受信时加载（扩展能注册工具、改工具调用，不受信等于让仓库在用户机器上执行代码）；
+	/// 单个扩展加载失败只影响它自己，会话照常起 —— 一个坏扩展不该让整个工作台打不开。
+	/// </para>
+	/// </summary>
+	private void LoadExtensions(CodingAgentSessionOptions options)
+	{
+		if (options.Extensions is { } provided)
+		{
+			// 宿主注入的扩展宿主由宿主负责释放与重载。
+			Extensions = provided;
+			_ownsExtensions = false;
+			return;
+		}
+
+		if (!options.LoadExtensions)
+		{
+			// 没加载也就没有可重载/释放的东西：注入分支同理。
+			_ownsExtensions = false;
+			return;
+		}
+
+		var host = new ExtensionHost(options.UiHost);
+		host.Load(Cwd, options.ProjectTrusted);
+		Extensions = host;
+
+		if (host.Tools.Count == 0)
+		{
+			return;
+		}
+
+		// 只并表、不重建提示词：本方法必须在 _fullTools 定稿之后、代理建立之前调用 ——
+		// 早了会被覆盖，晚了 ApplyTools 还没有 _agent 可用（第一版就在这里 NRE）。
+		var taken = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var builtin in _builtinTools)
+		{
+			taken.Add(builtin.Tool.Name);
+		}
+
+		var merged = _builtinTools.ToList();
+		foreach (var tool in host.Tools)
+		{
+			// 内置工具优先：扩展不该悄悄顶掉 read/write/bash，那会让行为无法解释。
+			if (taken.Add(tool.Name))
+			{
+				merged.Add(new BuiltinTool(tool, tool.Label, []));
+			}
+		}
+
+		_fullTools = merged;
+	}
+
+	/// <summary>
+	/// 工具调用前置钩子的公开缝：计划模式、扩展 tool_call 与安全门都在这里按顺序生效。
+	/// 宿主（RPC / 桌面）也可以直接作为 <c>BeforeToolCall</c> 选项注入自己的钩子。
+	/// </summary>
+	public ValueTask<BeforeToolCallResult?> InvokeBeforeToolCallAsync(
+		BeforeToolCallContext context,
+		CancellationToken cancellationToken) =>
+		GuardedBeforeToolCallAsync(context, cancellationToken);
+
+	/// <summary>
+	/// 安全门判定：档位按**会话文件路径**解析（<c>sessionLevels</c> 可以逐会话收紧），
+	/// 拒绝直接挡下并给出原因；要求确认时通过宿主的确认对话框问用户。
+	/// <para>
+	/// 没有宿主（RPC / print / 守护进程直连）时 ask 退化为<strong>拒绝</strong>：无审批人在场却放行，
+	/// 等于这道门只在有人看着时才关上 —— 那是最坏的一种失效模式。
+	/// </para>
+	/// </summary>
+	private async ValueTask<BeforeToolCallResult?> SecurityGateAsync(
+		BeforeToolCallContext context,
+		CancellationToken cancellationToken)
+	{
+		var level = Security.Resolve(Session.SessionFile);
+		var decision = level.Evaluate(context.ToolCall.Name, context.Arguments, Cwd);
+		if (decision.Effect == SecurityEffect.Allow)
+		{
+			return null;
+		}
+
+		if (decision.Effect == SecurityEffect.Deny)
+		{
+			return new BeforeToolCallResult { Block = true, Reason = decision.Reason };
+		}
+
+		var tool = context.ToolCall.Name;
+		lock (_securityApprovedTools)
+		{
+			if (_securityApprovedTools.Contains(tool))
+			{
+				return null;
+			}
+		}
+
+		if (UiHost is not { HasUi: true } host)
+		{
+			return new BeforeToolCallResult
+			{
+				Block = true,
+				Reason = $"{decision.Reason} 当前环境没有可用来确认的界面，已按拒绝处理；需要执行请让用户先切换档位或在界面上确认。",
+			};
+		}
+
+		var summary = context.Arguments["command"]?.ToString() is { Length: > 0 } command
+			? command.Length <= 300 ? command : command[..300] + "…"
+			: context.Arguments.ToJsonString();
+		var confirmed = await host.ConfirmAsync(
+			new UiConfirmRequest(
+				"安全确认",
+				$"{decision.Reason}\n\n工具：{tool}\n参数：{summary}",
+				null),
+			cancellationToken).ConfigureAwait(false);
+
+		if (confirmed != true)
+		{
+			return new BeforeToolCallResult { Block = true, Reason = $"用户拒绝了这次 `{tool}` 调用。" };
+		}
+
+		lock (_securityApprovedTools)
+		{
+			_securityApprovedTools.Add(tool);
+		}
+
+		return null;
 	}
 
 	/// <summary>把占位的 codemode 换成绑定到本会话的版本，并按新的工具集重建提示词。</summary>

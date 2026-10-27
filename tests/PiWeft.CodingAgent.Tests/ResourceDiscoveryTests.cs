@@ -256,3 +256,57 @@ public class ResourceResolverTests : IDisposable
 		File.WriteAllText(path, JsonNode.Parse(json)!.ToJsonString());
 	}
 }
+
+/// <summary>
+/// 资源快照里的扩展条目：只发现、不执行，且必须带上「为什么没生效」。
+/// </summary>
+public sealed class ExtensionDiscoveryTests : IDisposable
+{
+	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-ext-res-" + Guid.NewGuid().ToString("N")[..8]);
+
+	private string AgentDir => Path.Combine(_root, "agent");
+
+	private string Project => Path.Combine(_root, "project");
+
+	public ExtensionDiscoveryTests()
+	{
+		Directory.CreateDirectory(Path.Combine(AgentDir, "extensions"));
+		Directory.CreateDirectory(Path.Combine(Project, ".pi", "extensions"));
+	}
+
+	public void Dispose()
+	{
+		try
+		{
+			Directory.Delete(_root, recursive: true);
+		}
+		catch (IOException)
+		{
+			// 临时目录清理失败不影响断言结论。
+		}
+	}
+
+	[Fact]
+	public void ExtensionsAreListedWithTheirReasonAndRespectTrust()
+	{
+		File.WriteAllText(Path.Combine(AgentDir, "extensions", "good.js"), "module.exports = function (pi) {};");
+		File.WriteAllText(Path.Combine(AgentDir, "extensions", "typed.ts"), "export default function (pi: unknown) {}");
+		File.WriteAllText(Path.Combine(Project, ".pi", "extensions", "repo.js"), "module.exports = function (pi) {};");
+
+		var trusted = ResourceResolver.Resolve(Project, AgentDir, includeProject: true);
+		Assert.Equal(3, trusted.Extensions.Count);
+
+		var js = trusted.Extensions.Single(entry => entry.Name == "good");
+		Assert.Equal("全局", js.Origin);
+		Assert.Equal(string.Empty, js.Note);
+
+		// TypeScript 要写明需要转译：只列名字不写原因，用户会以为它在跑。
+		var ts = trusted.Extensions.Single(entry => entry.Name == "typed");
+		Assert.Contains("TypeScript", ts.Note, StringComparison.Ordinal);
+
+		// 不受信时项目扩展整个消失：仓库不该自带在用户机器上执行的代码。
+		var untrusted = ResourceResolver.Resolve(Project, AgentDir, includeProject: false);
+		Assert.DoesNotContain(untrusted.Extensions, entry => entry.Name == "repo");
+		Assert.Contains(untrusted.Extensions, entry => entry.Name == "good");
+	}
+}

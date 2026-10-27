@@ -123,6 +123,51 @@ public class GitDiffTests
 	}
 
 	[Fact]
+	public void UntrackedFileIsRenderedWithoutInvokingGit()
+	{
+		// 未跟踪文件没有 git diff 可比的对象。以前用 `git diff --no-index /dev/null <path>`，
+		// 而 /dev/null 只在 POSIX 上存在 —— Windows 上界面会显示「没有可显示的 diff」。
+		var root = Path.Combine(Path.GetTempPath(), "piweft-untracked-" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(root);
+		try
+		{
+			File.WriteAllText(Path.Combine(root, "新 文件.txt"), "第一行\n第二行\n");
+
+			var patch = GitStatusReader.Diff(root, "新 文件.txt", untracked: true);
+
+			Assert.StartsWith("diff --git a/新 文件.txt b/新 文件.txt", patch);
+			Assert.Contains("--- /dev/null", patch, StringComparison.Ordinal);
+			Assert.Contains("+++ b/新 文件.txt", patch, StringComparison.Ordinal);
+			Assert.Contains("@@ -0,0 +1,2 @@", patch, StringComparison.Ordinal);
+			Assert.Contains("+第一行", patch, StringComparison.Ordinal);
+			Assert.Contains("+第二行", patch, StringComparison.Ordinal);
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
+	public void UntrackedBinaryFileIsCalledOutInsteadOfRendered()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-untracked-bin-" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(root);
+		try
+		{
+			File.WriteAllBytes(Path.Combine(root, "blob.bin"), [0x50, 0x00, 0x4B, 0x03, 0x04]);
+
+			var patch = GitStatusReader.Diff(root, "blob.bin", untracked: true);
+
+			Assert.Contains("二进制文件", patch, StringComparison.Ordinal);
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
 	public void LongOutputIsCutWithAnExplanation()
 	{
 		var text = string.Join('\n', Enumerable.Range(1, 30).Select(index => $"line {index}"));

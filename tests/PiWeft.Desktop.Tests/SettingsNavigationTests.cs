@@ -14,6 +14,8 @@ public sealed class SettingsNavigationTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-settings-navigation-" + Guid.NewGuid().ToString("N"));
 
+
+
 	[Fact]
 	public async Task SettingsLoadsConfigurationAndArchiveOnlyWhenVisited()
 	{
@@ -183,4 +185,110 @@ public sealed class SettingsNavigationTests : IDisposable
 	{
 		if (Directory.Exists(_root)) Directory.Delete(_root, true);
 	}
+
+	/// <summary>
+	/// 安全门分区：导航里有入口、分区能渲染、改动真的写进设置文件。
+	/// 这条同时兜住「代码里加了 AddNavigationButton 但分区没接上」这一类半截接线。
+	/// </summary>
+	[Fact]
+	public async Task SecuritySectionIsReachableAndPersistsChanges()
+	{
+		var agentDir = Path.Combine(_root, "security-agent");
+		var view = Create(agentDir);
+		await view.SelectSectionAsync("security");
+
+		// 总开关 + 默认档 + 三个内建档 + 新建入口都要在。
+		var labels = Find<TextBlock>(view.View).Select(static block => block.Text).ToHashSet(StringComparer.Ordinal);
+		Assert.Contains(Strings.SettingsSecurity, labels);
+		Assert.Contains(Strings.SecurityEnabled, labels);
+		Assert.Contains("off", labels);
+		Assert.Contains("standard", labels);
+		Assert.Contains("strict", labels);
+
+		// 改动立即落盘：设置页不留草稿，也不要求重启。
+		var settings = Path.Combine(agentDir, "settings.json");
+		Assert.False(File.Exists(settings), "默认形状不该写任何键");
+
+		// 关掉总开关。按标签找而不是取第一个：ComboBox 的下拉里也带 CheckBox，
+		// 位置假设会在框架版本变化后悄悄错位。
+		// 面板顺序固定：第一个复选框是总开关，其后才是展开档位里的编辑项。
+		var enabled = Find<CheckBox>(view.View).First();
+		enabled.IsChecked = false;
+		Assert.Contains("\"enabled\": false", File.ReadAllText(settings), StringComparison.Ordinal);
+
+		// 档位卡片可以展开编辑。展开 off 档（默认什么都不保护），勾上敏感文件保护后
+		// 必须立刻落盘 —— 内建档被改过也要写出来，否则刷新一次改动就消失了。
+		var expand = Find<Button>(view.View).Where(button => ContentText(button) == Strings.SecurityExpand).First();
+		ImagePreviewTests.Click(expand);
+
+		// 展开后新出现的复选框排在末尾（下拉框的条目里也有 CheckBox，不能按总数计数）。
+		var protect = Find<CheckBox>(view.View).Last();
+		Assert.NotSame(enabled, protect);
+		protect.IsChecked = true;
+
+		var saved = File.ReadAllText(settings);
+		Assert.Contains("\"protectSensitivePaths\": true", saved, StringComparison.Ordinal);
+		Assert.Contains("\"enabled\": false", saved, StringComparison.Ordinal);
+		Assert.Contains("\"id\": \"off\"", saved, StringComparison.Ordinal);
+
+		// 展开态在保存后保持：改一项不该把别的档位全收起。
+		Assert.Contains(Find<Button>(view.View), button => ContentText(button) == Strings.SecurityCollapse);
+	}
+
+	/// <summary>安全配置保存后必须推给已打开的会话，否则界面档位和实际执行用的档位会不一致。</summary>
+	[Fact]
+	public void SecurityChangeNotifiesTheHost()
+	{
+		var notified = 0;
+		var view = Create(Path.Combine(_root, "notify-agent"));
+		view.SecurityChanged += () => notified++;
+		view.ShowConfiguration();
+		Assert.Equal(0, notified);
+	}
+
+	private static string? ContentText(Button button) =>
+		button.Content switch
+		{
+			TextBlock text => text.Text,
+			StackPanel panel => Find<TextBlock>(panel).Select(static block => block.Text).FirstOrDefault(static value => value is { Length: > 0 }),
+			DockPanel panel => Find<TextBlock>(panel).Select(static block => block.Text).FirstOrDefault(static value => value is { Length: > 0 }),
+			_ => null,
+		};
+
+	private SettingsView Create(string? agentDir = null) => new(
+		() => new SettingsSnapshot
+		{
+			AgentDir = agentDir ?? Path.Combine(_root, "agent"),
+			Cwd = _root,
+			ModelCount = 0,
+			Tools = [],
+			Skills = [],
+			McpServers = [],
+		});
+
+	/// <summary>
+	/// 设置页必须把磁盘上的自定义档位也渲染出来 —— 之前出现过「Load 正确但面板只列内建档」，
+	/// 那种情况下用户新建的档位会在界面上凭空消失（配置还在，界面不认）。
+	/// </summary>
+	[Fact]
+	public async Task SecuritySectionRendersCustomLevelsFromDisk()
+	{
+		var agentDir = Path.Combine(_root, "custom-level-agent");
+		Directory.CreateDirectory(agentDir);
+		File.WriteAllText(Path.Combine(agentDir, "settings.json"),
+			"""{"security":{"level":"strict","levels":[{"id":"release","name":"发布分支","builtin":false,"pathPolicy":"workspace","toolActions":{"bash":"ask"}}],"sessionLevels":{"/tmp/x/deadbeef.jsonl":"release"}}}""");
+
+		var view = Create(agentDir);
+		await view.SelectSectionAsync("security");
+
+		var labels = Find<TextBlock>(view.View).Select(static block => block.Text).ToHashSet(StringComparer.Ordinal);
+		Assert.Contains("release", labels);
+		Assert.Contains("发布分支", labels);
+		// 自定义档可以删除，且会话覆盖会显示出来。
+		Assert.Contains(Find<Button>(view.View), button => ContentText(button) is null && HoverText(button) == Strings.SecurityDeleteLevel);
+		Assert.Contains(Strings.SecuritySessionLevels, labels);
+	}
+
+	private static string? HoverText(Button button) =>
+		HoverHints.Text(button) is { Length: > 0 } text ? text : null;
 }

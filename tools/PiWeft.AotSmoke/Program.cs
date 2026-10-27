@@ -633,6 +633,32 @@ try
 		return 1;
 	}
 
+	// Extension host under NativeAOT: Jint interop is exactly where trimming breaks, and
+	// every bridge here is a ClrFunction on purpose — this stage is what proves that.
+	var extensionDirectory = Path.Combine(workspace, "agent", "extensions");
+	Directory.CreateDirectory(extensionDirectory);
+	File.WriteAllText(Path.Combine(extensionDirectory, "smoke.js"), """
+		module.exports = function (pi) {
+			pi.registerCommand("smoked", { description: "smoke", handler: function (arg) { globalThis.smokeSeen = arg; } });
+			pi.on("tool_call", function (payload) { if (payload.toolName === "bash") { payload.block = true; payload.reason = "smoke blocked"; } });
+			pi.ui.setStatus("smoke", "running");
+		};
+		""");
+	var previousAgentDir = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR");
+	Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", Path.Combine(workspace, "agent"));
+	using var extensionHost = new PiWeft.CodingAgent.Extensions.ExtensionHost();
+	extensionHost.Load(workspace, trusted: true);
+	var extensionLoaded = extensionHost.States.Count == 1 && extensionHost.States[0].Loaded;
+	extensionHost.RunCommand("smoked", "argument");
+	// Restore the smoke's own agent dir before anything else touches it.
+	Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", previousAgentDir);
+	Console.WriteLine($"extension host: loaded={extensionLoaded} unsupported={extensionHost.UnsupportedEvents.Count}");
+	if (!extensionLoaded)
+	{
+		Console.WriteLine("  diagnostics: " + string.Join(" | ", extensionHost.States.SelectMany(static state => state.Diagnostics)));
+		return 1;
+	}
+
 	// Schema validation: a call missing a required argument is rejected before the tool runs.
 	var validationTurn = 0;
 	using (var validationSession = new CodingAgentSession(new CodingAgentSessionOptions

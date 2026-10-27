@@ -190,12 +190,59 @@ public static class GitStatusReader
 	/// </summary>
 	public static string Diff(string cwd, string path, bool untracked, int maxLines = 400)
 	{
-		var arguments = untracked
-			? new[] { "diff", "--no-color", "--no-index", "--", "/dev/null", path }
-			: ["diff", "--no-color", "--", path];
+		// 未跟踪文件没有 git diff 可比的对象。以前用 `git diff --no-index /dev/null <path>`，
+		// 但 `/dev/null` 只在 POSIX 上存在（Git for Windows 是否认这个字面量取决于版本与配置），
+		// 在 Windows 上会直接失败、界面显示「没有可显示的 diff」。改为自己合成一份全新增的
+		// unified diff：跨平台一致，也不用为只读一份文本多起一个进程。
+		if (untracked)
+		{
+			return UntrackedDiff(cwd, path, maxLines);
+		}
 
-		var (output, _) = Run(cwd, arguments);
+		var (output, _) = Run(cwd, ["diff", "--no-color", "--", path]);
 		return Truncate(output, maxLines);
+	}
+
+	/// <summary>把未跟踪文件渲染成「整份新增」的 unified diff；二进制或读不到时给一句说明。</summary>
+	private static string UntrackedDiff(string cwd, string path, int maxLines)
+	{
+		var full = System.IO.Path.IsPathRooted(path) ? path : System.IO.Path.Combine(cwd, path);
+		var display = path.Replace('\\', '/');
+
+		string text;
+		try
+		{
+			if (!File.Exists(full))
+			{
+				return string.Empty;
+			}
+
+			// 只读前若干行：界面本来就只显示前 maxLines 行，没必要把几 MB 读进来。
+			using var stream = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+			using var reader = new StreamReader(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+			var builder = new System.Text.StringBuilder();
+			var read = 0;
+			while (read <= maxLines && reader.ReadLine() is { } line)
+			{
+				if (line.Contains('\0', StringComparison.Ordinal))
+				{
+					return $"二进制文件：{display}（无法以文本方式预览）";
+				}
+
+				builder.Append('+').Append(line).Append('\n');
+				read++;
+			}
+
+			text = builder.ToString();
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return string.Empty;
+		}
+
+		var lines = text.Length == 0 ? 0 : text.Count(static c => c == '\n');
+		var header = $"diff --git a/{display} b/{display}\nnew file mode 100644\n--- /dev/null\n+++ b/{display}\n@@ -0,0 +1,{lines} @@\n";
+		return Truncate(header + text.TrimEnd('\n'), maxLines);
 	}
 
 	/// <summary>把输出裁到前 N 行，超出时补一行说明。</summary>

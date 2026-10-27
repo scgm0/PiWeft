@@ -4,6 +4,7 @@ using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Platform;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Security;
 using PiWeft.CodingAgent.Tools;
 using PiWeft.Cli;
 
@@ -135,6 +136,9 @@ public sealed partial class SessionTab : IDisposable
 
 	/// <summary>输入框左群的终端开关键：控制会话底部的终端面板。</summary>
 	private readonly Button _terminalButton;
+
+	/// <summary>本会话的安全档位入口（按会话覆盖，与 PiDeck 的分布一致）。</summary>
+	private readonly Button _securityButton;
 	private readonly Border _terminalPane;
 	private readonly SplitPanel _terminalSplit;
 	private TerminalDock? _terminal;
@@ -355,6 +359,7 @@ public sealed partial class SessionTab : IDisposable
 		_planButton = new Button().Ghost().Content(_planLabel).HoverTip(Strings.PlanModeHint)
 			.OnClick(TogglePlanMode);
 		_terminalButton = AppIcons.Button("terminal", Strings.Terminal, ToggleTerminal);
+		_securityButton = AppIcons.Button("shield", Strings.SecurityTitle, ShowSecurityMenu);
 		_testButton = AppIcons.Button("refresh-cw", Strings.TestConnection, () => _ = TestConnectionAsync());
 
 		_modelPicker = new ModelPicker(availableModels ?? (() => models), () => Session.Model, SelectModel);
@@ -386,7 +391,7 @@ public sealed partial class SessionTab : IDisposable
 			.OnClick(InsertReference)
 			.HoverTip(Strings.ComposerReference);
 		var leftActions = new WrapPanel().Spacing(4).VerticalAlignment(VerticalAlignment.Center)
-			.Children(_planButton, attach, reference, commands, _terminalButton);
+			.Children(_planButton, attach, reference, commands, _terminalButton, _securityButton);
 		var centerActions = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(2)
@@ -1569,6 +1574,111 @@ public sealed partial class SessionTab : IDisposable
 		});
 	}
 
+	/// <summary>
+	/// 设置页保存安全配置后由宿主推给每个已打开的会话：档位是每次工具调用时读的，
+	/// 不推的话界面显示的还是旧档，用户会以为改动没生效。
+	/// </summary>
+	public void ApplySecurityConfig(SecurityConfig config)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		Session.Security = config;
+		RefreshPickers();
+	}
+
+	/// <summary>本会话安全档位的持久化键：新建会话还没有文件时用会话 id 兜底。</summary>
+	private string SecurityKey => Session.Session.SessionFile ?? $"session:{Session.Session.SessionId}";
+
+	/// <summary>
+	/// 档位按钮的提示直接说清「现在生效的是哪档、为什么」——总开关关掉时档位标签会有欺骗性，
+	/// 这时必须写明门没开，而不是显示一个看起来像在管的档位名。
+	/// </summary>
+	private void UpdateSecurityButton()
+	{
+		var config = Session.Security;
+		var level = config.Resolve(SecurityKey);
+		var overridden = config.Enabled &&
+			config.SessionLevels.TryGetValue(SecurityKey, out var assigned) &&
+			!string.Equals(assigned, config.DefaultLevelId, StringComparison.Ordinal);
+
+		_securityButton.HoverTip(!config.Enabled
+			? Strings.SecurityDisabledHint
+			: overridden
+				? Strings.SecurityOverrideHint(level.Name, level.Description)
+				: Strings.SecurityFollowHint(level.Name, level.Description));
+	}
+
+	/// <summary>
+	/// 按会话切换安全档位。列表里给「跟随默认」而不是直接列档位：
+	/// 清除覆盖与选了一个恰好等于默认的档位在配置上是两件事，混在一起会留下永远清不掉的脏键。
+	/// </summary>
+	private void ShowSecurityMenu()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		var config = SecurityConfig.Load();
+		if (!config.Enabled)
+		{
+			Toasts.Show(View, Strings.SecurityDisabledHint);
+			return;
+		}
+
+		// 与思考强度菜单一致：MewUI 的 MenuItem 没有 IsCheckable，当前项用图标列的勾表达。
+		HoverHints.Cancel(_securityButton);
+
+		var current = config.SessionLevels.TryGetValue(SecurityKey, out var existing) ? existing : null;
+		var checkIcon = new IconTemplate(size => new GlyphElement()
+			.Kind(GlyphKind.CheckMark)
+			.GlyphSize(4)
+			.Foreground(AppTheme.Accent)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.VerticalAlignment(VerticalAlignment.Center));
+
+		var menu = new ContextMenu();
+
+		var follow = new Command("pi.security.follow", Strings.SecurityFollowDefault);
+		_securityButton.Commands.Register(follow, () => ApplySecurityLevel(null));
+		menu.Items.Add(new MenuItem(follow) { Icon = current is null ? checkIcon : null });
+
+		foreach (var level in config.Levels)
+		{
+			var captured = level;
+			var command = new Command($"pi.security.{captured.Level}", Strings.SecurityLevelOption(captured.Name, captured.Builtin));
+			_securityButton.Commands.Register(command, () => ApplySecurityLevel(captured.Level));
+			menu.Items.Add(new MenuItem(command)
+			{
+				Icon = string.Equals(current, captured.Level, StringComparison.Ordinal) ? checkIcon : null,
+			});
+		}
+
+		menu.Show(_securityButton);
+	}
+
+	/// <summary>写回全局设置并就地替换本会话的生效配置：换档不该重建会话，也不该要求重启。</summary>
+	private void ApplySecurityLevel(string? levelId)
+	{
+		var key = SecurityKey;
+		try
+		{
+			var updated = SecurityConfig.Load().WithSessionLevel(key, levelId).Sanitized();
+			SecurityConfig.Save(updated);
+			Session.Security = updated;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+		{
+			Toasts.Error(View, Strings.SecuritySaveFailed(exception.Message));
+			return;
+		}
+
+		RefreshPickers();
+	}
+
 	/// <summary>思考强度菜单：与模型选择一样按当前模型支持项生成，当前项打勾。</summary>
 	private void ShowThinkingMenu()
 	{
@@ -1684,6 +1794,8 @@ public sealed partial class SessionTab : IDisposable
 		var modelName = Session.Model.Name.Length > 0 ? Session.Model.Name : Session.Model.Id;
 		_modelLabel.Text($"{Session.Model.Provider}/{modelName}").TextTrimming(TextTrimming.CharacterEllipsis);
 		_modelButton.HoverTip($"{Session.Model.Provider}/{Session.Model.Id}\n{Strings.ModelCapabilities(Session.Model)}");
+
+		UpdateSecurityButton();
 
 		var thinking = Strings.ThinkingLevelName(Session.ThinkingLevel);
 		// 铭牌跟 PiDeck 同款拼成一行：provider/model · max ▾；级别用原始短名，中文全名放在提示里。

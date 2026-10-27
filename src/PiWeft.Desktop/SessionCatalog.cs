@@ -62,6 +62,7 @@ public sealed class SessionCatalog
 	/// <summary>本次构建有没有产生新摘要（需要写回磁盘）。</summary>
 	private bool _summariesDirty;
 
+
 	/// <summary>把上一轮运行留下的摘要装进内存缓存。文件已变的情况下由既有的长度/mtime/指纹判据自然失效。</summary>
 	private void EnsurePersistedLoaded()
 	{

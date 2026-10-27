@@ -15,6 +15,16 @@
 # 许可：Lucide 采用 ISC。其中一部分图标派生自 Feather（MIT），
 # 名单在 src/PiWeft.Desktop/Resources/icons/LICENSE-Lucide.txt 里；
 # 新增名字若属于该名单，无需改动（名单已覆盖）。
+#
+# 新名字要不要加进那份名单，看**几何是否沿用 Feather**，而不是看两者是否都有同名图标
+# （Lucide 的图标名基本是 Feather 的超集，只看名字会漏判也会误判）。对比两边的图元数据：
+#
+#   curl -s https://raw.githubusercontent.com/feathericons/feather/main/icons/<名>.svg | grep -oE '<(path|circle|rect|line)[^>]*/>'
+#   curl -s https://raw.githubusercontent.com/lucide-icons/lucide/main/icons/<名>.svg      | grep -oE '<(path|circle|rect|line)[^>]*/>'
+#
+# 图元一致或仅属性顺序不同（lock、search）→ 派生自 Feather，名字要进名单；
+# 路径被重画（shield 在 Feather 是 `M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z`，
+# Lucide 是另一套带圆角的 24 网格路径）→ 只是同名重制，按 ISC 处理，不进名单。
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

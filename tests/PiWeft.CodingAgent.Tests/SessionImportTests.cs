@@ -84,7 +84,24 @@ public class SessionImportTests : IDisposable
 		return WriteFile(Path.Combine(".codex", "sessions", "2026", "10", "21", "rollout-1.jsonl"), lines);
 	}
 
-	private static string Json(string value) => System.Text.Json.JsonSerializer.Serialize(value);
+	/// <summary>只做 JSON 字符串转义。不用 <c>JsonSerializer.Serialize</c>：
+	/// 反射式序列化在裁剪/AOT 下会告警，而这里只需要字符串的一种转义。</summary>
+	private static string Json(string value)
+	{
+		var builder = new System.Text.StringBuilder(value.Length + 8).Append('"');
+		foreach (var c in value)
+		{
+			switch (c)
+			{
+				case '\\': builder.Append("\\\\"); break;
+				case '"': builder.Append("\\\""); break;
+				case '\n': builder.Append("\\n"); break;
+				default: builder.Append(c); break;
+			}
+		}
+
+		return builder.Append('"').ToString();
+	}
 
 	// ---------------------------------------------------------------- 发现
 

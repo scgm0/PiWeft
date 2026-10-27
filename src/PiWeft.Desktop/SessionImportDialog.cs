@@ -33,6 +33,7 @@ public sealed class SessionImportDialog
 	private string? _sourceFilter;
 	private IReadOnlyList<ImportedSession> _sessions = [];
 	private bool _loading;
+	private bool _importing;
 
 	/// <summary>收起后触发，宿主据此把焦点还给内容区。</summary>
 	public event Action? Closed;
@@ -335,6 +336,11 @@ public sealed class SessionImportDialog
 
 	private void ImportOne(ImportedSession session)
 	{
+		if (_importing)
+		{
+			return;
+		}
+
 		var result = SessionImportService.Import(session, _sessionDir);
 		if (result.Ok)
 		{
@@ -348,7 +354,7 @@ public sealed class SessionImportDialog
 
 	private void ImportAll()
 	{
-		if (_loading)
+		if (_loading || _importing)
 		{
 			return;
 		}
@@ -363,31 +369,54 @@ public sealed class SessionImportDialog
 			return;
 		}
 
-		var imported = 0;
-		var failed = 0;
-		foreach (var session in targets)
-		{
-			var result = SessionImportService.Import(session, _sessionDir);
-			if (result.Ok)
-			{
-				imported++;
-			}
-			else
-			{
-				failed++;
-			}
-		}
+		// 导入要逐条解析源文件：几百条会在 UI 线程上卡成一片白。甩到后台线程，界面只留一句进度。
+		_importing = true;
+		_status.Text(Strings.ImportImporting(targets.Count));
+		var pending = (IReadOnlyList<ImportedSession>)targets;
+		var sessionDir = _sessionDir;
 
-		if (failed == 0)
+		Task.Run(() =>
 		{
-			Toasts.Success(View, Strings.ImportAllDone(imported));
-		}
-		else
-		{
-			Toasts.Error(View, Strings.ImportAllPartial(imported, failed));
-		}
+			var imported = 0;
+			var failed = 0;
+			foreach (var session in pending)
+			{
+				if (SessionImportService.Import(session, sessionDir).Ok)
+				{
+					imported++;
+				}
+				else
+				{
+					failed++;
+				}
+			}
 
-		_afterImport();
+			return (Imported: imported, Failed: failed);
+		}).ContinueWith(
+			task => Dispatch(() =>
+			{
+				_importing = false;
+				if (task.IsFaulted)
+				{
+					Toasts.Error(View, Strings.ImportFailed(task.Exception?.GetBaseException().Message ?? string.Empty));
+					_status.Text(Strings.ImportHint);
+					return;
+				}
+
+				if (task.Result.Failed == 0)
+				{
+					Toasts.Success(View, Strings.ImportAllDone(task.Result.Imported));
+				}
+				else
+				{
+					Toasts.Error(View, Strings.ImportAllPartial(task.Result.Imported, task.Result.Failed));
+				}
+
+				// 重新列举：已导入的会话在源库里还在，但产物的落盘位置已经变了。
+				Reload();
+				_afterImport();
+			}),
+			TaskScheduler.Default);
 	}
 
 	/// <summary>把家目录缩成 <c>~</c>：路径列宽有限，完整路径在悬停提示里才有意义。</summary>

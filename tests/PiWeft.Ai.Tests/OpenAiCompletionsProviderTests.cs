@@ -471,7 +471,7 @@ public class HeaderOnlyTimeoutTests
 			""";
 
 		var provider = new OpenAiCompletionsProvider(
-			new HttpClient(new SlowBodyHandler(body, TimeSpan.FromMilliseconds(120))));
+			new HttpClient(new SlowBodyHandler(body, TimeSpan.FromMilliseconds(300))));
 
 		var model = new Model
 		{
@@ -485,8 +485,11 @@ public class HeaderOnlyTimeoutTests
 		var stream = provider.Stream(
 			model,
 			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
-			// 请求超时比正文耗时短得多：只覆盖等响应头时才不会把流切断。
-			new StreamOptions { ApiKey = "k", TimeoutMs = 50 });
+			// 超时预算必须比「正文总耗时」小得多，同时又要远大于「等响应头」的真实耗时。
+			// 原来的 50 ms 太贴边：并行跑整套测试时线程池一忙，连同步返回的响应头都能超过 50 ms，
+			// 超时真的在等头部阶段触发，测试就变成在验证它不想验证的场景（实测 8 并发时 4 次失败）。
+			// 正文 4 次读 × 300 ms ≈ 1.2 s，是 400 ms 预算的 3 倍，语义仍然成立。
+			new StreamOptions { ApiKey = "k", TimeoutMs = 400 });
 
 		var text = new StringBuilder();
 		await foreach (var @event in stream)

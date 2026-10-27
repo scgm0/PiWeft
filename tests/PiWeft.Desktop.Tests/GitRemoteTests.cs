@@ -150,6 +150,73 @@ public class GitRemoteTests : IDisposable
 	}
 
 	[Fact]
+	public void FirstPushPicksTheOnlyRemoteWhenItIsNotOrigin()
+	{
+		// 首次推送以前写死 origin：远端叫别的名字（upstream / github）时一次本该成功的推送
+		// 会报成「'origin' does not appear to be a git repository」。
+		var named = Path.Combine(_base, "named");
+		var namedRemote = Path.Combine(_base, "named.git");
+		Directory.CreateDirectory(named);
+		Run(_base, "init", "--bare", "-b", "main", namedRemote);
+		Run(named, "init", "-q", "-b", "main");
+		Run(named, "config", "user.email", "test@example.com");
+		Run(named, "config", "user.name", "PiWeft Test");
+		Run(named, "remote", "add", "upstream", namedRemote);
+		File.WriteAllText(Path.Combine(named, "a.txt"), "hello");
+		Run(named, "add", "--all");
+		Run(named, "commit", "-q", "-m", "first");
+
+		Assert.Equal("upstream", GitWriter.ResolvePushRemote(named));
+
+		var push = GitWriter.Push(named);
+		Assert.True(push.Ok, push.Message + " / " + push.Detail);
+		Assert.Equal("upstream/main", GitStatusReader.Upstream(named).Upstream);
+	}
+
+	[Fact]
+	public void OriginWinsWhenSeveralRemotesExist()
+	{
+		// 有 origin 时它就是约定俗成的目标，不必再要求用户指定。
+		var fork = Path.Combine(_base, "fork.git");
+		Run(_base, "init", "--bare", "-b", "main", fork);
+		Run(_work, "remote", "add", "fork", fork);
+
+		Write("a.txt", "hello");
+		CommitAll("first");
+
+		Assert.Equal("origin", GitWriter.ResolvePushRemote(_work));
+		Assert.True(GitWriter.Push(_work).Ok);
+		Assert.Equal("origin/main", GitStatusReader.Upstream(_work).Upstream);
+		Assert.Empty(Exec(fork, "rev-parse", "--all").Stdout.Trim());
+	}
+
+	[Fact]
+	public void FirstPushRefusesToGuessBetweenSeveralRemotes()
+	{
+		// 多个远端且没有 origin 时不猜：推错远端比不推难查得多。
+		var repo = Path.Combine(_base, "ambiguous");
+		var first = Path.Combine(_base, "ambiguous-a.git");
+		var second = Path.Combine(_base, "ambiguous-b.git");
+		Directory.CreateDirectory(repo);
+		Run(_base, "init", "--bare", "-b", "main", first);
+		Run(_base, "init", "--bare", "-b", "main", second);
+		Run(repo, "init", "-q", "-b", "main");
+		Run(repo, "config", "user.email", "test@example.com");
+		Run(repo, "config", "user.name", "PiWeft Test");
+		Run(repo, "remote", "add", "alpha", first);
+		Run(repo, "remote", "add", "beta", second);
+		File.WriteAllText(Path.Combine(repo, "a.txt"), "hello");
+		Run(repo, "add", "--all");
+		Run(repo, "commit", "-q", "-m", "first");
+
+		Assert.Null(GitWriter.ResolvePushRemote(repo));
+		Assert.False(GitWriter.Push(repo).Ok);
+		Assert.Equal(Strings.GitAmbiguousRemote, GitWriter.Push(repo).Message);
+		Assert.Empty(Exec(first, "rev-parse", "--all").Stdout.Trim());
+		Assert.Empty(Exec(second, "rev-parse", "--all").Stdout.Trim());
+	}
+
+	[Fact]
 	public void PushSendsNewCommits()
 	{
 		Write("a.txt", "hello");

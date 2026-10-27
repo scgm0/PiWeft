@@ -18,6 +18,7 @@ public class GitFailureTests
 	[InlineData("! [rejected]        main -> main (non-fast-forward)", "GitPushRejected")]
 	[InlineData("! [rejected]        main -> main (fetch first)", "GitPushRejected")]
 	[InlineData("fatal: The current branch main has no upstream branch.", "GitNoUpstream")]
+	[InlineData("fatal: 'upstream' does not appear to be a git repository", "GitUnknownRemote")]
 	[InlineData("error: Your local changes to the following files would be overwritten by merge:", "GitLocalChangesBlock")]
 	[InlineData("fatal: Not possible to fast-forward, aborting.", "GitNotFastForward")]
 	[InlineData("CONFLICT (content): Merge conflict in a.txt", "GitConflict")]
@@ -63,6 +64,7 @@ public class GitFailureTests
 		"GitNetworkFailed" => Strings.GitNetworkFailed,
 		"GitPushRejected" => Strings.GitPushRejected,
 		"GitNoUpstream" => Strings.GitNoUpstream,
+		"GitUnknownRemote" => Strings.GitUnknownRemote,
 		"GitLocalChangesBlock" => Strings.GitLocalChangesBlock,
 		"GitNotFastForward" => Strings.GitNotFastForward,
 		"GitConflict" => Strings.GitConflict,

@@ -481,7 +481,7 @@ public class IconResourceTests
 		{
 			foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(
 				File.ReadAllText(file),
-				@"AppIcons\.(?:Button|Get|Icon)\(\s*""(?<name>[a-z0-9-]+)"""))
+				@"AppIcons\.(?:Button|TextButton|PrimaryButton|Get|Icon)\(\s*""(?<name>[a-z0-9-]+)"""))
 			{
 				used.Add(match.Groups["name"].Value);
 			}

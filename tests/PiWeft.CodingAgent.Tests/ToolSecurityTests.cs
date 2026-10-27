@@ -48,29 +48,36 @@ public class ToolSecurityTests : IDisposable
 	{
 		var security = ToolSecurity.Off;
 
-		Assert.False(security.Enabled);
+		Assert.False(security.Effective);
 		Assert.Null(security.BlockingReason("bash", CmdArg("rm -rf /"), _root));
 		Assert.Null(security.BlockingReason("write", PathArg("/etc/passwd"), _root));
 		Assert.Null(security.BlockingReason("read", PathArg("/etc/shadow"), _root));
+		Assert.Equal(SecurityEffect.Allow, security.Evaluate("bash", CmdArg("rm -rf /"), _root).Effect);
 
 		// 缺省构造出来的也是 off。
-		Assert.False(new ToolSecurity().Enabled);
+		Assert.False(new ToolSecurity().Effective);
 	}
 
 	[Fact]
 	public void SettingsWithoutSecuritySectionStaysOff()
 	{
 		var settings = PiWeft.CodingAgent.Settings.CodingAgentSettings.Merge(null, null);
-		Assert.False(settings.Security.Enabled);
-		Assert.Null(settings.Security.BlockingReason("bash", CmdArg("rm -rf /"), _root));
+
+		// 门是挂着的（Enabled 默认 true），但默认档位什么都不限制 —— 引入这道门不改变任何既有行为。
+		Assert.True(settings.Security.Enabled);
+		Assert.Equal(ToolSecurity.OffLevel, settings.Security.DefaultLevelId);
+		Assert.Null(settings.Security.Resolve(null).BlockingReason("bash", CmdArg("rm -rf /"), _root));
 	}
 
 	[Fact]
 	public void UnknownLevelFallsBackToOffRatherThanGuessingStricter()
 	{
-		Assert.False(ToolSecurity.FromLevel("paranoid").Enabled);
-		Assert.False(ToolSecurity.FromLevel(null).Enabled);
-		Assert.False(ToolSecurity.FromLevel("").Enabled);
+		Assert.False(ToolSecurity.FromLevel("paranoid").Effective);
+		Assert.False(ToolSecurity.FromLevel(null).Effective);
+		Assert.False(ToolSecurity.FromLevel("").Effective);
+
+		// 默认档名写错同样按 off 处理（Resolve 找不到档位时不猜更严的档）。
+		Assert.Equal(ToolSecurity.OffLevel, new SecurityConfig { DefaultLevelId = "strcit" }.Resolve(null).Level);
 	}
 
 	// ---------------------------------------------------------------- standard

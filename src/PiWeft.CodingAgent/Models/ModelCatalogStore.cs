@@ -111,12 +111,58 @@ public static class ModelCatalogStore
 	}
 
 	/// <summary>强制刷新所有 Provider 的远程目录并写回缓存。</summary>
-	public static async Task<(int Updated, int Failed)> RefreshAllAsync(
+	/// <summary>两次全量刷新的最小间隔。显式 <c>pi update --models</c> 传 <c>force: true</c> 绕过。</summary>
+	public static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(6);
+
+	/// <summary>
+	/// 是否该刷了：取缓存里最新的 <c>checkedAt</c> 与 <see cref="RefreshInterval"/> 比较。
+	/// 没有缓存或时间戳缺失/在未来（手改文件、时钟回拨）时都返回 <see langword="true"/> ——
+	/// 节流不该变成「永远不刷新」。
+	/// </summary>
+	public static bool ShouldRefresh(string? agentDir = null, TimeSpan? interval = null, DateTimeOffset? now = null)
+	{
+		var root = ReadRoot(agentDir);
+		if (root?["providers"] is not JsonObject providers)
+		{
+			return true;
+		}
+
+		var newest = 0L;
+		foreach (var node in providers)
+		{
+			if (node.Value?["checkedAt"] is JsonValue value && value.TryGetValue<long>(out var checkedAt) && checkedAt > newest)
+			{
+				newest = checkedAt;
+			}
+		}
+
+		if (newest <= 0)
+		{
+			return true;
+		}
+
+		var elapsed = (now ?? DateTimeOffset.UtcNow) - DateTimeOffset.FromUnixTimeMilliseconds(newest);
+		return elapsed >= (interval ?? RefreshInterval);
+	}
+
+	/// <summary>刷新结果：更新了几个、几个失败、几个命中 304（内容未变，省下了传输）。</summary>
+	public sealed record RefreshOutcome(int Updated, int Failed, int NotModified)
+	{
+		public bool NothingToDo => Updated == 0 && Failed == 0 && NotModified == 0;
+	}
+
+	public static async Task<RefreshOutcome> RefreshAllAsync(
 		string? agentDir = null,
 		Action<string>? onError = null,
 		HttpMessageHandler? handler = null,
+		bool force = false,
 		CancellationToken cancellationToken = default)
 	{
+		if (!force && !ShouldRefresh(agentDir))
+		{
+			return new RefreshOutcome(0, 0, 0);
+		}
+
 		var registry = ModelRegistry.LoadDefault();
 		var providers = registry.Providers.OrderBy(static id => id, StringComparer.Ordinal).ToList();
 		var root = ReadRoot(agentDir) ?? new JsonObject();
@@ -125,6 +171,10 @@ public static class ModelCatalogStore
 
 		var updated = 0;
 		var failed = 0;
+		var notModified = 0;
+		// 只要有任何一次网络往返（含 304）就要落盘新的 checkedAt：否则节流窗口永远推不动，
+		// 每次启动都会重新全量拉一遍。
+		var touched = false;
 		using var client = handler is null ? null : new HttpClient(handler);
 		var http = client ?? SharedClient;
 
@@ -136,6 +186,22 @@ public static class ModelCatalogStore
 			request.Headers.TryAddWithoutValidation("accept", "application/json");
 			request.Headers.TryAddWithoutValidation("user-agent", "PiWeft/0.1.0");
 
+			// 条件请求：目录是按 provider 全量返回的大 JSON，绝大多数刷新其实什么都没变。
+			// 把缓存里的 ETag / Last-Modified 带回去，命中 304 就不用传也不用解析。
+			if (providerNodes[providerId] is JsonObject cached)
+			{
+				if (cached["etag"] is JsonValue etag && etag.TryGetValue<string>(out var tag) && !string.IsNullOrWhiteSpace(tag))
+				{
+					request.Headers.TryAddWithoutValidation("if-none-match", tag);
+				}
+
+				if (cached["lastModified"] is JsonValue modified && modified.TryGetValue<long>(out var modifiedMs) && modifiedMs > 0)
+				{
+					request.Headers.TryAddWithoutValidation("if-modified-since",
+						DateTimeOffset.FromUnixTimeMilliseconds(modifiedMs).ToUniversalTime().ToString("R"));
+				}
+			}
+
 			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 			timeout.CancelAfter(RequestTimeout);
 
@@ -145,6 +211,19 @@ public static class ModelCatalogStore
 					.ConfigureAwait(false);
 				if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.NotImplemented)
 				{
+					continue;
+				}
+
+				if (response.StatusCode == HttpStatusCode.NotModified)
+				{
+					// 内容没变：模型保持缓存里那份，只推进 checkedAt。
+					notModified++;
+					touched = true;
+					if (providerNodes[providerId] is JsonObject unchanged)
+					{
+						unchanged["checkedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+					}
+
 					continue;
 				}
 
@@ -167,11 +246,14 @@ public static class ModelCatalogStore
 				providerNodes[providerId] = new JsonObject
 				{
 					["models"] = models,
+					// 服务端没给 Last-Modified 时留 0，而不是把「现在」当成资源修改时间：
+					// 后者会让下一次的 If-Modified-Since 说是现在，撞上时钟偏差就永久 304。
 					["lastModified"] = response.Content.Headers.LastModified?.ToUnixTimeMilliseconds() ?? 0,
 					["checkedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 					["etag"] = response.Headers.ETag?.Tag,
 				};
 				updated++;
+				touched = true;
 			}
 			catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
 			{
@@ -201,12 +283,12 @@ public static class ModelCatalogStore
 			updated++;
 		}
 
-		if (updated > 0)
+		if (touched || updated > 0)
 		{
 			WriteRoot(root, agentDir);
 		}
 
-		return (updated, failed);
+		return new RefreshOutcome(updated, failed, notModified);
 	}
 
 	private static async Task<bool> RefreshOpenRouterAsync(

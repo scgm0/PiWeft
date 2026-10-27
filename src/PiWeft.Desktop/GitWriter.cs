@@ -68,6 +68,9 @@ public static class GitFailure
 				|| Contains(text, "Updates were rejected") =>
 				Strings.GitPushRejected,
 
+			// 远端名不存在（首次推送挑错远端时会走到这里）。
+			_ when Contains(text, "does not appear to be a git repository") => Strings.GitUnknownRemote,
+
 			// 无上游 / 无远端。
 			_ when Contains(text, "has no upstream branch")
 				|| Contains(text, "no upstream configured")
@@ -287,7 +290,38 @@ public static class GitWriter
 			return GitResult.Failure(Strings.GitDetachedHead);
 		}
 
-		return RunNetwork(cwd, ["push", "--set-upstream", "origin", branch], Strings.GitPushUpstreamCreated);
+		// 首次推送要挑远端，不能写死 origin：不少仓库的远端叫 upstream / github，
+		// 写死会让一次本该成功的推送报成「'origin' does not appear to be a git repository」。
+		if (ResolvePushRemote(cwd) is not { } remote)
+		{
+			return GitResult.Failure(Strings.GitAmbiguousRemote);
+		}
+
+		return RunNetwork(cwd, ["push", "--set-upstream", remote, branch], Strings.GitPushUpstreamCreated);
+	}
+
+	/// <summary>
+	/// 首次推送的远端选择：只有一个远端就用它；有 <c>origin</c> 用 <c>origin</c>；
+	/// 多个且都不是 origin 时不猜（推错远端比不推难查得多），返回 <see langword="null"/> 让界面提示用户指定。
+	/// </summary>
+	public static string? ResolvePushRemote(string cwd)
+	{
+		var capture = RunCapture(cwd, ["remote"], LocalTimeout);
+		if (!capture.Ok)
+		{
+			return null;
+		}
+
+		var remotes = capture.Stdout
+			.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			.ToList();
+
+		if (remotes.Count == 1)
+		{
+			return remotes[0];
+		}
+
+		return remotes.FirstOrDefault(static name => string.Equals(name, "origin", StringComparison.Ordinal));
 	}
 
 	/// <summary>把工作区（含未跟踪文件）收进 stash，得到一个干净的工作区。</summary>

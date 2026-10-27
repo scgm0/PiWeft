@@ -1653,6 +1653,15 @@ public sealed partial class MainWindow : Window
 					OpenSettingsDialog();
 					_settingsView?.ShowConfiguration();
 					break;
+				case "security":
+					OpenSettingsDialog();
+					if (_settingsView is { } security) _ = security.SelectSectionAsync("security");
+					break;
+				case "security-edit":
+					// 视觉验收：选中安全门分区并展开一档编辑器，让动作矩阵与目录表一起入镜。
+					OpenSettingsDialog();
+					if (_settingsView is { } editing) _ = editing.SelectSectionForSecurityEditAsync();
+					break;
 				case "appearance":
 					OpenSettingsDialog();
 					if (_settingsView is { } appearance) _ = appearance.SelectSectionAsync("appearance");
@@ -2218,12 +2227,27 @@ public sealed partial class MainWindow : Window
 	{
 		if (_settingsDialog is null)
 		{
-			_settingsView ??= new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
+			if (_settingsView is null)
+			{
+				_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
+				// 安全门改动要立刻推给所有已打开的会话，否则界面档位与实际执行用的档位会不一致。
+				_settingsView.SecurityChanged += ApplySecurityToSessions;
+			}
 			_settingsDialog = new SettingsDialog(_settingsView);
 			_settingsDialog.Closed += FocusActiveEntry;
 		}
 
 		_settingsDialog.Show(this);
+	}
+
+	/// <summary>把磁盘上的安全配置推给所有已打开的会话。</summary>
+	private void ApplySecurityToSessions()
+	{
+		var config = PiWeft.CodingAgent.Security.SecurityConfig.Load();
+		foreach (var tab in _tabEntries.OfType<SessionTab>().ToArray())
+		{
+			tab.ApplySecurityConfig(config);
+		}
 	}
 
 	/// <summary>Reload future-session environments without replacing any running session.</summary>
