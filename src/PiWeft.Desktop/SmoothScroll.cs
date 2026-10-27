@@ -36,6 +36,13 @@ internal sealed class SmoothScroll : IDisposable
 	private const double CorrectionTolerance = 2;
 	internal bool AutoFollowAtEnd { get; set; }
 
+	/// <summary>
+	/// 视口内容按实测行高虚拟化（会话时间线、执行过程组体）时，重排会把「估算行高被修正」
+	/// 换算成一次偏移校正直接写回视口。滚轮滑行期间必须把这次校正当成内容坐标系平移，
+	/// 而不是读者接管滚动：否则目标停在旧坐标系里，快速滚动会多走或倒退一个校正量。
+	/// </summary>
+	internal bool CompensateLayoutCorrections { get; set; }
+
 	/// <summary>True after an explicit wheel/keyboard/scrollbar escape from the tail.</summary>
 	internal bool ReaderEscaped => _readerEscaped;
 	// 读者明确上滚过（滚轮/键盘/滚动条/恢复历史位置）。只有这种意图能挡住「置底即跟底」；
@@ -582,6 +589,27 @@ internal sealed class SmoothScroll : IDisposable
 		var offset = Offset;
 		var maximum = MaxVerticalOffset;
 		var extentChanged = Math.Abs(maximum - _lastMaximum) > 0.5;
+
+		// 虚拟化 presenter 在重排时会把「估算行高被实测修正」换算成一次偏移校正，直接写视口。
+		// 读者正在滚轮滑行时，这次校正改的是内容坐标系：例如上方未测量行实测后变高，同一条
+		// 内容的坐标整体下移，presenter 就把偏移加大同样的量。若目标仍停在旧坐标系，滑行会
+		// 多走/倒退一个校正量——快速上滚时表现为「滚了很多却几乎没动，随后被拉回去」。
+		// 把曲线随校正一起平移，读者输入的距离仍原样兑现；这不是读者接管，不能停掉动画。
+		var compensated = false;
+		// 只有 extent 同时被重算的位移才是「行高实测」引起的坐标系平移；extent 不变的
+		// 外部跳转（拖动滚动条、程序化定位、焦点滚动）仍然是读者接管，交给下面的分支停动画。
+		if (CompensateLayoutCorrections && extentChanged && _viewport is not null && _clock.IsRunning &&
+			!IsApplyingOffset && offset != _lastOffset)
+		{
+			var dx = offset.X - _lastOffset.X;
+			var dy = offset.Y - _lastOffset.Y;
+			if (Math.Abs(dx) > 0.01 || Math.Abs(dy) > 0.01)
+			{
+				_target = new Point(_target.X + dx, _target.Y + dy);
+				_from = new Point(_from.X + dx, _from.Y + dy);
+				compensated = true;
+			}
+		}
 		if (AutoFollowAtEnd)
 		{
 			// 跟随态由几何决定：滚动条停在底部就跟随，读者明确上滚才离开。
@@ -605,8 +633,9 @@ internal sealed class SmoothScroll : IDisposable
 					_followGrowth = false;
 					// 像素舍入/锚点校正量级的微位移（虚拟化 presenter 重排时直接写视口）不是读者
 					// 接管：停掉动画会把置顶阅读的连续滚轮打成一顿一顿，直到读者上滚设置 escape
-					// 才恢复。可见幅度的外部位移仍按接管处理，立即结束在途动画。
-					if (!IsApplyingOffset && Math.Abs(offset.Y - _lastOffset.Y) > CorrectionTolerance) StopAnimation();
+					// 才恢复。可见幅度的外部位移若已按坐标系平移（compensated）也继续滑行；
+					// 只有无法解释的外部位移才结束在途动画。
+					if (!compensated && !IsApplyingOffset && Math.Abs(offset.Y - _lastOffset.Y) > CorrectionTolerance) StopAnimation();
 				}
 				// extent 增长且读者没上滚：保持现状，不把布局校正误判成离开。
 			}
@@ -620,7 +649,7 @@ internal sealed class SmoothScroll : IDisposable
 			// 像素网格都会产生一次亚 DIP 的外部位移——没有容差，平滑滚动每个刻度都会被
 			// 拦腰打断，只剩下一格格的重新起步（一顿一顿 + 半路丢距离）。
 			var correction = Math.Max(Math.Abs(offset.X - _lastOffset.X), Math.Abs(offset.Y - _lastOffset.Y));
-			if ((!_followGrowth || !extentChanged) && correction > CorrectionTolerance)
+			if (!compensated && (!_followGrowth || !extentChanged) && correction > CorrectionTolerance)
 			{
 				_followGrowth = false;
 				StopAnimation();

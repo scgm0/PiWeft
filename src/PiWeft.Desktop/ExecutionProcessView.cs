@@ -458,6 +458,7 @@ internal sealed class ExecutionProcessView
 			// 组体与整段过程一样是「可滚动的小窗」：内层能滚就滚内层，内层到边界（或内容装得下）
 			// 才把滚轮交还外层会话——由 SmoothScroll 在视口边界上交接（ScrollCascade）。
 			viewport?.MaxHeight(bodyMaxHeight).SmoothScrolling().NoHorizontalScroll();
+			if (viewport is not null) SmoothScroll.For(viewport).CompensateLayoutCorrections = true;
 			CompleteBody(list);
 			rows.Set(members);
 		}

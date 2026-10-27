@@ -36,6 +36,8 @@ internal sealed class ConversationTimeline : IDisposable
 		((IVisualTreeHost)View).VisitChildren(child => { scroll = child as ScrollViewer; return false; });
 		Scroll = scroll ?? throw new InvalidOperationException("The timeline requires a scroll viewport.");
 		Scroll.SmoothScrolling().NoHorizontalScroll();
+		// 首次打开的历史行只有估算高度；上滚时实测修正会重写偏移。滑行要跟着内容坐标系一起走。
+		SmoothScroll.For(Scroll).CompensateLayoutCorrections = true;
 		Scroll.ScrollChanged += RequestPrune;
 		Scroll.MouseDown += CancelJump;
 		Scroll.MouseWheel += CancelJump;
