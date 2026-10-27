@@ -88,6 +88,14 @@ public sealed record DesktopPreference
 	public string GitCommitThinking { get; init; } = string.Empty;
 
 	/// <summary>
+	/// Git 面板各节的高展开态，按仓库工作目录记（值形如 <c>图=200:1|比较=160:0|…</c>，
+	/// 见 <see cref="GitPaneLayout"/>）。每个仓库的用法不一样：有人天天看提交图，
+	/// 有人只用更改列表，所以折叠状态与拖动出来的高度都得分仓库存。
+	/// </summary>
+	public IReadOnlyDictionary<string, string> GitPanes { get; init; } =
+		new Dictionary<string, string>(StringComparer.Ordinal);
+
+	/// <summary>
 	/// 命令 Dock 使用的 shell 可执行文件；空表示自动（<c>$SHELL</c> → bash → sh）。
 	/// 只影响终端面板，不改动系统登录 shell。
 	/// </summary>
@@ -166,6 +174,7 @@ public sealed record DesktopPreference
 				GitCommitThinking = root?["gitCommitThinking"] is JsonValue commitThinking && commitThinking.TryGetValue<string>(out var commitThinkingText)
 					? commitThinkingText.Trim()
 					: string.Empty,
+				GitPanes = ReadStringMap(root?["gitPanes"]),
 				TerminalShell = root?["terminalShell"] is JsonValue shell && shell.TryGetValue<string>(out var shellPath)
 					? shellPath.Trim()
 					: string.Empty,
@@ -262,6 +271,22 @@ public sealed record DesktopPreference
 		{
 			root["gitCommitThinking"] = GitCommitThinking.Trim();
 		}
+		// Git 面板布局：没有记录时不留空对象。
+		if (GitPanes.Count == 0)
+		{
+			root.Remove("gitPanes");
+		}
+		else
+		{
+			var panes = new JsonObject();
+			foreach (var (cwd, layout) in GitPanes)
+			{
+				panes[cwd] = layout;
+			}
+
+			root["gitPanes"] = panes;
+		}
+
 		if (string.IsNullOrWhiteSpace(TerminalShell))
 		{
 			root.Remove("terminalShell");
@@ -343,6 +368,23 @@ public sealed record DesktopPreference
 	/// <summary>Git 提交摘要默认思考级别；空字符串表示跟随当前会话。</summary>
 	public DesktopPreference WithGitCommitThinking(string level) => this with { GitCommitThinking = (level ?? string.Empty).Trim() };
 
+	/// <summary>记住某个仓库的 Git 面板节高度与展开态；空串表示清除该仓库的记录。</summary>
+	public DesktopPreference WithGitPanes(string cwd, string layout)
+	{
+		var map = new Dictionary<string, string>(GitPanes, StringComparer.Ordinal);
+		var key = System.IO.Path.GetFullPath(cwd);
+		if (string.IsNullOrWhiteSpace(layout))
+		{
+			map.Remove(key);
+		}
+		else
+		{
+			map[key] = layout;
+		}
+
+		return this with { GitPanes = map };
+	}
+
 	public DesktopPreference TogglePinned(string sessionId)
 	{
 		var pinned = Pinned.Contains(sessionId, StringComparer.Ordinal)
@@ -406,6 +448,26 @@ public sealed record DesktopPreference
 		}
 
 		return pinned;
+	}
+
+	private static Dictionary<string, string> ReadStringMap(JsonNode? node)
+	{
+		var map = new Dictionary<string, string>(StringComparer.Ordinal);
+		if (node is not JsonObject obj)
+		{
+			return map;
+		}
+
+		foreach (var (key, value) in obj)
+		{
+			if (value is JsonValue json && json.TryGetValue<string>(out var text) &&
+				text.Trim().Length > 0 && key.Trim().Length > 0)
+			{
+				map[key] = text.Trim();
+			}
+		}
+
+		return map;
 	}
 
 	private static Dictionary<string, string> ReadShortcuts(JsonObject? root)

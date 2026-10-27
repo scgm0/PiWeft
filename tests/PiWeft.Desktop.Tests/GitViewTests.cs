@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using Aprillz.MewUI;
+using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
 using PiWeft.Desktop;
@@ -112,8 +113,10 @@ public sealed class GitViewTests : IDisposable
 		Find<Button>(view.View).FirstOrDefault(button =>
 			button.Tag is GitChange change && change.Path == path && HoverHints.Text(button) == tooltip);
 
+	/// <summary>文件行本体（行尾的动作按钮带同一个 Tag，靠内容形态区分）。</summary>
 	private static Button? FileRow(GitView view, string path) =>
-		Find<Button>(view.View).FirstOrDefault(button => button.Tag is GitChange change && change.Path == path);
+		Find<Button>(view.View).FirstOrDefault(button =>
+			button.Content is StackPanel && button.Tag is GitChange change && change.Path == path);
 
 	private static MultiLineTextBox CommitInput(GitView view) =>
 		Find<MultiLineTextBox>(view.View).Single(input => input.Placeholder?.Contains("Ctrl+Enter", StringComparison.Ordinal) == true);
@@ -312,6 +315,45 @@ public sealed class GitViewTests : IDisposable
 	}
 
 	[Fact]
+	public void SyncBadgeSitsInTopRightCornerClearOfTheArrow()
+	{
+		var remote = Path.Combine(Path.GetTempPath(), "piweft-badge-geom-" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(remote);
+		try
+		{
+			RunGitIn(remote, "init", "-q", "--bare", "-b", "main");
+			RunGit("add", "--all");
+			RunGit("commit", "-m", "base");
+			RunGit("remote", "add", "origin", remote);
+			RunGit("push", "-q", "-u", "origin", "main");
+			File.WriteAllText(Path.Combine(_root, "a.txt"), "local work");
+			RunGit("commit", "-qam", "local work");
+
+			var view = View(_root);
+			ConversationPerformanceTests.Layout(view.View, 420, 700);
+			var button = Assert.Single(Find<Button>(view.View), candidate =>
+				HoverHints.Text(candidate) == Strings.GitPushAhead(1));
+			var image = Assert.Single(Find<Image>(button).ToList());
+			var pill = Assert.Single(Find<Border>(button).ToList());
+
+			// 图标保持在按钮中心，圆牌压在右上角：两者只在角上相邻，不互相覆盖中心。
+			var centre = new Point(button.Bounds.X + button.Bounds.Width / 2, button.Bounds.Y + button.Bounds.Height / 2);
+			var iconCentre = Centre(image.Bounds);
+			Assert.InRange(iconCentre.X, centre.X - 2, centre.X + 2);
+			Assert.InRange(iconCentre.Y, centre.Y - 2, centre.Y + 2);
+			var pillCentre = Centre(pill.Bounds);
+			Assert.True(pillCentre.X > iconCentre.X, "圆牌要在图标右侧");
+			Assert.True(pillCentre.Y < iconCentre.Y, "圆牌要在图标上侧");
+			Assert.True(pill.Bounds.Right <= button.Bounds.Right + 0.5, "圆牌不能被按钮裁掉");
+			Assert.True(pill.Bounds.Bottom <= button.Bounds.Bottom, "圆牌不能被按钮裁掉");
+		}
+		finally
+		{
+			Directory.Delete(remote, recursive: true);
+		}
+	}
+
+	[Fact]
 	public void PrimaryButtonLabelsAreCentredInTheirButtons()
 	{
 		RunGit("add", "--all");
@@ -348,6 +390,8 @@ public sealed class GitViewTests : IDisposable
 		Assert.True(chip.Bounds.Width < 200,
 			$"分支键被填充位拉成 {chip.Bounds.Width:0} DIP：悬停底色与命中区会铺满整条空白");
 	}
+
+	private static Point Centre(Rect rect) => new(rect.X + rect.Width / 2, rect.Y + rect.Height / 2);
 
 	/// <summary>主按钮的标签必须落在按钮水平中心：贴左缘就成了「文字挤在左边」的观感。</summary>
 	private static void AssertCentered(GitView view, string label)
@@ -408,6 +452,187 @@ public sealed class GitViewTests : IDisposable
 				Directory.Delete(remote, recursive: true);
 			}
 		}
+	}
+
+	[Fact]
+	public void RowHitTestingIsStableWhileThePointerCrossesIt()
+	{
+		Directory.CreateDirectory(Path.Combine(_root, "src"));
+		File.WriteAllText(Path.Combine(_root, "src", "One.cs"), "one\n");
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "base");
+		File.AppendAllText(Path.Combine(_root, "src", "One.cs"), "changed\n");
+
+		var view = View(_root);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+		var row = FileRow(view, "src/One.cs");
+		Assert.NotNull(row);
+
+		var hitTest = typeof(Window).GetMethod("HitTest", BindingFlags.Instance | BindingFlags.Public)!;
+		var window = new Window { Content = view.View };
+		ConversationPerformanceTests.Layout(window, 420, 700);
+		var bounds = row!.Bounds;
+		var y = bounds.Y + bounds.Height / 2;
+
+		// 行内容不参与命中：横扫一行时命中叶子始终是那一行的按钮。
+		// 否则每走过一个图标/文字就换一次叶子，悬停链与重排被逐像素触发，高亮就落在指针后面。
+		var leaves = new HashSet<string>();
+		for (var x = bounds.X + 2; x < bounds.Right - 2; x += 3)
+		{
+			var leaf = (UIElement?)hitTest.Invoke(window, [new Point(x, y)]);
+			leaves.Add(leaf?.GetType().Name ?? "null");
+		}
+
+		Assert.Equal(["Button"], leaves);
+	}
+
+	[Fact]
+	public void SelectingARowKeepsTheChangeTreeAndTheRestOfThePanel()
+	{
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "base");
+		Directory.CreateDirectory(Path.Combine(_root, "src"));
+		File.WriteAllText(Path.Combine(_root, "src", "One.cs"), "one\n");
+		File.WriteAllText(Path.Combine(_root, "src", "Two.cs"), "two\n");
+
+		var view = View(_root);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+		var row = FileRow(view, "src/One.cs");
+		var other = FileRow(view, "src/Two.cs");
+		var commitRow = Find<Button>(view.View).FirstOrDefault(button =>
+			Find<TextBlock>(button).Any(static block => block.Text == "base"));
+		Assert.NotNull(row);
+		Assert.NotNull(commitRow);
+
+		ImagePreviewTests.Click(row!);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+
+		// 选一行只换 diff 那一节：改动树的元素实例保持不动，悬停态与滚动位置才不会掉。
+		Assert.Same(row, FileRow(view, "src/One.cs"));
+		Assert.Same(other, FileRow(view, "src/Two.cs"));
+		Assert.Same(commitRow, Find<Button>(view.View).First(button =>
+			Find<TextBlock>(button).Any(static block => block.Text == "base")));
+		// diff 确实出现在同一块面板里。
+		Assert.Contains(Find<MultiLineTextBox>(view.View), text => text.Text.Contains("+one", StringComparison.Ordinal));
+
+		// 再点同一行收起 diff，仍然不重建别的节。
+		ImagePreviewTests.Click(FileRow(view, "src/One.cs")!);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+		Assert.DoesNotContain(Find<MultiLineTextBox>(view.View), text => text.Text.Contains("+one", StringComparison.Ordinal));
+		Assert.Same(commitRow, Find<Button>(view.View).First(button =>
+			Find<TextBlock>(button).Any(static block => block.Text == "base")));
+	}
+
+	[Fact]
+	public void CollapsingChangesHandsTheFreedHeightToTheGraph()
+	{
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "base");
+		File.WriteAllText(Path.Combine(_root, "a.txt"), "changed");
+
+		var view = View(_root);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+		var graph = PaneWithText(view, Strings.GitGraph);
+		Assert.NotNull(graph);
+		var before = graph!.Bounds.Height;
+
+		ImagePreviewTests.Click(Find<Button>(view.View).First(button =>
+			Find<TextBlock>(button).Any(static block => block.Text == Strings.GitChanges)));
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+
+		// 收起「更改」后那块高度必须让给下面展开着的节，而不是原地留白。
+		var after = PaneWithText(view, Strings.GitGraph)!.Bounds.Height;
+		Assert.True(after > before + 100, $"图这一节从 {before:0} 只长到 {after:0} DIP，剩余高度没让出来");
+	}
+
+	/// <summary>某一节的宿主（节头与正文所在的那块），用节标题文字定位。</summary>
+	private static Border? PaneWithText(GitView view, string title) =>
+		Find<Border>(view.View).FirstOrDefault(pane =>
+			pane.Bounds.Height > 29 && Find<TextBlock>(pane).Any(block => block.Text == title));
+
+	[Fact]
+	public void FoldingADirectoryKeepsTheGraphAndTheCommitComposer()
+	{
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "base");
+		Directory.CreateDirectory(Path.Combine(_root, "src"));
+		File.WriteAllText(Path.Combine(_root, "src", "One.cs"), "one\n");
+
+		var view = View(_root);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+		var directory = Find<Button>(view.View).Single(button => button.Content is StackPanel panel &&
+			Find<TextBlock>(panel).Any(static block => block.Text == "src"));
+		var composer = Find<MultiLineTextBox>(view.View).Single();
+		var commitRow = Find<Button>(view.View).First(button =>
+			Find<TextBlock>(button).Any(static block => block.Text == "base"));
+
+		ImagePreviewTests.Click(directory);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+
+		Assert.Null(FileRow(view, "src/One.cs"));
+		// 折叠只重画改动树：提交框与图这几节保持原样。
+		Assert.Same(composer, Find<MultiLineTextBox>(view.View).Single());
+		Assert.Same(commitRow, Find<Button>(view.View).First(button =>
+			Find<TextBlock>(button).Any(static block => block.Text == "base")));
+	}
+
+	[Fact]
+	public void SashDragResizesThePaneBelowItAndPersists()
+	{
+		var view = View(_root);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+		var graph = Find<Border>(view.View).First(pane => pane.Bounds.Height > 0 && Math.Abs(pane.Bounds.Height - GitPaneLayout.ExpandedHeight(220)) < 0.5);
+		var before = graph.Bounds.Height;
+
+		// 向上拖 80 DIP：分隔条下面那一节（图）长高 80。
+		view.SetGraphHeightForTests(300);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+		Assert.Equal(GitPaneLayout.ExpandedHeight(300), graph.Bounds.Height, 0.5);
+		Assert.True(graph.Bounds.Height > before);
+
+		// 拖完即落盘，并且按仓库记：重开的面板用同一个 cwd 能拿回这个高度。
+		Assert.Contains(DesktopPreference.Load().GitPanes.Values, static value => value.Contains("图=300:1", StringComparison.Ordinal));
+		var reopened = View(_root);
+		ConversationPerformanceTests.Layout(reopened.View, 420, 700);
+		Assert.Contains(Find<Border>(reopened.View), pane => Math.Abs(pane.Bounds.Height - GitPaneLayout.ExpandedHeight(300)) < 0.5);
+	}
+
+	[Fact]
+	public void SashReportsIncrementalDeltasAndCommitsOnceOnRelease()
+	{
+		var heights = new List<double>();
+		var commits = 0;
+		var sash = new PaneSash(() => 200, height => heights.Add(height), () => commits++);
+
+		// 报的是「这一节应有的高度」：锚在按下那一刻，所以拖多远就长多少，不会因为
+		// 分隔条自己移动而自我抵消；落盘只在松手时发生一次，之后再动不算第二次提交。
+		sash.BeginDragForTests(500);
+		sash.MoveForTests(488);
+		sash.MoveForTests(480);
+		sash.MoveForTests(496);
+		sash.EndDragForTests();
+		sash.MoveForTests(600);
+		sash.EndDragForTests();
+
+		Assert.Equal([212d, 220d, 204d], heights);
+		Assert.Equal(1, commits);
+	}
+
+	[Fact]
+	public void CollapsedPanesShrinkToTheirHeaderAndHideTheirSash()
+	{
+		var view = View(_root);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+
+		var toggle = Find<Button>(view.View).First(button =>
+			Find<TextBlock>(button).Any(static block => block.Text == Strings.GitGraph));
+		ImagePreviewTests.Click(toggle);
+		ConversationPerformanceTests.Layout(view.View, 420, 700);
+
+		// 折叠后只剩节头那么高，分隔条也收起：没有可拖的对象就不该留一条能按到的线。
+		Assert.Contains(Find<Border>(view.View), pane => Math.Abs(pane.Bounds.Height - GitPaneLayout.HeaderHeight) < 0.5);
+		Assert.Contains(Find<PaneSash>(view.View), static sash => !sash.IsVisible);
+		Assert.Contains(DesktopPreference.Load().GitPanes.Values, static value => value.Contains("图=", StringComparison.Ordinal) && value.Contains(":0", StringComparison.Ordinal));
 	}
 
 	[Fact]

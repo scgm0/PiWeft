@@ -16,7 +16,7 @@ public sealed partial class GitView
 
 	private void LoadGraph(IReadOnlyList<string> branches)
 	{
-		if (!_graphExpanded)
+		if (!_panes.GraphOpen)
 		{
 			return;
 		}
@@ -55,7 +55,7 @@ public sealed partial class GitView
 			.Spacing(6)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Children(
-				ThemedGlyph(_graphExpanded ? GlyphKind.ChevronDown : GlyphKind.ChevronRight, AppStyles.RoleSubtle, 3),
+				ThemedGlyph(_panes.GraphOpen ? GlyphKind.ChevronDown : GlyphKind.ChevronRight, AppStyles.RoleSubtle, 3),
 				new TextBlock().Text(Strings.GitGraph).FontSize(AppTheme.FontSizeMicro)
 					.FontWeight(FontWeight.SemiBold).PrimaryText());
 		if (_graphTotal > 0)
@@ -64,14 +64,18 @@ public sealed partial class GitView
 				.FontSize(AppTheme.FontSizeMicro).FaintText());
 		}
 
+		title.IsHitTestVisible = false;
+
 		var titleButton = new Button()
 			.Ghost()
 			.Height(28)
 			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space2, 0))
 			.OnClick(() =>
 			{
-				_graphExpanded = !_graphExpanded;
-				Refresh();
+				_panes = _panes.WithGraph(_panes.Graph, !_panes.GraphOpen);
+				ApplyPaneHeights();
+				SavePanes();
+				RebuildGraph();
 			})
 			.Content(title);
 
@@ -116,7 +120,7 @@ public sealed partial class GitView
 				.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
 				.Child(new DockPanel().LastChildFill().Children(right.DockRight(), titleButton)),
 			new Thickness(0, 1, 0, 0));
-		if (!_graphExpanded)
+		if (!_panes.GraphOpen)
 		{
 			return header;
 		}
@@ -160,7 +164,7 @@ public sealed partial class GitView
 		return new StackPanel().Spacing(0)
 			.Children(header, new ScrollViewer()
 				.SmoothScrolling()
-				.MaxHeight(180)
+				.MaxHeight(PaneAbsorbs(GraphRow) ? double.PositiveInfinity : _panes.Graph)
 				.Content(content)
 				.AutoVerticalScroll()
 				.NoHorizontalScroll());
@@ -203,6 +207,7 @@ public sealed partial class GitView
 			lanes.Column(0),
 			subjectPanel.Column(1),
 			info.Column(2));
+		grid.IsHitTestVisible = false;
 		var button = new Button()
 			.Ghost()
 			.Height(28)
@@ -311,34 +316,45 @@ public sealed partial class GitView
 	private UIElement BuildCommitFileRow(GitCommitEntry commit, string? parent, GitCommitFile file)
 	{
 		var selected = _diffRequest?.MatchesCommit(commit.Hash, file.Path) == true;
+		var row = FileLikeRow(file, selected, () =>
+		{
+			_diffRequest = GitDiffRequest.Commit(commit.Hash, parent, file.Path, file.OriginalPath);
+			OpenChangesPane();
+			RebuildGraph();
+			RebuildDiff();
+		});
+		return row;
+	}
+
+	/// <summary>提交/比较结果里的文件行：状态字母 + 文件名，内容不参与命中（见 GitView.FlatContent）。</summary>
+	private UIElement FileLikeRow(GitCommitFile file, bool selected, Action onClick)
+	{
+		var rowContent = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(6)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(
+				new TextBlock().Text(file.Letter).FontFamily(AppTheme.MonoFont)
+					.FontSize(AppTheme.FontSizeMicro).Width(12)
+					.WithTheme((theme, text) => text.Foreground = RoleColor(AppTheme.For(theme), LetterRole(file.Letter))),
+				new TextBlock().Text(file.FileName).FontSize(AppTheme.FontSizeMicro)
+					.MutedText().MaxWidth(160).TextWrapping(TextWrapping.NoWrap)
+					.TextTrimming(TextTrimming.CharacterEllipsis));
+		rowContent.IsHitTestVisible = false;
+
 		var row = new Button()
 			.Ghost()
 			.Height(24)
 			.Padding(new Thickness(0, 0, AppTheme.Space1, 0))
-			.OnClick(() =>
-			{
-				_diffRequest = GitDiffRequest.Commit(commit.Hash, parent, file.Path, file.OriginalPath);
-				_changesExpanded = true;
-				Refresh();
-			})
-			.Content(new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(6)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(
-					new TextBlock().Text(file.Letter).FontFamily(AppTheme.MonoFont)
-						.FontSize(AppTheme.FontSizeMicro).Width(12)
-						.WithTheme((theme, text) => text.Foreground = RoleColor(AppTheme.For(theme), LetterRole(file.Letter))),
-					new TextBlock().Text(file.FileName).FontSize(AppTheme.FontSizeMicro)
-						.MutedText().MaxWidth(160).TextWrapping(TextWrapping.NoWrap)
-						.TextTrimming(TextTrimming.CharacterEllipsis)))
+			.Content(rowContent)
+			.OnClick(onClick)
 			.HoverTip(file.Path);
 
 		return new Border()
 			.CornerRadius(AppTheme.RadiusXs)
 			.WithTheme((theme, border) => border.Background = selected
 				? AppTheme.For(theme).CardBackgroundAlt
-				: AppTheme.Transparent)
+				: AppTheme.For(theme).Transparent)
 			.Child(row);
 	}
 
@@ -424,14 +440,16 @@ public sealed partial class GitView
 			.Spacing(6)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Children(
-				ThemedGlyph(_compareExpanded ? GlyphKind.ChevronDown : GlyphKind.ChevronRight, AppStyles.RoleSubtle, 3),
+				ThemedGlyph(_panes.CompareOpen ? GlyphKind.ChevronDown : GlyphKind.ChevronRight, AppStyles.RoleSubtle, 3),
 				new TextBlock().Text(Strings.GitCompare).FontSize(AppTheme.FontSizeMicro)
 					.FontWeight(FontWeight.SemiBold).MutedText());
-		if (_compareResult is { Files.Count: > 0 } result)
+		if (_compareResult is { Files.Count: > 0 } counted)
 		{
-			title.Children(new TextBlock().Text(result.Files.Count.ToString())
+			title.Children(new TextBlock().Text(counted.Files.Count.ToString())
 				.FontSize(AppTheme.FontSizeMicro).FaintText());
 		}
+
+		title.IsHitTestVisible = false;
 
 		var titleButton = new Button()
 			.Ghost()
@@ -439,8 +457,10 @@ public sealed partial class GitView
 			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space2, 0))
 			.OnClick(() =>
 			{
-				_compareExpanded = !_compareExpanded;
-				Refresh();
+				_panes = _panes.WithCompare(_panes.Compare, !_panes.CompareOpen);
+				ApplyPaneHeights();
+				SavePanes();
+				RebuildCompare();
 			})
 			.Content(title);
 
@@ -450,7 +470,7 @@ public sealed partial class GitView
 				.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
 				.Child(titleButton),
 			new Thickness(0, 1, 0, 0));
-		if (!_compareExpanded)
+		if (!_panes.CompareOpen)
 		{
 			return header;
 		}
@@ -527,7 +547,7 @@ public sealed partial class GitView
 
 				body.Children(new ScrollViewer()
 					.SmoothScrolling()
-					.MaxHeight(140)
+					.MaxHeight(PaneAbsorbs(CompareRow) ? double.PositiveInfinity : _panes.Compare)
 					.Content(files)
 					.AutoVerticalScroll()
 					.NoHorizontalScroll());
@@ -586,37 +606,15 @@ public sealed partial class GitView
 	private UIElement BuildCompareFileRow(GitBranchComparison result, GitCommitFile file)
 	{
 		var selected = _diffRequest?.MatchesCompare(result.BaseHash, result.TargetHash, file.Path) == true;
-		var label = $"{_compareResultBase}...{_compareResultTarget}";
-		var row = new Button()
-			.Ghost()
-			.Height(24)
-			.Padding(new Thickness(0, 0, AppTheme.Space1, 0))
-			.OnClick(() =>
-			{
-				_diffRequest = GitDiffRequest.Compare(
-					result.BaseHash, result.TargetHash, label, file.Path, file.OriginalPath);
-				_changesExpanded = true;
-				Refresh();
-			})
-			.Content(new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(6)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(
-					new TextBlock().Text(file.Letter).FontFamily(AppTheme.MonoFont)
-						.FontSize(AppTheme.FontSizeMicro).Width(12)
-						.WithTheme((theme, text) => text.Foreground = RoleColor(AppTheme.For(theme), LetterRole(file.Letter))),
-					new TextBlock().Text(file.FileName).FontSize(AppTheme.FontSizeMicro)
-						.MutedText().MaxWidth(240).TextWrapping(TextWrapping.NoWrap)
-						.TextTrimming(TextTrimming.CharacterEllipsis)))
-			.HoverTip(file.Path);
-
-		return new Border()
-			.CornerRadius(AppTheme.RadiusXs)
-			.WithTheme((theme, border) => border.Background = selected
-				? AppTheme.For(theme).CardBackgroundAlt
-				: AppTheme.Transparent)
-			.Child(row);
+		var label = _compareResultBase + "..." + _compareResultTarget;
+		return FileLikeRow(file, selected, () =>
+		{
+			_diffRequest = GitDiffRequest.Compare(
+				result.BaseHash, result.TargetHash, label, file.Path, file.OriginalPath);
+			OpenChangesPane();
+			RebuildCompare();
+			RebuildDiff();
+		});
 	}
 
 	private static string LetterRole(string letter) => letter switch
