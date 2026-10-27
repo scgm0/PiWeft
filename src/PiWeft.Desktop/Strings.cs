@@ -611,6 +611,10 @@ public static partial class Strings
 
 	public static string GitSummaryCurrent(string model, string thinking) => $"{model} · 思考 {thinking}";
 
+	public static string GitPushAhead(int count) => $"推送 {count} 个本地提交";
+
+	public static string GitPullBehind(int count) => $"拉取 {count} 个远端提交";
+
 	public const string GitBusy = "正在执行 Git 操作…";
 
 	public const string GitCommitBusy = "正在提交…";

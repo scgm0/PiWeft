@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
@@ -206,11 +207,17 @@ public sealed partial class GitView : IDisposable
 			fetch.IsEnabled = status.HasRemotes && !_busy && !_generating;
 			right.Children(fetch);
 
-			var pull = ToolbarButton("arrow-down", Strings.GitPull, () => _ = RunGitAsync(() => GitWriter.Pull(_cwd()), Strings.GitPullBusy));
+			var pulling = _busy && _busyMessage == Strings.GitPullBusy;
+			var pushing = _busy && _busyMessage == Strings.GitPushBusy;
+			var pullTooltip = status.Behind > 0 ? Strings.GitPullBehind(status.Behind) : Strings.GitPull;
+			var pull = ToolbarBadgeButton("arrow-down", pullTooltip,
+				() => _ = RunGitAsync(() => GitWriter.Pull(_cwd()), Strings.GitPullBusy), status.Behind, pulling);
 			pull.IsEnabled = status.HasRemotes && status.HasUpstream && !status.Detached && !_busy && !_generating;
 			right.Children(pull);
 
-			var push = ToolbarButton("arrow-up", Strings.GitPush, () => _ = RunGitAsync(() => GitWriter.Push(_cwd()), Strings.GitPushBusy));
+			var pushTooltip = status.Ahead > 0 ? Strings.GitPushAhead(status.Ahead) : Strings.GitPush;
+			var push = ToolbarBadgeButton("arrow-up", pushTooltip,
+				() => _ = RunGitAsync(() => GitWriter.Push(_cwd()), Strings.GitPushBusy), status.Ahead, pushing);
 			push.IsEnabled = status.HasRemotes && !status.Detached && !_busy && !_generating;
 			right.Children(push);
 		}
@@ -225,14 +232,6 @@ public sealed partial class GitView : IDisposable
 				new TextBlock().Text(branch).FontSize(AppTheme.FontSizeCaption).PrimaryText()
 					.MaxWidth(146).TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
 				ThemedGlyph(GlyphKind.ChevronDown, AppStyles.RoleFaint, 3));
-		var tracking = new List<string>();
-		if (status.Ahead > 0) tracking.Add($"↑{status.Ahead}");
-		if (status.Behind > 0) tracking.Add($"↓{status.Behind}");
-		if (tracking.Count > 0)
-		{
-			branchContent.Children(new TextBlock().Text(string.Join(' ', tracking))
-				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).FaintText());
-		}
 
 		Button? branchButton = null;
 		branchButton = new Button()
@@ -240,6 +239,9 @@ public sealed partial class GitView : IDisposable
 			.Height(AppTheme.ControlHeightSm)
 			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
 			.Content(branchContent);
+		// DockPanel 的填充位会把按钮拉成整行宽（301 DIP）：那样悬停底色与命中区会铺满整条空白，
+		// 分支键该按内容收口，剩余空白留给右侧的同步图标。
+		branchButton.HorizontalAlignment(HorizontalAlignment.Left);
 		branchButton.IsEnabled = status.IsRepository && !_busy && !_generating;
 		branchButton.HoverTip(Strings.GitBranchMenu);
 		// 闭包需要按钮本身作为菜单锚点；先建按钮再挂事件。
@@ -276,7 +278,7 @@ public sealed partial class GitView : IDisposable
 		_branchInput = input;
 
 		var create = new Button()
-			.Content(Label(Strings.GitNewBranch))
+			.Content(CenteredLabel(Strings.GitNewBranch).PrimaryText())
 			.Height(AppTheme.ControlHeightSm)
 			.OnClick(() => CreateBranch(input?.Text));
 
@@ -477,7 +479,7 @@ public sealed partial class GitView : IDisposable
 		var commit = new Button()
 			.Primary()
 			.Height(AppTheme.ControlHeightMd)
-			.Content(new TextBlock().Text(Strings.GitCommit).FontSize(AppTheme.FontSizeCaption).OnAccentText())
+			.Content(CenteredLabel(Strings.GitCommit).OnAccentText())
 			.IsEnabled(canCommit)
 			.OnClick(() => _ = CommitDraftAsync(_commitInput?.Text))
 			.HoverTip(canCommit ? Strings.GitCommit : Strings.GitNothingStaged);
@@ -1269,6 +1271,65 @@ public sealed partial class GitView : IDisposable
 		button.Width(26).Height(26).Padding(Thickness.Zero);
 		return button;
 	}
+
+	/// <summary>
+	/// 带角标的工具按钮（对齐 PiDeck 的 push/pull 徽标）：角标数的是「这一键现在能推出去/拉进来
+	/// 多少提交」，只在该方向真有差异时出现；这一键正在执行时先收起，免得数字停在旧值上。
+	/// <para>
+	/// 26 DIP 的按钮放不下「居中的 14 图标 + 角标」：PiDeck 把角标绝对定位到按钮外（-top-1 -right-1），
+	/// 而这行按钮彼此相邻、外层还会裁掉越界部分，所以这里改成同格分块 —— 图标退到左下、
+	/// 角标占右上，两块矩形不相交，谁也不压谁的笔画。
+	/// </summary>
+	private static Button ToolbarBadgeButton(string icon, string tooltip, Action action, int count, bool running)
+	{
+		if (count <= 0 || running)
+		{
+			return ToolbarButton(icon, tooltip, action);
+		}
+
+		// 图标退到左下：12 DIP 占 x 2..14、y 12..24；角标占 x 15..26、y 2..12，两块不相交。
+		var image = AppIcons.Icon(icon, AppStyles.RoleSubtle, 12)
+			.HorizontalAlignment(HorizontalAlignment.Left)
+			.VerticalAlignment(VerticalAlignment.Bottom)
+			.Margin(new Thickness(2, 0, 0, 2));
+
+		var badge = new Border()
+			.CornerRadius(5)
+			.MinWidth(11)
+			.Width(11 * Math.Max(1, count > 9 ? 2 : 1))
+			.Height(10)
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.VerticalAlignment(VerticalAlignment.Top)
+			.Margin(new Thickness(0, 2, 2, 0))
+			.IsHitTestVisible(false)
+			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Info)
+			.Child(new TextBlock()
+				.Text(count > 99 ? "99" : count.ToString(CultureInfo.InvariantCulture))
+				.FontFamily(AppTheme.MonoFont)
+				.FontSize(8)
+				.FontWeight(FontWeight.SemiBold)
+				.HorizontalAlignment(HorizontalAlignment.Center)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.OnAccentText());
+
+		var button = new Button()
+			.Ghost()
+			.Width(26)
+			.Height(26)
+			.Padding(Thickness.Zero)
+			.Content(new Grid().Children(image, badge))
+			.OnClick(action)
+			.HoverTip(tooltip);
+		return button;
+	}
+
+	/// <summary>主按钮文字：面板里所有 Primary 按钮的标签都居中，不贴着按钮左缘。</summary>
+	private static TextBlock CenteredLabel(string text) =>
+		new TextBlock()
+			.Text(text)
+			.FontSize(AppTheme.FontSizeCaption)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.VerticalAlignment(VerticalAlignment.Center);
 
 	private static Button SmallTextButton(string text, Action action) =>
 		new Button()

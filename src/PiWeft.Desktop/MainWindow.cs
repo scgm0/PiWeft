@@ -1637,7 +1637,6 @@ public sealed partial class MainWindow : Window
 					if (CurrentTab() is { } gitTab && _sessionPanels.TryGetValue(gitTab, out var gitPanel))
 					{
 						gitPanel.SelectFirstGitChangeForSmoke();
-						gitPanel.ReportGitGraphGeometryForSmoke();
 					}
 
 					break;
@@ -1729,9 +1728,10 @@ public sealed partial class MainWindow : Window
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
 		Dispatch(() =>
 		{
-			if (view == "git" && CurrentTab() is { } geometryTab && _sessionPanels.TryGetValue(geometryTab, out var geometryPanel))
+			// 泳道是自绘元素：把它的窗口坐标留在演练日志里，像素检查脚本才能对齐到具体格子。
+			if (view == "git" && CurrentTab() is { } graphTab && _sessionPanels.TryGetValue(graphTab, out var graphPanel))
 			{
-				geometryPanel.ReportGitGraphGeometryForSmoke();
+				graphPanel.ReportGitGraphGeometryForSmoke();
 			}
 
 			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();
