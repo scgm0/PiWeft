@@ -25,13 +25,16 @@ public static class McpLogin
 	/// <summary>
 	/// 执行登录。<paramref name="onAuthorizeUrl"/> 是浏览器授权时要打开的链接：由宿主决定怎么呈现
 	/// （CLI 打印出来让用户手动访问，桌面直接调系统浏览器）。为 <c>null</c> 表示宿主无法展示链接。
+	/// <paramref name="openBrowser"/> 为 <c>false</c> 时不尝试拉起系统浏览器（宿主自会展示 URL；
+	/// 测试与无人值守环境没有浏览器，进程内起一个 chromium 只会让测试又慢又吵）。
 	/// </summary>
 	public static async Task<Outcome> RunAsync(
 		HttpClient http,
 		McpServerConfig server,
 		string? agentDir = null,
 		Action<string>? onAuthorizeUrl = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		bool openBrowser = true)
 	{
 		if (server.Url is not { Length: > 0 } url)
 		{
@@ -65,7 +68,8 @@ public static class McpLogin
 			metadata,
 			agentDir,
 			onAuthorizeUrl is null ? static _ => { } : onAuthorizeUrl,
-			cancellationToken).ConfigureAwait(false);
+			cancellationToken,
+			openBrowser).ConfigureAwait(false);
 
 		return result.Ok
 			? new Outcome(true, $"已登录，令牌保存在 {McpOAuthStore.Path(agentDir)}", UsedBrowser: true)

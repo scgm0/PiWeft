@@ -37,6 +37,14 @@ internal sealed class SmoothScroll : IDisposable
 	internal bool AutoFollowAtEnd { get; set; }
 
 	/// <summary>
+	/// 测试专用：把每帧 dt 钉成固定秒数。曲线故意按真实流逝时间推进（见 <see cref="Advance"/> 里
+	/// “不要钳制 dt”的注释），所以拿墙钟喂帧的用例在满载机器上会抖出几十毫秒的帧间隔，
+	/// 「滚轮这段手势走了多少 DIP」就跟着抖成 flake。生产永不赋值：dt 仍是真实时间，
+	/// 手感与语义完全不变；赋值时连秒表都不用读。
+	/// </summary>
+	internal double? FrameDtSeconds { get; set; }
+
+	/// <summary>
 	/// 视口内容按实测行高虚拟化（会话时间线、执行过程组体）时，重排会把「估算行高被修正」
 	/// 换算成一次偏移校正直接写回视口。滚轮滑行期间必须把这次校正当成内容坐标系平移，
 	/// 而不是读者接管滚动：否则目标停在旧坐标系里，快速滚动会多走或倒退一个校正量。
@@ -499,8 +507,9 @@ internal sealed class SmoothScroll : IDisposable
 		// 根据自上一帧流逝的真实时间计算指数衰减系数。卡顿之后按真实时长推进：输入曲线
 		// 直接落位到目标、衰减曲线一步收敛。不要在这里钳制 dt——钳制会把每次主线程停顿
 		// 拉长成数倍时长的追赶，滚动中忽快忽慢、松手后拖出可见的滑行尾巴（漂移）。
-		double dt = _renderClock.Elapsed.TotalSeconds;
-		_renderClock.Restart();
+		var pinnedDt = FrameDtSeconds;
+		double dt = pinnedDt ?? _renderClock.Elapsed.TotalSeconds;
+		if (pinnedDt is null) _renderClock.Restart();
 
 		var current = Offset;
 		var targetX = Math.Min(_target.X, Maximum(false));
@@ -756,6 +765,10 @@ internal sealed class SmoothScroll : IDisposable
 		_toEnd = false;
 		_velocity = default;
 		_hermite = false;
+		// dt 由真实时钟驱动时，动画终点也是帧间计时的起点：不归零的话，下一次手势的第一帧
+		// 会带上「动画结束到现在」的全部流逝时间（几十到几百 ms），一次性跨出大半段距离。
+		// 钉住 dt 的测试路径不读秒表，归零与否没有影响。
+		_renderClock.Reset();
 	}
 
 	private void ClearPendingWheel()

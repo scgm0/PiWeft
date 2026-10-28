@@ -1,7 +1,4 @@
-using System.Diagnostics;
-using System.Reflection;
 using Aprillz.MewUI;
-using Aprillz.MewUI.Animation;
 using Aprillz.MewUI.Controls;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
@@ -17,18 +14,15 @@ namespace PiWeft.Desktop.Tests;
 [Collection("mewui-controls")]
 public sealed class SmoothScrollPlainViewportTests
 {
-	private static readonly object Manager = typeof(AnimationManager).GetProperty("Instance", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
-	private static readonly MethodInfo UpdateAt = typeof(AnimationManager).GetMethod("UpdateAt", BindingFlags.Instance | BindingFlags.NonPublic)!;
-
 	private sealed class Fixture
 	{
 		public required ScrollViewer Viewer { get; init; }
 		public required SmoothScroll Smooth { get; init; }
 
+		/// <summary>一个 16ms 帧：动画心跳 + 布局。dt 钉住，曲线不随机器负载抖。</summary>
 		public void Frame()
 		{
-			Thread.Sleep(16);
-			UpdateAt.Invoke(Manager, [Stopwatch.GetTimestamp()]);
+			AnimationFrames.Frame(Smooth);
 			ConversationPerformanceTests.Layout(Viewer);
 		}
 	}

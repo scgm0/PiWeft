@@ -12,14 +12,20 @@ internal sealed class AssistantMessageView : IDisposable
 	private readonly DockPanel _headerRow;
 	private readonly TextBlock _thinkingHeader = new();
 	private readonly TextBlock _thinkingPreview = new();
+	// 跑马灯容器：流式期把最新一行的行尾贴到右边缘，定稿后回到行首 + 省略号。
+	private readonly MarqueeLine _previewLine;
+	// 逐字推进：思考与正文各一把打字机，共用一条帧泵。网络一次推一整块，画面每帧只多露几个字，
+	// 跑马灯与流式正文才是「流」而不是一跳一跳。
+	private readonly Typewriter _thinkingType = new();
+	private readonly Typewriter _bodyType = new();
+	private readonly StreamPump _pump;
 	private readonly Image _thinkingIcon;
 	// 思考与正文各持有一个增量 Markdown 视图：流式期间只更新尾块，定稿只切状态。
 	private MarkdownView? _thinkingMarkdown;
 	private MarkdownView? _bodyMarkdown;
-	private MarkdownView? _fedBodyView;
-	private string? _fedBodyText;
-	private MarkdownView? _fedThinkingView;
-	private string? _fedThinkingText;
+	// 每个视图记住「已经写到可见前缀的第几个字」：下一帧只追加新露出的那几个字，不整串拷贝。
+	private readonly MarkdownFeed _thinkingFeed = new();
+	private readonly MarkdownFeed _bodyFeed = new();
 	private readonly Expander _thinking;
 	private readonly Border _body = new();
 	private readonly TextBlock _changes = new();
@@ -42,6 +48,7 @@ internal sealed class AssistantMessageView : IDisposable
 			.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Thinking);
 		_thinkingPreview.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
 			.TextTrimming(TextTrimming.CharacterEllipsis).VerticalAlignment(VerticalAlignment.Center);
+		_previewLine = new MarqueeLine(_thinkingPreview).VerticalAlignment(VerticalAlignment.Center);
 
 		_thinkingIcon = AppIcons.Icon("sparkles", AppStyles.RoleThinking, 12);
 		// Expander 自带折叠箭头，不在标题内再画一个。
@@ -49,13 +56,13 @@ internal sealed class AssistantMessageView : IDisposable
 			.Children(
 				_thinkingIcon.Column(0),
 				_thinkingHeader.Column(1).Margin(new Thickness(5, 0, 0, 0)),
-				_thinkingPreview.Column(2).Margin(new Thickness(6, 0, 0, 0)));
+				_previewLine.Column(2).Margin(new Thickness(6, 0, 0, 0)));
 		_thinking = new Expander()
 			.Header(thinkingTitle)
 			.IsExpanded(false);
 		_thinking.ExpandedChanged += expanded =>
 		{
-			_thinkingPreview.IsVisible = !expanded && _thinkingPreview.Text.Length > 0;
+			_previewLine.IsVisible = !expanded && _previewText.Length > 0;
 			if (!expanded)
 			{
 				_followingThinking = false;
@@ -94,13 +101,31 @@ internal sealed class AssistantMessageView : IDisposable
 			.HorizontalAlignment(HorizontalAlignment.Stretch)
 			.Child(content);
 		View.Tag = this;
+		// 帧泵挂在本行的根元素上：它按可见性自己止损，宿主不需要记得为「收起/滚出视口」停帧。
+		_pump = new StreamPump(View, PumpFrames);
 		Update(entry);
 	}
 
 	public Border View { get; }
 
+	/// <summary>一个 Markdown 视图的喂入状态：上次喂给它的权威文本 + 已经写进去的可见长度。</summary>
+	private sealed class MarkdownFeed
+	{
+		internal MarkdownView? View;
+		internal string? Source;
+		internal int Shown;
+
+		internal void Clear()
+		{
+			View = null;
+			Source = null;
+			Shown = 0;
+		}
+	}
+
 	public void Dispose()
 	{
+		_pump.Dispose();
 		if (_bodyMarkdown is not null)
 		{
 			UiLifetime.Release(_bodyMarkdown);
@@ -111,10 +136,8 @@ internal sealed class AssistantMessageView : IDisposable
 			UiLifetime.Release(_thinkingMarkdown);
 			_thinkingMarkdown = null;
 		}
-		_fedBodyView = null;
-		_fedBodyText = null;
-		_fedThinkingView = null;
-		_fedThinkingText = null;
+		_bodyFeed.Clear();
+		_thinkingFeed.Clear();
 	}
 
 	public void Update(ChatEntry entry)
@@ -144,16 +167,26 @@ internal sealed class AssistantMessageView : IDisposable
 			_thinkingHeader.Text(thinkingLabel);
 		}
 
-		// 折叠预览只看首行：展开时不算，取到完整首行后也不再算 —— 以前每帧从头扫一遍思考正文。
-		if (!_thinking.IsExpanded && !_previewSettled)
+		// 打字机与预览缓存都属于「这一条消息」：行视图会被回收给另一条，身份一变就整体重来。
+		// 比 id + 时间戳而不是比引用：同一条消息的每个流式帧都是新的 record。
+		var identity = (entry.EntryId, entry.Timestamp);
+		if (identity != _streamIdentity)
 		{
-			var preview = Preview(entry.Thinking, out var settled);
-			_previewSettled = settled;
-			_previewText = preview;
-			_thinkingPreview.Text(preview);
+			_streamIdentity = identity;
+			_previewSettled = false;
+			_thinkingType.Reset();
+			_bodyType.Reset();
 		}
+		// 逐字只对「正在流的这一段」生效：这一行已经定稿、或是打开的旧会话，就直接全量显示 ——
+		// 把几百 KB 的历史思考从头打一遍是灾难。
+		_thinkingType.Set(entry.Thinking, PacedStream && entry.IsThinking);
+		_bodyType.Set(entry.Text, PacedStream && entry.IsStreaming);
+		// 数据帧自己也推一格：没有帧泵（自检/单测）时这就是唯一的推进通道。
+		_thinkingType.Advance();
+		_bodyType.Advance();
 
-		_thinkingPreview.IsVisible(!_thinking.IsExpanded && _previewText.Length > 0);
+		RefreshPreview(entry);
+		_previewLine.IsVisible(!_thinking.IsExpanded && _previewText.Length > 0);
 		if (_thinking.IsExpanded)
 		{
 			EnsureThinkingBody(entry);
@@ -180,10 +213,43 @@ internal sealed class AssistantMessageView : IDisposable
 		{
 			_changes.Text(Strings.ChangedFilesSummary(entry.ChangedFiles));
 		}
-		_body.IsVisible(entry.Text.Length > 0);
-		_copy.IsVisible(!entry.Compact && !entry.IsStreaming && entry.Text.Length > 0);
+		RefreshBodyText(entry);
+		SyncPump();
 
-		if (entry.Text.Length > 0)
+		_entry = entry;
+	}
+
+	/// <summary>
+	/// 折叠预览：流式中跟着「已经露出的最新一行」跑（尾随 = 跑马灯），定稿后回到首行 + 省略号。
+	/// 展开时不算：正文已经整块在屏幕上，再算一遍单行是白烧。
+	/// </summary>
+	private void RefreshPreview(ChatEntry entry)
+	{
+		if (_thinking.IsExpanded) return;
+		if (entry.IsThinking)
+		{
+			// 思考还在写：首行随时会被新的一行顶掉，每帧跟着最新一行走。
+			_previewSettled = false;
+			SetPreview(ThinkingPreview.LatestLine(entry.Thinking, _thinkingType.Shown), followTail: true);
+		}
+		else if (!_previewSettled)
+		{
+			var preview = ThinkingPreview.FirstLine(entry.Thinking, out var settled);
+			_previewSettled = settled;
+			SetPreview(preview, followTail: false);
+		}
+	}
+
+	/// <summary>
+	/// 回答正文：打字机露出多少就喂多少，视图里已有的部分只追加新露出的那几个字。
+	/// 只有思考、还没有可见正文时不预建空的 Markdown 视图（过程组里每行都建一个是白烧布局）。
+	/// </summary>
+	private void RefreshBodyText(ChatEntry entry)
+	{
+		var shown = _bodyType.Shown;
+		_body.IsVisible(shown > 0);
+		_copy.IsVisible(!entry.Compact && !entry.IsStreaming && entry.Text.Length > 0);
+		if (shown > 0)
 		{
 			var view = EnsureBodyMarkdown();
 			if (!ReferenceEquals(_body.Child, view))
@@ -193,123 +259,160 @@ internal sealed class AssistantMessageView : IDisposable
 				if (previous is not null) UiLifetime.Release(previous);
 			}
 			view.IsStreaming = entry.IsStreaming;
-			FeedMarkdown(view, entry.Text, entry.IsStreaming, "markdown.stream", "markdown.finalize", ref _fedBodyView, ref _fedBodyText);
+			FeedMarkdown(view, _bodyFeed, entry.Text, shown, entry.IsStreaming, "markdown.stream", "markdown.finalize");
+			return;
 		}
-		else
-		{
-			// 只有思考、还没有正文时不要预建空的 Markdown 视图（过程组里每行都建一个是白烧布局）。
-			var previous = _body.Child;
-			if (previous is not null)
-			{
-				_body.Child(null);
-				UiLifetime.Release(previous);
-				if (ReferenceEquals(previous, _bodyMarkdown)) _bodyMarkdown = null;
-			}
-		}
-
-		_entry = entry;
+		var detached = _body.Child;
+		if (detached is null) return;
+		_body.Child(null);
+		UiLifetime.Release(detached);
+		if (ReferenceEquals(detached, _bodyMarkdown)) _bodyMarkdown = null;
+		_bodyFeed.Clear();
 	}
 
-	/// <summary>取首行摘要；<paramref name="settled"/> 为 true 表示后面再长的思考也不会改变它。</summary>
-	private static string Preview(string thinking, out bool settled)
+	/// <summary>
+	/// 逐字推进能不能摊平：只有挂在窗口上的行才有渲染脉冲可跟。没窗口（自检/无头布局测试）
+	/// 或这一行还没接进树（时间线先建视图再挂父级）时直接全露出，既省掉一次假动画，
+	/// 也让无窗口路径的结果与真实首屏一致：已经写好的内容不重打一遍。
+	/// </summary>
+	private bool PacedStream => PaceStreamForTest || (Application.IsRunning && View.FindVisualRoot() is Window);
+
+	/// <summary>窗口less 测试用：强制走有帧循环的推进路径，验证正文确实一个字符一个字符在走。</summary>
+	internal bool PaceStreamForTest { get; set; }
+
+	/// <summary>窗口less 测试用：手动推一帧（真窗口里由 StreamPump 的每帧回调驱动）。</summary>
+	internal void PumpStreamFrameForTest() => PumpFrames();
+
+	/// <summary>
+	/// 帧泵的每一拍：推进两把打字机，只把新露出的那几个字交给对应消费端。
+	/// 消费端都有「可见前缀没变就不写」的短路，所以没打到字的那些帧不会带来任何布局工作。
+	/// </summary>
+	private void PumpFrames()
 	{
-		settled = false;
-		// 只在有限窗口里找：流式期每帧都会调用，扫描整个已到达的思考正文是白烧。
-		var window = thinking.Length <= PreviewScanLimit ? thinking.AsSpan() : thinking[..PreviewScanLimit].AsSpan();
-		if (thinking.Length > PreviewScanLimit) settled = true;
-		var remaining = window;
-		while (remaining.Length > 0)
+		var entry = _entry;
+		if (entry is null)
 		{
-			var newline = remaining.IndexOf('\n');
-			var line = (newline < 0 ? remaining : remaining[..newline]).Trim();
-			if (line.Length > 0)
-			{
-				settled = true;
-				return line.Length <= 72 ? line.ToString() : line[..72].ToString() + "…";
-			}
-			if (newline < 0) break;
-			remaining = remaining[(newline + 1)..];
+			_pump.Stop();
+			return;
 		}
-		return string.Empty;
+		if (_thinkingType.Advance())
+		{
+			// 与 Update 走同一对消费端：展开着就长正文，收起着就长跑马灯预览。
+			if (_thinking.IsExpanded) EnsureThinkingBody(entry);
+			else RefreshPreview(entry);
+		}
+		if (_bodyType.Advance()) RefreshBodyText(entry);
+		SyncPump();
 	}
 
-	private const int PreviewScanLimit = 4096;
+	/// <summary>
+	/// 还有没打出的字就继续吃帧，打完立刻停泵：持续渲染会整窗心跳，
+	/// 下一块 delta 到达时 Update 会再把泵开起来。
+	/// </summary>
+	private void SyncPump()
+	{
+		if (_thinkingType.CaughtUp && _bodyType.CaughtUp) _pump.Stop();
+		else _pump.Start();
+	}
+
+	/// <summary>
+	/// 写预览行：文本没变就不碰 TextBlock（Text 是 AffectsLayout，赋值会把整行重新测量），
+	/// 但排布模式每帧都要对一下 —— 流式结束那一帧正是从尾随切回首行的时机。
+	/// </summary>
+	private void SetPreview(string text, bool followTail)
+	{
+		if (!string.Equals(_previewText, text, StringComparison.Ordinal))
+		{
+			_previewText = text;
+			_thinkingPreview.Text = text;
+		}
+		_previewLine.FollowTail = followTail;
+	}
 
 	private (long Timestamp, bool Streaming, double? Duration) _headerKey;
 	private string? _thinkingLabel;
 	private string _previewText = string.Empty;
 	private bool _previewSettled;
+	// 流式推进与预览缓存属于哪一条消息：行视图会被回收，身份一变就要重来。
+	private (string? Id, long Timestamp) _streamIdentity;
 
 	/// <summary>
 	/// 展开的思考：同一个增量 Markdown 视图从流式第一帧用到定稿，不再做纯文本→Markdown 的替换。
+	/// 视图里只写打字机已经露出的那段，所以「展开着看流式」也是逐字在长。
 	/// </summary>
 	private void EnsureThinkingBody(ChatEntry? entry = null)
 	{
 		var current = entry ?? _entry;
 		if (current is null) return;
 		var thinking = current.Thinking;
-		if (thinking.Length == 0 && !current.IsThinking)
+		// 打字机没跟着这条文本走（视图刚建、或行被回收给别的消息）时按全文显示，不能显示半句。
+		var shown = ReferenceEquals(_thinkingType.Target, thinking) ? Math.Min(_thinkingType.Shown, thinking.Length) : thinking.Length;
+		if (shown == 0)
 		{
 			if (_thinkingMarkdown is not null) _thinkingMarkdown.Source = string.Empty;
-			_fedThinkingText = null;
+			_thinkingFeed.Clear();
 			return;
 		}
 		_thinkingMarkdown ??= CreateMarkdownView(AppTheme.FontSizeCaption, muted: true);
 		SetThinkingContent(_thinkingMarkdown);
 		_thinkingMarkdown.IsStreaming = current.IsThinking;
-		if (ReferenceEquals(_fedThinkingView, _thinkingMarkdown) &&
-			string.Equals(_fedThinkingText, thinking, StringComparison.Ordinal))
-		{
-			return;
-		}
 		FeedMarkdown(
-			_thinkingMarkdown, thinking, current.IsThinking,
-			"markdown.thinking.stream", "markdown.thinking.finalize",
-			ref _fedThinkingView, ref _fedThinkingText);
+			_thinkingMarkdown, _thinkingFeed, thinking, shown, current.IsThinking,
+			"markdown.thinking.stream", "markdown.thinking.finalize");
 	}
 
 	/// <summary>
-	/// 流式帧走 Append：只把增量交给 Markdown 视图，解析仍由控件按尾块增量完成，宿主不再做
-	/// 整串比较与整串赋值。文本不是已喂入内容的纯追加（编辑重发、换行绑定、收缩）时回退整体
-	/// 赋值；同一文本重复到达（定稿后的状态帧）时不做任何更新。
+	/// 把打字机的可见前缀喂给 Markdown 视图：视图里已经有 text[..feed.Shown]、且新文本仍是上一次的继续时，
+	/// 只 Append 新露出的那几个字 —— 增量小，解析仍由控件按尾块增量完成，宿主不整串比较也不整串拷贝。
+	/// 文本被改写（编辑重发、换行绑定、收缩）、视图换了或已经定稿时退回整篇赋值；
+	/// 可见前缀一个字都没多（只是尾部又长了一点）时什么都不做。
 	/// </summary>
 	private void FeedMarkdown(
 		MarkdownView view,
+		MarkdownFeed feed,
 		string text,
+		int shown,
 		bool streaming,
 		string streamEvent,
-		string finalizeEvent,
-		ref MarkdownView? fedView,
-		ref string? fedText)
+		string finalizeEvent)
 	{
-		if (ReferenceEquals(view, fedView) && string.Equals(fedText, text, StringComparison.Ordinal))
+		shown = Math.Min(shown, text.Length);
+		var previous = feed.Source;
+		// 可见前缀仍然成立 = 权威文本还是上一次的继续。同一份字符串实例（帧泵在两个数据帧之间推进）
+		// 直接跳过比较：64K 正文每帧做一次整串 StartsWith 是白烧。
+		var continues = ReferenceEquals(view, feed.View) && previous is not null &&
+			(ReferenceEquals(previous, text) || text.StartsWith(previous, StringComparison.Ordinal));
+		if (continues)
 		{
-			return;
-		}
-		if (streaming &&
-			ReferenceEquals(view, fedView) &&
-			fedText is not null &&
-			text.Length >= fedText.Length &&
-			text.StartsWith(fedText, StringComparison.Ordinal))
-		{
-			var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-			view.Append(text[fedText.Length..]);
-			if (watch is not null)
+			if (shown == feed.Shown)
 			{
-				Diagnostics.Record(streamEvent, watch, $"delta={text.Length - fedText.Length} chars={text.Length}");
+				// 可见部分一个字都没多：这一帧没有要写的东西（定稿后的重复状态帧同理）。
+				feed.Source = text;
+				view.IsStreaming = streaming;
+				return;
+			}
+			if (streaming && shown > feed.Shown)
+			{
+				var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+				view.Append(text.Substring(feed.Shown, shown - feed.Shown));
+				if (watch is not null)
+				{
+					Diagnostics.Record(streamEvent, watch, $"delta={shown - feed.Shown} chars={shown}");
+				}
+				feed.Source = text;
+				feed.Shown = shown;
+				return;
 			}
 		}
-		else
+		var full = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+		view.Source = shown >= text.Length ? text : text.Substring(0, shown);
+		if (full is not null)
 		{
-			var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-			view.Source = text;
-			if (watch is not null)
-			{
-				Diagnostics.Record(streaming ? streamEvent : finalizeEvent, watch, $"chars={text.Length}");
-			}
+			Diagnostics.Record(streaming ? streamEvent : finalizeEvent, full, $"chars={shown}");
 		}
-		fedView = view;
-		fedText = text;
+		feed.View = view;
+		feed.Source = text;
+		feed.Shown = shown;
 	}
 
 	private void SetThinkingContent(UIElement content)

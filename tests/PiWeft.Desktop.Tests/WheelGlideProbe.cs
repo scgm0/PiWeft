@@ -1,7 +1,4 @@
-using System.Diagnostics;
-using System.Reflection;
 using Aprillz.MewUI;
-using Aprillz.MewUI.Animation;
 using Aprillz.MewUI.Controls;
 using Xunit;
 using Xunit.Abstractions;
@@ -18,11 +15,6 @@ namespace PiWeft.Desktop.Tests;
 [Collection("mewui-controls")]
 public sealed class WheelGlideProbe(ITestOutputHelper output)
 {
-    // AnimationManager.Instance 对外不可见，走与 AnimationFrames 相同的反射通道；这里用真实时间戳，
-    // 让 SmoothScroll.Advance 里的 dt 是真实帧间隔。
-    private static readonly object Manager = typeof(AnimationManager).GetProperty("Instance", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
-    private static readonly MethodInfo UpdateAt = typeof(AnimationManager).GetMethod("UpdateAt", BindingFlags.Instance | BindingFlags.NonPublic)!;
-
     private static ChatEntry Row(string id) => new()
     {
         Role = ChatRole.User, Text = id, EntryId = id, Timestamp = 0,
@@ -36,11 +28,10 @@ public sealed class WheelGlideProbe(ITestOutputHelper output)
 
         public void Pump() => ConversationPerformanceTests.Layout(Timeline.View);
 
-        /// <summary>一个 16ms 帧：动画心跳（Advance→Apply）+ 布局。</summary>
+        /// <summary>一个 16ms 帧：动画心跳（Advance→Apply）+ 布局。dt 钉住，曲线不随机器负载抖。</summary>
         public void Frame()
         {
-            Thread.Sleep(16);
-            UpdateAt.Invoke(Manager, [Stopwatch.GetTimestamp()]);
+            AnimationFrames.Frame(BodySmooth);
             Pump();
         }
 

@@ -94,7 +94,9 @@ public sealed class McpLoginTests : IDisposable
 		using var cts = new CancellationTokenSource();
 
 		string? authorizeUrl = null;
-		var run = McpLogin.RunAsync(new HttpClient(handler), config, _agentDir, url => authorizeUrl = url, cts.Token);
+		// openBrowser:false：断言的是「URL 交给宿主」这件事本身，不需要真拉一个浏览器进程；
+		// 桌面/CLI 的真实浏览器路径由各自的宿主实现负责。
+		var run = McpLogin.RunAsync(new HttpClient(handler), config, _agentDir, url => authorizeUrl = url, cts.Token, openBrowser: false);
 
 		var deadline = DateTime.UtcNow.AddSeconds(20);
 		while (authorizeUrl is null && DateTime.UtcNow < deadline)

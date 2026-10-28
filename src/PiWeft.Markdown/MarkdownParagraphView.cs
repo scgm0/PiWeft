@@ -866,11 +866,30 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		}
 	}
 
+	private bool MissingLayout()
+	{
+		foreach (Chunk chunk in _chunks)
+		{
+			if (chunk.Layout is null) return true;
+		}
+		return false;
+	}
+
 	protected override void OnRender(IGraphicsContext context)
 	{
 		if (_chunks.Count == 0)
 		{
 			return;
+		}
+
+		// 流式追加只会把尾块版面置空再 InvalidateVisual：动画脉冲驱动的连续渲染可能先于测量到来，
+		// 这时拿到的就是 null 版面，一个异常会让整帧的绘制全部作废（看到的就是丢帧）。
+		// 这里按当前 arrange 宽度补一次版面：EnsureLayout 幂等，真正的测量随后只会命中缓存。
+		// 还没排过版（宽度不可用）时不补：那种版面只会白建一遍再被测量推翻，留给下一帧。
+		if (MissingLayout())
+		{
+			if (Bounds.Width <= 1) return;
+			EnsureLayout(Bounds.Width);
 		}
 
 		for (int index = 0; index < _chunks.Count; index++)

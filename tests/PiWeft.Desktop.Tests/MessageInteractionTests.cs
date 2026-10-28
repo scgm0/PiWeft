@@ -169,15 +169,18 @@ public sealed class MessageInteractionTests
 			ConversationPerformanceTests.Layout(view.View);
 			var thinking = Find<Expander>(view.View).Single(expander =>
 				expander.Header is { } header && Find<TextBlock>(header).Any(text => text.Text == Strings.ThinkingComplete));
-			var preview = Find<TextBlock>(thinking.Header!).Single(text => text.Text == "**bold**");
-			Assert.True(preview.IsVisible);
+			// 预览行住在跑马灯容器里：收起/展开切换的是容器，文本只是它包的那一行。
+			var previewHost = Find<MarqueeLine>(thinking.Header!).Single();
+			var preview = Find<TextBlock>(previewHost).Single(text => text.Text == "**bold**");
+			Assert.True(previewHost.IsVisible);
+			Assert.Equal("**bold**", preview.Text);
 			Assert.DoesNotContain(Find<MarkdownView>(view.View), markdown => markdown.Source.Contains("**bold**", StringComparison.Ordinal));
 
 			thinking.IsExpanded = true;
 			ConversationPerformanceTests.Layout(view.View);
 
 			Assert.Contains(Find<MarkdownView>(view.View), markdown => markdown.Source.Contains("**bold**", StringComparison.Ordinal));
-			Assert.False(preview.IsVisible);
+			Assert.False(previewHost.IsVisible);
 		}
 		finally
 		{
