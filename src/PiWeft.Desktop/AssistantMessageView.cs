@@ -193,7 +193,8 @@ internal sealed class AssistantMessageView : IDisposable
 			// 已经由用户展开并进入跟随的思考继续贴住末尾；恢复出来的展开状态不自动开始跟随。
 			if (entry.IsThinking)
 			{
-				if (_followingThinking) _focus.FollowGrowth(_thinking);
+				// 续跟：读者自己上滚后就地停止，不能每帧把会话锁回末尾。
+				if (_followingThinking) _focus.FollowGrowth(_thinking, byReader: false);
 			}
 			else if (_followingThinking)
 			{

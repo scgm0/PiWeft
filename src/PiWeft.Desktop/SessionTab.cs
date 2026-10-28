@@ -262,6 +262,8 @@ public sealed partial class SessionTab : IDisposable
 		_textFocus.LayoutInvalidated = fold => _timeline.RefreshLayout(fold);
 		// 展开正在流式的思考时，外层会话重新贴住内容末尾（嵌套的组体则由它自己的视口跟随）。
 		_textFocus.FollowConversation = () => _conversationScroll!.ScrollToLatest();
+		// 展开之后的流式续跟只能「保持」跟底：读者一上滚就得放手，不能每帧把会话拉回末尾。
+		_textFocus.ContinueConversationFollowing = () => _conversationScroll!.ContinueFollowing();
 		_textFocus.PauseFollowing = () => _conversationScroll!.Browse();
 		_conversationScroll = new ConversationScroll(_scroll, visible => SetScrollToLatestVisible(visible && _messages.IsVisible));
 

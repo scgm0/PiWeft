@@ -975,6 +975,66 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void StreamingThinkingInsideAGroupNeverLocksTheConversationBackToTheTail()
+	{
+		// 回归：展开的思考在流式期每帧都会请求「继续跟底」。以前这条路直接走 ScrollToLatest，
+		// 把「跟底」重新锁上 —— 读者上滚一格，下一帧就被拽回末尾，会话根本拖不动。
+		ChatEntry Thought(string text) => new()
+		{
+			Role = ChatRole.Assistant, EntryId = "think", Timestamp = 1, Text = string.Empty,
+			Thinking = text, IsThinking = true, IsStreaming = true,
+		};
+		ChatEntry Process(ChatEntry member) => new()
+		{
+			Role = ChatRole.Process, Text = string.Empty, EntryId = "process", IsStreaming = true,
+			ProcessEntries = [member],
+		};
+
+		var thinkingText = string.Join('\n', Enumerable.Repeat("思考中的一行内容", 40));
+		var process = Process(Thought(thinkingText));
+		var rows = new StackPanel().Spacing(8);
+		var viewport = new ScrollViewer().Content(rows).AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling();
+		ConversationScroll? conversation = null;
+		using var focus = new TextFocusScrollGuard(viewport, anchor => conversation!.PreserveAnchor(anchor));
+		focus.FollowConversation = () => conversation!.ScrollToLatest();
+		focus.ContinueConversationFollowing = () => conversation!.ContinueFollowing();
+		conversation = new ConversationScroll(viewport, _ => { });
+		var view = new ExecutionProcessView(process, entry => new AssistantMessageView(entry, _ => { }, focus).View, focus);
+		rows.Children(new Border().Height(600), view.View, new Border().Height(900));
+		ConversationPerformanceTests.Layout(viewport, 560, 420);
+		// 流式中的常态：会话停在末尾。
+		SmoothScroll.For(viewport).JumpToEnd();
+		ConversationPerformanceTests.Layout(viewport, 560, 420);
+		conversation.FollowContent();
+		ConversationPerformanceTests.Layout(viewport, 560, 420);
+		Assert.True(conversation.Following);
+
+		var thinking = Find<Expander>(view.View).First(expander =>
+			expander.Header is { } header && Find<TextBlock>(header).Any(text => text.Text == Strings.ThinkingActive));
+		thinking.IsExpanded = true;
+		ConversationPerformanceTests.Layout(viewport, 560, 420);
+		// 展开是读者的明确动作：会话贴到末尾（既有语义不变）。
+		Assert.True(conversation.Following, "expanding live thinking should lock the conversation to the tail");
+
+		// 读者在会话里上滚一格：离开末尾。
+		SmoothScroll.For(viewport).ScrollBy(0, -1);
+		SmoothScroll.For(viewport).FlushPendingWheel();
+		ConversationPerformanceTests.Layout(viewport, 560, 420);
+		Assert.False(conversation.Following, "an upward wheel must leave the tail");
+
+		// 思考继续流式：每帧的续跟只能保持跟底，不能把读者重新锁回末尾。
+		var reading = viewport.VerticalOffset;
+		for (var tick = 0; tick < 6; tick++)
+		{
+			view.Update(Process(Thought(thinkingText + string.Join("\n", Enumerable.Repeat($"追加 {tick}", tick + 1)))));
+			ConversationPerformanceTests.Layout(viewport, 560, 420);
+			Assert.False(conversation.Following, $"streaming frame {tick} must not resurrect conversation following");
+		}
+		Assert.InRange(viewport.VerticalOffset, reading - 1, reading + 1);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
 	public void ExpandingStreamingThinkingInAGroupAlsoFollowsTheConversation()
 	{
 		var host = new Border();

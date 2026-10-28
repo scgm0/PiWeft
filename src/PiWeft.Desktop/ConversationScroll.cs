@@ -295,6 +295,20 @@ internal sealed class ConversationScroll : IDisposable
 		QueueFollow();
 	}
 
+	/// <summary>
+	/// 流式内容的后续帧请求「继续贴底」：读者仍停在末尾时才成立。
+	/// 展开的动作本身由 <see cref="ScrollToLatest"/> 承接（重锁跟底）；而此后每帧一次的续跟
+	/// 不能重置读者意图，否则展开着的思考只要还在流，会话就被钉在末尾、拖都拖不动。
+	/// 真正的偏移收敛仍在 Render 阶段由 <see cref="FollowContent"/> 完成。
+	/// </summary>
+	public void ContinueFollowing()
+	{
+		if (!Following || _readingAnchor is not null) return;
+		// 只排队，不在测量/排布中同步写偏移：续跟来自行视图的 Update。
+		_view.InvalidateArrange();
+		QueueFollow();
+	}
+
 	public void ScrollToLatest()
 	{
 		_readingAnchor = null;

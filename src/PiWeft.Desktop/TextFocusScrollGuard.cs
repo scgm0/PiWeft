@@ -55,6 +55,13 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	/// <summary>展开正在流式输出的内容（思考）时请求会话重新进入跟底。</summary>
 	public Action? FollowConversation { get; set; }
 
+	/// <summary>
+	/// 流式内容的后续帧请求「继续贴底」：只有读者仍停在末尾时才生效。
+	/// 展开是读者的一次阅读意图，此后每帧一次的续跟不是——不能拿它把已经上滚的读者拽回末尾，
+	/// 更不能把跟底状态重新锁上（否则展开着的思考只要还在流，会话就再也滚不动）。
+	/// </summary>
+	public Action? ContinueConversationFollowing { get; set; }
+
 	/// <summary>组内步骤的折叠是阅读行为：暂停外层跟底，但不移动外层滚动位置。</summary>
 	public Action? PauseFollowing { get; set; }
 
@@ -62,29 +69,41 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	public bool SuppressGrowthFollow { get; set; }
 
 	/// <summary>
-	/// 展开流式内容后让最近的滚动视口跟住内容末尾：会话本身交给 <see cref="FollowConversation"/>，
+	/// 展开流式内容后让最近的滚动视口跟住内容末尾：会话本身由 <see cref="FollowConversation"/>
+	/// （读者的展开动作）或 <see cref="ContinueConversationFollowing"/>（之后的逐帧续跟）承接，
 	/// 过程组的组体这类嵌套视口由自己的 <see cref="SmoothScroll"/> 持续贴底。
 	/// </summary>
 	/// <remarks>
 	/// 只有在读者本就看着末尾时才继续贴底：正在向上浏览时展开思考，不应该把读者拽到末尾。
 	/// 这也与组体的「置底才跟随」一致——上滚之后展开/折叠不能抢走阅读位置。
 	/// </remarks>
-	public void FollowGrowth(Element origin)
+	/// <param name="byReader">
+	/// 这次跟底来自读者的展开动作（true），还是流式内容每帧一次的续跟（false）。
+	/// 续跟只延续已有的跟底意图，不会把上滚离开末尾的读者重新锁回末尾。
+	/// </param>
+	public void FollowGrowth(Element origin, bool byReader = true)
 	{
 		if (NearestViewport(origin) is not { } viewport) return;
 		if (ReferenceEquals(viewport, _scroll))
 		{
-			FollowConversation?.Invoke();
+			FollowConversationFrom(byReader);
 			return;
 		}
 		// 组体小窗先跟住思考末尾；组体在会话里时，会话本身也要跟到最新，
-		// 否则组体内部在滚、外层仍停在思考标题上。
+		// 否则组体内部在滚、外层仍停在思考标题上。读者已经在组体里上滚阅读时不在此列：
+		// 那时会话也不该被拽到末尾。
 		if (SmoothScroll.Find(viewport) is { } smooth &&
 			(smooth.IsFollowingGrowth || smooth.MaxVerticalOffset - viewport.VerticalOffset <= AtTailTolerance))
 		{
 			smooth.FollowGrowth();
+			if (origin.IsDescendantOf(_scroll)) FollowConversationFrom(byReader);
 		}
-		if (origin.IsDescendantOf(_scroll)) FollowConversation?.Invoke();
+	}
+
+	private void FollowConversationFrom(bool byReader)
+	{
+		if (byReader) FollowConversation?.Invoke();
+		else ContinueConversationFollowing?.Invoke();
 	}
 
 	/// <summary>判定视口是否停在末尾的容差（DIP）。</summary>
