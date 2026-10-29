@@ -95,10 +95,14 @@ OAuth 支持授权码 + PKCE、动态注册、回环回调、401 刷新重放与
 - 侧栏摘要持久化：`SessionSummaryStore` 把每份会话的（长度, mtime, 首行指纹, 消息数, 首条预览）写到 `<agentDir>/session-summaries.json`（38.5 KiB / 92 会话），启动时只需 stat 一遍文件。实测 92 个会话 / 331 MiB：冷启动 **1046 ms** → 热启动 **52 ms**。失效判据与内存缓存一致（长度 / mtime / 首行指纹），损坏或版本不符退化成一次全扫；已删除会话的条目在下次列表构建时一并清除。字节偏移索引与历史分页**评估后未采用**，理由见[性能与基准](02-performance.md#为什么没有做字节偏移索引--历史分页)。
 - 外部会话导入：`pi import` 与桌面「导入外部会话」弹窗把 Claude Code（`~/.claude/projects`）与 Codex CLI（`~/.codex/sessions`）的会话转成 pi v3 JSONL（`src/PiWeft.CodingAgent/Import/`）。列举只读文件头部（256 KiB 上限、最多 500 条）并在后台线程跑，导入才做全量流式读取；产物同目录临时文件 + rename 原子落盘，并在链尾追加一条 `piweft-import` 自定义条目记录来源（不参与模型上下文）。重复导入再留一份产物、不覆盖上一次的转换结果。
 - 文件浏览器与内置编辑器（`Ctrl+Shift+E`）：按目录导航、跳过 `.git`/依赖/构建产物、带 Git 状态标记；目录列表按视口虚拟化（最多 2000 条）。文本读写有大小与二进制判定，保存用时间戳检测外部修改。助手每轮修改汇总显示在回答下方。
-- 原生 `todo` / `ask_question` / 计划模式：todo 按会话分支持久化为 PiDeck v3 自定义条目（`customType: "pi-deck-todo"`），切换分支自动恢复；`ask_question` 的线协议与 PiDeck 批量信封一致；计划模式停用 `edit`/`write`、附加 `plan_mode` 章节并用只读 shell 白名单拦截破坏性命令。
+- 原生 `todo` / `ask_question` / 计划模式：todo 按会话分支持久化为 PiDeck v3 自定义条目（`customType: "pi-deck-todo"`），切换分支自动恢复；`ask_question` 的线协议与 PiDeck 批量信封一致，桌面渲染成**会话内联卡片**（钉在对话区与输入区之间，不是遮罩弹窗）：题卡标签 + 进度 + 整行选项 + 自定义输入 + `review` 确认页，卡片开着时输入区折叠、页签标题带 `●`；计划模式停用 `edit`/`write`、附加 `plan_mode` 章节并用只读 shell 白名单拦截破坏性命令。视觉验收：`xvfb-run -a -s "-screen 0 1280x820x24" bash tools/desktop-ask-smoke.sh`。
 - 资源与主题：按 pi 约定发现技能/提示词模板/主题/pi 包，优先级为项目 settings 声明(0) > 项目自动发现(1) > 用户 settings 声明(2) > 用户目录自动发现(3) > 包(4)，同名资源先发现者胜出。主题目录文件监视热重载（防抖 400 ms，项目主题只在受信任时监视）；`/reload` 与 RPC `reload_resources` 重新解析而不重建会话。
 - 模型连接测试与远程模型目录：1-token 探测（RPC `test_model`）与按 API 拉取 `GET /models`（RPC `fetch_remote_models`），入口在配置页与输入框工具栏。
-- Git 状态/diff、暂存/未暂存目录树、暂存/取消暂存（含目录级）、提交（Ctrl+Enter）、分支切换/新建、AI 提交摘要（默认跟随会话，设置里可固定模型/思考级别）、源代码管理图（泳道/引用筛选/提交详情与文件 diff/加载更多）、比较更改（三点比较、ahead/behind、文件 diff）、远端同步（fetch / pull `--ff-only` / push，首次推送自动建立上游跟踪）、stash 收起与应用/丢弃（按未暂存/已暂存/冲突分节，带批量暂存与提交禁用态）、命令 Dock（PTY 终端）、跨会话用量统计与余额查询、实时会话统计、深浅主题与内嵌字体/图标。检查点仍由会话按回合自动快照，不再占用 Git 面板。所有 git 子进程钉住 `LC_ALL=C`，失败按输出特征分类成可操作的中文提示、原始输出留在详情里；状态读取用 `--porcelain=v1 -z`，中文 / 空格 / emoji / 换行路径都按原始 UTF-8 解析。
+- 记住会话的模型与思考级别（PiDeck 同义）：发送消息时把当前模型写进 `desktop.json` 的 `lastUsedModel`（选而未发不算），
+  新会话在没有显式 `defaultModel` 时沿用它，模型被删除后自动失效回退；恢复已有会话时优先用会话记录里的 `model_change`。
+  思考级别的点选写进 `settings.json` 的 `modelThinkingLevels[provider/model]`（每模型默认档位，未知字段原样保留），
+  解析次序是显式传入 > 会话记录 > 每模型默认 > 全局 `defaultThinkingLevel` > off，再 clamp 到该模型支持的档位。
+- Git 状态/diff、暂存/未暂存目录树、暂存/取消暂存（含目录级）、提交（Ctrl+Enter）、分支切换/新建、AI 提交摘要（默认跟随会话，设置里可固定模型/思考级别与自定义提示词模板）、源代码管理图（泳道/引用筛选/提交详情与文件 diff/加载更多）、比较更改（三点比较、ahead/behind、文件 diff）、远端同步（fetch / pull `--ff-only` / push，首次推送自动建立上游跟踪）、stash 收起与应用/丢弃（按未暂存/已暂存/冲突分节，带批量暂存与提交禁用态）、命令 Dock（PTY 终端）、跨会话用量统计与余额查询、实时会话统计、深浅主题与内嵌字体/图标。检查点仍由会话按回合自动快照，不再占用 Git 面板。所有 git 子进程钉住 `LC_ALL=C`，失败按输出特征分类成可操作的中文提示、原始输出留在详情里；状态读取用 `--porcelain=v1 -z`，中文 / 空格 / emoji / 换行路径都按原始 UTF-8 解析。
 - 供应商/模型、API Key、Agent 设置、MCP 和 JSON 配置管理（MCP 服务器行内显示授权状态，可 授权 / 重新授权 / 清除凭据；授权流程与 CLI 共用 `PiWeft.Mcp.McpLogin`）；全局/项目作用域、未知字段保留、原子写入和冲突检查。设置是窗口级模态弹窗，未保存修改受保护。
 - 按工作目录单实例；后台有界日志；`--self-check`、`--theme-smoke` 及截图脚本用于验证。
 

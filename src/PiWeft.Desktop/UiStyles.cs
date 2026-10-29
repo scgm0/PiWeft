@@ -57,7 +57,7 @@ public static class UiStyles
 
 	public static TextBlock ErrorText(this TextBlock block) => block.Role(AppStyles.RoleError);
 
-	private static TextBlock Role(this TextBlock block, string role)
+	internal static TextBlock Role(this TextBlock block, string role)
 	{
 		block.Tag = role;
 		return block.Foreground(AppStyles.ColorForRole(role));

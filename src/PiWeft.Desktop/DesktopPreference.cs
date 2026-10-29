@@ -91,6 +91,18 @@ public sealed record DesktopPreference
 	public string GitCommitThinking { get; init; } = string.Empty;
 
 	/// <summary>
+	/// 提交摘要的提示词模板；空表示使用 <see cref="GitCommitMessage.DefaultPromptTemplate"/>。
+	/// <c>{diff}</c> 会被替换成暂存区 diff（对齐 PiDeck 的 <c>gitCommitMessagePrompt</c>）。
+	/// </summary>
+	public string GitCommitPrompt { get; init; } = string.Empty;
+
+	/// <summary>
+	/// 用户最后一次真正发过消息的模型（<c>provider/id</c>）。对齐 PiDeck 的 <c>lastUsedModel</c>：
+	/// 只在发送时记录（选而未发不算），新会话在没有显式默认模型时沿用它。
+	/// </summary>
+	public string LastUsedModel { get; init; } = string.Empty;
+
+	/// <summary>
 	/// Git 面板各节的高展开态，按仓库工作目录记（值形如 <c>图=200:1|比较=160:0|…</c>，
 	/// 见 <see cref="GitPaneLayout"/>）。每个仓库的用法不一样：有人天天看提交图，
 	/// 有人只用更改列表，所以折叠状态与拖动出来的高度都得分仓库存。
@@ -176,6 +188,12 @@ public sealed record DesktopPreference
 					: string.Empty,
 				GitCommitThinking = root?["gitCommitThinking"] is JsonValue commitThinking && commitThinking.TryGetValue<string>(out var commitThinkingText)
 					? commitThinkingText.Trim()
+					: string.Empty,
+				GitCommitPrompt = root?["gitCommitPrompt"] is JsonValue commitPrompt && commitPrompt.TryGetValue<string>(out var commitPromptText)
+					? commitPromptText
+					: string.Empty,
+				LastUsedModel = root?["lastUsedModel"] is JsonValue lastModel && lastModel.TryGetValue<string>(out var lastModelText)
+					? lastModelText.Trim()
 					: string.Empty,
 				GitPanes = ReadStringMap(root?["gitPanes"]),
 				TerminalShell = root?["terminalShell"] is JsonValue shell && shell.TryGetValue<string>(out var shellPath)
@@ -276,6 +294,23 @@ public sealed record DesktopPreference
 		{
 			root["gitCommitThinking"] = GitCommitThinking.Trim();
 		}
+		// 提示词模板：与默认模板逐字相同的存空（跟随后续默认模板升级），内容保留换行不 Trim 正文。
+		if (GitCommitMessage.IsDefaultTemplate(GitCommitPrompt) || string.IsNullOrWhiteSpace(GitCommitPrompt))
+		{
+			root.Remove("gitCommitPrompt");
+		}
+		else
+		{
+			root["gitCommitPrompt"] = GitCommitPrompt;
+		}
+		if (string.IsNullOrWhiteSpace(LastUsedModel))
+		{
+			root.Remove("lastUsedModel");
+		}
+		else
+		{
+			root["lastUsedModel"] = LastUsedModel.Trim();
+		}
 		// Git 面板布局：没有记录时不留空对象。
 		if (GitPanes.Count == 0)
 		{
@@ -373,6 +408,10 @@ public sealed record DesktopPreference
 	/// <summary>Git 提交摘要默认思考级别；空字符串表示跟随当前会话。</summary>
 	public DesktopPreference WithGitCommitThinking(string level) => this with { GitCommitThinking = (level ?? string.Empty).Trim() };
 
+	/// <summary>Git 提交摘要提示词模板；空字符串（或与默认模板相同）表示跟随内置默认。</summary>
+	public DesktopPreference WithGitCommitPrompt(string template) =>
+		this with { GitCommitPrompt = GitCommitMessage.IsDefaultTemplate(template) ? string.Empty : (template ?? string.Empty) };
+
 	/// <summary>记住某个仓库的 Git 面板节高度与展开态；空串表示清除该仓库的记录。</summary>
 	public DesktopPreference WithGitPanes(string cwd, string layout)
 	{
@@ -414,6 +453,17 @@ public sealed record DesktopPreference
 	public DesktopPreference RememberModel(string provider, string id) => this with
 	{
 		RecentModels = Prepend(RecentModels, $"{provider}/{id}"),
+	};
+
+	/// <summary>
+	/// 记录「最后一次实际使用的模型」。与 <see cref="RememberModel"/> 分开：前者决定新会话默认，
+	/// 后者只影响模型选择器的排序；二者都在发送或显式选择时写入时已经很稳。
+	/// </summary>
+	public DesktopPreference RememberUsedModel(string provider, string id) => this with
+	{
+		LastUsedModel = string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(id)
+			? LastUsedModel
+			: $"{provider}/{id}",
 	};
 
 	private static IReadOnlyList<string> Prepend(IReadOnlyList<string> items, string value) =>

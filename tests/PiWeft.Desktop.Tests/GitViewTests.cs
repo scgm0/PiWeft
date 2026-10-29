@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
 using Aprillz.MewUI;
-using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
 using PiWeft.Desktop;
@@ -828,6 +827,52 @@ public sealed class GitViewTests : IDisposable
 		var ai = Find<Button>(view.View).Single(button =>
 			button.Tag is string tag && tag == Strings.GitGenerateCommitSummary);
 		Assert.False(ai.IsEnabled);
+	}
+
+	[Fact]
+	public void AiButtonIsDisabledAndExplainsWhenNoChatModelIsAvailable()
+	{
+		var model = TestModel();
+		var assistant = new GitCommitAssistant(
+			() => [],
+			() => model,
+			() => ThinkingLevels.Off,
+			(_, _, _, _) => Task.FromResult("unused"),
+			() => false);
+
+		var view = View(_root, assistant);
+		var ai = Find<Button>(view.View).Single(button =>
+			button.Tag is string tag && tag == Strings.GitGenerateCommitSummary);
+		Assert.False(ai.IsEnabled);
+		Assert.Equal(Strings.GitSummaryModelMissing, HoverHints.Text(ai));
+	}
+
+	[Fact]
+	public void ModelMissingFailureOffersTheSettingsShortcut()
+	{
+		RunGit("add", "--all");
+		RunGit("commit", "-m", "baseline");
+		File.WriteAllText(Path.Combine(_root, "a.txt"), "changed");
+		RunGit("add", "--all");
+
+		var model = TestModel();
+		var opened = false;
+		var assistant = new GitCommitAssistant(
+			() => [model],
+			() => model,
+			() => ThinkingLevels.Off,
+			(_, _, _, _) => Task.FromException<string>(new GitSummaryException(GitSummaryFailure.ModelMissing, Strings.GitSummaryModelMissing)),
+			() => false);
+
+		var view = View(_root, assistant, () => opened = true);
+		ImagePreviewTests.Click(Find<Button>(view.View).Single(button =>
+			button.Tag is string tag && tag == Strings.GitGenerateCommitSummary));
+
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.GitSummaryModelMissing);
+		var settings = Find<Button>(view.View).FirstOrDefault(button => ContentText(button) == Strings.GitSummaryGoSettings);
+		Assert.NotNull(settings);
+		ImagePreviewTests.Click(settings!);
+		Assert.True(opened);
 	}
 
 	private static Button? ButtonWithText(GitView view, string text) =>

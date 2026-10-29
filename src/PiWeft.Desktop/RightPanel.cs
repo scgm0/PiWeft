@@ -155,6 +155,12 @@ public sealed class RightPanel : IDisposable
 	/// <summary>视觉验收：Git 分段选中第一个改动。</summary>
 	public void SelectFirstGitChangeForSmoke() => _git?.SelectFirstChangeForSmoke();
 
+	/// <summary>视觉验收：直接走一次 AI 提交摘要（看进度条与内联失败行是否需要新布局）。</summary>
+	public void GenerateGitSummaryForSmoke() => _git?.GenerateSummaryForSmoke();
+
+	/// <summary>视觉验收：把摘要结果打到 stdout。</summary>
+	public void ReportGitSummaryForSmoke() => _git?.ReportSummaryForSmoke();
+
 	/// <summary>视觉验收：打印泳道几何。</summary>
 	public void ReportGitGraphGeometryForSmoke() => _git?.ReportGraphGeometryForSmoke();
 

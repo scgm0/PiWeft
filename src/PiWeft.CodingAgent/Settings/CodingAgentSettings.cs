@@ -174,6 +174,36 @@ public sealed record CodingAgentSettings
 	}
 
 	/// <summary>
+	/// 把某个模型的默认思考级别写进**全局**设置（<c>modelThinkingLevels</c>，键 <c>provider/modelId</c>）。
+	/// pi 用同一张表在新建会话（<c>findInitialModel</c>）与切换模型时解析默认档位：桌面在用户点选档位时记账，
+	/// 「本次的选择」就成了这个模型下一次的默认，不必再手改 settings.json。其它字段原样保留。
+	/// </summary>
+	public static void SetModelThinkingLevel(string provider, string model, string level, string? agentDir = null)
+	{
+		if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(level))
+		{
+			return;
+		}
+
+		var path = GlobalPath(agentDir);
+		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+		var root = ReadExistingObject(path);
+		// 损坏的 modelThinkingLevels（不是对象）直接换掉：保留它只会让整张表失效。
+		var levels = root["modelThinkingLevels"] as JsonObject ?? new JsonObject();
+		levels[$"{provider.Trim()}/{model.Trim()}"] = level.Trim();
+		root["modelThinkingLevels"] = levels;
+
+		File.WriteAllText(
+			path,
+			root.ToJsonString(new JsonSerializerOptions
+			{
+				WriteIndented = true,
+				Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+			}));
+	}
+
+	/// <summary>
 	/// 读取 settings 里的 <c>npmCommand</c>（默认 <c>["npm"]</c>）。该键只在包管理时使用，
 	/// 因此不进入建模的设置字段，避免保存时把用户没动过的值写回文件。
 	/// </summary>

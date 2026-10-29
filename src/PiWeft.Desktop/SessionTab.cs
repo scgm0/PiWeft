@@ -118,6 +118,12 @@ public sealed partial class SessionTab : IDisposable
 
 	/// <summary>输入区整列：提示文本 + 输入框 + 状态栏，空会话时一起居中。</summary>
 	private readonly StackPanel _composerColumn;
+	/// <summary>输入区（widget 卡 / 空会话提示 / 进行态行 / 输入卡）。问询卡打开时整块收起，
+	/// 与 PiDeck 一致：代理在等回答，输入框不该继续抢键盘焦点。</summary>
+	private readonly StackPanel _inputStack;
+	/// <summary>会话内联问询卡（ask_question）：钉在对话区与输入区之间，不再用遮罩弹窗。</summary>
+	private readonly AskQuestionPanel _askPanel;
+	private Border? _askCard;
 	private Border _headerRow = null!;
 	private readonly WrapPanel _commandBar = new();
 	private readonly Border _editNotice;
@@ -182,6 +188,15 @@ public sealed partial class SessionTab : IDisposable
 
 	/// <summary>会话空闲/运行状态变化时触发，用于在标签头显示指示。</summary>
 	public event Action<SessionTab>? StateChanged;
+
+	/// <summary>
+	/// 问询卡开关时触发。不能走 <see cref="StateChanged"/>：那条链路会顺带刷一遍会话列表
+	/// （对全部会话文件做 stat），而开关一张卡片只是页签标题上那个小圆点变了。
+	/// </summary>
+	public event Action<SessionTab>? AskChanged;
+
+	/// <summary>一条消息真的走完了一轮（成功、失败或中断都算发过了）；宿主用它记录「上次使用的模型」。</summary>
+	public event Action<SessionTab>? MessageSent;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
 		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null,
@@ -582,10 +597,21 @@ public sealed partial class SessionTab : IDisposable
 			.HorizontalAlignment(HorizontalAlignment.Center).TextTrimming(TextTrimming.CharacterEllipsis)
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0)).IsVisible(false);
 
+		_inputStack = new StackPanel()
+			.Spacing(2)
+			.Children(_widgetColumn, _emptyCard.IsVisible(false), _busyLine, composerPane);
+
+		// 问询卡片与会话同宽同列：真实窗口里该宽由 ReadingPreferences 随阅读宽度再算一次。
+		_askPanel = new AskQuestionPanel(OnAskVisibilityChanged);
+		_askCard = _askPanel.View
+			.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
+			.HorizontalAlignment(HorizontalAlignment.Center)
+			.Margin(new Thickness(AppTheme.Space4, AppTheme.Space2, AppTheme.Space4, 0));
+
 		_composerColumn = new StackPanel()
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Stretch)
-			.Children(_extensionLine, _widgetColumn, _emptyCard.IsVisible(false), _busyLine, composerPane,
+			.Children(_extensionLine, _askCard, _inputStack,
 				statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)));
 
 		var layout = new Grid()
@@ -659,6 +685,30 @@ public sealed partial class SessionTab : IDisposable
 
 	/// <summary>待办卡是否占据输入区上方的位置（诊断与契约测试用）。</summary>
 	internal bool TodoCardVisible => _todoCard.View.IsVisible;
+
+	/// <summary>会话内联问询卡（ask_question）：宿主 <see cref="DesktopUiHost"/> 直接用它展示。 </summary>
+	internal AskQuestionPanel AskPanel => _askPanel;
+
+	/// <summary>当前是否有阻塞式问询卡在等回答（页签标题会带标记，后台页签也能看出来）。</summary>
+	internal bool AskPending => _askPanel.IsOpen;
+
+	/// <summary>输入区是否可见（问询卡打开时整块收起；诊断与契约测试用）。</summary>
+	internal bool InputAreaVisible => _inputStack.IsVisible;
+
+	/// <summary>
+	/// 问询卡开关时收起/恢复输入区（PiDeck 同款：代理在等回答，输入框不能继续抢焦点），
+	/// 并通知宿主刷新页签标题，让后台会话的提问也能被看到。
+	/// </summary>
+	private void OnAskVisibilityChanged(bool open)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_inputStack.IsVisible(!open);
+		AskChanged?.Invoke(this);
+	}
 
 	/// <summary>「排队中」卡是否占位（队列为空时整卡不占位）。</summary>
 	internal bool QueueCardVisible => _queueCard.View.IsVisible;
@@ -861,6 +911,7 @@ public sealed partial class SessionTab : IDisposable
 		DetachFloatingButton();
 		ReadingPreferences.Changed -= ApplyReadingPreferences;
 		UiHost?.Hide();
+		_askPanel.Close();
 		_compactionAbort?.Cancel();
 		HideTransientPanels();
 		_renderTimer.Dispose();
@@ -936,6 +987,10 @@ public sealed partial class SessionTab : IDisposable
 		_composerPane.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		_widgetColumn.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		_readingStatisticsBar.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
+		if (_askCard is not null)
+		{
+			_askCard.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
+		}
 		_composer.FontSize(AppTheme.FontSizeChat);
 		_composerHint.FontSize(AppTheme.FontSizeChat);
 		Render(force: true);
@@ -1100,6 +1155,9 @@ public sealed partial class SessionTab : IDisposable
 				}
 
 				RefreshTitle();
+				// 这一轮真的发过了：通知宿主记账「上次使用的模型」（PiDeck 也是发送被接受后才记）。
+				// 偏好落盘属于宿主，不属于标签：无窗口测试直接驱动标签时不该碰真目录里的 desktop.json。
+				MessageSent?.Invoke(this);
 				StateChanged?.Invoke(this);
 			});
 		}
@@ -1539,7 +1597,6 @@ public sealed partial class SessionTab : IDisposable
 		{
 			AppLog.Failure(AppLog.For<SessionTab>(), "Save recent model", ex);
 		}
-
 		RefreshPickers();
 		Render();
 	}
@@ -1806,6 +1863,18 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		Session.SetThinkingLevel(level);
+		// 每模型默认档位（pi settings.json 的 modelThinkingLevels）：这次点选就是该模型下一次的默认，
+		// 新建会话 / 重新打开都用它（PiDeck 的 launchDefaults 同序：每模型默认 > 全局默认）。
+		// 与「最近模型」一样，这条写入只在用户真的点过档位时发生。
+		try
+		{
+			PiWeft.CodingAgent.Settings.CodingAgentSettings.SetModelThinkingLevel(Session.Model.Provider, Session.Model.Id, Session.ThinkingLevel);
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Save model thinking level", ex);
+		}
+
 		RefreshPickers();
 		Render();
 	}

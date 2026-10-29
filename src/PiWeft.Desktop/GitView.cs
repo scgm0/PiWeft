@@ -76,6 +76,14 @@ public sealed partial class GitView : IDisposable
 	private bool _disposed;
 	private MultiLineTextBox? _commitInput;
 
+	// 提交摘要的结构化失败原因（对齐 PiDeck 的 GIT_COMMIT_* 码）：只在摘要链路里展示，
+	// 与其它 git 操作的失败展开条分开，免得模型没配好却被引去查仓库。
+	private GitSummaryFailure? _summaryFailure;
+	private string _summaryFailureText = string.Empty;
+	private ProgressBar? _summaryBar;
+	private readonly DispatcherTimer _summaryTimer = new(TimeSpan.FromMilliseconds(250));
+	private DateTime _summaryStarted;
+
 	public GitView(Func<string> cwd, GitCommitAssistant? assistant = null, Action? openSettings = null)
 	{
 		_cwd = cwd;
@@ -88,6 +96,9 @@ public sealed partial class GitView : IDisposable
 		_compareSash = new PaneSash(() => _panes.Compare, height => SetPaneBody(Pane.Compare, height), SavePanes);
 		_moreSash = new PaneSash(() => _panes.More, height => SetPaneBody(Pane.More, height), SavePanes);
 		_panes = GitPaneLayout.Decode(DesktopPreference.Load().GitPanes.GetValueOrDefault(_cwd()));
+
+		// 进度条向 PiDeck 看齐：按等待上限爬升（而不是无限循环的不确定条），让用户知道还剩多久。
+		_summaryTimer.Tick += UpdateSummaryProgress;
 
 		// 骨架只搭一次：DockPanel 的子级顺序即停靠顺序。底部先停靠的在最下面，
 		// 所以自下而上是「更多 / 分隔条 / 比较 / 分隔条 / 图 / 分隔条」，「更改」吃掉剩余高度。
@@ -655,10 +666,36 @@ public sealed partial class GitView : IDisposable
 
 		if (_generating)
 		{
-			body.Children(new ProgressBar()
-				.IsIndeterminate(true)
-				.Height(2)
-				.Margin(new Thickness(0, AppTheme.Space1, 0, 0)));
+			_summaryBar = new ProgressBar()
+				.Minimum(0)
+				.Maximum(100)
+				.Height(3)
+				.Margin(new Thickness(0, AppTheme.Space1, 0, 0));
+			body.Children(_summaryBar);
+			UpdateSummaryProgress();
+		}
+		else
+		{
+			_summaryBar = null;
+		}
+
+		if (_summaryFailure is { } summaryFailure)
+		{
+			var row = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+				.VerticalAlignment(VerticalAlignment.Center);
+			row.Children(new TextBlock()
+				.Text(_summaryFailureText.Length > 0 ? _summaryFailureText : SummaryFailureMessage(summaryFailure))
+				.FontSize(AppTheme.FontSizeMicro)
+				.TextWrapping(TextWrapping.Wrap)
+				.WithTheme((theme, text) => text.Foreground = summaryFailure is GitSummaryFailure.ModelMissing or GitSummaryFailure.Failed
+					? AppTheme.For(theme).Error
+					: AppTheme.For(theme).TextMuted));
+			if (summaryFailure is GitSummaryFailure.ModelMissing or GitSummaryFailure.Failed && _openSettings is not null)
+			{
+				row.Children(SmallTextButton(Strings.GitSummaryGoSettings, _openSettings));
+			}
+
+			body.Children(row);
 		}
 
 		return Separator(
@@ -671,16 +708,19 @@ public sealed partial class GitView : IDisposable
 	private UIElement BuildAssistantButton(int staged)
 	{
 		var busy = _assistant?.IsBusy() == true;
-		var enabled = _assistant is not null && staged > 0 && !_busy && !_generating && !busy;
+		var hasModel = HasSummaryModel();
+		var enabled = _assistant is not null && hasModel && staged > 0 && !_busy && !_generating && !busy;
 		var tooltip = _assistant is null
 			? Strings.GitSummary
-			: _generating
-				? Strings.GitGeneratingCommitSummary
-				: busy
-					? Strings.GitSummaryBusy
-					: staged == 0
-						? Strings.GitStageBeforeGenerate
-						: ModelTooltip();
+			: !hasModel
+				? Strings.GitSummaryModelMissing
+				: _generating
+					? Strings.GitGeneratingCommitSummary
+					: busy
+						? Strings.GitSummaryBusy
+						: staged == 0
+							? Strings.GitStageBeforeGenerate
+							: ModelTooltip();
 
 		var icon = AppIcons.Icon("sparkles", AppStyles.RoleSubtle, 15);
 		var button = new Button()
@@ -1091,10 +1131,13 @@ public sealed partial class GitView : IDisposable
 			return body;
 		}
 
-		var resolved = ResolveAssistant();
+		var resolved = ResolveAssistant(out var preference);
 		body.Children(new TextBlock().Text(Strings.GitSummary).FontSize(AppTheme.FontSizeMicro).MutedText());
 		body.Children(new TextBlock()
 			.Text(Strings.GitSummaryCurrent($"{resolved.Model.Provider}/{resolved.Model.Id}", Strings.ThinkingLevelName(resolved.Thinking)))
+			.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+		body.Children(new TextBlock()
+			.Text(Strings.GitSummaryPromptState(preference.GitCommitPrompt is { Length: > 0 } ? Strings.GitSummaryPromptCustom : Strings.GitSummaryPromptDefault))
 			.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
 		if (_openSettings is not null)
 		{
@@ -1279,40 +1322,51 @@ public sealed partial class GitView : IDisposable
 
 		if (assistant.IsBusy())
 		{
-			Toasts.Show(View, Strings.GitSummaryBusy);
+			SetSummaryFailure(GitSummaryFailure.Busy, Strings.GitSummaryBusy);
+			return;
+		}
+
+		// 模型没配好与「仓库/暂存区」无关：先判这一条，否则用户在空暂存区看到的是「先去暂存」，
+		// 暂存完再撞一次「模型不可用」（PiDeck 用 GIT_COMMIT_MODEL_REQUIRED 单列这个场景）。
+		if (!HasSummaryModel())
+		{
+			SetSummaryFailure(GitSummaryFailure.ModelMissing, Strings.GitSummaryModelMissing);
 			return;
 		}
 
 		var status = GitStatusReader.Read(_cwd());
 		if (!status.Changes.Any(static change => change.HasStaged && !change.IsConflict))
 		{
-			Toasts.Show(View, Strings.GitStageBeforeGenerate);
+			SetSummaryFailure(GitSummaryFailure.EmptyDiff, Strings.GitStageBeforeGenerate);
 			return;
 		}
 
 		var diff = GitStatusReader.StagedDiffAll(_cwd(), GitCommitMessage.MaxDiffCharacters);
 		if (!diff.Ok)
 		{
-			_lastFailureMessage = Strings.GitSummaryFailed;
-			_lastFailureDetail = diff.Error;
-			Toasts.Error(View, Strings.GitSummaryFailedReason(diff.Error ?? Strings.GitFailed));
-			Refresh();
+			// 读 diff 失败（cwd 失效 / 仓库损坏 / git 超时）不能当成「空暂存区」：
+			// 前者要去查仓库，后者要去暂存，两种文案的后续动作完全不同。
+			SetSummaryFailure(GitSummaryFailure.DiffFailed, Strings.GitSummaryDiffFailed, diff.Error);
 			return;
 		}
 
 		if (diff.Text.Trim().Length == 0)
 		{
-			Toasts.Show(View, Strings.GitStageBeforeGenerate);
+			SetSummaryFailure(GitSummaryFailure.EmptyDiff, Strings.GitStageBeforeGenerate);
 			return;
 		}
 
 		var resolved = ResolveAssistant();
-		var abort = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+		var abort = new CancellationTokenSource(TimeSpan.FromSeconds(GitCommitMessage.GenerationTimeoutSeconds));
 		_summaryAbort = abort;
 		_generating = true;
+		_summaryFailure = null;
+		_summaryStarted = DateTime.UtcNow;
+		_summaryTimer.Start();
 		Refresh();
 
 		string? generated = null;
+		GitSummaryFailure? failureReason = null;
 		string? failure = null;
 		try
 		{
@@ -1324,10 +1378,21 @@ public sealed partial class GitView : IDisposable
 		}
 		catch (OperationCanceledException)
 		{
+			failureReason = GitSummaryFailure.Timeout;
 			failure = Strings.GitSummaryTimeout;
+		}
+		catch (GitSummaryException ex)
+		{
+			failureReason = ex.Failure;
+			failure = ex.Message;
+			if (ex.Detail is { Length: > 0 } detail)
+			{
+				_lastFailureDetail = detail;
+			}
 		}
 		catch (Exception ex)
 		{
+			failureReason = GitSummaryFailure.Failed;
 			failure = ex.Message;
 		}
 		finally
@@ -1347,14 +1412,21 @@ public sealed partial class GitView : IDisposable
 			}
 
 			_generating = false;
+			_summaryTimer.Stop();
 			if (failure is null && generated is { Length: > 0 } message)
 			{
 				_commitDraft = message;
 				_focusCommitAfterBuild = true;
+				_summaryFailure = null;
+				_summaryFailureText = string.Empty;
+				_lastFailureMessage = null;
+				_lastFailureDetail = null;
 				Toasts.Success(View, Strings.GitSummaryGenerated);
 			}
 			else
 			{
+				// 失败原因按类型落到面板內联提示；原始报错进展开条，排查时能看到完整文本。
+				_summaryFailure = failureReason ?? GitSummaryFailure.Failed;
 				_lastFailureMessage = Strings.GitSummaryFailed;
 				_lastFailureDetail = failure ?? Strings.GitSummaryEmpty;
 				Toasts.Error(View, failure is { Length: > 0 } ? Strings.GitSummaryFailedReason(failure) : Strings.GitSummaryEmpty);
@@ -1373,14 +1445,23 @@ public sealed partial class GitView : IDisposable
 		}
 	}
 
-	private (Model Model, string Thinking) ResolveAssistant()
-	{
-		if (_assistant is not { } assistant)
-		{
-			throw new InvalidOperationException(Strings.GitSummaryNoModel);
-		}
+	/// <summary>视觉验收：直接跑一次 AI 提交摘要（不等真实点击），用来截进度条与内联失败行。</summary>
+	internal void GenerateSummaryForSmoke() => _ = GenerateCommitSummaryAsync();
 
-		var preference = DesktopPreference.Load();
+	/// <summary>视觉验收：把摘要结果（或失败原因）打到 stdout，无人值守跑一次就能定位卡在哪一步。</summary>
+	internal void ReportSummaryForSmoke() =>
+		Console.WriteLine(
+			"piweft-desktop: git summary draft=" +
+			(_commitDraft.Length > 0 ? _commitDraft.Replace("\n", " \\n") : "(空)") +
+			" failure=" + (_summaryFailure?.ToString() ?? "(无)") +
+			" detail=" + (_lastFailureDetail ?? string.Empty).Replace("\n", " \\n"));
+
+	/// <summary>解析提交摘要用哪个模型与档位：默认跟随会话，偏好里指了固定项就覆盖。同时把读到的偏好递出去，免得更下面再读一次盘。</summary>
+	private (Model Model, string Thinking) ResolveAssistant(out DesktopPreference preference)
+	{
+		var assistant = _assistant ?? throw new InvalidOperationException(Strings.GitSummaryNoModel);
+		var loaded = DesktopPreference.Load();
+		preference = loaded;
 		var current = assistant.CurrentModel();
 		var models = assistant.Models();
 		var model = current;
@@ -1390,10 +1471,68 @@ public sealed partial class GitView : IDisposable
 				string.Equals($"{candidate.Provider}/{candidate.Id}", fixedModel, StringComparison.Ordinal)) ?? current;
 		}
 
-		var thinking = preference.GitCommitThinking is { Length: > 0 } fixedThinking
+		var thinking = loaded.GitCommitThinking is { Length: > 0 } fixedThinking
 			? fixedThinking
 			: assistant.CurrentThinking();
 		return (model, thinking);
+	}
+
+	private (Model Model, string Thinking) ResolveAssistant() => ResolveAssistant(out _);
+
+	/// <summary>模型目录里是否真有可用的对话模型（固定模型被删除时 ResolveAssistant 会回退到会话模型）。</summary>
+	private bool HasSummaryModel() =>
+		_assistant?.Models().Any(static model => model.Type == ModelType.Chat) == true;
+
+	/// <summary>记录并展示一次提交摘要失败；不同类型配不同动作提示（PiDeck 的错误码语义）。</summary>
+	private void SetSummaryFailure(GitSummaryFailure reason, string message, string? detail = null)
+	{
+		_summaryFailure = reason;
+		_summaryFailureText = message;
+		switch (reason)
+		{
+			case GitSummaryFailure.DiffFailed:
+			case GitSummaryFailure.Failed:
+				_lastFailureMessage = Strings.GitSummaryFailed;
+				_lastFailureDetail = detail is { Length: > 0 } ? detail : message;
+				Toasts.Error(View, Strings.GitSummaryFailedReason(_lastFailureDetail));
+				break;
+			case GitSummaryFailure.ModelMissing:
+				Toasts.Error(View, message);
+				break;
+			default:
+				Toasts.Show(View, message);
+				break;
+		}
+
+		Refresh();
+	}
+
+	private static string SummaryFailureMessage(GitSummaryFailure failure) => failure switch
+	{
+		GitSummaryFailure.EmptyDiff => Strings.GitStageBeforeGenerate,
+		GitSummaryFailure.DiffFailed => Strings.GitSummaryDiffFailed,
+		GitSummaryFailure.ModelMissing => Strings.GitSummaryModelMissing,
+		GitSummaryFailure.Busy => Strings.GitSummaryBusy,
+		GitSummaryFailure.Timeout => Strings.GitSummaryTimeout,
+		_ => Strings.GitSummaryFailed,
+	};
+
+	/// <summary>按等待上限爬升的进度（PiDeck 同款）：到 97% 停住等结果，不会先走满再回退。</summary>
+	private void UpdateSummaryProgress()
+	{
+		if (_summaryBar is not { } bar)
+		{
+			return;
+		}
+
+		if (!_generating)
+		{
+			bar.Value = 0;
+			return;
+		}
+
+		var seconds = (DateTime.UtcNow - _summaryStarted).TotalSeconds;
+		bar.Value = Math.Clamp(seconds / GitCommitMessage.GenerationTimeoutSeconds * 100d, 0, 97);
 	}
 
 	private void OpenInEditor(string path)
@@ -1775,5 +1914,7 @@ public sealed partial class GitView : IDisposable
 
 		_summaryAbort?.Dispose();
 		_summaryAbort = null;
+		_summaryTimer.Stop();
+		_summaryTimer.Dispose();
 	}
 }

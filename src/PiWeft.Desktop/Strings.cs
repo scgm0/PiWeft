@@ -528,6 +528,8 @@ public static partial class Strings
 
 	public const string GitSummaryEmpty = "模型没有返回提交摘要。";
 
+	public const string GitSummaryTruncated = "模型只在做推理、没返回正文（输出被长度上限截断了）。把提交摘要的思考级别调低一档再试。";
+
 	public const string GitSummaryBusy = "会话正在运行，完成后再生成提交摘要。";
 
 	public const string GitLastFailure = "上次操作失败";
@@ -604,7 +606,7 @@ public static partial class Strings
 
 	public const string GitSummarySettings = "提交摘要默认配置";
 
-	public const string GitSummarySettingsHint = "Git 面板的 AI 按钮默认使用当前会话模型与思考级别；在这里可以改成固定模型/级别。";
+	public const string GitSummarySettingsHint = "Git 面板的 AI 按钮默认使用当前会话模型与思考级别；在这里可以改成固定模型/级别，并自定义提交信息的提示词模板。";
 
 	public const string GitSummarySettingsOpen = "更改默认配置";
 
@@ -629,6 +631,31 @@ public static partial class Strings
 	public const string GitPushBusy = "正在推送…";
 
 	public const string GitSummaryNoModel = "没有可用模型";
+
+	// 提交摘要的结构化失败原因（对齐 PiDeck 的 GIT_COMMIT_* 错误码）。
+	public const string GitSummaryDiffFailed = "读取暂存区 diff 失败。";
+
+	public const string GitSummaryModelMissing = "没有可用的对话模型，先在设置里配置供应商与模型。";
+
+	public static string GitSummaryModelMissingDetail(string model) => $"虚拟模型 {model} 没有在模型目录里注册。";
+
+	public const string GitSummaryGoSettings = "去设置";
+
+	// 提示词模板（对齐 PiDeck 的 gitCommitMessagePrompt）：{diff} 是暂存区 diff 的占位符。
+	public const string GitSummaryPrompt = "提示词模板";
+
+	public static string GitSummaryPromptHint(string placeholder) =>
+		$"用 {placeholder} 表示暂存区 diff；留空使用默认模板（Gitmoji + 分点正文）。";
+
+	public const string GitSummaryPromptReset = "恢复默认";
+
+	public const string GitSummaryPromptSaved = "已保存提交摘要提示词。";
+
+	public const string GitSummaryPromptDefault = "默认模板";
+
+	public const string GitSummaryPromptCustom = "自定义模板";
+
+	public static string GitSummaryPromptState(string state) => $"提示词：{state}";
 
 	// 提示音设置页（设置 → 运行 → 提示音）。文案与默认值对齐 PiDeck 的声音提醒。
 	public const string SettingsSounds = "提示音";
@@ -847,18 +874,65 @@ public static partial class Strings
 
 	public static string ExtensionWidgetsCount(int count) => $"{count} 项";
 
-	/// <summary>ask_question 对话卡片。</summary>
+	/// <summary>ask_question 会话内联卡片（对齐 PiDeck 的 SessionRuntimeUiOverlay）。</summary>
 	public const string AskTitle = "需要你的输入";
 
 	public const string AskSubmit = "提交";
 
-	public const string AskCancel = "取消";
+	public const string AskCancel = "关闭";
 
-	public const string AskYes = "是（取消勾选则为否）";
+	public const string AskYes = "是";
 
-	public const string AskSelectPlaceholder = "（请选择）";
+	public const string AskNo = "否";
 
 	public const string AskCustomPlaceholder = "也可直接输入自定义内容";
+
+	public const string AskCollapse = "收起选项";
+
+	public const string AskExpand = "展开选项";
+
+	public const string AskPrevious = "上一题";
+
+	public const string AskNext = "下一题";
+
+	public const string AskSubmitAll = "提交全部";
+
+	public const string AskReviewTab = "确认";
+
+	public const string AskReviewTitle = "确认全部答案";
+
+	public const string AskReviewHint = "核对每一题后提交；未作答的题目会以取消返回给模型。";
+
+	public const string AskCustomUse = "使用";
+
+	public const string AskCustomAdd = "添加";
+
+	public const string AskAnswered = "已作答";
+
+	public const string AskUnanswered = "未作答";
+
+	public static string AskProgress(int answered, int total) => $"{answered}/{total}";
+
+	public static string AskQuestionProgress(int index, int total) => $"第 {index}/{total} 题";
+
+	// 卡片里不写“怎么推进”，就没人知道点一下选项算不算答完：一行提示把规则写当场。
+	public const string AskHintSelect = "点一个选项即答完本题，并自动到下一题；也可以直接输入自定义答案。";
+
+	public const string AskHintSelectLast = "点一个选项即答完并提交整张卡片；也可以直接输入自定义答案。";
+
+	public const string AskHintConfirm = "选是/否即答完本题，并自动到下一题。";
+
+	public const string AskHintConfirmLast = "选是/否即答完并提交整张卡片。";
+
+	public const string AskHintMultiSelect = "可勾选多个；勾完后点「下一题」（勾一个不会自动推进）。";
+
+	public const string AskHintMultiSelectLast = "可勾选多个；勾完后点「提交」。";
+
+	public const string AskHintInput = "输入后回车或点「下一题」；留空不算作答。";
+
+	public const string AskHintInputLast = "输入后回车或点「提交」；留空不算作答。";
+
+	public const string AskHintEditor = "多行输入，Ctrl+Enter 提交；留空不算作答。";
 
 	/// <summary>计划模式开关。</summary>
 	public const string PlanMode = "计划";

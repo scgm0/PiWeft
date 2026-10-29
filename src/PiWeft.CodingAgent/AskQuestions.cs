@@ -140,6 +140,28 @@ public static class AskQuestions
 		}
 	}
 
+	/// <summary>信封里的「批量审阅」标志：true 时界面在最后一题后加一页「确认全部答案」。</summary>
+	public static bool ReviewRequested(string? title)
+	{
+		if (string.IsNullOrEmpty(title))
+		{
+			return false;
+		}
+
+		try
+		{
+			return JsonNode.Parse(title) is JsonObject obj
+				&& obj[EnvelopeKey] is not null
+				&& obj["review"] is JsonValue value
+				&& value.TryGetValue<bool>(out var review)
+				&& review;
+		}
+		catch (JsonException)
+		{
+			return false;
+		}
+	}
+
 	/// <summary>解析宿主返回的回答。</summary>
 	public static (IReadOnlyList<AskAnswer> Answers, bool Cancelled) ParseResponse(string? raw, IReadOnlyList<AskQuestion> questions)
 	{

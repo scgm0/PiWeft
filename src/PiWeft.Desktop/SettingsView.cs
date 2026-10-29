@@ -580,12 +580,68 @@ public sealed class SettingsView
 		};
 
 		var current = snapshot.Session;
+
+		// 提示词模板（对齐 PiDeck 的 gitCommitMessagePrompt）：{diff} 是暂存区 diff 的占位符。
+		// 偏好里存空串 = 跟随内置默认模板，所以框里直接展示默认模板，用户能直接在上面改。
+		var promptBox = new MultiLineTextBox()
+			.Height(170)
+			.FontSize(AppTheme.FontSizeCaption)
+			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))
+			.StyleName(AppStyles.TextInput)
+			.Text(preference.GitCommitPrompt is { Length: > 0 } customPrompt ? customPrompt : GitCommitMessage.DefaultPromptTemplate);
+		void SavePromptTemplate(string? text)
+		{
+			var next = GitCommitMessage.IsDefaultTemplate(text) || string.IsNullOrWhiteSpace(text) ? string.Empty : text;
+			if (string.Equals(next, DesktopPreference.Load(snapshot.AgentDir).GitCommitPrompt, StringComparison.Ordinal))
+			{
+				return;
+			}
+
+			SavePreference(DesktopPreference.Load(snapshot.AgentDir).WithGitCommitPrompt(text ?? string.Empty));
+		}
+
+		// 只靠失焦保存不可靠：用户改完直接点设置页其它控件、关弹窗，可能根本不会触发 LostFocus。
+		// 停手 600 ms 后目自动落盘（与声音分区那种“改动即时生效”一致），失焦再充一次。
+		var promptGate = new DispatcherTimer(TimeSpan.FromMilliseconds(600));
+		promptGate.Tick += () =>
+		{
+			promptGate.Stop();
+			SavePromptTemplate(promptBox.Text);
+		};
+		promptBox.OnTextChanged(_ =>
+		{
+			promptGate.Stop();
+			promptGate.Start();
+		});
+		promptBox.OnLostFocus(() =>
+		{
+			promptGate.Stop();
+			SavePromptTemplate(promptBox.Text);
+		});
+
+		var promptReset = new Button().Ghost()
+			.Content(new TextBlock().Text(Strings.GitSummaryPromptReset).FontSize(AppTheme.FontSizeCaption).PrimaryText())
+			.OnClick(() =>
+			{
+				promptGate.Stop();
+				promptBox.Text = GitCommitMessage.DefaultPromptTemplate;
+				SavePromptTemplate(GitCommitMessage.DefaultPromptTemplate);
+			});
+
+		var promptField = new StackPanel().Spacing(AppTheme.Space1).Children(
+			new TextBlock().Text(Strings.GitSummaryPrompt).FontSize(AppTheme.FontSizeCaption).SubtleText(),
+			promptBox,
+			new DockPanel().LastChildFill().Children(promptReset.DockRight(),
+				new TextBlock().Text(Strings.GitSummaryPromptHint(GitCommitMessage.DiffPlaceholder))
+					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap)));
+
 		var body = new StackPanel().Spacing(AppTheme.Space3)
 			.Children(
 				new TextBlock().Text(Strings.GitSummarySettingsHint)
 					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap),
 				SettingField(Strings.GitSummaryModel, modelPicker),
-				SettingField(Strings.GitSummaryThinking, thinkingPicker));
+				SettingField(Strings.GitSummaryThinking, thinkingPicker),
+				promptField);
 
 		if (current is null)
 		{

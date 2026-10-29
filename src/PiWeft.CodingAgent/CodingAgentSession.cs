@@ -62,6 +62,12 @@ public sealed record CodingAgentSessionOptions
 	public ClassifiersGateway? Classifiers { get; init; }
 
 	/// <summary>
+	/// 会话文件记录了 <c>model_change</c> 时优先恢复它（pi 的 <c>findInitialModel</c> 同义）；
+	/// 显式 <c>--model</c> 由调用方关掉这个开关，模型已不存在时自动回退到 <see cref="Model"/>。
+	/// </summary>
+	public bool RestoreRecordedModel { get; init; }
+
+	/// <summary>
 	/// 思考级别。为 <c>null</c> 时沿用会话里记录的级别（恢复会话时就是上次的），没有记录则为
 	/// <see cref="ThinkingLevels.Off"/> —— 与 pi 一致：显式指定优先，其次会话记录，最后默认值。
 	/// </summary>
@@ -361,17 +367,29 @@ public sealed class CodingAgentSession : IDisposable
 			options.DecideCacheWarming,
 			PushCacheWarmingStatus);
 
-		// 恢复会话时，会话文件里记录的思考级别优先于默认值（显式传入的级别仍然最优先）。
+		// 恢复会话时，会话文件里记录的模型与思考级别优先于默认值（显式传入的仍然最优先）。
+		// 模型这一条对齐 pi 的 findInitialModel：宿主的默认模型只是没有记录时的兜底。
+		// BuildSessionContext() 会走一遍分支并投影消息，这里只调一次：
+		// 长会话开场时多走一遍分支是看得见的时间（分支部建要遍历整条链）。
+		var recorded = Session.Entries.Count > 0 ? Session.BuildSessionContext() : null;
+		var initialModel = options.Model;
+		if (options.RestoreRecordedModel && recorded?.Model is { } recordedModel &&
+			options.Registry?.Get(recordedModel.Provider, recordedModel.ModelId) is { } known)
+		{
+			// 模型可能已被删除或改名：存在性校验不过就回退到宿主解析出的模型。
+			initialModel = known;
+		}
+
 		var requestedThinkingLevel = options.ThinkingLevel
-			?? (Session.Entries.Count > 0 ? Session.BuildSessionContext().ThinkingLevel : null)
-			?? options.Settings.ModelThinkingLevels.GetValueOrDefault($"{options.Model.Provider}/{options.Model.Id}")
+			?? recorded?.ThinkingLevel
+			?? options.Settings.ModelThinkingLevels.GetValueOrDefault($"{initialModel.Provider}/{initialModel.Id}")
 			?? options.Settings.DefaultThinkingLevel
 			?? ThinkingLevels.Off;
 
 		_agent = new AgentRuntime(new AgentOptions
 		{
-			Model = options.Model,
-			ThinkingLevel = ThinkingLevelResolver.Clamp(options.Model, requestedThinkingLevel),
+			Model = initialModel,
+			ThinkingLevel = ThinkingLevelResolver.Clamp(initialModel, requestedThinkingLevel),
 			StreamFn = _routedStreamFn,
 			// 用 _fullTools 而不是局部的 builtins：扩展注册的工具在 LoadExtensions 里并进了
 			// _fullTools，用局部变量会把它们从代理的工具集里丢掉（工具能被执行却不出现在声明里）。

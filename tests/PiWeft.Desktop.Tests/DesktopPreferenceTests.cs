@@ -485,6 +485,32 @@ public sealed class ExpandedProjectsPreferenceTests : IDisposable
 		File.WriteAllText(DesktopPreference.Path(_agentDir), """{"expandedProjects":"not-an-array"}""");
 		Assert.Empty(DesktopPreference.Load(_agentDir).ExpandedProjects);
 	}
+
+	[Fact]
+	public void GitCommitPromptIsClearedWhenItMatchesTheDefaultTemplate()
+	{
+		DesktopPreference.Load(_agentDir).WithGitCommitPrompt("自定义 {diff}").Save(_agentDir);
+		Assert.Equal("自定义 {diff}", DesktopPreference.Load(_agentDir).GitCommitPrompt);
+
+		// 与内置默认逐字相同（或留空）= 跟随默认：不写进文件，默认模板升级时自动生效。
+		DesktopPreference.Load(_agentDir).WithGitCommitPrompt(GitCommitMessage.DefaultPromptTemplate).Save(_agentDir);
+		Assert.Equal(string.Empty, DesktopPreference.Load(_agentDir).GitCommitPrompt);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw.ContainsKey("gitCommitPrompt"));
+	}
+
+	[Fact]
+	public void LastUsedModelIsRememberedSeparatelyFromRecentModels()
+	{
+		DesktopPreference.Load(_agentDir).RememberUsedModel("test", "a").Save(_agentDir);
+
+		var preference = DesktopPreference.Load(_agentDir);
+		Assert.Equal("test/a", preference.LastUsedModel);
+		// 最近模型（选择器排序）不被这次记录污染。
+		Assert.Empty(preference.RecentModels);
+		// 空值不清掉已有记录。
+		Assert.Equal("test/a", preference.RememberUsedModel("", "").LastUsedModel);
+	}
 }
 
 /// <summary>哪些项目默认展开：只认「记录过」与「含选中会话」。</summary>

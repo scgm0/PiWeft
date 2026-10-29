@@ -1,6 +1,7 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Rendering;
+using PiWeft.CodingAgent;
 using PiWeft.Markdown;
 
 namespace PiWeft.Desktop;
@@ -14,6 +15,31 @@ public sealed partial class SessionTab
 	private static bool SweepProbe => Environment.GetEnvironmentVariable("PIWEFT_SWEEP_PROBE") == "1";
 
 	/// <summary>滚到顶部，让「移动到最新」悬浮按钮进入自动显示状态。</summary>
+	/// <summary>仅供 --ui-smoke ask：在会话里展开一张批量问询卡（select / multi_select / editor + 审阅页），供截图验收。</summary>
+	internal void PrepareAskSmoke()
+	{
+		var questions = new List<AskQuestion>
+		{
+			new("scope", "select", "这次改动拆成几次提交？",
+				[
+					new AskOption("一次提交", "one", "小改动合成一个提交，历史更干净"),
+					new AskOption("按模块拆分", "split", "桌面与文档分开，便于单独回滚"),
+					new AskOption("先提交文档", "docs", null),
+				],
+				null, null),
+			new("docs", "multi_select", "顺带更新这些文档？",
+				[
+					new AskOption("docs/00-status.md", "status", null),
+					new AskOption("docs/01-parity.md", "parity", null),
+					new AskOption("DESIGN.md", "design", null),
+				],
+				null, null),
+			new("note", "editor", "提交说明补充：", null, "多行内容，Ctrl+Enter 提交", null),
+		};
+
+		_ = AskPanel.ShowAsync(questions, review: true, CancellationToken.None);
+	}
+
 	/// <summary>
 	/// 仅供 --ui-smoke scroll-sweep：从会话底部按步长向上滚动，覆盖整条会话，
 	/// 每步打印 offset 供外部脚本对齐截图帧。步长小于视口，任何一帧里

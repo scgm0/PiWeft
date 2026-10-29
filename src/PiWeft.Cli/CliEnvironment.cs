@@ -607,15 +607,32 @@ public sealed class CliEnvironment
 	}
 
 	/// <summary>按会话相关参数解析出要使用的会话。</summary>
+	/// <param name="preferredModel">
+	/// 新会话（没有会话记录）的候选模型：仅当既没有显式 <c>--model</c>、也没有配置
+	/// <c>settings.defaultModel</c> 时才会用到（桌面传「上次真正用过的模型」，对齐 PiDeck 的 lastUsedModel）。
+	/// </param>
 	public CodingAgentSession CreateSession(
 		CliArguments arguments,
 		string cwd,
 		SessionManager? session = null,
 		IReadOnlyList<AgentTool>? extraTools = null,
 		bool recordInitialThinkingLevel = true,
-		IUiHost? uiHost = null)
+		IUiHost? uiHost = null,
+		Model? preferredModel = null)
 	{
 		var manager = session ?? ResolveSession(arguments, cwd, Settings.SessionDir);
+
+		// 新会话的模型：环境解析出的默认之后，才轮到「上次用过的模型」；
+		// 显式 --model / settings.defaultModel 都优先于它（与 PiDeck 的 launchDefaults 同序）。
+		var initialModel = Model;
+		if (manager.Entries.Count == 0
+			&& arguments.Model is null
+			&& arguments.Provider is null
+			&& Settings.DefaultModel is not { Length: > 0 }
+			&& preferredModel is { } remembered)
+		{
+			initialModel = remembered;
+		}
 
 		// 环境启动时已解析好的决策；若本次调用显式带 --approve/--no-approve 则以它为准。
 		var projectTrusted = arguments.ProjectTrustOverride ?? ProjectTrusted;
@@ -670,7 +687,9 @@ public sealed class CliEnvironment
 		return new CodingAgentSession(new CodingAgentSessionOptions
 		{
 			Cwd = cwd,
-			Model = Model,
+			Model = initialModel,
+			// 没显式指定模型时，恢复会话要回到会话记录里的模型（pi 的 findInitialModel 语义）。
+			RestoreRecordedModel = arguments.Model is null && arguments.Provider is null,
 			StreamFn = sessionStream,
 			Registry = Registry,
 			ApiKeyForProvider = provider => arguments.ApiKey ?? ProviderApiKeys.GetValueOrDefault(provider),

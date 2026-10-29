@@ -106,7 +106,12 @@ public static class AskQuestionTool
 			}
 		}
 
-		var envelope = AskQuestions.BuildEnvelope(questions, invocation.Arguments["review"]?.GetValue<bool>() == true);
+		// review 可以是模型写的 true / "true" / 1：只在真的是布尔时生效，
+		// 直接 GetValue<bool>() 遇到字符串会抛，整个工具调用就被一个无关紧要的开关弄挂。
+		var review = invocation.Arguments["review"] is JsonValue reviewValue
+			&& reviewValue.TryGetValue<bool>(out var reviewFlag)
+			&& reviewFlag;
+		var envelope = AskQuestions.BuildEnvelope(questions, review);
 		var raw = await host
 			.InputAsync(new UiInputRequest(envelope, AskQuestions.EnvelopePlaceholder), invocation.CancellationToken)
 			.ConfigureAwait(false);

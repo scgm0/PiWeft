@@ -1186,7 +1186,7 @@ public sealed partial class MainWindow : Window
 				{
 					var session = environment.CreateSession(
 						_arguments, manager.Cwd, session: manager, extraTools: extraTools,
-						recordInitialThinkingLevel: false, uiHost: uiHost);
+						recordInitialThinkingLevel: false, uiHost: uiHost, preferredModel: RememberedModel(environment));
 					// 聊天记录投影是纯模型工作（无 UI 依赖），提前在后台做完，标签页直接接手。
 					var chat = new ChatViewModel();
 					chat.Attach(session);
@@ -1355,7 +1355,7 @@ public sealed partial class MainWindow : Window
 		var uiHost = new DesktopUiHost();
 		OpenPreparedSession(
 			environment.CreateSession(_arguments, manager.Cwd, session: manager, extraTools: McpToolsFor(manager.Cwd),
-				recordInitialThinkingLevel: false, uiHost: uiHost),
+				recordInitialThinkingLevel: false, uiHost: uiHost, preferredModel: RememberedModel(environment)),
 			uiHost);
 	}
 
@@ -1397,6 +1397,11 @@ public sealed partial class MainWindow : Window
 		var tab = new SessionTab(session, environment.ListAvailableModels(_arguments.ApiKey), SessionTab.TitleFor(session),
 			() => environment.ListAvailableModels(_arguments.ApiKey), chat, statistics);
 		tab.TitleChanged += _ => UpdateTabHeaders();
+		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
+		// 那条链路会顺带把会话列表重_stat 一遇。
+		tab.AskChanged += _ => UpdateTabHeaders();
+		// 发过一条消息才记「上次真正用过的模型」（PiDeck 的 lastUsedModel）：选而未发不算。
+		tab.MessageSent += sent => RememberUsedModel(sent.Session.Model);
 		tab.StateChanged += _ =>
 		{
 			UpdateTabHeaders();
@@ -1659,6 +1664,10 @@ public sealed partial class MainWindow : Window
 					// 导入弹窗的视觉验收：列表与空态都要能截图。
 					_importDialog.Show(this);
 					break;
+				case "ask":
+					// ask 卡片的视觉验收：批量题 + 审阅页在会话底部，不动用真实代理。
+					CurrentTab()?.PrepareAskSmoke();
+					break;
 				case "git":
 					ShowGitPanel();
 					// 视觉验收也要看到 diff 区：选中第一个改动。
@@ -1670,6 +1679,15 @@ public sealed partial class MainWindow : Window
 					break;
 				case "git-settings":
 					OpenGitAssistantSettings();
+					break;
+				case "git-summary":
+					// 提交摘要的视觉验收：开着 Git 面板直接跑一次生成，截图能看到进度条与内联失败行。
+					ShowGitPanel();
+					if (CurrentTab() is { } summaryTab && _sessionPanels.TryGetValue(summaryTab, out var summaryPanel))
+					{
+						summaryPanel.GenerateGitSummaryForSmoke();
+					}
+
 					break;
 				case "terminal":
 					ToggleTerminalPanel();
@@ -1749,9 +1767,11 @@ public sealed partial class MainWindow : Window
 
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
 		// scroll-sweep 从会话底部按 0.9 s 一步扫完整条会话，需要更长的驻留。
+		// git-summary 要等一次真实的模型往返（开思考时轻松过 10 秒）。
 		await Task.Delay(view is "scroll-sweep" ? 50000
 			: view is "stream" ? 120000
 			: view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" ? 30000
+			: view is "git-summary" ? 75000
 			: 7000).ConfigureAwait(false);
 		// 加载提示会阻止关窗；退出前先确认没有在途的打开。
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
@@ -1765,6 +1785,11 @@ public sealed partial class MainWindow : Window
 
 			if (view == "primary") CurrentTab()?.ReportPrimarySmoke();
 			if (view == "chat") CurrentTab()?.ReportConversationSmoke();
+			if (view == "git-summary" && CurrentTab() is { } summaryTab && _sessionPanels.TryGetValue(summaryTab, out var summaryPanel))
+			{
+				// 把生成结果留在演练日志里：无人值守跑一次就能看出是草稿填上了还是卡在哪个失败原因。
+				summaryPanel.ReportGitSummaryForSmoke();
+			}
 			if (view == "resources" && _settingsView?.LastSectionError is { Length: > 0 } error)
 			{
 				// 资源页构建失败（例如引用了不存在的内嵌图标）必须在无人值守演练里暴露出来。
@@ -2615,7 +2640,7 @@ public sealed partial class MainWindow : Window
 		return index >= 0 && index < _tabEntries.Count ? _tabEntries[index] as SessionTab : null;
 	}
 
-	/// <summary>Git 面板的 AI 提交摘要能力：默认跟随会话；模型/思考级别由偏好覆盖。</summary>
+	/// <summary>Git 面板的 AI 提交摘要能力：默认跟随会话；模型/思考级别/提示词由偏好覆盖。</summary>
 	private GitCommitAssistant CreateGitAssistant(CodingAgentSession session, CliEnvironment environment) => new(
 		() => _models,
 		() => session.Model,
@@ -2626,10 +2651,62 @@ public sealed partial class MainWindow : Window
 			model,
 			thinking,
 			diff,
+			DesktopPreference.Load().GitCommitPrompt,
 			provider => _arguments.ApiKey ?? environment.ProviderApiKeys.GetValueOrDefault(provider),
 			cancellationToken),
 		() => session.IsRunning,
 		OpenGitAssistantSettings);
+
+	/// <summary>进程内最后一次写进 lastUsedModel 的模型；同一个模型连续发送不重复读写偏好文件。</summary>
+	private static string? _recordedUsedModel;
+
+	/// <summary>
+	/// 记住「用户最后一次真正发过消息的模型」。偏好落盘属于宿主：无窗口测试直接驱动
+	/// <see cref="SessionTab"/> 时不该碰真目录里的 desktop.json。
+	/// </summary>
+	private static void RememberUsedModel(Model model)
+	{
+		var key = $"{model.Provider}/{model.Id}";
+		if (string.Equals(_recordedUsedModel, key, StringComparison.Ordinal))
+		{
+			return;
+		}
+
+		_recordedUsedModel = key;
+		try
+		{
+			var preference = DesktopPreference.Load();
+			// 已经是这个值就不必再写盘：偏好文件只在真变了时落一次。
+			if (string.Equals(preference.LastUsedModel, key, StringComparison.Ordinal))
+			{
+				return;
+			}
+
+			preference.RememberUsedModel(model.Provider, model.Id).Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			// 写失败就把记账抹掉：下一条消息会重试，不能因为一次磁盘抽动从此不再记。
+			_recordedUsedModel = null;
+			AppLog.Failure(AppLog.For<MainWindow>(), "Save last used model", ex);
+		}
+	}
+
+	/// <summary>
+	/// 上次真正发过消息的模型（PiDeck 的 <c>lastUsedModel</c>）；目录里已经不存在时返回 <c>null</c>，
+	/// 新会话回退到环境解析出的默认模型。显式 <c>defaultModel</c> 仍然优先（由环境解析保证）。
+	/// </summary>
+	private static Model? RememberedModel(CliEnvironment environment)
+	{
+		var key = DesktopPreference.Load().LastUsedModel;
+		var separator = key.IndexOf('/');
+		if (separator <= 0 || separator == key.Length - 1)
+		{
+			return null;
+		}
+
+		return environment.Registry.Get(key[..separator], key[(separator + 1)..]);
+	}
 
 	/// <summary>从 Git 面板的「更改默认配置」打开设置，并落到 Git 提交摘要分区。</summary>
 	private void OpenGitAssistantSettings()

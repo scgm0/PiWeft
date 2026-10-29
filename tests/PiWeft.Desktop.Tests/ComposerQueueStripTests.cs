@@ -87,16 +87,25 @@ public sealed class ComposerQueueStripTests
 	public async Task RetractingKeepsTheDraftTheUserWasAlreadyWriting()
 	{
 		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		// 与上一份用例同理由：必须等第一次模型请求真的发出（而不只是进入 streaming）。
+		// AgentStart 先于 StreamFn，所只看 ChatStreaming 会抢在「请求前抽取」之前排队，
+		// 那条 steering 会被立即抽走、根本进不了队列快照（实测会在断言里随机为空）。
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
 		var model = FakeStreams.Model();
 		using var session = new CodingAgentSession(new CodingAgentSessionOptions
 		{
 			Cwd = manager.Cwd, Session = manager, Model = model, Tools = [], Skills = [], PromptTemplates = [], Persist = false,
-			StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, "final", gate.Task),
+			StreamFn = (streamModel, _, _) =>
+			{
+				started.TrySetResult();
+				return FakeStreams.Text(streamModel, "final", gate.Task);
+			},
 		});
 		using var tab = new SessionTab(session, [model], "queue-draft");
 		tab.SetExtensionText("first");
 		tab.SendFromShortcut();
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 		await WaitForAsync(() => tab.ChatStreaming);
 
 		tab.SetExtensionText("被排队的消息");
@@ -117,16 +126,23 @@ public sealed class ComposerQueueStripTests
 	public async Task RetractingAMessageThatAlreadyReachedTheModelIsRefused()
 	{
 		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		// 同上：等 StreamFn 真的被调过再排队，否则「请求前抽取」会在断言之前就把这条抽走。
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
 		var model = FakeStreams.Model();
 		using var session = new CodingAgentSession(new CodingAgentSessionOptions
 		{
 			Cwd = manager.Cwd, Session = manager, Model = model, Tools = [], Skills = [], PromptTemplates = [], Persist = false,
-			StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, "final", gate.Task),
+			StreamFn = (streamModel, _, _) =>
+			{
+				started.TrySetResult();
+				return FakeStreams.Text(streamModel, "final", gate.Task);
+			},
 		});
 		using var tab = new SessionTab(session, [model], "queue-retract");
 		tab.SetExtensionText("first");
 		tab.SendFromShortcut();
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 		await WaitForAsync(() => tab.ChatStreaming);
 
 		tab.SetExtensionText("这条会先被投递");

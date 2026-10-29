@@ -99,6 +99,44 @@ public class AskQuestionTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Tool_ToleratesANonBooleanReviewFlag()
+	{
+		// 模型把 review 写成 "true"/1 不能把整个工具调用弄挂：开关只认真正的布尔。
+		var host = new FakeUiHost
+		{
+			Response = AskQuestions.EncodeResponse(
+				[new AskAnswer("q1", "select", JsonValue.Create("B"), "B", false)],
+				cancelled: false),
+		};
+		using var session = Session(host);
+
+		var result = await AskAsync(session, new JsonObject
+		{
+			["questions"] = new JsonArray(new JsonObject
+			{
+				["question"] = "选哪个？",
+				["options"] = new JsonArray("A", "B"),
+			}),
+			["review"] = "true",
+		});
+
+		Assert.False(result.IsError);
+		Assert.False(AskQuestions.ReviewRequested(host.LastRequest!.Title));
+
+		// 真的传 true 时才开审阅页。
+		await AskAsync(session, new JsonObject
+		{
+			["questions"] = new JsonArray(new JsonObject
+			{
+				["question"] = "选哪个？",
+				["options"] = new JsonArray("A", "B"),
+			}),
+			["review"] = true,
+		});
+		Assert.True(AskQuestions.ReviewRequested(host.LastRequest!.Title));
+	}
+
+	[Fact]
 	public async Task Tool_WithoutUiReportsUnsupported()
 	{
 		using var session = Session(host: null);

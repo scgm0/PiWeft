@@ -583,7 +583,8 @@ public sealed partial class MainWindow
 	/// <summary>页签上显示的名字：会话用会话标题，辅助页用短名。</summary>
 	private static string EntryTitle(object entry) => entry switch
 	{
-		SessionTab tab => tab.Title,
+		// 阻塞式问询卡在等回答：页签带个圆点，后台会话不必靠声音才知道卡住了（PiDeck 的 PendingAskBadge 同义）。
+		SessionTab tab => tab.AskPending ? "\u25cf " + tab.Title : tab.Title,
 		UsageStatsView => Strings.UsageStatsTitle,
 		_ => string.Empty,
 	};
