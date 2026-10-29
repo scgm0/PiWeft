@@ -141,7 +141,10 @@ internal sealed class TextFocusScrollGuard : IDisposable
 		{
 			if (fold.FindVisualRoot() is not Window { Handle: not 0 }) return;
 			var inner = fold.Bounds.Deflate(fold.Padding);
-			var header = new Rect(inner.X, inner.Y, inner.Width, Math.Max(20, fold.Header?.DesiredSize.Height ?? 20));
+			// 组体里吸顶的标题在视口顶边：命中判定必须用吸顶后的位置，否则「点标题 = 阅读意图」会漏掉。
+			var header = fold is StickyExpander { HeaderDisplaced: true } sticky
+				? sticky.HeaderBand
+				: new Rect(inner.X, inner.Y, inner.Width, Math.Max(20, fold.Header?.DesiredSize.Height ?? 20));
 			var local = args.GetPosition(fold);
 			var point = new Point(fold.Bounds.X + local.X, fold.Bounds.Y + local.Y);
 			if (args.Button == MouseButton.Left && header.Contains(point)) ReadingIntent();

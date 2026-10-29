@@ -58,11 +58,11 @@ public sealed class UserMessageDisplayTests
 
 		var references = UserFileReferences.Parse(text);
 		var line = body.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
-		var expectedLength = text.Length - references.Sum(reference => reference.End - reference.Start - 1);
-		Assert.Equal(expectedLength, line.VisualLines[0].Layout.Lines[0].TextLength);
+		// 投影与原文等长（引用用 U+FFFC + 零宽空格占位），按源文偏移的组合输入/选区因此不会越界。
+		Assert.Equal(text.Length, line.VisualLines[0].Layout.Lines[0].TextLength);
 		foreach (var reference in references)
 		{
-			Assert.Equal(1, line.MapSourceOffsetToProjected(reference.End) - line.MapSourceOffsetToProjected(reference.Start));
+			Assert.Equal(reference.End - reference.Start, line.MapSourceOffsetToProjected(reference.End) - line.MapSourceOffsetToProjected(reference.Start));
 		}
 		body.Select(references[0].Start, references[0].End - references[0].Start);
 		Assert.Equal("@\"src/App.cs\"", body.SelectedText);
@@ -78,7 +78,7 @@ public sealed class UserMessageDisplayTests
 		var body = Find<MultiLineTextBox>(tab.View).Single(control => control.IsReadOnly && control.Text == text);
 		var reference = Assert.Single(UserFileReferences.Parse(text));
 		var line = body.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
-		Assert.Equal(1, line.MapSourceOffsetToProjected(reference.End) - line.MapSourceOffsetToProjected(reference.Start));
+		Assert.Equal(reference.End - reference.Start, line.MapSourceOffsetToProjected(reference.End) - line.MapSourceOffsetToProjected(reference.Start));
 		Assert.Contains(Find<Border>(tab.View), border => border.StyleName == AppStyles.UserMessage && border.IsVisible);
 	}
 
@@ -98,7 +98,7 @@ public sealed class UserMessageDisplayTests
 
 		var references = UserFileReferences.Parse(draft);
 		var line = composer.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
-		Assert.Equal(1, line.MapSourceOffsetToProjected(references[0].End) - line.MapSourceOffsetToProjected(references[0].Start));
+		Assert.Equal(references[0].End - references[0].Start, line.MapSourceOffsetToProjected(references[0].End) - line.MapSourceOffsetToProjected(references[0].Start));
 
 		// 光标停在 chip 右侧时，Right 跳过整枚，Backspace 删除整枚。
 		composer.MoveCaret(references[0].Start, false);
@@ -181,25 +181,36 @@ public sealed class UserMessageDisplayTests
 	}
 
 	[Fact]
-	public void CompositionSuspendsReferenceProjectionAndRestoresItAfterCommit()
+	public void CompositionKeepsTheChipProjectedAndItsSpanStaysInsideTheProjectedText()
 	{
 		var box = new MultiLineTextBox().Text("看 @\"src/App.cs\" 后继续输入");
 		UserReferenceRichText.Attach(box, editable: true);
+		ConversationPerformanceTests.Layout(new Border().Child(box), 720, 240);
 		Assert.Single(box.Extensions.Projections);
 		Assert.Single(box.Extensions.ElementGenerators);
 
-		// 组合输入的装饰范围按源文偏移绘制，投影压缩过路径；组合期间临时撤掉投影，
-		// 避免 MewUI 0.22.1 的 GetRangeBounds 在切片/投影文本上越界。
+		// 中文 IME 组合期间 chip 必须仍是 chip：不再临时撤掉投影。
 		var client = (ITextCompositionClient)box;
+		var compositionStart = box.Text.Length;
+		box.MoveCaret(compositionStart, false);
 		client.HandleTextCompositionStart(new TextCompositionEventArgs());
-		Assert.Empty(box.Extensions.Projections);
-		Assert.Empty(box.Extensions.ElementGenerators);
-		client.HandleTextCompositionUpdate(new TextCompositionEventArgs("继"));
-		Assert.Empty(box.Extensions.Projections);
-
-		client.HandleTextCompositionEnd(new TextCompositionEventArgs("继续"));
 		Assert.Single(box.Extensions.Projections);
 		Assert.Single(box.Extensions.ElementGenerators);
+		client.HandleTextCompositionUpdate(new TextCompositionEventArgs("中"));
+		Assert.Single(box.Extensions.Projections);
+
+		// MewUI 0.22.1 按源文偏移在投影文本上画组合下划线/span；投影等长时这段范围
+		// 必须仍落在文本里，否则 GetRangeBounds 会抛 ArgumentOutOfRange。
+		var line = box.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
+		var rects = new List<Rect>();
+		line.GetRangeBounds(new TextRange(compositionStart, 1), rects);
+		Assert.NotEmpty(rects);
+		Assert.Equal(box.Text.Length, line.LogicalLine.Length);
+
+		client.HandleTextCompositionEnd(new TextCompositionEventArgs("中"));
+		Assert.Single(box.Extensions.Projections);
+		Assert.Single(box.Extensions.ElementGenerators);
+		Assert.EndsWith("中", box.Text, StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -275,5 +286,71 @@ public sealed class UserMessageDisplayTests
 		var time = DateTimeOffset.FromUnixTimeMilliseconds(1_700_000_000_000).ToLocalTime().ToString("HH:mm");
 		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == time);
 		Assert.DoesNotContain(Find<TextBlock>(tab.View), block => block.Text.StartsWith("你", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void SwappedComposerHintStaysClickThroughToTheComposer()
+	{
+		using var tab = Tab("hello");
+		ConversationPerformanceTests.Layout(tab.View);
+		var composer = Find<MultiLineTextBox>(tab.View).Single(control => !control.IsReadOnly);
+
+		// 输入再删除：显示换新被调度；无调度器时直接驱动这一拍。
+		composer.Text = "输入一些内容再删除";
+		composer.Text = string.Empty;
+		tab.SwapComposerHint();
+		ConversationPerformanceTests.Layout(tab.View);
+
+		// 换新后的提示仍然可见，但绝不参与命中 —— 否则它会盖住输入框吞掉那一行的点击
+		//（窗口里表现为光标变箭头、点了没反应）。断言用与输入路由同一个入口：根元素 HitTest。
+		var hint = Assert.Single(Find<TextBlock>(tab.View).Where(block => block.Text == Strings.ComposerPlaceholder));
+		Assert.True(hint.IsVisible);
+		Assert.False(hint.IsHitTestVisible);
+		var point = new Point(hint.Bounds.X + 12, hint.Bounds.Y + 9);
+		var hit = ((UIElement)tab.View).HitTest(point);
+		Assert.True(ReferenceEquals(hit, composer),
+			$"点击占位行应命中输入框，实际命中 {hit?.GetType().Name ?? "null"}");
+	}
+
+	[Fact]
+	public async Task EditAndResendBringsTheOriginalImagesBackAsAttachments()
+	{
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		// 1x1 PNG（ComposerAttachmentTests 同款），缩略图测量时需要可解码。
+		var image = new ImageContent
+		{
+			Data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j7XcAAAAASUVORK5CYII=",
+			MimeType = "image/png",
+		};
+		manager.AppendMessage(new UserMessage
+		{
+			Content = MessageContent.FromBlocks([new TextContent { Text = "看这张图" }, image]),
+		});
+		manager.AppendMessage(new AssistantMessage { Content = [new TextContent { Text = "ok" }] });
+		var model = FakeStreams.Model() with { Input = ["text", "image"] };
+		var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = manager.Cwd, Session = manager, Model = model, Tools = [], Skills = [], PromptTemplates = [],
+			StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, "ok"), Persist = false,
+		});
+		using var tab = new SessionTab(session, [model], "edit");
+		ConversationPerformanceTests.Layout(tab.View);
+
+		var pencil = Find<Button>(tab.View).Single(button => HoverHints.Text(button) == Strings.EditAndResend);
+		ImagePreviewTests.Click(pencil);
+		ConversationPerformanceTests.Layout(tab.View);
+
+		// 原文回到输入框、图片回到附件区，重发才会带上同样的内容块。
+		Assert.Equal("看这张图", Find<MultiLineTextBox>(tab.View).Single(control => !control.IsReadOnly).Text);
+		var attachment = Assert.Single(tab.ComposerAttachments);
+		Assert.Equal(image.Data, attachment.Data);
+		Assert.Equal(image.MimeType, attachment.MimeType);
+		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == Strings.EditImageLabel);
+
+		// 发送时以内容块形式发给模型（fork 到原提问之前）：最后一条用户消息是本次提问。
+		await tab.SendAsync("再看一次");
+		var message = session.Session.BuildSessionContext().Messages.OfType<UserMessage>().Last();
+		Assert.Equal("再看一次", Assert.IsType<TextContent>(message.Content.Blocks![0]).Text);
+		Assert.Single(message.Content.Blocks!.OfType<ImageContent>());
 	}
 }

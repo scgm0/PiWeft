@@ -80,6 +80,7 @@ public static partial class Strings
 	public const string ComposerReference = "引用文件（@）";
 	public const string PinnedMark = "★";
 	public const string RemoveAttachment = "移除";
+	public const string EditImageLabel = "随消息图片";
 	public static string AttachFailed(string reason) => $"附加图片失败：{reason}";
 	public static string SendFailed(string reason) => $"发送失败：{reason}";
 
@@ -990,6 +991,20 @@ public static partial class Strings
 	public const string Cost = "费用";
 	public const string Compacting = "正在压缩…";
 	public const string Streaming = "正在生成…";
+
+	// 自动重试（与 PiDeck 的状态条同义：先报「第几次/上限」，有退避再补一句倒计时）。
+	public static string Retrying(int attempt, int maxAttempts) =>
+		maxAttempts > 0 ? $"正在自动重试 {attempt}/{maxAttempts}…" : $"正在自动重试（第 {attempt} 次）…";
+	public static string RetryingIn(int attempt, int maxAttempts, int seconds) =>
+		$"{Retrying(attempt, maxAttempts)} · {seconds} 秒后重试";
+	public static string RetrySucceeded(int attempt) => $"自动重试成功，共重试 {attempt} 次。";
+	public static string RetryFailed(int attempt, int maxAttempts, string? error)
+	{
+		var count = maxAttempts > 0 ? $"{attempt}/{maxAttempts}" : attempt.ToString();
+		var reason = string.IsNullOrWhiteSpace(error) ? string.Empty : $"：{error.Trim()}";
+		return $"自动重试失败，已重试 {count} 次{reason}";
+	}
+
 	public const string ThinkingActive = "正在思考…";
 	public const string ThinkingComplete = "思考过程";
 	public static string ThinkingDuration(double milliseconds) => $"思考了 {FormatDuration(milliseconds)}";

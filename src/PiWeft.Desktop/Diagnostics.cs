@@ -773,6 +773,14 @@ internal sealed class Diagnostics
 				$"input/p95={frame.InputP95Ms:0.0} lag={BitsToDouble(Volatile.Read(ref _queueLagBits)):0.0} " +
 				$"cpu={BitsToDouble(Volatile.Read(ref _cpuPercentBits)):0.#}% " +
 				$"pending={Interlocked.Read(ref _poolPendingWork)}";
+			// 渲染缓存台账（框架自己统计的像素/几何字节）：工作集是 GB 级时托管堆说明不了问题，
+			// 必须把文本位图/几何/图集/持久表面分开记，才看得出是哪一类在长。
+			var resources = RenderResourceMetrics.Snapshot();
+			detail += $" rtext={resources.TextCacheBytes / 1024}KiB rgeom={resources.GeometryCacheBytes / 1024}KiB " +
+				$"ratlas={resources.AtlasPageCount}/{resources.AtlasPageBytes / 1024}KiB " +
+				$"rpersist={resources.PersistentResourceCount}/{resources.PersistentResourceBytes / 1024}KiB " +
+				$"rscratch={resources.ScratchActiveCount}a/{resources.ScratchPooledCount}p/{resources.ScratchPooledBytes / 1024}KiB " +
+				$"rdecoded={resources.DecodedPixelCount}/{resources.DecodedPixelBytes / 1024}KiB";
 			if (Counters.Count > 0)
 			{
 				detail += " counters=[" + string.Join(",", Counters.Values

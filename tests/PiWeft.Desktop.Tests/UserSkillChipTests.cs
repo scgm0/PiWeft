@@ -73,7 +73,7 @@ public sealed class UserSkillChipTests
 
 		var skill = UserSkillReferences.Parse(draft)[0];
 		var line = composer.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
-		Assert.Equal(1, line.MapSourceOffsetToProjected(skill.End) - line.MapSourceOffsetToProjected(skill.Start));
+		Assert.Equal(skill.End - skill.Start, line.MapSourceOffsetToProjected(skill.End) - line.MapSourceOffsetToProjected(skill.Start));
 
 		// 光标停在 chip 右侧时，Backspace 整枚删除；原文仍是 /skill:mewui 的形式。
 		composer.MoveCaret(skill.End, false);
@@ -118,7 +118,7 @@ public sealed class UserSkillChipTests
 		Assert.Equal("跑 /skill:mewui 看看", body.Text);
 		var skill = UserSkillReferences.Parse(body.Text)[0];
 		var line = body.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
-		Assert.Equal(1, line.MapSourceOffsetToProjected(skill.End) - line.MapSourceOffsetToProjected(skill.Start));
+		Assert.Equal(skill.End - skill.Start, line.MapSourceOffsetToProjected(skill.End) - line.MapSourceOffsetToProjected(skill.Start));
 		Assert.NotEmpty(body.Extensions.Projections);
 		Assert.NotEmpty(body.Extensions.ElementGenerators);
 	}
@@ -136,7 +136,7 @@ public sealed class UserSkillChipTests
 		Assert.Equal("再跑 /skill:image-gen", body.Text);
 		var inline = Assert.Single(UserSkillReferences.Parse(body.Text));
 		var line = body.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
-		Assert.Equal(1, line.MapSourceOffsetToProjected(inline.End) - line.MapSourceOffsetToProjected(inline.Start));
+		Assert.Equal(inline.End - inline.Start, line.MapSourceOffsetToProjected(inline.End) - line.MapSourceOffsetToProjected(inline.Start));
 	}
 
 	private static SessionTab Tab(string text)

@@ -231,10 +231,18 @@ internal sealed partial class ConfigurationView
 		var global = defaults is { Error: null } ? defaults.Parse() : new JsonObject();
 		var compact = Check(Strings.ConfigAutoCompaction, ReadEnabled(_root, "compaction", ReadEnabled(global, "compaction", true)));
 		var retry = Check(Strings.ConfigAutoRetry, ReadEnabled(_root, "retry", ReadEnabled(global, "retry", true)));
+		var retryMaxInput = Input(ReadInt(_root, "retry", "maxRetries", ReadInt(global, "retry", "maxRetries", 3))
+			.ToString(CultureInfo.InvariantCulture));
+		var retryDelayInput = Input(ReadInt(_root, "retry", "baseDelayMs", ReadInt(global, "retry", "baseDelayMs", 2000))
+			.ToString(CultureInfo.InvariantCulture));
 		var compactChanged = false;
 		var retryChanged = false;
+		var retryMaxChanged = false;
+		var retryDelayChanged = false;
 		compact.OnCheckedChanged(_ => compactChanged = true);
 		retry.OnCheckedChanged(_ => retryChanged = true);
+		retryMaxInput.OnTextChanged(_ => retryMaxChanged = true);
+		retryDelayInput.OnTextChanged(_ => retryDelayChanged = true);
 
 		// 工具与 Codemode：项目层以全局原始条目为基线回验，chips 显示的集合就是保存后运行时解析出的集合。
 		var baseEntries = _project ? ConfigurationTools.ReadEntries(global) : null;
@@ -278,7 +286,10 @@ internal sealed partial class ConfigurationView
 			FormCard(Strings.ConfigDefaults, Strings.ConfigDefaultsHint,
 				Field(Strings.ConfigProvider, provider), Field(Strings.ConfigModelId, model)),
 			FormCard(Strings.ConfigBehavior, Strings.ConfigBehaviorHint,
-				Field(Strings.Thinking, thinking), compact, retry),
+				Field(Strings.Thinking, thinking), compact, retry,
+				Field(Strings.ConfigRetryMaxRetries, retryMaxInput),
+				Field(Strings.ConfigRetryBaseDelay, retryDelayInput),
+				Hint(Strings.ConfigRetryHint)),
 			FormCard(Strings.ConfigToolsTitle, Strings.ConfigToolsHint,
 				new StackPanel().Spacing(AppTheme.Space2).Children(
 					Label(Strings.ConfigDefaultTools),
@@ -299,7 +310,29 @@ internal sealed partial class ConfigurationView
 			SetOptional(next, "defaultModel", model.Text.Trim());
 			if (thinkingChanged) SetOptional(next, "defaultThinkingLevel", levels[Math.Max(0, thinking.SelectedIndex)]);
 			if (compactChanged) SetEnabled(next, "compaction", compact.IsChecked == true);
-			if (retryChanged) SetEnabled(next, "retry", retry.IsChecked == true);
+			if (retryChanged || retryMaxChanged || retryDelayChanged)
+			{
+				int? maxRetries = null;
+				int? baseDelayMs = null;
+				if (retryMaxChanged)
+				{
+					if (!int.TryParse(retryMaxInput.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value is < 0 or > 20)
+						throw new ArgumentException(Strings.ConfigRetryMaxRetriesInvalid);
+					maxRetries = value;
+				}
+				if (retryDelayChanged)
+				{
+					if (!int.TryParse(retryDelayInput.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value is < 0 or > 600_000)
+						throw new ArgumentException(Strings.ConfigRetryBaseDelayInvalid);
+					baseDelayMs = value;
+				}
+				// retry 里未建模的子键（例如上游的 retry.provider）必须保留。
+				var section = next["retry"] as JsonObject ?? new JsonObject();
+				if (retryChanged) section["enabled"] = retry.IsChecked == true;
+				if (maxRetries is { } max) section["maxRetries"] = max;
+				if (baseDelayMs is { } delay) section["baseDelayMs"] = delay;
+				next["retry"] = section;
+			}
 			if (!ConfigurationTools.Same(initialEntries, entries))
 			{
 				if (entries is null) next.Remove("defaultTools");
@@ -380,6 +413,9 @@ internal sealed partial class ConfigurationView
 
 	private static bool ReadEnabled(JsonObject root, string key, bool fallback) =>
 		root[key] is JsonObject obj && obj["enabled"] is JsonValue value && value.TryGetValue<bool>(out var enabled) ? enabled : fallback;
+
+	private static int ReadInt(JsonObject root, string sectionKey, string key, int fallback) =>
+		root[sectionKey] is JsonObject obj && obj[key] is JsonValue value && value.TryGetValue<int>(out var number) ? number : fallback;
 
 	private static void SetEnabled(JsonObject root, string key, bool enabled)
 	{

@@ -7,6 +7,8 @@ public static partial class Strings
 	public const string OutlineImageMessage = "图片消息";
 	public const string ExecutionExpandHint = "展开或收起本轮思考、工具调用和中间回复；最终回答始终显示。";
 	public const string ExecutionGroupHint = "展开或收起这组思考与工具调用。";
+	// 吸顶标题的附属入口：只显示图标，悬停/聚焦时说明用途。
+	public const string StepBackToStart = "回到这一步的开头";
 	public static string ExecutionTotal(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
 
 	// 过程组组头（PiDeck 同款）：运行态按最新工具类别给「正在…」，纯思考组退回「正在分析请求」。

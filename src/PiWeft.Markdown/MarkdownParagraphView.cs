@@ -875,6 +875,25 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		return false;
 	}
 
+	/// <summary>渲染宽度是否就是这套版面建立时的宽度（wrap 关闭时与宽度无关）。</summary>
+	private bool LayoutWidthMatches(double width)
+	{
+		double target = _wrap && double.IsFinite(width) ? Math.Max(1, width) : UnwrappedWidth;
+		return !double.IsNaN(_width) && Math.Abs(_width - target) <= 0.01;
+	}
+
+	/// <summary>当前版面（不含图片）的总高度：判断它是否已经超出父级给的高度。</summary>
+	private double TextHeight()
+	{
+		double height = 0;
+		foreach (Chunk chunk in _chunks)
+		{
+			if (chunk.Layout is null) return height;
+			height = chunk.Top + chunk.Layout.ContentHeight;
+		}
+		return height;
+	}
+
 	protected override void OnRender(IGraphicsContext context)
 	{
 		if (_chunks.Count == 0)
@@ -889,7 +908,14 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		if (MissingLayout())
 		{
 			if (Bounds.Width <= 1) return;
+			// 只有渲染宽度与「测量时用的宽度」一致，补出来的版面才与该轮测量等价；
+			// 在别的宽度上重排会让 chunk 的 Top/总高与父级已排好的行高不一致，
+			// 后画的块就会叠到下一块上（偶发错位重叠）。宽度变了就留给下一轮测量。
+			if (!LayoutWidthMatches(Bounds.Width)) return;
 			EnsureLayout(Bounds.Width);
+			// 版面已经比父级给的高度更高：这一帧先不画（画出去就会压到下一块），
+			// 下一次测量会把行高补齐。少一帧正文也比两行字叠在一起强。
+			if (Bounds.Height > 0.5 && TextHeight() > Bounds.Height + 0.5) return;
 		}
 
 		for (int index = 0; index < _chunks.Count; index++)
@@ -923,11 +949,18 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 					link ? TextDecoration.Underline : TextDecoration.None));
 			}
 
+			// Transient: false 是**必需的**，不是保守选择。流式尾块每帧都换文本，配合 Transient: true
+			// 会走 MewVG 的「临时文本贴图」：那条路径只在窗口帧的 EndFrame 里回收（
+			// `MewVGTextCache.ReleasePendingDeletes`），而保留帧/透明度组用的**离屏**帧会话
+			// （`X11OffscreenFrameSession.EndFrame`）没有调用它 —— 每帧新建一张永不释放的贴图，
+			// 实测 60fps 下 `text=` 以 ~20 MiB/s 无上限增长，对话越久工作集越大（GB 级）。
+			// 走普通缓存路径后文本位图受 16 MiB LRU 约束（滚动/定稿都会淘汰），实测 100 秒流式后
+			// 工作集稳定在 ~310 MiB。上游修复：离屏帧会话也应在 EndFrame 里调用
+			// `TextCache.ReleasePendingDeletes()`，届时可以重新评估临时路径。
 			var options = new TextDrawOptions(
 				Foreground,
 				paints.Count == 0 ? default : paints.ToArray(),
-				Owner: chunk,
-				Transient: IsStreaming && index == _chunks.Count - 1);
+				Owner: chunk);
 			context.Text.Draw(layout, new Point(Bounds.X, Bounds.Y + chunk.Top), in options);
 		}
 

@@ -98,14 +98,15 @@ public sealed class ConfigurationViewTests : IDisposable
 		view.SaveDraft();
 		Assert.Equal("only", Store.Read(ConfigFile.Settings).Parse()["codemode"]!["mode"]!.GetValue<string>());
 
-		// 声明预算：0 是有效值（只列命名空间）。
-		Find<TextBox>(view.View).ToArray()[2].Text = "0";
+		// 声明预算：0 是有效值（只列命名空间）。运行卡新增了重试次数/基础延迟两个输入，
+		// TextBox 顺序是 provider、model、retryMax、retryDelay、codemode 预算。
+		Find<TextBox>(view.View).ToArray()[4].Text = "0";
 		view.SaveDraft();
 		Assert.Equal(0, Store.Read(ConfigFile.Settings).Parse()["codemode"]!["inlineBudget"]!.GetValue<int>());
 
 		// 回到继承：模式选「继承」、预算留空，codemode 键整体移除。
 		Find<ComboBox>(view.View).ToArray()[2].SelectedIndex = 0;
-		Find<TextBox>(view.View).ToArray()[2].Text = string.Empty;
+		Find<TextBox>(view.View).ToArray()[4].Text = string.Empty;
 		view.SaveDraft();
 		Assert.False(Store.Read(ConfigFile.Settings).Parse().ContainsKey("codemode"));
 	}

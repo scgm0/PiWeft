@@ -76,6 +76,17 @@ internal static class FakeStreams
 		return stream;
 	}
 
+	/// <summary>一次可重试的失败回复：退避期没有正文，只能靠事件驱动界面状态。</summary>
+	public static AssistantMessageEventStream Error(Model model, string message)
+	{
+		var stream = new AssistantMessageEventStream();
+		var blank = Blank(model);
+		var failed = blank with { StopReason = StopReason.Error, ErrorMessage = message };
+		stream.Push(new StartEvent { Partial = blank });
+		stream.Push(new ErrorEvent { Reason = StopReason.Error, Partial = failed });
+		return stream;
+	}
+
 	private static AssistantMessage Blank(Model model) => new()
 	{
 		Api = model.Api,
@@ -117,7 +128,7 @@ public class ChatViewModelTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	private CodingAgentSession NewSession(SessionManager? manager = null, StreamFn? streamFn = null) =>
+	private CodingAgentSession NewSession(SessionManager? manager = null, StreamFn? streamFn = null, RetryPolicy? retry = null) =>
 		new(new CodingAgentSessionOptions
 		{
 			Cwd = _root,
@@ -127,7 +138,7 @@ public class ChatViewModelTests : IDisposable
 			Session = manager ?? SessionManager.InMemory(_root),
 			Persist = false,
 			Skills = [],
-			Settings = new CodingAgentSettings(),
+			Settings = new CodingAgentSettings { Retry = retry ?? new RetryPolicy() },
 		});
 
 	[Fact]
@@ -192,6 +203,94 @@ public class ChatViewModelTests : IDisposable
 		Assert.False(viewModel.IsStreaming);
 		Assert.Contains(viewModel.Entries(), entry =>
 			entry.Role == ChatRole.Assistant && entry.Text.Contains("after abort", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public async Task AutoRetryIsVisibleDuringBackoffAndReportsRecovery()
+	{
+		_streams.Enqueue(model => FakeStreams.Error(model, "Service Unavailable"));
+		_streams.Enqueue(model => FakeStreams.Text(model, "recovered"));
+
+		using var session = NewSession(retry: new RetryPolicy(BaseDelayMs: 250));
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var send = viewModel.SendAsync("hi");
+		ChatRetryStatus? retry = null;
+		for (var attempt = 0; attempt < 200 && retry is null; attempt++)
+		{
+			await Task.Delay(10);
+			retry = viewModel.Retry;
+		}
+
+		// 退避期没有消息事件：界面靠视图模型的重试状态画「正在重试 1/3 · N 秒后」。
+		Assert.NotNull(retry);
+		Assert.True(retry!.Running);
+		Assert.Equal(1, retry.Attempt);
+		Assert.Equal(3, retry.MaxAttempts);
+		Assert.True(retry.RetryAtUnixMs >= retry.StartedAtUnixMs);
+
+		await send.WaitAsync(TimeSpan.FromSeconds(5));
+
+		Assert.Null(viewModel.Retry);
+		var notice = viewModel.TakeRetryNotice();
+		Assert.NotNull(notice);
+		Assert.True(notice!.Success);
+		Assert.Equal(1, notice.Attempt);
+		Assert.Null(viewModel.Error);
+		Assert.Contains(viewModel.Entries(), entry =>
+			entry.Role == ChatRole.Assistant && entry.Text.Contains("recovered", StringComparison.Ordinal));
+		Assert.DoesNotContain(viewModel.Entries(), entry => entry.Role == ChatRole.Error);
+	}
+
+	[Fact]
+	public async Task ExhaustedAutoRetryLeavesTheFinalErrorAndFailsTheNotice()
+	{
+		for (var attempt = 0; attempt < 3; attempt++)
+		{
+			_streams.Enqueue(model => FakeStreams.Error(model, "Service Unavailable"));
+		}
+
+		using var session = NewSession(retry: new RetryPolicy(BaseDelayMs: 20, MaxRetries: 2));
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		await viewModel.SendAsync("hi").WaitAsync(TimeSpan.FromSeconds(5));
+
+		Assert.Null(viewModel.Retry);
+		var notice = viewModel.TakeRetryNotice();
+		Assert.NotNull(notice);
+		Assert.False(notice!.Success);
+		Assert.Equal(2, notice.Attempt);
+		Assert.Equal(2, notice.MaxAttempts);
+		Assert.Contains("Service Unavailable", notice.FinalError);
+		Assert.Equal("Service Unavailable", viewModel.Error);
+		Assert.Contains(viewModel.Entries(), entry => entry.Role == ChatRole.Error);
+	}
+
+	[Fact]
+	public async Task AbortingDuringRetryBackoffDoesNotReportARetryFailure()
+	{
+		_streams.Enqueue(model => FakeStreams.Error(model, "Service Unavailable"));
+
+		using var session = NewSession(retry: new RetryPolicy(BaseDelayMs: 5_000));
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var send = viewModel.SendAsync("hi");
+		for (var attempt = 0; attempt < 200 && viewModel.Retry is null; attempt++)
+		{
+			await Task.Delay(10);
+		}
+		Assert.NotNull(viewModel.Retry);
+
+		viewModel.Abort();
+		await send.WaitAsync(TimeSpan.FromSeconds(5));
+
+		Assert.Null(viewModel.Retry);
+		Assert.Null(viewModel.TakeRetryNotice());
+		Assert.Null(viewModel.Error);
+		Assert.DoesNotContain(viewModel.Entries(), entry => entry.Role == ChatRole.Error);
 	}
 
 	[Fact]

@@ -28,28 +28,49 @@ internal static class ThinkingPreview
 	/// 只把前 <paramref name="length"/> 个字符当作已经写好的内容取最新一行：打字机逐帧推进时，
 	/// 预览要看的不是「模型已经发完的那一行」，而是「已经露出来的那几个字」。
 	/// </summary>
-	internal static string LatestLine(string thinking, int length)
+	internal static string LatestLine(string thinking, int length) => LatestLine(new StreamText(thinking), length);
+
+	/// <summary>流式来源版：只切行尾窗口，不物化整篇正文。</summary>
+	internal static string LatestLine(in StreamText thinking, int length)
 	{
-		var span = thinking.AsSpan(0, Math.Clamp(length, 0, thinking.Length)).TrimEnd();
+		return LatestLine(thinking, length, LiveLineLimit + TrailingWhitespaceMargin);
+	}
+
+	private static string LatestLine(in StreamText thinking, int length, int window)
+	{
+		var limit = Math.Clamp(length, 0, thinking.Length);
 		// 只需要行尾那一段：跑马灯最多露出 LiveLineLimit 个字，更早的一定为负偏移裁在画面外。
 		// 换行也只在这段窗口里回找 —— 不这样封顶的话，模型写出一段不带换行的长句时
 		// 每帧都要反向扫完整篇（实测 32K 字一轮扫描就足以掉帧），TextBlock 也会重排整行。
-		var from = Math.Max(0, span.Length - LiveLineLimit);
+		// 多切一小段是为了先裁掉行尾空白、再向前取满一个窗口（与整篇扫描的结果一致）。
+		var from = Math.Max(0, limit - window);
 		// 窗口起点不能落在代理对中间（半个 emoji 会画出 tofu）。
-		if (from > 0 && char.IsLowSurrogate(span[from])) from++;
-		var window = span[from..];
-		var newline = window.LastIndexOfAny('\n', '\r');
-		var line = newline < 0 ? window : window[(newline + 1)..];
+		if (from > 0 && char.IsLowSurrogate(thinking.At(from))) from++;
+		var span = thinking.Slice(from, limit - from).AsSpan().TrimEnd();
+		if (span.Length > LiveLineLimit)
+		{
+			span = span[^LiveLineLimit..];
+			// 二次封顶同样不能把代理对劈开：行首要丢掉孤立的后半个。
+			if (char.IsLowSurrogate(span[0])) span = span[1..];
+		}
+		var newline = span.LastIndexOfAny('\n', '\r');
+		var line = newline < 0 ? span : span[(newline + 1)..];
 		return line.TrimStart().ToString();
 	}
 
+	/// <summary>行尾可能有一段空白（流式里模型常先写换行再写正文）：多切这么多留给 TrimEnd。</summary>
+	private const int TrailingWhitespaceMargin = 1024;
+
 	/// <summary>定稿后的第一个非空行；<paramref name="settled"/> 为 true 表示后面再长的思考也不会改变它。</summary>
-	internal static string FirstLine(string thinking, out bool settled)
+	internal static string FirstLine(string thinking, out bool settled) => FirstLine(new StreamText(thinking), out settled);
+
+	/// <summary>流式来源版：只切首行窗口，不物化整篇正文。</summary>
+	internal static string FirstLine(in StreamText thinking, out bool settled)
 	{
 		settled = false;
 		// 只在有限窗口里找：这条路径在思考结束时会再算一次，窗口只是防止把整篇正文扫一遍。
 		var scan = Math.Min(thinking.Length, FirstLineScanLimit);
-		var remaining = thinking.AsSpan(0, scan);
+		var remaining = thinking.Slice(0, scan).AsSpan();
 		if (thinking.Length > FirstLineScanLimit) settled = true;
 		while (remaining.Length > 0)
 		{
@@ -93,7 +114,7 @@ internal sealed class Typewriter
 	/// <summary>接手存量内容的阈值：一上来就这么长（视图回收后重建的行）不逐字，单条 delta 远小于它。</summary>
 	private const int RevealOnBirth = 240;
 
-	private string _target = string.Empty;
+	private StreamText _target = StreamText.Empty;
 	private int _shown;
 	// 上一次真正多打了字的时刻（ms）：长文本的降频间隔拿它算。
 	private long _lastStepAt;
@@ -102,14 +123,14 @@ internal sealed class Typewriter
 	internal int Shown => Math.Min(_shown, _target.Length);
 
 	/// <summary>当前权威全文（消费端比较可见前缀是否仍然成立时要用它，别自己拷一份）。</summary>
-	internal string Target => _target;
+	internal StreamText Target => _target;
 
 	/// <summary>还有没打到的字：没打完就不能停时钟，也不能算这一帧已经收尾。</summary>
 	internal bool CaughtUp => _shown >= _target.Length;
 
 	internal void Reset()
 	{
-		_target = string.Empty;
+		_target = StreamText.Empty;
 		_shown = 0;
 	}
 
@@ -117,9 +138,9 @@ internal sealed class Typewriter
 	/// 喂入最新的完整文本。<paramref name="animated"/> = false（没窗口驱动：自检/单测，或这一行已经是
 	/// 历史行）时直接全露出：逐字只对「正在流的这一行」有意义，打开旧会话把几百 KB 打一遍是灾难。
 	/// </summary>
-	internal void Set(string text, bool animated)
+	internal void Set(in StreamText text, bool animated)
 	{
-		if (ReferenceEquals(text, _target))
+		if (text.SameAs(_target))
 		{
 			if (!animated) _shown = text.Length;
 			return;
@@ -166,7 +187,7 @@ internal sealed class Typewriter
 		var step = Math.Min(MaxStepPerFrame, Math.Max(1, (_target.Length - _shown) / CatchUpDivisor));
 		var next = Math.Min(_target.Length, _shown + step);
 		// 不要把代理对劈开：半截 emoji 会画出 tofu。
-		if (next < _target.Length && char.IsHighSurrogate(_target[next - 1])) next++;
+		if (next < _target.Length && char.IsHighSurrogate(_target.At(next - 1))) next++;
 		_shown = next;
 		return true;
 	}

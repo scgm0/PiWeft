@@ -681,6 +681,44 @@ public class AutoRetryTests : IDisposable
 		Assert.DoesNotContain(session.Messages, message => message is AssistantMessage { StopReason: StopReason.Error });
 	}
 
+	/// <summary>
+	/// 火山方舟的排队错误把「稍后再试」藏在 HTTP 403 的嵌套 JSON 里（10605 / RESOURCE_LIMIT /
+	/// retryAfterSeconds），通用限流字样一个都没有：本来分类器判不出可重试，自动重试直接跳过。
+	/// 这里既验重试会发生，也验等待时长听供应商的而不是指数退避。
+	/// </summary>
+	[Fact]
+	public async Task ProviderQueueErrorRetriesAfterTheAdvertisedDelay()
+	{
+		const string ark =
+			"""
+			OpenAI-compatible request failed (403): {"code":"403","message":"{\"code\":\"10605\",\"message\":\"\\\"isQueued\\\":true,\\\"dfmodel\\\":{\\\"queueCount\\\":0,\\\"queueType\\\":\\\"p3\\\",\\\"retryAfterSeconds\\\":1}}"}"}
+			""";
+
+		var script = new ScriptedStreamFn();
+		script.EnqueueError(ark);
+		script.EnqueueText("排队结束后成功了");
+
+		// 默认基础退避是 1ms：断言 DelayMs == 1000 只能来自 retryAfterSeconds。
+		using var session = CreateSession(script);
+		int? scheduled = null;
+		using var subscription = session.Subscribe(@event =>
+		{
+			if (@event is AutoRetryStartEvent start)
+			{
+				scheduled = start.DelayMs;
+			}
+
+			return ValueTask.CompletedTask;
+		});
+
+		var messages = await session.PromptAsync("hi");
+
+		Assert.Equal(2, script.Requests.Count);
+		Assert.Equal(1000, scheduled);
+		var final = Assert.IsType<AssistantMessage>(messages[^1]);
+		Assert.Equal("排队结束后成功了", Assert.IsType<TextContent>(final.Content[0]).Text);
+	}
+
 	[Fact]
 	public async Task NonRetryableFailureIsReportedImmediately()
 	{

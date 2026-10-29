@@ -226,12 +226,55 @@ public class RetryClassifierTests
 	[InlineData("Provider returned error")]
 	[InlineData("429 Too Many Requests")]
 	[InlineData("Service Unavailable")]
+	[InlineData("The service is temporarily unavailable")]
+	[InlineData("upstream_stream_read_error")]
+	[InlineData("Stream was interrupted")]
+	[InlineData("HTTP/2 stream failed")]
+	[InlineData("request to https://ark.cn-beijing.volces.com failed, reason: ")]
 	[InlineData("connection refused")]
 	[InlineData("fetch failed")]
 	[InlineData("Anthropic stream ended before message_stop")]
 	[InlineData("Request timed out")]
 	public void TransientFailuresAreRetryable(string message) =>
 		Assert.True(RetryClassifier.IsRetryable(Failure(message)));
+
+	/// <summary>
+	/// 火山方舟的排队错误：403 + 嵌套 JSON，没有 429/限流字样，曾经直接当作不可重试。
+	/// </summary>
+	[Fact]
+	public void ProviderQueueErrorsAreRetryable()
+	{
+		const string ark =
+			"""
+			OpenAI-compatible request failed (403): {"code":"403","message":"{\"code\":\"10605\",\"message\":\"\\\"isQueued\\\":true,\\"dfmodel\\":{\\"queueCount\\\":0,\\"queueType\\\":\\"p3\\\",\\"retryAfterSeconds\\\":30}}"}"}
+			""";
+
+		Assert.True(RetryClassifier.IsRetryable(Failure(ark)));
+		Assert.Equal(30_000, RetryClassifier.ServerDelayMs(ark));
+	}
+
+	[Fact]
+	public void QueuedRetryWaitsForTheProviderHintInsteadOfTheBackoff()
+	{
+		var policy = new RetryPolicy(BaseDelayMs: 2000, MaxAgentDelayMs: 60_000);
+
+		// retryAfterSeconds 比退避长时听供应商的；超出上限时按上限截，不无限等。
+		Assert.Equal(30_000, RetryClassifier.DelayMs(policy, 1, "retryAfterSeconds\":30"));
+		Assert.Equal(60_000, RetryClassifier.DelayMs(policy, 1, "retry-after: 600"));
+
+		// 没有提示时回到指数退避。
+		Assert.Equal(2000, RetryClassifier.DelayMs(policy, 1, "429 Too Many Requests"));
+		Assert.Equal(4000, RetryClassifier.DelayMs(policy, 2, null));
+	}
+
+	[Theory]
+	[InlineData(null)]
+	[InlineData("")]
+	[InlineData("connection refused")]
+	[InlineData("retry-after: Wed, 21 Oct 2015 07:28:00 GMT")]
+	[InlineData("retryAfterSeconds\":0")]
+	public void AbsentOrUnparsableRetryHintsFallBackToBackoff(string? message) =>
+		Assert.Null(RetryClassifier.ServerDelayMs(message));
 
 	[Theory]
 	[InlineData("insufficient_quota: you exceeded your current quota")]

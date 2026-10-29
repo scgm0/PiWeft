@@ -62,6 +62,11 @@ public static partial class Strings
 	public const string ConfigInherit = "继承 / 默认";
 	public const string ConfigAutoCompaction = "自动压缩上下文";
 	public const string ConfigAutoRetry = "自动重试";
+	public const string ConfigRetryMaxRetries = "最大重试次数";
+	public const string ConfigRetryBaseDelay = "基础延迟 (ms)";
+	public const string ConfigRetryHint = "只对网络抖动、限流与 5xx 等临时故障生效；配额/账单类错误不重试。退避按指数增长。";
+	public const string ConfigRetryMaxRetriesInvalid = "最大重试次数必须是 0–20 的整数。";
+	public const string ConfigRetryBaseDelayInvalid = "基础延迟必须是 0–600000 的整数（毫秒）。";
 	public const string ConfigAddMcp = "添加服务器";
 	public const string ConfigToolsTitle = "工具与 Codemode";
 	public const string ConfigToolsHint = "会话启动时加载的工具与 codemode 脚本行为；改动写入 settings.json 的 defaultTools 与 codemode。";

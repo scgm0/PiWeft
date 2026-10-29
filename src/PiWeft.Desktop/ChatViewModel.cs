@@ -35,12 +35,58 @@ public sealed record ChatImage(string Data, string MimeType);
 /// <summary>聊天记录中的一行。</summary>
 public sealed record ChatEntry
 {
+	private string? _text;
+	private string? _thinking;
+
 	public required ChatRole Role { get; init; }
 
-	public required string Text { get; init; }
+	/// <summary>
+	/// 正文。流式行由 <see cref="StreamedText"/> 提供，这里只在复制/导出这类冷路径上整篇物化；
+	/// 逐帧渲染走 <see cref="BodyText"/>，不会产生整篇字符串拷贝。
+	/// </summary>
+	public required string Text
+	{
+		get => _text ?? StreamedText?.Materialize() ?? string.Empty;
+		init
+		{
+			_text = string.IsNullOrEmpty(value) ? null : value;
+			// 显式给了正文就不再使用流式来源：投影用 with { Text = … } 抹掉正文时必须真的抹掉。
+			StreamedText = null;
+		}
+	}
+
+	/// <summary>流式正文来源；存在时 <see cref="Text"/> 惰性物化，<see cref="TextLength"/> 为 O(1)。</summary>
+	public StreamedText? StreamedText { get; init; }
+
+	/// <summary>正文长度（流式行不物化正文）。</summary>
+	public int TextLength => _text is not null ? _text.Length : StreamedText?.Length ?? 0;
+
+	/// <summary>渲染用的正文来源：普通字符串或流式快照。</summary>
+	internal StreamText BodyText => _text is not null
+		? new StreamText(_text)
+		: StreamedText is { } live ? new StreamText(live) : StreamText.Empty;
 
 	/// <summary>可展示的思考文本，与回复正文和不透明签名分离。</summary>
-	public string Thinking { get; init; } = string.Empty;
+	public string Thinking
+	{
+		get => _thinking ?? StreamedThinking?.Materialize() ?? string.Empty;
+		init
+		{
+			_thinking = string.IsNullOrEmpty(value) ? null : value;
+			StreamedThinking = null;
+		}
+	}
+
+	/// <summary>流式思考来源；与 <see cref="StreamedText"/> 同构。</summary>
+	public StreamedText? StreamedThinking { get; init; }
+
+	/// <summary>思考文本长度（流式行不物化）。</summary>
+	public int ThinkingLength => _thinking is not null ? _thinking.Length : StreamedThinking?.Length ?? 0;
+
+	/// <summary>渲染用的思考来源。</summary>
+	internal StreamText ThinkingSource => _thinking is not null
+		? new StreamText(_thinking)
+		: StreamedThinking is { } live ? new StreamText(live) : StreamText.Empty;
 
 	/// <summary>当前消息的思考块仍在生成。</summary>
 	public bool IsThinking { get; init; }
@@ -89,7 +135,42 @@ public sealed record ChatEntry
 
 	/// <summary>助手仍在写这一行时为 true。</summary>
 	public bool IsStreaming { get; init; }
+
+	/// <summary>正文相同？流式行按快照比较（同一回合同长度即等价），不物化正文。</summary>
+	internal bool SameText(ChatEntry other)
+	{
+		if (ReferenceEquals(this, other)) return true;
+		if (_text is not null || other._text is not null) return string.Equals(_text, other._text, StringComparison.Ordinal);
+		return StreamedText is { } mine ? mine.SameSnapshot(other.StreamedText) : other.StreamedText is null;
+	}
+
+	/// <summary>思考文本相同？同 <see cref="SameText"/>。</summary>
+	internal bool SameThinking(ChatEntry other)
+	{
+		if (ReferenceEquals(this, other)) return true;
+		if (_thinking is not null || other._thinking is not null) return string.Equals(_thinking, other._thinking, StringComparison.Ordinal);
+		return StreamedThinking is { } mine ? mine.SameSnapshot(other.StreamedThinking) : other.StreamedThinking is null;
+	}
 }
+
+/// <summary>
+/// 一次自动重试的界面状态。退避倒计时结束后 <see cref="RetryAtUnixMs"/> 成为过去时刻，
+/// 界面据此从「N 秒后重试」切回「正在自动重试 n/m」。
+/// </summary>
+public sealed record ChatRetryStatus(
+	int Attempt,
+	int MaxAttempts,
+	int DelayMs,
+	long StartedAtUnixMs,
+	string ErrorMessage,
+	bool Running)
+{
+	/// <summary>下一次尝试的计划时刻（Unix 毫秒）；没有退避延迟时为 0。</summary>
+	public long RetryAtUnixMs => DelayMs > 0 ? StartedAtUnixMs + DelayMs : 0;
+}
+
+/// <summary>自动重试收口时留给界面的一次性提示（成功 toast / 失败 toast）。</summary>
+public sealed record ChatRetryNotice(bool Success, int Attempt, int MaxAttempts, string? FinalError);
 
 /// <summary>
 /// 把 <see cref="CodingAgentSession"/> 转成聊天视图要渲染的行，外加底部状态栏的一行文字。
@@ -116,14 +197,22 @@ public sealed class ChatViewModel : IDisposable
 	private readonly List<ToolEntry> _tools = [];
 	private IDisposable? _subscription;
 	private CodingAgentSession? _session;
-	private readonly StringBuilder _streamingText = new();
-	private readonly StringBuilder _streamingThinking = new();
+	// 追加式缓冲：片段不可变、快照共享，UI 线程读旧快照时不会碰到被下一轮清空的缓冲。
+	private readonly StreamingBuffer _streamingText = new();
+	private readonly StreamingBuffer _streamingThinking = new();
+	// 回合代号：ResetStreaming 时推进。快照只有同回合、同来源才谈得上「纯追加」，
+	// 否则下一回合可能在新长度上误把上一回合的前缀当成仍然成立。
+	private int _streamingGeneration;
 	private long _streamingTimestamp;
 	private bool _isThinking;
 	private bool _isStreaming;
 	private bool _isCompacting;
 	private string? _error;
 	private long _runStarted;
+	// 自动重试的实时状态与收口提示：重试退避没有消息事件，界面靠这两个字段显示「正在重试」。
+	private ChatRetryStatus? _retry;
+	private ChatRetryNotice? _retryNotice;
+	private bool _aborting;
 
 	/// <summary>在产生变更的线程上触发；窗口负责把它转到 UI 线程。</summary>
 	public event Action? Changed;
@@ -161,6 +250,29 @@ public sealed class ChatViewModel : IDisposable
 		}
 	}
 
+	/// <summary>当前正在进行的自动重试；没有重试时为 null。</summary>
+	public ChatRetryStatus? Retry
+	{
+		get
+		{
+			lock (_gate)
+			{
+				return _retry;
+			}
+		}
+	}
+
+	/// <summary>取走一次重试收口提示；界面负责在下一帧弹 toast。</summary>
+	public ChatRetryNotice? TakeRetryNotice()
+	{
+		lock (_gate)
+		{
+			var notice = _retryNotice;
+			_retryNotice = null;
+			return notice;
+		}
+	}
+
 	/// <summary>绑定一个会话，替换掉之前的会话。</summary>
 	public void Attach(CodingAgentSession session)
 	{
@@ -182,6 +294,9 @@ public sealed class ChatViewModel : IDisposable
 			_error = null;
 			_isStreaming = false;
 			_isCompacting = false;
+			_retry = null;
+			_retryNotice = null;
+			_aborting = false;
 			// 打开会话时的首次投影就从这里走：长会话整段映射要 200+ 毫秒，必须计时。
 			RebuildTimed(session);
 			_subscription = session.Subscribe(OnAgentEvent);
@@ -211,6 +326,9 @@ public sealed class ChatViewModel : IDisposable
 			ResetStreaming();
 			_isStreaming = false;
 			_error = null;
+			_retry = null;
+			_retryNotice = null;
+			_aborting = false;
 		}
 
 		Changed?.Invoke();
@@ -238,15 +356,23 @@ public sealed class ChatViewModel : IDisposable
 
 			if (_isStreaming && (_streamingText.Length > 0 || _streamingThinking.Length > 0 || _isThinking))
 			{
+				// 流式正文/思考只给快照（来源 + 长度），不复制正文：每帧整篇 ToString() 是
+				// 诊断面板「每帧分配」的来源（200K 字回复 = 每帧 ~400 KB）。渲染侧的打字机与
+				// 增量 Markdown 按前缀切片，整篇物化只发生在复制/导出这类冷路径。
 				rows.Add(new ChatEntry
 				{
 					Role = ChatRole.Assistant,
-					Text = _streamingText.ToString(),
-					Thinking = _streamingThinking.ToString(),
+					Text = string.Empty,
+					Thinking = string.Empty,
 					IsThinking = _isThinking,
 					Timestamp = _streamingTimestamp,
 					EntryId = $"live-assistant/{_streamingTimestamp}",
 					IsStreaming = true,
+				} with
+				{
+					// 两个来源必须在 Text/Thinking 之后赋值：那两个 init 会把来源清空。
+					StreamedText = new StreamedText(_streamingText, _streamingGeneration),
+					StreamedThinking = new StreamedText(_streamingThinking, _streamingGeneration),
 				});
 			}
 
@@ -346,6 +472,12 @@ public sealed class ChatViewModel : IDisposable
 			return;
 		}
 
+		lock (_gate)
+		{
+			// 上一轮被中断后留下的中止标记不能污染这一次重试收口判定。
+			_aborting = false;
+		}
+
 		var session = Session ?? throw new InvalidOperationException("尚未绑定会话");
 
 		lock (_gate)
@@ -364,6 +496,7 @@ public sealed class ChatViewModel : IDisposable
 			lock (_gate)
 			{
 				_isStreaming = false;
+				_retry = null;
 				ResetStreaming();
 				Rebuild();
 			}
@@ -380,7 +513,14 @@ public sealed class ChatViewModel : IDisposable
 		Changed?.Invoke();
 	}
 
-	public void Abort() => Session?.Abort();
+	public void Abort()
+	{
+		lock (_gate)
+		{
+			_aborting = true;
+		}
+		Session?.Abort();
+	}
 
 	/// <summary>运行中把一条消息插入当前回合，在下一次模型调用前生效。</summary>
 	public bool Steer(string text, IReadOnlyList<ImageContent>? images = null) => Enqueue(text, images, steer: true);
@@ -482,7 +622,36 @@ public sealed class ChatViewModel : IDisposable
 
 				case AutoRetryStartEvent retry:
 					AppLog.For<ChatViewModel>().ZLogWarning($"Retry scheduled: session={_session?.Session.SessionId}, attempt={retry.Attempt}, delayMs={retry.DelayMs}");
+					// 退避期间没有其它消息事件：把「正在重试 n/m」连同倒计时终点交给界面。
+					_retry = new ChatRetryStatus(
+						retry.Attempt,
+						retry.MaxAttempts,
+						retry.DelayMs,
+						DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+						retry.ErrorMessage,
+						Running: true);
+					// 失败的那次尝试不是最终结果：状态栏不要提前挂上错误。
+					_error = null;
 					break;
+
+				case AutoRetryEndEvent retryEnd:
+				{
+					var status = _retry;
+					var maxAttempts = status?.MaxAttempts ?? 0;
+					_retry = null;
+					if (retryEnd.Success)
+					{
+						AppLog.For<ChatViewModel>().ZLogInformation($"Retry succeeded: session={_session?.Session.SessionId}, attempt={retryEnd.Attempt}");
+						_retryNotice = new ChatRetryNotice(true, retryEnd.Attempt, maxAttempts, null);
+					}
+					else if (!_aborting && !string.Equals(retryEnd.FinalError, "Aborted", StringComparison.Ordinal))
+					{
+						AppLog.For<ChatViewModel>().ZLogWarning($"Retry exhausted: session={_session?.Session.SessionId}, attempt={retryEnd.Attempt}, error={retryEnd.FinalError}");
+						_error = retryEnd.FinalError;
+						_retryNotice = new ChatRetryNotice(false, retryEnd.Attempt, maxAttempts, retryEnd.FinalError);
+					}
+					break;
+				}
 
 				case AgentEndEvent:
 					var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(_runStarted).TotalMilliseconds;
@@ -500,10 +669,45 @@ public sealed class ChatViewModel : IDisposable
 
 	private void ResetStreaming()
 	{
-		_streamingText.Clear();
-		_streamingThinking.Clear();
+		_streamingText.Reset();
+		_streamingThinking.Reset();
+		_streamingGeneration++;
 		_streamingTimestamp = 0;
 		_isThinking = false;
+	}
+
+	/// <summary>
+	/// 仅供 <c>--ui-smoke stream</c>：把一段流式增量塞进当前行。没有模型也能复现
+	/// 「逐字打字机 + 增量 Markdown + 每帧重绘」这条路径，用来观察流式期的内存曲线。
+	/// </summary>
+	internal void SmokeStream(string bodyDelta, string thinkingDelta, bool finish)
+	{
+		lock (_gate)
+		{
+			_rowsSnapshot = null;
+			if (!_isStreaming && !finish)
+			{
+				_isStreaming = true;
+				ResetStreaming();
+				_streamingTimestamp = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+			}
+			if (thinkingDelta.Length > 0)
+			{
+				_streamingThinking.Append(thinkingDelta);
+				_isThinking = true;
+			}
+			if (bodyDelta.Length > 0)
+			{
+				_streamingText.Append(bodyDelta);
+				_isThinking = false;
+			}
+			if (finish)
+			{
+				_isStreaming = false;
+				_isThinking = false;
+			}
+		}
+		Changed?.Invoke();
 	}
 
 	/// <summary>从会话投影重建已落盘的行。调用时必须持有锁。</summary>

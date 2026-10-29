@@ -61,7 +61,7 @@ public sealed class StreamingAllocationProbe(ITestOutputHelper output)
 			var rows1 = InvalidateAndEntries();
 			var rows2 = InvalidateAndEntries();
 			var entriesBytes = (GC.GetAllocatedBytesForCurrentThread() - before) / 2;
-			output.WriteLine($"Entries() rebuild: {entriesBytes:N0} bytes/frame (rows={rows1.Count}, streaming text={rows1[^1].Text.Length:N0} chars)");
+			output.WriteLine($"Entries() rebuild: {entriesBytes:N0} bytes/frame (rows={rows1.Count}, streaming text={rows1[^1].TextLength:N0} chars)");
 
 			// ── 过程投影：尾部一遍 Project 的成本。
 			var projector = new ExecutionProcessProjector();
@@ -104,11 +104,13 @@ public sealed class StreamingAllocationProbe(ITestOutputHelper output)
 			output.WriteLine($"Timeline+Markdown: {timelineBytes:N0} bytes/frame over 25 frames in {watch.Elapsed.TotalMilliseconds:0} ms");
 
 			output.WriteLine($"TOTAL estimate: {entriesBytes + projectBytes + timelineBytes:N0} bytes/frame");
-			// 回归护栏：UI 管线（时间线 + 增量 Markdown + 虚拟化）每帧只允许常数级垃圾；
-			// Entries() 的整份物化与回复长度成正比（UTF-16 一份拷贝 + 少量包装）。
+			// 回归护栏：整条流式管线（行投影 + 过程投影 + 时间线 + 增量 Markdown）每帧只允许
+			// 常数级垃圾。流式正文走快照（来源 + 长度），不再按回复长度每帧物化整篇。
 			Assert.InRange(timelineBytes, 0, 4096);
 			Assert.InRange(projectBytes, 0, 4096);
-			Assert.InRange(entriesBytes, 0, (long)(rows1[^1].Text.Length * 2 * 1.1) + 32 * 1024);
+			Assert.InRange(entriesBytes, 0, 32 * 1024);
+			// 冷路径（复制/导出）仍能整篇物化，内容与快照长度一致。
+			Assert.Equal(rows1[^1].TextLength, rows1[^1].Text.Length);
 			gate.SetResult();
 			await send.WaitAsync(TimeSpan.FromSeconds(10));
 			await WaitForAsync(() => !chat.IsStreaming);

@@ -17,6 +17,10 @@ namespace PiWeft.Desktop;
 internal static class UserReferenceRichText
 {
 	private const char Placeholder = '\uFFFC';
+
+	/// <summary>引用占位后补齐用的零宽字符：投影与原文等长，但只有首字符画成 chip。</summary>
+	private const char Filler = '\u200B';
+
 	private const double ChipHeight = 20;
 	private const double IconSize = 12;
 	private const double LabelMaxWidth = 220;
@@ -39,52 +43,10 @@ internal static class UserReferenceRichText
 		if (editable)
 		{
 			box.EditableRegions = new ReferenceEditableRegions(box);
-			var client = (ITextCompositionClient)box;
-			var composing = false;
-			var suspended = false;
-			// MewUI 0.22.1 的组合输入下划线仍按源文偏移绘制，不会映射投影后的 chip 偏移；
-			// 组合期间临时撤掉引用投影与元素生成器，等组合提交后再恢复，避免 GetRangeBounds 越界。
-			void SuspendProjection()
-			{
-				if (suspended) return;
-				// 没有真实 chip 时投影是恒等的，不必为普通中文输入重建文本视图。
-				if (UserChips.Parse(box.Text).Count == 0) return;
-				suspended = true;
-				box.Extensions.Projections.Remove(projection);
-				box.Extensions.ElementGenerators.Remove(generator);
-				box.InvalidateTextView();
-			}
-			void RestoreProjection()
-			{
-				if (!suspended) return;
-				suspended = false;
-				box.Extensions.Projections.Add(projection);
-				box.Extensions.ElementGenerators.Add(generator);
-				box.InvalidateTextView();
-			}
-			box.TextCompositionStart += _ =>
-			{
-				NormalizeCaret(box);
-				composing = true;
-				SuspendProjection();
-			};
-			box.TextCompositionEnd += _ =>
-			{
-				composing = false;
-				// End 事件早于 CommitComposition；有调度器时等提交完成再恢复。
-				if (Application.IsRunning && Application.Current.Dispatcher is { } dispatcher)
-					dispatcher.BeginInvoke(DispatcherPriority.Render, () => { if (!composing) RestoreProjection(); });
-			};
-			// 无调度器（测试）或 End 未触发时，编辑器状态收敛后恢复。
-			box.EditingStateChanged += () =>
-			{
-				if (!composing && suspended && !client.IsComposing) RestoreProjection();
-			};
-			box.LostFocus += () =>
-			{
-				composing = false;
-				RestoreProjection();
-			};
+			// 组合输入（中文/日文 IME）前先把光标挪出 chip 内部：组合文本必须落在引用之外。
+			// 投影在组合期间保持挂载，chip 不会退回原始路径 —— 等长投影让 MewUI 按源文偏移
+			// 绘制的组合下划线/选区仍然落在文本内，见 <see cref="ReferenceProjection"/>。
+			box.TextCompositionStart += _ => NormalizeCaret(box);
 		}
 		IUserChip? hint = null;
 		box.MouseMove += args =>
@@ -301,50 +263,41 @@ internal static class UserReferenceRichText
 			var references = UserChips.Parse(source);
 			if (references.Count == 0) return new(source.AsMemory(), IdentityTextOffsetMap.Instance);
 
-			var projectedLength = source.Length;
-			foreach (var reference in references) projectedLength -= reference.End - reference.Start - 1;
-			var projected = new char[projectedLength];
+			// 投影与原文逐字符等长：每枚引用占位成 1 个 U+FFFC + (n-1) 个零宽空格，
+			// 元素生成器再把整段画成一枚 chip（VisualLength = n）。
+			//
+			// 长度不变很关键：MewUI 0.22.1 的 IME 组合下划线（以及选区/组合 span）仍按
+			// 源文偏移在投影文本上绘制。压缩别名会让这些范围落到投影文本之外，
+			// GetRangeBounds 抛 ArgumentOutOfRange；此前的规避是组合期间撤掉投影，
+			// 代价是输入中文时 chip 退回原始路径。等长投影既保住 chip，又让所有
+			// 按源文偏移的绘制保持正确。
+			var projected = source.ToCharArray();
 			var sourceToProjected = new int[source.Length + 1];
-			var projectedToSource = new int[projectedLength + 1];
+			var projectedToSource = new int[source.Length + 1];
+			for (var index = 0; index <= source.Length; index++)
+			{
+				sourceToProjected[index] = index;
+				projectedToSource[index] = index;
+			}
 
-			var sourceIndex = 0;
-			var projectedIndex = 0;
 			foreach (var reference in references)
 			{
-				while (sourceIndex < reference.Start)
+				var length = reference.End - reference.Start;
+				projected[reference.Start] = Placeholder;
+				if (length > 1)
 				{
-					projected[projectedIndex] = source[sourceIndex];
-					sourceToProjected[sourceIndex] = projectedIndex;
-					projectedToSource[projectedIndex] = sourceIndex;
-					sourceIndex++;
-					projectedIndex++;
+					Array.Fill(projected, Filler, reference.Start + 1, length - 1);
 				}
 
-				sourceToProjected[reference.Start] = projectedIndex;
-				var length = reference.End - reference.Start;
+				// 引用内部的偏移贴向最近的边：点击/命中不会把光标放进 chip 的隐藏原文，
+				// 两端仍严格落在 Start/End，range 映射因此覆盖整枚 chip。
 				for (var offset = 1; offset < length; offset++)
 				{
-					// 光标落在 chip 内部时贴向最近的一侧，不出现“藏在路径里”的插入点。
-					sourceToProjected[reference.Start + offset] = offset <= length / 2 ? projectedIndex : projectedIndex + 1;
+					var edge = offset * 2 <= length ? reference.Start : reference.End;
+					sourceToProjected[reference.Start + offset] = edge;
+					projectedToSource[reference.Start + offset] = edge;
 				}
-				sourceToProjected[reference.End] = projectedIndex + 1;
-				projectedToSource[projectedIndex] = reference.Start;
-				projectedToSource[projectedIndex + 1] = reference.End;
-				projected[projectedIndex] = Placeholder;
-				sourceIndex = reference.End;
-				projectedIndex++;
 			}
-
-			while (sourceIndex < source.Length)
-			{
-				projected[projectedIndex] = source[sourceIndex];
-				sourceToProjected[sourceIndex] = projectedIndex;
-				projectedToSource[projectedIndex] = sourceIndex;
-				sourceIndex++;
-				projectedIndex++;
-			}
-			sourceToProjected[source.Length] = projectedLength;
-			projectedToSource[projectedLength] = source.Length;
 
 			return new ProjectedText(new string(projected).AsMemory(), new ReferenceOffsetMap(sourceToProjected, projectedToSource));
 		}
@@ -383,9 +336,12 @@ internal static class UserReferenceRichText
 			foreach (var chip in UserChips.Parse(lineText))
 			{
 				if (line.Offset + chip.Start != offset) continue;
+				// 投影按源文等长占位，整段都要被行内对象吞掉；只给 1 列会让剩余零宽字符
+				// 继续参与布局，chip 后面凭空多出一个插入点。
+				var length = chip.End - chip.Start;
 				return new GeneratedTextElement(
-					chip.End - chip.Start,
-					1,
+					length,
+					length,
 					new InlineChip(chip),
 					BreaksLine: true);
 			}

@@ -66,4 +66,17 @@ public sealed class UserFileReferenceTests
 		Assert.Empty(UserFileReferences.Parse("看 @https://example.com/a"));
 	}
 
+	[Fact]
+	public void ChineseSentencePunctuationEndsAnUnquotedReference()
+	{
+		// 中文正文常紧贴路径书写：全角标点不属于路径，不能把后面的句子吞进 chip 标签。
+		var reference = Assert.Single(UserFileReferences.Parse("请参考 @docs/，然后继续"));
+		Assert.Equal("docs/", reference.Label);
+		Assert.Equal("docs/", reference.Path);
+
+		reference = Assert.Single(UserFileReferences.Parse("看 @/tmp/app.cs。再看别的"));
+		Assert.Equal("app.cs", reference.Label);
+		Assert.Equal("/tmp/app.cs", reference.Path);
+	}
+
 }

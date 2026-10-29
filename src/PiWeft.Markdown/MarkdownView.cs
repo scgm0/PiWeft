@@ -1487,7 +1487,10 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			// Image-bearing blocks are excluded: their height depends on async resolution, which
 			// the model hash does not cover.
 			var heightKey = new HeightKey(slot.Block.Hash, measureKey, width);
-			if (!double.IsNaN(slot.Height = TryCachedHeight(slot.Block, heightKey)))
+			// 已附着的元素可能还留着旧宽度下的版面：缓存高度只是「跨实例复用」的快路径，
+			// 对已经建出来的元素必须真的测一遍，否则行高与它画出来的文本行数会不一致
+			// （读者看到的就是相邻块错位、文字叠在一起）。
+			if (slot.Element is null && !double.IsNaN(slot.Height = TryCachedHeight(slot.Block, heightKey)))
 			{
 				_prefixValid = false;
 				continue;
@@ -1743,12 +1746,25 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 	private void ArrangeAttachedContent(Rect bounds)
 	{
+		bool unmeasured = false;
 		foreach (BlockSlot slot in _slots)
 		{
-			if (slot.Attached && slot.Element is not null)
+			if (!slot.Attached || slot.Element is null)
 			{
-				slot.Element.Arrange(new Rect(bounds.X, bounds.Y + slot.Top, bounds.Width, slot.Height));
+				continue;
 			}
+			if (double.IsNaN(slot.Height))
+			{
+				// 还没测过的高度不能拿去做排布矩形：NaN 会把 Bounds 写成 NaN，
+				// 随后一帧要么不画、要么沿用旧位置画（旧文本叠在新内容上）。留给下一轮测量。
+				unmeasured = true;
+				continue;
+			}
+			slot.Element.Arrange(new Rect(bounds.X, bounds.Y + slot.Top, bounds.Width, slot.Height));
+		}
+		if (unmeasured)
+		{
+			InvalidateMeasure();
 		}
 	}
 

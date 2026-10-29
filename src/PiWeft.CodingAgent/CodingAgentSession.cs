@@ -2293,7 +2293,7 @@ public sealed class CodingAgentSession : IDisposable
 			catch (Exception exception) when (attempt < maxAttempts)
 			{
 				retried = true;
-				var delay = RetryClassifier.DelayMs(policy, attempt);
+				var delay = RetryClassifier.DelayMs(policy, attempt, exception.Message);
 				Emit(new SummarizationRetryScheduledEvent
 				{
 					Attempt = attempt,
@@ -2692,7 +2692,7 @@ public sealed class CodingAgentSession : IDisposable
 				}
 
 				_retryAttempt++;
-				var delayMs = RetryClassifier.DelayMs(policy, _retryAttempt);
+				var delayMs = RetryClassifier.DelayMs(policy, _retryAttempt, last.ErrorMessage);
 
 				Emit(new AutoRetryStartEvent
 				{

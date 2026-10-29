@@ -38,7 +38,8 @@ internal sealed class ToolMessageView
 		if (timing.Text.Length == 0) timing.IsVisible(false);
 		if (detail.Text.Length == 0) detail.IsVisible(false);
 
-		var expander = new Expander().Header(header).IsExpanded(false).HoverTip(Strings.ToolExpandHint);
+		// 组体内吸顶用：没有挂组体视口时行为与普通 Expander 完全相同。
+		var expander = new StickyExpander().Header(header).IsExpanded(false).HoverTip(Strings.ToolExpandHint);
 		// 组体内的步骤由组体自己的预览行锚点负责；再让外层会话追随会改变会话滚动进度。
 		focus.TrackFold(expander, preserveAnchor: false);
 		expander.ExpandedChanged += expanded =>

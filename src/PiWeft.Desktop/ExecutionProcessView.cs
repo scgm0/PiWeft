@@ -108,6 +108,7 @@ internal sealed class ExecutionProcessView
 	{
 		foreach (var viewport in BodyViewports())
 		{
+			if (!viewport.IsVisible || viewport.Bounds.Height <= 0) continue;
 			viewport.InvalidateArrange();
 			// ScrollViewer itself is not an invalidation host: the presenter (virtualized) or the
 			// stack panel inside it must be arrange-dirty too, or it keeps its previous arrange.
@@ -127,6 +128,7 @@ internal sealed class ExecutionProcessView
 	{
 		foreach (var viewport in BodyViewports())
 		{
+			if (!viewport.IsVisible || viewport.Bounds.Height <= 0) continue;
 			// Capture intent before SetScrollOffsets: a virtualized presenter can still expose
 			// the previous extent for one pass, and the resulting clamp/ScrollChanged would
 			// otherwise clear the tail-follow flag before we get a chance to follow the new end.
@@ -151,25 +153,14 @@ internal sealed class ExecutionProcessView
 		KickBodyLayout();
 	}
 
-	private List<ScrollViewer> BodyViewports()
-	{
-		var viewports = new List<ScrollViewer>();
-		Collect(View);
-		return viewports;
+	/// <summary>
+	/// 组体视口清单。每个组在 <see cref="CompleteBody" /> 时就已知自己的视口，这里不再每帧
+	/// 遍历整棵树去找：流式期 <see cref="KickBodyLayout" /> / <see cref="SyncBodyMetrics" />
+	/// 每次都要跑，白走一遍可视化树（含逐节点 List 分配）是纯开销。
+	/// </summary>
+	private readonly List<ScrollViewer> _bodyViewports = [];
 
-		void Collect(Element element)
-		{
-			if (element is ScrollViewer viewport)
-			{
-				if (viewport.IsVisible && viewport.Bounds.Height > 0) viewports.Add(viewport);
-				return;
-			}
-			if (element is not IVisualTreeHost host) return;
-			var children = new List<Element>();
-			host.VisitChildren(child => { children.Add(child); return true; });
-			foreach (var child in children) Collect(child);
-		}
-	}
+	private List<ScrollViewer> BodyViewports() => _bodyViewports;
 	public IReadOnlyDictionary<string, bool> State
 	{
 		get
@@ -465,11 +456,15 @@ internal sealed class ExecutionProcessView
 
 		void CompleteBody(FrameworkElement content)
 		{
+			if (viewport is { } registered && !_bodyViewports.Contains(registered)) _bodyViewports.Add(registered);
 			// 组体是“最新步骤”的窗口：滚动条置底时持续跟随新步骤；用户上滚后暂停，
 			// 回到底部（滚轮/键盘/拖动滚动条）自动重新锁底。
 			// 组体就是“最新步骤”的窗口：置底即跟随。这里不能做任何抑制——栈/虚拟化切换、
 			// 步骤行回收后的重建都只是布局，不是读者的阅读意图；恢复态在 Restore 里单独处理。
 			if (viewport is not null) SmoothScroll.For(viewport).AutoFollowAtEnd = true;
+			// 展开项标题在组体里吸顶：栈布局的行在建视口之前就已经绑好，这里补挂一次。
+			if (viewport is { } bodyViewport)
+				for (var index = 0; index < stackHosts.Count; index++) AttachSticky(stackHosts[index], stackHosts[index], bodyViewport);
 			// 与 PiDeck 一样，连续竖线独占左列；步骤（图标 + 摘要）在右列，不让线从图标背后穿过。
 			var rail = new Border().Width(1).VerticalAlignment(VerticalAlignment.Stretch)
 				.WithTheme((theme, border) => border.Background = AppTheme.For(theme).Border);
@@ -514,14 +509,17 @@ internal sealed class ExecutionProcessView
 
 		/// <summary>步骤行的绑定入口：展开/收起只重测这一行并让它的预览行停在原地。</summary>
 		void BindStepRow(Grid row, ChatEntry entry, int index) =>
-			BindStep(row, entry, index, key, expanded =>
+			BindStep(row, entry, index, key, viewport, (expanded, expander) =>
 			{
 				// A tool detail is a reading action: keep its preview row pinned. A thinking
 				// block, on the other hand, is streamed content and should keep following the
 				// group tail; pinning it here would fight SmoothScroll on every growth frame.
 				var preservePreview = entry.Role == ChatRole.Tool;
 				if (expanded && preservePreview) StopGroupFollow();
-				InvalidateRow(row, index, preservePreview);
+				// 从吸顶标题收起：读者读的是这一项的开头，收起后标题应当落在视口顶部，
+				// 而不是把已经滚走的行顶留在原处（那样标题会直接消失）。
+				var collapseFromPinned = !expanded && expander is StickyExpander { HeaderDisplaced: true };
+				InvalidateRow(row, index, preservePreview, collapseFromPinned);
 			});
 
 		/// <summary>同步栈里的步骤行；同一位置的步骤只更新内容，不重建行。</summary>
@@ -709,14 +707,14 @@ internal sealed class ExecutionProcessView
 		}
 
 		/// <summary>步骤行展开/收起改变了行高：重测这一行，并让它的预览行停在原地。</summary>
-		void InvalidateRow(Grid row, int index, bool preservePreview)
+		void InvalidateRow(Grid row, int index, bool preservePreview, bool collapseFromPinned = false)
 		{
 			if (body is null) return;
 			ConversationTimeline.InvalidateMeasureTree(row);
 			list?.InvalidateMeasure();
 			// 栈布局靠内容测量更新组体高度，虚拟化列表靠 arrange 重测行高并重算 extent。
 			KickBodyLayout();
-			if (!preservePreview)
+			if (!preservePreview && !collapseFromPinned)
 			{
 				ClearAnchor();
 				return;
@@ -728,7 +726,7 @@ internal sealed class ExecutionProcessView
 			anchorIndex = index;
 			anchorAttempts = 0;
 			anchorApplied = double.NaN;
-			anchorOffset = viewport is not null ? row.Bounds.Y - viewport.Bounds.Y : 0;
+			anchorOffset = collapseFromPinned ? 0 : viewport is not null ? row.Bounds.Y - viewport.Bounds.Y : 0;
 			QueueClamp();
 		}
 
@@ -836,6 +834,7 @@ internal sealed class ExecutionProcessView
 		void DestroyBody()
 		{
 			if (body is not { } content) return;
+			if (viewport is { } retired) _bodyViewports.Remove(retired);
 			body = null;
 			list = null;
 			stack = null;
@@ -878,7 +877,8 @@ internal sealed class ExecutionProcessView
 	/// </summary>
 	private Grid StepRowHost() => new Grid().Columns("22,*");
 
-	private void BindStep(Grid host, ChatEntry entry, int index, string groupKey, Action<bool> layoutChanged)
+	private void BindStep(Grid host, ChatEntry entry, int index, string groupKey, ScrollViewer? bodyViewport,
+		Action<bool, Expander> layoutChanged)
 	{
 		var icon = host.Children.Count > 0 && host.Children[0] is Image existingIcon
 			? existingIcon
@@ -906,7 +906,16 @@ internal sealed class ExecutionProcessView
 		var view = _create(entry);
 		content.Child(view);
 		content.Tag = entry;
+		// 虚拟化列表的行是延后创建的：那时组体视口已经就绪，可以在这一层直接挂上吸顶宿主。
+		if (bodyViewport is { } body) AttachSticky(view, host, body);
 		TrackStepStates(stepKey, view, layoutChanged);
+	}
+
+	/// <summary>把组体视口交给这一行里的吸顶折叠行（只有组体内的步骤才吸顶）。</summary>
+	private static void AttachSticky(Element root, FrameworkElement rowHost, ScrollViewer body)
+	{
+		foreach (var expander in Expanders(root))
+			if (expander is StickyExpander sticky) sticky.AttachBody(body, rowHost);
 	}
 
 	private void UnbindStep(Grid host, string groupKey)
@@ -918,7 +927,7 @@ internal sealed class ExecutionProcessView
 	}
 
 	/// <summary>记住这一步里每个折叠开关的展开状态：行被回收后重建仍能恢复。</summary>
-	private void TrackStepStates(string stepKey, Element view, Action<bool>? layoutChanged = null)
+	private void TrackStepStates(string stepKey, Element view, Action<bool, Expander>? layoutChanged = null)
 	{
 		// 恢复状态发生在虚拟化器创建这一行的时候（测量途中）。此时再让上层失效排布会
 		// 在测量内部重入，行高缓存可能停在「内容还没建好」的那一版，表现为偶发的高度不对。
@@ -935,7 +944,7 @@ internal sealed class ExecutionProcessView
 				RecordStepState(stepKey, position, expanded);
 				if (restoring) return;
 				// 行内容变高/变矮：组体的行高缓存与可滚范围都要重算。
-				layoutChanged?.Invoke(expanded);
+				layoutChanged?.Invoke(expanded, expander);
 			};
 		}
 		restoring = false;
@@ -1012,7 +1021,7 @@ internal sealed class ExecutionProcessView
 		for (var i = 0; i < entries.Count; i++)
 		{
 			var entry = entries[i];
-			if (entry.Role == ChatRole.Tool || entry.Thinking.Length > 0 || entry.IsThinking) members.Add(entry);
+			if (entry.Role == ChatRole.Tool || entry.ThinkingLength > 0 || entry.IsThinking) members.Add(entry);
 			else
 			{
 				FlushGroup();
@@ -1096,7 +1105,7 @@ internal sealed class ExecutionProcessView
 				"todo" => "list-checks",
 				_ => "play",
 			},
-			ChatRole.Assistant when entry.Thinking.Length > 0 || entry.IsThinking => "sparkles",
+			ChatRole.Assistant when entry.ThinkingLength > 0 || entry.IsThinking => "sparkles",
 			ChatRole.Assistant => "message-square",
 			ChatRole.Error => "x",
 			_ => "ellipsis",
@@ -1104,7 +1113,7 @@ internal sealed class ExecutionProcessView
 
 		internal static string RoleFor(ChatEntry entry) => entry.Role switch
 		{
-			ChatRole.Assistant when entry.Thinking.Length > 0 || entry.IsThinking => AppStyles.RoleThinking,
+			ChatRole.Assistant when entry.ThinkingLength > 0 || entry.IsThinking => AppStyles.RoleThinking,
 			ChatRole.Assistant => AppStyles.RoleInfo,
 			ChatRole.Error => AppStyles.RoleSubtle,
 			_ => AppStyles.RoleSubtle,

@@ -57,7 +57,8 @@ internal sealed class AssistantMessageView : IDisposable
 				_thinkingIcon.Column(0),
 				_thinkingHeader.Column(1).Margin(new Thickness(5, 0, 0, 0)),
 				_previewLine.Column(2).Margin(new Thickness(6, 0, 0, 0)));
-		_thinking = new Expander()
+		// 组体内吸顶用（未挂组体视口时行为与普通 Expander 相同）。
+		_thinking = new StickyExpander()
 			.Header(thinkingTitle)
 			.IsExpanded(false);
 		_thinking.ExpandedChanged += expanded =>
@@ -112,13 +113,15 @@ internal sealed class AssistantMessageView : IDisposable
 	private sealed class MarkdownFeed
 	{
 		internal MarkdownView? View;
-		internal string? Source;
+		internal StreamText Source;
+		internal bool HasSource;
 		internal int Shown;
 
 		internal void Clear()
 		{
 			View = null;
-			Source = null;
+			Source = default;
+			HasSource = false;
 			Shown = 0;
 		}
 	}
@@ -157,7 +160,7 @@ internal sealed class AssistantMessageView : IDisposable
 			_header.Text(time.Length > 0 ? $"{role}  ·  {time}{timing}" : $"{role}{timing}");
 		}
 		_headerRow.IsVisible(!entry.Compact);
-		_thinking.IsVisible(entry.Thinking.Length > 0 || entry.IsThinking);
+		_thinking.IsVisible(entry.ThinkingLength > 0 || entry.IsThinking);
 		_thinkingIcon.IsVisible(!entry.Compact);
 		var thinkingLabel = entry.IsThinking ? Strings.ThinkingActive
 			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs) : Strings.ThinkingComplete;
@@ -179,8 +182,8 @@ internal sealed class AssistantMessageView : IDisposable
 		}
 		// 逐字只对「正在流的这一段」生效：这一行已经定稿、或是打开的旧会话，就直接全量显示 ——
 		// 把几百 KB 的历史思考从头打一遍是灾难。
-		_thinkingType.Set(entry.Thinking, PacedStream && entry.IsThinking);
-		_bodyType.Set(entry.Text, PacedStream && entry.IsStreaming);
+		_thinkingType.Set(entry.ThinkingSource, PacedStream && entry.IsThinking);
+		_bodyType.Set(entry.BodyText, PacedStream && entry.IsStreaming);
 		// 数据帧自己也推一格：没有帧泵（自检/单测）时这就是唯一的推进通道。
 		_thinkingType.Advance();
 		_bodyType.Advance();
@@ -231,11 +234,11 @@ internal sealed class AssistantMessageView : IDisposable
 		{
 			// 思考还在写：首行随时会被新的一行顶掉，每帧跟着最新一行走。
 			_previewSettled = false;
-			SetPreview(ThinkingPreview.LatestLine(entry.Thinking, _thinkingType.Shown), followTail: true);
+			SetPreview(ThinkingPreview.LatestLine(entry.ThinkingSource, _thinkingType.Shown), followTail: true);
 		}
 		else if (!_previewSettled)
 		{
-			var preview = ThinkingPreview.FirstLine(entry.Thinking, out var settled);
+			var preview = ThinkingPreview.FirstLine(entry.ThinkingSource, out var settled);
 			_previewSettled = settled;
 			SetPreview(preview, followTail: false);
 		}
@@ -249,7 +252,7 @@ internal sealed class AssistantMessageView : IDisposable
 	{
 		var shown = _bodyType.Shown;
 		_body.IsVisible(shown > 0);
-		_copy.IsVisible(!entry.Compact && !entry.IsStreaming && entry.Text.Length > 0);
+		_copy.IsVisible(!entry.Compact && !entry.IsStreaming && entry.TextLength > 0);
 		if (shown > 0)
 		{
 			var view = EnsureBodyMarkdown();
@@ -260,7 +263,7 @@ internal sealed class AssistantMessageView : IDisposable
 				if (previous is not null) UiLifetime.Release(previous);
 			}
 			view.IsStreaming = entry.IsStreaming;
-			FeedMarkdown(view, _bodyFeed, entry.Text, shown, entry.IsStreaming, "markdown.stream", "markdown.finalize");
+			FeedMarkdown(view, _bodyFeed, entry.BodyText, shown, entry.IsStreaming, "markdown.stream", "markdown.finalize");
 			return;
 		}
 		var detached = _body.Child;
@@ -345,9 +348,9 @@ internal sealed class AssistantMessageView : IDisposable
 	{
 		var current = entry ?? _entry;
 		if (current is null) return;
-		var thinking = current.Thinking;
+		var thinking = current.ThinkingSource;
 		// 打字机没跟着这条文本走（视图刚建、或行被回收给别的消息）时按全文显示，不能显示半句。
-		var shown = ReferenceEquals(_thinkingType.Target, thinking) ? Math.Min(_thinkingType.Shown, thinking.Length) : thinking.Length;
+		var shown = _thinkingType.Target.SameAs(thinking) ? Math.Min(_thinkingType.Shown, thinking.Length) : thinking.Length;
 		if (shown == 0)
 		{
 			if (_thinkingMarkdown is not null) _thinkingMarkdown.Source = string.Empty;
@@ -371,18 +374,16 @@ internal sealed class AssistantMessageView : IDisposable
 	private void FeedMarkdown(
 		MarkdownView view,
 		MarkdownFeed feed,
-		string text,
+		in StreamText text,
 		int shown,
 		bool streaming,
 		string streamEvent,
 		string finalizeEvent)
 	{
 		shown = Math.Min(shown, text.Length);
-		var previous = feed.Source;
-		// 可见前缀仍然成立 = 权威文本还是上一次的继续。同一份字符串实例（帧泵在两个数据帧之间推进）
-		// 直接跳过比较：64K 正文每帧做一次整串 StartsWith 是白烧。
-		var continues = ReferenceEquals(view, feed.View) && previous is not null &&
-			(ReferenceEquals(previous, text) || text.StartsWith(previous, StringComparison.Ordinal));
+		// 可见前缀仍然成立 = 权威文本还是上一次的继续。流式来源按「同回合 + 长度不减」判定，
+		// 不需要整串比较；普通字符串仍按引用/前缀比较（同一行的记录会在帧间复用它）。
+		var continues = ReferenceEquals(view, feed.View) && feed.HasSource && text.Continues(feed.Source);
 		if (continues)
 		{
 			if (shown == feed.Shown)
@@ -395,7 +396,8 @@ internal sealed class AssistantMessageView : IDisposable
 			if (streaming && shown > feed.Shown)
 			{
 				var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-				view.Append(text.Substring(feed.Shown, shown - feed.Shown));
+				// 只切新露出的那几个字：流式正文不整篇复制。
+				view.Append(text.Slice(feed.Shown, shown - feed.Shown));
 				if (watch is not null)
 				{
 					Diagnostics.Record(streamEvent, watch, $"delta={shown - feed.Shown} chars={shown}");
@@ -406,13 +408,15 @@ internal sealed class AssistantMessageView : IDisposable
 			}
 		}
 		var full = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-		view.Source = shown >= text.Length ? text : text.Substring(0, shown);
+		// 整篇赋值只发生在视图新建/文本被改写/定稿：此时才物化可见前缀。
+		view.Source = shown >= text.Length ? text.Materialize() : text.Slice(0, shown);
 		if (full is not null)
 		{
 			Diagnostics.Record(streaming ? streamEvent : finalizeEvent, full, $"chars={shown}");
 		}
 		feed.View = view;
 		feed.Source = text;
+		feed.HasSource = true;
 		feed.Shown = shown;
 	}
 

@@ -425,6 +425,21 @@ internal sealed class SmoothScroll : IDisposable
 	public void StopFollowingGrowth() => _followGrowth = false;
 
 	/// <summary>
+	/// 把视口定位到指定偏移并解除跟底（「回到本项开头」这类阅读定位，不是读者滚动）。
+	/// 与直接写 ScrollViewer 的区别：同时取消在途动画与本帧待处理输入，并明确记下「读者已离开末尾」，
+	/// 下一帧的内容增长不会再把读者拽回去。
+	/// </summary>
+	internal void RestoreReadingOffset(double vertical)
+	{
+		if (_disposed) return;
+		_readerEscaped = true;
+		_followGrowth = false;
+		Stop();
+		SyncMetrics();
+		Apply(new Point(Offset.X, Math.Clamp(vertical, 0, MaxVerticalOffset)));
+	}
+
+	/// <summary>
 	/// Republishes the virtualized extent to the scroll owner. Rows measured during arrange update
 	/// the presenter's extent after the owner already published its metrics, so the bar maximum
 	/// (and therefore the reachable end) would otherwise stay at the pre-growth value.

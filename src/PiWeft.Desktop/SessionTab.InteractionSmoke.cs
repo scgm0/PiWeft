@@ -1,11 +1,15 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Rendering;
 using PiWeft.Markdown;
 
 namespace PiWeft.Desktop;
 
 public sealed partial class SessionTab
 {
+	/// <summary>无窗口测试：立即渲染一帧（DispatcherTimer 在无调度器时不会自动 tick）。</summary>
+	internal void RenderForTests() => Render();
+
 	/// <summary>是否打印 scroll-sweep 的高频状态探针（PIWEFT_SWEEP_PROBE=1）。</summary>
 	private static bool SweepProbe => Environment.GetEnvironmentVariable("PIWEFT_SWEEP_PROBE") == "1";
 
@@ -380,6 +384,113 @@ public sealed partial class SessionTab
 			return found is null;
 		});
 		return found;
+	}
+
+	/// <summary>
+	/// 仅供 <c>--ui-smoke stream</c>：按真实流式的节奏持续追加思考与正文（含标题/列表/代码块），
+	/// 让逐字打字机、增量 Markdown 与每帧重绘一直跑；每秒打印工作集、托管堆与框架的渲染缓存台账，
+	/// 用来定位「对话越久工作集越大」到底是文本位图、几何、图集还是托管堆。
+	/// </summary>
+	internal void PrepareStreamSmoke()
+	{
+		var chunks = BuildStreamSmokeCorpus();
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(16));
+		var tick = 0;
+		var cursor = 0;
+		const int thinkingTicks = 60 * 45;
+		const int totalTicks = 60 * 105;
+		timer.Tick += () =>
+		{
+			var inThinking = tick < thinkingTicks;
+			if (cursor >= chunks.Length)
+			{
+				cursor = 0;
+			}
+			var delta = chunks[cursor++];
+			// 思考先写一段，再切到正文：两条逐字通道都要覆盖。
+			if (inThinking)
+			{
+				_chat.SmokeStream(string.Empty, delta, finish: false);
+				if (tick == 2) ExpandThinkingForStreamSmoke();
+			}
+			else
+			{
+				_chat.SmokeStream(delta, string.Empty, finish: false);
+			}
+			if (tick % 60 == 59)
+			{
+				var resources = RenderResourceMetrics.Snapshot();
+				var managed = GC.GetTotalMemory(forceFullCollection: false) / (1024 * 1024);
+				Console.WriteLine(
+					$"stream t={tick / 60}s chars={(inThinking ? "thinking" : "body")} ws={Environment.WorkingSet / (1024 * 1024)}MiB " +
+					$"heap={managed}MiB gc={GC.CollectionCount(0)}/{GC.CollectionCount(2)} " +
+					$"text={resources.TextCacheBytes / 1024}KiB geom={resources.GeometryCacheBytes / 1024}KiB " +
+					$"atlas={resources.AtlasPageCount}/{resources.AtlasPageBytes / 1024}KiB " +
+					$"persist={resources.PersistentResourceBytes / 1024}KiB scratch={resources.ScratchPooledBytes / 1024}KiB " +
+					$"pending={resources.PendingReleaseBytes / 1024}KiB");
+			}
+			if (tick == 150)
+			{
+				Console.WriteLine("stream-ready");
+			}
+			if (tick >= totalTicks)
+			{
+				_chat.SmokeStream(string.Empty, string.Empty, finish: true);
+				timer.Stop();
+				Console.WriteLine("stream-done");
+			}
+			tick++;
+		};
+		if (View.FindVisualRoot() is Window window) window.Closed += timer.Dispose;
+		timer.Start();
+	}
+
+	/// <summary>流式压测语料：切成「块」，按 tick 一块一块喂，接近真实模型的分块节奏。</summary>
+	private static string[] BuildStreamSmokeCorpus()
+	{
+		var builder = new System.Text.StringBuilder();
+		for (var i = 0; i < 400; i++)
+		{
+			switch (i % 5)
+			{
+				case 0:
+					builder.Append($"## 段落 {i}\n\n这是第 {i} 段正文，包含一句普通文本、`inline code` 与一个[链接](https://example.com/{i})，用来让增量 Markdown 每次都要重排尾块。\n\n");
+					break;
+				case 1:
+					builder.Append($"- 列表项 {i}.a，带一点长度让行高变化\n- 列表项 {i}.b，第二行内容\n- 列表项 {i}.c\n\n");
+					break;
+				case 2:
+					builder.Append($"```csharp\n// 代码块 {i}\nvar value = Compute({i});\nConsole.WriteLine(value);\n```\n\n");
+					break;
+				case 3:
+					builder.Append($"> 引用 {i}：这里是一段被引用的话，长度接近真实回复里的段落。\n\n");
+					break;
+				default:
+					builder.Append($"普通段落 {i}：" + string.Join("", Enumerable.Repeat("内容", 12)) + "\n\n");
+					break;
+			}
+		}
+		var text = builder.ToString();
+		// 每块 24 字：约等于 60fps 下每秒 1.4K 字，接近长回复的流式速度。
+		var blocks = new List<string>(text.Length / 24 + 1);
+		for (var offset = 0; offset < text.Length; offset += 24)
+		{
+			blocks.Add(text.Substring(offset, Math.Min(24, text.Length - offset)));
+		}
+		return [.. blocks];
+	}
+
+	/// <summary>展开当前流式回复的思考折叠：逐字打字的 Markdown 正文路径也要进压测。</summary>
+	private void ExpandThinkingForStreamSmoke()
+	{
+		foreach (var expander in Find<Expander>(_messages))
+		{
+			if (expander.Header is not { } header) continue;
+			var hasThinkingLabel = Find<TextBlock>(header).Any(text => text.Text == Strings.ThinkingActive);
+			if (!hasThinkingLabel) continue;
+			expander.IsExpanded = true;
+			return;
+		}
 	}
 
 	/// <summary>Native interaction diagnostics only; --ui-smoke interactions uses isolated fixtures.</summary>

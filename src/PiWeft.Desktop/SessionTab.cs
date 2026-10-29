@@ -20,6 +20,8 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ChatViewModel _chat;
 	private readonly ConversationTimeline _timeline;
 	private readonly DispatcherTimer _renderTimer = new(TimeSpan.FromMilliseconds(40));
+	// 自动重试退避期每秒刷新一次倒计时；不在重试时停着，不占调度。
+	private readonly DispatcherTimer _retryTimer = new(TimeSpan.FromSeconds(1));
 	private int _renderPending;
 	private volatile bool _disposed;
 	private bool _sending;
@@ -33,7 +35,11 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ConversationScroll _conversationScroll;
 	private readonly TextFocusScrollGuard _textFocus;
 	private readonly MultiLineTextBox _composer;
-	private readonly TextBlock _composerHint = new();
+	/// <summary>
+	/// 占位提示。实例一律经 <see cref="BuildComposerHint"/> 创建（显示换新见 <see cref="ShowComposerHint"/>）：
+	/// 构造与换新的每一枚都必须不可命中，否则提示盖在输入框上会吞掉那一行的点击。
+	/// </summary>
+	private TextBlock _composerHint = BuildComposerHint();
 	private readonly Button _sendButton;
 	private readonly Button _sendMenuButton;
 	private readonly Border _sendDivider;
@@ -284,7 +290,7 @@ public sealed partial class SessionTab : IDisposable
 			.Padding(new Thickness(AppTheme.Space2))
 			.OnTextChanged(value =>
 			{
-				_composerHint.IsVisible(value.Length == 0);
+				ShowComposerHint(value.Length == 0);
 				RefreshCommandBar();
 			})
 			.OnKeyDown(key =>
@@ -469,10 +475,7 @@ public sealed partial class SessionTab : IDisposable
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
 				.Children(_editNotice, _commandBar, _attachmentBar,
-					new Grid().Children(_composer, _composerHint.Text(Strings.ComposerPlaceholder)
-						.FontSize(AppTheme.FontSizeChat).SubtleText().TextTrimming(TextTrimming.CharacterEllipsis)
-						.Margin(new Thickness(AppTheme.Space2)).IsHitTestVisible(false)
-						.VerticalAlignment(VerticalAlignment.Top)), toolbar));
+					new Grid().Children(_composer, _composerHint), toolbar));
 
 		// The window registers with the OS; the session surface owns the target draft.
 
@@ -586,6 +589,10 @@ public sealed partial class SessionTab : IDisposable
 				Render();
 			}
 		};
+		_retryTimer.Tick += () =>
+		{
+			if (!_disposed) Render();
+		};
 		_imagePreview.Status = (message, ok) =>
 		{
 			if (_disposed) return;
@@ -628,6 +635,9 @@ public sealed partial class SessionTab : IDisposable
 
 	/// <summary>草稿里已识别的文件引用数（诊断与契约测试用）。</summary>
 	internal int ComposerReferenceCount => UserReferenceRichText.Count(_composer.Text);
+
+	/// <summary>输入区当前附件（诊断与契约测试用）。</summary>
+	internal IReadOnlyList<ImageContent> ComposerAttachments => [.. _attachments.Select(static item => item.Content)];
 
 	public string Title { get; private set; }
 
@@ -806,6 +816,7 @@ public sealed partial class SessionTab : IDisposable
 		_compactionAbort?.Cancel();
 		HideTransientPanels();
 		_renderTimer.Dispose();
+		_retryTimer.Dispose();
 		_scroll.ScrollChanged -= OutlineScrolled;
 		_outline.Dispose();
 		_conversationScroll.Dispose();
@@ -910,11 +921,15 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>焦点移入输入框。</summary>
 	public void FocusComposerNow() => _composer.Focus();
 
+	/// 编辑重发带回的图片没有文件路径；附件按路径去重，这里给一个稳定的合成前缀。
+	private const string EditImagePrefix = "edit-resend:";
+
 	/// <summary>
 	/// 「编辑重发」：把原文放回输入框，并记下要回到的条目。发送时先在该处开分支，
-	/// 于是修改后的提问落在新分支上，原历史仍可回看。
+	/// 于是修改后的提问落在新分支上，原历史仍可回看。原消息的图片一并带回附件区，
+	/// 重发才会带上同样的内容块。
 	/// </summary>
-	private void PrepareEdit(string entryId, string text)
+	private void PrepareEdit(string entryId, string text, IReadOnlyList<ChatImage> images)
 	{
 		if (IsStreaming)
 		{
@@ -923,6 +938,12 @@ public sealed partial class SessionTab : IDisposable
 
 		_pendingBranchEntryId = entryId;
 		_composer.Text = text;
+		_attachments.Clear();
+		foreach (var image in images)
+		{
+			AddImage(EditImagePrefix + _attachments.Count, new ImageContent { Data = image.Data, MimeType = image.MimeType });
+		}
+		RefreshAttachments();
 		_composer.Focus();
 		_editNotice.IsVisible(true);
 	}
@@ -1392,7 +1413,10 @@ public sealed partial class SessionTab : IDisposable
 		{
 			var captured = path;
 			_attachmentBar.Children(new StackPanel().Orientation(Orientation.Horizontal).Spacing(2).Children(
-				new Button().Ghost().Content(new TextBlock().Text(Path.GetFileName(path)).FontSize(AppTheme.FontSizeMicro))
+				new Button().Ghost().Content(new TextBlock()
+				.Text(path.StartsWith(EditImagePrefix, StringComparison.Ordinal)
+					? Strings.EditImageLabel
+					: Path.GetFileName(path)).FontSize(AppTheme.FontSizeMicro))
 					.HoverTip(Strings.ImagePreviewOpen).OnClick(() => PreviewAttachment(content)),
 				AppIcons.Button("x", Strings.RemoveAttachment, () =>
 				{
@@ -1737,6 +1761,60 @@ public sealed partial class SessionTab : IDisposable
 	/// 输入以 <c>/</c> 开头时，在输入框上方列出匹配的斜杠命令（提示词模板与技能），点击即补全。
 	/// 命令数据来自会话发现的结果，与 RPC 的 <c>get_commands</c> 同源。
 	/// </summary>
+	/// <summary>
+	/// 创建占位提示：样式与命中设置在这一处配齐 —— 提示叠在输入框上，
+	/// 任何一枚（构造的或换新的）都必须 IsHitTestVisible(false)，点击才能穿到输入框。
+	/// </summary>
+	private static TextBlock BuildComposerHint()
+	{
+		var hint = new TextBlock().FontSize(AppTheme.FontSizeChat).SubtleText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.Text(Strings.ComposerPlaceholder)
+			.Margin(new Thickness(AppTheme.Space2))
+			.IsHitTestVisible(false)
+			.VerticalAlignment(VerticalAlignment.Top);
+		return hint;
+	}
+
+	/// <summary>
+	/// 显隐占位提示。显示即换一枚新实例：
+	/// 保留场景把提示节点首次录制的光栅固化在节点上 —— 此后强制重绘、文本重建都换不掉，
+	/// 输入内容再删除后重放的仍是那截被裁掉的占位；新实例没有旧录制，完整绘制。
+	/// 换新延迟一拍，让「无提示」先被完整录制一帧，避免新旧光栅混在同一脏区。
+	/// </summary>
+	private void ShowComposerHint(bool visible)
+	{
+		if (_disposed) return;
+		if (!visible)
+		{
+			_composerHint.IsVisible(false);
+			return;
+		}
+
+		_composerHint.IsVisible(false);
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(200));
+		timer.Tick += () =>
+		{
+			timer.Stop();
+			timer.Dispose();
+			SwapComposerHint();
+		};
+		timer.Start();
+	}
+
+	/// <summary>把提示换成一枚全新实例（延迟一拍由 ShowComposerHint 调度）。测试直接驱动这一拍。</summary>
+	internal void SwapComposerHint()
+	{
+		if (_disposed) return;
+		var grid = Find<Grid>(_composerPane)
+			.FirstOrDefault(candidate => candidate.Children.Any(child => ReferenceEquals(child, _composer)));
+		if (grid is null) return;
+		var fresh = BuildComposerHint();
+		grid.Remove(_composerHint);
+		grid.Add(fresh);
+		_composerHint = fresh;
+	}
+
 	private void RefreshCommandBar()
 	{
 		var text = _composer.Text;
@@ -1819,6 +1897,16 @@ public sealed partial class SessionTab : IDisposable
 	/// </summary>
 	private (string Kind, string Icon, string Role, string Text)? BusyIndicator(IReadOnlyList<ChatEntry> rows)
 	{
+		// 自动重试优先于普通进行态：退避期没有任何消息事件，用户必须能看出「不是失败了，是在等重试」。
+		if (_chat.Retry is { Running: true } retry)
+		{
+			var seconds = RetrySecondsRemaining(retry.RetryAtUnixMs);
+			return ("retrying", "rotate-ccw", AppStyles.RoleInfo,
+				seconds > 0
+					? Strings.RetryingIn(retry.Attempt, retry.MaxAttempts, seconds)
+					: Strings.Retrying(retry.Attempt, retry.MaxAttempts));
+		}
+
 		if (Session.IsCompacting)
 		{
 			return ("compacting", "refresh-cw", AppStyles.RoleSubtle, Strings.Compacting);
@@ -1847,7 +1935,8 @@ public sealed partial class SessionTab : IDisposable
 		static (string, string, string, string) KindOf(ChatEntry item) => item.Role switch
 		{
 			ChatRole.Tool => ("executing", "terminal", AppStyles.RoleInfo, Strings.BusyExecuting),
-			ChatRole.Assistant when item.Text.Length > 0 || item.Images.Count > 0 =>
+			// 每帧都会走到这里：流式行必须用 O(1) 的长度判断，不能读 Text 触发整篇物化。
+			ChatRole.Assistant when item.TextLength > 0 || item.Images.Count > 0 =>
 				("responding", "message-square", AppStyles.RoleInfo, Strings.Streaming),
 			_ => ("thinking", "sparkles", AppStyles.RoleThinking, Strings.ThinkingActive),
 		};
@@ -1934,10 +2023,32 @@ public sealed partial class SessionTab : IDisposable
 		var kindChanged = indicator?.Kind != _busyKind;
 		_busyKind = indicator?.Kind;
 		_busyLine.IsVisible(busy && indicator is not null);
-		if (indicator is { } active && kindChanged)
+		if (indicator is { } active)
 		{
-			_busyIcon.Source(AppIcons.Get(active.Icon, AppStyles.ColorForRole(active.Role)));
-			_busyText.Text(active.Text);
+			if (kindChanged)
+			{
+				_busyIcon.Source(AppIcons.Get(active.Icon, AppStyles.ColorForRole(active.Role)));
+			}
+			// 重试倒计时每秒变一次，但 Kind 不变：文案要单独比对。
+			if (_busyText.Text != active.Text) _busyText.Text(active.Text);
+		}
+
+		// 退避期只在事件到达时才会重绘；这里交给 1 秒定时器读秒，收口后立刻停。
+		var retrying = _chat.Retry is { Running: true };
+		if (retrying)
+		{
+			if (!_retryTimer.IsEnabled) _retryTimer.Start();
+		}
+		else if (_retryTimer.IsEnabled)
+		{
+			_retryTimer.Stop();
+		}
+
+		// 重试收口提示：失败卡/成功回复本身已在时间线，toast 只负责即时告知。
+		if (_chat.TakeRetryNotice() is { } notice)
+		{
+			if (notice.Success) Toasts.Success(View, Strings.RetrySucceeded(notice.Attempt));
+			else NotifyError(Strings.RetryFailed(notice.Attempt, notice.MaxAttempts, notice.FinalError));
 		}
 		if (_statisticsPanel.IsOpen)
 		{
@@ -1974,7 +2085,7 @@ public sealed partial class SessionTab : IDisposable
 			foreach (var row in entries)
 			{
 				if (row.Role == ChatRole.User) _rowsHaveUser = true;
-				else if (row.Role == ChatRole.Assistant && row.Text.Length > 0) _rowsHaveReply = true;
+				else if (row.Role == ChatRole.Assistant && row.TextLength > 0) _rowsHaveReply = true;
 				if (_rowsHaveUser && _rowsHaveReply) break;
 			}
 		}
@@ -2282,7 +2393,8 @@ public sealed partial class SessionTab : IDisposable
 			if (entry.Text.Length > 0)
 			{
 				actions.Children(
-					AppIcons.Button("pencil", Strings.EditAndResend, () => PrepareEdit(entryId, entry.Text), size: 14)
+					AppIcons.Button("pencil", Strings.EditAndResend,
+						() => PrepareEdit(entryId, entry.Text, entry.Images), size: 14)
 						.IsEnabled(!IsStreaming));
 			}
 			actions.Children(
@@ -2559,6 +2671,14 @@ public sealed partial class SessionTab : IDisposable
 			.FontSize(AppTheme.FontSizeMicro)
 			.FontFamily(AppTheme.MonoFont)
 			.SubtleText();
+	}
+
+	/// <summary>退避倒计时的剩余整秒（向上取整，永不为负）；无计划时刻时为 0。</summary>
+	private static int RetrySecondsRemaining(long retryAtUnixMs)
+	{
+		if (retryAtUnixMs <= 0) return 0;
+		var remaining = retryAtUnixMs - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+		return remaining <= 0 ? 0 : (int)Math.Ceiling(remaining / 1000.0);
 	}
 
 	private static void Dispatch(Action action)

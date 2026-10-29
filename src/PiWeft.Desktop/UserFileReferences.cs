@@ -33,6 +33,13 @@ internal static partial class UserFileReferences
 	private static readonly char[] TrailingPunctuation =
 		['.', ',', ';', ':', '!', '?', '，', '。', '；', '：', '！', '？'];
 
+	/// <summary>
+	/// 中文句子标点：不可能属于路径，且常紧贴引用书写（<c>@docs/，然后…</c>）。
+	/// 见到就截断，避免把后面的中文句子吞进 chip 标签。
+	/// </summary>
+	private static readonly char[] SentencePunctuation =
+		['，', '。', '；', '：', '！', '？', '、', '（', '）', '【', '】', '「', '」', '『', '』', '《', '》', '〈', '〉', '…', '—', '～'];
+
 	public static IReadOnlyList<UserFileReference> Parse(string text)
 	{
 		if (text.Length == 0 || !text.Contains('@')) return [];
@@ -53,6 +60,8 @@ internal static partial class UserFileReferences
 			else
 			{
 				var plain = match.Groups["plain"].Value;
+				var stop = plain.AsSpan().IndexOfAny(SentencePunctuation);
+				if (stop >= 0) plain = plain[..stop];
 				var trimmed = plain.TrimEnd(TrailingPunctuation);
 				if (!LooksLikePath(trimmed)) continue;
 				path = trimmed;

@@ -1612,6 +1612,10 @@ public sealed partial class MainWindow : Window
 				case "latest-churn":
 					CurrentTab()?.PrepareLatestChurnSmoke();
 					break;
+				case "stream":
+					// 流式内存/渲染压测：没有模型也能持续跑逐字打字机 + 增量 Markdown。
+					CurrentTab()?.PrepareStreamSmoke();
+					break;
 				case "interactions":
 					CurrentTab()?.PrepareInteractionSmoke();
 					break;
@@ -1722,6 +1726,7 @@ public sealed partial class MainWindow : Window
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
 		// scroll-sweep 从会话底部按 0.9 s 一步扫完整条会话，需要更长的驻留。
 		await Task.Delay(view is "scroll-sweep" ? 50000
+			: view is "stream" ? 120000
 			: view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" ? 30000
 			: 7000).ConfigureAwait(false);
 		// 加载提示会阻止关窗；退出前先确认没有在途的打开。

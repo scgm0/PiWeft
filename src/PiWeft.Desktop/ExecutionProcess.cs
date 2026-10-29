@@ -62,7 +62,7 @@ internal static class ExecutionProcess
 				unique.Add(entry);
 			}
 			var last = unique[^1];
-			var answer = last.Role == ChatRole.Assistant && (last.Text.Length > 0 || last.Images.Count > 0) ? last : null;
+			var answer = last.Role == ChatRole.Assistant && (last.TextLength > 0 || last.Images.Count > 0) ? last : null;
 			var turnKey = turnId ?? unique[0].EntryId ?? unique[0].Timestamp.ToString();
 			// 思考步骤的键必须跨「流式行 → 落盘后的最终行」稳定：源 EntryId 会从
 			// live-assistant/... 变成会话条目 id，用轮次 + 序号代替。否则组键/步骤键
@@ -71,17 +71,17 @@ internal static class ExecutionProcess
 			var process = new List<ChatEntry>();
 			foreach (var entry in unique)
 			{
-				if (entry.Thinking.Length > 0 || entry.IsThinking)
+				if (entry.ThinkingLength > 0 || entry.IsThinking)
 					process.Add(entry with
 					{
 						EntryId = $"thinking/{turnKey}/{thinkingSequence++}", Text = string.Empty, Images = [], Compact = true,
 						// 只有纯思考回复的 DurationMs 才可视为思考耗时；含正文时那是整条回复的耗时。
-						DurationMs = entry.Text.Length == 0 && entry.Images.Count == 0 ? entry.DurationMs : null,
+						DurationMs = entry.TextLength == 0 && entry.Images.Count == 0 ? entry.DurationMs : null,
 					});
 				if (ReferenceEquals(entry, answer)) continue;
-				if (entry.Role != ChatRole.Assistant || entry.Text.Length > 0 || entry.Images.Count > 0)
+				if (entry.Role != ChatRole.Assistant || entry.TextLength > 0 || entry.Images.Count > 0)
 				{
-					var item = entry.Thinking.Length == 0 && !entry.IsThinking
+					var item = entry.ThinkingLength == 0 && !entry.IsThinking
 						? entry with { Compact = true }
 						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true };
 					if (!live && item.Role == ChatRole.Tool && item.IsStreaming)
@@ -102,7 +102,7 @@ internal static class ExecutionProcess
 					// 总耗时取自本轮最终回复；思考/工具行本身没有独立的墙钟时间。
 					DurationMs = unique.LastOrDefault(static entry => entry.Role == ChatRole.Assistant)?.DurationMs,
 				});
-			if (answer is not null) rows.Add(answer.Thinking.Length == 0 && !answer.IsThinking ? answer : answer with { Thinking = string.Empty, IsThinking = false });
+			if (answer is not null) rows.Add(answer.ThinkingLength == 0 && !answer.IsThinking ? answer : answer with { Thinking = string.Empty, IsThinking = false });
 			turn.Clear();
 		}
 	}
@@ -122,12 +122,12 @@ internal static class ExecutionProcess
 				tools++;
 			}
 
-			if (entry.Thinking.Length > 0 || entry.IsThinking)
+			if (entry.ThinkingLength > 0 || entry.IsThinking)
 			{
 				thinking++;
 			}
 
-			if (entry.Role == ChatRole.Assistant && (entry.Text.Length > 0 || entry.Images.Count > 0))
+			if (entry.Role == ChatRole.Assistant && (entry.TextLength > 0 || entry.Images.Count > 0))
 			{
 				interim++;
 			}
