@@ -289,6 +289,76 @@ public sealed class UserMessageDisplayTests
 	}
 
 	[Fact]
+	public void ComposerHintYieldsToImeCompositionAndComesBackWhenItIsCancelled()
+	{
+		using var tab = Tab("hello");
+		ConversationPerformanceTests.Layout(tab.View);
+		var composer = Find<MultiLineTextBox>(tab.View).Single(control => !control.IsReadOnly);
+		var hint = Assert.Single(Find<TextBlock>(tab.View).Where(block => block.Text == Strings.ComposerPlaceholder));
+		Assert.True(hint.IsVisible);
+
+		// 中文输入法开始组合：正文还没落到 Text，但 IME 的组合串已经画在同一行。
+		// 占位必须立即让位，否则两层字叠在一起（「速度|消息，@ 引用文件…」）。
+		tab.ComposerCompositionStarted();
+		Assert.False(hint.IsVisible);
+		Assert.Equal(string.Empty, composer.Text);
+
+		// 组合期间即使正文事件把占位又请回来，也不该真的显示。
+		composer.Text = string.Empty;
+		Assert.False(hint.IsVisible);
+
+		// 取消组合（Esc）：正文仍为空，占位按最终正文恢复。换新那一拍在无窗口测试里手动驱动。
+		tab.ComposerCompositionEnded();
+		tab.SwapComposerHint();
+		ConversationPerformanceTests.Layout(tab.View);
+		var restored = Assert.Single(Find<TextBlock>(tab.View).Where(block => block.Text == Strings.ComposerPlaceholder));
+		Assert.True(restored.IsVisible);
+
+		// 组合后正文非空：占位保持隐藏，不再回来。
+		tab.ComposerCompositionStarted();
+		composer.Text = "速度";
+		tab.ComposerCompositionEnded();
+		Assert.DoesNotContain(Find<TextBlock>(tab.View), block => block.Text == Strings.ComposerPlaceholder && block.IsVisible);
+	}
+
+	[Fact]
+	public void ComposerHintComesBackWhenTheImeEndEventNeverArrives()
+	{
+		using var tab = Tab("hello");
+		ConversationPerformanceTests.Layout(tab.View);
+		var composer = Find<MultiLineTextBox>(tab.View).Single(control => !control.IsReadOnly);
+		var hint = Assert.Single(Find<TextBlock>(tab.View).Where(block => block.Text == Strings.ComposerPlaceholder));
+
+		// 中文输入后删空：组合事件可能只到 Start，End 丢失（或被一次迟到的 Update 覆盖）。
+		// 旧实现把「事件状态」当权威，_composing 卡住后占位就再也不回来。
+		tab.ComposerCompositionStarted();
+		composer.Text = "中文";
+		composer.Text = string.Empty;
+		tab.SwapComposerHint();
+
+		// 框架的 IsComposing 已经复位（没有真实组合），所以占位必须回来。
+		var restored = Assert.Single(Find<TextBlock>(tab.View).Where(block => block.Text == Strings.ComposerPlaceholder));
+		Assert.True(restored.IsVisible);
+	}
+
+	[Fact]
+	public void ComposerHintDoesNotAppearForNonEmptyTextEvenIfTheSwapWasScheduled()
+	{
+		using var tab = Tab("hello");
+		ConversationPerformanceTests.Layout(tab.View);
+		var composer = Find<MultiLineTextBox>(tab.View).Single(control => !control.IsReadOnly);
+		var hint = Assert.Single(Find<TextBlock>(tab.View).Where(block => block.Text == Strings.ComposerPlaceholder));
+		Assert.True(hint.IsVisible);
+
+		// 清空（调度换新）与重新输入落在同一拍里：到点重算时必须看到「有正文」，不能盖住输入。
+		composer.Text = string.Empty;
+		composer.Text = "又输入了内容";
+		tab.SwapComposerHint();
+
+		Assert.DoesNotContain(Find<TextBlock>(tab.View), block => block.Text == Strings.ComposerPlaceholder && block.IsVisible);
+	}
+
+	[Fact]
 	public void SwappedComposerHintStaysClickThroughToTheComposer()
 	{
 		using var tab = Tab("hello");

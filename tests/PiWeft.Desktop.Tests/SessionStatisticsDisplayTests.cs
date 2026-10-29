@@ -20,7 +20,7 @@ public sealed class SessionStatisticsDisplayTests
 		Assert.Contains("150%", display.ContextLabel);
 		Assert.StartsWith("3 轮", display.Summary());
 		Assert.Equal("-", display.Rows().Single(row => row.Label == Strings.StatisticsFirstToken).Value);
-		Assert.Equal("-", display.Rows().Single(row => row.Label == Strings.StatisticsGenerationSpeed).Value);
+		Assert.Equal("-", display.Rows().Single(row => row.Label == Strings.StatisticsSpeedHintLabel).Value);
 		Assert.Null((display with { ContextWindow = 0 }).ContextPercent);
 	}
 
@@ -32,13 +32,22 @@ public sealed class SessionStatisticsDisplayTests
 			Input = 1000, Output = 200, CacheRead = 9000, CacheWrite = 500, Cost = 1,
 			LatestCacheHitPercent = 90, AverageCacheHitPercent = 45, CacheHitSamples = 2,
 			LatestReply = new ReplyPerformance(1000, 5000, 4000, 200),
+			SessionDurationMs = 8000, SessionStreamingMs = 4000, SessionStreamingOutput = 400,
 		};
 		var display = new SessionStatisticsDisplay(stats, 12800, 128000, 2);
-		Assert.Contains("50 tok/s", display.Summary());
+		var summary = display.Summary();
+
+		// 最近一次回复的三个量 + 整段会话的均速必须同时可读，且各自带口径标签。
+		Assert.Contains("流式 50 tok/s", summary);
+		Assert.Contains("均速 100 tok/s", summary);
+		Assert.Contains("缓存命中 90%", summary);
+		Assert.Contains("输入 1K · 输出 200 tok", summary);
 		var rows = display.Rows();
 		Assert.Equal("90%", rows.Single(row => row.Label == Strings.StatisticsLatestHit).Value);
 		Assert.Equal("45% (2 条样本)", rows.Single(row => row.Label == Strings.StatisticsAverageHit).Value);
 		Assert.Equal("40 tok/s", rows.Single(row => row.Label == Strings.StatisticsEndToEndSpeed).Value);
+		Assert.Equal("100 tok/s", rows.Single(row => row.Label == Strings.StatisticsSessionSpeed).Value);
+		Assert.Equal("25 tok/s", rows.Single(row => row.Label == Strings.StatisticsSessionEndToEndSpeed).Value);
 		Assert.Equal("¥7.20", rows.Single(row => row.Label == Strings.StatisticsCny).Value);
 		Assert.Equal("1B", SessionStatisticsDisplay.Compact(1_000_000_000));
 	}
@@ -86,15 +95,15 @@ public sealed class SessionStatisticsDisplayTests
 		var display = new SessionStatisticsDisplay(new SessionStatistics { Cost = 0.01 }, 500, 1000, 2);
 		panel.Update(display, false);
 		var overview = VisualTree.Find<TextBlock>(panel.View).Select(text => text.Text).ToArray();
-		Assert.Contains("50%", overview);
-		Assert.Contains("500 / 1K", overview);
+		Assert.Contains(overview, text => text.Contains("50%", StringComparison.Ordinal));
+		Assert.Contains(overview, text => text.Contains("~500 / 1K", StringComparison.Ordinal));
 		Assert.DoesNotContain(Strings.StatisticsWeightedHit, overview);
 		panel.ShowDetails();
 		var texts = VisualTree.Find<TextBlock>(panel.View).ToArray();
 		Assert.Contains(texts, text => text.Text == Strings.StatisticsWeightedHit);
 		panel.Update(display with { ContextTokens = 800 }, true);
 		Assert.Equal(texts, VisualTree.Find<TextBlock>(panel.View).ToArray());
-		Assert.Contains(texts, text => text.Text == "80%");
+		Assert.Contains(texts, text => text.Text.Contains("80%", StringComparison.Ordinal));
 	}
 
 	[Fact]

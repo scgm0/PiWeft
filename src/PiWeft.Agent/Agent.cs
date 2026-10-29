@@ -287,6 +287,52 @@ public sealed class Agent
 		}
 	}
 
+	/// <summary>
+	/// 从队列里拿掉一条尚未投递的消息（界面上的「撤回 / 丢弃」）。
+	/// 按引用匹配：调用方先拿 <see cref="PendingQueues"/> 的快照再选具体那一条。
+	/// </summary>
+	/// <param name="message">要移除的消息。</param>
+	/// <returns>确实移除了返回 true；已经被投递（不在队列里）返回 false。</returns>
+	public bool RemoveQueued(Message message)
+	{
+		ArgumentNullException.ThrowIfNull(message);
+		lock (_gate)
+		{
+			return Remove(_steering, message) || Remove(_followUp, message);
+		}
+	}
+
+	/// <summary>调用方必须持有 <see cref="_gate"/>。</summary>
+	private static bool Remove(Queue<Message> queue, Message message)
+	{
+		if (queue.Count == 0)
+		{
+			return false;
+		}
+
+		// Queue 不支持按下标删除：按顺序搬到新队列，只在命中那一条时跳过。
+		var remaining = new List<Message>(queue.Count);
+		var removed = false;
+		while (queue.Count > 0)
+		{
+			var item = queue.Dequeue();
+			if (!removed && ReferenceEquals(item, message))
+			{
+				removed = true;
+				continue;
+			}
+
+			remaining.Add(item);
+		}
+
+		foreach (var item in remaining)
+		{
+			queue.Enqueue(item);
+		}
+
+		return removed;
+	}
+
 	/// <summary>排入一条消息，在当前轮次的工具调用结束后注入。</summary>
 	public void Steer(Message message)
 	{

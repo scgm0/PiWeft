@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Input;
 using Aprillz.MewUI.Platform;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
@@ -22,6 +23,8 @@ public sealed partial class SessionTab : IDisposable
 	private readonly DispatcherTimer _renderTimer = new(TimeSpan.FromMilliseconds(40));
 	// 自动重试退避期每秒刷新一次倒计时；不在重试时停着，不占调度。
 	private readonly DispatcherTimer _retryTimer = new(TimeSpan.FromSeconds(1));
+	/// <summary>发送键右侧的投递方式菜单（自绘两行项，贴发送键上方展开）。</summary>
+	private readonly SendOptionsMenu _sendMenu = new();
 	private int _renderPending;
 	private volatile bool _disposed;
 	private bool _sending;
@@ -40,6 +43,16 @@ public sealed partial class SessionTab : IDisposable
 	/// 构造与换新的每一枚都必须不可命中，否则提示盖在输入框上会吞掉那一行的点击。
 	/// </summary>
 	private TextBlock _composerHint = BuildComposerHint();
+	/// <summary>
+	/// 最近一次组合事件的记录。只在框架没有实现 <c>ITextCompositionClient</c> 时作为兜底：
+	/// 事件可能迟到或丢（Update 在 End 之后到达、组合被取消不发 End），
+	/// 拿它当权威状态会让占位永久消失。
+	/// </summary>
+	private bool _composing;
+	/// <summary>占位换新已被调度时挂在这里；组合开始要能把它取消，否则新实例会默认可见地盖到组合串上。</summary>
+	private DispatcherTimer? _composerHintTimer;
+	/// <summary>占位提示的宿主格（构造时与输入框同格），避免每次换新都全树搜索。</summary>
+	private Grid? _composerHintHost;
 	private readonly Button _sendButton;
 	private readonly Button _sendMenuButton;
 	private readonly Border _sendDivider;
@@ -116,6 +129,14 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ScrollViewer _todoScroll;
 	private TodoState? _renderedTodo;
 	private TodoPlan? _renderedPlan;
+
+	/// <summary>
+	/// 输入区上方的「排队中」卡：运行中再发的消息在这里逐条列出，可撤回输入框或丢弃。
+	/// 队列为空时整卡不占位（与待办卡一致）。
+	/// </summary>
+	private readonly ComposerWidgetCard _queueCard;
+	private readonly StackPanel _queueRows = new();
+	private IReadOnlyList<ChatQueuedMessage>? _renderedQueue;
 
 	/// <summary>通用扩展 widget 卡：setWidget 的文本行进这里，和待办卡同列同宽。</summary>
 	private readonly ComposerWidgetCard _extensionCard;
@@ -293,6 +314,12 @@ public sealed partial class SessionTab : IDisposable
 				ShowComposerHint(value.Length == 0);
 				RefreshCommandBar();
 			})
+			// 中文/日文输入法组合期间正文还没落到 Text：只看 Text 长度会让占位一直留在原地，
+			// 而 IME 的组合串也画在同一行，两者叠在一起（「速度|消息，@ 引用文件…」）。
+			// 组合期间先让位，组合结束再按最终的 Text 决定恢复。
+			.OnTextCompositionStart(_ => ComposerCompositionStarted())
+			.OnTextCompositionUpdate(_ => ComposerCompositionStarted())
+			.OnTextCompositionEnd(_ => ComposerCompositionEnded())
 			.OnKeyDown(key =>
 			{
 				// 文件引用是行内原子：方向键跳过、Backspace/Delete 整枚删除。
@@ -438,6 +465,15 @@ public sealed partial class SessionTab : IDisposable
 		_todoCard = new ComposerWidgetCard("list-checks", Strings.TodoPlanTitle);
 		_todoCard.Body.Children(_todoScroll);
 
+		// 排队条只列尚未投递给模型的消息；高度上限与待办卡同口径，多条时在卡内滚动。
+		_queueCard = new ComposerWidgetCard("list-ordered", Strings.QueuedMessagesTitle);
+		_queueCard.Body.Children(new ScrollViewer()
+			.Content(_queueRows)
+			.AutoVerticalScroll()
+			.NoHorizontalScroll()
+			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
+			.MaxHeight(ComposerWidgetListMaxHeight));
+
 		_extensionBody.Spacing(AppTheme.Space2);
 		_extensionCard = new ComposerWidgetCard("package", Strings.ExtensionWidgetsTitle);
 		_extensionCard.Body.Children(new ScrollViewer()
@@ -452,7 +488,7 @@ public sealed partial class SessionTab : IDisposable
 		_widgetColumn.Spacing(AppTheme.Space2)
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
 			.IsVisible(false)
-			.Children(_todoCard.View, _extensionCard.View);
+			.Children(_queueCard.View, _todoCard.View, _extensionCard.View);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
 		_busyIcon = AppIcons.Icon("terminal", AppStyles.RoleInfo, 13);
@@ -475,7 +511,7 @@ public sealed partial class SessionTab : IDisposable
 			.Child(new StackPanel()
 				.Spacing(AppTheme.Space2)
 				.Children(_editNotice, _commandBar, _attachmentBar,
-					new Grid().Children(_composer, _composerHint), toolbar));
+					(_composerHintHost = new Grid()).Children(_composer, _composerHint), toolbar));
 
 		// The window registers with the OS; the session surface owns the target draft.
 
@@ -624,13 +660,25 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>待办卡是否占据输入区上方的位置（诊断与契约测试用）。</summary>
 	internal bool TodoCardVisible => _todoCard.View.IsVisible;
 
+	/// <summary>「排队中」卡是否占位（队列为空时整卡不占位）。</summary>
+	internal bool QueueCardVisible => _queueCard.View.IsVisible;
+
+	/// <summary>发送键右侧的投递方式菜单（诊断与契约测试用）。</summary>
+	internal SendOptionsMenu SendMenuForTests => _sendMenu;
+
+	/// <summary>无窗口测试里直接打开投递方式菜单（真实入口是发送键的 caret）。</summary>
+	internal void ShowSendMenuForTests() => ShowSendMenu();
+
+	/// <summary>输入框当前内容（测试与快捷发送共用同一条读路径）。</summary>
+	internal string ComposerText => _composer.Text;
+
 	/// <summary>扩展 widget 卡是否占据输入区上方的位置（诊断与契约测试用）。</summary>
 	internal bool ExtensionCardVisible => _extensionCard.View.IsVisible;
 
-	/// <summary>代理事件层是否已进入流式状态（诊断与契约测试用）。</summary>
 	/// <summary>标签页使用的聊天记录模型；宿主可以在后台预建后交接过来。</summary>
 	internal ChatViewModel Chat => _chat;
 
+	/// <summary>代理事件层是否已进入流式状态（诊断与契约测试用）。</summary>
 	internal bool ChatStreaming => _chat.IsStreaming;
 
 	/// <summary>草稿里已识别的文件引用数（诊断与契约测试用）。</summary>
@@ -817,6 +865,11 @@ public sealed partial class SessionTab : IDisposable
 		HideTransientPanels();
 		_renderTimer.Dispose();
 		_retryTimer.Dispose();
+		_composerHintTimer?.Stop();
+		_composerHintTimer?.Dispose();
+		_composerHintTimer = null;
+		// 发送弹窗是原生浮层，不随 View 释放；标签关掉时要关窗并释放 Popup 的原生资源。
+		_sendMenu.Dispose();
 		_scroll.ScrollChanged -= OutlineScrolled;
 		_outline.Dispose();
 		_conversationScroll.Dispose();
@@ -1785,31 +1838,84 @@ public sealed partial class SessionTab : IDisposable
 	private void ShowComposerHint(bool visible)
 	{
 		if (_disposed) return;
+
+		// 输入法组合期间永不让占位出现：组合串就画在同一行，叠上去就是两层字。
+		if (visible && IsComposingNow()) visible = false;
+
 		if (!visible)
 		{
+			CancelComposerHintSwap();
 			_composerHint.IsVisible(false);
 			return;
 		}
 
 		_composerHint.IsVisible(false);
-		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(200));
-		timer.Tick += () =>
+		// 复用同一个定时器并把 200 ms 重新起算：连续打字时每键一次 Stop/Start，
+		// 而不是每键 new + Dispose 一个 DispatcherTimer（后者每次都排一次调度器注册）。
+		var timer = _composerHintTimer;
+		if (timer is null)
+		{
+			timer = _composerHintTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(200));
+			timer.Tick += () =>
+			{
+				timer.Stop();
+				// 这一拍（200ms）里用户可能又输入了内容、或输入法重新进入组合：
+				// 到点时重新求值，而不是沿用调用瞬间的判断。
+				if (_composer.Text.Length > 0 || IsComposingNow()) return;
+				SwapComposerHint();
+			};
+		}
+		else
 		{
 			timer.Stop();
-			timer.Dispose();
-			SwapComposerHint();
-		};
+		}
+
 		timer.Start();
 	}
+
+	/// <summary>
+	/// 现在是否真的在组合。以框架的 <see cref="ITextCompositionClient.IsComposing"/> 为准——
+	/// 它在组合提交/取消时由框架自己复位；我们记的事件状态只作为兜底。
+	/// 只认事件状态时，「组合已结束但 End 没到」会让占位永久消失（中文输入后删空文本即复现）。
+	/// </summary>
+	private bool IsComposingNow() =>
+		_composer is ITextCompositionClient composition ? composition.IsComposing : _composing;
+
+	/// <summary>输入法组合开始（IME 预编辑）：立刻让位，并取消挂起的换新。</summary>
+	internal void ComposerCompositionStarted()
+	{
+		if (_disposed) return;
+		_composing = true;
+		CancelComposerHintSwap();
+		_composerHint.IsVisible(false);
+	}
+
+	/// <summary>
+	/// 组合结束：按提交后的正文决定占位要不要回来（取消组合时正文仍为空）。
+	/// 这里显式清掉事件状态，并重新按「文本为空」求值——即使 End 之后又来一次
+	/// 迟到的 Update 把状态置回 true，<see cref="IsComposingNow"/> 仍以框架状态为准。
+	/// </summary>
+	internal void ComposerCompositionEnded()
+	{
+		_composing = false;
+		if (_disposed) return;
+		ShowComposerHint(_composer.Text.Length == 0);
+	}
+
+	/// <summary>取消已挂起的占位换新：只停表，实例保留给下一次显示复用。</summary>
+	private void CancelComposerHintSwap() => _composerHintTimer?.Stop();
 
 	/// <summary>把提示换成一枚全新实例（延迟一拍由 ShowComposerHint 调度）。测试直接驱动这一拍。</summary>
 	internal void SwapComposerHint()
 	{
 		if (_disposed) return;
-		var grid = Find<Grid>(_composerPane)
-			.FirstOrDefault(candidate => candidate.Children.Any(child => ReferenceEquals(child, _composer)));
-		if (grid is null) return;
+		// 手动/自动换新都先把定时器收口：否则复用中的定时器到点会再换一次。
+		CancelComposerHintSwap();
+		var grid = _composerHintHost;
+		if (grid is null || !grid.Children.Any(child => ReferenceEquals(child, _composer))) return;
 		var fresh = BuildComposerHint();
+		// 换新发生在组合中（或组合刚结束还没拿到正文）时，新实例也不能默认可见。
+		if (IsComposingNow() || _composer.Text.Length > 0) fresh.IsVisible(false);
 		grid.Remove(_composerHint);
 		grid.Add(fresh);
 		_composerHint = fresh;
@@ -2012,6 +2118,12 @@ public sealed partial class SessionTab : IDisposable
 			_renderedTodo = todo;
 			RefreshTodoStrip(todo);
 		}
+		var queued = _chat.QueuedMessages();
+		if (!ReferenceEquals(queued, _renderedQueue))
+		{
+			_renderedQueue = queued;
+			RefreshQueueStrip(queued);
+		}
 		if (statsWatch is not null)
 		{
 			// 渲染每帧都发生：常态只计数，真正慢的那几次才落明细（否则诊断自身就是垃圾源）。
@@ -2189,6 +2301,152 @@ public sealed partial class SessionTab : IDisposable
 			.Children(new TodoStatusGlyph(item.Status).DockLeft(), text);
 	}
 
+	/// <summary>
+	/// 重建「排队中」卡：运行中再发的消息还没进会话投影，只能在队列快照里看到，
+	/// 这一块就是它们唯一的可见处。撤回 / 丢弃会改队列，下一次 queue_update 再刷新。
+	/// </summary>
+	private void RefreshQueueStrip(IReadOnlyList<ChatQueuedMessage> queued)
+	{
+		if (queued.Count == 0)
+		{
+			if (_queueRows.Children.Count > 0) _queueRows.Clear();
+			_queueCard.Show(false);
+			RefreshWidgetColumn();
+			return;
+		}
+
+		var steer = 0;
+		foreach (var item in queued)
+		{
+			if (item.Steer) steer++;
+		}
+
+		_queueCard.Meta = Strings.QueuedMessagesMeta(queued.Count, steer, queued.Count - steer);
+		_queueRows.Clear();
+		for (var index = 0; index < queued.Count; index++)
+		{
+			_queueRows.Children(QueuedRow(queued[index], index + 1));
+		}
+
+		_queueCard.Show(true);
+		RefreshWidgetColumn();
+	}
+
+	/// <summary>
+	/// 一条排队消息：序号 + 预览 + 投递时机标签 + 「撤回」「丢弃」。
+	/// 与 PiDeck 的排队行一致——悬停给全文，行内只留一行省略号。
+	/// </summary>
+	private UIElement QueuedRow(ChatQueuedMessage queued, int index)
+	{
+		var preview = Strings.QueuedPreview(queued.Text, queued.ImageCount);
+		var text = new TextBlock()
+			.Text(preview)
+			.FontSize(AppTheme.FontSizeCaption)
+			.MutedText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.TextWrapping(TextWrapping.NoWrap)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.HoverTip(Strings.QueuedRowTip(index, queued.Steer, preview));
+
+		var badge = new TextBlock()
+			.Text(queued.Steer ? Strings.QueuedSteer : Strings.QueuedFollowUp)
+			.FontSize(AppTheme.FontSizeMicro)
+			.SubtleText()
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(AppTheme.Space2, 0, AppTheme.Space1, 0));
+
+		var retract = AppIcons.Button("pencil", Strings.QueuedRetract, () => RetractQueued(queued))
+			.StyleName(AppStyles.GhostButton);
+		var discard = AppIcons.Button("x", Strings.QueuedDiscard, () => DiscardQueued(queued))
+			.StyleName(AppStyles.GhostButton);
+
+		var row = new DockPanel()
+			.LastChildFill()
+			.MinHeight(20)
+			.Children(discard.DockRight(), retract.DockRight(), badge.DockRight(), text);
+
+		// 序号用等宽小字：多条时能对得上「第几条」，但比图标省宽度。
+		return new DockPanel()
+			.LastChildFill()
+			.MinHeight(24)
+			.Children(new TextBlock()
+				.Text(index.ToString(System.Globalization.CultureInfo.InvariantCulture))
+				.FontFamily(AppTheme.MonoFont)
+				.FontSize(AppTheme.FontSizeMicro)
+				.SubtleText()
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Width(18)
+				.DockLeft(), row);
+	}
+
+	/// <summary>
+	/// 撤回：从队列拿掉并把内容放回输入框。与 PiDeck 的 retractQueuedPromptForEdit 同语义：
+	/// 撤回的文本排在已有草稿**前面**、空行分隔（用户刚写的那半句不会被吞掉），
+	/// 图片前插到附件列表，光标落在撤回文本末尾。
+	/// </summary>
+	internal void RetractQueued(ChatQueuedMessage queued)
+	{
+		if (_disposed) return;
+		if (!_chat.RetractQueued(queued))
+		{
+			Notify(Strings.QueuedGone);
+			return;
+		}
+
+		var draft = _composer.Text;
+		var restored = string.IsNullOrWhiteSpace(draft)
+			? queued.Text
+			: string.IsNullOrWhiteSpace(queued.Text) ? draft : $"{queued.Text.TrimEnd()}\n\n{draft}";
+		_composer.Text = restored;
+
+		if (queued.Message is UserMessage { Content.Blocks: { } blocks })
+		{
+			InsertAttachmentsFirst([.. blocks.OfType<ImageContent>().Select(static image => new ImageContent { Data = image.Data, MimeType = image.MimeType })]);
+		}
+
+		Notify(Strings.QueuedRetracted);
+		FocusComposer();
+		// 光标停在撤回内容之后：接着写的那一句应该紧跟着被撤回的消息，而不是跑到末尾。
+		// 放在 Focus 之后：聚焦本身可能把光标规范化到末尾。
+		_composer.CaretPosition = Math.Min(restored.Length, queued.Text.TrimEnd().Length);
+	}
+
+	/// <summary>
+	/// 把图片插到附件列表最前面（与 PiDeck 的 `[...prompt.images, ...current]` 一致）。
+	/// 仍走输入区的容量上限：撤回不是绕过 10 张 / 20 MiB 限制的入口。
+	/// </summary>
+	private void InsertAttachmentsFirst(IReadOnlyList<ImageContent> images)
+	{
+		if (images.Count == 0) return;
+		var accepted = new List<(string Path, ImageContent Content)>(images.Count);
+		var count = _attachments.Count;
+		var total = _attachments.Sum(static item => item.Content.Data.Length * 3L / 4);
+		foreach (var image in images)
+		{
+			var bytes = image.Data.Length * 3L / 4;
+			if (count >= ComposerDrop.MaxImages || total + bytes > ComposerDrop.MaxTotalBytes)
+			{
+				NotifyError(Strings.AttachmentLimit);
+				break;
+			}
+
+			accepted.Add(($"queue-retract:{Guid.NewGuid():N}", image));
+			count++;
+			total += bytes;
+		}
+
+		if (accepted.Count == 0) return;
+		_attachments.InsertRange(0, accepted);
+		RefreshAttachments();
+	}
+
+	/// <summary>丢弃：不回填，直接从队列拿掉。</summary>
+	internal void DiscardQueued(ChatQueuedMessage queued)
+	{
+		if (_disposed) return;
+		if (!_chat.RetractQueued(queued)) Notify(Strings.QueuedGone);
+	}
+
 	/// <summary>扩展 widget 卡：每个 key 一段，先用等宽小字标出 key，再逐行显示文本。</summary>
 	private void RefreshExtensionWidgets()
 	{
@@ -2238,7 +2496,12 @@ public sealed partial class SessionTab : IDisposable
 		return key.Replace('-', ' ').Replace('_', ' ');
 	}
 
-	private void RefreshWidgetColumn() => _widgetColumn.IsVisible(_todoCard.View.IsVisible || _extensionCard.View.IsVisible);
+	private void RefreshWidgetColumn()
+	{
+		// IsVisible 的同值写入也会触发失效：待办/队列/扩展三处都会调这里，先比较再写。
+		var visible = _todoCard.View.IsVisible || _extensionCard.View.IsVisible || _queueCard.View.IsVisible;
+		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
+	}
 
 	private SessionStatisticsDisplay StatisticsDisplay()
 	{
@@ -2506,27 +2769,25 @@ public sealed partial class SessionTab : IDisposable
 		catch (FormatException) { NotifyError(Strings.BrokenImage); }
 	}
 
-	/// <summary>右键菜单「粘贴」的共享实现：图片优先，纯文本回退到文本框的默认粘贴。</summary>
-	/// <summary>运行中发送键右侧的菜单：引导当前回合、排到下一轮或中断。</summary>
+	/// <summary>
+	/// 运行中发送键右侧的菜单（PiDeck 的 Split Send 下拉同款）：每项是「标题 + 生效时机」
+	/// 两行。投递方式是发送前最难猜的部分——「— steer」这种尾缀说明不了它什么时候生效，
+	/// 所以协议名与时机写在第二行。
+	/// </summary>
 	private void ShowSendMenu()
 	{
 		if (_disposed) return;
 		if (!_chat.IsStreaming) return;
 
 		HoverHints.Cancel(_sendMenuButton);
-		var menu = new ContextMenu();
-		void Add(string label, Action action)
-		{
-			var command = new Command($"pi.send.{menu.Items.Count}", label);
-			_sendMenuButton.Commands.Register(command, action);
-			menu.Items.Add(new MenuItem(command));
-		}
-
-		Add(Strings.SteerCurrentTurn, () => QueueDraft(steer: true));
-		Add(Strings.QueueNextTurn, () => QueueDraft(steer: false));
-		menu.AddSeparator();
-		Add(Strings.Abort, Send);
-		menu.Show(_sendMenuButton);
+		_sendMenu.Show(
+			_sendMenuButton,
+			[
+				new SendOptionsMenu.Item("arrow-up", Strings.SteerCurrentTurn, Strings.SteerCurrentTurnHint, () => QueueDraft(steer: true)),
+				new SendOptionsMenu.Item("list-ordered", Strings.QueueNextTurn, Strings.QueueNextTurnHint, () => QueueDraft(steer: false)),
+				// 中断是破坏性动作：图标转红，并用分隔线与两种投递方式分组。
+				new SendOptionsMenu.Item("x", Strings.Abort, Strings.AbortHint, Send, AppStyles.RoleError, SeparatorBefore: true),
+			]);
 	}
 
 	/// <summary>把当前草稿排入正在运行的代理；保留输入控件，只清空草稿。</summary>

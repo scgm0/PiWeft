@@ -64,6 +64,42 @@ public class QueueModeTests
 	}
 
 	[Fact]
+	public void RemoveQueuedDropsOnlyThatMessageAndKeepsOrder()
+	{
+		var agent = new Agent(new AgentOptions
+		{
+			Model = FakeStream.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+		});
+
+		var first = new UserMessage { Content = MessageContent.FromText("a"), Timestamp = 1 };
+		var second = new UserMessage { Content = MessageContent.FromText("b"), Timestamp = 2 };
+		var third = new UserMessage { Content = MessageContent.FromText("c"), Timestamp = 3 };
+		var queued = new UserMessage { Content = MessageContent.FromText("d"), Timestamp = 4 };
+		agent.Steer(first);
+		agent.Steer(second);
+		agent.Steer(third);
+		agent.FollowUp(queued);
+
+		Assert.True(agent.RemoveQueued(second));
+
+		// 只拿掉指定的那一条，剩余顺序不变：队列逐条投递，次序就是用户发送的次序。
+		var (steering, followUp) = agent.PendingQueues();
+		Assert.Equal(["a", "c"], steering.Select(message => ((UserMessage)message).Content.Text));
+		Assert.Single(followUp);
+		Assert.Equal(3, agent.PendingMessageCount);
+
+		// 同一条再撤一次、或撤从未入队的消息：返回 false，不动队列。
+		Assert.False(agent.RemoveQueued(second));
+		Assert.False(agent.RemoveQueued(new UserMessage()));
+		Assert.Equal(3, agent.PendingMessageCount);
+
+		// follow-up 里那条也能单独拿掉，拿完只剩 steering 两条。
+		Assert.True(agent.RemoveQueued(queued));
+		Assert.Empty(agent.PendingQueues().FollowUp);
+	}
+
+	[Fact]
 	public void QueueModesDefaultToOneAtATime()
 	{
 		var agent = new Agent(new AgentOptions

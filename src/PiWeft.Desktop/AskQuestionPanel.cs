@@ -17,6 +17,9 @@ internal sealed class AskQuestionPanel
 	private Window? _themeWindow;
 	private UIElement? _returnFocus;
 	private TaskCompletionSource<string?>? _completion;
+	/// <summary>等待输入提醒的会话标识与本次请求标识（同一批只响一次，回答完再重置）。</summary>
+	private string? _alertSessionId;
+	private string? _alertRequestId;
 	private List<Func<AskAnswer>> _answers = [];
 
 	public AskQuestionPanel()
@@ -62,6 +65,9 @@ internal sealed class AskQuestionPanel
 	/// <summary>强制关闭（标签或窗口销毁时调用），等待中的请求按取消处理。</summary>
 	public void Close() => Finish(cancelled: true);
 
+	/// <summary>绑定会话标识：提示音按会话做批次去重，和 PiDeck 的 waiting 提醒同义。</summary>
+	internal void BindSession(string? sessionId) => _alertSessionId = sessionId;
+
 	/// <summary>展示卡片并等待回答；<paramref name="owner"/> 用来定位窗口。</summary>
 	public Task<string?> ShowAsync(UIElement owner, IReadOnlyList<AskQuestion> questions, CancellationToken cancellationToken)
 	{
@@ -94,6 +100,9 @@ internal sealed class AskQuestionPanel
 		}
 
 		TransientOverlay.Open(window, View, () => Finish(cancelled: true));
+		// 代理停下来等用户回答：这是「需要你」的唯一现场，等用户真的看一眼再说话。
+		_alertRequestId = Guid.NewGuid().ToString("N");
+		SoundAlerts.Shared.RequestWaiting(_alertSessionId, _alertRequestId);
 		View.IsVisible(true);
 		AppStyles.ApplyTextColors(View);
 		_submit.Focus();
@@ -240,6 +249,8 @@ internal sealed class AskQuestionPanel
 
 		var completion = _completion;
 		_completion = null;
+		SoundAlerts.Shared.CompleteWaiting(_alertSessionId, _alertRequestId);
+		_alertRequestId = null;
 		View.IsVisible(false);
 		if (_window is { } window)
 		{

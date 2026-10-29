@@ -913,6 +913,21 @@ public sealed class CodingAgentSession : IDisposable
 	/// <summary>当前排队消息的快照，供队列类事件与界面使用。</summary>
 	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) PendingQueues() => _agent.PendingQueues();
 
+	/// <summary>
+	/// 撤回一条尚未投递的排队消息（界面的「撤回输入框 / 丢弃」）。
+	/// 已投递给模型的那条不在队列里，会返回 false。
+	/// </summary>
+	public bool RemoveQueued(Message message)
+	{
+		var removed = _agent.RemoveQueued(message);
+		if (removed)
+		{
+			EmitQueueUpdate();
+		}
+
+		return removed;
+	}
+
 	/// <summary>把队列现状作为 <c>queue_update</c> 发给订阅者。</summary>
 	private void EmitQueueUpdate()
 	{

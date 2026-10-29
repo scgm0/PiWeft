@@ -35,6 +35,9 @@ public sealed record DesktopPreference
 	public IReadOnlyList<string> RecentProjects { get; init; } = [];
 	public IReadOnlyList<string> RecentModels { get; init; } = [];
 
+	/// <summary>提示音（PiDeck 的 <c>soundAlert</c> 同义）：总开关、音量、仅失焦与三类事件。</summary>
+	public SoundAlertSettings SoundAlert { get; init; } = new();
+
 	/// <summary>用户自定义的快捷键（动作标识 → 组合串）。</summary>
 	public IReadOnlyDictionary<string, string> Shortcuts { get; init; } =
 		new Dictionary<string, string>(StringComparer.Ordinal);
@@ -186,6 +189,7 @@ public sealed record DesktopPreference
 				Shortcuts = ReadShortcuts(root),
 				RecentProjects = ReadList(root, "recentProjects"),
 				RecentModels = ReadList(root, "recentModels"),
+				SoundAlert = SoundAlertJson.Parse(root?["soundAlert"]),
 			};
 		}
 		catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
@@ -217,6 +221,7 @@ public sealed record DesktopPreference
 		}
 
 		root["theme"] = Theme;
+		root["soundAlert"] = SoundAlertJson.Write(SoundAlert);
 		root["sidebarCollapsed"] = SidebarCollapsed;
 		root["sidebarProjects"] = SidebarProjects;
 		// 折叠是默认状态，展开过的项目才落盘；都折起来时直接删键。

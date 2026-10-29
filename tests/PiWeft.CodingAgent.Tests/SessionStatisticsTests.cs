@@ -173,4 +173,81 @@ public sealed class SessionStatisticsTests
 		Assert.Null(new ReplyPerformance(null, duration, duration, 10).TokensPerSecond);
 		Assert.Null(new ReplyPerformance(null, duration, duration, 10).EndToEndTokensPerSecond);
 	}
+
+	[Fact]
+	public void SessionAverageSpeedDividesByTheUnionOfActiveWallClock()
+	{
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		manager.AppendMessage(new UserMessage());
+		// 两条回复的区间完全重叠（分支切换、并行标签）：墙钟只能算一次。
+		manager.AppendMessage(Assistant(0, 0, 0, duration: 1000) with { Timestamp = 1_000, Usage = OutputOnly(100) });
+		manager.AppendMessage(Assistant(0, 0, 0, duration: 1000) with { Timestamp = 1_000, Usage = OutputOnly(100) });
+		using var session = Create(manager);
+		var stats = session.Statistics();
+
+		// 活跃区间并集是 1000 ms，输出共 200 token。
+		Assert.Equal(1000, stats.SessionDurationMs);
+		Assert.Equal(900, stats.SessionStreamingMs);
+		Assert.Equal(200, stats.SessionStreamingOutput);
+		Assert.Equal(200, stats.SessionEndToEndTokensPerSecond!.Value, 6);
+		Assert.Equal(200.0 / 0.9, stats.SessionStreamingTokensPerSecond!.Value, 6);
+	}
+
+	[Fact]
+	public void OutOfOrderRepliesStillProduceTheExactUnion()
+	{
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		manager.AppendMessage(new UserMessage());
+		// 先一条晚的，再一条早的（跨分支合并、时钟回拨都可能出现）。
+		// 水位线增量会把这 500 ms 吞掉（低估 → 均速虚高）；排序并集必须给出精确的 1500 ms。
+		manager.AppendMessage(Assistant(0, 0, 0, duration: 1000) with { Timestamp = 10_000, Usage = OutputOnly(100) });
+		manager.AppendMessage(Assistant(0, 0, 0, duration: 500) with { Timestamp = 1_000, Usage = OutputOnly(50) });
+		using var session = Create(manager);
+
+		var stats = session.Statistics();
+		// 端到端：[10000,11000] + [1000,1500] → 1500。
+		Assert.Equal(1500, stats.SessionDurationMs);
+		// 流式：[10100,11000] + [1100,1500] → 900 + 400 = 1300。
+		Assert.Equal(1300, stats.SessionStreamingMs);
+		Assert.True(stats.SessionEndToEndTokensPerSecond is > 0,
+			$"均速不能是负数或零：{stats.SessionEndToEndTokensPerSecond}");
+	}
+
+	[Fact]
+	public void PartiallyOverlappingRepliesCountTheOverlapOnce()
+	{
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		manager.AppendMessage(new UserMessage());
+		// 并发/派生任务：两条回复部分重叠（[1000,3000] 与 [2000,4000]），并集是 3000 而不是 4000。
+		manager.AppendMessage(Assistant(0, 0, 0, duration: 2000) with { Timestamp = 1_000, Usage = OutputOnly(100) });
+		manager.AppendMessage(Assistant(0, 0, 0, duration: 2000) with { Timestamp = 2_000, Usage = OutputOnly(100) });
+		// 转精确模式后再追加的区间也要算进去（排序是就地的，追加落在已排序前缀之后）。
+		manager.AppendMessage(Assistant(0, 0, 0, duration: 1000) with { Timestamp = 5_000, Usage = OutputOnly(100) });
+		using var session = Create(manager);
+
+		Assert.Equal(4000, session.Statistics().SessionDurationMs);
+	}
+
+	[Fact]
+	public void SessionAverageSpeedSkipsSamplesWithoutTimestampsOrDurations()
+	{
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		manager.AppendMessage(new UserMessage());
+		// Timestamp 为 0（旧记录）时不参与均速：否则区间从 1970 起算。
+		manager.AppendMessage(Assistant(0, 0, 0, duration: 1000));
+		// 没有耗时也不参与。
+		manager.AppendMessage(Assistant(0, 0, 0) with { Timestamp = 5_000 });
+		using var session = Create(manager);
+		var stats = session.Statistics();
+
+		Assert.Equal(0, stats.SessionDurationMs);
+		Assert.Null(stats.SessionEndToEndTokensPerSecond);
+		Assert.Null(stats.SessionStreamingTokensPerSecond);
+	}
+
+	private static Usage OutputOnly(long output) => new()
+	{
+		Input = 0, Output = output, CacheRead = 0, CacheWrite = 0, TotalTokens = output,
+		Cost = new UsageCost { Total = 0 },
+	};
 }

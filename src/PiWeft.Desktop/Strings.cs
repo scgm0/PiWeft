@@ -630,6 +630,29 @@ public static partial class Strings
 
 	public const string GitSummaryNoModel = "没有可用模型";
 
+	// 提示音设置页（设置 → 运行 → 提示音）。文案与默认值对齐 PiDeck 的声音提醒。
+	public const string SettingsSounds = "提示音";
+
+	public const string SoundAlertGroup = "声音提醒";
+
+	public const string SoundAlertEventsGroup = "通知事件";
+
+	public const string SoundAlertEnabled = "启用提示音";
+
+	public const string SoundAlertOnlyWhenUnfocused = "仅在窗口失焦时提醒";
+
+	public const string SoundAlertVolume = "音量";
+
+	public const string SoundAlertDone = "会话完成";
+
+	public const string SoundAlertError = "会话出错";
+
+	public const string SoundAlertWaiting = "等待你的输入";
+
+	public const string SoundAlertPreview = "试听";
+
+	public const string SoundAlertHint = "完成与出错默认开启；等待输入默认关闭，避免连续提问时一直响。同一会话 8 秒内只响一次，多会话同时完成时只响最近一次。改动立即写入 desktop.json 的 soundAlert 段。";
+
 	// 安全门设置页（设置 → 运行 → 安全门）。文案对齐 PiDeck 的安全管理面板。
 	public const string SettingsSecurity = "安全门";
 
@@ -772,6 +795,42 @@ public static partial class Strings
 
 	/// <summary>输入区上方的待办卡。</summary>
 	public const string TodoPlanTitle = "待办";
+
+	// 输入区上方的「排队中」卡（PiDeck 的 queued-track 同义）：
+	// 运行中再发一条消息时它先进队列，这里逐条列出来、可以撤回或丢弃。
+	public const string QueuedMessagesTitle = "排队中";
+	public const string QueuedSteer = "本轮";
+	public const string QueuedFollowUp = "下一轮";
+	public const string QueuedRetract = "撤回输入框";
+	public const string QueuedDiscard = "丢弃这条排队消息";
+	public const string QueuedRetracted = "已撤回，可以继续编辑。";
+	public const string QueuedGone = "这条消息已经发出去了，撤回不了。";
+	public const string QueuedImageOnly = "图片消息";
+
+	/// <summary>排队条头部：条数与投递时机的分布，「2 条 · 1 本轮 · 1 下一轮」。</summary>
+	public static string QueuedMessagesMeta(int count, int steer, int followUp)
+	{
+		var parts = new List<string>(3) { $"{count} 条" };
+		if (steer > 0) parts.Add($"{steer} {QueuedSteer}");
+		if (followUp > 0) parts.Add($"{followUp} {QueuedFollowUp}");
+		return string.Join("\u2002·\u2002", parts);
+	}
+
+	/// <summary>一行排队的悬停提示：序号、投递时机、完整正文。</summary>
+	public static string QueuedRowTip(int index, bool steer, string text) =>
+		$"第 {index} 条 · {(steer ? QueuedSteer : QueuedFollowUp)}\n{text}";
+
+	/// <summary>行内预览：图片张数拼在文本前面，空文本时只留图片说明。</summary>
+	public static string QueuedPreview(string text, int images)
+	{
+		var body = text.ReplaceLineEndings(" ").Trim();
+		if (body.Length == 0)
+		{
+			body = images > 0 ? QueuedImageOnly : string.Empty;
+		}
+
+		return images > 0 && text.Length > 0 ? $"[{images} 图] {body}" : body;
+	}
 
 	/// <summary>待办进度：只显示非零分段，段间用宽空格 + 中点分隔（PiDeck 同款）。</summary>
 	public static string TodoPlanProgress(int completed, int inProgress, int pending)

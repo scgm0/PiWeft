@@ -67,6 +67,25 @@ public sealed class SettingsNavigationTests : IDisposable
 		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.GitSummaryThinking);
 	}
 
+	/// <summary>
+	/// 提示音分区必须渲染自己的卡片：导航标题与内容由两处 switch 分别决定，
+	/// 内容漏加 case 时标题照旧正确、内容却静默落到「运行环境」fallback。
+	/// </summary>
+	[Fact]
+	public async Task SoundsSectionRendersItsOwnCardsInsteadOfTheRuntimeFallback()
+	{
+		var view = Create(() => []);
+
+		await view.SelectSectionAsync("sounds");
+
+		Assert.Null(view.LastSectionError);
+		var texts = Find<TextBlock>(view.View).Select(block => block.Text).ToArray();
+		Assert.Contains(texts, text => text.Contains(Strings.SoundAlertGroup, StringComparison.Ordinal));
+		Assert.Contains(Strings.SoundAlertDone, texts);
+		Assert.Contains(Strings.SoundAlertVolume, texts);
+		Assert.DoesNotContain(texts, text => text.Contains(Strings.SettingsEnvironment, StringComparison.Ordinal));
+	}
+
 	[Fact]
 	public async Task ResourcesSection_RendersHintsAndEmptyState()
 	{

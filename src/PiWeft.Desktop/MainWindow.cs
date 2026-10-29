@@ -163,6 +163,7 @@ public sealed partial class MainWindow : Window
 
 		RegisterShortcuts();
 		BuildUi();
+		WireSoundAlerts();
 		this.OnLoaded(Startup);
 	}
 
@@ -1053,9 +1054,30 @@ public sealed partial class MainWindow : Window
 			panel.Dispose();
 		}
 
+		// 会话 id 在关标签前记下：CloseAsync 会收尾并释放会话，之后不宜再读它的状态。
+		var sessionId = SessionIdOf(tab);
 		await tab.CloseAsync();
+		SoundAlerts.Shared.Forget(sessionId);
 		UpdateStatus();
 	}
+
+	// --------------------------------------------------------------- 提示音
+
+	/// <summary>
+	/// 提示音的窗口侧接线：焦点门控（仅失焦提醒）与「谁在报告状态」。
+	/// 设置从 desktop.json 实时读取，所以设置页改完立即生效，不需要重开窗口。
+	/// </summary>
+	private void WireSoundAlerts()
+	{
+		var alerts = SoundAlerts.Shared;
+		// 焦点是实时状态：每次判定时读 IsActive，比维护一个布尔副本少一处可能过期的地方。
+		// 会话侧的基线由 AttachTab 后第一次 StateChanged 建立（Observe 首帧只记状态、不响）。
+		alerts.IsWindowFocused = () => IsActive;
+	}
+
+	/// <summary>会话 id：标签的会话文件 id 仍在生成时退回标题，至少不会把不同标签混成一个。</summary>
+	private static string SessionIdOf(SessionTab tab) =>
+		tab.Session.Session.SessionId is { Length: > 0 } id ? id : tab.Title;
 
 	// --------------------------------------------------------------- 标签页
 
@@ -1378,6 +1400,8 @@ public sealed partial class MainWindow : Window
 		tab.StateChanged += _ =>
 		{
 			UpdateTabHeaders();
+			// 提示音只关心「运行态 → 空闲」「无错误 → 有错误」这两条边沿，会话自己报即可。
+			SoundAlerts.Shared.Observe(SessionIdOf(tab), tab.IsStreaming, tab.Chat.Error);
 			if (!tab.IsStreaming)
 			{
 				RefreshSessions();

@@ -24,6 +24,8 @@ internal sealed class DesktopUiHost : IUiHost
 	{
 		_tab = tab;
 		_owner = tab.View;
+		// 等待输入提示音按会话去重：面板拿到会话标识后，同一批只响一次。
+		_panel.BindSession(tab.Session.Session.SessionId);
 	}
 
 	public Task<string?> InputAsync(UiInputRequest request, CancellationToken cancellationToken)

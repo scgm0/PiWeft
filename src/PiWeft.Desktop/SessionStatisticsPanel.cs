@@ -10,9 +10,9 @@ public sealed class SessionStatisticsPanel
 	private readonly Border _usage = new Border().IsVisible(false);
 	private ProviderUsageSummary? _usageSummary;
 	private readonly List<TextBlock> _values = [];
-	private readonly ProgressBar _context = new();
 	private readonly TextBlock _percent = new();
 	private readonly TextBlock _capacity = new();
+	private readonly ContextBreakdownBar _segments = new();
 	private readonly TextBlock _cost = new();
 	private readonly TextBlock _turns = new();
 	private readonly Button _compact;
@@ -31,15 +31,17 @@ public sealed class SessionStatisticsPanel
 		_overview.StyleName(AppStyles.SelectedButton);
 		var scroll = new ScrollViewer().SmoothScrolling().Content(new StackPanel().Spacing(AppTheme.Space2).Children(_body, _usage))
 			.AutoVerticalScroll().NoHorizontalScroll().MaxHeight(480);
-		var heading = new StackPanel().Spacing(AppTheme.Space3).Children(
+		// 标题区与 PiDeck 的上下文弹窗同结构：先给结论（已用百分比 + ~已用/窗口），
+		// 再用一条三段占用条与图例拆开系统 / 工具 / 对话——只看一个百分比无法判断
+		// 是上下文真的长，还是工具 schema 很大。
+		var heading = new StackPanel().Spacing(AppTheme.Space2).Children(
 			new DockPanel().LastChildFill().Children(
 				AppIcons.Button("x", Strings.Cancel, Hide).DockRight(),
 				new TextBlock().Text(Strings.SessionStatistics).FontSize(AppTheme.FontSizeTitle).FontWeight(FontWeight.Bold).PrimaryText()),
 			new DockPanel().LastChildFill().Children(
-				_percent.FontSize(24).FontWeight(FontWeight.Bold).PrimaryText().DockRight(),
-				new StackPanel().Spacing(4).Children(new TextBlock().Text(Strings.StatisticsContext).FontSize(AppTheme.FontSizeCaption).MutedText(),
-					_capacity.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeControl).PrimaryText())),
-			_context.Maximum(100).Height(4),
+				_capacity.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeCaption).MutedText().DockRight(),
+				_percent.FontSize(AppTheme.FontSizeControl).FontWeight(FontWeight.Bold).PrimaryText()),
+			_segments.View,
 			new DockPanel().LastChildFill().Children(_cost.FontSize(AppTheme.FontSizeTitle).FontWeight(FontWeight.Bold).PrimaryText().DockRight(),
 				_turns.FontSize(AppTheme.FontSizeControl).MutedText()),
 			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(_overview, _details));
@@ -116,8 +118,8 @@ public sealed class SessionStatisticsPanel
 		_compact.IsEnabled = !busy && display.Turns > 0;
 		if (ReferenceEquals(_display, display)) return;
 		_display = display;
-		_context.Value(Math.Clamp(display.ContextPercent ?? 0, 0, 100));
-		_percent.Text(display.ContextValue);
+		_segments.Update(display);
+		_percent.Text(display.ContextUsedLabel);
 		_capacity.Text(display.ContextCapacity).HoverTip(Strings.StatisticsContextHint);
 		_cost.Text(display.CostValue).HoverTip(Strings.StatisticsUsageHint);
 		_turns.Text(Strings.StatisticsTurnCount(display.Turns));

@@ -36,6 +36,7 @@
 		<PackageReference Include="Aprillz.MewUI.Core" />
 		<PackageReference Include="Aprillz.MewUI.Svg" />
 		<PackageReference Include="MiniPty" />
+		<PackageReference Include="OldBit.Beep" />
 	</ItemGroup>
 
 	<ItemGroup Condition="'$(MewUITarget)' == 'linux'">
@@ -67,6 +68,8 @@
 	<ItemGroup>
 		<EmbeddedResource Include="Resources/fonts/*.ttf" />
 		<EmbeddedResource Include="Resources/icons/*.svg" />
+		<!-- 提示音：与 PiDeck 同一套纯合成 WAV（见 Resources/sounds/README.md）。 -->
+		<EmbeddedResource Include="Resources/sounds/*.wav" />
 		<None Include="Resources/fonts/LICENSE-*.txt" />
 		<None Include="Resources/icons/LICENSE-*.txt" />
 	</ItemGroup>

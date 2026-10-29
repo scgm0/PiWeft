@@ -169,6 +169,16 @@ public sealed record ChatRetryStatus(
 	public long RetryAtUnixMs => DelayMs > 0 ? StartedAtUnixMs + DelayMs : 0;
 }
 
+/// <summary>
+/// 一条还没被模型消费的排队消息（PiDeck 的排队行）。用户运行中再发一条时，
+/// 它先待在 steering 或 follow-up 队列里；界面靠这张快照把它列出来、撤回或丢弃。
+/// </summary>
+/// <param name="Message">原始消息，撤回时按引用匹配。</param>
+/// <param name="Text">预览文本（只取正文，不含图片数据）。</param>
+/// <param name="ImageCount">随行的图片张数。</param>
+/// <param name="Steer">true 表示下一次模型调用前插入当前回合，false 表示排队到下一轮。</param>
+public sealed record ChatQueuedMessage(Message Message, string Text, int ImageCount, bool Steer);
+
 /// <summary>自动重试收口时留给界面的一次性提示（成功 toast / 失败 toast）。</summary>
 public sealed record ChatRetryNotice(bool Success, int Attempt, int MaxAttempts, string? FinalError);
 
@@ -213,6 +223,8 @@ public sealed class ChatViewModel : IDisposable
 	private ChatRetryStatus? _retry;
 	private ChatRetryNotice? _retryNotice;
 	private bool _aborting;
+	// 未投递给模型的排队消息（steer + follow-up），顺序与队列一致。
+	private ChatQueuedMessage[] _queued = [];
 
 	/// <summary>在产生变更的线程上触发；窗口负责把它转到 UI 线程。</summary>
 	public event Action? Changed;
@@ -273,6 +285,33 @@ public sealed class ChatViewModel : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// 当前还没被模型消费的排队消息，steering 在前（它会先进上下文）、follow-up 在后。
+	/// PiDeck 的排队区同口径：一轮里可以排多条，逐条撤回或丢弃。
+	/// </summary>
+	public IReadOnlyList<ChatQueuedMessage> QueuedMessages()
+	{
+		lock (_gate)
+		{
+			return _queued;
+		}
+	}
+
+	/// <summary>撤回一条排队消息（回到输入框由调用方负责），它不会再被投递给模型。</summary>
+	public bool RetractQueued(ChatQueuedMessage queued)
+	{
+		ArgumentNullException.ThrowIfNull(queued);
+		var removed = Session?.RemoveQueued(queued.Message) ?? false;
+		if (!removed)
+		{
+			// 已经投递给模型了：队列快照会由 queue_update 纠正，这里只拒绝这次撤回。
+			return false;
+		}
+
+		Changed?.Invoke();
+		return true;
+	}
+
 	/// <summary>绑定一个会话，替换掉之前的会话。</summary>
 	public void Attach(CodingAgentSession session)
 	{
@@ -297,6 +336,7 @@ public sealed class ChatViewModel : IDisposable
 			_retry = null;
 			_retryNotice = null;
 			_aborting = false;
+			_queued = [];
 			// 打开会话时的首次投影就从这里走：长会话整段映射要 200+ 毫秒，必须计时。
 			RebuildTimed(session);
 			_subscription = session.Subscribe(OnAgentEvent);
@@ -329,10 +369,41 @@ public sealed class ChatViewModel : IDisposable
 			_retry = null;
 			_retryNotice = null;
 			_aborting = false;
+			_queued = [];
 		}
 
 		Changed?.Invoke();
 	}
+
+	/// <summary>把队列快照投影成界面行：steering 先于 follow-up，与投递顺序一致。</summary>
+	private static ChatQueuedMessage[] ProjectQueue(QueueUpdateEvent queue)
+	{
+		var total = queue.Steering.Count + queue.FollowUp.Count;
+		if (total == 0)
+		{
+			return [];
+		}
+
+		var rows = new ChatQueuedMessage[total];
+		var index = 0;
+		foreach (var message in queue.Steering)
+		{
+			rows[index++] = Queued(message, steer: true);
+		}
+
+		foreach (var message in queue.FollowUp)
+		{
+			rows[index++] = Queued(message, steer: false);
+		}
+
+		return rows;
+	}
+
+	private static ChatQueuedMessage Queued(Message message, bool steer) => message switch
+	{
+		UserMessage user => new(message, TextOf(user.Content), ImagesOf(user.Content).Count, steer),
+		_ => new(message, string.Empty, 0, steer),
+	};
 
 	/// <summary>要渲染的行，不含系统提示。</summary>
 	public IReadOnlyList<ChatEntry> Entries()
@@ -618,6 +689,11 @@ public sealed class ChatViewModel : IDisposable
 						ToolResultText(end.Result),
 						end.IsError,
 						end.DurationMs));
+					break;
+
+				case QueueUpdateEvent queue:
+					// pi 的 queue_update 带的是变化后的全量队列，直接替换即可。
+					_queued = ProjectQueue(queue);
 					break;
 
 				case AutoRetryStartEvent retry:

@@ -52,6 +52,8 @@ public sealed class SettingsView
 	private readonly StackPanel _navigation = new();
 	private readonly Lazy<ConfigurationView> _configuration;
 	private SecuritySection? _security;
+	/// <summary>提示音分区：与安全门一样按需创建，切走不丢已展开的状态。</summary>
+	private SoundSection? _sounds;
 	private readonly Grid _main;
 	private readonly TextBlock _sectionTitle = new();
 	private readonly Action<ConfigFile> _saved;
@@ -207,6 +209,7 @@ public sealed class SettingsView
 			AddNavigationGroup(Strings.SettingsGroupRuntime, first: false);
 			AddNavigationButton("resources", "book-open", Strings.SettingsResources);
 			AddNavigationButton("session", "message-square", Strings.SettingsSession);
+			AddNavigationButton("sounds", "bell", Strings.SettingsSounds);
 			AddNavigationButton("security", "shield", Strings.SettingsSecurity);
 			AddNavigationButton("shortcuts", "terminal", Strings.SettingsShortcuts);
 			AddNavigationGroup(Strings.MaintenanceGroup, first: false);
@@ -231,6 +234,7 @@ public sealed class SettingsView
 		"resources" => Strings.SettingsResources,
 		"session" => Strings.SettingsSession,
 		"security" => Strings.SettingsSecurity,
+		"sounds" => Strings.SettingsSounds,
 		"archive" => Strings.SettingsArchive,
 		"shortcuts" => Strings.SettingsShortcuts,
 		"diagnostics" => Strings.SettingsDiagnostics,
@@ -331,6 +335,7 @@ public sealed class SettingsView
 				case "resources": _content.Children(ResourcesSection()); break;
 				case "session": _content.Children(SessionSection(snapshot.Session)); break;
 				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
+				case "sounds": _content.Children(SoundSection()); break;
 				case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
 				case "shortcuts": _content.Children(ShortcutSection()); break;
 				case "logs": _content.Children(LogSection()); break;
@@ -606,6 +611,13 @@ public sealed class SettingsView
 	/// 安全门分区。分区自己写 <c>settings.json</c>；保存成功后通过 <see cref="SecurityChanged"/>
 	/// 通知宿主把新配置推给所有已打开的会话 —— 只刷新设置页等于改了个看不见的开关。
 	/// </summary>
+	/// <summary>提示音分区：总开关 / 音量 / 仅失焦 + 三类事件音效与试听（改动即时生效）。</summary>
+	private Element SoundSection()
+	{
+		_sounds ??= new SoundSection();
+		return _sounds.View;
+	}
+
 	private Element SecuritySection(string agentDir)
 	{
 		_security ??= new SecuritySection(() => agentDir, () => SecurityChanged?.Invoke());
