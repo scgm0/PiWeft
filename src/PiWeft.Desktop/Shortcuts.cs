@@ -140,6 +140,12 @@ public sealed class ShortcutMap
 	private readonly Dictionary<string, string> _overrides = new(StringComparer.Ordinal);
 	private readonly List<string> _ignored = [];
 
+	/// <summary>
+	/// 窗口当前生效的那份表。旁注型的展示（等待提示轮播）不想把地图一层层传到构造函数里，
+	/// 就由主窗口建表时挂在这里；没窗口（单测、自检）时用内置默认值。
+	/// </summary>
+	internal static ShortcutMap Shared { get; set; } = new();
+
 	public ShortcutMap(IReadOnlyDictionary<string, string>? overrides = null)
 	{
 		foreach (var definition in Definitions)

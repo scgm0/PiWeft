@@ -517,7 +517,7 @@ public sealed partial class GitView
 			.Primary()
 			.Height(AppTheme.ControlHeightSm)
 			.Content(new TextBlock().Text(Strings.GitCompareAction)
-				.FontSize(AppTheme.FontSizeCaption).OnAccentText())
+				.FontSize(AppTheme.FontSizeCaption))
 			.OnClick(RunCompare);
 		body.Children(pickers, compare);
 

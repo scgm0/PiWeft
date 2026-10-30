@@ -15,6 +15,16 @@ public sealed partial class SessionTab
 	private static bool SweepProbe => Environment.GetEnvironmentVariable("PIWEFT_SWEEP_PROBE") == "1";
 
 	/// <summary>滚到顶部，让「移动到最新」悬浮按钮进入自动显示状态。</summary>
+	/// <summary>仅供 --ui-smoke waiting：摆出「首轮已发出、首 token 还没到」的一帧，供截图验收。
+	/// 状态条与时间线尾部的等待占位行都在这一帧里；真实等待的时长不可控，只能这样定住。</summary>
+	internal void PrepareWaitingSmoke()
+	{
+		_turnStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+		_sending = true;
+		_chat.SmokeWaitingTurn("把首轮等待的那一帧渲染出来：状态条一直在，时间线尾部也有占位行。");
+		Render();
+	}
+
 	/// <summary>仅供 --ui-smoke ask：在会话里展开一张批量问询卡（select / multi_select / editor + 审阅页），供截图验收。</summary>
 	internal void PrepareAskSmoke()
 	{

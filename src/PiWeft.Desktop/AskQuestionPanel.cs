@@ -586,7 +586,7 @@ internal sealed class AskQuestionPanel
 
 	private void RenderConfirm(AskQuestion question)
 	{
-		var yes = new Button().Primary().Content(Label(Strings.AskYes));
+		var yes = new Button().Primary().Content(AccentLabel(Strings.AskYes));
 		yes.OnClick(() => Commit(new AskAnswer(question.Id, question.Type, JsonValue.Create(true), Strings.AskYes, false)));
 		var no = new Button().StyleName(AppStyles.CardMutedButton).Content(Label(Strings.AskNo));
 		no.OnClick(() => Commit(new AskAnswer(question.Id, question.Type, JsonValue.Create(false), Strings.AskNo, false)));
@@ -713,7 +713,7 @@ internal sealed class AskQuestionPanel
 				.Content(new TextBlock().Text(Strings.AskPrevious).FontSize(AppTheme.FontSizeCaption).PrimaryText())
 				.OnClick(() => JumpTo(Math.Max(0, _questions.Count - 1)));
 			var submit = new Button().Primary()
-				.Content(Label(Strings.AskSubmitAll))
+				.Content(AccentLabel(Strings.AskSubmitAll))
 				.IsEnabled(_answers.All(static answer => answer is not null))
 				.OnClick(() => Finish(cancelled: false));
 			_footer.Children(previous);
@@ -753,7 +753,7 @@ internal sealed class AskQuestionPanel
 		}
 
 		_primary = new Button().Primary()
-			.Content(Label(_current == _questions.Count - 1 && !_review ? Strings.AskSubmit : Strings.AskNext))
+			.Content(AccentLabel(_current == _questions.Count - 1 && !_review ? Strings.AskSubmit : Strings.AskNext))
 			.IsEnabled(_draftAnswer?.Invoke() is not null)
 			.OnClick(SubmitDraft);
 		_footer.Children(_primary);
@@ -961,4 +961,15 @@ internal sealed class AskQuestionPanel
 	}
 
 	private static TextBlock Label(string text) => new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption).PrimaryText();
+
+	/// <summary>
+	/// 主按钮上的文字。字色不写死：清色继承 Button 的 Foreground，主按钮样式自己按状态切换
+	/// （可用 TextOnAccent、禁用 TextFaint）。以前这里复用 <see cref="Label"/>（PrimaryText），
+	/// 深色主题下近白的字压在近白的强调底上，「下一题」看起来像一块禁用态的灰斑；改成写死
+	/// OnAccentText 又会在禁用时变成深色字压深色底。跟随底色才是这两个失败态的一般解。
+	/// </summary>
+	private static TextBlock AccentLabel(string text) => new TextBlock()
+		.Text(text)
+		.FontSize(AppTheme.FontSizeCaption)
+		.FontWeight(FontWeight.Medium);
 }

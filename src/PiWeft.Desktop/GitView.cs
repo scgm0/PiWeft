@@ -640,7 +640,7 @@ public sealed partial class GitView : IDisposable
 		var commit = new Button()
 			.Primary()
 			.Height(AppTheme.ControlHeightMd)
-			.Content(CenteredLabel(Strings.GitCommit).OnAccentText())
+			.Content(CenteredLabel(Strings.GitCommit))
 			.IsEnabled(canCommit)
 			.OnClick(() => _ = CommitDraftAsync(_commitInput?.Text))
 			.HoverTip(canCommit ? Strings.GitCommit : Strings.GitNothingStaged);
@@ -1207,7 +1207,7 @@ public sealed partial class GitView : IDisposable
 			body.Children(new Button()
 				.Primary()
 				.Height(AppTheme.ControlHeightMd)
-				.Content(new TextBlock().Text(Strings.GitInit).FontSize(AppTheme.FontSizeCaption).OnAccentText())
+				.Content(new TextBlock().Text(Strings.GitInit).FontSize(AppTheme.FontSizeCaption))
 				.OnClick(() => ApplyResult(GitWriter.Init(_cwd()))));
 		}
 
@@ -1760,7 +1760,9 @@ public sealed partial class GitView : IDisposable
 	/// </summary>
 	private static void FlatContent(StackPanel content) => content.IsHitTestVisible = false;
 
-	/// <summary>主按钮文字：面板里所有 Primary 按钮的标签都居中，不贴着按钮左缘。</summary>
+	/// <summary>主按钮文字：面板里所有 Primary 按钮的标签都居中，不贴着按钮左缘。
+	/// 字色不写死：主按钮样式在可用 / 禁用两态自己换 Foreground，标签继承它才不会在禁用时变成
+	/// 深色字压深色底（截图里那种「已经消失」的按钮）。</summary>
 	private static TextBlock CenteredLabel(string text) =>
 		new TextBlock()
 			.Text(text)

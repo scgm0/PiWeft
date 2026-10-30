@@ -31,8 +31,7 @@ public static partial class Strings
 	public const string ToolActionEdit = "修改";
 	public const string ToolActionSearch = "搜索";
 
-	/// <summary>输入区上方的会话进行态（PiDeck responding 指示条）。</summary>
-	public const string BusyExecuting = "正在执行命令…";
+	/// <summary>输入区上方的会话进行态（PiDeck responding 指示条）的短语见 Strings.Responding.cs。</summary>
 	public const string SessionStatistics = "会话统计";
 	public const string StatisticsUsage = "累计用量";
 	public const string StatisticsLastReply = "上次模型回复";

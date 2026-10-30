@@ -174,6 +174,8 @@ public sealed partial class MainWindow : Window
 	private void RegisterShortcuts()
 	{
 		_shortcuts = new ShortcutMap(DesktopPreference.Load().Shortcuts);
+		// 旁注类展示（等待提示轮播里的键位）拿不到层层传入的地图，从这份生效表读。
+		ShortcutMap.Shared = _shortcuts;
 
 		this.OnKeyDown(key =>
 		{
@@ -1667,6 +1669,10 @@ public sealed partial class MainWindow : Window
 				case "ask":
 					// ask 卡片的视觉验收：批量题 + 审阅页在会话底部，不动用真实代理。
 					CurrentTab()?.PrepareAskSmoke();
+					break;
+				case "waiting":
+					// 首轮等待的视觉验收：状态条 + 呼吸点 + 已等待时长 + 功能提示 + 时间线占位行。
+					CurrentTab()?.PrepareWaitingSmoke();
 					break;
 				case "git":
 					ShowGitPanel();

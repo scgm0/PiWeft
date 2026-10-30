@@ -21,8 +21,11 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ChatViewModel _chat;
 	private readonly ConversationTimeline _timeline;
 	private readonly DispatcherTimer _renderTimer = new(TimeSpan.FromMilliseconds(40));
-	// 自动重试退避期每秒刷新一次倒计时；不在重试时停着，不占调度。
-	private readonly DispatcherTimer _retryTimer = new(TimeSpan.FromSeconds(1));
+	/// <summary>
+	/// 进行态心跳：等待期（没字可长、没事件可收）每 500ms 推一格呼吸点与轮播，
+	/// 顺便带退避期的重试倒计时（每秒变化一次，一帧就够了）。不跑回合时停着，不占调度。
+	/// </summary>
+	private readonly DispatcherTimer _busyTimer = new(TimeSpan.FromMilliseconds(RespondingStatusPolicy.PulseStepMs));
 	/// <summary>发送键右侧的投递方式菜单（自绘两行项，贴发送键上方展开）。</summary>
 	private readonly SendOptionsMenu _sendMenu = new();
 	private int _renderPending;
@@ -161,11 +164,29 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _thinkingButton;
 	private readonly TextBlock _thinkingLabel = new();
 
-	/// <summary>输入区上方的会话进行态指示行（PiDeck responding 条）：正在执行命令…/正在思考…。</summary>
+	/// <summary>
+	/// 输入区上方的会话进行态指示行（PiDeck responding 条）。
+	/// 只要这一轮还在跑就一直占位：[图标] [呼吸点] [状态短语 · 事实后缀] | [功能提示]。
+	/// </summary>
 	private readonly Border _busyLine;
+	/// <summary>状态行的列宿主：只在「跑回合」时占位（隐藏时整列不参与布局）。</summary>
+	private readonly ReadingColumn _busyColumn;
 	private readonly Image _busyIcon;
+	private readonly TextBlock _busyPulse = new();
 	private readonly TextBlock _busyText = new();
-	private string? _busyKind;
+	private readonly Border _busyDivider;
+	private readonly TextBlock _busyTip = new();
+	private RespondingKind? _busyKind;
+	/// <summary>最近一帧算出的进行态；心跳只拿它重新取轮播帧，不必重扫整段历史。</summary>
+	private RespondingStatus? _busyStatus;
+	/// <summary>本回合起点（发送与压缩自己记的单调时间戳）；0 表示没跑过。</summary>
+	private long _turnStarted;
+
+	/// <summary>时间线里等待占位行的身份：不属于会话条目，只在预热期拼在投影末尾。</summary>
+	private const string PendingReplyEntryId = "live-pending-reply";
+
+	/// <summary>占位行的共享实例：每一拍新建会让时间线误以为换了一行。</summary>
+	private ChatEntry? _pendingRow;
 
 	/// <summary>输入框左群的终端开关键：控制会话底部的终端面板。</summary>
 	private readonly Button _terminalButton;
@@ -506,15 +527,49 @@ public sealed partial class SessionTab : IDisposable
 			.Children(_queueCard.View, _todoCard.View, _extensionCard.View);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
-		_busyIcon = AppIcons.Icon("terminal", AppStyles.RoleInfo, 13);
-		_busyText.FontSize(AppTheme.FontSizeCaption).MutedText().VerticalAlignment(VerticalAlignment.Center);
+		// 三段都预留固定宽度：呼吸点在长与缩、状态短语在轮换、提示每七秒换一条，
+		// 三者同时把行宽推来推去的话，等待中的眼睛就会看到整条线左右晃。
+		_busyIcon = AppIcons.Icon("loader-circle", AppStyles.RoleInfo, 13);
+		_busyPulse
+			.FontSize(AppTheme.FontSizeMicro)
+			.FontFamily(AppTheme.MonoFont)
+			// 固定宽度按最宽的一帧（「···」）留够：等宽 12px 的三枚点约 22 DIP，
+			// 给 20 会被裁掉最后一点；再宽就只是白白把状态短语推远。
+			.Width(24)
+			.VerticalAlignment(VerticalAlignment.Center);
+		_busyText
+			.FontSize(AppTheme.FontSizeCaption)
+			.MinWidth(190)
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		_busyDivider = new Border()
+			.Width(1)
+			.Height(12)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.WithTheme((theme, line) => line.Background = AppTheme.For(theme).BorderSubtle)
+			.IsVisible(false);
+		_busyTip
+			.FontSize(AppTheme.FontSizeMicro)
+			// 旁注用「次要」而不是「最弱」：深色主题下 FaintText 在卡外底色上几乎看不见，
+			// 而这一行的全部意义就是被人看见（提示的是没有可见入口的能力）。
+			.SubtleText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.IsVisible(false);
+		// 宽度跟输入卡一致、且与内容长度无关：提示每七秒换一条、状态短语也在换，
+		// 若宽度跟内容走（Center + 内容宽），整行包括行首图标会跟着左右跳，等待中的眼睛
+		// 特别容易注意到这个。外面这层 ReadingColumn 按可用宽度报尺寸（与扩展卡同一套），
+		// 于是变长的是行尾那一句，行首永远钉在输入卡的左缘。
 		_busyLine = new Border()
-			.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
-			.HorizontalAlignment(HorizontalAlignment.Center)
-			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
-			.IsVisible(false)
-			.Child(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6)
-				.Children(_busyIcon, _busyText));
+			.Child(new DockPanel().LastChildFill().Spacing(6)
+				.Children(_busyIcon, _busyPulse, _busyText, _busyDivider, _busyTip));
+		_busyColumn = new ReadingColumn
+		{
+			Spacing = 0,
+			Margin = new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0),
+			IsVisible = false,
+		};
+		_busyColumn.Children(_busyLine);
 
 		var composerPane = _composerPane = new Border()
 			.StyleName(AppStyles.Composer)
@@ -599,7 +654,7 @@ public sealed partial class SessionTab : IDisposable
 
 		_inputStack = new StackPanel()
 			.Spacing(2)
-			.Children(_widgetColumn, _emptyCard.IsVisible(false), _busyLine, composerPane);
+			.Children(_widgetColumn, _emptyCard.IsVisible(false), _busyColumn, composerPane);
 
 		// 问询卡片与会话同宽同列：真实窗口里该宽由 ReadingPreferences 随阅读宽度再算一次。
 		_askPanel = new AskQuestionPanel(OnAskVisibilityChanged);
@@ -651,8 +706,10 @@ public sealed partial class SessionTab : IDisposable
 				Render();
 			}
 		};
-		_retryTimer.Tick += () =>
+		_busyTimer.Tick += () =>
 		{
+			// 等待期没有任何消息事件，这一拍就是唯一的推进：状态条的呼吸点、轮播、
+			// 已等待时长与退避倒计时全部跟着它走。整帧 Render 在这一拍里几乎全是缓存命中。
 			if (!_disposed) Render();
 		};
 		_imagePreview.Status = (message, ok) =>
@@ -727,6 +784,9 @@ public sealed partial class SessionTab : IDisposable
 
 	/// <summary>标签页使用的聊天记录模型；宿主可以在后台预建后交接过来。</summary>
 	internal ChatViewModel Chat => _chat;
+
+	/// <summary>当前进行态（诊断与单测读取；空闲为 null）。就是状态条那一行现在说的话。</summary>
+	internal RespondingStatus? BusyStatus => _busyStatus;
 
 	/// <summary>代理事件层是否已进入流式状态（诊断与契约测试用）。</summary>
 	internal bool ChatStreaming => _chat.IsStreaming;
@@ -915,7 +975,7 @@ public sealed partial class SessionTab : IDisposable
 		_compactionAbort?.Cancel();
 		HideTransientPanels();
 		_renderTimer.Dispose();
-		_retryTimer.Dispose();
+		_busyTimer.Dispose();
 		_composerHintTimer?.Stop();
 		_composerHintTimer?.Dispose();
 		_composerHintTimer = null;
@@ -986,6 +1046,8 @@ public sealed partial class SessionTab : IDisposable
 		_timeline.ApplyReadingWidth();
 		_composerPane.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		_widgetColumn.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
+		// 进行态行也在这一列里：它必须跟着阅读宽度走，否则改完宽度后状态条会跟输入卡错位。
+		_busyColumn.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		_readingStatisticsBar.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		if (_askCard is not null)
 		{
@@ -1012,6 +1074,9 @@ public sealed partial class SessionTab : IDisposable
 		AppStyles.ApplyTextColors(_usagePanel.View);
 		AppStyles.ApplyTextColors(_branchPanel.View);
 		AppStyles.ApplyTextColors(_imagePreview.View);
+		// 进行态条的图标是直接取色的（没进 AppIcons 的角色跟踪表），换肤后要重新取一次；
+		// 清掉 kind 就是让它下一帧按新主题重新上色，而文字那几段已经由角色重上色。
+		_busyKind = null;
 		_terminal?.ApplyTheme();
 	}
 
@@ -1076,6 +1141,9 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_sending = true;
+		// 状态条要回答「已经等了多久」，得有一个属于本回合的起点；AgentStart 比这里晚到，
+		// 中间那一段（检查点快照、分支切换、展开附件）也用同一个时钟。
+		_turnStarted = Stopwatch.GetTimestamp();
 		var sendAbort = new CancellationTokenSource();
 		lock (_sendAbortGate)
 		{
@@ -2067,26 +2135,43 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// <summary>
-	/// 会话进行态（PiDeck respondingKind 同语义）：压缩 → 执行工具 → 推流正文 → 思考。
-	/// 从最新条目向回找第一个仍在流式的活动，空闲返回 null。
+	/// 会话进行态（PiDeck respondingKind 同语义）。判定与措辞都在
+	/// <see cref="RespondingStatusPolicy"/>：只要这一轮还在跑就永远有一句可说，
+	/// 不再出现「完全没提示」的空窗（首轮发送后到首 token 之前就是这一段）。
 	/// </summary>
-	private (string Kind, string Icon, string Role, string Text)? BusyIndicator(IReadOnlyList<ChatEntry> rows)
+	private RespondingStatus ComposeStatus(IReadOnlyList<ChatEntry> rows, bool pendingRowVisible)
 	{
-		// 自动重试优先于普通进行态：退避期没有任何消息事件，用户必须能看出「不是失败了，是在等重试」。
-		if (_chat.Retry is { Running: true } retry)
-		{
-			var seconds = RetrySecondsRemaining(retry.RetryAtUnixMs);
-			return ("retrying", "rotate-ccw", AppStyles.RoleInfo,
-				seconds > 0
-					? Strings.RetryingIn(retry.Attempt, retry.MaxAttempts, seconds)
-					: Strings.Retrying(retry.Attempt, retry.MaxAttempts));
-		}
+		var retry = _chat.Retry;
+		var (liveTool, liveBody, liveThinking) = LiveActivity(rows);
+		return RespondingStatusPolicy.Compose(new RespondingInput(
+			TurnElapsedMs(),
+			TurnHasOutput(rows),
+			pendingRowVisible,
+			liveBody,
+			liveThinking,
+			liveTool,
+			Session.IsCompacting,
+			retry is { Running: true },
+			retry?.Attempt ?? 0,
+			retry?.MaxAttempts ?? 0,
+			retry is { } scheduled ? RetrySecondsRemaining(scheduled.RetryAtUnixMs) : 0));
+	}
 
-		if (Session.IsCompacting)
-		{
-			return ("compacting", "refresh-cw", AppStyles.RoleSubtle, Strings.Compacting);
-		}
+	/// <summary>
+	/// 预热期要不要在时间线尾部补一行「在等回复」的占位。条件是「屏幕上最后一行还是用户
+	/// 自己那条」且这一轮真的在等首 token —— 重试与压缩有自己的状态条文案，再挂一行
+	/// 「正在等第一句话」就是自相矛盾。
+	/// </summary>
+	private bool PendingRowVisible(IReadOnlyList<ChatEntry> rows) =>
+		!TurnHasOutput(rows) && _filter.Length == 0 && rows.Count > 0 &&
+		_chat.Retry is not { Running: true } && !Session.IsCompacting;
 
+	/// <summary>
+	/// 从最新条目向回找第一个仍在流式的活动。每帧都走，因此只看 O(1) 的长度与标记：
+	/// 读 <see cref="ChatEntry.Text"/> 会把整篇流式正文物化一遍。
+	/// </summary>
+	private static (bool Tool, bool Body, bool Thinking) LiveActivity(IReadOnlyList<ChatEntry> rows)
+	{
 		for (var index = rows.Count - 1; index >= 0; index--)
 		{
 			var row = rows[index];
@@ -2105,16 +2190,68 @@ public sealed partial class SessionTab : IDisposable
 			if (row.IsStreaming) return KindOf(row);
 		}
 
-		return null;
+		return (false, false, false);
 
-		static (string, string, string, string) KindOf(ChatEntry item) => item.Role switch
+		static (bool, bool, bool) KindOf(ChatEntry item) => item.Role switch
 		{
-			ChatRole.Tool => ("executing", "terminal", AppStyles.RoleInfo, Strings.BusyExecuting),
-			// 每帧都会走到这里：流式行必须用 O(1) 的长度判断，不能读 Text 触发整篇物化。
-			ChatRole.Assistant when item.TextLength > 0 || item.Images.Count > 0 =>
-				("responding", "message-square", AppStyles.RoleInfo, Strings.Streaming),
-			_ => ("thinking", "sparkles", AppStyles.RoleThinking, Strings.ThinkingActive),
+			ChatRole.Tool => (true, false, false),
+			ChatRole.Assistant when item.TextLength > 0 || item.Images.Count > 0 => (false, true, false),
+			_ => (false, false, true),
 		};
+	}
+
+	/// <summary>
+	/// 本回合有没有已经落下可见的行。屏幕上最后一行还是用户自己那条，就说明请求还没换回
+	/// 任何东西——这一段是「预热 + 等首 token」，和「工具收口、下一段还没开始」的空窗不是一回事：
+	/// 前者看不见子阶段，可以给几句真话轮着说；后者只能说「正在处理」。
+	/// </summary>
+	private static bool TurnHasOutput(IReadOnlyList<ChatEntry> rows) =>
+		rows.Count > 0 && rows[^1].Role != ChatRole.User;
+
+	/// <summary>本回合已用时长：取「发送/压缩」与「AgentStart」里更晚的那个起点。</summary>
+	private double TurnElapsedMs()
+	{
+		var started = _turnStarted;
+		var agent = _chat.TurnStarted;
+		if (agent != 0 && (started == 0 || agent > started)) started = agent;
+		return started == 0 ? 0 : Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+	}
+
+	/// <summary>
+	/// 右侧功能提示：只在屏幕自己不动的时候占位（推流期眼睛在正上文中，不抢视线），
+	/// 每 7 秒换一条；设置里关掉就整段不占位。
+	/// </summary>
+	private void ApplyRespondingTip(RespondingStatus status)
+	{
+		var quiet = status.Kind is RespondingKind.Starting or RespondingKind.Waiting
+			or RespondingKind.Executing or RespondingKind.Compacting or RespondingKind.Retrying;
+		var tip = quiet ? RespondingTips.Current(status.ElapsedMs, _turnStarted) : null;
+		var show = tip is { Length: > 0 };
+		_busyDivider.IsVisible(show);
+		_busyTip.IsVisible(show);
+		if (tip is { Length: > 0 } text && _busyTip.Text != text)
+		{
+			_busyTip.Text(text);
+		}
+	}
+
+	/// <summary>
+	/// 预热期在时间线尾部补一行「在等回复」的占位：首轮等待时正文区只有用户自己的气泡，
+	/// 看不出请求是否被受理。它不是会话内容：不进投影、不进大纲、不进模型上下文，
+	/// 只接在投影结果后面交给行宿主；首 token 一到就自然被真的流式行顶掉。
+	/// </summary>
+	private IReadOnlyList<ChatEntry> AppendPending(IReadOnlyList<ChatEntry> entries)
+	{
+		// 复用同一个实例：ConversationTimeline 按引用判同一行，实例不变就不会每一拍拆了重建，
+		// 那一行的心跳也才有意义。
+		_pendingRow ??= new ChatEntry
+		{
+			Role = ChatRole.Assistant,
+			EntryId = PendingReplyEntryId,
+			Text = string.Empty,
+			Timestamp = _turnStarted == 0 ? 0 : DateTimeOffset.Now.ToUnixTimeMilliseconds(),
+		};
+		return [.. entries, _pendingRow];
 	}
 
 	/// <summary>保留未变化的消息控件和折叠状态，只重绘变化后的尾部。</summary>
@@ -2200,29 +2337,40 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		var busy = _sending || _chat.IsStreaming;
-		var indicator = BusyIndicator(all);
-		var kindChanged = indicator?.Kind != _busyKind;
-		_busyKind = indicator?.Kind;
-		_busyLine.IsVisible(busy && indicator is not null);
-		if (indicator is { } active)
+		// 只要这一轮还在跑，状态条就一直在那儿：以前「没有流式行」直接不显示，
+		// 首轮发送后到首 token 之前那段最长的等待反而一片空白。
+		var pending = busy && PendingRowVisible(all);
+		var responding = busy ? ComposeStatus(all, pending) : (RespondingStatus?)null;
+		_busyStatus = responding;
+		var kindChanged = responding?.Kind != _busyKind;
+		_busyKind = responding?.Kind;
+		_busyColumn.IsVisible(responding is not null);
+		if (responding is { } active)
 		{
 			if (kindChanged)
 			{
 				_busyIcon.Source(AppIcons.Get(active.Icon, AppStyles.ColorForRole(active.Role)));
+				// 文案与呼吸点同色：状态本身就是这一个语义（思考紫、工具蓝、空窗弱色）。
+				_busyText.Role(active.Role);
+				_busyPulse.Role(active.Role);
 			}
-			// 重试倒计时每秒变一次，但 Kind 不变：文案要单独比对。
-			if (_busyText.Text != active.Text) _busyText.Text(active.Text);
+
+			// 倒计时、已等待时长与轮播短语都会变而 Kind 不变：逐段比一下，没变就不碰排版。
+			if (_busyPulse.Text != active.Pulse) _busyPulse.Text(active.Pulse);
+			var line = active.Text;
+			if (_busyText.Text != line) _busyText.Text(line);
+			ApplyRespondingTip(active);
 		}
 
-		// 退避期只在事件到达时才会重绘；这里交给 1 秒定时器读秒，收口后立刻停。
-		var retrying = _chat.Retry is { Running: true };
-		if (retrying)
+		// 心跳只在跑回合的时候开：推流期数据帧自己会把帧打进来，但模型一旦卡顿、工具一旦跑久，
+		// 屏幕就不再有事件——没有这一拍，呼吸点会停在半道上，看起来就像卡死了。
+		if (busy)
 		{
-			if (!_retryTimer.IsEnabled) _retryTimer.Start();
+			if (!_busyTimer.IsEnabled) _busyTimer.Start();
 		}
-		else if (_retryTimer.IsEnabled)
+		else if (_busyTimer.IsEnabled)
 		{
-			_retryTimer.Stop();
+			_busyTimer.Stop();
 		}
 
 		// 重试收口提示：失败卡/成功回复本身已在时间线，toast 只负责即时告知。
@@ -2274,12 +2422,14 @@ public sealed partial class SessionTab : IDisposable
 		_retry.IsEnabled = !busy && _rowsHaveUser;
 		_copyReply.IsEnabled = _rowsHaveReply;
 
+		// 预热占据位：大纲、计数、空会话判定都继续看真投影，这一行只给行宿主看。
+		var timelineRows = pending ? AppendPending(entries) : entries;
 		var realize = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-		_timeline.SetEntries(entries, force, _projector.LastStablePrefix, _projector.LastPrefixReused);
+		_timeline.SetEntries(timelineRows, force, _projector.LastStablePrefix, _projector.LastPrefixReused);
 		SyncOutline(entries, _projector.LastStablePrefix);
 		if (realize is not null)
 		{
-			Diagnostics.Slow("timeline.realize", realize, 8, $"rows={entries.Count}");
+			Diagnostics.Slow("timeline.realize", realize, 8, $"rows={timelineRows.Count}");
 		}
 		SetEmptyState(all.Count == 0 && _messages.IsVisible);
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
@@ -2617,6 +2767,7 @@ public sealed partial class SessionTab : IDisposable
 		var cancellation = new CancellationTokenSource();
 		_compactionAbort = cancellation;
 		_sending = true;
+		_turnStarted = Stopwatch.GetTimestamp();
 		string? failure = null;
 		Render();
 		try
@@ -2647,6 +2798,8 @@ public sealed partial class SessionTab : IDisposable
 
 	private UIElement Row(ChatEntry entry)
 	{
+		// 等待占位行按身份认，不按 Role：它看上去是助手侧的第一行，但不是助手回复。
+		if (entry.EntryId == PendingReplyEntryId) return new PendingReplyView(TurnElapsedMs);
 		var row = entry.Role switch
 		{
 			ChatRole.User => Bubble(entry),

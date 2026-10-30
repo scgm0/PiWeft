@@ -50,6 +50,24 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void RespondingTipsDefaultOnAndOnlyTheOffStateIsWritten()
+	{
+		// 默认显示：等待期那一行提示是新用户唯一的入口曝光，读不到键时不能意外关掉。
+		Assert.True(DesktopPreference.Load(_agentDir).RespondingTips);
+
+		(DesktopPreference.Load(_agentDir) with { RespondingTips = false }).Save(_agentDir);
+		Assert.False(DesktopPreference.Load(_agentDir).RespondingTips);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw["respondingTips"]!.GetValue<bool>());
+
+		// 改回默认值时把键删干净，不留下一个无意义的 true。
+		(DesktopPreference.Load(_agentDir) with { RespondingTips = true }).Save(_agentDir);
+		raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw.ContainsKey("respondingTips"));
+		Assert.True(DesktopPreference.Load(_agentDir).RespondingTips);
+	}
+
+	[Fact]
 	public void CycleGoesDarkLightSystemAndRoundTripsThroughTheFile()
 	{
 		var light = DesktopPreference.Load(_agentDir).Cycle();

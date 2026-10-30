@@ -1126,8 +1126,9 @@ public static partial class Strings
 	public const string Streaming = "正在生成…";
 
 	// 自动重试（与 PiDeck 的状态条同义：先报「第几次/上限」，有退避再补一句倒计时）。
+	// 这里不写尾部的「…」：状态条左边另有一段呼吸点，两处同时省略会把行数撑乱。
 	public static string Retrying(int attempt, int maxAttempts) =>
-		maxAttempts > 0 ? $"正在自动重试 {attempt}/{maxAttempts}…" : $"正在自动重试（第 {attempt} 次）…";
+		maxAttempts > 0 ? $"正在自动重试 {attempt}/{maxAttempts}" : $"正在自动重试（第 {attempt} 次）";
 	public static string RetryingIn(int attempt, int maxAttempts, int seconds) =>
 		$"{Retrying(attempt, maxAttempts)} · {seconds} 秒后重试";
 	public static string RetrySucceeded(int attempt) => $"自动重试成功，共重试 {attempt} 次。";

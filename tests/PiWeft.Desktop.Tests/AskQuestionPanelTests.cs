@@ -143,6 +143,38 @@ public sealed class AskQuestionPanelTests
 		Assert.True(AskQuestions.ParseResponse(response, Questions).Cancelled);
 	}
 
+	[Fact]
+	public void FooterActionLeavesItsColorToThePrimaryButtonItself()
+	{
+		// 页脚主按钮的底色是强调色（深色主题下是近白）。以前文字复用了「正文主色」的
+		// Label()，近白的字压在近白的底上，「下一题」看着就像一块禁用态的灰斑。
+		// 修法不是把字写死成 OnAccentText —— 那样禁用时又会变成深色字压深色底；
+		// 而是不给标签任何前景色与角色，让它继承按钮：可用 TextOnAccent、禁用 TextFaint。
+		// 「下一题」只在中间的自由输入题上出现，所以这里拿三道题。
+		var panel = new AskQuestionPanel();
+		var root = new StackPanel();
+		_ = new Window().Content(root);
+		root.Children(panel.View);
+		_ = panel.ShowAsync(
+			[
+				new AskQuestion("q1", "select", "选哪个？", [new AskOption("选项 A", "A", null)], null, null),
+				new AskQuestion("q2", "input", "中间题？", null, "写点什么", null),
+				new AskQuestion("q3", "input", "最后一题？", null, "再写点", null),
+			],
+			review: false,
+			CancellationToken.None);
+
+		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
+			ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true));
+
+		var next = Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskNext);
+		Assert.Equal(AppStyles.PrimaryButton, next.StyleName);
+		var label = Assert.IsType<TextBlock>(next.Content);
+		// 角色标签同样会覆盖继承（换主题时按角色重上色），所以必须为空。
+		Assert.Null(label.Tag);
+		panel.Close();
+	}
+
 	private static string? ContentText(Button button) =>
 		button.Content switch
 		{

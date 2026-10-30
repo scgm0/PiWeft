@@ -68,6 +68,12 @@ public sealed record DesktopPreference
 	public bool Diagnostics { get; init; }
 
 	/// <summary>
+	/// 等待期的功能提示轮播（状态条右侧那一行小字）。默认显示：它是唯一曝光
+	/// 「没有可见入口」的能力的机会；关掉只关提示本身，不影响里面提到的功能。
+	/// </summary>
+	public bool RespondingTips { get; init; } = true;
+
+	/// <summary>
 	/// 右侧功能面板的拖拽宽度（DIP）。面板本身属于会话、默认收起，因此折叠状态与分段
 	/// 不落盘；只有宽度是窗口级、跨会话共享的偏好。
 	/// </summary>
@@ -178,6 +184,9 @@ public sealed record DesktopPreference
 				SidebarProjects = root?["sidebarProjects"] is JsonValue tab && tab.TryGetValue<bool>(out var projects) && projects,
 				ExpandedProjects = ReadStringArray(root?["expandedProjects"]),
 				Diagnostics = root?["diagnostics"] is JsonValue diagnostics && diagnostics.TryGetValue<bool>(out var on) && on,
+				// 默认开：键缺失或类型不对都算开，只有显式写 false 才关。
+				RespondingTips = root?["respondingTips"] is not JsonValue respondingTips ||
+					!respondingTips.TryGetValue<bool>(out var tipsOff) || tipsOff,
 				RightPanelWidth = Math.Clamp(Number(root, "rightPanelWidth", positive: true) ?? AppTheme.RightPanelWidth,
 					AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth),
 				ChatWorkspace = root?["chatWorkspace"] is JsonValue chat && chat.TryGetValue<string>(out var chatWorkspace) ? chatWorkspace : string.Empty,
@@ -259,6 +268,15 @@ public sealed record DesktopPreference
 		else
 		{
 			root.Remove("diagnostics");
+		}
+		// 等待提示默认显示：只在用户关掉时落盘一个 false。
+		if (RespondingTips)
+		{
+			root.Remove("respondingTips");
+		}
+		else
+		{
+			root["respondingTips"] = false;
 		}
 		root["sidebarWidth"] = double.IsFinite(SidebarWidth) ? Math.Clamp(SidebarWidth, 200, 480) : AppTheme.SidebarWidth;
 		root["rightPanelWidth"] = double.IsFinite(RightPanelWidth)

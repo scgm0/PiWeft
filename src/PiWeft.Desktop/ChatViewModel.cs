@@ -251,6 +251,22 @@ public sealed class ChatViewModel : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// 本回合开始的单调时间戳（<see cref="System.Diagnostics.Stopwatch.GetTimestamp"/> 口径），
+	/// 在 <c>AgentStart</c> 上刷新；0 表示这一轮还没起过。等待期要回答「已经让读者等多久了」，
+	/// 只能用一个不受系统时钟调改影响的起点。
+	/// </summary>
+	internal long TurnStarted
+	{
+		get
+		{
+			lock (_gate)
+			{
+				return _runStarted;
+			}
+		}
+	}
+
 	public string? Error
 	{
 		get
@@ -783,6 +799,35 @@ public sealed class ChatViewModel : IDisposable
 				_isThinking = false;
 			}
 		}
+		Changed?.Invoke();
+	}
+
+	/// <summary>
+	/// 仅供 <c>--ui-smoke waiting</c>：把视图模型摆成「刚发出一条消息、首 token 还没到」。
+	/// 这一步在真实运行里要等网络，视觉验收不能等，所以直接种一行用户消息并把回合标为运行中；
+	/// 之后的行为与真的首轮等待一致（状态条判预热、时间线尾部拼占位行）。
+	/// </summary>
+	internal void SmokeWaitingTurn(string text)
+	{
+		lock (_gate)
+		{
+			_entries.Clear();
+			_entries.Add(new ChatEntry
+			{
+				Role = ChatRole.User,
+				Text = text,
+				Timestamp = DateTimeOffset.Now.ToUnixTimeMilliseconds(),
+				EntryId = "smoke-user",
+			});
+			_committedRows = _entries.ToArray();
+			// 把重建基线定在「当前版本」：下一次 Entries() 不会用真会话把这一行冲掉。
+			_builtSession = _session?.Session;
+			_builtRevision = _session?.Session.Revision ?? -1;
+			_rowsSnapshot = null;
+			_isStreaming = true;
+			ResetStreaming();
+		}
+
 		Changed?.Invoke();
 	}
 

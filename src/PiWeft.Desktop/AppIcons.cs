@@ -82,7 +82,10 @@ public static class AppIcons
 				.Spacing(6)
 				.Children(
 					image,
-					new TextBlock().Text(text).FontSize(AppTheme.FontSizeControl).OnAccentText()
+					// 字色不写死：不设前景色，继承 Button 的 Foreground，让主按钮样式在可用 / 禁用两态
+					// 自己切换（TextOnAccent ↔ TextFaint）。写死 OnAccentText 的话，禁用态
+					// 会变成深色字压在深色底上——看上去像已经消失的按钮。
+					new TextBlock().Text(text).FontSize(AppTheme.FontSizeControl)
 						.VerticalAlignment(VerticalAlignment.Center)))
 			.OnClick(onClick)
 			.StyleName(AppStyles.PrimaryButton);

@@ -474,13 +474,38 @@ public sealed class SettingsView
 		}
 		font.SelectionChanged += _ => SaveReading();
 		width.SelectionChanged += _ => SaveReading();
+
+		// 等待期的功能提示轮播：与诊断、侧栏一样是「模块开关」，只停提示本身。
+		var tips = new CheckBox().Content(new TextBlock()
+			.Text(Strings.RespondingTipsSettingDesc)
+			.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
+			.MaxWidth(760));
+		tips.IsChecked(preference.RespondingTips);
+		tips.OnCheckedChanged(_ =>
+		{
+			var shown = tips.IsChecked == true;
+			try
+			{
+				(DesktopPreference.Load() with { RespondingTips = shown }).Save();
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				Toast(Strings.ConfigFailed, ToastKind.Error);
+				return;
+			}
+
+			// 状态条下次读偏好就反映新选择：这一行只是旁注，不必等重启。
+			RespondingTips.Invalidate();
+		});
+
 		return new StackPanel().Spacing(AppTheme.Space4).Children(
 			Group("palette", Strings.ConfigTheme, new StackPanel().Spacing(AppTheme.Space3).Children(previews,
 				picker.HorizontalAlignment(HorizontalAlignment.Left))),
 			Group("file-text", Strings.ReadingSettings, new StackPanel().Spacing(AppTheme.Space3).Children(
 				new DockPanel().LastChildFill().Children(font.DockRight(), LabelForPreview(Strings.ChatFontSize)),
 				new DockPanel().LastChildFill().Children(width.DockRight(), LabelForPreview(Strings.ReadingWidth)),
-				sample)));
+				sample)),
+			Group("loader-circle", Strings.RespondingTipsSetting, tips));
 	}
 
 	private static TextBlock LabelForPreview(string text) => new TextBlock().Text(text)

@@ -85,8 +85,10 @@ MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win3
   选中项左侧打勾；select/multi_select 都保留一行自定义输入。单选/确认点一下即答完并自动推进，多选与文本题
   靠页脚「下一题/提交」收尾（勾一个不等于答完），卡内一行提示写清本题怎么推进。卡片开着时整个输入区折叠
   （不两处抢键盘焦点），页签标题前缀一个 `●`，后台会话也能看出卡在哪。只有启动时的项目信任询问（还没有
-  会话可挂）沿用窗口浮层。
+  会话可挂）沿用窗口浮层。页脚主按钮（下一题 / 提交 / 提交全部 / 是）的文字颜色与全应用其余主按钮一致，
+  用 `TextOnAccent`：底色是强调色（深色主题下近白），再用正文主色会让文字融进底色、看着像禁用态灰斑。
 - 用户/助手原文、Markdown、代码和工具输出支持部分选择与复制；用户消息、思考、工具原文和流式正文使用自适应高度只读文本控件。
+- 等待体验（PiDeck 的 responding 条）：只要这一轮在跑，输入卡上方那行就一直在。状态判定照搬 PiDeck 的 `deriveRespondingKind` 优先级（退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗，正文优先于思考），并补齐 PiDeck 的 `starting` / `waiting` 两态：屏幕最后一行还是用户消息时判为预热，三句真话轮播（正在准备会话 / 正在连接模型 / 等待首个回复），其余可观测阶段一律单句不猜；回合内空窗（工具收口与下一段之间）只说「正在处理」。与 PiDeck 一致：呼吸点三点循环、轮播短语与功能提示分开；不同之处是我们另据事实补了「本轮已 N 秒」（只在静默期，推流期与退避期不报数；预热期交给时间线占位行报，一轮只有一处实时耗时），并把等待占位落成时间线尾部一行（PiDeck 是纯状态条）。右侧功能提示每 7 秒一条，键位取生效绑定（改键后文案跟着变），可在设置 → 外观关掉（默认显示）。
 - 提示音（PiDeck 的 soundAlert）：三类事件——会话完成、会话出错、代理等待输入——各带开关与预设音效，默认完成 `done-chime`、出错 `error-buzz`、等待输入关（`waiting-ping`），音量 0.6，另可「仅在窗口失焦时提醒」。冷却规则照搬 PiDeck：同一会话完成 8 秒内只响一次（settled 与状态兜底会重复报到）、全局 1.5 秒只放行最近一次（多会话同时完成不叠音）、出错只在「非错误 → 错误」边沿响、等待输入按批去重。音效是 PiDeck 的 7 个纯合成 WAV，内嵌进桌面程序集，消费位置为 `<agentDir>/sounds/`；播放交给 `OldBit.Beep` 1.0.3（Windows WASAPI、macOS AudioToolbox、Linux ALSA，64 KB、纯 P/Invoke、无随包原生库、NativeAOT 实测通过），音量走它内建的 0–100 缩放。Beep 初始化失败时回退 Windows `winmm!PlaySound` / macOS `afplay` / Linux `paplay`/`pw-play`/`aplay`（此时用按 5% 步进生成的缩放副本控制音量），都没有时静默跳过。设备按次开关（空闲不占音频设备），播放放在后台线程，UI 线程不等待。设置 → 运行 → 提示音 可改开关、音量与音效并试听，写入 `desktop.json` 的 `soundAlert` 段（键名与 PiDeck 相同，预设 id 如 `done-chime`）。
 - 跨项目会话使用自己的 cwd 环境，启动项目 MCP 不注入其它项目标签。运行时发送按钮变为中断，保留草稿并禁用模型切换及历史修改动作；中断会结束流式请求、工具批次、自动压缩与重试退避，把已生成的部分回复以 `aborted` 消息落盘，随后可立即再次发送。发送键右侧的 Split Send 菜单可把草稿加入当前回合（steer）或排到下一轮（follow-up），附件随消息入队；菜单项按 PiDeck 的形状给两行——标题写动作（「加入当前回合」/「排队到下一轮」）、第二行写协议名与生效时机（「steer · 下一次模型调用前生效」/「followUp · 当前回复结束后发送」），另带一项中断（红色图标、上方一条发丝线分组）。版面：图标列定宽 22（图标 14 + 8 间距，不贴标题）、两行文字左缘对齐、行内边距 10/7、说明超长省略而不换行、卡片最小宽 288。用原生 `Popup` 托管自绘内容（边界翻转、外点关闭、Esc 由框架负责），无后端时静默降级。排入的消息在输入框上方的「排队中」卡里逐条列出（与待办卡同列同宽）：行内是序号、预览正文与图片数、投递时机（本轮 / 下一轮）；`queue_update` 全量快照驱动列表，模型抽走一条就少一条。每行可撤回输入框（正文与图片一起回填，不覆盖已写内容）或直接丢弃；已经投递给模型的那条撤回会被拒绝并提示。卡内最多 180 px 高的可滚列表，队列清空时整卡不占位。
 - Markdown 链接只放行 http/https；编辑器优先 `$VISUAL` / `$EDITOR`；HTML 导出无脚本且自包含。
@@ -417,6 +419,7 @@ dotnet publish src/PiWeft.Desktop/PiWeft.Desktop.csproj -c Release -r linux-x64 
 
 xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-parity-smoke.sh
 xvfb-run -a -s '-screen 0 1280x820x24' bash tools/desktop-ask-smoke.sh
+xvfb-run -a -s '-screen 0 1280x820x24' bash tools/desktop-waiting-smoke.sh
 PI_CODING_AGENT_DIR=$(mktemp -d) xvfb-run -a \
   src/PiWeft.Desktop/bin/Release/net10.0/linux-x64/publish/piweft-desktop --theme-smoke --cwd /tmp
 xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-statistics-smoke.sh

@@ -699,13 +699,15 @@ public static class AppStyles
 						Setters = [Setter.Create(UIElement.OpacityProperty, 0.78)],
 					},
 					// 主按钮没有“未保存”时可点：禁用态整体变灰，不保留醒目的强调白。
+					// 字色取 TextSubtle 而不是 TextFaint：底色已经是 HoverBackground，Faint 在深色
+					// 主题下只剩 1.5:1 的对比，“保存”会真的读不出来；Subtle 仍然明确弱于可用态。
 					new StateTrigger
 					{
 						Exclude = VisualStateFlags.Enabled,
 						Setters =
 						[
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
-							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextFaint)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle)),
 						],
 					},
 				],
