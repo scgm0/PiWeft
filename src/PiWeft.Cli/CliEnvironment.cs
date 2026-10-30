@@ -715,6 +715,10 @@ public sealed class CliEnvironment
 			CustomSystemPrompt = customSystemPrompt,
 			AppendSystemPrompt = appendSystemPrompt,
 			NoContextFiles = arguments.NoContextFiles,
+			// 显式路径来自 settings.extensions 与 -e；-ne 只关发现，显式路径仍然加载（与 pi 一致）。
+			ExtensionPaths = [.. Settings.Extensions, .. arguments.Extensions],
+			DiscoverExtensions = !arguments.NoExtensions,
+			FlagValues = arguments.UnknownFlags,
 			UiHost = uiHost,
 			ProjectTrusted = projectTrusted,
 		});

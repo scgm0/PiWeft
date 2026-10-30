@@ -110,6 +110,13 @@ public sealed record StreamOptions : ProviderRequestOptions
 	/// <summary>偏好的传输方式（<c>sse</c>、<c>websocket</c>、<c>websocket-cached</c>、<c>auto</c>）。</summary>
 	public string? Transport { get; init; }
 
+	/// <summary>
+	/// 响应体空闲超时（毫秒）：连续这么久没有收到任何字节就失败。
+	/// <see langword="null"/> 或 <c>0</c> 表示不设限。长思考由这个计时器而不是总时长兜底 ——
+	/// 总时长会把「慢但仍在产出」的合法长流切断。
+	/// </summary>
+	public int? IdleTimeoutMs { get; init; }
+
 	/// <summary>请求的 pi 思考级别（<c>off</c>…<c>max</c>），provider 会按模型支持范围收敛。</summary>
 	public string? ThinkingLevel { get; init; }
 

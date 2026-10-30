@@ -58,6 +58,12 @@ public sealed record CodingAgentSettings
 	/// <summary><c>off</c> / <c>streaming</c> / <c>idle</c>：保持提示缓存热的策略。</summary>
 	public string CacheWarming { get; init; } = "streaming";
 
+	/// <summary>
+	/// 偏好的传输方式：<c>auto</c> / <c>sse</c> / <c>websocket</c> / <c>websocket-cached</c>。
+	/// 目前只有 Codex 的 responses 实现会读它（其它 provider 一律走 HTTP）。
+	/// </summary>
+	public string Transport { get; init; } = "auto";
+
 	public CompactionSettings Compaction { get; init; } = new();
 
 	public BranchSummarySettings BranchSummary { get; init; } = new();
@@ -88,14 +94,29 @@ public sealed record CodingAgentSettings
 	/// <summary>额外的主题文件或目录，对应 pi 的 <c>settings.themes</c>。</summary>
 	public IReadOnlyList<string> Themes { get; init; } = [];
 
+	/// <summary>显式扩展文件或目录，对应 <c>settings.extensions</c>。</summary>
+	public IReadOnlyList<string> Extensions { get; init; } = [];
+
 	/// <summary>
 	/// 项目信任的默认决策：<c>always</c>、<c>never</c> 或 <c>ask</c>。
 	/// 默认 <c>ask</c>（与 pi 一致）：交互场景弹卡询问，RPC/print 等无 UI 场景按不受信处理。
 	/// </summary>
 	public string DefaultProjectTrust { get; init; } = "ask";
 
-	/// <summary>provider 请求超时，单位毫秒。</summary>
+	/// <summary>provider 请求超时（等响应头），单位毫秒。</summary>
 	public int? TimeoutMs { get; init; }
+
+	/// <summary>
+	/// 响应体空闲超时（毫秒），默认 300 秒；<c>0</c> 表示关闭。
+	/// 连续这么久没有收到任何字节就让这一轮失败，交给自动重试。长流不受总时长限制。
+	/// </summary>
+	public int HttpIdleTimeoutMs { get; init; } = 300_000;
+
+	/// <summary>
+	/// pi 的 <c>settings.httpProxy</c>：设置 <c>HTTP_PROXY</c>/<c>HTTPS_PROXY</c>。
+	/// 只读**全局**设置 —— 项目配置能把流量导到任意代理，等同于让仓库劫持用户请求。
+	/// </summary>
+	public string? HttpProxy { get; init; }
 
 	/// <summary>bash 工具使用的 shell 路径，对应 pi 的 <c>shellPath</c>；为空时按平台默认值。</summary>
 	public string? ShellPath { get; init; }
@@ -401,13 +422,26 @@ public sealed record CodingAgentSettings
 		Write(root, "steeringMode", file.SteeringMode);
 		Write(root, "followUpMode", file.FollowUpMode);
 		Write(root, "cacheWarming", file.CacheWarming);
+		Write(root, "transport", file.Transport);
+		if (file.SteeringMode is not null)
+		{
+			// 写入新键后旧键没有存在意义；留着会让下一次合并看到两份互相矛盾的档位。
+			root.Remove("queueMode");
+		}
+
+		if (file.Transport is not null)
+		{
+			root.Remove("websockets");
+		}
 		Write(root, "enableSkillCommands", file.EnableSkillCommands);
 		Write(root, "defaultProjectTrust", file.DefaultProjectTrust);
 		Write(root, "timeoutMs", file.TimeoutMs);
+		WriteTimeout(root, "httpIdleTimeoutMs", file.HttpIdleTimeoutMs);
 		WritePackages(root, file.Packages);
 		Write(root, "skills", file.Skills);
 		Write(root, "prompts", file.Prompts);
 		Write(root, "themes", file.Themes);
+		Write(root, "extensions", file.Extensions);
 
 		if (file.Compaction is { } compaction)
 		{
@@ -434,6 +468,16 @@ public sealed record CodingAgentSettings
 			Write(target, "maxRetries", retry.MaxRetries);
 			Write(target, "baseDelayMs", retry.BaseDelayMs);
 			Write(target, "maxAgentDelayMs", retry.MaxAgentDelayMs);
+
+			if (retry.Provider is { } provider)
+			{
+				var providerTarget = target["provider"] as JsonObject ?? new JsonObject();
+				Write(providerTarget, "timeoutMs", provider.TimeoutMs);
+				Write(providerTarget, "maxRetries", provider.MaxRetries);
+				Write(providerTarget, "maxRetryDelayMs", provider.MaxRetryDelayMs);
+				target["provider"] = providerTarget;
+			}
+
 			root["retry"] = target;
 		}
 
@@ -505,6 +549,23 @@ public sealed record CodingAgentSettings
 		root[name] = new JsonArray(nodes);
 	}
 
+	private static int NormalizeIdleTimeout(int value) => value < 0 ? 300_000 : value;
+
+	private static string? NormalizeHttpProxy(string? value) =>
+		string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+	private static void WriteTimeout(JsonObject root, string name, int? value)
+	{
+		if (value is not { } timeout)
+		{
+			return;
+		}
+
+		// 0 按 pi 的写法落成 "disabled"：数字 0 在 pi 的 schema 里是合法值（等于关闭），
+		// 但 "disabled" 更直白，且两边解析结果一致。
+		root[name] = timeout == 0 ? JsonValue.Create("disabled") : JsonValue.Create(timeout);
+	}
+
 	internal static SettingsFile? ReadFile(string path)
 	{
 		if (!File.Exists(path))
@@ -514,7 +575,7 @@ public sealed record CodingAgentSettings
 
 		try
 		{
-			return JsonSerializer.Deserialize(File.ReadAllText(path), CodingAgentJsonContext.Default.SettingsFile);
+			return Normalize(JsonSerializer.Deserialize(File.ReadAllText(path), CodingAgentJsonContext.Default.SettingsFile));
 		}
 		catch (JsonException)
 		{
@@ -524,6 +585,42 @@ public sealed record CodingAgentSettings
 		{
 			return null;
 		}
+	}
+
+	/// <summary>
+	/// 旧版设置键在内存里迁移到当前形状（pi 的 <c>SettingsManager.migrateSettings</c> 同义）：
+	/// <c>queueMode</c> → <c>steeringMode</c>、<c>websockets</c> → <c>transport</c>、
+	/// <c>retry.maxDelayMs</c> → <c>retry.provider.maxRetryDelayMs</c>。
+	/// 只在加载时改内存，不主动重写文件；下一次保存会自然写成新形状。
+	/// </summary>
+	internal static SettingsFile? Normalize(SettingsFile? file)
+	{
+		if (file is null)
+		{
+			return null;
+		}
+
+		var steering = file.SteeringMode ?? file.QueueMode;
+		var transport = file.Transport ?? (file.WebSockets is { } websockets ? (websockets ? "websocket" : "sse") : null);
+
+		var retry = file.Retry;
+		if (retry is not null && retry.MaxDelayMs is { } legacyDelay && retry.Provider?.MaxRetryDelayMs is null)
+		{
+			retry = retry with
+			{
+				MaxDelayMs = null,
+				Provider = (retry.Provider ?? new RetryProviderFile()) with { MaxRetryDelayMs = legacyDelay },
+			};
+		}
+
+		return file with
+		{
+			SteeringMode = steering,
+			Transport = transport,
+			QueueMode = null,
+			WebSockets = null,
+			Retry = retry,
+		};
 	}
 
 	internal static CodingAgentSettings Merge(SettingsFile? global, SettingsFile? project) => new()
@@ -538,6 +635,7 @@ public sealed record CodingAgentSettings
 		SteeringMode = project?.SteeringMode ?? global?.SteeringMode ?? "one-at-a-time",
 		FollowUpMode = project?.FollowUpMode ?? global?.FollowUpMode ?? "one-at-a-time",
 		CacheWarming = project?.CacheWarming ?? global?.CacheWarming ?? "streaming",
+		Transport = project?.Transport ?? global?.Transport ?? "auto",
 		Compaction = new CompactionSettings
 		{
 			Enabled = project?.Compaction?.Enabled ?? global?.Compaction?.Enabled ?? true,
@@ -554,8 +652,17 @@ public sealed record CodingAgentSettings
 		Skills = MergeLists(global?.Skills, project?.Skills),
 		Prompts = MergeLists(global?.Prompts, project?.Prompts),
 		Themes = MergeLists(global?.Themes, project?.Themes),
+		Extensions = MergeLists(global?.Extensions, project?.Extensions),
 		DefaultProjectTrust = project?.DefaultProjectTrust ?? global?.DefaultProjectTrust ?? "ask",
-		TimeoutMs = project?.TimeoutMs ?? global?.TimeoutMs,
+		// pi 把请求超时放在 retry.provider.timeoutMs；timeoutMs 是本端口早期写在根上的键，
+		// 仍然读它以免已有配置失效，但新写入只写 pi 的形状。
+		TimeoutMs = project?.TimeoutMs
+			?? project?.Retry?.Provider?.TimeoutMs
+			?? global?.TimeoutMs
+			?? global?.Retry?.Provider?.TimeoutMs,
+		HttpIdleTimeoutMs = NormalizeIdleTimeout(
+			project?.HttpIdleTimeoutMs ?? global?.HttpIdleTimeoutMs ?? 300_000),
+		HttpProxy = NormalizeHttpProxy(global?.HttpProxy),
 		ShellPath = project?.ShellPath ?? global?.ShellPath,
 		ShellCommandPrefix = project?.ShellCommandPrefix ?? global?.ShellCommandPrefix,
 		SessionDir = project?.SessionDir ?? global?.SessionDir,
@@ -759,6 +866,7 @@ public sealed record CodingAgentSettings
 		SteeringMode = settings.SteeringMode,
 		FollowUpMode = settings.FollowUpMode,
 		CacheWarming = settings.CacheWarming,
+		Transport = settings.Transport,
 		Compaction = new CompactionFile
 		{
 			Enabled = settings.Compaction.Enabled,
@@ -775,8 +883,9 @@ public sealed record CodingAgentSettings
 		Skills = List(settings.Skills),
 		Prompts = List(settings.Prompts),
 		Themes = List(settings.Themes),
+		Extensions = List(settings.Extensions),
 		DefaultProjectTrust = settings.DefaultProjectTrust,
-		TimeoutMs = settings.TimeoutMs,
+		HttpIdleTimeoutMs = settings.HttpIdleTimeoutMs,
 		ShellPath = settings.ShellPath,
 		ShellCommandPrefix = settings.ShellCommandPrefix,
 		SessionDir = settings.SessionDir,
@@ -794,6 +903,9 @@ public sealed record CodingAgentSettings
 			MaxRetries = settings.Retry.MaxRetries,
 			BaseDelayMs = settings.Retry.BaseDelayMs,
 			MaxAgentDelayMs = settings.Retry.MaxAgentDelayMs,
+			Provider = settings.TimeoutMs is { } timeoutMs
+				? new RetryProviderFile { TimeoutMs = timeoutMs }
+				: null,
 		},
 	};
 
@@ -849,6 +961,15 @@ public sealed record SettingsFile
 
 	public string? CacheWarming { get; init; }
 
+	public string? Transport { get; init; }
+
+	/// <summary>pi 的旧键，加载时迁移到 <see cref="SteeringMode"/>。</summary>
+	public string? QueueMode { get; init; }
+
+	/// <summary>pi 的旧键，加载时迁移到 <see cref="Transport"/>。</summary>
+	[JsonPropertyName("websockets")]
+	public bool? WebSockets { get; init; }
+
 	public CompactionFile? Compaction { get; init; }
 
 	public BranchSummaryFile? BranchSummary { get; init; }
@@ -865,9 +986,18 @@ public sealed record SettingsFile
 
 	public List<string>? Themes { get; init; }
 
+	public List<string>? Extensions { get; init; }
+
 	public string? DefaultProjectTrust { get; init; }
 
 	public int? TimeoutMs { get; init; }
+
+	/// <summary>响应体空闲超时（毫秒）；数字或 <c>"disabled"</c>。</summary>
+	[JsonConverter(typeof(TimeoutMsJsonConverter))]
+	public int? HttpIdleTimeoutMs { get; init; }
+
+	/// <summary>代理 URL；只对全局设置生效。</summary>
+	public string? HttpProxy { get; init; }
 
 	public string? ShellPath { get; init; }
 
@@ -906,6 +1036,21 @@ public sealed record RetryFile
 	public int? BaseDelayMs { get; init; }
 
 	public int? MaxAgentDelayMs { get; init; }
+
+	/// <summary>pi 的旧键，加载时迁移到 <see cref="Provider"/>.<see cref="RetryProviderFile.MaxRetryDelayMs"/>。</summary>
+	public int? MaxDelayMs { get; init; }
+
+	public RetryProviderFile? Provider { get; init; }
+}
+
+/// <summary><c>settings.retry.provider</c>：provider 请求超时与重试上限。</summary>
+public sealed record RetryProviderFile
+{
+	public int? TimeoutMs { get; init; }
+
+	public int? MaxRetries { get; init; }
+
+	public int? MaxRetryDelayMs { get; init; }
 }
 
 public sealed record BranchSummaryFile

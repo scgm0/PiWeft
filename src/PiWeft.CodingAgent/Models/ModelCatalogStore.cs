@@ -158,6 +158,12 @@ public static class ModelCatalogStore
 		bool force = false,
 		CancellationToken cancellationToken = default)
 	{
+		// 离线模式：目录刷新是「自动/批量」网络操作，直接跳过；缓存的目录仍然可用。
+		if (PiEnvironment.Offline)
+		{
+			return new RefreshOutcome(0, 0, 0);
+		}
+
 		if (!force && !ShouldRefresh(agentDir))
 		{
 			return new RefreshOutcome(0, 0, 0);

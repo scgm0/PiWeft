@@ -141,9 +141,10 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 注册期与所有回调都投递到那条线程上执行（Jint 引擎不是线程安全的，而工具与事件来自主机线程）。
 
 - **发现**：`<agentDir>/extensions` 与（仅在项目受信任时）`<cwd>/.pi/extensions`，认 `.js/.mjs/.cjs` 与 `.ts/.mts/.cts/.tsx`；
-  `.d.ts` 与目录里的杂文件不算扩展。
+  `.d.ts` 与目录里的杂文件不算扩展。显式 `-e/--extension <path>` 与 `settings.extensions` 额外加载文件/目录/`builtin:<name>`（内置扩展由本端口原生实现），不受项目信任门控；`-ne/--no-extensions` 只关闭约定目录发现，显式路径仍加载。
 - **注册面**：`pi.on(event, handler)`、`pi.registerTool({name,label,description,parameters,execute})`、
-  `pi.registerCommand(name, {description, handler})`（也收 `(name, description, handler)` 的位置写法）、`pi.ui.*`。
+  `pi.registerCommand(name, {description, handler})`（也收 `(name, description, handler)` 的位置写法）、
+  `pi.registerFlag(name, {type, description, default})` 与 `pi.getFlag(name)`、`pi.ui.*`。未知 `--flag` 按 pi 的规则解析后交给注册者；没有注册者时 CLI 报 `Unknown option` 并以 2 退出。
 - **可派发事件**：`tool_call`、`tool_result`、`before_agent_start`、`agent_end`。
   监听别的事件在**注册时就报诊断**并出现在 `UnsupportedEvents` —— 悄悄收下却永不触发是最难查的失效模式。
 - **沙箱**：扩展没有 `fs` / `net` / `require` / 动态 import。唯一出口是显式注册的 `__pi*` 宿主函数，
@@ -338,6 +339,37 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 - 配置入口：桌面设置 → 配置管理 → 源文件 → `settings.json`（与其它 pi 原生配置同一处编辑）。
 - 测试：`tests/PiWeft.CodingAgent.Tests/ToolSecurityTests.cs`（纯策略 35 项）+ `ToolSecuritySessionTests.cs`（接线 5 项：`off` 不干预、`strict` 拦住越界写、`standard` 拦敏感读与危险命令、codemode 嵌套调用同门、设置驱动）。
 
+## 启动期迁移、命令行契约与网络
+
+### 启动期迁移（对齐 pi 的 `migrations.ts`）
+
+| 迁移 | 行为 | 失败时 |
+|---|---|---|
+| 凭据 | `auth.json` 不存在时，把 `oauth.json` 与 `settings.json.apiKeys` 合并写入；`oauth.json` 改名为 `.migrated`，`apiKeys` 从 settings 删除 | 解析失败只记警告，来源文件不删、`auth.json` 不写 |
+| 会话落点 | agent 根目录下的 `*.jsonl` 按头部 `cwd` 搬进 `sessions/<编码后的 cwd>/`；同名目标存在时保留两份 | 单个文件失败只记警告 |
+| 资源目录 | `commands/` 改名为 `prompts/`；项目级只在已受信时执行 | 只记警告 |
+| 会话格式 | 打开 v1/v2 会话时就地升级到 v3：v1 补 `id`/`parentId`（按文件顺序成链）并把 `firstKeptEntryIndex` 换成 `firstKeptEntryId`；v2 把 `hookMessage` 角色改成 `custom`；同目录临时文件 + rename 原子回写 | 已经是 v3 的文件逐字节不变；`--export` 只解释不落盘 |
+| settings 旧键 | 加载时在内存里迁移 `queueMode`→`steeringMode`、`websockets`→`transport`、`retry.maxDelayMs`→`retry.provider.maxRetryDelayMs`；下一次保存写成新形状 | 无法识别的值按未设置处理 |
+
+`AgentMigrations.Run` 由 CLI 与桌面在启动时调用（CLI 在信任询问之后、桌面在解析启动目录之后），幂等、可每次运行。
+
+### 命令行契约
+
+- `--offline` 与 `PI_OFFLINE=1` 等价：跳过模型目录刷新、包更新和启动期目录拉取；显式登录、`pi install` 与对话请求照常。`PI_OFFLINE` 会写回环境供子进程继承。
+- 未知长选项不再直接报语法错：按 pi 的规则收集（`--flag=value`、`--flag value`、末尾的布尔 `--flag`），加载扩展后由 `pi.registerFlag` 消费；没有注册者时 CLI 报 `pi: Unknown option --name` 并以 2 退出。短选项仍然立即报错。
+- `-e/--extension`、`-ne/--no-extensions`、`--theme`、`--skill`、`--prompt-template` 都已接线；只有 `--use-theme`、`--tui-mode`、`--autocomplete-max-visible` 仍按「接受但不实现」提示一次。
+- `settings.httpProxy` 只读全局设置并写入 `HTTP_PROXY`/`HTTPS_PROXY`（.NET 的默认代理在首次读取环境变量时确定）；`PI_SHARE_VIEWER_URL` 覆盖 `/share` 的查看器地址。
+
+### 网络与超时
+
+- 请求超时只覆盖「等响应头」（`settings.retry.provider.timeoutMs`，旧版根上的 `timeoutMs` 仍兼容）；响应体由 `settings.httpIdleTimeoutMs`（默认 300000，`0`/`"disabled"` 关闭）兜底：连续没有收到任何字节就让这一轮以可重试错误结束，正常的长流不受总时长限制。
+- `settings.transport`（`auto`/`sse`/`websocket`/`websocket-cached`）目前只影响 Codex responses；其它 provider 一律走 HTTP。
+- `/share` 与 pi 同义：只导出当前分支，链尾追加 `pi.share` 自定义条目（系统提示词 + 工具 schema），优先用 `gh gist create`、没有 `gh` 时回退 `GITHUB_TOKEN`/`GH_TOKEN` 的 HTTP API，返回查看器链接；Radius 目标上传同一份 JSONL（`application/x-ndjson`）到 `PI_RADIUS_GATEWAY` 或默认网关。
+
+### 文件写入
+
+`edit`/`write` 通过按规范化路径（含符号链接解析）分组的条带锁串行化，同一轮并行工具调用不会互相覆盖；原子写入跟随符号链接写目标文件，而不是把链接替换成普通文件。
+
 ## 虚拟模型 route 与状态
 
 `models.json` 的虚拟模型既支持静态目标，也支持动态 JS 路由：
@@ -374,7 +406,7 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 
 | 编号 | 能力 | 状态与剩余差距 |
 |---|---|---|
-| PI-01 | JS/TS 扩展宿主 | **JavaScript 扩展已可用**：按 pi 约定发现（全局 `<agentDir>/extensions` + 受信任项目的 `.pi/extensions`），每扩展一个 Jint 引擎跑在专属线程上，注册工具/命令/事件钩子，工具调用前派发 `tool_call`；`/reload` 与关闭会话时释放。**TypeScript 仍不支持**（本端口无转译器），但会逐条说明原因而不是静默不加载 |
+| PI-01 | JS/TS 扩展宿主 | **JavaScript 扩展已可用**：按 pi 约定发现（全局 `<agentDir>/extensions` + 受信任项目的 `.pi/extensions`），显式 `-e/--extension` 与 `settings.extensions` 已接线（文件/目录/`builtin:<name>`），每扩展一个 Jint 引擎跑在专属线程上，注册工具/命令/事件钩子与 CLI flag，工具调用前派发 `tool_call`；`/reload` 与关闭会话时释放。**TypeScript 仍不支持**（本端口无转译器），但会逐条说明原因而不是静默不加载 |
 | PI-02 | 扩展 UI 协议 | 对话框与 fire-and-forget 方法（`setStatus`/`setWidget`/`setTitle`/`set_editor_text`）均已按 pi 顶层字段实现，RPC/控制台/桌面有对应落点；**扩展宿主已接上**：`pi.ui.notify/confirm/input/select/setStatus/setWidget/setTitle` 可由扩展调用（没有宿主界面时交互方法按取消处理并记诊断）。仍未覆盖：自定义 renderer、`setEditorText` 的扩展侧入口 |
 | PI-03 | Pi 包管理 | 已实现 settings `packages` 来源解析、npm/git/本地安装与 `pi install/list/remove/update`；未覆盖 npm 依赖冲突治理、包图库与资源筛选界面 |
 | PI-04 | 完整终端 TUI | 仍为按行 REPL；缺少多行编辑、`$EDITOR`、剪贴板图片粘贴进 TUI、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
@@ -387,8 +419,8 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 | PI-11 | 项目信任 | 已实现 `trust.json`、父目录查找、显式覆盖、默认 `ask`、项目资源门控与启动询问 |
 | PI-12 | 行内 shell 与会话环境变量 | 已实现 `!`/`!!` 与 bash（Windows 上还有 powershell）的 `PI_*` 注入 |
 | PI-13 | Windows powershell 工具 | 已实现（Windows） |
-| PI-14 | CLI 键位绑定 | 未实现 `keybindings.json` 与 `/hotkeys`；桌面快捷键体系独立 |
-| PI-15 | pi 专属斜杠命令 | `/copy`、`/import`、`/share`、`/bug`、`/llama`、`/settings` 已实现 |
+| PI-14 | CLI 键位绑定 | 未实现 `keybindings.json`；行式 REPL 没有可绑定的键位，`/hotkeys` 只说明这一点；桌面快捷键体系独立 |
+| PI-15 | pi 专属斜杠命令 | `/copy`、`/import`、`/share`、`/bug`、`/llama`、`/settings` 已实现；`/share` 与 pi 同义（当前分支 + `pi.share` 尾条目 + 查看器链接），`/bug` 只生成本地诊断包、不上传 |
 | D-01 | 问询、待办、计划 | 已实现原生 todo、ask_question（桌面为会话内联卡片：题卡标签 + 进度 + 整行选项 + 自定义输入 + 确认页，不是遮罩弹窗）、计划模式；未覆盖独立后台 Ask 工作流 |
 | D-02 | 文件工作台 | 已实现目录导航、文本编辑、修改汇总、统一/并排 diff；未覆盖多文件标签、草稿本、跨行块注释、内嵌浏览器 |
 | D-03 | 内置终端 | 已实现 MiniPty 与主要 VT 行为；未覆盖 macOS/Windows 实机回归、完整 VT100 边界、多标签、快照回放 |
@@ -400,9 +432,13 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 | D-09 | 多后端/导入 | 已实现 Claude Code 与 Codex CLI 的会话导入（`pi import` + 桌面弹窗）；缺少 DSH、ACP 外部 Agent 后端，以及 OpenCode / ZCode / Cursor / Kimi 等其余格式（这些源是 SQLite 库，本端口没有 SQLite 依赖） |
 | D-10 | 多模态工作流 | 图片输入/预览已有；缺少视觉桥、独立生图入口、语音转写/视频生成工作流 |
 | D-11 | 远程/自动化 | 缺少局域网 Web、实时推送、外网访问令牌/隧道、飞书和定时任务 |
-| D-12 | 桌面集成 | 缺少托盘、系统通知/历史、自动更新、快捷任务浮窗、桌面宠物；代理、进程监控和诊断包也未完整对齐 |
+| D-12 | 桌面集成 | 缺少托盘、系统通知/历史、自动更新、快捷任务浮窗、桌面宠物；`settings.httpProxy` 已接线，但进程监控、环境体检与诊断包导出仍未对齐 |
 | D-13 | 交互/长历史 | 缺少项目级置顶/排序、标签拖拽/分屏、完整消息编辑删除、Mermaid/KaTeX。历史分页**经实测后决定不做**（中位会话打开约 5 ms、p90 80 ms，且条数切页不构成内存上界），全部历史仍整份在内存；侧栏摘要改为磁盘持久化（启动 1046 ms → 52 ms） |
 | D-14 | 工具调用审批 | 已实现完整安全门：`allow`/`ask`/`deny` 工具动作矩阵（ask 走宿主确认对话框，没有审批人时按拒绝处理）、敏感文件、目录边界、危险命令表、禁地；设置 → 运行 → 安全门 提供总开关、默认档、档位编辑与自定义档增删；会话输入框的「安全」按钮按会话覆盖档位（`sessionLevels`）。未覆盖：PiDeck 的「按会话」独立存储位置（本项目存在全局 settings 的 security 段）与 CLI 侧的档位切换命令 |
+| PI-16 | 子工具调用账本 | `nestedCalls` 与 `parentToolCallId` 尚未产出（pi 的 codemode 会把嵌套调用记到工具结果上）；字段当前靠 `Extra` 原样保留，PiDeck 也还不读 |
+| PI-17 | 分类器方言 | 只实现 `openai-decisions`；目录里 25 个 `typesafe-system-one` / `cloudflare-workers-ai-system-one` 分类模型不可用（不影响对话模型） |
+| PI-18 | 其余网络细项 | Codex `websocket-cached` 连接复用、zstd 与完整 continuation；Bedrock 的 AWS profile/ECS/IRSA ambient 链；MCP `cimd`、完整 `callbackUrl` 与与 pi 共享的 `mcp-auth.json` 令牌格式 |
+
 | X-01 | 原生子代理、并行/链式编排、worktree 隔离 | 高价值但涉及执行所有权、取消、凭据和补丁合并 |
 | X-02 | ACP、IDE 集成 | 与 D-09 有关联；服务端协议与桌面接入外部后端应分别规划 |
 | X-03 | LSP/AST/DAP | 语义检索、诊断、结构化编辑、调试；不是基础工具的直接兼容要求 |

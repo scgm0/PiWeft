@@ -151,11 +151,15 @@ public class CliArgumentsTests
 	}
 
 	[Fact]
-	public void Parse_RejectsUnknownFlagsAndBadModes()
+	public void Parse_RejectsBadModesAndMissingValues()
 	{
-		Assert.NotNull(CliArguments.Parse(["--nope"]).Error);
 		Assert.NotNull(CliArguments.Parse(["--mode", "xml"]).Error);
 		Assert.NotNull(CliArguments.Parse(["--model"]).Error);
+
+		// 未知长选项交给扩展 flag（pi 的语义）；真正没有注册者时由会话报错退出。
+		var (unknown, unknownError) = CliArguments.Parse(["--nope"]);
+		Assert.Null(unknownError);
+		Assert.Contains("nope", unknown!.UnknownFlags.Keys);
 	}
 
 	[Fact]
@@ -436,8 +440,47 @@ public class CliEnvironmentTests
 	[Fact]
 	public void Parse_RecordsTheAcceptedCompatibilityFlags()
 	{
-		var (arguments, error) = CliArguments.Parse(["-e", "./ext.js", "--tui-mode", "fullscreen", "-ne"]);
+		var (arguments, error) = CliArguments.Parse(["--tui-mode", "fullscreen", "--use-theme", "dark"]);
 		Assert.Null(error);
-		Assert.Equal(["-e", "--tui-mode", "-ne"], arguments!.AcceptedCompatFlags);
+		Assert.Equal(["--tui-mode", "--use-theme"], arguments!.AcceptedCompatFlags);
+	}
+
+	[Fact]
+	public void Parse_CollectsExplicitExtensionsAndDisablesDiscovery()
+	{
+		var (arguments, error) = CliArguments.Parse(
+			["-e", "./ext.js", "--extension=builtin:codemode", "--extension", "./dir", "-ne"]);
+
+		Assert.Null(error);
+		Assert.Equal(["./ext.js", "builtin:codemode", "./dir"], arguments!.Extensions);
+		Assert.True(arguments.NoExtensions);
+		Assert.Empty(arguments.AcceptedCompatFlags);
+	}
+
+	[Fact]
+	public void Parse_UnknownLongFlagsFollowPiRules()
+	{
+		// --flag=value
+		var (equals, equalsError) = CliArguments.Parse(["--plan=strict", "hello"]);
+		Assert.Null(equalsError);
+		Assert.Equal("strict", equals!.UnknownFlags["plan"]);
+		Assert.Equal(["hello"], equals.Prompts);
+
+		// --flag value：下一个参数不以 - 或 @ 开头时被当作值消费。
+		var (value, valueError) = CliArguments.Parse(["--plan", "strict", "hello"]);
+		Assert.Null(valueError);
+		Assert.Equal("strict", value!.UnknownFlags["plan"]);
+		Assert.Equal(["hello"], value.Prompts);
+
+		// pi 的规则：下一个参数只要不以 - 或 @ 开头就当 flag 的值，哪怕它看起来像提示词。
+		// 想要布尔形态就把它放在末尾，或用 -- 结束选项解析。
+		var (boolean, booleanError) = CliArguments.Parse(["--plan", "--", "describe the repo"]);
+		Assert.Null(booleanError);
+		Assert.Null(boolean!.UnknownFlags["plan"]);
+		Assert.Equal(["describe the repo"], boolean.Prompts);
+
+		// 短选项仍然按未知选项报错。
+		var (_, shortError) = CliArguments.Parse(["-z"]);
+		Assert.NotNull(shortError);
 	}
 }

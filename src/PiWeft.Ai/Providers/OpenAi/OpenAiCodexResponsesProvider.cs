@@ -106,7 +106,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 				return;
 			}
 
-			await using var bodyStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+			await using var bodyStream = await ProviderHttp.ReadBodyAsync(response, options, cancellationToken).ConfigureAwait(false);
 
 			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId);
 			var sse = new SseJsonReader();

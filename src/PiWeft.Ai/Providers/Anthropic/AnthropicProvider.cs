@@ -75,8 +75,8 @@ public sealed class AnthropicProvider : IApiProvider
 				return;
 			}
 
-			await using var bodyStream = await response.Content
-				.ReadAsStreamAsync(options.CancellationToken)
+			await using var bodyStream = await ProviderHttp
+				.ReadBodyAsync(response, options, options.CancellationToken)
 				.ConfigureAwait(false);
 
 			await ParseAsync(bodyStream, model, options, stream, startedAt, options.CancellationToken)

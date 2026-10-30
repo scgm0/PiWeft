@@ -92,6 +92,19 @@ public sealed record CliArguments
 	/// <summary><c>--theme</c> 显式主题路径，可重复。</summary>
 	public List<string> Themes { get; init; } = [];
 
+	/// <summary><c>-e/--extension</c>：显式扩展文件、目录或 <c>builtin:&lt;name&gt;</c>，可重复。</summary>
+	public List<string> Extensions { get; init; } = [];
+
+	/// <summary><c>-ne/--no-extensions</c>：关闭约定目录发现；显式 <c>-e</c> 仍然加载。</summary>
+	public bool NoExtensions { get; init; }
+
+	/// <summary>
+	/// 本端口不认识的 <c>--flag</c>（pi 会把它们交给扩展的 <c>pi.registerFlag</c>）。
+	/// 解析规则与 pi 一致：<c>--flag=value</c> 取等号后的值；<c>--flag value</c> 在下一个参数
+	/// 不以 <c>-</c>/<c>@</c> 开头时消费它；否则视为布尔。
+	/// </summary>
+	public Dictionary<string, string?> UnknownFlags { get; init; } = new(StringComparer.Ordinal);
+
 	public bool ListModels { get; init; }
 
 	public string? ListModelsSearch { get; init; }
@@ -299,17 +312,20 @@ public sealed record CliArguments
 					case "--theme":
 						result = result with { Themes = [.. result.Themes, Value()] };
 						break;
+					case "-e" or "--extension":
+						result = result with { Extensions = [.. result.Extensions, Value()] };
+						break;
+					case "-ne" or "--no-extensions":
+						result = result with { NoExtensions = true };
+						break;
 					case "--no-themes":
 						result = result with { NoThemes = true };
 						break;
 
 					// 为兼容性而接受；对应功能不在本端口范围内（保留参数以免破坏 PiDeck 启动）。
-					case "-e" or "--extension" or "-ne" or "--no-extensions"
-						or "--use-theme"
-						or "--tui-mode" or "--autocomplete-max-visible":
+					case "--use-theme" or "--tui-mode" or "--autocomplete-max-visible":
 						result.AcceptedCompatFlags.Add(flag);
-						if (inlineValue is null && flag is "-e" or "--extension" or "--skill" or "--prompt-template"
-							or "--theme" or "--use-theme" or "--tui-mode" or "--autocomplete-max-visible")
+						if (inlineValue is null)
 						{
 							NextValue(flag); // 消费掉该值，避免它被当成提示词
 						}
@@ -317,7 +333,31 @@ public sealed record CliArguments
 						break;
 
 					default:
-						return (null, $"Unknown option '{flag}'. Run with --help.");
+						if (!flag.StartsWith("--", StringComparison.Ordinal))
+						{
+							return (null, $"Unknown option '{flag}'. Run with 'pi --help'.");
+						}
+
+						// pi 把未知的长选项留给扩展注册的 flag；这里原样收下，由会话交给扩展宿主判定。
+						var unknownName = flag[2..];
+						if (unknownName.Length == 0)
+						{
+							return (null, "Unknown option '--'. Run with 'pi --help'.");
+						}
+
+						string? unknownValue = inlineValue;
+						if (unknownValue is null && index + 1 < argv.Count)
+						{
+							var next = argv[index + 1];
+							if (next.Length > 0 && next[0] != '-' && next[0] != '@')
+							{
+								index++;
+								unknownValue = next;
+							}
+						}
+
+						result.UnknownFlags[unknownName] = unknownValue;
+						break;
 				}
 			}
 		}
@@ -403,6 +443,8 @@ public sealed record CliArguments
 		  --skill <path>                 Load an explicit skill file or directory (repeatable)
 		  --prompt-template <path>       Load an explicit prompt template (repeatable)
 		  --theme <path>                 Load an explicit theme file or directory (repeatable)
+		  -e, --extension <path>         Load an extension file, directory or builtin:<name> (repeatable)
+		  -ne, --no-extensions           Disable extension discovery (explicit -e paths still load)
 		  --no-themes                    Disable theme discovery
 		  --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
 		  --export <session> [output]    Export a session file to HTML and exit
@@ -413,10 +455,10 @@ public sealed record CliArguments
 		  --help, -h                     Show this help
 
 		Accepted for pi/PiDeck compatibility but not implemented in this port:
-		  -e/--extension, -ne/--no-extensions, --use-theme, --tui-mode.
-		These flags are consumed so PiDeck can launch the binary; they do not enable extensions
-		or a full-screen TUI. Custom pi themes are read by the desktop app from the themes
-		directory. MCP is supported separately (see --no-mcp).
+		  --use-theme, --tui-mode, --autocomplete-max-visible.
+		These flags are consumed so PiDeck can launch the binary; they do not enable a full-screen
+		TUI. Extensions are supported (JavaScript only, see -e); custom pi themes are read by the
+		desktop app from the themes directory. MCP is supported separately (see --no-mcp).
 		""";
 
 	private static IEnumerable<string> SplitList(string value) =>

@@ -158,8 +158,12 @@ public static class FileTools
 	/// </summary>
 	private static void WriteAtomically(string path, string content)
 	{
+		// 写入要跟随符号链接：Node 的 fs.writeFile 写到目标，而 rename 覆盖的是链接本身。
+		// 不解析的话，一次 edit 就会把 ~/.config 里的链变成普通文件，别处的链接全部断掉。
+		var target = ResolveSymlinkTarget(path);
+
 		UnixFileMode? preserved = null;
-		if (!OperatingSystem.IsWindows() && File.Exists(path))
+		if (!OperatingSystem.IsWindows() && File.Exists(target))
 		{
 			try
 			{
@@ -171,17 +175,17 @@ public static class FileTools
 			}
 		}
 
-		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+		var temporary = $"{target}.{Guid.NewGuid():N}.tmp";
 		try
 		{
 			File.WriteAllText(temporary, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-			File.Move(temporary, path, overwrite: true);
+			File.Move(temporary, target, overwrite: true);
 
 			if (preserved is { } mode && !OperatingSystem.IsWindows())
 			{
 				try
 				{
-					File.SetUnixFileMode(path, mode);
+					File.SetUnixFileMode(target, mode);
 				}
 				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
 				{
@@ -205,14 +209,33 @@ public static class FileTools
 		}
 	}
 
+	/// <summary>链接解析到最后一级目标；普通文件、悬空链接或不存在时返回原路径。</summary>
+	private static string ResolveSymlinkTarget(string path)
+	{
+		try
+		{
+			return File.ResolveLinkTarget(path, returnFinalTarget: true) is { } target
+				? Path.GetFullPath(target.FullName)
+				: path;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+			or ArgumentException or NotSupportedException)
+		{
+			return path;
+		}
+	}
+
 	private static AgentToolResult WriteFile(string cwd, AgentToolInvocation invocation)
 	{
 		var path = RequiredString(invocation, "path");
 		var content = RequiredString(invocation, "content");
 		var absolutePath = ToolPaths.ResolveToCwd(path, cwd);
 
-		ToolPaths.EnsureParentDirectory(absolutePath);
-		WriteAtomically(absolutePath, content);
+		FileMutationQueue.Mutate(absolutePath, () =>
+		{
+			ToolPaths.EnsureParentDirectory(absolutePath);
+			WriteAtomically(absolutePath, content);
+		});
 
 		return new AgentToolResult
 		{
@@ -272,6 +295,11 @@ public static class FileTools
 		var path = RequiredString(invocation, "path");
 		var absolutePath = ToolPaths.ResolveToCwd(path, cwd);
 
+		return FileMutationQueue.Mutate(absolutePath, () => ApplyEdits(path, absolutePath, invocation));
+	}
+
+	private static AgentToolResult ApplyEdits(string path, string absolutePath, AgentToolInvocation invocation)
+	{
 		if (!File.Exists(absolutePath))
 		{
 			throw new FileNotFoundException($"File not found: {path}", absolutePath);

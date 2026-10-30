@@ -376,4 +376,157 @@ public sealed class ExtensionHostTests : IDisposable
 			Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", null);
 		}
 	}
+
+	// ---------------------------------------------------------------- 显式路径 / CLI flag
+
+	[Fact]
+	public void ExplicitExtensionPathLoadsWithoutDiscovery()
+	{
+		var path = Path.Combine(_root, "explicit.js");
+		File.WriteAllText(path, "module.exports = function (pi) { pi.registerCommand('e', 'd', function () {}); };");
+
+		using var host = new ExtensionHost();
+		host.Load(_cwd, trusted: true, _agentDir, explicitPaths: [path]);
+
+		var state = Assert.Single(host.States);
+		Assert.True(state.Loaded, string.Join(" / ", state.Diagnostics));
+		Assert.Equal("e", Assert.Single(host.Commands).Name);
+	}
+
+	[Fact]
+	public void NoDiscoveryStillLoadsExplicitPaths()
+	{
+		Write("discovered.js", "module.exports = function (pi) { pi.registerCommand('discovered', 'd', function () {}); };");
+		var path = Path.Combine(_root, "explicit.js");
+		File.WriteAllText(path, "module.exports = function (pi) { pi.registerCommand('explicit', 'd', function () {}); };");
+
+		using var host = new ExtensionHost();
+		host.Load(_cwd, trusted: true, _agentDir, explicitPaths: [path], includeDiscovered: false);
+
+		Assert.Equal("explicit", Assert.Single(host.Commands).Name);
+	}
+
+	[Fact]
+	public void RelativeExplicitPathFallsBackToTheAgentDirectory()
+	{
+		var path = Path.Combine(_agentDir, "user-extension.js");
+		File.WriteAllText(path, "module.exports = function (pi) { pi.registerCommand('u', 'd', function () {}); };");
+
+		using var host = new ExtensionHost();
+		host.Load(_cwd, trusted: true, _agentDir, explicitPaths: ["user-extension.js"], includeDiscovered: false);
+
+		var state = Assert.Single(host.States);
+		Assert.True(state.Loaded, string.Join(" / ", state.Diagnostics));
+		Assert.Equal("u", Assert.Single(host.Commands).Name);
+	}
+
+	[Fact]
+	public void BuiltinExtensionPathIsAcceptedAsANoop()
+	{
+		using var host = new ExtensionHost();
+		host.Load(_cwd, trusted: true, _agentDir, explicitPaths: ["builtin:codemode"], includeDiscovered: false);
+
+		var state = Assert.Single(host.States);
+		Assert.True(state.Loaded);
+		Assert.Equal("内置", state.Descriptor.Origin);
+	}
+
+	[Fact]
+	public void MissingExplicitPathIsReportedInsteadOfIgnored()
+	{
+		using var host = new ExtensionHost();
+		host.Load(_cwd, trusted: true, _agentDir, explicitPaths: [Path.Combine(_root, "missing.js")], includeDiscovered: false);
+
+		var state = Assert.Single(host.States);
+		Assert.False(state.Loaded);
+		Assert.Contains("不存在", string.Join(" / ", state.Diagnostics));
+	}
+
+	[Fact]
+	public void ExtensionFlagsReceiveValuesAndUnknownFlagsAreReturned()
+	{
+		using var host = new ExtensionHost();
+		Write("flags.js", """
+			module.exports = function (pi) {
+				pi.registerFlag("plan", { type: "string", default: "off", description: "plan mode" });
+				pi.registerFlag("verbose", { type: "boolean" });
+				pi.registerTool({
+					name: "flags",
+					description: "d",
+					execute: function () { return { text: pi.getFlag("plan") + ":" + pi.getFlag("verbose") }; }
+				});
+			};
+			""");
+		host.Load(_cwd, trusted: true, _agentDir);
+
+		var unknown = host.ApplyFlagValues(new Dictionary<string, string?>
+		{
+			["plan"] = "strict",
+			["verbose"] = null,
+			["nope"] = null,
+		});
+
+		Assert.Equal(["nope"], unknown);
+		Assert.Equal("strict", host.Flags["plan"].Default is "off" ? "strict" : "unexpected");
+
+		var result = host.Tools[0].Execute(new AgentToolInvocation
+		{
+			ToolCallId = "c1",
+			ToolName = "flags",
+			Arguments = new JsonObject(),
+		}).GetAwaiter().GetResult();
+
+		Assert.Equal("strict:true", Assert.IsType<PiWeft.Ai.TextContent>(result.Content[0]).Text);
+	}
+
+	[Fact]
+	public void StringExtensionFlagWithoutAValueIsAnError()
+	{
+		using var host = new ExtensionHost();
+		Write("string-flag.js", """
+			module.exports = function (pi) {
+				pi.registerFlag("plan", { type: "string" });
+			};
+			""");
+		host.Load(_cwd, trusted: true, _agentDir);
+
+		host.ApplyFlagValues(new Dictionary<string, string?> { ["plan"] = null });
+
+		Assert.Contains(host.FlagErrors, message => message.Contains("--plan"));
+	}
+
+	[Fact]
+	public void SessionLoadsExplicitExtensionPathsAndHonorsNoDiscovery()
+	{
+		var cwd = Path.Combine(_root, "session-project");
+		Directory.CreateDirectory(cwd);
+		var explicitPath = Path.Combine(_root, "session-ext.js");
+		File.WriteAllText(explicitPath,
+			"module.exports = function (pi) { pi.registerTool({ name: 'explicit', description: 'd', execute: function () { return { text: 'x' }; } }); };");
+		Write("hidden.js", "module.exports = function (pi) { pi.registerTool({ name: 'hidden', description: 'd', execute: function () { return { text: 'x' }; } }); };");
+
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _agentDir);
+		try
+		{
+			using var session = new CodingAgentSession(new CodingAgentSessionOptions
+			{
+				Cwd = cwd,
+				Model = ScriptedSessions.Model(),
+				StreamFn = new ScriptedStreamFn().Invoke,
+				Session = SessionManager.InMemory(cwd),
+				Persist = false,
+				Skills = [],
+				PromptTemplates = [],
+				ExtensionPaths = [explicitPath],
+				DiscoverExtensions = false,
+			});
+
+			Assert.Contains(session.Tools, tool => tool.Name == "explicit");
+			Assert.DoesNotContain(session.Tools, tool => tool.Name == "hidden");
+		}
+		finally
+		{
+			Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", null);
+		}
+	}
 }

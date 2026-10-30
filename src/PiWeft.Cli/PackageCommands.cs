@@ -1,3 +1,4 @@
+using PiWeft.CodingAgent;
 using System.Text.Json.Nodes;
 using PiWeft.CodingAgent.Models;
 using PiWeft.CodingAgent.Resources;
@@ -91,6 +92,13 @@ public static class PackageCommands
 		TextWriter error,
 		CancellationToken cancellationToken)
 	{
+		// pi 的离线模式关闭「自动/批量」网络操作；显式 update 也属于这一类。
+		if (PiEnvironment.Offline)
+		{
+			output.WriteLine("pi: 离线模式（--offline / PI_OFFLINE）：跳过更新。");
+			return 0;
+		}
+
 		// 与 pi 对齐的别名与范围开关：pi update（自更新）、--self/self/pi、--extensions/--all、--models。
 		if (parsed.Self)
 		{
@@ -298,6 +306,10 @@ public static class PackageCommands
 					break;
 				case "--all":
 					parsed = parsed with { All = true };
+					break;
+				case "--offline":
+					// 包命令在通用解析之前分发，因此这里也要认 pi 的全局离线开关。
+					PiEnvironment.Configure(offlineArgument: true);
 					break;
 				case "--models":
 					parsed = parsed with { Models = true };

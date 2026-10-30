@@ -21,6 +21,22 @@ internal static class SharedHttpClient
 /// <summary>各 provider 适配器共用的 HTTP 辅助方法。</summary>
 internal static class ProviderHttp
 {
+	/// <summary>
+	/// 读取响应体，并按 <see cref="StreamOptions.IdleTimeoutMs"/> 包一层空闲超时。
+	/// 所有 provider 的流式读取都必须走这里：直接 <c>ReadAsStreamAsync</c> 的话，
+	/// 供应商把连接挂着不发也不关时这一轮会永远等下去（HttpClient 是 Infinite 超时）。
+	/// </summary>
+	public static async Task<Stream> ReadBodyAsync(
+		HttpResponseMessage response,
+		StreamOptions options,
+		CancellationToken cancellationToken)
+	{
+		var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+		return options.IdleTimeoutMs is > 0 and var timeout
+			? new IdleTimeoutStream(stream, TimeSpan.FromMilliseconds(timeout), options.CancellationToken)
+			: stream;
+	}
+
 	/// <summary>为 <see cref="ProviderRequestOptions.OnResponse"/> 抓取响应的状态行与头部快照。</summary>
 	public static ProviderResponse FromResponse(HttpResponseMessage response)
 	{

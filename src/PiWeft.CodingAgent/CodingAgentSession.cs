@@ -42,6 +42,16 @@ public sealed record CodingAgentSessionOptions
 	/// <summary>注入已建好的扩展宿主（测试或宿主自己管生命周期时用）；非空时忽略 <see cref="LoadExtensions"/>。</summary>
 	public ExtensionHost? Extensions { get; init; }
 
+	/// <summary>显式扩展路径：<c>-e/--extension</c> 与 <c>settings.extensions</c>（文件或目录）。</summary>
+	public IReadOnlyList<string> ExtensionPaths { get; init; } = [];
+
+	/// <summary>是否按约定目录发现扩展；<c>-ne/--no-extensions</c> 关闭发现但保留显式路径。</summary>
+	public bool DiscoverExtensions { get; init; } = true;
+
+	/// <summary>命令行未知 flag（<c>--name value</c> 或 <c>--name</c>），交给扩展的 <c>pi.registerFlag</c> 消费。</summary>
+	public IReadOnlyDictionary<string, string?> FlagValues { get; init; } =
+		new Dictionary<string, string?>(StringComparer.Ordinal);
+
 	public required string Cwd { get; init; }
 
 	public required Model Model { get; init; }
@@ -225,6 +235,16 @@ public sealed class CodingAgentSession : IDisposable
 	/// </summary>
 	public ExtensionHost? Extensions { get; private set; }
 
+	/// <summary>扩展注册的 CLI flag，供 --help 与诊断展示。</summary>
+	public IReadOnlyDictionary<string, ExtensionFlag> ExtensionFlags =>
+		Extensions?.Flags ?? new Dictionary<string, ExtensionFlag>();
+
+	/// <summary>没有对应扩展的未知 flag；非空时 CLI 按 pi 的语义报错退出。</summary>
+	public IReadOnlyList<string> UnknownExtensionFlags => Extensions?.UnknownFlags ?? [];
+
+	/// <summary>扩展 flag 的形状错误（例如 string 类型缺值）。</summary>
+	public IReadOnlyList<string> ExtensionFlagErrors => Extensions?.FlagErrors ?? [];
+
 	/// <summary>注入的扩展宿主由宿主释放，自己加载的才归本会话重载与释放。</summary>
 	private bool _ownsExtensions = true;
 
@@ -358,6 +378,9 @@ public sealed class CodingAgentSession : IDisposable
 		_streamOptions = options.Options with
 		{
 			TimeoutMs = options.Options.TimeoutMs ?? options.Settings.TimeoutMs,
+			IdleTimeoutMs = options.Options.IdleTimeoutMs ??
+				(options.Settings.HttpIdleTimeoutMs > 0 ? options.Settings.HttpIdleTimeoutMs : null),
+			Transport = options.Options.Transport ?? options.Settings.Transport,
 		};
 
 		_cacheWarmer = new CacheWarmer(
@@ -459,6 +482,15 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// <summary>真正声明给模型的工具（<see cref="Tools"/> 是脚本/钩子可调用的全集）。</summary>
 	public IReadOnlyList<AgentTool> DeclaredTools => _agent.DeclaredTools;
+
+	/// <summary>
+	/// 当前生效的完整系统提示词。pi 的 <c>/share</c> 把它写进 <c>pi.share</c> 尾条目，
+	/// 查看器据此渲染工具说明；会话文件本身不存系统提示词。
+	/// </summary>
+	public string CurrentSystemPrompt =>
+		// 系统提示词按具名章节存放（preamble/tools/rules/cwd…），发给模型前才拼成文本；
+		// /share 要的是模型实际看到的那一份，所以走同一个渲染函数。
+		Transcript.GetText(_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools)));
 
 	/// <summary>当前分支上模型可见的消息，已应用上下文编辑与压缩。</summary>
 	/// <summary>模型下一次请求会看到的完整消息（含运行时构造的系统提示词）。</summary>
@@ -1313,6 +1345,14 @@ public sealed class CodingAgentSession : IDisposable
 	/// 单个扩展加载失败只影响它自己，会话照常起 —— 一个坏扩展不该让整个工作台打不开。
 	/// </para>
 	/// </summary>
+	private static void ApplyFlagValues(ExtensionHost host, IReadOnlyDictionary<string, string?> values)
+	{
+		if (values.Count > 0)
+		{
+			host.ApplyFlagValues(values);
+		}
+	}
+
 	private void LoadExtensions(CodingAgentSessionOptions options)
 	{
 		if (options.Extensions is { } provided)
@@ -1320,6 +1360,7 @@ public sealed class CodingAgentSession : IDisposable
 			// 宿主注入的扩展宿主由宿主负责释放与重载。
 			Extensions = provided;
 			_ownsExtensions = false;
+			ApplyFlagValues(provided, options.FlagValues);
 			return;
 		}
 
@@ -1331,7 +1372,12 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		var host = new ExtensionHost(options.UiHost);
-		host.Load(Cwd, options.ProjectTrusted);
+		host.Load(
+			Cwd,
+			options.ProjectTrusted,
+			explicitPaths: options.ExtensionPaths,
+			includeDiscovered: options.DiscoverExtensions);
+		ApplyFlagValues(host, options.FlagValues);
 		Extensions = host;
 
 		if (host.Tools.Count == 0)

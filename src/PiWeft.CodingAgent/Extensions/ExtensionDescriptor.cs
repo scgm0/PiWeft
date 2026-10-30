@@ -34,12 +34,20 @@ public sealed record ExtensionDescriptor
 
 	public required ExtensionLanguage Language { get; init; }
 
-	public bool Supported => Language == ExtensionLanguage.Javascript;
+	/// <summary><c>-e builtin:&lt;name&gt;</c>：pi 的内置扩展，本端口用原生实现提供，无需执行脚本。</summary>
+	public bool Builtin { get; init; }
+
+	/// <summary>显式 <c>-e</c> 路径不存在。仍然进列表，界面上要能说清原因。</summary>
+	public bool Missing { get; init; }
+
+	public bool Supported => Language == ExtensionLanguage.Javascript && !Missing;
 
 	/// <summary>不支持时给用户的说明；支持时为 <see langword="null"/>。</summary>
-	public string? UnsupportedReason => Language == ExtensionLanguage.TypeScript
-		? "当前扩展宿主只执行 JavaScript；TypeScript 扩展需要先在构建期转译成 JS（本端口不内置 TS 转译器，见 docs/01-parity.md 的 PI-01）。"
-		: null;
+	public string? UnsupportedReason => Missing
+		? "扩展文件或目录不存在。"
+		: Language == ExtensionLanguage.TypeScript
+			? "当前扩展宿主只执行 JavaScript；TypeScript 扩展需要先在构建期转译成 JS（本端口不内置 TS 转译器，见 docs/01-parity.md 的 PI-01）。"
+			: null;
 
 	/// <summary>全局扩展目录：<c>&lt;agentDir&gt;/extensions</c>。</summary>
 	public static string GlobalDirectory(string? agentDir = null) =>
@@ -63,19 +71,92 @@ public sealed record ExtensionDescriptor
 	/// <param name="cwd">会话工作目录。</param>
 	/// <param name="trusted">项目是否受信任。</param>
 	/// <param name="agentDir">覆盖 agent 目录（测试与多环境用）。</param>
+	/// <param name="explicitPaths">pi 的 <c>-e/--extension</c> 与 <c>settings.extensions</c>。
+	/// 显式路径不受项目信任门控：它是用户自己写下的，不是仓库自带的。</param>
+	/// <param name="includeDiscovered">是否按约定目录发现。<c>-ne/--no-extensions</c> 关掉发现，
+	/// 但仍加载显式路径（与 pi 一致）。</param>
 	public static IReadOnlyList<ExtensionDescriptor> Discover(
 		string cwd,
 		bool trusted = true,
-		string? agentDir = null)
+		string? agentDir = null,
+		IReadOnlyList<string>? explicitPaths = null,
+		bool includeDiscovered = true)
 	{
 		var found = new List<ExtensionDescriptor>();
-		Collect(found, GlobalDirectory(agentDir), Origin: "全局", project: false);
-		if (trusted)
+		if (includeDiscovered)
 		{
-			Collect(found, ProjectDirectory(cwd), Origin: "项目", project: true);
+			Collect(found, GlobalDirectory(agentDir), Origin: "全局", project: false);
+			if (trusted)
+			{
+				Collect(found, ProjectDirectory(cwd), Origin: "项目", project: true);
+			}
+		}
+
+		foreach (var path in explicitPaths ?? [])
+		{
+			CollectExplicit(found, path, cwd, agentDir);
 		}
 
 		return found;
+	}
+
+	/// <summary>把一条显式路径（文件、目录、<c>builtin:&lt;name&gt;</c> 或相对 cwd 的路径）变成描述符。</summary>
+	private static void CollectExplicit(List<ExtensionDescriptor> into, string raw, string cwd, string? agentDir)
+	{
+		var value = raw.Trim();
+		if (value.Length == 0)
+		{
+			return;
+		}
+
+		if (value.StartsWith("builtin:", StringComparison.Ordinal))
+		{
+			into.Add(new ExtensionDescriptor
+			{
+				FilePath = value,
+				Origin = "内置",
+				Project = false,
+				Language = ExtensionLanguage.Javascript,
+				Builtin = true,
+			});
+			return;
+		}
+
+		// pi 的 settings.extensions 把相对路径解析到各自作用域的根（用户级是 agentDir）；
+		// 这里看两处再判定缺失：先 cwd（CLI 的 -e 语义），再 agentDir（用户级设置）。
+		var expanded = UserPath.ExpandTilde(value);
+		var path = Path.IsPathRooted(expanded)
+			? expanded
+			: new[] { Path.Combine(cwd, expanded), Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), expanded) }
+				.FirstOrDefault(candidate => File.Exists(candidate) || Directory.Exists(candidate))
+				?? Path.Combine(cwd, expanded);
+
+		if (Directory.Exists(path))
+		{
+			Collect(into, path, Origin: "显式", project: false);
+			return;
+		}
+
+		if (File.Exists(path))
+		{
+			into.Add(new ExtensionDescriptor
+			{
+				FilePath = path,
+				Origin = "显式",
+				Project = false,
+				Language = LanguageOf(path),
+			});
+			return;
+		}
+
+		into.Add(new ExtensionDescriptor
+		{
+			FilePath = path,
+			Origin = "显式",
+			Project = false,
+			Language = LanguageOf(path),
+			Missing = true,
+		});
 	}
 
 	private static void Collect(List<ExtensionDescriptor> into, string directory, string Origin, bool project)

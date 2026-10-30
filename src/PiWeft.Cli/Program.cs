@@ -35,6 +35,14 @@ async Task<int?> RunPreParseAsync(string label, Func<Task<int?>> command)
 	}
 }
 
+// `--offline` 是全局开关：它可能出现在子命令之前（pi --offline update --models）。
+// 子命令分发只认 args[0]，所以先把这个前缀剥掉；后面的通用解析仍会处理其它位置。
+if (args.Length > 0 && args[0] == "--offline")
+{
+	PiWeft.CodingAgent.PiEnvironment.Configure(offlineArgument: true);
+	args = args[1..];
+}
+
 // 凭据命令最先处理，并且**不经过通用参数解析**：它们有自己的开关
 // （--json / --credentials / --no-refresh / --min-expiry），通用解析器会把它们当成未知选项。
 // 这也和 pi 一致 —— 官方在解析参数之前先看是不是 auth 命令。
@@ -134,6 +142,28 @@ if (interactive && ProjectTrust.HasPendingDecision(cwd, trustOverride: arguments
 		.ConfigureAwait(false);
 	arguments = arguments with { ProjectTrustOverride = trusted };
 }
+
+// 启动期迁移（pi 的 migrations.ts）：旧凭据、旧会话落点与 commands/ 目录先搬到当前格式。
+// 放在信任询问之后：刚被信任的项目也能在同一次启动里迁移。
+try
+{
+	var migration = PiWeft.CodingAgent.Migrations.AgentMigrations.Run(cwd, projectTrustOverride: arguments.ProjectTrustOverride);
+	foreach (var warning in migration.Warnings)
+	{
+		AppLog.For<CliRunner>().ZLogWarning($"startup migration: {warning}");
+	}
+}
+catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+{
+	// 迁移失败不该阻止会话启动：旧格式仍按旧路径读取。
+	AppLog.For<CliRunner>().ZLogWarning($"startup migrations failed: {exception.Message}");
+}
+
+// 离线模式与代理必须在建 HTTP 客户端之前生效：pi 的 --offline 等价于 PI_OFFLINE=1，
+// 而 .NET 的默认代理只在第一次读取环境变量时确定。
+PiWeft.CodingAgent.PiEnvironment.Configure(arguments.Offline);
+PiWeft.CodingAgent.PiEnvironment.ApplyHttpProxy(
+	PiWeft.CodingAgent.Settings.CodingAgentSettings.Load(cwd, includeProject: false).HttpProxy);
 
 var (environment, error) = CliEnvironment.Create(arguments, cwd);
 if (environment is null)

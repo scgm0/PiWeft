@@ -86,6 +86,21 @@ public static class Program
 			return 2;
 		}
 
+		// 启动期迁移（pi 的 migrations.ts）：旧凭据、旧会话落点与 commands/ 目录先搬到当前格式。
+		// 项目级迁移只处理已受信项目；启动时还没来得及询问的，会在下次受信启动时迁移。
+		try
+		{
+			var migration = PiWeft.CodingAgent.Migrations.AgentMigrations.Run(cwd);
+			foreach (var warning in migration.Warnings)
+			{
+				AppLog.For<MainWindow>().ZLogWarning($"startup migration: {warning}");
+			}
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+		{
+			AppLog.For<MainWindow>().ZLogWarning($"startup migrations failed: {exception.Message}");
+		}
+
 		// 启动期配置：主题模式、内嵌字体、框架内置文案。三者都必须在创建控件之前就位，
 		// 并且对 --self-check 同样生效，便于自检反映真实启动状态。
 		// UI 线程上的未处理异常交给 MewUI 的事件，打印完整堆栈便于定位（默认只有一句概览）。
@@ -111,6 +126,11 @@ public static class Program
 		{
 			return SelfCheck(cwd);
 		}
+
+		// 离线模式与代理必须在建 HTTP 客户端之前生效（见 PiEnvironment 的说明）。
+		PiWeft.CodingAgent.PiEnvironment.Configure();
+		PiWeft.CodingAgent.PiEnvironment.ApplyHttpProxy(
+			PiWeft.CodingAgent.Settings.CodingAgentSettings.Load(cwd, includeProject: false).HttpProxy);
 
 		// 每个工作目录一个实例，避免两个窗口同时编辑同一批会话。
 		var instanceKey = Convert.ToHexString(

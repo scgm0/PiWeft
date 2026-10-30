@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Session;
@@ -121,12 +122,17 @@ public sealed partial class SessionManager
 	}
 
 	/// <summary>打开已有的会话文件。工作目录默认取头部记录，可显式覆盖；头部损坏时可用 <paramref name="cwdFallback"/> 兜底。</summary>
+	/// <param name="upgradeFile">
+	/// 旧版会话（v1/v2）是否就地升级并回写文件。只读导出传 <see langword="false"/>：
+	/// 内存里仍按当前格式解释，但不改用户的文件。
+	/// </param>
 	public static SessionManager Open(
 		string path,
 		string? sessionDir = null,
 		string? cwdOverride = null,
-		string? cwdFallback = null)
-		=> Open(path, sessionDir, cwdOverride, cwdFallback, progress: null, cancellationToken: default);
+		string? cwdFallback = null,
+		bool upgradeFile = true)
+		=> Open(path, sessionDir, cwdOverride, cwdFallback, progress: null, cancellationToken: default, upgradeFile: upgradeFile);
 
 	/// <summary>
 	/// 同上，并支持进度回调与取消。长会话（几十 MB）解析要上百毫秒到数秒，
@@ -138,7 +144,8 @@ public sealed partial class SessionManager
 		string? cwdOverride,
 		string? cwdFallback,
 		IProgress<SessionReadProgress>? progress,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		bool upgradeFile = true)
 	{
 		var resolved = Path.GetFullPath(path);
 		var entries = ReadFileEntries(resolved, progress, cancellationToken);
@@ -152,6 +159,7 @@ public sealed partial class SessionManager
 
 		var manager = new SessionManager(cwd, dir, resolved, true);
 		manager.LoadEntries(entries, header);
+		manager.MigrateLegacyEntries(upgradeFile);
 		return manager;
 	}
 
@@ -200,6 +208,10 @@ public sealed partial class SessionManager
 			throw new InvalidOperationException($"Cannot fork: source session has no header: {resolved}");
 		}
 
+		// fork 只读源文件，但派生出来的会话必须是当前格式：v1 条目没有 id，直接复制
+		// 到新文件会让分支投影只剩最后一条。迁移只在内存里做，源文件交给 pi/下一次打开处理。
+		SessionMigration.Migrate(entries);
+
 		var manager = Create(targetCwd, sessionDir, id, parentSession: resolved);
 		foreach (var entry in entries.OfType<SessionEntry>())
 		{
@@ -246,6 +258,92 @@ public sealed partial class SessionManager
 		_fileEntries.AddRange(entries);
 		SessionId = header?.Id ?? SessionPaths.NewSessionId();
 		RebuildIndex();
+	}
+
+	/// <summary>
+	/// 旧版会话升级到当前格式。内存里总会升级（否则 v1 的树与分支投影是坏的），
+	/// 只有 <paramref name="rewriteFile"/> 时才回写磁盘：pi 打开会话即迁移并重写，
+	/// 本端口保持一致；只读导出只解释不落盘。
+	/// </summary>
+	private void MigrateLegacyEntries(bool rewriteFile)
+	{
+		if (!SessionMigration.Migrate(_fileEntries))
+		{
+			return;
+		}
+
+		RebuildIndex();
+		if (rewriteFile)
+		{
+			RewriteFile();
+		}
+	}
+
+	/// <summary>
+	/// 把整份会话按当前格式重写：同目录临时文件 + 原子替换，写到一半崩溃不会留下半个会话。
+	/// 只在格式升级时调用，正常路径仍然只追加。
+	/// </summary>
+	private void RewriteFile()
+	{
+		if (SessionFile is not { Length: > 0 } path || !File.Exists(path))
+		{
+			return;
+		}
+
+		var directory = Path.GetDirectoryName(path);
+		if (directory is not { Length: > 0 })
+		{
+			return;
+		}
+
+		var temporary = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+		try
+		{
+			using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+			{
+				foreach (var item in _fileEntries)
+				{
+					var line = item switch
+					{
+						SessionHeader header => SessionJson.Serialize(header),
+						SessionEntry entry => SessionJson.Serialize(entry),
+						_ => null,
+					};
+
+					if (line is null)
+					{
+						continue;
+					}
+
+					stream.Write(Encoding.UTF8.GetBytes(line));
+					stream.WriteByte((byte)'\n');
+				}
+
+				stream.Flush(flushToDisk: true);
+			}
+
+			if (!OperatingSystem.IsWindows())
+			{
+				// 迁移不该顺手放宽会话文件的权限（pi 用默认 umask 写，只读用户可能有更严的设置）。
+				File.SetUnixFileMode(temporary, File.GetUnixFileMode(path));
+			}
+
+			File.Move(temporary, path, overwrite: true);
+		}
+		finally
+		{
+			try
+			{
+				if (File.Exists(temporary))
+				{
+					File.Delete(temporary);
+				}
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+			{
+				// 临时文件清理失败不影响已完成的迁移。
+			}
+		}
 	}
 
 	private static List<object> ReadFileEntries(

@@ -26,6 +26,9 @@ public sealed record ExtensionState
 
 }
 
+/// <summary>一个扩展注册的 CLI flag（pi 的 <c>pi.registerFlag</c>）。</summary>
+public sealed record ExtensionFlag(string Name, string Type, string Description, object? Default);
+
 /// <summary>
 /// 进程内 JS 扩展宿主：发现 → 沙箱执行 → 收集注册项（工具、命令、事件钩子）→ 派发事件。
 /// <para>
@@ -100,12 +103,24 @@ public sealed class ExtensionHost : IDisposable
 					if (!callable(definition.handler)) { __piDiagnose("命令 \"" + text(name) + "\" 没有 handler 函数。"); return; }
 					__piRegisterCommand(text(name), text(definition.description || ""), definition.handler);
 				},
+				registerFlag: function (name, definition) {
+					var def = definition || {};
+					var type = text(def.type || "boolean");
+					var defaultBoolean = type === "boolean" && typeof def.default === "boolean" ? def.default : null;
+					var defaultString = type === "string" && typeof def.default === "string" ? def.default : null;
+					__piRegisterFlag(text(name), type, text(def.description || ""), defaultBoolean, defaultString);
+				},
+				getFlag: function (name) { return __piGetFlag(text(name)); },
 				ui: Object.freeze(ui),
 			});
 		})();
 		""";
 
 	private readonly List<ExtensionState> _states = [];
+	private readonly Dictionary<string, ExtensionFlag> _flags = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, object?> _flagValues = new(StringComparer.Ordinal);
+	private IReadOnlyList<string> _unknownFlags = [];
+	private readonly List<string> _flagErrors = [];
 	private readonly IUiHost? _ui;
 	private bool _disposed;
 
@@ -120,6 +135,64 @@ public sealed class ExtensionHost : IDisposable
 	public IReadOnlyList<ExtensionCommand> Commands =>
 		[.. _states.Where(static state => state.Loaded).SelectMany(state => state.Registration.Commands)];
 
+	/// <summary>扩展注册的 CLI flag（名字 → 定义）。</summary>
+	public IReadOnlyDictionary<string, ExtensionFlag> Flags => _flags;
+
+	/// <summary>本次运行未能被任何扩展消费的未知 flag；调用方按 pi 的语义报告为错误。</summary>
+	public IReadOnlyList<string> UnknownFlags => _unknownFlags;
+
+	/// <summary>flag 形状错误（例如 string 类型没给值）。</summary>
+	public IReadOnlyList<string> FlagErrors => _flagErrors;
+
+	/// <summary>
+	/// 把命令行里的未知 flag 分配给已注册的扩展 flag（pi 的 <c>flagValues</c> 同义）：
+	/// boolean 一律视为 <c>true</c>，string 需要值；没有值的 string 记一条诊断。
+	/// 返回没有对应扩展的 flag 名 —— 真正的拼写错误必须报出来。
+	/// </summary>
+	public IReadOnlyList<string> ApplyFlagValues(IReadOnlyDictionary<string, string?> values)
+	{
+		_flagErrors.Clear();
+
+		// 先回到各自的默认值：同一个宿主可能被 reload 复用。
+		_flagValues.Clear();
+		foreach (var (name, flag) in _flags)
+		{
+			if (flag.Default is not null)
+			{
+				_flagValues[name] = flag.Default;
+			}
+		}
+
+		var unknown = new List<string>();
+		foreach (var (name, value) in values)
+		{
+			if (!_flags.TryGetValue(name, out var flag))
+			{
+				unknown.Add(name);
+				continue;
+			}
+
+			if (flag.Type == "string")
+			{
+				if (value is null)
+				{
+					_flagErrors.Add($"Extension flag \"--{name}\" requires a value");
+				}
+				else
+				{
+					_flagValues[name] = value;
+				}
+
+				continue;
+			}
+
+			_flagValues[name] = true;
+		}
+
+		_unknownFlags = unknown;
+		return unknown;
+	}
+
 	/// <summary>加载期发现的、宿主不派发的事件名。</summary>
 	public IReadOnlyList<string> UnsupportedEvents =>
 		[.. _states.SelectMany(state => state.Registration.UnsupportedEvents)];
@@ -129,14 +202,19 @@ public sealed class ExtensionHost : IDisposable
 		!_disposed && _states.Any(state => state.Loaded && state.Registration.HasHandlers(@event));
 
 	/// <summary>发现并加载扩展。单个扩展失败只影响它自己，其余照常加载。</summary>
-	public void Load(string cwd, bool trusted = true, string? agentDir = null)
+	public void Load(
+		string cwd,
+		bool trusted = true,
+		string? agentDir = null,
+		IReadOnlyList<string>? explicitPaths = null,
+		bool includeDiscovered = true)
 	{
 		if (_disposed)
 		{
 			return;
 		}
 
-		foreach (var descriptor in ExtensionDescriptor.Discover(cwd, trusted, agentDir))
+		foreach (var descriptor in ExtensionDescriptor.Discover(cwd, trusted, agentDir, explicitPaths, includeDiscovered))
 		{
 			Load(descriptor);
 		}
@@ -146,6 +224,14 @@ public sealed class ExtensionHost : IDisposable
 	{
 		var state = new ExtensionState { Descriptor = descriptor };
 		_states.Add(state);
+
+		if (descriptor.Builtin)
+		{
+			// pi 的 builtin:<name>（codemode / tool-search / mcp / llama）在本端口是原生实现，
+			// 没有可执行的脚本。接受这个参数，但如实说明它不会注册第二份。
+			state.Loaded = true;
+			return state;
+		}
 
 		if (!descriptor.Supported)
 		{
@@ -389,6 +475,54 @@ public sealed class ExtensionHost : IDisposable
 				RejectPromise(result, $"命令 {name}", state);
 			}));
 			return JsValue.Undefined;
+		}));
+
+		engine.SetValue("__piRegisterFlag", new ClrFunction(engine, "__piRegisterFlag", (thisObject, args) =>
+		{
+			var name = args.At(0).AsString();
+			if (name.Length == 0)
+			{
+				state.Diagnostics.Add("pi.registerFlag：缺少 name。");
+				return JsValue.Undefined;
+			}
+
+			var type = args.At(1).AsString();
+			if (type is not ("boolean" or "string"))
+			{
+				state.Diagnostics.Add($"pi.registerFlag(\"{name}\")：type 只能是 boolean 或 string。");
+				return JsValue.Undefined;
+			}
+
+			object? defaultValue = null;
+			if (type == "boolean" && !args.At(3).IsNull() && !args.At(3).IsUndefined())
+			{
+				defaultValue = args.At(3).AsBoolean();
+			}
+			else if (type == "string" && !args.At(4).IsNull() && !args.At(4).IsUndefined())
+			{
+				defaultValue = args.At(4).AsString();
+			}
+
+			_flags[name] = new ExtensionFlag(name, type, args.At(2).AsString(), defaultValue);
+			if (defaultValue is not null)
+			{
+				_flagValues[name] = defaultValue;
+			}
+
+			return JsValue.Undefined;
+		}));
+
+		engine.SetValue("__piGetFlag", new ClrFunction(engine, "__piGetFlag", (thisObject, args) =>
+		{
+			var name = args.At(0).AsString();
+			return _flagValues.TryGetValue(name, out var value)
+				? value switch
+				{
+					bool boolean => (JsValue)boolean,
+					string text => text,
+					_ => JsValue.Undefined,
+				}
+				: JsValue.Undefined;
 		}));
 
 		InstallUi(engine, state);

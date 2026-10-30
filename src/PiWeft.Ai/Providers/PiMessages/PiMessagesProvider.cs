@@ -63,7 +63,7 @@ public sealed class PiMessagesProvider : IApiProvider
 				return;
 			}
 
-			await using var bodyStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+			await using var bodyStream = await ProviderHttp.ReadBodyAsync(response, options, cancellationToken).ConfigureAwait(false);
 
 			var state = new PiMessagesStreamState(model, stream, startedAt);
 			var sse = new SseJsonReader();

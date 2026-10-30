@@ -285,11 +285,11 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		var sessionPath = CliEnvironment.ResolveSessionPath(source, cwd, arguments.SessionDir)
 			?? throw new InvalidOperationException($"Session not found: {source}");
 
-		// 导出是只读操作：不记录初始思考级别，以免改动会话文件。
+		// 导出是只读操作：不记录初始思考级别，也不把旧版会话回写成新格式（内存里仍按当前格式解释）。
 		using var session = environment.CreateSession(
 			arguments,
 			cwd,
-			session: SessionManager.Open(sessionPath, arguments.SessionDir),
+			session: SessionManager.Open(sessionPath, arguments.SessionDir, upgradeFile: false),
 			recordInitialThinkingLevel: false);
 
 		var requested = arguments.Prompts.Count > 0 ? arguments.Prompts[0] : null;
@@ -308,10 +308,36 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 	// ----------------------------------------------------------------- 单次输出
 
+	/// <summary>
+	/// 扩展 flag 的收口：没有注册者的未知选项、或 string 类型缺值，都按 pi 的语义报错退出。
+	/// 放在会话建好之后 —— 只有加载过扩展才知道哪些 flag 是合法的。
+	/// </summary>
+	private int? RejectUnknownExtensionFlags(CodingAgentSession session)
+	{
+		var failed = false;
+		foreach (var message in session.ExtensionFlagErrors)
+		{
+			error.WriteLine($"pi: {message}");
+			failed = true;
+		}
+
+		foreach (var name in session.UnknownExtensionFlags)
+		{
+			error.WriteLine($"pi: Unknown option --{name}");
+			failed = true;
+		}
+
+		return failed ? 2 : null;
+	}
+
 	/// <summary>单次模式：执行提示并打印最终的助手文本。</summary>
 	private async Task<int> RunPrintAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
 		using var session = environment.CreateSession(arguments, cwd, extraTools: _extraTools);
+		if (RejectUnknownExtensionFlags(session) is { } flagError)
+		{
+			return flagError;
+		}
 
 		var (prompts, images) = await PreparePromptsAsync(arguments, cwd, input, cancellationToken).ConfigureAwait(false);
 		for (var index = 0; index < prompts.Count; index++)
@@ -464,6 +490,10 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	private async Task<int> RunJsonAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
 		using var session = environment.CreateSession(arguments, cwd, extraTools: _extraTools);
+		if (RejectUnknownExtensionFlags(session) is { } flagError)
+		{
+			return flagError;
+		}
 
 		WriteRecord(SessionHeaderRecord(session.Session));
 
@@ -542,6 +572,11 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		_cwd = cwd;
 		// 当前 RPC 会话的事件订阅；换会话实例时必须重建。
 		_session = environment.CreateSession(arguments, cwd, extraTools: _extraTools, uiHost: this);
+		if (RejectUnknownExtensionFlags(_session) is { } flagError)
+		{
+			return flagError;
+		}
+
 		SubscribeSessionEvents();
 
 		try
@@ -1451,6 +1486,11 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			cwd,
 			extraTools: _extraTools,
 			uiHost: new ConsoleUiHost(input, error));
+		if (RejectUnknownExtensionFlags(session) is { } flagError)
+		{
+			return flagError;
+		}
+
 		error.WriteLine($"pi (PiWeft) — model {session.Model.Provider}/{session.Model.Id}. Type /exit to quit.");
 
 		// 交互模式不读管道 stdin（会把 TTY 阻塞），但 <c>@file</c> 附件仍作为第一条提示发出。
