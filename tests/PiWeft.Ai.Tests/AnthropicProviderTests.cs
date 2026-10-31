@@ -278,4 +278,128 @@ public class AnthropicProviderTests
 			Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", original);
 		}
 	}
+
+	/// <summary>先交出前若干字节，之后只等取消的响应体流：模拟「流开到一半就停住」。</summary>
+	/// <remarks>只实现 Memory 版 ReadAsync —— 与真实网络流一样没有可用的同步读。</remarks>
+	internal sealed class PartialThenStalledStream : Stream
+	{
+		private readonly byte[] _prefix;
+		private int _delivered;
+
+		/// <summary>数据交完、即将停住时的回调：测试靠它把「中止」钉在确定的时刻，而不是靠 sleep。</summary>
+		public Action? OnStalled { get; set; }
+
+		public PartialThenStalledStream(byte[] prefix) => _prefix = prefix;
+
+		public override bool CanRead => true;
+		public override bool CanSeek => false;
+		public override bool CanWrite => false;
+		public override long Length => throw new NotSupportedException();
+		public override long Position { get => 0; set => throw new NotSupportedException(); }
+		public override void Flush() { }
+		public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+		public override long Seek(long offset, System.IO.SeekOrigin origin) => throw new NotSupportedException();
+		public override void SetLength(long value) => throw new NotSupportedException();
+		public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+		public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+		{
+			if (_delivered < _prefix.Length)
+			{
+				var count = Math.Min(buffer.Length, _prefix.Length - _delivered);
+				_prefix.AsSpan(_delivered, count).CopyTo(buffer.Span);
+				_delivered += count;
+				return count;
+			}
+
+			// 之后不再有数据，也不会关闭连接：只能靠取消结束。
+			OnStalled?.Invoke();
+			await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+			return 0;
+		}
+	}
+
+	/// <summary>
+	/// 流被中断时的两种语义必须分开：用户中止是 aborted（不重试），
+	/// 供应商挂住连接是空闲超时的 error（要重试）。两者曾经共用一条取消路径，
+	/// 判错方向就会「中止被当成超时」或「停滞被当成中止」。
+	/// </summary>
+	public class AnthropicProviderAbortionTests
+	{
+		private const string FirstEvent = """
+			event: message_start
+			data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-5","usage":{"input_tokens":10}}}
+
+			event: content_block_delta
+			data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half"}}
+
+			""";
+
+		private static Model Sonnet() => new()
+		{
+			Id = "claude-sonnet-4-5",
+			Provider = "anthropic",
+			Api = AnthropicProvider.ApiId,
+			BaseUrl = "https://api.anthropic.com",
+			ContextWindow = 200_000,
+			MaxTokens = 8192,
+			Cost = new ModelCost { Input = 3, Output = 15, CacheRead = 0.3, CacheWrite = 3.75 },
+		};
+
+		/// <summary>每个用例自己的 handler：不共享静态状态，测试并行时不会互相串。</summary>
+		private static AnthropicProvider StalledProvider(Action? onStalled = null) =>
+			new(new HttpClient(new FakeHttpHandler
+			{
+				Responder = _ => new HttpResponseMessage(HttpStatusCode.OK)
+				{
+					Content = new StreamContent(new PartialThenStalledStream(Encoding.UTF8.GetBytes(FirstEvent))
+					{
+						OnStalled = onStalled,
+					}),
+				},
+			}));
+
+		[Fact]
+		public async Task UserAbortMidStreamIsReportedAsAborted()
+		{
+			using var source = new CancellationTokenSource();
+
+			// 中止的时刻钉在「首批字节已交给解析器」那一刻，而不是 sleep：
+			// 并行跑测试时按时间取消会飘到请求前或请求后，断言就不稳定了。
+			var provider = StalledProvider(source.Cancel);
+			var stream = provider.Stream(
+				Sonnet(),
+				new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+				new StreamOptions { ApiKey = "test-key", CancellationToken = source.Token });
+
+			await foreach (var _ in stream)
+			{
+			}
+
+			var message = await stream.Result;
+			Assert.Equal(StopReason.Aborted, message.StopReason);
+			Assert.Contains("abort", message.ErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+			Assert.False(RetryClassifier.IsRetryable(message));
+		}
+
+		[Fact]
+		public async Task StalledStreamHitsTheIdleTimeoutAndStaysRetryable()
+		{
+			using var source = new CancellationTokenSource();
+			var provider = StalledProvider();
+			var stream = provider.Stream(
+				Sonnet(),
+				new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+				new StreamOptions { ApiKey = "test-key", CancellationToken = source.Token, IdleTimeoutMs = 500 });
+
+			await foreach (var _ in stream)
+			{
+			}
+
+			var message = await stream.Result;
+			Assert.Equal(StopReason.Error, message.StopReason);
+			Assert.Contains("idle timeout", message.ErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+			Assert.True(RetryClassifier.IsRetryable(message));
+		}
+	}
 }

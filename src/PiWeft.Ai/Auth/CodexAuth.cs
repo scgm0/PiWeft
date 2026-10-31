@@ -474,12 +474,30 @@ internal static class AgentPaths
 	public static string AgentDirectory() =>
 		Environment.GetEnvironmentVariable(EnvAgentDir) switch
 		{
-			{ Length: > 0 } configured => configured,
+			// 与 SessionPaths.GetAgentDir 保持同一语义：~ 必须展开，否则会变成
+			// <cwd>/~/... 这种永远不存在的相对路径，登录写到的和会话读到的不是同一处。
+			{ Length: > 0 } configured => ExpandTilde(configured),
 			_ => Path.Combine(
 				Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
 				".pi",
 				"agent"),
 		};
+
+	private static string ExpandTilde(string path)
+	{
+		if (path.Length == 0 || path[0] != '~')
+		{
+			return path;
+		}
+
+		var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+		if (path.Length == 1)
+		{
+			return home;
+		}
+
+		return path[1] is '/' or '\\' ? Path.Combine(home, path[2..]) : path;
+	}
 }
 
 [JsonSourceGenerationOptions(WriteIndented = true)]

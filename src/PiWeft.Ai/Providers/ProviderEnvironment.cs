@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 
 namespace PiWeft.Ai.Providers;
 
@@ -37,6 +38,70 @@ internal static class ProviderHttp
 			: stream;
 	}
 
+	/// <summary>
+	/// 错误响应体的读取上限。各 provider 只把前 2000 字符写进错误文案，但网关偶尔会返回
+	/// 整页 HTML 甚至几十 MB 的诊断内容：不设上限就等于「一次失败的请求先吃掉一大块内存」，
+	/// 而且这笔分配还在自动重试的循环里。
+	/// </summary>
+	private const int MaxErrorBodyBytes = 1 << 20;
+
+	/// <summary>
+	/// 读取响应体文本（错误响应说明等），同样受 <see cref="StreamOptions.IdleTimeoutMs"/> 约束。
+	/// 错误体也可能被网关挂着不发：只给成功路径设空闲超时，等于把挂死风险留给最常见的失败分支。
+	/// </summary>
+	public static async Task<string> ReadBodyTextAsync(
+		HttpResponseMessage response,
+		StreamOptions options,
+		CancellationToken cancellationToken)
+	{
+		Stream raw = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+		if (options.IdleTimeoutMs is > 0 and var idle)
+		{
+			raw = new IdleTimeoutStream(raw, TimeSpan.FromMilliseconds(idle), options.CancellationToken);
+		}
+
+		await using var stream = raw;
+		using var buffer = new MemoryStream();
+		var chunk = new byte[16 * 1024];
+		while (buffer.Length < MaxErrorBodyBytes)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var count = await stream
+				.ReadAsync(chunk.AsMemory(0, Math.Min(chunk.Length, MaxErrorBodyBytes - (int)buffer.Length)), cancellationToken)
+				.ConfigureAwait(false);
+			if (count == 0)
+			{
+				break;
+			}
+
+			buffer.Write(chunk, 0, count);
+		}
+
+		var length = (int)buffer.Length;
+		var text = Decode(
+			new ReadOnlyMemory<byte>(buffer.GetBuffer(), 0, length),
+			response.Content.Headers.ContentType?.CharSet);
+		return length >= MaxErrorBodyBytes ? text + "…（响应体已截断）" : text;
+	}
+
+	/// <summary>按响应声明的字符集解码；字符集缺失或不认识时按 UTF-8（与 pi 的行为一致）。</summary>
+	private static string Decode(ReadOnlyMemory<byte> bytes, string? charset)
+	{
+		if (string.IsNullOrWhiteSpace(charset))
+		{
+			return Encoding.UTF8.GetString(bytes.Span);
+		}
+
+		try
+		{
+			return Encoding.GetEncoding(charset.Trim('"', '\'')).GetString(bytes.Span);
+		}
+		catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+		{
+			return Encoding.UTF8.GetString(bytes.Span);
+		}
+	}
+
 	/// <summary>为 <see cref="ProviderRequestOptions.OnResponse"/> 抓取响应的状态行与头部快照。</summary>
 	public static ProviderResponse FromResponse(HttpResponseMessage response)
 	{
@@ -53,22 +118,26 @@ internal static class ProviderHttp
 
 		return new ProviderResponse { Status = (int)response.StatusCode, Headers = headers };
 	}
-	/// <summary>
-	/// 开始一段「等响应头」的超时。返回的作用域把调用方的取消与超时合并，供发送请求时使用；
-	/// 正文读取请一律使用 <c>options.CancellationToken</c>。
-	/// </summary>
+
 	/// <summary>超时错误的文案：区分「等响应头超时」与其它取消。</summary>
 	public static string TimeoutMessage(HeaderTimeoutScope scope) =>
 		scope.TimedOut ? "Request timed out while waiting for response headers" : "Request timed out";
 
+	/// <summary>
+	/// 开始一段「等响应头」的超时。返回的作用域把调用方的取消与超时合并，供发送请求时使用；
+	/// 正文读取请一律使用 <c>options.CancellationToken</c>。
+	/// </summary>
 	public static HeaderTimeoutScope BeginHeaderTimeout(StreamOptions options)
 	{
-		if (options.TimeoutMs is not { } timeoutMs || timeoutMs <= 0)
+		// 等响应头也受空闲超时兜底：连接建立了但服务端一直不回头，否则这一轮会无限等下去
+		// （HttpClient 是 Infinite，正文计时器此时还没建立）。显式的请求超时优先。
+		var timeoutMs = options.TimeoutMs is > 0 ? options.TimeoutMs : options.IdleTimeoutMs;
+		if (timeoutMs is not { } value || value <= 0)
 		{
 			return new HeaderTimeoutScope(null, null, options.CancellationToken);
 		}
 
-		var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs));
+		var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(value));
 		var linked = CancellationTokenSource.CreateLinkedTokenSource(options.CancellationToken, timeout.Token);
 		return new HeaderTimeoutScope(timeout, linked, linked.Token);
 	}

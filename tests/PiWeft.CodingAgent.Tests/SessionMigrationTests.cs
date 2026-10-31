@@ -141,6 +141,60 @@ public class SessionMigrationTests : IDisposable
 	}
 
 	[Fact]
+	public void Open_MigratesThroughASymlinkedSessionFile()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		Directory.CreateDirectory(_root);
+		var real = Path.Combine(_root, "real.jsonl");
+		File.WriteAllLines(real,
+		[
+			V1Header(),
+			MessageLine("user", "one", 1),
+		]);
+		var alias = Path.Combine(_root, "alias.jsonl");
+		File.CreateSymbolicLink(alias, real);
+
+		var manager = SessionManager.Open(alias);
+
+		Assert.Single(manager.Entries);
+		// 链接还在，目标被升级成 v3；把链接替换成普通文件会让 dotfiles 指向旧目标。
+		Assert.NotNull(new FileInfo(alias).LinkTarget);
+		var header = JsonNode.Parse(File.ReadLines(real).First())!.AsObject();
+		Assert.Equal(3, header["version"]!.GetValue<int>());
+	}
+
+	[Fact]
+	public void Open_ToleratesAReadOnlySessionDirectory()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return; // Windows 的文件只读语义不同，这里不作为回归用例。
+		}
+
+		var path = WriteV1File();
+		var directory = Path.GetDirectoryName(path)!;
+		var before = File.ReadAllText(path);
+		File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+		try
+		{
+			var manager = SessionManager.Open(path);
+
+			// 内存里照样是完整的当前格式；回写失败不该让旧会话打不开。
+			Assert.Equal(4, manager.Entries.Count);
+			Assert.Equal(4, manager.BuildProjectedMessages().Count);
+			Assert.Equal(before, File.ReadAllText(path));
+		}
+		finally
+		{
+			File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+		}
+	}
+
+	[Fact]
 	public void Open_LeavesCurrentVersionFileByteIdentical()
 	{
 		var manager = SessionManager.Create("/workspace/current", Path.Combine(_root, "sessions"));

@@ -82,6 +82,8 @@ internal static class FileMutationQueue
 			// 解析失败就用绝对路径：宁可多串行一点，也不要出现两条路径各写各的。
 		}
 
-		return full;
+		// Windows 文件系统不区分大小写：Foo.txt 与 foo.txt 必须落在同一把锁上。
+		// macOS 默认也不区分，但存在区分大小写的卷，按路径原样处理（realpath 已经归一化了已存在文件）。
+		return OperatingSystem.IsWindows() ? full.ToUpperInvariant() : full;
 	}
 }

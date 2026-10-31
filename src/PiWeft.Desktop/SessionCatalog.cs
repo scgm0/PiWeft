@@ -233,7 +233,7 @@ public sealed class SessionCatalog
 	{
 		try
 		{
-			return File.GetLastWriteTimeUtc(path);
+			return ResolveSessionFileInfo(path).LastWriteTimeUtc;
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{
@@ -534,7 +534,7 @@ public sealed class SessionCatalog
 
 				try
 				{
-					var write = File.GetLastWriteTimeUtc(path);
+					var write = ResolveSessionFileInfo(path).LastWriteTimeUtc;
 					if (newest is null || write > newestWrite)
 					{
 						newest = path;
@@ -594,7 +594,8 @@ public sealed class SessionCatalog
 
 	private SessionListItem ToItem(string path)
 	{
-		var info = new FileInfo(path);
+		// 链接的大小是链接目标的路径长度，不是会话内容：用它当摘要缓存键会让侧栏永远显示旧预览。
+		var info = ResolveSessionFileInfo(path);
 		var modified = info.LastWriteTimeUtc;
 		var length = info.Exists ? info.Length : 0;
 		SummaryStamp? cached;
@@ -730,6 +731,33 @@ public sealed class SessionCatalog
 		}
 
 		return item;
+	}
+
+	/// <summary>
+	/// 会话文件的元数据。链接要解析到最终目标：<c>alias.jsonl</c> 的大小是目标路径的长度、
+	/// 修改时间是链接自身的，拿它当摘要缓存键会让侧栏永远显示旧预览。
+	/// 只有重解析点才多付一次解析：列目录动辄几百个会话，普通文件不应因此多一次系统调用。
+	/// </summary>
+	private static FileInfo ResolveSessionFileInfo(string path)
+	{
+		var info = new FileInfo(path);
+		if ((info.Attributes & FileAttributes.ReparsePoint) == 0)
+		{
+			return info;
+		}
+
+		try
+		{
+			// 解析失败时退回链接自身：列表仍能显示，只是摘要缓存按链接元数据失效。
+			return File.ResolveLinkTarget(path, returnFinalTarget: true) is { } target
+				? new FileInfo(target.FullName)
+				: info;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+			or ArgumentException or NotSupportedException)
+		{
+			return info;
+		}
 	}
 
 	private ref struct CatalogScan

@@ -10,24 +10,25 @@ namespace PiWeft.Ai;
 /// 会让这一轮永远等下去 —— pi 用 <c>settings.httpIdleTimeoutMs</c>（默认 300 秒）兜住这种情况。
 /// </para>
 /// <para>
+/// 计时用 <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> 反复续期，不轮询：
+/// 每读到数据就把到期时刻推到「现在 + 超时」，一个流从头到尾只有一个定时器。
+/// </para>
+/// <para>
 /// 超时抛 <see cref="IOException"/> 而不是 <see cref="OperationCanceledException"/>：
 /// 用户没按中断，把它报成「已中止」会误导；IOException 会走自动重试的分类器（文案里带 timeout）。
 /// </para>
 /// </summary>
 internal sealed class IdleTimeoutStream : Stream
 {
-	private static readonly TimeSpan MinimumCheckInterval = TimeSpan.FromMilliseconds(100);
-	private static readonly TimeSpan MaximumCheckInterval = TimeSpan.FromSeconds(1);
+	/// <summary>最短续期间隔：数据密集时不必为每个字节都动一次定时器。</summary>
+	private static readonly TimeSpan MinimumRenewInterval = TimeSpan.FromMilliseconds(50);
 
 	private readonly Stream _inner;
 	private readonly TimeSpan _timeout;
 	private readonly CancellationToken _requestToken;
-	private readonly CancellationTokenSource _idle = new();
+	private readonly CancellationTokenSource _idle;
 	private readonly CancellationTokenSource _linked;
-	private readonly CancellationTokenSource _stopWatchdog = new();
-	private readonly Task _watchdog;
-	private long _lastActivity;
-	private volatile bool _timedOut;
+	private long _lastRenew;
 	private bool _disposed;
 
 	public IdleTimeoutStream(Stream inner, TimeSpan timeout, CancellationToken requestToken)
@@ -37,34 +38,10 @@ internal sealed class IdleTimeoutStream : Stream
 		_inner = inner;
 		_timeout = timeout;
 		_requestToken = requestToken;
-		_lastActivity = Stopwatch.GetTimestamp();
+		_idle = new CancellationTokenSource();
 		_linked = CancellationTokenSource.CreateLinkedTokenSource(requestToken, _idle.Token);
-		_watchdog = WatchAsync();
-	}
-
-	private async Task WatchAsync()
-	{
-		var interval = TimeSpan.FromMilliseconds(
-			Math.Clamp(_timeout.TotalMilliseconds / 4, MinimumCheckInterval.TotalMilliseconds, MaximumCheckInterval.TotalMilliseconds));
-		try
-		{
-			while (true)
-			{
-				await Task.Delay(interval, _stopWatchdog.Token).ConfigureAwait(false);
-				if (Stopwatch.GetElapsedTime(Interlocked.Read(ref _lastActivity)) < _timeout)
-				{
-					continue;
-				}
-
-				_timedOut = true;
-				_idle.Cancel();
-				return;
-			}
-		}
-		catch (OperationCanceledException)
-		{
-			// Dispose 或超时后退出。
-		}
+		_lastRenew = Stopwatch.GetTimestamp();
+		ArmTimeout();
 	}
 
 	public override bool CanRead => _inner.CanRead;
@@ -91,31 +68,26 @@ internal sealed class IdleTimeoutStream : Stream
 
 	public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
 
+	// 走 Memory 重载，而不是基组的数组重载：后者会退回 BeginRead/EndRead，
+	// 对只实现了异步读的内层流（以及很多测试替身）等于把读退回同步路径。
 	public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
-		ReadCoreAsync(
-			(stream, token) => stream.ReadAsync(buffer, offset, count, token),
-			cancellationToken);
+		ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
 
-	public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+	public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
 	{
-		var (linked, perCall) = Link(cancellationToken);
-		return ReadMemoryAsync(buffer, linked, perCall);
-	}
-
-	private async ValueTask<int> ReadMemoryAsync(
-		Memory<byte> buffer,
-		CancellationToken linked,
-		CancellationTokenSource? perCall)
-	{
+		// 调用方的令牌通常就是请求令牌：这时直接用共享的 linked 源，不为每次读建一个 CTS。
+		// 一次长流有上万个读，每个都分配再释放 CancellationTokenSource 是白扔的对象。
+		var (token, perCall) = Link(cancellationToken);
 		try
 		{
-			var read = await _inner.ReadAsync(buffer, linked).ConfigureAwait(false);
-			Touch();
+			var read = await _inner.ReadAsync(buffer, token).ConfigureAwait(false);
+			Renew();
 			return read;
 		}
-		catch (OperationCanceledException) when (TimedOut)
+		catch (OperationCanceledException) when (IsIdleTimeout())
 		{
-			throw IdleTimeout();
+			throw new IOException(
+				$"Provider response stream idle timeout: no data for {_timeout.TotalSeconds:0.###} seconds");
 		}
 		finally
 		{
@@ -123,28 +95,6 @@ internal sealed class IdleTimeoutStream : Stream
 		}
 	}
 
-	private async Task<int> ReadCoreAsync(
-		Func<Stream, CancellationToken, Task<int>> read,
-		CancellationToken cancellationToken)
-	{
-		var (linked, perCall) = Link(cancellationToken);
-		try
-		{
-			var result = await read(_inner, linked).ConfigureAwait(false);
-			Touch();
-			return result;
-		}
-		catch (OperationCanceledException) when (TimedOut)
-		{
-			throw IdleTimeout();
-		}
-		finally
-		{
-			perCall?.Dispose();
-		}
-	}
-
-	/// <summary>调用方自己的令牌（通常就是请求令牌）直接复用共享的 linked 源，只有不同的令牌才另建。</summary>
 	private (CancellationToken Token, CancellationTokenSource? PerCall) Link(CancellationToken cancellationToken)
 	{
 		if (cancellationToken.CanBeCanceled && cancellationToken != _requestToken)
@@ -156,24 +106,53 @@ internal sealed class IdleTimeoutStream : Stream
 		return (_linked.Token, null);
 	}
 
-	private bool TimedOut => _timedOut && !_requestToken.IsCancellationRequested;
+	/// <summary>
+	/// 是「空闲到期」而不是用户中止或提前释放：请求令牌没被取消、本流也没在释放
+	/// （<see cref="Release"/> 会取消计时令牌，那之后到来的取消不该被说成超时）。
+	/// </summary>
+	private bool IsIdleTimeout() =>
+		_idle.IsCancellationRequested && !_requestToken.IsCancellationRequested && !_disposed;
 
-	private void Touch() => Interlocked.Exchange(ref _lastActivity, Stopwatch.GetTimestamp());
+	/// <summary>把到期时刻推到「现在 + 超时」。数据密集时最多每 50 ms 动一次定时器：
+	/// 于是空闲窗口可能被提前至多 50 ms 判定 —— 相对默认的 300 秒可以忽略，
+	/// 但换来的是「一秒几百个 SSE 分片也不反复重置定时器」。
+	/// </summary>
+	private void Renew()
+	{
+		var now = Stopwatch.GetTimestamp();
+		if (Stopwatch.GetElapsedTime(_lastRenew) < MinimumRenewInterval)
+		{
+			return;
+		}
 
-	private IOException IdleTimeout() =>
-		new($"Provider response stream idle timeout: no data for {_timeout.TotalSeconds:0.###} seconds");
+		_lastRenew = now;
+		ArmTimeout();
+	}
+
+	private void ArmTimeout()
+	{
+		if (_disposed || _idle.IsCancellationRequested)
+		{
+			return;
+		}
+
+		try
+		{
+			_idle.CancelAfter(_timeout);
+		}
+		catch (ObjectDisposedException)
+		{
+			// 与并发释放竞争：流已经不读了，超时不再有意义。
+		}
+	}
 
 	protected override void Dispose(bool disposing)
 	{
-		if (disposing && !_disposed)
+		if (disposing)
 		{
-			_disposed = true;
-			_stopWatchdog.Cancel();
-			_idle.Cancel();
-			_linked.Dispose();
-			_idle.Dispose();
-			_stopWatchdog.Dispose();
+			ReleaseCore();
 			_inner.Dispose();
+			ReleaseTokens();
 		}
 
 		base.Dispose(disposing);
@@ -181,17 +160,38 @@ internal sealed class IdleTimeoutStream : Stream
 
 	public override async ValueTask DisposeAsync()
 	{
-		if (!_disposed)
+		ReleaseCore();
+		await _inner.DisposeAsync().ConfigureAwait(false);
+		ReleaseTokens();
+		await base.DisposeAsync().ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// 释放顺序：标记已释放 → 取消计时 → 释放内层流 → 才释放令牌源。
+	/// 内层可能还有一个挂着注册的读在等取消；先把流关掉，那个注册一定已经走完，
+	/// 之后 dispose 才不会撞上「令牌源已释放」。
+	/// </summary>
+	private void ReleaseCore()
+	{
+		if (_disposed)
 		{
-			_disposed = true;
-			_stopWatchdog.Cancel();
-			_idle.Cancel();
-			_linked.Dispose();
-			_idle.Dispose();
-			_stopWatchdog.Dispose();
-			await _inner.DisposeAsync().ConfigureAwait(false);
+			return;
 		}
 
-		await base.DisposeAsync().ConfigureAwait(false);
+		_disposed = true;
+		_idle.Cancel();
+	}
+
+	private void ReleaseTokens()
+	{
+		try
+		{
+			_linked.Dispose();
+			_idle.Dispose();
+		}
+		catch (ObjectDisposedException)
+		{
+			// 重复释放：_disposed 已经挡住了正常路径，这里只兜底。
+		}
 	}
 }

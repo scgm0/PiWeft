@@ -214,6 +214,14 @@ public static class FileTools
 	{
 		try
 		{
+			// FileInfo.LinkTarget 对普通文件/不存在的路径返回 null 且不抛异常；
+			// File.ResolveLinkTarget 在路径不存在时抛 FileNotFoundException —— 新建文件的常见路径
+			// 不该为「它不是链接」付一次异常的成本。
+			if (new FileInfo(path).LinkTarget is null)
+			{
+				return path;
+			}
+
 			return File.ResolveLinkTarget(path, returnFinalTarget: true) is { } target
 				? Path.GetFullPath(target.FullName)
 				: path;

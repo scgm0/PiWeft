@@ -69,6 +69,64 @@ public class SettingsMigrationTests : IDisposable
 	}
 
 	[Fact]
+	public void SavingWritesOnlyValuesTheUserActuallyChanged()
+	{
+		WriteGlobal("{}");
+		var settings = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+		var projectDir = Path.Combine(Project, ".pi");
+		Directory.CreateDirectory(projectDir);
+
+		CodingAgentSettings.SaveProject(Project, settings);
+		var written = File.ReadAllText(Path.Combine(projectDir, "settings.json"));
+
+		Assert.DoesNotContain("transport", written, StringComparison.Ordinal);
+		Assert.DoesNotContain("httpIdleTimeoutMs", written, StringComparison.Ordinal);
+		Assert.DoesNotContain("extensions", written, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void SavingKeepsExplicitTransportAndIdleTimeout()
+	{
+		var projectDir = Path.Combine(Project, ".pi");
+		Directory.CreateDirectory(projectDir);
+		CodingAgentSettings.SaveProject(Project, new CodingAgentSettings
+		{
+			Transport = "websocket-cached",
+			HttpIdleTimeoutMs = 45_000,
+			Extensions = ["/home/u/.pi/agent/extensions/x.js"],
+		});
+
+		var file = CodingAgentSettings.ReadFile(Path.Combine(projectDir, "settings.json"))!;
+		Assert.Equal("websocket-cached", file.Transport);
+		Assert.Equal(45_000, file.HttpIdleTimeoutMs);
+
+		// 解析后的绝对用户路径不会被写进仓库里的项目设置。
+		Assert.Null(file.Extensions);
+		Assert.DoesNotContain("/home/u", File.ReadAllText(Path.Combine(projectDir, "settings.json")), StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void DisabledIdleTimeoutRoundTripsAsString()
+	{
+		var projectDir = Path.Combine(Project, ".pi");
+		Directory.CreateDirectory(projectDir);
+		CodingAgentSettings.SaveProject(Project, new CodingAgentSettings { HttpIdleTimeoutMs = 0 });
+
+		var written = File.ReadAllText(Path.Combine(projectDir, "settings.json"));
+		Assert.Contains("\"httpIdleTimeoutMs\": \"disabled\"", written, StringComparison.Ordinal);
+		// 保存写回的是 pi 的 "disabled" 写法；读取要还原成 0（关闭），不能回落成默认 300 秒。
+		Assert.Equal(0, CodingAgentSettings.Load(Project, AgentDir).HttpIdleTimeoutMs);
+	}
+
+	[Fact]
+	public void InvalidTransportFallsBackToAuto()
+	{
+		WriteGlobal("""{"transport":"carrier-pigeon"}""");
+
+		Assert.Equal("auto", CodingAgentSettings.Load(Project, AgentDir, includeProject: false).Transport);
+	}
+
+	[Fact]
 	public void ProjectTransportOverridesGlobal()
 	{
 		WriteGlobal("""{"websockets":true}""");
@@ -101,6 +159,33 @@ public class SettingsMigrationTests : IDisposable
 		Directory.CreateDirectory(projectDir);
 		File.WriteAllText(Path.Combine(projectDir, "settings.json"), """{"retry":{"provider":{"timeoutMs":30000}}}""");
 		Assert.Equal(30000, CodingAgentSettings.Load(Project, AgentDir).TimeoutMs);
+	}
+
+	[Fact]
+	public void ProjectExtensionsReplaceUserExtensions()
+	{
+		WriteGlobal("""{"extensions":["/global/a.js","/global/b.js"]}""");
+		var projectDir = Path.Combine(Project, ".pi");
+		Directory.CreateDirectory(projectDir);
+		File.WriteAllText(Path.Combine(projectDir, "settings.json"), """{"extensions":["/project/c.js"]}""");
+
+		Assert.Equal(["/project/c.js"], CodingAgentSettings.Load(Project, AgentDir).Extensions);
+
+		// 项目可以显式清空用户级列表。
+		File.WriteAllText(Path.Combine(projectDir, "settings.json"), """{"extensions":[]}""");
+		Assert.Empty(CodingAgentSettings.Load(Project, AgentDir).Extensions);
+	}
+
+	[Fact]
+	public void RelativeExtensionsResolveAgainstTheirDeclarationScope()
+	{
+		WriteGlobal("""{"extensions":["ext/user.js"]}""");
+		Assert.Equal([Path.Combine(AgentDir, "ext", "user.js")], CodingAgentSettings.Load(Project, AgentDir, includeProject: false).Extensions);
+
+		var projectDir = Path.Combine(Project, ".pi");
+		Directory.CreateDirectory(projectDir);
+		File.WriteAllText(Path.Combine(projectDir, "settings.json"), """{"extensions":["project.js"]}""");
+		Assert.Equal([Path.Combine(projectDir, "project.js")], CodingAgentSettings.Load(Project, AgentDir).Extensions);
 	}
 
 	[Fact]

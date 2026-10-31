@@ -55,7 +55,7 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 
 			if (!response.IsSuccessStatusCode)
 			{
-				var body = await response.Content.ReadAsStringAsync(options.CancellationToken).ConfigureAwait(false);
+				var body = await ProviderHttp.ReadBodyTextAsync(response, options, options.CancellationToken).ConfigureAwait(false);
 				PushFailure(stream, model, startedAt, $"Gemini request failed ({(int)response.StatusCode}): {Truncate(body, 2000)}");
 				return;
 			}

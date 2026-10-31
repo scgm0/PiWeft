@@ -43,18 +43,22 @@ public static class AgentMigrations
 		var directory = agentDir ?? SessionPaths.GetAgentDir();
 		var warnings = new List<string>();
 
-		if (!Directory.Exists(directory))
+		// agent 目录还不存在（首次运行）时，凭据与会话迁移无事可做；
+		// 但项目里的 commands/ 仍然该迁移，不能因为用户目录缺失就整体跳过。
+		var providers = new List<string>();
+		if (Directory.Exists(directory))
 		{
-			return MigrationReport.Empty;
+			providers.AddRange(MigrateAuth(directory, warnings));
+			MoveSessionsFromAgentRoot(directory, warnings);
 		}
-
-		var providers = MigrateAuth(directory, warnings);
-		MoveSessionsFromAgentRoot(directory, warnings);
 
 		// 用户级目录没有信任问题；项目目录只在已受信时动，避免在别人仓库里做写操作。
 		MoveCommandsToPrompts(directory, warnings);
+		// 先看有没有要迁移的目录，再问信任：绝大多数项目没有 commands/，
+		// 不该为一次 CLI 启动多读 trust.json 与 settings.json。
 		var project = Path.Combine(Path.GetFullPath(cwd), SessionPaths.ConfigDirName);
-		if (Directory.Exists(project) && IsTrusted(cwd, directory, projectTrustOverride))
+		if (Directory.Exists(Path.Combine(project, "commands")) &&
+			IsTrusted(cwd, directory, projectTrustOverride))
 		{
 			MoveCommandsToPrompts(project, warnings);
 		}
@@ -121,9 +125,10 @@ public static class AgentMigrations
 			}
 		}
 
-		// settings.apiKeys 是 pi 更早的存储位置：即便一条都没能搬过来，也要把它删掉，
-		// 否则每次启动都会看到同一份过期数据。
+		// settings.apiKeys 是 pi 更早的存储位置。删除动作推迟到 auth.json 写成功之后：
+		// 磁盘满或权限不足时，先把凭据从设置里删掉再写失败，等于把密钥抹了。
 		var settingsPath = Path.Combine(agentDir, "settings.json");
+		JsonObject? settingsToClean = null;
 		if (File.Exists(settingsPath) && ReadObject(settingsPath, warnings, "settings.json") is { } settings)
 		{
 			if (settings["apiKeys"] is JsonObject apiKeys)
@@ -148,15 +153,21 @@ public static class AgentMigrations
 					providers.Add(provider);
 				}
 
-				settings.Remove("apiKeys");
-				WriteJson(settingsPath, settings, privateFile: false);
+				settingsToClean = settings;
 			}
 		}
 
 		if (migrated.Count > 0)
 		{
-			// 先写 auth.json 再改 oauth.json 的名字：写失败时旧文件还在，下次启动可以重试。
+			// 先写 auth.json，再清理旧位置：任何一步失败时凭据都还在某处，下次启动可以重试。
 			WriteJson(authPath, migrated, privateFile: true);
+
+			if (settingsToClean is not null)
+			{
+				settingsToClean.Remove("apiKeys");
+				WriteJson(settingsPath, settingsToClean, privateFile: false);
+			}
+
 			if (oauthRead && File.Exists(oauthPath))
 			{
 				try

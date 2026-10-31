@@ -101,7 +101,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 
 			if (!response.IsSuccessStatusCode)
 			{
-				var errorBody = await response.Content.ReadAsStringAsync(options.CancellationToken).ConfigureAwait(false);
+				var errorBody = await ProviderHttp.ReadBodyTextAsync(response, options, options.CancellationToken).ConfigureAwait(false);
 				PushFailure(stream, model, startedAt, $"Codex request failed ({(int)response.StatusCode}): {Truncate(errorBody, 2000)}");
 				return;
 			}

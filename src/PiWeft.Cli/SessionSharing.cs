@@ -34,6 +34,13 @@ public static class SessionSharing
 			shareDestination = PiWeft.Ai.Auth.OAuthStore.Read("radius") is not null ? "radius" : "gist";
 		}
 
+		if (string.Equals(shareDestination, "radius", StringComparison.OrdinalIgnoreCase) &&
+			PiWeft.Ai.Auth.OAuthStore.Read("radius") is null)
+		{
+			// 先查凭据再导出：几十 MB 的会话不该为了报「未登录 Radius」先序列化一遍。
+			return (false, null, "未登录 Radius；先运行 pi login radius，或把 sessionShareDestination 设为 gist。");
+		}
+
 		var jsonl = BuildShareJsonl(session);
 		if (string.Equals(shareDestination, "radius", StringComparison.OrdinalIgnoreCase))
 		{
@@ -350,13 +357,39 @@ public static class SessionSharing
 
 			if (!cancellationToken.IsCancellationRequested)
 			{
+				// 进程已被杀掉，管道会关闭；把两个读取任务观察掉，避免留下未观察的异常。
+				// 只等 1 秒：若孙进程继承了管道，等待可能永不结束，超时结论不该被它拖住。
+				try
+				{
+					await Task.WhenAll(output, error).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+				}
+				catch (Exception exception) when (exception is IOException or ObjectDisposedException
+					or OperationCanceledException or TimeoutException)
+				{
+					// 输出已不可读或仍未关闭，超时结论不变。
+				}
+
 				return (1, string.Empty, "命令超时（30 秒）");
 			}
 
 			throw;
 		}
 
-		return (process.ExitCode, await output.ConfigureAwait(false), await error.ConfigureAwait(false));
+		// 主进程已退出，但孙进程可能仍持有管道；读取加一个有界等待，避免 /share 卡死。
+		string stdout;
+		string stderr;
+		try
+		{
+			stdout = await output.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+			stderr = await error.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+		}
+		catch (TimeoutException)
+		{
+			stdout = string.Empty;
+			stderr = string.Empty;
+		}
+
+		return (process.ExitCode, stdout, stderr);
 	}
 
 	private static string Summarize(string body)

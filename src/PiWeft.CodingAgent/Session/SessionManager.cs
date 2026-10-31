@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Text;
 using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Session;
@@ -150,7 +149,10 @@ public sealed partial class SessionManager
 		var resolved = Path.GetFullPath(path);
 		var entries = ReadFileEntries(resolved, progress, cancellationToken);
 
-		var header = entries.OfType<SessionHeader>().FirstOrDefault();
+		// 头部几乎总在第一行：先看首项，损坏/外部文件再退回全表扫描。
+		var header = entries.Count > 0 && entries[0] is SessionHeader first
+			? first
+			: entries.OfType<SessionHeader>().FirstOrDefault();
 		var cwd = NormalizeCwd(cwdOverride)
 			?? NormalizeCwd(header?.Cwd)
 			?? NormalizeCwd(cwdFallback)
@@ -159,7 +161,7 @@ public sealed partial class SessionManager
 
 		var manager = new SessionManager(cwd, dir, resolved, true);
 		manager.LoadEntries(entries, header);
-		manager.MigrateLegacyEntries(upgradeFile);
+		manager.MigrateLegacyEntries(header, upgradeFile);
 		return manager;
 	}
 
@@ -265,17 +267,33 @@ public sealed partial class SessionManager
 	/// 只有 <paramref name="rewriteFile"/> 时才回写磁盘：pi 打开会话即迁移并重写，
 	/// 本端口保持一致；只读导出只解释不落盘。
 	/// </summary>
-	private void MigrateLegacyEntries(bool rewriteFile)
+	private void MigrateLegacyEntries(SessionHeader? header, bool rewriteFile)
 	{
+		// 当前版本的会话占绝大多数：先用已解析的头部挡掉，避免每次打开都线性扫一遍条目。
+		if (header is null || header.Version >= SessionFormat.CurrentVersion)
+		{
+			return;
+		}
+
 		if (!SessionMigration.Migrate(_fileEntries))
 		{
 			return;
 		}
 
 		RebuildIndex();
-		if (rewriteFile)
+		if (!rewriteFile)
+		{
+			return;
+		}
+
+		try
 		{
 			RewriteFile();
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			// 只读介质或磁盘满：内存里已经升级，仍然能正常浏览与继续对话；
+			// 把会话打不开当成迁移失败是更坏的交换（用户只想看旧对话）。
 		}
 	}
 
@@ -290,33 +308,39 @@ public sealed partial class SessionManager
 			return;
 		}
 
-		var directory = Path.GetDirectoryName(path);
+		// 会话文件可能是符号链接（dotfiles 管理器很常见）：写入要跟随到目标，
+		// 否则一次迁移会把链接替换成普通文件，目标里的旧内容还留在原地。
+		var target = ResolveSessionTarget(path);
+		var directory = Path.GetDirectoryName(target);
 		if (directory is not { Length: > 0 })
 		{
 			return;
 		}
 
-		var temporary = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+		var temporary = Path.Combine(directory, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.tmp");
 		try
 		{
 			using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
 			{
+				// 一次迁移可能重写几十 MB：复用缓冲区，按行直接写 UTF-8 字节，
+				// 不为每行生成字符串再编码一次。
+				var buffer = new System.Buffers.ArrayBufferWriter<byte>(1024);
 				foreach (var item in _fileEntries)
 				{
-					var line = item switch
+					buffer.Clear();
+					switch (item)
 					{
-						SessionHeader header => SessionJson.Serialize(header),
-						SessionEntry entry => SessionJson.Serialize(entry),
-						_ => null,
-					};
-
-					if (line is null)
-					{
-						continue;
+						case SessionHeader header:
+							SessionJson.WriteHeaderLine(buffer, header);
+							break;
+						case SessionEntry entry:
+							SessionJson.WriteEntryLine(buffer, entry);
+							break;
+						default:
+							continue;
 					}
 
-					stream.Write(Encoding.UTF8.GetBytes(line));
-					stream.WriteByte((byte)'\n');
+					stream.Write(buffer.WrittenSpan);
 				}
 
 				stream.Flush(flushToDisk: true);
@@ -325,10 +349,10 @@ public sealed partial class SessionManager
 			if (!OperatingSystem.IsWindows())
 			{
 				// 迁移不该顺手放宽会话文件的权限（pi 用默认 umask 写，只读用户可能有更严的设置）。
-				File.SetUnixFileMode(temporary, File.GetUnixFileMode(path));
+				File.SetUnixFileMode(temporary, File.GetUnixFileMode(target));
 			}
 
-			File.Move(temporary, path, overwrite: true);
+			File.Move(temporary, target, overwrite: true);
 		}
 		finally
 		{
@@ -346,6 +370,24 @@ public sealed partial class SessionManager
 		}
 	}
 
+	/// <summary>符号链接解析到最终目标；普通文件或解析失败时返回原路径（读、写共用）。</summary>
+	private static string ResolveSessionTarget(string path)
+	{
+		try
+		{
+			return new FileInfo(path).LinkTarget is null
+				? path
+				: File.ResolveLinkTarget(path, returnFinalTarget: true) is { } target
+					? Path.GetFullPath(target.FullName)
+					: path;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+			or ArgumentException or NotSupportedException)
+		{
+			return path;
+		}
+	}
+
 	private static List<object> ReadFileEntries(
 		string path,
 		IProgress<SessionReadProgress>? progress = null,
@@ -357,14 +399,17 @@ public sealed partial class SessionManager
 			return entries;
 		}
 
-		var totalBytes = new FileInfo(path).Length;
+		// 符号链接的长度是链接本身的长度，不是目标文件的长度：拿它当读取上界会把会话截断
+		// （只读到头部）。读、写都统一解析到最终目标。
+		var target = ResolveSessionTarget(path);
+		var totalBytes = new FileInfo(target).Length;
 		var chunks = ChunkCount(totalBytes);
 		if (chunks <= 1)
 		{
 			var counted = 0;
 			long consumedTotal = 0;
 			long reported = 0;
-			ScanRange(path, 0, totalBytes, entries, cancellationToken, (delta, lines) =>
+			ScanRange(target, 0, totalBytes, entries, cancellationToken, (delta, lines) =>
 			{
 				consumedTotal += delta;
 				counted += lines;
@@ -377,7 +422,7 @@ public sealed partial class SessionManager
 			});
 
 			progress?.Report(new SessionReadProgress(totalBytes, totalBytes, counted));
-			EnsureTrailingNewline(path);
+			EnsureTrailingNewline(target);
 			return entries;
 		}
 
@@ -436,7 +481,7 @@ public sealed partial class SessionManager
 				var from = (long)index * totalBytes / chunks;
 				var to = index + 1 < chunks ? (long)(index + 1) * totalBytes / chunks : totalBytes;
 				ScanRange(
-					path, from, to, parts[index]!, cancellationToken,
+					target, from, to, parts[index]!, cancellationToken,
 					(delta, lines) =>
 					{
 						Interlocked.Add(ref bytesRead, delta);
@@ -454,7 +499,7 @@ public sealed partial class SessionManager
 		}
 
 		progress?.Report(new SessionReadProgress(totalBytes, totalBytes, (int)Interlocked.Read(ref linesRead)));
-		EnsureTrailingNewline(path);
+		EnsureTrailingNewline(target);
 		return entries;
 	}
 
@@ -782,8 +827,10 @@ public sealed partial class SessionManager
 				Cwd = Cwd,
 			};
 
-			var existing = File.Exists(SessionFile) ? File.ReadAllText(SessionFile) : string.Empty;
-			File.WriteAllText(SessionFile, SessionJson.Serialize(header) + "\n" + existing);
+			// 补头部要整体重写文件：写穿符号链接，否则链接会被替换成普通文件（与 RewriteFile 同一理由）。
+			var target = ResolveSessionTarget(SessionFile);
+			var existing = File.Exists(target) ? File.ReadAllText(target) : string.Empty;
+			File.WriteAllText(target, SessionJson.Serialize(header) + "\n" + existing);
 			_fileEntries.Insert(0, header);
 		}
 

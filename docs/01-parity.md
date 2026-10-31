@@ -141,10 +141,10 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 注册期与所有回调都投递到那条线程上执行（Jint 引擎不是线程安全的，而工具与事件来自主机线程）。
 
 - **发现**：`<agentDir>/extensions` 与（仅在项目受信任时）`<cwd>/.pi/extensions`，认 `.js/.mjs/.cjs` 与 `.ts/.mts/.cts/.tsx`；
-  `.d.ts` 与目录里的杂文件不算扩展。显式 `-e/--extension <path>` 与 `settings.extensions` 额外加载文件/目录/`builtin:<name>`（内置扩展由本端口原生实现），不受项目信任门控；`-ne/--no-extensions` 只关闭约定目录发现，显式路径仍加载。
+  `.d.ts` 与目录里的杂文件不算扩展。显式 `-e/--extension <path>` 与 `settings.extensions` 额外加载文件/目录/`builtin:<name>`（内置扩展由本端口原生实现），不受项目信任门控；`-ne/--no-extensions` 只关闭约定目录发现，显式路径仍加载。同一个文件既被约定目录发现、又被 `-e` 指到时只加载一次（按解析后的路径去重）：两份就是两个 Jint 引擎、两份工具与命令，而工具表只留第一份、命令表两份都在。
 - **注册面**：`pi.on(event, handler)`、`pi.registerTool({name,label,description,parameters,execute})`、
   `pi.registerCommand(name, {description, handler})`（也收 `(name, description, handler)` 的位置写法）、
-  `pi.registerFlag(name, {type, description, default})` 与 `pi.getFlag(name)`、`pi.ui.*`。未知 `--flag` 按 pi 的规则解析后交给注册者；没有注册者时 CLI 报 `Unknown option` 并以 2 退出。
+  `pi.registerFlag(name, {type, description, default})` 与 `pi.getFlag(name)`、`pi.ui.*`。未知 `--flag` 按 pi 的规则解析（`--f=v`、`--f v`、末尾的布尔形态）后交给注册者；没有注册者时 CLI 在任何模型调用之前就报 `Unknown option` 并以 2 退出。只有加载成功的扩展才算注册者：写到一半失败的扩展不该把命令行选项吞进无人应答的桶里。
 - **可派发事件**：`tool_call`、`tool_result`、`before_agent_start`、`agent_end`。
   监听别的事件在**注册时就报诊断**并出现在 `UnsupportedEvents` —— 悄悄收下却永不触发是最难查的失效模式。
 - **沙箱**：扩展没有 `fs` / `net` / `require` / 动态 import。唯一出口是显式注册的 `__pi*` 宿主函数，
@@ -349,7 +349,8 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 | 会话落点 | agent 根目录下的 `*.jsonl` 按头部 `cwd` 搬进 `sessions/<编码后的 cwd>/`；同名目标存在时保留两份 | 单个文件失败只记警告 |
 | 资源目录 | `commands/` 改名为 `prompts/`；项目级只在已受信时执行 | 只记警告 |
 | 会话格式 | 打开 v1/v2 会话时就地升级到 v3：v1 补 `id`/`parentId`（按文件顺序成链）并把 `firstKeptEntryIndex` 换成 `firstKeptEntryId`；v2 把 `hookMessage` 角色改成 `custom`；同目录临时文件 + rename 原子回写 | 已经是 v3 的文件逐字节不变；`--export` 只解释不落盘 |
-| settings 旧键 | 加载时在内存里迁移 `queueMode`→`steeringMode`、`websockets`→`transport`、`retry.maxDelayMs`→`retry.provider.maxRetryDelayMs`；下一次保存写成新形状 | 无法识别的值按未设置处理 |
+| settings 旧键 | 加载时在内存里迁移 `queueMode`→`steeringMode`、`websockets`→`transport`、`retry.maxDelayMs`→`retry.provider.maxRetryDelayMs`；保存只写用户真正改过的值（默认的 `transport=auto` 与默认空闲超时不落盘），新键写出后删除旧键 | 无法识别的值按未设置处理 |
+| 扩展路径 | `settings.extensions` 的相对路径按**声明作用域**解析（用户级 → `agentDir`，项目级 → `<cwd>/.pi`），与 pi 的 `getBaseDirForScope` 一致；`-e` 的相对路径按 `cwd`。绝不拿 cwd 当用户级基准，否则仓库里放个同名文件就能顶替用户全局声明；项目设置文件也永远得不到解析后的绝对用户路径 | 解析失败原样保留，加载期报「不存在」 |
 
 `AgentMigrations.Run` 由 CLI 与桌面在启动时调用（CLI 在信任询问之后、桌面在解析启动目录之后），幂等、可每次运行。
 
@@ -362,13 +363,13 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 
 ### 网络与超时
 
-- 请求超时只覆盖「等响应头」（`settings.retry.provider.timeoutMs`，旧版根上的 `timeoutMs` 仍兼容）；响应体由 `settings.httpIdleTimeoutMs`（默认 300000，`0`/`"disabled"` 关闭）兜底：连续没有收到任何字节就让这一轮以可重试错误结束，正常的长流不受总时长限制。
-- `settings.transport`（`auto`/`sse`/`websocket`/`websocket-cached`）目前只影响 Codex responses；其它 provider 一律走 HTTP。
+- 显式请求超时只覆盖「等响应头」（`settings.retry.provider.timeoutMs`，旧版根上的 `timeoutMs` 仍兼容）；`settings.httpIdleTimeoutMs`（默认 300000，`0`/`"disabled"` 关闭）兜底等响应头、响应体与错误响应体：连续没有收到任何字节就让这一轮以可重试错误结束，正常的长流不受总时长限制。计时用 `CancellationTokenSource.CancelAfter` 随读取续期：一个流只有一个定时器，没有轮询线程；错误响应体另有 1 MiB 上限（网关返回整页 HTML 时不会把内存吃掉一大块，而调用方只用前 2000 字符）。判定严格分开：用户中止 → `aborted`（不可重试），空闲超时 → `error` 且文案含 timeout（可重试）。特别注意 `SseParser` 会把读取消隐吞成「0 个事件」，不加判断就会把被掐断的流当成正常结束、给模型一条看起来成功的半截回复 —— 取消必须转成异常（有回归测试）。
+- `settings.transport`（`auto`/`sse`/`websocket`/`websocket-cached`）目前只影响 Codex responses；其它 provider 一律走 HTTP。写错的值收敛到 `auto`，而不是让各家 provider 自己猜。
 - `/share` 与 pi 同义：只导出当前分支，链尾追加 `pi.share` 自定义条目（系统提示词 + 工具 schema），优先用 `gh gist create`、没有 `gh` 时回退 `GITHUB_TOKEN`/`GH_TOKEN` 的 HTTP API，返回查看器链接；Radius 目标上传同一份 JSONL（`application/x-ndjson`）到 `PI_RADIUS_GATEWAY` 或默认网关。
 
 ### 文件写入
 
-`edit`/`write` 通过按规范化路径（含符号链接解析）分组的条带锁串行化，同一轮并行工具调用不会互相覆盖；原子写入跟随符号链接写目标文件，而不是把链接替换成普通文件。
+`edit`/`write` 通过按规范化路径（含符号链接解析，Windows 上不区分大小写）分组的条带锁串行化，同一轮并行工具调用不会互相覆盖；条带数量固定，不会随访问过的文件数无界增长。原子写入与「补会话头部」都跟随符号链接写目标文件，而不是把链接替换成普通文件；同一个道理也用在 `SessionManager` 的读取/整文件重写与桌面侧栏的摘要缓存键上（链接的大小是目标路径长度，拿它当缓存键会让侧栏永远显示旧预览）。
 
 ## 虚拟模型 route 与状态
 

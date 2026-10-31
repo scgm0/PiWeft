@@ -1,4 +1,5 @@
 using PiWeft.Ai;
+using PiWeft.Ai.Providers;
 using Xunit;
 
 namespace PiWeft.Ai.Tests;
@@ -104,6 +105,65 @@ public class IdleTimeoutStreamTests
 		}
 
 		Assert.Equal(8, total);
+	}
+
+	[Fact]
+	public async Task ErrorBodiesAreAlsoBoundedByTheIdleTimeout()
+	{
+		using var response = new HttpResponseMessage(System.Net.HttpStatusCode.BadGateway)
+		{
+			Content = new StreamContent(new SilentStream()),
+		};
+
+		await Assert.ThrowsAsync<IOException>(() => ProviderHttp.ReadBodyTextAsync(
+			response,
+			new StreamOptions { IdleTimeoutMs = 400 },
+			CancellationToken.None));
+	}
+
+	[Fact]
+	public async Task HugeErrorBodiesAreCapped()
+	{
+		// 网关可能返回几十 MB 的错误页；调用方只用前 2000 字符，读满整份纯属浪费内存。
+		await using var body = new MemoryStream(new byte[3 * 1024 * 1024]);
+		using var response = new HttpResponseMessage(System.Net.HttpStatusCode.BadGateway)
+		{
+			Content = new StreamContent(body),
+		};
+
+		var text = await ProviderHttp.ReadBodyTextAsync(response, new StreamOptions(), CancellationToken.None);
+
+		Assert.True(text.Length <= 1024 * 1024 + 32, $"actual={text.Length}");
+		Assert.EndsWith("…（响应体已截断）", text);
+	}
+
+	[Fact]
+	public async Task ArrayReadsAreForwardedToTheAsyncPath()
+	{
+		// 基组的数组 ReadAsync 会退回 BeginRead→同步 Read：对只实现异步读的内层流
+		// 直接抛 NotSupportedException，等于让所有 provider 的正文读取崩掉。
+		await using var stream = new IdleTimeoutStream(new SilentStream(), TimeSpan.FromMilliseconds(400), CancellationToken.None);
+		var buffer = new byte[16];
+
+		// 期望 IOException（空闲超时），而不是 NotSupportedException（退回同步读）。
+		await Assert.ThrowsAsync<IOException>(
+			async () => { _ = await stream.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None); });
+	}
+
+	[Fact]
+	public async Task SseParserSurfacesTheIdleTimeoutInsteadOfEndingTheStream()
+	{
+		// 计时器只负责取消读取；SseParser 必须把取消翻译成错误，而不是当成正常流结束 ——
+		// 后者会让模型收到一条「成功的空回复」，比报错难查得多。
+		await using var stream = new IdleTimeoutStream(new SilentStream(), TimeSpan.FromMilliseconds(400), CancellationToken.None);
+		var parser = System.Net.ServerSentEvents.SseParser.Create<bool>(stream, static (_, _) => true);
+
+		await Assert.ThrowsAsync<IOException>(async () =>
+		{
+			await foreach (var _ in parser.EnumerateAsync(CancellationToken.None))
+			{
+			}
+		});
 	}
 
 	[Fact]

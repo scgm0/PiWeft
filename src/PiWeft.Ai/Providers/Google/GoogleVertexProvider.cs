@@ -76,7 +76,7 @@ public sealed class GoogleVertexProvider : IApiProvider
 
 			if (!response.IsSuccessStatusCode)
 			{
-				var body = await response.Content.ReadAsStringAsync(options.CancellationToken).ConfigureAwait(false);
+				var body = await ProviderHttp.ReadBodyTextAsync(response, options, options.CancellationToken).ConfigureAwait(false);
 				PushFailure(
 					stream,
 					model,

@@ -106,11 +106,14 @@ public sealed record CodingAgentSettings
 	/// <summary>provider 请求超时（等响应头），单位毫秒。</summary>
 	public int? TimeoutMs { get; init; }
 
+	/// <summary><c>httpIdleTimeoutMs</c> 的默认值，与 pi 的 <c>DEFAULT_HTTP_IDLE_TIMEOUT_MS</c> 一致。</summary>
+	public const int DefaultHttpIdleTimeoutMs = 300_000;
+
 	/// <summary>
 	/// 响应体空闲超时（毫秒），默认 300 秒；<c>0</c> 表示关闭。
 	/// 连续这么久没有收到任何字节就让这一轮失败，交给自动重试。长流不受总时长限制。
 	/// </summary>
-	public int HttpIdleTimeoutMs { get; init; } = 300_000;
+	public int HttpIdleTimeoutMs { get; init; } = DefaultHttpIdleTimeoutMs;
 
 	/// <summary>
 	/// pi 的 <c>settings.httpProxy</c>：设置 <c>HTTP_PROXY</c>/<c>HTTPS_PROXY</c>。
@@ -157,12 +160,68 @@ public sealed record CodingAgentSettings
 	/// <summary>加载并合并全局与项目设置，项目配置优先。</summary>
 	public static CodingAgentSettings Load(string cwd, string? agentDir = null, bool includeProject = true)
 	{
-		var global = ReadFile(GlobalPath(agentDir));
+		var resolvedAgentDir = agentDir ?? SessionPaths.GetAgentDir();
+		var global = ReadFile(GlobalPath(resolvedAgentDir));
 		// 不受信时只取全局设置，项目里的 .pi/settings.json 不参与。
 		var project = includeProject ? ReadFile(ProjectPath(cwd)) : null;
+		var merged = Merge(global, project);
+
+		// extensions 的相对路径按声明作用域解析（pi 的 getBaseDirForScope）：用户级是 agentDir，
+		// 项目级是 <cwd>/.pi。绝不能拿 cwd 当用户级路径的基准 —— 一个不可信仓库里放个同名文件
+		// 就能顶替用户全局声明的扩展。
+		var declared = project?.Extensions ?? global?.Extensions;
+		var baseDirectory = project?.Extensions is not null
+			? Path.GetDirectoryName(ProjectPath(cwd))!
+			: resolvedAgentDir;
+
 		// 安全门只认全局设置，而且要读原始 JSON：档位表与会话覆盖都不是扁平字段。
-		return Merge(global, project) with { Security = SecurityConfig.Load(agentDir) };
+		return merged with
+		{
+			Extensions = ResolveExtensionPaths(declared, baseDirectory),
+			Security = SecurityConfig.Load(resolvedAgentDir),
+		};
 	}
+
+	/// <summary>把 settings 里的扩展路径按声明作用域的根解析成绝对路径；`~` 会展开。</summary>
+	private static IReadOnlyList<string> ResolveExtensionPaths(IReadOnlyList<string>? paths, string baseDirectory)
+	{
+		if (paths is not { Count: > 0 })
+		{
+			return [];
+		}
+
+		var resolved = new List<string>(paths.Count);
+		foreach (var raw in paths)
+		{
+			var value = raw.Trim();
+			if (value.Length == 0)
+			{
+				continue;
+			}
+
+			var expanded = UserPath.ExpandTilde(value);
+			try
+			{
+				resolved.Add(Path.IsPathRooted(expanded)
+					? Path.GetFullPath(expanded)
+					: Path.GetFullPath(Path.Combine(baseDirectory, expanded)));
+			}
+			catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+			{
+				// 坏路径原样保留：加载期会以「不存在」报告，而不是让整个设置读取失败。
+				resolved.Add(expanded);
+			}
+		}
+
+		return resolved;
+	}
+
+	/// <summary>
+	/// 只读**全局**设置里的 <c>httpProxy</c>。启动期就要把代理装进环境变量，而完整的
+	/// <see cref="Load"/> 会连带读项目设置与安全门；这里只解析一次全局文件，省掉两次多余读取。
+	/// </summary>
+	public static string? GlobalHttpProxy(string? agentDir = null) =>
+		NormalizeHttpProxy(ReadFile(GlobalPath(agentDir))?.HttpProxy);
 
 	/// <summary>
 	/// 只读**全局**设置里的 <c>defaultProjectTrust</c>。项目设置不能参与这个决策，
@@ -380,7 +439,9 @@ public sealed record CodingAgentSettings
 		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
 		var root = ReadExistingObject(path);
-		MergeInto(root, ToFile(settings));
+		// 加载后的 Extensions 是**按作用域解析过的绝对路径**（用户级根在 ~/.pi/agent）：
+		// 原样写进项目的 .pi/settings.json 等于把 home 路径提交进仓库，还会让用户级声明失效。
+		MergeInto(root, ToFile(settings) with { Extensions = null });
 
 		File.WriteAllText(
 			path,
@@ -551,6 +612,15 @@ public sealed record CodingAgentSettings
 
 	private static int NormalizeIdleTimeout(int value) => value < 0 ? 300_000 : value;
 
+	/// <summary>pi 的 transport 是四个字面量之一；写错时回落到 auto，而不是让 provider 各自猜。</summary>
+	private static string NormalizeTransport(string? value) => value?.Trim().ToLowerInvariant() switch
+	{
+		"sse" => "sse",
+		"websocket" => "websocket",
+		"websocket-cached" => "websocket-cached",
+		_ => "auto",
+	};
+
 	private static string? NormalizeHttpProxy(string? value) =>
 		string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
@@ -635,7 +705,7 @@ public sealed record CodingAgentSettings
 		SteeringMode = project?.SteeringMode ?? global?.SteeringMode ?? "one-at-a-time",
 		FollowUpMode = project?.FollowUpMode ?? global?.FollowUpMode ?? "one-at-a-time",
 		CacheWarming = project?.CacheWarming ?? global?.CacheWarming ?? "streaming",
-		Transport = project?.Transport ?? global?.Transport ?? "auto",
+		Transport = NormalizeTransport(project?.Transport ?? global?.Transport),
 		Compaction = new CompactionSettings
 		{
 			Enabled = project?.Compaction?.Enabled ?? global?.Compaction?.Enabled ?? true,
@@ -652,7 +722,9 @@ public sealed record CodingAgentSettings
 		Skills = MergeLists(global?.Skills, project?.Skills),
 		Prompts = MergeLists(global?.Prompts, project?.Prompts),
 		Themes = MergeLists(global?.Themes, project?.Themes),
-		Extensions = MergeLists(global?.Extensions, project?.Extensions),
+		// pi 的 deep merge 对数组是覆盖：项目声明了 extensions 就不再叠加用户级列表，
+		// 否则「项目里关掉某扩展」无法通过空数组表达。
+		Extensions = project?.Extensions ?? global?.Extensions ?? [],
 		DefaultProjectTrust = project?.DefaultProjectTrust ?? global?.DefaultProjectTrust ?? "ask",
 		// pi 把请求超时放在 retry.provider.timeoutMs；timeoutMs 是本端口早期写在根上的键，
 		// 仍然读它以免已有配置失效，但新写入只写 pi 的形状。
@@ -661,7 +733,7 @@ public sealed record CodingAgentSettings
 			?? global?.TimeoutMs
 			?? global?.Retry?.Provider?.TimeoutMs,
 		HttpIdleTimeoutMs = NormalizeIdleTimeout(
-			project?.HttpIdleTimeoutMs ?? global?.HttpIdleTimeoutMs ?? 300_000),
+			project?.HttpIdleTimeoutMs ?? global?.HttpIdleTimeoutMs ?? DefaultHttpIdleTimeoutMs),
 		HttpProxy = NormalizeHttpProxy(global?.HttpProxy),
 		ShellPath = project?.ShellPath ?? global?.ShellPath,
 		ShellCommandPrefix = project?.ShellCommandPrefix ?? global?.ShellCommandPrefix,
@@ -866,7 +938,12 @@ public sealed record CodingAgentSettings
 		SteeringMode = settings.SteeringMode,
 		FollowUpMode = settings.FollowUpMode,
 		CacheWarming = settings.CacheWarming,
-		Transport = settings.Transport,
+		// 只写用户真正改过的值：默认形状每次保存都追加 transport / httpIdleTimeoutMs，
+		// 会把配置文件写成一份「本端口认为的默认值」清单，也让人 diff 不出自己改了什么。
+		Transport = settings.Transport == "auto" ? null : settings.Transport,
+		HttpIdleTimeoutMs = settings.HttpIdleTimeoutMs == DefaultHttpIdleTimeoutMs
+			? null
+			: settings.HttpIdleTimeoutMs,
 		Compaction = new CompactionFile
 		{
 			Enabled = settings.Compaction.Enabled,
@@ -885,7 +962,6 @@ public sealed record CodingAgentSettings
 		Themes = List(settings.Themes),
 		Extensions = List(settings.Extensions),
 		DefaultProjectTrust = settings.DefaultProjectTrust,
-		HttpIdleTimeoutMs = settings.HttpIdleTimeoutMs,
 		ShellPath = settings.ShellPath,
 		ShellCommandPrefix = settings.ShellCommandPrefix,
 		SessionDir = settings.SessionDir,

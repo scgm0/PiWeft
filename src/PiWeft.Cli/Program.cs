@@ -16,6 +16,15 @@ using var logging = args is ["--version"] or ["-v"] or ["--help"] or ["-h"]
 	? null
 	: AppLog.Start("cli");
 
+// 代理与离线开关要在任何子命令分发（auth/mcp/import/package）之前生效：
+// `pi update --models`、`pi mcp login` 都可能发起网络请求，晚一步设置就只对主对话生效。
+if (args.Length == 0 || args[0] is not ("--version" or "-v" or "--help" or "-h"))
+{
+	PiWeft.CodingAgent.PiEnvironment.Configure();
+	PiWeft.CodingAgent.PiEnvironment.ApplyHttpProxy(
+		PiWeft.CodingAgent.Settings.CodingAgentSettings.GlobalHttpProxy());
+}
+
 // 子命令（auth/mcp/package）可能跑网络请求或外部进程：未预期的异常要转成
 // 「pi: ...」+ 退出码 1，而不是让 .NET 的栈回溯直接砸到用户脸上。
 async Task<int?> RunPreParseAsync(string label, Func<Task<int?>> command)
@@ -159,11 +168,8 @@ catch (Exception exception) when (exception is IOException or UnauthorizedAccess
 	AppLog.For<CliRunner>().ZLogWarning($"startup migrations failed: {exception.Message}");
 }
 
-// 离线模式与代理必须在建 HTTP 客户端之前生效：pi 的 --offline 等价于 PI_OFFLINE=1，
-// 而 .NET 的默认代理只在第一次读取环境变量时确定。
+// pi 的 --offline 等价于 PI_OFFLINE=1；代理已在子命令分发前装好。
 PiWeft.CodingAgent.PiEnvironment.Configure(arguments.Offline);
-PiWeft.CodingAgent.PiEnvironment.ApplyHttpProxy(
-	PiWeft.CodingAgent.Settings.CodingAgentSettings.Load(cwd, includeProject: false).HttpProxy);
 
 var (environment, error) = CliEnvironment.Create(arguments, cwd);
 if (environment is null)

@@ -160,5 +160,19 @@ public class AuthStoreTests : IDisposable
 	}
 
 	[Fact]
+	public void AgentDirectoryExpandsTilde()
+	{
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", "~/piweft-auth-dir");
+
+		var expected = Path.Combine(
+			Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+			"piweft-auth-dir",
+			"auth.json");
+		Assert.Equal(expected, AuthStore.Path());
+
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _agentDir);
+	}
+
+	[Fact]
 	public void MissingFileIsTolerated() => Assert.Null(AuthStore.ReadApiKey(Provider, _agentDir));
 }

@@ -97,7 +97,49 @@ public sealed record ExtensionDescriptor
 			CollectExplicit(found, path, cwd, agentDir);
 		}
 
-		return found;
+		return Dedupe(found);
+	}
+
+	/// <summary>
+	/// 同一个文件既被约定目录发现、又被 <c>-e</c> 指到时只加载一次（pi 按解析后的路径去重）。
+	/// 加载两份会得到两个 Jint 引擎、重复的工具与命令；工具表会静默留下第一份，
+	/// 命令表却两份都在。
+	/// </summary>
+	private static List<ExtensionDescriptor> Dedupe(List<ExtensionDescriptor> found)
+	{
+		if (found.Count <= 1)
+		{
+			return found;
+		}
+
+		var seen = new HashSet<string>(
+			OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+				? StringComparer.OrdinalIgnoreCase
+				: StringComparer.Ordinal);
+		var deduped = new List<ExtensionDescriptor>(found.Count);
+		foreach (var descriptor in found)
+		{
+			var key = descriptor.Builtin ? descriptor.FilePath : FullPathOrRaw(descriptor.FilePath);
+			if (seen.Add(key))
+			{
+				deduped.Add(descriptor);
+			}
+		}
+
+		return deduped;
+	}
+
+	/// <summary>规范化失败（例如路径里有 NUL）时退回原始字符串：去重不该让整次加载失败。</summary>
+	private static string FullPathOrRaw(string path)
+	{
+		try
+		{
+			return Path.GetFullPath(path);
+		}
+		catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			return path;
+		}
 	}
 
 	/// <summary>把一条显式路径（文件、目录、<c>builtin:&lt;name&gt;</c> 或相对 cwd 的路径）变成描述符。</summary>

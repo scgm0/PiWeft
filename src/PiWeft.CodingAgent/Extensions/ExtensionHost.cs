@@ -117,7 +117,6 @@ public sealed class ExtensionHost : IDisposable
 		""";
 
 	private readonly List<ExtensionState> _states = [];
-	private readonly Dictionary<string, ExtensionFlag> _flags = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, object?> _flagValues = new(StringComparer.Ordinal);
 	private IReadOnlyList<string> _unknownFlags = [];
 	private readonly List<string> _flagErrors = [];
@@ -135,8 +134,8 @@ public sealed class ExtensionHost : IDisposable
 	public IReadOnlyList<ExtensionCommand> Commands =>
 		[.. _states.Where(static state => state.Loaded).SelectMany(state => state.Registration.Commands)];
 
-	/// <summary>扩展注册的 CLI flag（名字 → 定义）。</summary>
-	public IReadOnlyDictionary<string, ExtensionFlag> Flags => _flags;
+	/// <summary>已加载扩展注册的 CLI flag（名字 → 定义）。加载失败的扩展不参与。</summary>
+	public IReadOnlyDictionary<string, ExtensionFlag> Flags => LoadedFlags();
 
 	/// <summary>本次运行未能被任何扩展消费的未知 flag；调用方按 pi 的语义报告为错误。</summary>
 	public IReadOnlyList<string> UnknownFlags => _unknownFlags;
@@ -152,10 +151,11 @@ public sealed class ExtensionHost : IDisposable
 	public IReadOnlyList<string> ApplyFlagValues(IReadOnlyDictionary<string, string?> values)
 	{
 		_flagErrors.Clear();
+		var flags = LoadedFlags();
 
 		// 先回到各自的默认值：同一个宿主可能被 reload 复用。
 		_flagValues.Clear();
-		foreach (var (name, flag) in _flags)
+		foreach (var (name, flag) in flags)
 		{
 			if (flag.Default is not null)
 			{
@@ -166,7 +166,7 @@ public sealed class ExtensionHost : IDisposable
 		var unknown = new List<string>();
 		foreach (var (name, value) in values)
 		{
-			if (!_flags.TryGetValue(name, out var flag))
+			if (!flags.TryGetValue(name, out var flag))
 			{
 				unknown.Add(name);
 				continue;
@@ -191,6 +191,26 @@ public sealed class ExtensionHost : IDisposable
 
 		_unknownFlags = unknown;
 		return unknown;
+	}
+
+	/// <summary>只用加载成功的扩展的 flag：失败扩展注册到一半的 flag 不该吞掉命令行选项。</summary>
+	private Dictionary<string, ExtensionFlag> LoadedFlags()
+	{
+		var flags = new Dictionary<string, ExtensionFlag>(StringComparer.Ordinal);
+		foreach (var state in _states)
+		{
+			if (!state.Loaded)
+			{
+				continue;
+			}
+
+			foreach (var flag in state.Registration.Flags)
+			{
+				flags[flag.Name] = flag;
+			}
+		}
+
+		return flags;
 	}
 
 	/// <summary>加载期发现的、宿主不派发的事件名。</summary>
@@ -503,7 +523,7 @@ public sealed class ExtensionHost : IDisposable
 				defaultValue = args.At(4).AsString();
 			}
 
-			_flags[name] = new ExtensionFlag(name, type, args.At(2).AsString(), defaultValue);
+			registration.AddFlag(new ExtensionFlag(name, type, args.At(2).AsString(), defaultValue));
 			if (defaultValue is not null)
 			{
 				_flagValues[name] = defaultValue;

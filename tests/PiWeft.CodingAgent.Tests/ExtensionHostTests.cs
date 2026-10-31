@@ -407,6 +407,18 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
+	public void DiscoveryAndExplicitPathLoadTheSameFileOnce()
+	{
+		var path = Write("duplicate.js", "module.exports = function (pi) { pi.registerCommand('d', 'd', function () {}); };");
+
+		using var host = new ExtensionHost();
+		host.Load(_cwd, trusted: true, _agentDir, explicitPaths: [path]);
+
+		Assert.Single(host.States);
+		Assert.Single(host.Commands);
+	}
+
+	[Fact]
 	public void RelativeExplicitPathFallsBackToTheAgentDirectory()
 	{
 		var path = Path.Combine(_agentDir, "user-extension.js");
@@ -477,6 +489,23 @@ public sealed class ExtensionHostTests : IDisposable
 		}).GetAwaiter().GetResult();
 
 		Assert.Equal("strict:true", Assert.IsType<PiWeft.Ai.TextContent>(result.Content[0]).Text);
+	}
+
+	[Fact]
+	public void FlagsFromFailedExtensionsDoNotSwallowCommandLineOptions()
+	{
+		using var host = new ExtensionHost();
+		Write("broken-flag.js", """
+			module.exports = function (pi) {
+				pi.registerFlag("ghost", { type: "boolean" });
+				throw new Error("boom");
+			};
+			""");
+		host.Load(_cwd, trusted: true, _agentDir);
+
+		Assert.False(host.States[0].Loaded);
+		Assert.Empty(host.Flags);
+		Assert.Equal(["ghost"], host.ApplyFlagValues(new Dictionary<string, string?> { ["ghost"] = null }));
 	}
 
 	[Fact]

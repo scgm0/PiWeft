@@ -28,16 +28,22 @@ internal sealed class ExtensionRegistration
 	private readonly List<string> _unsupported = [];
 	private readonly List<AgentTool> _tools = [];
 	private readonly List<ExtensionCommand> _commands = [];
+	private readonly List<ExtensionFlag> _flags = [];
 
 	public IReadOnlyList<AgentTool> Tools => _tools;
 
 	public IReadOnlyList<ExtensionCommand> Commands => _commands;
+
+	/// <summary>该扩展注册的 CLI flag。加载失败的扩展不参与 flag 解析。</summary>
+	public IReadOnlyList<ExtensionFlag> Flags => _flags;
 
 	public IReadOnlyList<string> UnsupportedEvents => _unsupported;
 
 	public void AddTool(AgentTool tool) => _tools.Add(tool);
 
 	public void AddCommand(ExtensionCommand command) => _commands.Add(command);
+
+	public void AddFlag(ExtensionFlag flag) => _flags.Add(flag);
 
 	/// <summary>记下一个监听者；事件名不受支持时返回 false（调用方负责报告诊断）。</summary>
 	public bool NoteListener(string @event)

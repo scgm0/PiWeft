@@ -300,6 +300,6 @@ public sealed partial class SessionManager
 		SessionId = header?.Id ?? SessionPaths.NewSessionId();
 		SessionFile = resolved;
 		RebuildIndex();
-		MigrateLegacyEntries(rewriteFile: true);
+		MigrateLegacyEntries(header, rewriteFile: true);
 	}
 }
