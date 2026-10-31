@@ -268,6 +268,10 @@ public sealed partial class MainWindow : Window
 				ShowFilesPanel();
 				break;
 
+			case ShortcutActions.Checkpoints:
+				ShowCheckpointsPanel();
+				break;
+
 			case ShortcutActions.Terminal:
 				ToggleTerminalPanel();
 				break;
@@ -1701,6 +1705,41 @@ public sealed partial class MainWindow : Window
 				case "files":
 					ShowFilesPanel();
 					break;
+				case "checkpoints-diff":
+					ShowCheckpointsPanel();
+					if (CurrentTab() is { } diffTab && _sessionPanels.TryGetValue(diffTab, out var diffPanel))
+					{
+						// 先让列表建好，再展开第一条；800ms 后报告 stat 行数。
+						diffPanel.ExpandFirstCheckpointDiffForSmoke();
+					}
+
+					var diffTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(1200));
+					diffTimer.Tick += () =>
+					{
+						diffTimer.Stop();
+						if (CurrentTab() is { } checkpointDiffTab &&
+							_sessionPanels.TryGetValue(checkpointDiffTab, out var checkpointDiffPanel))
+						{
+							checkpointDiffPanel.ReportCheckpointsForSmoke();
+						}
+					};
+					diffTimer.Start();
+					break;
+				case "checkpoints":
+					ShowCheckpointsPanel();
+					// 变更摘要是后台补的：等一拍再报告，脚本才能断言行数与摘要真的渲染了。
+					var checkpointTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(800));
+					checkpointTimer.Tick += () =>
+					{
+						checkpointTimer.Stop();
+						if (CurrentTab() is { } checkpointTab &&
+							_sessionPanels.TryGetValue(checkpointTab, out var checkpointPanel))
+						{
+							checkpointPanel.ReportCheckpointsForSmoke();
+						}
+					};
+					checkpointTimer.Start();
+					break;
 				case "panel":
 					ToggleRightPanel();
 					break;
@@ -2054,6 +2093,8 @@ public sealed partial class MainWindow : Window
 
 	private void ShowFilesPanel() => SetRightPanel(open: true, RightPanelSection.Files);
 
+	private void ShowCheckpointsPanel() => SetRightPanel(open: true, RightPanelSection.Checkpoints);
+
 	/// <summary>Ctrl+Shift+D / 命令面板：开关当前会话底部的终端面板（终端不再占用右侧面板）。</summary>
 	private void ToggleTerminalPanel() => CurrentTab()?.ToggleTerminal();
 
@@ -2383,6 +2424,7 @@ public sealed partial class MainWindow : Window
 			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsDialog),
 			new(Strings.Git, Strings.ShortcutGit, ShowGitPanel),
 			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, ShowFilesPanel),
+			new(Strings.Checkpoints, Strings.ShortcutCheckpoints, ShowCheckpointsPanel),
 			new(Strings.Terminal, Strings.ShortcutTerminal, ToggleTerminalPanel),
 			new(Strings.RightPanel, Strings.ShortcutRightPanel, ToggleRightPanel),
 			new(Strings.UsageStatsTitle, string.Empty, OpenUsageStatsTab),

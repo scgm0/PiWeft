@@ -3,16 +3,17 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>右侧功能面板的分段：文件与 Git 是会话的辅助表面，不再是独立标签页（终端在会话底部）。</summary>
+/// <summary>右侧功能面板的分段：文件、Git 与检查点是会话的辅助表面，不再是独立标签页（终端在会话底部）。</summary>
 public enum RightPanelSection
 {
 	Files,
 	Git,
+	Checkpoints,
 }
 
 /// <summary>
 /// 会话的右侧功能面板（对齐 PiDeck 的右侧 Dock）：顶部一条页签条，
-/// 下面按分段挂文件浏览器或 Git；切换分段不重建其它视图，收起只是隐藏。
+/// 下面按分段挂文件浏览器、Git 或检查点；切换分段不重建其它视图，收起只是隐藏。
 /// </summary>
 /// <remarks>
 /// 每个会话各有一个面板，内容跟着会话的工作目录走，默认收起。
@@ -31,6 +32,7 @@ public sealed class RightPanel : IDisposable
 	private readonly Action? _openGitSettings;
 	private FileBrowserView? _files;
 	private GitView? _git;
+	private CheckpointsView? _checkpoints;
 	private RightPanelSection _section;
 	private double _headerRightInset = AppTheme.Space1;
 	private bool _open;
@@ -52,11 +54,12 @@ public sealed class RightPanel : IDisposable
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Center);
 
-		// 顺序固定为「文件 → Git」：文件是打开面板最常用的入口。
+		// 顺序固定为「文件 → Git → 检查点」：文件是打开面板最常用的入口。
 		foreach (var option in new[]
 		{
 			(Section: RightPanelSection.Files, Icon: "file-text", Title: Strings.FileBrowser),
 			(Section: RightPanelSection.Git, Icon: "git-branch", Title: Strings.SidebarGit),
+			(Section: RightPanelSection.Checkpoints, Icon: "clock", Title: Strings.Checkpoints),
 		})
 		{
 			var icon = new Image()
@@ -164,8 +167,14 @@ public sealed class RightPanel : IDisposable
 	/// <summary>视觉验收：打印泳道几何。</summary>
 	public void ReportGitGraphGeometryForSmoke() => _git?.ReportGraphGeometryForSmoke();
 
+	/// <summary>视觉验收：打印检查点行数与摘要。</summary>
+	public void ReportCheckpointsForSmoke() => _checkpoints?.ReportForSmoke();
 
-	/// <summary>重读当前分段（文件列表 / Git 状态）；终端由自己的定时器重绘。</summary>
+	/// <summary>视觉验收：展开第一条检查点的变更概览。</summary>
+	public void ExpandFirstCheckpointDiffForSmoke() => _checkpoints?.ExpandFirstDiffForSmoke();
+
+
+	/// <summary>重读当前分段（文件列表 / Git 状态 / 检查点列表）；终端由自己的定时器重绘。</summary>
 	public void Refresh()
 	{
 		if (_disposed || !_open)
@@ -182,6 +191,10 @@ public sealed class RightPanel : IDisposable
 			case RightPanelSection.Git:
 				_git?.Refresh();
 				break;
+
+			case RightPanelSection.Checkpoints:
+				_checkpoints?.Refresh();
+				break;
 		}
 	}
 
@@ -191,6 +204,7 @@ public sealed class RightPanel : IDisposable
 		AppStyles.ApplyTextColors((Element)View);
 		_files?.ApplyTheme();
 		_git?.ApplyTheme();
+		_checkpoints?.ApplyTheme();
 		UpdateTabs();
 	}
 
@@ -203,7 +217,8 @@ public sealed class RightPanel : IDisposable
 			UIElement view = section switch
 			{
 				RightPanelSection.Files => (_files = new FileBrowserView(_cwd)).View,
-				_ => (_git = new GitView(_cwd, _gitAssistant, _openGitSettings)).View,
+				RightPanelSection.Git => (_git = new GitView(_cwd, _gitAssistant, _openGitSettings)).View,
+				_ => (_checkpoints = new CheckpointsView(_cwd)).View,
 			};
 
 			_views[section] = view;
@@ -243,6 +258,7 @@ public sealed class RightPanel : IDisposable
 	private static string TitleFor(RightPanelSection section) => section switch
 	{
 		RightPanelSection.Git => Strings.SidebarGit,
+		RightPanelSection.Checkpoints => Strings.Checkpoints,
 		_ => Strings.FileBrowser,
 	};
 

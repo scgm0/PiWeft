@@ -128,6 +128,7 @@ public sealed class ShortcutMap
 		new(ShortcutActions.Settings, "视图", "设置", "F1"),
 		new(ShortcutActions.Git, "视图", "Git 面板", "Ctrl+O"),
 		new(ShortcutActions.Files, "视图", "文件浏览器", "Ctrl+Shift+E"),
+		new(ShortcutActions.Checkpoints, "视图", "检查点", "Ctrl+Shift+H"),
 		new(ShortcutActions.Terminal, "视图", "底部终端", "Ctrl+Shift+D"),
 		new(ShortcutActions.RightPanel, "视图", "右侧边栏", "Ctrl+J"),
 		new(ShortcutActions.ToggleTheme, "视图", "切换深浅主题", "Ctrl+Shift+T"),
@@ -261,6 +262,7 @@ public static class ShortcutActions
 	public const string Settings = "settings";
 	public const string Git = "git";
 	public const string Files = "files";
+	public const string Checkpoints = "checkpoints";
 	public const string Terminal = "terminal";
 	public const string RightPanel = "rightPanel";
 	public const string ToggleTheme = "toggleTheme";

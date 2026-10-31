@@ -975,6 +975,8 @@ public static partial class Strings
 
 	public const string ShortcutFilesPanel = "在右侧面板打开文件浏览器";
 
+	public const string ShortcutCheckpoints = "查看工作区检查点并回滚";
+
 	public const string FileBrowserBack = "返回文件列表";
 
 	public static string FileBrowserOpened(string path) => $"已打开 {path}";
@@ -1034,6 +1036,56 @@ public static partial class Strings
 	public const string CheckpointCreated = "已创建检查点。";
 
 	public const string CheckpointRestored = "已恢复工作区文件（快照之后新增的未跟踪文件会保留）。";
+
+	public const string CheckpointRefresh = "刷新检查点";
+
+	public const string CheckpointHint = "每轮发送前自动快照（同一仓库每分钟最多一次）。恢复只回写工作区文件，不动分支、索引与提交；快照之后新增的未跟踪文件会保留。";
+
+	public const string CheckpointDiff = "查看变更概览";
+
+	public const string CheckpointOpenPatch = "在编辑器中打开完整补丁";
+
+	public const string CheckpointPatchHint = "概览只列变更文件；完整补丁在编辑器中查看。";
+
+	public const string CheckpointLoading = "读取中…";
+
+	public const string CheckpointUnchanged = "与当前工作区一致";
+
+	public const string CheckpointStatFailed = "无法读取变更统计";
+
+	public const string CheckpointNotRepository = "检查点需要 Git 仓库：当前工作目录不在仓库里。";
+
+	public const string CheckpointCreateFailed = "创建检查点失败（需要已初始化的 Git 仓库，且有可写入的 .git 目录）。";
+
+	public const string CheckpointAuto = "自动";
+
+	public const string CheckpointManual = "手动";
+
+	public const string CheckpointBeforeRestore = "恢复前";
+
+	public static string CheckpointCount(int count) => $"{count} 个";
+
+	public static string CheckpointDiffFailed(string reason) => $"读取变更概览失败：{reason}";
+
+	public static string CheckpointPatchFailed(string reason) => $"打开完整补丁失败：{reason}";
+
+	public static string CheckpointRestoreConfirm(string label) =>
+		$"把工作区文件恢复到这个检查点（{label}）？\n" +
+		"只回写工作区，不改分支、索引与提交；快照之后新增的未跟踪文件会保留。恢复前会自动再打一个「恢复前」检查点。";
+
+	public static string CheckpointStat(int files, int insertions, int deletions)
+	{
+		if (files == 0 && insertions == 0 && deletions == 0)
+		{
+			return CheckpointUnchanged;
+		}
+
+		var parts = new List<string>(3);
+		if (files > 0) parts.Add($"{files} 个文件");
+		if (insertions > 0) parts.Add($"+{insertions}");
+		if (deletions > 0) parts.Add($"−{deletions}");
+		return parts.Count == 0 ? CheckpointUnchanged : string.Join("，", parts);
+	}
 
 	/// <summary>回答下方的本轮修改汇总。</summary>
 	public static string ChangedFilesSummary(IReadOnlyList<string> files)

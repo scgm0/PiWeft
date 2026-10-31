@@ -22,6 +22,12 @@ public static class Checkpoints
 	/// <summary>默认保留的检查点数量，超出后按时间清理最旧的。</summary>
 	public const int DefaultRetention = 50;
 
+	/// <summary>
+	/// 变更概览最多渲染的行数。`git diff --stat` 正常是「文件数」那么多行；
+	/// 遇到几千个文件的生成物提交时，仍然要给文本控件一个上界。
+	/// </summary>
+	public const int MaxStatLines = 2000;
+
 	/// <summary>每个工作目录最近一次自动快照的时间，用于限频。</summary>
 	private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> LastAuto = new(StringComparer.Ordinal);
 
@@ -97,7 +103,9 @@ public static class Checkpoints
 				return null;
 			}
 
-			var id = $"{DateTimeOffset.UtcNow:yyyyMMdd'T'HHmmss'Z'}-{Guid.NewGuid().ToString("N")[..8]}";
+			// 带毫秒：git 的 creatordate 只精确到秒，同一秒内连按两次「新建检查点」时
+			// 仅靠时间排序会让 Prune 删掉较新的那个；id 里的毫秒是稳定的次级排序键。
+			var id = $"{DateTimeOffset.UtcNow:yyyyMMdd'T'HHmmssfff'Z'}-{Guid.NewGuid().ToString("N")[..8]}";
 			if (!Run(cwd, ["update-ref", RefPrefix + id, commit]).Ok)
 			{
 				return null;
@@ -149,8 +157,72 @@ public static class Checkpoints
 			checkpoints.Add(new Checkpoint(id, columns[1], created, label));
 		}
 
-		checkpoints.Sort(static (a, b) => b.Created.CompareTo(a.Created));
+		// creatordate 只有秒级精度：同一秒内创建的快照用 id（含毫秒）倒序兜底。
+		checkpoints.Sort(static (a, b) =>
+		{
+			var byTime = b.Created.CompareTo(a.Created);
+			return byTime != 0 ? byTime : string.CompareOrdinal(b.Id, a.Id);
+		});
 		return checkpoints.Count <= limit ? checkpoints : checkpoints.Take(limit).ToList();
+	}
+
+	/// <summary>
+	/// 检查点相对当前工作区的逐文件变更概览（`git diff --stat`）。
+	/// 回退预览默认展示它而不是完整补丁：340 个文件的补丁有 5 万多行，
+	/// 一次性建文本控件会把面板拖死；概览只有文件数那么多行，完整补丁交给编辑器。
+	/// </summary>
+	public static (string Stat, string? Error) Stat(string cwd, string sha)
+	{
+		if (sha.Length == 0)
+		{
+			return (string.Empty, Strings.CheckpointMissing);
+		}
+
+		// 固定宽度：右侧面板最窄 360 DIP，默认的 ~80 列 stat 会把 `++++` 条推到面板外。
+		// 40 列 = 26 列路径 + 10 列图形 + 分隔符；长路径由 git 自己截成 `...名字`。
+		var result = Run(
+			cwd,
+			[
+				"diff", "--stat", "--stat-width=40", "--stat-name-width=26", "--stat-graph-width=10",
+				"--no-ext-diff", sha, "--", ".",
+			],
+			maxOutput: 256 * 1024);
+		return result.Ok ? (ClampLines(result.Output, MaxStatLines), null) : (string.Empty, result.Output);
+	}
+
+	private static string ClampLines(string text, int maxLines)
+	{
+		var lines = text.Split('\n');
+		if (lines.Length <= maxLines)
+		{
+			return text;
+		}
+
+		return string.Join('\n', lines.Take(maxLines)) + $"\n…（仅显示前 {maxLines} 行）";
+	}
+
+	/// <summary>检查点相对当前工作区的完整补丁，供「在编辑器中打开」使用（上限 16 MiB）。</summary>
+	public static (string Patch, string? Error) Patch(string cwd, string sha)
+	{
+		if (sha.Length == 0)
+		{
+			return (string.Empty, Strings.CheckpointMissing);
+		}
+
+		var result = Run(cwd, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", sha, "--", "."], maxOutput: 16 * 1024 * 1024);
+		return result.Ok ? (result.Output, null) : (string.Empty, result.Output);
+	}
+
+	/// <summary>检查点相对当前工作区的变更摘要（`3 files changed, …`）；无差异时返回空串。</summary>
+	public static (string Summary, string? Error) ShortStat(string cwd, string sha)
+	{
+		if (sha.Length == 0)
+		{
+			return (string.Empty, Strings.CheckpointMissing);
+		}
+
+		var result = Run(cwd, ["diff", "--shortstat", "--no-ext-diff", sha, "--", "."]);
+		return result.Ok ? (result.Output.Trim(), null) : (string.Empty, result.Output);
 	}
 
 	/// <summary>把工作区恢复成某个检查点的内容；返回错误信息，成功时为 <c>null</c>。</summary>
@@ -182,7 +254,11 @@ public static class Checkpoints
 	}
 
 	/// <summary>运行一条 git 命令，合并 stdout/stderr，超时与输出都有界。</summary>
-	private static (string Output, bool Ok) Run(string cwd, string[] arguments, IReadOnlyDictionary<string, string>? environment = null)
+	private static (string Output, bool Ok) Run(
+		string cwd,
+		string[] arguments,
+		IReadOnlyDictionary<string, string>? environment = null,
+		int maxOutput = 4096)
 	{
 		var startInfo = new ProcessStartInfo("git")
 		{
@@ -191,6 +267,10 @@ public static class Checkpoints
 			UseShellExecute = false,
 			WorkingDirectory = Directory.Exists(cwd) ? cwd : Environment.CurrentDirectory,
 		};
+
+		// 与其它 git 子进程同一约定：输出与报错都按英文解析，提示文案不会被系统语言改掉。
+		startInfo.Environment["LC_ALL"] = "C";
+		startInfo.Environment["LANG"] = "C";
 
 		foreach (var argument in arguments)
 		{
@@ -232,7 +312,15 @@ public static class Checkpoints
 			var stdout = stdoutTask.GetAwaiter().GetResult();
 			var stderr = stderrTask.GetAwaiter().GetResult();
 			var output = stdout.Length > 0 ? stdout : stderr;
-			return (output.Length <= 4096 ? output : output[..4096], process.ExitCode == 0);
+			if (output.Length <= maxOutput)
+			{
+				return (output, process.ExitCode == 0);
+			}
+
+			// 截断也要告诉调用方：半份 diff 看起来像「只有这些改动」。
+			return (maxOutput > 4096
+				? output[..maxOutput] + "\n…（差异过大，已截断）"
+				: output[..4096], process.ExitCode == 0);
 		}
 		catch (System.ComponentModel.Win32Exception)
 		{

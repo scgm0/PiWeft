@@ -48,7 +48,7 @@ MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win3
 | 用量 | 会话统计、上下文、费用、缓存与计时、手动压缩；余额/积分查询；跨会话统计与 26 周热力图 | 完整供应商订阅窗口、热力图下钻 |
 | 设置 | 模型/供应商、API Key、Agent、MCP、JSON、作用域与草稿保护、工具调用安全门（`settings.security`）、外部会话导入 | 桌面 OAuth、技能/提示词管理、商店、安全门的图形化编辑与交互式审批 |
 | MCP | 启动连接、状态、stdio 工具热刷新、设置面板手动重连 | 自动重连、跨项目运行时管理 |
-| Git | 状态、暂存/未暂存目录树、diff、在编辑器中打开、暂存/取消暂存（含目录级）、提交（Ctrl+Enter）、分支切换/新建、AI 提交摘要（默认跟随会话，可在设置中固定模型/思考级别、自定义提示词模板、按原因分类的失败提示）、源代码管理图（泳道、引用筛选、提交详情/文件 diff、加载更多）、比较更改（三点比较、ahead/behind、文件 diff）、fetch/pull（`--ff-only`）/push（首次自动建跟踪）、stash 收起/应用/丢弃、失败分类提示 | 冲突解决界面、rebase/cherry-pick/reset/drop 等改写历史的操作、多远端选择；检查点不由 Git 面板管理（会话仍自动快照） |
+| Git | 状态、暂存/未暂存目录树、diff、在编辑器中打开、暂存/取消暂存（含目录级）、提交（Ctrl+Enter）、分支切换/新建、AI 提交摘要（默认跟随会话，可在设置中固定模型/思考级别、自定义提示词模板、按原因分类的失败提示）、源代码管理图（泳道、引用筛选、提交详情/文件 diff、加载更多）、比较更改（三点比较、ahead/behind、文件 diff）、fetch/pull（`--ff-only`）/push（首次自动建跟踪）、stash 收起/应用/丢弃、失败分类提示 | 冲突解决界面、rebase/cherry-pick/reset/drop 等改写历史的操作、多远端选择；检查点移到右侧面板的独立分段（会话仍自动快照） |
 | 文件 | 目录导航、Git 标记、内置文本编辑器与冲突检测保存、回答级修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
 | 终端 | MiniPty 伪终端、交互式 shell、Shell 选择、scrollback、选择、SGR/滚动区域/字符集/备用屏、缩放重排、字素簇按格对齐（组合符号/ZWJ emoji/国旗/肤色/Hangul，含跨读块拼接）、光标按字格几何绘制（DECSCUSR 块/竖线/下划线、失焦空心框，边贴设备像素、横向跟该行真实排布）、DECSCUSR/DECSCNM/DECALN/DECRQM、OSC 4/10/11/12、OSC 8/52、鼠标上报、bracketed paste、IME、Ctrl+C/V、PRIMARY、右键菜单 | 完整 VT100 边界行为、终端内搜索、终端多标签、快照回放 |
 | 主题与窗口 | 深浅/系统主题预览、侧栏收起与宽度恢复、尺寸与零/负位置恢复、单实例 | 自定义强调色、多显示器可见性/最大化恢复 |
@@ -194,7 +194,7 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
   否则它会出现在分支下拉里还能被「切换」，推送按钮也照样可点。
 - **面板按 PiDeck 的 SCM 三段重排**：顶部是紧凑分支栏（分支下拉 + 远端同步图标），下面是「更改」区
   （多行提交框 + Ctrl+Enter、AI 摘要、暂存/未暂存目录树）与折叠的「更多」（stash、提交摘要默认配置、
-  无远端提示）；检查点不再占用 Git 面板，会话仍按回合自动快照。改动按「未暂存 / 已暂存 / 合并冲突」
+  无远端提示）；检查点不再占用 Git 面板，移到右侧面板的独立「检查点」分段（会话仍按回合自动快照）。改动按「未暂存 / 已暂存 / 合并冲突」
   分节，同一文件两边都有改动时两边各出现一次（`MM` 这类状态只按索引列归类会让人以为已经提交干净了）。
   目录树把单子目录链合并成 `a.b.c` 一行，目录行可折叠、可对整棵子树暂存/取消暂存；文件行显示
   `A/M/D/R/U/?` 状态字母与行内动作。没有已暂存改动时提交主按钮禁用并给出提示。
@@ -426,7 +426,7 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 | D-02 | 文件工作台 | 已实现目录导航、文本编辑、修改汇总、统一/并排 diff；未覆盖多文件标签、草稿本、跨行块注释、内嵌浏览器 |
 | D-03 | 内置终端 | 已实现 MiniPty 与主要 VT 行为；未覆盖 macOS/Windows 实机回归、完整 VT100 边界、多标签、快照回放 |
 | D-04 | 完整 Git 工作流 | 已实现暂存/提交/分支、目录树、AI 提交摘要、源代码管理图、比较更改、远端同步（fetch/pull/push，含首次推送自动建跟踪）与 stash；检查点仍由会话自动快照提供；未覆盖冲突解决界面、rebase/cherry-pick/reset/drop 等改写历史的操作、多远端选择 |
-| D-05 | 文件检查点/回滚 | 已实现 `refs/pi-checkpoints/<id>` 快照与回滚；未覆盖快照与助手回合关联、清理后新增未跟踪文件、检查点分页与 diff 预览 |
+| D-05 | 文件检查点/回滚 | 已实现 `refs/pi-checkpoints/<id>` 快照与回滚，右侧面板「检查点」分段提供列表、按需变更概览（`git diff --stat`，完整补丁写临时文件交给编辑器）、恢复（恢复前自动打 `before-restore` 快照）；未覆盖快照与助手回合关联、恢复后清理新增未跟踪文件、检查点分页与按范围回退（files/conversation/all） |
 | D-06 | 配置深度 | 已实现连接测试、远程模型拉取、价格表单；未覆盖供应商迁移、收藏/隐藏/排序、Azure/Vertex/Bedrock 专用目录接口、桌面 OAuth |
 | D-07 | 用量系统 | 已实现余额/积分查询、跨会话统计与热力图；未覆盖订阅窗口/重置时间、火山 AK/SK 等专用解析、热力图下钻 |
 | D-08 | 技能/插件生态 | 已实现资源发现与资源页；缺少商店、中文提示词库、包安装可视化入口和 PiDeck 独立宿主插件系统 |
@@ -460,6 +460,7 @@ xvfb-run -a -s '-screen 0 1280x820x24' bash tools/desktop-waiting-smoke.sh
 PI_CODING_AGENT_DIR=$(mktemp -d) xvfb-run -a \
   src/PiWeft.Desktop/bin/Release/net10.0/linux-x64/publish/piweft-desktop --theme-smoke --cwd /tmp
 xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-statistics-smoke.sh
+xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh
 ```
 
 截图脚本使用独立 fixture agent 目录，不读取真实密钥或会话。修改进程环境变量的测试必须加入 `process-environment` 串行集合。MewUI 命名样式按目标控件类型校验；包版 Key 枚举没有标点键，不能根据上游 main 源码假设 API 可用。Windows/macOS 原生 GUI、发布包以及 PiDeck 完整 e2e 仍需独立验证。
