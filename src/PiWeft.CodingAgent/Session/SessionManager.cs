@@ -236,7 +236,11 @@ public sealed partial class SessionManager
 			_labelsById[labelEntry.TargetId] = label;
 		}
 
-		_leafId = entry.Id;
+		if (entry is not DeletedEntry)
+		{
+			_leafId = entry.Id;
+		}
+
 		Persist(entry);
 	}
 
@@ -299,9 +303,10 @@ public sealed partial class SessionManager
 
 	/// <summary>
 	/// 把整份会话按当前格式重写：同目录临时文件 + 原子替换，写到一半崩溃不会留下半个会话。
-	/// 只在格式升级时调用，正常路径仍然只追加。
+	/// 格式升级与「编辑重发」截断会用到；正常路径仍然只追加。
 	/// </summary>
-	private void RewriteFile()
+	/// <param name="source">要写入的条目序列；为空时写当前内存视图。</param>
+	private void RewriteFile(IReadOnlyList<object>? source = null)
 	{
 		if (SessionFile is not { Length: > 0 } path || !File.Exists(path))
 		{
@@ -325,7 +330,7 @@ public sealed partial class SessionManager
 				// 一次迁移可能重写几十 MB：复用缓冲区，按行直接写 UTF-8 字节，
 				// 不为每行生成字符串再编码一次。
 				var buffer = new System.Buffers.ArrayBufferWriter<byte>(1024);
-				foreach (var item in _fileEntries)
+				foreach (var item in source ?? _fileEntries)
 				{
 					buffer.Clear();
 					switch (item)
@@ -603,6 +608,13 @@ public sealed partial class SessionManager
 		foreach (var entry in _fileEntries.OfType<SessionEntry>())
 		{
 			_byId[entry.Id] = entry;
+
+			// 墓碑是死分支上的占位：它不抢叶子，也不参与标签。
+			if (entry is DeletedEntry)
+			{
+				continue;
+			}
+
 			_leafId = entry.Id;
 
 			if (entry is LabelEntry { Label: { Length: > 0 } label } labelEntry)

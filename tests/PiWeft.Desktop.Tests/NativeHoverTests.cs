@@ -45,7 +45,8 @@ public sealed class NativeHoverTests(ITestOutputHelper output)
 		var root = Path.Combine(Path.GetTempPath(), "piweft-hover-" + Guid.NewGuid().ToString("N"));
 		var agent = Path.Combine(root, "agent");
 		Directory.CreateDirectory(agent);
-		File.WriteAllText(Path.Combine(agent, "desktop.json"), "{\"theme\":\"dark\"}");
+		// 侧栏默认收起，底部主题/设置按钮不可见；这个演练要悬浮它们，必须显式展开。
+		File.WriteAllText(Path.Combine(agent, "desktop.json"), "{\"theme\":\"dark\",\"sidebarCollapsed\":false}");
 		File.WriteAllText(Path.Combine(agent, "settings.json"), "{\"defaultProvider\":\"fixture\",\"defaultModel\":\"fixture-model\"}");
 		File.WriteAllText(Path.Combine(agent, "models.json"), new JsonObject
 		{

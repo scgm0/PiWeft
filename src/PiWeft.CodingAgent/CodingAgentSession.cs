@@ -758,6 +758,26 @@ public sealed class CodingAgentSession : IDisposable
 		return selectedText;
 	}
 
+	/// <summary>
+	/// 「编辑重发」：在当前会话文件里把 <paramref name="entryId"/> 及其全部后继改成墓碑，
+	/// 再把代理消息重置为截断后的投影。会话 id 与文件不变，侧栏不会多出一条会话；
+	/// 旧回答的工具调用链也不会作为平行分支残留。
+	/// </summary>
+	/// <returns>被截断的条目数。</returns>
+	public int RewindForResend(string entryId)
+	{
+		ThrowIfDisposed();
+
+		if (_agent.IsStreaming)
+		{
+			throw new InvalidOperationException("Cannot rewind while streaming");
+		}
+
+		var truncated = Session.TruncateForResend(entryId);
+		_agent.SetMessages(Session.BuildProjectedMessages());
+		return truncated;
+	}
+
 	/// <summary>把当前分支复制成一个新会话文件，位置不变。</summary>
 	public void CloneAsync()
 	{

@@ -207,6 +207,12 @@ public static class SessionJson
 				PiJsonValue.WriteOptional(writer, "label", label.Label);
 				break;
 
+			case DeletedEntry deleted:
+				// pi/PiDeck 的墓碑形状：id/parentId 原样保留，只多一个原条目 id 与截断原因。
+				writer.WriteString("originalEntryId", deleted.OriginalEntryId);
+				PiJsonValue.WriteOptional(writer, "reason", deleted.Reason);
+				break;
+
 			case SessionInfoEntry info:
 				PiJsonValue.WriteOptional(writer, "name", info.Name);
 				break;
@@ -357,6 +363,11 @@ public static class SessionJson
 				TargetId = PiJsonValue.Str(obj, "targetId") ?? string.Empty,
 				Label = PiJsonValue.Str(obj, "label"),
 			},
+			"deleted" => new DeletedEntry
+			{
+				OriginalEntryId = PiJsonValue.Str(obj, "originalEntryId") ?? id,
+				Reason = PiJsonValue.Str(obj, "reason"),
+			},
 			"session_info" => new SessionInfoEntry
 			{
 				Name = PiJsonValue.Str(obj, "name"),
@@ -395,6 +406,8 @@ public static class SessionJson
 
 	private static readonly string[] LabelKeys = [.. BaseKeys, "targetId", "label"];
 
+	private static readonly string[] DeletedKeys = [.. BaseKeys, "originalEntryId", "reason"];
+
 	private static readonly string[] SessionInfoKeys = [.. BaseKeys, "name"];
 
 	private static string[] KnownKeys(string type) => type switch
@@ -409,6 +422,7 @@ public static class SessionJson
 		"custom_message" => CustomMessageKeys,
 		"context_edit" => ContextEditKeys,
 		"label" => LabelKeys,
+		"deleted" => DeletedKeys,
 		"session_info" => SessionInfoKeys,
 		_ => [],
 	};

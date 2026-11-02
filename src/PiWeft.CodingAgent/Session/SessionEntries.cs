@@ -165,6 +165,22 @@ public sealed record LabelEntry : SessionEntry
 	public string? Label { get; init; }
 }
 
+/// <summary>
+/// 墓碑：把被放弃的条目原地改写成它。编辑重发要真正截断分支（否则旧回答的 tool_call/toolResult
+/// 配对会残留），但又不能换新会话文件（侧栏会每改一次多一条会话），所以按 pi/PiDeck 的
+/// <c>deleted</c> 形状留下墓碑：原文不再进入上下文、不再出现在树里，仍可在文件里审计。
+/// </summary>
+public sealed record DeletedEntry : SessionEntry
+{
+	public override string Type => "deleted";
+
+	/// <summary>被墓碑替代的原条目 id；与 <see cref="SessionEntry.Id"/> 相同，单独保留便于外部工具识别。</summary>
+	public string OriginalEntryId { get; init; } = string.Empty;
+
+	/// <summary>截断原因，例如 <c>resend-truncate</c>。</summary>
+	public string? Reason { get; init; }
+}
+
 public sealed record SessionInfoEntry : SessionEntry
 {
 	public override string Type => "session_info";

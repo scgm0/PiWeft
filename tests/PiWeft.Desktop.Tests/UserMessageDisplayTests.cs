@@ -417,7 +417,7 @@ public sealed class UserMessageDisplayTests
 		Assert.Equal(image.MimeType, attachment.MimeType);
 		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == Strings.EditImageLabel);
 
-		// 发送时以内容块形式发给模型（fork 到原提问之前）：最后一条用户消息是本次提问。
+		// 发送时以内容块形式发给模型（原地截断到原提问之前）：最后一条用户消息是本次提问。
 		await tab.SendAsync("再看一次");
 		var message = session.Session.BuildSessionContext().Messages.OfType<UserMessage>().Last();
 		Assert.Equal("再看一次", Assert.IsType<TextContent>(message.Content.Blocks![0]).Text);

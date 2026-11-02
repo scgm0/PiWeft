@@ -67,6 +67,12 @@ public sealed partial class SessionManager
 
 		foreach (var entry in entries)
 		{
+			// 墓碑是「编辑重发」截断掉的死分支：不进树，否则每次重发都会多出一排无法打开的分支。
+			if (entry is DeletedEntry)
+			{
+				continue;
+			}
+
 			if (entry.ParentId is { Length: > 0 } parentId && _byId.ContainsKey(parentId))
 			{
 				if (!childrenByParent.TryGetValue(parentId, out var children))
@@ -240,6 +246,11 @@ public sealed partial class SessionManager
 			throw new InvalidOperationException("Cannot branch a session that is not persisted");
 		}
 
+		if (_byId[targetLeafId] is DeletedEntry)
+		{
+			throw new InvalidOperationException($"Entry {targetLeafId} has been deleted");
+		}
+
 		var retained = GetBranch(targetLeafId);
 		Invalidate();
 		var sourceFile = SessionFile;
@@ -268,7 +279,10 @@ public sealed partial class SessionManager
 		{
 			_fileEntries.Add(entry);
 			_byId[entry.Id] = entry;
-			_leafId = entry.Id;
+			if (entry is not DeletedEntry)
+			{
+				_leafId = entry.Id;
+			}
 
 			if (entry is LabelEntry { Label: { Length: > 0 } label } labelEntry)
 			{
@@ -285,6 +299,115 @@ public sealed partial class SessionManager
 		File.WriteAllText(target, string.Concat(lines.Select(static line => line + "\n")));
 		SessionFile = target;
 		return target;
+	}
+
+	/// <summary>
+	/// 把 <paramref name="entryId"/> 及其全部后继原地改写成墓碑，并让叶子回到它的父条目。
+	/// 「编辑重发」用它：分支真的被截断（旧回答的 tool_call / toolResult 配对不会残留），
+	/// 但会话 id 与文件不变，侧栏不会每改一次就多出一条会话。
+	/// </summary>
+	/// <returns>被改写的条目数。</returns>
+	public int TruncateForResend(string entryId)
+	{
+		using var scope = _stateGate.EnterScope();
+		if (!_byId.TryGetValue(entryId, out var target) || target is DeletedEntry)
+		{
+			throw new InvalidOperationException($"Entry {entryId} not found");
+		}
+
+		// 只处理当前分支上的条目：死分支已经不在投影里，截它没有意义。
+		if (!GetBranch().Any(entry => entry.Id == entryId))
+		{
+			throw new InvalidOperationException($"Entry {entryId} is not on the active branch");
+		}
+
+		// 先按 parentId 建一次子索引，再自顶向下收集整棵子树；逐条目扫全表在长会话里是 O(n²)。
+		var children = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+		foreach (var entry in _fileEntries.OfType<SessionEntry>())
+		{
+			if (entry is DeletedEntry || entry.ParentId is not { Length: > 0 } parentId)
+			{
+				continue;
+			}
+
+			if (!children.TryGetValue(parentId, out var siblings))
+			{
+				children[parentId] = siblings = [];
+			}
+
+			siblings.Add(entry.Id);
+		}
+
+		var doomed = new HashSet<string>(StringComparer.Ordinal) { entryId };
+		var pending = new Stack<string>();
+		pending.Push(entryId);
+		while (pending.Count > 0)
+		{
+			if (!children.TryGetValue(pending.Pop(), out var descendants))
+			{
+				continue;
+			}
+
+			foreach (var child in descendants)
+			{
+				if (doomed.Add(child))
+				{
+					pending.Push(child);
+				}
+			}
+		}
+
+		if (!_persist || SessionFile is null)
+		{
+			// 内存会话没有文件可留墓碑：直接移除被放弃的条目，投影与树与持久化会话一致。
+			var deleted = _fileEntries.RemoveAll(item => item is SessionEntry entry && doomed.Contains(entry.Id));
+			if (deleted == 0)
+			{
+				return 0;
+			}
+
+			RebuildIndex();
+			_leafId = target.ParentId;
+			Invalidate();
+			return deleted;
+		}
+
+		var timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow);
+		var rewritten = new List<object>(_fileEntries.Count);
+		var truncated = 0;
+		foreach (var item in _fileEntries)
+		{
+			if (item is SessionEntry entry && doomed.Contains(entry.Id))
+			{
+				rewritten.Add(new DeletedEntry
+				{
+					Id = entry.Id,
+					ParentId = entry.ParentId,
+					Timestamp = timestamp,
+					OriginalEntryId = entry.Id,
+					Reason = "resend-truncate",
+				});
+				truncated++;
+				continue;
+			}
+
+			rewritten.Add(item);
+		}
+
+		if (truncated == 0)
+		{
+			return 0;
+		}
+
+		// 先落盘再换内存视图：写失败时抛出去，会话保持原样，避免「内存已截断、文件没变」。
+		RewriteFile(rewritten);
+		_fileEntries.Clear();
+		_fileEntries.AddRange(rewritten);
+		RebuildIndex();
+		// 之后追加的消息接在被截断条目的父级：墓碑子树成为死分支，从 leaf 回溯永远走不到它。
+		_leafId = target.ParentId;
+		Invalidate();
+		return truncated;
 	}
 
 	/// <summary>从文件重建本管理器的视图，复用同一实例，便于调用方继续持有引用。</summary>

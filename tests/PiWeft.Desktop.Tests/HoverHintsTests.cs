@@ -12,6 +12,22 @@ public sealed class HoverHintsTests
 	{
 		Assert.Equal(TimeSpan.FromMilliseconds(350), HoverHints.Delay);
 	}
+
+	[Fact]
+	public void TooltipsStopShowingOnceTheWindowIsMinimized()
+	{
+		// Popup 是独立的置顶原生窗口，窗口最小化后不会自己隐藏（X11 尤其明显）；
+		// 和原生 ToolTip 一样，最小化时不能再出现、也不能继续停留在桌面上。
+		using var window = new Window();
+		Assert.True(HoverHints.CanShow(window));
+
+		window.WindowState = WindowState.Minimized;
+		Assert.False(HoverHints.CanShow(window));
+
+		window.WindowState = WindowState.Normal;
+		Assert.True(HoverHints.CanShow(window));
+	}
+
 	[Fact]
 	public void ChipAnchorsAreRememberedSoTheHintSitsOnTheChip()
 	{

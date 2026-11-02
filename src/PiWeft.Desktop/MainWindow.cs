@@ -1419,6 +1419,13 @@ public sealed partial class MainWindow : Window
 			}
 		};
 		tab.Forked += _ => RefreshSessions(force: true);
+		// 编辑重发会原地重写会话文件（墓碑截断）：不换文件，但长度/内容都变了，
+		// 侧栏摘要缓存必须先失效，否则会沿用截断前的预览与条目数。
+		tab.Rewritten += rewritten =>
+		{
+			_catalog.Invalidate(rewritten.Session.Session.SessionFile);
+			RefreshSessions(force: true);
+		};
 
 		_tabEntries.Add(tab);
 		AddTab(header: null!, content: tab.View, entry: tab);

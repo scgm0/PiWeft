@@ -2,7 +2,7 @@
 
 内置 `codemode` 工具让模型写 JavaScript，在 Jint 5 沙箱里调用其它工具。默认不启用（与 pi 的 inactive 注册一致）：`--tools +codemode` 或 `settings.defaultTools: ["+codemode"]` 选中；存在 MCP `codemode` exposure 工具时按 pi 行为自动启用（`settings.codemode.autoEnable`）。
 
-实现位于 `src/PiWeft.JavaScript` 与 `src/PiWeft.CodingAgent/CodeMode*`。Jint 固定在 `5.0.0-preview-2281`，只由 `nuget.config` 的 `Jint-preview` 源提供。
+实现位于 `src/PiWeft.JavaScript` 与 `src/PiWeft.CodingAgent/CodeMode*`。Jint 固定在 `5.0.0-preview.2322`，只由 `nuget.config` 的 `Jint-preview` 源提供；Feedz 会清理旧预览包，升级版本前先用 `dotnet package search Jint --source <feed>` 确认仍可还原。
 
 ## 脚本面
 

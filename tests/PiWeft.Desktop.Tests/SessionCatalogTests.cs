@@ -1,3 +1,4 @@
+using System.Text;
 using PiWeft.Desktop;
 using Xunit;
 
@@ -337,5 +338,105 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 		var third = catalog.List();
 		var before = first.Single(item => item.Path == target).MessageCount;
 		Assert.Equal(before + 1, third.Single(item => item.Path == target).MessageCount);
+	}
+
+	[Fact]
+	public void InvalidatingARewrittenSessionRecomputesPreviewAndCount()
+	{
+		// 编辑重发的墓碑截断会原地重写会话文件：文件长度可能反而变长，
+		// 进程内摘要缓存里的续扫偏移就失效了，必须先丢弃再重扫。
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		var path = Path.Combine(sessions, "2026-03-01T00-00-00-000Z_rewrite.jsonl");
+		var header = """{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp/x"}""";
+		File.WriteAllLines(path,
+		[
+			header,
+			"""{"id":"u1","parentId":"s","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"旧问题"}],"timestamp":1}}""",
+			"""{"id":"a1","parentId":"u1","type":"message","timestamp":"t","message":{"role":"assistant","content":[{"type":"text","text":"旧回答"}],"timestamp":2}}""",
+		]);
+
+		var catalog = new SessionCatalog();
+		var before = Assert.Single(catalog.List());
+		Assert.Equal("旧问题", before.Preview);
+		Assert.Equal(2, before.MessageCount);
+
+		// 截断后的文件：原条目全部成为墓碑，新提问接在父条目后面。
+		File.WriteAllLines(path,
+		[
+			header,
+			"""{"type":"deleted","id":"u1","parentId":"s","timestamp":"t","originalEntryId":"u1","reason":"resend-truncate"}""",
+			"""{"type":"deleted","id":"a1","parentId":"u1","timestamp":"t","originalEntryId":"a1","reason":"resend-truncate"}""",
+			"""{"id":"u2","parentId":"s","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"新问题"}],"timestamp":3}}""",
+		]);
+
+		catalog.Invalidate(path);
+		var after = Assert.Single(catalog.List());
+		Assert.Equal("新问题", after.Preview);
+		Assert.Equal(1, after.MessageCount);
+	}
+
+	[Fact]
+	public void InvalidatingBeforeTheSidebarLoadsIgnoresThePersistedSummary()
+	{
+		// 侧栏还没加载（磁盘摘要尚未装入）时发生编辑重发：Invalidate 必须能拦住磁盘上的旧摘要，
+		// 否则会拿旧偏移续扫重写后的文件。
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		var path = Path.Combine(sessions, "2026-03-02T00-00-00-000Z_stale.jsonl");
+		File.WriteAllLines(path,
+		[
+			"""{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp/x"}""",
+			"""{"id":"u1","parentId":"s","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"真正的问题"}],"timestamp":1}}""",
+		]);
+
+		var headHash = Fnv1a(Encoding.UTF8.GetBytes(File.ReadLines(path).First()));
+		SessionSummaryStore.Save(new Dictionary<string, SessionSummaryStamp>(StringComparer.Ordinal)
+		{
+			[path] = new SessionSummaryStamp
+			{
+				// 旧长度更短、旧偏移早已越界：这正是续扫会拿到错内容的条件。
+				Length = 10,
+				LastWriteTicks = new FileInfo(path).LastWriteTimeUtc.AddHours(-1).Ticks,
+				HeadHash = headHash,
+				Offset = 1_000_000,
+				Id = "stale",
+				Name = string.Empty,
+				Cwd = "/tmp/x",
+				MessageCount = 9,
+				Preview = "过期预览",
+			},
+		}, agent);
+
+		var catalog = new SessionCatalog();
+		catalog.Invalidate(path);
+
+		// 磁盘摘要也必须丢掉这一条，否则下一次启动仍会拿旧偏移续扫。
+		Assert.False(SessionSummaryStore.Load(agent).ContainsKey(path));
+
+		// 换一个实例模拟下一次启动：没有磁盘摘要可用，只能全量重扫。
+		var item = Assert.Single(new SessionCatalog().List());
+		Assert.Equal("真正的问题", item.Preview);
+		Assert.Equal(1, item.MessageCount);
+	}
+
+	/// <summary>与 <see cref="SessionCatalog"/> 的首行指纹同算法（缓存格式的一部分）。</summary>
+	private static long Fnv1a(ReadOnlySpan<byte> value)
+	{
+		var hash = 1469598103934665603L;
+		foreach (var b in value)
+		{
+			hash = (hash ^ b) * 1099511628211L;
+		}
+
+		return hash;
 	}
 }

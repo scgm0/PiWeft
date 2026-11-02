@@ -20,6 +20,9 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 		_window = window;
 		_timer.Tick += Show;
 		window.Deactivated += Cancel;
+		// Popup 是独立的原生窗口，owner 最小化时它不会跟着隐藏（X11 尤其明显）。
+		// 原生 ToolTip 由窗口的 popup 管理器在失焦时收起，这里补上窗口状态这一路。
+		window.WindowStateChanged += OnWindowStateChanged;
 		window.Closed += Dispose;
 		window.MouseDown += OnMouseDown;
 		window.MouseWheel += OnWheel;
@@ -49,6 +52,7 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 	private static void Begin(FrameworkElement owner)
 	{
 		if (!Application.IsRunning || string.IsNullOrEmpty(Text(owner)) || owner.FindVisualRoot() is not Window window) return;
+		if (!CanShow(window)) return;
 		var service = window.OverlayLayer.GetOrCreateService(_ => new HoverHints(window));
 		service.Cancel();
 		service._owner = owner;
@@ -67,10 +71,22 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 			ReferenceEquals(service._owner, owner)) service.Cancel();
 	}
 
+	/// <summary>
+	/// 窗口最小化后不应再有悬停提示：此时 owner 没有可视客户区，计时器到点或
+	/// 残留的 IsMouseOver 都会把置顶的 popup 留在桌面上。
+	/// </summary>
+	internal static bool CanShow(Window window) => window.WindowState != WindowState.Minimized;
+
+	private void OnWindowStateChanged(WindowState state)
+	{
+		if (state == WindowState.Minimized) Cancel();
+	}
+
 	private void Show()
 	{
 		_timer.Stop();
-		if (_owner is not { IsMouseOver: true } owner || !ReferenceEquals(owner.FindVisualRoot(), _window) || string.IsNullOrEmpty(Text(owner)))
+		if (!CanShow(_window) || _owner is not { IsMouseOver: true } owner ||
+			!ReferenceEquals(owner.FindVisualRoot(), _window) || string.IsNullOrEmpty(Text(owner)))
 		{ Cancel(); return; }
 		for (Element? ancestor = owner; ancestor is not null; ancestor = ancestor.Parent)
 			if (ancestor is UIElement { IsVisible: false }) { Cancel(); return; }
@@ -114,6 +130,7 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 		_popup = null;
 		_timer.Dispose();
 		_window.Deactivated -= Cancel;
+		_window.WindowStateChanged -= OnWindowStateChanged;
 		_window.Closed -= Dispose;
 		_window.MouseDown -= OnMouseDown;
 		_window.MouseWheel -= OnWheel;

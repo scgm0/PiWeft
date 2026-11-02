@@ -59,6 +59,12 @@ public sealed class SessionCatalog
 	/// <summary>磁盘摘要是否已装载：第一次构建列表时才读，避免构造期做 IO。</summary>
 	private bool _persistedLoaded;
 
+	/// <summary>
+	/// 已被原地重写的会话文件：磁盘摘要里的长度/偏移不再可用，装载时必须跳过它们。
+	/// 「编辑重发」的墓碑截断会把文件重写一遍，长度可能反而变长，续扫偏移会指向旧内容。
+	/// </summary>
+	private readonly HashSet<string> _stale = new(StringComparer.Ordinal);
+
 	/// <summary>本次构建有没有产生新摘要（需要写回磁盘）。</summary>
 	private bool _summariesDirty;
 
@@ -73,6 +79,9 @@ public sealed class SessionCatalog
 
 			foreach (var (path, stamp) in SessionSummaryStore.Load())
 			{
+				// 已原地重写过的文件不能用磁盘上的旧偏移续扫（见 Invalidate）。
+				if (_stale.Contains(path)) continue;
+
 				// 内存里已经有更新的就以内存为准（同一次运行里刚扫过）。
 				if (_summaries.ContainsKey(path)) continue;
 				_summaries[path] = new SummaryStamp(
@@ -105,7 +114,9 @@ public sealed class SessionCatalog
 		{
 			if (!_summariesDirty) return;
 			_summariesDirty = false;
-			snapshot = _summaries.ToDictionary(
+			snapshot = _summaries
+				.Where(entry => !_stale.Contains(entry.Key))
+				.ToDictionary(
 				static entry => entry.Key,
 				static entry => new SessionSummaryStamp
 				{
@@ -592,6 +603,31 @@ public sealed class SessionCatalog
 	public SessionManager Create(string cwd, string? sessionDir = null) =>
 		SessionManager.Create(cwd, sessionDir);
 
+	/// <summary>
+	/// 丢弃某个会话文件的摘要缓存。会话文件被原地重写（编辑重发的墓碑截断）后，长度可能
+	/// 反而变长，缓存里的续扫偏移已经不指向同一段内容；不丢弃会把截断前的预览与条数留在侧栏。
+	/// 内存缓存与磁盘摘要一起清：跨进程启动时也不能拿旧偏移续扫。
+	/// </summary>
+	public void Invalidate(string? path)
+	{
+		if (string.IsNullOrEmpty(path)) return;
+		path = Path.GetFullPath(path);
+
+		lock (_summaryGate)
+		{
+			_stale.Add(path);
+			if (_summaries.Remove(path)) _summariesDirty = true;
+		}
+
+		// 磁盘摘要是上一次运行的缓存：重写后的文件只有一个旧长度/旧偏移，
+		// 长度变大时续扫会从错位置开始。直接删掉这一条，下一次扫描自然全量重读。
+		var persisted = SessionSummaryStore.Load();
+		if (persisted.Remove(path))
+		{
+			SessionSummaryStore.Save(persisted);
+		}
+	}
+
 	private SessionListItem ToItem(string path)
 	{
 		// 链接的大小是链接目标的路径长度，不是会话内容：用它当摘要缓存键会让侧栏永远显示旧预览。
@@ -726,6 +762,8 @@ public sealed class SessionCatalog
 			lock (_summaryGate)
 			{
 				_summaries[path] = new SummaryStamp(length, modified, item, scannedTo, headHash);
+				// 重写后的文件已经全量重扫：新摘要可信，不再是「不可续扫」的旧摘要。
+				_stale.Remove(path);
 				_summariesDirty = true;
 			}
 		}

@@ -207,6 +207,12 @@ public sealed partial class SessionTab : IDisposable
 	/// <summary>会话被分支（新会话文件）后触发，宿主需要刷新侧栏。</summary>
 	public event Action<SessionTab>? Forked;
 
+	/// <summary>
+	/// 会话文件被原地重写（「编辑重发」的墓碑截断）后触发：会话 id 与文件不变，
+	/// 但宿主必须丢弃该文件的侧栏摘要缓存，否则会继续用截断前的预览与条数。
+	/// </summary>
+	public event Action<SessionTab>? Rewritten;
+
 	/// <summary>会话空闲/运行状态变化时触发，用于在标签头显示指示。</summary>
 	public event Action<SessionTab>? StateChanged;
 
@@ -1098,9 +1104,9 @@ public sealed partial class SessionTab : IDisposable
 	private const string EditImagePrefix = "edit-resend:";
 
 	/// <summary>
-	/// 「编辑重发」：把原文放回输入框，并记下要回到的条目。发送时先在该处开分支，
-	/// 于是修改后的提问落在新分支上，原历史仍可回看。原消息的图片一并带回附件区，
-	/// 重发才会带上同样的内容块。
+	/// 「编辑重发」：把原文放回输入框，并记下要回到的条目。发送时先把该条目及其之后的分支
+	/// 在原地截断成墓碑（同一份会话文件），修改后的提问接在后面 —— 原历史仍可回看，
+	/// 侧栏也不会因为每次重发多出一条会话。原消息的图片一并带回附件区，重发才会带上同样的内容块。
 	/// </summary>
 	private void PrepareEdit(string entryId, string text, IReadOnlyList<ChatImage> images)
 	{
@@ -1164,14 +1170,22 @@ public sealed partial class SessionTab : IDisposable
 			// 否则中断按钮看似生效，消息仍会在快照结束后发出去。
 			cancellationToken.ThrowIfCancellationRequested();
 
-			// 编辑重发：先回到原提问之前（新会话文件），再发送修改后的内容。
+			// 编辑重发：在同一份会话文件里把原提问及其之后的分支改成墓碑，再发送修改后的内容。
+			// 不创建新会话文件 —— 否则每改一次侧栏就多出一条完全同名的会话。
 			if (_pendingBranchEntryId is { Length: > 0 } branchId)
 			{
 				_pendingBranchEntryId = null;
-				Dispatch(() => _editNotice.IsVisible(false));
-				Session.ForkAt(branchId);
-				RefreshPickers();
-				Forked?.Invoke(this);
+				Session.RewindForResend(branchId);
+				// 旧回答已从投影里移除：先撤掉时间线上的旧行再发新消息。
+				// 检查点快照之后的续延可能在线程池上，UI 更新统一走 Dispatch。
+				Dispatch(() =>
+				{
+					_editNotice.IsVisible(false);
+					RefreshPickers();
+					Render();
+					RefreshTitle();
+					Rewritten?.Invoke(this);
+				});
 			}
 
 			if (_attachments.Count > 0)

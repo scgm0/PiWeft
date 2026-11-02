@@ -2177,6 +2177,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				CustomEntry custom => $"custom {custom.CustomType}",
 				CustomMessageEntry customMessage => $"custom_message {customMessage.CustomType}",
 				LabelEntry => "label",
+				DeletedEntry deleted => $"deleted（{(deleted.Reason ?? "truncated")}）",
 				_ => entry.Type,
 			};
 
