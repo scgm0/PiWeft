@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
@@ -31,6 +32,12 @@ public enum ChatRole
 
 /// <summary>聊天记录里的图片：Base64 数据与媒体类型。</summary>
 public sealed record ChatImage(string Data, string MimeType);
+
+/// <summary>
+/// 一次思考段的独立起止（Unix 毫秒）。只在当前进程的流式事件里可得：
+/// pi 的会话文件只保存 assistant 的请求起点与整条回复耗时，不落盘思考段起止。
+/// </summary>
+internal readonly record struct ChatThinkingTiming(long StartedAt, long EndedAt);
 
 /// <summary>聊天记录中的一行。</summary>
 public sealed record ChatEntry
@@ -90,6 +97,17 @@ public sealed record ChatEntry
 
 	/// <summary>当前消息的思考块仍在生成。</summary>
 	public bool IsThinking { get; init; }
+
+	/// <summary>思考段开始时刻（Unix 毫秒）；来自流式 thinking_start，历史 pi 会话缺省。</summary>
+	public long? ThinkingStartedAt { get; init; }
+
+	/// <summary>思考段结束时刻（Unix 毫秒）；来自 thinking_end / 首个正文 delta。</summary>
+	public long? ThinkingEndedAt { get; init; }
+
+	/// <summary>独立思考耗时；两端都缺失或历史数据没有思考事件时为 null。</summary>
+	public long? ThinkingDurationMs => ThinkingStartedAt is { } startedAt && ThinkingEndedAt is { } endedAt && endedAt >= startedAt
+		? endedAt - startedAt
+		: null;
 
 	/// <summary>工具名，仅工具行有值。</summary>
 	public string? ToolName { get; init; }
@@ -214,6 +232,10 @@ public sealed class ChatViewModel : IDisposable
 	// 否则下一回合可能在新长度上误把上一回合的前缀当成仍然成立。
 	private int _streamingGeneration;
 	private long _streamingTimestamp;
+	private long _streamingThinkingStartedAt;
+	private long _streamingThinkingEndedAt;
+	private readonly ConcurrentDictionary<long, ChatThinkingTiming> _thinkingTimings = new();
+	private long _thinkingTimingsRevision;
 	private bool _isThinking;
 	private bool _isStreaming;
 	private bool _isCompacting;
@@ -250,6 +272,15 @@ public sealed class ChatViewModel : IDisposable
 			}
 		}
 	}
+
+	/// <summary>
+	/// 当前进程已经观测到的思考段起止，按 assistant 请求时间戳索引。轨迹页用它给已落盘的
+	/// 思考行补独立耗时；新进程重新打开历史会话时表为空，回退到发生时刻（不伪造耗时）。
+	/// </summary>
+	internal IReadOnlyDictionary<long, ChatThinkingTiming> ThinkingTimings => _thinkingTimings;
+
+	/// <summary>思考起止表的版本：轨迹页据此识别「条目没变、只补到了思考耗时」。</summary>
+	internal long ThinkingTimingsRevision => Volatile.Read(ref _thinkingTimingsRevision);
 
 	/// <summary>
 	/// 本回合开始的单调时间戳（<see cref="System.Diagnostics.Stopwatch.GetTimestamp"/> 口径），
@@ -452,6 +483,8 @@ public sealed class ChatViewModel : IDisposable
 					Text = string.Empty,
 					Thinking = string.Empty,
 					IsThinking = _isThinking,
+					ThinkingStartedAt = _streamingThinkingStartedAt > 0 ? _streamingThinkingStartedAt : null,
+					ThinkingEndedAt = _streamingThinkingEndedAt > 0 ? _streamingThinkingEndedAt : null,
 					Timestamp = _streamingTimestamp,
 					EntryId = $"live-assistant/{_streamingTimestamp}",
 					IsStreaming = true,
@@ -653,6 +686,12 @@ public sealed class ChatViewModel : IDisposable
 
 				case MessageUpdateEvent { AssistantMessageEvent: TextDeltaEvent delta }:
 					_streamingText.Append(delta.Delta);
+					// 有的 provider 不补 thinking_end：首个正文 delta 就是思考段的事实终点。
+					if (_streamingThinkingStartedAt > 0 && _streamingThinkingEndedAt == 0)
+					{
+						_streamingThinkingEndedAt = NowMs();
+					}
+
 					break;
 
 				case MessageUpdateEvent { AssistantMessageEvent: ThinkingStartEvent }:
@@ -661,15 +700,28 @@ public sealed class ChatViewModel : IDisposable
 						_streamingThinking.Append("\n\n");
 					}
 
+					if (_streamingThinkingStartedAt <= 0)
+					{
+						_streamingThinkingStartedAt = NowMs();
+					}
+
+					_streamingThinkingEndedAt = 0;
 					_isThinking = true;
 					break;
 
 				case MessageUpdateEvent { AssistantMessageEvent: ThinkingDeltaEvent thinking }:
+					if (_streamingThinkingStartedAt <= 0)
+					{
+						_streamingThinkingStartedAt = NowMs();
+					}
+
+					_streamingThinkingEndedAt = 0;
 					_streamingThinking.Append(thinking.Delta);
 					_isThinking = true;
 					break;
 
 				case MessageUpdateEvent { AssistantMessageEvent: ThinkingEndEvent }:
+					_streamingThinkingEndedAt = NowMs();
 					_isThinking = false;
 					break;
 
@@ -680,6 +732,11 @@ public sealed class ChatViewModel : IDisposable
 					break;
 
 				case MessageEndEvent ended:
+					if (ended.Message is AssistantMessage endedAssistant)
+					{
+						RecordThinkingTiming(endedAssistant);
+					}
+
 					if (ended.Message is AssistantMessage { StopReason: StopReason.Error or StopReason.Aborted } failed)
 					{
 						AppLog.For<ChatViewModel>().ZLogWarning($"Assistant stopped: session={_session?.Session.SessionId}, reason={failed.StopReason.ToString()}");
@@ -765,8 +822,30 @@ public sealed class ChatViewModel : IDisposable
 		_streamingThinking.Reset();
 		_streamingGeneration++;
 		_streamingTimestamp = 0;
+		_streamingThinkingStartedAt = 0;
+		_streamingThinkingEndedAt = 0;
 		_isThinking = false;
 	}
+
+	/// <summary>把本轮流式思考的起止落到按请求时间戳索引的表里；无思考事件时什么都不记。</summary>
+	private void RecordThinkingTiming(AssistantMessage message)
+	{
+		if (_streamingThinkingStartedAt <= 0)
+		{
+			return;
+		}
+
+		var endedAt = _streamingThinkingEndedAt > 0 ? _streamingThinkingEndedAt : NowMs();
+		if (endedAt < _streamingThinkingStartedAt)
+		{
+			endedAt = _streamingThinkingStartedAt;
+		}
+
+		_thinkingTimings[message.Timestamp] = new ChatThinkingTiming(_streamingThinkingStartedAt, endedAt);
+		Interlocked.Increment(ref _thinkingTimingsRevision);
+	}
+
+	private static long NowMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
 	/// <summary>
 	/// 仅供 <c>--ui-smoke stream</c>：把一段流式增量塞进当前行。没有模型也能复现
@@ -1055,11 +1134,14 @@ public sealed class ChatViewModel : IDisposable
 
 				if (text.Length > 0 || thinking.Length > 0 || images.Count > 0)
 				{
+					var hasThinkingTiming = _thinkingTimings.TryGetValue(assistant.Timestamp, out var thinkingTiming);
 					_entries.Add(new ChatEntry
 					{
 						Role = ChatRole.Assistant,
 						Text = text,
 						Thinking = thinking,
+						ThinkingStartedAt = hasThinkingTiming ? thinkingTiming.StartedAt : null,
+						ThinkingEndedAt = hasThinkingTiming ? thinkingTiming.EndedAt : null,
 						DurationMs = assistant.DurationMs,
 						EntryId = entryIds.GetValueOrDefault(message),
 						Images = images,

@@ -1423,9 +1423,10 @@ public sealed partial class MainWindow : Window
 		_tabEntries.Add(tab);
 		AddTab(header: null!, content: tab.View, entry: tab);
 
-		// 这个会话自己的右侧面板：文件 / Git / 终端都以它的工作目录为基准，默认收起。
+		// 这个会话自己的右侧面板：文件 / Git / 轨迹 / 检查点都以它的工作目录为基准，默认收起。
 		// 面板视图挂在共享宿主里，切换会话只切可见性，终端等状态不会丢。
 		var panel = new RightPanel(() => session.Cwd, CreateGitAssistant(session, environment), OpenGitAssistantSettings);
+		panel.BindTrajectory(() => tab.TrajectorySnapshot());
 		panel.SetHeaderRightInset(_panelHeaderRightInset);
 		_sessionPanels[tab] = panel;
 		_panelHost.Children(panel.View);
@@ -1704,6 +1705,41 @@ public sealed partial class MainWindow : Window
 					break;
 				case "files":
 					ShowFilesPanel();
+					break;
+				case "trajectory-initial":
+					// 轨迹页的初始态：不选记录，检查轮头、默认折叠与「加载更早记录」入口。
+					ShowTrajectoryPanel();
+					var initialTrajectoryTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(900));
+					initialTrajectoryTimer.Tick += () =>
+					{
+						initialTrajectoryTimer.Stop();
+						if (CurrentTab() is { } initialTab &&
+							_sessionPanels.TryGetValue(initialTab, out var initialPanel))
+						{
+							initialPanel.ReportTrajectoryForSmoke();
+						}
+					};
+					initialTrajectoryTimer.Start();
+					break;
+				case "trajectory":
+					// 轨迹页的视觉验收：展开右栏、选中一条工具记录并停一拍，脚本截图后读轮数/记录数。
+					ShowTrajectoryPanel();
+					if (CurrentTab() is { } trajectoryTab && _sessionPanels.TryGetValue(trajectoryTab, out var trajectoryPanel))
+					{
+						trajectoryPanel.SelectTrajectoryRecordForSmoke();
+					}
+
+					var trajectoryTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(900));
+					trajectoryTimer.Tick += () =>
+					{
+						trajectoryTimer.Stop();
+						if (CurrentTab() is { } trajectoryTab &&
+							_sessionPanels.TryGetValue(trajectoryTab, out var trajectoryPanel))
+						{
+							trajectoryPanel.ReportTrajectoryForSmoke();
+						}
+					};
+					trajectoryTimer.Start();
 					break;
 				case "checkpoints-diff":
 					ShowCheckpointsPanel();
@@ -2093,6 +2129,8 @@ public sealed partial class MainWindow : Window
 
 	private void ShowFilesPanel() => SetRightPanel(open: true, RightPanelSection.Files);
 
+	private void ShowTrajectoryPanel() => SetRightPanel(open: true, RightPanelSection.Trajectory);
+
 	private void ShowCheckpointsPanel() => SetRightPanel(open: true, RightPanelSection.Checkpoints);
 
 	/// <summary>Ctrl+Shift+D / 命令面板：开关当前会话底部的终端面板（终端不再占用右侧面板）。</summary>
@@ -2424,6 +2462,7 @@ public sealed partial class MainWindow : Window
 			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsDialog),
 			new(Strings.Git, Strings.ShortcutGit, ShowGitPanel),
 			new(Strings.FileBrowser, Strings.ShortcutFilesPanel, ShowFilesPanel),
+			new(Strings.Trajectory, string.Empty, ShowTrajectoryPanel),
 			new(Strings.Checkpoints, Strings.ShortcutCheckpoints, ShowCheckpointsPanel),
 			new(Strings.Terminal, Strings.ShortcutTerminal, ToggleTerminalPanel),
 			new(Strings.RightPanel, Strings.ShortcutRightPanel, ToggleRightPanel),

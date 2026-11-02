@@ -357,6 +357,7 @@ internal sealed class ConversationTimeline : IDisposable
 		// 流式行按快照比较：为了判断「要不要重绑」而物化整篇正文，等于把省下的拷贝又请回来。
 		if (left.Role != right.Role || !left.SameText(right) || !left.SameThinking(right) ||
 			left.IsThinking != right.IsThinking || left.IsStreaming != right.IsStreaming ||
+			left.ThinkingStartedAt != right.ThinkingStartedAt || left.ThinkingEndedAt != right.ThinkingEndedAt ||
 			left.Timestamp != right.Timestamp || left.EntryId != right.EntryId || left.ToolName != right.ToolName ||
 			left.IsError != right.IsError || left.IsStopped != right.IsStopped ||
 			left.DurationMs != right.DurationMs || left.Patch != right.Patch ||

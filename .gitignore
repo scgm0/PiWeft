@@ -7,6 +7,9 @@ TestResults/
 *.coverage
 *.coveragexml
 
+# MewUI 运行时字体缓存（从仓库根启动桌面端/冒烟时会生成）
+Aprillz/
+
 # Local tools and editors
 .vs/
 .idea/

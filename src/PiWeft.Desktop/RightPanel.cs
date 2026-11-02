@@ -8,6 +8,7 @@ public enum RightPanelSection
 {
 	Files,
 	Git,
+	Trajectory,
 	Checkpoints,
 }
 
@@ -30,12 +31,16 @@ public sealed class RightPanel : IDisposable
 	private readonly Dictionary<RightPanelSection, UIElement> _views = [];
 	private readonly GitCommitAssistant? _gitAssistant;
 	private readonly Action? _openGitSettings;
+	private readonly DispatcherTimer _trajectoryTimer = new(TimeSpan.FromSeconds(1));
+	private Func<TrajectorySource>? _trajectorySource;
 	private FileBrowserView? _files;
 	private GitView? _git;
+	private TrajectoryView? _trajectory;
 	private CheckpointsView? _checkpoints;
 	private RightPanelSection _section;
 	private double _headerRightInset = AppTheme.Space1;
 	private bool _open;
+	private bool _compactTabs;
 	private bool _disposed;
 
 	public RightPanel(
@@ -54,11 +59,13 @@ public sealed class RightPanel : IDisposable
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Center);
 
-		// 顺序固定为「文件 → Git → 检查点」：文件是打开面板最常用的入口。
+		// 顺序固定为「文件 → Git → 轨迹 → 检查点」：文件是打开面板最常用的入口，
+		// 轨迹是需要盯着的会话复盘面，检查点是最低频的回退动作。
 		foreach (var option in new[]
 		{
 			(Section: RightPanelSection.Files, Icon: "file-text", Title: Strings.FileBrowser),
 			(Section: RightPanelSection.Git, Icon: "git-branch", Title: Strings.SidebarGit),
+			(Section: RightPanelSection.Trajectory, Icon: "activity", Title: Strings.Trajectory),
 			(Section: RightPanelSection.Checkpoints, Icon: "clock", Title: Strings.Checkpoints),
 		})
 		{
@@ -102,8 +109,18 @@ public sealed class RightPanel : IDisposable
 				.LastChildFill()
 				.Children(_header.DockTop(), _host));
 
+		// 窄面板（360 是允许的下限）放不下四个「图标 + 文字」页签：低于阈值时只留图标，
+		// 完整名称仍在悬停提示里。窗口按钮的右上角预留宽度不变，避免页签钻到按钮下面。
+		_view.SizeChanged += args => UpdateTabDensity(args.NewSize.Width);
 		UpdateTabs();
+		_trajectoryTimer.Tick += TickTrajectory;
 	}
+
+	/// <summary>
+	/// 绑定轨迹数据源（会话分支 + 聊天流式尾行）。放在构造之后单独绑定：
+	/// 会话标签页要先构造自己的 ChatViewModel，右侧面板才能拿到它。
+	/// </summary>
+	internal void BindTrajectory(Func<TrajectorySource> source) => _trajectorySource = source;
 
 	/// <summary>面板根元素：由主窗口放进内容区最右侧的定宽列，从窗框顶部一直铺到底。</summary>
 	public UIElement View => _view;
@@ -146,12 +163,21 @@ public sealed class RightPanel : IDisposable
 		{
 			Refresh();
 		}
+
+		// 轨迹页是唯一需要「边跑边看」的分段：面板开着时每秒推一次进度，
+		// 切到别的分段或收起就停，静态分段不占调度。
+		_trajectoryTimer.Stop();
+		if (section == RightPanelSection.Trajectory)
+		{
+			_trajectoryTimer.Start();
+		}
 	}
 
 	/// <summary>收起面板；终端等视图保持存活，再次展开时延续原来的状态。</summary>
 	public void Close()
 	{
 		_open = false;
+		_trajectoryTimer.Stop();
 		_view.IsVisible(false);
 	}
 
@@ -169,6 +195,12 @@ public sealed class RightPanel : IDisposable
 
 	/// <summary>视觉验收：打印检查点行数与摘要。</summary>
 	public void ReportCheckpointsForSmoke() => _checkpoints?.ReportForSmoke();
+
+	/// <summary>视觉验收：选中轨迹里的第一条工具记录，让检查器显示入参与结果。</summary>
+	public void SelectTrajectoryRecordForSmoke() => _trajectory?.SelectForSmoke();
+
+	/// <summary>视觉验收：打印轨迹轮数、记录数与当前窗口。</summary>
+	public void ReportTrajectoryForSmoke() => _trajectory?.ReportForSmoke();
 
 	/// <summary>视觉验收：展开第一条检查点的变更概览。</summary>
 	public void ExpandFirstCheckpointDiffForSmoke() => _checkpoints?.ExpandFirstDiffForSmoke();
@@ -192,10 +224,32 @@ public sealed class RightPanel : IDisposable
 				_git?.Refresh();
 				break;
 
+			case RightPanelSection.Trajectory:
+				_trajectory?.Refresh();
+				break;
+
 			case RightPanelSection.Checkpoints:
 				_checkpoints?.Refresh();
 				break;
 		}
+	}
+
+	private void TickTrajectory()
+	{
+		if (_disposed || !_open || _section != RightPanelSection.Trajectory)
+		{
+			_trajectoryTimer.Stop();
+			return;
+		}
+
+		// 面板跟着会话切换只切可见性（不 Close）：隐藏时跳过取数，切回来下一次秒表继续，
+		// 不必在 MainWindow 里为「活动会话变了」再加一条恢复路径。
+		if (!_view.IsVisible)
+		{
+			return;
+		}
+
+		_trajectory?.Refresh();
 	}
 
 	/// <summary>主题切换后刷新角色文本与图标颜色；已创建的视图各自跟随。</summary>
@@ -204,6 +258,7 @@ public sealed class RightPanel : IDisposable
 		AppStyles.ApplyTextColors((Element)View);
 		_files?.ApplyTheme();
 		_git?.ApplyTheme();
+		_trajectory?.ApplyTheme();
 		_checkpoints?.ApplyTheme();
 		UpdateTabs();
 	}
@@ -218,6 +273,7 @@ public sealed class RightPanel : IDisposable
 			{
 				RightPanelSection.Files => (_files = new FileBrowserView(_cwd)).View,
 				RightPanelSection.Git => (_git = new GitView(_cwd, _gitAssistant, _openGitSettings)).View,
+				RightPanelSection.Trajectory => (_trajectory = new TrajectoryView(ProjectTrajectory)).View,
 				_ => (_checkpoints = new CheckpointsView(_cwd)).View,
 			};
 
@@ -241,6 +297,13 @@ public sealed class RightPanel : IDisposable
 		{
 			var active = tab.Section == _section;
 			tab.Button.StyleName(active ? AppStyles.SegmentButtonActive : AppStyles.SegmentButton);
+			tab.Label.IsVisible(!_compactTabs);
+			tab.Button.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0));
+			if (tab.Button.Content is StackPanel content)
+			{
+				content.Spacing(_compactTabs ? 0 : 5);
+			}
+
 			tab.Label.Text(TitleFor(tab.Section));
 			if (active)
 			{
@@ -255,9 +318,24 @@ public sealed class RightPanel : IDisposable
 		}
 	}
 
+	private void UpdateTabDensity(double width)
+	{
+		var compact = width > 0 && width < 410;
+		if (compact == _compactTabs)
+		{
+			return;
+		}
+
+		_compactTabs = compact;
+		UpdateTabs();
+	}
+
+	private TrajectorySource ProjectTrajectory() => _trajectorySource?.Invoke() ?? new TrajectorySource([], [], false);
+
 	private static string TitleFor(RightPanelSection section) => section switch
 	{
 		RightPanelSection.Git => Strings.SidebarGit,
+		RightPanelSection.Trajectory => Strings.Trajectory,
 		RightPanelSection.Checkpoints => Strings.Checkpoints,
 		_ => Strings.FileBrowser,
 	};
@@ -270,6 +348,8 @@ public sealed class RightPanel : IDisposable
 		}
 
 		_disposed = true;
+		_trajectoryTimer.Stop();
+		_trajectory?.Dispose();
 		_git?.Dispose();
 	}
 

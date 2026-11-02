@@ -2722,6 +2722,17 @@ public sealed partial class SessionTab : IDisposable
 		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
 	}
 
+	/// <summary>
+	/// 轨迹页的数据源：当前分支的会话条目（已落盘事实）+ 聊天投影里还没落盘的流式尾行。
+	/// 不另开读取通道：会话文件与聊天投影同属这个标签，切换面板不需要等待 IO。
+	/// </summary>
+	internal TrajectorySource TrajectorySnapshot() => new(
+		Session.Session.GetBranch(),
+		_chat.Entries(),
+		IsStreaming || Session.IsCompacting,
+		_chat.ThinkingTimings,
+		_chat.ThinkingTimingsRevision);
+
 	private SessionStatisticsDisplay StatisticsDisplay()
 	{
 		var manager = Session.Session;

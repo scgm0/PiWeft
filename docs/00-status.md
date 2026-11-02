@@ -108,6 +108,7 @@ OAuth 支持授权码 + PKCE、动态注册、回环回调、401 刷新重放与
   思考级别的点选写进 `settings.json` 的 `modelThinkingLevels[provider/model]`（每模型默认档位，未知字段原样保留），
   解析次序是显式传入 > 会话记录 > 每模型默认 > 全局 `defaultThinkingLevel` > off，再 clamp 到该模型支持的档位。
 - Git 状态/diff、暂存/未暂存目录树、暂存/取消暂存（含目录级）、提交（Ctrl+Enter）、分支切换/新建、AI 提交摘要（默认跟随会话，设置里可固定模型/思考级别与自定义提示词模板）、源代码管理图（泳道/引用筛选/提交详情与文件 diff/加载更多）、比较更改（三点比较、ahead/behind、文件 diff）、远端同步（fetch / pull `--ff-only` / push，首次推送自动建立上游跟踪）、stash 收起与应用/丢弃（按未暂存/已暂存/冲突分节，带批量暂存与提交禁用态）、命令 Dock（PTY 终端）、跨会话用量统计与余额查询、实时会话统计、深浅主题与内嵌字体/图标。检查点不再占用 Git 面板，改到右侧面板的「检查点」分段：列出 `refs/pi-checkpoints` 快照、按需展开相对当前工作区的变更概览（`git diff --stat`，完整补丁交给编辑器）、恢复工作区（恢复前自动打 `before-restore` 快照）；会话仍按回合自动快照。所有 git 子进程钉住 `LC_ALL=C`，失败按输出特征分类成可操作的中文提示、原始输出留在详情里；状态读取用 `--porcelain=v1 -z`，中文 / 空格 / emoji / 换行路径都按原始 UTF-8 解析。
+- 右侧「轨迹」分段（会话复盘，`Ctrl+J` 打开后切「轨迹」）：按轮分组、默认只展开最后一轮的账本（轮头是「N 条 · M 工具 · 输入→输出 · 耗时」，轮内连续工具超过 8 条压成一组），顶部四条泳道（输入/模型/工具/过程）按时间布刻度、点刻度定位记录，底部检查器显示选中记录的完整时间、状态、模型、思考档位、token、入参/结果/思考/提示词并可复制。数据只来自当前分支与还没落盘的流式尾行；记录行按固定行高虚拟化（超长会话也只建视口附近的行），「加载更早记录」每次补尾部三轮。投影是增量的：append-only 分支只重建最后一轮，已收口的轮直接复用；进行中的轮头只改时长文本，流式正文超过摘要所需前缀后不再每秒重建虚拟列表。思考行优先用当前进程从 `thinking_start` / `thinking_end` 捕获的独立起止；Pi 会话文件本身不持久化这两个时刻，重开历史会话时显示发生时刻，不伪造耗时。视觉验收：`xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-trajectory-smoke.sh`（夹具会话含 6 轮、连续工具组、压缩与扩展过程，深浅主题各一张）。
 - 供应商/模型、API Key、Agent 设置、MCP 和 JSON 配置管理（MCP 服务器行内显示授权状态，可 授权 / 重新授权 / 清除凭据；授权流程与 CLI 共用 `PiWeft.Mcp.McpLogin`）；全局/项目作用域、未知字段保留、原子写入和冲突检查。设置是窗口级模态弹窗，未保存修改受保护。
 - 按工作目录单实例；后台有界日志；`--self-check`、`--theme-smoke` 及截图脚本用于验证。检查点面板的视觉验收：`xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh`。
 
@@ -134,6 +135,6 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。检查点面板的视觉验收：`xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh`。2026-10-31 全量测试：非桌面 1055 项（Agent 24 / Ai 214 / JavaScript 56 / Mcp 91 / Cli 144 / CodingAgent 526）、Desktop 1109 项，共 2164 项，全部通过；连续多轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
+GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。检查点面板的视觉验收：`xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh`；轨迹页的视觉验收：`xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-trajectory-smoke.sh`。2026-10-31 全量测试：非桌面 1055 项（Agent 24 / Ai 214 / JavaScript 56 / Mcp 91 / Cli 144 / CodingAgent 526）、Desktop 1109 项，共 2164 项，全部通过；连续多轮并行全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
 
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。真实数据互操作测试受本机会话/技能数据是否存在影响；provider 使用打桩服务，不能替代真实供应商联网验证。

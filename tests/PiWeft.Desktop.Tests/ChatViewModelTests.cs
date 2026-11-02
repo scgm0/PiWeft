@@ -499,6 +499,9 @@ public class ChatViewModelTests : IDisposable
 			Assert.Equal("plan", live.Thinking);
 			Assert.False(live.IsThinking);
 			Assert.Equal(123, live.Timestamp);
+			Assert.NotNull(live.ThinkingStartedAt);
+			Assert.NotNull(live.ThinkingEndedAt);
+			Assert.True(live.ThinkingDurationMs >= 0);
 		}
 		finally
 		{
@@ -508,6 +511,11 @@ public class ChatViewModelTests : IDisposable
 
 		var final = viewModel.Entries()[^1];
 		Assert.Equal("firstsecond", final.Text);
+		Assert.NotNull(final.ThinkingStartedAt);
+		Assert.NotNull(final.ThinkingEndedAt);
+		Assert.True(final.ThinkingDurationMs >= 0);
+		Assert.True(viewModel.ThinkingTimings.ContainsKey(123));
+		Assert.True(viewModel.ThinkingTimingsRevision > 0);
 		Assert.Equal("plan", final.Thinking);
 		Assert.False(final.IsStreaming);
 	}
