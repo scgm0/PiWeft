@@ -15,21 +15,24 @@ public static class DiffView
 		var numbers = new List<string>();
 		var oldLine = 0;
 		var newLine = 0;
-		var lines = normalized.Split('\n');
-		for (var index = 0; index < lines.Length; index++)
+		// 逐行走 span：一份几千行的补丁用 Split('\n') 会白白分配几千个短字符串，
+		// 而行号列只需要每行一个计数。枚举结果与 Split 一致（含结尾空行）。
+		var lineCount = normalized.Length == 0 ? 1 : normalized.AsSpan().Count('\n') + 1;
+		var index = 0;
+		foreach (var line in normalized.AsSpan().EnumerateLines())
 		{
-			var line = lines[index];
-			if (line.StartsWith("@@", StringComparison.Ordinal))
+			var last = ++index == lineCount;
+			if (line.StartsWith("@@"))
 			{
-				(oldLine, newLine) = ParseHunkHeader(line, oldLine, newLine);
+				(oldLine, newLine) = DiffSyntax.ParseHunkHeader(line, oldLine, newLine);
 				numbers.Add(string.Empty);
 			}
-			else if (IsMetadata(line) || index == lines.Length - 1 && line.Length == 0) numbers.Add(string.Empty);
-			else if (line.StartsWith('-')) numbers.Add((oldLine++).ToString());
+			else if (DiffSyntax.IsMetadata(line) || last && line.IsEmpty) numbers.Add(string.Empty);
+			else if (line.StartsWith("-")) numbers.Add((oldLine++).ToString());
 			else
 			{
 				numbers.Add((newLine++).ToString());
-				if (!line.StartsWith('+')) oldLine++;
+				if (!line.StartsWith("+")) oldLine++;
 			}
 		}
 
@@ -58,10 +61,6 @@ public static class DiffView
 			.Padding(new Thickness(AppTheme.Space2, 4, AppTheme.Space2, 4))
 			.Child(new DockPanel().LastChildFill().Children(gutter.DockLeft(), horizontal));
 	}
-
-	private static bool IsMetadata(string line) => line.StartsWith("+++", StringComparison.Ordinal) ||
-		line.StartsWith("---", StringComparison.Ordinal) || line.StartsWith("diff ", StringComparison.Ordinal) ||
-		line.StartsWith("index ", StringComparison.Ordinal) || line.StartsWith('\\');
 
 	/// <summary>
 	/// 并排 diff：左旧右新两列，行数一致逐行对齐；每列可独立横向滚动，纵向共用外层滚动。
@@ -140,12 +139,8 @@ public static class DiffView
 		return marker + (old ? row.OldText : row.NewText);
 	}
 
-	internal static (int OldLine, int NewLine) ParseHunkHeader(string line, int fallbackOld, int fallbackNew)
-	{
-		var match = System.Text.RegularExpressions.Regex.Match(line, @"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@");
-		return match.Success && int.TryParse(match.Groups[1].Value, out var oldLine) && int.TryParse(match.Groups[2].Value, out var newLine)
-			? (oldLine, newLine) : (fallbackOld, fallbackNew);
-	}
+	internal static (int OldLine, int NewLine) ParseHunkHeader(string line, int fallbackOld, int fallbackNew) =>
+		DiffSyntax.ParseHunkHeader(line, fallbackOld, fallbackNew);
 
 	internal sealed class DiffClassifier : ITextClassifier
 	{

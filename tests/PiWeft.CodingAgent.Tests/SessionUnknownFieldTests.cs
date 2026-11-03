@@ -68,6 +68,17 @@ public class SessionUnknownFieldTests : IDisposable
 	}
 
 	[Fact]
+	public void UsageKeepsUnmodeledFieldsInsideCostAndUsage()
+	{
+		// pi 会往 usage 与 usage.cost 里加模型层没建模的字段（opencode 等供应商的
+		// cost.totalFromProvider 就是真实一例）。它们丢在一次 fork/导入/编辑重发之后，
+		// 就是用户历史被静默改写：会话文件里已经算好的费用明细不见了。
+		const string line = """{"type":"message","id":"a4","parentId":null,"timestamp":"t","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"p","model":"m","usage":{"input":10,"output":4,"cacheRead":0,"cacheWrite":0,"reasoning":390,"totalTokens":14,"cacheTtlMs":60000,"cost":{"input":0.04,"output":0.0002,"cacheRead":0,"cacheWrite":0,"total":0.0402,"totalFromProvider":false,"currency":"USD"}},"stopReason":"stop","timestamp":1}}""";
+
+		AssertSameJson(line, RoundTrip(line));
+	}
+
+	[Fact]
 	public void UnknownMessageRoleIsPreservedWhole()
 	{
 		// 未知角色整体落进 CustomMessage.Raw，已知 + 未知字段都不动。

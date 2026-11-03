@@ -12,6 +12,12 @@ public sealed record UsageCost
 	public double CacheWrite { get; init; }
 
 	public double Total { get; init; }
+
+	/// <summary>
+	/// 未建模的顶层字段，重写会话文件时原样输出（pi 会往里加东西，例如
+	/// <c>totalFromProvider</c>）。丢弃它等于在 <c>fork</c>/导入/编辑重发后改写用户的历史。
+	/// </summary>
+	public System.Text.Json.Nodes.JsonObject? Extra { get; init; }
 }
 
 /// <summary>一次助手回复的令牌统计。</summary>
@@ -40,6 +46,9 @@ public sealed record Usage
 		get => _cost;
 		init => _cost = value ?? new UsageCost();
 	}
+
+	/// <summary>未建模的顶层字段，重写时原样输出（与 <see cref="UsageCost.Extra"/> 同一条纪律）。</summary>
+	public System.Text.Json.Nodes.JsonObject? Extra { get; init; }
 
 	public static Usage Empty => new();
 

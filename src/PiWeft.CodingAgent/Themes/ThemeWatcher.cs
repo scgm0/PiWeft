@@ -15,7 +15,7 @@ public sealed class ThemeWatcher : IDisposable
 	private const int DebounceMs = 400;
 
 	private readonly List<FileSystemWatcher> _watchers = [];
-	private readonly object _gate = new();
+	private readonly Lock _gate = new();
 	private CancellationTokenSource? _debounce;
 	private bool _disposed;
 

@@ -20,7 +20,7 @@ internal static class MessageText
 	}
 
 	public static MultiLineTextBox Create(string text = "", bool muted = false, bool mono = false, bool wrap = true,
-		double? fontSize = null)
+		double? fontSize = null, bool smoothScroll = true)
 	{
 		return new MultiLineTextBox
 		{
@@ -40,6 +40,6 @@ internal static class MessageText
 			FontSize = fontSize ?? AppTheme.FontSizeChat,
 			Foreground = muted ? AppTheme.TextMuted : AppTheme.TextPrimary,
 			Tag = muted ? AppStyles.RoleMuted : AppStyles.RolePrimary,
-		}.PrimarySelection();
+		}.PrimarySelection(smoothScroll);
 	}
 }

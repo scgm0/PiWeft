@@ -305,7 +305,11 @@ internal static class ExecutionProcess
 	}
 
 	/// <summary>从工具参数 JSON 里取第一个存在的字符串字段。</summary>
-	private static string? JsonField(string arguments, params string[] names)
+	/// <remarks>
+	/// 形参是 span 而不是数组：这条路径在一次投影里会被每个工具条目调用一次，
+	/// <c>params string[]</c> 每次调用都要分配一个小数组，而实参全是内联字面量。
+	/// </remarks>
+	private static string? JsonField(string arguments, params ReadOnlySpan<string> names)
 	{
 		try
 		{

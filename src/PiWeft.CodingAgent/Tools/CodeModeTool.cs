@@ -761,7 +761,7 @@ public static class CodeModeTool
 	private sealed class CallLog
 	{
 		private readonly List<NestedCall> _calls = [];
-		private readonly object _gate = new();
+		private readonly Lock _gate = new();
 
 		public string NextId(string parentToolCallId)
 		{

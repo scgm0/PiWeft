@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace PiWeft.Desktop;
 
 /// <summary>文件树里的一个条目。</summary>
@@ -15,13 +17,17 @@ public static class ProjectFiles
 	/// <summary>可编辑文本文件的大小上限。</summary>
 	public const int MaxFileBytes = 1024 * 1024;
 
-	/// <summary>这些目录不参与列举：版本库、依赖与构建产物。</summary>
-	private static readonly HashSet<string> IgnoredDirectories = new(StringComparer.Ordinal)
+	/// <summary>
+	/// 这些目录不参与列举：版本库、依赖与构建产物。
+	/// 冻结集合把哈希预先算好并分段存放：目录列举要对每一项都查一次，普通字典的每次查找
+	/// 都要重算字符串哈希（依赖替换、层级遍历）。
+	/// </summary>
+	private static readonly FrozenSet<string> IgnoredDirectories = new HashSet<string>(StringComparer.Ordinal)
 	{
 		".git", ".vs", ".idea", ".vscode", "node_modules", "bin", "obj", "dist", "build", "out",
 		"target", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".cache", ".gradle", "packages",
 		"Pods", "DerivedData", ".terraform",
-	};
+	}.ToFrozenSet(StringComparer.Ordinal);
 
 	/// <summary>列举目录内容：先目录后文件，各按名称排序。<paramref name="relativeDir"/> 为空表示项目根。</summary>
 	/// <param name="statuses">可选的 Git 状态标记，键为相对路径。</param>

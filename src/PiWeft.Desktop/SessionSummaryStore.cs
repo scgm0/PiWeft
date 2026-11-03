@@ -17,6 +17,12 @@ internal sealed record SessionSummaryStamp
 	/// <summary>上次扫到的字节位置。</summary>
 	public required long Offset { get; init; }
 
+	/// <summary>
+	/// 续扫点之前那一小段字节的指纹。0 表示没有（旧缓存）：这种情况不续扫，直接全量重扫——
+	/// 会话被原地重写后偏移已经失效，宁可多读一遍也不能拿着错位置续读。
+	/// </summary>
+	public long TailHash { get; init; }
+
 	public required string Id { get; init; }
 
 	public required string Name { get; init; }
@@ -95,6 +101,7 @@ internal static class SessionSummaryStore
 					LastWriteTicks = lastWrite.Value,
 					HeadHash = Number(item["head"]) ?? 0,
 					Offset = Number(item["offset"]) ?? 0,
+					TailHash = Number(item["tail"]) ?? 0,
 					Id = Text(item["id"]),
 					Name = Text(item["name"]),
 					Cwd = Text(item["cwd"]),
@@ -133,6 +140,7 @@ internal static class SessionSummaryStore
 				["mtime"] = stamp.LastWriteTicks,
 				["head"] = stamp.HeadHash,
 				["offset"] = stamp.Offset,
+				["tail"] = stamp.TailHash,
 				["id"] = stamp.Id,
 				["name"] = stamp.Name,
 				["cwd"] = stamp.Cwd,

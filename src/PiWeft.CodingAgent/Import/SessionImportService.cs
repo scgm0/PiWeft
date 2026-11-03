@@ -451,7 +451,7 @@ public static class SessionImportService
 	}
 
 	/// <summary>取字符串字段；非字符串或缺失返回 <see langword="null"/>。</summary>
-	internal static string? Text(JsonNode? node, params string[] path)
+	internal static string? Text(JsonNode? node, params ReadOnlySpan<string> path)
 	{
 		var current = node;
 		foreach (var name in path)

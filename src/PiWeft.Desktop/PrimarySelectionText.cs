@@ -10,9 +10,14 @@ internal static class PrimarySelectionText
 	internal static IPrimarySelection? Service { get; set; }
 	private static readonly ConditionalWeakTable<TextBase, SelectionObserver> Observers = new();
 
-	public static T PrimarySelection<T>(this T control) where T : TextBase
+	/// <param name="smoothScroll">
+	/// 是否给多行文本框装帧驱动的平滑滚动。嵌在另一个平滑视口里、又自带高度上限的文本框要传
+	/// <see langword="false"/>：平滑控制器接管滚轮后要经滚动条回写文本偏移，嵌套场景里
+	/// 算不出正确余量，表现是吞掉滚轮但不移动；内建滚轮处理会直接写偏移。
+	/// </param>
+	public static T PrimarySelection<T>(this T control, bool smoothScroll = true) where T : TextBase
 	{
-		if (control is MultiLineTextBox multi) multi.SmoothScrolling();
+		if (smoothScroll && control is MultiLineTextBox multi) multi.SmoothScrolling();
 		if (Service is null || control is not TextBox and not MultiLineTextBox) return control;
 		Observers.GetValue(control, static text => new SelectionObserver(text));
 		return control;

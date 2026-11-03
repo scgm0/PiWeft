@@ -28,12 +28,30 @@ internal sealed class TrajectoryView : IDisposable
 
 	private const int InspectorTextLimit = 20_000;
 
+	/// <summary>检查器默认高度（DIP），与 <see cref="DesktopPreference.TrajectoryInspectorHeight"/> 默认值一致。</summary>
+	internal const double DefaultInspectorHeight = 222;
+
+	/// <summary>拖动分隔条时检查器允许的最小高度：再矮就只剩两行参数了。</summary>
+	internal const double MinInspectorHeight = 140;
+
+	/// <summary>面板再高也不把检查器拽成半个屏幕，历史账本才是主体。</summary>
+	internal const double MaxInspectorHeight = 560;
+
+	/// <summary>面板高度里留给表头、泳道概览与账本的最小空间，检查器不能吃掉这部分。</summary>
+	private const double InspectorReservedHeight = 260;
+
+	/// <summary>单块入参/结果的可见高度：超过后由文本控件自己滚动。</summary>
+	private const double InspectorTextMaxHeight = 200;
+
 	private readonly Func<TrajectorySource> _source;
 	private readonly ItemsControl _ledger;
 	private readonly ScrollViewer _ledgerScroll;
 	private readonly TextBlock _empty = new();
 	private readonly StackPanel _inspectorBody = new();
 	private readonly ScrollViewer _inspectorScroll;
+	private readonly Border _inspectorHost;
+	private readonly PaneSash _inspectorSash;
+	private double _inspectorHeight;
 	private readonly TrajectoryOverview _overview = new();
 	private readonly TextBlock _turns = new();
 	private readonly TextBlock _recordCount = new();
@@ -143,19 +161,23 @@ internal sealed class TrajectoryView : IDisposable
 			.NoHorizontalScroll();
 		_inspectorScroll.AutoHideScrollBars = true;
 
-		var inspector = new Border()
-			.Height(222)
+		// 检查器高度可拖：与 Git 面板同一条 PaneSash 路径（锚定按下时的高度，拖完再落盘）。
+		// 分隔条自己就是分界线，检查器不再另画一条上边框。
+		_inspectorHeight = Math.Clamp(
+			DesktopPreference.Load().TrajectoryInspectorHeight, MinInspectorHeight, MaxInspectorHeight);
+		_inspectorSash = new PaneSash(() => _inspectorHeight, SetInspectorHeight, SaveInspectorHeight);
+		_inspectorHost = new Border()
+			.Height(_inspectorHeight)
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
-			.BorderThickness(new Thickness(0, 1, 0, 0))
-			.WithTheme((theme, border) => border.BorderBrush = AppTheme.For(theme).BorderSubtle)
 			.Child(_inspectorScroll);
 
-		View = new Border().Child(new Grid().Rows("Auto,Auto,*,Auto")
+		View = new Border().Child(new Grid().Rows("Auto,Auto,*,Auto,Auto")
 			.Children(
 				header.Row(0),
 				overview.Row(1),
 				new Grid().Children(_ledger, _empty).Row(2),
-				inspector.Row(3)));
+				_inspectorSash.Row(3),
+				_inspectorHost.Row(4)));
 
 		ShowInspector(null);
 		// 面板可能在构造后才被绑定数据源；这里先取一帧，避免首次切到轨迹分段时
@@ -165,6 +187,60 @@ internal sealed class TrajectoryView : IDisposable
 
 	public UIElement View { get; }
 
+	/// <summary>测试用：当前检查器高度（DIP）。</summary>
+	internal double InspectorHeightForTests => _inspectorHeight;
+
+	/// <summary>测试用：检查器宿主（拖动高度落在这个 Border 上）。</summary>
+	internal Border InspectorHostForTests => _inspectorHost;
+
+	/// <summary>测试用：拖拽的落点。不写盘，避免测试污染真实 desktop.json。</summary>
+	internal void SetInspectorHeightForTests(double height) => SetInspectorHeight(height);
+
+	private void SetInspectorHeight(double height)
+	{
+		_inspectorHeight = ClampInspectorHeight(height);
+		_inspectorHost.Height(_inspectorHeight);
+	}
+
+	/// <summary>面板被缩小后，固定的检查器高度不能把账本挤没；拖完的落点重新夹回可用范围。</summary>
+	private double ClampInspectorHeight(double height)
+	{
+		var available = View is { } view ? view.Bounds.Height : 0;
+		var max = available > 0
+			? Math.Min(MaxInspectorHeight, Math.Max(MinInspectorHeight, available - InspectorReservedHeight))
+			: MaxInspectorHeight;
+		return Math.Clamp(height, MinInspectorHeight, max);
+	}
+
+	private void EnsureInspectorHeightFits()
+	{
+		if (View.Bounds.Height <= 0)
+		{
+			return;
+		}
+
+		var clamped = ClampInspectorHeight(_inspectorHeight);
+		if (Math.Abs(clamped - _inspectorHeight) < 0.5)
+		{
+			return;
+		}
+
+		_inspectorHeight = clamped;
+		_inspectorHost.Height(clamped);
+	}
+
+	private void SaveInspectorHeight()
+	{
+		try
+		{
+			(DesktopPreference.Load() with { TrajectoryInspectorHeight = _inspectorHeight }).Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			// 布局记住失败不影响使用，下一次拖动再试。
+		}
+	}
+
 	/// <summary>重新读取数据源；入口没变时只推进进行中的秒表。</summary>
 	public void Refresh()
 	{
@@ -172,6 +248,8 @@ internal sealed class TrajectoryView : IDisposable
 		{
 			return;
 		}
+
+		EnsureInspectorHeightFits();
 
 		TrajectorySource source;
 		try
@@ -1043,24 +1121,20 @@ internal sealed class TrajectoryView : IDisposable
 					.FontWeight(FontWeight.SemiBold)
 					.SubtleText()
 					.VerticalAlignment(VerticalAlignment.Center));
-		var body = new TextBlock()
-			.Text(display)
-			.FontFamily(AppTheme.MonoFont)
-			.FontSize(AppTheme.FontSizeMicro)
-			.MutedText()
-			.TextWrapping(TextWrapping.Wrap);
-		var scroll = new ScrollViewer()
-			.Content(body)
-			.AutoVerticalScroll()
-			.NoHorizontalScroll()
-			.MaxHeight(200);
-		scroll.AutoHideScrollBars = true;
+		// 用有界 MultiLineTextBox，而不是在检查器里再套一个 ScrollViewer：
+		// 嵌套的 SmoothScrollViewer 会把滚轮判给外层（检查点页曾修过同一个问题）。
+		// 这里也不给文本框装 SmoothScrolling：它嵌在检查器的平滑视口里，平滑控制器接管滚轮后
+		// 要经滚动条回写文本偏移，嵌套场景里算不出正确余量，表现是吞掉滚轮却不移动；
+		// 文本控件内建的滚轮处理直接写偏移，超过 200 DIP 才内部滚动，短文本仍长到内容高度。
+		var body = MessageText.Create(display, muted: true, mono: true, fontSize: AppTheme.FontSizeMicro,
+				smoothScroll: false)
+			.MaxHeight(InspectorTextMaxHeight);
 		var box = new Border()
 			.StyleName(AppStyles.Card)
 			.CornerRadius(AppTheme.RadiusSm)
 			.Padding(new Thickness(AppTheme.Space2))
 			.Margin(new Thickness(0, 0, 0, AppTheme.Space1))
-			.Child(scroll);
+			.Child(body);
 		return new StackPanel()
 			.Spacing(2)
 			.Margin(new Thickness(0, AppTheme.Space3, 0, 0))

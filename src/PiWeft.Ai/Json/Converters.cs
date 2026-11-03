@@ -184,6 +184,12 @@ internal static class PiJsonValue
 		writer.WriteEndArray();
 	}
 
+	/// <summary>用量对象里已建模的字段；其余原样搬运（pi 会加 <c>cost.totalFromProvider</c> 之类）。</summary>
+	private static readonly string[] UsageKeys =
+		["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "reasoning", "totalTokens", "cost"];
+
+	private static readonly string[] UsageCostKeys = ["input", "output", "cacheRead", "cacheWrite", "total"];
+
 	public static Usage ReadUsage(JsonObject? obj)
 	{
 		if (obj is null)
@@ -201,6 +207,7 @@ internal static class PiJsonValue
 			CacheWrite1h = Long(obj, "cacheWrite1h"),
 			Reasoning = Long(obj, "reasoning"),
 			TotalTokens = Long(obj, "totalTokens") ?? 0,
+			Extra = ReadExtras(obj, UsageKeys),
 			Cost = new UsageCost
 			{
 				Input = Double(cost, "input") ?? 0,
@@ -208,6 +215,7 @@ internal static class PiJsonValue
 				CacheRead = Double(cost, "cacheRead") ?? 0,
 				CacheWrite = Double(cost, "cacheWrite") ?? 0,
 				Total = Double(cost, "total") ?? 0,
+				Extra = ReadExtras(cost, UsageCostKeys),
 			},
 		};
 	}
@@ -237,7 +245,9 @@ internal static class PiJsonValue
 		writer.WriteNumber("cacheRead", usage.Cost.CacheRead);
 		writer.WriteNumber("cacheWrite", usage.Cost.CacheWrite);
 		writer.WriteNumber("total", usage.Cost.Total);
+		WriteExtras(writer, usage.Cost.Extra);
 		writer.WriteEndObject();
+		WriteExtras(writer, usage.Extra);
 		writer.WriteEndObject();
 	}
 

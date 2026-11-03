@@ -54,7 +54,13 @@ public sealed class SessionCatalog
 	/// 侧栏一行的缓存。会话文件是只追加的，因此除了长度/时间戳之外还记住
 	/// 上次扫到的行边界与首行指纹：文件变长时只扫新增的字节，不重读整份几十 MB。
 	/// </summary>
-	private sealed record SummaryStamp(long Length, DateTime LastWrite, SessionListItem Item, long Offset, long HeadHash);
+	private sealed record SummaryStamp(
+		long Length,
+		DateTime LastWrite,
+		SessionListItem Item,
+		long Offset,
+		long HeadHash,
+		long TailHash);
 
 	/// <summary>磁盘摘要是否已装载：第一次构建列表时才读，避免构造期做 IO。</summary>
 	private bool _persistedLoaded;
@@ -101,7 +107,8 @@ public sealed class SessionCatalog
 						Preview = stamp.Preview,
 					},
 					stamp.Offset,
-					stamp.HeadHash);
+					stamp.HeadHash,
+					stamp.TailHash);
 			}
 		}
 	}
@@ -124,6 +131,7 @@ public sealed class SessionCatalog
 					LastWriteTicks = entry.Value.LastWrite.Ticks,
 					HeadHash = entry.Value.HeadHash,
 					Offset = entry.Value.Offset,
+					TailHash = entry.Value.TailHash,
 					Id = entry.Value.Item.Id,
 					Name = entry.Value.Item.Name,
 					Cwd = entry.Value.Item.Cwd,
@@ -270,6 +278,44 @@ public sealed class SessionCatalog
 		return Math.Min(limit, fileCount);
 	}
 
+	/// <summary>尾巴窗口长度：几十字节就足够区分「同一份前缀」与「被重写过的前缀」。</summary>
+	private const int TailWindow = 64;
+
+	/// <summary>续扫点之前那一小段字节的指纹。文件被重写后这段内容随之改变。</summary>
+	private static long TailHashAt(string path, long offset)
+	{
+		if (offset <= 0)
+		{
+			return 0;
+		}
+
+		try
+		{
+			var count = (int)Math.Min(TailWindow, offset);
+			using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+				FileShare.ReadWrite | FileShare.Delete, bufferSize: 1, FileOptions.RandomAccess);
+			stream.Seek(offset - count, SeekOrigin.Begin);
+			var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(count);
+			try
+			{
+				var read = stream.ReadAtLeast(buffer.AsSpan(0, count), count, throwOnEndOfStream: false);
+				return read == count ? Fnv1a(buffer.AsSpan(0, count)) : 0;
+			}
+			finally
+			{
+				System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			return 0;
+		}
+	}
+
+	/// <summary>续扫前校验：续扫点前的字节必须与上次记录的一致。</summary>
+	private static bool TailMatches(string path, long offset, long expected) =>
+		expected != 0 && TailHashAt(path, offset) == expected;
+
 	/// <summary>只读首行算指纹：文件是追加式的，首行没变就说明前缀可以直接复用。</summary>
 	private static bool HeadMatches(string path, long expected)
 	{
@@ -294,6 +340,9 @@ public sealed class SessionCatalog
 
 		return hash;
 	}
+
+	/// <summary>测试用：最近一次 <see cref="List"/> 真正读过的字节数（用来验证续扫而不是整份重读）。</summary>
+	internal long ScannedBytesForTests => Interlocked.Read(ref _scanBytes);
 
 	/// <summary>按关键字过滤会话：匹配名称、id、工作目录或文件名（不含 .jsonl 后缀，否则搜 "json" 会命中全部），忽略大小写。</summary>
 	public static IReadOnlyList<SessionListItem> Search(IReadOnlyList<SessionListItem> sessions, string? query)
@@ -606,8 +655,12 @@ public sealed class SessionCatalog
 	/// <summary>
 	/// 丢弃某个会话文件的摘要缓存。会话文件被原地重写（编辑重发的墓碑截断）后，长度可能
 	/// 反而变长，缓存里的续扫偏移已经不指向同一段内容；不丢弃会把截断前的预览与条数留在侧栏。
-	/// 内存缓存与磁盘摘要一起清：跨进程启动时也不能拿旧偏移续扫。
 	/// </summary>
+	/// <remarks>
+	/// 只改内存，不在调用线程上读写磁盘：调用方就在 UI 线程（发送完成、编辑重发），
+	/// 而整个摘要文件的重写属于后台扫描的收尾工作。`<c>_stale</c>` 同时挡住「磁盘摘要重新装入」
+	/// 这条回头路，`PersistSummaries` 会在下一次列表构建时把那个条目一并从磁盘上抹掉。
+	/// </remarks>
 	public void Invalidate(string? path)
 	{
 		if (string.IsNullOrEmpty(path)) return;
@@ -616,15 +669,9 @@ public sealed class SessionCatalog
 		lock (_summaryGate)
 		{
 			_stale.Add(path);
-			if (_summaries.Remove(path)) _summariesDirty = true;
-		}
-
-		// 磁盘摘要是上一次运行的缓存：重写后的文件只有一个旧长度/旧偏移，
-		// 长度变大时续扫会从错位置开始。直接删掉这一条，下一次扫描自然全量重读。
-		var persisted = SessionSummaryStore.Load();
-		if (persisted.Remove(path))
-		{
-			SessionSummaryStore.Save(persisted);
+			_summaries.Remove(path);
+			// 即使内存里没有这一条也要写回：磁盘上的旧条目必须跟着消失。
+			_summariesDirty = true;
 		}
 	}
 
@@ -660,7 +707,9 @@ public sealed class SessionCatalog
 			_summaries.TryGetValue(path, out known);
 		}
 
-		if (known is not null && length > known.Length)
+		// 续扫要求「上次扫到的位置之前那段字节没被动过」：只比对首行指纹是不够的，
+		// 会话被原地重写（本端口的墓碑截断、或外部工具）时首行通常原样保留，偏移却已失效。
+		if (known is not null && known.TailHash != 0 && length > known.Length)
 		{
 			var previous = known.Item;
 			scan = new CatalogScan
@@ -687,8 +736,10 @@ public sealed class SessionCatalog
 		try
 		{
 			// 续扫前先验明正身：同名文件被整份替换过（长度恰好也变了）时不能拿旧前缀当起点。
+			// 首行 + 续扫点之前的一小段尾巴都要对得上——会话被原地重写时首行通常不变，
+			// 只有尾巴能证明「这几十 MB 前缀确实是上次看到的那一份」。
 			var start = resumeFrom;
-			if (start > 0 && !HeadMatches(path, headHash))
+			if (start > 0 && (!HeadMatches(path, headHash) || !TailMatches(path, start, known!.TailHash)))
 			{
 				start = 0;
 				headHash = 0;
@@ -696,12 +747,15 @@ public sealed class SessionCatalog
 			}
 
 			using var lines = new Utf8LineReader(path, start);
+			// 首行（会话头部）的指纹用来判断下次能不能续扫；整份扫描时只看第一行，
+			// 不能逐行覆盖——覆盖后存下来的是末行指纹，而校验读的是首行，于是续扫永远失败。
+			var fingerprintFirstLine = start == 0;
 			while (lines.TryReadLine(out var line))
 			{
-				if (start == 0)
+				if (fingerprintFirstLine)
 				{
-					// 首行（会话头部）的指纹用来判断能不能续扫。
 					headHash = Fnv1a(line);
+					fingerprintFirstLine = false;
 				}
 
 				watchedBytes += line.Length + 1;
@@ -748,20 +802,23 @@ public sealed class SessionCatalog
 			MessageCount = scan.Messages,
 			Preview = scan.Preview ?? string.Empty,
 		};
+		// 读过的字节数总是累计：它只是一次原子加法（每份文件一次），
+		// 而「续扫到底有没有生效」是回归测试唯一能观察到的量，不能只在开诊断时才有值。
+		Interlocked.Add(ref _scanBytes, watchedBytes);
 		if (watch is not null)
 		{
 			Interlocked.Add(ref _scanTicks, watch.ElapsedTicks);
 			Interlocked.Increment(ref _scanCount);
-			Interlocked.Add(ref _scanBytes, watchedBytes);
 		}
 
 		info.Refresh();
 		// A writer may have appended while we scanned. Cache only a complete, stable snapshot.
 		if (readSucceeded && headHash != 0 && info.Exists && info.Length == length && info.LastWriteTimeUtc == modified)
 		{
+			var tailHash = TailHashAt(path, scannedTo);
 			lock (_summaryGate)
 			{
-				_summaries[path] = new SummaryStamp(length, modified, item, scannedTo, headHash);
+				_summaries[path] = new SummaryStamp(length, modified, item, scannedTo, headHash, tailHash);
 				// 重写后的文件已经全量重扫：新摘要可信，不再是「不可续扫」的旧摘要。
 				_stale.Remove(path);
 				_summariesDirty = true;

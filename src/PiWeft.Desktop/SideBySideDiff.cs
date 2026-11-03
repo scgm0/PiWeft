@@ -105,17 +105,9 @@ public static class SideBySideDiff
 		return rows;
 	}
 
-	private static bool IsMetadata(string line) => line.StartsWith("+++", StringComparison.Ordinal) ||
-		line.StartsWith("---", StringComparison.Ordinal) ||
-		line.StartsWith("diff ", StringComparison.Ordinal) ||
-		line.StartsWith("index ", StringComparison.Ordinal) ||
-		line.StartsWith('\\');
+	// 行分类与 hunk 头解析与统一视图共用：两边各留一份就会在一次修正后只修好一边。
+	private static bool IsMetadata(string line) => DiffSyntax.IsMetadata(line);
 
-	private static (int OldLine, int NewLine) ParseHunkHeader(string line, int fallbackOld, int fallbackNew)
-	{
-		var match = System.Text.RegularExpressions.Regex.Match(line, @"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@");
-		return match.Success && int.TryParse(match.Groups[1].Value, out var oldLine) && int.TryParse(match.Groups[2].Value, out var newLine)
-			? (oldLine, newLine)
-			: (fallbackOld, fallbackNew);
-	}
+	private static (int OldLine, int NewLine) ParseHunkHeader(string line, int fallbackOld, int fallbackNew) =>
+		DiffSyntax.ParseHunkHeader(line, fallbackOld, fallbackNew);
 }

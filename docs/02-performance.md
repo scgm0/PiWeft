@@ -36,9 +36,21 @@
   已验证「同长度改内容 + 还原 mtime → 仍报旧预览（说明真的没重扫）」，接着改 mtime → 立即重扫。
 - 已删除会话的条目在下次列表构建时一并从缓存文件里清掉（缓存不成了会话内容的残留副本）。
 - 缓存损坏 / 版本不符 → 当作没有缓存，退化成一次全扫，不会让侧栏起不来。
-- 两个记过的坑：① 64 位字段（mtime ticks、首行指纹）必须按 `long` 读，走 `double` 会在 2^53 以上丢精度、
+- 三个记过的坑：① 64 位字段（mtime ticks、首行指纹）必须按 `long` 读，走 `double` 会在 2^53 以上丢精度、
   缓存永远不命中；② 缓存行的 `Modified` 必须与扫描路径一致保持 **UTC**，转本地时间既会让排序混用偏移，
-  也会为 92 条付 133 ms（`DateTime.ToLocalTime` 逐条很贵）。
+  也会为 92 条付 133 ms（`DateTime.ToLocalTime` 逐条很贵）；③ **首行指纹只能在整份扫描的第一行取**
+  （`fingerprintFirstLine` 标志）。早先的写法是 `if (start == 0) headHash = Fnv1a(line)`，它会为全量扫描的
+  每一行覆盖一次，存下来的是**末行**指纹，而校验读的是首行 —— 于是「文件变长就续扫」永远被判定为
+  「文件变了」，每一轮结束的侧栏刷新都把整份会话从头读一遍。11.0 MiB / 1 万条消息的会话实测：
+  续扫生效后每轮 0.2–1.4 ms，失效时 63–83 ms（UI 线程上的卡顿）。回归用例
+  `SessionCatalogTruncationTests.AppendingResumesFromTheScannedOffsetInsteadOfRereadingTheFile`
+  直接断言「这次只读了文件的一小部分」（`ScannedBytesForTests`）。
+- 续扫点用**尾巴指纹**（续扫点之前 64 字节的 FNV-1a）而非只靠首行：会话被原地重写
+  （本端口「编辑重发」的墓碑截断、或 pi CLI 自己改写）时首行通常原样保留，只有尾巴能证明前缀没被动过。
+  旧缓存没有这个字段 → 不续扫、整份重扫一次，宁可多读一遍也不用错偏移
+  （回归用例 `InPlaceRewriteKeepsTheHeaderButDoesNotReuseTheStaleOffset`）。
+- 会话被原地重写后由 `SessionCatalog.Invalidate` 丢弃该文件的摘要：**只改内存**，磁盘上的旧条目
+  交给下一次列表构建时的 `PersistSummaries` 一并抹掉，不在 UI 线程上做一次整份缓存的读改写。
 
 ## 检查点预览为什么默认只显示 stat
 
@@ -273,7 +285,7 @@ Linux NativeAOT 发布版、Xvfb/Mesa、1280×820 的实际会话演练中：60 
 
 `.NET 10` NativeAOT 发布对照：默认 `piweft-desktop` 62,399,168 bytes；`OptimizationPreference=Speed` 为 64,028,176 bytes（+2.6%），适合确认 AOT 代码生成为瓶颈后再开启。`PredefinedCulturesOnly=true` 在当前依赖下没有减小体积，仍保留中文/本地化能力。
 
-**下一批候选**：`SessionManager.ReadFileEntries` 仍是 `File.ReadLines` + `JsonNode` 全量解析；目录扫描已经用 `Utf8JsonReader`，但打开超大历史文件仍会创建完整消息对象。Provider 侧每个 SSE 事件仍构造一次 `JsonDocument`（字节数组分配已消除）；终端在高频全屏重绘时仍会为新增行创建 `Run`（只在缓存未命中时）。
+**下一批候选**：`SessionManager.ReadFileEntries` 仍是 `File.ReadLines` + `JsonNode` 全量解析；目录扫描已经用 `Utf8JsonReader`，但打开超大历史文件仍会创建完整消息对象。Provider 侧每个 SSE 事件仍构造一次 `JsonDocument`（字节数组分配已消除）；终端在高频全屏重绘时仍会为新增行创建 `Run`（只在缓存未命中时）。侧栏刷新仍是**同步**的：200 份会话约 0.6 ms，2000 份约 7–10 ms 且分配约 1.1 MB（`Directory.EnumerateFiles` 的路径字符串），侧栏展开时每轮结束都会付一次；根治要么把 `RefreshSessions` 改成带合并的后台任务，要么只重扫当前会话那一份文件。OAuth 令牌刷新是同步的（`ProviderEnvironment.RefreshOAuth` 走 `GetAwaiter().GetResult()`）：真正过期的那一次请求会在发起线程上等一次 HTTP 往返（网络异常时最长 30 s 超时），正确的修法是把凭据解析链改成异步。
 
 ## Tooltip 与执行过程
 

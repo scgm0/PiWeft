@@ -10,7 +10,8 @@ namespace PiWeft.Ai.Utils;
 /// </summary>
 public static class JsonRepair
 {
-	private static readonly HashSet<char> ValidEscapes = ['"', '\\', '/', 'b', 'f', 'n', 'r', 't'];
+	/// <summary>JSON 合法的单字符转义；switch 表达式比 HashSet 查找少一次间接与装箱。</summary>
+	private static bool IsValidEscape(char value) => value is '"' or '\\' or '/' or 'b' or 'f' or 'n' or 'r' or 't';
 
 	/// <summary>转义字符串里的控制字符，并给非法转义补一个反斜杠。</summary>
 	public static string Repair(string json)
@@ -54,8 +55,10 @@ public static class JsonRepair
 			var next = json[index + 1];
 			if (next == 'u')
 			{
-				var digits = index + 2 + 4 <= json.Length ? json.Substring(index + 2, 4) : string.Empty;
-				if (digits.Length == 4 && digits.All(static c => char.IsAsciiHexDigit(c)))
+				// 不为了校验四位十六进制而 Substring：直接在自己的下标窗口上判，
+				// 一段含大量 \uXXXX 的正文能省掉同样数量的短字符串。
+				var digits = index + 6 <= json.Length ? json.AsSpan(index + 2, 4) : default;
+				if (!digits.IsEmpty && IsHexQuad(digits))
 				{
 					repaired.Append("\\u").Append(digits);
 					index += 5;
@@ -67,7 +70,7 @@ public static class JsonRepair
 				continue;
 			}
 
-			if (ValidEscapes.Contains(next))
+			if (IsValidEscape(next))
 			{
 				repaired.Append('\\').Append(next);
 				index++;
@@ -128,6 +131,19 @@ public static class JsonRepair
 	}
 
 	private static bool IsControl(char value) => value is >= '\u0000' and <= '\u001f';
+
+	private static bool IsHexQuad(ReadOnlySpan<char> digits)
+	{
+		foreach (var digit in digits)
+		{
+			if (!char.IsAsciiHexDigit(digit))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
 
 	private static string EscapeControl(char value) => value switch
 	{

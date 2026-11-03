@@ -230,7 +230,7 @@ public sealed class McpProcess : IAsyncDisposable
 	{
 		private const int MaxLineLength = 500;
 
-		private readonly object _gate = new();
+		private readonly Lock _gate = new();
 		private readonly Queue<string> _lines = new();
 		private int _length;
 

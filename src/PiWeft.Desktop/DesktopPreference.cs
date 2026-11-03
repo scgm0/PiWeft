@@ -80,6 +80,12 @@ public sealed record DesktopPreference
 	public double RightPanelWidth { get; init; } = AppTheme.RightPanelWidth;
 
 	/// <summary>
+	/// 右侧「轨迹」分段底部检查器的高度（DIP）。拖动分隔条时记下，重开面板沿用它；
+	/// 范围与 <see cref="TrajectoryView"/> 的拖动限制一致。
+	/// </summary>
+	public double TrajectoryInspectorHeight { get; init; } = TrajectoryView.DefaultInspectorHeight;
+
+	/// <summary>
 	/// 「对话」分段的聊天目录；空表示使用默认的 <see cref="DefaultChatWorkspace"/>。
 	/// 与 PiDeck 的内置 Chat 项目一样，这块工作区不属于任何项目，适合日常对话。
 	/// </summary>
@@ -189,6 +195,9 @@ public sealed record DesktopPreference
 					!respondingTips.TryGetValue<bool>(out var tipsOff) || tipsOff,
 				RightPanelWidth = Math.Clamp(Number(root, "rightPanelWidth", positive: true) ?? AppTheme.RightPanelWidth,
 					AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth),
+				TrajectoryInspectorHeight = Math.Clamp(
+					Number(root, "trajectoryInspectorHeight", positive: true) ?? TrajectoryView.DefaultInspectorHeight,
+					TrajectoryView.MinInspectorHeight, TrajectoryView.MaxInspectorHeight),
 				ChatWorkspace = root?["chatWorkspace"] is JsonValue chat && chat.TryGetValue<string>(out var chatWorkspace) ? chatWorkspace : string.Empty,
 				ChatFontSize = Math.Clamp(Number(root, "chatFontSize", positive: true) ?? 16, 14, 22),
 				ReadingWidth = Math.Clamp(Number(root, "readingWidth", positive: true) ?? 880, 760, 1360),
@@ -282,6 +291,9 @@ public sealed record DesktopPreference
 		root["rightPanelWidth"] = double.IsFinite(RightPanelWidth)
 			? Math.Clamp(RightPanelWidth, AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth)
 			: AppTheme.RightPanelWidth;
+		root["trajectoryInspectorHeight"] = double.IsFinite(TrajectoryInspectorHeight)
+			? Math.Clamp(TrajectoryInspectorHeight, TrajectoryView.MinInspectorHeight, TrajectoryView.MaxInspectorHeight)
+			: TrajectoryView.DefaultInspectorHeight;
 		// 面板默认收起且按会话各自打开：旧的折叠状态与分段不再写盘。
 		root.Remove("rightPanelCollapsed");
 		root.Remove("rightPanelTab");

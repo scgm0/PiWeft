@@ -153,7 +153,7 @@ public sealed class CodeModeSandbox
 
 		var modelCalls = new List<ModelCallRecord>();
 		var modelSlots = new SemaphoreSlim(4);
-		var modelUsageGate = new object();
+		var modelUsageGate = new Lock();
 		long inputTokens = 0, outputTokens = 0, totalTokens = 0;
 		double modelCost = 0;
 		var generatedImages = 0;

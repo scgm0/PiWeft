@@ -442,7 +442,7 @@ public sealed partial class SessionManager
 		long bytesRead = 0;
 		long linesRead = 0;
 		long reportedBytes = 0;
-		var reportGate = new object();
+		var reportGate = new Lock();
 
 		// 进度只能单调向前。各分片同时在扫，"算完字节数"与"发出去"之间存在窗口：
 		// 先算到 12 MB 的线程可能比算到 8 MB 的那个晚调用 Report，界面上的进度条就会

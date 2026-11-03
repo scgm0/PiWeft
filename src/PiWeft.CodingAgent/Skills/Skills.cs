@@ -34,12 +34,8 @@ public sealed record Skill
 public static partial class Skills
 {
 	/// <summary>不作为技能元数据暴露的前置元数据字段。</summary>
-	private static readonly HashSet<string> MetadataKeys = new(StringComparer.Ordinal)
-	{
-		"name",
-		"description",
-		"disable-model-invocation",
-	};
+	private static readonly System.Collections.Frozen.FrozenSet<string> MetadataKeys =
+		System.Collections.Frozen.FrozenSet.ToFrozenSet(["name", "description", "disable-model-invocation"], StringComparer.Ordinal);
 
 	/// <summary>
 	/// 发现技能：约定目录（项目优先）加 settings 显式路径与已安装包。

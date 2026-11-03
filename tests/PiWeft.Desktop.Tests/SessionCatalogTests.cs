@@ -416,16 +416,100 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 			},
 		}, agent);
 
+		// Invalidate 只改内存（UI 线程上不读写磁盘）：这一次扫描必须全量重读，
+		// 而不是拿那条越界偏移续扫，否则预览会是重写前的旧文本。
 		var catalog = new SessionCatalog();
 		catalog.Invalidate(path);
-
-		// 磁盘摘要也必须丢掉这一条，否则下一次启动仍会拿旧偏移续扫。
-		Assert.False(SessionSummaryStore.Load(agent).ContainsKey(path));
-
-		// 换一个实例模拟下一次启动：没有磁盘摘要可用，只能全量重扫。
-		var item = Assert.Single(new SessionCatalog().List());
+		var item = Assert.Single(catalog.List());
 		Assert.Equal("真正的问题", item.Preview);
 		Assert.Equal(1, item.MessageCount);
+
+		// 写回磁盘的是重扫后的新摘要（旧偏移已被丢弃），下一次启动不会拿它续扫。
+		Assert.True(SessionSummaryStore.Load(agent).TryGetValue(path, out var stamp));
+		Assert.Equal(1, stamp.MessageCount);
+		Assert.Equal("真正的问题", stamp.Preview);
+
+		// 换一个实例模拟下一次启动。
+		var reopened = Assert.Single(new SessionCatalog().List());
+		Assert.Equal("真正的问题", reopened.Preview);
+		Assert.Equal(1, reopened.MessageCount);
+	}
+
+	[Fact]
+	public void AppendingResumesFromTheScannedOffsetInsteadOfRereadingTheFile()
+	{
+		// 侧栏每一轮结束都会重扫变长的会话文件。续扫依赖两件事：磁盘/内存摘要里存的是
+		// 「首行」指纹（不是最后一行），以及续扫点之前的字节没有被改过。
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		var path = Path.Combine(sessions, "2026-03-04T00-00-00-000Z_resume.jsonl");
+		var lines = new List<string>
+		{
+			"""{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp/x"}""",
+		};
+		var payload = new string('y', 400);
+		for (var index = 0; index < 60; index++)
+		{
+			lines.Add("{\"id\":\"u" + index + "\",\"parentId\":\"s\",\"type\":\"message\",\"timestamp\":\"t\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"" + payload + "\"}],\"timestamp\":1}}");
+			lines.Add("{\"id\":\"a" + index + "\",\"parentId\":\"u" + index + "\",\"type\":\"message\",\"timestamp\":\"t\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok " + index + "\"}],\"timestamp\":2}}");
+		}
+
+		File.WriteAllLines(path, lines);
+		var fullLength = new FileInfo(path).Length;
+		var catalog = new SessionCatalog();
+		var cold = Assert.Single(catalog.List());
+		Assert.Equal(120, cold.MessageCount);
+		Assert.Equal(fullLength, catalog.ScannedBytesForTests);
+
+		File.AppendAllLines(path,
+		[
+			"""{"id":"u99","parentId":"s","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"新的一轮"}],"timestamp":3}}""",
+			"""{"id":"a99","parentId":"u99","type":"message","timestamp":"t","message":{"role":"assistant","content":[{"type":"text","text":"新的回答"}],"timestamp":4}}""",
+		]);
+
+		var warm = Assert.Single(catalog.List());
+		Assert.Equal(122, warm.MessageCount);
+		// 只读新增的那几十字节，而不是把整份文件再来一遍。
+		Assert.True(
+			catalog.ScannedBytesForTests < fullLength / 4,
+			$"续扫没有生效：重读了 {catalog.ScannedBytesForTests} 字节（整份 {fullLength}）");
+	}
+
+	[Fact]
+	public void InPlaceRewriteKeepsTheHeaderButDoesNotReuseTheStaleOffset()
+	{
+		// 典型场景：pi CLI（或本端口的墓碑截断）在同一条路径上重写了会话，首行头部原样保留。
+		// 只比对首行指纹时缓存会认为「前缀没变」并按旧偏移续读，侧栏从此一直显示重写前的预览。
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		var path = Path.Combine(sessions, "2026-03-03T00-00-00-000Z_rewrite.jsonl");
+		var header = """{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp/x"}""";
+		var first = """{"id":"u1","parentId":"s","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"旧问题"}],"timestamp":1}}""";
+		File.WriteAllLines(path, [header, first]);
+
+		var catalog = new SessionCatalog();
+		var before = Assert.Single(catalog.List());
+		Assert.Equal("旧问题", before.Preview);
+		Assert.Equal(1, before.MessageCount);
+
+		// 原地重写：头部保持不变，正文换成另一段更长的内容（长度变大才会走「续扫」分支）。
+		var second = """{"id":"u2","parentId":"s","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"新问题"}],"timestamp":2}}""";
+		var answer = """{"id":"a2","parentId":"u2","type":"message","timestamp":"t","message":{"role":"assistant","content":[{"type":"text","text":"一段足够长的回答，用来把文件写到比重写前更长。"}],"timestamp":3}}""";
+		File.WriteAllLines(path, [header, second, answer]);
+		File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(5));
+
+		// 新实例模拟下一次启动：只有磁盘摘要可用，没有任何「这个文件被重写过」的进程内记忆。
+		var after = Assert.Single(new SessionCatalog().List());
+		Assert.Equal("新问题", after.Preview);
+		Assert.Equal(2, after.MessageCount);
 	}
 
 	/// <summary>与 <see cref="SessionCatalog"/> 的首行指纹同算法（缓存格式的一部分）。</summary>

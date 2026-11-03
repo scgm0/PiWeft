@@ -13,7 +13,7 @@ namespace PiWeft.CodingAgent.Tools;
 /// </summary>
 internal static class FileMutationQueue
 {
-	private static readonly object[] Stripes = CreateStripes();
+	private static readonly Lock[] Stripes = CreateStripes();
 
 	/// <summary>在规范化路径对应的锁内执行 <paramref name="action"/>。</summary>
 	public static T Mutate<T>(string path, Func<T> action)
@@ -32,18 +32,18 @@ internal static class FileMutationQueue
 			return true;
 		});
 
-	private static object[] CreateStripes()
+	private static Lock[] CreateStripes()
 	{
-		var stripes = new object[64];
+		var stripes = new Lock[64];
 		for (var index = 0; index < stripes.Length; index++)
 		{
-			stripes[index] = new object();
+			stripes[index] = new Lock();
 		}
 
 		return stripes;
 	}
 
-	private static object LockFor(string path)
+	private static Lock LockFor(string path)
 	{
 		var key = Canonical(path);
 		var hash = (uint)StringComparer.Ordinal.GetHashCode(key);
