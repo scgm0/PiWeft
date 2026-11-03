@@ -2443,6 +2443,9 @@ public sealed class CodingAgentSession : IDisposable
 		StreamOptions options,
 		bool direct)
 	{
+		// 会话身份每次请求现取：fork / switch_session 后 Session 已换，不能沿用构造时的 ID。
+		// 宿主显式传入的 SessionId 优先（跨会话缓存等场景）。
+		options = options with { SessionId = options.SessionId ?? Session.SessionId };
 		var definition = VirtualModels.IsVirtual(model) && _registry is not null
 			? _registry.Virtual(model.Provider, model.Id)
 			: null;

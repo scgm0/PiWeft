@@ -7,7 +7,7 @@ namespace PiWeft.Desktop;
 /// <summary>按供应商分组的可用模型目录；树行虚拟化，搜索覆盖整个目录。</summary>
 internal sealed class ModelPicker
 {
-	private readonly Func<IReadOnlyList<Model>> _models;
+	private Func<IReadOnlyList<Model>> _models;
 	private readonly Func<Model> _current;
 	private readonly Action<Model> _pick;
 	private readonly TreeView _tree = new();
@@ -92,6 +92,13 @@ internal sealed class ModelPicker
 	public UIElement View { get; }
 	public bool IsOpen => View.IsVisible;
 	public event Action? Closed;
+
+	/// <summary>认证变化后换一份模型源；菜单开着时立即按新目录重建。</summary>
+	public void SetSource(Func<IReadOnlyList<Model>> models)
+	{
+		_models = models;
+		if (IsOpen) Reload();
+	}
 
 	public void Show(UIElement owner)
 	{

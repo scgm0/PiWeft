@@ -107,6 +107,8 @@ public static class AppTheme
 
 	public static Color Success => Current.Success;
 
+	public static Color Warning => Current.Warning;
+
 	public static Color Info => Current.Info;
 
 	public static Color Thinking => Current.Thinking;

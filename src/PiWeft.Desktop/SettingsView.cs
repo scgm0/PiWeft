@@ -73,6 +73,8 @@ public sealed class SettingsView
 
 	/// <summary>分区或配置脏状态变化；宿主弹窗据此刷新头部的保存按钮。</summary>
 	public event Action? StateChanged;
+	/// <summary>OAuth 登录/退出改写了 auth.json：宿主据此重建模型目录与可用模型。</summary>
+	public event Action? AuthChanged;
 
 	public SettingsView(
 		Func<SettingsSnapshot> snapshot,
@@ -89,6 +91,7 @@ public sealed class SettingsView
 		{
 			var view = new ConfigurationView(initial.AgentDir, initial.Cwd, _saved);
 			view.StateChanged += () => StateChanged?.Invoke();
+			view.AuthChanged += () => AuthChanged?.Invoke();
 			return view;
 		});
 		_content.Spacing(AppTheme.Space4).MaxWidth(960);
@@ -195,7 +198,7 @@ public sealed class SettingsView
 		{
 			AddNavigationGroup(Strings.ConfigurationGroup, first: true);
 			AddNavigationButton("models", "settings", Strings.ConfigModels);
-			AddNavigationButton("auth", "star", Strings.ConfigAuth);
+			AddNavigationButton("auth", "key-round", Strings.ConfigAuth);
 			AddNavigationButton("agent", "wrench", Strings.ConfigSettings);
 			AddNavigationButton("mcp", "terminal", Strings.SettingsMcp);
 			AddNavigationButton("source", "square-pen", Strings.ConfigSource);
@@ -286,6 +289,14 @@ public sealed class SettingsView
 			.StyleName(active ? AppStyles.SegmentButtonActive : AppStyles.SegmentButton)
 			.Height(AppTheme.ControlHeightSm + 2)
 			.HorizontalAlignment(HorizontalAlignment.Stretch);
+	}
+
+	/// <summary>仅供 --ui-smoke auth-login：打开认证页并直接启动一个供应商登录。</summary>
+	internal async Task OpenAuthLoginSmokeAsync(string providerId)
+	{
+		await SwitchModeAsync(true);
+		await SelectSectionAsync("auth");
+		if (_configuration.IsValueCreated) _configuration.Value.StartAuthLoginForSmoke(providerId);
 	}
 
 	internal async Task SelectSectionAsync(string section)

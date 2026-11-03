@@ -41,7 +41,7 @@ public sealed class ConfigurationStore
 	public ConfigurationDocument Read(ConfigFile file, bool project = false)
 	{
 		if (project && file == ConfigFile.Auth) throw new ArgumentException(Strings.ConfigAuthGlobalOnly);
-		var name = file switch { ConfigFile.Models => "models.json", ConfigFile.Auth => "auth.json", ConfigFile.Settings => "settings.json", ConfigFile.Usage => "usage-queries.json", _ => "mcp.json" };
+		var name = file switch { ConfigFile.Models => "models.json", ConfigFile.Auth => "auth.json", ConfigFile.Settings => "settings.json", ConfigFile.Usage => "usage-probes.json", _ => "mcp.json" };
 		var path = System.IO.Path.Combine(project ? System.IO.Path.Combine(System.IO.Path.GetFullPath(_cwd), ".pi") : System.IO.Path.GetFullPath(AgentDir), name);
 		var (raw, revision) = ReadRaw(path);
 		string? error = null;
@@ -174,6 +174,21 @@ public sealed class ConfigurationStore
 				if (entry is not JsonObject credential) throw new ArgumentException(Strings.ConfigInvalidValue(name));
 				StringFields(credential, "type", "key");
 			}
+		}
+		if (file == ConfigFile.Usage)
+		{
+			if (root.ContainsKey("providers") && root["providers"] is not JsonObject) throw new ArgumentException(Strings.UsageConfigProvidersRequired);
+			foreach (var (name, node) in root["providers"] as JsonObject ?? [])
+			{
+				ConfigurationModels.ValidateId(name);
+				if (node is not JsonObject provider) throw new ArgumentException(Strings.UsageConfigProviderInvalid(name));
+				StringFields(provider, "template", "apiKey", "baseUrl", "accessToken", "userId", "cookie", "cookiePath", "valuePath", "currencyPath");
+				BoolFields(provider, "enabled");
+				foreach (var key in new[] { "timeoutSecs", "intervalMinutes" })
+					if (provider.ContainsKey(key) && (provider[key] is not JsonValue number || !number.TryGetValue<int>(out _)))
+						throw new ArgumentException(Strings.ConfigInvalidValue(key));
+			}
+			if (root.ContainsKey("probes") && root["probes"] is not JsonArray) throw new ArgumentException(Strings.UsageConfigProbesRequired);
 		}
 		if (file == ConfigFile.Mcp)
 		{

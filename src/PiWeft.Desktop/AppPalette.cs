@@ -62,6 +62,9 @@ public sealed record AppPalette
 
 	public required Color Success { get; init; }
 
+	/// <summary>警示（用量接近上限等）：深色用琥珀，浅色用深琥珀。</summary>
+	public required Color Warning { get; init; }
+
 	public required Color Info { get; init; }
 
 	public required Color Thinking { get; init; }
@@ -95,6 +98,7 @@ public sealed record AppPalette
 		BorderSubtle = new Color(0x20, 0x20, 0x20),
 		Error = new Color(0xf8, 0x71, 0x71),
 		Success = new Color(0x4a, 0xde, 0x80),
+		Warning = new Color(0xfa, 0xb5, 0x24),
 		Info = new Color(0x60, 0xa5, 0xfa),
 		Thinking = new Color(0xa7, 0x8b, 0xfa),
 		Transparent = new Color(0x00, 0x00, 0x00, 0x00),
@@ -128,6 +132,7 @@ public sealed record AppPalette
 		BorderSubtle = new Color(0xeb, 0xeb, 0xeb),
 		Error = new Color(0xb4, 0x23, 0x18),
 		Success = new Color(0x14, 0x70, 0x3a),
+		Warning = new Color(0xb4, 0x53, 0x09),
 		Info = new Color(0x1d, 0x4e, 0xd8),
 		Thinking = new Color(0x6d, 0x28, 0xd9),
 		Transparent = new Color(0x00, 0x00, 0x00, 0x00),

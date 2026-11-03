@@ -136,7 +136,8 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 		request.Headers.TryAddWithoutValidation("accept", "text/event-stream");
 		request.Headers.TryAddWithoutValidation("user-agent", SharedHttpClient.UserAgent);
 
-		if (ProviderEnvironment.ResolveApiKey(model.Provider, options) is { Length: > 0 } apiKey)
+		var apiKey = ProviderEnvironment.ResolveApiKey(model.Provider, options);
+		if (apiKey is { Length: > 0 })
 		{
 			request.Headers.TryAddWithoutValidation("x-goog-api-key", apiKey);
 		}
@@ -163,6 +164,8 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 			}
 		}
 
+		ProviderAuthHeader.Apply(model, apiKey, request);
+		OpenCodeHeaders.Apply(model, options, request);
 		return request;
 	}
 

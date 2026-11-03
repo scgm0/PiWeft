@@ -14,7 +14,8 @@ internal static class AnthropicWire
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
 		ThinkingConfig thinking,
-		int maxTokens)
+		int maxTokens,
+		bool oauth = false)
 	{
 		writer.WriteStartObject();
 		writer.WriteString("model", model.Id);
@@ -22,15 +23,27 @@ internal static class AnthropicWire
 		writer.WriteBoolean("stream", true);
 
 		var systemText = Transcript.GetInitialSystemText(messages);
-		if (!string.IsNullOrWhiteSpace(systemText))
+		// Claude OAuth（sk-ant-oat）必须带 Claude Code 身份提示词；官方 API key 不需要。
+		if (oauth || !string.IsNullOrWhiteSpace(systemText))
 		{
 			writer.WritePropertyName("system");
 			writer.WriteStartArray();
-			writer.WriteStartObject();
-			writer.WriteString("type", "text");
-			writer.WriteString("text", TextSanitizer.SanitizeSurrogates(systemText));
-			WriteCacheControl(writer, options);
-			writer.WriteEndObject();
+			if (oauth)
+			{
+				writer.WriteStartObject();
+				writer.WriteString("type", "text");
+				writer.WriteString("text", "You are Claude Code, Anthropic's official CLI for Claude.");
+				WriteCacheControl(writer, options);
+				writer.WriteEndObject();
+			}
+			if (!string.IsNullOrWhiteSpace(systemText))
+			{
+				writer.WriteStartObject();
+				writer.WriteString("type", "text");
+				writer.WriteString("text", TextSanitizer.SanitizeSurrogates(systemText));
+				WriteCacheControl(writer, options);
+				writer.WriteEndObject();
+			}
 			writer.WriteEndArray();
 		}
 

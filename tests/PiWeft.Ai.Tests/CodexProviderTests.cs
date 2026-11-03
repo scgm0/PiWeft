@@ -143,6 +143,14 @@ public class CodexAuthTests : IDisposable
 	}
 
 	[Fact]
+	public void MalformedCodexEntryLoadsAsMissingInsteadOfThrowing()
+	{
+		File.WriteAllText(Path.Combine(_root, "auth.json"),
+			"""{"openai-codex":{"type":"oauth","access":123,"refresh":false}}""");
+		Assert.Null(CodexAuth.Load(_root));
+	}
+
+	[Fact]
 	public async Task ResolveRefreshesAnExpiredCredentialAndPersistsIt()
 	{
 		CodexAuth.Save(

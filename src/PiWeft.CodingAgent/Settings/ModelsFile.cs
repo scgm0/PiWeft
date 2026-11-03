@@ -266,14 +266,21 @@ public static partial class ModelsFileLoader
 		var applied = 0;
 		foreach (var (providerId, entry) in providers)
 		{
-			if (!string.IsNullOrEmpty(entry.BaseUrl) || entry.Compat is not null)
+			if (!string.IsNullOrEmpty(entry.BaseUrl) || entry.Compat is not null || entry.Headers is { Count: > 0 } || entry.AuthHeader is not null)
 			{
+				// provider 级 headers 也必须叠到内置模型上：Copilot 代理、TokenDance 归因、
+				// 自建网关的额外鉴权头都靠它；模型自己的同名头仍然优先。
+				var providerHeaders = entry.Headers is { Count: > 0 }
+					? entry.Headers.ToDictionary(static pair => pair.Key, static pair => ResolveValue(pair.Value) ?? string.Empty)
+					: null;
 				foreach (var existing in registry.List(providerId).ToList())
 				{
 					registry.Add(existing with
 					{
 						BaseUrl = string.IsNullOrEmpty(entry.BaseUrl) ? existing.BaseUrl : entry.BaseUrl,
 						Compat = MergeNodes(entry.Compat, existing.Compat),
+						Headers = MergeHeaders(providerHeaders, existing.Headers),
+						AuthHeader = entry.AuthHeader ?? existing.AuthHeader,
 					});
 					applied++;
 				}
@@ -422,6 +429,7 @@ public static partial class ModelsFileLoader
 			Headers = MergeHeaders(provider.Headers is null
 				? null
 				: provider.Headers.ToDictionary(static pair => pair.Key, static pair => ResolveValue(pair.Value) ?? string.Empty), model.Headers),
+			AuthHeader = provider.AuthHeader ?? false,
 		};
 	}
 

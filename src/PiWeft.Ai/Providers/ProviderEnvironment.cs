@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 
@@ -211,25 +212,46 @@ public static class ProviderEnvironment
 		return builder.ToString();
 	}
 
+	/// <summary>
+	/// 每个 provider 一把刷新锁：并发请求同时发现 access token 过期时只让一个去换，
+	/// 其余等它写回 auth.json 后直接复用新令牌。否则多个线程拿同一个 refresh token 竞争，
+	/// 在会轮转 refresh token 的供应商上会把凭据互相作废。
+	/// </summary>
+	private static readonly ConcurrentDictionary<string, SemaphoreSlim> OAuthRefreshGates = new(StringComparer.Ordinal);
+
 	private static Auth.OAuthCredential? RefreshOAuth(string provider, Auth.OAuthCredential credential)
 	{
+		var gate = OAuthRefreshGates.GetOrAdd(provider, static _ => new SemaphoreSlim(1, 1));
+		gate.Wait();
 		try
 		{
+			// 等锁期间可能已被别的请求刷新：重新读盘，未过期就直接用。
+			var current = Auth.OAuthStore.Read(provider);
+			if (current is { } refreshed && refreshed.ExpiresAt > DateTimeOffset.UtcNow)
+			{
+				return refreshed;
+			}
+
+			var toRefresh = current ?? credential;
 			return provider switch
 			{
-				Auth.AnthropicOAuth.ProviderKey => Auth.AnthropicOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
-				Auth.XaiOAuth.ProviderKey => Auth.XaiOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
-				Auth.KimiOAuth.ProviderKey => Auth.KimiOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
-				Auth.OpenAiChatGptOAuth.ProviderKey => Auth.OpenAiChatGptOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
-				Auth.GitHubCopilotOAuth.ProviderKey => Auth.GitHubCopilotOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
-				Auth.MetaOAuth.ProviderKey => Auth.MetaOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
-				Auth.RadiusOAuth.ProviderKey => Auth.RadiusOAuth.RefreshAsync(credential).GetAwaiter().GetResult(),
+				Auth.AnthropicOAuth.ProviderKey => Auth.AnthropicOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
+				Auth.XaiOAuth.ProviderKey => Auth.XaiOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
+				Auth.KimiOAuth.ProviderKey => Auth.KimiOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
+				Auth.OpenAiChatGptOAuth.ProviderKey => Auth.OpenAiChatGptOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
+				Auth.GitHubCopilotOAuth.ProviderKey => Auth.GitHubCopilotOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
+				Auth.MetaOAuth.ProviderKey => Auth.MetaOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
+				Auth.RadiusOAuth.ProviderKey => Auth.RadiusOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
 				_ => null,
 			};
 		}
 		catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException or Auth.CodexAuthException)
 		{
 			return null;
+		}
+		finally
+		{
+			gate.Release();
 		}
 	}
 

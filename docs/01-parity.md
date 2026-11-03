@@ -45,8 +45,8 @@ MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win3
 | 历史操作 | 编辑重发、重试、fork、分支树、直接/摘要跳转、HTML 导出 | 多选批量操作、分支比较 |
 | 输入与模型 | 斜杠命令、命令面板、可改快捷键、可用模型筛选、供应商分组/折叠、搜索/刷新、最近模型优先、记住上次真正使用的模型、每模型默认思考级别（写回 `settings.json`）、中文思考级别 | 模型收藏 |
 | 附件 | 路径引用、图片文件/原生字节、剪贴板图片粘贴、复制预览图片、仅图片发送 | 更多媒体类型、把回复整体复制为图片 |
-| 用量 | 会话统计、上下文、费用、缓存与计时、手动压缩；余额/积分查询；跨会话统计与 26 周热力图 | 完整供应商订阅窗口、热力图下钻 |
-| 设置 | 模型/供应商、API Key、Agent、MCP、JSON、作用域与草稿保护、工具调用安全门（`settings.security`）、外部会话导入 | 桌面 OAuth、技能/提示词管理、商店、安全门的图形化编辑与交互式审批 |
+| 用量 | 会话统计、上下文、费用、缓存与计时、手动压缩；供应商用量查询（余额 / 套餐窗口 / 订阅，多窗口百分比与重置时间）；跨会话统计与 26 周热力图 | 火山方舟 AK/SK、Sub2API 面板登录态余额、热力图下钻 |
+| 设置 | 模型/供应商、API Key 与订阅 OAuth 登录、Agent、MCP、JSON、作用域与草稿保护、工具调用安全门（`settings.security`）、外部会话导入 | 技能/提示词管理、商店、安全门的图形化编辑与交互式审批 |
 | MCP | 启动连接、状态、stdio 工具热刷新、设置面板手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、暂存/未暂存目录树、diff、在编辑器中打开、暂存/取消暂存（含目录级）、提交（Ctrl+Enter）、分支切换/新建、AI 提交摘要（默认跟随会话，可在设置中固定模型/思考级别、自定义提示词模板、按原因分类的失败提示）、源代码管理图（泳道、引用筛选、提交详情/文件 diff、加载更多）、比较更改（三点比较、ahead/behind、文件 diff）、fetch/pull（`--ff-only`）/push（首次自动建跟踪）、stash 收起/应用/丢弃、失败分类提示 | 冲突解决界面、rebase/cherry-pick/reset/drop 等改写历史的操作、多远端选择；检查点移到右侧面板的独立分段（会话仍自动快照） |
 | 文件 | 目录导航、Git 标记、内置文本编辑器与冲突检测保存、回答级修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
@@ -274,14 +274,42 @@ xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-primary-smoke.py
 
 - 分类设置页：系统设置与配置管理分开；保留环境、会话用量、归档、快捷键、日志和关于。
 - 自定义供应商：新增、编辑端点和协议、复制、删除、导入 JSON、脱敏导出。模型可设置 ID、名称、上下文、输出上限、推理及图片输入；字段补丁保留 `headers`、`cost`、`compat` 等未编辑数据。
-- 认证：API Key 遮罩输入、保存、删除；保存后清空敏感输入；已有 OAuth 不允许被 API Key 覆盖。
+- 认证：API Key 遮罩输入、保存、删除；保存后清空敏感输入；已有 OAuth 不允许被 API Key 覆盖。订阅登录覆盖 Anthropic、OpenAI（ChatGPT）、OpenAI Codex、GitHub Copilot、xAI、Kimi For Coding、Meta、Radius、OpenRouter，详见下文「订阅登录」。
 - Agent 设置：默认供应商/模型/思考级别、自动压缩和自动重试。未修改的继承值不制造项目覆盖。
 - MCP：全局/项目配置，stdio/HTTP 编辑、参数数组、启停和删除；保留 env/headers 等高级字段。
-- 源文件：模型、认证、设置和 MCP JSON，可显式显示、编辑和修复损坏文件。配置草稿独立于主题刷新；切页、重载、关闭设置弹窗和窗口均保护未保存修改。
+- 源文件：模型、认证、设置、MCP 与 `usage-probes.json`，可显式显示、编辑和修复损坏文件。配置草稿独立于主题刷新；切页、重载、关闭设置弹窗和窗口均保护未保存修改。
 - 文件读写限制在所选 agent 目录和固定的项目 `.pi` 路径，认证不允许写到项目作用域。读取和写入最多 2 MiB；只接受对象根节点，校验关键字段类型、模型 ID 和 MCP 名称。
 - 写入使用同目录临时文件、刷新到磁盘后原子替换；Unix 新配置仅用户可读写。桌面写入之间使用专属排他锁，并检测 pi 的 `.lock` 标记与内容 revision；不宣称与非协作编辑器拥有事务互斥。
 - 导出移除 API Key、认证相关字段、全部 headers/env/OAuth 和 URL 的查询、userinfo；不会自动导出 auth.json。源文件可能含密钥，默认不显示；配置操作不向日志输出异常原文或配置内容。
 - 模型目录/Agent 设置更新作用于新会话；已有会话不进行运行时替换。MCP 保存不自动重连，设置面板提供手动「重连 MCP」。
+
+### 订阅登录
+
+认证页的「订阅登录」直接复用 `PiWeft.Ai.Auth` 的 OAuth 实现（与 CLI `pi login` 同一套流程与凭据文件），因此桌面端不引入第二套认证协议：
+
+- 供应商：Anthropic（浏览器授权码）、OpenAI ChatGPT（回环回调）、OpenAI Codex（设备码）、GitHub Copilot（设备码 + 可选企业域名）、xAI、Kimi For Coding、Meta、Radius（设备码）、OpenRouter（浏览器换取 API Key）。
+- 状态：已登录 / 已过期 / API Key 已配置；显示到期时间、账号（Codex 从 JWT 读取）、端点与企业域名；支持刷新凭据（OpenRouter 永久 Key 除外）与退出。
+- 登录面板：实时输出 OAuth 流程日志；从日志提取授权 URL 与设备码，提供「打开授权页」；需要粘贴授权码/回调 URL 或企业域名时，在面板内提供输入框；可随时取消或重试。
+- 写入：凭据仍由 `OAuthStore` / `CodexAuth` 原子写入全局 `auth.json`（Unix 下 0600）；界面不显示、不记录 access/refresh token。登录会覆盖同名 API Key 条目，页面已明示。
+- 模型使用：登录/退出后重建模型环境，并把新的可用模型源推给所有已打开标签页的模型选择器——无需重开标签或重启应用。OpenRouter / GitHub Copilot / Radius 登录成功后还会刷新账号级模型目录，再重建环境。
+
+### 供应商请求头与会话亲和
+
+- **OpenCode / OpenCode Go**：所有 OpenAI-compatible、Responses、Anthropic、Gemini 请求补 `x-opencode-session`（当前会话 ID）与 `x-opencode-client: piweft`；显式同名头优先。缺失该头会直接 400 MissingSessionID。
+- **会话亲和（OpenRouter / Cloudflare AI Gateway / Fireworks 等）**：按模型 `compat.sendSessionAffinityHeaders` / `sessionAffinityFormat` 发送 `x-session-id`、`session_id`、`x-client-request-id`、`x-session-affinity` 的对应子集；OpenRouter 默认使用 `x-session-id`。显式头优先。
+- **GitHub Copilot**：静态目录头（User-Agent / Editor-Version / Editor-Plugin-Version / Copilot-Integration-Id）之外，按请求动态补 `X-Initiator`（user/agent）、`Openai-Intent: conversation-edits`，含图片时补 `Copilot-Vision-Request: true`；Anthropic 代理使用 Bearer + `anthropic-dangerous-direct-browser-access`，不接受 x-api-key 形式的 Copilot token。
+- **Claude OAuth（sk-ant-oat）**：Bearer + `claude-cli/2.1.280` UA、`x-app: cli`、`anthropic-dangerous-direct-browser-access`、`claude-code-20250219,oauth-2025-04-20` beta，并在 system 首块注入 Claude Code 身份提示词。
+- **provider 级 `headers` / `authHeader`**：headers 现在会同时作用于内置、远程缓存和自定义模型（模型同名头优先）；`authHeader: true` 按 pi 的 withConfiguredAuth 追加 `Authorization: Bearer <key>`。
+- **可选归因头**：OpenRouter 的 `HTTP-Referer` / `X-Title` 与 TokenDance 的 `X-App-URL` 不是功能必需；前者未自动注入，后者需要用户配置 provider headers（PiWeft 没有注册公共 app URL，不伪造归因）。
+
+### 用量查询
+
+配置落在 `~/.pi/agent/usage-probes.json`（与 PiDeck 同名同结构）：`providers` 映射由桌面弹窗维护，`probes` 数组留给 AI / 高级用户手写（运行时按 `baseUrl` 关键字合并）。旧版 `usage-queries.json` 只读兼容，在自动识别模式下优先使用，直到用户显式选择模板或删除旧文件。用量查询默认关闭，需在「配置用量查询」弹窗或统计面板入口显式启用——内置识别只表示「有可查询路径」，不会在升级后默默向一批网关扇出请求。
+
+- 内置候选：OpenCode、DeepSeek、OpenRouter、Kimi For Coding、Moonshot、SiliconFlow、智谱 GLM Coding Plan、OpenAI Codex、xAI、Command Code、TokenDance、MiniMax，以及 OpenAI 兼容网关的 `/usage` 兜底。结果统一成三种形态：`periods`（滚动/周/月百分比）、`balance`（金额+币种）、`credits`（总额/已用/剩余，可带并列窗口与独立货币）。
+- 声明式模板：通用 `/usage`、New API（访问令牌 + 用户 ID，积分除以 500000）、Cookie（网页登录态接口 + 字段路径）、Sub2API `/v1/usage`（钱包/订阅/Key 额度按响应分流）。
+- 展示：统计面板底部逐窗口显示进度条（≥90% 红、≥70% 橙、其余绿）与剩余量；弹窗内「测试」成功直接热更摘要，失败展示尝试过的 URL、HTTP 状态/超时与脱敏响应摘要。
+- 安全边界：3xx 不跟随；仅 HTTPS 或本机 HTTP；跨域请求只允许代码内置的官方 `absoluteUrl`；模型自定义头只回发给供应商自己的域；响应上限 1 MiB；明细只保留抹掉 API Key、截断到 240 字符的响应摘要，不写日志、不整份回传界面。
 
 ### 工具调用安全门
 
@@ -365,6 +393,7 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 
 - 显式请求超时只覆盖「等响应头」（`settings.retry.provider.timeoutMs`，旧版根上的 `timeoutMs` 仍兼容）；`settings.httpIdleTimeoutMs`（默认 300000，`0`/`"disabled"` 关闭）兜底等响应头、响应体与错误响应体：连续没有收到任何字节就让这一轮以可重试错误结束，正常的长流不受总时长限制。计时用 `CancellationTokenSource.CancelAfter` 随读取续期：一个流只有一个定时器，没有轮询线程；错误响应体另有 1 MiB 上限（网关返回整页 HTML 时不会把内存吃掉一大块，而调用方只用前 2000 字符）。判定严格分开：用户中止 → `aborted`（不可重试），空闲超时 → `error` 且文案含 timeout（可重试）。特别注意 `SseParser` 会把读取消隐吞成「0 个事件」，不加判断就会把被掐断的流当成正常结束、给模型一条看起来成功的半截回复 —— 取消必须转成异常（有回归测试）。
 - `settings.transport`（`auto`/`sse`/`websocket`/`websocket-cached`）目前只影响 Codex responses；其它 provider 一律走 HTTP。写错的值收敛到 `auto`，而不是让各家 provider 自己猜。
+- OpenCode / OpenCode Go 网关要求 `x-opencode-session` 才能路由会话：所有发往 `opencode.ai`（或 provider 名为 opencode / opencode-go）的请求自动带上当前会话 ID 与 `x-opencode-client: piweft`；压缩、分支摘要、缓存预热、连接探测与 Git 摘要复用/生成稳定 ID。模型或 `StreamOptions.Headers` 里的同名头（含空值）优先，绝不覆盖用户的显式配置。
 - `/share` 与 pi 同义：只导出当前分支，链尾追加 `pi.share` 自定义条目（系统提示词 + 工具 schema），优先用 `gh gist create`、没有 `gh` 时回退 `GITHUB_TOKEN`/`GH_TOKEN` 的 HTTP API，返回查看器链接；Radius 目标上传同一份 JSONL（`application/x-ndjson`）到 `PI_RADIUS_GATEWAY` 或默认网关。
 
 ### 文件写入
@@ -413,7 +442,7 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 | PI-04 | 完整终端 TUI | 仍为按行 REPL；缺少多行编辑、`$EDITOR`、剪贴板图片粘贴进 TUI、终端流式工具展示、补全、选择器、终端图片和完整快捷键 |
 | PI-05 | codemode / tool_search | 已实现；余项是 pi prelude 的 lockdown（见 [codemode 与 Jint](03-codemode.md)） |
 | PI-06 | MCP 高级运行时 | 已覆盖 OAuth 授权码 + PKCE、客户端凭据、`oauth` 对象、`callbackPort`/`clientName`/`authServerMetadataUrl`、401 刷新重放、HTTP 通知流与反向应答；**授权流程抽成 `McpLogin` 由 CLI 与桌面共用**（桌面配置页每个 HTTP 服务器一行显示 未授权/已授权/令牌已过期，带授权·重新授权·清除凭据）；未覆盖 `cimd`、完整 `callbackUrl` 路径、与 pi 共享 `mcp-auth.json` 令牌格式 |
-| PI-07 | 认证覆盖 | 已支持 Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius OAuth 与全 Provider API key；余项是 AWS profile/ECS/IRSA 完整 ambient 链与部分企业登录细分 |
+| PI-07 | 认证覆盖 | 已支持 Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius OAuth 与全 Provider API key；**桌面端已接入同一套 OAuth 登录/刷新/退出**（设备码、回环回调、手工授权码与企业域名输入），登录后即时刷新可用模型。余项是 AWS profile/ECS/IRSA 完整 ambient 链、OIDC/企业 SSO 细分与账号多开 |
 | PI-08 | 动态模型目录 | 已实现 pi.dev 目录刷新、离线缓存、账号级 OpenRouter/Radius/GitHub Copilot 目录、**条件请求（If-None-Match / If-Modified-Since，304 不重传不覆盖）与 6 小时刷新节流**（`pi update --models` 用 `force` 绕过）；余项是更细的账号能力同步与目录增量合并 |
 | PI-09 | 高级模型运行时 | 已实现虚拟模型（静态目标 + `models.json` 动态 JS route + 路由状态条目）、cache warming（含 `cache_warming_decision` 扩展回调）、模型级 `samplingParams`、Codex WebSocket、生图/分类网关；余项是扩展宿主动态注册 route、`websocket-cached` 连接复用、Codex zstd 与完整 continuation，以及生图/分类入口接线 |
 | PI-10 | 资源配置与主题 | 资源发现、主题 JSON 解析、主题目录热重载与资源页已实现；余项是独立资源编辑界面与包资源筛选可视化 |
@@ -427,8 +456,8 @@ PiWeft 新增 `settings.security`（pi 没有这个键），语义对齐 PiDeck 
 | D-03 | 内置终端 | 已实现 MiniPty 与主要 VT 行为；未覆盖 macOS/Windows 实机回归、完整 VT100 边界、多标签、快照回放 |
 | D-04 | 完整 Git 工作流 | 已实现暂存/提交/分支、目录树、AI 提交摘要、源代码管理图、比较更改、远端同步（fetch/pull/push，含首次推送自动建跟踪）与 stash；检查点仍由会话自动快照提供；未覆盖冲突解决界面、rebase/cherry-pick/reset/drop 等改写历史的操作、多远端选择 |
 | D-05 | 文件检查点/回滚 | 已实现 `refs/pi-checkpoints/<id>` 快照与回滚，右侧面板「检查点」分段提供列表、按需变更概览（`git diff --stat`，完整补丁写临时文件交给编辑器）、恢复（恢复前自动打 `before-restore` 快照）；未覆盖快照与助手回合关联、恢复后清理新增未跟踪文件、检查点分页与按范围回退（files/conversation/all） |
-| D-06 | 配置深度 | 已实现连接测试、远程模型拉取、价格表单；未覆盖供应商迁移、收藏/隐藏/排序、Azure/Vertex/Bedrock 专用目录接口、桌面 OAuth |
-| D-07 | 用量系统 | 已实现余额/积分查询、跨会话统计与热力图；未覆盖订阅窗口/重置时间、火山 AK/SK 等专用解析、热力图下钻 |
+| D-06 | 配置深度 | 已实现连接测试、远程模型拉取、价格表单、桌面订阅 OAuth 登录与登录后模型源热更新；未覆盖供应商迁移、收藏/隐藏/排序、Azure/Vertex/Bedrock 专用目录接口、多账号切换 |
+| D-07 | 用量系统 | 已实现 `usage-probes.json`（内置候选 + 声明式模板 + 旧 probes 数组）、余额/积分/套餐三形态、多窗口百分比与重置时间、自动查询间隔、失败尝试明细；覆盖 DeepSeek / OpenRouter / Moonshot / SiliconFlow / 智谱 / Kimi / Codex / xAI / Command Code / TokenDance / MiniMax / OpenCode 与通用 `/usage` 兜底。未覆盖火山方舟 AK/SK 签名、Sub2API 面板登录态余额、热力图下钻 |
 | D-08 | 技能/插件生态 | 已实现资源发现与资源页；缺少商店、中文提示词库、包安装可视化入口和 PiDeck 独立宿主插件系统 |
 | D-09 | 多后端/导入 | 已实现 Claude Code 与 Codex CLI 的会话导入（`pi import` + 桌面弹窗）；缺少 DSH、ACP 外部 Agent 后端，以及 OpenCode / ZCode / Cursor / Kimi 等其余格式（这些源是 SQLite 库，本端口没有 SQLite 依赖） |
 | D-10 | 多模态工作流 | 图片输入/预览已有；缺少视觉桥、独立生图入口、语音转写/视频生成工作流 |
@@ -460,6 +489,9 @@ xvfb-run -a -s '-screen 0 1280x820x24' bash tools/desktop-waiting-smoke.sh
 PI_CODING_AGENT_DIR=$(mktemp -d) xvfb-run -a \
   src/PiWeft.Desktop/bin/Release/net10.0/linux-x64/publish/piweft-desktop --theme-smoke --cwd /tmp
 xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-statistics-smoke.sh
+xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-usage-smoke.sh
+xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-auth-smoke.sh
+xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-auth-login-smoke.sh
 xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh
 ```
 

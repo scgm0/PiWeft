@@ -183,7 +183,16 @@ public static class AuthCommands
 				return 1;
 			}
 
-			AuthStore.SaveApiKey(provider, key.Trim());
+			try
+			{
+				AuthStore.SaveApiKey(provider, key.Trim());
+			}
+			catch (CodexAuthException exception)
+			{
+				error.WriteLine($"pi: {exception.Message}");
+				return 1;
+			}
+
 			output.WriteLine($"凭据已写入 {AuthStore.Path()}（provider: {provider}）。");
 			return 0;
 		}

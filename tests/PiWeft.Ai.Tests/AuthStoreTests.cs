@@ -42,6 +42,32 @@ public class AuthStoreTests : IDisposable
 	private static StreamOptions Options(string? apiKey = null) => new() { ApiKey = apiKey };
 
 	[Fact]
+	public void ConfiguredProvidersCountsLiteralTemplatesAndCommandsWithoutExecuting()
+	{
+		WriteAuth("""
+			{"literal":{"type":"api_key","key":"k"},
+			 "template":{"type":"api_key","key":"${TOKEN}","env":{"TOKEN":"resolved"}},
+			 "missing":{"type":"api_key","key":"${MISSING}"},
+			 "command":{"type":"api_key","key":"!never execute this"},
+			 "oauth":{"type":"oauth","access":"a","refresh":"r","expires":1}}
+			""");
+		var providers = AuthStore.ConfiguredProviders(_agentDir);
+		Assert.Contains("literal", providers);
+		Assert.Contains("template", providers);
+		Assert.Contains("command", providers);
+		Assert.DoesNotContain("missing", providers);
+		Assert.DoesNotContain("oauth", providers);
+	}
+
+	[Fact]
+	public void SaveApiKeyRefusesToOverwriteMalformedAuthFile()
+	{
+		WriteAuth("{not json");
+		Assert.Throws<CodexAuthException>(() => AuthStore.SaveApiKey(Provider, "new", _agentDir));
+		Assert.Equal("{not json", File.ReadAllText(AuthStore.Path(_agentDir)));
+	}
+
+	[Fact]
 	public void StoredCredentialWinsOverTheEnvironmentVariable()
 	{
 		WriteAuth("""{"deepseek":{"type":"api_key","key":"from-auth-json"}}""");

@@ -64,6 +64,9 @@ public static class CodexAuth
 	public static string CredentialsPath(string? agentDir = null) =>
 		Path.Combine(agentDir ?? AgentPaths.AgentDirectory(), "auth.json");
 
+	private static string? Text(JsonObject entry, string key) =>
+		entry[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
 	/// <summary>启动设备码流程，并返回需要展示给用户的信息。</summary>
 	public static async Task<CodexDeviceCode> StartDeviceAsync(
 		HttpClient http,
@@ -302,8 +305,9 @@ public static class CodexAuth
 				return null;
 			}
 
-			var access = entry["access"]?.GetValue<string>();
-			var refresh = entry["refresh"]?.GetValue<string>();
+			// 用户可手改 auth.json：字段类型不符时按缺失处理，避免认证/模型可用性路径抛异常。
+			var access = Text(entry, "access");
+			var refresh = Text(entry, "refresh");
 			if (string.IsNullOrEmpty(access) || string.IsNullOrEmpty(refresh))
 			{
 				return null;
@@ -313,7 +317,7 @@ public static class CodexAuth
 			{
 				Access = access,
 				Refresh = refresh,
-				Expires = entry["expires"]?.GetValue<long>() ?? 0,
+				Expires = entry["expires"] is JsonValue expires && expires.TryGetValue<long>(out var expiry) ? expiry : 0,
 			};
 		}
 		catch (JsonException)
@@ -332,46 +336,49 @@ public static class CodexAuth
 	/// </summary>
 	public static void Save(CodexCredentials credentials, string? agentDir = null)
 	{
-		var path = CredentialsPath(agentDir);
-		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-
-		JsonObject root;
-		try
+		lock (AuthFileGate.Gate)
 		{
-			root = File.Exists(path)
-				? JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject()
-				: new JsonObject();
-		}
-		catch (JsonException exception)
-		{
-			throw new CodexAuthException($"无法解析 {path}（{exception.Message}），为避免覆盖其它凭据已中止写入");
-		}
+			var path = CredentialsPath(agentDir);
+			Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-		root[ProviderKey] = JsonSerializer.SerializeToNode(credentials, AuthJsonContext.Default.CodexCredentials);
-
-		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
-		try
-		{
-			File.WriteAllText(temporary, root.ToJsonString(WriteOptions));
-			if (!OperatingSystem.IsWindows())
+			JsonObject root;
+			try
 			{
-				// 令牌文件不能按 umask 落成 0644：本机其它用户不该读到 access/refresh token。
-				File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+				root = File.Exists(path)
+					? JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject()
+					: new JsonObject();
+			}
+			catch (JsonException exception)
+			{
+				throw new CodexAuthException($"无法解析 {path}（{exception.Message}），为避免覆盖其它凭据已中止写入");
 			}
 
-			File.Move(temporary, path, overwrite: true);
-		}
-		finally
-		{
-			if (File.Exists(temporary))
+			root[ProviderKey] = JsonSerializer.SerializeToNode(credentials, AuthJsonContext.Default.CodexCredentials);
+
+			var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+			try
 			{
-				try
+				File.WriteAllText(temporary, root.ToJsonString(WriteOptions));
+				if (!OperatingSystem.IsWindows())
 				{
-					File.Delete(temporary);
+					// 令牌文件不能按 umask 落成 0644：本机其它用户不该读到 access/refresh token。
+					File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 				}
-				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+
+				File.Move(temporary, path, overwrite: true);
+			}
+			finally
+			{
+				if (File.Exists(temporary))
 				{
-					// 清理失败不影响主流程的错误上报。
+					try
+					{
+						File.Delete(temporary);
+					}
+					catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+					{
+						// 清理失败不影响主流程的错误上报。
+					}
 				}
 			}
 		}

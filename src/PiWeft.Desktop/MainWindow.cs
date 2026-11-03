@@ -1830,6 +1830,18 @@ public sealed partial class MainWindow : Window
 				case "balance":
 					CurrentTab()?.ShowProviderUsage();
 					break;
+				case "auth":
+					OpenSettingsDialog();
+					if (_settingsView is { } authView)
+					{
+						authView.ShowConfiguration();
+						_ = authView.SelectSectionAsync("auth");
+					}
+					break;
+				case "auth-login":
+					OpenSettingsDialog();
+					if (_settingsView is { } loginView) _ = loginView.OpenAuthLoginSmokeAsync("openai-codex");
+					break;
 				case "statistics-details":
 					CurrentTab()?.ShowStatisticsDetails();
 					break;
@@ -2387,6 +2399,8 @@ public sealed partial class MainWindow : Window
 				_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
 				// 安全门改动要立刻推给所有已打开的会话，否则界面档位与实际执行用的档位会不一致。
 				_settingsView.SecurityChanged += ApplySecurityToSessions;
+				// OAuth 登录/退出改写了 auth.json：重建可用模型并把新模型源推给已打开的标签页。
+				_settingsView.AuthChanged += RefreshAuthModels;
 			}
 			_settingsDialog = new SettingsDialog(_settingsView);
 			_settingsDialog.Closed += () =>
@@ -2414,6 +2428,37 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// <summary>Reload future-session environments without replacing any running session.</summary>
+	/// <summary>
+	/// 认证变化后重建模型环境：OAuth 凭据会改变可用模型集合（Copilot/Radius 还会改端点），
+	/// 已打开的标签页也必须换到新的模型源，否则登录成功却看不到新模型。
+	/// </summary>
+	private void RefreshAuthModels()
+	{
+		try
+		{
+			var (environment, error) = CliEnvironment.Create(_arguments, _cwd);
+			if (environment is null) { _banner.Text(error ?? Strings.ConfigFailed); return; }
+			_environment = environment;
+			_environments.Clear();
+			_environments[Path.GetFullPath(_cwd)] = environment;
+			_models = environment.ListAvailableModels(_arguments.ApiKey);
+			UpdateSessionModelSources();
+			AppLog.For<MainWindow>().ZLogInformation($"Auth model refresh: models={_models.Count}");
+			_banner.Text(Strings.AuthModelsRefreshed);
+		}
+		catch (Exception ex) when (ex is IOException or ArgumentException or InvalidOperationException)
+		{
+			_banner.Text(Strings.ConfigFailed);
+		}
+	}
+
+	/// <summary>把当前可用模型源推给所有已打开的标签页（认证变化后无需重开标签）。</summary>
+	private void UpdateSessionModelSources()
+	{
+		foreach (var tab in _tabEntries.OfType<SessionTab>())
+			tab.SetAvailableModels(() => EnvironmentFor(tab.Session.Cwd).ListAvailableModels(_arguments.ApiKey));
+	}
+
 	private void ReloadConfiguration(ConfigFile file)
 	{
 		if (file == ConfigFile.Mcp) { _banner.Text(Strings.ConfigMcpRestart); return; }
@@ -2425,7 +2470,9 @@ public sealed partial class MainWindow : Window
 			_environments.Clear();
 			_environments[Path.GetFullPath(_cwd)] = environment;
 			_models = environment.ListAvailableModels(_arguments.ApiKey);
-			_banner.Text(Strings.ConfigApplied);
+			// 认证条目会改变可用模型集合：已打开的标签页也要换模型源，其它配置仍只影响新会话。
+			if (file == ConfigFile.Auth) UpdateSessionModelSources();
+			_banner.Text(file == ConfigFile.Auth ? Strings.AuthModelsRefreshed : Strings.ConfigApplied);
 		}
 		catch (Exception ex) when (ex is IOException or ArgumentException or InvalidOperationException)
 		{

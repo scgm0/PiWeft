@@ -888,7 +888,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 						break;
 					}
 
-					if (!CliEnvironment.SupportedApis.Contains(model.Api, StringComparer.Ordinal))
+					if (!CliEnvironment.SupportsApi(model.Api))
 					{
 						WriteRecord(Response(id, "set_model", false, null, $"Unsupported api: {model.Api}"));
 						break;
@@ -1121,7 +1121,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 						break;
 					}
 
-					if (!CliEnvironment.SupportedApis.Contains(model.Api, StringComparer.Ordinal))
+					if (!CliEnvironment.SupportsApi(model.Api))
 					{
 						WriteRecord(Response(id, "test_model", false, null, $"Unsupported api: {model.Api}"));
 						break;

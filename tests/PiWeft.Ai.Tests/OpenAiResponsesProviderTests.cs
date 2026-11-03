@@ -150,6 +150,72 @@ public class OpenAiResponsesProviderTests
 	}
 
 	[Fact]
+	public async Task ResponsesUseSessionIdAsPromptCacheKeyUnlessDisabled()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiResponsesProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+		using (var body = JsonDocument.Parse(handler.LastBody!))
+			Assert.Equal("session-42", body.RootElement.GetProperty("prompt_cache_key").GetString());
+
+		var disabled = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var disabledProvider = new OpenAiResponsesProvider(new HttpClient(disabled));
+		var noCache = disabledProvider.Stream(
+			Model(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42", CacheRetention = CacheRetentions.None });
+		await foreach (var _ in noCache)
+		{
+		}
+		using var noCacheBody = JsonDocument.Parse(disabled.LastBody!);
+		Assert.False(noCacheBody.RootElement.TryGetProperty("prompt_cache_key", out _));
+	}
+
+	[Fact]
+	public async Task OpenRouterResponsesCarrySessionAffinityHeaders()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiResponsesProvider(new HttpClient(handler));
+		var model = Model(provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1");
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.Equal("session-42", handler.LastRequest!.Headers.GetValues("x-session-id").Single());
+	}
+
+	[Fact]
+	public async Task OpenCodeRouteCarriesSessionHeader()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiResponsesProvider(new HttpClient(handler));
+		var model = Model(provider: "opencode", baseUrl: "https://opencode.ai/zen/v1");
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.Equal("session-42", handler.LastRequest!.Headers.GetValues("x-opencode-session").Single());
+		Assert.Equal("piweft", handler.LastRequest.Headers.GetValues("x-opencode-client").Single());
+	}
+
+	[Fact]
 	public async Task SendsExpectedRequest()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };

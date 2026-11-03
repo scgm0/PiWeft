@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai.Auth;
 using PiWeft.Cli;
 using PiWeft.CodingAgent;
 using System.Globalization;
@@ -193,8 +194,22 @@ internal sealed partial class ConfigurationView
 	private void BuildAuth()
 	{
 		_saveForm = () => Save(_root);
-		if (_root.Count == 0) _body.Children(Label(Strings.ConfigNoAuth));
-		foreach (var (name, value) in _root)
+
+		// 订阅登录：OAuth 状态与入口（API Key 条目仍走下面的 auth.json 表单）。
+		var statuses = ProviderAuthService.Statuses(_store.AgentDir);
+		var cards = new StackPanel().Spacing(AppTheme.Space2);
+		foreach (var status in statuses) cards.Children(AuthProviderCard(status));
+		_body.Children(
+			Label(Strings.AuthSubscriptionTitle).FontWeight(FontWeight.Bold),
+			Hint(Strings.AuthSubscriptionHint),
+			cards);
+
+		_body.Children(Label(Strings.AuthEntriesTitle).FontWeight(FontWeight.Bold));
+		var listed = _root.Where(pair => ProviderAuth.Find(pair.Key) is null ||
+			!string.Equals(ConfigurationModels.Text(pair.Value, "type"), "oauth", StringComparison.Ordinal) ||
+			!ProviderAuthService.HasCredential(pair.Key, _store.AgentDir)).ToArray();
+		if (listed.Length == 0) _body.Children(Label(Strings.AuthNoApiKeys));
+		foreach (var (name, value) in listed)
 		{
 			_body.Children(new DockPanel().LastChildFill().Children(
 				AppIcons.Button("trash", Strings.Delete, () => _ = DeleteAsync(name, () =>
@@ -213,9 +228,131 @@ internal sealed partial class ConfigurationView
 			SetDirty(false);
 		};
 		_saveForm = commit;
-		_body.Children(FormCard(Strings.ConfigAuth, Strings.ConfigCredentialsHint,
+		_body.Children(FormCard(Strings.AuthApiKeyTitle, Strings.AuthApiKeyHint,
 			Field(Strings.ConfigProvider, provider), Field(Strings.ConfigKey, key),
 			AppIcons.PrimaryButton("check", Strings.ConfigSetKey, () => Guard(commit)).HorizontalAlignment(HorizontalAlignment.Left)));
+	}
+
+	/// <summary>一个订阅供应商的状态卡：登录/刷新/退出 + 到期时间与账号信息。</summary>
+	private UIElement AuthProviderCard(ProviderAuthStatus status)
+	{
+		var provider = status.Provider;
+		var details = new StackPanel().Spacing(4);
+		details.Children(
+			Label($"{provider.Name} · {provider.Id}").FontWeight(FontWeight.Bold),
+			new TextBlock().Text(status.StateText).FontSize(AppTheme.FontSizeMicro)
+				.Role(status.Expired ? AppStyles.RoleError : status.LoggedIn ? AppStyles.RoleSuccess : AppStyles.RoleSubtle)
+				.TextWrapping(TextWrapping.Wrap));
+		if (status.AccountId is { Length: > 0 } account)
+			details.Children(Hint(Strings.AuthAccount(account)));
+		if (status.EnterpriseUrl is { Length: > 0 } enterprise)
+			details.Children(Hint(Strings.AuthEnterprise(enterprise)));
+		if (status.BaseUrl is { Length: > 0 } baseUrl)
+			details.Children(Hint(Strings.AuthBaseUrl(baseUrl)));
+
+		var actions = new WrapPanel().Spacing(4);
+		var login = AppIcons.TextButton("key-round", status.LoggedIn ? Strings.AuthRelogin : Strings.AuthLogin,
+			() => StartAuthLogin(provider));
+		login.IsEnabled = !_authBusy;
+		actions.Children(login);
+		if (status.LoggedIn && provider.Refreshable)
+		{
+			var refresh = AppIcons.TextButton("refresh-cw", Strings.AuthRefresh,
+				() => _ = RefreshAuthAsync(provider));
+			refresh.IsEnabled = !_authBusy;
+			actions.Children(refresh);
+		}
+		if (status.LoggedIn)
+		{
+			var logout = AppIcons.TextButton("x", Strings.AuthLogout, () => _ = LogoutAuthAsync(provider));
+			logout.IsEnabled = !_authBusy;
+			actions.Children(logout);
+		}
+		if (provider.DocsUrl.Length > 0)
+			actions.Children(AppIcons.Button("external-link", Strings.AuthDocs,
+				() => Shell.Open(provider.DocsUrl)));
+		details.Children(actions);
+		return new Border().StyleName(AppStyles.CardMuted).CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(AppTheme.Space3)).Child(details);
+	}
+
+	/// <summary>登录/退出前先确认没有未保存的 auth.json 修改，避免外部写入被草稿覆盖。</summary>
+	private bool EnsureAuthEditable()
+	{
+		if (!_dirty) return true;
+		Toasts.Error(View, Strings.AuthSaveFirst);
+		return false;
+	}
+
+	internal void StartAuthLoginForSmoke(string providerId)
+	{
+		if (ProviderAuth.Find(providerId) is { } provider) StartAuthLogin(provider);
+	}
+
+	private void StartAuthLogin(AuthProvider provider)
+	{
+		if (!EnsureAuthEditable()) return;
+		var panel = new ProviderLoginPanel(provider, _store.AgentDir);
+		var completedLogin = false;
+		panel.Completed += completed =>
+		{
+			if (_dirty) return;
+			completedLogin = true;
+			Load();
+			AuthChanged?.Invoke();
+			Toasts.Success(View, Strings.AuthLoginDone(completed.Name));
+		};
+		// 失败/取消也可能已经写了半个凭据：关闭面板时重读 auth.json，让后续保存不会撞 revision。
+		// 成功时 Completed 已经重读过，这里不再重复构建整页。
+		panel.Closed += () =>
+		{
+			if (!completedLogin && !_dirty) Load();
+		};
+		panel.Show(View);
+	}
+
+	private async Task LogoutAuthAsync(AuthProvider provider)
+	{
+		if (!EnsureAuthEditable()) return;
+		if (!await MessageBox.ConfirmAsync(Strings.AuthLogoutConfirm(provider.Name))) return;
+		try
+		{
+			if (!ProviderAuthService.Logout(provider.Id, _store.AgentDir))
+			{
+				Toasts.Error(View, Strings.AuthLogoutFailed);
+				return;
+			}
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			Toasts.Error(View, Strings.ConfigFailed);
+			return;
+		}
+		Load();
+		AuthChanged?.Invoke();
+		Toasts.Success(View, Strings.AuthLogoutDone);
+	}
+
+	private async Task RefreshAuthAsync(AuthProvider provider)
+	{
+		if (!EnsureAuthEditable()) return;
+		_authBusy = true;
+		BuildAuth();
+		try
+		{
+			var refreshed = await ProviderAuthService.RefreshAsync(provider, _store.AgentDir, CancellationToken.None);
+			Toasts.Show(View, refreshed ? Strings.AuthRefreshDone : Strings.AuthRefreshFailed,
+				refreshed ? ToastKind.Success : ToastKind.Error);
+		}
+		catch (Exception exception) when (exception is not OperationCanceledException)
+		{
+			Toasts.Error(View, Strings.AuthRefreshFailed);
+		}
+		finally
+		{
+			_authBusy = false;
+			Load();
+		}
 	}
 
 	private void BuildAgentSettings()

@@ -81,7 +81,9 @@ PiWeft 将 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 实现以下 API：`anthropic-messages`、`openai-completions`、`openai-responses`、`openai-codex-responses`、`azure-openai-responses`、`google-generative-ai`、`google-vertex`、`bedrock-converse-stream`、`mistral-conversations`、`pi-messages`。
 
-`pi login` 支持 ChatGPT Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius 的 OAuth；其它 Provider 走 API key 登录。`logout` 可移除任意 Provider 的凭据并保留其它条目；运行时按需刷新过期 OAuth token。`pi auth check` 输出 `ready` / `not_ready` / `invalid`，退出码为 0 / 1 / 2；`invalid` 表示凭据存在但不可用。`print-api-key` / `print-bearer-token` 只输出相应凭据；`--min-expiry` 仅适用于后者。
+`pi login` 支持 ChatGPT Codex、OpenAI ChatGPT、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius 的 OAuth；其它 Provider 走 API key 登录。`logout` 可移除任意 Provider 的凭据并保留其它条目；运行时按需刷新过期 OAuth token。`pi auth check` 输出 `ready` / `not_ready` / `invalid`，退出码为 0 / 1 / 2；`invalid` 表示凭据存在但不可用。`print-api-key` / `print-bearer-token` 只输出相应凭据；`--min-expiry` 仅适用于后者。桌面端「设置 → 配置管理 → 认证」提供同一套订阅登录（实时日志、授权链接/设备码、授权码/企业域名输入、刷新与退出），登录成功后即时刷新账号模型目录与已打开标签页的可用模型。
+
+OpenCode / OpenCode Go 的 OpenAI-compatible、Responses、Anthropic 与 Gemini 请求自动附带 `x-opencode-session`（当前会话 ID，压缩/摘要/连接探测共用）与 `x-opencode-client: piweft`；用户显式配置的同名头优先，空值也算显式覆盖。
 
 `auth.json` 的 API Key 支持明文和 `${VAR}` 模板；命令型凭据（`!` 开头）在取值时执行命令取 stdout（10 秒超时、64 KiB 上限，不缓存），失败时回落到环境变量。写入是原子的，Unix 下仅用户可读写；文件无法解析时拒绝覆盖，避免抹掉其它供应商的凭据。
 
@@ -108,7 +110,7 @@ OAuth 支持授权码 + PKCE、动态注册、回环回调、401 刷新重放与
   新会话在没有显式 `defaultModel` 时沿用它，模型被删除后自动失效回退；恢复已有会话时优先用会话记录里的 `model_change`。
   思考级别的点选写进 `settings.json` 的 `modelThinkingLevels[provider/model]`（每模型默认档位，未知字段原样保留），
   解析次序是显式传入 > 会话记录 > 每模型默认 > 全局 `defaultThinkingLevel` > off，再 clamp 到该模型支持的档位。
-- Git 状态/diff、暂存/未暂存目录树、暂存/取消暂存（含目录级）、提交（Ctrl+Enter）、分支切换/新建、AI 提交摘要（默认跟随会话，设置里可固定模型/思考级别与自定义提示词模板）、源代码管理图（泳道/引用筛选/提交详情与文件 diff/加载更多）、比较更改（三点比较、ahead/behind、文件 diff）、远端同步（fetch / pull `--ff-only` / push，首次推送自动建立上游跟踪）、stash 收起与应用/丢弃（按未暂存/已暂存/冲突分节，带批量暂存与提交禁用态）、命令 Dock（PTY 终端）、跨会话用量统计与余额查询、实时会话统计、深浅主题与内嵌字体/图标。检查点不再占用 Git 面板，改到右侧面板的「检查点」分段：列出 `refs/pi-checkpoints` 快照、按需展开相对当前工作区的变更概览（`git diff --stat`，完整补丁交给编辑器）、恢复工作区（恢复前自动打 `before-restore` 快照）；会话仍按回合自动快照。所有 git 子进程钉住 `LC_ALL=C`，失败按输出特征分类成可操作的中文提示、原始输出留在详情里；状态读取用 `--porcelain=v1 -z`，中文 / 空格 / emoji / 换行路径都按原始 UTF-8 解析。
+- Git 状态/diff、暂存/未暂存目录树、暂存/取消暂存（含目录级）、提交（Ctrl+Enter）、分支切换/新建、AI 提交摘要（默认跟随会话，设置里可固定模型/思考级别与自定义提示词模板）、源代码管理图（泳道/引用筛选/提交详情与文件 diff/加载更多）、比较更改（三点比较、ahead/behind、文件 diff）、远端同步（fetch / pull `--ff-only` / push，首次推送自动建立上游跟踪）、stash 收起与应用/丢弃（按未暂存/已暂存/冲突分节，带批量暂存与提交禁用态）、命令 Dock（PTY 终端）、跨会话用量统计与供应商用量查询（余额/套餐窗口/订阅）、实时会话统计、深浅主题与内嵌字体/图标。检查点不再占用 Git 面板，改到右侧面板的「检查点」分段：列出 `refs/pi-checkpoints` 快照、按需展开相对当前工作区的变更概览（`git diff --stat`，完整补丁交给编辑器）、恢复工作区（恢复前自动打 `before-restore` 快照）；会话仍按回合自动快照。所有 git 子进程钉住 `LC_ALL=C`，失败按输出特征分类成可操作的中文提示、原始输出留在详情里；状态读取用 `--porcelain=v1 -z`，中文 / 空格 / emoji / 换行路径都按原始 UTF-8 解析。
 - 右侧「轨迹」分段（会话复盘，`Ctrl+J` 打开后切「轨迹」）：按轮分组、默认只展开最后一轮的账本（轮头是「N 条 · M 工具 · 输入→输出 · 耗时」，轮内连续工具超过 8 条压成一组），顶部四条泳道（输入/模型/工具/过程）按时间布刻度、点刻度定位记录，底部检查器显示选中记录的完整时间、状态、模型、思考档位、token、入参/结果/思考/提示词并可复制；检查器高度可用分隔条拖动（与 Git 面板同一套 `PaneSash` 语义，落盘 `trajectoryInspectorHeight`），入参/结果是有界只读文本框（超过 200 DIP 自己滚动，不再套嵌套 `ScrollViewer`，滚轮不会被外层检查器吃掉）。数据只来自当前分支与还没落盘的流式尾行；记录行按固定行高虚拟化（超长会话也只建视口附近的行），「加载更早记录」每次补尾部三轮。投影是增量的：append-only 分支只重建最后一轮，已收口的轮直接复用；进行中的轮头只改时长文本，流式正文超过摘要所需前缀后不再每秒重建虚拟列表。思考行优先用当前进程从 `thinking_start` / `thinking_end` 捕获的独立起止；Pi 会话文件本身不持久化这两个时刻，重开历史会话时显示发生时刻，不伪造耗时。视觉验收：`xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-trajectory-smoke.sh`（夹具会话含 6 轮、连续工具组、压缩与扩展过程，深浅主题各一张）。
 - 供应商/模型、API Key、Agent 设置、MCP 和 JSON 配置管理（MCP 服务器行内显示授权状态，可 授权 / 重新授权 / 清除凭据；授权流程与 CLI 共用 `PiWeft.Mcp.McpLogin`）；全局/项目作用域、未知字段保留、原子写入和冲突检查。设置是窗口级模态弹窗，未保存修改受保护。
 - 按工作目录单实例；后台有界日志；`--self-check`、`--theme-smoke` 及截图脚本用于验证。检查点面板的视觉验收：`xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh`。

@@ -31,12 +31,27 @@ public static class OAuthStore
 	public static string Path(string? agentDir = null) =>
 		System.IO.Path.Combine(agentDir ?? AgentPaths.AgentDirectory(), "auth.json");
 
-	public static OAuthCredential? Read(string provider, string? agentDir = null)
+	public static OAuthCredential? Read(string provider, string? agentDir = null) =>
+		ReadCredential(ReadRoot(agentDir)?[provider]);
+
+	/// <summary>
+	/// 一次读盘取出全部 OAuth 凭据。认证页要显示多个 provider 的状态，
+	/// 逐个 Read 会对同一份 auth.json 重复读盘/解析；这里只读一次。
+	/// </summary>
+	public static IReadOnlyDictionary<string, OAuthCredential> ReadAll(string? agentDir = null)
 	{
-		var node = ReadRoot(agentDir)?[provider];
-		if (node is not JsonObject entry ||
-			entry["type"]?.GetValue<string>() != "oauth" ||
-			entry["access"]?.GetValue<string>() is not { Length: > 0 } access)
+		var result = new Dictionary<string, OAuthCredential>(StringComparer.Ordinal);
+		if (ReadRoot(agentDir) is not { } root) return result;
+		foreach (var (provider, node) in root)
+		{
+			if (ReadCredential(node) is { } credential) result[provider] = credential;
+		}
+		return result;
+	}
+
+	private static OAuthCredential? ReadCredential(JsonNode? node)
+	{
+		if (node is not JsonObject entry || Text(entry, "type") != "oauth" || Text(entry, "access") is not { Length: > 0 } access)
 		{
 			return null;
 		}
@@ -52,17 +67,21 @@ public static class OAuthStore
 		return new OAuthCredential
 		{
 			Access = access,
-			Refresh = entry["refresh"]?.GetValue<string>() ?? string.Empty,
-			Expires = entry["expires"]?.GetValue<long>() ?? 0,
-			ClientId = entry["clientId"]?.GetValue<string>(),
+			Refresh = Text(entry, "refresh") ?? string.Empty,
+			Expires = entry["expires"] is JsonValue expires && expires.TryGetValue<long>(out var expiry) ? expiry : 0,
+			ClientId = Text(entry, "clientId"),
 			Scopes = scopes,
-			AccountId = entry["accountId"]?.GetValue<string>(),
-			BaseUrl = entry["baseUrl"]?.GetValue<string>(),
-			EnterpriseUrl = entry["enterpriseUrl"]?.GetValue<string>(),
+			AccountId = Text(entry, "accountId"),
+			BaseUrl = Text(entry, "baseUrl"),
+			EnterpriseUrl = Text(entry, "enterpriseUrl"),
 		};
 	}
 
-	/// <summary>读取未过期（含 skew）的 OAuth access token。</summary>
+	/// <summary>auth.json 是用户可手改文件：类型不符的字段按缺失处理，不能让整页认证/模型可用性抛异常。</summary>
+	private static string? Text(JsonObject entry, string key) =>
+		entry[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+	/// <summary>读取未过期（含 skew）的 OAuth access token；已过期返回 null。</summary>
 	public static string? ReadAccessToken(string provider, string? agentDir = null, TimeSpan? skew = null)
 	{
 		var credential = Read(provider, agentDir);
@@ -72,40 +91,63 @@ public static class OAuthStore
 		}
 
 		var expiresAt = credential.ExpiresAt - (skew ?? TimeSpan.FromMinutes(1));
-		return expiresAt > DateTimeOffset.UtcNow ? credential.Access : credential.Access;
+		return expiresAt > DateTimeOffset.UtcNow ? credential.Access : null;
 	}
 
 	public static void Save(string provider, OAuthCredential credential, string? agentDir = null)
 	{
-		var root = ReadRoot(agentDir) ?? new JsonObject();
-		var scopes = credential.Scopes is { Count: > 0 }
-			? new JsonArray([.. credential.Scopes.Select(static scope => (JsonNode?)JsonValue.Create(scope))])
-			: null;
-		root[provider] = new JsonObject
+		lock (AuthFileGate.Gate)
 		{
-			["type"] = "oauth",
-			["access"] = credential.Access,
-			["refresh"] = credential.Refresh,
-			["expires"] = credential.Expires,
-			["clientId"] = credential.ClientId,
-			["scopes"] = scopes,
-			["accountId"] = credential.AccountId,
-			["baseUrl"] = credential.BaseUrl,
-			["enterpriseUrl"] = credential.EnterpriseUrl,
-		};
-		Write(root, agentDir);
+			// 文件存在但解析失败时拒绝覆盖：否则一次 OAuth 登录会把其它供应商的凭据整片抹掉。
+			var root = ReadRootForWrite(agentDir);
+			var scopes = credential.Scopes is { Count: > 0 }
+				? new JsonArray([.. credential.Scopes.Select(static scope => (JsonNode?)JsonValue.Create(scope))])
+				: null;
+			root[provider] = new JsonObject
+			{
+				["type"] = "oauth",
+				["access"] = credential.Access,
+				["refresh"] = credential.Refresh,
+				["expires"] = credential.Expires,
+				["clientId"] = credential.ClientId,
+				["scopes"] = scopes,
+				["accountId"] = credential.AccountId,
+				["baseUrl"] = credential.BaseUrl,
+				["enterpriseUrl"] = credential.EnterpriseUrl,
+			};
+			Write(root, agentDir);
+		}
 	}
 
 	public static bool RemoveProvider(string provider, string? agentDir = null)
 	{
-		var root = ReadRoot(agentDir);
-		if (root is null || !root.Remove(provider))
+		lock (AuthFileGate.Gate)
 		{
-			return false;
-		}
+			var root = ReadRoot(agentDir);
+			if (root is null || !root.Remove(provider))
+			{
+				return false;
+			}
 
-		Write(root, agentDir);
-		return true;
+			Write(root, agentDir);
+			return true;
+		}
+	}
+
+	/// <summary>写盘前读取；文件缺失返回空对象，损坏/不可读时抛错而不是覆盖。</summary>
+	private static JsonObject ReadRootForWrite(string? agentDir)
+	{
+		var path = Path(agentDir);
+		if (!File.Exists(path)) return new JsonObject();
+		try
+		{
+			return JsonNode.Parse(File.ReadAllText(path)) as JsonObject
+				?? throw new CodexAuthException($"无法解析 {path}：顶层不是对象；为避免覆盖其它凭据已中止写入");
+		}
+		catch (System.Text.Json.JsonException exception)
+		{
+			throw new CodexAuthException($"无法解析 {path}（{exception.Message}）；为避免覆盖其它凭据已中止写入");
+		}
 	}
 
 	internal static JsonObject? ReadRoot(string? agentDir)

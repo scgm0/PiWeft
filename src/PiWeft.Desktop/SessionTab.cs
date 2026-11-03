@@ -298,6 +298,7 @@ public sealed partial class SessionTab : IDisposable
 		_statisticsPanel.SetUsage(_usageSummary);
 		_usagePanel = new ProviderUsagePanel(() => Session.Model, () => Session.Cwd);
 		_usagePanel.Saved += _usageSummary.Invalidate;
+		_usagePanel.ResultReady += _usageSummary.ApplyResult;
 		_usagePanel.Closed += () =>
 		{
 			if (_returnToStatistics && !_disposed)
@@ -2763,6 +2764,9 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	public void ShowStatistics() => _statisticsPanel.Show(View, StatisticsDisplay(), IsStreaming || Session.IsCompacting);
+
+	/// <summary>认证变化后换一份可用模型源（登录后无需重开标签页即可选到新模型）。</summary>
+	public void SetAvailableModels(Func<IReadOnlyList<Model>> availableModels) => _modelPicker.SetSource(availableModels);
 	public void ShowStatisticsDetails()
 	{
 		ShowStatistics();

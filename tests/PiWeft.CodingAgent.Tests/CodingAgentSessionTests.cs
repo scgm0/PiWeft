@@ -186,6 +186,25 @@ public class CodingAgentSessionTests : IDisposable
 	}
 
 	[Fact]
+	public async Task SessionRequestsUseTheCurrentSessionIdAfterSwitch()
+	{
+		var first = SessionManager.Create(_root, SessionsDir);
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("one");
+		script.EnqueueText("two");
+		using var session = CreateSession(script, first);
+
+		await session.PromptAsync("first");
+		Assert.Equal(first.SessionId, script.LastOptions!.SessionId);
+
+		// fork / switch_session 换掉 Session 后，请求标识必须跟着换，不能沿用旧会话 ID。
+		var second = SessionManager.InMemory(_root);
+		session.SwitchSession(second);
+		await session.PromptAsync("second");
+		Assert.Equal(second.SessionId, script.LastOptions!.SessionId);
+	}
+
+	[Fact]
 	public void SetTools_RebuildsThePromptTheModelSeesButKeepsTheSessionFile()
 	{
 		using var session = CreateSession(new ScriptedStreamFn());

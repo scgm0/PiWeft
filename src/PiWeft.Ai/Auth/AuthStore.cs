@@ -13,9 +13,10 @@ namespace PiWeft.Ai.Auth;
 /// 以 <c>!</c> 开头的命令型凭据在请求时执行外部命令取 stdout（与 pi 一致：不缓存）。
 /// </para>
 /// </summary>
-public static class AuthStore
+public static partial class AuthStore
 {
-	private static readonly Regex TemplatePattern = new(@"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+	[GeneratedRegex(@"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.CultureInvariant)]
+	private static partial Regex TemplatePattern();
 
 	/// <summary>命令型凭据的执行上限：超时或超长输出都视为取值失败。</summary>
 	private const int CommandTimeoutMs = 10_000;
@@ -29,32 +30,50 @@ public static class AuthStore
 	/// <summary>写入一个 api_key 凭据，保留 auth.json 里的其它 provider 与字段。</summary>
 	public static void SaveApiKey(string provider, string key, string? agentDir = null)
 	{
-		var path = Path(agentDir);
-		var root = ReadRoot(agentDir) ?? new JsonObject();
-		root[provider] = new JsonObject
+		lock (AuthFileGate.Gate)
 		{
-			["type"] = "api_key",
-			["key"] = key,
-		};
+			var path = Path(agentDir);
+			var root = ReadRootForWrite(path);
+			root[provider] = new JsonObject
+			{
+				["type"] = "api_key",
+				["key"] = key,
+			};
 
-		var directory = System.IO.Path.GetDirectoryName(path);
-		if (directory is { Length: > 0 })
-		{
-			Directory.CreateDirectory(directory);
+			var directory = System.IO.Path.GetDirectoryName(path);
+			if (directory is { Length: > 0 })
+			{
+				Directory.CreateDirectory(directory);
+			}
+
+			var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+			File.WriteAllText(temporary, root.ToJsonString(new System.Text.Json.JsonSerializerOptions
+			{
+				WriteIndented = true,
+				Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+			}));
+			if (!OperatingSystem.IsWindows())
+			{
+				File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+			}
+
+			File.Move(temporary, path, overwrite: true);
 		}
+	}
 
-		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
-		File.WriteAllText(temporary, root.ToJsonString(new System.Text.Json.JsonSerializerOptions
+	/// <summary>写盘前读取；文件缺失返回空对象，损坏/不可读时抛错而不是覆盖。</summary>
+	private static JsonObject ReadRootForWrite(string path)
+	{
+		if (!File.Exists(path)) return new JsonObject();
+		try
 		{
-			WriteIndented = true,
-			Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-		}));
-		if (!OperatingSystem.IsWindows())
-		{
-			File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+			return JsonNode.Parse(File.ReadAllText(path)) as JsonObject
+				?? throw new CodexAuthException($"无法解析 {path}：顶层不是对象；为避免覆盖其它凭据已中止写入");
 		}
-
-		File.Move(temporary, path, overwrite: true);
+		catch (System.Text.Json.JsonException exception)
+		{
+			throw new CodexAuthException($"无法解析 {path}（{exception.Message}）；为避免覆盖其它凭据已中止写入");
+		}
 	}
 
 	/// <summary>
@@ -174,6 +193,24 @@ public static class AuthStore
 		return (string.IsNullOrEmpty(resolved) ? null : resolved, false);
 	}
 
+	/// <summary>
+	/// 一次读盘列出「有可用 API Key（含命令型凭据）」的 provider。
+	/// 只做模板解析与命令型判定，不执行命令；供认证状态页批量读取。
+	/// </summary>
+	public static IReadOnlySet<string> ConfiguredProviders(string? agentDir = null)
+	{
+		var providers = new HashSet<string>(StringComparer.Ordinal);
+		if (ReadRoot(agentDir) is not { } root) return providers;
+		foreach (var (provider, node) in root)
+		{
+			if (ReadCredential(node) is not { } credential) continue;
+			var (key, env) = credential;
+			if (key.Length == 0) continue;
+			if (key.StartsWith('!') || ResolveTemplate(key, env) is { Length: > 0 }) providers.Add(provider);
+		}
+		return providers;
+	}
+
 	/// <summary>列出 auth.json 里配置过的 provider（用于 <c>pi auth check</c> 不带参数时逐个汇报）。</summary>
 	public static IReadOnlyList<string> ListProviders(string? agentDir = null)
 	{
@@ -273,7 +310,7 @@ public static class AuthStore
 		}
 
 		var missing = false;
-		var resolved = TemplatePattern.Replace(key, match =>
+		var resolved = TemplatePattern().Replace(key, match =>
 		{
 			var name = match.Groups[1].Value;
 

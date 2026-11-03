@@ -47,6 +47,7 @@ internal static class ThemePalette
 		BorderSubtle = Pick(theme, ThemeTokens.BorderMuted, fallback.BorderSubtle),
 		Error = Pick(theme, ThemeTokens.Error, fallback.Error),
 		Success = Pick(theme, ThemeTokens.Success, fallback.Success),
+		Warning = fallback.Warning,
 		Info = Pick(theme, ThemeTokens.MdLink, fallback.Info),
 		Thinking = Pick(theme, ThemeTokens.ThinkingText, Pick(theme, ThemeTokens.ThinkingMedium, fallback.Thinking)),
 		Transparent = fallback.Transparent,

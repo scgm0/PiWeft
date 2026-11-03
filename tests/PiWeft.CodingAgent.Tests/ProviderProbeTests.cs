@@ -93,6 +93,7 @@ public class ProviderProbeTests
 			Assert.True(result.Ok);
 			Assert.NotNull(result.Usage);
 			Assert.Equal(1, script.LastOptions!.MaxTokens);
+			Assert.Equal(session.Session.SessionId, script.LastOptions.SessionId);
 		}
 		finally
 		{

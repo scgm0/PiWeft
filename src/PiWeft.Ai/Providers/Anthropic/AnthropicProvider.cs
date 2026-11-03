@@ -17,7 +17,8 @@ public sealed class AnthropicProvider : IApiProvider
 {
 	public const string ApiId = "anthropic-messages";
 	public const string AnthropicVersion = "2023-06-01";
-	public const string OAuthBeta = "oauth-2025-04-20";
+	public const string OAuthBeta = "claude-code-20250219,oauth-2025-04-20";
+	public const string ClaudeCliUserAgent = "claude-cli/2.1.280";
 	public const string DefaultBaseUrl = "https://api.anthropic.com";
 
 	private static readonly byte[] DoneMarker = "[DONE]"u8.ToArray();
@@ -43,7 +44,7 @@ public sealed class AnthropicProvider : IApiProvider
 
 		try
 		{
-			var apiKey = ResolveApiKey(options);
+			var apiKey = ResolveApiKey(model, options);
 			if (string.IsNullOrEmpty(apiKey))
 			{
 				Fail(stream, model, startedAt, "Missing Anthropic API key. Set ANTHROPIC_API_KEY or pass ApiKey.");
@@ -106,8 +107,9 @@ public sealed class AnthropicProvider : IApiProvider
 		int maxTokens,
 		out string payloadJson)
 	{
+		var isAnthropicOAuth = apiKey.StartsWith("sk-ant-oat", StringComparison.Ordinal);
 		var bytes = JsonPayload.Write(writer =>
-			AnthropicWire.WriteRequest(writer, model, messages, tools, options, thinking, maxTokens));
+			AnthropicWire.WriteRequest(writer, model, messages, tools, options, thinking, maxTokens, isAnthropicOAuth));
 
 		if (options.OnPayload is { } onPayload)
 		{
@@ -121,7 +123,9 @@ public sealed class AnthropicProvider : IApiProvider
 		payloadJson = Encoding.UTF8.GetString(bytes);
 
 		var baseUrl = string.IsNullOrEmpty(model.BaseUrl) ? DefaultBaseUrl : model.BaseUrl;
-		var isOAuth = apiKey.StartsWith("sk-ant-oat", StringComparison.Ordinal);
+		// Anthropic 官方 API key 用 x-api-key；Claude OAuth 与 GitHub Copilot 用 Bearer。
+		// Copilot 的 Anthropic 代理还要求浏览器直连标记；它不接受 x-api-key 形式的 Copilot token。
+		var isCopilot = string.Equals(model.Provider, "github-copilot", StringComparison.Ordinal);
 
 		var request = new HttpRequestMessage(HttpMethod.Post, baseUrl.TrimEnd('/') + "/v1/messages")
 		{
@@ -133,10 +137,20 @@ public sealed class AnthropicProvider : IApiProvider
 		request.Headers.TryAddWithoutValidation("anthropic-version", AnthropicVersion);
 		request.Headers.TryAddWithoutValidation("user-agent", SharedHttpClient.UserAgent);
 
-		if (isOAuth)
+		if (isAnthropicOAuth)
 		{
 			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+			// Claude Code CLI 的 UA / x-app / beta 是 OAuth 订阅凭据的配套元数据，与 pi-ai 对齐。
+			request.Headers.Remove("user-agent");
+			request.Headers.TryAddWithoutValidation("user-agent", ClaudeCliUserAgent);
+			request.Headers.TryAddWithoutValidation("x-app", "cli");
+			request.Headers.TryAddWithoutValidation("anthropic-dangerous-direct-browser-access", "true");
 			request.Headers.TryAddWithoutValidation("anthropic-beta", OAuthBeta);
+		}
+		else if (isCopilot)
+		{
+			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+			request.Headers.TryAddWithoutValidation("anthropic-dangerous-direct-browser-access", "true");
 		}
 		else
 		{
@@ -165,6 +179,10 @@ public sealed class AnthropicProvider : IApiProvider
 			}
 		}
 
+		ProviderAuthHeader.Apply(model, apiKey, request);
+		ProviderSessionHeaders.ApplyAnthropic(model, options, request);
+		CopilotHeaders.Apply(model, messages, request);
+		OpenCodeHeaders.Apply(model, options, request);
 		return request;
 	}
 
@@ -235,8 +253,8 @@ public sealed class AnthropicProvider : IApiProvider
 		return maxTokens;
 	}
 
-	private static string? ResolveApiKey(StreamOptions options) =>
-		ProviderEnvironment.ResolveApiKey("anthropic", options);
+	private static string? ResolveApiKey(Model model, StreamOptions options) =>
+		ProviderEnvironment.ResolveApiKey(model.Provider, options);
 
 	internal static void Fail(
 		AssistantMessageEventStream stream,

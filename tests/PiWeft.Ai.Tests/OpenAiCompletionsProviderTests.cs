@@ -378,6 +378,87 @@ public class OpenAiCompletionsProviderTests
 	}
 
 	[Fact]
+	public async Task OpenRouterCompletionsCarrySessionAffinityHeaders()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		var model = Model(provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1");
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.Equal("session-42", handler.LastRequest!.Headers.GetValues("x-session-id").Single());
+	}
+
+	[Fact]
+	public async Task OpenCodeRequestsCarryTheSessionRoutingHeaders()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		var model = Model(provider: "opencode", baseUrl: "https://opencode.ai/zen/v1");
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		var request = handler.LastRequest!;
+		Assert.Equal("session-42", request.Headers.GetValues("x-opencode-session").Single());
+		Assert.Equal("piweft", request.Headers.GetValues("x-opencode-client").Single());
+	}
+
+	[Fact]
+	public async Task OpenCodeExplicitHeadersAreNotOverwritten()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		var model = Model(provider: "opencode", baseUrl: "https://opencode.ai/zen/v1");
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions
+			{
+				ApiKey = "test-key",
+				SessionId = "auto-session",
+				Headers = new Dictionary<string, string?> { ["x-opencode-session"] = "manual-session", ["x-opencode-client"] = "manual-client" },
+			});
+		await foreach (var _ in stream)
+		{
+		}
+
+		var request = handler.LastRequest!;
+		Assert.Equal("manual-session", request.Headers.GetValues("x-opencode-session").Single());
+		Assert.Equal("manual-client", request.Headers.GetValues("x-opencode-client").Single());
+	}
+
+	[Fact]
+	public async Task NonOpenCodeRequestsDoNotCarryOpenCodeHeaders()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.False(handler.LastRequest!.Headers.Contains("x-opencode-session"));
+		Assert.False(handler.LastRequest!.Headers.Contains("x-opencode-client"));
+	}
+
+	[Fact]
 	public async Task DeepSeekRequestTurnsThinkingOnWithTheMappedEffort()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };

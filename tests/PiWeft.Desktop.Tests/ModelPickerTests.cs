@@ -49,6 +49,20 @@ public sealed class ModelPickerTests
 	}
 
 	[Fact]
+	public void SetSourceRefreshesAnOpenPickerForAuthenticatedModels()
+	{
+		IReadOnlyList<Model> models = [Model("before")];
+		var picker = new ModelPicker(() => models, () => models[0], _ => { });
+		var window = new Window();
+		picker.Show(window);
+		IReadOnlyList<Model> authenticated = [Model("after", "oauth-provider")];
+		picker.SetSource(() => authenticated);
+		Find<TextBox>(picker.View).Single().Text = "oauth-provider";
+		Assert.Contains(Find<TextBlock>(picker.View), block => block.Text == Strings.ModelResultCount(1, 1));
+		picker.Hide();
+	}
+
+	[Fact]
 	public void ModelPickerClosesWithEscape()
 	{
 		// 面板互斥替换由 PaletteOverlayTests.OpeningAnotherPaletteClosesThePreviousWindowOverlay 覆盖；

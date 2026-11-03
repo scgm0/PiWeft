@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -37,8 +38,8 @@ internal static partial class UserFileReferences
 	/// 中文句子标点：不可能属于路径，且常紧贴引用书写（<c>@docs/，然后…</c>）。
 	/// 见到就截断，避免把后面的中文句子吞进 chip 标签。
 	/// </summary>
-	private static readonly char[] SentencePunctuation =
-		['，', '。', '；', '：', '！', '？', '、', '（', '）', '【', '】', '「', '」', '『', '』', '《', '》', '〈', '〉', '…', '—', '～'];
+	private static readonly SearchValues<char> SentencePunctuation = SearchValues.Create(
+		"，。；：！？、（）【】「」『』《》〈〉…—～");
 
 	public static IReadOnlyList<UserFileReference> Parse(string text)
 	{

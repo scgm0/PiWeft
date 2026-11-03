@@ -21,7 +21,7 @@ internal static class ModelAvailability
 		var oauthProviders = new Dictionary<string, bool>(StringComparer.Ordinal);
 		return [.. models.Where(model =>
 		{
-			if (!CliEnvironment.SupportedApis.Contains(model.Api, StringComparer.Ordinal)) return false;
+			if (!CliEnvironment.SupportsApi(model.Api)) return false;
 			// 虚拟模型本身不需要凭据；它的路由目标会在请求时由 provider 校验。
 			if (VirtualModels.IsVirtual(model)) return true;
 			var identity = (model.Provider, model.Api);

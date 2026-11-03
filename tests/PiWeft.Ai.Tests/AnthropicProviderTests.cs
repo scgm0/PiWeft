@@ -156,6 +156,80 @@ public class AnthropicProviderTests
 	}
 
 	[Fact]
+	public async Task AnthropicOAuthCarriesClaudeCodeHeadersAndIdentityPrompt()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Sonnet(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "sk-ant-oat-test" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		var request = handler.LastRequest!;
+		Assert.Equal("Bearer sk-ant-oat-test", request.Headers.Authorization!.ToString());
+		Assert.Equal(AnthropicProvider.ClaudeCliUserAgent, request.Headers.UserAgent.ToString());
+		Assert.Equal("cli", request.Headers.GetValues("x-app").Single());
+		Assert.Equal("true", request.Headers.GetValues("anthropic-dangerous-direct-browser-access").Single());
+		Assert.Contains("claude-code-20250219", request.Headers.GetValues("anthropic-beta").Single());
+
+		using var body = JsonDocument.Parse(handler.LastBody!);
+		var system = body.RootElement.GetProperty("system");
+		Assert.Equal(1, system.GetArrayLength());
+		Assert.Equal("You are Claude Code, Anthropic's official CLI for Claude.", system[0].GetProperty("text").GetString());
+	}
+
+	[Fact]
+	public async Task CopilotAnthropicRequestsCarryDynamicAndConfiguredAuthHeaders()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var model = Sonnet() with
+		{
+			Provider = "github-copilot",
+			BaseUrl = "https://api.individual.githubcopilot.com",
+			AuthHeader = true,
+		};
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "copilot-token" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		var request = handler.LastRequest!;
+		Assert.Equal("user", request.Headers.GetValues("X-Initiator").Single());
+		Assert.Equal("conversation-edits", request.Headers.GetValues("Openai-Intent").Single());
+		Assert.Equal("Bearer copilot-token", request.Headers.Authorization!.ToString());
+		Assert.False(request.Headers.Contains("x-api-key"));
+		Assert.Equal("true", request.Headers.GetValues("anthropic-dangerous-direct-browser-access").Single());
+	}
+
+	[Fact]
+	public async Task OpenCodeRouteCarriesSessionHeader()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var model = Sonnet() with { Provider = "opencode", BaseUrl = "https://opencode.ai/zen" };
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.Equal("session-42", handler.LastRequest!.Headers.GetValues("x-opencode-session").Single());
+		Assert.Equal("piweft", handler.LastRequest.Headers.GetValues("x-opencode-client").Single());
+	}
+
+	[Fact]
 	public async Task SendsExpectedRequest()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
@@ -401,5 +475,63 @@ public class AnthropicProviderTests
 			Assert.Contains("idle timeout", message.ErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 			Assert.True(RetryClassifier.IsRetryable(message));
 		}
+	}
+}
+
+/// <summary>Anthropic 兼容网关的凭据必须按 model.provider 解析，而不是写死 anthropic。</summary>
+[Collection("process-environment")]
+public sealed class AnthropicProviderProviderKeyTests : IDisposable
+{
+	private readonly string _agentDir = Path.Combine(Path.GetTempPath(), "piweft-anthropic-key-" + Guid.NewGuid().ToString("N")[..8]);
+	private readonly string? _previousAgentDir = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR");
+	private readonly string? _previousOpenRouter = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+	private readonly string? _previousAnthropic = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+
+	public AnthropicProviderProviderKeyTests()
+	{
+		Directory.CreateDirectory(_agentDir);
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _agentDir);
+		Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", "openrouter-key");
+		Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
+	}
+
+	public void Dispose()
+	{
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _previousAgentDir);
+		Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", _previousOpenRouter);
+		Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", _previousAnthropic);
+		Directory.Delete(_agentDir, recursive: true);
+	}
+
+	[Fact]
+	public async Task AnthropicCompatibleProviderResolvesItsOwnStoredKey()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => new HttpResponseMessage(HttpStatusCode.OK)
+		{
+			Content = new StringContent("""
+				event: message_start
+				data: {"type":"message_start","message":{"id":"msg_1","model":"anthropic/claude","usage":{"input_tokens":1,"output_tokens":0}}}
+				event: message_stop
+				data: {"type":"message_stop"}
+				""", Encoding.UTF8, "text/event-stream"),
+		} };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var model = new Model
+		{
+			Id = "anthropic/claude",
+			Provider = "openrouter",
+			Api = AnthropicProvider.ApiId,
+			BaseUrl = "https://openrouter.ai/api",
+		};
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions());
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.Equal("openrouter-key", handler.LastRequest!.Headers.GetValues("x-api-key").Single());
 	}
 }

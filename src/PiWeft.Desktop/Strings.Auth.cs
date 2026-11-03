@@ -1,0 +1,62 @@
+namespace PiWeft.Desktop;
+
+public static partial class Strings
+{
+	// ── 订阅登录：状态与结果 ──────────────────────────────────────────────
+	public const string AuthSubscriptionTitle = "订阅登录";
+	public const string AuthSubscriptionHint = "通过官方 OAuth / 设备码登录订阅账号：凭据即时写入全局 auth.json，登录后模型选择器会立即出现对应模型。登录会覆盖同名 API Key 条目；下方 API Key 条目需点顶部「保存」。";
+	public const string AuthLoggedOut = "未登录";
+	public const string AuthApiKeyConfigured = "API Key 已配置 · OAuth 未登录";
+	public const string AuthExpired = "凭据已过期，请刷新或重新登录";
+	public const string AuthNeverExpires = "长期有效";
+	public const string AuthLogin = "登录";
+	public const string AuthRelogin = "重新登录";
+	public const string AuthLogout = "退出登录";
+	public const string AuthRefresh = "刷新凭据";
+	public const string AuthDocs = "文档";
+	public const string AuthSaveFirst = "请先保存或放弃当前认证配置的修改，再登录/退出。";
+		public const string AuthLoginTitle = "登录供应商";
+	public const string AuthLoginSubtitle = "授权完成后凭据会写入 auth.json；本窗口不会显示或记录令牌。";
+	public const string AuthLogTitle = "登录日志";
+	public const string AuthAuthorization = "授权入口";
+	public const string AuthDeviceCode = "验证码";
+	public const string AuthOpenBrowser = "打开授权页";
+	public const string AuthCopyCode = "复制验证码";
+	public const string AuthCopyLink = "复制授权地址";
+	public const string AuthOpenBrowserFailed = "无法打开系统浏览器，请手动复制授权地址。";
+	public const string AuthPromptTitle = "需要输入";
+	public const string AuthPromptDefault = "请按上方提示输入后继续。";
+	public const string AuthPromptSubmit = "提交";
+	public const string AuthPromptEmptyHint = "可以直接提交空内容（例如 GitHub 企业域名留空表示 github.com）。";
+	public const string AuthLoginStarting = "正在申请授权…";
+	public const string AuthLoginRunning = "等待授权完成…";
+	public const string AuthLoginRefreshing = "登录成功，正在刷新模型目录…";
+	public const string AuthLoginSuccess = "登录成功";
+	public const string AuthLoginCanceled = "已取消登录";
+	public const string AuthLoginTimeout = "登录超时，请重试。";
+	public const string AuthLoginFailed = "登录失败";
+	public const string AuthRetry = "重试";
+	public const string AuthDone = "完成";
+	public const string AuthCancelLogin = "取消登录";
+	public const string AuthClose = "关闭";
+	public const string AuthRefreshDone = "凭据已刷新。";
+	public const string AuthRefreshFailed = "凭据刷新失败，请重新登录。";
+	public const string AuthLogoutDone = "已退出该供应商。";
+	public const string AuthLogoutFailed = "没有找到可删除的凭据。";
+	public const string AuthModelsRefreshed = "认证已更新，模型目录已重新加载。";
+	public const string AuthEntriesTitle = "auth.json 条目";
+	public const string AuthNoApiKeys = "还没有 API Key 条目；OAuth 凭据见上方订阅登录。";
+	public const string AuthApiKeyTitle = "API Key";
+	public const string AuthApiKeyHint = "API Key 保存后写入 auth.json 的 api_key 条目；OAuth 供应商请使用上方订阅登录。";
+	public static string AuthCatalogRefreshFailed(string error) => $"账号模型目录刷新失败（不影响登录）：{error}";
+	public const string AuthLogEmpty = "等待授权流程输出…";
+	public const string AuthBusy = "正在处理…";
+	public static string AuthExpiresAt(string value) => $"已登录 · 到期 {value}";
+	public static string AuthAccount(string value) => $"账号 {value}";
+	public static string AuthBaseUrl(string value) => $"端点 {value}";
+	public static string AuthEnterprise(string value) => $"企业域名 {value}";
+	public static string AuthLoginTitleFor(string provider) => $"登录 · {provider}";
+	public static string AuthLoginDone(string provider) => $"{provider} 登录成功，模型目录已更新。";
+	public static string AuthUnsupportedLogin(string provider) => $"暂不支持登录 {provider}。";
+	public static string AuthLogoutConfirm(string provider) => $"退出「{provider}」并删除它的 OAuth 凭据？";
+}

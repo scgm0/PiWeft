@@ -23,6 +23,7 @@ internal sealed partial class ConfigurationView
 	private bool _dirty;
 	private bool _syncing;
 	private bool _revealed;
+	private bool _authBusy;
 	private Action? _saveForm;
 
 	public ConfigurationView(string agentDir, string cwd, Action<ConfigFile> saved)
@@ -58,6 +59,8 @@ internal sealed partial class ConfigurationView
 	public bool CanSave => _saveForm is not null;
 	/// <summary>脏状态或可保存性变化；设置弹窗据此刷新头部的保存按钮。</summary>
 	public event Action? StateChanged;
+	/// <summary>auth.json 被 OAuth 登录/退出改写：宿主据此重建模型目录与可用模型。</summary>
+	public event Action? AuthChanged;
 	internal void SaveDraft() => Guard(() => _saveForm?.Invoke());
 	public void Discard() => Load();
 	public void ApplyTheme() => AppStyles.ApplyTextColors((Element)View);
@@ -164,8 +167,8 @@ internal sealed partial class ConfigurationView
 	private void BuildSource()
 	{
 		_saveForm = null;
-		var files = new[] { ConfigFile.Models, ConfigFile.Auth, ConfigFile.Settings, ConfigFile.Mcp };
-		var selector = new ComboBox().ItemsSource(ItemsView.Create(new[] { "models.json", "auth.json", "settings.json", "mcp.json" }))
+		var files = new[] { ConfigFile.Models, ConfigFile.Auth, ConfigFile.Settings, ConfigFile.Mcp, ConfigFile.Usage };
+		var selector = new ComboBox().ItemsSource(ItemsView.Create(new[] { "models.json", "auth.json", "settings.json", "mcp.json", "usage-probes.json" }))
 			.Width(200).SelectedIndex(Array.IndexOf(files, _file));
 		var selecting = false;
 		selector.SelectionChanged += _ =>

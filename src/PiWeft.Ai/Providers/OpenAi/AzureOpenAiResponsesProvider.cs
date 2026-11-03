@@ -194,6 +194,7 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 			}
 		}
 
+		ProviderAuthHeader.Apply(model, apiKey, request);
 		return request;
 	}
 

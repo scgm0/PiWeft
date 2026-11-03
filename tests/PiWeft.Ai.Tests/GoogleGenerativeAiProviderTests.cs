@@ -109,6 +109,25 @@ public class GoogleGenerativeAiProviderTests
 	}
 
 	[Fact]
+	public async Task OpenCodeRouteCarriesSessionHeader()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new GoogleGenerativeAiProvider(new HttpClient(handler));
+		var model = Model() with { Provider = "opencode", BaseUrl = "https://opencode.ai/zen/v1" };
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.Equal("session-42", handler.LastRequest!.Headers.GetValues("x-opencode-session").Single());
+		Assert.Equal("piweft", handler.LastRequest.Headers.GetValues("x-opencode-client").Single());
+	}
+
+	[Fact]
 	public async Task SendsExpectedRequest()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };

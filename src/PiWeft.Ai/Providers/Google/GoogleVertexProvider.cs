@@ -48,7 +48,7 @@ public sealed class GoogleVertexProvider : IApiProvider
 
 		try
 		{
-			var apiKey = ResolveApiKey(options);
+			var apiKey = ResolveApiKey(model, options);
 			var bearer = apiKey is null
 				? await GoogleAdc.GetAccessTokenAsync(_tokenHttp, cancellationToken).ConfigureAwait(false)
 				: null;
@@ -238,12 +238,11 @@ public sealed class GoogleVertexProvider : IApiProvider
 				: throw new InvalidOperationException(
 					"Vertex AI requires a project. Set GOOGLE_CLOUD_PROJECT or GOOGLE_PROJECT_ID.");
 
-	private static string? ResolveApiKey(StreamOptions options) =>
+	private static string? ResolveApiKey(Model model, StreamOptions options) =>
 		!string.IsNullOrEmpty(options.ApiKey)
 			? options.ApiKey
-			: Environment.GetEnvironmentVariable("GOOGLE_CLOUD_API_KEY") is { Length: > 0 } key
-				? key
-				: null;
+			: ProviderEnvironment.ResolveApiKey(model.Provider, options)
+				?? (Environment.GetEnvironmentVariable("GOOGLE_CLOUD_API_KEY") is { Length: > 0 } key ? key : null);
 
 	private static void PushFailure(
 		AssistantMessageEventStream stream,

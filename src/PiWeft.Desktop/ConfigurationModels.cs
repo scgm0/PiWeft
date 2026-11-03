@@ -14,7 +14,7 @@ public static class ConfigurationModels
 	public static JsonObject UpsertProvider(JsonObject source, string? oldName, string name, string baseUrl, string api, string? key)
 	{
 		ValidateId(name);
-		if (!CliEnvironment.SupportedApis.Contains(api, StringComparer.Ordinal)) throw new ArgumentException(Strings.ConfigUnsupportedApi);
+		if (!CliEnvironment.SupportsApi(api)) throw new ArgumentException(Strings.ConfigUnsupportedApi);
 		if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0)
 			throw new ArgumentException(Strings.ConfigUrlRequired);
 		var root = source.DeepClone().AsObject();

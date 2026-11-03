@@ -108,8 +108,13 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 		string? reasoningEffort)
 	{
 		var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
+		// 与 pi-ai 一致：Responses 请求用会话 ID 提升 prompt cache 命中；显式 none 时不带。
+		var promptCacheKey = options.CacheRetention == CacheRetentions.None || string.IsNullOrEmpty(options.SessionId)
+			? null
+			: options.SessionId.Length <= 64 ? options.SessionId : options.SessionId[..64];
 		var bytes = JsonPayload.Write(writer =>
-			OpenAiResponsesWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, maxOutputTokens));
+			OpenAiResponsesWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, maxOutputTokens,
+				promptCacheKey: promptCacheKey));
 
 		if (options.OnPayload is { } onPayload)
 		{
@@ -157,6 +162,9 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 			}
 		}
 
+		ProviderSessionHeaders.ApplyResponses(model, options, request);
+		CopilotHeaders.Apply(model, messages, request);
+		OpenCodeHeaders.Apply(model, options, request);
 		return request;
 	}
 

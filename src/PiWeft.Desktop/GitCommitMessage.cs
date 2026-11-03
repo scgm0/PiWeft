@@ -184,6 +184,8 @@ internal static class GitCommitMessage
 		}
 
 		// 一次摘要请求：返回收好的正文与是否被输出上限截断。
+		// 同一次摘要的两次尝试共用一个请求标识（OpenCode 需要 x-opencode-session）。
+		var summarySessionId = Guid.NewGuid().ToString("N");
 		async Task<(string Text, bool Truncated)> RunOnce(string level)
 		{
 			var stream = gateway.Stream(
@@ -192,6 +194,7 @@ internal static class GitCommitMessage
 				new StreamOptions
 				{
 					ApiKey = apiKeyForProvider(resolved.Provider),
+					SessionId = summarySessionId,
 					ThinkingLevel = ThinkingLevelResolver.Clamp(resolved, level),
 					MaxTokens = OutputBudget(resolved, level),
 					CacheRetention = CacheRetentions.None,

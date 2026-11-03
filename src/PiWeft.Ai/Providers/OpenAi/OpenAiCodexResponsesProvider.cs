@@ -221,6 +221,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			}
 		}
 
+		OpenCodeHeaders.Apply(model, options, request);
 		return request;
 	}
 

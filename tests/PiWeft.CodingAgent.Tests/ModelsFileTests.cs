@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using PiWeft.Ai;
+using PiWeft.CodingAgent.Models;
 using PiWeft.CodingAgent.Settings;
 using Xunit;
 
@@ -323,6 +324,60 @@ public class ModelsFileTests : IDisposable
 		Assert.True(ModelsFileLoader.ApplyProviderSettings(registry, file, null) > 0);
 
 		Assert.Equal("https://proxy.example.test/v1", registry.Resolve("anthropic", "claude-sonnet-4-5")!.BaseUrl);
+	}
+
+	[Fact]
+	public void ProviderHeadersApplyToBuiltInModelsWithoutOverridingModelHeaders()
+	{
+		WriteUser("""{"providers":{"anthropic":{"headers":{"X-App-URL":"https://piweft.example/","X-Provider":"yes"}}}}""");
+
+		var registry = ModelRegistry.LoadDefault();
+		var file = ModelsFileLoader.Read(ModelsFileLoader.UserPath(AgentDir));
+		Assert.True(ModelsFileLoader.ApplyProviderSettings(registry, file, null) > 0);
+
+		var model = registry.Resolve("anthropic", "claude-sonnet-4-5")!;
+		Assert.Equal("https://piweft.example/", model.Headers!["X-App-URL"]);
+		Assert.Equal("yes", model.Headers["X-Provider"]);
+	}
+
+	[Fact]
+	public void ProviderAuthHeaderAppliesToBuiltInAndCustomModels()
+	{
+		WriteUser("""{"providers":{"anthropic":{"authHeader":true,"models":[{"id":"custom-with-auth","api":"anthropic-messages"}]}}}""");
+
+		var registry = ModelRegistry.LoadDefault();
+		var file = ModelsFileLoader.Read(ModelsFileLoader.UserPath(AgentDir));
+		Assert.True(ModelsFileLoader.ApplyProviderSettings(registry, file, null) > 0);
+		Assert.True(registry.Resolve("anthropic", "claude-sonnet-4-5")!.AuthHeader);
+
+		var custom = ModelsFileLoader.Load(AgentDir, AgentDir).Models.Single(model => model.Id == "custom-with-auth");
+		Assert.True(custom.AuthHeader);
+	}
+
+	[Fact]
+	public void ProviderHeadersApplyToCachedCatalogModels()
+	{
+		Directory.CreateDirectory(AgentDir);
+		File.WriteAllText(Path.Combine(AgentDir, "models-store.json"), """
+			{"providers":{"anthropic":{"models":[{"id":"cached-catalog-model","name":"Cached","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com","headers":{"X-Existing":"model"}}]}}}
+			""");
+		var registry = ModelRegistry.LoadDefault();
+		ModelCatalogStore.LoadCached(registry, AgentDir);
+		var file = new ModelsFile
+		{
+			Providers = new Dictionary<string, ModelsProviderEntry>
+			{
+				["anthropic"] = new()
+				{
+					Headers = new Dictionary<string, string> { ["X-Provider"] = "yes" },
+				},
+			},
+		};
+
+		ModelsFileLoader.ApplyProviderSettings(registry, file, null);
+		var model = registry.Resolve("anthropic", "cached-catalog-model")!;
+		Assert.Equal("yes", model.Headers!["X-Provider"]);
+		Assert.Equal("model", model.Headers["X-Existing"]);
 	}
 
 	[Fact]

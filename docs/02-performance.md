@@ -520,3 +520,18 @@ PIWEFT_NATIVE_TESTS=1 PIWEFT_SCREENSHOTS=/tmp/piweft-interaction-validation \
 ```
 
 截图演练均使用独立目录，无真实会话或凭据。脚本除窗口尺寸与进程退出检查外，还断言最新回复实际落在消息视口内。`PI_WORKSPACE_SMOKE_TURNS` 可设 0–5000，0 使用原工具 fixture。
+
+## 认证、OpenCode 与用量查询审计（2026-11）
+
+这轮不改变功能语义，只修低层可靠性/分配问题：
+
+| 项 | 问题 | 处理 |
+|---|---|---|
+| 网关特殊头 | OpenCode 缺 `x-opencode-session` 直接 400；OpenRouter/Cloudflare/Fireworks 缺会话亲和头会打散缓存；Copilot 动态头缺失影响路由/图片请求 | OpenCode/会话亲和/Copilot 三类头统一在请求构建尾部补齐（显式头优先）；Anthropic 兼容 provider 按 `model.Provider` 取凭据，Copilot/Claude OAuth 使用 Bearer 与各自配套头 |
+| auth.json 并发写 | OAuth 刷新、API Key 保存、Codex 设备码各自「读整份 → 改一条 → 写整份」，并发时后写者会丢掉前者的新令牌 | 三类写路径共用 `AuthFileGate`（`System.Threading.Lock`）；同 provider 的 OAuth 刷新再加一把 `SemaphoreSlim`，等待者读回新令牌，避免重复刷新轮换 refresh token |
+| 手改 auth.json | `type/access/expires` 类型不符时 `GetValue<string>()` 会抛异常，认证页/模型可用性可能整页失败 | OAuthStore 与 CodexAuth 的读取改为 `TryGetValue` 宽松收窄，坏条目按缺失处理；写盘仍拒绝覆盖损坏文件；`ReadAccessToken` 修正了「两个分支都返回 access」的过期判断错误 |
+| 认证状态页 I/O | 9 个 provider 逐个读取 auth.json（OAuth + API Key 约 18 次读盘/解析） | `OAuthStore.ReadAll` + `AuthStore.ConfiguredProviders` 各一次读盘，状态页降为 2–3 次 |
+| 统计面板缓存 | 面板已打开时 `Invalidate` 只清行不重查，配置保存后可能停在旧值 | `Invalidate` 在 `_open` 时立即刷新 |
+| 小分配 | `Convert.ToHexString(...).ToLowerInvariant()` 多分配一份字符串；手写正则走运行时编译；非 OpenCode 请求也做 `Uri` 解析；模型可用性对每个目录模型做 O(n) 的 API 数组查找 | 改用 `Convert.ToHexStringLower`、`[GeneratedRegex]`、先做域名子串快筛再 `Uri.TryCreate`、`FrozenSet` + `SupportsApi`；用户文件引用的中文标点扫描改用缓存 `SearchValues<char>`（`System.Threading.Lock` 也已用于新增门闩） |
+
+未在这轮处理：`ProviderEnvironment.RefreshOAuth` 仍是同步等待异步刷新（请求线程会阻塞一次网络往返），以及 auth.json 的跨进程写入（pi CLI 与本进程各自原子替换，没有共享文件锁）。这两项需要异步凭据解析协议或跨进程锁，收益与风险不成比例，先保留在差距清单。

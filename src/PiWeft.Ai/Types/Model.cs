@@ -77,6 +77,13 @@ public sealed record Model
 
 	public Dictionary<string, string>? Headers { get; init; }
 
+	/// <summary>
+	/// pi 的 provider 级 <c>authHeader</c>：为 true 时额外发送 <c>Authorization: Bearer &lt;key&gt;</c>。
+	/// 不是模型目录字段，provider 配置在加载时写入。
+	/// </summary>
+	[JsonIgnore]
+	public bool AuthHeader { get; init; }
+
 	public bool Reasoning { get; init; }
 
 	/// <summary>把 pi 的思考级别映射到 provider 或模型私有的取值；<c>null</c> 表示该级别不受支持。</summary>

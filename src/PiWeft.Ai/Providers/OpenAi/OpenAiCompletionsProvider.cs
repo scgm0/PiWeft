@@ -187,6 +187,9 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 			}
 		}
 
+		ProviderSessionHeaders.ApplyCompletions(model, options, request);
+		CopilotHeaders.Apply(model, messages, request);
+		OpenCodeHeaders.Apply(model, options, request);
 		return request;
 	}
 

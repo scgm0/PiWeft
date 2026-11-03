@@ -75,6 +75,18 @@ public sealed class ModelAvailabilityTests : IDisposable
 	}
 
 	[Fact]
+	public void OAuthCredentialMakesProviderModelsAvailableWithoutAnApiKey()
+	{
+		OAuthStore.Save("fixture-oauth",
+			new OAuthCredential { Access = "access", Refresh = "refresh", Expires = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds() },
+			_root);
+		var oauth = Model(provider: "fixture-oauth", api: "anthropic-messages");
+		Assert.Single(ModelAvailability.Filter([oauth], new Dictionary<string, string>()));
+		Assert.True(OAuthStore.RemoveProvider("fixture-oauth", _root));
+		Assert.Empty(ModelAvailability.Filter([oauth], new Dictionary<string, string>()));
+	}
+
+	[Fact]
 	public void BedrockNeedsBothSigningKeysAndDoesNotUseGenericApiKeys()
 	{
 		var model = Model(api: "bedrock-converse-stream");

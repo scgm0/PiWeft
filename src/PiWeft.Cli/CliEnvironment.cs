@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.Ai.Providers;
@@ -111,6 +112,11 @@ public sealed class CliEnvironment
 		OpenAiCodexResponsesProvider.ApiId,
 		VirtualModels.Api,
 	];
+
+	/// <summary>API id 的 O(1) 查询表：模型可用性筛选对每个目录模型都会问一次。</summary>
+	private static readonly FrozenSet<string> SupportedApiSet = SupportedApis.ToFrozenSet(StringComparer.Ordinal);
+
+	public static bool SupportsApi(string api) => SupportedApiSet.Contains(api);
 
 	/// <summary>构建环境：设置、目录、provider、模型与工具集。</summary>
 	public static (CliEnvironment? Environment, string? Error) Create(CliArguments arguments, string cwd) =>
@@ -265,7 +271,7 @@ public sealed class CliEnvironment
 				return null;
 			}
 
-			if (!SupportedApis.Contains(match.Api, StringComparer.Ordinal))
+			if (!SupportsApi(match.Api))
 			{
 				error = $"Model '{match.Provider}/{match.Id}' uses api '{match.Api}', which this port does not implement yet. Supported: {string.Join(", ", SupportedApis)}.";
 				return null;
@@ -297,7 +303,7 @@ public sealed class CliEnvironment
 		// 
 		foreach (var candidate in registry.ChatModels())
 		{
-			if (SupportedApis.Contains(candidate.Api, StringComparer.Ordinal))
+			if (SupportsApi(candidate.Api))
 			{
 				return candidate;
 			}
@@ -374,7 +380,7 @@ public sealed class CliEnvironment
 		// 裸 id 命中多个 provider：优先有凭据者；不知道凭据情况（未传 key 信息）或仍然并列时
 		// 维持「有歧义」的返回，让调用方报错而不是猜一个。
 		var byId = registry.FindById(pattern)
-			.Where(m => SupportedApis.Contains(m.Api, StringComparer.Ordinal))
+			.Where(m => SupportsApi(m.Api))
 			.Where(m => provider is null || string.Equals(m.Provider, provider, StringComparison.Ordinal))
 			.ToList();
 		if (byId.Count > 1)
@@ -482,8 +488,14 @@ public sealed class CliEnvironment
 		var registry = ModelRegistry.LoadDefault();
 		var userModels = ModelsFileLoader.Read(ModelsFileLoader.UserPath());
 		var projectModels = ModelsFileLoader.Read(ModelsFileLoader.ProjectPath(cwd));
-		ModelsFileLoader.ApplyProviderSettings(registry, userModels, projectModels);
+		// 先叠加远程缓存与自定义模型，再应用 provider 级设置：否则缓存目录里已有 headers 的模型
+		// 会漏掉 provider 级补头/端点覆盖（Copilot 代理、TokenDance 归因、自建网关等）。
 		ModelCatalogStore.LoadCached(registry);
+		// 内置 + 远程缓存模型都先套 provider 级设置；自定义模型在 ToModel 里已按「模型头优先」
+		// 合并过 provider 设置，不能在这里再用 provider baseUrl 覆盖模型自己的端点。
+		ModelsFileLoader.ApplyProviderSettings(registry, userModels, projectModels);
+		// 与 CliEnvironment.Create 的装配顺序一致：Copilot proxy / 自定义 Radius 端点也要作用于缓存模型。
+		ApplyOAuthProviderEndpoints(registry);
 
 		var customModels = ModelsFileLoader.Load(cwd);
 		foreach (var custom in customModels.Models)
@@ -502,7 +514,7 @@ public sealed class CliEnvironment
 
 	private static IReadOnlyList<Model> ListModels(ModelRegistry registry, string? search)
 	{
-		IEnumerable<Model> models = registry.ChatModels().Where(m => SupportedApis.Contains(m.Api, StringComparer.Ordinal));
+		IEnumerable<Model> models = registry.ChatModels().Where(m => SupportsApi(m.Api));
 
 		if (search is { Length: > 0 })
 		{

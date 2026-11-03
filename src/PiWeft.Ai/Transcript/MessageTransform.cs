@@ -278,7 +278,8 @@ public static class MessageTransform
 			return id;
 		}
 
-		var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id))).ToLowerInvariant();
+		// .NET 9+ 的 ToHexStringLower 一次成型；旧写法先转大写 hex 再 ToLowerInvariant 会多分配一份字符串。
+		var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(id)));
 		return $"call_{hash[..32]}";
 	}
 }
