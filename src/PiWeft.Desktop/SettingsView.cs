@@ -619,7 +619,7 @@ public sealed class SettingsView
 
 		// 提示词模板（对齐 PiDeck 的 gitCommitMessagePrompt）：{diff} 是暂存区 diff 的占位符。
 		// 偏好里存空串 = 跟随内置默认模板，所以框里直接展示默认模板，用户能直接在上面改。
-		var promptBox = new MultiLineTextBox()
+		var promptBox = new MultiLineTextBox().PrimarySelection()
 			.Height(170)
 			.FontSize(AppTheme.FontSizeCaption)
 			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))

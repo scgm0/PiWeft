@@ -41,10 +41,11 @@ public sealed class AnthropicProvider : IApiProvider
 		var startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 		// 超时只覆盖「等响应头」：正文长流（长时间思考、慢生成）不能被固定时限切断。
 		using var headerTimeout = ProviderHttp.BeginHeaderTimeout(options);
+		var cancellationToken = options.CancellationToken;
 
 		try
 		{
-			var apiKey = ResolveApiKey(model, options);
+			var apiKey = await ResolveApiKeyAsync(model, options, cancellationToken).ConfigureAwait(false);
 			if (string.IsNullOrEmpty(apiKey))
 			{
 				Fail(stream, model, startedAt, "Missing Anthropic API key. Set ANTHROPIC_API_KEY or pass ApiKey.");
@@ -62,6 +63,7 @@ public sealed class AnthropicProvider : IApiProvider
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
+			headerTimeout.Stop();
 
 			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
 
@@ -253,8 +255,8 @@ public sealed class AnthropicProvider : IApiProvider
 		return maxTokens;
 	}
 
-	private static string? ResolveApiKey(Model model, StreamOptions options) =>
-		ProviderEnvironment.ResolveApiKey(model.Provider, options);
+	private static Task<string?> ResolveApiKeyAsync(Model model, StreamOptions options, CancellationToken cancellationToken) =>
+		ProviderEnvironment.ResolveApiKeyAsync(model.Provider, options, cancellationToken);
 
 	internal static void Fail(
 		AssistantMessageEventStream stream,

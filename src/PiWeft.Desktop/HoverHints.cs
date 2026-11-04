@@ -52,7 +52,7 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 	private static void Begin(FrameworkElement owner)
 	{
 		if (!Application.IsRunning || string.IsNullOrEmpty(Text(owner)) || owner.FindVisualRoot() is not Window window) return;
-		if (!CanShow(window)) return;
+		if (!CanShow(window, requireFocus: true)) return;
 		var service = window.OverlayLayer.GetOrCreateService(_ => new HoverHints(window));
 		service.Cancel();
 		service._owner = owner;
@@ -75,7 +75,12 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 	/// 窗口最小化后不应再有悬停提示：此时 owner 没有可视客户区，计时器到点或
 	/// 残留的 IsMouseOver 都会把置顶的 popup 留在桌面上。
 	/// </summary>
-	internal static bool CanShow(Window window) => window.WindowState != WindowState.Minimized;
+	/// <param name="requireFocus">
+	/// 悬停提示要求窗口处于激活态：Linux 下未聚焦窗口仍会收到指针进入/移动，
+	/// 否则切到别的应用后桌面顶层仍会冒出 tooltip。
+	/// </param>
+	internal static bool CanShow(Window window, bool requireFocus = false) =>
+		window.WindowState != WindowState.Minimized && (!requireFocus || window.IsActive);
 
 	private void OnWindowStateChanged(WindowState state)
 	{
@@ -85,7 +90,7 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 	private void Show()
 	{
 		_timer.Stop();
-		if (!CanShow(_window) || _owner is not { IsMouseOver: true } owner ||
+		if (!CanShow(_window, requireFocus: true) || _owner is not { IsMouseOver: true } owner ||
 			!ReferenceEquals(owner.FindVisualRoot(), _window) || string.IsNullOrEmpty(Text(owner)))
 		{ Cancel(); return; }
 		for (Element? ancestor = owner; ancestor is not null; ancestor = ancestor.Parent)

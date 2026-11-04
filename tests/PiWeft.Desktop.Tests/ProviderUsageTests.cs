@@ -57,15 +57,15 @@ public sealed class ProviderUsageTests
 	}
 
 	[Fact]
-	public void CalculatesRemainingAndScalesNewApiQuota()
+	public async Task CalculatesRemainingAndScalesNewApiQuota()
 	{
 		var result = UsageProbes.Parse(JsonNode.Parse("""{"data":{"total":"25.5","used":10}}"""),
 			new UsageProbeParse(UsageParseKind.Credits, TotalPath: "data.total", UsedPath: "data.used"));
 		Assert.Equal(15.5, result.Credits!.Remaining);
 
-		var plan = ProviderUsageService.BuildPlan(Model(),
+		var plan = await ProviderUsageService.BuildPlanAsync(Model(),
 			new UsageProbeProviderConfig(Enabled: true, Template: "newapi", AccessToken: "token", UserId: "42"),
-			EmptyDocument(), null, "/project");
+			EmptyDocument(), null, "/project", CancellationToken.None);
 		Assert.Null(plan.Error);
 		var parsed = UsageProbes.Parse(JsonNode.Parse("""{"success":true,"data":{"quota":1000000,"used_quota":500000}}"""),
 			plan.Candidates[0].Parse);

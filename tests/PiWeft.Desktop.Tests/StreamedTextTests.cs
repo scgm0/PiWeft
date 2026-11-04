@@ -81,6 +81,15 @@ public sealed class StreamedTextTests
 		Assert.Equal(7, snapshot.Length);
 		Assert.Equal("上一回合的正文", snapshot.Materialize());
 		Assert.Equal("合的", snapshot.Slice(3, 2));
+		// 跨片段、跨整个快照与边界 clamp 都与普通字符串完全一致。
+		var multi = Buffer("abc");
+		multi.Append("def");
+		multi.Append("ghi");
+		var multiSnapshot = Snapshot(multi);
+		Assert.Equal("cdefg", multiSnapshot.Slice(2, 5));
+		Assert.Equal("abcdefghi", multiSnapshot.Slice(-4, 100));
+		Assert.Equal("h", multiSnapshot.Slice(7, 1));
+		Assert.Equal(string.Empty, multiSnapshot.Slice(9, 3));
 		Assert.Equal('上', snapshot.At(0));
 		// 新回合不等于旧快照的继续：增量 Markdown 只能整篇重喂，不能把新文本接到旧前缀后面。
 		var next = new StreamText(Snapshot(body, generation: 2));

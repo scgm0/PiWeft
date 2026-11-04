@@ -303,8 +303,8 @@ public static class ModelCatalogStore
 		string? agentDir,
 		CancellationToken cancellationToken)
 	{
-		var key = OAuthStore.Read("openrouter", agentDir)?.Access ??
-			AuthStore.ReadApiKey("openrouter", agentDir) ??
+		var key = (await OAuthStore.ReadAsync("openrouter", agentDir, cancellationToken).ConfigureAwait(false))?.Access ??
+			await AuthStore.ReadApiKeyAsync("openrouter", agentDir, cancellationToken).ConfigureAwait(false) ??
 			Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
 		if (key is not { Length: > 0 })
 		{
@@ -408,7 +408,7 @@ public static class ModelCatalogStore
 		string? agentDir,
 		CancellationToken cancellationToken)
 	{
-		var credential = OAuthStore.Read("radius", agentDir);
+		var credential = await OAuthStore.ReadAsync("radius", agentDir, cancellationToken).ConfigureAwait(false);
 		if (credential is null)
 		{
 			return false;
@@ -469,7 +469,7 @@ public static class ModelCatalogStore
 		string? agentDir,
 		CancellationToken cancellationToken)
 	{
-		var credential = OAuthStore.Read("github-copilot", agentDir);
+		var credential = await OAuthStore.ReadAsync("github-copilot", agentDir, cancellationToken).ConfigureAwait(false);
 		if (credential is null)
 		{
 			return false;

@@ -104,6 +104,8 @@ public sealed class MarkdownDocument
 	private readonly Dictionary<MarkdownBlock, int> _unitIndex = new(ReferenceEqualityComparer.Instance);
 	private readonly string? _sourceText;
 	private readonly StringBuilder? _sourceBuilder;
+	/// <summary>Index of the first text unit of each top-level block, plus a final end index.</summary>
+	private readonly int[] _unitStarts;
 
 	/// <summary>
 	/// String-backed documents carry the full text; builder-backed documents hold the growing
@@ -116,23 +118,131 @@ public sealed class MarkdownDocument
 		StringBuilder? sourceBuilder,
 		IReadOnlyList<MarkdownBlock> blocks,
 		MarkdownOptions options)
+		: this(sourceText, sourceBuilder, blocks, options, previous: null, reusedBlockCount: 0)
+	{
+	}
+
+	/// <summary>
+	/// Builds a document whose first <paramref name="reusedBlockCount"/> blocks are the unchanged prefix
+	/// of <paramref name="previous"/>. Streaming appends replace only the old tail; rebuilding the
+	/// anchor table and selectable text units for the whole history on every frame is O(document) work
+	/// even though the parser already reparsed only the tail.
+	/// </summary>
+	internal MarkdownDocument(
+		string? sourceText,
+		StringBuilder? sourceBuilder,
+		IReadOnlyList<MarkdownBlock> blocks,
+		MarkdownOptions options,
+		MarkdownDocument? previous,
+		int reusedBlockCount)
 	{
 		_sourceText = sourceText;
 		_sourceBuilder = sourceBuilder;
 		SourceLength = sourceText?.Length ?? sourceBuilder?.Length ?? 0;
 		Options = options;
 		Blocks = blocks;
+		reusedBlockCount = Math.Clamp(reusedBlockCount, 0, Math.Min(previous?.Blocks.Count ?? 0, blocks.Count));
+		ReusedBlockCount = previous is null ? 0 : reusedBlockCount;
 
-		Dictionary<string, int> anchorBlocks = new(StringComparer.OrdinalIgnoreCase);
-		List<MarkdownTextUnit> units = [];
-		for (int index = 0; index < blocks.Count; index++)
+		Dictionary<string, int> anchorBlocks;
+		List<MarkdownTextUnit> units;
+		int[] starts;
+		if (previous is null || reusedBlockCount == 0)
 		{
-			CollectAnchors(blocks[index], index, anchorBlocks);
-			CollectTextUnits(blocks[index], "\n", index, units);
+			(anchorBlocks, units, starts) = BuildAll(blocks);
+		}
+		else
+		{
+			(anchorBlocks, units, starts) = BuildIncremental(previous, blocks, reusedBlockCount);
+		}
+
+		// The mapping is derived from the text units; rebuilding it in one pass is cheaper than
+		// threading a dictionary through the recursive collector on every append.
+		for (int index = 0; index < units.Count; index++)
+		{
+			_unitIndex[units[index].Block] = index;
 		}
 
 		AnchorBlocks = anchorBlocks;
 		TextUnits = units;
+		_unitStarts = starts;
+	}
+
+	/// <summary>How many leading blocks were carried over unchanged from the previous revision.</summary>
+	internal int ReusedBlockCount { get; }
+
+	private static (Dictionary<string, int> Anchors, List<MarkdownTextUnit> Units, int[] Starts) BuildAll(
+		IReadOnlyList<MarkdownBlock> blocks)
+	{
+		var anchors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		var units = new List<MarkdownTextUnit>();
+		var starts = new int[blocks.Count + 1];
+		for (int index = 0; index < blocks.Count; index++)
+		{
+			starts[index] = units.Count;
+			CollectAnchors(blocks[index], index, anchors);
+			CollectTextUnits(blocks[index], "\n", index, units);
+		}
+
+		starts[blocks.Count] = units.Count;
+		return (anchors, units, starts);
+	}
+
+	private static (Dictionary<string, int> Anchors, List<MarkdownTextUnit> Units, int[] Starts) BuildIncremental(
+		MarkdownDocument previous,
+		IReadOnlyList<MarkdownBlock> blocks,
+		int reusedBlockCount)
+	{
+		var anchors = new Dictionary<string, int>(previous.AnchorBlocks, StringComparer.OrdinalIgnoreCase);
+		// Drop anchors contributed by the replaced suffix before adding the freshly parsed tail.
+		// Only values owned by those top-level blocks may be removed: an anchor duplicated in an
+		// unchanged earlier block must keep its first definition.
+		for (int index = reusedBlockCount; index < previous.Blocks.Count; index++)
+		{
+			RemoveAnchors(previous.Blocks[index], index, anchors);
+		}
+
+		int prefixUnits = previous._unitStarts[reusedBlockCount];
+		var units = new List<MarkdownTextUnit>(prefixUnits + Math.Max(0, blocks.Count - reusedBlockCount));
+		for (int index = 0; index < prefixUnits; index++)
+		{
+			units.Add(previous.TextUnits[index]);
+		}
+
+		var starts = new int[blocks.Count + 1];
+		Array.Copy(previous._unitStarts, starts, reusedBlockCount + 1);
+		for (int index = reusedBlockCount; index < blocks.Count; index++)
+		{
+			starts[index] = units.Count;
+			CollectAnchors(blocks[index], index, anchors);
+			CollectTextUnits(blocks[index], "\n", index, units);
+		}
+
+		starts[blocks.Count] = units.Count;
+		return (anchors, units, starts);
+	}
+
+	private static void RemoveAnchors(MarkdownBlock block, int topIndex, Dictionary<string, int> anchors)
+	{
+		Remove(block.Anchor);
+		foreach (string alias in block.Aliases)
+		{
+			Remove(alias);
+		}
+
+		foreach (MarkdownBlock child in block.Children)
+		{
+			RemoveAnchors(child, topIndex, anchors);
+		}
+
+		void Remove(string? anchor)
+		{
+			if (!string.IsNullOrEmpty(anchor) &&
+				anchors.TryGetValue(anchor, out int owner) && owner == topIndex)
+			{
+				anchors.Remove(anchor);
+			}
+		}
 	}
 
 	/// <summary>Length of the source this document was parsed from, without materializing it.</summary>
@@ -166,14 +276,13 @@ public sealed class MarkdownDocument
 			? string.Empty
 			: string.IsNullOrWhiteSpace(item.Marker) ? "•" : item.Marker;
 
-	private void CollectTextUnits(MarkdownBlock block, string separator, int topIndex, List<MarkdownTextUnit> units)
+	private static void CollectTextUnits(MarkdownBlock block, string separator, int topIndex, List<MarkdownTextUnit> units)
 	{
 		switch (block.Kind)
 		{
 			case MarkdownBlockKind.Paragraph:
 			case MarkdownBlockKind.Heading:
 			case MarkdownBlockKind.Code:
-				_unitIndex[block] = units.Count;
 				bool hasLinks = block.Runs.Any(static run => VisualText(run).Length > 0 && run.Url != null);
 				units.Add(new MarkdownTextUnit(block, block.Text, separator, topIndex, hasLinks));
 				break;

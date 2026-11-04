@@ -68,27 +68,27 @@ public class AuthStoreTests : IDisposable
 	}
 
 	[Fact]
-	public void StoredCredentialWinsOverTheEnvironmentVariable()
+	public async Task StoredCredentialWinsOverTheEnvironmentVariable()
 	{
 		WriteAuth("""{"deepseek":{"type":"api_key","key":"from-auth-json"}}""");
 		Environment.SetEnvironmentVariable("DEEPSEEK_API_KEY", "from-environment");
 
-		Assert.Equal("from-auth-json", ProviderEnvironment.ResolveApiKey(Provider, Options()));
+		Assert.Equal("from-auth-json", await ProviderEnvironment.ResolveApiKeyAsync(Provider, Options()));
 		Assert.Equal("from-auth-json", AuthStore.ReadApiKey(Provider, _agentDir));
 	}
 
 	[Fact]
-	public void EnvironmentVariableIsUsedWhenNoCredentialIsStored()
+	public async Task EnvironmentVariableIsUsedWhenNoCredentialIsStored()
 	{
 		Environment.SetEnvironmentVariable("DEEPSEEK_API_KEY", "from-environment");
-		Assert.Equal("from-environment", ProviderEnvironment.ResolveApiKey(Provider, Options()));
+		Assert.Equal("from-environment", await ProviderEnvironment.ResolveApiKeyAsync(Provider, Options()));
 	}
 
 	[Fact]
-	public void ExplicitOptionStillWins()
+	public async Task ExplicitOptionStillWins()
 	{
 		WriteAuth("""{"deepseek":{"type":"api_key","key":"from-auth-json"}}""");
-		Assert.Equal("explicit", ProviderEnvironment.ResolveApiKey(Provider, Options("explicit")));
+		Assert.Equal("explicit", await ProviderEnvironment.ResolveApiKeyAsync(Provider, Options("explicit")));
 	}
 
 	[Fact]
@@ -116,24 +116,56 @@ public class AuthStoreTests : IDisposable
 	}
 
 	[Fact]
-	public void CommandCredentialIsExecutedAtRequestTime()
+	public async Task CommandCredentialIsExecutedAtRequestTime()
 	{
 		// 与 pi 一致：命令型凭据在取值时执行 stdout，不落盘、不缓存到文件。
 		WriteAuth("""{"deepseek":{"type":"api_key","key":"!echo from-command"}}""");
 
 		Assert.True(AuthStore.IsCommandCredential(Provider, _agentDir));
 		Assert.Equal("from-command", AuthStore.ReadApiKey(Provider, _agentDir));
-		Assert.Equal("from-command", ProviderEnvironment.ResolveApiKey(Provider, Options()));
+		Assert.Equal("from-command", await AuthStore.ReadApiKeyAsync(Provider, _agentDir));
+		Assert.Equal("from-command", await ProviderEnvironment.ResolveApiKeyAsync(Provider, Options()));
 	}
 
 	[Fact]
-	public void FailingCommandCredentialFallsBackToTheEnvironmentVariable()
+	public async Task FailingCommandCredentialFallsBackToTheEnvironmentVariable()
 	{
 		WriteAuth("""{"deepseek":{"type":"api_key","key":"!exit 3"}}""");
 		Environment.SetEnvironmentVariable("DEEPSEEK_API_KEY", "from-environment");
 
 		Assert.Null(AuthStore.ReadApiKey(Provider, _agentDir));
-		Assert.Equal("from-environment", ProviderEnvironment.ResolveApiKey(Provider, Options()));
+		Assert.Null(await AuthStore.ReadApiKeyAsync(Provider, _agentDir));
+		Assert.Equal("from-environment", await ProviderEnvironment.ResolveApiKeyAsync(Provider, Options()));
+	}
+
+	[Fact]
+	public async Task AsyncResolutionUsesStoredOAuthAccessToken()
+	{
+		WriteAuth("""{"deepseek":{"type":"oauth","access":"oauth-access","refresh":"r","expires":9999999999}}""");
+
+		Assert.Equal("oauth-access", await ProviderEnvironment.ResolveApiKeyAsync(Provider, Options()));
+	}
+
+	[Fact]
+	public async Task OversizedCommandOutputIsRejectedWithoutBufferingItAll()
+	{
+		if (OperatingSystem.IsWindows()) return;
+
+		// 10 万字符远超 64 KiB：必须在读入上限处终止，而不是先 ReadToEnd 再判断。
+		WriteAuth("""{"deepseek":{"type":"api_key","key":"!yes x | head -c 100000"}}""");
+
+		Assert.Null(await AuthStore.ReadApiKeyAsync(Provider, _agentDir));
+	}
+
+	[Fact]
+	public async Task CommandCredentialCancellationStopsTheCommand()
+	{
+		var command = OperatingSystem.IsWindows() ? "ping -n 30 127.0.0.1 > nul" : "sleep 30";
+		WriteAuth($$$"""{"deepseek":{"type":"api_key","key":"!{{{command}}}"}}""");
+
+		using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+			AuthStore.ReadApiKeyAsync(Provider, _agentDir, cancellation.Token));
 	}
 
 	[Fact]

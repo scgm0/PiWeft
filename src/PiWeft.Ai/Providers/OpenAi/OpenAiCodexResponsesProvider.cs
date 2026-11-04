@@ -96,6 +96,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
+			headerTimeout.Stop();
 
 			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
 

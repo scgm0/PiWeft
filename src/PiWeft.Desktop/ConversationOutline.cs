@@ -206,7 +206,7 @@ internal sealed class ConversationOutline : IDisposable
 
 	private void ShowPreview(int railIndex)
 	{
-		if (!Application.IsRunning || _view.FindVisualRoot() is not Window window || window.Handle == 0) return;
+		if (!Application.IsRunning || _view.FindVisualRoot() is not Window window || window.Handle == 0 || !window.IsActive) return;
 		if (!ReferenceEquals(_window, window))
 		{
 			if (_window is not null) _window.Deactivated -= HidePreview;

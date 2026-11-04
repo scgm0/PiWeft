@@ -41,26 +41,35 @@ internal static class ExecutionProcess
 		void Flush(bool live)
 		{
 			if (turn.Count == 0) return;
-			var tools = new Dictionary<string, int>();
-			var unique = new List<ChatEntry>();
-			foreach (var entry in turn)
+			// Most turns contain no tool calls; allocating a dictionary and a second list for
+			// every tail projection was measurable GC churn during streaming. Compact the
+			// already-owned turn list in place instead.
+			Dictionary<string, int>? tools = null;
+			int uniqueCount = 0;
+			for (int read = 0; read < turn.Count; read++)
 			{
+				var entry = turn[read];
 				if (entry.Role == ChatRole.Tool && entry.ToolCallId is { Length: > 0 } call)
 				{
-					if (tools.TryGetValue(call, out var index))
+					if (tools is not null && tools.TryGetValue(call, out var index))
 					{
 						// Result replaces the pending call in place, retaining the group's identity.
-						unique[index] = entry with
+						turn[index] = entry with
 						{
-							EntryId = unique[index].EntryId,
-							ToolArguments = entry.ToolArguments ?? unique[index].ToolArguments ?? unique[index].Text,
+							EntryId = turn[index].EntryId,
+							ToolArguments = entry.ToolArguments ?? turn[index].ToolArguments ?? turn[index].Text,
 						};
 						continue;
 					}
-					tools[call] = unique.Count;
+					(tools ??= new Dictionary<string, int>(StringComparer.Ordinal))[call] = uniqueCount;
 				}
-				unique.Add(entry);
+				turn[uniqueCount++] = entry;
 			}
+			if (uniqueCount < turn.Count)
+			{
+				turn.RemoveRange(uniqueCount, turn.Count - uniqueCount);
+			}
+			var unique = turn;
 			var last = unique[^1];
 			var answer = last.Role == ChatRole.Assistant && (last.TextLength > 0 || last.Images.Count > 0) ? last : null;
 			var turnKey = turnId ?? unique[0].EntryId ?? unique[0].Timestamp.ToString();
@@ -110,7 +119,7 @@ internal static class ExecutionProcess
 		}
 	}
 
-	public readonly record struct Stats(int Tools, int Thinking, int Interim, int Errors);
+	public readonly record struct Stats(int Tools, int Thinking, int Interim, int Errors, int Stopped);
 
 	public static Stats Count(IReadOnlyList<ChatEntry> entries)
 	{
@@ -118,6 +127,7 @@ internal static class ExecutionProcess
 		var thinking = 0;
 		var interim = 0;
 		var errors = 0;
+		var stopped = 0;
 		foreach (var entry in entries)
 		{
 			if (entry.Role == ChatRole.Tool)
@@ -139,9 +149,14 @@ internal static class ExecutionProcess
 			{
 				errors++;
 			}
+
+			if (entry.IsStopped)
+			{
+				stopped++;
+			}
 		}
 
-		return new Stats(tools, thinking, interim, errors);
+		return new Stats(tools, thinking, interim, errors, stopped);
 	}
 
 	public static string Summary(IReadOnlyList<ChatEntry> entries)
@@ -194,7 +209,7 @@ internal static class ExecutionProcess
 			var activity = entry.ToolName switch
 			{
 				"read" => "已读取文件", "write" => "已写入文件", "edit" => "修改了文件", "bash" => "执行了命令",
-				"grep" or "find" or "ls" => "已搜索代码", "todo" => "更新了计划", _ => "已调用工具",
+				"grep" or "find" or "ls" => "已搜索代码", "todo" => "更新了计划", "ask_question" => "已向你提问", _ => "已调用工具",
 			};
 			activities ??= [];
 			seen ??= new HashSet<string>(StringComparer.Ordinal);
@@ -230,6 +245,7 @@ internal static class ExecutionProcess
 		"bash" or "terminal" => Strings.ProcessGroupCommands,
 		"grep" or "find" or "ls" => Strings.ProcessGroupSearch,
 		"todo" => Strings.ProcessGroupTodo,
+		"ask_question" => Strings.ProcessGroupAsk,
 		_ => Strings.ProcessGroupTools,
 	};
 
@@ -254,16 +270,73 @@ internal static class ExecutionProcess
 		"bash" or "terminal" => "terminal",
 		"grep" or "find" or "ls" => "search",
 		"todo" => "list-checks",
+		"ask_question" => "circle-question-mark",
 		_ => "play",
 	};
 
 	/// <summary>组头实时详情：最新成员是工具时给「正在执行 …」，切回思考时消失（PiDeck 同款）。</summary>
-	public static string? RunningDetail(IReadOnlyList<ChatEntry> entries) =>
-		entries.Count > 0 && entries[^1] is { Role: ChatRole.Tool } tool ? ToolAction(tool, running: true) : null;
+	public static string? RunningDetail(IReadOnlyList<ChatEntry> entries)
+	{
+		if (entries.Count == 0 || entries[^1] is not { Role: ChatRole.Tool } tool)
+		{
+			return null;
+		}
+
+		// ask_question 的正文是 JSON 题包，直接把第一题原文放到组头；读不到就只留「正在等待回答」。
+		if (tool.ToolName is "ask_question")
+		{
+			return AskQuestionPreview(tool);
+		}
+
+		return ToolAction(tool, running: true);
+	}
+
+	private static string? AskQuestionPreview(ChatEntry entry)
+	{
+		if (entry.ToolArguments is not { Length: > 0 } arguments)
+		{
+			return null;
+		}
+
+		try
+		{
+			if (JsonNode.Parse(arguments) is not JsonObject root)
+			{
+				return null;
+			}
+
+			if (root["question"]?.GetValue<string>() is { Length: > 0 } single)
+			{
+				return Strings.ToolDetail(single);
+			}
+
+			if (root["questions"] is JsonArray questions)
+			{
+				foreach (var item in questions)
+				{
+					if (item is JsonObject question && question["question"]?.GetValue<string>() is { Length: > 0 } text)
+					{
+						return Strings.ToolDetail(text);
+					}
+				}
+			}
+		}
+		catch (Exception error) when (error is System.Text.Json.JsonException or InvalidOperationException or FormatException)
+		{
+		}
+
+		return null;
+	}
 
 	/// <summary>工具行动词短语：「正在执行 cd …」/「读取 src/App.cs」；未知工具保留原摘要。</summary>
 	public static string ToolAction(ChatEntry entry, bool running)
 	{
+		// ask_question 的参数是题包 JSON，行内只给第一题原文（读不到就不占位）。
+		if (entry.ToolName is "ask_question")
+		{
+			return AskQuestionPreview(entry) ?? string.Empty;
+		}
+
 		var verb = entry.ToolName switch
 		{
 			"bash" or "terminal" => Strings.ToolActionExecute,

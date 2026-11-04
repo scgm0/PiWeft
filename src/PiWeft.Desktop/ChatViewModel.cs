@@ -130,6 +130,9 @@ public sealed record ChatEntry
 	/// <summary>工具执行或整次助手回复的耗时（毫秒），不代表思考耗时。</summary>
 	public double? DurationMs { get; init; }
 
+	/// <summary>工具开始执行的时刻（Unix 毫秒）；只有仍在执行且来自事件流的工具行才有值。</summary>
+	public long? ToolStartedAt { get; init; }
+
 	/// <summary>该消息对应的会话条目 id；用户消息用于「在此分支」。</summary>
 	public string? EntryId { get; init; }
 
@@ -666,6 +669,13 @@ public sealed class ChatViewModel : IDisposable
 
 	private ValueTask OnAgentEvent(AgentEvent @event)
 	{
+		// 工具的部分输出还没进 UI：这类事件既不改投影也不改状态，早退可避免每次
+		// tool_execution_update 都清空快照并让宿主整帧重绘（接实时输出时再在这里处理）。
+		if (@event is ToolExecutionUpdateEvent)
+		{
+			return ValueTask.CompletedTask;
+		}
+
 		lock (_gate)
 		{
 			_rowsSnapshot = null;
@@ -749,11 +759,16 @@ public sealed class ChatViewModel : IDisposable
 
 				case ToolExecutionStartEvent start:
 					_tools.RemoveAll(tool => tool.ToolCallId == start.ToolCallId);
-					_tools.Add(new ToolEntry(start.ToolCallId, start.ToolName, start.Arguments.ToJsonString(PiJson.NodeOptions), null, false, null));
+					// 开始时刻只在这里取一次：tool_execution_update 会带新的部分结果，但不会重置秒表。
+					_tools.Add(new ToolEntry(start.ToolCallId, start.ToolName, start.Arguments.ToJsonString(PiJson.NodeOptions), null, false, null, NowMs()));
 					break;
 
 				case ToolExecutionEndEvent end:
-					var arguments = _tools.FirstOrDefault(tool => tool.ToolCallId == end.ToolCallId)?.Arguments ?? string.Empty;
+					var running = _tools.FirstOrDefault(tool => tool.ToolCallId == end.ToolCallId);
+					var arguments = running?.Arguments ?? string.Empty;
+					var startedAt = running?.StartedAt ?? (end.DurationMs is { } elapsedMs
+						? NowMs() - (long)elapsedMs
+						: NowMs());
 					_tools.RemoveAll(tool => tool.ToolCallId == end.ToolCallId);
 					_tools.Add(new ToolEntry(
 						end.ToolCallId,
@@ -761,7 +776,8 @@ public sealed class ChatViewModel : IDisposable
 						arguments,
 						ToolResultText(end.Result),
 						end.IsError,
-						end.DurationMs));
+						end.DurationMs,
+						startedAt));
 					break;
 
 				case QueueUpdateEvent queue:
@@ -1336,7 +1352,8 @@ public sealed class ChatViewModel : IDisposable
 		string Arguments,
 		string? Result,
 		bool IsError,
-		double? DurationMs)
+		double? DurationMs,
+		long StartedAt)
 	{
 		// 流式期每帧都会重投影：已完成的工具结果可能几十 KB，逐帧重拼一遍纯属垃圾。
 		// 条目本身不可变（事件到达时换新实例），缓存一次投影即安全。
@@ -1352,6 +1369,7 @@ public sealed class ChatViewModel : IDisposable
 			EntryId = $"live-tool/{ToolCallId}",
 			IsError = IsError,
 			DurationMs = DurationMs,
+			ToolStartedAt = Result is null && StartedAt > 0 ? StartedAt : null,
 			Text = Result is null ? $"→ {ToolName} {Arguments}" : $"→ {ToolName}\n{Result}",
 		};
 	}

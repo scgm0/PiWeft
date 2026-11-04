@@ -18,6 +18,25 @@ dotnet test PiWeft.slnx
 
 Linux 桌面渲染需要 X11 会话（或 XWayland）、OpenGL/EGL 以及 fontconfig。在 Ubuntu 上，请安装 `libx11-6 libxcursor1 libxrandr2 libxi6 libgl1 libegl1 libfontconfig1`。对于无头 GUI 测试，请安装 `xvfb` 并使用 `xvfb-run -a dotnet test PiWeft.slnx`。
 
+### MewUI 源码
+
+PiWeft 只使用 `external/MewUI` 的 MewUI 源码构建和发布（git submodule，当前指向 upstream `main`）；不再回退到 NuGet 版 MewUI。首次检出后初始化子模块：
+
+```sh
+git submodule update --init --recursive
+dotnet build PiWeft.slnx
+dotnet run --project src/PiWeft.Desktop -- --cwd /path/to/project
+```
+
+需要更新到 upstream 最新 `main` 时：
+
+```sh
+./scripts/mewui-source.sh
+git add external/MewUI
+```
+
+Windows 可使用 `./scripts/mewui-source.ps1`。脚本会同步 MewUI 及其 SvgNet 等嵌套子模块；提交前把新的子模块指针一起提交。`external/Directory.Build.props` 和 `external/Directory.Packages.props` 隔离 PiWeft 的中央包管理、分析器与 TargetFramework 设置。更新上游后请跑全量桌面测试、NativeAOT 发布和 `--ui-smoke stream`。
+
 ## 打包
 
 NativeAOT 发布需要本地构建工具：Windows 上的 Visual Studio C++、macOS 上的 Xcode 命令行工具以及 Ubuntu 上的 `clang` 和 `zlib1g-dev`。请在目标操作系统和架构上进行构建；NativeAOT 不支持任意跨操作系统构建。

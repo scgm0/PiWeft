@@ -12,6 +12,8 @@ internal sealed class AssistantMessageView : IDisposable
 	private readonly DockPanel _headerRow;
 	private readonly TextBlock _thinkingHeader = new();
 	private readonly TextBlock _thinkingPreview = new();
+	// 思考中的秒表：只在本段思考进行时显示；结束后由标题的「思考了 X」接手，不重复报数。
+	private readonly LiveDurationText _thinkingTimer = new(0);
 	// 跑马灯容器：流式期把最新一行的行尾贴到右边缘，定稿后回到行首 + 省略号。
 	private readonly MarqueeLine _previewLine;
 	// 逐字推进：思考与正文各一把打字机，共用一条帧泵。网络一次推一整块，画面每帧只多露几个字，
@@ -46,17 +48,21 @@ internal sealed class AssistantMessageView : IDisposable
 		_header.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText();
 		_thinkingHeader.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium)
 			.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Thinking);
+		_thinkingTimer.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
+			.TextAlignment(TextAlignment.Right).MinWidth(44).IsVisible(false)
+			.VerticalAlignment(VerticalAlignment.Center);
 		_thinkingPreview.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
 			.TextTrimming(TextTrimming.CharacterEllipsis).VerticalAlignment(VerticalAlignment.Center);
 		_previewLine = new MarqueeLine(_thinkingPreview).VerticalAlignment(VerticalAlignment.Center);
 
 		_thinkingIcon = AppIcons.Icon("sparkles", AppStyles.RoleThinking, 12);
 		// Expander 自带折叠箭头，不在标题内再画一个。
-		var thinkingTitle = new Grid().Columns("Auto,Auto,*").HorizontalAlignment(HorizontalAlignment.Stretch)
+		var thinkingTitle = new Grid().Columns("Auto,Auto,Auto,*").HorizontalAlignment(HorizontalAlignment.Stretch)
 			.Children(
 				_thinkingIcon.Column(0),
 				_thinkingHeader.Column(1).Margin(new Thickness(5, 0, 0, 0)),
-				_previewLine.Column(2).Margin(new Thickness(6, 0, 0, 0)));
+				_thinkingTimer.Column(2).Margin(new Thickness(6, 0, 0, 0)),
+				_previewLine.Column(3).Margin(new Thickness(6, 0, 0, 0)));
 		// 组体内吸顶用（未挂组体视口时行为与普通 Expander 相同）。
 		_thinking = new StickyExpander()
 			.Header(thinkingTitle)
@@ -163,11 +169,23 @@ internal sealed class AssistantMessageView : IDisposable
 		_thinking.IsVisible(entry.ThinkingLength > 0 || entry.IsThinking);
 		_thinkingIcon.IsVisible(!entry.Compact);
 		var thinkingLabel = entry.IsThinking ? Strings.ThinkingActive
-			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs) : Strings.ThinkingComplete;
-		if (!ReferenceEquals(thinkingLabel, _thinkingLabel))
+			: entry.ThinkingDurationMs is { } measured ? Strings.ThinkingDuration(measured)
+			: entry.Compact && entry.DurationMs is { } thinkingMs ? Strings.ThinkingDuration(thinkingMs)
+			: Strings.ThinkingComplete;
+		if (!string.Equals(thinkingLabel, _thinkingLabel, StringComparison.Ordinal))
 		{
 			_thinkingLabel = thinkingLabel;
 			_thinkingHeader.Text(thinkingLabel);
+		}
+		// 思考进行中才跑秒表；结束时刻一到，标题已经改成固定的「思考了 X」。
+		if (entry.IsThinking && entry.ThinkingStartedAt is { } thinkingStartedAt)
+		{
+			_thinkingTimer.IsVisible(true);
+			_thinkingTimer.SetSpan(thinkingStartedAt, null);
+		}
+		else
+		{
+			_thinkingTimer.IsVisible(false);
 		}
 
 		// 打字机与预览缓存都属于「这一条消息」：行视图会被回收给另一条，身份一变就整体重来。
@@ -435,9 +453,12 @@ internal sealed class AssistantMessageView : IDisposable
 		return text;
 	}
 
-	private static void ConfigureCodeText(MultiLineTextBox text, string? language, TextFocusScrollGuard focus, bool muted)
+	internal static void ConfigureCodeText(MultiLineTextBox text, string? language, TextFocusScrollGuard focus, bool muted)
 	{
 		focus.Track(text);
+		// MarkdownCodeBlockView 直接 new MultiLineTextBox，不经过 MessageText.Create；
+		// 这里补上 Linux PRIMARY selection（选中即复制，中键粘贴到输入框）。
+		text.PrimarySelection(smoothScroll: false);
 		// 代码块的横向视口在 Markdown 建块时才出现（MarkdownView 建树早于它）：
 		// 这里补装同一个平滑滚动控制器，触控板横向滑动才不会落进 ScrollViewer 的即时跳变。
 		for (var parent = text.Parent; parent is not null; parent = parent.Parent)

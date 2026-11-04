@@ -281,8 +281,10 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 	{
 		_runs = block.Runs.Count == 0 ? [] : block.Runs.ToArray();
 		_runStarts = new int[_runs.Length];
-		List<LinkRun> links = [];
-		List<ImageSlot> images = [];
+		// Most streamed paragraphs have neither links nor images. Allocating two empty Lists (and
+		// RebuildImages' dictionary/list) for every such frame was pure GC pressure.
+		List<LinkRun>? links = null;
+		List<ImageSlot>? images = null;
 		int offset = 0;
 		for (int index = 0; index < _runs.Length; index++)
 		{
@@ -291,16 +293,17 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			int length = VisualText(run).Length;
 			if (length > 0 && run.Url is not null)
 			{
-				links.Add(new LinkRun(offset, length, run));
+				(links ??= []).Add(new LinkRun(offset, length, run));
 			}
 			if (run.Image && run.Url is not null && length > 0)
 			{
-				images.Add(new ImageSlot(run));
+				(images ??= []).Add(new ImageSlot(run));
 			}
 			offset += length;
 		}
-		_links = links.Count == 0 ? [] : links.ToArray();
-		RebuildImages(images);
+		_links = links is null ? [] : links.ToArray();
+		if (images is not null) RebuildImages(images);
+		else if (_images.Count > 0) RebuildImages([]);
 		_focusedLink = _links.Length == 0 ? 0 : Math.Clamp(_focusedLink, 0, _links.Length - 1);
 		_pressedLink = -1;
 		_pressedImage = -1;
@@ -359,6 +362,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 	/// </summary>
 	private void RebuildImages(List<ImageSlot> next)
 	{
+		if (next.Count == 0 && _images.Count == 0) return;
 		Dictionary<string, ImageSlot> reusable = new(StringComparer.Ordinal);
 		foreach (ImageSlot slot in _images)
 		{

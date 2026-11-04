@@ -215,7 +215,7 @@ Options 与 Theme 实例**（桌面端为 `AssistantMessageView.SharedMarkdownOp
   一起，也不会裁掉字形；置 0 或负值即关闭行距，退回字体自然行高；
 - **块间距仍是块间距**：行间距只加在行与行之间，块的上下缘贴着文字，`BlockSpacing` 继续描述块之间
   的真实空白，不会因行高变大而把段落间距一起撑开；
-- **不影响代码块**：代码体是只读 `MultiLineTextBox`，MewUI 0.22.1 没有给它行高开关；
+- **不影响代码块**：代码体是只读 `MultiLineTextBox`，MewUI 源码 没有给它行高开关；
 - **选区跟着行框走，不跟着字形带走**：MewUI 的行范围矩形只有一行的自然高度，行间距拉开后
   逐行选区会变成一条条横纹。所以选区底色由 `MarkdownParagraphView` 自己铺（不再走 `TextPaintSpan`），
   每行矩形上下各扩半个行间距：行与行之间无缝相接，单行选区正好一个行框高（16 px → 25.6 DIP）。

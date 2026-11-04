@@ -143,6 +143,23 @@ public class CodexAuthTests : IDisposable
 	}
 
 	[Fact]
+	public async Task LoadAsyncReadsTheSameStoredCredential()
+	{
+		CodexAuth.Save(new CodexCredentials
+		{
+			Access = "access-async",
+			Refresh = "refresh-async",
+			Expires = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds(),
+		}, _root);
+
+		var loaded = await CodexAuth.LoadAsync(_root);
+
+		Assert.NotNull(loaded);
+		Assert.Equal("access-async", loaded!.Access);
+		Assert.Equal("refresh-async", loaded.Refresh);
+	}
+
+	[Fact]
 	public void MalformedCodexEntryLoadsAsMissingInsteadOfThrowing()
 	{
 		File.WriteAllText(Path.Combine(_root, "auth.json"),

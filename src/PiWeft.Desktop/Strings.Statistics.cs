@@ -20,6 +20,7 @@ public static partial class Strings
 	public const string ProcessGroupEdit = "正在编辑文件";
 	public const string ProcessGroupCommands = "正在运行命令";
 	public const string ProcessGroupTodo = "正在更新计划";
+	public const string ProcessGroupAsk = "正在等待回答";
 	public const string ProcessGroupTools = "正在调用工具";
 	/// <summary>类别超过三个时组头收尾：PiDeck 的「{title} 等」。</summary>
 	public static string ProcessGroupMore(string title) => $"{title} 等";

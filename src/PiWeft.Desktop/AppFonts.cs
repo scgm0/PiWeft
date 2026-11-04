@@ -16,7 +16,7 @@ namespace PiWeft.Desktop;
 /// <item>代码块、工具输出等等宽文本用 <b>Maple Mono NF CN</b>（静态 Regular）。Maple Mono 的可变字体只有拉丁版，
 /// 没有 CJK；用 CN 版是为了让代码里的中文注释也能等宽对齐，NF 版额外的 Nerd Font 图标供终端里的 powerline 提示符使用。</item>
 /// </list>
-/// 使用官方静态字重资源；MewUI 0.22.1 的注册表按字族只保留最后一个文件，
+/// 使用官方静态字重资源；MewUI 源码 的注册表按字族只保留最后一个文件，
 /// 因此 Regular 最后注册，Normal 使用原版正文笔画，Bold 请求由各平台后端处理。
 /// 另外给 Regular 注册一个显式的字族别名 <c>HarmonyOS_Sans_SC_Regular</c>，并把它设为
 /// 全局默认字体：即使系统里也装了同名字族，默认正文也一定落到内嵌的 Regular 文件。
@@ -74,7 +74,7 @@ public static class AppFonts
 
 		_registered = true;
 
-		// MewUI 0.22.1 的字族注册表只保存最后一个文件，Regular 必须最后注册。
+		// MewUI 源码 的字族注册表只保存最后一个文件，Regular 必须最后注册。
 		// 否则 Linux 的 Normal 也会拿到 Bold；粗体由后端按请求字重处理。
 		// 同时把 Regular 注册到显式别名，供 ThemeMetrics 的默认字体使用。
 		var boldLoaded = RegisterFont("HarmonyOS_Sans_SC_Bold.ttf");

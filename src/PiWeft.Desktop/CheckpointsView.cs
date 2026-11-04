@@ -105,16 +105,53 @@ public sealed class CheckpointsView
 			return;
 		}
 
-		var status = GitStatusReader.Read(cwd, TimeSpan.FromSeconds(5));
-		if (!status.IsRepository)
+		// `git status` + `for-each-ref` are external processes and can be slow on large
+		// repositories. Never run them while the panel is being opened on the UI thread.
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
-			SetEmpty(string.Equals(status.Error, Strings.GitUnavailable, StringComparison.Ordinal)
+			ApplyRefresh(cwd, generation, LoadRefresh(cwd));
+			return;
+		}
+
+		_ = RefreshAsync(cwd, generation, dispatcher);
+	}
+
+	private sealed record RefreshData(GitStatus Status, IReadOnlyList<Checkpoint>? Checkpoints);
+
+	private static RefreshData LoadRefresh(string cwd)
+	{
+		var status = GitStatusReader.Read(cwd, TimeSpan.FromSeconds(5));
+		return new RefreshData(status, status.IsRepository ? Checkpoints.List(cwd) : null);
+	}
+
+	private async Task RefreshAsync(string cwd, int generation, IDispatcher dispatcher)
+	{
+		var data = await Task.Run(() => LoadRefresh(cwd)).ConfigureAwait(false);
+		void Complete()
+		{
+			if (_generation != generation)
+			{
+				return;
+			}
+
+			ApplyRefresh(cwd, generation, data);
+		}
+
+		if (dispatcher.IsOnUIThread) Complete();
+		else dispatcher.BeginInvoke(Complete);
+	}
+
+	private void ApplyRefresh(string cwd, int generation, RefreshData data)
+	{
+		if (!data.Status.IsRepository)
+		{
+			SetEmpty(string.Equals(data.Status.Error, Strings.GitUnavailable, StringComparison.Ordinal)
 				? Strings.GitUnavailable
 				: Strings.CheckpointNotRepository);
 			return;
 		}
 
-		var checkpoints = Checkpoints.List(cwd);
+		var checkpoints = data.Checkpoints ?? [];
 		if (checkpoints.Count == 0)
 		{
 			SetEmpty(Strings.CheckpointEmpty);

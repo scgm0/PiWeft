@@ -65,6 +65,17 @@ public class CredentialStateTests : IDisposable
 	}
 
 	[Fact]
+	public async Task AsyncStateResolvesTemplatesWithoutExecutingCommands()
+	{
+		WriteAuth("""{ "openai": { "type": "api_key", "key": "${TOKEN}", "env": { "TOKEN": "sk-async" } } }""");
+
+		var (key, isCommand) = await AuthStore.ReadCredentialStateAsync("openai", _agentDir);
+
+		Assert.Equal("sk-async", key);
+		Assert.False(isCommand);
+	}
+
+	[Fact]
 	public void IsEmptyForAnUnknownProvider()
 	{
 		WriteAuth("""{ "openai": { "type": "api_key", "key": "sk" } }""");

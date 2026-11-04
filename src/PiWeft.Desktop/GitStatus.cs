@@ -374,7 +374,35 @@ public static class GitStatusReader
 			// 两路并发读：先 stdout 再 stderr 时，子进程写满 stderr 缓冲会阻塞，WaitForExit 永远等不到。
 			var stdoutTask = ReadBoundedAsync(process.StandardOutput, maxOutputCharacters);
 			var stderrTask = process.StandardError.ReadToEndAsync();
-			process.WaitForExit(10_000);
+			if (!process.WaitForExit(10_000))
+			{
+				// 不能在这里直接 GetResult：子进程还活着时读管道会一直等下去，UI 就冻住了。
+				// 先杀掉整棵进程树，再给读任务一个很短的收尾窗口，最后按超时返回。
+				try
+				{
+					process.Kill(entireProcessTree: true);
+				}
+				catch (InvalidOperationException)
+				{
+					// 已经退出。
+				}
+				catch (System.ComponentModel.Win32Exception)
+				{
+					// 进程已不可杀；下面的读取窗口仍能避免无限等待。
+				}
+
+				try
+				{
+					Task.WaitAll([stdoutTask, stderrTask], TimeSpan.FromSeconds(2));
+				}
+				catch (AggregateException)
+				{
+					// 进程被杀后管道关闭的异常不影响超时语义。
+				}
+
+				return (string.Empty, Strings.GitTimeout, -1);
+			}
+
 			var output = stdoutTask.GetAwaiter().GetResult();
 			var error = stderrTask.GetAwaiter().GetResult();
 			return (output, error, process.ExitCode);

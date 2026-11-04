@@ -28,6 +28,25 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void RunningAskQuestionUsesItsOwnGroupLabelAndQuestionPreview()
+	{
+		var entries = new[]
+		{
+			User("ask"),
+			new ChatEntry
+			{
+				Role = ChatRole.Tool, EntryId = "ask/1", ToolCallId = "ask-1", ToolName = "ask_question",
+				ToolArguments = "{\"questions\":[{\"question\":\"选哪个分支？\"}]}", IsStreaming = true, Text = string.Empty,
+			},
+		};
+		Assert.Equal(Strings.ProcessGroupAsk, ExecutionProcess.RunningLabel(entries));
+		Assert.Equal("circle-question-mark", ExecutionProcess.GroupIcon(entries));
+		Assert.Equal("选哪个分支？", ExecutionProcess.RunningDetail(entries));
+		Assert.Equal("选哪个分支？", ExecutionProcess.ToolAction(entries[1], true));
+		Assert.Equal("已向你提问", ExecutionProcess.GroupSummary([entries[1]]));
+	}
+
+	[Fact]
 	public void OneFoldPerTurnKeepsFinalAnswerVisibleAndCountsEachToolOnce()
 	{
 		var rows = ExecutionProcess.Project([
@@ -433,6 +452,44 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void RunningToolShowsALiveStopwatchButAskQuestionWaitIsNotToolTime()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1500;
+		var tool = new ChatEntry
+		{
+			Role = ChatRole.Tool, EntryId = "live-tool/1", ToolCallId = "1", ToolName = "bash",
+			Text = "arguments", IsStreaming = true, ToolStartedAt = startedAt,
+		};
+		var view = new ToolMessageView(tool, focus);
+		var timer = Assert.Single(Find<LiveDurationText>(view.View));
+		Assert.False(string.IsNullOrEmpty(timer.Text));
+		UiLifetime.Release(view.View);
+
+		// ask_question 的等待是人在读题，不能算进工具耗时（PiDeck 同义）。
+		var ask = new ToolMessageView(tool with { ToolName = "ask_question" }, focus);
+		Assert.Empty(Find<LiveDurationText>(ask.View));
+		Assert.Contains(Find<TextBlock>(ask.View), text => text.Text == Strings.AskWaitingForAnswer);
+		UiLifetime.Release(ask.View);
+
+		// 完成后的 ask_question 也不展示包含等待时间的耗时。
+		var answered = new ToolMessageView(tool with
+		{
+			ToolName = "ask_question", IsStreaming = false, DurationMs = 65_000, ToolStartedAt = null,
+		}, focus);
+		Assert.DoesNotContain(Find<TextBlock>(answered.View), text => text.Text == Strings.FormatDuration(65_000));
+		UiLifetime.Release(answered.View);
+	}
+
+	[Fact]
+	public void LiveDurationFormatReadsRunningAndFinishedSpansTheSameWay()
+	{
+		Assert.Equal(string.Empty, LiveDurationText.Format(0, 0, 5_000));
+		Assert.Equal("1.2 s", LiveDurationText.Format(1_000, 0, 2_234));
+		Assert.Equal("500 ms", LiveDurationText.Format(1_000, 1_500, 99_999));
+	}
+
+	[Fact]
 	public void StoppedTurnDoesNotLeaveAResultlessToolRunning()
 	{
 		var process = ExecutionProcess.Project([User("first"), Tool("orphan", "arguments", pending: true)], false)[1];
@@ -460,6 +517,32 @@ public sealed class ExecutionProcessTests
 		var group = Find<Expander>(view.View).Single(expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
 		Assert.Contains(Find<TextBlock>(group.Header!), text => text.Text == "已读取文件");
 		Assert.DoesNotContain(Find<TextBlock>(group.Header!), text => text.Text == Strings.ProcessGroupRead);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void InPlaceGroupMemberRewriteRefreshesTheGroupHeader()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var process = new ChatEntry
+		{
+			Role = ChatRole.Process, Text = string.Empty, IsStreaming = false,
+			ProcessEntries = [Tool("one", "ok")],
+		};
+		var view = new ExecutionProcessView(process, entry => new ToolMessageView(entry, focus).View);
+		Find<Expander>(view.View).Single(expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint).IsExpanded = true;
+		var group = Find<Expander>(view.View).Single(expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		Assert.Contains(Find<TextBlock>(group.Header!), text => text.Text == "已读取文件");
+
+		// Nodes 复用同一份成员数组；这次只在原位置换掉末尾成员，数量不变。
+		// 组头缓存必须看条目引用而不是数组引用，否则会继续显示旧的“已读取文件”。
+		var rewritten = process with
+		{
+			ProcessEntries = [Tool("one", "ok") with { ToolName = "bash" }],
+		};
+		view.Update(rewritten);
+		group = Find<Expander>(view.View).Single(expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		Assert.Contains(Find<TextBlock>(group.Header!), text => text.Text == "执行了命令");
 		UiLifetime.Release(view.View);
 	}
 

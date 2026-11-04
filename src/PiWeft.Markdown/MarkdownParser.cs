@@ -159,12 +159,17 @@ public static class MarkdownParser
 		MarkdownPipeline pipeline = Pipelines.GetValue(options, static value => BuildPipeline(value));
 		Markdig.Syntax.MarkdownDocument parsed = Markdig.Markdown.Parse(tail, pipeline);
 
-		// Seed uniqueness from the blocks that are not re-parsed: the last block is replaced by the
-		// freshly parsed tail, so its old anchors must not reserve their own slugs.
-		HashSet<string> anchors = new(StringComparer.Ordinal);
-		for (int index = 0; index < previous.Blocks.Count - 1; index++)
+		// Seed uniqueness from the blocks that are not re-parsed. The document already carries the
+		// anchor table for the whole previous revision, so copy its prefix instead of walking every
+		// historical block on every append. The replaced last block is excluded by its top index.
+		var anchors = new HashSet<string>(StringComparer.Ordinal);
+		int replacedTopIndex = previous.Blocks.Count - 1;
+		foreach (var (anchor, topIndex) in previous.AnchorBlocks)
 		{
-			CollectAnchors(previous.Blocks[index], anchors);
+			if (topIndex != replacedTopIndex)
+			{
+				anchors.Add(anchor);
+			}
 		}
 
 		List<MarkdownBlock> tailBlocks = MapChildren(parsed, tail, options, anchors);
@@ -181,7 +186,13 @@ public static class MarkdownParser
 		}
 		blocks.AddRange(tailBlocks);
 
-		document = new MarkdownDocument(source, builder, blocks, options)
+		document = new MarkdownDocument(
+			source,
+			builder,
+			blocks,
+			options,
+			previous,
+			reusedBlockCount: previous.Blocks.Count - 1)
 		{
 			TailRepaired = suffix.Length > 0
 		};
@@ -207,22 +218,6 @@ public static class MarkdownParser
 		foreach (MarkdownBlock child in block.Children)
 		{
 			ShiftSourceOffsets(child, offset);
-		}
-	}
-
-	private static void CollectAnchors(MarkdownBlock block, HashSet<string> anchors)
-	{
-		if (!string.IsNullOrEmpty(block.Anchor))
-		{
-			anchors.Add(block.Anchor);
-		}
-		foreach (string alias in block.Aliases)
-		{
-			anchors.Add(alias);
-		}
-		foreach (MarkdownBlock child in block.Children)
-		{
-			CollectAnchors(child, anchors);
 		}
 	}
 

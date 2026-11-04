@@ -1,3 +1,4 @@
+using System.Text;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
@@ -25,6 +26,8 @@ internal sealed class ProviderUsageSummary
 	private CancellationTokenSource? _abort;
 	private (string Provider, string BaseUrl, string Cwd)? _key;
 	private ProviderUsageResult? _result;
+	private readonly List<Action<ProviderUsageResult>> _rowUpdaters = [];
+	private string? _rowsShape;
 	private bool _open;
 	private int _generation;
 
@@ -150,12 +153,78 @@ internal sealed class ProviderUsageSummary
 
 	private void Render(ProviderUsageResult result)
 	{
-		ClearRows();
 		_status.Text(result.Success ? _current().Provider : result.Disabled ? Strings.UsageDisabled : result.Error ?? Strings.UsageUnavailable);
 		// 失败时保留上一次成功的时间：错误由状态行说明，时间列不假装刚刚更新过。
-		if (!result.Success) return;
+		if (!result.Success)
+		{
+			ClearRows();
+			return;
+		}
 		_time.Text(ProviderUsageDisplay.RelativeTime(result.At));
-		BuildRows(result);
+
+		// 5 分钟一次的自动刷新大多只是数值变化。结构不变时只改 Text/进度条，
+		// 不重建控件，避免反复创建文本布局、字体与原生渲染资源。
+		var shape = ShapeOf(result);
+		if (!string.Equals(shape, _rowsShape, StringComparison.Ordinal))
+		{
+			ClearRows();
+			_rowsShape = shape;
+			BuildRows(result);
+			return;
+		}
+
+		foreach (var update in _rowUpdaters) update(result);
+	}
+
+	/// <summary>行结构指纹：只包含决定“有哪些控件、什么配色”的字段，不包含会变的数值。</summary>
+	private static string ShapeOf(ProviderUsageResult result)
+	{
+		var builder = new StringBuilder(64);
+		builder.Append(result.Kind?.ToString() ?? "-").Append('|');
+		if (result.Balance is not null)
+			builder.Append('b').Append((int)ProviderUsageDisplay.ToneOf(result)).Append('|');
+		if (result.Periods is { } periods)
+		{
+			Append(periods.Rolling);
+			Append(periods.Weekly);
+			Append(periods.Monthly);
+		}
+		if (result.Credits is { } credits)
+		{
+			builder.Append("c|").Append((int)ProviderUsageDisplay.ToneOf(result)).Append('|');
+			var windows = credits.Windows ?? [];
+			foreach (var window in windows)
+			{
+				var percent = ProviderUsageDisplay.WindowPercent(window);
+				builder.Append(window.Key)
+					.Append(percent is not null ? 'b' : 'a')
+					.Append((int)ProviderUsageDisplay.PercentTone(percent));
+				if (percent is null)
+					builder.Append(window.Remaining is not null ? '1' : '0');
+				builder.Append('|');
+			}
+			if (windows.Count == 0)
+			{
+				var remaining = RemainingOf(credits);
+				builder.Append('r').Append(remaining is not null ? '1' : '0')
+					.Append('u').Append(credits.Used is not null ? '1' : '0').Append('|');
+			}
+		}
+		if (result.Booster is { } booster)
+		{
+			builder.Append("bo|")
+				.Append(booster.MonthlyUsed is not null ? '1' : '0')
+				.Append(booster.UnlimitedMonthly ? '1' : '0')
+				.Append(booster.MonthlyChargeLimit is not null ? '1' : '0').Append('|');
+		}
+		return builder.ToString();
+
+		void Append(UsagePeriod? period)
+		{
+			var percent = period?.Percent;
+			builder.Append(percent is not null ? 'b' : 'a')
+				.Append((int)ProviderUsageDisplay.PercentTone(percent)).Append('|');
+		}
 	}
 
 	private void BuildRows(ProviderUsageResult result)
@@ -164,54 +233,84 @@ internal sealed class ProviderUsageSummary
 		{
 			case ProviderUsageKind.Balance:
 				if (result.Balance is { } balance)
-					_rows.Children(AmountRow(Strings.UsageBalanceShort,
-						ProviderUsageDisplay.Money(balance, result.Currency), ProviderUsageDisplay.ToneOf(result)));
+					AddAmountRow(Strings.UsageBalanceShort,
+						current => ProviderUsageDisplay.Money(current.Balance!.Value, current.Currency),
+						ProviderUsageDisplay.ToneOf(result), result);
 				break;
 			case ProviderUsageKind.Periods:
 				if (result.Periods is { } periods)
 				{
-					AddPeriod(Strings.UsageWindowRolling, periods.Rolling);
-					AddPeriod(Strings.UsageWindowWeekly, periods.Weekly);
-					AddPeriod(Strings.UsageWindowMonthly, periods.Monthly);
+					AddPeriod(Strings.UsageWindowRolling, periods.Rolling, result);
+					AddPeriod(Strings.UsageWindowWeekly, periods.Weekly, result);
+					AddPeriod(Strings.UsageWindowMonthly, periods.Monthly, result);
 				}
 				break;
 			case ProviderUsageKind.Credits:
 				if (result.Credits is not { } credits) break;
 				var windows = credits.Windows ?? [];
-				foreach (var window in windows)
+				for (var index = 0; index < windows.Count; index++)
 				{
+					var window = windows[index];
+					var slot = index;
 					var percent = ProviderUsageDisplay.WindowPercent(window);
 					if (percent is { } value)
 					{
-						var trailing = window.Remaining is { } remaining and > 0
-							? $"{Strings.UsageRemaining} {ProviderUsageDisplay.Amount(remaining)}" : null;
-						_rows.Children(BarRow(ProviderUsageDisplay.WindowLabel(window.Key), value, trailing));
+						AddBarRow(ProviderUsageDisplay.WindowLabel(window.Key),
+							current => WindowValue((current.Credits?.Windows ?? [])[slot]),
+							ProviderUsageDisplay.PercentTone(value), result);
 					}
-					else if (window.Remaining is { } left)
-						_rows.Children(AmountRow(ProviderUsageDisplay.WindowLabel(window.Key),
-							ProviderUsageDisplay.Amount(left), ProviderUsageDisplay.Tone.Neutral));
+					else if (window.Remaining is not null)
+					{
+						AddAmountRow(ProviderUsageDisplay.WindowLabel(window.Key),
+							current => ProviderUsageDisplay.Amount((current.Credits?.Windows ?? [])[slot].Remaining ?? 0),
+							ProviderUsageDisplay.Tone.Neutral, result);
+					}
 				}
 				if (windows.Count == 0)
 				{
-					var remaining = credits.Remaining ?? (credits.Total is { } total && credits.Used is { } used ? total - used : null);
-					if (remaining is not null)
-						_rows.Children(AmountRow(Strings.UsageCreditsRemaining,
-							ProviderUsageDisplay.Amount(remaining.Value), ProviderUsageDisplay.ToneOf(result)));
-					if (credits.Used is { } spent)
-						_rows.Children(AmountRow(Strings.UsageCreditsUsed, ProviderUsageDisplay.Amount(spent),
-							ProviderUsageDisplay.Tone.Neutral));
+					if (RemainingOf(credits) is not null)
+						AddAmountRow(Strings.UsageCreditsRemaining,
+							current => ProviderUsageDisplay.Amount(RemainingOf(current.Credits!) ?? 0),
+							ProviderUsageDisplay.ToneOf(result), result);
+					if (credits.Used is not null)
+						AddAmountRow(Strings.UsageCreditsUsed,
+							current => ProviderUsageDisplay.Amount(current.Credits!.Used!.Value),
+							ProviderUsageDisplay.Tone.Neutral, result);
 				}
 				break;
 		}
-		if (result.Booster is { } booster) BuildBooster(booster);
-		void AddPeriod(string label, UsagePeriod? period)
+		if (result.Booster is { } booster) BuildBooster(booster, result);
+
+		void AddPeriod(string label, UsagePeriod? period, ProviderUsageResult current)
 		{
 			if (period?.Percent is not { } percent) return;
-			var trailing = period.ResetsAt is { } resetsAt && resetsAt > DateTimeOffset.UtcNow
-				? $"{Strings.UsageResetAt} {ResetLabel(resetsAt)}" : null;
-			_rows.Children(BarRow(label, percent, trailing));
+			AddBarRow(label, result => PeriodValue(result, label), ProviderUsageDisplay.PercentTone(percent), current);
 		}
 	}
+
+	/// <summary>周期行只按标签取对应周期，避免把滚动/周/月的顺序硬编码进更新回调。</summary>
+	private static (double Percent, string? Trailing) PeriodValue(ProviderUsageResult result, string label)
+	{
+		var periods = result.Periods;
+		var period = label == Strings.UsageWindowRolling ? periods?.Rolling
+			: label == Strings.UsageWindowWeekly ? periods?.Weekly
+			: periods?.Monthly;
+		if (period?.Percent is not { } percent) return (0, null);
+		var trailing = period.ResetsAt is { } resetsAt && resetsAt > DateTimeOffset.UtcNow
+			? $"{Strings.UsageResetAt} {ResetLabel(resetsAt)}" : null;
+		return (percent, trailing);
+	}
+
+	private static (double Percent, string? Trailing) WindowValue(UsageWindow window)
+	{
+		var percent = ProviderUsageDisplay.WindowPercent(window) ?? 0;
+		var trailing = window.Remaining is { } remaining and > 0
+			? $"{Strings.UsageRemaining} {ProviderUsageDisplay.Amount(remaining)}" : null;
+		return (percent, trailing);
+	}
+
+	private static double? RemainingOf(UsageCredits credits) =>
+		credits.Remaining ?? (credits.Total is { } total && credits.Used is { } used ? total - used : null);
 
 	/// <summary>重置时间：当天只给时分，跨天补月日，避免「重置 03:00」看不出是哪天。</summary>
 	private static string ResetLabel(DateTimeOffset resetsAt)
@@ -220,63 +319,84 @@ internal sealed class ProviderUsageSummary
 		return local.Date == DateTimeOffset.Now.Date ? local.ToString("HH:mm") : local.ToString("MM-dd HH:mm");
 	}
 
-	private void BuildBooster(UsageBooster booster)
+	private void BuildBooster(UsageBooster booster, ProviderUsageResult result)
 	{
 		_rows.Children(new Border().Height(1).Margin(new Thickness(0, 2, 0, 0))
 			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).BorderSubtle));
-		_rows.Children(AmountRow(Strings.UsageBoosterBalance,
-			ProviderUsageDisplay.Money(booster.Balance, booster.Currency), ProviderUsageDisplay.Tone.Ok));
-		if (booster.MonthlyUsed is { } monthlyUsed)
-			_rows.Children(AmountRow(Strings.UsageBoosterMonthlyUsed,
-				ProviderUsageDisplay.Money(monthlyUsed, booster.Currency), ProviderUsageDisplay.Tone.Neutral));
+		AddAmountRow(Strings.UsageBoosterBalance,
+			current => ProviderUsageDisplay.Money(current.Booster!.Balance, current.Booster.Currency),
+			ProviderUsageDisplay.Tone.Ok, result);
+		if (booster.MonthlyUsed is not null)
+			AddAmountRow(Strings.UsageBoosterMonthlyUsed,
+				current => ProviderUsageDisplay.Money(current.Booster!.MonthlyUsed!.Value, current.Booster.Currency),
+				ProviderUsageDisplay.Tone.Neutral, result);
 		if (booster.UnlimitedMonthly)
-			_rows.Children(AmountRow(Strings.UsageBoosterMonthlyLimit, Strings.UsageBoosterUnlimited,
-				ProviderUsageDisplay.Tone.Neutral));
-		else if (booster.MonthlyChargeLimit is { } limit)
-			_rows.Children(AmountRow(Strings.UsageBoosterMonthlyLimit,
-				ProviderUsageDisplay.Money(limit, booster.Currency), ProviderUsageDisplay.Tone.Neutral));
+			AddAmountRow(Strings.UsageBoosterMonthlyLimit, _ => Strings.UsageBoosterUnlimited,
+				ProviderUsageDisplay.Tone.Neutral, result);
+		else if (booster.MonthlyChargeLimit is not null)
+			AddAmountRow(Strings.UsageBoosterMonthlyLimit,
+				current => ProviderUsageDisplay.Money(current.Booster!.MonthlyChargeLimit!.Value, current.Booster.Currency),
+				ProviderUsageDisplay.Tone.Neutral, result);
 	}
 
 	/// <summary>一行「标签 + 圆角进度条 + 百分比 + 尾部小字」，档位色与阈值对齐 PiDeck。</summary>
-	private static UIElement BarRow(string label, double percent, string? trailing)
+	private void AddBarRow(
+		string label,
+		Func<ProviderUsageResult, (double Percent, string? Trailing)> valueOf,
+		ProviderUsageDisplay.Tone tone,
+		ProviderUsageResult current)
 	{
-		var tone = ProviderUsageDisplay.PercentTone(percent);
-		var clamped = Math.Clamp(percent, 0, 100);
 		var fill = new Border().CornerRadius(3)
 			.WithTheme((theme, border) => border.Background = ToneColor(theme, tone));
+		var trackGrid = new Grid();
 		var track = new Border().Height(6).CornerRadius(3).ClipToBounds(true)
 			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).HoverBackground)
-			.Child(new Grid()
-				.Columns(GridLength.Stars(Math.Max(0.001, clamped)), GridLength.Stars(Math.Max(0.001, 100 - clamped)))
-				.Children(fill.Column(0), new Border().Column(1)));
-		var text = new TextBlock().Text(ProviderUsageDisplay.Percent(clamped))
+			.Child(trackGrid.Children(fill.Column(0), new Border().Column(1)));
+		var percentText = new TextBlock()
 			.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).FontWeight(FontWeight.Bold)
 			.HorizontalAlignment(HorizontalAlignment.Right).Width(40)
 			.WithTheme((theme, block) => block.Foreground = ToneColor(theme, tone));
-		var children = new List<UIElement>
-		{
-			new TextBlock().Text(label).FontSize(AppTheme.FontSizeMicro).MutedText()
-				.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis)
-				.VerticalAlignment(VerticalAlignment.Center).Width(64),
-			track.VerticalAlignment(VerticalAlignment.Center),
-			text.VerticalAlignment(VerticalAlignment.Center),
-		};
-		if (trailing is not null)
-			children.Add(new TextBlock().Text(trailing).FontSize(AppTheme.FontSizeMicro).SubtleText()
-				.VerticalAlignment(VerticalAlignment.Center));
-		return new Grid().Columns(GridLength.Auto, GridLength.Stars(1), GridLength.Auto, GridLength.Auto)
+		var trailingText = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText()
+			.VerticalAlignment(VerticalAlignment.Center);
+		var labelText = new TextBlock().Text(label).FontSize(AppTheme.FontSizeMicro).MutedText()
+			.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center).Width(64);
+		_rows.Children(new Grid().Columns(GridLength.Auto, GridLength.Stars(1), GridLength.Auto, GridLength.Auto)
 			.Spacing(8)
-			.Children([.. children.Select((child, index) => child.Column(index))]);
+			.Children(labelText.Column(0), track.Column(1), percentText.Column(2), trailingText.Column(3)));
+
+		void Update(ProviderUsageResult result)
+		{
+			var (percent, trailing) = valueOf(result);
+			var clamped = Math.Clamp(percent, 0, 100);
+			trackGrid.Columns(GridLength.Stars(Math.Max(0.001, clamped)), GridLength.Stars(Math.Max(0.001, 100 - clamped)));
+			percentText.Text(ProviderUsageDisplay.Percent(clamped));
+			trailingText.Text(trailing ?? string.Empty).IsVisible(trailing is not null);
+		}
+
+		_rowUpdaters.Add(Update);
+		Update(current);
 	}
 
 	/// <summary>一行「灰标签 + 右对齐彩色数值」。</summary>
-	private static UIElement AmountRow(string label, string value, ProviderUsageDisplay.Tone tone) =>
-		new DockPanel().LastChildFill().Children(
+	private void AddAmountRow(
+		string label,
+		Func<ProviderUsageResult, string> valueOf,
+		ProviderUsageDisplay.Tone tone,
+		ProviderUsageResult current)
+	{
+		var value = new TextBlock().FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeCaption)
+			.FontWeight(FontWeight.Bold).HorizontalAlignment(HorizontalAlignment.Right)
+			.WithTheme((theme, block) => block.Foreground = ToneColor(theme, tone));
+		_rows.Children(new DockPanel().LastChildFill().Children(
 			new TextBlock().Text(label).FontSize(AppTheme.FontSizeMicro).MutedText()
 				.VerticalAlignment(VerticalAlignment.Center).DockLeft(),
-			new TextBlock().Text(value).FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeCaption)
-				.FontWeight(FontWeight.Bold).HorizontalAlignment(HorizontalAlignment.Right)
-				.WithTheme((theme, block) => block.Foreground = ToneColor(theme, tone)).DockRight());
+			value.DockRight()));
+
+		void Update(ProviderUsageResult result) => value.Text(valueOf(result));
+		_rowUpdaters.Add(Update);
+		Update(current);
+	}
 
 	internal static Color ToneColor(Theme theme, ProviderUsageDisplay.Tone tone)
 	{
@@ -306,7 +426,14 @@ internal sealed class ProviderUsageSummary
 			_timer.Stop();
 			return;
 		}
-		_timer.Interval = TimeSpan.FromMinutes(Math.Clamp(minutes, 1, 1440));
+		var target = TimeSpan.FromMinutes(Math.Clamp(minutes, 1, 1440));
+		// 面板打开时 Show() 会在每次会话重绘时被调用；同间隔重复设置 Interval 会
+		// Reschedule 并重置倒计时，导致自动查询永远等不到 5 分钟。
+		if (_timer.IsEnabled && _timer.Interval == target)
+		{
+			return;
+		}
+		_timer.Interval = target;
 		_timer.Start();
 	}
 
@@ -314,6 +441,8 @@ internal sealed class ProviderUsageSummary
 	{
 		foreach (var child in _rows.Children.ToArray()) UiLifetime.Release(child);
 		_rows.Clear();
+		_rowUpdaters.Clear();
+		_rowsShape = null;
 	}
 
 	private void Cancel()

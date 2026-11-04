@@ -885,6 +885,9 @@ public static partial class Strings
 
 	public const string AskNo = "否";
 
+	/// <summary>运行中的 ask_question 行不计工具秒表：这段时间是人在读题，不是工具在跑。</summary>
+	public const string AskWaitingForAnswer = "等待回答…";
+
 	public const string AskCustomPlaceholder = "也可直接输入自定义内容";
 
 	public const string AskCollapse = "收起选项";
@@ -960,6 +963,8 @@ public static partial class Strings
 	public const string FileBrowserParent = "上一级";
 
 	public const string FileBrowserEmpty = "这个目录没有可显示的文件。";
+
+	public const string FileBrowserLoading = "正在读取文件列表…";
 
 	public const string FileBrowserMissing = "文件不存在。";
 

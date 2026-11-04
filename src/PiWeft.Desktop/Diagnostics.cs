@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Aprillz.MewUI;
@@ -165,6 +166,14 @@ internal sealed class Diagnostics
 	private static int _pinnedObjects;
 	private static int _finalizationPending;
 	private static int _draining;
+	private static long _rssAnonBytes;
+	private static long _rssFileBytes;
+	private static long _rssShmemBytes;
+	private static int _fontMapCount;
+	private static long _fontMapBytes;
+	private static long _gpuMapBytes;
+	private static long _lastSmapsTicks;
+	private static long _lastMemoryTrimTicks;
 
 	// ── 帧档：定长环形缓冲 + Interlocked，热路径不分配、不加锁、不碰字符串 ──
 	private static readonly long[] FrameDurations = new long[FrameSlots];
@@ -647,6 +656,14 @@ internal sealed class Diagnostics
 		Interlocked.Exchange(ref _cpuWallBaseline, 0);
 		Interlocked.Exchange(ref _poolPendingWork, 0);
 		Interlocked.Exchange(ref _lohBytes, 0);
+		Interlocked.Exchange(ref _rssAnonBytes, 0);
+		Interlocked.Exchange(ref _rssFileBytes, 0);
+		Interlocked.Exchange(ref _rssShmemBytes, 0);
+		Volatile.Write(ref _fontMapCount, 0);
+		Interlocked.Exchange(ref _fontMapBytes, 0);
+		Interlocked.Exchange(ref _gpuMapBytes, 0);
+		Interlocked.Exchange(ref _lastSmapsTicks, 0);
+		Interlocked.Exchange(ref _lastMemoryTrimTicks, 0);
 		Interlocked.Exchange(ref _framesLastSecond, 0);
 		Interlocked.Exchange(ref _framesReportedBaseline, 0);
 		Array.Clear(FrameDurations);
@@ -686,6 +703,8 @@ internal sealed class Diagnostics
 			Process.Refresh();
 			Interlocked.Exchange(ref _workingSetBytes, Process.WorkingSet64);
 			Interlocked.Exchange(ref _privateMemoryBytes, Process.PrivateMemorySize64);
+			UpdateNativeMemoryBreakdown();
+			TrimIfMemoryPressure();
 			var info = GC.GetGCMemoryInfo();
 			Interlocked.Exchange(ref _heapBytes, info.HeapSizeBytes);
 			Interlocked.Exchange(ref _fragmentedBytes, info.FragmentedBytes);
@@ -748,6 +767,112 @@ internal sealed class Diagnostics
 	}
 
 	/// <summary>
+	/// 分离匿名/文件/共享内存与字体映射数：工作集是 GB 级而 GC 提交只有百 MB 时，
+	/// 单看 rss 无法判断是托管堆、字体映射还是 GPU/驱动内存。Linux 每 5 秒读一次 procfs。
+	/// </summary>
+	private static void UpdateNativeMemoryBreakdown()
+	{
+		if (!OperatingSystem.IsLinux())
+		{
+			return;
+		}
+
+		var now = Stopwatch.GetTimestamp();
+		var previous = Interlocked.Read(ref _lastSmapsTicks);
+		if (previous != 0 && now - previous < Stopwatch.Frequency * 5)
+		{
+			return;
+		}
+
+		if (Interlocked.CompareExchange(ref _lastSmapsTicks, now, previous) != previous)
+		{
+			return;
+		}
+
+		try
+		{
+			long anon = 0, file = 0, shmem = 0;
+			foreach (var line in File.ReadLines("/proc/self/status"))
+			{
+				if (line.StartsWith("RssAnon:", StringComparison.Ordinal)) anon = Kb(line);
+				else if (line.StartsWith("RssFile:", StringComparison.Ordinal)) file = Kb(line);
+				else if (line.StartsWith("RssShmem:", StringComparison.Ordinal)) shmem = Kb(line);
+			}
+
+			Interlocked.Exchange(ref _rssAnonBytes, anon * 1024);
+			Interlocked.Exchange(ref _rssFileBytes, file * 1024);
+			Interlocked.Exchange(ref _rssShmemBytes, shmem * 1024);
+
+			var fonts = 0;
+			long fontBytes = 0, gpuBytes = 0;
+			foreach (var line in File.ReadLines("/proc/self/maps"))
+			{
+				if (line.Contains("MewUI/FontCache", StringComparison.Ordinal))
+				{
+					fonts++;
+					fontBytes += MapBytes(line);
+				}
+				else if (line.Contains("/dev/nvidiactl", StringComparison.Ordinal) ||
+					line.Contains("/dev/dri/", StringComparison.Ordinal))
+				{
+					gpuBytes += MapBytes(line);
+				}
+			}
+			Volatile.Write(ref _fontMapCount, fonts);
+			Interlocked.Exchange(ref _fontMapBytes, fontBytes);
+			Interlocked.Exchange(ref _gpuMapBytes, gpuBytes);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			// procfs 不可读时保留上一次读数；诊断本身不能影响主流程。
+		}
+	}
+
+	private static long Kb(string line)
+	{
+		var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+		return parts.Length > 1 && long.TryParse(parts[1], out var value) ? value : 0;
+	}
+
+	/// <summary>从 <c>maps</c> 的“起-止”列取映射字节数；格式不符返回 0。</summary>
+	private static long MapBytes(string line)
+	{
+		var dash = line.IndexOf('-');
+		var space = line.IndexOf(' ', dash + 1);
+		if (dash <= 0 || space <= dash) return 0;
+		return long.TryParse(line.AsSpan(0, dash), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var start) &&
+			long.TryParse(line.AsSpan(dash + 1, space - dash - 1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var end) &&
+			end > start ? end - start : 0;
+	}
+
+	/// <summary>
+	/// 工作集异常增大时释放可清理的渲染缓存。只处理 >2 GiB 的异常态，
+	/// 正常窗口不会触发；限流 30 秒，避免与长流/大图叠加时反复抖动。
+	/// </summary>
+	private static void TrimIfMemoryPressure()
+	{
+		if (Interlocked.Read(ref _workingSetBytes) < 2L * 1024 * 1024 * 1024) return;
+		if (!Application.IsRunning || Application.Current?.Dispatcher is not { } dispatcher) return;
+
+		var now = Stopwatch.GetTimestamp();
+		var previous = Interlocked.Read(ref _lastMemoryTrimTicks);
+		if (previous != 0 && now - previous < Stopwatch.Frequency * 30) return;
+		if (Interlocked.CompareExchange(ref _lastMemoryTrimTicks, now, previous) != previous) return;
+
+		try
+		{
+			dispatcher.BeginInvoke(() =>
+			{
+				Application.Current?.GraphicsFactory.TextEngine.ManagedCache.Trim();
+			});
+		}
+		catch (Exception exception)
+		{
+			AppLog.For<Diagnostics>().ZLogWarning($"Render cache trim skipped: {exception.Message}");
+		}
+	}
+
+	/// <summary>
 	/// 每秒一行的运行时摘要（<c>name="runtime.window"</c>）写进同一个 timings 文件：
 	/// 「优化前后对照」和「堆是不是在长」要的是逐秒曲线，而不是每帧明细；空闲帧也照样写一行，
 	/// 否则一段没有重绘的时间里看不出堆的变化。明细档只有慢样本会落盘。
@@ -769,6 +894,12 @@ internal sealed class Diagnostics
 				$"gen0={Volatile.Read(ref _gen0Collections)} gen2={Volatile.Read(ref _gen2Collections)} " +
 				$"finq={Volatile.Read(ref _finalizationPending)} pinned={Volatile.Read(ref _pinnedObjects)} " +
 				$"rss={Interlocked.Read(ref _workingSetBytes) / (1024 * 1024)}MiB " +
+				$"priv={Interlocked.Read(ref _privateMemoryBytes) / (1024 * 1024)}MiB " +
+				$"commit={Interlocked.Read(ref _committedBytes) / (1024 * 1024)}MiB " +
+				$"anon={Interlocked.Read(ref _rssAnonBytes) / (1024 * 1024)}MiB " +
+				$"file={Interlocked.Read(ref _rssFileBytes) / (1024 * 1024)}MiB " +
+				$"shmem={Interlocked.Read(ref _rssShmemBytes) / (1024 * 1024)}MiB fonts={Volatile.Read(ref _fontMapCount)} " +
+				$"fontmb={Interlocked.Read(ref _fontMapBytes) / (1024 * 1024)}MiB gpu={Interlocked.Read(ref _gpuMapBytes) / (1024 * 1024)}MiB " +
 				$"draw={frame.DrawCalls} cull={frame.CulledCalls} text={frame.TextDraws} " +
 				$"input/p95={frame.InputP95Ms:0.0} lag={BitsToDouble(Volatile.Read(ref _queueLagBits)):0.0} " +
 				$"cpu={BitsToDouble(Volatile.Read(ref _cpuPercentBits)):0.#}% " +

@@ -605,7 +605,7 @@ internal sealed class AskQuestionPanel
 		var prefill = question.Prefill ?? string.Empty;
 		if (multiLine)
 		{
-			var editor = new MultiLineTextBox()
+			var editor = new MultiLineTextBox().PrimarySelection()
 				.Height(120)
 				.StyleName(AppStyles.TextInput)
 				.Text(prefill)
@@ -627,7 +627,7 @@ internal sealed class AskQuestionPanel
 			return;
 		}
 
-		var text = new TextBox()
+		var text = new TextBox().PrimarySelection()
 			.StyleName(AppStyles.TextInputLine)
 			.Text(prefill)
 			.Placeholder(question.Placeholder ?? string.Empty);
@@ -853,7 +853,7 @@ internal sealed class AskQuestionPanel
 		return all;
 	}
 
-	private TextBox CustomInputBox(AskQuestion question) => new TextBox()
+	private TextBox CustomInputBox(AskQuestion question) => new TextBox().PrimarySelection()
 		.StyleName(AppStyles.TextInputLine)
 		.Placeholder(question.Placeholder ?? Strings.AskCustomPlaceholder);
 

@@ -58,7 +58,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		nameof(Renderers), null, MewPropertyOptions.AffectsLayout,
 		static (self, _, _) => self.InvalidateSource(forceRebuild: true));
 
-	private readonly List<BlockSlot> _slots = [];
+	private List<BlockSlot> _slots = [];
+	private List<BlockSlot> _slotsScratch = [];
 	private readonly List<Rect> _rangeBounds = [];
 	private MarkdownDocument? _document;
 	private MarkdownTheme _theme = new();
@@ -73,6 +74,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	private ScrollViewer? _scroll;
 	private int _visibleFirst = -1;
 	private int _visibleLast = -1;
+	private int _slotGeneration;
 	private bool _disposed;
 
 	private (int Unit, int Offset)? _selectionAnchor;
@@ -430,7 +432,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		int oldCount = _slots.Count;
 		int newCount = newBlocks.Count;
 
-		int prefix = 0;
+		// Incremental appends already know which blocks are the previous revision's prefix;
+		// skip re-hashing the whole history on every streamed frame.
+		int prefix = Math.Min(document.ReusedBlockCount, Math.Min(oldCount, newCount));
 		while (prefix < oldCount && prefix < newCount && _slots[prefix].Block.Hash == newBlocks[prefix].Hash)
 		{
 			prefix++;
@@ -442,11 +446,17 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			suffix++;
 		}
 
-		List<BlockSlot> slots = new(newCount);
+		int generation = ++_slotGeneration;
+		// Reuse the previous slot list's capacity; the old list remains live until the disposal
+		// pass below and then becomes next frame's scratch. This avoids a List allocation plus
+		// AddRange copy for every streamed frame.
+		List<BlockSlot> slots = _slotsScratch;
+		slots.Clear();
 		for (int index = 0; index < prefix; index++)
 		{
 			BlockSlot slot = _slots[index];
 			slot.Block = newBlocks[index];
+			slot.Generation = generation;
 			slots.Add(slot);
 		}
 
@@ -464,40 +474,46 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			{
 				existing.Block = newBlocks[index];
 				existing.Height = double.NaN;
+				existing.Generation = generation;
 				slots.Add(existing);
 				continue;
 			}
-			slots.Add(new BlockSlot { Block = newBlocks[index] });
+			slots.Add(new BlockSlot { Block = newBlocks[index], Generation = generation });
 		}
 
 		for (int index = 0; index < suffix; index++)
 		{
 			BlockSlot slot = _slots[oldCount - suffix + index];
 			slot.Block = newBlocks[newMiddleEnd + index];
+			slot.Generation = generation;
 			slots.Add(slot);
 		}
 
-		HashSet<BlockSlot> reused = new(ReferenceEqualityComparer.Instance);
-		foreach (BlockSlot slot in slots)
-		{
-			reused.Add(slot);
-		}
+		// A generation stamp replaces the per-frame HashSet allocation used to find slots that
+		// were not carried over. Slots are only touched here, on the UI thread.
 		foreach (BlockSlot slot in _slots)
 		{
-			if (!reused.Contains(slot))
+			if (slot.Generation != generation)
 			{
 				DisposeSlot(slot);
 			}
 		}
 
-		_slots.Clear();
-		_slots.AddRange(slots);
-		_prefix = new double[newCount + 1];
+		_slotsScratch = _slots;
+		_slots = slots;
+		if (_prefix.Length != newCount + 1)
+		{
+			_prefix = new double[newCount + 1];
+		}
 		_prefixValid = false;
 		_visibleFirst = -1;
 		_visibleLast = -1;
 
-		for (int index = 0; index < _slots.Count; index++)
+		// Incremental appends keep all prefix blocks by reference, so their element text units
+		// and models are already current. Re-walking every historical paragraph on every stream
+		// frame was the remaining O(document) part of the tail path.
+		int assignStart = document.ReusedBlockCount > 0 ? Math.Min(prefix, document.ReusedBlockCount) : 0;
+		for (int index = assignStart; index < _slots.Count; index++)
 		{
 			BlockSlot slot = _slots[index];
 			int unit = document.GetTextUnit(slot.Block);
@@ -1376,19 +1392,23 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		private const int Capacity = 4096;
 
 		private static readonly object Lock = new();
-		private static readonly Dictionary<HeightKey, double> Heights = [];
+		// 节点随值一起保存：命中时 LinkedList.Remove(key) 是 O(n)，在长会话的跨实例复用时
+		// 每个块都会扫一遍 LRU；保存节点后重排/淘汰都是 O(1)。容量与淘汰顺序保持不变。
+		private static readonly Dictionary<HeightKey, (double Height, LinkedListNode<HeightKey> Node)> Heights = [];
 		private static readonly LinkedList<HeightKey> Lru = [];
 
 		public static bool TryGet(in HeightKey key, out double height)
 		{
 			lock (Lock)
 			{
-				if (Heights.TryGetValue(key, out height))
+				if (Heights.TryGetValue(key, out var entry))
 				{
-					Lru.Remove(key);
-					Lru.AddLast(key);
+					Lru.Remove(entry.Node);
+					Lru.AddLast(entry.Node);
+					height = entry.Height;
 					return true;
 				}
+				height = 0;
 				return false;
 			}
 		}
@@ -1397,12 +1417,18 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		{
 			lock (Lock)
 			{
-				if (!Heights.TryAdd(key, height))
+				if (Heights.TryGetValue(key, out var existing))
 				{
-					Heights[key] = height;
-					Lru.Remove(key);
+					Lru.Remove(existing.Node);
+					Lru.AddLast(existing.Node);
+					Heights[key] = (height, existing.Node);
 				}
-				Lru.AddLast(key);
+				else
+				{
+					var node = Lru.AddLast(key);
+					Heights[key] = (height, node);
+				}
+
 				while (Lru.Count > Capacity && Lru.First is { } oldest)
 				{
 					Heights.Remove(oldest.Value);
@@ -1698,7 +1724,11 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 	protected override void ArrangeContent(Rect bounds)
 	{
-		ArrangeAttachedContent(bounds);
+		double beforeHeight = TotalHeight;
+		int previousFirst = _visibleFirst;
+		int previousLast = _visibleLast;
+		double measureWidth = double.IsFinite(_measureWidth) && _measureWidth > 0 ? _measureWidth : bounds.Width;
+		bool unmeasured = ArrangeAttachedContent(bounds, measureWidth);
 
 		if (_slots.Count == 0)
 		{
@@ -1710,6 +1740,10 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		int last = Math.Min(_slots.Count - 1, FindIndexByY(bottom));
 		if (first == _visibleFirst && last == _visibleLast)
 		{
+			if (unmeasured)
+			{
+				InvalidateMeasure();
+			}
 			return;
 		}
 
@@ -1738,13 +1772,19 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		double realizeWidth = double.IsFinite(_measureWidth) && _measureWidth > 0 ? _measureWidth : bounds.Width;
 		RealizeRange(top, bottom, realizeWidth, GetDpi() / 96.0);
 		EnsurePrefix();
-		ArrangeAttachedContent(bounds);
+		unmeasured |= ArrangeAttachedContent(bounds, realizeWidth);
 
-		// 新补回来的块可能报出与估算不同的真实高度：总高变了，要让外层 extent 走正常路径更新。
-		InvalidateMeasure();
+		// 新补回来的块可能报出与估算不同的真实高度：高度、可见窗口或未测块变化时才让外层
+		// extent 走正常路径更新。无条件标脏会在「变高虚拟化呈现于 arrange 中测量行」的路径上
+		// 每轮重新安排，布局永不收敛（窗口卡在加载提示、CPU 100%）。
+		if (unmeasured || previousFirst != _visibleFirst || previousLast != _visibleLast ||
+			Math.Abs(TotalHeight - beforeHeight) > 0.01)
+		{
+			InvalidateMeasure();
+		}
 	}
 
-	private void ArrangeAttachedContent(Rect bounds)
+	private bool ArrangeAttachedContent(Rect bounds, double contentWidth)
 	{
 		bool unmeasured = false;
 		foreach (BlockSlot slot in _slots)
@@ -1760,27 +1800,18 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 				unmeasured = true;
 				continue;
 			}
-			slot.Element.Arrange(new Rect(bounds.X, bounds.Y + slot.Top, bounds.Width, slot.Height));
+			slot.Element.Arrange(new Rect(bounds.X, bounds.Y + slot.Top, contentWidth, slot.Height));
 		}
-		if (unmeasured)
-		{
-			InvalidateMeasure();
-		}
+		return unmeasured;
 	}
 
-	protected override void RenderSubtree(IGraphicsContext context)
+	protected override void OnRender(IGraphicsContext context)
 	{
+		base.OnRender(context);
 		if (PaintProbeEnabled)
 		{
 			Console.WriteLine(
 				$"paint {System.Diagnostics.Stopwatch.GetTimestamp()} boundsY={Bounds.Y:F0} attached={RealizedBlockCount}/{_slots.Count}");
-		}
-		foreach (BlockSlot slot in _slots)
-		{
-			if (slot.Attached && slot.Element is not null)
-			{
-				slot.Element.Render(context);
-			}
 		}
 	}
 
@@ -1918,6 +1949,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			DisposeSlot(slot);
 		}
 		_slots.Clear();
+		_slotsScratch.Clear();
 		_document = null;
 		_streamSource = null;
 		_streamMaterialized = null;
@@ -1944,6 +1976,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		public FrameworkElement? Element;
 		public bool Attached;
 		public int TextUnit = -1;
+		/// <summary>ApplyDocument generation that last carried this slot over.</summary>
+		public int Generation;
 	}
 
 	private readonly record struct MeasureKey(

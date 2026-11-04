@@ -32,11 +32,11 @@ public sealed class OpenAiDecisionsProvider : IClassifierApiProvider
 
 		try
 		{
-			var apiKey = options.ApiKey ?? ProviderEnvironment.ResolveApiKey(model.Provider, new StreamOptions
+			var apiKey = await ProviderEnvironment.ResolveApiKeyAsync(model.Provider, new StreamOptions
 			{
 				ApiKey = options.ApiKey,
 				Headers = options.Headers,
-			});
+			}, cancellationToken).ConfigureAwait(false);
 			if (string.IsNullOrWhiteSpace(apiKey))
 			{
 				return result with

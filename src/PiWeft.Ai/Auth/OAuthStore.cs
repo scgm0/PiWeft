@@ -34,6 +34,13 @@ public static class OAuthStore
 	public static OAuthCredential? Read(string provider, string? agentDir = null) =>
 		ReadCredential(ReadRoot(agentDir)?[provider]);
 
+	/// <summary><see cref="Read"/> 的异步版本；请求路径不应阻塞在线程池线程上读盘。</summary>
+	public static async Task<OAuthCredential?> ReadAsync(
+		string provider,
+		string? agentDir = null,
+		CancellationToken cancellationToken = default) =>
+		ReadCredential((await AuthStore.ReadRootAsync(agentDir, cancellationToken).ConfigureAwait(false))?[provider]);
+
 	/// <summary>
 	/// 一次读盘取出全部 OAuth 凭据。认证页要显示多个 provider 的状态，
 	/// 逐个 Read 会对同一份 auth.json 重复读盘/解析；这里只读一次。
@@ -49,7 +56,7 @@ public static class OAuthStore
 		return result;
 	}
 
-	private static OAuthCredential? ReadCredential(JsonNode? node)
+	internal static OAuthCredential? ReadCredential(JsonNode? node)
 	{
 		if (node is not JsonObject entry || Text(entry, "type") != "oauth" || Text(entry, "access") is not { Length: > 0 } access)
 		{

@@ -32,7 +32,7 @@ PiWeft 复用 pi 兼容核心，桌面端用 MewUI + NativeAOT，PiDeck 用 Elec
 3. 图标缓存包含颜色，`AppIcons.RefreshAll` 更新存活控件，弱引用避免持有旧消息。
 4. 消息卡片、工具、思考标题和 diff 原位换色，保留 Markdown 实例、选区、展开状态与配置草稿；分支树和 Git 不因主题变化重新加载。
 
-MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win32 + Direct2D，macOS 使用 MacOS + MewVG。正文默认 HarmonyOS Sans SC Regular，代码与终端使用 Maple Mono NF CN Regular（Nerd Font）；Lucide SVG 内嵌，许可随包。HarmonyOS Sans 的镜像许可与官方发布说明存在差异，分发前需核实。
+MewUI 只使用 `external/MewUI` 的实时源码（git submodule，upstream main）；Linux 使用 X11 + MewVG，Windows 使用 Win32 + Direct2D，macOS 使用 MacOS + MewVG。NuGet 版 MewUI 已不再参与构建。正文默认 HarmonyOS Sans SC Regular，代码与终端使用 Maple Mono NF CN Regular（Nerd Font）；Lucide SVG 内嵌，许可随包。HarmonyOS Sans 的镜像许可与官方发布说明存在差异，分发前需核实。
 
 ## 桌面功能对照
 
@@ -99,7 +99,7 @@ MewUI 0.22.1 全部来自 NuGet；Linux 使用 X11 + MewVG，Windows 使用 Win3
 
 ## Linux PRIMARY 与图片剪贴板
 
-Linux 上选中的原文、Markdown、代码和工具输出，以及普通输入框文本，自动发布到 PRIMARY；鼠标中键在可点击位置插入 PRIMARY。普通 Ctrl+C/Ctrl+V 的 CLIPBOARD 不受影响，密码框不发布文本，中键粘贴不自动发送且可撤销。
+Linux 上选中的原文、Markdown、代码块/工具输出，以及普通输入框文本，自动发布到 PRIMARY；鼠标中键在可点击位置插入 PRIMARY。代码块走 `ConfigureCodeText` 显式挂接，动态创建的 TextBox/MultiLineTextBox 由窗口级兜底惰性挂接，未显式调用 `PrimarySelection()` 也不会漏。普通 Ctrl+C/Ctrl+V 的 CLIPBOARD 不受影响，密码框不发布文本，中键粘贴不自动发送且可撤销。悬停提示与右侧大纲预览只在窗口激活且未最小化时显示，失焦即收起。
 当前 MewUI Linux 宿主是 X11/XWayland。PRIMARY 默认由进程内原生实现持有：`X11PrimarySelection` 用独立 Display 连接与专用事件线程直接实现 X11 selection owner 协议，只依赖 `libX11.so.6`。事件线程用 `poll` 等待 X 连接与 `eventfd`，空闲时不轮询；超过单个请求块的文本按 ICCCM INCR 分块传输。`XOpenDisplay` 或资源创建失败时按 `xclip`、`xsel` 顺序回退外部程序；没有 DISPLAY 时才使用 `wl-copy`/`wl-paste`。纯 Wayland 且无 XWayland 时只能走回退路径。
 
 ```sh
@@ -495,4 +495,4 @@ xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-auth-login-smoke.sh
 xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh
 ```
 
-截图脚本使用独立 fixture agent 目录，不读取真实密钥或会话。修改进程环境变量的测试必须加入 `process-environment` 串行集合。MewUI 命名样式按目标控件类型校验；包版 Key 枚举没有标点键，不能根据上游 main 源码假设 API 可用。Windows/macOS 原生 GUI、发布包以及 PiDeck 完整 e2e 仍需独立验证。
+截图脚本使用独立 fixture agent 目录，不读取真实密钥或会话。修改进程环境变量的测试必须加入 `process-environment` 串行集合。MewUI 命名样式按目标控件类型校验；源码版 Key 枚举没有标点键，不能假设 API 可用。Windows/macOS 原生 GUI、发布包以及 PiDeck 完整 e2e 仍需独立验证。

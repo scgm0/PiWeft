@@ -43,13 +43,15 @@ internal sealed class ProviderUsageService(HttpClient client)
 	}
 
 	/// <summary>按给定配置查询（弹窗测试也走这里，忽略 enabled 开关）。</summary>
-	public static Task<ProviderUsageResult> QueryAsync(Model model, UsageProbeProviderConfig config, UsageProbeDocument document,
+	public static async Task<ProviderUsageResult> QueryAsync(Model model, UsageProbeProviderConfig config, UsageProbeDocument document,
 		UsageProbeCandidate? legacy, string cwd, CancellationToken cancellationToken, HttpClient? client = null)
 	{
-		var plan = BuildPlan(model, config, document, legacy, cwd);
-		if (plan.Error is { } error) return Task.FromResult(ProviderUsageResult.Failure(error));
+		var plan = await BuildPlanAsync(model, config, document, legacy, cwd, cancellationToken).ConfigureAwait(false);
+		if (plan.Error is { } error) return ProviderUsageResult.Failure(error);
 		var timeout = TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSecs, 1, 300));
-		return new ProviderUsageService(client ?? Client).ProbeAsync(model, plan, timeout, config.IntervalMinutes, cancellationToken);
+		return await new ProviderUsageService(client ?? Client)
+			.ProbeAsync(model, plan, timeout, config.IntervalMinutes, cancellationToken)
+			.ConfigureAwait(false);
 	}
 
 	/// <summary>弹窗「测试」：不读 enabled 开关、不写配置，直接用草稿配置探测。</summary>
@@ -63,13 +65,14 @@ internal sealed class ProviderUsageService(HttpClient client)
 	}
 
 	/// <summary>构造探测计划：声明式模板优先；否则内置候选 + 旧 probes 数组自动匹配。</summary>
-	public static UsageProbePlan BuildPlan(Model model, UsageProbeProviderConfig config, UsageProbeDocument document,
-		UsageProbeCandidate? legacy, string cwd)
+	public static async Task<UsageProbePlan> BuildPlanAsync(Model model, UsageProbeProviderConfig config, UsageProbeDocument document,
+		UsageProbeCandidate? legacy, string cwd, CancellationToken cancellationToken)
 	{
 		var baseUrl = model.BaseUrl.Trim();
 		if (baseUrl.Length == 0) return new("", "", [], Strings.UsageNoBaseUrl);
 		var token = config.ApiKey.Trim();
-		if (token.Length == 0) token = ResolveKey(model, cwd) ?? string.Empty;
+		if (token.Length == 0)
+			token = await ResolveKeyAsync(model, cwd, cancellationToken).ConfigureAwait(false) ?? string.Empty;
 
 		if (config.Template.Length > 0)
 		{
@@ -361,26 +364,30 @@ internal sealed class ProviderUsageService(HttpClient client)
 		return Strings.UsageHintMixed;
 	}
 
-	public static string? ResolveKey(Model model, string cwd)
+	public static async Task<string?> ResolveKeyAsync(Model model, string cwd, CancellationToken cancellationToken)
 	{
 		// Codex 的凭据不走 OAuthStore 的刷新链：用 CodexAuth.ResolveAsync 才能在令牌过期时续期，
 		// 否则用量查询会拿着旧 access token 得到 401。
 		if (model.Provider == CodexAuth.ProviderKey)
 		{
+			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			timeout.CancelAfter(TimeSpan.FromSeconds(10));
 			try
 			{
-				using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-				return CodexAuth.ResolveAsync(CodexAuthClient, cancellationToken: timeout.Token)
-					.GetAwaiter().GetResult().Access;
+				return (await CodexAuth.ResolveAsync(CodexAuthClient, cancellationToken: timeout.Token).ConfigureAwait(false)).Access;
 			}
-			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException or
-				OperationCanceledException or IOException)
+			catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+			{
+				// 续期超时：回落到已存凭据；查询本身会给出 401 明细。
+			}
+			catch (Exception ex) when (ex is CodexAuthException or HttpRequestException or System.Text.Json.JsonException or IOException)
 			{
 				// 续期失败时回落到已存凭据；查询本身会给出 401 明细。
 			}
 		}
-		return ProviderEnvironment.ResolveApiKey(model.Provider,
-			new StreamOptions { ApiKey = ModelsFileLoader.Load(cwd).ApiKeys.GetValueOrDefault(model.Provider) });
+		return await ProviderEnvironment.ResolveApiKeyAsync(model.Provider,
+			new StreamOptions { ApiKey = ModelsFileLoader.Load(cwd).ApiKeys.GetValueOrDefault(model.Provider) },
+			cancellationToken).ConfigureAwait(false);
 	}
 
 	private static readonly HttpClient CodexAuthClient = new() { Timeout = TimeSpan.FromSeconds(30) };

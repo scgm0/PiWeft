@@ -1915,7 +1915,7 @@ public sealed partial class SessionTab : IDisposable
 		// 点击后指针仍在按钮上，先收起悬停提示，避免它压在刚打开的菜单上。
 		HoverHints.Cancel(_thinkingButton);
 
-		// 当前级别在菜单图标列打勾；MewUI 0.22.1 的 MenuItem 还没有 IsCheckable，
+		// 当前级别在菜单图标列打勾；MewUI 源码 的 MenuItem 还没有 IsCheckable，
 		// 用 IconTemplate 表达同一层信息。
 		var checkIcon = new IconTemplate(size => new GlyphElement()
 			.Kind(GlyphKind.CheckMark)
@@ -2457,9 +2457,12 @@ public sealed partial class SessionTab : IDisposable
 		{
 			if (row is FrameworkElement { Tag: StackPanel actions })
 			{
-				foreach (var action in actions.Children.OfType<Button>())
+				foreach (var child in actions.Children)
 				{
-					action.IsEnabled = !busy || HoverHints.Text(action) == Strings.CopyUserMessage;
+					if (child is Button action)
+					{
+						action.IsEnabled = !busy || HoverHints.Text(action) == Strings.CopyUserMessage;
+					}
 				}
 			}
 		}

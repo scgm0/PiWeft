@@ -6,17 +6,6 @@
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="11.0.0-rc.2.26504.105" />
     <PackageVersion Include="ZLogger" Version="2.5.10" />
-    <PackageVersion Include="Aprillz.MewUI.Core" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Platform.Win32" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Platform.MacOS" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Backend.Direct2D" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Backend.Gdi" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Backend.MewVG.Win32" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Backend.MewVG.MacOS" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Platform.X11" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Backend.MewVG.X11" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Svg" Version="0.22.1" />
-    <PackageVersion Include="Aprillz.MewUI.Markdown" Version="0.22.1" />
     <PackageVersion Include="Markdig" Version="1.3.2" />
     <PackageVersion Include="MiniPty" Version="1.3.0" />
     <!-- 提示音播放：MIT、单 dll、纯 P/Invoke（WASAPI/AudioToolbox/ALSA），NativeAOT 友好。 -->

@@ -53,11 +53,15 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 			var reasoningEffort = thinkingMode == ThinkingDisabled ? null : ResolveReasoningEffort(model, options);
 
 			var requestOptions = MergeModelSamplingParams(model, options);
-			using var request = BuildRequest(model, messages, tools, requestOptions, reasoningEffort, thinkingMode);
+			var apiKey = await ProviderEnvironment
+				.ResolveApiKeyAsync(model.Provider, requestOptions, cancellationToken)
+				.ConfigureAwait(false);
+			using var request = BuildRequest(model, messages, tools, requestOptions, reasoningEffort, thinkingMode, apiKey);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
+			headerTimeout.Stop();
 
 			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
 
@@ -135,7 +139,8 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
 		string? reasoningEffort,
-		string? thinkingMode)
+		string? thinkingMode,
+		string? apiKey)
 	{
 		var maxTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
 		var bytes = JsonPayload.Write(writer =>
@@ -160,7 +165,7 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		request.Headers.TryAddWithoutValidation("accept", "text/event-stream");
 		request.Headers.TryAddWithoutValidation("user-agent", SharedHttpClient.UserAgent);
 
-		if (ProviderEnvironment.ResolveApiKey(model.Provider, options) is { Length: > 0 } apiKey)
+		if (apiKey is { Length: > 0 })
 		{
 			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 		}

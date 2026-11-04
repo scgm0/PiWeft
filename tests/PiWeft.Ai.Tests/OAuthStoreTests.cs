@@ -41,6 +41,23 @@ public sealed class OAuthStoreTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ReadAsyncRoundTripsOAuthCredential()
+	{
+		OAuthStore.Save("anthropic", new OAuthCredential
+		{
+			Access = "sk-ant-oat-async",
+			Refresh = "refresh-async",
+			Expires = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds(),
+		}, _root);
+
+		var read = await OAuthStore.ReadAsync("anthropic", _root);
+
+		Assert.NotNull(read);
+		Assert.Equal("sk-ant-oat-async", read!.Access);
+		Assert.Equal("refresh-async", read.Refresh);
+	}
+
+	[Fact]
 	public void ReadAllReturnsEveryOAuthCredentialInOnePass()
 	{
 		OAuthStore.Save("anthropic", new OAuthCredential { Access = "a", Refresh = "r", Expires = 1 }, _root);

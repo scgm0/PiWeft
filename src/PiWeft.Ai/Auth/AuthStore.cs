@@ -1,5 +1,7 @@
+using System.Buffers;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -79,6 +81,7 @@ public static partial class AuthStore
 	/// <summary>
 	/// 取某个 provider 的 API key。文件不存在、provider 没有 api_key 凭据、模板变量缺失，
 	/// 或命令型凭据执行失败时返回 null（不抛异常，让调用方继续走环境变量）。
+	/// <para>请求路径应使用 <see cref="ReadApiKeyAsync"/>，避免在异步链路里阻塞线程。</para>
 	/// </summary>
 	public static string? ReadApiKey(string provider, string? agentDir = null)
 	{
@@ -104,6 +107,42 @@ public static partial class AuthStore
 		return string.IsNullOrEmpty(resolved) ? null : resolved;
 	}
 
+	/// <summary><see cref="ReadApiKey"/> 的异步版本：读盘与命令型凭据都不占用调用线程。</summary>
+	public static async Task<string?> ReadApiKeyAsync(
+		string provider,
+		string? agentDir = null,
+		CancellationToken cancellationToken = default)
+	{
+		var root = await ReadRootAsync(agentDir, cancellationToken).ConfigureAwait(false);
+		return await ReadApiKeyFromRootAsync(root, provider, cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>从已解析的 auth.json 根节点取 key；供凭据解析链一次读盘同时处理 API Key 与 OAuth。</summary>
+	internal static async Task<string?> ReadApiKeyFromRootAsync(
+		JsonObject? root,
+		string provider,
+		CancellationToken cancellationToken)
+	{
+		if (ReadCredential(root?[provider]) is not { } credential)
+		{
+			return null;
+		}
+
+		var (key, env) = credential;
+		if (key.Length == 0)
+		{
+			return null;
+		}
+
+		if (key.StartsWith('!'))
+		{
+			return await ExecuteCommandKeyAsync(key[1..], cancellationToken).ConfigureAwait(false);
+		}
+
+		var resolved = ResolveTemplate(key, env);
+		return string.IsNullOrEmpty(resolved) ? null : resolved;
+	}
+
 	/// <summary>
 	/// 执行一条命令型凭据命令并返回修剪后的 stdout。
 	/// 命令来自用户自己的 <c>auth.json</c>（用户级文件，项目配置无法写入）；
@@ -118,24 +157,21 @@ public static partial class AuthStore
 
 		try
 		{
-			var start = OperatingSystem.IsWindows()
-				? new ProcessStartInfo("cmd.exe", $"/d /s /c \"{command}\"")
-				: new ProcessStartInfo("/bin/sh", $"-c \"{command.Replace("\"", "\\\"")}\"");
-			start.RedirectStandardOutput = true;
-			start.RedirectStandardError = true;
-			start.UseShellExecute = false;
-			start.CreateNoWindow = true;
-
-			using var process = Process.Start(start);
+			using var process = Process.Start(CreateCommandStartInfo(command));
 			if (process is null)
 			{
 				return null;
 			}
 
-			var output = process.StandardOutput.ReadToEndAsync();
+			// 输出上限 64 KiB 是读入上限，不是“读完再检查”：超限立即杀进程，
+			// 避免一条命令先吃掉几百 MB 内存再被判定失败。
+			var stdout = process.StandardOutput;
+			var output = Task.Run(() => ReadCommandOutput(process, stdout));
+			var error = process.StandardError;
+			_ = Task.Run(() => DrainCommandError(error));
 			if (!process.WaitForExit(CommandTimeoutMs))
 			{
-				try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+				TryKill(process);
 				return null;
 			}
 
@@ -144,6 +180,7 @@ public static partial class AuthStore
 			{
 				if (!output.Wait(2_000))
 				{
+					TryKill(process);
 					return null;
 				}
 			}
@@ -152,19 +189,233 @@ public static partial class AuthStore
 				return null;
 			}
 
-			// 输出截断即视为失败：被截断的 key 一定是坏的。
 			var text = output.Result;
-			if (text.Length >= CommandOutputLimit || process.ExitCode != 0)
+			if (text is null || process.ExitCode != 0)
 			{
 				return null;
 			}
 
 			return text.Trim('\r', '\n') is { Length: > 0 } key ? key : null;
 		}
-		catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+		catch (Exception exception) when (exception is InvalidOperationException or Win32Exception or ObjectDisposedException)
 		{
 			return null;
 		}
+	}
+
+	/// <summary><see cref="ExecuteCommandKey"/> 的异步版本；调用方取消时终止进程并向上抛出。</summary>
+	public static async Task<string?> ExecuteCommandKeyAsync(
+		string command,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrWhiteSpace(command))
+		{
+			return null;
+		}
+
+		cancellationToken.ThrowIfCancellationRequested();
+
+		try
+		{
+			using var process = Process.Start(CreateCommandStartInfo(command));
+			if (process is null)
+			{
+				return null;
+			}
+
+			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			timeout.CancelAfter(CommandTimeoutMs);
+
+			var stdout = process.StandardOutput;
+			var output = ReadCommandOutputAsync(process, stdout, timeout.Token);
+			var error = process.StandardError;
+			_ = DrainCommandErrorAsync(error, timeout.Token);
+			try
+			{
+				await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				TryKill(process);
+				cancellationToken.ThrowIfCancellationRequested();
+				return null;
+			}
+
+			// 进程已退出；输出流最多再等 2 秒，防止游离子进程占着管道不放。
+			(string? Text, bool Truncated) result;
+			try
+			{
+				result = await output.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+			}
+			catch (TimeoutException)
+			{
+				TryKill(process);
+				return null;
+			}
+			catch (OperationCanceledException)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				return null;
+			}
+
+			// 输出截断即视为失败：被截断的 key 一定是坏的。
+			if (result.Truncated || result.Text is null || process.ExitCode != 0)
+			{
+				return null;
+			}
+
+			return result.Text.Trim('\r', '\n') is { Length: > 0 } key ? key : null;
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception exception) when (exception is InvalidOperationException or Win32Exception or IOException or ObjectDisposedException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>读 stdout，最多读 <see cref="CommandOutputLimit"/> 个字符；超限立即杀进程并返回 null。</summary>
+	private static string? ReadCommandOutput(Process process, StreamReader reader)
+	{
+		var buffer = ArrayPool<char>.Shared.Rent(4096);
+		var builder = new StringBuilder(Math.Min(CommandOutputLimit, 4096));
+		try
+		{
+			while (builder.Length < CommandOutputLimit)
+			{
+				var remaining = CommandOutputLimit - builder.Length;
+				var count = reader.Read(buffer, 0, Math.Min(buffer.Length, remaining));
+				if (count == 0)
+				{
+					break;
+				}
+
+				builder.Append(buffer, 0, count);
+			}
+
+			if (builder.Length >= CommandOutputLimit)
+			{
+				TryKill(process);
+				return null;
+			}
+
+			return builder.ToString();
+		}
+		catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
+		{
+			return null;
+		}
+		finally
+		{
+			ArrayPool<char>.Shared.Return(buffer, clearArray: true);
+		}
+	}
+
+	private static async Task<(string? Text, bool Truncated)> ReadCommandOutputAsync(
+		Process process,
+		StreamReader reader,
+		CancellationToken cancellationToken)
+	{
+		var buffer = ArrayPool<char>.Shared.Rent(4096);
+		var builder = new StringBuilder(Math.Min(CommandOutputLimit, 4096));
+		try
+		{
+			while (builder.Length < CommandOutputLimit)
+			{
+				var remaining = CommandOutputLimit - builder.Length;
+				var count = await reader
+					.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)), cancellationToken)
+					.ConfigureAwait(false);
+				if (count == 0)
+				{
+					break;
+				}
+
+				builder.Append(buffer, 0, count);
+			}
+
+			if (builder.Length >= CommandOutputLimit)
+			{
+				TryKill(process);
+				return (null, true);
+			}
+
+			return (builder.ToString(), false);
+		}
+		catch (OperationCanceledException)
+		{
+			return (null, true);
+		}
+		catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
+		{
+			return (null, true);
+		}
+		finally
+		{
+			ArrayPool<char>.Shared.Return(buffer, clearArray: true);
+		}
+	}
+
+	private static void DrainCommandError(StreamReader reader)
+	{
+		var buffer = ArrayPool<char>.Shared.Rent(4096);
+		try
+		{
+			while (reader.Read(buffer, 0, buffer.Length) > 0)
+			{
+			}
+		}
+		catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
+		{
+		}
+		finally
+		{
+			ArrayPool<char>.Shared.Return(buffer, clearArray: true);
+		}
+	}
+
+	private static async Task DrainCommandErrorAsync(StreamReader reader, CancellationToken cancellationToken)
+	{
+		var buffer = ArrayPool<char>.Shared.Rent(4096);
+		try
+		{
+			while (await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false) > 0)
+			{
+			}
+		}
+		catch (Exception exception) when (exception is OperationCanceledException or IOException or ObjectDisposedException or InvalidOperationException)
+		{
+		}
+		finally
+		{
+			ArrayPool<char>.Shared.Return(buffer, clearArray: true);
+		}
+	}
+
+	private static void TryKill(Process process)
+	{
+		try
+		{
+			process.Kill(entireProcessTree: true);
+		}
+		catch (Exception exception) when (exception is InvalidOperationException or Win32Exception or NotSupportedException or AggregateException or ObjectDisposedException)
+		{
+			// 进程可能已退出，或权限/平台不支持；都不影响调用方继续回落到环境变量。
+		}
+	}
+
+	private static ProcessStartInfo CreateCommandStartInfo(string command)
+	{
+		var start = OperatingSystem.IsWindows()
+			? new ProcessStartInfo("cmd.exe", $"/d /s /c \"{command}\"")
+			: new ProcessStartInfo("/bin/sh", $"-c \"{command.Replace("\"", "\\\"")}\"");
+		start.RedirectStandardOutput = true;
+		start.RedirectStandardError = true;
+		start.UseShellExecute = false;
+		start.CreateNoWindow = true;
+		return start;
 	}
 
 	/// <summary>
@@ -174,6 +425,32 @@ public static partial class AuthStore
 	public static (string? Key, bool IsCommand) ReadCredentialState(string provider, string? agentDir = null)
 	{
 		if (ReadCredential(provider, agentDir) is not { } credential)
+		{
+			return (null, false);
+		}
+
+		var (key, env) = credential;
+		if (key.Length == 0)
+		{
+			return (null, false);
+		}
+
+		if (key.StartsWith('!'))
+		{
+			return (null, true);
+		}
+
+		var resolved = ResolveTemplate(key, env);
+		return (string.IsNullOrEmpty(resolved) ? null : resolved, false);
+	}
+
+	/// <summary><see cref="ReadCredentialState"/> 的异步版本；只解析文件，不执行命令。</summary>
+	public static async Task<(string? Key, bool IsCommand)> ReadCredentialStateAsync(
+		string provider,
+		string? agentDir = null,
+		CancellationToken cancellationToken = default)
+	{
+		if (await ReadCredentialAsync(provider, agentDir, cancellationToken).ConfigureAwait(false) is not { } credential)
 		{
 			return (null, false);
 		}
@@ -269,8 +546,14 @@ public static partial class AuthStore
 	}
 
 	/// <summary>读出 <c>(key, env)</c>；没有 api_key 凭据时返回 null。</summary>
-	private static (string Key, Dictionary<string, string> Env)? ReadCredential(string provider, string? agentDir) =>
+	private static (string Key, Dictionary<string, string>? Env)? ReadCredential(string provider, string? agentDir) =>
 		ReadCredential(ReadRoot(agentDir)?[provider]);
+
+	private static async Task<(string Key, Dictionary<string, string>? Env)?> ReadCredentialAsync(
+		string provider,
+		string? agentDir,
+		CancellationToken cancellationToken) =>
+		ReadCredential((await ReadRootAsync(agentDir, cancellationToken).ConfigureAwait(false))?[provider]);
 
 	private static JsonObject? ReadRoot(string? agentDir)
 	{
@@ -285,14 +568,34 @@ public static partial class AuthStore
 		}
 	}
 
-	private static (string Key, Dictionary<string, string> Env)? ReadCredential(JsonNode? node)
+	internal static async Task<JsonObject?> ReadRootAsync(string? agentDir, CancellationToken cancellationToken)
+	{
+		try
+		{
+			var path = Path(agentDir);
+			if (!File.Exists(path))
+			{
+				return null;
+			}
+
+			var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+			return JsonNode.Parse(text) as JsonObject;
+		}
+		catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+		{
+			return null;
+		}
+	}
+
+	internal static (string Key, Dictionary<string, string>? Env)? ReadCredential(JsonNode? node)
 	{
 		if (node is not JsonObject entry || entry["type"] is not JsonValue type ||
 			!type.TryGetValue<string>(out var kind) || kind != "api_key" ||
 			entry["key"] is not JsonValue value || !value.TryGetValue<string>(out var key)) return null;
-		var env = new Dictionary<string, string>(StringComparer.Ordinal);
+		Dictionary<string, string>? env = null;
 		if (entry["env"] is JsonObject envNode)
 		{
+			env = new Dictionary<string, string>(StringComparer.Ordinal);
 			foreach (var (name, item) in envNode)
 			{
 				if (item is JsonValue text && text.TryGetValue<string>(out var content)) env[name] = content;
@@ -302,7 +605,7 @@ public static partial class AuthStore
 	}
 
 	/// <summary>展开 <c>${VAR}</c>：先看凭据自带的 env，再看进程环境；任一变量缺失即整体不可用（与 pi 一致）。</summary>
-	private static string? ResolveTemplate(string key, Dictionary<string, string> env)
+	private static string? ResolveTemplate(string key, Dictionary<string, string>? env)
 	{
 		if (!key.Contains("${", StringComparison.Ordinal))
 		{
@@ -314,7 +617,7 @@ public static partial class AuthStore
 		{
 			var name = match.Groups[1].Value;
 
-			if (env.TryGetValue(name, out var fromCredential) && fromCredential.Length > 0)
+			if (env is not null && env.TryGetValue(name, out var fromCredential) && fromCredential.Length > 0)
 			{
 				return fromCredential;
 			}

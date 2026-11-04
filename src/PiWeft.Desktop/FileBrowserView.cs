@@ -24,6 +24,7 @@ public sealed class FileBrowserView
 	private string _relativeDir = string.Empty;
 	private string? _openFile;
 	private long _openTicks;
+	private int _refreshVersion;
 
 	public FileBrowserView(Func<string> cwd)
 	{
@@ -93,22 +94,56 @@ public sealed class FileBrowserView
 	public void Refresh()
 	{
 		var cwd = _cwd();
+		var relativeDir = _relativeDir;
+		var version = ++_refreshVersion;
 
 		// 编辑模式下顶栏是文件名：后台刷新（面板重新展开）不能把它改回目录。
 		if (_openFile is null)
 		{
-			var path = _relativeDir.Length == 0 ? "/" : "/" + _relativeDir;
+			var path = relativeDir.Length == 0 ? "/" : "/" + relativeDir;
 			_title.Text(path);
-			_title.HoverTip(_relativeDir.Length == 0 ? cwd : Path.Combine(cwd, _relativeDir));
+			_title.HoverTip(relativeDir.Length == 0 ? cwd : Path.Combine(cwd, relativeDir));
 		}
 
+		// git status 最多等 5 秒，目录也可能很大。真实窗口里放到线程池，先让面板打开并响应输入；
+		// 无窗口测试没有调度器，保持同步，测试的断言仍然在构造后立即可见。
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		{
+			ApplyRows(LoadRows(cwd, relativeDir));
+			return;
+		}
+
+		_empty.Text(Strings.FileBrowserLoading).IsVisible(true);
+		_list.IsVisible(false);
+		_ = RefreshAsync(cwd, relativeDir, version, dispatcher);
+	}
+
+	private async Task RefreshAsync(string cwd, string relativeDir, int version, IDispatcher dispatcher)
+	{
+		var rows = await Task.Run(() => LoadRows(cwd, relativeDir)).ConfigureAwait(false);
+		void Complete()
+		{
+			if (version != _refreshVersion || _openFile is not null || _relativeDir != relativeDir)
+			{
+				return;
+			}
+
+			ApplyRows(rows);
+		}
+
+		if (dispatcher.IsOnUIThread) Complete();
+		else dispatcher.BeginInvoke(Complete);
+	}
+
+	private static List<FileRow> LoadRows(string cwd, string relativeDir)
+	{
 		var rows = new List<FileRow>();
-		if (_relativeDir.Length > 0)
+		if (relativeDir.Length > 0)
 		{
 			rows.Add(new FileRow("\u2191", Strings.FileBrowserParent, string.Empty, string.Empty));
 		}
 
-		var entries = ProjectFiles.List(cwd, _relativeDir, GitStatuses(cwd));
+		var entries = ProjectFiles.List(cwd, relativeDir, GitStatuses(cwd));
 		foreach (var entry in entries)
 		{
 			rows.Add(new FileRow(
@@ -118,6 +153,11 @@ public sealed class FileBrowserView
 				entry.RelativePath));
 		}
 
+		return rows;
+	}
+
+	private void ApplyRows(List<FileRow> rows)
+	{
 		_list.ItemsSource = ItemsView.Create(rows, static row => row.Name);
 		_list.IsVisible(rows.Count > 0);
 		_empty.Text(Strings.FileBrowserEmpty).IsVisible(rows.Count == 0);

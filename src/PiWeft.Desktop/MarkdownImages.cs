@@ -18,7 +18,8 @@ internal sealed class MarkdownImageLoader : IMarkdownImageResolver
 	public static readonly MarkdownImageLoader Shared = new();
 
 	private readonly object _lock = new();
-	private readonly Dictionary<string, ImageSource?> _cache = [];
+	// 缓存值带 LRU 节点：图片解析命中时不再线性扫描链表。
+	private readonly Dictionary<string, (ImageSource? Source, LinkedListNode<string> Node)> _cache = [];
 	private readonly LinkedList<string> _lru = [];
 	private HttpClient? _http;
 
@@ -27,10 +28,10 @@ internal sealed class MarkdownImageLoader : IMarkdownImageResolver
 		string key = request.ResolvedUri?.ToString() ?? request.Url;
 		lock (_lock)
 		{
-			if (_cache.TryGetValue(key, out ImageSource? cached))
+			if (_cache.TryGetValue(key, out var cached))
 			{
-				Touch(key);
-				return cached;
+				Touch(cached.Node);
+				return cached.Source;
 			}
 		}
 
@@ -50,8 +51,18 @@ internal sealed class MarkdownImageLoader : IMarkdownImageResolver
 
 		lock (_lock)
 		{
-			_cache[key] = source;
-			_lru.AddLast(key);
+			if (_cache.TryGetValue(key, out var existing))
+			{
+				_lru.Remove(existing.Node);
+				_lru.AddLast(existing.Node);
+				_cache[key] = (source, existing.Node);
+			}
+			else
+			{
+				var node = _lru.AddLast(key);
+				_cache[key] = (source, node);
+			}
+
 			while (_lru.Count > MaxCachedEntries && _lru.First is { } oldest)
 			{
 				_cache.Remove(oldest.Value);
@@ -154,9 +165,9 @@ internal sealed class MarkdownImageLoader : IMarkdownImageResolver
 		}
 	}
 
-	private void Touch(string key)
+	private void Touch(LinkedListNode<string> node)
 	{
-		_lru.Remove(key);
-		_lru.AddLast(key);
+		_lru.Remove(node);
+		_lru.AddLast(node);
 	}
 }

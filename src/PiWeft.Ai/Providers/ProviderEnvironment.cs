@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Net;
 using System.Text;
 
@@ -127,20 +128,17 @@ internal static class ProviderHttp
 	/// <summary>
 	/// 开始一段「等响应头」的超时。返回的作用域把调用方的取消与超时合并，供发送请求时使用；
 	/// 正文读取请一律使用 <c>options.CancellationToken</c>。
+	/// <para>
+	/// 计时从第一次读取 <see cref="HeaderTimeoutScope.Token"/>（真正发请求）时才开始：
+	/// 凭据解析、OAuth 刷新与命令型凭据不消耗请求超时，也避免为失败的解析白建计时器。
+	/// </para>
 	/// </summary>
 	public static HeaderTimeoutScope BeginHeaderTimeout(StreamOptions options)
 	{
 		// 等响应头也受空闲超时兜底：连接建立了但服务端一直不回头，否则这一轮会无限等下去
 		// （HttpClient 是 Infinite，正文计时器此时还没建立）。显式的请求超时优先。
 		var timeoutMs = options.TimeoutMs is > 0 ? options.TimeoutMs : options.IdleTimeoutMs;
-		if (timeoutMs is not { } value || value <= 0)
-		{
-			return new HeaderTimeoutScope(null, null, options.CancellationToken);
-		}
-
-		var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(value));
-		var linked = CancellationTokenSource.CreateLinkedTokenSource(options.CancellationToken, timeout.Token);
-		return new HeaderTimeoutScope(timeout, linked, linked.Token);
+		return new HeaderTimeoutScope(options.CancellationToken, timeoutMs);
 	}
 }
 
@@ -150,67 +148,125 @@ internal static class ProviderHttp
 /// </summary>
 public sealed class HeaderTimeoutScope : IDisposable
 {
-	private readonly CancellationTokenSource? _timeout;
-	private readonly CancellationTokenSource? _linked;
+	private readonly CancellationToken _callerToken;
+	private readonly int? _timeoutMs;
+	private CancellationTokenSource? _timeout;
+	private CancellationTokenSource? _linked;
+	private CancellationToken _token;
+	private bool _started;
+	private bool _disposed;
 
-	internal HeaderTimeoutScope(CancellationTokenSource? timeout, CancellationTokenSource? linked, CancellationToken token)
+	internal HeaderTimeoutScope(CancellationToken callerToken, int? timeoutMs)
 	{
-		_timeout = timeout;
-		_linked = linked;
-		Token = token;
+		_callerToken = callerToken;
+		_timeoutMs = timeoutMs is > 0 ? timeoutMs : null;
 	}
 
-	/// <summary>传给发送请求那一步的令牌。</summary>
-	public CancellationToken Token { get; }
+	/// <summary>传给发送请求那一步的令牌；第一次读取时才启动计时器。</summary>
+	public CancellationToken Token
+	{
+		get
+		{
+			if (_disposed)
+			{
+				return _callerToken;
+			}
+
+			if (!_started)
+			{
+				_started = true;
+				if (_timeoutMs is { } value)
+				{
+					_timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(value));
+					_linked = CancellationTokenSource.CreateLinkedTokenSource(_callerToken, _timeout.Token);
+					_token = _linked.Token;
+				}
+				else
+				{
+					_token = _callerToken;
+				}
+			}
+
+			return _token;
+		}
+	}
 
 	/// <summary>是否是我们自己的超时先触发（而不是调用方取消）。</summary>
 	public bool TimedOut => _timeout is { IsCancellationRequested: true };
 
+	/// <summary>
+	/// 响应头已经拿到：停止计时并释放定时器。长流期间不再背着一个无用的 CTS，
+	/// 后续正文超时也不会被误报成「等响应头超时」。
+	/// </summary>
+	public void Stop()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_started = true;
+		_token = _callerToken;
+		_linked?.Dispose();
+		_linked = null;
+		_timeout?.Dispose();
+		_timeout = null;
+	}
+
 	public void Dispose()
 	{
-		_linked?.Dispose();
-		_timeout?.Dispose();
+		if (_disposed)
+		{
+			return;
+		}
+
+		Stop();
+		_disposed = true;
 	}
 }
 
 /// <summary>从环境变量解析 provider 凭据，对应 pi 的 <c>env-api-keys</c>。</summary>
 public static class ProviderEnvironment
 {
-	private static readonly Dictionary<string, string> Overrides = new(StringComparer.Ordinal)
-	{
-		["huggingface"] = "HF_TOKEN",
-		["moonshotai"] = "MOONSHOT_API_KEY",
-		["moonshotai-cn"] = "MOONSHOT_API_KEY",
-		["zai"] = "ZAI_API_KEY",
-		["zai-coding-cn"] = "ZAI_API_KEY",
-		["xai"] = "XAI_API_KEY",
-		["opencode"] = "OPENCODE_API_KEY",
-		["opencode-go"] = "OPENCODE_API_KEY",
-		["kimi-coding"] = "KIMI_API_KEY",
-		["google"] = "GEMINI_API_KEY",
-		["google-vertex"] = "GOOGLE_CLOUD_API_KEY",
-		["vercel-ai-gateway"] = "AI_GATEWAY_API_KEY",
-		["cloudflare-workers-ai"] = "CLOUDFLARE_API_KEY",
-		["cloudflare-ai-gateway"] = "CLOUDFLARE_API_KEY",
-	};
+	private static readonly FrozenDictionary<string, string> Overrides =
+		new Dictionary<string, string>(StringComparer.Ordinal)
+		{
+			["huggingface"] = "HF_TOKEN",
+			["moonshotai"] = "MOONSHOT_API_KEY",
+			["moonshotai-cn"] = "MOONSHOT_API_KEY",
+			["zai"] = "ZAI_API_KEY",
+			["zai-coding-cn"] = "ZAI_API_KEY",
+			["xai"] = "XAI_API_KEY",
+			["opencode"] = "OPENCODE_API_KEY",
+			["opencode-go"] = "OPENCODE_API_KEY",
+			["kimi-coding"] = "KIMI_API_KEY",
+			["google"] = "GEMINI_API_KEY",
+			["google-vertex"] = "GOOGLE_CLOUD_API_KEY",
+			["vercel-ai-gateway"] = "AI_GATEWAY_API_KEY",
+			["cloudflare-workers-ai"] = "CLOUDFLARE_API_KEY",
+			["cloudflare-ai-gateway"] = "CLOUDFLARE_API_KEY",
+		}.ToFrozenDictionary(StringComparer.Ordinal);
+
+	/// <summary>provider → 环境变量名。每次请求都会查一次，缓存掉重复的 StringBuilder 拼接。</summary>
+	private static readonly ConcurrentDictionary<string, string> KeyNames = new(StringComparer.Ordinal);
 
 	/// <summary>某个 provider 的 API key 对应的环境变量名。</summary>
-	public static string KeyName(string provider)
+	public static string KeyName(string provider) => KeyNames.GetOrAdd(provider, static name =>
 	{
-		if (Overrides.TryGetValue(provider, out var name))
+		if (Overrides.TryGetValue(name, out var overridden))
 		{
-			return name;
+			return overridden;
 		}
 
-		var builder = new System.Text.StringBuilder(provider.Length + 8);
-		foreach (var c in provider)
+		var builder = new StringBuilder(name.Length + 8);
+		foreach (var c in name)
 		{
 			builder.Append(c is '-' or '.' ? '_' : char.ToUpperInvariant(c));
 		}
 
 		builder.Append("_API_KEY");
 		return builder.ToString();
-	}
+	});
 
 	/// <summary>
 	/// 每个 provider 一把刷新锁：并发请求同时发现 access token 过期时只让一个去换，
@@ -219,31 +275,46 @@ public static class ProviderEnvironment
 	/// </summary>
 	private static readonly ConcurrentDictionary<string, SemaphoreSlim> OAuthRefreshGates = new(StringComparer.Ordinal);
 
-	private static Auth.OAuthCredential? RefreshOAuth(string provider, Auth.OAuthCredential credential)
+	private static Task<Auth.OAuthCredential?> RefreshProviderAsync(
+		string provider,
+		Auth.OAuthCredential credential,
+		CancellationToken cancellationToken) =>
+		provider switch
+		{
+			Auth.AnthropicOAuth.ProviderKey => Auth.AnthropicOAuth.RefreshAsync(credential, cancellationToken),
+			Auth.XaiOAuth.ProviderKey => Auth.XaiOAuth.RefreshAsync(credential, cancellationToken),
+			Auth.KimiOAuth.ProviderKey => Auth.KimiOAuth.RefreshAsync(credential, cancellationToken),
+			Auth.OpenAiChatGptOAuth.ProviderKey => Auth.OpenAiChatGptOAuth.RefreshAsync(credential, cancellationToken: cancellationToken),
+			Auth.GitHubCopilotOAuth.ProviderKey => Auth.GitHubCopilotOAuth.RefreshAsync(credential, cancellationToken: cancellationToken),
+			Auth.MetaOAuth.ProviderKey => Auth.MetaOAuth.RefreshAsync(credential, cancellationToken: cancellationToken),
+			Auth.RadiusOAuth.ProviderKey => Auth.RadiusOAuth.RefreshAsync(credential, cancellationToken: cancellationToken),
+			_ => Task.FromResult<Auth.OAuthCredential?>(null),
+		};
+
+	private static async Task<Auth.OAuthCredential?> RefreshOAuthAsync(
+		string provider,
+		Auth.OAuthCredential credential,
+		CancellationToken cancellationToken)
 	{
 		var gate = OAuthRefreshGates.GetOrAdd(provider, static _ => new SemaphoreSlim(1, 1));
-		gate.Wait();
+		await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 		try
 		{
+			cancellationToken.ThrowIfCancellationRequested();
+
 			// 等锁期间可能已被别的请求刷新：重新读盘，未过期就直接用。
-			var current = Auth.OAuthStore.Read(provider);
+			var current = await Auth.OAuthStore
+				.ReadAsync(provider, agentDir: null, cancellationToken)
+				.ConfigureAwait(false);
 			if (current is { } refreshed && refreshed.ExpiresAt > DateTimeOffset.UtcNow)
 			{
 				return refreshed;
 			}
 
 			var toRefresh = current ?? credential;
-			return provider switch
-			{
-				Auth.AnthropicOAuth.ProviderKey => Auth.AnthropicOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
-				Auth.XaiOAuth.ProviderKey => Auth.XaiOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
-				Auth.KimiOAuth.ProviderKey => Auth.KimiOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
-				Auth.OpenAiChatGptOAuth.ProviderKey => Auth.OpenAiChatGptOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
-				Auth.GitHubCopilotOAuth.ProviderKey => Auth.GitHubCopilotOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
-				Auth.MetaOAuth.ProviderKey => Auth.MetaOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
-				Auth.RadiusOAuth.ProviderKey => Auth.RadiusOAuth.RefreshAsync(toRefresh).GetAwaiter().GetResult(),
-				_ => null,
-			};
+			// 刷新一旦开始就不再跟随请求取消：供应商可能已轮换 refresh token，
+			// 中途取消会让刚下发的新令牌丢失。真正的网络等待由各家 HttpClient 的 30 秒超时兜底。
+			return await RefreshProviderAsync(provider, toRefresh, CancellationToken.None).ConfigureAwait(false);
 		}
 		catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException or Auth.CodexAuthException)
 		{
@@ -262,15 +333,34 @@ public static class ProviderEnvironment
 	/// 存储优先这一步很关键：<c>pi login</c> 与桌面端都把 key 写进 <c>auth.json</c>，只认环境变量会让
 	/// 这些用户收到 401。
 	/// </para>
+	/// <para>
+	/// 读盘、命令型凭据与 OAuth 刷新全部走异步链路；等待刷新闸门时响应取消，
+	/// 但刷新本身不跟随取消，避免轮换型 refresh token 被丢掉。
+	/// </para>
 	/// </summary>
-	public static string? ResolveApiKey(string provider, StreamOptions options)
+	public static async Task<string?> ResolveApiKeyAsync(
+		string provider,
+		StreamOptions options,
+		CancellationToken cancellationToken = default)
 	{
+		if (!cancellationToken.CanBeCanceled)
+		{
+			cancellationToken = options.CancellationToken;
+		}
+
+		cancellationToken.ThrowIfCancellationRequested();
+
 		if (!string.IsNullOrEmpty(options.ApiKey))
 		{
 			return options.ApiKey;
 		}
 
-		var stored = Auth.AuthStore.ReadApiKey(provider);
+		var root = await Auth.AuthStore
+			.ReadRootAsync(agentDir: null, cancellationToken)
+			.ConfigureAwait(false);
+		var stored = await Auth.AuthStore
+			.ReadApiKeyFromRootAsync(root, provider, cancellationToken)
+			.ConfigureAwait(false);
 		if (stored is { Length: > 0 })
 		{
 			return stored;
@@ -278,11 +368,13 @@ public static class ProviderEnvironment
 
 		// OAuth 凭据（Anthropic / xAI 等）以 access token 形式复用 API key 通道；
 		// AnthropicProvider 会按 sk-ant-oat 前缀切换成 Bearer 请求。
-		if (Auth.OAuthStore.Read(provider) is { Access.Length: > 0 } oauth)
+		// 与 API Key 共用同一次读盘/解析，避免同一份 auth.json 读两遍。
+		var oauth = Auth.OAuthStore.ReadCredential(root?[provider]);
+		if (oauth is { Access.Length: > 0 })
 		{
 			if (oauth.ExpiresAt <= DateTimeOffset.UtcNow && oauth.Refresh.Length > 0)
 			{
-				var refreshed = RefreshOAuth(provider, oauth);
+				var refreshed = await RefreshOAuthAsync(provider, oauth, cancellationToken).ConfigureAwait(false);
 				if (refreshed is { Access.Length: > 0 } updated)
 				{
 					return updated.Access;

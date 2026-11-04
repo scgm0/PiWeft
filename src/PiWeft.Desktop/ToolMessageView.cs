@@ -21,9 +21,7 @@ internal sealed class ToolMessageView
 				var palette = AppTheme.For(theme);
 				text.Foreground = entry.IsStreaming ? palette.Info : entry.IsError ? palette.Error : palette.TextMuted;
 			});
-		var timing = new TextBlock()
-			.Text(entry.DurationMs is { } ms ? Strings.FormatDuration(ms) : string.Empty)
-			.FontSize(AppTheme.FontSizeMicro).SubtleText();
+		var timing = Timing(entry);
 		var detailSource = DetailSource(entry);
 		var detail = new TextBlock().Text(ExecutionProcess.ToolAction(entry, entry.IsStreaming))
 			.FontSize(AppTheme.FontSizeMicro).MutedText().FontFamily(AppTheme.MonoFont)
@@ -73,12 +71,12 @@ internal sealed class ToolMessageView
 			{
 				body.Children(SectionLabel(Strings.ToolResultLabel));
 				var text = MessageText.Create(entry.Text, muted: true, mono: true, fontSize: AppTheme.FontSizeCaption);
-			text.WithTheme((theme, block) =>
-			{
-				block.Foreground = AppTheme.For(theme).CodeText;
-				AppStyles.RefreshTextView(block);
-			});
-			text.Tag = null;
+				text.WithTheme((theme, block) =>
+				{
+					block.Foreground = AppTheme.For(theme).CodeText;
+					AppStyles.RefreshTextView(block);
+				});
+				text.Tag = null;
 				focus.Track(text);
 				body.Children(text);
 			}
@@ -90,6 +88,9 @@ internal sealed class ToolMessageView
 		View = new Border().CornerRadius(AppTheme.RadiusSm)
 			.Padding(new Thickness(0, 2, 0, 2))
 			.MaxWidth(AppTheme.MessageMaxWidth).Child(expander);
+		// ConversationTimeline uses this marker to avoid the metadata-only fast path: the
+		// tool row shows arguments in its header and has no in-place updater yet.
+		View.Tag = this;
 		if (entry.IsError)
 		{
 			View.BorderThickness(1).Padding(new Thickness(6, 3, 6, 3)).WithTheme((theme, border) =>
@@ -102,6 +103,26 @@ internal sealed class ToolMessageView
 	}
 
 	public Border View { get; }
+
+	private static TextBlock Timing(ChatEntry entry)
+	{
+		// 运行中的工具行从 ToolExecutionStartEvent 拿开始时刻，由 LiveDurationText 自己跳秒；
+		// ask_question 的等待是人在读题，不能用工具秒表把思考时间算进去（PiDeck 同义）。
+		TextBlock timing = entry switch
+		{
+			{ DurationMs: { } duration } when entry.ToolName is not "ask_question" => new TextBlock().Text(Strings.FormatDuration(duration)),
+			{ IsStreaming: true, ToolName: "ask_question" } => new TextBlock().Text(Strings.AskWaitingForAnswer),
+			{ IsStreaming: true, ToolStartedAt: { } startedAt } => new LiveDurationText(startedAt),
+			_ => new TextBlock(),
+		};
+		timing.FontSize(AppTheme.FontSizeMicro).SubtleText();
+		if (timing.Text.Length == 0 || entry.ToolName is "ask_question") return timing;
+		// 读数用等宽数字；只有运行中的秒表需要固定最小宽度，避免每 100 ms 跳一次时
+		// 把后面的命令预览推来推去（已完成的固定耗时不需要多占位置）。
+		timing.FontFamily(AppTheme.MonoFont);
+		if (timing is LiveDurationText) timing.TextAlignment(TextAlignment.Right).MinWidth(44);
+		return timing;
+	}
 
 	private static string DetailSource(ChatEntry entry)
 	{

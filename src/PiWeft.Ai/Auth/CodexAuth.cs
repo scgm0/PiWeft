@@ -61,6 +61,9 @@ public static class CodexAuth
 	/// <summary>提前一分钟刷新，避免在途请求用到已过期的令牌。</summary>
 	private static readonly TimeSpan ExpirySkew = TimeSpan.FromMinutes(1);
 
+	/// <summary>刷新网络等待上限；Codex 推理客户端可能是 Infinite 超时，不能让它无限挂住。</summary>
+	private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(30);
+
 	public static string CredentialsPath(string? agentDir = null) =>
 		Path.Combine(agentDir ?? AgentPaths.AgentDirectory(), "auth.json");
 
@@ -257,7 +260,7 @@ public static class CodexAuth
 		string? authBaseUrl = null,
 		CancellationToken cancellationToken = default)
 	{
-		var stored = Load(agentDir)
+		var stored = await LoadAsync(agentDir, cancellationToken).ConfigureAwait(false)
 			?? throw new CodexAuthException(
 				"No ChatGPT credentials found. Run the Codex device login first, or set them in <agentDir>/auth.json.");
 
@@ -270,13 +273,15 @@ public static class CodexAuth
 		try
 		{
 			// 取锁后再读一次：等待期间别的请求可能已经把令牌刷新过了。
-			var current = Load(agentDir);
+			var current = await LoadAsync(agentDir, cancellationToken).ConfigureAwait(false);
 			if (current is { } stillValid && stillValid.ExpiresAt - ExpirySkew > DateTimeOffset.UtcNow)
 			{
 				return stillValid;
 			}
 
-			var refreshed = await RefreshAsync(http, current?.Refresh ?? stored.Refresh, authBaseUrl, cancellationToken).ConfigureAwait(false);
+			using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			timeout.CancelAfter(RefreshTimeout);
+			var refreshed = await RefreshAsync(http, current?.Refresh ?? stored.Refresh, authBaseUrl, timeout.Token).ConfigureAwait(false);
 			var credentials = CodexCredentials.FromTokens(refreshed);
 			Save(credentials, agentDir);
 			return credentials;
@@ -298,27 +303,7 @@ public static class CodexAuth
 
 		try
 		{
-			var root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
-			var entry = root?[ProviderKey] as JsonObject;
-			if (entry is null)
-			{
-				return null;
-			}
-
-			// 用户可手改 auth.json：字段类型不符时按缺失处理，避免认证/模型可用性路径抛异常。
-			var access = Text(entry, "access");
-			var refresh = Text(entry, "refresh");
-			if (string.IsNullOrEmpty(access) || string.IsNullOrEmpty(refresh))
-			{
-				return null;
-			}
-
-			return new CodexCredentials
-			{
-				Access = access,
-				Refresh = refresh,
-				Expires = entry["expires"] is JsonValue expires && expires.TryGetValue<long>(out var expiry) ? expiry : 0,
-			};
+			return FromRoot(JsonNode.Parse(File.ReadAllText(path)) as JsonObject);
 		}
 		catch (JsonException)
 		{
@@ -328,6 +313,51 @@ public static class CodexAuth
 		{
 			return null;
 		}
+	}
+
+	/// <summary><see cref="Load"/> 的异步版本；请求路径使用它避免同步读盘。</summary>
+	public static async Task<CodexCredentials?> LoadAsync(
+		string? agentDir = null,
+		CancellationToken cancellationToken = default)
+	{
+		var path = CredentialsPath(agentDir);
+		if (path is null || !File.Exists(path))
+		{
+			return null;
+		}
+
+		try
+		{
+			var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+			return FromRoot(JsonNode.Parse(text) as JsonObject);
+		}
+		catch (Exception exception) when (exception is JsonException or IOException)
+		{
+			return null;
+		}
+	}
+
+	private static CodexCredentials? FromRoot(JsonObject? root)
+	{
+		if (root?[ProviderKey] is not JsonObject entry)
+		{
+			return null;
+		}
+
+		// 用户可手改 auth.json：字段类型不符时按缺失处理，避免认证/模型可用性路径抛异常。
+		var access = Text(entry, "access");
+		var refresh = Text(entry, "refresh");
+		if (string.IsNullOrEmpty(access) || string.IsNullOrEmpty(refresh))
+		{
+			return null;
+		}
+
+		return new CodexCredentials
+		{
+			Access = access,
+			Refresh = refresh,
+			Expires = entry["expires"] is JsonValue expires && expires.TryGetValue<long>(out var expiry) ? expiry : 0,
+		};
 	}
 
 	/// <summary>

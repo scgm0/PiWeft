@@ -25,6 +25,8 @@ public sealed partial class GitView
 		{
 			_graphRef = string.Empty;
 			_graphDirty = true;
+			_graphVersion++;
+			_graphLoading = false;
 		}
 
 		if (_graphLoaded && !_graphDirty)
@@ -32,16 +34,73 @@ public sealed partial class GitView
 			return;
 		}
 
-		var log = GitHistoryReader.Log(
-			_cwd(),
-			_graphPage,
-			_graphRef.Length > 0 ? _graphRef : null,
-			_graphRef.Length == 0);
+		// The graph runs `git log` and a second `git rev-list --count`; on a large repository that
+		// is exactly the work that made opening the panel freeze. Load it off the UI thread and
+		// render the cached/empty state first. Headless tests keep the synchronous path.
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		{
+			var log = GitHistoryReader.Log(
+				_cwd(), _graphPage, _graphRef.Length > 0 ? _graphRef : null, _graphRef.Length == 0);
+			ApplyGraph(log, GitHistoryReader.Count(_cwd(), _graphRef.Length > 0 ? _graphRef : null,
+				_graphRef.Length == 0));
+			return;
+		}
+
+		if (_graphLoading)
+		{
+			return;
+		}
+
+		_graphLoading = true;
+		var version = ++_graphVersion;
+		var cwd = _cwd();
+		var page = _graphPage;
+		var graphRef = _graphRef;
+		_ = LoadGraphAsync(cwd, page, graphRef, version, dispatcher);
+	}
+
+	private async Task LoadGraphAsync(string cwd, int page, string graphRef, int version, IDispatcher dispatcher)
+	{
+		GitLogResult log = new([], Strings.GitUnavailable);
+		int total = 0;
+		try
+		{
+			(log, total) = await Task.Run(() =>
+			{
+				var result = GitHistoryReader.Log(
+					cwd, page, graphRef.Length > 0 ? graphRef : null, graphRef.Length == 0);
+				var count = result.Error is null
+					? GitHistoryReader.Count(cwd, graphRef.Length > 0 ? graphRef : null, graphRef.Length == 0)
+					: 0;
+				return (result, count);
+			}).ConfigureAwait(false);
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+		{
+			log = new GitLogResult([], Strings.GitUnavailable);
+		}
+
+		void Complete()
+		{
+			if (_disposed || version != _graphVersion)
+			{
+				return;
+			}
+
+			_graphLoading = false;
+			ApplyGraph(log, total);
+			RebuildGraph();
+		}
+
+		if (dispatcher.IsOnUIThread) Complete();
+		else dispatcher.BeginInvoke(Complete);
+	}
+
+	private void ApplyGraph(GitLogResult log, int total)
+	{
 		_graphCommits = log.Commits;
 		_graphError = log.Error;
-		_graphTotal = log.Error is null
-			? GitHistoryReader.Count(_cwd(), _graphRef.Length > 0 ? _graphRef : null, _graphRef.Length == 0)
-			: 0;
+		_graphTotal = total;
 		_graphLoaded = true;
 		_graphDirty = false;
 	}

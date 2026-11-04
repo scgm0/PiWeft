@@ -43,12 +43,16 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var reasoningEffort = ResolveReasoningEffort(model, options);
+			var apiKey = await ProviderEnvironment
+				.ResolveApiKeyAsync(model.Provider, options, cancellationToken)
+				.ConfigureAwait(false);
 
-			using var request = BuildRequest(model, messages, tools, options, reasoningEffort);
+			using var request = BuildRequest(model, messages, tools, options, reasoningEffort, apiKey);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
+			headerTimeout.Stop();
 
 			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
 
@@ -105,7 +109,8 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 		IReadOnlyList<Message> messages,
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
-		string? reasoningEffort)
+		string? reasoningEffort,
+		string? apiKey)
 	{
 		var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
 		// 与 pi-ai 一致：Responses 请求用会话 ID 提升 prompt cache 命中；显式 none 时不带。
@@ -135,7 +140,7 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 		request.Headers.TryAddWithoutValidation("accept", "text/event-stream");
 		request.Headers.TryAddWithoutValidation("user-agent", SharedHttpClient.UserAgent);
 
-		if (ProviderEnvironment.ResolveApiKey(model.Provider, options) is { Length: > 0 } apiKey)
+		if (apiKey is { Length: > 0 })
 		{
 			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 		}

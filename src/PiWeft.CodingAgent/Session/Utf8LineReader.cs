@@ -159,7 +159,11 @@ public sealed class Utf8LineReader : IDisposable
 
 		var next = ArrayPool<byte>.Shared.Rent(Math.Max(required, _lineBuffer.Length * 2));
 		_lineBuffer.AsSpan(0, _lineLength).CopyTo(next);
-		ArrayPool<byte>.Shared.Return(_lineBuffer);
+		// 与 Dispose 同一门槛：几 MB 的正文行不给共享池留常驻块。
+		if (_lineBuffer.Length <= MaxPooledLineBuffer)
+		{
+			ArrayPool<byte>.Shared.Return(_lineBuffer);
+		}
 		_lineBuffer = next;
 	}
 

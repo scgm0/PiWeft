@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- MewUI 仓库使用 csproj 内联版本，不能继承 PiWeft 的中央包管理。 -->
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+</Project>

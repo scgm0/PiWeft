@@ -66,19 +66,22 @@ public sealed class StreamedText
 		{
 			return cached;
 		}
-		var chars = new char[count];
-		var written = 0;
-		var segment = Locate(start);
-		while (written < count && segment < _segmentCount)
+		// string.Create 直接写进最终字符串的存储：少一次 char[] 分配与一次整段拷贝。
+		// 片段表与起点表在快照生命周期内不变，因此静态回调可以安全共享。
+		return string.Create(count, (Source: this, Start: start), static (span, state) =>
 		{
-			var text = _segments[segment];
-			var offset = start + written - _starts[segment];
-			var take = Math.Min(text.Length - offset, count - written);
-			text.CopyTo(offset, chars, written, take);
-			written += take;
-			segment++;
-		}
-		return written == count ? new string(chars) : new string(chars, 0, written);
+			var written = 0;
+			var segment = state.Source.Locate(state.Start);
+			while (written < span.Length && segment < state.Source._segmentCount)
+			{
+				var text = state.Source._segments[segment];
+				var offset = state.Start + written - state.Source._starts[segment];
+				var take = Math.Min(text.Length - offset, span.Length - written);
+				text.AsSpan(offset, take).CopyTo(span[written..]);
+				written += take;
+				segment++;
+			}
+		});
 	}
 
 	/// <summary>定位包含 <paramref name="index"/> 的片段（片段起点表是递增的）。</summary>

@@ -38,6 +38,8 @@ internal sealed class ExecutionProcessView
 	private readonly List<ChatEntry> _memberScratch = [];
 	private int _nodeCount;
 	private ChatEntry _entry;
+	private ExecutionProcess.Stats _statsSnapshot;
+	private bool _statsValid;
 	private string? _latestGroup;
 	private bool _automatic;
 	// 只在「流式最新组自动展开」这一条通道上跟随末尾；手动展开/恢复展开不跟随。
@@ -241,16 +243,24 @@ internal sealed class ExecutionProcessView
 	{
 		_entry = entry;
 		var stats = ExecutionProcess.Count(entry.ProcessEntries);
-		_toolCount.Text(stats.Tools.ToString());
-		_thinkingCount.Text(stats.Thinking.ToString());
-		_interimCount.Text(stats.Interim.ToString());
-		_errorCount.Text(stats.Errors.ToString()).ErrorText();
-		_toolStat.IsVisible(stats.Tools > 0);
-		_thinkingStat.IsVisible(stats.Thinking > 0);
-		_interimStat.IsVisible(stats.Interim > 0);
-		_errorStat.IsVisible(stats.Errors > 0);
+		// This runs for every streaming frame of every visible process group. The counts are
+		// unchanged on most frames, so only format strings and touch the stat rows when a
+		// category really changed.
+		if (!_statsValid || stats != _statsSnapshot)
+		{
+			_statsValid = true;
+			_statsSnapshot = stats;
+			_toolCount.Text(stats.Tools.ToString());
+			_thinkingCount.Text(stats.Thinking.ToString());
+			_interimCount.Text(stats.Interim.ToString());
+			_errorCount.Text(stats.Errors.ToString()).ErrorText();
+			_toolStat.IsVisible(stats.Tools > 0);
+			_thinkingStat.IsVisible(stats.Thinking > 0);
+			_interimStat.IsVisible(stats.Interim > 0);
+			_errorStat.IsVisible(stats.Errors > 0);
+		}
 		// 错误已在计数里显示，不再追加第二个红叉；运行中也不能预先打成功勾。
-		_ok.IsVisible(!entry.IsStreaming && stats.Errors == 0 && !entry.ProcessEntries.Any(step => step.IsStopped));
+		_ok.IsVisible(!entry.IsStreaming && stats.Errors == 0 && stats.Stopped == 0);
 		_running.IsVisible(entry.IsStreaming);
 		if (_fold.IsExpanded || _fold.Content is not null) Build();
 	}
@@ -378,6 +388,21 @@ internal sealed class ExecutionProcessView
 			}
 			else DestroyBody();
 		};
+		// 组头摘要/图标只依赖这一组成员。流式帧里只有正在运行的最新组会变；前面的
+		// 历史组每次 Build 仍会走到这里，若不判重就会每帧重建 HashSet、拼接摘要并重设
+		// 图标源。记录上一次的成员列表与末尾条目，稳定组直接跳过组头更新。
+		// Node.Entries 会原地复用同一数组来避免每帧分配，因此不能保存「成员列表引用」做判重：
+		// 列表内容变了引用仍然相同。记录数量与末尾条目的引用，才能识别原地重写的组。
+		int headerCount = -1;
+		ChatEntry? headerLast = null;
+		bool headerRunning = false;
+		// 运行组的实时详情只取决于最新工具的名字与参数。流式帧每帧都会重建成员对象，
+		// 但参数字符串引用通常不变；缓存一次解析结果，避免每 16ms 对同一段 JSON 再 Parse。
+		string? detailTool = null;
+		string? detailArguments = null;
+		int detailLength = -1;
+		string? detailText = null;
+
 		Track(key, fold, false, group: true);
 		var host = new Border().Padding(new Thickness(2, 0, 0, 0)).Child(fold);
 		var slot = new Slot(key, host, Update);
@@ -851,22 +876,40 @@ internal sealed class ExecutionProcessView
 		{
 			members = next;
 			runningGroup = isRunning;
-			if (isRunning)
+			var lastMember = next.Count > 0 ? next[^1] : null;
+			var headerChanged = headerCount != next.Count || !ReferenceEquals(headerLast, lastMember) ||
+				headerRunning != isRunning;
+			headerCount = next.Count;
+			headerLast = lastMember;
+			headerRunning = isRunning;
+			if (headerChanged)
 			{
-				icon.Source(AppIcons.Get(ExecutionProcess.GroupIcon(next), AppStyles.ColorForRole(AppStyles.RoleAccent)));
-				label.Text(ExecutionProcess.RunningLabel(next));
-				var runningDetail = ExecutionProcess.RunningDetail(next);
-				separator.IsVisible(runningDetail is not null);
-				detail.IsVisible(runningDetail is not null);
-				if (runningDetail is { } text) detail.Text(text);
-			}
-			else
-			{
-				icon.Source(AppIcons.Get(ExecutionProcess.GroupIcon(next), AppStyles.ColorForRole(AppStyles.RoleSubtle)));
-				var summary = ExecutionProcess.GroupSummary(next);
-				label.Text(summary.Length > 0 ? summary : Strings.ProcessGroupAnalyzed);
-				separator.IsVisible(false);
-				detail.IsVisible(false);
+				if (isRunning)
+				{
+					icon.Source(AppIcons.Get(ExecutionProcess.GroupIcon(next), AppStyles.ColorForRole(AppStyles.RoleAccent)));
+					label.Text(ExecutionProcess.RunningLabel(next));
+					var latest = next.Count > 0 ? next[^1] : null;
+					if (latest is null || latest.ToolName != detailTool ||
+						!ReferenceEquals(latest.ToolArguments, detailArguments) ||
+						latest.TextLength != detailLength)
+					{
+						detailTool = latest?.ToolName;
+						detailArguments = latest?.ToolArguments;
+						detailLength = latest?.TextLength ?? -1;
+						detailText = ExecutionProcess.RunningDetail(next);
+					}
+					separator.IsVisible(detailText is not null);
+					detail.IsVisible(detailText is not null);
+					if (detailText is { } text) detail.Text(text);
+				}
+				else
+				{
+					icon.Source(AppIcons.Get(ExecutionProcess.GroupIcon(next), AppStyles.ColorForRole(AppStyles.RoleSubtle)));
+					var summary = ExecutionProcess.GroupSummary(next);
+					label.Text(summary.Length > 0 ? summary : Strings.ProcessGroupAnalyzed);
+					separator.IsVisible(false);
+					detail.IsVisible(false);
+				}
 			}
 			if (body is not null) SyncRows();
 		}
@@ -891,7 +934,6 @@ internal sealed class ExecutionProcessView
 		if (icon.Parent is null) host.Children(icon.Column(0), content.Column(1));
 		icon.Source(AppIcons.Get(StepIcon.IconFor(entry), AppStyles.ColorForRole(StepIcon.RoleFor(entry))));
 
-		var stepKey = $"{groupKey}/{Id(entry, index)}";
 		if (content.Tag is ChatEntry previous && ConversationTimeline.SameEntry(previous, entry)) return;
 		if (content.Tag is ChatEntry { IsStreaming: true } streaming && entry.Role == ChatRole.Assistant &&
 			streaming.Timestamp == entry.Timestamp && streaming.Images.SequenceEqual(entry.Images) &&
@@ -902,6 +944,9 @@ internal sealed class ExecutionProcessView
 			content.Tag = entry;
 			return;
 		}
+		// The key is only needed when this row's content is actually rebuilt; formatting it before
+		// the equal/streaming fast paths allocated one string per visible step per streaming frame.
+		var stepKey = $"{groupKey}/{Id(entry, index)}";
 		if (content.Child is { } old) UiLifetime.Release(old);
 		var view = _create(entry);
 		content.Child(view);

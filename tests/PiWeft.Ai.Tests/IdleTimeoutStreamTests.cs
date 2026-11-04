@@ -10,6 +10,36 @@ namespace PiWeft.Ai.Tests;
 /// </summary>
 public class IdleTimeoutStreamTests
 {
+	[Fact]
+	public async Task HeaderTimeoutStartsOnlyWhenTheTokenIsRead()
+	{
+		var options = new StreamOptions { TimeoutMs = 80 };
+		using var scope = ProviderHttp.BeginHeaderTimeout(options);
+
+		// 凭据解析阶段不应消耗请求超时：读取 Token 之前的等待不计时。
+		await Task.Delay(150);
+		Assert.False(scope.TimedOut);
+		Assert.False(scope.Token.IsCancellationRequested);
+
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+			await Task.Delay(500, scope.Token));
+		Assert.True(scope.TimedOut);
+	}
+
+	[Fact]
+	public async Task StopReleasesTheHeaderTimerAfterHeaders()
+	{
+		var options = new StreamOptions { TimeoutMs = 50 };
+		using var scope = ProviderHttp.BeginHeaderTimeout(options);
+
+		_ = scope.Token; // 启动计时器
+		scope.Stop();
+		await Task.Delay(120);
+
+		Assert.False(scope.TimedOut);
+		Assert.False(scope.Token.IsCancellationRequested);
+	}
+
 	/// <summary>永远不返回数据的流：只有取消能让 ReadAsync 结束。</summary>
 	private sealed class SilentStream : Stream
 	{

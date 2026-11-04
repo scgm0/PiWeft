@@ -297,16 +297,16 @@ public static class AuthCommands
 		switch (kind)
 		{
 			case "check":
-				return AuthCheck(provider, agentDir, rest, output, error, cancellationToken);
+				return await AuthCheck(provider, agentDir, rest, output, error, cancellationToken).ConfigureAwait(false);
 			case "print-api-key":
-				return PrintApiKey(provider, agentDir, output, error);
+				return await PrintApiKey(provider, agentDir, output, error, cancellationToken).ConfigureAwait(false);
 			default:
 				return await PrintBearerToken(provider, agentDir, output, error, cancellationToken).ConfigureAwait(false);
 		}
 	}
 
 	/// <summary><c>pi auth check</c>：校验凭据可用性并报告状态（不打印凭据本身，除非 --credentials）。</summary>
-	private static int AuthCheck(
+	private static async Task<int> AuthCheck(
 		string provider,
 		string? agentDir,
 		IReadOnlyList<string> rest,
@@ -320,7 +320,7 @@ public static class AuthCommands
 
 		try
 		{
-			var authType = ResolveAuthType(provider, agentDir);
+			var authType = await ResolveAuthTypeAsync(provider, agentDir, cancellationToken).ConfigureAwait(false);
 			var status = authType is null ? "not_ready" : "ready";
 			string? credential = null;
 
@@ -330,7 +330,7 @@ public static class AuthCommands
 				// 取不到值报告 invalid（凭据配置坏了），与「没配置」的 not_ready 区分开。
 				try
 				{
-					credential = ResolveCredential(provider, agentDir, noRefresh, cancellationToken);
+					credential = await ResolveCredentialAsync(provider, agentDir, noRefresh, cancellationToken).ConfigureAwait(false);
 				}
 				catch (CodexAuthException)
 				{
@@ -383,15 +383,20 @@ public static class AuthCommands
 	}
 
 	/// <summary><c>pi auth print-api-key</c>：只对 api_key 型凭据有效。</summary>
-	private static int PrintApiKey(string provider, string? agentDir, TextWriter output, TextWriter error)
+	private static async Task<int> PrintApiKey(
+		string provider,
+		string? agentDir,
+		TextWriter output,
+		TextWriter error,
+		CancellationToken cancellationToken)
 	{
-		if (string.Equals(ResolveAuthType(provider, agentDir), "oauth", StringComparison.Ordinal))
+		if (string.Equals(await ResolveAuthTypeAsync(provider, agentDir, cancellationToken).ConfigureAwait(false), "oauth", StringComparison.Ordinal))
 		{
 			error.WriteLine($"pi: Provider \"{provider}\" is configured with OAuth, not an API key");
 			return 1;
 		}
 
-		var key = AuthStore.ReadApiKey(provider, agentDir)
+		var key = await AuthStore.ReadApiKeyAsync(provider, agentDir, cancellationToken).ConfigureAwait(false)
 			?? Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(provider));
 
 		if (string.IsNullOrEmpty(key))
@@ -414,7 +419,7 @@ public static class AuthCommands
 	{
 		try
 		{
-			var token = ResolveCredential(provider, agentDir, noRefresh: false, cancellationToken);
+			var token = await ResolveCredentialAsync(provider, agentDir, noRefresh: false, cancellationToken).ConfigureAwait(false);
 			if (token is not { Length: > 0 })
 			{
 				error.WriteLine($"pi: Provider \"{provider}\" is not configured with an OAuth bearer token");
@@ -432,9 +437,9 @@ public static class AuthCommands
 	}
 
 	/// <summary>凭据类型：<c>api_key</c>（auth.json、命令型凭据或环境变量）或 <c>oauth</c>；都没有时返回 null。</summary>
-	private static string? ResolveAuthType(string provider, string? agentDir)
+	private static async Task<string?> ResolveAuthTypeAsync(string provider, string? agentDir, CancellationToken cancellationToken)
 	{
-		var (stored, isCommand) = AuthStore.ReadCredentialState(provider, agentDir);
+		var (stored, isCommand) = await AuthStore.ReadCredentialStateAsync(provider, agentDir, cancellationToken).ConfigureAwait(false);
 		if (stored is { Length: > 0 } ||
 			isCommand ||
 			Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(provider)) is { Length: > 0 })
@@ -442,8 +447,9 @@ public static class AuthCommands
 			return "api_key";
 		}
 
-		if (OAuthStore.Read(provider, agentDir) is not null ||
-			(string.Equals(provider, CodexAuth.ProviderKey, StringComparison.Ordinal) && CodexAuth.Load(agentDir) is not null))
+		if (await OAuthStore.ReadAsync(provider, agentDir, cancellationToken).ConfigureAwait(false) is not null ||
+			(string.Equals(provider, CodexAuth.ProviderKey, StringComparison.Ordinal) &&
+				await CodexAuth.LoadAsync(agentDir, cancellationToken).ConfigureAwait(false) is not null))
 		{
 			return "oauth";
 		}
@@ -452,34 +458,33 @@ public static class AuthCommands
 	}
 
 	/// <summary>取凭据明文：api_key 直接读，oauth 走刷新逻辑。</summary>
-	private static string? ResolveCredential(
+	private static async Task<string?> ResolveCredentialAsync(
 		string provider,
 		string? agentDir,
 		bool noRefresh,
 		CancellationToken cancellationToken)
 	{
-		if (ResolveAuthType(provider, agentDir) == "api_key")
+		if (await ResolveAuthTypeAsync(provider, agentDir, cancellationToken).ConfigureAwait(false) == "api_key")
 		{
-			return AuthStore.ReadApiKey(provider, agentDir)
+			return await AuthStore.ReadApiKeyAsync(provider, agentDir, cancellationToken).ConfigureAwait(false)
 				?? Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(provider));
 		}
 
 		using var http = new HttpClient();
 		if (string.Equals(provider, CodexAuth.ProviderKey, StringComparison.Ordinal))
 		{
-			if (noRefresh && CodexAuth.Load(agentDir) is { } stored)
+			if (noRefresh && await CodexAuth.LoadAsync(agentDir, cancellationToken).ConfigureAwait(false) is { } stored)
 			{
 				return stored.Access;
 			}
 
-			return CodexAuth
+			return (await CodexAuth
 				.ResolveAsync(http, agentDir, Environment.GetEnvironmentVariable(AuthBaseUrlVariable), cancellationToken)
-				.GetAwaiter()
-				.GetResult()
+				.ConfigureAwait(false))
 				.Access;
 		}
 
-		var credential = OAuthStore.Read(provider, agentDir);
+		var credential = await OAuthStore.ReadAsync(provider, agentDir, cancellationToken).ConfigureAwait(false);
 		if (credential is null)
 		{
 			return null;
@@ -489,44 +494,44 @@ public static class AuthCommands
 		{
 			if (string.Equals(provider, AnthropicOAuth.ProviderKey, StringComparison.Ordinal))
 			{
-				return AnthropicOAuth.RefreshAsync(credential, cancellationToken)
-					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+				return (await AnthropicOAuth.RefreshAsync(credential, cancellationToken).ConfigureAwait(false))?.Access
+					?? credential.Access;
 			}
 
 			if (string.Equals(provider, XaiOAuth.ProviderKey, StringComparison.Ordinal))
 			{
-				return XaiOAuth.RefreshAsync(credential, cancellationToken)
-					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+				return (await XaiOAuth.RefreshAsync(credential, cancellationToken).ConfigureAwait(false))?.Access
+					?? credential.Access;
 			}
 
 			if (string.Equals(provider, KimiOAuth.ProviderKey, StringComparison.Ordinal))
 			{
-				return KimiOAuth.RefreshAsync(credential, cancellationToken)
-					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+				return (await KimiOAuth.RefreshAsync(credential, cancellationToken).ConfigureAwait(false))?.Access
+					?? credential.Access;
 			}
 
 			if (string.Equals(provider, OpenAiChatGptOAuth.ProviderKey, StringComparison.Ordinal))
 			{
-				return OpenAiChatGptOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
-					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+				return (await OpenAiChatGptOAuth.RefreshAsync(credential, cancellationToken: cancellationToken).ConfigureAwait(false))?.Access
+					?? credential.Access;
 			}
 
 			if (string.Equals(provider, GitHubCopilotOAuth.ProviderKey, StringComparison.Ordinal))
 			{
-				return GitHubCopilotOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
-					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+				return (await GitHubCopilotOAuth.RefreshAsync(credential, cancellationToken: cancellationToken).ConfigureAwait(false))?.Access
+					?? credential.Access;
 			}
 
 			if (string.Equals(provider, MetaOAuth.ProviderKey, StringComparison.Ordinal))
 			{
-				return MetaOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
-					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+				return (await MetaOAuth.RefreshAsync(credential, cancellationToken: cancellationToken).ConfigureAwait(false))?.Access
+					?? credential.Access;
 			}
 
 			if (string.Equals(provider, RadiusOAuth.ProviderKey, StringComparison.Ordinal))
 			{
-				return RadiusOAuth.RefreshAsync(credential, cancellationToken: cancellationToken)
-					.GetAwaiter().GetResult()?.Access ?? credential.Access;
+				return (await RadiusOAuth.RefreshAsync(credential, cancellationToken: cancellationToken).ConfigureAwait(false))?.Access
+					?? credential.Access;
 			}
 
 			if (string.Equals(provider, OpenRouterOAuth.ProviderKey, StringComparison.Ordinal))

@@ -40,6 +40,25 @@ public sealed class ProviderUsageSummaryTests
 	}
 
 	[Fact]
+	public async Task SameShapeRefreshReusesValueControls()
+	{
+		var value = 12.99;
+		var summary = new ProviderUsageSummary(() => FakeStreams.Model(), () => "/project", () => { }, (_, _, _) =>
+			Task.FromResult(Balance(value)));
+		summary.Show();
+		await Wait(() => Find<TextBlock>(summary.View).Any(text => text.Text.Contains("$12.99", StringComparison.Ordinal)));
+		var block = Find<TextBlock>(summary.View).Single(text => text.Text.Contains("$12.99", StringComparison.Ordinal));
+
+		value = 13.99;
+		await summary.RefreshAsync();
+		await Wait(() => block.Text.Contains("$13.99", StringComparison.Ordinal));
+		Assert.Contains(block, Find<TextBlock>(summary.View));
+
+		summary.Hide();
+		UiLifetime.Release(summary.View);
+	}
+
+	[Fact]
 	public async Task InvalidateRefreshesAnAlreadyOpenSummary()
 	{
 		var calls = 0;

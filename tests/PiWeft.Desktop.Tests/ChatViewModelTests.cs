@@ -603,6 +603,58 @@ public class ChatViewModelTests : IDisposable
 	}
 
 	[Fact]
+	public async Task RunningToolKeepsItsStartTimestampForTheLiveStopwatch()
+	{
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		_streams.Enqueue(static model => FakeStreams.ToolCall(model, "call-slow", "slow_tool", new JsonObject()));
+		_streams.Enqueue(static model => FakeStreams.Text(model, "done"));
+
+		using var session = NewSession();
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+		var tool = new AgentTool
+		{
+			Name = "slow_tool",
+			Label = "slow_tool",
+			Description = "阻塞到测试放行",
+			Execute = async _ =>
+			{
+				started.TrySetResult();
+				await gate.Task;
+				return new AgentToolResult { Content = [new TextContent { Text = "slow done" }] };
+			},
+		};
+		session.SetTools([.. session.Tools, tool]);
+
+		var send = viewModel.SendAsync("run the slow tool");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		// 流式工具行必须带开始时刻：过程投影会拿它当秒表起点，而不是每帧用当前时间重置。
+		var live = Assert.Single(viewModel.Entries(), entry => entry.EntryId == "live-tool/call-slow");
+		Assert.True(live.IsStreaming);
+		Assert.NotNull(live.ToolStartedAt);
+		Assert.Null(live.DurationMs);
+		var projected = Assert.Single(ExecutionProcess.Project(viewModel.Entries(), true)[^1].ProcessEntries,
+			entry => entry.ToolCallId == "call-slow");
+		Assert.Equal(live.ToolStartedAt, projected.ToolStartedAt);
+
+		gate.SetResult();
+		await send.WaitAsync(TimeSpan.FromSeconds(5));
+
+		var finished = Assert.Single(viewModel.Entries(), entry =>
+			entry.Role == ChatRole.Tool && entry.ToolCallId == "call-slow" && !entry.IsStreaming);
+		Assert.NotNull(finished.DurationMs);
+		// 过程投影按调用 id 合并调用与结果：最终只剩一行，且不再挂着秒表起点。
+		var finalProcess = Assert.Single(ExecutionProcess.Project(viewModel.Entries(), false), row =>
+			row.Role == ChatRole.Process && row.ProcessEntries.Any(entry => entry.ToolCallId == "call-slow"));
+		var finalTool = Assert.Single(finalProcess.ProcessEntries, entry => entry.ToolCallId == "call-slow");
+		Assert.False(finalTool.IsStreaming);
+		Assert.Null(finalTool.ToolStartedAt);
+		Assert.Equal("done", viewModel.Entries()[^1].Text);
+	}
+
+	[Fact]
 	public async Task UserRowsCarryTheirEntryIdSoTheUiCanBranch()
 	{
 		_streams.Enqueue(static model => FakeStreams.Text(model, "answer"));

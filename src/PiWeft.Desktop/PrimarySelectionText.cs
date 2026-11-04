@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Input;
 
 namespace PiWeft.Desktop;
 
@@ -9,6 +10,14 @@ internal static class PrimarySelectionText
 {
 	internal static IPrimarySelection? Service { get; set; }
 	private static readonly ConditionalWeakTable<TextBase, SelectionObserver> Observers = new();
+	private static readonly ConditionalWeakTable<Window, WindowObserver> Windows = new();
+
+	/// <summary>
+	/// Window 级兜底：动态创建的代码块、表单输入等不一定经过显式的 PrimarySelection()，
+	/// 第一次点击/键盘选中时按命中元素惰性挂上 observer，后续选区变化即发布 PRIMARY。
+	/// </summary>
+	internal static void Attach(Window window) =>
+		Windows.GetValue(window, static owner => new WindowObserver(owner));
 
 	/// <param name="smoothScroll">
 	/// 是否给多行文本框装帧驱动的平滑滚动。嵌在另一个平滑视口里、又自带高度上限的文本框要传
@@ -116,7 +125,7 @@ internal static class PrimarySelectionText
 			control.MouseDown += MiddleDown;
 		}
 
-		private void Publish()
+		internal void Publish()
 		{
 			if (_placingCaret || Service is null || _queued) return;
 			void Commit()
@@ -133,7 +142,7 @@ internal static class PrimarySelectionText
 			else Commit();
 		}
 
-		private void MiddleDown(MouseEventArgs args)
+		internal void MiddleDown(MouseEventArgs args)
 		{
 			if (args.Button != MouseButton.Middle || args.Handled || _control.IsReadOnly || !_control.IsEffectivelyEnabled || Service is null) return;
 			var local = args.GetPosition(_control);
@@ -143,6 +152,63 @@ internal static class PrimarySelectionText
 			_control.Focus();
 			args.Handled = true;
 			_ = PasteAsync(_control);
+		}
+	}
+
+	private sealed class WindowObserver
+	{
+		private readonly Window _window;
+		private bool _closed;
+
+		public WindowObserver(Window window)
+		{
+			_window = window;
+			window.MouseDown += OnMouseDown;
+			window.PreviewKeyDown += OnPreviewKeyDown;
+			window.Closed += OnClosed;
+		}
+
+		private void OnClosed()
+		{
+			if (_closed) return;
+			_closed = true;
+			_window.MouseDown -= OnMouseDown;
+			_window.PreviewKeyDown -= OnPreviewKeyDown;
+			_window.Closed -= OnClosed;
+		}
+
+		private void OnMouseDown(MouseEventArgs args)
+		{
+			if (_closed || Service is null) return;
+			var point = args.GetPosition(_window);
+			if (_window.HitTest(point) is not { } leaf || Find(leaf) is not { } text) return;
+			var observer = Observers.GetValue(text, static control => new SelectionObserver(control));
+			if (args.Button == MouseButton.Middle && !args.Handled)
+			{
+				observer.MiddleDown(args);
+			}
+			else
+			{
+				// 显式调用点通常已经在 MouseDown 前挂好；这里覆盖动态控件，
+				// 并补一次发布，避免双击/拖选的第一帧还停留在上一次 PRIMARY。
+				observer.Publish();
+			}
+		}
+
+		private void OnPreviewKeyDown(KeyEventArgs args)
+		{
+			if (_closed || args.Handled || Service is null) return;
+			if (_window.FocusManager.FocusedElement is not { } focused || Find(focused) is not { } text) return;
+			Observers.GetValue(text, static control => new SelectionObserver(control)).Publish();
+		}
+
+		private static TextBase? Find(Element leaf)
+		{
+			for (Element? current = leaf; current is not null; current = current.Parent)
+			{
+				if (current is TextBox or MultiLineTextBox) return (TextBase)current;
+			}
+			return null;
 		}
 	}
 }

@@ -42,11 +42,19 @@ internal static class ThinkingPreview
 		// 只需要行尾那一段：跑马灯最多露出 LiveLineLimit 个字，更早的一定为负偏移裁在画面外。
 		// 换行也只在这段窗口里回找 —— 不这样封顶的话，模型写出一段不带换行的长句时
 		// 每帧都要反向扫完整篇（实测 32K 字一轮扫描就足以掉帧），TextBlock 也会重排整行。
-		// 多切一小段是为了先裁掉行尾空白、再向前取满一个窗口（与整篇扫描的结果一致）。
-		var from = Math.Max(0, limit - window);
+		// TrimEnd first, bounded to the same whitespace margin as before: slicing a 1600-char
+		// window every frame just to drop its tail allocated a temporary string twice this size.
+		var end = limit;
+		var floor = Math.Max(0, limit - window);
+		while (end > floor && char.IsWhiteSpace(thinking.At(end - 1)))
+		{
+			end--;
+		}
+
+		var from = Math.Max(0, end - LiveLineLimit);
 		// 窗口起点不能落在代理对中间（半个 emoji 会画出 tofu）。
 		if (from > 0 && char.IsLowSurrogate(thinking.At(from))) from++;
-		var span = thinking.Slice(from, limit - from).AsSpan().TrimEnd();
+		var span = thinking.Slice(from, end - from).AsSpan();
 		if (span.Length > LiveLineLimit)
 		{
 			span = span[^LiveLineLimit..];

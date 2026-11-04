@@ -7,7 +7,7 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Aprillz.MewUI.Core" />
+		<ProjectReference Include="$(MewUISourceRoot)src/MewUI/MewUI.csproj" GlobalPropertiesToRemove="PublishAot" />
 		<PackageReference Include="Markdig" />
 	</ItemGroup>
 

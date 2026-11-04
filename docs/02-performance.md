@@ -179,7 +179,7 @@ dotnet run --project tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj
 
 ### 会话打开与内存
 
-- 消息使用 MewUI 0.22.1 的可变高度 `ItemsControl`，只为可见范围与少量预加载行创建正文、Markdown、图片和工具控件。
+- 消息使用 MewUI 实时源码（upstream main）的可变高度 `ItemsControl`，只为可见范围与少量预加载行创建正文、Markdown、图片和工具控件。
 - 滚出视口后释放消息内容，回收池只保留小型容器；再次浏览时恢复轻量的工具/思考展开状态。
 - 模板的 unbind 发生在同一控件重新绑定前，因此在布局结束后清理真正已脱离视口的内容，保留流式更新期间的选区与控件。
 - 历史变更按尾部替换、追加、删除通知，保留既有消息与高度缓存；流式尾部只在可见宿主上原位更新，不发送 Replace 通知，因此虚拟化高度缓存不会回落成 120 DIP 估算值，滚动条与视口不会被短暂压短后停在真实底部之前。流式消息落盘时仍原位替换正文为 Markdown。
@@ -202,12 +202,29 @@ dotnet run --project tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj
 - 跟随意图与布局解耦（对齐 PiDeck 的状态机）：滚轮/触控板/键盘/滚动条才是读者输入，行高变化引起的锚点校正不改变跟随态；近底带内的上滚先累计读者自己的位移（25 DIP 逃逸），1–2 px 的触控板抖动不会退出跟随。Arrow/PageUp/PageDown/Home/End 在焦点控件未处理时滚动会话，嵌套视口到边界后再交还祖先。只有这些真正的滚动键（且未被内层控件处理、不带 Ctrl）才算键盘滚动意图：无关按键与点击/选择正文不再取消组体的跟随增长，也不吞掉当帧已入队、尚未落位的滚轮输入；点击正文只停掉在途滑行动画。代码块的横向视口在 Markdown 建块时补装同一个平滑滚动控制器，触控板横向滑动与 Shift+滚轮走同一套曲线。
 - 平滑滚动输入按帧合并：同一帧的 wheel/trackpad 增量先累加，再一次性写入偏移，避免高回报率设备一帧触发多次重排。动画中途再次输入时用 Hermite 曲线从当前速度续接，不再每次从零速重开 ease；键盘自动重复（`KeyEventArgs.IsRepeat`）直接落位，长按方向键不再被压成单次曲线的第一小段。滚轮落在滚动条上仍由视口按 100 DIP 平滑滚动，不再走 `ScrollBar` 的 24 DIP 立即跳变；终端滚轮把分数刻度累积成整行（一格 3 行），触控板不会每个事件都跳 3 行。跟底滑行不再使用固定 260ms 上限，而是按剩余距离提高指数衰减率：近距离保持柔和尾巴，几万 DIP 的「回到最新」在几百毫秒内收敛到阈值，避免最后一帧突然跳几十 DIP。以上仍是应用层优化，滚动帧依旧会触发 MewUI 的 arrange；真正的 placement-only 滚动需要框架改动。
 - **首次打开复杂会话、快速上滚时的「进度跳变/回退」根因在虚拟化行高估算，不在滚轮曲线。** MewUI 的 `VariableHeightItemsPresenter` 对未测行使用「已测行高的运行平均」；打开会话只测得尾部行，向上滚入未测历史时，每测出一行都会改写全部未测行的估算位置，presenter 再做锚点校正，把偏移一次改写几千 DIP（320 行夹具实测单次 +8.9K DIP）。内容因锚点校正保持稳定，但滚轮动画的目标仍停在旧坐标系：旧实现要么把这次校正当外部接管停掉滑行，要么让目标多走/倒退一个校正量——表现为「滚了很多却几乎没动、随后回退」。修复：`SmoothScroll.CompensateLayoutCorrections` 在会话时间线与虚拟化组体上启用，滚轮滑行期间遇到 extent 同时变化的偏移校正时，把 `_target`/`_from` 一起平移并继续滑行；extent 不变的外部跳转（滚动条、程序化定位、焦点滚动）仍按读者接管停动画。回归见 `VirtualizedWheelCorrectionTests`：两种估算方向（历史比尾部高/矮）各 40 格上滚，内容位移从修复前的 1.20–1.36K DIP 恢复到 1.72–1.76K DIP（目标 2K，差额来自行槽取整），校正帧的滑行动画不再中断。
-- 执行过程组体的跟底由**几何**决定（`SmoothScroll.AutoFollowAtEnd`）：滚动条停在底部（4 DIP 容差）就跟随最新步骤，只有读者明确上滚（滚轮/键盘向上、拖动滚动条、恢复历史位置）才离开，回到末尾自动重新锁底。布局测高、栈→虚拟化 presenter 切换、展开/折叠步骤引起的 extent 与偏移变化都不再永久关闭跟底——此前这些路径会静默清掉跟随状态，表现为「置底也不跟」。展开步骤时用 `StopFollowingGrowth` 只清本次跟随，并把预览行在同一帧的 `SyncBodyMetrics` 里钉回原位，不留到下一次无关更新。钉锚同时记录**步骤索引**而不只是行宿主：虚拟化器会在流式帧里 Replace 该行并换掉宿主，只认引用会让锚点提前失效（表现为偶发的「展开步骤行时组体进度没固定在预览行」）；渲染阶段的收尾最多补两次，且一旦发现偏移不是自己写的（读者滚轮/键盘/滚动条已接管）立刻放弃钉锚，绝不和读者抢滚动。工具步骤的开合一律钉住预览行——即使滚动条正好停在末尾（几何上属于跟随态），展开的正文也不该把阅读位置顶走；流式思考/正文的开合仍交给跟底通道。流式行重测期间保留布局前的跟底意图，避免被虚拟化 anchor 校正误判成读者上滚，只有滚轮/键盘/滚动条才取消。展开流式思考仅在读者本就位于末尾时才继续贴底。组内展开项的标题吸顶走 `StickyExpander`（MewUI 没有 `position: sticky`）：排布阶段把 Header 放到组体视口顶边并在本项范围内 clamp，绘制阶段先画正文（裁掉标题覆盖的那一段）再画标题与折叠箭头，因此标题背后不需要不透明底色、换肤不会失配，也不会被代码块/正文底色盖住。吸顶判定与绘制只在已展开、且整项高于组体视口的行上发生；会话里的同一套视图（没有挂组体视口）行为完全不变。覆盖 `RenderSubtree` 会让这些步骤行成为「兼容子树」，与流式 Markdown 现有的记录方式一致：滚动时按行的 Bounds 变化重录一次，和它内部 Markdown 的既有重录同源，不引入新的每帧布局工作（几何判定全在 arrange 里读 `Bounds`/`ViewportHeight`，没有滚动订阅）。展开动作本身与之后的**每帧续跟**分开：展开走 `ConversationScroll.ScrollToLatest`（读者的阅读指令，重新锁底），此后每个流式帧只走 `ContinueFollowing`——读者已经上滚就什么都不做。此前两条路共用 `ScrollToLatest`，展开着的思考只要还在流，会话每帧都被重新锁回末尾，滚轮/滚动条/键盘全部失效（`ExecutionProcessTests.StreamingThinkingInsideAGroupNeverLocksTheConversationBackToTheTail` 回归）。
+- 执行过程组体的跟底由**几何**决定（`SmoothScroll.AutoFollowAtEnd`）：滚动条停在底部（4 DIP 容差）就跟随最新步骤，只有读者明确上滚（滚轮/键盘向上、拖动滚动条、恢复历史位置）才离开，回到末尾自动重新锁底。布局测高、栈→虚拟化 presenter 切换、展开/折叠步骤引起的 extent 与偏移变化都不再永久关闭跟底——此前这些路径会静默清掉跟随状态，表现为「置底也不跟」。展开步骤时用 `StopFollowingGrowth` 只清本次跟随，并把预览行在同一帧的 `SyncBodyMetrics` 里钉回原位，不留到下一次无关更新。钉锚同时记录**步骤索引**而不只是行宿主：虚拟化器会在流式帧里 Replace 该行并换掉宿主，只认引用会让锚点提前失效（表现为偶发的「展开步骤行时组体进度没固定在预览行」）；渲染阶段的收尾最多补两次，且一旦发现偏移不是自己写的（读者滚轮/键盘/滚动条已接管）立刻放弃钉锚，绝不和读者抢滚动。工具步骤的开合一律钉住预览行——即使滚动条正好停在末尾（几何上属于跟随态），展开的正文也不该把阅读位置顶走；流式思考/正文的开合仍交给跟底通道。流式行重测期间保留布局前的跟底意图，避免被虚拟化 anchor 校正误判成读者上滚，只有滚轮/键盘/滚动条才取消。展开流式思考仅在读者本就位于末尾时才继续贴底。组内展开项的标题吸顶走 `StickyExpander`（MewUI 没有 `position: sticky`）：排布阶段把 Header 放到组体视口顶边并在本项范围内 clamp，绘制阶段先画正文（裁掉标题覆盖的那一段）再画标题与折叠箭头，因此标题背后不需要不透明底色、换肤不会失配，也不会被代码块/正文底色盖住。吸顶判定与绘制只在已展开、且整项高于组体视口的行上发生；会话里的同一套视图（没有挂组体视口）行为完全不变。通过 `IVisualTreeHost`/`OnRenderOverlay` 自定义绘制顺序，与流式 Markdown 现有的记录方式一致：滚动时按行的 Bounds 变化重录一次，和它内部 Markdown 的既有重录同源，不引入新的每帧布局工作（几何判定全在 arrange 里读 `Bounds`/`ViewportHeight`，没有滚动订阅）。展开动作本身与之后的**每帧续跟**分开：展开走 `ConversationScroll.ScrollToLatest`（读者的阅读指令，重新锁底），此后每个流式帧只走 `ContinueFollowing`——读者已经上滚就什么都不做。此前两条路共用 `ScrollToLatest`，展开着的思考只要还在流，会话每帧都被重新锁回末尾，滚轮/滚动条/键盘全部失效（`ExecutionProcessTests.StreamingThinkingInsideAGroupNeverLocksTheConversationBackToTheTail` 回归）。
 - 会话内搜索进入时取消跟底并定位第一条命中，清空后按“搜索前的行 + 行内深度”恢复阅读位置（长回复中间也不会跳回行首）；过程组里的工具名与输出也参与匹配。
 - **流式每帧的整篇文本拷贝才是「每帧分配」的大头（2026-10 二次定位并修掉）**：`ChatViewModel.Entries()` 每个 delta 事件都调用 `_streamingText/_streamingThinking.ToString()`，200 K 字的回复就是每次投影一份 ~400 KB 的临时字符串。诊断文件里 `runtime.window` 的 `alloc/frame` 是**累计**平均值（`alloc/frame = 累计分配 / 累计帧数`），它长期停在 ~435 KB 正说明每帧都在复制整篇；同一份文件里 `gen0=3794 / gen2=33`、以及一批 `draws=0` 的 200–400 ms `frame.long`，与这条路径产生的 GC 压力相称（`ui.render` 的 8–22 ms 慢样本也集中在这种持续分配期）。修复：流式正文与思考改成**追加式快照**（`StreamedText`：来源 + 回合代号 + 长度，配 `StreamText` 统一「普通字符串 / 流式来源」两种形态）；打字机、增量 Markdown、单行预览只按前缀切片，`ChatEntry.TextLength/ThinkingLength` 与行相等判定都是 O(1)，整篇物化只发生在复制/导出这类冷路径（`ChatEntry.Text` 仍是惰性 string，对外语义不变）。实测：`StreamingAllocationProbe` 的 `Entries() rebuild` 从 **393,748 B/帧 → 1,300 B/帧**；真实 `SessionTab`（150 K 字流式回复）的 `Render()` 分配从 ~400 KB/帧降到 **272 B/帧**（`StreamingRenderBudgetTests` 钉住 ≤16 KiB/帧的预算）。另外两处每帧热路径的顺手修复：组体视口清单改为建体时登记（不再每帧遍历可视化树）、`BusyIndicator` 用长度判断（不能读 `Text` 触发整篇物化）。
 
 - **工作集随对话涨到 GB 级的根因（2026-10 定位并修掉）：MewVG 的「临时文本贴图」在离屏帧会话里只加不回收。** 逐字打字机让流式尾块**每帧都换文本**，`MarkdownParagraphView` 因此把尾块画成 transient 文本；MewVG 把它写进 `MewVGTextCache.UseTransient` 的临时槽位，而这些槽位只在**窗口帧**的 `EndFrame → ReleasePendingDeletes` 里回收。保留帧/透明度组走的是**离屏帧会话**（`X11OffscreenFrameSession.EndFrame`），它没有调用 `ReleasePendingDeletes`：每帧新建一张纹理、`_transientIndex` 永不归零、`RenderResourceMetrics.TextCacheBytes` 只加不减——实测 60fps 流式下 **`text=` 从 281 KiB 线性涨到 469 MiB/74 s（≈6 MiB/s）**，工作集 259 → 431 MiB 且仍在涨（30 分钟级会话就是 GB 级，正好对上「对话越久越大、启动只有 400 MB」的现象）。修复：`MarkdownParagraphView` 不再使用 transient 文本（`TextDrawOptions.Transient = false`），尾块文本走普通文本缓存——受 **16 MiB LRU** 约束，滚动/定稿自动淘汰。实测同一场景 100 秒流式后 `text=` 稳定在 **16 MiB**、工作集 **335 MiB 不再增长**（`--ui-smoke stream` 可复现：`stream t=Ns ws=… text=…` 每秒一行）。上游修复是让 `X11OffscreenFrameSession.EndFrame` 也调用 `TextCache.ReleasePendingDeletes()`，修好后可以重新评估 transient 路径（它本来是为了不把一次性文本塞进 LRU）。
-- **MewUI 升级观察清单（当前锁 0.22.1）**：我们踩到的两类问题上游都在 `main` 上修了，但**都还没进任何 NuGet 版本**（最新 tag `v0.22.1` = 2026-09-30；`build/MewUI.Common.props` 的 `MewUIVersion` 仍是 0.22.1，仓库只有 `release.yml` 的 tag 发布，没有 preview feed）。下一版发布后按顺序复核：
+- **MewUI main 的虚拟化布局死循环（2026-11 定位并修掉）**：源码版 `VariableHeightItemsPresenter` 会在自己的 arrange 里测量行；当时 `MarkdownView.ArrangeContent` 每条路径都无条件 `InvalidateMeasure()`，并且用 arrange 宽度去排按 measure 宽度测出的块。结果每轮 arrange 都重新标脏整个窗口，布局永远不收敛——打开 4.7 MB 会话后卡在「正在准备会话」，UI 线程 100% CPU、每轮跑满 8 次布局预算。修复：`ArrangeAttachedContent` 统一使用 measure 宽度（`_measureWidth`）排块，只有总高变化或仍有未测块时才失效；`VirtualizationAudit` 的远距离 `ScrollIntoView` / 流式组体回归用例继续覆盖。源码版打开同一会话恢复为约 0.3 s 完成、空闲 CPU 约 19%，NativeAOT 发布版同样验证通过。
+- **本轮热路径审计（2026-11）**：流式工具组头只在成员数量/末尾条目变化时重算摘要，运行组的最新工具参数解析也按参数字符串引用缓存，避免每帧重跑 `GroupSummary` / `JsonNode.Parse`；`ExecutionProcess.Stats` 在同一遍扫描里统计 `Stopped`，去掉每帧 `Any()` 的 LINQ 枚举器。`MarkdownView` 的高度 LRU、Markdown 图片 LRU 与 `MarkdownMetrics` 行高 LRU 都把链表节点和值一起保存，命中从 O(n) 扫描改为 O(1) 重排；`StreamedText.Slice` 用 `string.Create` 直接写最终字符串，少一次 `char[]` 与整段拷贝。另修掉 `GitStatusReader.RunDetailed` 超时后仍等待 stdout/stderr 读任务的路径：原实现会一直等未退出的子进程，UI 可能永久冻住；现在先杀进程树，再有界收尾并按超时返回。
+- **本轮源码热路径审计（2026-11，第二轮）**：重点处理流式 Markdown 与过程组每帧的 O(document) 工作，而不是继续堆缓存：
+  - `MarkdownDocument` 的增量解析以前只重解析尾块，但每帧仍会为**整篇文档**重建 `AnchorBlocks`、`TextUnits` 与 `UnitIndex`。现在 `MarkdownParser.Parse(..., previous)` 把上一版的未变前缀直接传给新文档，只收集尾块的文本单元/锚点；同时从上一版的 `AnchorBlocks` 复制前缀并只移除被替换尾块贡献的锚点。`MarkdownIncrementalParserTests` 现在逐前缀同时比对 blocks、文本单元和锚点表。
+  - `MarkdownParser.TryParseTail` 的锚点种子也不再递归遍历全部历史块，而是读取上一版 `AnchorBlocks` 并排除被替换的尾行。
+  - `MarkdownView.ApplyDocument` 复用上一帧的 `List<BlockSlot>` 容量，`_prefix` 数组在块数不变时复用；增量前缀的文本单元/内嵌元素不再每帧重走。`BlockSlot` 用 generation 标记替代每帧新建的 `HashSet`。
+  - `MarkdownParagraphView.RebuildRuns` 只在真的存在链接/图片时创建列表；无图片段落不再每帧进入 `RebuildImages` 的字典/List 分配。
+  - `ThinkingPreview.LatestLine` 先按 1024 字上限反向裁掉行尾空白，再只切最多 600 字的行尾窗口；以前每帧先切 1600 字再生成最终行，临时字符串约为此前的两倍。
+  - `ConversationTimeline.SameMetadataOnly` 不再用两次 `with { ToolArguments = null }` 克隆记录；`ExecutionProcessProjector.ProjectRange` 在无工具的轮次不建字典，并原地压缩 turn 列表；`ExecutionProcessView` 的统计文本只在计数变化时格式化，步骤键只在真正重建行时拼接。
+  - 实测（x64 Debug / Xvfb，`MarkdownViewTests.StreamingAppendCostStaysBounded` 的 180 块尾部追加）：中位分配从约 **113 KiB/帧降到 65–68 KiB/帧**，耗时仍在中位约 2 ms；这是局部基准，不代表整进程 RSS。桌面测试 **1165/1165** 通过。
+  - NativeAOT `linux-x64` 回归（同一 4.7 MB 真实会话）：首帧 **209 ms**，空闲托管堆约 **31 MiB**；`--ui-smoke stream` 持续 30 秒工作集稳定在 **293 MiB**、`rtext≈1.07 MiB`、无增长趋势。工作集仍主要来自 AOT 代码页、GL 驱动/共享表面和字体映射，而不是托管的 Markdown/消息对象；继续压这块需要框架或字体缓存层改动，不能在应用侧靠删缓存换取正确性。
+- **右侧面板打开卡顿/卡死（2026-11 定位并修掉）**：文件、Git、检查点三个分段在构造或刷新时同步执行 `git status` / `git log` / `for-each-ref`；大仓库或 Git 响应慢时，这些外部进程直接占住 UI 线程，面板看起来「卡死」。现在运行窗口里把枚举目录、Git 状态、提交图与分支列表、检查点列表都放到线程池，回到 UI 线程只做控件更新；文件浏览器与 Git 面板用 generation 丢弃过期结果。无窗口测试仍走同步路径，保持既有断言与确定性。
+  - `FileBrowserView.Refresh` 的后台结果只在目录/版本仍匹配时应用，避免快速切目录时旧列表覆盖新列表。
+  - `GitView` 的状态、提交图、分支列表分别异步加载；提交图只先渲染缓存/空态，完成后原位重建图区。
+  - `CheckpointsView` 的 `git status` + `for-each-ref` 放到后台，行摘要继续按需串行加载。
+  - 验证：用一个每次调用先 `sleep 3` 的假 `git` 运行 `--ui-smoke panel` / `--ui-smoke git`，面板打开后 UI 仍立即响应，没有 3 秒级长帧；真实仓库的既有测试与演练保持通过。
+
+- **MewUI 源码升级观察清单**：PiWeft 直接跟随 `external/MewUI` 的 upstream main，不再使用 NuGet 版。更新子模块后按顺序复核：
   - `11ebf80b` / #294「Fix transient text growth on MewVG offscreen frames」——正是本轮 `rtext` 无上限增长：离屏帧会话没有 drain 文本缓存，流式尾块的 transient 文本每帧新建一张贴图。上游给三个后端的离屏 `EndFrame` 各补一行 `ReleasePendingDeletes`。**升级后可以去掉 `MarkdownParagraphView` 的 `Transient: false` 工作区**（transient 的初衷是避免把一次性文本塞进 LRU），但要先用 `--ui-smoke stream` 复核 `rtext` 不再增长。
   - `97c18931`「Draw wrapped text with the line breaks it measured」+ `eeac5ffe` / `11137c95`「Stop wrapped text blocks / Markdown paragraphs re-measuring from arrange」——正是「布局宽度与绘制宽度差一个设备像素，在 125% 缩放下把词挤到下一行、行高装不下就叠字」的那一类；同时移除了「arrange 里反过来 invalidate measure」的重复布局模式（我们的 `MarkdownParagraphView.ArrangeContent` 目前仍有这个写法，升级后可改成「按 arrange 宽度绘制、父级负责高度」）。
   - `430656e0` / `0d3a21ac` / `c38cb09c`（measure→arrange 契约：测量后重新 arrange、arrange 前先测陈旧元素、补上被窗口布局漏掉的 arrange）——对应我们 `ExecutionProcessView.KickBodyLayout`、`MarkdownView` 就地补齐这类手工失效；升级后先保留（无害），再用 `MarkdownVirtualizationSweepTests` / `FoldScrollTests` 复核能否简化。
@@ -244,7 +261,7 @@ dotnet run --project tools/PiWeft.SessionBench/PiWeft.SessionBench.csproj
 32 K 单段落一次性全量布局仍是历史消息首次进入时的成本；流式路径从第一帧起就按开放尾块增长，不会走到它。分块布局与整段布局的行数、行高、baseline 和总高度在测试中逐行比对一致；块回收只保留外层视口附近的元素，总高度保持精确，因此外层可变高度虚拟化的行高缓存不会因回收而失效。
 
 流式渲染不再替换段落/列表/表格元素：尾块原位更新，新增列表项/表格行/引用段落直接追加到现有容器；视口内及上下各 2 个块保持已附着，视口外再保留 ±12 个已测块，避免边界抖动反复 attach/detach。这些是消除“增量更新时文本块一直闪烁”的关键。
-- 虚拟化行的高度只在 arrange 阶段重测。MewUI 0.22.1 里 `InvalidateMeasure` 命中「祖先已 dirty」分支时不会同时置 arrange dirty，行高变化会被跳过（表现为展开最后一步/展开思考后组体滚不到新内容；该缺陷在 0.22.1 与当前 main 上都能复现，已在框架仓库补了回归测试与修复）。ExecutionProcessView 与时间线在行内更新后显式 `InvalidateArrange`（含视口内容），布局落定后重新发布 extent，并把正在跟随增长的组体重新贴到底部；升级到含修复的 MewUI 后这些显式失效依然安全。会话搜索弹窗的行是带 hover 提示的按钮，不做虚拟化，因此结果按 200 行封顶并在状态行说明截断（`SessionSearchTruncated`），避免一次检索构造上千个控件。
+- 虚拟化行的高度只在 arrange 阶段重测。旧版 MewUI 里 `InvalidateMeasure` 命中「祖先已 dirty」分支时不会同时置 arrange dirty，行高变化会被跳过（表现为展开最后一步/展开思考后组体滚不到新内容；该缺陷在旧版上能复现，当前 main 已含回归测试与修复）。ExecutionProcessView 与时间线在行内更新后显式 `InvalidateArrange`（含视口内容），布局落定后重新发布 extent，并把正在跟随增长的组体重新贴到底部；升级到含修复的 MewUI 后这些显式失效依然安全。会话搜索弹窗的行是带 hover 提示的按钮，不做虚拟化，因此结果按 200 行封顶并在状态行说明截断（`SessionSearchTruncated`），避免一次检索构造上千个控件。
 
 同一 1000 轮、2000 条消息 fixture 的局部冷启动观测（包含 `SessionTab` 构造及 960×720 控件布局，不包括 JSONL 解析、模型环境初始化或网络请求）：
 
@@ -285,13 +302,14 @@ Linux NativeAOT 发布版、Xvfb/Mesa、1280×820 的实际会话演练中：60 
 
 `.NET 10` NativeAOT 发布对照：默认 `piweft-desktop` 62,399,168 bytes；`OptimizationPreference=Speed` 为 64,028,176 bytes（+2.6%），适合确认 AOT 代码生成为瓶颈后再开启。`PredefinedCulturesOnly=true` 在当前依赖下没有减小体积，仍保留中文/本地化能力。
 
-**下一批候选**：`SessionManager.ReadFileEntries` 仍是 `File.ReadLines` + `JsonNode` 全量解析；目录扫描已经用 `Utf8JsonReader`，但打开超大历史文件仍会创建完整消息对象。Provider 侧每个 SSE 事件仍构造一次 `JsonDocument`（字节数组分配已消除）；终端在高频全屏重绘时仍会为新增行创建 `Run`（只在缓存未命中时）。侧栏刷新仍是**同步**的：200 份会话约 0.6 ms，2000 份约 7–10 ms 且分配约 1.1 MB（`Directory.EnumerateFiles` 的路径字符串），侧栏展开时每轮结束都会付一次；根治要么把 `RefreshSessions` 改成带合并的后台任务，要么只重扫当前会话那一份文件。OAuth 令牌刷新是同步的（`ProviderEnvironment.RefreshOAuth` 走 `GetAwaiter().GetResult()`）：真正过期的那一次请求会在发起线程上等一次 HTTP 往返（网络异常时最长 30 s 超时），正确的修法是把凭据解析链改成异步。
+**下一批候选**：`SessionManager.ReadFileEntries` 仍是 `File.ReadLines` + `JsonNode` 全量解析；目录扫描已经用 `Utf8JsonReader`，但打开超大历史文件仍会创建完整消息对象。Provider 侧每个 SSE 事件仍构造一次 `JsonDocument`（字节数组分配已消除）；终端在高频全屏重绘时仍会为新增行创建 `Run`（只在缓存未命中时）。侧栏刷新仍是**同步**的：200 份会话约 0.6 ms，2000 份约 7–10 ms 且分配约 1.1 MB（`Directory.EnumerateFiles` 的路径字符串），侧栏展开时每轮结束都会付一次；根治要么把 `RefreshSessions` 改成带合并的后台任务，要么只重扫当前会话那一份文件。
 
 ## Tooltip 与执行过程
 
 - Tooltip 保留 350 ms 延迟，通过 `Popup.ShowAt` 展示，内容测量、原生表面与边界翻转交给 MewUI。锚点直接使用窗口绝对 `Bounds`，不累加父级坐标，不把提示内容放入 `OverlayLayer`。
 - 每轮一个执行过程汇总，历史默认折叠；思考和连续工具调用组成次级折叠组，中间回复按原顺序穿插，末尾正文与图片保持常显。流式轮自动展开最新过程组，尊重手动开合状态。
 - 工具调用与结果通过调用 ID 合并，只计数一次，同时保留输入参数与输出。工具正文与 diff 仍首次展开时才创建。
+- 运行中的工具步骤行有独立秒表：开始时刻在 `tool_execution_start` 记一次（`tool_execution_update` 不重置，且桌面当前不渲染部分输出，这类事件直接早退，不再触发整帧重绘），`LiveDurationText` 每 100 ms 只改自己这一枚 TextBlock；折叠、滚出组体视口或切走标签页时停表，不触发整帧 `Render` 重投影。读数用等宽 + 固定最小宽度，计时增长不会推动右侧命令摘要。思考行在同一套秒表上跑（只在本段思考进行时显示），结束后由标题的「思考了 X」接手。
 - 过程组内 24 条以内步骤使用内容驱动的栈：展开/收起步骤会同步更新组体高度（最高 300 DIP），滚轮落在组体空白与竖线区域也先归组体；超过 24 条切换为虚拟化列表并固定限高，组体不再随单行展开跳高。流式最新组自动展开时跟住末尾，手动展开从顶部开始；工具步骤展开用预览行锚点停住，流式思考展开则让组体与会话跟随内容增长。虚拟化回收后仍恢复两级折叠和工具明细状态；释放资源时也处理已经折叠、没有出现在可见树里的内容。
 - `NativeHoverTests` 在独立 Xvfb 中驱动实际鼠标，检查延迟、顶部和底部提示、移出与滚动关闭，以及执行过程开合。
 - 会话统计与余额配置使用原生 `Border`、`DockPanel`、`ScrollViewer` 分配剩余高度，不在 `MeasureContent` 中修改 `MaxHeight` 等布局属性。
@@ -527,6 +545,12 @@ PIWEFT_NATIVE_TESTS=1 PIWEFT_SCREENSHOTS=/tmp/piweft-interaction-validation \
 
 | 项 | 问题 | 处理 |
 |---|---|---|
+| 用量摘要自动刷新失效 | 统计面板打开时 `Show()` 随每次会话重绘调用，`StartTimer()` 每次都写 `DispatcherTimer.Interval`；MewUI 会在启用状态下 `Reschedule`，5 分钟倒计时被不断重置 | 同一间隔且已启用时不再重启；数值刷新只更新既有 Text/进度条，结构不变不重建控件 |
+| 工作集远大于提交 | `runtime.window` 只记 rss/heap，无法区分字体文件映射、GPU/驱动共享内存与托管堆 | 增加 `priv/commit/anon/file/shmem/fonts`（Linux 每 5 秒读 `smaps_rollup` 与 `maps`）；工作集 >2 GiB 时清理托管文本布局缓存并限流 30 秒 |
+| 超大行缓冲回池 | `Utf8LineReader.EnsureCapacity` 把超过 256 KiB 的旧行缓冲也还给共享池，与 `Dispose` 的阈值策略不一致 | 与 `Dispose` 同门槛：超过阈值交给 GC，不让共享池常驻大块 |
+| OAuth 刷新阻塞请求线程 | `ProviderEnvironment.RefreshOAuth` 走 `GetAwaiter().GetResult()`，真正过期的那次请求会在发起线程上等一次 HTTP 往返（网络异常时最长 30 s） | 请求路径改用 `ProviderEnvironment.ResolveApiKeyAsync`：auth.json 异步读、命令型凭据异步执行、刷新闸门 `WaitAsync`；刷新开始后不跟随请求取消，避免轮换型 refresh token 丢失。CLI `auth`、模型目录刷新与桌面用量探测也一并改为 await |
+| 命令型凭据输出上限 | 旧实现先 `ReadToEndAsync` 再判断 64 KiB，一条输出几百 MB 的命令会先吃掉整块内存 | stdout 改为 `ArrayPool<char>` 有界读，达到上限立即杀进程；stderr 异步排空避免管道写满卡死；池化缓冲归还前清零 |
+| 请求超时起点 | `BeginHeaderTimeout` 在凭据解析前就启动计时器，慢 OAuth 刷新会消耗 `timeoutMs`，甚至还没发请求就超时 | `HeaderTimeoutScope` 改为首次读取 `Token`（真正 `SendAsync`）时才启动计时器，响应头到手立即 `Stop` 释放定时器；解析失败也不再白建 CTS/定时器 |
 | 网关特殊头 | OpenCode 缺 `x-opencode-session` 直接 400；OpenRouter/Cloudflare/Fireworks 缺会话亲和头会打散缓存；Copilot 动态头缺失影响路由/图片请求 | OpenCode/会话亲和/Copilot 三类头统一在请求构建尾部补齐（显式头优先）；Anthropic 兼容 provider 按 `model.Provider` 取凭据，Copilot/Claude OAuth 使用 Bearer 与各自配套头 |
 | auth.json 并发写 | OAuth 刷新、API Key 保存、Codex 设备码各自「读整份 → 改一条 → 写整份」，并发时后写者会丢掉前者的新令牌 | 三类写路径共用 `AuthFileGate`（`System.Threading.Lock`）；同 provider 的 OAuth 刷新再加一把 `SemaphoreSlim`，等待者读回新令牌，避免重复刷新轮换 refresh token |
 | 手改 auth.json | `type/access/expires` 类型不符时 `GetValue<string>()` 会抛异常，认证页/模型可用性可能整页失败 | OAuthStore 与 CodexAuth 的读取改为 `TryGetValue` 宽松收窄，坏条目按缺失处理；写盘仍拒绝覆盖损坏文件；`ReadAccessToken` 修正了「两个分支都返回 access」的过期判断错误 |
@@ -534,4 +558,4 @@ PIWEFT_NATIVE_TESTS=1 PIWEFT_SCREENSHOTS=/tmp/piweft-interaction-validation \
 | 统计面板缓存 | 面板已打开时 `Invalidate` 只清行不重查，配置保存后可能停在旧值 | `Invalidate` 在 `_open` 时立即刷新 |
 | 小分配 | `Convert.ToHexString(...).ToLowerInvariant()` 多分配一份字符串；手写正则走运行时编译；非 OpenCode 请求也做 `Uri` 解析；模型可用性对每个目录模型做 O(n) 的 API 数组查找 | 改用 `Convert.ToHexStringLower`、`[GeneratedRegex]`、先做域名子串快筛再 `Uri.TryCreate`、`FrozenSet` + `SupportsApi`；用户文件引用的中文标点扫描改用缓存 `SearchValues<char>`（`System.Threading.Lock` 也已用于新增门闩） |
 
-未在这轮处理：`ProviderEnvironment.RefreshOAuth` 仍是同步等待异步刷新（请求线程会阻塞一次网络往返），以及 auth.json 的跨进程写入（pi CLI 与本进程各自原子替换，没有共享文件锁）。这两项需要异步凭据解析协议或跨进程锁，收益与风险不成比例，先保留在差距清单。
+未在这轮处理：auth.json 的跨进程写入（pi CLI 与本进程各自原子替换，没有共享文件锁）。这项需要跨进程锁，收益与风险不成比例，先保留在差距清单。

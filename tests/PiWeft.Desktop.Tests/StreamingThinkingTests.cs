@@ -398,7 +398,10 @@ public sealed class StreamingThinkingTests
 		view.SyncBodyMetrics();
 		Pump(view.View);
 
-		var paragraphs = Find<MarkdownParagraphView>(markdown).ToArray();
+		// 新虚拟化器会把整行回收并重建，旧 MarkdownView 已脱离可视化树；按当前树重新取。
+		var restored = Find<MarkdownView>(view.View)
+			.Single(candidate => candidate.Source == thinkingText);
+		var paragraphs = Find<MarkdownParagraphView>(restored).ToArray();
 		Assert.NotEmpty(paragraphs);
 		Assert.Contains(paragraphs, paragraph => paragraph.Bounds.Height > 0 &&
 			paragraph.Bounds.Bottom > body.Bounds.Y && paragraph.Bounds.Y < body.Bounds.Bottom &&
@@ -714,7 +717,6 @@ public sealed class StreamingThinkingTests
 		Pump(view.View);
 		ExpandGroups(view.View);
 		var body = BodyOf(view);
-		var smooth = SmoothScroll.For(body);
 		var list = Find<ItemsControl>(view.View).Single();
 		list.ScrollIntoView(list.ItemsSource.Count - 1);
 		Pump(view.View);
@@ -727,40 +729,49 @@ public sealed class StreamingThinkingTests
 		var markdown = Assert.Single(Find<MarkdownView>(view.View), candidate => candidate.Source == thinkingText);
 		guard.Track(markdown);
 
-		// Put the middle of the long thinking Markdown in the middle of the group body.
-		var desired = Math.Clamp(
-			markdown.Bounds.Y - body.Bounds.Y + markdown.Bounds.Height / 2 - body.ViewportHeight / 2,
-			0, smooth.MaxVerticalOffset);
-		body.SetScrollOffsets(0, desired);
+		// 思考是过程组的最后一步；展开后把它滚到组体末尾（长内容再按末尾定位），
+		// 让虚拟化器重新实现这一行，而不是拿展开前缓存的中间偏移硬套。
+		body.SetScrollOffsets(0, double.MaxValue);
 		Settle(view);
+		for (var pass = 0; pass < 2; pass++)
+		{
+			view.SyncBodyMetrics();
+			Pump(view.View);
+		}
 		var offset = body.VerticalOffset;
-		var paragraph = Find<MarkdownParagraphView>(markdown)
+		// 行在滚动中可能已被虚拟化器回收并重建：每次从当前可视化树取实例，不持有旧引用。
+		var current = Find<MarkdownView>(view.View)
+			.Single(candidate => candidate.Source == thinkingText);
+		var paragraph = Find<MarkdownParagraphView>(current)
 			.First(candidate => candidate.Bounds.Bottom > body.Bounds.Y && candidate.Bounds.Y < body.Bounds.Bottom);
-		Assert.True(markdown.BeginSelectionAtForTest(new Point(paragraph.Bounds.X + 2, paragraph.Bounds.Y + 4)));
+		Assert.True(current.BeginSelectionAtForTest(new Point(paragraph.Bounds.X + 2, paragraph.Bounds.Y + 4)));
 
 		// Clicking a MarkdownView focuses the whole (viewport-taller) view. MewUI's focus-into-view
 		// would scroll the group body to the view's top/bottom, jumping the progress and temporarily
 		// releasing the virtualized step row. The focus guard must preserve every ancestor viewport.
-		Assert.True(markdown.Focus());
+		Assert.True(current.Focus());
 		Pump(view.View);
 		view.SyncBodyMetrics();
 		Pump(view.View);
 
 		Assert.InRange(body.VerticalOffset, offset - 1, offset + 1);
-		Assert.True(markdown.RealizedBlockCount > 0, "clicking the thinking text must not blank the Markdown");
-		Assert.Contains(Find<MarkdownParagraphView>(markdown),
+		current = Find<MarkdownView>(view.View).Single(candidate => candidate.Source == thinkingText);
+		Assert.True(current.RealizedBlockCount > 0, "clicking the thinking text must not blank the Markdown");
+		Assert.Contains(Find<MarkdownParagraphView>(current),
 			candidate => candidate.Bounds.Height > 0 && !string.IsNullOrEmpty(candidate.Text));
 
 		// Link paragraphs are independent focus targets; they must preserve the same ancestor
 		// viewports instead of letting focus-into-view move the group body.
-		var linkParagraph = Find<MarkdownParagraphView>(markdown)
+		current = Find<MarkdownView>(view.View).Single(candidate => candidate.Source == thinkingText);
+		var linkParagraph = Find<MarkdownParagraphView>(current)
 			.First(candidate => candidate.Focusable);
 		Assert.True(linkParagraph.Focus());
 		Pump(view.View);
 		view.SyncBodyMetrics();
 		Pump(view.View);
 		Assert.InRange(body.VerticalOffset, offset - 1, offset + 1);
-		Assert.True(markdown.RealizedBlockCount > 0);
+		current = Find<MarkdownView>(view.View).Single(candidate => candidate.Source == thinkingText);
+		Assert.True(current.RealizedBlockCount > 0);
 		UiLifetime.Release(view.View);
 	}
 

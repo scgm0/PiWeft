@@ -33,26 +33,31 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Aprillz.MewUI.Core" />
-		<PackageReference Include="Aprillz.MewUI.Svg" />
+		<ProjectReference Include="$(MewUISourceRoot)src/MewUI/MewUI.csproj" GlobalPropertiesToRemove="PublishAot" />
+		<ProjectReference Include="$(MewUISourceRoot)extensions/MewUI.Svg/MewUI.Svg.csproj" GlobalPropertiesToRemove="PublishAot" />
 		<PackageReference Include="MiniPty" />
 		<PackageReference Include="OldBit.Beep" />
 	</ItemGroup>
 
 	<ItemGroup Condition="'$(MewUITarget)' == 'linux'">
-		<PackageReference Include="Aprillz.MewUI.Platform.X11" />
-		<PackageReference Include="Aprillz.MewUI.Backend.MewVG.X11" />
+		<ProjectReference Include="$(MewUISourceRoot)src/MewUI.Platform.X11/MewUI.Platform.X11.csproj" GlobalPropertiesToRemove="PublishAot" />
+		<ProjectReference Include="$(MewUISourceRoot)src/MewUI.Backend.MewVG.X11/MewUI.Backend.MewVG.X11.csproj" GlobalPropertiesToRemove="PublishAot" />
 	</ItemGroup>
 
 	<ItemGroup Condition="'$(MewUITarget)' == 'windows'">
-		<PackageReference Include="Aprillz.MewUI.Platform.Win32" />
-		<PackageReference Include="Aprillz.MewUI.Backend.Direct2D" />
+		<ProjectReference Include="$(MewUISourceRoot)src/MewUI.Platform.Win32/MewUI.Platform.Win32.csproj" GlobalPropertiesToRemove="PublishAot" />
+		<ProjectReference Include="$(MewUISourceRoot)src/MewUI.Backend.Direct2D/MewUI.Backend.Direct2D.csproj" GlobalPropertiesToRemove="PublishAot" />
 	</ItemGroup>
 
 	<ItemGroup Condition="'$(MewUITarget)' == 'macos'">
-		<PackageReference Include="Aprillz.MewUI.Platform.MacOS" />
-		<PackageReference Include="Aprillz.MewUI.Backend.MewVG.MacOS" />
+		<ProjectReference Include="$(MewUISourceRoot)src/MewUI.Platform.MacOS/MewUI.Platform.MacOS.csproj" GlobalPropertiesToRemove="PublishAot" />
+		<ProjectReference Include="$(MewUISourceRoot)src/MewUI.Backend.MewVG.MacOS/MewUI.Backend.MewVG.MacOS.csproj" GlobalPropertiesToRemove="PublishAot" />
 	</ItemGroup>
+
+	<Target Name="ValidateLocalMewUISource" BeforeTargets="PrepareForBuild"
+		Condition="!Exists('$(MewUISourceRoot)src/MewUI/MewUI.csproj')">
+		<Error Text="MewUI source is missing at $(MewUISourceRoot). Run git submodule update --init --recursive (or scripts/mewui-source.sh / .ps1) first." />
+	</Target>
 
 	<ItemGroup>
 		<InternalsVisibleTo Include="PiWeft.Desktop.Tests" />

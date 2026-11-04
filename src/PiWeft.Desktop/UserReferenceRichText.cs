@@ -266,7 +266,7 @@ internal static class UserReferenceRichText
 			// 投影与原文逐字符等长：每枚引用占位成 1 个 U+FFFC + (n-1) 个零宽空格，
 			// 元素生成器再把整段画成一枚 chip（VisualLength = n）。
 			//
-			// 长度不变很关键：MewUI 0.22.1 的 IME 组合下划线（以及选区/组合 span）仍按
+			// 长度不变很关键：MewUI 源码 的 IME 组合下划线（以及选区/组合 span）仍按
 			// 源文偏移在投影文本上绘制。压缩别名会让这些范围落到投影文本之外，
 			// GetRangeBounds 抛 ArgumentOutOfRange；此前的规避是组合期间撤掉投影，
 			// 代价是输入中文时 chip 退回原始路径。等长投影既保住 chip，又让所有

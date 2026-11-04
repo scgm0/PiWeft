@@ -189,6 +189,48 @@ public sealed class MessageInteractionTests
 	}
 
 	[Fact]
+	public void ThinkingHeaderShowsALiveStopwatchWhileStreamingAndTheMeasuredSpanAfterward()
+	{
+		var startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1500;
+		var live = new ChatEntry
+		{
+			Role = ChatRole.Assistant,
+			Text = string.Empty,
+			Thinking = "plan",
+			IsThinking = true,
+			ThinkingStartedAt = startedAt,
+			EntryId = "thinking-live",
+		};
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var view = new AssistantMessageView(live, _ => { }, focus);
+		try
+		{
+			Assert.Contains(Find<TextBlock>(view.View), text => text.Text == Strings.ThinkingActive);
+			var timer = Assert.Single(Find<LiveDurationText>(view.View), text => text.IsVisible);
+			Assert.False(string.IsNullOrEmpty(timer.Text));
+		}
+		finally
+		{
+			UiLifetime.Release(view.View);
+		}
+
+		var done = new AssistantMessageView(live with
+		{
+			IsThinking = false,
+			ThinkingEndedAt = startedAt + 1200,
+		}, _ => { }, focus);
+		try
+		{
+			Assert.Contains(Find<TextBlock>(done.View), text => text.Text == Strings.ThinkingDuration(1200));
+			Assert.DoesNotContain(Find<LiveDurationText>(done.View), text => text.IsVisible);
+		}
+		finally
+		{
+			UiLifetime.Release(done.View);
+		}
+	}
+
+	[Fact]
 	public void CodeTextThemeRefreshRevalidatesArrangeAfterADirtyMeasure()
 	{
 		var text = AssistantMessageView.CreateCodeText("line 1\nline 2", "text", new TextFocusScrollGuard(new ScrollViewer()));
@@ -201,7 +243,8 @@ public sealed class MessageInteractionTests
 		// 新视图的视口宽度停在 0，代码块只会画背景。刷新必须显式失效排布。
 		text.InvalidateMeasure();
 		text.Arrange(text.Bounds);
-		Assert.True(text.IsMeasureDirty);
+		// 新版 MewUI 的 Arrange 会先补测脏元素（measure→arrange 契约），因此这里不能再断言
+		// IsMeasureDirty；关键是换肤后必须重新进入 arrange，否则横向视口宽度停在 0。
 		Assert.False(text.IsArrangeDirty);
 
 		AppStyles.RefreshTextView(text);

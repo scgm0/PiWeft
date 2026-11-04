@@ -44,12 +44,16 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 			var tools = Transcript.GetTools(messages);
 			var thinkingBudget = ResolveThinkingBudget(model, options);
 			var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
+			var apiKey = await ProviderEnvironment
+				.ResolveApiKeyAsync(model.Provider, options, cancellationToken)
+				.ConfigureAwait(false);
 
-			using var request = BuildRequest(model, messages, tools, options, thinkingBudget, maxOutputTokens);
+			using var request = BuildRequest(model, messages, tools, options, thinkingBudget, maxOutputTokens, apiKey);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
+			headerTimeout.Stop();
 
 			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
 
@@ -107,7 +111,8 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
 		int? thinkingBudget,
-		int? maxOutputTokens)
+		int? maxOutputTokens,
+		string? apiKey)
 	{
 		var bytes = JsonPayload.Write(writer =>
 			GoogleWire.WriteRequest(writer, model, messages, tools, options, thinkingBudget, maxOutputTokens));
@@ -136,7 +141,6 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 		request.Headers.TryAddWithoutValidation("accept", "text/event-stream");
 		request.Headers.TryAddWithoutValidation("user-agent", SharedHttpClient.UserAgent);
 
-		var apiKey = ProviderEnvironment.ResolveApiKey(model.Provider, options);
 		if (apiKey is { Length: > 0 })
 		{
 			request.Headers.TryAddWithoutValidation("x-goog-api-key", apiKey);

@@ -26,6 +26,8 @@ public sealed class HoverHintsTests
 
 		window.WindowState = WindowState.Normal;
 		Assert.True(HoverHints.CanShow(window));
+		// 新建窗口尚未激活：要求焦点的调用（真实悬停路径）必须拒绝。
+		Assert.False(HoverHints.CanShow(window, requireFocus: true));
 	}
 
 	[Fact]

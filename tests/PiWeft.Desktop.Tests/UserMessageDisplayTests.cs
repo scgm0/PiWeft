@@ -199,7 +199,7 @@ public sealed class UserMessageDisplayTests
 		client.HandleTextCompositionUpdate(new TextCompositionEventArgs("中"));
 		Assert.Single(box.Extensions.Projections);
 
-		// MewUI 0.22.1 按源文偏移在投影文本上画组合下划线/span；投影等长时这段范围
+		// MewUI 源码 按源文偏移在投影文本上画组合下划线/span；投影等长时这段范围
 		// 必须仍落在文本里，否则 GetRangeBounds 会抛 ArgumentOutOfRange。
 		var line = box.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
 		var rects = new List<Rect>();

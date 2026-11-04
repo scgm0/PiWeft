@@ -131,6 +131,8 @@ public sealed class GroupBodyStickyHeaderTests
 		var fixture = Build(Steps(Tool(0, 2), Tool(1, 40), Tool(2, 30)));
 		try
 		{
+			// 打开会话时组体可能已经贴到末尾；先回到顶部，才能验证「未跨过视口时不吸顶」。
+			fixture.ScrollTo(0);
 			var steps = Find<StickyExpander>(fixture.Body).ToArray();
 			var step = steps[1];
 			step.IsExpanded = true;
@@ -201,6 +203,7 @@ public sealed class GroupBodyStickyHeaderTests
 		var fixture = Build(Steps(Tool(0, 2), Tool(1, 40)));
 		try
 		{
+			fixture.ScrollTo(0);
 			var step = Find<StickyExpander>(fixture.Body).ElementAt(1);
 			step.IsExpanded = true;
 			fixture.Settle();

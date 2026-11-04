@@ -48,7 +48,7 @@ public sealed class GoogleVertexProvider : IApiProvider
 
 		try
 		{
-			var apiKey = ResolveApiKey(model, options);
+			var apiKey = await ResolveApiKeyAsync(model, options, cancellationToken).ConfigureAwait(false);
 			var bearer = apiKey is null
 				? await GoogleAdc.GetAccessTokenAsync(_tokenHttp, cancellationToken).ConfigureAwait(false)
 				: null;
@@ -71,6 +71,7 @@ public sealed class GoogleVertexProvider : IApiProvider
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
+			headerTimeout.Stop();
 
 			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
 
@@ -238,10 +239,10 @@ public sealed class GoogleVertexProvider : IApiProvider
 				: throw new InvalidOperationException(
 					"Vertex AI requires a project. Set GOOGLE_CLOUD_PROJECT or GOOGLE_PROJECT_ID.");
 
-	private static string? ResolveApiKey(Model model, StreamOptions options) =>
+	private static async Task<string?> ResolveApiKeyAsync(Model model, StreamOptions options, CancellationToken cancellationToken) =>
 		!string.IsNullOrEmpty(options.ApiKey)
 			? options.ApiKey
-			: ProviderEnvironment.ResolveApiKey(model.Provider, options)
+			: await ProviderEnvironment.ResolveApiKeyAsync(model.Provider, options, cancellationToken).ConfigureAwait(false)
 				?? (Environment.GetEnvironmentVariable("GOOGLE_CLOUD_API_KEY") is { Length: > 0 } key ? key : null);
 
 	private static void PushFailure(

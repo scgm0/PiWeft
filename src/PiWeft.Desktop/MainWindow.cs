@@ -51,8 +51,7 @@ public sealed partial class MainWindow : Window
 
 	private UsageStatsView? _usageStatsView;
 	private string? _pendingNotice;
-	private DesktopPreference? _queuedThemePreference;
-	private DispatcherTimer? _themeApplyGate;
+	private CancellationTokenSource? _themeApplyCancellation;
 	private readonly Dictionary<string, CliEnvironment> _environments = new(StringComparer.Ordinal);
 	private CliEnvironment? _environment;
 	private IReadOnlyList<SessionListItem> _sessions = [];
@@ -163,6 +162,7 @@ public sealed partial class MainWindow : Window
 
 		RegisterShortcuts();
 		BuildUi();
+		PrimarySelectionText.Attach(this);
 		WireSoundAlerts();
 		this.OnLoaded(Startup);
 	}
@@ -614,6 +614,9 @@ public sealed partial class MainWindow : Window
 			Diagnostics.Close();
 			_usageStatsView?.Close();
 			_themeWatcher?.Dispose();
+			_themeApplyCancellation?.Cancel();
+			_themeApplyCancellation?.Dispose();
+			_themeApplyCancellation = null;
 			// 每个会话面板里的伪终端都要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
 			foreach (var panel in _sessionPanels.Values) panel.Dispose();
 			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
@@ -2261,24 +2264,32 @@ public sealed partial class MainWindow : Window
 
 		// 连续点击只应用最后一次：每次 SetTheme 都会触发整树重排重绘，
 		// 高频连发可能让虚拟化行里的文本视图重建到一半又被下一次打断（代码块丢文本）。
-		_queuedThemePreference = preference;
-		_themeApplyGate ??= CreateThemeApplyGate();
-		_themeApplyGate.Stop();
-		_themeApplyGate.Start();
+		// 这里用可取消的 Task.Delay 而不是 DispatcherTimer：MewUI 源码版里
+		// DispatcherTimer.Start() 从 UI 回调内重入时可能不排程，主题会一直停在旧值。
+		_themeApplyCancellation?.Cancel();
+		var cancellation = new CancellationTokenSource();
+		_themeApplyCancellation = cancellation;
+		_ = ApplyThemeAfterDelayAsync(preference, cancellation);
 	}
 
-	private DispatcherTimer CreateThemeApplyGate()
+	private async Task ApplyThemeAfterDelayAsync(DesktopPreference preference, CancellationTokenSource cancellation)
 	{
-		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(120));
-		timer.Tick += () =>
+		try
 		{
-			timer.Stop();
-			var preference = _queuedThemePreference;
-			_queuedThemePreference = null;
-			if (preference is null) return;
+			await Task.Delay(120, cancellation.Token).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException)
+		{
+			return;
+		}
+
+		Dispatch(() =>
+		{
+			if (cancellation.IsCancellationRequested || _sessionHostClosed) return;
+			if (ReferenceEquals(_themeApplyCancellation, cancellation)) _themeApplyCancellation = null;
 			ApplyThemePreference(preference);
-		};
-		return timer;
+			cancellation.Dispose();
+		});
 	}
 
 	private void ApplyThemePreference(DesktopPreference preference)

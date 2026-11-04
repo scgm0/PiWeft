@@ -15,12 +15,13 @@ namespace PiWeft.Desktop;
 /// <item>排布阶段把 Header 放到视口顶边（在本项范围内 clamp），正文留在原排布位置继续滚动；</item>
 /// <item>绘制阶段先画正文（裁掉吸顶标题覆盖的那一段），再画标题与箭头 —— 正文不会盖住吸顶标题，
 /// 标题背后也不需要不透明底色（裁掉的那段露出阅读区本身的背景，主题换肤不会失配）。
-/// 覆盖 <see cref="RenderSubtree" /> 会让本行成为「兼容子树」，与流式 Markdown 现有的记录方式一致。</item>
+/// 通过 <see cref="IVisualTreeHost.VisitChildren" /> 先交正文、再交标题，框架按顺序绘制；
+/// 命中测试会反向探测，标题仍在正文之上优先命中。</item>
 /// <item>吸顶时标题右侧只多一个「回到这一步的开头」图标（滚回开头的同时解除组体跟底）。</item>
 /// </list>
 /// 只有挂到组体视口（<see cref="AttachBody" />）的步骤才吸顶：会话里的同一套视图保持原样。
 /// </remarks>
-internal sealed class StickyExpander : Expander
+internal sealed class StickyExpander : Expander, IVisualTreeHost
 {
 	/// <summary>Expander 内部留给折叠箭头的宽度（与框架里的常量一致）。</summary>
 	private const double GlyphAreaWidth = 20;
@@ -193,39 +194,40 @@ internal sealed class StickyExpander : Expander
 
 	protected override void OnRender(IGraphicsContext context)
 	{
-		// 背景/描边仍按本行自身位置画；箭头改到 RenderSubtree 里画，才能落在吸顶位置且不被正文盖住。
+		// 背景/描边仍按本行自身位置画；箭头在 OnRenderOverlay 里画，才能落在吸顶位置且不被正文盖住。
 		// （PiWeft 不给 Expander 套控件模板，因此不必像框架实现那样分流模板路径。）
 		DrawBackgroundAndBorder(context, GetSnappedBorderBounds(Bounds), Background, BorderBrush, BorderThickness, CornerRadius);
 	}
 
-	protected override void RenderSubtree(IGraphicsContext context)
+	/// <summary>正文在吸顶标题下方继续滚动：把标题覆盖的那一段裁掉，标题就不需要不透明底色。</summary>
+	protected override ChildClip? GetChildClip(UIElement child)
 	{
-		// 先画正文：吸顶标题要压在正文之上（框架默认顺序是标题→正文）。
-		if (IsExpanded && Content is { } content) RenderContent(context, content);
+		if (!ReferenceEquals(child, Content) || !_displaced || _headerBand.Height <= 0)
+		{
+			return base.GetChildClip(child);
+		}
+
+		var top = Math.Max(child.Bounds.Y, _headerBand.Bottom);
+		var height = child.Bounds.Bottom - top;
+		return height > 0.5
+			? new ChildClip(new Rect(child.Bounds.X, top, child.Bounds.Width, height))
+			: new ChildClip(Rect.Empty);
+	}
+
+	protected override void OnRenderOverlay(IGraphicsContext context)
+	{
+		base.OnRenderOverlay(context);
 		if (_stuck) DrawStickyFace(context);
-		Header?.Render(context);
 		DrawGlyph(context);
 	}
 
-	/// <summary>正文在吸顶标题下方继续滚动：把标题覆盖的那一段裁掉，标题就不需要不透明底色。</summary>
-	private void RenderContent(IGraphicsContext context, Element content)
+	bool IVisualTreeHost.VisitChildren(Func<Element, bool> visitor)
 	{
-		if (!_displaced || content.Bounds.Height <= 0)
-		{
-			content.Render(context);
-			return;
-		}
-		var top = Math.Max(content.Bounds.Y, _headerBand.Bottom);
-		var height = content.Bounds.Bottom - top;
-		if (height <= 0.5)
-		{
-			// 正文已经整体落在标题后面：整段不画（它下面马上就是本项末尾）。
-			return;
-		}
-		context.Save();
-		context.SetClip(new Rect(content.Bounds.X, top, content.Bounds.Width, height));
-		try { content.Render(context); }
-		finally { context.Restore(); }
+		// 先交正文、再交标题：框架按访问顺序绘制，标题因此压在正文之上。
+		// 命中测试会反向探测，标题仍优先于正文命中。
+		if (IsExpanded && Content is { } content && !visitor(content)) return false;
+		if (Header is { } header && !visitor(header)) return false;
+		return true;
 	}
 
 	/// <summary>吸顶面只有一条底部分隔线：背面就是阅读区背景（正文已裁掉），换肤无需另配颜色。</summary>

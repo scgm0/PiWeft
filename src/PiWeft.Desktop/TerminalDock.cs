@@ -157,7 +157,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			.HoverTip(Strings.TerminalShell)
 			.OnClick(ShowShellMenu);
 
-		_shellInput = new TextBox()
+		_shellInput = new TextBox().PrimarySelection()
 			.Placeholder(Strings.TerminalShellPrompt)
 			.IsVisible(false)
 			.OnKeyDown(key =>

@@ -46,6 +46,8 @@ public sealed partial class GitView : IDisposable
 	private int _graphPage = 40;
 	private bool _branchesLoaded;
 	private bool _branchesDirty = true;
+	private bool _branchesLoading;
+	private int _branchesVersion;
 	private IReadOnlyList<string> _branches = [];
 	private bool _graphLoaded;
 	private bool _graphDirty = true;
@@ -74,6 +76,9 @@ public sealed partial class GitView : IDisposable
 	private TextBox? _branchInput;
 	private CancellationTokenSource? _summaryAbort;
 	private bool _disposed;
+	private int _refreshVersion;
+	private bool _graphLoading;
+	private int _graphVersion;
 	private MultiLineTextBox? _commitInput;
 
 	// 提交摘要的结构化失败原因（对齐 PiDeck 的 GIT_COMMIT_* 码）：只在摘要链路里展示，
@@ -122,7 +127,9 @@ public sealed partial class GitView : IDisposable
 			_moreHost.Row(9));
 		_notRepoHost.IsVisible = false;
 		View = _host;
-		Rebuild();
+		// Initial load is asynchronous in a running window: Git status/graph must not run on the
+		// UI thread while the panel is opening. Headless tests keep the synchronous path.
+		Refresh();
 	}
 
 	public UIElement View { get; }
@@ -138,12 +145,51 @@ public sealed partial class GitView : IDisposable
 			return;
 		}
 
-		Rebuild();
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		{
+			Rebuild();
+			return;
+		}
+
+		var version = ++_refreshVersion;
+		// A status refresh also invalidates an in-flight graph load; its result belongs to the
+		// previous repository snapshot and must not overwrite the new graph.
+		_graphVersion++;
+		_graphLoading = false;
+		var cwd = _cwd();
+		_ = RefreshAsync(cwd, version, dispatcher);
 	}
 
-	private void Rebuild()
+	private async Task RefreshAsync(string cwd, int version, IDispatcher dispatcher)
 	{
-		var status = GitStatusReader.Read(_cwd());
+		GitStatus status;
+		try
+		{
+			status = await Task.Run(() => GitStatusReader.Read(cwd)).ConfigureAwait(false);
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+		{
+			status = new GitStatus { IsRepository = false, Error = Strings.GitUnavailable };
+		}
+
+		void Complete()
+		{
+			if (_disposed || version != _refreshVersion)
+			{
+				return;
+			}
+
+			ApplyStatus(status);
+		}
+
+		if (dispatcher.IsOnUIThread) Complete();
+		else dispatcher.BeginInvoke(Complete);
+	}
+
+	private void Rebuild() => ApplyStatus(GitStatusReader.Read(_cwd()));
+
+	private void ApplyStatus(GitStatus status)
+	{
 		if (_diffRequest is { Kind: GitDiffKind.WorkingTree or GitDiffKind.Staged } request &&
 			!status.Changes.Any(change => string.Equals(change.Path, request.Path, StringComparison.Ordinal)))
 		{
@@ -303,14 +349,61 @@ public sealed partial class GitView : IDisposable
 
 	private IReadOnlyList<string> CurrentBranches()
 	{
-		if (!_branchesLoaded || _branchesDirty)
+		if (_branchesLoaded && !_branchesDirty)
+		{
+			return _branches;
+		}
+
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
 			_branches = GitWriter.Branches(_cwd());
 			_branchesLoaded = true;
 			_branchesDirty = false;
+			return _branches;
+		}
+
+		// Even `git branch` can be slow on a huge ref set. Keep the cached list visible and
+		// fetch it in the background; the first graph render already shows the status.
+		if (!_branchesLoading)
+		{
+			_branchesLoading = true;
+			var version = ++_branchesVersion;
+			var cwd = _cwd();
+			_ = LoadBranchesAsync(cwd, version, dispatcher);
 		}
 
 		return _branches;
+	}
+
+	private async Task LoadBranchesAsync(string cwd, int version, IDispatcher dispatcher)
+	{
+		IReadOnlyList<string> branches;
+		try
+		{
+			branches = await Task.Run(() => GitWriter.Branches(cwd)).ConfigureAwait(false);
+		}
+		catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+		{
+			branches = [];
+		}
+
+		void Complete()
+		{
+			if (_disposed || version != _branchesVersion)
+			{
+				return;
+			}
+
+			_branchesLoading = false;
+			_branches = branches;
+			_branchesLoaded = true;
+			_branchesDirty = false;
+			RebuildGraph();
+			RebuildCompare();
+		}
+
+		if (dispatcher.IsOnUIThread) Complete();
+		else dispatcher.BeginInvoke(Complete);
 	}
 
 	private UIElement BuildBranchBar(GitStatus status)
@@ -410,7 +503,7 @@ public sealed partial class GitView : IDisposable
 	private UIElement BuildNewBranchEditor()
 	{
 		TextBox? input = null;
-		input = new TextBox()
+		input = new TextBox().PrimarySelection()
 			.Text(_branchDraft)
 			.Placeholder(Strings.GitBranchPlaceholder)
 			.Height(AppTheme.ControlHeightSm)
@@ -615,7 +708,7 @@ public sealed partial class GitView : IDisposable
 		var canCommit = staged > 0 && !_busy && !_generating;
 		var branch = status.Branch.Length > 0 ? status.Branch : "HEAD";
 
-		_commitInput = new MultiLineTextBox()
+		_commitInput = new MultiLineTextBox().PrimarySelection()
 			.Text(_commitDraft)
 			.Placeholder(Strings.GitCommitPlaceholderTo(branch))
 			.Height(58)

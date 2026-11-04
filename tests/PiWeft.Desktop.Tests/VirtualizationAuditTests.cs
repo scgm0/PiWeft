@@ -132,7 +132,8 @@ public sealed class VirtualizationAuditTests
 		var changes = new List<ItemsChange>();
 		timeline.View.ItemsSource.Changed += changes.Add;
 
-		rows[20] = rows[20] with { ToolArguments = "metadata-only" };
+		// 可见内容变化必须发 Replace；只改 ToolArguments 的元数据变化不应重建行（另一个用例覆盖）。
+		rows[20] = rows[20] with { Text = "changed" };
 		timeline.SetEntries(rows);
 
 		var replace = Assert.Single(changes);
@@ -337,6 +338,10 @@ public sealed class VirtualizationAuditTests
 		}).ToArray();
 		timeline.SetEntries(rows);
 		Pump(timeline.View);
+		// ScrollIntoView 是程序化阅读定位：先像真实宿主那样退出跟底，否则新布局把
+		// 「extent 变高」与「跟底」合并处理时会把偏移再拉回末尾。
+		conversation.Browse();
+		timeline.Scroll.SetScrollOffsets(0, 0);
 		timeline.View.ScrollIntoView(0);
 		for (var pass = 0; pass < 6; pass++) Pump(timeline.View);
 		Assert.Contains(VisualTree.Find<ContentControl>(timeline.View), host => host.Tag is ChatEntry { EntryId: "r0" });

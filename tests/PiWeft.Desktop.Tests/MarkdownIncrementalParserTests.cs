@@ -44,6 +44,9 @@ public sealed class MarkdownIncrementalParserTests(ITestOutputHelper output)
 			Assert.Equal(
 				full.TextUnits.Select(static unit => unit.Text),
 				previous.TextUnits.Select(static unit => unit.Text));
+			Assert.Equal(
+				full.AnchorBlocks.OrderBy(static pair => pair.Key, StringComparer.Ordinal),
+				previous.AnchorBlocks.OrderBy(static pair => pair.Key, StringComparer.Ordinal));
 		}
 		output.WriteLine($"doc {docIndex}: {source.Length} chars, {source.Length / 5} prefixes");
 	}
@@ -56,6 +59,22 @@ public sealed class MarkdownIncrementalParserTests(ITestOutputHelper output)
 			data.Add(index);
 		}
 		return data;
+	}
+
+	[Fact]
+	public void IncrementalAppendReusesPrefixBookkeepingAndRefreshesTheTailAnchors()
+	{
+		var previous = MarkdownParser.Parse("# first\n\nintro **bold**\n\nold body\n");
+		var source = "# first\n\nintro **bold**\n\nold body\n\n## new-tail\n\nnew body and [link](https://example.com)\n";
+		var incremental = MarkdownParser.Parse(source, previous: previous);
+
+		Assert.True(incremental.ReusedBlockCount >= 2, $"reused={incremental.ReusedBlockCount}");
+		Assert.Same(previous.TextUnits[0], incremental.TextUnits[0]);
+		Assert.Equal(MarkdownParser.Parse(source).ToPlainText(), incremental.ToPlainText());
+		Assert.True(incremental.AnchorBlocks.TryGetValue("first", out int firstAnchor));
+		Assert.True(firstAnchor >= 0);
+		Assert.Equal(3, incremental.AnchorBlocks.GetValueOrDefault("new-tail", -1));
+		Assert.Equal(0, incremental.GetTextUnit(incremental.Blocks[0]));
 	}
 
 	[Fact]

@@ -45,12 +45,16 @@ public sealed class MistralConversationsProvider : IApiProvider
 			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var effort = ResolveReasoningEffort(model, options);
+			var apiKey = await ProviderEnvironment
+				.ResolveApiKeyAsync(model.Provider, options, cancellationToken)
+				.ConfigureAwait(false);
 
-			using var request = BuildRequest(model, messages, tools, options, effort);
+			using var request = BuildRequest(model, messages, tools, options, effort, apiKey);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
+			headerTimeout.Stop();
 
 			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
 
@@ -107,7 +111,8 @@ public sealed class MistralConversationsProvider : IApiProvider
 		IReadOnlyList<Message> messages,
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
-		string? reasoningEffort)
+		string? reasoningEffort,
+		string? apiKey)
 	{
 		var bytes = JsonPayload.Write(writer =>
 		{
@@ -198,7 +203,7 @@ public sealed class MistralConversationsProvider : IApiProvider
 		request.Headers.TryAddWithoutValidation("accept", "text/event-stream");
 		request.Headers.TryAddWithoutValidation("user-agent", SharedHttpClient.UserAgent);
 
-		if (ProviderEnvironment.ResolveApiKey(model.Provider, options) is { Length: > 0 } apiKey)
+		if (apiKey is { Length: > 0 })
 		{
 			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 		}

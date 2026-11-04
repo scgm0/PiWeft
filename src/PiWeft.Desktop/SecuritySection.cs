@@ -244,7 +244,7 @@ public sealed class SecuritySection
 
 		if (!captured.Builtin)
 		{
-			var name = new TextBox().Text(captured.Name).Placeholder(Strings.SecurityLevelNamePlaceholder);
+			var name = new TextBox().PrimarySelection().Text(captured.Name).Placeholder(Strings.SecurityLevelNamePlaceholder);
 			name.Height(AppTheme.ControlHeightSm);
 			var commit = AppIcons.TextButton("check", Strings.SecurityRename, () =>
 			{

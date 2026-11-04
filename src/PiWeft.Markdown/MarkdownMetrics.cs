@@ -18,7 +18,8 @@ internal static class MarkdownMetrics
 	private const int Capacity = 128;
 
 	private static readonly object Lock = new();
-	private static readonly Dictionary<FontKey, double> NaturalLineHeights = [];
+	// 节点与值一起保存，命中时 O(1) 重排；否则每个段落布局都要线性扫一遍 LRU。
+	private static readonly Dictionary<FontKey, (double Height, LinkedListNode<FontKey> Node)> NaturalLineHeights = [];
 	private static readonly LinkedList<FontKey> Lru = [];
 
 	private readonly record struct FontKey(string? Family, double Size, FontWeight Weight, bool Italic, uint Dpi);
@@ -47,12 +48,12 @@ internal static class MarkdownMetrics
 		FontKey key = new(style.FontFamily, style.FontSize, style.Weight, style.Italic, dpi);
 		lock (Lock)
 		{
-			if (NaturalLineHeights.TryGetValue(key, out double cached))
+			if (NaturalLineHeights.TryGetValue(key, out var cached))
 			{
 				// 命中也要刷新 LRU 位置，否则热键会被冷键顶掉，反复重新探针。
-				Lru.Remove(key);
-				Lru.AddLast(key);
-				return cached;
+				Lru.Remove(cached.Node);
+				Lru.AddLast(cached.Node);
+				return cached.Height;
 			}
 		}
 
@@ -76,16 +77,23 @@ internal static class MarkdownMetrics
 		}
 		lock (Lock)
 		{
-			if (!NaturalLineHeights.TryAdd(key, height))
+			if (NaturalLineHeights.TryGetValue(key, out var existing))
 			{
-				Lru.Remove(key);
+				Lru.Remove(existing.Node);
+				Lru.AddLast(existing.Node);
+				NaturalLineHeights[key] = (height, existing.Node);
 			}
-			Lru.AddLast(key);
+			else
+			{
+				var node = Lru.AddLast(key);
+				NaturalLineHeights[key] = (height, node);
+			}
+
 			while (Lru.Count > Capacity)
 			{
-				FontKey oldest = Lru.First!.Value;
+				LinkedListNode<FontKey> oldest = Lru.First!;
 				Lru.RemoveFirst();
-				NaturalLineHeights.Remove(oldest);
+				NaturalLineHeights.Remove(oldest.Value);
 			}
 		}
 		return height;

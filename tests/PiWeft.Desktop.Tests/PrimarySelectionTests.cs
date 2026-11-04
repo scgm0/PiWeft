@@ -28,6 +28,20 @@ public sealed class PrimarySelectionTests : IDisposable
 	}
 
 	[Fact]
+	public void CodeBlockSelectionPublishesToPrimary()
+	{
+		var primary = new FakePrimary();
+		PrimarySelectionText.Service = primary;
+		using var guard = new TextFocusScrollGuard(new ScrollViewer());
+		var code = new MultiLineTextBox().Text("var value = 1;");
+		AssistantMessageView.ConfigureCodeText(code, "csharp", guard, muted: false);
+
+		code.Select(4, 5);
+
+		Assert.Equal("value", primary.Published.Last());
+	}
+
+	[Fact]
 	public async Task PasteAtCaretKeepsDraftAndCanBeUndone()
 	{
 		var primary = new FakePrimary { Result = "中文\nnext" };

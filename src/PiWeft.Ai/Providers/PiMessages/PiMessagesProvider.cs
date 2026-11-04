@@ -41,7 +41,9 @@ public sealed class PiMessagesProvider : IApiProvider
 
 		try
 		{
-			var apiKey = ProviderEnvironment.ResolveApiKey(model.Provider, options);
+			var apiKey = await ProviderEnvironment
+				.ResolveApiKeyAsync(model.Provider, options, cancellationToken)
+				.ConfigureAwait(false);
 			if (string.IsNullOrEmpty(apiKey))
 			{
 				PushFailure(stream, model, startedAt, $"No API key provided for provider \"{model.Provider}\"");
@@ -53,6 +55,7 @@ public sealed class PiMessagesProvider : IApiProvider
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
 				.ConfigureAwait(false);
+			headerTimeout.Stop();
 
 			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
 

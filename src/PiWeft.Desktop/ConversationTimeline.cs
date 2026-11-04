@@ -49,7 +49,16 @@ internal sealed class ConversationTimeline : IDisposable
 
 	public ItemsControl View { get; }
 	public ScrollViewer Scroll { get; }
-	public IEnumerable<UIElement> VisibleRows => _visible.Select(static host => host.Content).OfType<UIElement>();
+	public IEnumerable<UIElement> VisibleRows
+	{
+		get
+		{
+			foreach (var host in _visible)
+			{
+				if (host.Content is UIElement content) yield return content;
+			}
+		}
+	}
 
 	/// <summary>当前视口里真正建了内容的行数；诊断页用它区分「行多」与「行贵」。</summary>
 	internal int VisibleRowCount => _visible.Count;
@@ -237,11 +246,26 @@ internal sealed class ConversationTimeline : IDisposable
 	{
 		_pendingRelease.Remove(host);
 		TrackIndex(host, index);
-		if (host.Tag is ChatEntry previous && SameEntry(previous, entry)) return;
+		if (host.Tag is ChatEntry previous && SameEntry(previous, entry))
+		{
+			host.Tag = entry;
+			return;
+		}
+		// Process groups expose their members' arguments in the header. Update the persistent view
+		// before considering a top-level metadata-only short-circuit, otherwise a changed tool
+		// argument would update the tag while leaving the visible group header stale.
 		if (host.Tag is ChatEntry processEntry && entry.Role == ChatRole.Process &&
 			processEntry.EntryId == entry.EntryId && host.Content is Border { Tag: ExecutionProcessView process })
 		{
 			process.Update(entry);
+			host.Tag = entry;
+			return;
+		}
+		if (host.Tag is ChatEntry metadataEntry && SameMetadataOnly(metadataEntry, entry) &&
+			host.Content is not Border { Tag: ToolMessageView })
+		{
+			// Only non-layout metadata changed: preserve the measured height and existing controls.
+			// Replace would reset this row to the virtualizer's estimate.
 			host.Tag = entry;
 			return;
 		}
@@ -351,7 +375,19 @@ internal sealed class ConversationTimeline : IDisposable
 			foreach (var found in FindExpanders(child)) yield return found;
 	}
 
-	internal static bool SameEntry(ChatEntry left, ChatEntry right)
+	/// <summary>只改变不参与布局的展示元数据（当前为工具参数）——不需要 Replace 重建行。</summary>
+	/// <remarks>
+	/// Compare fields directly instead of cloning both records with <c>with { ToolArguments = null }</c>:
+	/// this runs for every changed row on every streaming frame, and the clones were pure garbage.
+	/// Nested process members keep normal argument comparison; only the top-level row is metadata-only.
+	/// </remarks>
+	internal static bool SameMetadataOnly(ChatEntry left, ChatEntry right) =>
+		SameEntryCore(left, right, ignoreToolArguments: true);
+
+	internal static bool SameEntry(ChatEntry left, ChatEntry right) =>
+		SameEntryCore(left, right, ignoreToolArguments: false);
+
+	private static bool SameEntryCore(ChatEntry left, ChatEntry right, bool ignoreToolArguments)
 	{
 		if (ReferenceEquals(left, right)) return true;
 		// 流式行按快照比较：为了判断「要不要重绑」而物化整篇正文，等于把省下的拷贝又请回来。
@@ -360,8 +396,8 @@ internal sealed class ConversationTimeline : IDisposable
 			left.ThinkingStartedAt != right.ThinkingStartedAt || left.ThinkingEndedAt != right.ThinkingEndedAt ||
 			left.Timestamp != right.Timestamp || left.EntryId != right.EntryId || left.ToolName != right.ToolName ||
 			left.IsError != right.IsError || left.IsStopped != right.IsStopped ||
-			left.DurationMs != right.DurationMs || left.Patch != right.Patch ||
-			left.ToolArguments != right.ToolArguments || left.ToolCallId != right.ToolCallId ||
+			left.DurationMs != right.DurationMs || left.ToolStartedAt != right.ToolStartedAt || left.Patch != right.Patch ||
+			(!ignoreToolArguments && left.ToolArguments != right.ToolArguments) || left.ToolCallId != right.ToolCallId ||
 			left.Compact != right.Compact ||
 			!left.Images.SequenceEqual(right.Images) || !left.ChangedFiles.SequenceEqual(right.ChangedFiles) ||
 			left.ProcessEntries.Count != right.ProcessEntries.Count)
@@ -377,7 +413,10 @@ internal sealed class ConversationTimeline : IDisposable
 		var rightSteps = right.ProcessEntries;
 		for (var index = 0; index < count; index++)
 		{
-			if (!SameEntry(leftSteps[index], rightSteps[index])) return false;
+			if (!SameEntryCore(leftSteps[index], rightSteps[index], ignoreToolArguments: false))
+			{
+				return false;
+			}
 		}
 
 		return true;
@@ -429,7 +468,8 @@ internal sealed class ConversationTimeline : IDisposable
 		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
 			(Equals(Key(current), Key(next)) && next.Role == ChatRole.Process) ||
 			(current.IsStreaming && next.Role == ChatRole.Assistant && current.Timestamp == next.Timestamp &&
-				current.Images.SequenceEqual(next.Images));
+				current.Images.SequenceEqual(next.Images)) ||
+			SameMetadataOnly(current, next);
 
 		public void Update(IReadOnlyList<ChatEntry> entries, int stablePrefix, bool prefixReused, List<int> inPlace)
 		{

@@ -1,0 +1,3 @@
+[submodule "external/MewUI"]
+	path = external/MewUI
+	url = https://github.com/aprillz/MewUI.git
