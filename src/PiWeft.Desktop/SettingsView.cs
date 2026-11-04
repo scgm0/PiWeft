@@ -994,10 +994,16 @@ public sealed class SettingsView
 		Refresh();
 	}
 
-	private async Task ExportDiagnosticsTraceAsync()
+	private Task ExportDiagnosticsTraceAsync() =>
+		ExportDiagnosticsAsync(() => Diagnostics.ExportChromeTrace());
+
+	private Task ExportDiagnosticsFirefoxAsync() =>
+		ExportDiagnosticsAsync(() => Diagnostics.ExportFirefoxProfile());
+
+	private async Task ExportDiagnosticsAsync(Func<string?> export)
 	{
 		Toast(Strings.DiagnosticsExporting, ToastKind.Info);
-		var path = await Task.Run(() => Diagnostics.ExportChromeTrace()).ConfigureAwait(true);
+		var path = await Task.Run(export).ConfigureAwait(true);
 		if (path is null)
 		{
 			Toast(Strings.DiagnosticsExportEmpty, ToastKind.Info);
@@ -1024,7 +1030,11 @@ public sealed class SettingsView
 				_diagnosticsPaused ? Strings.DiagnosticsResume : Strings.DiagnosticsPause,
 				ToggleDiagnosticsPause, strong: false),
 			AppIcons.TextButton("download", Strings.DiagnosticsExportTrace,
-				() => _ = ExportDiagnosticsTraceAsync(), strong: false),
+				() => _ = ExportDiagnosticsTraceAsync(), strong: false)
+				.HoverTip(Strings.DiagnosticsExportHint),
+			AppIcons.TextButton("activity", Strings.DiagnosticsExportFirefox,
+				() => _ = ExportDiagnosticsFirefoxAsync(), strong: false)
+				.HoverTip(Strings.DiagnosticsExportFirefoxHint),
 			AppIcons.TextButton("refresh-cw", Strings.DiagnosticsRefresh, () => Refresh()),
 			AppIcons.TextButton("arrow-down", Strings.DiagnosticsCompact,
 				() => _ = CompactDiagnosticsAsync(), strong: false),
@@ -1038,7 +1048,7 @@ public sealed class SettingsView
 		var body = new StackPanel().Spacing(AppTheme.Space2).Children(status, buttons, compacted);
 		if (!string.IsNullOrEmpty(_diagnosticsTraceResult))
 		{
-			body.Children(new TextBlock().Text($"Trace：{_diagnosticsTraceResult}")
+			body.Children(new TextBlock().Text($"导出：{_diagnosticsTraceResult}")
 				.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
 				.TextWrapping(TextWrapping.Wrap).HoverTip(_diagnosticsTraceResult));
 		}

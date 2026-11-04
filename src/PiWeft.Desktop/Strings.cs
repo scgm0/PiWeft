@@ -119,6 +119,11 @@ public static partial class Strings
 	public const string DiagnosticsPaused = "已暂停刷新 · 采样仍在继续";
 	public const string DiagnosticsResume = "继续刷新";
 	public const string DiagnosticsExportTrace = "导出 Chrome Trace";
+	public const string DiagnosticsExportFirefox = "导出 Firefox Profile";
+	public const string DiagnosticsExportHint =
+		"Chrome Trace Event Format：Perfetto、Chrome DevTools 可直接打开；Firefox Profiler 可导入为 marker。speedscope 不支持该格式。";
+	public const string DiagnosticsExportFirefoxHint =
+		"Gecko profile：在 profiler.firefox.com 打开，span 显示为 marker，逐秒指标显示为 counter 轨道；与 Ultra 的 trace 用同一个查看器。";
 	public const string DiagnosticsExporting = "正在导出 Trace…";
 	public const string DiagnosticsExportEmpty = "还没有可导出的采集文件。";
 	public const string DiagnosticsCompacting = "正在压堆…";

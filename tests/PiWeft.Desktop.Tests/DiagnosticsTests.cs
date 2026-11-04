@@ -451,6 +451,79 @@ public sealed class DiagnosticsTests : IDisposable
 	}
 
 	[Fact]
+	public void ExportSplitsWindowMetricsIntoTraceCounters()
+	{
+		Diagnostics.SetEnabled(true, _agentDir);
+		Diagnostics.Reset();
+		// 采样器每秒写一行 runtime.window；等它落盘后再导出。
+		var deadline = Stopwatch.StartNew();
+		while (deadline.Elapsed < TimeSpan.FromSeconds(4) &&
+			!File.Exists(Diagnostics.TakeSnapshot().TimingsPath) )
+		{
+			Thread.Sleep(100);
+		}
+
+		Thread.Sleep(1400);
+		var path = Diagnostics.ExportChromeTrace();
+		Assert.NotNull(path);
+		using var document = JsonDocument.Parse(File.ReadAllText(path!));
+		var events = document.RootElement.GetProperty("traceEvents").EnumerateArray().ToArray();
+		Assert.Contains(events, static item => item.TryGetProperty("name", out var name) &&
+			name.GetString() == "thread_name");
+		Assert.Contains(events, static item => item.TryGetProperty("ph", out var phase) &&
+			phase.GetString() == "C" &&
+			item.TryGetProperty("name", out var name) &&
+			name.GetString() == "frame.p95ms");
+		Assert.DoesNotContain(events, static item => item.TryGetProperty("name", out var name) &&
+			name.GetString() == "runtime.window");
+	}
+
+	[Fact]
+	public void ExportWritesFirefoxProfileWithMarkersAndCounters()
+	{
+		Diagnostics.SetEnabled(true, _agentDir);
+		Diagnostics.Reset();
+		Diagnostics.Record("session.open.read", 884.3, "bytes=47451970, lines=26985");
+		Diagnostics.Record("tool.exec", 12.5, "tool=read");
+		Thread.Sleep(1400);
+
+		var path = Diagnostics.ExportFirefoxProfile();
+		Assert.NotNull(path);
+		// 手工验证钩子：需要把产物交给真实的 Firefox Profiler 导入器时，指一个输出路径即可。
+		if (Environment.GetEnvironmentVariable("PIWEFT_FF_PROFILE_OUT") is { Length: > 0 } copyTo)
+		{
+			File.Copy(path!, copyTo, overwrite: true);
+		}
+
+		using var document = JsonDocument.Parse(File.ReadAllText(path!));
+		var root = document.RootElement;
+		Assert.Equal(37, root.GetProperty("meta").GetProperty("version").GetInt32());
+		Assert.Equal("PiWeft", root.GetProperty("meta").GetProperty("product").GetString());
+		Assert.True(root.GetProperty("meta").GetProperty("categories").GetArrayLength() >= 10);
+
+		var threads = root.GetProperty("threads").EnumerateArray().ToArray();
+		Assert.NotEmpty(threads);
+		var main = threads.Single(thread => thread.GetProperty("name").GetString() == "GeckoMain");
+		Assert.Equal("PiWeft", main.GetProperty("processName").GetString());
+		var markers = main.GetProperty("markers");
+		Assert.Equal(0, markers.GetProperty("schema").GetProperty("name").GetInt32());
+		Assert.Equal(5, markers.GetProperty("schema").GetProperty("data").GetInt32());
+		var rows = markers.GetProperty("data").EnumerateArray().ToArray();
+		Assert.Contains(rows, static row => row[3].GetInt32() == 1); // INTERVAL
+		// 纯 marker 档案：samples/frameTable/stackTable 是合法空表。
+		Assert.Equal(0, main.GetProperty("samples").GetProperty("data").GetArrayLength());
+		Assert.Equal(0, main.GetProperty("frameTable").GetProperty("data").GetArrayLength());
+		Assert.Equal(0, main.GetProperty("stackTable").GetProperty("data").GetArrayLength());
+
+		var counters = root.GetProperty("counters").EnumerateArray().ToArray();
+		Assert.Contains(counters, static counter => counter.GetProperty("name").GetString() == "frame.p95ms");
+		var counter = counters.First();
+		Assert.Equal(0, counter.GetProperty("samples").GetProperty("schema").GetProperty("time").GetInt32());
+		Assert.Equal(2, counter.GetProperty("samples").GetProperty("schema").GetProperty("number").GetInt32());
+		Assert.NotEmpty(counter.GetProperty("samples").GetProperty("data").EnumerateArray());
+	}
+
+	[Fact]
 	public void FrameBudgetSnapsToCommonRefreshRates()
 	{
 		// 启动/动画噪声会把中位间隔抬到 24.6 ms：吸附到 16.7 ms，而不是发明一个 40 fps 的预算。
@@ -654,6 +727,8 @@ public sealed class SettingsDiagnosticsSectionTests : IDisposable
 		Assert.Contains(texts, static text => text.Contains("×9"));
 		Assert.Contains(Strings.LabelCpu, texts);
 		Assert.Contains(Strings.DiagnosticsCompact, texts);
+		Assert.Contains(Strings.DiagnosticsExportTrace, texts);
+		Assert.Contains(Strings.DiagnosticsExportFirefox, texts);
 	}
 
 	[Fact]

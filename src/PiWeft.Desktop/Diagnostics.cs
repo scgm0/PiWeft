@@ -174,6 +174,8 @@ internal sealed partial class Diagnostics
 	private static long _droppedLines;
 	private static int _recentCursor;
 	private static int _recentCount;
+	private static long _epochBaseTicks;
+	private static long _epochBaseUs;
 
 	// 采样值由线程池写入、UI 线程读取，因此用 Volatile 包住（double/long 需要 long 位中转）。
 	private static long _workingSetBytes;
@@ -285,6 +287,8 @@ internal sealed partial class Diagnostics
 				session = OpenWriter(directory, sequence: 0);
 				_directory = directory;
 				_timingsPath = session.Path;
+				Interlocked.Exchange(ref _epochBaseTicks, Stopwatch.GetTimestamp());
+				Interlocked.Exchange(ref _epochBaseUs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000L);
 				Volatile.Write(ref _session, session);
 				_lastError = null;
 				_enabled = true;
@@ -319,6 +323,7 @@ internal sealed partial class Diagnostics
 		var startedAt = DateTime.Now.AddMilliseconds(-durationMs);
 		var threadId = Environment.CurrentManagedThreadId;
 		detail = TrimDetail(detail);
+		var (tsUs, durationUs) = SpanTiming(durationMs);
 		lock (Gate)
 		{
 			var bucket = StatsBucketLocked(name);
@@ -326,7 +331,7 @@ internal sealed partial class Diagnostics
 			AppendRecentLocked(new Timing(name, startedAt, durationMs, detail, threadId));
 		}
 
-		EnqueueLine(Serialize(name, startedAt, durationMs, detail, "span", threadId));
+		EnqueueLine(Serialize(name, startedAt, durationMs, detail, "span", threadId, tsUs, durationUs));
 		if (durationMs >= SlowPathMs)
 		{
 			AppLog.For<Diagnostics>().ZLogWarning($"Slow path: {name} {durationMs:0.0} ms {detail}");
@@ -1157,7 +1162,15 @@ internal sealed partial class Diagnostics
 				.Select(static counter => $"{counter.Name}:{counter.Value}")) + "]";
 		}
 
-		EnqueueLine(Serialize("runtime.window", DateTime.Now.AddSeconds(-1), SampleInterval.TotalMilliseconds, detail, "counter", Environment.CurrentManagedThreadId));
+		EnqueueLine(Serialize(
+			"runtime.window",
+			DateTime.Now.AddSeconds(-1),
+			SampleInterval.TotalMilliseconds,
+			detail,
+			"counter",
+			Environment.CurrentManagedThreadId,
+			ToEpochUs(Stopwatch.GetTimestamp()),
+			0));
 	}
 
 	/// 中位帧间隔会被启动/动画噪声带偏：吸附到常见刷新率（144/120/90/60/30），
@@ -1396,7 +1409,9 @@ internal sealed partial class Diagnostics
 		double durationMs,
 		string? detail,
 		string kind,
-		int threadId)
+		int threadId,
+		long tsUs,
+		long durationUs)
 	{
 		var buffer = new ArrayBufferWriter<byte>(256);
 		using (var json = new Utf8JsonWriter(buffer))
@@ -1408,6 +1423,9 @@ internal sealed partial class Diagnostics
 			json.WriteString("name", name);
 			json.WriteString("startedAt", startedAt.ToString("O", CultureInfo.InvariantCulture));
 			json.WriteNumber("durationMs", Math.Round(durationMs, 1));
+			// 微秒口径：Chrome Trace / Firefox Profiler 的事件时间都是 µs，0.1 ms 会让帧级跨度失真。
+			json.WriteNumber("tsUs", tsUs);
+			json.WriteNumber("durationUs", durationUs);
 			json.WriteNumber("pid", Environment.ProcessId);
 			json.WriteNumber("tid", threadId);
 			if (!string.IsNullOrEmpty(detail))
@@ -1422,6 +1440,31 @@ internal sealed partial class Diagnostics
 		}
 
 		return Encoding.UTF8.GetString(buffer.WrittenSpan);
+	}
+
+	/// 会话内单调时钟映射到绝对 epoch 微秒：多个采集文件能在同一条时间线上对齐，
+	/// 又不受系统时钟回拨影响。
+	private static long ToEpochUs(long ticks)
+	{
+		var baseTicks = Interlocked.Read(ref _epochBaseTicks);
+		var baseUs = Interlocked.Read(ref _epochBaseUs);
+		if (baseTicks == 0L)
+		{
+			baseTicks = Stopwatch.GetTimestamp();
+			baseUs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000L;
+			Interlocked.Exchange(ref _epochBaseTicks, baseTicks);
+			Interlocked.Exchange(ref _epochBaseUs, baseUs);
+		}
+
+		return baseUs + (ticks - baseTicks) * 1_000_000L / Stopwatch.Frequency;
+	}
+
+	private static (long TsUs, long DurationUs) SpanTiming(double durationMs)
+	{
+		var end = Stopwatch.GetTimestamp();
+		var durationUs = (long)Math.Round(Math.Max(0, durationMs) * 1000.0);
+		var start = end - (long)(Math.Max(0, durationMs) * Stopwatch.Frequency / 1000.0);
+		return (ToEpochUs(start), durationUs);
 	}
 
 	private static double Elapsed(Stopwatch watch)

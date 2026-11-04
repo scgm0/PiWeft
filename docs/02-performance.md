@@ -71,7 +71,7 @@
 - 计数档给每帧路径（`row.build`/`row.release`/`row.inplace`/`render.stats`/`timeline.realize`/`ui.render`）；`Slow` 的 detail 延迟到超过阈值才格式化，流式 Markdown 追加只计数 + 慢样本，不再每帧写明细。
 - 每秒采样工作集/私有内存/托管堆/LOH/POH/碎片/累计分配/GC 次数/CPU/提交内存/pinned/待终结/线程池；CPU 用 `TimeSpan.TicksPerMillisecond` 换算（`Process.TotalProcessorTime` 是 100 ns tick，不是 Stopwatch tick）。
 - 落盘 `<agentDir>/diagnostics/timings-<时间戳>-<pid>-<序号>.jsonl`：首行 `diagnostics.meta` 带 schema 版本/运行时/OS/架构/核数，每条记录带 `kind/cat/tid/v`。16 MiB 轮转、保留最近 12 份/7 天；队列有上限，写盘跟不上时丢弃并计数，不阻塞 UI。
-- 明细档只给低频或超阈值样本；单条 ≥200 ms 记 `Slow path`。导出 `trace-*.json` 可直接打开 Perfetto、Chrome DevTools 或 speedscope。
+- 明细档只给低频或超阈值样本；单条 ≥200 ms 记 `Slow path`。两种导出：`trace-*.json`（Chrome Trace Event Format）可直接打开 Perfetto / Chrome DevTools，Firefox Profiler 也能导入为 marker；`profile-*.json`（Gecko profile v37，已用 Firefox Profiler 的真实导入器验证）在 profiler.firefox.com 打开，span 是 marker、逐秒指标是 counter 轨道，与 Ultra 的 trace 用同一个查看器。counter 的 `count` 按「值 × 间隔秒数」编码，让 line-rate 画出来等于指标值。speedscope 读的是 Chrome DevTools CPU profile，不是 Chrome Trace Event Format，不能直接打开。
 - 诊断不改 `external/MewUI` 源码：帧起点来自应用侧请求，指针采样靠已有事件与各交互宿主的取样点；`scripts/mewui-source.sh` 可随时把子模块重置回上游。
 - Debug 下 MewUI DevTools（`Ctrl+Shift+P` 帧叠层、`Ctrl+Alt+Shift+P` profiler、`Ctrl+Shift+T` 视觉树、`Ctrl+Shift+I` 拾取）可用；AOT 发布会折叠。CPU 采样、堆转储、ETW/perf 仍交给外部工具；发布版已开 EventPipe，`dotnet-gcdump` 的堆分析在 NativeAOT 下不可用。
 
@@ -86,3 +86,12 @@ PI_WORKSPACE_SMOKE_APP="$PWD/artifacts/desktop-optimized-linux-x64/piweft-deskto
 ```
 
 `--ui-smoke stream` 每秒打印工作集/托管堆/渲染缓存，是流式内存曲线的固定入口；`PI_WORKSPACE_SMOKE_TURNS=0` 使用原工具 fixture。
+
+## 外部 CPU 采样
+
+自带诊断是**应用级 span**：能看到「打开会话 884 ms」「这一帧 41 ms」「工具执行 8 s」，看不到「CPU 时间花在哪个函数/栈」。后者交给外部采样器，三者互补：
+
+- `ultra profile --pid <pid> --duration 30`（xoofx/ultra，采样 profiler，输出 Firefox Profiler 格式）。Linux 需要 root 或 `kernel.perf_event_paranoid ≤ 0`；Windows 需要管理员（或 `--elevate`）；macOS 仅 Apple Silicon 且只能 launch。它的 trace 与本项目导出的 `profile-*.json` 在同一个查看器（profiler.firefox.com）里打开，可以对照「自带 span 慢在哪一段」和「CPU 花在哪个栈」。
+- NativeAOT 下 Linux 的 perf 采样能看到 native 栈，但 AOT 代码没有 JIT map，.NET 方法名解析有限；这时它更适合定位渲染/原生库热点。
+- `dotnet-trace collect -p <pid> --profile dotnet-sampled-thread-time` 是另一条不依赖 Ultra 的路径；发布版已开 `EventSourceSupport`，可以直接附着。
+- 这些都不作为运行依赖、不打包进发布物；给出 PID 与权限即可复现。
