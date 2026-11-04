@@ -85,6 +85,10 @@ internal sealed class SmoothScroll : IDisposable
 	private const double EaseY1 = 0.1;
 	private const double EaseY2 = 1.0;
 	private Point _from;
+	// Last offset actually written by an animation frame. MewUI places scroll content on
+	// whole device pixels; skipping a repeat write avoids an arrange/SceneChanged for sub-pixel
+	// movement that would land on the same pixel.
+	private Point _lastAppliedOffset = new(double.NaN, double.NaN);
 	// 重定向时沿用上一帧速度：连续滚轮/按键在曲线中途续接，而不是每次从零速重新起一条 ease。
 	private Point _fromVelocity;
 	private Point _velocity;
@@ -556,7 +560,7 @@ internal sealed class SmoothScroll : IDisposable
 				StopAnimation();
 				return;
 			}
-			Apply(new Point(nextX, nextY));
+			Apply(new Point(nextX, nextY), intermediate: true);
 			if (dt > 0) _velocity = new Point((nextX - current.X) / dt, (nextY - current.Y) / dt);
 			return;
 		}
@@ -577,15 +581,55 @@ internal sealed class SmoothScroll : IDisposable
 			return;
 		}
 
+		// Keep follow-to-end exact: the target can move while the extent is still settling, and
+			// snapping the last fractional steps here makes the viewport stop one pixel short of the
+			// newly published maximum. Input-driven glides benefit from the pixel-grid dedupe; follow
+			// already writes at most once per growing frame.
 		Apply(new Point(glideX, glideY));
 	}
 
-	private void Apply(Point offset)
+	private void Apply(Point offset, bool intermediate = false)
 	{
 		IsApplyingOffset = true;
 		try
 		{
-			if (_viewport is not null) _viewport.SetScrollOffsets(offset.X, offset.Y);
+			if (_viewport is not null)
+			{
+				if (intermediate)
+				{
+					// The scene moves non-IScrollContent by whole device pixels (MewUI's scroll
+					// scene frame). Writing every fractional animation step still invalidates arrange
+					// and raises ScrollChanged for a placement that does not move; snap intermediate
+					// writes to the device grid and skip repeats. The final write stays exact so the
+					// logical target and layout are preserved.
+					var raw = offset;
+					double scale = _viewport.GetDpi() / 96.0;
+					if (scale > 0 && double.IsFinite(scale))
+					{
+						offset = new Point(
+							Math.Round(offset.X * scale, MidpointRounding.AwayFromZero) / scale,
+							Math.Round(offset.Y * scale, MidpointRounding.AwayFromZero) / scale);
+						// If the raw step is smaller than half a device pixel, keep it instead of
+						// collapsing it onto the previous pixel: test/probe clocks can feed a tiny
+						// first frame, and a real first frame should still show movement.
+						if (offset == _lastAppliedOffset &&
+							Math.Abs(raw.X - _lastAppliedOffset.X) < 0.5 / scale &&
+							Math.Abs(raw.Y - _lastAppliedOffset.Y) < 0.5 / scale)
+						{
+							offset = raw;
+						}
+					}
+					if (offset == _lastAppliedOffset)
+					{
+						_lastOffset = Offset;
+						_lastMaximum = MaxVerticalOffset;
+						return;
+					}
+				}
+
+				_viewport.SetScrollOffsets(offset.X, offset.Y);
+				_lastAppliedOffset = Offset;
+			}
 			else
 			{
 				if (_horizontalBar is not null) _horizontalBar.Value = offset.X;

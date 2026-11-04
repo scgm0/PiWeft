@@ -138,6 +138,6 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。检查点面板的视觉验收：`xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh`；轨迹页的视觉验收：`xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-trajectory-smoke.sh`。2026-11-04 全量测试：Agent 24 / Ai 256 / JavaScript 56 / Mcp 91 / Cli 145 / CodingAgent 537 / Desktop 1165，共 2274 项，全部通过；桌面测试改为串行集合后连续多轮全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
+GUI 环境可用 `xvfb-run -a dotnet test PiWeft.slnx`。检查点面板的视觉验收：`xvfb-run -a -s '-screen 0 1440x900x24' bash tools/desktop-checkpoints-smoke.sh`；轨迹页的视觉验收：`xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-trajectory-smoke.sh`。2026-11-04 全量测试：Agent 24 / Ai 256 / JavaScript 56 / Mcp 91 / Cli 145 / CodingAgent 537 / Desktop 1168，共 2277 项，全部通过；桌面测试改为串行集合后连续多轮全量运行无随机失败。`RealSessionFidelityTests` 直接读本机 `~/.pi/agent/sessions` 的真实 pi 会话（当前约 7.8 万行 / 90 个文件）逐行比对重序列化结果，它变红即表示会话格式出现漂移，应当作阻断项而不是已知噪音。`dotnet publish src/PiWeft.Cli -c Release -r linux-x64` 的 NativeAOT 冒烟通过（`AOT SMOKE OK`）。
 
 测试覆盖 provider 请求/流事件、工具与队列、会话无损读写、压缩/重试、认证、RPC、MCP、桌面逻辑和控件。真实数据互操作测试受本机会话/技能数据是否存在影响；provider 使用打桩服务，不能替代真实供应商联网验证。

@@ -167,6 +167,54 @@ public sealed class GroupBodyStickyHeaderTests
 	}
 
 	[Fact]
+	public void LongLastExpandedStepKeepsItsBodyVisibleAfterScrollingBack()
+	{
+		var fixture = Build(Tool(0, 1), Tool(1, 1), Tool(2, 400));
+		try
+		{
+			var step = Find<StickyExpander>(fixture.Body).Last();
+			step.IsExpanded = true;
+			fixture.Settle();
+			fixture.ScrollBody(step.Bounds.Bottom - (fixture.ViewportTop + fixture.Body.ViewportHeight));
+			Assert.True(step.HeaderPinned);
+			var body = Assert.IsAssignableFrom<UIElement>(step.Content);
+			var atEnd = step.ChildClipForTest(body);
+			Assert.True(atEnd is null || atEnd.Value.Rect.Height > 1, $"body clipped away at the end: {atEnd}");
+
+			fixture.ScrollBody(-500);
+			var after = step.ChildClipForTest(body);
+			Assert.True(after is null || after.Value.Rect.Height > 1, $"body clipped away after scrolling back: {after}");
+			var textView = Find<MultiLineTextBox>(step.Content!).OrderByDescending(text => text.Text.Length).First();
+			Assert.True(textView.Bounds.Height > 1);
+			Assert.True(textView.TextViewportBounds.Height > 1);
+		}
+		finally
+		{
+			UiLifetime.Release(fixture.View.View);
+		}
+	}
+
+	[Fact]
+	public void ScrollingATallStepReinvalidatesItsStickyArrangement()
+	{
+		var fixture = Build(Steps(Tool(0, 260)));
+		try
+		{
+			var step = Find<StickyExpander>(fixture.Body).First();
+			step.IsExpanded = true;
+			fixture.Settle();
+			// Tall steps move their header/clip as the body scrolls; a framed scene must not reuse
+			// the previous arrangement's clip.
+			fixture.Body.SetScrollOffsets(0, Math.Max(0, fixture.Body.VerticalOffset - 40));
+			Assert.True(step.IsArrangeDirty, "a scroll under a tall sticky step must re-arrange its clip");
+		}
+		finally
+		{
+			UiLifetime.Release(fixture.View.View);
+		}
+	}
+
+	[Fact]
 	public void ShortExpandedStepNeverPins()
 	{
 		// 展开后仍装得下一屏的步骤永远不会跨过视口顶边，不进入吸顶态。
@@ -417,4 +465,37 @@ public sealed class GroupBodyStickyHeaderTests
 		Assert.True(header.Bounds.Y < natural);
 		view.Dispose();
 	}
+	[Fact]
+	public void LongExpandedBashStepKeepsItsBodyVisibleAfterScrollingBack()
+	{
+		var fixture = Build(Steps(Tool(0, 260)));
+		try
+		{
+			var step = Find<StickyExpander>(fixture.Body).First();
+			step.IsExpanded = true;
+			fixture.Settle();
+
+			// 读者上滑到长输出的末尾；标题吸在组体顶部，正文从标题下方继续显示。
+			fixture.ScrollBody(step.Bounds.Bottom - (fixture.ViewportTop + fixture.Body.ViewportHeight));
+			Assert.True(step.HeaderPinned);
+			var body = Assert.IsAssignableFrom<UIElement>(step.Content);
+			var atEnd = step.ChildClipForTest(body);
+			Assert.True(atEnd is null || atEnd.Value.Rect.Height > 1,
+				$"body clipped away at the end: {atEnd}");
+
+			// 再下滑回看：内容必须重新落在视口里，不能留下标题下方的整块空白。
+			fixture.ScrollBody(-500);
+			var after = step.ChildClipForTest(body);
+			Assert.True(after is null || after.Value.Rect.Height > 1,
+				$"body clipped away after scrolling back: {after}");
+			var textView = Find<MultiLineTextBox>(step.Content!).OrderByDescending(text => text.Text.Length).First();
+			Assert.True(textView.Bounds.Height > 1,
+				"the expanded bash output must still have a laid-out text view");
+		}
+		finally
+		{
+			UiLifetime.Release(fixture.View.View);
+		}
+	}
+
 }

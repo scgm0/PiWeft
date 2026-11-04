@@ -707,28 +707,10 @@ internal sealed class ExecutionProcessView
 		Grid? RealizedRow(int index)
 		{
 			if (list is null) return null;
-			Grid? found = null;
-			Visit(list);
-			return found;
-
-			void Visit(Element element)
-			{
-				if (found is not null) return;
-				// 只认容器层：不要为了找一个索引把每一行的正文/Markdown 子树都走一遍。
-				if (element is ItemContainer container)
-				{
-					if (container.Index == index) found = container.Content as Grid;
-					return;
-				}
-				if (element is not IVisualTreeHost host) return;
-				var children = new List<Element>();
-				host.VisitChildren(child => { children.Add(child); return true; });
-				foreach (var child in children)
-				{
-					Visit(child);
-					if (found is not null) return;
-				}
-			}
+			// ItemsControl owns the index→container map. Walking the visual tree here allocated a
+			// List and closures for every in-place streaming row; TryGetContainer is the direct
+			// O(1) lookup from the latest MewUI host API.
+			return list.TryGetContainer(index, out var container) ? container.Content as Grid : null;
 		}
 
 		/// <summary>步骤行展开/收起改变了行高：重测这一行，并让它的预览行停在原地。</summary>

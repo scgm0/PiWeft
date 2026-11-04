@@ -60,6 +60,9 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 	/// <summary>标题当前所在的横带（含折叠箭头区）：吸顶时命中判定要按这里，而不是自然位置。</summary>
 	internal Rect HeaderBand => _headerBand;
 
+	/// <summary>测试用：按当前排布结果计算正文裁剪。</summary>
+	internal ChildClip? ChildClipForTest(UIElement child) => GetChildClip(child);
+
 	/// <summary>
 	/// 挂到组体：只有组体内的步骤才吸顶，并把「回到开头」入口加到标题行右侧。
 	/// 入参在行绑定时传一次（视口/宿主随组体重建而更换）。
@@ -73,6 +76,11 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		// 窗口缩放会改变视口高度（吸顶资格随之变化），但本行自己的排布矩形可能没变，
 		// 框架会跳过 Arrange；这里补一次失效，让吸顶判定按新视口重算。
 		body.SizeChanged += OnBodyGeometryChanged;
+		// The group body is framed as one scene by MewUI (its StackPanel content is not a
+		// scroll-driven presenter). A scene frame shifts cached drawings on scroll; the sticky
+		// header's clip and displaced position depend on the scroll offset and must be re-arranged.
+		// Without this, a long expanded bash step can show a blank band after scrolling up/down.
+		body.ScrollChanged += OnBodyScrolled;
 		EnsureReturnToStart();
 		UpdateReturnToStart();
 		InvalidateArrange();
@@ -81,7 +89,11 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 	/// <summary>解除挂载（组体销毁/行被回收）：不留下对视图的事件订阅。</summary>
 	internal void DetachBody()
 	{
-		if (_body is not null) _body.SizeChanged -= OnBodyGeometryChanged;
+		if (_body is not null)
+		{
+			_body.SizeChanged -= OnBodyGeometryChanged;
+			_body.ScrollChanged -= OnBodyScrolled;
+		}
 		_body = null;
 		_rowHost = null;
 		if (_displaced)
@@ -94,6 +106,17 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 	}
 
 	private void OnBodyGeometryChanged(SizeChangedEventArgs _) => InvalidateArrange();
+
+	private void OnBodyScrolled()
+	{
+		if (!IsExpanded || Content is null || _body is not { } body) return;
+		// Short steps never stick; only tall expanded steps need the scroll-dependent arrangement.
+		if (Bounds.Height <= body.ViewportHeight + 0.5) return;
+		// Steps fully outside the body cannot show a sticky clip; the scroll that brings one back
+		// into view will hit this branch and invalidate it.
+		if (Bounds.Bottom <= body.Bounds.Top || Bounds.Top >= body.Bounds.Bottom) return;
+		InvalidateArrange();
+	}
 
 	/// <summary>把「回到这一步的开头」图标放进标题行右侧；不吸顶时透明且不参与命中。</summary>
 	private void EnsureReturnToStart()
