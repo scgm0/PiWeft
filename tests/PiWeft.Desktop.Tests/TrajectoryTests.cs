@@ -489,6 +489,17 @@ public class TrajectoryTests
 		Assert.Equal(expected, TrajectoryFormat.Duration(milliseconds));
 
 	[Fact]
+	public void DurationSharesTheStepRowReading()
+	{
+		// 轨迹与步骤行必须同一口径，否则同一段耗时在两个面板里会写成两种样子。
+		Assert.Equal(Strings.FormatDuration(59_999), TrajectoryFormat.Duration(59_999));
+		Assert.Equal(Strings.FormatDuration(64_000), TrajectoryFormat.Duration(64_000));
+		// 轨迹耗时来自会话文件，缺失或异常时也由同一个函数兜底（NaN/负数按 0 排版）。
+		Assert.Equal(Strings.FormatDuration(0), TrajectoryFormat.Duration(double.NaN));
+		Assert.Equal(Strings.FormatDuration(0), TrajectoryFormat.Duration(-1));
+	}
+
+	[Fact]
 	public void CompactTokensMatchesLedgerColumns()
 	{
 		Assert.Equal("265", TrajectoryFormat.CompactTokens(265));

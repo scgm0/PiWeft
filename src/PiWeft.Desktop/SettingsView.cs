@@ -959,12 +959,12 @@ public sealed class SettingsView
 		// 两列两行：四列时提示文字会被裁掉，指标板就白做了。
 		var tiles = new Grid().Columns("*,*").Rows("Auto,Auto")
 			.Children(
-				MetricTile(Strings.LabelFrameGap, frame.Frames > 0 ? $"{frame.P50Ms:0.0} / {frame.P95Ms:0.0} ms" : "—",
+				MetricTile(Strings.LabelFrameGap, frame.Frames > 0 ? $"{frame.P50Ms:0.0} / {frame.P95Ms:0.0}ms" : "—",
 					frame.Frames > 0
 						? $"p50 / p95 · 实时 {fresh.FramesPerSecond:0} fps · 典型 {frame.Fps:0.#}"
 						: "等待第一次采样", 0, 0),
 				MetricTile(Strings.LabelFrameCounts, $"{frame.DroppedFrames} / {frame.LongFrames} / {frame.IdleGaps}",
-					$"最长停顿 {frame.MaxGapMs:0} ms · 峰值 {frame.MaxMs:0.0} ms", 1, 0),
+					$"最长停顿 {frame.MaxGapMs:0}ms · 峰值 {frame.MaxMs:0.0}ms", 1, 0),
 				MetricTile(Strings.LabelWorkingSet, Strings.FormatBytes(fresh.WorkingSetBytes),
 					$"提交 {Strings.FormatBytes(fresh.CommittedBytes)} · {Strings.LabelCpu} {fresh.CpuPercent:0.#}%", 0, 1),
 				MetricTile(Strings.LabelHeap, Strings.FormatBytes(fresh.HeapBytes),
@@ -989,8 +989,8 @@ public sealed class SettingsView
 					.FontSize(AppTheme.FontSizeMicro).SubtleText(),
 				strip,
 				new TextBlock()
-					.Text($"● {Strings.LabelFrameBudget} · ● >16.7 ms · ● ≥{Diagnostics.LongFrameReportMs:0} ms" +
-						$" · 最近 {frame.LastMs:0.0} ms · 最大 {frame.MaxMs:0.0} ms · {Strings.LabelAllocPerFrame} " +
+					.Text($"● {Strings.LabelFrameBudget} · ● >16.7ms · ● ≥{Diagnostics.LongFrameReportMs:0}ms" +
+						$" · 最近 {frame.LastMs:0.0}ms · 最大 {frame.MaxMs:0.0}ms · {Strings.LabelAllocPerFrame} " +
 						$"{Strings.FormatBytes((long)Math.Round(frame.AllocBytesPerFrame))} · {Strings.LabelGcPause} {frame.GcPausePercent:0.##}%")
 					.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
 					.TextWrapping(TextWrapping.Wrap)));
@@ -999,15 +999,15 @@ public sealed class SettingsView
 		live.Children(DiagnosticsRows(Strings.DiagnosticsLoopHeader, [
 
 			("帧率（最近一秒）", fresh.FramesPerSecond > 0
-				? $"{fresh.FramesPerSecond:0} 帧/秒 · 间隔中位数 {1000 / Math.Max(frame.Fps, 0.1):0.0} ms · {(fresh.ContinuousLoop ? "连续" : "按请求")}" +
+				? $"{fresh.FramesPerSecond:0} 帧/秒 · 间隔中位数 {1000 / Math.Max(frame.Fps, 0.1):0.0}ms · {(fresh.ContinuousLoop ? "连续" : "按请求")}" +
 					$" · VSync {(fresh.VSync ? "开" : "关")} · 目标 {(fresh.TargetFps > 0 ? fresh.TargetFps.ToString() : "跟随刷新率")}"
 				: "等待第一次采样"),
 			(Strings.LabelInputLatency, frame.Inputs > 0
-				? $"p95 {frame.InputP95Ms:0.0} ms · 最大 {frame.InputMaxMs:0.0} ms（样本 {frame.Inputs}）"
+				? $"p95 {frame.InputP95Ms:0.0}ms · 最大 {frame.InputMaxMs:0.0}ms（样本 {frame.Inputs}）"
 				: "还没有按键/滚轮样本"),
 			(Strings.LabelQueueLag, fresh.QueueLagMaxMs >= Diagnostics.LagWarnMs
-				? $"最近 {fresh.QueueLagMs:0.0} ms · 窗口内最大 {fresh.QueueLagMaxMs:0.0} ms（≥50 ms 表示 UI 线程被占住）"
-				: $"最近 {fresh.QueueLagMs:0.0} ms · 窗口内最大 {fresh.QueueLagMaxMs:0.0} ms"),
+				? $"最近 {fresh.QueueLagMs:0.0}ms · 窗口内最大 {fresh.QueueLagMaxMs:0.0}ms（≥50ms 表示 UI 线程被占住）"
+				: $"最近 {fresh.QueueLagMs:0.0}ms · 窗口内最大 {fresh.QueueLagMaxMs:0.0}ms"),
 			(Strings.LabelDrawCalls, frame.DrawCalls > 0
 				? $"{frame.DrawCalls} 调用 · 剔除 {frame.CulledCalls} · 文本 {frame.TextDraws} · 形状 {frame.ShapeDraws}" +
 					$" · 图片 {frame.ImageDraws} · 裁剪 {frame.ClipCount}"
@@ -1032,7 +1032,7 @@ public sealed class SettingsView
 			foreach (var counter in fresh.Counters.Take(12))
 			{
 				counters.Children(MetricLine(counter.Name,
-					counter.TotalMs > 0 ? $"×{counter.Value} · Σ {counter.TotalMs:0.0} ms" : $"×{counter.Value}",
+					counter.TotalMs > 0 ? $"×{counter.Value} · Σ {counter.TotalMs:0.0}ms" : $"×{counter.Value}",
 					counter.TotalMs > 0 ? "明细只含慢样本" : null));
 			}
 
@@ -1045,7 +1045,7 @@ public sealed class SettingsView
 			.FontSize(AppTheme.FontSizeMicro).SubtleText());
 		foreach (var stat in fresh.Stats.Take(14))
 		{
-			stats.Children(MetricLine(stat.Name, $"×{stat.Count} · Σ {stat.TotalMs:0.0} ms",
+			stats.Children(MetricLine(stat.Name, $"×{stat.Count} · Σ {stat.TotalMs:0.0}ms",
 				$"max {stat.MaxMs:0.0} · last {stat.LastMs:0.0}"));
 		}
 
@@ -1057,7 +1057,7 @@ public sealed class SettingsView
 		foreach (var timing in fresh.Recent.Take(10))
 		{
 			recent.Children(MetricLine($"{timing.StartedAt:HH:mm:ss}  {timing.Name}",
-				$"{timing.DurationMs:0.0} ms", timing.Detail));
+				$"{timing.DurationMs:0.0}ms", timing.Detail));
 		}
 
 		live.Children(recent);

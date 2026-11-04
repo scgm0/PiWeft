@@ -1202,45 +1202,8 @@ internal static class TrajectoryFormat
 		return value.ToString(CultureInfo.InvariantCulture);
 	}
 
-	public static string Duration(double milliseconds)
-	{
-		if (!double.IsFinite(milliseconds) || milliseconds < 0)
-		{
-			milliseconds = 0;
-		}
-
-		if (milliseconds < 1000)
-		{
-			return $"{milliseconds:0}ms";
-		}
-
-		var totalSeconds = (long)Math.Floor(milliseconds / 1000);
-		if (totalSeconds < 60)
-		{
-			return $"{totalSeconds}.{(long)(milliseconds % 1000 / 100)}s";
-		}
-
-		var hours = totalSeconds / 3600;
-		var minutes = totalSeconds % 3600 / 60;
-		var seconds = totalSeconds % 60;
-		var text = new StringBuilder(8);
-		if (hours > 0)
-		{
-			text.Append(hours).Append('h');
-		}
-
-		if (minutes > 0)
-		{
-			text.Append(minutes).Append('m');
-		}
-
-		if (seconds > 0)
-		{
-			text.Append(seconds).Append('s');
-		}
-
-		return text.Length > 0 ? text.ToString() : "0ms";
-	}
+	/// 会话轨迹的耗时读数：与步骤行同一口径（500ms / 1.2s / 1m04s / 24h24m56s）。
+	public static string Duration(double milliseconds) => Strings.FormatDuration(milliseconds);
 
 	public static string Clock(long unixMs) => unixMs > 0
 		? DateTimeOffset.FromUnixTimeMilliseconds(unixMs).ToLocalTime()

@@ -485,8 +485,46 @@ public sealed class ExecutionProcessTests
 	public void LiveDurationFormatReadsRunningAndFinishedSpansTheSameWay()
 	{
 		Assert.Equal(string.Empty, LiveDurationText.Format(0, 0, 5_000));
-		Assert.Equal("1.2 s", LiveDurationText.Format(1_000, 0, 2_234));
-		Assert.Equal("500 ms", LiveDurationText.Format(1_000, 1_500, 99_999));
+		Assert.Equal("1.2s", LiveDurationText.Format(1_000, 0, 2_234));
+		// 整秒也带一位小数：运行中的秒表读数宽度不变。
+		Assert.Equal("2.0s", LiveDurationText.Format(1_000, 0, 3_000));
+		Assert.Equal("500ms", LiveDurationText.Format(1_000, 1_500, 99_999));
+	}
+
+	[Fact]
+	public void DurationReadingsPadSecondsToOneDecimalPlace()
+	{
+		// 步骤行的读数固定一位小数：1.9s / 2.0s / 2.1s，不再出现窄一格的「2s」。
+		Assert.Equal("1.9s", Strings.FormatDuration(1_900));
+		Assert.Equal("2.0s", Strings.FormatDuration(2_000));
+		Assert.Equal("2.1s", Strings.FormatDuration(2_150));
+		// 截断而不进位：59.9s 之后才进分钟段，不会出现「60.0s」再跳回小值。
+		Assert.Equal("59.9s", Strings.FormatDuration(59_999));
+		// 分钟以上补零，读数宽度不随零字段变化；小时档保留秒。
+		Assert.Equal("1m00s", Strings.FormatDuration(60_000));
+		Assert.Equal("1m04s", Strings.FormatDuration(64_000));
+		Assert.Equal("24h24m56s", Strings.FormatDuration(87_896_000));
+		// 不足一秒仍是整数毫秒，也不会四舍五入成 1000ms。
+		Assert.Equal("999ms", Strings.FormatDuration(999.6));
+	}
+
+	[Fact]
+	public void SubMillisecondToolSpansShowOneDecimalInsteadOfZero()
+	{
+		// 工具真的会 0.3ms 就返回：整数毫秒会把这一整段读成「0ms」。
+		Assert.Equal("0.4ms", Strings.FormatDuration(0.43));
+		Assert.Equal("0.9ms", Strings.FormatDuration(0.99));
+		Assert.Equal("1ms", Strings.FormatDuration(1));
+		// 十分位必须是截断而不是浮点乘法的产物：0.7 存成 0.6999…，不能显示成 0.6ms。
+		for (var tenth = 1; tenth <= 9; tenth++)
+		{
+			Assert.Equal($"0.{tenth}ms", Strings.FormatDuration(tenth / 10.0));
+		}
+
+		// 低于可显示分辨率（包括旧记录里真写成 0 的）说「低于 0.1ms」，不写 0ms。
+		Assert.Equal("<0.1ms", Strings.FormatDuration(0));
+		Assert.Equal("<0.1ms", Strings.FormatDuration(0.04));
+		Assert.Equal("<0.1ms", Strings.FormatDuration(double.NaN));
 	}
 
 	[Fact]

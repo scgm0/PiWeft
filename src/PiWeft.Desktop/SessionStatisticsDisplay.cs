@@ -207,8 +207,5 @@ public sealed record SessionStatisticsDisplay(SessionStatistics Totals, long Con
 	private static string Speed(double? value) => value is { } number && double.IsFinite(number)
 		? number.ToString("0", CultureInfo.InvariantCulture) + " tok/s" : Strings.StatisticsMissing;
 	private static string Duration(double? value) => value is { } ms && double.IsFinite(ms) && ms >= 0
-		? ms < 1000 ? ms.ToString("0", CultureInfo.InvariantCulture) + "ms"
-			: ms < 60_000 ? (ms / 1000).ToString("0.#", CultureInfo.InvariantCulture) + "s"
-			: (ms / 60_000).ToString("0.#", CultureInfo.InvariantCulture) + "min"
-		: Strings.StatisticsMissing;
+		? Strings.FormatDuration(ms) : Strings.StatisticsMissing;
 }

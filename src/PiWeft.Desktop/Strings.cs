@@ -135,7 +135,7 @@ public static partial class Strings
 	public const string DiagnosticsCompact = "压一次堆";
 	public const string DiagnosticsCompactHint = "完整回收并显示剩余托管堆";
 	public static string DiagnosticsCompactResult(long before, long after, double pauseMs) =>
-		$"回收前 {FormatBytes(before)} → 剩余 {FormatBytes(after)}（GC 用了 {pauseMs:0} ms）";
+		$"回收前 {FormatBytes(before)} → 剩余 {FormatBytes(after)}（GC 用了 {pauseMs:0}ms）";
 	public const string LabelWorkingSet = "工作集";
 	public const string LabelHeap = "托管堆";
 	public const string LabelLoh = "大对象堆";
@@ -151,7 +151,7 @@ public static partial class Strings
 	public const string LabelQueueLag = "UI 队列延迟";
 	public const string LabelInputLatency = "输入→绘制";
 	public const string LabelFrameGap = "帧间隔";
-	public const string LabelFrameBudget = "预算 16.7 ms";
+	public const string LabelFrameBudget = "预算 16.7ms";
 	public const string LabelFrameCounts = "掉帧 / 长帧 / 停顿";
 	public const string LabelAllocPerFrame = "每帧分配";
 	public const string LabelDrawCalls = "绘制调用";
@@ -924,7 +924,7 @@ public static partial class Strings
 
 	public const string TestingConnection = "正在测试连接…";
 
-	public static string ConnectionOk(string provider, string model, long latencyMs) => $"连接正常：{provider}/{model} · {latencyMs} ms";
+	public static string ConnectionOk(string provider, string model, long latencyMs) => $"连接正常：{provider}/{model} · {latencyMs}ms";
 
 	public static string ConnectionFailed(string reason) => $"连接失败：{reason}";
 
@@ -1087,13 +1087,34 @@ public static partial class Strings
 
 	public static string ToolDetail(string text) => Summarize(text);
 
-	public static string FormatDuration(double milliseconds) => milliseconds switch
+	/// 步骤行、思考/回复耗时、过程组总计与会话轨迹共用的计时读数。
+	/// 单位紧贴数字（500ms / 1.2s / 1m04s），秒档固定一位小数：等宽字里「2s」比邻近读数窄一格，
+	/// 运行中的秒表每 100 ms 刷新一次，读数宽度一变就会把后面的预览推来推去。
+	/// 一位小数由截断得到（不提前进位），59.9s 之后才进入分钟段，不会出现「60.0s」。
+	/// 分钟以上补零（1m04s、24h24m56s），小时档保留秒：长任务里秒在跳才说明还在跑。
+	/// 毫秒档只在 1ms 以下给一位小数：工具真的会 0.3ms 就返回，取整就会读成「0ms」，
+	/// 而 2–999ms 的十分位只是调度噪声；低于显示分辨率的读数记 <0.1ms，不写 0ms。
+	public static string FormatDuration(double milliseconds)
 	{
-		< 1000 => $"{milliseconds:0} ms",
-		< 60_000 => $"{milliseconds / 1000:0.#} s",
-		< 3_600_000 => $"{(int)(milliseconds / 60_000)}m{(int)(milliseconds % 60_000 / 1000):00}s",
-		_ => $"{(int)(milliseconds / 3_600_000)}h{(int)(milliseconds % 3_600_000 / 60_000):00}m",
-	};
+		if (!double.IsFinite(milliseconds) || milliseconds < 0) milliseconds = 0;
+		if (milliseconds < 0.1) return "<0.1ms";
+		if (milliseconds < 1)
+		{
+			// 乘 10 后截断；+1e-6 抵消二进制浮点（0.3 存成 0.2999…）的误差，不让 0.3ms 显示成 0.2ms。
+			return $"0.{(long)(milliseconds * 10 + 1e-6)}ms";
+		}
+
+		if (milliseconds < 1000) return $"{(long)milliseconds}ms";
+		if (milliseconds < 60_000)
+		{
+			var tenths = (long)(milliseconds / 100);
+			return $"{tenths / 10}.{tenths % 10}s";
+		}
+
+		var totalSeconds = (long)(milliseconds / 1000);
+		if (totalSeconds < 3600) return $"{totalSeconds / 60}m{totalSeconds % 60:00}s";
+		return $"{totalSeconds / 3600}h{totalSeconds % 3600 / 60:00}m{totalSeconds % 60:00}s";
+	}
 
 	private static string Summarize(string text)
 	{
