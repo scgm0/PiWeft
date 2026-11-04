@@ -3,21 +3,16 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 发送键右侧的投递方式菜单（PiDeck 的 Split Send 下拉同款）。
-///
 /// 每一项是「标题 + 一行灰色说明」两行，而不是一整条长标签：
 /// 投递方式是发送前最难猜的语义（加入当前回合 vs 排队到下一轮），
 /// 光靠「— steer」这种尾缀读者仍不知道它什么时候生效。用 MewUI 的
 /// <see cref="Popup"/> 托管自绘内容：边界翻转、外点关闭、Esc 都由框架负责，
 /// 我们只负责列表本身。
-///
 /// 版面对齐 PiDeck 的下拉：图标列定宽（不与标题贴字）、两行文字左缘对齐、
 /// 行与行之间留呼吸、最后一项（中断）前用一条发丝线分组、说明过长省略而不换行。
-/// </summary>
 internal sealed class SendOptionsMenu : IDisposable
 {
-	/// <summary>一项投递方式。</summary>
 	/// <param name="Icon">Lucide 图标名。</param>
 	/// <param name="Title">主标题（动作本身）。</param>
 	/// <param name="Description">副标题（协议名 + 生效时机）。</param>
@@ -32,16 +27,13 @@ internal sealed class SendOptionsMenu : IDisposable
 		string Role = AppStyles.RoleSubtle,
 		bool SeparatorBefore = false);
 
-	/// <summary>图标列宽：图标 14 + 8 间距，保证两行文字与图标不贴在一起。</summary>
 	private const double IconColumnWidth = 22;
 
-	/// <summary>行内边距：上下 7 让两行文字在中文字体下有足够行距，又不把菜单撑高。</summary>
 	private static readonly Thickness RowPadding = new(AppTheme.Space3 - 2, 7, AppTheme.Space3, 7);
 
 	private readonly Popup _popup = new();
 	private Window? _window;
 
-	/// <summary>在 <paramref name="anchor"/> 上方弹出；内容每次重建，避免残留上一轮的启用态。</summary>
 	public void Show(FrameworkElement anchor, IReadOnlyList<Item> items)
 	{
 		// 原生弹窗需要真实后端；无头（单元测试、诊断脚本未 Run）时静默降级，
@@ -67,13 +59,10 @@ internal sealed class SendOptionsMenu : IDisposable
 
 	public bool IsOpen => _popup.IsOpen;
 
-	/// <summary>浮层内容（测试与交互诊断用）：菜单项就在这棵子树里。</summary>
 	internal UIElement? ContentForTests => _popup.Content;
 
-	/// <summary>
 	/// 释放原生弹窗。Popup 持有自己的原生窗口资源，标签关闭时只 Close 不 Dispose 会泄漏；
 	/// 每个会话标签各有一个菜单实例，反复开关标签就会累积。
-	/// </summary>
 	public void Dispose()
 	{
 		Close();
@@ -101,7 +90,6 @@ internal sealed class SendOptionsMenu : IDisposable
 		}
 	}
 
-	/// <summary>构建菜单内容（纯控件，不碰窗口）：测试与真实弹出共用同一份构建逻辑。</summary>
 	internal UIElement BuildForTests(IReadOnlyList<Item> items) => Build(items);
 
 	private UIElement Build(IReadOnlyList<Item> items)
@@ -126,7 +114,6 @@ internal sealed class SendOptionsMenu : IDisposable
 			.Child(list);
 	}
 
-	/// <summary>一项：定宽图标列 + 两行文字；整行是 Ghost 按钮，悬停底色由样式统一给出。</summary>
 	private Button Row(Item item)
 	{
 		var captured = item;
@@ -171,7 +158,6 @@ internal sealed class SendOptionsMenu : IDisposable
 			});
 	}
 
-	/// <summary>分组用发丝线：上下各留一点空间，线本身不参与命中。</summary>
 	private static UIElement Separator()
 	{
 		var line = new Border()

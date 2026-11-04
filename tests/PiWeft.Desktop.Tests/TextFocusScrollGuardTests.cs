@@ -6,11 +6,9 @@ using Xunit.Abstractions;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// Focusing a reading control must not drive any enclosing viewport. A MarkdownView is often
 /// taller than the execution group body, so MewUI's focus-into-view would otherwise scroll the
 /// group (and the conversation) to the focused view's top or bottom.
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class TextFocusScrollGuardTests(ITestOutputHelper output)
 {

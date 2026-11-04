@@ -7,35 +7,26 @@ using PiWeft.Ai;
 using PiWeft.Ai.Json;
 namespace PiWeft.Mcp;
 
-/// <summary>
 /// pi 暴露的三个资源工具，名称与 Codex、opencode 使用的一致：
 /// <c>list_mcp_resources</c>、<c>list_mcp_resource_templates</c> 与 <c>read_mcp_resource</c>。它们接受
 /// <c>server</c> 参数，覆盖所有带资源的已连接服务器，因此按这些工具训练过的模型
 /// 可以直接使用。
-/// </summary>
-/// <remarks>
 /// 列举结果是 JSON：<c>{server?, resources: [{server, ...}], nextCursor?, errors?}</c>。传 <c>server</c> 可只取
 /// 某个服务器的一页（配合 <c>cursor</c> 继续），省略则遍历所有服务器的所有页。MCP 应用界面
 /// 资源（<c>ui://</c> URI 与 <c>profile=mcp-app</c> HTML）会被排除：它们是给宿主渲染的用户界面。
-/// 
-/// </remarks>
 public static class McpResourceTools
 {
 	public const string ListResourcesTool = "list_mcp_resources";
 	public const string ListResourceTemplatesTool = "list_mcp_resource_templates";
 	public const string ReadResourceTool = "read_mcp_resource";
 
-	/// <summary>面向模型的文本上限，与 pi 的 <c>MCP_OUTPUT_MAX_BYTES</c> 一致。</summary>
 	public const int MaxOutputBytes = 20 * 1024;
 
-	/// <summary>某个工具名是否属于这一族。</summary>
 	public static bool IsResourceTool(string name) =>
 		name is ListResourcesTool or ListResourceTemplatesTool or ReadResourceTool;
 
-	/// <summary>
 	/// 构建这三个工具。<paramref name="servers"/> 在调用时读取，因此注册之后才连接（或断开）的
 	/// 服务器也能被反映出来。
-	/// </summary>
 	public static IReadOnlyList<AgentTool> Create(Func<IReadOnlyList<IMcpResourceProvider>> servers) =>
 	[
 		ListTool(servers),
@@ -232,7 +223,6 @@ public static class McpResourceTools
 			(available.Length > 0 ? $". Servers with resources: {available}" : string.Empty));
 	}
 
-	/// <summary>某个服务器的一页，或所有服务器的所有页，按名称排序。</summary>
 	private static async Task<JsonObject> ListAsync<T>(
 		IReadOnlyList<IMcpResourceProvider> servers,
 		string? serverName,
@@ -328,7 +318,6 @@ public static class McpResourceTools
 		};
 	}
 
-	/// <summary>带服务器标记的资源项，不含 <c>_meta</c> 与图标。</summary>
 	private static JsonNode Describe(string server, McpResource resource)
 	{
 		var node = WithoutMeta(resource.Raw) ?? new JsonObject();
@@ -360,7 +349,6 @@ public static class McpResourceTools
 		return node;
 	}
 
-	/// <summary>去掉 <c>_meta</c> 与图标 —— 只有能渲染它们宿主才用得上。</summary>
 	private static JsonObject? WithoutMeta(JsonObject? raw)
 	{
 		if (raw is null)
@@ -374,7 +362,6 @@ public static class McpResourceTools
 		return clone;
 	}
 
-	/// <summary>该项是否为 MCP 应用界面 —— 对模型没有意义。</summary>
 	internal static bool IsMcpApp(string? uri, string? mimeType)
 	{
 		if (uri is not null && uri.StartsWith("ui://", StringComparison.OrdinalIgnoreCase))
@@ -393,7 +380,6 @@ public static class McpResourceTools
 			mimeType.Contains("profile=mcp-app", StringComparison.OrdinalIgnoreCase);
 	}
 
-	/// <summary>某个资源块面向模型的内容。</summary>
 	internal static IReadOnlyList<ContentBlock> ToModelContent(McpResourceContent content)
 	{
 		if (content.Text is not null)
@@ -443,7 +429,6 @@ public static class McpResourceTools
 		}
 	}
 
-	/// <summary>这些类型的 blob 按文本展示。</summary>
 	private static bool IsTextMimeType(string? mimeType)
 	{
 		if (mimeType is null)
@@ -460,7 +445,6 @@ public static class McpResourceTools
 			type.EndsWith("+xml", StringComparison.Ordinal);
 	}
 
-	/// <summary>保存 blob 时的文件扩展名：取 URI 末尾的扩展名，否则用 <c>.bin</c>。</summary>
 	private static string ExtensionOf(string uri)
 	{
 		var path = Uri.TryCreate(uri, UriKind.Absolute, out var parsed) ? parsed.AbsolutePath : uri;
@@ -483,16 +467,12 @@ public static class McpResourceTools
 	};
 }
 
-/// <summary>传给 MCP 资源工具的非法参数。</summary>
 public sealed class McpToolArgumentException(string message) : Exception(message);
 
-/// <summary>把面向模型的 MCP 输出限制在字节预算内，行为与 pi 的“截断并另存”一致。</summary>
 internal static class McpOutput
 {
-	/// <summary>
 	/// 合并后的文本超过 <see cref="McpResourceTools.MaxOutputBytes"/> 时从中间截断，
 	/// 把完整文本存到临时文件并告知模型路径。图片块保留。
-	/// </summary>
 	public static IReadOnlyList<ContentBlock> Limit(IReadOnlyList<ContentBlock> content)
 	{
 		var combined = string.Concat(content.OfType<TextContent>().Select(static block => block.Text));
@@ -527,7 +507,6 @@ internal static class McpOutput
 		return (text[..headChars], text[^tailChars..], lines);
 	}
 
-	/// <summary>在不切断字符的前提下，<paramref name="maxBytes"/> 能容纳多少字符。</summary>
 	private static int TakeChars(string text, int maxBytes, bool fromEnd)
 	{
 		var taken = 0;

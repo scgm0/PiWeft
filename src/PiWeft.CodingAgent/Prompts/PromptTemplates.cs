@@ -4,29 +4,22 @@ using PiWeft.CodingAgent.Resources;
 
 namespace PiWeft.CodingAgent.Prompts;
 
-/// <summary>从 <c>prompts</c> 目录加载的斜杠命令提示词模板。</summary>
 public sealed record PromptTemplate
 {
-	/// <summary>命令名，取文件名去掉扩展名。</summary>
 	public required string Name { get; init; }
 
 	public required string Content { get; init; }
 
-	/// <summary>frontmatter 里的 description，供命令补全展示。</summary>
 	public string? Description { get; init; }
 
 	public required string FilePath { get; init; }
 
-	/// <summary>模板来源（用户、项目或包）。</summary>
 	public ResourceOrigin Origin { get; init; }
 }
 
-/// <summary>
 /// 加载并展开斜杠命令提示词模板。对应 pi 的 <c>prompt-templates.ts</c>。
-/// </summary>
 public static partial class PromptTemplates
 {
-	/// <summary>从用户与项目提示词目录加载模板，项目模板优先；包含已安装 pi 包提供的模板。</summary>
 	public static IReadOnlyList<PromptTemplate> Discover(string cwd, string? agentDir = null, bool includeProject = true)
 	{
 		var resolvedAgentDir = agentDir ?? Session.SessionPaths.GetAgentDir();
@@ -34,7 +27,6 @@ public static partial class PromptTemplates
 		return Discover(ResourceResolver.PromptRoots(cwd, resolvedAgentDir, includeProject, packages));
 	}
 
-	/// <summary>从已解析的根目录加载模板；单个根可以是目录，也可以是 <c>.md</c> 文件。</summary>
 	public static IReadOnlyList<PromptTemplate> Discover(IReadOnlyList<ResourceRoot> roots)
 	{
 		var templates = new List<PromptTemplate>();
@@ -54,7 +46,6 @@ public static partial class PromptTemplates
 		return templates;
 	}
 
-	/// <summary>把 <c>/name args</c> 形式的消息展开成模板正文；不匹配时原样返回。</summary>
 	public static string Expand(string text, IReadOnlyList<PromptTemplate> templates)
 	{
 		if (!text.StartsWith('/'))
@@ -82,11 +73,9 @@ public static partial class PromptTemplates
 		return text;
 	}
 
-	/// <summary>
 	/// 按空白切分参数字符串，并识别单引号与双引号。
 	/// 空的引号参数（<c>""</c> / <c>''</c>）是一个位置参数，不能丢弃 ——
 	/// 丢掉会让后面的参数错位、默认值失真（pi 1.3.0 修正的正是这个行为）。
-	/// </summary>
 	public static string[] ParseArgs(string argsString)
 	{
 		var args = new List<string>();
@@ -138,10 +127,8 @@ public static partial class PromptTemplates
 		return [.. args];
 	}
 
-	/// <summary>
 	/// 在模板内容中替换 <c>$1</c>、<c>$@</c>、<c>$ARGUMENTS</c>、<c>${N:-default}</c>、<c>${@:-default}</c>、
 	/// <c>${@:N}</c> 与 <c>${@:N:L}</c>。替换进去的值不会被再次扫描。
-	/// </summary>
 	public static string SubstituteArgs(string content, IReadOnlyList<string> args)
 	{
 		var allArgs = string.Join(" ", args);

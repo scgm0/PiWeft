@@ -6,7 +6,6 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent.Compaction;
 
-/// <summary>对被放弃分支做摘要后的结果。</summary>
 public sealed record BranchSummaryResult
 {
 	public required string Summary { get; init; }
@@ -20,10 +19,8 @@ public sealed record BranchSummaryResult
 	public int SummarizedEntries { get; init; }
 }
 
-/// <summary>
 /// 树导航时的分支摘要：叶子移动到别处时，被放弃的那条路径会被摘要，
 /// 使其上下文不至于丢失。对应 pi 的 <c>branch-summarization.ts</c>。
-/// </summary>
 public static class BranchSummarizer
 {
 	public const string BranchSummaryPrompt = """
@@ -57,10 +54,8 @@ public static class BranchSummarizer
 		Keep each section concise. Preserve exact file paths, function names, and error messages.
 		""";
 
-	/// <summary>
 	/// 从 <paramref name="fromId"/> 回溯到它与 <paramref name="targetId"/> 的共同祖先之间的条目，
 	/// 按时间顺序排列。这些就是导航将要放弃的条目。
-	/// </summary>
 	public static IReadOnlyList<SessionEntry> CollectAbandonedEntries(
 		SessionManager session,
 		string fromId,
@@ -91,10 +86,8 @@ public static class BranchSummarizer
 		return abandoned;
 	}
 
-	/// <summary>
 	/// 摘要被放弃的分支，把叶子移动到 <paramref name="targetId"/>，并在那里追加一条
 	/// <c>branch_summary</c> 条目。没有可摘要内容时返回 <c>null</c>。
-	/// </summary>
 	public static async Task<BranchSummaryResult?> NavigateWithSummaryAsync(
 		SessionManager session,
 		Model model,
@@ -104,7 +97,8 @@ public static class BranchSummarizer
 		BranchSummarySettings branchSettings,
 		string targetId,
 		string? customInstructions = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		string? thinkingLevel = null)
 	{
 		ArgumentNullException.ThrowIfNull(session);
 		ArgumentNullException.ThrowIfNull(model);
@@ -143,9 +137,10 @@ public static class BranchSummarizer
 			customInstructions: null,
 			previousSummary: null,
 			cancellationToken,
-			basePromptOverride: instructions).ConfigureAwait(false);
+			basePromptOverride: instructions,
+			thinkingLevel: thinkingLevel).ConfigureAwait(false);
 
-		var fileOperations = ConversationSerializer.CollectFileOperations(messages);
+		var fileOperations = CollectFileOperations(abandoned, messages);
 		var details = new JsonObject
 		{
 			["readFiles"] = new JsonArray([.. fileOperations.ReadFiles.OrderBy(static f => f, StringComparer.Ordinal)
@@ -167,7 +162,6 @@ public static class BranchSummarizer
 		};
 	}
 
-	/// <summary>只摘要被放弃的分支而不导航，便于预览结果。</summary>
 	public static async Task<BranchSummaryResult?> SummarizeBranchAsync(
 		SessionManager session,
 		Model model,
@@ -177,7 +171,8 @@ public static class BranchSummarizer
 		BranchSummarySettings branchSettings,
 		string targetId,
 		string? customInstructions = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		string? thinkingLevel = null)
 	{
 		var leafId = session.LeafId;
 		if (leafId is null || string.Equals(leafId, targetId, StringComparison.Ordinal))
@@ -211,9 +206,10 @@ public static class BranchSummarizer
 			customInstructions: null,
 			previousSummary: null,
 			cancellationToken,
-			basePromptOverride: instructions).ConfigureAwait(false);
+			basePromptOverride: instructions,
+			thinkingLevel: thinkingLevel).ConfigureAwait(false);
 
-		var fileOperations = ConversationSerializer.CollectFileOperations(messages);
+		var fileOperations = CollectFileOperations(abandoned, messages);
 
 		return new BranchSummaryResult
 		{
@@ -225,41 +221,96 @@ public static class BranchSummarizer
 		};
 	}
 
-	/// <summary>从最新的条目往前取，直到达到上下文窗口预算。</summary>
 	private static List<Message> SelectWithinBudget(
 		IReadOnlyList<SessionEntry> abandoned,
 		int contextWindow,
 		int reserveTokens)
 	{
 		var budget = contextWindow > 0 ? contextWindow - Math.Max(0, reserveTokens) : 0;
+
+		// 与 pi 的 prepareBranchEntries 一致：工具结果不进分支摘要（内容已在助手的工具调用里），
+		// 被 context_edit 隐藏的尝试不重新出现，替换过的内容按替换后的版本摘要。
+		var edits = SessionManager.LatestContextEdits(abandoned);
+		var candidates = new List<(int Index, List<Message> Messages)>(abandoned.Count);
+		for (var index = 0; index < abandoned.Count; index++)
+		{
+			var entry = abandoned[index];
+			if (entry is SessionMessageEntry { Message: ToolResultMessage })
+			{
+				continue;
+			}
+
+			var entryMessages = SessionManager.ProjectEntry(entry, edits.GetValueOrDefault(entry.Id)).ToList();
+			if (entryMessages.Count > 0)
+			{
+				candidates.Add((index, entryMessages));
+			}
+		}
+
 		if (budget <= 0)
 		{
-			return [.. abandoned.SelectMany(SessionManager.MessagesForEntry)];
+			return [.. candidates.SelectMany(static candidate => candidate.Messages)];
 		}
 
 		var selected = new List<(int Index, List<Message> Messages)>();
 		long tokens = 0;
-		for (var index = abandoned.Count - 1; index >= 0; index--)
+		for (var index = candidates.Count - 1; index >= 0; index--)
 		{
-			var messages = SessionManager.MessagesForEntry(abandoned[index]).ToList();
-			var entryTokens = messages.Sum(ContextTokens.EstimateTokens);
+			var entryMessages = candidates[index].Messages;
+			var entryTokens = entryMessages.Sum(ContextTokens.EstimateTokens);
 			if (selected.Count > 0 && tokens + entryTokens > budget)
 			{
 				break;
 			}
 
-			selected.Add((index, messages));
+			selected.Add(candidates[index]);
 			tokens += entryTokens;
 		}
 
 		selected.Reverse();
 		var result = new List<Message>();
-		foreach (var (_, messages) in selected)
+		foreach (var (_, entryMessages) in selected)
 		{
-			result.AddRange(messages);
+			result.AddRange(entryMessages);
 		}
 
 		return result;
 	}
 
+	/// 文件清单除了本次摘要的消息，还要带上被放弃路径里嵌套的分支摘要（与 pi 的 prepareBranchEntries 一致）。
+	private static ConversationSerializer.FileOperations CollectFileOperations(
+		IReadOnlyList<SessionEntry> abandoned,
+		IReadOnlyList<Message> messages)
+	{
+		var operations = ConversationSerializer.CollectFileOperations(messages);
+		foreach (var entry in abandoned)
+		{
+			// pi 的条件是「非扩展生成」（fromHook 缺省与 false 都算），只有细节对象存在时才合并。
+			if (entry is not BranchSummaryEntry { Details: JsonObject details } summary || summary.FromHook == true)
+			{
+				continue;
+			}
+
+			AddPaths(details["readFiles"], operations.ReadFiles);
+			AddPaths(details["modifiedFiles"], operations.ModifiedFiles);
+		}
+
+		return operations;
+	}
+
+	private static void AddPaths(JsonNode? node, HashSet<string> target)
+	{
+		if (node is not JsonArray array)
+		{
+			return;
+		}
+
+		foreach (var item in array)
+		{
+			if (item?.GetValueKind() == System.Text.Json.JsonValueKind.String)
+			{
+				target.Add(item.GetValue<string>());
+			}
+		}
+	}
 }

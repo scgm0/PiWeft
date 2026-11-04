@@ -353,14 +353,12 @@ public class AnthropicProviderTests
 		}
 	}
 
-	/// <summary>先交出前若干字节，之后只等取消的响应体流：模拟「流开到一半就停住」。</summary>
-	/// <remarks>只实现 Memory 版 ReadAsync —— 与真实网络流一样没有可用的同步读。</remarks>
+	/// 只实现 Memory 版 ReadAsync —— 与真实网络流一样没有可用的同步读。
 	internal sealed class PartialThenStalledStream : Stream
 	{
 		private readonly byte[] _prefix;
 		private int _delivered;
 
-		/// <summary>数据交完、即将停住时的回调：测试靠它把「中止」钉在确定的时刻，而不是靠 sleep。</summary>
 		public Action? OnStalled { get; set; }
 
 		public PartialThenStalledStream(byte[] prefix) => _prefix = prefix;
@@ -393,11 +391,9 @@ public class AnthropicProviderTests
 		}
 	}
 
-	/// <summary>
 	/// 流被中断时的两种语义必须分开：用户中止是 aborted（不重试），
 	/// 供应商挂住连接是空闲超时的 error（要重试）。两者曾经共用一条取消路径，
 	/// 判错方向就会「中止被当成超时」或「停滞被当成中止」。
-	/// </summary>
 	public class AnthropicProviderAbortionTests
 	{
 		private const string FirstEvent = """
@@ -420,7 +416,6 @@ public class AnthropicProviderTests
 			Cost = new ModelCost { Input = 3, Output = 15, CacheRead = 0.3, CacheWrite = 3.75 },
 		};
 
-		/// <summary>每个用例自己的 handler：不共享静态状态，测试并行时不会互相串。</summary>
 		private static AnthropicProvider StalledProvider(Action? onStalled = null) =>
 			new(new HttpClient(new FakeHttpHandler
 			{
@@ -478,7 +473,6 @@ public class AnthropicProviderTests
 	}
 }
 
-/// <summary>Anthropic 兼容网关的凭据必须按 model.provider 解析，而不是写死 anthropic。</summary>
 [Collection("process-environment")]
 public sealed class AnthropicProviderProviderKeyTests : IDisposable
 {

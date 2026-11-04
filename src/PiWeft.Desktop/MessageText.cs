@@ -4,10 +4,8 @@ using Aprillz.MewUI.Input;
 
 namespace PiWeft.Desktop;
 
-/// <summary>可选择的原文消息，不解析 Markdown，也不创建独立的纵向视口。</summary>
 internal static class MessageText
 {
-	/// <summary>流式追加时保留既有选区；替换原文时不沿用旧位置。</summary>
 	public static void Update(MultiLineTextBox text, string value)
 	{
 		var previous = text.Text;

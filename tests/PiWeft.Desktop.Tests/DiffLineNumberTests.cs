@@ -5,7 +5,6 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>diff 视图的行号解析：hunk 头给出起点，之后的增删与上下文各自推进对应计数。</summary>
 [Collection("mewui-controls")]
 public class DiffLineNumberTests
 {

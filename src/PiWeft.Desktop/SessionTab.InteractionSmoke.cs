@@ -8,15 +8,12 @@ namespace PiWeft.Desktop;
 
 public sealed partial class SessionTab
 {
-	/// <summary>无窗口测试：立即渲染一帧（DispatcherTimer 在无调度器时不会自动 tick）。</summary>
 	internal void RenderForTests() => Render();
 
-	/// <summary>是否打印 scroll-sweep 的高频状态探针（PIWEFT_SWEEP_PROBE=1）。</summary>
 	private static bool SweepProbe => Environment.GetEnvironmentVariable("PIWEFT_SWEEP_PROBE") == "1";
 
-	/// <summary>滚到顶部，让「移动到最新」悬浮按钮进入自动显示状态。</summary>
-	/// <summary>仅供 --ui-smoke waiting：摆出「首轮已发出、首 token 还没到」的一帧，供截图验收。
-	/// 状态条与时间线尾部的等待占位行都在这一帧里；真实等待的时长不可控，只能这样定住。</summary>
+	/// 仅供 --ui-smoke waiting：摆出「首轮已发出、首 token 还没到」的一帧，供截图验收。
+	/// 状态条与时间线尾部的等待占位行都在这一帧里；真实等待的时长不可控，只能这样定住。
 	internal void PrepareWaitingSmoke()
 	{
 		_turnStarted = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -25,7 +22,6 @@ public sealed partial class SessionTab
 		Render();
 	}
 
-	/// <summary>仅供 --ui-smoke ask：在会话里展开一张批量问询卡（select / multi_select / editor + 审阅页），供截图验收。</summary>
 	internal void PrepareAskSmoke()
 	{
 		var questions = new List<AskQuestion>
@@ -50,11 +46,9 @@ public sealed partial class SessionTab
 		_ = AskPanel.ShowAsync(questions, review: true, CancellationToken.None);
 	}
 
-	/// <summary>
 	/// 仅供 --ui-smoke scroll-sweep：从会话底部按步长向上滚动，覆盖整条会话，
 	/// 每步打印 offset 供外部脚本对齐截图帧。步长小于视口，任何一帧里
 	/// 「两块已渲染内容之间出现成段空白」都会被像素检测抓到。
-	/// </summary>
 	internal void PrepareScrollSweepSmoke()
 	{
 		PiWeft.Markdown.MarkdownView.PaintProbeEnabled = SweepProbe;
@@ -164,10 +158,8 @@ public sealed partial class SessionTab
 		timer.Start();
 	}
 
-	/// <summary>
 	/// 仅供 --ui-smoke latest-theme：先上滚让「移动到最新」按钮浮出，再动态切到浅色主题，
 	/// 供外部脚本前后截图核对按钮与正文的配色（长会话 + 运行中换肤才会暴露）。
-	/// </summary>
 	internal void PrepareLatestThemeSmoke()
 	{
 		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(700));
@@ -215,10 +207,8 @@ public sealed partial class SessionTab
 		timer.Start();
 	}
 
-	/// <summary>
 	/// 滚到顶部后反复切换输入区上方卡片的展开与可见性，制造消息区高度抖动，
 	/// 复现悬浮按钮「显示不全」的偶发绘制缺陷（外部脚本趁机连拍截图）。
-	/// </summary>
 	internal void PrepareLatestChurnSmoke()
 	{
 		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(180));
@@ -251,10 +241,8 @@ public sealed partial class SessionTab
 		timer.Start();
 	}
 
-	/// <summary>
 	/// 仅供 --ui-smoke wheel：展开执行过程组体后沿真实滚轮入口持续波浪滚动 ~24 秒，
 	/// 供外部脚本采性能样本（dotnet-trace / 诊断 timings）对照长帧治理效果。
-	/// </summary>
 	internal void PrepareWheelSmoke()
 	{
 		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(120));
@@ -302,7 +290,6 @@ public sealed partial class SessionTab
 		}
 	}
 
-	/// <summary>展开本轮执行过程，供原生截图检查时间线和工具详情。</summary>
 	internal void PrepareProcessSmoke()
 	{
 		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(120));
@@ -333,10 +320,8 @@ public sealed partial class SessionTab
 		timer.Start();
 	}
 
-	/// <summary>
 	/// 仅供 --ui-smoke collapse：按用户路径展开过程组与工具调用，报告滚动范围、已实现行与空白行，
 	/// 用于定位「展开/收起长内容后正文不渲染，滚动一下才恢复」。
-	/// </summary>
 	internal void PrepareCollapseSmoke()
 	{
 		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(300));
@@ -422,11 +407,9 @@ public sealed partial class SessionTab
 		return found;
 	}
 
-	/// <summary>
 	/// 仅供 <c>--ui-smoke stream</c>：按真实流式的节奏持续追加思考与正文（含标题/列表/代码块），
 	/// 让逐字打字机、增量 Markdown 与每帧重绘一直跑；每秒打印工作集、托管堆与框架的渲染缓存台账，
 	/// 用来定位「对话越久工作集越大」到底是文本位图、几何、图集还是托管堆。
-	/// </summary>
 	internal void PrepareStreamSmoke()
 	{
 		var chunks = BuildStreamSmokeCorpus();
@@ -481,7 +464,6 @@ public sealed partial class SessionTab
 		timer.Start();
 	}
 
-	/// <summary>流式压测语料：切成「块」，按 tick 一块一块喂，接近真实模型的分块节奏。</summary>
 	private static string[] BuildStreamSmokeCorpus()
 	{
 		var builder = new System.Text.StringBuilder();
@@ -516,7 +498,6 @@ public sealed partial class SessionTab
 		return [.. blocks];
 	}
 
-	/// <summary>展开当前流式回复的思考折叠：逐字打字的 Markdown 正文路径也要进压测。</summary>
 	private void ExpandThinkingForStreamSmoke()
 	{
 		foreach (var expander in Find<Expander>(_messages))
@@ -529,7 +510,6 @@ public sealed partial class SessionTab
 		}
 	}
 
-	/// <summary>Native interaction diagnostics only; --ui-smoke interactions uses isolated fixtures.</summary>
 	internal void PrepareInteractionSmoke()
 	{
 		View.KeyDown += key =>

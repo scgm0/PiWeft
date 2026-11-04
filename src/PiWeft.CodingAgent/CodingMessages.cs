@@ -5,10 +5,8 @@ using PiWeft.Ai;
 using PiWeft.Ai.Json;
 namespace PiWeft.CodingAgent;
 
-/// <summary>
 /// 编码代理特有的消息，以及把它们转换成面向 LLM 的消息的转换器。
 /// 对应 pi 的 <c>core/messages.ts</c>。
-/// </summary>
 public static class CodingMessages
 {
 	public const string CompactionSummaryPrefix = """
@@ -35,14 +33,11 @@ public static class CodingMessages
 		</summary>
 		""";
 
-	/// <summary>不会直接发给模型、因此必须转换的消息角色。</summary>
 	public static bool IsConvertibleRole(string role) =>
 		role is "bashExecution" or "custom" or "branchSummary" or "compactionSummary";
 
-	/// <summary>
 	/// 把代理的会话记录转换成 provider 能理解的消息：纯状态消息被过滤掉，
 	/// 自定义角色变成 user 消息 —— 与 pi 的 <c>convertToLlm</c> 完全一致。
-	/// </summary>
 	public static IReadOnlyList<Message> ConvertToLlm(IReadOnlyList<Message> messages, CancellationToken cancellationToken)
 	{
 		var converted = new List<Message>(messages.Count);
@@ -88,7 +83,6 @@ public static class CodingMessages
 		return converted;
 	}
 
-	/// <summary>按 pi 呈现给模型的方式渲染 <c>bashExecution</c> 消息。</summary>
 	public static string BashExecutionToText(CustomMessage message)
 	{
 		var raw = message.Raw;
@@ -125,10 +119,8 @@ public static class CodingMessages
 		return builder.ToString();
 	}
 
-	/// <summary>
 	/// 粗略的上下文大小估算（每四个字符一个令牌，外加每条消息的小额开销）。pi 的估算器更精细，
 	/// 这里的实现只用于压缩阈值判断。
-	/// </summary>
 	public static long EstimateTokens(IEnumerable<Message> messages)
 	{
 		long tokens = 0;
@@ -184,7 +176,6 @@ public static class CodingMessages
 			? message.Raw[name]!.GetValue<string>()
 			: string.Empty;
 
-	/// <summary>为通过 <c>!</c> 执行的 shell 命令创建 <c>bashExecution</c> 消息。</summary>
 	public static CustomMessage BashExecution(
 		string command,
 		string output,

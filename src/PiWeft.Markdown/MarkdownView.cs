@@ -8,7 +8,6 @@ using Aprillz.MewUI.Text.Editing;
 
 namespace PiWeft.Markdown;
 
-/// <summary>Raised when the user activates a link; the host decides what to open.</summary>
 public sealed class MarkdownLinkRequestedEventArgs(
 	string url,
 	Uri? resolvedUri,
@@ -23,17 +22,14 @@ public sealed class MarkdownLinkRequestedEventArgs(
 	public int SourceLength { get; } = sourceLength;
 }
 
-/// <summary>Raised before selected text is written to the clipboard.</summary>
 public sealed class MarkdownCopyingEventArgs(string text) : EventArgs
 {
 	public string Text { get; set; } = text;
 	public bool Cancel { get; set; }
 }
 
-/// <summary>
 /// Incremental Markdown control. It reparses cheaply, diffs top-level blocks by model hash, reuses
 /// unchanged elements and text layouts, and keeps only the blocks near the outer viewport realized.
-/// </summary>
 public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, ILogicalTreeHost
 {
 	private const double FallbackEstimate = 48;
@@ -115,13 +111,11 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 	}
 
-	/// <summary>
 	/// Appends a streamed delta to the source. Equivalent to setting Source to the concatenation,
 	/// but each frame materializes only the parsed tail: the accumulated source stays in one
 	/// builder, the document model is never handed the full string, and the previous frame's
 	/// text is not re-scanned or re-copied. Repair of an unfinished tail follows
 	/// <see cref="IsStreaming"/>.
-	/// </summary>
 	public void Append(string delta)
 	{
 		ArgumentNullException.ThrowIfNull(delta);
@@ -161,7 +155,6 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 	}
 
-	/// <summary>Host presentation for custom blocks; assigning a new instance rebuilds the document.</summary>
 	public MarkdownRenderers? Renderers
 	{
 		get => GetValue(RenderersProperty);
@@ -172,10 +165,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	public Func<string, string?, FrameworkElement?>? CodeBlockFactory { get; set; }
 	public Action<MultiLineTextBox, string?>? CodeTextCreated { get; set; }
 
-	/// <summary>
 	/// Host-controlled image loading. Without it, images render their alt text and nothing is
 	/// fetched from disk or network. Changing it rebuilds the document.
-	/// </summary>
 	public IMarkdownImageResolver? ImageResolver
 	{
 		get => _imageResolver;
@@ -191,22 +182,17 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	}
 	private IMarkdownImageResolver? _imageResolver;
 
-	/// <summary>
 	/// Called when a paragraph or heading is created. Hosts use this to attach focus guards to
 	/// focusable link text; a click can otherwise ask the enclosing scroll viewport to scroll the
 	/// whole element into view.
-	/// </summary>
 	public Action<FrameworkElement>? FocusableElementCreated { get; set; }
 
 	public event Action<MarkdownLinkRequestedEventArgs>? LinkRequested;
 
-	/// <summary>Raised when the user clicks a resolved image (open a preview, download, ...).</summary>
 	public event Action<MarkdownImageRequestedEventArgs>? ImageRequested;
 
-	/// <summary>
 	/// Raised when a layout pass found nothing to realize although the document is non-empty:
 	/// the surface is about to paint empty. Hosts count/log it to capture the geometry of a blank row.
-	/// </summary>
 	public event Action<string>? NothingRealized;
 	public event Action? SelectionChanged;
 	public event Action<MarkdownCopyingEventArgs>? Copying;
@@ -230,7 +216,6 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	public bool HasSelection => _hasSelection;
 	public string SelectedText => _selectedText;
 
-	/// <summary>Number of realized top-level blocks; exposed for diagnostics and tests.</summary>
 	public int RealizedBlockCount
 	{
 		get
@@ -247,10 +232,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 	}
 
-	/// <summary>Total number of top-level blocks in the current document.</summary>
 	public int BlockCount => _slots.Count;
 
-	/// <summary>Returns the realized element of a top-level block, or null when it is not created.</summary>
 	internal FrameworkElement? GetBlockElement(int index)
 		=> index >= 0 && index < _slots.Count ? _slots[index].Element : null;
 
@@ -263,11 +246,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	internal bool IsBlockAttachedForTest(int index)
 		=> index >= 0 && index < _slots.Count && _slots[index].Attached && _slots[index].Element is not null;
 
-	/// <summary> realise 窗口与几何诊断（--ui-smoke scroll-sweep 用）。</summary>
 	internal (int First, int Last, double BoundsY) RealizeStateForTest
 		=> (_visibleFirst, _visibleLast, Bounds.Y);
 
-	/// <summary>每个顶层块的类型、文本前缀与高度（--ui-smoke scroll-sweep 用）。</summary>
 	internal string DescribeBlocksForTest()
 	{
 		var builder = new System.Text.StringBuilder();
@@ -282,7 +263,6 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		return builder.ToString();
 	}
 
-	/// <summary>Exact total height of the document in DIPs.</summary>
 	public double TotalHeight
 	{
 		get
@@ -1109,10 +1089,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	private static string TitleCase(string kind)
 		=> kind.Length == 0 ? kind : char.ToUpperInvariant(kind[0]) + kind[1..].ToLowerInvariant();
 
-	/// <summary>
 	/// An image arrived (or its paragraph re-measured): the owning top-level slot must re-measure
 	/// even though its cached height predates the image. Nested paragraphs walk up to their slot.
-	/// </summary>
 	private void InvalidateSlotOfElement(FrameworkElement element)
 	{
 		for (Element? current = element; current is not null; current = current.Parent)
@@ -1141,12 +1119,10 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		return panel;
 	}
 
-	/// <summary>
 	/// 列表条目要补的那一份行间距，与正文段落同一个口径（字号 × 倍率 − 字体自然行高）。
 	/// 段落内部的行距由 <see cref="MarkdownParagraphView"/> 加在行与行之间，而单行条目没有
 	/// 「行与行之间」，不补就会被正文抢先：同样 16 px 字号，正文 25.6 DIP、条目只有 19 DIP。
 	/// 嵌套列表的条目再走一次这里，所以多层列表的行距与正文保持一致。
-	/// </summary>
 	private double ListItemLeading()
 	{
 		TextRunStyle style = new(FontFamily, FontSize, FontWeight, FontStyle == FontStyle.Italic);
@@ -1381,12 +1357,10 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		return height;
 	}
 
-	/// <summary>
 	/// Cross-instance block heights. Re-entering a large historical message re-measures every
 	/// block from scratch; keyed by model hash + font/theme/DPI + exact width, a cached height is
 	/// exactly what a fresh measure would produce, so elements are only built for realized
 	/// blocks. Bounded LRU; image-bearing blocks never enter it (async height).
-	/// </summary>
 	private static class HeightCache
 	{
 		private const int Capacity = 4096;
@@ -1757,17 +1731,14 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 
 		// 就地补齐，不等下一轮 measure。
-		//
 		// RealizeRange 在 measure 阶段跑，那时本控件的 Bounds 还是上一轮 arrange 的位置；跳滚叠加
 		// 外层变高虚拟化呈现修正行高后，算出的窗口会整体偏离视口一个步长，把视口上方的块 detach 掉，
 		// 本帧就呈现为成段空白（分析见 docs/issues/scroll-up-blank-realize-window-lag.md）。
 		// 到 arrange 这一步 bounds 已经是本轮的最终值（框架先写 Bounds 再进 ArrangeCore），所以在这里
 		// 按真实窗口把块补回来并直接就位，呈现前正文就是完整的。
-		//
 		// 这里不改成「只 InvalidateMeasure 等下一轮」：实测在「变高呈现 → 条目容器 → 本控件」这条链上，
 		// 标脏确实传到了 Window、循环也多跑了一轮，但那一轮没有重新走进本控件（外层按相同约束短路），
 		// 帧仍然带着旧窗口呈现出去。简化场景下框架会补测，跨虚拟化祖先时不成立，所以补齐必须就地做完。
-		//
 		// 宽度沿用 measure 用的那个（_measureWidth），避免拿 arrange 宽与 wrap 宽不一致反复改高。
 		double realizeWidth = double.IsFinite(_measureWidth) && _measureWidth > 0 ? _measureWidth : bounds.Width;
 		RealizeRange(top, bottom, realizeWidth, GetDpi() / 96.0);
@@ -1815,7 +1786,6 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 	}
 
-	/// <summary>--ui-smoke scroll-sweep 的绘制探针开关（临时诊断）。</summary>
 	internal static bool PaintProbeEnabled;
 
 	bool IVisualTreeHost.VisitChildren(Func<Element, bool> visitor)
@@ -1976,7 +1946,6 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		public FrameworkElement? Element;
 		public bool Attached;
 		public int TextUnit = -1;
-		/// <summary>ApplyDocument generation that last carried this slot over.</summary>
 		public int Generation;
 	}
 

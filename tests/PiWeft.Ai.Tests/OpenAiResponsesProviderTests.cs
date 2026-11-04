@@ -21,7 +21,6 @@ public class OpenAiResponsesProviderTests
 		Cost = new ModelCost { Input = 1.25, Output = 10, CacheRead = 0.125 },
 	};
 
-	/// <summary>Wraps an SSE body, making sure it ends with the blank line that dispatches the last event.</summary>
 	private static HttpResponseMessage Sse(string body)
 	{
 		var terminated = body.EndsWith("\n\n", StringComparison.Ordinal)

@@ -3,15 +3,12 @@ using System.Text.Json.Serialization;
 
 namespace PiWeft.CodingAgent.Settings;
 
-/// <summary>
 /// settings.packages 的一个条目。字符串形式等价于只填写 <see cref="Source"/>；
 /// 对象形式可以关闭自动加载并按资源类型收窄。对应 pi 的 <c>PackageSource</c>。
-/// </summary>
 public sealed record PackageDeclaration
 {
 	public required string Source { get; init; }
 
-	/// <summary>false 时不自动加载包内资源，只应用显式过滤器。</summary>
 	public bool Autoload { get; init; } = true;
 
 	public List<string>? Extensions { get; init; }
@@ -27,7 +24,6 @@ public sealed record PackageDeclaration
 	public static implicit operator PackageDeclaration(string source) => FromSource(source);
 }
 
-/// <summary>兼容字符串与对象两种 packages 条目。</summary>
 public sealed class PackageDeclarationListJsonConverter : JsonConverter<List<PackageDeclaration>>
 {
 	public override List<PackageDeclaration> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
@@ -145,7 +141,6 @@ public sealed class PackageDeclarationListJsonConverter : JsonConverter<List<Pac
 	}
 }
 
-/// <summary>兼容旧版 skills 对象（customDirectories）与字符串数组。</summary>
 public sealed class FlexibleStringListJsonConverter : JsonConverter<List<string>>
 {
 	public override List<string> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)

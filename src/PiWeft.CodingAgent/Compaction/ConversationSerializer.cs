@@ -5,16 +5,12 @@ using PiWeft.Ai;
 using PiWeft.Ai.Json;
 namespace PiWeft.CodingAgent.Compaction;
 
-/// <summary>
 /// 把消息渲染成文本供摘要请求使用，避免模型把输入当成需要继续的对话。
 /// 对应 pi 的 <c>compaction/utils.ts</c>。
-/// </summary>
 public static class ConversationSerializer
 {
-	/// <summary>工具结果在摘要前会先截断，因为不需要完整文本。</summary>
 	public const int ToolResultMaxChars = 2000;
 
-	/// <summary>被摘要区间内涉及的文件路径，用于压缩细节。</summary>
 	public sealed record FileOperations
 	{
 		public HashSet<string> ReadFiles { get; } = new(StringComparer.Ordinal);
@@ -85,7 +81,6 @@ public static class ConversationSerializer
 		return string.Join("\n\n", parts);
 	}
 
-	/// <summary>从工具调用中收集一段消息读写过的文件。</summary>
 	public static FileOperations CollectFileOperations(IEnumerable<Message> messages)
 	{
 		var operations = new FileOperations();
@@ -126,7 +121,6 @@ public static class ConversationSerializer
 		return operations;
 	}
 
-	/// <summary>渲染追加在压缩摘要后的文件列表。</summary>
 	public static string FormatFileOperations(IReadOnlyCollection<string> readFiles, IReadOnlyCollection<string> modifiedFiles)
 	{
 		if (readFiles.Count == 0 && modifiedFiles.Count == 0)

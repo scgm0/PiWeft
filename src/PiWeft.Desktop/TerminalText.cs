@@ -2,21 +2,15 @@ using System.Globalization;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 终端里「一个码点占几格」的判定。终端缓冲区是按显示格寻址的，而输出流是 Unicode 文本：
 /// 组合符号、变体选择符、ZWJ 链、肤色修饰、Hangul 中/终声都不该各占一格，否则列号会越算越偏。
-/// <para>
 /// 宽度口径对齐 wcwidth（东亚宽字符 2 格、组合符号 0 格）：应用侧（readline/zsh）也用 wcwidth 算光标，
 /// 两边口径一致才不会有整行错位。emoji 变体选择符（U+FE0F）把窄字符画成两格宽的情况刻意不升级宽度，
 /// 那属于字体呈现与 wcwidth 的固有分歧，硬改反而会和 shell 的列号打架。
-/// </para>
-/// </summary>
 internal static class TerminalText
 {
-	/// <summary>零宽连接符：它把后面的字符并进同一格。</summary>
 	internal const int Zwj = 0x200D;
 
-	/// <summary>码点占几格：0 = 零宽续接，1 = 窄，2 = 宽。</summary>
 	internal static int RuneWidth(int codepoint)
 	{
 		if (codepoint < 0x20 || codepoint == 0x7F)
@@ -43,11 +37,9 @@ internal static class TerminalText
 		return IsWide(codepoint) ? 2 : 1;
 	}
 
-	/// <summary>
 	/// 零宽续接码元：它属于前一格那个文本元素，自己不开新格。
 	/// 组合符号（é、越南语声调、阿拉伯音符）、变体选择符、ZWJ、肤色修饰、Hangul 中/终声、
 	/// 标签字符（细分旗帜）、键帽组合都属于这一类。
-	/// </summary>
 	internal static bool IsExtend(int codepoint)
 	{
 		// 快速通道：U+0300 以下只有零宽空格/连接符这一小段是零宽，其余一律不是续接码元。
@@ -103,10 +95,8 @@ internal static class TerminalText
 			UnicodeCategory.EnclosingMark;
 	}
 
-	/// <summary>区域指示符（U+1F1E6–U+1F1FF）：成对出现才是一个国旗。</summary>
 	internal static bool IsRegionalIndicator(int codepoint) => codepoint is >= 0x1F1E6 and <= 0x1F1FF;
 
-	/// <summary>东亚宽字符与 emoji：占两格。</summary>
 	internal static bool IsWide(int codepoint) => codepoint switch
 	{
 		>= 0x1100 and <= 0x115F => true,
@@ -132,7 +122,6 @@ internal static class TerminalText
 		_ => false,
 	};
 
-	/// <summary>把一个簇（一个文本元素）按格数折回宽度；孤立组合符号按一格算，别让它凭空消失。</summary>
 	internal static int ClusterWidth(ReadOnlySpan<char> cluster)
 	{
 		if (cluster.IsEmpty)
@@ -151,7 +140,6 @@ internal static class TerminalText
 		return width > 2 ? 2 : width;
 	}
 
-	/// <summary>读出 <paramref name="index"/> 处的码点；孤立代理按 U+FFFD 处理，返回下一个位置。</summary>
 	internal static int NextCodepoint(ReadOnlySpan<char> text, int index, out int codepoint)
 	{
 		var unit = text[index++];

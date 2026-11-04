@@ -15,38 +15,29 @@ using ZLogger;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 桌面外壳主窗口：自定义标题栏、左侧会话栏、多标签会话主区。
 /// 每个标签是一个独立的 <see cref="SessionTab"/>（各自持有会话与输入区），因此可以并行开着多个会话。
 /// 会话文件与 CLI、pi 完全互通。
-/// </summary>
 public sealed partial class MainWindow : Window
 {
 	private readonly string _cwd;
 	private readonly SessionCatalog _catalog = new();
 	private CliArguments _arguments;
-	/// <summary>与 TabControl 一一对应的标签内容：<see cref="SessionTab"/> 或 Git/文件/终端等辅助页。</summary>
 	private readonly List<object> _tabEntries = [];
 	private McpConnection? _mcp;
 	private IReadOnlyList<AgentTool> _mcpTools = [];
-	/// <summary>标签标题文本，主题/名称变化时只改这一个控件。</summary>
 	private SettingsView? _settingsView;
 
-	/// <summary>设置是窗口级弹窗（与 PiDeck 一致），不占用主区标签。</summary>
 	private SettingsDialog? _settingsDialog;
 
-	/// <summary>
 	/// 每个会话各有一个右侧面板（文件 / Git / 终端）：内容跟着会话的工作目录，
 	/// 默认收起；宽度是窗口级偏好，切换会话时沿用。
-	/// </summary>
 	private readonly Dictionary<SessionTab, RightPanel> _sessionPanels = [];
-	/// <summary>用户偏好宽度：只由拖拽分隔条/关窗写入；窗口缩放造成的夹取不覆盖它。</summary>
 	private double _rightPanelWidth = AppTheme.RightPanelWidth;
 	private SplitPanel _panelSplit = null!;
 	private Grid _panelHost = null!;
 	private SessionTab? _lastSessionTab;
 	private CommandPalette? _palette;
-	/// <summary>主题目录监视器：主题文件变化时即时换肤（PI-10）。</summary>
 	private ThemeWatcher? _themeWatcher;
 
 	private UsageStatsView? _usageStatsView;
@@ -89,13 +80,10 @@ public sealed partial class MainWindow : Window
 	private IReadOnlyList<SessionListItem> _allSessions = [];
 	private IReadOnlyList<Model> _models = [];
 
-	/// <summary>「对话」分段的工作目录：这里开出的会话不属于任何项目。</summary>
 	private readonly string _chatWorkspace;
 
-	/// <summary>「对话」分段的节点，重建后用来恢复选中。</summary>
 	private IReadOnlyList<TreeViewNode> _chatNodes = [];
 
-	/// <summary>「对话」为空时的提示；列表铺满剩余高度，提示叠在列表上方。</summary>
 	private TextBlock _chatsEmpty = null!;
 
 	private SessionSearchPalette _sessionSearch = null!;
@@ -104,23 +92,18 @@ public sealed partial class MainWindow : Window
 	private TextBox _nameBox = null!;
 	private TreeView _sessionTree = null!;
 
-	/// <summary>当前的快捷键绑定（启动时读一次，改键后提示重启生效）。</summary>
 	private ShortcutMap _shortcuts = new();
 
-	/// <summary>当前的会话树节点，便于在重建后恢复选中。</summary>
 	private IReadOnlyList<TreeViewNode> _sessionNodes = [];
 	private TabControl _tabControl = null!;
 	private Border _welcome = null!;
 	private TextBlock _banner = null!;
 	private TextBlock _status = null!;
 
-	/// <summary>是否在启动后自动切换一次主题然后退出（用于无人值守验证运行时换肤）。</summary>
 	public bool ThemeSmoke { get; init; }
 
-	/// <summary>启动后自动打开的标签（<c>settings</c> / <c>git</c>），用于无人值守截图检查这些面板。</summary>
 	public string? SmokeTab { get; init; }
 
-	/// <summary>启动后自动打开某个视图并停留，供截图验证（git/settings/branch/search）。</summary>
 	public string? UiSmoke { get; init; }
 
 	public MainWindow(string cwd)
@@ -150,7 +133,6 @@ public sealed partial class MainWindow : Window
 		_arguments = CliArguments.Parse(["--mode", "text"]).Arguments!;
 	}
 
-	/// <summary>把这一帧的帧时与绘制量交给诊断的帧档；关闭时内部立即返回。</summary>
 	private void ObserveDiagnosticsFrame() => Diagnostics.ObserveFrame(LastFrameStats);
 
 	protected override void OnBuild()
@@ -167,10 +149,8 @@ public sealed partial class MainWindow : Window
 		this.OnLoaded(Startup);
 	}
 
-	/// <summary>
 	/// 注册窗口级快捷键。绑定来自 <see cref="ShortcutMap"/>（内置默认值 + <c>desktop.json</c> 里的覆盖），
 	/// 因此用户可以改键；Ctrl+1…9 是范围型动作，固定不参与改键。
-	/// </summary>
 	private void RegisterShortcuts()
 	{
 		_shortcuts = new ShortcutMap(DesktopPreference.Load().Shortcuts);
@@ -225,7 +205,6 @@ public sealed partial class MainWindow : Window
 		});
 	}
 
-	/// <summary>执行一个快捷键动作。</summary>
 	private void InvokeShortcut(string id)
 	{
 		switch (id)
@@ -303,19 +282,15 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>
 	/// 构建静态外壳一次；主题切换只重解析样式与更新动态内容，不替换会话与输入控件。
-	/// </summary>
 	private void BuildUi()
 	{
 		_banner = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 		_status = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 
-		// ------------------------------------------------------------ 外壳
 		// 窗口标题栏（品牌 + 当前语境 + 窗口按钮）由 BuildChromeShell 组装；
 		// 主区仍直接是内容，不新增全局工具栏。
 
-		// ------------------------------------------------------------ 侧栏
 		// 新建会话 + 搜索会话（两条与侧栏同色的导航行）+ 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
 		// 「搜索会话」不是常驻输入框：点击打开搜索弹窗（Ctrl+K），结果按名称、路径与正文过滤。
 		_sessionSearch = new SessionSearchPalette(
@@ -448,7 +423,6 @@ public sealed partial class MainWindow : Window
 							.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
 							.Child(new Grid().Children(_sessionTree, _chatsTree.IsVisible(false), _chatsEmpty)))));
 
-		// ------------------------------------------------------------ 主区
 		_tabControl = new TabControl().BorderThickness(0).CornerRadius(0).Padding(Thickness.Zero)
 			.WithTheme((theme, tabs) => tabs.Background = AppTheme.For(theme).WindowBackground);
 		_tabControl.SelectionChanged += _ => UpdateStatus();
@@ -503,7 +477,6 @@ public sealed partial class MainWindow : Window
 		main.Children(_welcome);
 		main.Children(_backButton);
 
-		// ------------------------------------------------------------ 右侧功能面板
 		// 面板属于会话：每个标签在 AttachTab 里挂一个 RightPanel 进这个宿主。
 		// 主区与面板之间用默认分隔条（与左侧同一套 SplitPanel）：主区星号、面板定宽，
 		// 窗口缩放后重新钉回用户宽度，拖拽时只在鼠标按下的帧里记录实际宽度。
@@ -512,7 +485,6 @@ public sealed partial class MainWindow : Window
 		_panelHost = new Grid { ClipToBounds = true }.IsVisible(false);
 
 
-		// ------------------------------------------------------------ 窗框
 		// PiDeck 式连续窗框：左段与侧栏同色；主区与右侧面板共用顶部一行窗框，
 		// 面板列从窗口顶部一直铺到底，页签条与主标题栏同高（40），不再是标题栏下方的一行。
 		// 窗口按钮先建好：标题栏与面板页签条都要按它的宽度让位（浮层在窗框模板里）。
@@ -549,14 +521,12 @@ public sealed partial class MainWindow : Window
 
 	}
 
-	/// <summary>把标题栏左段的项目铭牌换成指定文本，并同步完整路径提示。</summary>
 	private void SetProjectCaption(string text, string? tip = null)
 	{
 		_tabCaption.Text(text);
 		_tabCaption.HoverTip(tip);
 	}
 
-	// ------------------------------------------------------------------ 启动
 
 	private async void Startup()
 	{
@@ -635,9 +605,7 @@ public sealed partial class MainWindow : Window
 		_ = BootstrapAsync(preference);
 	}
 
-	/// <summary>
 	/// 启动后半程：后台准备环境与侧栏数据，回 UI 线程挂首个会话与演练入口。
-	/// </summary>
 	private async Task BootstrapAsync(DesktopPreference preference)
 	{
 		CliEnvironment? environment = null;
@@ -757,12 +725,9 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	// ------------------------------------------------------------- 会话列表
 
-	/// <summary>
 	/// 外部工具（xdotool 等）往这个后端注入键盘/指针事件并不可靠，
 	/// 因此把「打开某个面板」做成启动参数，便于无人值守截图检查。
-	/// </summary>
 	private async Task RunSmokeTabAsync(string smokeTab)
 	{
 		// 面板要挂在自动打开的会话上，先等它在后台建好。
@@ -781,7 +746,6 @@ public sealed partial class MainWindow : Window
 		});
 	}
 
-	/// <summary>重建侧栏列表。目录快照始终包含全部会话，侧栏再按聊天目录分成「对话」与「项目」两段。</summary>
 	/// <param name="force">
 	/// 明确要求刷新（改名、删除、归档、手动刷新）时即使侧栏还没加载过也要加载；
 	/// 流式结束这类后台刷新则不主动付这笔扫描成本。
@@ -813,14 +777,12 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>侧栏列表与目录快照同步；正文搜索移到了「搜索会话」弹窗里。</summary>
 	private void FilterSessions(DesktopPreference? preference = null)
 	{
 		_sessions = _allSessions;
 		UpdateSessionList(preference ?? DesktopPreference.Load());
 	}
 
-	/// <summary>重建侧栏列表（内容命中分组已随搜索弹窗移走）。</summary>
 	private void UpdateSessionList(DesktopPreference preference)
 	{
 		var selectedId = SelectedSession()?.Id ?? CurrentTab()?.Session.Session.SessionId;
@@ -895,11 +857,9 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>项目节点的标题：目录短名 + 会话数（完整路径放在提示里）。</summary>
 	private static string ProjectLabel(string cwd, int count) =>
 		count > 1 ? $"{ShortCwd(cwd)} ({count})" : ShortCwd(cwd);
 
-	/// <summary>会话节点的标题：置顶标记、标题、时间。</summary>
 	private string SessionLine(SessionListItem item, DesktopPreference preference)
 	{
 		var pin = preference.IsPinned(item.Id) ? $"{Strings.PinnedMark} " : string.Empty;
@@ -907,7 +867,6 @@ public sealed partial class MainWindow : Window
 		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}";
 	}
 
-	/// <summary>两个分段共用同一个处理器：只对会话行打开会话，项目分组行忽略。</summary>
 	private void OnSessionSelected(object? item)
 	{
 		if (_restoringSelection)
@@ -928,7 +887,6 @@ public sealed partial class MainWindow : Window
 		OpenSessionPath(selected.Path);
 	}
 
-	/// <summary>「搜索会话」弹窗里选中的会话：按路径打开，已打开则切到那个标签。</summary>
 	private void OpenSessionFromSearch(SessionListItem item)
 	{
 		_nameBox.Text = item.Name;
@@ -936,7 +894,6 @@ public sealed partial class MainWindow : Window
 		OpenSessionPath(item.Path);
 	}
 
-	/// <summary>侧栏当前选中的会话：取可见分段的选中行，避免命中另一棵树的旧选择。</summary>
 	private SessionListItem? SelectedSession()
 	{
 		var tree = _projectsTab ? _sessionTree : _chatsTree;
@@ -949,13 +906,10 @@ public sealed partial class MainWindow : Window
 		return SessionGroups.IsChat(selected, _chatWorkspace) == !_projectsTab ? selected : null;
 	}
 
-	/// <summary>把输入框里的名称写给选中的会话，并刷新列表与标签标题。</summary>
 	private void RenameSelected() => _ = RenameSelectedAsync();
 
-	/// <summary>
 	/// 改名要读完整份会话才能追加一条 <c>session_info</c>，大文件不能在 UI 线程读；
 	/// 只有确实需要等一会儿（>2 MB）才弹加载提示，小会话直接后台跑完避免闪烁。
-	/// </summary>
 	private async Task RenameSelectedAsync()
 	{
 		var path = _renamingPath ?? SelectedSession()?.Path;
@@ -996,7 +950,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>删除会话前先确认；文件移到 <c>.trash</c> 而不是直接抹掉。</summary>
 	private async Task DeleteSelectedAsync()
 	{
 		var selected = SelectedSession();
@@ -1031,10 +984,8 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>关闭标签并释放它持有的会话。</summary>
 	private void CloseTab(SessionTab tab) => _ = CloseTabAsync(tab);
 
-	/// <summary>流式运行中先中止并等这轮结果落盘，再移除标签与会话。</summary>
 	private async Task CloseTabAsync(SessionTab tab)
 	{
 		var index = _tabEntries.IndexOf(tab);
@@ -1070,12 +1021,9 @@ public sealed partial class MainWindow : Window
 		UpdateStatus();
 	}
 
-	// --------------------------------------------------------------- 提示音
 
-	/// <summary>
 	/// 提示音的窗口侧接线：焦点门控（仅失焦提醒）与「谁在报告状态」。
 	/// 设置从 desktop.json 实时读取，所以设置页改完立即生效，不需要重开窗口。
-	/// </summary>
 	private void WireSoundAlerts()
 	{
 		var alerts = SoundAlerts.Shared;
@@ -1084,19 +1032,14 @@ public sealed partial class MainWindow : Window
 		alerts.IsWindowFocused = () => IsActive;
 	}
 
-	/// <summary>会话 id：标签的会话文件 id 仍在生成时退回标题，至少不会把不同标签混成一个。</summary>
 	private static string SessionIdOf(SessionTab tab) =>
 		tab.Session.Session.SessionId is { Length: > 0 } id ? id : tab.Title;
 
-	// --------------------------------------------------------------- 标签页
 
-	/// <summary>先选中已打开的标签，避免重复反序列化整个 JSONL 文件。</summary>
 	private void OpenSessionPath(string path) => _ = OpenSessionPathAsync(path);
 
-	/// <summary>
 	/// 仅供 --ui-smoke scroll-sweep：打开 fixture 目录里最新的会话，然后让会话标签分步滚动，
 	/// 供外部脚本逐帧截图排查「长消息部分情况下渲染消失」。
-	/// </summary>
 	private async Task RunScrollSweepSmokeAsync()
 	{
 		var dir = SessionPaths.GetDefaultSessionDir(_cwd);
@@ -1115,10 +1058,8 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>
 	/// 打开会话。长会话（几十 MB、数万行）解析要近一秒，聊天记录投影再要 200+ 毫秒，
 	/// 这些都放到后台线程，期间用 BusyIndicator 显示读取进度；UI 线程只建标签页。
-	/// </summary>
 	private async Task OpenSessionPathAsync(string path)
 	{
 		var resolved = Path.GetFullPath(path);
@@ -1243,10 +1184,8 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>
 	/// 需要侧栏数据时才加载（展开侧栏、打开搜索、或需要按置顶顺序选首个会话）。
 	/// 重复调用共用同一个在途任务，展开-收起-再展开不会重复扫描。
-	/// </summary>
 	private Task EnsureSessionsLoadedAsync()
 	{
 		if (_sessionsLoaded) return Task.CompletedTask;
@@ -1256,7 +1195,6 @@ public sealed partial class MainWindow : Window
 		return task;
 	}
 
-	/// <summary>扫描并挂上侧栏摘要；失败只记日志并把提示改成「暂无会话」，不影响已打开的会话。</summary>
 	private async Task LoadSessionsAsync(DesktopPreference preference)
 	{
 		// 扫描期间先说明在干什么，避免展开侧栏看到空列表以为没有会话。
@@ -1291,16 +1229,13 @@ public sealed partial class MainWindow : Window
 		_sessionSearch.Reload();
 	}
 
-	/// <summary>等待侧栏扫描落地（自检与演练用；正常交互不需要等）。</summary>
 	private async Task WaitForSidebarAsync(int timeoutMs = 30_000)
 	{
 		await Task.WhenAny(EnsureSessionsLoadedAsync(), Task.Delay(timeoutMs)).ConfigureAwait(false);
 	}
 
-	/// <summary>
 	/// 等待在途的后台打开结束。会话打开改成异步后，启动时「立刻就有标签页」不再成立；
 	/// 自检与演练流程必须显式等待，否则在满载机器上会读到空标签页。
-	/// </summary>
 	private async Task WaitForSessionOpensAsync(int timeoutMs = 30_000)
 	{
 		var waited = 0;
@@ -1311,10 +1246,8 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>
 	/// 把多个进度消费者合成一个：<c>Diagnostics</c> 需要行数，界面需要百分比，
 	/// 但 <see cref="SessionManager"/> 只接受一个 <see cref="IProgress{T}"/>。
-	/// </summary>
 	private static IProgress<SessionReadProgress> Composite(
 		IProgress<SessionReadProgress> first, IProgress<SessionReadProgress> second) =>
 		new Combiner(first, second);
@@ -1329,7 +1262,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>命中已打开的标签就选中它并返回，避免重复反序列化整个 JSONL 文件。</summary>
 	private SessionTab? SelectOpenTab(string path)
 	{
 		var existing = _tabEntries.OfType<SessionTab>().FirstOrDefault(tab => tab.Session.Session.SessionFile == path);
@@ -1343,7 +1275,6 @@ public sealed partial class MainWindow : Window
 		return existing;
 	}
 
-	/// <summary>打开一个会话：已打开则选中，否则新建标签页。</summary>
 	private void OpenSession(SessionManager manager)
 	{
 		if (_environment is null)
@@ -1368,7 +1299,6 @@ public sealed partial class MainWindow : Window
 			uiHost);
 	}
 
-	/// <summary>把已经建好的会话挂成标签页；<paramref name="session"/> 可以在后台线程创建。</summary>
 	private void OpenPreparedSession(
 		CodingAgentSession session, DesktopUiHost uiHost, ChatViewModel? chat = null,
 		SessionStatisticsDisplay? statistics = null)
@@ -1397,7 +1327,6 @@ public sealed partial class MainWindow : Window
 		tab.FocusComposer();
 	}
 
-	/// <summary>为已有会话创建一个标签页；<paramref name="chat"/> 是后台已经投影好的聊天记录。</summary>
 	private SessionTab AttachTab(
 		CodingAgentSession session, ChatViewModel? chat = null, SessionStatisticsDisplay? statistics = null)
 	{
@@ -1445,23 +1374,19 @@ public sealed partial class MainWindow : Window
 		return tab;
 	}
 
-	/// <summary>
 	/// 登记标签页。TabControl 自带的页签头不渲染：标题栏右段另绘 PiDeck 式页签，
 	/// 切换/关闭都在那里完成；命令面板里也保留同一组「关闭当前/其他/全部标签」动作。
-	/// </summary>
 	private void AddTab(UIElement header, UIElement content, object entry)
 	{
 		// TabItem 强制要求 Header；给一个 0×0 空元素，隐藏 TabControl 自带的页签条。
 		_tabControl.AddTab(new TabItem().Header(new Border().Width(0).Height(0)).Content(content));
 	}
 
-	/// <summary>会话标题变化或标签集合变化后，按标题/选中项同步标题栏页签。</summary>
 	private void UpdateTabHeaders()
 	{
 		SyncTitleBarTabs();
 	}
 
-	/// <summary>关闭 Git/文件/终端这类辅助标签。</summary>
 	private void CloseAuxTab(object entry)
 	{
 		CloseAuxTabCore(entry);
@@ -1500,7 +1425,6 @@ public sealed partial class MainWindow : Window
 		UpdateStatus();
 	}
 
-	/// <summary>加载段落与欢迎文案互斥；状态变化后重算面板可见性。</summary>
 	private void SyncWelcomeLoading()
 	{
 		var showing = _sessionLoading.Showing;
@@ -1546,10 +1470,8 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>
 	/// 无人值守的界面演练：启动后打开指定视图并停留若干秒（外部脚本趁机截图），随后退出。
 	/// 键盘/鼠标注入在 Wayland 会话里不可靠，这种方式能稳定覆盖各个视图。
-	/// </summary>
 	private async Task RunUiSmokeAsync(string view)
 	{
 		// 首个会话在后台解析：先等它建好标签页再演练。
@@ -1913,9 +1835,7 @@ public sealed partial class MainWindow : Window
 		});
 	}
 
-	/// <summary>
 	/// 无人值守的主题演练：等界面稳定后换肤，验证选择颜色与草稿状态，再退出。
-	/// </summary>
 	private async Task RunThemeSmokeAsync()
 	{
 		Color oldSelection = default;
@@ -1970,7 +1890,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>监视主题目录：防抖后的变更回调切回 UI 线程重新解析并换肤。</summary>
 	private void StartThemeWatcher()
 	{
 		try
@@ -1990,7 +1909,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>主题文件变化后重新解析当前主题并应用；坏文件保留现有外观并记录诊断。</summary>
 	private void ReapplyThemeFromDisk()
 	{
 		try
@@ -2034,7 +1952,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>换肤只更新颜色，正文、Markdown、分支树与 Git 快照均保留。</summary>
 	protected override void OnThemeChanged(Theme oldTheme, Theme newTheme)
 	{
 		base.OnThemeChanged(oldTheme, newTheme);
@@ -2070,7 +1987,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>把窗口尺寸与位置写进偏好文件。</summary>
 	private void SaveWindowState()
 	{
 		try
@@ -2091,8 +2007,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>收起时复用现有侧栏与会话，SplitPanel 自动把空间交给主区。</summary>
-	/// <summary>从辅助页返回工作区：最近的会话标签，没有会话则关掉当前辅助页回到欢迎页。</summary>
 	private void BackToWorkspace()
 	{
 		var index = _tabEntries.FindLastIndex(entry => entry is SessionTab);
@@ -2116,12 +2030,9 @@ public sealed partial class MainWindow : Window
 		if (_sidebarPreferred) _ = EnsureSessionsLoadedAsync();
 	}
 
-	// ------------------------------------------------------- 右侧功能面板
 
-	/// <summary>标题栏的 panel 键 / Ctrl+J：收起时展开，展开时收起；面板属于当前会话。</summary>
 	private void ToggleRightPanel() => SetRightPanel(_panelHost?.IsVisible != true);
 
-	/// <summary>展开或收起当前会话的右侧面板；指定分段时顺带切过去。</summary>
 	private void SetRightPanel(bool open, RightPanelSection? section = null)
 	{
 		if (CurrentTab() is not { } tab || !_sessionPanels.TryGetValue(tab, out var panel))
@@ -2155,12 +2066,9 @@ public sealed partial class MainWindow : Window
 
 	private void ShowCheckpointsPanel() => SetRightPanel(open: true, RightPanelSection.Checkpoints);
 
-	/// <summary>Ctrl+Shift+D / 命令面板：开关当前会话底部的终端面板（终端不再占用右侧面板）。</summary>
 	private void ToggleTerminalPanel() => CurrentTab()?.ToggleTerminal();
 
-	/// <summary>
 	/// 当前会话的面板决定宿主是否出现：切换会话只切可见性，各会话的分段与内容都保留。
-	/// </summary>
 	private void SyncPanelLayout()
 	{
 		if (_panelHost is null || _panelSplit is null)
@@ -2195,7 +2103,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>展开时用上次记录的宽度初始化分栏；之后完全交给 SplitPanel 的默认布局。</summary>
 	private void ReapplyPanelWidth()
 	{
 		if (!_panelHost.IsVisible)
@@ -2207,7 +2114,6 @@ public sealed partial class MainWindow : Window
 		_panelSplit.SecondLength = GridLength.Pixels(_rightPanelWidth);
 	}
 
-	/// <summary>收起面板/关窗时把当前宽度记成偏好，供下次展开使用。</summary>
 	private void CapturePanelWidth()
 	{
 		if (!_panelHost.IsVisible)
@@ -2222,7 +2128,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>辅助页（用量统计）不需要会话侧栏；右侧面板不占用侧栏。</summary>
 	private void ApplySidebarLayout()
 	{
 		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
@@ -2245,9 +2150,7 @@ public sealed partial class MainWindow : Window
 		UpdateChrome();
 	}
 
-	/// <summary>
 	/// 切换深色/浅色配色：原位更新主题，并把偏好写盘供下次启动使用。
-	/// </summary>
 	private void ToggleTheme()
 	{
 		var preference = DesktopPreference.Load().Cycle();
@@ -2312,7 +2215,6 @@ public sealed partial class MainWindow : Window
 		_pendingNotice = null;
 	}
 
-	/// <summary>把当前会话的文件路径或会话 id 复制到剪贴板。</summary>
 	private void CopySessionInfo(bool path)
 	{
 		if (CurrentTab() is not { } tab)
@@ -2329,10 +2231,8 @@ public sealed partial class MainWindow : Window
 		_banner.Text(clipboard?.TrySetText(text) == true ? Strings.Copied : Strings.ClipboardUnavailable);
 	}
 
-	/// <summary>
 	/// 把当前会话导出成自包含的 HTML（与 CLI 的 <c>export_html</c> 同一套渲染），
 	/// 可选立刻用系统默认程序打开。
-	/// </summary>
 	private void ExportCurrentSession(bool open)
 	{
 		if (CurrentTab() is not { } tab)
@@ -2367,7 +2267,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>打开（或选中）用量统计标签；每次切回都会重新扫描。</summary>
 	private void OpenUsageStatsTab()
 	{
 		var index = _usageStatsView is null ? -1 : _tabEntries.IndexOf(_usageStatsView);
@@ -2388,7 +2287,6 @@ public sealed partial class MainWindow : Window
 		UpdateStatus();
 	}
 
-	/// <summary>浮层关闭后把焦点还给当前视图：会话给输入框，没有会话时给搜索入口。</summary>
 	private void FocusActiveEntry()
 	{
 		if (CurrentTab() is { } tab)
@@ -2400,7 +2298,6 @@ public sealed partial class MainWindow : Window
 		_searchButton.Focus();
 	}
 
-	/// <summary>打开设置弹窗（与 PiDeck 一样是模态浮层，不是主区标签）。</summary>
 	private void OpenSettingsDialog()
 	{
 		if (_settingsDialog is null)
@@ -2428,7 +2325,6 @@ public sealed partial class MainWindow : Window
 		_settingsDialog.Show(this);
 	}
 
-	/// <summary>把磁盘上的安全配置推给所有已打开的会话。</summary>
 	private void ApplySecurityToSessions()
 	{
 		var config = PiWeft.CodingAgent.Security.SecurityConfig.Load();
@@ -2438,11 +2334,8 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>Reload future-session environments without replacing any running session.</summary>
-	/// <summary>
 	/// 认证变化后重建模型环境：OAuth 凭据会改变可用模型集合（Copilot/Radius 还会改端点），
 	/// 已打开的标签页也必须换到新的模型源，否则登录成功却看不到新模型。
-	/// </summary>
 	private void RefreshAuthModels()
 	{
 		try
@@ -2463,7 +2356,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>把当前可用模型源推给所有已打开的标签页（认证变化后无需重开标签）。</summary>
 	private void UpdateSessionModelSources()
 	{
 		foreach (var tab in _tabEntries.OfType<SessionTab>())
@@ -2491,10 +2383,8 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>
 	/// 重新解析技能、提示词模板与主题，对应 pi 的 <c>/reload</c>：已打开的会话不重建，
 	/// 只刷新它们下一次请求使用的系统提示词章节。
-	/// </summary>
 	private Task ReloadResourcesAsync()
 	{
 		foreach (var tab in _tabEntries.OfType<SessionTab>())
@@ -2514,7 +2404,6 @@ public sealed partial class MainWindow : Window
 		return Task.CompletedTask;
 	}
 
-	/// <summary>命令面板的命令集：宿主操作 + 当前会话的斜杠命令。</summary>
 	private IReadOnlyList<PaletteCommand> PaletteCommands()
 	{
 		var commands = new List<PaletteCommand>
@@ -2597,7 +2486,6 @@ public sealed partial class MainWindow : Window
 		return commands;
 	}
 
-	/// <summary>关闭当前选中的标签。</summary>
 	private void CloseCurrentTab()
 	{
 		var index = _tabControl.SelectedIndex;
@@ -2607,7 +2495,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>显示重命名输入框（平时隐藏，保持侧栏整洁）。</summary>
 	private void ShowRenameBox()
 	{
 		if (SelectedSession() is null)
@@ -2621,7 +2508,6 @@ public sealed partial class MainWindow : Window
 		_nameBox.Focus();
 	}
 
-	/// <summary>置顶/取消置顶侧栏选中的会话。</summary>
 	private void TogglePin()
 	{
 		var selected = SelectedSession();
@@ -2645,7 +2531,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>标题栏左段的项目铭牌：显示当前会话所属项目，没有会话时显示窗口工作目录。</summary>
 	private void UpdateProjectCaption()
 	{
 		var cwd = CurrentTab()?.Session.Cwd ?? _cwd;
@@ -2653,17 +2538,13 @@ public sealed partial class MainWindow : Window
 	}
 
 
-	/// <summary>
 	/// 侧栏项目是否默认展开：只认「用户上次展开过」与「包含当前选中会话」两种。
 	/// 默认折叠——会话多的机器上全展开等于每次启动都把整份清单铺出来。
-	/// </summary>
 	internal static bool ShouldExpandProject(string? projectCwd, bool containsSelected, IReadOnlyList<string> expandedProjects) =>
 		projectCwd is { Length: > 0 } && (containsSelected || expandedProjects.Contains(projectCwd, StringComparer.Ordinal));
 
-	/// <summary>
 	/// 该项目节点里是否有当前会话。按路径比对而不是会话 id：外部工具生成的会话
 	/// 头部 id 可能与文件名里的 uuid 不一致，用 id 会漏判、把选中项折在看不见的地方。
-	/// </summary>
 	private static bool ContainsSession(TreeViewNode project, string? sessionPath)
 	{
 		if (sessionPath is null) return false;
@@ -2679,7 +2560,6 @@ public sealed partial class MainWindow : Window
 		return false;
 	}
 
-	/// <summary>用户展开/折叠项目时记一笔并落盘；程序化重建时的同值操作不写文件。</summary>
 	private void RememberProjectExpanded(object? item, bool expanded)
 	{
 		if (item is not TreeViewNode { Tag: string cwd } || cwd.Length == 0)
@@ -2702,7 +2582,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>在列表重建后把选中项恢复到指定会话；「对话」与「项目」两个分段都要找。</summary>
 	private void RestoreSelection(string sessionId)
 	{
 		// 恢复高亮不应再次打开会话或把焦点从正在输入的控件抢走。
@@ -2736,7 +2615,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>把当前标签左移/右移一格（拖拽排序的键盘替代）。</summary>
 	private void MoveCurrentTab(int delta)
 	{
 		var index = _tabControl.SelectedIndex;
@@ -2746,7 +2624,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>按 _tabEntries 的顺序重建标签栏。</summary>
 	private void RebuildTabStrip()
 	{
 		_tabControl.ClearTabs();
@@ -2766,7 +2643,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>关闭除当前标签之外的所有会话标签。</summary>
 	private void CloseOtherTabs()
 	{
 		var keep = CurrentTab();
@@ -2776,7 +2652,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>关闭所有会话标签（设置面板保留）。</summary>
 	private void CloseAllTabs()
 	{
 		foreach (var tab in _tabEntries.OfType<SessionTab>().ToList())
@@ -2785,14 +2660,12 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>当前选中的会话标签。</summary>
 	private SessionTab? CurrentTab()
 	{
 		var index = _tabControl.SelectedIndex;
 		return index >= 0 && index < _tabEntries.Count ? _tabEntries[index] as SessionTab : null;
 	}
 
-	/// <summary>Git 面板的 AI 提交摘要能力：默认跟随会话；模型/思考级别/提示词由偏好覆盖。</summary>
 	private GitCommitAssistant CreateGitAssistant(CodingAgentSession session, CliEnvironment environment) => new(
 		() => _models,
 		() => session.Model,
@@ -2809,13 +2682,10 @@ public sealed partial class MainWindow : Window
 		() => session.IsRunning,
 		OpenGitAssistantSettings);
 
-	/// <summary>进程内最后一次写进 lastUsedModel 的模型；同一个模型连续发送不重复读写偏好文件。</summary>
 	private static string? _recordedUsedModel;
 
-	/// <summary>
 	/// 记住「用户最后一次真正发过消息的模型」。偏好落盘属于宿主：无窗口测试直接驱动
 	/// <see cref="SessionTab"/> 时不该碰真目录里的 desktop.json。
-	/// </summary>
 	private static void RememberUsedModel(Model model)
 	{
 		var key = $"{model.Provider}/{model.Id}";
@@ -2844,10 +2714,8 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>
 	/// 上次真正发过消息的模型（PiDeck 的 <c>lastUsedModel</c>）；目录里已经不存在时返回 <c>null</c>，
 	/// 新会话回退到环境解析出的默认模型。显式 <c>defaultModel</c> 仍然优先（由环境解析保证）。
-	/// </summary>
 	private static Model? RememberedModel(CliEnvironment environment)
 	{
 		var key = DesktopPreference.Load().LastUsedModel;
@@ -2860,7 +2728,6 @@ public sealed partial class MainWindow : Window
 		return environment.Registry.Get(key[..separator], key[(separator + 1)..]);
 	}
 
-	/// <summary>从 Git 面板的「更改默认配置」打开设置，并落到 Git 提交摘要分区。</summary>
 	private void OpenGitAssistantSettings()
 	{
 		OpenSettingsDialog();
@@ -2870,7 +2737,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>设置面板的数据快照。</summary>
 	private SettingsSnapshot Snapshot() => new()
 	{
 		AgentDir = SessionPaths.GetAgentDir(),
@@ -2888,14 +2754,11 @@ public sealed partial class MainWindow : Window
 		Session = CurrentSession(),
 	};
 
-	/// <summary>辅助标签沿用最近聚焦的会话，打开设置不会丢失模型、工具和用量上下文。</summary>
 	private CodingAgentSession? CurrentSession() => CurrentTab()?.Session ?? _lastSessionTab?.Session;
 
-	/// <summary>给某个工作目录准备 MCP 工具：全局连一次，工具按会话所属目录过滤。</summary>
 	private IReadOnlyList<AgentTool> McpToolsFor(string cwd) =>
 		string.Equals(Path.GetFullPath(cwd), Path.GetFullPath(_cwd), StringComparison.Ordinal) ? _mcpTools : [];
 
-	/// <summary>后台连接 MCP 服务器，并把工具注入所有已打开的会话。</summary>
 	private async Task ConnectMcpAsync()
 	{
 		try
@@ -2956,7 +2819,6 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	/// <summary>重建 MCP 连接：先释放旧连接，再按当前配置重新连接（供设置面板的手动重连使用）。</summary>
 	internal async Task ReconnectMcpAsync()
 	{
 		var previous = _mcp;
@@ -2980,13 +2842,10 @@ public sealed partial class MainWindow : Window
 	private static IReadOnlyList<AgentTool> ToolSetFor(McpConnection connection) =>
 		[.. connection.Tools, .. McpResourceTools.Create(() => connection.ResourceServers)];
 
-	/// <summary>去掉工具列表里来自 MCP 的项，保留内置工具。</summary>
 	private static IReadOnlyList<AgentTool> WithoutMcp(IReadOnlyList<AgentTool> tools) =>
 		[.. tools.Where(tool => !tool.Name.StartsWith("mcp__", StringComparison.Ordinal) && !McpResourceTools.IsResourceTool(tool.Name))];
 
-	// ------------------------------------------------------------------ 辅助
 
-	/// <summary>会话头部可能来自行为不规范的工具；空目录或坏路径按当前目录处理，至少让历史可读。</summary>
 	private static string ResolveCwd(string? cwd)
 	{
 		if (!string.IsNullOrWhiteSpace(cwd))
@@ -3004,7 +2863,6 @@ public sealed partial class MainWindow : Window
 		return Environment.CurrentDirectory;
 	}
 
-	/// <summary>按工作目录缓存环境；创建失败时回退到启动时的那套。</summary>
 	private CliEnvironment EnvironmentFor(string cwd)
 	{
 		var key = ResolveCwd(cwd);
@@ -3031,7 +2889,6 @@ public sealed partial class MainWindow : Window
 		return environment;
 	}
 
-	/// <summary>把工作目录压缩成便于在列表里识别的短名。</summary>
 	private static string ShortCwd(string cwd)
 	{
 		if (cwd.Length == 0)
@@ -3044,16 +2901,13 @@ public sealed partial class MainWindow : Window
 		return name.Length > 0 ? name : trimmed;
 	}
 
-	/// <summary>
 	/// 把后台线程的进度汇报转到 UI 线程。<see cref="Progress{T}"/> 依赖同步上下文，
 	/// 而 MewUI 不安装它，回调会落在线程池上直接碰 BusyIndicator —— 所以自己调度。
-	/// </summary>
 	private sealed class UiProgress<T>(Action<T> apply) : IProgress<T>
 	{
 		public void Report(T value) => Dispatch(() => apply(value));
 	}
 
-	/// <summary>把动作调度到 UI 线程；应用尚未运行时直接执行。</summary>
 	private static void Dispatch(Action action)
 	{
 		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;

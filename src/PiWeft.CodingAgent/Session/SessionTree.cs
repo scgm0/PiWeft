@@ -3,35 +3,27 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Session;
 
-/// <summary>会话树中的一个节点，即 <c>get_tree</c> 返回的形状。</summary>
 public sealed record SessionTreeNode
 {
 	public required SessionEntry Entry { get; init; }
 
 	public IReadOnlyList<SessionTreeNode> Children { get; init; } = [];
 
-	/// <summary>由 <c>label</c> 条目附在该条目上的标签（如果有）。</summary>
 	public string? Label { get; init; }
 
 	public string? LabelTimestamp { get; init; }
 }
 
-/// <summary>客户端可以据此派生的用户消息，即 <c>get_fork_messages</c> 返回的形状。</summary>
 public sealed record ForkMessage(string EntryId, string Text);
 
-/// <summary>树构建、条目查找，以及 RPC 面所需的各种会话生命周期操作。</summary>
 public sealed partial class SessionManager
 {
-	/// <summary>该会话是否写入文件。</summary>
 	public bool IsPersisted => _persist;
 
-	/// <summary>按 id 查找条目。</summary>
 	public SessionEntry? GetEntry(string id) => _byId.TryGetValue(id, out var entry) ? entry : null;
 
-	/// <summary>会话中是否存在该 id 的条目。</summary>
 	public bool Contains(string id) => _byId.ContainsKey(id);
 
-	/// <summary><paramref name="sinceId"/> 之后的全部条目（不含自身），按文件顺序；id 未知时返回 <c>null</c>。</summary>
 	public IReadOnlyList<SessionEntry>? EntriesSince(string sinceId)
 	{
 		var entries = Entries;
@@ -54,10 +46,8 @@ public sealed partial class SessionManager
 		return [.. entries.Skip(index + 1)];
 	}
 
-	/// <summary>
 	/// 会话以条目树的形式呈现。结果是数组，因为一个会话可能有多个根：
 	/// 父条目缺失（文件损坏或被裁剪）的条目会各自成为一棵树的根。
-	/// </summary>
 	public IReadOnlyList<SessionTreeNode> BuildTree()
 	{
 		var entries = Entries;
@@ -137,7 +127,6 @@ public sealed partial class SessionManager
 		return [.. roots.Select(root => built[root.Id])];
 	}
 
-	/// <summary>当前分支上的用户消息，按时间从早到晚，供派生选择器使用。</summary>
 	public IReadOnlyList<ForkMessage> GetUserMessagesForForking()
 	{
 		var messages = new List<ForkMessage>();
@@ -152,7 +141,6 @@ public sealed partial class SessionManager
 		return messages;
 	}
 
-	/// <summary>最后一条带文本的助手消息内容，没有则为 <c>null</c>。</summary>
 	public string? LastAssistantText()
 	{
 		foreach (var entry in Enumerable.Reverse(Entries))
@@ -172,7 +160,6 @@ public sealed partial class SessionManager
 		return null;
 	}
 
-	/// <summary>当前显示名，取自最新的 <c>session_info</c> 条目；没有则为 <c>null</c>。</summary>
 	public string? CurrentName()
 	{
 		string? name = null;
@@ -187,10 +174,8 @@ public sealed partial class SessionManager
 		return string.IsNullOrEmpty(name) ? null : name;
 	}
 
-	/// <summary>
 	/// 在该管理器上开一个新会话：新 id、新文件，并把 <paramref name="parentSession"/> 记为来源。
 	/// <c>new_session</c> 以及从空白处派生的场景会用到。
-	/// </summary>
 	public string StartNew(string? parentSession = null, DateTimeOffset? now = null)
 	{
 		using var scope = _stateGate.EnterScope();
@@ -225,14 +210,10 @@ public sealed partial class SessionManager
 		return SessionId;
 	}
 
-	/// <summary>
 	/// 把根到 <paramref name="targetLeafId"/> 的路径写进新的会话文件，并把本管理器切过去，
 	/// 后续追加都落在派生分支上。返回新文件路径。
-	/// </summary>
-	/// <remarks>
 	/// pi 不改动原文件，而是把保留的条目复制进新文件；这也正是客户端对“在此派生”的预期：
 	/// 旧会话仍然留在历史里可用。
-	/// </remarks>
 	public string CreateBranchedSession(string targetLeafId)
 	{
 		using var scope = _stateGate.EnterScope();
@@ -301,11 +282,9 @@ public sealed partial class SessionManager
 		return target;
 	}
 
-	/// <summary>
 	/// 把 <paramref name="entryId"/> 及其全部后继原地改写成墓碑，并让叶子回到它的父条目。
 	/// 「编辑重发」用它：分支真的被截断（旧回答的 tool_call / toolResult 配对不会残留），
 	/// 但会话 id 与文件不变，侧栏不会每改一次就多出一条会话。
-	/// </summary>
 	/// <returns>被改写的条目数。</returns>
 	public int TruncateForResend(string entryId)
 	{
@@ -410,7 +389,6 @@ public sealed partial class SessionManager
 		return truncated;
 	}
 
-	/// <summary>从文件重建本管理器的视图，复用同一实例，便于调用方继续持有引用。</summary>
 	internal void ReloadFrom(string path)
 	{
 		using var scope = _stateGate.EnterScope();

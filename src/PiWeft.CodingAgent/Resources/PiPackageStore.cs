@@ -4,13 +4,10 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent.Resources;
 
-/// <summary>
 /// pi 包的来源解析与发现：把 settings 里的 <c>packages</c> 条目（npm / git / 本地路径）
 /// 映射到磁盘上的包根目录，并读取其 <c>package.json</c> 清单。
-/// </summary>
 public static class PiPackageStore
 {
-	/// <summary>settings 里声明的包来源，去重后按「项目优先」排序。</summary>
 	public static IReadOnlyList<PackageSource> DeclaredSources(
 		string cwd,
 		string? agentDir = null,
@@ -65,7 +62,6 @@ public static class PiPackageStore
 		}
 	}
 
-	/// <summary>发现已安装的包；包根不存在（未安装）时跳过。</summary>
 	public static IReadOnlyList<PiPackage> Discover(
 		string cwd,
 		string? agentDir = null,
@@ -86,7 +82,6 @@ public static class PiPackageStore
 		return packages;
 	}
 
-	/// <summary>读取一个已安装包的清单。</summary>
 	public static PiPackage Load(PackageSource source, string root) => new()
 	{
 		Name = ReadName(root) ?? Path.GetFileName(root.TrimEnd(Path.DirectorySeparatorChar, '/')),
@@ -103,10 +98,8 @@ public static class PiPackageStore
 				: source,
 	};
 
-	/// <summary>
 	/// 把来源字符串解析成包根目录的绝对路径；无法识别时返回 <c>null</c>。
 	/// 仅做路径推导，不执行安装动作。
-	/// </summary>
 	public static string? ResolveRoot(PackageSource source)
 	{
 		var value = source.Value;
@@ -139,7 +132,6 @@ public static class PiPackageStore
 		}
 	}
 
-	/// <summary>从 <c>npm:</c> 来源里取出包名（保留 scope，去掉版本）。</summary>
 	public static string? NpmPackageName(string spec)
 	{
 		var trimmed = spec.Trim();
@@ -156,7 +148,6 @@ public static class PiPackageStore
 		return name.Length == 0 ? null : name;
 	}
 
-	/// <summary>git 来源在磁盘上的目录名：去掉协议与 ref，并把分隔符换成 '-'。</summary>
 	public static string? GitSlug(string spec)
 	{
 		var value = spec;

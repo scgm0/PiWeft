@@ -9,7 +9,6 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent.Models;
 
-/// <summary>pi.dev 远程模型目录的本地缓存与刷新。对应 pi 的 models-store.json + remote catalog。</summary>
 public static class ModelCatalogStore
 {
 	public const string CatalogBaseUrl = "https://pi.dev";
@@ -29,7 +28,6 @@ public static class ModelCatalogStore
 	public static string PathFor(string? agentDir = null) =>
 		Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "models-store.json");
 
-	/// <summary>把已缓存的远程目录叠加到注册表；不存在或损坏时什么都不做。</summary>
 	public static int LoadCached(ModelRegistry registry, string? agentDir = null)
 	{
 		var root = ReadRoot(agentDir);
@@ -82,7 +80,6 @@ public static class ModelCatalogStore
 		return added;
 	}
 
-	/// <summary>只刷新一个账号级目录（OpenRouter / Radius / GitHub Copilot）。</summary>
 	public static async Task<bool> RefreshAccountCatalogAsync(
 		string provider,
 		string? agentDir = null,
@@ -110,15 +107,11 @@ public static class ModelCatalogStore
 		return updated;
 	}
 
-	/// <summary>强制刷新所有 Provider 的远程目录并写回缓存。</summary>
-	/// <summary>两次全量刷新的最小间隔。显式 <c>pi update --models</c> 传 <c>force: true</c> 绕过。</summary>
 	public static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(6);
 
-	/// <summary>
 	/// 是否该刷了：取缓存里最新的 <c>checkedAt</c> 与 <see cref="RefreshInterval"/> 比较。
 	/// 没有缓存或时间戳缺失/在未来（手改文件、时钟回拨）时都返回 <see langword="true"/> ——
 	/// 节流不该变成「永远不刷新」。
-	/// </summary>
 	public static bool ShouldRefresh(string? agentDir = null, TimeSpan? interval = null, DateTimeOffset? now = null)
 	{
 		var root = ReadRoot(agentDir);
@@ -145,7 +138,6 @@ public static class ModelCatalogStore
 		return elapsed >= (interval ?? RefreshInterval);
 	}
 
-	/// <summary>刷新结果：更新了几个、几个失败、几个命中 304（内容未变，省下了传输）。</summary>
 	public sealed record RefreshOutcome(int Updated, int Failed, int NotModified)
 	{
 		public bool NothingToDo => Updated == 0 && Failed == 0 && NotModified == 0;

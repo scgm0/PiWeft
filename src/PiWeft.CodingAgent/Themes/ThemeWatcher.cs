@@ -5,11 +5,9 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Themes;
 
-/// <summary>
 /// 监视主题根目录（用户、项目、settings 声明与包）的 <c>*.json</c> 变化，
 /// 防抖后触发一次回调。坏文件不产生事件语义变化——由调用方重新解析并决定是否换肤。
 /// 文件系统不可用（目录不存在、平台不支持）时返回的实例静默失效。
-/// </summary>
 public sealed class ThemeWatcher : IDisposable
 {
 	private const int DebounceMs = 400;
@@ -23,13 +21,10 @@ public sealed class ThemeWatcher : IDisposable
 	{
 	}
 
-	/// <summary>防抖后的变更回调；在后台线程触发，调用方自行调度到 UI 线程。</summary>
 	public event Action? Changed;
 
-	/// <summary>
 	/// 监视给定主题根目录。目录不存在的项跳过（不为其创建监视器）；
 	/// 没有任何可监视目录时返回可用但空转的实例。
-	/// </summary>
 	public static ThemeWatcher Create(string cwd, string? agentDir = null, bool includeProject = true)
 	{
 		var resolvedAgentDir = agentDir ?? SessionPaths.GetAgentDir();

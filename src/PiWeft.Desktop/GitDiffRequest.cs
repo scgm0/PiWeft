@@ -1,6 +1,5 @@
 namespace PiWeft.Desktop;
 
-/// <summary>diff 面板当前展示的内容类型。</summary>
 internal enum GitDiffKind
 {
 	WorkingTree,
@@ -9,10 +8,8 @@ internal enum GitDiffKind
 	Compare,
 }
 
-/// <summary>
 /// 底部 diff 面板的请求。工作区/暂存、提交内文件与分支比较都走同一块面板，
 /// 切换来源时只换请求，不重建第二套 diff UI。
-/// </summary>
 internal sealed record GitDiffRequest(
 	GitDiffKind Kind,
 	string Path,

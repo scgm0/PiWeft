@@ -6,10 +6,8 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent.Compaction;
 
-/// <summary>压缩在会话记录上的切分位置。</summary>
 public sealed record CompactionPlan(int FirstKeptEntryIndex, int TurnStartIndex, bool IsSplitTurn);
 
-/// <summary>一次压缩运行的结果。</summary>
 public sealed record CompactionResult
 {
 	public required string FirstKeptEntryId { get; init; }
@@ -23,18 +21,16 @@ public sealed record CompactionResult
 	public JsonObject? Details { get; init; }
 }
 
-/// <summary>
 /// 上下文压缩：把较旧的条目摘要成结构化检查点，并记为一条 <c>compaction</c> 会话条目，
 /// 之后由上下文构建器回放。对应 pi 的 <c>compaction.ts</c>。
-/// </summary>
 public static class Compactor
 {
-	/// <summary>找出切分位置，使大约 <paramref name="keepRecentTokens"/> 个令牌保持原样。</summary>
 	public static CompactionPlan? FindCutPoint(
 		IReadOnlyList<SessionEntry> entries,
 		int startIndex,
 		int endIndex,
-		long keepRecentTokens)
+		long keepRecentTokens,
+		IReadOnlyDictionary<string, ContextEditEntry>? edits = null)
 	{
 		if (startIndex >= endIndex)
 		{
@@ -49,7 +45,7 @@ public static class Compactor
 				continue;
 			}
 
-			if (MessagesFor(entries[i]).Any(IsCutPointMessage))
+			if (MessagesFor(entries[i], edits).Any(IsCutPointMessage))
 			{
 				cutPoints.Add(i);
 			}
@@ -65,7 +61,7 @@ public static class Compactor
 
 		for (var i = endIndex - 1; i >= startIndex; i--)
 		{
-			var entryTokens = MessagesFor(entries[i]).Sum(ContextTokens.EstimateTokens);
+			var entryTokens = MessagesFor(entries[i], edits).Sum(ContextTokens.EstimateTokens);
 			if (entryTokens == 0)
 			{
 				continue;
@@ -96,13 +92,12 @@ public static class Compactor
 			cutIndex--;
 		}
 
-		var startsTurn = MessagesFor(entries[cutIndex]).Any(IsTurnStartMessage);
+		var startsTurn = MessagesFor(entries[cutIndex], edits).Any(IsTurnStartMessage);
 		var turnStartIndex = startsTurn ? -1 : FindTurnStartIndex(entries, cutIndex, startIndex);
 
 		return new CompactionPlan(cutIndex, turnStartIndex, !startsTurn && turnStartIndex != -1);
 	}
 
-	/// <summary>包含 <paramref name="entryIndex"/> 的那个轮次的起始条目下标，找不到为 -1。</summary>
 	public static int FindTurnStartIndex(IReadOnlyList<SessionEntry> entries, int entryIndex, int startIndex)
 	{
 		for (var i = entryIndex; i >= startIndex; i--)
@@ -116,10 +111,8 @@ public static class Compactor
 		return -1;
 	}
 
-	/// <summary>
 	/// 就地压缩会话：摘要切点之前的全部内容，并追加一条 <c>compaction</c> 条目。
 	/// 没有值得压缩的内容时返回 <c>null</c>。
-	/// </summary>
 	public static async Task<CompactionResult?> CompactAsync(
 		SessionManager session,
 		Model model,
@@ -127,7 +120,8 @@ public static class Compactor
 		StreamOptions options,
 		CompactionSettings settings,
 		string? customInstructions = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		string? thinkingLevel = null)
 	{
 		ArgumentNullException.ThrowIfNull(session);
 		ArgumentNullException.ThrowIfNull(model);
@@ -153,7 +147,10 @@ public static class Compactor
 			startIndex++;
 		}
 
-		var plan = FindCutPoint(entries, startIndex, entries.Count, settings.KeepRecentTokens);
+		// 与实时上下文相同的投影规则：context_edit 隐藏的尝试不计 token、不进入摘要，
+		// 内容替换按替换后的版本摘要（参照 pi 的 buildSessionProjection）。
+		var edits = SessionManager.LatestContextEdits(entries);
+		var plan = FindCutPoint(entries, startIndex, entries.Count, settings.KeepRecentTokens, edits);
 		if (plan is null || plan.FirstKeptEntryIndex <= startIndex)
 		{
 			return null;
@@ -163,9 +160,9 @@ public static class Compactor
 			? plan.TurnStartIndex
 			: plan.FirstKeptEntryIndex;
 
-		var historyMessages = MessagesBetween(entries, startIndex, historyEnd);
+		var historyMessages = MessagesBetween(entries, startIndex, historyEnd, edits);
 		var turnPrefixMessages = plan.IsSplitTurn
-			? MessagesBetween(entries, historyEnd, plan.FirstKeptEntryIndex)
+			? MessagesBetween(entries, historyEnd, plan.FirstKeptEntryIndex, edits)
 			: [];
 
 		var tokensBefore = ContextTokens.EstimateContextTokens(session.BuildProjectedMessages()).Tokens;
@@ -178,7 +175,8 @@ public static class Compactor
 			historyMessages,
 			customInstructions,
 			previousSummary,
-			cancellationToken).ConfigureAwait(false);
+			cancellationToken,
+			thinkingLevel: thinkingLevel).ConfigureAwait(false);
 
 		var summary = history.Text;
 		var usage = history.Usage;
@@ -194,7 +192,8 @@ public static class Compactor
 				customInstructions: null,
 				previousSummary: null,
 				cancellationToken,
-				CompactionPrompts.TurnPrefixSummarizationPrompt).ConfigureAwait(false);
+				CompactionPrompts.TurnPrefixSummarizationPrompt,
+				thinkingLevel).ConfigureAwait(false);
 
 			summary = $"{summary}\n\n---\n\n**Turn Context (split turn):**\n\n{turnPrefix.Text}";
 			usage = CombineUsage(usage, turnPrefix.Usage);
@@ -230,7 +229,6 @@ public static class Compactor
 		};
 	}
 
-	/// <summary>用一次专门的模型调用为一段消息生成结构化摘要。</summary>
 	public static async Task<(string Text, Usage Usage)> GenerateSummaryAsync(
 		Model model,
 		StreamFn streamFn,
@@ -240,7 +238,8 @@ public static class Compactor
 		string? customInstructions,
 		string? previousSummary,
 		CancellationToken cancellationToken,
-		string? basePromptOverride = null)
+		string? basePromptOverride = null,
+		string? thinkingLevel = null)
 	{
 		// 与 pi 现行行为一致：摘要请求使用模型自身的输出上限。
 		// compaction.reserveTokens 只决定「何时开始压缩」，不再限制摘要长度 ——
@@ -283,7 +282,9 @@ public static class Compactor
 			options with
 			{
 				MaxTokens = model.MaxTokens > 0 ? model.MaxTokens : null,
-				ThinkingLevel = ThinkingLevels.Off,
+				// 与 pi 的 createSummarizationOptions 一致：推理模型沿用会话的思考级别（off 时仍是 off）。
+				// 以前固定 off 会让支持思考的模型只拿 effort=none，某些模型直接以 400 拒绝摘要请求。
+				ThinkingLevel = model.Reasoning ? thinkingLevel ?? ThinkingLevels.Off : ThinkingLevels.Off,
 			});
 
 		await foreach (var _ in stream.WithCancellation(cancellationToken).ConfigureAwait(false))
@@ -307,7 +308,6 @@ public static class Compactor
 		return (text, response.Usage);
 	}
 
-	/// <summary>摘要响应不可用的原因；正常时为 <c>null</c>。</summary>
 	public static string? SummarizationFailure(AssistantMessage response)
 	{
 		if (response.StopReason == StopReason.Aborted)
@@ -364,18 +364,25 @@ public static class Compactor
 		return checkpoint;
 	}
 
-	private static List<Message> MessagesBetween(IReadOnlyList<SessionEntry> entries, int start, int end)
+	private static List<Message> MessagesBetween(
+		IReadOnlyList<SessionEntry> entries,
+		int start,
+		int end,
+		IReadOnlyDictionary<string, ContextEditEntry>? edits = null)
 	{
 		var messages = new List<Message>();
 		for (var i = start; i < end; i++)
 		{
-			messages.AddRange(MessagesFor(entries[i]));
+			messages.AddRange(MessagesFor(entries[i], edits));
 		}
 
 		return messages;
 	}
 
-	private static IReadOnlyList<Message> MessagesFor(SessionEntry entry) => SessionManager.MessagesForEntry(entry);
+	private static IReadOnlyList<Message> MessagesFor(
+		SessionEntry entry,
+		IReadOnlyDictionary<string, ContextEditEntry>? edits = null) =>
+		SessionManager.ProjectEntry(entry, edits?.GetValueOrDefault(entry.Id));
 
 	private static bool IsCutPointMessage(Message message) => message switch
 	{

@@ -7,13 +7,10 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// <c>pi install / list / remove / update</c>：管理 pi package（npm、git 与本地路径）。
 /// 与 pi 一致，这些命令在通用参数解析之前分发，因此自带开关不会与主解析器冲突。
-/// </summary>
 public static class PackageCommands
 {
-	/// <summary>顶层包命令；未命中时返回 <c>null</c>，交由通用解析器处理。</summary>
 	public static async Task<int?> RunAsync(
 		string command,
 		IReadOnlyList<string> rest,
@@ -211,7 +208,6 @@ public static class PackageCommands
 		}
 	}
 
-	/// <summary>打印一条结果；成功返回 true。</summary>
 	private static bool Report(PackageResult result, TextWriter output, TextWriter error, string? detail)
 	{
 		if (result.Ok)
@@ -247,7 +243,6 @@ public static class PackageCommands
 		};
 	}
 
-	/// <summary>包命令的解析结果，包含 pi 的 update 范围开关。</summary>
 	private sealed record ParsedPackageArgs
 	{
 		public string? Source { get; init; }
@@ -258,22 +253,16 @@ public static class PackageCommands
 
 		public bool Help { get; init; }
 
-		/// <summary><c>pi update --self</c> / <c>self</c> / <c>pi</c>。</summary>
 		public bool Self { get; init; }
 
-		/// <summary><c>pi update --extensions</c>（更新全部包）。</summary>
 		public bool Extensions { get; init; }
 
-		/// <summary><c>pi update --all</c>。</summary>
 		public bool All { get; init; }
 
-		/// <summary><c>pi update --models</c>。</summary>
 		public bool Models { get; init; }
 
-		/// <summary><c>pi update --force</c>（本端口无自更新语义，接受并忽略）。</summary>
 		public bool Force { get; init; }
 
-		/// <summary><c>pi update --extension &lt;source&gt;</c> 的别名形式。</summary>
 		public string? ExtensionSource { get; init; }
 	}
 
@@ -346,7 +335,6 @@ public static class PackageCommands
 		return parsed;
 	}
 
-	/// <summary><c>pi config</c>：列出已声明的包来源与资源键，行式 REPL 没有交互式选择界面。</summary>
 	private static int Config(bool local, string cwd, TextWriter output, TextWriter error)
 	{
 		var agentDir = SessionPaths.GetAgentDir();

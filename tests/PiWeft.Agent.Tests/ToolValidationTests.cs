@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.Agent.Tests;
 
-/// <summary>Tool-argument validation happens inside the loop, before hooks and execution.</summary>
 public class ToolValidationTests
 {
 	private static AgentTool TypedTool(

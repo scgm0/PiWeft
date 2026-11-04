@@ -6,8 +6,7 @@ using ZLogger.Providers;
 
 namespace PiWeft.Cli;
 
-/// <summary>CLI 与桌面端共用的日志；可选标准错误输出，不记录提示词、工具参数或凭据。</summary>
-/// <remarks>自定义枚举先转为字符串，避免 ZLogger 在 NativeAOT 下反射创建枚举数组。</remarks>
+/// 自定义枚举先转为字符串，避免 ZLogger 在 NativeAOT 下反射创建枚举数组。
 public sealed class AppLog : IDisposable
 {
 	private static ILoggerFactory _factory = NullLoggerFactory.Instance;
@@ -22,7 +21,6 @@ public sealed class AppLog : IDisposable
 
 	public static ILogger For<T>() => Volatile.Read(ref _factory).CreateLogger(typeof(T).FullName ?? typeof(T).Name);
 
-	/// <summary>每个进程一个宿主，在入口用 using 保证退出前排空后台日志队列。</summary>
 	public static AppLog Start(string application, bool logToConsole = false)
 	{
 		DirectoryPath = Path.Combine(SessionPaths.GetAgentDir(), "logs");
@@ -99,7 +97,6 @@ public sealed class AppLog : IDisposable
 			static (in MessageTemplate template, in LogInfo info) => template.Format(info.Timestamp, info.LogLevel, info.Category)));
 	}
 
-	/// <summary>异常消息可能含 provider 响应和密钥，只记录类型与堆栈，不转储 Message/Data/InnerException。</summary>
 	public static void Failure(ILogger logger, string operation, Exception exception) =>
 		logger.ZLogError($"{operation}: errorType={exception.GetType().FullName}, stack={exception.StackTrace}");
 

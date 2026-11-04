@@ -18,7 +18,6 @@ using PiWeft.CodingAgent.Tools;
 
 namespace PiWeft.Cli;
 
-/// <summary>一次 CLI 运行所需的全部内容：模型目录、已注册的 provider 与解析后的设置。</summary>
 public sealed class CliEnvironment
 {
 	private CliEnvironment(
@@ -43,19 +42,14 @@ public sealed class CliEnvironment
 		ProjectTrusted = projectTrusted;
 	}
 
-	/// <summary>
 	/// 项目是否受信任。为 false 时不合并项目设置、不连接项目 MCP，也不加载项目技能与提示词模板。
 	/// 一次启动只解析一次，会话构造与 MCP 连接共用同一个决策。
-	/// </summary>
 	public bool ProjectTrusted { get; } = true;
 
-	/// <summary><c>models.json</c> 中声明的 API key，按 provider id 索引。</summary>
 	public IReadOnlyDictionary<string, string> ProviderApiKeys { get; }
 
-	/// <summary>替换流式函数。测试以及自行掌控传输的嵌入方会用到。</summary>
 	internal StreamFn? StreamFnOverride { get; init; }
 
-	/// <summary>围绕调用方提供的流式函数构建环境。</summary>
 	internal static CliEnvironment ForTests(
 		ModelRegistry registry,
 		CodingAgentSettings settings,
@@ -78,10 +72,8 @@ public sealed class CliEnvironment
 
 	public ModelsGateway Gateway { get; }
 
-	/// <summary>生图模型网关；目前注册 OpenRouter 方言。</summary>
 	public ImagesGateway Images { get; }
 
-	/// <summary>分类模型网关；目前注册 OpenAI Decisions 方言。</summary>
 	public ClassifiersGateway Classifiers { get; }
 
 	public CodingAgentSettings Settings { get; }
@@ -94,10 +86,8 @@ public sealed class CliEnvironment
 
 	public StreamFn StreamFn => _streamFn ??= AgentGatewayStreamFn.For(Gateway);
 
-	/// <summary>连接测试用的流式函数：测试注入优先，否则走真实网关。</summary>
 	internal StreamFn ProbeStreamFn => StreamFnOverride ?? StreamFn;
 
-	/// <summary>本端口实现的 provider API。</summary>
 	public static readonly string[] SupportedApis =
 	[
 		AnthropicProvider.ApiId,
@@ -113,16 +103,13 @@ public sealed class CliEnvironment
 		VirtualModels.Api,
 	];
 
-	/// <summary>API id 的 O(1) 查询表：模型可用性筛选对每个目录模型都会问一次。</summary>
 	private static readonly FrozenSet<string> SupportedApiSet = SupportedApis.ToFrozenSet(StringComparer.Ordinal);
 
 	public static bool SupportsApi(string api) => SupportedApiSet.Contains(api);
 
-	/// <summary>构建环境：设置、目录、provider、模型与工具集。</summary>
 	public static (CliEnvironment? Environment, string? Error) Create(CliArguments arguments, string cwd) =>
 		Create(arguments, cwd, handler: null);
 
-	/// <summary>构建环境，可让 provider 的 HTTP 请求走 <paramref name="handler"/>。</summary>
 	internal static (CliEnvironment? Environment, string? Error) Create(
 		CliArguments arguments,
 		string cwd,
@@ -235,7 +222,6 @@ public sealed class CliEnvironment
 		["xiaomi-token-plan-sgp"] = "mimo-v2.6-pro",
 	};
 
-	/// <summary>依次从 <c>--model</c>、设置里的默认模型、第一个有密钥的 provider 解析模型。</summary>
 	public static Model? ResolveModel(
 		ModelRegistry registry,
 		CliArguments arguments,
@@ -300,7 +286,6 @@ public sealed class CliEnvironment
 
 		// 完全没有密钥时，仍然以第一个受支持的对话模型启动，让桌面客户端能访问到 RPC 面并展示模型选择；
 		// 之后发送提示会以 provider 自己的“缺少密钥”错误失败，这与 pi 在 RPC 模式下的体验一致。
-		// 
 		foreach (var candidate in registry.ChatModels())
 		{
 			if (SupportsApi(candidate.Api))
@@ -313,7 +298,6 @@ public sealed class CliEnvironment
 		return null;
 	}
 
-	/// <summary>为目录里还没有的新模型构造 fallback 条目，使用该 Provider 首个模型的端点与能力。</summary>
 	private static bool TryBuildFallbackModel(
 		ModelRegistry registry,
 		string requested,
@@ -348,11 +332,9 @@ public sealed class CliEnvironment
 		return true;
 	}
 
-	/// <summary>
 	/// 按 <c>provider/id</c>、精确 id、glob 模式或子串查找模型。与 pi 1.3.0 一致：
 	/// 同名 id 出现在多个 provider 时优先选择**有可用凭据**的那个，仍然无法区分时返回 null
 	/// 由调用方报「模型未找到/有歧义」。
-	/// </summary>
 	public static Model? FindModel(
 		ModelRegistry registry,
 		string pattern,
@@ -426,7 +408,6 @@ public sealed class CliEnvironment
 		return null;
 	}
 
-	/// <summary>知道凭据情况时，把候选收窄到本地有可用凭据的 provider；不知道时原样返回。</summary>
 	private static IReadOnlyList<Model> PreferCredentialed(
 		IReadOnlyList<Model> candidates,
 		IReadOnlyDictionary<string, string>? providerApiKeys,
@@ -440,7 +421,6 @@ public sealed class CliEnvironment
 		return ModelAvailability.Filter(candidates, providerApiKeys, explicitApiKey);
 	}
 
-	/// <summary>某个模型是否命中所给的 <c>--models</c> 模式：支持 glob 与子串匹配。</summary>
 	public static bool MatchesModelPattern(Model model, string pattern)
 	{
 		var qualified = $"{model.Provider}/{model.Id}";
@@ -454,18 +434,14 @@ public sealed class CliEnvironment
 			model.Id.Contains(pattern, StringComparison.OrdinalIgnoreCase);
 	}
 
-	/// <summary>列出本端口已实现 api 的对话模型，可按搜索串过滤。</summary>
 	public IReadOnlyList<Model> ListModels(string? search = null) => ListModels(Registry, search);
 
-	/// <summary>会话可选择的模型：受支持且有可用的本地认证；目录查询仍保留全量语义。</summary>
 	public IReadOnlyList<Model> ListAvailableModels(string? explicitKey = null) =>
 		ModelAvailability.Filter(ListModels(), ProviderApiKeys, explicitKey);
 
-	/// <summary>列出目录模型，以及 <c>models.json</c> 中的自定义端点。</summary>
 	public static IReadOnlyList<Model> ListModels(string cwd, string? search) =>
 		ListModels(BuildRegistry(cwd), search);
 
-	/// <summary>把 OAuth 凭据携带的端点（Copilot proxy、自定义 Radius gateway）应用到该 Provider 的全部模型。</summary>
 	private static void ApplyOAuthProviderEndpoints(ModelRegistry registry)
 	{
 		foreach (var provider in registry.Providers)
@@ -482,7 +458,6 @@ public sealed class CliEnvironment
 		}
 	}
 
-	/// <summary>加载目录并叠加 <c>models.json</c>。</summary>
 	public static ModelRegistry BuildRegistry(string cwd)
 	{
 		var registry = ModelRegistry.LoadDefault();
@@ -527,16 +502,13 @@ public sealed class CliEnvironment
 		return [.. models.OrderBy(static m => m.Provider, StringComparer.Ordinal).ThenBy(static m => m.Id, StringComparer.Ordinal)];
 	}
 
-	/// <summary>应用工具相关参数：默认集、白名单、黑名单。</summary>
 	public static IReadOnlyList<AgentTool> ResolveTools(CliArguments arguments, string cwd) =>
 		ResolveTools(arguments, cwd, new CodingAgentSettings());
 
-	/// <summary>
 	/// 与 pi 相同的三态语义：默认集来自 <c>settings.defaultTools</c>（未配置时用
 	/// <see cref="CodingAgentSettings.DefaultToolNames"/>）；<c>--tools</c> 的纯名字列表整体替换默认集，
 	/// 只含 <c>+</c>/<c>-</c> 时在默认集上增删；<c>--exclude-tools</c> 最后应用并支持通配。
 	/// 模式永远针对**完整**内置目录展开，因此默认关闭的 <c>grep</c>/<c>find</c>/<c>ls</c> 仍可显式选中。
-	/// </summary>
 	public static IReadOnlyList<AgentTool> ResolveTools(CliArguments arguments, string cwd, CodingAgentSettings settings)
 	{
 		if (arguments.NoTools)
@@ -576,10 +548,8 @@ public sealed class CliEnvironment
 		return tools;
 	}
 
-	/// <summary>
 	/// 按 <c>+name</c> / <c>-name</c> / 纯名字三态调整工具集。纯名字出现即整体替换
 	/// <paramref name="baseTools"/>（<c>--tools</c> 额外支持通配），否则只在基线上增删。
-	/// </summary>
 	private static List<AgentTool> ApplyToolEntries(
 		IReadOnlyList<AgentTool> baseTools,
 		IReadOnlyList<AgentTool> catalog,
@@ -618,7 +588,6 @@ public sealed class CliEnvironment
 		return selected;
 	}
 
-	/// <summary>按会话相关参数解析出要使用的会话。</summary>
 	/// <param name="preferredModel">
 	/// 新会话（没有会话记录）的候选模型：仅当既没有显式 <c>--model</c>、也没有配置
 	/// <c>settings.defaultModel</c> 时才会用到（桌面传「上次真正用过的模型」，对齐 PiDeck 的 lastUsedModel）。
@@ -678,7 +647,6 @@ public sealed class CliEnvironment
 
 		resources = resources with { Themes = themes };
 
-		// --system-prompt / --append-system-prompt 既接受字面文本，也接受文件路径（与 pi 一致）。
 		var customSystemPrompt = arguments.SystemPrompt is { Length: > 0 } systemPrompt
 			? CliInput.ResolvePromptInput(systemPrompt, cwd)
 			: null;
@@ -787,15 +755,13 @@ public sealed class CliEnvironment
 		return merged;
 	}
 
-	/// <summary>内置工具（按参数过滤）在前，MCP 工具在后；新建会话与服务器报告新工具后的
-	/// 刷新都会用到。</summary>
+	/// 内置工具（按参数过滤）在前，MCP 工具在后；新建会话与服务器报告新工具后的
+	/// 刷新都会用到。
 	public IReadOnlyList<AgentTool> ComposeTools(CliArguments arguments, IReadOnlyList<AgentTool>? extraTools) =>
 		arguments.NoTools ? [] : [.. Tools, .. FilterExtraTools(arguments, extraTools ?? [])];
 
-	/// <summary>
 	/// 应用 <c>mcp__</c> 工具模式。不以 <c>mcp__</c> 开头的条目永远不会移除 MCP 工具，
 	/// 这是 pi 的规则。
-	/// </summary>
 	internal static IReadOnlyList<AgentTool> FilterExtraTools(CliArguments arguments, IReadOnlyList<AgentTool> tools)
 	{
 		var allow = arguments.Tools.Where(static pattern => IsMcpPattern(pattern) && !pattern.StartsWith('-')).ToList();
@@ -817,7 +783,6 @@ public sealed class CliEnvironment
 		return [.. filtered];
 	}
 
-	/// <summary>某个工具模式是否指向 MCP 工具（包含资源工具）。</summary>
 	private static bool IsMcpPattern(string pattern)
 	{
 		var bare = pattern.StartsWith('-') ? pattern[1..] : pattern;
@@ -834,10 +799,8 @@ public sealed class CliEnvironment
 		return pattern.IndexOfAny(['*', '?']) >= 0 && SearchTools.GlobToRegex(pattern).IsMatch(name);
 	}
 
-	/// <summary>
 	/// 打开或创建参数所要求的会话文件。<paramref name="defaultSessionDir"/> 来自
 	/// <c>settings.sessionDir</c>，只有在没有 <c>--session-dir</c> 时才生效。
-	/// </summary>
 	public static SessionManager ResolveSession(CliArguments arguments, string cwd, string? defaultSessionDir = null)
 	{
 		if (arguments.NoSession)
@@ -880,7 +843,6 @@ public sealed class CliEnvironment
 		return SessionManager.Create(cwd, sessionDir, arguments.SessionId);
 	}
 
-	/// <summary>按会话 id 在会话目录里找最新的匹配文件（文件名包含 id）。</summary>
 	private static string? FindSessionById(string id, string cwd, string? sessionDir)
 	{
 		var directory = sessionDir is { Length: > 0 } configured
@@ -898,7 +860,6 @@ public sealed class CliEnvironment
 			.LastOrDefault();
 	}
 
-	/// <summary>在会话目录中解析会话文件路径或部分 UUID。</summary>
 	public static string? ResolveSessionPath(string pathOrId, string cwd, string? sessionDir)
 	{
 		if (File.Exists(pathOrId))

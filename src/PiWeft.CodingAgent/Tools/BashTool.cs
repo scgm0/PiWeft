@@ -4,10 +4,8 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>
 /// 内置 <c>bash</c> 工具执行时的会话上下文。非空字段会以 <c>PI_*</c> 环境变量注入子进程，
 /// 扩展与脚本因此能感知当前会话（与 pi 的 <c>exposeSessionEnvironment</c> 一致）。
-/// </summary>
 public sealed record BashSessionEnvironment
 {
 	public string? SessionId { get; init; }
@@ -20,14 +18,11 @@ public sealed record BashSessionEnvironment
 
 	public string? ThinkingLevel { get; init; }
 
-	/// <summary><c>settings.shellPath</c>。</summary>
 	public string? ShellPath { get; init; }
 
-	/// <summary><c>settings.shellCommandPrefix</c>。</summary>
 	public string? CommandPrefix { get; init; }
 }
 
-/// <summary>内置的 <c>bash</c> 工具：在会话的工作目录里执行 shell 命令。</summary>
 public static class BashTool
 {
 	public static AgentTool Create(string cwd, Func<BashSessionEnvironment?>? context = null) => new()
@@ -106,12 +101,18 @@ public static class BashTool
 			.ConfigureAwait(false);
 
 		var truncation = Truncate.Tail(result.Output);
+		if (result.OutputTruncated)
+		{
+			// 内存里只有尾部窗口：行号/字节数按命令的真实总量报告，完整内容指向临时文件。
+			truncation = truncation with { TotalLines = result.TotalLines, TotalBytes = result.TotalBytes };
+		}
+
 		var text = truncation.Content;
 		string? fullOutputPath = null;
 
 		if (truncation.Truncated)
 		{
-			fullOutputPath = ShellRunner.WriteFullOutput(result.Output);
+			fullOutputPath = result.FullOutputPath ?? ShellRunner.WriteFullOutput(result.Output);
 
 			if (truncation.LastLinePartial)
 			{

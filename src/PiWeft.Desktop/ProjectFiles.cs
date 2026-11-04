@@ -2,26 +2,19 @@ using System.Collections.Frozen;
 
 namespace PiWeft.Desktop;
 
-/// <summary>文件树里的一个条目。</summary>
 public sealed record ProjectEntry(string Name, string RelativePath, bool IsDirectory, string Status);
 
-/// <summary>
 /// 项目文件访问：目录列举（跳过构建产物与版本库目录、条数有界）、文本读取（大小与二进制判定）
 /// 与带冲突检测的写入。所有路径都限制在项目根目录内，<c>..</c> 逃逸会被拒绝。
-/// </summary>
 public static class ProjectFiles
 {
-	/// <summary>单次列举的最大条目数，避免超大目录拖垮界面。</summary>
 	public const int MaxEntries = 2000;
 
-	/// <summary>可编辑文本文件的大小上限。</summary>
 	public const int MaxFileBytes = 1024 * 1024;
 
-	/// <summary>
 	/// 这些目录不参与列举：版本库、依赖与构建产物。
 	/// 冻结集合把哈希预先算好并分段存放：目录列举要对每一项都查一次，普通字典的每次查找
 	/// 都要重算字符串哈希（依赖替换、层级遍历）。
-	/// </summary>
 	private static readonly FrozenSet<string> IgnoredDirectories = new HashSet<string>(StringComparer.Ordinal)
 	{
 		".git", ".vs", ".idea", ".vscode", "node_modules", "bin", "obj", "dist", "build", "out",
@@ -29,7 +22,6 @@ public static class ProjectFiles
 		"Pods", "DerivedData", ".terraform",
 	}.ToFrozenSet(StringComparer.Ordinal);
 
-	/// <summary>列举目录内容：先目录后文件，各按名称排序。<paramref name="relativeDir"/> 为空表示项目根。</summary>
 	/// <param name="statuses">可选的 Git 状态标记，键为相对路径。</param>
 	public static IReadOnlyList<ProjectEntry> List(string cwd, string relativeDir, IReadOnlyDictionary<string, string>? statuses = null)
 	{
@@ -84,7 +76,6 @@ public static class ProjectFiles
 		return directories;
 	}
 
-	/// <summary>读取文本文件；过大或含 NUL 字节时返回错误而不返回内容。</summary>
 	public static (string? Content, long LastWriteTicks, string? Error) Read(string cwd, string relativePath, int maxBytes = MaxFileBytes)
 	{
 		var root = Path.GetFullPath(cwd);
@@ -117,10 +108,8 @@ public static class ProjectFiles
 		}
 	}
 
-	/// <summary>
 	/// 写入文本文件。给定 <paramref name="expectedTicks"/> 时若磁盘上的时间戳已变化，拒绝覆盖并返回冲突。
 	/// 写入采用同目录临时文件加原子替换。
-	/// </summary>
 	public static string? Write(string cwd, string relativePath, string content, long? expectedTicks = null)
 	{
 		var root = Path.GetFullPath(cwd);
@@ -154,7 +143,6 @@ public static class ProjectFiles
 		}
 	}
 
-	/// <summary>把相对路径解析成根目录内的绝对路径；越界或含绝对路径时返回 <c>null</c>。</summary>
 	internal static string? ResolveContained(string root, string relativePath)
 	{
 		if (Path.IsPathRooted(relativePath))

@@ -8,11 +8,9 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.Anthropic;
 
-/// <summary>
 /// Anthropic Messages API（<c>anthropic-messages</c>）的流式适配器。请求用 <see cref="Utf8JsonWriter"/> 手写，
 /// SSE 响应用 <c>System.Net.ServerSentEvents</c> 解析；整条链路
 /// 都不使用反射，满足 NativeAOT 要求。
-/// </summary>
 public sealed class AnthropicProvider : IApiProvider
 {
 	public const string ApiId = "anthropic-messages";
@@ -278,7 +276,6 @@ public sealed class AnthropicProvider : IApiProvider
 		stream.Push(new ErrorEvent { Reason = reason, Partial = error });
 	}
 
-	/// <summary>给模型看的错误文本；设置 <c>PI_DEBUG_ERRORS=1</c> 时会附带堆栈便于排查。</summary>
 	internal static string DescribeError(Exception exception) =>
 		Environment.GetEnvironmentVariable("PI_DEBUG_ERRORS") == "1" ? exception.ToString() : exception.Message;
 

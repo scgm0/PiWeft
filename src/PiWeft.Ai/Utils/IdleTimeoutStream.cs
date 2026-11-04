@@ -2,25 +2,16 @@ using System.Diagnostics;
 
 namespace PiWeft.Ai;
 
-/// <summary>
 /// 给响应体加「空闲超时」：连续 <see cref="_timeout"/> 没有读到任何字节就失败。
-/// <para>
 /// 为什么不是总时长：模型思考几分钟仍在产出 delta 是合法长流，用总时长会在正常路径上切断它。
 /// 反过来，供应商把连接挂着不发也不关时，<see cref="HttpClient"/> 的 <c>Timeout = Infinite</c>
 /// 会让这一轮永远等下去 —— pi 用 <c>settings.httpIdleTimeoutMs</c>（默认 300 秒）兜住这种情况。
-/// </para>
-/// <para>
 /// 计时用 <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> 反复续期，不轮询：
 /// 每读到数据就把到期时刻推到「现在 + 超时」，一个流从头到尾只有一个定时器。
-/// </para>
-/// <para>
 /// 超时抛 <see cref="IOException"/> 而不是 <see cref="OperationCanceledException"/>：
 /// 用户没按中断，把它报成「已中止」会误导；IOException 会走自动重试的分类器（文案里带 timeout）。
-/// </para>
-/// </summary>
 internal sealed class IdleTimeoutStream : Stream
 {
-	/// <summary>最短续期间隔：数据密集时不必为每个字节都动一次定时器。</summary>
 	private static readonly TimeSpan MinimumRenewInterval = TimeSpan.FromMilliseconds(50);
 
 	private readonly Stream _inner;
@@ -106,17 +97,14 @@ internal sealed class IdleTimeoutStream : Stream
 		return (_linked.Token, null);
 	}
 
-	/// <summary>
 	/// 是「空闲到期」而不是用户中止或提前释放：请求令牌没被取消、本流也没在释放
 	/// （<see cref="Release"/> 会取消计时令牌，那之后到来的取消不该被说成超时）。
-	/// </summary>
 	private bool IsIdleTimeout() =>
 		_idle.IsCancellationRequested && !_requestToken.IsCancellationRequested && !_disposed;
 
-	/// <summary>把到期时刻推到「现在 + 超时」。数据密集时最多每 50 ms 动一次定时器：
+	/// 把到期时刻推到「现在 + 超时」。数据密集时最多每 50 ms 动一次定时器：
 	/// 于是空闲窗口可能被提前至多 50 ms 判定 —— 相对默认的 300 秒可以忽略，
 	/// 但换来的是「一秒几百个 SSE 分片也不反复重置定时器」。
-	/// </summary>
 	private void Renew()
 	{
 		var now = Stopwatch.GetTimestamp();
@@ -166,11 +154,9 @@ internal sealed class IdleTimeoutStream : Stream
 		await base.DisposeAsync().ConfigureAwait(false);
 	}
 
-	/// <summary>
 	/// 释放顺序：标记已释放 → 取消计时 → 释放内层流 → 才释放令牌源。
 	/// 内层可能还有一个挂着注册的读在等取消；先把流关掉，那个注册一定已经走完，
 	/// 之后 dispose 才不会撞上「令牌源已释放」。
-	/// </summary>
 	private void ReleaseCore()
 	{
 		if (_disposed)

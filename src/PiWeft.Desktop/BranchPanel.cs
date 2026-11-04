@@ -7,10 +7,8 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 会话分支树：把会话条目按 <c>id</c>/<c>parentId</c> 展开，每行都能「跳到此处」。
 /// 数据来自 <see cref="SessionManager.BuildTree"/>，与 RPC 的 <c>get_tree</c> 同源。
-/// </summary>
 public sealed class BranchPanel
 {
 	private readonly Func<CodingAgentSession?> _session;
@@ -47,7 +45,6 @@ public sealed class BranchPanel
 
 	public UIElement View { get; }
 
-	/// <summary>重建树。每次切到该视图时调用，保证显示的是最新状态。</summary>
 	public void Refresh()
 	{
 		_tree.Clear();
@@ -106,10 +103,8 @@ public sealed class BranchPanel
 		}
 	}
 
-	/// <summary>
 	/// 带摘要的跳转：先把被放弃的那段路径摘要成一条 <c>branch_summary</c>，再移动叶子。
 	/// 摘要要调用模型，因此是异步且有耗时的操作。
-	/// </summary>
 	private async Task JumpWithSummaryAsync(CodingAgentSession session, string entryId)
 	{
 		try
@@ -138,7 +133,6 @@ public sealed class BranchPanel
 		}
 	}
 
-	/// <summary>每个条目一行摘要，尽量让用户认出这一步做了什么。</summary>
 	private static string Describe(SessionEntry entry) => entry switch
 	{
 		SessionMessageEntry { Message: UserMessage user } => $"{Strings.RoleUser}: {First(user.Content.Text)}",

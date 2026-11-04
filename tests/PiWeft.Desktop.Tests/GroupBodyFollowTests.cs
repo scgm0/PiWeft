@@ -5,10 +5,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 组体「滚动条置底 ⇒ 跟随最新步骤」。真实对话里思考与 bash 步骤交替、中途还会展开/折叠，
 /// 这里按同样的顺序驱动，钉住跟随不会被 presenter 切换、行高重测或展开动作永久打断。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class GroupBodyFollowTests
 {
@@ -75,10 +73,8 @@ public sealed class GroupBodyFollowTests
 			Pump(View.View);
 		}
 
-		/// <summary>
 		/// 读者的滚轮/滚动条位移。直接落位而不跑补间动画：动画由真实帧时钟驱动，
 		/// 测试宿主里没有消息循环，结果不稳定；这里只验证「位移之后跟随态如何判定」。
-		/// </summary>
 		public void ReaderScroll(double delta)
 		{
 			Body.SetScrollOffsets(0, Math.Clamp(Body.VerticalOffset + delta, 0, Smooth.MaxVerticalOffset));

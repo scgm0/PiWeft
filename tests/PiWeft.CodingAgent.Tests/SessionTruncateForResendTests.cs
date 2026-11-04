@@ -6,11 +6,9 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 编辑重发不再为每次重发派生一份新会话文件（否则侧栏每改一次就多一条同名会话）：
 /// 在同一份文件里把被放弃的分支改成墓碑。这里锁住三件事 —— 会话 id 与文件不变、
 /// 旧分支从投影与树里消失、之后追加的消息接在截断点上。
-/// </summary>
 public class SessionTruncateForResendTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-truncate-" + Guid.NewGuid().ToString("N")[..8]);
@@ -50,7 +48,6 @@ public class SessionTruncateForResendTests : IDisposable
 	private static int CountNodes(IReadOnlyList<SessionTreeNode> roots) =>
 		roots.Sum(static node => 1 + CountNodes(node.Children));
 
-	/// <summary>两条用户消息、各一条回答；返回被编辑的那条用户消息 id 与它的父条目。</summary>
 	private static (SessionManager Manager, string FirstUser, string FirstAnswer, string Second) BuildSession(string sessionDir)
 	{
 		var manager = SessionManager.Create("/tmp/p", sessionDir);

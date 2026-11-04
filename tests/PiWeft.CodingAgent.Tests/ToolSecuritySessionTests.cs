@@ -7,10 +7,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 安全门的接线验证：纯策略单测在 <see cref="ToolSecurityTests"/>，这里证明它真的挂在
 /// 工具调用链路上 —— 直接工具调用与 codemode 嵌套调用都要被拦住，<c>off</c> 等级下必须完全不干预。
-/// </summary>
 public class ToolSecuritySessionTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-security-session-" + Guid.NewGuid().ToString("N")[..8]);

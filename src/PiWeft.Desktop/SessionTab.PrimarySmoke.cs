@@ -7,7 +7,6 @@ namespace PiWeft.Desktop;
 
 public sealed partial class SessionTab
 {
-	/// <summary>Isolated smoke fixtures can exercise the real native middle-button route and PRIMARY owner.</summary>
 	internal void PreparePrimarySmoke()
 	{
 		_composer.Text = "before after";

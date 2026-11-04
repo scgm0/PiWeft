@@ -4,7 +4,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>侧栏两个分段的归属：聊天目录里的会话只出现在「对话」，不会在「项目」里重复出现。</summary>
 public class SessionGroupsTests
 {
 	private static SessionListItem Item(string id, string cwd) => new()

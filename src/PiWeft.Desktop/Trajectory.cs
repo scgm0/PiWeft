@@ -5,10 +5,8 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 轨迹账本的泳道：一条会话在时间轴上同时有「用户输入 / 模型回复 / 工具执行 / 过程事件」四条线。
 /// 与 PiDeck 的会话轨迹同一口径（输入 / 模型 / 工具 / 过程）。
-/// </summary>
 internal enum TrajectoryLane
 {
 	Input,
@@ -17,7 +15,6 @@ internal enum TrajectoryLane
 	Process,
 }
 
-/// <summary>一条轨迹记录的种类。种类决定行首图标、文案与检查器的字段。</summary>
 internal enum TrajectoryKind
 {
 	User,
@@ -39,10 +36,8 @@ internal enum TrajectoryKind
 	Unknown,
 }
 
-/// <summary>
 /// 账本里的一行。只保存渲染与检查器需要的最小字段：正文/工具结果这类大对象保留源引用，
 /// 摘要按前缀就地生成，不把整份历史复制进轨迹模型（长会话里工具输出动辄几十 KB）。
-/// </summary>
 internal sealed class TrajectoryRecord
 {
 	public required string Id { get; init; }
@@ -55,16 +50,12 @@ internal sealed class TrajectoryRecord
 
 	public required string Summary { get; init; }
 
-	/// <summary>记录开始时刻（Unix 毫秒）；点记录与区间记录共用这一列。</summary>
 	public long StartedAt { get; internal set; }
 
-	/// <summary>区间记录的结束时刻；<see langword="null"/> 表示仍在进行（或不伪造耗时）。</summary>
 	public long? EndedAt { get; internal set; }
 
-	/// <summary>实测耗时；没有实测时留空，时间列退回发生时刻，不写 0ms 冒充。</summary>
 	public double? DurationMs { get; internal set; }
 
-	/// <summary>工具状态（running / done / error）或助手停止原因；检查器按字符串原样显示。</summary>
 	public string? Status { get; internal set; }
 
 	public bool IsError { get; internal set; }
@@ -73,7 +64,6 @@ internal sealed class TrajectoryRecord
 
 	public string? ToolCallId { get; init; }
 
-	/// <summary>自定义过程的类型（扩展写入的 customType）；工具记录留空。</summary>
 	public string? CustomType { get; init; }
 
 	public string? Provider { get; init; }
@@ -84,13 +74,10 @@ internal sealed class TrajectoryRecord
 
 	public Usage? Usage { get; init; }
 
-	/// <summary>压缩前 token 数（压缩过程记录）。</summary>
 	public long? TokensBefore { get; init; }
 
-	/// <summary>首条用户消息 = 会话的初始提示词。</summary>
 	public bool IsInitialPrompt { get; init; }
 
-	/// <summary>过程记录的补充说明（工具/压缩目标的短文本），不做全文。</summary>
 	public string? Detail { get; init; }
 
 	internal Message? Source { get; init; }
@@ -104,7 +91,6 @@ internal sealed class TrajectoryRecord
 	public bool InFlight => EndedAt is null;
 }
 
-/// <summary>一轮：一条用户消息开启，后续的思考、回复、工具与过程事件都挂在它下面。</summary>
 internal sealed record TrajectoryTurn(
 	int Index,
 	long StartedAt,
@@ -113,27 +99,21 @@ internal sealed record TrajectoryTurn(
 	double? DurationMs,
 	IReadOnlyList<TrajectoryRecord> Records)
 {
-	/// <summary>本轮所有助手消息的 token 合计（含只有思考/工具、没有正文的请求）。</summary>
 	public long InputTokens { get; init; }
 
 	public long OutputTokens { get; init; }
 
 	public long ReasoningTokens { get; init; }
 
-	/// <summary>本轮工具记录数（构建时一次算好，账本每次绑定轮头不再扫整轮）。</summary>
 	public int ToolCalls { get; init; } = -1;
 
-	/// <summary>本轮在会话分支里的起始条目下标：增量重建从这一轮开始，之前的轮可直接复用。</summary>
 	public int SourceStartIndex { get; init; } = -1;
 
-	/// <summary>本轮是否已有用户消息（复用轮时决定下一条用户消息是否算「初始提示」）。</summary>
 	public bool HasUser { get; init; }
 
-	/// <summary>本轮是否已有系统提示词（复用轮时决定新的提示词算初始还是更新）。</summary>
 	public bool HasSystemPrompt { get; init; }
 }
 
-/// <summary>轨迹模型：轮 + 扁平记录 + 概览时间域（右端在有进行中记录时伸到 now）。</summary>
 internal sealed record TrajectoryModel(
 	IReadOnlyList<TrajectoryTurn> Turns,
 	IReadOnlyList<TrajectoryRecord> Records,
@@ -143,10 +123,8 @@ internal sealed record TrajectoryModel(
 	public static TrajectoryModel Empty { get; } = new([], [], 0, 0);
 }
 
-/// <summary>
 /// 轨迹页的数据源：当前分支的会话条目（事实）+ 聊天投影的流式尾行（还没落盘的部分）。
 /// 会话文件是唯一权威；流式行只补「正在写的那一句」，落盘后自然消失。
-/// </summary>
 internal readonly record struct TrajectorySource(
 	IReadOnlyList<SessionEntry> Entries,
 	IReadOnlyList<ChatEntry> LiveRows,
@@ -154,12 +132,10 @@ internal readonly record struct TrajectorySource(
 	IReadOnlyDictionary<long, ChatThinkingTiming>? ThinkingTimings = null,
 	long ThinkingTimingsRevision = 0);
 
-/// <summary>
 /// 从 pi 会话分支构建轨迹。规则与 PiDeck 的 buildTrajectory 对齐：
 /// 用户消息开轮；思考/回复/工具归入当前轮；工具调用与结果按 callId 合并成一条记录；
 /// 过程条目（模型切换、思考档位、压缩、扩展）按文件顺序落入当前轮；
 /// 进行中的记录不伪造结束时间，时间列显示「进行中」。
-/// </summary>
 internal static class TrajectoryBuilder
 {
 	private const int SummaryLimit = 96;
@@ -184,11 +160,9 @@ internal static class TrajectoryBuilder
 		return draft.Complete(now);
 	}
 
-	/// <summary>
 	/// 增量重建：复用 <paramref name="reuse"/> 里已收口的轮，只从 <paramref name="startIndex"/>
 	/// 开始重建尾部（通常是最后一轮）。数据源是 append-only 的分支时，流式每秒的刷新从
 	/// O(整份历史) 降到 O(最后一轮)。
-	/// </summary>
 	internal static TrajectoryModel BuildTail(
 		IReadOnlyList<SessionEntry> entries,
 		int startIndex,
@@ -228,7 +202,6 @@ internal static class TrajectoryBuilder
 		}
 	}
 
-	/// <summary>一次构建的可变状态；只在 UI 线程使用，不共享。</summary>
 	private sealed class Draft
 	{
 		private readonly bool _busy;
@@ -769,10 +742,8 @@ internal static class TrajectoryBuilder
 			return false;
 		}
 
-		/// <summary>
 		/// 收口后再算一轮的结束与耗时：工具结果晚于下一个用户消息到达时，把它记回上一轮；
 		/// 会话空闲时仍挂着无结果工具（进程退出/中断）统一收成「已中断」，不永久显示进行中。
-		/// </summary>
 		private void FinalizeTurns()
 		{
 			// 会话仍在跑时，复用轮已经收口，不再逐条扫描；只有本轮新建的轮需要收口。
@@ -989,10 +960,8 @@ internal static class TrajectoryBuilder
 		usage.Input > 0 || usage.Output > 0 || usage.CacheRead > 0 || usage.CacheWrite > 0 || usage.Reasoning > 0;
 }
 
-/// <summary>
 /// 会话轨迹的增量投影：分支是 append-only 的，每秒流式刷新只需要重建最后一轮，
 /// 之前的轮（及其摘要、工具结果、用量）直接复用。分支切换 / 重写时回退到全量构建。
-/// </summary>
 internal sealed class TrajectoryProjector
 {
 	private int _entryCount;
@@ -1066,7 +1035,6 @@ internal sealed class TrajectoryProjector
 		return _model;
 	}
 
-	/// <summary>丢弃增量前缀；下一轮 Project 会做一次全量构建（条目没变、只补到思考耗时时用）。</summary>
 	public void Invalidate()
 	{
 		_primed = false;
@@ -1091,7 +1059,6 @@ internal sealed class TrajectoryProjector
 	}
 }
 
-/// <summary>轨迹账本的一行：单条记录，或被折叠的一段连续工具调用。</summary>
 internal abstract record TrajectoryLedgerItem(string Key)
 {
 	public sealed record Record(TrajectoryRecord Value) : TrajectoryLedgerItem(Value.Id);
@@ -1099,7 +1066,6 @@ internal abstract record TrajectoryLedgerItem(string Key)
 	public sealed record Group(IReadOnlyList<TrajectoryRecord> Records) : TrajectoryLedgerItem($"group:{Records[0].Id}");
 }
 
-/// <summary>轮头摘要：步数、工具数与本轮 token 用量。</summary>
 internal readonly record struct TrajectoryTurnSummary(
 	int Steps,
 	int ToolCalls,
@@ -1108,13 +1074,10 @@ internal readonly record struct TrajectoryTurnSummary(
 	long ReasoningTokens,
 	double? DurationMs);
 
-/// <summary>轨迹的纯函数：轮摘要、连续工具折叠、渲染窗口与格式。视图与单测共用这一份。</summary>
 internal static class TrajectoryLedger
 {
-	/// <summary>连续工具超过这个条数就压成一行；与 PiDeck 的阈值一致。</summary>
 	public const int ToolGroupLimit = 8;
 
-	/// <summary>初始渲染的尾部轮数；每次「加载更早记录」再加同样多。</summary>
 	public const int TurnWindowStep = 3;
 
 	public static TrajectoryTurnSummary Summarize(TrajectoryTurn turn)
@@ -1154,7 +1117,6 @@ internal static class TrajectoryLedger
 		return count;
 	}
 
-	/// <summary>把连续工具调用折叠成组；未超过阈值时原样输出（不为折叠而折叠）。</summary>
 	public static IReadOnlyList<TrajectoryLedgerItem> Fold(IReadOnlyList<TrajectoryRecord> records, int limit = ToolGroupLimit)
 	{
 		var items = new List<TrajectoryLedgerItem>();
@@ -1198,15 +1160,12 @@ internal static class TrajectoryLedger
 		return items;
 	}
 
-	/// <summary>折叠后仍露出的记录：本轮第一条用户消息，折叠行不能只剩计数。</summary>
 	public static TrajectoryRecord? Peek(IReadOnlyList<TrajectoryRecord> records) =>
 		records.FirstOrDefault(static record => record.Kind == TrajectoryKind.User);
 
-	/// <summary>默认折叠除最后一轮外的所有轮：打开轨迹时最关心「当前这轮在干什么」。</summary>
 	public static HashSet<int> DefaultFoldedTurns(IReadOnlyList<TrajectoryTurn> turns) =>
 		[.. turns.Take(Math.Max(0, turns.Count - 1)).Select(static turn => turn.Index)];
 
-	/// <summary>取尾部 <paramref name="window"/> 轮（按轮计数，不按记录数）。</summary>
 	public static IReadOnlyList<TrajectoryTurn> Window(IReadOnlyList<TrajectoryTurn> turns, int window)
 	{
 		var count = Math.Clamp(window, 1, Math.Max(1, turns.Count));
@@ -1226,10 +1185,8 @@ internal static class TrajectoryLedger
 	}
 }
 
-/// <summary>轨迹页的数字/时间格式：与 PiDeck 的账本列同一口径。</summary>
 internal static class TrajectoryFormat
 {
-	/// <summary>紧凑 token：1000 → 1.0k，10000 → 12k（窄账本列放不下完整数字）。</summary>
 	public static string CompactTokens(long value)
 	{
 		if (value >= 10_000)
@@ -1245,7 +1202,6 @@ internal static class TrajectoryFormat
 		return value.ToString(CultureInfo.InvariantCulture);
 	}
 
-	/// <summary>耗时：&lt;1s 用 ms，&lt;60s 用一位小数的秒，再往上保留 h/m/s 档位。</summary>
 	public static string Duration(double milliseconds)
 	{
 		if (!double.IsFinite(milliseconds) || milliseconds < 0)
@@ -1286,25 +1242,21 @@ internal static class TrajectoryFormat
 		return text.Length > 0 ? text.ToString() : "0ms";
 	}
 
-	/// <summary>点记录的时间列：本地时钟。</summary>
 	public static string Clock(long unixMs) => unixMs > 0
 		? DateTimeOffset.FromUnixTimeMilliseconds(unixMs).ToLocalTime()
 			.ToString("HH:mm:ss", CultureInfo.InvariantCulture)
 		: "—";
 
-	/// <summary>检查器里的完整时间：带上日期。</summary>
 	public static string Time(long unixMs) => unixMs > 0
 		? DateTimeOffset.FromUnixTimeMilliseconds(unixMs).ToLocalTime()
 			.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
 		: "—";
 }
 
-/// <summary>从 pi 消息/内容块里提取轨迹需要的文本，摘要按前缀生成，不复制整份历史。</summary>
 internal static class TrajectoryText
 {
 	public const int SummaryLimit = 96;
 
-	/// <summary>把多行文本压成一行摘要并截断；不物化整篇正文。</summary>
 	public static string Summarize(string? text, int limit = SummaryLimit)
 	{
 		if (string.IsNullOrEmpty(text))
@@ -1473,7 +1425,6 @@ internal static class TrajectoryText
 		return builder?.ToString() ?? string.Empty;
 	}
 
-	/// <summary>流式文本来源的摘要：直接按快照读前缀，不在每帧切出临时字符串。</summary>
 	public static string Summarize(StreamText text, int limit = SummaryLimit)
 	{
 		if (text.Length == 0)
@@ -1508,7 +1459,6 @@ internal static class TrajectoryText
 		return builder.ToString();
 	}
 
-	/// <summary>截断到 limit 并补省略号；不把代理对切成半截（Emoji 不会变成替换字符）。</summary>
 	private static string FinishSummary(StringBuilder builder, int limit)
 	{
 		builder.Length = Math.Max(0, limit - 1);
@@ -1569,7 +1519,6 @@ internal static class TrajectoryText
 
 	private static int CountImages(IReadOnlyList<ContentBlock>? blocks) => blocks?.Count(static block => block is ImageContent) ?? 0;
 
-	/// <summary>纯图片消息也要在账本里读得懂：没有正文时用「[n 张图片]」占位。</summary>
 	public static string WithImages(string text, int imageCount)
 	{
 		if (imageCount <= 0)
@@ -1582,7 +1531,6 @@ internal static class TrajectoryText
 			: Strings.TrajectoryImages(imageCount);
 	}
 
-	/// <summary>工具行摘要：命令取 command、文件工具取路径，其它退回参数 JSON 前缀。</summary>
 	public static string ToolSummary(ToolCall call)
 	{
 		var arguments = call.Arguments;
@@ -1621,7 +1569,6 @@ internal static class TrajectoryText
 		return null;
 	}
 
-	/// <summary>扩展条目：类型 + 数据摘要（只取前缀，不把整块扩展状态塞进账本）。</summary>
 	public static string CustomSummary(string customType, System.Text.Json.Nodes.JsonNode? data)
 	{
 		var payload = data is null ? string.Empty : Summarize(data.ToJsonString(), SummaryLimit);
@@ -1633,7 +1580,6 @@ internal static class TrajectoryText
 		return customType.Length > 0 ? $"{customType} · {payload}" : payload;
 	}
 
-	/// <summary>系统提示词摘要：只读前缀，不在每次刷新时复制整份提示词。</summary>
 	public static string SystemPromptSummary(SystemMessage system, int limit = SummaryLimit)
 	{
 		var builder = new StringBuilder(limit * 3);
@@ -1663,7 +1609,6 @@ internal static class TrajectoryText
 		return Summarize(builder.ToString(), limit);
 	}
 
-	/// <summary>系统提示词全文：指令文本 + 具名章节，顺序与模型看到的一致。</summary>
 	public static string SystemPromptText(SystemMessage system)
 	{
 		var builder = new StringBuilder(system.Text);
@@ -1688,7 +1633,6 @@ internal static class TrajectoryText
 		return builder.ToString();
 	}
 
-	/// <summary>检查器里的入参：用户消息正文或工具参数 JSON。</summary>
 	public static string InputOf(TrajectoryRecord record) => record switch
 	{
 		{ Kind: TrajectoryKind.Tool, Call: { } call } => call.ArgumentsError is { Length: > 0 } error
@@ -1698,7 +1642,6 @@ internal static class TrajectoryText
 		_ => string.Empty,
 	};
 
-	/// <summary>检查器里的输出：助手正文、思考全文、工具结果或错误原因。</summary>
 	public static string OutputOf(TrajectoryRecord record)
 	{
 		if (record.Kind == TrajectoryKind.Thinking)

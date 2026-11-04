@@ -7,7 +7,6 @@ using Xunit;
 
 namespace PiWeft.Ai.Tests;
 
-/// <summary>Mistral chat completions: OpenAI-shaped requests with its own content-part and stop-reason vocabulary.</summary>
 public class MistralConversationsProviderTests
 {
 	private static Model Model() => new()
@@ -31,7 +30,6 @@ public class MistralConversationsProviderTests
 		};
 	}
 
-	/// <summary>Mistral sends content as a list of parts when reasoning is involved.</summary>
 	private const string ArrayContentBody = """
 		data: {"id":"cmpl_1","model":"mistral-large-latest","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"considering"}]}]},"finish_reason":null}]}
 

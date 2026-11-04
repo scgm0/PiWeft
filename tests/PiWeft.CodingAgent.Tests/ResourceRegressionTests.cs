@@ -7,10 +7,8 @@ using SkillCatalog = PiWeft.CodingAgent.Skills.Skills;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 资源发现的回归用例：作用域优先级、坏输入不致命、settings 声明的文件根。
 /// 这些场景此前都会给出错误结果（用户级资源遮蔽项目级、坏主题让整个会话构造失败）。
-/// </summary>
 public class ResourceRegressionTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-resreg-" + Guid.NewGuid().ToString("N")[..8]);

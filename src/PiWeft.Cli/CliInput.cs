@@ -4,14 +4,11 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// CLI 输入装配：<c>@file</c> 附件、管道 stdin、系统提示词的文件/文本解析。
 /// 对应 pi 的 <c>cli/file-processor.ts</c>、<c>cli/initial-message.ts</c> 与
 /// <c>resolvePromptInput</c> 的最小实现，不引入图片缩放等额外依赖。
-/// </summary>
 internal static class CliInput
 {
-	/// <summary>与文件工具一致的图片扩展名到 MIME 的映射。</summary>
 	private static readonly Dictionary<string, string> ImageMimeTypes = new(StringComparer.OrdinalIgnoreCase)
 	{
 		[".png"] = "image/png",
@@ -22,10 +19,8 @@ internal static class CliInput
 		[".bmp"] = "image/bmp",
 	};
 
-	/// <summary>
 	/// 解析 <c>--system-prompt</c> / <c>--append-system-prompt</c> 的值：
 	/// 若是存在的文件路径则读取内容，否则按字面文本处理（与 pi 的 <c>resolvePromptInput</c> 一致）。
-	/// </summary>
 	public static string ResolvePromptInput(string value, string cwd)
 	{
 		if (value.Length == 0)
@@ -53,10 +48,8 @@ internal static class CliInput
 		}
 	}
 
-	/// <summary>
 	/// 把 <c>@file</c> 参数展开成初始提示词文本与图片附件。
 	/// 文本文件包在 <c>&lt;file name="..."&gt;</c> 里，图片以内容块附带并留下同名占位引用。
-	/// </summary>
 	/// <exception cref="FileNotFoundException">参数指向的文件不存在。</exception>
 	public static (string Text, List<ImageContent> Images) ProcessFiles(IReadOnlyList<string> fileArgs, string cwd)
 	{
@@ -101,7 +94,6 @@ internal static class CliInput
 		return (text.ToString(), images);
 	}
 
-	/// <summary>展开 <c>~</c> 并转成相对 <paramref name="cwd"/> 的绝对路径。</summary>
 	public static string ResolvePath(string value, string cwd) =>
 		Path.GetFullPath(UserPath.ExpandTilde(value), cwd);
 

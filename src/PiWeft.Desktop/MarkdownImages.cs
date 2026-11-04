@@ -4,11 +4,9 @@ using PiWeft.Markdown;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// Loads images referenced by markdown: data URIs, local files and http(s), each with a size cap.
 /// Results — including failures — are cached by URL, so a streaming frame never re-fetches and a
 /// broken URL costs one request. The cache is bounded; evicted entries re-resolve on demand.
-/// </summary>
 internal sealed class MarkdownImageLoader : IMarkdownImageResolver
 {
 	private const int MaxBytes = 8 << 20;

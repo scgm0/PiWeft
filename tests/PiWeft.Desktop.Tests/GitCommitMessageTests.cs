@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>AI 提交摘要的模型输出清洗：围栏、前缀、引号与长度都要收成可直接提交的一条消息。</summary>
 public sealed class GitCommitMessageTests
 {
 	private sealed class FakeProvider : IApiProvider
@@ -16,10 +15,8 @@ public sealed class GitCommitMessageTests
 
 		public string Reply { get; init; } = "feat: add git panel";
 
-		/// <summary>逐次回放的回复（正文/思考/结束原因）；用完後回落到 <see cref="Reply"/>。</summary>
 		public Queue<(string Text, string Thinking, StopReason Reason)> Script { get; } = new();
 
-		/// <summary>每次调用收到的选项，用来断言思考档位与输出预算。</summary>
 		public List<StreamOptions> Options { get; } = [];
 
 		public AssistantMessageEventStream Stream(Model model, Context context, StreamOptions options)

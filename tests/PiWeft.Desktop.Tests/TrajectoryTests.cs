@@ -6,7 +6,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>轨迹账本的构建规则：开轮、工具合并、用量、过程条目与折叠窗口。</summary>
 public class TrajectoryTests
 {
 	private const long Base = 1_700_000_000_000;

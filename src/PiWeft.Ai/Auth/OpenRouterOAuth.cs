@@ -7,7 +7,6 @@ using System.Web;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>OpenRouter OAuth：PKCE 授权码换取一个永久 API key。</summary>
 public static class OpenRouterOAuth
 {
 	public const string ProviderKey = "openrouter";

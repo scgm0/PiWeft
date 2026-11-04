@@ -3,10 +3,8 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>
 /// <c>pi mcp add/list/remove</c> 的配置读写。agent 目录通过参数注入，
 /// 因此测试不改进程环境变量（也就不会影响并行运行的其它测试）。
-/// </summary>
 public sealed class McpCommandTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-mcp-" + Guid.NewGuid().ToString("N"));

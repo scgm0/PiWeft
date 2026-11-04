@@ -8,21 +8,16 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Mcp;
 
-/// <summary>为 MCP 请求提供 OAuth 访问令牌。</summary>
 public interface IMcpAccessTokenProvider
 {
-	/// <summary>取当前可用的访问令牌；没有令牌时返回 <c>null</c>（照常发送匿名请求）。</summary>
 	Task<string?> GetTokenAsync(CancellationToken cancellationToken);
 
-	/// <summary>强制刷新令牌，通常在收到 401 之后调用；失败时返回 <c>null</c>。</summary>
 	Task<string?> RefreshAsync(CancellationToken cancellationToken);
 }
 
-/// <summary>
 /// 基于 streamable HTTP 传输的 MCP 客户端：每条 JSON-RPC 消息都以 POST 发往同一个端点，
 /// 服务器要么回单个 JSON 对象，要么用 SSE 流回传响应。本端不使用会话状态，
 /// 服务器下发的会话 id 若存在则原样回传。
-/// </summary>
 public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDisposable
 {
 	private readonly HttpClient _http;
@@ -34,20 +29,15 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 	private readonly SemaphoreSlim _gate = new(1, 1);
 	private int _nextId;
 
-	/// <summary>独立通知流的取消源；服务器不支持时为 null。</summary>
 	private CancellationTokenSource? _notificationCts;
 	private Task? _notificationTask;
 
-	/// <summary>服务器是否接受独立 SSE 通知流（<c>GET</c> + <c>text/event-stream</c>）。</summary>
 	private volatile bool _notificationStreamActive;
 
-	/// <summary>
 	/// 服务器通过独立流推送的通知（<c>params</c> 可能为 null），
 	/// 例如 <c>notifications/tools/list_changed</c>。
-	/// </summary>
 	public event Action<string, JsonObject?>? NotificationReceived;
 
-	/// <summary>独立通知流当前是否在线；服务器明确拒绝（404/405 等）时为 <c>false</c>。</summary>
 	public bool NotificationStreamActive => _notificationStreamActive;
 
 	private McpHttpClient(
@@ -70,25 +60,18 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 
 	public string ServerVersion { get; private set; } = string.Empty;
 
-	/// <summary>配置条目里的名称；连接注册之前为空。</summary>
 	public string ConfiguredServerName { get; set; } = string.Empty;
 
-	/// <summary>工具与资源工具用于该服务器的名称。</summary>
 	public string ConfiguredName => ConfiguredServerName.Length > 0 ? ConfiguredServerName : ServerName;
 
-	/// <summary>服务器发来的自由格式说明（如果有）。</summary>
 	public string? Instructions { get; private set; }
 
-	/// <summary>服务器下发的会话 id，后续请求会原样回传。</summary>
 	public string? SessionId { get; private set; }
 
-	/// <summary>服务器在握手时声明的能力。</summary>
 	public McpServerCapabilities Capabilities { get; private set; } = new();
 
-	/// <summary>资源与提示发现使用的单次请求超时。</summary>
 	public TimeSpan Timeout => _timeout;
 
-	/// <summary>建立连接并完成 MCP 握手。</summary>
 	public static async Task<McpHttpClient> ConnectAsync(
 		string url,
 		IReadOnlyDictionary<string, string>? headers,
@@ -139,7 +122,6 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		return client;
 	}
 
-	/// <summary>列出服务器的工具，并跟随分页游标。</summary>
 	public Task<IReadOnlyList<McpTool>> ListToolsAsync(CancellationToken cancellationToken) =>
 		PageAsync(
 			"tools/list",
@@ -147,15 +129,12 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 			static result => (McpProtocol.DecodeTools(result), McpProtocol.StringOf(result, "nextCursor")),
 			cancellationToken);
 
-	/// <summary>读取 <c>resources/list</c> 的全部页。</summary>
 	public Task<IReadOnlyList<McpResource>> ListResourcesAsync(CancellationToken cancellationToken) =>
 		PageAsync("resources/list", "resources", McpProtocol.DecodeResources, cancellationToken);
 
-	/// <summary>读取 <c>resources/templates/list</c> 的全部页。</summary>
 	public Task<IReadOnlyList<McpResourceTemplate>> ListResourceTemplatesAsync(CancellationToken cancellationToken) =>
 		PageAsync("resources/templates/list", "templates", McpProtocol.DecodeResourceTemplates, cancellationToken);
 
-	/// <summary>读取一个资源。</summary>
 	public async Task<IReadOnlyList<McpResourceContent>> ReadResourceAsync(string uri, CancellationToken cancellationToken)
 	{
 		var response = await SendAsync(
@@ -167,11 +146,9 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		return response.Result is null ? [] : McpProtocol.DecodeResourceContents(response.Result);
 	}
 
-	/// <summary>读取 <c>prompts/list</c> 的全部页。</summary>
 	public Task<IReadOnlyList<McpPrompt>> ListPromptsAsync(CancellationToken cancellationToken) =>
 		PageAsync("prompts/list", "prompts", McpProtocol.DecodePrompts, cancellationToken);
 
-	/// <summary>渲染一个提示。</summary>
 	public async Task<McpPromptResult> GetPromptAsync(
 		string name,
 		JsonObject? arguments,
@@ -191,7 +168,6 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 			: McpProtocol.DecodePromptResult(response.Result);
 	}
 
-	/// <summary>收集某个列举方法的全部页。<paramref name="pageKey"/> 仅用于可读性。</summary>
 	private async Task<IReadOnlyList<T>> PageAsync<T>(
 		string method,
 		string pageKey,
@@ -227,7 +203,6 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		return items;
 	}
 
-	/// <summary>调用工具。即使工具报告了错误，协议层的结果仍会返回。</summary>
 	public async Task<McpCallResult> CallToolAsync(string name, JsonObject arguments, CancellationToken cancellationToken)
 	{
 		var parameters = new JsonObject
@@ -280,10 +255,8 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		}
 	}
 
-	/// <summary>
 	/// 启动独立通知流。它与请求-响应共用同一个端点，但必须绕开 <c>_gate</c> ——
 	/// 长连接会永久占住那把锁，让所有请求饿死。
-	/// </summary>
 	private void StartNotificationStream()
 	{
 		var notifications = new CancellationTokenSource();
@@ -405,7 +378,6 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		}
 	}
 
-	/// <summary>指数退避等待；返回 <c>false</c> 表示已取消。</summary>
 	private static async Task<bool> DelayAsync(int attempt, CancellationToken cancellationToken)
 	{
 		var milliseconds = Math.Min(30_000, 500 * Math.Pow(2, Math.Min(attempt, 6)));
@@ -427,7 +399,6 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		or HttpStatusCode.NotAcceptable
 		or HttpStatusCode.NoContent;
 
-	/// <summary>分发独立流里的一条记录：处理服务端通知，并对服务端请求（带 id）反向应答。</summary>
 	private void DispatchNotification(JsonObject record)
 	{
 		if (record["method"] is not JsonValue method || method.GetValueKind() != JsonValueKind.String)
@@ -445,11 +416,9 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		NotificationReceived?.Invoke(method.GetValue<string>(), record["params"] as JsonObject);
 	}
 
-	/// <summary>
 	/// 对服务端请求反向应答：<c>ping</c> 返回空结果，其余方法返回 -32601。
 	/// 不取 <c>_gate</c>（那把锁只保护客户端自己的请求-响应配对）；失败静默丢弃，
 	/// 通知流的后台任务不能因为一次应答失败而中断。
-	/// </summary>
 	private void PostServerResponseAsync(JsonNode id, string method)
 	{
 		JsonObject response;
@@ -580,7 +549,6 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		}
 	}
 
-	/// <summary>构造一条 POST 请求，并按需带上 OAuth 访问令牌。</summary>
 	private async Task<HttpRequestMessage> CreateRequestAsync(JsonObject record, CancellationToken cancellationToken)
 	{
 		var request = new HttpRequestMessage(HttpMethod.Post, _url)
@@ -605,7 +573,6 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		return request;
 	}
 
-	/// <summary>注入 <c>Authorization: Bearer …</c>；没有令牌提供者或令牌时保持匿名请求。</summary>
 	private async Task ApplyAuthorizationAsync(HttpRequestMessage request, CancellationToken cancellationToken)
 	{
 		if (_tokens is null)
@@ -683,10 +650,8 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		return null;
 	}
 
-	/// <summary>
 	/// 解析一帧 SSE 数据。坏帧（服务器发来非法 JSON）直接跳过而不是抛出：
 	/// 通知流的后台任务一旦 fault，连 <see cref="DisposeAsync"/> 都会被带着抛出。
-	/// </summary>
 	private static JsonDocument? ParseFrame(string eventName, ReadOnlySpan<byte> data)
 	{
 		_ = eventName;

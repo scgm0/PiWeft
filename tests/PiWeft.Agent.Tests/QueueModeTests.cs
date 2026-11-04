@@ -5,10 +5,8 @@ using Xunit;
 
 namespace PiWeft.Agent.Tests;
 
-/// <summary>Queue delivery modes and <c>ClearQueue</c>, which back the RPC steering/follow-up commands.</summary>
 public class QueueModeTests
 {
-	/// <summary>Builds an agent whose only tool enqueues messages on the running agent.</summary>
 	private static (Agent Agent, ScriptedStreamFn Script) Build(AgentQueueMode mode, Action<Agent> onTool)
 	{
 		var script = new ScriptedStreamFn();

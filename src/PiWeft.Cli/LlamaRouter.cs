@@ -6,7 +6,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.Cli;
 
-/// <summary>llama.cpp router 的最小管理客户端，对应 pi 的 <c>/llama</c>。</summary>
 public static class LlamaRouter
 {
 	public const string BaseUrlVariable = "LLAMA_BASE_URL";
@@ -31,7 +30,6 @@ public static class LlamaRouter
 
 	public static string InferenceBaseUrl => BaseUrl + "/v1";
 
-	/// <summary>把 router 模型映射为可供会话选择的 Model。</summary>
 	public static Model ToModel(ModelInfo model)
 	{
 		var context = model.ContextWindow is > 0 ? model.ContextWindow.Value : 128000;
@@ -88,7 +86,6 @@ public static class LlamaRouter
 	public static Task UnloadAsync(string model, HttpMessageHandler? handler = null, CancellationToken cancellationToken = default) =>
 		RequestAsync(HttpMethod.Post, "/models/unload", new JsonObject { ["model"] = model }, handler, cancellationToken);
 
-	/// <summary>从 Hugging Face 下载模型（<c>owner/repo[:quant]</c>）。</summary>
 	public static Task DownloadAsync(string model, HttpMessageHandler? handler = null, CancellationToken cancellationToken = default) =>
 		RequestAsync(HttpMethod.Post, "/models", new JsonObject { ["model"] = model }, handler, cancellationToken);
 

@@ -8,10 +8,8 @@ using PiWeft.CodingAgent.Compaction;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// 写出代理事件的 JSON/RPC 线格式，与 pi 的 <c>docs/json.md</c> 一致：更新只发增量，
 /// 因此省略累积消息与 <c>assistantMessageEvent.partial</c> 快照，流体积保持线性。
-/// </summary>
 public static class AgentEventWriter
 {
 	private static readonly JsonWriterOptions WriterOptions = new()
@@ -21,7 +19,6 @@ public static class AgentEventWriter
 		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
-	/// <summary>把一个事件序列化成单行 JSONL（不带结尾换行）。</summary>
 	public static string Write(AgentEvent @event)
 	{
 		using var buffer = new MemoryStream(256);
@@ -209,7 +206,6 @@ public static class AgentEventWriter
 		writer.WriteEndObject();
 	}
 
-	/// <summary>嵌套的 <c>assistantMessageEvent</c> 记录。终止事件不在这里发出。</summary>
 	public static void WriteAssistantMessageEvent(Utf8JsonWriter writer, AssistantMessageEvent @event)
 	{
 		writer.WriteStartObject();
@@ -292,10 +288,8 @@ public static class AgentEventWriter
 		writer.WriteEndObject();
 	}
 
-	/// <summary>
 	/// 会话级运行的终态记录，对应 pi 的 <c>agent_settled</c>：此后不会再自动重试、压缩恢复或
 	/// 投递排队消息。<c>aborted</c> 为 true 表示这次运行是被中止结束的。
-	/// </summary>
 	public static string AgentSettled(bool aborted)
 	{
 		using var buffer = new MemoryStream(64);
@@ -310,7 +304,6 @@ public static class AgentEventWriter
 		return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
 	}
 
-	/// <summary>工具结果的线格式：内容块数组加可选 details。</summary>
 	private static void WriteToolResult(Utf8JsonWriter writer, AgentToolResult result)
 	{
 		writer.WriteStartObject();
@@ -325,7 +318,6 @@ public static class AgentEventWriter
 		writer.WriteEndObject();
 	}
 
-	/// <summary>压缩结果的线格式，字段与 pi 的 <c>compaction_end.result</c> 一致。</summary>
 	private static void WriteCompactionResult(Utf8JsonWriter writer, CompactionResult result, long? estimatedTokensAfter)
 	{
 		writer.WriteStartObject();
@@ -355,7 +347,6 @@ public static class AgentEventWriter
 		writer.WriteEndArray();
 	}
 
-	/// <summary>客户端收到的用量对象，与线格式一致。</summary>
 	internal static JsonObject UsageRecord(Usage usage) => new()
 	{
 		["input"] = usage.Input,

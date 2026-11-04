@@ -5,7 +5,6 @@ using PiWeft.Markdown;
 
 namespace PiWeft.Desktop;
 
-/// <summary>助手消息的持久视图：思考独立折叠，正文与思考在流式期间增量渲染 Markdown，定稿只切状态。</summary>
 internal sealed class AssistantMessageView : IDisposable
 {
 	private readonly TextBlock _header = new();
@@ -115,7 +114,6 @@ internal sealed class AssistantMessageView : IDisposable
 
 	public Border View { get; }
 
-	/// <summary>一个 Markdown 视图的喂入状态：上次喂给它的权威文本 + 已经写进去的可见长度。</summary>
 	private sealed class MarkdownFeed
 	{
 		internal MarkdownView? View;
@@ -241,10 +239,8 @@ internal sealed class AssistantMessageView : IDisposable
 		_entry = entry;
 	}
 
-	/// <summary>
 	/// 折叠预览：流式中跟着「已经露出的最新一行」跑（尾随 = 跑马灯），定稿后回到首行 + 省略号。
 	/// 展开时不算：正文已经整块在屏幕上，再算一遍单行是白烧。
-	/// </summary>
 	private void RefreshPreview(ChatEntry entry)
 	{
 		if (_thinking.IsExpanded) return;
@@ -262,10 +258,8 @@ internal sealed class AssistantMessageView : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 回答正文：打字机露出多少就喂多少，视图里已有的部分只追加新露出的那几个字。
 	/// 只有思考、还没有可见正文时不预建空的 Markdown 视图（过程组里每行都建一个是白烧布局）。
-	/// </summary>
 	private void RefreshBodyText(ChatEntry entry)
 	{
 		var shown = _bodyType.Shown;
@@ -292,23 +286,17 @@ internal sealed class AssistantMessageView : IDisposable
 		_bodyFeed.Clear();
 	}
 
-	/// <summary>
 	/// 逐字推进能不能摊平：只有挂在窗口上的行才有渲染脉冲可跟。没窗口（自检/无头布局测试）
 	/// 或这一行还没接进树（时间线先建视图再挂父级）时直接全露出，既省掉一次假动画，
 	/// 也让无窗口路径的结果与真实首屏一致：已经写好的内容不重打一遍。
-	/// </summary>
 	private bool PacedStream => PaceStreamForTest || (Application.IsRunning && View.FindVisualRoot() is Window);
 
-	/// <summary>窗口less 测试用：强制走有帧循环的推进路径，验证正文确实一个字符一个字符在走。</summary>
 	internal bool PaceStreamForTest { get; set; }
 
-	/// <summary>窗口less 测试用：手动推一帧（真窗口里由 StreamPump 的每帧回调驱动）。</summary>
 	internal void PumpStreamFrameForTest() => PumpFrames();
 
-	/// <summary>
 	/// 帧泵的每一拍：推进两把打字机，只把新露出的那几个字交给对应消费端。
 	/// 消费端都有「可见前缀没变就不写」的短路，所以没打到字的那些帧不会带来任何布局工作。
-	/// </summary>
 	private void PumpFrames()
 	{
 		var entry = _entry;
@@ -327,20 +315,16 @@ internal sealed class AssistantMessageView : IDisposable
 		SyncPump();
 	}
 
-	/// <summary>
 	/// 还有没打出的字就继续吃帧，打完立刻停泵：持续渲染会整窗心跳，
 	/// 下一块 delta 到达时 Update 会再把泵开起来。
-	/// </summary>
 	private void SyncPump()
 	{
 		if (_thinkingType.CaughtUp && _bodyType.CaughtUp) _pump.Stop();
 		else _pump.Start();
 	}
 
-	/// <summary>
 	/// 写预览行：文本没变就不碰 TextBlock（Text 是 AffectsLayout，赋值会把整行重新测量），
 	/// 但排布模式每帧都要对一下 —— 流式结束那一帧正是从尾随切回首行的时机。
-	/// </summary>
 	private void SetPreview(string text, bool followTail)
 	{
 		if (!string.Equals(_previewText, text, StringComparison.Ordinal))
@@ -358,10 +342,8 @@ internal sealed class AssistantMessageView : IDisposable
 	// 流式推进与预览缓存属于哪一条消息：行视图会被回收，身份一变就要重来。
 	private (string? Id, long Timestamp) _streamIdentity;
 
-	/// <summary>
 	/// 展开的思考：同一个增量 Markdown 视图从流式第一帧用到定稿，不再做纯文本→Markdown 的替换。
 	/// 视图里只写打字机已经露出的那段，所以「展开着看流式」也是逐字在长。
-	/// </summary>
 	private void EnsureThinkingBody(ChatEntry? entry = null)
 	{
 		var current = entry ?? _entry;
@@ -383,12 +365,10 @@ internal sealed class AssistantMessageView : IDisposable
 			"markdown.thinking.stream", "markdown.thinking.finalize");
 	}
 
-	/// <summary>
 	/// 把打字机的可见前缀喂给 Markdown 视图：视图里已经有 text[..feed.Shown]、且新文本仍是上一次的继续时，
 	/// 只 Append 新露出的那几个字 —— 增量小，解析仍由控件按尾块增量完成，宿主不整串比较也不整串拷贝。
 	/// 文本被改写（编辑重发、换行绑定、收缩）、视图换了或已经定稿时退回整篇赋值；
 	/// 可见前缀一个字都没多（只是尾部又长了一点）时什么都不做。
-	/// </summary>
 	private void FeedMarkdown(
 		MarkdownView view,
 		MarkdownFeed feed,
@@ -475,10 +455,8 @@ internal sealed class AssistantMessageView : IDisposable
 
 	private MarkdownView EnsureBodyMarkdown() => _bodyMarkdown ??= CreateMarkdownView(AppTheme.FontSizeChat);
 
-	/// <summary>
 	/// 全部消息视图共享同一份 Options 与 Theme 实例：两者都进高度缓存的 MeasureKey，而 record
 	/// 对 HashSet/委托字段按实例比较——每视图新建一份会让跨实例缓存永不命中。
-	/// </summary>
 	internal static readonly MarkdownOptions SharedMarkdownOptions = new()
 	{
 		// 与应用层「链接只放行 http/https」一致，下沉为控件库的第二道闸门（图片同样受限）。

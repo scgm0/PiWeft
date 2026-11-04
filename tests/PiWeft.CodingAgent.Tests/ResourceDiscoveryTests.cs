@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>pi 包清单（<c>package.json</c> 的 <c>pi</c> 字段）解析与资源路径展开。</summary>
 public class PiPackageTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-pkg-" + Guid.NewGuid().ToString("N")[..8]);
@@ -123,7 +122,6 @@ public class PiPackageTests : IDisposable
 	}
 }
 
-/// <summary>统一资源解析：settings 显式路径、包资源与优先级。</summary>
 public class ResourceResolverTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-res-" + Guid.NewGuid().ToString("N")[..8]);
@@ -257,9 +255,7 @@ public class ResourceResolverTests : IDisposable
 	}
 }
 
-/// <summary>
 /// 资源快照里的扩展条目：只发现、不执行，且必须带上「为什么没生效」。
-/// </summary>
 public sealed class ExtensionDiscoveryTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-ext-res-" + Guid.NewGuid().ToString("N")[..8]);

@@ -4,11 +4,9 @@ using System.Text.Json.Serialization;
 
 namespace PiWeft.CodingAgent.Settings;
 
-/// <summary>
 /// pi 的 <c>httpIdleTimeoutMs</c> 既收毫秒数也收字符串 <c>"disabled"</c>。
 /// 源生成的 <see cref="int"/> 转换器只认数字，这里把两种写法都收下：
 /// <c>"disabled"</c> 落成 <c>0</c>（关闭），无法识别的值按未设置处理。
-/// </summary>
 public sealed class TimeoutMsJsonConverter : JsonConverter<int?>
 {
 	public override int? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)

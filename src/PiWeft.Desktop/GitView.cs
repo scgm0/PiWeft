@@ -7,10 +7,8 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// Git 面板（参考 PiDeck 的 SCM 布局）：紧凑分支/同步栏、提交摘要、暂存/未暂存目录树、
 /// 可折叠的差异与更多区。写操作走 <see cref="GitWriter"/>，只读查询走 <see cref="GitStatusReader"/>。
-/// </summary>
 public sealed partial class GitView : IDisposable
 {
 	private readonly Func<string> _cwd;
@@ -134,10 +132,8 @@ public sealed partial class GitView : IDisposable
 
 	public UIElement View { get; }
 
-	/// <summary>主题切换后刷新角色文本颜色；图形在各自 WithTheme 里跟随。</summary>
 	public void ApplyTheme() => AppStyles.ApplyTextColors(View);
 
-	/// <summary>重新读取 Git 状态并重建面板；草稿、折叠状态与阅读位置保留。</summary>
 	public void Refresh()
 	{
 		if (_disposed)
@@ -211,7 +207,6 @@ public sealed partial class GitView : IDisposable
 		}
 	}
 
-	/// <summary>用缓存的 status 重填所有分节；交互态变化只走下面的单项 Rebuild*。</summary>
 	private void RebuildSections()
 	{
 		var status = _lastStatus ??= GitStatusReader.Read(_cwd());
@@ -261,7 +256,6 @@ public sealed partial class GitView : IDisposable
 		}
 	}
 
-	/// <summary>「更改」区整体重填（节头 / 错误条 / 提交框 / 改动树 / diff）。</summary>
 	private void RebuildChanges()
 	{
 		var status = _lastStatus!;
@@ -274,7 +268,6 @@ public sealed partial class GitView : IDisposable
 		ApplyPaneHeights();
 	}
 
-	/// <summary>只重填提交框（暂存数变化会改占位符与按钮可用性）。</summary>
 	private void RebuildComposer(GitStatus status) => Swap(_composerHost, BuildCommitComposer(status));
 
 	private void RebuildList()
@@ -316,7 +309,6 @@ public sealed partial class GitView : IDisposable
 		RebuildMore();
 	}
 
-	/// <summary>选中行的底色就地切换：不重建改动树，光标下的行与滚动位置都保持原样。</summary>
 	private void ApplyRowSelection()
 	{
 		foreach (var (key, frame) in _rowFrames)
@@ -345,7 +337,6 @@ public sealed partial class GitView : IDisposable
 		host.InvalidateMeasure();
 	}
 
-	// ----------------------------------------------------------------- 分支栏
 
 	private IReadOnlyList<string> CurrentBranches()
 	{
@@ -605,7 +596,6 @@ public sealed partial class GitView : IDisposable
 		ApplyResult(result);
 	}
 
-	// ----------------------------------------------------------------- 更改区
 
 	private UIElement BuildChangesPane(GitStatus status)
 	{
@@ -1158,7 +1148,6 @@ public sealed partial class GitView : IDisposable
 		return new Border().Padding(new Thickness(0, 0, 0, AppTheme.Space1)).Child(pane);
 	}
 
-	// ----------------------------------------------------------------- 更多区
 
 	private UIElement BuildMorePane(GitStatus status)
 	{
@@ -1276,7 +1265,6 @@ public sealed partial class GitView : IDisposable
 		return section;
 	}
 
-	// ----------------------------------------------------------------- 非仓库 / 通用
 
 	private UIElement BuildNotRepository(GitStatus status)
 	{
@@ -1538,10 +1526,8 @@ public sealed partial class GitView : IDisposable
 		}
 	}
 
-	/// <summary>视觉验收：直接跑一次 AI 提交摘要（不等真实点击），用来截进度条与内联失败行。</summary>
 	internal void GenerateSummaryForSmoke() => _ = GenerateCommitSummaryAsync();
 
-	/// <summary>视觉验收：把摘要结果（或失败原因）打到 stdout，无人值守跑一次就能定位卡在哪一步。</summary>
 	internal void ReportSummaryForSmoke() =>
 		Console.WriteLine(
 			"piweft-desktop: git summary draft=" +
@@ -1549,7 +1535,6 @@ public sealed partial class GitView : IDisposable
 			" failure=" + (_summaryFailure?.ToString() ?? "(无)") +
 			" detail=" + (_lastFailureDetail ?? string.Empty).Replace("\n", " \\n"));
 
-	/// <summary>解析提交摘要用哪个模型与档位：默认跟随会话，偏好里指了固定项就覆盖。同时把读到的偏好递出去，免得更下面再读一次盘。</summary>
 	private (Model Model, string Thinking) ResolveAssistant(out DesktopPreference preference)
 	{
 		var assistant = _assistant ?? throw new InvalidOperationException(Strings.GitSummaryNoModel);
@@ -1572,11 +1557,9 @@ public sealed partial class GitView : IDisposable
 
 	private (Model Model, string Thinking) ResolveAssistant() => ResolveAssistant(out _);
 
-	/// <summary>模型目录里是否真有可用的对话模型（固定模型被删除时 ResolveAssistant 会回退到会话模型）。</summary>
 	private bool HasSummaryModel() =>
 		_assistant?.Models().Any(static model => model.Type == ModelType.Chat) == true;
 
-	/// <summary>记录并展示一次提交摘要失败；不同类型配不同动作提示（PiDeck 的错误码语义）。</summary>
 	private void SetSummaryFailure(GitSummaryFailure reason, string message, string? detail = null)
 	{
 		_summaryFailure = reason;
@@ -1610,7 +1593,6 @@ public sealed partial class GitView : IDisposable
 		_ => Strings.GitSummaryFailed,
 	};
 
-	/// <summary>按等待上限爬升的进度（PiDeck 同款）：到 97% 停住等结果，不会先走满再回退。</summary>
 	private void UpdateSummaryProgress()
 	{
 		if (_summaryBar is not { } bar)
@@ -1647,7 +1629,6 @@ public sealed partial class GitView : IDisposable
 		}
 	}
 
-	// ----------------------------------------------------------------- 小部件
 
 	private static Border Separator(Border border, Thickness thickness) =>
 		border.BorderThickness(thickness)
@@ -1664,14 +1645,10 @@ public sealed partial class GitView : IDisposable
 		return button;
 	}
 
-	/// <summary>
 	/// 带差异计数的同步按钮（对齐 PiDeck 的 push/pull 徽标）：计数是「这一键现在能推出去/拉进来多少提交」，
 	/// 只在该方向真有差异时出现；这一键正在执行时先收起，免得数字停在旧值上。
-	/// <para>
 	/// 布局照 PiDeck：图标保持居中，计数做成压在按钮右上角的小圆牌。箭头图标的右上是空角，
 	/// 圆牌落在那里不遮笔画，也不必把图标挤歪 —— 把图标挪到左下（第一版的做法）会让整行看着歪。
-	/// </para>
-	/// </summary>
 	private static Button ToolbarCountButton(string icon, string tooltip, Action action, int count, bool running)
 	{
 		if (count <= 0 || running)
@@ -1713,7 +1690,6 @@ public sealed partial class GitView : IDisposable
 			.HoverTip(tooltip);
 	}
 
-	/// <summary>点开某一行时把「更改」区展开（折叠状态下选文件看不到 diff）。</summary>
 	private void OpenChangesPane()
 	{
 		if (_panes.ChangesOpen)
@@ -1733,10 +1709,8 @@ public sealed partial class GitView : IDisposable
 		More,
 	}
 
-	/// <summary>
 	/// 把某一节的正文高度设成拖动算出来的绝对值。上限留给主区：更改区至少要能看见提交框与
 	/// 几行改动，所以三节加起来不能把上面挤没。
-	/// </summary>
 	private void SetPaneBody(Pane pane, double body)
 	{
 		var clamped = GitPaneLayout.ClampBody(body, MaxPaneBody());
@@ -1750,7 +1724,6 @@ public sealed partial class GitView : IDisposable
 		ApplyPaneHeights();
 	}
 
-	/// <summary>面板可用高度里留给「更改」区的下限之外的部分，就是三节正文的总上限。</summary>
 	private double MaxPaneBody()
 	{
 		var available = _root.Bounds.Height;
@@ -1763,10 +1736,8 @@ public sealed partial class GitView : IDisposable
 		return Math.Max(GitPaneLayout.MinBody, (available - 40 - GitPaneLayout.HeaderHeight) * 0.6);
 	}
 
-	/// <summary>
 	/// 把三节的高度、分隔条可见性与「谁来吸掉剩余高度」写成当前布局。
 	/// 折叠的那一节只留节头，并且它的分隔条一并收起（没有可改的对象就不留一条能按到的线）。
-	/// </summary>
 	private void ApplyPaneHeights()
 	{
 		var absorber = AbsorberRow();
@@ -1800,7 +1771,6 @@ public sealed partial class GitView : IDisposable
 		_root.InvalidateMeasure();
 	}
 
-	/// <summary>这一节正在吸剩余高度时不再用自己的 MaxHeight 自我封顶。</summary>
 	private bool PaneAbsorbs(int row) => AbsorberRow() == row;
 
 	private const int ChangesRow = 3;
@@ -1808,10 +1778,8 @@ public sealed partial class GitView : IDisposable
 	private const int CompareRow = 7;
 	private const int MoreRow = 9;
 
-	/// <summary>
 	/// 吸掉剩余高度的那一节：按 更改 → 图 → 比较 → 更多 取第一个展开着的。
 	/// 更改收起来时把它让给图，面板才不会在中间留一块空白。
-	/// </summary>
 	private int AbsorberRow()
 	{
 		var repo = _lastStatus?.IsRepository == true;
@@ -1833,7 +1801,6 @@ public sealed partial class GitView : IDisposable
 		return _panes.CompareOpen ? CompareRow : MoreRow;
 	}
 
-	/// <summary>落盘面板布局；只在拖完或折叠时调用，不每移一像素写一次文件。</summary>
 	private void SavePanes()
 	{
 		try
@@ -1846,16 +1813,14 @@ public sealed partial class GitView : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 让按钮的显示内容不参与命中测试。不关掉时，鼠标在一行里走过图标/文字/计数会让命中叶子不断换，
 	/// 每换一次都要重算悬停链并重绘一帧 —— 快速扫过列表时输入队列就是这么堆起来的（高亮「不跟手」）。
 	/// 按钮本体仍然命中（整行一次），行尾的动作按钮是兄弟节点，不受影响。
-	/// </summary>
 	private static void FlatContent(StackPanel content) => content.IsHitTestVisible = false;
 
-	/// <summary>主按钮文字：面板里所有 Primary 按钮的标签都居中，不贴着按钮左缘。
+	/// 主按钮文字：面板里所有 Primary 按钮的标签都居中，不贴着按钮左缘。
 	/// 字色不写死：主按钮样式在可用 / 禁用两态自己换 Foreground，标签继承它才不会在禁用时变成
-	/// 深色字压深色底（截图里那种「已经消失」的按钮）。</summary>
+	/// 深色字压深色底（截图里那种「已经消失」的按钮）。
 	private static TextBlock CenteredLabel(string text) =>
 		new TextBlock()
 			.Text(text)
@@ -1944,14 +1909,12 @@ public sealed partial class GitView : IDisposable
 
 	private static string GitDiffStat(int added, int removed) => Strings.GitDiffStat(added, removed);
 
-	/// <summary>测试入口：模拟在「图」上面的分隔条上向上拖 <paramref name="pixels"/> DIP。</summary>
 	internal void SetGraphHeightForTests(double body)
 	{
 		SetPaneBody(Pane.Graph, body);
 		SavePanes();
 	}
 
-	/// <summary>视觉验收用：打印泳道与面板根的窗口坐标，供像素检查脚本对齐。</summary>
 	internal void ReportGraphGeometryForSmoke()
 	{
 		var lanes = new List<Rect>();
@@ -1978,7 +1941,6 @@ public sealed partial class GitView : IDisposable
 			$"branches={CurrentBranches().Count} error={_graphError ?? "-"} lanes=[{string.Join(" ", lanes)}]");
 	}
 
-	/// <summary>视觉验收用：选中第一个改动，让 diff 区一起出现在截图里。</summary>
 	public void SelectFirstChangeForSmoke()
 	{
 		var status = GitStatusReader.Read(_cwd());

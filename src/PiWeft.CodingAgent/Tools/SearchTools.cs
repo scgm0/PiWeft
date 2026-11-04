@@ -6,7 +6,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>内置搜索工具：<c>ls</c>、<c>find</c> 与 <c>grep</c>。</summary>
 public static class SearchTools
 {
 	public static AgentTool Ls(string cwd) => new()
@@ -312,7 +311,6 @@ public static class SearchTools
 		}
 	}
 
-	/// <summary>把 glob（<c>*</c>、<c>?</c>、<c>**</c>）转成针对 posix 分隔相对路径的正则。</summary>
 	public static Regex GlobToRegex(string pattern)
 	{
 		var builder = new StringBuilder(pattern.Length * 2 + 8);

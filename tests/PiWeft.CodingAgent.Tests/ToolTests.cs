@@ -41,7 +41,6 @@ public class ToolTests : IDisposable
 		return path;
 	}
 
-	// ------------------------------------------------------------------ read
 
 	[Fact]
 	public async Task Read_ReturnsFileContent()
@@ -93,7 +92,6 @@ public class ToolTests : IDisposable
 		Assert.Contains("Use offset=2001 to continue.", text);
 	}
 
-	// ----------------------------------------------------------------- write
 
 	[Fact]
 	public async Task Write_CreatesParentDirectories()
@@ -107,7 +105,6 @@ public class ToolTests : IDisposable
 		Assert.Equal("hello", File.ReadAllText(Path.Combine(_root, "nested/deep/out.txt")));
 	}
 
-	// ------------------------------------------------------------------ edit
 
 	[Fact]
 	public async Task Edit_AppliesMultipleDisjointEdits()
@@ -198,7 +195,6 @@ public class ToolTests : IDisposable
 		Assert.Equal("replaced\nnext\n", File.ReadAllText(Path.Combine(_root, "a.txt")));
 	}
 
-	// -------------------------------------------------------------- ls/find
 
 	[Fact]
 	public async Task Ls_ListsDirectoriesWithSlash()
@@ -247,7 +243,6 @@ public class ToolTests : IDisposable
 		Assert.Equal("No files found matching pattern", Text(result));
 	}
 
-	// ------------------------------------------------------------------ grep
 
 	[Fact]
 	public async Task Grep_ReportsMatchesWithContextAndLineNumbers()
@@ -292,7 +287,6 @@ public class ToolTests : IDisposable
 		Assert.Equal("No matches found", Text(result));
 	}
 
-	// ------------------------------------------------------------------ bash
 
 	[Fact]
 	public async Task Bash_CapturesOutput()

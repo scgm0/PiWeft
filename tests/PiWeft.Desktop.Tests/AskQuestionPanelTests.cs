@@ -8,7 +8,6 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>D-01：会话内联问询卡片按 PiDeck 的底部卡片渲染批量问题，并返回同构 JSON。</summary>
 [Collection("mewui-controls")]
 public sealed class AskQuestionPanelTests
 {

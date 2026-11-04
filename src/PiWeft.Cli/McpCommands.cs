@@ -5,13 +5,10 @@ using PiWeft.Mcp;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// <c>pi mcp list|add|remove|login|logout</c>：管理 MCP 服务器配置与它们的 OAuth 令牌。
 /// 与 <c>auth</c> 一样在通用参数解析之前分发，自带开关不会被主解析器当成未知选项。
-/// </summary>
 public static class McpCommands
 {
-	/// <summary>不需要取值的开关。</summary>
 	private static readonly HashSet<string> Flags = new(StringComparer.Ordinal) { "local", "json", "help" };
 
 	private static readonly HttpClient Http = new(new SocketsHttpHandler
@@ -23,7 +20,6 @@ public static class McpCommands
 		Timeout = Timeout.InfiniteTimeSpan,
 	};
 
-	/// <summary>顶层 <c>mcp</c> 命令。</summary>
 	public static async Task<int?> RunAsync(
 		string command,
 		IReadOnlyList<string> rest,
@@ -449,11 +445,8 @@ public static class McpCommands
 		return 0;
 	}
 
-	/// <summary>发一次不带令牌的 initialize，从 401 响应里取出 <c>WWW-Authenticate</c>。</summary>
-	/// <summary>
 	/// 解析子命令参数。<c>--</c> 之后的参数原样进入 <paramref name="trailing"/>（pi 的
 	/// <c>pi mcp add name -- command args...</c> 形式），不再当成选项或位置参数。
-	/// </summary>
 	private static (string? Positional, Dictionary<string, List<string>> Options, IReadOnlyList<string> Trailing) Parse(
 		IReadOnlyList<string> rest)
 	{

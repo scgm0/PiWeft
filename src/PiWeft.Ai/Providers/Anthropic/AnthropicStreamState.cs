@@ -4,10 +4,8 @@ using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.Anthropic;
 
-/// <summary>
 /// 把 Anthropic 的 SSE 事件折叠进一个 <see cref="AssistantMessageEventStream"/>。内容块按 content index 跟踪，
 /// 每次变化后都会重新生成实时的 <see cref="AssistantMessageEvent.Partial"/> 快照。
-/// </summary>
 internal sealed class AnthropicStreamState
 {
 	private readonly Model _model;

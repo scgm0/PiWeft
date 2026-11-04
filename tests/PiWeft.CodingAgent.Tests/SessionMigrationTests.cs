@@ -6,10 +6,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 旧版会话升级：pi 在打开会话时把 v1/v2 就地迁移到 v3，本端口必须做同样的事，
 /// 否则 v1（没有 id/parentId）的分支投影只能看到最后一条。
-/// </summary>
 public class SessionMigrationTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-migration-" + Guid.NewGuid().ToString("N")[..8]);

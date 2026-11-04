@@ -2,17 +2,11 @@ using PiWeft.CodingAgent.Import;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// <c>pi import</c>：把别的工具留下的会话搬进 pi 的会话目录。
-/// <para>
 /// 在通用参数解析之前分发（与 <c>pi mcp</c> / <c>pi install</c> 同层），因为它自带
 /// <c>--from</c> / <c>--project</c> / <c>--cwd</c> 这类开关，交给主解析器会被当成未知参数。
-/// </para>
-/// <para>
 /// 无参数时只列可导入会话，不改任何文件；要真落盘必须显式给 <c>--all</c> 或一个序号/路径。
 /// 「列出来就会写盘」在导入这种不可逆动作上是错的默认。
-/// </para>
-/// </summary>
 public static class ImportCommands
 {
 	/// <param name="home">来源根目录的「家目录」；测试注入用，生产传 <see langword="null"/> 取当前用户。</param>

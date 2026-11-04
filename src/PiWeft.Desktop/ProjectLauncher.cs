@@ -3,7 +3,6 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>在独立项目窗口打开目录；原窗口的会话与运行不受影响，单实例入口处理重复项目。</summary>
 internal static class ProjectLauncher
 {
 	public static bool Open(string cwd)

@@ -8,11 +8,9 @@ using PiWeft.Ai.Providers.OpenAi;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.Mistral;
 
-/// <summary>
 /// Mistral 对话补全 API（<c>mistral-conversations</c>）的流式适配器。请求与工具形状紧跟 OpenAI，
 /// 但流里的 <c>delta.content</c> 既可能是字符串，也可能是分片列表（含推理内容），
 /// 并且结束原因使用 Mistral 自己的词汇表。
-/// </summary>
 public sealed class MistralConversationsProvider : IApiProvider
 {
 	public const string ApiId = "mistral-conversations";
@@ -233,7 +231,6 @@ public sealed class MistralConversationsProvider : IApiProvider
 		return request;
 	}
 
-	/// <summary>Mistral 的推理控制参数：有映射值就用映射值，否则用 pi 的级别。</summary>
 	internal static string? ResolveReasoningEffort(Model model, StreamOptions options)
 	{
 		if (!model.Reasoning)

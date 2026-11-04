@@ -22,17 +22,14 @@ public static partial class Strings
 	public const string ProcessGroupTodo = "正在更新计划";
 	public const string ProcessGroupAsk = "正在等待回答";
 	public const string ProcessGroupTools = "正在调用工具";
-	/// <summary>类别超过三个时组头收尾：PiDeck 的「{title} 等」。</summary>
 	public static string ProcessGroupMore(string title) => $"{title} 等";
 
-	/// <summary>工具行的动词短语：进行中加「正在」，例如「正在执行 cd …」「读取 src/App.cs」。</summary>
 	public static string ToolAction(string verb, string detail, bool running) => running ? $"正在{verb} {detail}" : $"{verb} {detail}";
 	public const string ToolActionExecute = "执行";
 	public const string ToolActionRead = "读取";
 	public const string ToolActionEdit = "修改";
 	public const string ToolActionSearch = "搜索";
 
-	/// <summary>输入区上方的会话进行态（PiDeck responding 指示条）的短语见 Strings.Responding.cs。</summary>
 	public const string SessionStatistics = "会话统计";
 	public const string StatisticsUsage = "累计用量";
 	public const string StatisticsLastReply = "上次模型回复";

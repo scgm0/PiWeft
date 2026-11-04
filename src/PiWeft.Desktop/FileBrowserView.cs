@@ -3,11 +3,9 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// D-02：项目文件浏览与内置编辑器，单列形态，适合右侧功能面板的窄宽度。
 /// 列表里点开文件就换成编辑器（顶栏变成文件路径 + 保存），返回键回到目录列表。
 /// 保存时用时间戳检测外部修改，避免覆盖别人的改动。
-/// </summary>
 public sealed class FileBrowserView
 {
 	private readonly Func<string> _cwd;
@@ -87,10 +85,8 @@ public sealed class FileBrowserView
 
 	public UIElement View { get; }
 
-	/// <summary>主题切换后刷新角色文本颜色；图形在各自 WithTheme 里跟随。</summary>
 	public void ApplyTheme() => AppStyles.ApplyTextColors(View);
 
-	/// <summary>重新列举当前目录。</summary>
 	public void Refresh()
 	{
 		var cwd = _cwd();
@@ -165,7 +161,6 @@ public sealed class FileBrowserView
 		_list.SetScrollOffsets(0, 0);
 	}
 
-	/// <summary>虚拟化行的骨架：前缀、名称、Git 状态只建一次，绑定只改文本。</summary>
 	private Button RowView()
 	{
 		var prefix = new TextBlock().FontSize(AppTheme.FontSizeMicro).Width(12).AccentText();
@@ -211,7 +206,6 @@ public sealed class FileBrowserView
 		}
 	}
 
-	/// <summary>一行一个条目：父目录（空路径）、目录（名称以 / 结尾）或文件。</summary>
 	private sealed record FileRow(string Prefix, string Name, string Status, string RelativePath);
 
 	private sealed record RowParts(TextBlock Prefix, TextBlock Name, TextBlock Status)
@@ -219,7 +213,6 @@ public sealed class FileBrowserView
 		public FileRow? Row { get; set; }
 	}
 
-	/// <summary>Git 状态标记：相对路径 → 单字状态。</summary>
 	private static IReadOnlyDictionary<string, string> GitStatuses(string cwd)
 	{
 		var status = GitStatusReader.Read(cwd, TimeSpan.FromSeconds(5));
@@ -265,7 +258,6 @@ public sealed class FileBrowserView
 		EnterEditor(relativePath);
 	}
 
-	/// <summary>切换成编辑器：列表让位，顶栏换成文件路径与保存键。</summary>
 	private void EnterEditor(string relativePath)
 	{
 		_listHost.IsVisible(false);
@@ -281,7 +273,6 @@ public sealed class FileBrowserView
 		}
 	}
 
-	/// <summary>回到目录列表：重新列举目录，顺带刷新文件的 Git 状态。</summary>
 	private void CloseEditor()
 	{
 		_openFile = null;

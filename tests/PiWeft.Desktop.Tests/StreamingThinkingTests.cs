@@ -6,9 +6,7 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 流式思考与步骤行展开后的布局收敛：两者都要求“行在 arrange 阶段变高后重新测高并发布 extent”。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class StreamingThinkingTests
 {
@@ -18,7 +16,6 @@ public sealed class StreamingThinkingTests
 		view.Arrange(new Rect(0, 0, width, height));
 	}
 
-	/// <summary>逐层展开：外层过程折叠建出组，组折叠再建出步骤行（不动步骤自身的折叠）。</summary>
 	private static void ExpandGroups(UIElement root, int passes = 3)
 	{
 		for (var pass = 0; pass < passes; pass++)
@@ -34,7 +31,6 @@ public sealed class StreamingThinkingTests
 		}
 	}
 
-	/// <summary>窗口里这一步由 Render 优先级的回调完成；无窗口 fixture 手动驱动同一收敛。</summary>
 	private static void Settle(ExecutionProcessView group)
 	{
 		Pump(group.View);

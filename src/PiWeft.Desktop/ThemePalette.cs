@@ -3,13 +3,10 @@ using PiWeft.CodingAgent.Themes;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 把 pi 主题的颜色角色映射到桌面的 <see cref="AppPalette"/>。pi 的角色比桌面配色细，
 /// 因此这里做一次「最佳对应」：主题没写的角色沿用内建深浅配色的取值，避免出现空白或不可读的区域。
-/// </summary>
 internal static class ThemePalette
 {
-	/// <summary>用 <paramref name="theme"/> 覆盖 <paramref name="fallback"/> 中对应的角色。</summary>
 	public static AppPalette FromTheme(PiTheme theme, AppPalette fallback) => new()
 	{
 		// pi 没有窗口背景角色：优先用导出的页面背景，其次是自定义面板背景。

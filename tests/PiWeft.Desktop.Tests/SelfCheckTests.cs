@@ -3,11 +3,9 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// Runs the shell's headless self-check as a child process. It is the only end-to-end gate that can run without a
 /// display, and it covers exactly the wiring a window needs: model resolution, the provider gateway, tool discovery
 /// and the session catalog.
-/// </summary>
 public class SelfCheckTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-desktop-check-" + Guid.NewGuid().ToString("N")[..8]);

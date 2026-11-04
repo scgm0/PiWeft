@@ -2,11 +2,9 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 解析草稿和用户消息里的 <c>/skill:名称</c> 技能调用，供展示层画成行内技能 chip。
 /// 规则对齐 PiDeck：前置字符不能是路径分隔符或标识符字符，token 后不能紧跟 <c>/</c>，
 /// 代码块、行内代码和 URL 里的同名文本保持纯文本。
-/// </summary>
 internal static partial class UserSkillReferences
 {
 	[GeneratedRegex("""(?<![:/.\w#!~])/skill:(?<name>[\p{L}\p{N}_-]+)""", RegexOptions.CultureInvariant)]

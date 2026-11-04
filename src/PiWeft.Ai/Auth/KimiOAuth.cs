@@ -2,7 +2,6 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>Kimi Code 订阅的 OAuth 设备码流程。</summary>
 public static class KimiOAuth
 {
 	public const string ProviderKey = "kimi-coding";

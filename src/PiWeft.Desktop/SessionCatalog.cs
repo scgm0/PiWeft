@@ -8,7 +8,6 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>侧栏中的一个会话文件。</summary>
 public sealed record SessionListItem
 {
 	public required string Path { get; init; }
@@ -23,13 +22,10 @@ public sealed record SessionListItem
 
 	public int MessageCount { get; init; }
 
-	/// <summary>第一条用户消息的摘要，用作没有命名时的标题。</summary>
 	public string Preview { get; init; } = string.Empty;
 
-	/// <summary>
 	/// 列表里的标题：会话名优先，其次第一条用户消息，最后退回「新会话」。
 	/// 文件名（时间戳 + id）对用户没有意义，不拿出来当标题。
-	/// </summary>
 	public string Display => Name.Length > 0
 		? Name
 		: Preview.Length > 0
@@ -37,9 +33,7 @@ public sealed record SessionListItem
 			: Strings.UntitledSession;
 }
 
-/// <summary>
 /// 列出并打开磁盘上的会话。文件格式与 pi CLI 共用，因此终端里开的会话会出现在这里，反之亦然。
-/// </summary>
 public sealed class SessionCatalog
 {
 	private readonly Dictionary<string, SummaryStamp> _summaries = new(StringComparer.Ordinal);
@@ -50,10 +44,8 @@ public sealed class SessionCatalog
 	private long _scanBytes;
 	// 摘要缓存被并行扫描读写；扫描本身在锁外，只有查表与写回加锁。
 	private readonly Lock _summaryGate = new();
-	/// <summary>
 	/// 侧栏一行的缓存。会话文件是只追加的，因此除了长度/时间戳之外还记住
 	/// 上次扫到的行边界与首行指纹：文件变长时只扫新增的字节，不重读整份几十 MB。
-	/// </summary>
 	private sealed record SummaryStamp(
 		long Length,
 		DateTime LastWrite,
@@ -62,20 +54,15 @@ public sealed class SessionCatalog
 		long HeadHash,
 		long TailHash);
 
-	/// <summary>磁盘摘要是否已装载：第一次构建列表时才读，避免构造期做 IO。</summary>
 	private bool _persistedLoaded;
 
-	/// <summary>
 	/// 已被原地重写的会话文件：磁盘摘要里的长度/偏移不再可用，装载时必须跳过它们。
 	/// 「编辑重发」的墓碑截断会把文件重写一遍，长度可能反而变长，续扫偏移会指向旧内容。
-	/// </summary>
 	private readonly HashSet<string> _stale = new(StringComparer.Ordinal);
 
-	/// <summary>本次构建有没有产生新摘要（需要写回磁盘）。</summary>
 	private bool _summariesDirty;
 
 
-	/// <summary>把上一轮运行留下的摘要装进内存缓存。文件已变的情况下由既有的长度/mtime/指纹判据自然失效。</summary>
 	private void EnsurePersistedLoaded()
 	{
 		lock (_summaryGate)
@@ -113,7 +100,6 @@ public sealed class SessionCatalog
 		}
 	}
 
-	/// <summary>把内存摘要写回磁盘（只写仍然存在的文件）。</summary>
 	private void PersistSummaries()
 	{
 		Dictionary<string, SessionSummaryStamp> snapshot;
@@ -144,10 +130,8 @@ public sealed class SessionCatalog
 		SessionSummaryStore.Save(snapshot);
 	}
 
-	/// <summary>agent 目录下的全部会话，最近的在前；可按工作目录过滤。</summary>
 	public IReadOnlyList<SessionListItem> List(string? cwdFilter = null, int limit = 200) => ListCore(false, cwdFilter, limit);
 
-	/// <summary>Reuse unchanged summaries and prune deleted paths; cached data never retains message bodies.</summary>
 	private IReadOnlyList<SessionListItem> ListCore(bool archived, string? cwdFilter, int limit)
 	{
 		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
@@ -247,7 +231,6 @@ public sealed class SessionCatalog
 		return result;
 	}
 
-	/// <summary>读文件的修改时间；读不到的（刚好被删）排到最后，不参与截断。</summary>
 	private static DateTime LastWriteOf(string path)
 	{
 		try
@@ -260,10 +243,8 @@ public sealed class SessionCatalog
 		}
 	}
 
-	/// <summary>
 	/// 扫描并行度：文件数量够多才值得开线程（每份会话都要读全文，属 IO+CPU 混合）。
 	/// 留一个核给 UI 线程，别让打开会话时的时间线布局抢不到 CPU。
-	/// </summary>
 	private static int ScanParallelism(int fileCount)
 	{
 		if (fileCount <= 1) return 1;
@@ -278,10 +259,8 @@ public sealed class SessionCatalog
 		return Math.Min(limit, fileCount);
 	}
 
-	/// <summary>尾巴窗口长度：几十字节就足够区分「同一份前缀」与「被重写过的前缀」。</summary>
 	private const int TailWindow = 64;
 
-	/// <summary>续扫点之前那一小段字节的指纹。文件被重写后这段内容随之改变。</summary>
 	private static long TailHashAt(string path, long offset)
 	{
 		if (offset <= 0)
@@ -312,11 +291,9 @@ public sealed class SessionCatalog
 		}
 	}
 
-	/// <summary>续扫前校验：续扫点前的字节必须与上次记录的一致。</summary>
 	private static bool TailMatches(string path, long offset, long expected) =>
 		expected != 0 && TailHashAt(path, offset) == expected;
 
-	/// <summary>只读首行算指纹：文件是追加式的，首行没变就说明前缀可以直接复用。</summary>
 	private static bool HeadMatches(string path, long expected)
 	{
 		try
@@ -341,10 +318,8 @@ public sealed class SessionCatalog
 		return hash;
 	}
 
-	/// <summary>测试用：最近一次 <see cref="List"/> 真正读过的字节数（用来验证续扫而不是整份重读）。</summary>
 	internal long ScannedBytesForTests => Interlocked.Read(ref _scanBytes);
 
-	/// <summary>按关键字过滤会话：匹配名称、id、工作目录或文件名（不含 .jsonl 后缀，否则搜 "json" 会命中全部），忽略大小写。</summary>
 	public static IReadOnlyList<SessionListItem> Search(IReadOnlyList<SessionListItem> sessions, string? query)
 	{
 		var trimmed = query?.Trim() ?? string.Empty;
@@ -364,10 +339,8 @@ public sealed class SessionCatalog
 		];
 	}
 
-	/// <summary>列出归档（<c>.trash</c>）里的会话。</summary>
 	public IReadOnlyList<SessionListItem> ListDeleted(int limit = 200) => ListCore(true, null, limit);
 
-	/// <summary>把归档里的会话移回它原来的目录。</summary>
 	public string Restore(string trashPath)
 	{
 		var resolved = Path.GetFullPath(trashPath);
@@ -383,7 +356,6 @@ public sealed class SessionCatalog
 		return target;
 	}
 
-	/// <summary>清空归档，返回删除的会话数。调用方负责先确认。</summary>
 	public int PurgeDeleted()
 	{
 		var deleted = ListDeleted(limit: int.MaxValue);
@@ -405,13 +377,10 @@ public sealed class SessionCatalog
 		return removed;
 	}
 
-	/// <summary>一条内容命中：命中的会话与所在行的摘要。</summary>
 	public sealed record ContentMatch(SessionListItem Session, string Excerpt);
 
-	/// <summary>
 	/// 在会话正文里找关键字。只扫描最近的若干个文件、每个文件最多读 <paramref name="maxBytesPerFile"/>，
 	/// 命中即停 —— 聊天记录里工具输出往往很长，全量读会拖慢输入。
-	/// </summary>
 	public static IReadOnlyList<ContentMatch> SearchContent(
 		IReadOnlyList<SessionListItem> sessions,
 		string? query,
@@ -440,7 +409,6 @@ public sealed class SessionCatalog
 		return matches;
 	}
 
-	/// <summary>在一个会话文件里找到第一处命中，返回该行摘要。</summary>
 	private static string? FindInFile(string path, string query, int maxBytes, CancellationToken cancellationToken)
 	{
 		if (maxBytes <= 0) return null;
@@ -474,11 +442,9 @@ public sealed class SessionCatalog
 		finally { System.Buffers.ArrayPool<byte>.Shared.Return(buffer); }
 	}
 
-	/// <summary>
 	/// 把命中行压成一段以关键字为中心的摘要。会话文件是 JSONL，命中多半在消息文本里，
 	/// 因此先试着只取 JSON 中的字符串内容，避免把字段名与转义噪音一起端给用户；
 	/// 取不到（或那里面没有关键字）时退回整行摘要。
-	/// </summary>
 	internal static string Summarize(string line, string query, int radius = 60)
 	{
 		if (line.StartsWith('{') &&
@@ -491,7 +457,6 @@ public sealed class SessionCatalog
 		return Center(line, query, radius);
 	}
 
-	/// <summary>围绕关键字截取一段，两端加省略号。</summary>
 	internal static string Center(string text, string query, int radius = 60)
 	{
 		var index = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
@@ -509,7 +474,6 @@ public sealed class SessionCatalog
 			end < text.Length ? "…" : string.Empty);
 	}
 
-	/// <summary>把一行 JSONL 里所有字符串值拼成可读文本，用于展示摘要。</summary>
 	internal static string? ExtractText(string line)
 	{
 		try
@@ -567,10 +531,8 @@ public sealed class SessionCatalog
 		}
 	}
 
-	/// <summary>
 	/// 最近修改的会话文件路径：只 stat 目录，不读任何内容。
 	/// 启动时用它提前并行解析首个会话，而不必等整份侧栏摘要扫完。
-	/// </summary>
 	public string? MostRecentPath()
 	{
 		EnsurePersistedLoaded();
@@ -614,13 +576,10 @@ public sealed class SessionCatalog
 		return newest;
 	}
 
-	/// <summary>按文件路径打开会话，恢复其中的模型与思考级别。</summary>
 	public SessionManager Open(string path, string? cwdFallback = null) => SessionManager.Open(path, cwdFallback: cwdFallback);
 
-	/// <summary>
 	/// 同上，但可汇报读取进度并可取消。长会话（几十 MB）要读上要近一秒，
 	/// 桌面在后台线程调用它，同时让加载提示显示百分比。
-	/// </summary>
 	public SessionManager Open(
 		string path,
 		string? cwdFallback,
@@ -628,13 +587,10 @@ public sealed class SessionCatalog
 		CancellationToken cancellationToken) =>
 		SessionManager.Open(path, null, null, cwdFallback, progress, cancellationToken);
 
-	/// <summary>给会话设置显示名（追加一条 <c>session_info</c> 条目，历史不受影响）。</summary>
 	public void Rename(string path, string? name) => SessionManager.Open(path).AppendSessionInfo(name);
 
-	/// <summary>
 	/// 把会话文件移到同目录下的 <c>.trash</c> 里。pi 的会话是只追加的，直接删除无法恢复，
 	/// 因此这里保留一份，用户要彻底清理时自行删除该目录。
-	/// </summary>
 	public string Delete(string path)
 	{
 		var directory = Path.GetDirectoryName(Path.GetFullPath(path))
@@ -648,19 +604,14 @@ public sealed class SessionCatalog
 		return target;
 	}
 
-	/// <summary>在某个工作目录下新建会话。</summary>
 	public SessionManager Create(string cwd, string? sessionDir = null) =>
 		SessionManager.Create(cwd, sessionDir);
 
-	/// <summary>
 	/// 丢弃某个会话文件的摘要缓存。会话文件被原地重写（编辑重发的墓碑截断）后，长度可能
 	/// 反而变长，缓存里的续扫偏移已经不指向同一段内容；不丢弃会把截断前的预览与条数留在侧栏。
-	/// </summary>
-	/// <remarks>
 	/// 只改内存，不在调用线程上读写磁盘：调用方就在 UI 线程（发送完成、编辑重发），
 	/// 而整个摘要文件的重写属于后台扫描的收尾工作。`<c>_stale</c>` 同时挡住「磁盘摘要重新装入」
 	/// 这条回头路，`PersistSummaries` 会在下一次列表构建时把那个条目一并从磁盘上抹掉。
-	/// </remarks>
 	public void Invalidate(string? path)
 	{
 		if (string.IsNullOrEmpty(path)) return;
@@ -828,11 +779,9 @@ public sealed class SessionCatalog
 		return item;
 	}
 
-	/// <summary>
 	/// 会话文件的元数据。链接要解析到最终目标：<c>alias.jsonl</c> 的大小是目标路径的长度、
 	/// 修改时间是链接自身的，拿它当摘要缓存键会让侧栏永远显示旧预览。
 	/// 只有重解析点才多付一次解析：列目录动辄几百个会话，普通文件不应因此多一次系统调用。
-	/// </summary>
 	private static FileInfo ResolveSessionFileInfo(string path)
 	{
 		var info = new FileInfo(path);
@@ -863,13 +812,11 @@ public sealed class SessionCatalog
 		public int Messages;
 	}
 
-	/// <summary>
 	/// 不用 JSON 解析判断一行对目录有没有影响。返回 false 表示必须走完整的 <see cref="ScanLine"/>
 	/// （会话头部、session_info、需要预览的首条用户消息，以及任何形状不合常规的行）。
 	/// 兼容两种真实写法：pi 的 <c>{"id":"…",…,"type":"message"…}</c> 与外部导出的
 	/// <c>{"type": "message", …}</c>（键后带空格）。只读行首窗口里的头几个键，正文一概不碰；
 	/// 尾部被截断（不以 <c>}</c> 结束）或键序异常的行退回完整解析，容错与原来一致。
-	/// </summary>
 	private static bool FastScanLine(ReadOnlySpan<byte> line, ref CatalogScan scan)
 	{
 		if (line.Length < 24 || line[^1] != (byte)'}')
@@ -914,7 +861,6 @@ public sealed class SessionCatalog
 		return true;
 	}
 
-	/// <summary>行首是否是 <c>{"key"</c>（pi 与常见导出都把 id 或 type 放在第一个键）。</summary>
 	private static bool StartsForKey(ReadOnlySpan<byte> head, ReadOnlySpan<byte> key)
 	{
 		if (head.Length < key.Length + 3 || head[0] != (byte)'{' || head[1] != (byte)'\'')
@@ -925,10 +871,8 @@ public sealed class SessionCatalog
 		return head.Slice(2, key.Length).SequenceEqual(key) && head[2 + key.Length] == (byte)'\"';
 	}
 
-	/// <summary>
 	/// 在行首窗口里读 <c>"key" : "value"</c>，容忍冒号前后的空白。
 	/// 只扫到第一个 <c>"content"</c> 之前，避免把正文里的同名字段当头部键。
-	/// </summary>
 	private static bool TryReadStringField(ReadOnlySpan<byte> head, ReadOnlySpan<byte> key, out ReadOnlySpan<byte> value)
 	{
 		value = default;
@@ -1174,14 +1118,11 @@ public sealed class SessionCatalog
 		return builder?.ToString();
 	}
 
-	/// <summary>窗口less 测试用：扫描一行会话摘要。</summary>
 	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLineForTest(string line) =>
 		ScanLinesForTest([line]);
 
-	/// <summary>
 	/// 窗口less 测试用：按真实读盘顺序扫描——先走快速字节判定，判定不了才完整解析。
 	/// 与 <see cref="ScanLinesForTest"/> 的结果必须逐字段相同，否则快速路径改写了目录语义。
-	/// </summary>
 	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLinesFastForTest(IEnumerable<string> lines)
 	{
 		var scan = new CatalogScan();
@@ -1212,7 +1153,6 @@ public sealed class SessionCatalog
 		return (scan.Cwd, scan.Name, scan.Preview, scan.Messages);
 	}
 
-	/// <summary>窗口less 测试用：按文件顺序扫描多行会话摘要。</summary>
 	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLinesForTest(IEnumerable<string> lines)
 	{
 		var scan = new CatalogScan();
@@ -1234,7 +1174,6 @@ public sealed class SessionCatalog
 		return (scan.Cwd, scan.Name, scan.Preview, scan.Messages);
 	}
 
-	/// <summary>把首条用户消息压成一行摘要。</summary>
 	private static string Summarize(string? text)
 	{
 		if (string.IsNullOrWhiteSpace(text))

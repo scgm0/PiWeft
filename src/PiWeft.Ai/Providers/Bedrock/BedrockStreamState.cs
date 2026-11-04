@@ -5,10 +5,8 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Providers.Bedrock;
 
-/// <summary>
 /// 把 Bedrock Converse 的流事件折叠进一个 <see cref="AssistantMessageEventStream"/>；内容块按服务给出的
 /// <c>contentBlockIndex</c> 跟踪。
-/// </summary>
 internal sealed class BedrockStreamState
 {
 	private sealed class Slot
@@ -162,7 +160,6 @@ internal sealed class BedrockStreamState
 		EnsureSlot(GetInt(root, "contentBlockIndex") ?? _content.Count, isToolUse, toolUse);
 	}
 
-	/// <summary>若 <paramref name="index"/> 对应的块尚未打开则打开它。</summary>
 	private void EnsureSlot(int index, bool isToolUse, JsonElement toolUse)
 	{
 		EnsureStarted();

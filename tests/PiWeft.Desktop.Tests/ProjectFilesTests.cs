@@ -3,7 +3,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>D-02：项目文件列举、读取与写入的边界。</summary>
 public class ProjectFilesTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-files-" + Guid.NewGuid().ToString("N")[..8]);

@@ -5,17 +5,14 @@ using Aprillz.MewUI.Input;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Public property bindings observe selections without polling; password controls are never attached.</summary>
 internal static class PrimarySelectionText
 {
 	internal static IPrimarySelection? Service { get; set; }
 	private static readonly ConditionalWeakTable<TextBase, SelectionObserver> Observers = new();
 	private static readonly ConditionalWeakTable<Window, WindowObserver> Windows = new();
 
-	/// <summary>
 	/// Window 级兜底：动态创建的代码块、表单输入等不一定经过显式的 PrimarySelection()，
 	/// 第一次点击/键盘选中时按命中元素惰性挂上 observer，后续选区变化即发布 PRIMARY。
-	/// </summary>
 	internal static void Attach(Window window) =>
 		Windows.GetValue(window, static owner => new WindowObserver(owner));
 

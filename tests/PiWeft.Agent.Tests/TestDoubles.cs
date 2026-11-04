@@ -3,7 +3,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.Agent.Tests;
 
-/// <summary>Builds scripted assistant streams so the loop can be tested without a network.</summary>
 internal static class FakeStream
 {
 	public static Model Model(string id = "test-model") => new()
@@ -80,7 +79,6 @@ internal static class FakeStream
 	}
 }
 
-/// <summary>A <see cref="StreamFn"/> that returns queued responses and records the requests it saw.</summary>
 internal sealed class ScriptedStreamFn
 {
 	private readonly Queue<Func<Model, AssistantMessageEventStream>> _responses = new();

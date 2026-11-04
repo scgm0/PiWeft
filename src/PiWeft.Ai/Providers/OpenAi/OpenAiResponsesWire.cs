@@ -5,7 +5,6 @@ using PiWeft.Ai.Utils;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>写出 OpenAI Responses API 的请求体。</summary>
 internal static class OpenAiResponsesWire
 {
 	public static void WriteRequest(

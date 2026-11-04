@@ -8,7 +8,6 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>自动重试退避期：状态条必须说明「正在重试第几次、几秒后」，而不是看起来已经失败。</summary>
 [Collection("mewui-controls")]
 public sealed class AutoRetryUiTests
 {

@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>
 /// 包命令在通用参数解析之前分发，因此 <c>--offline</c> 必须由它自己识别。
 /// 离线时 <c>update</c>（含 <c>--models</c>）不发起网络请求。
-/// </summary>
 [Collection("process-environment")]
 public sealed class PackageOfflineTests : IDisposable
 {

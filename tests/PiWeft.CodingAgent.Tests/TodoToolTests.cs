@@ -7,7 +7,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>C-01/D-01：原生 todo 工具与 PiDeck v3 快照的读写兼容。</summary>
 public class TodoToolTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-todo-" + Guid.NewGuid().ToString("N")[..8]);

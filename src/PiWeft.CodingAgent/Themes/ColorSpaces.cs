@@ -1,10 +1,8 @@
 namespace PiWeft.CodingAgent.Themes;
 
-/// <summary>
 /// OKLab / OKHSL / sRGB 互转。移植自 Björn Ottosson 的参考实现
 /// （<c>https://bottosson.github.io/posts/colorpicker/</c>，MIT），与 pi 的
 /// <c>packages/tui/src/oklab.ts</c> 使用同一组常量，保证同一主题在两侧解析出相同颜色。
-/// </summary>
 internal static class ColorSpaces
 {
 	// Oklab 的 (L, a, b) → cube-root LMS 的系数（第 0 列固定为 1）。
@@ -19,17 +17,13 @@ internal static class ColorSpaces
 	private const double K2 = 0.03;
 	private const double K3 = (1 + K1) / (1 + K2);
 
-	/// <summary>OKHSL 亮度 → Oklab 亮度。</summary>
 	private static double OkhslToOklabLightness(double x) => (x * x + K1 * x) / (K3 * (x + K2));
 
-	/// <summary>sRGB 传递函数：线性 → 编码，取值 0-1。</summary>
 	private static double LinearToSrgb(double value) =>
 		value > 0.0031308 ? (1.055 * Math.Pow(value, 1 / 2.4)) - 0.055 : 12.92 * value;
 
-	/// <summary>
 	/// 每通道（红、绿、蓝）在何处先越界的 (a, b) 半平面，以及该处最大饱和度的多项式拟合。
 	/// 与 pi 的 <c>SATURATION_FIT</c> 一致。
-	/// </summary>
 	private static readonly ((double X, double Y) HalfPlane, double[] Fit)[] SaturationFit =
 	[
 		((-1.8817031, -0.80936501), [1.19086277, 1.76576728, 0.59662641, 0.75515197, 0.56771245]),
@@ -37,7 +31,6 @@ internal static class ColorSpaces
 		((0.13110758, 1.81333971), [1.35733652, -0.00915799, -1.1513021, -0.50559606, 0.00692167]),
 	];
 
-	/// <summary>Oklab (L, a, b) → 线性 sRGB，可能越界。</summary>
 	public static (double R, double G, double B) OklabToLinearSrgb(double l, double a, double b)
 	{
 		var l_ = l + (LabToLmsA0 * a) + (LabToLmsB0 * b);
@@ -53,7 +46,6 @@ internal static class ColorSpaces
 			(-0.0041960761386756 * lc) + (-0.7034186179359362 * mc) + (1.7076146940746117 * sc));
 	}
 
-	/// <summary>线性 sRGB → sRGB 通道（0-255，四舍五入，越界裁剪）。</summary>
 	public static ThemeColor LinearSrgbToColor(double r, double g, double b)
 	{
 		var clamped = (
@@ -66,11 +58,9 @@ internal static class ColorSpaces
 			(byte)Math.Round(clamped.Item3 * 255));
 	}
 
-	/// <summary>
 	/// OKLCH → sRGB 颜色。亮度 0-1，色度 ≥ 0，色相为角度。
 	/// 越出色域时按 pi 的做法映射：固定色相，二分收缩色度直到落回 sRGB；
 	/// 无彩色始终在色域内，因此 <c>oklch(100% 0.3 150)</c> 会得到白色。
-	/// </summary>
 	public static ThemeColor OklchToColor(double lightness, double chroma, double hue)
 	{
 		var radians = hue * Math.PI / 180.0;
@@ -112,13 +102,11 @@ internal static class ColorSpaces
 			&& linear.B >= -epsilon && linear.B <= 1 + epsilon;
 	}
 
-	/// <summary>每个 cube-root LMS 分量沿色度方向 (a, b) 的变化率。</summary>
 	private static (double L, double M, double S) LmsSlopes(double a, double b) => (
 		(LabToLmsA0 * a) + (LabToLmsB0 * b),
 		(LabToLmsA1 * a) + (LabToLmsB1 * b),
 		(LabToLmsA2 * a) + (LabToLmsB2 * b));
 
-	/// <summary>色相 (a, b) 在 sRGB 内的最大饱和度（C/L）：多项式拟合加一步 Halley 迭代。</summary>
 	private static double MaxSaturation(double a, double b)
 	{
 		var channel = 2;
@@ -154,7 +142,6 @@ internal static class ColorSpaces
 		return saturation - ((f * f1) / ((f1 * f1) - (0.5 * f * f2)));
 	}
 
-	/// <summary>色相 (a, b) 上 sRGB 最饱和颜色的 Oklab 亮度与色度。</summary>
 	private static (double Lightness, double Chroma) Cusp(double a, double b)
 	{
 		var saturation = MaxSaturation(a, b);
@@ -163,7 +150,6 @@ internal static class ColorSpaces
 		return (lightness, lightness * saturation);
 	}
 
-	/// <summary>固定亮度线上离开 sRGB 色域的色度。</summary>
 	private static double MaxChroma(double a, double b, double lightness, (double Lightness, double Chroma) cusp)
 	{
 		if (lightness <= cusp.Lightness)
@@ -209,7 +195,6 @@ internal static class ColorSpaces
 		}
 	}
 
-	/// <summary>OKHSL 在亮度 L 与色相 (a, b) 下的三个色度参考点：[c0, cMid, cMax]。</summary>
 	private static (double C0, double CMid, double CMax) ChromaStops(double lightness, double a, double b)
 	{
 		var peak = Cusp(a, b);
@@ -229,7 +214,6 @@ internal static class ColorSpaces
 		return (c0, cMid, cMax);
 	}
 
-	/// <summary>OKHSL → sRGB 颜色。色相为角度，饱和度与亮度 0-1。</summary>
 	public static ThemeColor OkhslToColor(double hue, double saturation, double lightness)
 	{
 		var labLightness = OkhslToOklabLightness(lightness);

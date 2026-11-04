@@ -10,14 +10,11 @@ using Jint.Runtime.Interop;
 
 namespace PiWeft.JavaScript;
 
-/// <summary>
 /// 在受限的 Jint 解释器里运行模型写的 JavaScript。每次 <see cref="ExecuteAsync"/> 新建并丢弃引擎，
 /// 脚本唯一能碰到宿主的地方是 <see cref="CodeModeTool"/> 暴露的函数；工具结果不进入 LLM 上下文，
 /// 进入上下文的只有脚本的输出与返回值。
-/// </summary>
 public sealed class CodeModeSandbox
 {
-	/// <summary><c>timeout</c> 为无限时使用的实际值：Jint 只接受有限的正时限。</summary>
 	private static readonly TimeSpan MaxEffectiveTimeout = TimeSpan.FromDays(1);
 
 	private static readonly string PreludeSource = CodeModePrelude.Source
@@ -41,13 +38,10 @@ public sealed class CodeModeSandbox
 		_options = options;
 	}
 
-	/// <summary>本次执行暴露给脚本的工具。</summary>
 	public IReadOnlyList<CodeModeTool> Tools => _options.Tools;
 
-	/// <summary>
 	/// 运行一段脚本。脚本失败不会抛异常，而是通过 <see cref="CodeModeResult.Error"/> 报告。
 	/// 解释器跑在独立的后台线程上（不占用调用线程与线程池），工具落定后脚本的续体也回到该线程。
-	/// </summary>
 	public Task<CodeModeResult> ExecuteAsync(string code, CodeModeExecuteOptions? options = null)
 	{
 		ArgumentNullException.ThrowIfNull(code);
@@ -76,7 +70,6 @@ public sealed class CodeModeSandbox
 		return worker.Completion;
 	}
 
-	/// <summary>同时运行的 codemode 解释器上限，与 pi 的 <c>MAX_CONCURRENT_CODEMODE_WORKERS</c> 一致。</summary>
 	private const int MaxConcurrentWorkers = 2;
 
 	private static int _activeWorkers;
@@ -471,10 +464,8 @@ public sealed class CodeModeSandbox
 		}
 	}
 
-	/// <summary>脚本在等待一个永远不会落定的 Promise：没有挂起的工具，也没有定时器。</summary>
 	private sealed class CodeModeStalledException(string message) : Exception(message);
 
-	/// <summary>执行中的 <c>models.*</c> 调用；结束后转成只读的 <see cref="CodeModeModelCallRecord"/>。</summary>
 	private sealed class ModelCallRecord
 	{
 		public required string Name { get; init; }
@@ -506,10 +497,8 @@ public sealed class CodeModeSandbox
 		return JsonNode.Parse(json);
 	}
 
-	/// <summary>
 	/// 检索语料（与 pi 的 <c>createToolSearchDocument</c> 一致）：工具名、原名（<c>_</c> 换空格）、
 	/// 原始描述、schema 里的说明与属性名，以及命名空间的名称/描述/instructions。
-	/// </summary>
 	private static string SearchText(CodeModeTool tool)
 	{
 		var text = CodeModeSearch.CreateDocument(tool.Name, tool.SearchDescription ?? tool.Description, tool.InputSchema);
@@ -522,10 +511,8 @@ public sealed class CodeModeSandbox
 		return extra.Length == 0 ? text : $"{text} {extra}";
 	}
 
-	/// <summary>
 	/// 命名空间匹配：名称或别名，按原名或脚本标识符形式比较
 	/// （<c>dev-radius</c> 与 <c>dev_radius</c> 等价）。
-	/// </summary>
 	private static bool NamespaceMatches(string? namespaceName, IReadOnlyList<string>? aliases, string query)
 	{
 		if (namespaceName is not null && NamespaceNameMatches(namespaceName, query)) return true;
@@ -545,11 +532,9 @@ public sealed class CodeModeSandbox
 			CodeModeIdentifier.ToIdentifier(query),
 			StringComparison.Ordinal);
 
-	/// <summary>宿主桥的可选字符串参数：<c>undefined</c>/<c>null</c> 归一为 <c>null</c>，与原委托转换一致。</summary>
 	private static string? OptionalString(JsValue value) =>
 		value.IsUndefined() || value.IsNull() ? null : value.AsString();
 
-	/// <summary>检索文档：<see cref="Terms"/> 在首次检索时已分词，多次 <c>searchTools()</c> 复用。</summary>
 	private sealed record SearchDocument(
 		string Name,
 		string RawName,
@@ -557,12 +542,10 @@ public sealed class CodeModeSandbox
 		string? Namespace,
 		IReadOnlyList<string>? NamespaceAliases);
 
-	/// <summary>
 	/// 与 <c>ForUntrustedCode</c> 相同的资源预算，但不启用它的「不可变配置快照」：那个配置会永久
 	/// 关闭 eval/new Function，而 pi 的 QuickJS 允许它们。这里改成手动搭建：不注册 CLR 暴露、
 	/// 模块加载或调试器，只关闭包装对象的反射/写入口，再加上同样的时限、语句与内存约束。
 	/// eval 生成的源码同样受 MaxSourceLength/MaxNodeCount 与语句预算约束。
-	/// </summary>
 	private Options CreateEngineOptions(TimeSpan timeout)
 	{
 		var options = new Options
@@ -869,10 +852,8 @@ public sealed class CodeModeSandbox
 		};
 	}
 
-	/// <summary>
 	/// 承载一次执行的后台线程。同步解释、宿主回调与工具落定都在这个线程上排队执行，
 	/// 调用方只等待 <see cref="Completion"/>；线程不取自线程池，避免 CPU 密集脚本饿死线程池。
-	/// </summary>
 	private sealed class CodeModeWorker
 	{
 		private readonly ConcurrentQueue<Action> _queue = new();
@@ -903,14 +884,12 @@ public sealed class CodeModeSandbox
 			thread.Start();
 		}
 
-		/// <summary>从工具续体投递一次落定；执行结束后投递的项无人处理，也不会抛错。</summary>
 		public void Post(Action action)
 		{
 			_queue.Enqueue(action);
 			ReleaseSignal();
 		}
 
-		/// <summary>取消等场景下唤醒等待中的 worker；重复唤醒只是多一次空转。</summary>
 		public void Wake() => ReleaseSignal();
 
 		private void ReleaseSignal()
@@ -925,10 +904,8 @@ public sealed class CodeModeSandbox
 			}
 		}
 
-		/// <summary>队列里还有未处理的落定。</summary>
 		public bool HasPendingWork => !_queue.IsEmpty;
 
-		/// <summary>等待新的落定；<see cref="Post"/> 与取消注册都会唤醒。</summary>
 		public void WaitForWork(TimeSpan timeout) => _signal.Wait(timeout);
 
 		public void Drain()

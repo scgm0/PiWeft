@@ -4,7 +4,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Stats;
 
-/// <summary>一个统计维度的令牌与费用合计。</summary>
 public sealed record StatsTotals
 {
 	public long Input { get; init; }
@@ -15,7 +14,6 @@ public sealed record StatsTotals
 
 	public long CacheWrite { get; init; }
 
-	/// <summary>计入的助手回复数（<c>usage</c> 条目不计）。</summary>
 	public long Messages { get; init; }
 
 	public double Cost { get; init; }
@@ -23,16 +21,12 @@ public sealed record StatsTotals
 	public long Tokens => Input + Output + CacheRead + CacheWrite;
 }
 
-/// <summary>按日期聚合的用量。</summary>
 public sealed record DailyStats(string Date, StatsTotals Totals);
 
-/// <summary>按供应商 + 模型聚合的用量。</summary>
 public sealed record ModelStats(string Provider, string Model, StatsTotals Totals);
 
-/// <summary>按项目（工作目录）聚合的用量。</summary>
 public sealed record ProjectStats(string Directory, StatsTotals Totals);
 
-/// <summary>跨会话统计结果；各维度都按同一遍扫描得到，互不重复计数。</summary>
 public sealed record UsageStatsReport(
 	IReadOnlyList<DailyStats> Days,
 	IReadOnlyList<ModelStats> Models,
@@ -42,38 +36,27 @@ public sealed record UsageStatsReport(
 	public static UsageStatsReport Empty { get; } = new([], [], [], new StatsTotals());
 }
 
-/// <summary>热力图格子的用量档位，0 表示无用量。</summary>
 public sealed record UsageHeatCell(string Date, long Tokens, int Level);
 
-/// <summary>扫描参数；默认值面向桌面按需刷新，不做轮询。</summary>
 public sealed record UsageStatsOptions
 {
-	/// <summary>最多扫描的会话文件数（按文件名倒序，先读最近的）。</summary>
 	public int MaxFiles { get; init; } = 2000;
 
-	/// <summary>单个项目目录最多列举的文件数，防止超大目录拖慢一次刷新。</summary>
 	public int MaxFilesPerProject { get; init; } = 2000;
 
-	/// <summary>超过该长度的行直接跳过（工具结果可能很大）。</summary>
 	public int MaxLineBytes { get; init; } = 256 * 1024;
 
-	/// <summary>只统计该时间点之后的条目（ISO 8601 字符串比较，与写入格式一致）。</summary>
 	public DateTimeOffset? Since { get; init; }
 
-	/// <summary>只统计该项目（会话根下的目录名，或它的工作目录路径）。</summary>
 	public string? Project { get; init; }
 
-	/// <summary>会话文件里没有 <c>cost</c> 时用来补算费用的价格表；返回 <c>null</c> 表示不补算。</summary>
 	public Func<string, string, ModelCostRates?>? Rates { get; init; }
 }
 
-/// <summary>
 /// 跨会话用量统计。只读会话 JSONL，按需调用、单遍扫描、逐行解析，
 /// 不做缓存也不驻留后台线程；文件数与行长都有上限。
-/// </summary>
 public static class UsageStats
 {
-	/// <summary>默认的会话根目录：优先 <c>PI_CODING_AGENT_SESSION_DIR</c>，否则 <c>&lt;agentDir&gt;/sessions</c>。</summary>
 	public static string DefaultRoot()
 	{
 		var configured = Environment.GetEnvironmentVariable(Session.SessionPaths.EnvSessionDir);
@@ -119,7 +102,6 @@ public static class UsageStats
 			Sum(days.Values));
 	}
 
-	/// <summary>把每日用量整理成最近 <paramref name="weeks"/> 周的热力图，按周排列、周一为第一天。</summary>
 	public static IReadOnlyList<UsageHeatCell> Heatmap(UsageStatsReport report, int weeks = 26, DateOnly? today = null)
 	{
 		weeks = Math.Clamp(weeks, 1, 104);
@@ -145,7 +127,6 @@ public static class UsageStats
 		return cells;
 	}
 
-	/// <summary>四档强度（另有 0 档无用量），阈值与 GitHub 热力图同量级。</summary>
 	private static int Level(long tokens, long max)
 	{
 		if (tokens <= 0 || max <= 0)
@@ -195,7 +176,6 @@ public static class UsageStats
 		}
 	}
 
-	/// <summary>会话文件名以 ISO 时间戳开头，倒序即最近优先。</summary>
 	private static IEnumerable<string> EnumerateSessionFiles(string directory, int limit)
 	{
 		string[] files;
@@ -383,7 +363,6 @@ public static class UsageStats
 			? Math.Max(0, number)
 			: 0;
 
-	/// <summary>会话里写入的 <c>usage.cost.total</c>；没有 cost 对象时返回 0。</summary>
 	private static double ReadCost(JsonElement usage) =>
 		usage.TryGetProperty("cost", out var cost) && cost.ValueKind == JsonValueKind.Object &&
 			cost.TryGetProperty("total", out var total) && total.ValueKind == JsonValueKind.Number && total.TryGetDouble(out var value) && value > 0
@@ -407,7 +386,6 @@ public static class UsageStats
 		return index < parts.Length ? parts[index] : string.Empty;
 	}
 
-	/// <summary>可变累加器，避免每行都构造新纪录。</summary>
 	internal sealed class Bucket(long input = 0, long output = 0, long cacheRead = 0, long cacheWrite = 0, long messages = 0, double cost = 0)
 	{
 		public long Input { get; private set; } = input;

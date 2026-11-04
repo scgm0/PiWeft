@@ -4,10 +4,8 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 订阅登录面板：展示授权入口（URL / 设备码）、实时日志、需要用户输入的提示，并提供取消/重试。
 /// 登录本身复用 <see cref="ProviderAuthService"/>（底层仍是 PiWeft.Ai.Auth 的 OAuth 流程）。
-/// </summary>
 internal sealed class ProviderLoginPanel
 {
 	private readonly AuthProvider _provider;
@@ -375,7 +373,6 @@ internal sealed class ProviderLoginPanel
 	private static TextBlock Label(string text) => new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption).PrimaryText();
 }
 
-/// <summary>把 OAuth 流程的 TextWriter 输出送进面板日志（不落盘、不回显令牌）。</summary>
 internal sealed class AuthLogWriter(Action<string> append) : TextWriter
 {
 	public override Encoding Encoding => Encoding.UTF8;
@@ -392,7 +389,6 @@ internal sealed class AuthLogWriter(Action<string> append) : TextWriter
 	public override void WriteLine() => append("\n");
 }
 
-/// <summary>把 OAuth 流程的 TextReader 输入接到面板的提问输入框。</summary>
 internal sealed class AuthPromptReader(Func<CancellationToken, Task<string?>> read) : TextReader
 {
 	public override Task<string?> ReadLineAsync() => read(CancellationToken.None);
@@ -403,7 +399,6 @@ internal sealed class AuthPromptReader(Func<CancellationToken, Task<string?>> re
 	public override string? ReadLine() => read(CancellationToken.None).GetAwaiter().GetResult();
 }
 
-/// <summary>登录面板的外框：与用量弹窗同款，Grid 覆盖层不会把 MaxWidth 当成测量约束。</summary>
 internal sealed class AuthDialogSurface : ContentControl
 {
 	protected override Size MeasureContent(Size availableSize)

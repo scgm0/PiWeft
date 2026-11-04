@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 主题颜色解析。黄金值取自 pi 的 <c>packages/tui/test/colors.test.ts</c>，
 /// 保证同一份主题文件在两侧解析出相同的颜色。
-/// </summary>
 public class ThemeColorParserTests
 {
 	[Fact]
@@ -112,7 +110,6 @@ public class ThemeColorParserTests
 	}
 }
 
-/// <summary>主题文件的解析与发现。</summary>
 public class ThemeCatalogTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-themes-" + Guid.NewGuid().ToString("N")[..8]);

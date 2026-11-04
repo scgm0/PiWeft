@@ -2,10 +2,8 @@ using System.Text;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>内置工具共用的路径处理，对应 pi 的 <c>path-utils</c> 与路径配置。</summary>
 public static class ToolPaths
 {
-	/// <summary>展开 <c>~</c>、开头的 <c>@</c> 引用与 Unicode 空格，再相对 <paramref name="cwd"/> 解析。</summary>
 	public static string ResolveToCwd(string path, string cwd)
 	{
 		var expanded = Expand(path);
@@ -14,7 +12,6 @@ public static class ToolPaths
 			: Path.GetFullPath(Path.Combine(cwd, expanded));
 	}
 
-	/// <summary>展开用户给出的路径，但不相对工作目录解析。</summary>
 	public static string Expand(string path)
 	{
 		var value = path;
@@ -41,7 +38,6 @@ public static class ToolPaths
 	public static string HomeDirectory =>
 		Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-	/// <summary>把各种特殊空格（NBSP、窄 NBSP、表意空格等）替换为 U+0020。</summary>
 	public static string NormalizeUnicodeSpaces(string value)
 	{
 		StringBuilder? builder = null;
@@ -67,14 +63,12 @@ public static class ToolPaths
 		return builder?.ToString() ?? value;
 	}
 
-	/// <summary>输出相对 <paramref name="root"/> 且使用正斜杠的路径，与 ripgrep/fd 的输出一致。</summary>
 	public static string RelativeTo(string path, string root)
 	{
 		var relative = Path.GetRelativePath(root, path);
 		return relative.Replace('\\', '/');
 	}
 
-	/// <summary>文件路径的父目录不存在时创建它。</summary>
 	public static void EnsureParentDirectory(string path)
 	{
 		var directory = Path.GetDirectoryName(path);
@@ -84,7 +78,6 @@ public static class ToolPaths
 		}
 	}
 
-	/// <summary>读取失败时 pi 会重试的四种 macOS 文件名变体（AM/PM 空格、NFD、弯引号）。</summary>
 	public static IReadOnlyList<string> ReadVariants(string resolved)
 	{
 		var variants = new List<string>(4);

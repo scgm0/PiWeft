@@ -12,16 +12,12 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// D-03：命令 Dock。用 MiniPty 在项目目录里启动一个真正的伪终端（交互式 shell），
 /// 输出交给 <see cref="TerminalScreen"/> 做 ANSI/VT 解析后按行渲染，键盘与 IME 输入直接写回 PTY。
-/// <para>
 /// 交互对齐 xterm.js 的常用部分：scrollback 与滚动条、鼠标拖选/双击选词/三击选行/Alt 区块选择、
 /// Shift+滚轮本地滚动、应用鼠标上报（1000/1002/1003 + SGR 1006/1016 + urxvt 1015）、
 /// bracketed paste（多行先确认）。支持缩放重排、DECSCUSR 光标形态与闪烁、DECSCNM 反色、
 /// OSC 4/10/11/12 调色、OSC 8 超链接（Ctrl+点击）。少数边界序列按 xterm.js 近似处理。
-/// </para>
-/// </summary>
 public sealed class TerminalDock : IDisposable, ITerminalInputSink
 {
 	private const int MinColumns = 20;
@@ -29,19 +25,14 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private const int MinRows = 5;
 	private const int MaxRows = 200;
 
-	/// <summary>两次重绘之间的最小间隔，避免高频输出逐个字符重排。</summary>
 	private const long PaintIntervalMs = 40;
 
-	/// <summary>
 	/// 面板尺寸连续变化（拖分隔条、缩放窗口）时，PTY 尺寸延后这么久再发一次：
 	/// 每个像素都发 SIGWINCH 会让 shell 逐帧重画提示符，看起来像终端内容在跳。
-	/// </summary>
 	private const int ResizeSettleMs = 120;
 
-	/// <summary>为滚动条预留的宽度（控件 + 间距），列数计算时扣除。</summary>
 	private const double ScrollBarReserve = 18;
 
-	/// <summary>重绘时复用的文本 run 上限；终端整屏行数远低于这个数量。</summary>
 	private const int MaxPooledRuns = 512;
 
 	private readonly Func<string> _cwd;
@@ -77,16 +68,12 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private readonly TextBlock _imeLabel = new();
 	private bool _imeActive;
 
-	/// <summary>文本行底下的光标层：只画块光标的实心矩形，块下那个字符仍由文本行绘制。</summary>
 	private readonly TerminalCursorLayer _cursorUnder;
 
-	/// <summary>文本行之上的光标层：竖线、底线，以及失焦时的空心框。</summary>
 	private readonly TerminalCursorLayer _cursorOver;
 
-	/// <summary>本帧算出的光标格（相对终端表面左上角）；候选窗定位与测试都读它。</summary>
 	private Rect _cursorCell;
 
-	/// <summary>量光标格用的本行文本与样式 run（每帧复用，不分配）。</summary>
 	private readonly StringBuilder _cursorText = new();
 	private readonly List<GeometryStyleRun> _cursorStyles = [];
 	private readonly List<Rect> _cursorBounds = [];
@@ -94,7 +81,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private readonly DispatcherTimer _timer;
 	private readonly Lock _gate = new();
 
-	/// <summary>拖拽面板高度时的 PTY 尺寸只在停下后发一次，避免 SIGWINCH 让 shell 逐帧重画。</summary>
 	private DispatcherTimer? _resizeTimer;
 	private PtySize? _pendingResize;
 
@@ -307,7 +293,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 	public UIElement View { get; }
 
-	/// <summary>把键盘焦点交给终端输入层；自定义 shell 输入框打开时优先给它。</summary>
 	public void FocusTerminal()
 	{
 		if (_disposed)
@@ -324,7 +309,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_input.Focus();
 	}
 
-	/// <summary>主题切换：终端表面、光标、选区、链接与 ANSI 系统色都按新主题重绘。</summary>
 	public void ApplyTheme()
 	{
 		if (_disposed)
@@ -352,7 +336,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		PaintIfDirty(force: true);
 	}
 
-	/// <summary>窗口less 测试用：当前视口文本。</summary>
 	internal string ScreenText
 	{
 		get
@@ -364,7 +347,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
-	/// <summary>窗口less 测试用：在屏幕锁内建立一段选区，触发 PRIMARY 同步。</summary>
 	internal void SelectForTest(int bufferRow, int column, int length)
 	{
 		lock (_gate)
@@ -374,7 +356,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
-	/// <summary>窗口less 测试用：向屏幕喂一段输出并立即重绘。</summary>
 	internal void FeedForTest(string text)
 	{
 		lock (_gate)
@@ -385,7 +366,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		PaintIfDirty(force: true);
 	}
 
-	/// <summary>窗口less 测试用：读取屏幕内部状态。</summary>
 	internal TerminalScreen Screen
 	{
 		get
@@ -397,36 +377,27 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
-	/// <summary>窗口less 测试用：模拟失焦/聚焦并立即重绘。</summary>
 	internal void SetFocusForTest(bool focused)
 	{
 		SendFocus(focused);
 		PaintIfDirty(force: true);
 	}
 
-	/// <summary>窗口less 测试用：光标当前是否画得出来（含闪烁的隐藏相位）。</summary>
 	internal bool CursorVisibleForTest => _cursorUnder.CursorVisible || _cursorOver.CursorVisible;
 
-	/// <summary>窗口less 测试用：失焦光标是否走「一圈空心框」画法。</summary>
 	internal bool CursorHollowForTest => _cursorOver.CursorVisible && !_cursorOver.CursorFocused;
 
-	/// <summary>窗口less 测试用：聚焦块光标是否走「整格实心」画法。</summary>
 	internal bool CursorSolidBlockForTest => _cursorUnder.CursorVisible;
 
-	/// <summary>窗口less 测试用：光标色（含 OSC 12 覆盖）。</summary>
 	internal Color CursorColorForTest =>
 		_cursorOver.CursorVisible ? _cursorOver.CursorColor : _cursorUnder.CursorColor;
 
-	/// <summary>窗口less 测试用：当前光标格（相对终端表面左上角）。</summary>
 	internal Rect CursorCellForTest => _cursorCell;
 
-	/// <summary>窗口less 测试用：终端表面的 arrange 结果（光标格相对它的坐标）。</summary>
 	internal Rect CursorSurfaceForTest => _lineHost.Bounds;
 
-	/// <summary>
 	/// 窗口less 测试用：光标格是否正好压在它所属的那个文本行上。
 	/// 拖高时布局回调先于子元素 arrange，绝对坐标只能在渲染时现算，否则光标停在旧行。
-	/// </summary>
 	internal bool CursorSitsOnItsRowForTest
 	{
 		get
@@ -456,10 +427,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
-	/// <summary>窗口less 测试用：当前字格尺寸。</summary>
 	internal (double Width, double Height) CellSizeForTest => (_cellWidth, _lineHeight);
 
-	// ------------------------------------------------------------------ PTY
 
 	private PtyStartInfo CreateStartInfo()
 	{
@@ -485,7 +454,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		};
 	}
 
-	/// <summary>命令 Dock 的 shell 选择：自动、检测到的 shell，或手填路径。</summary>
 	private void ShowShellMenu()
 	{
 		var menu = new ContextMenu();
@@ -604,7 +572,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_input.Focus();
 	}
 
-	/// <summary>把 PTY 输出按 UTF-8 增量解码后喂给屏幕；界面只在有变化时重绘。</summary>
 	private async Task PumpAsync(PtySession session, CancellationToken cancellationToken)
 	{
 		var decoder = Encoding.UTF8.GetDecoder();
@@ -659,7 +626,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
-	/// <summary>输入按到达顺序串行写入 PTY，避免高频击键乱序。</summary>
 	private static async Task WriteLoopAsync(PtySession session, ChannelReader<string> reader, CancellationToken cancellationToken)
 	{
 		try
@@ -743,7 +709,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		PaintIfDirty(force: true);
 	}
 
-	// ------------------------------------------------------------------ 键盘
 
 	public void SendKey(KeyEventArgs key)
 	{
@@ -828,11 +793,9 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_inputQueue?.Writer.TryWrite(text);
 	}
 
-	// ------------------------------------------------------------------ 输入法
 
 	public bool IsComposing => _imeActive;
 
-	/// <summary>候选窗定位：当前光标格的窗口坐标；滚动查看历史时不给位置。</summary>
 	public Rect CursorRect
 	{
 		get
@@ -958,7 +921,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		RequestPaste(text);
 	}
 
-	/// <summary>多行内容先确认再送进 PTY：粘贴一段脚本很可能被 shell 直接执行。</summary>
 	internal void RequestPaste(string text)
 	{
 		if (NeedsPasteConfirmation(text))
@@ -1036,7 +998,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
-	/// <summary>中键粘贴：Linux 的 PRIMARY selection（选中即复制的那份）。</summary>
 	private async Task PastePrimaryAsync()
 	{
 		if (PrimarySelectionText.Service is not { } service)
@@ -1062,7 +1023,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		SendText(bracketed ? $"\u001b[200~{text}\u001b[201~" : text);
 	}
 
-	/// <summary>选区变化后同步到 PRIMARY selection（Linux 的“选中即复制”）。</summary>
 	private void OnSelectionChanged()
 	{
 		Interlocked.Increment(ref _selectionVersion);
@@ -1091,7 +1051,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		service.Publish(text);
 	}
 
-	/// <summary>打开 OSC 8 链接；只放行常见协议，避免终端里的输出触发任意程序。</summary>
 	private static bool OpenLink(string uri)
 	{
 		if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed) ||
@@ -1112,7 +1071,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
-	/// <summary>DECSET 1004：应用开启后把焦点变化告诉它（vim/neovim 用）。</summary>
 	private void SendFocus(bool focused)
 	{
 		_inputFocused = focused;
@@ -1136,7 +1094,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		Wake();
 	}
 
-	/// <summary>DECSCUSR 请求闪烁时按 ~480ms 翻转光标；返回定时器是否应保持运行。</summary>
 	private bool UpdateBlink()
 	{
 		bool blink;
@@ -1169,7 +1126,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	private static IClipboardService? Clipboard =>
 		Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
 
-	/// <summary>右键菜单：复制/粘贴/全选，以及清屏与重启 shell。</summary>
 	private void ShowContextMenu()
 	{
 		_contextMenu ??= BuildContextMenu();
@@ -1210,7 +1166,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		PaintIfDirty(force: true);
 	}
 
-	// ------------------------------------------------------------------ 鼠标
 
 	public void PointerDown(MouseEventArgs e)
 	{
@@ -1345,7 +1300,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		if (lines != 0) ScrollView(lines);
 	}
 
-	/// <summary>把分数滚轮刻度累积成整行；一格滚轮 = 3 行，与旧行为一致。</summary>
 	internal static int WheelLines(ref double remainder, double notches)
 	{
 		if (!double.IsFinite(notches) || notches == 0) return 0;
@@ -1391,7 +1345,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		return code;
 	}
 
-	/// <summary>按应用选择的编码写回：SGR（1006/1016）、urxvt 十进制（1015）或传统 X10 字节序列。</summary>
 	private void ReportMouse(int code, int column, int row, bool release)
 	{
 		bool sgr;
@@ -1426,7 +1379,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 				: $"\u001b[M{(char)(32 + code)}{(char)(32 + x)}{(char)(32 + y)}");
 	}
 
-	// ------------------------------------------------------------------ 滚动
 
 	private void ScrollView(int lines) => ScrollView(lines, force: true);
 
@@ -1461,7 +1413,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		PaintIfDirty(force: true);
 	}
 
-	// ------------------------------------------------------------------ 布局与渲染
 
 	private void MeasureCell()
 	{
@@ -1475,7 +1426,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_lineHeight = Math.Max(1, size.Height);
 	}
 
-	/// <summary>按面板尺寸重新计算列/行，并同步 PTY 的窗口大小。</summary>
 	private void SyncViewport()
 	{
 		if (_disposed)
@@ -1510,7 +1460,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		PaintIfDirty(force: true);
 	}
 
-	/// <summary>攒一次 PTY 尺寸，等面板尺寸停下来再发；连续的 resize 只保留最后一组行列。</summary>
 	private void QueuePtyResize(int columns, int rows)
 	{
 		if (_session is null)
@@ -1531,7 +1480,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		return timer;
 	}
 
-	/// <summary>把攒下的尺寸发给 PTY；没有挂起的尺寸时什么也不做。</summary>
 	private void FlushPtyResize()
 	{
 		_resizeTimer?.Stop();
@@ -1616,7 +1564,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		return true;
 	}
 
-	/// <summary>唤醒可能已休眠的渲染定时器；只在有变化时调用。</summary>
 	private void Wake()
 	{
 		_idleTicks = 0;
@@ -1629,7 +1576,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_timerRunning = true;
 	}
 
-	/// <summary>后台输出合并唤醒：一帧内多次输出只排一次 UI 调度。</summary>
 	private void RequestWake()
 	{
 		if (Interlocked.Exchange(ref _wakeQueued, 1) != 0)
@@ -1842,14 +1788,12 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		}
 	}
 
-	/// <summary>
 	/// 光标格（**相对于终端表面左上角**）。横向跟着本行的真实排布量：回退字体的字宽、宽字符、
 	/// 粗体都会让「列号 × 格宽」与字符实际位置对不上，只有按排布量才压得住它所属那一格；
 	/// 纵向用「视口行 × 行高」：所有文本行与两层光标共用同一个栅格单元，行高固定、间距为 0，
 	/// 这个相对位置天然跟得住。绝对坐标交给光标层在渲染时按当前 Bounds 现算 ——
 	/// 要是在重绘前就把它算死，拖高时 arrange 发生在绘制之后，光标会一直停在旧行上。
 	/// 量不到排布时退回格网数学。
-	/// </summary>
 	private Rect CursorCellRect(int viewportRow, int column)
 	{
 		if (TryBuildCursorRow(viewportRow, out var charIndex, out var charLength, out var cells) &&
@@ -1873,10 +1817,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			_lineHeight);
 	}
 
-	/// <summary>
 	/// 复制光标行的排布输入：文本与各格样式 run 都照 <see cref="AddRun"/> 的写法拼出来，
 	/// 同时给出光标那一格在文本里的码元区间。行内量不到光标格时返回 false。
-	/// </summary>
 	private bool TryBuildCursorRow(int viewportRow, out int charIndex, out int charLength, out int cells)
 	{
 		charIndex = 0;
@@ -1916,7 +1858,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		return charLength > 0;
 	}
 
-	/// <summary>把上面拼出的行交给文本引擎量一格的实际位置；内容一致时命中引擎缓存，不重复排版。</summary>
 	private bool TryMeasureCluster(int charIndex, int charLength, out Rect bounds)
 	{
 		bounds = default;
@@ -2080,7 +2021,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		view.Inlines.Add(element);
 	}
 
-	/// <summary>默认色交给主题/OSC 覆盖，调色板（含 OSC 4 改写）与真彩色转成具体颜色。</summary>
 	private Color? Resolve(TerminalColor color) => color.Kind switch
 	{
 		TerminalColorKind.Indexed => FromRgb(_paintPalette[color.Index] ?? TerminalPalette.Rgb(color.Index, AppTheme.IsLightTheme)),
@@ -2095,7 +2035,6 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 	private static uint ToRgb(Color color) => ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
 
-	/// <summary>行内容指纹：用结构哈希代替字符串拼接，每帧每行零字符串分配。</summary>
 	private static ulong Signature(List<TerminalRun> runs, int cursor, bool cursorFocused = false)
 	{
 		var hash = new HashCode();

@@ -2,7 +2,6 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>Meta Muse 订阅 OAuth：设备码获取身份令牌，再 mint 一天的 Model API key。</summary>
 public static class MetaOAuth
 {
 	public const string ProviderKey = "meta";

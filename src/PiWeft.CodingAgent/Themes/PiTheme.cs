@@ -4,35 +4,26 @@ using PiWeft.CodingAgent.Resources;
 
 namespace PiWeft.CodingAgent.Themes;
 
-/// <summary>主题的明暗分类。</summary>
 public enum ThemeAppearance
 {
 	Dark,
 	Light,
 }
 
-/// <summary>
 /// 一个已解析的 pi 主题：<c>name</c>、可选 <c>appearance</c>、<c>vars</c> 变量与 <c>colors</c> 角色。
 /// 颜色值可能是「终端默认」（<c>""</c>），由渲染侧决定回退。
-/// </summary>
 public sealed record PiTheme
 {
-	/// <summary>主题名，即 <c>name</c> 字段；文件名的约定值也是它。</summary>
 	public required string Name { get; init; }
 
-	/// <summary>主题文件路径。</summary>
 	public required string FilePath { get; init; }
 
-	/// <summary>明暗分类；未声明时按背景角色推断。</summary>
 	public ThemeAppearance Appearance { get; init; }
 
-	/// <summary>已解析的颜色角色。</summary>
 	public required IReadOnlyDictionary<string, ThemeColor> Colors { get; init; }
 
-	/// <summary>来源（用户/项目/包）。</summary>
 	public ResourceOrigin Origin { get; init; }
 
-	/// <summary>解析期间的诊断（未知角色、缺失的回退项等）。</summary>
 	public IReadOnlyList<string> Warnings { get; init; } = [];
 
 	public ThemeColor? ExportPageBackground { get; init; }
@@ -41,7 +32,6 @@ public sealed record PiTheme
 
 	public ThemeColor? ExportInfoBackground { get; init; }
 
-	/// <summary>取一个颜色角色，缺失或为「终端默认」时返回 <paramref name="fallback"/>。</summary>
 	public ThemeColor GetOrDefault(string token, ThemeColor fallback)
 	{
 		if (Colors.TryGetValue(token, out var color) && !color.IsTerminalDefault)
@@ -59,10 +49,8 @@ public sealed record PiTheme
 		return fallback;
 	}
 
-	/// <summary>
 	/// 解析一个主题 JSON。<paramref name="error"/> 非空表示主题无效（缺少 name/colors、
 	/// 颜色写法不合法或存在未定义的变量），此时返回 <c>null</c>。
-	/// </summary>
 	public static PiTheme? Parse(
 		string json,
 		string filePath,

@@ -17,17 +17,14 @@ public sealed class SmoothScrollTests
 		view.Arrange(new Rect(0, 0, 200, 200));
 	}
 
-	/// <summary>
 	/// 推进一帧：新的衰减物理按真实经过时间计算，假时钟只负责触发 Tick，
 	/// 所以帧间隔必须真的存在（否则 dt≈0，画面不动）。
-	/// </summary>
 	private static void Frame(int milliseconds = 16)
 	{
 		Thread.Sleep(milliseconds);
 		AnimationFrames.Advance(milliseconds);
 	}
 
-	/// <summary>持续推进到落位：指数衰减每帧只走完剩余距离的一部分。</summary>
 	private static void Settle(SmoothScroll smooth, int frames = 60)
 	{
 		for (var index = 0; index < frames && smooth.IsAnimating; index++)

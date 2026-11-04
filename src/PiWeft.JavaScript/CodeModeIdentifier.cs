@@ -1,12 +1,9 @@
 namespace PiWeft.JavaScript;
 
-/// <summary>工具名到脚本标识符的映射。</summary>
 public static class CodeModeIdentifier
 {
-	/// <summary>
 	/// 脚本使用的标识符：不能出现在 JavaScript 标识符里的字符换成 <c>_</c>。
 	/// <c>mcp__docs__search</c> 原样保留，<c>my-tool</c> 变成 <c>my_tool</c>。
-	/// </summary>
 	public static string ToIdentifier(string name)
 	{
 		ArgumentNullException.ThrowIfNull(name);

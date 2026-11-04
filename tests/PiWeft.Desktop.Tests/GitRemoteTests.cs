@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// D-04：远端同步工作流。用一个裸仓库当远端，跑真实的 fetch/pull/push 往返，
 /// 不 mock git —— 这些操作的语义全在同 git 的行为里，打桩只会验证我们的假设。
-/// </summary>
 public class GitRemoteTests : IDisposable
 {
 	private readonly string _base = Path.Combine(Path.GetTempPath(), "piweft-gitremote-" + Guid.NewGuid().ToString("N")[..8]);
@@ -91,7 +89,6 @@ public class GitRemoteTests : IDisposable
 
 	private string HeadOf(string cwd) => Exec(cwd, "rev-parse", "HEAD").Stdout.Trim();
 
-	// ---------------------------------------------------------------- 状态解析
 
 	[Fact]
 	public void StatusReportsUpstreamAndRemotes()
@@ -132,7 +129,6 @@ public class GitRemoteTests : IDisposable
 		Assert.Equal(Strings.GitNoRemote, GitWriter.Fetch(lonely).Message);
 	}
 
-	// ---------------------------------------------------------------- push
 
 	[Fact]
 	public void FirstPushCreatesUpstreamTracking()
@@ -271,7 +267,6 @@ public class GitRemoteTests : IDisposable
 		Assert.Contains("rejected", push.Detail ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 	}
 
-	// ---------------------------------------------------------------- fetch / pull
 
 	[Fact]
 	public void FetchUpdatesRemoteTrackingWithoutTouchingTheWorkTree()
@@ -385,7 +380,6 @@ public class GitRemoteTests : IDisposable
 		Assert.Equal(Strings.GitNoUpstream, pull.Message);
 	}
 
-	// ---------------------------------------------------------------- stash
 
 	[Fact]
 	public void StashPushCleansTheWorkTreeIncludingUntrackedFiles()

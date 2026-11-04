@@ -3,7 +3,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Compaction;
 
-/// <summary>一次保温决策及其经济学输入，对应 pi 的 <c>CacheWarmingDecision</c>。</summary>
 public sealed record CacheWarmingDecision
 {
 	public required bool Idle { get; init; }
@@ -18,11 +17,9 @@ public sealed record CacheWarmingDecision
 
 	public required bool EconomicsAvailable { get; init; }
 
-	/// <summary><c>warm</c> 或 <c>stop</c>。</summary>
 	public required string Action { get; init; }
 }
 
-/// <summary>保温器的可观察状态，供会话/RPC/桌面展示。</summary>
 public sealed record CacheWarmingStatus
 {
 	public required string State { get; init; }
@@ -33,11 +30,9 @@ public sealed record CacheWarmingStatus
 
 	public CacheWarmingDecision? Decision { get; init; }
 
-	/// <summary>扩展把 pi 的决策改成了另一个动作。</summary>
 	public bool ExtensionOverride { get; init; }
 }
 
-/// <summary>每次刷新前发给扩展的决策事件，对应 pi 的 <c>cache_warming_decision</c>。</summary>
 public sealed record CacheWarmingDecisionEvent
 {
 	public string Type => "cache_warming_decision";
@@ -54,16 +49,13 @@ public sealed record CacheWarmingDecisionEvent
 
 	public required bool EconomicsAvailable { get; init; }
 
-	/// <summary>pi 自己的决策：<c>warm</c> 或 <c>stop</c>。</summary>
 	public required string Action { get; init; }
 }
 
-/// <summary>
 /// 在提示缓存到期前用 1 token 输出重放最近一次请求，保持 Provider 的 prompt cache 命中。
 /// 对应 pi 的 <c>CacheWarmer</c>：streaming 阶段在代理运行期间保温，agent settled 后停止；
 /// idle 阶段使用更低的中断概率和 30 分钟上限。每次刷新前可经 <c>cache_warming_decision</c>
 /// 回调让扩展覆盖 pi 的决策。
-/// </summary>
 public sealed class CacheWarmer : IDisposable
 {
 	private const int RefreshMarginMs = 10_000;
@@ -121,7 +113,6 @@ public sealed class CacheWarmer : IDisposable
 		}
 	}
 
-	/// <summary>开始为一条已发送的请求保温；新的调用会替换旧的计时器。</summary>
 	public void Start(Model model, IReadOnlyList<Message> messages, StreamOptions options)
 	{
 		Cancel("replaced by a newer request");
@@ -192,7 +183,6 @@ public sealed class CacheWarmer : IDisposable
 		}
 	}
 
-	/// <summary>代理运行结束：streaming 保温停止；idle 保温切换到更短的 30 分钟上限。</summary>
 	public void AgentSettled()
 	{
 		if (_mode().Equals("streaming", StringComparison.OrdinalIgnoreCase))

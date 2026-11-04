@@ -4,9 +4,7 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 打开长会话的后台读取契约：进度能汇报、能取消，UTF-8 逐行解析与旧的字符串路径结果一致。
-/// </summary>
 public class SessionOpenProgressTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-open-progress-" + Guid.NewGuid().ToString("N")[..8]);

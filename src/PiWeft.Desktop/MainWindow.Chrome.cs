@@ -3,30 +3,22 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 自定义窗框：PiDeck 式的连续标题栏，左段属于侧栏，右段属于主区。
-/// </summary>
-/// <remarks>
 /// Windows 与 macOS 用 <see cref="Window.ExtendClientAreaTitleBarHeight"/> 把客户区延伸到原生标题栏：
 /// 系统继续负责圆角、阴影、缩放与 macOS 的红绿灯；X11 没有等价能力，只能改为无边框窗口，
 /// 于是移动、八向缩放与三个窗口按钮全部由应用绘制（<see cref="Window.DragMove"/> /
 /// <see cref="Window.DragResize"/>）。标题栏左段与侧栏同色、右段与主区同色，页签条和窗口按钮
 /// 都在右段里，内容仍从标题栏下方开始 —— 这样既不新增一条全局工具栏，又比一条横贯全宽的
 /// 中性色顶栏更贴近 PiDeck 的窗框层次。
-/// </remarks>
 public sealed partial class MainWindow
 {
-	/// <summary>X11 透明窗框的阴影模糊半径；同时是窗口外侧留给阴影的边距。</summary>
 	private const double ShadowExtent = 12;
 
-	/// <summary>阴影向下偏移，让窗口在桌面上有轻微悬浮感。</summary>
 	private const double ShadowOffset = 2;
 
-	/// <summary>
 	/// 窗口级浮层的可见区域：跳过标题栏；X11 正常窗口还要跳过透明阴影边，
 	/// 否则浮层的透明捕获层会盖住标题栏底部或压出圆角窗框。
 	/// 最大化/全屏时透明阴影边已不存在，浮层要贴住窗口四边，否则四周会留一圈亮边。
-	/// </summary>
 	internal static Thickness OverlayInsetFor(WindowState state)
 	{
 		if (UsesNativeWindowFrame || state is WindowState.Maximized or WindowState.FullScreen)
@@ -41,15 +33,12 @@ public sealed partial class MainWindow
 			ShadowExtent + ShadowOffset);
 	}
 
-	/// <summary>标题栏页签文本的最大宽度：长会话名在页签里省略，鼠标悬停看全名。</summary>
 	private const double TitleTabMaxWidth = 180;
 
 	private TextBlock _tabCaption = null!;
 
-	/// <summary>标题栏左段：品牌、侧栏折叠键、当前项目铭牌。</summary>
 	private Border _sidebarTitleBar = null!;
 
-	/// <summary>标题栏中段：页签条、新建入口、命令入口与右侧面板唤醒键。</summary>
 	private Border _mainTitleBar = null!;
 
 	private DockPanel _sidebarColumn = null!;
@@ -60,25 +49,18 @@ public sealed partial class MainWindow
 
 	private Button _hideSidebarButton = null!;
 
-	/// <summary>标题栏右段的 panel 键：唤醒 / 收起当前会话的右侧面板。</summary>
 	private Button _rightPanelButton = null!;
 
-	/// <summary>panel 键的图标：打开态换成主文字色，和常驻浮起一起表示「此刻开着」。</summary>
 	private Image _rightPanelGlyph = null!;
 
-	/// <summary>窗口按钮浮层：不属于某一列，始终贴在窗口右上角（面板展开时盖在面板页签条上）。</summary>
 	private UIElement _windowActionsOverlay = null!;
 
-	/// <summary>标题栏右段的实际内边距；面板收起时给右上角的窗口按钮浮层让位。</summary>
 	private double _titleBarRightPadding;
 
-	/// <summary>面板页签条右侧预留宽度：窗口按钮浮层盖在面板列右上角。</summary>
 	private double _panelHeaderRightInset = AppTheme.Space1;
 
-	/// <summary>唤醒键上一次的开关态：只在变化时重设样式与图标色，避免布局回调里反复失效。</summary>
 	private bool? _rightPanelButtonOpen;
 
-	/// <summary>命令入口与窗口按钮之间的发丝线；系统自带窗口按钮时隐藏。</summary>
 	private Border _chromeActionsSeparator = null!;
 
 	private StackPanel _titleBarButtons = null!;
@@ -91,29 +73,22 @@ public sealed partial class MainWindow
 
 	private GlyphElement _maximizeGlyph = null!;
 
-	/// <summary>X11 的圆角窗框（背景、1px 边界、裁剪与 ShadowDecorator）；原生窗框时为空。</summary>
 	private Border? _chromeBorder;
 
-	/// <summary>X11 窗口落影；最大化/全屏时收为 0，窗框填满屏幕。</summary>
 	private ShadowDecorator? _shadow;
 
-	/// <summary>页签签名：避免流式状态变化时无谓地重建页签、抢走键盘焦点。</summary>
 	private readonly List<object> _titleBarTabEntries = [];
 
-	/// <summary>当前页签控件，只更新样式而不重建，鼠标/键盘焦点在切换标签时不会丢。</summary>
 	private readonly List<TitleTabView> _titleTabViews = [];
 
 	private string _titleBarTabTitles = string.Empty;
 
 	private int _titleBarSelectedIndex = -1;
 
-	/// <summary>最近一次写入 DWM 的边框色，避免缩放过程中重复调用系统 API。</summary>
 	private Color? _nativeBorderColor;
 
-	/// <summary>
 	/// 是否保留系统原生窗框。X11 的扩展标题栏只是「去掉装饰」，无法保留原生按钮，
 	/// 所以只有 Win32/macOS 走原生扩展路径。
-	/// </summary>
 	private static bool UsesNativeWindowFrame =>
 #if MEWUI_WIN32 || MEWUI_MACOS
 		true;
@@ -121,7 +96,6 @@ public sealed partial class MainWindow
 		false;
 #endif
 
-	/// <summary>在创建原生窗口之前决定窗框形态。</summary>
 	private void ConfigureWindowFrame()
 	{
 		if (UsesNativeWindowFrame)
@@ -138,10 +112,8 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// <summary>
 	/// 窗口模板只负责外框、内容槽与右上角的窗口按钮浮层；标题栏属于侧栏/主区/面板各列，
 	/// 由 BuildUi 组装。
-	/// </summary>
 	private UIElement BuildChromeShell()
 	{
 		// 窗口按钮浮在内容之上：右侧面板展开时它们落在面板页签条的右端，
@@ -180,7 +152,6 @@ public sealed partial class MainWindow
 		return root;
 	}
 
-	/// <summary>标题栏左段：品牌门牌 + 收起侧栏 + 当前项目。</summary>
 	private UIElement BuildSidebarTitleBar()
 	{
 		// 项目铭牌是标签而不是元数据：用 UI 字体、次要文字色，完整路径留在悬停提示里。
@@ -234,7 +205,6 @@ public sealed partial class MainWindow
 		return _sidebarTitleBar;
 	}
 
-	/// <summary>标题栏中段：页签条 + 新建 + 命令入口 + 右侧面板唤醒键（窗口按钮在浮层里）。</summary>
 	private UIElement BuildMainTitleBar()
 	{
 		// 侧栏收起后，panel 键回到主标题栏最左侧（PiDeck 的位置），右段不再重复放一个。
@@ -294,7 +264,6 @@ public sealed partial class MainWindow
 		return _mainTitleBar;
 	}
 
-	/// <summary>标题栏里的小图标按钮：28×28 的悬停块，不撑满整行。</summary>
 	private Button BuildChromeIconButton(string icon, string tip, Action onClick)
 	{
 		var button = AppIcons.Button(icon, tip, onClick, size: AppIcons.Size);
@@ -304,10 +273,8 @@ public sealed partial class MainWindow
 		return button;
 	}
 
-	/// <summary>
 	/// 右侧面板的唤醒键：图标自己持有，打开态换主文字色 + 常驻浮起，
 	/// 提示文字随开关变成「打开 / 关闭右侧边栏」并带上当前快捷键。
-	/// </summary>
 	private Button BuildRightPanelButton()
 	{
 		_rightPanelGlyph = new Image()
@@ -328,10 +295,8 @@ public sealed partial class MainWindow
 			.IsVisible(false);
 	}
 
-	/// <summary>
 	/// 窗口按钮浮层：贴在窗口右上角、盖在内容之上。右侧面板展开时它落在面板页签条右端
 	/// （页签右侧预留同样宽度），收起时落在主标题栏右端；位置与面板开关无关，不需要重排。
-	/// </summary>
 	private UIElement BuildWindowActionsOverlay()
 	{
 		_chromeActionsSeparator = new Border()
@@ -359,10 +324,8 @@ public sealed partial class MainWindow
 			.Children(_chromeActionsSeparator, _titleBarButtons);
 	}
 
-	/// <summary>
 	/// 同步唤醒键：没有会话时不占位；展开时呈强调弱底。位置由布局决定 ——
 	/// 它是主标题栏右端的最后一项，面板展开时主标题栏变窄，它自然停在面板左缘。
-	/// </summary>
 	private void UpdateRightPanelButton()
 	{
 		if (_rightPanelButton is null || _rightPanelGlyph is null || _tabControl is null)
@@ -386,7 +349,6 @@ public sealed partial class MainWindow
 			: action);
 	}
 
-	/// <summary>标题栏里的形状按钮（+）：与窗口按钮同一套 Glyph 绘制，跟随前景色。</summary>
 	private Button BuildChromeGlyphButton(GlyphKind kind, string tip, Action onClick)
 	{
 		var glyph = new GlyphElement()
@@ -428,9 +390,7 @@ public sealed partial class MainWindow
 			.HoverTip(tip);
 	}
 
-	/// <summary>
 	/// 标题栏页签的签名检查：只有标签集合、标题或选中项变化时才重建，流式状态刷新不会打断焦点。
-	/// </summary>
 	private void SyncTitleBarTabs(bool force = false)
 	{
 		if (_titleTabs is null)
@@ -475,7 +435,6 @@ public sealed partial class MainWindow
 		RebuildTitleBarTabs(selected);
 	}
 
-	/// <summary>按 _tabEntries 重建页签控件；只在标签集合或标题变化时调用。</summary>
 	private void RebuildTitleBarTabs(int selected)
 	{
 		_titleTabs.Clear();
@@ -489,7 +448,6 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// <summary>活动态 / 非活动态切换：只改样式与关闭键可见性。</summary>
 	private void UpdateTitleBarTabSelection(int selected)
 	{
 		for (var index = 0; index < _titleTabViews.Count; index++)
@@ -501,7 +459,6 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// <summary>标题栏页签：活动页签带底与关闭键，非活动页签悬停才浮起。</summary>
 	private TitleTabView BuildTitleTab(object entry, bool active)
 	{
 		var title = EntryTitle(entry);
@@ -543,7 +500,6 @@ public sealed partial class MainWindow
 		return new TitleTabView(tab, close);
 	}
 
-	/// <summary>页签控件与它的关闭键：活动态切换时一起更新。</summary>
 	private sealed record TitleTabView(Button Button, Button Close);
 
 	private Button BuildTitleTabClose(object entry)
@@ -580,7 +536,6 @@ public sealed partial class MainWindow
 		UpdateStatus();
 	}
 
-	/// <summary>页签上显示的名字：会话用会话标题，辅助页用短名。</summary>
 	private static string EntryTitle(object entry) => entry switch
 	{
 		// 阻塞式问询卡在等回答：页签带个圆点，后台会话不必靠声音才知道卡住了（PiDeck 的 PendingAskBadge 同义）。
@@ -589,10 +544,8 @@ public sealed partial class MainWindow
 		_ => string.Empty,
 	};
 
-	/// <summary>
 	/// 标题栏的空白处拖动窗口，双击最大化/还原。macOS 的原生拖动会进入 AppKit 的事件循环，
 	/// 第二次按下时不能再启动，否则双击事件收不到 —— 因此只让单击启动拖动（与 MewUI 示例一致）。
-	/// </summary>
 	private void AttachTitleBarDrag(UIElement zone)
 	{
 		zone.OnMouseDown(e =>
@@ -633,10 +586,8 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// <summary>
 	/// 按平台能力刷新窗框：原生有按钮（macOS）就隐藏自绘按钮并让出红绿灯的位置；
 	/// 否则显示三个自绘按钮，并让它们贴住右缘。
-	/// </summary>
 	private void UpdateChrome()
 	{
 		if (_mainTitleBar is null || _sidebarTitleBar is null)
@@ -694,10 +645,8 @@ public sealed partial class MainWindow
 		UpdateRightPanelButton();
 	}
 
-	/// <summary>
 	/// X11 透明窗框：普通态有 10 DIP 圆角、1px 边界与 12 DIP 落影；
 	/// 最大化/全屏时全部归零，圆角窗框铺满屏幕。原生窗框平台不做任何事。
-	/// </summary>
 	private void UpdateTransparentFrame(bool normal)
 	{
 		if (_chromeBorder is null || _shadow is null)
@@ -712,7 +661,6 @@ public sealed partial class MainWindow
 		_shadow.CornerRadius = normal ? AppTheme.RadiusLg : 0;
 	}
 
-	/// <summary>Win11 的原生边框跟着配色走，窗口与桌面之间才没有一圈突兀的浅色线。</summary>
 	private void SyncNativeBorderColor()
 	{
 		if (Handle == 0 || !ChromeCapabilities.HasFlag(WindowChromeCapabilities.NativeBorderColor))

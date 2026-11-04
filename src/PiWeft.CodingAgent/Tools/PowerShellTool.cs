@@ -4,7 +4,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>内置 <c>powershell</c> 工具：在 Windows（以及装有 pwsh 的平台）执行 PowerShell。</summary>
 public static class PowerShellTool
 {
 	public static AgentTool Create(string cwd, Func<BashSessionEnvironment?>? context = null) => new()
@@ -54,11 +53,16 @@ public static class PowerShellTool
 				}).ConfigureAwait(false);
 
 			var truncation = Truncate.Tail(result.Output);
+			if (result.OutputTruncated)
+			{
+				truncation = truncation with { TotalLines = result.TotalLines, TotalBytes = result.TotalBytes };
+			}
+
 			var text = truncation.Content;
 			string? fullOutputPath = null;
 			if (truncation.Truncated)
 			{
-				fullOutputPath = ShellRunner.WriteFullOutput(result.Output);
+				fullOutputPath = result.FullOutputPath ?? ShellRunner.WriteFullOutput(result.Output);
 				text += $"\n\n[Showing last {Truncate.FormatSize(truncation.OutputBytes)} of line {truncation.TotalLines} ({Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit). Full output: {fullOutputPath}]";
 			}
 

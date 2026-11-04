@@ -6,10 +6,8 @@ using Xunit;
 
 namespace PiWeft.Mcp.Tests;
 
-/// <summary>
 /// Exercises the follow-up MCP capabilities against the real fixture server: paginated discovery, the three resource
 /// tools, prompts, and the live tool refresh a server triggers with <c>notifications/tools/list_changed</c>.
-/// </summary>
 public class McpResourceAndPromptTests : IAsyncLifetime
 {
 	private McpProcess? _process;
@@ -260,7 +258,6 @@ public class McpResourceAndPromptTests : IAsyncLifetime
 
 }
 
-/// <summary>Shared helpers for reaching the fixture server and building a session around it.</summary>
 internal static class McpFixtures
 {
 	public static string? FixtureAssembly()

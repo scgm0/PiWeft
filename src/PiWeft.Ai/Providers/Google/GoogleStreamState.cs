@@ -6,10 +6,8 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.Google;
 
-/// <summary>
 /// 把 Gemini <c>streamGenerateContent</c> 的分片折叠进一个 <see cref="AssistantMessageEventStream"/>。Gemini 流式下发的是
 /// 完整分片（不是增量），且文本与思考共用同一个 part 列表，因此内容块会随 part 类型变化而开合。
-/// </summary>
 internal sealed class GoogleStreamState
 {
 	private readonly Model _model;

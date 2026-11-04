@@ -3,10 +3,8 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>
 /// 供 <c>grep</c> 与 <c>find</c> 遍历时使用的 <c>.gitignore</c> 匹配器。pi 把忽略规则交给 ripgrep/fd，
 /// 本端口在进程内实现常用子集，因而不需要外部可执行文件。
-/// </summary>
 public sealed class GitIgnore
 {
 	private readonly List<IgnoreRule> _rules = [];
@@ -15,7 +13,6 @@ public sealed class GitIgnore
 
 	public static GitIgnore Empty { get; } = new();
 
-	/// <summary>解析 <c>.gitignore</c> 文件（若存在），并以它所在目录作为模式基准。</summary>
 	public static GitIgnore FromDirectory(string directory)
 	{
 		var path = Path.Combine(directory, ".gitignore");
@@ -57,7 +54,6 @@ public sealed class GitIgnore
 		}
 	}
 
-	/// <summary>最后一条命中的规则是忽略该路径时为 true。</summary>
 	public bool IsIgnored(string absolutePath, bool isDirectory)
 	{
 		var ignored = false;
@@ -193,10 +189,8 @@ public sealed class GitIgnore
 	}
 }
 
-/// <summary>深度优先的文件遍历器，遵循各级 <c>.gitignore</c>，并始终跳过 <c>.git</c>。</summary>
 public static class FileWalker
 {
-	/// <summary>按稳定顺序枚举 <paramref name="root"/> 下的文件。</summary>
 	public static IEnumerable<string> EnumerateFiles(string root, bool skipHidden = false)
 	{
 		if (!Directory.Exists(root))
@@ -211,7 +205,6 @@ public static class FileWalker
 		}
 	}
 
-	/// <summary>深度优先枚举 <paramref name="root"/> 下的所有条目（文件与目录）。</summary>
 	public static IEnumerable<string> EnumerateEntries(string root)
 	{
 		if (!Directory.Exists(root))
@@ -382,10 +375,8 @@ public static class FileWalker
 		}
 	}
 
-	/// <summary>
 	/// 是否是符号链接/重解析点。读不到属性时按「不进入」处理 —— 宁可少扫一点，也不要因为
 	/// 自指软链接把 grep/find 拖进无限递归。
-	/// </summary>
 	private static bool IsReparsePoint(string path)
 	{
 		try

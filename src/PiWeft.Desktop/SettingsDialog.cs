@@ -3,28 +3,21 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 设置弹窗：与 PiDeck 一样是窗口级模态浮层，而不是主区里的一个标签页。
-/// </summary>
-/// <remarks>
 /// 结构：压暗背景 + 居中浮起卡片。卡片头部固定（标题、未保存提示、保存、关闭），
 /// 内部再分为左侧导航轨（系统设置 / 配置管理分段 + 分区列表）与右侧可滚动内容。
 /// 弹窗自己不持有配置草稿：脏状态、保存与关闭确认都委托给 <see cref="SettingsView"/>。
-/// </remarks>
 internal sealed class SettingsDialog
 {
-	/// <summary>浮层尺寸：大屏时停在 1120×820，小窗口按可用空间收缩。</summary>
 	private const double MaxDialogWidth = 1120;
 	private const double MaxDialogHeight = 820;
 
-	/// <summary>压暗层与标题栏补片共用的颜色；背景已做低分辨率柔化时 50% 仍然保留足够层次。</summary>
 	private static readonly Color ScrimColor = new(0x80, 0x00, 0x00, 0x00);
 
 	private readonly SettingsView _settings;
 	private readonly Button _saveButton;
 	private readonly TextBlock _dirtyLabel;
 
-	/// <summary>最大化/全屏时补上标题栏的压暗层：主浮层从标题栏下方开始，否则顶部会留一条亮边。</summary>
 	private readonly Border _titleBarDim;
 
 	private Window? _window;
@@ -95,7 +88,6 @@ internal sealed class SettingsDialog
 
 	public bool IsOpen => View.IsVisible;
 
-	/// <summary>收起后触发；宿主据此把焦点还给内容区。</summary>
 	public event Action? Closed;
 
 	public void Show(UIElement owner)
@@ -121,7 +113,6 @@ internal sealed class SettingsDialog
 		_settings.FocusNavigation();
 	}
 
-	/// <summary>立即收起（不做保存确认）；供窗口关闭或其他浮层接管时使用。</summary>
 	public void Hide()
 	{
 		if (!IsOpen) return;
@@ -137,7 +128,6 @@ internal sealed class SettingsDialog
 		Closed?.Invoke();
 	}
 
-	/// <summary>关闭请求：配置有未保存修改时先确认，取消则留在弹窗里。</summary>
 	public async Task<bool> RequestCloseAsync()
 	{
 		if (!IsOpen) return true;
@@ -160,14 +150,10 @@ internal sealed class SettingsDialog
 		return true;
 	}
 
-	/// <summary>
 	/// 换肤后重解析浮层子树并保留草稿/焦点。
-	/// </summary>
-	/// <remarks>
 	/// 窗口换肤只通知浮层根元素（OverlayLayer 不在主视觉树里），子控件仍停留在旧主题，
 	/// 会出现“文字已变浅、卡片还是深色”的半换肤状态。摘下再挂回会把 OnVisualRootChanged
 	/// 传给整棵子树，让命名样式按新主题重新解析；控件本身不重建，输入内容与滚动位置都保留。
-	/// </remarks>
 	public void ApplyTheme()
 	{
 		if (!IsOpen || _window is not { } window)
@@ -196,7 +182,6 @@ internal sealed class SettingsDialog
 		UpdateTitleBarDim();
 	}
 
-	/// <summary>最大化/全屏时把浮层可见区域贴到窗口四边（透明阴影边已不存在）。</summary>
 	private void ApplyOverlayInset()
 	{
 		if (_window is not { } window || View is not FrameworkElement element) return;
@@ -205,10 +190,8 @@ internal sealed class SettingsDialog
 			: new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
 	}
 
-	/// <summary>
 	/// 最大化/全屏时把标题栏也纳入模态背景：主浮层从标题栏下方开始，补片负责这一条，
 	/// 避免窗口铺满屏幕后顶部留下一条亮带。补片不参与命中测试，页签与窗口按钮仍可点击。
-	/// </summary>
 	private void UpdateTitleBarDim()
 	{
 		if (_window is not { } window) return;
@@ -242,7 +225,6 @@ internal sealed class SettingsDialog
 		_dirtyLabel.IsVisible(dirty);
 	}
 
-	/// <summary>弹窗卡片按可用空间收缩，但保持固定比例感：大屏不铺满，小窗不被裁切。</summary>
 	private sealed class DialogSurface : ContentControl
 	{
 		protected override Size MeasureContent(Size availableSize)

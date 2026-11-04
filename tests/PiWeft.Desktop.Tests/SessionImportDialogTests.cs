@@ -6,10 +6,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 导入外部会话弹窗。来源根目录与产物目录都注入夹具，不读也不写真实的
 /// <c>~/.claude</c> / <c>~/.codex</c> 与用户会话目录。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class SessionImportDialogTests : IDisposable
 {
@@ -39,10 +37,8 @@ public sealed class SessionImportDialogTests : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 夹具用 <see cref="JsonObject"/> 拼，不写内插原始字符串：JSON 的连续右花括号会和
 	/// 插值定界符打架（<c>$$"""</c> 下 <c>}}</c> 直接被当成插值闭合），一写一个坑。
-	/// </summary>
 	private void WriteClaudeSession(string sessionId, string text, string timestamp)
 	{
 		var path = Path.Combine(_home, ".claude", "projects", "-tmp-project", sessionId + ".jsonl");
@@ -179,7 +175,6 @@ public sealed class SessionImportDialogTests : IDisposable
 		Assert.DoesNotContain(Find<Button>(dialog.View), button => ContentText(button) == Strings.ImportAllSources);
 	}
 
-	/// <summary>按钮内容可能是 TextBlock（普通）或 DockPanel（带图标），取其中的文本。</summary>
 	private static string? ContentText(Button button) =>
 		button.Content switch
 		{

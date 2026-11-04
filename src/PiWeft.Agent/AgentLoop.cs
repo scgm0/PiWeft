@@ -5,16 +5,13 @@ using PiWeft.Ai.Utils;
 
 namespace PiWeft.Agent;
 
-/// <summary>
 /// 代理主循环。全程使用 <see cref="Message"/>，只在真正请求 provider 的边界上转换成对方要的形状。
 /// 对应 pi 的 <c>agent-loop.ts</c>。
-/// </summary>
 public static class AgentLoop
 {
 	private const string TruncatedToolCallMessage =
 		"Tool call was truncated by the output token limit and was not executed. Re-issue the call with complete arguments.";
 
-	/// <summary>用新的提示消息启动一次运行：它们会被加入上下文并对外发出事件。</summary>
 	public static async Task<IReadOnlyList<Message>> RunAsync(
 		IReadOnlyList<Message> prompts,
 		AgentContext context,
@@ -43,10 +40,8 @@ public static class AgentLoop
 		return newMessages;
 	}
 
-	/// <summary>
 	/// 从当前上下文继续一次运行，不新增消息。上下文的最后一条消息必须能转换成
 	/// <c>user</c> 或 <c>toolResult</c>，否则 provider 会拒绝该请求。
-	/// </summary>
 	public static async Task<IReadOnlyList<Message>> ContinueAsync(
 		AgentContext context,
 		AgentLoopConfig config,
@@ -721,10 +716,8 @@ public static class AgentLoop
 		};
 	}
 
-	/// <summary>
 	/// 把取消时的部分回复补成一条完整的 aborted 消息。provider 自己推送的终止事件可能
 	/// 因为取消先打断读取而丢失，桌面端需要这条消息来清空流式状态并落盘本次运行。
-	/// </summary>
 	private static AssistantMessage AbortedAssistant(AssistantMessage? partial, AgentLoopConfig config, double elapsedMs)
 	{
 		var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -822,10 +815,8 @@ public static class AgentLoop
 		return messages.Count == 0 ? [] : [.. messages];
 	}
 
-	/// <summary>
 	/// 把“运行时能执行的工具”与“会话记录里已经声明的工具”之间的差异补上，
 	/// 这样重放会话记录总能得到与 <see cref="AgentContext.Tools"/> 完全一致的工具集。
-	/// </summary>
 	internal static List<Message> DeclareToolChanges(AgentContext context, IReadOnlyList<Message> pendingMessages)
 	{
 		var baseline = new List<Message>(pendingMessages);

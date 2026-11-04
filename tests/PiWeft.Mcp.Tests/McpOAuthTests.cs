@@ -6,7 +6,6 @@ using Xunit;
 
 namespace PiWeft.Mcp.Tests;
 
-/// <summary>按 URL 脚本化响应的 HTTP 桩，用于 OAuth 的元数据与令牌请求。</summary>
 internal sealed class ScriptedHttpHandler : HttpMessageHandler
 {
 	public List<(string Method, string Url, string? Body)> Calls { get; } = [];
@@ -374,7 +373,6 @@ public class McpOAuthTests : IDisposable
 	}
 }
 
-/// <summary>最小的授权服务器桩：受保护资源元数据、授权服务器元数据、动态注册与令牌端点。</summary>
 internal sealed class FakeOAuthServer : IDisposable
 {
 	private const string Resource = "https://mcp.example/mcp";

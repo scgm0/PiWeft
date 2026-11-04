@@ -3,16 +3,13 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Session;
 
-/// <summary>打开会话文件时的读取进度；<see cref="TotalBytes"/> 为 0 表示长度未知。</summary>
 public readonly record struct SessionReadProgress(long BytesRead, long TotalBytes, int Lines)
 {
 	public double Fraction => TotalBytes <= 0 ? 0 : Math.Clamp((double)BytesRead / TotalBytes, 0, 1);
 }
 
-/// <summary>
 /// 读写 pi 的会话文件：用 <c>id</c>/<c>parentId</c> 串联的仅追加 JSONL 树，感知压缩的
 /// 上下文构建，以及分支导航。磁盘格式与 pi 二进制线上兼容。
-/// </summary>
 public sealed partial class SessionManager
 {
 	private readonly Lock _stateGate = new();
@@ -30,7 +27,6 @@ public sealed partial class SessionManager
 	private List<Message> _incrementalTail = [];
 	private IReadOnlyList<SessionEntry>? _incrementalBranch;
 
-	/// <summary>追加、重载、新建或导航后递增，供消费者失效派生缓存。</summary>
 	public long Revision { get { lock (_stateGate) return _revision; } }
 
 	private void Invalidate(bool keepIncrementalProjection = false, bool keepBranch = false)
@@ -60,7 +56,6 @@ public sealed partial class SessionManager
 		SessionId = string.Empty;
 	}
 
-	/// <summary>会话启动时的工作目录。</summary>
 	public string Cwd { get; }
 
 	public string SessionDir { get; }
@@ -73,7 +68,6 @@ public sealed partial class SessionManager
 
 	public int EntryCount => _byId.Count;
 
-	/// <summary>按文件顺序排列的全部条目，不含头部。</summary>
 	public IReadOnlyList<SessionEntry> Entries
 	{
 		get
@@ -91,9 +85,7 @@ public sealed partial class SessionManager
 
 	public SessionHeader? Header => _fileEntries.OfType<SessionHeader>().FirstOrDefault();
 
-	// ---------------------------------------------------------------- 构造
 
-	/// <summary>在 <paramref name="cwd"/> 下创建一个会落盘的新会话。</summary>
 	public static SessionManager Create(
 		string cwd,
 		string? sessionDir = null,
@@ -120,7 +112,6 @@ public sealed partial class SessionManager
 		return manager;
 	}
 
-	/// <summary>打开已有的会话文件。工作目录默认取头部记录，可显式覆盖；头部损坏时可用 <paramref name="cwdFallback"/> 兜底。</summary>
 	/// <param name="upgradeFile">
 	/// 旧版会话（v1/v2）是否就地升级并回写文件。只读导出传 <see langword="false"/>：
 	/// 内存里仍按当前格式解释，但不改用户的文件。
@@ -133,10 +124,8 @@ public sealed partial class SessionManager
 		bool upgradeFile = true)
 		=> Open(path, sessionDir, cwdOverride, cwdFallback, progress: null, cancellationToken: default, upgradeFile: upgradeFile);
 
-	/// <summary>
 	/// 同上，并支持进度回调与取消。长会话（几十 MB）解析要上百毫秒到数秒，
 	/// 桌面把它放到后台线程并显示进度；<paramref name="progress"/> 会在读取线程上被调用。
-	/// </summary>
 	public static SessionManager Open(
 		string path,
 		string? sessionDir,
@@ -165,7 +154,6 @@ public sealed partial class SessionManager
 		return manager;
 	}
 
-	/// <summary>把头部里的工作目录规范成绝对路径；空值或损坏值交给调用方回退。</summary>
 	private static string? NormalizeCwd(string? cwd)
 	{
 		if (string.IsNullOrWhiteSpace(cwd))
@@ -183,7 +171,6 @@ public sealed partial class SessionManager
 		}
 	}
 
-	/// <summary>打开该工作目录下最近的会话；不存在则新建。</summary>
 	public static SessionManager ContinueRecent(string cwd, string? sessionDir = null)
 	{
 		var dir = sessionDir ?? SessionPaths.GetDefaultSessionDir(cwd);
@@ -192,10 +179,8 @@ public sealed partial class SessionManager
 		return mostRecent is null ? Create(cwd, dir) : Open(mostRecent, dir);
 	}
 
-	/// <summary>
 	/// 把会话文件复制到 <paramref name="targetCwd"/>，保留全部条目及其 id/parentId，
 	/// 使派生会话从同一个叶子继续。新头部会把源文件记为父会话。
-	/// </summary>
 	public static SessionManager ForkFrom(
 		string sourcePath,
 		string targetCwd,
@@ -215,16 +200,37 @@ public sealed partial class SessionManager
 		SessionMigration.Migrate(entries);
 
 		var manager = Create(targetCwd, sessionDir, id, parentSession: resolved);
-		foreach (var entry in entries.OfType<SessionEntry>())
+		try
 		{
-			manager.AppendExisting(entry);
+			foreach (var entry in entries.OfType<SessionEntry>())
+			{
+				manager.AppendExisting(entry, persist: false);
+			}
+
+			// 一条 fd 写完再原子替换：中途失败不会留下半个派生会话，也不会每写一条就打开一次文件。
+			manager.RewriteFile();
+		}
+		catch
+		{
+			// 失败时删掉刚建出的文件：内存里的 manager 不会交出去，磁盘上不该留下空壳。
+			try
+			{
+				if (manager.SessionFile is { } path && File.Exists(path))
+				{
+					File.Delete(path);
+				}
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+			{
+			}
+
+			throw;
 		}
 
 		return manager;
 	}
 
-	/// <summary>追加一个已有 id 的条目，复制会话时使用。</summary>
-	private void AppendExisting(SessionEntry entry)
+	private void AppendExisting(SessionEntry entry, bool persist = true)
 	{
 		using var scope = _stateGate.EnterScope();
 		Invalidate();
@@ -241,10 +247,12 @@ public sealed partial class SessionManager
 			_leafId = entry.Id;
 		}
 
-		Persist(entry);
+		if (persist)
+		{
+			Persist(entry);
+		}
 	}
 
-	/// <summary>创建一个完全不落盘的会话。</summary>
 	public static SessionManager InMemory(string cwd, string? id = null)
 	{
 		var manager = new SessionManager(Path.GetFullPath(cwd), string.Empty, null, false);
@@ -266,11 +274,9 @@ public sealed partial class SessionManager
 		RebuildIndex();
 	}
 
-	/// <summary>
 	/// 旧版会话升级到当前格式。内存里总会升级（否则 v1 的树与分支投影是坏的），
 	/// 只有 <paramref name="rewriteFile"/> 时才回写磁盘：pi 打开会话即迁移并重写，
 	/// 本端口保持一致；只读导出只解释不落盘。
-	/// </summary>
 	private void MigrateLegacyEntries(SessionHeader? header, bool rewriteFile)
 	{
 		// 当前版本的会话占绝大多数：先用已解析的头部挡掉，避免每次打开都线性扫一遍条目。
@@ -301,10 +307,8 @@ public sealed partial class SessionManager
 		}
 	}
 
-	/// <summary>
 	/// 把整份会话按当前格式重写：同目录临时文件 + 原子替换，写到一半崩溃不会留下半个会话。
 	/// 格式升级与「编辑重发」截断会用到；正常路径仍然只追加。
-	/// </summary>
 	/// <param name="source">要写入的条目序列；为空时写当前内存视图。</param>
 	private void RewriteFile(IReadOnlyList<object>? source = null)
 	{
@@ -375,7 +379,57 @@ public sealed partial class SessionManager
 		}
 	}
 
-	/// <summary>符号链接解析到最终目标；普通文件或解析失败时返回原路径（读、写共用）。</summary>
+	/// 在文件最前面插入一行会话头，其余字节原样保留。
+	/// 先写同目录临时文件再原子替换；读原文与写临时文件同时进行，不需要把整个文件读进内存。
+	private static void PrependHeader(string target, SessionHeader header)
+	{
+		var directory = Path.GetDirectoryName(target);
+		if (directory is not { Length: > 0 })
+		{
+			throw new IOException($"Session file has no directory: {target}");
+		}
+
+		var temporary = Path.Combine(directory, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.tmp");
+		try
+		{
+			using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+			{
+				var buffer = new System.Buffers.ArrayBufferWriter<byte>(256);
+				SessionJson.WriteHeaderLine(buffer, header);
+				output.Write(buffer.WrittenSpan);
+
+				if (File.Exists(target))
+				{
+					using var input = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+					input.CopyTo(output);
+				}
+
+				output.Flush(flushToDisk: true);
+			}
+
+			if (!OperatingSystem.IsWindows() && File.Exists(target))
+			{
+				// 修复头部不该顺手放宽/改变会话文件的权限。
+				File.SetUnixFileMode(temporary, File.GetUnixFileMode(target));
+			}
+
+			File.Move(temporary, target, overwrite: true);
+		}
+		finally
+		{
+			try
+			{
+				if (File.Exists(temporary))
+				{
+					File.Delete(temporary);
+				}
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+			{
+			}
+		}
+	}
+
 	private static string ResolveSessionTarget(string path)
 	{
 		try
@@ -508,10 +562,8 @@ public sealed partial class SessionManager
 		return entries;
 	}
 
-	/// <summary>
 	/// 只有几十 MB 级别的文件才值得并行：小文件切段后，句柄与调度开销比省下的时间还多。
 	/// 并行度也留余量 —— 打开会话时 UI 线程还要建树，不该把整机核数吃满。
-	/// </summary>
 	private static int ChunkCount(long totalBytes)
 	{
 		if (totalBytes < 8 * 1024 * 1024)
@@ -530,10 +582,8 @@ public sealed partial class SessionManager
 		return Math.Min(limit, Math.Max(1, (int)(totalBytes / (4 * 1024 * 1024))));
 	}
 
-	/// <summary>
 	/// 扫描 <paramref name="from"/>..<paramref name="to"/> 之间的整行。非首段先丢掉被切开的那半行
 	/// （它归上一段），所以每行恰好被解析一次；<paramref name="onLine"/> 收到该行的字节增量与行数。
-	/// </summary>
 	private static void ScanRange(
 		string path,
 		long from,
@@ -628,7 +678,6 @@ public sealed partial class SessionManager
 		}
 	}
 
-	// ---------------------------------------------------------------- 追加
 
 	public string AppendMessage(Message message) => Append(new SessionMessageEntry
 	{
@@ -718,7 +767,6 @@ public sealed partial class SessionManager
 		Data = data,
 	});
 
-	/// <summary>追加一条扩展风格的消息，它会参与 LLM 上下文。</summary>
 	public string AppendCustomMessage(
 		string customType,
 		MessageContent content,
@@ -742,10 +790,8 @@ public sealed partial class SessionManager
 		Name = name,
 	});
 
-	/// <summary>
 	/// 追加一条上下文编辑：<paramref name="replacement"/> 为 null 表示把目标条目从模型上下文中移除，
 	/// 有值则替换其内容。pi 的重试就靠它把失败的那次尝试从投影里去掉（原文保留在文件里）。
-	/// </summary>
 	public string AppendContextEdit(string targetId, MessageContent? replacement)
 	{
 		if (!_byId.ContainsKey(targetId))
@@ -796,6 +842,14 @@ public sealed partial class SessionManager
 	{
 		using var scope = _stateGate.EnterScope();
 		var extendsBranch = entry.ParentId == _leafId;
+		var previousLeafId = _leafId;
+		var hadLabel = false;
+		string? previousLabel = null;
+		if (entry is LabelEntry capturedLabel)
+		{
+			hadLabel = _labelsById.TryGetValue(capturedLabel.TargetId, out previousLabel);
+		}
+
 		// A normal message only extends the projection. Edits, compaction and summaries can
 		// change earlier messages, so those still rebuild it from the branch.
 		Invalidate(
@@ -816,8 +870,50 @@ public sealed partial class SessionManager
 		}
 
 		_leafId = entry.Id;
-		Persist(entry);
+		try
+		{
+			Persist(entry);
+		}
+		catch
+		{
+			// 与 pi 的 _appendEntry 一致：没写进文件的条目不能留在内存里，否则它会成为下一条的父级，
+			// 文件里出现指向不存在父级的链，重开会话时这一段连同后续追加都读不出来（数据丢失）。
+			Rollback(entry, previousLeafId, hadLabel, previousLabel);
+			throw;
+		}
+
 		return entry.Id;
+	}
+
+	/// 追加失败（磁盘满、只读、被独占）时把内存回退到追加之前。
+	/// 条目按追加顺序存放，失败的那条总在表尾（补会话头的场景会在它前面插一行，但本条仍是最后一项）；
+	/// 缓存一律丢弃重建，只把叶子与标签恢复成原值。
+	private void Rollback(SessionEntry entry, string? previousLeafId, bool hadLabel, string? previousLabel)
+	{
+		if (_fileEntries.Count > 0 && ReferenceEquals(_fileEntries[^1], entry))
+		{
+			_fileEntries.RemoveAt(_fileEntries.Count - 1);
+		}
+		else
+		{
+			_fileEntries.RemoveAll(item => ReferenceEquals(item, entry));
+		}
+
+		_byId.Remove(entry.Id);
+		if (entry is LabelEntry labelEntry)
+		{
+			if (hadLabel)
+			{
+				_labelsById[labelEntry.TargetId] = previousLabel!;
+			}
+			else
+			{
+				_labelsById.Remove(labelEntry.TargetId);
+			}
+		}
+
+		_leafId = previousLeafId;
+		Invalidate();
 	}
 
 	private void Persist(SessionEntry entry)
@@ -840,9 +936,10 @@ public sealed partial class SessionManager
 			};
 
 			// 补头部要整体重写文件：写穿符号链接，否则链接会被替换成普通文件（与 RewriteFile 同一理由）。
+			// 用临时文件 + 原子替换而不是原地截断重写：外部工具写出的会话可能很大，
+			// 截断后写到一半崩溃会把整份会话弄丢。
 			var target = ResolveSessionTarget(SessionFile);
-			var existing = File.Exists(target) ? File.ReadAllText(target) : string.Empty;
-			File.WriteAllText(target, SessionJson.Serialize(header) + "\n" + existing);
+			PrependHeader(target, header);
 			_fileEntries.Insert(0, header);
 		}
 
@@ -865,9 +962,7 @@ public sealed partial class SessionManager
 		return Guid.NewGuid().ToString();
 	}
 
-	// ---------------------------------------------------------------- 导航
 
-	/// <summary>把叶子移回更早的条目，后续追加就会形成新分支。</summary>
 	public void Branch(string branchFromId)
 	{
 		using var scope = _stateGate.EnterScope();
@@ -880,7 +975,6 @@ public sealed partial class SessionManager
 		Invalidate();
 	}
 
-	/// <summary>允许下一次追加开启一个新的根。</summary>
 	public void ResetLeaf()
 	{
 		using var scope = _stateGate.EnterScope();
@@ -888,7 +982,6 @@ public sealed partial class SessionManager
 		Invalidate();
 	}
 
-	/// <summary>从某个条目回溯到根，按根到叶的顺序返回路径。</summary>
 	public IReadOnlyList<SessionEntry> GetBranch(string? fromId = null)
 	{
 		using var scope = _stateGate.EnterScope();
@@ -920,7 +1013,6 @@ public sealed partial class SessionManager
 		return ImmutableList.CreateRange(path);
 	}
 
-	/// <summary>供上下文与渲染使用的、感知压缩的条目列表。</summary>
 	public IReadOnlyList<SessionEntry> BuildContextEntries() => BuildContextEntries(GetBranch());
 
 	private IReadOnlyList<SessionEntry> BuildContextEntries(IReadOnlyList<SessionEntry> path)
@@ -978,7 +1070,6 @@ public sealed partial class SessionManager
 		return contextEntries;
 	}
 
-	/// <summary>发给模型的消息，已应用上下文编辑；被编辑移除的条目不会产生任何消息。</summary>
 	public IReadOnlyList<Message> BuildProjectedMessages()
 	{
 		using var scope = _stateGate.EnterScope();
@@ -1102,10 +1193,8 @@ public sealed partial class SessionManager
 		System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 	}
 
-	/// <summary>
 	/// Appends an entry's projected messages without building a temporary list per entry.
 	/// A context edit replaces the content of every message the entry contributes.
-	/// </summary>
 	private static void AddEntryMessages(List<Message> messages, SessionEntry entry, MessageContent? replacement)
 	{
 		switch (entry)
@@ -1152,7 +1241,6 @@ public sealed partial class SessionManager
 		}
 	}
 
-	/// <summary>模型可见的上下文，以及从当前分支解析出的设置。</summary>
 	public SessionContext BuildSessionContext()
 	{
 		using var scope = _stateGate.EnterScope();
@@ -1180,7 +1268,6 @@ public sealed partial class SessionManager
 		};
 	}
 
-	/// <summary>第一条用户消息的文本，供会话选择器使用。</summary>
 	public string FirstUserMessageText()
 	{
 		using var scope = _stateGate.EnterScope();
@@ -1195,7 +1282,6 @@ public sealed partial class SessionManager
 		return string.Empty;
 	}
 
-	/// <summary>由 <c>/name</c> 设置的显示名（如果有）。</summary>
 	public string? SessionName()
 	{
 		using var scope = _stateGate.EnterScope();
@@ -1211,7 +1297,6 @@ public sealed partial class SessionManager
 		return name;
 	}
 
-	/// <summary>按目标条目 id 索引的标签。</summary>
 	public IReadOnlyDictionary<string, string> Labels => _labelsById;
 
 	public SessionInfo ToSessionInfo()
@@ -1256,9 +1341,7 @@ public sealed partial class SessionManager
 		};
 	}
 
-	// ---------------------------------------------------------------- 列举
 
-	/// <summary>列出目录中的会话文件，最近的在前。</summary>
 	public static IReadOnlyList<SessionInfo> ListSessions(string sessionDir, string? cwdFilter = null)
 	{
 		if (!Directory.Exists(sessionDir))
@@ -1289,17 +1372,48 @@ public sealed partial class SessionManager
 		return sessions;
 	}
 
-	/// <summary>目录中最近一个会话的路径，没有则为 <c>null</c>。</summary>
 	public static string? FindMostRecentSession(string sessionDir, string? cwdFilter = null)
 	{
 		var sessions = ListSessions(sessionDir, cwdFilter);
 		return sessions.Count == 0 ? null : sessions[0].Path;
 	}
 
-	// ---------------------------------------------------------------- 转换
 
-	/// <summary>单个条目贡献的上下文消息，与压缩模块共用。</summary>
 	public static IReadOnlyList<Message> MessagesForEntry(SessionEntry entry) => ToMessages(entry);
+
+	/// 一组条目里每个目标的最新 <c>context_edit</c>（后写的覆盖先写的）。
+	/// 分支摘要与压缩必须按同一套投影规则取消息：被隐藏的失败尝试不能重新进入摘要请求，
+	/// 内容替换也要按替换后的版本摘要（参照 pi 的 buildSessionProjection / prepareBranchEntries）。
+	internal static Dictionary<string, ContextEditEntry> LatestContextEdits(IEnumerable<SessionEntry> entries)
+	{
+		var edits = new Dictionary<string, ContextEditEntry>(StringComparer.Ordinal);
+		foreach (var entry in entries)
+		{
+			if (entry is ContextEditEntry edit)
+			{
+				edits[edit.TargetId] = edit;
+			}
+		}
+
+		return edits;
+	}
+
+	/// 把单个条目投影成模型可见消息，并应用针对它的 <c>context_edit</c>（<c>null</c> 表示移除）。
+	internal static IReadOnlyList<Message> ProjectEntry(SessionEntry entry, ContextEditEntry? edit)
+	{
+		var messages = ToMessages(entry);
+		if (edit is not { Replacement: { } replacement })
+		{
+			return edit is null ? messages : [];
+		}
+
+		for (var index = 0; index < messages.Count; index++)
+		{
+			messages[index] = ReplaceContent(messages[index], replacement);
+		}
+
+		return messages;
+	}
 
 	private static List<Message> ToMessages(SessionEntry entry) => entry switch
 	{

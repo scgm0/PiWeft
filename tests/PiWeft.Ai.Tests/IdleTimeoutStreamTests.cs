@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.Ai.Tests;
 
-/// <summary>
 /// 响应体空闲超时：供应商把连接挂着不发也不关时，这一轮必须失败（并进入自动重试），
 /// 但「慢而仍在产出」的长流不能被切断。
-/// </summary>
 public class IdleTimeoutStreamTests
 {
 	[Fact]
@@ -40,7 +38,6 @@ public class IdleTimeoutStreamTests
 		Assert.False(scope.Token.IsCancellationRequested);
 	}
 
-	/// <summary>永远不返回数据的流：只有取消能让 ReadAsync 结束。</summary>
 	private sealed class SilentStream : Stream
 	{
 		public override bool CanRead => true;
@@ -61,7 +58,6 @@ public class IdleTimeoutStreamTests
 		}
 	}
 
-	/// <summary>每隔一段时间产出一个字节的流：总时长可以超过空闲超时，但相邻两次读的间隔不超过它。</summary>
 	private sealed class TrickleStream(int bytes, TimeSpan interval) : Stream
 	{
 		private int _remaining = bytes;

@@ -10,10 +10,8 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>
 /// <c>/share</c> 的产物：pi 的查看器要的是**当前分支**加一条 <c>pi.share</c> 尾条目
 /// （系统提示词 + 工具 schema）；整份会话文件里可能有别的分支，不能直接上传。
-/// </summary>
 [Collection("process-environment")]
 public sealed class SessionSharingTests : IDisposable
 {

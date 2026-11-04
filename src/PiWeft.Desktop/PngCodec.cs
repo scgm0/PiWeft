@@ -3,17 +3,14 @@ using System.IO.Compression;
 
 namespace PiWeft.Desktop;
 
-/// <summary>8 位 BGRA 位图：每行紧密排列，跨度为 <c>Width * 4</c>。</summary>
 internal sealed record PixelImage(int Width, int Height, byte[] Bgra)
 {
 	public static PixelImage Create(int width, int height) => new(width, height, new byte[width * height * 4]);
 }
 
-/// <summary>
 /// PNG **编码**（8 位 RGBA）。解码不需要自己写：MewUI 的 <c>ImageDecoders</c> 公开提供 PNG/JPEG/BMP/ICO
 /// 解码与 <c>ImageSource.CopyPixels</c> 像素读取，只有「把像素编回 PNG」这一侧框架没有，
 /// 而 Windows 的 CF_DIB 剪贴板需要它。整份实现只用 BCL，NativeAOT 下可用。
-/// </summary>
 internal static class PngCodec
 {
 	private static readonly byte[] Signature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -24,7 +21,6 @@ internal static class PngCodec
 
 	public static bool IsPng(ReadOnlySpan<byte> data) => data.Length >= 8 && data[..8].SequenceEqual(Signature);
 
-	/// <summary>把 BGRA 位图编码为 8 位 RGBA PNG；逐行按最小绝对差启发式选滤波器。</summary>
 	public static byte[] Encode(PixelImage image)
 	{
 		var width = image.Width;
@@ -125,7 +121,6 @@ internal static class PngCodec
 		output.Write(crc);
 	}
 
-	/// <summary>PNG 分块校验用的 CRC-32（IEEE）。</summary>
 	private static class Crc32
 	{
 		private static readonly uint[] Table = Build();

@@ -8,12 +8,10 @@ using PiWeft.Agent;
 
 namespace PiWeft.CodingAgent.Extensions;
 
-/// <summary>一个已加载扩展的状态。</summary>
 public sealed record ExtensionState
 {
 	required public ExtensionDescriptor Descriptor { get; init; }
 
-	/// <summary>加载与运行期间的错误，逐条给人看。</summary>
 	public List<string> Diagnostics { get; } = [];
 
 	public bool Loaded { get; set; }
@@ -26,18 +24,13 @@ public sealed record ExtensionState
 
 }
 
-/// <summary>一个扩展注册的 CLI flag（pi 的 <c>pi.registerFlag</c>）。</summary>
 public sealed record ExtensionFlag(string Name, string Type, string Description, object? Default);
 
-/// <summary>
 /// 进程内 JS 扩展宿主：发现 → 沙箱执行 → 收集注册项（工具、命令、事件钩子）→ 派发事件。
-/// <para>
 /// 沙箱与 codemode 同一套纪律：Jint 解释器不给扩展任何宿主能力（无 <c>fs</c>、无 <c>net</c>、无 <c>require</c>），
 /// 扩展唯一能碰到外面的通道是显式注册的 <c>__pi*</c> 宿主函数，<c>pi</c> 对象本身由这些函数在 JS 侧组装
 /// （与 <c>CodeModePrelude</c> 同一手法）。所有桥用 <see cref="ClrFunction"/> 注册：不走反射包装，
 /// 因而在 NativeAOT/裁剪下不产生 IL2026/IL2111。
-/// </para>
-/// <para>
 /// 两条明确的限制，都在界面里可见、不静默降级：
 /// <list type="bullet">
 /// <item><description><strong>只执行 JavaScript</strong>：TypeScript 扩展需要构建期转译（本端口不内置转译器），
@@ -45,17 +38,12 @@ public sealed record ExtensionFlag(string Name, string Type, string Description,
 /// <item><description><strong>处理器必须同步</strong>：返回 Promise 会被拒绝并说明原因（异步要等事件循环泵
 /// 接进宿主）。把 <c>[object Promise]</c> 当成结果交给模型，比直接报错难查得多。</description></item>
 /// </list>
-/// </para>
-/// </summary>
 public sealed class ExtensionHost : IDisposable
 {
-	/// <summary>单次进入扩展代码的时限。卡死的扩展不该拖住会话。</summary>
 	private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(10);
 
-	/// <summary>
 	/// 在 JS 侧组装 <c>pi</c>：每个方法都转调宿主函数，注册结果通过 <c>__piRegister*</c> 交回宿主。
 	/// 用 <c>globalThis.pi</c> 而不是 let/const：扩展文件与这段前缀同处一个脚本作用域。
-	/// </summary>
 	private const string Prelude = """
 		globalThis.pi = (function () {
 			function callable(value) { return typeof value === "function"; }
@@ -125,7 +113,6 @@ public sealed class ExtensionHost : IDisposable
 
 	public ExtensionHost(IUiHost? ui = null) => _ui = ui;
 
-	/// <summary>已加载扩展的状态（含加载失败的），供资源页与诊断展示。</summary>
 	public IReadOnlyList<ExtensionState> States => _states;
 
 	public IReadOnlyList<AgentTool> Tools =>
@@ -134,20 +121,15 @@ public sealed class ExtensionHost : IDisposable
 	public IReadOnlyList<ExtensionCommand> Commands =>
 		[.. _states.Where(static state => state.Loaded).SelectMany(state => state.Registration.Commands)];
 
-	/// <summary>已加载扩展注册的 CLI flag（名字 → 定义）。加载失败的扩展不参与。</summary>
 	public IReadOnlyDictionary<string, ExtensionFlag> Flags => LoadedFlags();
 
-	/// <summary>本次运行未能被任何扩展消费的未知 flag；调用方按 pi 的语义报告为错误。</summary>
 	public IReadOnlyList<string> UnknownFlags => _unknownFlags;
 
-	/// <summary>flag 形状错误（例如 string 类型没给值）。</summary>
 	public IReadOnlyList<string> FlagErrors => _flagErrors;
 
-	/// <summary>
 	/// 把命令行里的未知 flag 分配给已注册的扩展 flag（pi 的 <c>flagValues</c> 同义）：
 	/// boolean 一律视为 <c>true</c>，string 需要值；没有值的 string 记一条诊断。
 	/// 返回没有对应扩展的 flag 名 —— 真正的拼写错误必须报出来。
-	/// </summary>
 	public IReadOnlyList<string> ApplyFlagValues(IReadOnlyDictionary<string, string?> values)
 	{
 		_flagErrors.Clear();
@@ -193,7 +175,6 @@ public sealed class ExtensionHost : IDisposable
 		return unknown;
 	}
 
-	/// <summary>只用加载成功的扩展的 flag：失败扩展注册到一半的 flag 不该吞掉命令行选项。</summary>
 	private Dictionary<string, ExtensionFlag> LoadedFlags()
 	{
 		var flags = new Dictionary<string, ExtensionFlag>(StringComparer.Ordinal);
@@ -213,15 +194,12 @@ public sealed class ExtensionHost : IDisposable
 		return flags;
 	}
 
-	/// <summary>加载期发现的、宿主不派发的事件名。</summary>
 	public IReadOnlyList<string> UnsupportedEvents =>
 		[.. _states.SelectMany(state => state.Registration.UnsupportedEvents)];
 
-	/// <summary>某个事件是否有任何扩展监听（宿主据此省掉构造 payload 的开销）。</summary>
 	public bool ListensTo(string @event) =>
 		!_disposed && _states.Any(state => state.Loaded && state.Registration.HasHandlers(@event));
 
-	/// <summary>发现并加载扩展。单个扩展失败只影响它自己，其余照常加载。</summary>
 	public void Load(
 		string cwd,
 		bool trusted = true,
@@ -304,10 +282,8 @@ public sealed class ExtensionHost : IDisposable
 		return state;
 	}
 
-	/// <summary>
 	/// 把事件派发给所有监听它的扩展，返回合并后的 payload（扩展可就地改写字段）。
 	/// 单个扩展抛错只记在它自己的诊断里，不影响其它扩展与本次工具调用。
-	/// </summary>
 	public JsonObject Dispatch(string @event, JsonObject payload)
 	{
 		if (_disposed)
@@ -364,7 +340,6 @@ public sealed class ExtensionHost : IDisposable
 		state.Engine!.Invoke("piweftCallHandler", @event, json);
 	}
 
-	/// <summary>在扩展线程上调用某个扩展工具的实现并取回 JSON 结果。</summary>
 	internal Task<string> InvokeToolByNameAsync(ExtensionState state, string toolName, string argumentsJson)
 	{
 		var worker = state.Worker ?? throw new ObjectDisposedException(nameof(ExtensionHost));
@@ -383,7 +358,6 @@ public sealed class ExtensionHost : IDisposable
 		return engine.Invoke("piweftToolResult").AsString();
 	}
 
-	/// <summary>运行一个扩展注册的斜杠命令。</summary>
 	public void RunCommand(string name, string argument)
 	{
 		foreach (var state in _states)
@@ -570,7 +544,6 @@ public sealed class ExtensionHost : IDisposable
 			""");
 	}
 
-	/// <summary>宿主侧的 JS 注册表：处理器与命令函数存在这里，宿主按名字回调。</summary>
 	private const string HandlerRegistry = """
 		// 扩展按 pi 的约定写 `module.exports = function (pi) {...}`；宿主不提供 require/imports，
 		// 但必须提供 module/exports 这两个名字，否则扩展第一行就 "module is not defined"。
@@ -653,7 +626,6 @@ public sealed class ExtensionHost : IDisposable
 			}
 		}
 
-		/// <summary>三态确认：null = 宿主不支持或取消，与「用户答否」必须区分。</summary>
 		bool? AskBool(Func<IUiHost, CancellationToken, Task<bool?>> ask)
 		{
 			if (host is not { HasUi: true })
@@ -742,11 +714,9 @@ public sealed class ExtensionHost : IDisposable
 		}));
 	}
 
-	/// <summary>
 	/// 处理器返回 Promise 时明确报告。异步支持要等事件循环泵接进宿主；在那之前把
 	/// <c>[object Promise]</c> 当成结果交给模型，是最难排查的一种静默错误。
-	/// <para>Jint 直接给了 <c>IsPromise()</c>，不用靠探测 <c>then</c> 属性猜。</para>
-	/// </summary>
+	/// Jint 直接给了 <c>IsPromise()</c>，不用靠探测 <c>then</c> 属性猜。
 	private static void RejectPromise(JsValue? value, string what, ExtensionState state)
 	{
 		if (value is not null && value.IsPromise())
@@ -783,7 +753,6 @@ public sealed class ExtensionHost : IDisposable
 		}
 	}
 
-	/// <summary>扩展工具结果的形状：<c>{ text }</c> / <c>{ content: [...] }</c> / <c>{ isError, error }</c>，或直接一个字符串。</summary>
 	private static AgentToolResult ToToolResult(string json)
 	{
 		JsonNode? node;

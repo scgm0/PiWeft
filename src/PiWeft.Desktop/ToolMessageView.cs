@@ -4,7 +4,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>工具行只构造摘要；首次展开才解析补丁、创建可选择输出，并复用展开内容。</summary>
 internal sealed class ToolMessageView
 {
 	public ToolMessageView(ChatEntry entry, TextFocusScrollGuard focus, Action<ImageSource>? preview = null)

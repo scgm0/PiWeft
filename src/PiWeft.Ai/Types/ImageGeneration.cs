@@ -2,13 +2,11 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai;
 
-/// <summary>生图请求的输入，对应 pi 的 <c>ImagesContext</c>。</summary>
 public sealed record ImageGenerationRequest
 {
 	public IReadOnlyList<ContentBlock> Input { get; init; } = [];
 }
 
-/// <summary>一次生图的结果。失败也通过结果返回，而不是抛异常。</summary>
 public sealed record ImageGenerationResult
 {
 	public string Api { get; init; } = string.Empty;
@@ -30,7 +28,6 @@ public sealed record ImageGenerationResult
 	public long Timestamp { get; init; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 }
 
-/// <summary>一种生图 API 的实现，按 <see cref="Api"/> 索引。</summary>
 public interface IImageApiProvider
 {
 	string Api { get; }
@@ -42,7 +39,6 @@ public interface IImageApiProvider
 		CancellationToken cancellationToken = default);
 }
 
-/// <summary>按模型声明的 <c>api</c> 分发到生图实现；与聊天网关分开，避免污染流式接口。</summary>
 public sealed class ImagesGateway
 {
 	private readonly Dictionary<string, IImageApiProvider> _providers = new(StringComparer.Ordinal);
@@ -76,7 +72,6 @@ public sealed class ImagesGateway
 	}
 }
 
-/// <summary>把 JSON 节点安全地转成文本/数字/数组，供各 provider 复用。</summary>
 internal static class ImageJson
 {
 	public static string? String(JsonNode? node) =>

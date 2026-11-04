@@ -5,11 +5,9 @@ using Xunit;
 
 namespace PiWeft.Mcp.Tests;
 
-/// <summary>
 /// <see cref="McpLogin"/> 是 CLI（<c>pi mcp login</c>）与桌面配置页共用的授权入口。
 /// 这里钉住三件事：分支选择（客户端凭据 vs 浏览器授权码）、令牌落盘位置、
 /// 以及状态查询（未授权 / 已授权 / 已过期）——界面上的三个按钮文案全靠它。
-/// </summary>
 public sealed class McpLoginTests : IDisposable
 {
 	private const string Endpoint = "https://mcp.example/mcp";
@@ -35,7 +33,6 @@ public sealed class McpLoginTests : IDisposable
 			Content = new StringContent(node.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
 		};
 
-	/// <summary>标准的发现链：protected-resource → authorization-server → token。</summary>
 	private static ScriptedHttpHandler Discovery(Func<HttpResponseMessage>? token = null) => new()
 	{
 		Responder = (request, _) => request.RequestUri!.AbsolutePath switch
@@ -82,10 +79,8 @@ public sealed class McpLoginTests : IDisposable
 		Assert.Equal("cc-1", McpOAuthStore.Load(Endpoint, _agentDir)!.Access);
 	}
 
-	/// <summary>
 	/// 浏览器授权码流要**等回调**才返回：这段等待必须可取消，否则用户在界面上关掉弹窗
 	/// 之后，后台任务会一直挂着（回环端口也一直被占）。
-	/// </summary>
 	[Fact]
 	public async Task BrowserFlowHandsTheAuthorizeUrlToTheHostAndHonoursCancellation()
 	{

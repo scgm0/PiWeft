@@ -3,10 +3,8 @@ using System.Threading.Channels;
 
 namespace PiWeft.Ai;
 
-/// <summary>
 /// 基于推送的异步事件流，并带一个最终结果。消费方用 <c>await foreach</c> 迭代，
 /// 生产方用 <see cref="Push"/> 推送、用 <see cref="End"/> 结束。
-/// </summary>
 public class EventStream<T, TResult> : IAsyncEnumerable<T>
 {
 	private readonly Channel<T> _channel = Channel.CreateUnbounded<T>(new UnboundedChannelOptions
@@ -29,7 +27,6 @@ public class EventStream<T, TResult> : IAsyncEnumerable<T>
 		_extractResult = extractResult;
 	}
 
-	/// <summary>最终结果，由终止事件或 <see cref="End"/> 结算。</summary>
 	public Task<TResult> Result => _result.Task;
 
 	public bool IsDone => Volatile.Read(ref _done) != 0;
@@ -53,7 +50,6 @@ public class EventStream<T, TResult> : IAsyncEnumerable<T>
 		_channel.Writer.TryWrite(@event);
 	}
 
-	/// <summary>在没有终止事件的情况下结束流。</summary>
 	public void End()
 	{
 		if (Interlocked.Exchange(ref _done, 1) != 0)
@@ -64,7 +60,6 @@ public class EventStream<T, TResult> : IAsyncEnumerable<T>
 		_channel.Writer.TryComplete();
 	}
 
-	/// <summary>结束流并显式给出结果。</summary>
 	public void End(TResult result)
 	{
 		if (Interlocked.Exchange(ref _done, 1) == 0)
@@ -75,7 +70,6 @@ public class EventStream<T, TResult> : IAsyncEnumerable<T>
 		_result.TrySetResult(result);
 	}
 
-	/// <summary>让流失败；已经推送的事件仍会被消费完。</summary>
 	public void Fail(Exception exception)
 	{
 		if (Interlocked.Exchange(ref _done, 1) == 0)
@@ -95,10 +89,8 @@ public class EventStream<T, TResult> : IAsyncEnumerable<T>
 	}
 }
 
-/// <summary>
 /// 一次助手回复的事件流，同时负责计时：最终消息会带上 <c>durationMs</c>，
 /// 用单调时钟从流创建时刻起算；若消息已自带该字段，或它的时间戳早于流创建，则不改动。
-/// </summary>
 public sealed class AssistantMessageEventStream : EventStream<AssistantMessageEvent, AssistantMessage>
 {
 	private readonly long _startedAtWallClock = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();

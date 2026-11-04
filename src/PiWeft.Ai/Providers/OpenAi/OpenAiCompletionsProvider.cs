@@ -7,15 +7,12 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>
 /// OpenAI 兼容的 Chat Completions API（<c>openai-completions</c>）的流式适配器，既覆盖 OpenAI 本身，
 /// 也覆盖所有使用同一线格式的服务端：DeepSeek、Groq、xAI、OpenRouter、Mistral、vLLM、llama.cpp、Ollama。
-/// </summary>
 public sealed class OpenAiCompletionsProvider : IApiProvider
 {
 	public const string ApiId = "openai-completions";
 
-	/// <summary>目录里 <c>compat.thinkingFormat</c> 的取值：用 <c>thinking.type</c> 开关思考。</summary>
 	private const string DeepSeekThinkingFormat = "deepseek";
 
 	private const string ThinkingEnabled = "enabled";
@@ -198,11 +195,9 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		return request;
 	}
 
-	/// <summary>
 	/// 用 <c>thinking.type</c> 显式开关思考的端点在「关闭」时返回 <c>disabled</c>，
 	/// 其余思考档位返回 <c>enabled</c>；没有这个开关的端点返回 <c>null</c>。
 	/// 目录里 <c>off: null</c> 表示「省略思考参数即关闭」，此时按 pi 的做法不下发开关。
-	/// </summary>
 	internal static string? ResolveThinkingMode(Model model, StreamOptions options)
 	{
 		if (!model.Reasoning || !UsesThinkingSwitch(model))
@@ -220,16 +215,13 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		return offDeclaredAsOmitted ? null : ThinkingDisabled;
 	}
 
-	/// <summary>
 	/// 目录用 <c>compat.thinkingFormat</c> 声明思考字段的形状。<c>deepseek</c> 默认开启思考，
 	/// 只发 <c>reasoning_effort</c> 关不掉它，必须带上 <c>thinking.type</c>。
-	/// </summary>
 	internal static bool UsesThinkingSwitch(Model model) =>
 		model.Compat?["thinkingFormat"] is JsonValue value &&
 		value.TryGetValue<string>(out var format) &&
 		string.Equals(format, DeepSeekThinkingFormat, StringComparison.Ordinal);
 
-	/// <summary>把 pi 的思考级别映射到 provider 的 <c>reasoning_effort</c>；返回 <c>null</c> 表示不带该字段。</summary>
 	internal static string? ResolveReasoningEffort(Model model, StreamOptions options)
 	{
 		if (!model.Reasoning)

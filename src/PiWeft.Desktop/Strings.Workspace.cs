@@ -14,7 +14,6 @@ public static partial class Strings
 	public const string StatisticsContext = "上下文";
 	public const string ToggleSidebar = "展开 / 收起项目侧栏";
 
-	/// <summary>会话的右侧面板：文件 / Git / 终端都停靠在这里，默认收起。</summary>
 	public const string OpenRightPanel = "打开右侧边栏";
 	public const string CloseRightPanel = "关闭右侧边栏";
 	public const string RightPanel = "右侧边栏";
@@ -61,7 +60,6 @@ public static partial class Strings
 	public const string SidebarTabChats = "对话";
 	public const string SidebarTabProjects = "项目";
 
-	/// <summary>「对话」为空时的引导：这里不是全部会话的平铺，而是没有项目上下文的聊天目录。</summary>
 	public const string ChatsEmpty = "还没有对话。这里的会话不属于任何项目，点「新建」开始一个。";
 	public static string ChatWorkspaceFailed(string reason) => $"无法使用聊天目录：{reason}";
 	public const string AddProject = "添加项目";
@@ -70,7 +68,6 @@ public static partial class Strings
 	public const string ProjectMenuRemove = "移除";
 	public const string ProjectMenuReveal = "查看文件";
 	public const string ProjectMenuNewTask = "新建任务";
-	/// <summary>页脚入口的短标签：完整说明在悬浮提示里，文字不参与撑宽页脚布局。</summary>
 	public const string SidebarGit = "Git";
 	public const string BackToWorkspace = "返回工作区";
 	public const string MoreActions = "更多操作";

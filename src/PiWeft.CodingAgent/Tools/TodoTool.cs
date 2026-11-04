@@ -6,36 +6,26 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>待办项；状态取值 <c>pending</c>、<c>in_progress</c>、<c>completed</c>。</summary>
 public sealed record TodoItem(int Id, string Text, string Status);
 
-/// <summary>一个待办计划；条目至少一条。</summary>
 public sealed record TodoPlan(int Id, IReadOnlyList<TodoItem> Items);
 
-/// <summary>
 /// 与 PiDeck 的 <c>pi-deck-todo-state.ts</c> 对齐的 v3 快照。
 /// <c>PreviousPlan</c> 是最近一次被 <c>replace</c> 取代的计划，供 <c>restore</c> 使用。
-/// </summary>
 public sealed record TodoState(TodoPlan? ActivePlan, TodoPlan? PreviousPlan, int NextPlanId, int NextTodoId)
 {
 	public static TodoState Empty { get; } = new(null, null, 1, 1);
 }
 
-/// <summary>
 /// 原生 <c>todo</c> 工具：用与 PiDeck 相同的 v3 自定义条目（<c>customType: "pi-deck-todo"</c>）
 /// 持久化当前分支的待办计划。
-/// <para>
 /// 设计要点与 PiDeck 一致：状态只在显式工具调用时改变；计划的最新视图由**本次变更的
 /// toolResult** 携带（append-only，不打断提示前缀缓存），不做每轮注入。切换分支时从该分支
 /// 的最后一个合法快照重建，因此旧分支的计划自动恢复。
-/// </para>
-/// </summary>
 public static class TodoTool
 {
-	/// <summary>PiDeck 使用的快照条目类型。</summary>
 	public const string EntryType = "pi-deck-todo";
 
-	/// <summary>工具名。</summary>
 	public const string Name = "todo";
 
 	private const int MaxTextLength = 1000;
@@ -46,7 +36,6 @@ public static class TodoTool
 	private static readonly string[] Statuses = ["pending", "in_progress", "completed"];
 	private static readonly string[] Actions = ["list", "add", "update", "delete", "replace", "restore", "clear"];
 
-	/// <summary>构建工具。<paramref name="session"/> 返回当前会话（可能因切换会话而变化）。</summary>
 	public static BuiltinTool Create(Func<SessionManager?> session) => new(
 		new AgentTool
 		{
@@ -137,10 +126,8 @@ public static class TodoTool
 		return AgentToolResult.Text(text.ToString());
 	}
 
-	/// <summary>从当前分支最后一个合法 v3 快照重建状态；无快照视为空计划。</summary>
 	public static TodoState Current(SessionManager session) => Reconstruct(session);
 
-	/// <summary>从当前分支最后一个合法 v3 快照重建状态；无快照视为空计划。</summary>
 	private static TodoState Reconstruct(SessionManager session)
 	{
 		JsonNode? latest = null;
@@ -155,9 +142,7 @@ public static class TodoTool
 		return Decode(latest) ?? TodoState.Empty;
 	}
 
-	// ------------------------------------------------------------------ 解码 / 编码
 
-	/// <summary>解码 v3 快照；版本不符或任一计划非法时返回 <c>null</c>（视为无计划，不迁移）。</summary>
 	public static TodoState? Decode(JsonNode? data)
 	{
 		if (data is not JsonObject obj || PositiveInt(obj["version"]) != 3)
@@ -251,7 +236,6 @@ public static class TodoTool
 		return new TodoItem(id.Value, text, status);
 	}
 
-	/// <summary>编码 v3 快照，字段与 PiDeck 完全一致。</summary>
 	public static JsonObject Encode(TodoState state)
 	{
 		var obj = new JsonObject { ["version"] = 3 };
@@ -281,7 +265,6 @@ public static class TodoTool
 		})]),
 	};
 
-	// ------------------------------------------------------------------ reducer
 
 	private sealed record Outcome(
 		bool Ok,
@@ -577,7 +560,6 @@ public static class TodoTool
 		return true;
 	}
 
-	// ------------------------------------------------------------------ 输出
 
 	private static string ResultText(string action, Outcome result) => action switch
 	{
@@ -613,7 +595,6 @@ public static class TodoTool
 	private static string CountSuffix(int count) =>
 		count == 1 ? " (1 todo in plan)" : $" ({count} todos in plan)";
 
-	/// <summary>模型可见的计划正文：首行统计 + 每行 <c>[status] #id: text</c>。</summary>
 	public static string FormatPlan(TodoPlan? plan)
 	{
 		if (plan is null)
@@ -656,7 +637,6 @@ public static class TodoTool
 		return builder.ToString();
 	}
 
-	// ------------------------------------------------------------------ JSON 辅助
 
 	private static int? PositiveInt(JsonNode? node)
 	{

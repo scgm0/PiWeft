@@ -1,22 +1,16 @@
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 状态条右侧的功能提示轮播（PiDeck 的 <c>RespondingTips</c> 同义）。
-///
 /// 等待期是用户唯一的注意力空档：回复还没字可看，中断又太早。用这一行曝光
 /// 「没有可见入口」的能力——命令面板、排队发送、@ 引用、提示音。
-///
 /// 收录规则（照 PiDeck）：
 /// 1. 只写本应用真的做得到的事，能给出入口的才写；
 /// 2. 键位不写死，只记动作标识，实际按键由生效的 <see cref="ShortcutMap"/> 渲染，用户改过键也不会说错；
 /// 3. 一条一行、超长截断：它是旁注，不能把状态条撑宽。
-/// </summary>
 internal static class RespondingTips
 {
-	/// <summary>一条提示：正文里的 <see cref="Strings.RespondingTipShortcutToken"/> 换成生效键位。</summary>
 	internal readonly record struct Tip(string Text, string? ShortcutId);
 
-	/// <summary>轮播步进：比状态短语的 1.8s 慢一个量级，两处文字同时跳会很吵。</summary>
 	public const double TipStepMs = 7000;
 
 	private static readonly Tip[] Entries =
@@ -33,21 +27,17 @@ internal static class RespondingTips
 		new("设置 → 提示音：回复完成或出错时响一声，长任务不用盯着屏幕", null),
 	];
 
-	/// <summary>
 	/// 随机起点：短等待往往撑不过一整轮，固定从第一条开始等于只有第一条有曝光。
 	/// 进程内一次抽样，每回合再用回合起点错开一次；之后按本回合已用时间推进，
 	/// 同一回合内读起来就是稳定的轮播，而不是每一拍乱跳。
-	/// </summary>
 	private static readonly int _offset = Random.Shared.Next(Entries.Length);
 
-	/// <summary>读偏好（设置页关掉就不再出现）；测试可注入。</summary>
 	public static Func<bool> EnabledProvider { get; set; } = static () => ReadPreference();
 
-	/// <summary>键位表；窗口没建起来时（单测、自检）用默认绑定。</summary>
 	public static Func<ShortcutMap> BindingsProvider { get; set; } = static () => ShortcutMap.Shared;
 
-	/// <summary>是否显示提示本身（不影响提示里提到的功能）。首次读取后缓存，设置页保存时调
-	/// <see cref="Invalidate"/> 失效：状态条一秒要问好几次，不能每次去碰一下 desktop.json。</summary>
+	/// 是否显示提示本身（不影响提示里提到的功能）。首次读取后缓存，设置页保存时调
+	/// <see cref="Invalidate"/> 失效：状态条一秒要问好几次，不能每次去碰一下 desktop.json。
 	public static bool Enabled
 	{
 		get
@@ -91,14 +81,11 @@ internal static class RespondingTips
 	private static bool _cached = true;
 	private static bool _loaded;
 
-	/// <summary>让下一次读取立刻反映新的偏好（设置页保存后调用，单测也用它重置）。</summary>
 	public static void Invalidate() => Volatile.Write(ref _loaded, false);
 
-	/// <summary>
 	/// 当前这一条提示：<paramref name="elapsedMs"/> 是本回合已用时间，<paramref name="turnSeed"/> 是
 	/// 本回合的单调起点（同一回合内稳定，换一回合换一个相位）。关掉开关或没有可说的内容时返回 null，
 	/// 状态条那一段整块不占位。
-	/// </summary>
 	public static string? Current(double elapsedMs, long turnSeed = 0)
 	{
 		if (!Enabled || Entries.Length == 0)
@@ -113,7 +100,6 @@ internal static class RespondingTips
 		return Render(Entries[index]);
 	}
 
-	/// <summary>取第 <paramref name="index"/> 条（诊断与单测用的确定入口）。</summary>
 	public static string? At(int index)
 	{
 		if (index < 0 || index >= Entries.Length)

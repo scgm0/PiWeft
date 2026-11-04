@@ -3,7 +3,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Readable overview by default; detailed counters are opt-in and updated in place.</summary>
 public sealed class SessionStatisticsPanel
 {
 	private readonly StackPanel _body = new();

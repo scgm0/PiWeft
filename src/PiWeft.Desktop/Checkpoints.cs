@@ -3,38 +3,27 @@ using System.Globalization;
 
 namespace PiWeft.Desktop;
 
-/// <summary>一个工作区检查点。</summary>
 public sealed record Checkpoint(string Id, string Sha, DateTimeOffset Created, string Label);
 
-/// <summary>
 /// D-05：工作区检查点与回滚（移植 pi-rewind 的思路）。
-/// <para>
 /// 快照写入 git 低层引用 <c>refs/pi-checkpoints/&lt;id&gt;</c>，不产生用户可见的分支或提交：
 /// 用临时索引把工作区（含未跟踪文件，尊从 .gitignore）写成 tree，再 <c>commit-tree</c> 成对象。
 /// 恢复只回写文件（<c>git restore --worktree</c>），不改变索引、HEAD 或分支；
 /// 快照之后新增的未跟踪文件会保留，需要时应自行清理。
-/// </para>
-/// </summary>
 public static class Checkpoints
 {
 	public const string RefPrefix = "refs/pi-checkpoints/";
 
-	/// <summary>默认保留的检查点数量，超出后按时间清理最旧的。</summary>
 	public const int DefaultRetention = 50;
 
-	/// <summary>
 	/// 变更概览最多渲染的行数。`git diff --stat` 正常是「文件数」那么多行；
 	/// 遇到几千个文件的生成物提交时，仍然要给文本控件一个上界。
-	/// </summary>
 	public const int MaxStatLines = 2000;
 
-	/// <summary>每个工作目录最近一次自动快照的时间，用于限频。</summary>
 	private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> LastAuto = new(StringComparer.Ordinal);
 
-	/// <summary>
 	/// 发送提示前的自动快照：同一个工作目录每 <paramref name="minInterval"/> 最多一次，
 	/// 且只在工作区确实有改动时创建，避免为干净仓库堆一组空检查点。
-	/// </summary>
 	public static Checkpoint? AutoSnapshot(string cwd, TimeSpan minInterval)
 	{
 		var full = Path.GetFullPath(cwd);
@@ -63,7 +52,6 @@ public static class Checkpoints
 		return checkpoint;
 	}
 
-	/// <summary>创建一个覆盖当前工作区的检查点；失败时返回 <c>null</c>。</summary>
 	public static Checkpoint? Create(string cwd, string label = "")
 	{
 		var index = Path.Combine(Path.GetTempPath(), "piweft-index-" + Guid.NewGuid().ToString("N")[..12]);
@@ -125,7 +113,6 @@ public static class Checkpoints
 		}
 	}
 
-	/// <summary>列出检查点，最新的在前。</summary>
 	public static IReadOnlyList<Checkpoint> List(string cwd, int limit = DefaultRetention)
 	{
 		var result = Run(cwd, ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(creatordate:iso-strict)%09%(subject)", RefPrefix]);
@@ -166,11 +153,9 @@ public static class Checkpoints
 		return checkpoints.Count <= limit ? checkpoints : checkpoints.Take(limit).ToList();
 	}
 
-	/// <summary>
 	/// 检查点相对当前工作区的逐文件变更概览（`git diff --stat`）。
 	/// 回退预览默认展示它而不是完整补丁：340 个文件的补丁有 5 万多行，
 	/// 一次性建文本控件会把面板拖死；概览只有文件数那么多行，完整补丁交给编辑器。
-	/// </summary>
 	public static (string Stat, string? Error) Stat(string cwd, string sha)
 	{
 		if (sha.Length == 0)
@@ -201,7 +186,6 @@ public static class Checkpoints
 		return string.Join('\n', lines.Take(maxLines)) + $"\n…（仅显示前 {maxLines} 行）";
 	}
 
-	/// <summary>检查点相对当前工作区的完整补丁，供「在编辑器中打开」使用（上限 16 MiB）。</summary>
 	public static (string Patch, string? Error) Patch(string cwd, string sha)
 	{
 		if (sha.Length == 0)
@@ -213,7 +197,6 @@ public static class Checkpoints
 		return result.Ok ? (result.Output, null) : (string.Empty, result.Output);
 	}
 
-	/// <summary>检查点相对当前工作区的变更摘要（`3 files changed, …`）；无差异时返回空串。</summary>
 	public static (string Summary, string? Error) ShortStat(string cwd, string sha)
 	{
 		if (sha.Length == 0)
@@ -225,7 +208,6 @@ public static class Checkpoints
 		return result.Ok ? (result.Output.Trim(), null) : (string.Empty, result.Output);
 	}
 
-	/// <summary>把工作区恢复成某个检查点的内容；返回错误信息，成功时为 <c>null</c>。</summary>
 	public static string? Restore(string cwd, string sha)
 	{
 		if (sha.Length == 0)
@@ -237,7 +219,6 @@ public static class Checkpoints
 		return result.Ok ? null : result.Output;
 	}
 
-	/// <summary>按保留上限清理最旧的检查点，返回删除数量。</summary>
 	public static int Prune(string cwd, int keep = DefaultRetention)
 	{
 		var all = List(cwd, int.MaxValue);
@@ -253,7 +234,6 @@ public static class Checkpoints
 		return removed;
 	}
 
-	/// <summary>运行一条 git 命令，合并 stdout/stderr，超时与输出都有界。</summary>
 	private static (string Output, bool Ok) Run(
 		string cwd,
 		string[] arguments,

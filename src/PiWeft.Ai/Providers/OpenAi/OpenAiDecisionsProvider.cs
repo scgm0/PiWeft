@@ -5,7 +5,6 @@ using PiWeft.Ai.Json;
 
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>OpenAI Decisions 分类 API；对应 pi 的 <c>openai-decisions</c>。</summary>
 public sealed class OpenAiDecisionsProvider : IClassifierApiProvider
 {
 	public const string ApiId = "openai-decisions";

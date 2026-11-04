@@ -6,7 +6,6 @@ using ZLogger;
 
 namespace PiWeft.Desktop;
 
-/// <summary>内置预设音效：与 PiDeck 的 SOUND_ALERT_PRESETS 一一对应。</summary>
 public enum SoundAlertPreset
 {
 	DoneChime,
@@ -18,34 +17,26 @@ public enum SoundAlertPreset
 	WaitingKnock,
 }
 
-/// <summary>
 /// 提示音播放器：把嵌入的 WAV 落到 <c>&lt;agentDir&gt;/sounds/</c> 缓存，按 PCM 交给
 /// <see href="https://github.com/oldbit-com/Beep">OldBit.Beep</see> 播放
 /// （Windows WASAPI、macOS AudioToolbox、Linux ALSA，都是系统框架，无随包原生库）。
-///
 /// 选择 Beep 而不是平台命令或更大的音频引擎：它只有 64 KB、纯 P/Invoke、
 /// 三个平台的正式后端齐全，音量内建；PiDeck 那种「一个短提示音」的需求用不上
 /// 引擎级的混音/录音能力。平台命令（paplay / afplay / winmm）保留为兜底：
 /// Linux 缺 libasound、容器里没有音频服务、或 Beep 初始化失败时仍然有声音。
-///
 /// 设备生命周期：Beep 在构造时打开音频设备、<c>Stop</c> 时关闭。提示音频率很低，
 /// 所以每次播放构造一个实例、播完即弃——空闲时不占音频设备，代价是每次
 /// 10–50 ms 的开关设备延迟，对提示音完全够用。
-/// </summary>
 internal static partial class SoundPlayer
 {
-	/// <summary>出厂音量（与 PiDeck 一致）。</summary>
 	internal const double DefaultVolume = 0.6;
 
-	/// <summary>播放命令的探测结果：null 表示本机没有可用播放器（回退路径也走不通）。</summary>
 	private static readonly Lazy<(string Command, string[] Args)?> Backend = new(DetectBackend);
 
 	private static readonly string[] LinuxPlayers = ["paplay", "pw-play", "aplay"];
 
-	/// <summary>预设对应的嵌入资源名（csproj 会把 Resources/sounds/*.wav 打进程序集）。</summary>
 	internal static string ResourceName(SoundAlertPreset preset) => "PiWeft.Desktop.Resources.sounds." + FileName(preset);
 
-	/// <summary>预设对应的文件名，与 PiDeck 的 SOUND_ALERT_PRESETS 一致。</summary>
 	internal static string FileName(SoundAlertPreset preset) => preset switch
 	{
 		SoundAlertPreset.DoneChime => "done-chime.wav",
@@ -57,15 +48,11 @@ internal static partial class SoundPlayer
 		_ => "waiting-knock.wav",
 	};
 
-	/// <summary>同一时间只让一个提示音持有音频设备：连续触发时排队，而不是互相抢设备。</summary>
 	private static readonly SemaphoreSlim Gate = new(1, 1);
 
-	/// <summary>
 	/// 播放指定预设；<paramref name="volume"/> 取 0–1。任何失败都不向调用方抛。
-	///
 	/// 播放要开关音频设备并等音效放完（最多 1 秒），所以在 UI 线程上只投递、不等待：
 	/// 会话完成事件与设置页试听都从 UI 线程来，同步等会把界面冻住。
-	/// </summary>
 	public static void Play(SoundAlertPreset preset, double volume)
 	{
 		var level = ClampVolume(volume);
@@ -125,18 +112,14 @@ internal static partial class SoundPlayer
 		}
 	}
 
-	/// <summary>音量给 0–1，非法值按 0.6 处理（与 PiDeck 的 clampSoundVolume 一致）。</summary>
 	internal static double ClampVolume(double volume) =>
 		double.IsFinite(volume) ? Math.Clamp(volume, 0, 1) : DefaultVolume;
 
-	/// <summary>回调音量百分比（5% 步进）：回退路径用同一档位的缩放副本。</summary>
 	internal static int VolumePercent(double volume) =>
 		(int)Math.Round(ClampVolume(volume) * 20) * 5;
 
-	/// <summary>
 	/// 播放缓存路径：首次从嵌入资源落一份原始 WAV 到 <c>&lt;agentDir&gt;/sounds/</c>。
 	/// 返回 null 表示嵌入资源缺失（构建裁剪掉了），此时静默不播。
-	/// </summary>
 	internal static string? CachedPath(SoundAlertPreset preset, string? agentDir = null)
 	{
 		var directory = Path.Combine(agentDir ?? CodingAgent.Session.SessionPaths.GetAgentDir(), "sounds");
@@ -173,10 +156,8 @@ internal static partial class SoundPlayer
 		return path;
 	}
 
-	/// <summary>
 	/// 回退路径的缩放副本（5% 步进复用）。只在 Beep 不可用时生成，
 	/// 所以正常情况下缓存目录里只有原始 WAV。
-	/// </summary>
 	internal static string? ScaledPath(SoundAlertPreset preset, string source, double volume)
 	{
 		var percent = VolumePercent(volume);
@@ -204,10 +185,8 @@ internal static partial class SoundPlayer
 		}
 	}
 
-	/// <summary>
 	/// 16-bit PCM 采样缩放：只改 data 块里的样本，头部原样保留。
 	/// 遇到非 16-bit / 非 PCM 的文件直接复制（宁可响得比设置响，也不要没声）。
-	/// </summary>
 	internal static void ScaleWav(string source, string destination, double factor)
 	{
 		var bytes = File.ReadAllBytes(source);
@@ -228,10 +207,8 @@ internal static partial class SoundPlayer
 		File.WriteAllBytes(destination, bytes);
 	}
 
-	/// <summary>
 	/// 用 Beep 播一次。返回 false 表示本机没有可用设备/后端，调用方应回退到平台命令。
 	/// <paramref name="silent"/> 为 true 时走 Beep 的静音后端（无头测试用：验证解析与调用链，不碰设备）。
-	/// </summary>
 	internal static bool TryPlayWithBeep(string path, double volume, bool silent = false)
 	{
 		var audio = WavAudio.Parse(File.ReadAllBytes(path));
@@ -359,7 +336,6 @@ internal static partial class SoundPlayer
 		return null;
 	}
 
-	/// <summary>在 PATH 里找可执行文件（不启动它）。</summary>
 	internal static string? FindOnPath(string command, string? path = null)
 	{
 		path ??= Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
@@ -390,18 +366,14 @@ internal static partial class SoundPlayer
 	}
 }
 
-/// <summary>
 /// 从 WAV 里取出 PCM 与格式：Beep 只吃裸样本，格式由构造参数给出。
 /// 只认 PCM（format=1）与 ≤32-bit 的位深；PiDeck 的预设都是 44.1 kHz / 单声道 / 16-bit。
-/// </summary>
 internal sealed record WavAudio(AudioFormat Format, int SampleRate, int Channels, byte[] Pcm, TimeSpan Duration)
 {
-	/// <summary>data 块在原文件里的偏移与长度（回退路径要就地缩放样本）。</summary>
 	public int DataOffset { get; init; }
 
 	public int DataLength => Pcm.Length;
 
-	/// <summary>解析 WAV；格式不认识时返回 null（调用方回退或跳过）。</summary>
 	public static WavAudio? Parse(byte[] bytes)
 	{
 		if (bytes.Length < 44 || bytes[0] != 'R' || bytes[1] != 'I' || bytes[2] != 'F' || bytes[3] != 'F')

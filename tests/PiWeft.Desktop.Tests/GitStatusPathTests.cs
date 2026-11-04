@@ -4,11 +4,9 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// D-04：真实仓库上的路径边界。中文、空格、emoji 文件名在 <c>git status</c> 的非 <c>-z</c> 输出里
 /// 会被八进制转义并加引号，按固定列解析会得到一串不存在的路径 —— 于是「点暂存没反应」「点开文件说没有」。
 /// 这里用真实 git 把这条钉住。
-/// </summary>
 public class GitStatusPathTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-gitpath-" + Guid.NewGuid().ToString("N")[..8]);

@@ -2,11 +2,9 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 专用解析器（结构特殊、声明式路径表达不了的响应）：
 /// 与 PiDeck 的 providerUsageCustom / providerUsageMinimax 一一对应，
 /// 新增此类供应商时在此注册，候选表写 <c>UsageParseKind.Custom</c>。
-/// </summary>
 internal static class UsageProbeResolvers
 {
 	public static UsageProbeResponse Parse(string resolver, JsonNode? body)
@@ -30,18 +28,15 @@ internal static class UsageProbeResolvers
 
 	// ── xAI ────────────────────────────────────────────────────────────────
 
-	/// <summary>xAI 金额字段是 { val: cents } 包装：取 val 除 100 得美元。</summary>
 	private static double? CentValue(JsonNode? node)
 	{
 		var cents = Number(node, "val");
 		return cents is null ? null : cents / 100;
 	}
 
-	/// <summary>
 	/// xAI consumer billing：config.creditUsagePercent 是套餐内额度占用百分比；
 	/// 没有百分比时回退 monthlyLimit/used（cent wrapper）成美元桶；
 	/// onDemandCap/onDemandUsed 是超出套餐的按需用量（美元）。
-	/// </summary>
 	private static UsageProbeResponse ParseXaiBilling(JsonObject body)
 	{
 		if (Box(body["config"]) is not { } config) return new(false);
@@ -68,10 +63,8 @@ internal static class UsageProbeResolvers
 
 	// ── OpenAI Codex ───────────────────────────────────────────────────────
 
-	/// <summary>
 	/// Codex wham/usage：rate_limit.primary/secondary_window 是 percent 桶，
 	/// credits.balance 是剩余点数（has_credits 时），unlimited 时没有具体余额。
-	/// </summary>
 	private static UsageProbeResponse ParseCodexUsage(JsonObject body)
 	{
 		var windows = new List<UsageWindow>();
@@ -93,17 +86,14 @@ internal static class UsageProbeResolvers
 
 	// ── Command Code ───────────────────────────────────────────────────────
 
-	/// <summary>Command Code 官方套餐定价：仅用于月度分母推算（5h/周 cap 组合全表唯一）。</summary>
 	private static readonly (double Monthly, double FiveHour, double Weekly)[] CommandCodePlans =
 	[
 		(10, 3, 6), (70, 14, 35), (80, 16, 40), (150, 45, 90), (300, 90, 180),
 	];
 
-	/// <summary>
 	/// Command Code /alpha/billing/credits：月度只有剩余额度（上限不在接口里），
 	/// 5h/周窗口的 used/cap 来自响应。月度分母按套餐表反查 + 双重校验，校验不过
 	/// 降级为「只显剩余不给百分比」（fail-closed）。
-	/// </summary>
 	private static UsageProbeResponse ParseCommandCode(JsonObject body)
 	{
 		var credits = Box(body["credits"]);
@@ -151,11 +141,9 @@ internal static class UsageProbeResolvers
 
 	// ── Kimi For Coding ────────────────────────────────────────────────────
 
-	/// <summary>
 	/// Kimi /usages：5h 滚动限制在 limits[]（window.duration/timeUnit + detail），
 	/// 周额度在 usage，月度会员限额在 totalQuota；独立 Boost 钱包不走这里，
 	/// 由声明式 booster 规格之外的固定路径解析（与 PiDeck 同一组路径）。
-	/// </summary>
 	private static UsageProbeResponse ParseKimiCredits(JsonObject body)
 	{
 		var windows = new List<UsageWindow>();
@@ -239,11 +227,9 @@ internal static class UsageProbeResolvers
 
 	// ── MiniMax Coding Plan ────────────────────────────────────────────────
 
-	/// <summary>
 	/// MiniMax /v1/token_plan/remains：model_remains 每行一个模型桶（general / video），
 	/// 各带 5h 滚动窗与周窗。鉴权失败也是 HTTP 200，只能看 base_resp.status_code。
 	/// 接口给「剩余百分比」，UI 要「已用」，所以翻转成 100 - remaining。
-	/// </summary>
 	private static UsageProbeResponse ParseMinimaxPlan(JsonObject body)
 	{
 		var status = Number(body, "base_resp.status_code");
@@ -289,11 +275,9 @@ internal static class UsageProbeResolvers
 
 	// ── Sub2API ────────────────────────────────────────────────────────────
 
-	/// <summary>
 	/// Sub2API 网关 GET /v1/usage：响应随计费形态分三支——钱包（顶层 balance + unit）、
 	/// 订阅（subscription 日/周/月 usage/limit 对）、key 额度（quota 三件套 + rate_limits[]）。
 	/// 面板 JWT 余额段（/api/v1/auth/me）不在此解析：PiWeft 只保留主用量。
-	/// </summary>
 	private static UsageProbeResponse ParseSub2ApiUsage(JsonObject root)
 	{
 		var unit = UsageJson.TextAt(root, "unit");

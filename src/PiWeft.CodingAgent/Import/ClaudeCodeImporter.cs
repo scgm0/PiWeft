@@ -5,18 +5,12 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Import;
 
-/// <summary>
 /// Claude Code 会话导入（<c>~/.claude/projects/&lt;项目 slug&gt;/&lt;sessionId&gt;.jsonl</c>）。
-/// <para>
 /// 每行一条记录：<c>{"type":"user"|"assistant"|...,"message":{...},"cwd":..,"sessionId":..,"timestamp":..}</c>。
 /// <c>message.content</c> 是块数组：<c>text</c> / <c>thinking</c> / <c>tool_use</c> / <c>tool_result</c>。
-/// </para>
-/// <para>
 /// 跳过 <c>isSidechain</c>（子代理的旁支 transcript）与 <c>isMeta</c>（宿主注入的元信息，不是对话）。
 /// <c>tool_result</c> 块写在 user 行里，必须还原成 pi 的 <c>toolResult</c> 消息 ——
 /// 当成用户文本会让模型看到「工具输出」的原始 JSON，也会破坏 toolCall ↔ toolResult 的配对。
-/// </para>
-/// </summary>
 internal sealed class ClaudeCodeImporter : IExternalSessionImporter
 {
 	public string Key => "claude";
@@ -25,7 +19,6 @@ internal sealed class ClaudeCodeImporter : IExternalSessionImporter
 
 	public string ResolveRoot(string home) => Path.Combine(home, ".claude", "projects");
 
-	/// <summary>形如 <c>projects/&lt;slug&gt;/&lt;id&gt;.jsonl</c>；子目录也扫（有的版本按日期分层）。</summary>
 	public IReadOnlyList<string> Enumerate(string root)
 	{
 		var files = new List<string>();
@@ -145,10 +138,8 @@ internal sealed class ClaudeCodeImporter : IExternalSessionImporter
 		return entries;
 	}
 
-	/// <summary>
 	/// user 行可能同时承载「用户输入」与「工具结果」：一行里先有 tool_result 块、后有文本时，
 	/// 工具结果必须排在前面 —— 否则 user 气泡会插在 toolCall 与 toolResult 之间。
-	/// </summary>
 	private static string? AppendUser(
 		JsonObject record,
 		List<SessionEntry> entries,
@@ -375,7 +366,6 @@ internal sealed class ClaudeCodeImporter : IExternalSessionImporter
 		return id;
 	}
 
-	/// <summary>只取 user 行里「用户自己说的话」：text 块，不含 tool_result。</summary>
 	private static string UserText(JsonObject record)
 	{
 		var content = record["message"]?["content"];
@@ -402,7 +392,6 @@ internal sealed class ClaudeCodeImporter : IExternalSessionImporter
 		return string.Join("\n", parts).Trim();
 	}
 
-	/// <summary>把 tool_result 的 content（字符串或块数组）摊平成文本。</summary>
 	private static string FlattenContent(JsonNode? node)
 	{
 		if (node is JsonValue value && value.TryGetValue<string>(out var single))
@@ -467,7 +456,6 @@ internal sealed class ClaudeCodeImporter : IExternalSessionImporter
 		};
 	}
 
-	/// <summary>Claude 的项目 slug 是路径编码：<c>-home-user-repo</c>；拿不到 cwd 时据此还原。</summary>
 	private static string? CwdFromProjectSlug(string path)
 	{
 		var directory = Path.GetDirectoryName(path);

@@ -6,26 +6,20 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Import;
 
-/// <summary>
 /// 一个可导入的外部会话（只读摘要）。<see cref="Source"/> + <see cref="SessionId"/> 唯一确定一条，
 /// 列表与命令行都用它们挑目标 —— 传路径也行，但用户手上通常只有「第 3 条 Claude 会话」这种信息。
-/// </summary>
 public sealed record ImportedSession
 {
-	/// <summary>来源标识（<c>claude</c> / <c>codex</c>）。</summary>
 	public required string Source { get; init; }
 
 	public required string SourceLabel { get; init; }
 
 	public required string SessionId { get; init; }
 
-	/// <summary>源 transcript 的绝对路径。</summary>
 	public required string SourcePath { get; init; }
 
-	/// <summary>源会话的工作目录；决定导入后的会话落在哪个项目下。</summary>
 	public required string Cwd { get; init; }
 
-	/// <summary>标题：优先源会话自己的标题，其次首条用户消息的第一行。</summary>
 	public string Title { get; init; } = string.Empty;
 
 	public DateTimeOffset Created { get; init; }
@@ -35,10 +29,8 @@ public sealed record ImportedSession
 	public long Size { get; init; }
 }
 
-/// <summary>一个来源的可用性概览（<c>pi import</c> 的列表头）。</summary>
 public sealed record SessionImportSource(string Key, string Label, string Root, bool Exists, int Count);
 
-/// <summary>导入结果。<see cref="SessionFile"/> 为空表示没落盘。</summary>
 public sealed record SessionImportResult(
 	string? SessionFile,
 	string SessionId,
@@ -50,52 +42,35 @@ public sealed record SessionImportResult(
 	public static SessionImportResult Failure(string error) => new(null, string.Empty, 0, error);
 }
 
-/// <summary>
 /// 一种外部会话格式。<see cref="Convert"/> 只产出 pi v3 条目，落盘由 <see cref="SessionImportService"/> 统一做。
-/// </summary>
 public interface IExternalSessionImporter
 {
-	/// <summary>来源标识，决定 <c>pi import &lt;source&gt;</c> 的名字。</summary>
 	string Key { get; }
 
 	string Label { get; }
 
-	/// <summary>源会话库根目录（<paramref name="home"/> 是可注入的家目录，便于测试）。</summary>
 	string ResolveRoot(string home);
 
-	/// <summary>枚举根目录下的会话文件。要有界：有的工具会把几千个文件平铺在一个目录里。</summary>
 	IReadOnlyList<string> Enumerate(string root);
 
-	/// <summary>只读文件头部得到摘要；头部取不到元数据时返回 <see langword="null"/>（不进列表）。</summary>
 	ImportedSession? Describe(string path);
 
-	/// <summary>把源文件转成 pi v3 条目（不含会话头）。</summary>
 	IReadOnlyList<SessionEntry> Convert(ImportedSession session);
 }
 
-/// <summary>
 /// 外部会话导入：发现 → 转换 → 写成 pi v3 JSONL。
-/// <para>
 /// 落盘是原子的（同目录临时文件 + rename），并且**文件名由源会话的创建时间与 id 决定**，
 /// 所以重复导入同一条会话会覆盖上一次的产物而不是堆出副本 —— 源会话后来续聊了，重导一次就同步。
-/// </para>
-/// <para>
 /// 导入产物里会多一条 <c>custom</c> 条目记下来源（<c>piweft-import</c>），便于事后追溯是哪台工具的哪个文件，
 /// 也方便将来换转换器时判断哪些产物该重导。它不参与模型上下文。
-/// </para>
-/// </summary>
 public static class SessionImportService
 {
-	/// <summary>导入标记的 customType。</summary>
 	public const string MarkerType = "piweft-import";
 
-	/// <summary>转换器版本；产物有效性受转换逻辑影响时 +1，便于识别旧产物。</summary>
 	public const int ConverterVersion = 1;
 
-	/// <summary>摘要阶段只读这么多：源 transcript 动辄几十 MB，整读会把内存吃穿。</summary>
 	private const int HeadBytes = 256 * 1024;
 
-	/// <summary>单次列举的上限，防止一个平铺目录把界面/打印刷爆。</summary>
 	public const int MaxSessions = 500;
 
 	private static readonly IExternalSessionImporter[] AllImporters =
@@ -128,10 +103,8 @@ public static class SessionImportService
 		return sources;
 	}
 
-	/// <summary>
 	/// 列出可导入会话，最近的在前。<paramref name="projectPath"/> 非空时只留工作目录在该目录下的会话
 	/// （与 PiDeck 的「按项目导入」一致：用户在一次导入里只关心当前项目的历史）。
-	/// </summary>
 	public static IReadOnlyList<ImportedSession> Discover(
 		string sourceKey,
 		string? projectPath = null,
@@ -175,7 +148,6 @@ public static class SessionImportService
 		return [.. sessions.OrderByDescending(static session => session.Modified).Take(MaxSessions)];
 	}
 
-	/// <summary>全部来源的会话，最近的在前。</summary>
 	public static IReadOnlyList<ImportedSession> DiscoverAll(string? projectPath = null, string? home = null)
 	{
 		var all = new List<ImportedSession>();
@@ -187,10 +159,8 @@ public static class SessionImportService
 		return [.. all.OrderByDescending(static session => session.Modified)];
 	}
 
-	/// <summary>
 	/// 导入一条会话。返回的 <see cref="SessionImportResult.SessionFile"/> 是产物路径。
 	/// <paramref name="cwdOverride"/> 用于源会话记录的工作目录已经不存在时改投一个可用目录。
-	/// </summary>
 	public static SessionImportResult Import(
 		ImportedSession session,
 		string? sessionDir = null,
@@ -293,7 +263,6 @@ public static class SessionImportService
 		};
 	}
 
-	/// <summary>一行 JSONL：直接写字节，不经过中间字符串。</summary>
 	private static void WriteLine(Stream stream, Action<System.Text.Json.Utf8JsonWriter> write)
 	{
 		var buffer = new System.Buffers.ArrayBufferWriter<byte>(1024);
@@ -307,7 +276,6 @@ public static class SessionImportService
 		stream.Write("\n"u8);
 	}
 
-	/// <summary>同目录判断：Windows/macOS 大小写不敏感，Linux 敏感。</summary>
 	public static bool SameDirectory(string left, string right)
 	{
 		if (left.Length == 0 || right.Length == 0)
@@ -333,7 +301,6 @@ public static class SessionImportService
 
 	internal static string ToolPathsHome() => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-	/// <summary>读取文件头部若干字节；按最后一个换行截断，避免把半行当完整行解析。</summary>
 	internal static IReadOnlyList<JsonObject> ReadHeadObjects(string path, int maxBytes = HeadBytes)
 	{
 		using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -367,7 +334,6 @@ public static class SessionImportService
 		return ParseLines(text);
 	}
 
-	/// <summary>整文件逐行解析（导入阶段用：源文件大小已知，逐行流式读不整块进内存）。</summary>
 	internal static IEnumerable<JsonObject> ReadObjects(string path)
 	{
 		using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -424,7 +390,6 @@ public static class SessionImportService
 		return objects;
 	}
 
-	/// <summary>ISO 8601 / epoch 毫秒两路都认；解析不出来返回 <see langword="null"/>。</summary>
 	internal static DateTimeOffset? ParseTimestamp(JsonNode? node)
 	{
 		if (node is not JsonValue value)
@@ -450,7 +415,6 @@ public static class SessionImportService
 		return null;
 	}
 
-	/// <summary>取字符串字段；非字符串或缺失返回 <see langword="null"/>。</summary>
 	internal static string? Text(JsonNode? node, params ReadOnlySpan<string> path)
 	{
 		var current = node;
@@ -465,15 +429,12 @@ public static class SessionImportService
 		return current is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > 0 ? text : null;
 	}
 
-	/// <summary>
 	/// 布尔字段的真值判断。<c>isSidechain</c>/<c>isMeta</c> 这类标记是 JSON 布尔，
 	/// 用 <see cref="Text"/> 读会得到 <see langword="null"/> 而不是 <c>false</c> —— 那正好是
 	/// 「该跳过却没跳过」的来源。
-	/// </summary>
 	internal static bool IsTrue(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<bool>(out var flag) && flag;
 
-	/// <summary>标题取首行并截断：会话列表按单行展示，长标题会被裁掉。</summary>
 	internal static string TitleFromText(string? text, int maxLength = 80)
 	{
 		if (string.IsNullOrWhiteSpace(text))
@@ -486,10 +447,8 @@ public static class SessionImportService
 	}
 }
 
-/// <summary>
 /// 8 位十六进制 id 生成器，与 pi 自己的条目 id 同形态。
 /// 每次导入各建一个实例：只要在**当前文件内**唯一即可，跨文件不需要协调。
-/// </summary>
 internal sealed class ImportIds
 {
 	private readonly HashSet<string> _used = new(StringComparer.Ordinal);

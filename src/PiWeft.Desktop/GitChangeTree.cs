@@ -1,16 +1,13 @@
 namespace PiWeft.Desktop;
 
-/// <summary>变更列表的一行：目录行或文件行。</summary>
 internal enum GitTreeRowKind
 {
 	Directory,
 	File,
 }
 
-/// <summary>
 /// 变更列表的树形行。<see cref="Changes"/> 在目录行里是整棵子树的资源（目录级暂存/取消暂存
 /// 因此对整棵子树生效），在文件行里只有一个元素。
-/// </summary>
 internal sealed record GitTreeRow(
 	GitTreeRowKind Kind,
 	string Path,
@@ -23,11 +20,9 @@ internal sealed record GitTreeRow(
 	public GitChange? File => Kind == GitTreeRowKind.File ? Changes[0] : null;
 }
 
-/// <summary>
 /// 把扁平的 <see cref="GitChange"/> 列表折成目录树（纯函数，便于单测）：
 /// 目录优先、同级按名称排序；单子目录且无直属文件时合并成 <c>a.b.c</c> 一行，
 /// 避免 <c>src/main/pi/...</c> 这类链把窄面板挤成竖条。
-/// </summary>
 internal static class GitChangeTree
 {
 	private sealed class Node
@@ -70,7 +65,6 @@ internal static class GitChangeTree
 		return rows;
 	}
 
-	/// <summary>树里所有可折叠目录的完整路径；用于「全部收起」。</summary>
 	public static IReadOnlyList<string> AllDirectoryPaths(IReadOnlyList<GitChange> changes) =>
 		[.. Build(changes).Where(static row => row.IsDirectory).Select(static row => row.Path)];
 

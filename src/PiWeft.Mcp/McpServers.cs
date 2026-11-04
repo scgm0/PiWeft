@@ -5,7 +5,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.Mcp;
 
-/// <summary>一个 stdio MCP 服务器进程及其客户端。</summary>
 public sealed class McpProcess : IAsyncDisposable
 {
 	private readonly Process _process;
@@ -21,7 +20,6 @@ public sealed class McpProcess : IAsyncDisposable
 
 	public McpServerConfig Config { get; }
 
-	/// <summary>启动 stdio 服务器并完成 MCP 握手。</summary>
 	public static async Task<McpProcess> StartAsync(McpServerConfig config, CancellationToken cancellationToken)
 	{
 		if (!config.IsStdio)
@@ -163,10 +161,8 @@ public sealed class McpProcess : IAsyncDisposable
 		return new McpProcess(process, client, config);
 	}
 
-	/// <summary>
 	/// 汇总服务器进程的退出诊断：退出码与 stderr 尾部。先给正在退出的进程一小段时间，
 	/// 超时后按仍存活处理；两者都拿不到就返回空串，调用方沿用原始错误。
-	/// </summary>
 	private static async Task<string> ExitDetailAsync(Process process, StderrTail stderrTail, TimeSpan wait)
 	{
 		try
@@ -225,7 +221,6 @@ public sealed class McpProcess : IAsyncDisposable
 		_process.Dispose();
 	}
 
-	/// <summary>有界的 stderr 尾部缓冲：只保留最后若干行，供崩溃诊断使用。</summary>
 	private sealed class StderrTail(int capacity)
 	{
 		private const int MaxLineLength = 500;
@@ -262,14 +257,11 @@ public sealed class McpProcess : IAsyncDisposable
 	}
 }
 
-/// <summary>把 MCP 工具适配成代理的工具形状。</summary>
 public static class McpToolAdapter
 {
-	/// <summary>注册名：<c>mcp__&lt;服务器&gt;__&lt;工具&gt;</c>，其余字符替换为 <c>_</c>。</summary>
 	public static string ToolName(string server, string tool) =>
 		$"mcp__{Sanitize(server)}__{Sanitize(tool)}";
 
-	/// <summary>codemode 命名空间名，与 pi 一致：<c>mcp__&lt;server&gt;</c>。</summary>
 	public static string NamespaceName(string server) => $"mcp__{Sanitize(server)}";
 
 	public static string Sanitize(string value)
@@ -284,7 +276,6 @@ public static class McpToolAdapter
 		return new string(buffer);
 	}
 
-	/// <summary>把单个 MCP 工具包装成代理工具，调用会回到服务器。</summary>
 	public static AgentTool Create(
 		IMcpToolInvoker client,
 		string server,
@@ -365,10 +356,8 @@ public static class McpToolAdapter
 	}
 }
 
-/// <summary>供界面展示的单个服务器状态。</summary>
 public sealed record McpServerState(string Name, bool Connected, int ToolCount, string? Error);
 
-/// <summary>已连接的 MCP 服务器及其暴露的工具。</summary>
 public sealed class McpConnection : IAsyncDisposable
 {
 	private readonly List<IAsyncDisposable> _transports;
@@ -395,34 +384,24 @@ public sealed class McpConnection : IAsyncDisposable
 		_states = states;
 	}
 
-	/// <summary>一个已连接的服务器，保留它以便列表变化后重新列举工具。</summary>
 	internal sealed record ServerEntry(string Name, IMcpToolInvoker Client, TimeSpan Timeout);
 
-	/// <summary>
 	/// 所有已连接服务器的工具，已加命名空间。服务器发出 <c>tools/list_changed</c> 时，
 	/// 同一个列表实例会被就地更新，因此持有该引用的地方都能看到刷新结果。
-	/// </summary>
 	public IReadOnlyList<AgentTool> Tools => _tools;
 
-	/// <summary>暴露资源的已连接服务器，供资源工具使用。</summary>
 	public IReadOnlyList<IMcpResourceProvider> ResourceServers => _resourceServers;
 
-	/// <summary>每个配置过的服务器的连接状态与工具数，供界面展示。</summary>
 	public IReadOnlyList<McpServerState> Servers => _states;
 
-	/// <summary>未能连接的服务器，格式为 <c>名称: 原因</c>；另外包含刷新失败。</summary>
 	public IReadOnlyList<string> Errors => _errors;
 
-	/// <summary>服务器宣告变化并刷新工具列表之后触发。</summary>
 	public event Action<McpConnection>? ToolsChanged;
 
-	/// <summary>服务器宣告 <c>resources/list_changed</c> 时触发。</summary>
 	public event Action<McpConnection, string>? ResourcesChanged;
 
-	/// <summary>服务器宣告 <c>prompts/list_changed</c> 时触发。</summary>
 	public event Action<McpConnection, string>? PromptsChanged;
 
-	/// <summary>重新列举所有已连接服务器的工具，并触发 <see cref="ToolsChanged"/>。</summary>
 	public async Task RefreshToolsAsync(CancellationToken cancellationToken = default)
 	{
 		await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -465,7 +444,6 @@ public sealed class McpConnection : IAsyncDisposable
 		ToolsChanged?.Invoke(this);
 	}
 
-	/// <summary>处理服务器通知。它运行在传输的读取循环上，因此只启动工作而不等待。</summary>
 	internal void OnNotification(string server, string method)
 	{
 		switch (method)
@@ -501,13 +479,10 @@ public sealed class McpConnection : IAsyncDisposable
 	internal void AddResourceServer(IMcpResourceProvider provider) => _resourceServers.Add(provider);
 }
 
-/// <summary>连接 MCP 服务器并收集它们的工具。</summary>
 public static class McpServers
 {
-	/// <summary>
 	/// 连接所有启用的服务器。单个服务器启动失败不会影响其它服务器，其失败原因会记录在
 	/// <see cref="McpConnection.Errors"/> 中。
-	/// </summary>
 	public static async Task<McpConnection> ConnectAllAsync(
 		IReadOnlyList<McpServerConfig> servers,
 		Action<string>? onError = null,
@@ -645,7 +620,6 @@ public static class McpServers
 		return connection;
 	}
 
-	/// <summary>加载配置并连接所有启用项。</summary>
 	public static Task<McpConnection> ConnectConfiguredAsync(
 		string cwd,
 		string? agentDir = null,

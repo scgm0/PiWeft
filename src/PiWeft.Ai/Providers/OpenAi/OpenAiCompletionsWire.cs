@@ -5,7 +5,6 @@ using PiWeft.Ai.Utils;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>写出 OpenAI 兼容的 <c>/chat/completions</c> 请求体。</summary>
 internal static class OpenAiCompletionsWire
 {
 	public static void WriteRequest(
@@ -268,7 +267,6 @@ internal static class OpenAiCompletionsWire
 		writer.WriteEndObject();
 	}
 
-	/// <summary>写出 OpenAI 的工具声明数组；与 Mistral 适配器共用。</summary>
 	internal static void WriteTools(Utf8JsonWriter writer, IReadOnlyList<Tool> tools)
 	{
 		writer.WritePropertyName("tools");
@@ -293,10 +291,8 @@ internal static class OpenAiCompletionsWire
 	internal static bool UsesMaxCompletionTokens(Model model) =>
 		model.BaseUrl.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase);
 
-	/// <summary>OpenAI 兼容端点在流式响应里可能承载思考的字段名，与解析端保持同一顺序。</summary>
 	private static readonly string[] ReasoningFields = ["reasoning_content", "reasoning", "reasoning_text"];
 
-	/// <summary>目录声明「助手消息必须带 reasoning_content」的端点（DeepSeek）。</summary>
 	internal static bool RequiresReasoningContent(Model model) =>
 		model.Compat?["requiresReasoningContentOnAssistantMessages"] is JsonValue flag &&
 		flag.TryGetValue<bool>(out var required) &&

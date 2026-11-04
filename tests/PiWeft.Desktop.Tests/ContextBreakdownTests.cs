@@ -9,10 +9,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 上下文弹窗要能说明「占用是谁吃掉的」：系统提示词、工具 schema 与对话本身分开列，
 /// 三段之和必须等于总占用（PiDeck 的 contextBreakdown 口径）。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class ContextBreakdownTests
 {
@@ -119,7 +117,6 @@ public sealed class ContextBreakdownTests
 		UiLifetime.Release(panel.View);
 	}
 
-	/// <summary>IsVisible 是本地状态；这里的断言要看祖先链是否真的把它显示出来。</summary>
 	private static bool EffectivelyVisible(Element element)
 	{
 		for (Element? node = element; node is not null; node = node.Parent)

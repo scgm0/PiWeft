@@ -3,7 +3,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>终端码点宽度：一个簇占几格决定列号，错一格整行就偏。</summary>
 public sealed class TerminalTextTests
 {
 	[Theory]

@@ -5,7 +5,6 @@ using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.Bedrock;
 
-/// <summary>写出 Bedrock Converse API 的请求体。</summary>
 internal static class BedrockWire
 {
 	public static void WriteRequest(
@@ -301,7 +300,6 @@ internal static class BedrockWire
 		writer.WriteEndObject();
 	}
 
-	/// <summary>Bedrock 的图片格式是裸名称，不是媒体类型。</summary>
 	internal static string FormatOf(string mimeType) => mimeType switch
 	{
 		"image/jpeg" => "jpeg",

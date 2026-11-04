@@ -3,7 +3,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>右侧功能面板的分段：文件、Git 与检查点是会话的辅助表面，不再是独立标签页（终端在会话底部）。</summary>
 public enum RightPanelSection
 {
 	Files,
@@ -12,15 +11,11 @@ public enum RightPanelSection
 	Checkpoints,
 }
 
-/// <summary>
 /// 会话的右侧功能面板（对齐 PiDeck 的右侧 Dock）：顶部一条页签条，
 /// 下面按分段挂文件浏览器、Git 或检查点；切换分段不重建其它视图，收起只是隐藏。
-/// </summary>
-/// <remarks>
 /// 每个会话各有一个面板，内容跟着会话的工作目录走，默认收起。
 /// 视图按需创建，之后一直保留。面板放在主窗口最右侧的定宽栏里，
 /// 由默认分隔条拖拽调宽，宽度是窗口级偏好（<see cref="DesktopPreference.RightPanelWidth"/>）。
-/// </remarks>
 public sealed class RightPanel : IDisposable
 {
 	private readonly Func<string> _cwd;
@@ -116,19 +111,14 @@ public sealed class RightPanel : IDisposable
 		_trajectoryTimer.Tick += TickTrajectory;
 	}
 
-	/// <summary>
 	/// 绑定轨迹数据源（会话分支 + 聊天流式尾行）。放在构造之后单独绑定：
 	/// 会话标签页要先构造自己的 ChatViewModel，右侧面板才能拿到它。
-	/// </summary>
 	internal void BindTrajectory(Func<TrajectorySource> source) => _trajectorySource = source;
 
-	/// <summary>面板根元素：由主窗口放进内容区最右侧的定宽列，从窗框顶部一直铺到底。</summary>
 	public UIElement View => _view;
 
-	/// <summary>
 	/// 页签条右侧预留的宽度：窗口按钮浮在面板列右上角（X11 自绘 / Win 原生），
 	/// 避让后三段页签不会被按钮压住。由主窗口在窗框刷新时统一写入。
-	/// </summary>
 	public void SetHeaderRightInset(double inset)
 	{
 		if (Math.Abs(_headerRightInset - inset) <= 0.5)
@@ -144,7 +134,6 @@ public sealed class RightPanel : IDisposable
 
 	public bool IsOpen => _open;
 
-	/// <summary>展开面板并切到指定分段。</summary>
 	public void Show(RightPanelSection section)
 	{
 		if (_disposed)
@@ -173,7 +162,6 @@ public sealed class RightPanel : IDisposable
 		}
 	}
 
-	/// <summary>收起面板；终端等视图保持存活，再次展开时延续原来的状态。</summary>
 	public void Close()
 	{
 		_open = false;
@@ -181,32 +169,23 @@ public sealed class RightPanel : IDisposable
 		_view.IsVisible(false);
 	}
 
-	/// <summary>视觉验收：Git 分段选中第一个改动。</summary>
 	public void SelectFirstGitChangeForSmoke() => _git?.SelectFirstChangeForSmoke();
 
-	/// <summary>视觉验收：直接走一次 AI 提交摘要（看进度条与内联失败行是否需要新布局）。</summary>
 	public void GenerateGitSummaryForSmoke() => _git?.GenerateSummaryForSmoke();
 
-	/// <summary>视觉验收：把摘要结果打到 stdout。</summary>
 	public void ReportGitSummaryForSmoke() => _git?.ReportSummaryForSmoke();
 
-	/// <summary>视觉验收：打印泳道几何。</summary>
 	public void ReportGitGraphGeometryForSmoke() => _git?.ReportGraphGeometryForSmoke();
 
-	/// <summary>视觉验收：打印检查点行数与摘要。</summary>
 	public void ReportCheckpointsForSmoke() => _checkpoints?.ReportForSmoke();
 
-	/// <summary>视觉验收：选中轨迹里的第一条工具记录，让检查器显示入参与结果。</summary>
 	public void SelectTrajectoryRecordForSmoke() => _trajectory?.SelectForSmoke();
 
-	/// <summary>视觉验收：打印轨迹轮数、记录数与当前窗口。</summary>
 	public void ReportTrajectoryForSmoke() => _trajectory?.ReportForSmoke();
 
-	/// <summary>视觉验收：展开第一条检查点的变更概览。</summary>
 	public void ExpandFirstCheckpointDiffForSmoke() => _checkpoints?.ExpandFirstDiffForSmoke();
 
 
-	/// <summary>重读当前分段（文件列表 / Git 状态 / 检查点列表）；终端由自己的定时器重绘。</summary>
 	public void Refresh()
 	{
 		if (_disposed || !_open)
@@ -252,7 +231,6 @@ public sealed class RightPanel : IDisposable
 		_trajectory?.Refresh();
 	}
 
-	/// <summary>主题切换后刷新角色文本与图标颜色；已创建的视图各自跟随。</summary>
 	public void ApplyTheme()
 	{
 		AppStyles.ApplyTextColors((Element)View);
@@ -263,7 +241,6 @@ public sealed class RightPanel : IDisposable
 		UpdateTabs();
 	}
 
-	/// <summary>只创建一次视图并挂进内容区；之后切换只改可见性。返回本次是否新建。</summary>
 	private bool EnsureView(RightPanelSection section)
 	{
 		var created = false;
@@ -290,7 +267,6 @@ public sealed class RightPanel : IDisposable
 		return created;
 	}
 
-	/// <summary>活动页签提亮并浮起，其余安静地留在底色上。</summary>
 	private void UpdateTabs()
 	{
 		foreach (var tab in _tabs)

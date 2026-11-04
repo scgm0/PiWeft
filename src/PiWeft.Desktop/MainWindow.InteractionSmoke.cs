@@ -5,7 +5,6 @@ namespace PiWeft.Desktop;
 
 public sealed partial class MainWindow
 {
-	/// <summary>Expose fixture coordinates and hint visibility for a native pointer smoke test.</summary>
 	private void PrepareHoverSmoke()
 	{
 		Visit(this);

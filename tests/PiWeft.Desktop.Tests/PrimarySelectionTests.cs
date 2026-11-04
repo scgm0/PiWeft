@@ -166,7 +166,6 @@ public sealed class PrimarySelectionTests : IDisposable
 		Assert.True(fromXclip == external, $"incremental receive mismatch, length={(fromXclip?.Length).GetValueOrDefault()}");
 	}
 
-	/// <summary>用 xclip 把 <paramref name="text"/> 写进 PRIMARY 再由 xclip 自己读回，验证宿主能否服务这么大的 INCR 传输。</summary>
 	private static async Task<bool> XclipRoundTrips(string text)
 	{
 		try
@@ -188,10 +187,8 @@ public sealed class PrimarySelectionTests : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 反复读直到拿到期望值或总预算耗尽。单次 <c>ReadAsync</c> 自带 2 秒超时，
 	/// 所以必须按总预算收敛——否则每次超时叠起来会把一条断言拖成一分钟。
-	/// </summary>
 	private static async Task<string?> ReadEventually(IPrimarySelection selection, string expected, TimeSpan? budget = null)
 	{
 		var deadline = Environment.TickCount64 + (long)(budget ?? TimeSpan.FromSeconds(1)).TotalMilliseconds;

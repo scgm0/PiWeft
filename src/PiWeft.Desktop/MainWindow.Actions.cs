@@ -41,7 +41,6 @@ public sealed partial class MainWindow
 		_banner.Text(ProjectLauncher.Open(cwd) ? Strings.ProjectOpened : Strings.ProjectOpenFailed(cwd));
 	}
 
-	/// <summary>菜单闭包只捕获稳定的标签身份，执行时重新查索引，重排后仍作用于原标签。</summary>
 	private ContextMenu TabMenu(FrameworkElement owner, object entry)
 	{
 		var menu = new ContextMenu();

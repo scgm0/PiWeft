@@ -7,7 +7,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>动态 JS route 与 <c>pi.virtual-model-state</c> 条目。</summary>
 public sealed class VirtualModelSessionTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-virtual-" + Guid.NewGuid().ToString("N")[..8]);

@@ -2,7 +2,6 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>Radius gateway OAuth 设备码流程，并在登录后读取 gateway 的 baseUrl。</summary>
 public static class RadiusOAuth
 {
 	public const string ProviderKey = "radius";

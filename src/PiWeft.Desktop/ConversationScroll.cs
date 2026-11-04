@@ -3,7 +3,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Owns conversation follow state; layout growth is separate from the reader's scroll intent.</summary>
 internal sealed class ConversationScroll : IDisposable
 {
 	private const double EndThreshold = 40;
@@ -47,10 +46,8 @@ internal sealed class ConversationScroll : IDisposable
 
 	public bool Following { get; private set; } = true;
 
-	/// <summary>
 	/// Search results are a reading surface of their own: reaching their end must not silently
 	/// re-lock tail following. An explicit "move to latest" clears the suspension.
-	/// </summary>
 	public bool FollowSuspended
 	{
 		get => _followSuspended;
@@ -64,18 +61,15 @@ internal sealed class ConversationScroll : IDisposable
 		}
 	}
 
-	/// <summary>Clicking or dragging the scrollbar is explicit reader intent: leave the tail now.</summary>
 	private void OnScrollBarPointer(MouseEventArgs _) => Browse();
 
 	private void OnNestedInput(ScrollViewer nested) => NoteNestedWheel(nested);
 
-	/// <summary>
 	/// 嵌套视口（执行过程的组体）消费了一次滚轮：会话自己的输入通道看不见这次输入，
 	/// 而跟底的每帧跳变会把读者正在读的组体持续往上顶（组下方的流式回答在增长）——
 	/// 表现为「组体内滚轮缓慢/读的行总在往上跑」。读者仍贴着嵌套视口自己的末尾时
 	/// （跟着最新步骤）与跟底同向，跟随不动；离开末尾读历史步骤则立即停追，
 	/// 滚回末尾或点「回到最新」照常恢复。
-	/// </summary>
 	internal void NoteNestedWheel(ScrollViewer nested)
 	{
 		if (!Following) return;
@@ -209,11 +203,9 @@ internal sealed class ConversationScroll : IDisposable
 		});
 	}
 
-	/// <summary>
 	/// Republishes the scroll extent once layout has settled. A row that grew during arrange updates
 	/// the virtualizer's height cache after the owner published its metrics; without this the bar
 	/// maximum stays at the pre-growth value until the reader scrolls.
-	/// </summary>
 	internal void SyncExtentAfterLayout() => _smooth.SyncExtent();
 
 	private void QueueExtentSync()
@@ -227,7 +219,6 @@ internal sealed class ConversationScroll : IDisposable
 		});
 	}
 
-	/// <summary>布局落定后把偏移对齐到最新末端；虚拟化时间线的末端只有测量后才成立。</summary>
 	internal void FollowAfterLayout()
 	{
 		if (!Following) return;
@@ -236,14 +227,12 @@ internal sealed class ConversationScroll : IDisposable
 		JumpToEndKeepingIntent();
 	}
 
-	/// <summary>跳到最新，并把这次位移标记成自己的动作，避免被当成读者滚动而取消跟随。</summary>
 	private void JumpToEndKeepingIntent()
 	{
 		_followingJump = true;
 		_smooth.JumpToEnd();
 	}
 
-	/// <summary>A manual fold is reading intent, not a request to follow a growing reply.</summary>
 	public void PreserveAnchor(UIElement anchor)
 	{
 		_smooth.Stop();
@@ -295,12 +284,10 @@ internal sealed class ConversationScroll : IDisposable
 		QueueFollow();
 	}
 
-	/// <summary>
 	/// 流式内容的后续帧请求「继续贴底」：读者仍停在末尾时才成立。
 	/// 展开的动作本身由 <see cref="ScrollToLatest"/> 承接（重锁跟底）；而此后每帧一次的续跟
 	/// 不能重置读者意图，否则展开着的思考只要还在流，会话就被钉在末尾、拖都拖不动。
 	/// 真正的偏移收敛仍在 Render 阶段由 <see cref="FollowContent"/> 完成。
-	/// </summary>
 	public void ContinueFollowing()
 	{
 		if (!Following || _readingAnchor is not null) return;
@@ -323,7 +310,6 @@ internal sealed class ConversationScroll : IDisposable
 		if (Application.IsRunning) QueueFollow();
 	}
 
-	/// <summary>显式跳转到历史消息：取消在途跟底和折叠锚点，后续流式增长不把用户拉回末尾。</summary>
 	public void Browse()
 	{
 		_readingAnchor = null;

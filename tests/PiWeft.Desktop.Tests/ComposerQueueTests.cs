@@ -7,7 +7,6 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>运行中发送键右侧的 Split Send 菜单把草稿排入 steering，而不是中断当前回复。</summary>
 [Collection("mewui-controls")]
 public sealed class ComposerQueueTests
 {

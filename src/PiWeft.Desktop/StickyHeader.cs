@@ -4,12 +4,9 @@ using Aprillz.MewUI.Rendering;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 过程组组体内的步骤折叠行：展开后比组体视口更高的项，标题在本项范围内吸顶
 /// （对齐 PiDeck 的 <c>processEntryStickyPolicy</c>：只对跨过视口顶边的展开项生效，
 /// 本项末尾越过视口后标题随内容一起退场；不复制标题、不套第二层滚动条）。
-/// </summary>
-/// <remarks>
 /// MewUI 没有 CSS 的 position:sticky，也没有可用的渲染变换，因此吸顶由本控件自己完成：
 /// <list type="number">
 /// <item>排布阶段把 Header 放到视口顶边（在本项范围内 clamp），正文留在原排布位置继续滚动；</item>
@@ -20,16 +17,12 @@ namespace PiWeft.Desktop;
 /// <item>吸顶时标题右侧只多一个「回到这一步的开头」图标（滚回开头的同时解除组体跟底）。</item>
 /// </list>
 /// 只有挂到组体视口（<see cref="AttachBody" />）的步骤才吸顶：会话里的同一套视图保持原样。
-/// </remarks>
 internal sealed class StickyExpander : Expander, IVisualTreeHost
 {
-	/// <summary>Expander 内部留给折叠箭头的宽度（与框架里的常量一致）。</summary>
 	private const double GlyphAreaWidth = 20;
 
-	/// <summary>Expander 的标题最小高度（与框架里的常量一致）。</summary>
 	private const double MinHeaderHeight = 20;
 
-	/// <summary>亚像素容差：标题刚好贴住视口顶边时不要来回闪。</summary>
 	private const double PinTolerance = 1;
 
 	// 步骤行宿主（RowHost）用来把吸顶标题的底色/分隔线铺满整行（含左侧图标列）；
@@ -51,22 +44,16 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 	// 铺满整行的吸顶面（含左侧图标列），只画底部分隔线。
 	private Rect _stickyFace;
 
-	/// <summary>标题当前是否吸在组体视口顶部（显示「回到开头」入口、画分隔线的状态）。</summary>
 	internal bool HeaderPinned => _stuck;
 
-	/// <summary>标题是否已经离开自然位置：收起这一项时应把它的开头重新对齐到视口顶部。</summary>
 	internal bool HeaderDisplaced => _displaced;
 
-	/// <summary>标题当前所在的横带（含折叠箭头区）：吸顶时命中判定要按这里，而不是自然位置。</summary>
 	internal Rect HeaderBand => _headerBand;
 
-	/// <summary>测试用：按当前排布结果计算正文裁剪。</summary>
 	internal ChildClip? ChildClipForTest(UIElement child) => GetChildClip(child);
 
-	/// <summary>
 	/// 挂到组体：只有组体内的步骤才吸顶，并把「回到开头」入口加到标题行右侧。
 	/// 入参在行绑定时传一次（视口/宿主随组体重建而更换）。
-	/// </summary>
 	internal void AttachBody(ScrollViewer body, FrameworkElement? rowHost)
 	{
 		if (ReferenceEquals(_body, body) && ReferenceEquals(_rowHost, rowHost)) return;
@@ -86,7 +73,6 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		InvalidateArrange();
 	}
 
-	/// <summary>解除挂载（组体销毁/行被回收）：不留下对视图的事件订阅。</summary>
 	internal void DetachBody()
 	{
 		if (_body is not null)
@@ -118,7 +104,6 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		InvalidateArrange();
 	}
 
-	/// <summary>把「回到这一步的开头」图标放进标题行右侧；不吸顶时透明且不参与命中。</summary>
 	private void EnsureReturnToStart()
 	{
 		if (_returnToStart is not null || _headerHost is not null || Header is not UIElement header) return;
@@ -193,9 +178,7 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		UpdateReturnToStart();
 	}
 
-	/// <summary>
 	/// 标题的目标位置：标题在原位就留在原位；跨过视口顶边则贴住顶边，离开本项时随本项末尾一起退场。
-	/// </summary>
 	private double ResolveHeaderY(Rect bounds, double naturalY, double headerHeight)
 	{
 		if (!IsStickyEligible(bounds.Height, headerHeight)) return naturalY;
@@ -206,7 +189,6 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		return Math.Min(viewportTop, Math.Max(naturalY, bounds.Bottom - headerHeight));
 	}
 
-	/// <summary>只有「已展开 + 比组体视口更高」的项会跨过视口顶边，才需要吸顶。</summary>
 	private bool IsStickyEligible(double entryHeight, double headerHeight)
 	{
 		if (!IsExpanded || headerHeight <= 0) return false;
@@ -222,7 +204,6 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		DrawBackgroundAndBorder(context, GetSnappedBorderBounds(Bounds), Background, BorderBrush, BorderThickness, CornerRadius);
 	}
 
-	/// <summary>正文在吸顶标题下方继续滚动：把标题覆盖的那一段裁掉，标题就不需要不透明底色。</summary>
 	protected override ChildClip? GetChildClip(UIElement child)
 	{
 		if (!ReferenceEquals(child, Content) || !_displaced || _headerBand.Height <= 0)
@@ -253,7 +234,6 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		return true;
 	}
 
-	/// <summary>吸顶面只有一条底部分隔线：背面就是阅读区背景（正文已裁掉），换肤无需另配颜色。</summary>
 	private void DrawStickyFace(IGraphicsContext context)
 	{
 		if (_stickyFace.Width <= 0 || _stickyFace.Height <= 0) return;
@@ -262,7 +242,6 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 			palette.BorderSubtle);
 	}
 
-	/// <summary>折叠箭头与框架默认绘制同源，只是跟着吸顶位置走。</summary>
 	private void DrawGlyph(IGraphicsContext context)
 	{
 		if (_headerBand.Width <= 0 || _headerBand.Height <= 0) return;
@@ -271,7 +250,6 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		Glyph.Draw(context, center, GlyphSize, color, IsExpanded ? GlyphKind.ChevronDown : GlyphKind.ChevronRight);
 	}
 
-	/// <summary>标记这次按下发生在标题上（含吸顶后的位置）：吸顶时标题的开合判定只认它。</summary>
 	private void OnHeaderMouseDown(MouseEventArgs e)
 	{
 		if (_displaced && !e.Handled && e.Button == MouseButton.Left && IsEffectivelyEnabled) _headerDown = e;
@@ -295,7 +273,6 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 		base.OnMouseDown(e);
 	}
 
-	/// <summary>回到本项开头：滚回这一行的起点，同时解除组体的跟底（读者正在读历史步骤）。</summary>
 	private void ReturnToStart()
 	{
 		if (_body is not { } body) return;

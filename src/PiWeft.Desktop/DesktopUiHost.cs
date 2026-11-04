@@ -4,15 +4,11 @@ using PiWeft.CodingAgent;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 桌面的 <see cref="IUiHost"/>：把 <c>ask_question</c> 的请求交给会话标签自带的
 /// 内联问询卡（<see cref="AskQuestionPanel"/>）。卡片在 UI 线程上构建，代理循环在后台等待回答。
-/// <para>
 /// 为什么不再有窗口级弹窗：PiDeck 的 ask 卡片钉在对话区底部，与输入框同级，用户能一边翻历史
 /// 一边回答；遮罩弹窗会把整窗压暗并抢走滚动。同一个面板也承接扩展的
 /// <c>select / confirm / editor</c> 请求 —— 它们同样是“代理停下等你输入”。
-/// </para>
-/// </summary>
 internal sealed class DesktopUiHost : IUiHost
 {
 	private SessionTab? _tab;
@@ -21,13 +17,10 @@ internal sealed class DesktopUiHost : IUiHost
 
 	public bool HasUi => true;
 
-	/// <summary>
 	/// 窗口级宿主：会话还没建出来时的项目信任询问用（没有页签可以挂内联卡片），
 	/// 卡片以窗口浮层展示，回答完即收。
-	/// </summary>
 	public void Attach(UIElement owner) => _owner = owner;
 
-	/// <summary>绑定会话标签：问询卡放进它的输入列，等待输入提示音按会话去重。</summary>
 	public void Attach(SessionTab tab)
 	{
 		_tab = tab;
@@ -45,7 +38,6 @@ internal sealed class DesktopUiHost : IUiHost
 		return AskAsync(questions, AskQuestions.ReviewRequested(request.Title), cancellationToken);
 	}
 
-	/// <summary>单选卡片：复用问询卡的 select 渲染。</summary>
 	public Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken) =>
 		ShowDialogAsync<string?>(
 			new AskQuestion("dialog", "select", request.Title,
@@ -55,7 +47,6 @@ internal sealed class DesktopUiHost : IUiHost
 				? answers[0].Value!.GetValue<string>()
 				: null);
 
-	/// <summary>确认卡片：复用问询卡的 confirm 渲染。</summary>
 	public Task<bool?> ConfirmAsync(UiConfirmRequest request, CancellationToken cancellationToken) =>
 		ShowDialogAsync<bool?>(
 			new AskQuestion("dialog", "confirm", request.Message is { Length: > 0 } ? $"{request.Title}\n{request.Message}" : request.Title, null, null, null),
@@ -64,7 +55,6 @@ internal sealed class DesktopUiHost : IUiHost
 				? true
 				: answers.Count > 0 ? false : null);
 
-	/// <summary>多行编辑卡片：复用问询卡的 editor 渲染。</summary>
 	public Task<string?> EditorAsync(UiEditorRequest request, CancellationToken cancellationToken) =>
 		ShowDialogAsync<string?>(
 			new AskQuestion("dialog", "editor", request.Title, null, null, request.Prefill),
@@ -73,7 +63,6 @@ internal sealed class DesktopUiHost : IUiHost
 				? answers[0].Value!.GetValue<string>()
 				: null);
 
-	/// <summary>桌面没有全局通知面：暂不实现（保持 no-op，避免噪声）。</summary>
 	public void Notify(UiNotifyRequest request)
 	{
 	}
@@ -90,7 +79,6 @@ internal sealed class DesktopUiHost : IUiHost
 	public void SetEditorText(string text) =>
 		Dispatch(() => _tab?.SetExtensionText(text));
 
-	/// <summary>关闭未完成的卡片（标签或窗口销毁）。</summary>
 	public void Hide() => Dispatch(() =>
 	{
 		_tab?.AskPanel.Close();
@@ -156,7 +144,6 @@ internal sealed class DesktopUiHost : IUiHost
 		}
 	}
 
-	/// <summary>把单问题卡片挂到会话里（没有会话则退回窗口浮层）并等待回答；取消或关闭返回 <c>null</c>。</summary>
 	private Task<T?> ShowDialogAsync<T>(
 		AskQuestion question,
 		CancellationToken cancellationToken,

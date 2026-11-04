@@ -5,18 +5,12 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 导入外部会话：把 Claude Code / Codex CLI 留在本机的会话搬进 pi 的会话目录。
-/// <para>
 /// 与 PiDeck 的「导入会话」弹窗同一件事，但这里只做**只读列举 + 逐条导入**：外部会话库可能不存在、
 /// 可能很大，弹窗一打开就把几万条会话读进内存是不可接受的 —— 列举在后台线程按头部摘要跑，
 /// 有上限（<see cref="SessionImportService.MaxSessions"/>），导入才做全量读取。
-/// </para>
-/// <para>
 /// 空态要说明「去哪里找过」，而不是只说「没有」：用户下一步就得靠这句话判断是没装那个工具、
 /// 还是会话库被放在了别处。
-/// </para>
-/// </summary>
 public sealed class SessionImportDialog
 {
 	private const double PanelWidth = 720;
@@ -35,7 +29,6 @@ public sealed class SessionImportDialog
 	private bool _loading;
 	private bool _importing;
 
-	/// <summary>收起后触发，宿主据此把焦点还给内容区。</summary>
 	public event Action? Closed;
 
 	public SessionImportDialog(Action afterImport, string? home = null, string? sessionDir = null)
@@ -109,7 +102,6 @@ public sealed class SessionImportDialog
 
 	public bool IsOpen => View.IsVisible;
 
-	/// <summary>当前列出的会话（供测试断言过滤是否生效）。</summary>
 	internal IReadOnlyList<ImportedSession> Sessions => _sessions;
 
 	public void Show(UIElement owner)
@@ -148,7 +140,6 @@ public sealed class SessionImportDialog
 		Closed?.Invoke();
 	}
 
-	/// <summary>重新扫描来源并重建列表（导入后也走它，让已导入的条目排名更新）。</summary>
 	internal void Reload()
 	{
 		if (!IsOpen)
@@ -178,10 +169,8 @@ public sealed class SessionImportDialog
 			TaskScheduler.Default);
 	}
 
-	/// <summary>
 	/// 同步扫描并重建（测试与宿主自检用）。真机上走 <see cref="Reload"/> 的后台路径 ——
 	/// 在 UI 线程读上千个文件头部会把窗口卡住。
-	/// </summary>
 	internal void ReloadSync() =>
 		FinishLoading(
 			SessionImportService.DiscoverSources(_home),
@@ -207,7 +196,6 @@ public sealed class SessionImportDialog
 				: Strings.ImportHint);
 	}
 
-	/// <summary>来源分段：全部 / 每个有内容的来源。一个都没有时整行不占位。</summary>
 	private void BuildSourceFilter(IReadOnlyList<SessionImportSource> sources)
 	{
 		_sources.Clear();
@@ -419,7 +407,6 @@ public sealed class SessionImportDialog
 			TaskScheduler.Default);
 	}
 
-	/// <summary>把家目录缩成 <c>~</c>：路径列宽有限，完整路径在悬停提示里才有意义。</summary>
 	private static string ShortCwd(string path)
 	{
 		var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

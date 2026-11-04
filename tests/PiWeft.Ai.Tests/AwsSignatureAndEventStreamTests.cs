@@ -5,10 +5,8 @@ using Xunit;
 
 namespace PiWeft.Ai.Tests;
 
-/// <summary>
 /// SigV4 is verified against AWS's published test-suite vector for <c>get-vanilla</c>, including the intermediate
 /// canonical request and string-to-sign, so a bug cannot hide behind a matching final hash.
-/// </summary>
 public class AwsSignatureV4Tests
 {
 	private static readonly AwsCredentials VectorCredentials = new()

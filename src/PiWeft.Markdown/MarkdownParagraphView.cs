@@ -6,7 +6,6 @@ using Aprillz.MewUI.Text;
 
 namespace PiWeft.Markdown;
 
-/// <summary>A realized text element that takes part in the document selection.</summary>
 internal interface ISelectableText
 {
 	int TextUnit { get; set; }
@@ -17,12 +16,10 @@ internal interface ISelectableText
 	void SetSelection(int start, int end);
 }
 
-/// <summary>
 /// A paragraph laid out in stable chunks. Only the last chunk (the open line) is re-laid out when
 /// text is appended; chunks ending on a closed line are frozen and their text layouts are reused.
 /// Image runs render as scaled images stacked below the text; each is loaded through the host
 /// resolver and re-measures the enclosing block when it arrives.
-/// </summary>
 internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVisualTreeHost
 {
 	// The open chunk stays small enough that one append costs a few milliseconds at most.
@@ -140,8 +137,8 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		return true;
 	}
 	internal (int Start, int End) SelectionRange => (_selectionStart, _selectionEnd);
-	/// <summary>Layout width assigned by EnsureLayout; NaN until the paragraph was measured, so a
-	/// NaN here on a realized element means it would render blank.</summary>
+	/// Layout width assigned by EnsureLayout; NaN until the paragraph was measured, so a
+	/// NaN here on a realized element means it would render blank.
 	internal double LayoutWidthForTest => _width;
 	internal bool IsStreaming { get; set; }
 	internal IReadOnlyList<MarkdownRun> Runs => _runs;
@@ -355,11 +352,9 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		(element as IDisposable)?.Dispose();
 	}
 
-	/// <summary>
 	/// Rebuilds the image slots after a run remap. Elements for URLs that persist across
 	/// revisions are reused — a streaming tail re-maps the paragraph's runs every frame, and the
 	/// image element plus its decoded source must survive that.
-	/// </summary>
 	private void RebuildImages(List<ImageSlot> next)
 	{
 		if (next.Count == 0 && _images.Count == 0) return;
@@ -511,10 +506,8 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		InvalidateVisual();
 	}
 
-	/// <summary>
 	/// Wires image loading. Called once when the view creates the element; the delegates survive
 	/// every block refresh.
-	/// </summary>
 	internal void ConfigureImages(
 		Func<MarkdownImageRequest, CancellationToken, ValueTask<ImageSource?>>? resolveImage,
 		Action<MarkdownParagraphView>? imageLayoutChanged,
@@ -722,7 +715,6 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		}, TextLayoutCachePolicy.Owner, chunk);
 	}
 
-	/// <summary>
 	/// Extra leading between the lines of this block, in DIPs, from <see cref="MarkdownMetrics"/>:
 	/// the theme's line-height multiplier applied to the rendered font size, minus the height the
 	/// font already reserves. Never negative, because a multiplier below the font's natural height
@@ -730,7 +722,6 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 	/// no-op there instead of cutting glyphs. The gap sits between lines only, so a block's top and
 	/// bottom edges stay flush with the text and <see cref="MarkdownTheme.BlockSpacing"/> keeps
 	/// describing the real distance between blocks.
-	/// </summary>
 	private double ResolveLineSpacing(ITextEngine engine, TextRunStyle style, uint dpi)
 		=> MarkdownMetrics.LineSpacing(
 			engine,
@@ -856,9 +847,21 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 
 	protected override void ArrangeContent(Rect bounds)
 	{
-		if (_wrap && double.IsFinite(bounds.Width) && Math.Abs(bounds.Width - _width) > 0.01)
+		// 开了布局取整的父级（表格的 Grid）在 arrange 阶段把轨道按设备像素对齐，而 measure 的
+		// 约束仍是非整数宽度（MewUI 的约定：measure 保留未取整的轨道，arrange 的落点要等网格最终位置才知道），
+		// 再加上本文本块测量时给自己留的一像素余量，同一段文字「测宽 215 / 排宽 216」是正常的：
+		// 不是版面失效，也不需要重测。以前这里按 0.01 DIP 判等，表格里每轮 arrange 都重新标脏
+		// measure，形成 measure → arrange → InvalidateMeasure → measure 的死循环，整个窗口 100% CPU 卡死。
+		// 只有可排宽度比已排版宽度窄出两设备像素以上时才可能需要重排（文字会被裁掉）；
+		// 宽出来只是多了点余量，按原版面绘制即可。
+		if (_wrap && double.IsFinite(bounds.Width) && double.IsFinite(_width))
 		{
-			InvalidateMeasure();
+			double scale = GetDpi() / 96.0;
+			double tolerance = scale > 0 ? 2 / scale : 0;
+			if (bounds.Width < _width - tolerance)
+			{
+				InvalidateMeasure();
+			}
 		}
 		foreach (ImageSlot slot in _images)
 		{
@@ -879,14 +882,12 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		return false;
 	}
 
-	/// <summary>渲染宽度是否就是这套版面建立时的宽度（wrap 关闭时与宽度无关）。</summary>
 	private bool LayoutWidthMatches(double width)
 	{
 		double target = _wrap && double.IsFinite(width) ? Math.Max(1, width) : UnwrappedWidth;
 		return !double.IsNaN(_width) && Math.Abs(_width - target) <= 0.01;
 	}
 
-	/// <summary>当前版面（不含图片）的总高度：判断它是否已经超出父级给的高度。</summary>
 	private double TextHeight()
 	{
 		double height = 0;
@@ -979,12 +980,10 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		}
 	}
 
-	/// <summary>
 	/// 选区底色按「行框」铺，不按「字形带」铺：MewUI 的行范围矩形只有一行的自然高度，
 	/// 加了行间距后逐行选区会变成一条条横纹（浏览器/PiDeck 把半行距也涂进去，选区是连续的）。
 	/// 上下各扩半个行间距后，行与行之间正好接上；块与块之间只会伸进 BlockSpacing 一半，
 	/// 不会盖到相邻块的文字（BlockSpacing 8 ≥ 半行间距 ≤ 3.3 @16px）。
-	/// </summary>
 	private void DrawSelection(IGraphicsContext context, Chunk chunk)
 	{
 		Color selection = Theme.Palette.SelectionBackground;
@@ -1002,7 +1001,6 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		}
 	}
 
-	/// <summary>本段落选区要涂的矩形（坐标相对段落左上，含行间距扩展）。</summary>
 	internal IReadOnlyList<Rect> SelectionRectsForTest()
 	{
 		_selectionRects.Clear();
@@ -1035,7 +1033,6 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		}
 	}
 
-	/// <summary>把一行的选区矩形上下各扩 inflate（行间距的一半），使逐行选区连成一片。</summary>
 	internal static Rect InflateLine(Rect line, double inflate)
 		=> inflate <= 0
 			? line
@@ -1288,7 +1285,6 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		public double Top { get; set; }
 	}
 
-	/// <summary>One image run and its resolved element; kept across run remaps by URL.</summary>
 	private sealed class ImageSlot(MarkdownRun run)
 	{
 		public MarkdownRun Run { get; } = run;

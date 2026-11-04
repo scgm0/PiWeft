@@ -5,12 +5,10 @@ using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// Windows 的图片剪贴板：直接读写原生剪贴板。注册的 <c>"PNG"</c> 格式优先（浏览器、终端等现代程序都放它），
 /// 只有 <c>CF_DIB</c> / <c>CF_DIBV5</c> 时先解出真彩像素再编成 PNG（读），或反过来写出像素格式（写）；
 /// 复制文件（<c>CF_HDROP</c>）里的图片也会被附加。解码用 MewUI 的 <see cref="ImageDecoders"/>，
 /// 编码只有 PNG 这一侧需要自己实现。
-/// </summary>
 internal sealed partial class Win32ClipboardImages : IClipboardImages
 {
 	private const uint CfDib = 8;
@@ -104,7 +102,6 @@ internal sealed partial class Win32ClipboardImages : IClipboardImages
 		return 0;
 	}
 
-	/// <summary>剪贴板句柄只在持有期间有效，所以这里把字节与路径都复制出来再关闭。</summary>
 	private ClipboardPayload ReadPayload()
 	{
 		if (!OpenClipboard(0)) return new(null, null, []);

@@ -5,7 +5,6 @@ using System.Text;
 
 namespace PiWeft.Ai.Providers;
 
-/// <summary>provider 未自行提供时使用的共享 HTTP 客户端。连接池在进程内共用。</summary>
 internal static class SharedHttpClient
 {
 	public static readonly string UserAgent = "PiWeft/0.1.0";
@@ -21,14 +20,11 @@ internal static class SharedHttpClient
 	};
 }
 
-/// <summary>各 provider 适配器共用的 HTTP 辅助方法。</summary>
 internal static class ProviderHttp
 {
-	/// <summary>
 	/// 读取响应体，并按 <see cref="StreamOptions.IdleTimeoutMs"/> 包一层空闲超时。
 	/// 所有 provider 的流式读取都必须走这里：直接 <c>ReadAsStreamAsync</c> 的话，
 	/// 供应商把连接挂着不发也不关时这一轮会永远等下去（HttpClient 是 Infinite 超时）。
-	/// </summary>
 	public static async Task<Stream> ReadBodyAsync(
 		HttpResponseMessage response,
 		StreamOptions options,
@@ -40,17 +36,13 @@ internal static class ProviderHttp
 			: stream;
 	}
 
-	/// <summary>
 	/// 错误响应体的读取上限。各 provider 只把前 2000 字符写进错误文案，但网关偶尔会返回
 	/// 整页 HTML 甚至几十 MB 的诊断内容：不设上限就等于「一次失败的请求先吃掉一大块内存」，
 	/// 而且这笔分配还在自动重试的循环里。
-	/// </summary>
 	private const int MaxErrorBodyBytes = 1 << 20;
 
-	/// <summary>
 	/// 读取响应体文本（错误响应说明等），同样受 <see cref="StreamOptions.IdleTimeoutMs"/> 约束。
 	/// 错误体也可能被网关挂着不发：只给成功路径设空闲超时，等于把挂死风险留给最常见的失败分支。
-	/// </summary>
 	public static async Task<string> ReadBodyTextAsync(
 		HttpResponseMessage response,
 		StreamOptions options,
@@ -86,7 +78,6 @@ internal static class ProviderHttp
 		return length >= MaxErrorBodyBytes ? text + "…（响应体已截断）" : text;
 	}
 
-	/// <summary>按响应声明的字符集解码；字符集缺失或不认识时按 UTF-8（与 pi 的行为一致）。</summary>
 	private static string Decode(ReadOnlyMemory<byte> bytes, string? charset)
 	{
 		if (string.IsNullOrWhiteSpace(charset))
@@ -104,7 +95,6 @@ internal static class ProviderHttp
 		}
 	}
 
-	/// <summary>为 <see cref="ProviderRequestOptions.OnResponse"/> 抓取响应的状态行与头部快照。</summary>
 	public static ProviderResponse FromResponse(HttpResponseMessage response)
 	{
 		var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -121,18 +111,13 @@ internal static class ProviderHttp
 		return new ProviderResponse { Status = (int)response.StatusCode, Headers = headers };
 	}
 
-	/// <summary>超时错误的文案：区分「等响应头超时」与其它取消。</summary>
 	public static string TimeoutMessage(HeaderTimeoutScope scope) =>
 		scope.TimedOut ? "Request timed out while waiting for response headers" : "Request timed out";
 
-	/// <summary>
 	/// 开始一段「等响应头」的超时。返回的作用域把调用方的取消与超时合并，供发送请求时使用；
 	/// 正文读取请一律使用 <c>options.CancellationToken</c>。
-	/// <para>
 	/// 计时从第一次读取 <see cref="HeaderTimeoutScope.Token"/>（真正发请求）时才开始：
 	/// 凭据解析、OAuth 刷新与命令型凭据不消耗请求超时，也避免为失败的解析白建计时器。
-	/// </para>
-	/// </summary>
 	public static HeaderTimeoutScope BeginHeaderTimeout(StreamOptions options)
 	{
 		// 等响应头也受空闲超时兜底：连接建立了但服务端一直不回头，否则这一轮会无限等下去
@@ -142,10 +127,8 @@ internal static class ProviderHttp
 	}
 }
 
-/// <summary>
 /// 「等待响应头」的超时作用域。pi 1.2.0 起超时只覆盖等响应头这一步：长流（长时间思考、慢生成）
 /// 不能被固定时限切断，正文停滞交给 HTTP 客户端自己处理。
-/// </summary>
 public sealed class HeaderTimeoutScope : IDisposable
 {
 	private readonly CancellationToken _callerToken;
@@ -162,7 +145,6 @@ public sealed class HeaderTimeoutScope : IDisposable
 		_timeoutMs = timeoutMs is > 0 ? timeoutMs : null;
 	}
 
-	/// <summary>传给发送请求那一步的令牌；第一次读取时才启动计时器。</summary>
 	public CancellationToken Token
 	{
 		get
@@ -191,13 +173,10 @@ public sealed class HeaderTimeoutScope : IDisposable
 		}
 	}
 
-	/// <summary>是否是我们自己的超时先触发（而不是调用方取消）。</summary>
 	public bool TimedOut => _timeout is { IsCancellationRequested: true };
 
-	/// <summary>
 	/// 响应头已经拿到：停止计时并释放定时器。长流期间不再背着一个无用的 CTS，
 	/// 后续正文超时也不会被误报成「等响应头超时」。
-	/// </summary>
 	public void Stop()
 	{
 		if (_disposed)
@@ -225,7 +204,6 @@ public sealed class HeaderTimeoutScope : IDisposable
 	}
 }
 
-/// <summary>从环境变量解析 provider 凭据，对应 pi 的 <c>env-api-keys</c>。</summary>
 public static class ProviderEnvironment
 {
 	private static readonly FrozenDictionary<string, string> Overrides =
@@ -247,10 +225,8 @@ public static class ProviderEnvironment
 			["cloudflare-ai-gateway"] = "CLOUDFLARE_API_KEY",
 		}.ToFrozenDictionary(StringComparer.Ordinal);
 
-	/// <summary>provider → 环境变量名。每次请求都会查一次，缓存掉重复的 StringBuilder 拼接。</summary>
 	private static readonly ConcurrentDictionary<string, string> KeyNames = new(StringComparer.Ordinal);
 
-	/// <summary>某个 provider 的 API key 对应的环境变量名。</summary>
 	public static string KeyName(string provider) => KeyNames.GetOrAdd(provider, static name =>
 	{
 		if (Overrides.TryGetValue(name, out var overridden))
@@ -268,11 +244,9 @@ public static class ProviderEnvironment
 		return builder.ToString();
 	});
 
-	/// <summary>
 	/// 每个 provider 一把刷新锁：并发请求同时发现 access token 过期时只让一个去换，
 	/// 其余等它写回 auth.json 后直接复用新令牌。否则多个线程拿同一个 refresh token 竞争，
 	/// 在会轮转 refresh token 的供应商上会把凭据互相作废。
-	/// </summary>
 	private static readonly ConcurrentDictionary<string, SemaphoreSlim> OAuthRefreshGates = new(StringComparer.Ordinal);
 
 	private static Task<Auth.OAuthCredential?> RefreshProviderAsync(
@@ -326,18 +300,12 @@ public static class ProviderEnvironment
 		}
 	}
 
-	/// <summary>
 	/// 与 pi 一致的顺序：显式选项 → <c>auth.json</c> 里存储的凭据 → 该 provider 的环境变量 →
 	/// 一小组 OpenAI 兼容网关通用的兜底变量。
-	/// <para>
 	/// 存储优先这一步很关键：<c>pi login</c> 与桌面端都把 key 写进 <c>auth.json</c>，只认环境变量会让
 	/// 这些用户收到 401。
-	/// </para>
-	/// <para>
 	/// 读盘、命令型凭据与 OAuth 刷新全部走异步链路；等待刷新闸门时响应取消，
 	/// 但刷新本身不跟随取消，避免轮换型 refresh token 被丢掉。
-	/// </para>
-	/// </summary>
 	public static async Task<string?> ResolveApiKeyAsync(
 		string provider,
 		StreamOptions options,

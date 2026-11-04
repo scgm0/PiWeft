@@ -5,10 +5,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 启动期迁移：pi 老版本的 oauth.json / settings.apiKeys、写在 agent 根目录的会话、
 /// 以及 commands/ 目录都要搬到当前布局，否则老用户看到的是「没登录、没会话、没模板」。
-/// </summary>
 public class AgentMigrationsTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-migrate-" + Guid.NewGuid().ToString("N")[..8]);

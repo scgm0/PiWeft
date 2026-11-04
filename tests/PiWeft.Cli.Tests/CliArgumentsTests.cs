@@ -81,7 +81,6 @@ internal sealed class ScriptedStreamFn
 
 	public int Calls { get; private set; }
 
-	/// <summary>每次请求模型看到的完整消息快照，便于断言提示词/附件/展开结果。</summary>
 	public List<IReadOnlyList<Message>> Requests { get; } = [];
 
 	public void Enqueue(string text) => _responses.Enqueue(model => TestModels.Text(model, text));
@@ -460,13 +459,11 @@ public class CliEnvironmentTests
 	[Fact]
 	public void Parse_UnknownLongFlagsFollowPiRules()
 	{
-		// --flag=value
 		var (equals, equalsError) = CliArguments.Parse(["--plan=strict", "hello"]);
 		Assert.Null(equalsError);
 		Assert.Equal("strict", equals!.UnknownFlags["plan"]);
 		Assert.Equal(["hello"], equals.Prompts);
 
-		// --flag value：下一个参数不以 - 或 @ 开头时被当作值消费。
 		var (value, valueError) = CliArguments.Parse(["--plan", "strict", "hello"]);
 		Assert.Null(valueError);
 		Assert.Equal("strict", value!.UnknownFlags["plan"]);

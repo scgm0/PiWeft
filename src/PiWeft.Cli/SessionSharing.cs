@@ -7,18 +7,13 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// <c>/share</c>：把**当前分支**导出成带 <c>pi.share</c> 尾条目的 JSONL，上传为私有 gist 或
 /// Radius artifact，并返回 pi 的会话查看器地址。
-/// <para>
 /// 与 pi 的差异只在传输层：pi 用 <c>gh gist create</c>，这里优先用 <c>gh</c>、没有时退回
 /// <c>GITHUB_TOKEN</c> 的 HTTP API。产物语义保持一致 —— 整份会话文件里可能有多条分支，
 /// 查看器要的是当前这条；系统提示词与工具 schema 不在会话文件里，必须由尾条目补上。
-/// </para>
-/// </summary>
 public static class SessionSharing
 {
-	/// <summary>pi 的默认查看器地址；可用 <c>PI_SHARE_VIEWER_URL</c> 覆盖。</summary>
 	private const string DefaultViewerUrl = "https://pi.dev/session/";
 
 	private const string DefaultRadiusGateway = "https://radius.pi.dev";
@@ -50,10 +45,8 @@ public static class SessionSharing
 		return await ShareViaGistAsync(jsonl, cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>
 	/// 导出当前分支 + <c>pi.share</c> 尾条目。头部用当前时间戳（与 pi 的
 	/// <c>serializeSessionBranch</c> 一致），条目按分支顺序重挂 <c>parentId</c>，第一条为根。
-	/// </summary>
 	internal static string BuildShareJsonl(CodingAgentSession session)
 	{
 		var timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow);
@@ -95,10 +88,8 @@ public static class SessionSharing
 		return builder.ToString();
 	}
 
-	/// <summary>
 	/// 分支里的父链重挂到导出的前一条。未知条目整行输出原始对象，
 	/// 只改模型的 <c>ParentId</c> 不会落到文件里，必须一起改。
-	/// </summary>
 	private static SessionEntry WithParent(SessionEntry entry, string? parentId)
 	{
 		if (entry.ParentId == parentId)
@@ -116,7 +107,6 @@ public static class SessionSharing
 		return unknown with { ParentId = parentId, Raw = raw };
 	}
 
-	/// <summary>查看器链接：<c>PI_SHARE_VIEWER_URL</c> 或 pi 的默认地址，片段是 gist id。</summary>
 	internal static string ViewerUrl(string gistId)
 	{
 		var baseUrl = Environment.GetEnvironmentVariable("PI_SHARE_VIEWER_URL") is { Length: > 0 } configured
@@ -302,7 +292,6 @@ public static class SessionSharing
 		}
 	}
 
-	/// <summary>运行一个外部命令并捕获输出；可执行文件不存在时返回 <see langword="null"/>。</summary>
 	private static async Task<(int ExitCode, string Output, string Error)?> RunAsync(
 		string fileName,
 		IReadOnlyList<string> arguments,

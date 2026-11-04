@@ -4,7 +4,6 @@ using Aprillz.MewUI.Text;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Selectable unified diff with a separate line-number gutter and paint-only classification.</summary>
 public static class DiffView
 {
 	public static UIElement Render(string patch) => Render(patch, null);
@@ -62,10 +61,8 @@ public static class DiffView
 			.Child(new DockPanel().LastChildFill().Children(gutter.DockLeft(), horizontal));
 	}
 
-	/// <summary>
 	/// 并排 diff：左旧右新两列，行数一致逐行对齐；每列可独立横向滚动，纵向共用外层滚动。
 	/// hunk 头渲染成两列都显示的分隔行。
-	/// </summary>
 	internal static UIElement RenderSideBySide(string patch, TextFocusScrollGuard? focus)
 	{
 		var rows = SideBySideDiff.Parse(patch);
@@ -114,7 +111,6 @@ public static class DiffView
 					.Content(body).AutoHorizontalScroll().NoVerticalScroll().SmoothScrolling()));
 	}
 
-	/// <summary>生成并排某一侧的文本行；缺失的一侧为空行（保留一个空格以保持行高）。</summary>
 	private static string Line(DiffRow row, bool old)
 	{
 		if (row.Kind == DiffRowKind.Header)

@@ -7,7 +7,6 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>RPC commands added for parity with pi: session switching, queues, shell and compaction toggles.</summary>
 public class RpcCommandTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-rpc2-" + Guid.NewGuid().ToString("N")[..8]);

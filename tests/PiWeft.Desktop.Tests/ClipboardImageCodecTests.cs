@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 剪贴板互转用的编解码器：PNG 编码与 DIB 读写都必须原样往返。
 /// 解码一侧用框架的 <see cref="ImageDecoders"/> 交叉验证 —— 那是另一套实现，也正是运行时真正用到的那条路径。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class ClipboardImageCodecTests
 {

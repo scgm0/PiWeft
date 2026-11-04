@@ -3,25 +3,19 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>提示音的三类事件，与 PiDeck 的 <c>SoundAlertKind</c> 一致。</summary>
 public enum SoundAlertKind
 {
-	/// <summary>会话正常完成。</summary>
 	Done,
 
-	/// <summary>会话以错误收尾。</summary>
 	Error,
 
-	/// <summary>代理停下来等用户输入（ask_question 之类）。</summary>
 	Waiting,
 }
 
-/// <summary>单个事件的音效配置。</summary>
 /// <param name="Enabled">该事件是否播放提示音。</param>
 /// <param name="Preset">选中的预设音效。</param>
 public sealed record SoundAlertEventSettings(bool Enabled, SoundAlertPreset Preset)
 {
-	/// <summary>该事件的出厂默认：完成/出错开、等待输入关（与 PiDeck 一致）。</summary>
 	public static SoundAlertEventSettings Default(SoundAlertKind kind) => kind switch
 	{
 		SoundAlertKind.Done => new(true, SoundAlertPreset.DoneChime),
@@ -29,7 +23,6 @@ public sealed record SoundAlertEventSettings(bool Enabled, SoundAlertPreset Pres
 		_ => new(false, SoundAlertPreset.WaitingPing),
 	};
 
-	/// <summary>该事件可选的预设（设置页的下拉项）。</summary>
 	public static IReadOnlyList<SoundAlertPreset> Presets(SoundAlertKind kind) => kind switch
 	{
 		SoundAlertKind.Done => [SoundAlertPreset.DoneChime, SoundAlertPreset.DoneBell, SoundAlertPreset.DonePop],
@@ -38,18 +31,14 @@ public sealed record SoundAlertEventSettings(bool Enabled, SoundAlertPreset Pres
 	};
 }
 
-/// <summary>
 /// 提示音设置（PiDeck 的 <c>soundAlert</c> 同义）：总开关、音量、仅失焦，以及三类事件。
 /// 每类事件开关与音效分开，允许「完成响、出错响、等待不响」这种常见组合。
-/// </summary>
 public sealed record SoundAlertSettings
 {
 	public bool Enabled { get; init; } = true;
 
-	/// <summary>音量 0–1；非法值按 0.6 处理（与 PiDeck 的 clampSoundVolume 一致）。</summary>
 	public double Volume { get; init; } = SoundPlayer.DefaultVolume;
 
-	/// <summary>只在主窗口没有焦点时提醒（PiDeck 的 alertOnlyWhenUnfocused）。</summary>
 	public bool OnlyWhenUnfocused { get; init; }
 
 	public SoundAlertEventSettings Done { get; init; } = SoundAlertEventSettings.Default(SoundAlertKind.Done);
@@ -73,22 +62,17 @@ public sealed record SoundAlertSettings
 	};
 }
 
-/// <summary>
 /// 提示音调度：把会话状态边沿与等待输入翻译成「该不该响」，再交给 <see cref="SoundPlayer"/>。
-///
 /// 规则照搬 PiDeck 的 soundAlertTracker：
 /// - 完成：同一会话 8 秒冷却（settled 与状态兜底可能双触发），并带 1.5 秒全局冷却，
-///   多个会话同时完成时只响最近一次，避免叠音；
+/// 多个会话同时完成时只响最近一次，避免叠音；
 /// - 出错：只有「从非错误变成错误」才响，启动时已经挂着的错误不是新事件；
 /// - 等待输入：同一会话的一批请求只响一次，全部回答完再重置，下次新批才再响；
 /// - 仅失焦：主窗口在前台时整体静默（应用内 toast 不受影响）。
-/// </summary>
 internal sealed class SoundAlerts
 {
-	/// <summary>同一会话完成提醒的冷却：8 秒内只响一次。</summary>
 	internal static readonly TimeSpan DoneCooldown = TimeSpan.FromSeconds(8);
 
-	/// <summary>全局冷却：多个会话同时完成时只放行最近一次。</summary>
 	internal static readonly TimeSpan GlobalCooldown = TimeSpan.FromMilliseconds(1500);
 
 	private sealed record SessionState(bool Streaming, string? Error, DateTimeOffset DoneCooldownUntil);
@@ -97,30 +81,22 @@ internal sealed class SoundAlerts
 	private readonly Dictionary<string, HashSet<string>> _pendingRequests = new(StringComparer.Ordinal);
 	private readonly HashSet<string> _waitingNotified = new(StringComparer.Ordinal);
 
-	/// <summary>进程级单例：窗口与会话标签都往这里报。</summary>
 	public static SoundAlerts Shared { get; } = new();
 
-	/// <summary>读当前设置；默认读桌面偏好。</summary>
 	public Func<SoundAlertSettings> SettingsProvider { get; set; } = static () => DesktopPreference.Load().SoundAlert;
 
-	/// <summary>主窗口是否在前台；没有窗口时按失焦处理（宁可多响一次，也别吞掉提醒）。</summary>
 	public Func<bool> IsWindowFocused { get; set; } = static () => false;
 
-	/// <summary>实际播放（测试注入用）。</summary>
 	public Action<SoundAlertPreset, double> Player { get; set; } = static (preset, volume) => SoundPlayer.Play(preset, volume);
 
-	/// <summary>时钟（测试注入用）。</summary>
 	public Func<DateTimeOffset> Clock { get; set; } = static () => DateTimeOffset.UtcNow;
 
 	private DateTimeOffset _lastPlayedAt = DateTimeOffset.MinValue;
-	/// <summary>设置缓存：StateChanged 可能一秒报几次，不必每次都读一遍 desktop.json。</summary>
 	private SoundAlertSettings? _cachedSettings;
 	private DateTimeOffset _cachedSettingsAt = DateTimeOffset.MinValue;
 
-	/// <summary>
 	/// 报告一个会话的运行态。由宿在会话状态变化时调用（同一状态重复调用是安全的）：
 	/// 只在「流式 → 空闲」与非错误 → 错误的边沿上响。
-	/// </summary>
 	/// <param name="sessionId">会话标识；空串表示无法归属（直接忽略）。</param>
 	/// <param name="streaming">该会话是否正在运行。</param>
 	/// <param name="error">当前错误文本；无错误传 null。</param>
@@ -165,7 +141,6 @@ internal sealed class SoundAlerts
 		_sessions[sessionId] = new SessionState(streaming, error, state?.DoneCooldownUntil ?? DateTimeOffset.MinValue);
 	}
 
-	/// <summary>代理开始等待用户输入：同一会话的一批请求只响一次。</summary>
 	public void RequestWaiting(string? sessionId, string? requestId)
 	{
 		if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(requestId) || !Enabled(out var settings))
@@ -188,7 +163,6 @@ internal sealed class SoundAlerts
 		Play(SoundAlertKind.Waiting, settings, Clock());
 	}
 
-	/// <summary>一条等待输入已经回答（或取消）：这一批清空后才允许下一次提醒。</summary>
 	public void CompleteWaiting(string? sessionId, string? requestId)
 	{
 		if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(requestId))
@@ -208,7 +182,6 @@ internal sealed class SoundAlerts
 		}
 	}
 
-	/// <summary>会话关闭：清掉它的残留状态，避免 id 复用时误判边沿。</summary>
 	public void Forget(string? sessionId)
 	{
 		if (string.IsNullOrEmpty(sessionId))
@@ -221,7 +194,6 @@ internal sealed class SoundAlerts
 		_waitingNotified.Remove(sessionId);
 	}
 
-	/// <summary>清空全部状态（测试与退出路径用）。</summary>
 	public void Reset()
 	{
 		_sessions.Clear();
@@ -232,7 +204,6 @@ internal sealed class SoundAlerts
 		_cachedSettingsAt = DateTimeOffset.MinValue;
 	}
 
-	/// <summary>读设置（2 秒缓存）：设置页改完最多 2 秒内生效，测试注入的 provider 仍立即生效。</summary>
 	private SoundAlertSettings ReadSettings()
 	{
 		var now = Clock();
@@ -246,10 +217,8 @@ internal sealed class SoundAlerts
 		return _cachedSettings;
 	}
 
-	/// <summary>
 	/// 设置门控：总开关、该类事件开关、仅失焦，任一关掉都不响。
 	/// 返回 false 时调用方直接放弃（不更新冷却，避免「关着开关也消耗冷却」）。
-	/// </summary>
 	private bool Enabled(out SoundAlertSettings settings)
 	{
 		settings = ReadSettings();
@@ -288,13 +257,10 @@ internal sealed class SoundAlerts
 	}
 }
 
-/// <summary>
 /// 提示音设置的 JSON 形状（<c>desktop.json</c> 的 <c>soundAlert</c> 节点）。
-///
 /// 键名与取值沿用 PiDeck：预设音效记 id 字符串（<c>done-chime</c> 等），
 /// 这样两边的设置可以互相看懂，也方便用户照文档手改。
 /// 解析永远不抛：缺字段、类型不对、预设名失效都回落到该事件的默认值。
-/// </summary>
 internal static class SoundAlertJson
 {
 	public static SoundAlertSettings Parse(System.Text.Json.Nodes.JsonNode? node)
@@ -326,7 +292,6 @@ internal static class SoundAlertJson
 		["waiting"] = WriteEvent(settings.Waiting),
 	};
 
-	/// <summary>预设的稳定 id（PiDeck 同名）。</summary>
 	public static string Id(SoundAlertPreset preset) => preset switch
 	{
 		SoundAlertPreset.DoneChime => "done-chime",
@@ -338,7 +303,6 @@ internal static class SoundAlertJson
 		_ => "waiting-knock",
 	};
 
-	/// <summary>预设的界面名称。</summary>
 	public static string Label(SoundAlertPreset preset) => preset switch
 	{
 		SoundAlertPreset.DoneChime => "清脆铃音",
@@ -350,7 +314,6 @@ internal static class SoundAlertJson
 		_ => "敲门",
 	};
 
-	/// <summary>id → 预设；无法识别返回 null（调用方回落默认）。</summary>
 	public static SoundAlertPreset? Preset(string? id) => id switch
 	{
 		"done-chime" => SoundAlertPreset.DoneChime,

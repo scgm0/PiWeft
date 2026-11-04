@@ -6,9 +6,7 @@ using Xunit;
 
 namespace PiWeft.Mcp.Tests;
 
-/// <summary>
 /// MCP 的回归用例：写入 <c>mcp.json</c> 不得丢数据，坏 SSE 帧不得让通知流崩溃。
-/// </summary>
 public class McpRegressionTests : IDisposable
 {
 	private const string Url = "https://mcp.example.test/mcp";

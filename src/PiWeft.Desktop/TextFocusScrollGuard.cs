@@ -4,7 +4,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>会话阅读控件获得焦点不驱动外层滚动；文本选择、键盘操作与显式滚动仍可用。</summary>
 internal sealed class TextFocusScrollGuard : IDisposable
 {
 	private readonly ScrollViewer _scroll;
@@ -49,34 +48,24 @@ internal sealed class TextFocusScrollGuard : IDisposable
 		control.GotFocus += () => Preserve(control);
 	}
 
-	/// <summary>折叠开关改变了行高：宿主据此重排会话视图（与手动滚动同样的收敛）。</summary>
 	public Action<FrameworkElement>? LayoutInvalidated { get; set; }
 
-	/// <summary>展开正在流式输出的内容（思考）时请求会话重新进入跟底。</summary>
 	public Action? FollowConversation { get; set; }
 
-	/// <summary>
 	/// 流式内容的后续帧请求「继续贴底」：只有读者仍停在末尾时才生效。
 	/// 展开是读者的一次阅读意图，此后每帧一次的续跟不是——不能拿它把已经上滚的读者拽回末尾，
 	/// 更不能把跟底状态重新锁上（否则展开着的思考只要还在流，会话就再也滚不动）。
-	/// </summary>
 	public Action? ContinueConversationFollowing { get; set; }
 
-	/// <summary>组内步骤的折叠是阅读行为：暂停外层跟底，但不移动外层滚动位置。</summary>
 	public Action? PauseFollowing { get; set; }
 
-	/// <summary>恢复折叠状态时抑制「跟随内容增长」，避免滚动中的虚拟化行重建后把读者拽回末尾。</summary>
 	public bool SuppressGrowthFollow { get; set; }
 
-	/// <summary>
 	/// 展开流式内容后让最近的滚动视口跟住内容末尾：会话本身由 <see cref="FollowConversation"/>
 	/// （读者的展开动作）或 <see cref="ContinueConversationFollowing"/>（之后的逐帧续跟）承接，
 	/// 过程组的组体这类嵌套视口由自己的 <see cref="SmoothScroll"/> 持续贴底。
-	/// </summary>
-	/// <remarks>
 	/// 只有在读者本就看着末尾时才继续贴底：正在向上浏览时展开思考，不应该把读者拽到末尾。
 	/// 这也与组体的「置底才跟随」一致——上滚之后展开/折叠不能抢走阅读位置。
-	/// </remarks>
 	/// <param name="byReader">
 	/// 这次跟底来自读者的展开动作（true），还是流式内容每帧一次的续跟（false）。
 	/// 续跟只延续已有的跟底意图，不会把上滚离开末尾的读者重新锁回末尾。
@@ -106,10 +95,8 @@ internal sealed class TextFocusScrollGuard : IDisposable
 		else ContinueConversationFollowing?.Invoke();
 	}
 
-	/// <summary>判定视口是否停在末尾的容差（DIP）。</summary>
 	internal const double AtTailTolerance = 4;
 
-	/// <summary>折叠流式内容时停止跟随增长，视口停在读者看到的位置。</summary>
 	public void StopGrowth(Element origin)
 	{
 		if (NearestViewport(origin) is not { } viewport || ReferenceEquals(viewport, _scroll)) return;

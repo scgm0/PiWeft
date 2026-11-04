@@ -7,10 +7,8 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.Google;
 
-/// <summary>
 /// Vertex AI 的应用默认凭据（ADC）：显式访问令牌、服务账号密钥文件，或 gcloud 用户凭据。
 /// 令牌按凭据来源缓存，直到临近过期前才刷新。
-/// </summary>
 public sealed class GoogleAdc
 {
 	private static readonly Lock Gate = new();
@@ -18,16 +16,12 @@ public sealed class GoogleAdc
 
 	private sealed record Entry(string Token, DateTimeOffset ExpiresAt);
 
-	/// <summary>指向服务账号或用户凭据 JSON 文件的环境变量。</summary>
 	public const string CredentialsVariable = "GOOGLE_APPLICATION_CREDENTIALS";
 
-	/// <summary>调用方已经拿到的令牌，例如来自工作负载身份或 CI 密钥。</summary>
 	public const string AccessTokenVariable = "GOOGLE_ACCESS_TOKEN";
 
-	/// <summary>Vertex AI 要求的 OAuth scope。</summary>
 	public const string CloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform";
 
-	/// <summary>返回访问令牌；缓存的令牌临近过期时先刷新。</summary>
 	public static async Task<string> GetAccessTokenAsync(HttpClient http, CancellationToken cancellationToken)
 	{
 		if (Environment.GetEnvironmentVariable(AccessTokenVariable) is { Length: > 0 } provided)
@@ -69,7 +63,6 @@ public sealed class GoogleAdc
 		return token;
 	}
 
-	/// <summary>清空令牌缓存。测试用它来隔离不同的凭据来源。</summary>
 	public static void ClearCache()
 	{
 		lock (Gate)
@@ -78,7 +71,6 @@ public sealed class GoogleAdc
 		}
 	}
 
-	/// <summary>用签名后的 JWT 断言换取访问令牌。</summary>
 	internal static async Task<(string Token, TimeSpan Lifetime)> RefreshServiceAccountAsync(
 		HttpClient http,
 		JsonObject credential,
@@ -99,7 +91,6 @@ public sealed class GoogleAdc
 		}, cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>刷新授权用户凭据，也就是 `gcloud auth application-default login` 写入的那种。</summary>
 	internal static async Task<(string Token, TimeSpan Lifetime)> RefreshUserAsync(
 		HttpClient http,
 		JsonObject credential,
@@ -149,7 +140,6 @@ public sealed class GoogleAdc
 		return (token, TimeSpan.FromSeconds(Math.Max(60, expiresIn - 60)));
 	}
 
-	/// <summary>为服务账号构建 RS256 签名的 JWT 断言。</summary>
 	internal static string CreateAssertion(string email, string audience, string privateKeyPem)
 	{
 		var issuedAt = DateTimeOffset.UtcNow;
@@ -176,7 +166,6 @@ public sealed class GoogleAdc
 		return $"{signingInput}.{Base64Url(signature)}";
 	}
 
-	/// <summary>JWT 要求的无填充 Base64url 编码。</summary>
 	internal static string Base64Url(string value) => Base64Url(Encoding.UTF8.GetBytes(value));
 
 	internal static string Base64Url(byte[] bytes) =>

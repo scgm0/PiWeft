@@ -114,7 +114,6 @@ public sealed class ModelCatalogStoreTests : IDisposable
 		}
 	}
 
-	/// <summary>对上次的 ETag 回 304，其余回 200。</summary>
 	private sealed class ConditionalCatalogHandler(string body) : HttpMessageHandler
 	{
 		public List<string?> IfNoneMatch { get; } = [];
@@ -138,10 +137,8 @@ public sealed class ModelCatalogStoreTests : IDisposable
 			});
 		}
 	}
-	/// <summary>
 	/// 条件请求：第二次刷新必须把上次拿到的 ETag 带回去；服务端 304 时不重新传输、
 	/// 不覆盖缓存里的模型，但 checkedAt 要推进（否则节流窗口永远推不动，每次启动都全量拉一遍）。
-	/// </summary>
 	[Fact]
 	public async Task ConditionalRequestAvoidsReDownloadingUnchangedCatalog()
 	{

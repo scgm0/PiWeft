@@ -7,29 +7,22 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>
 /// 读取 <c>&lt;agentDir&gt;/auth.json</c> 里的 <c>api_key</c> 凭据。
-/// <para>
 /// 凭据解析时存储值优先于环境变量（与 pi 一致）。
 /// key 值可以是明文，也可以是 <c>${VAR}</c> 模板（变量取自同一凭据的 <c>env</c> 字段或进程环境）；
 /// 以 <c>!</c> 开头的命令型凭据在请求时执行外部命令取 stdout（与 pi 一致：不缓存）。
-/// </para>
-/// </summary>
 public static partial class AuthStore
 {
 	[GeneratedRegex(@"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.CultureInvariant)]
 	private static partial Regex TemplatePattern();
 
-	/// <summary>命令型凭据的执行上限：超时或超长输出都视为取值失败。</summary>
 	private const int CommandTimeoutMs = 10_000;
 
 	private const int CommandOutputLimit = 64 * 1024;
 
-	/// <summary>凭据文件的位置。</summary>
 	public static string Path(string? agentDir = null) =>
 		System.IO.Path.Combine(agentDir ?? AgentPaths.AgentDirectory(), "auth.json");
 
-	/// <summary>写入一个 api_key 凭据，保留 auth.json 里的其它 provider 与字段。</summary>
 	public static void SaveApiKey(string provider, string key, string? agentDir = null)
 	{
 		lock (AuthFileGate.Gate)
@@ -63,7 +56,6 @@ public static partial class AuthStore
 		}
 	}
 
-	/// <summary>写盘前读取；文件缺失返回空对象，损坏/不可读时抛错而不是覆盖。</summary>
 	private static JsonObject ReadRootForWrite(string path)
 	{
 		if (!File.Exists(path)) return new JsonObject();
@@ -78,11 +70,9 @@ public static partial class AuthStore
 		}
 	}
 
-	/// <summary>
 	/// 取某个 provider 的 API key。文件不存在、provider 没有 api_key 凭据、模板变量缺失，
 	/// 或命令型凭据执行失败时返回 null（不抛异常，让调用方继续走环境变量）。
-	/// <para>请求路径应使用 <see cref="ReadApiKeyAsync"/>，避免在异步链路里阻塞线程。</para>
-	/// </summary>
+	/// 请求路径应使用 <see cref="ReadApiKeyAsync"/>，避免在异步链路里阻塞线程。
 	public static string? ReadApiKey(string provider, string? agentDir = null)
 	{
 		var credential = ReadCredential(provider, agentDir);
@@ -107,7 +97,6 @@ public static partial class AuthStore
 		return string.IsNullOrEmpty(resolved) ? null : resolved;
 	}
 
-	/// <summary><see cref="ReadApiKey"/> 的异步版本：读盘与命令型凭据都不占用调用线程。</summary>
 	public static async Task<string?> ReadApiKeyAsync(
 		string provider,
 		string? agentDir = null,
@@ -117,7 +106,6 @@ public static partial class AuthStore
 		return await ReadApiKeyFromRootAsync(root, provider, cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>从已解析的 auth.json 根节点取 key；供凭据解析链一次读盘同时处理 API Key 与 OAuth。</summary>
 	internal static async Task<string?> ReadApiKeyFromRootAsync(
 		JsonObject? root,
 		string provider,
@@ -143,11 +131,9 @@ public static partial class AuthStore
 		return string.IsNullOrEmpty(resolved) ? null : resolved;
 	}
 
-	/// <summary>
 	/// 执行一条命令型凭据命令并返回修剪后的 stdout。
 	/// 命令来自用户自己的 <c>auth.json</c>（用户级文件，项目配置无法写入）；
 	/// 超时 10 秒、输出上限 64 KiB，超时即终止进程并视为失败。
-	/// </summary>
 	public static string? ExecuteCommandKey(string command)
 	{
 		if (string.IsNullOrWhiteSpace(command))
@@ -203,7 +189,6 @@ public static partial class AuthStore
 		}
 	}
 
-	/// <summary><see cref="ExecuteCommandKey"/> 的异步版本；调用方取消时终止进程并向上抛出。</summary>
 	public static async Task<string?> ExecuteCommandKeyAsync(
 		string command,
 		CancellationToken cancellationToken = default)
@@ -276,7 +261,6 @@ public static partial class AuthStore
 		}
 	}
 
-	/// <summary>读 stdout，最多读 <see cref="CommandOutputLimit"/> 个字符；超限立即杀进程并返回 null。</summary>
 	private static string? ReadCommandOutput(Process process, StreamReader reader)
 	{
 		var buffer = ArrayPool<char>.Shared.Rent(4096);
@@ -418,10 +402,8 @@ public static partial class AuthStore
 		return start;
 	}
 
-	/// <summary>
 	/// 一次解析同时给出可用的 key 与该凭据是否为命令型（不执行命令）。
 	/// 需要执行命令取 key 的调用方应改用 <see cref="ReadApiKey"/>。
-	/// </summary>
 	public static (string? Key, bool IsCommand) ReadCredentialState(string provider, string? agentDir = null)
 	{
 		if (ReadCredential(provider, agentDir) is not { } credential)
@@ -444,7 +426,6 @@ public static partial class AuthStore
 		return (string.IsNullOrEmpty(resolved) ? null : resolved, false);
 	}
 
-	/// <summary><see cref="ReadCredentialState"/> 的异步版本；只解析文件，不执行命令。</summary>
 	public static async Task<(string? Key, bool IsCommand)> ReadCredentialStateAsync(
 		string provider,
 		string? agentDir = null,
@@ -470,10 +451,8 @@ public static partial class AuthStore
 		return (string.IsNullOrEmpty(resolved) ? null : resolved, false);
 	}
 
-	/// <summary>
 	/// 一次读盘列出「有可用 API Key（含命令型凭据）」的 provider。
 	/// 只做模板解析与命令型判定，不执行命令；供认证状态页批量读取。
-	/// </summary>
 	public static IReadOnlySet<string> ConfiguredProviders(string? agentDir = null)
 	{
 		var providers = new HashSet<string>(StringComparer.Ordinal);
@@ -488,7 +467,6 @@ public static partial class AuthStore
 		return providers;
 	}
 
-	/// <summary>列出 auth.json 里配置过的 provider（用于 <c>pi auth check</c> 不带参数时逐个汇报）。</summary>
 	public static IReadOnlyList<string> ListProviders(string? agentDir = null)
 	{
 		var path = Path(agentDir);
@@ -509,14 +487,11 @@ public static partial class AuthStore
 		}
 	}
 
-	/// <summary>凭据是否属于「需要执行命令」的类型，用于给出更准确的提示。</summary>
 	public static bool IsCommandCredential(string provider, string? agentDir = null) =>
 		ReadCredential(provider, agentDir) is { } credential && credential.Key.StartsWith('!');
 
-	/// <summary>
 	/// 列出配置了命令型凭据的 provider。只解析文件不执行命令，
 	/// 供启动路径（模型可用性筛选）把这类 provider 计为可用。
-	/// </summary>
 	public static IReadOnlyList<string> CommandCredentialProviders(string? agentDir = null)
 	{
 		var providers = new List<string>();
@@ -532,7 +507,6 @@ public static partial class AuthStore
 		return providers;
 	}
 
-	/// <summary>一次读取全部 API key；模型目录筛选无需为每个模型重复解析凭据文件。</summary>
 	public static IReadOnlyDictionary<string, string> ReadApiKeys(string? agentDir = null)
 	{
 		var keys = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -545,7 +519,6 @@ public static partial class AuthStore
 		return keys;
 	}
 
-	/// <summary>读出 <c>(key, env)</c>；没有 api_key 凭据时返回 null。</summary>
 	private static (string Key, Dictionary<string, string>? Env)? ReadCredential(string provider, string? agentDir) =>
 		ReadCredential(ReadRoot(agentDir)?[provider]);
 
@@ -604,7 +577,6 @@ public static partial class AuthStore
 		return (key, env);
 	}
 
-	/// <summary>展开 <c>${VAR}</c>：先看凭据自带的 env，再看进程环境；任一变量缺失即整体不可用（与 pi 一致）。</summary>
 	private static string? ResolveTemplate(string key, Dictionary<string, string>? env)
 	{
 		if (!key.Contains("${", StringComparison.Ordinal))

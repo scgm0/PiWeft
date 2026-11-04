@@ -5,7 +5,6 @@ using System.Text.Json;
 
 namespace PiWeft.Ai.Providers;
 
-/// <summary>用 <see cref="Utf8JsonWriter"/> 构建 provider 请求 payload，不使用反射。</summary>
 internal static class JsonPayload
 {
 	private static readonly JsonWriterOptions WriterOptions = new()
@@ -17,7 +16,6 @@ internal static class JsonPayload
 		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
-	/// <summary>把 payload 写进缓冲区并返回其 UTF-8 字节。</summary>
 	public static byte[] Write(Action<Utf8JsonWriter> write)
 	{
 		var buffer = new ArrayBufferWriter<byte>(4096);
@@ -31,17 +29,13 @@ internal static class JsonPayload
 	}
 }
 
-/// <summary>一种 provider API 的实现，按 <see cref="Api"/> 索引。</summary>
 public interface IApiProvider
 {
-	/// <summary>pi 的 api id，例如 <c>anthropic-messages</c>。</summary>
 	string Api { get; }
 
-	/// <summary>发起一次流式请求；返回的流由该 provider 负责完成。</summary>
 	AssistantMessageEventStream Stream(Model model, Context context, StreamOptions options);
 }
 
-/// <summary>为模型解析出 provider，并对外暴露流式入口。</summary>
 public sealed class ModelsGateway
 {
 	private readonly Dictionary<string, IApiProvider> _providers = new(StringComparer.Ordinal);
@@ -67,7 +61,6 @@ public sealed class ModelsGateway
 			? provider
 			: throw new InvalidOperationException($"no provider registered for api '{api}'");
 
-	/// <summary>为目录中的模型 id 流式返回响应（<c>provider/model</c> 或唯一的模型 id）。</summary>
 	public AssistantMessageEventStream Stream(string modelId, Context context, StreamOptions? options = null)
 	{
 		var model = Registry.Resolve(modelId)

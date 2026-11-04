@@ -4,17 +4,14 @@ using Aprillz.MewUI.Rendering;
 
 namespace PiWeft.Desktop;
 
-/// <summary>提交图里的一条 lane。</summary>
 internal sealed record GitGraphNode(string Id, int Color);
 
-/// <summary>一行提交的输入/输出 lane；算法与 PiDeck 的 swimlane 一致。</summary>
 internal sealed record GitGraphRow(
 	GitCommitEntry Commit,
 	IReadOnlyList<GitGraphNode> Input,
 	IReadOnlyList<GitGraphNode> Output,
 	int NodeIndex);
 
-/// <summary>把拓扑序提交折成连续的输入/输出 lane。</summary>
 internal static class GitCommitGraph
 {
 	public const int LaneWidth = 14;
@@ -72,10 +69,8 @@ internal static class GitCommitGraph
 	}
 }
 
-/// <summary>
 /// 一行提交的 lane 绘制：输入 lane 到输出的连接、分叉/合并曲线与节点。
 /// 只是数据可视化，不参与命中；点击交给外层提交行按钮。
-/// </summary>
 internal sealed class CommitGraphLanes : FrameworkElement
 {
 	private GitGraphRow? _row;

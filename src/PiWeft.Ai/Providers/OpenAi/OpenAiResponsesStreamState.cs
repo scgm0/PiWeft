@@ -5,10 +5,8 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>
 /// 把 OpenAI Responses API 的 SSE 事件折叠进一个 <see cref="AssistantMessageEventStream"/>。内容块按事件的
 /// <c>output_index</c> 跟踪，这也是 Responses API 标识输出项的方式。
-/// </summary>
 internal sealed class OpenAiResponsesStreamState
 {
 	private sealed class Slot
@@ -278,7 +276,6 @@ internal sealed class OpenAiResponsesStreamState
 		Push(new ToolCallDeltaEvent { ContentIndex = slot.ContentIndex, Delta = delta, Partial = Snapshot() });
 	}
 
-	/// <summary><c>done</c> 事件带完整参数，因此只把缺失的后缀作为增量补发。</summary>
 	private void AppendArgumentsSuffix(int outputIndex, string? complete)
 	{
 		if (complete is null || !_slots.TryGetValue(outputIndex, out var slot) || slot.Kind != "toolCall")

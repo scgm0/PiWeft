@@ -4,17 +4,14 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai;
 
-/// <summary>
 /// 请求前的消息归一化。对应 pi 的 <c>api/transform-messages.ts</c>：
 /// 丢弃不属于当前模型的 thinking、跳过失败的助手回合、为孤儿工具调用补结果、
 /// 归一工具调用 id，并把不支持图片的模型收到的图片降级为文本。
-/// </summary>
 public static class MessageTransform
 {
 	private const string UserImagePlaceholder = "(image omitted: model does not support images)";
 	private const string ToolImagePlaceholder = "(tool image omitted: model does not support images)";
 
-	/// <summary>应用全部变换，返回可以安全发送给 <paramref name="model"/> 的消息。</summary>
 	public static List<Message> Transform(IReadOnlyList<Message> messages, Model model)
 	{
 		ArgumentNullException.ThrowIfNull(messages);
@@ -175,10 +172,8 @@ public static class MessageTransform
 		return replaced;
 	}
 
-	/// <summary>
 	/// 重放前整理工具调用与结果：跳过 error/aborted 助手消息，为没有结果的调用补一条
 	/// “No result provided”，并把 system 消息挪到工具结果之后。
-	/// </summary>
 	private static List<Message> ReconcileToolCalls(IReadOnlyList<Message> messages)
 	{
 		var result = new List<Message>(messages.Count);
@@ -270,7 +265,6 @@ public static class MessageTransform
 		return result;
 	}
 
-	/// <summary>把 provider 不接受的工具调用 id 归一成短而稳定的形式。</summary>
 	private static string NormalizeToolCallId(string id)
 	{
 		if (id.Length is > 0 and <= 64 && id.All(static c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-'))

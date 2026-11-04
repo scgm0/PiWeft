@@ -3,7 +3,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Compaction;
 
-/// <summary>识别 provider 的上下文溢出错误。对应 pi 的 <c>utils/overflow.ts</c>。</summary>
 public static partial class ContextOverflow
 {
 	private static readonly Regex[] Patterns =
@@ -41,7 +40,6 @@ public static partial class ContextOverflow
 		TooManyRequests(),
 	];
 
-	/// <summary>这次失败是否表示输入超过上下文窗口。</summary>
 	public static bool IsOverflow(AssistantMessage message)
 	{
 		if (message.StopReason != StopReason.Error || string.IsNullOrEmpty(message.ErrorMessage))

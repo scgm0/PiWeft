@@ -5,7 +5,6 @@ using PiWeft.Ai.Json;
 
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>OpenRouter 的 chat-completions 生图方言；对应 pi 的 <c>openrouter-images</c>。</summary>
 public sealed class OpenRouterImagesProvider : IImageApiProvider
 {
 	public const string ApiId = "openrouter-images";

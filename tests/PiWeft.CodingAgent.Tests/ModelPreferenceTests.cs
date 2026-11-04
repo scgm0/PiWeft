@@ -8,10 +8,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 「记住会话使用的模型与思考级别」（对齐 PiDeck 的 lastUsedModel / modelThinkingLevels）：
 /// 每模型默认档位写进 settings.json；恢复会话时记录的模型优先于宿主默认。
-/// </summary>
 public sealed class ModelPreferenceTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-model-pref-" + Guid.NewGuid().ToString("N")[..8]);

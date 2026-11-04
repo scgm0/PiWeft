@@ -6,7 +6,6 @@ namespace PiWeft.Markdown;
 
 public sealed partial class MarkdownView
 {
-	/// <summary>Selects the whole document, including blocks that are not realized.</summary>
 	public void SelectAll()
 	{
 		if (!IsSelectionEnabled || _document is null || _document.TextUnits.Count == 0)
@@ -17,10 +16,8 @@ public sealed partial class MarkdownView
 		SetSelection((0, 0), (last, _document.TextUnits[last].Text.Length));
 	}
 
-	/// <summary>Clears the selection.</summary>
 	public void ClearSelection() => SetSelection(null, null);
 
-	/// <summary>Copies the selected text; returns false when there is nothing selected or a handler cancels.</summary>
 	public bool CopySelection()
 	{
 		string text = _selectedText;
@@ -61,7 +58,6 @@ public sealed partial class MarkdownView
 		return anchor.CompareTo(focus) <= 0 ? (anchor, focus) : (focus, anchor);
 	}
 
-	/// <summary>Recomputes the copied text after the document model changed.</summary>
 	private void RefreshSelectedText()
 	{
 		string text = BuildSelectedText();
@@ -334,12 +330,10 @@ public sealed partial class MarkdownView
 
 	private (int Unit, bool Forward)? _pendingLinkFocus;
 
-	/// <summary>
 	/// Moves keyboard focus from the current paragraph's links to the first (or last) link of
 	/// the next (or previous) text unit that has one, realizing the target block first if
 	/// needed. Returns false when focus is not on a link paragraph of this view or no further
 	/// link exists, so Tab keeps its default focus-navigation meaning.
-	/// </summary>
 	private bool TryMoveLinkFocus(bool forward)
 	{
 		if (_document is null ||

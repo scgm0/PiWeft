@@ -5,10 +5,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 并行工具调用里的同文件写入：每次 <c>edit</c> 都是「读—改—写」，
 /// 不串行化时后写的那次会拿着旧内容，前一次修改被静默覆盖。
-/// </summary>
 public class FileToolsTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-files-" + Guid.NewGuid().ToString("N")[..8]);

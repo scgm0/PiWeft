@@ -5,9 +5,7 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// <c>/bug</c>：生成可分享的本地诊断包（zip），包含环境、脱敏后的配置、最近错误日志和可选的会话记录。
-/// </summary>
 public static class BugReport
 {
 	public static string Create(

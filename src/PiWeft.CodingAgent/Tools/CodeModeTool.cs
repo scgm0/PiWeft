@@ -8,53 +8,37 @@ using JsCodeModeTool = PiWeft.JavaScript.CodeModeTool;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>
 /// codemode 需要的会话能力：脚本能调用哪些工具、怎么执行（走完整工具管线）、
 /// <c>store()</c> 从哪里读、成功后写到哪里。
-/// </summary>
 public sealed record CodeModeHost
 {
-	/// <summary>当前可被脚本调用的工具（可以包含 codemode 自身，工具会自行排除）。</summary>
 	public required Func<IReadOnlyList<AgentTool>> Tools { get; init; }
 
-	/// <summary>
 	/// 按名称执行嵌套调用；必须走参数校验、钩子与中断，而不是直接调用 <see cref="AgentTool.Execute"/>。
 	/// 最后一个参数是本次 codemode 执行的消息快照（供钩子上下文复用），没有会话时为 <c>null</c>。
-	/// </summary>
 	public required Func<string, JsonObject, string, CancellationToken, IReadOnlyList<Message>?, Task<AgentToolCallOutcome>> ExecuteTool { get; init; }
 
-	/// <summary>
 	/// 嵌套调用钩子上下文用的消息快照；每次 codemode 执行取一份并由所有嵌套调用复用，
 	/// 避免每次工具调用都拷贝整段会话记录。
-	/// </summary>
 	public Func<IReadOnlyList<Message>>? Messages { get; init; }
 
-	/// <summary><c>load()</c> 读到的最新值（按会话分支）。</summary>
 	public Func<IReadOnlyDictionary<string, JsonNode?>> LoadStore { get; init; } = static () => new Dictionary<string, JsonNode?>(StringComparer.Ordinal);
 
-	/// <summary>成功执行后提交 <c>store()</c> 的改动。</summary>
 	public Action<CodeModeStoreWrites> SaveStore { get; init; } = static _ => { };
 
-	/// <summary><c>models.*</c> 的目录查询；为 <c>null</c> 时脚本调用目录查询会报错。</summary>
 	public Func<CodeModeModelsRequest, JsonNode?>? Models { get; init; }
 
-	/// <summary><c>models.classify()</c> / <c>models.generateImages()</c> 的宿主桥。</summary>
 	public Func<CodeModeModelCall, CancellationToken, Task<CodeModeModelCallResult>>? ModelCall { get; init; }
 
-	/// <summary>按工具名取 prompt guidelines；与 pi 一样附在声明与 <c>ALL_TOOLS</c> 的描述后。</summary>
 	public Func<string, IReadOnlyList<string>>? Guidelines { get; init; }
 }
 
-/// <summary>
 /// 原生 <c>codemode</c> 工具：模型写 JavaScript，在 Jint 沙箱里调用其它工具。
 /// 嵌套调用的结果不进入 LLM 上下文，只有脚本的输出与返回值进入。
-/// </summary>
 public static class CodeModeTool
 {
-	/// <summary>工具名。</summary>
 	public const string Name = "codemode";
 
-	/// <summary>会话里保存 <c>store()</c> 改动的自定义条目类型。</summary>
 	public const string EntryType = "codemode-store";
 
 	public const string Snippet = "Run JavaScript that calls other tools";
@@ -64,16 +48,12 @@ public static class CodeModeTool
 		"Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.",
 	];
 
-	/// <summary>默认输出预算（token），与 pi 一致。</summary>
 	private const int DefaultMaxOutputTokens = 10_000;
 
-	/// <summary>估算 token 时的字符数。</summary>
 	private const int CharsPerToken = 4;
 
-	/// <summary>工具声明的默认描述预算（估算 token），可由 <c>settings.codemode.inlineBudget</c> 覆盖。</summary>
 	public const int DefaultInlineBudget = 3000;
 
-	/// <summary>脚本没有 <c>@options.timeout_ms</c> 时的默认时限：与 pi 一样不设上限，靠 abort 与任务停滞检测。</summary>
 	public static readonly TimeSpan DefaultTimeout = Timeout.InfiniteTimeSpan;
 
 	private const string DescriptionIntro =
@@ -93,20 +73,16 @@ public static class CodeModeTool
 	private const string DescriptionGlobalsModelCalls =
 		"- `await models.classify(model, context)` and `await models.generateImages(model, context)` run a classifier or image model; `context` is the `state`/`images`/`questions` or `input` shape. Show generated images with `image(block)`.";
 
-	/// <summary><c>models.*</c> 调用（分类/生图）在嵌套调用详情里的前缀。</summary>
 	private const string ModelCallIdSuffix = "/models/";
 
-	/// <summary>没有会话上下文时使用的占位工具：能执行纯脚本，但不能调用工具、也不持久化 store。</summary>
 	public static BuiltinTool CreatePlaceholder() => Create(new CodeModeHost
 	{
 		Tools = static () => [],
 		ExecuteTool = static (name, _, _, _, _) => throw new InvalidOperationException($"Tool \"{name}\" is not available in this script"),
 	});
 
-	/// <summary>
 	/// 构建绑定到会话的工具。<paramref name="declaredTools"/> 是写进描述的工具有集（默认取
 	/// <see cref="CodeModeHost.Tools"/>）；执行时始终以宿主当前的工具集为准。
-	/// </summary>
 	public static BuiltinTool Create(
 		CodeModeHost host,
 		IReadOnlyList<AgentTool>? declaredTools = null,
@@ -144,7 +120,6 @@ public static class CodeModeTool
 			Guidelines);
 	}
 
-	/// <summary>面向模型的工具描述：固定说明 + 每个可调用工具的声明。</summary>
 	public static string CreateDescription(
 		IReadOnlyList<AgentTool> tools,
 		bool models = true,
@@ -214,7 +189,6 @@ public static class CodeModeTool
 		return string.Join("\n\n", sections);
 	}
 
-	/// <summary>目录里的一条工具声明，成本以估算 token 计（字符数 / 4，向上取整）。</summary>
 	private sealed record CatalogEntry(string Name, string? Namespace, string? NamespaceDescription, string Section, int Cost);
 
 	private sealed record CatalogGroup(string? Namespace, string? Description)
@@ -222,10 +196,8 @@ public static class CodeModeTool
 		public List<CatalogEntry> Entries { get; } = [];
 	}
 
-	/// <summary>
 	/// 预算选择（pi 的 selectCatalog）：每一轮让每个组放入它最便宜且放得下的工具；
 	/// 放不下的组本轮退出，其它组继续。这样每个命名空间都先被代表，再逐步补全。
-	/// </summary>
 	private static HashSet<string> SelectCatalog(IReadOnlyList<CatalogGroup> groups, int budget)
 	{
 		var queues = groups
@@ -269,7 +241,6 @@ public static class CodeModeTool
 		return $"{heading}\n{declaration.RenderSample().Trim()}";
 	}
 
-	/// <summary>单个工具的 TypeScript 声明，供 <c>tool_search</c> 返回加载结果。</summary>
 	public static string RenderDeclaration(AgentTool tool, IReadOnlyList<string>? guidelines = null) =>
 		new CodeModeToolDeclaration(
 			tool.Name,
@@ -411,7 +382,6 @@ public static class CodeModeTool
 		};
 	}
 
-	/// <summary>把 <c>models.*</c> 调用并入 details 的 <c>calls</c>（与工具调用同一个列表，pi 的渲染形状）。</summary>
 	private static void AppendModelCalls(
 		JsonObject details,
 		IReadOnlyList<CodeModeModelCallRecord> modelCalls,
@@ -533,7 +503,6 @@ public static class CodeModeTool
 		};
 	}
 
-	/// <summary>工具描述 + prompt guidelines；pi 把 guidelines 附在声明后面。</summary>
 	private static string DescribeWithGuidelines(AgentTool tool, CodeModeHost host) =>
 		AppendGuidelines(tool.Description, host.Guidelines?.Invoke(tool.Name));
 
@@ -545,7 +514,6 @@ public static class CodeModeTool
 			_ => string.Empty,
 		}).Where(static text => text.Length > 0));
 
-	/// <summary>与 pi 相同的排版：多条文本带序号，console 归入一个块。</summary>
 	private static List<ContentBlock> FormatOutput(IReadOnlyList<CodeModeOutputItem> output)
 	{
 		var items = new List<ContentBlock>();
@@ -599,7 +567,6 @@ public static class CodeModeTool
 		return $"{head}\n\n{summary}";
 	}
 
-	/// <summary>按输出预算保留首尾；图片保持在文本之后。预算为 0 时只保留截断提示（与 pi 一致）。</summary>
 	private static List<ContentBlock> Truncate(List<ContentBlock> items, int maxChars, out string? fullOutputPath)
 	{
 		fullOutputPath = null;
@@ -645,7 +612,6 @@ public static class CodeModeTool
 		return result;
 	}
 
-	/// <summary>把完整输出写到临时目录，文件名与 pi 的 <c>pi-codemode-*</c> 同形。</summary>
 	private static string WriteFullOutput(string text)
 	{
 		var path = Path.Combine(
@@ -655,10 +621,8 @@ public static class CodeModeTool
 		return path;
 	}
 
-	/// <summary>
 	/// 每张图片保存到临时文件并在前面加一行路径说明（pi 的做法）：模型能看到图片，
 	/// 但字节只有通过这个文件才可访问。同一张图重复出现只保存一次。
-	/// </summary>
 	private static List<ContentBlock> SaveImages(List<ContentBlock> items)
 	{
 		var labels = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -718,7 +682,6 @@ public static class CodeModeTool
 	private static string Shorten(string text, int maxChars) =>
 		text.Length > maxChars ? $"{text[..(maxChars - 3)]}..." : text;
 
-	/// <summary>详情里的一次嵌套调用；只用于界面展示，不进入上下文。</summary>
 	private sealed class NestedCall
 	{
 		public required string Id { get; init; }
@@ -754,10 +717,8 @@ public static class CodeModeTool
 		};
 	}
 
-	/// <summary>
 	/// 嵌套调用记录：脚本线程写入，界面线程读取快照，因此所有访问都经过同一把锁；
 	/// 快照会把脚本结束时仍在运行的调用归一化为 <c>cancelled</c>（与 pi 一致）。
-	/// </summary>
 	private sealed class CallLog
 	{
 		private readonly List<NestedCall> _calls = [];
@@ -809,7 +770,6 @@ public static class CodeModeTool
 		}
 	}
 
-	/// <summary>把 <see cref="AgentTool"/> 投影成声明渲染器需要的形状。</summary>
 	private sealed record CodeModeToolDeclaration(
 		string ToolName,
 		string? Description,

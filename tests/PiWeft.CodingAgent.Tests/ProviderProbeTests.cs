@@ -6,7 +6,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>D-06：供应商连接测试复用完整请求路径并区分成功/提供方错误/异常/取消。</summary>
 public class ProviderProbeTests
 {
 	[Fact]

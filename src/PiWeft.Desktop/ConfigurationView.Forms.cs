@@ -123,7 +123,6 @@ internal sealed partial class ConfigurationView
 		};
 	}
 
-	/// <summary>价格必须是非负数字（空视为 0）。</summary>
 	private static bool TryCost(string? text, out double value)
 	{
 		if (string.IsNullOrWhiteSpace(text))
@@ -135,7 +134,6 @@ internal sealed partial class ConfigurationView
 		return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) && value >= 0 && double.IsFinite(value);
 	}
 
-	/// <summary>按供应的 API 拉取远程模型目录，并把缺失的模型加入配置草稿。</summary>
 	private async Task FetchRemoteModelsAsync(string provider)
 	{
 		if (_root["providers"]?[provider] is not JsonObject entry)
@@ -233,7 +231,6 @@ internal sealed partial class ConfigurationView
 			AppIcons.PrimaryButton("check", Strings.ConfigSetKey, () => Guard(commit)).HorizontalAlignment(HorizontalAlignment.Left)));
 	}
 
-	/// <summary>一个订阅供应商的状态卡：登录/刷新/退出 + 到期时间与账号信息。</summary>
 	private UIElement AuthProviderCard(ProviderAuthStatus status)
 	{
 		var provider = status.Provider;
@@ -276,7 +273,6 @@ internal sealed partial class ConfigurationView
 			.Padding(new Thickness(AppTheme.Space3)).Child(details);
 	}
 
-	/// <summary>登录/退出前先确认没有未保存的 auth.json 修改，避免外部写入被草稿覆盖。</summary>
 	private bool EnsureAuthEditable()
 	{
 		if (!_dirty) return true;

@@ -1,15 +1,11 @@
 namespace PiWeft.Desktop;
 
-/// <summary>终端可选择的一个 shell。</summary>
 internal sealed record TerminalShellOption(string Path, string Name);
 
-/// <summary>
 /// 命令 Dock 的 shell 发现与解析：读取 <c>$SHELL</c>、<c>/etc/shells</c> 与常见路径，
 /// 也接受用户在 <c>desktop.json</c> 里写下的可执行文件路径。只影响终端面板，不改系统登录 shell。
-/// </summary>
 internal static class TerminalShells
 {
-	/// <summary>这些 shell 接受 <c>-i</c>；其它（nu、csh 派生等）直接启动，参数由 shell 自己决定。</summary>
 	private static readonly string[] InteractiveFlagShells = ["bash", "sh", "zsh", "ksh", "dash", "fish"];
 
 	private static readonly string[] CommonUnixShells =
@@ -17,7 +13,6 @@ internal static class TerminalShells
 		"/bin/bash", "/bin/zsh", "/bin/fish", "/bin/sh", "/usr/bin/fish", "/usr/local/bin/fish",
 	];
 
-	/// <summary>当前可用的 shell 列表（按路径去重），自动项不包含在内。</summary>
 	public static IReadOnlyList<TerminalShellOption> Detect()
 	{
 		var options = new List<TerminalShellOption>();
@@ -71,7 +66,6 @@ internal static class TerminalShells
 		return options;
 	}
 
-	/// <summary>把偏好里的值解析成可执行文件路径；空或无效时回退系统默认。</summary>
 	public static string Resolve(string configured)
 	{
 		if (!string.IsNullOrWhiteSpace(configured))
@@ -109,11 +103,9 @@ internal static class TerminalShells
 		return "/bin/sh";
 	}
 
-	/// <summary>状态栏与按钮上显示的名字：自动时显示解析到的名字。</summary>
 	public static string DisplayName(string configured) =>
 		string.IsNullOrWhiteSpace(configured) ? System.IO.Path.GetFileName(Resolve("")) : System.IO.Path.GetFileName(Resolve(configured));
 
-	/// <summary>配置值是否能在本机解析成可执行文件（用于自定义输入的校验）。</summary>
 	public static bool IsExecutable(string configured)
 	{
 		if (string.IsNullOrWhiteSpace(configured))
@@ -125,7 +117,6 @@ internal static class TerminalShells
 		return File.Exists(expanded) || FindOnPath(configured.Trim()) is not null;
 	}
 
-	/// <summary>启动参数：POSIX 交互 shell 用 <c>-i</c>，其它保持空。</summary>
 	public static IReadOnlyList<string> Arguments(string shell)
 	{
 		if (OperatingSystem.IsWindows())
@@ -137,7 +128,6 @@ internal static class TerminalShells
 		return InteractiveFlagShells.Contains(name, StringComparer.OrdinalIgnoreCase) ? ["-i"] : [];
 	}
 
-	/// <summary>符号链接解析后的真实路径；解析失败时返回原路径。</summary>
 	internal static string RealPath(string path)
 	{
 		try

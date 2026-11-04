@@ -5,14 +5,11 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent;
 
-/// <summary>
 /// 项目信任：决定是否加载项目级资源（技能、提示词模板、MCP、项目设置）。
 /// 与 pi 的 <c>trust.json</c> 同构——<c>&lt;agentDir&gt;/trust.json</c> 是「规范化绝对路径 → true/false/null」的对象，
 /// 查找时从工作目录逐级向上取第一个决策。默认由 <c>settings.defaultProjectTrust</c> 决定。
-/// </summary>
 public static class ProjectTrust
 {
-	/// <summary>需要项目信任才会加载的项目配置项（与 pi 一致；不含 AGENTS.md 等上下文文件）。</summary>
 	private static readonly string[] TrustRequiringConfigNames =
 	[
 		"settings.json",
@@ -25,10 +22,8 @@ public static class ProjectTrust
 		"APPEND_SYSTEM.md",
 	];
 
-	/// <summary>信任存储文件路径。</summary>
 	public static string StorePath(string agentDir) => Path.Combine(Path.GetFullPath(agentDir), "trust.json");
 
-	/// <summary>读取某个工作目录的已存决策（向上查找父目录）；没有决策时返回 <c>null</c>。</summary>
 	public static bool? Get(string agentDir, string cwd)
 	{
 		var data = Read(StorePath(agentDir));
@@ -55,7 +50,6 @@ public static class ProjectTrust
 		}
 	}
 
-	/// <summary>写入一个决策；<paramref name="decision"/> 为 <c>null</c> 表示删除该条目。</summary>
 	public static void Set(string agentDir, string cwd, bool? decision)
 	{
 		var path = StorePath(agentDir);
@@ -73,11 +67,9 @@ public static class ProjectTrust
 		Write(path, data);
 	}
 
-	/// <summary>
 	/// 解析实际是否信任：显式开关优先，其次已存决策，最后默认值。
 	/// <c>ask</c> 在无 UI 场景按不受信处理（失败关闭）；交互场景由调用方先经
 	/// <see cref="HasPendingDecision"/> 与 <see cref="PromptAsync"/> 取得决策。
-	/// </summary>
 	public static bool Resolve(string cwd, bool? trustOverride, string? defaultTrust, string? agentDir = null)
 	{
 		if (trustOverride is { } value)
@@ -104,9 +96,7 @@ public static class ProjectTrust
 		};
 	}
 
-	/// <summary>
 	/// 工作目录（或其祖先）是否存在受项目信任保护的项目资源。用户级 <c>~/.agents/skills</c> 不算。
-	/// </summary>
 	public static bool HasTrustRequiringProjectResources(string cwd)
 	{
 		var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -143,10 +133,8 @@ public static class ProjectTrust
 		}
 	}
 
-	/// <summary>
 	/// 是否需要询问用户：需要保护的项目资源存在、没有已存决策，且默认值为 <c>ask</c>。
 	/// 显式 <c>--approve/--no-approve</c> 与 <c>always</c>/<c>never</c> 都不会进入询问路径。
-	/// </summary>
 	public static bool HasPendingDecision(string cwd, string? agentDir = null, bool? trustOverride = null)
 	{
 		if (trustOverride is not null || !HasTrustRequiringProjectResources(cwd))
@@ -158,10 +146,8 @@ public static class ProjectTrust
 		return Get(resolvedAgentDir, cwd) is null && CodingAgentSettings.GlobalDefaultProjectTrust(resolvedAgentDir) == "ask";
 	}
 
-	/// <summary>
 	/// 通过宿主 UI 询问是否信任该项目；选择会写入 <c>trust.json</c>（「仅本次会话」不写）。
 	/// 无 UI、取消或解析失败一律按不信任处理。
-	/// </summary>
 	public static async Task<bool> PromptAsync(
 		string cwd,
 		IUiHost host,

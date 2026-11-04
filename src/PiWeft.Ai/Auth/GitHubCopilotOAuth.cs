@@ -3,7 +3,6 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>GitHub Copilot OAuth：GitHub 设备码 → Copilot 短期令牌。</summary>
 public static partial class GitHubCopilotOAuth
 {
 	public const string ProviderKey = "github-copilot";

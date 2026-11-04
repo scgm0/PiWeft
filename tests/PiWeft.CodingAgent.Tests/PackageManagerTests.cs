@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>假命令执行器：记录调用，并可按用例模拟命令的副作用。</summary>
 internal sealed class FakePackageRunner : IPackageCommandRunner
 {
 	public List<(string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory)> Calls { get; } = [];
@@ -26,7 +25,6 @@ internal sealed class FakePackageRunner : IPackageCommandRunner
 	}
 }
 
-/// <summary>pi 包的安装、移除与更新（npm / git / 本地路径）。</summary>
 public class PackageManagerTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-pkgmgr-" + Guid.NewGuid().ToString("N")[..8]);
@@ -248,7 +246,6 @@ public class PackageManagerTests : IDisposable
 	}
 }
 
-/// <summary>settings 的 <c>packages</c> 读写：加、删、幂等与其它键保留。</summary>
 public class PackageSettingsTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-pkgsettings-" + Guid.NewGuid().ToString("N")[..8]);

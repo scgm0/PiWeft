@@ -2,16 +2,12 @@ using System.Text;
 
 namespace PiWeft.Ai;
 
-/// <summary>
 /// 各 provider 共用的会话记录辅助方法。provider 会依据回放状态重建开头的 system 消息，
 /// 因此每次流式请求都只携带一条 system 消息。
-/// </summary>
 public static class Transcript
 {
-	/// <summary>
 	/// 把 <see cref="Context.SystemPrompt"/> 与 <see cref="Context.Tools"/> 折叠进消息列表，
 	/// 并把所有 system 消息合并成开头的一条。其余消息保持原有顺序。
-	/// </summary>
 	public static List<Message> Normalize(Context context, Model? model = null)
 	{
 		ArgumentNullException.ThrowIfNull(context);
@@ -77,7 +73,6 @@ public static class Transcript
 		return normalized;
 	}
 
-	/// <summary>system 消息渲染后的文本：先是内容，再按插入顺序拼接具名章节。</summary>
 	public static string GetText(SystemMessage message)
 	{
 		if (message.Sections is not { Count: > 0 } sections)
@@ -104,7 +99,6 @@ public static class Transcript
 		return builder.ToString();
 	}
 
-	/// <summary>会话记录末尾生效的工具集合。</summary>
 	public static IReadOnlyList<Tool> GetTools(IReadOnlyList<Message> messages)
 	{
 		IReadOnlyList<Tool> tools = [];
@@ -119,7 +113,6 @@ public static class Transcript
 		return tools;
 	}
 
-	/// <summary>第一条 system 消息的文本，没有则为空字符串。</summary>
 	public static string GetInitialSystemText(IReadOnlyList<Message> messages)
 	{
 		foreach (var message in messages)

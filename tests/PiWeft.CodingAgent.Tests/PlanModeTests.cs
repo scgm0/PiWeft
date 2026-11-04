@@ -4,7 +4,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>D-01：计划模式的工具限制、提示词章节与 PiDeck 标记。</summary>
 public class PlanModeTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-plan-" + Guid.NewGuid().ToString("N")[..8]);

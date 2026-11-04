@@ -8,7 +8,6 @@ using Xunit;
 
 namespace PiWeft.Mcp.Tests;
 
-/// <summary>真实子进程上的 stdio/HTTP 握手、分页与工具调用。</summary>
 public class McpProcessTests
 {
 	private static string DotnetHost => Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";

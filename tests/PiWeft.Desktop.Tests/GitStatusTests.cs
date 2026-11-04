@@ -3,13 +3,10 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// Git 状态解析。<c>git status --porcelain=v1 -b -z</c> 是稳定的 NUL 分隔格式，直接喂样本断言，
 /// 不需要真的建仓库。真实仓库上的中文 / 空格 / emoji 路径见 <c>GitStatusPathTests</c>。
-/// </summary>
 public class GitStatusTests
 {
-	/// <summary>把可读的多行样本拼成 -z 形态（每行以 NUL 结尾，含尾随 NUL）。</summary>
 	private static string Z(params string[] fields) => string.Concat(fields.Select(static field => field + "\0"));
 
 	[Fact]
@@ -112,7 +109,6 @@ public class GitStatusTests
 	}
 }
 
-/// <summary>Git diff 读取的截断逻辑：界面只展示前若干行，超出部分给出提示。</summary>
 public class GitDiffTests
 {
 	[Fact]

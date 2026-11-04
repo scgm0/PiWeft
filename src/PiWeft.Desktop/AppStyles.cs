@@ -3,14 +3,10 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 命名样式表：界面里长期存在的容器与文本用它上色，颜色由 <see cref="Setter.Create{T}"/> 从主题解析。
 /// 因此切换主题时 MewUI 会重新解析样式并重绘，<b>不需要重建界面</b> —— 这正是官方示例的做法。
-/// </summary>
-/// <remarks>
 /// 只给需要跟随主题的**颜色**定义样式；字号、内边距之类的静态值仍写在构建代码里，读起来更直观。
 /// 消息气泡和工具卡片同样使用命名样式，换肤保留正文控件与 Markdown。
-/// </remarks>
 public static class AppStyles
 {
 	// 容器
@@ -21,17 +17,13 @@ public static class AppStyles
 	public const string TextInputLine = "pi-text-input-line";
 	public const string Sidebar = "pi-sidebar";
 	public const string Panel = "pi-panel";
-	/// <summary>右侧功能面板的页签条：与侧栏同色，底部一条发丝线，与主区页签条区分。</summary>
 	public const string RightPanelHeader = "pi-right-panel-header";
 	public const string Card = "pi-card";
 	public const string CardMuted = "pi-card-muted";
-	/// <summary>浮层卡片（上下文/余额这类浮在内容之上的面板）：比 Card 多一条可见结构线，配合阴影使用。</summary>
 	public const string PopupCard = "pi-popup-card";
 
-	/// <summary>右侧面板外壳：与左侧栏同色，窗框两侧对称。</summary>
 	public const string RightPanel = "pi-right-panel";
 
-	/// <summary>会话底部的终端面板：主区底色，顶部一条发丝线把终端与对话分开。</summary>
 	public const string TerminalDock = "pi-terminal-dock";
 
 	public const string UserMessage = "pi-message-user";
@@ -48,10 +40,8 @@ public static class AppStyles
 	public const string DialogNav = "pi-dialog-nav";
 	public const string DialogContent = "pi-dialog-content";
 
-	/// <summary>设置卡片的分区标题条：底色与卡片同色，只有一条底发丝线。</summary>
 	public const string CardHeader = "pi-card-header";
 
-	/// <summary>分段切换（系统设置 / 配置管理）：轨道容器。</summary>
 	public const string SegmentTrack = "pi-segment-track";
 	public const string SegmentButton = "pi-segment-button";
 	public const string SegmentButtonActive = "pi-segment-button-active";
@@ -64,7 +54,6 @@ public static class AppStyles
 	public const string TitleBarButton = "pi-title-bar-button";
 	public const string TitleBarIconButton = "pi-title-bar-icon";
 
-	/// <summary>标题栏里的开关型图标按钮（右侧面板开关）处于打开状态时的常驻浮起。</summary>
 	public const string TitleBarIconButtonActive = "pi-title-bar-icon-active";
 	public const string TitleBarCloseButton = "pi-title-bar-close";
 	public const string TitleBarTab = "pi-title-bar-tab";
@@ -72,11 +61,9 @@ public static class AppStyles
 	public const string TitleBarTabClose = "pi-title-bar-tab-close";
 	public const string WindowFrame = "pi-window-frame";
 
-	/// <summary>
 	/// 与 <see cref="Card"/> 同色但目标是 <see cref="Button"/> 的版本。
 	/// 样式是按控件类型校验的：把 Border 的样式套到 Button 上会在运行时抛异常，
 	/// 所以可点击的卡片必须用这一组。
-	/// </summary>
 	public const string CardButton = "pi-button-card";
 
 	public const string CardMutedButton = "pi-button-card-muted";
@@ -108,7 +95,6 @@ public static class AppStyles
 	public const string RoleSuccess = "success";
 	public const string RoleWarning = "warning";
 
-	/// <summary>按角色取当前主题下的文本颜色。</summary>
 	public static Color ColorForRole(string role) => role switch
 	{
 		RolePrimary => AppTheme.TextPrimary,
@@ -125,26 +111,20 @@ public static class AppStyles
 		_ => AppTheme.TextPrimary,
 	};
 
-	/// <summary>
 	/// 换肤后重建文本视图，并显式失效排布。
-	/// </summary>
-	/// <remarks>
 	/// MewUI 源码 的 <c>MultiLineTextBox</c> 在换肤重建视图时只调用 <c>InvalidateMeasure</c>；
 	/// 若控件此前已被标成测量失效（换肤广播通常如此），这次调用会提前返回，排布标记不会被重新置位。
 	/// 外层横向 ScrollViewer 以无限宽测量时，新视图的视口宽度仍停在 0，<c>TextViewLayout</c>
 	/// 不会物化任何行，代码块/差异文本就只剩背景。这里补一次排布失效，让 ArrangeContent
 	/// 把真实宽度写回视口后再绘制。
-	/// </remarks>
 	public static void RefreshTextView(MultiLineTextBox view)
 	{
 		view.InvalidateTextView();
 		view.InvalidateArrange();
 	}
 
-	/// <summary>
 	/// 遍历子树，把带角色标记的文本重新上色。换主题时调用，比重建界面便宜得多
 	/// （只改颜色，不重新创建控件、也不重新解析 Markdown）。
-	/// </summary>
 	public static void ApplyTextColors(Element root)
 	{
 		if (root is TextBlock text && text.Tag is string role)
@@ -179,7 +159,6 @@ public static class AppStyles
 		],
 	};
 
-	/// <summary>构建样式表。挂在 Window 上，作用域覆盖其所有后代。</summary>
 	public static StyleSheet Create()
 	{
 		return new StyleSheet()
@@ -755,7 +734,6 @@ public static class AppStyles
 			});
 	}
 
-	/// <summary>卡片外观：底色 + 细边框 + 大圆角，目标类型由调用方指定。</summary>
 	private static Style CardStyle(Type target, Func<AppPalette, Color> pick) => new(target)
 	{
 		BasedOn = typeof(Button).IsAssignableFrom(target) ? ButtonInteraction : null,

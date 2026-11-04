@@ -4,13 +4,10 @@ using System.Text.Json;
 
 namespace PiWeft.Ai.Providers.Bedrock;
 
-/// <summary>一条解码后的 AWS 事件流消息。</summary>
 public sealed record AwsEventStreamMessage
 {
-	/// <summary>消息头，例如 <c>:event-type</c> 与 <c>:message-type</c>。</summary>
 	public required IReadOnlyDictionary<string, string> Headers { get; init; }
 
-	/// <summary>原始 payload 字节。</summary>
 	public required byte[] Payload { get; init; }
 
 	public string? EventType => Headers.GetValueOrDefault(":event-type");
@@ -25,7 +22,6 @@ public sealed record AwsEventStreamMessage
 
 	public bool IsError => MessageType is "error" or "exception";
 
-	/// <summary>把 payload 当作 JSON 解析。</summary>
 	public JsonDocument? ParseJson()
 	{
 		if (Payload.Length == 0)
@@ -37,19 +33,14 @@ public sealed record AwsEventStreamMessage
 	}
 }
 
-/// <summary>
 /// <c>application/vnd.amazon.eventstream</c> 分帧的解码器，Bedrock 等 AWS 流式 API 都用这种格式。
 /// 每条消息依次为：总长度、头部长度、前导 CRC、头部、payload、消息 CRC —— 全部大端序。
-/// </summary>
 public static class AwsEventStream
 {
-	/// <summary>每条消息都以三个 4 字节字开头。</summary>
 	public const int PreludeLength = 12;
 
-	/// <summary>前导部分长度、头部、payload 与结尾的 CRC。</summary>
 	public const int TrailerLength = 4;
 
-	/// <summary>从 <paramref name="stream"/> 中读取消息直到流结束。</summary>
 	public static async IAsyncEnumerable<AwsEventStreamMessage> ReadAsync(
 		Stream stream,
 		[System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -112,7 +103,6 @@ public static class AwsEventStream
 		}
 	}
 
-	/// <summary>解析一条消息的头部区块。</summary>
 	public static Dictionary<string, string> ParseHeaders(ReadOnlySpan<byte> headers)
 	{
 		var result = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -195,7 +185,6 @@ public static class AwsEventStream
 		return result;
 	}
 
-	/// <summary>编码一条消息。测试以及需要提供该分帧的调用方会用到。</summary>
 	public static byte[] Encode(IReadOnlyDictionary<string, string> headers, ReadOnlySpan<byte> payload)
 	{
 		var headerBlock = EncodeHeaders(headers);
@@ -251,7 +240,6 @@ public static class AwsEventStream
 	}
 }
 
-/// <summary>AWS 使用的 CRC32 变体（IEEE 802.3，反射实现，与 zlib 相同）。</summary>
 internal static class Crc32
 {
 	private static readonly uint[] Table = BuildTable();

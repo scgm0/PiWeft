@@ -152,10 +152,8 @@ public class ModelTests
 	}
 }
 
-/// <summary>
 /// 价格的负占位值：OpenRouter 对路由模型（`openrouter/auto`）报 -1，pi 一律当 0。
 /// 界面上显示 -$1,000,000/1M 会让人以为计费坏了。
-/// </summary>
 public class NegativeCostTests
 {
 	[Fact]
@@ -205,10 +203,8 @@ public class NegativeCostTests
 	}
 }
 
-/// <summary>
 /// 重试分类与退避：对应 pi 的 <c>utils/retry.ts</c>。配额类错误不该重试，
 /// 网络抖动与服务端临时故障该重试。
-/// </summary>
 public class RetryClassifierTests
 {
 	private static AssistantMessage Failure(string message) => new()
@@ -238,9 +234,7 @@ public class RetryClassifierTests
 	public void TransientFailuresAreRetryable(string message) =>
 		Assert.True(RetryClassifier.IsRetryable(Failure(message)));
 
-	/// <summary>
 	/// 火山方舟的排队错误：403 + 嵌套 JSON，没有 429/限流字样，曾经直接当作不可重试。
-	/// </summary>
 	[Fact]
 	public void ProviderQueueErrorsAreRetryable()
 	{
@@ -281,7 +275,21 @@ public class RetryClassifierTests
 	[InlineData("Monthly usage limit reached")]
 	[InlineData("GoUsageLimitError")]
 	[InlineData("Your billing account is not active")]
+	[InlineData("subscription_sharing_workplace_individual_usage_limit_exceeded")]
 	public void QuotaAndBillingFailuresAreNotRetryable(string message) =>
+		Assert.False(RetryClassifier.IsRetryable(Failure(message)));
+
+	[Theory]
+	[InlineData("429 Too Many Requests: {\"code\":\"1308\",\"message\":\"usage limit reached\"}")]
+	[InlineData("{'code': 1308, 'message': 'quota'}")]
+	public void ZhipuUsageLimitIsNotRetryable(string message) =>
+		Assert.False(RetryClassifier.IsRetryable(Failure(message)));
+
+	[Theory]
+	[InlineData("request req_429abc failed")]
+	[InlineData("processed 1500 bytes")]
+	[InlineData("trace id 9500f")]
+	public void StatusCodesInsideIdentifiersDoNotTriggerRetries(string message) =>
 		Assert.False(RetryClassifier.IsRetryable(Failure(message)));
 
 	[Fact]

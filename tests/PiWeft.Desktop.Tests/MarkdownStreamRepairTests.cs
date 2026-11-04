@@ -5,11 +5,9 @@ using Xunit.Abstractions;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// Streaming tail repair: provisional closers for unfinished syntax, the streaming parse
 /// differential against a full parse of the repaired source, finalize correction, and the
 /// append-only builder API.
-/// </summary>
 public sealed class MarkdownStreamRepairTests(ITestOutputHelper output)
 {
 	[Theory]
@@ -73,11 +71,9 @@ public sealed class MarkdownStreamRepairTests(ITestOutputHelper output)
 		return data;
 	}
 
-	/// <summary>
 	/// For every streamed prefix: the streaming parse must equal a full parse of the repaired
 	/// source, blocks before the last must equal the unrepaired parse, and the repair flag must
 	/// track whether a suffix was applied.
-	/// </summary>
 	[Theory]
 	[MemberData(nameof(StreamingIndices))]
 	public void StreamingPrefixDifferentialRepairsOnlyTheLastBlock(int docIndex)

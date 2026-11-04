@@ -4,7 +4,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
 
-/// <summary>按供应商分组的可用模型目录；树行虚拟化，搜索覆盖整个目录。</summary>
 internal sealed class ModelPicker
 {
 	private Func<IReadOnlyList<Model>> _models;
@@ -93,7 +92,6 @@ internal sealed class ModelPicker
 	public bool IsOpen => View.IsVisible;
 	public event Action? Closed;
 
-	/// <summary>认证变化后换一份模型源；菜单开着时立即按新目录重建。</summary>
 	public void SetSource(Func<IReadOnlyList<Model>> models)
 	{
 		_models = models;
@@ -178,7 +176,6 @@ internal sealed class ModelPicker
 
 	private void Pick(Model model) { Hide(); _pick(model); }
 
-	/// <summary>保持目录宽度稳定，同时适应窄窗口。</summary>
 	private sealed class ModelSurface : ContentControl
 	{
 		protected override Size MeasureContent(Size availableSize)

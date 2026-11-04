@@ -3,7 +3,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>模型、命令和图片浮层共用窗口级互斥与清理，避免跨标签叠加。</summary>
 internal sealed class TransientOverlay : IOverlayService
 {
 	private UIElement? _active;

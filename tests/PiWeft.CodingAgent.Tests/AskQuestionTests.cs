@@ -8,7 +8,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>D-01：ask_question 的 PiDeck 兼容信封、回答解析与宿主交互。</summary>
 public class AskQuestionTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-ask-" + Guid.NewGuid().ToString("N")[..8]);

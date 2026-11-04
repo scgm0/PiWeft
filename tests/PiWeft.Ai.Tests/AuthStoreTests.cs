@@ -5,10 +5,8 @@ using Xunit;
 
 namespace PiWeft.Ai.Tests;
 
-/// <summary>
 /// auth.json 凭据解析。之前只认环境变量，把 key 存进 auth.json 的用户（pi login / 桌面端）会拿到 401，
 /// 这些测试盯住「存储的凭据优先」与模板、命令型凭据的处理。
-/// </summary>
 [Collection("process-environment")]
 public class AuthStoreTests : IDisposable
 {

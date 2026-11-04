@@ -2,7 +2,6 @@ using System.Net.Http;
 
 namespace PiWeft.Ai.Providers;
 
-/// <summary>
 /// 会话亲和请求头：pi 的模型 compat 允许网关按会话粘性路由/缓存。
 /// 缺失时通常不会 400（OpenCode 的 session 头是特例），但会把同一会话的请求打散到不同副本，
 /// 表现为缓存不命中、首 token 变慢。规则与 pi-ai 的 createClient 一致：
@@ -10,10 +9,8 @@ namespace PiWeft.Ai.Providers;
 /// - openai 格式：<c>session_id</c> + <c>x-client-request-id</c>（completions 另加 <c>x-session-affinity</c>）；
 /// - <c>openai-nosession</c>：只发后两者，不发 <c>session_id</c>。
 /// 显式配置的同名头优先，空值也算显式覆盖。
-/// </summary>
 public static class ProviderSessionHeaders
 {
-	/// <summary>OpenAI-compatible completions 的亲和头。</summary>
 	public static void ApplyCompletions(Model model, StreamOptions options, HttpRequestMessage request)
 	{
 		if (string.IsNullOrWhiteSpace(options.SessionId)) return;
@@ -30,7 +27,6 @@ public static class ProviderSessionHeaders
 		Add(request, "x-session-affinity", options.SessionId);
 	}
 
-	/// <summary>OpenAI Responses 的亲和头（pi-ai 在 Responses 路径不检查 sendSessionAffinityHeaders）。</summary>
 	public static void ApplyResponses(Model model, StreamOptions options, HttpRequestMessage request)
 	{
 		if (string.IsNullOrWhiteSpace(options.SessionId)) return;
@@ -45,7 +41,6 @@ public static class ProviderSessionHeaders
 		Add(request, "x-client-request-id", options.SessionId);
 	}
 
-	/// <summary>Anthropic Messages 的亲和头：openrouter 用 x-session-id，其余用 x-session-affinity。</summary>
 	public static void ApplyAnthropic(Model model, StreamOptions options, HttpRequestMessage request)
 	{
 		if (string.IsNullOrWhiteSpace(options.SessionId)) return;
@@ -74,10 +69,8 @@ public static class ProviderSessionHeaders
 	}
 }
 
-/// <summary>
 /// GitHub Copilot 的动态请求头（静态头在模型目录的 headers 里，动态头必须按本次消息算）：
 /// <c>X-Initiator</c>、<c>Openai-Intent</c>，含图片时追加 <c>Copilot-Vision-Request</c>。
-/// </summary>
 public static class CopilotHeaders
 {
 	public static void Apply(Model model, IReadOnlyList<Message> messages, HttpRequestMessage request)

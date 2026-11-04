@@ -3,20 +3,15 @@ using System.Numerics;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 剪贴板 DIB（<c>CF_DIB</c> / <c>CF_DIBV5</c>）与 BGRA 位图互转用的最小实现。只处理截图与常规程序
 /// 会放上剪贴板的 24/32 位无调色板格式：调色板 DIB 从不出现在截图路径上，遇到就按失败处理。
 /// 纯托管代码，移植性测试与 Windows 后端共用同一份逻辑。
-/// </summary>
 internal static class DibCodec
 {
-	/// <summary>BITMAPV5HEADER 的字节数；写出的 DIB 一律用它，保证带 alpha 掩码与色彩空间。</summary>
 	internal const int HeaderSize = 124;
 
-	/// <summary>单边像素上限；超过它的剪贴板内容按「不是图片」处理，避免异常大小的分配。</summary>
 	private const int MaxDimension = 16384;
 
-	/// <summary>总像素上限（约 64M 像素，对应 256 MiB BGRA）。</summary>
 	private const long MaxPixels = 64L * 1024 * 1024;
 
 	private const int InfoHeaderSize = 40;
@@ -118,7 +113,6 @@ internal static class DibCodec
 		return true;
 	}
 
-	/// <summary>写出带 alpha 掩码的 32 位 DIB（BITMAPV5HEADER + BI_BITFIELDS），即 CF_DIBV5 的内容。</summary>
 	public static byte[] Write(PixelImage image)
 	{
 		var stride = image.Width * 4;
@@ -141,10 +135,8 @@ internal static class DibCodec
 		return dib;
 	}
 
-	/// <summary>
 	/// 写出 32 位 BI_RGB DIB（仅 BITMAPINFOHEADER），即 CF_DIB 的内容。老程序（画图、Word）只认这一版，
 	/// 代价是 alpha 通道在它们眼里是保留位。
-	/// </summary>
 	public static byte[] WriteRgb(PixelImage image)
 	{
 		var stride = image.Width * 4;
@@ -162,7 +154,6 @@ internal static class DibCodec
 		return dib;
 	}
 
-	/// <summary>BMP 传统是自下而上，因此第 0 行放最后一条扫描线。</summary>
 	private static void CopyPixels(PixelImage image, byte[] target, int offset)
 	{
 		var stride = image.Width * 4;
@@ -170,7 +161,6 @@ internal static class DibCodec
 			image.Bgra.AsSpan(y * stride, stride).CopyTo(target.AsSpan(offset + (image.Height - 1 - y) * stride));
 	}
 
-	/// <summary>按掩码取出一个通道并缩放到 0–255；掩码为 0 时返回调用方给的回退值。</summary>
 	private static byte Channel(uint pixel, uint mask, byte fallback)
 	{
 		if (mask == 0) return fallback;

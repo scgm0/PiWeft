@@ -2,15 +2,12 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.Desktop;
 
-/// <summary>用户消息里的技能上下文块：展示成 chip，正文仍完整发送给模型。</summary>
 internal sealed record UserSkillChip(string Name, string Location);
 
-/// <summary>
 /// 把用户消息拆成「技能 chip + 文件引用 chip + 正文」。技能命令展开后会插入一整段
 /// <c>&lt;skill name="..."&gt;...&lt;/skill&gt;</c>，那是模型上下文，不是用户写的话；
 /// 直接铺在气泡里会把一条普通提问变成几百行 XML。文件引用则原样保留在正文里，
 /// 由 <see cref="UserReferenceRichText"/> 的投影层在行内显示成 chip。
-/// </summary>
 internal static partial class UserMessageText
 {
 	private const int CollapsedLines = 8;
@@ -42,10 +39,8 @@ internal static partial class UserMessageText
 		return (chips, body);
 	}
 
-	/// <summary>
 	/// 折叠长正文：只按源码行数截断（PiDeck 用 CSS line-clamp，MewUI 没有同等的文本行裁剪）。
 	/// 被截断时保留一个省略号，展开按钮和完整原文都在气泡里。
-	/// </summary>
 	public static (string Text, bool Collapsible) Collapse(string body)
 	{
 		if (body.Length == 0) return (body, false);

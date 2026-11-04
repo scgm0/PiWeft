@@ -6,13 +6,11 @@ using Aprillz.MewUI.Text;
 
 namespace PiWeft.Markdown;
 
-/// <summary>
 /// Fenced-code line-number gutter. Each number is its own cached single-line layout in the code
 /// view's exact style, drawn at that code line's own top, so a line made taller by a fallback font
 /// (CJK, emoji) shifts every number below it by the same amount the code shifts. The gutter is a
 /// sibling column of the text view, not part of it: numbers stay put while the code scrolls
 /// horizontally. Coordinates are absolute window space, the space every MewUI render draws in.
-/// </summary>
 internal sealed class MarkdownCodeGutter : FrameworkElement
 {
 	private readonly MultiLineTextBox _code;

@@ -4,10 +4,8 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.Desktop;
 
-/// <summary>用户消息 / 草稿里的一个文件引用：展示短文件名，完整路径留在原文与 tooltip 里。</summary>
 internal sealed record UserFileReference(string Path, string Label, bool IsDirectory, int Start, int End) : IUserChip
 {
-	/// <summary>展示用前缀；文件引用保留 @，和 PiDeck 的 file chip 一致。</summary>
 	public string Display => "@" + Label;
 
 	public UserChipKind Kind => UserChipKind.File;
@@ -15,10 +13,8 @@ internal sealed record UserFileReference(string Path, string Label, bool IsDirec
 	public string Value => Path;
 }
 
-/// <summary>
 /// 解析草稿和用户消息里的 <c>@"path"</c> / <c>@path</c> 引用。
 /// 只做展示层识别，不改变发送给模型的原文；代码块、行内代码和 URL 里的 @ 保持纯文本。
-/// </summary>
 internal static partial class UserFileReferences
 {
 	// 文件 chip 只认两种写法：
@@ -34,10 +30,8 @@ internal static partial class UserFileReferences
 	private static readonly char[] TrailingPunctuation =
 		['.', ',', ';', ':', '!', '?', '，', '。', '；', '：', '！', '？'];
 
-	/// <summary>
 	/// 中文句子标点：不可能属于路径，且常紧贴引用书写（<c>@docs/，然后…</c>）。
 	/// 见到就截断，避免把后面的中文句子吞进 chip 标签。
-	/// </summary>
 	private static readonly SearchValues<char> SentencePunctuation = SearchValues.Create(
 		"，。；：！？、（）【】「」『』《》〈〉…—～");
 
@@ -127,7 +121,6 @@ internal static partial class UserFileReferences
 		return false;
 	}
 
-	/// <summary>URL、围栏代码块和行内代码里的 @ 不参与引用识别。</summary>
 	internal static List<(int Start, int End)> ProtectedSpans(string text)
 	{
 		var spans = new List<(int Start, int End)>();

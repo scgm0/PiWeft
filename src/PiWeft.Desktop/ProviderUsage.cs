@@ -3,18 +3,13 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Desktop;
 
-/// <summary>用量结果的展示形态。三类形态互斥，解析不出形态时查询按失败处理。</summary>
 internal enum ProviderUsageKind
 {
-	/// <summary>三档占用百分比（滚动 / 周 / 月），如 opencode、火山方舟、MiniMax 套餐。</summary>
 	Periods,
-	/// <summary>剩余额度（金额 + 币种），如 DeepSeek、Moonshot 官方余额。</summary>
 	Balance,
-	/// <summary>额度点数（总额 / 已用 / 剩余），可带并列窗口与独立货币。</summary>
 	Credits,
 }
 
-/// <summary>一档百分比用量；重置时间与可用状态都可能缺省。</summary>
 internal sealed record UsagePeriod(double? Percent, DateTimeOffset? ResetsAt = null, string? Status = null);
 
 internal sealed record UsagePeriods(UsagePeriod? Rolling = null, UsagePeriod? Weekly = null, UsagePeriod? Monthly = null)
@@ -22,17 +17,14 @@ internal sealed record UsagePeriods(UsagePeriod? Rolling = null, UsagePeriod? We
 	public bool IsEmpty => Rolling is null && Weekly is null && Monthly is null;
 }
 
-/// <summary>并列限额窗口（如智谱 5h 窗 + 周窗、xAI 套餐 + 按需）。</summary>
 internal sealed record UsageWindow(string Key, double? Total = null, double? Used = null, double? Remaining = null, double? Percent = null);
 
 internal sealed record UsageCredits(double? Total = null, double? Used = null, double? Remaining = null,
 	IReadOnlyList<UsageWindow>? Windows = null);
 
-/// <summary>与主额度并存的独立货币（如 Kimi Boost 点数），不与主额度混单位。</summary>
 internal sealed record UsageBooster(double Balance, double? Total = null, string? Currency = null,
 	double? MonthlyUsed = null, double? MonthlyChargeLimit = null, bool UnlimitedMonthly = false);
 
-/// <summary>一次用量查询的完整结果；失败时只带可展示的本地文案，不带响应原文。</summary>
 internal sealed record ProviderUsageResult(
 	bool Success,
 	ProviderUsageKind? Kind = null,
@@ -54,7 +46,6 @@ internal sealed record ProviderUsageResult(
 		new(false, Error: Strings.UsageDisabled, Disabled: true, At: DateTimeOffset.UtcNow, IntervalMinutes: 0);
 }
 
-/// <summary>响应路径取值与数值收窄：宽松容错，字段缺失或类型不符时返回 null。</summary>
 internal static class UsageJson
 {
 	public static JsonNode? At(JsonNode? node, string path)
@@ -70,7 +61,6 @@ internal static class UsageJson
 		return node;
 	}
 
-	/// <summary>数值收窄：接受数字或可解析的数字字符串（网关余额字段常见字符串）。</summary>
 	public static double? Number(JsonNode? node)
 	{
 		if (node is not JsonValue value) return null;
@@ -85,16 +75,13 @@ internal static class UsageJson
 		At(node, path) is JsonValue value && value.TryGetValue<string>(out var text) && text.Trim().Length > 0 ? text.Trim() : null;
 }
 
-/// <summary>
 /// 用量展示的纯函数：档位色、金额格式、窗口标签、相对时间与内联摘要。
 /// 与 PiDeck 的 providerUsageDisplay 对齐：百分比 ≥90% 红、≥70% 橙，其余绿；
 /// 余额 ≤0 红、不足总额 10% 橙。
-/// </summary>
 internal static class ProviderUsageDisplay
 {
 	public enum Tone { Ok, Low, Empty, Neutral }
 
-	/// <summary>币种代码 → 常用符号；未知代码原样作为后缀，避免「XYZ3.5」这类粘连。</summary>
 	public static string CurrencySymbol(string? code) => (code ?? string.Empty).Trim().ToUpperInvariant() switch
 	{
 		"CNY" or "RMB" => "¥",
@@ -109,10 +96,8 @@ internal static class ProviderUsageDisplay
 
 	private static readonly string[] CurrencyCodes = ["CNY", "RMB", "USD", "EUR", "GBP"];
 
-	/// <summary>金额/点数：最多两位小数，整数不显示小数点。</summary>
 	public static string Amount(double value) => Math.Round(value, 2).ToString("0.##", CultureInfo.InvariantCulture);
 
-	/// <summary>余额：已知币种用「¥110」前缀，未知代码用「110 XYZ」后缀，无币种只用数字。</summary>
 	public static string Money(double value, string? currency)
 	{
 		var code = (currency ?? string.Empty).Trim();
@@ -123,7 +108,6 @@ internal static class ProviderUsageDisplay
 
 	public static string Percent(double value) => $"{Math.Round(value).ToString("0", CultureInfo.InvariantCulture)}%";
 
-	/// <summary>单窗口已用百分比：优先 used/total（used 缺失时用 total-remaining 反推），其次服务端 percent。</summary>
 	public static double? WindowPercent(UsageWindow window)
 	{
 		var used = window.Used ?? (window.Remaining is { } remaining && window.Total is { } total ? total - remaining : null);
@@ -142,7 +126,6 @@ internal static class ProviderUsageDisplay
 		return values.Length == 0 ? null : values.Max();
 	}
 
-	/// <summary>结果里可推导出的最高用量百分比；余额形态没有上限概念，返回 null。</summary>
 	public static double? UsagePercent(ProviderUsageResult result)
 	{
 		if (!result.Success) return null;
@@ -201,14 +184,11 @@ internal static class ProviderUsageDisplay
 		_ => key,
 	};
 
-	/// <summary>内联摘要的一段：标签 + 数值 + 档位色。</summary>
 	internal sealed record Segment(string Label, string Text, Tone Tone);
 
-	/// <summary>
 	/// 多档摘要（统计面板底部一行展开用）：periods / credits 窗口逐档「窗口名 + 百分比」，
 	/// 无总额但有剩余时降级为「窗口名 + 剩余」；balance 为「余额 + 金额」；
 	/// credits 主值为「剩余 + 数值」。返回 null 表示没有可展示数值。
-	/// </summary>
 	public static IReadOnlyList<Segment>? Segments(ProviderUsageResult result)
 	{
 		if (!result.Success) return null;
@@ -246,7 +226,6 @@ internal static class ProviderUsageDisplay
 		return credits.Used is { } spent ? [new(Strings.UsageUsedShort, Amount(spent), Tone.Neutral)] : null;
 	}
 
-	/// <summary>相对更新时间：刚刚 / n 分钟前 / n 小时前 / n 天前；超过 30 天给短日期。</summary>
 	public static string RelativeTime(DateTimeOffset at, DateTimeOffset? now = null)
 	{
 		var elapsed = (now ?? DateTimeOffset.UtcNow) - at;
@@ -258,7 +237,6 @@ internal static class ProviderUsageDisplay
 		return at.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 	}
 
-	/// <summary>错误文案：只透出本地生成的分类文案，绝不回显响应原文。</summary>
 	public static string ErrorText(Exception error) => error switch
 	{
 		InvalidOperationException ex when ex.Message == Strings.UsageMissingKey || ex.Message == Strings.UsageUnavailable ||

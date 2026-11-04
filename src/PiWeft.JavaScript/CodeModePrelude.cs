@@ -1,27 +1,19 @@
 namespace PiWeft.JavaScript;
 
-/// <summary>
 /// 在脚本之前求值的 JavaScript。它把宿主桥接函数 <c>__cmCall</c>/<c>__cmOutput</c> 藏在闭包里，
 /// 在它们之上搭出 <c>tools</c>、<c>ALL_TOOLS</c>、<c>searchTools</c>/<c>describeTool</c>、
 /// <c>text</c>/<c>image</c>/<c>exit</c>/<c>console</c>、<c>store</c>/<c>load</c> 与 <c>models.*</c>。
-/// <para>
 /// 与 pi 的 prelude 相比，这里不做内置对象的锁定（lockdown）：每次执行都新建并丢弃解释器，
 /// 脚本破坏原型只会影响它自己的这一次结果；换来的是不会和 Jint 的内建实现互相干扰。
-/// </para>
-/// </summary>
 internal static class CodeModePrelude
 {
-	/// <summary>单值 JSON 文本上限（256 Ki 字符）。</summary>
 	public const int MaxStoreValueChars = 256 * 1024;
 
-	/// <summary>整个 store 的 JSON 文本上限（1 Mi 字符）。</summary>
 	public const int MaxStoreTotalChars = 1024 * 1024;
 
-	/// <summary>
 	/// 求值结果为 <c>{ run }</c>：接受一个 async 函数，返回
 	/// <c>{"ok":true,"valueJson":...,"writesJson":"[[key, json], ...]"}</c>
 	/// 或 <c>{"ok":false,"errorJson":"{name,message,stack}"}</c>。
-	/// </summary>
 	public const string Source =
 		"""
 		(function (toolsJson, storeJson) {

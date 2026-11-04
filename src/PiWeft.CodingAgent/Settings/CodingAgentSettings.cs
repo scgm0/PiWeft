@@ -8,156 +8,112 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Settings;
 
-/// <summary>压缩调优参数，对应 pi 设置里的 <c>compaction</c> 段。</summary>
 public sealed record CompactionSettings
 {
 	public bool Enabled { get; init; } = true;
 
-	/// <summary>为下一次响应预留的令牌数。</summary>
 	public int ReserveTokens { get; init; } = 16384;
 
-	/// <summary>压缩时始终原样保留的近期令牌数。</summary>
 	public int KeepRecentTokens { get; init; } = 20000;
 }
 
-/// <summary>分支摘要参数，对应 pi 的 <c>settings.branchSummary</c>。</summary>
 public sealed record BranchSummarySettings
 {
-	/// <summary>摘要请求为上下文窗口预留的令牌数。</summary>
 	public int ReserveTokens { get; init; } = 16384;
 
-	/// <summary>跳过分支摘要提示，直接导航。</summary>
 	public bool SkipPrompt { get; init; }
 }
 
-/// <summary>
 /// 本端口读取的 pi <c>settings.json</c> 子集。未知键会被忽略，因此完整的 pi 设置文件也能
 /// 正常加载而不报错。
-/// </summary>
 public sealed record CodingAgentSettings
 {
 	public string? DefaultProvider { get; init; }
 
 	public string? DefaultModel { get; init; }
 
-	/// <summary>取值 <c>off</c>、<c>minimal</c>…<c>max</c>。</summary>
 	public string? DefaultThinkingLevel { get; init; }
 
-	/// <summary>按 <c>provider/modelId</c> 覆盖启动思考级别。</summary>
 	public IReadOnlyDictionary<string, string> ModelThinkingLevels { get; init; } =
 		new Dictionary<string, string>(StringComparer.Ordinal);
 
-	/// <summary>启动与轮换使用的模型模式；空表示全部可用模型。</summary>
 	public IReadOnlyList<string> EnabledModels { get; init; } = [];
 
-	/// <summary><c>all</c> 或 <c>one-at-a-time</c>。</summary>
 	public string SteeringMode { get; init; } = "one-at-a-time";
 
 	public string FollowUpMode { get; init; } = "one-at-a-time";
 
-	/// <summary><c>off</c> / <c>streaming</c> / <c>idle</c>：保持提示缓存热的策略。</summary>
 	public string CacheWarming { get; init; } = "streaming";
 
-	/// <summary>
 	/// 偏好的传输方式：<c>auto</c> / <c>sse</c> / <c>websocket</c> / <c>websocket-cached</c>。
 	/// 目前只有 Codex 的 responses 实现会读它（其它 provider 一律走 HTTP）。
-	/// </summary>
 	public string Transport { get; init; } = "auto";
 
 	public CompactionSettings Compaction { get; init; } = new();
 
 	public BranchSummarySettings BranchSummary { get; init; } = new();
 
-	/// <summary>自动重试策略，对应 pi 的 <c>settings.retry</c>。</summary>
 	public RetryPolicy Retry { get; init; } = new();
 
-	/// <summary>codemode 工具设置，对应 pi 的 <c>settings.codemode</c>。</summary>
 	public CodemodeSettings Codemode { get; init; } = new();
 
-	/// <summary>
 	/// 工具调用安全门，对应 <c>settings.security</c>。默认等于没装这道门（<c>off</c> 档、完全放行）；
 	/// 只从<strong>全局</strong>设置读取，见 <see cref="SecurityConfig.Load"/>。
-	/// </summary>
 	public SecurityConfig Security { get; init; } = SecurityConfig.Off;
 
 	public bool EnableSkillCommands { get; init; } = true;
 
-	/// <summary>包来源（npm / git / 本地路径），对应 pi 的 <c>settings.packages</c>。</summary>
 	public IReadOnlyList<PackageDeclaration> Packages { get; init; } = [];
 
-	/// <summary>额外的技能文件或目录，对应 pi 的 <c>settings.skills</c>。</summary>
 	public IReadOnlyList<string> Skills { get; init; } = [];
 
-	/// <summary>额外的提示词模板文件或目录，对应 pi 的 <c>settings.prompts</c>。</summary>
 	public IReadOnlyList<string> Prompts { get; init; } = [];
 
-	/// <summary>额外的主题文件或目录，对应 pi 的 <c>settings.themes</c>。</summary>
 	public IReadOnlyList<string> Themes { get; init; } = [];
 
-	/// <summary>显式扩展文件或目录，对应 <c>settings.extensions</c>。</summary>
 	public IReadOnlyList<string> Extensions { get; init; } = [];
 
-	/// <summary>
 	/// 项目信任的默认决策：<c>always</c>、<c>never</c> 或 <c>ask</c>。
 	/// 默认 <c>ask</c>（与 pi 一致）：交互场景弹卡询问，RPC/print 等无 UI 场景按不受信处理。
-	/// </summary>
 	public string DefaultProjectTrust { get; init; } = "ask";
 
-	/// <summary>provider 请求超时（等响应头），单位毫秒。</summary>
 	public int? TimeoutMs { get; init; }
 
-	/// <summary><c>httpIdleTimeoutMs</c> 的默认值，与 pi 的 <c>DEFAULT_HTTP_IDLE_TIMEOUT_MS</c> 一致。</summary>
 	public const int DefaultHttpIdleTimeoutMs = 300_000;
 
-	/// <summary>
 	/// 响应体空闲超时（毫秒），默认 300 秒；<c>0</c> 表示关闭。
 	/// 连续这么久没有收到任何字节就让这一轮失败，交给自动重试。长流不受总时长限制。
-	/// </summary>
 	public int HttpIdleTimeoutMs { get; init; } = DefaultHttpIdleTimeoutMs;
 
-	/// <summary>
 	/// pi 的 <c>settings.httpProxy</c>：设置 <c>HTTP_PROXY</c>/<c>HTTPS_PROXY</c>。
 	/// 只读**全局**设置 —— 项目配置能把流量导到任意代理，等同于让仓库劫持用户请求。
-	/// </summary>
 	public string? HttpProxy { get; init; }
 
-	/// <summary>bash 工具使用的 shell 路径，对应 pi 的 <c>shellPath</c>；为空时按平台默认值。</summary>
 	public string? ShellPath { get; init; }
 
-	/// <summary>每条 bash 命令前追加的初始化脚本，对应 pi 的 <c>shellCommandPrefix</c>。</summary>
 	public string? ShellCommandPrefix { get; init; }
 
-	/// <summary>会话目录，对应 pi 的 <c>sessionDir</c>；<c>--session-dir</c> 优先。</summary>
 	public string? SessionDir { get; init; }
 
-	/// <summary><c>/share</c> 的目标：<c>auto</c>、<c>gist</c> 或 <c>radius</c>。</summary>
 	public string SessionShareDestination { get; init; } = "auto";
 
-	/// <summary>
 	/// 默认启用的工具名（可带前缀 <c>+</c> / <c>-</c>），对应 pi 的 <c>defaultTools</c>。
 	/// 为空时使用 <see cref="DefaultToolNames"/>。
-	/// </summary>
 	public IReadOnlyList<string> DefaultTools { get; init; } = [];
 
-	/// <summary>settings 里是否显式写了 defaultTools（空的列表表示禁用全部内置工具）。</summary>
 	public bool DefaultToolsConfigured { get; init; }
 
-	/// <summary>
 	/// 未配置 <c>defaultTools</c> 时的默认工具集，与 pi 一致（<c>read</c>/<c>bash</c>/<c>edit</c>/<c>write</c>），
 	/// 另外保留 PiDeck 依赖的原生 <c>todo</c> 与 <c>ask_question</c>。
 	/// pi 默认关闭的 <c>grep</c>/<c>find</c>/<c>ls</c> 需要 <c>--tools</c> 或 <c>defaultTools</c> 显式开启。
-	/// </summary>
 	public static readonly string[] DefaultToolNames = ["read", "bash", "edit", "write", "todo", "ask_question"];
 
-	/// <summary>全局设置路径：<c>&lt;agentDir&gt;/settings.json</c>。</summary>
 	public static string GlobalPath(string? agentDir = null) =>
 		Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "settings.json");
 
-	/// <summary>项目设置路径：<c>&lt;cwd&gt;/.pi/settings.json</c>。</summary>
 	public static string ProjectPath(string cwd) =>
 		Path.Combine(Path.GetFullPath(cwd), SessionPaths.ConfigDirName, "settings.json");
 
-	/// <summary>加载并合并全局与项目设置，项目配置优先。</summary>
 	public static CodingAgentSettings Load(string cwd, string? agentDir = null, bool includeProject = true)
 	{
 		var resolvedAgentDir = agentDir ?? SessionPaths.GetAgentDir();
@@ -182,7 +138,6 @@ public sealed record CodingAgentSettings
 		};
 	}
 
-	/// <summary>把 settings 里的扩展路径按声明作用域的根解析成绝对路径；`~` 会展开。</summary>
 	private static IReadOnlyList<string> ResolveExtensionPaths(IReadOnlyList<string>? paths, string baseDirectory)
 	{
 		if (paths is not { Count: > 0 })
@@ -216,25 +171,19 @@ public sealed record CodingAgentSettings
 		return resolved;
 	}
 
-	/// <summary>
 	/// 只读**全局**设置里的 <c>httpProxy</c>。启动期就要把代理装进环境变量，而完整的
 	/// <see cref="Load"/> 会连带读项目设置与安全门；这里只解析一次全局文件，省掉两次多余读取。
-	/// </summary>
 	public static string? GlobalHttpProxy(string? agentDir = null) =>
 		NormalizeHttpProxy(ReadFile(GlobalPath(agentDir))?.HttpProxy);
 
-	/// <summary>
 	/// 只读**全局**设置里的 <c>defaultProjectTrust</c>。项目设置不能参与这个决策，
 	/// 否则一个项目可以用自己的 settings.json 把自己标成可信。
-	/// </summary>
 	public static string GlobalDefaultProjectTrust(string? agentDir = null) =>
 		ReadFile(GlobalPath(agentDir))?.DefaultProjectTrust ?? "ask";
 
-	/// <summary>
 	/// 把默认模型写进**全局**设置文件（<c>&lt;agentDir&gt;/settings.json</c>）。
 	/// 只改动 <c>defaultProvider</c> 与 <c>defaultModel</c> 两个键，其它字段（包括本端口未建模的键）原样保留 ——
 	/// 用户的配置文件不能被我们覆盖掉。
-	/// </summary>
 	public static void SetDefaultModel(string provider, string model, string? agentDir = null)
 	{
 		var path = GlobalPath(agentDir);
@@ -253,11 +202,9 @@ public sealed record CodingAgentSettings
 			}));
 	}
 
-	/// <summary>
 	/// 把某个模型的默认思考级别写进**全局**设置（<c>modelThinkingLevels</c>，键 <c>provider/modelId</c>）。
 	/// pi 用同一张表在新建会话（<c>findInitialModel</c>）与切换模型时解析默认档位：桌面在用户点选档位时记账，
 	/// 「本次的选择」就成了这个模型下一次的默认，不必再手改 settings.json。其它字段原样保留。
-	/// </summary>
 	public static void SetModelThinkingLevel(string provider, string model, string level, string? agentDir = null)
 	{
 		if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(level))
@@ -283,10 +230,8 @@ public sealed record CodingAgentSettings
 			}));
 	}
 
-	/// <summary>
 	/// 读取 settings 里的 <c>npmCommand</c>（默认 <c>["npm"]</c>）。该键只在包管理时使用，
 	/// 因此不进入建模的设置字段，避免保存时把用户没动过的值写回文件。
-	/// </summary>
 	public static IReadOnlyList<string> NpmCommand(string settingsPath)
 	{
 		var root = File.Exists(settingsPath) ? ReadExistingObject(settingsPath) : null;
@@ -307,10 +252,8 @@ public sealed record CodingAgentSettings
 		return command.Count > 0 ? command : ["npm"];
 	}
 
-	/// <summary>
 	/// 把包来源加入某份 settings 的 <c>packages</c> 数组。保留文件里其它键，写入是原子的；
 	/// 已经声明过时返回 <c>false</c>（不重复追加）。
-	/// </summary>
 	public static bool AddPackage(string settingsPath, string source)
 	{
 		var root = ReadExistingObject(settingsPath);
@@ -340,7 +283,6 @@ public sealed record CodingAgentSettings
 		return true;
 	}
 
-	/// <summary>从某份 settings 的 <c>packages</c> 数组移除一个来源；未声明时返回 <c>false</c>。</summary>
 	public static bool RemovePackage(string settingsPath, string source)
 	{
 		if (!File.Exists(settingsPath))
@@ -386,7 +328,6 @@ public sealed record CodingAgentSettings
 		return true;
 	}
 
-	/// <summary>同目录临时文件 + 原子替换；Unix 上新文件仅用户可读写。</summary>
 	private static void WriteAtomically(string path, JsonObject root)
 	{
 		var directory = Path.GetDirectoryName(path);
@@ -429,10 +370,8 @@ public sealed record CodingAgentSettings
 		}
 	}
 
-	/// <summary>
 	/// 把设置写入项目文件。**保留文件里本端口未建模的键**（例如 <c>$schema</c> 与上游新增项），
 	/// 只覆盖我们认识的字段 —— 否则一次保存就会把用户的其它配置抹掉。
-	/// </summary>
 	public static void SaveProject(string cwd, CodingAgentSettings settings)
 	{
 		var path = ProjectPath(cwd);
@@ -453,7 +392,6 @@ public sealed record CodingAgentSettings
 			}));
 	}
 
-	/// <summary>读出现有设置文件（不存在或坏掉时给一个空对象）。</summary>
 	private static JsonObject ReadExistingObject(string path)
 	{
 		if (!File.Exists(path))
@@ -472,7 +410,6 @@ public sealed record CodingAgentSettings
 		}
 	}
 
-	/// <summary>把已知字段写进 JSON 对象，其余键原样保留。</summary>
 	private static void MergeInto(JsonObject root, SettingsFile file)
 	{
 		Write(root, "defaultProvider", file.DefaultProvider);
@@ -612,7 +549,6 @@ public sealed record CodingAgentSettings
 
 	private static int NormalizeIdleTimeout(int value) => value < 0 ? 300_000 : value;
 
-	/// <summary>pi 的 transport 是四个字面量之一；写错时回落到 auto，而不是让 provider 各自猜。</summary>
 	private static string NormalizeTransport(string? value) => value?.Trim().ToLowerInvariant() switch
 	{
 		"sse" => "sse",
@@ -657,12 +593,10 @@ public sealed record CodingAgentSettings
 		}
 	}
 
-	/// <summary>
 	/// 旧版设置键在内存里迁移到当前形状（pi 的 <c>SettingsManager.migrateSettings</c> 同义）：
 	/// <c>queueMode</c> → <c>steeringMode</c>、<c>websockets</c> → <c>transport</c>、
 	/// <c>retry.maxDelayMs</c> → <c>retry.provider.maxRetryDelayMs</c>。
 	/// 只在加载时改内存，不主动重写文件；下一次保存会自然写成新形状。
-	/// </summary>
 	internal static SettingsFile? Normalize(SettingsFile? file)
 	{
 		if (file is null)
@@ -775,11 +709,9 @@ public sealed record CodingAgentSettings
 		return merged;
 	}
 
-	/// <summary>
 	/// defaultTools 的跨层合并：项目只含 +/− 时叠加到用户列表；出现纯名字时整体替换。
 	/// 空列表是合法的“全部禁用”，不能回退到默认值；两层都未配置时返回 <c>null</c>
 	/// （表示使用 <see cref="DefaultToolNames"/>），设置界面据此区分「继承」与「显式空选择」。
-	/// </summary>
 	public static IReadOnlyList<string>? MergeDefaultToolEntries(IReadOnlyList<string>? global, IReadOnlyList<string>? project)
 	{
 		if (project is null)
@@ -811,7 +743,6 @@ public sealed record CodingAgentSettings
 	private static IReadOnlyList<string> MergeTools(List<string>? global, List<string>? project) =>
 		MergeDefaultToolEntries(global, project) ?? [];
 
-	/// <summary>合并 packages：项目条目按来源替换用户条目，新条目追加在后面。</summary>
 	private static IReadOnlyList<PackageDeclaration> MergePackages(
 		IReadOnlyList<PackageDeclaration>? global,
 		IReadOnlyList<PackageDeclaration>? project)
@@ -845,7 +776,6 @@ public sealed record CodingAgentSettings
 		return merged;
 	}
 
-	/// <summary>把 packages 写成 pi 支持的字符串/对象数组，保留过滤字段。</summary>
 	private static void WritePackages(JsonObject root, List<PackageDeclaration>? packages)
 	{
 		if (packages is null)
@@ -892,7 +822,6 @@ public sealed record CodingAgentSettings
 		_ => null,
 	};
 
-	/// <summary>拼接全局与项目的资源列表并去重（先出现者保留）。</summary>
 	private static IReadOnlyList<string> MergeLists(List<string>? global, List<string>? project)
 	{
 		if (global is null or { Count: 0 })
@@ -985,37 +914,28 @@ public sealed record CodingAgentSettings
 		},
 	};
 
-	/// <summary>空列表写成 <c>null</c>，保存时不会覆盖文件里已有的条目。</summary>
 	private static List<string>? List(IReadOnlyList<string> values) => values.Count > 0 ? [.. values] : null;
 
-	/// <summary>settings.codemode.mode：只认 <c>only</c>，其余按 <c>on</c>（与 pi 的默认值一致）。</summary>
 	private static string NormalizeCodemodeMode(string? value) =>
 		string.Equals(value, "only", StringComparison.OrdinalIgnoreCase) ? "only" : "on";
 
-	/// <summary>settings.codemode.inlineBudget：负数按默认值处理。</summary>
 	private static int NormalizeCodemodeBudget(int? value) => value is >= 0 ? value.Value : CodemodeSettings.DefaultInlineBudget;
 
 
 
 }
 
-/// <summary>codemode 工具设置，对应 pi 的 <c>settings.codemode</c>。</summary>
 public sealed record CodemodeSettings
 {
-	/// <summary>默认的描述预算（估算 token）。</summary>
 	public const int DefaultInlineBudget = 3000;
 
-	/// <summary><c>on</c>（默认）或 <c>only</c>；<c>only</c> 需要延迟声明支持，当前按 <c>on</c> 执行。</summary>
 	public string Mode { get; init; } = "on";
 
-	/// <summary>描述里工具声明的预算（估算 token）。</summary>
 	public int InlineBudget { get; init; } = DefaultInlineBudget;
 
-	/// <summary>有 <c>exposure: codemode</c> 的 MCP 工具时自动启用 codemode（与 pi 一致）。</summary>
 	public bool AutoEnable { get; init; } = true;
 }
 
-/// <summary>设置文件的磁盘形状。所有字段都是可选的，未知键会被忽略。</summary>
 public sealed record SettingsFile
 {
 	public string? DefaultProvider { get; init; }
@@ -1024,13 +944,10 @@ public sealed record SettingsFile
 
 	public string? DefaultThinkingLevel { get; init; }
 
-	/// <summary>按 <c>provider/modelId</c> 覆盖启动思考级别。</summary>
 	public Dictionary<string, string>? ModelThinkingLevels { get; init; }
 
-	/// <summary>启动与轮换使用的模型模式；空表示全部可用模型。</summary>
 	public List<string>? EnabledModels { get; init; }
 
-	/// <summary><c>all</c> 或 <c>one-at-a-time</c>。</summary>
 	public string? SteeringMode { get; init; }
 
 	public string? FollowUpMode { get; init; }
@@ -1039,10 +956,8 @@ public sealed record SettingsFile
 
 	public string? Transport { get; init; }
 
-	/// <summary>pi 的旧键，加载时迁移到 <see cref="SteeringMode"/>。</summary>
 	public string? QueueMode { get; init; }
 
-	/// <summary>pi 的旧键，加载时迁移到 <see cref="Transport"/>。</summary>
 	[JsonPropertyName("websockets")]
 	public bool? WebSockets { get; init; }
 
@@ -1068,11 +983,9 @@ public sealed record SettingsFile
 
 	public int? TimeoutMs { get; init; }
 
-	/// <summary>响应体空闲超时（毫秒）；数字或 <c>"disabled"</c>。</summary>
 	[JsonConverter(typeof(TimeoutMsJsonConverter))]
 	public int? HttpIdleTimeoutMs { get; init; }
 
-	/// <summary>代理 URL；只对全局设置生效。</summary>
 	public string? HttpProxy { get; init; }
 
 	public string? ShellPath { get; init; }
@@ -1081,7 +994,6 @@ public sealed record SettingsFile
 
 	public string? SessionDir { get; init; }
 
-	/// <summary><c>/share</c> 的目标：<c>auto</c>、<c>gist</c> 或 <c>radius</c>。</summary>
 	public string SessionShareDestination { get; init; } = "auto";
 
 	public List<string>? DefaultTools { get; init; }
@@ -1092,7 +1004,6 @@ public sealed record SettingsFile
 }
 
 
-/// <summary><c>settings.codemode</c> 的磁盘形状。</summary>
 public sealed record CodemodeFile
 {
 	public string? Mode { get; init; }
@@ -1102,7 +1013,6 @@ public sealed record CodemodeFile
 	public bool? AutoEnable { get; init; }
 }
 
-/// <summary><c>settings.retry</c> 的磁盘形状。</summary>
 public sealed record RetryFile
 {
 	public bool? Enabled { get; init; }
@@ -1113,13 +1023,11 @@ public sealed record RetryFile
 
 	public int? MaxAgentDelayMs { get; init; }
 
-	/// <summary>pi 的旧键，加载时迁移到 <see cref="Provider"/>.<see cref="RetryProviderFile.MaxRetryDelayMs"/>。</summary>
 	public int? MaxDelayMs { get; init; }
 
 	public RetryProviderFile? Provider { get; init; }
 }
 
-/// <summary><c>settings.retry.provider</c>：provider 请求超时与重试上限。</summary>
 public sealed record RetryProviderFile
 {
 	public int? TimeoutMs { get; init; }

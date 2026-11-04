@@ -9,10 +9,8 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>一个 MCP 服务器在界面上的状态。</summary>
 public sealed record McpServerStatus(string Name, bool Connected, int ToolCount, string? Error);
 
-/// <summary>设置面板要展示的一次快照。</summary>
 public sealed record SettingsSnapshot
 {
 	public required string AgentDir { get; init; }
@@ -21,30 +19,24 @@ public sealed record SettingsSnapshot
 
 	public required int ModelCount { get; init; }
 
-	/// <summary>可选模型目录；Git 提交摘要的默认模型选择器使用。</summary>
 	public IReadOnlyList<Model> Models { get; init; } = [];
 
 	public required IReadOnlyList<string> Tools { get; init; }
 
 	public required IReadOnlyList<string> Skills { get; init; }
 
-	/// <summary>已解析的资源（技能、提示词模板、主题、包与诊断）。</summary>
 	public ResourceSnapshot Resources { get; init; } = ResourceSnapshot.Empty;
 
 	public required IReadOnlyList<McpServerStatus> McpServers { get; init; }
 
-	/// <summary>当前会话的信息；没有打开会话时为 <c>null</c>。</summary>
 	public CodingAgentSession? Session { get; init; }
 
-	/// <summary>归档（<c>.trash</c>）里的会话。</summary>
 	public IReadOnlyList<SessionListItem> Archived { get; init; } = [];
 	public Func<IReadOnlyList<SessionListItem>>? LoadArchived { get; init; }
 }
 
-/// <summary>
 /// 设置弹窗的内容：分类展示系统状态，并通过独立的配置视图管理模型、认证、Agent 与 MCP 文件。
 /// 外壳（压暗背景、卡片、标题栏、保存/关闭）由 <see cref="SettingsDialog"/> 提供。
-/// </summary>
 public sealed class SettingsView
 {
 	private readonly Func<SettingsSnapshot> _snapshot;
@@ -52,28 +44,22 @@ public sealed class SettingsView
 	private readonly StackPanel _navigation = new();
 	private readonly Lazy<ConfigurationView> _configuration;
 	private SecuritySection? _security;
-	/// <summary>提示音分区：与安全门一样按需创建，切走不丢已展开的状态。</summary>
 	private SoundSection? _sounds;
 	private readonly Grid _main;
 	private readonly TextBlock _sectionTitle = new();
 	private readonly Action<ConfigFile> _saved;
 
-	/// <summary>手动重建 MCP 连接；为空时不显示重连按钮。</summary>
 	private readonly Func<Task>? _reconnectMcp;
 
-	/// <summary>重新解析技能/提示词/主题；为空时不显示重载按钮。</summary>
 	private readonly Func<Task>? _reloadResources;
 	private readonly ScrollViewer _systemView;
 	private Button? _activeNavigationButton;
 	private bool _configMode;
 	private string _section = "overview";
 
-	/// <summary>当前快捷键表（可改键后刷新）。</summary>
 	private ShortcutMap _shortcuts = new(DesktopPreference.Load().Shortcuts);
 
-	/// <summary>分区或配置脏状态变化；宿主弹窗据此刷新头部的保存按钮。</summary>
 	public event Action? StateChanged;
-	/// <summary>OAuth 登录/退出改写了 auth.json：宿主据此重建模型目录与可用模型。</summary>
 	public event Action? AuthChanged;
 
 	public SettingsView(
@@ -123,16 +109,13 @@ public sealed class SettingsView
 
 	public bool IsConfigMode => _configMode;
 
-	/// <summary>当前表单是否可提交；源文件模式在勾选「显示源文件」之前不可保存。</summary>
 	public bool CanSave => _configuration.IsValueCreated && _configuration.Value.CanSave;
 
-	/// <summary>把保存动作交给配置草稿；没有打开配置分区时什么也不做。</summary>
 	public void SaveDraft()
 	{
 		if (_configuration.IsValueCreated) _configuration.Value.SaveDraft();
 	}
 
-	/// <summary>把焦点放到当前分区，保证弹窗打开或切换分区后 Esc / 键盘导航仍然可达。</summary>
 	public void FocusNavigation()
 	{
 		if (_activeNavigationButton is { } active)
@@ -291,7 +274,6 @@ public sealed class SettingsView
 			.HorizontalAlignment(HorizontalAlignment.Stretch);
 	}
 
-	/// <summary>仅供 --ui-smoke auth-login：打开认证页并直接启动一个供应商登录。</summary>
 	internal async Task OpenAuthLoginSmokeAsync(string providerId)
 	{
 		await SwitchModeAsync(true);
@@ -314,16 +296,12 @@ public sealed class SettingsView
 		FocusNavigation();
 	}
 
-	/// <summary>操作反馈统一走窗口级 toast（例如「已设为默认模型」）。</summary>
 	private void Toast(string message, ToastKind kind = ToastKind.Info) => Toasts.Show(_sectionTitle, message, kind);
 
-	/// <summary>
 	/// 最近一次分区构建失败的原因；正常时为 <c>null</c>。
 	/// 图标缺失一类的错误会记在这里并给出可见提示，而不是留下空白面板。
-	/// </summary>
 	internal string? LastSectionError { get; private set; }
 
-	/// <summary>重新读取快照并重建面板。</summary>
 	public void Refresh()
 	{
 		if (_configMode) return;
@@ -522,7 +500,6 @@ public sealed class SettingsView
 	private static TextBlock LabelForPreview(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeControl).PrimaryText();
 
-	/// <summary>Git 提交摘要：默认跟随当前会话，也可以固定模型与思考级别。</summary>
 	private Element GitSection()
 	{
 		var snapshot = _snapshot();
@@ -698,12 +675,8 @@ public sealed class SettingsView
 		new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption).SubtleText(),
 		control);
 
-	/// <summary>资源管理：技能、提示词模板、主题与 pi 包的来源、路径与解析结果。</summary>
-	/// <summary>
 	/// 安全门分区。分区自己写 <c>settings.json</c>；保存成功后通过 <see cref="SecurityChanged"/>
 	/// 通知宿主把新配置推给所有已打开的会话 —— 只刷新设置页等于改了个看不见的开关。
-	/// </summary>
-	/// <summary>提示音分区：总开关 / 音量 / 仅失焦 + 三类事件音效与试听（改动即时生效）。</summary>
 	private Element SoundSection()
 	{
 		_sounds ??= new SoundSection();
@@ -717,14 +690,12 @@ public sealed class SettingsView
 		return _security.View;
 	}
 
-	/// <summary>视觉验收入口：选中安全门分区并展开第一个档位编辑器。</summary>
 	internal Task SelectSectionForSecurityEditAsync()
 	{
 		_security ??= new SecuritySection(() => _snapshot().AgentDir, () => SecurityChanged?.Invoke());
 		return SelectSectionAsync("security");
 	}
 
-	/// <summary>安全配置发生变化的宿主回调。</summary>
 	public event Action? SecurityChanged;
 
 	private Element ResourcesSection()
@@ -812,7 +783,6 @@ public sealed class SettingsView
 		}
 	}
 
-	/// <summary>资源列表的一行：名称、补充说明、来源与文件路径。</summary>
 	private sealed record ResourceRow(string Name, string Detail, string Source, string Path);
 
 	private Element ResourceList(IEnumerable<ResourceRow> rows)
@@ -883,10 +853,8 @@ public sealed class SettingsView
 					.FontSize(AppTheme.FontSizeMicro).SubtleText())));
 	}
 
-	/// <summary>
 	/// 性能诊断：开关 + 即时快照 + 按名称聚合的耗时。面板本身不轮询，
 	/// 采样在 <see cref="Diagnostics"/> 的定时器里做，这里只在打开开关或点「刷新采样」时取一次快照。
-	/// </summary>
 	private string _compactResult = string.Empty;
 	// 诊断分区的每秒脉冲：只重建「实时区」（概览/帧条/循环/内存/聚合），静态部分不动。
 	private DispatcherTimer? _diagnosticsPulse;
@@ -962,10 +930,8 @@ public sealed class SettingsView
 		return Group("list-checks", Strings.SettingsDiagnostics, body);
 	}
 
-	/// <summary>
 	/// 诊断分区的每秒脉冲：重建实时区。分区已被替换（重建/切走）或从视觉树摘下（面板关闭）时，
 	/// 脉冲自行退场，不跟着无主树继续跑。
-	/// </summary>
 	internal void PulseDiagnostics()
 	{
 		var host = _diagnosticsLiveHost;
@@ -986,7 +952,6 @@ public sealed class SettingsView
 		FillDiagnosticsLive(host, Diagnostics.TakeSnapshot());
 	}
 
-	/// <summary>填充诊断分区的实时部分；每秒由 <see cref="_diagnosticsPulse"/> 重建一次。</summary>
 	private void FillDiagnosticsLive(StackPanel live, Diagnostics.Snapshot fresh)
 	{
 		// 概览：一眼看清「卡不卡、涨不涨」，细节都放到下面的分组里。
@@ -1098,7 +1063,6 @@ public sealed class SettingsView
 		live.Children(recent);
 	}
 
-	/// <summary>诊断区的操作按钮：刷新、压一次堆（判泄漏）、清空统计、打开目录。</summary>
 	private Element DiagnosticsButtons(Diagnostics.Snapshot fresh)
 	{
 		var compacted = new TextBlock()
@@ -1125,9 +1089,7 @@ public sealed class SettingsView
 			compacted);
 	}
 
-	/// <summary>
 	/// 诊断卡内的小节：小标题 + 发丝线 + 对齐行。不再嵌一层卡片，避免「盒中盒」把版面切碎。
-	/// </summary>
 	private static Element DiagnosticsRows(string title, IReadOnlyList<(string Label, string Value)> rows)
 	{
 		var body = new StackPanel().Spacing(2);
@@ -1142,7 +1104,6 @@ public sealed class SettingsView
 		return body;
 	}
 
-	/// <summary>概览里的一枚指标块：小标签 + 等宽数值 + 一行补充说明。</summary>
 	private static Element MetricTile(string label, string value, string? hint, int column, int row)
 	{
 		var tile = new Border()
@@ -1167,10 +1128,8 @@ public sealed class SettingsView
 		return tile;
 	}
 
-	/// <summary>
 	/// 一行「名称 …… 数值」：名称靠左、数值靠右对齐成表，备注只进悬浮提示 ——
 	/// 三列同屏会把名称挤成省略号，反而看不清是谁的耗时。
-	/// </summary>
 	private static Element MetricLine(string name, string value, string? note)
 	{
 		var row = new DockPanel().LastChildFill().Children(
@@ -1221,7 +1180,6 @@ public sealed class SettingsView
 		}
 	}
 
-	/// <summary>带图标的卡片标题；图标名取自内嵌的 Lucide 图标集。</summary>
 	private static Element Group(string icon, string title, UIElement content) => new Border()
 		.StyleName(AppStyles.Card)
 		.CornerRadius(AppTheme.RadiusMd)
@@ -1306,10 +1264,8 @@ public sealed class SettingsView
 		}
 	}
 
-	/// <summary>
 	/// 快捷键表：列出全部可绑定动作、当前绑定，并允许改键。改动写回 <c>desktop.json</c>，重启后生效
 	/// （MewUI 的窗口级快捷键在启动时注册）。
-	/// </summary>
 	private Element ShortcutSection()
 	{
 		var body = new StackPanel().Spacing(4);
@@ -1371,10 +1327,8 @@ public sealed class SettingsView
 		return Group("terminal", Strings.SettingsShortcuts, body);
 	}
 
-	/// <summary>
 	/// 一行快捷键。改键时进入「按下组合键」的捕获状态：捕获走窗口级按键处理，
 	/// 因此不受输入法影响（输入法会吞掉合成出来的可打印字符）。
-	/// </summary>
 	private Element ShortcutRow(string id, string description)
 	{
 		if (CapturingId != id)
@@ -1406,24 +1360,20 @@ public sealed class SettingsView
 				new TextBlock().Text(description).FontSize(AppTheme.FontSizeCaption).MutedText());
 	}
 
-	/// <summary>当前正在等待用户按下组合键的动作标识。</summary>
 	public string? CapturingId { get; private set; }
 
-	/// <summary>进入捕获状态：下一个带修饰键（或功能键）的按键会成为新绑定。</summary>
 	public void BeginCapture(string id)
 	{
 		CapturingId = id;
 		Refresh();
 	}
 
-	/// <summary>取消捕获。</summary>
 	public void CancelCapture()
 	{
 		CapturingId = null;
 		Refresh();
 	}
 
-	/// <summary>宿主捕获到按键后回调：是否接受这个组合（不接受时按键继续按原来的绑定处理）。</summary>
 	public bool CaptureBinding(Key key, ModifierKeys modifiers)
 	{
 		if (CapturingId is not { } id)
@@ -1452,7 +1402,6 @@ public sealed class SettingsView
 		return true;
 	}
 
-	/// <summary>保存一个改键：<paramref name="text"/> 为 null 表示恢复默认。</summary>
 	private void SaveShortcut(string id, string? text)
 	{
 		var map = new ShortcutMap(DesktopPreference.Load().Shortcuts);
@@ -1473,11 +1422,9 @@ public sealed class SettingsView
 		Refresh();
 	}
 
-	/// <summary>动作标识 → 中文说明（冲突提示里用）。</summary>
 	private static string DescribeAction(string id) =>
 		ShortcutMap.Definitions.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal))?.Description ?? id;
 
-	/// <summary>关于：版本、内嵌字体与依赖，排查问题时一眼可见。</summary>
 	private static Element AboutSection()
 	{
 		var body = new StackPanel().Spacing(4);
@@ -1502,7 +1449,6 @@ public sealed class SettingsView
 		return Group("settings", Strings.SettingsAbout, body);
 	}
 
-	/// <summary>归档管理：恢复单个会话，或清空归档。</summary>
 	private Element ArchiveSection(IReadOnlyList<SessionListItem> archived)
 	{
 		var body = new StackPanel().Spacing(AppTheme.Space2);

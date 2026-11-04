@@ -5,17 +5,13 @@ using Xunit.Abstractions;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 「首次打开复杂会话，快速上滚时会话进度跳变/回退」的回归：打开时只有尾部行有实测高度，
 /// 上方历史行用的是虚拟化器的运行平均估算；上滚后实测行高修正会改写偏移（锚点校正）。
 /// 普通 <see cref="SmoothScroll"/> 要么把可见校正当读者接管而停止滑行，要么让目标留在旧
 /// 坐标系里；结果是滚了很多却几乎没动、甚至反向滑回去。会话时间线必须把校当内容坐标系平移。
-/// </summary>
-/// <remarks>
 /// 帧驱动分两条：<see cref="AnimationFrames.Frame(SmoothScroll)"/> 钉住每帧 dt（曲线确定，
 /// 距离断言可以收到 ±2%），以及真实 dt 的 <see cref="RealFrames"/>（覆盖「不钳制 dt」那条性质，
 /// 只断言不漂移/不拖长尾，默认跳过 —— 见其注释）。
-/// </remarks>
 [Collection("mewui-controls")]
 public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 {
@@ -30,10 +26,8 @@ public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 		view.Arrange(new Rect(0, 0, width, height));
 	}
 
-	/// <summary>
 	/// 真实 dt 的一帧：睡满名义帧长再推时钟，SmoothScroll 读到的是墙钟时间。
 	/// 只用于 <see cref="RealFrameClockKeepsTheGlideDriftFree"/>。
-	/// </summary>
 	private static void RealFrames() => Thread.Sleep(AnimationFrames.FrameMs);
 
 	private sealed class Fixture : IDisposable
@@ -43,7 +37,6 @@ public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 		public required TextFocusScrollGuard Guard { get; init; }
 		public required SmoothScroll Smooth { get; init; }
 		public required double[] Heights { get; init; }
-		/// <summary>本用例把进程级滚轮步长临时钉成的值；Dispose 时还原。</summary>
 		public required ThemeMetrics MetricsBefore { get; init; }
 
 		public void Dispose()
@@ -58,7 +51,6 @@ public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 			VisualTree.Find<ContentControl>(Timeline.View)
 				.FirstOrDefault(host => host.Tag is ChatEntry { EntryId: var id } && id == entryId);
 
-		/// <summary>行槽高度 = 正文高度 + 行外框/间距；同一时间线里是常量。</summary>
 		public double ChromeFor(string entryId, int index)
 		{
 			var host = HostOf(entryId);
@@ -121,14 +113,11 @@ public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 		return fixture;
 	}
 
-	/// <summary>一段手势的测量结果：全部换算到内容坐标，偏移侧的校正另算。</summary>
 	private sealed record Glide(
 		double Moved, double Expected, double Correction, bool BigJump, bool KilledGlide, bool Settled);
 
-	/// <summary>
 	/// 跑「40 格快速上滚 + 收尾」：每格推一帧（帧由 <paramref name="frame"/> 决定是钉住 dt
 	/// 还是真实 dt），随后按同一节奏等动画收敛。
-	/// </summary>
 	private Glide Run(Fixture fixture, Action frame)
 	{
 		var timeline = fixture.Timeline;
@@ -217,12 +206,10 @@ public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 		Assert.InRange(run.Moved, run.Expected * 0.78, run.Expected * 0.95);
 	}
 
-	/// <summary>
 	/// 真实 dt 下的同一段手势：只断言「不漂移、不拖长尾」这类性质，容差留足机器负载的余量。
 	/// 固定 dt 的用例把距离钉死了，这条负责守住「Advance 不钳制 dt」时曲线仍然按真实时间收敛
 	/// （见 SmoothScroll.Advance 的注释：钳制 dt 会把主线程停顿拉长成追赶、松手后拖尾巴）。
 	/// 它按墙钟sleep，满载机器上本身会抖，所以默认跳过：设 PIWEFT_NATIVE_TESTS=1 才跑。
-	/// </summary>
 	[Theory]
 	[InlineData(true)]
 	[InlineData(false)]

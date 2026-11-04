@@ -3,12 +3,10 @@ using PiWeft.CodingAgent;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// RPC 模式的 <see cref="IUiHost"/>：发出 pi 的 <c>extension_ui_request</c> 并等待客户端用
 /// <c>extension_ui_response</c> 回答。对话框方法（select/confirm/input/editor）阻塞等待，
 /// notify 即发即忘。<c>ask_question</c> 走 PiDeck 批量信封（<c>method: "input"</c>），
 /// 因此 PiDeck 的桌面端可以直接渲染问询卡片。
-/// </summary>
 public sealed partial class CliRunner : IUiHost
 {
 	private readonly Lock _uiGate = new();
@@ -120,7 +118,6 @@ public sealed partial class CliRunner : IUiHost
 	void IUiHost.SetEditorText(string text) =>
 		WriteUiFireAndForget("set_editor_text", new JsonObject { ["text"] = text });
 
-	/// <summary>发出一个不等待回应的扩展 UI 请求，字段与 pi RPC 的顶层字段一致。</summary>
 	private void WriteUiFireAndForget(string method, JsonObject parameters)
 	{
 		var record = new JsonObject
@@ -137,10 +134,8 @@ public sealed partial class CliRunner : IUiHost
 		WriteRecord(CliJson.Serialize(record));
 	}
 
-	/// <summary>
 	/// 发出一个对话框请求并等待 <c>extension_ui_response</c>。
 	/// 请求自带 <c>timeout</c> 时在超时后自动按取消解析（pi 的 agent 侧超时语义）。
-	/// </summary>
 	private async Task<JsonObject?> SendUiRequestAsync(string method, JsonObject parameters, CancellationToken cancellationToken)
 	{
 		var id = Guid.NewGuid().ToString("N");
@@ -197,7 +192,6 @@ public sealed partial class CliRunner : IUiHost
 		}
 	}
 
-	/// <summary>取消所有等待中的扩展 UI 请求（stdin 关闭或进程退出时）。</summary>
 	private void CancelPendingUiRequests()
 	{
 		lock (_uiGate)
@@ -211,7 +205,6 @@ public sealed partial class CliRunner : IUiHost
 		}
 	}
 
-	/// <summary>处理 RPC 的 <c>extension_ui_response</c>；返回是否命中等待中的请求。</summary>
 	private bool ResolveUiResponse(JsonObject command)
 	{
 		// 协议里 id 是字符串，但客户端发数字时也必须能命中（回显容错）。

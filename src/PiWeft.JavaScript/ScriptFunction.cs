@@ -7,7 +7,6 @@ using Jint.Runtime;
 
 namespace PiWeft.JavaScript;
 
-/// <summary>一次受限 JS 函数调用的预算。</summary>
 public sealed record ScriptFunctionOptions
 {
 	public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(5);
@@ -19,11 +18,9 @@ public sealed record ScriptFunctionOptions
 	public int MaxSourceLength { get; init; } = 256 * 1024;
 }
 
-/// <summary>
 /// 运行一段 async 函数体：<c>return ...</c> 的值会作为 JSON 返回。
 /// 脚本只拿到两个 JSON 值（<c>request</c> 与 <c>context</c>），没有 CLR、文件、网络或模块入口。
 /// 用于 <c>models.json</c> 的虚拟模型 <c>route</c> 等宿主内钩子；每次调用新建解释器。
-/// </summary>
 public static class ScriptFunction
 {
 	private static readonly JsonSerializerOptions JsonOptions = new()

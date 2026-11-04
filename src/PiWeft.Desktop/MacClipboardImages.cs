@@ -4,14 +4,11 @@ using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// macOS 的图片剪贴板：直接走 NSPasteboard。读取按 public.png、public.jpeg、public.tiff 的顺序尝试，
 /// TIFF（系统截图默认放的就是它）用 NSBitmapImageRep 转成 PNG 再返回；写入用与 MIME 对应的 UTI。
 /// Objective-C 互操作与 MewUI 的 macOS 平台层同构（libobjc + objc_msgSend），每次调用自带 autorelease pool。
-/// </summary>
 internal sealed partial class MacClipboardImages : IClipboardImages
 {
-	/// <summary>NSBitmapImageFileTypePNG。</summary>
 	private const ulong BitmapFileTypePng = 4;
 
 	private static readonly string[] Readable = ["public.png", "public.jpeg", "public.tiff"];
@@ -79,7 +76,6 @@ internal sealed partial class MacClipboardImages : IClipboardImages
 		return Task.FromResult(nsType != 0 && ObjC.MsgSend_bool_nint_nint(pasteboard, ObjC.Sel("setData:forType:"), nsData, nsType));
 	}
 
-	/// <summary>系统截图把 TIFF 放上剪贴板，交给 NSBitmapImageRep 转一次 PNG。</summary>
 	private static (string? MimeType, byte[]? Data) ToPng(nint tiff)
 	{
 		var bitmapClass = ObjC.GetClass("NSBitmapImageRep");
@@ -128,7 +124,6 @@ internal sealed partial class MacClipboardImages : IClipboardImages
 
 	public void Dispose() => _disposed = true;
 
-	/// <summary>只声明用得到的 objc 入口；放在这里以免与平台层的内部互操作耦合。</summary>
 	private static unsafe partial class ObjC
 	{
 		[LibraryImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_getClass")]
@@ -198,7 +193,6 @@ internal sealed partial class MacClipboardImages : IClipboardImages
 
 		public static void MsgSend_void(nint receiver, nint selector) => objc_msgSend_void(receiver, selector);
 
-		/// <summary>临时对象的作用域；没有池时 Cocoa 会打印「autoreleased with no pool」并在进程生命周期内泄漏。</summary>
 		public readonly struct Pool : IDisposable
 		{
 			private readonly nint _pool;

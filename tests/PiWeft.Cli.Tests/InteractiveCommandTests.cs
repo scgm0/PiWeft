@@ -7,7 +7,6 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>交互模式的 pi 专属斜杠命令：/import 与 /copy（NEW-06）。</summary>
 public class InteractiveCommandTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-interactive-" + Guid.NewGuid().ToString("N")[..8]);

@@ -4,10 +4,8 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>预览图片的原始编码数据：「复制图片」按它写系统剪贴板。</summary>
 internal sealed record PreviewPayload(string Base64, string MimeType);
 
-/// <summary>缩略图和预览共用图片源；弱缓存不延长会话或大位图的生命周期。</summary>
 internal static class ChatImages
 {
 	private sealed class CachedSource
@@ -23,12 +21,10 @@ internal static class ChatImages
 	}
 	private static readonly ConditionalWeakTable<string, CachedSource> Sources = new();
 
-	/// <summary>图片源到原始数据的映射随源一起消失，不额外持有位图。</summary>
 	private static readonly ConditionalWeakTable<ImageSource, PreviewPayload> Payloads = new();
 
 	internal static ImageSource Source(string data) => Sources.GetOrCreateValue(data).Get(data);
 
-	/// <summary>登记原始编码数据，供预览里的「复制图片」原样写回剪贴板。</summary>
 	internal static ImageSource Source(ChatImage image)
 	{
 		var source = Source(image.Data);
@@ -55,10 +51,8 @@ internal static class ChatImages
 		}
 	}
 
-	/// <summary>
 	/// 用户消息的紧凑缩略图（PiDeck 同款 64–88 DIP 方块）：历史里的大图不再把整条气泡撑满，
 	/// 点击仍打开全尺寸预览。图片按 UniformToFill 居中裁切，透明底用内嵌表面托住。
-	/// </summary>
 	public static UIElement CreateThumbnail(ChatImage image, Action<ImageSource>? preview = null, double size = 88)
 	{
 		try
@@ -82,7 +76,6 @@ internal static class ChatImages
 	}
 }
 
-/// <summary>窗口级图片预览：适应窗口、遮罩关闭、Escape 关闭，可把当前图片复制回剪贴板；隐藏时释放图片引用。</summary>
 internal sealed class ImagePreview
 {
 	private readonly Image _image = new();
@@ -117,7 +110,6 @@ internal sealed class ImagePreview
 	public UIElement View { get; }
 	public bool IsOpen => View.IsVisible;
 
-	/// <summary>写剪贴板的结果反馈出口（文案, 是否成功）；由宿主接到 toast，未接时静默。</summary>
 	public Action<string, bool>? Status { get; set; }
 
 	public void Show(UIElement owner, ImageSource source)

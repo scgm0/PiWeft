@@ -5,12 +5,10 @@ using System.Text.Json.Serialization;
 
 namespace PiWeft.Mcp;
 
-/// <summary><c>mcp.json</c> 中的一个 MCP 服务器条目。</summary>
 public sealed record McpServerConfig
 {
 	public string Name { get; init; } = string.Empty;
 
-	/// <summary>stdio 服务器的可执行文件；HTTP 服务器没有该字段。</summary>
 	public string? Command { get; init; }
 
 	public IReadOnlyList<string> Arguments { get; init; } = [];
@@ -19,48 +17,36 @@ public sealed record McpServerConfig
 
 	public string? Cwd { get; init; }
 
-	/// <summary>streamable HTTP 端点，与 <see cref="Command"/> 互斥。</summary>
 	public string? Url { get; init; }
 
 	public IReadOnlyDictionary<string, string>? Headers { get; init; }
 
-	/// <summary>单次请求超时（秒），默认 60。</summary>
 	public int? Timeout { get; init; }
 
 	public bool Enabled { get; init; } = true;
 
 	public string? Description { get; init; }
 
-	/// <summary>工具暴露方式，默认 <c>direct</c>；见 <see cref="McpExposure"/>。</summary>
 	public string Exposure { get; init; } = McpExposure.Default;
 
-	/// <summary>按工具名或 <c>*</c> 通配符逐工具覆盖暴露方式；精确名优先于通配符。</summary>
 	public IReadOnlyDictionary<string, string>? ToolExposure { get; init; }
 
-	/// <summary>HTTP 认证方式：<c>oauth</c> 走授权码流程；其它值（含 null）只沿用静态 headers。</summary>
 	public string? Auth { get; init; }
 
-	/// <summary>OAuth 客户端 id；留空时按需动态注册（RFC 7591）。</summary>
 	public string? ClientId { get; init; }
 
-	/// <summary>
 	/// OAuth 客户端密钥；与 <see cref="ClientId"/> 同时配置时走客户端凭据授权
 	/// （RFC 6749 §4.4），不再需要浏览器授权与动态注册。
-	/// </summary>
 	public string? ClientSecret { get; init; }
 
-	/// <summary>OAuth 请求的 scope；留空时用授权服务器建议的 scope。</summary>
 	public IReadOnlyList<string> Scopes { get; init; } = [];
 
-	/// <summary>pi 形状的 oauth 配置；PiWeft 也接受旧的 <c>auth: "oauth"</c> + 顶层字段。</summary>
 	[System.Text.Json.Serialization.JsonPropertyName("oauth")]
 	public McpOAuthConfigEntry? OAuth { get; init; }
 
-	/// <summary>是否走 OAuth：必须是 HTTP 服务器且显式声明 <c>auth: oauth</c>。</summary>
 	public bool UsesOAuth => IsHttp &&
 		(OAuth is not null || string.Equals(Auth, OAuthAuthValue, StringComparison.OrdinalIgnoreCase));
 
-	/// <summary><c>auth</c> 字段里表示 OAuth 的取值。</summary>
 	public const string OAuthAuthValue = "oauth";
 
 	public TimeSpan TimeoutSpan => TimeSpan.FromSeconds(Timeout is > 0 ? Timeout.Value : 60);
@@ -70,7 +56,6 @@ public sealed record McpServerConfig
 	public bool IsHttp => Url is { Length: > 0 };
 }
 
-/// <summary>pi 形状的 <c>oauth</c> 配置对象。</summary>
 public sealed record McpOAuthConfigEntry
 {
 	public string? ClientId { get; init; }
@@ -83,13 +68,11 @@ public sealed record McpOAuthConfigEntry
 	public string? AuthServerMetadataUrl { get; init; }
 }
 
-/// <summary>一个 <c>mcp.json</c> 文件：服务器名到条目的映射。</summary>
 public sealed record McpConfigFile
 {
 	public IReadOnlyDictionary<string, McpServerEntry>? McpServers { get; init; }
 }
 
-/// <summary>服务器条目的磁盘形状。所有字段都可选，因此支持局部覆盖。</summary>
 public sealed record McpServerEntry
 {
 	public string? Command { get; init; }
@@ -126,24 +109,18 @@ public sealed record McpServerEntry
 	public McpOAuthConfigEntry? OAuth { get; init; }
 }
 
-/// <summary>
 /// 加载并合并 MCP 服务器配置。用户级来自 <c>&lt;agentDir&gt;/mcp.json</c>，项目级来自
 /// <c>&lt;cwd&gt;/.pi/mcp.json</c>；同名时项目条目替换用户条目，
 /// 项目里的局部条目只覆盖它显式设置的字段。
-/// </summary>
 public static partial class McpConfig
 {
-	/// <summary>名称只能包含字母、数字、<c>_</c> 与 <c>-</c>。</summary>
 	public static bool IsValidName(string name) =>
 		name.Length > 0 && name.All(static c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-');
 
-	/// <summary>只有 <c>-</c> 与 <c>_</c> 不同的名称视为同一个服务器。</summary>
 	public static string CanonicalName(string name) => name.Replace('-', '_');
 
-	/// <summary>存放用户配置的目录。</summary>
 	public const string ConfigDirName = ".pi";
 
-	/// <summary>与编码代理同样的解析规则：<c>$PI_CODING_AGENT_DIR</c> 或 <c>~/.pi/agent</c>。</summary>
 	public static string GetAgentDir(string? agentDir = null) =>
 		agentDir ?? Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") switch
 		{
@@ -154,15 +131,12 @@ public static partial class McpConfig
 				"agent"),
 		};
 
-	/// <summary>用户配置路径。</summary>
 	public static string UserPath(string? agentDir = null) =>
 		Path.Combine(GetAgentDir(agentDir), "mcp.json");
 
-	/// <summary>项目配置路径。</summary>
 	public static string ProjectPath(string cwd) =>
 		Path.Combine(Path.GetFullPath(cwd), ConfigDirName, "mcp.json");
 
-	/// <summary>加载并合并用户与项目配置。</summary>
 	public static IReadOnlyList<McpServerConfig> Load(string cwd, string? agentDir = null, bool includeProject = true)
 	{
 		var user = ReadFile(UserPath(agentDir));
@@ -192,10 +166,8 @@ public static partial class McpConfig
 		}
 	}
 
-	/// <summary>
 	/// 把一条服务器配置写进指定的 <c>mcp.json</c>。保留文件里其它键，写入是原子的；
 	/// 已有同名条目会被替换（<c>pi mcp add</c> 的语义）。
-	/// </summary>
 	public static void SaveEntry(string path, string name, McpServerEntry entry)
 	{
 		var root = ReadObject(path);
@@ -205,7 +177,6 @@ public static partial class McpConfig
 		WriteAtomically(path, root);
 	}
 
-	/// <summary>从指定的 <c>mcp.json</c> 移除一条服务器配置；不存在时返回 <c>false</c>。</summary>
 	public static bool RemoveEntry(string path, string name)
 	{
 		if (!File.Exists(path))
@@ -302,7 +273,6 @@ public static partial class McpConfig
 		}
 	}
 
-	/// <summary>合并用户与项目条目，并用环境变量展开 <c>${VAR}</c>。</summary>
 	internal static IReadOnlyList<McpServerConfig> Merge(McpConfigFile? user, McpConfigFile? project)
 	{
 		var merged = new Dictionary<string, McpServerEntry>(StringComparer.Ordinal);
@@ -404,7 +374,6 @@ public static partial class McpConfig
 		};
 	}
 
-	/// <summary>展开 <c>${VAR}</c> 与开头的 <c>~/</c>。</summary>
 	internal static string? Expand(string? value)
 	{
 		if (string.IsNullOrEmpty(value))

@@ -7,10 +7,8 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.Google;
 
-/// <summary>
 /// Google Generative Language API（<c>google-generative-ai</c>）的流式适配器，覆盖 Gemini 系列。
 /// 配置好端点与鉴权后，同样的线格式也服务于 <c>google-vertex</c>。
-/// </summary>
 public sealed class GoogleGenerativeAiProvider : IApiProvider
 {
 	public const string ApiId = "google-generative-ai";
@@ -173,10 +171,8 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 		return request;
 	}
 
-	/// <summary>
 	/// 把 pi 的思考级别映射到 Gemini 的 <c>thinkingConfig.thinkingBudget</c>。返回 <c>null</c> 表示不带该字段，
 	/// 这正是非推理模型所期望的。
-	/// </summary>
 	internal static int? ResolveThinkingBudget(Model model, StreamOptions options)
 	{
 		if (!model.Reasoning)

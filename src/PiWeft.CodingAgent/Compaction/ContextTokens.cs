@@ -5,10 +5,8 @@ using PiWeft.CodingAgent.Settings;
 using PiWeft.Ai.Json;
 namespace PiWeft.CodingAgent.Compaction;
 
-/// <summary>上下文窗口核算。对应 pi 在 <c>compaction.ts</c> 里的令牌辅助方法。</summary>
 public static class ContextTokens
 {
-	/// <summary>单张图片计入的字符数 —— 像素数据本身不直接计数。</summary>
 	public const long EstimatedImageChars = 4800;
 
 	public static long CalculateContextTokens(Usage usage) =>
@@ -16,12 +14,10 @@ public static class ContextTokens
 			? usage.TotalTokens
 			: usage.Input + usage.Output + usage.CacheRead + usage.CacheWrite;
 
-	/// <summary>该用量能否作为基准：未中断、未失败，且不是全零。</summary>
 	private static bool IsUsableUsage(AssistantMessage message) =>
 		message.StopReason is not (StopReason.Aborted or StopReason.Error) &&
 		CalculateContextTokens(message.Usage) > 0;
 
-	/// <summary>最后一条给出可用用量的助手消息的下标与用量。</summary>
 	public static (int Index, Usage Usage)? LastAssistantUsage(IReadOnlyList<Message> messages)
 	{
 		for (var i = messages.Count - 1; i >= 0; i--)
@@ -35,7 +31,6 @@ public static class ContextTokens
 		return null;
 	}
 
-	/// <summary>单条消息在上下文窗口中占用的估算令牌数。</summary>
 	public static long EstimateTokens(Message message)
 	{
 		long chars = message switch
@@ -51,10 +46,8 @@ public static class ContextTokens
 		return (chars + 3) / 4; // 即 ceil(chars / 4)
 	}
 
-	/// <summary>
 	/// 估算的上下文大小：以最后一次可用用量为基准，其后的内容按估算累加 —— pi 也这么做，
 	/// 以免很长的工具结果被重复计算。
-	/// </summary>
 	public static (long Tokens, int? LastUsageIndex) EstimateContextTokens(IReadOnlyList<Message> messages)
 	{
 		var last = LastAssistantUsage(messages);
@@ -78,7 +71,6 @@ public static class ContextTokens
 		return (tokens, last.Value.Index);
 	}
 
-	/// <summary>上下文已接近窗口上限、应当触发压缩时为 true。</summary>
 	public static bool ShouldCompact(long contextTokens, int contextWindow, CompactionSettings settings) =>
 		settings.Enabled && contextTokens > contextWindow - settings.ReserveTokens;
 
@@ -147,7 +139,6 @@ public static class ContextTokens
 		_ => 0,
 	};
 
-	/// <summary>自定义消息的字符数，从其保留的 JSON 中读取：bash 输出或摘要。</summary>
 	private static long RawChars(JsonObject raw)
 	{
 		long chars = 0;

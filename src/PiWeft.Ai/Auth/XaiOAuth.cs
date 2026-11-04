@@ -3,7 +3,6 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>xAI OAuth 设备码流程。</summary>
 public static class XaiOAuth
 {
 	public const string ProviderKey = "xai";

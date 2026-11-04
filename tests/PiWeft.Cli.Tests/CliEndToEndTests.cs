@@ -8,7 +8,6 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>Serves a canned Anthropic SSE stream so the CLI can be exercised end to end without a network.</summary>
 internal sealed class FakeAnthropicHandler : HttpMessageHandler
 {
 	public const string StreamBody = """

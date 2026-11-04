@@ -4,16 +4,13 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 默认行距：正文 1.6 倍、标题 1.3 倍（与 PiDeck 的 --line-height-chat / .markdown-body 标题一致），
 /// 按字号换算成 MewUI 的附加行间距，并且保证不把行压到字体自然行高以下。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class MarkdownLineSpacingTests
 {
 	private const string FourLines = "aaaa\nbbbb\ncccc\ndddd";
 
-	/// <summary>关掉行距的主题：用来量字体自然行高，作为行距断言的基准。</summary>
 	private static readonly MarkdownTheme TightTheme = new() { LineHeightScale = 0, HeadingLineHeightScale = 0 };
 
 	private static double Height(double fontSize, MarkdownTheme theme, MarkdownBlockKind kind, string text)
@@ -26,7 +23,6 @@ public sealed class MarkdownLineSpacingTests
 		return paragraph.DesiredSize.Height;
 	}
 
-	/// <summary>行距（相邻两行行首的间距），单位 DIP。</summary>
 	private static double Pitch(double fontSize, MarkdownTheme theme, MarkdownBlockKind kind)
 	{
 		// 4 行文本有 3 个行间空隙：高度差 / 3 就是加上的行间距，加上自然行高即行距。

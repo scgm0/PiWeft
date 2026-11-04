@@ -1,6 +1,5 @@
 namespace PiWeft.Desktop;
 
-/// <summary>Only web and local file links from model output may start an external application.</summary>
 internal sealed record MessageLinkTarget(string Target, bool IsWeb, int? Line = null, int? Column = null)
 {
 	public static MessageLinkTarget? Resolve(string url, string cwd)

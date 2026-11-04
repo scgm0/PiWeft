@@ -1,9 +1,7 @@
 namespace PiWeft.Ai;
 
-/// <summary>
 /// 对应 pi 的 <c>calculateCost</c>：先套用命中输入阈值中最高的整请求价格档位，
 /// 再对 Anthropic 的 1 小时缓存写入按基础输入价的 2 倍计费。会就地写入并返回 <paramref name="usage"/> 的费用。
-/// </summary>
 public static class CostCalculator
 {
 	public static Usage Calculate(Model model, Usage usage)
@@ -44,10 +42,8 @@ public static class CostCalculator
 	}
 }
 
-/// <summary>对应 pi 的思考级别解析辅助方法。</summary>
 public static class ThinkingLevelResolver
 {
-	/// <summary>模型支持的级别。非推理模型只支持 <c>off</c>。</summary>
 	public static IReadOnlyList<string> GetSupported(Model model)
 	{
 		if (!model.Reasoning)
@@ -78,7 +74,6 @@ public static class ThinkingLevelResolver
 		return supported;
 	}
 
-	/// <summary>把请求的级别收敛到最近的支持项。</summary>
 	public static string Clamp(Model model, string level)
 	{
 		var available = GetSupported(model);

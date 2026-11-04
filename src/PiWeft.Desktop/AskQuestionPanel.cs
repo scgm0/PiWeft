@@ -5,16 +5,12 @@ using PiWeft.CodingAgent;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// <c>ask_question</c> 的会话内联卡片（对齐 PiDeck 的 <c>SessionRuntimeUiOverlay</c>）：
 /// 钉在对话区底部、与输入框同级，不再用遮罩弹窗。卡片按批量信封渲染
 /// select / multi_select / confirm / input / editor，回答以同构 JSON 返回。
-/// <para>
 /// 为什么不做弹窗：代理停下等回答时，用户往往还要上翻历史核对上下文。遮罩弹窗会
 /// 把整窗（含对话）压暗并抢走滚动，PiDeck 的做法是让卡片和输入框一样待在列底，
 /// 对话照常可读可滚；输入区在这段时间折叠，避免两处同时抢键盘焦点。
-/// </para>
-/// </summary>
 internal sealed class AskQuestionPanel
 {
 	private readonly TextBlock _title = new();
@@ -45,7 +41,6 @@ internal sealed class AskQuestionPanel
 	private Grid? _overlayHost;
 	private Window? _overlayWindow;
 
-	/// <summary>等待输入提醒的会话标识与本次请求标识（同一批只响一次，回答完再重置）。</summary>
 	private string? _alertSessionId;
 	private string? _alertRequestId;
 
@@ -138,21 +133,16 @@ internal sealed class AskQuestionPanel
 				_content));
 	}
 
-	/// <summary>卡片本体；由会话标签放进输入列（对话区与输入框之间）。</summary>
 	public Border View { get; }
 
 	public bool IsOpen => View.IsVisible;
 
-	/// <summary>强制关闭（标签或窗口销毁时调用），等待中的请求按取消处理。</summary>
 	public void Close() => Finish(cancelled: true);
 
-	/// <summary>绑定会话标识：提示音按会话做批次去重，和 PiDeck 的 waiting 提醒同义。</summary>
 	internal void BindSession(string? sessionId) => _alertSessionId = sessionId;
 
-	/// <summary>
 	/// 窗口级浮层模式：只给「会话还没建出来」的场景用（启动时的项目信任询问）。
 	/// 普通 ask_question 一律走 <see cref="ShowAsync"/> 的会话内联卡片。
-	/// </summary>
 	public Task<string?> ShowOverlayAsync(Window window, IReadOnlyList<AskQuestion> questions, bool review, CancellationToken cancellationToken)
 	{
 		var backdrop = new Button()
@@ -179,7 +169,6 @@ internal sealed class AskQuestionPanel
 		return ShowAsync(questions, review, cancellationToken);
 	}
 
-	/// <summary>展示卡片并等待回答。</summary>
 	public Task<string?> ShowAsync(IReadOnlyList<AskQuestion> questions, bool review, CancellationToken cancellationToken)
 	{
 		if (questions.Count == 0)
@@ -287,7 +276,6 @@ internal sealed class AskQuestionPanel
 		_collapse.HoverTip(_expanded ? Strings.AskCollapse : Strings.AskExpand);
 	}
 
-	// ------------------------------------------------------------------ 渲染
 
 	private void RenderCard()
 	{
@@ -646,7 +634,6 @@ internal sealed class AskQuestionPanel
 		});
 	}
 
-	/// <summary>本题的推进方式：卡片里没有说明文字，靠一行提示说清「点一下就算答完」还是「还要点提交」。</summary>
 	private string HintFor(AskQuestion question)
 	{
 		if (_questions.Count == 1)
@@ -770,7 +757,6 @@ internal sealed class AskQuestionPanel
 		Commit(answer);
 	}
 
-	/// <summary>页脚主按钮的可用态跟着草稿走：空输入不能提交，填上即亮。</summary>
 	private void RefreshPrimaryState()
 	{
 		if (_primary is { } primary)
@@ -798,7 +784,6 @@ internal sealed class AskQuestionPanel
 			: new AskAnswer(question.Id, question.Type, JsonValue.Create(text), null, false);
 	}
 
-	/// <summary>写入一题答案并推进：全部答完即提交，否则跳到下一道未答的题。</summary>
 	private void Commit(AskAnswer answer)
 	{
 		if (_submitting || _current < 0 || _current >= _answers.Count)
@@ -844,7 +829,6 @@ internal sealed class AskQuestionPanel
 		return null;
 	}
 
-	/// <summary>选项 + 本题临时追加的自定义项（自定义项排在后面，索引稳定）。</summary>
 	private List<AskOption> OptionsFor(AskQuestion question)
 	{
 		var options = _current >= 0 && _current < _extraOptions.Count ? _extraOptions[_current] : [];
@@ -857,11 +841,9 @@ internal sealed class AskQuestionPanel
 		.StyleName(AppStyles.TextInputLine)
 		.Placeholder(question.Placeholder ?? Strings.AskCustomPlaceholder);
 
-	/// <summary>
 	/// 卡片打开后把焦点交给真正要用的控件：文本题给输入框（一进来就能打字），
 	/// 选项题给第一个可点的按钮（回车/空格就能选）。之前主按钮禁用时一个控件都拿不到焦点，
 	/// 用户得先点一下才能输入，Esc 也递不进来。
-	/// </summary>
 	private void FocusCurrent()
 	{
 		if (_current < 0 || _current >= _questions.Count)
@@ -904,7 +886,6 @@ internal sealed class AskQuestionPanel
 		return null;
 	}
 
-	/// <summary>卡片里第一个能打字的控件（单行框或多行框）。</summary>
 	private static UIElement? FindFirstEditor(Element root)
 	{
 		foreach (var element in Walk(root))
@@ -929,7 +910,6 @@ internal sealed class AskQuestionPanel
 		}
 	}
 
-	/// <summary>深度优先走一遍子树（标签、选项、输入框都在卡片自己这一小撮节点里）。</summary>
 	private static IEnumerable<Element> Walk(Element root)
 	{
 		var pending = new Stack<Element>();
@@ -962,12 +942,10 @@ internal sealed class AskQuestionPanel
 
 	private static TextBlock Label(string text) => new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption).PrimaryText();
 
-	/// <summary>
 	/// 主按钮上的文字。字色不写死：清色继承 Button 的 Foreground，主按钮样式自己按状态切换
 	/// （可用 TextOnAccent、禁用 TextFaint）。以前这里复用 <see cref="Label"/>（PrimaryText），
 	/// 深色主题下近白的字压在近白的强调底上，「下一题」看起来像一块禁用态的灰斑；改成写死
 	/// OnAccentText 又会在禁用时变成深色字压深色底。跟随底色才是这两个失败态的一般解。
-	/// </summary>
 	private static TextBlock AccentLabel(string text) => new TextBlock()
 		.Text(text)
 		.FontSize(AppTheme.FontSizeCaption)

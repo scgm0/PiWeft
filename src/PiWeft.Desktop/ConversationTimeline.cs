@@ -3,7 +3,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>可变高度的消息时间线，只为视口创建内容；回收时释放正文、图片和 Markdown。</summary>
 internal sealed class ConversationTimeline : IDisposable
 {
 	private readonly MessageRows _rows = new();
@@ -60,10 +59,8 @@ internal sealed class ConversationTimeline : IDisposable
 		}
 	}
 
-	/// <summary>当前视口里真正建了内容的行数；诊断页用它区分「行多」与「行贵」。</summary>
 	internal int VisibleRowCount => _visible.Count;
 
-	/// <summary>视口顶部下方 28 DIP 的实际行；只检查已实现容器，不测量整份历史。</summary>
 	internal int RowAtViewportAnchor()
 	{
 		var anchor = Scroll.Bounds.Y + 28;
@@ -113,11 +110,9 @@ internal sealed class ConversationTimeline : IDisposable
 		View.InvalidateMeasure();
 	}
 
-	/// <summary>
 	/// 折叠开关改变行高后立刻重排一次，并按新内容重算滚动范围、把偏移收回到末尾之内。
 	/// 手动滚动或改窗口大小本来会顺手做这件事；不主动做的话，虚拟化器会继续用旧的行高，
 	/// 表现为折叠内容下方空出一块、直到重排才恢复。
-	/// </summary>
 	/// <param name="source">触发重排的元素（折叠开关）；给出时只刷新它所在的那一行。</param>
 	public void RefreshLayout(Element? source = null)
 	{
@@ -139,13 +134,10 @@ internal sealed class ConversationTimeline : IDisposable
 		});
 	}
 
-	/// <summary>
 	/// 把偏移收回当前内容末尾之内。SetScrollOffsets 会先从滚动内容取一次最新范围再夹取，
 	/// 和用户滚一下触发的修正完全同一条路径。
-	/// </summary>
 	private void Reclamp() => Scroll.SetScrollOffsets(Scroll.HorizontalOffset, Scroll.VerticalOffset);
 
-	/// <summary>元素所在的、当前已实现的行；不在时间线里时返回 <c>null</c>。</summary>
 	private ReadingRow? HostOf(Element? element)
 	{
 		for (var current = element; current is not null; current = current.Parent)
@@ -153,7 +145,6 @@ internal sealed class ConversationTimeline : IDisposable
 		return null;
 	}
 
-	/// <summary>让一行（含子树）重新测量：折叠改变了内部高度的元素不一定把失效传到行根。</summary>
 	internal static void InvalidateMeasureTree(Element element)
 	{
 		if (element is UIElement ui) ui.InvalidateMeasure();
@@ -165,7 +156,6 @@ internal sealed class ConversationTimeline : IDisposable
 		});
 	}
 
-	/// <summary>先由虚拟化器实现目标行，再把它对齐到视口上沿；不依赖未测量行的估算高度。</summary>
 	/// <param name="index">目标行。</param>
 	/// <param name="withinRow">恢复阅读位置时，让目标行顶部比视口上沿高出多少 DIP。</param>
 	public void JumpToRow(int index, double withinRow = 0)
@@ -200,7 +190,6 @@ internal sealed class ConversationTimeline : IDisposable
 
 	private void CancelJump(MouseEventArgs _) => _jumpGeneration++;
 
-	/// <summary>正在阅读的条目与视口进入它的深度；用于搜索结束后恢复原位置。</summary>
 	internal readonly record struct ReadingPoint(string? EntryId, double WithinRow);
 
 	internal ReadingPoint CurrentReadingAnchor()
@@ -222,7 +211,6 @@ internal sealed class ConversationTimeline : IDisposable
 		return new ReadingPoint(entry.EntryId, Math.Max(0, Scroll.Bounds.Top - top.Bounds.Top));
 	}
 
-	/// <summary>Current index of an entry id, or -1 when the entry left the projection.</summary>
 	internal int IndexOfEntryId(string? entryId)
 	{
 		if (string.IsNullOrEmpty(entryId)) return -1;
@@ -297,7 +285,6 @@ internal sealed class ConversationTimeline : IDisposable
 		}
 	}
 
-	/// <summary>Keeps a cheap host-to-index map so an in-place update can find its realized row.</summary>
 	private void TrackIndex(ReadingRow host, int index)
 	{
 		if (_indexByHost.TryGetValue(host, out var previous) && previous != index && _hostByIndex.TryGetValue(previous, out var mapped) && ReferenceEquals(mapped, host))
@@ -308,18 +295,15 @@ internal sealed class ConversationTimeline : IDisposable
 		_hostByIndex[index] = host;
 	}
 
-	/// <summary>Unbind also runs immediately before a rebind. Release only rows actually detached after layout.</summary>
 	private void QueueRelease(ReadingRow host)
 	{
 		_pendingRelease.Add(host);
 		RequestPrune();
 	}
 
-	/// <summary>
 	/// 释放检查只能放在本次布局之后：虚拟化器在一次布局里会先摘下容器、随后又按 key 收回
 	/// （Reset 的 hold/回挂），此刻 <c>Parent</c> 为空并不代表这行真的离开了视图。
 	/// 在布局中途同步释放会把仍要显示的行清空，表现就是一条只占了位置、没有内容的空白行。
-	/// </summary>
 	private void RequestPrune()
 	{
 		if (_pendingRelease.Count == 0) return;
@@ -375,12 +359,9 @@ internal sealed class ConversationTimeline : IDisposable
 			foreach (var found in FindExpanders(child)) yield return found;
 	}
 
-	/// <summary>只改变不参与布局的展示元数据（当前为工具参数）——不需要 Replace 重建行。</summary>
-	/// <remarks>
 	/// Compare fields directly instead of cloning both records with <c>with { ToolArguments = null }</c>:
 	/// this runs for every changed row on every streaming frame, and the clones were pure garbage.
 	/// Nested process members keep normal argument comparison; only the top-level row is metadata-only.
-	/// </remarks>
 	internal static bool SameMetadataOnly(ChatEntry left, ChatEntry right) =>
 		SameEntryCore(left, right, ignoreToolArguments: true);
 
@@ -436,7 +417,6 @@ internal sealed class ConversationTimeline : IDisposable
 		_rows.Clear();
 	}
 
-	/// <summary>Short messages occupy the same reading column as long replies.</summary>
 	private sealed class ReadingRow : ContentControl
 	{
 		protected override Size MeasureContent(Size availableSize)
@@ -446,7 +426,6 @@ internal sealed class ConversationTimeline : IDisposable
 		}
 	}
 
-	/// <summary>Granular tail changes retain measured heights and existing selections during streaming.</summary>
 	internal sealed class MessageRows : IItemsView
 	{
 		private readonly List<ChatEntry> _entries = [];
@@ -458,13 +437,11 @@ internal sealed class ConversationTimeline : IDisposable
 		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
 		public void Clear() => Update([], 0, false, []);
 
-		/// <summary>
 		/// Streaming and process rows have a persistent view that can absorb new data without
 		/// rebuilding. Other replacements change identity or presentation and still need a rebind.
 		/// 流式行落盘时 EntryId 会从 live-assistant/… 变成会话条目 id（时间戳与图片不变）：
 		/// 这仍是一次原位收尾——发 Replace 会把该行已测高度作废成估算值，长回复定稿的一瞬
 		/// 滚动范围先缩后涨，跟底读者看到一次跳动（组内步骤列表见 StepRows 的同一处理）。
-		/// </summary>
 		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
 			(Equals(Key(current), Key(next)) && next.Role == ChatRole.Process) ||
 			(current.IsStreaming && next.Role == ChatRole.Assistant && current.Timestamp == next.Timestamp &&

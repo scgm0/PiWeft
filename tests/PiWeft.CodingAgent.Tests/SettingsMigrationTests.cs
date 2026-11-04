@@ -3,10 +3,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 旧版 settings 键的加载期迁移（pi 的 <c>SettingsManager.migrateSettings</c> 同义）。
 /// 迁移只在内存里做：下一次保存自然写成新形状，不主动重写用户的配置文件。
-/// </summary>
 public class SettingsMigrationTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-settings-" + Guid.NewGuid().ToString("N")[..8]);

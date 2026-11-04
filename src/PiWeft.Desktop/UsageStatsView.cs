@@ -6,10 +6,8 @@ using PiWeft.CodingAgent.Stats;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// D-07 用量统计：跨会话聚合每日/模型/项目用量并画热力图。
 /// 扫描按需触发、单遍读取、文件数与行长有上限，不在后台常驻线程。
-/// </summary>
 internal sealed class UsageStatsView
 {
 	private readonly Func<string> _sessionsRoot;
@@ -47,7 +45,6 @@ internal sealed class UsageStatsView
 
 	public UIElement View { get; }
 
-	/// <summary>主题切换后刷新角色文本颜色；图形在各自 WithTheme 里跟随。</summary>
 	public void ApplyTheme() => AppStyles.ApplyTextColors(View);
 
 	public void Close()
@@ -143,7 +140,6 @@ internal sealed class UsageStatsView
 		_content.Children(Card(Strings.UsageStatsProjects, ProjectList(report)));
 	}
 
-	/// <summary>26 周 × 7 天的方块图；行是星期，列是周。</summary>
 	private static Element Heatmap(UsageStatsReport report)
 	{
 		const int weeks = 26;
@@ -172,10 +168,8 @@ internal sealed class UsageStatsView
 			new TextBlock().Text(Strings.UsageStatsHeatmapHint).FontSize(AppTheme.FontSizeMicro).FaintText());
 	}
 
-	/// <summary>
 	/// GitHub 风格的热力图：浅色卡片用浅绿阶、深色卡片用深绿阶；
 	/// 0 级是“无活动”，在两种主题下都保持可见的低对比底。
-	/// </summary>
 	private static Color LevelColor(int level, bool dark) => (dark, level) switch
 	{
 		(_, 1) => dark ? new Color(0x0E, 0x44, 0x29) : new Color(0x9B, 0xE9, 0xB0),
@@ -222,7 +216,6 @@ internal sealed class UsageStatsView
 			new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Bold).SubtleText(),
 			body));
 
-	/// <summary>按量级缩写令牌数，避免统计行过长。</summary>
 	internal static string FormatTokens(long tokens) => tokens switch
 	{
 		>= 1_000_000_000 => $"{tokens / 1_000_000_000.0:0.##}B",

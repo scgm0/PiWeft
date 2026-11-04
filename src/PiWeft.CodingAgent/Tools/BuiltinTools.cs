@@ -5,13 +5,10 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>一个内置工具，以及它对提示词的贡献。</summary>
 public sealed record BuiltinTool(AgentTool Tool, string Snippet, IReadOnlyList<string> Guidelines);
 
-/// <summary>内置编码工具集，顺序与 pi 的声明顺序一致。</summary>
 public static class BuiltinTools
 {
-	/// <summary>按 pi 声明顺序排列的工具，系统提示里也使用同一顺序。</summary>
 	public static IReadOnlyList<BuiltinTool> Create(string cwd) =>
 	[
 		new BuiltinTool(
@@ -69,11 +66,9 @@ public static class BuiltinTools
 		AskQuestionTool.Create(static () => null),
 	];
 
-	/// <summary>
 	/// 可被 <c>--tools</c>/<c>--exclude-tools</c> 或 <c>defaultTools</c> 选中的完整目录。
 	/// 比默认集多出 <c>codemode</c>：与 pi 一样它默认不启用，需要显式选中
 	/// （<c>--tools +codemode</c> 或 <c>"defaultTools": ["+codemode"]</c>）。
-	/// </summary>
 	public static IReadOnlyList<BuiltinTool> Catalog(string cwd) =>
 	[
 		.. Create(cwd),
@@ -82,14 +77,11 @@ public static class BuiltinTools
 		CodeModeTool.CreatePlaceholder(),
 	];
 
-	/// <summary>只取可执行的工具，供 <see cref="AgentContext.Tools"/> 使用。</summary>
 	public static IReadOnlyList<AgentTool> Tools(string cwd) => [.. Create(cwd).Select(static builtin => builtin.Tool)];
 
-	/// <summary>完整目录里的可执行工具。</summary>
 	public static IReadOnlyList<AgentTool> CatalogTools(string cwd) =>
 		[.. Catalog(cwd).Select(static builtin => builtin.Tool)];
 
-	/// <summary>为自定义工具集构建工具声明列表。</summary>
 	public static IReadOnlyList<JsonObject> Describe(IEnumerable<AgentTool> tools) =>
 		[.. tools.Select(static tool => new JsonObject { ["name"] = tool.Name })];
 }

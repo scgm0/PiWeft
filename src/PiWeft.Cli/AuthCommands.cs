@@ -5,13 +5,10 @@ using PiWeft.Ai.Providers;
 using PiWeft.Ai.Json;
 namespace PiWeft.Cli;
 
-/// <summary>凭据相关命令：<c>pi login &lt;provider&gt;</c> 与 <c>pi auth &lt;子命令&gt;</c>。</summary>
 public static class AuthCommands
 {
-	/// <summary>覆盖 OAuth 服务器地址，测试即用它指向打桩服务。</summary>
 	public const string AuthBaseUrlVariable = "PI_CODEX_AUTH_BASE_URL";
 
-	/// <summary>执行一个凭据命令；不是本模块的命令时返回 <c>null</c>。</summary>
 	public static async Task<int?> RunAsync(
 		string command,
 		IReadOnlyList<string> rest,
@@ -239,14 +236,12 @@ public static class AuthCommands
 		return 0;
 	}
 
-	/// <summary>
 	/// <c>pi auth</c> 命令面，与 pi 的行为对齐：
 	/// <list type="bullet">
 	/// <item><c>check</c> 输出 <c>ready</c> / <c>not_ready</c> / <c>invalid</c>，退出码 0 / 1 / 2；</item>
 	/// <item><c>--json</c> 输出 <c>{{"status":..,"provider":..,"authType":..}}</c>；<c>--credentials</c> 连凭据一起输出；</item>
 	/// <item><c>print-api-key</c> / <c>print-bearer-token</c> 打印凭据本身，类型不匹配时报错。</item>
 	/// </list>
-	/// </summary>
 	private static async Task<int> AuthAsync(
 		IReadOnlyList<string> rest,
 		TextWriter output,
@@ -277,7 +272,6 @@ public static class AuthCommands
 			return 2;
 		}
 
-		// --min-expiry 只被 print-bearer-token 接受，格式与 pi 一致（30m、1h、500ms）。
 		var minExpiry = ValueOf(rest, "--min-expiry");
 		if (minExpiry is not null)
 		{
@@ -305,7 +299,6 @@ public static class AuthCommands
 		}
 	}
 
-	/// <summary><c>pi auth check</c>：校验凭据可用性并报告状态（不打印凭据本身，除非 --credentials）。</summary>
 	private static async Task<int> AuthCheck(
 		string provider,
 		string? agentDir,
@@ -382,7 +375,6 @@ public static class AuthCommands
 		}
 	}
 
-	/// <summary><c>pi auth print-api-key</c>：只对 api_key 型凭据有效。</summary>
 	private static async Task<int> PrintApiKey(
 		string provider,
 		string? agentDir,
@@ -409,7 +401,6 @@ public static class AuthCommands
 		return 0;
 	}
 
-	/// <summary><c>pi auth print-bearer-token</c>：只对 OAuth 型凭据有效。</summary>
 	private static async Task<int> PrintBearerToken(
 		string provider,
 		string? agentDir,
@@ -436,7 +427,6 @@ public static class AuthCommands
 		}
 	}
 
-	/// <summary>凭据类型：<c>api_key</c>（auth.json、命令型凭据或环境变量）或 <c>oauth</c>；都没有时返回 null。</summary>
 	private static async Task<string?> ResolveAuthTypeAsync(string provider, string? agentDir, CancellationToken cancellationToken)
 	{
 		var (stored, isCommand) = await AuthStore.ReadCredentialStateAsync(provider, agentDir, cancellationToken).ConfigureAwait(false);
@@ -457,7 +447,6 @@ public static class AuthCommands
 		return null;
 	}
 
-	/// <summary>取凭据明文：api_key 直接读，oauth 走刷新逻辑。</summary>
 	private static async Task<string?> ResolveCredentialAsync(
 		string provider,
 		string? agentDir,
@@ -544,7 +533,6 @@ public static class AuthCommands
 	}
 
 
-	/// <summary>把 <c>provider/model</c> 形式的模型标识折成 provider。</summary>
 	private static string? ProviderOf(string? model)
 	{
 		if (model is not { Length: > 0 })
@@ -556,7 +544,6 @@ public static class AuthCommands
 		return slash > 0 ? model[..slash] : model;
 	}
 
-	/// <summary><c>30m</c> / <c>1h</c> / <c>500ms</c> 形式的时长。</summary>
 	private static bool IsDuration(string text)
 	{
 		var digits = 0;
@@ -582,7 +569,6 @@ public static class AuthCommands
 			""");
 	}
 
-	/// <summary>取 <c>--name value</c> 形式的参数值。</summary>
 	private static string? ValueOf(IReadOnlyList<string> rest, string name)
 	{
 		for (var index = 0; index < rest.Count - 1; index++)

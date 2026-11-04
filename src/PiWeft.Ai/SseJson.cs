@@ -2,10 +2,8 @@ using System.Text.Json;
 
 namespace PiWeft.Ai;
 
-/// <summary>
 /// Reuses one UTF-8 buffer for the events of a single SSE stream. A <see cref="JsonDocument"/>
 /// still lives for one event, but no byte array is allocated or rented per event.
-/// </summary>
 internal sealed class SseJsonReader
 {
 	private byte[] _buffer = [];

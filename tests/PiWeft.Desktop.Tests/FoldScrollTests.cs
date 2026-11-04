@@ -273,7 +273,6 @@ public sealed class FoldScrollTests
 		Assert.All(visible, row => Assert.True(row.Bounds.Height > 0));
 	}
 
-	/// <summary>只跑一次真实的 measure/arrange：不手动清洗子树缓存，才能暴露漏掉的失效。</summary>
 	private static void Pump(UIElement view, double width = 500, double height = 400)
 	{
 		view.Measure(new Size(width, height));

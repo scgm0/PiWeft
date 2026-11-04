@@ -144,10 +144,8 @@ public class SystemPromptTests
 	}
 }
 
-/// <summary>
 /// Compares the generated prompt with the system messages stored in real pi session files, so prompt drift is caught
 /// the same way session format drift is.
-/// </summary>
 public class RealPromptFidelityTests
 {
 	private static SystemMessage? FirstSectionedSystemMessage()
@@ -160,7 +158,6 @@ public class RealPromptFidelityTests
 		return null;
 	}
 
-	/// <summary>枚举真实会话文件里的分章节系统提示词。</summary>
 	private static IEnumerable<SystemMessage> SectionedSystemMessages()
 	{
 		var root = Path.Combine(SessionPaths.GetAgentDir(), "sessions");
@@ -260,10 +257,8 @@ public class RealPromptFidelityTests
 		[.. section.Split('\n').Where(line => line.StartsWith(prefix, StringComparison.Ordinal)).Select(static line => line.Trim())];
 }
 
-/// <summary>
 /// 项目指令文件的加载规则：全局文件优先、每级目录只取一个、按真实路径去重，
 /// 以及嵌套 git worktree 里符号链接到主仓库的那份要被跳过。
-/// </summary>
 public class ContextFileLoadingTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-ctx-" + Guid.NewGuid().ToString("N")[..8]);
@@ -406,10 +401,8 @@ public class ContextFileLoadingTests : IDisposable
 	}
 }
 
-/// <summary>
 /// 用户给出的路径里的 <c>~</c> 必须展开：<c>Path.GetFullPath("~/x")</c> 会得到
 /// <c>&lt;cwd&gt;/~/x</c>，路径永远不存在（pi 1.2.0 修的同类问题）。
-/// </summary>
 public class UserPathTests
 {
 	[Fact]

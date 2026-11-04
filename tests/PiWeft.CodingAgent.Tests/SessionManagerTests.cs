@@ -349,10 +349,8 @@ public class SessionManagerTests : IDisposable
 	}
 }
 
-/// <summary>
 /// 外部工具写出的会话文件可能没有 session 头。追加时应当把头部补回第一行，
 /// 否则 pi 与 PiDeck 都解析不出会话身份（它们都按「首行是 session 头」读）。
-/// </summary>
 public class HeaderRepairTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-header-" + Guid.NewGuid().ToString("N")[..8]);
@@ -380,7 +378,8 @@ public class HeaderRepairTests : IDisposable
 			Message = new PiWeft.Ai.UserMessage { Content = PiWeft.Ai.MessageContent.FromText("外部工具写的") },
 		};
 
-		File.WriteAllText(path, PiWeft.CodingAgent.Session.SessionJson.Serialize(message) + "\n");
+		var originalLine = PiWeft.CodingAgent.Session.SessionJson.Serialize(message);
+		File.WriteAllText(path, originalLine + "\n");
 
 		var manager = SessionManager.Open(path, _root);
 		Assert.Null(manager.Header);
@@ -389,6 +388,8 @@ public class HeaderRepairTests : IDisposable
 
 		var lines = File.ReadAllLines(path);
 		Assert.Equal(3, lines.Length);
+		// 补头部是逐字节搬移原文，不是重新序列化：外部工具写的未知字段必须原样保留。
+		Assert.Equal(originalLine, lines[1]);
 
 		var header = System.Text.Json.Nodes.JsonNode.Parse(lines[0])!;
 		Assert.Equal("session", header["type"]!.GetValue<string>());
@@ -403,9 +404,7 @@ public class HeaderRepairTests : IDisposable
 	}
 }
 
-/// <summary>
 /// 会话文件保留可读 UTF-8 内容，并能无损读回工具参数与回复耗时。
-/// </summary>
 public class SessionFileEncodingTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-enc-" + Guid.NewGuid().ToString("N")[..8]);
@@ -482,5 +481,59 @@ public class SessionFileEncodingTests : IDisposable
 		Assert.Equal(1234.5, assistant.DurationMs);
 		Assert.Equal("检查引号与中文", Assert.IsType<ThinkingContent>(assistant.Content[0]).Thinking);
 		Assert.Equal("echo \"=== 你好 ===\"", Assert.IsType<ToolCall>(assistant.Content[1]).Arguments["command"]!.GetValue<string>());
+	}
+
+	[Fact]
+	public void Append_RollsBackMemoryWhenTheFileCannotBeWritten()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return; // 用 Unix 权限位制造写失败
+		}
+
+		var manager = SessionManager.Create(_root, Path.Combine(_root, "sessions"));
+		var first = manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("first"), Timestamp = 1 });
+		var entriesBefore = manager.Entries.Count;
+		var leafBefore = manager.LeafId;
+		Assert.Equal(first, leafBefore);
+
+		// 去掉写权限：追加必须失败，而且失败后内存里不能留下那条没写进文件的条目。
+		var mode = File.GetUnixFileMode(manager.SessionFile!);
+		File.SetUnixFileMode(manager.SessionFile!, mode & ~(UnixFileMode.UserWrite | UnixFileMode.GroupWrite | UnixFileMode.OtherWrite));
+		Assert.ThrowsAny<Exception>(() =>
+			manager.AppendMessage(new AssistantMessage
+			{
+				Timestamp = 2,
+				Api = "openai-completions",
+				Provider = "openai",
+				Model = "gpt-test",
+				Content = [new TextContent { Text = "must not survive" }],
+			}));
+
+		Assert.Equal(leafBefore, manager.LeafId);
+		Assert.Equal(entriesBefore, manager.Entries.Count);
+		Assert.DoesNotContain(manager.Entries, static entry =>
+			entry is SessionMessageEntry { Message: AssistantMessage assistant } &&
+			assistant.Content.OfType<TextContent>().Any(static block => block.Text == "must not survive"));
+
+		// 恢复写权限后继续追加：新条目的父级仍指向最后一条成功落盘的条目，文件链完整。
+		File.SetUnixFileMode(manager.SessionFile!, mode);
+		var second = manager.AppendMessage(new AssistantMessage
+		{
+			Timestamp = 3,
+			Api = "openai-completions",
+			Provider = "openai",
+			Model = "gpt-test",
+			Content = [new TextContent { Text = "second answer" }],
+		});
+
+		var reopened = SessionManager.Open(manager.SessionFile!, _root);
+		Assert.Equal(second, reopened.LeafId);
+		var ids = reopened.Entries.Select(static entry => entry.Id).ToHashSet(StringComparer.Ordinal);
+		Assert.All(reopened.Entries, entry => Assert.True(entry.ParentId is null || ids.Contains(entry.ParentId),
+			$"entry {entry.Id} points at missing parent {entry.ParentId}"));
+		Assert.Contains(reopened.Entries, entry => entry.Id == second);
+		var last = Assert.IsType<AssistantMessage>(reopened.Entries.OfType<SessionMessageEntry>().Last().Message);
+		Assert.Equal("second answer", Assert.IsType<TextContent>(last.Content[0]).Text);
 	}
 }

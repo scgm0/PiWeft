@@ -6,16 +6,12 @@ using System.Text.RegularExpressions;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Utils;
 
-/// <summary>
 /// 按工具的 JSON Schema 校验并强制转换模型写出的工具参数。对应 pi 的 <c>utils/validation.ts</c>：
 /// 可选的 null 会被删除，基础类型会被转换，失败时给出模型看到的错误工具结果文本。
-/// </summary>
 public static class JsonSchemaValidator
 {
-	/// <summary>校验后的参数，或格式化好的校验错误。</summary>
 	public sealed record Result(JsonObject? Value, string? Error);
 
-	/// <summary>校验一次工具调用的参数，返回转换后的参数或格式化错误。</summary>
 	public static Result ValidateToolArguments(Tool tool, JsonObject arguments)
 	{
 		ArgumentNullException.ThrowIfNull(tool);
@@ -48,9 +44,7 @@ public static class JsonSchemaValidator
 		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
-	// ------------------------------------------------------------------ 类型转换
 
-	/// <summary>删除值为 <c>null</c> 的可选属性 —— 模型常以此表示“未设置”。</summary>
 	public static void NormalizeOptionalNulls(JsonObject schema, JsonNode? value)
 	{
 		switch (value)
@@ -108,7 +102,6 @@ public static class JsonSchemaValidator
 		}
 	}
 
-	/// <summary>把基础类型转换成声明的类型，并递归处理对象、数组与联合类型。</summary>
 	public static JsonNode? Coerce(JsonObject schema, JsonNode? value)
 	{
 		var current = value;
@@ -333,9 +326,7 @@ public static class JsonSchemaValidator
 		}
 	}
 
-	// ---------------------------------------------------------------- 校验
 
-	/// <summary>值是否满足该 schema。</summary>
 	public static bool IsValid(JsonObject schema, JsonNode? value)
 	{
 		var errors = new List<string>();
@@ -572,7 +563,6 @@ public static class JsonSchemaValidator
 		}
 	}
 
-	// -------------------------------------------------------------------- 辅助
 
 	private static readonly string[] UnionKeywords = ["anyOf", "oneOf"];
 
@@ -617,7 +607,6 @@ public static class JsonSchemaValidator
 
 	private static double? AsDouble(JsonNode? node) => TryNumber(node, out var value) ? value : null;
 
-	/// <summary>不论底层 CLR 类型是哪种都读出数值：解析得到的 JSON，或由 int/long/decimal 构建的节点。</summary>
 	private static bool TryNumber(JsonNode? node, out double value)
 	{
 		value = 0;

@@ -4,10 +4,8 @@ using Aprillz.MewUI.Text;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 代码块的轻量语法着色：按语言识别关键字、字符串、注释与数字。
 /// 只做逐行扫描（不跟踪跨行块注释），对聊天里展示的片段足够，且完全无依赖、AOT 友好。
-/// </summary>
 public sealed class KeywordClassifier(string? language) : ITextClassifier
 {
 	private static readonly FrozenDictionary<string, FrozenSet<string>> KeywordSets =
@@ -18,7 +16,6 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 	private readonly string _language = Normalize(language);
 	private readonly FrozenSet<string> _keywords = KeywordSets.GetValueOrDefault(Normalize(language), FrozenSet<string>.Empty);
 
-	/// <summary>当前语言的显示名。</summary>
 	public string Language => _language.Length == 0 ? "text" : _language;
 
 	public void Classify(in TextClassificationContext context, IList<TextPaintSpan> output)
@@ -136,7 +133,6 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 
 	private static bool IsIdentifierChar(char c) => char.IsAsciiLetterOrDigit(c) || c is '_' or '$';
 
-	/// <summary>把 Markdown 里的语言标记折叠成我们认识的名字。</summary>
 	private static string Normalize(string? language)
 	{
 		if (string.IsNullOrWhiteSpace(language))
@@ -166,7 +162,6 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 		};
 	}
 
-	/// <summary>常用语言的关键字表。表里没有的语言只做字符串/注释/数字着色。</summary>
 	private static HashSet<string> KeywordsFor(string language) => language switch
 	{
 		"csharp" or "cs" or "c#" => new HashSet<string>(StringComparer.Ordinal)
@@ -243,10 +238,8 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 	};
 }
 
-/// <summary>
 /// 语法着色用的颜色，取自 PiDeck 的 <c>--code-*</c> 令牌（GitHub 浅色/暗色两套），
 /// 因此代码块与 PiDeck 里的高亮观感一致。
-/// </summary>
 public static class SyntaxPalette
 {
 	private static bool IsLight => AppTheme.IsLightTheme;

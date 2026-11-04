@@ -5,11 +5,9 @@ using System.Text;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 进程内原生 X11 PRIMARY 选区：自己充当 selection owner，不依赖 xclip/xsel 等外部程序。
 /// 独立 Display 连接 + 专用事件线程；用 eventfd 投递唤醒并 poll 阻塞等待，空闲时不轮询；
 /// 超过单个请求块的文本按 ICCCM INCR 属性协议分块传输。只负责 PRIMARY；CLIPBOARD 仍由框架负责。
-/// </summary>
 internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposable
 {
 	private const string LibX11 = "libX11.so.6";
@@ -68,7 +66,6 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 
 	public Task PendingPublish { get; private set; } = Task.CompletedTask;
 
-	/// <summary>单个 X 请求块的字节上限；超过它的文本走 ICCCM INCR。测试用它确认大数据确实分块。</summary>
 	internal int TransferChunkBytes => _chunkBytes;
 
 	private X11PrimarySelection()
@@ -110,7 +107,6 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 		_pump.Start();
 	}
 
-	/// <summary>仅在 X11/XWayland 会话可用时返回实例；失败时调用方回退到外部程序。</summary>
 	public static X11PrimarySelection? Create()
 	{
 		if (!OperatingSystem.IsLinux()) return null;
@@ -194,7 +190,6 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 		}
 	}
 
-	/// <summary>投递到事件线程并唤醒它；唤醒信号重复时 eventfd 计数器合并，不会丢失。</summary>
 	private void Post(Action operation)
 	{
 		_queue.Enqueue(operation);
@@ -302,7 +297,6 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 		XFlush(_display);
 	}
 
-	/// <summary>仅用于构造 SelectionNotify；字段偏移按 LP64 XSelectionEvent 布局。</summary>
 	private unsafe void SendNotify(nint requestor, nint selection, nint target, nint property, nint time)
 	{
 		Span<byte> buffer = stackalloc byte[EventBufferSize];
@@ -360,7 +354,6 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 		else SendChunk(notify.Window, notify.Atom, notify.State);
 	}
 
-	/// <summary>接收端：owner 追加了一块数据（或零长度结束标志）。</summary>
 	private void ReceiveChunk(nint property, int state)
 	{
 		if (state != PropertyNewValue || _incoming is null || property != _incomingProperty) return;
@@ -380,7 +373,6 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 		_incoming.Write(data, 0, length);
 	}
 
-	/// <summary>服务端：requestor 读走了一块，追加下一块或写结束标志。</summary>
 	private unsafe void SendChunk(nint requestor, nint property, int state)
 	{
 		if (state != PropertyDelete) return;
@@ -407,7 +399,6 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 		pending?.TrySetResult(text);
 	}
 
-	/// <summary>只取属性类型，不读取也不删除内容。</summary>
 	private unsafe nint PropertyType(nint window, nint property)
 	{
 		if (XGetWindowProperty(_display, window, property, 0, 0, 0, AnyPropertyType,
@@ -416,7 +407,6 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 		return type;
 	}
 
-	/// <summary>读取并删除属性内容；长度为零是 INCR 的结束标志，不是失败。</summary>
 	private unsafe bool TakeProperty(nint window, nint property, int maxBytes, out byte[] content, out int length)
 	{
 		content = [];

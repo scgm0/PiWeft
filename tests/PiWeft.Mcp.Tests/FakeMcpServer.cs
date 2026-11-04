@@ -4,9 +4,7 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Mcp.Tests;
 
-/// <summary>
 /// A scripted MCP server speaking JSON-RPC over pipes, so the client can be tested without spawning a process.
-/// </summary>
 internal sealed class FakeMcpServer : IAsyncDisposable
 {
 	private readonly Stream _input;

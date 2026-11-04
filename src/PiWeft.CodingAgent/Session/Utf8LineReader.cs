@@ -2,10 +2,8 @@ using System.Buffers;
 
 namespace PiWeft.CodingAgent.Session;
 
-/// <summary>
 /// Reads a UTF-8 file line by line without decoding each line to a string. The returned span is
 /// backed by a pooled buffer and stays valid until the next <see cref="TryReadLine"/> call.
-/// </summary>
 public sealed class Utf8LineReader : IDisposable
 {
 	private const int ReadBufferSize = 64 * 1024;
@@ -13,7 +11,6 @@ public sealed class Utf8LineReader : IDisposable
 	private const int CarriageReturn = 13; // '\r'
 	private const int InitialLineCapacity = 4 * 1024;
 
-	/// <summary>行缓冲还回共享池的上限；再大就宁可让 GC 回收，不给进程留常驻块。</summary>
 	private const int MaxPooledLineBuffer = 256 * 1024;
 
 	private readonly FileStream _stream;
@@ -26,10 +23,8 @@ public sealed class Utf8LineReader : IDisposable
 	private bool _skipPartialLine;
 	private bool _disposed;
 
-	/// <summary>
 	/// <paramref name="fromBytes"/> 用于续读或分段并行扫：偏移落在行中间时，那条被切开的半行
 	/// 会被自动跳过（归上一段），因此调用方总是按整行消费。
-	/// </summary>
 	public Utf8LineReader(string path, long fromBytes = 0)
 	{
 		_stream = new FileStream(
@@ -52,7 +47,6 @@ public sealed class Utf8LineReader : IDisposable
 		_lineBuffer = ArrayPool<byte>.Shared.Rent(InitialLineCapacity);
 	}
 
-	/// <summary>已消费到的字节位置（含尚未交付的缓冲），用于读取进度。</summary>
 	public long BytesRead => _stream.Position - (_readEnd - _readStart);
 
 	public bool TryReadLine(out ReadOnlySpan<byte> line)
@@ -117,7 +111,6 @@ public sealed class Utf8LineReader : IDisposable
 		}
 	}
 
-	/// <summary>统一收尾：去掉行尾 CR，并在真正的首行剥掉 BOM。</summary>
 	private ReadOnlySpan<byte> Finish(ReadOnlySpan<byte> raw)
 	{
 		var result = raw;

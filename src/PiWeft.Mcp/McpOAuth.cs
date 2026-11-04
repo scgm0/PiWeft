@@ -10,7 +10,6 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.Mcp;
 
-/// <summary>授权服务器元数据（RFC 8414，或 OIDC 的 <c>openid-configuration</c>）。</summary>
 public sealed record McpAuthorizationServerMetadata
 {
 	public required string AuthorizationEndpoint { get; init; }
@@ -19,13 +18,11 @@ public sealed record McpAuthorizationServerMetadata
 
 	public string? Issuer { get; init; }
 
-	/// <summary>动态客户端注册端点（RFC 7591）；为 null 时必须在配置里写死 clientId。</summary>
 	public string? RegistrationEndpoint { get; init; }
 
 	public IReadOnlyList<string> ScopesSupported { get; init; } = [];
 }
 
-/// <summary>受保护资源元数据（RFC 9728）。</summary>
 public sealed record McpProtectedResourceMetadata
 {
 	public required string Resource { get; init; }
@@ -35,7 +32,6 @@ public sealed record McpProtectedResourceMetadata
 	public IReadOnlyList<string> ScopesSupported { get; init; } = [];
 }
 
-/// <summary>一次授权或刷新的结果。</summary>
 public sealed record McpOAuthResult
 {
 	public required bool Ok { get; init; }
@@ -49,30 +45,23 @@ public sealed record McpOAuthResult
 	public static McpOAuthResult Failure(string error) => new() { Ok = false, Error = error };
 }
 
-/// <summary>
 /// MCP 的 OAuth 2.1 授权码流程（含 PKCE 与回环回调）。
 /// 依次走 RFC 9728（受保护资源元数据）→ RFC 8414（授权服务器元数据）→
 /// 可选的 RFC 7591（动态客户端注册）→ 授权码 + PKCE → 令牌交换。
-/// </summary>
 public static partial class McpOAuth
 {
-	/// <summary>元数据与令牌请求的超时。</summary>
 	private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
 
-	/// <summary>等待用户在浏览器里完成授权的时间。</summary>
 	public static readonly TimeSpan AuthorizationTimeout = TimeSpan.FromMinutes(5);
 
 	public const string ClientName = "PiWeft";
 
 	public const string RedirectPath = "/callback";
 
-	/// <summary>PKCE 的 <c>code_verifier</c> 字节数（编码后 43–128 个字符）。</summary>
 	private const int VerifierBytes = 48;
 
-	/// <summary>
 	/// 从 <c>WWW-Authenticate</c> 响应头里取 <c>resource_metadata</c>；
 	/// 没有时退回 RFC 9728 的规范位置。
-	/// </summary>
 	public static string? ResourceMetadataUrl(string? wwwAuthenticate, string endpoint)
 	{
 		if (wwwAuthenticate is { Length: > 0 })
@@ -93,10 +82,8 @@ public static partial class McpOAuth
 		return $"{uri.Scheme}://{uri.Authority}/.well-known/oauth-protected-resource{path}";
 	}
 
-	/// <summary>
 	/// 发现授权服务器：先拉受保护资源元数据，再对它的第一个 <c>authorization_servers</c>
 	/// 拉授权服务器元数据。<paramref name="challenge"/> 是上一次 401 响应的 <c>WWW-Authenticate</c> 值。
-	/// </summary>
 	public static async Task<McpAuthorizationServerMetadata?> DiscoverAsync(
 		HttpClient http,
 		string endpoint,
@@ -161,7 +148,6 @@ public static partial class McpOAuth
 		};
 	}
 
-	/// <summary>按 RFC 8414 的顺序列出候选的授权服务器元数据地址。</summary>
 	private static IEnumerable<string> AuthorizationServerMetadataUrls(string issuer)
 	{
 		if (!Uri.TryCreate(issuer, UriKind.Absolute, out var uri))
@@ -174,11 +160,9 @@ public static partial class McpOAuth
 		yield return $"{uri.Scheme}://{uri.Authority}/.well-known/openid-configuration{path}";
 	}
 
-	/// <summary>
 	/// 跑完整的授权码 + PKCE 流程并在成功后把令牌写进存储。
 	/// <paramref name="onAuthorizationUrl"/> 用于把授权地址展示给用户（无图形环境时尤其重要）；
 	/// <paramref name="openBrowser"/> 为 <c>false</c> 时不尝试启动浏览器（测试与无人值守场景）。
-	/// </summary>
 	public static async Task<McpOAuthResult> AuthorizeAsync(
 		HttpClient http,
 		string endpoint,
@@ -264,17 +248,13 @@ public static partial class McpOAuth
 		}
 	}
 
-	/// <summary>
 	/// 配置里是否同时给了 <c>clientId</c> 与 <c>clientSecret</c>：此时用客户端凭据授权
 	/// （RFC 6749 §4.4），不需要浏览器参与。
-	/// </summary>
 	public static bool UsesClientCredentials(McpServerConfig config) =>
 		config.ClientId is { Length: > 0 } && config.ClientSecret is { Length: > 0 };
 
-	/// <summary>
 	/// 客户端凭据授权：直接向令牌端点请求访问令牌并写进存储。
 	/// 适用于网关/机器账号等无需用户参与的场景；没有 refresh token，到期后重新走本流程。
-	/// </summary>
 	public static async Task<McpOAuthResult> ClientCredentialsAsync(
 		HttpClient http,
 		string endpoint,
@@ -325,7 +305,6 @@ public static partial class McpOAuth
 		return token;
 	}
 
-	/// <summary>用 refresh token 换一个新的访问令牌。</summary>
 	public static async Task<McpOAuthResult> RefreshAsync(HttpClient http, McpOAuthToken token, CancellationToken cancellationToken)
 	{
 		if (token.TokenEndpoint is not { Length: > 0 } tokenEndpoint || token.Refresh is not { Length: > 0 } refresh)
@@ -360,10 +339,8 @@ public static partial class McpOAuth
 			fallbackRefresh: refresh).ConfigureAwait(false);
 	}
 
-	/// <summary>
 	/// 取一个可直接使用的令牌：已保存且不在刷新窗口内就原样返回；否则尝试刷新。
 	/// 没有保存过令牌时返回 <c>null</c>（调用方应引导用户执行 <c>pi mcp login</c>）。
-	/// </summary>
 	public static async Task<McpOAuthToken?> ResolveAsync(
 		HttpClient http,
 		string endpoint,
@@ -392,7 +369,6 @@ public static partial class McpOAuth
 		return refreshed.Token;
 	}
 
-	/// <summary>构造授权地址（PKCE + resource 参数）。</summary>
 	internal static string BuildAuthorizationUrl(
 		McpAuthorizationServerMetadata metadata,
 		McpServerConfig config,
@@ -423,7 +399,6 @@ public static partial class McpOAuth
 		return $"{metadata.AuthorizationEndpoint}{separator}{string.Join('&', query)}";
 	}
 
-	/// <summary>动态注册一个公共客户端（RFC 7591）；把 client_id 临时放在结果的 <c>Access</c> 字段里。</summary>
 	private static async Task<McpOAuthResult> RegisterClientAsync(
 		HttpClient http,
 		McpAuthorizationServerMetadata metadata,
@@ -458,7 +433,6 @@ public static partial class McpOAuth
 			: McpOAuthResult.Failure("动态客户端注册没有返回 client_id");
 	}
 
-	/// <summary>用授权码或 refresh token 换令牌。</summary>
 	private static async Task<McpOAuthResult> ExchangeAsync(
 		HttpClient http,
 		string tokenEndpoint,
@@ -512,7 +486,6 @@ public static partial class McpOAuth
 		});
 	}
 
-	/// <summary>等待回环回调，返回授权码；超时或 state 不匹配时返回 null。</summary>
 	private static async Task<string?> WaitForCallbackAsync(
 		TcpListener listener,
 		string expectedState,
@@ -619,7 +592,6 @@ public static partial class McpOAuth
 		await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>解析回调 URL 的查询串。</summary>
 	private static Dictionary<string, string> QueryOf(string target, out string? error)
 	{
 		var result = new Dictionary<string, string>(StringComparer.Ordinal);

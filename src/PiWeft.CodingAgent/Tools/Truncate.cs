@@ -2,14 +2,12 @@ using System.Text;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>截断结果。行数与字节数两个上限谁先命中就按谁截；永远不返回半行内容。</summary>
 public sealed record TruncationResult
 {
 	public required string Content { get; init; }
 
 	public bool Truncated { get; init; }
 
-	/// <summary>取值 <c>lines</c>、<c>bytes</c>；未发生截断时为 <c>null</c>。</summary>
 	public string? TruncatedBy { get; init; }
 
 	public int TotalLines { get; init; }
@@ -20,10 +18,8 @@ public sealed record TruncationResult
 
 	public long OutputBytes { get; init; }
 
-	/// <summary>第一行被从中间截断时为 true（尾部截断的边界情况）。</summary>
 	public bool LastLinePartial { get; init; }
 
-	/// <summary>仅第一行就超过字节上限时为 true（头部截断）。</summary>
 	public bool FirstLineExceedsLimit { get; init; }
 
 	public int MaxLines { get; init; }
@@ -31,13 +27,11 @@ public sealed record TruncationResult
 	public long MaxBytes { get; init; }
 }
 
-/// <summary>对应 pi 的 <c>truncate.ts</c>。</summary>
 public static class Truncate
 {
 	public const int DefaultMaxLines = 2000;
 	public const long DefaultMaxBytes = 50 * 1024;
 
-	/// <summary>单行 grep 匹配结果保留的最大字符数。</summary>
 	public const int GrepMaxLineLength = 500;
 
 	public static string FormatSize(long bytes) => bytes switch
@@ -47,7 +41,6 @@ public static class Truncate
 		_ => $"{(bytes / (1024.0 * 1024.0)).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)}MB",
 	};
 
-	/// <summary>保留前 N 行或前 N 字节，适用于开头更重要的读取。</summary>
 	public static TruncationResult Head(string content, int maxLines = DefaultMaxLines, long maxBytes = DefaultMaxBytes)
 	{
 		var totalBytes = ByteCount(content);
@@ -113,7 +106,6 @@ public static class Truncate
 		};
 	}
 
-	/// <summary>保留最后 N 行或最后 N 字节，适用于结尾更重要的命令输出。</summary>
 	public static TruncationResult Tail(string content, int maxLines = DefaultMaxLines, long maxBytes = DefaultMaxBytes)
 	{
 		var totalBytes = ByteCount(content);
@@ -173,7 +165,6 @@ public static class Truncate
 		};
 	}
 
-	/// <summary>把一行截断到 <paramref name="maxChars"/> 并追加标记；grep 匹配结果会用到。</summary>
 	public static (string Text, bool WasTruncated) Line(string line, int maxChars = GrepMaxLineLength) =>
 		line.Length <= maxChars
 			? (line, false)
@@ -211,7 +202,6 @@ public static class Truncate
 			MaxBytes = maxBytes,
 		};
 
-	/// <summary>在字符边界上保留最后 <paramref name="maxBytes"/> 个 UTF-8 字节。</summary>
 	private static string TakeBytesFromEnd(string value, long maxBytes)
 	{
 		var bytes = Encoding.UTF8.GetBytes(value);

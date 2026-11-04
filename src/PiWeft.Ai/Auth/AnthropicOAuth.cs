@@ -6,7 +6,6 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>Anthropic Claude Pro/Max 浏览器 OAuth（PKCE + 回环回调）。</summary>
 public static class AnthropicOAuth
 {
 	public const string ProviderKey = "anthropic";

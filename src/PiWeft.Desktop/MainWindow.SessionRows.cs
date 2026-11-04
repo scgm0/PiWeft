@@ -8,7 +8,6 @@ public sealed partial class MainWindow
 {
 	private IReadOnlySet<string> _pinnedSessionIds = new HashSet<string>();
 
-	/// <summary>Virtualized rows keep time visible while titles ellipsize rather than forcing horizontal scrolling.</summary>
 	private void ConfigureSessionRows()
 	{
 		HideScrollbarsWhenIdle(_sessionTree);
@@ -61,7 +60,6 @@ public sealed partial class MainWindow
 		});
 	}
 
-	/// <summary>「对话」视图：聊天目录里的会话平铺，每行一个会话，不属于任何项目。</summary>
 	private void ConfigureChatsRows()
 	{
 		HideScrollbarsWhenIdle(_chatsTree);
@@ -106,10 +104,8 @@ public sealed partial class MainWindow
 		});
 	}
 
-	/// <summary>
 	/// 列表的滚动条是 MewUI 的浮层条：不占布局宽度，默认常显，会压在行的右缘上。
 	/// 打开自动隐藏后，静止时完全淡出、滚动或悬停条本身时淡入，平时列表里看不到条。
-	/// </summary>
 	private static void HideScrollbarsWhenIdle(Element view)
 	{
 		if (view is ScrollViewer scroll)
@@ -127,7 +123,6 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// <summary>行尾 ⋯ 按钮的统一分发：会话行与项目行各弹各的菜单。</summary>
 	private void RowMenuClick(Button button)
 	{
 		switch (button.Tag)
@@ -172,7 +167,6 @@ public sealed partial class MainWindow
 		menu.Show(owner);
 	}
 
-	/// <summary>「对话 | 项目」切换：对话是聊天目录里的会话流，项目是按项目分组的任务树。</summary>
 	private void ShowSidebarView(bool projects, bool persist = true)
 	{
 		_projectsTab = projects;
@@ -204,7 +198,6 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// <summary>「对话」的「新建」：会话落在聊天目录里，不属于任何项目。</summary>
 	private void NewChatSession()
 	{
 		try
@@ -219,7 +212,6 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// <summary>新建会话的统一落点：跟随侧栏分段 —— 对话落在聊天目录，项目落在当前会话/窗口目录。</summary>
 	private void NewSessionFromCurrentView()
 	{
 		if (!_projectsTab)
@@ -231,7 +223,6 @@ public sealed partial class MainWindow
 		NewSessionIn(CurrentSession()?.Cwd ?? _cwd);
 	}
 
-	/// <summary>在指定目录新建会话并立即出现在侧栏，而不是等第一条消息落盘后才刷新。</summary>
 	private void NewSessionIn(string cwd)
 	{
 		// 没有工作目录的旧会话会聚成「?」分组：给它开新任务时退回窗口目录，避免空路径。
@@ -239,7 +230,6 @@ public sealed partial class MainWindow
 		RefreshSessions(force: true);
 	}
 
-	/// <summary>从会话行发起的重命名优先于「选中项」。</summary>
 	private void StartRename(SessionListItem item)
 	{
 		_renamingPath = item.Path;
@@ -248,7 +238,6 @@ public sealed partial class MainWindow
 		_nameBox.Focus();
 	}
 
-	/// <summary>归档 = 移入会话目录的 .trash（pi 的会话是只追加的，保留一份可找回）。</summary>
 	private void ArchiveSession(SessionListItem item)
 	{
 		try
@@ -271,7 +260,6 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// <summary>把项目从侧栏移除：会话文件保留，仅不再分组展示，并从最近项目里去掉。</summary>
 	private void RemoveProject(string cwd)
 	{
 		_removedProjects.Add(Path.GetFullPath(cwd));

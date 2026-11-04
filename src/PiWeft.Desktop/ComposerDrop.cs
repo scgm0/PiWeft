@@ -3,14 +3,12 @@ using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Snapshots native drop data before the drag ends; file reads are bounded and asynchronous.</summary>
 internal static class ComposerDrop
 {
 	public const int MaxImageBytes = 10 * 1024 * 1024;
 	public const int MaxTotalBytes = 20 * 1024 * 1024;
 	public const int MaxImages = 10;
 
-	/// <summary>Native drag-over advertises formats before the payload can be read.</summary>
 	public static bool CanAccept(IDataObject data) => data.Contains(StandardDataFormats.StorageItems) ||
 		data.Contains(StandardDataFormats.Uris) || data.Contains(StandardDataFormats.Text) ||
 		new[] { "image/png", "image/jpeg", "image/webp", "image/gif" }.Any(data.Contains);

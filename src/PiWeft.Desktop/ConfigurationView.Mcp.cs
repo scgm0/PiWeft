@@ -32,14 +32,10 @@ internal sealed partial class ConfigurationView
 		}
 	}
 
-	/// <summary>
 	/// 授权状态与入口。只对 HTTP 服务器显示 —— stdio 服务器没有 OAuth，放一个「授权」按钮
 	/// 在那里只会让人以为点它能解决连不上的问题。
-	/// <para>
 	/// 这里读的是**已保存的**配置（磁盘上那份），不是编辑中的草稿：授权要拿真实 URL 去发现
 	/// 授权服务器并换令牌，用没保存的草稿换回来的令牌跟服务器对不上。
-	/// </para>
-	/// </summary>
 	private Element AuthRow(string name, JsonObject server)
 	{
 		if (ConfigurationModels.Text(server, "url") is not { Length: > 0 } url)
@@ -80,10 +76,8 @@ internal sealed partial class ConfigurationView
 			: McpLogin.IsExpired(config, _store.AgentDir) ? Strings.McpTokenExpired
 				: Strings.McpAuthorized;
 
-	/// <summary>
 	/// 走 <see cref="McpLogin"/> 的完整流程（探测挑战 → 发现元数据 → 客户端凭据或浏览器授权码）。
 	/// 与 CLI 共用同一实现，所以两边支持哪些授权方式不会分叉。
-	/// </summary>
 	private async Task AuthorizeAsync(string name, string url)
 	{
 		var config = new McpServerConfig { Name = name, Url = url };

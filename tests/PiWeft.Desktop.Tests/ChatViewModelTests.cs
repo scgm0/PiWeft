@@ -9,7 +9,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>Scripted provider streams, so the view model is exercised without a network or a window.</summary>
 internal static class FakeStreams
 {
 	public static Model Model(string id = "test-model") => new()
@@ -76,7 +75,6 @@ internal static class FakeStreams
 		return stream;
 	}
 
-	/// <summary>一次可重试的失败回复：退避期没有正文，只能靠事件驱动界面状态。</summary>
 	public static AssistantMessageEventStream Error(Model model, string message)
 	{
 		var stream = new AssistantMessageEventStream();
@@ -96,7 +94,6 @@ internal static class FakeStreams
 	};
 }
 
-/// <summary>A provider that answers with whatever the test queued.</summary>
 internal sealed class QueuedStreams
 {
 	private readonly Queue<Func<Model, StreamOptions, AssistantMessageEventStream>> _responses = new();

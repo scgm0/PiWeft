@@ -15,10 +15,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// A scripted provider that reports token usage derived from the transcript it was handed, so context growth behaves
 /// like a real provider and the compaction threshold is reached the way it would be in production.
-/// </summary>
 internal sealed class UsageAwareStreamFn(int inputPerTurn)
 {
 	private readonly Lock _gate = new();
@@ -57,7 +55,6 @@ internal sealed class UsageAwareStreamFn(int inputPerTurn)
 	}
 }
 
-/// <summary>Scripted responses used by the resilience tests.</summary>
 internal static class Streams
 {
 	public static AssistantMessageEventStream Text(Model model, string text, int inputTokens)
@@ -112,7 +109,6 @@ internal static class Streams
 	};
 }
 
-/// <summary>A queue of scripted responses, for tests that need several turns.</summary>
 internal sealed class QueuedStreamFn
 {
 	private readonly Queue<Func<Model, AssistantMessageEventStream>> _responses = new();
@@ -125,7 +121,6 @@ internal sealed class QueuedStreamFn
 			: throw new InvalidOperationException("QueuedStreamFn ran out of responses");
 }
 
-/// <summary>A minimal HTTP double for provider resilience checks.</summary>
 internal sealed class StubHttpHandler : HttpMessageHandler
 {
 	public Func<HttpRequestMessage, HttpResponseMessage>? Responder { get; set; }

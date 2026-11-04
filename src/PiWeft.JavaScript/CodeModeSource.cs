@@ -4,36 +4,28 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.JavaScript;
 
-/// <summary>脚本首行 <c>// @options:</c> 声明的执行选项。</summary>
 public sealed record CodeModeSourceOptions
 {
-	/// <summary>脚本输出的 token 预算。</summary>
 	public int? MaxOutputTokens { get; init; }
 
-	/// <summary>整个脚本的硬性时限（毫秒）。</summary>
 	public int? TimeoutMs { get; init; }
 }
 
-/// <summary>解析后的脚本：<see cref="Code"/> 的选项行已替换成空行，行号与输入一致。</summary>
 public sealed record ParsedCodeModeSource(string Code, CodeModeSourceOptions Options);
 
-/// <summary>脚本源码格式错误；与脚本自身抛错区分，调用方可以直接展示。</summary>
 public sealed class CodeModeSourceException : Exception
 {
 	public CodeModeSourceException(string message) : base(message) { }
 }
 
-/// <summary>
 /// 解析 codemode 源码：可选的 <c>// @options: {"max_output_tokens": 2000, "timeout_ms": 30000}</c>
 /// 首行，其后是 JavaScript。与 pi 的 <c>parseCodemodeSource()</c> 规则一致。
-/// </summary>
 public static class CodeModeSource
 {
 	public const string OptionsPrefix = "// @options:";
 
 	private const string SupportedFieldsText = "`max_output_tokens` 和 `timeout_ms`";
 
-	/// <summary>最大 <c>timeout_ms</c>，与 <see cref="int.MaxValue"/> 一致。</summary>
 	private const int MaxTimeoutMs = int.MaxValue;
 
 	public static ParsedCodeModeSource Parse(string input)
@@ -133,7 +125,6 @@ public static class CodeModeSource
 		return new CodeModeSourceOptions { MaxOutputTokens = maxOutputTokens, TimeoutMs = timeoutMs };
 	}
 
-	/// <summary>整数节点 → int；非整数、缺失与超出 safe integer 范围都返回 <c>null</c>。</summary>
 	private static int? SafeInteger(JsonNode? node)
 	{
 		if (node is not JsonValue value) return null;

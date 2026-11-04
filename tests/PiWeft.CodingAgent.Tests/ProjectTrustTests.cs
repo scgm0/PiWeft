@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>PI-11：trust.json 存储、受保护资源探测与决策解析。</summary>
 public class ProjectTrustTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-trust-" + Guid.NewGuid().ToString("N")[..8]);

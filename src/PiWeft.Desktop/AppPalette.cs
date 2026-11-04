@@ -2,11 +2,9 @@ using Aprillz.MewUI;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 一套配色。「织机」设计语言（见仓库根 DESIGN.md）：暖墨色底 + 黄铜单强调色，
 /// 深色与浅色各一份，由 <see cref="AppTheme.For"/> 按当前主题解析 ——
 /// 样式 setter 与运行时取值共用同一份定义。
-/// </summary>
 public sealed record AppPalette
 {
 	// 背景层次
@@ -33,7 +31,6 @@ public sealed record AppPalette
 
 	public required Color TerminalSelection { get; init; }
 
-	/// <summary>光标色：聚焦时填充实心块，失焦时用它给空心方框描边（同色，不降亮）。</summary>
 	public required Color TerminalCursor { get; init; }
 
 	public required Color TerminalLink { get; init; }
@@ -62,7 +59,6 @@ public sealed record AppPalette
 
 	public required Color Success { get; init; }
 
-	/// <summary>警示（用量接近上限等）：深色用琥珀，浅色用深琥珀。</summary>
 	public required Color Warning { get; init; }
 
 	public required Color Info { get; init; }
@@ -71,7 +67,6 @@ public sealed record AppPalette
 
 	public required Color Transparent { get; init; }
 
-	/// <summary>深色配色：中性石墨分层，白色主按钮 —— 高级感来自克制的冷黑与高对比白字。</summary>
 	public static AppPalette Dark { get; } = new()
 	{
 		WindowBackground = new Color(0x14, 0x14, 0x14),
@@ -104,7 +99,6 @@ public sealed record AppPalette
 		Transparent = new Color(0x00, 0x00, 0x00, 0x00),
 	};
 
-	/// <summary>浅色配色：中性灰阶 + 黑色主按钮，纯白卡片。</summary>
 	public static AppPalette Light { get; } = new()
 	{
 		WindowBackground = new Color(0xfa, 0xfa, 0xfa),

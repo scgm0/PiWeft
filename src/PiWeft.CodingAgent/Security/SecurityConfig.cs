@@ -6,47 +6,33 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Security;
 
-/// <summary>
 /// 安全门的整体配置：总开关 + 默认档位 + 档位表 + 按会话覆盖。
 /// 形状与持久化位置对齐 PiDeck 的 <c>security-config</c>（本项目存在 <c>settings.json</c> 的
 /// <c>security</c> 段里，见 <c>CodingAgentSettings</c>）。
-/// <para>
 /// <see cref="Enabled"/> 默认 <see langword="true"/> 但 <see cref="DefaultLevelId"/> 默认
 /// <c>off</c>：门是挂着的，只是没设任何限制 —— 引入它不改变任何既有行为，也不破坏 pi 兼容语义。
-/// </para>
-/// </summary>
 public sealed record SecurityConfig
 {
-	/// <summary>配置结构版本；改形状时 +1，读旧版本时按字段缺省解释。</summary>
 	public const int SchemaVersion = 1;
 
-	/// <summary>总开关。关闭时完全放行，与档位表里的内容无关。</summary>
 	public bool Enabled { get; init; } = true;
 
-	/// <summary>未设置会话级覆盖时使用的档位 id。</summary>
 	public string DefaultLevelId { get; init; } = ToolSecurity.OffLevel;
 
-	/// <summary>档位表：内建 <c>off</c>/<c>standard</c>/<c>strict</c> 加用户自定义档。</summary>
 	public IReadOnlyList<ToolSecurity> Levels { get; init; } = ToolSecurity.Builtins;
 
-	/// <summary>
 	/// 会话级覆盖：会话文件路径 → 档位 id。与 PiDeck 的 <c>sessionLevels</c> 同语义 ——
 	/// 项目里多数会话可以放心跑，个别要动生产代码的临时收紧，不该逼用户改全局档位。
-	/// </summary>
 	public IReadOnlyDictionary<string, string> SessionLevels { get; init; } =
 		new Dictionary<string, string>(StringComparer.Ordinal);
 
-	/// <summary>完全放行的配置（等价于没装这道门）。</summary>
 	public static SecurityConfig Off { get; } = new();
 
-	/// <summary>
 	/// 单档位的隐式转换：让 <c>new { Security = ToolSecurity.Strict }</c> 这类写法继续有效 ——
 	/// 该档位成为默认档，并替换掉同 id 的内建档（自定义档则追加）。
-	/// </summary>
 	public static implicit operator SecurityConfig(ToolSecurity level) =>
 		(Off with { DefaultLevelId = level.Level }).WithLevel(level);
 
-	/// <summary>按 id 找档位；找不到返回 <see langword="null"/>（调用方退回默认档）。</summary>
 	public ToolSecurity? Find(string? levelId)
 	{
 		if (levelId is not { Length: > 0 } wanted)
@@ -65,11 +51,9 @@ public sealed record SecurityConfig
 		return null;
 	}
 
-	/// <summary>
 	/// 某个会话生效的档位。关闭总开关时返回 <see cref="ToolSecurity.Off"/>；
 	/// 覆盖指向不存在的档位时退回默认档，默认档也不存在时按 <c>off</c> 处理 ——
 	/// 配置写错不该把用户的工作流卡死。
-	/// </summary>
 	public ToolSecurity Resolve(string? sessionFilePath)
 	{
 		if (!Enabled)
@@ -87,10 +71,8 @@ public sealed record SecurityConfig
 		return Find(DefaultLevelId) ?? ToolSecurity.Off;
 	}
 
-	/// <summary>界面/命令行列出可选档位。</summary>
 	public IReadOnlyList<ToolSecurity> Options => Levels;
 
-	/// <summary>替换或追加一个档位（同 id 覆盖，保持原位置）。</summary>
 	public SecurityConfig WithLevel(ToolSecurity level)
 	{
 		var levels = new List<ToolSecurity>(Levels.Count + 1);
@@ -116,7 +98,6 @@ public sealed record SecurityConfig
 		return this with { Levels = levels };
 	}
 
-	/// <summary>删除自定义档位；内建档不可删。删掉的正是默认档时回退 <c>off</c>。</summary>
 	public SecurityConfig WithoutLevel(string levelId)
 	{
 		var target = Find(levelId);
@@ -146,7 +127,6 @@ public sealed record SecurityConfig
 		};
 	}
 
-	/// <summary>设置或清除某个会话的档位覆盖。</summary>
 	public SecurityConfig WithSessionLevel(string sessionFilePath, string? levelId)
 	{
 		var sessions = new Dictionary<string, string>(SessionLevels, StringComparer.Ordinal);
@@ -162,7 +142,6 @@ public sealed record SecurityConfig
 		return this with { SessionLevels = sessions };
 	}
 
-	/// <summary>丢掉指向不存在档位的覆盖与默认档（配置被手改坏时的自愈）。</summary>
 	public SecurityConfig Sanitized()
 	{
 		var defaultLevel = Find(DefaultLevelId) is null ? ToolSecurity.OffLevel : DefaultLevelId;
@@ -183,14 +162,10 @@ public sealed record SecurityConfig
 		return this with { DefaultLevelId = defaultLevel, SessionLevels = sessions };
 	}
 
-	/// <summary>
 	/// 从 <c>&lt;agentDir&gt;/settings.json</c> 读安全配置。
-	/// <para>
 	/// <strong>只读全局设置</strong>：项目里的 <c>.pi/settings.json</c> 会随仓库一起分发，
 	/// 让它能改自己的安全档位等于让一个仓库关掉用户机器上的防护，或者反过来把工作流卡死。
 	/// 项目设置里的 <c>security</c> 段被忽略。
-	/// </para>
-	/// </summary>
 	public static SecurityConfig Load(string? agentDir = null)
 	{
 		var path = System.IO.Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "settings.json");
@@ -213,10 +188,8 @@ public sealed record SecurityConfig
 		}
 	}
 
-	/// <summary>
 	/// 写回 <c>&lt;agentDir&gt;/settings.json</c> 的 <c>security</c> 段：其它键原样保留
 	/// （用户手写的 pi 配置不能被我们覆盖掉），回到默认形状时删掉该键；同目录临时文件 + 原子替换。
-	/// </summary>
 	public static void Save(SecurityConfig config, string? agentDir = null)
 	{
 		var directory = agentDir ?? SessionPaths.GetAgentDir();
@@ -260,7 +233,6 @@ public sealed record SecurityConfig
 
 	/// 序列化成 <c>settings.json</c> 的 <c>security</c> 段。默认形状（开着门但什么都不限制）
 	/// 不写任何键 —— 配置里塞一堆等于默认的字段会让手写配置的人看不懂。
-	/// </summary>
 	public JsonObject ToJson()
 	{
 		var root = new JsonObject();
@@ -308,10 +280,8 @@ public sealed record SecurityConfig
 		return root;
 	}
 
-	/// <summary>
 	/// 读取旧形状：安全段里直接平铺的档位字段（没有 <c>levels</c> 数组时）。
 	/// 没有这类字段就返回 <see langword="null"/> —— 只有内建 id、总开关与会话覆盖时不该造出一个档位。
-	/// </summary>
 	private static ToolSecurity? FlatOverride(JsonObject root, string defaultLevel)
 	{
 		string[] keys = ["protectSensitivePaths", "pathPolicy", "customAllowDirs", "denyDirs", "denyBashPatterns", "defaultAction", "toolActions"];
@@ -407,10 +377,8 @@ public sealed record SecurityConfig
 		node[name] = new JsonArray([.. values.Select(static value => (JsonNode?)JsonValue.Create(value))]);
 	}
 
-	/// <summary>
 	/// 从 <c>settings.json</c> 的 <c>security</c> 段还原。缺字段按默认解释；
 	/// 未识别的档位名一律按 <c>off</c>，绝不猜一个更严的档 —— 写错的配置不该卡死用户。
-	/// </summary>
 	public static SecurityConfig FromJson(JsonNode? node)
 	{
 		if (node is not JsonObject root)

@@ -7,10 +7,8 @@ using Xunit.Abstractions;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 后台解析另一个会话时，主区必须只剩加载提示：上一个会话的正文、输入区与右侧面板都要让位。
 /// 历史缺陷是加载段落直接浮在旧会话正文之上（旧会话还没收起），这里用演练标记做回归。
-/// </summary>
 [Collection("native-desktop")]
 public sealed class SessionLoadingSmokeTests(ITestOutputHelper output)
 {

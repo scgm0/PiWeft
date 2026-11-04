@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>代码块着色：逐行扫描关键字、字符串、注释与数字。分类器是纯函数，可以直接断言区间。</summary>
 public class CodeHighlightingTests
 {
 	private static IReadOnlyList<TextPaintSpan> Classify(string? language, string line)

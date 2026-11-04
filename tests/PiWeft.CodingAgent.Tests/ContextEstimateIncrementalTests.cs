@@ -6,11 +6,9 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 增量上下文估算必须和 <see cref="ContextTokens.EstimateContextTokens"/> 逐位一致：
 /// 它按消息引用复用已估算的前缀，所以任何改写历史的路径（追加、分支、上下文编辑、压缩）
 /// 都不能让读数偏小或偏大。
-/// </summary>
 public sealed class ContextEstimateIncrementalTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-ctx-estimate-" + Guid.NewGuid().ToString("N")[..8]);

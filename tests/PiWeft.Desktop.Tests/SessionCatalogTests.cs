@@ -94,10 +94,8 @@ public sealed class SessionCatalogTests
 	}
 }
 
-/// <summary>
 /// 目录快速字节判定必须与完整 JSON 解析逐字段一致：条数、预览、名字、cwd 都不能因为
 /// 「跳过解析」而变化。这里刻意覆盖边界形状：正文里出现同名字段、超长前缀、断行、纯图片消息。
-/// </summary>
 public sealed class SessionCatalogFastScanTests
 {
 	private static void AssertSameAgreement(params string[] lines)
@@ -233,10 +231,8 @@ public sealed class SessionCatalogFastScanTests
 	}
 }
 
-/// <summary>
 /// 侧栏只扫「会显示出来的那些」：文件数超过 limit 时按修改时间截断，
 /// 但不能改变排序语义，也不能让截断之外的文件影响结果。
-/// </summary>
 // 改了进程级 PI_CODING_AGENT_DIR：必须与其它同类测试串行，否则会互相读到对方的会话目录。
 [Collection("process-environment")]
 public sealed class SessionCatalogTruncationTests : IDisposable
@@ -512,7 +508,6 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 		Assert.Equal(2, after.MessageCount);
 	}
 
-	/// <summary>与 <see cref="SessionCatalog"/> 的首行指纹同算法（缓存格式的一部分）。</summary>
 	private static long Fnv1a(ReadOnlySpan<byte> value)
 	{
 		var hash = 1469598103934665603L;

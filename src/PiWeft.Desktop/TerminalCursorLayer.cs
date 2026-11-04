@@ -4,11 +4,8 @@ using Aprillz.MewUI.Rendering;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 光标层：把光标按「字格几何」画出来，对齐参考实现 MewUI.Terminal 的
 /// <c>TerminalCursorVisual</c> / <c>TerminalRenderer.RenderCursor</c>。
-/// </summary>
-/// <remarks>
 /// 旧做法把光标烘进文本 run：块光标 = 给那个 run 铺背景色，竖线/下划线 = 把字符染成光标色再加一条下划线。
 /// 于是出现三类渲染缺陷：
 /// <list type="bullet">
@@ -30,13 +27,10 @@ namespace PiWeft.Desktop;
 /// 按底色绘制，仍然读得出来）；竖线/底线/失焦空心框那份排在文本行之上，不遮字，
 /// 单元格自带背景色（vim 高亮行、状态栏）时也不会被盖掉。</item>
 /// </list>
-/// </remarks>
 internal sealed class TerminalCursorLayer : FrameworkElement
 {
-	/// <summary>竖线宽度占格宽的比例（与 MewUI.Terminal 同口径）。</summary>
 	private const double BarWidthRatio = 0.12;
 
-	/// <summary>底线厚度占行高的比例。</summary>
 	private const double UnderlineHeightRatio = 0.1;
 
 	private Rect _cell;
@@ -55,19 +49,14 @@ internal sealed class TerminalCursorLayer : FrameworkElement
 		IsVisible = true;
 	}
 
-	/// <summary>窗口less 测试用：光标当前是否画得出来。</summary>
 	internal bool CursorVisible => _visible;
 
-	/// <summary>窗口less 测试用：聚焦态（决定实心块还是空心框）。</summary>
 	internal bool CursorFocused => _focused;
 
-	/// <summary>窗口less 测试用：光标色。</summary>
 	internal Color CursorColor => _color;
 
-	/// <summary>光标格相对于本层左上角的位置（本层与文本行占同一个栅格单元）。</summary>
 	internal Rect RelativeCell => _cell;
 
-	/// <summary>光标格的窗口绝对位置：用当前 arrange 结果现算，所以拖拽时与文字同步。</summary>
 	internal Rect Cell
 	{
 		get
@@ -86,7 +75,6 @@ internal sealed class TerminalCursorLayer : FrameworkElement
 		}
 	}
 
-	/// <summary>写入本帧要画的光标格（相对本层左上角）；绝对位置在 <see cref="OnRender"/> 里按当前 Bounds 现算。</summary>
 	internal void SetCursor(Rect relativeCell, Color color, TerminalCursorStyle style, bool focused, bool visible)
 	{
 		var changed = visible != _visible || focused != _focused ||

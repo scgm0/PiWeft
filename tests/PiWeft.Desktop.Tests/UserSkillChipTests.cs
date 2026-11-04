@@ -9,10 +9,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 用户消息 / 草稿里的 <c>/skill:名称</c> 和文件引用一样是行内 chip：
 /// 投影成一个占位字符、编辑时整枚原子、悬浮给出完整信息，原文保持 <c>/skill:名称</c>。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class UserSkillChipTests
 {

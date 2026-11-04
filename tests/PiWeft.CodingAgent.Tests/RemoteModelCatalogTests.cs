@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>D-06：远程模型目录拉取的端点、鉴权与解析。</summary>
 public class RemoteModelCatalogTests
 {
 	private sealed class StubHandler(HttpStatusCode status, string body) : HttpMessageHandler

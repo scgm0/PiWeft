@@ -2,7 +2,6 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai;
 
-/// <summary>结构化分类问题；对应 pi 的 <c>ClassifierQuestion</c> 联合类型。</summary>
 public abstract record ClassifierQuestion
 {
 	public abstract string Type { get; }
@@ -14,7 +13,6 @@ public sealed record ClassifierChoiceQuestion : ClassifierQuestion
 {
 	public override string Type => "choice";
 
-	/// <summary>选项值到说明的映射。</summary>
 	public IReadOnlyDictionary<string, string> Criteria { get; init; } = new Dictionary<string, string>();
 }
 
@@ -22,7 +20,6 @@ public sealed record ClassifierScoreQuestion : ClassifierQuestion
 {
 	public override string Type => "score";
 
-	/// <summary>从低到高的评分档位标签。</summary>
 	public IReadOnlyList<string> Criteria { get; init; } = [];
 }
 
@@ -35,7 +32,6 @@ public sealed record ClassifierBoolQuestion : ClassifierQuestion
 	public string FalseMeaning { get; init; } = string.Empty;
 }
 
-/// <summary>一次分类请求：共享状态、可选图片以及一组具名问题。</summary>
 public sealed record ClassifierContext
 {
 	public JsonObject State { get; init; } = new();
@@ -79,7 +75,6 @@ public sealed record ClassifierBoolAnswer : ClassifierAnswer
 	public double Probability { get; init; }
 }
 
-/// <summary>一次分类的结果；失败也通过结果返回。</summary>
 public sealed record ClassifierResult
 {
 	public string Api { get; init; } = string.Empty;
@@ -100,7 +95,6 @@ public sealed record ClassifierResult
 	public long Timestamp { get; init; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 }
 
-/// <summary>一种分类 API 的实现，按 <see cref="Api"/> 索引。</summary>
 public interface IClassifierApiProvider
 {
 	string Api { get; }
@@ -112,7 +106,6 @@ public interface IClassifierApiProvider
 		CancellationToken cancellationToken = default);
 }
 
-/// <summary>按模型声明的 <c>api</c> 分发到分类实现。</summary>
 public sealed class ClassifiersGateway
 {
 	private readonly Dictionary<string, IClassifierApiProvider> _providers = new(StringComparer.Ordinal);

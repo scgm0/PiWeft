@@ -5,10 +5,8 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 流式纯文本视图：纯追加走文档增量编辑，回退/改写才整篇替换。
 /// 这里钉住文本正确性与既有阅读状态（选区）在增长时不被重置。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class StreamingTextViewTests
 {

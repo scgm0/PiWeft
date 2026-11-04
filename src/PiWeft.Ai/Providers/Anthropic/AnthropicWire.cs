@@ -4,7 +4,6 @@ using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.Anthropic;
 
-/// <summary>写出 Anthropic Messages API 的请求体。不使用反射，也不构建中间对象图。</summary>
 internal static class AnthropicWire
 {
 	public static void WriteRequest(

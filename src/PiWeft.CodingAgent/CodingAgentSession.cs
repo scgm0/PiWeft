@@ -33,22 +33,16 @@ namespace PiWeft.CodingAgent;
 
 public sealed record CodingAgentSessionOptions
 {
-	/// <summary>
 	/// 是否按 pi 约定发现并加载扩展（全局 + 受信任项目的 <c>extensions/</c>）。
 	/// 默认开：没有扩展目录时开销只是几次目录存在性检查。
-	/// </summary>
 	public bool LoadExtensions { get; init; } = true;
 
-	/// <summary>注入已建好的扩展宿主（测试或宿主自己管生命周期时用）；非空时忽略 <see cref="LoadExtensions"/>。</summary>
 	public ExtensionHost? Extensions { get; init; }
 
-	/// <summary>显式扩展路径：<c>-e/--extension</c> 与 <c>settings.extensions</c>（文件或目录）。</summary>
 	public IReadOnlyList<string> ExtensionPaths { get; init; } = [];
 
-	/// <summary>是否按约定目录发现扩展；<c>-ne/--no-extensions</c> 关闭发现但保留显式路径。</summary>
 	public bool DiscoverExtensions { get; init; } = true;
 
-	/// <summary>命令行未知 flag（<c>--name value</c> 或 <c>--name</c>），交给扩展的 <c>pi.registerFlag</c> 消费。</summary>
 	public IReadOnlyDictionary<string, string?> FlagValues { get; init; } =
 		new Dictionary<string, string?>(StringComparer.Ordinal);
 
@@ -56,110 +50,78 @@ public sealed record CodingAgentSessionOptions
 
 	public required Model Model { get; init; }
 
-	/// <summary>流式产出助手回复。接模型网关时用 <c>AgentGatewayStreamFn.For(gateway)</c>。</summary>
 	public required StreamFn StreamFn { get; init; }
 
-	/// <summary>会话使用的模型目录；虚拟模型路由需要它解析物理目标。</summary>
 	public ModelRegistry? Registry { get; init; }
 
-	/// <summary>为路由后的物理 Provider 解析凭据（来自 models.json 的 key）。</summary>
 	public Func<string, string?>? ApiKeyForProvider { get; init; }
 
-	/// <summary>生图网关；codemode 的 <c>models.generateImages()</c> 使用它。</summary>
 	public ImagesGateway? Images { get; init; }
 
-	/// <summary>分类网关；codemode 的 <c>models.classify()</c> 使用它。</summary>
 	public ClassifiersGateway? Classifiers { get; init; }
 
-	/// <summary>
 	/// 会话文件记录了 <c>model_change</c> 时优先恢复它（pi 的 <c>findInitialModel</c> 同义）；
 	/// 显式 <c>--model</c> 由调用方关掉这个开关，模型已不存在时自动回退到 <see cref="Model"/>。
-	/// </summary>
 	public bool RestoreRecordedModel { get; init; }
 
-	/// <summary>
 	/// 思考级别。为 <c>null</c> 时沿用会话里记录的级别（恢复会话时就是上次的），没有记录则为
 	/// <see cref="ThinkingLevels.Off"/> —— 与 pi 一致：显式指定优先，其次会话记录，最后默认值。
-	/// </summary>
 	public string? ThinkingLevel { get; init; }
 
-	/// <summary>覆盖内置工具集。</summary>
 	public IReadOnlyList<AgentTool>? Tools { get; init; }
 
-	/// <summary>在内置工具集之上追加的工具，例如 MCP 服务器提供的工具。</summary>
 	public IReadOnlyList<AgentTool> ExtraTools { get; init; } = [];
 
-	/// <summary>要恢复的已有会话；不传则新建。</summary>
 	public SessionManager? Session { get; init; }
 
-	/// <summary>是否把会话条目写入磁盘；设为 <c>false</c> 即纯内存会话。</summary>
 	public bool Persist { get; init; } = true;
 
-	/// <summary>CLI 按 pi 的行为在启动时记录级别；桌面浏览可延迟到开始对话再记录。</summary>
 	public bool RecordInitialThinkingLevel { get; init; }
 
 	public CodingAgentSettings Settings { get; init; } = new();
 
-	/// <summary>追加在工具准则之后的准则，默认使用 pi 的基础规则。</summary>
 	public IReadOnlyList<string>? ExtraGuidelines { get; init; }
 
-	/// <summary>自定义前缀提示词（<c>--system-prompt</c>），取代默认 preamble。</summary>
 	public string? CustomSystemPrompt { get; init; }
 
-	/// <summary>追加到提示词的 <c>addendum</c> 章节（<c>--append-system-prompt</c>）。</summary>
 	public string? AppendSystemPrompt { get; init; }
 
-	/// <summary>为 true 时不加载 AGENTS.md / CLAUDE.md 等项目上下文文件。</summary>
 	public bool NoContextFiles { get; init; }
 
-	/// <summary>宿主交互界面；为 null 时 <c>ask_question</c> 直接报告不支持。</summary>
 	public IUiHost? UiHost { get; init; }
 
-	/// <summary>
 	/// 项目是否受信任。为 false 时不加载项目级技能与提示词模板（<c>&lt;cwd&gt;/.pi/skills</c>、
 	/// <c>.agents/skills</c> 等），但仍加载用户级目录。上下文文件不受影响（与 pi 一致）。
-	/// </summary>
 	public bool ProjectTrusted { get; init; } = true;
 
-	/// <summary>每次请求的基础 provider 选项（API key、请求头、超时、采样参数）。</summary>
 	public StreamOptions Options { get; init; } = new();
 
-	/// <summary>覆盖技能发现结果；传空列表即不加载任何技能。</summary>
 	public IReadOnlyList<Skills.Skill>? Skills { get; init; }
 
-	/// <summary>覆盖提示词模板的发现结果。</summary>
 	public IReadOnlyList<PromptTemplate>? PromptTemplates { get; init; }
 
-	/// <summary>预先解析好的资源快照（技能、模板、主题、包）；不传则由会话自行解析。</summary>
 	public ResourceSnapshot? Resources { get; init; }
 
 	public Func<BeforeToolCallContext, CancellationToken, ValueTask<BeforeToolCallResult?>>? BeforeToolCall { get; init; }
 
 	public Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? AfterToolCall { get; init; }
 
-	/// <summary>
 	/// 扩展的 <c>cache_warming_decision</c> 处理器：返回 <c>warm</c>/<c>stop</c> 覆盖 pi 的决策，
 	/// 返回 <c>null</c> 或抛异常时沿用 pi 的决策。
-	/// </summary>
 	public Func<CacheWarmingDecisionEvent, CancellationToken, Task<string?>>? DecideCacheWarming { get; init; }
 }
 
-/// <summary>
 /// 一个编码代理会话：分章节的系统提示词、内置工具、仅追加的会话文件与代理循环接在一起。
 /// 已落盘的消息才是权威记录，因此每次请求发送的都是会话当前分支的投影。
-/// </summary>
 public sealed class CodingAgentSession : IDisposable
 {
 	private readonly AgentRuntime _agent;
 	private CacheWarmer? _cacheWarmer;
 
-	/// <summary>系统提示词中最后一次描述过的工具集合。</summary>
 	private IReadOnlyList<BuiltinTool> _promptTools = [];
 
-	/// <summary>会话运行期间不会变化的提示词输入。</summary>
 	private SystemPromptOptions _systemPromptSections = null!;
 
-	/// <summary>工具集变化后重建的系统提示词。</summary>
 	private SystemMessage? _refreshedSystemPrompt;
 	private IReadOnlyList<Message>? _projectedCache;
 	private long _projectedCacheRevision = -1;
@@ -167,21 +129,16 @@ public sealed class CodingAgentSession : IDisposable
 	private readonly IDisposable _persistence;
 	private readonly IDisposable _cacheWarmLifecycle;
 
-	/// <summary>会话订阅者：代理事件之外，会话自己也会发重试事件。</summary>
 	private readonly List<Func<AgentEvent, ValueTask>> _listeners = [];
 
-	/// <summary>连续重试次数（0 表示当前不在重试）。</summary>
 	private int _retryAttempt;
 	private AssistantMessage? _routeFailed;
 
-	/// <summary>退避等待的中止开关。</summary>
 	private CancellationTokenSource? _retryAbort;
 
-	/// <summary>整次运行（自动压缩、请求、重试退避）的中止开关。</summary>
 	private readonly Lock _abortGate = new();
 	private CancellationTokenSource? _runAbort;
 
-	/// <summary>RPC 的 <c>set_auto_retry</c> 覆盖值；为 null 时用设置里的默认。</summary>
 	private bool? _autoRetryOverride;
 	private bool _overflowRecoveryAttempted;
 	private readonly StreamFn _streamFn;
@@ -197,14 +154,12 @@ public sealed class CodingAgentSession : IDisposable
 	private bool _disposed;
 	private readonly Lock _statisticsGate = new();
 
-	/// <summary>宿主显式传入的技能/模板（例如 <c>--no-skills</c>），重载资源时保持生效。</summary>
 	private readonly IReadOnlyList<Skills.Skill>? _explicitSkills;
 	private readonly IReadOnlyList<PromptTemplate>? _explicitTemplates;
 	private readonly SessionStatisticsCache _statistics = new();
 	private long _todoRevision = -1;
 	private TodoState _todo = TodoState.Empty;
 
-	/// <summary>本次计划模式是否由 PiDeck 标记开启（决定下一条无标记消息是否自动退出）。</summary>
 	private bool _planModeFromMarker;
 	private IReadOnlyList<Message>? _contextMessages;
 	private (long Tokens, int? LastUsageIndex) _contextTokens;
@@ -214,44 +169,31 @@ public sealed class CodingAgentSession : IDisposable
 	private long _estimateTotal;
 	private int _estimateCount;
 
-	/// <summary>当前生效的完整工具集（不受计划模式过滤影响）。</summary>
 	private IReadOnlyList<BuiltinTool> _fullTools = [];
 
-	/// <summary><c>tool_search</c> 工具：懒创建，按需加入可执行与声明集合。</summary>
 	private readonly Lazy<AgentTool> _toolSearch;
 
-	/// <summary>会话里记录 <c>tool_search</c> 加载结果的条目类型。</summary>
 	private const string ToolLoadEntryType = "tool-load";
 
-	/// <summary>宿主提供的 beforeToolCall 钩子；计划模式的安全网在它之前执行。</summary>
 	private readonly Func<BeforeToolCallContext, CancellationToken, ValueTask<BeforeToolCallResult?>>? _userBeforeToolCall;
 
-	/// <summary>宿主提供的 afterToolCall 钩子；嵌套的 codemode 调用也走同一个钩子。</summary>
 	private readonly Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? _userAfterToolCall;
 
-	/// <summary>
 	/// 进程内 JS 扩展宿主。默认按 pi 约定发现全局与项目扩展；宿主可以传 <c>extensions: null</c>
 	/// 关掉（测试与一次性会话用）。
-	/// </summary>
 	public ExtensionHost? Extensions { get; private set; }
 
-	/// <summary>扩展注册的 CLI flag，供 --help 与诊断展示。</summary>
 	public IReadOnlyDictionary<string, ExtensionFlag> ExtensionFlags =>
 		Extensions?.Flags ?? new Dictionary<string, ExtensionFlag>();
 
-	/// <summary>没有对应扩展的未知 flag；非空时 CLI 按 pi 的语义报错退出。</summary>
 	public IReadOnlyList<string> UnknownExtensionFlags => Extensions?.UnknownFlags ?? [];
 
-	/// <summary>扩展 flag 的形状错误（例如 string 类型缺值）。</summary>
 	public IReadOnlyList<string> ExtensionFlagErrors => Extensions?.FlagErrors ?? [];
 
-	/// <summary>注入的扩展宿主由宿主释放，自己加载的才归本会话重载与释放。</summary>
 	private bool _ownsExtensions = true;
 
-	/// <summary>不含扩展工具的内置基线：并表与重载都从它出发，避免重复追加。</summary>
 	private IReadOnlyList<BuiltinTool> _builtinTools = [];
 
-	/// <summary>构造参数留一份给 <c>ReloadResources</c> 重建扩展用。</summary>
 	private CodingAgentSessionOptions? _sessionOptions;
 
 	public CodingAgentSession(CodingAgentSessionOptions options)
@@ -449,22 +391,16 @@ public sealed class CodingAgentSession : IDisposable
 
 	public CodingAgentSettings Settings { get; }
 
-	/// <summary>
 	/// 当前生效的安全门配置。启动时来自 <c>settings.security</c>（只读全局），
 	/// 用户在界面上改档位时就地替换 —— 换档不该重建会话，也不该要求重启。
-	/// </summary>
 	public SecurityConfig Security { get; set; } = SecurityConfig.Off;
 
-	/// <summary>本会话当前档位的 id（<c>off</c> / <c>standard</c> / <c>strict</c> 或自定义）。</summary>
 	public string SecurityLevelId => Security.Resolve(Session.SessionFile).Level;
 
-	/// <summary>本会话内已经「总是允许」过的工具名；只在当前会话生命周期内有效。</summary>
 	private readonly HashSet<string> _securityApprovedTools = new(StringComparer.Ordinal);
 
-	/// <summary>宿主交互界面（RPC / CLI / 桌面）；为 null 时 ask_question 报告不可用。</summary>
 	public IUiHost? UiHost { get; }
 
-	/// <summary>项目是否受信任；决定项目级技能与提示词模板是否加载。</summary>
 	public bool ProjectTrusted { get; }
 
 	public SessionManager Session { get; private set; }
@@ -473,58 +409,41 @@ public sealed class CodingAgentSession : IDisposable
 
 	public Model Model => _agent.Model;
 
-	/// <summary>当前缓存保温状态；模型没有 promptCache 时也会给出 inactive 原因。</summary>
 	public Compaction.CacheWarmingStatus? CacheWarmingStatus => _cacheWarmer?.Status;
 
 	public string ThinkingLevel => _agent.ThinkingLevel;
 
 	public IReadOnlyList<AgentTool> Tools => _agent.Tools;
 
-	/// <summary>真正声明给模型的工具（<see cref="Tools"/> 是脚本/钩子可调用的全集）。</summary>
 	public IReadOnlyList<AgentTool> DeclaredTools => _agent.DeclaredTools;
 
-	/// <summary>
 	/// 当前生效的完整系统提示词。pi 的 <c>/share</c> 把它写进 <c>pi.share</c> 尾条目，
 	/// 查看器据此渲染工具说明；会话文件本身不存系统提示词。
-	/// </summary>
 	public string CurrentSystemPrompt =>
 		// 系统提示词按具名章节存放（preamble/tools/rules/cwd…），发给模型前才拼成文本；
 		// /share 要的是模型实际看到的那一份，所以走同一个渲染函数。
 		Transcript.GetText(_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools)));
 
-	/// <summary>当前分支上模型可见的消息，已应用上下文编辑与压缩。</summary>
-	/// <summary>模型下一次请求会看到的完整消息（含运行时构造的系统提示词）。</summary>
 	public IReadOnlyList<Message> Messages => Project();
 
-	/// <summary>
 	/// 下一次请求将携带的消息：分支投影；若会话中途工具集发生变化，
 	/// 其中的系统提示词会被重建。
-	/// </summary>
 	public IReadOnlyList<Message> ProjectedMessages => Project();
 
-	/// <summary>当前是否有压缩正在进行。</summary>
 	public bool IsCompacting { get; private set; }
 
-	/// <summary>队列中等待的 steering 与 follow-up 消息数。</summary>
 	public int PendingMessageCount => _agent.PendingMessageCount;
 
-	/// <summary>由 <c>set_session_name</c> 设置的显示名（如果设置了）。</summary>
 	public string? SessionName => Session.CurrentName();
 
-	/// <summary>估算的上下文大小，以及它所依据的最后一条助手用量下标。</summary>
-	/// <summary>当前会话解析出的资源快照（技能、模板、主题、包与诊断）。</summary>
 	public ResourceSnapshot Resources { get; private set; }
 
-	/// <summary>为该会话工作目录发现的技能。</summary>
 	public IReadOnlyList<Skills.Skill> DiscoveredSkills => Resources.Skills;
 
-	/// <summary>为该会话发现的斜杠命令提示词模板。</summary>
 	public IReadOnlyList<PromptTemplate> PromptTemplates => Resources.Templates;
 
-	/// <summary>
 	/// 重新解析技能、提示词模板与主题，对应 pi 的 <c>/reload</c>：不重建会话，
 	/// 只刷新提示词里的技能章节，使后续请求看到新的资源集合。
-	/// </summary>
 	public void ReloadResources()
 	{
 		ThrowIfDisposed();
@@ -555,12 +474,9 @@ public sealed class CodingAgentSession : IDisposable
 		ApplyTools();
 	}
 
-	/// <summary>用已发现的提示词模板展开 <c>/name args</c> 形式的消息。</summary>
 	public string ExpandPromptTemplate(string text) => Prompts.PromptTemplates.Expand(text, PromptTemplates);
 
-	/// <summary>
 	/// 展开一条用户输入：先展开 <c>/skill:name</c> 技能命令，再展开提示词模板，顺序与 pi 一致。
-	/// </summary>
 	public string ExpandInput(string text)
 	{
 		if (text.Length == 0)
@@ -579,10 +495,8 @@ public sealed class CodingAgentSession : IDisposable
 			PromptTemplates);
 	}
 
-	/// <summary>
 	/// 把一条文本输入（可选图片）组装成待发送的用户消息，展开技能命令与提示词模板。
 	/// CLI、RPC 与桌面共用这条路径，保证三者的输入语义一致。
-	/// </summary>
 	public UserMessage PrepareInput(string text, IReadOnlyList<ImageContent>? images = null)
 	{
 		// 计划模式：PiDeck 的 Plan 开关会在消息首行注入隐藏标记。带标记就开启，
@@ -612,10 +526,8 @@ public sealed class CodingAgentSession : IDisposable
 		return new UserMessage { Content = MessageContent.FromBlocks(blocks), Timestamp = timestamp };
 	}
 
-	/// <summary>
 	/// 把叶子移动到 <paramref name="targetId"/>，并先把被放弃的路径摘要成一条
 	/// <c>branch_summary</c> 条目。
-	/// </summary>
 	public async Task<BranchSummaryResult?> NavigateWithSummaryAsync(
 		string targetId,
 		string? customInstructions = null,
@@ -636,16 +548,15 @@ public sealed class CodingAgentSession : IDisposable
 			Settings.BranchSummary,
 			targetId,
 			customInstructions,
-			cancellationToken).ConfigureAwait(false);
+			cancellationToken,
+			thinkingLevel: _agent.ThinkingLevel).ConfigureAwait(false);
 
 		_agent.SetMessages(Session.BuildProjectedMessages());
 		return result;
 	}
 
-	/// <summary>
 	/// 直接把叶子移到某个条目并重载消息，不生成分支摘要。界面上的「跳到此处」用它，
 	/// 只做回退不做摘要生成，因此是即时操作。
-	/// </summary>
 	public void NavigateTo(string entryId)
 	{
 		ThrowIfDisposed();
@@ -664,10 +575,8 @@ public sealed class CodingAgentSession : IDisposable
 		_agent.SetMessages(Session.BuildProjectedMessages());
 	}
 
-	/// <summary>
 	/// 替换当前会话，<c>switch_session</c>、<c>fork</c>、<c>clone</c> 都需要它。代理保留自己的模型、
 	/// 工具与设置，会话记录则按新会话的分支重建。
-	/// </summary>
 	public void SwitchSession(SessionManager session)
 	{
 		ThrowIfDisposed();
@@ -692,11 +601,9 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 在当前会话的 <paramref name="entryId"/> 处派生，并切换到新的会话文件。
 	/// <paramref name="position"/> 取 <c>before</c>（在用户消息之前派生，RPC 的默认值）或 <c>at</c>
 	/// （保留该条目本身，也就是 <see cref="CloneAsync"/> 的行为）。
-	/// </summary>
 	/// <returns>被派生那条用户消息的文本；在条目处派生时返回 <c>null</c>。</returns>
 	public string? ForkAt(string entryId, string position = "before")
 	{
@@ -758,11 +665,9 @@ public sealed class CodingAgentSession : IDisposable
 		return selectedText;
 	}
 
-	/// <summary>
 	/// 「编辑重发」：在当前会话文件里把 <paramref name="entryId"/> 及其全部后继改成墓碑，
 	/// 再把代理消息重置为截断后的投影。会话 id 与文件不变，侧栏不会多出一条会话；
 	/// 旧回答的工具调用链也不会作为平行分支残留。
-	/// </summary>
 	/// <returns>被截断的条目数。</returns>
 	public int RewindForResend(string entryId)
 	{
@@ -778,7 +683,6 @@ public sealed class CodingAgentSession : IDisposable
 		return truncated;
 	}
 
-	/// <summary>把当前分支复制成一个新会话文件，位置不变。</summary>
 	public void CloneAsync()
 	{
 		ThrowIfDisposed();
@@ -786,7 +690,6 @@ public sealed class CodingAgentSession : IDisposable
 		ForkAt(leaf, "at");
 	}
 
-	/// <summary>只摘要被放弃的路径，不做导航。</summary>
 	public Task<BranchSummaryResult?> SummarizeBranchAsync(
 		string targetId,
 		string? customInstructions = null,
@@ -802,7 +705,8 @@ public sealed class CodingAgentSession : IDisposable
 			Settings.BranchSummary,
 			targetId,
 			customInstructions,
-			cancellationToken);
+			cancellationToken,
+			thinkingLevel: _agent.ThinkingLevel);
 	}
 
 	public (long Tokens, int? LastUsageIndex) ContextTokens()
@@ -819,11 +723,9 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 与 <see cref="Compaction.ContextTokens.EstimateContextTokens"/> 同语义，但按消息引用复用已估算的
 	/// 前缀：追加一条消息只重新估算那一条，而不是整段历史。26,983 条的真实会话里，这一步从
 	/// 约 124 ms（UI 线程）降到不足 1 ms；分支导航或上下文编辑改写了前缀时，退回到第一个不一致处重算。
-	/// </summary>
 	private (long Tokens, int? LastUsageIndex) EstimateContextIncrementally(IReadOnlyList<Message> messages)
 	{
 		var reusable = 0;
@@ -875,14 +777,11 @@ public sealed class CodingAgentSession : IDisposable
 		return (Compaction.ContextTokens.CalculateContextTokens(anchor.Value.Usage) + (total - before), anchor.Value.Index);
 	}
 
-	/// <summary>上下文是否超过当前模型的压缩阈值。</summary>
 	public bool ShouldCompact() =>
 		Compaction.ContextTokens.ShouldCompact(ContextTokens().Tokens, _agent.Model.ContextWindow, Settings.Compaction);
 
-	/// <summary>
 	/// 摘要较旧的条目并记录一条 <c>compaction</c> 条目。没有可压缩内容时返回 <c>null</c>。
 	/// 完成后会从会话刷新代理的会话记录。
-	/// </summary>
 	/// <param name="reason">压缩原因（<c>manual</c> / <c>threshold</c> / <c>overflow</c>），随事件发给客户端。</param>
 	public async Task<CompactionResult?> CompactAsync(
 		string? customInstructions = null,
@@ -910,7 +809,8 @@ public sealed class CodingAgentSession : IDisposable
 					_streamOptions,
 					Settings.Compaction,
 					customInstructions,
-					cancellationToken),
+					cancellationToken,
+					thinkingLevel: _agent.ThinkingLevel),
 				"compaction",
 				reason,
 				cancellationToken).ConfigureAwait(false);
@@ -955,24 +855,20 @@ public sealed class CodingAgentSession : IDisposable
 
 	public bool IsStreaming => _agent.IsStreaming;
 
-	/// <summary>每个抽取点投递多少条 steering 消息。</summary>
 	public AgentQueueMode SteeringMode
 	{
 		get => _agent.SteeringMode;
 		set => _agent.SteeringMode = value;
 	}
 
-	/// <summary>每个抽取点投递多少条 follow-up 消息。</summary>
 	public AgentQueueMode FollowUpMode
 	{
 		get => _agent.FollowUpMode;
 		set => _agent.FollowUpMode = value;
 	}
 
-	/// <summary>自动压缩的运行时开关，与配置里的 <c>compaction.enabled</c> 同时生效。</summary>
 	public bool AutoCompactionEnabled { get; set; } = true;
 
-	/// <summary>清空排队的 steering 与 follow-up 消息，并返回被丢弃的内容。</summary>
 	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue()
 	{
 		var cleared = _agent.ClearQueue();
@@ -980,13 +876,10 @@ public sealed class CodingAgentSession : IDisposable
 		return cleared;
 	}
 
-	/// <summary>当前排队消息的快照，供队列类事件与界面使用。</summary>
 	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) PendingQueues() => _agent.PendingQueues();
 
-	/// <summary>
 	/// 撤回一条尚未投递的排队消息（界面的「撤回输入框 / 丢弃」）。
 	/// 已投递给模型的那条不在队列里，会返回 false。
-	/// </summary>
 	public bool RemoveQueued(Message message)
 	{
 		var removed = _agent.RemoveQueued(message);
@@ -998,7 +891,6 @@ public sealed class CodingAgentSession : IDisposable
 		return removed;
 	}
 
-	/// <summary>把队列现状作为 <c>queue_update</c> 发给订阅者。</summary>
 	private void EmitQueueUpdate()
 	{
 		var (steering, followUp) = _agent.PendingQueues();
@@ -1015,7 +907,6 @@ public sealed class CodingAgentSession : IDisposable
 		return new ListenerHandle(subscription, _listeners, listener);
 	}
 
-	/// <summary>把会话级事件（例如重试）发给订阅者。</summary>
 	private void Emit(AgentEvent @event)
 	{
 		foreach (var listener in _listeners.ToArray())
@@ -1059,7 +950,6 @@ public sealed class CodingAgentSession : IDisposable
 		CancelQuietly(run);
 	}
 
-	/// <summary>中止当前运行并等到会话真正空闲，供 RPC 的 abort 命令使用。</summary>
 	public async Task AbortAsync(CancellationToken cancellationToken = default)
 	{
 		Abort();
@@ -1069,7 +959,6 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>是否有一次 Prompt/Continue 运行尚未收尾（含压缩与重试退避）。</summary>
 	public bool IsRunning
 	{
 		get
@@ -1103,11 +992,9 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 外部调用方的取消令牌被取消时，即使本轮已经落定 aborted 消息并收尾，也把取消继续向上传递：
 	/// CLI 需要据此返回 130，桌面会用同一信号清掉发送状态。会话内部的 <see cref="Abort"/>（例如 RPC
 	/// 的 abort 命令）不会取消调用方令牌，因此仍按正常收尾返回。
-	/// </summary>
 	private static void ThrowIfCallerCancelled(CancellationToken cancellationToken)
 	{
 		if (cancellationToken.IsCancellationRequested)
@@ -1133,16 +1020,13 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>缓存的全文件统计快照；只有追加条目才消费新用量。</summary>
 	public SessionStatistics Statistics()
 	{
 		lock (_statisticsGate) return _statistics.Get(Session);
 	}
 
-	/// <summary>是否处于计划模式：写工具被停用，提示词附加只读指引。</summary>
 	public bool PlanModeEnabled { get; private set; }
 
-	/// <summary>开关计划模式。停用 <c>edit</c>/<c>write</c> 并重建提示词与工具集。</summary>
 	public void SetPlanMode(bool enabled)
 	{
 		if (PlanModeEnabled == enabled)
@@ -1154,7 +1038,6 @@ public sealed class CodingAgentSession : IDisposable
 		ApplyTools();
 	}
 
-	/// <summary>把完整工具集按计划模式过滤后应用到代理，并重建提示词。</summary>
 	private void ApplyTools()
 	{
 		var effective = _fullTools;
@@ -1208,14 +1091,12 @@ public sealed class CodingAgentSession : IDisposable
 		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(declared));
 	}
 
-	/// <summary><c>tool_search</c> 的名字；它不是内置目录里的工具，只在需要发现时出现。</summary>
 	private const string ToolSearchName = "tool_search";
 
 	private static bool IsDiscoveryExposure(string exposure) =>
 		string.Equals(exposure, ToolExposure.Codemode, StringComparison.Ordinal)
 		|| string.Equals(exposure, ToolExposure.Deferred, StringComparison.Ordinal);
 
-	/// <summary>带上 <c>plan_mode</c> 章节（如启用）的提示词输入。</summary>
 	private static AgentQueueMode ParseQueueMode(string? value) =>
 		string.Equals(value, "all", StringComparison.OrdinalIgnoreCase)
 			? AgentQueueMode.All
@@ -1250,10 +1131,8 @@ public sealed class CodingAgentSession : IDisposable
 		};
 	}
 
-	/// <summary>
 	/// 与 pi 的 <c>mcp_servers</c> 章节对齐：列出工具没有直接声明给模型的 MCP 服务器，
 	/// 以及该用 codemode 还是 tool_search 去够到它们。
-	/// </summary>
 	private string? BuildMcpServersSection()
 	{
 		var namespaces = new Dictionary<string, McpNamespaceInfo>(StringComparer.Ordinal);
@@ -1306,7 +1185,6 @@ public sealed class CodingAgentSession : IDisposable
 
 	private sealed record McpNamespaceInfo(string? Description, bool Deferred, bool Codemode);
 
-	/// <summary>计划模式下的安全网：即使模型仍调用写工具也会被拦下。</summary>
 	private async ValueTask<BeforeToolCallResult?> GuardedBeforeToolCallAsync(
 		BeforeToolCallContext context,
 		CancellationToken cancellationToken)
@@ -1358,13 +1236,9 @@ public sealed class CodingAgentSession : IDisposable
 			: await _userBeforeToolCall(context, cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>
 	/// 发现并加载扩展，把注册的工具并进本会话的工具集。
-	/// <para>
 	/// 项目扩展只在受信时加载（扩展能注册工具、改工具调用，不受信等于让仓库在用户机器上执行代码）；
 	/// 单个扩展加载失败只影响它自己，会话照常起 —— 一个坏扩展不该让整个工作台打不开。
-	/// </para>
-	/// </summary>
 	private static void ApplyFlagValues(ExtensionHost host, IReadOnlyDictionary<string, string?> values)
 	{
 		if (values.Count > 0)
@@ -1426,23 +1300,17 @@ public sealed class CodingAgentSession : IDisposable
 		_fullTools = merged;
 	}
 
-	/// <summary>
 	/// 工具调用前置钩子的公开缝：计划模式、扩展 tool_call 与安全门都在这里按顺序生效。
 	/// 宿主（RPC / 桌面）也可以直接作为 <c>BeforeToolCall</c> 选项注入自己的钩子。
-	/// </summary>
 	public ValueTask<BeforeToolCallResult?> InvokeBeforeToolCallAsync(
 		BeforeToolCallContext context,
 		CancellationToken cancellationToken) =>
 		GuardedBeforeToolCallAsync(context, cancellationToken);
 
-	/// <summary>
 	/// 安全门判定：档位按**会话文件路径**解析（<c>sessionLevels</c> 可以逐会话收紧），
 	/// 拒绝直接挡下并给出原因；要求确认时通过宿主的确认对话框问用户。
-	/// <para>
 	/// 没有宿主（RPC / print / 守护进程直连）时 ask 退化为<strong>拒绝</strong>：无审批人在场却放行，
 	/// 等于这道门只在有人看着时才关上 —— 那是最坏的一种失效模式。
-	/// </para>
-	/// </summary>
 	private async ValueTask<BeforeToolCallResult?> SecurityGateAsync(
 		BeforeToolCallContext context,
 		CancellationToken cancellationToken)
@@ -1500,7 +1368,6 @@ public sealed class CodingAgentSession : IDisposable
 		return null;
 	}
 
-	/// <summary>把占位的 codemode 换成绑定到本会话的版本，并按新的工具集重建提示词。</summary>
 	private void RebindCodeMode(IReadOnlyList<AgentTool> tools)
 	{
 		var index = -1;
@@ -1541,11 +1408,9 @@ public sealed class CodingAgentSession : IDisposable
 		declaredTools: CodemodeDescribedTools(tools),
 		inlineBudget: Settings.Codemode.InlineBudget);
 
-	/// <summary>
 	/// codemode 描述里列出的工具。pi 的 mode=on 只列 <c>codemode</c> exposure 的工具：已经直接
 	/// 声明给模型的工具不再重复一遍（它们的描述里会加上怎么从脚本调用），deferred 留给
 	/// <c>tool_search</c>。mode=only 额外列出 direct 工具。
-	/// </summary>
 	private IReadOnlyList<AgentTool> CodemodeDescribedTools(IReadOnlyList<AgentTool> tools)
 	{
 		var only = string.Equals(Settings.Codemode.Mode, "only", StringComparison.Ordinal);
@@ -1559,7 +1424,6 @@ public sealed class CodingAgentSession : IDisposable
 		];
 	}
 
-	/// <summary>按当前分支重建 <c>tool_search</c> 加载过的工具名。</summary>
 	private HashSet<string> LoadedToolNames()
 	{
 		var names = new HashSet<string>(StringComparer.Ordinal);
@@ -1582,11 +1446,9 @@ public sealed class CodingAgentSession : IDisposable
 		return names;
 	}
 
-	/// <summary>
 	/// 面向模型的 <c>tool_search</c>：在尚未声明的 <c>codemode</c>/<c>deferred</c> 工具里按 BM25
 	/// 排序，把命中的工具写成 <c>tool-load</c> 条目并立即声明（后续回合可直接调用）。
 	/// 与 pi 一样，加载会进入会话记录，因此恢复、fork 与切换分支都看得到。
-	/// </summary>
 	private AgentTool CreateToolSearchTool() => new()
 	{
 		Name = ToolSearchName,
@@ -1674,7 +1536,6 @@ public sealed class CodingAgentSession : IDisposable
 			$"Loaded {matches.Count} tool(s):\n\n{string.Join("\n\n", sections)}"));
 	}
 
-	/// <summary>内置工具的 prompt guidelines，附在声明与 ALL_TOOLS 的描述后。</summary>
 	private IReadOnlyList<string> ToolGuidelines(string name)
 	{
 		foreach (var builtin in _fullTools)
@@ -1685,7 +1546,6 @@ public sealed class CodingAgentSession : IDisposable
 		return [];
 	}
 
-	/// <summary>mode=on：直接声明给模型的工具补一行从脚本调用的说明（与 pi 一致）。</summary>
 	private static AgentTool WithCodemodeHint(AgentTool tool)
 	{
 		// 调用方可能把已经带提示的工具再传回来（MCP 刷新/测试），避免重复追加。
@@ -1698,10 +1558,8 @@ public sealed class CodingAgentSession : IDisposable
 		};
 	}
 
-	/// <summary>
 	/// 执行脚本发起的一次嵌套调用。与顶层调用共用同一条管线：参数修正、schema 校验、
 	/// 计划模式安全网与宿主钩子都会执行，嵌套结果不进入 LLM 上下文。
-	/// </summary>
 	private async Task<AgentToolCallOutcome> ExecuteNestedToolAsync(
 		string name,
 		JsonObject arguments,
@@ -1835,10 +1693,8 @@ public sealed class CodingAgentSession : IDisposable
 		};
 	}
 
-	/// <summary>
 	/// 脚本的 <c>models.*</c>：只查询会话的模型目录，不发请求。pi 的 <c>classify</c>/<c>generateImages</c>
 	/// 需要网关与凭据，PiWeft 还没把这两个入口接到会话，因此这里只暴露目录查询。
-	/// </summary>
 	private JsonNode? QueryCodeModeModels(CodeModeModelsRequest request)
 	{
 		var type = request.Type switch
@@ -1873,7 +1729,6 @@ public sealed class CodingAgentSession : IDisposable
 		return array;
 	}
 
-	/// <summary>没有凭据解析器时按「全部可用」处理；有解析器时以它能否给出 key 为准。</summary>
 	private bool IsProviderAvailable(string provider) =>
 		_apiKeyForProvider is null || _apiKeyForProvider(provider) is { Length: > 0 };
 
@@ -1885,10 +1740,8 @@ public sealed class CodingAgentSession : IDisposable
 		return info;
 	}
 
-	/// <summary>
 	/// 执行一次 <c>models.classify()</c> / <c>models.generateImages()</c>。模型由脚本给出
 	/// provider + id，凭据与请求头沿用会话的解析结果，脚本无法自带 baseUrl/headers。
-	/// </summary>
 	private async Task<CodeModeModelCallResult> ExecuteModelCallAsync(
 		CodeModeModelCall call,
 		CancellationToken cancellationToken)
@@ -2232,7 +2085,6 @@ public sealed class CodingAgentSession : IDisposable
 		return values;
 	}
 
-	/// <summary>按当前分支重建 <c>load()</c> 可见的 store：从根开始依次应用 codemode-store 条目。</summary>
 	private IReadOnlyDictionary<string, JsonNode?> LoadCodeModeStore()
 	{
 		var store = new Dictionary<string, JsonNode?>(StringComparer.Ordinal);
@@ -2263,7 +2115,6 @@ public sealed class CodingAgentSession : IDisposable
 		return store;
 	}
 
-	/// <summary>成功执行后把 <c>store()</c> 的改动追加为一条自定义条目（不进入上下文）。</summary>
 	private void SaveCodeModeStore(PiWeft.JavaScript.CodeModeStoreWrites writes)
 	{
 		var set = new JsonObject();
@@ -2281,14 +2132,11 @@ public sealed class CodingAgentSession : IDisposable
 		Session.AppendCustom(CodeModeToolFactory.EntryType, new JsonObject { ["set"] = set, ["delete"] = delete });
 	}
 
-	/// <summary>
 	/// 用本会话的模型、凭据与选项做一次连接测试（只发 1 个输出 token）。
 	/// 桌面的「测试连接」与 RPC 的 <c>test_model</c> 共用它。
-	/// </summary>
 	public Task<ProviderTestResult> TestConnectionAsync(CancellationToken cancellationToken = default) =>
 		ProviderProbe.TestAsync(_directStreamFn, _agent.Model, _streamOptions, cancellationToken);
 
-	/// <summary>当前分支的待办计划；按会话 revision 缓存，未变更时零扫描。</summary>
 	public TodoState CurrentTodo()
 	{
 		lock (_statisticsGate)
@@ -2303,14 +2151,12 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>按类型拆分的令牌合计，供客户端展示统计。</summary>
 	public (long Input, long Output, long CacheRead, long CacheWrite) UsageBreakdown()
 	{
 		var stats = Statistics();
 		return (stats.Input, stats.Output, stats.CacheRead, stats.CacheWrite);
 	}
 
-	/// <summary>整个会话的令牌与费用合计，包含其它运行写入的条目。</summary>
 	public (long Tokens, double Cost) UsageTotals()
 	{
 		var stats = Statistics();
@@ -2341,21 +2187,15 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	// ------------------------------------------------------------ 自动重试
 
-	/// <summary>是否启用自动重试（RPC 覆盖优先，其次是设置）。</summary>
 	public bool AutoRetryEnabled => _autoRetryOverride ?? Settings.Retry.Enabled;
 
-	/// <summary>RPC 的 <c>set_auto_retry</c>。</summary>
 	public void SetAutoRetryEnabled(bool enabled) => _autoRetryOverride = enabled;
 
-	/// <summary>当前重试到第几次（0 表示没有在重试）。</summary>
 	public int RetryAttempt => _retryAttempt;
 
-	/// <summary>是否正在退避等待。</summary>
 	public bool IsRetrying => _retryAbort is not null;
 
-	/// <summary>中止正在进行的重试等待，对应 RPC 的 <c>abort_retry</c>。</summary>
 	public void AbortRetry() => CancelQuietly(_retryAbort);
 
 	private async Task<CompactionResult?> RunSummarizationWithRetryAsync(
@@ -2420,17 +2260,14 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 虚拟模型的请求入口：先按当前会话选择路由到物理模型，再把事件原样转发。
 	/// 助手消息因此记录物理 provider/model，而 <c>model_change</c> 仍保留虚拟模型。
-	/// </summary>
 	private AssistantMessageEventStream StreamWithVirtualRouting(
 		Model model,
 		IReadOnlyList<Message> messages,
 		StreamOptions options) =>
 		StreamWithVirtualRouting(model, messages, options, direct: false);
 
-	/// <summary>代理循环之外的调用（摘要、分支摘要）：route 结果不写路由状态。</summary>
 	private AssistantMessageEventStream StreamDirectWithVirtualRouting(
 		Model model,
 		IReadOnlyList<Message> messages,
@@ -2529,7 +2366,6 @@ public sealed class CodingAgentSession : IDisposable
 		return stream;
 	}
 
-	/// <summary>读取当前分支上某个虚拟模型最近一次保存的路由状态。</summary>
 	private JsonNode? ReadVirtualModelState(string provider, string modelId)
 	{
 		foreach (var entry in Session.GetBranch())
@@ -2547,7 +2383,6 @@ public sealed class CodingAgentSession : IDisposable
 		return null;
 	}
 
-	/// <summary>把路由状态写成 <c>pi.virtual-model-state</c> 自定义条目，不进入 LLM 上下文。</summary>
 	private void StoreVirtualModelState(string provider, string modelId, JsonNode state)
 	{
 		var id = Session.AppendCustom(VirtualModels.StateEntryType, new JsonObject
@@ -2631,7 +2466,6 @@ public sealed class CodingAgentSession : IDisposable
 		return ValueTask.CompletedTask;
 	}
 
-	/// <summary>把保温状态同步到扩展 UI 的 <c>piweft:cache-warming</c> 状态项。</summary>
 	private void PushCacheWarmingStatus(Compaction.CacheWarmingStatus status)
 	{
 		var text = status.State switch
@@ -2656,7 +2490,6 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>工具回合结束后检查阈值；需要时在继续同一个运行前压缩。</summary>
 	private async ValueTask<AgentTurnUpdate?> PrepareNextTurnAsync(
 		AgentTurnContext turn,
 		CancellationToken cancellationToken)
@@ -2700,7 +2533,8 @@ public sealed class CodingAgentSession : IDisposable
 					_streamOptions,
 					Settings.Compaction,
 					customInstructions: null,
-					cancellationToken),
+					cancellationToken,
+					thinkingLevel: _agent.ThinkingLevel),
 				"compaction",
 				reason,
 				cancellationToken).ConfigureAwait(false);
@@ -2730,11 +2564,9 @@ public sealed class CodingAgentSession : IDisposable
 		});
 	}
 
-	/// <summary>
 	/// 跑一次代理，并在「可重试的失败」上按退避策略重试。与 pi 一致：
 	/// 失败的助手回复保留在会话文件里，但通过 <c>context_edit</c> 从模型投影中移除，
 	/// 这样重试请求不会带上那次失败；重试本身不重新提交用户消息。
-	/// </summary>
 	/// <param name="run">接收「本次调用内的第几次尝试」（0 表示首次），跑一轮代理。</param>
 	private async Task<IReadOnlyList<Message>> RunWithRetryAsync(
 		Func<int, Task<IReadOnlyList<Message>>> run,
@@ -2885,7 +2717,6 @@ public sealed class CodingAgentSession : IDisposable
 		return null;
 	}
 
-	/// <summary>把某条消息从模型投影中移除（保留在会话文件里）。</summary>
 	private void OmitFromContext(Message message)
 	{
 		foreach (var entry in Session.Entries.OfType<SessionMessageEntry>())
@@ -2898,7 +2729,6 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>上下文超过阈值且开启了压缩时，先压缩再继续。</summary>
 	private async Task AutoCompactAsync(CancellationToken cancellationToken)
 	{
 		if (!AutoCompactionEnabled || !Settings.Compaction.Enabled || _agent.IsStreaming)
@@ -2959,21 +2789,18 @@ public sealed class CodingAgentSession : IDisposable
 		}
 	}
 
-	/// <summary>排入一条消息，在当前工具批次结束后引导正在运行的代理。</summary>
 	public void Steer(Message message)
 	{
 		_agent.Steer(message);
 		EmitQueueUpdate();
 	}
 
-	/// <summary>排入一条消息，在代理本应停止时继续处理。</summary>
 	public void FollowUp(Message message)
 	{
 		_agent.FollowUp(message);
 		EmitQueueUpdate();
 	}
 
-	/// <summary>切换模型，并在会话中记录一条 <c>model_change</c> 条目。</summary>
 	public void SetModel(Model model)
 	{
 		_cacheWarmer?.Cancel();
@@ -2987,7 +2814,6 @@ public sealed class CodingAgentSession : IDisposable
 		Session.AppendModelChange(model.Provider, model.Id);
 	}
 
-	/// <summary>设置思考级别（按模型收敛），并记录一条变更条目。</summary>
 	public void SetThinkingLevel(string level)
 	{
 		var clamped = ThinkingLevelResolver.Clamp(_agent.Model, level);
@@ -3001,7 +2827,6 @@ public sealed class CodingAgentSession : IDisposable
 		Emit(new ThinkingLevelChangedEvent { Level = clamped });
 	}
 
-	/// <summary>在模型的工具循环之外执行 shell 命令的结果。</summary>
 	public sealed record BashRunResult
 	{
 		public required string Output { get; init; }
@@ -3015,11 +2840,9 @@ public sealed class CodingAgentSession : IDisposable
 		public string? FullOutputPath { get; init; }
 	}
 
-	/// <summary>
 	/// 立即执行一条 shell 命令，并记为 <c>bashExecution</c> 消息，因此下一次提示能看到它 ——
 	/// 除非设置了 <paramref name="excludeFromContext"/>。交互模式的 <c>!</c> 命令与 RPC 的 <c>bash</c>
 	/// 命令都由它支撑。
-	/// </summary>
 	public async Task<BashRunResult> RunBashAsync(
 		string command,
 		bool excludeFromContext = false,
@@ -3033,7 +2856,14 @@ public sealed class CodingAgentSession : IDisposable
 			.ConfigureAwait(false);
 
 		var truncation = Truncate.Tail(result.Output);
-		var fullOutputPath = truncation.Truncated ? ShellRunner.WriteFullOutput(result.Output) : null;
+		if (result.OutputTruncated)
+		{
+			truncation = truncation with { TotalLines = result.TotalLines, TotalBytes = result.TotalBytes };
+		}
+
+		var fullOutputPath = truncation.Truncated
+			? result.FullOutputPath ?? ShellRunner.WriteFullOutput(result.Output)
+			: null;
 
 		Session.AppendMessage(CodingMessages.BashExecution(
 			command,
@@ -3060,7 +2890,6 @@ public sealed class CodingAgentSession : IDisposable
 		};
 	}
 
-	/// <summary>追加一条会参与 LLM 上下文的扩展风格消息。</summary>
 	public string AppendCustomMessage(string customType, string content, bool display = true)
 	{
 		var id = Session.AppendCustomMessage(customType, MessageContent.FromText(content), display);
@@ -3068,14 +2897,12 @@ public sealed class CodingAgentSession : IDisposable
 		return id;
 	}
 
-	/// <summary>设置会话显示名；<paramref name="name"/> 为 null 表示清除。对应 RPC 的 <c>set_session_name</c>。</summary>
 	public void SetSessionName(string? name)
 	{
 		Session.AppendSessionInfo(name);
 		Emit(new SessionInfoChangedEvent { Name = name });
 	}
 
-	/// <summary>把刚追加的自定义条目作为 <c>entry_appended</c> 发出。</summary>
 	private void EmitEntryAppended(string entryId)
 	{
 		if (Session.GetEntry(entryId) is not { } entry)
@@ -3110,14 +2937,10 @@ public sealed class CodingAgentSession : IDisposable
 		CancellationToken cancellationToken) =>
 		ValueTask.FromResult(Project());
 
-	/// <summary>
 	/// 分支投影，外加当前系统提示词。会话运行期间工具集可能变化（例如 MCP 服务器宣告了新工具），
 	/// 所以模型看到的提示词每次都按当前状态重建。
-	/// <para>
 	/// 会话文件里不存系统提示（与 pi 一致）：文件里若因历史原因残留了 role:system 的消息，用当前
 	/// 提示词替换它；否则插到最前面。压缩产生的 system 消息不在开头，保持原样。
-	/// </para>
-	/// </summary>
 	private IReadOnlyList<Message> Project()
 	{
 		// The prompt is built once and only replaced when tools/resources rebuild it. Reusing the
@@ -3163,10 +2986,8 @@ public sealed class CodingAgentSession : IDisposable
 		return result;
 	}
 
-	/// <summary>
 	/// 替换生效的工具集，例如 MCP 服务器宣告 <c>tools/list_changed</c> 之后。系统提示词会
 	/// 用新的工具声明重建，未变动的工具沿用已有的措辞。
-	/// </summary>
 	public void SetTools(IReadOnlyList<AgentTool> tools)
 	{
 		// 有 exposure: codemode 的工具时自动补上 codemode（pi 的 autoEnableCodemode 行为）。
@@ -3227,7 +3048,6 @@ public sealed class CodingAgentSession : IDisposable
 		ApplyTools();
 	}
 
-	/// <summary>bash 工具的会话上下文：以 <c>PI_*</c> 环境变量暴露当前会话与模型。</summary>
 	private Tools.BashSessionEnvironment? BashEnvironment() => new()
 	{
 		SessionId = Session.SessionId,
@@ -3263,16 +3083,12 @@ public sealed class CodingAgentSession : IDisposable
 		return ValueTask.CompletedTask;
 	}
 
-	/// <summary>会话文件里最近一次写入的 thinking level 是否已经读过。</summary>
 	private bool _persistedThinkingLevelLoaded;
 
-	/// <summary>会话文件里最近一次写入的 thinking level；恢复会话时读一次并缓存，之后随写入更新。</summary>
 	private string? _persistedThinkingLevel;
 
-	/// <summary>
 	/// 会话文件里最近一次写入的 thinking level。只在第一次需要时重建分支上下文（O(n)），
 	/// 之后随写入同步更新 —— 否则每条消息结束都会把整个分支遍历一遍。
-	/// </summary>
 	private string? PersistedThinkingLevel()
 	{
 		if (!_persistedThinkingLevelLoaded)
@@ -3287,7 +3103,6 @@ public sealed class CodingAgentSession : IDisposable
 		return _persistedThinkingLevel;
 	}
 
-	/// <summary>Read-only view of a system prompt followed by the session projection.</summary>
 	private sealed class PromptedMessages(Message prompt, IReadOnlyList<Message> projected) : IReadOnlyList<Message>
 	{
 		public int Count => projected.Count + 1;

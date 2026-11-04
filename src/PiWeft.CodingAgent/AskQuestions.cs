@@ -3,10 +3,8 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.CodingAgent;
 
-/// <summary>选择题的一个选项。</summary>
 public sealed record AskOption(string Label, string Value, string? Description);
 
-/// <summary>归一化后的一个问题。</summary>
 public sealed record AskQuestion(
 	string Id,
 	string Type,
@@ -15,29 +13,20 @@ public sealed record AskQuestion(
 	string? Placeholder,
 	string? Prefill);
 
-/// <summary>用户对一个问题的回答；<c>Value</c> 可能是字符串、布尔或字符串数组。</summary>
 public sealed record AskAnswer(string Id, string Type, JsonNode? Value, string? Label, bool WasCustom);
 
-/// <summary>
 /// <c>ask_question</c> 的线协议编解码：与 PiDeck 的 <c>pi-deck-ask-question.ts</c> 完全一致。
-/// <para>
 /// 无论单个还是批量问题，都通过一次 <c>ui.input</c> 提交：<c>title</c> 是 JSON 信封
 /// （键 <c>__piDeckBatchAsk</c>），<c>placeholder</c> 是固定哨兵值 <c>__piDeckBatchAsk__</c>。
 /// PiDeck 的渲染层据此展开为问询卡片，回答以同构 JSON 字符串返回。
-/// </para>
-/// </summary>
 public static class AskQuestions
 {
-	/// <summary>批量信封的键，PiDeck 用它识别问询卡片。</summary>
 	public const string EnvelopeKey = "__piDeckBatchAsk";
 
-	/// <summary>PiDeck 用来识别批量问询的占位符哨兵。</summary>
 	public const string EnvelopePlaceholder = "__piDeckBatchAsk__";
 
-	/// <summary>允许的问题类型。</summary>
 	public static readonly string[] Types = ["select", "multi_select", "confirm", "input", "editor"];
 
-	/// <summary>把工具参数归一化成问题列表；缺少 <c>questions</c> 时回退到顶层单问题字段。</summary>
 	public static IReadOnlyList<AskQuestion> FromToolArguments(JsonObject arguments)
 	{
 		var raw = arguments["questions"] as JsonArray;
@@ -64,7 +53,6 @@ public static class AskQuestions
 		return questions;
 	}
 
-	/// <summary>构造提交给宿主 UI 的信封 JSON。</summary>
 	public static string BuildEnvelope(IReadOnlyList<AskQuestion> questions, bool review)
 	{
 		var array = new List<JsonNode?>(questions.Count);
@@ -117,7 +105,6 @@ public static class AskQuestions
 		}.ToJsonString();
 	}
 
-	/// <summary>宿主端解析信封；不是批量问询时返回 <c>null</c>。</summary>
 	public static IReadOnlyList<AskQuestion>? ParseEnvelope(string? title)
 	{
 		if (title is null || title.Length == 0)
@@ -140,7 +127,6 @@ public static class AskQuestions
 		}
 	}
 
-	/// <summary>信封里的「批量审阅」标志：true 时界面在最后一题后加一页「确认全部答案」。</summary>
 	public static bool ReviewRequested(string? title)
 	{
 		if (string.IsNullOrEmpty(title))
@@ -162,7 +148,6 @@ public static class AskQuestions
 		}
 	}
 
-	/// <summary>解析宿主返回的回答。</summary>
 	public static (IReadOnlyList<AskAnswer> Answers, bool Cancelled) ParseResponse(string? raw, IReadOnlyList<AskQuestion> questions)
 	{
 		if (string.IsNullOrWhiteSpace(raw))
@@ -210,7 +195,6 @@ public static class AskQuestions
 		return (answers, !complete);
 	}
 
-	/// <summary>构造宿主返回值。</summary>
 	public static string EncodeResponse(IReadOnlyList<AskAnswer> answers, bool cancelled)
 	{
 		var array = new List<JsonNode?>(answers.Count);
@@ -243,7 +227,6 @@ public static class AskQuestions
 		return new JsonObject { ["cancelled"] = cancelled, ["answers"] = new JsonArray([.. array]) }.ToJsonString();
 	}
 
-	/// <summary>模型可见的回答文本，与 PiDeck 的 <c>batchResult</c> 一致。</summary>
 	public static string ResultText(IReadOnlyList<AskAnswer> answers, bool cancelled)
 	{
 		if (cancelled && answers.Count == 0)
@@ -260,7 +243,6 @@ public static class AskQuestions
 			$"{answer.Id}: {(answer.WasCustom ? "(自行输入) " : string.Empty)}{FormatValue(answer.Value)}"));
 	}
 
-	/// <summary>写入工具结果的 <c>details</c>，供界面渲染。</summary>
 	public static JsonObject ResultDetails(IReadOnlyList<AskQuestion> questions, IReadOnlyList<AskAnswer> answers, bool cancelled) => new()
 	{
 		["questions"] = new JsonArray([.. questions.Select(static question => (JsonNode?)new JsonObject

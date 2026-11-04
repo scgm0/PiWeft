@@ -7,11 +7,9 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.Google;
 
-/// <summary>
 /// Vertex AI（<c>google-vertex</c>）的流式适配器。它与 <see cref="GoogleGenerativeAiProvider"/> 使用相同的
 /// generateContent 线格式，区别在端点（项目、区域、发布方）、模型路径
 /// 与鉴权方式（ADC bearer 令牌，或 Vertex API key）。
-/// </summary>
 public sealed class GoogleVertexProvider : IApiProvider
 {
 	public const string ApiId = "google-vertex";
@@ -194,10 +192,8 @@ public sealed class GoogleVertexProvider : IApiProvider
 		return request;
 	}
 
-	/// <summary>
 	/// 构建 Vertex 的 generateContent URL。目录里给的是带 <c>{location}</c> 的模板，
 	/// 在这里做替换；<c>global</c> 是合法取值，此时不加区域前缀。
-	/// </summary>
 	internal static string BuildUrl(Model model, StreamOptions options)
 	{
 		var location = ResolveLocation(options);

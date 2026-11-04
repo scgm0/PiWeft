@@ -1,6 +1,5 @@
 namespace PiWeft.Desktop;
 
-/// <summary>Reading metrics are cached once, then published on explicit settings changes, never loaded per token.</summary>
 internal static class ReadingPreferences
 {
 	public static double FontSize { get; private set; } = 16;

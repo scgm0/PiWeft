@@ -6,21 +6,17 @@ using PiWeft.Ai;
 using PiWeft.Ai.Json;
 namespace PiWeft.Mcp;
 
-/// <summary>MCP 服务器声明的一个工具。</summary>
 public sealed record McpTool
 {
 	public required string Name { get; init; }
 
 	public string Description { get; init; } = string.Empty;
 
-	/// <summary>工具参数的 JSON Schema。</summary>
 	public required JsonObject InputSchema { get; init; }
 
-	/// <summary>工具结构化输出的 JSON Schema（可选）。</summary>
 	public JsonObject? OutputSchema { get; init; }
 }
 
-/// <summary><c>tools/call</c> 解码后的结果。</summary>
 public sealed record McpCallResult
 {
 	public IReadOnlyList<ContentBlock> Content { get; init; } = [];
@@ -29,14 +25,11 @@ public sealed record McpCallResult
 
 	public JsonNode? StructuredContent { get; init; }
 
-	/// <summary>完整的结果 payload，供程序化调用方使用。</summary>
 	public JsonNode? Raw { get; init; }
 }
 
-/// <summary>
 /// Model Context Protocol 客户端，在一对流上使用 JSON-RPC 2.0（stdio 或任意嵌入方式）。
 /// 实现本端口需要的子集：<c>initialize</c>、<c>tools/list</c>、<c>tools/call</c>，以及资源、提示与通知。
-/// </summary>
 public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDisposable
 {
 	public const string ProtocolVersion = "2025-06-18";
@@ -59,40 +52,29 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		_readLoop = Task.Run(ReadLoopAsync);
 	}
 
-	/// <summary>握手时服务器自报的名称。</summary>
 	public string ServerName { get; private set; } = string.Empty;
 
 	public string ServerVersion { get; private set; } = string.Empty;
 
-	/// <summary>配置条目里的名称；连接注册之前为空。</summary>
 	public string ConfiguredServerName { get; set; } = string.Empty;
 
-	/// <summary>工具与资源工具用于该服务器的名称。</summary>
 	public string ConfiguredName => ConfiguredServerName.Length > 0 ? ConfiguredServerName : ServerName;
 
-	/// <summary>服务器发来的自由格式说明（如果有）。</summary>
 	public string? Instructions { get; private set; }
 
-	/// <summary>服务器在握手时声明的能力。</summary>
 	public McpServerCapabilities Capabilities { get; private set; } = new();
 
-	/// <summary>资源与提示发现使用的单次请求超时。</summary>
 	public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(60);
 
-	/// <summary>
 	/// 服务器发来的每个通知都会触发，包括 <c>notifications/tools/list_changed</c> 与
 	/// <c>notifications/message</c>。处理函数运行在读取循环上，因此不能阻塞。
-	/// </summary>
 	public event Action<string, JsonObject?>? NotificationReceived;
 
-	/// <summary>
 	/// 连接中断时传输层补充的诊断说明，例如 stdio 进程的退出码与 stderr 摘要。
 	/// 读取循环失败挂起请求时会把它并入异常消息，否则用户只能看到一句
 	/// "connection closed"，无从判断服务器为何退出。
-	/// </summary>
 	public volatile string? ClosureDiagnostics;
 
-	/// <summary>建立连接并完成 MCP 握手。</summary>
 	public static async Task<McpClient> ConnectAsync(
 		Stream input,
 		Stream output,
@@ -127,7 +109,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return client;
 	}
 
-	/// <summary>发送请求并等待对应的响应。</summary>
 	public async Task<JsonObject> RequestAsync(string method, JsonObject? parameters, CancellationToken cancellationToken)
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
@@ -168,7 +149,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		}
 	}
 
-	/// <summary>发送通知（无 id、无响应）。</summary>
 	public void Notify(string method, JsonObject? parameters)
 	{
 		if (_disposed)
@@ -191,7 +171,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		_ = WriteAsync(record, CancellationToken.None);
 	}
 
-	/// <summary>列出服务器工具的一页。</summary>
 	public async Task<(IReadOnlyList<McpTool> Tools, string? NextCursor)> ListToolsPageAsync(
 		string? cursor,
 		CancellationToken cancellationToken)
@@ -206,7 +185,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return (McpProtocol.DecodeTools(result), McpProtocol.StringOf(result, "nextCursor"));
 	}
 
-	/// <summary>列出服务器的工具，并跟随分页游标。</summary>
 	public async Task<IReadOnlyList<McpTool>> ListToolsAsync(CancellationToken cancellationToken)
 	{
 		var tools = new List<McpTool>();
@@ -223,7 +201,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return tools;
 	}
 
-	/// <summary>读取 <c>resources/list</c> 的全部页。</summary>
 	public async Task<IReadOnlyList<McpResource>> ListResourcesAsync(CancellationToken cancellationToken)
 	{
 		var resources = new List<McpResource>();
@@ -247,7 +224,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return resources;
 	}
 
-	/// <summary>读取 <c>resources/templates/list</c> 的全部页。</summary>
 	public async Task<IReadOnlyList<McpResourceTemplate>> ListResourceTemplatesAsync(CancellationToken cancellationToken)
 	{
 		var templates = new List<McpResourceTemplate>();
@@ -271,7 +247,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return templates;
 	}
 
-	/// <summary>读取一个资源，可能返回多个内容块。</summary>
 	public async Task<IReadOnlyList<McpResourceContent>> ReadResourceAsync(string uri, CancellationToken cancellationToken)
 	{
 		var result = await RequestAsync("resources/read", new JsonObject { ["uri"] = uri }, cancellationToken)
@@ -280,7 +255,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return McpProtocol.DecodeResourceContents(result);
 	}
 
-	/// <summary>读取 <c>prompts/list</c> 的全部页。</summary>
 	public async Task<IReadOnlyList<McpPrompt>> ListPromptsAsync(CancellationToken cancellationToken)
 	{
 		var prompts = new List<McpPrompt>();
@@ -304,7 +278,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return prompts;
 	}
 
-	/// <summary>渲染一个提示，并替换其中的参数。</summary>
 	public async Task<McpPromptResult> GetPromptAsync(
 		string name,
 		JsonObject? arguments,
@@ -320,7 +293,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return McpProtocol.DecodePromptResult(result);
 	}
 
-	/// <summary>服务器支持时发送 <c>resources/subscribe</c>；返回是否真的发了。</summary>
 	public async Task<bool> SubscribeAsync(string uri, CancellationToken cancellationToken)
 	{
 		if (!Capabilities.ResourcesSubscribe)
@@ -333,7 +305,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		return true;
 	}
 
-	/// <summary>调用工具并解码其内容块。</summary>
 	public async Task<McpCallResult> CallToolAsync(string name, JsonObject arguments, CancellationToken cancellationToken)
 	{
 		var parameters = new JsonObject
@@ -442,17 +413,14 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		}
 	}
 
-	/// <summary>连接中断时挂起请求收到的异常消息；带得上诊断就带上。</summary>
 	private static string ClosedMessage(string detail) =>
 		detail.Length > 0
 			? $"The MCP connection closed before a response arrived ({detail})"
 			: "The MCP connection closed before a response arrived";
 
-	/// <summary>
 	/// stdout 关闭与传输层上报退出诊断（进程退出事件、stderr 读完）之间存在竞争：
 	/// 还有挂起请求时给诊断一小段时间到达，再带着已知信息失败。没有挂起请求或已
 	/// 主动释放时立即返回，不拖慢释放路径。
-	/// </summary>
 	private async Task<string> DescribeClosureAsync()
 	{
 		if (_disposed)
@@ -566,7 +534,6 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 	}
 }
 
-/// <summary>MCP 服务器返回的错误。</summary>
 public sealed class McpException(int code, string message) : Exception(message)
 {
 	public int Code { get; } = code;

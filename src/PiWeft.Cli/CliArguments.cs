@@ -1,19 +1,14 @@
 namespace PiWeft.Cli;
 
-/// <summary>一次运行的输出模式。</summary>
 public enum CliMode
 {
-	/// <summary>基于行的交互会话（配合 <c>--print</c> 时是单次输出）。</summary>
 	Text,
 
-	/// <summary>会话头部加一条 JSONL 事件流。</summary>
 	Json,
 
-	/// <summary>长驻的 JSONL 命令/响应/事件协议。</summary>
 	Rpc,
 }
 
-/// <summary>解析后的命令行，对应本端口实现的那部分 pi 参数。</summary>
 public sealed record CliArguments
 {
 	public CliMode Mode { get; init; } = CliMode.Text;
@@ -36,12 +31,10 @@ public sealed record CliArguments
 
 	public bool Resume { get; init; }
 
-	/// <summary>会话文件路径或部分 UUID。</summary>
 	public string? Session { get; init; }
 
 	public string? SessionId { get; init; }
 
-	/// <summary>要派生为新会话的会话文件或部分 UUID。</summary>
 	public string? Fork { get; init; }
 
 	public string? SessionDir { get; init; }
@@ -52,21 +45,16 @@ public sealed record CliArguments
 
 	public List<string> Prompts { get; init; } = [];
 
-	/// <summary><c>@file</c> 附件参数（已去掉 <c>@</c> 前缀），对应 pi 的 <c>fileArgs</c>。</summary>
 	public List<string> FileArgs { get; init; } = [];
 
-	/// <summary>工具白名单。以 <c>+</c>/<c>-</c> 开头的条目在默认集上增减，其余则整体替换默认集。</summary>
 	public List<string> Tools { get; init; } = [];
 
 	public List<string> ExcludeTools { get; init; } = [];
 
-	/// <summary><c>--models</c>：Ctrl+P 轮换使用的模型模式列表（支持 glob）。</summary>
 	public List<string> Models { get; init; } = [];
 
-	/// <summary><c>--export</c>：把会话文件导出为 HTML 后退出。</summary>
 	public string? Export { get; init; }
 
-	/// <summary><c>--approve</c> / <c>--no-approve</c>：本章进程的项目信任覆盖。</summary>
 	public bool? ProjectTrustOverride { get; init; }
 
 	public bool NoBuiltinTools { get; init; }
@@ -83,26 +71,19 @@ public sealed record CliArguments
 
 	public bool NoThemes { get; init; }
 
-	/// <summary><c>--skill</c> 显式技能路径（文件或目录），可重复。</summary>
 	public List<string> Skills { get; init; } = [];
 
-	/// <summary><c>--prompt-template</c> 显式模板路径，可重复。</summary>
 	public List<string> PromptTemplates { get; init; } = [];
 
-	/// <summary><c>--theme</c> 显式主题路径，可重复。</summary>
 	public List<string> Themes { get; init; } = [];
 
-	/// <summary><c>-e/--extension</c>：显式扩展文件、目录或 <c>builtin:&lt;name&gt;</c>，可重复。</summary>
 	public List<string> Extensions { get; init; } = [];
 
-	/// <summary><c>-ne/--no-extensions</c>：关闭约定目录发现；显式 <c>-e</c> 仍然加载。</summary>
 	public bool NoExtensions { get; init; }
 
-	/// <summary>
 	/// 本端口不认识的 <c>--flag</c>（pi 会把它们交给扩展的 <c>pi.registerFlag</c>）。
 	/// 解析规则与 pi 一致：<c>--flag=value</c> 取等号后的值；<c>--flag value</c> 在下一个参数
 	/// 不以 <c>-</c>/<c>@</c> 开头时消费它；否则视为布尔。
-	/// </summary>
 	public Dictionary<string, string?> UnknownFlags { get; init; } = new(StringComparer.Ordinal);
 
 	public bool ListModels { get; init; }
@@ -117,13 +98,10 @@ public sealed record CliArguments
 
 	public bool Offline { get; init; }
 
-	/// <summary>
 	/// 为兼容而接受但本端口不实现的选项名（<c>-e</c>、<c>--theme</c> 等）。
 	/// 调用方据此向用户提示「该开关不会生效」，避免静默降级。
-	/// </summary>
 	public List<string> AcceptedCompatFlags { get; init; } = [];
 
-	/// <summary>解析 argv。以错误信息代替异常返回，便于调用方打印用法。</summary>
 	public static (CliArguments? Arguments, string? Error) Parse(IReadOnlyList<string> argv)
 	{
 		var result = new CliArguments();
@@ -369,11 +347,9 @@ public sealed record CliArguments
 		return (SplitModelThinkingSuffix(result), null);
 	}
 
-	/// <summary>
 	/// pi 允许在 <c>--model</c> 里用 <c>provider/id:level</c> 顺带指定思考级别
 	///（<c>off</c>、<c>minimal</c>…<c>max</c>）。显式 <c>--thinking</c> 优先于后缀。
 	/// 解析在全部参数处理完后进行，因此 <c>--thinking</c> 与 <c>--model</c> 的先后顺序不影响结果。
-	/// </summary>
 	private static CliArguments SplitModelThinkingSuffix(CliArguments arguments)
 	{
 		if (arguments.Model is not { Length: > 0 } model)

@@ -3,16 +3,12 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.CodingAgent.Resources;
 
-/// <summary>
 /// 一个够用的 glob 展开器：支持 pi 包清单里的相对路径、<c>*</c>（段内）与 <c>**</c>（跨段）。
 /// 只在包资源解析时使用，不追求完整 glob 语义。
-/// </summary>
 internal static class PathGlob
 {
-	/// <summary>
 	/// 把 <paramref name="pattern"/> 相对 <paramref name="root"/> 展开成绝对路径列表。
 	/// 没有通配符时直接返回该路径（无论是否存在）。
-	/// </summary>
 	public static IReadOnlyList<string> Expand(string root, string pattern)
 	{
 		var normalized = pattern.Replace('\\', '/').Trim();

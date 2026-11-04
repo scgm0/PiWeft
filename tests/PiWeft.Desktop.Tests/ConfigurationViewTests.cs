@@ -165,7 +165,6 @@ public sealed class ConfigurationViewTests : IDisposable
 		Assert.Equal("test-key", Store.Read(ConfigFile.Auth).Parse()["local"]!["key"]!.GetValue<string>());
 	}
 
-	/// <summary>按可见文案点击表单里的文字按钮（图标按钮通过 HoverHints 文案定位）。</summary>
 	private static void ClickText(UIElement root, string text) =>
 		ImagePreviewTests.Click(Find<Button>(root).First(button => Find<TextBlock>(button).Any(block => block.Text == text)));
 
@@ -174,11 +173,8 @@ public sealed class ConfigurationViewTests : IDisposable
 		if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
 	}
 
-	/// <summary>
 	/// MCP 授权入口的渲染规则：HTTP 服务器才有授权行（stdio 没有 OAuth，放个按钮只会误导人），
 	/// 状态文案要跟磁盘上的凭据一致，「清除凭据」只在真有待清除的东西时出现。
-	/// </summary>
-	/// <summary>按钮标签按内容文本匹配：AppIcons.TextButton 把文字放在内容里，HoverTip 只有图标按钮才有。</summary>
 	private static List<Button> ButtonsLabeled(ConfigurationView view, string label) =>
 		[.. Find<Button>(view.View).Where(button =>
 			button.Content is StackPanel panel && Find<TextBlock>(panel).Any(block => block.Text == label))];

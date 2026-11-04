@@ -3,7 +3,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>命令 Dock 的最小 VT 屏幕：文本、光标、颜色与滚动。</summary>
 public sealed class TerminalScreenTests
 {
 	private static TerminalScreen NewScreen(int columns = 20, int rows = 5) => new(columns, rows);

@@ -4,17 +4,13 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.JavaScript;
 
-/// <summary>
 /// 把工具与 JSON Schema 渲染成 TypeScript 声明，供模型阅读脚本 API。
 /// 移植自 pi 的 <c>declarations.ts</c>：对象按属性名排序，属性说明变成 <c>//</c> 注释，
 /// 类型无法表达的约束变成 <c>@integer @minimum 1</c> 之类的标签。
-/// </summary>
 public static class CodeModeDeclarations
 {
-	/// <summary>渲染后的参数类型上限，超过时先丢标签、再退化成 <c>unknown</c>。</summary>
 	public const int DefaultInputSchemaMaxChars = 16_000;
 
-	/// <summary>每个 schema 最多展开多少次本地 <c>$ref</c>，避免共享定义撑爆输出。</summary>
 	private const int MaxRefExpansions = 32;
 
 	private const string Indent = "  ";
@@ -35,10 +31,8 @@ public static class CodeModeDeclarations
 		"maximum", "exclusiveMaximum", "maxLength", "maxItems",
 	};
 
-	/// <summary>最长属性标签；更长（大 default、长 pattern）直接省略。</summary>
 	private const int MaxTagChars = 80;
 
-	/// <summary>渲染 <c>declare const tools: { ... };</c>；没有工具时返回空串。</summary>
 	public static string Render(IReadOnlyList<CodeModeTool> tools)
 	{
 		if (tools.Count == 0) return string.Empty;
@@ -47,7 +41,6 @@ public static class CodeModeDeclarations
 		return $"declare const tools: {{\n{string.Join("\n", members)}\n}};";
 	}
 
-	/// <summary><c>name(args: T): Promise&lt;R&gt;;</c>，名称使用脚本侧的标识符。</summary>
 	public static string RenderSignature(CodeModeTool tool, int inputMaxChars = DefaultInputSchemaMaxChars)
 	{
 		var input = tool.InputSchema is null
@@ -56,21 +49,17 @@ public static class CodeModeDeclarations
 		return $"{CodeModeIdentifier.ToIdentifier(tool.Name)}(args: {input}): Promise<{RenderOutputType(tool.OutputSchema)}>;";
 	}
 
-	/// <summary>工具调用解析出的类型；没有输出 schema 时是 <c>unknown</c>。</summary>
 	public static string RenderOutputType(JsonNode? schema) =>
 		schema is null ? "unknown" : SchemaToType(schema);
 
-	/// <summary>工具的完整样例：说明 + 声明代码块，用于工具清单与 <c>ALL_TOOLS</c>。</summary>
 	public static string RenderSample(CodeModeTool tool)
 	{
 		var declaration = $"declare const tools: {{ {RenderSignature(tool)} }};";
 		return $"{tool.Description?.Trim() ?? string.Empty}\n\ncodemode tool declaration:\n```ts\n{declaration}\n```";
 	}
 
-	/// <summary>
 	/// JSON Schema → TypeScript 类型表达式。结果超过 <paramref name="maxChars"/> 时先去掉约束标签；
 	/// 仍然超长则退化为 <c>unknown</c>。
-	/// </summary>
 	public static string SchemaToType(JsonNode? schema, int maxChars = DefaultInputSchemaMaxChars)
 	{
 		var tagged = ToType(schema, new SchemaContext(schema, tags: true));
@@ -79,7 +68,6 @@ public static class CodeModeDeclarations
 		return untagged.Length <= maxChars ? untagged : "unknown";
 	}
 
-	/// <summary>可变的渲染上下文：<c>Resolving</c>/<c>Expansions</c> 沿递归进出，避免每层拷贝集合。</summary>
 	private sealed class SchemaContext(JsonNode? root, bool tags)
 	{
 		public JsonNode? Root { get; } = root;
@@ -263,9 +251,7 @@ public static class CodeModeDeclarations
 	private static string DescriptionOf(JsonNode? property) =>
 		property is JsonObject obj ? Str(obj["description"])?.Trim() ?? string.Empty : string.Empty;
 
-	/// <summary>
 	/// 类型表达不了的约束，写成 JSDoc 标签：<c>@integer @minimum 1 @maximum 100 @default 20</c>。
-	/// </summary>
 	private static string ConstraintTags(JsonNode? schema)
 	{
 		if (schema is not JsonObject property) return string.Empty;

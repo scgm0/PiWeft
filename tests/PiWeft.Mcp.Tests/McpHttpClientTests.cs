@@ -8,7 +8,6 @@ using Xunit;
 
 namespace PiWeft.Mcp.Tests;
 
-/// <summary>A scripted MCP streamable-HTTP endpoint.</summary>
 internal sealed class FakeMcpHttpHandler : HttpMessageHandler
 {
 	private readonly List<JsonObject> _requests = [];
@@ -20,7 +19,6 @@ internal sealed class FakeMcpHttpHandler : HttpMessageHandler
 
 	public void Enqueue(Func<JsonObject, HttpResponseMessage> responder) => _responses.Enqueue(responder);
 
-	/// <summary>Queues a plain JSON-RPC response.</summary>
 	public void EnqueueJson(JsonObject result, string? sessionId = null) => Enqueue(request => new HttpResponseMessage(HttpStatusCode.OK)
 	{
 		Content = new StringContent(
@@ -34,7 +32,6 @@ internal sealed class FakeMcpHttpHandler : HttpMessageHandler
 			"application/json"),
 	});
 
-	/// <summary>Queues an SSE response carrying one JSON-RPC record.</summary>
 	public void EnqueueSse(JsonObject result) => Enqueue(request => new HttpResponseMessage(HttpStatusCode.OK)
 	{
 		Content = new StringContent(
@@ -49,7 +46,6 @@ internal sealed class FakeMcpHttpHandler : HttpMessageHandler
 			"text/event-stream"),
 	});
 
-	/// <summary>Queues an accepted response for a notification.</summary>
 	public void EnqueueAccepted() => Enqueue(_ => new HttpResponseMessage(HttpStatusCode.Accepted));
 
 	public void EnqueueStatus(HttpStatusCode status, string body = "nope") => Enqueue(_ => new HttpResponseMessage(status)
@@ -57,10 +53,8 @@ internal sealed class FakeMcpHttpHandler : HttpMessageHandler
 		Content = new StringContent(body, Encoding.UTF8, "application/json"),
 	});
 
-	/// <summary>GET（独立通知流）收到的会话头，按顺序记录。</summary>
 	public List<string?> NotificationStreamRequests { get; } = [];
 
-	/// <summary>通知流 GET 的响应工厂；为 null 时回 405，模拟不支持独立流的服务器。</summary>
 	public Func<HttpResponseMessage>? NotificationStreamResponse { get; set; }
 
 	protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

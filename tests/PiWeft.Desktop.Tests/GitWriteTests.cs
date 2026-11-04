@@ -4,7 +4,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>D-04：Git 写操作。用真实临时仓库验证暂存、提交与分支切换。</summary>
 public class GitWriteTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-git-" + Guid.NewGuid().ToString("N")[..8]);

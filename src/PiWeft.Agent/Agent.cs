@@ -12,10 +12,8 @@ public sealed record AgentOptions
 
 	public IReadOnlyList<AgentTool> Tools { get; init; } = [];
 
-	/// <summary>真正声明给模型的工具；为 <c>null</c> 时等于 <see cref="Tools"/>。</summary>
 	public IReadOnlyList<AgentTool>? DeclaredTools { get; init; }
 
-	/// <summary>流式产出助手回复。接模型网关时用 <see cref="AgentGatewayStreamFn.For"/>。</summary>
 	public required StreamFn StreamFn { get; init; }
 
 	public Func<IReadOnlyList<Message>, CancellationToken, IReadOnlyList<Message>>? ConvertToLlm { get; init; }
@@ -41,10 +39,8 @@ public sealed record AgentOptions
 	public StreamOptions Options { get; init; } = new();
 }
 
-/// <summary>
 /// 有状态代理：负责工具执行与事件流。它持有会话记录、steering 队列、follow-up 队列与监听器集合；
 /// 具体调度交给 <see cref="AgentLoop"/>。
-/// </summary>
 public sealed class Agent
 {
 	private static readonly Func<IReadOnlyList<Message>, CancellationToken, IReadOnlyList<Message>> DefaultConvertToLlm =
@@ -137,7 +133,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>真正声明给模型的工具；<see cref="Tools"/> 是脚本与钩子可调用的全集。</summary>
 	public IReadOnlyList<AgentTool> DeclaredTools
 	{
 		get
@@ -149,7 +144,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>会话记录的快照，返回的是副本。</summary>
 	public IReadOnlyList<Message> Messages
 	{
 		get
@@ -179,10 +173,8 @@ public sealed class Agent
 
 	public void SetTools(IReadOnlyList<AgentTool> tools) => SetTools(tools, tools);
 
-	/// <summary>
 	/// 分别设置可执行与声明给模型的工具集。codemode/deferred 工具留在可执行集合里，
 	/// 但只有 <paramref name="declared"/> 会进入请求的工具声明。
-	/// </summary>
 	public void SetTools(IReadOnlyList<AgentTool> tools, IReadOnlyList<AgentTool> declared)
 	{
 		lock (_gate)
@@ -192,7 +184,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>替换整个会话记录，加载会话时使用。</summary>
 	public void SetMessages(IReadOnlyList<Message> messages)
 	{
 		lock (_gate)
@@ -202,7 +193,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>注册监听器；释放返回的订阅即可注销。</summary>
 	public IDisposable Subscribe(Func<AgentEvent, ValueTask> listener)
 	{
 		lock (_gate)
@@ -213,7 +203,6 @@ public sealed class Agent
 		return new Subscription(this, listener);
 	}
 
-	/// <summary>每个抽取点投递多少条 steering 消息。默认一次一条。</summary>
 	public AgentQueueMode SteeringMode
 	{
 		get
@@ -233,7 +222,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>每个抽取点投递多少条 follow-up 消息。默认一次一条。</summary>
 	public AgentQueueMode FollowUpMode
 	{
 		get
@@ -253,7 +241,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>steering 与 follow-up 队列中等待的消息总数。</summary>
 	public int PendingMessageCount
 	{
 		get
@@ -265,7 +252,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>当前排队消息的快照（steering、follow-up 各一份）。</summary>
 	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) PendingQueues()
 	{
 		lock (_gate)
@@ -274,7 +260,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>清空所有排队消息，并返回被丢弃的内容。</summary>
 	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue()
 	{
 		lock (_gate)
@@ -287,10 +272,8 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>
 	/// 从队列里拿掉一条尚未投递的消息（界面上的「撤回 / 丢弃」）。
 	/// 按引用匹配：调用方先拿 <see cref="PendingQueues"/> 的快照再选具体那一条。
-	/// </summary>
 	/// <param name="message">要移除的消息。</param>
 	/// <returns>确实移除了返回 true；已经被投递（不在队列里）返回 false。</returns>
 	public bool RemoveQueued(Message message)
@@ -302,7 +285,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>调用方必须持有 <see cref="_gate"/>。</summary>
 	private static bool Remove(Queue<Message> queue, Message message)
 	{
 		if (queue.Count == 0)
@@ -333,7 +315,6 @@ public sealed class Agent
 		return removed;
 	}
 
-	/// <summary>排入一条消息，在当前轮次的工具调用结束后注入。</summary>
 	public void Steer(Message message)
 	{
 		lock (_gate)
@@ -342,7 +323,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>排入一条消息，在代理本应停止时继续处理。</summary>
 	public void FollowUp(Message message)
 	{
 		lock (_gate)
@@ -351,7 +331,6 @@ public sealed class Agent
 		}
 	}
 
-	/// <summary>取消当前运行；助手消息会以停止原因 <c>aborted</c> 结束。</summary>
 	public void Abort()
 	{
 		CancellationTokenSource? cancellation;
@@ -508,7 +487,6 @@ public sealed class Agent
 		return messages;
 	}
 
-	/// <summary>调用方必须持有 <see cref="_gate"/>。</summary>
 	private QueueUpdateEvent QueueUpdate() => new()
 	{
 		Steering = _steering.ToList(),

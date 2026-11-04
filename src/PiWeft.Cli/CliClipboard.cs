@@ -2,10 +2,8 @@ using System.Diagnostics;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// CLI 侧的系统剪贴板写入：按平台选择 <c>wl-copy</c>/<c>xclip</c>/<c>pbcopy</c>/<c>clip</c>。
 /// 没有可用工具（常见于无图形环境的 SSH 会话）时返回 false，由调用方给出提示。
-/// </summary>
 internal static class CliClipboard
 {
 	public static bool TryCopy(string text)

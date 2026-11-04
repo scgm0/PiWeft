@@ -7,7 +7,6 @@ using Xunit;
 
 namespace PiWeft.Ai.Tests;
 
-/// <summary>The pi-messages protocol: a POST of { model, context, options } returning serialized assistant events.</summary>
 public class PiMessagesProviderTests
 {
 	private static Model Model() => new()

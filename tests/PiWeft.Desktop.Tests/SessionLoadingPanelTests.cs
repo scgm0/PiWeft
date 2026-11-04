@@ -5,10 +5,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 准备阶段会话面板里的加载段落：进度就地显示、没有中止按钮、
 /// 错误停在同一段落里直到用户关闭，状态变化必须通知宿主换回欢迎文案。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class SessionLoadingPanelTests
 {

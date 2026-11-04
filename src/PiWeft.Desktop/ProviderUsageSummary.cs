@@ -5,10 +5,8 @@ using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 会话统计面板底部的用量摘要：标题行（相对时间 + 刷新 + 配置）加动态结果区。
 /// 查询只在面板打开时进行；关闭时取消请求并拒绝迟到结果，模型切换不会串号展示。
-/// </summary>
 internal sealed class ProviderUsageSummary
 {
 	private readonly Func<Model> _current;
@@ -21,7 +19,6 @@ internal sealed class ProviderUsageSummary
 	private readonly Button _refresh;
 	private readonly Button _configure;
 	private readonly DispatcherTimer _timer;
-	/// <summary>相对时间文本的分钟级刷新；查询本身由 <see cref="_timer"/> 按配置间隔驱动。</summary>
 	private readonly DispatcherTimer _clock;
 	private CancellationTokenSource? _abort;
 	private (string Provider, string BaseUrl, string Cwd)? _key;
@@ -66,7 +63,6 @@ internal sealed class ProviderUsageSummary
 
 	public Border View { get; }
 
-	/// <summary>统计面板打开时调用：首次进入或结果过期就查询，复用缓存避免重复请求。</summary>
 	public void Show()
 	{
 		var model = _current();
@@ -95,7 +91,6 @@ internal sealed class ProviderUsageSummary
 		Cancel();
 	}
 
-	/// <summary>配置或凭据变化：丢弃缓存，下次打开重新查询。</summary>
 	public void Invalidate()
 	{
 		_result = null;
@@ -108,7 +103,6 @@ internal sealed class ProviderUsageSummary
 		if (_open) _ = RefreshAsync();
 	}
 
-	/// <summary>弹窗「测试」成功后把同一份结果热更到摘要，三处展示立刻一致。</summary>
 	public void ApplyResult(ProviderUsageResult result)
 	{
 		if (!result.Success) return;
@@ -176,7 +170,6 @@ internal sealed class ProviderUsageSummary
 		foreach (var update in _rowUpdaters) update(result);
 	}
 
-	/// <summary>行结构指纹：只包含决定“有哪些控件、什么配色”的字段，不包含会变的数值。</summary>
 	private static string ShapeOf(ProviderUsageResult result)
 	{
 		var builder = new StringBuilder(64);
@@ -288,7 +281,6 @@ internal sealed class ProviderUsageSummary
 		}
 	}
 
-	/// <summary>周期行只按标签取对应周期，避免把滚动/周/月的顺序硬编码进更新回调。</summary>
 	private static (double Percent, string? Trailing) PeriodValue(ProviderUsageResult result, string label)
 	{
 		var periods = result.Periods;
@@ -312,7 +304,6 @@ internal sealed class ProviderUsageSummary
 	private static double? RemainingOf(UsageCredits credits) =>
 		credits.Remaining ?? (credits.Total is { } total && credits.Used is { } used ? total - used : null);
 
-	/// <summary>重置时间：当天只给时分，跨天补月日，避免「重置 03:00」看不出是哪天。</summary>
 	private static string ResetLabel(DateTimeOffset resetsAt)
 	{
 		var local = resetsAt.ToLocalTime();
@@ -339,7 +330,6 @@ internal sealed class ProviderUsageSummary
 				ProviderUsageDisplay.Tone.Neutral, result);
 	}
 
-	/// <summary>一行「标签 + 圆角进度条 + 百分比 + 尾部小字」，档位色与阈值对齐 PiDeck。</summary>
 	private void AddBarRow(
 		string label,
 		Func<ProviderUsageResult, (double Percent, string? Trailing)> valueOf,
@@ -378,7 +368,6 @@ internal sealed class ProviderUsageSummary
 		Update(current);
 	}
 
-	/// <summary>一行「灰标签 + 右对齐彩色数值」。</summary>
 	private void AddAmountRow(
 		string label,
 		Func<ProviderUsageResult, string> valueOf,

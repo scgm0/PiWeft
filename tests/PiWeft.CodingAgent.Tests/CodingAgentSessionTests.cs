@@ -48,7 +48,6 @@ internal static class ScriptedSessions
 		return stream;
 	}
 
-	/// <summary>一次失败的回复（可重试错误的测试用）。</summary>
 	public static AssistantMessageEventStream Error(Model model, string message)
 	{
 		var stream = new AssistantMessageEventStream();
@@ -81,10 +80,8 @@ internal sealed class ScriptedStreamFn
 
 	public List<IReadOnlyList<Message>> Requests { get; } = [];
 
-	/// <summary>最近一次请求的选项，便于断言探测参数。</summary>
 	public StreamOptions? LastOptions { get; private set; }
 
-	/// <summary>最近一次请求实际收到的模型。</summary>
 	public Model? LastModel { get; private set; }
 
 	public void EnqueueText(string text) => _responses.Enqueue(model => ScriptedSessions.Text(model, text));
@@ -596,10 +593,8 @@ public class SettingsTests : IDisposable
 	}
 }
 
-/// <summary>
 /// 自动重试：可重试的失败会退避后重跑，失败的那次尝试从模型投影里移除（文件里保留），
 /// 并发出 <c>auto_retry_start</c> / <c>auto_retry_end</c> 事件 —— 与 pi 的行为一致。
-/// </summary>
 public class AutoRetryTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-retry-" + Guid.NewGuid().ToString("N")[..8]);
@@ -700,11 +695,9 @@ public class AutoRetryTests : IDisposable
 		Assert.DoesNotContain(session.Messages, message => message is AssistantMessage { StopReason: StopReason.Error });
 	}
 
-	/// <summary>
 	/// 火山方舟的排队错误把「稍后再试」藏在 HTTP 403 的嵌套 JSON 里（10605 / RESOURCE_LIMIT /
 	/// retryAfterSeconds），通用限流字样一个都没有：本来分类器判不出可重试，自动重试直接跳过。
 	/// 这里既验重试会发生，也验等待时长听供应商的而不是指数退避。
-	/// </summary>
 	[Fact]
 	public async Task ProviderQueueErrorRetriesAfterTheAdvertisedDelay()
 	{
@@ -829,14 +822,11 @@ public class AutoRetryTests : IDisposable
 		Assert.IsType<AssistantMessage>(messages[^1]);
 	}
 
-	/// <summary>事件断言用的记录。</summary>
 	private sealed record Piece(string Kind, int Attempt, int MaxAttempts, int DelayMs, string Error);
 }
 
-/// <summary>
 /// 写项目设置时必须保留本端口未建模的键（例如 <c>$schema</c> 与上游新增项），
 /// 否则一次保存就会把用户的其它配置抹掉。
-/// </summary>
 public class SettingsWriteTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-settings-" + Guid.NewGuid().ToString("N")[..8]);
@@ -902,9 +892,7 @@ public class SettingsWriteTests : IDisposable
 	}
 }
 
-/// <summary>
 /// 桌面浏览时不写文件；开始对话时记录实际级别，CLI 可显式启用上游启动记录。
-/// </summary>
 public class OpenSessionWriteTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-openwrite-" + Guid.NewGuid().ToString("N")[..8]);

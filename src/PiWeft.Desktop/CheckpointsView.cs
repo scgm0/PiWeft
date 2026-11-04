@@ -5,18 +5,13 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// D-05：右侧面板的「检查点」分段。列出 <c>refs/pi-checkpoints</c> 下的工作区快照，
 /// 每个快照可以展开成相对当前工作区的统一 diff，或回写工作区（不动分支与索引）。
-/// <para>
 /// 与 PiDeck 的 rewind 面板同一件事，范围收窄到文件：会话跳转仍走分支树 / fork，
 /// 不把两种回退混在一个按钮里。恢复前先自动打一个 <c>before-restore</c> 快照，
 /// 手滑一次还能退回来。
-/// </para>
-/// </summary>
 public sealed class CheckpointsView
 {
-	/// <summary>git 命令失败时保留的原始输出长度（与 <see cref="Checkpoints"/> 的约定一致）。</summary>
 	private readonly Func<string> _cwd;
 	private readonly StackPanel _rows = new();
 	private readonly List<CheckpointRow> _rowState = [];
@@ -24,7 +19,6 @@ public sealed class CheckpointsView
 	private readonly TextBlock _count = new();
 	private readonly ScrollViewer _scroll;
 
-	/// <summary>每次刷新递增：后台算摘要/取 diff 的结果回来时据此丢弃过期结果。</summary>
 	private int _generation;
 
 	private bool _restoring;
@@ -91,7 +85,6 @@ public sealed class CheckpointsView
 
 	public UIElement View { get; }
 
-	/// <summary>重读检查点列表。只做一次 <c>for-each-ref</c>；每行的变更摘要在后台补齐。</summary>
 	public void Refresh()
 	{
 		var generation = ++_generation;
@@ -172,10 +165,8 @@ public sealed class CheckpointsView
 		_ = LoadSummariesAsync(cwd, _rowState, generation);
 	}
 
-	/// <summary>主题切换后刷新角色文本颜色；图标在 AppIcons 的存活表里统一跟随。</summary>
 	public void ApplyTheme() => AppStyles.ApplyTextColors((Element)View);
 
-	/// <summary>视觉验收：打印行数与每行摘要，供 xvfb 脚本断言面板真的渲染了数据。</summary>
 	public void ReportForSmoke()
 	{
 		var labels = _rows.Children.Count;
@@ -186,7 +177,6 @@ public sealed class CheckpointsView
 			$"diff-visible={(first?.DiffHost.IsVisible == true)} diff-lines={first?.DiffLines ?? 0}");
 	}
 
-	/// <summary>视觉验收：展开第一条快照的变更概览（不打开编辑器）。</summary>
 	public void ExpandFirstDiffForSmoke()
 	{
 		if (_rowState.FirstOrDefault() is { } first)
@@ -273,7 +263,6 @@ public sealed class CheckpointsView
 		return row;
 	}
 
-	/// <summary>后台补齐每行的变更摘要；50 个快照就是 50 次 git，串行跑在后台线程，不冻 UI。</summary>
 	private async Task LoadSummariesAsync(string cwd, List<CheckpointRow> rows, int generation)
 	{
 		await Task.Run(() =>
@@ -355,12 +344,10 @@ public sealed class CheckpointsView
 		});
 	}
 
-	/// <summary>
 	/// 变更概览：固定 180 DIP 的虚拟化行列表（内部滚动由 ItemsControl 自己持有），
 	/// 不把整份 stat 撑进回滚列表。这里不用手写的 ScrollViewer：MewUI 的嵌套平滑滚动
 	/// 会把滚轮判给外层，表现为「有滚动条但滚不动」；ItemsControl 的滚动路径与文件列表一致，
 	/// 是已经验证可用的。
-	/// </summary>
 	private UIElement BuildStatPreview(CheckpointRow row, string stat)
 	{
 		var lines = stat.Split('\n');
@@ -394,7 +381,6 @@ public sealed class CheckpointsView
 				list);
 	}
 
-	/// <summary>完整补丁写到临时文件再交给编辑器：面板不做几万行的文本布局。</summary>
 	private async Task OpenPatchAsync(CheckpointRow row)
 	{
 		var cwd = _cwd();
@@ -492,7 +478,6 @@ public sealed class CheckpointsView
 		Refresh();
 	}
 
-	/// <summary>快照标签：内置三类之外的自定义标签原样显示。</summary>
 	private static string DescribeLabel(string label) => label switch
 	{
 		"" => Strings.CheckpointManual,
@@ -502,7 +487,6 @@ public sealed class CheckpointsView
 		_ => label,
 	};
 
-	/// <summary>把 `3 files changed, 12 insertions(+), 4 deletions(-)` 转成中文摘要。</summary>
 	private static string DescribeStat(string shortStat)
 	{
 		var files = Match(shortStat, @"(\d+) files? changed");
@@ -541,7 +525,6 @@ public sealed class CheckpointsView
 
 		public bool DiffLoaded { get; set; }
 
-		/// <summary>已加载的 stat 行数，供视觉验收断言「没有展开成几万行」。</summary>
 		public int DiffLines { get; set; }
 
 		public Border Root { get; set; } = null!;

@@ -47,7 +47,6 @@ public class CompactionTests : IDisposable
 		Timestamp = timestamp,
 	};
 
-	// ------------------------------------------------------------------ tokens
 
 	[Fact]
 	public void ShouldCompact_RespectsReserveTokensAndEnabledFlag()
@@ -112,7 +111,6 @@ public class CompactionTests : IDisposable
 		Assert.True(ContextTokens.EstimateTokens(message) >= 200);
 	}
 
-	// ------------------------------------------------------------ serialization
 
 	[Fact]
 	public void Serialize_RendersRolesAndTruncatesToolResults()
@@ -182,7 +180,6 @@ public class CompactionTests : IDisposable
 		Assert.Contains("<modified-files>", formatted);
 	}
 
-	// -------------------------------------------------------------- cut points
 
 	[Fact]
 	public void FindCutPoint_PrefersTheTurnStartWhenKeepingRecentTokens()
@@ -247,7 +244,6 @@ public class CompactionTests : IDisposable
 		Assert.Null(Compactor.SummarizationFailure(Assistant("fine")));
 	}
 
-	// ---------------------------------------------------------------- compacting
 
 	[Fact]
 	public async Task CompactAsync_AppendsACompactionEntryAndRewritesTheContext()
@@ -432,5 +428,136 @@ public class CompactionTests : IDisposable
 		Assert.NotNull(result);
 		var prompt = Assert.IsType<UserMessage>(script.Requests[0][1]).Content.Text!;
 		Assert.Contains("Additional focus: focus on the migration", prompt);
+	}
+
+	[Fact]
+	public async Task CompactAsync_SummarizesTheProjectedContextWithoutHiddenAttempts()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("first question", 1));
+
+		// 一次失败尝试随后被 context_edit 隐藏：它不能重新进入摘要请求。
+		var failed = session.AppendMessage(Assistant("FAILED_ATTEMPT_TEXT", 2));
+		session.AppendContextEdit(failed, replacement: null);
+
+		session.AppendMessage(User("second question", 3));
+		var replaced = session.AppendMessage(Assistant("OLD_ATTEMPT_TEXT", 4));
+		session.AppendContextEdit(replaced, MessageContent.FromText("NEW_ATTEMPT_TEXT"));
+		session.AppendMessage(User("third question", 5));
+		session.AppendMessage(Assistant("third answer", 6));
+
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("## Goal\nsummary");
+		script.EnqueueText("## Goal\nturn prefix");
+		var result = await Compactor.CompactAsync(
+			session,
+			ScriptedSessions.Model(),
+			script.Invoke,
+			new StreamOptions(),
+			new CompactionSettings { ReserveTokens = 4096, KeepRecentTokens = 1 });
+
+		Assert.NotNull(result);
+		var prompt = string.Join(
+			"\n",
+			script.Requests.SelectMany(static request => request.OfType<UserMessage>())
+				.Select(static user => user.Content.Text ?? string.Empty));
+		Assert.DoesNotContain("FAILED_ATTEMPT_TEXT", prompt);
+		Assert.Contains("NEW_ATTEMPT_TEXT", prompt);
+		Assert.DoesNotContain("OLD_ATTEMPT_TEXT", prompt);
+	}
+
+	[Fact]
+	public async Task BranchSummarySkipsToolResultsAndSummarizesTheProjectedContext()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		var root = session.AppendMessage(User("root question", 1));
+
+		// 被放弃的路径：隐藏的失败尝试、工具结果、被替换的助手回复。
+		var failed = session.AppendMessage(Assistant("FAILED_ATTEMPT_TEXT", 2));
+		session.AppendContextEdit(failed, replacement: null);
+		session.AppendMessage(new ToolResultMessage
+		{
+			ToolName = "bash",
+			ToolCallId = "call_1",
+			Content = [new TextContent { Text = "TOOL_OUTPUT_BODY" }],
+		});
+		var replaced = session.AppendMessage(Assistant("OLD_ATTEMPT_TEXT", 3));
+		session.AppendContextEdit(replaced, MessageContent.FromText("NEW_ATTEMPT_TEXT"));
+
+		// 嵌套分支摘要的文件清单要带进这次摘要（即使它本身被预算挤掉）。
+		session.AppendBranchSummary("root", "nested branch", details: new JsonObject
+		{
+			["readFiles"] = new JsonArray("nested-read.txt"),
+			["modifiedFiles"] = new JsonArray("nested-edit.txt"),
+		});
+
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("branch summary");
+		var result = await BranchSummarizer.NavigateWithSummaryAsync(
+			session,
+			ScriptedSessions.Model(),
+			script.Invoke,
+			new StreamOptions(),
+			new CompactionSettings(),
+			new BranchSummarySettings(),
+			root);
+
+		Assert.NotNull(result);
+		var prompt = Assert.IsType<UserMessage>(Assert.Single(script.Requests)[1]).Content.Text!;
+		Assert.DoesNotContain("FAILED_ATTEMPT_TEXT", prompt);
+		Assert.DoesNotContain("TOOL_OUTPUT_BODY", prompt);
+		Assert.Contains("NEW_ATTEMPT_TEXT", prompt);
+		Assert.DoesNotContain("OLD_ATTEMPT_TEXT", prompt);
+
+		var appended = Assert.IsType<BranchSummaryEntry>(session.Entries[^1]);
+		var details = Assert.IsType<JsonObject>(appended.Details);
+		Assert.Contains("nested-read.txt",
+			Assert.IsType<JsonArray>(details["readFiles"]).Select(static node => node!.GetValue<string>()));
+		Assert.Contains("nested-edit.txt",
+			Assert.IsType<JsonArray>(details["modifiedFiles"]).Select(static node => node!.GetValue<string>()));
+	}
+
+	[Fact]
+	public async Task SummarizationRequestsUseTheSessionThinkingLevel()
+	{
+		// 推理模型：会话思考级别要传给摘要请求（固定 off 会让支持推理的模型只拿 effort=none，
+		// 部分模型会以 400 拒绝整次压缩/分支摘要）。
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("first question", 1));
+		session.AppendMessage(Assistant("first answer", 2));
+		session.AppendMessage(User("second question", 3));
+
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("summary");
+		var result = await Compactor.CompactAsync(
+			session,
+			ScriptedSessions.Model(),
+			script.Invoke,
+			new StreamOptions(),
+			new CompactionSettings { ReserveTokens = 4096, KeepRecentTokens = 1 },
+			thinkingLevel: ThinkingLevels.High);
+
+		Assert.NotNull(result);
+		Assert.Equal(ThinkingLevels.High, script.LastOptions!.ThinkingLevel);
+
+		var branchSession = SessionManager.Create(_root, SessionsDir);
+		var root = branchSession.AppendMessage(User("root", 1));
+		branchSession.AppendMessage(Assistant("answer", 2));
+		var branchScript = new ScriptedStreamFn();
+		branchScript.EnqueueText("branch summary");
+		var branch = await BranchSummarizer.NavigateWithSummaryAsync(
+			branchSession,
+			ScriptedSessions.Model(),
+			branchScript.Invoke,
+			new StreamOptions(),
+			new CompactionSettings(),
+			new BranchSummarySettings(),
+			root,
+			thinkingLevel: ThinkingLevels.High);
+
+		Assert.NotNull(branch);
+		Assert.Equal(ThinkingLevels.High, branchScript.LastOptions!.ThinkingLevel);
 	}
 }

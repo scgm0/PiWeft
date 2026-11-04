@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 侧栏摘要的磁盘缓存。它换掉的是「每次启动把 300+ MiB 会话全扫一遍」——
 /// 失效判据必须与内存缓存完全一致（长度 / mtime / 首行指纹），否则会显示过期的消息数与预览。
-/// </summary>
 public class SessionSummaryStoreTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-summary-" + Guid.NewGuid().ToString("N")[..8]);
@@ -124,9 +122,7 @@ public class SessionSummaryStoreTests : IDisposable
 	}
 }
 
-/// <summary>
 /// 目录级行为：上一轮运行留下的摘要必须真的被下一轮用上，且文件变了要能失效。
-/// </summary>
 // 改了进程级 PI_CODING_AGENT_DIR：必须与其它同类测试串行。
 [Collection("process-environment")]
 public sealed class SessionCatalogSummaryCacheTests : IDisposable

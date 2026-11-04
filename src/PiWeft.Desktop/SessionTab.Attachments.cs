@@ -8,7 +8,6 @@ public sealed partial class SessionTab
 {
 	private int _loadingAttachments;
 
-	/// <summary>Acceptance and effect are independent in MewUI; setting only Copy rejects native drops.</summary>
 	private void OnFilesDragOver(DragEventArgs e)
 	{
 		e.Accepted = !_disposed && ComposerDrop.CanAccept(e.Data) && (e.AllowedEffects & DragDropEffects.Copy) != 0;
@@ -16,7 +15,6 @@ public sealed partial class SessionTab
 		e.Handled = true;
 	}
 
-	/// <summary>Snapshot the native payload synchronously, then load images off the UI thread.</summary>
 	private void OnFilesDropped(DragEventArgs e)
 	{
 		OnFilesDragOver(e);
@@ -45,7 +43,6 @@ public sealed partial class SessionTab
 	}
 
 
-	/// <summary>Paths stay in the draft; images are read off the UI thread into this tab only.</summary>
 	internal async Task AddFilesAsync(IReadOnlyList<string> paths)
 	{
 		if (_disposed) return;

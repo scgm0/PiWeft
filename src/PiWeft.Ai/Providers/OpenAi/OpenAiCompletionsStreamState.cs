@@ -5,10 +5,8 @@ using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>
 /// 把 OpenAI 兼容的 <c>chat.completion.chunk</c> 事件折叠进一个 <see cref="AssistantMessageEventStream"/>。
 /// 一条流最多包含一个文本块与一个思考块；工具调用按流式索引区分。
-/// </summary>
 internal sealed class OpenAiCompletionsStreamState
 {
 	private readonly Model _model;

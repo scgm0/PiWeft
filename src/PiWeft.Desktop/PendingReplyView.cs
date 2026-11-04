@@ -3,18 +3,14 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 时间线里的等待占位行：消息已经发出去、屏幕上还没有本回合的任何输出时，
 /// 在「回复本该开始出现的位置」先落一行轻量的等待提示。
-///
 /// 为什么要有这一行：首轮等待时正文区只有用户自己的气泡，既看不出请求是否被受理，
 /// 也没有一处可以盯。首 token 一到，真正的流式行就接在这行原来的位置上。
 /// 它不属于会话内容：不进投影、不进模型上下文、不进大纲，只是这一帧的界面。
-///
 /// 节拍放在行里自驱动，而不是等宿主每帧来推：这一行只在等待期存在，而等待期恰恰是宿主
 /// 最没有事件可处理的时候；宿主也就不用为它保存引用，不必担心行被虚拟化器回收后引用发旧。
 /// 看不见就自己停（与 <see cref="StreamPump"/> 同一套闸）。
-/// </summary>
 internal sealed class PendingReplyView : StackPanel
 {
 	private readonly Func<double> _elapsed;
@@ -62,7 +58,6 @@ internal sealed class PendingReplyView : StackPanel
 		Update();
 	}
 
-	/// <summary>这一行现在说的话（供渲染与单测读取）。</summary>
 	internal string TitleText => _title.Text ?? string.Empty;
 
 	internal string PulseText => _pulse.Text ?? string.Empty;

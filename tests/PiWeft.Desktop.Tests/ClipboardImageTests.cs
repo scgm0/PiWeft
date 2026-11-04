@@ -202,7 +202,6 @@ public sealed class ClipboardImageTests : IDisposable
 	{
 		public bool Image { get; init; }
 
-		/// <summary>ReadAsync 的返回值；未指定时给一张默认 PNG。</summary>
 		public IReadOnlyList<ClipboardAttachment>? Result { get; init; }
 
 		public List<(string MimeType, byte[] Data)> Written { get; } = [];

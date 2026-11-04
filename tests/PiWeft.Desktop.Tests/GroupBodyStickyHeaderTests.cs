@@ -6,11 +6,9 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 组体内展开项的标题吸顶（对齐 PiDeck 的 processEntryStickyPolicy）：
 /// 只有「已展开 + 比组体视口更高」的步骤才会在跨过视口顶边时把标题留在那里，
 /// 末尾越过视口后随内容退场；会话里的同名视图不吸顶。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class GroupBodyStickyHeaderTests
 {
@@ -31,7 +29,6 @@ public sealed class GroupBodyStickyHeaderTests
 		DurationMs = 12,
 	};
 
-	/// <summary>补足短步骤：收起长项之后组体仍然装不下一屏，才能验证「回到开头」的落位。</summary>
 	private static ChatEntry[] Steps(params ChatEntry[] members) =>
 		[.. members, .. Enumerable.Range(100, 12).Select(index => Tool(index, 1))];
 
@@ -51,7 +48,6 @@ public sealed class GroupBodyStickyHeaderTests
 			Settle();
 		}
 
-		/// <summary>窗口里这一步由 Render 优先级的回调完成；无窗口 fixture 手动驱动同一收敛。</summary>
 		public void Settle()
 		{
 			Pump(View.View);
@@ -61,7 +57,6 @@ public sealed class GroupBodyStickyHeaderTests
 			Pump(View.View);
 		}
 
-		/// <summary>读者的阅读定位（不是程序化滚动）：同时解除跟底，流式增长不会再把位置拽回末尾。</summary>
 		public void ScrollTo(double offset)
 		{
 			Smooth.RestoreReadingOffset(offset);
@@ -70,14 +65,12 @@ public sealed class GroupBodyStickyHeaderTests
 
 		public void ScrollBody(double delta) => ScrollTo(Body.VerticalOffset + delta);
 
-		/// <summary>组体停在末尾：几何上进入「置底即跟随」。</summary>
 		public void FollowToEnd()
 		{
 			Smooth.JumpToEnd();
 			Settle();
 		}
 
-		/// <summary>把这一项的顶部滚到视口顶边上方 <paramref name="distance"/> 处（距离越大 = 越过越多）。</summary>
 		public void ScrollStepPastTop(StickyExpander step, double distance) =>
 			ScrollBody(step.Bounds.Y - ViewportTop + distance);
 	}

@@ -7,11 +7,9 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.PiMessages;
 
-/// <summary>
 /// <c>pi-messages</c> 协议的流式适配器：向 <c>&lt;baseUrl&gt;/messages</c> 发一次
 /// <c>{ model, context, options }</c> POST，响应是序列化助手事件的 SSE 流。
 /// pi-messages 后端（或 <c>models.json</c> 中 <c>"api": "pi-messages"</c> 的条目）就说这种协议。
-/// </summary>
 public sealed class PiMessagesProvider : IApiProvider
 {
 	public const string ApiId = "pi-messages";

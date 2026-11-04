@@ -5,7 +5,6 @@ namespace PiWeft.Desktop;
 
 public sealed partial class SessionTab
 {
-	/// <summary>仅供 --ui-smoke outline 的原生鼠标验收：报告刻度坐标、跳转后的阅读位置与预览状态。</summary>
 	internal void PrepareOutlineSmoke()
 	{
 		var previous = new Dictionary<string, string>();

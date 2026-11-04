@@ -1,12 +1,9 @@
 namespace PiWeft.CodingAgent.Themes;
 
-/// <summary>
 /// ANSI 256 色索引表（xterm 默认调色板）。pi 的主题可以写 <c>"39"</c> 这样的索引色，
 /// 终端自己渲染它；桌面需要具体 RGB，因此这里内置同一套 xterm 取值。
-/// </summary>
 internal static class AnsiPalette
 {
-	/// <summary>6×6×6 立方体各级分量。</summary>
 	private static readonly int[] CubeLevels = [0, 95, 135, 175, 215, 255];
 
 	private static readonly ThemeColor[] Colors = Build();

@@ -10,10 +10,8 @@ internal interface IPrimarySelection
 	Task PendingPublish { get; }
 }
 
-/// <summary>
 /// PRIMARY 服务选择器：优先使用进程内原生 X11 实现（无外部程序），失败时回退到
 /// xclip / xsel（X11）或 wl-copy / wl-paste（Wayland）。不含 CLIPBOARD 语义。
-/// </summary>
 internal sealed class LinuxPrimarySelection : IPrimarySelection, IDisposable
 {
 	// 原生实现按 ICCCM INCR 分块，单次传输上限可放宽到 8 MiB；外部程序回退路径沿用同一上限。
@@ -55,7 +53,6 @@ internal sealed class LinuxPrimarySelection : IPrimarySelection, IDisposable
 	public void Dispose() => (_inner as IDisposable)?.Dispose();
 }
 
-/// <summary>外部程序后端（xclip / xsel / wl-copy）：原生 X11 实现不可用时的回退。</summary>
 internal sealed class ProcessPrimarySelection : IPrimarySelection, IDisposable
 {
 	private readonly SelectionCommand _command;

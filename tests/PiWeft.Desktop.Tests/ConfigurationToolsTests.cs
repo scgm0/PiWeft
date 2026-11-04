@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 设置页「工具与 Codemode」的语义：默认集、纯名字整体替换、+/- 增量、显式空选择，
 /// 以及 codemode 子键的最小化回写。
-/// </summary>
 public sealed class ConfigurationToolsTests
 {
 	[Fact]

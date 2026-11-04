@@ -4,22 +4,15 @@ using Aprillz.MewUI.Rendering;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 分隔两节的可拖动细线（对齐 PiDeck 的 sash）：静态是一条发丝线，悬停/拖动时提亮，
 /// 光标换成上下箭头。按下时记住「指针在窗口里的位置」和「这一节当时的高度」，
 /// 之后每次移动都换算成这一节应有的高度报给宿主。
-/// </summary>
-/// <remarks>
 /// 为什么不是增量：分隔条跟着它分隔的那一节一起移动，用「相对上一次事件的位移」累加会自我抵消 ——
 /// 节长高把线顶开，指针与新线的距离就变小，实测拖 70 DIP 只长 40 DIP。锚定窗口坐标 + 绝对高度没有这个问题。
-/// <para>
 /// 也没有复用 MewUI 的 <c>SplitPanel</c>：它一次只能分两栏、分隔条固定 8 DIP，且没有「拖完了」的回调 ——
 /// 这里要拖完那一刻才写 desktop.json，移动过程中只改本地高度（每移一像素写一次文件是不能接受的）。
-/// </para>
-/// </remarks>
 internal sealed class PaneSash : FrameworkElement
 {
-	/// <summary>视觉只有一条线，但命中得有 6 DIP 才按得住。</summary>
 	public const double HitThickness = 6;
 
 	private readonly Func<double> _startingHeight;

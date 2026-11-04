@@ -3,16 +3,12 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.CodingAgent.Themes;
 
-/// <summary>
 /// 解析 pi 主题里的颜色写法，六种形式与 <c>docs/themes.md</c> 一致：
 /// 十六进制、<c>oklch(...)</c>、<c>okhsl(...)</c>、256 色索引、<c>vars</c> 变量引用、空字符串（终端默认）。
-/// </summary>
 public static partial class ThemeColorParser
 {
-	/// <summary>变量引用的最大解析深度，用于截断循环引用。</summary>
 	private const int MaxDepth = 16;
 
-	/// <summary>解析一个颜色值。空字符串表示「终端默认」，同样返回 <c>true</c>。</summary>
 	public static bool TryParse(
 		string? value,
 		IReadOnlyDictionary<string, string>? variables,

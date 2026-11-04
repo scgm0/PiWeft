@@ -7,10 +7,8 @@ using Xunit.Abstractions;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// Incremental Markdown control: model mapping, block diff/reuse, streaming paragraph chunks,
 /// selection copy and outer-viewport block recycling.
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class MarkdownViewTests
 {

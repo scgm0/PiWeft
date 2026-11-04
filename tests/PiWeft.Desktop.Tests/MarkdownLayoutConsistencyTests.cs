@@ -7,11 +7,9 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// Markdown 排布一致性：块的行高必须与它内部真正排出来的文本高度一致，否则下一块会压在它上面
 /// （读者看到的就是「偶发的正文错位重叠」）。这里用「父级给的高度 ≥ 子元素排版高度」作为
 /// 不相交的必要条件，覆盖宽度往返与流式追加两种最容易出现缓存/测量不一致的场景。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class MarkdownLayoutConsistencyTests(ITestOutputHelper output)
 {
@@ -31,7 +29,6 @@ public sealed class MarkdownLayoutConsistencyTests(ITestOutputHelper output)
 		return scroll;
 	}
 
-	/// <summary>每个已实现段落都必须落在父级给它的高度里（超出就会叠到下一块上）。</summary>
 	private static void AssertNoOverflow(MarkdownView markdown, string where)
 	{
 		var realized = Find<MarkdownParagraphView>(markdown).ToArray();
@@ -103,6 +100,45 @@ public sealed class MarkdownLayoutConsistencyTests(ITestOutputHelper output)
 		finally
 		{
 			UiLifetime.Release(scroll);
+		}
+	}
+
+	[Fact]
+	public void TableCellsDoNotRemeasureWhenTheGridSnapsTracksToDevicePixels()
+	{
+		// 4 列星号轨道的表格在非整数可用宽度上会得到 215.5 这样的轨道：measure 用未取整的宽度，
+		// arrange 把轨道端点对齐到设备像素（216）。段落曾经把这个一像素差当成版面失效，每轮
+		// arrange 都重新标脏 measure，表格所在的窗口于是陷入 measure → arrange → InvalidateMeasure
+		// → measure 的死循环（打开带表格的会话即 100% CPU 卡死）。
+		// 必须挂在 Window 下：Grid 只对 ILayoutRoundingHost（窗口）做像素对齐，孤立控件直接 Pump
+		// 不会出现这个差值，这也是它以前没被抓到的原因。
+		var table = "| 部分 | 精简前 | 精简后 | 变化 |\n|---|---:|---:|---:|\n" +
+			"| README + DESIGN + docs | 1,950 行 | 782 行 | **-60%** |\n" +
+			"| 源码注释/XML 文档 | 10,774 行 | 5,696 行 | **-47%** |\n" +
+			"| 测试代码 | 54,792 行 / 2,277 项 | 44,466 行 / 1,925 项 | **-18.8% / -15.5%** |\n" +
+			"| scripts | 123 行 | 113 行 | **-8%** |";
+		foreach (var width in new double[] { 950, 1060 })
+		{
+			var markdown = new MarkdownView { Source = table };
+			var scroll = new ScrollViewer().Content(markdown).AutoVerticalScroll().NoHorizontalScroll();
+			var window = new Window().Content(scroll);
+			try
+			{
+				for (var pass = 0; pass < 3; pass++)
+				{
+					scroll.Measure(new Size(width, 700));
+					scroll.Arrange(new Rect(0, 0, width, 700));
+				}
+				var cells = Find<MarkdownParagraphView>(markdown).ToArray();
+				Assert.NotEmpty(cells);
+				Assert.All(cells, cell => Assert.False(cell.IsMeasureDirty,
+					$"w={width}: 单元格正文排布后又标脏 measure，布局不会收敛"));
+			}
+			finally
+			{
+				UiLifetime.Release(scroll);
+				window.Dispose();
+			}
 		}
 	}
 }

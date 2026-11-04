@@ -11,15 +11,12 @@ using PiWeft.CodingAgent.Themes;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// 会话、发现与导出相关的 RPC 命令。它们对应 pi 的 <c>rpc-commands.md</c>：同样的命令名、
 /// 同样的响应形状与数据字段，因此按 pi 写的客户端无需改动即可使用。
-/// </summary>
 public sealed partial class CliRunner
 {
 	private bool _autoRetry;
 
-	/// <summary><c>get_state</c> 的数据：状态栏与侧栏一次往返就能拿到的全部信息。</summary>
 	private JsonObject StateRecord(CodingAgentSession session) => new()
 	{
 		["model"] = ModelRecordWithThinking(session.Model),
@@ -74,7 +71,6 @@ public sealed partial class CliRunner
 
 	private static string QueueModeText(AgentQueueMode mode) => mode == AgentQueueMode.All ? "all" : "one-at-a-time";
 
-	/// <summary><c>get_session_stats</c> 的数据。</summary>
 	private JsonObject SessionStatsRecord(CodingAgentSession session)
 	{
 		var entries = session.Session.Entries;
@@ -140,14 +136,12 @@ public sealed partial class CliRunner
 		return stats;
 	}
 
-	/// <summary><c>get_entries</c> 的数据：按追加顺序的条目，以及当前叶子。</summary>
 	private static JsonObject EntriesRecord(SessionManager manager, IReadOnlyList<SessionEntry> entries) => new()
 	{
 		["entries"] = new JsonArray([.. entries.Select(EntryRecord)]),
 		["leafId"] = manager.LeafId,
 	};
 
-	/// <summary><c>get_tree</c> 的数据。</summary>
 	private static JsonObject TreeRecord(SessionManager manager) => new()
 	{
 		["tree"] = new JsonArray([.. manager.BuildTree().Select(TreeNodeRecord)]),
@@ -162,10 +156,8 @@ public sealed partial class CliRunner
 		["labelTimestamp"] = node.LabelTimestamp,
 	};
 
-	/// <summary>一个会话条目，JSON 形状与会话文件一致。</summary>
 	private static JsonNode EntryRecord(SessionEntry entry) => JsonNode.Parse(SessionJson.Serialize(entry))!;
 
-	/// <summary><c>get_commands</c> 的数据：可以通过 <c>prompt</c> 运行的提示词模板与技能。</summary>
 	private JsonObject CommandsRecord(CodingAgentSession session)
 	{
 		var commands = new List<JsonNode?>();
@@ -195,10 +187,8 @@ public sealed partial class CliRunner
 		return new JsonObject { ["commands"] = new JsonArray([.. commands]) };
 	}
 
-	/// <summary>
 	/// <c>get_resources</c> / <c>reload_resources</c> 的数据：已解析的技能、提示词模板、主题与包。
 	/// 桌面管理界面与 <c>pi</c> 的 RPC 客户端共用同一份形状。
-	/// </summary>
 	private static JsonObject ResourcesRecord(CodingAgentSession session)
 	{
 		var skills = new List<JsonNode?>(session.Resources.Skills.Count);
@@ -273,7 +263,6 @@ public sealed partial class CliRunner
 		_ => "user",
 	};
 
-	/// <summary>资源元数据，对应 pi 的 <c>SourceInfo</c>。</summary>
 	private JsonObject SourceInfoRecord(string path, string source)
 	{
 		// agent 目录下的资源属于用户级，其余位于项目下的属于项目级。
@@ -289,7 +278,6 @@ public sealed partial class CliRunner
 		};
 	}
 
-	/// <summary><c>cycle_model</c>：切换到轮换列表中的下一个模型。</summary>
 	private JsonObject? CycleModel(CodingAgentSession session)
 	{
 		var models = CycleModels(session);
@@ -314,7 +302,6 @@ public sealed partial class CliRunner
 		};
 	}
 
-	/// <summary><c>cycle_thinking_level</c>：当前模型支持的下一个思考级别。</summary>
 	private static JsonObject? CycleThinkingLevel(CodingAgentSession session)
 	{
 		var levels = ThinkingLevelResolver.GetSupported(session.Model);
@@ -330,7 +317,6 @@ public sealed partial class CliRunner
 		return new JsonObject { ["level"] = session.ThinkingLevel };
 	}
 
-	/// <summary>轮换遍历的模型：环境暴露的全部模型（可受 <c>--models</c> 限制），且一定包含当前模型。</summary>
 	private List<Model> CycleModels(CodingAgentSession session)
 	{
 		var models = new List<Model>(environment.ListModels());
@@ -350,7 +336,6 @@ public sealed partial class CliRunner
 		return models;
 	}
 
-	/// <summary><c>export_html</c>：把会话渲染成自包含的 HTML 文件。</summary>
 	private string ExportHtml(CodingAgentSession session, string? outputPath)
 	{
 		var path = outputPath is { Length: > 0 }

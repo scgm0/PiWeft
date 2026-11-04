@@ -5,10 +5,7 @@ using Aprillz.MewUI;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 内嵌字体：把界面用到的字体打进程序集，渲染效果不再取决于机器上装了什么。
-/// </summary>
-/// <remarks>
 /// <list type="bullet">
 /// <item>界面正文用 <b>HarmonyOS Sans SC</b> 的官方静态字重（Regular / Bold）。早前用 fontTools
 /// 把三个字重合成过一个可变字体，但插值后的笔画粗细在原字重之间不够均匀，因此改回官方文件；
@@ -21,24 +18,18 @@ namespace PiWeft.Desktop;
 /// 另外给 Regular 注册一个显式的字族别名 <c>HarmonyOS_Sans_SC_Regular</c>，并把它设为
 /// 全局默认字体：即使系统里也装了同名字族，默认正文也一定落到内嵌的 Regular 文件。
 /// 许可原文随包放在 <c>Resources/fonts</c>；注册失败时退回字体栈里的 <c>sans-serif</c>/<c>monospace</c>。
-/// </remarks>
 public static class AppFonts
 {
 	private const string ResourcePrefix = "PiWeft.Desktop.Resources.fonts.";
 
-	/// <summary>界面正文字体族（友好的字族名，供显式设置字体的文本使用）。</summary>
 	public const string UiFamily = "HarmonyOS Sans SC";
 
-	/// <summary>
 	/// 默认正文字体族：Regular 文件的显式别名。默认样式、窗口与框架自绘对话框都用它，
 	/// 避免系统同名可变字体抢占，也避免字重回退到 Bold。
-	/// </summary>
 	public const string DefaultUiFamily = "HarmonyOS_Sans_SC_Regular";
 
-	/// <summary>等宽字体族（Nerd Font 版，含 powerline 图标）。</summary>
 	public const string MonoFamily = "Maple Mono NF CN";
 
-	/// <summary>一格滚轮的位移（DIP）：与 Chromium/Electron 的 ~100px 对齐。</summary>
 	internal const double ScrollWheelStepDip = 100;
 
 	private static bool _registered;
@@ -46,25 +37,18 @@ public static class AppFonts
 	private static bool _regularLoaded;
 	private static bool _monoLoaded;
 
-	/// <summary>代码与工具输出使用的字体族；注册失败时退回系统等宽字体。</summary>
 	public static string Mono => _monoLoaded ? MonoFamily : "monospace";
 
-	/// <summary>界面正文使用的字体族；注册失败时交给平台默认字体。</summary>
 	public static string Ui => _uiLoaded ? UiFamily : ThemeMetrics.SystemFontFamily;
 
-	/// <summary>全局默认正文字体族；Regular 注册失败时交给平台默认字体。</summary>
 	public static string DefaultUi => _regularLoaded ? DefaultUiFamily : ThemeMetrics.SystemFontFamily;
 
-	/// <summary>界面字体的展示名：默认是官方 Regular 文件。</summary>
 	public static string UiDisplayName => _regularLoaded ? $"{UiFamily} Regular" : Ui;
 
-	/// <summary>是否成功内嵌了正文字体。</summary>
 	public static bool HasUiFont => _uiLoaded;
 
-	/// <summary>是否成功内嵌了等宽字体。</summary>
 	public static bool HasMonoFont => _monoLoaded;
 
-	/// <summary>注册内嵌字体。必须在创建任何控件之前调用一次。</summary>
 	public static void Register()
 	{
 		if (_registered)

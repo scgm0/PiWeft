@@ -2,7 +2,6 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>为需要安装级 device ID 的 OAuth 流程提供稳定 UUID。</summary>
 public static partial class OAuthDeviceId
 {
 	public static string GetOrCreate(string? agentDir = null)

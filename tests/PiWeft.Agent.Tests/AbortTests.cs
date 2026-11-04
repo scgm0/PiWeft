@@ -4,7 +4,6 @@ using Xunit;
 
 namespace PiWeft.Agent.Tests;
 
-/// <summary>用户中断（<see cref="Agent.Abort"/>）必须以正常的终止事件收尾，而不是把取消抛给调用方。</summary>
 public class AbortTests
 {
 	private static AgentTool WaitingTool(TaskCompletionSource started) => new()

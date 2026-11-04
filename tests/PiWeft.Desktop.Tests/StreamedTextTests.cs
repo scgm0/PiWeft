@@ -6,10 +6,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 流式文本快照：整篇物化不再发生在每帧投影里（诊断面板「每帧分配」的主项），
 /// 但正文、思考、预览与增量 Markdown 的结果必须与普通字符串完全一致。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class StreamedTextTests
 {

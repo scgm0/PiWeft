@@ -479,10 +479,8 @@ public class OpenAiCompletionsProviderTests
 	}
 }
 
-/// <summary>
 /// 超时只覆盖「等响应头」。pi 1.2.0 修的就是这个：固定时限把长时间思考的流中途切断。
 /// 这里让响应头立刻返回、正文慢慢产出，并要求结果完整。
-/// </summary>
 public class HeaderOnlyTimeoutTests
 {
 	private sealed class SlowBodyHandler(string body, TimeSpan bodyDelay) : HttpMessageHandler

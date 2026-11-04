@@ -4,7 +4,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>右缘定位轴的刻度规划与当前项解析（PiDeck planRailTicks / outlineRailActive 的契约）。</summary>
 [Collection("mewui-controls")]
 public sealed class OutlineRailTests
 {

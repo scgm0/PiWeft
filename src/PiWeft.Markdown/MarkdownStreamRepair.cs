@@ -1,13 +1,11 @@
 namespace PiWeft.Markdown;
 
-/// <summary>
 /// Computes provisional closers for an unfinished streaming tail, so unclosed emphasis, code
 /// spans and link URLs render like the finished document while tokens are still arriving. The
 /// repair only appends invisible markup characters at the very end of the tail: it cannot create
 /// blocks or change text before the last one, and the finalized parse replaces the repaired
 /// model wholesale. Fences, indented code and HTML markup render acceptably while unclosed, so
 /// they are skipped rather than repaired.
-/// </summary>
 internal static class MarkdownStreamRepair
 {
 	private const int MaxOpenConstructs = 64;
@@ -24,7 +22,6 @@ internal static class MarkdownStreamRepair
 
 	private readonly record struct OpenConstruct(ConstructKind Kind, char Delimiter, int Count);
 
-	/// <summary>Returns the closing markers to append to <paramref name="text"/>, or empty.</summary>
 	public static string ComputeSuffix(ReadOnlySpan<char> text)
 	{
 		List<OpenConstruct> open = new(8);

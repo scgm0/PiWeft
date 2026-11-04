@@ -120,10 +120,8 @@ public class MessageJsonTests
 	}
 }
 
-/// <summary>
 /// JSON 写出保留中文与必要的 JSON 引号转义，避免可读内容变成 \uXXXX。
 /// 源生成上下文、消息序列化与 JsonNode 四个入口共用同一编码器配置，合并为理论用例 + 引号用例。
-/// </summary>
 public class JsonEscapingTests
 {
 	private const string Command = "echo \"=== 我这条会话的启动时间 ===\"";

@@ -7,10 +7,8 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>
 /// Drives <c>pi login</c> / <c>pi auth</c> through the real executable against a stub OAuth server, so the device-code
 /// flow, the credential file, and the printed output are all exercised the way a user hits them.
-/// </summary>
 public sealed class AuthCommandProcessTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-login-" + Guid.NewGuid().ToString("N")[..8]);
@@ -245,7 +243,6 @@ public sealed class AuthCommandProcessTests : IDisposable
 		Assert.Equal(0, key.ExitCode);
 		Assert.Equal("sk-stored-key", key.StdOut.Trim());
 
-		// --credentials 把凭据一起交出来（非 JSON 模式下就是凭据本身）。
 		var credentials = await RunAsync("auth", "check", "--provider", "deepseek", "--credentials");
 		Assert.Equal("sk-stored-key", credentials.StdOut.Trim());
 	}

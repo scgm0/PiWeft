@@ -4,7 +4,6 @@ using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.Google;
 
-/// <summary>写出 Google Generative Language（Gemini）的请求体。</summary>
 internal static class GoogleWire
 {
 	public static void WriteRequest(

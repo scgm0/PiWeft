@@ -6,15 +6,11 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 外部会话导入：发现 → 转换 → 落盘。
-/// <para>
 /// 夹具按 Claude Code 与 Codex CLI 的**磁盘格式**手写（字段名取自这两个工具的公开实现，
 /// 也与 PiDeck 的对应 importer 一致），因为这些工具的会话库不一定存在于开发机上。
 /// 夹具之外还有一条「产物能被 <see cref="SessionManager"/> 正常打开」的断言 ——
 /// 格式对不对，最终由 pi 自己的读取端判定。
-/// </para>
-/// </summary>
 public class SessionImportTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-import-" + Guid.NewGuid().ToString("N")[..8]);
@@ -49,7 +45,6 @@ public class SessionImportTests : IDisposable
 		return path;
 	}
 
-	/// <summary>Claude Code 的一段完整对话：用户 → 助手思考+工具调用 → 工具结果 → 助手结论。</summary>
 	private string WriteClaudeSession(string sessionId = "sess-claude-1")
 	{
 		var lines = new[]
@@ -66,7 +61,6 @@ public class SessionImportTests : IDisposable
 		return WriteFile(Path.Combine(".claude", "projects", "-tmp-project", sessionId + ".jsonl"), lines);
 	}
 
-	/// <summary>Codex 的一段完整对话：session_meta → 用户 → 思考 → 调用 → 输出 → 结论。</summary>
 	private string WriteCodexSession(string sessionId = "sess-codex-1")
 	{
 		var lines = new[]
@@ -84,8 +78,8 @@ public class SessionImportTests : IDisposable
 		return WriteFile(Path.Combine(".codex", "sessions", "2026", "10", "21", "rollout-1.jsonl"), lines);
 	}
 
-	/// <summary>只做 JSON 字符串转义。不用 <c>JsonSerializer.Serialize</c>：
-	/// 反射式序列化在裁剪/AOT 下会告警，而这里只需要字符串的一种转义。</summary>
+	/// 只做 JSON 字符串转义。不用 <c>JsonSerializer.Serialize</c>：
+	/// 反射式序列化在裁剪/AOT 下会告警，而这里只需要字符串的一种转义。
 	private static string Json(string value)
 	{
 		var builder = new System.Text.StringBuilder(value.Length + 8).Append('"');
@@ -103,7 +97,6 @@ public class SessionImportTests : IDisposable
 		return builder.Append('"').ToString();
 	}
 
-	// ---------------------------------------------------------------- 发现
 
 	[Fact]
 	public void DiscoveryListsBothSourcesAndFiltersByProject()
@@ -150,7 +143,6 @@ public class SessionImportTests : IDisposable
 		Assert.Empty(SessionImportService.Discover("claude", home: _home));
 	}
 
-	// ---------------------------------------------------------------- Claude 转换
 
 	[Fact]
 	public void ClaudeSessionConvertsToPiEntries()
@@ -197,7 +189,6 @@ public class SessionImportTests : IDisposable
 		Assert.Equal(source, session.SourcePath);
 	}
 
-	// ---------------------------------------------------------------- Codex 转换
 
 	[Fact]
 	public void CodexSessionConvertsToPiEntries()
@@ -250,7 +241,6 @@ public class SessionImportTests : IDisposable
 		Assert.Equal("旧版 CLI 的用户输入", Assert.IsType<UserMessage>(messages[0]).Content.Text);
 	}
 
-	// ---------------------------------------------------------------- 落盘
 
 	[Fact]
 	public void ImportWritesAReadablePiSession()

@@ -6,7 +6,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>Custom endpoints and metadata overrides from <c>models.json</c>.</summary>
 public class ModelsFileTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-models-" + Guid.NewGuid().ToString("N")[..8]);

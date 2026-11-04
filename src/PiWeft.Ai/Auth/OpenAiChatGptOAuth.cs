@@ -7,7 +7,6 @@ using System.Web;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>OpenAI ChatGPT 订阅 OAuth（动态客户端 + PKCE + 回环回调）。</summary>
 public static class OpenAiChatGptOAuth
 {
 	public const string ProviderKey = "openai";

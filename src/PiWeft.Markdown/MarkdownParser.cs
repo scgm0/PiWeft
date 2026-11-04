@@ -14,23 +14,19 @@ using Markdig.Syntax.Inlines;
 
 namespace PiWeft.Markdown;
 
-/// <summary>Maps a Markdig document to the small immutable model the view renders incrementally.</summary>
 public static class MarkdownParser
 {
-	/// <summary>Layout-only outer spacing inserted around inline-code runs.</summary>
 	internal const char InlineCodeMargin = '\u2009';
 
 	// Options carrying a delegate are rare; weak keys keep the cache from growing on every assignment.
 	private static readonly ConditionalWeakTable<MarkdownOptions, MarkdownPipeline> Pipelines = [];
 	private static readonly MarkdownOptions DefaultOptions = new();
 
-	/// <summary>
 	/// Parses <paramref name="source"/>, reusing the tail of <paramref name="previous"/> when the new
 	/// text only appended to it. Only the last top-level block is re-parsed, so a streamed frame
 	/// costs time proportional to the appended text instead of the whole message. While
 	/// <paramref name="streaming"/> is set, the unfinished tail receives provisional closers so
 	/// unclosed syntax renders like the finished document.
-	/// </summary>
 	public static MarkdownDocument Parse(string source, MarkdownOptions? options = null, MarkdownDocument? previous = null, bool streaming = false)
 	{
 		ArgumentNullException.ThrowIfNull(source);
@@ -44,11 +40,9 @@ public static class MarkdownParser
 		return ParseFull(source, options, streaming);
 	}
 
-	/// <summary>
 	/// Parses a source that only grows by appends. Reference equality with the previous
 	/// document's builder proves the append-only property, so the incremental path needs neither
 	/// a full-source prefix comparison nor a full-string materialization.
-	/// </summary>
 	public static MarkdownDocument Parse(StringBuilder source, MarkdownOptions? options = null, MarkdownDocument? previous = null, bool streaming = false)
 	{
 		ArgumentNullException.ThrowIfNull(source);
@@ -221,11 +215,9 @@ public static class MarkdownParser
 		}
 	}
 
-	/// <summary>
 	/// True when the text may contain a Markdown link reference definition. The scan is
 	/// deliberately conservative: a false positive only makes that frame take the full parse
 	/// path, while a false negative could leave earlier link URLs stale.
-	/// </summary>
 	internal static bool ContainsLinkReferenceDefinition(ReadOnlySpan<char> text)
 	{
 		int lineStart = 0;
@@ -614,11 +606,9 @@ public static class MarkdownParser
 		"[!NOTE]", "[!TIP]", "[!IMPORTANT]", "[!WARNING]", "[!CAUTION]",
 	];
 
-	/// <summary>
 	/// GitHub alerts arrive as a plain QuoteBlock in Markdig 1.x: the first paragraph starts with
 	/// the marker. Detection reads the mapped model text, which is robust against the inline
 	/// parser splitting the marker across literal runs.
-	/// </summary>
 	private static string? DetectAlert(List<MarkdownBlock> children)
 	{
 		if (children.Count == 0 || children[0].Kind is not (MarkdownBlockKind.Paragraph or MarkdownBlockKind.Heading))
@@ -733,11 +723,9 @@ public static class MarkdownParser
 			Alert = block.Alert,
 		};
 
-	/// <summary>
 	/// Scheme gate for <see cref="MarkdownOptions.LinkSchemes"/>: absolute URLs with a scheme
 	/// outside the allowlist render as plain text (links and images alike); anchors, relative
 	/// URLs and unset options always pass. The host still decides what to open on activation.
-	/// </summary>
 	private static bool IsLinkAllowed(MarkdownOptions options, string? url)
 	{
 		if (options.LinkSchemes is not { } schemes || string.IsNullOrEmpty(url) || url.StartsWith('#'))
@@ -857,11 +845,9 @@ public static class MarkdownParser
 		}
 	}
 
-	/// <summary>
 	/// Maps one inline HTML tag of the <see cref="MarkdownOptions.UseHtmlFormatting"/> whitelist to
 	/// run styling. Returns false for anything outside the whitelist so it stays literal. Opening
 	/// and closing tags adjust <paramref name="state"/>; a whole comment node is simply dropped.
-	/// </summary>
 	private static bool ApplyHtmlTag(HtmlInline html, ref MarkdownInlineState state, List<MarkdownRun> runs)
 	{
 		string tag = html.Tag ?? string.Empty;
@@ -1111,7 +1097,6 @@ public static class MarkdownParser
 		bool Image);
 }
 
-/// <summary>Assigns stable hashes bottom-up after mapping.</summary>
 internal static class MarkdownHashBuilder
 {
 	public static void Assign(IReadOnlyList<MarkdownBlock> blocks)

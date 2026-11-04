@@ -3,11 +3,9 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 消息区右缘的定位轴：一条真实用户消息一枚刻度，悬浮/键盘聚焦预览，点击跳转。
 /// 悬浮预览按 <see cref="HoverHints.Delay"/> 延迟出现（与其它悬停提示一致），
 /// 键盘聚焦则立即出现；预览交给 Popup 定位，不参与消息测量，也不拦截正文的鼠标命中。
-/// </summary>
 internal sealed class ConversationOutline : IDisposable
 {
 	internal readonly record struct Item(int RowIndex, string Title, string Time);
@@ -170,7 +168,6 @@ internal sealed class ConversationOutline : IDisposable
 		_rows[next].Focus();
 	}
 
-	/// <summary>指针悬浮：刻度立即高亮（与按钮悬停一致），文字预览等 <see cref="HoverHints.Delay"/>。</summary>
 	internal void Hover(int railIndex)
 	{
 		if (!SelectRail(railIndex)) return;
@@ -179,7 +176,6 @@ internal sealed class ConversationOutline : IDisposable
 		_hoverDelay.Start();
 	}
 
-	/// <summary>键盘聚焦与测试入口：立即显示预览，不叠加鼠标的悬停延迟。</summary>
 	internal void Preview(int railIndex)
 	{
 		if (!SelectRail(railIndex)) return;
@@ -188,10 +184,8 @@ internal sealed class ConversationOutline : IDisposable
 		ShowPreview(railIndex);
 	}
 
-	/// <summary>是否有一个悬浮预览正在等待延迟到达。</summary>
 	internal bool PreviewPending => _pendingRail >= 0;
 
-	/// <summary>记录当前刻度并更新标题/时间与高亮；越界时返回 false。</summary>
 	private bool SelectRail(int railIndex)
 	{
 		if (railIndex < 0 || railIndex >= _rendered.Length) return false;

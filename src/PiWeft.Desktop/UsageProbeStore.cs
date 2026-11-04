@@ -4,7 +4,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
 
-/// <summary>单 provider 的用量查询配置（usage-probes.json 的 providers 映射条目）。</summary>
 internal sealed record UsageProbeProviderConfig(
 	bool Enabled = false,
 	string Template = "",
@@ -19,21 +18,17 @@ internal sealed record UsageProbeProviderConfig(
 	int TimeoutSecs = UsageProbeStore.DefaultTimeoutSeconds,
 	int IntervalMinutes = UsageProbeStore.DefaultIntervalMinutes);
 
-/// <summary>内置候选自动识别结果（弹窗「已内置」徽标与说明文案）。</summary>
 internal sealed record UsageProbeRecognition(string TemplateId, string Category);
 
-/// <summary>usage-probes.json 的读取结果：providers 映射、旧 probes 数组与校验错误（不含密钥回显）。</summary>
 internal sealed record UsageProbeDocument(
 	IReadOnlyDictionary<string, UsageProbeProviderConfig> Providers,
 	IReadOnlyList<UsageProbeCandidate> Probes,
 	IReadOnlyList<string> Errors,
 	string Path);
 
-/// <summary>
 /// 用量查询配置文件（与 PiDeck 同名同结构）：
 /// <c>~/.pi/agent/usage-probes.json</c>，顶层 providers 由弹窗维护、probes 数组供 AI/高级用户手写。
 /// 旧版 <c>usage-queries.json</c> 只读兼容：自动识别模式下优先使用，显式选择模板后让位。
-/// </summary>
 internal static class UsageProbeStore
 {
 	public const string FileName = "usage-probes.json";
@@ -48,7 +43,6 @@ internal static class UsageProbeStore
 		AllowTrailingCommas = true,
 	};
 
-	/// <summary>声明式模板 id（用户可选）；内置候选 templateId 也允许出现在配置里。</summary>
 	public static readonly IReadOnlyList<string> DeclarativeTemplates = ["general", "newapi", "cookie", "sub2api"];
 
 	public static bool IsDeclarativeTemplate(string id) => DeclarativeTemplates.Contains(id, StringComparer.Ordinal);
@@ -56,7 +50,6 @@ internal static class UsageProbeStore
 	public static bool IsKnownTemplate(string id) =>
 		IsDeclarativeTemplate(id) || UsageProbes.Candidates.Any(candidate => candidate.TemplateId == id);
 
-	/// <summary>读取配置；文件缺失/损坏都安全返回空文档 + 可读错误，不抛异常。</summary>
 	public static UsageProbeDocument Load(string agentDir)
 	{
 		var path = System.IO.Path.Combine(agentDir, FileName);
@@ -101,7 +94,6 @@ internal static class UsageProbeStore
 		return new UsageProbeDocument(providers, probes, errors, path);
 	}
 
-	/// <summary>按 provider 名读取一条配置；未配置返回 null。</summary>
 	public static UsageProbeProviderConfig? LoadProvider(string agentDir, string provider) =>
 		Load(agentDir).Providers.GetValueOrDefault(provider);
 
@@ -124,7 +116,6 @@ internal static class UsageProbeStore
 		return config;
 	}
 
-	/// <summary>写回用的 JSON 片段：只写已知字段，空字段省略（enabled 始终写，显式关闭必须持久化）。</summary>
 	public static JsonObject ToJson(UsageProbeProviderConfig config)
 	{
 		var entry = new JsonObject { ["enabled"] = config.Enabled };
@@ -146,7 +137,6 @@ internal static class UsageProbeStore
 		return entry;
 	}
 
-	/// <summary>保存前校验（渲染层数据不可信）：非法配置必须拒绝写盘。</summary>
 	public static void Validate(UsageProbeProviderConfig config)
 	{
 		if (config.TimeoutSecs is < 1 or > 300 || config.IntervalMinutes is < 0 or > 1440)
@@ -162,7 +152,6 @@ internal static class UsageProbeStore
 			if (value.Any(char.IsControl)) throw new ArgumentException(Strings.UsageInvalidConfig);
 	}
 
-	/// <summary>模板必填字段的提前校验（保存前给人话提示，而不是等查询时才报错）。</summary>
 	public static string? TemplateError(UsageProbeProviderConfig config) => config.Template switch
 	{
 		"newapi" when config.AccessToken.Trim().Length == 0 || config.UserId.Trim().Length == 0 => Strings.UsageNewApiNeeds,
@@ -170,7 +159,6 @@ internal static class UsageProbeStore
 		_ => null,
 	};
 
-	/// <summary>内置模板自动识别：命中第一个带 templateId 的候选。</summary>
 	public static UsageProbeRecognition? Recognize(Model model)
 	{
 		var api = NormalizeApi(model.Api);
@@ -184,7 +172,6 @@ internal static class UsageProbeStore
 		return null;
 	}
 
-	/// <summary>旧版 usage-queries.json 的 per-provider 配置转成一条候选（只读兼容）。</summary>
 	public static UsageProbeCandidate? LoadLegacyCandidate(string agentDir, string provider, ICollection<string>? errors = null)
 	{
 		var path = System.IO.Path.Combine(agentDir, LegacyFileName);
@@ -239,7 +226,6 @@ internal static class UsageProbeStore
 		}
 	}
 
-	/// <summary>旧探针数组：AI/高级用户手写，运行时按 baseUrl 合并探测；非法条目跳过并记录。</summary>
 	public static IReadOnlyList<UsageProbeCandidate> ReadProbes(JsonNode? node, ICollection<string> errors)
 	{
 		if (node is null) return [];

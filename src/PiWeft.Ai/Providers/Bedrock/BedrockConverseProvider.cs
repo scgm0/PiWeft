@@ -5,11 +5,9 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.Bedrock;
 
-/// <summary>
 /// Bedrock Converse API（<c>bedrock-converse-stream</c>）的流式适配器。请求用 SigV4 签名，
 /// 响应是 AWS 二进制事件流而非 SSE；两者都在本程序集内实现，因此
 /// 不需要 AWS SDK。
-/// </summary>
 public sealed class BedrockConverseProvider : IApiProvider
 {
 	public const string ApiId = "bedrock-converse-stream";
@@ -171,7 +169,6 @@ public sealed class BedrockConverseProvider : IApiProvider
 		return request;
 	}
 
-	/// <summary>某个模型的 Converse 流式端点。</summary>
 	internal static string BuildUrl(Model model)
 	{
 		var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
@@ -181,7 +178,6 @@ public sealed class BedrockConverseProvider : IApiProvider
 		return $"{baseUrl}/model/{Uri.EscapeDataString(model.Id)}/converse-stream";
 	}
 
-	/// <summary>先从端点主机名推导区域，再从环境变量推导。</summary>
 	internal static string ResolveRegion(Model model)
 	{
 		if (!string.IsNullOrEmpty(model.BaseUrl) &&
@@ -201,7 +197,6 @@ public sealed class BedrockConverseProvider : IApiProvider
 			?? "us-east-1";
 	}
 
-	/// <summary>Bedrock 只对 Anthropic 模型使用基于预算的思考配置。</summary>
 	internal static int? ResolveThinkingBudget(Model model, StreamOptions options)
 	{
 		if (!model.Reasoning || !model.Id.StartsWith("anthropic.", StringComparison.OrdinalIgnoreCase))

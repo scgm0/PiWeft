@@ -5,10 +5,8 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// The sidebar and the single-instance guard. Both run headless: the catalog reads the same session files the CLI
 /// writes, and the guard is exercised by acquiring the same key twice.
-/// </summary>
 [Collection("process-environment")]
 public class ShellTests : IDisposable
 {
@@ -325,7 +323,6 @@ public class ShellTests : IDisposable
 	}
 }
 
-/// <summary>跨会话内容搜索：只扫最近若干文件、命中即停，返回围绕关键字的摘要。</summary>
 [Collection("process-environment")]
 public class SessionContentSearchTests : IDisposable
 {
@@ -463,10 +460,8 @@ public class SessionContentSearchTests : IDisposable
 	}
 }
 
-/// <summary>
 /// 图标资源与源码的一致性：界面代码里写错一个图标名，MewUI 会在构建界面时抛异常并被 UI 线程吞掉 ——
 /// 表现是「某个标签页打不开」这种极难定位的故障（设置面板就曾因为缺 rotate-ccw.svg 而整个打不开）。
-/// </summary>
 public class IconResourceTests
 {
 	[Fact]
@@ -495,7 +490,6 @@ public class IconResourceTests
 			$"这些图标被代码引用但缺少 Resources/icons/*.svg：{string.Join("、", missing)}");
 	}
 
-	/// <summary>测试进程在 bin 目录下运行，向上找到仓库里的 src/PiWeft.Desktop。</summary>
 	private static string FindDesktopProject()
 	{
 		var directory = new DirectoryInfo(AppContext.BaseDirectory);

@@ -3,11 +3,9 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Markdown;
 
-/// <summary>
 /// Vertical list rows with a fixed marker column. Row heights are cached; a streamed last item only
 /// re-measures its own row instead of the whole list, which a star-column Grid would do on every
 /// pass.
-/// </summary>
 internal sealed class MarkdownListPanel : Panel
 {
 	private readonly List<ListRow> _rows = [];

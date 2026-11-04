@@ -3,14 +3,10 @@ using System.Text;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 保证每个用户只有一个实例：第二次启动会立即退出（并尽量让已运行的实例把窗口带到前台），
 /// 而不是让两个窗口同时编辑同一批会话。
-/// </summary>
-/// <remarks>
 /// Unix 使用 agent 目录下的 socket：已有实例持有时绑定会失败（<c>EADDRINUSE</c>），该 socket 同时充当激活通道；
 /// Windows 没有这种 socket，改用命名互斥体。
-/// </remarks>
 public sealed class SingleInstance : IDisposable
 {
 	// 继续与改名前的桌面实例共用锁，防止新旧程序同时编辑同一个项目。
@@ -30,7 +26,6 @@ public sealed class SingleInstance : IDisposable
 		_socketPath = socketPath;
 	}
 
-	/// <summary>本进程是否为第一个实例。</summary>
 	public bool IsFirstInstance { get; private init; }
 
 	public static SingleInstance Acquire(string instanceKey)
@@ -70,7 +65,6 @@ public sealed class SingleInstance : IDisposable
 		return new SingleInstance(mutex: null, socket: null, path) { IsFirstInstance = false };
 	}
 
-	/// <summary>请求已运行的实例把窗口带到前台。尽力而为：具体行为由界面决定。</summary>
 	public static void SignalRunningInstance(string instanceKey)
 	{
 		if (OperatingSystem.IsWindows())
@@ -90,7 +84,6 @@ public sealed class SingleInstance : IDisposable
 		}
 	}
 
-	/// <summary>等待后续启动发来的激活请求。</summary>
 	public void Listen(Action onActivate)
 	{
 		if (_socket is null)
@@ -153,7 +146,6 @@ public sealed class SingleInstance : IDisposable
 		_listenCancellation.Dispose();
 	}
 
-	/// <summary>该 socket 路径上是否真的有进程在监听。</summary>
 	private static bool IsLive(string path)
 	{
 		using var probe = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);

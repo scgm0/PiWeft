@@ -7,13 +7,11 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent.Migrations;
 
-/// <summary>一次启动期迁移的结果。宿主负责把警告写进日志，迁移本身不做 I/O 之外的输出。</summary>
 public sealed record MigrationReport(IReadOnlyList<string> MigratedAuthProviders, IReadOnlyList<string> Warnings)
 {
 	public static MigrationReport Empty { get; } = new([], []);
 }
 
-/// <summary>
 /// 启动期的一次性迁移，镜像 pi 的 <c>migrations.ts</c>：
 /// <list type="bullet">
 /// <item><description><strong>凭据</strong>：<c>oauth.json</c> 与 <c>settings.json.apiKeys</c> 合并成
@@ -24,7 +22,6 @@ public sealed record MigrationReport(IReadOnlyList<string> MigratedAuthProviders
 /// </list>
 /// 每一步都失败关闭：单个文件读不懂只记警告，不阻塞启动、也不删除来源文件。
 /// 迁移是幂等的，可以每次启动都跑。
-/// </summary>
 public static class AgentMigrations
 {
 	private static readonly JsonSerializerOptions WriteOptions = new()
@@ -33,11 +30,9 @@ public static class AgentMigrations
 		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
-	/// <summary>
 	/// 执行全部启动期迁移。<paramref name="agentDir"/> 为空时用 <c>PI_CODING_AGENT_DIR</c> 或默认目录。
 	/// <paramref name="projectTrustOverride"/> 是本进程的显式信任开关（<c>-a</c>/<c>-na</c>）；
 	/// 项目级的 <c>commands/</c> 迁移只在受信时执行，不在别人的仓库里做写操作。
-	/// </summary>
 	public static MigrationReport Run(string cwd, string? agentDir = null, bool? projectTrustOverride = null)
 	{
 		var directory = agentDir ?? SessionPaths.GetAgentDir();
@@ -82,10 +77,8 @@ public static class AgentMigrations
 		}
 	}
 
-	/// <summary>
 	/// 把旧凭据并入 <c>auth.json</c>。<c>auth.json</c> 已存在时整体跳过（与 pi 一致：
 	/// 新文件是权威，旧的 <c>oauth.json</c> 留着由用户自己清理）。
-	/// </summary>
 	private static List<string> MigrateAuth(string agentDir, List<string> warnings)
 	{
 		var providers = new List<string>();
@@ -184,7 +177,6 @@ public static class AgentMigrations
 		return providers;
 	}
 
-	/// <summary>把 agent 根目录下的会话文件搬回 <c>sessions/&lt;编码后的 cwd&gt;/</c>。</summary>
 	private static void MoveSessionsFromAgentRoot(string agentDir, List<string> warnings)
 	{
 		string[] files;
@@ -229,7 +221,6 @@ public static class AgentMigrations
 		}
 	}
 
-	/// <summary>pi 的目录编码：去掉开头分隔符，再把 <c>/ \ :</c> 换成 <c>-</c>，两侧加 <c>--</c>。</summary>
 	internal static string EncodeCwd(string cwd)
 	{
 		var trimmed = cwd.TrimStart('/', '\\');

@@ -3,7 +3,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Lazy two-level process folds. Streaming updates retain existing text and tool surfaces.</summary>
 internal sealed class ExecutionProcessView
 {
 	private readonly Func<ChatEntry, UIElement> _create;
@@ -100,12 +99,10 @@ internal sealed class ExecutionProcessView
 
 	public Border View { get; }
 
-	/// <summary>
 	/// The step list only re-measures rows while arranging, and an ancestor that was already
 	/// measure-dirty leaves the arrange clean — a row that grows (expanded step, streaming thinking)
 	/// would then keep its old height and the body would neither grow nor scroll to it. Invalidate the
 	/// arrange of every open body and republish the virtualized extent once layout has settled.
-	/// </summary>
 	private void KickBodyLayout()
 	{
 		foreach (var viewport in BodyViewports())
@@ -125,7 +122,6 @@ internal sealed class ExecutionProcessView
 		});
 	}
 
-	/// <summary>Republishes each open body's extent and keeps a growth-following body pinned to its end.</summary>
 	internal void SyncBodyMetrics()
 	{
 		foreach (var viewport in BodyViewports())
@@ -140,7 +136,6 @@ internal sealed class ExecutionProcessView
 		RunPendingClamps();
 	}
 
-	/// <summary>布局落定后执行待收尾的阅读位置修正；每个动作只跑一次。</summary>
 	private void RunPendingClamps()
 	{
 		if (_pendingClamps.Count == 0) return;
@@ -155,11 +150,9 @@ internal sealed class ExecutionProcessView
 		KickBodyLayout();
 	}
 
-	/// <summary>
 	/// 组体视口清单。每个组在 <see cref="CompleteBody" /> 时就已知自己的视口，这里不再每帧
 	/// 遍历整棵树去找：流式期 <see cref="KickBodyLayout" /> / <see cref="SyncBodyMetrics" />
 	/// 每次都要跑，白走一遍可视化树（含逐节点 List 分配）是纯开销。
-	/// </summary>
 	private readonly List<ScrollViewer> _bodyViewports = [];
 
 	private List<ScrollViewer> BodyViewports() => _bodyViewports;
@@ -200,7 +193,6 @@ internal sealed class ExecutionProcessView
 		finally { _automatic = false; }
 	}
 
-	/// <summary>把序列化回来的 <c>step/…/n</c> 状态还原成按步骤键索引的展开表。</summary>
 	private void RestoreStepState(string key, bool expanded)
 	{
 		if (!expanded) return;
@@ -216,7 +208,6 @@ internal sealed class ExecutionProcessView
 		_stepStates[stepKey] = array;
 	}
 
-	/// <summary>代码恢复折叠状态时不让流式思考重新请求贴底；用户点击/键盘切开的路径不受影响。</summary>
 	private void SetExpandedWithoutFollowing(Expander expander, bool expanded)
 	{
 		var previous = _focus?.SuppressGrowthFollow ?? false;
@@ -501,7 +492,6 @@ internal sealed class ExecutionProcessView
 			fold.Content(body);
 		}
 
-		/// <summary>滚轮落在组体空白处时也要先归组体；装得下或到边界才留给外层会话。</summary>
 		void RouteBodyWheel(MouseWheelEventArgs args)
 		{
 			if (args.Handled || viewport is null) return;
@@ -532,7 +522,6 @@ internal sealed class ExecutionProcessView
 			}
 		}
 
-		/// <summary>步骤行的绑定入口：展开/收起只重测这一行并让它的预览行停在原地。</summary>
 		void BindStepRow(Grid row, ChatEntry entry, int index) =>
 			BindStep(row, entry, index, key, viewport, (expanded, expander) =>
 			{
@@ -547,7 +536,6 @@ internal sealed class ExecutionProcessView
 				InvalidateRow(row, index, preservePreview, collapseFromPinned);
 			});
 
-		/// <summary>同步栈里的步骤行；同一位置的步骤只更新内容，不重建行。</summary>
 		void SyncStackRows()
 		{
 			if (stack is null) return;
@@ -623,7 +611,6 @@ internal sealed class ExecutionProcessView
 			if (viewport is { } target) RestoreOffset(target, offset, atEnd);
 		}
 
-		/// <summary>换 presenter 后把原来的阅读位置放回去；等新列表真正量出 extent 再落位。</summary>
 		void RestoreOffset(ScrollViewer target, double offset, bool atEnd)
 		{
 			if (offset <= 0) return;
@@ -703,7 +690,6 @@ internal sealed class ExecutionProcessView
 			}
 		}
 
-		/// <summary>当前虚拟化器已实现的宿主；行滚出视口会被回收，因此只用于原位更新时查找。</summary>
 		Grid? RealizedRow(int index)
 		{
 			if (list is null) return null;
@@ -713,7 +699,6 @@ internal sealed class ExecutionProcessView
 			return list.TryGetContainer(index, out var container) ? container.Content as Grid : null;
 		}
 
-		/// <summary>步骤行展开/收起改变了行高：重测这一行，并让它的预览行停在原地。</summary>
 		void InvalidateRow(Grid row, int index, bool preservePreview, bool collapseFromPinned = false)
 		{
 			if (body is null) return;
@@ -897,9 +882,7 @@ internal sealed class ExecutionProcessView
 		}
 	}
 
-	/// <summary>
 	/// 组内的步骤行：只为视口建摘要，展开时才建具体内容；折叠/滚出视口即释放。
-	/// </summary>
 	private Grid StepRowHost() => new Grid().Columns("22,*");
 
 	private void BindStep(Grid host, ChatEntry entry, int index, string groupKey, ScrollViewer? bodyViewport,
@@ -938,7 +921,6 @@ internal sealed class ExecutionProcessView
 		TrackStepStates(stepKey, view, layoutChanged);
 	}
 
-	/// <summary>把组体视口交给这一行里的吸顶折叠行（只有组体内的步骤才吸顶）。</summary>
 	private static void AttachSticky(Element root, FrameworkElement rowHost, ScrollViewer body)
 	{
 		foreach (var expander in Expanders(root))
@@ -953,7 +935,6 @@ internal sealed class ExecutionProcessView
 		content.Tag = null;
 	}
 
-	/// <summary>记住这一步里每个折叠开关的展开状态：行被回收后重建仍能恢复。</summary>
 	private void TrackStepStates(string stepKey, Element view, Action<bool, Expander>? layoutChanged = null)
 	{
 		// 恢复状态发生在虚拟化器创建这一行的时候（测量途中）。此时再让上层失效排布会
@@ -996,7 +977,6 @@ internal sealed class ExecutionProcessView
 
 	private static string StepStateKey(string stepKey, int index) => $"{StepStatePrefix}{stepKey}/{index}";
 
-	/// <summary>非过程组节点的单行视图（中间回复/错误）：一行一个，不需要虚拟化。</summary>
 	private Slot Leaf(string key, ChatEntry entry)
 	{
 		var content = new Border();
@@ -1035,10 +1015,8 @@ internal sealed class ExecutionProcessView
 
 	private static string Id(ChatEntry entry, int index) => entry.EntryId ?? $"{entry.Role}/{entry.Timestamp}/{index}";
 
-	/// <summary>
 	/// 把过程条目切成「过程组 / 中间回复」。节点对象与成员缓冲按索引复用：
 	/// 流式期每帧都会走这里，反复 new 列表与数组纯属给 GC 添活。
-	/// </summary>
 	private List<Node> Nodes(IReadOnlyList<ChatEntry> entries)
 	{
 		var nodes = _nodes;
@@ -1109,7 +1087,6 @@ internal sealed class ExecutionProcessView
 			.Children(AppIcons.Icon(icon, role, 11), count);
 	}
 
-	/// <summary>步骤图标只表示类型，不再承担时间线节点或遮线圆底的职责。</summary>
 	private sealed class StepIcon
 	{
 		public StepIcon(ChatEntry entry)
@@ -1147,7 +1124,6 @@ internal sealed class ExecutionProcessView
 		};
 	}
 
-	/// <summary>组内步骤的虚拟化数据源：只为视口建行，尾部变化用 Replace 而不是整表重置。</summary>
 	private sealed class StepRows : IItemsView
 	{
 		private readonly List<ChatEntry> _items = [];
@@ -1161,13 +1137,10 @@ internal sealed class ExecutionProcessView
 		public string GetText(int index) => string.Empty;
 		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
 
-		/// <summary>丢弃内容但不通知：调用方正在销毁整个列表。</summary>
 		public void Reset() => _items.Clear();
 
-		/// <summary>
 		/// 更新步骤列表。<paramref name="inPlace"/> 收集只原位更新、不向虚拟化器发通知的索引；
 		/// 调用方随后直接重绑这些已实现行的内容。
-		/// </summary>
 		public void Set(IReadOnlyList<ChatEntry> items, List<int>? inPlace = null)
 		{
 			inPlace?.Clear();
@@ -1259,20 +1232,16 @@ internal sealed class ExecutionProcessView
 			Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, items.Count));
 		}
 
-		/// <summary>
 		/// 流式助手步骤有持久视图，能原地吸收新的思考/正文，包括“流式行 → 落盘后的最终行”
 		/// （两者的 EntryId 会从临时的 live-assistant 变成会话条目 id，但时间戳与图片不变）。
 		/// 其余步骤改变内容时仍要重绑：工具行的摘要与展开体在创建时固定，不能靠 Update 追加。
-		/// </summary>
 		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
 			current.Role == ChatRole.Assistant && current.IsStreaming && next.Role == ChatRole.Assistant &&
 			current.Timestamp == next.Timestamp && current.Images.SequenceEqual(next.Images);
 	}
 
-	/// <summary>
 	/// 过程组/中间回复的节点。做成可变类是为了让 <see cref="Nodes"/> 在流式期原地复用：
 	/// 每帧新建 Node + 成员数组 + 插值键，在长会话里就是持续的 GC 压力。
-	/// </summary>
 	private sealed class Node
 	{
 		public string Key = string.Empty;

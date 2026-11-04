@@ -2,17 +2,12 @@ using Aprillz.MewUI;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// MewUI 自己绘制的界面文案（消息框、输入框右键菜单、内置文件对话框、忙碌指示器、颜色选择器）
 /// 默认是英文，这里统一改成中文。字符串以 <see cref="ObservableValue{T}"/> 暴露，因此赋值后
 /// 已经打开的编辑命令菜单会立刻更新，对话框则在下次打开时生效。
-/// </summary>
-/// <remarks>
 /// 值里的下划线是访问键（Alt 加速键），沿用 MewUI 的约定：中文标签后跟一个带下划线的字母。
-/// </remarks>
 public static class MewUiLocalization
 {
-	/// <summary>把框架内置文案切换成中文。可在启动时调用，也可在语言变化时再次调用。</summary>
 	public static void ApplyChinese()
 	{
 		// 通用按钮

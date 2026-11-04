@@ -2,12 +2,10 @@ using System.Diagnostics;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 一次 Git 写操作的结果。<see cref="Message"/> 是给人看的一句话结论（成功摘要或分类后的失败原因），
 /// <see cref="Detail"/> 是 git 的原始输出尾部，只在需要排查时展示 —— 直接把
 /// <c>fatal: could not read Username for 'https://github.com': terminal prompts disabled</c>
 /// 甩到状态行里，用户只知道「失败了」。
-/// </summary>
 public sealed record GitResult(bool Ok, string Message, string? Detail = null)
 {
 	public static GitResult Success(string message = "") => new(true, message);
@@ -15,20 +13,14 @@ public sealed record GitResult(bool Ok, string Message, string? Detail = null)
 	public static GitResult Failure(string message, string? detail = null) => new(false, message, detail);
 }
 
-/// <summary>一个 stash 条目。</summary>
 public sealed record GitStashEntry(string Reference, string Description);
 
-/// <summary>
 /// 把 git 的原始输出翻成一句能照着做的中文。git 的错误文本是稳定的英文（且被脚本广泛依赖），
 /// 所以按特征串分类是可靠的；分类不出来就退回 output 的首行，至少不吞信息。
-/// <para>
 /// 注意区分「工作区状态不对」与「环境/认证/网络不通」：前者用户能自己解决，
 /// 后者要看凭据或代理 —— 提示必须不同，否则用户会去错误的方向折腾。
-/// </para>
-/// </summary>
 public static class GitFailure
 {
-	/// <summary>按输出特征分类；未命中时返回 <see langword="null"/>。</summary>
 	public static string? Classify(string output)
 	{
 		var text = output.Trim();
@@ -114,20 +106,15 @@ public static class GitFailure
 		text.Contains(needle, StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>
 /// Git 写操作：暂存、取消暂存、提交、分支、远端同步（fetch/pull/push）与 stash。
 /// 全部通过 <see cref="ProcessStartInfo.ArgumentList"/> 传参，不拼 shell；名称以 <c>-</c> 开头的一律拒绝，
 /// 避免被 git 当成选项。输出有界、命令有超时，不让一次卡住的 git 拖垮界面。
-/// </summary>
 public static class GitWriter
 {
-	/// <summary>本地操作的上限：超过这个时间基本是 index.lock 残留或磁盘打嗝。</summary>
 	private static readonly TimeSpan LocalTimeout = TimeSpan.FromSeconds(30);
 
-	/// <summary>网络操作的上限：克隆大仓或慢链路正常也要几十秒。</summary>
 	private static readonly TimeSpan NetworkTimeout = TimeSpan.FromSeconds(120);
 
-	/// <summary>初始化一个 Git 仓库；用于「不是 Git 仓库」空态里的入口。</summary>
 	public static GitResult Init(string cwd) => Run(cwd, ["init"], Strings.GitInitDone);
 
 	public static GitResult Stage(string cwd, IReadOnlyList<string> paths)
@@ -171,7 +158,6 @@ public static class GitWriter
 		return Run(cwd, ["commit", "-m", message]);
 	}
 
-	/// <summary>本地分支名列表，当前分支排在最前。</summary>
 	public static IReadOnlyList<string> Branches(string cwd)
 	{
 		var capture = RunCapture(cwd, ["branch", "--format=%(HEAD)\t%(refname:short)"], LocalTimeout);
@@ -240,7 +226,6 @@ public static class GitWriter
 		return Run(cwd, ["switch", name]);
 	}
 
-	/// <summary>只更新远端跟踪分支，不动工作区。拉取前先看清有没有新提交时用。</summary>
 	public static GitResult Fetch(string cwd)
 	{
 		if (!HasRemotes(cwd))
@@ -251,10 +236,8 @@ public static class GitWriter
 		return RunNetwork(cwd, ["fetch", "--prune"], Strings.GitFetchDone);
 	}
 
-	/// <summary>
 	/// 拉取。<c>--ff-only</c> 是刻意选的：这里没有冲突解决界面，自动 merge 或 rebase 会把仓库
 	/// 推进到一个用户无法从界面收拾的状态；不能快进时宁可报错并提示用户去终端处理。
-	/// </summary>
 	public static GitResult Pull(string cwd)
 	{
 		if (!HasRemotes(cwd))
@@ -270,10 +253,8 @@ public static class GitWriter
 		return RunNetwork(cwd, ["pull", "--ff-only"], Strings.GitPullDone);
 	}
 
-	/// <summary>
 	/// 推送。没有上游分支时自动 <c>push -u</c> 建立跟踪 —— 首次推送是最常见的动作，
 	/// 而 <c>git push</c> 在无上游时的报错恰好是新手最容易卡住的地方。
-	/// </summary>
 	public static GitResult Push(string cwd)
 	{
 		if (!HasRemotes(cwd))
@@ -303,10 +284,8 @@ public static class GitWriter
 		return RunNetwork(cwd, ["push", "--set-upstream", remote, branch], Strings.GitPushUpstreamCreated);
 	}
 
-	/// <summary>
 	/// 首次推送的远端选择：只有一个远端就用它；有 <c>origin</c> 用 <c>origin</c>；
 	/// 多个且都不是 origin 时不猜（推错远端比不推难查得多），返回 <see langword="null"/> 让界面提示用户指定。
-	/// </summary>
 	public static string? ResolvePushRemote(string cwd)
 	{
 		var capture = RunCapture(cwd, ["remote"], LocalTimeout);
@@ -327,7 +306,6 @@ public static class GitWriter
 		return remotes.FirstOrDefault(static name => string.Equals(name, "origin", StringComparison.Ordinal));
 	}
 
-	/// <summary>把工作区（含未跟踪文件）收进 stash，得到一个干净的工作区。</summary>
 	public static GitResult StashPush(string cwd)
 	{
 		var capture = RunCapture(cwd, ["stash", "push", "--include-untracked"], LocalTimeout);
@@ -344,7 +322,6 @@ public static class GitWriter
 			: GitResult.Success(Strings.GitStashCreated);
 	}
 
-	/// <summary>应用最近一个 stash。冲突时 git 会保留该条目，界面据此提示用户。</summary>
 	public static GitResult StashPop(string cwd)
 	{
 		return Run(cwd, ["stash", "pop"], Strings.GitStashPopped);
@@ -360,7 +337,6 @@ public static class GitWriter
 		return Run(cwd, ["stash", "drop", reference]);
 	}
 
-	/// <summary>stash 列表，最近的在前。</summary>
 	public static IReadOnlyList<GitStashEntry> Stashes(string cwd)
 	{
 		var capture = RunCapture(cwd, ["stash", "list", "--format=%gd\t%gs"], LocalTimeout);
@@ -397,25 +373,20 @@ public static class GitWriter
 
 	private static bool HasPaths(IReadOnlyList<string> paths) => paths.Count > 0 && paths.Any(static path => path.Length > 0);
 
-	/// <summary>分支名不能为空、不能以 <c>-</c> 开头（会被当成选项），也不能含空白。</summary>
 	private static bool IsValidName(string name) =>
 		name.Length > 0 && name[0] != '-' && name.Trim() == name && !name.Any(char.IsWhiteSpace);
 
-	/// <summary>只接受 <c>stash@{n}</c> 形态，避免把一个任意字符串当 git 选项传进去。</summary>
 	private static bool IsValidStashReference(string reference) =>
 		reference.StartsWith("stash@{", StringComparison.Ordinal) && reference.EndsWith('}') && reference.Length > 7;
 
 	private static GitResult Run(string cwd, string[] arguments, string? successMessage = null) =>
 		Finish(RunCapture(cwd, arguments, LocalTimeout), successMessage ?? Strings.GitDone);
 
-	/// <summary>
 	/// 网络操作：关掉终端提示。<c>GIT_TERMINAL_PROMPT=0</c> 把「等用户输入密码」从挂死
 	/// （要等满 120 秒超时）变成立刻返回可分类的认证错误，凭据管理器与 askpass 不受影响。
-	/// </summary>
 	private static GitResult RunNetwork(string cwd, string[] arguments, string successMessage) =>
 		Finish(RunCapture(cwd, arguments, NetworkTimeout, disableTerminalPrompt: true), successMessage);
 
-	/// <summary>成功时的摘要：能分类就用分类结果（如「已经是最新的」），否则用操作自己的中文结论。</summary>
 	private static GitResult Finish(GitCapture capture, string successMessage)
 	{
 		if (!capture.Ok)
@@ -427,7 +398,6 @@ public static class GitWriter
 		return GitResult.Success(text.Length > 0 ? GitFailure.Classify(text) ?? successMessage : successMessage);
 	}
 
-	/// <summary>失败时优先给分类后的可操作提示，原始输出留在 <see cref="GitResult.Detail"/> 里。</summary>
 	private static GitResult Failure(GitCapture capture)
 	{
 		if (capture.TimedOut)
@@ -445,7 +415,6 @@ public static class GitWriter
 		return GitResult.Failure(friendly.Length > 0 ? friendly : Strings.GitFailed, Limit(output));
 	}
 
-	/// <summary>合并两路输出：git 把进度与错误都写在 stderr，成功摘要写在 stdout。</summary>
 	private static string Combine(string stdout, string stderr)
 	{
 		var trimmedOut = stdout.TrimEnd('\r', '\n');
@@ -458,10 +427,8 @@ public static class GitWriter
 		return trimmedErr.Length == 0 ? trimmedOut : trimmedOut + "\n" + trimmedErr;
 	}
 
-	/// <summary>
 	/// 捕获一次 git 调用。stdout/stderr 并发读：顺序读时子进程某个缓冲（约 64KB）写满就会阻塞，
 	/// 进而永远不退出 —— 那 WaitForExit 的超时也等不到，UI 会冻结。
-	/// </summary>
 	private static GitCapture RunCapture(
 		string cwd,
 		string[] arguments,

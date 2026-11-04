@@ -4,10 +4,8 @@ using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.PiMessages;
 
-/// <summary>
 /// 根据 pi-messages 事件流重建助手消息。该协议发送的是事件而非部分快照，
 /// 因此这里的状态机自行维护内容列表，并在每个事件后重新生成快照。
-/// </summary>
 internal sealed class PiMessagesStreamState
 {
 	private readonly Model _model;
@@ -190,9 +188,7 @@ internal sealed class PiMessagesStreamState
 		}
 	}
 
-	/// <summary>
 	/// 收束最终消息。没有终止事件就结束的流会按错误处理，因为无法确认响应完整。
-	/// </summary>
 	public void Finish()
 	{
 		if (_finished)

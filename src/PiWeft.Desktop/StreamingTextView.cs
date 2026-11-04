@@ -5,20 +5,14 @@ using Aprillz.MewUI.Text.Editing;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 只读、可流式追加的文本视图。
-/// </summary>
-/// <remarks>
 /// 直接给 <see cref="MultiLineTextBox.Text"/> 赋值会调用 <c>EditableTextDocument.SetText</c>：
 /// 重建整篇文档与行索引、清空撤销历史、整篇重新测量。流式内容每 40 ms 增长一次，这个成本随长度
 /// 线性上升（实测 32 K 约 42 ms、64 K 约 73 ms），远超一帧预算。
-/// <para>
 /// 纯追加只需要 <see cref="MultiLineTextBox.ReplaceRange"/>：文档按区间增量更新行索引，
 /// 文本视图只重排受影响的行。撤销历史对只读展示没有意义，直接关掉，避免每帧生成一条编辑记录。
 /// 实测 32 K–64 K 的追加稳定在 1 ms 左右。
-/// </para>
 /// 文本回退（重发、编辑、模型改写前缀）无法走追加路径，退回整篇替换；这种情况在流式里很少见。
-/// </remarks>
 internal sealed class StreamingTextView
 {
 	private readonly MultiLineTextBox _view;
@@ -49,10 +43,8 @@ internal sealed class StreamingTextView
 
 	public MultiLineTextBox View => _view;
 
-	/// <summary>当前已写入的文本（与文档内容一致，可直接用于前缀比较）。</summary>
 	public string Text => _text;
 
-	/// <summary>把内容更新到最新值：追加走增量编辑，其余情况整篇替换。</summary>
 	public void Update(string text)
 	{
 		if (string.Equals(_text, text, StringComparison.Ordinal)) return;

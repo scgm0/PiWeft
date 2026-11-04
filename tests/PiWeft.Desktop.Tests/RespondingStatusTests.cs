@@ -3,11 +3,9 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 会话进行态的判定与措辞。规矩是从 PiDeck 抄来的：状态条只能说后台此刻确定的事实，
 /// 只有观测不到子阶段的「等首 token」允许多句轮播；而这一段恰恰是首轮最久的空白，
 /// 因此它必须永远有一句话可说。
-/// </summary>
 public sealed class RespondingStatusTests : IDisposable
 {
 	private readonly Func<bool> _originalEnabled = RespondingTips.EnabledProvider;

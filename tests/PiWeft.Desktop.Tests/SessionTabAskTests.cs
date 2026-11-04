@@ -7,10 +7,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// ask_question 卡片钉在会话底部（对话区与输入框之间），与 PiDeck 的 SessionRuntimeUiOverlay 同义：
 /// 不再有遮罩弹窗；卡片打开时输入区整块收起，答完再回来。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class SessionTabAskTests
 {

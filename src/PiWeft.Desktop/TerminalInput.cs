@@ -4,13 +4,10 @@ using Aprillz.MewUI.Input;
 
 namespace PiWeft.Desktop;
 
-/// <summary>把键盘事件翻译成终端字节序列；返回 <c>null</c> 表示这不是终端输入。</summary>
 internal static class TerminalKeys
 {
-	/// <summary>
 	/// 处理有确定字节序列的特殊键。普通字符走 IME/文本输入。
 	/// 应用光标键模式（DECCKM）下方向键与 Home/End 用 SS3 前缀，与 xterm 一致。
-	/// </summary>
 	public static string? Translate(KeyEventArgs key, bool applicationCursorKeys)
 	{
 		if (key.ControlKey && !key.AltKey && Control(key.Key) is { } control)
@@ -67,7 +64,6 @@ internal static class TerminalKeys
 		};
 	}
 
-	/// <summary>Ctrl+字母 = 0x01–0x1A；Ctrl+空格 = NUL。</summary>
 	private static string? Control(Key key) => key switch
 	{
 		>= Key.A and <= Key.Z => ((char)(1 + ((int)key - (int)Key.A))).ToString(),
@@ -90,10 +86,8 @@ internal interface ITerminalInputSink
 
 	void Wheel(MouseWheelEventArgs e);
 
-	/// <summary>输入法预编辑是否进行中。</summary>
 	bool IsComposing { get; }
 
-	/// <summary>IME 候选窗定位用的光标矩形（窗口坐标）。</summary>
 	Rect CursorRect { get; }
 
 	void CompositionStarted(string text);
@@ -103,7 +97,6 @@ internal interface ITerminalInputSink
 	void CompositionEnded();
 }
 
-/// <summary>捕获键盘、IME 与鼠标，转成终端输入或本地选择；点击即聚焦。</summary>
 internal sealed class TerminalInputSurface : Control, ITextInputClient, ITextCompositionClient
 {
 	private readonly ITerminalInputSink _sink;
@@ -163,11 +156,9 @@ internal sealed class TerminalInputSurface : Control, ITextInputClient, ITextCom
 		_sink.SendText(e.Text);
 	}
 
-	// ------------------------------------------------------------ IME 预编辑
 
 	bool ITextCompositionClient.IsComposing => _sink.IsComposing;
 
-	/// <summary>终端没有文本缓冲区，候选窗位置直接用当前光标格。</summary>
 	int ITextCompositionClient.CompositionStartIndex => 0;
 
 	Rect ITextCompositionClient.GetCharRectInWindow(int charIndex) => _sink.CursorRect;

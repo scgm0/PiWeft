@@ -6,10 +6,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 折叠态思考预览的跑马灯：流式期每帧跟着最新一行并把行尾贴到右边缘，定稿后回到首行 + 省略号。
 /// 与 PiDeck 的 SingleLinePreview（running = latestLine + 尾部跟随，结束 = firstLine）同语义。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class ThinkingPreviewTests
 {

@@ -6,11 +6,9 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 用量查询配置弹窗（对齐 PiDeck 的 UsageProbeConfigDialog）：
 /// 启用开关 + 预设模板 pills + 模板字段 + 超时/间隔 + 测试（带排查明细）+ 保存。
 /// 无字段级自定义：旧版 probes 数组仍可读；声明式模板只保留 PiDeck 的四个。
-/// </summary>
 internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 {
 	private readonly StackPanel _body = new();
@@ -261,7 +259,6 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		});
 	}
 
-	/// <summary>读表单：只写当前模板相关的字段，切换模板不会把上一个模板的密钥写进配置。</summary>
 	private UsageProbeProviderConfig ReadForm()
 	{
 		var template = UsageProbeStore.IsKnownTemplate(_template) ? _template : string.Empty;
@@ -482,10 +479,8 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 	private static Button ActionButton(string title, Action action) => new Button().Content(Label(title)).OnClick(action);
 }
 
-/// <summary>
 /// 弹窗卡片的外框：Grid 覆盖层不会把 MaxWidth 当成测量约束（PiDeck 的 ModelSurface 同款问题），
 /// 这里显式用「可用宽度与卡片宽度取小」测量，窄窗口下不会被裁掉，宽窗口下也不会拉通整屏。
-/// </summary>
 internal sealed class UsageDialogSurface : ContentControl
 {
 	protected override Size MeasureContent(Size availableSize)

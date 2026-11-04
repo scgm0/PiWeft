@@ -5,10 +5,8 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Providers.Mistral;
 
-/// <summary>
 /// 把 Mistral 的对话补充分片折叠进一个 <see cref="AssistantMessageEventStream"/>。Mistral 可能把
 /// <c>delta.content</c> 发成字符串或分片列表（文本与思考），两种形状都要处理。
-/// </summary>
 internal sealed class MistralStreamState
 {
 	private readonly Model _model;

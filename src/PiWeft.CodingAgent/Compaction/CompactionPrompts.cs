@@ -1,6 +1,5 @@
 namespace PiWeft.CodingAgent.Compaction;
 
-/// <summary>摘要提示词，逐字抄自 pi，保证摘要格式兼容。</summary>
 public static class CompactionPrompts
 {
 	public const string SummarizationSystemPrompt = """

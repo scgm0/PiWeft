@@ -5,11 +5,9 @@ using PiWeft.JavaScript;
 
 namespace PiWeft.CodingAgent.Settings;
 
-/// <summary>
 /// 把 <c>models.json</c> 里虚拟模型的 <c>route</c> 源码包装成 <see cref="VirtualModelDefinition.Route"/>。
 /// 脚本收到 <c>request</c> 与 <c>context</c> 两个 JSON 值；<c>context.modelRegistry</c> 提供
 /// <c>find</c>/<c>findOfType</c>/<c>getModelsOfType</c>/<c>getAvailableOfType</c>。
-/// </summary>
 internal static class VirtualModelScript
 {
 	private const string ContextPrelude =

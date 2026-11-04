@@ -9,16 +9,13 @@ using Aprillz.MewUI.Text.Editing;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 让 <see cref="MultiLineTextBox"/> 把 <c>@"path"</c> / <c>@path</c> 画成真正的行内 chip。
 /// 原始文档仍是完整路径（发送、复制、撤销都不改），投影层把引用压成一个占位字符，
 /// 元素生成器在这个占位区间上放 <see cref="IInlineTextObject"/>；编辑时再把整枚 chip 当作原子。
-/// </summary>
 internal static class UserReferenceRichText
 {
 	private const char Placeholder = '\uFFFC';
 
-	/// <summary>引用占位后补齐用的零宽字符：投影与原文等长，但只有首字符画成 chip。</summary>
 	private const char Filler = '\u200B';
 
 	private const double ChipHeight = 20;
@@ -81,7 +78,6 @@ internal static class UserReferenceRichText
 		}
 	}
 
-	/// <summary>chip 的悬浮提示：文件给完整路径，技能给 SKILL.md 的位置（解析不到时回到命令原文）。</summary>
 	internal static string HintFor(IUserChip chip, string? cwd, Func<string, string?>? skillLocation)
 	{
 		if (chip is UserSkillReference skill)
@@ -92,17 +88,14 @@ internal static class UserReferenceRichText
 		return FullPath(chip.Value, cwd);
 	}
 
-	/// <summary>chip 提示里的完整路径：相对引用按会话工作目录解析成绝对路径。</summary>
 	internal static string FullPath(string path, string? cwd)
 	{
 		if (string.IsNullOrEmpty(cwd) || Path.IsPathRooted(path)) return path;
 		return MessageLinkTarget.Resolve(path, cwd)?.Target ?? path;
 	}
 
-	/// <summary>行内 chip（文件引用 + 技能调用）的数量（诊断与契约测试用）。</summary>
 	public static int Count(string text) => UserChips.Parse(text).Count;
 
-	/// <summary>把落在 chip 内部的选区扩到整枚 chip；没有 chip 时返回 null。</summary>
 	public static TextRange? ExpandSelection(MultiLineTextBox box)
 	{
 		if (box.SelectionLength == 0) return null;
@@ -121,7 +114,6 @@ internal static class UserReferenceRichText
 		return expandedStart == start && expandedEnd == end ? null : new TextRange(expandedStart, expandedEnd - expandedStart);
 	}
 
-	/// <summary>粘贴/替换前把选区或光标移出 chip 内部，避免编辑落在不可见的原文里。</summary>
 	public static void NormalizeForEdit(MultiLineTextBox box)
 	{
 		if (ExpandSelection(box) is { } expanded)
@@ -133,10 +125,8 @@ internal static class UserReferenceRichText
 		if (box.SelectionLength == 0) NormalizeCaret(box);
 	}
 
-	/// <summary>
 	/// 命中测试：<paramref name="point"/> 是文本框内（<c>MouseEventArgs.GetPosition(box)</c>）的相对坐标，
 	/// 落在一枚已投影的文件 chip 上时返回它（技能 chip 不可点击，只走 <see cref="ChipAtPoint"/>）。
-	/// </summary>
 	internal static UserFileReference? ReferenceAtPoint(MultiLineTextBox box, Point point)
 		=> ChipAtPoint(box, point)?.Chip as UserFileReference;
 
@@ -185,7 +175,6 @@ internal static class UserReferenceRichText
 		}
 	}
 
-	/// <summary>方向键、Backspace/Delete 在 chip 边界上按整枚跳转/删除。</summary>
 	public static bool TryHandleKey(MultiLineTextBox box, KeyEventArgs key)
 	{
 		if (box.IsReadOnly) return false;
@@ -227,7 +216,6 @@ internal static class UserReferenceRichText
 		return true;
 	}
 
-	/// <summary>输入文字时如果选区只覆盖 chip 的一部分，先扩成整枚再替换。</summary>
 	public static bool TryHandleTextInput(MultiLineTextBox box, TextInputEventArgs input)
 	{
 		if (box.IsReadOnly || string.IsNullOrEmpty(input.Text)) return false;
@@ -265,7 +253,6 @@ internal static class UserReferenceRichText
 
 			// 投影与原文逐字符等长：每枚引用占位成 1 个 U+FFFC + (n-1) 个零宽空格，
 			// 元素生成器再把整段画成一枚 chip（VisualLength = n）。
-			//
 			// 长度不变很关键：MewUI 源码 的 IME 组合下划线（以及选区/组合 span）仍按
 			// 源文偏移在投影文本上绘制。压缩别名会让这些范围落到投影文本之外，
 			// GetRangeBounds 抛 ArgumentOutOfRange；此前的规避是组合期间撤掉投影，
@@ -352,7 +339,6 @@ internal static class UserReferenceRichText
 			=> text.Contains('@') || text.Contains("/skill:", StringComparison.Ordinal);
 	}
 
-	/// <summary>把原始路径 / 技能命令整段视为可编辑单元；插入点不能落进 chip 内部。</summary>
 	private sealed class ReferenceEditableRegions(MultiLineTextBox box) : IEditableRegionProvider
 	{
 		public bool CanInsert(int offset)
@@ -377,7 +363,6 @@ internal static class UserReferenceRichText
 		private ITextLayout? _labelLayout;
 		private ITextEngine? _labelEngine;
 
-		/// <summary>技能用 Thinking 紫（和气泡上方的技能 chip 同色），文件引用用 Info 蓝。</summary>
 		private Color Accent => chip.Kind == UserChipKind.Skill ? AppTheme.Thinking : AppTheme.Info;
 
 		public InlineMetrics Measure()
@@ -428,7 +413,6 @@ internal static class UserReferenceRichText
 			return _labelLayout;
 		}
 
-		/// <summary>把一枚 Lucide 图标画进 chip 的图标位；SVG 自己按 24 视口缩放，12px 下笔画仍然清楚。</summary>
 		private static void DrawChipIcon(IGraphicsContext graphics, string icon, Point origin, Color color)
 		{
 			if (AppIcons.Get(icon, color) is not IVectorImageSource vector)

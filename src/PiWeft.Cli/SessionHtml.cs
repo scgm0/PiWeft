@@ -7,10 +7,8 @@ using PiWeft.CodingAgent.Session;
 using PiWeft.Ai.Json;
 namespace PiWeft.Cli;
 
-/// <summary>
 /// 为 <c>export_html</c> 把会话渲染成自包含的 HTML：先是会话元数据，
 /// 然后是当前分支的每条消息。不含脚本与外部资源，因此文件在任何地方都能打开。
-/// </summary>
 public static class SessionHtml
 {
 	public static string Render(CodingAgentSession session)

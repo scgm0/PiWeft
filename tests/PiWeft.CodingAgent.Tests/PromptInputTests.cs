@@ -5,9 +5,7 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 覆盖 C-01（系统提示词覆盖与项目上下文开关）与 C-03（技能命令/提示词模板统一展开）。
-/// </summary>
 public class PromptInputTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-promptinput-" + Guid.NewGuid().ToString("N")[..8]);

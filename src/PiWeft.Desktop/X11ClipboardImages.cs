@@ -4,11 +4,9 @@ using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// Linux（X11/XWayland）的图片剪贴板，经 xclip 读写 <c>image/png</c> 等 MIME。
 /// MewUI 自身就跑在 X11/XWayland 上，因此图片与文本落在同一个剪贴板域里，不处理原生 Wayland 会话。
 /// xsel 不支持图片类型，装了但没装 xclip 时就报告不可用，界面保留原有文本粘贴。
-/// </summary>
 internal sealed class X11ClipboardImages : IClipboardImages
 {
 	private const int TimeoutMs = 1500;
@@ -95,7 +93,6 @@ internal sealed class X11ClipboardImages : IClipboardImages
 		finally { Stop(candidate); }
 	}
 
-	/// <summary>列出剪贴板可用目标。按键处理里同步调用，因此只等待一个有界超时。</summary>
 	private string[]? Run(IReadOnlyList<string> arguments)
 	{
 		Process? process = null;

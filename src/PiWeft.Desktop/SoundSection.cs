@@ -4,20 +4,15 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 设置 → 提示音：总开关、音量、仅失焦，以及「完成 / 出错 / 等待输入」三类事件各自的
 /// 开关与音效（带试听）。与 PiDeck 的提示音设置同构，默认值也一致：
 /// 完成与出错开、等待输入关，音量 0.6。
-///
 /// 改动即时写入 <c>desktop.json</c> 的 <c>soundAlert</c> 段，不设草稿：
 /// 提示音是「马上能听出来对不对」的偏好，多一层保存只会让用户以为没生效。
-/// </summary>
 public sealed class SoundSection
 {
 	private readonly StackPanel _body = new();
-	/// <summary>拖动音量滑块时合并写盘：滑动一次会触发几十次 ValueChanged，逐次读写文件是白费。</summary>
 	private readonly DispatcherTimer _saveTimer = new(TimeSpan.FromMilliseconds(350));
-	/// <summary>还没落盘的设置；null 表示没有待保存改动。</summary>
 	private SoundAlertSettings? _pending;
 
 	public SoundSection()
@@ -29,7 +24,6 @@ public sealed class SoundSection
 
 	public UIElement View => _body;
 
-	/// <summary>界面重建入口：读当前偏好，铺一张总开关卡 + 一张事件卡。</summary>
 	private void Rebuild()
 	{
 		var settings = DesktopPreference.Load().SoundAlert;
@@ -84,10 +78,8 @@ public sealed class SoundSection
 		return Group("list-checks", Strings.SoundAlertEventsGroup, body);
 	}
 
-	/// <summary>
 	/// 一行事件：左侧开关与说明，右侧音效下拉 + 试听。
 	/// 事件开关关闭时下拉仍可改（先配好再打开），但试听按钮始终可用——试听本来就是为了选个音。
-	/// </summary>
 	private Element EventRow(SoundAlertSettings settings, SoundAlertKind kind)
 	{
 		var config = settings.For(kind);
@@ -123,10 +115,8 @@ public sealed class SoundSection
 			enabled);
 	}
 
-	/// <summary>
 	/// 改一条设置：开关/音效这类单次操作立即落盘；滑块这类连续输入合并到 350 ms 后写。
 	/// 只动 <c>soundAlert</c> 段，其它偏好原样保留。
-	/// </summary>
 	private void Update(Func<SoundAlertSettings, SoundAlertSettings> change, bool immediate = true)
 	{
 		var current = _pending ?? DesktopPreference.Load().SoundAlert;
@@ -141,7 +131,6 @@ public sealed class SoundSection
 		_saveTimer.Start();
 	}
 
-	/// <summary>把待保存的设置写回 desktop.json（没有待保存改动时什么也不做）。</summary>
 	private void SaveNow()
 	{
 		_saveTimer.Stop();
@@ -158,7 +147,6 @@ public sealed class SoundSection
 		}
 	}
 
-	/// <summary>预设列表里找下标（IReadOnlyList 没有 IndexOf）。</summary>
 	private static int IndexOf(IReadOnlyList<SoundAlertPreset> presets, SoundAlertPreset preset)
 	{
 		for (var index = 0; index < presets.Count; index++)

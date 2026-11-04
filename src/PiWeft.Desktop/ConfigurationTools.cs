@@ -3,17 +3,13 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// settings.json 里 <c>defaultTools</c> 与 <c>codemode</c> 的读写语义（与 pi 一致）：
 /// 纯名字整体替换默认集，<c>+name</c>/<c>-name</c> 在继承集上增删，空数组是「禁用全部」，
 /// 删掉键则回到继承/默认。
-/// </summary>
 internal static class ConfigurationTools
 {
-	/// <summary>设置页可选中的完整工具目录，顺序与运行时声明顺序一致。</summary>
 	public static IReadOnlyList<string> Catalog { get; } = BuildCatalog();
 
-	/// <summary>目录里的扩展工具（非原生内置），排在原生工具之后。</summary>
 	public static bool IsExtension(string name) => string.Equals(name, "codemode", StringComparison.Ordinal);
 
 	private static List<string> BuildCatalog()
@@ -27,7 +23,6 @@ internal static class ConfigurationTools
 		return names;
 	}
 
-	/// <summary>读出 raw 里的 <c>defaultTools</c> 字符串数组；键不存在（或类型不对）时返回 <c>null</c>。</summary>
 	public static List<string>? ReadEntries(JsonObject root)
 	{
 		if (root["defaultTools"] is not JsonArray array) return null;
@@ -39,7 +34,6 @@ internal static class ConfigurationTools
 		return entries;
 	}
 
-	/// <summary>把单层的 defaultTools 条目解析成实际生效的工具集。</summary>
 	public static IReadOnlyList<string> Resolve(IReadOnlyList<string>? entries)
 	{
 		if (entries is null) return [.. CodingAgentSettings.DefaultToolNames];
@@ -57,18 +51,14 @@ internal static class ConfigurationTools
 		return tools;
 	}
 
-	/// <summary>某一层合并后的生效工具集；项目层把全局原始条目作为 <paramref name="baseEntries"/> 传入。</summary>
 	public static IReadOnlyList<string> ResolveInLayer(IReadOnlyList<string>? baseEntries, IReadOnlyList<string>? entries) =>
 		Resolve(CodingAgentSettings.MergeDefaultToolEntries(baseEntries, entries));
 
-	/// <summary>目标工具在该层合并后是否生效。</summary>
 	public static bool IsEnabled(IReadOnlyList<string>? baseEntries, IReadOnlyList<string>? entries, string name) =>
 		ResolveInLayer(baseEntries, entries).Contains(name, StringComparer.Ordinal);
 
-	/// <summary>
 	/// 开关一个工具并返回该层新的原始条目；<c>null</c> 表示删除该键（回到继承/默认）。
 	/// 编码与 <see cref="Encode"/> 共用回验，显式空选择后只开一个工具不会意外带回默认集。
-	/// </summary>
 	public static IReadOnlyList<string>? SetEnabled(
 		IReadOnlyList<string>? baseEntries, IReadOnlyList<string>? entries, string name, bool on)
 	{
@@ -79,10 +69,8 @@ internal static class ConfigurationTools
 		return Encode(baseEntries, entries, selection);
 	}
 
-	/// <summary>
 	/// 按目录顺序插入：关掉再打开一个默认工具时顺序要与默认集一致，否则「回到默认」判定失败，
 	/// 会把本可以删除的键写成一份冗长的显式列表。
-	/// </summary>
 	private static void InsertInCatalogOrder(List<string> selection, string name)
 	{
 		var rank = Rank(name);
@@ -108,10 +96,8 @@ internal static class ConfigurationTools
 		return -1;
 	}
 
-	/// <summary>
 	/// 把期望的生效工具集编码回该层最小的原始条目：先保留现值，再尝试删除键，
 	/// 然后是「保留其它条目 + 增量」，最后用纯名字列表兜底。<c>null</c> 表示删除该键。
-	/// </summary>
 	public static IReadOnlyList<string>? Encode(
 		IReadOnlyList<string>? baseEntries, IReadOnlyList<string>? entries, IReadOnlyList<string> selection)
 	{
@@ -147,10 +133,8 @@ internal static class ConfigurationTools
 		return plain;
 	}
 
-	/// <summary>列表是否显式为「禁用全部内置工具」（空数组）。</summary>
 	public static bool DisablesAll(IReadOnlyList<string>? entries) => entries is { Count: 0 };
 
-	/// <summary>两条原始条目是否完全一致（含顺序）；<c>null</c> 只等于 <c>null</c>。</summary>
 	public static bool Same(IReadOnlyList<string>? left, IReadOnlyList<string>? right)
 	{
 		if (left is null || right is null) return left is null && right is null;
@@ -160,10 +144,8 @@ internal static class ConfigurationTools
 		return true;
 	}
 
-	/// <summary>
 	/// 只写调用方真正改过的 <c>codemode</c> 子键，保留未知嵌套字段；
 	/// 返回 <c>null</c> 表示整个 <c>codemode</c> 键应当移除（避免落盘 <c>codemode: {}</c> 脏数据）。
-	/// </summary>
 	public static JsonObject? PatchCodemode(
 		JsonNode? existing, string? mode, int? inlineBudget, bool modeChanged, bool inlineBudgetChanged)
 	{

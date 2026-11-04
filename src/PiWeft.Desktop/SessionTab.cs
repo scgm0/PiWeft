@@ -11,22 +11,17 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 一个会话标签页：消息区 + 输入区 + 该会话的模型/思考级别与用量。
 /// 每个标签持有自己的 <see cref="CodingAgentSession"/>，因此多个会话可以并行运行。
-/// </summary>
 public sealed partial class SessionTab : IDisposable
 {
 	// 会话模型可以是后台预建的（长会话的投影要上百毫秒），默认自己新建一个。
 	private readonly ChatViewModel _chat;
 	private readonly ConversationTimeline _timeline;
 	private readonly DispatcherTimer _renderTimer = new(TimeSpan.FromMilliseconds(40));
-	/// <summary>
 	/// 进行态心跳：等待期（没字可长、没事件可收）每 500ms 推一格呼吸点与轮播，
 	/// 顺便带退避期的重试倒计时（每秒变化一次，一帧就够了）。不跑回合时停着，不占调度。
-	/// </summary>
 	private readonly DispatcherTimer _busyTimer = new(TimeSpan.FromMilliseconds(RespondingStatusPolicy.PulseStepMs));
-	/// <summary>发送键右侧的投递方式菜单（自绘两行项，贴发送键上方展开）。</summary>
 	private readonly SendOptionsMenu _sendMenu = new();
 	private int _renderPending;
 	private volatile bool _disposed;
@@ -41,20 +36,14 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ConversationScroll _conversationScroll;
 	private readonly TextFocusScrollGuard _textFocus;
 	private readonly MultiLineTextBox _composer;
-	/// <summary>
 	/// 占位提示。实例一律经 <see cref="BuildComposerHint"/> 创建（显示换新见 <see cref="ShowComposerHint"/>）：
 	/// 构造与换新的每一枚都必须不可命中，否则提示盖在输入框上会吞掉那一行的点击。
-	/// </summary>
 	private TextBlock _composerHint = BuildComposerHint();
-	/// <summary>
 	/// 最近一次组合事件的记录。只在框架没有实现 <c>ITextCompositionClient</c> 时作为兜底：
 	/// 事件可能迟到或丢（Update 在 End 之后到达、组合被取消不发 End），
 	/// 拿它当权威状态会让占位永久消失。
-	/// </summary>
 	private bool _composing;
-	/// <summary>占位换新已被调度时挂在这里；组合开始要能把它取消，否则新实例会默认可见地盖到组合串上。</summary>
 	private DispatcherTimer? _composerHintTimer;
-	/// <summary>占位提示的宿主格（构造时与输入框同格），避免每次换新都全树搜索。</summary>
 	private Grid? _composerHintHost;
 	private readonly Button _sendButton;
 	private readonly Button _sendMenuButton;
@@ -89,7 +78,6 @@ public sealed partial class SessionTab : IDisposable
 	private readonly FloatingAnchor _scrollToLatestFloatHost;
 	private readonly FloatingTracker _scrollToLatestWatcher;
 
-	/// <summary>挂窗后浮层宿主升入窗口 OverlayLayer（见 <see cref="HandleFloatingRootChanged"/>）。</summary>
 	private bool _floatingHosted;
 	private Window? _floatingWindow;
 	private readonly TextBox _searchBox = new TextBox().PrimarySelection();
@@ -111,27 +99,22 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Grid _mainArea = new();
 	private readonly ConversationOutline _outline = new();
 
-	/// <summary>待发送的图片附件：文件路径与内容块。</summary>
 	private readonly List<(string Path, ImageContent Content)> _attachments = [];
 
-	/// <summary>「编辑重发」时记录要回到的条目；发送前先在该处分支。</summary>
 	private string? _pendingBranchEntryId;
 	private readonly TextBlock _emptyContext = new();
 	private readonly Border _emptyCard;
 
-	/// <summary>输入区整列：提示文本 + 输入框 + 状态栏，空会话时一起居中。</summary>
 	private readonly StackPanel _composerColumn;
-	/// <summary>输入区（widget 卡 / 空会话提示 / 进行态行 / 输入卡）。问询卡打开时整块收起，
-	/// 与 PiDeck 一致：代理在等回答，输入框不该继续抢键盘焦点。</summary>
+	/// 输入区（widget 卡 / 空会话提示 / 进行态行 / 输入卡）。问询卡打开时整块收起，
+	/// 与 PiDeck 一致：代理在等回答，输入框不该继续抢键盘焦点。
 	private readonly StackPanel _inputStack;
-	/// <summary>会话内联问询卡（ask_question）：钉在对话区与输入区之间，不再用遮罩弹窗。</summary>
 	private readonly AskQuestionPanel _askPanel;
 	private Border? _askCard;
 	private Border _headerRow = null!;
 	private readonly WrapPanel _commandBar = new();
 	private readonly Border _editNotice;
 
-	/// <summary>输入区上方的待办卡：头部显示分段进度，展开后是限高可滚动的完整计划。</summary>
 	private const double ComposerWidgetListMaxHeight = 180;
 	private readonly ComposerWidgetCard _todoCard;
 	private readonly StackPanel _todoRows = new();
@@ -139,15 +122,12 @@ public sealed partial class SessionTab : IDisposable
 	private TodoState? _renderedTodo;
 	private TodoPlan? _renderedPlan;
 
-	/// <summary>
 	/// 输入区上方的「排队中」卡：运行中再发的消息在这里逐条列出，可撤回输入框或丢弃。
 	/// 队列为空时整卡不占位（与待办卡一致）。
-	/// </summary>
 	private readonly ComposerWidgetCard _queueCard;
 	private readonly StackPanel _queueRows = new();
 	private IReadOnlyList<ChatQueuedMessage>? _renderedQueue;
 
-	/// <summary>通用扩展 widget 卡：setWidget 的文本行进这里，和待办卡同列同宽。</summary>
 	private readonly ComposerWidgetCard _extensionCard;
 	private readonly StackPanel _extensionBody = new();
 	private readonly ReadingColumn _widgetColumn = new();
@@ -164,12 +144,9 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _thinkingButton;
 	private readonly TextBlock _thinkingLabel = new();
 
-	/// <summary>
 	/// 输入区上方的会话进行态指示行（PiDeck responding 条）。
 	/// 只要这一轮还在跑就一直占位：[图标] [呼吸点] [状态短语 · 事实后缀] | [功能提示]。
-	/// </summary>
 	private readonly Border _busyLine;
-	/// <summary>状态行的列宿主：只在「跑回合」时占位（隐藏时整列不参与布局）。</summary>
 	private readonly ReadingColumn _busyColumn;
 	private readonly Image _busyIcon;
 	private readonly TextBlock _busyPulse = new();
@@ -177,52 +154,37 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Border _busyDivider;
 	private readonly TextBlock _busyTip = new();
 	private RespondingKind? _busyKind;
-	/// <summary>最近一帧算出的进行态；心跳只拿它重新取轮播帧，不必重扫整段历史。</summary>
 	private RespondingStatus? _busyStatus;
-	/// <summary>本回合起点（发送与压缩自己记的单调时间戳）；0 表示没跑过。</summary>
 	private long _turnStarted;
 
-	/// <summary>时间线里等待占位行的身份：不属于会话条目，只在预热期拼在投影末尾。</summary>
 	private const string PendingReplyEntryId = "live-pending-reply";
 
-	/// <summary>占位行的共享实例：每一拍新建会让时间线误以为换了一行。</summary>
 	private ChatEntry? _pendingRow;
 
-	/// <summary>输入框左群的终端开关键：控制会话底部的终端面板。</summary>
 	private readonly Button _terminalButton;
 
-	/// <summary>本会话的安全档位入口（按会话覆盖，与 PiDeck 的分布一致）。</summary>
 	private readonly Button _securityButton;
 	private readonly Border _terminalPane;
 	private readonly SplitPanel _terminalSplit;
 	private TerminalDock? _terminal;
 	private bool _terminalOpen;
 
-	/// <summary>底部终端面板的高度：收起时记下来，下次展开沿用。</summary>
 	private double _terminalDockHeight = AppTheme.TerminalDockHeight;
 
-	/// <summary>标签标题变化时触发（会话名、运行状态）。</summary>
 	public event Action<SessionTab>? TitleChanged;
 
-	/// <summary>会话被分支（新会话文件）后触发，宿主需要刷新侧栏。</summary>
 	public event Action<SessionTab>? Forked;
 
-	/// <summary>
 	/// 会话文件被原地重写（「编辑重发」的墓碑截断）后触发：会话 id 与文件不变，
 	/// 但宿主必须丢弃该文件的侧栏摘要缓存，否则会继续用截断前的预览与条数。
-	/// </summary>
 	public event Action<SessionTab>? Rewritten;
 
-	/// <summary>会话空闲/运行状态变化时触发，用于在标签头显示指示。</summary>
 	public event Action<SessionTab>? StateChanged;
 
-	/// <summary>
 	/// 问询卡开关时触发。不能走 <see cref="StateChanged"/>：那条链路会顺带刷一遍会话列表
 	/// （对全部会话文件做 stat），而开关一张卡片只是页签标题上那个小圆点变了。
-	/// </summary>
 	public event Action<SessionTab>? AskChanged;
 
-	/// <summary>一条消息真的走完了一轮（成功、失败或中断都算发过了）；宿主用它记录「上次使用的模型」。</summary>
 	public event Action<SessionTab>? MessageSent;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
@@ -744,25 +706,18 @@ public sealed partial class SessionTab : IDisposable
 
 	public CodingAgentSession Session { get; }
 
-	/// <summary>本标签的宿主交互（ask_question）；随标签释放一起关闭。</summary>
 	internal DesktopUiHost? UiHost { get; set; }
 
-	/// <summary>待办卡是否占据输入区上方的位置（诊断与契约测试用）。</summary>
 	internal bool TodoCardVisible => _todoCard.View.IsVisible;
 
-	/// <summary>会话内联问询卡（ask_question）：宿主 <see cref="DesktopUiHost"/> 直接用它展示。 </summary>
 	internal AskQuestionPanel AskPanel => _askPanel;
 
-	/// <summary>当前是否有阻塞式问询卡在等回答（页签标题会带标记，后台页签也能看出来）。</summary>
 	internal bool AskPending => _askPanel.IsOpen;
 
-	/// <summary>输入区是否可见（问询卡打开时整块收起；诊断与契约测试用）。</summary>
 	internal bool InputAreaVisible => _inputStack.IsVisible;
 
-	/// <summary>
 	/// 问询卡开关时收起/恢复输入区（PiDeck 同款：代理在等回答，输入框不能继续抢焦点），
 	/// 并通知宿主刷新页签标题，让后台会话的提问也能被看到。
-	/// </summary>
 	private void OnAskVisibilityChanged(bool open)
 	{
 		if (_disposed)
@@ -774,44 +729,32 @@ public sealed partial class SessionTab : IDisposable
 		AskChanged?.Invoke(this);
 	}
 
-	/// <summary>「排队中」卡是否占位（队列为空时整卡不占位）。</summary>
 	internal bool QueueCardVisible => _queueCard.View.IsVisible;
 
-	/// <summary>发送键右侧的投递方式菜单（诊断与契约测试用）。</summary>
 	internal SendOptionsMenu SendMenuForTests => _sendMenu;
 
-	/// <summary>无窗口测试里直接打开投递方式菜单（真实入口是发送键的 caret）。</summary>
 	internal void ShowSendMenuForTests() => ShowSendMenu();
 
-	/// <summary>输入框当前内容（测试与快捷发送共用同一条读路径）。</summary>
 	internal string ComposerText => _composer.Text;
 
-	/// <summary>扩展 widget 卡是否占据输入区上方的位置（诊断与契约测试用）。</summary>
 	internal bool ExtensionCardVisible => _extensionCard.View.IsVisible;
 
-	/// <summary>标签页使用的聊天记录模型；宿主可以在后台预建后交接过来。</summary>
 	internal ChatViewModel Chat => _chat;
 
-	/// <summary>当前进行态（诊断与单测读取；空闲为 null）。就是状态条那一行现在说的话。</summary>
 	internal RespondingStatus? BusyStatus => _busyStatus;
 
-	/// <summary>代理事件层是否已进入流式状态（诊断与契约测试用）。</summary>
 	internal bool ChatStreaming => _chat.IsStreaming;
 
-	/// <summary>草稿里已识别的文件引用数（诊断与契约测试用）。</summary>
 	internal int ComposerReferenceCount => UserReferenceRichText.Count(_composer.Text);
 
-	/// <summary>输入区当前附件（诊断与契约测试用）。</summary>
 	internal IReadOnlyList<ImageContent> ComposerAttachments => [.. _attachments.Select(static item => item.Content)];
 
 	public string Title { get; private set; }
 
-	/// <summary>标签页内容。</summary>
 	public UIElement View { get; }
 
 	public bool IsStreaming => _sending || _chat.IsStreaming;
 
-	/// <summary>会话显示名：会话名 > 第一条用户消息 > 短 id。</summary>
 	public static string TitleFor(CodingAgentSession session)
 	{
 		if (session.SessionName is { Length: > 0 } name)
@@ -830,7 +773,6 @@ public sealed partial class SessionTab : IDisposable
 		return Strings.UntitledSession;
 	}
 
-	/// <summary>扩展 <c>setStatus</c>：状态条目显示在输入区上方；text 为 null 时清除。</summary>
 	public void SetExtensionStatus(string key, string? text)
 	{
 		if (_disposed)
@@ -850,7 +792,6 @@ public sealed partial class SessionTab : IDisposable
 		RefreshExtensionLine();
 	}
 
-	/// <summary>扩展 <c>setWidget</c>：把 widget 的文本行放进输入区上方的扩展卡。</summary>
 	public void SetExtensionWidget(string key, IReadOnlyList<string>? lines)
 	{
 		if (_disposed)
@@ -870,7 +811,6 @@ public sealed partial class SessionTab : IDisposable
 		RefreshExtensionWidgets();
 	}
 
-	/// <summary>扩展 <c>setTitle</c>：更新标签页标题。</summary>
 	public void SetExtensionTitle(string title)
 	{
 		if (_disposed)
@@ -887,7 +827,6 @@ public sealed partial class SessionTab : IDisposable
 		TitleChanged?.Invoke(this);
 	}
 
-	/// <summary>扩展 <c>set_editor_text</c>：替换输入框内容并把焦点交回编辑器。</summary>
 	public void SetExtensionText(string text)
 	{
 		if (_disposed)
@@ -947,10 +886,8 @@ public sealed partial class SessionTab : IDisposable
 		Session.Dispose();
 	}
 
-	/// <summary>
 	/// 关闭标签：先中止运行中的轮次并等它收尾（结果落盘），再释放界面与会话。
 	/// 有界等待，收尾失败也继续关闭。
-	/// </summary>
 	public async Task CloseAsync()
 	{
 		try
@@ -970,7 +907,6 @@ public sealed partial class SessionTab : IDisposable
 		Dispose();
 	}
 
-	/// <summary>释放界面订阅和待执行的刷新，不释放会话。</summary>
 	public void DisposeView()
 	{
 		if (_disposed) return;
@@ -1002,7 +938,6 @@ public sealed partial class SessionTab : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	/// <summary>把同一帧内的增量合并，避免每个 token 都触发布局与绘制。</summary>
 	private void OnChatChanged()
 	{
 		if (_disposed || Interlocked.Exchange(ref _renderPending, 1) != 0)
@@ -1019,7 +954,6 @@ public sealed partial class SessionTab : IDisposable
 		});
 	}
 
-	/// <summary>发送输入框中的指令，运行结束后刷新界面。</summary>
 	private void Send()
 	{
 		if (_sending || _chat.IsStreaming)
@@ -1065,7 +999,6 @@ public sealed partial class SessionTab : IDisposable
 		Render(force: true);
 	}
 
-	/// <summary>原位换色，保留 Markdown、选区、工具折叠与阅读位置。</summary>
 	public void ApplyTheme()
 	{
 		AppStyles.ApplyTextColors((Element)View);
@@ -1087,28 +1020,22 @@ public sealed partial class SessionTab : IDisposable
 		_terminal?.ApplyTheme();
 	}
 
-	/// <summary>临时消息统一走窗口级 toast；头部铭牌只留给模型与思考级别。</summary>
 	private void Notify(string message) => Toasts.Show(View, message);
 
-	/// <summary>失败类提示：红色图标，停留时间按文案长度。</summary>
 	private void NotifyError(string message) => Toasts.Error(View, message);
 
-	/// <summary>宿主快捷键：发送当前输入框内容；正在运行则中断。</summary>
 	public void SendFromShortcut() => Send();
 
 	internal Task PendingSend => _pendingSend;
 
-	/// <summary>焦点移入输入框。</summary>
 	public void FocusComposerNow() => _composer.Focus();
 
 	/// 编辑重发带回的图片没有文件路径；附件按路径去重，这里给一个稳定的合成前缀。
 	private const string EditImagePrefix = "edit-resend:";
 
-	/// <summary>
 	/// 「编辑重发」：把原文放回输入框，并记下要回到的条目。发送时先把该条目及其之后的分支
 	/// 在原地截断成墓碑（同一份会话文件），修改后的提问接在后面 —— 原历史仍可回看，
 	/// 侧栏也不会因为每次重发多出一条会话。原消息的图片一并带回附件区，重发才会带上同样的内容块。
-	/// </summary>
 	private void PrepareEdit(string entryId, string text, IReadOnlyList<ChatImage> images)
 	{
 		if (IsStreaming)
@@ -1128,7 +1055,6 @@ public sealed partial class SessionTab : IDisposable
 		_editNotice.IsVisible(true);
 	}
 
-	/// <summary>由外部（快捷发送、命令面板）触发发送。带附件时以内容块形式发送。</summary>
 	public async Task SendAsync(string text)
 	{
 		if (_sending || _chat.IsStreaming || _disposed)
@@ -1246,7 +1172,6 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>取消发送前的准备工作（检查点、分支切换等），并让正在进行的运行收到取消信号。</summary>
 	private void CancelPendingSend()
 	{
 		CancellationTokenSource? cancellation;
@@ -1270,15 +1195,12 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>展开/收起会话内搜索框（供无人值守的界面演练调用）。</summary>
 	public void ToggleSearchFromSmoke() => ToggleSearch();
 
-	/// <summary>测试入口：走与输入框相同的过滤路径。</summary>
 	internal void SetFilterFromTests(string value) => _searchBox.Text = value;
 	internal ConversationTimeline TimelineFromTests => _timeline;
 	internal bool FollowingFromTests => _conversationScroll.Following;
 
-	/// <summary>只切 opacity，保留悬浮按钮的布局位置，避免隐藏期间布局变化后图标与底分离。</summary>
 	private void SetScrollToLatestVisible(bool visible)
 	{
 		var wasHidden = _scrollToLatestFloat.Opacity == 0;
@@ -1289,16 +1211,13 @@ public sealed partial class SessionTab : IDisposable
 		if (visible && wasHidden) _scrollToLatestFloatHost.InvalidateMeasure();
 	}
 
-	/// <summary>阴影按当前配色取深浅两档：浅色主题下重阴影会糊成一圈灰边。浮层收不到窗口的换肤通知，所以显式刷。</summary>
 	private void ApplyFloatingShadow() =>
 		_scrollToLatestFloat.ShadowColor = Color.FromArgb(AppTheme.IsLightTheme ? (byte)0x22 : (byte)0x96, 0, 0, 0);
 
-	/// <summary>
 	/// 挂到窗口后把浮层宿主升入窗口的 OverlayLayer：浮层与正文是两个独立的绘制根，
 	/// 时间线行在流式/回收中被整块重绘时不会再把与自己重叠的按钮像素盖掉
 	/// （保留场景对正文脏区的重绘不保证回放树序在它之上的兄弟内容）。
 	/// 未挂窗（单元测试直接排布 <c>tab.View</c>）时宿主留在主区里，位置算法完全相同。
-	/// </summary>
 	private void HandleFloatingRootChanged(Element? oldRoot, Element? newRoot)
 	{
 		if (newRoot is Window window)
@@ -1331,18 +1250,15 @@ public sealed partial class SessionTab : IDisposable
 		if (_scrollToLatestFloatHost.Parent is null) _mainArea.Children(_scrollToLatestFloatHost);
 	}
 
-	/// <summary>
 	/// 浮层宿主：把圆钮摆在 <see cref="Anchor"/> 的水平居中、下缘越过其底边 <see cref="Overlap"/> 的位置。
 	/// 摆位在每轮 arrange 里按锚点的实时 Bounds 计算 —— 正文区宽/高怎么变（分栏拖动、侧栏折叠、
 	/// 待办卡展开收起、窗口缩放）都不需要同步代码；OverlayLayer 只给客户区矩形这一个约束，
 	/// 所以锚点必须自己读，而不是把边界换算成 margin 存起来。
 	/// 自身对命中透明：只有圆钮（经由 ShadowDecorator 转发给子级）可点，其余区域照常滚正文。
-	/// </summary>
 	private sealed class FloatingAnchor : Panel
 	{
 		internal Element? Anchor;
 
-		/// <summary>圆钮下缘越过锚点区下边的距离（DIP）。</summary>
 		internal double Overlap;
 
 		protected override Size MeasureContent(Size availableSize)
@@ -1390,10 +1306,8 @@ public sealed partial class SessionTab : IDisposable
 			}
 		}
 
-		/// <summary>
 		/// 宿主铺满正文区，但只有圆钮可命中：其余位置一律穿透，滚轮与悬停照常落到正文，
 		/// 不会像 Panel 的默认实现那样把自己当作命中结果。
-		/// </summary>
 		protected override UIElement? OnHitTest(Point point)
 		{
 			if (!IsVisible || !IsHitTestVisible)
@@ -1413,10 +1327,8 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 浮层驱动器：两件事——跟踪本标签页的视觉根（挂层/摘层），以及在正文区被重新摆位时要求浮层重排。
 	/// 它自己铺满正文区，因此正文区的任何移动或缩放都会走到它的 ArrangeContent。
-	/// </summary>
 	private sealed class FloatingTracker : Grid
 	{
 		public Action<Element?, Element?>? Changed;
@@ -1435,10 +1347,8 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>回到最新一条消息。</summary>
 	private void ScrollToLatest() => _conversationScroll.ScrollToLatest();
 
-	/// <summary>展开/收起会话内搜索框。</summary>
 	private void ToggleSearch()
 	{
 		var show = !_searchBox.IsVisible;
@@ -1455,10 +1365,8 @@ public sealed partial class SessionTab : IDisposable
 		else ApplyFilter(string.Empty);
 	}
 
-	/// <summary>
 	/// 会话内过滤是显式搜索：进入时取消跟底并回到第一条命中，清空时回到搜索前的行（或末尾）。
 	/// 否则虚拟化列表按旧偏移重新投影，读者会落在与搜索无关的位置。
-	/// </summary>
 	private void ApplyFilter(string next)
 	{
 		if (string.Equals(next, _filter, StringComparison.Ordinal)) return;
@@ -1496,10 +1404,8 @@ public sealed partial class SessionTab : IDisposable
 		_filterAnchor = default;
 	}
 
-	/// <summary>
 	/// 一条聊天记录是否命中当前过滤关键字（正文、思考、工具名，以及执行过程里的步骤）。
 	/// 过程组行本身不带正文，不展开成员会让工具输出成为搜索盲区。
-	/// </summary>
 	internal static bool Matches(ChatEntry entry, string filter) =>
 		filter.Length == 0 ||
 		entry.Text.Contains(filter, StringComparison.OrdinalIgnoreCase) ||
@@ -1507,16 +1413,12 @@ public sealed partial class SessionTab : IDisposable
 		(entry.ToolName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false) ||
 		entry.ProcessEntries.Any(member => Matches(member, filter));
 
-	/// <summary>切到分支树视图。</summary>
 	public void ShowBranches() => ShowView(showChat: false);
 
-	/// <summary>切回对话视图。</summary>
 	public void ShowChat() => ShowView(showChat: true);
 
-	/// <summary>当前会话可用的斜杠命令名。</summary>
 	public IReadOnlyList<string> SlashCommands() => [.. Commands().Select(static command => command.Name)];
 
-	/// <summary>把文本填进输入框并把焦点给它（命令面板用）。</summary>
 	public void Prefill(string text)
 	{
 		_composer.Text = text;
@@ -1524,7 +1426,6 @@ public sealed partial class SessionTab : IDisposable
 		_composer.Focus();
 	}
 
-	/// <summary>在对话视图与分支树之间切换。</summary>
 	private void ShowView(bool showChat)
 	{
 		_conversationScroll.Stop();
@@ -1546,10 +1447,8 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 空会话：提示文本与输入区（含状态栏）作为一个整体居中，落在消息区正中；
 	/// 有记录后输入区回到贴底的自适应行。只换网格行，不重建输入框 —— 草稿、附件与焦点都保留。
-	/// </summary>
 	private void SetEmptyState(bool empty)
 	{
 		_emptyCard.IsVisible(empty);
@@ -1564,7 +1463,6 @@ public sealed partial class SessionTab : IDisposable
 		_composerColumn.VerticalAlignment(empty ? VerticalAlignment.Center : VerticalAlignment.Stretch);
 	}
 
-	/// <summary>选择图片并附加到下一次发送。图片以 Base64 随消息发给模型（`prompt` 的 images 字段同源）。</summary>
 	private async Task AttachImageAsync()
 	{
 		string[]? files;
@@ -1592,7 +1490,6 @@ public sealed partial class SessionTab : IDisposable
 		await AddFilesAsync(files);
 	}
 
-	/// <summary>刷新附件条：每个附件一个可移除的标签。</summary>
 	private void RefreshAttachments()
 	{
 		_attachmentBar.Clear();
@@ -1622,7 +1519,6 @@ public sealed partial class SessionTab : IDisposable
 		_attachmentBar.IsVisible(true);
 	}
 
-	/// <summary>把最后一条助手回复复制到剪贴板。</summary>
 	private void CopyLastReply()
 	{
 		var text = _chat.LastAssistantText();
@@ -1635,7 +1531,6 @@ public sealed partial class SessionTab : IDisposable
 		CopyText(text);
 	}
 
-	/// <summary>复制一段文本，并用 toast 告知结果。</summary>
 	private void CopyText(string text)
 	{
 		var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
@@ -1643,7 +1538,6 @@ public sealed partial class SessionTab : IDisposable
 		else NotifyError(Strings.ClipboardUnavailable);
 	}
 
-	/// <summary>重新发送最后一条用户消息（会话历史保留，等同于再问一次）。</summary>
 	private async Task RetryAsync()
 	{
 		var text = _chat.LastUserText();
@@ -1684,7 +1578,6 @@ public sealed partial class SessionTab : IDisposable
 		Render();
 	}
 
-	/// <summary>测试当前模型的连通性，结果用 toast 提示。</summary>
 	private async Task TestConnectionAsync()
 	{
 		if (_testing || _sending || _chat.IsStreaming || _disposed)
@@ -1712,7 +1605,6 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>切换计划模式（只读探索）。运行期间不可切换。</summary>
 	private void TogglePlanMode()
 	{
 		if (IsStreaming || _disposed)
@@ -1724,16 +1616,12 @@ public sealed partial class SessionTab : IDisposable
 		Render();
 	}
 
-	/// <summary>会话底部的终端面板是否展开。</summary>
 	public bool IsTerminalOpen => _terminalOpen;
 
-	/// <summary>输入框的终端键 / Ctrl+Shift+D：展开时收起，收起时展开。</summary>
 	public void ToggleTerminal() => SetTerminalOpen(!_terminalOpen);
 
-	/// <summary>
 	/// 展开或收起底部终端。终端在第一次展开时才创建（会真的启动伪终端），之后收起只隐藏，
 	/// shell 的历史与工作目录都不丢；展开时把键盘焦点交给它。
-	/// </summary>
 	public void SetTerminalOpen(bool open)
 	{
 		if (_disposed || _terminalOpen == open)
@@ -1770,11 +1658,9 @@ public sealed partial class SessionTab : IDisposable
 		FocusTerminalSoon();
 	}
 
-	/// <summary>终端键在面板展开时常驻浮起，一眼看出终端是从这里打开的。</summary>
 	private void UpdateTerminalButton() =>
 		_terminalButton.StyleName(_terminalOpen ? AppStyles.SelectedButton : AppStyles.GhostButton);
 
-	/// <summary>展开后再交焦点：面板这一帧还没布局完，终端输入层此时还收不到键盘。</summary>
 	private void FocusTerminalSoon()
 	{
 		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
@@ -1793,10 +1679,8 @@ public sealed partial class SessionTab : IDisposable
 		});
 	}
 
-	/// <summary>
 	/// 设置页保存安全配置后由宿主推给每个已打开的会话：档位是每次工具调用时读的，
 	/// 不推的话界面显示的还是旧档，用户会以为改动没生效。
-	/// </summary>
 	public void ApplySecurityConfig(SecurityConfig config)
 	{
 		if (_disposed)
@@ -1808,13 +1692,10 @@ public sealed partial class SessionTab : IDisposable
 		RefreshPickers();
 	}
 
-	/// <summary>本会话安全档位的持久化键：新建会话还没有文件时用会话 id 兜底。</summary>
 	private string SecurityKey => Session.Session.SessionFile ?? $"session:{Session.Session.SessionId}";
 
-	/// <summary>
 	/// 档位按钮的提示直接说清「现在生效的是哪档、为什么」——总开关关掉时档位标签会有欺骗性，
 	/// 这时必须写明门没开，而不是显示一个看起来像在管的档位名。
-	/// </summary>
 	private void UpdateSecurityButton()
 	{
 		var config = Session.Security;
@@ -1830,10 +1711,8 @@ public sealed partial class SessionTab : IDisposable
 				: Strings.SecurityFollowHint(level.Name, level.Description));
 	}
 
-	/// <summary>
 	/// 按会话切换安全档位。列表里给「跟随默认」而不是直接列档位：
 	/// 清除覆盖与选了一个恰好等于默认的档位在配置上是两件事，混在一起会留下永远清不掉的脏键。
-	/// </summary>
 	private void ShowSecurityMenu()
 	{
 		if (_disposed)
@@ -1879,7 +1758,6 @@ public sealed partial class SessionTab : IDisposable
 		menu.Show(_securityButton);
 	}
 
-	/// <summary>写回全局设置并就地替换本会话的生效配置：换档不该重建会话，也不该要求重启。</summary>
 	private void ApplySecurityLevel(string? levelId)
 	{
 		var key = SecurityKey;
@@ -1898,7 +1776,6 @@ public sealed partial class SessionTab : IDisposable
 		RefreshPickers();
 	}
 
-	/// <summary>思考强度菜单：与模型选择一样按当前模型支持项生成，当前项打勾。</summary>
 	private void ShowThinkingMenu()
 	{
 		if (IsStreaming || _disposed)
@@ -1962,14 +1839,10 @@ public sealed partial class SessionTab : IDisposable
 		Render();
 	}
 
-	/// <summary>
 	/// 输入以 <c>/</c> 开头时，在输入框上方列出匹配的斜杠命令（提示词模板与技能），点击即补全。
 	/// 命令数据来自会话发现的结果，与 RPC 的 <c>get_commands</c> 同源。
-	/// </summary>
-	/// <summary>
 	/// 创建占位提示：样式与命中设置在这一处配齐 —— 提示叠在输入框上，
 	/// 任何一枚（构造的或换新的）都必须 IsHitTestVisible(false)，点击才能穿到输入框。
-	/// </summary>
 	private static TextBlock BuildComposerHint()
 	{
 		var hint = new TextBlock().FontSize(AppTheme.FontSizeChat).SubtleText()
@@ -1981,12 +1854,10 @@ public sealed partial class SessionTab : IDisposable
 		return hint;
 	}
 
-	/// <summary>
 	/// 显隐占位提示。显示即换一枚新实例：
 	/// 保留场景把提示节点首次录制的光栅固化在节点上 —— 此后强制重绘、文本重建都换不掉，
 	/// 输入内容再删除后重放的仍是那截被裁掉的占位；新实例没有旧录制，完整绘制。
 	/// 换新延迟一拍，让「无提示」先被完整录制一帧，避免新旧光栅混在同一脏区。
-	/// </summary>
 	private void ShowComposerHint(bool visible)
 	{
 		if (_disposed) return;
@@ -2025,15 +1896,12 @@ public sealed partial class SessionTab : IDisposable
 		timer.Start();
 	}
 
-	/// <summary>
 	/// 现在是否真的在组合。以框架的 <see cref="ITextCompositionClient.IsComposing"/> 为准——
 	/// 它在组合提交/取消时由框架自己复位；我们记的事件状态只作为兜底。
 	/// 只认事件状态时，「组合已结束但 End 没到」会让占位永久消失（中文输入后删空文本即复现）。
-	/// </summary>
 	private bool IsComposingNow() =>
 		_composer is ITextCompositionClient composition ? composition.IsComposing : _composing;
 
-	/// <summary>输入法组合开始（IME 预编辑）：立刻让位，并取消挂起的换新。</summary>
 	internal void ComposerCompositionStarted()
 	{
 		if (_disposed) return;
@@ -2042,11 +1910,9 @@ public sealed partial class SessionTab : IDisposable
 		_composerHint.IsVisible(false);
 	}
 
-	/// <summary>
 	/// 组合结束：按提交后的正文决定占位要不要回来（取消组合时正文仍为空）。
 	/// 这里显式清掉事件状态，并重新按「文本为空」求值——即使 End 之后又来一次
 	/// 迟到的 Update 把状态置回 true，<see cref="IsComposingNow"/> 仍以框架状态为准。
-	/// </summary>
 	internal void ComposerCompositionEnded()
 	{
 		_composing = false;
@@ -2054,10 +1920,8 @@ public sealed partial class SessionTab : IDisposable
 		ShowComposerHint(_composer.Text.Length == 0);
 	}
 
-	/// <summary>取消已挂起的占位换新：只停表，实例保留给下一次显示复用。</summary>
 	private void CancelComposerHintSwap() => _composerHintTimer?.Stop();
 
-	/// <summary>把提示换成一枚全新实例（延迟一拍由 ShowComposerHint 调度）。测试直接驱动这一拍。</summary>
 	internal void SwapComposerHint()
 	{
 		if (_disposed) return;
@@ -2112,7 +1976,6 @@ public sealed partial class SessionTab : IDisposable
 		_commandBar.IsVisible(true);
 	}
 
-	/// <summary>可用的斜杠命令：提示词模板 + 技能。</summary>
 	private IEnumerable<(string Name, string Description)> Commands()
 	{
 		foreach (var template in Session.PromptTemplates)
@@ -2126,7 +1989,6 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>同步当前模型与思考强度铭牌。</summary>
 	private void RefreshPickers()
 	{
 		var modelName = Session.Model.Name.Length > 0 ? Session.Model.Name : Session.Model.Id;
@@ -2141,7 +2003,6 @@ public sealed partial class SessionTab : IDisposable
 		_thinkingButton.HoverTip($"{Strings.ThinkingLevelTitle}：{thinking}");
 	}
 
-	/// <summary>在光标处插入 @，开始一个文件引用。</summary>
 	private void InsertReference()
 	{
 		if (_disposed) return;
@@ -2149,11 +2010,9 @@ public sealed partial class SessionTab : IDisposable
 		_composer.EnterText(_composer.CaretPosition, 0, "@");
 	}
 
-	/// <summary>
 	/// 会话进行态（PiDeck respondingKind 同语义）。判定与措辞都在
 	/// <see cref="RespondingStatusPolicy"/>：只要这一轮还在跑就永远有一句可说，
 	/// 不再出现「完全没提示」的空窗（首轮发送后到首 token 之前就是这一段）。
-	/// </summary>
 	private RespondingStatus ComposeStatus(IReadOnlyList<ChatEntry> rows, bool pendingRowVisible)
 	{
 		var retry = _chat.Retry;
@@ -2172,19 +2031,15 @@ public sealed partial class SessionTab : IDisposable
 			retry is { } scheduled ? RetrySecondsRemaining(scheduled.RetryAtUnixMs) : 0));
 	}
 
-	/// <summary>
 	/// 预热期要不要在时间线尾部补一行「在等回复」的占位。条件是「屏幕上最后一行还是用户
 	/// 自己那条」且这一轮真的在等首 token —— 重试与压缩有自己的状态条文案，再挂一行
 	/// 「正在等第一句话」就是自相矛盾。
-	/// </summary>
 	private bool PendingRowVisible(IReadOnlyList<ChatEntry> rows) =>
 		!TurnHasOutput(rows) && _filter.Length == 0 && rows.Count > 0 &&
 		_chat.Retry is not { Running: true } && !Session.IsCompacting;
 
-	/// <summary>
 	/// 从最新条目向回找第一个仍在流式的活动。每帧都走，因此只看 O(1) 的长度与标记：
 	/// 读 <see cref="ChatEntry.Text"/> 会把整篇流式正文物化一遍。
-	/// </summary>
 	private static (bool Tool, bool Body, bool Thinking) LiveActivity(IReadOnlyList<ChatEntry> rows)
 	{
 		for (var index = rows.Count - 1; index >= 0; index--)
@@ -2215,15 +2070,12 @@ public sealed partial class SessionTab : IDisposable
 		};
 	}
 
-	/// <summary>
 	/// 本回合有没有已经落下可见的行。屏幕上最后一行还是用户自己那条，就说明请求还没换回
 	/// 任何东西——这一段是「预热 + 等首 token」，和「工具收口、下一段还没开始」的空窗不是一回事：
 	/// 前者看不见子阶段，可以给几句真话轮着说；后者只能说「正在处理」。
-	/// </summary>
 	private static bool TurnHasOutput(IReadOnlyList<ChatEntry> rows) =>
 		rows.Count > 0 && rows[^1].Role != ChatRole.User;
 
-	/// <summary>本回合已用时长：取「发送/压缩」与「AgentStart」里更晚的那个起点。</summary>
 	private double TurnElapsedMs()
 	{
 		var started = _turnStarted;
@@ -2232,10 +2084,8 @@ public sealed partial class SessionTab : IDisposable
 		return started == 0 ? 0 : Stopwatch.GetElapsedTime(started).TotalMilliseconds;
 	}
 
-	/// <summary>
 	/// 右侧功能提示：只在屏幕自己不动的时候占位（推流期眼睛在正上文中，不抢视线），
 	/// 每 7 秒换一条；设置里关掉就整段不占位。
-	/// </summary>
 	private void ApplyRespondingTip(RespondingStatus status)
 	{
 		var quiet = status.Kind is RespondingKind.Starting or RespondingKind.Waiting
@@ -2250,11 +2100,9 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>
 	/// 预热期在时间线尾部补一行「在等回复」的占位：首轮等待时正文区只有用户自己的气泡，
 	/// 看不出请求是否被受理。它不是会话内容：不进投影、不进大纲、不进模型上下文，
 	/// 只接在投影结果后面交给行宿主；首 token 一到就自然被真的流式行顶掉。
-	/// </summary>
 	private IReadOnlyList<ChatEntry> AppendPending(IReadOnlyList<ChatEntry> entries)
 	{
 		// 复用同一个实例：ConversationTimeline 按引用判同一行，实例不变就不会每一拍拆了重建，
@@ -2269,7 +2117,6 @@ public sealed partial class SessionTab : IDisposable
 		return [.. entries, _pendingRow];
 	}
 
-	/// <summary>保留未变化的消息控件和折叠状态，只重绘变化后的尾部。</summary>
 	private void Render(bool force = false)
 	{
 		if (_disposed)
@@ -2477,7 +2324,6 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 
-	/// <summary>重建待办卡；只在计划对象变化时调用，平时零成本。</summary>
 	private void RefreshTodoStrip(TodoState state)
 	{
 		var plan = state.ActivePlan;
@@ -2517,7 +2363,6 @@ public sealed partial class SessionTab : IDisposable
 		RefreshWidgetColumn();
 	}
 
-	/// <summary>一条待办：状态字形 + 可截断的正文，整行悬停显示完整文本。</summary>
 	private static UIElement TodoRow(TodoItem item)
 	{
 		var text = new TextBlock()
@@ -2538,10 +2383,8 @@ public sealed partial class SessionTab : IDisposable
 			.Children(new TodoStatusGlyph(item.Status).DockLeft(), text);
 	}
 
-	/// <summary>
 	/// 重建「排队中」卡：运行中再发的消息还没进会话投影，只能在队列快照里看到，
 	/// 这一块就是它们唯一的可见处。撤回 / 丢弃会改队列，下一次 queue_update 再刷新。
-	/// </summary>
 	private void RefreshQueueStrip(IReadOnlyList<ChatQueuedMessage> queued)
 	{
 		if (queued.Count == 0)
@@ -2569,10 +2412,8 @@ public sealed partial class SessionTab : IDisposable
 		RefreshWidgetColumn();
 	}
 
-	/// <summary>
 	/// 一条排队消息：序号 + 预览 + 投递时机标签 + 「撤回」「丢弃」。
 	/// 与 PiDeck 的排队行一致——悬停给全文，行内只留一行省略号。
-	/// </summary>
 	private UIElement QueuedRow(ChatQueuedMessage queued, int index)
 	{
 		var preview = Strings.QueuedPreview(queued.Text, queued.ImageCount);
@@ -2616,11 +2457,9 @@ public sealed partial class SessionTab : IDisposable
 				.DockLeft(), row);
 	}
 
-	/// <summary>
 	/// 撤回：从队列拿掉并把内容放回输入框。与 PiDeck 的 retractQueuedPromptForEdit 同语义：
 	/// 撤回的文本排在已有草稿**前面**、空行分隔（用户刚写的那半句不会被吞掉），
 	/// 图片前插到附件列表，光标落在撤回文本末尾。
-	/// </summary>
 	internal void RetractQueued(ChatQueuedMessage queued)
 	{
 		if (_disposed) return;
@@ -2648,10 +2487,8 @@ public sealed partial class SessionTab : IDisposable
 		_composer.CaretPosition = Math.Min(restored.Length, queued.Text.TrimEnd().Length);
 	}
 
-	/// <summary>
 	/// 把图片插到附件列表最前面（与 PiDeck 的 `[...prompt.images, ...current]` 一致）。
 	/// 仍走输入区的容量上限：撤回不是绕过 10 张 / 20 MiB 限制的入口。
-	/// </summary>
 	private void InsertAttachmentsFirst(IReadOnlyList<ImageContent> images)
 	{
 		if (images.Count == 0) return;
@@ -2677,14 +2514,12 @@ public sealed partial class SessionTab : IDisposable
 		RefreshAttachments();
 	}
 
-	/// <summary>丢弃：不回填，直接从队列拿掉。</summary>
 	internal void DiscardQueued(ChatQueuedMessage queued)
 	{
 		if (_disposed) return;
 		if (!_chat.RetractQueued(queued)) Notify(Strings.QueuedGone);
 	}
 
-	/// <summary>扩展 widget 卡：每个 key 一段，先用等宽小字标出 key，再逐行显示文本。</summary>
 	private void RefreshExtensionWidgets()
 	{
 		_extensionBody.Clear();
@@ -2740,10 +2575,8 @@ public sealed partial class SessionTab : IDisposable
 		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
 	}
 
-	/// <summary>
 	/// 轨迹页的数据源：当前分支的会话条目（已落盘事实）+ 聊天投影里还没落盘的流式尾行。
 	/// 不另开读取通道：会话文件与聊天投影同属这个标签，切换面板不需要等待 IO。
-	/// </summary>
 	internal TrajectorySource TrajectorySnapshot() => new(
 		Session.Session.GetBranch(),
 		_chat.Entries(),
@@ -2768,7 +2601,6 @@ public sealed partial class SessionTab : IDisposable
 
 	public void ShowStatistics() => _statisticsPanel.Show(View, StatisticsDisplay(), IsStreaming || Session.IsCompacting);
 
-	/// <summary>认证变化后换一份可用模型源（登录后无需重开标签页即可选到新模型）。</summary>
 	public void SetAvailableModels(Func<IReadOnlyList<Model>> availableModels) => _modelPicker.SetSource(availableModels);
 	public void ShowStatisticsDetails()
 	{
@@ -2844,11 +2676,9 @@ public sealed partial class SessionTab : IDisposable
 		return row;
 	}
 
-	/// <summary>
 	/// 用户消息：右侧内嵌气泡，与助手回复（左侧正文）一眼分开；技能上下文收成 chip，
 	/// 文件引用在正文里由投影层显示成行内 chip。正文保持可选中，时间与操作在气泡下方，图片缩略图在气泡上方。
 	/// 外层 StackPanel 挂 actions（Tag 约定）。
-	/// </summary>
 	private UIElement Bubble(ChatEntry entry)
 	{
 		var (skills, text) = UserMessageText.Parse(entry.Text);
@@ -2950,8 +2780,6 @@ public sealed partial class SessionTab : IDisposable
 		return row;
 	}
 
-	/// <summary>技能上下文 chip：蓝色信息色 + sparkles，tooltip 显示技能文件位置。</summary>
-	/// <summary>技能 chip 的悬浮提示用：技能名 → SKILL.md 的绝对路径。</summary>
 	private string? SkillLocation(string name)
 	{
 		foreach (var skill in Session.DiscoveredSkills)
@@ -2983,10 +2811,8 @@ public sealed partial class SessionTab : IDisposable
 		? DateTimeOffset.FromUnixTimeMilliseconds(entry.Timestamp).ToLocalTime().ToString("HH:mm")
 		: string.Empty;
 
-	/// <summary>
 	/// 回到这条用户消息之前重开一条分支：会话文件会换成新文件（旧文件保留在历史里），
 	/// 之后输入的内容都落在新分支上。
-	/// </summary>
 	private void BranchAt(string entryId)
 	{
 		if (IsStreaming)
@@ -3010,7 +2836,6 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// <summary>消息缩略图与预览复用同一个图片源。</summary>
 	internal static UIElement ImageView(ChatImage image, Action<ImageSource>? preview = null) => ChatImages.Create(image, preview);
 
 	private void OpenMessageLink(string url) => Shell.OpenMessageLink(url, Session.Cwd, message => NotifyError(message));
@@ -3023,11 +2848,9 @@ public sealed partial class SessionTab : IDisposable
 		catch (FormatException) { NotifyError(Strings.BrokenImage); }
 	}
 
-	/// <summary>
 	/// 运行中发送键右侧的菜单（PiDeck 的 Split Send 下拉同款）：每项是「标题 + 生效时机」
 	/// 两行。投递方式是发送前最难猜的部分——「— steer」这种尾缀说明不了它什么时候生效，
 	/// 所以协议名与时机写在第二行。
-	/// </summary>
 	private void ShowSendMenu()
 	{
 		if (_disposed) return;
@@ -3044,7 +2867,6 @@ public sealed partial class SessionTab : IDisposable
 			]);
 	}
 
-	/// <summary>把当前草稿排入正在运行的代理；保留输入控件，只清空草稿。</summary>
 	internal void QueueDraft(bool steer)
 	{
 		if (_disposed || !_chat.IsStreaming) return;
@@ -3094,7 +2916,6 @@ public sealed partial class SessionTab : IDisposable
 		_composer.Cut();
 	}
 
-	/// <summary>粘贴菜单项的可用性：剪贴板有图片或文本时都允许执行。</summary>
 	private bool CanPasteFromClipboard()
 	{
 		if (_disposed || _composer.IsReadOnly) return false;
@@ -3104,7 +2925,6 @@ public sealed partial class SessionTab : IDisposable
 		return clipboard?.HasText() == true;
 	}
 
-	/// <summary>剪贴板里是图片时把它附加到输入框；返回是否接管了这次按键。</summary>
 	private bool PasteImageFromClipboard()
 	{
 		if (_disposed || ClipboardImages.Service is not { } service || !service.HasImage()) return false;
@@ -3112,13 +2932,10 @@ public sealed partial class SessionTab : IDisposable
 		return true;
 	}
 
-	/// <summary>最近一次剪贴板图片粘贴；测试与交互诊断用它等待后台读取结束。</summary>
 	internal Task PendingPaste => _pendingPaste;
 
-	/// <summary>窗口级图片预览浮层；浮层不在会话可视树里，测试与交互诊断经这里取其中的控件。</summary>
 	internal ImagePreview ImagePreview => _imagePreview;
 
-	/// <summary>读取剪贴板图片并逐个附加；读取失败时说明原因，避免按键被吞掉后没有任何反馈。</summary>
 	private async Task PasteImageAsync(IClipboardImages service)
 	{
 		IReadOnlyList<ClipboardAttachment> attachments;
@@ -3144,7 +2961,6 @@ public sealed partial class SessionTab : IDisposable
 		FocusComposer();
 	}
 
-	/// <summary>带标题与时间的通用卡片，用于错误等系统类消息。</summary>
 	private UIElement Card(ChatEntry entry, string label)
 	{
 		var text = MessageText.Create(entry.Text, fontSize: AppTheme.FontSizeCaption)
@@ -3172,7 +2988,6 @@ public sealed partial class SessionTab : IDisposable
 				.Child(content));
 	}
 
-	/// <summary>角色行：角色名 + 时间。</summary>
 	private static UIElement Header(string prefix, ChatEntry entry, string label)
 	{
 		var name = prefix.Length > 0 ? $"{prefix}{label}" : label;
@@ -3188,7 +3003,6 @@ public sealed partial class SessionTab : IDisposable
 			.SubtleText();
 	}
 
-	/// <summary>退避倒计时的剩余整秒（向上取整，永不为负）；无计划时刻时为 0。</summary>
 	private static int RetrySecondsRemaining(long retryAtUnixMs)
 	{
 		if (retryAtUnixMs <= 0) return 0;

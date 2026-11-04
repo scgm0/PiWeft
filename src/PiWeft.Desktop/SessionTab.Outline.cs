@@ -9,12 +9,10 @@ public sealed partial class SessionTab
 	private int[] _outlineUserRows = [];
 	private bool _outlineActiveQueued;
 
-	/// <summary>
 	/// 右侧定位轴只由用户行决定，而 <paramref name="stablePrefix"/> 之前的行投影器已经保证与上一次
 	/// 引用一致，所以那里的大纲条目原样留着，只校验尾部、只补新增的用户行。
 	/// 以前这里每帧为上千行重建两个列表并整表比较（1000 轮历史约 60 KB/帧的纯浪费），
 	/// 流式期最明显的无谓分配就是它。
-	/// </summary>
 	private void SyncOutline(IReadOnlyList<ChatEntry> entries, int stablePrefix)
 	{
 		var changed = false;

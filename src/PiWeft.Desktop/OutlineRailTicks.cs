@@ -1,16 +1,12 @@
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 会话定位轴（右缘刻度）的刻度规划。PiDeck 的 <c>planRailTicks</c> 同款纯函数：
 /// 优先全量展示（间距按可用高度收缩），压到下限仍放不下时均匀抽稀，但首尾刻度强制保留——
 /// 最顶刻度必须能回到第一条用户消息，最底刻度必须对应最后一条。
-/// </summary>
 internal static class OutlineRailTicks
 {
-	/// <summary>刻度间距上限（每个刻度一行 14px，与 PiDeck 的观感一致）。</summary>
 	public const double MaxSize = 14;
 
-	/// <summary>刻度间距下限：再小就只能靠抽稀，保证剩下的刻度仍可悬浮与点击。</summary>
 	public const double MinSize = 4;
 
 	public readonly record struct Plan<T>(IReadOnlyList<T> Items, double Size);
@@ -30,7 +26,6 @@ internal static class OutlineRailTicks
 		return new(Sample(items, maxCount), MinSize);
 	}
 
-	/// <summary>均匀抽稀并强制保留首尾；取样下标严格递增，不会重复。</summary>
 	public static IReadOnlyList<T> Sample<T>(IReadOnlyList<T> items, int maxCount)
 	{
 		var count = items.Count;
@@ -46,10 +41,8 @@ internal static class OutlineRailTicks
 		return sampled;
 	}
 
-	/// <summary>
 	/// 当前行对应的用户问题：取最后一个不晚于当前行的项，都不满足时退回第一项。
 	/// <paramref name="positions"/> 是按顺序排列的用户消息行下标（不受虚拟化回收影响）。
-	/// </summary>
 	public static int ActiveIndex(IReadOnlyList<int> positions, int anchor)
 	{
 		var low = 0;
@@ -71,7 +64,6 @@ internal static class OutlineRailTicks
 		return active >= 0 ? active : (positions.Count > 0 ? 0 : -1);
 	}
 
-	/// <summary>抽稀后当前项可能没有刻度：取下标最近的已渲染刻度。</summary>
 	public static int NearestRendered(IReadOnlyList<int> rendered, int sourceIndex)
 	{
 		if (rendered.Count == 0) return -1;

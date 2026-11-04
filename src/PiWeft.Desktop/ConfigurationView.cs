@@ -4,13 +4,11 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Owns one configuration draft and scope. Theme changes never discard the draft.</summary>
 internal sealed partial class ConfigurationView
 {
 	private readonly ConfigurationStore _store;
 	private readonly Action<ConfigFile> _saved;
 	private readonly StackPanel _body = new();
-	/// <summary>只承载「这个文件本身坏了」这类持续状态；操作反馈走 toast。</summary>
 	private readonly TextBlock _notice = new();
 	private readonly TextBlock _path = new();
 	private readonly TextBlock _dirtyLabel = new();
@@ -55,11 +53,8 @@ internal sealed partial class ConfigurationView
 
 	public UIElement View { get; }
 	public bool IsDirty => _dirty;
-	/// <summary>当前表单是否可提交（源文件模式在「显示源文件」之前不可保存）。</summary>
 	public bool CanSave => _saveForm is not null;
-	/// <summary>脏状态或可保存性变化；设置弹窗据此刷新头部的保存按钮。</summary>
 	public event Action? StateChanged;
-	/// <summary>auth.json 被 OAuth 登录/退出改写：宿主据此重建模型目录与可用模型。</summary>
 	public event Action? AuthChanged;
 	internal void SaveDraft() => Guard(() => _saveForm?.Invoke());
 	public void Discard() => Load();
@@ -128,7 +123,6 @@ internal sealed partial class ConfigurationView
 		StateChanged?.Invoke();
 	}
 
-	/// <summary><paramref name="notify"/> 为 false 时由调用方自己给出一条更具体的提示。</summary>
 	private void Save(JsonObject next, bool notify = true)
 	{
 		if (_document is null) return;
@@ -203,10 +197,8 @@ internal sealed partial class ConfigurationView
 	private CheckBox Check(string title, bool value) => new CheckBox().Content(Label(title)).IsChecked(value).OnCheckedChanged(_ => SetDirty(true));
 	private static TextBlock Label(string text) => new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption).PrimaryText();
 	private static StackPanel Field(string title, UIElement input) => new StackPanel().Spacing(4).Children(Label(title), input);
-	/// <summary>字段说明：比正文小一号的弱化文案，换行不撑破卡片。</summary>
 	private static TextBlock Hint(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap);
-	/// <summary>工具 chip：等宽名字 + 移除按钮；颜色跟随主题，不写死色值。</summary>
 	private static UIElement ToolChip(string name, Action remove) => new Border()
 		.CornerRadius(AppTheme.RadiusSm).BorderThickness(1)
 		.Padding(new Thickness(8, 1, 2, 1))

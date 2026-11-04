@@ -3,10 +3,8 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>命令面板里的一条命令。</summary>
 public sealed record PaletteCommand(string Title, string Detail, Action Run);
 
-/// <summary>可搜索、用方向键选择并执行的命令面板。</summary>
 public sealed class CommandPalette
 {
 	private const double RowHeight = 54;
@@ -162,7 +160,6 @@ public sealed class CommandPalette
 		command.Run();
 	}
 
-	/// <summary>所有关键字都需命中标题或说明，标题前缀优先，结果数量有界。</summary>
 	public static IReadOnlyList<PaletteCommand> Search(IReadOnlyList<PaletteCommand> commands, string? query)
 	{
 		var text = query?.Trim() ?? string.Empty;
@@ -212,7 +209,6 @@ public sealed class CommandPalette
 		Select(0);
 	}
 
-	/// <summary>按可用宽度测量，不随搜索结果的文字长度收缩，也不超出窄窗口。</summary>
 	private sealed class PaletteSurface : ContentControl
 	{
 		protected override Size MeasureContent(Size availableSize)

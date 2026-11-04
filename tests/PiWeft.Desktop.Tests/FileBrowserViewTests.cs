@@ -6,7 +6,6 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>D-02：文件浏览器可以打开、编辑并保存，也能进入子目录。</summary>
 [Collection("mewui-controls")]
 public sealed class FileBrowserViewTests : IDisposable
 {

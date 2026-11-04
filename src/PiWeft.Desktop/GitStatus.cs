@@ -2,23 +2,18 @@ using System.Diagnostics;
 
 namespace PiWeft.Desktop;
 
-/// <summary>工作区里一个被改动的文件。</summary>
 public sealed record GitChange(string IndexStatus, string WorkTreeStatus, string Path)
 {
-	/// <summary>索引里有这个文件的改动（已暂存）。<c>MM</c> 这种「已暂存又改过」两边都算。</summary>
 	public bool HasStaged => IndexStatus is not (" " or "?");
 
-	/// <summary>工作区里有这个文件的改动（未暂存）；未跟踪文件只落在这一侧。</summary>
 	public bool HasWorkTree => WorkTreeStatus is not " " || IndexStatus == "?";
 
-	/// <summary>合并冲突：两边都不能直接提交，界面把它单独成节。</summary>
 	public bool IsConflict => (IndexStatus, WorkTreeStatus) switch
 	{
 		("U", _) or (_, "U") or ("A", "A") or ("D", "D") => true,
 		_ => false,
 	};
 
-	/// <summary>面向用户的单字状态：新增/修改/删除/改名/冲突/未跟踪。</summary>
 	public string Label => (IndexStatus, WorkTreeStatus) switch
 	{
 		("?", "?") => "未跟踪",
@@ -29,7 +24,6 @@ public sealed record GitChange(string IndexStatus, string WorkTreeStatus, string
 		_ => "修改",
 	};
 
-	/// <summary>变更列表行首的单字母状态；<paramref name="staged"/> 选择索引侧或工作区侧。</summary>
 	public string StatusLetter(bool staged)
 	{
 		if (IndexStatus == "?" && WorkTreeStatus == "?") return "?";
@@ -47,12 +41,10 @@ public sealed record GitChange(string IndexStatus, string WorkTreeStatus, string
 		};
 	}
 
-	/// <summary>文件名（不含目录），用于紧凑树行。</summary>
 	public string FileName => Path.Length == 0
 		? Path
 		: Path[(Path.Replace('\\', '/').LastIndexOf('/') + 1)..];
 
-	/// <summary>目录部分；根目录文件返回空串。</summary>
 	public string Directory
 	{
 		get
@@ -63,10 +55,8 @@ public sealed record GitChange(string IndexStatus, string WorkTreeStatus, string
 	}
 }
 
-/// <summary>一次 <c>git status</c> 的结果。</summary>
 public sealed record GitStatus
 {
-	/// <summary>当前分支名；分离头指针时是短哈希。</summary>
 	public string Branch { get; init; } = string.Empty;
 
 	public int Ahead { get; init; }
@@ -75,21 +65,16 @@ public sealed record GitStatus
 
 	public IReadOnlyList<GitChange> Changes { get; init; } = [];
 
-	/// <summary>不在 Git 仓库里时为 false。</summary>
 	public bool IsRepository { get; init; }
 
 	public string? Error { get; init; }
 
-	/// <summary>当前分支是否已配置上游（<c>branch.&lt;name&gt;.merge</c>）。推送/拉取的可用性判据。</summary>
 	public bool HasUpstream { get; init; }
 
-	/// <summary>仓库是否配置了任何远端。<c>false</c> 时推送/拉取/获取都没有意义。</summary>
 	public bool HasRemotes { get; init; }
 
-	/// <summary>分离头指针：没有分支可推，也没有上游。</summary>
 	public bool Detached { get; init; }
 
-	/// <summary>一行摘要，例如「main · 3 个改动 ↑1」；不是仓库时给一句简短说明。</summary>
 	public string Summary()
 	{
 		if (!IsRepository)
@@ -126,19 +111,15 @@ public sealed record GitStatus
 	}
 }
 
-/// <summary>当前分支与它的上游跟踪分支。</summary>
 public sealed record GitUpstream(string Branch, string Upstream)
 {
 	public bool HasUpstream => Upstream.Length > 0;
 }
 
-/// <summary>
 /// 只读的 Git 状态：调用系统 <c>git</c> 并解析 <c>--porcelain=v1 -b</c> 的输出。
 /// 写操作（暂存、提交、分支）见 <see cref="GitWriter"/>。
-/// </summary>
 public static class GitStatusReader
 {
-	/// <summary>读取某个工作目录的 Git 状态。</summary>
 	public static GitStatus Read(string cwd, TimeSpan? timeout = null)
 	{
 		var startInfo = new ProcessStartInfo("git")
@@ -206,7 +187,6 @@ public static class GitStatusReader
 		}
 	}
 
-	/// <summary>当前分支与它的上游；没有上游时 <see cref="GitUpstream.Upstream"/> 为空。</summary>
 	public static GitUpstream Upstream(string cwd)
 	{
 		// rev-parse 在没有上游时以非 0 退出，这是正常情况而不是错误。
@@ -217,30 +197,25 @@ public static class GitStatusReader
 		return new GitUpstream(branch, upstream);
 	}
 
-	/// <summary>仓库是否配置了任何远端。</summary>
 	public static bool HasRemotes(string cwd)
 	{
 		var (output, exitCode) = Run(cwd, ["remote"]);
 		return exitCode == 0 && output.Trim().Length > 0;
 	}
 
-	/// <summary>一次 diff 读取的结果；<see cref="Error"/> 非空表示 git 调用失败而不是「没有差异」。</summary>
 	public sealed record DiffContent(string Text, string? Error)
 	{
 		public bool Ok => Error is null;
 	}
 
-	/// <summary>某个文件的暂存区 diff（HEAD ↔ index）。</summary>
 	public static string StagedDiff(string cwd, string path, int maxLines = 400)
 	{
 		var (output, _, exitCode) = RunDetailed(cwd, ["diff", "--staged", "--no-color", "--", path]);
 		return exitCode == 0 ? Truncate(output, maxLines) : string.Empty;
 	}
 
-	/// <summary>
 	/// 整个暂存区的 diff，供 AI 生成提交摘要。空暂存区返回空串且 <see cref="DiffContent.Ok"/> 为 true；
 	/// git 调用失败通过 <see cref="DiffContent.Error"/> 区分，避免把失败误报成「模型没返回」。
-	/// </summary>
 	public static DiffContent StagedDiffAll(string cwd, int maxCharacters = 8000)
 	{
 		var (output, error, exitCode) = RunDetailed(
@@ -262,10 +237,8 @@ public static class GitStatusReader
 			null);
 	}
 
-	/// <summary>
 	/// 读取某个文件的 diff 文本。<paramref name="maxLines"/> 用于限制体积（界面里只看前若干行），
 	/// 未跟踪文件没有 diff，改为把文件内容当成整段新增显示。
-	/// </summary>
 	public static string Diff(string cwd, string path, bool untracked, int maxLines = 400)
 	{
 		// 未跟踪文件没有 git diff 可比的对象。以前用 `git diff --no-index /dev/null <path>`，
@@ -281,7 +254,6 @@ public static class GitStatusReader
 		return Truncate(output, maxLines);
 	}
 
-	/// <summary>把未跟踪文件渲染成「整份新增」的 unified diff；二进制或读不到时给一句说明。</summary>
 	private static string UntrackedDiff(string cwd, string path, int maxLines)
 	{
 		var full = System.IO.Path.IsPathRooted(path) ? path : System.IO.Path.Combine(cwd, path);
@@ -323,7 +295,6 @@ public static class GitStatusReader
 		return Truncate(header + text.TrimEnd('\n'), maxLines);
 	}
 
-	/// <summary>把输出裁到前 N 行，超出时补一行说明。</summary>
 	internal static string Truncate(string text, int maxLines)
 	{
 		var lines = text.Replace("\r\n", "\n").Split('\n');
@@ -336,14 +307,12 @@ public static class GitStatusReader
 		return string.Join('\n', lines.Take(maxLines)) + $"\n… 还有 {lines.Length - maxLines} 行未显示（在终端运行 git diff 查看完整内容）";
 	}
 
-	/// <summary>运行一条 git 命令并返回标准输出与退出码。</summary>
 	private static (string Output, int ExitCode) Run(string cwd, string[] arguments)
 	{
 		var (output, _, exitCode) = RunDetailed(cwd, arguments);
 		return (output, exitCode);
 	}
 
-	/// <summary>运行一条 git 命令并同时保留 stderr；读取层需要区分「空结果」与「命令失败」。</summary>
 	internal static (string Output, string Error, int ExitCode) RunDetailed(
 		string cwd,
 		string[] arguments,
@@ -413,10 +382,8 @@ public static class GitStatusReader
 		}
 	}
 
-	/// <summary>
 	/// 读完 stdout，但最多保留 <paramref name="cap"/> 个字符。超限后继续排空管道，
 	/// 子进程不会因为写满缓冲而卡到超时；调用方拿到的文本已带截断标记。
-	/// </summary>
 	private static async Task<string> ReadBoundedAsync(StreamReader reader, int cap)
 	{
 		if (cap <= 0)
@@ -450,11 +417,9 @@ public static class GitStatusReader
 		return truncated ? builder.ToString() + "\n… (truncated)" : builder.ToString();
 	}
 
-	/// <summary>
 	/// 让 git 说英文。失败分类（<see cref="GitFailure"/>）按英文特征串匹配，用户机器上的
 	/// 本地化输出会让它静默失配 —— 中文环境里 <c>git pull</c> 的报错是「无法快进」而不是
 	/// "Not possible to fast-forward"。这里只影响 git 自己的消息，不影响路径与内容字节。
-	/// </summary>
 	internal static void ApplyLocale(ProcessStartInfo startInfo)
 	{
 		startInfo.Environment["LC_ALL"] = "C";
@@ -462,15 +427,11 @@ public static class GitStatusReader
 		startInfo.Environment["LANGUAGE"] = "C";
 	}
 
-	/// <summary>
 	/// 解析 <c>git status --porcelain=v1 -b -z</c> 的输出（字段以 NUL 分隔）。
-	/// <para>
 	/// 必须是 <c>-z</c> 形态：非 <c>-z</c> 时 git 会对非 ASCII 路径做八进制转义
 	/// （<c>"\344\270\255..."</c>），给带空格的路径加引号，而解析按固定列取子串 ——
 	/// 中文或 emoji 文件名会拿到一串转义文本，后续「暂存 / 打开」全部指向不存在的路径。
 	/// <c>-z</c> 输出原始 UTF-8 字节且不带引号，是 git 唯一保证机器可读的形态。
-	/// </para>
-	/// </summary>
 	public static GitStatus Parse(string output)
 	{
 		var branch = string.Empty;
@@ -527,10 +488,8 @@ public static class GitStatusReader
 		};
 	}
 
-	/// <summary>
 	/// 解析 <c>## main...origin/main [ahead 1, behind 2]</c>。
 	/// 无上游时是 <c>## main</c>；分离头指针是 <c>## HEAD (no branch)</c>。
-	/// </summary>
 	private static (string Branch, int Ahead, int Behind, bool HasUpstream, bool Detached) ParseBranchLine(string text)
 	{
 		var branch = text;

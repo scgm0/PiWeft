@@ -3,13 +3,10 @@ using PiWeft.Agent;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>
 /// 原生 <c>ask_question</c> 工具：通过宿主 UI（RPC、CLI 交互或桌面）向用户提问，
 /// 并使用与 PiDeck 完全一致的批量信封，因此 PiDeck 的桌面端能直接渲染问询卡片。
-/// </summary>
 public static class AskQuestionTool
 {
-	/// <summary>工具名。</summary>
 	public const string Name = "ask_question";
 
 	private const string Description =
@@ -17,7 +14,6 @@ public static class AskQuestionTool
 		"Pass questions:[{type,question,options,placeholder,prefill}] — one or more questions in a single card, even for a single one; id is auto-assigned when omitted. " +
 		"type is optional (defaults to select with options, else input); set it explicitly for confirm/editor/multi_select.";
 
-	/// <summary>构建工具。<paramref name="session"/> 返回当前会话（其 <see cref="CodingAgentSession.UiHost"/> 提供交互）。</summary>
 	public static BuiltinTool Create(Func<CodingAgentSession?> session) => new(
 		new AgentTool
 		{

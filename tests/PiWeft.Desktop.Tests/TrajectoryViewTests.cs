@@ -9,10 +9,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 轨迹页的检查器：分隔条能像 Git 面板那样拖动，入参/结果文本在自己的视口里滚动
 /// （曾经套了一层 ScrollViewer，滚轮被外层吃掉，表现为「有滚动条但滚不动」）。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class TrajectoryViewTests
 {

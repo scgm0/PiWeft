@@ -5,12 +5,10 @@ using Aprillz.MewUI.Resources;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 待办行的状态图标（对齐 PiDeck 的 lucide-react 用法）：完成 <c>circle-check</c>、
 /// 进行中 <c>loader-circle</c>、待处理 <c>circle-dashed</c>，全部取自内嵌 Lucide SVG
 /// （tools/fetch-lucide-icons.sh 那套），颜色按主题角色解析后交给 SVG 着色。
 /// 自己不画图标：笔画风格、圆头与 2.25 号线宽和全应用其余图标一致，换肤只需重绘。
-/// </summary>
 internal sealed class TodoStatusGlyph : FrameworkElement
 {
 	public const double DefaultSize = 16;
@@ -63,7 +61,6 @@ internal sealed class TodoStatusGlyph : FrameworkElement
 			bounds.X + inset, bounds.Y + inset, side - inset * 2, side - inset * 2));
 	}
 
-	/// <summary>状态 → Lucide 图标名。</summary>
 	private string IconName => _status switch
 	{
 		"completed" => "circle-check",

@@ -3,7 +3,6 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.Desktop;
 
-/// <summary>一条提交历史。日志只带 subject；展开详情时再读完整消息与文件。</summary>
 public sealed record GitCommitEntry(
 	string Hash,
 	string AuthorName,
@@ -15,14 +14,11 @@ public sealed record GitCommitEntry(
 {
 	public string ShortHash => Hash.Length > 7 ? Hash[..7] : Hash;
 
-	/// <summary>详情查询时拿到的完整提交消息；日志列表里为空串。</summary>
 	public string FullMessage { get; init; } = string.Empty;
 
-	/// <summary>当前 HEAD 指向的提交（<c>%D</c> 里的 <c>HEAD -> branch</c>）。</summary>
 	public bool IsHead => Refs.Any(static reference => reference.StartsWith("HEAD ->", StringComparison.Ordinal));
 }
 
-/// <summary>提交或分支比较里的一个文件。</summary>
 public sealed record GitCommitFile(string Status, string Path, string? OriginalPath)
 {
 	public string Letter => Status.Length > 0 ? Status[..1] : "M";
@@ -32,7 +28,6 @@ public sealed record GitCommitFile(string Status, string Path, string? OriginalP
 		: Path[(Path.Replace('\\', '/').LastIndexOf('/') + 1)..];
 }
 
-/// <summary>一次提交详情：完整消息、改动文件与增删统计。</summary>
 public sealed record GitCommitDetail(
 	GitCommitEntry Commit,
 	IReadOnlyList<GitCommitFile> Files,
@@ -40,10 +35,8 @@ public sealed record GitCommitDetail(
 	int Deletions,
 	string? Error = null);
 
-/// <summary><c>git log</c> 的结果；失败时 <see cref="Error"/> 非空。</summary>
 public sealed record GitLogResult(IReadOnlyList<GitCommitEntry> Commits, string? Error = null);
 
-/// <summary>两个分支的三点比较结果。</summary>
 public sealed record GitBranchComparison(
 	IReadOnlyList<GitCommitFile> Files,
 	int Ahead,
@@ -52,16 +45,13 @@ public sealed record GitBranchComparison(
 	string TargetHash,
 	string? Error = null);
 
-/// <summary>提交/比较文件 diff 的结果；空文本不一定代表失败，<see cref="Error"/> 才代表 git 失败。</summary>
 public sealed record GitFileDiff(string Text, string? Error = null)
 {
 	public bool Ok => Error is null;
 }
 
-/// <summary>
 /// Git 历史只读查询：log、提交数、提交详情、分支三点比较与提交/比较文件 diff。
 /// 所有 ref/hash 都先做形态校验，路径统一放在 <c>--</c> 之后。
-/// </summary>
 public static class GitHistoryReader
 {
 	private const char FieldSeparator = '\u001f';
@@ -72,7 +62,6 @@ public static class GitHistoryReader
 	private static readonly Regex InsertionsPattern = new(@"(\d+)\s+insertions?\(\+\)", RegexOptions.CultureInvariant);
 	private static readonly Regex DeletionsPattern = new(@"(\d+)\s+deletions?\(-\)", RegexOptions.CultureInvariant);
 
-	/// <summary>最近提交；<paramref name="reference"/> 为空时看全部分支（排除内部检查点引用）。</summary>
 	public static GitLogResult Log(
 		string cwd,
 		int maxEntries = 40,
@@ -118,7 +107,6 @@ public static class GitHistoryReader
 		return new GitLogResult(ParseLog(output), null);
 	}
 
-	/// <summary>与 <see cref="Log"/> 同过滤条件的提交总数。</summary>
 	public static int Count(string cwd, string? reference = null, bool allBranches = true)
 	{
 		var arguments = new List<string> { "rev-list", "--count" };
@@ -148,7 +136,6 @@ public static class GitHistoryReader
 			: 0;
 	}
 
-	/// <summary>完整提交详情；hash 非法、commit 不存在或读取失败时返回 <c>null</c>。</summary>
 	public static GitCommitDetail? Detail(string cwd, string hash)
 	{
 		if (!IsHash(hash))
@@ -200,7 +187,6 @@ public static class GitHistoryReader
 			filesExitCode == 0 ? null : ErrorText(fileError));
 	}
 
-	/// <summary>提交内单个文件的 diff；重命名时把原路径一起交给 pathspec。</summary>
 	public static GitFileDiff CommitFileDiff(
 		string cwd,
 		string commitHash,
@@ -229,7 +215,6 @@ public static class GitHistoryReader
 			: new GitFileDiff(string.Empty, ErrorText(error));
 	}
 
-	/// <summary>三点比较（merge-base → target）的文件列表与 ahead/behind。</summary>
 	public static GitBranchComparison Compare(string cwd, string baseReference, string targetReference)
 	{
 		var baseHash = Resolve(cwd, baseReference);
@@ -268,7 +253,6 @@ public static class GitHistoryReader
 		return new GitBranchComparison(ParseNameStatus(filesOutput), ahead, behind, baseHash, targetHash);
 	}
 
-	/// <summary>比较结果里单个文件的 diff（base...target）。</summary>
 	public static GitFileDiff CompareFileDiff(
 		string cwd,
 		string baseHash,
@@ -298,7 +282,6 @@ public static class GitHistoryReader
 			: new GitFileDiff(string.Empty, ErrorText(error));
 	}
 
-	/// <summary>解析 <c>--name-status -z</c> 输出；重命名/复制包含原路径与目标路径。</summary>
 	internal static IReadOnlyList<GitCommitFile> ParseNameStatus(string output)
 	{
 		var fields = output.Split('\0');
@@ -333,7 +316,6 @@ public static class GitHistoryReader
 		return files;
 	}
 
-	/// <summary>解析 <c>git log</c> 的 <c>-z</c> 记录，供测试复用。</summary>
 	internal static IReadOnlyList<GitCommitEntry> ParseLog(string output)
 	{
 		var commits = new List<GitCommitEntry>();

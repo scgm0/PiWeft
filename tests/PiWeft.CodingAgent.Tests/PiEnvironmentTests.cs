@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// <c>--offline</c> / <c>PI_OFFLINE</c> 与 <c>settings.httpProxy</c>。
 /// 两者都要在 HTTP 客户端创建前生效：代理来自 <c>HttpClient.DefaultProxy</c> 首次读取时的环境变量。
-/// </summary>
 [Collection("process-environment")]
 public class PiEnvironmentTests : IDisposable
 {

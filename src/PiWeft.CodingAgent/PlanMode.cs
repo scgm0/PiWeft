@@ -2,27 +2,21 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.CodingAgent;
 
-/// <summary>
 /// 原生计划模式：只读探索 + 计划确认。与 PiDeck 的 <c>pi-deck-plan-mode.ts</c> 对齐：
 /// 桌面输入框的 Plan 开关会在消息前注入隐藏标记 <c>__PI_DECK_PLAN_MODE__</c>，
 /// 本实现在此识别它、停用写工具，并在下一条无标记消息时自动退出。
-/// </summary>
 public static partial class PlanMode
 {
-	/// <summary>PiDeck 输入框使用的隐藏标记。</summary>
 	public const string Marker = "__PI_DECK_PLAN_MODE__";
 
-	/// <summary>计划模式下被停用的写工具。</summary>
 	public static readonly string[] DisabledTools = ["edit", "write"];
 
-	/// <summary>注入到系统提示词的 <c>plan_mode</c> 章节。</summary>
 	public const string Instructions =
 		"<plan_mode>\n" +
 		"You are in plan mode. Do not modify the workspace: the edit and write tools are unavailable, and only read-only shell commands are allowed. " +
 		"Explore with read-only tools, then output a numbered plan and stop for approval.\n" +
 		"</plan_mode>";
 
-	/// <summary>如果文本以标记开头就剥离它；返回是否命中标记。</summary>
 	public static bool TryStripMarker(string text, out string cleaned)
 	{
 		if (!text.StartsWith(Marker, StringComparison.Ordinal))
@@ -37,10 +31,8 @@ public static partial class PlanMode
 		return true;
 	}
 
-	/// <summary>
 	/// 计划模式下 shell 是否只读：必须是已知安全命令，且不含破坏性片段。
 	/// 与 PiDeck 的 <c>isSafeCommand</c> 同一判据。
-	/// </summary>
 	public static bool IsReadOnlyShellCommand(string command) =>
 		!DestructiveRegex().IsMatch(command) && SafeRegex().IsMatch(command);
 

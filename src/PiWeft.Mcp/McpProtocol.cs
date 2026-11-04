@@ -3,17 +3,13 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Mcp;
 
-/// <summary>连接的一端，可以执行 MCP 工具调用并重新列举它们。</summary>
 public interface IMcpToolInvoker
 {
-	/// <summary>调用服务器声明的工具。</summary>
 	Task<McpCallResult> CallToolAsync(string name, JsonObject arguments, CancellationToken cancellationToken);
 
-	/// <summary>列出服务器的工具，并跟随分页游标。</summary>
 	Task<IReadOnlyList<McpTool>> ListToolsAsync(CancellationToken cancellationToken);
 }
 
-/// <summary>stdio 与 HTTP 两种传输共用的解码逻辑。</summary>
 internal static class McpProtocol
 {
 	public static List<McpTool> DecodeTools(JsonObject result)
@@ -233,7 +229,6 @@ internal static class McpProtocol
 		};
 	}
 
-	/// <summary>提示内容既可能是单个块，也可能是块列表。</summary>
 	private static List<Ai.ContentBlock> DecodePromptContent(JsonNode? content)
 	{
 		var blocks = new List<Ai.ContentBlock>();
@@ -270,12 +265,10 @@ internal static class McpProtocol
 		}
 	}
 
-	/// <summary>为 JSON-RPC 错误对象构建异常。</summary>
 	public static McpException Error(JsonObject error) => new(
 		error["code"]?.GetValue<int>() ?? -32000,
 		error["message"]?.GetValue<string>() ?? "MCP request failed");
 
-	/// <summary>读取 JSON-RPC 记录的 payload；遇到错误对象时抛异常。</summary>
 	public static JsonObject ResultOf(JsonObject record) =>
 		record["error"] is JsonObject error
 			? throw Error(error)

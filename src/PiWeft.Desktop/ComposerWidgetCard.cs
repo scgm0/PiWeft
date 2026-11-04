@@ -3,11 +3,9 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 输入区上方的扩展卡：与输入框同宽同列，头部是高 36 的「图标 + 标题 + 进度 + 折叠键」，
 /// 展开后放列表或扩展文本。对齐 PiDeck 的 composer widget frame：
 /// 一卡一件事、没有内容时整体不占位，卡片之间用间距而不是分隔线区分。
-/// </summary>
 internal sealed class ComposerWidgetCard
 {
 	private readonly Button _header;
@@ -74,10 +72,8 @@ internal sealed class ComposerWidgetCard
 
 	public Border View { get; }
 
-	/// <summary>展开后的内容宿主；调用方只往里放内容。</summary>
 	public StackPanel Body => _body;
 
-	/// <summary>头部副标题（进度、数量这类元数据）。空字符串时整段不占位。</summary>
 	public string Meta
 	{
 		get => _meta.Text;
@@ -88,7 +84,6 @@ internal sealed class ComposerWidgetCard
 		}
 	}
 
-	/// <summary>默认展开；折叠只影响卡片自身，不改变会话数据。</summary>
 	public bool IsExpanded
 	{
 		get => _expanded;

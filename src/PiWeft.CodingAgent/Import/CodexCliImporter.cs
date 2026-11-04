@@ -4,18 +4,12 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Import;
 
-/// <summary>
 /// Codex CLI 会话导入（<c>~/.codex/sessions/&lt;YYYY&gt;/&lt;MM&gt;/&lt;DD&gt;/rollout-*.jsonl</c>）。
-/// <para>
 /// 每行是 <c>{"timestamp":..,"type":..,"payload":{..}}</c>。第一行是 <c>session_meta</c>（带 id / cwd / model），
 /// 对话主体在 <c>response_item</c> 里：<c>message</c>（user/assistant）、<c>reasoning</c>、
 /// <c>function_call</c>、<c>function_call_output</c>。
-/// </para>
-/// <para>
 /// 旧版 CLI（≤0.129）把用户输入写在 <c>event_msg/user_message</c> 里、新桌面版直接写
 /// <c>response_item/message</c>；两条路径都认，同一段文本只落一次（以先出现的为准）。
-/// </para>
-/// </summary>
 internal sealed class CodexCliImporter : IExternalSessionImporter
 {
 	public string Key => "codex";
@@ -24,7 +18,6 @@ internal sealed class CodexCliImporter : IExternalSessionImporter
 
 	public string ResolveRoot(string home) => Path.Combine(home, ".codex", "sessions");
 
-	/// <summary>按 <c>YYYY/MM/DD</c> 分层存放，因此要递归。</summary>
 	public IReadOnlyList<string> Enumerate(string root)
 	{
 		var files = new List<string>();
@@ -301,7 +294,6 @@ internal sealed class CodexCliImporter : IExternalSessionImporter
 		return entries;
 	}
 
-	/// <summary>desktop 版把用户输入包在 <c>&lt;user_message&gt;</c> 之类的包装块里，这里剥掉。</summary>
 	private static string? ExtractUserText(JsonObject record)
 	{
 		var type = SessionImportService.Text(record, "type");
@@ -320,7 +312,6 @@ internal sealed class CodexCliImporter : IExternalSessionImporter
 		return null;
 	}
 
-	/// <summary>content 是块数组（<c>input_text</c>/<c>output_text</c>/<c>text</c>）或纯字符串。</summary>
 	private static string FlattenText(JsonObject? payload)
 	{
 		if (payload is null)
@@ -378,7 +369,6 @@ internal sealed class CodexCliImporter : IExternalSessionImporter
 		return output is null ? string.Empty : output.ToJsonString();
 	}
 
-	/// <summary>Codex 的 arguments 是 JSON 字符串（偶尔已经是对象）。</summary>
 	private static JsonObject ParseArguments(JsonNode? node)
 	{
 		if (node is JsonObject obj)

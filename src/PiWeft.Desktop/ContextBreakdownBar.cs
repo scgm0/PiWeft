@@ -3,13 +3,10 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 上下文占用条 + 三段图例（系统 / 工具 / 对话），对齐 PiDeck 的 ContextMeter 面板：
 /// 一条按窗口比例画的分段进度条，下面三行「色块 + 名称 + ~token」。
-///
 /// 为什么不用 <see cref="ProgressBar"/>：它只能表达一个标量。上下文占用里真正值得看的
 /// 是构成——同是 40%，系统提示词与工具 schema 吃满和对话本身长，处理方式完全不同。
-/// </summary>
 internal sealed class ContextBreakdownBar
 {
 	private const double BarHeight = 4;
@@ -22,7 +19,6 @@ internal sealed class ContextBreakdownBar
 	private readonly Border _rest = Segment(static _ => new Color(0, 0, 0, 0));
 	private readonly StackPanel _legend = new() { Spacing = 1, IsVisible = false };
 	private readonly LegendRow[] _rows;
-	/// <summary>上一次画出的三段份额（0.1% 精度）：流式期间数据每帧变，但份额常常不动，不必重排。</summary>
 	private (int System, int Tools, int Conversation, int Remainder)? _drawn;
 
 	public ContextBreakdownBar()
@@ -93,7 +89,6 @@ internal sealed class ContextBreakdownBar
 	private static Border Segment(Func<Theme, Color> color) =>
 		new Border().WithTheme((theme, border) => border.Background = color(theme));
 
-	/// <summary>图例的一行：色块 + 名称 + 右对齐的 ~token 数。</summary>
 	private sealed class LegendRow
 	{
 		private readonly Border _swatch;

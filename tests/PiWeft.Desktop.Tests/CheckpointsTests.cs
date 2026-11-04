@@ -6,11 +6,9 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// D-05：工作区检查点（<c>refs/pi-checkpoints</c>）的后端与右侧面板视图。
 /// 后端用真实 git 仓库跑；视图只断言结构（新增/刷新/差异/恢复入口与空态），
 /// 恢复确认框与异步创建单独由后端用例覆盖。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class CheckpointsTests : IDisposable
 {

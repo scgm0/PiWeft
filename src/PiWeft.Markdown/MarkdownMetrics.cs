@@ -3,11 +3,9 @@ using Aprillz.MewUI.Text;
 
 namespace PiWeft.Markdown;
 
-/// <summary>
 /// 行距换算的公共口径：<see cref="MarkdownTheme"/> 用「字号倍率」描述行高（CSS/PiDeck 的习惯），
 /// MewUI 的段落样式只接受「附加行间距」（DIP）。要把倍率落到附加间距上，就得先知道字体自己
 /// 为一行留了多少高度，所以这里按 字族/字号/字重/斜体/DPI 探一次量并缓存（一个进程内不会变）。
-/// </summary>
 internal static class MarkdownMetrics
 {
 	private const double UnwrappedWidth = 1_000_000;
@@ -24,11 +22,9 @@ internal static class MarkdownMetrics
 
 	private readonly record struct FontKey(string? Family, double Size, FontWeight Weight, bool Italic, uint Dpi);
 
-	/// <summary>
 	/// 每行需要补的附加行间距（DIP）：<c>字号 × 倍率</c> 与字体自然行高之差。
 	/// 差为负时返回 0——倍率低于自然行高就不压缩，否则上下行会咬在一起（CJK 字体自然行高本来就大）。
 	/// 倍率非有限或 ≤ 0 视为关闭行距。
-	/// </summary>
 	public static double LineSpacing(ITextEngine engine, TextRunStyle style, uint dpi, double scale)
 	{
 		if (!double.IsFinite(scale) || scale <= 0)
@@ -42,7 +38,6 @@ internal static class MarkdownMetrics
 		return Math.Max(0, style.FontSize * scale - NaturalLineHeight(engine, style, dpi));
 	}
 
-	/// <summary>字体为一行预留的高度（不含任何附加行距）。</summary>
 	public static double NaturalLineHeight(ITextEngine engine, TextRunStyle style, uint dpi)
 	{
 		FontKey key = new(style.FontFamily, style.FontSize, style.Weight, style.Italic, dpi);

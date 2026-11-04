@@ -7,7 +7,6 @@ using PiWeft.Ai.Providers.OpenAi;
 
 namespace PiWeft.Cli;
 
-/// <summary>按已实现的认证路径筛选模型；只检查本地配置，不发请求或刷新令牌。</summary>
 internal static class ModelAvailability
 {
 	public static IReadOnlyList<Model> Filter(IEnumerable<Model> models,

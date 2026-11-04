@@ -4,11 +4,9 @@ using PiWeft.CodingAgent.Security;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 安全门设置面板（设置 → 运行 → 安全门）。与 PiDeck 的安全管理面板同构：
 /// 总开关 + 默认档位 + 每档可展开编辑（工具动作、危险命令、目录边界、敏感文件），
 /// 支持新建/删除自定义档位。
-/// <para>
 /// 两处刻意的差异：
 /// <list type="bullet">
 /// <item><description><strong>即时保存</strong>：每次改动直接写全局 <c>settings.json</c> 的
@@ -18,8 +16,6 @@ namespace PiWeft.Desktop;
 /// <item><description>会话级覆盖不在这里管理，在会话输入框的「安全」按钮上（与 PiDeck 的
 /// 分布一致）。</description></item>
 /// </list>
-/// </para>
-/// </summary>
 public sealed class SecuritySection
 {
 	private readonly Func<string> _agentDir;
@@ -41,7 +37,6 @@ public sealed class SecuritySection
 
 	public UIElement View => _body;
 
-	/// <summary>重新从磁盘读取并重建（宿主在别处改过配置后调用）。</summary>
 	public void Reload()
 	{
 		try
@@ -84,7 +79,6 @@ public sealed class SecuritySection
 		}
 	}
 
-	// ---------------------------------------------------------------- 总开关与默认档
 
 	private Element ToggleGroup()
 	{
@@ -114,7 +108,6 @@ public sealed class SecuritySection
 			enabledTip: Strings.SecurityEnabledTip);
 	}
 
-	// ---------------------------------------------------------------- 档位表
 
 	private Element LevelsGroup()
 	{
@@ -193,7 +186,6 @@ public sealed class SecuritySection
 			.Child(card);
 	}
 
-	/// <summary>展开后的档位编辑器：路径边界、目录、危险命令、敏感文件、工具动作矩阵。</summary>
 	private Element LevelEditor(ToolSecurity level)
 	{
 		var captured = level;
@@ -262,10 +254,8 @@ public sealed class SecuritySection
 		return panel;
 	}
 
-	/// <summary>
 	/// 工具动作矩阵。只列内置工具集里真实存在的工具 —— 列一堆本端口没有的工具
 	/// 会让人以为配了就有用。
-	/// </summary>
 	private Element ToolActionsEditor(ToolSecurity level)
 	{
 		var panel = new StackPanel().Spacing(AppTheme.Space1);
@@ -314,7 +304,6 @@ public sealed class SecuritySection
 						.FontSize(AppTheme.FontSizeMicro).FaintText()));
 	}
 
-	// ---------------------------------------------------------------- 会话覆盖
 
 	private Element SessionOverridesGroup()
 	{
@@ -334,7 +323,6 @@ public sealed class SecuritySection
 		return Card("git-branch", Strings.SecuritySessionLevels, panel);
 	}
 
-	// ---------------------------------------------------------------- 写盘
 
 	private string[] LevelNames() => [.. _config.Levels.Select(level => level.Level)];
 
@@ -369,10 +357,8 @@ public sealed class SecuritySection
 		return level with { ToolActions = actions };
 	}
 
-	/// <summary>
 	/// 应用一次修改并落盘。写盘失败时恢复原配置并显示原因 —— 界面上显示的是「已生效」的
 	/// 假象比报错更糟。
-	/// </summary>
 	private void Update(Func<SecurityConfig, SecurityConfig> mutate)
 	{
 		var previous = _config;
@@ -408,7 +394,6 @@ public sealed class SecuritySection
 		_ => Strings.SecurityActionAllow,
 	};
 
-	/// <summary>一行一条的列表编辑器；失焦时才写盘。</summary>
 	private Element ListEditor(string title, string hint, IReadOnlyList<string> values, Action<IReadOnlyList<string>> commit)
 	{
 		var input = new MultiLineTextBox()
@@ -441,7 +426,6 @@ public sealed class SecuritySection
 			apply);
 	}
 
-	/// <summary>档位标签：默认档用强调色，其余用最弱档，扫一眼就能认出当前默认。</summary>
 	private static TextBlock TagChip(string text, bool accent)
 	{
 		var block = new TextBlock().Text(text).FontSize(AppTheme.FontSizeMicro).VerticalAlignment(VerticalAlignment.Center);
@@ -454,7 +438,6 @@ public sealed class SecuritySection
 	private static TextBlock Hint(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap);
 
-	/// <summary>与其它设置分区同构的卡片外观（图标 + 标题 + 内容）。</summary>
 	private static Element Card(string icon, string title, UIElement content, string? enabledTip = null) => new Border()
 		.StyleName(AppStyles.Card)
 		.CornerRadius(AppTheme.RadiusMd)

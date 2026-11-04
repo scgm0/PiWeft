@@ -12,7 +12,6 @@ public sealed partial class SessionTab
 	private UIElement? _themeSmokeToolContent;
 	private Border? _themeSmokeUser;
 
-	/// <summary>Real-window fixtures verify message identity and reading state as well as composer state.</summary>
 	internal void PrepareThemeSmoke()
 	{
 		_composer.Text = "theme smoke draft";

@@ -8,17 +8,13 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 会话轨迹页（右侧面板的「轨迹」分段，对齐 PiDeck 的会话复盘）：
 /// 顶部是轮数/记录数与被折叠记录入口，中间是四条泳道的概览，下面是按轮分组的账本，
 /// 底部检查器显示选中记录的入参、输出与耗时。
-/// </summary>
-/// <remarks>
 /// 数据只来自会话分支（<see cref="SessionEntry"/>）与聊天投影里还没落盘的流式尾行，
 /// 不另开读取通道、不复制历史正文：摘要按前缀生成，全文只在检查器选中时提取。
 /// 面板打开期间由 <see cref="RightPanel"/> 每秒调用一次 <see cref="Refresh"/>；入口签名没变时
 /// 只推进「进行中」的秒表，不重建账本。
-/// </remarks>
 internal sealed class TrajectoryView : IDisposable
 {
 	private static readonly TrajectoryLane[] LaneOrder =
@@ -28,19 +24,14 @@ internal sealed class TrajectoryView : IDisposable
 
 	private const int InspectorTextLimit = 20_000;
 
-	/// <summary>检查器默认高度（DIP），与 <see cref="DesktopPreference.TrajectoryInspectorHeight"/> 默认值一致。</summary>
 	internal const double DefaultInspectorHeight = 222;
 
-	/// <summary>拖动分隔条时检查器允许的最小高度：再矮就只剩两行参数了。</summary>
 	internal const double MinInspectorHeight = 140;
 
-	/// <summary>面板再高也不把检查器拽成半个屏幕，历史账本才是主体。</summary>
 	internal const double MaxInspectorHeight = 560;
 
-	/// <summary>面板高度里留给表头、泳道概览与账本的最小空间，检查器不能吃掉这部分。</summary>
 	private const double InspectorReservedHeight = 260;
 
-	/// <summary>单块入参/结果的可见高度：超过后由文本控件自己滚动。</summary>
 	private const double InspectorTextMaxHeight = 200;
 
 	private readonly Func<TrajectorySource> _source;
@@ -63,7 +54,6 @@ internal sealed class TrajectoryView : IDisposable
 	private readonly Dictionary<string, int> _rowIndexById = new(StringComparer.Ordinal);
 	private readonly HashSet<int> _folded = [];
 	private readonly HashSet<string> _expandedGroups = new(StringComparer.Ordinal);
-	/// <summary>当前实现的「进行中」轮头时长标签：每秒只改文本，不重建账本。</summary>
 	private readonly Dictionary<int, (TextBlock Label, long StartedAt)> _liveDurations = [];
 
 	private TrajectoryModel _model = TrajectoryModel.Empty;
@@ -187,13 +177,10 @@ internal sealed class TrajectoryView : IDisposable
 
 	public UIElement View { get; }
 
-	/// <summary>测试用：当前检查器高度（DIP）。</summary>
 	internal double InspectorHeightForTests => _inspectorHeight;
 
-	/// <summary>测试用：检查器宿主（拖动高度落在这个 Border 上）。</summary>
 	internal Border InspectorHostForTests => _inspectorHost;
 
-	/// <summary>测试用：拖拽的落点。不写盘，避免测试污染真实 desktop.json。</summary>
 	internal void SetInspectorHeightForTests(double height) => SetInspectorHeight(height);
 
 	private void SetInspectorHeight(double height)
@@ -202,7 +189,6 @@ internal sealed class TrajectoryView : IDisposable
 		_inspectorHost.Height(_inspectorHeight);
 	}
 
-	/// <summary>面板被缩小后，固定的检查器高度不能把账本挤没；拖完的落点重新夹回可用范围。</summary>
 	private double ClampInspectorHeight(double height)
 	{
 		var available = View is { } view ? view.Bounds.Height : 0;
@@ -241,7 +227,6 @@ internal sealed class TrajectoryView : IDisposable
 		}
 	}
 
-	/// <summary>重新读取数据源；入口没变时只推进进行中的秒表。</summary>
 	public void Refresh()
 	{
 		if (_disposed)
@@ -344,7 +329,6 @@ internal sealed class TrajectoryView : IDisposable
 		_hasRendered = true;
 	}
 
-	/// <summary>视觉验收：打印轮数/记录数与当前渲染窗口，脚本据此断言轨迹真的建起来了。</summary>
 	public void ReportForSmoke()
 	{
 		var folded = _model.Turns.Count(turn => _folded.Contains(turn.Index));
@@ -357,7 +341,6 @@ internal sealed class TrajectoryView : IDisposable
 			$"turn0={(_model.Turns.Count > 0 ? $"{TrajectoryFormat.Time(_model.Turns[0].StartedAt)}..{TrajectoryFormat.Time(_model.Turns[0].EndedAt ?? 0)} dur={_model.Turns[0].DurationMs:0} live={_model.Turns[0].InFlight}" : "-")}");
 	}
 
-	/// <summary>视觉验收：选中第一条已完成的工具记录，检查器才有内容可看。</summary>
 	public void SelectForSmoke()
 	{
 		// 选最后一轮里的工具记录：窗口仍是默认的尾部三轮，「加载更早记录」不会被选中动作撑开。
@@ -371,7 +354,6 @@ internal sealed class TrajectoryView : IDisposable
 		}
 	}
 
-	/// <summary>主题切换后重上色：角色文本走统一刷新，泳道/圆点由各自的 WithTheme 跟随。</summary>
 	public void ApplyTheme()
 	{
 		AppStyles.ApplyTextColors(View);
@@ -621,7 +603,6 @@ internal sealed class TrajectoryView : IDisposable
 		}
 	}
 
-	/// <summary>只保证某一轮落在渲染窗口里；不改变用户对折叠状态的选择。</summary>
 	private void EnsureTurnInWindow(int turnIndex)
 	{
 		if (turnIndex < 0 || turnIndex >= _model.Turns.Count)
@@ -636,7 +617,6 @@ internal sealed class TrajectoryView : IDisposable
 		}
 	}
 
-	/// <summary>用户明确选中一条记录时：扩窗口、展开轮与所在工具组，让行真的出现在视口里。</summary>
 	private void RevealRecord(TrajectoryRecord record)
 	{
 		EnsureTurnInWindow(record.TurnIndex);
@@ -883,10 +863,8 @@ internal sealed class TrajectoryView : IDisposable
 			.WithTheme((theme, border) => border.Background = LaneColor(AppTheme.For(theme), record.Lane));
 	}
 
-	/// <summary>
 	/// 虚拟列表里的一行：轮头、单条记录或一段被折叠的连续工具。
 	/// <see cref="Key"/> 给固定行高 presenter 当复用键，滚动与重建时少换容器。
-	/// </summary>
 	private abstract record LedgerRow(string Key, string Text)
 	{
 		public sealed record Header(TrajectoryTurn Turn)
@@ -911,7 +889,6 @@ internal sealed class TrajectoryView : IDisposable
 			record.Live?.TextLength ?? 0,
 			record.Live?.ThinkingLength ?? 0);
 
-	/// <summary>检查器内容签名（值类型，不为每次重绘拼字符串）。</summary>
 	private readonly record struct InspectorSignature(
 		string? Id,
 		string? Status,
@@ -1200,7 +1177,6 @@ internal sealed class TrajectoryView : IDisposable
 			source.ThinkingTimingsRevision);
 	}
 
-	/// <summary>数据源签名（值类型，不每秒分配字符串）：比较它决定是否重建账本。</summary>
 	private readonly record struct SourceSignature(
 		int EntryCount,
 		string? LastEntryId,
@@ -1303,10 +1279,8 @@ internal sealed class TrajectoryView : IDisposable
 	};
 }
 
-/// <summary>
 /// 概览泳道：四条 lane 上按时间布刻度，点击刻度选中对应记录。
 /// 与 PiDeck 的轨迹概览同义；只画数据，不建控件（几百条记录也不会变成几百个可命中的按钮）。
-/// </summary>
 internal sealed class TrajectoryOverview : FrameworkElement
 {
 	public const double LaneHeight = 15;
@@ -1328,7 +1302,6 @@ internal sealed class TrajectoryOverview : FrameworkElement
 		Height = LaneHeight * LaneOrder.Length;
 	}
 
-	/// <summary>点了某个刻度：参数是代表记录的 id。</summary>
 	public event Action<string>? RecordSelected;
 
 	public void SetData(IReadOnlyList<TrajectoryRecord> records, long domainStart, long domainEnd, string? selectedId)
@@ -1500,7 +1473,6 @@ internal sealed class TrajectoryOverview : FrameworkElement
 		}
 	}
 
-	/// <summary>把 DIP 坐标对齐到设备像素，避免 1px 线/小刻度被抗锯齿抹成两像素灰边。</summary>
 	private static double Snap(double value, double scale) =>
 		Math.Round(value * scale, MidpointRounding.AwayFromZero) / scale;
 
@@ -1512,10 +1484,8 @@ internal sealed class TrajectoryOverview : FrameworkElement
 		return Math.Clamp((at - _domainStart) / (double)span, 0, 1);
 	}
 
-	/// <summary>比例 → 轨道内横坐标（左右各留 8 DIP，给选中框的外框留出空间）。</summary>
 	private static double XOf(double ratio, double width) => 8 + ratio * Math.Max(1, width - 16);
 
-	/// <summary>按 lane + 像素桶聚合：概览窄的时候不因为记录多而把点击目标压到 1 DIP 以下。</summary>
 	private List<Bucket> BuildBuckets(TrajectoryLane lane)
 	{
 		_buckets.Clear();

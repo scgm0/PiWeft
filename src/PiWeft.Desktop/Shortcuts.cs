@@ -2,23 +2,19 @@ using Aprillz.MewUI;
 
 namespace PiWeft.Desktop;
 
-/// <summary>一个可以重新绑定的快捷键（组合串形如 <c>Ctrl+Shift+P</c>）。</summary>
 /// <param name="Id">持久化用的标识，改动它会让用户已有的绑定失效。</param>
 /// <param name="Category">分组，设置面板按组展示。</param>
 /// <param name="Description">中文说明。</param>
 /// <param name="Default">默认组合串。</param>
 public sealed record ShortcutDefinition(string Id, string Category, string Description, string Default);
 
-/// <summary>解析后的按键组合。</summary>
 /// <param name="Key">主键。</param>
 /// <param name="Modifiers">修饰键。</param>
 public sealed record ShortcutBinding(Key Key, ModifierKeys Modifiers)
 {
-	/// <summary>
 	/// 解析组合串。接受 <c>Ctrl</c>/<c>Control</c>、<c>Shift</c>、<c>Alt</c>/<c>Option</c> 与
 	/// 字母、数字、<c>F1</c>–<c>F24</c>、<c>Enter</c>、<c>Space</c>、方向键等 <see cref="Key"/> 名称。
 	/// 非法输入返回 null，由调用方决定是退回默认值还是提示用户。
-	/// </summary>
 	public static ShortcutBinding? TryParse(string? text)
 	{
 		if (string.IsNullOrWhiteSpace(text))
@@ -62,7 +58,6 @@ public sealed record ShortcutBinding(Key Key, ModifierKeys Modifiers)
 		return key is { } parsed ? new ShortcutBinding(parsed, modifiers) : null;
 	}
 
-	/// <summary>单独解析主键，数字键 0–9 对应 <c>Key.D0</c>–<c>Key.D9</c>。</summary>
 	private static Key? ParseKey(string part)
 	{
 		if (part.Length == 1 && char.IsAsciiDigit(part[0]))
@@ -73,7 +68,6 @@ public sealed record ShortcutBinding(Key Key, ModifierKeys Modifiers)
 		return Enum.TryParse<Key>(part, ignoreCase: true, out var key) && key != Key.None ? key : null;
 	}
 
-	/// <summary>格式化成写回配置文件的形状。</summary>
 	public override string ToString()
 	{
 		var parts = new List<string>(4);
@@ -98,25 +92,19 @@ public sealed record ShortcutBinding(Key Key, ModifierKeys Modifiers)
 		return string.Join('+', parts);
 	}
 
-	/// <summary>数字键显示成 1–9 / 0，其它沿用枚举名。</summary>
 	private static string KeyName(Key key) =>
 		key is >= Key.D0 and <= Key.D9 ? ((char)('0' + (key - Key.D0))).ToString() : key.ToString();
 
-	/// <summary>这次按键是否命中这个绑定（修饰键必须完全一致，避免 Ctrl+P 抢走 Ctrl+Shift+P）。</summary>
 	public bool Matches(KeyEventArgs args) => args.Key == Key && Normalize(args.Modifiers) == Normalize(Modifiers);
 
-	/// <summary>只保留我们支持的三个修饰键，忽略 Meta / CapsLock 之类的噪音。</summary>
 	private static ModifierKeys Normalize(ModifierKeys modifiers) =>
 		modifiers & (ModifierKeys.Control | ModifierKeys.Shift | ModifierKeys.Alt);
 }
 
-/// <summary>
 /// 快捷键表：内置默认值 + 用户在 <c>desktop.json</c> 里的覆盖。无法解析或未知标识的覆盖会被忽略并记入
 /// <see cref="Ignored"/>，这样一份改坏的配置不会让界面失去所有快捷键。
-/// </summary>
 public sealed class ShortcutMap
 {
-	/// <summary>全部可绑定动作。Ctrl+数字切换标签是范围型动作，单独处理。</summary>
 	public static IReadOnlyList<ShortcutDefinition> Definitions { get; } =
 	[
 		new(ShortcutActions.Palette, "通用", "命令面板", "Ctrl+P"),
@@ -141,10 +129,8 @@ public sealed class ShortcutMap
 	private readonly Dictionary<string, string> _overrides = new(StringComparer.Ordinal);
 	private readonly List<string> _ignored = [];
 
-	/// <summary>
 	/// 窗口当前生效的那份表。旁注型的展示（等待提示轮播）不想把地图一层层传到构造函数里，
 	/// 就由主窗口建表时挂在这里；没窗口（单测、自检）时用内置默认值。
-	/// </summary>
 	internal static ShortcutMap Shared { get; set; } = new();
 
 	public ShortcutMap(IReadOnlyDictionary<string, string>? overrides = null)
@@ -184,19 +170,14 @@ public sealed class ShortcutMap
 		}
 	}
 
-	/// <summary>被忽略的覆盖项（未知标识或无法解析的组合）。</summary>
 	public IReadOnlyList<string> Ignored => _ignored;
 
-	/// <summary>用户改过的绑定（只含与默认不同的项），用于写回配置。</summary>
 	public IReadOnlyDictionary<string, string> Overrides => _overrides;
 
-	/// <summary>取某个动作当前的绑定；标识未知时返回 null。</summary>
 	public ShortcutBinding? Get(string id) => _bindings.GetValueOrDefault(id);
 
-	/// <summary>设置面板显示用的文本，例如 <c>Ctrl+P</c>；动作没绑定则返回「未绑定」。</summary>
 	public string Describe(string id) => Get(id)?.ToString() ?? Strings.ShortcutUnbound;
 
-	/// <summary>把某个动作改绑到新的组合串；解析失败返回 false 且不改变现状。</summary>
 	public bool Rebind(string id, string text)
 	{
 		if (!_bindings.ContainsKey(id) || ShortcutBinding.TryParse(text) is not { } parsed)
@@ -209,7 +190,6 @@ public sealed class ShortcutMap
 		return true;
 	}
 
-	/// <summary>恢复某个动作的默认绑定。</summary>
 	public void Reset(string id)
 	{
 		_overrides.Remove(id);
@@ -221,9 +201,7 @@ public sealed class ShortcutMap
 		}
 	}
 
-	/// <summary>
 	/// 找出撞在同一个组合上的动作。冲突不会让程序出错，但后注册的动作会永远抢不到按键，因此设置面板要提示。
-	/// </summary>
 	public IReadOnlyList<(string Id, string OtherId, string Binding)> Conflicts()
 	{
 		var conflicts = new List<(string, string, string)>();
@@ -250,7 +228,6 @@ public sealed class ShortcutMap
 	}
 }
 
-/// <summary>快捷键标识常量：持久化在 <c>desktop.json</c> 的 <c>shortcuts</c> 里，不要随意更名。</summary>
 public static class ShortcutActions
 {
 	public const string Palette = "palette";

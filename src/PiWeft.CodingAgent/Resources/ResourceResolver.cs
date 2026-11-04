@@ -6,14 +6,10 @@ using PiWeft.CodingAgent.Themes;
 
 namespace PiWeft.CodingAgent.Resources;
 
-/// <summary>一个资源根目录及其来源。</summary>
 public sealed record ResourceRoot(string Path, ResourceOrigin Origin);
 
-/// <summary>一次资源解析的结果：技能、提示词模板、主题、包与诊断。</summary>
-/// <summary>
 /// 资源页显示的一个扩展条目。<see cref="Note"/> 承载「为什么没生效」——
 /// 加载失败或 TypeScript 未转译的扩展如果只字不提，用户会以为它在跑。
-/// </summary>
 public sealed record ExtensionEntry(string Name, string Path, string Origin, bool Loaded, string Note);
 
 public sealed record ResourceSnapshot
@@ -26,23 +22,18 @@ public sealed record ResourceSnapshot
 
 	public IReadOnlyList<PiPackage> Packages { get; init; } = [];
 
-	/// <summary>发现的扩展（含加载失败与不支持的形态）。</summary>
 	public IReadOnlyList<ExtensionEntry> Extensions { get; init; } = [];
 
-	/// <summary>解析期间的诊断（冲突、无效主题、未安装的包等）。</summary>
 	public IReadOnlyList<string> Diagnostics { get; init; } = [];
 
 	public static ResourceSnapshot Empty { get; } = new();
 }
 
-/// <summary>
 /// 统一的资源发现入口：把「约定目录 + settings 显式路径 + 已安装包」合成
 /// 技能、提示词模板与主题的根目录列表，优先级与 pi 的 <c>resourcePrecedenceRank</c> 对齐。
 /// CLI、RPC 与桌面共用这一条路径，保证三者看到相同的资源集合。
-/// </summary>
 public static class ResourceResolver
 {
-	/// <summary>解析全部资源。</summary>
 	public static ResourceSnapshot Resolve(
 		string cwd,
 		string? agentDir = null,
@@ -72,7 +63,6 @@ public static class ResourceResolver
 		};
 	}
 
-	/// <summary>技能根目录，按优先级排列。</summary>
 	public static IReadOnlyList<ResourceRoot> SkillRoots(
 		string cwd,
 		string? agentDir = null,
@@ -109,7 +99,6 @@ public static class ResourceResolver
 		return [.. roots.OrderBy(static root => root.Origin.Rank)];
 	}
 
-	/// <summary>提示词模板根目录，按优先级排列。</summary>
 	public static IReadOnlyList<ResourceRoot> PromptRoots(
 		string cwd,
 		string? agentDir = null,
@@ -139,7 +128,6 @@ public static class ResourceResolver
 		return [.. roots.OrderBy(static root => root.Origin.Rank)];
 	}
 
-	/// <summary>主题根目录，按优先级排列。</summary>
 	public static IReadOnlyList<ResourceRoot> ThemeRoots(
 		string cwd,
 		string? agentDir = null,
@@ -185,10 +173,8 @@ public static class ResourceResolver
 		}
 	}
 
-	/// <summary>
 	/// 把 settings 里显式声明的资源路径展开成根目录。项目设置里的相对路径相对项目 <c>.pi</c>，
 	/// 用户设置里的相对路径相对 agent 目录（与 pi 一致）。
-	/// </summary>
 	private static void AddDeclared(
 		List<ResourceRoot> roots,
 		string cwd,

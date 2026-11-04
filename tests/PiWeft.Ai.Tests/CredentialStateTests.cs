@@ -3,10 +3,8 @@ using Xunit;
 
 namespace PiWeft.Ai.Tests;
 
-/// <summary>
 /// 凭据读取的回归用例：<see cref="AuthStore.ReadCredentialState"/> 一次解析同时给出可用 key
 /// 与「是否命令型」，`ProviderEnvironment` 不再为同一个 provider 读两遍 auth.json。
-/// </summary>
 public class CredentialStateTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-cred-" + Guid.NewGuid().ToString("N")[..8]);

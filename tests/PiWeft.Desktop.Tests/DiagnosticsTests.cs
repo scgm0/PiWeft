@@ -9,10 +9,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 性能诊断采样的契约：默认关闭且零副作用，开启后按名称聚合、逐条落盘、
 /// 重复设置同值不重开文件，关掉之后必须把缓冲里的记录写完。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class DiagnosticsTests : IDisposable
 {
@@ -414,7 +412,6 @@ public sealed class DiagnosticsTests : IDisposable
 }
 
 
-/// <summary>设置页的诊断分区：关闭时给提示，打开时给聚合数据；构建过程不许吞异常。</summary>
 [Collection("mewui-controls")]
 public sealed class SettingsDiagnosticsSectionTests : IDisposable
 {

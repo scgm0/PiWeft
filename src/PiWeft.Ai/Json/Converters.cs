@@ -4,10 +4,8 @@ using System.Text.Json.Serialization;
 
 namespace PiWeft.Ai.Json;
 
-/// <summary>
 /// 消息模型的手写 JSON 转换。所有分支都显式写出，因此在没有反射解析器的情况下
 /// 类型依然满足 NativeAOT / 裁剪安全。
-/// </summary>
 internal static class PiJsonValue
 {
 	public static string? Str(JsonNode? node) => node is JsonValue value && value.TryGetValue<string>(out var s) ? s : null;
@@ -32,15 +30,11 @@ internal static class PiJsonValue
 	public static List<JsonNode?>? Array(JsonObject obj, string name) =>
 		obj.TryGetPropertyValue(name, out var node) && node is JsonArray array ? [.. array] : null;
 
-	/// <summary>
 	/// 收集未被建模的字段，重写时原样输出。
-	/// <para>
 	/// pi 与各类会话工具会往消息对象里加字段（例如 codemode 在 toolResult 上写
 	/// <c>nestedCalls</c>），模型层不认识它们就该原样搬运，而不是静默丢弃——
 	/// 丢弃等于改写用户的历史：<c>fork</c>、导入后再写回，那些数据就永久没了。
 	/// 这与配置侧「未知字段保留」是同一条纪律。
-	/// </para>
-	/// </summary>
 	public static JsonObject? ReadExtras(JsonObject obj, params ReadOnlySpan<string> known)
 	{
 		JsonObject? extras = null;
@@ -58,7 +52,6 @@ internal static class PiJsonValue
 		return extras;
 	}
 
-	/// <summary>把 <see cref="ReadExtras"/> 收集到的字段写回当前对象作用域。</summary>
 	public static void WriteExtras(Utf8JsonWriter writer, JsonObject? extras)
 	{
 		if (extras is null)
@@ -184,7 +177,6 @@ internal static class PiJsonValue
 		writer.WriteEndArray();
 	}
 
-	/// <summary>用量对象里已建模的字段；其余原样搬运（pi 会加 <c>cost.totalFromProvider</c> 之类）。</summary>
 	private static readonly string[] UsageKeys =
 		["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "reasoning", "totalTokens", "cost"];
 
@@ -251,7 +243,6 @@ internal static class PiJsonValue
 		writer.WriteEndObject();
 	}
 
-	/// <summary>读取一个工具声明。与会话文件格式共用。</summary>
 	public static Tool ReadTool(JsonObject obj) => new()
 	{
 		Name = Str(obj, "name") ?? string.Empty,
@@ -260,7 +251,6 @@ internal static class PiJsonValue
 		ConstrainedSampling = obj.TryGetPropertyValue("constrainedSampling", out var constrained) ? constrained : null,
 	};
 
-	/// <summary>写出一个工具声明。与会话文件格式共用。</summary>
 	public static void WriteTool(Utf8JsonWriter writer, Tool tool)
 	{
 		writer.WriteStartObject();
@@ -277,7 +267,6 @@ internal static class PiJsonValue
 		writer.WriteEndObject();
 	}
 
-	/// <summary>从数组节点读取工具声明列表。</summary>
 	public static List<Tool> ReadTools(JsonNode? node)
 	{
 		var tools = new List<Tool>();
@@ -295,7 +284,6 @@ internal static class PiJsonValue
 		return tools;
 	}
 
-	/// <summary>写出工具声明列表。</summary>
 	public static void WriteTools(Utf8JsonWriter writer, IReadOnlyList<Tool> tools)
 	{
 		writer.WriteStartArray();
@@ -307,7 +295,6 @@ internal static class PiJsonValue
 		writer.WriteEndArray();
 	}
 
-	/// <summary>从数组节点读取工具引用列表（<c>{ name }</c>）。</summary>
 	public static List<ToolReference> ReadToolReferences(JsonNode? node)
 	{
 		var references = new List<ToolReference>();
@@ -333,7 +320,6 @@ internal static class PiJsonValue
 		}
 	}
 
-	/// <summary>读取 <c>string | ContentBlock[]</c> 形式的内容。与会话文件格式共用。</summary>
 	public static MessageContent ReadMessageContent(JsonNode? node)
 	{
 		if (node is null)
@@ -346,7 +332,6 @@ internal static class PiJsonValue
 			: MessageContent.FromBlocks(ReadBlocks(node));
 	}
 
-	/// <summary>写出 <c>string | ContentBlock[]</c> 形式的内容。与会话文件格式共用。</summary>
 	public static void WriteMessageContent(Utf8JsonWriter writer, MessageContent content)
 	{
 		if (content.IsText)
@@ -430,7 +415,6 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 		return ReadMessage(obj);
 	}
 
-	/// <summary>从已解析的对象读取一条消息。与会话文件格式共用。</summary>
 	internal static Message ReadMessage(JsonObject obj)
 	{
 		var role = PiJsonValue.Str(obj, "role") ?? throw new JsonException("message is missing its role");
@@ -521,7 +505,6 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 	public override void Write(Utf8JsonWriter writer, Message value, JsonSerializerOptions options) =>
 		WriteMessage(writer, value);
 
-	/// <summary>把一条消息写进已打开的对象作用域。与会话文件格式共用。</summary>
 	internal static void WriteMessage(Utf8JsonWriter writer, Message value)
 	{
 		if (value is CustomMessage { Raw: { } raw })

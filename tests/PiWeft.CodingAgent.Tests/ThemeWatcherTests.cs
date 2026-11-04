@@ -3,7 +3,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>PI-10：主题目录监视热重载的触发与防抖。</summary>
 public class ThemeWatcherTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-themewatch-" + Guid.NewGuid().ToString("N")[..8]);

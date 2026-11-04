@@ -4,10 +4,8 @@ using ZLogger;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 桌面外壳的入口：注册平台宿主与渲染后端、保证单实例、然后运行主窗口。
 /// 用法：<c>piweft-desktop [--cwd &lt;目录&gt;] [--self-check]</c>。
-/// </summary>
 public static class Program
 {
 	public static int Main(string[] args)
@@ -192,10 +190,8 @@ public static class Program
 		return 0;
 	}
 
-	/// <summary>
 	/// 不打开窗口地校验运行环境：模型解析、provider 网关、发现的工具与会话目录。
 	/// 外壳能够启动时返回 0，否则返回 1。
-	/// </summary>
 	private static int SelfCheck(string cwd)
 	{
 		Console.WriteLine(Strings.SelfCheckTitle);
@@ -234,7 +230,6 @@ public static class Program
 		return 0;
 	}
 
-	/// <summary>应用界面主题：按偏好取深色或浅色，配合紫色强调。</summary>
 	private static void ApplyTheme()
 	{
 		var preference = DesktopPreference.Load();
@@ -250,10 +245,8 @@ public static class Program
 		ThemeManager.DefaultDarkSeed = AppTheme.Seed(resolution.Dark ?? AppPalette.Dark);
 	}
 
-	/// <summary>
 	/// 注册平台宿主与渲染后端。这里按**构建时**的目标平台选择（csproj 用 <c>TargetPlatform</c> 与
 	/// 条件包引用决定），而不是运行时探测 —— MewUI 的注册 API 是按包提供的，编译进哪个包就用哪个。
-	/// </summary>
 	private static void RegisterPlatform()
 	{
 #if MEWUI_WIN32

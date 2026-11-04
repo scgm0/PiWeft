@@ -4,13 +4,10 @@ using Aprillz.MewUI.Rendering;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 帧时间条：把最近若干帧的间隔画成柱子，一眼看出「什么时候掉的帧、掉多深」。
 /// 这是数据可视化（不是图标）：柱形与参考线只表达数值，任何图形元素都来自主题色。
-/// </summary>
 internal sealed class FrameTimeStrip : FrameworkElement
 {
-	/// <summary>一帧的时间预算：60 FPS。</summary>
 	private const double BudgetMs = 16.7;
 
 	private const double BarGap = 1;

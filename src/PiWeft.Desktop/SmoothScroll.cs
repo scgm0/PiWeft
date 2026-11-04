@@ -6,7 +6,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Frame-driven scrolling with retargetable input curves and exponential end-follow, for both high-frequency trackpads and discrete mouse wheels.</summary>
 internal sealed class SmoothScroll : IDisposable
 {
 	private static readonly ConditionalWeakTable<FrameworkElement, SmoothScroll> Controllers = new();
@@ -36,28 +35,22 @@ internal sealed class SmoothScroll : IDisposable
 	private const double CorrectionTolerance = 2;
 	internal bool AutoFollowAtEnd { get; set; }
 
-	/// <summary>
 	/// 测试专用：把每帧 dt 钉成固定秒数。曲线故意按真实流逝时间推进（见 <see cref="Advance"/> 里
 	/// “不要钳制 dt”的注释），所以拿墙钟喂帧的用例在满载机器上会抖出几十毫秒的帧间隔，
 	/// 「滚轮这段手势走了多少 DIP」就跟着抖成 flake。生产永不赋值：dt 仍是真实时间，
 	/// 手感与语义完全不变；赋值时连秒表都不用读。
-	/// </summary>
 	internal double? FrameDtSeconds { get; set; }
 
-	/// <summary>
 	/// 视口内容按实测行高虚拟化（会话时间线、执行过程组体）时，重排会把「估算行高被修正」
 	/// 换算成一次偏移校正直接写回视口。滚轮滑行期间必须把这次校正当成内容坐标系平移，
 	/// 而不是读者接管滚动：否则目标停在旧坐标系里，快速滚动会多走或倒退一个校正量。
-	/// </summary>
 	internal bool CompensateLayoutCorrections { get; set; }
 
-	/// <summary>True after an explicit wheel/keyboard/scrollbar escape from the tail.</summary>
 	internal bool ReaderEscaped => _readerEscaped;
 	// 读者明确上滚过（滚轮/键盘/滚动条/恢复历史位置）。只有这种意图能挡住「置底即跟底」；
 	// 布局测高、presenter 切换、展开折叠引起的位移都不算，否则跟底会被静默关掉且再不恢复。
 	private bool _readerEscaped;
 
-	/// <summary>恢复历史状态后的首个组体：保持阅读位置，等读者滚到底或显式展开再重新锁底。</summary>
 	internal void SuppressAutoFollow()
 	{
 		_readerEscaped = true;
@@ -142,7 +135,6 @@ internal sealed class SmoothScroll : IDisposable
 
 	public static SmoothScroll For(ScrollViewer view) => Controllers.GetValue(view, static view => new SmoothScroll(view));
 	public static SmoothScroll For(MultiLineTextBox view) => Controllers.GetValue(view, static view => new SmoothScroll(view));
-	/// <summary>已安装的控制器；不新建，供滚轮沿祖先链交接时判断谁接管。</summary>
 	internal static SmoothScroll? Find(FrameworkElement view) =>
 		Controllers.TryGetValue(view, out var scroll) ? scroll : null;
 	internal static void Release(Element element)
@@ -152,20 +144,16 @@ internal sealed class SmoothScroll : IDisposable
 
 	public bool IsAnimating => _clock.IsRunning;
 	public bool IsApplyingOffset { get; private set; }
-	/// <summary>是否正在跟随内容增长（展开流式内容后保持贴底）。</summary>
 	public bool IsFollowingGrowth => _followGrowth;
 	public double MaxVerticalOffset => Maximum(vertical: true);
 	public double TargetVerticalOffset => Math.Clamp(
 		(IsAnimating ? (_toEnd ? MaxVerticalOffset : _target.Y) : Offset.Y) + _pendingWheel.Y,
 		0, MaxVerticalOffset);
-	/// <summary>Wheel/keyboard scroll input in DIPs (positive = toward the end).</summary>
 	public event Action<double>? VerticalInput;
 
-	/// <summary>
 	/// 本视口消费了滚轮输入、且祖先链上还有另一个受控视口（嵌套滚动，如执行过程的组体）
 	/// 时，把本视口报给最近那个受控祖先。外层会话的跟底状态机看不见嵌套输入，
 	/// 需要这份通知判断「读者正在嵌套视口里离开末尾阅读」。
-	/// </summary>
 	internal event Action<ScrollViewer>? NestedInput;
 
 	private void NotifyNestedAncestor()
@@ -179,7 +167,6 @@ internal sealed class SmoothScroll : IDisposable
 			return;
 		}
 	}
-	/// <summary>The scrollbar owned by this viewport, if any; its pointer gestures are reader intent.</summary>
 	internal ScrollBar? VerticalBar => _verticalBar;
 	private Point Offset => _text?.ScrollOffset ?? new Point(_viewport!.HorizontalOffset, _viewport.VerticalOffset);
 	private bool CanScrollHorizontally => _text is not null ? !_text.Wrap : _viewport!.HorizontalScroll != ScrollMode.Disabled;
@@ -203,9 +190,7 @@ internal sealed class SmoothScroll : IDisposable
 			(vertical ? _viewport.ViewportHeight : _viewport.ViewportWidth));
 	}
 
-	/// <summary>
 	/// 按滚轮方向返回本视口还能走的偏移增量；已经到边界（或内容装得下）的方向为零。
-	/// </summary>
 	internal Point WheelDelta(double horizontal, double vertical)
 	{
 		var current = IsAnimating ? _target : new Point(Offset.X + _pendingWheel.X, Offset.Y + _pendingWheel.Y);
@@ -250,9 +235,7 @@ internal sealed class SmoothScroll : IDisposable
 	// 低于这个刻度视为触控板/高精度输入；紧随分数流之后的偏大增量由 IsPreciseWheel 继续按连续流处理。
 	private const double TrackpadNotchThreshold = 0.5;
 
-	/// <summary>
 	/// Wheel deltas are notch counts, including fractional trackpad movement.
-	/// </summary>
 	public void ScrollBy(double horizontal, double vertical)
 	{
 		if (!double.IsFinite(horizontal) || !double.IsFinite(vertical) || (horizontal == 0 && vertical == 0)) return;
@@ -274,7 +257,6 @@ internal sealed class SmoothScroll : IDisposable
 		});
 	}
 
-	/// <summary>把一次滚轮输入累加进本帧的待处理位移；不立即写视口。</summary>
 	internal void EnqueueWheelPixels(double horizontal, double vertical)
 	{
 		if (_disposed || !double.IsFinite(horizontal) || !double.IsFinite(vertical)) return;
@@ -288,7 +270,6 @@ internal sealed class SmoothScroll : IDisposable
 		if (vertical != 0) VerticalInput?.Invoke(vertical);
 	}
 
-	/// <summary>把本帧累积的滚轮位移一次写入视口。</summary>
 	internal void FlushPendingWheel()
 	{
 		if (_disposed) return;
@@ -322,7 +303,6 @@ internal sealed class SmoothScroll : IDisposable
 		}
 	}
 
-	/// <summary>Scrolls by DIPs; used by the wheel after converting notches and by keyboard scrolling.</summary>
 	/// <param name="animate">
 	/// 键盘自动重复直接落位：每次重复都从零速重开曲线会把长按方向键压成几分之一的速度。
 	/// </param>
@@ -364,9 +344,7 @@ internal sealed class SmoothScroll : IDisposable
 		if (vertical != 0) VerticalInput?.Invoke(vertical);
 	}
 
-	/// <summary>
 	/// 分数增量或紧跟在分数流之后的偏大增量视为触控板；离散滚轮刻度仍走缓动。
-	/// </summary>
 	private bool IsPreciseWheel(double horizontal, double vertical, double step)
 	{
 		var magnitude = Math.Max(Math.Abs(horizontal), Math.Abs(vertical));
@@ -396,22 +374,18 @@ internal sealed class SmoothScroll : IDisposable
 		Apply(new Point(Offset.X, MaxVerticalOffset));
 	}
 
-	/// <summary>
 	/// Keeps an already running animation pointed at the end. A wheel animation started a notch
 	/// short of the end would otherwise settle there while the reply keeps growing, with no further
 	/// scroll notification left to resume following.
-	/// </summary>
 	public void FollowEnd()
 	{
 		if (IsAnimating) ScrollToEnd();
 		else JumpToEnd();
 	}
 
-	/// <summary>
 	/// 展开正在流式输出的内容后，让视口持续贴住内容末尾：立即露出当前末尾，之后每次内容变高
 	/// （思考的 Markdown 解析、行高变化）都在布局落定后再落位。与 <see cref="FollowEnd"/> 不同，
 	/// 它不依赖动画，所以长内容每帧增长时也能跟上。
-	/// </summary>
 	public void FollowGrowth()
 	{
 		if (_disposed) return;
@@ -425,14 +399,11 @@ internal sealed class SmoothScroll : IDisposable
 		Apply(new Point(Offset.X, MaxVerticalOffset));
 	}
 
-	/// <summary>停止跟随内容增长，视口停在当前位置（折叠流式内容或读者接管时）。</summary>
 	public void StopFollowingGrowth() => _followGrowth = false;
 
-	/// <summary>
 	/// 把视口定位到指定偏移并解除跟底（「回到本项开头」这类阅读定位，不是读者滚动）。
 	/// 与直接写 ScrollViewer 的区别：同时取消在途动画与本帧待处理输入，并明确记下「读者已离开末尾」，
 	/// 下一帧的内容增长不会再把读者拽回去。
-	/// </summary>
 	internal void RestoreReadingOffset(double vertical)
 	{
 		if (_disposed) return;
@@ -443,18 +414,14 @@ internal sealed class SmoothScroll : IDisposable
 		Apply(new Point(Offset.X, Math.Clamp(vertical, 0, MaxVerticalOffset)));
 	}
 
-	/// <summary>
 	/// Republishes the virtualized extent to the scroll owner. Rows measured during arrange update
 	/// the presenter's extent after the owner already published its metrics, so the bar maximum
 	/// (and therefore the reachable end) would otherwise stay at the pre-growth value.
-	/// </summary>
 	internal void SyncExtent() => SyncMetrics();
 
-	/// <summary>
 	/// Refreshes the viewport's extent metrics from its scroll content. <see cref="ScrollViewer"/>
 	/// only republishes a virtualized content extent during measure; a row that grew after that
 	/// leaves the bar maximum stale until the next offset write.
-	/// </summary>
 	private void SyncMetrics()
 	{
 		if (_viewport is null) return;
@@ -738,10 +705,8 @@ internal sealed class SmoothScroll : IDisposable
 		ClearPendingWheel();
 	}
 
-	/// <summary>
 	/// 滚轮落在滚动条上时仍由视口接管：否则 MewUI 的 ScrollBar 会按 SmallChange（24 DIP）
 	/// 立即跳变，和内容区的 100 DIP 平滑滚动不一致。
-	/// </summary>
 	private void OnScrollBarWheel(MouseWheelEventArgs args)
 	{
 		if (args.Handled) return;
@@ -749,7 +714,6 @@ internal sealed class SmoothScroll : IDisposable
 		args.Handled = true;
 	}
 
-	/// <summary>把跟随增长的重夹排到布局之后；一帧里只排一次。</summary>
 	private void QueueGrowthFollow()
 	{
 		if (_growthFollowQueued) return;
@@ -817,7 +781,6 @@ internal sealed class SmoothScroll : IDisposable
 		ClearPendingWheel();
 	}
 
-	/// <summary>只停曲线，保留本帧待处理的滚轮输入（布局校正不该吞掉读者刚发出的滚动）。</summary>
 	private void StopAnimation()
 	{
 		_clock.Stop();
@@ -839,7 +802,6 @@ internal sealed class SmoothScroll : IDisposable
 	// 对于以时间为基准的物理循环，内置 Easing 提供恒等映射即可
 	private static double LinearEase(double progress) => progress;
 
-	/// <summary>Chromium 滚动曲线的 CSS ease：cubic-bezier(0.25, 0.1, 0.25, 1)。</summary>
 	private static double ChromiumEase(double x)
 	{
 		x = Math.Clamp(x, 0, 1);
@@ -868,7 +830,6 @@ internal sealed class SmoothScroll : IDisposable
 		return 3 * u * u * p1 + 6 * u * t * (p2 - p1) + 3 * t * t * (1 - p2);
 	}
 
-	/// <summary>三次 Hermite：起点速度 m0、终点速度为 0，到点精确落位。</summary>
 	private static double Hermite(double t, double from, double m0, double target)
 	{
 		double t2 = t * t;
@@ -876,7 +837,6 @@ internal sealed class SmoothScroll : IDisposable
 		return (2 * t3 - 3 * t2 + 1) * from + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * target;
 	}
 
-	/// <summary>限制起点切线，保证同向时曲线不越过目标。</summary>
 	private static double ClampTangent(double distance, double tangent)
 	{
 		if (distance > 0) return Math.Clamp(tangent, 0, 3 * distance);
@@ -905,14 +865,10 @@ internal sealed class SmoothScroll : IDisposable
 	}
 }
 
-/// <summary>
 /// 嵌套滚动链：内层视口在边界放行后，滚轮沿祖先链找到下一个真正滚得动的视口。
-/// </summary>
 internal static class ScrollCascade
 {
-	/// <summary>
 	/// 从 <paramref name="origin"/> 的父级向上找最近的可滚动祖先视口并接管这次滚轮。
-	/// </summary>
 	/// <param name="origin">起点元素，从它的父级开始查找，本身不会被滚动。</param>
 	/// <param name="horizontal">滚轮横向刻度（+ 表示向左）。</param>
 	/// <param name="vertical">滚轮纵向刻度（+ 表示向上）。</param>
@@ -935,7 +891,6 @@ internal static class ScrollCascade
 	}
 }
 
-/// <summary>Installs one shared wheel controller per viewport.</summary>
 internal static class SmoothScrollExtensions
 {
 	public static T SmoothScrolling<T>(this T view) where T : FrameworkElement
@@ -944,7 +899,6 @@ internal static class SmoothScrollExtensions
 		return view;
 	}
 
-	/// <summary>Attach at construction boundaries, including framework-owned tree and code viewports.</summary>
 	private static void Attach(Element element)
 	{
 		if (element is ScrollViewer scroll) SmoothScroll.For(scroll);

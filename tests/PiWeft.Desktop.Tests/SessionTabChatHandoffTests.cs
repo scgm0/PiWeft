@@ -10,10 +10,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 长会话的聊天记录可以在后台线程预投影，标签页直接接手；
 /// 交接必须真正复用同一个模型，否则 UI 线程还得再投影一遍（本项要省掉 200+ 毫秒）。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class SessionTabChatHandoffTests(ITestOutputHelper output)
 {

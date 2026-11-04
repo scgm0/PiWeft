@@ -7,10 +7,8 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>
 /// OpenAI Responses API（<c>openai-responses</c>）的流式适配器。GPT-5 级别与推理模型使用该 API，
 /// 它也覆盖 Azure Responses 与 OpenAI Codex 的端点形状。
-/// </summary>
 public sealed class OpenAiResponsesProvider : IApiProvider
 {
 	public const string ApiId = "openai-responses";
@@ -173,10 +171,8 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 		return request;
 	}
 
-	/// <summary>
 	/// 把 pi 的思考级别映射到 Responses 的 <c>reasoning.effort</c>。返回 <c>null</c> 表示不带 reasoning 字段，
 	/// 这只会发生在非推理模型上。
-	/// </summary>
 	internal static string? ResolveReasoningEffort(Model model, StreamOptions options)
 	{
 		if (!model.Reasoning)

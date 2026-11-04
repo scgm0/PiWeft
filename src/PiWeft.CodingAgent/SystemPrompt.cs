@@ -5,51 +5,37 @@ using PiWeft.CodingAgent.Tools;
 
 namespace PiWeft.CodingAgent;
 
-/// <summary>编码系统提示词的输入。</summary>
 public sealed record SystemPromptOptions
 {
 	public required string Cwd { get; init; }
 
-	/// <summary>各工具对提示词的贡献，按声明顺序。</summary>
 	public IReadOnlyList<BuiltinTool> Tools { get; init; } = [];
 
-	/// <summary>追加在工具准则之后的准则（pi 的基础规则）。</summary>
 	public IReadOnlyList<string> ExtraGuidelines { get; init; } = [];
 
-	/// <summary>
 	/// 自定义前缀提示词，对应 pi 的 <c>--system-prompt</c>。设置后取代默认 preamble，
 	/// 并且不再生成 tools/rules/docs 章节（与 pi 的 <c>customPrompt</c> 一致）。
-	/// </summary>
 	public string? CustomPrompt { get; init; }
 
-	/// <summary>
 	/// 追加在提示词末尾的 <c>addendum</c> 章节，对应 pi 的 <c>--append-system-prompt</c>。
-	/// </summary>
 	public string? Addendum { get; init; }
 
-	/// <summary>由 AGENTS.md / CLAUDE.md 渲染出的 <c>&lt;project_context&gt;</c> 章节。</summary>
 	public string? ProjectContext { get; init; }
 
-	/// <summary>渲染出的 <c>&lt;docs&gt;</c> 章节。</summary>
 	public string? Docs { get; init; }
 
-	/// <summary>由已发现技能渲染出的 <c>&lt;available_skills&gt;</c> 章节。</summary>
 	public string? Skills { get; init; }
 
-	/// <summary>按名称覆盖的提示词章节；值为 <c>null</c> 表示删除该章节。</summary>
 	public IReadOnlyDictionary<string, string?>? SectionOverrides { get; init; }
 }
 
-/// <summary>
 /// 组装编码系统提示词。pi 把提示词作为具名章节挂在 system 消息上，
 /// 因此提示词的更新可以从会话文件里回放。
-/// </summary>
 public static class SystemPrompt
 {
 	public const string Preamble =
 		"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
 
-	/// <summary>每个会话都会带上的基础规则，追加在工具准则之后。</summary>
 	public static readonly string[] BaselineGuidelines =
 	[
 		"Be concise in your responses",
@@ -161,19 +147,15 @@ public static class SystemPrompt
 	}
 }
 
-/// <summary>
 /// 自动加载 SYSTEM.md / APPEND_SYSTEM.md。受信任项目的 <c>.pi</c> 文件覆盖 agent 目录的对应文件。
-/// </summary>
 public static class SystemPromptFiles
 {
 	public const string SystemFileName = "SYSTEM.md";
 	public const string AppendFileName = "APPEND_SYSTEM.md";
 
-	/// <summary>返回替换默认 preamble 的文本；没有时返回 null。</summary>
 	public static string? LoadSystem(string cwd, bool projectTrusted, string? agentDir = null) =>
 		Load(cwd, projectTrusted, SystemFileName, agentDir);
 
-	/// <summary>返回追加到提示词末尾的文本；没有时返回 null。</summary>
 	public static string? LoadAppend(string cwd, bool projectTrusted, string? agentDir = null) =>
 		Load(cwd, projectTrusted, AppendFileName, agentDir);
 
@@ -211,7 +193,6 @@ public static class SystemPromptFiles
 	}
 }
 
-/// <summary>
 /// 从工作目录向上加载项目指令文件（AGENTS.md、CLAUDE.md 等），对应 pi 的
 /// <c>loadProjectContextFiles</c>：
 /// <list type="bullet">
@@ -220,18 +201,14 @@ public static class SystemPromptFiles
 /// <item>按**真实路径**去重：把 AGENTS.md 符号链接到 CLAUDE.md 之类的写法不会重复注入；</item>
 /// <item>嵌套 git worktree 里符号链接到主仓库的那一份要跳过 —— 否则同一份说明会出现两次。</item>
 /// </list>
-/// </summary>
 public static class ContextFiles
 {
 	public const string SectionName = "project_context";
 
-	/// <summary>pi 会查找的指令文件名，按优先级排列。</summary>
 	public static readonly string[] FileNames =
 	["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD", "CODEBUDDY.md"];
 
-	/// <summary>
 	/// 为 <paramref name="cwd"/> 渲染 <c>project_context</c> 章节；没有内容时返回 <c>null</c>。
-	/// </summary>
 	/// <param name="cwd">工作目录。</param>
 	/// <param name="agentDir">agent 目录（放全局指令文件）；默认取 <c>$PI_CODING_AGENT_DIR</c>。</param>
 	public static string? Load(string cwd, string? agentDir = null)
@@ -307,7 +284,6 @@ public static class ContextFiles
 		return builder.ToString();
 	}
 
-	/// <summary>某个目录下的指令文件：按 <see cref="FileNames"/> 取第一个存在的。</summary>
 	private static (string Path, string Content)? LoadFromDirectory(string directory)
 	{
 		foreach (var name in FileNames)
@@ -332,7 +308,6 @@ public static class ContextFiles
 		return null;
 	}
 
-	/// <summary>解析符号链接后的路径（不存在时退回绝对路径）。</summary>
 	internal static string Canonicalize(string path)
 	{
 		try
@@ -346,10 +321,8 @@ public static class ContextFiles
 		}
 	}
 
-	/// <summary>
 	/// 嵌套 git worktree 里被主仓库遮蔽的指令文件路径；不适用时返回 <c>null</c>。
 	/// 只在「worktree 位于主仓库内部」且主仓库确实检出在同一处时才算（裸仓库与子模块不算）。
-	/// </summary>
 	internal static string? FindShadowedContextFile(string cwd)
 	{
 		if (FindGitPaths(cwd) is not var (repoDir, commonGitDir))
@@ -377,7 +350,6 @@ public static class ContextFiles
 			: null;
 	}
 
-	/// <summary>向父目录查找 <c>.git</c>，返回（worktree 根目录, 公共 git 目录）。</summary>
 	private static (string RepoDir, string CommonGitDir)? FindGitPaths(string start)
 	{
 		var current = new DirectoryInfo(Path.GetFullPath(start));
@@ -419,7 +391,6 @@ public static class ContextFiles
 		return null;
 	}
 
-	/// <summary>读取 <c>.git</c> 指针文件里的 <c>gitdir:</c> 路径。</summary>
 	private static string? ReadGitDirPointer(string path)
 	{
 		try

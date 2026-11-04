@@ -3,13 +3,10 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>文件中的一次定点替换。</summary>
 public sealed record EditReplacement(string OldText, string NewText);
 
-/// <summary>实际应用的变化：原始内容与替换后内容，均已归一化为 LF。</summary>
 public sealed record AppliedEdits(string BaseContent, string NewContent);
 
-/// <summary>对应 pi 的 <c>edit-diff.ts</c>：BOM 与行尾处理、唯一性检查、统一 diff 补丁。</summary>
 public static partial class EditDiff
 {
 	public static (bool HadBom, string Content) SplitBom(string content) =>
@@ -23,7 +20,6 @@ public static partial class EditDiff
 	public static string RestoreLineEndings(string text, string lineEnding) =>
 		lineEnding == "\n" ? text : text.Replace("\n", lineEnding);
 
-	/// <summary>用于匹配“空白与文件不同”的文本的归一化方式。</summary>
 	public static string NormalizeForFuzzyMatch(string text)
 	{
 		var normalized = text.Normalize(NormalizationForm.FormKC);
@@ -51,10 +47,8 @@ public static partial class EditDiff
 		return builder.ToString();
 	}
 
-	/// <summary>
 	/// 应用互不重叠的替换。每个 <c>oldText</c> 都与原始内容匹配，且必须唯一；
 	/// 匹配不到时会退化为忽略空白的匹配。
-	/// </summary>
 	public static AppliedEdits ApplyEdits(string content, IReadOnlyList<EditReplacement> edits, string path)
 	{
 		if (edits.Count == 0)
@@ -144,7 +138,6 @@ public static partial class EditDiff
 		return new AppliedEdits(baseContent, newContent);
 	}
 
-	/// <summary>新内容中第一处变化的行号（从 1 开始）。</summary>
 	public static int? FirstChangedLine(string baseContent, string newContent)
 	{
 		var before = baseContent.Split('\n');
@@ -162,7 +155,6 @@ public static partial class EditDiff
 		return before.Length == after.Length ? null : limit + 1;
 	}
 
-	/// <summary>带三行上下文的标准统一补丁，作为工具的 <c>patch</c> 细节返回。</summary>
 	public static string UnifiedPatch(string baseContent, string newContent, string path)
 	{
 		if (string.Equals(baseContent, newContent, StringComparison.Ordinal))
@@ -376,9 +368,7 @@ public static partial class EditDiff
 		return count;
 	}
 
-	/// <summary>
 	/// 把归一化后的字符下标映射回原始下标，这样模糊匹配的结果可以作用到原始文本上。
-	/// </summary>
 	private static int[] BuildIndexMap(string original)
 	{
 		var map = new List<int>(original.Length + 1);

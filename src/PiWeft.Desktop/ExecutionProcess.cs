@@ -2,17 +2,14 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Desktop;
 
-/// <summary>One execution summary per user turn; the trailing answer always stays outside the fold.</summary>
 internal static class ExecutionProcess
 {
 	public static IReadOnlyList<ChatEntry> Project(IReadOnlyList<ChatEntry> entries, bool busy) =>
 		ProjectRange(entries, 0, busy, out _);
 
-	/// <summary>
 	/// Projects from <paramref name="start"/> and reports where the last user turn begins in the result.
 	/// Turn boundaries are independent, so a streaming tail can be re-projected without rebuilding the
 	/// historical prefix.
-	/// </summary>
 	internal static List<ChatEntry> ProjectRange(
 		IReadOnlyList<ChatEntry> entries,
 		int start,
@@ -190,10 +187,8 @@ internal static class ExecutionProcess
 		}
 	}
 
-	/// <summary>
 	/// 组头结束态摘要：只列工具类别（PiDeck 同款，思考不计入；纯思考组由调用方给「已完成分析」）。
 	/// 类别超过三个时收成「… 等」，否则组头会跟着工具种类无限变长。
-	/// </summary>
 	public static string GroupSummary(IReadOnlyList<ChatEntry> entries)
 	{
 		List<string>? activities = null;
@@ -223,7 +218,6 @@ internal static class ExecutionProcess
 		return truncated ? Strings.ProcessGroupMore(summary) : summary;
 	}
 
-	/// <summary>组头运行态文案：按最新工具类别给「正在…」，纯思考组退回「正在分析请求」。</summary>
 	public static string RunningLabel(IReadOnlyList<ChatEntry> entries)
 	{
 		for (var index = entries.Count - 1; index >= 0; index--)
@@ -249,7 +243,6 @@ internal static class ExecutionProcess
 		_ => Strings.ProcessGroupTools,
 	};
 
-	/// <summary>组头类别图标：与 <see cref="RunningLabel"/> 同源。</summary>
 	public static string GroupIcon(IReadOnlyList<ChatEntry> entries)
 	{
 		for (var index = entries.Count - 1; index >= 0; index--)
@@ -274,7 +267,6 @@ internal static class ExecutionProcess
 		_ => "play",
 	};
 
-	/// <summary>组头实时详情：最新成员是工具时给「正在执行 …」，切回思考时消失（PiDeck 同款）。</summary>
 	public static string? RunningDetail(IReadOnlyList<ChatEntry> entries)
 	{
 		if (entries.Count == 0 || entries[^1] is not { Role: ChatRole.Tool } tool)
@@ -328,7 +320,6 @@ internal static class ExecutionProcess
 		return null;
 	}
 
-	/// <summary>工具行动词短语：「正在执行 cd …」/「读取 src/App.cs」；未知工具保留原摘要。</summary>
 	public static string ToolAction(ChatEntry entry, bool running)
 	{
 		// ask_question 的参数是题包 JSON，行内只给第一题原文（读不到就不占位）。
@@ -353,7 +344,6 @@ internal static class ExecutionProcess
 		return Strings.ToolAction(verb, DetailPreview(entry), running);
 	}
 
-	/// <summary>行内摘要：bash 取命令，文件类工具取路径，其余退回参数/结果摘要。</summary>
 	private static string DetailPreview(ChatEntry entry)
 	{
 		if (entry.ToolArguments is not { Length: > 0 } arguments)
@@ -377,11 +367,8 @@ internal static class ExecutionProcess
 		return Strings.ToolDetail(arguments);
 	}
 
-	/// <summary>从工具参数 JSON 里取第一个存在的字符串字段。</summary>
-	/// <remarks>
 	/// 形参是 span 而不是数组：这条路径在一次投影里会被每个工具条目调用一次，
 	/// <c>params string[]</c> 每次调用都要分配一个小数组，而实参全是内联字面量。
-	/// </remarks>
 	private static string? JsonField(string arguments, params ReadOnlySpan<string> names)
 	{
 		try
@@ -405,10 +392,8 @@ internal static class ExecutionProcess
 	}
 }
 
-/// <summary>
 /// Keeps the projected history across streaming frames: only the last user turn is projected again
 /// while its tail changes. The static <see cref="ExecutionProcess.Project"/> still does a full pass.
-/// </summary>
 internal sealed class ExecutionProcessProjector
 {
 	private ChatEntry[] _source = [];
@@ -417,13 +402,10 @@ internal sealed class ExecutionProcessProjector
 	private int _prefixRows;
 	private bool _busy;
 
-	/// <summary>Rows before the last user turn that the previous projection can vouch for.</summary>
 	public int LastStablePrefix { get; private set; }
 
-	/// <summary>Whether those rows are reference-identical to the previous projection.</summary>
 	public bool LastPrefixReused { get; private set; }
 
-	/// <summary>增量（只重投最后轮）与整段重投的次数。诊断页用它判断缓存有没有真的生效。</summary>
 	public long TailPasses { get; private set; }
 
 	public long FullPasses { get; private set; }

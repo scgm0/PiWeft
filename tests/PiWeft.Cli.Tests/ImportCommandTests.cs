@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>
 /// <c>pi import</c> 的命令面。来源目录与会话目录都通过参数注入，
 /// 因此测试不改进程环境变量（也就不会影响并行运行的其它测试）。
-/// </summary>
 public sealed class ImportCommandTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-import-" + Guid.NewGuid().ToString("N")[..8]);
@@ -51,7 +49,6 @@ public sealed class ImportCommandTests : IDisposable
 	private int Run(string[] rest, StringWriter output, StringWriter error) =>
 		ImportCommands.Run(rest, output, error, _project, _home, _sessions);
 
-	/// <summary>只做 JSON 字符串转义（Windows 路径里的反斜杠必须转义），避免在测试里引入 JSON 序列化上下文。</summary>
 	private static string JsonString(string value) =>
 		"\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
 

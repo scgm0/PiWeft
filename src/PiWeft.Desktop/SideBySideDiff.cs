@@ -1,25 +1,18 @@
 namespace PiWeft.Desktop;
 
-/// <summary>并排 diff 中一行的类型。</summary>
 public enum DiffRowKind
 {
-	/// <summary>上下文行，两侧相同。</summary>
 	Context,
 
-	/// <summary>仅左侧（删除）。</summary>
 	Deletion,
 
-	/// <summary>仅右侧（新增）。</summary>
 	Addition,
 
-	/// <summary>左删右增配对。</summary>
 	Change,
 
-	/// <summary>hunk 头，作为分隔行。</summary>
 	Header,
 }
 
-/// <summary>并排 diff 的一行。</summary>
 public sealed record DiffRow(
 	int? OldNumber,
 	string OldText,
@@ -28,10 +21,8 @@ public sealed record DiffRow(
 	DiffRowKind Kind,
 	string Header = "");
 
-/// <summary>
 /// 把统一 diff 解析成并排的两列。删除与新增按顺序配对，缺少一侧的行用空行占位，
 /// 因此两列的行数始终一致、逐行对齐。不做语法处理，只负责行结构。
-/// </summary>
 public static class SideBySideDiff
 {
 	public static IReadOnlyList<DiffRow> Parse(string patch)

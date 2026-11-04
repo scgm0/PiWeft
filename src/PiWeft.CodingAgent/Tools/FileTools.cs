@@ -5,7 +5,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>内置文件工具：<c>read</c>、<c>write</c> 与 <c>edit</c>。</summary>
 public static class FileTools
 {
 	private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -152,10 +151,8 @@ public static class FileTools
 		Execute = invocation => Task.FromResult(WriteFile(cwd, invocation)),
 	};
 
-	/// <summary>
 	/// 同目录临时文件 + 原子替换：写到一半崩溃/断电不会把原文件截成半截（那可能是用户几天的改动）。
 	/// 覆盖时保留原有的 Unix 权限位，避免 <c>chmod +x</c> 过的脚本丢掉执行位。
-	/// </summary>
 	private static void WriteAtomically(string path, string content)
 	{
 		// 写入要跟随符号链接：Node 的 fs.writeFile 写到目标，而 rename 覆盖的是链接本身。
@@ -209,7 +206,6 @@ public static class FileTools
 		}
 	}
 
-	/// <summary>链接解析到最后一级目标；普通文件、悬空链接或不存在时返回原路径。</summary>
 	private static string ResolveSymlinkTarget(string path)
 	{
 		try

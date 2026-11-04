@@ -3,10 +3,8 @@ using Xunit;
 
 namespace PiWeft.Mcp.Tests;
 
-/// <summary>
 /// stdio 服务器命令的解析与子进程 PATH 的组装。图形外壳启动（macOS Finder）只给最小 PATH，
 /// 这里的合并顺序与解析结果决定了 <c>"command": "node"</c> 能不能起来。
-/// </summary>
 public class McpLaunchEnvironmentTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-launch-" + Guid.NewGuid().ToString("N")[..8]);

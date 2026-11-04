@@ -4,7 +4,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Delayed tooltip using MewUI's Popup API so styling, measurement and native popup hosting stay framework-owned.</summary>
 internal sealed class HoverHints : IOverlayService, IDisposable
 {
 	internal static readonly TimeSpan Delay = TimeSpan.FromMilliseconds(350);
@@ -44,7 +43,6 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 
 	internal static string? Text(FrameworkElement element) => Hints.TryGetValue(element, out var hint) ? hint.Text : null;
 
-	/// <summary>提示的锚点；为空时退回整个元素。</summary>
 	internal static Rect? AnchorOf(FrameworkElement element) => Hints.TryGetValue(element, out var hint) ? hint.Anchor : null;
 
 	internal static bool IsOpen(Window window) => window.OverlayLayer.GetService<HoverHints>()?._popup?.IsOpen == true;
@@ -71,10 +69,8 @@ internal sealed class HoverHints : IOverlayService, IDisposable
 			ReferenceEquals(service._owner, owner)) service.Cancel();
 	}
 
-	/// <summary>
 	/// 窗口最小化后不应再有悬停提示：此时 owner 没有可视客户区，计时器到点或
 	/// 残留的 IsMouseOver 都会把置顶的 popup 留在桌面上。
-	/// </summary>
 	/// <param name="requireFocus">
 	/// 悬停提示要求窗口处于激活态：Linux 下未聚焦窗口仍会收到指针进入/移动，
 	/// 否则切到别的应用后桌面顶层仍会冒出 tooltip。

@@ -4,22 +4,18 @@ using System.Text;
 
 namespace PiWeft.Ai.Providers.Bedrock;
 
-/// <summary>用于 SigV4 签名的 AWS 凭据。</summary>
 public sealed record AwsCredentials
 {
 	public required string AccessKeyId { get; init; }
 
 	public required string SecretAccessKey { get; init; }
 
-	/// <summary>临时凭据（STS、SSO、实例角色）才有该值。</summary>
 	public string? SessionToken { get; init; }
 
 	public bool IsValid => AccessKeyId.Length > 0 && SecretAccessKey.Length > 0;
 
-	/// <summary>
 	/// 从环境变量读取凭据，支持标准的 <c>AWS_*</c> 变量；命名 profile 与实例元数据
 	/// 不在本端口的实现范围内。
-	/// </summary>
 	public static AwsCredentials FromEnvironment()
 	{
 		var accessKey = Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");
@@ -38,16 +34,13 @@ public sealed record AwsCredentials
 	}
 }
 
-/// <summary>
 /// AWS Signature Version 4 请求签名。按规范直接实现，因此不需要 AWS SDK，
 /// 让 NativeAOT 构建不必引入依赖反射的库。
-/// </summary>
 public static class AwsSignatureV4
 {
 	public const string Algorithm = "AWS4-HMAC-SHA256";
 	public const string EmptyPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-	/// <summary>请求签名过程中的各个中间结果，便于诊断与测试。</summary>
 	public sealed record Signed
 	{
 		public required string CanonicalRequest { get; init; }
@@ -61,11 +54,9 @@ public static class AwsSignatureV4
 		public required IReadOnlyDictionary<string, string> Headers { get; init; }
 	}
 
-	/// <summary>
 	/// 对请求签名。请求头里必须已经包含 <c>host</c>，否则要显式提供 Host 值。
 	/// <paramref name="includeContentHash"/> 会加上 Bedrock 必需的 <c>x-amz-content-sha256</c>；
 	/// 而经典的 SigV4 测试向量里还没有这个头。
-	/// </summary>
 	public static Signed Sign(
 		string method,
 		string url,
@@ -164,7 +155,6 @@ public static class AwsSignatureV4
 		};
 	}
 
-	/// <summary>SigV4 的密钥派生链：日期、区域、服务，最后是请求后缀。</summary>
 	public static byte[] DeriveSigningKey(string secretAccessKey, string dateStamp, string region, string service)
 	{
 		var date = Hmac(Encoding.UTF8.GetBytes("AWS4" + secretAccessKey), dateStamp);
@@ -173,7 +163,6 @@ public static class AwsSignatureV4
 		return Hmac(serviceKey, "aws4_request");
 	}
 
-	/// <summary>RFC 3986 的 URI 编码，SigV4 要求查询串与路径都按此处理。</summary>
 	internal static string UriEncode(string value, bool encodeSlash)
 	{
 		var builder = new StringBuilder(value.Length * 2);

@@ -5,7 +5,6 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>D-02：并排 diff 的解析与渲染。</summary>
 public class SideBySideDiffTests
 {
 	private const string PairedPatch = """
@@ -93,7 +92,6 @@ public class SideBySideDiffTests
 	public void EmptyPatchProducesNoRows() => Assert.Empty(SideBySideDiff.Parse(string.Empty));
 }
 
-/// <summary>并排渲染不抛异常，并且可由工具视图切换到。</summary>
 [Collection("mewui-controls")]
 public sealed class DiffViewRenderTests
 {

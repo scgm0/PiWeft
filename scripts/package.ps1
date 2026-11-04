@@ -21,7 +21,7 @@ function Invoke-Dotnet([string[]]$Arguments) {
 }
 
 if (-not $SkipPublish) {
-    foreach ($project in @('PiWeft.Cli', 'PiWeft.Desktop')) {
+    foreach ($project in 'PiWeft.Cli', 'PiWeft.Desktop') {
         Invoke-Dotnet @('publish', (Join-Path $repo "src/$project/$project.csproj"), '-c', 'Release', '-r', $Rid,
             '--self-contained', 'true', '-p:PublishAot=true', "-p:Version=$Version", '-o', (Join-Path $publish $project))
     }
@@ -29,21 +29,20 @@ if (-not $SkipPublish) {
 
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 $extension = if ($Rid.StartsWith('win-')) { '.exe' } else { '' }
-# CLI 的构建产物就是 pi；桌面端是 piweft-desktop。
 foreach ($item in @(@('PiWeft.Cli', "pi$extension"), @('PiWeft.Desktop', "piweft-desktop$extension"))) {
     $source = Join-Path $publish "$($item[0])/$($item[1])"
     if (-not (Test-Path $source)) { throw "Missing published binary: $source" }
     Copy-Item $source $stage
 }
-$licenses = Join-Path $stage 'licenses'
-New-Item -ItemType Directory -Path $licenses | Out-Null
-Get-ChildItem (Join-Path $repo 'src/PiWeft.Desktop/Resources') -Recurse -Filter 'LICENSE-*.txt' | Copy-Item -Destination $licenses
+New-Item -ItemType Directory -Path (Join-Path $stage 'licenses') | Out-Null
+Get-ChildItem (Join-Path $repo 'src/PiWeft.Desktop/Resources') -Recurse -Filter 'LICENSE-*.txt' | Copy-Item -Destination (Join-Path $stage 'licenses')
 Copy-Item (Join-Path $repo 'README.md') $stage
 
 if ($Rid.StartsWith('osx-')) {
     $bundle = Join-Path $stage 'PiWeft Desktop.app/Contents'
-    New-Item -ItemType Directory -Path (Join-Path $bundle 'MacOS') -Force | Out-Null
-    Move-Item (Join-Path $stage 'piweft-desktop') (Join-Path $bundle 'MacOS/piweft-desktop')
+    $macos = Join-Path $bundle 'MacOS'
+    New-Item -ItemType Directory -Path $macos -Force | Out-Null
+    Move-Item (Join-Path $stage 'piweft-desktop') (Join-Path $macos 'piweft-desktop')
     $bundleVersion = ($Version -split '[-+]')[0]
     $plist = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -60,9 +59,8 @@ if ($Rid.StartsWith('osx-')) {
 </dict></plist>
 "@
     [IO.File]::WriteAllText((Join-Path $bundle 'Info.plist'), $plist, [Text.UTF8Encoding]::new($false))
-    & chmod +x (Join-Path $bundle 'MacOS/piweft-desktop') (Join-Path $stage 'pi')
+    & chmod +x (Join-Path $macos 'piweft-desktop') (Join-Path $stage 'pi')
     if ($LASTEXITCODE -ne 0) { throw 'chmod failed' }
-    # Ad-hoc signing makes the bundle locally runnable; notarization requires maintainer credentials.
     & codesign --force --deep --sign - (Join-Path $stage 'PiWeft Desktop.app')
     if ($LASTEXITCODE -ne 0) { throw 'codesign failed' }
 } elseif (-not $Rid.StartsWith('win-')) {

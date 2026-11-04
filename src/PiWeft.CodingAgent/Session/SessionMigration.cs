@@ -4,7 +4,6 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Session;
 
-/// <summary>
 /// 把旧版 pi 会话升级到当前格式。pi 在打开会话时就会迁移并就地重写文件
 /// （<c>session-manager.ts</c> 的 <c>migrateToCurrentVersion</c>），这里保持同一语义，
 /// 否则旧会话在本端口里会读成另一种形状：
@@ -15,17 +14,12 @@ namespace PiWeft.CodingAgent.Session;
 /// 不改名时它会被当成未知角色整体塞进原始对象，桌面与上下文都按另一种语义处理。</description></item>
 /// </list>
 /// 迁移是幂等的：已经是当前版本的文件原样返回 <see langword="false"/>，调用方不得重写。
-/// </summary>
 internal static class SessionMigration
 {
-	/// <summary>
 	/// 就地把 <paramref name="entries"/>（头部 + 条目，按文件顺序）升级到
 	/// <see cref="SessionFormat.CurrentVersion"/>；返回是否发生了迁移。
-	/// </summary>
-	/// <remarks>
 	/// 没有头部（外部工具写出的会话）时不做迁移 —— pi 的加载分支也只对带头部的文件调用
 	/// <c>migrateToCurrentVersion</c>，把无头文件补一个头部是另一条路径（见 SessionManager.Persist）。
-	/// </remarks>
 	public static bool Migrate(List<object> entries)
 	{
 		var headerIndex = entries.FindIndex(static entry => entry is SessionHeader);
@@ -55,7 +49,6 @@ internal static class SessionMigration
 		return true;
 	}
 
-	/// <summary>v1 没有条目树：按文件顺序补 <c>id</c>/<c>parentId</c>，并把压缩下标换成 id。</summary>
 	private static void MigrateV1ToV2(List<object> entries)
 	{
 		var taken = new HashSet<string>(StringComparer.Ordinal);
@@ -113,10 +106,8 @@ internal static class SessionMigration
 		}
 	}
 
-	/// <summary>
 	/// 未知条目写回时整行输出原始对象（见 <see cref="UnknownSessionEntry"/>），
 	/// 只改模型上的 <c>Id</c> 不会落到文件里，必须同时改原始行。
-	/// </summary>
 	private static SessionEntry WithTree(SessionEntry entry, string id, string? parentId)
 	{
 		if (entry is not UnknownSessionEntry unknown)
@@ -130,7 +121,6 @@ internal static class SessionMigration
 		return unknown with { Id = id, ParentId = parentId, Raw = raw };
 	}
 
-	/// <summary>v2 → v3：<c>hookMessage</c> 角色改名为 <c>custom</c>（原始对象一起改）。</summary>
 	private static void MigrateV2ToV3(List<object> entries)
 	{
 		for (var index = 0; index < entries.Count; index++)
@@ -153,7 +143,6 @@ internal static class SessionMigration
 		}
 	}
 
-	/// <summary>8 位十六进制 id，与 pi 的 <c>generateId</c> 同形；冲突时退回完整 UUID。</summary>
 	private static string NewId(HashSet<string> taken)
 	{
 		for (var attempt = 0; attempt < 100; attempt++)

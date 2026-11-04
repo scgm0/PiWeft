@@ -4,10 +4,8 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 会话搜索弹窗：侧栏「搜索会话」入口或 Ctrl+K 打开。先按名称、首条消息、路径与文件名过滤，
 /// 再在后台扫会话正文追加内容命中；方向键选择、Enter 打开、Esc 或点空白处收起（背景不变暗）。
-/// </summary>
 public sealed class SessionSearchPalette
 {
 	private const double RowHeight = 50;
@@ -32,7 +30,6 @@ public sealed class SessionSearchPalette
 	private CancellationTokenSource? _contentSearch;
 	private Window? _window;
 
-	/// <summary>收起后触发，宿主据此把焦点还给内容区。</summary>
 	public event Action? Closed;
 
 	public SessionSearchPalette(
@@ -118,7 +115,6 @@ public sealed class SessionSearchPalette
 	public UIElement View { get; }
 	public bool IsOpen => View.IsVisible;
 
-	/// <summary>当前结果（供测试断言过滤是否生效）。</summary>
 	internal IReadOnlyList<SessionListItem> Matches => _targets;
 
 	public void Show(UIElement owner)
@@ -178,14 +174,12 @@ public sealed class SessionSearchPalette
 		_open(session);
 	}
 
-	/// <summary>列表就绪后由宿主调用，用当前关键字重跑一次过滤。</summary>
 	internal void Reload()
 	{
 		if (!IsOpen) return;
 		Refresh();
 	}
 
-	/// <summary>元数据命中先上屏；正文命中异步回来后再补进列表。</summary>
 	private void Refresh(string? queryText = null)
 	{
 		var all = _sessions();
@@ -271,7 +265,6 @@ public sealed class SessionSearchPalette
 	private static string Folder(SessionListItem item) =>
 		item.Cwd.Length > 0 ? item.Cwd : Path.GetDirectoryName(item.Path) ?? item.Path;
 
-	/// <summary>正文搜索放到后台：整份会话文件可能很大，直接在输入回调里扫会卡住输入。</summary>
 	private void StartContentSearch(IReadOnlyList<SessionListItem> all, string? query)
 	{
 		_contentSearch?.Cancel();
@@ -288,7 +281,6 @@ public sealed class SessionSearchPalette
 		_ = SearchContentAsync(candidates, trimmed, version, cancellation);
 	}
 
-	/// <summary>连续输入先等待短暂静止；新请求取消旧扫描，关闭弹窗也会作废在途结果。</summary>
 	private async Task SearchContentAsync(IReadOnlyList<SessionListItem> candidates, string query, int version,
 		CancellationTokenSource cancellation)
 	{
@@ -351,7 +343,6 @@ public sealed class SessionSearchPalette
 		dispatcher.BeginInvoke(action);
 	}
 
-	/// <summary>按可用宽度测量，不随结果的文字长度收缩，也不超出窄窗口。</summary>
 	private sealed class SearchSurface : ContentControl
 	{
 		protected override Size MeasureContent(Size availableSize)

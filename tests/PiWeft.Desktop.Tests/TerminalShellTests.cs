@@ -3,7 +3,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>命令 Dock 的 shell 选择：偏好持久化、解析回退与参数。</summary>
 public sealed class TerminalShellTests : IDisposable
 {
 	private readonly string _directory = Path.Combine(Path.GetTempPath(), "pi-shell-" + Guid.NewGuid().ToString("N")[..8]);

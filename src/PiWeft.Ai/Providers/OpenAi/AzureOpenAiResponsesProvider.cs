@@ -7,11 +7,9 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>
 /// Azure OpenAI Responses API（<c>azure-openai-responses</c>）的流式适配器。它沿用 OpenAI Responses 的
 /// 线格式，区别有三点：端点带 API 版本、凭据放在 <c>api-key</c> 头里，
 /// 并且请求体里写的是 Azure 的<em>部署名</em>而不是模型名。
-/// </summary>
 public sealed class AzureOpenAiResponsesProvider : IApiProvider
 {
 	public const string ApiId = "azure-openai-responses";
@@ -199,10 +197,8 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 		return request;
 	}
 
-	/// <summary>
 	/// 解析 Azure 资源端点。部署是按客户划分的，因此目录里没有 base URL；
 	/// 它来自模型配置、<c>AZURE_OPENAI_BASE_URL</c> 或 <c>AZURE_OPENAI_RESOURCE_NAME</c>。
-	/// </summary>
 	internal static (string BaseUrl, string ApiVersion) ResolveEndpoint(Model model, StreamOptions options)
 	{
 		var apiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION") is { Length: > 0 } version
@@ -226,7 +222,6 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 		return (NormalizeBaseUrl(baseUrl), apiVersion);
 	}
 
-	/// <summary>确保端点以 <c>/openai/v1</c> 结尾，便于后续拼接 <c>/responses</c>。</summary>
 	internal static string NormalizeBaseUrl(string baseUrl)
 	{
 		var trimmed = baseUrl.Trim().TrimEnd('/');
@@ -251,7 +246,6 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 		return trimmed;
 	}
 
-	/// <summary>模型对应的部署名：有显式映射就用映射，否则用模型 id。</summary>
 	internal static string ResolveDeploymentName(Model model) =>
 		ParseDeploymentMap(Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME_MAP"))
 			.GetValueOrDefault(model.Id) ?? model.Id;

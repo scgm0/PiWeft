@@ -1,13 +1,10 @@
 namespace PiWeft.Mcp;
 
-/// <summary>
 /// 基于 <see cref="McpOAuthStore"/> 的令牌提供者：首次请求时读取（必要时刷新）访问令牌，
 /// 收到 401 后强制刷新。配置了 <c>clientId + clientSecret</c> 的服务器在没有已存令牌或
 /// 令牌到期时走客户端凭据授权，无需用户参与。
-/// </summary>
 public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 {
-	/// <summary>元数据与令牌请求共用的客户端；连接池按进程复用。</summary>
 	private static readonly HttpClient SharedHttp = new(new SocketsHttpHandler
 	{
 		PooledConnectionLifetime = TimeSpan.FromMinutes(5),
@@ -32,7 +29,6 @@ public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 		_config = config;
 	}
 
-	/// <summary>最近一次解析到的令牌；供 <c>list_mcp</c> 展示到期时间。</summary>
 	public McpOAuthToken? Cached
 	{
 		get

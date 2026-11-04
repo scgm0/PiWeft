@@ -7,7 +7,6 @@ using PiWeft.Ai.Json;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary>为 Codex 后端保存的 ChatGPT OAuth 凭据。</summary>
 public sealed record CodexCredentials
 {
 	[JsonPropertyName("type")]
@@ -19,7 +18,6 @@ public sealed record CodexCredentials
 	[JsonPropertyName("refresh")]
 	public required string Refresh { get; init; }
 
-	/// <summary>访问令牌过期的 Unix 秒时间戳。</summary>
 	[JsonPropertyName("expires")]
 	public long Expires { get; init; }
 
@@ -33,35 +31,27 @@ public sealed record CodexCredentials
 	};
 }
 
-/// <summary>刚签发的一对令牌。</summary>
 public sealed record CodexTokens(string Access, string Refresh, DateTimeOffset ExpiresAt);
 
-/// <summary>用户输入的设备授权码。</summary>
 public sealed record CodexDeviceCode(string DeviceAuthId, string UserCode, TimeSpan Interval, string VerificationUri);
 
-/// <summary>OAuth 流程无法继续时抛出。</summary>
 public sealed class CodexAuthException(string message) : Exception(message);
 
-/// <summary>
 /// Codex 后端使用的 ChatGPT OAuth：RFC 8628 设备码授权、令牌交换与刷新。
 /// 凭据存放在 <c>&lt;agentDir&gt;/auth.json</c> 的 <c>openai-codex</c> 键下，与 pi 的位置一致。
-/// </summary>
 public static class CodexAuth
 {
 	public const string ProviderKey = "openai-codex";
 	public const string ClientId = "app_EMoamEEZ73f0CkXaXp7hrann";
 	public const string DefaultAuthBaseUrl = "https://auth.openai.com";
 
-	/// <summary>携带 ChatGPT 账号 id 的声明命名空间。</summary>
 	public const string ClaimPath = "https://api.openai.com/auth";
 
 	private const string VerificationPath = "/codex/device";
 	private const string RedirectUri = "https://auth.openai.com/deviceauth/callback";
 
-	/// <summary>提前一分钟刷新，避免在途请求用到已过期的令牌。</summary>
 	private static readonly TimeSpan ExpirySkew = TimeSpan.FromMinutes(1);
 
-	/// <summary>刷新网络等待上限；Codex 推理客户端可能是 Infinite 超时，不能让它无限挂住。</summary>
 	private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(30);
 
 	public static string CredentialsPath(string? agentDir = null) =>
@@ -70,7 +60,6 @@ public static class CodexAuth
 	private static string? Text(JsonObject entry, string key) =>
 		entry[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
-	/// <summary>启动设备码流程，并返回需要展示给用户的信息。</summary>
 	public static async Task<CodexDeviceCode> StartDeviceAsync(
 		HttpClient http,
 		string? authBaseUrl = null,
@@ -112,10 +101,8 @@ public static class CodexAuth
 		return new CodexDeviceCode(deviceAuthId, userCode, interval.Value, $"{baseUrl}{VerificationPath}");
 	}
 
-	/// <summary>
 	/// 轮询直到用户完成设备授权，再用授权码换取令牌。按 RFC 8628 的要求，
 	/// 遇到 <c>slow_down</c> 时会拉长轮询间隔。
-	/// </summary>
 	public static async Task<CodexTokens> PollDeviceAsync(
 		HttpClient http,
 		CodexDeviceCode device,
@@ -176,7 +163,6 @@ public static class CodexAuth
 		throw new CodexAuthException("OpenAI Codex device authorization timed out");
 	}
 
-	/// <summary>用授权码换取一对令牌。</summary>
 	public static async Task<CodexTokens> ExchangeAsync(
 		HttpClient http,
 		string authorizationCode,
@@ -202,7 +188,6 @@ public static class CodexAuth
 		return await ReadTokensAsync(response, "exchange", cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>刷新已过期的访问令牌。</summary>
 	public static async Task<CodexTokens> RefreshAsync(
 		HttpClient http,
 		string refreshToken,
@@ -225,7 +210,6 @@ public static class CodexAuth
 		return await ReadTokensAsync(response, "refresh", cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>从访问令牌中读取 <c>chatgpt_account_id</c> 声明。</summary>
 	public static string? GetAccountId(string accessToken)
 	{
 		try
@@ -250,10 +234,8 @@ public static class CodexAuth
 		}
 	}
 
-	/// <summary>进程级刷新闸门：并发请求不要各自拿同一个 refresh token 去换。</summary>
 	private static readonly SemaphoreSlim RefreshGate = new(1, 1);
 
-	/// <summary>加载已保存的凭据，即将过期时先刷新。</summary>
 	public static async Task<CodexCredentials> ResolveAsync(
 		HttpClient http,
 		string? agentDir = null,
@@ -292,7 +274,6 @@ public static class CodexAuth
 		}
 	}
 
-	/// <summary>读取已保存的凭据；不存在时返回 <c>null</c>。</summary>
 	public static CodexCredentials? Load(string? agentDir = null)
 	{
 		var path = CredentialsPath(agentDir);
@@ -315,7 +296,6 @@ public static class CodexAuth
 		}
 	}
 
-	/// <summary><see cref="Load"/> 的异步版本；请求路径使用它避免同步读盘。</summary>
 	public static async Task<CodexCredentials?> LoadAsync(
 		string? agentDir = null,
 		CancellationToken cancellationToken = default)
@@ -360,10 +340,8 @@ public static class CodexAuth
 		};
 	}
 
-	/// <summary>
 	/// 写入凭据，同时保留文件中其它 provider 的条目。写入是原子的，Unix 下仅用户可读写；
 	/// 文件存在但无法解析时**拒绝覆盖** —— 否则会把其它供应商的凭据整片抹掉。
-	/// </summary>
 	public static void Save(CodexCredentials credentials, string? agentDir = null)
 	{
 		lock (AuthFileGate.Gate)
@@ -414,10 +392,8 @@ public static class CodexAuth
 		}
 	}
 
-	/// <summary>
 	/// 从错误体里取 <c>error</c> 字段；不是 JSON 时返回 <c>null</c>（不抛异常）。
 	/// 注意不要把这个 body 原样拼进异常消息：它可能包含 access/refresh token。
-	/// </summary>
 	private static string? ErrorCodeOf(string body)
 	{
 		try
@@ -430,7 +406,6 @@ public static class CodexAuth
 		}
 	}
 
-	/// <summary>提交 JSON 请求体。手写实现，保证裁剪后仍然是反射无关的路径。</summary>
 	private static Task<HttpResponseMessage> PostJsonAsync(
 		HttpClient http,
 		string url,
@@ -503,7 +478,6 @@ public static class CodexAuth
 	}
 }
 
-/// <summary>定位 pi 的 agent 目录，且不依赖编码代理程序集。</summary>
 internal static class AgentPaths
 {
 	public const string EnvAgentDir = "PI_CODING_AGENT_DIR";

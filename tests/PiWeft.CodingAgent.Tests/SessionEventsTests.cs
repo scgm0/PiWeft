@@ -7,10 +7,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 会话层事件（pi 的 <c>queue_update</c> / <c>thinking_level_changed</c> /
 /// <c>session_info_changed</c> / <c>entry_appended</c> / <c>compaction_*</c>）的回归。
-/// </summary>
 public class SessionEventsTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-events-" + Guid.NewGuid().ToString("N")[..8]);

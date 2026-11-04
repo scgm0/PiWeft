@@ -4,7 +4,6 @@ using System.Text;
 
 namespace PiWeft.Desktop;
 
-/// <summary>终端颜色：默认（跟随主题）、256 色调色板索引，或 24 位真彩色。</summary>
 internal enum TerminalColorKind : byte
 {
 	Default,
@@ -22,10 +21,8 @@ internal readonly record struct TerminalColor(TerminalColorKind Kind, byte Index
 		new(TerminalColorKind.Rgb, 0, (uint)((r << 16) | (g << 8) | b));
 }
 
-/// <summary>
 /// 渲染端可绘制的一段同色文本；<see cref="Column"/> 是它起始的单元格列，<see cref="Cells"/> 是它占的格数
 /// （宽字符与 emoji 占两格，组合符号零格）。渲染端按格数而不是字符数算列，簇里有多少码元都不影响对齐。
-/// </summary>
 internal readonly record struct TerminalRun(
 	string Text,
 	int Column,
@@ -43,7 +40,6 @@ internal readonly record struct TerminalRun(
 	bool Selected,
 	bool Cursor);
 
-/// <summary>应用请求的鼠标上报模式（DECSET 1000/1002/1003）。</summary>
 internal enum TerminalMouseMode
 {
 	None,
@@ -53,7 +49,6 @@ internal enum TerminalMouseMode
 	Any,
 }
 
-/// <summary>DECSCUSR 光标形态；是否闪烁由 <c>CursorBlink</c> 单独表示。</summary>
 internal enum TerminalCursorStyle
 {
 	Block,
@@ -61,15 +56,11 @@ internal enum TerminalCursorStyle
 	Bar,
 }
 
-/// <summary>
 /// 一块终端屏幕：单元格缓冲 + ANSI/VT 解析，参考 xterm.js 的行为实现增量部分。
-/// <para>
 /// 支持：scrollback（主屏历史行）、备用屏（1049/47/1047）、滚动区域（DECSTBM）、
 /// G0/G1 字符集（DEC Special Graphics）、自动换行、原点模式、应用光标键、bracketed paste、
 /// 鼠标上报（1000/1002/1003 + SGR 1006/1016 与 urxvt 1015）、文本选择、DSR/DA 应答。
-/// </para>
-/// <para>不做完整 VT100：少数边界序列按 xterm.js 的行为近似处理。</para>
-/// </summary>
+/// 不做完整 VT100：少数边界序列按 xterm.js 的行为近似处理。
 internal sealed class TerminalScreen
 {
 	public const int DefaultScrollback = 2000;
@@ -82,7 +73,6 @@ internal sealed class TerminalScreen
 	private readonly List<int> _primaryVersions = [];
 	private readonly List<int> _alternateVersions = [];
 
-	/// <summary>每行是否“软换行”接到下一行；窗口变宽/变窄时据此把逻辑行拼回去重排。</summary>
 	private readonly List<bool> _primaryWrapped = [];
 	private readonly List<bool> _alternateWrapped = [];
 	private readonly bool[] _graphicsCharset = new bool[2];
@@ -113,13 +103,10 @@ internal sealed class TerminalScreen
 	private char _csiMarker;
 	private string _osc = string.Empty;
 
-	/// <summary>上一块输出末尾留下的半个代理对：PTY 读块可能把一个码点劈成两半。</summary>
 	private char _pendingHighSurrogate;
 
-	/// <summary>上一个写入的码元是 ZWJ：下一个字符并进同一格，不另起一格。</summary>
 	private bool _joinNext;
 
-	/// <summary>最近写入的格子（绝对行 + 列），供组合符号、ZWJ 链、区域指示符回填进同一簇。</summary>
 	private int _lastCellRow = -1;
 	private int _lastCellColumn = -1;
 
@@ -138,7 +125,6 @@ internal sealed class TerminalScreen
 	private int _currentLink;
 	private char _csiIntermediate;
 
-	/// <summary>OSC 4 覆盖后的调色板；写入时整块替换，读端拿到的都是稳定快照。</summary>
 	private uint?[] _palette = new uint?[256];
 	private uint? _defaultForeground;
 	private uint? _defaultBackground;
@@ -153,7 +139,6 @@ internal sealed class TerminalScreen
 		Resize(columns, rows);
 	}
 
-	/// <summary>屏幕内容、模式或选择变化时递增，渲染端据此决定是否重绘。</summary>
 	public int Version { get; private set; }
 
 	public int Columns => _columns;
@@ -170,66 +155,48 @@ internal sealed class TerminalScreen
 
 	public TerminalMouseMode MouseMode { get; private set; }
 
-	/// <summary>SGR 1006 扩展鼠标坐标。</summary>
 	public bool SgrMouse { get; private set; }
 
-	/// <summary>DECSET 1015（urxvt）：十进制鼠标坐标编码。</summary>
 	public bool UrxvtMouse { get; private set; }
 
-	/// <summary>DECSET 1016（SGR-Pixels）：鼠标坐标以像素而非单元格上报。</summary>
 	public bool PixelMouse { get; private set; }
 
 	public bool BracketedPaste { get; private set; }
 
-	/// <summary>DECSCUSR（<c>CSI Ps SP q</c>）设置的光标形状。</summary>
 	public TerminalCursorStyle CursorStyle => _cursorStyle;
 
-	/// <summary>DECSCUSR 的闪烁位（1/3/5）；默认不闪烁。</summary>
 	public bool CursorBlink { get; private set; }
 
-	/// <summary>DECSCNM（模式 5）：整屏反色。</summary>
 	public bool ReverseVideo => _reverseVideo;
 
-	/// <summary>调色板快照（null 表示沿用内置颜色）。</summary>
 	public uint?[] Palette => Volatile.Read(ref _palette);
 
-	/// <summary>OSC 10 覆盖的默认前景色；null 表示用宿主主题。</summary>
 	public uint? DefaultForegroundRgb => _defaultForeground;
 
-	/// <summary>OSC 11 覆盖的默认背景色；null 表示用宿主主题。</summary>
 	public uint? DefaultBackgroundRgb => _defaultBackground;
 
-	/// <summary>OSC 12 覆盖的光标颜色；null 表示用强调色。</summary>
 	public uint? CursorColorRgb => _cursorColor;
 
-	/// <summary>调色板/默认色版本：渲染端据此丢弃行缓存。</summary>
 	public int ColorVersion => Volatile.Read(ref _colorVersion);
 
-	/// <summary>宿主题色，供 OSC 10/11 查询回复默认值。</summary>
 	public uint HostForeground { get; set; }
 
 	public uint HostBackground { get; set; }
 
 	public bool ApplicationCursorKeys { get; private set; }
 
-	/// <summary>向 PTY 回写应答（DSR/DA）。由宿主注入。</summary>
 	public Action<string>? Respond { get; set; }
 
-	/// <summary>选区变化时触发（含清空），供 PRIMARY selection 同步。</summary>
 	public event Action? SelectionChanged;
 
-	/// <summary>OSC 52 写入系统剪贴板（由宿主注入，后台线程调用需自行转到 UI 线程）。</summary>
 	public Action<string>? ClipboardWrite { get; set; }
 
-	/// <summary>DECSET 1004：窗口焦点变化时上报 <c>CSI I</c> / <c>CSI O</c>。</summary>
 	public bool FocusReporting { get; private set; }
 
-	/// <summary>向上翻看历史时大于 0，0 表示贴底。</summary>
 	public int ViewOffset => _viewOffset;
 
 	public int MaxViewOffset => _alternateActive ? 0 : Math.Max(0, _primary.Count - _rows);
 
-	/// <summary>视口第一行对应的缓冲区绝对行。</summary>
 	public int ViewTop => Math.Max(0, ActiveLines.Count - _rows - _viewOffset);
 
 	public int ScrollbackLines => _alternateActive ? 0 : Math.Max(0, _primary.Count - _rows);
@@ -240,7 +207,6 @@ internal sealed class TerminalScreen
 
 	private int BufferBase => _alternateActive ? 0 : Math.Max(0, _primary.Count - _rows);
 
-	// ------------------------------------------------------------------ 视口
 
 	public void Resize(int columns, int rows)
 	{
@@ -331,7 +297,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>向上（正数）或向下（负数）滚动视口；返回是否发生变化。</summary>
 	public bool ScrollView(int lines)
 	{
 		var next = Math.Clamp(_viewOffset + lines, 0, MaxViewOffset);
@@ -356,7 +321,6 @@ internal sealed class TerminalScreen
 		Touch();
 	}
 
-	/// <summary>当前视口的文本（不含历史），用于整屏复制。</summary>
 	public string GetText()
 	{
 		var builder = new StringBuilder();
@@ -373,9 +337,7 @@ internal sealed class TerminalScreen
 		return builder.ToString().TrimEnd('\n');
 	}
 
-	// ------------------------------------------------------------------ 选择
 
-	/// <summary>开始选择；<paramref name="block"/> 为真时是矩形（区块）选择（Alt+拖拽）。</summary>
 	public void BeginSelection(int bufferRow, int column, bool block = false)
 	{
 		_selectionAnchor = (bufferRow, Math.Clamp(column, 0, _columns - 1));
@@ -411,7 +373,6 @@ internal sealed class TerminalScreen
 		SelectionChanged?.Invoke();
 	}
 
-	/// <summary>全选当前活动缓冲（主屏含 scrollback）。</summary>
 	public void SelectAll()
 	{
 		var last = ActiveLines.Count - 1;
@@ -427,7 +388,6 @@ internal sealed class TerminalScreen
 		SelectionChanged?.Invoke();
 	}
 
-	/// <summary>双击选词：字母、数字与常见路径字符算一个词。</summary>
 	public void SelectWord(int bufferRow, int column)
 	{
 		var line = BufferLine(bufferRow);
@@ -459,7 +419,6 @@ internal sealed class TerminalScreen
 		SelectionChanged?.Invoke();
 	}
 
-	/// <summary>三击选行。</summary>
 	public void SelectLine(int bufferRow)
 	{
 		if (BufferLine(bufferRow) is null)
@@ -474,7 +433,6 @@ internal sealed class TerminalScreen
 		SelectionChanged?.Invoke();
 	}
 
-	/// <summary>选中的文本；没有选区时返回 <c>null</c>。</summary>
 	public string? GetSelectionText()
 	{
 		if (TryGetBlock(out var firstRow, out var lastRow, out var left, out var right))
@@ -514,7 +472,6 @@ internal sealed class TerminalScreen
 		return builder.ToString();
 	}
 
-	/// <summary>某一行在视口中的选区列范围（含端点）；没有选区时返回 <c>null</c>。</summary>
 	public (int From, int To)? GetSelectionRange(int viewportRow)
 	{
 		if (TryGetBlock(out var firstRow, out var lastRow, out var left, out var right))
@@ -539,7 +496,6 @@ internal sealed class TerminalScreen
 		return (from, Math.Min(to, _columns - 1));
 	}
 
-	/// <summary>区块选择的矩形边界（左上/右下角按行列各取极值）。</summary>
 	private bool TryGetBlock(out int firstRow, out int lastRow, out int left, out int right)
 	{
 		firstRow = 0;
@@ -601,7 +557,6 @@ internal sealed class TerminalScreen
 	private static bool IsWord(char c) =>
 		char.IsLetterOrDigit(c) || c is '_' or '-' or '.' or '/' or '\\' or '~' or ':' or '@';
 
-	// ------------------------------------------------------------------ 行缓冲
 
 	private void EnsurePrimaryHeight(int rows)
 	{
@@ -613,12 +568,10 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>
 	/// 收回撑满视口用的尾部空行。视口底部锚定（BufferBase = Count - rows），这些空行留着
 	/// 就被当成真实历史：拖分隔条把终端拉高再缩回时，提示符会被顶出视口、光标被映到别的行，
 	/// shell 收到 SIGWINCH 重画提示符就留下几行重复文本。
 	/// 只收回「整行没内容、在光标行以下、且缓冲区仍不短于视口」的末尾行，光标绝对行不变。
-	/// </summary>
 	private void TrimViewportPadding(int cursorAbsoluteRow)
 	{
 		var keep = Math.Max(_rows, Math.Min(_primary.Count, cursorAbsoluteRow + 1));
@@ -665,7 +618,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>某一缓冲行的内容版本：渲染端据此跳过未变化的行。</summary>
 	internal int LineVersion(int bufferRow)
 	{
 		var versions = ActiveVersions;
@@ -697,14 +649,12 @@ internal sealed class TerminalScreen
 		InvalidateLastCell();
 	}
 
-	/// <summary>丢弃「最近写入的格子」：行被搬动、清屏或重排后，续接码元必须重新开始。</summary>
 	private void InvalidateLastCell()
 	{
 		_lastCellRow = -1;
 		_lastCellColumn = -1;
 	}
 
-	/// <summary>行缓冲与行版本必须同步增删，否则行级缓存会串行。</summary>
 	private void InsertBufferLine(int index, TerminalCell[] line)
 	{
 		ActiveLines.Insert(index, line);
@@ -748,10 +698,8 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>
 	/// 主屏重排：把软换行的行拼回逻辑行，再按新列宽重新切分。
 	/// 光标、视口与软换行标记一起迁移，缩放窗口不再截断长命令行。
-	/// </summary>
 	private void ReflowPrimary(int oldRows, out int cursorRow, out int cursorColumn, out int viewTopRow)
 	{
 		var source = _primary;
@@ -859,7 +807,6 @@ internal sealed class TerminalScreen
 			: startMap[Math.Clamp(viewTopRow, 0, effectiveCount - 1)];
 	}
 
-	/// <summary>行内最后一个有内容的单元格之后（行尾默认空格是填充，不算内容）。</summary>
 	private static int LineContentLength(TerminalCell[] line)
 	{
 		var length = line.Length;
@@ -871,7 +818,6 @@ internal sealed class TerminalScreen
 		return length;
 	}
 
-	/// <summary>某格的显示宽度：右半占位格为 0，宽字符（下一格是占位）为 2，其余为 1。</summary>
 	private static int CellWidthAt(TerminalCell[] line, int column) =>
 		line[column].Text == '\0'
 			? 0
@@ -885,7 +831,6 @@ internal sealed class TerminalScreen
 		!cell.Bold && !cell.Italic && !cell.Underline && !cell.Strikethrough &&
 		!cell.Dim && !cell.Hidden && !cell.Reverse && cell.Link == 0;
 
-	/// <summary>列数变化时同步制表位：已有位保留，新列沿用默认的每 8 列一个。</summary>
 	private void ResizeTabStops()
 	{
 		while (_tabStops.Count > _columns)
@@ -899,7 +844,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>下一个制表位；没有就用最后一列（与 xterm 一致）。</summary>
 	private int NextTabStop(int from)
 	{
 		for (var column = from + 1; column < _columns; column++)
@@ -961,12 +905,9 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	// ------------------------------------------------------------------ 解析
 
-	/// <summary>
 	/// 喂入一段（可跨块的）终端输出。普通文本用 <see cref="SearchValues{T}"/> 批量跳过，
 	/// 版本号每块只递增一次：高频输出时不再为每个字符做一次失效标记。
-	/// </summary>
 	public void Feed(ReadOnlySpan<char> text)
 	{
 		if (text.IsEmpty)
@@ -1002,7 +943,6 @@ internal sealed class TerminalScreen
 		Touch();
 	}
 
-	/// <summary>C0 控制字符（含 ESC）：Ground 状态下唯一需要退出快速路径的字符。</summary>
 	private static readonly SearchValues<char> GroundSpecials = CreateGroundSpecials();
 
 	private static SearchValues<char> CreateGroundSpecials()
@@ -1016,10 +956,8 @@ internal sealed class TerminalScreen
 		return SearchValues.Create(chars);
 	}
 
-	/// <summary>
 	/// 批量写入一段可打印文本。按码点而不是按 char 走：代理对、组合符号、ZWJ 链都归一个簇、占一格。
 	/// 末尾那个孤立高代理留到下一块再拼——PTY 读块会把它劈开。
-	/// </summary>
 	private void WriteSpan(ReadOnlySpan<char> text)
 	{
 		if (_pendingHighSurrogate != '\0')
@@ -1117,7 +1055,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>DECALN（<c>ESC # 8</c>）：整屏填 'E'，光标回原点，用于检查对齐。</summary>
 	private void FillScreen(char c)
 	{
 		var cell = TerminalCell.Blank;
@@ -1266,7 +1203,6 @@ internal sealed class TerminalScreen
 		_state = ParseState.Ground;
 	}
 
-	/// <summary>等待 <c>ESC (</c> / <c>ESC )</c> 之后决定 G0 还是 G1 的下标。</summary>
 	private int PendingCharset { get; set; }
 
 	private void FeedCharset(char c)
@@ -1474,7 +1410,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>TBC（<c>CSI Ps g</c>）：0 清当前列，3 清全部。</summary>
 	private void ClearTabStops(int mode)
 	{
 		if (mode == 3)
@@ -1493,7 +1428,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>DECSTR（<c>CSI ! p</c>）：软复位，保留屏幕内容与回滚缓冲。</summary>
 	private void SoftReset()
 	{
 		_pen = TerminalCell.Blank;
@@ -1535,7 +1469,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>DECRQM：1 = 已设置，2 = 已复位，0 = 不支持（xterm 约定）。</summary>
 	private void ReportMode(bool privateMode, int mode)
 	{
 		var state = privateMode
@@ -1845,11 +1778,8 @@ internal sealed class TerminalScreen
 
 	private TerminalCell _pen = TerminalCell.Blank;
 
-	// ------------------------------------------------------------------ 单元格写入
 
-	/// <summary>
 	/// 把一个簇写进当前格；宽字符再占一格右半占位。<paramref name="second"/> 为 <c>\0</c> 表示单字符。
-	/// </summary>
 	private void WriteCell(char first, char second, int width)
 	{
 		if (_wrapPending || (_cursorColumn + width > _columns && _autoWrap))
@@ -1908,10 +1838,8 @@ internal sealed class TerminalScreen
 		MarkLine(AbsoluteRow);
 	}
 
-	/// <summary>
 	/// 写入一个码点。零宽续接码元（组合符号、变体选择符、ZWJ 链、肤色修饰、Hangul 中/终声、
 	/// 区域指示符的第二半）并进上一格而不开新格——列号不再因为“一个簇好几个码元”而漂移。
-	/// </summary>
 	private void WriteRune(char first, char second)
 	{
 		var mapped = MapCharset(first);
@@ -1950,10 +1878,8 @@ internal sealed class TerminalScreen
 		WriteCell(mapped, second, width);
 	}
 
-	/// <summary>
 	/// 把续接码元并进最近写入的格子。光标必须还紧挨着那一格：<c>\r</c>、CSI 定位、滚动都会让光标跑掉，
 	/// 这时宁可当新字符写，也不能回填到别处去。
-	/// </summary>
 	private bool TryJoinLastCell(int codepoint, char first, char second)
 	{
 		if (_lastCellRow < 0 || _lastCellRow != AbsoluteRow)
@@ -2004,7 +1930,6 @@ internal sealed class TerminalScreen
 		return true;
 	}
 
-	/// <summary>这一格是不是一个还没配对的区域指示符（国旗的左半）。</summary>
 	private static bool IsLoneRegionalIndicator(TerminalCell[] line, int column)
 	{
 		var cell = line[column];
@@ -2026,7 +1951,6 @@ internal sealed class TerminalScreen
 		return TerminalText.IsRegionalIndicator(char.ConvertToUtf32(cell.Text, trailer[0]));
 	}
 
-	/// <summary>DEC Special Graphics：只有 G0/G1 被 <c>ESC ( 0</c> 切换时生效。</summary>
 	private char MapCharset(char c)
 	{
 		var index = _singleShift ?? _activeCharset;
@@ -2430,7 +2354,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>OSC 4：按 index/spec 成对处理，spec 为 <c>?</c> 时按 xterm 格式回报。</summary>
 	private void ApplyPaletteOsc(string specs)
 	{
 		var parts = specs.Split(';');
@@ -2455,7 +2378,6 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// <summary>OSC 10/11/12：设置（或查询）默认前景、背景、光标颜色。</summary>
 	private void ApplyDefaultColorOsc(string osc)
 	{
 		var separator = osc.IndexOf(';');
@@ -2494,7 +2416,6 @@ internal sealed class TerminalScreen
 		BumpColors();
 	}
 
-	/// <summary>OSC 104 复位单个/全部调色板项，OSC 110/111/112 复位默认色。</summary>
 	private void ResetColorOsc(string osc)
 	{
 		if (osc == "104")
@@ -2550,7 +2471,6 @@ internal sealed class TerminalScreen
 		Touch();
 	}
 
-	/// <summary>解析 <c>rgb:r/g/b</c>、<c>#rgb</c>、<c>#rrggbb</c>、<c>#rrrrggggbbbb</c>。</summary>
 	private static bool TryParseColor(string spec, out uint rgb)
 	{
 		rgb = 0;
@@ -2622,7 +2542,6 @@ internal sealed class TerminalScreen
 		return value >= 0;
 	}
 
-	/// <summary>颜色分量允许 1/2/3/4 位十六进制，统一缩放到 8 位。</summary>
 	private static bool TryParseChannel(string text, out byte value)
 	{
 		value = 0;
@@ -2670,7 +2589,6 @@ internal sealed class TerminalScreen
 		return id;
 	}
 
-	/// <summary>视口某格上的超链接地址；没有则返回 <c>null</c>。</summary>
 	public string? LinkAt(int viewportRow, int column)
 	{
 		var bufferRow = ViewTop + viewportRow;
@@ -2683,7 +2601,6 @@ internal sealed class TerminalScreen
 		return id >= 1 && id <= _links.Count ? _links[id - 1] : null;
 	}
 
-	/// <summary>新行：全部填成空格。<c>\0</c> 只用来标记宽字符右半格，不能当空单元格。</summary>
 	private static TerminalCell[] NewLine(int columns)
 	{
 		var line = new TerminalCell[Math.Max(MinColumns, columns)];
@@ -2691,19 +2608,15 @@ internal sealed class TerminalScreen
 		return line;
 	}
 
-	/// <summary>某一行按颜色与选区合并后的 runs；宽字符右半（<c>\0</c>）不单独输出，但计入格数。</summary>
 	public List<TerminalRun> GetRuns(int viewportRow, List<TerminalRun> runs) =>
 		GetRuns(viewportRow, runs, new StringBuilder(), -1);
 
-	/// <summary>同上，并把 <paramref name="cursorColumn"/> 那一格单独切出来（<see cref="TerminalRun.Cursor"/>）。</summary>
 	public List<TerminalRun> GetRuns(int viewportRow, List<TerminalRun> runs, int cursorColumn) =>
 		GetRuns(viewportRow, runs, new StringBuilder(), cursorColumn);
 
-	/// <summary>
 	/// 同上，但复用调用方的 <see cref="StringBuilder"/>，渲染循环里每行零额外分配。
 	/// <paramref name="cursorColumn"/> 是要单独切出来的光标格（-1 表示不切）：渲染端不必再按文本元素
 	/// 自己算簇边界，光标格永远落在一个完整簇上。
-	/// </summary>
 	public List<TerminalRun> GetRuns(int viewportRow, List<TerminalRun> runs, StringBuilder builder, int cursorColumn = -1)
 	{
 		runs.Clear();
@@ -2865,13 +2778,10 @@ internal sealed class TerminalScreen
 			Background = TerminalColor.Default,
 		};
 
-		/// <summary>簇的首个 UTF-16 码元；<c>\0</c> 表示宽字符的右半占位。</summary>
 		public char Text;
 
-		/// <summary>
 		/// 同一簇里跟在首码元后面的码元：低代理、组合符号、变体选择符、ZWJ 链、肤色修饰……
 		/// 整簇只占一格（宽字符两格），渲染时拼回去。null 表示就是一个字符，这是绝大多数格子的情形。
-		/// </summary>
 		public string? Trailers;
 
 		public TerminalColor Foreground;
@@ -2884,12 +2794,10 @@ internal sealed class TerminalScreen
 		public bool Hidden;
 		public bool Reverse;
 
-		/// <summary>OSC 8 超链接 id（0 表示没有链接），与 <c>_links</c> 一起解析成 URI。</summary>
 		public int Link;
 	}
 }
 
-/// <summary>终端 256 色调色板（16 个系统色 + 6×6×6 立方 + 灰阶）。</summary>
 internal static class TerminalPalette
 {
 	private static readonly uint[] Colors = Create();
@@ -2903,7 +2811,6 @@ internal static class TerminalPalette
 
 	public static uint Rgb(byte index) => Colors[index];
 
-	/// <summary>按终端表面明暗取系统色；16 色以后的立方体/灰阶保持 xterm 标准。</summary>
 	public static uint Rgb(byte index, bool light) =>
 		light && index < LightColors.Length ? LightColors[index] : Colors[index];
 

@@ -5,15 +5,12 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent.Resources;
 
-/// <summary>一次包操作的结果。</summary>
 public sealed record PackageResult
 {
 	public required bool Ok { get; init; }
 
-	/// <summary>面向用户的一句话结果。</summary>
 	public required string Message { get; init; }
 
-	/// <summary>包根目录或命令输出的尾部（失败时用于诊断）。</summary>
 	public string? Detail { get; init; }
 
 	public static PackageResult Success(string message, string? detail = null) => new() { Ok = true, Message = message, Detail = detail };
@@ -21,7 +18,6 @@ public sealed record PackageResult
 	public static PackageResult Failure(string message, string? detail = null) => new() { Ok = false, Message = message, Detail = detail };
 }
 
-/// <summary>执行外部命令的抽象：默认走真实进程，测试注入假实现即可断言命令行。</summary>
 public interface IPackageCommandRunner
 {
 	Task<(int ExitCode, string Output, string Error)> RunAsync(
@@ -31,10 +27,8 @@ public interface IPackageCommandRunner
 		CancellationToken cancellationToken);
 }
 
-/// <summary>用 <see cref="Process"/> 执行命令；参数经 <c>ArgumentList</c> 传递，不经过 shell。</summary>
 public sealed class ProcessPackageCommandRunner : IPackageCommandRunner
 {
-	/// <summary>命令输出保留的最大字符数，避免一次 npm 安装把内存吃满。</summary>
 	private const int MaxOutputChars = 32 * 1024;
 
 	public static ProcessPackageCommandRunner Instance { get; } = new();
@@ -97,24 +91,20 @@ public sealed class ProcessPackageCommandRunner : IPackageCommandRunner
 		text.Length <= MaxOutputChars ? text : text[^MaxOutputChars..];
 }
 
-/// <summary>安装/移除/更新 pi 包所需的上下文。</summary>
 public sealed record PackageOptions
 {
 	public required string AgentDir { get; init; }
 
 	public required string Cwd { get; init; }
 
-	/// <summary>为 true 时写项目 <c>.pi/settings.json</c>，否则写全局设置。</summary>
 	public bool Local { get; init; }
 
-	/// <summary>npm 命令与固定参数，对应 pi 的 <c>settings.npmCommand</c>。</summary>
 	public IReadOnlyList<string> NpmCommand { get; init; } = ["npm"];
 
 	public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
 
 	public ResourceScope Scope => Local ? ResourceScope.Project : ResourceScope.User;
 
-	/// <summary>相对路径与安装目录的基准：项目级为项目 <c>.pi</c>，用户级为 agent 目录。</summary>
 	public string ScopeRoot => Local
 		? Path.Combine(Path.GetFullPath(Cwd), SessionPaths.ConfigDirName)
 		: Path.GetFullPath(AgentDir);
@@ -126,10 +116,8 @@ public sealed record PackageOptions
 	public PackageSource Source(string value) => new() { Value = value, Scope = Scope, ScopeRoot = ScopeRoot };
 }
 
-/// <summary>
 /// pi 包的安装、移除与更新。与 pi 一致：npm 装到 <c>&lt;scopeRoot&gt;/npm/node_modules/&lt;name&gt;</c>，
 /// git 克隆到 <c>&lt;scopeRoot&gt;/git/&lt;slug&gt;</c>，本地路径只登记不复制；来源写进 settings 的 <c>packages</c>。
-/// </summary>
 public static class PiPackageManager
 {
 	public static async Task<PackageResult> InstallAsync(
@@ -209,7 +197,6 @@ public static class PiPackageManager
 		return PackageResult.Success($"已移除 {trimmed}");
 	}
 
-	/// <summary>更新一个或全部已安装的包；<paramref name="source"/> 为 null 时更新全部。</summary>
 	public static async Task<IReadOnlyList<PackageResult>> UpdateAsync(
 		string? source,
 		PackageOptions options,
@@ -408,7 +395,6 @@ public static class PiPackageManager
 		}
 	}
 
-	/// <summary>把 <c>git:</c> / URL 来源拆成可克隆的 URL 与可选的 ref。</summary>
 	private static (string? Url, string? Reference) SplitGitReference(string value)
 	{
 		var text = value.StartsWith("git:", StringComparison.Ordinal) ? value[4..] : value;
@@ -442,7 +428,6 @@ public static class PiPackageManager
 		value.StartsWith("http://", StringComparison.Ordinal) ||
 		value.StartsWith("https://", StringComparison.Ordinal);
 
-	/// <summary>Windows 上 npm 是 <c>npm.cmd</c>，直接用无扩展名的名字启动会失败。</summary>
 	private static string NpmExecutable(IReadOnlyList<string> command)
 	{
 		var executable = command.Count > 0 && command[0].Length > 0 ? command[0] : "npm";

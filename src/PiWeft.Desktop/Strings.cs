@@ -1,8 +1,6 @@
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 界面文案。中文是这里的第一方语言，其它语言按需增加；界面代码只引用这里的常量，不再出现字面量。
-/// </summary>
 public static partial class Strings
 {
 	// 窗口
@@ -30,13 +28,11 @@ public static partial class Strings
 	public const string KeepCurrentTab = "保留此标签";
 	public static string ModelResultCount(int shown, int total) => $"{shown} / {total} 个模型";
 
-	/// <summary>会话搜索结果超过有界列表时提示截断，并给出继续缩小范围的建议。</summary>
 	public static string SessionSearchTruncated(int shown, int total) => $"显示前 {shown} / {total} 个会话，继续输入以缩小范围";
 	public static string ProjectOpenFailed(string reason) => $"打开项目失败：{reason}";
 	public static string ModelCapabilities(PiWeft.Ai.Model model) =>
 		$"{model.Provider} · {model.ContextWindow / 1000.0:0.#}k · {(model.SupportsImages ? ModelVision : ModelTextOnly)}{(model.Reasoning ? $" · {ModelReasoning}" : string.Empty)}";
 	public const string NewSession = "新建";
-	/// <summary>还没有内容也没有命名的会话在列表里的标题。</summary>
 	public const string UntitledSession = "未命名会话";
 	public const string Rename = "重命名";
 	public const string TogglePin = "置顶";
@@ -49,7 +45,6 @@ public static partial class Strings
 	public static string Deleted(string path) => $"已移动到 {path}";
 	public const string NoSessions = "此目录下暂无会话，点「新建」开始一个。";
 	public const string SessionsScanning = "正在读取会话列表…";
-	/// <summary>侧栏入口与搜索弹窗的输入提示共用一个短名。</summary>
 	public const string SessionSearch = "搜索会话";
 	public static string EnvironmentFallback(string cwd, string reason) => $"目录 {cwd} 的环境不可用（{reason}），已回退到启动环境。";
 	public const string NoMatches = "没有匹配的会话。";
@@ -76,7 +71,6 @@ public static partial class Strings
 	public const string BrokenImage = "（图片数据无法解码）";
 	public const string PaletteButton = "命令";
 
-	/// <summary>输入框工具条上的 @ 引用按钮。</summary>
 	public const string ComposerReference = "引用文件（@）";
 	public const string PinnedMark = "★";
 	public const string RemoveAttachment = "移除";
@@ -87,7 +81,6 @@ public static partial class Strings
 	// 顶栏与欢迎页
 	public const string AppName = "PiWeft Desktop";
 
-	/// <summary>标题栏上的短品牌名；完整名在关于与自检里。</summary>
 	public const string BrandShort = "PiWeft";
 
 	public const string MinimizeWindow = "最小化";
@@ -236,14 +229,12 @@ public static partial class Strings
 	public static string SettingsMcpFailed(string reason) => $"连接失败：{reason}";
 	public static string SettingsMcpTools(int count) => $"已连接，{count} 个工具";
 
-	/// <summary>MCP 重连按钮与提示。</summary>
 	public const string SettingsMcpReconnect = "重连 MCP";
 
 	public const string SettingsMcpReconnecting = "正在重连 MCP…";
 
 	public const string SettingsMcpReconnected = "MCP 已重连";
 
-	/// <summary>资源管理（技能 / 提示词模板 / 主题 / pi 包）。</summary>
 	public const string SettingsGit = "Git 提交摘要";
 	public const string SettingsResources = "资源";
 	public const string ResourcesPrompts = "提示词模板";
@@ -268,7 +259,6 @@ public static partial class Strings
 	public const string ResourcesDark = "深色";
 	public const string ResourcesUnknown = "未知";
 
-	/// <summary>D-07 跨会话用量统计。</summary>
 	public const string UsageStatsTitle = "用量统计";
 
 	public const string UsageStatsRefresh = "刷新统计";
@@ -332,7 +322,6 @@ public static partial class Strings
 	public static string TimeHours(int hours) => $"{hours} 小时前";
 	public static string TimeDays(int days) => $"{days} 天前";
 
-	/// <summary>空状态里单独一行显示当前模型与目录。</summary>
 	public static string EmptySessionContext(string provider, string model, string cwd) =>
 		$"{provider}/{model}\n{cwd}";
 
@@ -779,12 +768,10 @@ public static partial class Strings
 
 	public static string SecuritySaveFailed(string reason) => $"保存安全配置失败：{reason}";
 
-	/// <summary>远程模型目录拉取。</summary>
 	public const string ConfigFetchModels = "拉取远程模型";
 
 	public const string ConfigFetchingModels = "正在拉取远程模型…";
 
-	/// <summary>模型价格表单。</summary>
 	public const string ConfigCostInput = "输入价";
 
 	public const string ConfigCostOutput = "输出价";
@@ -804,7 +791,6 @@ public static partial class Strings
 	public static string ConfigFetchFailed(string reason) => $"拉取失败：{reason}";
 	public static string GitChangeCount(int count) => $"{count} 个改动";
 
-	/// <summary>diff 标题行的增删统计，与 PiDeck 的「+n −m」一致。</summary>
 	public static string GitDiffStat(int added, int removed) => $"+{added} −{removed}";
 	public static string FilterMatches(int matched, int total) => $"{matched} / {total} 条匹配";
 	public const string CloseTab = "关闭";
@@ -816,11 +802,9 @@ public static partial class Strings
 	public const string RoleAssistantStreaming = "pi（正在回复…）";
 	public const string RoleError = "错误";
 
-	/// <summary>用户长消息的折叠开关。</summary>
 	public const string MessageExpand = "展开全文";
 	public const string MessageCollapse = "收起";
 
-	/// <summary>输入区上方的待办卡。</summary>
 	public const string TodoPlanTitle = "待办";
 
 	// 输入区上方的「排队中」卡（PiDeck 的 queued-track 同义）：
@@ -834,7 +818,6 @@ public static partial class Strings
 	public const string QueuedGone = "这条消息已经发出去了，撤回不了。";
 	public const string QueuedImageOnly = "图片消息";
 
-	/// <summary>排队条头部：条数与投递时机的分布，「2 条 · 1 本轮 · 1 下一轮」。</summary>
 	public static string QueuedMessagesMeta(int count, int steer, int followUp)
 	{
 		var parts = new List<string>(3) { $"{count} 条" };
@@ -843,11 +826,9 @@ public static partial class Strings
 		return string.Join("\u2002·\u2002", parts);
 	}
 
-	/// <summary>一行排队的悬停提示：序号、投递时机、完整正文。</summary>
 	public static string QueuedRowTip(int index, bool steer, string text) =>
 		$"第 {index} 条 · {(steer ? QueuedSteer : QueuedFollowUp)}\n{text}";
 
-	/// <summary>行内预览：图片张数拼在文本前面，空文本时只留图片说明。</summary>
 	public static string QueuedPreview(string text, int images)
 	{
 		var body = text.ReplaceLineEndings(" ").Trim();
@@ -859,7 +840,6 @@ public static partial class Strings
 		return images > 0 && text.Length > 0 ? $"[{images} 图] {body}" : body;
 	}
 
-	/// <summary>待办进度：只显示非零分段，段间用宽空格 + 中点分隔（PiDeck 同款）。</summary>
 	public static string TodoPlanProgress(int completed, int inProgress, int pending)
 	{
 		var parts = new List<string>(3);
@@ -869,12 +849,10 @@ public static partial class Strings
 		return string.Join("\u2002·\u2002", parts);
 	}
 
-	/// <summary>输入区上方的扩展 widget 卡。</summary>
 	public const string ExtensionWidgetsTitle = "扩展";
 
 	public static string ExtensionWidgetsCount(int count) => $"{count} 项";
 
-	/// <summary>ask_question 会话内联卡片（对齐 PiDeck 的 SessionRuntimeUiOverlay）。</summary>
 	public const string AskTitle = "需要你的输入";
 
 	public const string AskSubmit = "提交";
@@ -885,7 +863,6 @@ public static partial class Strings
 
 	public const string AskNo = "否";
 
-	/// <summary>运行中的 ask_question 行不计工具秒表：这段时间是人在读题，不是工具在跑。</summary>
 	public const string AskWaitingForAnswer = "等待回答…";
 
 	public const string AskCustomPlaceholder = "也可直接输入自定义内容";
@@ -937,14 +914,12 @@ public static partial class Strings
 
 	public const string AskHintEditor = "多行输入，Ctrl+Enter 提交；留空不算作答。";
 
-	/// <summary>计划模式开关。</summary>
 	public const string PlanMode = "计划";
 
 	public const string PlanModeOn = "计划中";
 
 	public const string PlanModeHint = "只读探索并生成计划；开启期间不能修改文件，下一条普通消息自动退出。";
 
-	/// <summary>供应商连接测试。</summary>
 	public const string TestConnection = "测试连接";
 
 	public const string TestingConnection = "正在测试连接…";
@@ -953,7 +928,6 @@ public static partial class Strings
 
 	public static string ConnectionFailed(string reason) => $"连接失败：{reason}";
 
-	/// <summary>文件浏览器与内置编辑器。</summary>
 	public const string FileBrowser = "文件";
 
 	public const string FileBrowserRefresh = "刷新文件列表";
@@ -988,7 +962,6 @@ public static partial class Strings
 
 	public static string FileBrowserSaved(string path) => $"已保存 {path}";
 
-	/// <summary>会话底部的命令 Dock（MiniPty 伪终端）。</summary>
 	public const string Terminal = "终端";
 
 	public const string TerminalRestart = "重启 shell";
@@ -997,7 +970,6 @@ public static partial class Strings
 
 	public const string TerminalCopy = "复制";
 
-	/// <summary>Markdown 代码块复制按钮的悬浮提示（也用作无图标时的按钮文案来源）。</summary>
 	public const string CopyCodeTooltip = "复制代码";
 
 	public const string TerminalPaste = "粘贴";
@@ -1018,7 +990,6 @@ public static partial class Strings
 
 	public const string TerminalHint = "命令 Dock：在项目目录里启动交互式 shell（伪终端）。";
 
-	/// <summary>输入框里的终端开关键与底部面板的收起键。</summary>
 	public const string CloseTerminal = "收起终端";
 
 	public const string ShortcutTerminal = "在会话底部开关终端";
@@ -1027,7 +998,6 @@ public static partial class Strings
 
 	public static string TerminalFailed(string reason) => $"[错误] {reason}";
 
-	/// <summary>工作区检查点。</summary>
 	public const string Checkpoints = "检查点";
 
 	public const string CreateCheckpoint = "创建检查点";
@@ -1092,7 +1062,6 @@ public static partial class Strings
 		return parts.Count == 0 ? CheckpointUnchanged : string.Join("，", parts);
 	}
 
-	/// <summary>回答下方的本轮修改汇总。</summary>
 	public static string ChangedFilesSummary(IReadOnlyList<string> files)
 	{
 		var names = files.Select(Path.GetFileName).ToList();
@@ -1102,7 +1071,6 @@ public static partial class Strings
 			: $"本轮修改 {files.Count} 个文件：{shown} 等";
 	}
 
-	/// <summary>diff 视图切换。</summary>
 	public const string DiffUnified = "统一";
 
 	public const string DiffSideBySide = "并排";
@@ -1119,7 +1087,6 @@ public static partial class Strings
 
 	public static string ToolDetail(string text) => Summarize(text);
 
-	/// <summary>把毫秒格式化成便于扫读的时长。</summary>
 	public static string FormatDuration(double milliseconds) => milliseconds switch
 	{
 		< 1000 => $"{milliseconds:0} ms",
@@ -1128,7 +1095,6 @@ public static partial class Strings
 		_ => $"{(int)(milliseconds / 3_600_000)}h{(int)(milliseconds % 3_600_000 / 60_000):00}m",
 	};
 
-	/// <summary>把多行文本压成一行摘要，过长时截断。</summary>
 	private static string Summarize(string text)
 	{
 		Span<char> preview = stackalloc char[81];

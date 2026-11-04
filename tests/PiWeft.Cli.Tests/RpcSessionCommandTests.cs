@@ -7,10 +7,8 @@ using Xunit;
 
 namespace PiWeft.Cli.Tests;
 
-/// <summary>
 /// The RPC surface PiDeck drives: session introspection, navigation (fork/clone/switch), discovery and export. Each
 /// test asserts the shapes documented in pi's <c>rpc-commands.md</c>, so a client written against pi works unchanged.
-/// </summary>
 public class RpcSessionCommandTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-rpc3-" + Guid.NewGuid().ToString("N")[..8]);
@@ -63,11 +61,9 @@ public class RpcSessionCommandTests : IDisposable
 		.. extra,
 	]).Arguments!;
 
-	/// <summary>
 	/// Reads commands one at a time, pausing after a <c>prompt</c> so the next prompt arrives after the first run
 	/// finished. Without the pause a second prompt would be queued as a steering message, which is real pi behavior
 	/// but not what these assertions are about.
-	/// </summary>
 	private sealed class PacedReader(string commands, int pauseMs = 200) : TextReader
 	{
 		private readonly string[] _lines = commands.Split('\n');
@@ -115,7 +111,6 @@ public class RpcSessionCommandTests : IDisposable
 			node["type"]!.GetValue<string>() == "response" && node["command"]!.GetValue<string>() == command)!
 			.AsObject();
 
-	/// <summary>Runs two prompts so the session has entries to work with.</summary>
 	private static string Seed() => string.Join(
 		'\n',
 		"""{"id":"p1","type":"prompt","message":"first question"}""",
@@ -578,7 +573,6 @@ public class RpcSessionCommandTests : IDisposable
 	}
 }
 
-/// <summary>Escapes a string as a JSON literal. Written by hand so the test assembly stays trimming clean.</summary>
 internal static class CliTestJson
 {
 	public static string String(string value) => JsonValue.Create(value)!.ToJsonString();

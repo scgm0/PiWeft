@@ -3,7 +3,6 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Field patches preserve provider/model metadata that the form does not understand.</summary>
 public static class ConfigurationModels
 {
 	public static void ValidateId(string id)
@@ -70,10 +69,8 @@ public static class ConfigurationModels
 		return root;
 	}
 
-	/// <summary>
 	/// 把远程目录里的模型 id 合并进供应商（已存在的跳过），新条目用保守默认值，
 	/// 用户可在表单里继续修改。返回新对象与新增数量。
-	/// </summary>
 	public static (JsonObject Root, int Added) AddMissingModels(
 		JsonObject source,
 		string provider,
@@ -174,12 +171,10 @@ public static class ConfigurationModels
 	public static double Decimal(JsonNode? node, string key, double fallback = 0) => node?[key] is JsonValue value && value.TryGetValue<double>(out var number) ? number : fallback;
 	public static bool Flag(JsonNode? node, string key) => node?[key] is JsonValue value && value.TryGetValue<bool>(out var flag) && flag;
 
-	/// <summary>价格必须非负且有限；NaN/ Infinity 会污染序列化，直接拒绝。</summary>
 	private static bool IsValidCost(ModelCostValues cost) =>
 		IsRate(cost.Input) && IsRate(cost.Output) && IsRate(cost.CacheRead) && IsRate(cost.CacheWrite);
 
 	private static bool IsRate(double value) => double.IsFinite(value) && value >= 0;
 }
 
-/// <summary>模型价格（每百万 token 或供应商单位，原样写入 <c>cost</c>）。</summary>
 public readonly record struct ModelCostValues(double Input, double Output, double CacheRead, double CacheWrite);

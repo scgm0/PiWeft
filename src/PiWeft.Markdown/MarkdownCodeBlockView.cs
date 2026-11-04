@@ -6,17 +6,14 @@ using Aprillz.MewUI.Text.Editing;
 
 namespace PiWeft.Markdown;
 
-/// <summary>Implemented by code-block views that can update their text without being rebuilt.</summary>
 public interface IMarkdownCodeView
 {
 	void SetCode(string code, string? language);
 }
 
-/// <summary>
 /// Default fenced-code presentation: a single card with a compact language/action header and a
 /// horizontally scrollable, appendable code surface. The chrome mirrors the table card so
 /// Markdown blocks do not become a stack of nested boxes.
-/// </summary>
 internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 {
 	private const double HeaderHeight = 34;
@@ -214,7 +211,6 @@ internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 	private Color CodeBackground(Theme uiTheme)
 		=> _backgroundSelector?.Invoke(uiTheme) ?? _background;
 
-	/// <summary>宿主没给图标时，退回本地化文本标签当动作内容。</summary>
 	private static FrameworkElement CenterOrFallback(MarkdownTheme theme, double fontSize) =>
 		Center(theme.CodeCopyIcon?.Invoke(theme.CodeCopyIconSize) ?? new TextBlock
 		{
@@ -222,10 +218,8 @@ internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 			FontSize = Math.Max(10, fontSize * 0.72),
 		});
 
-	/// <summary>
 	/// 按钮里的动作内容两向都居中：宿主给的图标常常只设了纵向居中（固定宽度下水平默认是
 	/// Stretch，于是图标贴在按钮左侧），文本标签同理。
-	/// </summary>
 	private static FrameworkElement Center(FrameworkElement element)
 	{
 		element.HorizontalAlignment = HorizontalAlignment.Center;
@@ -233,7 +227,6 @@ internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 		return element;
 	}
 
-	/// <summary>Copies the fenced code and shows the host's confirmation icon for a moment.</summary>
 	private void CopyCode()
 	{
 		if (_code.Length == 0 || !Application.IsRunning ||
@@ -270,7 +263,6 @@ internal sealed class MarkdownCodeBlockView : ContentControl, IMarkdownCodeView
 	private static Color SubtleText(Theme uiTheme)
 		=> uiTheme.Palette.WindowText.Lerp(uiTheme.Palette.WindowBackground, 0.35);
 
-	/// <summary>静止时压暗、悬停恢复全强度：动作不该和代码本身抢注意力。</summary>
 	private const double IdleActionOpacity = 0.62;
 
 	private static Color ActionText(Theme uiTheme)

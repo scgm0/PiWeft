@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 分段并行读必须和逐行读一模一样：每行恰好解析一次、顺序不变、行边界切在巨型行中间也不能丢内容。
 /// 单测里的常规会话都是小文件（走单段路径），所以这里刻意造超过并行阈值的大文件。
-/// </summary>
 public sealed class SessionParallelReadTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-parallel-read-" + Guid.NewGuid().ToString("N")[..8]);
@@ -26,7 +24,6 @@ public sealed class SessionParallelReadTests : IDisposable
 
 	private string SessionDir => Path.Combine(_root, "sessions");
 
-	/// <summary>大约 12 MiB 的会话：足够切成多段并行扫。</summary>
 	private SessionManager BuildLarge(int turns, int paddingChars)
 	{
 		var manager = SessionManager.Create(_root, SessionDir);
@@ -40,7 +37,6 @@ public sealed class SessionParallelReadTests : IDisposable
 		return manager;
 	}
 
-	/// <summary>取一条消息的正文文本（用户消息与助手消息的内容容器不同）。</summary>
 	private static string? TextOf(Message message) => message switch
 	{
 		UserMessage user => user.Content.Text,
@@ -140,10 +136,8 @@ public sealed class SessionParallelReadTests : IDisposable
 		Assert.Equal(manager.Entries.Count, reopened.Entries.Count);
 	}
 
-	/// <summary>
 	/// 并行分段读会真的从多个线程调 <see cref="IProgress{T}.Report"/>，收集器必须自己保证线程安全——
 	/// 裸 <c>List.Add</c> 并发写会丢元素甚至把内部数组搅乱，表现为「进度不能倒退」随机变红。
-	/// </summary>
 	private sealed class Collector : IProgress<SessionReadProgress>
 	{
 		private readonly List<SessionReadProgress> _reports = [];

@@ -8,14 +8,10 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 扩展宿主的可执行契约：发现 → 沙箱执行 → 注册 → 回调。
 /// 全部用临时目录里的真实扩展文件，因为「宿主能跑」这件事只能靠真的跑一遍来证明。
-/// <para>
 /// 其中一个用例改 <c>PI_CODING_AGENT_DIR</c>（会话按它发现扩展），所以整个类归到串行集合里 ——
 /// 并行跑时别的测试会读到对方设置的 agent 目录。
-/// </para>
-/// </summary>
 [Collection("process-environment")]
 public sealed class ExtensionHostTests : IDisposable
 {
@@ -63,7 +59,6 @@ public sealed class ExtensionHostTests : IDisposable
 		return host.States[0];
 	}
 
-	// ---------------------------------------------------------------- 发现
 
 	[Fact]
 	public void GlobalAndProjectExtensionsAreBothDiscovered()
@@ -104,7 +99,6 @@ public sealed class ExtensionHostTests : IDisposable
 		Assert.Empty(host.States);
 	}
 
-	// ---------------------------------------------------------------- 诚实的失败
 
 	[Fact]
 	public void TypeScriptIsReportedInsteadOfSilentlySkipped()
@@ -173,7 +167,6 @@ public sealed class ExtensionHostTests : IDisposable
 		Assert.Contains(host.States[0].Diagnostics, message => message.Contains("Promise", StringComparison.Ordinal));
 	}
 
-	// ---------------------------------------------------------------- 注册与回调
 
 	[Fact]
 	public void RegisteredToolExecutesItsJavascriptImplementation()
@@ -377,7 +370,6 @@ public sealed class ExtensionHostTests : IDisposable
 		}
 	}
 
-	// ---------------------------------------------------------------- 显式路径 / CLI flag
 
 	[Fact]
 	public void ExplicitExtensionPathLoadsWithoutDiscovery()

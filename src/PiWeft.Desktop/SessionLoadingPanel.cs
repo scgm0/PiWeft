@@ -3,12 +3,10 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 准备阶段会话面板里的加载段落：它不是浮层卡片，而是欢迎面板 StackPanel 里的一段，
 /// 加载时把「开始一次会话」的文案换成进度（文件名 + 百分比 + 行数），随后「正在准备会话…」。
 /// 没有中止按钮 —— 后台那一段只是在读文件，中断它没有恢复价值；
 /// 出错时也不退回横幅，而是把错误留在同一段落里就地显示，直到用户关掉或开始下一次操作。
-/// </summary>
 internal sealed class SessionLoadingPanel
 {
 	private readonly StackPanel _view;
@@ -59,13 +57,10 @@ internal sealed class SessionLoadingPanel
 			.Children(_title, _bar, _detail, _dismiss);
 	}
 
-	/// <summary>挂在准备阶段会话面板里的段落。</summary>
 	public StackPanel View => _view;
 
-	/// <summary>状态变化后请宿主重算面板可见性（加载中要让准备阶段面板顶上去）。</summary>
 	public Action? Changed { get; set; }
 
-	/// <summary>是否正在加载或停在错误态。</summary>
 	public bool Showing => _active > 0 || _failed;
 
 	// 供测试与宿主读取的当前状态。
@@ -76,7 +71,6 @@ internal sealed class SessionLoadingPanel
 	public double ProgressValue => _bar.Value;
 	public bool DismissVisible => _dismiss.IsVisible;
 
-	/// <summary>开始一项操作：段落进入进度态。</summary>
 	public void Begin(string title)
 	{
 		_active++;
@@ -93,7 +87,6 @@ internal sealed class SessionLoadingPanel
 		Changed?.Invoke();
 	}
 
-	/// <summary>更新进度文案；<paramref name="fraction"/> 为空表示长度未知，继续用不定进度。</summary>
 	public void Update(string detail, double? fraction)
 	{
 		if (_failed) return;
@@ -107,17 +100,14 @@ internal sealed class SessionLoadingPanel
 		Changed?.Invoke();
 	}
 
-	/// <summary>操作结束：没有在途操作也没有错误时段落收起。</summary>
 	public void Complete()
 	{
 		_active = Math.Max(0, _active - 1);
 		if (_active == 0 && !_failed) Changed?.Invoke();
 	}
 
-	/// <summary>
 	/// 操作失败：错误就地显示在准备阶段的位置上，
 	/// 直到用户关掉它或开始下一次操作。
-	/// </summary>
 	public void Fail(string title, string detail)
 	{
 		_active = Math.Max(0, _active - 1);

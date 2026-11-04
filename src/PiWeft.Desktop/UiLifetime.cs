@@ -3,7 +3,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Release detached message/editor resources, including caret timers and scrolling clocks.</summary>
 internal static class UiLifetime
 {
 	public static void Release(Element element)

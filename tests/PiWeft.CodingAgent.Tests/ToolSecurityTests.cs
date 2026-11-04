@@ -4,10 +4,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>
 /// 工具调用安全门。默认等级必须是完全放行（<c>off</c>）——引入这道门不能改变任何既有行为；
 /// 上保护靠显式选 <c>standard</c> / <c>strict</c>。
-/// </summary>
 public class ToolSecurityTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-security-" + Guid.NewGuid().ToString("N")[..8]);
@@ -41,7 +39,6 @@ public class ToolSecurityTests : IDisposable
 
 	private static JsonObject CmdArg(string command) => Args(("command", command));
 
-	// ---------------------------------------------------------------- 默认值
 
 	[Fact]
 	public void DefaultLevelIsCompletelyPermissive()
@@ -80,7 +77,6 @@ public class ToolSecurityTests : IDisposable
 		Assert.Equal(ToolSecurity.OffLevel, new SecurityConfig { DefaultLevelId = "strcit" }.Resolve(null).Level);
 	}
 
-	// ---------------------------------------------------------------- standard
 
 	[Fact]
 	public void StandardBlocksSensitiveFilesForReadAndWrite()
@@ -158,7 +154,6 @@ public class ToolSecurityTests : IDisposable
 		Assert.Null(security.BlockingReason("read", PathArg("secrets.md"), _root));
 	}
 
-	// ---------------------------------------------------------------- strict
 
 	[Fact]
 	public void StrictDeniesWritesOutsideWorkspaceButAllowsReads()
@@ -238,7 +233,6 @@ public class ToolSecurityTests : IDisposable
 		}
 	}
 
-	// ---------------------------------------------------------------- 边界与非目标
 
 	[Fact]
 	public void ToolsWithoutPathSemanticsAreNotJudged()

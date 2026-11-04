@@ -3,7 +3,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>界面偏好里的主题名解析与 pi 主题到桌面配色的映射。</summary>
 public class DesktopThemeTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-desktoptheme-" + Guid.NewGuid().ToString("N")[..8]);

@@ -406,7 +406,6 @@ public class CliRunnerTests : IDisposable
 		Assert.True(responses[1]!["success"]!.GetValue<bool>());
 	}
 
-	/// <summary>Builds an environment whose tool set comes from the arguments, like the real startup path.</summary>
 	private CliEnvironment EnvironmentWithTools(CliArguments arguments)
 	{
 		var model = TestModels.Model();

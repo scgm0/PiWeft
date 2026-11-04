@@ -3,7 +3,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>运行中的 Split Send 菜单依赖这两条队列入口。</summary>
 public sealed class AgentQueueTests
 {
 	[Fact]

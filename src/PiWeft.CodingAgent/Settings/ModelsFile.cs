@@ -6,17 +6,14 @@ using PiWeft.Ai;
 
 namespace PiWeft.CodingAgent.Settings;
 
-/// <summary><c>models.json</c> 中的一个 provider 条目。</summary>
 public sealed record ModelsProviderEntry
 {
 	public string? Name { get; init; }
 
 	public string? BaseUrl { get; init; }
 
-	/// <summary>该端点使用的 api，例如 <c>openai-completions</c>。</summary>
 	public string? Api { get; init; }
 
-	/// <summary>字面量密钥，或 <c>$NAME</c> / <c>${NAME}</c> 形式的环境变量插值。</summary>
 	public string? ApiKey { get; init; }
 
 	public IReadOnlyDictionary<string, string>? Headers { get; init; }
@@ -25,17 +22,13 @@ public sealed record ModelsProviderEntry
 
 	public bool? AuthHeader { get; init; }
 
-	/// <summary>Radius 等 Provider 的 OAuth 登录方式。</summary>
 	public string? OAuth { get; init; }
 
-	/// <summary>在该 provider 上新增或替换的模型。</summary>
 	public IReadOnlyList<JsonObject>? Models { get; init; }
 
-	/// <summary>按模型 id 覆盖该 Provider 的内置模型。</summary>
 	public IReadOnlyDictionary<string, ModelsOverrideEntry>? ModelOverrides { get; init; }
 }
 
-/// <summary>按模型 id 索引的元数据覆盖，作用于已存在的模型。</summary>
 public sealed record ModelsOverrideEntry
 {
 	public string? Name { get; init; }
@@ -63,7 +56,6 @@ public sealed record ModelsOverrideEntry
 	public JsonObject? SamplingParams { get; init; }
 }
 
-/// <summary>modelOverrides 里只覆盖部分价格；未给出的字段保持原值。</summary>
 public sealed record ModelCostPatch
 {
 	public double? Input { get; init; }
@@ -75,7 +67,6 @@ public sealed record ModelCostPatch
 	public double? CacheWrite { get; init; }
 }
 
-/// <summary><c>models.json</c> 文件：自定义 provider，以及对目录模型的覆盖。</summary>
 public sealed record ModelsFile
 {
 	public IReadOnlyDictionary<string, ModelsProviderEntry>? Providers { get; init; }
@@ -83,43 +74,33 @@ public sealed record ModelsFile
 	public IReadOnlyDictionary<string, ModelsOverrideEntry>? ModelOverrides { get; init; }
 }
 
-/// <summary>
 /// 加载 <c>models.json</c> 并转换成目录条目。pi 就是靠它指向内置目录里没有的
 /// OpenAI / Anthropic / Google 兼容端点（Ollama、LM Studio、vLLM、代理等）。
-/// </summary>
 public static partial class ModelsFileLoader
 {
-	/// <summary>用户级路径：<c>&lt;agentDir&gt;/models.json</c>。</summary>
 	public static string UserPath(string? agentDir = null) =>
 		Path.Combine(agentDir ?? Session.SessionPaths.GetAgentDir(), "models.json");
 
-	/// <summary>项目级路径：<c>&lt;cwd&gt;/.pi/models.json</c>。</summary>
 	public static string ProjectPath(string cwd) =>
 		Path.Combine(Path.GetFullPath(cwd), Session.SessionPaths.ConfigDirName, "models.json");
 
-	/// <summary>应用该文件后的结果：模型，以及 provider 在请求时需要的凭据与端点。</summary>
 	public sealed record Applied
 	{
 		public IReadOnlyList<Model> Models { get; init; } = [];
 
-		/// <summary>models.json 中声明的虚拟模型。</summary>
 		public IReadOnlyList<VirtualModelDefinition> VirtualModels { get; init; } = [];
 
-		/// <summary>provider id 到 API key 的映射，已完成变量插值。</summary>
 		public IReadOnlyDictionary<string, string> ApiKeys { get; init; } = new Dictionary<string, string>();
 
 		public int OverrideCount { get; init; }
 
-		/// <summary>最终生效的 provider 条目，用于把 baseUrl/compat 作用于内置模型。</summary>
 		public IReadOnlyDictionary<string, ModelsProviderEntry> ProviderEntries { get; init; } =
 			new Dictionary<string, ModelsProviderEntry>();
 	}
 
-	/// <summary>
 	/// 加载并应用两个文件；同名时项目条目替换用户条目。
 	/// 项目级 <c>.pi/models.json</c> 能改写端点与请求头，因此不受信的项目必须传
 	/// <paramref name="includeProject"/> = <c>false</c>（与 settings / 技能同一信任边界）。
-	/// </summary>
 	public static Applied Load(string cwd, string? agentDir = null, bool includeProject = true)
 	{
 		var user = Read(UserPath(agentDir));
@@ -127,7 +108,6 @@ public static partial class ModelsFileLoader
 		return user is null && project is null ? new Applied() : Apply(user, project);
 	}
 
-	/// <summary>加载单个文件；缺失或不可读时返回 <c>null</c>。</summary>
 	public static ModelsFile? Read(string path)
 	{
 		if (!File.Exists(path))
@@ -211,7 +191,6 @@ public static partial class ModelsFileLoader
 		};
 	}
 
-	/// <summary>把 <c>modelOverrides</c> 应用到注册表中已有的模型。</summary>
 	public static int ApplyOverrides(ModelRegistry registry, ModelsFile? user, ModelsFile? project)
 	{
 		var overrides = new Dictionary<string, ModelsOverrideEntry>(StringComparer.Ordinal);
@@ -249,7 +228,6 @@ public static partial class ModelsFileLoader
 		return applied;
 	}
 
-	/// <summary>把 provider 级设置（baseUrl/compat）应用到已经加载的内置模型。</summary>
 	public static int ApplyProviderSettings(ModelRegistry registry, ModelsFile? user, ModelsFile? project)
 	{
 		var providers = new Dictionary<string, ModelsProviderEntry>(StringComparer.Ordinal);
@@ -370,9 +348,7 @@ public static partial class ModelsFileLoader
 		};
 	}
 
-	/// <summary>
 	/// <c>virtual.route</c> 可以是源码字符串，或 <c>{ "code": "...", "timeoutMs": 2000 }</c>。
-	/// </summary>
 	private static (string? Source, int? TimeoutMs) RouteSource(JsonNode? node)
 	{
 		if (node is JsonValue value && value.TryGetValue<string>(out var source) && !string.IsNullOrWhiteSpace(source))
@@ -457,7 +433,6 @@ public static partial class ModelsFileLoader
 	private static string? FirstNonEmpty(string? first, string? second) =>
 		!string.IsNullOrEmpty(first) ? first : !string.IsNullOrEmpty(second) ? second : null;
 
-	/// <summary>解析 models.json 中的值：<c>!command</c> 执行命令，其余做环境变量插值。</summary>
 	internal static string? ResolveValue(string? value)
 	{
 		if (value is { Length: > 1 } && value[0] == '!')
@@ -469,10 +444,8 @@ public static partial class ModelsFileLoader
 		return Interpolate(value);
 	}
 
-	/// <summary>
 	/// 展开 <c>$NAME</c> 与 <c>${NAME}</c>。以 <c>!command</c> 开头的形式（pi 会在请求时执行 shell 命令）
 	/// 在本端口中有意不执行。
-	/// </summary>
 	internal static string? Interpolate(string? value)
 	{
 		if (string.IsNullOrEmpty(value) || !value.Contains('$', StringComparison.Ordinal))

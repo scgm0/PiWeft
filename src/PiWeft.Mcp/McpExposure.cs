@@ -1,6 +1,5 @@
 namespace PiWeft.Mcp;
 
-/// <summary>
 /// MCP 工具的暴露方式，与 pi 同名同义：
 /// <list type="bullet">
 /// <item><c>codemode</c>：只在 codemode 脚本里可调用，不直接声明给模型（pi 默认）。</item>
@@ -11,7 +10,6 @@ namespace PiWeft.Mcp;
 /// 默认值与 pi 一致：<c>codemode</c>。会话会把这类工具留给脚本调用（必要时自动启用 codemode），
 /// <c>deferred</c> 等 <c>tool_search</c> 加载后再声明给模型，<c>hidden</c> 直接丢弃。
 /// 仍沿用 pi 的默认别名替换规则。
-/// </summary>
 public static class McpExposure
 {
 	public const string Codemode = "codemode";
@@ -19,7 +17,6 @@ public static class McpExposure
 	public const string Direct = "direct";
 	public const string Hidden = "hidden";
 
-	/// <summary>配置文件里 <c>exposure</c> 的默认值：与 pi 一致，MCP 工具默认只在 codemode 脚本里可用。</summary>
 	public const string Default = Codemode;
 
 	private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
@@ -27,7 +24,6 @@ public static class McpExposure
 		["codemode-deferred"] = Codemode,
 	};
 
-	/// <summary>旧别名替换成当前名称；未知值与 null 返回 <c>null</c>（由调用方决定兜底）。</summary>
 	public static string? Normalize(string? value)	{
 		if (string.IsNullOrWhiteSpace(value))
 		{
@@ -43,16 +39,12 @@ public static class McpExposure
 		return trimmed is Codemode or Deferred or Direct or Hidden ? trimmed : null;
 	}
 
-	/// <summary>取值是否是可识别的 exposure（含旧别名）。</summary>
 	public static bool IsKnown(string? value) => Normalize(value) is not null;
 
-	/// <summary>该工具是否可达（<c>hidden</c> 之外都可执行；是否直接声明由会话按 exposure 决定）。</summary>
 	public static bool IsVisible(string exposure) => exposure != Hidden;
 
-	/// <summary>
 	/// 单个工具的有效暴露方式：精确名优先，其次按声明顺序取第一个匹配的通配符，最后回落到服务器默认。
 	/// 未知值按默认值处理，避免一个拼写错误让整个服务器消失。
-	/// </summary>
 	public static string Resolve(McpServerConfig config, string toolName)
 	{
 		if (config.ToolExposure is { Count: > 0 } overrides)
@@ -74,11 +66,9 @@ public static class McpExposure
 		return Normalize(config.Exposure) ?? Default;
 	}
 
-	/// <summary>服务器是否配置成完全不暴露工具（整台 <c>hidden</c> 且没有逐工具放行）。</summary>
 	public static bool IsFullyHidden(McpServerConfig config) =>
 		Normalize(config.Exposure) == Hidden && config.ToolExposure is not { Count: > 0 };
 
-	/// <summary><c>*</c> 匹配任意字符，其余字符按字面量处理。</summary>
 	internal static bool MatchesWildcard(string pattern, string value)
 	{
 		var patternIndex = 0;

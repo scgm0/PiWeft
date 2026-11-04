@@ -3,7 +3,6 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// <summary>Git 面板的源代码管理图与比较更改。diff 请求仍由 <see cref="GitView"/> 主文件统一渲染。</summary>
 public sealed partial class GitView
 {
 	private UIElement BuildBottomPanes(GitStatus status, IReadOnlyList<string> branches) =>
@@ -12,7 +11,6 @@ public sealed partial class GitView
 			BuildComparePane(status, branches),
 			BuildMorePane(status));
 
-	// ----------------------------------------------------------------- 源代码管理图
 
 	private void LoadGraph(IReadOnlyList<string> branches)
 	{
@@ -385,7 +383,6 @@ public sealed partial class GitView
 		return row;
 	}
 
-	/// <summary>提交/比较结果里的文件行：状态字母 + 文件名，内容不参与命中（见 GitView.FlatContent）。</summary>
 	private UIElement FileLikeRow(GitCommitFile file, bool selected, Action onClick)
 	{
 		var rowContent = new StackPanel()
@@ -490,7 +487,6 @@ public sealed partial class GitView
 			.MaxWidth(68).TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis)
 			.WithTheme((theme, text) => text.Foreground = RoleColor(AppTheme.For(theme), role)));
 
-	// ----------------------------------------------------------------- 比较更改
 
 	private UIElement BuildComparePane(GitStatus status, IReadOnlyList<string> branches)
 	{

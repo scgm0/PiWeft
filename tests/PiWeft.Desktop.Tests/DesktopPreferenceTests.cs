@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>界面偏好的落盘与容错。主题在启动前读取，因此这里的行为直接影响启动结果。</summary>
 public class DesktopPreferenceTests : IDisposable
 {
 	private readonly string _agentDir = Path.Combine(Path.GetTempPath(), "piweft-desktop-pref-" + Guid.NewGuid().ToString("N")[..8]);
@@ -306,7 +305,6 @@ public class DesktopPreferenceTests : IDisposable
 	}
 }
 
-/// <summary>把默认模型写回 settings.json：只改两个键，别的字段（含未建模的）必须原样保留。</summary>
 public class DefaultModelSettingTests : IDisposable
 {
 	private readonly string _agentDir = Path.Combine(Path.GetTempPath(), "piweft-desktop-default-" + Guid.NewGuid().ToString("N")[..8]);
@@ -364,7 +362,6 @@ public class DefaultModelSettingTests : IDisposable
 	}
 }
 
-/// <summary>快捷键解析、覆盖与冲突检测。</summary>
 public class ShortcutMapTests
 {
 	[Theory]
@@ -445,10 +442,8 @@ public class ShortcutMapTests
 	}
 }
 
-/// <summary>
 /// 侧栏项目的展开状态：默认全折叠，只有用户展开过的项目才记录；
 /// 坏数据不能把整份偏好弄坏。
-/// </summary>
 public sealed class ExpandedProjectsPreferenceTests : IDisposable
 {
 	private readonly string _agentDir = Path.Combine(Path.GetTempPath(), "piweft-expanded-" + Guid.NewGuid().ToString("N")[..8]);
@@ -531,7 +526,6 @@ public sealed class ExpandedProjectsPreferenceTests : IDisposable
 	}
 }
 
-/// <summary>哪些项目默认展开：只认「记录过」与「含选中会话」。</summary>
 public class ProjectExpansionRuleTests
 {
 	[Fact]

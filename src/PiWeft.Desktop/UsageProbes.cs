@@ -15,7 +15,6 @@ internal sealed record UsageProbeWindow(
 	string ListPath = "",
 	IReadOnlyList<UsageProbeWhere>? Where = null);
 
-/// <summary>数组遍历匹配条件：元素上 Path 的值等于 Value（Value 为数组时按「属于其中任一项」匹配）。</summary>
 internal sealed record UsageProbeWhere(string Path, JsonNode? Value);
 
 internal sealed record UsageProbeBooster(
@@ -63,7 +62,6 @@ internal sealed record UsageProbeCandidate(
 	UsageProbeParse? Parse = null,
 	string TemplateId = "");
 
-/// <summary>解析器输出：命中形态；未命中时由执行层保留尝试明细，不回显响应原文。</summary>
 internal sealed record UsageProbeResponse(
 	bool Matched,
 	ProviderUsageKind? Kind = null,
@@ -73,16 +71,13 @@ internal sealed record UsageProbeResponse(
 	UsageCredits? Credits = null,
 	UsageBooster? Booster = null);
 
-/// <summary>
 /// 内置候选表与探测规则（对齐 PiDeck 的 providerUsageProbe）：
 /// 新增供应商只在这里补「端点 + 解析」，不发散到 UI/IPC。
 /// 用户维护的旧版 probes 数组（usage-probes.json 的 probes）合并在本表之后。
-/// </summary>
 internal static class UsageProbes
 {
 	public const int MaxResponseBytes = 1024 * 1024;
 
-	/// <summary>候选端点表；前面的专有候选优先于末尾的通用 OpenAI 兜底。</summary>
 	public static readonly IReadOnlyList<UsageProbeCandidate> Candidates =
 	[
 		// opencode / opencode-go 网关：/v1/usage 直接给出三档占用百分比 + 重置时间。
@@ -185,7 +180,6 @@ internal static class UsageProbes
 			Parse: new(UsageParseKind.Balance, ValuePath: "balance", CurrencyPath: "unit")),
 	];
 
-	/// <summary>模板 id → 面向用户的类别（弹窗「已内置」徽标与说明文案）。</summary>
 	public static readonly IReadOnlyDictionary<string, string> TemplateCategories = new Dictionary<string, string>
 	{
 		["opencode-usage"] = Strings.UsageCategoryPlan,
@@ -202,7 +196,6 @@ internal static class UsageProbes
 		["minimax-plan"] = Strings.UsageCategoryPlan,
 	};
 
-	/// <summary>候选是否适用于给定 baseUrl / apiType。</summary>
 	public static bool Applies(UsageProbeCandidate candidate, string baseUrl, string apiType)
 	{
 		if (candidate.BaseUrlContains is { Count: > 0 } needles)
@@ -215,7 +208,6 @@ internal static class UsageProbes
 		return true;
 	}
 
-	/// <summary>候选适用 provider 的探测 URL 列表（版本化、原样、站点根三条去重尝试）。</summary>
 	public static IReadOnlyList<string> Urls(UsageProbeCandidate candidate, string baseUrl)
 	{
 		if (candidate.AbsoluteUrl.Length > 0) return [candidate.AbsoluteUrl];
@@ -239,14 +231,12 @@ internal static class UsageProbes
 		return urls.Distinct(StringComparer.Ordinal).ToArray();
 	}
 
-	/// <summary>OpenAI 兼容协议：baseUrl 未带版本段时补 /v1。</summary>
 	public static string EnsureVersionPath(string baseUrl)
 	{
 		var trimmed = baseUrl.TrimEnd('/');
 		return HasVersionPath(trimmed) ? trimmed : trimmed + "/v1";
 	}
 
-	/// <summary>去掉 baseUrl 末尾的 API 版本段（/v1、/v1beta、/api），得到管理根。</summary>
 	public static string StripVersionPath(string baseUrl)
 	{
 		var trimmed = baseUrl.TrimEnd('/');
@@ -266,10 +256,8 @@ internal static class UsageProbes
 			trimmed.EndsWith("/api", StringComparison.OrdinalIgnoreCase);
 	}
 
-	/// <summary>
 	/// 组装请求头：显式 Authorization 或 noBearer 时不自动补 Bearer；headers 里的
 	/// {{apiKey}} 替换成真实 key。模型自定义头只在同源请求里携带（跨域不泄露）。
-	/// </summary>
 	public static Dictionary<string, string> BuildHeaders(UsageProbeCandidate candidate, string token,
 		IReadOnlyDictionary<string, string>? modelHeaders, bool sameOrigin)
 	{
@@ -288,7 +276,6 @@ internal static class UsageProbes
 		return headers;
 	}
 
-	/// <summary>按解析规格解析响应体；匹配成功时返回对应形态。</summary>
 	public static UsageProbeResponse Parse(JsonNode? body, UsageProbeParse? parse)
 	{
 		parse ??= new UsageProbeParse();
@@ -409,7 +396,6 @@ internal static class UsageProbes
 			unlimited);
 	}
 
-	/// <summary>重置时间：ISO 字符串、epoch 秒或毫秒都能接受；非正数视为未上报。</summary>
 	public static DateTimeOffset? ParseResetTime(JsonNode? node)
 	{
 		if (node is not JsonValue value) return null;

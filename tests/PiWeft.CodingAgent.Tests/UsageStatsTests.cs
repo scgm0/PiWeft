@@ -4,7 +4,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>D-07：跨会话用量统计的有界扫描、聚合维度与热力图分档。</summary>
 public class UsageStatsTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-stats-" + Guid.NewGuid().ToString("N")[..8]);

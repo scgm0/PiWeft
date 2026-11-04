@@ -9,11 +9,9 @@ using PiWeft.Ai.Auth;
 using PiWeft.Ai.Json;
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// <summary>
 /// ChatGPT Codex 后端（<c>openai-codex-responses</c>）的流式适配器。它使用 Responses 线格式，
 /// 面向 <c>https://chatgpt.com/backend-api/codex</c>，用 ChatGPT OAuth 凭据鉴权，并且始终发送
 /// <c>store: false</c> —— 该端点强制要求这个值。
-/// </summary>
 public sealed class OpenAiCodexResponsesProvider : IApiProvider
 {
 	public const string ApiId = "openai-codex-responses";
@@ -355,7 +353,6 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 		return type is "response.completed" or "response.done" or "response.incomplete" or "response.failed" or "error";
 	}
 
-	/// <summary>把 responses 端点换成 WebSocket URL。</summary>
 	internal static string BuildWebSocketUrl(Model model)
 	{
 		var uri = new Uri(BuildUrl(model));
@@ -371,7 +368,6 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 		return builder.Uri.ToString();
 	}
 
-	/// <summary>Codex 的 responses 端点，兼容已经带上该路径的 base URL。</summary>
 	internal static string BuildUrl(Model model)
 	{
 		var baseUrl = string.IsNullOrEmpty(model.BaseUrl)

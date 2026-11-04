@@ -12,7 +12,6 @@ using ZLogger;
 
 namespace PiWeft.Desktop;
 
-/// <summary>
 /// 性能诊断采样（对齐 PiDeck 设置里的「性能诊断」）：默认关闭，关闭时调用点只做一次布尔判断，
 /// 不分配、不落盘。采样分三档，成本依次递增，热路径只走前两档：
 /// <list type="bullet">
@@ -26,25 +25,18 @@ namespace PiWeft.Desktop;
 /// 打开后每秒采一次进程内存/CPU 与 UI 队列延迟，明细逐条写入
 /// <c>&lt;agentDir&gt;/diagnostics/timings-*.jsonl</c>，并按名称聚合次数/总耗时/最大值，
 /// 供「优化前后对照」与「谁把 UI 线程占住了」这类排查使用。
-/// </summary>
 internal sealed class Diagnostics
 {
-	/// <summary>单条耗时记录。</summary>
 	internal readonly record struct Timing(string Name, DateTime StartedAt, double DurationMs, string? Detail);
 
-	/// <summary>按名称聚合的耗时统计。</summary>
 	internal readonly record struct Stat(string Name, int Count, double TotalMs, double MaxMs, double LastMs);
 
-	/// <summary>零分配的事件计数；<paramref name="TotalMs"/> 只在 <see cref="Slow"/> 路径上有值。</summary>
 	internal readonly record struct CounterStat(string Name, long Value, double TotalMs);
 
-	/// <summary>
 	/// 帧档聚合：全部来自定长环形缓冲与 Interlocked 计数，读取时才算分位数，
 	/// 因此每帧的成本与是否显示面板无关。
-	/// </summary>
 	internal readonly record struct FrameStats(
 		long Frames,
-		/// <summary>由帧间隔中位数换算的典型 FPS（不是算术平均的倒数）。</summary>
 		double Fps,
 		double LastMs,
 		double AvgMs,
@@ -53,7 +45,6 @@ internal sealed class Diagnostics
 		double MaxMs,
 		long DroppedFrames,
 		long LongFrames,
-		/// <summary>最近若干帧的间隔（毫秒，旧→新），给面板画帧时间条；正常滚动下不会超过 64 个。</summary>
 		IReadOnlyList<double> Samples,
 		long IdleGaps,
 		double MaxGapMs,
@@ -69,7 +60,6 @@ internal sealed class Diagnostics
 		int ImageDraws,
 		int ClipCount);
 
-	/// <summary>一次采样的快照：内存、CPU、UI 队列延迟、帧档与累计统计。</summary>
 	internal sealed record Snapshot(
 		bool Enabled,
 		DateTimeOffset SampledAt,
@@ -100,32 +90,23 @@ internal sealed class Diagnostics
 		IReadOnlyList<Stat> Stats,
 		IReadOnlyList<CounterStat> Counters);
 
-	/// <summary>队列延迟超过这个值就记一条警告：UI 线程被什么东西占住了。</summary>
 	internal const double LagWarnMs = 50;
 
-	/// <summary>耗时超过这个值的路径按警告记录，方便在日志里直接看到慢路径。</summary>
 	private const double SlowPathMs = 200;
 
 	// 帧档的环形缓冲必须是 2 的幂：热路径用 & 取模，不做除法也不取余。
 	private const int FrameSlots = 2048;
-	/// <summary>面板帧时间条的样本数：够看出一次掉帧风暴，又不至于把面板画成噪声。</summary>
 	private const int SampleSlots = 64;
 	private const int InputSlots = 512;
-	/// <summary>一帧超过这个时长算掉帧：60 FPS 预算的 1.5 倍。</summary>
 	private const double DroppedFrameMs = 20;
-	/// <summary>一帧超过这个时长算长帧：读者能明确感到卡顿。</summary>
 	internal const double LongFrameReportMs = 50;
 
 	private const double LongFrameMs = LongFrameReportMs;
-	/// <summary>
 	/// 两帧之间超过这个时长就不算帧样本：渲染循环是按请求跑的，空闲后的第一次重绘
 	/// 只说明「这段时间没人要求重绘」，把它当成帧时间会让 p95 与 GC 占比都失真。
 	/// 它单独记成「停顿」，因为那确实可能是 UI 被占住。
-	/// </summary>
 	private const double IdleGapMs = 400;
-	/// <summary>输入到绘制超过这个时长就不再算样本：那是空闲后的一次重绘，不是延迟。</summary>
 	private const double InputWindowMs = 1000;
-	/// <summary>长帧日志的限流窗口：一秒最多一条，够定位又不刷屏。</summary>
 	private static readonly long JankWarnIntervalTicks = Stopwatch.Frequency;
 
 	private static readonly TimeSpan SampleInterval = TimeSpan.FromSeconds(1);
@@ -210,16 +191,12 @@ internal sealed class Diagnostics
 	private static long _cpuTicksBaseline;
 	private static long _cpuWallBaseline;
 
-	/// <summary>诊断数据目录：<c>&lt;agentDir&gt;/diagnostics</c>，与偏好文件同级，便于一起备份。</summary>
 	public static string DirectoryPath(string? agentDir = null) =>
 		Path.Combine(string.IsNullOrWhiteSpace(agentDir) ? SessionPaths.GetAgentDir() : agentDir!, "diagnostics");
 
-	/// <summary>采样是否开着。调用点用它做零成本短路。</summary>
 	public static bool Enabled => _enabled;
 
-	/// <summary>
 	/// 按设置开关启停。重复设置同值不会重开文件，避免设置页抖一下就把日志切成两份。
-	/// </summary>
 	public static void SetEnabled(bool enabled, string? agentDir = null)
 	{
 		lock (Gate)
@@ -253,7 +230,6 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary>记录一段耗时。<paramref name="detail"/> 是自由文本（键=值 形式），一起进 JSONL。</summary>
 	public static void Record(string name, double durationMs, string? detail = null)
 	{
 		if (!_enabled)
@@ -287,7 +263,6 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary>记录一段耗时：把正在走的 <paramref name="watch"/> 停下并读毫秒，少一次样板代码。</summary>
 	public static void Record(string name, Stopwatch watch, string? detail = null)
 	{
 		if (!_enabled)
@@ -310,11 +285,9 @@ internal sealed class Diagnostics
 			$"clip={stats.PrimitiveStats.ClipCount}");
 	}
 
-	/// <summary>
 	/// 每帧一次（接 <see cref="Window.FrameRendered"/>）：只写两个定长槽位和几个 Interlocked 计数。
 	/// 关闭时是一次 volatile 判断；开着时一帧约百纳秒、零分配，所以可以常驻而不必担心测出「观测者效应」。
 	/// <paramref name="stats"/> 来自 <see cref="Window.LastFrameStats"/>，框架本来就每帧无条件填好。
-	/// </summary>
 	public static void ObserveFrame(in RenderStats stats)
 	{
 		if (!_enabled)
@@ -412,7 +385,6 @@ internal sealed class Diagnostics
 		Volatile.Write(ref _frameClipCount, primitives.ClipCount);
 	}
 
-	/// <summary>记一次输入事件的时间戳；下一帧渲染时它变成「输入→绘制」延迟样本。</summary>
 	public static void NoteInput()
 	{
 		if (_enabled)
@@ -421,7 +393,6 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary>计数档：只累加事件次数或量值，不记时间、不产生字符串。</summary>
 	public static void Count(string name, long delta = 1)
 	{
 		if (!_enabled)
@@ -432,10 +403,8 @@ internal sealed class Diagnostics
 		Counters.GetOrAdd(name, static key => new CounterBucket(key)).Add(delta);
 	}
 
-	/// <summary>
 	/// 热路径用的组合档：先记一次计数，只有超过 <paramref name="thresholdMs"/> 才落明细。
 	/// 每帧都会发生的路径用它，否则诊断本身就成了每秒上百 KB 的垃圾来源。
-	/// </summary>
 	public static void Slow(string name, double durationMs, double thresholdMs, string? detail = null)
 	{
 		if (!_enabled)
@@ -454,7 +423,6 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary><see cref="Slow(string,double,double,string?)"/> 的秒表版本：关闭时只停下秒表。</summary>
 	public static void Slow(string name, Stopwatch watch, double thresholdMs, string? detail = null)
 	{
 		if (!_enabled)
@@ -466,16 +434,12 @@ internal sealed class Diagnostics
 		Slow(name, Elapsed(watch), thresholdMs, detail);
 	}
 
-	/// <summary>
 	/// 采样窗口内的一次性作用域：<c>using (Diagnostics.Track("session.open.read"))</c>。
 	/// 关闭时返回一个什么都不做的句柄，连字符串拼接都不会发生。
-	/// </summary>
 	public static Scope Track(string name) => new(name);
 
-	/// <summary>
 	/// 主动压一次堆：返回回收前后托管堆的字节数。判断「150 MiB 是不是泄漏」只有这条路径说得准 ——
 	/// 差值稳定说明是活的缓存，剩得越来越多才是泄漏。会阻塞当前线程，所以只挂在面板按钮上。
-	/// </summary>
 	public static (long BeforeBytes, long AfterBytes, double PauseMs) Compact()
 	{
 		var started = Stopwatch.GetTimestamp();
@@ -484,7 +448,6 @@ internal sealed class Diagnostics
 		return (before, after, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
 	}
 
-	/// <summary>取一次快照：内存/CPU/队列延迟读最近一次采样值，帧档从环形缓冲现算分位数。</summary>
 	public static Snapshot TakeSnapshot()
 	{
 		lock (Gate)
@@ -521,10 +484,8 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary>
 	/// 帧档汇总：分位数只在读面板时算一次（拷贝到排序缓冲再取），
 	/// 因此热路径永远只需要写一个槽位。
-	/// </summary>
 	private static FrameStats BuildFrameStats()
 	{
 		var frames = Interlocked.Read(ref _frameCount);
@@ -610,13 +571,11 @@ internal sealed class Diagnostics
 			Volatile.Read(ref _frameClipCount));
 	}
 
-	/// <summary>排序缓冲里取分位数（最近邻）；没有样本时是 0。</summary>
 	private static double QuantileMs(int samples, double quantile) =>
 		samples <= 0 ? 0 : TicksToMs(Scratch[Math.Clamp((int)Math.Round(quantile * (samples - 1)), 0, samples - 1)]);
 
 	private static double TicksToMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
-	/// <summary>清空累计统计与文件队列（设置页的「重新开始」用，避免旧数据干扰对照）。</summary>
 	public static void Reset()
 	{
 		lock (Gate)
@@ -631,7 +590,6 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary>退出前收摊：落盘并释放文件句柄。</summary>
 	public static void Close() => SetEnabled(false);
 
 	private static void Stop()
@@ -689,7 +647,6 @@ internal sealed class Diagnostics
 		Counters.Clear();
 	}
 
-	/// <summary>每秒一次：内存 + UI 队列延迟。都在池线程执行，绝不占用 UI 线程。</summary>
 	private static void Sample()
 	{
 		if (!_enabled)
@@ -766,10 +723,8 @@ internal sealed class Diagnostics
 		ProbeQueueLag();
 	}
 
-	/// <summary>
 	/// 分离匿名/文件/共享内存与字体映射数：工作集是 GB 级而 GC 提交只有百 MB 时，
 	/// 单看 rss 无法判断是托管堆、字体映射还是 GPU/驱动内存。Linux 每 5 秒读一次 procfs。
-	/// </summary>
 	private static void UpdateNativeMemoryBreakdown()
 	{
 		if (!OperatingSystem.IsLinux())
@@ -834,7 +789,6 @@ internal sealed class Diagnostics
 		return parts.Length > 1 && long.TryParse(parts[1], out var value) ? value : 0;
 	}
 
-	/// <summary>从 <c>maps</c> 的“起-止”列取映射字节数；格式不符返回 0。</summary>
 	private static long MapBytes(string line)
 	{
 		var dash = line.IndexOf('-');
@@ -845,10 +799,8 @@ internal sealed class Diagnostics
 			end > start ? end - start : 0;
 	}
 
-	/// <summary>
 	/// 工作集异常增大时释放可清理的渲染缓存。只处理 >2 GiB 的异常态，
 	/// 正常窗口不会触发；限流 30 秒，避免与长流/大图叠加时反复抖动。
-	/// </summary>
 	private static void TrimIfMemoryPressure()
 	{
 		if (Interlocked.Read(ref _workingSetBytes) < 2L * 1024 * 1024 * 1024) return;
@@ -872,11 +824,9 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary>
 	/// 每秒一行的运行时摘要（<c>name="runtime.window"</c>）写进同一个 timings 文件：
 	/// 「优化前后对照」和「堆是不是在长」要的是逐秒曲线，而不是每帧明细；空闲帧也照样写一行，
 	/// 否则一段没有重绘的时间里看不出堆的变化。明细档只有慢样本会落盘。
-	/// </summary>
 	private static void WriteFrameWindow()
 	{
 		Diagnostics.FrameStats frame;
@@ -924,10 +874,8 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary>
 	/// UI 队列延迟：从池线程投递一个工作项，量它被 UI 线程接手前排队了多久。
 	/// 这就是 PiDeck 里 setImmediate 往返的等价物 —— 流式渲染把 UI 线程占住时，这个值会直接抬头。
-	/// </summary>
 	private static void ProbeQueueLag()
 	{
 		// 窗口正在关闭时投递会失败或永远不执行：丢掉这一次探针即可，诊断不该影响退出。
@@ -1046,7 +994,6 @@ internal sealed class Diagnostics
 		return watch.Elapsed.TotalMilliseconds;
 	}
 
-	/// <summary><see cref="Track"/> 的作用域句柄。</summary>
 	internal ref struct Scope
 	{
 		private readonly string? _name;
@@ -1076,10 +1023,8 @@ internal sealed class Diagnostics
 		}
 	}
 
-	/// <summary>
 	/// 计数档的桶：值与累计耗时都用 Interlocked 累加，读取只取快照，
 	/// 因此每帧一次的调用点不会有锁、字符串或分配。
-	/// </summary>
 	private sealed class CounterBucket(string name)
 	{
 		private long _value;

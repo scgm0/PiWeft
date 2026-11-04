@@ -8,11 +8,9 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>
 /// 发送弹窗（PiDeck 的 Split Send 同款）：投递方式是两行项——标题写动作、
 /// 第二行写协议名与生效时机。点击项即执行对应动作（弹窗自身的开关由框
 /// 架的原生 Popup 负责，无头测试里不涉及）。
-/// </summary>
 [Collection("mewui-controls")]
 public sealed class SendOptionsMenuTests
 {

@@ -3,7 +3,6 @@ using Aprillz.MewUI;
 
 namespace PiWeft.Markdown;
 
-/// <summary>Top-level and nested block kinds the renderer understands.</summary>
 public enum MarkdownBlockKind
 {
 	Paragraph,
@@ -18,11 +17,9 @@ public enum MarkdownBlockKind
 	TableCell,
 	Group,
 
-	/// <summary>A block without a built-in mapping (e.g. a math block); <see cref="MarkdownBlock.CustomKind"/> carries the Markdig node type name.</summary>
 	Custom
 }
 
-/// <summary>Inline style flags carried by a <see cref="MarkdownRun"/>.</summary>
 [Flags]
 public enum MarkdownRunStyle
 {
@@ -35,14 +32,11 @@ public enum MarkdownRunStyle
 	Code = 1 << 5,
 	Underline = 1 << 6,
 
-	/// <summary>Subscript/superscript text from the inline HTML whitelist: smaller font, same baseline.</summary>
 	Script = 1 << 7
 }
 
-/// <summary>
 /// One inline run. Text is materialized by the mapper; source offsets let selection, links and
 /// diagnostics address the original document.
-/// </summary>
 public readonly record struct MarkdownRun(
 	string Text,
 	MarkdownRunStyle Style = MarkdownRunStyle.None,
@@ -53,7 +47,6 @@ public readonly record struct MarkdownRun(
 	int SourceStart = -1,
 	int SourceLength = 0);
 
-/// <summary>An immutable mapped block; <see cref="Hash"/> identifies equal presentation content.</summary>
 public sealed class MarkdownBlock
 {
 	public MarkdownBlockKind Kind { get; init; }
@@ -70,26 +63,19 @@ public sealed class MarkdownBlock
 	public int SourceStart { get; internal set; }
 	public int SourceLength { get; init; }
 
-	/// <summary>Plain display text for paragraph, heading and code blocks; empty for containers.</summary>
 	public string Text { get; init; } = string.Empty;
 
-	/// <summary>Normalized fence language for code blocks.</summary>
 	public string? CodeLanguage { get; init; }
 
-	/// <summary>Markdig node type name for <see cref="MarkdownBlockKind.Custom"/> blocks; null otherwise.</summary>
 	public string? CustomKind { get; init; }
 
-	/// <summary>
 	/// GitHub alert kind ("NOTE"/"TIP"/"IMPORTANT"/"WARNING"/"CAUTION") for quote blocks whose
 	/// first line carries the marker; the marker itself is stripped from the content.
-	/// </summary>
 	public string? Alert { get; init; }
 
-	/// <summary>Stable 64-bit hash of every input that affects presentation.</summary>
 	public ulong Hash { get; internal set; }
 }
 
-/// <summary>A selectable leaf block and the separator copied before it.</summary>
 public sealed record MarkdownTextUnit(
 	MarkdownBlock Block,
 	string Text,
@@ -98,21 +84,17 @@ public sealed record MarkdownTextUnit(
 	bool HasLinks,
 	string ListMarkerPrefix = "");
 
-/// <summary>One parsed revision: blocks, source and the bookkeeping selection and navigation need.</summary>
 public sealed class MarkdownDocument
 {
 	private readonly Dictionary<MarkdownBlock, int> _unitIndex = new(ReferenceEqualityComparer.Instance);
 	private readonly string? _sourceText;
 	private readonly StringBuilder? _sourceBuilder;
-	/// <summary>Index of the first text unit of each top-level block, plus a final end index.</summary>
 	private readonly int[] _unitStarts;
 
-	/// <summary>
 	/// String-backed documents carry the full text; builder-backed documents hold the growing
 	/// <see cref="StringBuilder"/> instead, so streaming frames never materialize the whole
 	/// source. A builder-backed document may still carry a materialized snapshot from its
 	/// latest full parse.
-	/// </summary>
 	internal MarkdownDocument(
 		string? sourceText,
 		StringBuilder? sourceBuilder,
@@ -122,12 +104,10 @@ public sealed class MarkdownDocument
 	{
 	}
 
-	/// <summary>
 	/// Builds a document whose first <paramref name="reusedBlockCount"/> blocks are the unchanged prefix
 	/// of <paramref name="previous"/>. Streaming appends replace only the old tail; rebuilding the
 	/// anchor table and selectable text units for the whole history on every frame is O(document) work
 	/// even though the parser already reparsed only the tail.
-	/// </summary>
 	internal MarkdownDocument(
 		string? sourceText,
 		StringBuilder? sourceBuilder,
@@ -168,7 +148,6 @@ public sealed class MarkdownDocument
 		_unitStarts = starts;
 	}
 
-	/// <summary>How many leading blocks were carried over unchanged from the previous revision.</summary>
 	internal int ReusedBlockCount { get; }
 
 	private static (Dictionary<string, int> Anchors, List<MarkdownTextUnit> Units, int[] Starts) BuildAll(
@@ -245,32 +224,25 @@ public sealed class MarkdownDocument
 		}
 	}
 
-	/// <summary>Length of the source this document was parsed from, without materializing it.</summary>
 	internal int SourceLength { get; }
 
-	/// <summary>The builder this document was parsed from, when it is append-only backed.</summary>
 	internal StringBuilder? SourceBuilder => _sourceBuilder;
 
-	/// <summary>True when the last block was parsed with a provisional streaming repair suffix.</summary>
 	internal bool TailRepaired { get; set; }
 
 	public string Source => _sourceText ?? _sourceBuilder?.ToString() ?? string.Empty;
 
 	public IReadOnlyList<MarkdownBlock> Blocks { get; }
 
-	/// <summary>True when the source contains a link reference definition; incremental parsing is then unsafe.</summary>
 	public bool HasLinkReferenceDefinitions { get; init; }
 	public MarkdownOptions Options { get; }
 	public IReadOnlyDictionary<string, int> AnchorBlocks { get; }
 	public IReadOnlyList<MarkdownTextUnit> TextUnits { get; }
 
-	/// <summary>Returns the text unit index of a leaf block, or -1 when it has no selectable text.</summary>
 	public int GetTextUnit(MarkdownBlock block) => _unitIndex.TryGetValue(block, out int index) ? index : -1;
 
-	/// <summary>Display text of one run, matching what the paragraph lays out.</summary>
 	public static string VisualText(MarkdownRun run) => run.Image && run.Text.Length == 0 ? "\uFFFC" : run.Text;
 
-	/// <summary>Marker a list item displays: nothing for a task item, a bullet when the item has no marker.</summary>
 	public static string GetListMarkerText(MarkdownBlock item)
 		=> item.Children.FirstOrDefault()?.Runs.Any(static run => run.TaskChecked.HasValue) == true
 			? string.Empty
@@ -344,7 +316,6 @@ public sealed class MarkdownDocument
 		}
 	}
 
-	/// <summary>Plain text of the whole document, using the same separators as selection copy.</summary>
 	public string ToPlainText()
 	{
 		StringBuilder builder = new();
@@ -361,7 +332,6 @@ public sealed class MarkdownDocument
 	}
 }
 
-/// <summary>FNV-1a hashing for stable block identity within a process.</summary>
 internal static class MarkdownHash
 {
 	private const ulong Offset = 14695981039346656037UL;

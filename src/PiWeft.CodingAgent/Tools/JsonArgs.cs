@@ -3,10 +3,8 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.CodingAgent.Tools;
 
-/// <summary>
 /// 宽容的工具参数读取。模型写出的 JSON 解析成 <see cref="JsonElement"/> 支撑的值，
 /// 进程内调用方则用 CLR 基础类型构建节点；两种形状都要能读。
-/// </summary>
 internal static class JsonArgs
 {
 	public static double? Number(JsonNode? node)

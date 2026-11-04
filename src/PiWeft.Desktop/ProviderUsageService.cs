@@ -9,16 +9,12 @@ using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.Desktop;
 
-/// <summary>一次探测计划：目标基址、凭据与按顺序尝试的候选。</summary>
 internal sealed record UsageProbePlan(string BaseUrl, string Token, IReadOnlyList<UsageProbeCandidate> Candidates, string? Error = null);
 
-/// <summary>单次探测失败的明细（URL + 状态/结构/网络），用于全部失败时生成可排查的提示。</summary>
 internal sealed record UsageProbeAttempt(string Url, string Method, int? Status = null, string? Body = null, bool Shape = false, string? Error = null);
 
-/// <summary>
 /// 供应商用量/余额探测：逐候选、逐 URL 尝试，首个解析成功的结果即返回。
 /// 凭据只在主进程发请求；响应原文不落日志、不回传 UI，只保留脱敏截断后的尝试明细。
-/// </summary>
 internal sealed class ProviderUsageService(HttpClient client)
 {
 	// 总超时由每次探测的 CancellationTokenSource 控制（按 provider 配置 1-300 秒），
@@ -28,7 +24,6 @@ internal sealed class ProviderUsageService(HttpClient client)
 		Timeout = Timeout.InfiniteTimeSpan,
 	};
 
-	/// <summary>读取当前模型对应 provider 的配置并查询；未显式启用时快速返回「未开启」。</summary>
 	public static async Task<ProviderUsageResult> QueryProviderAsync(Model model, string cwd, CancellationToken cancellationToken)
 	{
 		var agentDir = SessionPaths.GetAgentDir();
@@ -42,7 +37,6 @@ internal sealed class ProviderUsageService(HttpClient client)
 			.ConfigureAwait(false);
 	}
 
-	/// <summary>按给定配置查询（弹窗测试也走这里，忽略 enabled 开关）。</summary>
 	public static async Task<ProviderUsageResult> QueryAsync(Model model, UsageProbeProviderConfig config, UsageProbeDocument document,
 		UsageProbeCandidate? legacy, string cwd, CancellationToken cancellationToken, HttpClient? client = null)
 	{
@@ -54,7 +48,6 @@ internal sealed class ProviderUsageService(HttpClient client)
 			.ConfigureAwait(false);
 	}
 
-	/// <summary>弹窗「测试」：不读 enabled 开关、不写配置，直接用草稿配置探测。</summary>
 	public static async Task<ProviderUsageResult> TestAsync(Model model, UsageProbeProviderConfig config, string cwd,
 		CancellationToken cancellationToken)
 	{
@@ -64,7 +57,6 @@ internal sealed class ProviderUsageService(HttpClient client)
 		return await QueryAsync(model, config, document, legacy, cwd, cancellationToken).ConfigureAwait(false);
 	}
 
-	/// <summary>构造探测计划：声明式模板优先；否则内置候选 + 旧 probes 数组自动匹配。</summary>
 	public static async Task<UsageProbePlan> BuildPlanAsync(Model model, UsageProbeProviderConfig config, UsageProbeDocument document,
 		UsageProbeCandidate? legacy, string cwd, CancellationToken cancellationToken)
 	{
@@ -155,7 +147,6 @@ internal sealed class ProviderUsageService(HttpClient client)
 		}
 	}
 
-	/// <summary>逐候选、逐 URL 探测；链式预检、响应截断、重定向拒绝与异常收敛都在这一层。</summary>
 	public async Task<ProviderUsageResult> ProbeAsync(Model model, UsageProbePlan plan, TimeSpan timeout, int intervalMinutes,
 		CancellationToken cancellationToken)
 	{
@@ -288,7 +279,6 @@ internal sealed class ProviderUsageService(HttpClient client)
 		return null;
 	}
 
-	/// <summary>URL 安全边界：仅 http(s)、无 userinfo、HTTP 仅限本机；跨域必须来自代码内置的 absoluteUrl。</summary>
 	private static bool TryValidateUrl(string url, Uri? baseUri, bool builtinAbsolute, out Uri uri)
 	{
 		uri = null!;
@@ -321,7 +311,6 @@ internal sealed class ProviderUsageService(HttpClient client)
 	private static string Redact(string value, string secret) =>
 		secret.Length == 0 ? value : value.Replace(secret, "***", StringComparison.Ordinal);
 
-	/// <summary>失败明细：每次尝试一行（方法 + URL + 状态/错误 + 响应摘要），末尾给归纳提示。</summary>
 	public static string BuildDetail(IReadOnlyList<UsageProbeAttempt> attempts, string token)
 	{
 		var lines = new List<string> { Strings.UsageAttemptsTitle };

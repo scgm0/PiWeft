@@ -5,7 +5,6 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>空会话的输入区：随提示文本一起居中、贴在其下方，且不再显示工作区路径。</summary>
 [Collection("mewui-controls")]
 public sealed class EmptySessionLayoutTests
 {
@@ -93,7 +92,6 @@ public sealed class EmptySessionLayoutTests
 		Assert.Null(host.HitTest(center));
 	}
 
-	/// <summary>圆钮下缘越过正文区下边的距离，与 SessionTab 的 FloatingAnchor.Overlap 一致。</summary>
 	private const double FloatingOverlap = 3;
 
 	[Fact]
@@ -109,7 +107,6 @@ public sealed class EmptySessionLayoutTests
 	private static MultiLineTextBox Composer(SessionTab tab) =>
 		Find<MultiLineTextBox>(tab.View).Single(text => !text.IsReadOnly);
 
-	/// <summary>输入框所在的输入区整列（提示文本 + 输入框 + 状态栏）。</summary>
 	private static StackPanel Column(Element composer)
 	{
 		StackPanel? column = null;

@@ -3,16 +3,13 @@ using PiWeft.CodingAgent;
 
 namespace PiWeft.Cli;
 
-/// <summary>
 /// 基于终端的 <see cref="IUiHost"/>：把 <c>ask_question</c> 的批量信封渲染成命令行问答，
 /// 并提供 pi 扩展 UI 对话框方法（select/confirm/input/editor）的终端实现，
 /// 供 CLI 交互模式使用。print/JSON 模式不提供宿主，工具会明确报告不可用。
-/// </summary>
 internal sealed class ConsoleUiHost(TextReader input, TextWriter output) : IUiHost
 {
 	public bool HasUi => true;
 
-	/// <summary>终端没有真正的通知面：打到输出流（交互模式是 stderr 旁的提示流）。</summary>
 	public void Notify(UiNotifyRequest request) =>
 		output.WriteLine($"[notify:{request.NotifyType}] {request.Message}");
 
@@ -35,7 +32,6 @@ internal sealed class ConsoleUiHost(TextReader input, TextWriter output) : IUiHo
 
 	public void SetTitle(UiTitleRequest request) => output.WriteLine($"[title] {request.Title}");
 
-	/// <summary>终端输入循环不暴露可替换的编辑缓冲；set_editor_text 在这里保持 no-op。</summary>
 	public void SetEditorText(string text)
 	{
 	}

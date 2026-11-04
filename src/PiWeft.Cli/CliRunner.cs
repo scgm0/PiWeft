@@ -14,7 +14,6 @@ using ZLogger;
 
 namespace PiWeft.Cli;
 
-/// <summary>按请求的模式执行一次 CLI 调用。</summary>
 public sealed partial class CliRunner(CliEnvironment environment, TextWriter output, TextWriter error)
 {
 	private readonly Lock _outputGate = new();
@@ -26,12 +25,10 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	private McpConnection? _mcp;
 	private CodingAgentSession? _session;
 
-	/// <summary>当前运行的参数，MCP 服务器变化时需要它来重新组装工具。</summary>
 	private CliArguments? _arguments;
 	private string _cwd = string.Empty;
 	private CancellationTokenSource? _bashCancellation;
 
-	/// <summary>按参数分派到对应模式，返回进程退出码。</summary>
 	public async Task<int> RunAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
 		if (arguments.ShowHelp)
@@ -125,7 +122,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		}
 	}
 
-	/// <summary>连接 MCP 服务器并把工具装配进当前会话；<c>reconnect_mcp</c> 复用同一路径。</summary>
 	private async Task ConnectMcpAsync(string cwd, bool includeProject, CancellationToken cancellationToken)
 	{
 		_mcp = await McpServers.ConnectConfiguredAsync(
@@ -158,7 +154,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		};
 	}
 
-	/// <summary>MCP 连接状态的 RPC 载荷。</summary>
 	private JsonObject McpStatus()
 	{
 		var servers = new List<JsonNode?>(_mcp?.Servers.Count ?? 0);
@@ -188,7 +183,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		};
 	}
 
-	/// <summary>跨会话统计的 RPC 载荷：合计 + 每日热力图 + 模型/项目排行。</summary>
 	private static JsonObject UsageStatsJson(UsageStatsReport report, int weeks)
 	{
 		var days = new List<JsonNode?>(report.Days.Count);
@@ -241,8 +235,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		["cost"] = totals.Cost,
 	};
 
-	/// <summary><c>pi --export &lt;session&gt; [output]</c>：把会话渲染成自包含 HTML 后退出。</summary>
-	/// <summary>导出会话为 JSONL；已落盘时直接复制，内存会话则按条目重建。</summary>
 	internal static string ExportJsonl(CodingAgentSession session, string? outputPath)
 	{
 		var path = outputPath is { Length: > 0 }
@@ -301,17 +293,13 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return 0;
 	}
 
-	/// <summary><c>pi --version</c> 报告的 RPC 契约版本，供客户端判断特性支持；不是自身构建号。</summary>
 	public const string RpcContractVersion = "1.3.0";
 
 	public static string VersionString => RpcContractVersion;
 
-	// ----------------------------------------------------------------- 单次输出
 
-	/// <summary>
 	/// 扩展 flag 的收口：没有注册者的未知选项、或 string 类型缺值，都按 pi 的语义报错退出。
 	/// 放在会话建好之后 —— 只有加载过扩展才知道哪些 flag 是合法的。
-	/// </summary>
 	private int? RejectUnknownExtensionFlags(CodingAgentSession session)
 	{
 		var failed = false;
@@ -330,7 +318,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return failed ? 2 : null;
 	}
 
-	/// <summary>单次模式：执行提示并打印最终的助手文本。</summary>
 	private async Task<int> RunPrintAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
 		using var session = environment.CreateSession(arguments, cwd, extraTools: _extraTools);
@@ -359,10 +346,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return LastStopReasonWasError(session) || session.ErrorMessage is { Length: > 0 } ? 1 : 0;
 	}
 
-	/// <summary>
 	/// 把管道 stdin、<c>@file</c> 附件与第一个命令行提示合成初始提示，其余提示保持顺序。
 	/// 返回的列表至少含一项（可能为空字符串），保证无参数调用仍会跑一轮。
-	/// </summary>
 	private static async Task<(List<string> Prompts, List<ImageContent> Images)> PreparePromptsAsync(
 		CliArguments arguments,
 		string cwd,
@@ -461,7 +446,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	private Task RunAndPrintAsync(CodingAgentSession session, string prompt, CancellationToken cancellationToken) =>
 		RunAndPrintAsync(session, session.PrepareInput(prompt), cancellationToken);
 
-	/// <summary>最后一条助手回复是否因为达到输出上限而被截断。</summary>
 	private static bool LastStopReasonIsTruncated(CodingAgentSession session) =>
 		session.Session.Entries
 			.OfType<SessionMessageEntry>()
@@ -476,7 +460,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			.OfType<AssistantMessage>()
 			.LastOrDefault() is { StopReason: StopReason.Error or StopReason.Aborted };
 
-	/// <summary>最后一次运行是否以「被中止」结束，供 <c>agent_settled.aborted</c> 使用。</summary>
 	private static bool LastStopReasonWasAborted(CodingAgentSession session) =>
 		session.Session.Entries
 			.OfType<SessionMessageEntry>()
@@ -484,9 +467,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			.OfType<AssistantMessage>()
 			.LastOrDefault() is { StopReason: StopReason.Aborted };
 
-	// ------------------------------------------------------------------ JSON
 
-	/// <summary>JSON 模式：先输出会话头部，再为每个代理事件输出一行 JSONL。</summary>
 	private async Task<int> RunJsonAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
 		using var session = environment.CreateSession(arguments, cwd, extraTools: _extraTools);
@@ -522,7 +503,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return LastStopReasonWasError(session) || session.ErrorMessage is { Length: > 0 } ? 1 : 0;
 	}
 
-	/// <summary>JSON 模式的头部记录，字段与会话文件头部一致。</summary>
 	public static string SessionHeaderRecord(SessionManager session)
 	{
 		var header = session.Header;
@@ -543,15 +523,11 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return CliJson.Serialize(record);
 	}
 
-	// ------------------------------------------------------------------- RPC
 
-	/// <summary>当前 RPC 会话的事件订阅；换会话实例时必须重建。</summary>
 	private IDisposable? _sessionEvents;
 
-	/// <summary>
 	/// 订阅当前会话的代理事件并写成 JSONL。订阅绑定在会话实例上：<c>new_session</c> 会换掉实例，
 	/// 必须重新订阅，否则客户端只收到 response、收不到任何 message_*/tool_* 事件。
-	/// </summary>
 	private void SubscribeSessionEvents()
 	{
 		_sessionEvents?.Dispose();
@@ -562,10 +538,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		});
 	}
 
-	/// <summary>
 	/// RPC 模式：在 stdin/stdout 上运行长驻的 JSONL 命令/响应/事件协议。不输出会话头部，
 	/// 客户端改为调用 <c>get_state</c>。
-	/// </summary>
 	private async Task<int> RunRpcAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
 		_arguments = arguments;
@@ -1351,7 +1325,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			? command["message"]!.GetValue<string>()
 			: throw new InvalidOperationException("message is required");
 
-	/// <summary>从 RPC 命令里读取 <c>images</c> 内容块，缺失时返回空列表。</summary>
 	private static List<ImageContent> ImagesOf(JsonObject command)
 	{
 		if (command["images"] is not JsonArray images || images.Count == 0)
@@ -1377,7 +1350,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return result;
 	}
 
-	/// <summary>pi 返回的模型对象，便于客户端复用自己的渲染逻辑。</summary>
 	private static JsonObject ModelRecord(Model model) => new()
 	{
 		["id"] = model.Id,
@@ -1404,7 +1376,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		},
 	};
 
-	/// <summary>模型对象，包含模型选择器会读取的字段，以及思考级别映射。</summary>
 	private static JsonObject ModelRecordWithThinking(Model model)
 	{
 		var record = ModelRecord(model);
@@ -1476,9 +1447,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return CliJson.Serialize(record);
 	}
 
-	// ------------------------------------------------------------ 交互模式
 
-	/// <summary>基于行的 REPL。全屏 TUI 渲染不在本端口范围内。</summary>
 	private async Task<int> RunInteractiveAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
 		using var session = environment.CreateSession(
@@ -1640,9 +1609,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return 0;
 	}
 
-	/// <summary>
 	/// 导入并 resume 一个 JSONL 会话：返回打开后的会话，由调用方替换当前会话。
-	/// </summary>
 	internal static SessionManager ImportSession(string sourcePath)
 	{
 		if (!File.Exists(sourcePath))
@@ -1654,9 +1621,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return SessionManager.Open(Path.GetFullPath(sourcePath));
 	}
 
-	// ------------------------------------------------------------ 交互命令
 
-	/// <summary>交互模式可用的斜杠命令一览（/help）。</summary>
 	private const string InteractiveHelpText = """
 		命令：
 		  /model                    查看当前 provider/model/thinking
@@ -1687,7 +1652,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		/hotkeys 仅有桌面快捷键；/llama 需要 LLAMA_BASE_URL 指向 router 模式服务器。
 		""";
 
-	/// <summary>交互模式的内联 shell：`!cmd` 把输出并入对话，`!!cmd` 只执行不入上下文。</summary>
 	private async Task RunInlineShellAsync(CodingAgentSession session, string line, CancellationToken cancellationToken)
 	{
 		var excludeFromContext = line.StartsWith("!!");
@@ -1718,10 +1682,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		}
 	}
 
-	/// <summary>
 	/// pi 内置斜杠命令的行式实现。返回 true 表示已消费；未识别的 <c>/…</c> 继续走
 	/// 技能命令与提示词模板展开（与既有行为一致）。
-	/// </summary>
 	private async Task<bool> HandleSlashCommandAsync(
 		CodingAgentSession session,
 		CliArguments arguments,
@@ -2185,7 +2147,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		}
 	}
 
-	/// <summary>按 <c>mcp__&lt;server&gt;__&lt;tool&gt;</c> 前缀分组，展示每个服务器的工具数。</summary>
 	private void PrintMcpServers()
 	{
 		var any = false;
@@ -2213,7 +2174,6 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return line.Length <= max ? line : $"{line[..max]}…";
 	}
 
-	/// <summary>分支树里一条消息的单行描述。</summary>
 	private static string DescribeMessage(Message message) => message switch
 	{
 		UserMessage user => $"user {FirstLine(user.Content.Text ?? string.Empty, 48)}",

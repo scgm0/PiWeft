@@ -3,11 +3,9 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.JavaScript;
 
-/// <summary>
 /// <c>searchTools()</c>/<c>describeTool()</c> 使用的工具检索：与 pi 的
 /// <c>extensions/tool-search/tool.ts</c> 同一套分词与 Okapi BM25 参数（k1 = 1.2，b = 0.75），
 /// 文档是工具名、描述、参数 schema 的说明与属性名，以及可选的关键词。
-/// </summary>
 public static partial class CodeModeSearch
 {
 	private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
@@ -16,7 +14,6 @@ public static partial class CodeModeSearch
 		"of", "on", "or", "that", "the", "this", "to", "with",
 	};
 
-	/// <summary>构造排名字段；<paramref name="searchTerms"/> 用于补上工具标签等关键词。</summary>
 	public static string CreateDocument(
 		string name,
 		string? description,
@@ -30,7 +27,6 @@ public static partial class CodeModeSearch
 		return string.Join(" ", parts.Where(static part => !string.IsNullOrWhiteSpace(part)));
 	}
 
-	/// <summary>返回与查询相关的工具名，按分数降序；同分保持传入顺序。</summary>
 	public static IReadOnlyList<string> Rank(
 		string query,
 		IReadOnlyList<(string Name, string Text)> documents,
@@ -48,10 +44,8 @@ public static partial class CodeModeSearch
 		return RankTerms(query, tokenized, limit);
 	}
 
-	/// <summary>
 	/// 与 <see cref="Rank"/> 相同，但文档已预先分词：同一个脚本里多次 <c>searchTools()</c>
 	/// 复用第一次的分词结果，而不是每条查询重新扫描全部 schema 文本。
-	/// </summary>
 	public static IReadOnlyList<string> RankTerms(
 		string query,
 		IReadOnlyList<(string Name, IReadOnlyList<string> Terms)> documents,
@@ -114,7 +108,6 @@ public static partial class CodeModeSearch
 		];
 	}
 
-	/// <summary>按 pi 的规则切词：camelCase 边界、小写、去停用词、朴素单数化。</summary>
 	public static IReadOnlyList<string> Tokenize(string text)
 	{
 		// 与 pi 相同的顺序：先拆小写→大写边界，再拆连续大写缩写。
@@ -149,7 +142,6 @@ public static partial class CodeModeSearch
 		return term;
 	}
 
-	/// <summary>递归收集 schema 里的说明文字与参数名。</summary>
 	private static void SchemaText(JsonNode? schema, List<string> parts)
 	{
 		if (schema is not JsonObject node) return;

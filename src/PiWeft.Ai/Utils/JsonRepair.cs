@@ -4,16 +4,12 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Utils;
 
-/// <summary>
 /// 宽容的 JSON 读取：修复模型常见的非法转义与控制字符，并在失败时保留原文。
 /// 对应 pi 的 <c>utils/json-parse.ts</c>。
-/// </summary>
 public static class JsonRepair
 {
-	/// <summary>JSON 合法的单字符转义；switch 表达式比 HashSet 查找少一次间接与装箱。</summary>
 	private static bool IsValidEscape(char value) => value is '"' or '\\' or '/' or 'b' or 'f' or 'n' or 'r' or 't';
 
-	/// <summary>转义字符串里的控制字符，并给非法转义补一个反斜杠。</summary>
 	public static string Repair(string json)
 	{
 		var repaired = new StringBuilder(json.Length + 16);
@@ -83,7 +79,6 @@ public static class JsonRepair
 		return repaired.ToString();
 	}
 
-	/// <summary>解析一个 JSON 对象；不是对象或无法修复时返回错误文本。</summary>
 	public static (JsonObject? Value, string? Error) ParseObject(string? json)
 	{
 		if (string.IsNullOrWhiteSpace(json))

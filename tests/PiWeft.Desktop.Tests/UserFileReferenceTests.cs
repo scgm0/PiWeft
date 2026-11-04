@@ -2,7 +2,6 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// <summary>用户草稿/消息里的文件引用只做展示层识别：短标签、保留顺序，不误伤 URL 和代码。</summary>
 public sealed class UserFileReferenceTests
 {
 	[Fact]

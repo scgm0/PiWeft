@@ -5,7 +5,6 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// <summary>Session forking, which backs the CLI <c>--fork</c> flag.</summary>
 public class SessionForkTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-fork-" + Guid.NewGuid().ToString("N")[..8]);

@@ -8,10 +8,8 @@ using PiWeft.Ai.Json;
 
 namespace PiWeft.CodingAgent.Session;
 
-/// <summary>
 /// 读写 pi 的会话文件格式（JSONL，第 3 版）。全部手写，保证整条链路
 /// 不使用反射，满足 NativeAOT 要求。
-/// </summary>
 public static class SessionJson
 {
 	private static readonly JsonWriterOptions WriterOptions = new()
@@ -24,7 +22,6 @@ public static class SessionJson
 		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
-	/// <summary>把头部序列化成一行 JSONL（不带结尾换行）。</summary>
 	public static string Serialize(SessionHeader header)
 	{
 		var buffer = new ArrayBufferWriter<byte>(256);
@@ -37,7 +34,6 @@ public static class SessionJson
 		return Encoding.UTF8.GetString(buffer.WrittenSpan);
 	}
 
-	/// <summary>把一个条目序列化成一行 JSONL（不带结尾换行）。</summary>
 	public static string Serialize(SessionEntry entry)
 	{
 		var buffer = new ArrayBufferWriter<byte>(512);
@@ -50,7 +46,6 @@ public static class SessionJson
 		return Encoding.UTF8.GetString(buffer.WrittenSpan);
 	}
 
-	/// <summary>把头部写成一行 JSONL（含换行）到可复用缓冲区，供整文件重写使用。</summary>
 	public static void WriteHeaderLine(IBufferWriter<byte> buffer, SessionHeader header)
 	{
 		using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
@@ -64,11 +59,9 @@ public static class SessionJson
 		buffer.Advance(1);
 	}
 
-	/// <summary>
 	/// Writes one JSONL line (entry + newline) into a reusable buffer. Persist paths can hand the
 	/// UTF-8 bytes straight to <c>File.AppendAllBytes</c> instead of allocating a string and
 	/// encoding it again.
-	/// </summary>
 	public static void WriteEntryLine(IBufferWriter<byte> buffer, SessionEntry entry)
 	{
 		using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
@@ -222,7 +215,6 @@ public static class SessionJson
 		writer.WriteEndObject();
 	}
 
-	/// <summary>把一行 JSONL 解析成 <see cref="SessionHeader"/> 或 <see cref="SessionEntry"/>。</summary>
 	public static object? ParseLine(string line)
 	{
 		if (string.IsNullOrWhiteSpace(line))
@@ -233,10 +225,8 @@ public static class SessionJson
 		return ParseNode(JsonNode.Parse(line));
 	}
 
-	/// <summary>
 	/// 直接从 UTF-8 字节解析一行。会话文件动辄几十 MB，逐行转成 string 再解析会多一次
 	/// 整文件规模的分配；这里让 <see cref="JsonNode"/> 自己解码。
-	/// </summary>
 	public static object? ParseLine(ReadOnlySpan<byte> utf8Line)
 	{
 		if (utf8Line.IsEmpty || IsWhiteSpace(utf8Line))

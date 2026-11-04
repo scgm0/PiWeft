@@ -8,7 +8,6 @@ namespace PiWeft.Desktop;
 
 public enum ConfigFile { Models, Auth, Settings, Mcp, Usage }
 
-/// <summary>A bounded file snapshot. Invalid JSON remains available for explicit source repair.</summary>
 public sealed record ConfigurationDocument(ConfigFile File, bool Project, string Path, string Raw, string Revision, string? Error)
 {
 	public JsonObject Parse() => Error is null
@@ -18,7 +17,6 @@ public sealed record ConfigurationDocument(ConfigFile File, bool Project, string
 
 public sealed class ConfigurationConflictException() : IOException(Strings.ConfigConflict);
 
-/// <summary>Configuration writes use revision checks and same-directory atomic replacement.</summary>
 public sealed class ConfigurationStore
 {
 	public ConfigurationStore(string agentDir, string cwd)
@@ -33,7 +31,6 @@ public sealed class ConfigurationStore
 
 	public const int MaxBytes = 2 * 1024 * 1024;
 
-	/// <summary>全局配置所在目录；MCP 授权令牌也存在这里，跨模块要用同一个根。</summary>
 	public string AgentDir { get; }
 	private static readonly JsonDocumentOptions ReadOptions = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
 	public static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };

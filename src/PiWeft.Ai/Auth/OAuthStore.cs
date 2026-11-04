@@ -2,30 +2,25 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Auth;
 
-/// <summary><c>auth.json</c> 中的 OAuth 凭据，与 pi 的字段保持一致。</summary>
 public sealed record OAuthCredential
 {
 	public string Type { get; init; } = "oauth";
 	public required string Access { get; init; }
 	public required string Refresh { get; init; }
 
-	/// <summary>访问令牌过期的 Unix 秒时间戳。</summary>
 	public long Expires { get; init; }
 
 	public string? ClientId { get; init; }
 	public IReadOnlyList<string>? Scopes { get; init; }
 	public string? AccountId { get; init; }
 
-	/// <summary>Provider 的端点覆盖（例如 Copilot 的 proxy 或自定义 Radius gateway）。</summary>
 	public string? BaseUrl { get; init; }
 
-	/// <summary>GitHub Copilot Enterprise 域名。</summary>
 	public string? EnterpriseUrl { get; init; }
 
 	public DateTimeOffset ExpiresAt => DateTimeOffset.FromUnixTimeSeconds(Expires);
 }
 
-/// <summary>按 provider 读写 <c>auth.json</c> 中的 OAuth 凭据；API key 条目保持不动。</summary>
 public static class OAuthStore
 {
 	public static string Path(string? agentDir = null) =>
@@ -34,17 +29,14 @@ public static class OAuthStore
 	public static OAuthCredential? Read(string provider, string? agentDir = null) =>
 		ReadCredential(ReadRoot(agentDir)?[provider]);
 
-	/// <summary><see cref="Read"/> 的异步版本；请求路径不应阻塞在线程池线程上读盘。</summary>
 	public static async Task<OAuthCredential?> ReadAsync(
 		string provider,
 		string? agentDir = null,
 		CancellationToken cancellationToken = default) =>
 		ReadCredential((await AuthStore.ReadRootAsync(agentDir, cancellationToken).ConfigureAwait(false))?[provider]);
 
-	/// <summary>
 	/// 一次读盘取出全部 OAuth 凭据。认证页要显示多个 provider 的状态，
 	/// 逐个 Read 会对同一份 auth.json 重复读盘/解析；这里只读一次。
-	/// </summary>
 	public static IReadOnlyDictionary<string, OAuthCredential> ReadAll(string? agentDir = null)
 	{
 		var result = new Dictionary<string, OAuthCredential>(StringComparer.Ordinal);
@@ -84,11 +76,9 @@ public static class OAuthStore
 		};
 	}
 
-	/// <summary>auth.json 是用户可手改文件：类型不符的字段按缺失处理，不能让整页认证/模型可用性抛异常。</summary>
 	private static string? Text(JsonObject entry, string key) =>
 		entry[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
-	/// <summary>读取未过期（含 skew）的 OAuth access token；已过期返回 null。</summary>
 	public static string? ReadAccessToken(string provider, string? agentDir = null, TimeSpan? skew = null)
 	{
 		var credential = Read(provider, agentDir);
@@ -141,7 +131,6 @@ public static class OAuthStore
 		}
 	}
 
-	/// <summary>写盘前读取；文件缺失返回空对象，损坏/不可读时抛错而不是覆盖。</summary>
 	private static JsonObject ReadRootForWrite(string? agentDir)
 	{
 		var path = Path(agentDir);
