@@ -6,6 +6,8 @@
 		<AssemblyTitle>PiWeft Desktop</AssemblyTitle>
 		<RootNamespace>PiWeft.Desktop</RootNamespace>
 		<PublishAot>true</PublishAot>
+		<!-- NativeAOT 默认不带 EventPipe；打开后 dotnet-counters/dotnet-trace 才能附着到发布版。 -->
+		<EventSourceSupport>true</EventSourceSupport>
 		<TrimMode>full</TrimMode>
 		<InvariantGlobalization>false</InvariantGlobalization>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>

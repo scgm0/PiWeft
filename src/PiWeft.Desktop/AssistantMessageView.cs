@@ -308,6 +308,9 @@ internal sealed class AssistantMessageView : IDisposable
 			_pump.Stop();
 			return;
 		}
+
+		// 逐字推进就是一次重绘请求：没有它，帧档只能看到隔帧的空闲。
+		Diagnostics.NoteFrameRequest();
 		if (_thinkingType.Advance())
 		{
 			// 与 Update 走同一对消费端：展开着就长正文，收起着就长跑马灯预览。
@@ -401,7 +404,9 @@ internal sealed class AssistantMessageView : IDisposable
 				view.Append(text.Slice(feed.Shown, shown - feed.Shown));
 				if (watch is not null)
 				{
-					Diagnostics.Record(streamEvent, watch, $"delta={shown - feed.Shown} chars={shown}");
+					Diagnostics.Slow(streamEvent, watch, 4,
+						static state => $"delta={state.Delta} chars={state.Chars}",
+						(Delta: shown - feed.Shown, Chars: shown));
 				}
 				feed.Source = text;
 				feed.Shown = shown;

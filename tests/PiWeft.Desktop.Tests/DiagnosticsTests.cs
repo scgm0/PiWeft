@@ -85,11 +85,17 @@ public sealed class DiagnosticsTests : IDisposable
 		var path = live.TimingsPath!;
 		Diagnostics.Close();
 		var lines = File.ReadAllLines(path);
-		Assert.Equal(3, lines.Length);
-		using var first = JsonDocument.Parse(lines[0]);
+		Assert.Contains(lines, static line => line.Contains("\"kind\":\"meta\"", StringComparison.Ordinal));
+		var records = lines.Where(static line => !line.Contains("\"kind\":\"meta\"", StringComparison.Ordinal)).ToArray();
+		Assert.Equal(3, records.Length);
+		using var first = JsonDocument.Parse(records[0]);
 		Assert.Equal("session.open.read", first.RootElement.GetProperty("name").GetString());
 		Assert.Equal(884.3, first.RootElement.GetProperty("durationMs").GetDouble());
 		Assert.Equal("bytes=47451970, lines=26985", first.RootElement.GetProperty("detail").GetString());
+		Assert.True(first.RootElement.GetProperty("v").GetInt32() >= 1, "文件要带 schema 版本");
+		Assert.Equal("span", first.RootElement.GetProperty("kind").GetString());
+		Assert.Equal("session", first.RootElement.GetProperty("cat").GetString());
+		Assert.True(first.RootElement.TryGetProperty("tid", out _), "每条记录要能对上线程");
 		Assert.True(first.RootElement.TryGetProperty("rssBytes", out _), "每行都带上当时的内存，才能把慢和涨对上");
 	}
 
@@ -181,13 +187,18 @@ public sealed class DiagnosticsTests : IDisposable
 		using var json = JsonDocument.Parse(line);
 		Assert.Equal("runtime.window", json.RootElement.GetProperty("name").GetString());
 		var detail = json.RootElement.GetProperty("detail").GetString()!;
-		Assert.Contains("fps=", detail, StringComparison.Ordinal);
+		Assert.Contains("window.fps=", detail, StringComparison.Ordinal);
+		Assert.Contains("total.fps=", detail, StringComparison.Ordinal);
 		Assert.Contains("p95=", detail, StringComparison.Ordinal);
 		Assert.Contains("counters=[row.build:3]", detail, StringComparison.Ordinal);
 		// 空闲也必须有这一行：判断堆是否一直长，靠的就是没有重绘的时间段。
 		Assert.Contains("heap=", detail, StringComparison.Ordinal);
 		Assert.Contains("loh=", detail, StringComparison.Ordinal);
+		Assert.Contains("poh=", detail, StringComparison.Ordinal);
 		Assert.Contains("rss=", detail, StringComparison.Ordinal);
+		Assert.Contains("total.p95=", detail, StringComparison.Ordinal);
+		Assert.Contains("budget=", detail, StringComparison.Ordinal);
+		Assert.Contains("dropped-lines=", detail, StringComparison.Ordinal);
 	}
 
 	[Fact]
@@ -270,8 +281,11 @@ public sealed class DiagnosticsTests : IDisposable
 		Diagnostics.Reset();
 
 		Diagnostics.ObserveFrame(new RenderStats(10, 1));
+		// 每次请求之后才发生「帧工作」，请求之前的等待不计入成本。
+		Diagnostics.NoteFrameRequest();
 		Thread.Sleep(25);
 		Diagnostics.ObserveFrame(new RenderStats(10, 1));
+		Diagnostics.NoteFrameRequest();
 		Thread.Sleep(60);
 		Diagnostics.ObserveFrame(new RenderStats(10, 1));
 
@@ -335,6 +349,7 @@ public sealed class DiagnosticsTests : IDisposable
 		var stats = new RenderStats(8, 2);
 
 		Diagnostics.ObserveFrame(stats);
+		Diagnostics.NoteFrameRequest();
 		Thread.Sleep(60);
 		Diagnostics.ObserveFrame(stats);
 		Thread.Sleep(450);
@@ -400,6 +415,147 @@ public sealed class DiagnosticsTests : IDisposable
 
 		Diagnostics.Reset();
 		Assert.Empty(Diagnostics.TakeSnapshot().Counters);
+	}
+
+
+	[Fact]
+	public void CpuPercentUsesTimeSpanTicks()
+	{
+		// Process.TotalProcessorTime 是 100 ns 的 TimeSpan tick；用 Stopwatch.Frequency 换算会差 100 倍。
+		Assert.Equal(100, Diagnostics.CpuPercentFromTicks(TimeSpan.TicksPerSecond, Stopwatch.Frequency, 1), 1);
+		Assert.Equal(50, Diagnostics.CpuPercentFromTicks(TimeSpan.TicksPerSecond, Stopwatch.Frequency, 2), 1);
+	}
+
+	[Fact]
+	public void FrameRequestSeparatesIdleFromFrameCost()
+	{
+		Diagnostics.SetEnabled(true, _agentDir);
+		Diagnostics.Reset();
+		var stats = new RenderStats(10, 1);
+
+		Diagnostics.NoteFrameRequest();
+		Thread.Sleep(20);
+		Diagnostics.ObserveFrame(stats);
+
+		// 300 ms 的空闲在旧口径下会变成「长帧」；有了请求时间戳，它只是空闲。
+		Thread.Sleep(300);
+		Diagnostics.NoteFrameRequest();
+		Thread.Sleep(10);
+		Diagnostics.ObserveFrame(stats);
+
+		var frame = Diagnostics.TakeSnapshot().Frame;
+		Assert.Equal(2, frame.Frames);
+		Assert.Equal(0, frame.IdleGaps);
+		Assert.Equal(0, frame.LongFrames);
+		Assert.True(frame.MaxMs < 100, $"idle must not become frame cost: max={frame.MaxMs:0.0}");
+	}
+
+	[Fact]
+	public void FrameBudgetSnapsToCommonRefreshRates()
+	{
+		// 启动/动画噪声会把中位间隔抬到 24.6 ms：吸附到 16.7 ms，而不是发明一个 40 fps 的预算。
+		Assert.Equal(1000.0 / 60, Diagnostics.SnapFrameBudget(16.4), 1);
+		Assert.Equal(1000.0 / 60, Diagnostics.SnapFrameBudget(24.6), 1);
+		Assert.Equal(1000.0 / 120, Diagnostics.SnapFrameBudget(8.5), 1);
+		Assert.Equal(1000.0 / 30, Diagnostics.SnapFrameBudget(33.0), 1);
+		// 偏离所有常见刷新率太远：回退 60 fps。
+		Assert.Equal(1000.0 / 60, Diagnostics.SnapFrameBudget(5.0), 1);
+	}
+
+	[Fact]
+	public void LongPauseWithoutRequestIsAStallAndNotAFrame()
+	{
+		Diagnostics.SetEnabled(true, _agentDir);
+		Diagnostics.Reset();
+		var stats = new RenderStats(10, 1);
+
+		Diagnostics.NoteFrameRequest();
+		Thread.Sleep(10);
+		Diagnostics.ObserveFrame(stats);
+		Thread.Sleep(500);
+		Diagnostics.ObserveFrame(stats);
+
+		var frame = Diagnostics.TakeSnapshot().Frame;
+		Assert.Equal(1, frame.Frames);
+		Assert.Equal(1, frame.IdleGaps);
+		Assert.True(frame.MaxGapMs >= 400, $"max gap={frame.MaxGapMs:0.0}");
+	}
+
+	[Fact]
+	public void LazySlowDetailDoesNotAllocateBelowThreshold()
+	{
+		Diagnostics.SetEnabled(true, _agentDir);
+		Diagnostics.Reset();
+		// 预热计数器桶；之后每次调用都必须零分配。
+		Diagnostics.Slow("lazy.path", 1, 8, static value => $"v={value}", 0);
+
+		var before = GC.GetAllocatedBytesForCurrentThread();
+		for (var index = 0; index < 1000; index++)
+		{
+			Diagnostics.Slow("lazy.path", 1, 8, static value => $"v={value}", index);
+		}
+
+		var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+		Assert.True(allocated < 4096, $"lazy Slow allocated {allocated} bytes");
+		var counter = Diagnostics.TakeSnapshot().Counters.Single(item => item.Name == "lazy.path");
+		Assert.Equal(1001, counter.Value);
+	}
+
+	[Fact]
+	public void DiagnosticsStartFailureIsNonFatal()
+	{
+		var blocker = Path.Combine(_agentDir, "not-a-directory");
+		File.WriteAllText(blocker, "x");
+
+		Diagnostics.SetEnabled(true, blocker);
+
+		Assert.False(Diagnostics.Enabled);
+		Assert.False(string.IsNullOrWhiteSpace(Diagnostics.LastError));
+		Diagnostics.Close();
+	}
+
+	[Fact]
+	public void ExportWritesChromeTrace()
+	{
+		Diagnostics.SetEnabled(true, _agentDir);
+		Diagnostics.Record("export.span", 12.5, "rows=3");
+		Diagnostics.Close();
+
+		var path = Diagnostics.ExportChromeTrace();
+		Assert.NotNull(path);
+		Assert.True(File.Exists(path));
+		using var document = JsonDocument.Parse(File.ReadAllText(path!));
+		var events = document.RootElement.GetProperty("traceEvents").EnumerateArray().ToArray();
+		var span = events.Single(item => item.TryGetProperty("name", out var name) &&
+			name.GetString() == "export.span");
+		Assert.Equal("X", span.GetProperty("ph").GetString());
+		Assert.Equal(12500, span.GetProperty("dur").GetInt64());
+		Assert.Equal(3, span.GetProperty("args").GetProperty("rows").GetInt32());
+	}
+
+
+	[Fact]
+	public void FileLimitRotatesInsteadOfGrowingForever()
+	{
+		var oldLimit = Diagnostics.FileLimitBytes;
+		Diagnostics.FileLimitBytes = 2048;
+		try
+		{
+			Diagnostics.SetEnabled(true, _agentDir);
+			for (var index = 0; index < 80; index++)
+			{
+				Diagnostics.Record("rotate.span", index, new string('x', 160));
+			}
+
+			Diagnostics.Close();
+			var files = Directory.GetFiles(Diagnostics.DirectoryPath(_agentDir), "timings-*.jsonl");
+			Assert.True(files.Length > 1, $"expected rotation, got {files.Length} file(s)");
+		}
+		finally
+		{
+			Diagnostics.FileLimitBytes = oldLimit;
+			Diagnostics.Close();
+		}
 	}
 
 	private static RenderPrimitiveStats Primitives() => new(
@@ -499,6 +655,73 @@ public sealed class SettingsDiagnosticsSectionTests : IDisposable
 		Assert.Contains(Strings.LabelCpu, texts);
 		Assert.Contains(Strings.DiagnosticsCompact, texts);
 	}
+
+	[Fact]
+	public async Task LiveViewUpdatesInPlaceAndPauseFreezesIt()
+	{
+		File.WriteAllText(Path.Combine(_root, "agent", "desktop.json"), """{"theme":"dark","diagnostics":true}""");
+		Diagnostics.SetEnabled(true, Path.Combine(_root, "agent"));
+		Diagnostics.Record("live.path", 12);
+		var view = Create();
+		await view.SelectSectionAsync("diagnostics");
+
+		// 实时区的控件只建一次：脉冲刷新不能把整棵树换掉。
+		var before = Find<TextBlock>(view.View).ToArray();
+		Diagnostics.Record("live.path", 34);
+		view.RefreshDiagnosticsLive();
+		var after = Find<TextBlock>(view.View).ToArray();
+		Assert.All(before, block => Assert.Contains(block, after));
+		Assert.Contains(after, block => (block.Text ?? string.Empty).Contains("×2", StringComparison.Ordinal));
+
+		// 暂停后脉冲不再改数值，但采样仍在继续（计数照常累加）。
+		var pause = Find<Button>(view.View).Single(button => ButtonText(button).Contains(Strings.DiagnosticsPause, StringComparison.Ordinal));
+		Click(pause);
+		// 按钮切换本身会重建分区；从暂停后的这一份开始比，才能看出脉冲是否真的冻结了数值。
+		var frozen = Find<TextBlock>(view.View).Select(static block => block.Text).ToArray();
+		Diagnostics.Record("live.path", 56);
+		view.RefreshDiagnosticsLive();
+		Assert.Equal(frozen, Find<TextBlock>(view.View).Select(static block => block.Text).ToArray());
+		Assert.Contains(Strings.DiagnosticsPaused, Texts(view));
+		Assert.Equal(3, Diagnostics.TakeSnapshot().Stats.Single(static stat => stat.Name == "live.path").Count);
+
+		var resume = Find<Button>(view.View).Single(button => ButtonText(button).Contains(Strings.DiagnosticsResume, StringComparison.Ordinal));
+		Click(resume);
+		Assert.Contains(Strings.DiagnosticsSampling, Texts(view));
+	}
+
+	[Fact]
+	public async Task ExportButtonWritesATraceNextToTheTimings()
+	{
+		File.WriteAllText(Path.Combine(_root, "agent", "desktop.json"), """{"theme":"dark","diagnostics":true}""");
+		Diagnostics.SetEnabled(true, Path.Combine(_root, "agent"));
+		Diagnostics.Record("export.ui", 4.2);
+		var view = Create();
+		await view.SelectSectionAsync("diagnostics");
+
+		var button = Find<Button>(view.View).Single(button => ButtonText(button).Contains(Strings.DiagnosticsExportTrace, StringComparison.Ordinal));
+		Click(button);
+
+		var deadline = Stopwatch.StartNew();
+		while (deadline.Elapsed < TimeSpan.FromSeconds(5) &&
+			!Directory.GetFiles(Diagnostics.DirectoryPath(Path.Combine(_root, "agent")), "trace-*.json").Any())
+		{
+			await Task.Delay(50);
+		}
+
+		var trace = Directory.GetFiles(Diagnostics.DirectoryPath(Path.Combine(_root, "agent")), "trace-*.json").Single();
+		using var document = JsonDocument.Parse(File.ReadAllText(trace));
+		Assert.Contains(document.RootElement.GetProperty("traceEvents").EnumerateArray(),
+			item => item.TryGetProperty("name", out var name) && name.GetString() == "export.ui");
+	}
+
+	// Button.OnClick is protected: the other UI tests invoke it the same way.
+	private static void Click(Button button) =>
+		typeof(Button).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(button, null);
+
+	private static string ButtonText(Button button) =>
+		button.Content is Element content
+			? string.Join(" ", Find<TextBlock>(content).Select(static block => block.Text ?? string.Empty))
+			: string.Empty;
 
 	private SettingsView Create() => new(
 		() => new SettingsSnapshot

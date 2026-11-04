@@ -33,9 +33,9 @@
 | 2,000 行流式过程投影 | 1.15 ms / 233 KB → 0.07–0.12 ms |
 | 40 会话侧栏冷扫描 | 39–67 ms / 34.4 MB → 19–24 ms / 0.26 MB |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
-| NativeAOT 桌面体积 | 62.4 MB；`OptimizationPreference=Speed` 64.0 MB（+2.6%） |
+| NativeAOT 桌面体积（linux-x64，当前提交） | 75.8 MiB；开启 `EventSourceSupport` 77.4 MiB（+1.6 MiB / +2.1%，换来 `dotnet-counters`/`dotnet-trace` 可附着）。旧记录 62.4 MB / 64.0 MB 来自更早构建，需按当前提交重测 |
 
-内存读法：工作集包含字体映射、GPU/驱动共享表面与保留合成；判断泄漏看趋势与 `runtime.window` 的 `rtext/rgeom/ratlas/rpersist/rscratch/rdecoded` 台账，再用 `dotnet-counters`/`dotnet-gcdump` 与 `smaps_rollup` 对照。打开含大量截图的会话会一次性抬高工作集，不属于逐帧增长。
+内存读法：工作集包含字体映射、GPU/驱动共享表面与保留合成；判断泄漏看趋势与 `runtime.window` 的 `rtext/rgeom/ratlas/rpersist/rscratch/rdecoded/rbitmap/rvector/rencoded` 台账，再用 `dotnet-counters`/`dotnet-trace` 与 `smaps_rollup` 对照。发布版已打开 NativeAOT 的 `EventSourceSupport`（实测 +1.6 MiB），`dotnet-counters collect` 已验证可附着；但 NativeAOT 仍不支持 `dotnet-gcdump` 的堆分析，托管堆趋势以自带窗口值为准。打开含大量截图的会话会一次性抬高工作集，不属于逐帧增长。
 
 ## 已落地的热路径
 
@@ -49,7 +49,7 @@
 - 平滑滚动按帧合并输入、Hermite 续接、设备像素提交；虚拟化高度校正时平移动画目标，避免「滚很多却回退」。
 - 过程组跟底由几何决定；展开工具行用步骤索引锚定预览行，虚拟化换宿主也不失效；流式思考只续跟、不反复锁底。
 - 图片/文件面板、Git 状态/图/分支、检查点列表放后台线程，generation 丢弃过期结果；面板按节独立宿主，选行只换 diff。
-- 诊断分帧档（~66 ns/0 B）、计数档（30–50 ns/0 B）、明细档（2.1–2.7 µs/~870 B）；空闲也写 `runtime.window`，便于判断堆趋势。
+- 诊断分帧档（约百纳秒/0 B）、计数档（30–50 ns/0 B）、明细档（约 2 µs/~870 B）；`Slow` 的 detail 延迟到超过阈值才格式化，流式追加只计数+采慢样本。空闲也写 `runtime.window`，便于判断堆趋势。
 - 滚动/首次打开复杂会话的剩余长帧主要来自框架的文本重录、交换缓冲与 GL 上下文初始化，应用侧不再收窄。
 
 ## 为什么不做历史分页
@@ -62,14 +62,18 @@
 
 ## 诊断面板
 
-设置 → 维护 → 性能诊断，默认关闭；关闭时调用点只做一次布尔判断。打开后每秒刷新实时区（概览、帧时间、渲染循环、内存/GC、计数、聚合、最近明细），静态部分不动；面板摘下后脉冲停止。
+设置 → 维护 → 性能诊断，默认关闭；关闭时调用点只做一次布尔判断。打开后实时区每秒**原地更新文本与帧条**，不重建控件树；面板摘下或暂停刷新后脉冲停止。按钮提供暂停/继续、刷新、压堆、清空、打开目录和**导出 Chrome Trace**。
 
-- 帧档接 `Window.FrameRendered` / `LastFrameStats`，产出 p50/p95/最大、FPS（中位帧间隔）、掉帧/长帧、每帧分配、GC 暂停占比、输入→绘制延迟与 draw/cull/text/shape/image/clip 计数；>400 ms 的间隔记为停顿，不混入帧样本。
-- 计数档给每帧路径（`row.build`/`row.release`/`row.inplace`/`render.stats`/`timeline.realize`/`ui.render`）；明细档只给低频或超阈值样本，逐条写 JSONL。
-- 每秒采样工作集/私有内存/托管堆/碎片/累计分配/GC 次数/CPU/提交内存/pinned/待终结/线程池，并从池线程向 UI 投递探针测排队延迟。
-- 落盘 `<agentDir>/diagnostics/timings-<时间戳>.jsonl`，250 ms 一批 flush；单条 ≥200 ms 记 `Slow path`。
-- FPS 按帧间隔中位数换算，渲染循环是按请求重绘；面板同时显示「连续/按请求 · VSync · 目标帧率」与每秒帧数。
-- Debug 下 MewUI DevTools（`Ctrl+Shift+P` 帧叠层、`Ctrl+Alt+Shift+P` profiler、`Ctrl+Shift+T` 视觉树、`Ctrl+Shift+I` 拾取）可用；AOT 发布会折叠。CPU 采样、堆转储、ETW/perf 交给外部工具。
+- 帧档用「应用侧重绘请求 → `FrameRendered`」测**本帧真实成本**，不是两次呈现之间的空闲间隔：`SessionTab.Render`、流式打字机、平滑滚动、输入都会标记请求，请求之前的空闲被切掉。MewUI 源码不需要改动；覆盖不到的框架内部重绘（悬停、框架动画）间隔 <50 ms 时按帧成本算，≥50 ms 时按空闲处理。`≥400 ms` 的停顿单独计数，不混入帧成本。
+- 掉帧阈值取目标帧率；未设置时用连续循环的帧间隔中位数，且只接受 4–40 ms、吸附到 144/120/90/60/30 Hz 的常见刷新率，偏离太远回退 60 fps。不再固定 20 ms；长帧仍是 ≥50 ms 的独立阈值。
+- 产出窗口 p50/p95/max、掉帧/长帧/停顿、每帧分配、GC 暂停占比、输入→绘制、draw/cull/text/shape/image/clip；`runtime.window` 同时写窗口值（`frames`/`window.fps`/`p50`/`p95`/`dropped`/`long`/`stall`/`alloc/frame`/`gc`）和 `total.*` 累计值，文件里既有逐秒曲线也能看整个采集期峰值。
+- 输入采样：键盘用 `Window.PreviewKeyDown`；指针/滚轮除窗口冒泡点外，还会话视口、阅读守卫、输入区、发送键、标签页、会话行、侧栏滚动各记一次，覆盖主要交互；更深的按钮点击可能收不到样本，这是不改框架前提下的已知限制。一帧内保留最早的待处理输入，记最坏等待。
+- 计数档给每帧路径（`row.build`/`row.release`/`row.inplace`/`render.stats`/`timeline.realize`/`ui.render`）；`Slow` 的 detail 延迟到超过阈值才格式化，流式 Markdown 追加只计数 + 慢样本，不再每帧写明细。
+- 每秒采样工作集/私有内存/托管堆/LOH/POH/碎片/累计分配/GC 次数/CPU/提交内存/pinned/待终结/线程池；CPU 用 `TimeSpan.TicksPerMillisecond` 换算（`Process.TotalProcessorTime` 是 100 ns tick，不是 Stopwatch tick）。
+- 落盘 `<agentDir>/diagnostics/timings-<时间戳>-<pid>-<序号>.jsonl`：首行 `diagnostics.meta` 带 schema 版本/运行时/OS/架构/核数，每条记录带 `kind/cat/tid/v`。16 MiB 轮转、保留最近 12 份/7 天；队列有上限，写盘跟不上时丢弃并计数，不阻塞 UI。
+- 明细档只给低频或超阈值样本；单条 ≥200 ms 记 `Slow path`。导出 `trace-*.json` 可直接打开 Perfetto、Chrome DevTools 或 speedscope。
+- 诊断不改 `external/MewUI` 源码：帧起点来自应用侧请求，指针采样靠已有事件与各交互宿主的取样点；`scripts/mewui-source.sh` 可随时把子模块重置回上游。
+- Debug 下 MewUI DevTools（`Ctrl+Shift+P` 帧叠层、`Ctrl+Alt+Shift+P` profiler、`Ctrl+Shift+T` 视觉树、`Ctrl+Shift+I` 拾取）可用；AOT 发布会折叠。CPU 采样、堆转储、ETW/perf 仍交给外部工具；发布版已开 EventPipe，`dotnet-gcdump` 的堆分析在 NativeAOT 下不可用。
 
 ## 复现
 

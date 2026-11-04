@@ -4,6 +4,8 @@
 		<OutputType>Exe</OutputType>
 		<IsAotCompatible>true</IsAotCompatible>
 		<PublishAot>true</PublishAot>
+		<!-- NativeAOT 默认不带 EventPipe；打开后 dotnet-counters/dotnet-trace 才能附着到发布版。 -->
+		<EventSourceSupport>true</EventSourceSupport>
 		<RootNamespace>PiWeft.Cli</RootNamespace>
 		<!-- 项目名与命名空间是 PiWeft.Cli，但构建产物必须是 pi：
 		     .NET 用输出文件名作为程序集身份，所以 AssemblyName 只能是 pi。 -->

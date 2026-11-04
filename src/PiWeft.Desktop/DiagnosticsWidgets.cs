@@ -8,10 +8,9 @@ namespace PiWeft.Desktop;
 /// 这是数据可视化（不是图标）：柱形与参考线只表达数值，任何图形元素都来自主题色。
 internal sealed class FrameTimeStrip : FrameworkElement
 {
-	private const double BudgetMs = 16.7;
-
 	private const double BarGap = 1;
 	private double[] _samples = [];
+	private double _budgetMs = 16.7;
 
 	public FrameTimeStrip()
 	{
@@ -20,9 +19,10 @@ internal sealed class FrameTimeStrip : FrameworkElement
 		VerticalAlignment = VerticalAlignment.Center;
 	}
 
-	public void SetSamples(IReadOnlyList<double> samples)
+	public void SetSamples(IReadOnlyList<double> samples, double budgetMs = 16.7)
 	{
 		_samples = samples.Count == 0 ? [] : [.. samples];
+		_budgetMs = budgetMs > 0 && double.IsFinite(budgetMs) ? budgetMs : 16.7;
 		InvalidateVisual();
 	}
 
@@ -50,8 +50,8 @@ internal sealed class FrameTimeStrip : FrameworkElement
 			return;
 		}
 
-		// 纵轴按「最矮也看得见预算线」来定标：峰值再高，16.7 ms 的参考线也始终在 1/3 高度以上。
-		var peak = BudgetMs * 1.5;
+		// 纵轴按「最矮也看得见预算线」来定标：峰值再高，预算线也始终在 1/3 高度以上。
+		var peak = _budgetMs * 1.5;
 		foreach (var sample in _samples)
 		{
 			peak = Math.Max(peak, sample);
@@ -59,7 +59,7 @@ internal sealed class FrameTimeStrip : FrameworkElement
 
 		var usable = box.Height - 6;
 		double Y(double ms) => box.Bottom - 3 - Math.Min(1, ms / peak) * usable;
-		var budget = Y(BudgetMs);
+		var budget = Y(_budgetMs);
 		context.DrawLine(new Point(box.X + 1, budget), new Point(box.Right - 1, budget),
 			palette.Info.WithAlpha(0x66), 1, pixelSnap: true);
 
@@ -71,10 +71,10 @@ internal sealed class FrameTimeStrip : FrameworkElement
 			var rect = new Rect(box.X + index * slot + BarGap / 2, top, width, box.Bottom - 3 - top);
 			var color = _samples[index] >= Diagnostics.LongFrameReportMs
 				? palette.Error
-				: _samples[index] > BudgetMs
+				: _samples[index] > _budgetMs
 					? palette.Accent
 					: palette.Success;
-			context.FillRectangle(rect, color.WithAlpha((byte)(_samples[index] > BudgetMs ? 0xAA : 0x6E)));
+			context.FillRectangle(rect, color.WithAlpha((byte)(_samples[index] > _budgetMs ? 0xAA : 0x6E)));
 		}
 	}
 }

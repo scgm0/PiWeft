@@ -12,6 +12,8 @@ public sealed partial class MainWindow
 	{
 		HideScrollbarsWhenIdle(_sessionTree);
 		_sessionTree.SmoothScrolling().CornerRadius(AppTheme.RadiusMd);
+		// 侧栏滚动由 TreeView 的滚动级联接住，不会冒泡到窗口根。
+		_sessionTree.MouseWheel += _ => Diagnostics.NoteInput();
 		_sessionTree.HorizontalScroll = ScrollMode.Disabled;
 		_sessionTree.ItemHeight = 36;
 		_sessionTree.Indent = 14;
@@ -34,6 +36,7 @@ public sealed partial class MainWindow
 			context.Register("title", title);
 			context.Register("time", time);
 			return new DockPanel().LastChildFill()
+				.OnMouseDown(_ => Diagnostics.NoteInput())
 				.Children(more.DockRight(), time.DockRight(), new DockPanel().LastChildFill().Children(folder.DockLeft(), title));
 		}, (row, node, _, context) =>
 		{

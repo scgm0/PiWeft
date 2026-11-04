@@ -306,6 +306,8 @@ public sealed partial class SessionTab : IDisposable
 		_mainArea.SizeChanged += _ => UpdateOutlineVisibility();
 
 		_composer = new MultiLineTextBox().PrimarySelection()
+			// 文本控件会处理点击（移光标），冒泡不到窗口根：输入区自己记一次。
+			.OnMouseDown(_ => Diagnostics.NoteInput())
 			.FontSize(AppTheme.FontSizeChat)
 			.Placeholder(string.Empty)
 			.Height(AppTheme.ComposerHeight)
@@ -369,6 +371,7 @@ public sealed partial class SessionTab : IDisposable
 			.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6).Children(
 				_sendIcon, _sendLabel.Text(Strings.Send).FontSize(AppTheme.FontSizeCaption).OnAccentText()))
 			.OnClick(Send)
+			.OnMouseDown(_ => Diagnostics.NoteInput())
 			.Primary().Height(AppTheme.ControlHeightMd)
 			.CornerRadius(0)
 			.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0))
@@ -2124,6 +2127,8 @@ public sealed partial class SessionTab : IDisposable
 			return;
 		}
 
+		// 应用侧重绘请求：帧档用「请求 → 呈现」量真实成本，把按请求重绘前的空闲切掉。
+		Diagnostics.NoteFrameRequest();
 		// 流式期每 40 ms 合并一次渲染；只把真正贵的帧记进诊断，否则文件会被无害的抖动填满。
 		var renderWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 
@@ -2195,7 +2200,7 @@ public sealed partial class SessionTab : IDisposable
 		if (statsWatch is not null)
 		{
 			// 渲染每帧都发生：常态只计数，真正慢的那几次才落明细（否则诊断自身就是垃圾源）。
-			Diagnostics.Slow("render.stats", statsWatch, 8, $"rows={all.Count}");
+			Diagnostics.Slow("render.stats", statsWatch, 8, static rows => $"rows={rows}", all.Count);
 		}
 
 		var busy = _sending || _chat.IsStreaming;
@@ -2291,7 +2296,7 @@ public sealed partial class SessionTab : IDisposable
 		SyncOutline(entries, _projector.LastStablePrefix);
 		if (realize is not null)
 		{
-			Diagnostics.Slow("timeline.realize", realize, 8, $"rows={timelineRows.Count}");
+			Diagnostics.Slow("timeline.realize", realize, 8, static rows => $"rows={rows}", timelineRows.Count);
 		}
 		SetEmptyState(all.Count == 0 && _messages.IsVisible);
 		_noMatches.IsVisible(all.Count > 0 && entries.Count == 0 && _messages.IsVisible);
@@ -2319,7 +2324,9 @@ public sealed partial class SessionTab : IDisposable
 		if (renderWatch is not null)
 		{
 			var elapsed = renderWatch.Elapsed.TotalMilliseconds;
-			Diagnostics.Slow("ui.render", elapsed, 8, $"rows={entries.Count}, visible={_timeline.VisibleRowCount}");
+			Diagnostics.Slow("ui.render", elapsed, 8,
+				static state => $"rows={state.Rows}, visible={state.Visible}",
+				(Rows: entries.Count, Visible: _timeline.VisibleRowCount));
 		}
 	}
 

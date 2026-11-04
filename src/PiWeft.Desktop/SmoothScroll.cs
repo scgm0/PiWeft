@@ -557,6 +557,7 @@ internal sealed class SmoothScroll : IDisposable
 
 	private void Apply(Point offset, bool intermediate = false)
 	{
+		Diagnostics.NoteFrameRequest();
 		IsApplyingOffset = true;
 		try
 		{

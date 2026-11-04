@@ -107,31 +107,44 @@ public static partial class Strings
 	// 性能诊断（对齐 PiDeck 设置里的同名开关）
 	public const string SettingsDiagnostics = "性能诊断";
 	public const string DiagnosticsDesc =
-		"三档采样：帧档（每帧约 0.1 µs、零分配，给帧间隔 p50/p95、掉帧/长帧/停顿、每帧分配、GC 占比、输入→绘制延迟与绘制量）、" +
+		"三档采样：帧档（应用侧重绘请求→FrameRendered 的真实帧成本，p50/p95、掉帧/长帧/停顿、每帧分配、GC 占比、输入→绘制延迟与绘制量）、" +
 		"计数档（行构建/回收、重建轮次等 churn 次数）、明细档（打开会话、投影、慢帧、Markdown 定稿等关键耗时，逐条落盘）。" +
-		"数据写到应用数据目录的 diagnostics 文件夹，并每秒追加一行帧档摘要，用来做优化前后对照与追查卡顿；" +
+		"每秒写一行窗口值 + 累计值，可暂停刷新、压堆、导出 Chrome Trace 到 Perfetto/Chrome DevTools 查看；" +
 		"默认关闭，关闭时调用点只剩一次布尔判断。";
 	public const string DiagnosticsRefresh = "刷新采样";
 	public const string DiagnosticsOpenFolder = "打开诊断目录";
 	public const string DiagnosticsReset = "清空统计";
+	public const string DiagnosticsPause = "暂停刷新";
+	public const string DiagnosticsSampling = "采样中 · 每秒刷新";
+	public const string DiagnosticsPaused = "已暂停刷新 · 采样仍在继续";
+	public const string DiagnosticsResume = "继续刷新";
+	public const string DiagnosticsExportTrace = "导出 Chrome Trace";
+	public const string DiagnosticsExporting = "正在导出 Trace…";
+	public const string DiagnosticsExportEmpty = "还没有可导出的采集文件。";
+	public const string DiagnosticsCompacting = "正在压堆…";
+	public static string DiagnosticsExported(string path) => $"Trace 已导出：{path}";
+	public static string DiagnosticsStartFailed(string? error) =>
+		string.IsNullOrWhiteSpace(error) ? "诊断启动失败：目录不可写或磁盘已满。应用会继续运行。" : $"诊断启动失败：{error}";
 	public const string DiagnosticsMemory = "内存";
 	public const string DiagnosticsQueueLag = "UI 队列延迟";
+	public const string DiagnosticsQueue = "诊断队列";
 	public const string DiagnosticsOff = "采样未开启：打开开关后再操作一次，就能看到各阶段的耗时。";
 	public const string DiagnosticsNoData = "还没有记录到耗时；开关打开后的操作才会被记下来。";
-	public const string DiagnosticsStatsHeader = "按名称汇总（次数 · 总耗时 · 最大 · 最近）";
+	public const string DiagnosticsStatsHeader = "按名称汇总（次数 · 总耗时 · p95 · 最大）";
 	public const string DiagnosticsRecentHeader = "最近耗时";
 	public const string DiagnosticsPath = "耗时文件";
 	public const string DiagnosticsStarted = "性能诊断已开始采样";
 	public const string DiagnosticsStopped = "性能诊断已停止";
-	public const string DiagnosticsFrameHeader = "帧档（每帧约 0.1 µs、零分配）";
+	public const string DiagnosticsFrameHeader = "帧档（真实帧成本 · 每帧零分配）";
 	public const string DiagnosticsOverview = "概览";
 	public const string DiagnosticsMemoryHeader = "内存与 GC";
+	public const string LabelPoh = "POH";
 	public const string DiagnosticsMemoryHint =
 		"托管堆只会在 GC 需要时才回收：gen2 次数几乎不动而堆持续变大，是「还没收」而不是「漏了」。" +
 		"要判定泄漏，点「压一次堆」看剩余；同一个操作重复做，剩余一路抬高才是泄漏。";
 	public const string DiagnosticsLoopHeader = "渲染循环";
 	public const string DiagnosticsLoopHint =
-		"FPS 由帧间隔中位数换算：开局是背靠背的连续重绘，稳定后只剩按请求重绘的那几帧，两者不可直接比。";
+		"连续循环用帧间隔中位数换算 FPS；按请求重绘时帧间隔包含空闲，不能换算 FPS，只看真实帧成本与停顿。";
 	public const string DiagnosticsCompact = "压一次堆";
 	public const string DiagnosticsCompactHint = "完整回收并显示剩余托管堆";
 	public static string DiagnosticsCompactResult(long before, long after, double pauseMs) =>
@@ -150,9 +163,10 @@ public static partial class Strings
 	public const string LabelPool = "线程池";
 	public const string LabelQueueLag = "UI 队列延迟";
 	public const string LabelInputLatency = "输入→绘制";
-	public const string LabelFrameGap = "帧间隔";
-	public const string LabelFrameBudget = "预算 16.7ms";
-	public const string LabelFrameCounts = "掉帧 / 长帧 / 停顿";
+	public const string LabelFrameGap = "帧成本";
+	public const string LabelFrameRate = "帧率 / 帧间隔";
+	public const string LabelFrameBudget = "预算";
+	public const string LabelFrameCounts = "掉帧 / 长帧 / 停顿（最近一秒）";
 	public const string LabelAllocPerFrame = "每帧分配";
 	public const string LabelDrawCalls = "绘制调用";
 	public const string DiagnosticsCountersHeader = "事件计数（帧档与 churn 档）";

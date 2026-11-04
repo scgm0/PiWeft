@@ -112,12 +112,12 @@ public sealed partial class MainWindow : Window
 		var preference = DesktopPreference.Load();
 		// 诊断要覆盖启动本身：环境构建、首个会话解析与标签页布局都在开启之后才发生。
 		Diagnostics.SetEnabled(preference.Diagnostics);
-		// 帧档：MewUI 每帧渲染后都无条件填好 LastFrameStats，这里只把它读进定长环形缓冲。
+		// 帧档：只接 FrameRendered；帧起点由应用侧重绘请求（SessionTab/滚动/打字机/输入）标记。
 		FrameRendered += ObserveDiagnosticsFrame;
-		// 输入→绘制：没被下游处理掉的按键与指针事件会冒泡到窗口根，够判断「点了但半天没反应」。
-		// 滚轮通常已被文本控件或滚动级联处理掉，不在此处重复记一次。
+		// 输入→绘制：键盘用预览钩子，指针/滚轮用冒泡点；会话与阅读守卫另有自己的取样点。
 		PreviewKeyDown += _ => Diagnostics.NoteInput();
 		MouseDown += _ => Diagnostics.NoteInput();
+		MouseWheel += _ => Diagnostics.NoteInput();
 		foreach (var expandedProject in preference.ExpandedProjects) _expandedProjects.Add(expandedProject);
 		_chatWorkspace = preference.ResolveChatWorkspace();
 		this.Resizable(preference.WindowWidth ?? 1280, preference.WindowHeight ?? 820);

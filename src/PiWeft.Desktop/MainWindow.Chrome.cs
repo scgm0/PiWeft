@@ -490,6 +490,7 @@ public sealed partial class MainWindow
 		// 右键沿用命令面板里的同一组标签动作（关闭/保留/右移…）。
 		tab.OnMouseDown(e =>
 		{
+			Diagnostics.NoteInput();
 			if (e.Button == MouseButton.Right)
 			{
 				TabMenu(tab, entry).Show(tab);
