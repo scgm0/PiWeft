@@ -54,6 +54,13 @@
 		<ProjectReference Include="$(MewUISourceRoot)src/MewUI.Backend.MewVG.MacOS/MewUI.Backend.MewVG.MacOS.csproj" GlobalPropertiesToRemove="PublishAot" />
 	</ItemGroup>
 
+	<!-- MewUI.Svg 只在非 AOT 构建中引用源生成器；publish 时 GlobalPropertiesToRemove 去掉了 PublishAot，restore 图却按 AOT 排除了它。首次构建前单独还原，避免 NETSDK1004。 -->
+	<Target Name="RestoreMewUISvgGenerator" BeforeTargets="ResolveProjectReferences"
+		Condition="'$(PublishAot)' == 'true' and Exists('$(MewUISourceRoot)extensions/MewUI.Svg/ThirdParty/SvgNet/Generators/Svg.Generators.csproj') and !Exists('$(MewUISourceRoot)extensions/MewUI.Svg/ThirdParty/SvgNet/Generators/obj/project.assets.json')">
+		<MSBuild Projects="$(MewUISourceRoot)extensions/MewUI.Svg/ThirdParty/SvgNet/Generators/Svg.Generators.csproj"
+			Targets="Restore" Properties="Configuration=$(Configuration)" RemoveProperties="PublishAot" />
+	</Target>
+
 	<Target Name="ValidateLocalMewUISource" BeforeTargets="PrepareForBuild"
 		Condition="!Exists('$(MewUISourceRoot)src/MewUI/MewUI.csproj')">
 		<Error Text="MewUI source is missing at $(MewUISourceRoot). Run git submodule update --init --recursive (or scripts/mewui-source.sh / .ps1) first." />
