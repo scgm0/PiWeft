@@ -191,8 +191,10 @@ internal static class ExecutionProcess
 	/// 类别超过三个时收成「… 等」，否则组头会跟着工具种类无限变长。
 	public static string GroupSummary(IReadOnlyList<ChatEntry> entries)
 	{
-		List<string>? activities = null;
-		HashSet<string>? seen = null;
+		// 类别只有 8 种：用位掩码去重、栈上存下标，不再为每次组头变化分配 List + HashSet + string.Join。
+		Span<int> picked = stackalloc int[3];
+		var count = 0;
+		var seen = 0;
 		var truncated = false;
 		foreach (var entry in entries)
 		{
@@ -201,22 +203,35 @@ internal static class ExecutionProcess
 				continue;
 			}
 
-			var activity = entry.ToolName switch
+			var kind = entry.ToolName switch
 			{
-				"read" => "已读取文件", "write" => "已写入文件", "edit" => "修改了文件", "bash" => "执行了命令",
-				"grep" or "find" or "ls" => "已搜索代码", "todo" => "更新了计划", "ask_question" => "已向你提问", _ => "已调用工具",
+				"read" => 0, "write" => 1, "edit" => 2, "bash" => 3,
+				"grep" or "find" or "ls" => 4, "todo" => 5, "ask_question" => 6, _ => 7,
 			};
-			activities ??= [];
-			seen ??= new HashSet<string>(StringComparer.Ordinal);
-			if (!seen.Add(activity)) continue;
-			if (activities.Count < 3) activities.Add(activity);
+			var bit = 1 << kind;
+			if ((seen & bit) != 0) continue;
+			seen |= bit;
+			if (count < 3) picked[count++] = kind;
 			else truncated = true;
 		}
 
-		if (activities is null) return string.Empty;
-		var summary = string.Join("、", activities);
+		if (count == 0) return string.Empty;
+		// 最多三项，直接拼：类别顺序仍是首次出现的顺序。
+		var summary = count switch
+		{
+			1 => Activities[picked[0]],
+			2 => $"{Activities[picked[0]]}、{Activities[picked[1]]}",
+			_ => $"{Activities[picked[0]]}、{Activities[picked[1]]}、{Activities[picked[2]]}",
+		};
 		return truncated ? Strings.ProcessGroupMore(summary) : summary;
 	}
+
+	// 与上面的 switch 分支一一对应（下标即类别号）。
+	private static readonly string[] Activities =
+	[
+		"已读取文件", "已写入文件", "修改了文件", "执行了命令",
+		"已搜索代码", "更新了计划", "已向你提问", "已调用工具",
+	];
 
 	public static string RunningLabel(IReadOnlyList<ChatEntry> entries)
 	{

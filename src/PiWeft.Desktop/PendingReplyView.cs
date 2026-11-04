@@ -10,7 +10,8 @@ namespace PiWeft.Desktop;
 /// 它不属于会话内容：不进投影、不进模型上下文、不进大纲，只是这一帧的界面。
 /// 节拍放在行里自驱动，而不是等宿主每帧来推：这一行只在等待期存在，而等待期恰恰是宿主
 /// 最没有事件可处理的时候；宿主也就不用为它保存引用，不必担心行被虚拟化器回收后引用发旧。
-/// 看不见就自己停（与 <see cref="StreamPump"/> 同一套闸）。
+/// 看不见就只跳不写（与 <see cref="StreamPump.NeedsFrames"/> 同一套闸）；不停表的原因同
+/// <see cref="LiveDurationText"/>：滚动不重新测量，停了就没人叫醒，读数会冻在离开视口那一刻。
 internal sealed class PendingReplyView : StackPanel
 {
 	private readonly Func<double> _elapsed;
@@ -66,7 +67,7 @@ internal sealed class PendingReplyView : StackPanel
 
 	protected override Size MeasureContent(Size availableSize)
 	{
-		// 从隐藏里回到画面时补回心跳：文本每秒都在变，测量每都会走到这里，比挂在事件上可靠。
+		// 首次进入画面时启动心跳；不可见期间心跳不停，所以这里不承担「复活」职责。
 		Start();
 		return base.MeasureContent(availableSize);
 	}
@@ -82,12 +83,8 @@ internal sealed class PendingReplyView : StackPanel
 
 	private void OnTick()
 	{
-		if (!StreamPump.NeedsFrames(this))
-		{
-			// 折叠、切走的标签页、滚出视口、整行被回收：停下来，下次测量再起来。
-			Stop();
-			return;
-		}
+		// 折叠、切走的标签页、滚出视口：只跳过写入，不停表（见类注释）。
+		if (!StreamPump.NeedsFrames(this)) return;
 
 		Update();
 	}

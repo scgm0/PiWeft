@@ -24,6 +24,10 @@ public sealed class ExecutionProcessTests
 		// 超过三个类别时收成「… 等」，组头不会跟着工具种类无限变长。
 		Assert.Equal("执行了命令、已读取文件、修改了文件 等",
 			ExecutionProcess.GroupSummary([Call("bash", 0), Call("read", 1), Call("edit", 2), Call("grep", 3)]));
+		// 同类别去重、顺序按首次出现；第 4 个不同类别才触发「等」，未知工具归「已调用工具」。
+		Assert.Equal("已读取文件、已搜索代码、修改了文件 等",
+			ExecutionProcess.GroupSummary([Call("read", 0), Call("grep", 1), Call("read", 2), Call("edit", 3), Call("todo", 4)]));
+		Assert.Equal("已调用工具", ExecutionProcess.GroupSummary([Call("weird-tool", 0)]));
 		Assert.Equal(string.Empty, ExecutionProcess.GroupSummary([Answer("thinking", string.Empty, "plan")]));
 	}
 
@@ -482,6 +486,94 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void StreamingToolOutputPatchesTheRowInsteadOfRebuildingIt()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1500;
+		ChatEntry Running(string output) => new()
+		{
+			Role = ChatRole.Tool, EntryId = "live-tool/1", ToolCallId = "1", ToolName = "bash",
+			Text = $"→ bash\n{output}", IsStreaming = true, ToolStartedAt = startedAt,
+		};
+
+		var view = new ToolMessageView(Running("line 1"), focus);
+		var timer = Assert.Single(Find<LiveDurationText>(view.View));
+		var detail = Find<TextBlock>(view.View).First(text => text.Text == ExecutionProcess.ToolAction(Running("line 1"), true));
+		// 输出增长：只就地换表头文本，秒表与视图都不换（换一次就白造一次 DispatcherTimer）。
+		Assert.True(view.Update(Running("line 1\nline 2")));
+		Assert.Same(timer, Assert.Single(Find<LiveDurationText>(view.View)));
+		Assert.Contains(Find<TextBlock>(view.View), text => ReferenceEquals(text, detail));
+		// 完成时要换固定耗时与完成态样式：返回 false 交给整行重建。
+		Assert.False(view.Update(Running("done") with { IsStreaming = false, DurationMs = 12, ToolStartedAt = null }));
+		UiLifetime.Release(view.View);
+
+		// 开始时刻从无到有 = 耗时空控件换代（空 TextBlock → LiveDurationText），不能就地更新。
+		var waiting = Running("out") with { ToolStartedAt = null };
+		var early = new ToolMessageView(waiting, focus);
+		Assert.False(early.Update(waiting with { ToolStartedAt = startedAt }));
+		UiLifetime.Release(early.View);
+
+		// 展开着的行体是展开那一刻的快照（还挂着吸顶视口）：同样交给整行重建。
+		var expanded = new ToolMessageView(Running("out"), focus);
+		Assert.Single(Find<Expander>(expanded.View)).IsExpanded = true;
+		Assert.False(expanded.Update(Running("out\nmore")));
+		UiLifetime.Release(expanded.View);
+	}
+
+	[Fact]
+	public void StreamingToolStepKeepsItsStopwatchInsideTheGroup()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1500;
+		ChatEntry Step(string output) => new()
+		{
+			Role = ChatRole.Tool, EntryId = "live-tool/1", ToolCallId = "call", ToolName = "bash",
+			Text = output, IsStreaming = true, ToolStartedAt = startedAt,
+		};
+		ChatEntry Process(ChatEntry step) => new()
+		{
+			Role = ChatRole.Process, Text = string.Empty, EntryId = "process/test", IsStreaming = true,
+			ProcessEntries = [step],
+		};
+
+		var builds = 0;
+		var view = new ExecutionProcessView(Process(Step("line 1")), entry =>
+		{
+			builds++;
+			return new ToolMessageView(entry, focus).View;
+		}, focus);
+		ConversationPerformanceTests.Layout(view.View);
+		foreach (var expander in Find<Expander>(view.View)
+			.Where(expander => !expander.IsExpanded &&
+				HoverHints.Text(expander) is Strings.ExecutionExpandHint or Strings.ExecutionGroupHint)
+			.ToArray())
+		{
+			expander.IsExpanded = true;
+		}
+		ConversationPerformanceTests.Layout(view.View);
+		view.SyncBodyMetrics();
+		ConversationPerformanceTests.Layout(view.View);
+
+		var built = builds;
+		Assert.True(built >= 1);
+		var timer = Assert.Single(Find<LiveDurationText>(view.View));
+		// 同一次调用输出增长：组内步骤走就地更新，不再新建 ToolMessageView / 秒表。
+		view.Update(Process(Step("line 1\nline 2")));
+		ConversationPerformanceTests.Layout(view.View);
+		view.SyncBodyMetrics();
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.Equal(built, builds);
+		Assert.Same(timer, Assert.Single(Find<LiveDurationText>(view.View)));
+		// 完成时要换固定耗时与完成态样式：重建一次。
+		view.Update(Process(Step("done") with { IsStreaming = false, DurationMs = 12, ToolStartedAt = null }));
+		ConversationPerformanceTests.Layout(view.View);
+		view.SyncBodyMetrics();
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.Equal(built + 1, builds);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
 	public void LiveDurationFormatReadsRunningAndFinishedSpansTheSameWay()
 	{
 		Assert.Equal(string.Empty, LiveDurationText.Format(0, 0, 5_000));
@@ -503,6 +595,8 @@ public sealed class ExecutionProcessTests
 		// 分钟以上补零，读数宽度不随零字段变化；小时档保留秒。
 		Assert.Equal("1m00s", Strings.FormatDuration(60_000));
 		Assert.Equal("1m04s", Strings.FormatDuration(64_000));
+		Assert.Equal("59m59s", Strings.FormatDuration(3_599_999));
+		Assert.Equal("1h00m00s", Strings.FormatDuration(3_600_000));
 		Assert.Equal("24h24m56s", Strings.FormatDuration(87_896_000));
 		// 不足一秒仍是整数毫秒，也不会四舍五入成 1000ms。
 		Assert.Equal("999ms", Strings.FormatDuration(999.6));
@@ -515,11 +609,17 @@ public sealed class ExecutionProcessTests
 		Assert.Equal("0.4ms", Strings.FormatDuration(0.43));
 		Assert.Equal("0.9ms", Strings.FormatDuration(0.99));
 		Assert.Equal("1ms", Strings.FormatDuration(1));
-		// 十分位必须是截断而不是浮点乘法的产物：0.7 存成 0.6999…，不能显示成 0.6ms。
+		// 十分位不能被二进制浮点污染：0.7 存成 0.6999…，不能显示成 0.6ms。
 		for (var tenth = 1; tenth <= 9; tenth++)
 		{
 			Assert.Equal($"0.{tenth}ms", Strings.FormatDuration(tenth / 10.0));
 		}
+
+		// 微秒量化后的边界：0.9999999ms 不能再拼出旧实现那种「0.10ms」。
+		Assert.Equal("0.1ms", Strings.FormatDuration(0.1));
+		Assert.Equal("1ms", Strings.FormatDuration(0.9999999));
+		Assert.Equal("999ms", Strings.FormatDuration(999.4));
+		Assert.Equal("1.0s", Strings.FormatDuration(999.9999));
 
 		// 低于可显示分辨率（包括旧记录里真写成 0 的）说「低于 0.1ms」，不写 0ms。
 		Assert.Equal("<0.1ms", Strings.FormatDuration(0));

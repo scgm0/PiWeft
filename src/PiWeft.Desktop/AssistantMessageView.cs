@@ -184,6 +184,9 @@ internal sealed class AssistantMessageView : IDisposable
 		else
 		{
 			_thinkingTimer.IsVisible(false);
+			// 显式收口跨度：LiveDurationText 不可见时只跳不写、不再停表（见其类注释），
+			// 不收口的话这条历史消息会每 100ms 空跳一次，直到行被释放。
+			_thinkingTimer.SetSpan(0, null);
 		}
 
 		// 打字机与预览缓存都属于「这一条消息」：行视图会被回收给另一条，身份一变就整体重来。

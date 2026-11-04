@@ -909,6 +909,13 @@ internal sealed class ExecutionProcessView
 			content.Tag = entry;
 			return;
 		}
+		if (content.Tag is ChatEntry { IsStreaming: true } && entry.Role == ChatRole.Tool &&
+			content.Child is Border { Tag: ToolMessageView tool } && tool.Update(entry))
+		{
+			// 工具步骤仍在输出：表头/秒表都就地更新，不重建行（图标只依赖工具名，不会变）。
+			content.Tag = entry;
+			return;
+		}
 		// The key is only needed when this row's content is actually rebuilt; formatting it before
 		// the equal/streaming fast paths allocated one string per visible step per streaming frame.
 		var stepKey = $"{groupKey}/{Id(entry, index)}";
@@ -990,6 +997,9 @@ internal sealed class ExecutionProcessView
 			if (previous is not null && ConversationTimeline.SameEntry(previous, value)) return;
 			if (previous is { IsStreaming: true } && value.Role == ChatRole.Assistant &&
 				content.Child is Border { Tag: AssistantMessageView assistant }) assistant.Update(value);
+			// 工具步骤仍在输出：表头/秒表都有就地更新路径，不重建行（图标只依赖工具名，不会变）。
+			else if (previous is { IsStreaming: true } && value.Role == ChatRole.Tool &&
+				content.Child is Border { Tag: ToolMessageView tool } && tool.Update(value)) { }
 			else
 			{
 				if (content.Child is { } old) UiLifetime.Release(old);
@@ -1236,8 +1246,12 @@ internal sealed class ExecutionProcessView
 		/// （两者的 EntryId 会从临时的 live-assistant 变成会话条目 id，但时间戳与图片不变）。
 		/// 其余步骤改变内容时仍要重绑：工具行的摘要与展开体在创建时固定，不能靠 Update 追加。
 		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
-			current.Role == ChatRole.Assistant && current.IsStreaming && next.Role == ChatRole.Assistant &&
-			current.Timestamp == next.Timestamp && current.Images.SequenceEqual(next.Images);
+			// 工具步骤的流式输出：同一次调用每来一段就换一条 ChatEntry，只有正文在长；
+			// 表头只依赖参数（见 ToolMessageView.Update），原地重绑才能保住行高与秒表。
+			(current.Role == ChatRole.Tool && current.IsStreaming && next.Role == ChatRole.Tool &&
+				next.IsStreaming && current.ToolCallId == next.ToolCallId) ||
+			(current.Role == ChatRole.Assistant && current.IsStreaming && next.Role == ChatRole.Assistant &&
+				current.Timestamp == next.Timestamp && current.Images.SequenceEqual(next.Images));
 	}
 
 	/// 过程组/中间回复的节点。做成可变类是为了让 <see cref="Nodes"/> 在流式期原地复用：

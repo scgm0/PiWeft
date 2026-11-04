@@ -7,8 +7,10 @@ namespace PiWeft.Desktop;
 /// 执行中每 100 ms 用「当前时刻 - 开始时刻」刷新一次，结束后停在固定耗时。
 /// 节拍放在控件自己身上，而不是让宿主整帧重绘：一次 tick 只改这一枚 TextBlock，
 /// 过程组的行布局、虚拟化列表和会话视口都不会因为计时器重新投影。
-/// 与 <see cref="PendingReplyView"/> 一样，不可见就停表（折叠、滚出视口、切走的标签页），
-/// 下一次测量再启动；无窗口（自检/单测）时只显示一次初值，不建计时器。
+/// 与 <see cref="PendingReplyView"/> 一样，不可见时不写文本；但<b>不停表</b>：
+/// MewUI 滚动只 InvalidateArrange，不重新测量，所以「下次测量再启动」永远等不到
+/// （实测：计时停在离开视口那一刻）。空转一拍只做一次 <see cref="StreamPump.NeedsFrames"/> 向上遍历，
+/// 10Hz 量级可不计；无窗口（自检/单测）时只显示一次初值，不建计时器。
 internal sealed class LiveDurationText : TextBlock
 {
 	private const int TickIntervalMs = 100;
@@ -42,7 +44,7 @@ internal sealed class LiveDurationText : TextBlock
 
 	protected override Size MeasureContent(Size availableSize)
 	{
-		// 从隐藏里回到画面时补回心跳：文本每拍都在变，测量每次都会走到这里。
+		// 首次进入画面时启动心跳。之后它自己一直跳，不靠测量「复活」（见类注释）。
 		Start();
 		return base.MeasureContent(availableSize);
 	}
@@ -57,12 +59,10 @@ internal sealed class LiveDurationText : TextBlock
 
 	private void Tick()
 	{
-		if (!StreamPump.NeedsFrames(this))
-		{
-			// 折叠、切走的标签页、滚出视口、整行被回收：停下来，下次测量再起来。
-			Stop();
-			return;
-		}
+		// 不可见的拍只跳过写入，绝不停表：滚出视口再回来不会有测量来叫醒它，
+		// 停了读数就冻在离开那一刻（折叠、切走的标签页同理）。自己被显式隐藏时也不必写，
+		// 但要停表得由宿主收口跨度（见 AssistantMessageView）。
+		if (!IsVisible || !StreamPump.NeedsFrames(this)) return;
 
 		UpdateText(NowMs());
 	}

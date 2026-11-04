@@ -1094,24 +1094,20 @@ public static partial class Strings
 	/// 分钟以上补零（1m04s、24h24m56s），小时档保留秒：长任务里秒在跳才说明还在跑。
 	/// 毫秒档只在 1ms 以下给一位小数：工具真的会 0.3ms 就返回，取整就会读成「0ms」，
 	/// 而 2–999ms 的十分位只是调度噪声；低于显示分辨率的读数记 <0.1ms，不写 0ms。
+	/// 先在整数微秒上量化一次，之后全部整数除法：既没有二进制浮点缩放误差（0.7 存成 0.6999…
+	/// 会截成 0.6ms），也不靠 epsilon 补偿；微秒比显示分辨率还细两个量级，四舍五入看不出来。
 	public static string FormatDuration(double milliseconds)
 	{
 		if (!double.IsFinite(milliseconds) || milliseconds < 0) milliseconds = 0;
-		if (milliseconds < 0.1) return "<0.1ms";
-		if (milliseconds < 1)
-		{
-			// 乘 10 后截断；+1e-6 抵消二进制浮点（0.3 存成 0.2999…）的误差，不让 0.3ms 显示成 0.2ms。
-			return $"0.{(long)(milliseconds * 10 + 1e-6)}ms";
-		}
+		var micros = (long)Math.Round(milliseconds * 1000, MidpointRounding.AwayFromZero);
+		if (micros < 100) return "<0.1ms";
+		if (micros < 1_000) return $"0.{micros / 100}ms";
+		if (micros < 1_000_000) return $"{micros / 1000}ms";
 
-		if (milliseconds < 1000) return $"{(long)milliseconds}ms";
-		if (milliseconds < 60_000)
-		{
-			var tenths = (long)(milliseconds / 100);
-			return $"{tenths / 10}.{tenths % 10}s";
-		}
+		var tenths = micros / 100_000;
+		if (tenths < 600) return $"{tenths / 10}.{tenths % 10}s";
 
-		var totalSeconds = (long)(milliseconds / 1000);
+		var totalSeconds = micros / 1_000_000;
 		if (totalSeconds < 3600) return $"{totalSeconds / 60}m{totalSeconds % 60:00}s";
 		return $"{totalSeconds / 3600}h{totalSeconds % 3600 / 60:00}m{totalSeconds % 60:00}s";
 	}

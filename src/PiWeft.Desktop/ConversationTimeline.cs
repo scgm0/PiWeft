@@ -249,6 +249,14 @@ internal sealed class ConversationTimeline : IDisposable
 			host.Tag = entry;
 			return;
 		}
+		if (host.Tag is ChatEntry toolEntry && entry.Role == ChatRole.Tool && toolEntry.EntryId == entry.EntryId &&
+			host.Content is Border { Tag: ToolMessageView tool } && tool.Update(entry))
+		{
+			// 运行中的工具每来一段输出就换一个 ChatEntry；整行重建会白送一次 Expander/秒表构造，
+			// 还把行高打回虚拟化估算值。表头只依赖参数，多数拍一个字都不用改（见 ToolMessageView.Update）。
+			host.Tag = entry;
+			return;
+		}
 		if (host.Tag is ChatEntry metadataEntry && SameMetadataOnly(metadataEntry, entry) &&
 			host.Content is not Border { Tag: ToolMessageView })
 		{
@@ -446,6 +454,10 @@ internal sealed class ConversationTimeline : IDisposable
 			(Equals(Key(current), Key(next)) && next.Role == ChatRole.Process) ||
 			(current.IsStreaming && next.Role == ChatRole.Assistant && current.Timestamp == next.Timestamp &&
 				current.Images.SequenceEqual(next.Images)) ||
+			// 工具行的流式输出：同一次调用每来一段就换一条 ChatEntry，只有正文在长；
+			// 表头只依赖参数（见 ToolMessageView.Update），原地重绑才能保住行高与秒表。
+			(current.Role == ChatRole.Tool && current.IsStreaming && next.Role == ChatRole.Tool &&
+				next.IsStreaming && Equals(Key(current), Key(next)) && current.ToolCallId == next.ToolCallId) ||
 			SameMetadataOnly(current, next);
 
 		public void Update(IReadOnlyList<ChatEntry> entries, int stablePrefix, bool prefixReused, List<int> inPlace)
