@@ -32,6 +32,8 @@ public sealed class ConfigurationStore
 	public const int MaxBytes = 2 * 1024 * 1024;
 
 	public string AgentDir { get; }
+
+	public string Cwd => _cwd;
 	private static readonly JsonDocumentOptions ReadOptions = new() { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
 	public static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 

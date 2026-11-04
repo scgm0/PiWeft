@@ -10,8 +10,10 @@ public sealed class ModelAvailabilityTests : IDisposable
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-available-" + Guid.NewGuid().ToString("N"));
 	private readonly Dictionary<string, string?> _previous = new();
 	private static readonly string[] Variables = ["PI_CODING_AGENT_DIR", "FIXTURE_AVAILABLE_API_KEY", "AZURE_OPENAI_API_KEY",
-		"GOOGLE_CLOUD_API_KEY", "GOOGLE_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY",
-		"AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY"];
+		"GOOGLE_CLOUD_API_KEY", "GOOGLE_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
+		"GOOGLE_PROJECT_ID", "GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION",
+		"CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_GATEWAY_ID",
+		"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY"];
 
 	public ModelAvailabilityTests()
 	{
@@ -100,12 +102,68 @@ public sealed class ModelAvailabilityTests : IDisposable
 
 	[Theory]
 	[InlineData("azure-openai-responses", "AZURE_OPENAI_API_KEY")]
-	[InlineData("google-vertex", "GOOGLE_ACCESS_TOKEN")]
 	[InlineData("google-vertex", "GOOGLE_CLOUD_API_KEY")]
 	public void SpecialProviderCredentialsUseTheirActualAuthenticationPaths(string api, string variable)
 	{
 		Environment.SetEnvironmentVariable(variable, "test-credential");
 		Assert.Single(ModelAvailability.Filter([Model(api: api)], new Dictionary<string, string>()));
+	}
+
+	[Fact]
+	public void VertexAccessTokenStillRequiresProjectAndLocation()
+	{
+		var model = Model(provider: "google-vertex", api: "google-vertex");
+		Environment.SetEnvironmentVariable("GOOGLE_ACCESS_TOKEN", "token");
+		Assert.Empty(ModelAvailability.Filter([model], new Dictionary<string, string>()));
+
+		Environment.SetEnvironmentVariable("GOOGLE_CLOUD_PROJECT", "project");
+		Environment.SetEnvironmentVariable("GOOGLE_CLOUD_LOCATION", "us-central1");
+		Assert.Single(ModelAvailability.Filter([model], new Dictionary<string, string>()));
+	}
+
+	[Fact]
+	public void CredentialScopedEnvEnablesVertexAdcAndBedrockKeys()
+	{
+		var adc = Path.Combine(_root, "adc.json");
+		File.WriteAllText(adc, "{}");
+		AuthStore.SaveApiKeyCredential("google-vertex", null, new Dictionary<string, string>
+		{
+			["GOOGLE_CLOUD_PROJECT"] = "project",
+			["GOOGLE_CLOUD_LOCATION"] = "us-central1",
+			["GOOGLE_APPLICATION_CREDENTIALS"] = adc,
+		}, _root);
+		var vertex = Model(provider: "google-vertex", api: "google-vertex");
+		Assert.Single(ModelAvailability.Filter([vertex], new Dictionary<string, string>()));
+
+		AuthStore.SaveApiKeyCredential("amazon-bedrock", null, new Dictionary<string, string>
+		{
+			["AWS_ACCESS_KEY_ID"] = "access",
+			["AWS_SECRET_ACCESS_KEY"] = "secret",
+		}, _root);
+		var bedrock = Model(provider: "amazon-bedrock", api: "bedrock-converse-stream");
+		Assert.Single(ModelAvailability.Filter([bedrock], new Dictionary<string, string>()));
+	}
+
+	[Fact]
+	public void ProviderSpecificKeyFieldsGateAvailability()
+	{
+		var model = Model(provider: "cloudflare-workers-ai", api: "openai-completions");
+		AuthStore.SaveApiKey("cloudflare-workers-ai", "cf-key", _root);
+		Assert.Empty(ModelAvailability.Filter([model], new Dictionary<string, string>()));
+
+		AuthStore.SaveApiKeyCredential("cloudflare-workers-ai", "cf-key", new Dictionary<string, string>
+		{
+			["CLOUDFLARE_ACCOUNT_ID"] = "account",
+		}, _root);
+		Assert.Single(ModelAvailability.Filter([model], new Dictionary<string, string>()));
+	}
+
+	[Fact]
+	public void StoredVertexApiKeyMakesModelsAvailable()
+	{
+		AuthStore.SaveApiKey("google-vertex", "vertex-key", _root);
+		var vertex = Model(provider: "google-vertex", api: "google-vertex");
+		Assert.Single(ModelAvailability.Filter([vertex], new Dictionary<string, string>()));
 	}
 
 	[Fact]

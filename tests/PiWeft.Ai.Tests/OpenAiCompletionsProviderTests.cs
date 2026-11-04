@@ -477,6 +477,23 @@ public class OpenAiCompletionsProviderTests
 		Assert.Equal("enabled", document.RootElement.GetProperty("thinking").GetProperty("type").GetString());
 		Assert.Equal("max", document.RootElement.GetProperty("reasoning_effort").GetString());
 	}
+	[Fact]
+	public async Task CloudflareGatewayUsesGatewayAuthorizationHeader()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		var stream = provider.Stream(
+			Model("cloudflare-ai-gateway", "https://gateway.ai.cloudflare.com/v1/account/gateway/openai"),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "gateway-key" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		var request = handler.LastRequest!;
+		Assert.Equal("Bearer gateway-key", request.Headers.GetValues("cf-aig-authorization").Single());
+		Assert.Null(request.Headers.Authorization);
+	}
 }
 
 /// 超时只覆盖「等响应头」。pi 1.2.0 修的就是这个：固定时限把长时间思考的流中途切断。
@@ -581,4 +598,5 @@ public class HeaderOnlyTimeoutTests
 
 		Assert.Equal("慢慢来", text.ToString());
 	}
+
 }

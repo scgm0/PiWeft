@@ -263,6 +263,14 @@ public class GoogleVertexProviderTests
 	}
 
 	[Fact]
+	public void BuildUrl_ApiKeyUsesExpressPathWithoutProject()
+	{
+		Assert.Equal(
+			"https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+			GoogleVertexProvider.BuildUrl(Model(), new StreamOptions(), express: true));
+	}
+
+	[Fact]
 	public void MissingProjectIsReportedClearly()
 	{
 		var previous = Environment.GetEnvironmentVariable("GOOGLE_CLOUD_PROJECT");

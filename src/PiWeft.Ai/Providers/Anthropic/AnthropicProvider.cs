@@ -122,7 +122,9 @@ public sealed class AnthropicProvider : IApiProvider
 
 		payloadJson = Encoding.UTF8.GetString(bytes);
 
-		var baseUrl = string.IsNullOrEmpty(model.BaseUrl) ? DefaultBaseUrl : model.BaseUrl;
+		var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
+			? DefaultBaseUrl
+			: ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl);
 		// Anthropic 官方 API key 用 x-api-key；Claude OAuth 与 GitHub Copilot 用 Bearer。
 		// Copilot 的 Anthropic 代理还要求浏览器直连标记；它不接受 x-api-key 形式的 Copilot token。
 		var isCopilot = string.Equals(model.Provider, "github-copilot", StringComparison.Ordinal);
@@ -151,6 +153,11 @@ public sealed class AnthropicProvider : IApiProvider
 		{
 			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 			request.Headers.TryAddWithoutValidation("anthropic-dangerous-direct-browser-access", "true");
+		}
+		else if (string.Equals(model.Provider, "cloudflare-ai-gateway", StringComparison.Ordinal))
+		{
+			// AI Gateway 的凭据是网关令牌，上游密钥由网关 BYOK 管理；发 x-api-key 会被网关拒绝。
+			request.Headers.TryAddWithoutValidation("cf-aig-authorization", "Bearer " + apiKey);
 		}
 		else
 		{

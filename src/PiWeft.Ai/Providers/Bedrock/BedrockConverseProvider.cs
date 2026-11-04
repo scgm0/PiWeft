@@ -36,7 +36,7 @@ public sealed class BedrockConverseProvider : IApiProvider
 
 		try
 		{
-			var credentials = AwsCredentials.FromEnvironment();
+			var credentials = AwsCredentials.FromEnvironment(model.Provider);
 			if (!credentials.IsValid)
 			{
 				PushFailure(
@@ -173,7 +173,7 @@ public sealed class BedrockConverseProvider : IApiProvider
 	{
 		var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
 			? "https://bedrock-runtime.us-east-1.amazonaws.com"
-			: model.BaseUrl.TrimEnd('/');
+			: ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 
 		return $"{baseUrl}/model/{Uri.EscapeDataString(model.Id)}/converse-stream";
 	}

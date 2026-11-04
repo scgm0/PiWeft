@@ -112,6 +112,13 @@ internal sealed partial class ConfigurationView
 	{
 		_saveForm = null;
 		_body.Clear();
+		// 切走认证页后释放整棵 42 行控件树与凭据快照，避免旧页面控件被 _authRows 长期持有。
+		_authRows.Clear();
+		_authStatuses = [];
+		_authList = null;
+		_authCount = null;
+		_authHeader = null;
+		_authEmpty = null;
 		if (_source || _document?.Error is not null) { BuildSource(); return; }
 		switch (_file)
 		{

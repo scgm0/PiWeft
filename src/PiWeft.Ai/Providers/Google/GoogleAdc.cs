@@ -22,18 +22,49 @@ public sealed class GoogleAdc
 
 	public const string CloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform";
 
-	public static async Task<string> GetAccessTokenAsync(HttpClient http, CancellationToken cancellationToken)
+	public static Task<string> GetAccessTokenAsync(HttpClient http, CancellationToken cancellationToken) =>
+		GetAccessTokenAsync(http, stored: null, allowDefaultAdc: false, cancellationToken);
+
+	/// <paramref name="provider"/> 非空时同时读取 auth.json 凭据里的 env：桌面端 Vertex ADC
+	/// 表单把项目、区域和凭据文件路径存在那里，不需要用户再改进程环境。
+	public static Task<string> GetAccessTokenAsync(
+		HttpClient http,
+		string? provider,
+		CancellationToken cancellationToken) =>
+		GetAccessTokenAsync(http,
+			provider is null ? null : ProviderEnvironment.StoredEnvironment(provider),
+			allowDefaultAdc: true, cancellationToken);
+
+	/// 请求方已经读过凭据 env 时直接传入，避免同一个请求重复读 auth.json。
+	public static Task<string> GetAccessTokenAsync(
+		HttpClient http,
+		IReadOnlyDictionary<string, string>? stored,
+		CancellationToken cancellationToken) =>
+		GetAccessTokenAsync(http, stored, allowDefaultAdc: true, cancellationToken);
+
+	private static async Task<string> GetAccessTokenAsync(
+		HttpClient http,
+		IReadOnlyDictionary<string, string>? stored,
+		bool allowDefaultAdc,
+		CancellationToken cancellationToken)
 	{
-		if (Environment.GetEnvironmentVariable(AccessTokenVariable) is { Length: > 0 } provided)
+		var provided = ProviderEnvironment.EnvironmentValue(stored, AccessTokenVariable);
+		if (provided is { Length: > 0 })
 		{
 			return provided;
 		}
 
-		var path = Environment.GetEnvironmentVariable(CredentialsVariable);
-		if (string.IsNullOrEmpty(path))
+		var configured = ProviderEnvironment.EnvironmentValue(stored, CredentialsVariable);
+		var path = string.IsNullOrEmpty(configured)
+			? allowDefaultAdc ? DefaultCredentialsPath() : null
+			: ExpandHome(configured);
+		if (string.IsNullOrEmpty(path) || !File.Exists(path))
 		{
 			throw new InvalidOperationException(
-				"Vertex AI needs credentials. Set GOOGLE_ACCESS_TOKEN, or GOOGLE_APPLICATION_CREDENTIALS to a service-account file, or GOOGLE_CLOUD_API_KEY.");
+				"Vertex AI needs credentials. Set GOOGLE_ACCESS_TOKEN, or GOOGLE_APPLICATION_CREDENTIALS to a service-account file, or GOOGLE_CLOUD_API_KEY. " +
+				(string.IsNullOrEmpty(path)
+					? "No default ADC file path is available."
+					: $"The default ADC file was not found at {path}."));
 		}
 
 		lock (Gate)
@@ -69,6 +100,52 @@ public sealed class GoogleAdc
 		{
 			Cache.Clear();
 		}
+	}
+
+	/// 模型可用性筛选用的无网络检查：API Key（express），或带项目/区域的访问令牌/ADC 文件。
+	public static bool HasConfiguredCredentials(string? provider = null) =>
+		HasConfiguredCredentials(provider is null ? null : ProviderEnvironment.StoredEnvironment(provider));
+
+	public static bool HasConfiguredCredentials(IReadOnlyDictionary<string, string>? stored)
+	{
+		string? Env(string name) => ProviderEnvironment.EnvironmentValue(stored, name);
+
+		// Vertex Express（API key）不需要项目/区域。
+		if (Env("GOOGLE_CLOUD_API_KEY") is { Length: > 0 }) return true;
+
+		// 访问令牌与 ADC 都走 projects/{project}/locations/{location} 端点，缺项目/区域不可用。
+		if (string.IsNullOrEmpty(Env("GOOGLE_CLOUD_PROJECT") ?? Env("GOOGLE_PROJECT_ID")) ||
+			string.IsNullOrEmpty(Env("GOOGLE_CLOUD_LOCATION") ?? Env("GOOGLE_CLOUD_REGION")))
+		{
+			return false;
+		}
+
+		if (Env(AccessTokenVariable) is { Length: > 0 }) return true;
+
+		var path = Env(CredentialsVariable);
+		path = string.IsNullOrEmpty(path) ? DefaultCredentialsPath() : ExpandHome(path);
+		return !string.IsNullOrEmpty(path) && File.Exists(path);
+	}
+
+	/// gcloud 的默认 ADC 位置；与 pi 一样支持不显式设置 GOOGLE_APPLICATION_CREDENTIALS。
+	private static string? DefaultCredentialsPath()
+	{
+		var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+		if (string.IsNullOrEmpty(home)) return null;
+		return OperatingSystem.IsWindows()
+			? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "gcloud", "application_default_credentials.json")
+			: Path.Combine(home, ".config", "gcloud", "application_default_credentials.json");
+	}
+
+	private static string ExpandHome(string path)
+	{
+		if (path != "~" && !path.StartsWith("~/", StringComparison.Ordinal) && !path.StartsWith("~\\", StringComparison.Ordinal))
+		{
+			return path;
+		}
+
+		var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+		return path.Length <= 2 ? home : Path.Combine(home, path[2..]);
 	}
 
 	internal static async Task<(string Token, TimeSpan Lifetime)> RefreshServiceAccountAsync(

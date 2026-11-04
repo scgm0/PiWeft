@@ -1,6 +1,8 @@
 using PiWeft.Ai;
 using PiWeft.Ai.Auth;
 using PiWeft.Ai.Providers;
+using PiWeft.Ai.Providers.Bedrock;
+using PiWeft.Ai.Providers.Google;
 
 using PiWeft.Ai.Json;
 namespace PiWeft.Cli;
@@ -40,13 +42,53 @@ public static class AuthCommands
 		TextReader input,
 		CancellationToken cancellationToken)
 	{
-		var provider = rest.Count > 0 ? rest[0] : CodexAuth.ProviderKey;
+		var positional = rest.Where(static value => !value.StartsWith('-')).ToArray();
+		var provider = positional.Length > 0 ? positional[0] : CodexAuth.ProviderKey;
+		var method = positional.Length > 1 ? positional[1] : null;
+		var wantsKey = rest.Contains("--api-key") || method is "api-key" or "api_key" or "apikey" or "key";
+		var wantsOAuth = method is "oauth" or "oauth2" or "subscription";
+		if (method is not null && !wantsKey && !wantsOAuth)
+		{
+			error.WriteLine("pi: login method must be \"oauth\" or \"api-key\".");
+			return 2;
+		}
+
 		if (!ModelRegistry.LoadDefault().Providers.Contains(provider, StringComparer.Ordinal))
 		{
 			error.WriteLine($"pi: Unknown provider '{provider}'.");
 			return 2;
 		}
 
+		var descriptor = ProviderAuthCatalog.Find(provider);
+		if (wantsKey && descriptor?.ApiKey is null)
+		{
+			error.WriteLine($"pi: Provider \"{provider}\" has no interactive API key login.");
+			return 2;
+		}
+
+		if (wantsOAuth && descriptor?.OAuth != true)
+		{
+			error.WriteLine($"pi: Provider \"{provider}\" has no OAuth login.");
+			return 2;
+		}
+
+		// 保持旧行为：不指定方式时，有 OAuth 的供应商默认走 OAuth；
+		// 只支持 API Key 的供应商直接进入 Key 流程。
+		if (!wantsKey && descriptor?.OAuth == true)
+		{
+			return await LoginOAuthAsync(provider, output, error, input, cancellationToken).ConfigureAwait(false);
+		}
+
+		return await LoginKeyAsync(provider, descriptor, output, error, input, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static async Task<int> LoginOAuthAsync(
+		string provider,
+		TextWriter output,
+		TextWriter error,
+		TextReader input,
+		CancellationToken cancellationToken)
+	{
 		if (string.Equals(provider, AnthropicOAuth.ProviderKey, StringComparison.Ordinal))
 		{
 			try
@@ -170,28 +212,8 @@ public static class AuthCommands
 
 		if (provider != CodexAuth.ProviderKey)
 		{
-			// 其余 Provider 走 API key 登录：安全地写入 auth.json，不经过 shell 历史。
-			output.Write($"请输入 {provider} 的 API key（以 ! 开头表示命令型凭据）：");
-			output.Flush();
-			var key = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-			if (string.IsNullOrWhiteSpace(key))
-			{
-				error.WriteLine("pi: API key 为空，登录取消。");
-				return 1;
-			}
-
-			try
-			{
-				AuthStore.SaveApiKey(provider, key.Trim());
-			}
-			catch (CodexAuthException exception)
-			{
-				error.WriteLine($"pi: {exception.Message}");
-				return 1;
-			}
-
-			output.WriteLine($"凭据已写入 {AuthStore.Path()}（provider: {provider}）。");
-			return 0;
+			error.WriteLine($"pi: OAuth login is not implemented for '{provider}'.");
+			return 2;
 		}
 
 		using var http = new HttpClient();
@@ -220,6 +242,93 @@ public static class AuthCommands
 			error.WriteLine($"pi: {ex.Message}");
 			return 1;
 		}
+	}
+
+	/// 交互式 API Key 登录：字段来自与桌面端共用的 <see cref="ProviderAuthCatalog"/>。
+	/// 标准供应商只问一个 Key；Cloudflare / Vertex / Bedrock 会问额外 env 字段或认证方式。
+	private static async Task<int> LoginKeyAsync(
+		string provider,
+		ProviderAuthDescriptor? descriptor,
+		TextWriter output,
+		TextWriter error,
+		TextReader input,
+		CancellationToken cancellationToken)
+	{
+		var keyAuth = descriptor?.ApiKey ??
+			ProviderAuthCatalog.StandardKey("API Key", ProviderEnvironment.KeyName(provider));
+		var option = keyAuth.DefaultOption;
+		if (keyAuth.Options.Count > 1)
+		{
+			output.WriteLine($"{provider} 的认证方式：");
+			for (var index = 0; index < keyAuth.Options.Count; index++)
+			{
+				var item = keyAuth.Options[index];
+				output.WriteLine($"  {index + 1}. {item.Label}{(item.Description is { Length: > 0 } description ? " — " + description : string.Empty)}");
+			}
+			output.Write($"选择 (1-{keyAuth.Options.Count})：");
+			output.Flush();
+			var choice = (await input.ReadLineAsync(cancellationToken).ConfigureAwait(false))?.Trim();
+			if (!int.TryParse(choice, out var selected) || selected < 1 || selected > keyAuth.Options.Count)
+			{
+				error.WriteLine("pi: 无效的认证方式，登录取消。");
+				return 1;
+			}
+			option = keyAuth.Options[selected - 1];
+		}
+		else if (option.Description is { Length: > 0 } description)
+		{
+			output.WriteLine(description);
+		}
+		if (keyAuth.Hint is { Length: > 0 } authHint) output.WriteLine(authHint);
+
+		string? key = null;
+		var environment = new Dictionary<string, string>(StringComparer.Ordinal);
+		if (option.Fields.Count == 0)
+		{
+			if (!option.Ambient)
+			{
+				error.WriteLine("pi: 该认证方式没有可录入的字段。");
+				return 1;
+			}
+			output.WriteLine("将保存「使用外部凭据」标记；请确认进程环境已提供所需变量。");
+		}
+		else
+		{
+			foreach (var field in option.Fields)
+			{
+				var suffix = field.Required ? string.Empty : "（可选）";
+				var hint = field.IsMainKey ? "（以 ! 开头表示命令型凭据）" : $"（{field.Name}）";
+				output.Write($"{field.Label}{suffix}{hint}：");
+				output.Flush();
+				var value = (await input.ReadLineAsync(cancellationToken).ConfigureAwait(false))?.Trim();
+				if (field.Required && string.IsNullOrEmpty(value))
+				{
+					error.WriteLine($"pi: {field.Label}不能为空，登录取消。");
+					return 1;
+				}
+				if (string.IsNullOrEmpty(value)) continue;
+				if (field.IsMainKey) key = value;
+				else environment[field.Name] = value;
+			}
+		}
+
+		var agentDir = Environment.GetEnvironmentVariable(PiWeft.Ai.Auth.AgentPaths.EnvAgentDir);
+		try
+		{
+			if (await OAuthStore.ReadAsync(provider, agentDir, cancellationToken).ConfigureAwait(false) is not null)
+			{
+				output.WriteLine("注意：将替换该供应商已有的 OAuth 凭据。");
+			}
+			AuthStore.SaveApiKeyCredential(provider, key, environment, agentDir, overwriteOAuth: true);
+		}
+		catch (Exception exception) when (exception is CodexAuthException or IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+		{
+			error.WriteLine($"pi: {exception.Message}");
+			return 1;
+		}
+
+		output.WriteLine($"凭据已写入 {AuthStore.Path(agentDir)}（provider: {provider}）。");
+		return 0;
 	}
 
 	private static int Logout(IReadOnlyList<string> rest, TextWriter output, TextWriter error)
@@ -389,7 +498,7 @@ public static class AuthCommands
 		}
 
 		var key = await AuthStore.ReadApiKeyAsync(provider, agentDir, cancellationToken).ConfigureAwait(false)
-			?? Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(provider));
+			?? ProviderEnvironment.ResolveEnvironmentKey(provider);
 
 		if (string.IsNullOrEmpty(key))
 		{
@@ -430,9 +539,11 @@ public static class AuthCommands
 	private static async Task<string?> ResolveAuthTypeAsync(string provider, string? agentDir, CancellationToken cancellationToken)
 	{
 		var (stored, isCommand) = await AuthStore.ReadCredentialStateAsync(provider, agentDir, cancellationToken).ConfigureAwait(false);
-		if (stored is { Length: > 0 } ||
+		var hasKey = stored is { Length: > 0 } ||
 			isCommand ||
-			Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(provider)) is { Length: > 0 })
+			ProviderEnvironment.ResolveEnvironmentKey(provider) is { Length: > 0 };
+		if (hasKey && HasRequiredProviderEnvironment(provider, agentDir)) return "api_key";
+		if (HasProviderAmbient(provider) && AuthStore.ReadStoredApiKey(provider, agentDir) is not { HasKey: true })
 		{
 			return "api_key";
 		}
@@ -447,6 +558,23 @@ public static class AuthCommands
 		return null;
 	}
 
+	private static bool HasProviderAmbient(string provider) => provider switch
+	{
+		"amazon-bedrock" => AwsCredentials.FromEnvironment(provider).IsValid,
+		"google-vertex" => GoogleAdc.HasConfiguredCredentials(provider),
+		_ => false,
+	};
+
+	/// API Key 之外还要求 env 字段的供应商（Cloudflare）在字段缺失时不能报 ready。
+	private static bool HasRequiredProviderEnvironment(string provider, string? agentDir)
+	{
+		var option = ProviderAuthCatalog.Find(provider)?.ApiKey?.DefaultOption;
+		if (option is null || option.EnvironmentFields.Count == 0) return true;
+		var stored = AuthStore.ReadStoredApiKey(provider, agentDir);
+		return option.EnvironmentFields.All(field =>
+			!field.Required || ProviderEnvironment.EnvironmentValue(stored?.Environment, field.Name) is not null);
+	}
+
 	private static async Task<string?> ResolveCredentialAsync(
 		string provider,
 		string? agentDir,
@@ -455,8 +583,18 @@ public static class AuthCommands
 	{
 		if (await ResolveAuthTypeAsync(provider, agentDir, cancellationToken).ConfigureAwait(false) == "api_key")
 		{
-			return await AuthStore.ReadApiKeyAsync(provider, agentDir, cancellationToken).ConfigureAwait(false)
-				?? Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(provider));
+			// Bedrock 的签名只认 AWS 凭据；auth.json 里的旧 API Key 不能当成可用令牌打印。
+			if (string.Equals(provider, "amazon-bedrock", StringComparison.Ordinal) &&
+				AwsCredentials.FromEnvironment(provider).IsValid)
+			{
+				return "ambient";
+			}
+
+			var key = await AuthStore.ReadApiKeyAsync(provider, agentDir, cancellationToken).ConfigureAwait(false)
+				?? ProviderEnvironment.ResolveEnvironmentKey(provider);
+			// Vertex ADC / Bedrock AWS 没有单个 API Key 可打印；给 auth check 一个可读的
+			// 「已由环境提供」标记，而不是把可用凭据误报成 invalid。
+			return key ?? (HasProviderAmbient(provider) ? "ambient" : null);
 		}
 
 		using var http = new HttpClient();

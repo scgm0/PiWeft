@@ -15,21 +15,25 @@ public sealed record AwsCredentials
 	public bool IsValid => AccessKeyId.Length > 0 && SecretAccessKey.Length > 0;
 
 	/// 从环境变量读取凭据，支持标准的 <c>AWS_*</c> 变量；命名 profile 与实例元数据
-	/// 不在本端口的实现范围内。
-	public static AwsCredentials FromEnvironment()
+	/// 不在本端口的实现范围内。传入 provider 时优先读取 auth.json 的凭据 env，
+	/// 这样桌面端「AWS 访问密钥」表单保存的值能直接用于签名。
+	public static AwsCredentials FromEnvironment(string? provider = null)
 	{
-		var accessKey = Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");
-		var secret = Environment.GetEnvironmentVariable("AWS_SECRET_ACCESS_KEY");
+		var stored = provider is null ? null : ProviderEnvironment.StoredEnvironment(provider);
+		string? Read(string name) => ProviderEnvironment.EnvironmentValue(stored, name);
+
+		var accessKey = Read("AWS_ACCESS_KEY_ID");
+		var secret = Read("AWS_SECRET_ACCESS_KEY");
 
 		// 两者同时存在时命名 profile 的值优先，与 AWS CLI 的优先级大致一致。
-		accessKey ??= Environment.GetEnvironmentVariable("AWS_ACCESS_KEY");
-		secret ??= Environment.GetEnvironmentVariable("AWS_SECRET_KEY");
+		accessKey ??= Read("AWS_ACCESS_KEY");
+		secret ??= Read("AWS_SECRET_KEY");
 
 		return new AwsCredentials
 		{
 			AccessKeyId = accessKey ?? string.Empty,
 			SecretAccessKey = secret ?? string.Empty,
-			SessionToken = Environment.GetEnvironmentVariable("AWS_SESSION_TOKEN"),
+			SessionToken = Read("AWS_SESSION_TOKEN"),
 		};
 	}
 }

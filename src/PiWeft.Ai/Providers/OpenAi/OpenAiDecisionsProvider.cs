@@ -76,7 +76,7 @@ public sealed class OpenAiDecisionsProvider : IClassifierApiProvider
 
 			var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
 				? "https://api.openai.com/v1"
-				: model.BaseUrl.TrimEnd('/');
+				: ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 			using var request = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/decisions")
 			{
 				Content = new StringContent(body.ToJsonString(PiJson.NodeOptions), Encoding.UTF8, "application/json"),

@@ -189,88 +189,196 @@ internal sealed partial class ConfigurationView
 		BuildProviders();
 	}
 
+	private string _authQuery = string.Empty;
+	private IReadOnlyList<ProviderAuthStatus> _authStatuses = [];
+	private StackPanel? _authList;
+	private TextBlock? _authCount;
+	private UIElement? _authHeader;
+	private TextBlock? _authEmpty;
+	private readonly List<AuthRowEntry> _authRows = [];
+
+	private sealed record AuthRowEntry(UIElement Row, UIElement Separator, string SearchText);
+
 	private void BuildAuth()
 	{
-		_saveForm = () => Save(_root);
+		// 认证页直接写 auth.json，不走「草稿 + 顶部保存」；顶部的保存仍留给源文件编辑。
+		// RefreshAuthAsync 会直接调用本方法，必须自己清空，不能在旧列表下面再叠一份。
+		_body.Clear();
+		_saveForm = null;
+		_authStatuses = ProviderAuthService.Statuses(_store.AgentDir, _store.Cwd);
+		_authList = new StackPanel().Spacing(0);
+		_authCount = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 
-		// 订阅登录：OAuth 状态与入口（API Key 条目仍走下面的 auth.json 表单）。
-		var statuses = ProviderAuthService.Statuses(_store.AgentDir);
-		var cards = new StackPanel().Spacing(AppTheme.Space2);
-		foreach (var status in statuses) cards.Children(AuthProviderCard(status));
+		var search = new TextBox().PrimarySelection().Placeholder(Strings.AuthKeySearch).MinWidth(220).Text(_authQuery);
+		search.OnTextChanged(_ =>
+		{
+			_authQuery = search.Text;
+			FillAuthList();
+		});
+		var toolbar = new Grid().Columns("*,Auto").Children(
+			search.Column(0),
+			new StackPanel().Orientation(Orientation.Horizontal).Spacing(2).Children(
+				AppIcons.Button("refresh-cw", Strings.ConfigReload, () => Load())).Column(1));
+
 		_body.Children(
 			Label(Strings.AuthSubscriptionTitle).FontWeight(FontWeight.Bold),
 			Hint(Strings.AuthSubscriptionHint),
-			cards);
+			toolbar,
+			_authCount,
+			_authList);
 
-		_body.Children(Label(Strings.AuthEntriesTitle).FontWeight(FontWeight.Bold));
-		var listed = _root.Where(pair => ProviderAuth.Find(pair.Key) is null ||
-			!string.Equals(ConfigurationModels.Text(pair.Value, "type"), "oauth", StringComparison.Ordinal) ||
-			!ProviderAuthService.HasCredential(pair.Key, _store.AgentDir)).ToArray();
-		if (listed.Length == 0) _body.Children(Label(Strings.AuthNoApiKeys));
-		foreach (var (name, value) in listed)
+		// 行只建一次；搜索只切换可见性。42 行 × 每键重建整棵树是认证页最明显的性能雷点。
+		_authRows.Clear();
+		_authHeader = AuthHeader();
+		_authList.Children(_authHeader);
+		foreach (var status in _authStatuses)
 		{
-			_body.Children(new DockPanel().LastChildFill().Children(
-				AppIcons.Button("trash", Strings.Delete, () => _ = DeleteAsync(name, () =>
-				{
-					_root.Remove(name); SetDirty(true); Build();
-				})).DockRight(), Label(Strings.ConfigCredentialType(name, ConfigurationModels.Text(value, "type")))));
+			var row = AuthRow(status);
+			var separator = new Border().Height(1).WithTheme((theme, border) => border.Background = AppTheme.For(theme).BorderSubtle);
+			_authList.Children(row, separator);
+			_authRows.Add(new AuthRowEntry(row, separator, AuthSearchText(status)));
 		}
-		var provider = Input();
-		var key = new PasswordBox();
-		key.PasswordChanged += () => SetDirty(true);
-		Action commit = () =>
-		{
-			Save(string.IsNullOrWhiteSpace(provider.Text) && key.Password.Length == 0
-				? _root : ConfigurationModels.SetApiKey(_root, provider.Text.Trim(), key.Password));
-			key.Password = string.Empty;
-			SetDirty(false);
-		};
-		_saveForm = commit;
-		_body.Children(FormCard(Strings.AuthApiKeyTitle, Strings.AuthApiKeyHint,
-			Field(Strings.ConfigProvider, provider), Field(Strings.ConfigKey, key),
-			AppIcons.PrimaryButton("check", Strings.ConfigSetKey, () => Guard(commit)).HorizontalAlignment(HorizontalAlignment.Left)));
+
+		_authEmpty = Hint(string.Empty);
+		_authEmpty.IsVisible(false);
+		_authList.Children(_authEmpty);
+		FillAuthList();
 	}
 
-	private UIElement AuthProviderCard(ProviderAuthStatus status)
+	private void FillAuthList()
 	{
-		var provider = status.Provider;
-		var details = new StackPanel().Spacing(4);
-		details.Children(
-			Label($"{provider.Name} · {provider.Id}").FontWeight(FontWeight.Bold),
-			new TextBlock().Text(status.StateText).FontSize(AppTheme.FontSizeMicro)
-				.Role(status.Expired ? AppStyles.RoleError : status.LoggedIn ? AppStyles.RoleSuccess : AppStyles.RoleSubtle)
-				.TextWrapping(TextWrapping.Wrap));
-		if (status.AccountId is { Length: > 0 } account)
-			details.Children(Hint(Strings.AuthAccount(account)));
-		if (status.EnterpriseUrl is { Length: > 0 } enterprise)
-			details.Children(Hint(Strings.AuthEnterprise(enterprise)));
-		if (status.BaseUrl is { Length: > 0 } baseUrl)
-			details.Children(Hint(Strings.AuthBaseUrl(baseUrl)));
-
-		var actions = new WrapPanel().Spacing(4);
-		var login = AppIcons.TextButton("key-round", status.LoggedIn ? Strings.AuthRelogin : Strings.AuthLogin,
-			() => StartAuthLogin(provider));
-		login.IsEnabled = !_authBusy;
-		actions.Children(login);
-		if (status.LoggedIn && provider.Refreshable)
+		if (_authList is null || _authCount is null) return;
+		var query = _authQuery.Trim();
+		var visible = 0;
+		foreach (var entry in _authRows)
 		{
-			var refresh = AppIcons.TextButton("refresh-cw", Strings.AuthRefresh,
-				() => _ = RefreshAuthAsync(provider));
+			var match = query.Length == 0 || entry.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase);
+			if (entry.Row.IsVisible != match) entry.Row.IsVisible(match);
+			if (entry.Separator.IsVisible != match) entry.Separator.IsVisible(match);
+			if (match) visible++;
+		}
+
+		var countText = Strings.AuthKeyCount(visible);
+		if (_authCount.Text != countText) _authCount.Text(countText);
+		if (_authHeader is { } header && header.IsVisible != (visible > 0)) header.IsVisible(visible > 0);
+		if (_authEmpty is not null)
+		{
+			var emptyText = query.Length == 0 ? Strings.AuthKeyCountNone : Strings.AuthKeyNoMatch;
+			if (_authEmpty.Text != emptyText) _authEmpty.Text(emptyText);
+			if (_authEmpty.IsVisible != (visible == 0)) _authEmpty.IsVisible(visible == 0);
+		}
+	}
+
+	private static string AuthSearchText(ProviderAuthStatus status) => string.Join(' ',
+		new[]
+		{
+			status.Id,
+			status.Name,
+			status.OAuth?.Description,
+			status.OAuth is null ? null : "OAuth",
+			status.Key?.Label,
+			status.Key is null ? null : Strings.AuthKeyMethod,
+			status.OAuthStateText,
+			status.KeyStateText,
+		}.Concat(status.Key?.EnvironmentNames ?? [])
+		 .Concat(status.Key?.Options.SelectMany(static option =>
+			new[] { option.Label, option.Description }.Concat(option.Fields.SelectMany(static field => new[] { field.Label, field.Name }))) ?? []));
+
+	private static UIElement AuthHeader() => new Border().Padding(new Thickness(0, 0, 0, 4)).Child(
+		new Grid().Columns("240,*,Auto").Children(
+			Micro(Strings.ConfigProvider).Column(0),
+			Micro(Strings.AuthColumnMethod).Column(1),
+			Micro(Strings.AuthColumnActions).Column(2).HorizontalAlignment(HorizontalAlignment.Right)));
+
+	private UIElement AuthRow(ProviderAuthStatus status)
+	{
+		var identity = new StackPanel().Spacing(2).Children(
+			Label(status.Name).FontWeight(FontWeight.Bold),
+			new TextBlock().Text(status.BuiltIn ? status.Id : status.Id + " · " + Strings.AuthKeyCustomProvider)
+				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).SubtleText()
+				.TextWrapping(TextWrapping.Wrap));
+
+		var methods = new StackPanel().Spacing(3);
+		if (status.OAuth is not null || status.OAuthConfigured)
+		{
+			methods.Children(MethodState(Strings.AuthOAuthMethod, status.OAuthStateText, status.OAuthConfigured, status.OAuthExpired));
+		}
+		if (status.Key is not null || status.KeyConfigured)
+		{
+			methods.Children(MethodState(Strings.AuthKeyMethod, status.KeyStateText, status.KeyConfigured, error: status.KeyError));
+		}
+		if (status.AccountId is { Length: > 0 } account) methods.Children(Micro(Strings.AuthAccount(account)));
+		if (status.EnterpriseUrl is { Length: > 0 } enterprise) methods.Children(Micro(Strings.AuthEnterprise(enterprise)));
+		if (status.BaseUrl is { Length: > 0 } baseUrl) methods.Children(Micro(Strings.AuthBaseUrl(baseUrl)));
+
+		var actions = new WrapPanel().Spacing(2).VerticalAlignment(VerticalAlignment.Center);
+		if (status.CanLoginOAuth)
+		{
+			var login = AppIcons.TextButton("key-round",
+				status.OAuthConfigured ? Strings.AuthRelogin : Strings.AuthLogin,
+				() => StartAuthLogin(status.OAuth!));
+			login.IsEnabled = !_authBusy;
+			actions.Children(login);
+		}
+		if (status.CanSetKey)
+		{
+			var hasMainKey = status.StoredKey is { HasKey: true } && status.Key?.DefaultOption.HasMainKey == true;
+			var key = AppIcons.TextButton("key-round",
+				hasMainKey ? Strings.AuthKeyChange
+					: status.KeyStored ? Strings.AuthKeyEdit
+					: Strings.AuthKeySet,
+				() => OpenKeyPanel(status));
+			key.IsEnabled = !_authBusy;
+			actions.Children(key);
+		}
+		if (status.CanRefresh)
+		{
+			var refresh = AppIcons.Button("refresh-cw", Strings.AuthRefresh, () => _ = RefreshAuthAsync(status.OAuth!));
 			refresh.IsEnabled = !_authBusy;
 			actions.Children(refresh);
 		}
-		if (status.LoggedIn)
+		if (status.CanForget)
 		{
-			var logout = AppIcons.TextButton("x", Strings.AuthLogout, () => _ = LogoutAuthAsync(provider));
-			logout.IsEnabled = !_authBusy;
-			actions.Children(logout);
+			var forget = AppIcons.Button("trash",
+				status.OAuthConfigured ? Strings.AuthLogout : Strings.AuthKeyClear,
+				() => _ = ForgetAsync(status));
+			forget.IsEnabled = !_authBusy;
+			actions.Children(forget);
 		}
-		if (provider.DocsUrl.Length > 0)
-			actions.Children(AppIcons.Button("external-link", Strings.AuthDocs,
-				() => Shell.Open(provider.DocsUrl)));
-		details.Children(actions);
-		return new Border().StyleName(AppStyles.CardMuted).CornerRadius(AppTheme.RadiusSm)
-			.Padding(new Thickness(AppTheme.Space3)).Child(details);
+		if (status.DocsUrl.Length > 0)
+		{
+			actions.Children(AppIcons.Button("external-link", Strings.AuthDocs, () => Shell.Open(status.DocsUrl)));
+		}
+
+		return new Border().Padding(new Thickness(0, AppTheme.Space2)).Child(
+			new Grid().Columns("240,*,Auto").Children(
+				identity.Column(0).VerticalAlignment(VerticalAlignment.Top),
+				methods.Column(1).VerticalAlignment(VerticalAlignment.Top),
+				actions.Column(2).HorizontalAlignment(HorizontalAlignment.Right)));
+	}
+
+	private static TextBlock MethodState(string label, string state, bool configured, bool error)
+	{
+		var block = new TextBlock().Text(label + " · " + state).FontSize(AppTheme.FontSizeMicro)
+			.TextWrapping(TextWrapping.Wrap);
+		return block.Role(error
+			? AppStyles.RoleError
+			: configured ? AppStyles.RoleSuccess : AppStyles.RoleSubtle);
+	}
+
+	private static TextBlock Micro(string text) => new TextBlock().Text(text)
+		.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap);
+
+	private void OpenKeyPanel(ProviderAuthStatus status)
+	{
+		if (!EnsureAuthEditable() || status.Key is null) return;
+		var panel = new ProviderKeyPanel(status, _store.AgentDir, (_, forgotten) =>
+		{
+			Load();
+			AuthChanged?.Invoke();
+			Toasts.Success(View, forgotten ? Strings.AuthKeyCleared(status.Name) : Strings.AuthKeySaved(status.Name));
+		});
+		panel.Show(View);
 	}
 
 	private bool EnsureAuthEditable()
@@ -285,9 +393,13 @@ internal sealed partial class ConfigurationView
 		if (ProviderAuth.Find(providerId) is { } provider) StartAuthLogin(provider);
 	}
 
-	private void StartAuthLogin(AuthProvider provider)
+	private void StartAuthLogin(AuthProvider provider) => _ = StartAuthLoginAsync(provider);
+
+	private async Task StartAuthLoginAsync(AuthProvider provider)
 	{
 		if (!EnsureAuthEditable()) return;
+		if (ProviderAuthService.HasStoredKey(provider.Id, _store.AgentDir) &&
+			!await MessageBox.ConfirmAsync(Strings.AuthLoginOverwriteKey(provider.Name))) return;
 		var panel = new ProviderLoginPanel(provider, _store.AgentDir);
 		var completedLogin = false;
 		panel.Completed += completed =>
@@ -307,26 +419,29 @@ internal sealed partial class ConfigurationView
 		panel.Show(View);
 	}
 
-	private async Task LogoutAuthAsync(AuthProvider provider)
+	private async Task ForgetAsync(ProviderAuthStatus status)
 	{
-		if (!EnsureAuthEditable()) return;
-		if (!await MessageBox.ConfirmAsync(Strings.AuthLogoutConfirm(provider.Name))) return;
+		var confirmation = status.OAuthConfigured
+			? Strings.AuthLogoutConfirm(status.Name)
+			: Strings.AuthKeyClearConfirm(status.Name);
+		if (!await MessageBox.ConfirmAsync(confirmation)) return;
 		try
 		{
-			if (!ProviderAuthService.Logout(provider.Id, _store.AgentDir))
+			if (!ProviderAuthService.Logout(status.Id, _store.AgentDir))
 			{
 				Toasts.Error(View, Strings.AuthLogoutFailed);
 				return;
 			}
 		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or CodexAuthException)
 		{
 			Toasts.Error(View, Strings.ConfigFailed);
 			return;
 		}
+
 		Load();
 		AuthChanged?.Invoke();
-		Toasts.Success(View, Strings.AuthLogoutDone);
+		Toasts.Success(View, status.OAuthConfigured ? Strings.AuthLogoutDone : Strings.AuthKeyCleared(status.Name));
 	}
 
 	private async Task RefreshAuthAsync(AuthProvider provider)
@@ -348,6 +463,7 @@ internal sealed partial class ConfigurationView
 		{
 			_authBusy = false;
 			Load();
+			AuthChanged?.Invoke();
 		}
 	}
 

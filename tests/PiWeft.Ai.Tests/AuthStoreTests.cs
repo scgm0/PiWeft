@@ -1,6 +1,7 @@
 using PiWeft.Ai;
 using PiWeft.Ai.Auth;
 using PiWeft.Ai.Providers;
+using PiWeft.Ai.Providers.Bedrock;
 using Xunit;
 
 namespace PiWeft.Ai.Tests;
@@ -47,14 +48,103 @@ public class AuthStoreTests : IDisposable
 			 "template":{"type":"api_key","key":"${TOKEN}","env":{"TOKEN":"resolved"}},
 			 "missing":{"type":"api_key","key":"${MISSING}"},
 			 "command":{"type":"api_key","key":"!never execute this"},
+			 "envonly":{"type":"api_key","env":{"AWS_ACCESS_KEY_ID":"x"}},
+			 "marker":{"type":"api_key"},
 			 "oauth":{"type":"oauth","access":"a","refresh":"r","expires":1}}
 			""");
 		var providers = AuthStore.ConfiguredProviders(_agentDir);
 		Assert.Contains("literal", providers);
 		Assert.Contains("template", providers);
 		Assert.Contains("command", providers);
+		Assert.Contains("envonly", providers);
 		Assert.DoesNotContain("missing", providers);
+		Assert.DoesNotContain("marker", providers);
 		Assert.DoesNotContain("oauth", providers);
+	}
+
+	[Fact]
+	public void StoredCredentialSnapshotsKeepEnvironmentAndDoNotExecuteCommands()
+	{
+		WriteAuth("""
+			{"command":{"type":"api_key","key":"!never execute"},
+			 "template":{"type":"api_key","key":"${MISSING}"},
+			 "cloudflare":{"type":"api_key","key":"cf","env":{"CLOUDFLARE_ACCOUNT_ID":"acc"}},
+			 "ambient":{"type":"api_key"}}
+			""");
+		var all = AuthStore.ReadAllStoredApiKeys(_agentDir);
+		Assert.True(all["command"].IsCommand);
+		Assert.True(all["command"].HasUsableKey);
+		Assert.True(all["template"].IsTemplate);
+		Assert.False(all["template"].HasUsableKey);
+		Assert.True(all["cloudflare"].HasUsableKey);
+		Assert.Equal("acc", all["cloudflare"].Environment["CLOUDFLARE_ACCOUNT_ID"]);
+		Assert.True(all["ambient"].IsAmbientMarker);
+		Assert.True(all["ambient"].IsConfigured);
+		Assert.Equal("acc", AuthStore.ReadStoredEnvironmentValue("cloudflare", "CLOUDFLARE_ACCOUNT_ID", _agentDir));
+	}
+
+	[Fact]
+	public void SaveApiKeyCredentialWritesEnvironmentAndRemovesTheWholeEntry()
+	{
+		AuthStore.SaveApiKeyCredential(Provider, "key", new Dictionary<string, string>
+		{
+			["CLOUDFLARE_ACCOUNT_ID"] = "acc",
+			["EMPTY"] = "",
+		}, _agentDir);
+
+		var stored = AuthStore.ReadStoredApiKey(Provider, _agentDir)!;
+		Assert.Equal("key", stored.Key);
+		Assert.Equal("acc", stored.Environment["CLOUDFLARE_ACCOUNT_ID"]);
+		Assert.False(stored.Environment.ContainsKey("EMPTY"));
+		Assert.True(AuthStore.RemoveCredential(Provider, _agentDir));
+		Assert.Null(AuthStore.ReadStoredApiKey(Provider, _agentDir));
+		Assert.False(AuthStore.RemoveCredential(Provider, _agentDir));
+
+		// 没有 key 也没有 env 时保存 ambient 标记；不能把它写成空 key 字段。
+		AuthStore.SaveApiKeyCredential(Provider, null, null, _agentDir);
+		Assert.True(AuthStore.ReadStoredApiKey(Provider, _agentDir)!.IsAmbientMarker);
+	}
+
+	[Fact]
+	public void ApiKeySaveRefusesOauthUnlessExplicitlyConfirmed()
+	{
+		OAuthStore.Save(Provider, new OAuthCredential
+		{
+			Access = "access",
+			Refresh = "refresh",
+			Expires = DateTimeOffset.UtcNow.AddDays(1).ToUnixTimeSeconds(),
+		}, _agentDir);
+
+		Assert.Throws<InvalidOperationException>(() => AuthStore.SaveApiKey(Provider, "new", _agentDir));
+		Assert.NotNull(OAuthStore.Read(Provider, _agentDir));
+
+		AuthStore.SaveApiKeyCredential(Provider, "new", env: null, _agentDir, overwriteOAuth: true);
+		Assert.Null(OAuthStore.Read(Provider, _agentDir));
+		Assert.Equal("new", AuthStore.ReadApiKey(Provider, _agentDir));
+	}
+
+	[Fact]
+	public void ProviderEnvironmentReadsCredentialScopedAwsAndExpandsBaseUrlPlaceholders()
+	{
+		AuthStore.SaveApiKeyCredential("amazon-bedrock", null, new Dictionary<string, string>
+		{
+			["AWS_ACCESS_KEY_ID"] = "stored-access",
+			["AWS_SECRET_ACCESS_KEY"] = "stored-secret",
+			["AWS_SESSION_TOKEN"] = "stored-token",
+		}, _agentDir);
+		var credentials = AwsCredentials.FromEnvironment("amazon-bedrock");
+		Assert.True(credentials.IsValid);
+		Assert.Equal("stored-access", credentials.AccessKeyId);
+		Assert.Equal("stored-token", credentials.SessionToken);
+
+		AuthStore.SaveApiKeyCredential("cloudflare-workers-ai", "cf", new Dictionary<string, string>
+		{
+			["CLOUDFLARE_ACCOUNT_ID"] = "account",
+		}, _agentDir);
+		Assert.Equal(
+			"https://api.cloudflare.com/client/v4/accounts/account/ai/v1",
+			ProviderEnvironment.ExpandBaseUrl("cloudflare-workers-ai",
+				"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"));
 	}
 
 	[Fact]

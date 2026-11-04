@@ -372,7 +372,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 	{
 		var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
 			? "https://chatgpt.com/backend-api"
-			: model.BaseUrl.TrimEnd('/');
+			: ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 
 		if (baseUrl.EndsWith("/codex/responses", StringComparison.Ordinal))
 		{

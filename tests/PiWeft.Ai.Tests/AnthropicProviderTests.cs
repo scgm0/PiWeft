@@ -471,6 +471,28 @@ public class AnthropicProviderTests
 			Assert.True(RetryClassifier.IsRetryable(message));
 		}
 	}
+	[Fact]
+	public async Task CloudflareGatewayUsesGatewayAuthorizationHeader()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var model = Sonnet() with
+		{
+			Provider = "cloudflare-ai-gateway",
+			BaseUrl = "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic",
+		};
+		var stream = provider.Stream(model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "gateway-key", MaxTokens = 128 });
+		await foreach (var _ in stream)
+		{
+		}
+
+		var request = handler.LastRequest!;
+		Assert.Equal("Bearer gateway-key", request.Headers.GetValues("cf-aig-authorization").Single());
+		Assert.False(request.Headers.Contains("x-api-key"));
+		Assert.Null(request.Headers.Authorization);
+	}
 }
 
 [Collection("process-environment")]
@@ -528,4 +550,5 @@ public sealed class AnthropicProviderProviderKeyTests : IDisposable
 
 		Assert.Equal("openrouter-key", handler.LastRequest!.Headers.GetValues("x-api-key").Single());
 	}
+
 }

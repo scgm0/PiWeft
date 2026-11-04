@@ -1641,7 +1641,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		  /mcp                      查看已连接的 MCP 服务器与工具
 		  /trust                    查看当前项目信任状态
 		  /settings                 查看设置文件路径与生效值
-		  /login [provider]         OAuth 登录（默认 openai-codex）
+		  /login [provider] [oauth|api-key]  登录供应商（默认 openai-codex）
 		  /logout [provider]        移除已存凭据
 		  /copy                     复制最近一条助手回复
 		  /import <路径>            导入并切换到另一个 JSONL 会话

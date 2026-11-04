@@ -152,7 +152,7 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 			}
 		}
 
-		var baseUrl = model.BaseUrl.TrimEnd('/');
+		var baseUrl = ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 		var request = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/chat/completions")
 		{
 			Content = new ByteArrayContent(bytes),
@@ -164,7 +164,15 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 
 		if (apiKey is { Length: > 0 })
 		{
-			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+			if (string.Equals(model.Provider, "cloudflare-ai-gateway", StringComparison.Ordinal))
+			{
+				// 同 Anthropic 分支：网关令牌走 cf-aig-authorization，上游密钥由网关管理。
+				request.Headers.TryAddWithoutValidation("cf-aig-authorization", "Bearer " + apiKey);
+			}
+			else
+			{
+				request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+			}
 		}
 
 		if (model.Headers is { Count: > 0 } modelHeaders)

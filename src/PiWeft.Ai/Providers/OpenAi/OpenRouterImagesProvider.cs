@@ -98,7 +98,7 @@ public sealed class OpenRouterImagesProvider : IImageApiProvider
 
 			var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
 				? "https://openrouter.ai/api/v1"
-				: model.BaseUrl.TrimEnd('/');
+				: ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 			using var httpRequest = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/chat/completions")
 			{
 				Content = new StringContent(body.ToJsonString(PiJson.NodeOptions), Encoding.UTF8, "application/json"),

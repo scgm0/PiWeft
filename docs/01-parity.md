@@ -31,7 +31,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | 输入/模型 | 斜杠命令、命令面板、改键、模型筛选/搜索/刷新、记住上次使用、每模型思考档 | 模型收藏 |
 | 附件 | 路径引用、图片文件/字节、粘贴、复制预览 | 更多媒体类型、回复转图片 |
 | 用量 | 会话统计、上下文、费用、缓存、压缩；供应商余额/套餐；跨会话热力图 | 火山 AK/SK、Sub2API 登录态、热力图下钻 |
-| 设置 | 模型/供应商、API Key 与订阅 OAuth、Agent、MCP、JSON、作用域、草稿保护、安全门、导入 | 技能/提示词管理、商店、安全门图形编辑与审批 |
+| 设置 | 模型/供应商、供应商认证台（40+ 内置、OAuth / API Key 双方法、搜索、状态来源）、Agent、MCP、JSON、作用域、草稿保护、安全门、导入 | 技能/提示词管理、商店、安全门图形编辑与审批 |
 | MCP | 启动连接、状态、stdio 热刷新、手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、目录树、diff、暂存、提交、分支、AI 摘要、图、比较、fetch/pull/push、stash | 冲突界面、rebase/cherry-pick/reset、多远端 |
 | 文件 | 目录导航、Git 标记、内置编辑器、修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
@@ -127,13 +127,13 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | PiDeck | 行为 | 本端口 |
 |---|---|---|
 | `ModelsTab` | 供应商/模型编辑、复制、导入导出、保留高级字段 | `ConfigurationView.Forms.cs`、`ConfigurationModels.cs` |
-| `AuthTab` | API Key 与 OAuth 分开 | API Key 管理；OAuth 只展示类型，不被表单覆盖 |
+| `AuthTab` | API Key 与 OAuth 分开 | 同一供应商合并两种方法；API Key 表单按供应商生成字段，覆盖 OAuth 前确认 |
 | `McpTab` | 全局/项目、enabled、stdio/HTTP，保存不启动 | `ConfigurationView.Mcp.cs` |
 | `piConfigFileStore` | revision、未知字段、原子替换、外部修改冲突 | `ConfigurationStore.cs` |
 | `ConfigManager` | 配置领域与视图分离 | `ProviderProbe`、`RemoteModelCatalog` |
 
 - 设置分系统设置/配置管理；自定义供应商支持新增、编辑端点/协议、复制、删除、导入 JSON、脱敏导出；模型字段补丁保留 `headers`/`cost`/`compat`。
-- 认证：API Key 遮罩输入、保存、删除；已有 OAuth 不允许被 API Key 覆盖。Agent 设置含默认供应商/模型/思考档、自动压缩/重试；未修改的继承值不写项目覆盖。
+- 认证：内置供应商目录（42 个）同时展示 OAuth 与 API Key；API Key 支持遮罩输入、命令型凭据、`${VAR}` 模板、环境变量来源和供应商专属字段（Cloudflare 账户/网关、Vertex 项目/区域/ADC、Bedrock AWS 密钥）。保存 API Key 会替换同名 OAuth，必须在界面确认；删除会清掉 auth.json 条目但不动环境变量。Agent 设置含默认供应商/模型/思考档、自动压缩/重试；未修改的继承值不写项目覆盖。
 - MCP：全局/项目配置、stdio/HTTP、参数数组、启停/删除，保留 env/headers；保存不自动重连。
 - 源文件（模型、认证、设置、MCP、`usage-probes.json`）可显示、编辑和修复损坏文件；草稿独立于主题刷新，切页/重载/关闭均保护未保存修改。
 - 文件读写限制在 agent 目录与固定项目 `.pi` 路径；认证不写项目作用域；读写 ≤2 MiB；只接受对象根节点并校验关键字段。
@@ -141,9 +141,11 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 导出移除 API Key、认证字段、headers/env/OAuth 与 URL 查询/userinfo；不自动导出 auth.json；日志不输出配置内容或异常原文。
 - 模型目录/Agent 设置只作用于新会话；已有会话不运行时替换。MCP 保存后需手动重连。
 
-### 订阅登录
+### 供应商认证
 
-桌面复用 `PiWeft.Ai.Auth` 的 OAuth（与 `pi login` 同一套流程和 `auth.json`）：Anthropic（授权码）、OpenAI ChatGPT（回环）、Codex（设备码）、GitHub Copilot（设备码 + 企业域名）、xAI、Kimi、Meta、Radius（设备码）、OpenRouter（浏览器换取 Key）。面板实时输出日志，提取授权 URL/设备码，支持输入授权码/回调 URL、取消和重试；凭据由 `OAuthStore`/`CodexAuth` 原子写入全局 `auth.json`（Unix 0600），界面不显示 token。登录/退出后重建模型环境并推给所有标签页；登录会覆盖同名 API Key（页面已明示）。
+桌面复用 `PiWeft.Ai.Auth` 的 OAuth（与 `pi login` 同一套流程和 `auth.json`）：Anthropic（授权码）、OpenAI ChatGPT（回环）、Codex（设备码）、GitHub Copilot（设备码 + 企业域名）、xAI、Kimi、Meta、Radius（设备码）、OpenRouter（浏览器换取 Key）。面板实时输出日志，提取授权 URL/设备码，支持输入授权码/回调 URL、取消和重试；凭据由 `OAuthStore`/`CodexAuth` 原子写入全局 `auth.json`（Unix 0600），界面不显示 token。登录/退出后重建模型环境并推给所有标签页。
+
+API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-key]` 共用同一份供应商事实：标准供应商一个 `key`，Cloudflare / Vertex / Bedrock 使用额外 `env` 字段或环境变量 marker。这些字段不只是展示：Cloudflare 占位符由凭据 env 展开、网关令牌走 `cf-aig-authorization`，Vertex API Key 走 express 端点、ADC 读取凭据文件与项目/区域，Bedrock AWS 密钥参与 SigV4 签名。认证页把 OAuth 与 API Key 合并成一行，显示已保存 / 环境变量 / 命令型 / 外部凭据 / 未配置与过期状态；内置目录覆盖 `models.json` 全部 42 个供应商，自定义 auth.json 条目也能编辑或删除。API Key 面板不回显已保存密钥，留空表示保留；覆盖 OAuth 前必须确认。
 
 ### 供应商请求头与会话亲和
 
@@ -238,7 +240,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | PI-04 | 完整 TUI | 行式 REPL；缺多行编辑、`$EDITOR`、TUI 图片粘贴、补全、选择器、终端图片与完整键位 |
 | PI-05 | codemode / tool_search | 已实现；余项是 prelude lockdown |
 | PI-06 | MCP 高级运行时 | OAuth/PKCE/客户端凭据、callback、401 重放、HTTP 通知已覆盖；缺 `cimd`、完整 `callbackUrl`、与 pi 共享 `mcp-auth.json` |
-| PI-07 | 认证 | OAuth + API Key 全覆盖，桌面已接同一套登录；缺 AWS ambient 链、OIDC/SSO、多账号 |
+| PI-07 | 认证 | OAuth + API Key 全覆盖；桌面与 `pi login` 共用供应商目录，支持 Cloudflare/Vertex/Bedrock 多字段与凭据 env；缺 AWS 配置文件/实例元数据链、OIDC/SSO、多账号 |
 | PI-08 | 动态模型目录 | 远程刷新、离线缓存、账号目录、条件请求、6 小时节流已实现；缺账号能力同步与增量合并 |
 | PI-09 | 高级模型运行时 | 虚拟模型、cache warming、samplingParams、Codex WebSocket、生图/分类已实现；缺扩展注册 route、连接复用、生图入口 |
 | PI-10 | 资源/主题 | 发现、解析、热重载已实现；缺资源编辑界面与包筛选可视化 |

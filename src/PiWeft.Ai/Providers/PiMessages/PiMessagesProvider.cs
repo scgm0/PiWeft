@@ -188,7 +188,7 @@ public sealed class PiMessagesProvider : IApiProvider
 			}
 		}
 
-		var baseUrl = model.BaseUrl.TrimEnd('/');
+		var baseUrl = ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 		var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/messages")
 		{
 			Content = new ByteArrayContent(bytes),

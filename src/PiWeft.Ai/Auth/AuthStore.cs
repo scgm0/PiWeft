@@ -23,38 +23,107 @@ public static partial class AuthStore
 	public static string Path(string? agentDir = null) =>
 		System.IO.Path.Combine(agentDir ?? AgentPaths.AgentDirectory(), "auth.json");
 
-	public static void SaveApiKey(string provider, string key, string? agentDir = null)
+	public static void SaveApiKey(string provider, string key, string? agentDir = null) =>
+		SaveApiKeyCredential(provider, key, env: null, agentDir);
+
+	/// 写入 <c>api_key</c> 凭据。key 为空但有 env 时保存「额外字段型」凭据；
+	/// 两者都为空时保存一条环境变量/外部凭据标记（与 pi 的 credential-chain 登录一致）。
+	/// 默认拒绝覆盖 OAuth：调用方（桌面端）必须让用户明确确认后才传 <paramref name="overwriteOAuth"/>。
+	public static void SaveApiKeyCredential(
+		string provider,
+		string? key,
+		IReadOnlyDictionary<string, string>? env,
+		string? agentDir = null,
+		bool overwriteOAuth = false)
 	{
 		lock (AuthFileGate.Gate)
 		{
 			var path = Path(agentDir);
 			var root = ReadRootForWrite(path);
-			root[provider] = new JsonObject
+			var existing = root[provider] as JsonObject;
+			if (existing is not null && !overwriteOAuth &&
+				!string.Equals(Text(existing, "type"), "api_key", StringComparison.Ordinal))
 			{
-				["type"] = "api_key",
-				["key"] = key,
-			};
-
-			var directory = System.IO.Path.GetDirectoryName(path);
-			if (directory is { Length: > 0 })
-			{
-				Directory.CreateDirectory(directory);
+				throw new InvalidOperationException($"provider '{provider}' is configured with OAuth");
 			}
 
-			var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
-			File.WriteAllText(temporary, root.ToJsonString(new System.Text.Json.JsonSerializerOptions
+			// 覆盖已有 api_key 时保留未知字段（pi 可能在未来版本写入新的非敏感元数据）。
+			var credential = existing is not null && string.Equals(Text(existing, "type"), "api_key", StringComparison.Ordinal)
+				? existing.DeepClone().AsObject()
+				: new JsonObject();
+			credential["type"] = "api_key";
+
+			if (!string.IsNullOrEmpty(key))
 			{
-				WriteIndented = true,
-				Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-			}));
-			if (!OperatingSystem.IsWindows())
+				credential["key"] = key;
+			}
+			else
 			{
-				File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+				credential.Remove("key");
 			}
 
-			File.Move(temporary, path, overwrite: true);
+			var environment = new JsonObject();
+			foreach (var (name, value) in env ?? new Dictionary<string, string>(StringComparer.Ordinal))
+			{
+				if (!string.IsNullOrEmpty(name) && value is { Length: > 0 })
+				{
+					environment[name] = value;
+				}
+			}
+
+			if (environment.Count > 0)
+			{
+				credential["env"] = environment;
+			}
+			else
+			{
+				credential.Remove("env");
+			}
+
+			root[provider] = credential;
+			WriteRoot(path, root);
 		}
 	}
+
+	/// 删除任意类型的凭据（API Key / OAuth）。桌面端「退出登录」与「清除 API Key」
+	/// 都走这里：auth.json 一个 provider 只有一份凭据，按类型删会留下无法解释的半状态。
+	public static bool RemoveCredential(string provider, string? agentDir = null)
+	{
+		lock (AuthFileGate.Gate)
+		{
+			var path = Path(agentDir);
+			if (!File.Exists(path)) return false;
+			var root = ReadRootForWrite(path);
+			if (!root.Remove(provider)) return false;
+			WriteRoot(path, root);
+			return true;
+		}
+	}
+
+	private static void WriteRoot(string path, JsonObject root)
+	{
+		var directory = System.IO.Path.GetDirectoryName(path);
+		if (directory is { Length: > 0 })
+		{
+			Directory.CreateDirectory(directory);
+		}
+
+		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+		File.WriteAllText(temporary, root.ToJsonString(new System.Text.Json.JsonSerializerOptions
+		{
+			WriteIndented = true,
+			Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+		}));
+		if (!OperatingSystem.IsWindows())
+		{
+			File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+		}
+
+		File.Move(temporary, path, overwrite: true);
+	}
+
+	private static string? Text(JsonObject entry, string key) =>
+		entry[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
 	private static JsonObject ReadRootForWrite(string path)
 	{
@@ -426,6 +495,55 @@ public static partial class AuthStore
 		return (string.IsNullOrEmpty(resolved) ? null : resolved, false);
 	}
 
+	/// 不含解析结果的存储快照。认证页需要同时展示「有 Key / 只有 env / 命令型 / 模板变量缺失」，
+	/// 不能用 <see cref="ReadApiKey"/>（它会把后三种都折叠成 null）。
+	public sealed record StoredApiKey(string? Key, IReadOnlyDictionary<string, string> Environment, bool HasUsableKey)
+	{
+		public bool HasKey => !string.IsNullOrEmpty(Key);
+
+		public bool IsCommand => Key?.StartsWith('!') == true;
+
+		public bool IsTemplate => Key?.Contains("${", StringComparison.Ordinal) == true;
+
+		public bool HasEnvironment => Environment.Count > 0;
+
+		/// 只有 <c>{"type":"api_key"}</c>：pi 的 AWS credential-chain 之类「使用外部凭据」标记。
+		public bool IsAmbientMarker => !HasKey && !HasEnvironment;
+
+		public bool IsConfigured => HasUsableKey || HasEnvironment || IsAmbientMarker;
+	}
+
+	public static StoredApiKey? ReadStoredApiKey(string provider, string? agentDir = null) =>
+		ReadStoredApiKey(ReadRoot(agentDir)?[provider]);
+
+	/// 一次读盘解析全部 api_key 凭据；认证页要展示 40+ 个供应商，逐个读会把同一份文件读 40 次。
+	public static IReadOnlyDictionary<string, StoredApiKey> ReadAllStoredApiKeys(string? agentDir = null)
+	{
+		var result = new Dictionary<string, StoredApiKey>(StringComparer.Ordinal);
+		if (ReadRoot(agentDir) is not { } root) return result;
+		foreach (var (provider, node) in root)
+		{
+			if (ReadStoredApiKey(node) is { } credential) result[provider] = credential;
+		}
+
+		return result;
+	}
+
+	internal static StoredApiKey? ReadStoredApiKey(JsonNode? node)
+	{
+		if (ReadCredential(node) is not { } credential) return null;
+		var (key, env) = credential;
+		var usable = key.Length > 0 && (key.StartsWith('!') || ResolveTemplate(key, env) is { Length: > 0 });
+		return new StoredApiKey(key, env ?? new Dictionary<string, string>(StringComparer.Ordinal), usable);
+	}
+
+	/// 凭据 env 里的值优先于进程环境（pi 的 credential-scoped env 语义）。
+	public static string? ReadStoredEnvironmentValue(string provider, string name, string? agentDir = null) =>
+		ReadStoredApiKey(provider, agentDir) is { } credential &&
+		credential.Environment.TryGetValue(name, out var value) && value.Length > 0
+			? value
+			: null;
+
 	public static async Task<(string? Key, bool IsCommand)> ReadCredentialStateAsync(
 		string provider,
 		string? agentDir = null,
@@ -461,7 +579,13 @@ public static partial class AuthStore
 		{
 			if (ReadCredential(node) is not { } credential) continue;
 			var (key, env) = credential;
-			if (key.Length == 0) continue;
+			if (key.Length == 0)
+			{
+				// env-only 凭据（Vertex ADC / AWS 访问密钥）也算已配置；只写 type 的
+				// ambient 标记不算，否则会把"等待外部凭据"误报成已可用。
+				if (env is { Count: > 0 }) providers.Add(provider);
+				continue;
+			}
 			if (key.StartsWith('!') || ResolveTemplate(key, env) is { Length: > 0 }) providers.Add(provider);
 		}
 		return providers;
@@ -562,9 +686,12 @@ public static partial class AuthStore
 
 	internal static (string Key, Dictionary<string, string>? Env)? ReadCredential(JsonNode? node)
 	{
+		// key 可以缺失：pi 的 credential-chain 登录会只写 {type:"api_key", env:{...}}，
+		// 甚至只写 {type:"api_key"}。把它们当成「没有可解析 Key」而不是「不是凭据」，
+		// 否则认证页会把已保存的外部凭据显示成未配置。
 		if (node is not JsonObject entry || entry["type"] is not JsonValue type ||
-			!type.TryGetValue<string>(out var kind) || kind != "api_key" ||
-			entry["key"] is not JsonValue value || !value.TryGetValue<string>(out var key)) return null;
+			!type.TryGetValue<string>(out var kind) || kind != "api_key") return null;
+		var key = entry["key"] is JsonValue value && value.TryGetValue<string>(out var keyText) ? keyText : string.Empty;
 		Dictionary<string, string>? env = null;
 		if (entry["env"] is JsonObject envNode)
 		{

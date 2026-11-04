@@ -47,8 +47,10 @@ public sealed class GoogleVertexProvider : IApiProvider
 		try
 		{
 			var apiKey = await ResolveApiKeyAsync(model, options, cancellationToken).ConfigureAwait(false);
+			// API key 走 express，不需要项目/区域；ADC 一次读盘后同时供令牌与 URL 使用。
+			var stored = apiKey is null ? ProviderEnvironment.StoredEnvironment(model.Provider) : null;
 			var bearer = apiKey is null
-				? await GoogleAdc.GetAccessTokenAsync(_tokenHttp, cancellationToken).ConfigureAwait(false)
+				? await GoogleAdc.GetAccessTokenAsync(_tokenHttp, stored, cancellationToken).ConfigureAwait(false)
 				: null;
 
 			var messages = Transcript.Normalize(context, model);
@@ -64,7 +66,8 @@ public sealed class GoogleVertexProvider : IApiProvider
 				thinkingBudget,
 				maxOutputTokens,
 				apiKey,
-				bearer);
+				bearer,
+				stored);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
@@ -133,7 +136,8 @@ public sealed class GoogleVertexProvider : IApiProvider
 		int? thinkingBudget,
 		int? maxOutputTokens,
 		string? apiKey,
-		string? bearer)
+		string? bearer,
+		IReadOnlyDictionary<string, string>? stored)
 	{
 		var bytes = JsonPayload.Write(writer =>
 			GoogleWire.WriteRequest(writer, model, messages, tools, options, thinkingBudget, maxOutputTokens));
@@ -147,7 +151,7 @@ public sealed class GoogleVertexProvider : IApiProvider
 			}
 		}
 
-		var url = BuildUrl(model, options);
+		var url = BuildUrl(model, options, apiKey is not null, stored);
 		var request = new HttpRequestMessage(HttpMethod.Post, url)
 		{
 			Content = new ByteArrayContent(bytes),
@@ -194,14 +198,31 @@ public sealed class GoogleVertexProvider : IApiProvider
 
 	/// 构建 Vertex 的 generateContent URL。目录里给的是带 <c>{location}</c> 的模板，
 	/// 在这里做替换；<c>global</c> 是合法取值，此时不加区域前缀。
-	internal static string BuildUrl(Model model, StreamOptions options)
-	{
-		var location = ResolveLocation(options);
-		var project = ResolveProject();
+	internal static string BuildUrl(Model model, StreamOptions options) =>
+		BuildUrl(model, options, express: false, stored: null);
 
+	internal static string BuildUrl(Model model, StreamOptions options, bool express) =>
+		BuildUrl(model, options, express, stored: null);
+
+	internal static string BuildUrl(Model model, StreamOptions options, bool express, IReadOnlyDictionary<string, string>? stored)
+	{
 		var template = string.IsNullOrEmpty(model.BaseUrl)
 			? "https://{location}-aiplatform.googleapis.com"
 			: model.BaseUrl;
+
+		if (express)
+		{
+			// Vertex Express（API key）由 Google 从 key 解析项目，不需要 project/location 路径；
+			// 这与 pi 的 google-vertex API key 分支一致。
+			var expressBase = template.Contains("{location}", StringComparison.Ordinal)
+				? "https://aiplatform.googleapis.com"
+				: template;
+			return expressBase.TrimEnd('/') +
+				$"/v1/publishers/google/models/{Uri.EscapeDataString(model.Id)}:streamGenerateContent?alt=sse";
+		}
+
+		var location = ResolveLocationFromEnvironment(options, stored);
+		var project = ResolveProjectFromEnvironment(stored);
 
 		var baseUrl = template.Contains("{location}", StringComparison.Ordinal)
 			? template.Replace("{location}", location, StringComparison.Ordinal)
@@ -219,27 +240,49 @@ public sealed class GoogleVertexProvider : IApiProvider
 	}
 
 	internal static string ResolveLocation(StreamOptions options) =>
-		options.Metadata?["location"]?.GetValue<string>() is { Length: > 0 } fromOptions
+		ResolveLocation(options, provider: null);
+
+	internal static string ResolveLocation(StreamOptions options, string? provider) =>
+		ResolveLocationFromEnvironment(options,
+			provider is null ? null : ProviderEnvironment.StoredEnvironment(provider));
+
+	private static string ResolveLocationFromEnvironment(
+		StreamOptions options,
+		IReadOnlyDictionary<string, string>? stored)
+	{
+		string? Value(string name) => ProviderEnvironment.EnvironmentValue(stored, name);
+
+		return options.Metadata?["location"]?.GetValue<string>() is { Length: > 0 } fromOptions
 			? fromOptions
-			: Environment.GetEnvironmentVariable("GOOGLE_CLOUD_LOCATION") is { Length: > 0 } location
+			: Value("GOOGLE_CLOUD_LOCATION") is { Length: > 0 } location
 				? location
-				: Environment.GetEnvironmentVariable("GOOGLE_CLOUD_REGION") is { Length: > 0 } region
+				: Value("GOOGLE_CLOUD_REGION") is { Length: > 0 } region
 					? region
 					: DefaultLocation;
+	}
 
-	internal static string ResolveProject() =>
-		Environment.GetEnvironmentVariable("GOOGLE_CLOUD_PROJECT") is { Length: > 0 } project
+	internal static string ResolveProject() => ResolveProject(provider: null);
+
+	internal static string ResolveProject(string? provider) =>
+		ResolveProjectFromEnvironment(provider is null ? null : ProviderEnvironment.StoredEnvironment(provider));
+
+	private static string ResolveProjectFromEnvironment(IReadOnlyDictionary<string, string>? stored)
+	{
+		string? Value(string name) => ProviderEnvironment.EnvironmentValue(stored, name);
+
+		return Value("GOOGLE_CLOUD_PROJECT") is { Length: > 0 } project
 			? project
-			: Environment.GetEnvironmentVariable("GOOGLE_PROJECT_ID") is { Length: > 0 } fallback
+			: Value("GOOGLE_PROJECT_ID") is { Length: > 0 } fallback
 				? fallback
 				: throw new InvalidOperationException(
 					"Vertex AI requires a project. Set GOOGLE_CLOUD_PROJECT or GOOGLE_PROJECT_ID.");
+	}
 
 	private static async Task<string?> ResolveApiKeyAsync(Model model, StreamOptions options, CancellationToken cancellationToken) =>
 		!string.IsNullOrEmpty(options.ApiKey)
 			? options.ApiKey
 			: await ProviderEnvironment.ResolveApiKeyAsync(model.Provider, options, cancellationToken).ConfigureAwait(false)
-				?? (Environment.GetEnvironmentVariable("GOOGLE_CLOUD_API_KEY") is { Length: > 0 } key ? key : null);
+				?? ProviderEnvironment.EnvironmentValue(model.Provider, "GOOGLE_CLOUD_API_KEY");
 
 	private static void PushFailure(
 		AssistantMessageEventStream stream,

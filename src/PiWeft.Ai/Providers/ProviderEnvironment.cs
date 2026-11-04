@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace PiWeft.Ai.Providers;
 
@@ -204,7 +205,7 @@ public sealed class HeaderTimeoutScope : IDisposable
 	}
 }
 
-public static class ProviderEnvironment
+public static partial class ProviderEnvironment
 {
 	private static readonly FrozenDictionary<string, string> Overrides =
 		new Dictionary<string, string>(StringComparer.Ordinal)
@@ -213,11 +214,13 @@ public static class ProviderEnvironment
 			["moonshotai"] = "MOONSHOT_API_KEY",
 			["moonshotai-cn"] = "MOONSHOT_API_KEY",
 			["zai"] = "ZAI_API_KEY",
-			["zai-coding-cn"] = "ZAI_API_KEY",
+			["zai-coding-cn"] = "ZAI_CODING_CN_API_KEY",
 			["xai"] = "XAI_API_KEY",
 			["opencode"] = "OPENCODE_API_KEY",
 			["opencode-go"] = "OPENCODE_API_KEY",
 			["kimi-coding"] = "KIMI_API_KEY",
+			["github-copilot"] = "COPILOT_GITHUB_TOKEN",
+			["azure"] = "AZURE_OPENAI_API_KEY",
 			["google"] = "GEMINI_API_KEY",
 			["google-vertex"] = "GOOGLE_CLOUD_API_KEY",
 			["vercel-ai-gateway"] = "AI_GATEWAY_API_KEY",
@@ -226,6 +229,19 @@ public static class ProviderEnvironment
 		}.ToFrozenDictionary(StringComparer.Ordinal);
 
 	private static readonly ConcurrentDictionary<string, string> KeyNames = new(StringComparer.Ordinal);
+
+	/// 进程环境中该 provider 的 API Key；主变量优先，再查兼容旧变量名。
+	public static string? ResolveEnvironmentKey(string provider)
+	{
+		var primary = Environment.GetEnvironmentVariable(KeyName(provider));
+		if (!string.IsNullOrEmpty(primary)) return primary;
+		return provider switch
+		{
+			"azure" => Environment.GetEnvironmentVariable("AZURE_API_KEY"),
+			"zai-coding-cn" => Environment.GetEnvironmentVariable("ZAI_API_KEY"),
+			_ => null,
+		};
+	}
 
 	public static string KeyName(string provider) => KeyNames.GetOrAdd(provider, static name =>
 	{
@@ -300,6 +316,44 @@ public static class ProviderEnvironment
 		}
 	}
 
+	[GeneratedRegex(@"\{([A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.CultureInvariant)]
+	private static partial Regex EnvironmentTemplate();
+
+	private static readonly IReadOnlyDictionary<string, string> EmptyEnvironment =
+		new Dictionary<string, string>(StringComparer.Ordinal);
+
+	/// provider 级 env（auth.json 的 <c>api_key.env</c>）。Cloudflare 的账户/网关 ID、
+	/// Vertex 的项目/区域与 AWS 访问密钥都存在这里；请求时优先于进程环境。
+	public static IReadOnlyDictionary<string, string> StoredEnvironment(string provider, string? agentDir = null) =>
+		Auth.AuthStore.ReadStoredApiKey(provider, agentDir)?.Environment ?? EmptyEnvironment;
+
+	public static string? EnvironmentValue(string provider, string name) =>
+		EnvironmentValue(StoredEnvironment(provider), name);
+
+	public static string? EnvironmentValue(IReadOnlyDictionary<string, string>? stored, string name)
+	{
+		if (stored is not null && stored.TryGetValue(name, out var storedValue) && storedValue.Length > 0)
+		{
+			return storedValue;
+		}
+
+		return Environment.GetEnvironmentVariable(name) is { Length: > 0 } fromProcess ? fromProcess : null;
+	}
+
+	/// 展开模型目录里的 <c>{ENV_NAME}</c>（Cloudflare 的账户/网关 ID 等）。
+	/// 缺失值直接报错：静默保留花括号会请求一个必然 404 的地址，比失败更难排查。
+	public static string ExpandBaseUrl(string provider, string baseUrl)
+	{
+		if (!baseUrl.Contains('{', StringComparison.Ordinal)) return baseUrl;
+		var stored = StoredEnvironment(provider);
+		return EnvironmentTemplate().Replace(baseUrl, match =>
+		{
+			var name = match.Groups[1].Value;
+			return EnvironmentValue(stored, name)
+				?? throw new InvalidOperationException($"Missing environment variable {name} for provider {provider}");
+		});
+	}
+
 	/// 与 pi 一致的顺序：显式选项 → <c>auth.json</c> 里存储的凭据 → 该 provider 的环境变量 →
 	/// 一小组 OpenAI 兼容网关通用的兜底变量。
 	/// 存储优先这一步很关键：<c>pi login</c> 与桌面端都把 key 写进 <c>auth.json</c>，只认环境变量会让
@@ -352,16 +406,6 @@ public static class ProviderEnvironment
 			return oauth.Access;
 		}
 
-		var direct = Environment.GetEnvironmentVariable(KeyName(provider));
-		if (!string.IsNullOrEmpty(direct))
-		{
-			return direct;
-		}
-
-		return provider switch
-		{
-			"openai" => Environment.GetEnvironmentVariable("OPENAI_API_KEY"),
-			_ => null,
-		};
+		return ResolveEnvironmentKey(provider);
 	}
 }

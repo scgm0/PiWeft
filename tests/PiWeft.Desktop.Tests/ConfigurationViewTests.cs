@@ -1,5 +1,7 @@
+using System.Reflection;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai.Auth;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
 
@@ -152,17 +154,48 @@ public sealed class ConfigurationViewTests : IDisposable
 	}
 
 	[Fact]
-	public async Task AuthHeaderSaveCommitsTheCredentialFormAndClearsSensitiveInput()
+	public async Task RebuildingTheAuthPageDoesNotAppendASecondCopy()
 	{
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
 		await view.OpenAsync(ConfigFile.Auth);
-		Find<TextBox>(view.View).Single().Text = "local";
-		var password = Find<PasswordBox>(view.View).Single();
-		password.Password = "test-key";
-		view.SaveDraft();
-		Assert.False(view.IsDirty);
-		Assert.Empty(password.Password);
-		Assert.Equal("test-key", Store.Read(ConfigFile.Auth).Parse()["local"]!["key"]!.GetValue<string>());
+		typeof(ConfigurationView).GetMethod("BuildAuth", BindingFlags.Instance | BindingFlags.NonPublic)!
+			.Invoke(view, null);
+		Assert.Equal(1, Find<TextBlock>(view.View).Count(block => block.Text == Strings.AuthSubscriptionTitle));
+	}
+
+	[Fact]
+	public async Task AuthPageListsBuiltInProvidersAndFiltersBySearch()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Auth);
+
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == "Anthropic" && IsEffectivelyVisible(block));
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == "Google Vertex AI" && IsEffectivelyVisible(block));
+		// 每个支持 API Key 的内置供应商都应有一个「设置 API Key」入口；Codex 只有 OAuth。
+		Assert.Equal(
+			ProviderAuthCatalog.BuiltIns.Count(provider => provider.ApiKey is not null),
+			CountButtonsLabeled(view, Strings.AuthKeySet));
+
+		var search = Find<TextBox>(view.View).Single();
+		search.Text = "vertex";
+		// 行控件复用，过滤只切 IsVisible；仍在视觉树里但不可见。
+		Assert.DoesNotContain(Find<TextBlock>(view.View), block => block.Text == "Anthropic" && IsEffectivelyVisible(block));
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == "Google Vertex AI" && IsEffectivelyVisible(block));
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.AuthKeyCount(1));
+
+		search.Text = "no-such-provider";
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.AuthKeyNoMatch && IsEffectivelyVisible(block));
+		Assert.DoesNotContain(Find<TextBlock>(view.View), block => block.Text == "Google Vertex AI" && IsEffectivelyVisible(block));
+	}
+
+	private static bool IsEffectivelyVisible(Element element)
+	{
+		for (var current = element; current is not null; current = current.Parent)
+		{
+			if (current is UIElement { IsVisible: false }) return false;
+		}
+
+		return true;
 	}
 
 	private static void ClickText(UIElement root, string text) =>

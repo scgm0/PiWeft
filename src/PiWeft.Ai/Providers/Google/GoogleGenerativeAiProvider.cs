@@ -126,7 +126,7 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 
 		var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
 			? "https://generativelanguage.googleapis.com/v1beta"
-			: model.BaseUrl.TrimEnd('/');
+			: ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 
 		// Gemini 把模型名放在路径里；设置 alt=sse 时以 SSE 流式返回。
 		var url = $"{baseUrl}/models/{Uri.EscapeDataString(model.Id)}:streamGenerateContent?alt=sse";

@@ -28,7 +28,7 @@ internal static class ModelAvailability
 			{
 				var configuredKey = configuredKeys.GetValueOrDefault(model.Provider);
 				var key = explicitKey is { Length: > 0 } ? explicitKey : configuredKey is { Length: > 0 } ? configuredKey :
-					stored.GetValueOrDefault(model.Provider) ?? Environment.GetEnvironmentVariable(ProviderEnvironment.KeyName(model.Provider));
+					stored.GetValueOrDefault(model.Provider) ?? ProviderEnvironment.ResolveEnvironmentKey(model.Provider);
 				var hasKey = !string.IsNullOrWhiteSpace(key) && !key.StartsWith('!');
 				var hasCommandKey = commandProviders.Contains(model.Provider);
 				if (!oauthProviders.TryGetValue(model.Provider, out var hasOAuth))
@@ -41,13 +41,12 @@ internal static class ModelAvailability
 					OpenAiCodexResponsesProvider.ApiId => !string.IsNullOrWhiteSpace(explicitKey) ||
 						configuredKeys.GetValueOrDefault(model.Provider) is { Length: > 0 } configured && !configured.StartsWith('!') ||
 						credentials is { Access.Length: > 0, Refresh.Length: > 0 },
-					BedrockConverseProvider.ApiId => AwsCredentials.FromEnvironment().IsValid,
-					GoogleVertexProvider.ApiId => !string.IsNullOrWhiteSpace(explicitKey) ||
+					BedrockConverseProvider.ApiId => AwsCredentials.FromEnvironment(model.Provider).IsValid,
+					GoogleVertexProvider.ApiId => hasKey || hasCommandKey || !string.IsNullOrWhiteSpace(explicitKey) ||
 						configuredKeys.GetValueOrDefault(model.Provider) is { Length: > 0 } vertexKey && !vertexKey.StartsWith('!') ||
-						HasVariable("GOOGLE_CLOUD_API_KEY") || HasVariable(GoogleAdc.AccessTokenVariable) ||
-						File.Exists(Environment.GetEnvironmentVariable(GoogleAdc.CredentialsVariable)),
+						GoogleAdc.HasConfiguredCredentials(model.Provider),
 					AzureOpenAiResponsesProvider.ApiId => hasKey || hasCommandKey || HasVariable("AZURE_OPENAI_API_KEY"),
-					_ => hasKey || hasCommandKey || hasOAuth,
+					_ => ((hasKey || hasCommandKey) && HasRequiredKeyEnvironment(model.Provider)) || hasOAuth,
 				};
 				providers[identity] = available;
 			}
@@ -66,4 +65,15 @@ internal static class ModelAvailability
 	}
 
 	private static bool HasVariable(string name) => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name));
+
+	/// Cloudflare 这类供应商的 API Key 只有在账户/网关 env 也齐备时才可用。
+	/// 认证页会显示「缺少字段」，模型选择器也不该把它们当成可用模型。
+	private static bool HasRequiredKeyEnvironment(string provider)
+	{
+		var option = ProviderAuthCatalog.Find(provider)?.ApiKey?.DefaultOption;
+		if (option is null || option.EnvironmentFields.Count == 0) return true;
+		var stored = ProviderEnvironment.StoredEnvironment(provider);
+		return option.EnvironmentFields.All(field =>
+			!field.Required || ProviderEnvironment.EnvironmentValue(stored, field.Name) is not null);
+	}
 }
