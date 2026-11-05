@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using PiWeft.Ai;
 using PiWeft.CodingAgent.Tools;
 using Xunit;
 
@@ -111,5 +113,192 @@ public sealed class ShellOutputTests : IDisposable
 		Assert.Null(result.FullOutputPath);
 		Assert.Equal("hello\nworld\n", result.Output);
 		Assert.Equal(2, result.TotalLines);
+	}
+
+	[Fact]
+	public async Task BinaryAndAnsiOutputIsSanitizedBeforeItReachesTheModel()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var result = await ShellRunner.RunAsync(
+			"printf '\\033[31mred\\033[0m\\000\\001\\r\\n'",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			CancellationToken.None);
+
+		Assert.Equal(0, result.ExitCode);
+		Assert.Equal("red\r\n", result.Output);
+		Assert.Equal(5, result.TotalBytes);
+	}
+
+	[Fact]
+	public async Task AnsiSequenceSplitAcrossReadsIsStillStripped()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		// printf 的两次写入落在不同的管道 read 里，前半段 ESC[ 必须扣到下一块再拼起来。
+		var result = await ShellRunner.RunAsync(
+			"printf '\\033['; sleep 0.15; printf '31mred\\033[0m\\n'",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			CancellationToken.None);
+
+		Assert.Equal(0, result.ExitCode);
+		Assert.Equal("red\n", result.Output);
+	}
+
+	[Fact]
+	public async Task BackgroundChildHoldingThePipeDoesNotBlockTheTool()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var startedAt = Stopwatch.GetTimestamp();
+		var result = await ShellRunner.RunAsync(
+			"sleep 2 & echo hi",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			CancellationToken.None);
+		var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+		Assert.Equal(0, result.ExitCode);
+		Assert.Contains("hi", result.Output);
+		Assert.True(elapsed < TimeSpan.FromSeconds(1.5), $"tool waited {elapsed} for a background child");
+	}
+
+	[Fact]
+	public async Task TimeoutStillAppliesWhenTheShellExitedAndABackgroundProcessKeepsWriting()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var startedAt = Stopwatch.GetTimestamp();
+		var result = await ShellRunner.RunAsync(
+			"for i in $(seq 1 1200); do echo tick; sleep 0.01; done & echo started; exit 3",
+			_root,
+			timeoutSeconds: 5,
+			onOutput: null,
+			CancellationToken.None);
+		var elapsed = Stopwatch.GetElapsedTime(startedAt);
+
+		Assert.True(
+			result.TimedOut,
+			$"ShellExit={result.ShellExitCode} out={result.Output[..Math.Min(120, result.Output.Length)]}");
+		Assert.True(
+			result.ShellExitedBeforeTimeout,
+			$"TimedOut={result.TimedOut} ShellExit={result.ShellExitCode} out={result.Output[..Math.Min(120, result.Output.Length)]}");
+		Assert.Equal(3, result.ShellExitCode);
+		Assert.Contains("started", result.Output);
+		Assert.Contains("tick", result.Output);
+		Assert.True(elapsed < TimeSpan.FromSeconds(8), $"timed out tool took {elapsed}");
+	}
+
+	[Fact]
+	public void TimeoutStatusAlsoReportsTheShellExitCode()
+	{
+		var result = new ShellResult("out", ExitCode: null, Cancelled: false)
+		{
+			TimedOut = true,
+			ShellExitedBeforeTimeout = true,
+			ShellExitCode = 3,
+			ShellExitSeconds = 0.1,
+		};
+
+		var message = BashTool.TimeoutStatus(result, timeoutSeconds: 5, text: "out");
+
+		Assert.Contains("timed out after 5 seconds", message);
+		Assert.Contains("shell exited with code 3 after 0.1 seconds", message);
+		Assert.Contains("background processes", message);
+	}
+
+	[Fact]
+	public void TimeoutStatusOmitsTheShellSentenceWhenTheShellWasStillRunning()
+	{
+		var result = new ShellResult("out", ExitCode: null, Cancelled: false) { TimedOut = true };
+
+		var message = BashTool.TimeoutStatus(result, timeoutSeconds: null, text: "out");
+
+		Assert.Contains("timed out after timeout seconds", message);
+		Assert.DoesNotContain("shell exited", message);
+	}
+
+	[Fact]
+	public void ReadFullOutputDoesNotSplitUtf8CharactersAtTheWindowEdge()
+	{
+		var path = Path.Combine(_root, "full.log");
+		File.WriteAllText(path, new string('é', 100) + new string('x', 200));
+
+		var full = ShellRunner.ReadFullOutput(path, 11);
+
+		Assert.True(full.Truncated);
+		Assert.DoesNotContain('\uFFFD', full.Content);
+	}
+
+	[Fact]
+	public void ConvertToLlmSanitizesOldPoisonedToolResults()
+	{
+		var message = new ToolResultMessage
+		{
+			ToolCallId = "c1",
+			ToolName = "bash",
+			Content = [new TextContent { Text = "\u0000\u001b[31mred\u001b[0m\u001a" }],
+		};
+
+		var converted = CodingMessages.ConvertToLlm([message], CancellationToken.None);
+		var result = Assert.IsType<ToolResultMessage>(Assert.Single(converted));
+		var text = Assert.IsType<TextContent>(Assert.Single(result.Content));
+
+		Assert.Equal("red", text.Text);
+	}
+
+	[Fact]
+	public void ConvertToLlmSanitizesOldBashExecutionOutput()
+	{
+		var message = CodingMessages.BashExecution(
+			command: "echo hi",
+			output: "\u0000\u001b[31mout\u001b[0m\u001a",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			fullOutputPath: null,
+			excludeFromContext: false,
+			timestamp: 1);
+
+		var converted = CodingMessages.ConvertToLlm([message], CancellationToken.None);
+		var user = Assert.IsType<UserMessage>(Assert.Single(converted));
+
+		Assert.Equal("Ran `echo hi`\n```\nout\n```", user.Content.Text);
+	}
+
+	[Fact]
+	public async Task FullOutputFileIsOnlyReadableByTheCurrentUser()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var path = ShellRunner.WriteFullOutput(new string('a', 64 * 1024));
+		try
+		{
+			Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+		}
+		finally
+		{
+			File.Delete(path);
+		}
 	}
 }

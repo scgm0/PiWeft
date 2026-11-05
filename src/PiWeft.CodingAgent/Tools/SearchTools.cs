@@ -70,7 +70,7 @@ public static class SearchTools
 		}
 
 		// pi 的 ls 用大小写不敏感排序，而不是 Ordinal（B.txt 不会排到 a.txt 前面）。
-		entries.Sort(StringComparer.OrdinalIgnoreCase);
+		entries.Sort(StringComparer.CurrentCultureIgnoreCase);
 
 		if (entries.Count == 0)
 		{

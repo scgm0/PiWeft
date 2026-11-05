@@ -1523,7 +1523,14 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		var documents = candidates
-			.Select(tool => (tool.Name, CodeModeSearch.CreateDocument(tool.Name, tool.Description, tool.Parameters)))
+			.Select(tool => CodeModeSearch.CreateToolSearchDocument(
+				tool.Name,
+				tool.Description,
+				tool.Parameters,
+				namespaceText: string.Join(
+					" ",
+					new[] { tool.Namespace, tool.NamespaceDescription, tool.NamespaceInstructions }
+						.Where(static part => !string.IsNullOrWhiteSpace(part)))))
 			.ToList();
 		var matches = CodeModeSearch.Rank(query, documents, limit);
 		if (matches.Count == 0)

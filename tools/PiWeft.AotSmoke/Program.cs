@@ -276,7 +276,7 @@ const string responsesBody = """
 
 	""";
 
-var responsesModel = registry.List().First(m => m.Api == OpenAiResponsesProvider.ApiId && m.Type == ModelType.Chat);
+var responsesModel = registry.List().First(m => m.Api == OpenAiResponsesProvider.ApiId && m.Provider == "openai" && m.Type == ModelType.Chat);
 gateway.Register(new OpenAiResponsesProvider(new HttpClient(new StaticHandler(responsesBody))));
 
 var responsesStream = gateway.Stream(
@@ -795,7 +795,7 @@ Console.WriteLine($"codemode second: ok={codeModeSecond.Ok} value={codeModeSecon
 var codeModeEval = await codeModeSandbox.ExecuteAsync("""return eval("1 + 1");""");
 Console.WriteLine($"codemode eval: ok={codeModeEval.Ok} value={codeModeEval.Value} error={codeModeEval.Error?.Message}");
 
-var codeModeSearch = await codeModeSandbox.ExecuteAsync("""return searchTools("echo")[0].name;""");
+var codeModeSearch = await codeModeSandbox.ExecuteAsync("""return (await searchTools("echo"))[0].name;""");
 Console.WriteLine($"codemode search: ok={codeModeSearch.Ok} value={codeModeSearch.Value} error={codeModeSearch.Error?.Message}");
 
 var codeModeModels = await codeModeSandbox.ExecuteAsync("""return models.getModelsOfType("chat")[0].id;""");
@@ -804,7 +804,7 @@ Console.WriteLine($"codemode models: ok={codeModeModels.Ok} value={codeModeModel
 var codeMode = await codeModeSandbox.ExecuteAsync("""
 	const value = await tools.echo({ value: "hi" });
 	const compiled = eval("1 + 1");
-	const found = searchTools("echo")[0].name;
+	const found = (await searchTools("echo"))[0].name;
 	const model = models.getModelsOfType("chat")[0].id;
 	text("codemode:" + value);
 	return compiled + 40 + (found === "echo" ? 0 : 100) + (model === "smoke" ? 0 : 100);

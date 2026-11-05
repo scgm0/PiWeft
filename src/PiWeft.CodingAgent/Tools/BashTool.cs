@@ -125,10 +125,7 @@ public static class BashTool
 
 		if (result.TimedOut)
 		{
-			var seconds = timeoutSeconds is { } timeout
-				? timeout.ToString("0.###", CultureInfo.InvariantCulture)
-				: "timeout";
-			throw new InvalidOperationException(AppendStatus(formatted.Text, $"Command timed out after {seconds} seconds"));
+			throw new InvalidOperationException(TimeoutStatus(result, timeoutSeconds, formatted.Text));
 		}
 
 		return new AgentToolResult
@@ -142,4 +139,27 @@ public static class BashTool
 
 	internal static string AppendStatus(string text, string status) =>
 		text.Length > 0 ? $"{text}\n\n{status}" : status;
+
+	/// <summary>
+	/// 超时状态行。与 pi #11813 一致：如果 shell 在超时前已经退出、只是后台进程还占着管道，
+	/// 要把 shell 的真实退出码一并告诉模型，否则模型会把已经失败的命令当成慢命令重试。
+	/// </summary>
+	internal static string TimeoutStatus(ShellResult result, double? timeoutSeconds, string text)
+	{
+		var seconds = timeoutSeconds is { } timeout
+			? timeout.ToString("0.###", CultureInfo.InvariantCulture)
+			: "timeout";
+		var status = $"Command timed out after {seconds} seconds";
+		if (result.ShellExitedBeforeTimeout && result.ShellExitCode is { } shellExitCode)
+		{
+			var after = result.ShellExitSeconds is { } exitSeconds
+				? exitSeconds.ToString("0.#", CultureInfo.InvariantCulture)
+				: "0";
+			status +=
+				$". The shell exited with code {shellExitCode} after {after} seconds, " +
+				"but background processes it started kept writing output until the timeout.";
+		}
+
+		return AppendStatus(text, status);
+	}
 }

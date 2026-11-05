@@ -293,6 +293,21 @@ public class RetryClassifierTests
 		Assert.False(RetryClassifier.IsRetryable(Failure(message)));
 
 	[Fact]
+	public void VeryLongProviderRetryHintsAreNotRetryable()
+	{
+		// 2026-11-05 实际会话：配额到第二天才重置，retry_after 74505 秒。
+		const string quota =
+			"""
+			Responses request failed (429): {"error": {"message": "upstream rate limit reached for this model; retry in 74505s", "type": "rate_limit_error", "code": 429, "retry_after": 74505}}
+			""";
+
+		Assert.False(RetryClassifier.IsRetryable(Failure(quota)));
+		// 十几秒/几分钟的排队仍然值得自动重试。
+		Assert.True(RetryClassifier.IsRetryable(Failure("429 Too Many Requests: retry_after: 30")));
+		Assert.True(RetryClassifier.IsRetryable(Failure("429 Too Many Requests: retry-after: 600")));
+	}
+
+	[Fact]
 	public void SuccessAndAbortsAreNeverRetried()
 	{
 		Assert.False(RetryClassifier.IsRetryable(Failure("timeout") with { StopReason = StopReason.Stop }));

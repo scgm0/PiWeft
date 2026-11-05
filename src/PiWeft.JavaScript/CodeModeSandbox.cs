@@ -267,10 +267,17 @@ public sealed class CodeModeSandbox
 			searchDocuments = new List<SearchDocument>(_options.Tools.Count);
 			foreach (var tool in _options.Tools)
 			{
+				var namespaceText = string.Join(
+					" ",
+					new[] { tool.Namespace, tool.NamespaceDescription, tool.NamespaceInstructions }
+						.Where(static part => !string.IsNullOrWhiteSpace(part)));
 				searchDocuments.Add(new SearchDocument(
-					CodeModeIdentifier.ToIdentifier(tool.Name),
 					tool.Name,
-					CodeModeSearch.Tokenize(SearchText(tool)),
+					CodeModeSearch.CreateToolSearchDocument(
+						tool.Name,
+						tool.SearchDescription ?? tool.Description,
+						tool.InputSchema,
+						namespaceText: namespaceText),
 					tool.Namespace,
 					tool.NamespaceAliases));
 			}
@@ -296,17 +303,17 @@ public sealed class CodeModeSandbox
 				}
 			}
 
-			var ranked = CodeModeSearch.RankTerms(
+			var ranked = CodeModeSearch.Rank(
 				args.At(0).AsString(),
-				[.. filtered.Select(static document => (document.Name, document.Terms))],
+				[.. filtered.Select(static document => document.Document)],
 				(int)args.At(1).AsNumber());
 			var matches = new JsonArray();
 			foreach (var name in ranked)
 			{
-				var document = filtered.First(candidate => candidate.Name == name);
+				var document = filtered.First(candidate => candidate.RawName == name);
 				matches.Add((JsonNode)new JsonObject
 				{
-					["name"] = document.Name,
+					["name"] = CodeModeIdentifier.ToIdentifier(document.RawName),
 					["description"] = toolsByName.TryGetValue(document.RawName, out var tool) ? tool.Description : null,
 				});
 			}
@@ -497,20 +504,6 @@ public sealed class CodeModeSandbox
 		return JsonNode.Parse(json);
 	}
 
-	/// 检索语料（与 pi 的 <c>createToolSearchDocument</c> 一致）：工具名、原名（<c>_</c> 换空格）、
-	/// 原始描述、schema 里的说明与属性名，以及命名空间的名称/描述/instructions。
-	private static string SearchText(CodeModeTool tool)
-	{
-		var text = CodeModeSearch.CreateDocument(tool.Name, tool.SearchDescription ?? tool.Description, tool.InputSchema);
-		if (tool.Namespace is null) return text;
-
-		var extra = string.Join(
-			" ",
-			new[] { tool.Namespace, tool.NamespaceDescription, tool.NamespaceInstructions }
-				.Where(static part => !string.IsNullOrWhiteSpace(part)));
-		return extra.Length == 0 ? text : $"{text} {extra}";
-	}
-
 	/// 命名空间匹配：名称或别名，按原名或脚本标识符形式比较
 	/// （<c>dev-radius</c> 与 <c>dev_radius</c> 等价）。
 	private static bool NamespaceMatches(string? namespaceName, IReadOnlyList<string>? aliases, string query)
@@ -536,9 +529,8 @@ public sealed class CodeModeSandbox
 		value.IsUndefined() || value.IsNull() ? null : value.AsString();
 
 	private sealed record SearchDocument(
-		string Name,
 		string RawName,
-		IReadOnlyList<string> Terms,
+		CodeModeSearch.ToolSearchDocument Document,
 		string? Namespace,
 		IReadOnlyList<string>? NamespaceAliases);
 

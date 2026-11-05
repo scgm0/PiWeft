@@ -34,7 +34,7 @@ public sealed record SystemPromptOptions
 public static class SystemPrompt
 {
 	public const string Preamble =
-		"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
+		"You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.";
 
 	public static readonly string[] BaselineGuidelines =
 	[
@@ -118,7 +118,7 @@ public static class SystemPrompt
 			builder.Append("- ").Append(tool.Tool.Name).Append(": ").Append(tool.Snippet).Append('\n');
 		}
 
-		builder.Append("\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>");
+		builder.Append("\nAdditional tools may be available.\n</tools>");
 		return builder.ToString();
 	}
 

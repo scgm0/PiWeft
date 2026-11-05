@@ -2,7 +2,7 @@ using System.Text;
 
 namespace PiWeft.CodingAgent.Tools;
 
-public static class ToolPaths
+public static partial class ToolPaths
 {
 	public static string ResolveToCwd(string path, string cwd)
 	{
@@ -21,6 +21,7 @@ public static class ToolPaths
 		}
 
 		value = NormalizeUnicodeSpaces(value);
+		value = NormalizeWindowsShellPath(value);
 
 		if (value == "~")
 		{
@@ -32,8 +33,44 @@ public static class ToolPaths
 			return Path.Combine(HomeDirectory, value[2..]);
 		}
 
+		// pi 的 normalizePath 接受 file:// URL；Path.GetFullPath 会把它当成相对路径。
+		if (value.StartsWith("file://", StringComparison.OrdinalIgnoreCase) &&
+			Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+			uri.IsFile)
+		{
+			return uri.LocalPath;
+		}
+
 		return value;
 	}
+
+	/// Git Bash / MSYS / WSL 的 /c/foo、/mnt/c/foo、/cygdrive/c/foo 在 Windows 上
+	/// 需要转成 C:\foo；pi 的 normalizeWindowsShellPath 同义。
+	private static string NormalizeWindowsShellPath(string value)
+	{
+		if (!OperatingSystem.IsWindows() ||
+			!value.StartsWith('/') ||
+			value.StartsWith("//", StringComparison.Ordinal) ||
+			value.Contains('\\'))
+		{
+			return value;
+		}
+
+		var match = WindowsShellPath().Match(value);
+		if (!match.Success)
+		{
+			return value;
+		}
+
+		var drive = char.ToUpperInvariant(match.Groups[1].Value[0]);
+		var suffix = match.Groups[2].Value.Replace('/', '\\');
+		return $"{drive}:\\{suffix}";
+	}
+
+	[System.Text.RegularExpressions.GeneratedRegex(
+		"^/(?:mnt/|cygdrive/)?([a-z])(?:/(.*))?$",
+		System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+	private static partial System.Text.RegularExpressions.Regex WindowsShellPath();
 
 	public static string HomeDirectory =>
 		Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

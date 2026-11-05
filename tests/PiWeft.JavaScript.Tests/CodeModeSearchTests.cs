@@ -51,6 +51,31 @@ public sealed class CodeModeSearchTests
 	}
 
 	[Fact]
+	public void Rank_PrefersNameMatchesAndExactLocalNames()
+	{
+		var byName = CodeModeSearch.CreateToolSearchDocument("window_screenshot", "capture", null);
+		var byText = CodeModeSearch.CreateToolSearchDocument(
+			"capture",
+			"window window window window window window",
+			null);
+
+		Assert.Equal(["window_screenshot"], CodeModeSearch.Rank("window", [byName, byText], 1));
+
+		var exact = CodeModeSearch.CreateToolSearchDocument("mcp__app__thread_read", "read a thread", null);
+		var other = CodeModeSearch.CreateToolSearchDocument("other", "thread read tool", null);
+		Assert.Equal(["mcp__app__thread_read"], CodeModeSearch.Rank("thread_read", [other, exact], 1));
+	}
+
+	[Fact]
+	public void Rank_PrefersCoverageBeforeRawScore()
+	{
+		var both = CodeModeSearch.CreateToolSearchDocument("a", "screenshot window", null);
+		var repeated = CodeModeSearch.CreateToolSearchDocument("b", "window window window window window", null);
+
+		Assert.Equal(["a"], CodeModeSearch.Rank("screenshot window", [repeated, both], 1));
+	}
+
+	[Fact]
 	public void Rank_HonoursTheLimitAndKeepsOrderOnTies()
 	{
 		var first = CodeModeSearch.CreateDocument("alpha", "file tool", null);

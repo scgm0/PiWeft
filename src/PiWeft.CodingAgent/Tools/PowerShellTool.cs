@@ -86,10 +86,7 @@ public static class PowerShellTool
 
 		if (result.TimedOut)
 		{
-			var seconds = timeoutSeconds is { } timeout
-				? timeout.ToString("0.###", CultureInfo.InvariantCulture)
-				: "timeout";
-			throw new InvalidOperationException(BashTool.AppendStatus(formatted.Text, $"Command timed out after {seconds} seconds"));
+			throw new InvalidOperationException(BashTool.TimeoutStatus(result, timeoutSeconds, formatted.Text));
 		}
 
 		return new AgentToolResult

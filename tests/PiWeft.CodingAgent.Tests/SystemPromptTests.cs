@@ -37,9 +37,7 @@ public class SystemPromptTests
 		var tools = message.Sections!["tools"]!;
 
 		Assert.StartsWith("<tools>\n", tools);
-		Assert.EndsWith(
-			"\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>",
-			tools);
+		Assert.EndsWith("\nAdditional tools may be available.\n</tools>", tools);
 		Assert.Contains("- read: Read file contents\n", tools);
 		Assert.Contains("- bash: Execute bash commands (ls, grep, find, etc.)\n", tools);
 		Assert.Contains("- ls: List directory contents\n", tools);
@@ -200,13 +198,18 @@ public class RealPromptFidelityTests
 	[Fact]
 	public void PreambleSectionMatchesPi()
 	{
-		var real = FirstSectionedSystemMessage();
-		if (real?.Sections is null)
+		// 真实会话里同时存在 pi 1.3 和 1.5 的 preamble；此处只要求当前基线
+		// 出现在至少一份真实 pi 会话中。
+		var preambles = SectionedSystemMessages()
+			.Select(static session => session.Sections?.GetValueOrDefault("preamble"))
+			.Where(static preamble => !string.IsNullOrEmpty(preamble))
+			.ToHashSet(StringComparer.Ordinal);
+		if (preambles.Count == 0)
 		{
 			return; // no pi sessions on this machine
 		}
 
-		Assert.Equal(SystemPrompt.Preamble, real.Sections["preamble"]);
+		Assert.Contains(SystemPrompt.Preamble, preambles);
 	}
 
 	[Fact]

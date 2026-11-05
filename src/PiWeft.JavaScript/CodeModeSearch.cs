@@ -3,16 +3,27 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.JavaScript;
 
-/// <c>searchTools()</c>/<c>describeTool()</c> 使用的工具检索：与 pi 的
-/// <c>extensions/tool-search/tool.ts</c> 同一套分词与 Okapi BM25 参数（k1 = 1.2，b = 0.75），
-/// 文档是工具名、描述、参数 schema 的说明与属性名，以及可选的关键词。
+/// 工具检索：与 pi 的 <c>extensions/tool-search/tool.ts</c> 对齐的 Okapi BM25
+/// （k1 = 1.2、b = 0.75），名称权重 3、命名空间权重 0.5，并保留覆盖度、
+/// 完整本地名加成和精确名优先排序。
 public static partial class CodeModeSearch
 {
+	private const double K1 = 1.2;
+
+	private const double B = 0.75;
+
+	private const double NameWeight = 3;
+
+	private const double NamespaceWeight = 0.5;
+
 	private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
 	{
 		"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it",
 		"of", "on", "or", "that", "the", "this", "to", "with",
 	};
+
+	/// 建立 pi 的检索文档：description + schema 描述/属性名 + 可选附加词。
+	public sealed record ToolSearchDocument(string Name, string Text, string? NamespaceText = null);
 
 	public static string CreateDocument(
 		string name,
@@ -27,86 +38,121 @@ public static partial class CodeModeSearch
 		return string.Join(" ", parts.Where(static part => !string.IsNullOrWhiteSpace(part)));
 	}
 
-	public static IReadOnlyList<string> Rank(
-		string query,
-		IReadOnlyList<(string Name, string Text)> documents,
-		int limit)
+	/// 与 pi 的 <c>createToolSearchDocument</c> 同形：名称单独参与权重，不混进正文。
+	public static ToolSearchDocument CreateToolSearchDocument(
+		string name,
+		string? description,
+		JsonNode? inputSchema,
+		string? searchTerms = null,
+		string? namespaceText = null)
 	{
-		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
-		if (string.IsNullOrWhiteSpace(query) || documents.Count == 0) return [];
-
-		var tokenized = new (string Name, IReadOnlyList<string> Terms)[documents.Count];
-		for (var index = 0; index < documents.Count; index++)
-		{
-			tokenized[index] = (documents[index].Name, Tokenize(documents[index].Text));
-		}
-
-		return RankTerms(query, tokenized, limit);
+		var parts = new List<string>();
+		if (!string.IsNullOrWhiteSpace(description)) parts.Add(description);
+		if (!string.IsNullOrWhiteSpace(searchTerms)) parts.Add(searchTerms);
+		if (inputSchema is not null) SchemaText(inputSchema, parts);
+		return new ToolSearchDocument(
+			name,
+			string.Join(" ", parts.Where(static part => !string.IsNullOrWhiteSpace(part))),
+			string.IsNullOrWhiteSpace(namespaceText) ? null : namespaceText);
 	}
 
-	/// 与 <see cref="Rank"/> 相同，但文档已预先分词：同一个脚本里多次 <c>searchTools()</c>
-	/// 复用第一次的分词结果，而不是每条查询重新扫描全部 schema 文本。
-	public static IReadOnlyList<string> RankTerms(
+	public static IReadOnlyList<string> Rank(
 		string query,
-		IReadOnlyList<(string Name, IReadOnlyList<string> Terms)> documents,
+		IReadOnlyList<ToolSearchDocument> documents,
 		int limit)
 	{
-		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
-		if (string.IsNullOrWhiteSpace(query) || documents.Count == 0) return [];
-
-		var queryTerms = Tokenize(query).Distinct(StringComparer.Ordinal).ToList();
-		if (queryTerms.Count == 0) return [];
-
-		var counts = new List<Dictionary<string, int>>(documents.Count);
-		var lengths = new List<int>(documents.Count);
-		foreach (var document in documents)
+		if (limit <= 0 || documents.Count == 0 || string.IsNullOrWhiteSpace(query))
 		{
-			var termCounts = new Dictionary<string, int>(StringComparer.Ordinal);
-			foreach (var term in document.Terms)
-			{
-				termCounts[term] = termCounts.GetValueOrDefault(term) + 1;
-			}
-
-			counts.Add(termCounts);
-			lengths.Add(document.Terms.Count);
+			return [];
 		}
 
-		var totalLength = 0;
-		foreach (var length in lengths) totalLength += length;
-		var averageLength = totalLength / (double)documents.Count;
+		var queryTerms = Tokenize(query).Distinct(StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
+		if (queryTerms.Count == 0)
+		{
+			return [];
+		}
+
+		var indexed = new List<IndexedDocument>(documents.Count);
+		foreach (var document in documents)
+		{
+			indexed.Add(Index(document));
+		}
+
+		var averageLength = indexed.Sum(static document => document.TextLength) / (double)indexed.Count;
 		if (averageLength <= 0) averageLength = 1;
 
 		var idf = new Dictionary<string, double>(StringComparer.Ordinal);
 		foreach (var term in queryTerms)
 		{
-			var frequency = counts.Count(count => count.ContainsKey(term));
-			idf[term] = Math.Log(1 + (documents.Count - frequency + 0.5) / (frequency + 0.5));
+			var frequency = indexed.Count(document =>
+				document.NameTerms.Contains(term) ||
+				document.TextCounts.ContainsKey(term) ||
+				document.NamespaceTerms.Contains(term));
+			idf[term] = Math.Log(1 + (indexed.Count - frequency + 0.5) / (frequency + 0.5));
 		}
 
-		const double k1 = 1.2;
-		const double b = 0.75;
-		var matches = new List<(string Name, double Score)>();
-		for (var index = 0; index < documents.Count; index++)
+		var fullNameBonus = idf.Values.Sum();
+		var normalizedQuery = NormalizeName(query);
+		var matches = new List<Match>(indexed.Count);
+		foreach (var document in indexed)
 		{
+			var norm = K1 * (1 - B + B * document.TextLength / averageLength);
 			var score = 0.0;
+			var covered = 0;
 			foreach (var term in queryTerms)
 			{
-				if (!counts[index].TryGetValue(term, out var count) || count == 0) continue;
-				var norm = k1 * (1 - b + (b * lengths[index] / averageLength));
-				score += idf[term] * (count * (k1 + 1) / (count + norm));
+				var count = document.TextCounts.GetValueOrDefault(term);
+				var weight = (document.NameTerms.Contains(term) ? NameWeight : 0) +
+					(document.NamespaceTerms.Contains(term) ? NamespaceWeight : 0) +
+					count * (K1 + 1) / (count + norm);
+				if (weight > 0) covered++;
+				score += idf[term] * weight;
 			}
 
-			if (score > 0) matches.Add((documents[index].Name, score));
+			if (score <= 0) continue;
+			if (document.LocalNameTerms.Count > 0 &&
+				document.LocalNameTerms.All(queryTerms.Contains))
+			{
+				score += fullNameBonus;
+			}
+
+			matches.Add(new Match(
+				document.Name,
+				score,
+				covered,
+				IsExactNameQuery(normalizedQuery, document.Name)));
 		}
 
 		return
 		[
 			.. matches
-				.OrderByDescending(static match => match.Score)
+				.OrderByDescending(static match => match.Exact)
+				.ThenByDescending(static match => match.Covered)
+				.ThenByDescending(static match => match.Score)
 				.Take(limit)
 				.Select(static match => match.Name),
 		];
 	}
+
+	/// 兼容旧的字符串文档调用；新代码应使用 <see cref="CreateToolSearchDocument"/>。
+	public static IReadOnlyList<string> Rank(
+		string query,
+		IReadOnlyList<(string Name, string Text)> documents,
+		int limit) =>
+		Rank(
+			query,
+			[.. documents.Select(static document => new ToolSearchDocument(document.Name, document.Text))],
+			limit);
+
+	/// 已分词的旧调用；重新走同一套排名器，保证语义不分叉。
+	public static IReadOnlyList<string> RankTerms(
+		string query,
+		IReadOnlyList<(string Name, IReadOnlyList<string> Terms)> documents,
+		int limit) =>
+		Rank(
+			query,
+			[.. documents.Select(static document => new ToolSearchDocument(document.Name, string.Join(" ", document.Terms)))],
+			limit);
 
 	public static IReadOnlyList<string> Tokenize(string text)
 	{
@@ -120,6 +166,37 @@ public static partial class CodeModeSearch
 		}
 
 		return terms;
+	}
+
+	private static IndexedDocument Index(ToolSearchDocument document)
+	{
+		var nameTerms = Tokenize(document.Name).ToHashSet(StringComparer.Ordinal);
+		var localName = document.Name.Split("__").LastOrDefault() ?? document.Name;
+		var localNameTerms = Tokenize(localName).Distinct(StringComparer.Ordinal).ToList();
+		var textCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+		foreach (var term in Tokenize(document.Text))
+		{
+			textCounts[term] = textCounts.GetValueOrDefault(term) + 1;
+		}
+
+		return new IndexedDocument(
+			document.Name,
+			nameTerms,
+			localNameTerms,
+			textCounts,
+			textCounts.Values.Sum(),
+			document.NamespaceText is { Length: > 0 }
+				? Tokenize(document.NamespaceText).ToHashSet(StringComparer.Ordinal)
+				: []);
+	}
+
+	private static string NormalizeName(string name) =>
+		NonIdentifierCharacters().Replace(name.Trim().ToLowerInvariant(), "_");
+
+	private static bool IsExactNameQuery(string normalizedQuery, string name)
+	{
+		var normalized = NormalizeName(name);
+		return normalized == normalizedQuery || normalized.EndsWith($"__{normalizedQuery}", StringComparison.Ordinal);
 	}
 
 	private static string Stem(string term)
@@ -168,6 +245,16 @@ public static partial class CodeModeSearch
 		}
 	}
 
+	private sealed record IndexedDocument(
+		string Name,
+		HashSet<string> NameTerms,
+		IReadOnlyList<string> LocalNameTerms,
+		IReadOnlyDictionary<string, int> TextCounts,
+		int TextLength,
+		HashSet<string> NamespaceTerms);
+
+	private sealed record Match(string Name, double Score, int Covered, bool Exact);
+
 	[GeneratedRegex(@"([a-z0-9])([A-Z])", RegexOptions.CultureInvariant)]
 	private static partial Regex CamelBoundary();
 
@@ -179,4 +266,7 @@ public static partial class CodeModeSearch
 
 	[GeneratedRegex(@"(ches|shes|sses|xes|zes)$", RegexOptions.CultureInvariant)]
 	private static partial Regex PluralEnding();
+
+	[GeneratedRegex(@"[^a-z0-9_$]", RegexOptions.CultureInvariant)]
+	private static partial Regex NonIdentifierCharacters();
 }

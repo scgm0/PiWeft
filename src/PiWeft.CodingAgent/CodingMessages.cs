@@ -1,8 +1,8 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Ai;
-
 using PiWeft.Ai.Json;
+using PiWeft.CodingAgent.Tools;
 namespace PiWeft.CodingAgent;
 
 /// 编码代理特有的消息，以及把它们转换成面向 LLM 的消息的转换器。
@@ -45,7 +45,7 @@ public static class CodingMessages
 		{
 			if (message is not CustomMessage custom)
 			{
-				converted.Add(message);
+				converted.Add(SanitizeToolResult(message));
 				continue;
 			}
 
@@ -63,19 +63,19 @@ public static class CodingMessages
 				case "branchSummary":
 					converted.Add(User(
 						custom,
-						BranchSummaryPrefix + RawString(custom, "summary") + BranchSummarySuffix));
+						BranchSummaryPrefix + ShellTextSanitizer.Sanitize(RawString(custom, "summary")) + BranchSummarySuffix));
 					break;
 
 				case "compactionSummary":
 					converted.Add(User(
 						custom,
-						CompactionSummaryPrefix + RawString(custom, "summary") + CompactionSummarySuffix));
+						CompactionSummaryPrefix + ShellTextSanitizer.Sanitize(RawString(custom, "summary")) + CompactionSummarySuffix));
 					break;
 
 				default:
 					converted.Add(custom.Content.IsText && custom.Content.Text is { Length: 0 }
 						? custom with { Content = MessageContent.Empty }
-						: User(custom, custom.Content));
+						: User(custom, SanitizeToolContent(custom.Content)));
 					break;
 			}
 		}
@@ -87,9 +87,11 @@ public static class CodingMessages
 	{
 		var raw = message.Raw;
 		var builder = new StringBuilder();
-		builder.Append("Ran `").Append(RawString(message, "command")).Append("`\n");
+		builder.Append("Ran `")
+			.Append(ShellTextSanitizer.Sanitize(RawString(message, "command")))
+			.Append("`\n");
 
-		var output = RawString(message, "output");
+		var output = ShellTextSanitizer.Sanitize(RawString(message, "output"));
 		if (output.Length > 0)
 		{
 			builder.Append("```\n").Append(output).Append("\n```");
@@ -158,6 +160,60 @@ public static class CodingMessages
 			: []),
 		_ => [],
 	};
+
+	/// <summary>
+	/// 旧会话或其它工具的 toolResult 可能带 NUL/ANSI（例如 `bash` 打印二进制文件）。
+	/// 在发给 provider 前统一清洗，避免一条被污染的会话从此再也发不出去。
+	/// </summary>
+	private static Message SanitizeToolResult(Message message)
+	{
+		if (message is not ToolResultMessage result)
+		{
+			return message;
+		}
+
+		var content = SanitizeBlocks(result.Content);
+		return ReferenceEquals(content, result.Content) ? message : result with { Content = content };
+	}
+
+	private static MessageContent SanitizeToolContent(MessageContent content)
+	{
+		if (content.IsText)
+		{
+			var text = content.Text ?? string.Empty;
+			var clean = ShellTextSanitizer.Sanitize(text);
+			return Same(clean, text) ? content : MessageContent.FromText(clean);
+		}
+
+		var blocks = SanitizeBlocks(content.Blocks ?? []);
+		return ReferenceEquals(blocks, content.Blocks) ? content : MessageContent.FromBlocks(blocks);
+	}
+
+	private static IReadOnlyList<ContentBlock> SanitizeBlocks(IReadOnlyList<ContentBlock> blocks)
+	{
+		List<ContentBlock>? copy = null;
+		for (var index = 0; index < blocks.Count; index++)
+		{
+			if (blocks[index] is not TextContent text)
+			{
+				continue;
+			}
+
+			var clean = ShellTextSanitizer.Sanitize(text.Text);
+			if (Same(clean, text.Text))
+			{
+				continue;
+			}
+
+			copy ??= [.. blocks];
+			copy[index] = text with { Text = clean };
+		}
+
+		return copy ?? blocks;
+	}
+
+	private static bool Same(string left, string right) =>
+		ReferenceEquals(left, right) || string.Equals(left, right, StringComparison.Ordinal);
 
 	private static UserMessage User(CustomMessage source, string text) => new()
 	{

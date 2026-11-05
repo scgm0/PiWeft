@@ -20,6 +20,11 @@ public static class RetryClassifier
 {
 	public const int DefaultMaxAgentDelayMs = 60_000;
 
+	/// 供应商明确要求等待超过这么久（例如配额要到明天才重置）时，自动重试没有意义：
+	/// 退避上限只有 60 秒，提前重试只会一次又一次撞同一面墙，还会让会话看起来卡在「正在重试」。
+	/// 这类错误直接交给用户决定换模型还是等重置。
+	public const int MaxAutoRetryServerDelayMs = 15 * 60 * 1000;
+
 	/// 明确不可重试的用量/配额类错误：这些是账号级限制，等几秒重试也不会变好。
 	private static readonly Regex NonRetryable = new(
 		string.Join('|',
@@ -145,6 +150,12 @@ public static class RetryClassifier
 		}
 
 		if (NonRetryable.IsMatch(message.ErrorMessage))
+		{
+			return false;
+		}
+
+		// 配额冷却几个小时（甚至一天）时，60 秒退避只会重复失败；让错误立即回到界面。
+		if (ServerDelayMs(message.ErrorMessage) is { } serverDelay && serverDelay > MaxAutoRetryServerDelayMs)
 		{
 			return false;
 		}

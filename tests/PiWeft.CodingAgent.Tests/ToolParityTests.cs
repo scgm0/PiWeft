@@ -111,6 +111,19 @@ public sealed class ToolParityTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Read_AcceptsFileUrlsAndAtPrefixedPaths()
+	{
+		var path = Write("url target.txt", "hello");
+		var uri = new Uri(path).AbsoluteUri;
+
+		var byUrl = await FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = uri }));
+		Assert.Equal("hello", Text(byUrl));
+
+		var byAt = await FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "@" + path }));
+		Assert.Equal("hello", Text(byAt));
+	}
+
+	[Fact]
 	public async Task Read_DetectsImagesByMagicBytesNotByExtension()
 	{
 		Write("fake.png", "this is plain text");
