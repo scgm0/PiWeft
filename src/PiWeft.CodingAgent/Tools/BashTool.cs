@@ -50,6 +50,8 @@ public static class BashTool
 			["required"] = new JsonArray("command"),
 		},
 		OutputSchema = ShellToolFormatter.ShellOutputSchema(),
+		// 与 pi 的 bash 一样声明严格 JSON schema：能严格就严格，schema 被拒时回落。
+		ConstrainedSampling = PiWeft.Ai.ConstrainedSampling.JsonSchema(),
 		Execute = invocation => RunAsync(cwd, invocation, context),
 	};
 

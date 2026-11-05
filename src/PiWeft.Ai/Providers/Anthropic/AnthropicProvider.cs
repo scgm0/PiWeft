@@ -6,6 +6,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 
 using PiWeft.Ai.Json;
+using PiWeft.Ai.Utils;
+
 namespace PiWeft.Ai.Providers.Anthropic;
 
 /// Anthropic Messages API（<c>anthropic-messages</c>）的流式适配器。请求用 <see cref="Utf8JsonWriter"/> 手写，
@@ -38,7 +40,7 @@ public sealed class AnthropicProvider : IApiProvider
 	{
 		var startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 		// 超时只覆盖「等响应头」：正文长流（长时间思考、慢生成）不能被固定时限切断。
-		using var headerTimeout = ProviderHttp.BeginHeaderTimeout(options);
+		HeaderTimeoutScope? headerTimeout = null;
 		var cancellationToken = options.CancellationToken;
 
 		try
@@ -55,19 +57,45 @@ public sealed class AnthropicProvider : IApiProvider
 			var thinking = ResolveThinking(model, options);
 			var maxTokens = ResolveMaxTokens(model, options, thinking);
 
-			using var request = BuildRequest(model, messages, tools, options, apiKey, thinking, maxTokens, out var payloadJson);
-			options.NotifyStreamEvent(payloadJson, model);
-
-			using var response = await _http
-				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
-				.ConfigureAwait(false);
-			headerTimeout.Stop();
-
-			options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
-
-			if (!response.IsSuccessStatusCode)
+			// Claude 对严格工具的额度/文法有上限（工具数、联合类型参数数），超了整个请求 400。
+			// 命中时把「希望严格」的降级成普通 schema 重发一次；声明了 require 的仍会报错。
+			var hasPreferredStrictTools = HasPreferredStrictTools(model, tools);
+			var disablePreferredStrictTools = false;
+			while (true)
 			{
+				// 上一次尝试可能已经把响应头等到了（严限重试）：先收掉它的计时器。
+				headerTimeout?.Dispose();
+				headerTimeout = ProviderHttp.BeginHeaderTimeout(options);
+				using var request = BuildRequest(
+					model, messages, tools, options, apiKey, thinking, maxTokens, disablePreferredStrictTools, out var payloadJson);
+				options.NotifyStreamEvent(payloadJson, model);
+
+				using var response = await _http
+					.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
+					.ConfigureAwait(false);
+				headerTimeout.Stop();
+
+				options.OnResponse?.Invoke(ProviderHttp.FromResponse(response), model);
+
+				if (response.IsSuccessStatusCode)
+				{
+					await using var bodyStream = await ProviderHttp
+						.ReadBodyAsync(response, options, options.CancellationToken)
+						.ConfigureAwait(false);
+
+					await ParseAsync(bodyStream, model, options, stream, startedAt, options.CancellationToken)
+						.ConfigureAwait(false);
+					return;
+				}
+
 				var body = await ProviderHttp.ReadBodyTextAsync(response, options, options.CancellationToken).ConfigureAwait(false);
+				if (!disablePreferredStrictTools && hasPreferredStrictTools &&
+					(int)response.StatusCode == 400 && ConstrainedSampling.IsStrictToolLimitError(body))
+				{
+					disablePreferredStrictTools = true;
+					continue;
+				}
+
 				Fail(
 					stream,
 					model,
@@ -75,13 +103,6 @@ public sealed class AnthropicProvider : IApiProvider
 					$"Anthropic request failed ({(int)response.StatusCode}): {Truncate(body, 2000)}");
 				return;
 			}
-
-			await using var bodyStream = await ProviderHttp
-				.ReadBodyAsync(response, options, options.CancellationToken)
-				.ConfigureAwait(false);
-
-			await ParseAsync(bodyStream, model, options, stream, startedAt, options.CancellationToken)
-				.ConfigureAwait(false);
 		}
 		catch (OperationCanceledException) when (options.CancellationToken.IsCancellationRequested)
 		{
@@ -89,12 +110,38 @@ public sealed class AnthropicProvider : IApiProvider
 		}
 		catch (OperationCanceledException)
 		{
-			Fail(stream, model, startedAt, ProviderHttp.TimeoutMessage(headerTimeout));
+			Fail(stream, model, startedAt,
+				headerTimeout is { } timeout ? ProviderHttp.TimeoutMessage(timeout) : "Request timed out");
 		}
 		catch (Exception ex)
 		{
 			Fail(stream, model, startedAt, DescribeError(ex));
 		}
+		finally
+		{
+			headerTimeout?.Dispose();
+		}
+	}
+
+	/// 本次请求里是否有「希望严格」且真的能发严格 schema 的工具：只有它们值得为额度超限重试。
+	private static bool HasPreferredStrictTools(Model model, IReadOnlyList<Tool> tools)
+	{
+		if (!ModelCompat.FlagOr(model, "supportsStrictTools", false))
+		{
+			return false;
+		}
+
+		foreach (var tool in tools)
+		{
+			if (ConstrainedSampling.PrefersStrictJsonSchema(tool) &&
+				ConstrainedSampling.ResolveStrictJsonSchema(
+					tool, supportsStrictMode: true, ConstrainedSampling.IsAnthropicStrictUnsupportedKeyword) == true)
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private HttpRequestMessage BuildRequest(
@@ -105,11 +152,12 @@ public sealed class AnthropicProvider : IApiProvider
 		string apiKey,
 		ThinkingConfig thinking,
 		int maxTokens,
+		bool disablePreferredStrictTools,
 		out string payloadJson)
 	{
 		var isAnthropicOAuth = apiKey.StartsWith("sk-ant-oat", StringComparison.Ordinal);
-		var bytes = JsonPayload.Write(writer =>
-			AnthropicWire.WriteRequest(writer, model, messages, tools, options, thinking, maxTokens, isAnthropicOAuth));
+		var bytes = JsonPayload.Write(writer => AnthropicWire.WriteRequest(
+			writer, model, messages, tools, options, thinking, maxTokens, isAnthropicOAuth, disablePreferredStrictTools));
 
 		if (options.OnPayload is { } onPayload)
 		{

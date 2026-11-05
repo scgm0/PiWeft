@@ -14,7 +14,8 @@ internal static class AnthropicWire
 		StreamOptions options,
 		ThinkingConfig thinking,
 		int maxTokens,
-		bool oauth = false)
+		bool oauth = false,
+		bool disablePreferredStrictTools = false)
 	{
 		writer.WriteStartObject();
 		writer.WriteString("model", model.Id);
@@ -56,15 +57,32 @@ internal static class AnthropicWire
 
 		if (tools.Count > 0)
 		{
+			// Claude 的严格工具要模型目录显式声明（compat.supportsStrictTools），
+			// 且只接受 JSON Schema 的一个子集；不满足的工具仍按普通 schema 发。
+			var supportsStrictTools = ModelCompat.FlagOr(model, "supportsStrictTools", false);
 			writer.WritePropertyName("tools");
 			writer.WriteStartArray();
 			foreach (var tool in tools)
 			{
+				// disablePreferredStrictTools：严格工具额度已超限，"prefer" 的工具不再要严格。
+				var strict =
+					disablePreferredStrictTools && ConstrainedSampling.PrefersStrictJsonSchema(tool)
+						? null
+						: ConstrainedSampling.ResolveStrictJsonSchema(
+							tool,
+							supportsStrictTools,
+							ConstrainedSampling.IsAnthropicStrictUnsupportedKeyword);
+				var parameters = ConstrainedSampling.GetJsonSchemaToolParameters(tool, strict);
 				writer.WriteStartObject();
 				writer.WriteString("name", tool.Name);
 				writer.WriteString("description", tool.Description);
+				if (strict == true)
+				{
+					writer.WriteBoolean("strict", true);
+				}
+
 				writer.WritePropertyName("input_schema");
-				tool.Parameters.WriteTo(writer);
+				WriteInputSchema(writer, parameters, strict == true);
 				writer.WriteEndObject();
 			}
 
@@ -106,6 +124,43 @@ internal static class AnthropicWire
 
 				writer.WritePropertyName(key);
 				value.WriteTo(writer);
+			}
+		}
+
+		writer.WriteEndObject();
+	}
+
+	/// Anthropic 只把根部的 <c>type</c>/<c>properties</c>/<c>required</c> 与共享定义当真：
+	/// 根级 <c>anyOf</c>/<c>oneOf</c>/<c>allOf</c> 会直接 400。严格模式发完整 schema，
+	/// 普通模式只发这根部的四个字段（与 pi 的 <c>legacyInputSchema</c> 一致）。
+	private static void WriteInputSchema(Utf8JsonWriter writer, JsonObject parameters, bool strict)
+	{
+		writer.WriteStartObject();
+		if (strict)
+		{
+			foreach (var (key, value) in parameters)
+			{
+				if (key is "type" or "properties" or "required" or "$defs" or "definitions")
+				{
+					continue;
+				}
+
+				writer.WritePropertyName(key);
+				value?.WriteTo(writer);
+			}
+		}
+
+		writer.WriteString("type", "object");
+		writer.WritePropertyName("properties");
+		(parameters["properties"] as JsonObject ?? new JsonObject()).WriteTo(writer);
+		writer.WritePropertyName("required");
+		(parameters["required"] as JsonArray ?? new JsonArray()).WriteTo(writer);
+		foreach (var key in new[] { "$defs", "definitions" })
+		{
+			if (parameters[key] is { } definitions)
+			{
+				writer.WritePropertyName(key);
+				definitions.WriteTo(writer);
 			}
 		}
 

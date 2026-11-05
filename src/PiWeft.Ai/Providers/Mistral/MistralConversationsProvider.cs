@@ -148,7 +148,8 @@ public sealed class MistralConversationsProvider : IApiProvider
 
 			if (tools.Count > 0)
 			{
-				OpenAiCompletionsWire.WriteTools(writer, tools);
+				// Mistral 的受约束解码总是可用（pi 传 true），因此每个工具都带 strict 字段。
+				OpenAiCompletionsWire.WriteTools(writer, tools, supportsStrictMode: true);
 			}
 
 			if (options.Metadata?["toolChoice"] is JsonValue toolChoice &&

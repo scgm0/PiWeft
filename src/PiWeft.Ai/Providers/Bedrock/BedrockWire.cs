@@ -33,21 +33,28 @@ internal static class BedrockWire
 
 		if (tools.Count > 0)
 		{
+			var supportsStrictMode = ModelCompat.FlagOr(model, "supportsStrictMode", false);
 			writer.WritePropertyName("toolConfig");
 			writer.WriteStartObject();
 			writer.WritePropertyName("tools");
 			writer.WriteStartArray();
 			foreach (var tool in tools)
 			{
+				var strict = ConstrainedSampling.ResolveStrictJsonSchema(tool, supportsStrictMode);
 				writer.WriteStartObject();
 				writer.WritePropertyName("toolSpec");
 				writer.WriteStartObject();
 				writer.WriteString("name", tool.Name);
 				writer.WriteString("description", tool.Description);
+				if (strict == true)
+				{
+					writer.WriteBoolean("strict", true);
+				}
+
 				writer.WritePropertyName("inputSchema");
 				writer.WriteStartObject();
 				writer.WritePropertyName("json");
-				tool.Parameters.WriteTo(writer);
+				ConstrainedSampling.GetJsonSchemaToolParameters(tool, strict).WriteTo(writer);
 				writer.WriteEndObject();
 				writer.WriteEndObject();
 				writer.WriteEndObject();

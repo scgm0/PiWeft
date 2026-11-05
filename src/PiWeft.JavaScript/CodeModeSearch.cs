@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -158,15 +159,69 @@ public static partial class CodeModeSearch
 	{
 		// 与 pi 相同的顺序：先拆小写→大写边界，再拆连续大写缩写。
 		var spaced = CamelRun().Replace(CamelBoundary().Replace(text, "$1 $2"), "$1 $2");
+		var lowered = spaced.ToLowerInvariant();
+
+		// ASCII/拉丁词按空白与标点切；CJK 没有空格，pi 用 Intl.Segmenter 按词切，
+		// .NET 没有等价物，这里退一步用「单字 + 二元组」：查询「截图」与描述里的
+		// 「截取屏幕截图」共享二元组「截图」，至少能命中。只用 [^a-z0-9]+ 切会把
+		// 整段中文当分隔符丢掉，中文查询必然零结果。
 		var terms = new List<string>();
-		foreach (var raw in Separator().Split(spaced.ToLowerInvariant()))
+		var word = new StringBuilder();
+		var ideographs = new List<char>(8);
+
+		void FlushWord()
 		{
-			if (raw.Length == 0 || StopWords.Contains(raw)) continue;
-			terms.Add(Stem(raw));
+			if (word.Length == 0) return;
+			var token = word.ToString();
+			word.Clear();
+			if (token.Length == 0 || StopWords.Contains(token)) return;
+			terms.Add(Stem(token));
 		}
 
+		void FlushIdeographs()
+		{
+			if (ideographs.Count == 0) return;
+			for (var index = 0; index < ideographs.Count; index++)
+			{
+				terms.Add(ideographs[index].ToString());
+				if (index > 0) terms.Add(string.Concat(ideographs[index - 1], ideographs[index]));
+			}
+
+			ideographs.Clear();
+		}
+
+		foreach (var c in lowered)
+		{
+			if (IsIdeograph(c))
+			{
+				FlushWord();
+				ideographs.Add(c);
+				continue;
+			}
+
+			FlushIdeographs();
+			if (char.IsLetterOrDigit(c))
+			{
+				word.Append(c);
+			}
+			else
+			{
+				FlushWord();
+			}
+		}
+
+		FlushWord();
+		FlushIdeographs();
 		return terms;
 	}
+
+	/// 汉字/假名/谚文：这些文字没有词间空格，按字与二元组切。
+	private static bool IsIdeograph(char c) =>
+		c is >= '\u3040' and <= '\u30FF' ||
+		c is >= '\u3400' and <= '\u4DBF' ||
+		c is >= '\u4E00' and <= '\u9FFF' ||
+		c is >= '\uF900' and <= '\uFAFF' ||
+		c is >= '\uAC00' and <= '\uD7AF';
 
 	private static IndexedDocument Index(ToolSearchDocument document)
 	{
@@ -260,9 +315,6 @@ public static partial class CodeModeSearch
 
 	[GeneratedRegex(@"([A-Z]+)([A-Z][a-z])", RegexOptions.CultureInvariant)]
 	private static partial Regex CamelRun();
-
-	[GeneratedRegex(@"[^a-z0-9]+", RegexOptions.CultureInvariant)]
-	private static partial Regex Separator();
 
 	[GeneratedRegex(@"(ches|shes|sses|xes|zes)$", RegexOptions.CultureInvariant)]
 	private static partial Regex PluralEnding();

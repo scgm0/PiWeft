@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 
 using PiWeft.Ai.Json;
+using PiWeft.Ai.Utils;
 namespace PiWeft.Ai.Providers.OpenAi;
 
 /// Azure OpenAI Responses API（<c>azure-openai-responses</c>）的流式适配器。它沿用 OpenAI Responses 的
@@ -147,7 +148,8 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 			options,
 			reasoningEffort,
 			maxOutputTokens,
-			deployment));
+			deployment,
+			supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? true));
 
 		if (options.OnPayload is { } onPayload)
 		{

@@ -17,7 +17,8 @@ internal static class OpenAiResponsesWire
 		int? maxOutputTokens,
 		string? modelNameOverride = null,
 		bool store = true,
-		string? promptCacheKey = null)
+		string? promptCacheKey = null,
+		bool supportsStrictMode = false)
 	{
 		writer.WriteStartObject();
 		// Azure 使用的是部署名，它通常等于模型 id，但并不总是。
@@ -73,12 +74,18 @@ internal static class OpenAiResponsesWire
 			writer.WriteStartArray();
 			foreach (var tool in tools)
 			{
+				var strict = ConstrainedSampling.ResolveStrictJsonSchema(tool, supportsStrictMode);
 				writer.WriteStartObject();
 				writer.WriteString("type", "function");
 				writer.WriteString("name", tool.Name);
 				writer.WriteString("description", tool.Description);
 				writer.WritePropertyName("parameters");
-				tool.Parameters.WriteTo(writer);
+				ConstrainedSampling.GetJsonSchemaToolParameters(tool, strict).WriteTo(writer);
+				if (supportsStrictMode)
+				{
+					writer.WriteBoolean("strict", strict == true);
+				}
+
 				writer.WriteEndObject();
 			}
 

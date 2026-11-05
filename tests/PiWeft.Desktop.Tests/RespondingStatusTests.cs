@@ -106,6 +106,37 @@ public sealed class RespondingStatusTests : IDisposable
 	}
 
 	[Fact]
+	public void ThePlaceholderRowWinsTheElapsedInEveryQuietPhaseNotJustWarmUp()
+	{
+		// 占位行与可观测的子阶段可以同时成立（轮次中间的 steering 消息落在用户行上，
+		// 而上一段的工具仍在跑）。两个采样器各自读同一个秒表，相位差半拍就会并排出
+		// 「48 秒」与「49 秒」；因此只要占位行在报，状态条一律让位。
+		Assert.Equal(string.Empty, RespondingStatusPolicy.Compose(
+			Input(elapsed: 12_000, tool: true, pendingRow: true)).Suffix);
+		Assert.Equal(string.Empty, RespondingStatusPolicy.Compose(
+			Input(elapsed: 12_000, compacting: true, pendingRow: true)).Suffix);
+		// 没有占位行时，工具执行（静默期）仍然由状态条报时。
+		Assert.Contains("12 秒", RespondingStatusPolicy.Compose(
+			Input(elapsed: 12_000, tool: true)).Suffix, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void ThePlaceholderRowOnlyAppearsWhenNothingIsFlowingOnScreen()
+	{
+		// 真的在等首 token：最后一行是用户自己的，也没有任何一行在流。
+		Assert.True(RespondingStatusPolicy.NeedsPendingRow(Input(elapsed: 3_000)));
+		// 轮次中间的 steering 消息会让最后一行回到用户行，但上一段的工具可能仍在跑：
+		// 那时候屏幕上的事实是「正在执行命令」，再挂一行「正在等第一句话」就是自相矛盾。
+		Assert.False(RespondingStatusPolicy.NeedsPendingRow(Input(elapsed: 48_000, tool: true)));
+		Assert.False(RespondingStatusPolicy.NeedsPendingRow(Input(elapsed: 48_000, body: true)));
+		Assert.False(RespondingStatusPolicy.NeedsPendingRow(Input(elapsed: 48_000, thinking: true)));
+		// 已有输出、重试与压缩各有自己的说法，都不靠占位行解释。
+		Assert.False(RespondingStatusPolicy.NeedsPendingRow(Input(output: true)));
+		Assert.False(RespondingStatusPolicy.NeedsPendingRow(Input(retrying: true, attempt: 1, max: 3, seconds: 4)));
+		Assert.False(RespondingStatusPolicy.NeedsPendingRow(Input(compacting: true)));
+	}
+
+	[Fact]
 	public void PlaceholderRowNeverSuppressesTheElapsedOfALaterQuietPhase()
 	{
 		// 一旦有了输出，占位行就该收起来；此时「正在处理 · 本轮已 N 秒」仍然照报。

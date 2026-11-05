@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 
 using PiWeft.Ai.Json;
+using PiWeft.Ai.Utils;
 namespace PiWeft.Ai.Providers.OpenAi;
 
 /// OpenAI Responses API（<c>openai-responses</c>）的流式适配器。GPT-5 级别与推理模型使用该 API，
@@ -117,7 +118,8 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 			: options.SessionId.Length <= 64 ? options.SessionId : options.SessionId[..64];
 		var bytes = JsonPayload.Write(writer =>
 			OpenAiResponsesWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, maxOutputTokens,
-				promptCacheKey: promptCacheKey));
+				promptCacheKey: promptCacheKey,
+			supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? false));
 
 		if (options.OnPayload is { } onPayload)
 		{

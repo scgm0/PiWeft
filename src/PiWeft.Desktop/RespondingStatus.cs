@@ -79,6 +79,14 @@ internal static class RespondingStatusPolicy
 		return input.TurnHasOutput ? RespondingKind.Waiting : RespondingKind.Starting;
 	}
 
+	/// 时间线尾部要不要补一行「正在等第一句话」。条件是这一轮还没落下任何可见输出，
+	/// 且屏幕上没有任何一段还在流：轮次中间的 steering 消息会让最后一行回到用户行，
+	/// 而上一段的工具可能仍在跑——那时候屏幕上的事实是「正在执行命令」，
+	/// 占位行既说谎，又与状态条争同一个实时秒数。
+	public static bool NeedsPendingRow(in RespondingInput input) =>
+		!input.TurnHasOutput && !input.LiveTool && !input.LiveBody && !input.LiveThinking &&
+		!input.Retrying && !input.Compacting;
+
 	public static RespondingStatus Compose(in RespondingInput input)
 	{
 		var kind = KindOf(input);
@@ -98,11 +106,12 @@ internal static class RespondingStatusPolicy
 
 		// 时长只在「屏幕上没有东西自己在长」的时候报：推流期肉眼就看得到进展，再读一个数字纯属占位。
 		// 退避期也不报：那句「N 秒后重试」已经是更精确的同一个信息。
-		// 预热期若时间线里已经有一行占位在报同一个数，这里就不再重复（一轮只留一个实时耗时）。
+		// 时间线里已经有一行占位在报同一个数时，这里一律不再重复（一轮只留一个实时耗时）。
+		// 判据不看 Kind：占位行与可观测的子阶段（工具执行、压缩）可能同时成立，
+		// 只按 Kind 放行就会出现两个各自采样的秒数并排跳（占位行 48 秒 / 状态条 49 秒）。
 		var quiet = kind is RespondingKind.Starting or RespondingKind.Waiting
 			or RespondingKind.Executing or RespondingKind.Compacting;
-		var duplicate = kind == RespondingKind.Starting && input.PendingRowVisible;
-		var suffix = quiet && !duplicate && input.ElapsedMs >= ElapsedFromMs
+		var suffix = quiet && !input.PendingRowVisible && input.ElapsedMs >= ElapsedFromMs
 			? Strings.RespondingElapsed(input.ElapsedMs)
 			: string.Empty;
 

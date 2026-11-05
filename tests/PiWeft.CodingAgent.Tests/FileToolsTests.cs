@@ -140,6 +140,31 @@ public class FileToolsTests : IDisposable
 	}
 
 	[Fact]
+	public void WriteKeepsTheInodeSoAlreadyOpenHandlesSeeTheNewContent()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return; // Windows 上「重命名覆盖被占用的文件」直接失败，不比这层语义。
+		}
+
+		var file = Path.Combine(_root, "inode.txt");
+		File.WriteAllText(file, "old");
+		// 先拿着旧 inode，再让工具覆盖：临时文件 + rename 会让这个句柄指着已经被注销的旧 inode，
+		// 硬链接也罢、别的进程打开的句柄也罢，都会停在旧内容上。就地写才与 pi 的 fs.writeFile 一致。
+		using var handle = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+		using var reader = new StreamReader(handle, leaveOpen: true);
+
+		Execute(FileTools.Write(_root), new JsonObject
+		{
+			["path"] = "inode.txt",
+			["content"] = "new",
+		});
+
+		handle.Position = 0;
+		Assert.Equal("new", reader.ReadToEnd());
+	}
+
+	[Fact]
 	public void EditStillFailsOnMissingFile()
 	{
 		var tool = FileTools.Edit(_root);

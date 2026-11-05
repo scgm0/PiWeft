@@ -15,6 +15,9 @@ internal sealed class FakeHttpHandler : HttpMessageHandler
 
 	public string? LastBody { get; private set; }
 
+	/// 每次请求的请求体，按发送顺序；重试类用例要看「降级后的那一次」发了什么。
+	public List<string> Bodies { get; } = [];
+
 	protected override async Task<HttpResponseMessage> SendAsync(
 		HttpRequestMessage request,
 		CancellationToken cancellationToken)
@@ -23,6 +26,10 @@ internal sealed class FakeHttpHandler : HttpMessageHandler
 		LastBody = request.Content is null
 			? null
 			: await request.Content.ReadAsStringAsync(cancellationToken);
+		if (LastBody is not null)
+		{
+			Bodies.Add(LastBody);
+		}
 		return Responder?.Invoke(request) ?? new HttpResponseMessage(HttpStatusCode.OK);
 	}
 }
@@ -493,6 +500,121 @@ public class AnthropicProviderTests
 		Assert.False(request.Headers.Contains("x-api-key"));
 		Assert.Null(request.Headers.Authorization);
 	}
+
+	/// 与目录同口径的严格工具模型：compat.supportsStrictTools 为 true 才会发 strict。
+	private static Model StrictSonnet() => Sonnet() with
+	{
+		Compat = new System.Text.Json.Nodes.JsonObject { ["supportsStrictTools"] = true },
+	};
+
+	private static Tool StrictReadTool() => new()
+	{
+		Name = "read",
+		Description = "read a file",
+		Parameters = new System.Text.Json.Nodes.JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new System.Text.Json.Nodes.JsonObject
+			{
+				["path"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "string" },
+				["offset"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "number" },
+			},
+			["required"] = new System.Text.Json.Nodes.JsonArray("path"),
+		},
+		ConstrainedSampling = new System.Text.Json.Nodes.JsonObject
+		{
+			["type"] = "json_schema",
+			["strict"] = "prefer",
+		},
+	};
+
+	[Fact]
+	public async Task StrictToolsAreOnlySentToModelsThatDeclareThem()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var context = new Context
+		{
+			Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }],
+			Tools = [StrictReadTool()],
+		};
+
+		var strictStream = provider.Stream(StrictSonnet(), context, new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in strictStream)
+		{
+		}
+
+		using (var body = JsonDocument.Parse(handler.LastBody!))
+		{
+			var tool = body.RootElement.GetProperty("tools")[0];
+			Assert.True(tool.GetProperty("strict").GetBoolean());
+			var schema = tool.GetProperty("input_schema");
+			Assert.False(schema.GetProperty("additionalProperties").GetBoolean());
+			// 严格 schema 里可选属性补成 anyOf[..., null-flavoured] 并全部进 required。
+			Assert.Equal(2, schema.GetProperty("required").GetArrayLength());
+			Assert.True(schema.GetProperty("properties").GetProperty("offset").TryGetProperty("anyOf", out _));
+		}
+
+		// 没有声明 supportsStrictTools 的模型：不发 strict，也不把根 schema 换成严格版。
+		var plainStream = provider.Stream(Sonnet(), context, new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in plainStream)
+		{
+		}
+
+		using (var body = JsonDocument.Parse(handler.LastBody!))
+		{
+			var tool = body.RootElement.GetProperty("tools")[0];
+			Assert.False(tool.TryGetProperty("strict", out _));
+			var schema = tool.GetProperty("input_schema");
+			Assert.False(schema.TryGetProperty("additionalProperties", out _));
+			Assert.Equal(1, schema.GetProperty("required").GetArrayLength());
+			Assert.False(schema.GetProperty("properties").GetProperty("offset").TryGetProperty("anyOf", out _));
+		}
+	}
+
+	[Fact]
+	public async Task StrictToolLimitRejectionIsRetriedWithoutPreferredStrictTools()
+	{
+		var attempts = 0;
+		var handler = new FakeHttpHandler
+		{
+			Responder = _ =>
+			{
+				attempts++;
+				return attempts == 1
+					? new HttpResponseMessage(HttpStatusCode.BadRequest)
+					{
+						Content = new StringContent(
+							"{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Too many strict tools (20)\"}}",
+							Encoding.UTF8,
+							"application/json"),
+					}
+					: Sse(StreamBody);
+			},
+		};
+
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var stream = provider.Stream(
+			StrictSonnet(),
+			new Context
+			{
+				Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }],
+				Tools = [StrictReadTool()],
+			},
+			new StreamOptions { ApiKey = "test-key" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.Equal(2, attempts);
+		using var first = JsonDocument.Parse(handler.Bodies[0]);
+		using var second = JsonDocument.Parse(handler.Bodies[1]);
+		Assert.True(first.RootElement.GetProperty("tools")[0].GetProperty("strict").GetBoolean());
+		Assert.False(second.RootElement.GetProperty("tools")[0].TryGetProperty("strict", out _));
+		Assert.False(second.RootElement.GetProperty("tools")[0]
+			.GetProperty("input_schema").TryGetProperty("additionalProperties", out _));
+	}
 }
 
 [Collection("process-environment")]
@@ -550,5 +672,4 @@ public sealed class AnthropicProviderProviderKeyTests : IDisposable
 
 		Assert.Equal("openrouter-key", handler.LastRequest!.Headers.GetValues("x-api-key").Single());
 	}
-
 }

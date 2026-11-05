@@ -35,6 +35,7 @@ internal static class GoogleWire
 
 		if (tools.Count > 0)
 		{
+			var supportsStrictMode = SupportsStrictToolSampling(model.Id);
 			writer.WritePropertyName("tools");
 			writer.WriteStartArray();
 			writer.WriteStartObject();
@@ -42,11 +43,13 @@ internal static class GoogleWire
 			writer.WriteStartArray();
 			foreach (var tool in tools)
 			{
+				var strict = ConstrainedSampling.ResolveStrictJsonSchema(tool, supportsStrictMode);
 				writer.WriteStartObject();
 				writer.WriteString("name", tool.Name);
 				writer.WriteString("description", tool.Description);
 				writer.WritePropertyName("parametersJsonSchema");
-				tool.Parameters.WriteTo(writer);
+				// Gemini 忽略 parametersJsonSchema 中的 const，改写成单值 enum（与 pi 一致）。
+				RewriteConstAsEnum(ConstrainedSampling.GetJsonSchemaToolParameters(tool, strict)).WriteTo(writer);
 				writer.WriteEndObject();
 			}
 
@@ -67,6 +70,18 @@ internal static class GoogleWire
 				"any" => "ANY",
 				_ => "AUTO",
 			});
+			writer.WriteEndObject();
+			writer.WriteEndObject();
+		}
+		else if (tools.Count > 0 && tools.Any(tool =>
+			ConstrainedSampling.ResolveStrictJsonSchema(tool, SupportsStrictToolSampling(model.Id)) == true))
+		{
+			// 有严格工具时必须用 VALIDATED 模式：否则 Gemini 不会真的执行受约束解码。
+			writer.WritePropertyName("toolConfig");
+			writer.WriteStartObject();
+			writer.WritePropertyName("functionCallingConfig");
+			writer.WriteStartObject();
+			writer.WriteString("mode", "VALIDATED");
 			writer.WriteEndObject();
 			writer.WriteEndObject();
 		}
@@ -334,5 +349,54 @@ internal static class GoogleWire
 
 		writer.WriteEndArray();
 		writer.WriteEndObject();
+	}
+
+	/// Gemini 3+ 在 VALIDATED 工具模式里强制 required 参数；更老的模型没有这个模式。
+	internal static bool SupportsStrictToolSampling(string modelId)
+	{
+		var match = System.Text.RegularExpressions.Regex.Match(
+			modelId.ToLowerInvariant(),
+			"^gemini(?:-live)?-(\\d+)",
+			System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+		return match.Success &&
+			int.TryParse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture, out var major) &&
+			major >= 3;
+	}
+
+	/// Gemini 忽略 parametersJsonSchema 里的 <c>const</c>：字符串/数字常量改写成单值 enum。
+	private static JsonNode RewriteConstAsEnum(JsonObject schema)
+	{
+		var cloned = (JsonObject)schema.DeepClone();
+		Rewrite(cloned);
+		return cloned;
+
+		static void Rewrite(JsonNode? node)
+		{
+			switch (node)
+			{
+				case JsonObject obj:
+					if (obj["const"] is JsonValue constant &&
+						(constant.GetValueKind() is System.Text.Json.JsonValueKind.String or System.Text.Json.JsonValueKind.Number))
+					{
+						obj.Remove("const");
+						obj["enum"] = new JsonArray(constant.DeepClone());
+					}
+
+					foreach (var (_, value) in obj)
+					{
+						Rewrite(value);
+					}
+
+					break;
+
+				case JsonArray array:
+					foreach (var item in array)
+					{
+						Rewrite(item);
+					}
+
+					break;
+			}
+		}
 	}
 }

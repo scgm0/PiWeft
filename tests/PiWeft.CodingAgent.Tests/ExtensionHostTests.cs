@@ -204,6 +204,28 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
+	public void RegisteredToolCanDeclareConstrainedSampling()
+	{
+		using var host = new ExtensionHost();
+		Write("strict.js", """
+			module.exports = function (pi) {
+				pi.registerTool({
+					name: "strict",
+					description: "d",
+					parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+					constrainedSampling: { type: "json_schema", strict: "prefer" },
+					execute: function () { return "ok"; },
+				});
+			};
+			""");
+		host.Load(_cwd, trusted: true, _agentDir);
+
+		var tool = Assert.Single(host.Tools);
+		Assert.True(PiWeft.Ai.ConstrainedSampling.PrefersStrictJsonSchema(tool.ToDeclaration()));
+		Assert.NotNull(tool.ToDeclaration().ConstrainedSampling);
+	}
+
+	[Fact]
 	public void ToolReturningAStringIsAccepted()
 	{
 		using var host = new ExtensionHost();

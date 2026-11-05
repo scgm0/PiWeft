@@ -15,6 +15,28 @@ public sealed class CodeModeSearchTests
 	}
 
 	[Fact]
+	public void Tokenize_KeepsCjkTextSoChineseQueriesCanMatch()
+	{
+		// pi 用 Intl.Segmenter 按词切；进程内用「单字 + 二元组」兜底，
+		// 至少让「截图」这种查询与「截取屏幕截图」共享一个二元组。
+		var terms = CodeModeSearch.Tokenize("截取屏幕截图");
+
+		Assert.Contains("截图", terms);
+		Assert.Contains("截", terms);
+	}
+
+	[Fact]
+	public void Rank_FindsToolsDescribedInChinese()
+	{
+		var screenshot = CodeModeSearch.CreateToolSearchDocument("screenshot", "截取当前屏幕截图", null);
+		var read = CodeModeSearch.CreateToolSearchDocument("read", "Read file contents", null);
+
+		var matches = CodeModeSearch.Rank("截图", [screenshot, read], 8);
+
+		Assert.Equal(["screenshot"], matches);
+	}
+
+	[Fact]
 	public void CreateDocument_IncludesSchemaDescriptionsAndPropertyNames()
 	{
 		var schema = new JsonObject

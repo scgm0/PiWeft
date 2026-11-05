@@ -26,6 +26,7 @@ public static class FileTools
 			["required"] = new JsonArray("path"),
 		},
 		OutputSchema = ReadOutputSchema(),
+		ConstrainedSampling = PiWeft.Ai.ConstrainedSampling.JsonSchema(),
 		Execute = invocation => Task.FromResult(ReadFile(cwd, invocation, model)),
 	};
 
@@ -184,85 +185,22 @@ public static class FileTools
 			},
 			["required"] = new JsonArray("path", "content"),
 		},
+		ConstrainedSampling = PiWeft.Ai.ConstrainedSampling.JsonSchema(),
 		Execute = invocation => Task.FromResult(WriteFile(cwd, invocation)),
 	};
 
-	/// 同目录临时文件 + 原子替换：写到一半崩溃/断电不会把原文件截成半截（那可能是用户几天的改动）。
-	/// 覆盖时保留原有的 Unix 权限位，避免 <c>chmod +x</c> 过的脚本丢掉执行位。
-	private static void WriteAtomically(string path, string content)
+	/// 就地写入（与 pi 的 <c>fs.writeFile</c> 同语义）：打开现有的 inode、截断、写满。
+	/// 不换文件，是因为「换文件」不是写入而是「注销旧文件再建一个新的」：硬链接会断开、
+	/// 别的进程已经打开的句柄还指着旧内容、ACL/扩展属性/inode 全变。pi 接受写到一半
+	/// 崩溃留下半截文件——这里同理；需要原子性的会话/设置/导入各自走自己的临时文件+rename。
+	private static void WriteInPlace(string path, string content)
 	{
-		// 写入要跟随符号链接：Node 的 fs.writeFile 写到目标，而 rename 覆盖的是链接本身。
-		// 不解析的话，一次 edit 就会把 ~/.config 里的链变成普通文件，别处的链接全部断掉。
-		var target = ResolveSymlinkTarget(path);
-
-		UnixFileMode? preserved = null;
-		if (!OperatingSystem.IsWindows() && File.Exists(target))
-		{
-			try
-			{
-				preserved = File.GetUnixFileMode(path);
-			}
-			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
-			{
-				// 读不到权限位就按默认落盘。
-			}
-		}
-
-		var temporary = $"{target}.{Guid.NewGuid():N}.tmp";
-		try
-		{
-			File.WriteAllText(temporary, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-			File.Move(temporary, target, overwrite: true);
-
-			if (preserved is { } mode && !OperatingSystem.IsWindows())
-			{
-				try
-				{
-					File.SetUnixFileMode(target, mode);
-				}
-				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
-				{
-					// 恢复权限失败不影响写入结果本身。
-				}
-			}
-		}
-		finally
-		{
-			if (File.Exists(temporary))
-			{
-				try
-				{
-					File.Delete(temporary);
-				}
-				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-				{
-					// 清理失败不影响主流程。
-				}
-			}
-		}
-	}
-
-	private static string ResolveSymlinkTarget(string path)
-	{
-		try
-		{
-			// FileInfo.LinkTarget 对普通文件/不存在的路径返回 null 且不抛异常；
-			// File.ResolveLinkTarget 在路径不存在时抛 FileNotFoundException —— 新建文件的常见路径
-			// 不该为「它不是链接」付一次异常的成本。
-			if (new FileInfo(path).LinkTarget is null)
-			{
-				return path;
-			}
-
-			return File.ResolveLinkTarget(path, returnFinalTarget: true) is { } target
-				? Path.GetFullPath(target.FullName)
-				: path;
-		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
-			or ArgumentException or NotSupportedException)
-		{
-			return path;
-		}
+		// 写入跟随符号链接：FileMode.Create 在链接路径上打开的就是目标文件，
+		// 不解析也能保持链接本身不变（rename 式写入会把链接换成普通文件）。
+		using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+		var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+		var bytes = encoding.GetBytes(content);
+		stream.Write(bytes, 0, bytes.Length);
 	}
 
 	private static AgentToolResult WriteFile(string cwd, AgentToolInvocation invocation)
@@ -276,7 +214,7 @@ public static class FileTools
 			ThrowIfAborted(invocation.CancellationToken);
 			EnsureWritableIfExisting(absolutePath, path);
 			ToolPaths.EnsureParentDirectory(absolutePath);
-			WriteAtomically(absolutePath, content);
+			WriteInPlace(absolutePath, content);
 		});
 
 		return new AgentToolResult
@@ -325,6 +263,7 @@ public static class FileTools
 			["required"] = new JsonArray("path", "edits"),
 		},
 		PrepareArguments = PrepareEditArguments,
+		ConstrainedSampling = PiWeft.Ai.ConstrainedSampling.JsonSchema(),
 		Execute = invocation => Task.FromResult(EditFile(cwd, invocation)),
 	};
 
@@ -382,7 +321,7 @@ public static class FileTools
 		ThrowIfAborted(cancellationToken);
 		var applied = EditDiff.ApplyEdits(normalized, edits, path);
 		var restored = EditDiff.RestoreLineEndings(applied.NewContent, lineEnding);
-		WriteAtomically(absolutePath, hadBom ? "\uFEFF" + restored : restored);
+		WriteInPlace(absolutePath, hadBom ? "\uFEFF" + restored : restored);
 
 		var diff = EditDiff.DisplayDiff(applied.BaseContent, applied.NewContent);
 		return new AgentToolResult

@@ -88,13 +88,24 @@ public sealed record AgentTool
 	/// 声明后，codemode 脚本里的嵌套调用解析为该结构而不是文本。
 	public JsonObject? OutputSchema { get; init; }
 
+	/// 受约束采样声明（见 <see cref="PiWeft.Ai.ConstrainedSampling"/>）。
+	/// 声明后请求里的参数 schema 会被改写成 provider 的严格模式子集；
+	/// 不声明就按普通 schema 发送。
+	public JsonNode? ConstrainedSampling { get; init; }
+
 	public ToolExecutionMode? ExecutionMode { get; init; }
 
 	public Func<JsonObject, JsonObject>? PrepareArguments { get; init; }
 
 	public required Func<AgentToolInvocation, Task<AgentToolResult>> Execute { get; init; }
 
-	public Tool ToDeclaration() => new() { Name = Name, Description = Description, Parameters = Parameters };
+	public Tool ToDeclaration() => new()
+	{
+		Name = Name,
+		Description = Description,
+		Parameters = Parameters,
+		ConstrainedSampling = ConstrainedSampling,
+	};
 }
 
 public sealed record AgentToolCallOutcome

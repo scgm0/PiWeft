@@ -156,7 +156,10 @@ public static class SearchTools
 			throw new InvalidOperationException($"Path not found: {root}");
 		}
 
-		var regex = GlobToRegex(pattern);
+		// fd 的 --glob 是 smart-case：pattern 里没有大写字母就大小写不敏感。
+		// 路径型 pattern 在 fd 里是对绝对路径匹配（pi 用 --full-path + **/ 前缀），
+		// 因此在任意深度都能命中。
+		var regex = GlobToRegex(pattern, GlobSyntax.IsSmartCaseInsensitive(pattern), anyDepth: true);
 		var results = new List<string>();
 		var resultLimitReached = false;
 
@@ -164,9 +167,10 @@ public static class SearchTools
 		{
 			ThrowIfAborted(invocation.CancellationToken);
 			var isDirectory = Directory.Exists(entry);
-			var relative = ToolPaths.RelativeTo(entry, root);
+			var relative = GlobSyntax.NormalizeSlashes(ToolPaths.RelativeTo(entry, root));
 			var candidate = pattern.Contains('/') ? relative : Path.GetFileName(entry);
-			if (!regex.IsMatch(candidate))
+			// fd 的目录结果带尾斜杠：`src/` 这种 pattern 只匹配目录，而我们的相对路径不带斜杠。
+			if (!regex.IsMatch(candidate) && !(isDirectory && regex.IsMatch(candidate + "/")))
 			{
 				continue;
 			}
@@ -272,13 +276,20 @@ public static class SearchTools
 			? new Regex(Regex.Escape(pattern), options, TimeSpan.FromSeconds(2))
 			: SafeRegex(pattern, options);
 
-		var globRegex = glob is null ? null : GlobToRegex(glob);
+		// rg 的 --glob 支持 `!pattern` 反向排除；工具只收一个 glob，因此「排除」就是
+		// 「除了命中的都搜」，与 rg 单个 --glob 的行为一致。
+		var excludeGlob = glob is { Length: > 1 } && glob[0] == '!';
+		var globPattern = excludeGlob ? glob![1..] : glob;
+		var globRegex = globPattern is null ? null : GlobToRegex(globPattern);
 		var root = path is null ? cwd : ToolPaths.ResolveToCwd(path, cwd);
+
+		bool GlobAccepts(string file) =>
+			globRegex is null || GlobMatches(globRegex, globPattern!, file, root) != excludeGlob;
 
 		var files = new List<string>();
 		if (File.Exists(root))
 		{
-			if (globRegex is null || GlobMatches(globRegex, glob!, root, root))
+			if (GlobAccepts(root))
 			{
 				files.Add(root);
 			}
@@ -288,7 +299,7 @@ public static class SearchTools
 			foreach (var file in FileWalker.EnumerateFiles(root, includeGitDirectory: true))
 			{
 				ThrowIfAborted(invocation.CancellationToken);
-				if (globRegex is null || GlobMatches(globRegex, glob!, file, root))
+				if (GlobAccepts(file))
 				{
 					files.Add(file);
 				}
@@ -421,7 +432,14 @@ public static class SearchTools
 
 	private static bool GlobMatches(Regex regex, string glob, string file, string root)
 	{
-		var relative = ToolPaths.RelativeTo(file, root);
+		// 与 rg 的 --glob 一致：不带 '/' 的 glob 只比文件名（任意深度），
+		// 带 '/' 的比相对搜索根（以 '/' 开头的绝对 glob 比绝对路径）。
+		if (glob.StartsWith('/'))
+		{
+			return regex.IsMatch(GlobSyntax.NormalizeSlashes(Path.GetFullPath(file)));
+		}
+
+		var relative = GlobSyntax.NormalizeSlashes(ToolPaths.RelativeTo(file, root));
 		return regex.IsMatch(glob.Contains('/') ? relative : Path.GetFileName(file));
 	}
 
@@ -460,24 +478,54 @@ public static class SearchTools
 		}
 	}
 
-	public static Regex GlobToRegex(string pattern)
+	/// glob → 正则（与 pi 交给 fd/ripgrep 的 globset 语法对齐）：
+	/// <c>*</c> 不跨目录、<c>**</c> 跨目录、<c>?</c> 单字符、<c>[abc]</c>/<c>[!abc]</c> 字符类、
+	/// <c>{a,b}</c> 分支与反斜杠转义。
+	/// <para>
+	/// <paramref name="anyDepth"/> 对应 pi 在 find 里给路径型 pattern 补的 <c>**/</c> 前缀：
+	/// fd 用 <c>--full-path</c> 匹配绝对路径，于是 <c>src/*.ts</c> 在任意深度都能命中。
+	/// </para>
+	public static Regex GlobToRegex(string pattern, bool ignoreCase = false, bool anyDepth = false)
 	{
-		var builder = new StringBuilder(pattern.Length * 2 + 8);
+		var builder = new StringBuilder(pattern.Length * 2 + 16);
 		builder.Append('^');
-
-		for (var i = 0; i < pattern.Length; i++)
+		if (anyDepth && pattern.Contains('/') && !pattern.StartsWith('/') &&
+			!pattern.StartsWith("**/", StringComparison.Ordinal) && pattern != "**")
 		{
-			var c = pattern[i];
+			builder.Append("(?:.*/)?");
+		}
+
+		AppendGlob(builder, pattern, 0, pattern.Length);
+		builder.Append('$');
+		return GlobSyntax.Compile(builder, ignoreCase);
+	}
+
+	private static void AppendGlob(StringBuilder builder, string pattern, int start, int end)
+	{
+		for (var index = start; index < end; index++)
+		{
+			var c = pattern[index];
 			switch (c)
 			{
-				case '*':
-					if (i + 1 < pattern.Length && pattern[i + 1] == '*')
+				case '\\':
+					if (index + 1 < end)
 					{
-						i++;
-						if (i + 1 < pattern.Length && pattern[i + 1] == '/')
+						builder.Append(Regex.Escape(pattern[++index].ToString()));
+					}
+					else
+					{
+						builder.Append("\\\\");
+					}
+
+					break;
+				case '*':
+					if (index + 1 < end && pattern[index + 1] == '*')
+					{
+						index++;
+						if (index + 1 < end && pattern[index + 1] == '/')
 						{
-							i++;
-							builder.Append("(.*/)?");
+							index++;
+							builder.Append("(?:.*/)?");
 						}
 						else
 						{
@@ -495,15 +543,30 @@ public static class SearchTools
 					break;
 				case '[':
 				{
-					var close = pattern.IndexOf(']', i + 1);
-					if (close > i)
+					var close = GlobSyntax.FindClassEnd(pattern, index + 1, end);
+					if (close < 0)
 					{
-						builder.Append(pattern, i, close - i + 1);
-						i = close;
+						builder.Append("\\[");
 					}
 					else
 					{
-						builder.Append("\\[");
+						GlobSyntax.AppendClass(builder, pattern, index + 1, close);
+						index = close;
+					}
+
+					break;
+				}
+				case '{':
+				{
+					var close = GlobSyntax.FindBraceEnd(pattern, index + 1, end);
+					if (close < 0)
+					{
+						builder.Append("\\{");
+					}
+					else
+					{
+						GlobSyntax.AppendBraceAlternatives(builder, pattern, index + 1, close, AppendGlob);
+						index = close;
 					}
 
 					break;
@@ -513,8 +576,5 @@ public static class SearchTools
 					break;
 			}
 		}
-
-		builder.Append('$');
-		return new Regex(builder.ToString(), RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));
 	}
 }

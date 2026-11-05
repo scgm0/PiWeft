@@ -64,20 +64,118 @@ public sealed class GitIgnore
 		}
 
 		var combined = new GitIgnore();
+		// 优先级从低到高：全局忽略（core.excludesFile / XDG ignore）→ .git/info/exclude →
+		// 逐层 .gitignore/.ignore/.rgignore。规则是「后出现的覆盖先出现的」，顺序错了
+		// 就会出现「仓库根的 .gitignore 被 info/exclude 反过来压住」这种和 git 不一样的结果。
+		var baseDirectory = gitRoot ?? directory;
+		combined.AddRange(Global(baseDirectory));
+		if (gitRoot is not null)
+		{
+			combined.AddRange(FromFile(Path.Combine(gitRoot, ".git", "info", "exclude"), gitRoot));
+		}
+
 		for (var index = chain.Count - 1; index >= 0; index--)
 		{
 			var current = chain[index];
 			combined.AddRange(FromFile(Path.Combine(current, ".gitignore"), current));
 			combined.AddRange(FromFile(Path.Combine(current, ".ignore"), current));
 			combined.AddRange(FromFile(Path.Combine(current, ".rgignore"), current));
-			if (gitRoot is not null &&
-				string.Equals(Path.GetFullPath(current), Path.GetFullPath(gitRoot), StringComparison.Ordinal))
-			{
-				combined.AddRange(FromFile(Path.Combine(current, ".git", "info", "exclude"), current));
-			}
 		}
 
 		return combined;
+	}
+
+	/// git 的全局忽略源：<c>$XDG_CONFIG_HOME/git/ignore</c>（缺省 <c>~/.config/git/ignore</c>）
+	/// 与 <c>core.excludesFile</c> 指到的文件。ripgrep 与 fd 都读它们，进程内实现也要读，
+	/// 否则「本机早就忽略掉的构建产物」会重新出现在 grep/find 的结果里。
+	public static GitIgnore Global(string baseDirectory)
+	{
+		var combined = new GitIgnore();
+		foreach (var path in GlobalFiles())
+		{
+			combined.AddRange(FromFile(path, baseDirectory));
+		}
+
+		return combined;
+	}
+
+	private static IEnumerable<string> GlobalFiles()
+	{
+		var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+		if (home.Length == 0)
+		{
+			yield break;
+		}
+
+		var configHome = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+		var xdg = string.IsNullOrEmpty(configHome) ? Path.Combine(home, ".config") : configHome;
+		yield return Path.Combine(xdg, "git", "ignore");
+
+		foreach (var configFile in new[] { Path.Combine(xdg, "git", "config"), Path.Combine(home, ".gitconfig") })
+		{
+			if (ReadCoreExcludesFile(configFile) is { } excludes)
+			{
+				yield return excludes;
+			}
+		}
+	}
+
+	/// 只读 <c>[core] excludesfile</c> 一行：不必为了一个路径去实现整套 git 配置语法。
+	private static string? ReadCoreExcludesFile(string configFile)
+	{
+		if (!File.Exists(configFile))
+		{
+			return null;
+		}
+
+		try
+		{
+			var section = string.Empty;
+			foreach (var raw in File.ReadLines(configFile))
+			{
+				var line = raw.Trim();
+				if (line.Length == 0 || line[0] is '#' or ';')
+				{
+					continue;
+				}
+
+				if (line[0] == '[' && line[^1] == ']')
+				{
+					section = line[1..^1].Trim();
+					continue;
+				}
+
+				var separator = line.IndexOf('=');
+				if (separator <= 0 || !string.Equals(section, "core", StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+
+				var key = line[..separator].Trim();
+				if (!string.Equals(key, "excludesfile", StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+
+				var value = line[(separator + 1)..].Trim().Trim('"');
+				if (value.StartsWith('~'))
+				{
+					var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+					value = value.Length > 1 && value[1] == '/'
+						? Path.Combine(home, value[2..])
+						: home;
+				}
+
+				// 相对路径的语义随 cwd 变，这里只接受绝对路径（git 文档也不推荐相对路径）。
+				return Path.IsPathRooted(value) ? value : null;
+			}
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			// 读不到全局配置就当没有：忽略规则缺失只会多列文件，不能因此让工具失败。
+		}
+
+		return null;
 	}
 
 	private static string? FindGitRoot(string directory)
@@ -217,10 +315,12 @@ public sealed class GitIgnore
 					break;
 				case '[':
 				{
-					var close = pattern.IndexOf(']', i + 1);
+					// gitignore 用 fnmatch 的字符类：'[!a]' 是取反，.NET 里要写成 '[^/a]'。
+					// 照原样抄进去会让 '!' 变成普通字符，整条规则的意思反过来。
+					var close = GlobSyntax.FindClassEnd(pattern, i + 1, pattern.Length);
 					if (close > i + 1)
 					{
-						builder.Append(pattern, i, close - i + 1);
+						GlobSyntax.AppendClass(builder, pattern, i + 1, close);
 						i = close;
 					}
 					else
@@ -487,15 +587,24 @@ public static class FileWalker
 
 	/// 是否是符号链接/重解析点。读不到属性时按「不进入」处理 —— 宁可少扫一点，也不要因为
 	/// 自指软链接把 grep/find 拖进无限递归。
+	/// 目录本身是「链接」才不跟随：符号链接与目录联接（junction）。
+	/// Windows 上可重解析点不只是链接——OneDrive 等云占位符也是，而它们是货真价实的目录，
+	/// 按「凡是 reparse point 都跳过」会把整片同步目录悄悄漏掉。LinkTarget 只对真正的链接返回非空。
 	private static bool IsReparsePoint(string path)
 	{
 		try
 		{
-			return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+			if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0)
+			{
+				return false;
+			}
+
+			// 拿不到链接目标（不是链接、或不是我们能解析的重解析点）就照常遍历。
+			return new DirectoryInfo(path).LinkTarget is not null;
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			return true;
+			return false;
 		}
 	}
 

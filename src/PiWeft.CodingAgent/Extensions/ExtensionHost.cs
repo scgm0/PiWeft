@@ -84,7 +84,8 @@ public sealed class ExtensionHost : IDisposable
 						text(definition.label || definition.name),
 						text(definition.description || ""),
 						definition.parameters && typeof definition.parameters === "object" ? JSON.stringify(definition.parameters) : "{}",
-						definition.execute);
+						definition.execute,
+						definition.constrainedSampling && typeof definition.constrainedSampling === "object" ? JSON.stringify(definition.constrainedSampling) : "");
 				},
 				registerCommand: function (name, second, third) {
 					var definition = commandDefinition(second, third);
@@ -434,6 +435,8 @@ public sealed class ExtensionHost : IDisposable
 			var label = args.At(1).AsString();
 			var description = args.At(2).AsString();
 			var parameters = ParseObject(args.At(3).AsString());
+			// 扩展也能像内置工具一样声明受约束采样；解析失败按「没声明」处理，不阻断注册。
+			var constrained = ParseConstrainedSampling(args.At(5).AsString());
 
 			// execute 函数留在 JS 侧按名字取（C# 不跨线程持有 JS 函数）。
 			engine.Invoke("piweftStoreTool", name, args.At(4));
@@ -443,6 +446,7 @@ public sealed class ExtensionHost : IDisposable
 				Label = label.Length > 0 ? label : name,
 				Description = description,
 				Parameters = parameters,
+				ConstrainedSampling = constrained,
 				Execute = invocation =>
 				{
 					// 代理线程把调用投到扩展线程上执行：Jint 引擎不是线程安全的。
@@ -750,6 +754,33 @@ public sealed class ExtensionHost : IDisposable
 		catch (JsonException)
 		{
 			return new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() };
+		}
+	}
+
+	/// 扩展工具的 <c>constrainedSampling</c>：只接受 pi 认得的两种形状
+	/// （<c>json_schema</c> 与 <c>grammar</c>），其余按「没声明」处理。
+	private static JsonNode? ParseConstrainedSampling(string json)
+	{
+		if (json.Length == 0)
+		{
+			return null;
+		}
+
+		try
+		{
+			if (JsonNode.Parse(json) is not JsonObject config ||
+				config["type"] is not JsonValue typeValue ||
+				!typeValue.TryGetValue<string>(out var type) ||
+				(type != PiWeft.Ai.ConstrainedSampling.JsonSchemaType && type != PiWeft.Ai.ConstrainedSampling.GrammarType))
+			{
+				return null;
+			}
+
+			return config;
+		}
+		catch (JsonException)
+		{
+			return null;
 		}
 	}
 

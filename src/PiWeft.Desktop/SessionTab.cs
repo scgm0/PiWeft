@@ -2016,11 +2016,14 @@ public sealed partial class SessionTab : IDisposable
 	/// 会话进行态（PiDeck respondingKind 同语义）。判定与措辞都在
 	/// <see cref="RespondingStatusPolicy"/>：只要这一轮还在跑就永远有一句可说，
 	/// 不再出现「完全没提示」的空窗（首轮发送后到首 token 之前就是这一段）。
-	private RespondingStatus ComposeStatus(IReadOnlyList<ChatEntry> rows, bool pendingRowVisible)
+	/// 本回合的一帧事实。状态条的措辞与尾部占位行都从这一份输入派生，
+	/// 两处不会各算一遍（否则每一试就多一次 O(n) 扫描，也容易走偏）；
+	/// 占位行是否真的显示要等这份输入出来才能定（见 <see cref="RespondingStatusPolicy.NeedsPendingRow"/>）。
+	private RespondingInput TurnState(IReadOnlyList<ChatEntry> rows, bool pendingRowVisible)
 	{
 		var retry = _chat.Retry;
 		var (liveTool, liveBody, liveThinking) = LiveActivity(rows);
-		return RespondingStatusPolicy.Compose(new RespondingInput(
+		return new RespondingInput(
 			TurnElapsedMs(),
 			TurnHasOutput(rows),
 			pendingRowVisible,
@@ -2031,15 +2034,14 @@ public sealed partial class SessionTab : IDisposable
 			retry is { Running: true },
 			retry?.Attempt ?? 0,
 			retry?.MaxAttempts ?? 0,
-			retry is { } scheduled ? RetrySecondsRemaining(scheduled.RetryAtUnixMs) : 0));
+			retry is { } scheduled ? RetrySecondsRemaining(scheduled.RetryAtUnixMs) : 0);
 	}
 
-	/// 预热期要不要在时间线尾部补一行「在等回复」的占位。条件是「屏幕上最后一行还是用户
-	/// 自己那条」且这一轮真的在等首 token —— 重试与压缩有自己的状态条文案，再挂一行
-	/// 「正在等第一句话」就是自相矛盾。
-	private bool PendingRowVisible(IReadOnlyList<ChatEntry> rows) =>
-		!TurnHasOutput(rows) && _filter.Length == 0 && rows.Count > 0 &&
-		_chat.Retry is not { Running: true } && !Session.IsCompacting;
+	/// 预热期要不要在时间线尾部补一行「在等回复」的占位。判定在
+	/// <see cref="RespondingStatusPolicy.NeedsPendingRow"/>：屏幕最后一行还是用户自己那条、
+	/// 且没有任何一行在流，才是真的在等首 token。过滤与「表里有没有行」是界面自己的事实。
+	private bool PendingRowVisible(in RespondingInput input) =>
+		RespondingStatusPolicy.NeedsPendingRow(input) && _filter.Length == 0;
 
 	/// 从最新条目向回找第一个仍在流式的活动。每帧都走，因此只看 O(1) 的长度与标记：
 	/// 读 <see cref="ChatEntry.Text"/> 会把整篇流式正文物化一遍。
@@ -2206,8 +2208,15 @@ public sealed partial class SessionTab : IDisposable
 		var busy = _sending || _chat.IsStreaming;
 		// 只要这一轮还在跑，状态条就一直在那儿：以前「没有流式行」直接不显示，
 		// 首轮发送后到首 token 之前那段最长的等待反而一片空白。
-		var pending = busy && PendingRowVisible(all);
-		var responding = busy ? ComposeStatus(all, pending) : (RespondingStatus?)null;
+		// 占位行是否显示变成本帧输入的一部分：它决定谁在报「本轮已 N 秒」。
+		var pending = false;
+		RespondingStatus? responding = null;
+		if (busy)
+		{
+			var state = TurnState(all, pendingRowVisible: false);
+			pending = all.Count > 0 && PendingRowVisible(state);
+			responding = RespondingStatusPolicy.Compose(pending ? state with { PendingRowVisible = true } : state);
+		}
 		_busyStatus = responding;
 		var kindChanged = responding?.Kind != _busyKind;
 		_busyKind = responding?.Kind;

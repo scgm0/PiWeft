@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Auth;
 
 using PiWeft.Ai.Json;
+using PiWeft.Ai.Utils;
 namespace PiWeft.Ai.Providers.OpenAi;
 
 /// ChatGPT Codex 后端（<c>openai-codex-responses</c>）的流式适配器。它使用 Responses 线格式，
@@ -165,7 +166,8 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			maxOutputTokens,
 			modelNameOverride: null,
 			store: false,
-			promptCacheKey: cacheKey));
+			promptCacheKey: cacheKey,
+			supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? true));
 
 		if (options.OnPayload is { } onPayload)
 		{

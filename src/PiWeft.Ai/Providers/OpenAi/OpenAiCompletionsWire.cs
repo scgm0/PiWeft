@@ -59,7 +59,7 @@ internal static class OpenAiCompletionsWire
 
 		if (tools.Count > 0)
 		{
-			WriteTools(writer, tools);
+			WriteTools(writer, tools, StrictSamplingFor(model));
 		}
 
 		if (options.Metadata?["toolChoice"] is JsonValue toolChoice && toolChoice.TryGetValue<string>(out var choice))
@@ -267,12 +267,17 @@ internal static class OpenAiCompletionsWire
 		writer.WriteEndObject();
 	}
 
-	internal static void WriteTools(Utf8JsonWriter writer, IReadOnlyList<Tool> tools)
+	/// 这个模型的工具是否带 <c>strict</c>。pi 对 OpenAI 兼容端点默认带上
+	/// （<c>compat.supportsStrictMode !== false</c>）；少数端点会拒绝未知字段，目录里显式关掉。
+	internal static bool StrictSamplingFor(Model model) => ModelCompat.FlagOr(model, "supportsStrictMode", true);
+
+	internal static void WriteTools(Utf8JsonWriter writer, IReadOnlyList<Tool> tools, bool supportsStrictMode)
 	{
 		writer.WritePropertyName("tools");
 		writer.WriteStartArray();
 		foreach (var tool in tools)
 		{
+			var strict = ConstrainedSampling.ResolveStrictJsonSchema(tool, supportsStrictMode);
 			writer.WriteStartObject();
 			writer.WriteString("type", "function");
 			writer.WritePropertyName("function");
@@ -280,7 +285,13 @@ internal static class OpenAiCompletionsWire
 			writer.WriteString("name", tool.Name);
 			writer.WriteString("description", tool.Description);
 			writer.WritePropertyName("parameters");
-			tool.Parameters.WriteTo(writer);
+			ConstrainedSampling.GetJsonSchemaToolParameters(tool, strict).WriteTo(writer);
+			if (supportsStrictMode)
+			{
+				// 只支持严格模式的端点不必看到这个字段；不支持的端点看到它会直接拒绝。
+				writer.WriteBoolean("strict", strict == true);
+			}
+
 			writer.WriteEndObject();
 			writer.WriteEndObject();
 		}

@@ -394,4 +394,47 @@ public sealed class ToolParityTests : IDisposable
 			Assert.Equal("hi", bash.StructuredContent!["output"]!.GetValue<string>());
 		}
 	}
+
+	[Fact]
+	public void FileAndShellToolsDeclarePreferStrictJsonSampling()
+	{
+		// pi 只给 read / bash / edit / write 声明严格 JSON schema；grep/find/ls 与 powershell 不声明。
+		var tools = BuiltinTools.Create("/tmp");
+		var byName = tools.ToDictionary(tool => tool.Tool.Name, tool => tool.Tool, StringComparer.Ordinal);
+
+		foreach (var name in new[] { "read", "bash", "edit", "write" })
+		{
+			Assert.True(byName[name].ConstrainedSampling is JsonObject config &&
+				config["type"]!.GetValue<string>() == ConstrainedSampling.JsonSchemaType &&
+				config["strict"]!.GetValue<string>() == "prefer", name);
+		}
+
+		foreach (var name in new[] { "grep", "find", "ls" })
+		{
+			Assert.Null(byName[name].ConstrainedSampling);
+		}
+
+		// 声明要跟着工具一起进 transcript：恢复会话后仍然按同一套严格规则发请求。
+		var declaration = byName["read"].ToDeclaration();
+		Assert.NotNull(declaration.ConstrainedSampling);
+		Assert.True(ConstrainedSampling.PrefersStrictJsonSchema(declaration));
+	}
+
+	[Fact]
+	public void StrictJsonSchemaIsAcceptableForEveryDeclaredTool()
+	{
+		// 声明了 prefer 的工具必须能被改写成严格版，否则等于白声明（每次都回落）。
+		foreach (var tool in BuiltinTools.Create("/tmp").Select(static builtin => builtin.Tool))
+		{
+			if (tool.ConstrainedSampling is null)
+			{
+				continue;
+			}
+
+			var strict = ConstrainedSampling.MakeStrictJsonSchema(tool.Parameters);
+			Assert.All(strict["required"]!.AsArray(), node => Assert.NotNull(node));
+			Assert.False(strict["additionalProperties"]!.GetValue<bool>());
+		}
+	}
+
 }
