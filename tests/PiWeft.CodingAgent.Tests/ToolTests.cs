@@ -119,7 +119,8 @@ public class ToolTests : IDisposable
 		}));
 
 		Assert.Equal("ALPHA\nbeta\nGAMMA\n", File.ReadAllText(Path.Combine(_root, "a.txt")));
-		Assert.Contains("--- a/a.txt", result.Details!["patch"]!.GetValue<string>());
+		Assert.Contains("--- a.txt", result.Details!["patch"]!.GetValue<string>());
+		Assert.Contains("+1 ALPHA", result.Details["diff"]!.GetValue<string>());
 		Assert.Equal(1, result.Details["firstChangedLine"]!.GetValue<int>());
 	}
 

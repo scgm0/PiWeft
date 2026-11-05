@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 
@@ -317,8 +318,8 @@ internal sealed class ExecutionProcessView
 	private Slot Group(string key, IReadOnlyList<ChatEntry> entries, bool running)
 	{
 		// 小组用内容驱动的栈：展开一行，组体就跟着长高（最高 300）。
-		// 步骤多到一屏放不下时改走虚拟化列表，此时内容必然超过 300，组体固定限高才不会因为
-		// ItemsControl 的估算行高停在折叠高度上。
+		// 步骤多到一屏放不下时改走虚拟化面板，此时内容必然超过 300，组体固定限高才不会因为
+		// 估算行高停在折叠高度上。
 		const int stackLimit = 24;
 		const double bodyMaxHeight = 300;
 		var members = entries;
@@ -327,11 +328,11 @@ internal sealed class ExecutionProcessView
 		// 折叠时把组体换成它：Expander.Content 不接受 null，用一个零高度占位保持「已展开才建树」。
 		var collapsedBody = new Border { Height = 0 };
 		Border? body = null;
-		ItemsControl? list = null;
+		VirtualRowsPanel<ChatEntry, Grid>? panel = null;
 		StackPanel? stack = null;
 		var stackEntries = new List<ChatEntry>();
 		var stackHosts = new List<Grid>();
-		// 组体的滚动视口：栈布局是外层 ScrollViewer，虚拟化时是 ItemsControl 内层视口。
+		// 组体的滚动视口：栈布局与虚拟化面板都直接持有一个 ScrollViewer。
 		ScrollViewer? viewport = null;
 		// 每个过程组各自持有追帧状态：一个视图里可能有多组（中间回复会把过程切成多段），
 		// 共用一份标志会让后一组的重夹/露出被前一组吞掉。
@@ -350,9 +351,11 @@ internal sealed class ExecutionProcessView
 		// A virtualized presenter may correct the viewport offset while a streaming row is
 		// remeasured. Reassert the pre-layout follow intent in the Render-stage settle.
 		var followAfterLayout = false;
-		// 流式思考/正文只原位更新已实现的那一行，不向虚拟化器发 Replace：
-		// Replace 会把该行已测高度作废成估算值，组体 extent 先缩后涨，看起来就是进度跳变。
+		// 流式思考/正文只原位更新已实现的那一行，不重建行：
+		// 重建会把该行已测高度作废成估算值，组体 extent 先缩后涨，看起来就是进度跳变。
 		var inPlaceRows = new List<int>();
+		// 内容未变（或可原位更新）的行：高度缓存按身份沿用，重排时由面板补偿坐标系平移。
+		var keptRows = new List<int>();
 		// 组头与 PiDeck 过程组同构：类别图标 + 主文案 + 「·」+ 等宽实时详情；运行时图标走强调色。
 		var icon = AppIcons.Icon("terminal", AppStyles.RoleSubtle, 13);
 		var label = new TextBlock().FontSize(AppTheme.FontSizeCaption).SubtleText()
@@ -447,27 +450,33 @@ internal sealed class ExecutionProcessView
 		void BuildVirtualBody()
 		{
 			rows = new StepRows();
-			viewport = null;
-			list = new ItemsControl().VariableHeightPresenter().ItemsSource(rows)
-				.ItemHeight(28).ItemPadding(Thickness.Zero).BorderThickness(0)
-				.Background(AppTheme.Transparent).Padding(Thickness.Zero)
-				// 能走到虚拟化说明行数已经超过一屏；固定组体高度，滚轮与追帧都只作用在内层。
-				.Height(bodyMaxHeight);
-			list.ItemTemplate = new DelegateTemplate<ChatEntry>(
-				_ => StepRowHost(),
-				(host, entry, index, _) => BindStepRow((Grid)host, entry, index),
-				(host, _, _, _) => UnbindStep((Grid)host, key));
-			((IVisualTreeHost)list).VisitChildren(child =>
+			rows.Set(members, inPlaceRows, keptRows, out _);
+			// 行数据归 StepRows 所有（它知道哪些行只是内容变化）；面板只负责按高度虚拟化。
+			// 捕获局部副本：DestroyBody 会把 rows 置空，面板的 count/itemAt 委托不能跟着失效。
+			var source = rows;
+			panel = new VirtualRowsPanel<ChatEntry, Grid>(
+				() => source.Count,
+				source.ItemAt,
+				StepRowHost,
+				(host, entry, index) => BindStepRow(host, entry, index),
+				host => UnbindStep(host, key))
 			{
-				viewport ??= child as ScrollViewer;
-				return viewport is null;
-			});
+				Key = static entry => (object?)entry.EntryId ?? entry,
+				Same = ConversationTimeline.SameEntry,
+				// 折叠的步骤行基本是固定高度（图标 + 一行摘要），展开的那几行由实测校正。
+				DefaultEstimate = 32,
+				// 跟底时（组体停在末尾、看的是最新步骤）不能让「锚点上方长高」把偏移拉走：
+				// 旧 presenter 也是 follow-end 优先于锚点校正。浏览态才补偿坐标系平移。
+				PreserveReadingAnchor = () => viewport is null || SmoothScroll.Find(viewport) is not { IsFollowingGrowth: true },
+			};
 			// 组体与整段过程一样是「可滚动的小窗」：内层能滚就滚内层，内层到边界（或内容装得下）
 			// 才把滚轮交还外层会话——由 SmoothScroll 在视口边界上交接（ScrollCascade）。
-			viewport?.MaxHeight(bodyMaxHeight).SmoothScrolling().NoHorizontalScroll();
-			if (viewport is not null) SmoothScroll.For(viewport).CompensateLayoutCorrections = true;
-			CompleteBody(list);
-			rows.Set(members);
+			// 能走到虚拟化说明行数已经超过一屏；固定组体高度，滚轮与追帧都只作用在内层。
+			viewport = new ScrollViewer().Content(panel).MaxHeight(bodyMaxHeight)
+				.SmoothScrolling().NoHorizontalScroll();
+			panel.Scroll = viewport;
+			SmoothScroll.For(viewport).CompensateLayoutCorrections = true;
+			CompleteBody(viewport);
 		}
 
 		void CompleteBody(FrameworkElement content)
@@ -666,19 +675,23 @@ internal sealed class ExecutionProcessView
 				followAfterLayout = false;
 				_pendingClamps.Remove(FollowAfterLayout);
 			}
-			if (list is not null)
+			if (panel is not null && rows is not null)
 			{
 				inPlaceRows.Clear();
-				rows?.Set(members, inPlaceRows);
-				// 原位更新的行不经过 ItemsChange，因此虚拟化器不会重新绑定它们；
-				// 这里直接更新已实现的宿主，保留各自的已测高度。
+				keptRows.Clear();
+				var anchor = panel.CaptureShiftAnchor();
+				var previous = rows.Set(members, inPlaceRows, keptRows, out var changed);
+				// 内容与行数都没变时跳过：ApplyRows 会作废测量，流式期每帧都做等于白跑一遍布局。
+				if (changed) panel.ApplyRows(previous, rows.Count, keptRows, anchor);
+				// 原位更新的行不重建，但要让它们的子树重新测量；面板 Arrange 会重绑整段实现范围，
+				// 这里补视口外的焦点固定行。
 				for (var i = 0; i < inPlaceRows.Count; i++)
 				{
 					var index = inPlaceRows[i];
 					if (index >= members.Count || RealizedRow(index) is not { } row) continue;
 
 					ConversationTimeline.InvalidateMeasureTree(row);
-					BindStepRow(row, members[index], index);
+					if (viewport is null || !row.IsDescendantOf(viewport)) BindStepRow(row, members[index], index);
 				}
 			}
 			else SyncStackRows();
@@ -690,20 +703,14 @@ internal sealed class ExecutionProcessView
 			}
 		}
 
-		Grid? RealizedRow(int index)
-		{
-			if (list is null) return null;
-			// ItemsControl owns the index→container map. Walking the visual tree here allocated a
-			// List and closures for every in-place streaming row; TryGetContainer is the direct
-			// O(1) lookup from the latest MewUI host API.
-			return list.TryGetContainer(index, out var container) ? container.Content as Grid : null;
-		}
+		// 面板持有 index→行宿主的映射，原位更新时直接取，不用遍历可视化树。
+		Grid? RealizedRow(int index) => panel?.HostAt(index);
 
 		void InvalidateRow(Grid row, int index, bool preservePreview, bool collapseFromPinned = false)
 		{
 			if (body is null) return;
 			ConversationTimeline.InvalidateMeasureTree(row);
-			list?.InvalidateMeasure();
+			panel?.InvalidateMeasure();
 			// 栈布局靠内容测量更新组体高度，虚拟化列表靠 arrange 重测行高并重算 extent。
 			KickBodyLayout();
 			if (!preservePreview && !collapseFromPinned)
@@ -828,7 +835,8 @@ internal sealed class ExecutionProcessView
 			if (body is not { } content) return;
 			if (viewport is { } retired) _bodyViewports.Remove(retired);
 			body = null;
-			list = null;
+			panel?.DisposePanel();
+			panel = null;
 			stack = null;
 			stackEntries.Clear();
 			stackHosts.Clear();
@@ -888,6 +896,8 @@ internal sealed class ExecutionProcessView
 	private void BindStep(Grid host, ChatEntry entry, int index, string groupKey, ScrollViewer? bodyViewport,
 		Action<bool, Expander> layoutChanged)
 	{
+		// 行宿主带着当前下标：面板按需回收/复用，宿主本身不记录身份；测试与诊断靠它定位行。
+		host.Tag = index;
 		var icon = host.Children.Count > 0 && host.Children[0] is Image existingIcon
 			? existingIcon
 			: AppIcons.Icon(StepIcon.IconFor(entry), StepIcon.RoleFor(entry), 14)
@@ -1134,120 +1144,92 @@ internal sealed class ExecutionProcessView
 		};
 	}
 
-	private sealed class StepRows : IItemsView
+	private sealed class StepRows
 	{
 		private readonly List<ChatEntry> _items = [];
+		private ChatEntry[] _snapshot = [];
 
 		public int Count => _items.Count;
-		public Func<object?, object?>? KeySelector { get; } =
-			static item => item is ChatEntry entry ? (object?)entry.EntryId ?? entry : null;
-		public event Action<ItemsChange>? Changed;
 
-		public object GetItem(int index) => _items[index];
-		public string GetText(int index) => string.Empty;
-		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
+		public ChatEntry? ItemAt(int index) => (uint)index < (uint)_items.Count ? _items[index] : null;
 
 		public void Reset() => _items.Clear();
 
-		/// 更新步骤列表。<paramref name="inPlace"/> 收集只原位更新、不向虚拟化器发通知的索引；
-		/// 调用方随后直接重绑这些已实现行的内容。
-		public void Set(IReadOnlyList<ChatEntry> items, List<int>? inPlace = null)
+		/// <summary>
+		/// 更新步骤列表。<paramref name="inPlace"/> 收集只原位更新、不重建视图的索引；
+		/// <paramref name="kept"/> 收集高度可以沿用的索引（内容未变或原位更新）。
+		/// 返回改动前的快照，供面板按行身份迁移高度；<paramref name="changed"/> 为 false 时
+		/// 内容与行数都没变，调用方可以整帧跳过面板更新。
+		/// </summary>
+		public RowsSnapshot<ChatEntry> Set(IReadOnlyList<ChatEntry> items, List<int> inPlace, List<int> kept, out bool changed)
 		{
-			inPlace?.Clear();
+			inPlace.Clear();
+			kept.Clear();
+			var previous = Snapshot();
 			var previousCount = _items.Count;
-			if (previousCount == 0)
+			changed = false;
+			if (previousCount == items.Count)
 			{
-				_items.AddRange(items);
-				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, items.Count));
-				return;
-			}
-			if (items.Count == previousCount)
-			{
-				// 只重绑真正变化的连续行段：把“第一处差异一直到末尾”整段作废会让
-				// 后面未变化行的高度缓存回落成估算值，组体的滚动范围随之抖动。
-				var runStart = -1;
 				for (var index = 0; index < items.Count; index++)
 				{
-					var previous = _items[index];
+					var current = _items[index];
 					var next = items[index];
-					if (ConversationTimeline.SameEntry(previous, next))
+					if (ConversationTimeline.SameEntry(current, next))
 					{
-						if (runStart >= 0)
-						{
-							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, index - runStart));
-							runStart = -1;
-						}
+						kept.Add(index);
 						continue;
 					}
-
+					changed = true;
 					_items[index] = next;
-					if (CanUpdateInPlace(previous, next))
-					{
-						inPlace?.Add(index);
-						if (runStart >= 0)
-						{
-							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, index - runStart));
-							runStart = -1;
-						}
-					}
-					else if (runStart < 0)
-					{
-						runStart = index;
-					}
+					// 工具/流式助手步骤有持久视图，能原地吸收新的输出；其余改变内容时要重建。
+					if (CanUpdateInPlace(current, next)) inPlace.Add(index);
+					if (CanUpdateInPlace(current, next) || ConversationTimeline.SameMetadataOnly(current, next)) kept.Add(index);
 				}
-				if (runStart >= 0) Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, items.Count - runStart));
-				return;
+				return previous;
+			}
+
+			changed = true;
+			var common = Math.Min(previousCount, items.Count);
+			for (var index = 0; index < common; index++)
+			{
+				var current = _items[index];
+				var next = items[index];
+				_items[index] = next;
+				if (ConversationTimeline.SameEntry(current, next))
+				{
+					kept.Add(index);
+					continue;
+				}
+				if (CanUpdateInPlace(current, next) || ConversationTimeline.SameMetadataOnly(current, next))
+				{
+					if (CanUpdateInPlace(current, next)) inPlace.Add(index);
+					kept.Add(index);
+				}
 			}
 			if (items.Count > previousCount)
 			{
-				// 追加新步骤时，前缀里也可能同时有流式行在增长。先把前缀变化拆成
-				// 原位更新 / 局部 Replace，最后再发 Add：虚拟化器的 Add 会先扩高
-				// 度缓存并重映射已实现行，若先发 Replace，它会因计数未同步而整表
-				// ResetHeights，把前面所有已测行高打回估算值。
-				var replacements = new List<ItemsChange>();
-				var runStart = -1;
-				for (var index = 0; index < previousCount; index++)
-				{
-					var previous = _items[index];
-					var next = items[index];
-					if (ConversationTimeline.SameEntry(previous, next)) { Flush(index); continue; }
-
-					_items[index] = next;
-					if (CanUpdateInPlace(previous, next))
-					{
-						inPlace?.Add(index);
-						Flush(index);
-					}
-					else if (runStart < 0)
-					{
-						runStart = index;
-					}
-				}
-				Flush(previousCount);
-
 				for (var index = previousCount; index < items.Count; index++) _items.Add(items[index]);
-				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Add, previousCount, items.Count - previousCount));
-				foreach (var replacement in replacements) Changed?.Invoke(replacement);
-				return;
-
-				void Flush(int end)
-				{
-					if (runStart < 0) return;
-					replacements.Add(new ItemsChange(ItemsChangeKind.Replace, runStart, end - runStart));
-					runStart = -1;
-				}
 			}
-			_items.Clear();
-			_items.AddRange(items);
-			Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, items.Count));
+			else if (items.Count < previousCount)
+			{
+				_items.RemoveRange(items.Count, previousCount - items.Count);
+			}
+			return previous;
+		}
+
+		/// <summary>复用同一块快照缓冲：组体行数不多，但流式期每帧都会走到这里。</summary>
+		private RowsSnapshot<ChatEntry> Snapshot()
+		{
+			if (_snapshot.Length < _items.Count) _snapshot = new ChatEntry[Math.Max(8, _items.Count)];
+			CollectionsMarshal.AsSpan(_items).CopyTo(_snapshot);
+			return new RowsSnapshot<ChatEntry>(_snapshot, _items.Count);
 		}
 
 		/// 流式助手步骤有持久视图，能原地吸收新的思考/正文，包括“流式行 → 落盘后的最终行”
 		/// （两者的 EntryId 会从临时的 live-assistant 变成会话条目 id，但时间戳与图片不变）。
-		/// 其余步骤改变内容时仍要重绑：工具行的摘要与展开体在创建时固定，不能靠 Update 追加。
+		/// 工具步骤的流式输出同理：同一次调用每来一段就换一条 ChatEntry，只有正文在长；
+		/// 表头只依赖参数（见 ToolMessageView.Update），原地重绑就能保住行高与秒表。
 		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
-			// 工具步骤的流式输出：同一次调用每来一段就换一条 ChatEntry，只有正文在长；
-			// 表头只依赖参数（见 ToolMessageView.Update），原地重绑才能保住行高与秒表。
 			(current.Role == ChatRole.Tool && current.IsStreaming && next.Role == ChatRole.Tool &&
 				next.IsStreaming && current.ToolCallId == next.ToolCallId) ||
 			(current.Role == ChatRole.Assistant && current.IsStreaming && next.Role == ChatRole.Assistant &&

@@ -46,7 +46,7 @@ internal sealed class ConversationScroll : IDisposable
 		_smooth = SmoothScroll.For(view);
 		_showLatest = showLatest;
 		_timeline = timeline;
-		if (timeline is not null) timeline.FollowingProvider = () => Following;
+		if (timeline is not null) timeline.SetFollowingProvider(() => Following);
 		_lastOffset = view.VerticalOffset;
 		_lastMaximum = _smooth.MaxVerticalOffset;
 		view.ScrollChanged += OnScrollChanged;

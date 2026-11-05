@@ -14,6 +14,8 @@ public sealed partial class CliRunner : IUiHost
 
 	bool IUiHost.HasUi => true;
 
+	bool IUiHost.SupportsPiDeckWidgets => true;
+
 	async Task<string?> IUiHost.InputAsync(UiInputRequest request, CancellationToken cancellationToken)
 	{
 		var response = await SendUiRequestAsync(

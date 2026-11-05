@@ -26,6 +26,9 @@ public static class TodoTool
 {
 	public const string EntryType = "pi-deck-todo";
 
+	/// 压缩/分支摘要后补注计划用的 custom message 类型（与 PiDeck 的 pi-deck-todo-brief 同名）。
+	public const string BriefEntryType = "pi-deck-todo-brief";
+
 	public const string Name = "todo";
 
 	private const int MaxTextLength = 1000;
@@ -36,7 +39,7 @@ public static class TodoTool
 	private static readonly string[] Statuses = ["pending", "in_progress", "completed"];
 	private static readonly string[] Actions = ["list", "add", "update", "delete", "replace", "restore", "clear"];
 
-	public static BuiltinTool Create(Func<SessionManager?> session) => new(
+	public static BuiltinTool Create(Func<SessionManager?> session, Action<TodoState>? changed = null) => new(
 		new AgentTool
 		{
 			Name = Name,
@@ -45,7 +48,7 @@ public static class TodoTool
 				"Manage the current todo plan. Actions: list, add, update (id + status/text), delete (id, removing a single item), " +
 				"replace (atomically begin a new plan), restore (undo the latest replacement), and clear (intentionally remove it).",
 			Parameters = Parameters(),
-			Execute = invocation => Task.FromResult(Execute(session(), invocation)),
+			Execute = invocation => Task.FromResult(Execute(session(), invocation, changed)),
 		},
 		"List or change the current todo plan (list / add / update / delete / replace / restore / clear)",
 		[
@@ -96,7 +99,10 @@ public static class TodoTool
 		["additionalProperties"] = false,
 	};
 
-	private static AgentToolResult Execute(SessionManager? session, AgentToolInvocation invocation)
+	private static AgentToolResult Execute(
+		SessionManager? session,
+		AgentToolInvocation invocation,
+		Action<TodoState>? changed)
 	{
 		if (session is null)
 		{
@@ -114,6 +120,7 @@ public static class TodoTool
 		if (outcome.Changed)
 		{
 			session.AppendCustom(EntryType, Encode(outcome.State));
+			changed?.Invoke(outcome.State);
 		}
 
 		var text = new StringBuilder(ResultText(action, outcome));
@@ -594,6 +601,68 @@ public static class TodoTool
 
 	private static string CountSuffix(int count) =>
 		count == 1 ? " (1 todo in plan)" : $" ({count} todos in plan)";
+
+	/// PiDeck 的 todo widget 行协议：首行是计划身份元数据，后续 `☑/◐/☐ #id text`。
+	public static IReadOnlyList<string> WidgetLines(TodoPlan plan, string? leafId)
+	{
+		var identity = leafId is { Length: > 0 }
+			? $"{Uri.EscapeDataString(leafId)}:{plan.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+			: plan.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+		var lines = new List<string>(plan.Items.Count + 1)
+		{
+			$"[[pid:todo-plan:{identity}]]",
+		};
+		foreach (var item in plan.Items)
+		{
+			lines.Add($"{StatusMarker(item.Status)} #{item.Id} {item.Text}");
+		}
+
+		return lines;
+	}
+
+	private static string StatusMarker(string status) => status switch
+	{
+		"completed" => "☑",
+		"in_progress" => "◐",
+		_ => "☐",
+	};
+
+	/// 压缩/分支摘要之后，如果计划快照已经落在被摘要掉的历史里，就需要补注一次全文。
+	public static bool NeedsBriefAfterCompaction(SessionManager session)
+	{
+		var branch = session.GetBranch();
+		var lastInvalidating = -1;
+		for (var index = 0; index < branch.Count; index++)
+		{
+			if (branch[index] is CompactionEntry or BranchSummaryEntry)
+			{
+				lastInvalidating = index;
+			}
+		}
+
+		if (lastInvalidating < 0)
+		{
+			return false;
+		}
+
+		for (var index = lastInvalidating + 1; index < branch.Count; index++)
+		{
+			if (branch[index] is CustomEntry { CustomType: EntryType } or CustomMessageEntry { CustomType: BriefEntryType })
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	public static string BriefText(TodoPlan plan) =>
+		$"[CURRENT TODO PLAN #{plan.Id}]\n" +
+		"This is the current plan, not a history-based task boundary. Continue it with add/update while it still applies. " +
+		"Remove one obsolete item with action=delete and its id. For a new or materially re-scoped request, call action=replace with the complete new plan even if old items are unfinished. " +
+		"Do not clear because items are complete or because a new user message arrived. Use action=restore after an accidental replacement. " +
+		"If an id is uncertain, call action=list first.\n\n" +
+		FormatPlan(plan);
 
 	public static string FormatPlan(TodoPlan? plan)
 	{

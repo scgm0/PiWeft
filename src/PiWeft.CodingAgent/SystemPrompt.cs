@@ -125,12 +125,50 @@ public static class SystemPrompt
 	public static string? RenderRules(IReadOnlyList<BuiltinTool> tools, IReadOnlyList<string> extraGuidelines)
 	{
 		var guidelines = new List<string>();
-		foreach (var tool in tools)
+		var seen = new HashSet<string>(StringComparer.Ordinal);
+
+		void Add(string guideline)
 		{
-			guidelines.AddRange(tool.Guidelines);
+			var normalized = guideline.Trim();
+			if (normalized.Length > 0 && seen.Add(normalized))
+			{
+				guidelines.Add(normalized);
+			}
 		}
 
-		guidelines.AddRange(extraGuidelines);
+		// pi 1.5 在未声明 grep/find/ls 时自动提示用 shell 做文件操作。
+		var names = tools.Select(static tool => tool.Tool.Name).ToHashSet(StringComparer.Ordinal);
+		var hasBash = names.Contains("bash");
+		var hasPowerShell = names.Contains("powershell");
+		if ((hasBash || hasPowerShell) && !names.Contains("grep") && !names.Contains("find") && !names.Contains("ls"))
+		{
+			if (hasBash && hasPowerShell)
+			{
+				Add("Use bash or PowerShell for file operations like listing, searching, and finding files");
+			}
+			else if (hasPowerShell)
+			{
+				Add("Use PowerShell for file operations like listing, searching, and finding files");
+			}
+			else
+			{
+				Add("Use bash for file operations like ls, rg, find");
+			}
+		}
+
+		foreach (var tool in tools)
+		{
+			foreach (var guideline in tool.Guidelines)
+			{
+				Add(guideline);
+			}
+		}
+
+		foreach (var guideline in extraGuidelines)
+		{
+			Add(guideline);
+		}
+
 		if (guidelines.Count == 0)
 		{
 			return null;

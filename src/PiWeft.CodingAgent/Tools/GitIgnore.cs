@@ -13,22 +13,84 @@ public sealed class GitIgnore
 
 	public static GitIgnore Empty { get; } = new();
 
-	public static GitIgnore FromDirectory(string directory)
+	public static GitIgnore FromDirectory(string directory) =>
+		FromFile(Path.Combine(directory, ".gitignore"), directory);
+
+	public static GitIgnore FromFile(string path, string baseDirectory)
 	{
-		var path = Path.Combine(directory, ".gitignore");
 		if (!File.Exists(path))
 		{
-			return Empty;
+			// 不能返回共享的 Empty：调用方会用 AddRange 把 .ignore/.rgignore 叠加进来。
+			return new GitIgnore();
 		}
 
 		try
 		{
-			return Parse(File.ReadAllLines(path), directory);
+			return Parse(File.ReadAllLines(path), baseDirectory);
 		}
-		catch (IOException)
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return new GitIgnore();
+		}
+	}
+
+	/// 搜索起点在子目录时，ripgrep/fd 仍会应用父目录的 ignore 文件。这里把 git 仓库根
+	/// （没有仓库则到文件系统根）到搜索目录父级的规则合并成一份，Walker 再叠加各层本地规则。
+	public static GitIgnore ForSearchRoot(string root)
+	{
+		var directory = Directory.Exists(root)
+			? Path.GetFullPath(root)
+			: Path.GetDirectoryName(Path.GetFullPath(root)) ?? Path.GetFullPath(root);
+		if (directory.Length == 0)
 		{
 			return Empty;
 		}
+
+		var gitRoot = FindGitRoot(directory);
+		var stop = gitRoot ?? Path.GetPathRoot(directory) ?? directory;
+		var chain = new List<string>();
+		for (var current = directory; current is { Length: > 0 }; current = Path.GetDirectoryName(current))
+		{
+			if (string.Equals(Path.GetFullPath(current), Path.GetFullPath(directory), StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			chain.Add(current);
+			if (string.Equals(Path.GetFullPath(current), Path.GetFullPath(stop), StringComparison.Ordinal))
+			{
+				break;
+			}
+		}
+
+		var combined = new GitIgnore();
+		for (var index = chain.Count - 1; index >= 0; index--)
+		{
+			var current = chain[index];
+			combined.AddRange(FromFile(Path.Combine(current, ".gitignore"), current));
+			combined.AddRange(FromFile(Path.Combine(current, ".ignore"), current));
+			combined.AddRange(FromFile(Path.Combine(current, ".rgignore"), current));
+			if (gitRoot is not null &&
+				string.Equals(Path.GetFullPath(current), Path.GetFullPath(gitRoot), StringComparison.Ordinal))
+			{
+				combined.AddRange(FromFile(Path.Combine(current, ".git", "info", "exclude"), current));
+			}
+		}
+
+		return combined;
+	}
+
+	private static string? FindGitRoot(string directory)
+	{
+		for (var current = directory; current is { Length: > 0 }; current = Path.GetDirectoryName(current))
+		{
+			if (Directory.Exists(Path.Combine(current, ".git")))
+			{
+				return current;
+			}
+		}
+
+		return null;
 	}
 
 	public static GitIgnore Parse(IEnumerable<string> lines, string baseDirectory)
@@ -153,6 +215,32 @@ public sealed class GitIgnore
 				case '?':
 					builder.Append("[^/]");
 					break;
+				case '[':
+				{
+					var close = pattern.IndexOf(']', i + 1);
+					if (close > i + 1)
+					{
+						builder.Append(pattern, i, close - i + 1);
+						i = close;
+					}
+					else
+					{
+						builder.Append("\\[");
+					}
+
+					break;
+				}
+				case '\\':
+					if (i + 1 < pattern.Length)
+					{
+						builder.Append(Regex.Escape(pattern[++i].ToString()));
+					}
+					else
+					{
+						builder.Append("\\\\");
+					}
+
+					break;
 				default:
 					builder.Append(Regex.Escape(c.ToString()));
 					break;
@@ -163,9 +251,15 @@ public sealed class GitIgnore
 
 		try
 		{
+			var options = RegexOptions.CultureInvariant | RegexOptions.Compiled;
+			if (OperatingSystem.IsWindows())
+			{
+				options |= RegexOptions.IgnoreCase;
+			}
+
 			return new Regex(
 				builder.ToString(),
-				RegexOptions.CultureInvariant | RegexOptions.Compiled,
+				options,
 				TimeSpan.FromSeconds(2));
 		}
 		catch (ArgumentException)
@@ -191,7 +285,7 @@ public sealed class GitIgnore
 
 public static class FileWalker
 {
-	public static IEnumerable<string> EnumerateFiles(string root, bool skipHidden = false)
+	public static IEnumerable<string> EnumerateFiles(string root, bool skipHidden = false, bool includeGitDirectory = false)
 	{
 		if (!Directory.Exists(root))
 		{
@@ -199,13 +293,19 @@ public static class FileWalker
 		}
 
 		var stack = new List<GitIgnore>();
-		foreach (var file in WalkFiles(root, stack, skipHidden))
+		var inherited = GitIgnore.ForSearchRoot(root);
+		if (inherited.Count > 0)
+		{
+			stack.Add(inherited);
+		}
+
+		foreach (var file in WalkFiles(root, stack, skipHidden, includeGitDirectory))
 		{
 			yield return file;
 		}
 	}
 
-	public static IEnumerable<string> EnumerateEntries(string root)
+	public static IEnumerable<string> EnumerateEntries(string root, bool includeGitDirectory = false)
 	{
 		if (!Directory.Exists(root))
 		{
@@ -213,16 +313,24 @@ public static class FileWalker
 		}
 
 		var stack = new List<GitIgnore>();
-		foreach (var entry in WalkEntries(root, stack))
+		var inherited = GitIgnore.ForSearchRoot(root);
+		if (inherited.Count > 0)
+		{
+			stack.Add(inherited);
+		}
+
+		foreach (var entry in WalkEntries(root, stack, includeGitDirectory))
 		{
 			yield return entry;
 		}
 	}
 
-	private static IEnumerable<string> WalkFiles(string directory, List<GitIgnore> stack, bool skipHidden)
+	private static IEnumerable<string> WalkFiles(string directory, List<GitIgnore> stack, bool skipHidden, bool includeGitDirectory)
 	{
 		var pushed = false;
 		var local = GitIgnore.FromDirectory(directory);
+		local.AddRange(GitIgnore.FromFile(Path.Combine(directory, ".ignore"), directory));
+		local.AddRange(GitIgnore.FromFile(Path.Combine(directory, ".rgignore"), directory));
 		if (local.Count > 0)
 		{
 			stack.Add(local);
@@ -265,7 +373,7 @@ public static class FileWalker
 			foreach (var child in directories)
 			{
 				var name = Path.GetFileName(child);
-				if (string.Equals(name, ".git", StringComparison.Ordinal))
+				if (!includeGitDirectory && string.Equals(name, ".git", StringComparison.Ordinal))
 				{
 					continue;
 				}
@@ -286,7 +394,7 @@ public static class FileWalker
 					continue;
 				}
 
-				foreach (var file in WalkFiles(child, stack, skipHidden))
+				foreach (var file in WalkFiles(child, stack, skipHidden, includeGitDirectory))
 				{
 					yield return file;
 				}
@@ -301,10 +409,12 @@ public static class FileWalker
 		}
 	}
 
-	private static IEnumerable<string> WalkEntries(string directory, List<GitIgnore> stack)
+	private static IEnumerable<string> WalkEntries(string directory, List<GitIgnore> stack, bool includeGitDirectory)
 	{
 		var pushed = false;
 		var local = GitIgnore.FromDirectory(directory);
+		local.AddRange(GitIgnore.FromFile(Path.Combine(directory, ".ignore"), directory));
+		local.AddRange(GitIgnore.FromFile(Path.Combine(directory, ".rgignore"), directory));
 		if (local.Count > 0)
 		{
 			stack.Add(local);
@@ -333,7 +443,7 @@ public static class FileWalker
 			{
 				var isDirectory = Directory.Exists(child);
 				var name = Path.GetFileName(child);
-				if (string.Equals(name, ".git", StringComparison.Ordinal))
+				if (!includeGitDirectory && string.Equals(name, ".git", StringComparison.Ordinal))
 				{
 					continue;
 				}
@@ -360,7 +470,7 @@ public static class FileWalker
 					continue;
 				}
 
-				foreach (var entry in WalkEntries(child, stack))
+				foreach (var entry in WalkEntries(child, stack, includeGitDirectory))
 				{
 					yield return entry;
 				}

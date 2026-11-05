@@ -12,7 +12,8 @@ public static class SearchTools
 	{
 		Name = "ls",
 		Label = "ls",
-		Description = "List directory contents. Directories are shown with a trailing slash.",
+		Description =
+			$"List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or {Truncate.DefaultMaxBytes / 1024}KB (whichever is hit first).",
 		Parameters = new JsonObject
 		{
 			["type"] = "object",
@@ -27,53 +28,95 @@ public static class SearchTools
 
 	private static AgentToolResult ListDirectory(string cwd, AgentToolInvocation invocation)
 	{
+		ThrowIfAborted(invocation.CancellationToken);
 		var path = JsonArgs.String(invocation.Arguments["path"]);
-		var limit = FileTools.OptionalInt(invocation, "limit") ?? 500;
+		var limit = Math.Max(1, FileTools.OptionalInt(invocation, "limit") ?? 500);
 		var directory = path is null ? cwd : ToolPaths.ResolveToCwd(path, cwd);
 
 		if (!Directory.Exists(directory))
 		{
-			throw new DirectoryNotFoundException($"Directory not found: {path ?? directory}");
+			if (File.Exists(directory))
+			{
+				throw new InvalidOperationException($"Not a directory: {directory}");
+			}
+
+			throw new InvalidOperationException($"Path not found: {directory}");
 		}
 
 		var entries = new List<string>();
-		foreach (var child in Directory.EnumerateDirectories(directory))
+		try
 		{
-			var name = Path.GetFileName(child);
-			if (name.Length > 0)
+			foreach (var child in Directory.EnumerateDirectories(directory))
 			{
-				entries.Add(name + "/");
+				var name = Path.GetFileName(child);
+				if (name.Length > 0)
+				{
+					entries.Add(name + "/");
+				}
+			}
+
+			foreach (var child in Directory.EnumerateFiles(directory))
+			{
+				var name = Path.GetFileName(child);
+				if (name.Length > 0)
+				{
+					entries.Add(name);
+				}
 			}
 		}
-
-		foreach (var child in Directory.EnumerateFiles(directory))
+		catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
 		{
-			var name = Path.GetFileName(child);
-			if (name.Length > 0)
-			{
-				entries.Add(name);
-			}
+			throw new InvalidOperationException($"Cannot read directory: {exception.Message}", exception);
 		}
 
-		entries.Sort(StringComparer.Ordinal);
+		// pi 的 ls 用大小写不敏感排序，而不是 Ordinal（B.txt 不会排到 a.txt 前面）。
+		entries.Sort(StringComparer.OrdinalIgnoreCase);
 
 		if (entries.Count == 0)
 		{
 			return new AgentToolResult { Content = [new TextContent { Text = "(empty directory)" }] };
 		}
 
-		var truncated = entries.Count > limit;
-		var shown = truncated ? entries.GetRange(0, limit) : entries;
-		var output = string.Join("\n", shown);
-		if (truncated)
+		var entryLimitReached = entries.Count > limit;
+		var shown = entryLimitReached ? entries.GetRange(0, limit) : entries;
+		var rawOutput = string.Join("\n", shown);
+		var truncation = Truncate.Head(rawOutput, maxLines: int.MaxValue);
+		var output = truncation.Content;
+		var notices = new List<string>(2);
+		if (entryLimitReached)
 		{
-			output += $"\n\n[Showing {limit} of {entries.Count} entries. Use a smaller path or a larger limit.]";
+			notices.Add($"{limit} entries limit reached. Use limit={limit * 2} for more");
+		}
+
+		if (truncation.Truncated)
+		{
+			notices.Add($"{Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit reached");
+		}
+
+		if (notices.Count > 0)
+		{
+			output += $"\n\n[{string.Join(". ", notices)}]";
+		}
+
+		var details = new JsonObject
+		{
+			["path"] = directory,
+			["entries"] = entries.Count,
+		};
+		if (entryLimitReached)
+		{
+			details["entryLimitReached"] = limit;
+		}
+
+		if (truncation.Truncated)
+		{
+			details["truncation"] = truncation.ToJson();
 		}
 
 		return new AgentToolResult
 		{
 			Content = [new TextContent { Text = output }],
-			Details = new JsonObject { ["path"] = directory, ["entries"] = entries.Count },
+			Details = details,
 		};
 	}
 
@@ -81,7 +124,8 @@ public static class SearchTools
 	{
 		Name = "find",
 		Label = "find",
-		Description = "Find files by glob pattern. Respects .gitignore.",
+		Description =
+			$"Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or {Truncate.DefaultMaxBytes / 1024}KB (whichever is hit first).",
 		Parameters = new JsonObject
 		{
 			["type"] = "object",
@@ -104,33 +148,36 @@ public static class SearchTools
 	{
 		var pattern = FileTools.RequiredString(invocation, "pattern");
 		var path = JsonArgs.String(invocation.Arguments["path"]);
-		var limit = FileTools.OptionalInt(invocation, "limit") ?? 1000;
+		var limit = Math.Max(1, FileTools.OptionalInt(invocation, "limit") ?? 1000);
 		var root = path is null ? cwd : ToolPaths.ResolveToCwd(path, cwd);
 
 		if (!Directory.Exists(root))
 		{
-			throw new DirectoryNotFoundException($"Directory not found: {path ?? root}");
+			throw new InvalidOperationException($"Path not found: {root}");
 		}
 
 		var regex = GlobToRegex(pattern);
 		var results = new List<string>();
-		var truncated = false;
+		var resultLimitReached = false;
 
-		foreach (var file in FileWalker.EnumerateFiles(root))
+		foreach (var entry in FileWalker.EnumerateEntries(root, includeGitDirectory: true))
 		{
-			var relative = ToolPaths.RelativeTo(file, root);
-			if (!regex.IsMatch(relative))
+			ThrowIfAborted(invocation.CancellationToken);
+			var isDirectory = Directory.Exists(entry);
+			var relative = ToolPaths.RelativeTo(entry, root);
+			var candidate = pattern.Contains('/') ? relative : Path.GetFileName(entry);
+			if (!regex.IsMatch(candidate))
 			{
 				continue;
 			}
 
 			if (results.Count >= limit)
 			{
-				truncated = true;
+				resultLimitReached = true;
 				break;
 			}
 
-			results.Add(relative);
+			results.Add(isDirectory ? relative + "/" : relative);
 		}
 
 		if (results.Count == 0)
@@ -138,16 +185,44 @@ public static class SearchTools
 			return new AgentToolResult { Content = [new TextContent { Text = "No files found matching pattern" }] };
 		}
 
-		var output = new StringBuilder(string.Join("\n", results));
-		if (truncated)
+		var rawOutput = string.Join("\n", results);
+		var truncation = Truncate.Head(rawOutput, maxLines: int.MaxValue);
+		var output = truncation.Content;
+		var notices = new List<string>(2);
+		if (resultLimitReached)
 		{
-			output.Append($"\n\n[Truncated at {limit} results. Use a narrower pattern or path.]");
+			notices.Add($"{limit} results limit reached. Use limit={limit * 2} for more, or refine pattern");
+		}
+
+		if (truncation.Truncated)
+		{
+			notices.Add($"{Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit reached");
+		}
+
+		if (notices.Count > 0)
+		{
+			output += $"\n\n[{string.Join(". ", notices)}]";
+		}
+
+		var details = new JsonObject
+		{
+			["path"] = root,
+			["count"] = results.Count,
+		};
+		if (resultLimitReached)
+		{
+			details["resultLimitReached"] = limit;
+		}
+
+		if (truncation.Truncated)
+		{
+			details["truncation"] = truncation.ToJson();
 		}
 
 		return new AgentToolResult
 		{
-			Content = [new TextContent { Text = output.ToString() }],
-			Details = new JsonObject { ["path"] = root, ["count"] = results.Count },
+			Content = [new TextContent { Text = output }],
+			Details = details,
 		};
 	}
 
@@ -155,7 +230,8 @@ public static class SearchTools
 	{
 		Name = "grep",
 		Label = "grep",
-		Description = "Search file contents for patterns. Respects .gitignore.",
+		Description =
+			$"Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or {Truncate.DefaultMaxBytes / 1024}KB (whichever is hit first). Long lines are truncated to {Truncate.GrepMaxLineLength} chars.",
 		Parameters = new JsonObject
 		{
 			["type"] = "object",
@@ -181,18 +257,15 @@ public static class SearchTools
 		var glob = JsonArgs.String(invocation.Arguments["glob"]);
 		var ignoreCase = JsonArgs.Bool(invocation.Arguments["ignoreCase"]) ?? false;
 		var literal = JsonArgs.Bool(invocation.Arguments["literal"]) ?? false;
-		var context = FileTools.OptionalInt(invocation, "context") ?? 0;
-		var limit = FileTools.OptionalInt(invocation, "limit") ?? 100;
+		var context = Math.Max(0, FileTools.OptionalInt(invocation, "context") ?? 0);
+		var limit = Math.Max(1, FileTools.OptionalInt(invocation, "limit") ?? 100);
 
-		var options = RegexOptions.CultureInvariant | RegexOptions.Multiline;
+		// pi 的 rg 使用线性时间、无 lookaround/backreference 的 Rust regex。
+		// NonBacktracking 让 .NET 侧也拒绝这类模式，并避免灾难性回溯。
+		var options = RegexOptions.CultureInvariant | RegexOptions.Multiline | RegexOptions.NonBacktracking;
 		if (ignoreCase)
 		{
 			options |= RegexOptions.IgnoreCase;
-		}
-
-		if (literal)
-		{
-			options |= RegexOptions.IgnorePatternWhitespace;
 		}
 
 		var regex = literal
@@ -205,13 +278,17 @@ public static class SearchTools
 		var files = new List<string>();
 		if (File.Exists(root))
 		{
-			files.Add(root);
+			if (globRegex is null || GlobMatches(globRegex, glob!, root, root))
+			{
+				files.Add(root);
+			}
 		}
 		else if (Directory.Exists(root))
 		{
-			foreach (var file in FileWalker.EnumerateFiles(root))
+			foreach (var file in FileWalker.EnumerateFiles(root, includeGitDirectory: true))
 			{
-				if (globRegex is null || globRegex.IsMatch(ToolPaths.RelativeTo(file, root)))
+				ThrowIfAborted(invocation.CancellationToken);
+				if (globRegex is null || GlobMatches(globRegex, glob!, file, root))
 				{
 					files.Add(file);
 				}
@@ -219,18 +296,25 @@ public static class SearchTools
 		}
 		else
 		{
-			throw new DirectoryNotFoundException($"Path not found: {path ?? root}");
+			throw new InvalidOperationException($"Path not found: {root}");
 		}
 
 		var output = new StringBuilder();
 		var matches = 0;
 		var truncated = false;
+		var linesTruncated = false;
 
 		foreach (var file in files)
 		{
 			if (truncated)
 			{
 				break;
+			}
+
+			ThrowIfAborted(invocation.CancellationToken);
+			if (IsBinaryFile(file))
+			{
+				continue;
 			}
 
 			List<string>? lines;
@@ -252,6 +336,7 @@ public static class SearchTools
 
 			for (var i = 0; i < lines.Count; i++)
 			{
+				ThrowIfAborted(invocation.CancellationToken);
 				if (!regex.IsMatch(lines[i]))
 				{
 					continue;
@@ -275,8 +360,9 @@ public static class SearchTools
 					}
 
 					var separator = j == i ? ":" : "-";
-					var (text, _) = Truncate.Line(lines[j]);
-					output.Append(display).Append(separator).Append(j + 1).Append(separator).Append(' ').Append(text).Append('\n');
+					var (lineText, lineTruncated) = Truncate.Line(lines[j]);
+					linesTruncated |= lineTruncated;
+					output.Append(display).Append(separator).Append(j + 1).Append(separator).Append(' ').Append(lineText).Append('\n');
 				}
 			}
 		}
@@ -286,17 +372,80 @@ public static class SearchTools
 			return new AgentToolResult { Content = [new TextContent { Text = "No matches found" }] };
 		}
 
-		var text2 = output.ToString().TrimEnd('\n');
+		var rawOutput = output.ToString().TrimEnd('\n');
+		var truncation = Truncate.Head(rawOutput, maxLines: int.MaxValue);
+		var text = truncation.Content;
+		var notices = new List<string>(3);
 		if (truncated)
 		{
-			text2 += $"\n\n[Truncated at {limit} matches. Use a narrower pattern or path.]";
+			notices.Add($"{limit} matches limit reached. Use limit={limit * 2} for more, or refine pattern");
+		}
+
+		if (truncation.Truncated)
+		{
+			notices.Add($"{Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit reached");
+		}
+
+		if (linesTruncated)
+		{
+			notices.Add($"Some lines truncated to {Truncate.GrepMaxLineLength} chars. Use read tool to see full lines");
+		}
+
+		if (notices.Count > 0)
+		{
+			text += $"\n\n[{string.Join(". ", notices)}]";
+		}
+
+		var details = new JsonObject { ["matches"] = matches };
+		if (truncated)
+		{
+			details["matchLimitReached"] = limit;
+		}
+
+		if (truncation.Truncated)
+		{
+			details["truncation"] = truncation.ToJson();
+		}
+
+		if (linesTruncated)
+		{
+			details["linesTruncated"] = true;
 		}
 
 		return new AgentToolResult
 		{
-			Content = [new TextContent { Text = text2 }],
-			Details = new JsonObject { ["matches"] = matches },
+			Content = [new TextContent { Text = text }],
+			Details = details,
 		};
+	}
+
+	private static bool GlobMatches(Regex regex, string glob, string file, string root)
+	{
+		var relative = ToolPaths.RelativeTo(file, root);
+		return regex.IsMatch(glob.Contains('/') ? relative : Path.GetFileName(file));
+	}
+
+	private static bool IsBinaryFile(string path)
+	{
+		try
+		{
+			using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+			var buffer = new byte[8192];
+			var read = stream.Read(buffer, 0, buffer.Length);
+			return buffer.AsSpan(0, read).Contains((byte)0);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return false;
+		}
+	}
+
+	private static void ThrowIfAborted(CancellationToken cancellationToken)
+	{
+		if (cancellationToken.IsCancellationRequested)
+		{
+			throw new InvalidOperationException("Operation aborted");
+		}
 	}
 
 	private static Regex SafeRegex(string pattern, RegexOptions options)
@@ -305,7 +454,7 @@ public static class SearchTools
 		{
 			return new Regex(pattern, options, TimeSpan.FromSeconds(2));
 		}
-		catch (ArgumentException ex)
+		catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
 		{
 			throw new InvalidOperationException($"Invalid regular expression: {ex.Message}");
 		}

@@ -161,6 +161,7 @@ public sealed class CodingAgentSession : IDisposable
 	private TodoState _todo = TodoState.Empty;
 
 	private bool _planModeFromMarker;
+	private bool _todoWidgetPublished;
 	private IReadOnlyList<Message>? _contextMessages;
 	private (long Tokens, int? LastUsageIndex) _contextTokens;
 	// 逐条估算的增量缓存：上下文估算在长会话里要 100+ 毫秒，而投影几乎只是往后追加。
@@ -226,7 +227,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		// 内置工具的提示词元数据以名称索引：命令行/桌面会传入已经过滤的 AgentTool 列表，
 		// 这里按名称把短 snippet 与 guidelines 重新挂回去，保证提示词与 pi/PiDeck 一致。
-		var defaults = BuiltinTools.Create(Cwd);
+		var defaults = BuiltinTools.Create(Cwd, () => _agent?.Model);
 		var defaultsByName = new Dictionary<string, BuiltinTool>(defaults.Count, StringComparer.Ordinal);
 		foreach (var tool in defaults)
 		{
@@ -260,7 +261,7 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			if (builtins[index].Tool.Name == TodoToolFactory.Name)
 			{
-				builtins[index] = TodoToolFactory.Create(() => Session);
+				builtins[index] = TodoToolFactory.Create(() => Session, PublishTodoWidget);
 			}
 			else if (builtins[index].Tool.Name == AskQuestionToolFactory.Name)
 			{
@@ -270,6 +271,11 @@ public sealed class CodingAgentSession : IDisposable
 			{
 				// bash 需要会话上下文来注入 PI_* 环境变量与 settings 的 shell 配置。
 				builtins[index] = builtins[index] with { Tool = PiWeft.CodingAgent.Tools.BashTool.Create(Cwd, BashEnvironment) };
+			}
+			else if (builtins[index].Tool.Name == "read")
+			{
+				// read 需要模型能力来判断是否给出非 vision 提示；图片识别本身按 magic bytes。
+				builtins[index] = builtins[index] with { Tool = FileTools.Read(Cwd, () => _agent?.Model) };
 			}
 		}
 
@@ -385,6 +391,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		_persistence = _agent.Subscribe(PersistAsync);
 		_cacheWarmLifecycle = _agent.Subscribe(CacheWarmLifecycleAsync);
+		PublishTodoWidget(CurrentTodo());
 	}
 
 	public string Cwd { get; }
@@ -599,6 +606,8 @@ public sealed class CodingAgentSession : IDisposable
 				_agent.SetThinkingLevel(ThinkingLevelResolver.Clamp(_agent.Model, recorded));
 			}
 		}
+
+		PublishTodoWidget(CurrentTodo());
 	}
 
 	/// 在当前会话的 <paramref name="entryId"/> 处派生，并切换到新的会话文件。
@@ -648,6 +657,7 @@ public sealed class CodingAgentSession : IDisposable
 			}
 
 			_agent.SetMessages(Session.BuildProjectedMessages());
+			PublishTodoWidget(CurrentTodo());
 			return selectedText;
 		}
 
@@ -662,6 +672,7 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		_agent.SetMessages(Session.BuildProjectedMessages());
+		PublishTodoWidget(CurrentTodo());
 		return selectedText;
 	}
 
@@ -680,6 +691,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		var truncated = Session.TruncateForResend(entryId);
 		_agent.SetMessages(Session.BuildProjectedMessages());
+		PublishTodoWidget(CurrentTodo());
 		return truncated;
 	}
 
@@ -839,6 +851,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		if (result is not null)
 		{
+			AppendTodoBriefAfterCompaction();
 			_agent.SetMessages(Session.BuildProjectedMessages());
 		}
 
@@ -1064,7 +1077,7 @@ public sealed class CodingAgentSession : IDisposable
 
 		if (toolSearch is not null)
 		{
-			declared.Add(new BuiltinTool(toolSearch, "Search for tools to load", []));
+			declared.Add(new BuiltinTool(toolSearch, "Search for tools that are not loaded yet and load the matches", []));
 		}
 
 		var codemodeActive = effective.Any(static tool => tool.Tool.Name == CodeModeToolFactory.Name);
@@ -1418,6 +1431,7 @@ public sealed class CodingAgentSession : IDisposable
 		[
 			.. tools.Where(tool =>
 				!string.Equals(tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)
+				&& !string.Equals(tool.Name, ToolSearchName, StringComparison.Ordinal)
 				&& !string.Equals(tool.Exposure, ToolExposure.Hidden, StringComparison.Ordinal)
 				&& (string.Equals(tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal)
 					|| (only && !string.Equals(tool.Exposure, ToolExposure.Deferred, StringComparison.Ordinal)))),
@@ -1454,8 +1468,9 @@ public sealed class CodingAgentSession : IDisposable
 		Name = ToolSearchName,
 		Label = ToolSearchName,
 		Description =
-			"Search for tools that are not declared to you yet and load the matching ones so you can call them directly. " +
-			"Use it when a task needs a tool you cannot see, such as an MCP tool.",
+			$"# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\n" +
+			$"Some of the tools, such as tools of MCP servers, may not have been provided to you upfront, and you should use this tool (`{ToolSearchName}`) to search for the required tools. " +
+			$"For MCP tool discovery, always use `{ToolSearchName}`.",
 		Parameters = new JsonObject
 		{
 			["type"] = "object",
@@ -1464,13 +1479,12 @@ public sealed class CodingAgentSession : IDisposable
 				["query"] = new JsonObject
 				{
 					["type"] = "string",
-					["description"] = "What the tool should do.",
+					["description"] = "Search query for deferred tools.",
 				},
 				["limit"] = new JsonObject
 				{
-					["type"] = "integer",
-					["minimum"] = 1,
-					["description"] = "Maximum number of tools to load (default 8).",
+					["type"] = "number",
+					["description"] = "Maximum number of tools to return. Defaults to 8.",
 				},
 			},
 			["required"] = new JsonArray("query"),
@@ -1505,7 +1519,7 @@ public sealed class CodingAgentSession : IDisposable
 			.ToList();
 		if (candidates.Count == 0)
 		{
-			return Task.FromResult(AgentToolResult.Text("No tools are waiting to be loaded."));
+			return Task.FromResult(AgentToolResult.Text("No matching tools found."));
 		}
 
 		var documents = candidates
@@ -1514,7 +1528,7 @@ public sealed class CodingAgentSession : IDisposable
 		var matches = CodeModeSearch.Rank(query, documents, limit);
 		if (matches.Count == 0)
 		{
-			return Task.FromResult(AgentToolResult.Text($"No tools matched \"{query}\"."));
+			return Task.FromResult(AgentToolResult.Text("No matching tools found."));
 		}
 
 		var names = new JsonArray();
@@ -1527,13 +1541,15 @@ public sealed class CodingAgentSession : IDisposable
 		// 立即重建 loadout：后续回合的声明与脚本可调用集合都包含这些工具。
 		ApplyTools();
 
-		var sections = matches.Select(name =>
+		var loadedLines = matches.Select(name =>
 		{
 			var tool = candidates.First(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
-			return CodeModeToolFactory.RenderDeclaration(tool, ToolGuidelines(tool.Name));
+			var firstLine = tool.Description.Trim().Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+			return $"- {name}: {firstLine}";
 		});
 		return Task.FromResult(AgentToolResult.Text(
-			$"Loaded {matches.Count} tool(s):\n\n{string.Join("\n\n", sections)}"));
+			$"Loaded {matches.Count} tool{(matches.Count == 1 ? string.Empty : "s")}. They are available from your next call:\n{string.Join("\n", loadedLines)}",
+			new JsonObject { ["loaded"] = new JsonArray([.. matches.Select(static name => (JsonNode?)JsonValue.Create(name))]) }));
 	}
 
 	private IReadOnlyList<string> ToolGuidelines(string name)
@@ -1551,7 +1567,13 @@ public sealed class CodingAgentSession : IDisposable
 		// 调用方可能把已经带提示的工具再传回来（MCP 刷新/测试），避免重复追加。
 		if (tool.Description.Contains("\n\nCodemode: `tools.", StringComparison.Ordinal)) return tool;
 
-		var output = tool.OutputSchema is null ? "a string" : "an object";
+		var output = tool.OutputSchema is null
+			? "a string"
+			: tool.OutputSchema["anyOf"] is JsonArray variants &&
+				variants.Any(static variant => variant is JsonObject obj &&
+					obj["type"]?.GetValue<string>() == "string")
+				? "a string, or an image object"
+				: "an object";
 		return tool with
 		{
 			Description = $"{tool.Description.Trim()}\n\nCodemode: `tools.{CodeModeIdentifier.ToIdentifier(tool.Name)}(args)` resolves to {output}.",
@@ -2556,6 +2578,11 @@ public sealed class CodingAgentSession : IDisposable
 			IsCompacting = false;
 		}
 
+		if (result is not null)
+		{
+			AppendTodoBriefAfterCompaction();
+		}
+
 		Emit(new CompactionEndEvent
 		{
 			Reason = reason,
@@ -3004,7 +3031,7 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			bound.Add(tool.Name switch
 			{
-				TodoToolFactory.Name => TodoToolFactory.Create(() => Session).Tool,
+				TodoToolFactory.Name => TodoToolFactory.Create(() => Session, PublishTodoWidget).Tool,
 				AskQuestionToolFactory.Name => AskQuestionToolFactory.Create(() => this).Tool,
 				_ => tool,
 			});
@@ -3022,7 +3049,7 @@ public sealed class CodingAgentSession : IDisposable
 			switch (tool.Name)
 			{
 				case TodoToolFactory.Name:
-					rebuilt.Add(TodoToolFactory.Create(() => Session));
+					rebuilt.Add(TodoToolFactory.Create(() => Session, PublishTodoWidget));
 					continue;
 				case AskQuestionToolFactory.Name:
 					rebuilt.Add(AskQuestionToolFactory.Create(() => this));
@@ -3037,6 +3064,11 @@ public sealed class CodingAgentSession : IDisposable
 						? bashDescribed with { Tool = PiWeft.CodingAgent.Tools.BashTool.Create(Cwd, BashEnvironment) }
 						: new BuiltinTool(tool, tool.Description, []));
 					continue;
+				case "read":
+					rebuilt.Add(known.TryGetValue(tool.Name, out var readDescribed)
+						? readDescribed with { Tool = FileTools.Read(Cwd, () => _agent?.Model) }
+						: new BuiltinTool(tool, tool.Description, []));
+					continue;
 			}
 
 			rebuilt.Add(known.TryGetValue(tool.Name, out var described)
@@ -3046,6 +3078,48 @@ public sealed class CodingAgentSession : IDisposable
 
 		_fullTools = rebuilt;
 		ApplyTools();
+	}
+
+	private void PublishTodoWidget(TodoState state)
+	{
+		if (UiHost is not { HasUi: true, SupportsPiDeckWidgets: true } host)
+		{
+			return;
+		}
+
+		if (state.ActivePlan is not { } plan)
+		{
+			if (_todoWidgetPublished)
+			{
+				host.SetWidget(new UiWidgetRequest("pi-deck-todo", null, null));
+				_todoWidgetPublished = false;
+			}
+
+			return;
+		}
+
+		_todoWidgetPublished = true;
+		host.SetWidget(new UiWidgetRequest("pi-deck-todo", TodoToolFactory.WidgetLines(plan, Session.LeafId), null));
+	}
+
+	/// 压缩/分支摘要会冲掉历史里的计划视图；只在需要时补一条不可见 custom message，
+	/// 与 PiDeck 的 pi-deck-todo-brief 行为一致。补注后再次压缩前不会重复添加。
+	private void AppendTodoBriefAfterCompaction()
+	{
+		var state = CurrentTodo();
+		if (state.ActivePlan is not { } plan || !TodoToolFactory.NeedsBriefAfterCompaction(Session))
+		{
+			return;
+		}
+
+		// PiDeck 同时写一条私有 marker 和一条 display:false 的 custom message；前者供
+		// 下一次压缩判定可见性，后者才进入模型上下文。
+		Session.AppendCustom(TodoToolFactory.BriefEntryType, new JsonObject { ["reason"] = "post-compaction" });
+		Session.AppendCustomMessage(
+			TodoToolFactory.BriefEntryType,
+			MessageContent.FromText(TodoToolFactory.BriefText(plan)),
+			display: false);
+		PublishTodoWidget(state);
 	}
 
 	private Tools.BashSessionEnvironment? BashEnvironment() => new()

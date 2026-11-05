@@ -1644,6 +1644,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		  /login [provider] [oauth|api-key]  登录供应商（默认 openai-codex）
 		  /logout [provider]        移除已存凭据
 		  /copy                     复制最近一条助手回复
+		  /todo [list|clear|restore] 查看/清空/恢复当前待办计划
 		  /import <路径>            导入并切换到另一个 JSONL 会话
 		  /bug [描述]               生成脱敏诊断包（zip）
 		  /export、/exit            导出 / 退出
@@ -1697,6 +1698,49 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 		switch (command)
 		{
+			case "/todo":
+			{
+				var todo = session.Tools.FirstOrDefault(static tool => tool.Name == PiWeft.CodingAgent.Tools.TodoTool.Name);
+				if (todo is null)
+				{
+					error.WriteLine("当前工具集未启用 todo。");
+					return true;
+				}
+
+				var action = rest.Length == 0 ? "list" : rest.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0].ToLowerInvariant();
+				if (action is not ("list" or "clear" or "restore"))
+				{
+					error.WriteLine("用法：/todo [list|clear|restore]");
+					return true;
+				}
+
+				try
+				{
+					var result = await todo.Execute(new AgentToolInvocation
+					{
+						ToolCallId = Guid.NewGuid().ToString("N"),
+						ToolName = todo.Name,
+						Arguments = new JsonObject { ["action"] = action },
+						CancellationToken = cancellationToken,
+					}).ConfigureAwait(false);
+					var text = string.Join("\n", result.Content.OfType<TextContent>().Select(static content => content.Text));
+					if (result.IsError)
+					{
+						error.WriteLine(text);
+					}
+					else
+					{
+						output.WriteLine(text);
+					}
+				}
+				catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
+				{
+					error.WriteLine($"pi: {exception.Message}");
+				}
+
+				return true;
+			}
+
 			case "/help":
 				error.WriteLine(InteractiveHelpText);
 				return true;

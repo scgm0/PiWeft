@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
@@ -29,7 +31,10 @@ public static class BashTool
 	{
 		Name = "bash",
 		Label = "bash",
-		Description = "Execute bash commands (ls, grep, find, etc.). Output is truncated to the last 2000 lines or 50KB.",
+		Description =
+			$"Execute a bash command in the current working directory. Returns stdout and stderr. " +
+			$"Output is truncated to last {Truncate.DefaultMaxLines} lines or {Truncate.DefaultMaxBytes / 1024}KB (whichever is hit first). " +
+			"If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
 		Parameters = new JsonObject
 		{
 			["type"] = "object",
@@ -44,6 +49,7 @@ public static class BashTool
 			},
 			["required"] = new JsonArray("command"),
 		},
+		OutputSchema = ShellToolFormatter.ShellOutputSchema(),
 		Execute = invocation => RunAsync(cwd, invocation, context),
 	};
 
@@ -85,6 +91,8 @@ public static class BashTool
 			}
 		}
 
+		invocation.OnUpdate?.Invoke(new AgentToolResult { Content = [], Details = null });
+		var startedAt = Stopwatch.GetTimestamp();
 		var result = await ShellRunner
 			.RunAsync(
 				command,
@@ -97,50 +105,41 @@ public static class BashTool
 					ShellPath = session?.ShellPath,
 					CommandPrefix = session?.CommandPrefix,
 					Environment = environment.Count > 0 ? environment : null,
-				})
+					TempFilePrefix = "pi-bash",
+				},
+				onSnapshot: snapshot => invocation.OnUpdate?.Invoke(ShellToolFormatter.UpdateResult(snapshot)))
 			.ConfigureAwait(false);
 
-		var truncation = Truncate.Tail(result.Output);
-		if (result.OutputTruncated)
+		var wallTimeSeconds = Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
+		var formatted = ShellToolFormatter.Format(
+			result,
+			command,
+			"pi-bash",
+			wallTimeSeconds,
+			emptyText: result.Cancelled || result.TimedOut ? string.Empty : "(no output)");
+
+		if (result.Cancelled)
 		{
-			// 内存里只有尾部窗口：行号/字节数按命令的真实总量报告，完整内容指向临时文件。
-			truncation = truncation with { TotalLines = result.TotalLines, TotalBytes = result.TotalBytes };
+			throw new InvalidOperationException(AppendStatus(formatted.Text, "Command aborted"));
 		}
 
-		var text = truncation.Content;
-		string? fullOutputPath = null;
-
-		if (truncation.Truncated)
+		if (result.TimedOut)
 		{
-			fullOutputPath = result.FullOutputPath ?? ShellRunner.WriteFullOutput(result.Output);
-
-			if (truncation.LastLinePartial)
-			{
-				text += $"\n\n[Showing last {Truncate.FormatSize(truncation.OutputBytes)} of line {truncation.TotalLines} ({Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit). Full output: {fullOutputPath}]";
-			}
-			else
-			{
-				text += $"\n\n[Showing lines {truncation.TotalLines - truncation.OutputLines + 1}-{truncation.TotalLines} of {truncation.TotalLines} ({Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit). Full output: {fullOutputPath}]";
-			}
-		}
-
-		if (result.ExitCode is { } exitCode && exitCode != 0)
-		{
-			text = text.Length == 0
-				? $"Command exited with code {exitCode}"
-				: $"{text}\n\nCommand exited with code {exitCode}";
+			var seconds = timeoutSeconds is { } timeout
+				? timeout.ToString("0.###", CultureInfo.InvariantCulture)
+				: "timeout";
+			throw new InvalidOperationException(AppendStatus(formatted.Text, $"Command timed out after {seconds} seconds"));
 		}
 
 		return new AgentToolResult
 		{
-			Content = [new TextContent { Text = text }],
-			Details = new JsonObject
-			{
-				["command"] = command,
-				["exitCode"] = result.ExitCode,
-				["truncated"] = truncation.Truncated,
-				["fullOutputPath"] = fullOutputPath,
-			},
+			Content = [new TextContent { Text = formatted.Text }],
+			Details = formatted.Details,
+			StructuredContent = formatted.StructuredContent,
+			IsError = formatted.IsError,
 		};
 	}
+
+	internal static string AppendStatus(string text, string status) =>
+		text.Length > 0 ? $"{text}\n\n{status}" : status;
 }

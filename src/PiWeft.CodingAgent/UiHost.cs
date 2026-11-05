@@ -24,6 +24,10 @@ public interface IUiHost
 {
 	bool HasUi { get; }
 
+	/// 是否使用 PiDeck 的扩展 widget 协议。桌面端已有原生 todo 卡片，不需要再推
+	/// pi-deck-todo；RPC 宿主（PiDeck）需要。
+	bool SupportsPiDeckWidgets => false;
+
 	Task<string?> InputAsync(UiInputRequest request, CancellationToken cancellationToken);
 
 	Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken) => Task.FromResult<string?>(null);

@@ -67,6 +67,15 @@ public sealed class StreamingThinkingTests
 		Text = string.Join('\n', Enumerable.Range(0, 30).Select(line => $"output {index} line {line}")),
 	};
 
+	/// 虚拟化组体的行宿主：面板直接托管步骤行 Grid，当前下标写在 <c>Tag</c> 上
+	/// （等价于旧 <c>ItemContainer.Index</c>；行会被回收复用，所以每次重新取）。
+	private static IReadOnlyList<Grid> StepRowHosts(ScrollViewer viewport) =>
+		Find<Grid>(viewport).Where(grid => grid.Tag is int).ToArray();
+
+	/// 组体末尾：行高不定，直接按发布出来的可滚范围落位，等价于旧 <c>ScrollIntoView(最后一行)</c>。
+	private static void ScrollBodyToEnd(ScrollViewer body) =>
+		body.SetScrollOffsets(body.HorizontalOffset, SmoothScroll.For(body).MaxVerticalOffset);
+
 	private static ScrollViewer BodyOf(ExecutionProcessView group) =>
 		Find<ScrollViewer>(group.View).Single(view => view.IsVisible && view.Bounds.Height > 0 &&
 			view.VerticalScroll != ScrollMode.Disabled);
@@ -103,11 +112,11 @@ public sealed class StreamingThinkingTests
 		Pump(view.View);
 
 		// 2) 同一帧里读者点开一个靠上的工具步骤。
-		var row = Find<ItemContainer>(body)
-			.First(container => container.Bounds.Y > body.Bounds.Y &&
-				container.Bounds.Bottom <= body.Bounds.Bottom &&
-				Find<Expander>(container).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
-		var position = row.Index;
+		var row = StepRowHosts(body)
+			.First(host => host.Bounds.Y > body.Bounds.Y &&
+				host.Bounds.Bottom <= body.Bounds.Bottom &&
+				Find<Expander>(host).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
+		var position = (int)row.Tag!;
 		var previewTop = row.Bounds.Y - body.Bounds.Y;
 		Find<Expander>(row).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint).IsExpanded = true;
 
@@ -117,7 +126,7 @@ public sealed class StreamingThinkingTests
 		Pump(view.View);
 
 		Assert.False(smooth.IsFollowingGrowth, "expanding a tool step cancels the queued follow");
-		var expanded = Find<ItemContainer>(body).First(container => container.Index == position);
+		var expanded = StepRowHosts(body).First(host => (int)host.Tag! == position);
 		Assert.InRange(expanded.Bounds.Y - body.Bounds.Y, previewTop - 1, previewTop + 1);
 		UiLifetime.Release(view.View);
 	}
@@ -308,10 +317,10 @@ public sealed class StreamingThinkingTests
 		smooth.FollowGrowth();
 		Pump(view.View);
 
-		var changes = new List<ItemsChange>();
-		var items = Find<ItemsControl>(view.View).Single();
-		items.ItemsSource.Changed += changes.Add;
+		// 流式思考行只原位更新：行高不能被重建打回估算值，否则组体 extent 先缩后涨，
+		// 表现就是进度/滚动位置跳变。这里同时盯偏移与已发布的 extent。
 		var offsets = new List<double>();
+		var extents = new List<double>();
 		for (var step = 1; step <= 12; step++)
 		{
 			var text = string.Join("\n\n", Enumerable.Range(0, step * 2).Select(index => $"思考内容段落 {index}"));
@@ -321,13 +330,14 @@ public sealed class StreamingThinkingTests
 			view.SyncBodyMetrics();
 			Pump(view.View);
 			offsets.Add(body.VerticalOffset);
+			extents.Add(smooth.MaxVerticalOffset);
 		}
 
-		// 流式思考行只原位更新：不能每帧发 Replace 把该行高度打回估算值，
-		// 否则组体的 extent 会先缩后涨，表现为进度/滚动位置跳变。
-		Assert.Empty(changes);
 		for (var index = 1; index < offsets.Count; index++)
 		{
+			Assert.True(extents[index] >= extents[index - 1] - 0.5,
+				$"group extent shrank at frame {index} (row height reset to an estimate): " +
+				$"{extents[index - 1]:0.#} -> {extents[index]:0.#}");
 			Assert.True(offsets[index] >= offsets[index - 1] - 0.5,
 				$"group progress went backwards at frame {index}: {offsets[index - 1]:0.#} -> {offsets[index]:0.#}");
 		}
@@ -340,7 +350,10 @@ public sealed class StreamingThinkingTests
 		Pump(view.View);
 		view.SyncBodyMetrics();
 		Pump(view.View);
-		Assert.Empty(changes);
+		// 落盘不必保留视图实例（内容可能重排）；这里只要求 extent 不缩、仍停在末尾。
+		Assert.True(smooth.MaxVerticalOffset >= extents[^1] - 1,
+			$"settling must not collapse the extent: {extents[^1]:0.#} -> {smooth.MaxVerticalOffset:0.#}");
+		Assert.Equal(smooth.MaxVerticalOffset, body.VerticalOffset, 1);
 		UiLifetime.Release(view.View);
 	}
 
@@ -371,8 +384,7 @@ public sealed class StreamingThinkingTests
 		ExpandGroups(view.View);
 
 		var body = BodyOf(view);
-		var list = Find<ItemsControl>(view.View).Single();
-		list.ScrollIntoView(list.ItemsSource.Count - 1);
+		ScrollBodyToEnd(body);
 		Pump(view.View);
 		view.SyncBodyMetrics();
 		Pump(view.View);
@@ -436,10 +448,9 @@ public sealed class StreamingThinkingTests
 		smooth.FollowGrowth();
 		Pump(view.View);
 
-		var changes = new List<ItemsChange>();
-		var items = Find<ItemsControl>(view.View).Single();
-		items.ItemsSource.Changed += changes.Add;
+		// 整段「增长 + 追加」过程中行高不能被重建打回估算值：extent 只增不减，尾部始终钉住。
 		var offsets = new List<double>();
+		var extents = new List<double>();
 		for (var step = 1; step <= 8; step++)
 		{
 			members[5] = Thinking(string.Join("\n\n", Enumerable.Range(0, step * 2).Select(i => $"思考 {i}")));
@@ -451,11 +462,14 @@ public sealed class StreamingThinkingTests
 			view.SyncBodyMetrics();
 			Pump(view.View);
 			offsets.Add(body.VerticalOffset);
+			extents.Add(smooth.MaxVerticalOffset);
 			Assert.True(smooth.MaxVerticalOffset - body.VerticalOffset <= 1, $"step {step} follow={smooth.IsFollowingGrowth} max={smooth.MaxVerticalOffset:0.#} offset={body.VerticalOffset:0.#} viewport={body.ViewportHeight:0.#}");
 		}
 
-		// 同时“流式增长 + 追加新步骤”不能退化成整表 Reset，也不能被布局校正静默取消跟底。
-		Assert.DoesNotContain(changes, change => change.Kind == ItemsChangeKind.Reset);
+		// 同时“流式增长 + 追加新步骤”不能让 extent 收缩，也不能被布局校正静默取消跟底。
+		for (var index = 1; index < extents.Count; index++)
+			Assert.True(extents[index] >= extents[index - 1] - 0.5,
+				$"extent shrank at append {index}: {extents[index - 1]:0.#} -> {extents[index]:0.#}");
 		Assert.True(smooth.IsFollowingGrowth, "layout extent corrections must not cancel group growth follow");
 		for (var index = 1; index < offsets.Count; index++)
 			Assert.True(offsets[index] >= offsets[index - 1] - 0.5,
@@ -559,6 +573,7 @@ public sealed class StreamingThinkingTests
 			.Skip(1).First();
 		var y = anchor.Bounds.Y;
 		var offset = body.VerticalOffset;
+		var max = SmoothScroll.For(body).MaxVerticalOffset;
 		for (var step = 1; step <= 6; step++)
 		{
 			var text = string.Join("\n\n", Enumerable.Range(0, 4 + step * 3).Select(i => $"思考内容 {i}"));
@@ -569,8 +584,12 @@ public sealed class StreamingThinkingTests
 			view.SyncBodyMetrics();
 			Pump(view.View);
 		}
+		// 思考行整个在视口上方：它长多少，内容坐标系就整体下移多少。面板把这段差值补进偏移，
+		// 读者看到的那一行因此不动（而不是让内容被顶上去）。
 		Assert.InRange(anchor.Bounds.Y, y - 1, y + 1);
-		Assert.InRange(body.VerticalOffset, offset - 1, offset + 1);
+		var grown = SmoothScroll.For(body).MaxVerticalOffset - max;
+		Assert.True(grown > 20, $"the thinking block above the viewport must grow: {grown:0.#}");
+		Assert.InRange(body.VerticalOffset - offset, grown - 1.5, grown + 1.5);
 		UiLifetime.Release(view.View);
 	}
 
@@ -713,8 +732,7 @@ public sealed class StreamingThinkingTests
 		Pump(view.View);
 		ExpandGroups(view.View);
 		var body = BodyOf(view);
-		var list = Find<ItemsControl>(view.View).Single();
-		list.ScrollIntoView(list.ItemsSource.Count - 1);
+		ScrollBodyToEnd(body);
 		Pump(view.View);
 		view.SyncBodyMetrics();
 		Pump(view.View);

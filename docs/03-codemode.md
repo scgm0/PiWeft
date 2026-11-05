@@ -14,8 +14,8 @@ async 函数体，支持顶层 `await`/`return`；首行可写：
 
 可见的只有 `tools.<name>(args)`、`ALL_TOOLS`、发现函数、`models.*`、`text()`/`image()`/`exit()`/`console.*`、`store()`/`load()`；没有 Node、文件、网络、定时器或模块加载。`eval`/`new Function` 可用，动态源码同受预算约束；宿主桥在 prelude 里收进闭包并删除。
 
-- `searchTools(query, { limit?, namespace? })`：与 pi 相同的分词 + Okapi BM25（k1=1.2、b=0.75），在全部嵌套工具上排序。
-- `describeTool(name)` 返回 TypeScript 声明；`describeNamespace(name)` 返回 `{ name, aliases, description, instructions, tools }`。命名空间为 `mcp__<server>`，服务器原名作别名。
+- `await searchTools(query, { limit?, namespace? })`：与 pi 相同的分词 + Okapi BM25（k1=1.2、b=0.75），在全部嵌套工具上排序。
+- `await describeTool(name)` 返回 TypeScript 声明；`await describeNamespace(name)` 返回 `{ name, aliases, description, instructions, tools }`。命名空间为 `mcp__<server>`，服务器原名作别名。
 - `models.*`：`getModelsOfType`/`getAvailableOfType`/`getModelOfType`（剔除凭据 headers，available 按凭据过滤）；`classify`/`generateImages` 走会话网关（并发 4，宿主校验 context，凭据由会话解析），调用进详情并汇入 `usage`。
 - `store()`/`load()`：成功才写 `codemode-store` 条目，`load()` 按分支从根重建；值有大小限制。
 

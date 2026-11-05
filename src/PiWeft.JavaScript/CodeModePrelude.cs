@@ -110,30 +110,43 @@ internal static class CodeModePrelude
 			Object.freeze(allTools);
 
 			// 未列在描述里的工具（被预算裁掉或 MCP 提供的）用这些函数按需发现。
+			// pi 的发现函数是 async；用 Promise.resolve 保持脚本里的 await 形状一致。
 			function searchTools(query, options) {
-				if (typeof query !== "string") throw new TypeErrorCtor("searchTools() expects a query string");
-				const settings = options === undefined || options === null ? {} : options;
-				const limit = settings.limit === undefined ? 8 : settings.limit;
-				if (typeof limit !== "number" || !Number.isInteger(limit) || limit <= 0) {
-					throw new TypeErrorCtor("searchTools() limit must be a positive integer");
+				try {
+					if (typeof query !== "string") throw new TypeErrorCtor("searchTools() expects a query string");
+					const settings = options === undefined || options === null ? {} : options;
+					const limit = settings.limit === undefined ? 8 : settings.limit;
+					if (typeof limit !== "number" || !Number.isInteger(limit) || limit <= 0) {
+						throw new TypeErrorCtor("searchTools() limit must be a positive integer");
+					}
+					const namespace = settings.namespace;
+					if (namespace !== undefined && namespace !== null && typeof namespace !== "string") {
+						throw new TypeErrorCtor("searchTools() namespace must be a string");
+					}
+					return Promise.resolve(parse(hostSearch(query, limit, namespace === undefined ? null : namespace)));
+				} catch (error) {
+					return Promise.reject(error);
 				}
-				const namespace = settings.namespace;
-				if (namespace !== undefined && namespace !== null && typeof namespace !== "string") {
-					throw new TypeErrorCtor("searchTools() namespace must be a string");
-				}
-				return parse(hostSearch(query, limit, namespace === undefined ? null : namespace));
 			}
 
 			function describeTool(name) {
-				if (typeof name !== "string") throw new TypeErrorCtor("describeTool() expects a tool name");
-				const description = hostDescribe(name);
-				return description === undefined ? undefined : String(description);
+				try {
+					if (typeof name !== "string") throw new TypeErrorCtor("describeTool() expects a tool name");
+					const description = hostDescribe(name);
+					return Promise.resolve(description === undefined ? undefined : String(description));
+				} catch (error) {
+					return Promise.reject(error);
+				}
 			}
 
 			function describeNamespace(name) {
-				if (typeof name !== "string") throw new TypeErrorCtor("describeNamespace() expects a namespace name");
-				const raw = hostDescribeNamespace(name);
-				return raw === undefined || raw === null ? undefined : parse(raw);
+				try {
+					if (typeof name !== "string") throw new TypeErrorCtor("describeNamespace() expects a namespace name");
+					const raw = hostDescribeNamespace(name);
+					return Promise.resolve(raw === undefined || raw === null ? undefined : parse(raw));
+				} catch (error) {
+					return Promise.reject(error);
+				}
 			}
 
 			// models.*：目录查询，与 pi 的 getModelsOfType/getAvailableOfType/getModelOfType 一致。

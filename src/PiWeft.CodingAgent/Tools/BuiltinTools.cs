@@ -9,10 +9,10 @@ public sealed record BuiltinTool(AgentTool Tool, string Snippet, IReadOnlyList<s
 
 public static class BuiltinTools
 {
-	public static IReadOnlyList<BuiltinTool> Create(string cwd) =>
+	public static IReadOnlyList<BuiltinTool> Create(string cwd, Func<PiWeft.Ai.Model?>? model = null) =>
 	[
 		new BuiltinTool(
-			FileTools.Read(cwd),
+			FileTools.Read(cwd, model),
 			"Read file contents",
 			["Use read to examine files instead of cat or sed."]),
 
@@ -32,10 +32,8 @@ public static class BuiltinTools
 			FileTools.Edit(cwd),
 			"Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
 			[
-				"Use edit for precise changes (edits[].oldText must match exactly)",
-				"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-				"Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-				"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+				"Use edit for targeted changes. Batch changes to one file in a single call.",
+				"Each edits[].oldText must exactly and uniquely match the original file. Keep matches short and non-overlapping; merge nearby changes without including large unchanged regions.",
 			]),
 
 		new BuiltinTool(
@@ -69,18 +67,19 @@ public static class BuiltinTools
 	/// 可被 <c>--tools</c>/<c>--exclude-tools</c> 或 <c>defaultTools</c> 选中的完整目录。
 	/// 比默认集多出 <c>codemode</c>：与 pi 一样它默认不启用，需要显式选中
 	/// （<c>--tools +codemode</c> 或 <c>"defaultTools": ["+codemode"]</c>）。
-	public static IReadOnlyList<BuiltinTool> Catalog(string cwd) =>
+	public static IReadOnlyList<BuiltinTool> Catalog(string cwd, Func<PiWeft.Ai.Model?>? model = null) =>
 	[
-		.. Create(cwd),
+		.. Create(cwd, model),
 		// codemode 的可调用工具集来自会话，这里先放占位，会话构造时再重新绑定
 		// （见 CodingAgentSession）。
 		CodeModeTool.CreatePlaceholder(),
 	];
 
-	public static IReadOnlyList<AgentTool> Tools(string cwd) => [.. Create(cwd).Select(static builtin => builtin.Tool)];
+	public static IReadOnlyList<AgentTool> Tools(string cwd, Func<PiWeft.Ai.Model?>? model = null) =>
+		[.. Create(cwd, model).Select(static builtin => builtin.Tool)];
 
-	public static IReadOnlyList<AgentTool> CatalogTools(string cwd) =>
-		[.. Catalog(cwd).Select(static builtin => builtin.Tool)];
+	public static IReadOnlyList<AgentTool> CatalogTools(string cwd, Func<PiWeft.Ai.Model?>? model = null) =>
+		[.. Catalog(cwd, model).Select(static builtin => builtin.Tool)];
 
 	public static IReadOnlyList<JsonObject> Describe(IEnumerable<AgentTool> tools) =>
 		[.. tools.Select(static tool => new JsonObject { ["name"] = tool.Name })];

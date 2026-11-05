@@ -157,8 +157,8 @@ public class SessionSoakTests : IDisposable
 		{
 			Cwd = _root,
 			// The reserve must exceed one turn, otherwise a single turn can overshoot the window before the next
-			// request gets a chance to compact.
-			Model = ScriptedSessions.Model() with { ContextWindow = 8000, MaxTokens = 4096 },
+			// request gets a chance to compact. pi 1.5 的工具描述比 1.3 长，固定窗口留出余量。
+			Model = ScriptedSessions.Model() with { ContextWindow = 9000, MaxTokens = 4096 },
 			StreamFn = script.Invoke,
 			Session = session,
 			Skills = [],
@@ -225,7 +225,7 @@ public class SessionSoakTests : IDisposable
 		using var coding = new CodingAgentSession(new CodingAgentSessionOptions
 		{
 			Cwd = _root,
-			Model = ScriptedSessions.Model() with { ContextWindow = 8000, MaxTokens = 4096 },
+			Model = ScriptedSessions.Model() with { ContextWindow = 9000, MaxTokens = 4096 },
 			StreamFn = script.Invoke,
 			Session = session,
 			Skills = [],

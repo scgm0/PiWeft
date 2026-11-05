@@ -241,6 +241,37 @@ public class TodoToolTests : IDisposable
 	}
 
 	[Fact]
+	public void BriefIsNeededOnlyWhenCompactionDroppedTheLatestSnapshot()
+	{
+		var manager = SessionManager.InMemory(_root);
+		var plan = new TodoPlan(1, [new TodoItem(1, "keep", "pending")]);
+		manager.AppendCustom(TodoTool.EntryType, TodoTool.Encode(new TodoState(plan, null, 2, 2)));
+		var kept = manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("kept"), Timestamp = 1 });
+		Assert.False(TodoTool.NeedsBriefAfterCompaction(manager));
+
+		manager.AppendCompaction("summary", kept, tokensBefore: 100);
+		Assert.True(TodoTool.NeedsBriefAfterCompaction(manager));
+
+		manager.AppendCustomMessage(TodoTool.BriefEntryType, MessageContent.FromText(TodoTool.BriefText(plan)), display: false);
+		Assert.False(TodoTool.NeedsBriefAfterCompaction(manager));
+	}
+
+	[Fact]
+	public void WidgetAndBriefUseThePiDeckContracts()
+	{
+		var plan = new TodoPlan(7, [new TodoItem(1, "first", "completed"), new TodoItem(2, "second", "in_progress")]);
+
+		var lines = TodoTool.WidgetLines(plan, "leaf/1");
+		Assert.Equal("[[pid:todo-plan:leaf%2F1:7]]", lines[0]);
+		Assert.Equal("☑ #1 first", lines[1]);
+		Assert.Equal("◐ #2 second", lines[2]);
+
+		var brief = TodoTool.BriefText(plan);
+		Assert.Contains("[CURRENT TODO PLAN #7]", brief);
+		Assert.Contains("Todo plan #7: 1 completed, 1 in progress, 0 pending (2 items)", brief);
+	}
+
+	[Fact]
 	public void Encode_RoundTripsThroughDecode()
 	{
 		var state = new TodoState(

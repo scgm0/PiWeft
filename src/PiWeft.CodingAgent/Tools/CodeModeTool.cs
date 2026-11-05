@@ -63,9 +63,9 @@ public static class CodeModeTool
 
 	private const string DescriptionGlobalsTools =
 		"Globals:\n" +
-		"- `text(value)`, `image(dataUrlOrImageBlock)`, `console.log(...)`, and top-level `return` add output; `exit()` ends the script. With several text items, each starts with a `==> text N/M <==` line, and `console` lines follow the other output in one `<console_output>` block.\n" +
+		"- `text(value)`, `image(dataUrlOrImageBlock)`, `console.log(...)`, and top-level `return` add output; `exit()` ends the script. With several text items, each starts with a `==> text N/M <==` line, and `console` lines follow the other output in one `<console_output>` block. `image()` also saves the image to a temp file and the result names its path.\n" +
 		"- `store(key, value)` and `load(key)` keep JSON values across codemode calls.\n" +
-		"- `ALL_TOOLS` lists every tool; `searchTools(query, { limit?, namespace? })` ranks all of them by topic, `describeTool(name)` returns one tool's declaration, and `describeNamespace(name)` lists a namespace's tools.";
+		"- `ALL_TOOLS`, `await searchTools(query, { limit?, namespace? })`, `await describeTool(name)`, `await describeNamespace(name)`: find unlisted tools, such as MCP tools.";
 
 	private const string DescriptionGlobalsModels =
 		"- `models.getModelsOfType(type, provider?)`, `models.getAvailableOfType(type, provider?)`, and `models.getModelOfType(type, provider, id)` read the model catalog; type is `chat`, `image`, or `classifier`.";
@@ -260,7 +260,9 @@ public static class CodeModeTool
 	}
 
 	private static IReadOnlyList<AgentTool> CallableTools(IReadOnlyList<AgentTool> tools) =>
-		[.. tools.Where(static tool => !string.Equals(tool.Name, Name, StringComparison.Ordinal))];
+		[.. tools.Where(static tool =>
+			!string.Equals(tool.Name, Name, StringComparison.Ordinal) &&
+			!string.Equals(tool.Name, "tool_search", StringComparison.Ordinal))];
 
 	private static async Task<AgentToolResult> ExecuteAsync(AgentToolInvocation invocation, CodeModeHost host)
 	{

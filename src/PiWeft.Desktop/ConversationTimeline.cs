@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 
@@ -6,7 +7,7 @@ namespace PiWeft.Desktop;
 internal sealed class ConversationTimeline : IDisposable
 {
 	private readonly MessageRows _rows = new();
-	private readonly ConversationList _list;
+	private readonly VirtualRowsPanel<ChatEntry, ReadingRow> _list;
 	private readonly Func<ChatEntry, UIElement> _create;
 	private readonly Dictionary<object, bool[]> _expanded = [];
 	private readonly Dictionary<object, IReadOnlyDictionary<string, bool>> _processStates = [];
@@ -14,13 +15,28 @@ internal sealed class ConversationTimeline : IDisposable
 	private readonly Dictionary<ReadingRow, int> _indexByHost = [];
 	private readonly Dictionary<int, ReadingRow> _hostByIndex = [];
 	private readonly List<int> _inPlaceUpdates = [];
+	private readonly List<int> _keptUpdates = [];
+	private readonly List<ReadingRow> _rebindScratch = [];
+	private readonly List<Expander> _expanderScratch = [];
+	private readonly List<Element> _treeScratch = [];
 	private bool _refreshQueued;
 	private bool _disposed;
 
 	public ConversationTimeline(Func<ChatEntry, UIElement> create)
 	{
 		_create = create;
-		_list = new ConversationList(this);
+		_list = new VirtualRowsPanel<ChatEntry, ReadingRow>(
+			() => _rows.Count,
+			_rows.EntryAt,
+			CreateRow,
+			(host, entry, index) => Bind(host, entry, index),
+			Release)
+		{
+			Key = static entry => (object?)entry.EntryId ?? entry,
+			Same = SameEntry,
+			Estimate = EstimateRowHeight,
+			DefaultEstimate = 120,
+		};
 		Scroll = new ScrollViewer().Content(_list)
 			.AutoVerticalScroll().NoHorizontalScroll()
 			.BorderThickness(0).Background(AppTheme.Transparent)
@@ -43,7 +59,8 @@ internal sealed class ConversationTimeline : IDisposable
 	public ScrollViewer Scroll { get; }
 	public IItemsView ItemsSource => _rows;
 	internal int RowCount => _rows.Count;
-	internal Func<bool>? FollowingProvider { get; set; }
+	internal void SetFollowingProvider(Func<bool>? following) =>
+		_list.PreserveReadingAnchor = following is null ? null : () => !following();
 
 	private ReadingRow CreateRow() => new ReadingRow()
 		.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
@@ -71,33 +88,40 @@ internal sealed class ConversationTimeline : IDisposable
 		int stablePrefix = 0,
 		bool prefixReused = false)
 	{
-		PruneRecycled();
 		_inPlaceUpdates.Clear();
-		// 行数变化/重建才需要按 key 迁移高度；流式原位更新走原下标，避免每帧复制整张表。
-		var oldEntries = rebuild || entries.Count != _rows.Count || (!prefixReused && stablePrefix == 0)
-			? _rows.Snapshot()
-			: null;
-		_rows.Update(entries, stablePrefix, prefixReused, _inPlaceUpdates);
+		_keptUpdates.Clear();
+		// 结构变化才需要按行身份迁移高度；流式原位更新走原下标，避免每帧复制整张表。
+		// 全量重投（prefixReused=false）会换掉行实例，必须迁移；否则只按引用前缀判断即可。
+		var structural = rebuild || entries.Count != _rows.Count || !prefixReused;
+		var oldEntries = structural ? _rows.Snapshot() : default;
+		// 迁移/重排会把行整体平移：先按顶部行记住阅读位置，布局前后补偿同样的量。
+		var anchor = structural ? _list.CaptureShiftAnchor() : default;
+		_rows.Update(entries, stablePrefix, prefixReused, _inPlaceUpdates, _keptUpdates, structural);
 		// churn 计数（零分配）：流式期原位更新的行数，是「重建 vs 复用」最直接的对照量。
 		if (_inPlaceUpdates.Count > 0) Diagnostics.Count("row.inplace", _inPlaceUpdates.Count);
-		_list.OnEntriesChanged(oldEntries, entries, _inPlaceUpdates);
-		// A streaming tail changes on every frame. Rebinding just its visible host keeps the
-		// panel's measured height (and therefore the published extent) instead of resetting the
-		// row to the coarse estimate, which made the viewport clamp short of the real bottom.
-		for (var i = 0; i < _inPlaceUpdates.Count; i++)
+		// 行数/顺序没变时不用碰高度缓存：流式行的增长由 Arrange 重测，再经「总高度变化」发布 extent。
+		// 顺手省掉一条每帧都会作废测量的路径（否则流式期每帧多跑一整轮 measure）。
+		if (structural) _list.ApplyRows(oldEntries, entries.Count, _keptUpdates, anchor);
+		// A streaming tail changes on every frame. Rebinding its visible host keeps the panel's
+		// measured height (and therefore the published extent) instead of resetting the row to the
+		// coarse estimate, which made the viewport clamp short of the real bottom. Rows inside the
+		// realized range are rebound again by Arrange, but that second visit is a reference-equal
+		// early-out; rows pinned outside it (focus) are only rebound here.
+		foreach (var index in CollectionsMarshal.AsSpan(_inPlaceUpdates))
 		{
-			var index = _inPlaceUpdates[i];
 			if (index < entries.Count && _hostByIndex.TryGetValue(index, out var host)) Bind(host, entries[index], index);
 		}
-		// The streaming row invalidates its own measure; the virtualizer only re-measures rows while
-		// arranging, and an ancestor that was already measure-dirty skips that arrange. Invalidate the
+		// The streaming row invalidates its own measure; the panel only re-measures rows on arrange,
+		// and an ancestor that was already measure-dirty skips that arrange. Invalidate the
 		// arrange as well so the grown row (expanded thinking, streaming body) is actually re-measured.
 		if (_inPlaceUpdates.Count > 0) View.InvalidateArrange();
 		if (!rebuild) return;
-		foreach (var host in _visible.ToArray())
+		_rebindScratch.Clear();
+		_rebindScratch.AddRange(_visible);
+		foreach (var host in CollectionsMarshal.AsSpan(_rebindScratch))
 		{
 			if (_indexByHost.TryGetValue(host, out var index) && index < entries.Count) Bind(host, entries[index], index);
-			// 索引失效时直接释放；ConversationList 下一轮会把宿主从可视集合里摘掉。
+			// 索引失效时直接释放；面板下一轮会把宿主从可视集合里摘掉。
 			else Release(host);
 		}
 		View.InvalidateMeasure();
@@ -113,18 +137,15 @@ internal sealed class ConversationTimeline : IDisposable
 		// 中文和代码混合时一行大约 14 DIP/字符；宁可略估小（实测变大只会扩展 extent）
 		// 也不要把长行估得过大，因为收缩才容易触发夹取。
 		var charsPerLine = Math.Max(24, width / 14.0);
-		var lines = Math.Max(1, entry.TextLength / charsPerLine);
-		if (entry.TextLength > 0 && !entry.IsStreaming)
+		var lines = (double)entry.TextLength / charsPerLine;
+		// 流式行的正文是增量快照，materialize 整篇只为数个换行不划算：只按字符数粗估。
+		if (entry.TextLength > 0 && !entry.IsStreaming && entry.StreamedText is null)
 		{
-			var text = entry.Text.AsSpan();
-			var newlines = 1;
-			for (var index = 0; index < text.Length; index++)
-			{
-				if (text[index] == '\n') newlines++;
-			}
-			lines = Math.Max(lines, newlines);
+			// MemoryExtensions.Count 是向量化实现：整段正文扫一遍比逐字符快一个量级。
+			var newlines = entry.Text.AsSpan().Count('\n') + 1;
+			if (newlines > lines) lines = newlines;
 		}
-		var height = 48 + Math.Ceiling(lines) * 22 + AppTheme.Space3;
+		var height = 48 + Math.Ceiling(Math.Max(1, lines)) * 22 + AppTheme.Space3;
 		// 思考默认收起成一行表头；展开后的行会被实测替换。
 		if (entry.ThinkingLength > 0) height += 44;
 		if (entry.Images.Count > 0) height += entry.Images.Count * 240;
@@ -195,17 +216,21 @@ internal sealed class ConversationTimeline : IDisposable
 	}
 
 	/// 顶部行的原始阅读位置；WithinRow 是行顶超出视口上沿的距离。
-	internal ReadingPoint CaptureReadingPoint() => _list.CaptureReadingPoint();
+	internal ReadingPoint CaptureReadingPoint()
+	{
+		var (key, within) = _list.CaptureReadingPoint();
+		return new ReadingPoint(key as string, within);
+	}
 
 	/// 把阅读位置映射回当前内容坐标系；面板用 prefix + within 直接落位。
-	internal bool RestoreReadingPoint(ReadingPoint point) => _list.RestoreReadingPoint(point);
+	internal bool RestoreReadingPoint(ReadingPoint point) => _list.RestoreReadingPoint(point.EntryId, point.WithinRow);
 
 	internal int IndexOfEntryId(string? entryId)
 	{
 		if (string.IsNullOrEmpty(entryId)) return -1;
 		for (var index = 0; index < _rows.Count; index++)
 		{
-			if (_rows.GetItem(index) is ChatEntry entry && string.Equals(entry.EntryId, entryId, StringComparison.Ordinal))
+			if (_rows.EntryAt(index) is { } entry && string.Equals(entry.EntryId, entryId, StringComparison.Ordinal))
 				return index;
 		}
 		return -1;
@@ -222,12 +247,15 @@ internal sealed class ConversationTimeline : IDisposable
 
 	private void Bind(ReadingRow host, ChatEntry entry, int index)
 	{
-		TrackIndex(host, index);
 		if (host.Tag is ChatEntry previous && SameEntry(previous, entry))
 		{
+			// 引用相等时连字典都不用动：流式期每帧都会走到这里。
+			if (ReferenceEquals(previous, entry)) return;
+			TrackIndex(host, index);
 			host.Tag = entry;
 			return;
 		}
+		TrackIndex(host, index);
 		// Process groups expose their members' arguments in the header. Update the persistent view
 		// before considering a top-level metadata-only short-circuit, otherwise a changed tool
 		// argument would update the tag while leaving the visible group header stale.
@@ -250,7 +278,7 @@ internal sealed class ConversationTimeline : IDisposable
 			host.Content is not Border { Tag: ToolMessageView })
 		{
 			// Only non-layout metadata changed: preserve the measured height and existing controls.
-			// Replace would reset this row to the virtualizer's estimate.
+			// Replace would reset this row to the estimator's value.
 			host.Tag = entry;
 			return;
 		}
@@ -277,16 +305,17 @@ internal sealed class ConversationTimeline : IDisposable
 		}
 		if (_expanded.TryGetValue(Key(entry), out var states))
 		{
-			var expanders = FindExpanders(host.Content).ToArray();
-			for (var i = 0; i < Math.Min(states.Length, expanders.Length); i++) expanders[i].IsExpanded = states[i];
+			var expanders = FindExpanders(host.Content);
+			for (var i = 0; i < Math.Min(states.Length, expanders.Count); i++) expanders[i].IsExpanded = states[i];
 		}
 	}
 
 	private void TrackIndex(ReadingRow host, int index)
 	{
-		if (_indexByHost.TryGetValue(host, out var previous) && previous != index && _hostByIndex.TryGetValue(previous, out var mapped) && ReferenceEquals(mapped, host))
+		if (_indexByHost.TryGetValue(host, out var previous))
 		{
-			_hostByIndex.Remove(previous);
+			if (previous == index && _hostByIndex.TryGetValue(index, out var current) && ReferenceEquals(current, host)) return;
+			if (_hostByIndex.TryGetValue(previous, out var mapped) && ReferenceEquals(mapped, host)) _hostByIndex.Remove(previous);
 		}
 		_indexByHost[host] = index;
 		_hostByIndex[index] = host;
@@ -294,7 +323,7 @@ internal sealed class ConversationTimeline : IDisposable
 
 	internal void PruneRecycled()
 	{
-		// ConversationList 在 Arrange 里同步回收离屏宿主，这里保留给测试/旧调用点。
+		// 面板在 Arrange 里同步回收离屏宿主，这里保留给测试/旧调用点。
 	}
 
 	private void Release(ReadingRow host)
@@ -302,9 +331,23 @@ internal sealed class ConversationTimeline : IDisposable
 		if (host.Tag is ChatEntry entry && host.Content is { } child)
 		{
 			if (child is Border { Tag: ExecutionProcessView process }) _processStates[Key(entry)] = process.State;
-			var states = FindExpanders(child).Select(static expander => expander.IsExpanded).ToArray();
-			if (states.Any(static expanded => expanded)) _expanded[Key(entry)] = states;
-			else _expanded.Remove(Key(entry));
+			var expanders = FindExpanders(child);
+			if (expanders.Count == 0)
+			{
+				_expanded.Remove(Key(entry));
+			}
+			else
+			{
+				var states = new bool[expanders.Count];
+				var any = false;
+				for (var slot = 0; slot < states.Length; slot++)
+				{
+					states[slot] = expanders[slot].IsExpanded;
+					any |= states[slot];
+				}
+				if (any) _expanded[Key(entry)] = states;
+				else _expanded.Remove(Key(entry));
+			}
 			UiLifetime.Release(child);
 			Diagnostics.Count("row.release");
 		}
@@ -316,14 +359,25 @@ internal sealed class ConversationTimeline : IDisposable
 			_hostByIndex.Remove(index);
 	}
 
-	private static IEnumerable<Expander> FindExpanders(Element root)
+	/// 迭代式遍历并用复用缓冲收集 <see cref="Expander"/>：行回收在滚动热路径上，
+	/// 递归 + 每层 List 分配会变成每帧几十次小对象。
+	private List<Expander> FindExpanders(Element root)
 	{
-		if (root is Expander expander) { yield return expander; yield break; }
-		if (root is not IVisualTreeHost tree) yield break;
-		var children = new List<Element>();
-		tree.VisitChildren(child => { children.Add(child); return true; });
-		foreach (var child in children)
-			foreach (var found in FindExpanders(child)) yield return found;
+		_expanderScratch.Clear();
+		_treeScratch.Clear();
+		_treeScratch.Add(root);
+		while (_treeScratch.Count > 0)
+		{
+			var element = _treeScratch[^1];
+			_treeScratch.RemoveAt(_treeScratch.Count - 1);
+			if (element is Expander expander)
+			{
+				_expanderScratch.Add(expander);
+				continue;
+			}
+			if (element is IVisualTreeHost tree) tree.VisitChildren(child => { _treeScratch.Add(child); return true; });
+		}
+		return _expanderScratch;
 	}
 
 	/// Compare fields directly instead of cloning both records with <c>with { ToolArguments = null }</c>:
@@ -382,392 +436,6 @@ internal sealed class ConversationTimeline : IDisposable
 		_rows.Clear();
 	}
 
-	/// <summary>
-	/// 会话列表自己的虚拟化面板。替换 MewUI 的 VariableHeightItemsPresenter：
-	/// 每行先有自己的估算高度，实测只改这一行，不会因为全局运行平均被一行 10k DIP 的离群行
-	/// 牵动而让整段历史的 extent 一起收缩。面板只使用公开的 ScrollViewer/Control API。
-	/// </summary>
-	private sealed class ConversationList : Panel
-	{
-		private const double Overscan = 320;
-		private readonly ConversationTimeline _owner;
-		private readonly Dictionary<int, ReadingRow> _realized = [];
-		private readonly Stack<ReadingRow> _pool = new();
-		private readonly List<int> _releaseScratch = [];
-		private double[] _heights = [];
-		private bool[] _measured = [];
-		private double[]? _prefix;
-		private double _total;
-		private double _width;
-		private bool _disposed;
-		private int _scrollTargetIndex = -1;
-		private double _scrollTargetWithin;
-		private double _pendingShift;
-
-		public ConversationList(ConversationTimeline owner) => _owner = owner;
-
-		public ScrollViewer? Scroll { get; set; }
-
-		public double TotalHeight => _total;
-
-		protected override Size MeasureContent(Size availableSize)
-		{
-			var count = _owner._rows.Count;
-			EnsureHeights(count);
-			if (!double.IsFinite(availableSize.Width) || availableSize.Width <= 0)
-			{
-				// 无约束测量（弹出层/分栏首轮）只是探自然尺寸，用上一次的视口宽度。
-				var fallback = _width > 0 ? _width : Math.Max(280, Scroll?.ViewportWidth ?? 0);
-				_width = fallback > 0 ? fallback : AppTheme.MessageMaxWidth;
-			}
-			else if (Math.Abs(availableSize.Width - _width) > 0.5)
-			{
-				_width = availableSize.Width;
-				for (var index = 0; index < count; index++)
-				{
-					if (!_measured[index]) _heights[index] = 0;
-				}
-			}
-			RecomputePrefix();
-			var total = _total;
-			return new Size(
-				Math.Max(0, availableSize.Width > 0 && double.IsFinite(availableSize.Width) ? availableSize.Width : _width),
-				Math.Max(0, total));
-		}
-
-		protected override void ArrangeContent(Rect bounds)
-		{
-			if (_disposed) return;
-			var count = _owner._rows.Count;
-			if (count == 0)
-			{
-				ReleaseAll();
-				return;
-			}
-			EnsureHeights(count);
-			var width = bounds.Width;
-			if (!double.IsFinite(width) || width <= 0) width = _width;
-			if (!double.IsFinite(width) || width <= 0) width = 700;
-			if (Math.Abs(width - _width) > 0.5)
-			{
-				_width = width;
-				for (var index = 0; index < count; index++)
-				{
-					if (!_measured[index]) _heights[index] = 0;
-				}
-			}
-			var scroll = Scroll;
-			var offset = scroll?.VerticalOffset ?? Math.Max(0, -bounds.Y);
-			var viewport = scroll?.ViewportHeight ?? Math.Max(0, bounds.Height);
-			var placementY = bounds.Y;
-			var placedOffset = offset;
-			if (Math.Abs(_pendingShift) > 0.5 && scroll is not null)
-			{
-				var shift = _pendingShift;
-				_pendingShift = 0;
-				scroll.SetScrollOffsets(scroll.HorizontalOffset, scroll.VerticalOffset + shift);
-				offset = scroll.VerticalOffset;
-				placementY -= offset - placedOffset;
-				placedOffset = offset;
-			}
-			RecomputePrefix();
-			var anchorIndex = FindIndexByY(offset);
-			var anchorWithin = offset - _prefix![anchorIndex];
-			var anchorTopBefore = _prefix![anchorIndex];
-
-			// 先落位到目标行，再按新坐标做一次范围计算；高度刚变化时多走一轮。
-			if (_scrollTargetIndex >= 0 && _scrollTargetIndex < count && scroll is not null)
-			{
-				var desired = Math.Clamp(_prefix![_scrollTargetIndex] + _scrollTargetWithin,
-					0, Math.Max(0, _total - viewport));
-				if (Math.Abs(desired - offset) > 0.5)
-				{
-					scroll.SetScrollOffsets(scroll.HorizontalOffset, desired);
-					offset = scroll.VerticalOffset;
-					placementY -= offset - placedOffset;
-					placedOffset = offset;
-					RecomputePrefix();
-				}
-				else
-				{
-					_scrollTargetIndex = -1;
-				}
-			}
-
-			var first = FindIndexByY(Math.Max(0, offset - Overscan));
-			var last = FindIndexByY(Math.Min(_total, offset + viewport + Overscan));
-			ReleaseOutside(first, last);
-			var changed = false;
-			for (var round = 0; round < 2; round++)
-			{
-				var roundChanged = ArrangeRange(first, last, width, bounds.X, placementY);
-				changed |= roundChanged;
-				if (!roundChanged) break;
-				RecomputePrefix();
-				first = FindIndexByY(Math.Max(0, offset - Overscan));
-				last = FindIndexByY(Math.Min(_total, offset + viewport + Overscan));
-				ReleaseOutside(first, last);
-			}
-			if (changed)
-			{
-				// 高度实测改了内容坐标系：浏览态下把「锚点上方的高度变化」补到当前偏移上。
-				// 只用相对量，不用测量时的绝对 offset——动画可能已经又走了一帧。
-				if (_owner.FollowingProvider?.Invoke() != true && scroll is not null)
-				{
-					anchorIndex = Math.Min(anchorIndex, Math.Max(0, count - 1));
-					var shift = _prefix![anchorIndex] - anchorTopBefore;
-					if (Math.Abs(shift) > 0.5)
-					{
-						var before = scroll.VerticalOffset;
-						scroll.SetScrollOffsets(scroll.HorizontalOffset, before + shift);
-						var applied = scroll.VerticalOffset - before;
-						_pendingShift = shift - applied;
-						offset = scroll.VerticalOffset;
-					}
-				}
-				// ScrollViewer 的 extent 来自 Measure 后的 DesiredSize；这里主动失效一次，
-				// 让下一轮把新的总高度发布成滚动条范围。
-				InvalidateMeasure();
-				scroll?.InvalidateMeasure();
-				InvalidateArrange();
-			}
-		}
-
-		private bool ArrangeRange(int first, int last, double width, double placementX, double placementY)
-		{
-			var count = _owner._rows.Count;
-			var changed = false;
-			for (var index = first; index <= last && index < count; index++)
-			{
-				if (index < 0) continue;
-				if (_owner._rows.GetItem(index) is not ChatEntry entry) continue;
-				var host = GetOrCreate(index);
-				_owner.Bind(host, entry, index);
-				host.Measure(new Size(width, double.PositiveInfinity));
-				var height = host.DesiredSize.Height;
-				if (!double.IsFinite(height) || height <= 0) height = 24;
-				if (Math.Abs(height - _heights[index]) > 0.5)
-				{
-					_heights[index] = height;
-					_measured[index] = true;
-					changed = true;
-				}
-				else if (!_measured[index])
-				{
-					_heights[index] = height;
-					_measured[index] = true;
-				}
-				host.Arrange(new Rect(placementX, placementY + _prefix![index], width, height));
-			}
-			return changed;
-		}
-
-		private ReadingRow GetOrCreate(int index)
-		{
-			if (_realized.TryGetValue(index, out var host)) return host;
-			host = _pool.Count > 0 ? _pool.Pop() : _owner.CreateRow();
-			Add(host);
-			_realized[index] = host;
-			return host;
-		}
-
-		private void ReleaseOutside(int first, int last)
-		{
-			_releaseScratch.Clear();
-			foreach (var (index, _) in _realized)
-			{
-				if (index < first || index > last) _releaseScratch.Add(index);
-			}
-			for (var i = 0; i < _releaseScratch.Count; i++)
-			{
-				if (!_realized.Remove(_releaseScratch[i], out var host)) continue;
-				// 焦点还在这一行里时先留着：滚动离开视口不应把正在选中的文本焦点一起回收。
-				if (ContainsFocus(host))
-				{
-					_realized[_releaseScratch[i]] = host;
-					continue;
-				}
-				_owner.Release(host);
-				Remove(host);
-				_pool.Push(host);
-			}
-		}
-
-		private static bool ContainsFocus(ReadingRow host)
-		{
-			if (host.FindVisualRoot() is not Window window) return false;
-			var focused = window.FocusManager.FocusedElement;
-			return focused is not null && VisualTree.IsInSubtreeOf(focused, host);
-		}
-
-		public void CancelScrollTarget() => _scrollTargetIndex = -1;
-
-		private void ReleaseAll()
-		{
-			foreach (var host in _realized.Values) _owner.Release(host);
-			_realized.Clear();
-			Clear();
-			_pool.Clear();
-		}
-
-		public void OnEntriesChanged(
-			IReadOnlyList<ChatEntry>? oldEntries,
-			IReadOnlyList<ChatEntry> entries,
-			IReadOnlyList<int> inPlaceUpdates)
-		{
-			var count = entries.Count;
-			if (oldEntries is null)
-			{
-				EnsureHeights(count);
-				InvalidateMeasure();
-				return;
-			}
-
-			var inPlace = new HashSet<int>(inPlaceUpdates);
-			var oldByKey = new Dictionary<object, (double Height, bool Measured, ChatEntry Entry)>();
-			for (var index = 0; index < oldEntries.Count && index < _heights.Length; index++)
-			{
-				var entry = oldEntries[index];
-				oldByKey[Key(entry)] = (_heights[index], _measured[index], entry);
-			}
-			var heights = new double[count];
-			var measured = new bool[count];
-			for (var index = 0; index < count; index++)
-			{
-				var entry = entries[index];
-				if (!oldByKey.TryGetValue(Key(entry), out var previous)) continue;
-				if (inPlace.Contains(index) || SameEntry(previous.Entry, entry))
-				{
-					heights[index] = previous.Height;
-					measured[index] = previous.Measured;
-				}
-			}
-			_heights = heights;
-			_measured = measured;
-			_prefix = null;
-			InvalidateMeasure();
-		}
-
-		public void InvalidateHeightsForWidth()
-		{
-			for (var index = 0; index < _heights.Length; index++)
-			{
-				if (!_measured[index]) _heights[index] = 0;
-			}
-			_prefix = null;
-			InvalidateMeasure();
-		}
-
-		public ReadingPoint CaptureReadingPoint()
-		{
-			var count = _owner._rows.Count;
-			if (count == 0) return new ReadingPoint(null, 0);
-			EnsureHeights(count);
-			RecomputePrefix();
-			var offset = Scroll?.VerticalOffset ?? 0;
-			var index = FindIndexByY(offset);
-			if (_owner._rows.GetItem(index) is not ChatEntry entry) return new ReadingPoint(null, 0);
-			return new ReadingPoint(entry.EntryId, offset - _prefix![index]);
-		}
-
-		public bool RestoreReadingPoint(ReadingPoint point)
-		{
-			var count = _owner._rows.Count;
-			if (count == 0 || string.IsNullOrEmpty(point.EntryId)) return false;
-			var index = _owner.IndexOfEntryId(point.EntryId);
-			if (index < 0) return false;
-			ScrollToIndex(index, point.WithinRow);
-			return true;
-		}
-
-		public void ScrollToIndex(int index, double withinRow = 0)
-		{
-			var count = _owner._rows.Count;
-			if (index < 0 || index >= count || Scroll is null) return;
-			EnsureHeights(count);
-			RecomputePrefix();
-			var viewport = Math.Max(0, Scroll.ViewportHeight);
-			var target = Math.Clamp(_prefix![index] + withinRow, 0, Math.Max(0, _total - viewport));
-			_scrollTargetIndex = index;
-			_scrollTargetWithin = withinRow;
-			Scroll.SetScrollOffsets(Scroll.HorizontalOffset, target);
-			InvalidateArrange();
-		}
-
-		public int IndexAtViewportAnchor(double withinViewport)
-		{
-			var count = _owner._rows.Count;
-			if (count == 0) return -1;
-			EnsureHeights(count);
-			RecomputePrefix();
-			return FindIndexByY((Scroll?.VerticalOffset ?? 0) + withinViewport);
-		}
-
-		private void EnsureHeights(int count)
-		{
-			if (_heights.Length == count && _measured.Length == count) return;
-			var heights = new double[count];
-			var measured = new bool[count];
-			Array.Copy(_heights, heights, Math.Min(_heights.Length, count));
-			Array.Copy(_measured, measured, Math.Min(_measured.Length, count));
-			_heights = heights;
-			_measured = measured;
-			_prefix = null;
-		}
-
-		private void RecomputePrefix()
-		{
-			var count = _owner._rows.Count;
-			if (_heights.Length != count) EnsureHeights(count);
-			if (_prefix is null || _prefix.Length != count + 1) _prefix = new double[count + 1];
-			var sum = 0.0;
-			_prefix[0] = 0;
-			for (var index = 0; index < count; index++)
-			{
-				var height = _heights[index] > 0 ? _heights[index] : EstimateHeight(index);
-				_heights[index] = height;
-				sum += height;
-				_prefix[index + 1] = sum;
-			}
-			_total = sum;
-		}
-
-		private double EstimateHeight(int index)
-		{
-			if (_owner._rows.GetItem(index) is not ChatEntry entry) return 48;
-			var width = _width > 0 ? _width : 700;
-			var height = ConversationTimeline.EstimateRowHeight(entry, width);
-			return double.IsFinite(height) && height > 0 ? height : 48;
-		}
-
-		private int FindIndexByY(double y)
-		{
-			var count = _owner._rows.Count;
-			if (count <= 0) return 0;
-			y = Math.Clamp(y, 0, Math.Max(0, _total));
-			var prefix = _prefix!;
-			int low = 0, high = count;
-			while (low < high)
-			{
-				var middle = low + (high - low) / 2;
-				if (prefix[middle + 1] <= y) low = middle + 1;
-				else high = middle;
-			}
-			return Math.Min(low, count - 1);
-		}
-
-		public void DisposePanel()
-		{
-			if (_disposed) return;
-			_disposed = true;
-			ReleaseAll();
-			_heights = [];
-			_measured = [];
-			_prefix = null;
-			_total = 0;
-		}
-	}
-
 	private sealed class ReadingRow : ContentControl
 	{
 		protected override Size MeasureContent(Size availableSize)
@@ -780,14 +448,24 @@ internal sealed class ConversationTimeline : IDisposable
 	internal sealed class MessageRows : IItemsView
 	{
 		private readonly List<ChatEntry> _entries = [];
+		private ChatEntry[] _snapshot = [];
 		public int Count => _entries.Count;
 		public Func<object?, object?> KeySelector { get; } = static item => item is ChatEntry entry ? Key(entry) : null;
 		public event Action<ItemsChange>? Changed;
 		public object GetItem(int index) => _entries[index];
+		public ChatEntry? EntryAt(int index) => (uint)index < (uint)_entries.Count ? _entries[index] : null;
 		public string GetText(int index) => string.Empty;
-		public ChatEntry[] Snapshot() => [.. _entries];
 		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
-		public void Clear() => Update([], 0, false, []);
+		public void Clear() => Update([], 0, false, [], [], false);
+
+		/// 复用同一块快照缓冲：结构变化（追加一行、过程组重排）在流式期每回合会发生几十次，
+		/// 每次 <c>[.. _entries]</c> 都会分配一个与历史行数等长的数组。
+		public RowsSnapshot<ChatEntry> Snapshot()
+		{
+			if (_snapshot.Length < _entries.Count) _snapshot = new ChatEntry[Math.Max(16, _entries.Count)];
+			CollectionsMarshal.AsSpan(_entries).CopyTo(_snapshot);
+			return new RowsSnapshot<ChatEntry>(_snapshot, _entries.Count);
+		}
 
 		/// Streaming and process rows have a persistent view that can absorb new data without
 		/// rebuilding. Other replacements change identity or presentation and still need a rebind.
@@ -804,19 +482,35 @@ internal sealed class ConversationTimeline : IDisposable
 				next.IsStreaming && Equals(Key(current), Key(next)) && current.ToolCallId == next.ToolCallId) ||
 			SameMetadataOnly(current, next);
 
-		public void Update(IReadOnlyList<ChatEntry> entries, int stablePrefix, bool prefixReused, List<int> inPlace)
+		/// <param name="inPlace">可以只重绑、不必重建视图的行（流式尾巴、过程组）。</param>
+		/// <param name="kept">行高可以沿用的行：内容未变，或可原位更新。<paramref name="collectKept"/> 为 false 时不填。</param>
+		/// <param name="collectKept">调用方是否需要 <paramref name="kept"/>（只有结构变化才需要）。</param>
+		public void Update(
+			IReadOnlyList<ChatEntry> entries,
+			int stablePrefix,
+			bool prefixReused,
+			List<int> inPlace,
+			List<int> kept,
+			bool collectKept)
 		{
 			var common = Math.Min(Count, entries.Count);
 			// The projector reuses every row before the current turn by reference. Start the
 			// comparison there instead of walking the whole history on every streaming frame.
 			var unchanged = prefixReused ? Math.Min(stablePrefix, common) : 0;
 			while (unchanged < common && SameEntry(_entries[unchanged], entries[unchanged])) unchanged++;
+			// 前缀行无论后面有没有变化都要记进 kept：全量重投但内容未变时 unchanged == common，
+			// 漏记会让面板把整段历史的行高当成未知，重新估算后 extent 大幅跳动。
+			if (collectKept)
+			{
+				kept.Clear();
+				for (var index = 0; index < unchanged; index++) kept.Add(index);
+			}
 			if (unchanged < common)
 			{
 				// Notify only the rows that really need a new view. A single Replace spanning to the
-				// end would drop the virtualizer's measured heights for every unchanged row below,
-				// collapsing the extent to an estimate and shifting a browsing reader. In-place rows
-				// are rebound by the host below, so they interrupt a Replace run instead of joining it.
+				// end would drop the measured heights for every unchanged row below, collapsing the
+				// extent to an estimate and shifting a browsing reader. In-place rows are rebound by
+				// the host below, so they interrupt a Replace run instead of joining it.
 				var runStart = -1;
 				for (var i = unchanged; i < common; i++)
 				{
@@ -824,6 +518,7 @@ internal sealed class ConversationTimeline : IDisposable
 					var next = entries[i];
 					if (SameEntry(current, next))
 					{
+						if (collectKept) kept.Add(i);
 						if (runStart >= 0)
 						{
 							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, i - runStart));
@@ -835,6 +530,7 @@ internal sealed class ConversationTimeline : IDisposable
 					if (CanUpdateInPlace(current, next))
 					{
 						inPlace.Add(i);
+						if (collectKept) kept.Add(i);
 						if (runStart >= 0)
 						{
 							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, i - runStart));

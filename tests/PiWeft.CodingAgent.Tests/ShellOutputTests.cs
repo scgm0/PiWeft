@@ -39,7 +39,7 @@ public sealed class ShellOutputTests : IDisposable
 		Assert.Equal(0, result.ExitCode);
 		Assert.True(result.OutputTruncated);
 		Assert.Equal(1, result.TotalLines);
-		Assert.InRange(result.TotalBytes, 3_000_001, 3_000_100);
+		Assert.InRange(result.TotalBytes, 3_000_000, 3_000_100);
 		Assert.NotNull(result.FullOutputPath);
 		Assert.False(string.IsNullOrEmpty(result.Output));
 

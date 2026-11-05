@@ -38,7 +38,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - `pi install/list/remove/update` 管理 npm/git/本地包，`--local` 写项目 `.pi/settings.json`；`settings.npmCommand` 可覆盖 npm。
 - `pi mcp list|add|remove|login|logout` 管理服务器与 OAuth；配置写 `<agentDir>/mcp.json`，令牌写 `mcp-oauth.json`；写入保留其它键、注释与尾逗号。
 - CLI `@file` 展开为 `<file>` 文本块，图片作为内容块；print/JSON 模式合入重定向 stdin；RPC 拒绝 `@file`。
-- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开。交互命令含 `/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`、`/share`、`/llama`。`!command` 输出并入对话，`!!command` 只执行。
+- 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开。交互命令含 `/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/todo`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`、`/share`、`/llama`。`!command` 输出并入对话，`!!command` 只执行。
 - `-e/--extension` 加载显式扩展文件/目录/`builtin:<name>`；`-ne/--no-extensions` 只关闭约定发现。未知 `--flag` 交给扩展 `pi.registerFlag`，无人注册时退出 2。
 - 网络：`httpIdleTimeoutMs` 默认 300 秒，按读取续期；只切断停滞流，不限制长流。严格区分用户中止（`aborted`，不重试）与空闲超时（`error`，可重试）。`httpProxy` 只读全局设置。`--offline` / `PI_OFFLINE=1` 跳过自动网络操作。
 - 项目信任：`<agentDir>/trust.json` 从 cwd 逐级向上取第一个决策；`-a/--approve`、`-na/--no-approve` 覆盖；默认 `ask`。不受信时不合并项目设置、不连项目 MCP、不读项目模型/技能/提示词。RPC/print 无法弹框时按不受信处理。
@@ -87,6 +87,10 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 并行工具里同一文件的 `edit`/`write` 已串行化；`nestedCalls` / `parentToolCallId` 尚未产出，只按未知字段保留。
 - 生图/分类网关已接入 codemode，但没有一级入口；虚拟模型路由已实现，扩展宿主动态注册未接；Codex `websocket-cached` 未复用连接。
 - 桌面历史仍全量在内存（分支/fork/搜索/todo/`context_edit` 依赖全量）；完整 VT100 边界、终端多标签、快照回放未覆盖。
+- `grep`/`find` 仍是进程内实现：glob、父目录 ignore、limit/字节上限已对齐，但正则使用 .NET `NonBacktracking` 而非 ripgrep/fd；不依赖外部二进制。
+- `read` 图片按 magic bytes 识别并给出非 vision 提示，但未按模型限制缩放/转码。
+- 内置工具尚未声明 `constrainedSampling`，provider 层也未实现 strict JSON schema / grammar。
+- `tool_search` / codemode `searchTools` 仍是基础 BM25，缺少 pi 的 name/namespace 权重、覆盖度与精确名加成。
 - Windows/macOS 原生窗口、发布包、真实供应商联网与 PiDeck 完整 e2e 仍需实机验证。
 
 ## 验证

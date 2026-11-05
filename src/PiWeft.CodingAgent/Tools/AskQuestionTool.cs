@@ -88,17 +88,18 @@ public static class AskQuestionTool
 	{
 		var questions = AskQuestions.FromToolArguments(invocation.Arguments);
 
-		// 非交互环境：不阻塞，直接告知模型改用回复文本提问（与 PiDeck headless 行为一致）。
+		// 非交互环境：不阻塞，直接告知模型改用回复文本提问。PiDeck 把这种提示作为
+		// 普通 toolResult 返回（cancelled=true），不是 isError；否则模型会当成失败重试。
 		if (session?.UiHost is not { HasUi: true } host)
 		{
-			return AgentToolResult.Error("ask_question 无法执行：当前环境不支持交互式 UI。");
+			return Cancelled(questions, "ask_question 无法执行：当前环境不支持交互式 UI。");
 		}
 
 		foreach (var question in questions)
 		{
 			if ((question.Type is "select" or "multi_select") && question.Options is not { Count: > 0 })
 			{
-				return AgentToolResult.Error($"ask_question 未执行：{question.Type} 类型必须提供 options（问题: {question.Question}）");
+				return Cancelled(questions, $"ask_question 未执行：{question.Type} 类型必须提供 options（问题: {question.Question}）");
 			}
 		}
 
@@ -107,16 +108,30 @@ public static class AskQuestionTool
 		var review = invocation.Arguments["review"] is JsonValue reviewValue
 			&& reviewValue.TryGetValue<bool>(out var reviewFlag)
 			&& reviewFlag;
-		var envelope = AskQuestions.BuildEnvelope(questions, review);
-		var raw = await host
-			.InputAsync(new UiInputRequest(envelope, AskQuestions.EnvelopePlaceholder), invocation.CancellationToken)
-			.ConfigureAwait(false);
-
-		var (answers, cancelled) = AskQuestions.ParseResponse(raw, questions);
-		return new AgentToolResult
+		try
 		{
-			Content = [new PiWeft.Ai.TextContent { Text = AskQuestions.ResultText(answers, cancelled) }],
-			Details = AskQuestions.ResultDetails(questions, answers, cancelled),
-		};
+			var envelope = AskQuestions.BuildEnvelope(questions, review);
+			var raw = await host
+				.InputAsync(new UiInputRequest(envelope, AskQuestions.EnvelopePlaceholder), invocation.CancellationToken)
+				.ConfigureAwait(false);
+
+			var (answers, cancelled) = AskQuestions.ParseResponse(raw, questions);
+			return new AgentToolResult
+			{
+				Content = [new PiWeft.Ai.TextContent { Text = AskQuestions.ResultText(answers, cancelled) }],
+				Details = AskQuestions.ResultDetails(questions, answers, cancelled),
+			};
+		}
+		catch (Exception)
+		{
+			// 与 PiDeck 扩展一致：UI 异常/取消都折叠成 cancelled 结果，不把异常抛给模型。
+			return Cancelled(questions, "用户取消了提问");
+		}
 	}
+
+	private static AgentToolResult Cancelled(IReadOnlyList<AskQuestion> questions, string text) => new()
+	{
+		Content = [new PiWeft.Ai.TextContent { Text = text }],
+		Details = AskQuestions.ResultDetails(questions, [], cancelled: true),
+	};
 }

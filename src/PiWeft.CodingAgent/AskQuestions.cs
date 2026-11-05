@@ -47,7 +47,8 @@ public static class AskQuestions
 		// 兼容旧模型直接传顶层字段。
 		if (arguments["question"] is not null)
 		{
-			questions.Add(Normalize(arguments, 0));
+			// PiDeck 对旧式单问题使用 "default"；批量问题才用 q1/q2。
+			questions.Add(Normalize(arguments, -1));
 		}
 
 		return questions;
@@ -245,18 +246,61 @@ public static class AskQuestions
 
 	public static JsonObject ResultDetails(IReadOnlyList<AskQuestion> questions, IReadOnlyList<AskAnswer> answers, bool cancelled) => new()
 	{
-		["questions"] = new JsonArray([.. questions.Select(static question => (JsonNode?)new JsonObject
+		["questions"] = new JsonArray([.. questions.Select(static question =>
 		{
-			["id"] = question.Id,
-			["type"] = question.Type,
-			["question"] = question.Question,
+			var item = new JsonObject
+			{
+				["id"] = question.Id,
+				["type"] = question.Type,
+				["question"] = question.Question,
+			};
+
+			if (question.Options is { Count: > 0 } options)
+			{
+				item["options"] = new JsonArray([.. options.Select(static option =>
+				{
+					var node = new JsonObject { ["label"] = option.Label, ["value"] = option.Value };
+					if (option.Description is { Length: > 0 } description)
+					{
+						node["description"] = description;
+					}
+
+					return (JsonNode?)node;
+				})]);
+			}
+
+			if (question.Type == "select")
+			{
+				item["allowOther"] = true;
+			}
+
+			if (question.Placeholder is { Length: > 0 } placeholder)
+			{
+				item["placeholder"] = placeholder;
+			}
+
+			if (question.Prefill is { Length: > 0 } prefill)
+			{
+				item["prefill"] = prefill;
+			}
+
+			return (JsonNode?)item;
 		})]),
-		["answers"] = new JsonArray([.. answers.Select(static answer => (JsonNode?)new JsonObject
+		["answers"] = new JsonArray([.. answers.Select(static answer =>
 		{
-			["id"] = answer.Id,
-			["type"] = answer.Type,
-			["value"] = answer.Value?.DeepClone(),
-			["wasCustom"] = answer.WasCustom,
+			var item = new JsonObject
+			{
+				["id"] = answer.Id,
+				["type"] = answer.Type,
+				["value"] = answer.Value?.DeepClone(),
+				["wasCustom"] = answer.WasCustom,
+			};
+			if (answer.Label is { Length: > 0 } label)
+			{
+				item["label"] = label;
+			}
+
+			return (JsonNode?)item;
 		})]),
 		["cancelled"] = cancelled,
 	};
@@ -291,7 +335,9 @@ public static class AskQuestions
 		}
 
 		return new AskQuestion(
-			item["id"]?.GetValue<string>() is { Length: > 0 } id ? id : $"q{index + 1}",
+			item["id"]?.GetValue<string>() is { Length: > 0 } id
+				? id
+				: index < 0 ? "default" : $"q{index + 1}",
 			type,
 			item["question"]?.GetValue<string>() ?? string.Empty,
 			options,
@@ -339,12 +385,7 @@ public static class AskQuestions
 		return value switch
 		{
 			JsonArray array => array.Count > 0,
-			JsonValue json => json.GetValueKind() switch
-			{
-				JsonValueKind.Null => false,
-				JsonValueKind.String => json.GetValue<string>().Length > 0,
-				_ => true,
-			},
+			JsonValue json => json.GetValueKind() != JsonValueKind.Null,
 			_ => true,
 		};
 	}

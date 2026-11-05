@@ -149,7 +149,7 @@ public sealed class CodeModeToolTests : IDisposable
 		using var session = CreateSession();
 
 		var read = session.DeclaredTools.Single(static tool => tool.Name == "read");
-		Assert.Contains("Codemode: `tools.read(args)` resolves to a string.", read.Description);
+		Assert.Contains("Codemode: `tools.read(args)` resolves to a string", read.Description);
 
 		var codemode = session.DeclaredTools.Single(static tool => tool.Name == CodeModeTool.Name);
 		Assert.DoesNotContain("tools.codemode", codemode.Description);
@@ -256,9 +256,9 @@ public sealed class CodeModeToolTests : IDisposable
 		var codemode = session.Tools.Single(static tool => tool.Name == CodeModeTool.Name);
 
 		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
-			const matches = searchTools("file contents");
+			const matches = await searchTools("file contents");
 			text(matches.map(function (match) { return match.name; }).join(","));
-			text(describeTool(matches[0].name));
+			text(await describeTool(matches[0].name));
 			"""));
 
 		Assert.False(result.IsError, Text(result));
@@ -614,6 +614,26 @@ public sealed class CodeModeToolTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Execute_NestedBashResolvesToStructuredContent()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return; // Windows 需要 Git Bash；该路径由 Windows CI 单独覆盖。
+		}
+
+		using var session = CreateSession();
+		var codemode = session.Tools.Single(static tool => tool.Name == CodeModeTool.Name);
+
+		var result = await codemode.Execute(Invoke(CodeModeTool.Name, """
+			const r = await tools.bash({ command: "printf hi" });
+			return r.exit_code;
+			"""));
+
+		Assert.False(result.IsError, Text(result));
+		Assert.Contains("0", Text(result));
+	}
+
+	[Fact]
 	public async Task DeferredTool_IsLoadedByToolSearchAndRecordedOnTheBranch()
 	{
 		using var session = CreateSession(extraTools: [DiscoveryTool("deferred_tool", ToolExposure.Deferred)]);
@@ -630,6 +650,7 @@ public sealed class CodeModeToolTests : IDisposable
 
 		Assert.False(result.IsError, Text(result));
 		Assert.Contains("deferred_tool", Text(result));
+		Assert.Equal("deferred_tool", result.Details!["loaded"]![0]!.GetValue<string>());
 		Assert.Contains(session.DeclaredTools, static tool => tool.Name == "deferred_tool");
 		Assert.Contains(session.Session.Entries, static entry =>
 			entry is CustomEntry { CustomType: "tool-load" } custom

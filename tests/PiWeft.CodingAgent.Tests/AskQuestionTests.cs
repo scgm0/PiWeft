@@ -145,7 +145,8 @@ public class AskQuestionTests : IDisposable
 			["questions"] = new JsonArray(new JsonObject { ["question"] = "继续吗？", ["type"] = "confirm" }),
 		});
 
-		Assert.True(result.IsError);
+		Assert.False(result.IsError);
+		Assert.True(result.Details!["cancelled"]!.GetValue<bool>());
 		Assert.Contains("不支持交互式 UI", Assert.IsType<TextContent>(result.Content[0]).Text);
 	}
 
@@ -160,7 +161,8 @@ public class AskQuestionTests : IDisposable
 			["questions"] = new JsonArray(new JsonObject { ["question"] = "选哪个？", ["type"] = "select" }),
 		});
 
-		Assert.True(result.IsError);
+		Assert.False(result.IsError);
+		Assert.True(result.Details!["cancelled"]!.GetValue<bool>());
 		Assert.Contains("必须提供 options", Assert.IsType<TextContent>(result.Content[0]).Text);
 		Assert.Null(host.LastRequest);
 	}

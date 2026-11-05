@@ -351,10 +351,10 @@ public sealed class CodeModeSandboxTests
 
 		var result = await Run(
 			"""
-			const matches = searchTools("pattern");
+			const matches = await searchTools("pattern");
 			text(matches.map(function (match) { return match.name; }).join(","));
-			text(describeTool("grep"));
-			return describeTool("missing");
+			text(await describeTool("grep"));
+			return await describeTool("missing");
 			""",
 			new CodeModeTool
 			{
@@ -405,14 +405,14 @@ public sealed class CodeModeSandboxTests
 		});
 
 		var result = await sandbox.ExecuteAsync("""
-			const matches = searchTools("search", { namespace: "docs" });
+			const matches = await searchTools("search", { namespace: "docs" });
 			text(matches.map(function (match) { return match.name; }).join(","));
-			const namespace = describeNamespace("mcp__docs");
+			const namespace = await describeNamespace("mcp__docs");
 			return [
 			  namespace.name,
 			  namespace.aliases.join(","),
 			  namespace.tools.join(","),
-			  describeNamespace("missing") === undefined,
+			  (await describeNamespace("missing")) === undefined,
 			  namespace.description,
 			  namespace.instructions,
 			].join("|");
@@ -426,7 +426,7 @@ public sealed class CodeModeSandboxTests
 	[Fact]
 	public async Task Execute_SearchToolsRejectsBadLimits()
 	{
-		var result = await Run("""searchTools("read", { limit: 0 });""");
+		var result = await Run("""await searchTools("read", { limit: 0 });""");
 
 		Assert.False(result.Ok);
 		Assert.Contains("limit must be a positive integer", result.Error!.Message);
@@ -435,7 +435,7 @@ public sealed class CodeModeSandboxTests
 	[Fact]
 	public async Task Execute_SearchToolsWithAnEmptyQueryReturnsNothing()
 	{
-		var result = await Run("""return searchTools("").length;""");
+		var result = await Run("""return (await searchTools("")).length;""");
 
 		Assert.True(result.Ok, result.Error?.Message);
 		Assert.Equal(0, result.Value!.GetValue<int>());

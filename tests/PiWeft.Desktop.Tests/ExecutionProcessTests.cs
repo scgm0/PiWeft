@@ -11,6 +11,11 @@ public sealed class ExecutionProcessTests
 	private static ChatEntry User(string id) => new() { Role = ChatRole.User, Text = id, EntryId = id };
 	private static ChatEntry Answer(string id, string text, string thinking = "") =>
 		new() { Role = ChatRole.Assistant, EntryId = id, Text = text, Thinking = thinking };
+	/// 虚拟化组体的行宿主：面板直接托管步骤行 Grid，当前下标写在 <c>Tag</c> 上
+	/// （等价于旧 <c>ItemContainer.Index</c>；行会被回收复用，所以每次重新取）。
+	private static IReadOnlyList<Grid> StepRowHosts(ScrollViewer viewport) =>
+		Find<Grid>(viewport).Where(grid => grid.Tag is int).ToArray();
+
 	private static ChatEntry Tool(string id, string text, bool pending = false) =>
 		new() { Role = ChatRole.Tool, EntryId = $"{id}/{(pending ? "call" : "result")}", ToolCallId = id, ToolName = "read", Text = text, IsStreaming = pending };
 
@@ -1094,11 +1099,11 @@ public sealed class ExecutionProcessTests
 		viewport.SetScrollOffsets(0, 240);
 		ConversationPerformanceTests.Layout(view.View);
 
-		var row = Find<ItemContainer>(viewport)
-			.First(container => container.Bounds.Y >= viewport.Bounds.Y &&
-				container.Bounds.Bottom <= viewport.Bounds.Bottom &&
-				Find<Expander>(container).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
-		var position = row.Index;
+		var row = StepRowHosts(viewport)
+			.First(host => host.Bounds.Y >= viewport.Bounds.Y &&
+				host.Bounds.Bottom <= viewport.Bounds.Bottom &&
+				Find<Expander>(host).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint));
+		var position = (int)row.Tag!;
 		var tool = Find<Expander>(row).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
 		var previewTop = row.Bounds.Y - viewport.Bounds.Y;
 		tool.IsExpanded = true;
@@ -1114,7 +1119,7 @@ public sealed class ExecutionProcessTests
 		view.SyncBodyMetrics();
 		ConversationPerformanceTests.Layout(view.View);
 
-		var rebound = Find<ItemContainer>(viewport).First(container => container.Index == position);
+		var rebound = StepRowHosts(viewport).First(host => (int)host.Tag! == position);
 		Assert.True(Find<Expander>(rebound).Any(expander => expander.IsExpanded),
 			$"row {position} must stay expanded: offset={viewport.VerticalOffset:0.#}");
 		Assert.InRange(rebound.Bounds.Y - viewport.Bounds.Y, previewTop - 1, previewTop + 1);
@@ -1143,13 +1148,13 @@ public sealed class ExecutionProcessTests
 		ConversationPerformanceTests.Layout(view.View);
 		Assert.True(smooth.IsFollowingGrowth, "the body parked at its end follows growth");
 
-		var row = Find<ItemContainer>(viewport)
-			.Where(container => container.Bounds.Y > viewport.Bounds.Y &&
-				container.Bounds.Bottom <= viewport.Bounds.Bottom &&
-				Find<Expander>(container).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint))
-			.OrderBy(container => container.Bounds.Y)
+		var row = StepRowHosts(viewport)
+			.Where(host => host.Bounds.Y > viewport.Bounds.Y &&
+				host.Bounds.Bottom <= viewport.Bounds.Bottom &&
+				Find<Expander>(host).Any(expander => HoverHints.Text(expander) == Strings.ToolExpandHint))
+			.OrderBy(host => host.Bounds.Y)
 			.First();
-		var position = row.Index;
+		var position = (int)row.Tag!;
 		var previewTop = row.Bounds.Y - viewport.Bounds.Y;
 		var reading = viewport.VerticalOffset;
 		Find<Expander>(row).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint).IsExpanded = true;
@@ -1158,7 +1163,7 @@ public sealed class ExecutionProcessTests
 		Assert.False(smooth.IsFollowingGrowth, "expanding a tool step is a reading action");
 		Assert.True(smooth.MaxVerticalOffset > reading + 20,
 			$"the expanded body must have grown: {reading:0.#} -> {smooth.MaxVerticalOffset:0.#}");
-		var expanded = Find<ItemContainer>(viewport).First(container => container.Index == position);
+		var expanded = StepRowHosts(viewport).First(host => (int)host.Tag! == position);
 		Assert.InRange(expanded.Bounds.Y - viewport.Bounds.Y, previewTop - 1, previewTop + 1);
 		Assert.True(viewport.VerticalOffset <= reading + 1,
 			$"the reading position was dragged toward the tail: {reading:0.#} -> {viewport.VerticalOffset:0.#}");

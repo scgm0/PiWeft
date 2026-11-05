@@ -55,10 +55,8 @@ public class SystemPromptTests
 			<rules>
 			- Use read to examine files instead of cat or sed.
 			- You can inspect PI_* environment variables for current model and session details.
-			- Use edit for precise changes (edits[].oldText must match exactly)
-			- When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls
-			- Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.
-			- Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.
+			- Use edit for targeted changes. Batch changes to one file in a single call.
+			- Each edits[].oldText must exactly and uniquely match the original file. Keep matches short and non-overlapping; merge nearby changes without including large unchanged regions.
 			- Use write only for new files or complete rewrites.
 			- Maintain the actionable plan with the todo tool. After finishing an item, call action=update with its id and status=completed. Remove one obsolete item with action=delete and its id. Use action=replace only to rebuild the whole plan. If an id is uncertain, call action=list first.
 			- Start a new or materially re-scoped task with one action=replace call containing the complete new plan. Never infer that boundary from completed items, idle time, a user message, or session start.
@@ -72,6 +70,22 @@ public class SystemPromptTests
 			</rules>
 			""",
 			message.Sections!["rules"]);
+	}
+
+	[Fact]
+	public void Build_DefaultToolsAddShellFileOperationRule()
+	{
+		var defaults = BuiltinTools.Create("/tmp")
+			.Where(static tool => tool.Tool.Name is "read" or "bash" or "edit" or "write" or "todo" or "ask_question")
+			.ToList();
+		var message = SystemPrompt.Build(new SystemPromptOptions
+		{
+			Cwd = "/tmp",
+			Tools = defaults,
+			ExtraGuidelines = SystemPrompt.BaselineGuidelines,
+		});
+
+		Assert.Contains("- Use bash for file operations like ls, rg, find", message.Sections!["rules"]);
 	}
 
 	[Fact]

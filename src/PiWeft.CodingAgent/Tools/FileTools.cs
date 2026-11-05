@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
@@ -7,12 +8,7 @@ namespace PiWeft.CodingAgent.Tools;
 
 public static class FileTools
 {
-	private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
-	{
-		".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
-	};
-
-	public static AgentTool Read(string cwd) => new()
+	public static AgentTool Read(string cwd, Func<Model?>? model = null) => new()
 	{
 		Name = "read",
 		Label = "read",
@@ -29,11 +25,13 @@ public static class FileTools
 			},
 			["required"] = new JsonArray("path"),
 		},
-		Execute = invocation => Task.FromResult(ReadFile(cwd, invocation)),
+		OutputSchema = ReadOutputSchema(),
+		Execute = invocation => Task.FromResult(ReadFile(cwd, invocation, model)),
 	};
 
-	private static AgentToolResult ReadFile(string cwd, AgentToolInvocation invocation)
+	private static AgentToolResult ReadFile(string cwd, AgentToolInvocation invocation, Func<Model?>? model)
 	{
+		ThrowIfAborted(invocation.CancellationToken);
 		var path = RequiredString(invocation, "path");
 		var offset = OptionalInt(invocation, "offset");
 		var limit = OptionalInt(invocation, "limit");
@@ -44,22 +42,39 @@ public static class FileTools
 			throw new FileNotFoundException($"File not found: {path}", absolutePath);
 		}
 
-		if (ImageExtensions.Contains(Path.GetExtension(absolutePath)))
+		var mimeType = DetectImageMimeType(absolutePath);
+		if (mimeType is not null)
 		{
 			var bytes = File.ReadAllBytes(absolutePath);
-			var mimeType = MimeTypeFor(Path.GetExtension(absolutePath));
+			var encoded = Convert.ToBase64String(bytes);
+			var note = $"Read image file [{mimeType}]";
+			if (model?.Invoke() is { SupportsImages: false })
+			{
+				note += "\n[Current model does not support images. The image will be omitted from this request.]";
+			}
+
 			return new AgentToolResult
 			{
 				Content =
 				[
-					new TextContent { Text = $"Read image file [{mimeType}]" },
-					new ImageContent { Data = Convert.ToBase64String(bytes), MimeType = mimeType },
+					new TextContent { Text = note },
+					new ImageContent { Data = encoded, MimeType = mimeType },
 				],
 				Details = new JsonObject { ["path"] = absolutePath, ["type"] = "image", ["mimeType"] = mimeType },
+				StructuredContent = new JsonObject
+				{
+					["type"] = "image",
+					["data"] = encoded,
+					["mimeType"] = mimeType,
+					["note"] = note,
+				},
 			};
 		}
 
-		var text = File.ReadAllText(absolutePath, Encoding.UTF8);
+		// pi 用 Buffer.toString("utf-8") 读文本：BOM 会作为 U+FEFF 留在正文里，
+		// 而 File.ReadAllText 会静默吃掉它。
+		ThrowIfAborted(invocation.CancellationToken);
+		var text = Encoding.UTF8.GetString(File.ReadAllBytes(absolutePath));
 		var allLines = text.Split('\n');
 		var totalFileLines = allLines.Length;
 		var startLine = offset is { } o ? Math.Max(0, o - 1) : 0;
@@ -75,6 +90,8 @@ public static class FileTools
 		int? userLimitedLines = null;
 		if (limit is { } userLimit)
 		{
+			// 负的 limit 没有意义；夹到 0，避免 C# range 的 end < start 直接抛异常。
+			userLimit = Math.Max(0, userLimit);
 			var endLine = Math.Min(startLine + userLimit, allLines.Length);
 			selected = string.Join("\n", allLines[startLine..endLine]);
 			userLimitedLines = endLine - startLine;
@@ -130,14 +147,33 @@ public static class FileTools
 		{
 			Content = [new TextContent { Text = output }],
 			Details = details,
+			StructuredContent = JsonValue.Create(output),
 		};
 	}
+
+	private static JsonObject ReadOutputSchema() => new()
+	{
+		["anyOf"] = new JsonArray(
+			new JsonObject { ["type"] = "string" },
+			new JsonObject
+			{
+				["type"] = "object",
+				["properties"] = new JsonObject
+				{
+					["type"] = new JsonObject { ["type"] = "string" },
+					["data"] = new JsonObject { ["type"] = "string" },
+					["mimeType"] = new JsonObject { ["type"] = "string" },
+					["note"] = new JsonObject { ["type"] = "string" },
+				},
+				["required"] = new JsonArray("type", "data", "mimeType", "note"),
+			}),
+	};
 
 	public static AgentTool Write(string cwd) => new()
 	{
 		Name = "write",
 		Label = "write",
-		Description = "Create or overwrite a file with the given content.",
+		Description = "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
 		Parameters = new JsonObject
 		{
 			["type"] = "object",
@@ -237,6 +273,8 @@ public static class FileTools
 
 		FileMutationQueue.Mutate(absolutePath, () =>
 		{
+			ThrowIfAborted(invocation.CancellationToken);
+			EnsureWritableIfExisting(absolutePath, path);
 			ToolPaths.EnsureParentDirectory(absolutePath);
 			WriteAtomically(absolutePath, content);
 		});
@@ -244,11 +282,6 @@ public static class FileTools
 		return new AgentToolResult
 		{
 			Content = [new TextContent { Text = $"Successfully wrote to {path}" }],
-			Details = new JsonObject
-			{
-				["path"] = absolutePath,
-				["bytes"] = Truncate.ByteCount(content),
-			},
 		};
 	}
 
@@ -256,7 +289,7 @@ public static class FileTools
 	{
 		Name = "edit",
 		Label = "edit",
-		Description = "Make precise file edits with exact text replacement, including multiple disjoint edits in one call.",
+		Description = "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
 		Parameters = new JsonObject
 		{
 			["type"] = "object",
@@ -291,6 +324,7 @@ public static class FileTools
 			},
 			["required"] = new JsonArray("path", "edits"),
 		},
+		PrepareArguments = PrepareEditArguments,
 		Execute = invocation => Task.FromResult(EditFile(cwd, invocation)),
 	};
 
@@ -298,18 +332,30 @@ public static class FileTools
 	{
 		var path = RequiredString(invocation, "path");
 		var absolutePath = ToolPaths.ResolveToCwd(path, cwd);
+		// 顶层 agent loop 会执行 PrepareArguments；直接调用工具（测试、codemode 之外的宿主）
+		// 时也要接受 pi 的三种旧式参数，否则一个 JSON 字符串 edits 就会直接失败。
+		var arguments = PrepareEditArguments(invocation.Arguments);
 
-		return FileMutationQueue.Mutate(absolutePath, () => ApplyEdits(path, absolutePath, invocation));
+		return FileMutationQueue.Mutate(
+			absolutePath,
+			() => ApplyEdits(path, absolutePath, arguments, invocation.CancellationToken));
 	}
 
-	private static AgentToolResult ApplyEdits(string path, string absolutePath, AgentToolInvocation invocation)
+	private static AgentToolResult ApplyEdits(
+		string path,
+		string absolutePath,
+		JsonObject arguments,
+		CancellationToken cancellationToken)
 	{
 		if (!File.Exists(absolutePath))
 		{
 			throw new FileNotFoundException($"File not found: {path}", absolutePath);
 		}
 
-		var editsNode = invocation.Arguments["edits"] as JsonArray
+		ThrowIfAborted(cancellationToken);
+		EnsureWritableIfExisting(absolutePath, path);
+
+		var editsNode = arguments["edits"] as JsonArray
 			?? throw new InvalidOperationException("edits must be an array");
 
 		var edits = new List<EditReplacement>(editsNode.Count);
@@ -333,26 +379,113 @@ public static class FileTools
 		var lineEnding = EditDiff.DetectLineEnding(withoutBom);
 		var normalized = EditDiff.NormalizeToLf(withoutBom);
 
+		ThrowIfAborted(cancellationToken);
 		var applied = EditDiff.ApplyEdits(normalized, edits, path);
 		var restored = EditDiff.RestoreLineEndings(applied.NewContent, lineEnding);
 		WriteAtomically(absolutePath, hadBom ? "\uFEFF" + restored : restored);
 
+		var diff = EditDiff.DisplayDiff(applied.BaseContent, applied.NewContent);
 		return new AgentToolResult
 		{
 			Content =
 			[
 				new TextContent
 				{
-					Text = $"Successfully edited {path} ({edits.Count} replacement{(edits.Count == 1 ? string.Empty : "s")})",
+					Text = $"Successfully replaced {edits.Count} block(s) in {path}.",
 				},
 			],
 			Details = new JsonObject
 			{
 				["path"] = absolutePath,
+				["diff"] = diff.Diff,
 				["patch"] = EditDiff.UnifiedPatch(applied.BaseContent, applied.NewContent, path),
-				["firstChangedLine"] = EditDiff.FirstChangedLine(applied.BaseContent, applied.NewContent),
+				["firstChangedLine"] = diff.FirstChangedLine,
 			},
 		};
+	}
+
+	/// pi 的 edit 兼容层：edits 可能是 JSON 字符串、单个对象，或旧式顶层 oldText/newText。
+	private static JsonObject PrepareEditArguments(JsonObject arguments)
+	{
+		var result = (JsonObject)arguments.DeepClone();
+		var editsNode = result["edits"];
+
+		if (editsNode is JsonValue value && value.GetValueKind() == JsonValueKind.String)
+		{
+			try
+			{
+				editsNode = JsonNode.Parse(value.GetValue<string>());
+				if (editsNode is JsonArray || IsSingleEdit(editsNode))
+				{
+					result["edits"] = editsNode;
+				}
+				else
+				{
+					editsNode = result["edits"];
+				}
+			}
+			catch (JsonException)
+			{
+				// 保留原文；后续 schema 校验会给出明确错误。
+				editsNode = result["edits"];
+			}
+		}
+
+		if (IsSingleEdit(editsNode))
+		{
+			result["edits"] = new JsonArray(((JsonObject)editsNode!).DeepClone());
+			editsNode = result["edits"];
+		}
+
+		if (JsonArgs.String(result["oldText"]) is { } oldText && JsonArgs.String(result["newText"]) is { } newText)
+		{
+			var array = editsNode as JsonArray ?? new JsonArray();
+			array.Add((JsonNode)new JsonObject { ["oldText"] = oldText, ["newText"] = newText });
+			result["edits"] = array;
+			result.Remove("oldText");
+			result.Remove("newText");
+		}
+
+		return result;
+	}
+
+	private static bool IsSingleEdit(JsonNode? node) =>
+		node is JsonObject edit && JsonArgs.String(edit["oldText"]) is not null && JsonArgs.String(edit["newText"]) is not null;
+
+	private static void EnsureWritableIfExisting(string absolutePath, string displayPath)
+	{
+		if (!File.Exists(absolutePath))
+		{
+			return;
+		}
+
+		if (OperatingSystem.IsWindows() &&
+			(File.GetAttributes(absolutePath) & FileAttributes.ReadOnly) != 0)
+		{
+			throw new InvalidOperationException($"Could not edit file: {displayPath}. Error code: EACCES.");
+		}
+
+		try
+		{
+			using var stream = new FileStream(absolutePath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+		}
+		catch (UnauthorizedAccessException exception)
+		{
+			throw new InvalidOperationException($"Could not edit file: {displayPath}. Error code: EACCES.", exception);
+		}
+		catch (IOException exception) when (!OperatingSystem.IsWindows() &&
+			exception.Message.Contains("permission", StringComparison.OrdinalIgnoreCase))
+		{
+			throw new InvalidOperationException($"Could not edit file: {displayPath}. Error code: EACCES.", exception);
+		}
+	}
+
+	private static void ThrowIfAborted(CancellationToken cancellationToken)
+	{
+		if (cancellationToken.IsCancellationRequested)
+		{
+			throw new InvalidOperationException("Operation aborted");
+		}
 	}
 
 	private static JsonObject TruncationDetails(TruncationResult truncation, string path) => new()
@@ -361,15 +494,164 @@ public static class FileTools
 		["truncation"] = truncation.ToJson(),
 	};
 
-	private static string MimeTypeFor(string extension) => extension.ToLowerInvariant() switch
+	/// 按文件头识别图片，而不是按扩展名。pi 的 mime.ts 同样只接受可安全内联的静态图片。
+	private static string? DetectImageMimeType(string path)
 	{
-		".jpg" or ".jpeg" => "image/jpeg",
-		".png" => "image/png",
-		".gif" => "image/gif",
-		".webp" => "image/webp",
-		".bmp" => "image/bmp",
-		_ => "application/octet-stream",
-	};
+		const int sniffBytes = 4100;
+		var buffer = new byte[sniffBytes];
+		int read;
+		try
+		{
+			using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+			read = stream.Read(buffer, 0, buffer.Length);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return null;
+		}
+
+		var data = buffer.AsSpan(0, read);
+		if (data.Length >= 4 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF && data[3] != 0xF7)
+		{
+			return "image/jpeg";
+		}
+
+		if (StartsWith(data, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) && IsStaticPng(data))
+		{
+			return "image/png";
+		}
+
+		if (StartsWithAscii(data, 0, "GIF87a") || StartsWithAscii(data, 0, "GIF89a"))
+		{
+			return "image/gif";
+		}
+
+		if (StartsWithAscii(data, 0, "RIFF") && StartsWithAscii(data, 8, "WEBP"))
+		{
+			return "image/webp";
+		}
+
+		if (StartsWithAscii(data, 0, "BM") && IsBmp(data))
+		{
+			return "image/bmp";
+		}
+
+		return null;
+	}
+
+	private static bool IsStaticPng(ReadOnlySpan<byte> data)
+	{
+		if (data.Length < 16 || ReadUInt32BigEndian(data, 8) != 13 || !StartsWithAscii(data, 12, "IHDR"))
+		{
+			return false;
+		}
+
+		var offset = 8;
+		while (offset + 8 <= data.Length)
+		{
+			var length = ReadUInt32BigEndian(data, offset);
+			var typeOffset = offset + 4;
+			if (StartsWithAscii(data, typeOffset, "acTL"))
+			{
+				return false; // animated PNG 不内联
+			}
+
+			if (StartsWithAscii(data, typeOffset, "IDAT"))
+			{
+				return true;
+			}
+
+			var next = (long)offset + 8 + length + 4;
+			if (next <= offset || next > data.Length)
+			{
+				return true;
+			}
+
+			offset = (int)next;
+		}
+
+		return true;
+	}
+
+	private static bool IsBmp(ReadOnlySpan<byte> data)
+	{
+		if (data.Length < 26)
+		{
+			return false;
+		}
+
+		var declaredSize = ReadUInt32LittleEndian(data, 2);
+		var pixelOffset = ReadUInt32LittleEndian(data, 10);
+		var dibSize = ReadUInt32LittleEndian(data, 14);
+		if (declaredSize != 0 && declaredSize < 26)
+		{
+			return false;
+		}
+
+		if (pixelOffset < 14 + dibSize)
+		{
+			return false;
+		}
+
+		if (declaredSize != 0 && pixelOffset >= declaredSize)
+		{
+			return false;
+		}
+
+		int planes;
+		int bits;
+		if (dibSize == 12)
+		{
+			planes = ReadUInt16LittleEndian(data, 22);
+			bits = ReadUInt16LittleEndian(data, 24);
+		}
+		else if (dibSize is >= 40 and <= 124)
+		{
+			if (data.Length < 30)
+			{
+				return false;
+			}
+
+			planes = ReadUInt16LittleEndian(data, 26);
+			bits = ReadUInt16LittleEndian(data, 28);
+		}
+		else
+		{
+			return false;
+		}
+
+		return planes == 1 && bits is 1 or 4 or 8 or 16 or 24 or 32;
+	}
+
+	private static bool StartsWith(ReadOnlySpan<byte> data, ReadOnlySpan<byte> prefix) =>
+		data.Length >= prefix.Length && data[..prefix.Length].SequenceEqual(prefix);
+
+	private static bool StartsWithAscii(ReadOnlySpan<byte> data, int offset, string text)
+	{
+		if (data.Length < offset + text.Length)
+		{
+			return false;
+		}
+
+		for (var index = 0; index < text.Length; index++)
+		{
+			if (data[offset + index] != text[index])
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private static uint ReadUInt32BigEndian(ReadOnlySpan<byte> data, int offset) =>
+		((uint)data[offset] << 24) | ((uint)data[offset + 1] << 16) | ((uint)data[offset + 2] << 8) | data[offset + 3];
+
+	private static uint ReadUInt32LittleEndian(ReadOnlySpan<byte> data, int offset) =>
+		data[offset] | ((uint)data[offset + 1] << 8) | ((uint)data[offset + 2] << 16) | ((uint)data[offset + 3] << 24);
+
+	private static int ReadUInt16LittleEndian(ReadOnlySpan<byte> data, int offset) =>
+		data[offset] | (data[offset + 1] << 8);
 
 	internal static string RequiredString(AgentToolInvocation invocation, string name) =>
 		JsonArgs.String(invocation.Arguments[name])

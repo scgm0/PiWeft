@@ -12,7 +12,18 @@ public static partial class EditDiff
 	public static (bool HadBom, string Content) SplitBom(string content) =>
 		content.StartsWith('\uFEFF') ? (true, content[1..]) : (false, content);
 
-	public static string DetectLineEnding(string content) => content.Contains("\r\n") ? "\r\n" : "\n";
+	public static string DetectLineEnding(string content)
+	{
+		var crlf = content.IndexOf("\r\n", StringComparison.Ordinal);
+		var lf = content.IndexOf('\n');
+		if (lf < 0 || crlf < 0)
+		{
+			return "\n";
+		}
+
+		// 与 pi 一致：以文件中第一个换行的样式为准，而不是“出现过 CRLF 就全转 CRLF”。
+		return crlf < lf ? "\r\n" : "\n";
+	}
 
 	public static string NormalizeToLf(string text) =>
 		text.Replace("\r\n", "\n").Replace('\r', '\n');
@@ -74,9 +85,8 @@ public static partial class EditDiff
 		var usedFuzzyMatch = normalized.Any(edit => IndexOf(content, edit.OldText) < 0);
 		var baseContent = content;
 		var searchContent = usedFuzzyMatch ? NormalizeForFuzzyMatch(content) : content;
-		var map = usedFuzzyMatch ? BuildIndexMap(content) : null;
 
-		var matches = new List<(int Index, int Length, int EditIndex, string NewText)>(normalized.Length);
+		var matches = new List<TextReplacement>(normalized.Length);
 		for (var i = 0; i < normalized.Length; i++)
 		{
 			var oldText = usedFuzzyMatch ? NormalizeForFuzzyMatch(normalized[i].OldText) : normalized[i].OldText;
@@ -98,9 +108,7 @@ public static partial class EditDiff
 						: $"Found {occurrences} occurrences of edits[{i}] in {path}. Each oldText must be unique. Please provide more context to make it unique.");
 			}
 
-			var originalIndex = map is null ? index : map[index];
-			var originalEnd = map is null ? index + oldText.Length : map[index + oldText.Length];
-			matches.Add((originalIndex, originalEnd - originalIndex, i, normalized[i].NewText));
+			matches.Add(new TextReplacement(index, oldText.Length, normalized[i].NewText, i));
 		}
 
 		matches.Sort(static (a, b) => a.Index.CompareTo(b.Index));
@@ -115,17 +123,11 @@ public static partial class EditDiff
 			}
 		}
 
-		var builder = new StringBuilder(content.Length);
-		var cursor = 0;
-		foreach (var match in matches)
-		{
-			builder.Append(content, cursor, match.Index - cursor);
-			builder.Append(match.NewText);
-			cursor = match.Index + match.Length;
-		}
-
-		builder.Append(content, cursor, content.Length - cursor);
-		var newContent = builder.ToString();
+		// 模糊匹配时，替换发生在归一化视图里；未触碰的行必须从原文件逐字节拷回，
+		// 否则 NFKC 的字符展开/收缩会让索引错位（pi 的 applyReplacementsPreservingUnchangedLines）。
+		var newContent = usedFuzzyMatch
+			? ApplyReplacementsPreservingUnchangedLines(content, searchContent, matches)
+			: ApplyReplacements(content, matches, offset: 0);
 
 		if (string.Equals(baseContent, newContent, StringComparison.Ordinal))
 		{
@@ -136,6 +138,265 @@ public static partial class EditDiff
 		}
 
 		return new AppliedEdits(baseContent, newContent);
+	}
+
+	private sealed record TextReplacement(int Index, int Length, string NewText, int EditIndex);
+
+	private sealed record LineSpan(int Start, int End);
+
+	private sealed class ReplacementGroup(int startLine, int endLine, List<TextReplacement> replacements)
+	{
+		public int StartLine { get; } = startLine;
+
+		public int EndLine { get; set; } = endLine;
+
+		public List<TextReplacement> Replacements { get; } = replacements;
+	}
+
+	private static string ApplyReplacements(string content, IReadOnlyList<TextReplacement> replacements, int offset)
+	{
+		var result = content;
+		for (var i = replacements.Count - 1; i >= 0; i--)
+		{
+			var replacement = replacements[i];
+			var index = replacement.Index - offset;
+			result = string.Concat(
+				result.AsSpan(0, index),
+				replacement.NewText,
+				result.AsSpan(index + replacement.Length));
+		}
+
+		return result;
+	}
+
+	private static string ApplyReplacementsPreservingUnchangedLines(
+		string originalContent,
+		string baseContent,
+		IReadOnlyList<TextReplacement> replacements)
+	{
+		var originalLines = SplitLinesWithEndings(originalContent);
+		var baseLines = GetLineSpans(baseContent);
+		if (originalLines.Count != baseLines.Count)
+		{
+			throw new InvalidOperationException(
+				"Cannot preserve unchanged lines because the base content has a different line count.");
+		}
+
+		var groups = new List<ReplacementGroup>();
+		foreach (var replacement in replacements.OrderBy(static replacement => replacement.Index))
+		{
+			var range = GetReplacementLineRange(baseLines, replacement);
+			if (groups.Count > 0 && range.StartLine < groups[^1].EndLine)
+			{
+				var current = groups[^1];
+				current.Replacements.Add(replacement);
+				current.EndLine = Math.Max(current.EndLine, range.EndLine);
+				continue;
+			}
+
+			groups.Add(new ReplacementGroup(range.StartLine, range.EndLine, [replacement]));
+		}
+
+		var builder = new StringBuilder(originalContent.Length);
+		var originalLineIndex = 0;
+		foreach (var group in groups)
+		{
+			for (var index = originalLineIndex; index < group.StartLine; index++)
+			{
+				builder.Append(originalLines[index]);
+			}
+
+			var groupStart = baseLines[group.StartLine].Start;
+			var groupEnd = baseLines[group.EndLine - 1].End;
+			builder.Append(ApplyReplacements(baseContent[groupStart..groupEnd], group.Replacements, groupStart));
+			originalLineIndex = group.EndLine;
+		}
+
+		for (var index = originalLineIndex; index < originalLines.Count; index++)
+		{
+			builder.Append(originalLines[index]);
+		}
+
+		return builder.ToString();
+	}
+
+	private static List<string> SplitLinesWithEndings(string content)
+	{
+		var lines = new List<string>();
+		var start = 0;
+		for (var index = 0; index < content.Length; index++)
+		{
+			if (content[index] != '\n')
+			{
+				continue;
+			}
+
+			lines.Add(content[start..(index + 1)]);
+			start = index + 1;
+		}
+
+		if (start < content.Length)
+		{
+			lines.Add(content[start..]);
+		}
+
+		return lines;
+	}
+
+	private static List<LineSpan> GetLineSpans(string content)
+	{
+		var spans = new List<LineSpan>();
+		var offset = 0;
+		foreach (var line in SplitLinesWithEndings(content))
+		{
+			spans.Add(new LineSpan(offset, offset + line.Length));
+			offset += line.Length;
+		}
+
+		return spans;
+	}
+
+	private static (int StartLine, int EndLine) GetReplacementLineRange(
+		IReadOnlyList<LineSpan> lines,
+		TextReplacement replacement)
+	{
+		var replacementStart = replacement.Index;
+		var replacementEnd = replacement.Index + replacement.Length;
+		var startLine = -1;
+		for (var index = 0; index < lines.Count; index++)
+		{
+			var line = lines[index];
+			if (replacementStart >= line.Start && replacementStart < line.End)
+			{
+				startLine = index;
+				break;
+			}
+		}
+
+		if (startLine < 0)
+		{
+			throw new InvalidOperationException("Replacement range is outside the base content.");
+		}
+
+		var endLine = startLine;
+		while (endLine < lines.Count && lines[endLine].End < replacementEnd)
+		{
+			endLine++;
+		}
+
+		if (endLine >= lines.Count)
+		{
+			throw new InvalidOperationException("Replacement range is outside the base content.");
+		}
+
+		return (startLine, endLine + 1);
+	}
+
+	/// pi 的 display diff：带新旧行号、最多 4 行上下文。用于 edit.details.diff。
+	public static (string Diff, int? FirstChangedLine) DisplayDiff(
+		string baseContent,
+		string newContent,
+		int contextLines = 4)
+	{
+		var before = SplitKeepingTrailing(baseContent);
+		var after = SplitKeepingTrailing(newContent);
+		var edits = DiffLines(before, after);
+		if (edits.All(static edit => edit.Kind == DiffKind.Same))
+		{
+			return (string.Empty, null);
+		}
+
+		var width = Math.Max(before.Length, after.Length).ToString(System.Globalization.CultureInfo.InvariantCulture).Length;
+		var output = new List<string>();
+		var oldLine = 1;
+		var newLine = 1;
+		int? firstChangedLine = null;
+		var lastWasChange = false;
+
+		for (var index = 0; index < edits.Count; index++)
+		{
+			var edit = edits[index];
+			if (edit.Kind == DiffKind.Same)
+			{
+				var nextIsChange = index + 1 < edits.Count && edits[index + 1].Kind != DiffKind.Same;
+				if (!lastWasChange && !nextIsChange)
+				{
+					oldLine++;
+					newLine++;
+					continue;
+				}
+
+				var run = new List<string>();
+				var runIndex = index;
+				while (runIndex < edits.Count && edits[runIndex].Kind == DiffKind.Same)
+				{
+					run.Add(edits[runIndex].Text);
+					runIndex++;
+				}
+
+				void EmitSame(string line)
+				{
+					output.Add($" {oldLine.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(width)} {line}");
+					oldLine++;
+					newLine++;
+				}
+
+				void SkipSame(int count)
+				{
+					oldLine += count;
+					newLine += count;
+				}
+
+				if (lastWasChange && nextIsChange)
+				{
+					if (run.Count <= contextLines * 2)
+					{
+						foreach (var line in run) EmitSame(line);
+					}
+					else
+					{
+						foreach (var line in run.Take(contextLines)) EmitSame(line);
+						output.Add($" {"".PadLeft(width)} ...");
+						SkipSame(run.Count - contextLines * 2);
+						foreach (var line in run.TakeLast(contextLines)) EmitSame(line);
+					}
+				}
+				else if (lastWasChange)
+				{
+					foreach (var line in run.Take(contextLines)) EmitSame(line);
+					SkipSame(Math.Max(0, run.Count - contextLines));
+				}
+				else if (nextIsChange)
+				{
+					SkipSame(Math.Max(0, run.Count - contextLines));
+					foreach (var line in run.TakeLast(contextLines)) EmitSame(line);
+				}
+				else
+				{
+					SkipSame(run.Count);
+				}
+
+				lastWasChange = false;
+				index = runIndex - 1;
+				continue;
+			}
+
+			firstChangedLine ??= newLine;
+			if (edit.Kind == DiffKind.Remove)
+			{
+				output.Add($"-{oldLine.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(width)} {edit.Text}");
+				oldLine++;
+			}
+			else
+			{
+				output.Add($"+{newLine.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(width)} {edit.Text}");
+				newLine++;
+			}
+
+			lastWasChange = true;
+		}
+
+		return (string.Join("\n", output), firstChangedLine);
 	}
 
 	public static int? FirstChangedLine(string baseContent, string newContent)
@@ -168,7 +429,7 @@ public static partial class EditDiff
 		if (before.Length > 20_000 || after.Length > 20_000)
 		{
 			// 输入过大时退化为整文件替换。
-			var header = $"--- a/{path}\n+++ b/{path}\n@@ -1,{before.Length} +1,{after.Length} @@\n";
+			var header = $"--- {path}\n+++ {path}\n@@ -1,{before.Length} +1,{after.Length} @@\n";
 			var body = new StringBuilder(header);
 			foreach (var line in before)
 			{
@@ -185,8 +446,8 @@ public static partial class EditDiff
 
 		var edits = DiffLines(before, after);
 		var output = new StringBuilder();
-		output.Append("--- a/").Append(path).Append('\n');
-		output.Append("+++ b/").Append(path).Append('\n');
+		output.Append("--- ").Append(path).Append('\n');
+		output.Append("+++ ").Append(path).Append('\n');
 
 		var index = 0;
 		while (index < edits.Count)
@@ -205,7 +466,7 @@ public static partial class EditDiff
 				if (edits[i].Kind == DiffKind.Same)
 				{
 					contextAfter++;
-					if (contextAfter > 6)
+					if (contextAfter > 8)
 					{
 						break;
 					}
@@ -217,8 +478,8 @@ public static partial class EditDiff
 				}
 			}
 
-			var hunkStart = Math.Max(0, start - 3);
-			var hunkEnd = Math.Min(edits.Count - 1, end + 3);
+			var hunkStart = Math.Max(0, start - 4);
+			var hunkEnd = Math.Min(edits.Count - 1, end + 4);
 
 			var oldLines = 0;
 			var newLines = 0;
@@ -366,41 +627,5 @@ public static partial class EditDiff
 		}
 
 		return count;
-	}
-
-	/// 把归一化后的字符下标映射回原始下标，这样模糊匹配的结果可以作用到原始文本上。
-	private static int[] BuildIndexMap(string original)
-	{
-		var map = new List<int>(original.Length + 1);
-		var normalized = new StringBuilder(original.Length);
-		var index = 0;
-
-		while (index < original.Length)
-		{
-			var lineStart = index;
-			while (index < original.Length && original[index] != '\n')
-			{
-				index++;
-			}
-
-			var line = original.AsSpan(lineStart, index - lineStart);
-			var trimmed = line.TrimEnd();
-
-			for (var i = 0; i < trimmed.Length; i++)
-			{
-				map.Add(lineStart + i);
-				normalized.Append(trimmed[i]);
-			}
-
-			if (index < original.Length)
-			{
-				map.Add(index);
-				normalized.Append('\n');
-				index++;
-			}
-		}
-
-		map.Add(original.Length);
-		return [.. map];
 	}
 }
