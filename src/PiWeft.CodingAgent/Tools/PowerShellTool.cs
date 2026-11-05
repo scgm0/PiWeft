@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
@@ -74,7 +73,6 @@ public static class PowerShellTool
 		var wallTimeSeconds = Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
 		var formatted = ShellToolFormatter.Format(
 			result,
-			command,
 			"pi-powershell",
 			wallTimeSeconds,
 			emptyText: result.Cancelled || result.TimedOut ? string.Empty : "(no output)");

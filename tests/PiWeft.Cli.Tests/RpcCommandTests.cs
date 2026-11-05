@@ -129,7 +129,41 @@ public class RpcCommandTests : IDisposable
 		Assert.Equal("hello from bash\n", bash["data"]!["output"]!.GetValue<string>());
 		Assert.Equal(0, bash["data"]!["exitCode"]!.GetValue<int>());
 		Assert.False(bash["data"]!["truncated"]!.GetValue<bool>());
-		Assert.Contains(records, static node => node["type"]!.GetValue<string>() == "bash_execution_update");
+
+		var updates = records.Where(static node => node["type"]!.GetValue<string>() == "bash_execution_update").ToArray();
+		Assert.NotEmpty(updates);
+		Assert.All(updates, static node => Assert.False(node.AsObject().ContainsKey("output")));
+		Assert.Equal(
+			"hello from bash\n",
+			string.Concat(updates.Select(static node => node["delta"]!.GetValue<string>())));
+	}
+
+	[Fact]
+	public async Task BashStripsCarriageReturnsAndStreamsDeltaChunks()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var (environment, output) = Setup();
+		var runner = new CliRunner(environment, output, new StringWriter());
+
+		var commands = string.Join(
+			'\n',
+			"""{"id":"1","type":"bash","command":"printf 'a\\rb\\r\\nc'"}""",
+			"""{"id":"2","type":"exit"}""");
+
+		var records = await RunAsync(runner, Arguments("--no-session"), commands, output);
+
+		var bash = ResponseFor(records, "bash");
+		Assert.Equal("ab\nc", bash["data"]!["output"]!.GetValue<string>());
+
+		var updates = records.Where(static node => node["type"]!.GetValue<string>() == "bash_execution_update").ToArray();
+		Assert.NotEmpty(updates);
+		Assert.Equal(
+			"ab\nc",
+			string.Concat(updates.Select(static node => node["delta"]!.GetValue<string>())));
 	}
 
 	[Fact]

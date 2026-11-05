@@ -7,11 +7,9 @@ namespace PiWeft.CodingAgent.Tools;
 /// bash / powershell 共用的结果格式化：截断、完整输出路径、状态行与 structuredContent。
 internal sealed record ShellToolOutput(
 	string Text,
-	JsonObject Details,
+	JsonObject? Details,
 	JsonObject StructuredContent,
-	bool IsError,
-	string? FullOutputPath,
-	TruncationResult Truncation);
+	bool IsError);
 
 internal static class ShellToolFormatter
 {
@@ -19,7 +17,6 @@ internal static class ShellToolFormatter
 
 	public static ShellToolOutput Format(
 		ShellResult result,
-		string command,
 		string tempFilePrefix,
 		double wallTimeSeconds,
 		string emptyText = "(no output)")
@@ -32,25 +29,40 @@ internal static class ShellToolFormatter
 		}
 
 		var text = truncation.Content.Length > 0 ? truncation.Content : emptyText;
-		string? fullOutputPath = null;
+		string? fullOutputPath = result.FullOutputPath;
 		JsonObject? truncationDetails = null;
 		if (truncation.Truncated)
 		{
-			fullOutputPath = result.FullOutputPath ?? ShellRunner.WriteFullOutput(result.Output, tempFilePrefix);
+			// 临时目录不可写时 OutputCapture 会退化成只有尾部窗口；这里再写一次也会失败，
+			// 不能因此把已经成功的命令变成工具错误。
+			if (fullOutputPath is null)
+			{
+				try
+				{
+					fullOutputPath = ShellRunner.WriteFullOutput(result.Output, tempFilePrefix);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+				}
+			}
+
 			truncationDetails = truncation.ToJson();
+			var fullHint = fullOutputPath is { Length: > 0 }
+				? $" Full output: {fullOutputPath}"
+				: " Full output could not be saved.";
 			var startLine = truncation.TotalLines - truncation.OutputLines + 1;
 			var endLine = truncation.TotalLines;
 			if (truncation.LastLinePartial)
 			{
-				text += $"\n\n[Showing last {Truncate.FormatSize(truncation.OutputBytes)} of line {endLine} (line is {Truncate.FormatSize(LastLineBytes(result.Output))}). Full output: {fullOutputPath}]";
+				text += $"\n\n[Showing last {Truncate.FormatSize(truncation.OutputBytes)} of line {endLine} (line is {Truncate.FormatSize(LastLineBytes(result.Output))}).{fullHint}]";
 			}
 			else if (truncation.TruncatedBy == "lines")
 			{
-				text += $"\n\n[Showing lines {startLine}-{endLine} of {truncation.TotalLines}. Full output: {fullOutputPath}]";
+				text += $"\n\n[Showing lines {startLine}-{endLine} of {truncation.TotalLines}.{fullHint}]";
 			}
 			else
 			{
-				text += $"\n\n[Showing lines {startLine}-{endLine} of {truncation.TotalLines} ({Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit). Full output: {fullOutputPath}]";
+				text += $"\n\n[Showing lines {startLine}-{endLine} of {truncation.TotalLines} ({Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit).{fullHint}]";
 			}
 		}
 
@@ -62,16 +74,17 @@ internal static class ShellToolFormatter
 				: $"Command exited with code {result.ExitCode}";
 		}
 
-		var details = new JsonObject
-		{
-			["command"] = command,
-			["exitCode"] = result.ExitCode,
-			["truncated"] = truncation.Truncated,
-			["fullOutputPath"] = fullOutputPath,
-		};
+		// 与 pi 的 BashToolDetails 一致：details 只带截断信息和完整输出路径。
+		// 命令、退出码在工具参数与 structuredContent 里，不重复塞进 details。
+		var details = new JsonObject();
 		if (truncationDetails is not null)
 		{
 			details["truncation"] = truncationDetails;
+		}
+
+		if (fullOutputPath is { Length: > 0 })
+		{
+			details["fullOutputPath"] = fullOutputPath;
 		}
 
 		var structuredOutput = result.Output;
@@ -106,7 +119,7 @@ internal static class ShellToolFormatter
 			structured["full_output_path"] = outputPath;
 		}
 
-		return new ShellToolOutput(text, details, structured, isError, fullOutputPath, truncation);
+		return new ShellToolOutput(text, details.Count > 0 ? details : null, structured, isError);
 	}
 
 	public static AgentToolResult UpdateResult(ShellSnapshot snapshot)

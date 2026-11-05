@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text;
 using PiWeft.CodingAgent.Session;
 
@@ -53,6 +54,11 @@ public sealed record ShellInvocation
 
 	public bool PowerShell { get; init; }
 
+	/// <summary>
+	/// 用户 <c>!</c> 命令的输出按 pi 的 bash-executor 去掉 <c>\r</c>；bash 工具本身保留原始 CR。
+	/// </summary>
+	public bool StripCarriageReturns { get; init; }
+
 	public string TempFilePrefix { get; init; } = "pi-bash";
 }
 
@@ -74,8 +80,21 @@ public static class ShellRunner
 
 	private const int UpdateThrottleMs = 100;
 
+	/// <summary>Unix 上 setsid 会让 shell 成为新会话/进程组组长，超时才能整组杀掉后台进程（pi 的 detached: true 语义）。</summary>
+	private static readonly Lock GroupGate = new();
+	private static readonly HashSet<int> ActiveGroups = [];
+	private static bool _setsidResolved;
+	private static string? _setsidPath;
+
+	static ShellRunner()
+	{
+		// pi 在进程退出时用 killTrackedDetachedChildren 清理正在运行的 shell 组。
+		AppDomain.CurrentDomain.ProcessExit += static (_, _) => KillActiveProcessGroups();
+	}
+
 	/// 在 <paramref name="cwd"/> 执行 <paramref name="command"/>，按到达顺序合并 stdout 与 stderr。
-	/// 取消/超时会杀掉整棵进程树，并把已经收到的输出带回结果。
+	/// 取消/超时会杀掉进程组（无 setsid 时退回整棵进程树），并把已经收到的输出带回结果。
+	/// <paramref name="onOutput"/> 收到的是清洗后的文本块，不是按行拆分。
 	public static async Task<ShellResult> RunAsync(
 		string command,
 		string cwd,
@@ -118,24 +137,41 @@ public static class ShellRunner
 		var shell = invocation?.PowerShell == true
 			? PowerShellCommand()
 			: ShellCommand(invocation?.ShellPath);
+
+		// 与 pi 的 detached: true 对齐：Unix 上通过 setsid 把 shell 放进独立进程组。
+		// 没有 setsid 时退回 .NET 的整树 kill（shell 已退出时无法追踪被 reparent 的后代）。
+		var setsid = ResolveSetsid();
+		var useProcessGroup = setsid is not null;
+		var fileName = shell.FileName;
+		var arguments = new List<string>(shell.Arguments);
+		if (!shell.CommandFromStdin)
+		{
+			arguments.Add(command);
+		}
+
+		if (useProcessGroup)
+		{
+			// 不用 `--`：BusyBox 的 setsid 不解析选项分隔符，会把 `--` 当成程序名。
+			// shell 路径是绝对路径（或 sh），不会以 `-` 开头被 setsid 误认为选项。
+			arguments.Insert(0, shell.FileName);
+			fileName = setsid!;
+		}
+
 		var startInfo = new ProcessStartInfo
 		{
-			FileName = shell.FileName,
+			FileName = fileName,
 			WorkingDirectory = cwd,
 			RedirectStandardOutput = true,
 			RedirectStandardError = true,
 			RedirectStandardInput = true,
+			StandardInputEncoding = new UTF8Encoding(false),
 			UseShellExecute = false,
+			CreateNoWindow = true,
 		};
 
-		foreach (var argument in shell.Arguments)
+		foreach (var argument in arguments)
 		{
 			startInfo.ArgumentList.Add(argument);
-		}
-
-		if (!shell.CommandFromStdin)
-		{
-			startInfo.ArgumentList.Add(command);
 		}
 
 		foreach (var name in SessionEnvironmentNames)
@@ -166,70 +202,116 @@ public static class ShellRunner
 			cancellation.CancelAfter(TimeSpan.FromSeconds(timeout));
 		}
 
-		using var capture = new OutputCapture(invocation?.TempFilePrefix ?? "pi-bash");
+		using var capture = new OutputCapture(
+			invocation?.TempFilePrefix ?? "pi-bash",
+			invocation?.StripCarriageReturns == true);
 		using var process = new Process { StartInfo = startInfo };
 		if (!process.Start())
 		{
 			throw new InvalidOperationException($"Failed to start {shell.FileName}");
 		}
 
-		using var readCancellation = new CancellationTokenSource();
-		var updateGate = new object();
-		var stdout = PumpAsync(process.StandardOutput.BaseStream, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
-		var stderr = PumpAsync(process.StandardError.BaseStream, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
-		var pumps = Task.WhenAll(stdout, stderr);
-		var startedAt = Stopwatch.GetTimestamp();
+		int? processGroupId = useProcessGroup ? process.Id : null;
+		if (processGroupId is { } groupId)
+		{
+			TrackProcessGroup(groupId);
+		}
 
 		try
 		{
+			using var readCancellation = new CancellationTokenSource();
+			var updateGate = new object();
+			var stdout = PumpAsync(process.StandardOutput.BaseStream, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
+			var stderr = PumpAsync(process.StandardError.BaseStream, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
+			var pumps = Task.WhenAll(stdout, stderr);
+			var startedAt = Stopwatch.GetTimestamp();
+
 			try
 			{
-				if (shell.CommandFromStdin)
+				try
 				{
-					await process.StandardInput.WriteAsync(command.AsMemory(), CancellationToken.None).ConfigureAwait(false);
+					if (shell.CommandFromStdin)
+					{
+						await process.StandardInput.WriteAsync(command.AsMemory(), CancellationToken.None).ConfigureAwait(false);
+					}
+
+					process.StandardInput.Close();
+				}
+				catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+				{
+					// 命令可能已经退出，管道读端关了。与 pi 一样忽略 stdin 的写失败。
 				}
 
-				process.StandardInput.Close();
+				// WaitForExitAsync 只等 shell 自己退出，不等它留给后台进程的管道。
+				await process.WaitForExitAsync(cancellation.Token).ConfigureAwait(false);
+
+				// shell 退出后仍可能有后代在写（`npm run dev &`）。像 pi 的 waitForChildProcess
+				// 一样按管道空闲收尾，但整个收尾仍受 timeout/abort 约束：否则 shell 先退出时，
+				// 超时会被 2 秒固定 drain 拖成「命令成功」，后台进程也会被留在原地。
+				await DrainAfterExitAsync(pumps, capture, readCancellation, cancellation.Token, timeoutSeconds is not null)
+					.ConfigureAwait(false);
+
+				return CompleteCapture(
+					capture,
+					exitCode: process.ExitCode,
+					cancelled: false,
+					timedOut: false,
+					onSnapshot);
 			}
-			catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+			catch (OperationCanceledException)
 			{
-				// 命令可能已经退出，管道读端关了。与 pi 一样忽略 stdin 的写失败。
+				var timedOut = !cancellationToken.IsCancellationRequested;
+				var shellExit = DescribeShellExit(process, startedAt);
+				TryKill(process, processGroupId);
+				await DrainAfterCancellationAsync(pumps, readCancellation).ConfigureAwait(false);
+
+				var result = CompleteCapture(
+					capture,
+					exitCode: null,
+					cancelled: !timedOut,
+					timedOut: timedOut,
+					onSnapshot);
+				return shellExit is { } exit
+					? result with
+					{
+						ShellExitedBeforeTimeout = true,
+						ShellExitCode = exit.ExitCode,
+						ShellExitSeconds = exit.Seconds,
+					}
+					: result;
 			}
-
-			// WaitForExitAsync 只等 shell 自己退出，不等它留给后台进程的管道。
-			await process.WaitForExitAsync(cancellation.Token).ConfigureAwait(false);
-
-			// shell 退出后仍可能有后代在写（`npm run dev &`）。像 pi 的 waitForChildProcess
-			// 一样按管道空闲收尾，但整个收尾仍受 timeout/abort 约束：否则 shell 先退出时，
-			// 超时会被 2 秒固定 drain 拖成「命令成功」，后台进程也会被留在原地。
-			await DrainAfterExitAsync(pumps, capture, readCancellation, cancellation.Token, timeoutSeconds is not null)
-				.ConfigureAwait(false);
-
-			return capture.Complete(process.ExitCode, cancelled: false, timedOut: false);
+			catch
+			{
+				TryKill(process, processGroupId);
+				readCancellation.Cancel();
+				throw;
+			}
 		}
-		catch (OperationCanceledException)
+		finally
 		{
-			var timedOut = !cancellationToken.IsCancellationRequested;
-			var shellExit = DescribeShellExit(process, startedAt);
-			TryKill(process);
-			await DrainAfterCancellationAsync(pumps, readCancellation).ConfigureAwait(false);
+			if (processGroupId is { } group)
+			{
+				UntrackProcessGroup(group);
+			}
+		}
+	}
 
-			var result = capture.Complete(exitCode: null, cancelled: !timedOut, timedOut: timedOut);
-			return shellExit is { } exit
-				? result with
-				{
-					ShellExitedBeforeTimeout = true,
-					ShellExitCode = exit.ExitCode,
-					ShellExitSeconds = exit.Seconds,
-				}
-				: result;
-		}
-		catch
-		{
-			TryKill(process);
-			readCancellation.Cancel();
-			throw;
-		}
+	/// <summary>收尾并把最终快照推给 onUpdate（pi 的 finishOutput 也会发最后一次 update）。</summary>
+	private static ShellResult CompleteCapture(
+		OutputCapture capture,
+		int? exitCode,
+		bool cancelled,
+		bool timedOut,
+		Action<ShellSnapshot>? onSnapshot)
+	{
+		var result = capture.Complete(exitCode, cancelled, timedOut);
+		onSnapshot?.Invoke(new ShellSnapshot(
+			result.Output,
+			result.TotalBytes,
+			result.TotalLines,
+			result.OutputTruncated,
+			result.FullOutputPath));
+		return result;
 	}
 
 	/// <summary>shell 退出后等待两个管道排空的时间参数。</summary>
@@ -594,8 +676,27 @@ public static class ShellRunner
 		startInfo.Environment[pathKey] = string.Join(Path.PathSeparator, [binDir, .. entries]);
 	}
 
-	private static void TryKill(Process process)
+	private const int SigKill = 9;
+
+	/// <summary>macOS 的 SIGSTOP 是 17，Linux 是 19（pi 在 macOS 上先 STOP 再 KILL，避免子进程唤醒 shell 继续执行）。</summary>
+	private static int SigStop => OperatingSystem.IsMacOS() ? 17 : 19;
+
+	[DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+	private static extern int SysKill(int pid, int signal);
+
+	/// <summary>Unix 上优先杀掉整个进程组；shell 先退出时也能命中后台进程（pi 的 kill(-pid) 语义）。</summary>
+	private static void TryKill(Process process, int? processGroupId)
 	{
+		if (processGroupId is { } group && TryKillProcessGroup(group))
+		{
+			return;
+		}
+
+		if (OperatingSystem.IsWindows() && TryTaskKill(process))
+		{
+			return;
+		}
+
 		try
 		{
 			if (!process.HasExited)
@@ -611,8 +712,252 @@ public static class ShellRunner
 		}
 	}
 
+	private static bool TryKillProcessGroup(int groupId)
+	{
+		if (OperatingSystem.IsWindows() || groupId <= 0)
+		{
+			return false;
+		}
+
+		try
+		{
+			if (OperatingSystem.IsMacOS())
+			{
+				_ = SysKill(-groupId, SigStop);
+			}
+
+			return SysKill(-groupId, SigKill) == 0;
+		}
+		catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>Windows 上用 System32 的 taskkill /F /T，避免 PATH 里的同名程序（pi 的同款修复）。</summary>
+	private static bool TryTaskKill(Process process)
+	{
+		if (!OperatingSystem.IsWindows())
+		{
+			return false;
+		}
+
+		var systemRoot = Environment.GetEnvironmentVariable("SystemRoot");
+		var executable = string.IsNullOrEmpty(systemRoot)
+			? "taskkill.exe"
+			: Path.Combine(systemRoot, "System32", "taskkill.exe");
+
+		try
+		{
+			var startInfo = new ProcessStartInfo
+			{
+				FileName = executable,
+				CreateNoWindow = true,
+				UseShellExecute = false,
+				RedirectStandardOutput = true,
+				RedirectStandardError = true,
+			};
+			startInfo.ArgumentList.Add("/F");
+			startInfo.ArgumentList.Add("/T");
+			startInfo.ArgumentList.Add("/PID");
+			startInfo.ArgumentList.Add(process.Id.ToString(CultureInfo.InvariantCulture));
+
+			using var taskkill = Process.Start(startInfo);
+			if (taskkill is null)
+			{
+				return false;
+			}
+
+			if (!taskkill.WaitForExit(5_000))
+			{
+				try
+				{
+					taskkill.Kill();
+				}
+				catch (Exception)
+				{
+				}
+
+				return false;
+			}
+
+			_ = taskkill.StandardOutput.ReadToEnd();
+			_ = taskkill.StandardError.ReadToEnd();
+			return taskkill.ExitCode == 0;
+		}
+		catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+		{
+			return false;
+		}
+	}
+
+	private static string? ResolveSetsid()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return null;
+		}
+
+		lock (GroupGate)
+		{
+			if (_setsidResolved)
+			{
+				return _setsidPath;
+			}
+
+			_setsidResolved = true;
+			foreach (var candidate in new[] { "/usr/bin/setsid", "/bin/setsid", "/usr/local/bin/setsid" })
+			{
+				if (IsExecutable(candidate))
+				{
+					_setsidPath = candidate;
+					return _setsidPath;
+				}
+			}
+
+			var onPath = FindOnPath("setsid");
+			if (onPath is not null && IsExecutable(onPath))
+			{
+				_setsidPath = onPath;
+			}
+
+			return _setsidPath;
+		}
+	}
+
+	private static bool IsExecutable(string path)
+	{
+		try
+		{
+			if (!File.Exists(path))
+			{
+				return false;
+			}
+
+			if (OperatingSystem.IsWindows())
+			{
+				return true;
+			}
+
+			var mode = File.GetUnixFileMode(path);
+			return (mode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+		{
+			return false;
+		}
+	}
+
+	private static void TrackProcessGroup(int groupId)
+	{
+		lock (GroupGate)
+		{
+			ActiveGroups.Add(groupId);
+		}
+	}
+
+	private static void UntrackProcessGroup(int groupId)
+	{
+		lock (GroupGate)
+		{
+			ActiveGroups.Remove(groupId);
+		}
+	}
+
+	private static void KillActiveProcessGroups()
+	{
+		int[] groups;
+		lock (GroupGate)
+		{
+			if (ActiveGroups.Count == 0)
+			{
+				return;
+			}
+
+			groups = [.. ActiveGroups];
+			ActiveGroups.Clear();
+		}
+
+		foreach (var group in groups)
+		{
+			TryKillProcessGroup(group);
+		}
+	}
+
 	private static string? FindOnPath(string executable)
 	{
+		// Windows 上不能只靠 File.Exists：Store 版 bash/pwsh 是 reparse point，
+		// 而且安装目录不一定在 PATH 的普通目录项里。与 pi 一样问 where。
+		if (OperatingSystem.IsWindows())
+		{
+			return FindOnWindowsPath(executable);
+		}
+
+		var path = Environment.GetEnvironmentVariable("PATH");
+		if (string.IsNullOrEmpty(path))
+		{
+			return null;
+		}
+
+		foreach (var directory in path.Split(Path.PathSeparator))
+		{
+			if (directory.Length == 0)
+			{
+				continue;
+			}
+
+			var candidate = Path.Combine(directory, executable);
+			if (IsExecutable(candidate))
+			{
+				return candidate;
+			}
+		}
+
+		return null;
+	}
+
+	private static string? FindOnWindowsPath(string executable)
+	{
+		try
+		{
+			var startInfo = new ProcessStartInfo
+			{
+				FileName = "where.exe",
+				CreateNoWindow = true,
+				UseShellExecute = false,
+				RedirectStandardOutput = true,
+				RedirectStandardError = true,
+			};
+			startInfo.ArgumentList.Add(executable);
+
+			using var where = Process.Start(startInfo);
+			if (where is null)
+			{
+				return null;
+			}
+
+			var output = where.StandardOutput.ReadToEnd();
+			where.WaitForExit(5_000);
+			if (where.ExitCode != 0)
+			{
+				return null;
+			}
+
+			foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+			{
+				// where 只返回存在的可执行文件；不要再 stat，Store 版 bash/pwsh 的 reparse point
+				// 会让 File.Exists 误判为不存在（pi 为避免 Node existsSync 的同一个坑）。
+				if (line.Length > 0)
+				{
+					return line;
+				}
+			}
+		}
+		catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+		{
+			// where 不可用或进程启动失败：继续按 PATH 的普通目录查找。
+		}
+
 		var path = Environment.GetEnvironmentVariable("PATH");
 		if (string.IsNullOrEmpty(path))
 		{
@@ -648,10 +993,10 @@ public static class ShellRunner
 		private const long MaxRollingBytes = MaxBytes * 2;
 
 		private readonly string _prefix;
+		private readonly bool _stripCarriageReturns;
 		private readonly Lock _gate = new();
 		private readonly Decoder _decoder = Encoding.UTF8.GetDecoder();
 		private readonly StringBuilder _tail = new();
-		private readonly StringBuilder _line = new();
 		private readonly List<byte[]> _pendingBytes = [];
 		private FileStream? _file;
 		private string? _path;
@@ -668,7 +1013,11 @@ public static class ShellRunner
 		private long _lastActivityTicks = Stopwatch.GetTimestamp();
 		private Action<string>? _onOutput;
 
-		public OutputCapture(string prefix) => _prefix = prefix;
+		public OutputCapture(string prefix, bool stripCarriageReturns)
+		{
+			_prefix = prefix;
+			_stripCarriageReturns = stripCarriageReturns;
+		}
 
 		/// <summary>最近一次收到管道数据的时间戳。shell 退出后用它判断后台进程是否还在写。</summary>
 		public long LastActivityTicks => Interlocked.Read(ref _lastActivityTicks);
@@ -728,7 +1077,6 @@ public static class ShellRunner
 				if (!_closed)
 				{
 					FlushDecoderLocked();
-					FlushLineLocked();
 					if (ShouldUseTempFile())
 					{
 						EnsureFileLocked();
@@ -788,7 +1136,10 @@ public static class ShellRunner
 			var combined = _pendingAnsi.Length == 0 ? text : _pendingAnsi + text;
 			var (complete, pending) = ShellTextSanitizer.SplitIncompleteAnsiSuffix(combined);
 			_pendingAnsi = pending;
-			return ShellTextSanitizer.Sanitize(complete);
+			var sanitized = ShellTextSanitizer.Sanitize(complete);
+			return _stripCarriageReturns && sanitized.Contains('\r')
+				? sanitized.Replace("\r", string.Empty)
+				: sanitized;
 		}
 
 		private void FlushDecoderLocked()
@@ -807,23 +1158,15 @@ public static class ShellRunner
 			{
 				var rest = ShellTextSanitizer.Sanitize(_pendingAnsi);
 				_pendingAnsi = string.Empty;
+				if (_stripCarriageReturns && rest.Contains('\r'))
+				{
+					rest = rest.Replace("\r", string.Empty);
+				}
 				if (rest.Length > 0)
 				{
 					AppendTextLocked(rest, _onOutput);
 				}
 			}
-		}
-
-		private void FlushLineLocked()
-		{
-			if (_line.Length == 0)
-			{
-				return;
-			}
-
-				var line = _line.ToString();
-			_line.Clear();
-			_onOutput?.Invoke(line.EndsWith('\r') ? line[..^1] : line);
 		}
 
 		private void AppendTextLocked(string text, Action<string>? onOutput)
@@ -876,42 +1219,9 @@ public static class ShellRunner
 				TrimTailLocked();
 			}
 
-			// 行回调只在同一条锁里投递，stdout/stderr 的行序不会被线程池打乱。
-			if (onOutput is null)
-			{
-				return;
-			}
-
-			// 一次 chunk 可能有几千行；按段截取，避免每行 Remove(0, n) 造成二次方拷贝。
-			var segmentStart = 0;
-			for (var index = 0; index < text.Length; index++)
-			{
-				if (text[index] != '\n')
-				{
-					continue;
-				}
-
-				string line;
-				if (_line.Length == 0)
-				{
-					line = text[segmentStart..index];
-				}
-				else
-				{
-					_line.Append(text, segmentStart, index - segmentStart);
-					line = _line.ToString();
-					_line.Clear();
-				}
-
-				segmentStart = index + 1;
-				// 只给行回调去掉 CRLF 的尾巴；模型上下文保留原始 \r（与 pi 的 bash 工具一致）。
-				onOutput.Invoke(line.EndsWith('\r') ? line[..^1] : line);
-			}
-
-			if (segmentStart < text.Length)
-			{
-				_line.Append(text, segmentStart, text.Length - segmentStart);
-			}
+			// 流式回调按清洗后的文本 chunk 投递（与 pi 的 onChunk/delta 语义一致）。
+			// 仍在 _gate 内，保证 stdout/stderr 的 chunk 顺序。
+			onOutput?.Invoke(text);
 		}
 
 		private void TrimTailLocked()

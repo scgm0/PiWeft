@@ -92,6 +92,12 @@ public static class CodingMessages
 			.Append("`\n");
 
 		var output = ShellTextSanitizer.Sanitize(RawString(message, "output"));
+		if (output.Contains('\r'))
+		{
+			// 用户 `!` 命令按 pi 的 bash-executor 语义去掉 CR；旧会话也在这里一并修复。
+			output = output.Replace("\r", string.Empty);
+		}
+
 		if (output.Length > 0)
 		{
 			builder.Append("```\n").Append(output).Append("\n```");

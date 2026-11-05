@@ -272,6 +272,11 @@ public sealed class CodingAgentSession : IDisposable
 				// bash 需要会话上下文来注入 PI_* 环境变量与 settings 的 shell 配置。
 				builtins[index] = builtins[index] with { Tool = PiWeft.CodingAgent.Tools.BashTool.Create(Cwd, BashEnvironment) };
 			}
+			else if (builtins[index].Tool.Name == "powershell")
+			{
+				// PowerShell 与 bash 一样要注入会话上下文（PI_*）与 shell 配置。
+				builtins[index] = builtins[index] with { Tool = PowerShellTool.Create(Cwd, BashEnvironment) };
+			}
 			else if (builtins[index].Tool.Name == "read")
 			{
 				// read 需要模型能力来判断是否给出非 vision 提示；图片识别本身按 magic bytes。
@@ -2886,7 +2891,19 @@ public sealed class CodingAgentSession : IDisposable
 		ThrowIfDisposed();
 
 		var result = await ShellRunner
-			.RunAsync(command, Cwd, timeoutSeconds: null, onOutput, cancellationToken)
+			.RunAsync(
+				command,
+				Cwd,
+				timeoutSeconds: null,
+				onOutput,
+				cancellationToken,
+				new ShellInvocation
+				{
+					ShellPath = Settings.ShellPath,
+					CommandPrefix = Settings.ShellCommandPrefix,
+					// pi 的 bash-executor 对用户 `!` 命令去掉 CR；工具输出仍保留原始 CR。
+					StripCarriageReturns = true,
+				})
 			.ConfigureAwait(false);
 
 		var truncation = Truncate.Tail(result.Output);
@@ -3069,6 +3086,11 @@ public sealed class CodingAgentSession : IDisposable
 					// 工具集被 MCP 刷新重建时，bash 也要重新绑定会话上下文（PI_* 注入）。
 					rebuilt.Add(known.TryGetValue(tool.Name, out var bashDescribed)
 						? bashDescribed with { Tool = PiWeft.CodingAgent.Tools.BashTool.Create(Cwd, BashEnvironment) }
+						: new BuiltinTool(tool, tool.Description, []));
+					continue;
+				case "powershell":
+					rebuilt.Add(known.TryGetValue(tool.Name, out var powershellDescribed)
+						? powershellDescribed with { Tool = PowerShellTool.Create(Cwd, BashEnvironment) }
 						: new BuiltinTool(tool, tool.Description, []));
 					continue;
 				case "read":

@@ -113,7 +113,6 @@ public static class BashTool
 		var wallTimeSeconds = Stopwatch.GetElapsedTime(startedAt).TotalSeconds;
 		var formatted = ShellToolFormatter.Format(
 			result,
-			command,
 			"pi-bash",
 			wallTimeSeconds,
 			emptyText: result.Cancelled || result.TimedOut ? string.Empty : "(no output)");
@@ -147,7 +146,7 @@ public static class BashTool
 	internal static string TimeoutStatus(ShellResult result, double? timeoutSeconds, string text)
 	{
 		var seconds = timeoutSeconds is { } timeout
-			? timeout.ToString("0.###", CultureInfo.InvariantCulture)
+			? timeout.ToString(CultureInfo.InvariantCulture)
 			: "timeout";
 		var status = $"Command timed out after {seconds} seconds";
 		if (result.ShellExitedBeforeTimeout && result.ShellExitCode is { } shellExitCode)

@@ -156,6 +156,73 @@ public sealed class ShellOutputTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ShellPathAndCommandPrefixAreApplied()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var result = await ShellRunner.RunAsync(
+			"echo \"$PIWEFT_PREFIX_MARKER\"",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			CancellationToken.None,
+			new ShellInvocation
+			{
+				ShellPath = "/bin/bash",
+				CommandPrefix = "PIWEFT_PREFIX_MARKER=from-prefix",
+			});
+
+		Assert.Equal(0, result.ExitCode);
+		Assert.Equal("from-prefix\n", result.Output);
+	}
+
+	[Fact]
+	public async Task FinalSnapshotIsEmittedEvenForShortCommands()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var snapshots = new List<ShellSnapshot>();
+		var result = await ShellRunner.RunAsync(
+			"printf 'hello\\n'",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			CancellationToken.None,
+			onSnapshot: snapshots.Add);
+
+		Assert.Equal(0, result.ExitCode);
+		Assert.NotEmpty(snapshots);
+		Assert.Contains(snapshots, static snapshot => snapshot.Content.Contains("hello"));
+	}
+
+	[Fact]
+	public async Task UserBashStripsCarriageReturnsAndStreamsChunks()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var chunks = new List<string>();
+		var result = await ShellRunner.RunAsync(
+			"printf 'a\\rb\\r\\nc'",
+			_root,
+			timeoutSeconds: null,
+			chunks.Add,
+			CancellationToken.None,
+			new ShellInvocation { StripCarriageReturns = true });
+
+		Assert.Equal("ab\nc", result.Output);
+		Assert.Equal("ab\nc", string.Concat(chunks));
+	}
+
+	[Fact]
 	public async Task BackgroundChildHoldingThePipeDoesNotBlockTheTool()
 	{
 		if (OperatingSystem.IsWindows())
@@ -233,6 +300,51 @@ public sealed class ShellOutputTests : IDisposable
 
 		Assert.Contains("timed out after timeout seconds", message);
 		Assert.DoesNotContain("shell exited", message);
+	}
+
+	[Fact]
+	public async Task TimeoutKillsBackgroundProcessWhenTheShellExitsFirst()
+	{
+		if (!OperatingSystem.IsLinux())
+		{
+			return; // 需要 setsid 与 /proc
+		}
+
+		var pidFile = Path.Combine(_root, "background.pid");
+		var result = await ShellRunner.RunAsync(
+			$"for i in $(seq 1 1200); do echo tick; sleep 0.01; done & echo $! > '{pidFile}'; exit 0",
+			_root,
+			timeoutSeconds: 2,
+			onOutput: null,
+			CancellationToken.None);
+
+		Assert.True(result.TimedOut);
+		Assert.True(result.ShellExitedBeforeTimeout);
+		Assert.Equal(0, result.ShellExitCode);
+
+		var pid = int.Parse(File.ReadAllText(pidFile).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+		var deadline = DateTime.UtcNow.AddSeconds(2);
+		while (DateTime.UtcNow < deadline && ProcessIsAlive(pid))
+		{
+			await Task.Delay(25);
+		}
+
+		Assert.False(ProcessIsAlive(pid), $"background process {pid} survived the timeout");
+	}
+
+	private static bool ProcessIsAlive(int pid)
+	{
+		try
+		{
+			var stat = File.ReadAllText($"/proc/{pid}/stat");
+			var close = stat.LastIndexOf(')');
+			// 僵尸进程已经退出，只等 init 回收；测试把它视为死亡。
+			return close < 0 || stat.Length <= close + 2 || stat[close + 2] != 'Z';
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return false;
+		}
 	}
 
 	[Fact]

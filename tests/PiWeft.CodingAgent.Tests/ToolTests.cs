@@ -303,7 +303,7 @@ public class ToolTests : IDisposable
 		}));
 
 		Assert.Equal("hello\n", Text(result));
-		Assert.Equal(0, result.Details!["exitCode"]!.GetValue<int>());
+		Assert.Equal(0, result.StructuredContent!["exit_code"]!.GetValue<int>());
 	}
 
 	[Fact]

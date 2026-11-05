@@ -1210,17 +1210,21 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		_bashCancellation = cancellation;
 
-		var updates = new List<Task>();
-		void OnOutput(string line)
+		void OnOutput(string delta)
 		{
-			// 流式输出只是过程信息；最终结果在响应里。
-			updates.Add(Task.Run(() => WriteRecord(CliJson.Serialize(new JsonObject
+			// 与 pi 的 bash_execution_update 对齐：delta 是清洗后的文本块，不是按行拆分。
+			// 回调在 ShellRunner 的锁内串行触发；WriteRecord 自己也会加锁。
+			var update = new JsonObject
 			{
 				["type"] = "bash_execution_update",
-				["id"] = id,
-				["output"] = line + "\n",
-			}))));
+				["delta"] = delta,
+			};
+			if (!string.IsNullOrEmpty(id))
+			{
+				update["id"] = id;
+			}
 
+			WriteRecord(CliJson.Serialize(update));
 		}
 
 		try
@@ -1229,15 +1233,16 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				.RunBashAsync(shellCommand, excludeFromContext, OnOutput, cancellation.Token)
 				.ConfigureAwait(false);
 
-			await Task.WhenAll(updates).ConfigureAwait(false);
-
 			var data = new JsonObject
 			{
 				["output"] = result.Output,
-				["exitCode"] = result.ExitCode,
 				["cancelled"] = result.Cancelled,
 				["truncated"] = result.Truncated,
 			};
+			if (result.ExitCode is { } exitCode)
+			{
+				data["exitCode"] = exitCode;
+			}
 
 			if (result.FullOutputPath is { Length: > 0 } path)
 			{
