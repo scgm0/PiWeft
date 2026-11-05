@@ -31,7 +31,7 @@ public sealed partial class SessionTab : IDisposable
 	private CancellationTokenSource? _compactionAbort;
 	private readonly Lock _sendAbortGate = new();
 	private CancellationTokenSource? _sendAbort;
-	private readonly ItemsControl _messages;
+	private readonly ScrollViewer _messages;
 	private readonly ScrollViewer _scroll;
 	private readonly ConversationScroll _conversationScroll;
 	private readonly TextFocusScrollGuard _textFocus;
@@ -297,7 +297,7 @@ public sealed partial class SessionTab : IDisposable
 		// 展开之后的流式续跟只能「保持」跟底：读者一上滚就得放手，不能每帧把会话拉回末尾。
 		_textFocus.ContinueConversationFollowing = () => _conversationScroll!.ContinueFollowing();
 		_textFocus.PauseFollowing = () => _conversationScroll!.Browse();
-		_conversationScroll = new ConversationScroll(_scroll, visible => SetScrollToLatestVisible(visible && _messages.IsVisible));
+		_conversationScroll = new ConversationScroll(_scroll, visible => SetScrollToLatestVisible(visible && _messages.IsVisible), _timeline);
 
 		// 右缘定位轴：点击刻度跳到那条用户消息，滚动时高亮当前阅读位置。
 		_outline.Jump += JumpToOutline;
@@ -1435,7 +1435,7 @@ public sealed partial class SessionTab : IDisposable
 		_messages.IsVisible(showChat);
 		UpdateOutlineVisibility();
 		SetEmptyState(showChat && _chat.Entries().Count == 0);
-		_noMatches.IsVisible(showChat && _filter.Length > 0 && _messages.ItemsSource.Count == 0);
+		_noMatches.IsVisible(showChat && _filter.Length > 0 && _timeline.RowCount == 0);
 		_branchPanel.View.IsVisible(!showChat);
 
 		if (showChat)

@@ -88,7 +88,7 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		using var focus = new TextFocusScrollGuard(new ScrollViewer());
 		using var timeline = new ConversationTimeline(entry => new ToolMessageView(entry, focus).View);
 		timeline.SetEntries(rows);
-		timeline.View.ScrollIntoView(0);
+		timeline.ScrollToIndex(0);
 		Layout(timeline.View);
 		// 折叠标题是「状态点 + 动词短语」的组合，按标题子树里的摘要文本定位这一行。
 		var first = Find<Expander>(timeline.View).Single(expander => expander.Header is { } header &&
@@ -96,11 +96,11 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		first.IsExpanded = true;
 		var original = first.Content;
 		Assert.Contains(Find<MultiLineTextBox>(original!), text => text.Text == "tool 0");
-		timeline.View.ScrollIntoView(rows.Length - 1);
+		timeline.ScrollToIndex(rows.Length - 1);
 		Layout(timeline.View);
 		timeline.PruneRecycled(); // Drain the release normally queued on the native dispatcher.
 		Assert.DoesNotContain(Find<MultiLineTextBox>(timeline.View), text => text.Text == "tool 0");
-		timeline.View.ScrollIntoView(0);
+		timeline.ScrollToIndex(0);
 		Layout(timeline.View);
 		var restored = Find<Expander>(timeline.View).Single(expander => expander.Content is not null);
 		Assert.True(restored.IsExpanded);
@@ -142,7 +142,7 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		using var timeline = new ConversationTimeline(entry => entry.Role == ChatRole.Assistant
 			? new AssistantMessageView(entry, _ => { }, focus).View
 			: new Border().Height(100).Child(new TextBlock().Text(entry.Text)));
-		using var conversation = new ConversationScroll(timeline.Scroll, _ => { });
+		using var conversation = new ConversationScroll(timeline.Scroll, _ => { }, timeline);
 		var history = Enumerable.Range(0, 20)
 			.Select(i => new ChatEntry { Role = ChatRole.User, Text = $"history {i}", EntryId = $"h{i}" })
 			.ToList();
@@ -151,7 +151,7 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		timeline.SetEntries(history);
 		Layout(timeline.View, 600, 500);
 		var changes = new List<ItemsChange>();
-		timeline.View.ItemsSource.Changed += changes.Add;
+		timeline.ItemsSource.Changed += changes.Add;
 		var changed = streaming with { Text = string.Join("\n\n", Enumerable.Range(0, 40).Select(i => $"paragraph {i}")) };
 		history[^1] = changed;
 		timeline.SetEntries(history);

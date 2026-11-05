@@ -52,7 +52,7 @@ public sealed partial class SessionTab
 
 	private void JumpToOutline(int index)
 	{
-		if (index < 0 || index >= _messages.ItemsSource.Count) return;
+		if (index < 0 || index >= _timeline.RowCount) return;
 		_conversationScroll.Browse();
 		_outline.SetActiveRow(index);
 		_timeline.JumpToRow(index);

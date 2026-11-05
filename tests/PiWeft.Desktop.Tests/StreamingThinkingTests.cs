@@ -585,7 +585,7 @@ public sealed class StreamingThinkingTests
 			_ => new AssistantMessageView(entry, _ => { }, guard!).View,
 		});
 		guard = new TextFocusScrollGuard(timeline.Scroll, anchor => conversation!.PreserveAnchor(anchor));
-		conversation = new ConversationScroll(timeline.Scroll, _ => { });
+		conversation = new ConversationScroll(timeline.Scroll, _ => { }, timeline);
 		using (guard)
 		using (conversation)
 		{

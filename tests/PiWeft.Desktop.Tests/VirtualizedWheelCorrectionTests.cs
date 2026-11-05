@@ -85,7 +85,7 @@ public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 		var timeline = new ConversationTimeline(entry =>
 			new Border().Height(heights[int.Parse(entry.EntryId![1..])]).Child(new TextBlock().Text(entry.Text)));
 		var guard = new TextFocusScrollGuard(timeline.Scroll);
-		var conversation = new ConversationScroll(timeline.Scroll, _ => { });
+		var conversation = new ConversationScroll(timeline.Scroll, _ => { }, timeline);
 		var smooth = SmoothScroll.For(timeline.Scroll);
 		// 整条用例都跑在钉住的 dt 上（开场跳底 + 手势 + 收尾），曲线因此逐帧确定；
 		// 真实 dt 的性质由 RealFrameClockKeepsTheGlideDriftFree 单独覆盖。
@@ -191,19 +191,17 @@ public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 			$"historyTall={historyTall}: moved={run.Moved:0} expected={run.Expected:0} " +
 			$"correction={run.Correction:0} bigJump={run.BigJump} killedGlide={run.KilledGlide} settled={run.Settled}");
 
-		Assert.True(run.Correction > run.Expected * 0.5,
-			"the fixture must exercise a virtualized anchor correction (content coordinates shifted)");
+		// 每行先写入自己的估算高度后，运行平均不再把整段历史一起改掉；校正量变小但路径仍在。
+		Assert.True(run.Correction > 0,
+			"the fixture must exercise a measured-height correction (content coordinates shifted)");
 		Assert.True(run.Settled, "the wheel glide should settle");
 		Assert.False(run.KilledGlide,
 			"a measured-height correction must not stop the reader's wheel glide");
-		// 默认 50 DIP/格。没有坐标补偿时这段手势只走 ~0.3×；补偿后走满输入距离。
-		// 剩下的 12–18% 是估算段的二次收缩：补偿只平移「写回视口的那次校正」，而估算段的行高是
-		// 运行平均（40–100 混合），上滚途中平均被新测量行逐行重算，extent 跟着收了几次——
-		// 内容坐标里再被扣掉一段。固定 dt + 钉住滚轮步长之后这是确定值：
-		//   historyTall=False → 0.82×、historyTall=True → 0.88×。
-		// 关掉坐标补偿时实测是 0.40× / 0.55×（且 killedGlide 变 true），所以这条带宽
-		// 既能抓住「补偿丢了」，也不会因为两档几何差异而误报。
-		Assert.InRange(run.Moved, run.Expected * 0.78, run.Expected * 0.95);
+		// 默认 50 DIP/格。未测量行有各自的粗估（40–100 混合），上滚途中逐行实测会改 extent；
+		// 面板把「锚点上方的高度变化」补到偏移上，SmoothScroll 再把补偿量平移进动画目标。
+		// moved 是内容坐标距离，会因上方行变高/变矮而与滚轮距离不同；
+		// moved + correction 才是实际兑现的输入距离，固定 dt 下容差可以收紧。
+		Assert.InRange(run.Moved + run.Correction, run.Expected * 0.95, run.Expected * 1.08);
 	}
 
 	/// 真实 dt 下的同一段手势：只断言「不漂移、不拖长尾」这类性质，容差留足机器负载的余量。

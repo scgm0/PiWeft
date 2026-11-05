@@ -191,7 +191,7 @@ public sealed class ExecutionProcessTests
 		using var timeline = new ConversationTimeline(Create);
 		var rows = new[] { process }.Concat(Enumerable.Range(0, 200).Select(i => Answer($"row-{i}", $"answer {i}"))).ToArray();
 		timeline.SetEntries(rows);
-		timeline.View.ScrollIntoView(0);
+		timeline.ScrollToIndex(0);
 		ConversationPerformanceTests.Layout(timeline.View);
 		var run = Assert.Single(Find<Expander>(timeline.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
 		Assert.Null(run.Content);
@@ -205,7 +205,7 @@ public sealed class ExecutionProcessTests
 		tool.IsExpanded = true;
 		Assert.Contains(Find<MultiLineTextBox>(tool.Content!), text => text.Text == "output");
 		run.IsExpanded = false;
-		timeline.View.ScrollIntoView(rows.Length - 1);
+		timeline.ScrollToIndex(rows.Length - 1);
 		ConversationPerformanceTests.Layout(timeline.View);
 		timeline.PruneRecycled();
 		// 回到顶部：直接写偏移，避免虚拟化器在行高刚变化时丢掉一次 ScrollIntoView 请求。

@@ -91,7 +91,7 @@ public sealed class FoldScrollTests
 			return new Border().Height(100).Child(new TextBlock().Text(entry.Text));
 		});
 		guard = new TextFocusScrollGuard(timeline.Scroll, anchor => conversation!.PreserveAnchor(anchor));
-		conversation = new ConversationScroll(timeline.Scroll, _ => { });
+		conversation = new ConversationScroll(timeline.Scroll, _ => { }, timeline);
 		using (guard)
 		using (conversation)
 		{
@@ -160,7 +160,7 @@ public sealed class FoldScrollTests
 			return new AssistantMessageView(entry, _ => { }, guard!).View;
 		});
 		guard = new TextFocusScrollGuard(timeline.Scroll, anchor => conversation!.PreserveAnchor(anchor));
-		conversation = new ConversationScroll(timeline.Scroll, _ => { });
+		conversation = new ConversationScroll(timeline.Scroll, _ => { }, timeline);
 		using (guard)
 		using (conversation)
 		{

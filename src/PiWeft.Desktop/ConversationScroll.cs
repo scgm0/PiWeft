@@ -15,6 +15,13 @@ internal sealed class ConversationScroll : IDisposable
 	private readonly ScrollViewer _view;
 	private readonly SmoothScroll _smooth;
 	private readonly Action<bool> _showLatest;
+	private readonly ConversationTimeline? _timeline;
+	private ConversationTimeline.ReadingPoint _readingPoint;
+	private ConversationTimeline.ReadingPoint? _readingRestoreTarget;
+	private bool _hasReadingPoint;
+	private bool _readingRestoreQueued;
+	private bool _restoringReadingPoint;
+	private int _readingRestoreAttempts;
 	private double _lastOffset;
 	private double _lastMaximum;
 	private bool _followQueued;
@@ -30,12 +37,16 @@ internal sealed class ConversationScroll : IDisposable
 	private long _lastUpwardInputAt;
 	private bool _upwardJitter;
 	private bool _followSuspended;
+	// 一次布局夹取把读者带到末尾后，后续稳定帧不能把它当成「读者自己回到底部」而重新锁跟。
+	private bool _clampBlockedFollow;
 
-	public ConversationScroll(ScrollViewer view, Action<bool> showLatest)
+	public ConversationScroll(ScrollViewer view, Action<bool> showLatest, ConversationTimeline? timeline = null)
 	{
 		_view = view;
 		_smooth = SmoothScroll.For(view);
 		_showLatest = showLatest;
+		_timeline = timeline;
+		if (timeline is not null) timeline.FollowingProvider = () => Following;
 		_lastOffset = view.VerticalOffset;
 		_lastMaximum = _smooth.MaxVerticalOffset;
 		view.ScrollChanged += OnScrollChanged;
@@ -56,6 +67,9 @@ internal sealed class ConversationScroll : IDisposable
 			_followSuspended = value;
 			if (!value) return;
 			Following = false;
+			_readingRestoreTarget = null;
+			_readingRestoreAttempts = 0;
+			_clampBlockedFollow = false;
 			_upwardPixels = 0;
 			_smooth.Stop();
 		}
@@ -80,7 +94,14 @@ internal sealed class ConversationScroll : IDisposable
 
 	private void OnVerticalInput(double pixels)
 	{
+		_timeline?.CancelScrollTarget();
 		_readingAnchor = null;
+		// 新的读者输入就是新的阅读意图：上一次夹取留下的恢复目标到此为止。
+		_readingRestoreTarget = null;
+		_readingRestoreAttempts = 0;
+		// 输入前的顶部行：第一格上滚就把估算收缩推到夹取时，后面这次 ScrollChanged
+		// 已经看不到夹取前的阅读位置，只能用这里保存的点。
+		RememberReadingPoint(allowFollowing: true);
 		if (pixels < 0)
 		{
 			// 与 PiDeck 相同的两档判定：明确离开末尾时真实滚轮立即逃逸；仍贴着末尾时，
@@ -107,6 +128,8 @@ internal sealed class ConversationScroll : IDisposable
 		}
 		else if (pixels > 0)
 		{
+			// 读者自己向下滚：之前那次夹取不再阻止「回到底部就重新跟底」。
+			_clampBlockedFollow = false;
 			_upwardPixels = 0;
 			_upwardJitter = false;
 			// 向下回到末尾附近才重新锁定跟随；浏览中途的下滚不算跟底指令。
@@ -127,12 +150,13 @@ internal sealed class ConversationScroll : IDisposable
 		// 自己发起的跳跃与跟底动画都会改变偏移：那不是读者的滚动意图，不能用来推翻 Following。
 		var ownMove = _followingJump || _smooth.IsAnimating;
 		if (_followingJump) _followingJump = false;
+		// A shrinking extent clamps the offset down to the new end. That is layout, not a
+		// reader instruction: keep the previous intent instead of resuming follow.
+		var clampedByShrink = maximumDelta < -0.5 && offset >= maximum - 0.5;
+		if (clampedByShrink && !Following) _clampBlockedFollow = true;
 		if (!ownMove && _readingAnchor is null && !_restoringAnchor && !_smooth.IsApplyingOffset)
 		{
-			// A shrinking extent clamps the offset down to the new end. That is layout, not a
-			// reader instruction: keep the previous intent instead of resuming follow.
-			var clampedByShrink = maximumDelta < -0.5 && offset >= maximum - 0.5;
-			if (!clampedByShrink)
+			if (!clampedByShrink && !_clampBlockedFollow)
 			{
 				if (maximum - offset <= 0.5 && offsetDelta >= -0.5)
 				{
@@ -174,6 +198,101 @@ internal sealed class ConversationScroll : IDisposable
 		{
 			QueueFollow();
 		}
+		// 放在最后：窗口无调度器时恢复会同步写偏移并重入 ScrollChanged，
+		// 这里不能再把 _lastOffset 覆盖回夹取后的旧值。
+		HandleReadingPoint(clampedByShrink);
+	}
+
+	private void HandleReadingPoint(bool clampedByShrink)
+	{
+		if (_timeline is null || _restoringReadingPoint) return;
+		if (Following)
+		{
+			_readingRestoreTarget = null;
+			return;
+		}
+		if (clampedByShrink && _hasReadingPoint && ReadingUpRecently())
+		{
+			// 夹取可能跨多轮布局：保留目标，后续排布再把它拉回同一行内位置。
+			_readingRestoreTarget = _readingPoint;
+			_readingRestoreAttempts = 0;
+			// 夹回末尾后旧动画目标已落在新范围之外，先停掉再恢复阅读位置。
+			_smooth.Stop();
+			if (!_readingRestoreQueued) QueueReadingRestore(_readingPoint);
+			return;
+		}
+		if (_readingRestoreTarget is { } target)
+		{
+			var current = _timeline.CaptureReadingPoint();
+			if (string.Equals(current.EntryId, target.EntryId, StringComparison.Ordinal) &&
+				Math.Abs(current.WithinRow - target.WithinRow) <= 1)
+			{
+				_readingRestoreTarget = null;
+				_readingRestoreAttempts = 0;
+				_readingPoint = current;
+				_hasReadingPoint = true;
+				return;
+			}
+			if (ReadingUpRecently() && _readingRestoreAttempts++ < 4)
+			{
+				RestoreReadingPoint(target);
+				return;
+			}
+			_readingRestoreTarget = null;
+			_readingRestoreAttempts = 0;
+		}
+		if (_readingAnchor is not null || _readingRestoreQueued) return;
+		RememberReadingPoint(allowFollowing: false);
+	}
+
+	private void RememberReadingPoint(bool allowFollowing)
+	{
+		if (_timeline is null || _readingAnchor is not null) return;
+		if (!allowFollowing && Following) return;
+		var point = _timeline.CaptureReadingPoint();
+		if (string.IsNullOrEmpty(point.EntryId)) return;
+		_readingPoint = point;
+		_hasReadingPoint = true;
+	}
+
+	private bool ReadingUpRecently() =>
+		_upwardPixels > 0 &&
+		(_smooth.IsAnimating || Environment.TickCount64 - _lastUpwardInputAt <= 750);
+
+	private void QueueReadingRestore(ConversationTimeline.ReadingPoint point)
+	{
+		if (_timeline is null) return;
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		{
+			RestoreReadingPoint(point);
+			return;
+		}
+		_readingRestoreQueued = true;
+		dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+		{
+			_readingRestoreQueued = false;
+			if (!_disposed) RestoreReadingPoint(point);
+		});
+	}
+
+	private void RestoreReadingPoint(ConversationTimeline.ReadingPoint point)
+	{
+		if (_disposed || _timeline is null || Following) return;
+		_restoringReadingPoint = true;
+		try
+		{
+			_smooth.Stop();
+			_timeline.RestoreReadingPoint(point);
+		}
+		finally
+		{
+			_restoringReadingPoint = false;
+		}
+		// 恢复后的实际顶部可能因夹取/回收略有偏差，后续手势从这里续接。
+		var restored = _timeline.CaptureReadingPoint();
+		if (string.IsNullOrEmpty(restored.EntryId)) return;
+		_readingPoint = restored;
+		_hasReadingPoint = true;
 	}
 
 	private void QueueFollow(int attempt = 0)
@@ -235,6 +354,8 @@ internal sealed class ConversationScroll : IDisposable
 
 	public void PreserveAnchor(UIElement anchor)
 	{
+		_readingRestoreTarget = null;
+		_readingRestoreAttempts = 0;
 		_smooth.Stop();
 		Following = false;
 		_readingAnchor = anchor;
@@ -298,6 +419,10 @@ internal sealed class ConversationScroll : IDisposable
 
 	public void ScrollToLatest()
 	{
+		_timeline?.CancelScrollTarget();
+		_readingRestoreTarget = null;
+		_readingRestoreAttempts = 0;
+		_clampBlockedFollow = false;
 		_readingAnchor = null;
 		_followSuspended = false;
 		Following = true;
@@ -312,6 +437,10 @@ internal sealed class ConversationScroll : IDisposable
 
 	public void Browse()
 	{
+		_timeline?.CancelScrollTarget();
+		_readingRestoreTarget = null;
+		_readingRestoreAttempts = 0;
+		_clampBlockedFollow = false;
 		_readingAnchor = null;
 		Following = false;
 		_upwardPixels = 0;
