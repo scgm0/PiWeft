@@ -365,6 +365,88 @@ public class CompactionTests : IDisposable
 	}
 
 	[Fact]
+	public void PrefillCapacityErrorsAreOverflowButPlainRateLimitsAreNot()
+	{
+		Assert.True(ContextOverflow.IsOverflowText(
+			"OpenAI-compatible request failed (429): {\"error\":{\"message\":\"Upstream request failed: [prefill_cap_refused] the cell is at capacity; retry shortly (after 5 s)\"}}"));
+		Assert.True(ContextOverflow.IsOverflowText("413 Payload Too Large"));
+		Assert.False(ContextOverflow.IsOverflowText("429 Too Many Requests: rate limit exceeded"));
+		Assert.False(ContextOverflow.IsOverflowText("The upstream pool is cooling and resumes in 74445s"));
+	}
+
+	[Fact]
+	public async Task GenerateSummarySplitsWhenTheGatewayRejectsPrefill()
+	{
+		var model = ScriptedSessions.Model();
+		var messages = Enumerable.Range(0, 20)
+			.Select(i => (Message)User(new string((char)('a' + i % 26), 8_000), i + 1))
+			.ToArray();
+		var calls = 0;
+
+		AssistantMessageEventStream Invoke(Model current, IReadOnlyList<Message> request, StreamOptions options)
+		{
+			calls++;
+			var prompt = string.Concat(request.OfType<UserMessage>().Select(static message => message.Content.Text));
+			if (prompt.Length > 60_000)
+			{
+				return ScriptedSessions.Error(
+					current,
+					"OpenAI-compatible request failed (429): {\"error\":{\"message\":\"Upstream request failed: [prefill_cap_refused] the cell is at capacity; retry shortly\"}}");
+			}
+
+			return ScriptedSessions.Text(current, $"summary-{calls}");
+		}
+
+		var (text, usage) = await Compactor.GenerateSummaryAsync(
+			model,
+			Invoke,
+			new StreamOptions(),
+			new CompactionSettings(),
+			messages,
+			customInstructions: null,
+			previousSummary: null,
+			CancellationToken.None);
+
+		Assert.StartsWith("summary-", text);
+		Assert.True(calls > 1, $"expected recursive chunking, got {calls} call(s)");
+		Assert.True(usage.Output > 5);
+	}
+
+	[Fact]
+	public async Task PrefillFailureCompactsTheSessionAndThePromptSucceeds()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("first question", 1));
+		session.AppendMessage(Assistant("first answer", 2));
+		session.AppendMessage(User("second question", 3));
+		session.AppendMessage(Assistant("second answer", 4));
+
+		var stream = new PrefillRecoveryStreamFn();
+		using var coding = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = stream.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				Compaction = new CompactionSettings { Enabled = true, ReserveTokens = 1, KeepRecentTokens = 1 },
+				Retry = new RetryPolicy(Enabled: false),
+			},
+		});
+
+		await coding.PromptAsync("new question");
+
+		Assert.True(stream.PromptCalls >= 2, $"prompt calls={stream.PromptCalls}");
+		Assert.True(stream.SummaryCalls >= 1, $"summary calls={stream.SummaryCalls}");
+		Assert.Contains(session.Entries, static entry => entry is CompactionEntry);
+		Assert.True(coding.ContextTokens().Tokens < 10_000, $"context={coding.ContextTokens().Tokens}");
+		var lastAssistant = coding.Messages.OfType<AssistantMessage>().Last();
+		Assert.Equal("recovered answer", string.Concat(lastAssistant.Content.OfType<TextContent>().Select(static block => block.Text)));
+	}
+
+	[Fact]
 	public async Task SessionAutoCompactsBeforePrompting()
 	{
 		var session = SessionManager.Create(_root, SessionsDir);
@@ -560,4 +642,30 @@ public class CompactionTests : IDisposable
 		Assert.NotNull(branch);
 		Assert.Equal(ThinkingLevels.High, branchScript.LastOptions!.ThinkingLevel);
 	}
+
+
+internal sealed class PrefillRecoveryStreamFn
+{
+	public int PromptCalls { get; private set; }
+
+	public int SummaryCalls { get; private set; }
+
+	public AssistantMessageEventStream Invoke(Model model, IReadOnlyList<Message> messages, StreamOptions options)
+	{
+		var text = messages.OfType<UserMessage>().FirstOrDefault()?.Content.Text ?? string.Empty;
+		if (text.Contains("<conversation>", StringComparison.Ordinal))
+		{
+			SummaryCalls++;
+			return ScriptedSessions.Text(model, $"summary {SummaryCalls}");
+		}
+
+		PromptCalls++;
+		return PromptCalls == 1
+			? ScriptedSessions.Error(
+				model,
+				"OpenAI-compatible request failed (429): {\"error\":{\"message\":\"Upstream request failed: [prefill_cap_refused] the cell is at capacity; retry shortly (after 5 s)\"}}")
+			: ScriptedSessions.Text(model, "recovered answer");
+	}
+}
+
 }

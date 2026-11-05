@@ -125,11 +125,62 @@ public sealed class ContextEstimateIncrementalTests : IDisposable
 		AssertSame(session, manager);
 	}
 
+	[Fact]
+	public void IgnoresUsageAnchorAfterCompaction()
+	{
+		var manager = SessionManager.Create(_root, Path.Combine(_root, "sessions"));
+		var session = Create(manager);
+		manager.AppendMessage(System());
+		manager.AppendMessage(User("问题", 1));
+		manager.AppendMessage(Assistant("回答", 2, new Usage { Input = 500_000, Output = 1000, TotalTokens = 501_000 }));
+		var kept = manager.AppendMessage(User("压缩后保留的最近问题", 3));
+
+		var before = session.ContextTokens();
+		Assert.True(before.Tokens >= 500_000, $"before={before.Tokens}");
+
+		manager.AppendCompaction("summary", kept, before.Tokens);
+
+		var (tokens, index) = session.ContextTokens();
+		Assert.Null(index);
+		Assert.True(tokens < 10_000, $"after compaction the stale usage anchor must be ignored, got {tokens}");
+	}
+
 	private static void AssertSame(CodingAgentSession session, SessionManager manager)
 	{
 		var reference = ContextTokens.EstimateContextTokens(manager.BuildProjectedMessages());
 		var incremental = session.ContextTokens();
-		Assert.Equal(reference.Tokens, incremental.Tokens);
-		Assert.Equal(reference.LastUsageIndex, incremental.LastUsageIndex);
+		if (UsageAnchorValid(manager))
+		{
+			Assert.Equal(reference.Tokens, incremental.Tokens);
+			Assert.Equal(reference.LastUsageIndex, incremental.LastUsageIndex);
+			return;
+		}
+
+		var total = manager.BuildProjectedMessages().Sum(ContextTokens.EstimateTokens);
+		Assert.Equal(total, incremental.Tokens);
+		Assert.Null(incremental.LastUsageIndex);
+	}
+
+	private static bool UsageAnchorValid(SessionManager manager)
+	{
+		var branch = manager.GetBranch();
+		var lastInvalidating = -1;
+		var lastUsage = -1;
+		for (var index = 0; index < branch.Count; index++)
+		{
+			switch (branch[index])
+			{
+				case CompactionEntry or ContextEditEntry:
+					lastInvalidating = index;
+					break;
+				case SessionMessageEntry { Message: AssistantMessage assistant }
+					when assistant.StopReason is not (StopReason.Aborted or StopReason.Error) &&
+						ContextTokens.CalculateContextTokens(assistant.Usage) > 0:
+					lastUsage = index;
+					break;
+			}
+		}
+
+		return lastUsage > lastInvalidating;
 	}
 }

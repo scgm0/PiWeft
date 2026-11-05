@@ -44,6 +44,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 网络：`httpIdleTimeoutMs` 默认 300 秒，按读取续期；只切断停滞流，不限制长流。严格区分用户中止（`aborted`，不重试）与空闲超时（`error`，可重试）。`httpProxy` 只读全局设置。`--offline` / `PI_OFFLINE=1` 跳过自动网络操作。
 - 项目信任：`<agentDir>/trust.json` 从 cwd 逐级向上取第一个决策；`-a/--approve`、`-na/--no-approve` 覆盖；默认 `ask`。不受信时不合并项目设置、不连项目 MCP、不读项目模型/技能/提示词。RPC/print 无法弹框时按不受信处理。
 - 凭据按显式选项、存储凭据、环境变量异步解析；OAuth 刷新有闸门且不跟随请求取消。可恢复错误按 `settings.retry` 退避；供应商 `Retry-After` 优先；要求等待超过 15 分钟的配额冷却不自动重试，直接把错误交回界面。失败尝试保留在文件里，通过 `context_edit` 排除出上下文。
+- 请求过大（`prefill_cap_refused`、413、payload too large、上下文超限）进入 overflow recovery：排除失败尝试后压缩；摘要请求本身过大时按 token 递归对半拆分，先摘要前半段再把它作为 `previousSummary` 摘要后半段。压缩/上下文编辑之后的最后一次 usage 不再充当上下文估算锚点，避免压缩后仍显示 600K。
 - 提示音与 PiDeck 同义：完成/出错/等待输入三类事件，各有开关与预设 WAV，默认完成与出错开；会话完成 8 秒、全局 1.5 秒冷却；「仅失焦提醒」在前台静默。
 - 等待态由 `RespondingStatusPolicy` 统一判定（退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗）；预热期三句轮播，回合内空窗只说「正在处理」；时间线尾部另有等待占位行（不进模型上下文/会话文件）。
 - PiDeck 的 `--no-themes`、`--offline`、`--no-extensions`、`-e <path>` 已接线；`--use-theme`、`--tui-mode`、`--autocomplete-max-visible` 接受但不实现。

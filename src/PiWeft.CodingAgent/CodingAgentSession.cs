@@ -164,6 +164,8 @@ public sealed class CodingAgentSession : IDisposable
 	private bool _todoWidgetPublished;
 	private IReadOnlyList<Message>? _contextMessages;
 	private (long Tokens, int? LastUsageIndex) _contextTokens;
+	private bool _contextAnchorValid = true;
+	private long _contextAnchorRevision = -1;
 	// 逐条估算的增量缓存：上下文估算在长会话里要 100+ 毫秒，而投影几乎只是往后追加。
 	private IReadOnlyList<Message>? _estimateSource;
 	private long[] _estimateValues = [];
@@ -731,19 +733,60 @@ public sealed class CodingAgentSession : IDisposable
 		lock (_statisticsGate)
 		{
 			var messages = Session.BuildProjectedMessages();
-			if (!ReferenceEquals(messages, _contextMessages))
+			var anchorValid = UsageAnchorValid(Session.Revision);
+			if (!ReferenceEquals(messages, _contextMessages) || anchorValid != _contextAnchorValid)
 			{
-				_contextTokens = EstimateContextIncrementally(messages);
+				_contextTokens = EstimateContextIncrementally(messages, anchorValid);
 				_contextMessages = messages;
+				_contextAnchorValid = anchorValid;
 			}
 			return _contextTokens;
 		}
 	}
 
+	/// <summary>
+	/// 与 pi 的 estimateProjectedContextTokens 一致：最后一次 usage 之后如果发生过
+	/// compaction / context_edit，那条 usage 的 input 已经不能代表当前投影，必须退回全量估算。
+	/// 否则压缩完的大会话仍会显示/判断成 600K+，小窗口模型会反复触发压缩。
+	/// </summary>
+	private bool UsageAnchorValid(long revision)
+	{
+		if (_contextAnchorRevision == revision)
+		{
+			return _contextAnchorValid;
+		}
+
+		_contextAnchorRevision = revision;
+		var branch = Session.GetBranch();
+		var lastInvalidating = -1;
+		var lastUsage = -1;
+		for (var index = 0; index < branch.Count; index++)
+		{
+			switch (branch[index])
+			{
+				case CompactionEntry or ContextEditEntry:
+					lastInvalidating = index;
+					break;
+				case SessionMessageEntry { Message: AssistantMessage assistant } when HasUsableUsage(assistant):
+					lastUsage = index;
+					break;
+			}
+		}
+
+		_contextAnchorValid = lastUsage > lastInvalidating;
+		return _contextAnchorValid;
+	}
+
+	private static bool HasUsableUsage(AssistantMessage message) =>
+		message.StopReason is not (StopReason.Aborted or StopReason.Error) &&
+		Compaction.ContextTokens.CalculateContextTokens(message.Usage) > 0;
+
 	/// 与 <see cref="Compaction.ContextTokens.EstimateContextTokens"/> 同语义，但按消息引用复用已估算的
 	/// 前缀：追加一条消息只重新估算那一条，而不是整段历史。26,983 条的真实会话里，这一步从
 	/// 约 124 ms（UI 线程）降到不足 1 ms；分支导航或上下文编辑改写了前缀时，退回到第一个不一致处重算。
-	private (long Tokens, int? LastUsageIndex) EstimateContextIncrementally(IReadOnlyList<Message> messages)
+	private (long Tokens, int? LastUsageIndex) EstimateContextIncrementally(
+		IReadOnlyList<Message> messages,
+		bool useUsageAnchor)
 	{
 		var reusable = 0;
 		if (ReferenceEquals(_estimateSource, messages))
@@ -777,6 +820,11 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		_estimateTotal = total;
+
+		if (!useUsageAnchor)
+		{
+			return (total, null);
+		}
 
 		var anchor = Compaction.ContextTokens.LastAssistantUsage(messages);
 		if (anchor is null)
@@ -2533,8 +2581,7 @@ public sealed class CodingAgentSession : IDisposable
 			return null;
 		}
 
-		var projected = Session.BuildProjectedMessages();
-		var (tokens, _) = Compaction.ContextTokens.EstimateContextTokens(projected);
+		var (tokens, _) = ContextTokens();
 		if (!Compaction.ContextTokens.ShouldCompact(tokens, _agent.Model.ContextWindow, Settings.Compaction))
 		{
 			return null;

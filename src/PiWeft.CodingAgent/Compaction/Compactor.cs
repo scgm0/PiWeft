@@ -296,6 +296,42 @@ public static class Compactor
 		var failure = SummarizationFailure(response);
 		if (failure is not null)
 		{
+			// 摘要请求本身也可能超过 gateway 的 prefill 容量（旧大会话常见）。
+			// 按消息 token 对半拆开，先摘要前半段，再用前一份摘要作为 previousSummary
+			// 摘要后半段；递归直到单个请求能被接受。
+			if (messages.Count > 1 && ContextOverflow.IsOverflowText(response.ErrorMessage))
+			{
+				var split = FindSummarySplit(messages);
+				if (split > 0 && split < messages.Count)
+				{
+					var firstMessages = messages.Take(split).ToArray();
+					var secondMessages = messages.Skip(split).ToArray();
+					var (firstText, firstUsage) = await GenerateSummaryAsync(
+						model,
+						streamFn,
+						options,
+						settings,
+						firstMessages,
+						customInstructions,
+						previousSummary,
+						cancellationToken,
+						basePromptOverride,
+						thinkingLevel).ConfigureAwait(false);
+					var (secondText, secondUsage) = await GenerateSummaryAsync(
+						model,
+						streamFn,
+						options,
+						settings,
+						secondMessages,
+						customInstructions,
+						firstText,
+						cancellationToken,
+						basePromptOverride,
+						thinkingLevel).ConfigureAwait(false);
+					return (secondText, CombineUsage(firstUsage, secondUsage));
+				}
+			}
+
 			throw new InvalidOperationException(failure);
 		}
 
@@ -306,6 +342,36 @@ public static class Compactor
 		}
 
 		return (text, response.Usage);
+	}
+
+	/// <summary>按估算 token 找到尽量对半的拆分点；两侧都至少保留一条消息。</summary>
+	private static int FindSummarySplit(IReadOnlyList<Message> messages)
+	{
+		if (messages.Count <= 1)
+		{
+			return 0;
+		}
+
+		var estimates = new long[messages.Count];
+		long total = 0;
+		for (var i = 0; i < messages.Count; i++)
+		{
+			estimates[i] = Math.Max(1, ContextTokens.EstimateTokens(messages[i]));
+			total += estimates[i];
+		}
+
+		var half = total / 2;
+		long accumulated = 0;
+		for (var i = 0; i < messages.Count - 1; i++)
+		{
+			accumulated += estimates[i];
+			if (accumulated >= half)
+			{
+				return i + 1;
+			}
+		}
+
+		return messages.Count / 2;
 	}
 
 	public static string? SummarizationFailure(AssistantMessage response)

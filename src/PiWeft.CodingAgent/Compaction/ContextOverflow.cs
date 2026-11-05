@@ -31,6 +31,10 @@ public static partial class ContextOverflow
 		TokenLimitExceeded(),
 		RangeOfInputLength(),
 		PromptTooLongExceeded(),
+		PrefillCapRefused(),
+		PrefillCellAtCapacity(),
+		Http413(),
+		PayloadTooLarge(),
 	];
 
 	private static readonly Regex[] NonOverflow =
@@ -40,19 +44,26 @@ public static partial class ContextOverflow
 		TooManyRequests(),
 	];
 
-	public static bool IsOverflow(AssistantMessage message)
+	public static bool IsOverflow(AssistantMessage message) =>
+		message.StopReason == StopReason.Error && IsOverflowText(message.ErrorMessage);
+
+	/// <summary>
+	/// 判断一段错误文本是否是「请求太大」而不是普通限流。压缩摘要请求本身也可能太大：
+	/// gateway 会把超出 prefill 容量的请求报成 429 prefill_cap_refused，而不是 413。
+	/// </summary>
+	public static bool IsOverflowText(string? errorMessage)
 	{
-		if (message.StopReason != StopReason.Error || string.IsNullOrEmpty(message.ErrorMessage))
+		if (string.IsNullOrEmpty(errorMessage))
 		{
 			return false;
 		}
 
-		if (NonOverflow.Any(pattern => pattern.IsMatch(message.ErrorMessage)))
+		if (NonOverflow.Any(pattern => pattern.IsMatch(errorMessage)))
 		{
 			return false;
 		}
 
-		return Patterns.Any(pattern => pattern.IsMatch(message.ErrorMessage));
+		return Patterns.Any(pattern => pattern.IsMatch(errorMessage));
 	}
 
 	[GeneratedRegex(@"prompt (?:is )?too long", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
@@ -126,6 +137,18 @@ public static partial class ContextOverflow
 
 	[GeneratedRegex(@"prompt too long; exceeded (?:max )?context length", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
 	private static partial Regex PromptTooLongExceeded();
+
+	[GeneratedRegex(@"prefill[_-]?cap[_-]?refused", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+	private static partial Regex PrefillCapRefused();
+
+	[GeneratedRegex(@"(?<![a-z0-9])413(?![a-z0-9])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+	private static partial Regex Http413();
+
+	[GeneratedRegex(@"(?:request (?:entity|body|content)|payload) too large", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+	private static partial Regex PayloadTooLarge();
+
+	[GeneratedRegex(@"\bcell is at capacity\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+	private static partial Regex PrefillCellAtCapacity();
 
 	[GeneratedRegex(@"^(Throttling error|Service unavailable):", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
 	private static partial Regex Throttling();
