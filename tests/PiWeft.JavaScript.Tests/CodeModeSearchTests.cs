@@ -107,4 +107,51 @@ public sealed class CodeModeSearchTests
 		Assert.Equal(["alpha", "beta"], CodeModeSearch.Rank("file", documents, 2));
 		Assert.Equal(["alpha"], CodeModeSearch.Rank("file", documents, 1));
 	}
+	[Fact]
+	public void CreateToolSearchDocument_FollowsLocalRefsIntoDefs()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["model"] = new JsonObject { ["$ref"] = "#/$defs/model" },
+			},
+			["$defs"] = new JsonObject
+			{
+				["model"] = new JsonObject
+				{
+					["type"] = "object",
+					["description"] = "zebra detail",
+					["properties"] = new JsonObject
+					{
+						["stripeCount"] = new JsonObject { ["type"] = "number", ["description"] = "quokka count" },
+					},
+				},
+			},
+		};
+
+		var document = CodeModeSearch.CreateToolSearchDocument("mcp__zoo__feed", "Feed an animal", schema);
+
+		Assert.Contains("zebra", document.Text);
+		Assert.Contains("quokka", document.Text);
+		Assert.Contains("stripeCount", document.Text);
+		Assert.Equal(["mcp__zoo__feed"], CodeModeSearch.Rank("zebra", [document], 5));
+	}
+
+	[Fact]
+	public void CreateToolSearchDocument_SurvivesMalformedRefs()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject { ["value"] = new JsonObject { ["$ref"] = "#/$defs/%E0" } },
+		};
+
+		var document = CodeModeSearch.CreateToolSearchDocument("weird", "still searchable", schema);
+
+		Assert.Contains("still searchable", document.Text);
+		Assert.Contains("value", document.Text);
+	}
+
 }

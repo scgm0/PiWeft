@@ -7,6 +7,13 @@ public sealed record ExtensionCommand(
 	string Description,
 	Action<string> Invoke);
 
+/// 扩展注册的工具与提示词元数据。pi 的 <c>promptSnippet</c>/<c>promptGuidelines</c>
+/// 决定工具是否出现在 Available tools 与 Guidelines 章节，不能只靠 label 兜底。
+internal sealed record ExtensionToolRegistration(
+	AgentTool Tool,
+	string? PromptSnippet,
+	IReadOnlyList<string> PromptGuidelines);
+
 /// 一个已加载扩展注册出来的东西。宿主读它来拼工具集、命令表与钩子，
 /// 单独抽出来是因为「注册表」要在扩展线程之外被读（代理构建工具声明时）。
 internal sealed class ExtensionRegistration
@@ -21,11 +28,13 @@ internal sealed class ExtensionRegistration
 
 	private readonly List<string> _listeners = [];
 	private readonly List<string> _unsupported = [];
-	private readonly List<AgentTool> _tools = [];
+	private readonly List<ExtensionToolRegistration> _tools = [];
 	private readonly List<ExtensionCommand> _commands = [];
 	private readonly List<ExtensionFlag> _flags = [];
 
-	public IReadOnlyList<AgentTool> Tools => _tools;
+	public IReadOnlyList<AgentTool> Tools => [.. _tools.Select(static tool => tool.Tool)];
+
+	public IReadOnlyList<ExtensionToolRegistration> ToolRegistrations => _tools;
 
 	public IReadOnlyList<ExtensionCommand> Commands => _commands;
 
@@ -33,7 +42,7 @@ internal sealed class ExtensionRegistration
 
 	public IReadOnlyList<string> UnsupportedEvents => _unsupported;
 
-	public void AddTool(AgentTool tool) => _tools.Add(tool);
+	public void AddTool(ExtensionToolRegistration tool) => _tools.Add(tool);
 
 	public void AddCommand(ExtensionCommand command) => _commands.Add(command);
 

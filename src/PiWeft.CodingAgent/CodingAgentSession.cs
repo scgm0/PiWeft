@@ -7,6 +7,7 @@ using PiWeft.Ai;
 using PiWeft.Imaging;
 using PiWeft.Ai.Json;
 using PiWeft.Ai.Utils;
+using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Resources;
@@ -114,7 +115,7 @@ public sealed record CodingAgentSessionOptions
 
 /// 一个编码代理会话：分章节的系统提示词、内置工具、仅追加的会话文件与代理循环。
 /// 已落盘的消息是权威记录，每次请求发送的都是当前分支的投影。
-public sealed class CodingAgentSession : IDisposable
+public sealed partial class CodingAgentSession : IDisposable
 {
 	private readonly AgentRuntime _agent;
 	private CacheWarmer? _cacheWarmer;
@@ -129,6 +130,7 @@ public sealed class CodingAgentSession : IDisposable
 	private SystemMessage? _projectedCachePrompt;
 	private readonly IDisposable _persistence;
 	private readonly IDisposable _cacheWarmLifecycle;
+	private readonly IDisposable _modeLifecycle;
 
 	private readonly List<Func<AgentEvent, ValueTask>> _listeners = [];
 
@@ -381,7 +383,13 @@ public sealed class CodingAgentSession : IDisposable
 		});
 
 		// codemode 的描述要列出会话当前可调用的工具，因此等代理建好后再绑定并重建提示词。
-		RebindCodeMode([.. builtins.Select(static builtin => builtin.Tool)]);
+		// model-only 只声明给模型，脚本碰不到，别在描述里当可调用工具列出来。
+		RebindCodeMode([.. builtins
+			.Select(static builtin => builtin.Tool)
+			.Where(static tool => tool.Exposure != ToolExposure.ModelOnly)]);
+		// 扩展工具在 LoadExtensions 里并入 _fullTools；初始的 AgentOptions.Tools 还没应用
+		// exposure/default 过滤，统一走一次 ApplyTools。
+		ApplyTools();
 
 		_agent.SteeringMode = ParseQueueMode(options.Settings.SteeringMode);
 		_agent.FollowUpMode = ParseQueueMode(options.Settings.FollowUpMode);
@@ -397,7 +405,12 @@ public sealed class CodingAgentSession : IDisposable
 
 		_persistence = _agent.Subscribe(PersistAsync);
 		_cacheWarmLifecycle = _agent.Subscribe(CacheWarmLifecycleAsync);
+		_modeLifecycle = _agent.Subscribe(ModeLifecycleAsync);
 		PublishTodoWidget(CurrentTodo());
+		// 计划/目标模式的状态跟着分支走：执行态续接进度，目标只恢复为暂停。
+		RestoreModeState();
+		PublishPlanWidget();
+		PublishGoalWidget();
 	}
 
 	public string Cwd { get; }
@@ -524,6 +537,31 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			_planModeFromMarker = false;
 			SetPlanMode(false);
+		}
+
+		// 目标模式：带标记进入/推进目标；切回普通模式的下一条无标记消息只暂停，不清除。
+		if (GoalMode.TryStripMarker(text, out var objective))
+		{
+			text = objective;
+			if (_goal.Objective.Length == 0 || _goal.Phase == GoalState.Complete)
+			{
+				SetGoal(objective);
+			}
+			else if (_goal.Phase is GoalState.Paused or GoalState.Blocked)
+			{
+				SetGoal(objective, resetRounds: false);
+			}
+			else
+			{
+				_goal = _goal with { Enabled = true, Phase = GoalState.Active };
+				PublishGoalWidget();
+				PersistGoalState();
+				RefreshSystemPrompt();
+			}
+		}
+		else if (_goal.Running)
+		{
+			PauseGoal();
 		}
 
 		var expanded = ExpandInput(text);
@@ -1306,7 +1344,12 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		PlanModeEnabled = enabled;
+		// 退出计划模式同时结束执行态；草案步骤一并清掉，避免下一轮把旧计划当当前计划。
+		_planExecution = false;
+		_planSteps.Clear();
 		ApplyTools();
+		PublishPlanWidget();
+		PersistPlanState();
 	}
 
 	private void ApplyTools()
@@ -1327,6 +1370,7 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			var exposure = tool.Tool.Exposure;
 			if (string.Equals(exposure, ToolExposure.Direct, StringComparison.Ordinal)
+				|| string.Equals(exposure, ToolExposure.ModelOnly, StringComparison.Ordinal)
 				|| (!string.Equals(exposure, ToolExposure.Hidden, StringComparison.Ordinal) && loaded.Contains(tool.Tool.Name)))
 			{
 				declared.Add(tool);
@@ -1343,6 +1387,7 @@ public sealed class CodingAgentSession : IDisposable
 		if (string.Equals(Settings.Codemode.Mode, "on", StringComparison.Ordinal) && codemodeActive)
 		{
 			declared = [.. declared.Select(static tool => tool.Tool.Name is CodeModeToolFactory.Name or ToolSearchName
+				|| tool.Tool.Exposure == ToolExposure.ModelOnly
 				? tool
 				: tool with { Tool = WithCodemodeHint(tool.Tool) })];
 		}
@@ -1354,13 +1399,22 @@ public sealed class CodingAgentSession : IDisposable
 				|| tool.Tool.Name is CodeModeToolFactory.Name or ToolSearchName)];
 		}
 
-		var callableTools = toolSearch is null
-			? effective.Select(static tool => tool.Tool).ToList()
-			: [.. effective.Select(static tool => tool.Tool), toolSearch];
+		// model-only 只声明给模型，不能被 codemode/嵌套调用碰到（与 pi 的 exposure 语义一致）。
+		List<AgentTool> callableTools = [.. effective
+			.Select(static tool => tool.Tool)
+			.Where(static tool => tool.Exposure != ToolExposure.ModelOnly)];
+		if (toolSearch is not null)
+		{
+			callableTools.Add(toolSearch);
+		}
 		_agent.SetTools(callableTools, declared.Select(static tool => tool.Tool).ToList());
 		_promptTools = declared;
 		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(declared));
 	}
+
+	/// 只改模式章节、不动工具集时用：计划执行态与目标态都要让下一轮请求看到新章节。
+	private void RefreshSystemPrompt() =>
+		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(_promptTools));
 
 	private const string ToolSearchName = "tool_search";
 
@@ -1393,6 +1447,8 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		if (PlanModeEnabled) Merge()["plan_mode"] = PlanMode.Instructions;
+		if (PlanExecutionSection() is { } planExecution) Merge()["plan_execution"] = planExecution;
+		if (GoalSection() is { } goal) Merge()["goal_mode"] = goal;
 		if (BuildMcpServersSection() is { } mcpServers) Merge()["mcp_servers"] = mcpServers;
 
 		return _systemPromptSections with
@@ -1412,6 +1468,7 @@ public sealed class CodingAgentSession : IDisposable
 			var tool = builtin.Tool;
 			if (tool.Namespace is null
 				|| string.Equals(tool.Exposure, ToolExposure.Direct, StringComparison.Ordinal)
+				|| string.Equals(tool.Exposure, ToolExposure.ModelOnly, StringComparison.Ordinal)
 				|| string.Equals(tool.Exposure, ToolExposure.Hidden, StringComparison.Ordinal))
 			{
 				continue;
@@ -1502,6 +1559,25 @@ public sealed class CodingAgentSession : IDisposable
 			return gated;
 		}
 
+		if (OperatingSystem.IsWindows() &&
+			context.ToolCall.Name == "bash" &&
+			context.Arguments["command"]?.GetValue<string>() is { Length: > 0 } nulCommand)
+		{
+			// Windows Git Bash 不把 `nul` 当空设备；与 PiDeck 的扩展一样在调用前改写。
+			var normalized = ShellCommandNormalizer.NormalizeNulRedirects(nulCommand);
+			if (!string.Equals(normalized, nulCommand, StringComparison.Ordinal))
+			{
+				context.Arguments["command"] = normalized;
+			}
+		}
+
+		if (context.ToolCall.Name is "bash" or "powershell" &&
+			context.Arguments["command"]?.GetValue<string>() is { Length: > 0 } deleteCommand)
+		{
+			// 删除照常发生，但字面量目标先复制进回收站；失败不阻断调用。
+			await TrashGuard.BackupAsync(context.ToolCall.Name, deleteCommand, Cwd, cancellationToken).ConfigureAwait(false);
+		}
+
 		return _userBeforeToolCall is null
 			? null
 			: await _userBeforeToolCall(context, cancellationToken).ConfigureAwait(false);
@@ -1545,7 +1621,7 @@ public sealed class CodingAgentSession : IDisposable
 		ApplyFlagValues(host, options.FlagValues);
 		Extensions = host;
 
-		if (host.Tools.Count == 0)
+		if (host.ToolRegistrations.Count == 0)
 		{
 			return;
 		}
@@ -1559,12 +1635,16 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		var merged = _builtinTools.ToList();
-		foreach (var tool in host.Tools)
+		foreach (var registered in host.ToolRegistrations)
 		{
+			var tool = registered.Tool;
 			// 内置工具优先：扩展不该悄悄顶掉 read/write/bash，那会让行为无法解释。
 			if (taken.Add(tool.Name))
 			{
-				merged.Add(new BuiltinTool(tool, tool.Label, []));
+				merged.Add(new BuiltinTool(
+					tool,
+					registered.PromptSnippet ?? string.Empty,
+					registered.PromptGuidelines));
 			}
 		}
 
@@ -2456,23 +2536,29 @@ public sealed class CodingAgentSession : IDisposable
 		// 展开技能命令与提示词模板，让 CLI、RPC、桌面与交互模式共享同一语义。
 		// 图片在这之后按当前模型归一化。PrepareInput 保持同步：计划模式与模板展开要立即生效。
 		var message = await NormalizeMessageAsync(PrepareInput(text), cancellationToken).ConfigureAwait(false);
-		using var run = BeginRun(cancellationToken);
-		try
+		IReadOnlyList<Message> messages;
+		using (var run = BeginRun(cancellationToken))
 		{
-			await AutoCompactAsync(run.Token).ConfigureAwait(false);
-			var messages = await RunWithRetryAsync(
-				// 只有首次才追加用户消息；重试时它已经在投影里，再 PromptAsync 会写第二份进内存与 JSONL。
-				attempt => attempt == 0
-					? _agent.PromptAsync(message, run.Token)
-					: _agent.ContinueAsync(run.Token),
-				run.Token).ConfigureAwait(false);
-			ThrowIfCallerCancelled(cancellationToken);
-			return messages;
+			try
+			{
+				await AutoCompactAsync(run.Token).ConfigureAwait(false);
+				messages = await RunWithRetryAsync(
+					// 只有首次才追加用户消息；重试时它已经在投影里，再 PromptAsync 会写第二份进内存与 JSONL。
+					attempt => attempt == 0
+						? _agent.PromptAsync(message, run.Token)
+						: _agent.ContinueAsync(run.Token),
+					run.Token).ConfigureAwait(false);
+				ThrowIfCallerCancelled(cancellationToken);
+			}
+			finally
+			{
+				EndRun(run);
+			}
 		}
-		finally
-		{
-			EndRun(run);
-		}
+
+		// 计划确认选在 agent_end 里发生，执行要一轮新请求：本轮完全收尾后再起。
+		await RunPendingModeTurnAsync(cancellationToken).ConfigureAwait(false);
+		return messages;
 	}
 
 
@@ -3044,43 +3130,53 @@ public sealed class CodingAgentSession : IDisposable
 		message = await NormalizeMessageAsync(message, cancellationToken).ConfigureAwait(false);
 		_cacheWarmer?.Cancel();
 		_overflowRecoveryAttempted = false;
-		using var run = BeginRun(cancellationToken);
-		try
+		IReadOnlyList<Message> messages;
+		using (var run = BeginRun(cancellationToken))
 		{
-			// 与字符串重载一致：先自动压缩，再按重试策略运行；重试走「继续」，不重新提问。
-			await AutoCompactAsync(run.Token).ConfigureAwait(false);
-			var messages = await RunWithRetryAsync(
-				attempt => attempt == 0
-					? _agent.PromptAsync(message, run.Token)
-					: _agent.ContinueAsync(run.Token),
-				run.Token).ConfigureAwait(false);
-			ThrowIfCallerCancelled(cancellationToken);
-			return messages;
+			try
+			{
+				// 与字符串重载一致：先自动压缩，再按重试策略运行；重试走「继续」，不重新提问。
+				await AutoCompactAsync(run.Token).ConfigureAwait(false);
+				messages = await RunWithRetryAsync(
+					attempt => attempt == 0
+						? _agent.PromptAsync(message, run.Token)
+						: _agent.ContinueAsync(run.Token),
+					run.Token).ConfigureAwait(false);
+				ThrowIfCallerCancelled(cancellationToken);
+			}
+			finally
+			{
+				EndRun(run);
+			}
 		}
-		finally
-		{
-			EndRun(run);
-		}
+
+		await RunPendingModeTurnAsync(cancellationToken).ConfigureAwait(false);
+		return messages;
 	}
 
 	public async Task<IReadOnlyList<Message>> ContinueAsync(CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
 		_cacheWarmer?.Cancel();
-		using var run = BeginRun(cancellationToken);
-		try
+		IReadOnlyList<Message> messages;
+		using (var run = BeginRun(cancellationToken))
 		{
-			await AutoCompactAsync(run.Token).ConfigureAwait(false);
-			var messages = await RunWithRetryAsync(
-				_ => _agent.ContinueAsync(run.Token),
-				run.Token).ConfigureAwait(false);
-			ThrowIfCallerCancelled(cancellationToken);
-			return messages;
+			try
+			{
+				await AutoCompactAsync(run.Token).ConfigureAwait(false);
+				messages = await RunWithRetryAsync(
+					_ => _agent.ContinueAsync(run.Token),
+					run.Token).ConfigureAwait(false);
+				ThrowIfCallerCancelled(cancellationToken);
+			}
+			finally
+			{
+				EndRun(run);
+			}
 		}
-		finally
-		{
-			EndRun(run);
-		}
+
+		await RunPendingModeTurnAsync(cancellationToken).ConfigureAwait(false);
+		return messages;
 	}
 
 	public void Steer(Message message)
@@ -3235,6 +3331,7 @@ public sealed class CodingAgentSession : IDisposable
 		_disposed = true;
 		_persistence.Dispose();
 		_cacheWarmLifecycle.Dispose();
+		_modeLifecycle.Dispose();
 		GC.SuppressFinalize(this);
 	}
 
@@ -3374,7 +3471,7 @@ public sealed class CodingAgentSession : IDisposable
 		{
 			if (_todoWidgetPublished)
 			{
-				host.SetWidget(new UiWidgetRequest("pi-deck-todo", null, null));
+				host.SetWidget(new UiWidgetRequest(PiDeckProtocol.TodoWidgetKey, null, null));
 				_todoWidgetPublished = false;
 			}
 
@@ -3382,7 +3479,7 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		_todoWidgetPublished = true;
-		host.SetWidget(new UiWidgetRequest("pi-deck-todo", TodoToolFactory.WidgetLines(plan, Session.LeafId), null));
+		host.SetWidget(new UiWidgetRequest(PiDeckProtocol.TodoWidgetKey, TodoToolFactory.WidgetLines(plan, Session.LeafId), null));
 	}
 
 	/// 压缩/分支摘要会冲掉历史里的计划视图；只在需要时补一条不可见 custom message，

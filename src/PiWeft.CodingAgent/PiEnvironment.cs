@@ -29,6 +29,8 @@ public static class PiEnvironment
 
 	/// 把 <c>settings.httpProxy</c> 应用到 <c>HTTP_PROXY</c> / <c>HTTPS_PROXY</c>。
 	/// 与 pi 一致：只在配置了非空值时设置，且不清理用户已有的环境变量。
+	/// 同时标记这组代理由本进程注入：agent shell 命令会清掉这些变量，
+	/// 避免命令走模型专用出口（PiDeck 的 shell proxy 语义）。
 	public static void ApplyHttpProxy(string? httpProxy)
 	{
 		var proxy = httpProxy?.Trim();
@@ -39,6 +41,7 @@ public static class PiEnvironment
 
 		Environment.SetEnvironmentVariable("HTTP_PROXY", proxy);
 		Environment.SetEnvironmentVariable("HTTPS_PROXY", proxy);
+		Environment.SetEnvironmentVariable("PIDECK_PI_PROXY_SCOPE", "model-only");
 	}
 
 	private static bool IsTruthy(string? value) =>

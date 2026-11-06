@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.Ai.Utils;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Tools;
@@ -206,4 +207,35 @@ public class AskQuestionTests : IDisposable
 		Assert.Equal("editor", parsed[1].Type);
 		Assert.Null(AskQuestions.ParseEnvelope("not json"));
 	}
+	[Fact]
+	public void Schema_AcceptsLegacySingleQuestionAndUnknownFields()
+	{
+		// PiDeck 保留旧式顶层 question/type/options，并且不拒绝未知字段（allowOther 等）。
+		var tool = AskQuestionTool.Create(static () => null).Tool;
+
+		var legacy = JsonSchemaValidator.ValidateToolArguments(tool.ToDeclaration(), new JsonObject
+		{
+			["question"] = "继续？",
+			["options"] = new JsonArray("是", "否"),
+			["allowOther"] = true,
+		});
+
+		Assert.Null(legacy.Error);
+		Assert.Equal("继续？", legacy.Value!["question"]!.GetValue<string>());
+	}
+
+	[Fact]
+	public void Schema_WrapsASingleQuestionObjectIntoTheQuestionsArray()
+	{
+		var tool = AskQuestionTool.Create(static () => null).Tool;
+		var result = JsonSchemaValidator.ValidateToolArguments(tool.ToDeclaration(), new JsonObject
+		{
+			["questions"] = new JsonObject { ["question"] = "继续？" },
+		});
+
+		Assert.Null(result.Error);
+		Assert.IsType<JsonArray>(result.Value!["questions"]);
+		Assert.Equal("继续？", result.Value["questions"]![0]!["question"]!.GetValue<string>());
+	}
+
 }

@@ -173,7 +173,9 @@ internal static class GlobSyntax
 	/// 供调用方构造超时正则：glob 展开后可能有嵌套分支，仍然给一个上限。
 	public static Regex Compile(StringBuilder builder, bool ignoreCase)
 	{
-		var options = RegexOptions.CultureInvariant;
+		// 生成的 glob 正则没有反向引用与环视，NonBacktracking 不会改变语义，
+		// 但能挡住畸形 pattern 的指数回溯。
+		var options = RegexOptions.CultureInvariant | RegexOptions.NonBacktracking;
 		if (ignoreCase)
 		{
 			options |= RegexOptions.IgnoreCase;

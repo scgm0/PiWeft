@@ -35,7 +35,7 @@ public static partial class CodeModeSearch
 		var parts = new List<string> { name, name.Replace('_', ' ') };
 		if (!string.IsNullOrWhiteSpace(description)) parts.Add(description);
 		if (searchTerms is not null) parts.Add(searchTerms);
-		if (inputSchema is not null) SchemaText(inputSchema, parts);
+		if (inputSchema is not null) SchemaText(inputSchema, parts, inputSchema, new HashSet<JsonNode>(ReferenceEqualityComparer.Instance));
 		return string.Join(" ", parts.Where(static part => !string.IsNullOrWhiteSpace(part)));
 	}
 
@@ -50,7 +50,7 @@ public static partial class CodeModeSearch
 		var parts = new List<string>();
 		if (!string.IsNullOrWhiteSpace(description)) parts.Add(description);
 		if (!string.IsNullOrWhiteSpace(searchTerms)) parts.Add(searchTerms);
-		if (inputSchema is not null) SchemaText(inputSchema, parts);
+		if (inputSchema is not null) SchemaText(inputSchema, parts, inputSchema, new HashSet<JsonNode>(ReferenceEqualityComparer.Instance));
 		return new ToolSearchDocument(
 			name,
 			string.Join(" ", parts.Where(static part => !string.IsNullOrWhiteSpace(part))),
@@ -274,9 +274,18 @@ public static partial class CodeModeSearch
 		return term;
 	}
 
-	private static void SchemaText(JsonNode? schema, List<string> parts)
+	private static void SchemaText(JsonNode? schema, List<string> parts, JsonNode? root, HashSet<JsonNode> seen)
 	{
 		if (schema is not JsonObject node) return;
+
+		// MCP 的 input schema 常把模型放在 $defs 里；不跟进去就搜不到属性名与描述。
+		if (node["$ref"] is JsonValue refValue && refValue.TryGetValue<string>(out var reference))
+		{
+			if (ResolveReference(reference, root) is JsonObject target && seen.Add(target))
+			{
+				SchemaText(target, parts, root, seen);
+			}
+		}
 
 		if (node["description"] is JsonValue description && description.TryGetValue<string>(out var text))
 		{
@@ -288,16 +297,75 @@ public static partial class CodeModeSearch
 			foreach (var (name, property) in properties)
 			{
 				parts.Add(name);
-				SchemaText(property, parts);
+				SchemaText(property, parts, root, seen);
 			}
 		}
 
-		SchemaText(node["items"], parts);
+		foreach (var key in new[] { "items", "prefixItems" })
+		{
+			switch (node[key])
+			{
+				case JsonObject item:
+					SchemaText(item, parts, root, seen);
+					break;
+				case JsonArray tuple:
+					foreach (var entry in tuple) SchemaText(entry, parts, root, seen);
+					break;
+			}
+		}
+
 		foreach (var key in new[] { "anyOf", "oneOf", "allOf" })
 		{
 			if (node[key] is not JsonArray variants) continue;
-			foreach (var variant in variants) SchemaText(variant, parts);
+			foreach (var variant in variants) SchemaText(variant, parts, root, seen);
 		}
+	}
+
+	/// 本地 JSON Pointer（<c>#/$defs/x</c>）。循环引用与畸形转义返回 null，检索退化为不含该子树。
+	private static JsonNode? ResolveReference(string reference, JsonNode? root)
+	{
+		if (root is null || !reference.StartsWith('#'))
+		{
+			return null;
+		}
+
+		var pointer = reference[1..];
+		if (pointer.Length == 0)
+		{
+			return root;
+		}
+
+		if (!pointer.StartsWith('/'))
+		{
+			return null;
+		}
+
+		JsonNode? current = root;
+		foreach (var rawSegment in pointer[1..].Split('/'))
+		{
+			string segment;
+			try
+			{
+				segment = Uri.UnescapeDataString(rawSegment)
+					.Replace("~1", "/", StringComparison.Ordinal)
+					.Replace("~0", "~", StringComparison.Ordinal);
+			}
+			catch (UriFormatException)
+			{
+				return null;
+			}
+
+			current = segment.Length > 0 && int.TryParse(segment, out var index) && current is JsonArray array
+				? index >= 0 && index < array.Count ? array[index] : null
+				: current is JsonObject obj ? obj[segment] : null;
+
+			if (current is null)
+			{
+				return null;
+			}
+		}
+
+		return current;
 	}
 
 	private sealed record IndexedDocument(

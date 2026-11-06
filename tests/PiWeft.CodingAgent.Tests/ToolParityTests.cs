@@ -256,6 +256,8 @@ public sealed class ToolParityTests : IDisposable
 	[Fact]
 	public async Task Find_And_Grep_HonorParentGitIgnoreWhenSearchingASubdirectory()
 	{
+		// ripgrep 只在仓库内读 .gitignore；没有 .git 时这组断言会被（正确地）跳过。
+		Directory.CreateDirectory(Path.Combine(_root, ".git"));
 		Write(".gitignore", "ignored.txt\n");
 		Write("sub/ignored.txt", "needle");
 		Write("sub/keep.txt", "needle");

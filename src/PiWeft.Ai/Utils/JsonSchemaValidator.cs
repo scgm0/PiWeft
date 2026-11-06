@@ -17,12 +17,12 @@ public static class JsonSchemaValidator
 		ArgumentNullException.ThrowIfNull(tool);
 
 		var clone = (JsonObject)arguments.DeepClone();
-		NormalizeOptionalNulls(tool.Parameters, clone);
+		NormalizeOptionalNulls(tool.Parameters, clone, tool.Parameters);
 
-		var coerced = Coerce(tool.Parameters, clone) as JsonObject ?? clone;
+		var coerced = Coerce(tool.Parameters, clone, tool.Parameters) as JsonObject ?? clone;
 
 		var errors = new List<string>();
-		ValidateNode(tool.Parameters, coerced, string.Empty, errors);
+		ValidateNode(tool.Parameters, coerced, string.Empty, errors, tool.Parameters);
 
 		if (errors.Count == 0)
 		{
@@ -45,28 +45,47 @@ public static class JsonSchemaValidator
 	};
 
 
-	public static void NormalizeOptionalNulls(JsonObject schema, JsonNode? value)
+	public static void NormalizeOptionalNulls(JsonObject schema, JsonNode? value) =>
+		NormalizeOptionalNulls(schema, value, schema);
+
+	private static void NormalizeOptionalNulls(JsonObject schema, JsonNode? value, JsonNode? root)
 	{
+		var resolved = Resolve(schema, root);
+		if (resolved is null)
+		{
+			return;
+		}
+
+		schema = resolved;
+
 		switch (value)
 		{
 			case JsonArray array:
 			{
-				var itemSchema = schema["items"] as JsonObject;
-				if (schema["items"] is JsonArray itemSchemas)
+				var prefix = schema["prefixItems"] as JsonArray ?? schema["items"] as JsonArray;
+				if (prefix is not null)
 				{
-					for (var i = 0; i < array.Count && i < itemSchemas.Count; i++)
+					for (var i = 0; i < array.Count && i < prefix.Count; i++)
 					{
-						if (itemSchemas[i] is JsonObject tupleSchema)
+						if (prefix[i] is JsonObject tupleSchema)
 						{
-							NormalizeOptionalNulls(tupleSchema, array[i]);
+							NormalizeOptionalNulls(tupleSchema, array[i], root);
 						}
 					}
 				}
-				else if (itemSchema is not null)
+
+				if (schema["items"] is JsonObject itemSchema && schema["prefixItems"] is null)
 				{
 					foreach (var item in array)
 					{
-						NormalizeOptionalNulls(itemSchema, item);
+						NormalizeOptionalNulls(itemSchema, item, root);
+					}
+				}
+				else if (schema["items"] is JsonObject restSchema && schema["prefixItems"] is JsonArray prefixItems)
+				{
+					for (var i = prefixItems.Count; i < array.Count; i++)
+					{
+						NormalizeOptionalNulls(restSchema, array[i], root);
 					}
 				}
 
@@ -94,7 +113,7 @@ public static class JsonSchemaValidator
 						continue;
 					}
 
-					NormalizeOptionalNulls(property, propertyValue);
+					NormalizeOptionalNulls(property, propertyValue, root);
 				}
 
 				return;
@@ -102,15 +121,25 @@ public static class JsonSchemaValidator
 		}
 	}
 
-	public static JsonNode? Coerce(JsonObject schema, JsonNode? value)
+	public static JsonNode? Coerce(JsonObject schema, JsonNode? value) =>
+		Coerce(schema, value, schema);
+
+	private static JsonNode? Coerce(JsonObject schema, JsonNode? value, JsonNode? root)
 	{
+		var resolved = Resolve(schema, root);
+		if (resolved is null)
+		{
+			return value;
+		}
+
+		schema = resolved;
 		var current = value;
 
 		if (schema["allOf"] is JsonArray allOf)
 		{
 			foreach (var nested in allOf.OfType<JsonObject>())
 			{
-				current = Coerce(nested, current);
+				current = Coerce(nested, current, root);
 			}
 		}
 
@@ -118,7 +147,7 @@ public static class JsonSchemaValidator
 		{
 			if (schema[keyword] is JsonArray union)
 			{
-				current = CoerceUnion(union.OfType<JsonObject>().ToList(), current);
+				current = CoerceUnion(union.OfType<JsonObject>().ToList(), current, root);
 			}
 		}
 
@@ -126,44 +155,68 @@ public static class JsonSchemaValidator
 		var matchesUnionMember = types.Count > 1 && types.Any(type => MatchesType(current, type));
 		if (types.Count > 0 && !matchesUnionMember)
 		{
+			var converted = false;
 			foreach (var type in types)
 			{
 				var candidate = CoercePrimitive(current, type);
 				if (!ReferenceEquals(candidate, current))
 				{
 					current = candidate;
+					converted = true;
 					break;
 				}
 			}
+
+			// pi-schema / TypeBox 的转换规则：单值遇到 array 包装成单元素数组。
+			// null 不包：`[null]` 只会让校验错误更难读，缺值应当如实报类型不符。
+			if (!converted && types.Contains("array") && current is not (null or JsonArray))
+			{
+				current = new JsonArray(current?.DeepClone());
+			}
 		}
 
-		if (types.Contains("object") && current is JsonObject obj && schema["properties"] is JsonObject properties)
+		if (types.Contains("object") && current is JsonObject obj)
 		{
-			foreach (var (key, propertySchema) in properties.ToList())
+			var properties = schema["properties"] as JsonObject;
+			var patternProperties = schema["patternProperties"] as JsonObject;
+			if (properties is not null)
 			{
-				if (propertySchema is not JsonObject property || !obj.TryGetPropertyValue(key, out var propertyValue))
+				foreach (var (key, propertySchema) in properties.ToList())
 				{
-					continue;
-				}
-
-				var coercedProperty = Coerce(property, propertyValue);
-				if (!ReferenceEquals(coercedProperty, propertyValue))
-				{
-					obj[key] = coercedProperty;
-				}
-			}
-
-			if (schema["additionalProperties"] is JsonObject additional)
-			{
-				var defined = properties.Select(static pair => pair.Key).ToHashSet(StringComparer.Ordinal);
-				foreach (var (key, propertyValue) in obj.ToList())
-				{
-					if (defined.Contains(key))
+					if (propertySchema is not JsonObject property || !obj.TryGetPropertyValue(key, out var propertyValue))
 					{
 						continue;
 					}
 
-					var coercedProperty = Coerce(additional, propertyValue);
+					var coercedProperty = Coerce(property, propertyValue, root);
+					if (!ReferenceEquals(coercedProperty, propertyValue))
+					{
+						obj[key] = coercedProperty;
+					}
+				}
+			}
+
+			foreach (var (key, propertyValue) in obj.ToList())
+			{
+				if (properties?.ContainsKey(key) == true)
+				{
+					continue;
+				}
+
+				if (patternProperties is not null && MatchPatternSchema(patternProperties, key) is { } patternSchema)
+				{
+					var coercedPattern = Coerce(patternSchema, propertyValue, root);
+					if (!ReferenceEquals(coercedPattern, propertyValue))
+					{
+						obj[key] = coercedPattern;
+					}
+
+					continue;
+				}
+
+				if (schema["additionalProperties"] is JsonObject additional)
+				{
+					var coercedProperty = Coerce(additional, propertyValue, root);
 					if (!ReferenceEquals(coercedProperty, propertyValue))
 					{
 						obj[key] = coercedProperty;
@@ -174,27 +227,30 @@ public static class JsonSchemaValidator
 
 		if (types.Contains("array") && current is JsonArray array)
 		{
-			if (schema["items"] is JsonArray tuple)
+			var prefix = schema["prefixItems"] as JsonArray ?? schema["items"] as JsonArray;
+			if (prefix is not null)
 			{
-				for (var i = 0; i < array.Count && i < tuple.Count; i++)
+				for (var i = 0; i < array.Count && i < prefix.Count; i++)
 				{
-					if (tuple[i] is not JsonObject tupleSchema)
+					if (prefix[i] is not JsonObject tupleSchema)
 					{
 						continue;
 					}
 
-					var coercedItem = Coerce(tupleSchema, array[i]);
+					var coercedItem = Coerce(tupleSchema, array[i], root);
 					if (!ReferenceEquals(coercedItem, array[i]))
 					{
 						array[i] = coercedItem;
 					}
 				}
 			}
-			else if (schema["items"] is JsonObject itemSchema)
+
+			if (schema["items"] is JsonObject itemSchema)
 			{
-				for (var i = 0; i < array.Count; i++)
+				var start = schema["prefixItems"] is JsonArray prefixItems ? prefixItems.Count : 0;
+				for (var i = start; i < array.Count; i++)
 				{
-					var coercedItem = Coerce(itemSchema, array[i]);
+					var coercedItem = Coerce(itemSchema, array[i], root);
 					if (!ReferenceEquals(coercedItem, array[i]))
 					{
 						array[i] = coercedItem;
@@ -206,7 +262,7 @@ public static class JsonSchemaValidator
 		return current;
 	}
 
-	private static JsonNode? CoerceUnion(IReadOnlyList<JsonObject> branches, JsonNode? value)
+	private static JsonNode? CoerceUnion(IReadOnlyList<JsonObject> branches, JsonNode? value, JsonNode? root)
 	{
 		if (branches.Count == 0)
 		{
@@ -216,7 +272,7 @@ public static class JsonSchemaValidator
 		// 已在某处合法：保持原样。
 		foreach (var branch in branches)
 		{
-			if (IsValid(branch, value))
+			if (IsValid(branch, value, root))
 			{
 				return value;
 			}
@@ -225,14 +281,111 @@ public static class JsonSchemaValidator
 		// 否则用第一个转换后能通过校验的分支。
 		foreach (var branch in branches)
 		{
-			var candidate = Coerce(branch, value?.DeepClone());
-			if (IsValid(branch, candidate))
+			var candidate = Coerce(branch, value?.DeepClone(), root);
+			if (IsValid(branch, candidate, root))
 			{
 				return candidate;
 			}
 		}
 
 		return value;
+	}
+
+	private static JsonObject? MatchPatternSchema(JsonObject patternProperties, string key)
+	{
+		foreach (var (pattern, schema) in patternProperties)
+		{
+			if (schema is JsonObject propertySchema && SafeRegexMatch(pattern, key))
+			{
+				return propertySchema;
+			}
+		}
+
+		return null;
+	}
+
+	/// 本地 <c>$ref</c> 的解析结果按 schema 根缓存：同一个工具每次调用都会重走 pointer，
+	/// 而 schema 在会话内不变。根节点被回收时缓存一起回收。
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<
+		JsonNode,
+		System.Collections.Concurrent.ConcurrentDictionary<string, JsonObject?>> RefCache = new();
+
+	/// 解析本地 <c>$ref</c>（<c>#/$defs/x</c>、<c>#/definitions/x</c>，也支持任意 JSON Pointer）。
+	/// 循环引用或坏指针返回 null，按「不校验」处理，不能因为一个坏 schema 让工具调用崩掉。
+	private static JsonObject? Resolve(JsonObject schema, JsonNode? root)
+	{
+		var current = schema;
+		HashSet<string>? seen = null;
+		while (current["$ref"] is JsonValue refValue && refValue.TryGetValue<string>(out var reference))
+		{
+			seen ??= new HashSet<string>(StringComparer.Ordinal);
+			if (!seen.Add(reference) || ResolveReference(reference, root) is not JsonObject target)
+			{
+				return null;
+			}
+
+			current = target;
+		}
+
+		return current;
+	}
+
+	private static JsonNode? ResolveReference(string reference, JsonNode? root)
+	{
+		if (root is null || !reference.StartsWith('#'))
+		{
+			return null;
+		}
+
+		var cache = RefCache.GetValue(root, static _ => new(StringComparer.Ordinal));
+		if (cache.TryGetValue(reference, out var cached))
+		{
+			return cached;
+		}
+
+		var resolved = ResolvePointer(reference, root);
+		cache[reference] = resolved;
+		return resolved;
+	}
+
+	private static JsonObject? ResolvePointer(string reference, JsonNode root)
+	{
+		var pointer = reference[1..];
+		if (pointer.Length == 0)
+		{
+			return root as JsonObject;
+		}
+
+		if (!pointer.StartsWith('/'))
+		{
+			return null;
+		}
+
+		JsonNode? current = root;
+		foreach (var rawSegment in pointer[1..].Split('/'))
+		{
+			string segment;
+			try
+			{
+				segment = Uri.UnescapeDataString(rawSegment).Replace("~1", "/", StringComparison.Ordinal).Replace("~0", "~", StringComparison.Ordinal);
+			}
+			catch (UriFormatException)
+			{
+				// 畸形百分号转义（#/$defs/%E0）：按无法解析处理，不影响其它工具。
+				return null;
+			}
+
+			current = segment.Length > 0 && int.TryParse(segment, out var index) && current is JsonArray array
+				? index >= 0 && index < array.Count ? array[index] : null
+				: current is JsonObject obj ? obj[segment] : null;
+
+			if (current is null)
+			{
+				return null;
+			}
+		}
+
+		return current as JsonObject;
 	}
 
 	private static JsonNode? CoercePrimitive(JsonNode? value, string type)
@@ -326,35 +479,43 @@ public static class JsonSchemaValidator
 		}
 	}
 
+	public static bool IsValid(JsonObject schema, JsonNode? value) => IsValid(schema, value, schema);
 
-	public static bool IsValid(JsonObject schema, JsonNode? value)
+	private static bool IsValid(JsonObject schema, JsonNode? value, JsonNode? root)
 	{
 		var errors = new List<string>();
-		ValidateNode(schema, value, string.Empty, errors);
+		ValidateNode(schema, value, string.Empty, errors, root);
 		return errors.Count == 0;
 	}
 
-	private static void ValidateNode(JsonObject schema, JsonNode? value, string path, List<string> errors)
+	private static void ValidateNode(JsonObject schema, JsonNode? value, string path, List<string> errors, JsonNode? root)
 	{
+		var resolved = Resolve(schema, root);
+		if (resolved is null)
+		{
+			return;
+		}
+
+		schema = resolved;
 		var displayPath = path.Length == 0 ? "root" : path;
 
 		if (schema["allOf"] is JsonArray allOf)
 		{
 			foreach (var nested in allOf.OfType<JsonObject>())
 			{
-				ValidateNode(nested, value, path, errors);
+				ValidateNode(nested, value, path, errors, root);
 			}
 		}
 
 		if (schema["anyOf"] is JsonArray anyOf &&
-			!anyOf.OfType<JsonObject>().Any(branch => IsValid(branch, value)))
+			!anyOf.OfType<JsonObject>().Any(branch => IsValid(branch, value, root)))
 		{
 			errors.Add($"{displayPath}: Expected value to match at least one of the allowed schemas");
 			return;
 		}
 
 		if (schema["oneOf"] is JsonArray oneOf &&
-			oneOf.OfType<JsonObject>().Count(branch => IsValid(branch, value)) != 1)
+			oneOf.OfType<JsonObject>().Count(branch => IsValid(branch, value, root)) != 1)
 		{
 			errors.Add($"{displayPath}: Expected value to match exactly one of the allowed schemas");
 			return;
@@ -379,8 +540,8 @@ public static class JsonSchemaValidator
 
 		ValidateNumberConstraints(schema, value, displayPath, errors);
 		ValidateStringConstraints(schema, value, displayPath, errors);
-		ValidateArrayConstraints(schema, value, path, displayPath, errors);
-		ValidateObjectConstraints(schema, value, path, displayPath, errors);
+		ValidateArrayConstraints(schema, value, path, displayPath, errors, root);
+		ValidateObjectConstraints(schema, value, path, displayPath, errors, root);
 	}
 
 	private static void ValidateNumberConstraints(JsonObject schema, JsonNode? value, string path, List<string> errors)
@@ -456,7 +617,8 @@ public static class JsonSchemaValidator
 		JsonNode? value,
 		string path,
 		string displayPath,
-		List<string> errors)
+		List<string> errors,
+		JsonNode? root)
 	{
 		if (value is not JsonArray array)
 		{
@@ -489,21 +651,24 @@ public static class JsonSchemaValidator
 			}
 		}
 
-		if (schema["items"] is JsonArray tuple)
+		var prefix = schema["prefixItems"] as JsonArray ?? schema["items"] as JsonArray;
+		if (prefix is not null)
 		{
-			for (var i = 0; i < array.Count && i < tuple.Count; i++)
+			for (var i = 0; i < array.Count && i < prefix.Count; i++)
 			{
-				if (tuple[i] is JsonObject tupleSchema)
+				if (prefix[i] is JsonObject tupleSchema)
 				{
-					ValidateNode(tupleSchema, array[i], $"{path}[{i}]", errors);
+					ValidateNode(tupleSchema, array[i], $"{path}[{i}]", errors, root);
 				}
 			}
 		}
-		else if (schema["items"] is JsonObject itemSchema)
+
+		if (schema["items"] is JsonObject itemSchema)
 		{
-			for (var i = 0; i < array.Count; i++)
+			var start = schema["prefixItems"] is JsonArray prefixItems ? prefixItems.Count : 0;
+			for (var i = start; i < array.Count; i++)
 			{
-				ValidateNode(itemSchema, array[i], $"{path}[{i}]", errors);
+				ValidateNode(itemSchema, array[i], $"{path}[{i}]", errors, root);
 			}
 		}
 	}
@@ -513,7 +678,8 @@ public static class JsonSchemaValidator
 		JsonNode? value,
 		string path,
 		string displayPath,
-		List<string> errors)
+		List<string> errors,
+		JsonNode? root)
 	{
 		if (value is not JsonObject obj)
 		{
@@ -541,13 +707,36 @@ public static class JsonSchemaValidator
 			errors.Add($"{displayPath}: Expected at most {(int)maxProperties} propert(y|ies)");
 		}
 
+		var patternProperties = schema["patternProperties"] as JsonObject;
 		foreach (var (key, propertyValue) in obj)
 		{
 			var childPath = path.Length == 0 ? key : $"{path}.{key}";
 
-			if (properties?[key] is JsonObject propertySchema)
+			var propertySchema = properties?[key] as JsonObject;
+			var matchedProperty = propertySchema is not null;
+			if (propertySchema is not null)
 			{
-				ValidateNode(propertySchema, propertyValue, childPath, errors);
+				ValidateNode(propertySchema, propertyValue, childPath, errors, root);
+			}
+
+			// JSON Schema 里 properties 与 patternProperties 各自独立生效：同名属性两边都要过。
+			var matchedPattern = false;
+			if (patternProperties is not null)
+			{
+				foreach (var (pattern, patternSchema) in patternProperties)
+				{
+					if (patternSchema is not JsonObject property || !SafeRegexMatch(pattern, key))
+					{
+						continue;
+					}
+
+					matchedPattern = true;
+					ValidateNode(property, propertyValue, childPath, errors, root);
+				}
+			}
+
+			if (matchedProperty || matchedPattern)
+			{
 				continue;
 			}
 
@@ -656,6 +845,10 @@ public static class JsonSchemaValidator
 		catch (ArgumentException)
 		{
 			return true; // schema 里的非法正则不能让整次调用失败
+		}
+		catch (RegexMatchTimeoutException)
+		{
+			return false;
 		}
 	}
 }

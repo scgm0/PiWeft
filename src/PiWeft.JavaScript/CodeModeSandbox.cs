@@ -42,37 +42,179 @@ public sealed class CodeModeSandbox
 
 	/// 运行一段脚本。脚本失败不会抛异常，而是通过 <see cref="CodeModeResult.Error"/> 报告。
 	/// 解释器跑在独立的后台线程上（不占用调用线程与线程池），工具落定后脚本的续体也回到该线程。
-	public Task<CodeModeResult> ExecuteAsync(string code, CodeModeExecuteOptions? options = null)
+	public async Task<CodeModeResult> ExecuteAsync(string code, CodeModeExecuteOptions? options = null)
 	{
 		ArgumentNullException.ThrowIfNull(code);
 		options ??= new CodeModeExecuteOptions();
 
-		// 与 pi 相同的进程级并发上限：允许一个替补在被取消的 worker 退出期间启动。
-		if (Interlocked.Increment(ref _activeWorkers) > MaxConcurrentWorkers)
+		var deadline = options.Timeout ?? _options.Timeout;
+		if (deadline < TimeSpan.Zero && deadline != Timeout.InfiniteTimeSpan)
 		{
-			Interlocked.Decrement(ref _activeWorkers);
-			throw new InvalidOperationException(
-				$"Codemode worker limit reached ({MaxConcurrentWorkers} workers are still running or shutting down). Retry after they exit.");
+			deadline = TimeSpan.Zero;
+		}
+
+		var wait = deadline == Timeout.InfiniteTimeSpan || deadline > WorkerWaitLimit
+			? WorkerWaitLimit
+			: deadline;
+		var startedWaiting = Stopwatch.GetTimestamp();
+		var maxWorkers = MaxWorkers();
+		var admission = await ReserveWorkerAsync(wait, maxWorkers, options.CancellationToken).ConfigureAwait(false);
+		var waited = Stopwatch.GetElapsedTime(startedWaiting);
+		if (admission != WorkerAdmission.Admitted)
+		{
+			if (admission == WorkerAdmission.Aborted)
+			{
+				return NotStarted(new CodeModeError
+				{
+					Kind = CodeModeErrorKind.Aborted,
+					Message = "Execution aborted while waiting for a codemode worker",
+				});
+			}
+
+			return NotStarted(new CodeModeError
+			{
+				Kind = CodeModeErrorKind.Timeout,
+				Message = deadline <= WorkerWaitLimit
+					? $"Execution timed out after {(int)deadline.TotalMilliseconds} ms while waiting for a free codemode worker"
+					: $"No codemode worker became free within {WorkerWaitLimit.TotalSeconds:0} seconds. All {maxWorkers} workers, shared by every session in this process, are held by other scripts. Retry after they finish.",
+			});
+		}
+
+		if (deadline != Timeout.InfiniteTimeSpan)
+		{
+			var remaining = deadline - waited;
+			if (remaining <= TimeSpan.Zero)
+			{
+				ReleaseWorker();
+				return NotStarted(new CodeModeError
+				{
+					Kind = CodeModeErrorKind.Timeout,
+					Message = $"Execution timed out after {(int)deadline.TotalMilliseconds} ms while waiting for a free codemode worker",
+				});
+			}
+
+			options = options with { Timeout = remaining };
 		}
 
 		var worker = new CodeModeWorker();
-		worker.Start(() =>
+		try
 		{
-			try
+			worker.Start(() =>
 			{
-				return ExecuteCore(worker, code, options);
-			}
-			finally
-			{
-				Interlocked.Decrement(ref _activeWorkers);
-			}
-		});
-		return worker.Completion;
+				try
+				{
+					return ExecuteCore(worker, code, options);
+				}
+				finally
+				{
+					ReleaseWorker();
+				}
+			});
+		}
+		catch
+		{
+			ReleaseWorker();
+			throw;
+		}
+
+		return await worker.Completion.ConfigureAwait(false);
 	}
 
-	private const int MaxConcurrentWorkers = 2;
+	private static CodeModeResult NotStarted(CodeModeError error) => new() { Ok = false, Error = error };
+
+	private const int DefaultMaxWorkers = 2;
+
+	/// pi 的 CODEMODE_WORKER_WAIT_MS：脚本排队等 worker 的上限，避免互相等待的脚本永久挂住。
+	private static readonly TimeSpan WorkerWaitLimit = TimeSpan.FromSeconds(60);
+
+	private static readonly Lock WorkerGate = new();
+
+	/// 等待中的脚本，先到先得（pi 也按到达顺序分配）。
+	private static readonly Queue<TaskCompletionSource<bool>> WorkerWaiters = new();
 
 	private static int _activeWorkers;
+
+	private enum WorkerAdmission
+	{
+		Admitted,
+		Aborted,
+		TimedOut,
+	}
+
+	private static int MaxWorkers()
+	{
+		var value = Environment.GetEnvironmentVariable("PI_CODEMODE_MAX_WORKERS");
+		return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0
+			? parsed
+			: DefaultMaxWorkers;
+	}
+
+	/// 排队等一个 worker 名额：取消/超时会把它标成已完成，Release 跳过这种过期条目。
+	private static async Task<WorkerAdmission> ReserveWorkerAsync(
+		TimeSpan wait,
+		int maxWorkers,
+		CancellationToken cancellationToken)
+	{
+		if (cancellationToken.IsCancellationRequested)
+		{
+			return WorkerAdmission.Aborted;
+		}
+
+		TaskCompletionSource<bool> waiter;
+		lock (WorkerGate)
+		{
+			if (_activeWorkers < maxWorkers && WorkerWaiters.Count == 0)
+			{
+				_activeWorkers++;
+				return WorkerAdmission.Admitted;
+			}
+
+			waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+			WorkerWaiters.Enqueue(waiter);
+		}
+
+		using var timer = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		var delay = Task.Delay(wait, timer.Token);
+		var completed = await Task.WhenAny(waiter.Task, delay).ConfigureAwait(false);
+		if (completed == waiter.Task && waiter.Task.Result)
+		{
+			timer.Cancel();
+			return WorkerAdmission.Admitted;
+		}
+
+		timer.Cancel();
+
+		// 与 Release 竞争：TrySetResult(false) 成功说明还在队列里；失败说明名额已经转交过来了。
+		if (!waiter.TrySetResult(false))
+		{
+			return WorkerAdmission.Admitted;
+		}
+
+		return cancellationToken.IsCancellationRequested ? WorkerAdmission.Aborted : WorkerAdmission.TimedOut;
+	}
+
+	/// 交出名额：优先转交给队首 waiter；没有 waiter 才真正减计数。
+	private static void ReleaseWorker()
+	{
+		lock (WorkerGate)
+		{
+			while (WorkerWaiters.Count > 0)
+			{
+				var next = WorkerWaiters.Dequeue();
+				if (next.TrySetResult(true))
+				{
+					// 名额直接转交，_activeWorkers 保持不变。
+					return;
+				}
+			}
+
+			_activeWorkers--;
+			if (_activeWorkers < 0)
+			{
+				_activeWorkers = 0;
+			}
+		}
+	}
 
 	private CodeModeResult ExecuteCore(CodeModeWorker worker, string code, CodeModeExecuteOptions options)
 	{

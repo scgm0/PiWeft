@@ -39,10 +39,13 @@ internal sealed class ConsoleUiHost(TextReader input, TextWriter output) : IUiHo
 	public async Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken)
 	{
 		output.WriteLine();
-		output.WriteLine(request.Title);
+		output.WriteLine(UiSelectText.DisplayTitle(request.Title));
 		for (var index = 0; index < request.Options.Count; index++)
 		{
-			output.WriteLine($"  {index + 1}. {request.Options[index]}");
+			var (label, description) = UiSelectText.SplitOption(request.Options[index]);
+			output.WriteLine(description is { Length: > 0 }
+				? $"  {index + 1}. {label} — {description}"
+				: $"  {index + 1}. {label}");
 		}
 
 		while (true)

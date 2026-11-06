@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Xunit;
 
 namespace PiWeft.JavaScript.Tests;
 
+[Collection("codemode-workers")]
 public sealed class CodeModeSandboxTests
 {
 	private static CodeModeTool Tool(string name, Func<JsonNode?, CancellationToken, Task<JsonNode?>> execute) => new()
@@ -593,4 +595,122 @@ public sealed class CodeModeSandboxTests
 		Assert.Equal(2, result.Value!.AsArray().Count);
 		Assert.Equal(2, result.Calls.Count);
 	}
+	[Fact]
+	public async Task Execute_QueuesWhenAllWorkersAreBusyAndTimesOutOnTheScriptDeadline()
+	{
+		var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var sandbox = new CodeModeSandbox(new CodeModeSandboxOptions
+		{
+			Timeout = TimeSpan.FromSeconds(30),
+			Tools =
+			[
+				Tool("block", async (_, cancellationToken) =>
+				{
+					entered.TrySetResult(true);
+					await gate.Task.WaitAsync(cancellationToken);
+					return null;
+				}),
+			],
+		});
+
+		var first = sandbox.ExecuteAsync("""await tools.block({ path: "1" });""");
+		var second = sandbox.ExecuteAsync("""await tools.block({ path: "2" });""");
+		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		// 第三段脚本没有空 worker：等脚本自己的 200ms 截止时间，而不是立刻失败。
+		var stopwatch = Stopwatch.StartNew();
+		var third = await sandbox.ExecuteAsync(
+			"""text("third");""",
+			new CodeModeExecuteOptions { Timeout = TimeSpan.FromMilliseconds(200) });
+		stopwatch.Stop();
+
+		Assert.False(third.Ok);
+		Assert.Equal(CodeModeErrorKind.Timeout, third.Error!.Kind);
+		Assert.Contains("waiting for a free codemode worker", third.Error.Message);
+		// 下界证明它真的等过；不设上界，并行跑全量测试时机器可能很忙。
+		Assert.True(stopwatch.Elapsed >= TimeSpan.FromMilliseconds(150), $"waited only {stopwatch.ElapsedMilliseconds} ms");
+
+		gate.TrySetResult(true);
+		var results = await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
+		Assert.All(results, static result => Assert.True(result.Ok, result.Error?.Message));
+	}
+
+	[Fact]
+	public async Task Execute_WaitsForAFreeWorkerAndRunsAfterRelease()
+	{
+		var previous = Environment.GetEnvironmentVariable("PI_CODEMODE_MAX_WORKERS");
+		var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		Environment.SetEnvironmentVariable("PI_CODEMODE_MAX_WORKERS", "1");
+		try
+		{
+			var sandbox = new CodeModeSandbox(new CodeModeSandboxOptions
+			{
+				Timeout = TimeSpan.FromSeconds(30),
+				Tools =
+				[
+					Tool("block", async (_, cancellationToken) =>
+					{
+						entered.TrySetResult(true);
+						await gate.Task.WaitAsync(cancellationToken);
+						return null;
+					}),
+				],
+			});
+
+			var first = sandbox.ExecuteAsync("""await tools.block({ path: "1" });""");
+			await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+			var waiting = sandbox.ExecuteAsync("""text("second");""");
+			Assert.False(waiting.IsCompleted);
+
+			gate.TrySetResult(true);
+			var firstResult = await first.WaitAsync(TimeSpan.FromSeconds(10));
+			var secondResult = await waiting.WaitAsync(TimeSpan.FromSeconds(10));
+			Assert.True(firstResult.Ok, firstResult.Error?.Message);
+			Assert.True(secondResult.Ok, secondResult.Error?.Message);
+			Assert.Equal("second", Assert.IsType<CodeModeTextItem>(Assert.Single(secondResult.Output)).Text);
+		}
+		finally
+		{
+			Environment.SetEnvironmentVariable("PI_CODEMODE_MAX_WORKERS", previous);
+		}
+	}
+
+	[Fact]
+	public async Task Execute_FreezesBuiltinsSoScriptsCannotCorruptHostReports()
+	{
+		var result = await Run("""
+			let replaced = false;
+			try { Array.prototype.toJSON = function () { return "hacked"; }; } catch (error) { replaced = true; }
+			return [
+			  Object.isFrozen(Array.prototype),
+			  Object.isFrozen(Object.prototype),
+			  Object.isFrozen(Promise.prototype),
+			  replaced || typeof Array.prototype.toJSON === "undefined",
+			  JSON.stringify([1, 2]),
+			].join("|");
+			""");
+
+		Assert.True(result.Ok, result.Error?.Message);
+		Assert.Equal("true|true|true|true|[1,2]", result.Value!.GetValue<string>());
+	}
+
+	[Fact]
+	public async Task Execute_KeepsHostBridgesHiddenAfterLockdown()
+	{
+		var result = await Run("""
+			return [
+			  typeof __cmCall,
+			  typeof __cmFinish,
+			  typeof __cmOutput,
+			  Object.isFrozen(globalThis),
+			].join("|");
+			""");
+
+		Assert.True(result.Ok, result.Error?.Message);
+		Assert.Equal("undefined|undefined|undefined|false", result.Value!.GetValue<string>());
+	}
+
 }

@@ -168,7 +168,32 @@ public static class Truncate
 	public static (string Text, bool WasTruncated) Line(string line, int maxChars = GrepMaxLineLength) =>
 		line.Length <= maxChars
 			? (line, false)
-			: (string.Concat(line.AsSpan(0, maxChars), "... [truncated]"), true);
+			: (string.Concat(SliceHead(line, maxChars), "... [truncated]"), true);
+
+	/// <summary>最多取前 <paramref name="maxUnits"/> 个 UTF-16 码元，不劈开代理对。</summary>
+	public static string SliceHead(string text, int maxUnits)
+	{
+		var end = Math.Clamp(maxUnits, 0, text.Length);
+		return end > 0 && end < text.Length &&
+			char.IsHighSurrogate(text[end - 1]) && char.IsLowSurrogate(text[end])
+			? text[..(end - 1)]
+			: text[..end];
+	}
+
+	/// <summary>最多取后 <paramref name="maxUnits"/> 个 UTF-16 码元，不劈开代理对。</summary>
+	public static string SliceTail(string text, int maxUnits)
+	{
+		if (maxUnits <= 0)
+		{
+			return string.Empty;
+		}
+
+		var start = Math.Max(0, text.Length - maxUnits);
+		return start > 0 && start < text.Length &&
+			char.IsLowSurrogate(text[start]) && char.IsHighSurrogate(text[start - 1])
+			? text[(start + 1)..]
+			: text[start..];
+	}
 
 	internal static long ByteCount(string value) => Encoding.UTF8.GetByteCount(value);
 

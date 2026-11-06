@@ -26,7 +26,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | 项目/会话 | cwd 分组、环境隔离、并行标签、置顶、命名、归档/恢复、最近项目 | 项目级置顶、标签拖拽/分屏、批量操作 |
 | 搜索 | 元数据 + 有界正文搜索、会话内过滤 | 正则、命中高亮 |
 | 消息 | Markdown、高亮、复制、图片放大、思考折叠 | 代码行号、跨行块注释、更多语言 |
-| 工具 | 折叠摘要、状态/耗时、参数/输出、统一/并排 diff | 完整文件交互 |
+| 工具 | 折叠摘要、状态/耗时、参数/输出、统一/并排 diff；shell 侧删除前备份进回收站、Windows `> nul` 改写、模型专用代理不传给 agent 命令 | 完整文件交互 |
 | 历史 | 编辑重发、重试、fork、分支树、跳转、HTML 导出 | 多选批量、分支比较 |
 | 输入/模型 | 斜杠命令、命令面板、改键、模型筛选/搜索/刷新、记住上次使用、每模型思考档 | 模型收藏 |
 | 附件 | 路径引用、图片文件/字节、粘贴、复制预览；进上下文前按模型限制应用 EXIF 方向并缩放/转码 | 更多媒体类型、回复转图片 |
@@ -58,6 +58,8 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 命令面板每次打开取一份命令快照，最多 12 项；模型选择用虚拟化供应商树，搜索覆盖全部模型。
 - 可用模型要求 API 已实现且能解析凭据；不执行命令型凭据、不发网络探测。
 - 命令/模型/图片面板是窗口级覆盖层，同一窗口只开一个；Esc 关闭，切换标签清理。
+- 计划模式在回合结束时从 `Plan:` / `计划：` 下的编号行取步骤，推 `pi-deck-plan-todos` 草案，再弹 `[PI_DECK_PLAN_NEXT]` 选单：执行会恢复写权限并立刻起一轮，`[DONE:n]` 逐条勾进度；先不执行保持只读，关闭选单退出计划模式。步骤状态写 `pi-deck-plan-mode` 条目，只在执行态随分支恢复。
+- 目标模式带 `__PI_DECK_GOAL_MODE__` 标记进入，续轮指令以隐藏 follow-up 交给模型；`GOAL_COMPLETE` / `GOAL_BLOCKED: 原因` / 轮次上限（默认 32）结束，中止与出错不推进轮次。状态写 `pi-deck-goal-mode` 条目，重启只恢复为暂停。
 - `ask_question` 是会话内联卡片（非遮罩）：题卡标签 + 进度 + 整行选项 + 自定义输入 + review 确认页；卡片打开时输入区折叠，页签标题加 `●`。
 - 等待态常驻输入卡上方，阶段优先级退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗；预热期三句轮播，回合内空窗只说「正在处理」；静默 2 秒补「本轮已 N 秒」。时间线尾部的等待占位行只在等首 token 时出现，条件是最后一行是用户消息且没有任何一行在流；它报时的时候状态条不再重复同一个数字。
 - 提示音：完成/出错/等待输入三类，默认完成与出错开、音量 0.6；会话完成 8 秒、全局 1.5 秒冷却；出错按边沿、等待输入按批去重；「仅失焦提醒」在前台静默。
@@ -179,6 +181,28 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 - 不覆盖 MCP 与自定义工具（无可判定路径），bash 只按命令文本匹配。
 - 入口：设置 → 运行 → 安全门（总开关、默认档、档位编辑、自定义档、会话覆盖）和输入框 shield 按钮；改动即时写盘并推给会话。
 
+## PiDeck 私有名字与互通契约
+
+`pi-deck-*`、`__PI_DECK_*`、`[PI_DECK_*]` 是 PiDeck 内置扩展的私有标识，不是 pi 的协议。把 `customPiPath` 指向本端口时，PiDeck 仍会 `--extension` 注入这些 `.ts`，而本端口只跑 JS，功能由原生实现接管；PiDeck 的渲染层与历史读取器只认这些名字，因此它们是互通契约，集中声明在 `src/PiWeft.CodingAgent/Compatibility/PiDeckProtocol.cs`。
+
+| 名字 | 用途 | PiDeck 读取点 |
+|---|---|---|
+| `__piDeckBatchAsk` / `__piDeckBatchAsk__` | `ask_question` 批量信封与哨兵 placeholder | `feishu/AskCard.ts`、`pi/extensionUiGate.ts` |
+| `pi-deck-todo`（custom 条目） | v3 待办快照：`version/activePlan/previousPlan/nextPlanId/nextTodoId` | `pi/SessionHistoryReader.ts`、`ipc/sessionIpc.ts`、`pi/AgentManager.ts` |
+| `pi-deck-todo`（widget key） | 待办 widget，首行 `[[pid:todo-plan:<leafId>:<planId>]]` | `components/session/SessionTodoStrip.tsx`、`agentTodoParser.ts` |
+| `pi-deck-todo-brief` | 压缩后补注的不可见消息 | todo 扩展的补注判定 |
+| `pi-deck-plan-mode`（custom 条目） | `enabled/todos[].step,text,completed/executing` | plan 扩展 `session_start` 恢复执行态 |
+| `pi-deck-plan-todos`（widget key） | 计划草案/进度 widget | `SessionTodoStrip.tsx`、`ComposerComponents.tsx` |
+| `[PI_DECK_PLAN_NEXT]` | 计划确认选单标题前缀 | `renderer/src/utils/askUi.ts` |
+| `pi-deck-plan-execute` / `pi-deck-plan-complete` | 执行指令与完成消息（可见 custom message） | 无按名过滤；沿用只为让 PiDeck 会话历史保持同一形态 |
+| `pi-deck-goal-mode`（custom 条目） | `enabled/phase/objective/roundsStarted/maxGoalRounds/blockReason` | goal 扩展 `session_start` |
+| `pi-deck-goal`（widget key） | 目标进度 widget | `components/session/SessionGoalStrip.tsx` |
+| `__PI_DECK_PLAN_MODE__` / `__PI_DECK_GOAL_MODE__` | composer 注入的模式标记，正文即指令/目标 | `shared/composerModeMarkers.ts` |
+
+- 形状比名字更容易漂移：PiDeck 的待办快照从 v2 变到 v3。名字对、字段错的表现是「静默不显示」，`tests/PiWeft.CodingAgent.Tests/PiDeckProtocolTests.cs` 逐条断言字面量与字段名。
+- 纯内部名字不借前缀：目标续轮消息角色是 `piweft-goal-continue`，不写会话文件。
+- 升级 PiDeck 时检查：`resources/extensions/pi-deck-*.ts` 的条目/widget 形状、`src/renderer` 的 key 表、`src/main` 的 `customType` 过滤。改名或改形状要同步 `PiDeckProtocol` 与形状测试。
+
 ## 启动迁移、CLI 与网络
 
 ### 启动迁移
@@ -235,10 +259,10 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | 编号 | 能力 | 状态 |
 |---|---|---|
 | PI-01 | JS/TS 扩展 | JS 可用（发现、显式路径、专属线程、工具/命令/事件/flag、reload）；TypeScript 不支持 |
-| PI-02 | 扩展 UI | 对话框与 setStatus/setWidget/setTitle/set_editor_text 已实现；无自定义 renderer、无 setEditorText 扩展入口 |
+| PI-02 | 扩展 UI | 对话框与 setStatus/setWidget/setTitle/set_editor_text 已实现；扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`/`namespace`/`executionMode`；无自定义 renderer、无 `ctx.executeTool` 扩展入口 |
 | PI-03 | 包管理 | 安装/列表/移除/更新已实现；无依赖冲突治理与资源筛选界面 |
 | PI-04 | 完整 TUI | 行式 REPL；缺多行编辑、`$EDITOR`、TUI 图片粘贴、补全、选择器、终端图片与完整键位 |
-| PI-05 | codemode / tool_search | 已实现；余项是 prelude lockdown |
+| PI-05 | codemode / tool_search | 已实现（含 worker 排队、`PI_CODEMODE_MAX_WORKERS`、检索 `$ref`、prelude lockdown）；余项只有顶层 `arguments` 等轻微差异 |
 | PI-06 | MCP 高级运行时 | OAuth/PKCE/客户端凭据、callback、401 重放、HTTP 通知已覆盖；缺 `cimd`、完整 `callbackUrl`、与 pi 共享 `mcp-auth.json` |
 | PI-07 | 认证 | OAuth + API Key 全覆盖；桌面与 `pi login` 共用供应商目录，支持 Cloudflare/Vertex/Bedrock 多字段与凭据 env；缺 AWS 配置文件/实例元数据链、OIDC/SSO、多账号 |
 | PI-08 | 动态模型目录 | 远程刷新、离线缓存、账号目录、条件请求、6 小时节流已实现；缺账号能力同步与增量合并 |
@@ -252,7 +276,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | PI-16 | 子工具账本 | `nestedCalls` / `parentToolCallId` 尚未产出 |
 | PI-17 | 分类器方言 | 只有 `openai-decisions`；25 个 `typesafe-system-one` 分类模型不可用 |
 | PI-18 | 网络细项 | Codex `websocket-cached` 复用、zstd/continuation；AWS ambient 链；MCP `cimd` / `mcp-auth.json` |
-| D-01 | 问询/待办/计划 | 已实现；缺独立后台 Ask 工作流 |
+| D-01 | 问询/待办/计划 | 已实现，含计划步骤跟踪（`Plan:` 解析、`pi-deck-plan-todos` 进度、`[DONE:n]`、执行确认选单）与目标模式（自动续轮、`GOAL_COMPLETE`/`GOAL_BLOCKED`、轮次上限）；缺独立后台 Ask 工作流 |
 | D-02 | 文件工作台 | 导航、编辑、汇总、diff 已实现；缺多文件标签、草稿本、跨行块注释、内嵌浏览器 |
 | D-03 | 内置终端 | MiniPty 与主要 VT 行为；缺 Windows/macOS 实机回归、完整 VT100、多标签、快照回放 |
 | D-04 | Git 工作流 | 暂存/提交/分支/图/比较/远端/stash 已实现；缺冲突界面、rebase/cherry-pick/reset、多远端 |

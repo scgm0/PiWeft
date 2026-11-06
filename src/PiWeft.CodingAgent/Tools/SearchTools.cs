@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -8,6 +9,12 @@ namespace PiWeft.CodingAgent.Tools;
 
 public static class SearchTools
 {
+	private static FileWalkOptions FileWalkerOptions(IgnoreFlavor flavor) => new()
+	{
+		Flavor = flavor,
+		IncludeGitDirectory = true,
+	};
+
 	public static AgentTool Ls(string cwd) => new()
 	{
 		Name = "ls",
@@ -98,11 +105,7 @@ public static class SearchTools
 			output += $"\n\n[{string.Join(". ", notices)}]";
 		}
 
-		var details = new JsonObject
-		{
-			["path"] = directory,
-			["entries"] = entries.Count,
-		};
+		var details = new JsonObject();
 		if (entryLimitReached)
 		{
 			details["entryLimitReached"] = limit;
@@ -116,7 +119,7 @@ public static class SearchTools
 		return new AgentToolResult
 		{
 			Content = [new TextContent { Text = output }],
-			Details = details,
+			Details = details.Count > 0 ? details : null,
 		};
 	}
 
@@ -163,7 +166,7 @@ public static class SearchTools
 		var results = new List<string>();
 		var resultLimitReached = false;
 
-		foreach (var entry in FileWalker.EnumerateEntries(root, includeGitDirectory: true))
+		foreach (var entry in FileWalker.EnumerateEntries(root, FileWalkerOptions(IgnoreFlavor.Fd)))
 		{
 			ThrowIfAborted(invocation.CancellationToken);
 			var isDirectory = Directory.Exists(entry);
@@ -208,11 +211,7 @@ public static class SearchTools
 			output += $"\n\n[{string.Join(". ", notices)}]";
 		}
 
-		var details = new JsonObject
-		{
-			["path"] = root,
-			["count"] = results.Count,
-		};
+		var details = new JsonObject();
 		if (resultLimitReached)
 		{
 			details["resultLimitReached"] = limit;
@@ -226,7 +225,7 @@ public static class SearchTools
 		return new AgentToolResult
 		{
 			Content = [new TextContent { Text = output }],
-			Details = details,
+			Details = details.Count > 0 ? details : null,
 		};
 	}
 
@@ -286,95 +285,141 @@ public static class SearchTools
 		bool GlobAccepts(string file) =>
 			globRegex is null || GlobMatches(globRegex, globPattern!, file, root) != excludeGlob;
 
-		var files = new List<string>();
-		if (File.Exists(root))
-		{
-			if (GlobAccepts(root))
-			{
-				files.Add(root);
-			}
-		}
-		else if (Directory.Exists(root))
-		{
-			foreach (var file in FileWalker.EnumerateFiles(root, includeGitDirectory: true))
-			{
-				ThrowIfAborted(invocation.CancellationToken);
-				if (GlobAccepts(file))
-				{
-					files.Add(file);
-				}
-			}
-		}
-		else
+		var singleFile = File.Exists(root);
+		if (!singleFile && !Directory.Exists(root))
 		{
 			throw new InvalidOperationException($"Path not found: {root}");
 		}
 
-		var output = new StringBuilder();
+		var output = new MatchBuffer();
 		var matches = 0;
-		var truncated = false;
+		var matchLimitReached = false;
 		var linesTruncated = false;
+		var stop = false;
 
-		foreach (var file in files)
+		// 逐行扫描：只按 '\n' 切行（rg 同样只认 '\n'），孤立 CR 留在行内。
+		// 每个文件独立维护待输出的前导上下文与尾随窗口。
+		void SearchFile(string file)
 		{
-			if (truncated)
+			var display = file == root
+				? Path.GetFileName(file)
+				: ToolPaths.RelativeTo(file, root is { Length: > 0 } ? root : cwd);
+			var pending = new Queue<(long Number, string Text)>();
+			long lineIndex = 0;
+			long trailingUntil = -1;
+			var limitHit = false;
+
+			void Emit(long number, string line, bool isMatch)
 			{
-				break;
+				var (lineText, lineTruncated) = Truncate.Line(line);
+				linesTruncated |= lineTruncated;
+				output.Add($"{display}{(isMatch ? ':' : '-')}{number + 1}{(isMatch ? ':' : '-')} {lineText}");
 			}
 
-			ThrowIfAborted(invocation.CancellationToken);
-			if (IsBinaryFile(file))
-			{
-				continue;
-			}
-
-			List<string>? lines;
 			try
 			{
-				lines = [.. File.ReadLines(file)];
-			}
-			catch (IOException)
-			{
-				continue;
-			}
-			catch (UnauthorizedAccessException)
-			{
-				continue;
-			}
+				foreach (var line in ReadLines(file, invocation.CancellationToken))
+				{
+					var isMatch = regex.IsMatch(line);
+					if (limitHit)
+					{
+						// 仅补完最后一个匹配的尾随上下文；到窗口末尾就停。
+						if (lineIndex > trailingUntil)
+						{
+							stop = true;
+								return;
+						}
+						Emit(lineIndex, line, isMatch: false);
+						if (lineIndex == trailingUntil)
+						{
+							stop = true;
+							return;
+						}
+						lineIndex++;
+						continue;
+					}
 
-			var display = file == root ? Path.GetFileName(file) : ToolPaths.RelativeTo(file, root is { Length: > 0 } ? root : cwd);
-			var emitted = new HashSet<int>();
+					if (isMatch && matches < limit)
+					{
+						foreach (var previous in pending)
+						{
+							Emit(previous.Number, previous.Text, isMatch: false);
+						}
+						pending.Clear();
+						Emit(lineIndex, line, isMatch: true);
+						matches++;
+						trailingUntil = lineIndex + context;
+					}
+					else if (isMatch)
+					{
+						// 多出一个匹配才说明「撞到上限」；它若落在最后窗口内，按 rg 的语义当上下文显示。
+						matchLimitReached = true;
+						limitHit = true;
+						if (lineIndex <= trailingUntil)
+						{
+							Emit(lineIndex, line, isMatch: false);
+							if (lineIndex == trailingUntil)
+							{
+								stop = true;
+							}
+						}
+						else
+						{
+							stop = true;
+						}
 
-			for (var i = 0; i < lines.Count; i++)
+						lineIndex++;
+						return;
+					}
+					else if (lineIndex <= trailingUntil)
+					{
+						Emit(lineIndex, line, isMatch: false);
+						pending.Clear();
+					}
+					else
+					{
+						if (context > 0)
+						{
+							pending.Enqueue((lineIndex, line));
+							while (pending.Count > context)
+							{
+								pending.Dequeue();
+							}
+						}
+					}
+
+					lineIndex++;
+				}
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+			{
+				// rg 也跳过读不了的文件；已经有结果时不要把整次搜索变成错误。
+			}
+		}
+
+		if (singleFile)
+		{
+			if (GlobAccepts(root))
+			{
+				SearchFile(root);
+			}
+		}
+		else
+		{
+			foreach (var file in FileWalker.EnumerateFiles(root, FileWalkerOptions(IgnoreFlavor.Ripgrep)))
 			{
 				ThrowIfAborted(invocation.CancellationToken);
-				if (!regex.IsMatch(lines[i]))
+				if (stop)
+				{
+					break;
+				}
+
+				if (!GlobAccepts(file))
 				{
 					continue;
 				}
 
-				if (matches >= limit)
-				{
-					truncated = true;
-					break;
-				}
-
-				matches++;
-
-				var from = Math.Max(0, i - context);
-				var to = Math.Min(lines.Count - 1, i + context);
-				for (var j = from; j <= to; j++)
-				{
-					if (!emitted.Add(j))
-					{
-						continue;
-					}
-
-					var separator = j == i ? ":" : "-";
-					var (lineText, lineTruncated) = Truncate.Line(lines[j]);
-					linesTruncated |= lineTruncated;
-					output.Append(display).Append(separator).Append(j + 1).Append(separator).Append(' ').Append(lineText).Append('\n');
-				}
+				SearchFile(file);
 			}
 		}
 
@@ -383,11 +428,14 @@ public static class SearchTools
 			return new AgentToolResult { Content = [new TextContent { Text = "No matches found" }] };
 		}
 
-		var rawOutput = output.ToString().TrimEnd('\n');
-		var truncation = Truncate.Head(rawOutput, maxLines: int.MaxValue);
+		var truncation = Truncate.Head(output.Render(), maxLines: int.MaxValue) with
+		{
+			TotalLines = (int)Math.Min(output.TotalLines, int.MaxValue),
+			TotalBytes = output.TotalBytes - 1,
+		};
 		var text = truncation.Content;
 		var notices = new List<string>(3);
-		if (truncated)
+		if (matchLimitReached)
 		{
 			notices.Add($"{limit} matches limit reached. Use limit={limit * 2} for more, or refine pattern");
 		}
@@ -407,8 +455,8 @@ public static class SearchTools
 			text += $"\n\n[{string.Join(". ", notices)}]";
 		}
 
-		var details = new JsonObject { ["matches"] = matches };
-		if (truncated)
+		var details = new JsonObject();
+		if (matchLimitReached)
 		{
 			details["matchLimitReached"] = limit;
 		}
@@ -426,8 +474,220 @@ public static class SearchTools
 		return new AgentToolResult
 		{
 			Content = [new TextContent { Text = text }],
-			Details = details,
+			Details = details.Count > 0 ? details : null,
 		};
+	}
+
+	/// 输出缓冲区：只保存能进字节预算的行，其余只计数（与 pi 的 rg 读取端一致）。
+	private sealed class MatchBuffer
+	{
+		private readonly List<string> _lines = [];
+
+		public long TotalLines { get; private set; }
+
+		public long TotalBytes { get; private set; }
+
+		public void Add(string line)
+		{
+			// 每行按「行 + 换行」计数；最后一行没有换行，报告时减 1。
+			if (TotalBytes - 1 <= Truncate.DefaultMaxBytes)
+			{
+				_lines.Add(line);
+			}
+
+			TotalBytes += Encoding.UTF8.GetByteCount(line) + 1;
+			TotalLines++;
+		}
+
+		public string Render() => string.Join('\n', _lines);
+	}
+
+	/// 按 '\n' 切行并识别 UTF-16 BOM（rg 也会读带 BOM 的 UTF-16 文件）。
+	/// 孤立 CR 不当换行；行尾的一个 CR 与 rg 一样剥掉。
+	/// UTF-8 走字节快路径：一次 64 KiB 池化读入，用 `IndexOf(byte)` 找换行，
+	/// 只把行切片解码成字符串；UTF-16 需要按码元对齐，退回 StreamReader。
+	private static IEnumerable<string> ReadLines(string path, CancellationToken cancellationToken)
+	{
+		using var stream = new FileStream(
+			path,
+			FileMode.Open,
+			FileAccess.Read,
+			FileShare.ReadWrite,
+			64 * 1024,
+			FileOptions.SequentialScan);
+
+		var bom = new byte[3];
+		var bomRead = 0;
+		while (bomRead < bom.Length)
+		{
+			var read = stream.Read(bom, bomRead, bom.Length - bomRead);
+			if (read == 0)
+			{
+				break;
+			}
+
+			bomRead += read;
+		}
+
+		var offset = 0;
+		if (bomRead >= 3 && bom[0] == 0xEF && bom[1] == 0xBB && bom[2] == 0xBF)
+		{
+			offset = 3;
+		}
+		else if (bomRead >= 2 && bom[0] == 0xFF && bom[1] == 0xFE)
+		{
+			foreach (var line in ReadLinesWithReader(stream, 2, Encoding.Unicode, cancellationToken))
+			{
+				yield return line;
+			}
+
+			yield break;
+		}
+		else if (bomRead >= 2 && bom[0] == 0xFE && bom[1] == 0xFF)
+		{
+			foreach (var line in ReadLinesWithReader(stream, 2, Encoding.BigEndianUnicode, cancellationToken))
+			{
+				yield return line;
+			}
+
+			yield break;
+		}
+
+		stream.Position = offset;
+		var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+		ArrayBufferWriter<byte>? partial = null;
+		try
+		{
+			while (true)
+			{
+				if (cancellationToken.IsCancellationRequested)
+				{
+					throw new InvalidOperationException("Operation aborted");
+				}
+
+				var read = stream.Read(buffer, 0, buffer.Length);
+				if (read == 0)
+				{
+					break;
+				}
+
+				var position = 0;
+				while (position < read)
+				{
+					var newline = buffer.AsSpan(position, read - position).IndexOf((byte)'\n');
+					if (newline < 0)
+					{
+						partial ??= new ArrayBufferWriter<byte>(1024);
+						partial.Write(buffer.AsSpan(position, read - position));
+						break;
+					}
+
+					var absolute = position + newline;
+					if (partial is { WrittenCount: > 0 })
+					{
+						partial.Write(buffer.AsSpan(position, absolute - position));
+						yield return DecodeLine(partial.WrittenSpan);
+						partial.ResetWrittenCount();
+					}
+					else
+					{
+						yield return DecodeLine(buffer.AsSpan(position, absolute - position));
+					}
+
+					position = absolute + 1;
+				}
+			}
+
+			if (partial is { WrittenCount: > 0 })
+			{
+				yield return DecodeLine(partial.WrittenSpan);
+			}
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(buffer);
+		}
+	}
+
+	/// 行尾的一个 CR 与 rg 一样剥掉；无效 UTF-8 按替换字符解码（与 StreamReader 同义）。
+	private static string DecodeLine(ReadOnlySpan<byte> line)
+	{
+		if (!line.IsEmpty && line[^1] == (byte)'\r')
+		{
+			line = line[..^1];
+		}
+
+		return Encoding.UTF8.GetString(line);
+	}
+
+	/// UTF-16 路径：换行符占两个字节，不能按字节扫描。
+	private static IEnumerable<string> ReadLinesWithReader(
+		Stream stream,
+		int offset,
+		Encoding encoding,
+		CancellationToken cancellationToken)
+	{
+		stream.Position = offset;
+		using var reader = new StreamReader(
+			stream,
+			encoding,
+			detectEncodingFromByteOrderMarks: false,
+			bufferSize: 64 * 1024,
+			leaveOpen: true);
+
+		var buffer = ArrayPool<char>.Shared.Rent(64 * 1024);
+		var line = new StringBuilder();
+		try
+		{
+			while (true)
+			{
+				if (cancellationToken.IsCancellationRequested)
+				{
+					throw new InvalidOperationException("Operation aborted");
+				}
+
+				var read = reader.Read(buffer, 0, buffer.Length);
+				if (read == 0)
+				{
+					break;
+				}
+
+				var position = 0;
+				while (position < read)
+				{
+					var newline = Array.IndexOf(buffer, '\n', position, read - position);
+					if (newline < 0)
+					{
+						line.Append(buffer, position, read - position);
+						break;
+					}
+
+					line.Append(buffer, position, newline - position);
+					yield return TrimCarriageReturn(line);
+					line.Clear();
+					position = newline + 1;
+				}
+			}
+
+			if (line.Length > 0)
+			{
+				yield return TrimCarriageReturn(line);
+			}
+		}
+		finally
+		{
+			ArrayPool<char>.Shared.Return(buffer);
+		}
+	}
+
+	private static string TrimCarriageReturn(StringBuilder line)
+	{
+		if (line.Length > 0 && line[^1] == '\r')
+		{
+			line.Length--;
+		}
+
+		return line.ToString();
 	}
 
 	private static bool GlobMatches(Regex regex, string glob, string file, string root)
@@ -441,21 +701,6 @@ public static class SearchTools
 
 		var relative = GlobSyntax.NormalizeSlashes(ToolPaths.RelativeTo(file, root));
 		return regex.IsMatch(glob.Contains('/') ? relative : Path.GetFileName(file));
-	}
-
-	private static bool IsBinaryFile(string path)
-	{
-		try
-		{
-			using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-			var buffer = new byte[8192];
-			var read = stream.Read(buffer, 0, buffer.Length);
-			return buffer.AsSpan(0, read).Contains((byte)0);
-		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-		{
-			return false;
-		}
 	}
 
 	private static void ThrowIfAborted(CancellationToken cancellationToken)

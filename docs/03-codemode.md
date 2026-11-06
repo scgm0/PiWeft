@@ -14,7 +14,7 @@ async 函数体，支持顶层 `await`/`return`；首行可写：
 
 可见的只有 `tools.<name>(args)`、`ALL_TOOLS`、发现函数、`models.*`、`text()`/`image()`/`exit()`/`console.*`、`store()`/`load()`；没有 Node、文件、网络、定时器或模块加载。`eval`/`new Function` 可用，动态源码同受预算约束；宿主桥在 prelude 里收进闭包并删除。
 
-- `await searchTools(query, { limit?, namespace? })`：与 pi 相同的 Okapi BM25（k1=1.2、b=0.75、名称权重 3、命名空间权重 0.5、覆盖度与精确名优先），在全部嵌套工具上排序。分词与 pi 一致处理 camelCase、停用词与复数词干；CJK 没有 `Intl.Segmenter`，改用「单字 + 二元组」，中文描述与中文查询至少能共享二元组。
+- `await searchTools(query, { limit?, namespace? })`：与 pi 相同的 Okapi BM25（k1=1.2、b=0.75、名称权重 3、命名空间权重 0.5、覆盖度与精确名优先），在全部嵌套工具上排序。检索文本会沿输入 schema 的 `$ref` 读进 `$defs` 的属性名与描述。分词与 pi 一致处理 camelCase、停用词与复数词干；CJK 没有 `Intl.Segmenter`，改用「单字 + 二元组」，中文描述与中文查询至少能共享二元组。
 - `await describeTool(name)` 返回 TypeScript 声明；`await describeNamespace(name)` 返回 `{ name, aliases, description, instructions, tools }`。命名空间为 `mcp__<server>`，服务器原名作别名。
 - `models.*`：`getModelsOfType`/`getAvailableOfType`/`getModelOfType`（剔除凭据 headers，available 按凭据过滤）；`classify`/`generateImages` 走会话网关（并发 4，宿主校验 context，凭据由会话解析），调用进详情并汇入 `usage`。
 - `store()`/`load()`：成功才写 `codemode-store` 条目，`load()` 按分支从根重建；值有大小限制。
@@ -38,13 +38,13 @@ codemode 描述按命名空间分组，`inlineBudget`（默认 3000 token）控�
 
 ## 沙箱
 
-每次执行新建引擎，手动搭建与 `ForUntrustedCode` 相同的预算（语句 200 万、托管 256 MiB、时限、源码/AST 上限、栈守卫），关闭 interop 反射/写入口；不直接启用 `ForUntrustedCode`：它的不可变配置会永久禁 eval。默认无超时（只有 `@options.timeout_ms` 与 abort）；无挂起工具/定时任务时报「Promise 永远不会落定」；并发解释器上限 2。专用后台线程泵 `Engine.Tasks`，脚本代码与 await 续体始终同线程。这是线程级隔离，不是 OS 沙箱。
+每次执行新建引擎，手动搭建与 `ForUntrustedCode` 相同的预算（语句 200 万、托管 256 MiB、时限、源码/AST 上限、栈守卫），关闭 interop 反射/写入口；不直接启用 `ForUntrustedCode`：它的不可变配置会永久禁 eval。默认无超时（只有 `@options.timeout_ms` 与 abort）；无挂起工具/定时任务时报「Promise 永远不会落定」。进程级 worker 上限默认 2，`PI_CODEMODE_MAX_WORKERS` 可覆盖；名额满时按到达顺序排队最多 60 秒，等待时间计入脚本截止时间，超时/取消返回脚本错误而不是立刻抛异常。专用后台线程泵 `Engine.Tasks`，脚本代码与 await 续体始终同线程。这是线程级隔离，不是 OS 沙箱。
 
 ## 宿主脚本与 AOT
 
 `models.json` 的虚拟模型动态路由使用 `ScriptFunction`（同一套 Jint 约束）：每次新建解释器，只收到 `request`/`ctx` 两个 JSON 值，支持 async/await，有超时/语句/内存/源码上限；没有 codemode 的 `tools`/`models`/`store` 桥。
 
-- 未移植 prelude lockdown；命名空间只来自 MCP；顶层 `arguments` 与 pi 略有差异。
+- prelude 先冻结内置对象与 `globalThis` 再收集宿主桥（与 pi 的 lockdown 同义）；命名空间只来自 MCP；顶层 `arguments` 与 pi 略有差异。Jint 下没有追加 generator/async-generator 原型（prelude 不使用它们）。
 - `PiWeft.JavaScript` 自身通过 AOT/trim 分析器；根目录 `Directory.Build.props` 把
   `Jint.Runtime.Interop.ReflectionEnabled` 设为 `false`（Jint 5 迁移文档 6.8）：宿主桥全是
   `ClrFunction` + `JsValue`，运行时不需要反射式 CLR 投影，关掉后裁剪器能去掉整条反射链。

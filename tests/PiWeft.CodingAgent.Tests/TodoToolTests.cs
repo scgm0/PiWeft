@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.Ai.Utils;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Tools;
 using Xunit;
@@ -290,4 +291,15 @@ public class TodoToolTests : IDisposable
 		Assert.Equal(3, decoded.NextPlanId);
 		Assert.Equal(5, decoded.NextTodoId);
 	}
+	[Fact]
+	public void Schema_ToleratesUnknownFieldsLikePideck()
+	{
+		var tool = TodoTool.Create(static () => null).Tool;
+		var result = JsonSchemaValidator.ValidateToolArguments(
+			tool.ToDeclaration(),
+			new JsonObject { ["action"] = "list", ["note"] = "unknown" });
+
+		Assert.Null(result.Error);
+	}
+
 }

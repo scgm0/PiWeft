@@ -35,6 +35,9 @@ public sealed class SearchToolsTests : IDisposable
 	private static string Text(AgentToolResult result) =>
 		string.Concat(result.Content.OfType<TextContent>().Select(static block => block.Text));
 
+	private void MakeRepository(string relativePath) =>
+		Directory.CreateDirectory(Path.Combine(_root, relativePath, ".git"));
+
 	private void Write(string relativePath, string content)
 	{
 		var path = Path.Combine(_root, relativePath);
@@ -177,6 +180,186 @@ public sealed class SearchToolsTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Grep_UsesOnlyLineFeedAsLineBreak()
+	{
+		Write("cr.txt", "a\rb\rc\r\nmatch\r\n");
+
+		var text = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "match", ["path"] = "cr.txt" })));
+
+		// rg 只按 '\n' 切行：孤立 CR 是正文，匹配在第二行。
+		Assert.Contains("cr.txt:2: match", text);
+	}
+
+	[Fact]
+	public async Task Grep_ReadsUtf16BomFiles()
+	{
+		var bytes = new byte[] { 0xFF, 0xFE }
+			.Concat(System.Text.Encoding.Unicode.GetBytes("hello match\n"))
+			.ToArray();
+		File.WriteAllBytes(Path.Combine(_root, "u16.txt"), bytes);
+
+		var text = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "match", ["path"] = "u16.txt" })));
+
+		Assert.Contains("u16.txt:1: hello match", text);
+	}
+
+	[Fact]
+	public async Task Grep_FindsTextInBinaryFiles()
+	{
+		File.WriteAllBytes(Path.Combine(_root, "bin.dat"), [.. "abc\0def\nok\n"u8]);
+
+		var text = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "ok", ["path"] = "bin.dat" })));
+
+		// rg --json 会报告二进制文件中的文本行，不整份跳过。
+		Assert.Contains("bin.dat:2: ok", text);
+	}
+
+	[Fact]
+	public async Task Grep_EmitsContextWithoutDuplicates()
+	{
+		Write("ctx.txt", "l1\nl2\nm1\nl3\nl4\nm2\nl5\n");
+
+		var text = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "m", ["path"] = "ctx.txt", ["context"] = 1 })));
+
+		Assert.Equal("ctx.txt-2- l2\nctx.txt:3: m1\nctx.txt-4- l3\nctx.txt-5- l4\nctx.txt:6: m2\nctx.txt-7- l5", text);
+	}
+
+	[Fact]
+	public async Task Grep_OutsideRepository_DoesNotApplyGitIgnore()
+	{
+		Write(".gitignore", "*.log\n");
+		Write("a.log", "needle\n");
+		Write("b.txt", "needle\n");
+
+		var text = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "needle" })));
+
+		// ripgrep 默认只在仓库里读 .gitignore。
+		Assert.Contains("a.log", text);
+		Assert.Contains("b.txt", text);
+	}
+
+	[Fact]
+	public async Task Find_OutsideRepository_AppliesGitIgnoreLikeFdNoRequireGit()
+	{
+		Write(".gitignore", "*.log\n");
+		Write("a.log", "x");
+		Write("b.txt", "x");
+
+		var text = Text(await SearchTools.Find(_root).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "*" })));
+
+		Assert.DoesNotContain("a.log", text);
+		Assert.Contains("b.txt", text);
+	}
+
+	[Fact]
+	public async Task NestedRepository_ResetsAncestorGitIgnore()
+	{
+		MakeRepository("nest");
+		MakeRepository("nest/inner");
+		Write("nest/.gitignore", "*.log\n");
+		Write("nest/outer.log", "needle\n");
+		Write("nest/inner/inner.log", "needle\n");
+
+		var find = Text(await SearchTools.Find(Path.Combine(_root, "nest")).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "*.log" })));
+		Assert.Contains("inner/inner.log", find);
+		Assert.DoesNotContain("outer.log", find);
+
+		var grep = Text(await SearchTools.Grep(Path.Combine(_root, "nest")).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "needle" })));
+		Assert.Contains("inner/inner.log", grep);
+		Assert.DoesNotContain("outer.log", grep);
+	}
+
+	[Fact]
+	public async Task Find_ReadsFdIgnoreAndGrepDoesNot()
+	{
+		Write(".fdignore", "foo.txt\n");
+		Write("foo.txt", "needle\n");
+		Write("bar.txt", "needle\n");
+
+		var find = Text(await SearchTools.Find(_root).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "*" })));
+		Assert.DoesNotContain("foo.txt", find);
+
+		var grep = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "needle" })));
+		Assert.Contains("foo.txt", grep);
+	}
+
+	[Fact]
+	public async Task Grep_ReadsRgIgnoreAndFindDoesNot()
+	{
+		Write(".rgignore", "foo.txt\n");
+		Write("foo.txt", "needle\n");
+		Write("bar.txt", "needle\n");
+
+		var grep = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "needle" })));
+		Assert.DoesNotContain("foo.txt", grep);
+
+		var find = Text(await SearchTools.Find(_root).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "*" })));
+		Assert.Contains("foo.txt", find);
+	}
+
+	[Fact]
+	public async Task RepositoryRoot_DoesNotInheritParentGitIgnore()
+	{
+		Write("above/.gitignore", "*.log\n");
+		MakeRepository("above/repo");
+		Write("above/repo/a.log", "needle\n");
+		Write("above/repo/b.txt", "needle\n");
+
+		var find = Text(await SearchTools.Find(Path.Combine(_root, "above/repo")).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "*" })));
+		Assert.Contains("a.log", find);
+
+		var grep = Text(await SearchTools.Grep(Path.Combine(_root, "above/repo")).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "needle" })));
+		Assert.Contains("a.log", grep);
+	}
+
+	[Fact]
+	public async Task NonVcsIgnoreAboveRepositoryRoot_StillApplies()
+	{
+		Write("nonvcs/.ignore", "*.log\n");
+		MakeRepository("nonvcs/repo");
+		Write("nonvcs/repo/a.log", "needle\n");
+		Write("nonvcs/repo/b.txt", "needle\n");
+
+		var find = Text(await SearchTools.Find(Path.Combine(_root, "nonvcs/repo")).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "*" })));
+		Assert.DoesNotContain("a.log", find);
+
+		var grep = Text(await SearchTools.Grep(Path.Combine(_root, "nonvcs/repo")).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "needle" })));
+		Assert.DoesNotContain("a.log", grep);
+	}
+
+	[Fact]
+	public async Task Grep_NonRepoDirectoryAfterARepoDoesNotInheritGitIgnore()
+	{
+		MakeRepository("a");
+		Write("a/x.log", "needle\n");
+		// b 不是仓库：ripgrep 不读它的 .gitignore，哪怕前面刚走过一个仓库。
+		Write("b/.gitignore", "*.log\n");
+		Write("b/y.log", "needle\n");
+
+		var text = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "needle" })));
+
+		Assert.Contains("a/x.log", text);
+		Assert.Contains("b/y.log", text);
+	}
+
+	[Fact]
 	public async Task Grep_GlobSupportsRipgrepStyleNegation()
 	{
 		Write("keep/a.txt", "needle\n");
@@ -219,6 +402,38 @@ public sealed class GlobalGitIgnoreTests : IDisposable
 	}
 
 	[Fact]
+	public async Task FdGlobalIgnoreAppliesToFindButNotGrep()
+	{
+		Directory.CreateDirectory(Path.Combine(_root, "config", "fd"));
+		File.WriteAllText(Path.Combine(_root, "config", "fd", "ignore"), "fd-ignored/\n");
+		Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", Path.Combine(_root, "config"));
+
+		var work = Path.Combine(_root, "work-fd");
+		Directory.CreateDirectory(Path.Combine(work, "fd-ignored"));
+		File.WriteAllText(Path.Combine(work, "fd-ignored", "x.txt"), "x");
+		File.WriteAllText(Path.Combine(work, "kept.txt"), "x");
+
+		var find = await SearchTools.Find(work).Execute(new AgentToolInvocation
+		{
+			ToolCallId = "call-1",
+			ToolName = "find",
+			Arguments = new JsonObject { ["pattern"] = "*.txt" },
+		});
+		var findText = string.Concat(find.Content.OfType<TextContent>().Select(static block => block.Text));
+		Assert.Contains("kept.txt", findText);
+		Assert.DoesNotContain("fd-ignored", findText);
+
+		var grep = await SearchTools.Grep(work).Execute(new AgentToolInvocation
+		{
+			ToolCallId = "call-2",
+			ToolName = "grep",
+			Arguments = new JsonObject { ["pattern"] = "x" },
+		});
+		var grepText = string.Concat(grep.Content.OfType<TextContent>().Select(static block => block.Text));
+		Assert.Contains("fd-ignored/x.txt", grepText);
+	}
+
+	[Fact]
 	public async Task GlobalIgnoreFileIsHonouredLikeRipgrepAndFd()
 	{
 		File.WriteAllText(Path.Combine(_root, "config", "git", "ignore"), "global-ignored/\n");
@@ -240,4 +455,17 @@ public sealed class GlobalGitIgnoreTests : IDisposable
 		Assert.Contains("kept.txt", text);
 		Assert.DoesNotContain("global-ignored", text);
 	}
+
+	[Fact]
+	public void RelativeTo_RequiresASeparatorBoundary()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-rel");
+		// 前缀相同但不是子目录：不能切出错误相对路径。
+		var sibling = root + "x/file.ts";
+		Assert.Equal(Path.GetRelativePath(root, sibling).Replace('\\', '/'), ToolPaths.RelativeTo(sibling, root));
+
+		Assert.Equal("a/b.ts", ToolPaths.RelativeTo(Path.Combine(root, "a", "b.ts"), root));
+		Assert.Equal("b.ts", ToolPaths.RelativeTo(Path.Combine(root, "b.ts"), root));
+	}
+
 }

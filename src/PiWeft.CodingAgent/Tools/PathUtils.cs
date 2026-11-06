@@ -100,10 +100,26 @@ public static partial class ToolPaths
 		return builder?.ToString() ?? value;
 	}
 
+	/// 相对路径。遍历时调用方已经保证 <paramref name="path"/> 在 <paramref name="root"/> 下，
+	/// 先走「前缀切片」快路径：`GetRelativePath` 会做两次 `GetFullPath`，每个条目一次太贵。
 	public static string RelativeTo(string path, string root)
 	{
-		var relative = Path.GetRelativePath(root, path);
-		return relative.Replace('\\', '/');
+		var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+		if (root.Length > 0 && path.Length > root.Length && path.StartsWith(root, comparison))
+		{
+			// 必须落在分隔符上：`/a/b` 不能把 `/a/bc/d` 当成子路径。
+			// 根自带尾分隔符（`/`、`C:\`）时直接从这里切。
+			var start = root[^1] is '/' or '\\'
+				? root.Length
+				: path[root.Length] is '/' or '\\' ? root.Length + 1 : -1;
+
+			if (start > 0 && start < path.Length)
+			{
+				return path[start..].Replace('\\', '/');
+			}
+		}
+
+		return Path.GetRelativePath(root, path).Replace('\\', '/');
 	}
 
 	public static void EnsureParentDirectory(string path)

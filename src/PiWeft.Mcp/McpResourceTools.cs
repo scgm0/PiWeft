@@ -507,25 +507,48 @@ internal static class McpOutput
 		return (text[..headChars], text[^tailChars..], lines);
 	}
 
+	/// 按 UTF-8 字节预算取头/尾，游标落在 Rune 边界上，不把代理对或四字节字符切两半。
 	private static int TakeChars(string text, int maxBytes, bool fromEnd)
 	{
-		var taken = 0;
 		var bytes = 0;
-
-		while (taken < text.Length && bytes < maxBytes)
+		if (!fromEnd)
 		{
-			var index = fromEnd ? text.Length - 1 - taken : taken;
-			var size = Encoding.UTF8.GetByteCount(text.AsSpan(index, 1));
-			if (bytes + size > maxBytes)
+			var units = 0;
+			foreach (var rune in text.EnumerateRunes())
+			{
+				if (bytes + rune.Utf8SequenceLength > maxBytes)
+				{
+					break;
+				}
+
+				bytes += rune.Utf8SequenceLength;
+				units += rune.Utf16SequenceLength;
+			}
+
+			return units;
+		}
+
+		var position = text.Length;
+		while (position > 0)
+		{
+			var status = Rune.DecodeLastFromUtf16(text.AsSpan(0, position), out var rune, out var consumed);
+			if (status != System.Buffers.OperationStatus.Done)
+			{
+				// 无效 UTF-16 按一个替换字符处理，步进一个码元。
+				consumed = 1;
+				rune = Rune.ReplacementChar;
+			}
+
+			if (bytes + rune.Utf8SequenceLength > maxBytes)
 			{
 				break;
 			}
 
-			bytes += size;
-			taken++;
+			bytes += rune.Utf8SequenceLength;
+			position -= consumed;
 		}
 
-		return taken;
+		return text.Length - position;
 	}
 
 	private static string SaveFullOutput(string text)

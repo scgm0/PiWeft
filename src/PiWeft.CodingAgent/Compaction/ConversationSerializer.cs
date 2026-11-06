@@ -192,7 +192,7 @@ public static class ConversationSerializer
 			return text;
 		}
 
-		return $"{text[..maxChars]}\n\n[... {text.Length - maxChars} more characters truncated]";
+		return $"{PiWeft.CodingAgent.Tools.Truncate.SliceHead(text, maxChars)}\n\n[... {text.Length - maxChars} more characters truncated]";
 	}
 
 	private static string StringArgument(JsonObject arguments, string name) =>

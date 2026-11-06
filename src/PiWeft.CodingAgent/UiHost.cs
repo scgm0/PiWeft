@@ -16,6 +16,32 @@ public sealed record UiWidgetRequest(string Key, IReadOnlyList<string>? Lines, s
 
 public sealed record UiTitleRequest(string Title);
 
+/// 选单文案的本地呈现规则。PiDeck 用 `[标记]` 前缀路由专用卡片、用 `label|description`
+/// 编码主副文案；桌面与 CLI 没有这套协议，显示前要剥掉标记与竖线，但返回值保持原样。
+public static class UiSelectText
+{
+	/// 去掉开头的 `[标记]`（例如 `[PI_DECK_PLAN_NEXT]`），其余内容原样保留。
+	public static string DisplayTitle(string title)
+	{
+		if (!title.StartsWith('['))
+		{
+			return title;
+		}
+
+		var close = title.IndexOf(']');
+		return close < 0 ? title : title[(close + 1)..].TrimStart();
+	}
+
+	/// `label|description` → 主文案与可选说明；没有竖线时说明为空。
+	public static (string Label, string? Description) SplitOption(string option)
+	{
+		var separator = option.IndexOf('|');
+		return separator <= 0
+			? (option, null)
+			: (option[..separator], option[(separator + 1)..]);
+	}
+}
+
 /// 宿主交互能力。CLI 交互模式、RPC 与桌面各自实现；headless（print/JSON）不提供实现，
 /// <c>ask_question</c> 会明确告知模型当前环境无法交互，不静默阻塞。
 /// 对话框方法对应 pi RPC <c>extension_ui</c> 协议（select/confirm/input/editor），

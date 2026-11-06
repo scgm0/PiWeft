@@ -40,8 +40,14 @@ internal sealed class DesktopUiHost : IUiHost
 
 	public Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken) =>
 		ShowDialogAsync<string?>(
-			new AskQuestion("dialog", "select", request.Title,
-				[.. request.Options.Select(static option => new AskOption(option, option, null))], null, null),
+			// PiDeck 的标记与 `label|description` 编码只对 PiDeck 有意义：
+			// 卡片显示去掉标记的主副文案，返回的仍是完整选项值。
+			new AskQuestion("dialog", "select", UiSelectText.DisplayTitle(request.Title),
+				[.. request.Options.Select(static option =>
+				{
+					var (label, description) = UiSelectText.SplitOption(option);
+					return new AskOption(label, option, description);
+				})], null, null),
 			cancellationToken,
 			static answers => answers.Count > 0 && answers[0].Value?.GetValueKind() == System.Text.Json.JsonValueKind.String
 				? answers[0].Value!.GetValue<string>()

@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using PiWeft.CodingAgent.Compatibility;
 
 namespace PiWeft.CodingAgent;
 
@@ -7,7 +8,7 @@ namespace PiWeft.CodingAgent;
 /// 本实现在此识别它、停用写工具，并在下一条无标记消息时自动退出。
 public static partial class PlanMode
 {
-	public const string Marker = "__PI_DECK_PLAN_MODE__";
+	public const string Marker = PiDeckProtocol.PlanModeMarker;
 
 	public static readonly string[] DisabledTools = ["edit", "write"];
 

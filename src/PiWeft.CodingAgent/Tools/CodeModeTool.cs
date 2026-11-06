@@ -5,6 +5,7 @@ using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.JavaScript;
 using JsCodeModeTool = PiWeft.JavaScript.CodeModeTool;
+using TruncateUtil = PiWeft.CodingAgent.Tools.Truncate;
 
 namespace PiWeft.CodingAgent.Tools;
 
@@ -584,8 +585,8 @@ public static class CodeModeTool
 		var headChars = budget / 2;
 		var tailChars = budget - headChars;
 		var removed = combined.Length - headChars - tailChars;
-		var head = combined[..headChars];
-		var tail = tailChars > 0 ? combined[^tailChars..] : string.Empty;
+		var head = TruncateUtil.SliceHead(combined, headChars);
+		var tail = TruncateUtil.SliceTail(combined, tailChars);
 		var builder = new StringBuilder();
 		builder.AppendLine(
 			$"Warning: truncated output (original token count: {(combined.Length + CharsPerToken - 1) / CharsPerToken})");
@@ -682,7 +683,7 @@ public static class CodeModeTool
 	}
 
 	private static string Shorten(string text, int maxChars) =>
-		text.Length > maxChars ? $"{text[..(maxChars - 3)]}..." : text;
+		text.Length > maxChars ? $"{TruncateUtil.SliceHead(text, maxChars - 3)}..." : text;
 
 	private sealed class NestedCall
 	{

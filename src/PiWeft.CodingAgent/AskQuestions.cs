@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
+using PiWeft.CodingAgent.Compatibility;
+
 namespace PiWeft.CodingAgent;
 
 public sealed record AskOption(string Label, string Value, string? Description);
@@ -21,9 +23,9 @@ public sealed record AskAnswer(string Id, string Type, JsonNode? Value, string? 
 /// PiDeck 的渲染层据此展开为问询卡片，回答以同构 JSON 字符串返回。
 public static class AskQuestions
 {
-	public const string EnvelopeKey = "__piDeckBatchAsk";
+	public const string EnvelopeKey = PiDeckProtocol.AskEnvelopeKey;
 
-	public const string EnvelopePlaceholder = "__piDeckBatchAsk__";
+	public const string EnvelopePlaceholder = PiDeckProtocol.AskEnvelopePlaceholder;
 
 	public static readonly string[] Types = ["select", "multi_select", "confirm", "input", "editor"];
 

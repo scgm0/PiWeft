@@ -78,6 +78,17 @@ public static class ShellRunner
 		"PI_REASONING_LEVEL",
 	];
 
+	/// PiDeck 的模型专用代理标记：置位时 agent shell 不继承模型请求的代理变量。
+	private const string ProxyScopeVariable = "PIDECK_PI_PROXY_SCOPE";
+
+	private static readonly string[] ProxyEnvironmentNames =
+	[
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+		"http_proxy", "https_proxy", "all_proxy",
+		"NO_PROXY", "no_proxy",
+		"NODE_USE_ENV_PROXY",
+	];
+
 	private const int UpdateThrottleMs = 100;
 
 	/// <summary>Unix 上 setsid 会让 shell 成为新会话/进程组组长，超时才能整组杀掉后台进程（pi 的 detached: true 语义）。</summary>
@@ -192,6 +203,19 @@ public static class ShellRunner
 					startInfo.Environment[name] = value;
 				}
 			}
+		}
+
+		if (string.Equals(
+			Environment.GetEnvironmentVariable(ProxyScopeVariable),
+			"model-only",
+			StringComparison.Ordinal))
+		{
+			foreach (var name in ProxyEnvironmentNames)
+			{
+				startInfo.Environment.Remove(name);
+			}
+
+			startInfo.Environment.Remove(ProxyScopeVariable);
 		}
 
 		AddAgentBinToPath(startInfo);

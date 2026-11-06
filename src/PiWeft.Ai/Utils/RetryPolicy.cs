@@ -81,9 +81,14 @@ public static class RetryClassifier
 			"rate.?limit",
 			"too many requests",
 			// 状态码不能是更长单词/数字的一部分：请求 id、字节数里出现的 500/429 不该触发重试。
-			"(?<![a-z0-9])(?:429|500|502|503|504|520|524)(?![a-z0-9])",
-			// 也匹配 "The service is temporarily unavailable"。
+			// 收藏 5xx 中的网关瞬态（Cloudflare 520-527/530）；501/505/511 这类不重试。
+			"(?<![a-z0-9])(?:429|50[0234]|52[0-7]|530)(?![a-z0-9])",
+			// 网关空响应：pi 1.4+ 已把 bodyless 400/413 移出溢出判定，按瞬态重试。
+			@"\b(?:400|413)\s*(?:status code)?\s*\(no body\)",
+			// 也匹配 "The service is temporarily unavailable"；中文网关文案单独列。
 			"service.?(?:is.?)?(?:temporarily.?)?unavailable",
+			"暂时不可用",
+			"请稍后重试",
 			"server.?error",
 			"internal.?error",
 
@@ -93,8 +98,15 @@ public static class RetryClassifier
 			"unable to forward upstream",
 			"upstream.?request.?failed",
 			"upstream_stream_read_error",
+			"stream_read_error",
 			"stream was interrupted",
+			"stream disconnected before completion",
 			"http/?2 stream failed",
+			"GOAWAY",
+			"unexpected EOF",
+			"unable to reach",
+			"tool.?arguments.?stopped making progress",
+			"basispoints_tool_arguments_stalled",
 
 			// 网络与传输层
 			"network.?error",

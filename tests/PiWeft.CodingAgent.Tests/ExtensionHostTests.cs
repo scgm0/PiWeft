@@ -226,6 +226,98 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
+	public void RegisteredToolCarriesPromptMetadataExposureAndOutputSchema()
+	{
+		using var host = new ExtensionHost();
+		Write("meta.js", """
+			module.exports = function (pi) {
+				pi.registerTool({
+					name: "meta",
+					description: "d",
+					promptSnippet: "Use meta for things",
+					promptGuidelines: ["Always call meta twice."],
+					outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+					exposure: "model-only",
+					namespace: { name: "meta-ns", aliases: ["mn"], description: "meta tools", instructions: "read me" },
+					executionMode: "sequential",
+					parameters: { type: "object", properties: {} },
+					execute: function () { return { ok: true }; },
+				});
+			};
+			""");
+		host.Load(_cwd, trusted: true, _agentDir);
+
+		var tool = Assert.Single(host.Tools);
+		Assert.Equal("model-only", tool.Exposure);
+		Assert.Equal("meta-ns", tool.Namespace);
+		Assert.Equal(["mn"], tool.NamespaceAliases);
+		Assert.Equal("read me", tool.NamespaceInstructions);
+		Assert.Equal(ToolExecutionMode.Sequential, tool.ExecutionMode);
+		Assert.NotNull(tool.OutputSchema);
+		Assert.Equal("boolean", tool.OutputSchema!["properties"]!["ok"]!["type"]!.GetValue<string>());
+
+		var registration = Assert.Single(host.ToolRegistrations);
+		Assert.Equal("Use meta for things", registration.PromptSnippet);
+		Assert.Equal(["Always call meta twice."], registration.PromptGuidelines);
+	}
+
+	[Fact]
+	public void SessionUsesExtensionPromptMetadataAndKeepsModelOnlyToolsUncallable()
+	{
+		var cwd = Path.Combine(_root, "meta-project");
+		Directory.CreateDirectory(cwd);
+		var extension = Path.Combine(_root, "meta-ext.js");
+		File.WriteAllText(extension, """
+			module.exports = function (pi) {
+				pi.registerTool({
+					name: "meta",
+					description: "d",
+					promptSnippet: "Meta snippet",
+					promptGuidelines: ["Meta guideline."],
+					exposure: "direct",
+					execute: function () { return "ok"; },
+				});
+				pi.registerTool({
+					name: "quiet",
+					description: "no snippet",
+					exposure: "model-only",
+					execute: function () { return "ok"; },
+				});
+			};
+			""");
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _agentDir);
+		try
+		{
+			using var session = new CodingAgentSession(new CodingAgentSessionOptions
+			{
+				Cwd = cwd,
+				Model = ScriptedSessions.Model(),
+				StreamFn = new ScriptedStreamFn().Invoke,
+				Session = SessionManager.InMemory(cwd),
+				Persist = false,
+				Skills = [],
+				PromptTemplates = [],
+				ExtensionPaths = [extension],
+				DiscoverExtensions = false,
+			});
+
+			Assert.Contains(session.Tools, tool => tool.Name == "meta");
+			Assert.DoesNotContain(session.Tools, tool => tool.Name == "quiet");
+			Assert.Contains(session.DeclaredTools, tool => tool.Name == "quiet");
+
+			var system = Assert.IsType<PiWeft.Ai.SystemMessage>(session.ProjectedMessages[0]);
+			var tools = system.Sections!["tools"];
+			Assert.Contains("meta: Meta snippet", tools);
+			Assert.DoesNotContain("quiet", tools);
+			Assert.Contains("Meta guideline.", system.Sections["rules"]);
+		}
+		finally
+		{
+			Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", null);
+		}
+	}
+
+	[Fact]
 	public async Task ToolReturningAStringIsAccepted()
 	{
 		using var host = new ExtensionHost();

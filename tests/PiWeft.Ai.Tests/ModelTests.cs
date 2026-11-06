@@ -231,8 +231,24 @@ public class RetryClassifierTests
 	[InlineData("fetch failed")]
 	[InlineData("Anthropic stream ended before message_stop")]
 	[InlineData("Request timed out")]
+	[InlineData("400 status code (no body)")]
+	[InlineData("413 status code (no body)")]
+	[InlineData("模型服务暂时不可用，请稍后重试")]
+	[InlineData("stream_read_error")]
+	[InlineData("unexpected EOF")]
+	[InlineData("http2 error: GOAWAY received")]
+	[InlineData("juzi-r4: The host is configured as a Cloudflare Tunnel, but Cloudflare is currently unable to reach it.")]
+	[InlineData("520 status code")]
+	[InlineData("basispoints_tool_arguments_stalled: Tool arguments stopped making progress")]
 	public void TransientFailuresAreRetryable(string message) =>
 		Assert.True(RetryClassifier.IsRetryable(Failure(message)));
+
+	[Fact]
+	public void OrdinaryBadRequestsAreNotRetried()
+	{
+		Assert.False(RetryClassifier.IsRetryable(Failure("400 status code: invalid request")));
+		Assert.False(RetryClassifier.IsRetryable(Failure("413 payload too large for this gateway")));
+	}
 
 	/// 火山方舟的排队错误：403 + 嵌套 JSON，没有 429/限流字样，曾经直接当作不可重试。
 	[Fact]

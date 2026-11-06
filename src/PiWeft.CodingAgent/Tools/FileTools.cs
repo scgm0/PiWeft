@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -113,47 +114,36 @@ public static class FileTools
 		}
 
 		// pi 用 Buffer.toString("utf-8") 读文本：BOM 会作为 U+FEFF 留在正文里，
-		// 而 File.ReadAllText 会静默吃掉它。
-		ThrowIfAborted(invocation.CancellationToken);
-		var text = Encoding.UTF8.GetString(File.ReadAllBytes(absolutePath));
-		var allLines = text.Split('\n');
-		var totalFileLines = allLines.Length;
+		// 而 File.ReadAllText 会静默吃掉它。大文件不能整份读进内存：��保留会显示的行，
+		// 其余只计数；取消在解码块之间检查。
 		var startLine = offset is { } o ? Math.Max(0, o - 1) : 0;
 		var startLineDisplay = startLine + 1;
+		var selectedLines = SelectLines(
+			absolutePath,
+			startLine,
+			limit is { } requestedLimit ? Math.Max(0, requestedLimit) : null,
+			invocation.CancellationToken);
+		var totalFileLines = selectedLines.TotalFileLines;
 
-		if (startLine >= allLines.Length)
+		if (startLine >= totalFileLines)
 		{
 			throw new InvalidOperationException(
-				$"Offset {offset} is beyond end of file ({allLines.Length} lines total)");
+				$"Offset {offset} is beyond end of file ({totalFileLines} lines total)");
 		}
 
-		string selected;
-		int? userLimitedLines = null;
-		if (limit is { } userLimit)
-		{
-			// 负的 limit 没有意义；夹到 0，避免 C# range 的 end < start 直接抛异常。
-			userLimit = Math.Max(0, userLimit);
-			var endLine = Math.Min(startLine + userLimit, allLines.Length);
-			selected = string.Join("\n", allLines[startLine..endLine]);
-			userLimitedLines = endLine - startLine;
-		}
-		else
-		{
-			selected = string.Join("\n", allLines[startLine..]);
-		}
-
-		var truncation = Truncate.Head(selected);
+		var truncation = selectedLines.Truncation;
+		int? userLimitedLines = limit is { } userLimit
+			? Math.Min(Math.Max(0, userLimit), Math.Max(0, totalFileLines - startLine))
+			: null;
 		string output;
 		JsonNode? details = null;
-		var limitNote = $"[Truncated. Full file: {absolutePath}]";
 
 		if (truncation.FirstLineExceedsLimit)
 		{
-			var firstLineSize = Truncate.FormatSize(Truncate.ByteCount(allLines[startLine]));
+			var firstLineSize = Truncate.FormatSize(selectedLines.FirstLineBytes);
 			output =
 				$"[Line {startLineDisplay} is {firstLineSize}, exceeds {Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit. Use bash: sed -n '{startLineDisplay}p' {path} | head -c {Truncate.DefaultMaxBytes}]";
 			details = TruncationDetails(truncation, absolutePath);
-			limitNote = string.Empty;
 		}
 		else if (truncation.Truncated)
 		{
@@ -164,24 +154,16 @@ public static class FileTools
 				? $"\n\n[Showing lines {startLineDisplay}-{endLineDisplay} of {totalFileLines}. Use offset={nextOffset} to continue.]"
 				: $"\n\n[Showing lines {startLineDisplay}-{endLineDisplay} of {totalFileLines} ({Truncate.FormatSize(Truncate.DefaultMaxBytes)} limit). Use offset={nextOffset} to continue.]";
 			details = TruncationDetails(truncation, absolutePath);
-			limitNote = string.Empty;
 		}
-		else if (userLimitedLines is { } limited && startLine + limited < allLines.Length)
+		else if (userLimitedLines is { } limited && startLine + limited < totalFileLines)
 		{
-			var remaining = allLines.Length - (startLine + limited);
+			var remaining = totalFileLines - (startLine + limited);
 			var nextOffset = startLine + limited + 1;
 			output = $"{truncation.Content}\n\n[{remaining} more lines in file. Use offset={nextOffset} to continue.]";
-			limitNote = string.Empty;
 		}
 		else
 		{
 			output = truncation.Content;
-			limitNote = string.Empty;
-		}
-
-		if (limitNote.Length > 0)
-		{
-			output += $"\n\n{limitNote}";
 		}
 
 		return new AgentToolResult
@@ -190,6 +172,151 @@ public static class FileTools
 			Details = details,
 			StructuredContent = JsonValue.Create(output),
 		};
+	}
+
+	private readonly record struct SelectedLines(
+		int TotalFileLines,
+		TruncationResult Truncation,
+		long FirstLineBytes);
+
+	/// 按 <c>\n</c> 切行（不把孤立 <c>\r</c> 当换行，与 pi 的 <c>text.split("\n")</c> 一致），
+	/// 只保留选中区间且能进截断预算的行；大文件内存上界是「预算 + 一行」。
+	private static SelectedLines SelectLines(
+		string path,
+		int startLine,
+		int? limit,
+		CancellationToken cancellationToken)
+	{
+		var endLine = limit is { } userLimit ? (long)startLine + userLimit : long.MaxValue;
+		var storedLines = new List<string>();
+		var line = new StringBuilder();
+		long storedBytes = 0;
+		long selectedBytes = 0;
+		long lineBytes = 0;
+		long firstLineBytes = 0;
+		long lineIndex = 0;
+		var selectedLineCount = 0;
+		var lastLineEmpty = true;
+		var hasText = false;
+		var storedPastCaps = false;
+
+		void FinishLine()
+		{
+			var selected = lineIndex >= startLine && lineIndex < endLine;
+			if (selected)
+			{
+				if (selectedLineCount == 0)
+				{
+					firstLineBytes = lineBytes;
+				}
+
+				selectedLineCount++;
+				selectedBytes += lineBytes;
+				lastLineEmpty = !hasText;
+
+				if (!storedPastCaps)
+				{
+					var text = line.ToString();
+					storedBytes += Encoding.UTF8.GetByteCount(text) + (storedLines.Count > 0 ? 1 : 0);
+					storedLines.Add(text);
+					if (storedLines.Count > Truncate.DefaultMaxLines || storedBytes > Truncate.DefaultMaxBytes)
+					{
+						// 与 pi 一样多存一行，让 truncateHead 按完整输入判断截断；之后只计数。
+						storedPastCaps = true;
+					}
+				}
+			}
+
+			lineIndex++;
+			line.Clear();
+			lineBytes = 0;
+			hasText = false;
+		}
+
+		var buffer = ArrayPool<char>.Shared.Rent(64 * 1024);
+		try
+		{
+			using var stream = new FileStream(
+				path,
+				FileMode.Open,
+				FileAccess.Read,
+				FileShare.ReadWrite,
+				64 * 1024,
+				FileOptions.SequentialScan);
+			// BOM 必须保留：pi 的 Buffer.toString("utf-8") 不会吞掉它。
+			using var reader = new StreamReader(
+				stream,
+				new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false),
+				detectEncodingFromByteOrderMarks: false,
+				bufferSize: 64 * 1024);
+
+			while (true)
+			{
+				if (cancellationToken.IsCancellationRequested)
+				{
+					throw new InvalidOperationException("Operation aborted");
+				}
+				var read = reader.Read(buffer, 0, buffer.Length);
+				if (read == 0)
+				{
+					FinishLine();
+					break;
+				}
+
+				var span = buffer.AsSpan(0, read);
+				while (!span.IsEmpty)
+				{
+					var newline = span.IndexOf('\n');
+					var segment = newline < 0 ? span : span[..newline];
+					var selected = lineIndex >= startLine && lineIndex < endLine;
+					if (selected && !segment.IsEmpty)
+					{
+						hasText = true;
+						if (!storedPastCaps && lineBytes <= Truncate.DefaultMaxBytes)
+						{
+							line.Append(segment);
+						}
+
+						lineBytes += Encoding.UTF8.GetByteCount(segment);
+					}
+
+					if (newline < 0)
+					{
+						break;
+					}
+
+					FinishLine();
+					span = span[(newline + 1)..];
+				}
+			}
+		}
+		finally
+		{
+			ArrayPool<char>.Shared.Return(buffer);
+		}
+
+		var stored = storedLines.Count == 0 ? string.Empty : string.Join('\n', storedLines);
+		var truncation = Truncate.Head(stored) with
+		{
+			TotalLines = selectedBytes == 0 ? 0 : selectedLineCount - (lastLineEmpty ? 1 : 0),
+			TotalBytes = selectedBytes,
+		};
+
+		// 流式路径不保存超预算的首行，但模型仍需要 pi 的可操作提示（与整份读取的语义一致）。
+		if (selectedLineCount > 0 && firstLineBytes > Truncate.DefaultMaxBytes)
+		{
+			truncation = truncation with
+			{
+				Content = string.Empty,
+				Truncated = true,
+				TruncatedBy = "bytes",
+				OutputLines = 0,
+				OutputBytes = 0,
+				FirstLineExceedsLimit = true,
+			};
+		}
+
+		return new SelectedLines((int)lineIndex, truncation, firstLineBytes);
 	}
 
 	private static JsonObject ReadOutputSchema() => new()

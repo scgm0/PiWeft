@@ -231,6 +231,218 @@ public class JsonSchemaValidatorTests
 	}
 
 	[Fact]
+	public void LocalRefPropertiesAreValidatedAndCoerced()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["model"] = new JsonObject { ["$ref"] = "#/$defs/model" },
+			},
+			["required"] = new JsonArray("model"),
+			["$defs"] = new JsonObject
+			{
+				["model"] = new JsonObject
+				{
+					["type"] = "object",
+					["properties"] = new JsonObject
+					{
+						["count"] = new JsonObject { ["type"] = "integer" },
+						["tag"] = new JsonObject { ["type"] = "string" },
+					},
+					["required"] = new JsonArray("count"),
+				},
+			},
+		};
+
+		var missing = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject
+		{
+			["model"] = new JsonObject { ["tag"] = "a" },
+		});
+		Assert.Contains("- model.count: Expected required property", missing.Error);
+
+		var coerced = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject
+		{
+			["model"] = new JsonObject { ["count"] = "7", ["tag"] = 42 },
+		});
+		Assert.Null(coerced.Error);
+		Assert.Equal(7, coerced.Value!["model"]!["count"]!.GetValue<long>());
+		Assert.Equal("42", coerced.Value["model"]!["tag"]!.GetValue<string>());
+	}
+
+	[Fact]
+	public void RecursiveRefDoesNotLoop()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject { ["root"] = new JsonObject { ["$ref"] = "#/$defs/node" } },
+			["required"] = new JsonArray("root"),
+			["$defs"] = new JsonObject
+			{
+				["node"] = new JsonObject
+				{
+					["type"] = "object",
+					["properties"] = new JsonObject { ["next"] = new JsonObject { ["$ref"] = "#/$defs/node" } },
+				},
+			},
+		};
+
+		var result = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject
+		{
+			["root"] = new JsonObject { ["next"] = new JsonObject { ["next"] = new JsonObject() } },
+		});
+		Assert.Null(result.Error);
+	}
+
+	[Fact]
+	public void PatternPropertiesAreValidatedAndCoerced()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["patternProperties"] = new JsonObject
+			{
+				["^x-"] = new JsonObject { ["type"] = "integer" },
+				["^y-"] = new JsonObject { ["type"] = "string" },
+			},
+			["additionalProperties"] = false,
+		};
+
+		var coerced = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject
+		{
+			["x-a"] = "3",
+			["y-b"] = 4,
+		});
+		Assert.Null(coerced.Error);
+		Assert.Equal(3, coerced.Value!["x-a"]!.GetValue<long>());
+		Assert.Equal("4", coerced.Value["y-b"]!.GetValue<string>());
+
+		var unknown = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject { ["z-c"] = 1 });
+		Assert.Contains("- z-c: Unexpected property", unknown.Error);
+	}
+
+	[Fact]
+	public void PrefixItemsAreValidatedAndTheRestUsesItems()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["args"] = new JsonObject
+				{
+					["type"] = "array",
+					["prefixItems"] = new JsonArray(
+						new JsonObject { ["type"] = "string" },
+						new JsonObject { ["type"] = "integer" }),
+					["items"] = new JsonObject { ["type"] = "number" },
+				},
+			},
+			["required"] = new JsonArray("args"),
+		};
+
+		var coerced = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject
+		{
+			["args"] = new JsonArray("a", "2", "3.5"),
+		});
+		Assert.Null(coerced.Error);
+		Assert.Equal("a", coerced.Value!["args"]![0]!.GetValue<string>());
+		Assert.Equal(2, coerced.Value["args"]![1]!.GetValue<long>());
+		Assert.Equal(3.5, coerced.Value["args"]![2]!.GetValue<double>());
+
+		var bad = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject
+		{
+			["args"] = new JsonArray(new JsonObject()),
+		});
+		Assert.Contains("- args[0]: Expected string", bad.Error);
+	}
+
+	[Fact]
+	public void SingleValueIsWrappedForArraySchemas()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["questions"] = new JsonObject
+				{
+					["type"] = "array",
+					["items"] = new JsonObject
+					{
+						["type"] = "object",
+						["properties"] = new JsonObject { ["question"] = new JsonObject { ["type"] = "string" } },
+						["required"] = new JsonArray("question"),
+					},
+				},
+			},
+			["required"] = new JsonArray("questions"),
+		};
+
+		var result = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject
+		{
+			["questions"] = new JsonObject { ["question"] = "继续？" },
+		});
+
+		Assert.Null(result.Error);
+		Assert.IsType<JsonArray>(result.Value!["questions"]);
+		Assert.Equal("继续？", result.Value["questions"]![0]!["question"]!.GetValue<string>());
+	}
+
+	[Fact]
+	public void MalformedRefIsIgnoredInsteadOfThrowing()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject { ["value"] = new JsonObject { ["$ref"] = "#/$defs/%E0" } },
+		};
+
+		var result = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject { ["value"] = 1 });
+		Assert.Null(result.Error);
+	}
+
+	[Fact]
+	public void PropertiesAndPatternPropertiesBothApply()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["x-a"] = new JsonObject { ["type"] = "string", ["minLength"] = 3 },
+			},
+			["patternProperties"] = new JsonObject
+			{
+				["^x-"] = new JsonObject { ["type"] = "string", ["pattern"] = "^x" },
+			},
+		};
+
+		// 命中 properties 的属性也要过 patternProperties。
+		var result = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject { ["x-a"] = "x" });
+		Assert.Contains("- x-a: Expected string length greater than or equal to 3", result.Error);
+	}
+
+	[Fact]
+	public void NullIsNotWrappedIntoAnArray()
+	{
+		var schema = new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["items"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } },
+			},
+			["required"] = new JsonArray("items"),
+		};
+
+		var result = JsonSchemaValidator.ValidateToolArguments(ToolWith(schema), new JsonObject { ["items"] = null });
+		Assert.Contains("- items: Expected array", result.Error);
+	}
+
+	[Fact]
 	public void EmptySchemaAcceptsAnything()
 	{
 		var tool = ToolWith(new JsonObject { ["type"] = "object" });

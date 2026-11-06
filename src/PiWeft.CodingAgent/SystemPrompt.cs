@@ -55,7 +55,10 @@ public static class SystemPrompt
 
 		if (!custom)
 		{
-			sections["tools"] = RenderTools(options.Tools);
+			if (RenderTools(options.Tools) is { } tools)
+			{
+				sections["tools"] = tools;
+			}
 
 			var rules = RenderRules(options.Tools, options.ExtraGuidelines);
 			if (rules is not null)
@@ -110,10 +113,17 @@ public static class SystemPrompt
 		};
 	}
 
-	public static string RenderTools(IReadOnlyList<BuiltinTool> tools)
+	/// 没有 promptSnippet 的工具（pi 自定义工具的默认形态）不出现在 Available tools 章节。
+	public static string? RenderTools(IReadOnlyList<BuiltinTool> tools)
 	{
+		var visible = tools.Where(static tool => tool.Snippet.Length > 0).ToList();
+		if (visible.Count == 0)
+		{
+			return null;
+		}
+
 		var builder = new StringBuilder("<tools>\n");
-		foreach (var tool in tools)
+		foreach (var tool in visible)
 		{
 			builder.Append("- ").Append(tool.Tool.Name).Append(": ").Append(tool.Snippet).Append('\n');
 		}

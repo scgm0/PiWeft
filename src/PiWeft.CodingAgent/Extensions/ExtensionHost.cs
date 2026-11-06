@@ -85,7 +85,13 @@ public sealed class ExtensionHost : IDisposable
 						text(definition.description || ""),
 						definition.parameters && typeof definition.parameters === "object" ? JSON.stringify(definition.parameters) : "{}",
 						definition.execute,
-						definition.constrainedSampling && typeof definition.constrainedSampling === "object" ? JSON.stringify(definition.constrainedSampling) : "");
+						definition.constrainedSampling && typeof definition.constrainedSampling === "object" ? JSON.stringify(definition.constrainedSampling) : "",
+						text(definition.promptSnippet || ""),
+						Array.isArray(definition.promptGuidelines) ? JSON.stringify(definition.promptGuidelines) : "",
+						definition.outputSchema && typeof definition.outputSchema === "object" ? JSON.stringify(definition.outputSchema) : "",
+						text(definition.exposure || ""),
+						definition.namespace && typeof definition.namespace === "object" ? JSON.stringify(definition.namespace) : "",
+						text(definition.executionMode || ""));
 				},
 				registerCommand: function (name, second, third) {
 					var definition = commandDefinition(second, third);
@@ -118,6 +124,9 @@ public sealed class ExtensionHost : IDisposable
 
 	public IReadOnlyList<AgentTool> Tools =>
 		[.. _states.Where(static state => state.Loaded).SelectMany(state => state.Registration.Tools)];
+
+	internal IReadOnlyList<ExtensionToolRegistration> ToolRegistrations =>
+		[.. _states.Where(static state => state.Loaded).SelectMany(state => state.Registration.ToolRegistrations)];
 
 	public IReadOnlyList<ExtensionCommand> Commands =>
 		[.. _states.Where(static state => state.Loaded).SelectMany(state => state.Registration.Commands)];
@@ -437,6 +446,12 @@ public sealed class ExtensionHost : IDisposable
 			var parameters = ParseObject(args.At(3).AsString());
 			// 扩展也能像内置工具一样声明受约束采样；解析失败按「没声明」处理，不阻断注册。
 			var constrained = ParseConstrainedSampling(args.At(5).AsString());
+			var promptSnippet = args.At(6).AsString();
+			var promptGuidelines = ParseStringArray(args.At(7).AsString());
+			var outputSchema = ParseNullableObject(args.At(8).AsString());
+			var exposure = NormalizeExposure(args.At(9).AsString());
+			var namespaceObject = ParseNullableObject(args.At(10).AsString());
+			var executionMode = ParseExecutionMode(args.At(11).AsString());
 
 			// execute 函数留在 JS 侧按名字取（C# 不跨线程持有 JS 函数）。
 			engine.Invoke("piweftStoreTool", name, args.At(4));
@@ -447,6 +462,13 @@ public sealed class ExtensionHost : IDisposable
 				Description = description,
 				Parameters = parameters,
 				ConstrainedSampling = constrained,
+				OutputSchema = outputSchema,
+				Exposure = exposure,
+				Namespace = namespaceObject?["name"]?.GetValue<string>() is { Length: > 0 } namespaceName ? namespaceName : null,
+				NamespaceAliases = ParseStringArrayNode(namespaceObject?["aliases"]),
+				NamespaceDescription = namespaceObject?["description"]?.GetValue<string>(),
+				NamespaceInstructions = namespaceObject?["instructions"]?.GetValue<string>(),
+				ExecutionMode = executionMode,
 				Execute = invocation =>
 				{
 					// 代理线程把调用投到扩展线程上执行：Jint 引擎不是线程安全的。
@@ -457,7 +479,10 @@ public sealed class ExtensionHost : IDisposable
 					return Task.FromResult(ToToolResult(json));
 				},
 			};
-			registration.AddTool(tool);
+			registration.AddTool(new ExtensionToolRegistration(
+				tool,
+				promptSnippet.Length > 0 ? promptSnippet : null,
+				promptGuidelines));
 			return JsValue.Undefined;
 		}));
 
@@ -729,21 +754,88 @@ public sealed class ExtensionHost : IDisposable
 		}
 	}
 
-	private static IReadOnlyList<string> ParseStringArray(string json)
+	/// 扩展给的数组可能混着非字符串（`aliases: ["a", 1]`）：只收字符串，不因为一个坏项让整个扩展加载失败。
+	private static IReadOnlyList<string> ParseStringArrayNode(JsonNode? node)
 	{
-		if (JsonNode.Parse(json) is not JsonArray array)
+		if (node is not JsonArray array)
 		{
 			return [];
 		}
 
 		var values = new List<string>(array.Count);
-		foreach (var node in array)
+		foreach (var item in array)
 		{
-			values.Add(node is JsonValue value && value.TryGetValue<string>(out var text) ? text : node?.ToJsonString() ?? string.Empty);
+			if (item is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > 0)
+			{
+				values.Add(text);
+			}
 		}
 
 		return values;
 	}
+
+	private static IReadOnlyList<string> ParseStringArray(string json)
+	{
+		if (json.Length == 0)
+		{
+			return [];
+		}
+
+		try
+		{
+			if (JsonNode.Parse(json) is not JsonArray array)
+			{
+				return [];
+			}
+
+			var values = new List<string>(array.Count);
+			foreach (var node in array)
+			{
+				values.Add(node is JsonValue value && value.TryGetValue<string>(out var text)
+					? text
+					: node?.ToJsonString() ?? string.Empty);
+			}
+
+			return values;
+		}
+		catch (JsonException)
+		{
+			return [];
+		}
+	}
+
+	private static JsonObject? ParseNullableObject(string json)
+	{
+		if (json.Length == 0)
+		{
+			return null;
+		}
+
+		try
+		{
+			return JsonNode.Parse(json) as JsonObject;
+		}
+		catch (JsonException)
+		{
+			return null;
+		}
+	}
+
+	private static string NormalizeExposure(string value) => value switch
+	{
+		ToolExposure.Codemode => ToolExposure.Codemode,
+		ToolExposure.Deferred => ToolExposure.Deferred,
+		ToolExposure.Hidden => ToolExposure.Hidden,
+		ToolExposure.ModelOnly => ToolExposure.ModelOnly,
+		_ => ToolExposure.Direct,
+	};
+
+	private static ToolExecutionMode? ParseExecutionMode(string value) => value switch
+	{
+		"sequential" => ToolExecutionMode.Sequential,
+		"parallel" => ToolExecutionMode.Parallel,
+		_ => null,
+	};
 
 	private static JsonObject ParseObject(string json)
 	{

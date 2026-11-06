@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
+using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Tools;
@@ -24,10 +25,10 @@ public sealed record TodoState(TodoPlan? ActivePlan, TodoPlan? PreviousPlan, int
 /// 的最后一个合法快照重建，因此旧分支的计划自动恢复。
 public static class TodoTool
 {
-	public const string EntryType = "pi-deck-todo";
+	public const string EntryType = PiDeckProtocol.TodoEntryType;
 
 	/// 压缩/分支摘要后补注计划用的 custom message 类型（与 PiDeck 的 pi-deck-todo-brief 同名）。
-	public const string BriefEntryType = "pi-deck-todo-brief";
+	public const string BriefEntryType = PiDeckProtocol.TodoBriefEntryType;
 
 	public const string Name = "todo";
 
@@ -96,7 +97,6 @@ public static class TodoTool
 			},
 		},
 		["required"] = new JsonArray("action"),
-		["additionalProperties"] = false,
 	};
 
 	private static AgentToolResult Execute(
@@ -610,7 +610,7 @@ public static class TodoTool
 			: plan.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
 		var lines = new List<string>(plan.Items.Count + 1)
 		{
-			$"[[pid:todo-plan:{identity}]]",
+			$"{PiDeckProtocol.TodoPlanMetadataPrefix}{identity}]]",
 		};
 		foreach (var item in plan.Items)
 		{

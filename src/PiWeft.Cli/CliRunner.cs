@@ -1518,6 +1518,47 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				continue;
 			}
 
+			if (trimmed.StartsWith("/goal", StringComparison.Ordinal))
+			{
+				// 与 PiDeck 的 /goal 同义：/goal <目标> 进入目标模式，pause/clear 退出，
+				// 无参数查看进度。自动续轮由会话在回合结束时完成。
+				var argument = trimmed.Length > "/goal".Length ? trimmed["/goal".Length..].Trim() : string.Empty;
+				switch (argument.ToLowerInvariant())
+				{
+					case "pause" or "off" or "disable":
+						session.PauseGoal();
+						error.WriteLine("目标模式已暂停。");
+						break;
+					case "clear" or "reset":
+						session.ClearGoal();
+						error.WriteLine("目标已清除。");
+						break;
+					case "resume" or "on" or "enable":
+						if (session.Goal.Objective.Length == 0)
+						{
+							error.WriteLine("没有可恢复的目标，请先输入目标。");
+						}
+						else
+						{
+							session.SetGoal(session.Goal.Objective, resetRounds: false);
+							error.WriteLine($"目标已恢复：{session.Goal.Objective}");
+						}
+
+						break;
+					case "":
+						error.WriteLine(session.Goal.Objective.Length == 0
+							? "当前没有目标。发送一条目标，或使用 /goal <目标>。"
+							: $"目标（{session.Goal.Phase}）{session.Goal.RoundsStarted}/{session.Goal.MaxRounds}\n{session.Goal.Objective}");
+						break;
+					default:
+						session.SetGoal(argument);
+						error.WriteLine($"目标模式已开启：{session.Goal.Objective}");
+						break;
+				}
+
+				continue;
+			}
+
 			if (trimmed == "/reload")
 			{
 				// 与 pi 的 /reload 对应：重新发现技能、提示词模板与主题，不重建会话。
@@ -1633,6 +1674,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		  /thinking [级别]          查看/设置思考级别（off…max）
 		  /compact                  压缩上下文
 		  /plan                     切换计划模式（只读）
+		  /goal [目标|pause|resume|clear]  目标模式：自动续轮直到完成或阻塞
 		  /reload                   重新发现技能/提示词模板/主题
 		  /new                      开始新会话
 		  /resume                   选择并恢复历史会话

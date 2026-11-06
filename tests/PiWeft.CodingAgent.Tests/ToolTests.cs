@@ -92,6 +92,33 @@ public class ToolTests : IDisposable
 		Assert.Contains("Use offset=2001 to continue.", text);
 	}
 
+	[Fact]
+	public async Task Read_DoesNotSplitOnLoneCarriageReturn()
+	{
+		// pi 的 read 只在 '\n' 上切行；孤立 CR 是正文（与 grep/rg 的差异被单独处理）。
+		Write("cr.txt", "a\rb\nmatch\n");
+		var text = Text(await FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "cr.txt" })));
+
+		Assert.Equal("a\rb\nmatch\n", text);
+	}
+
+	[Fact]
+	public async Task Read_FirstLineOverByteLimit_PointsAtTheBashFallback()
+	{
+		var longLine = new string('x', (int)Truncate.DefaultMaxBytes + 1024);
+		Write("long.txt", longLine + "\nsecond\n");
+
+		var text = Text(await FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "long.txt" })));
+
+		Assert.Contains("exceeds 50.0KB limit", text);
+		Assert.Contains("head -c 51200", text);
+
+		// offset 跳到后面的正常行仍然可读。
+		var second = Text(await FileTools.Read(_root).Execute(
+			Invoke("read", new JsonObject { ["path"] = "long.txt", ["offset"] = 2 })));
+		Assert.Contains("second", second);
+	}
+
 
 	[Fact]
 	public async Task Write_CreatesParentDirectories()
@@ -264,6 +291,7 @@ public class ToolTests : IDisposable
 	[Fact]
 	public async Task Grep_RespectsGitIgnoreAndSupportsLiteralAndIgnoreCase()
 	{
+		Directory.CreateDirectory(Path.Combine(_root, ".git"));
 		Write(".gitignore", "vendor/\n");
 		Write("src/a.txt", "Needle\n");
 		Write("vendor/b.txt", "Needle\n");

@@ -81,7 +81,6 @@ public static class AskQuestionTool
 			},
 			["review"] = new JsonObject { ["type"] = "boolean", ["description"] = "When true, shows a Submit/review tab of all answers for confirmation. Default false." },
 		},
-		["additionalProperties"] = false,
 	};
 
 	private static async Task<AgentToolResult> ExecuteAsync(CodingAgentSession? session, AgentToolInvocation invocation)

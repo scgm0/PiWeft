@@ -30,6 +30,8 @@ public static class PowerShellTool
 			["required"] = new JsonArray("command"),
 		},
 		OutputSchema = ShellToolFormatter.ShellOutputSchema(),
+		// 与 bash 一致：PowerShell 也声明严格 JSON schema（createShellToolDefinition 同款）。
+		ConstrainedSampling = PiWeft.Ai.ConstrainedSampling.JsonSchema(),
 		Execute = invocation => RunAsync(cwd, invocation, context),
 	};
 

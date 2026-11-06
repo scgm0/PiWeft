@@ -60,6 +60,9 @@ public static class ToolExposure
 	public const string Deferred = "deferred";
 
 	public const string Hidden = "hidden";
+
+	/// 声明给模型但不可被其它工具调用（pi 的 <c>model-only</c>）。
+	public const string ModelOnly = "model-only";
 }
 
 public sealed record AgentTool

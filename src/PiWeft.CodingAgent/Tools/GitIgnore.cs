@@ -3,11 +3,42 @@ using System.Text.RegularExpressions;
 
 namespace PiWeft.CodingAgent.Tools;
 
+/// 忽略规则的来源。嵌套仓库只丢掉祖先仓库的本地 VCS 规则；全局 git 忽略与非 VCS 规则保留。
+internal enum IgnoreSource
+{
+	LocalGit,
+	GlobalGit,
+	Always,
+}
+
+/// grep 跟 ripgrep 的 ignore 语义，find 跟 fd 的。
+internal enum IgnoreFlavor
+{
+	Ripgrep,
+	Fd,
+}
+
+/// 遍历参数：ignore 方言决定读哪些 ignore 文件，也决定嵌套仓库边界怎么处理。
+internal sealed record FileWalkOptions
+{
+	public IgnoreFlavor Flavor { get; init; } = IgnoreFlavor.Fd;
+
+	public bool SkipHidden { get; init; }
+
+	public bool IncludeGitDirectory { get; init; }
+
+	public string FlavorIgnoreFileName => Flavor == IgnoreFlavor.Fd ? ".fdignore" : ".rgignore";
+}
+
 /// 供 <c>grep</c> 与 <c>find</c> 遍历时使用的 <c>.gitignore</c> 匹配器。pi 把忽略规则交给 ripgrep/fd，
 /// 本端口在进程内实现常用子集，因而不需要外部可执行文件。
 public sealed class GitIgnore
 {
 	private readonly List<IgnoreRule> _rules = [];
+
+	/// 所有规则共用的基准目录（逐目录层都是这种情况）。合并层可能是 null，
+	/// 那时按规则自带的基准分组算相对路径。
+	private string? _singleBase;
 
 	public int Count => _rules.Count;
 
@@ -16,7 +47,10 @@ public sealed class GitIgnore
 	public static GitIgnore FromDirectory(string directory) =>
 		FromFile(Path.Combine(directory, ".gitignore"), directory);
 
-	public static GitIgnore FromFile(string path, string baseDirectory)
+	public static GitIgnore FromFile(string path, string baseDirectory) =>
+		FromFile(path, baseDirectory, IgnoreSource.LocalGit);
+
+	internal static GitIgnore FromFile(string path, string baseDirectory, IgnoreSource source)
 	{
 		if (!File.Exists(path))
 		{
@@ -26,7 +60,7 @@ public sealed class GitIgnore
 
 		try
 		{
-			return Parse(File.ReadAllLines(path), baseDirectory);
+			return Parse(File.ReadAllLines(path), baseDirectory, source);
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
@@ -34,9 +68,11 @@ public sealed class GitIgnore
 		}
 	}
 
-	/// 搜索起点在子目录时，ripgrep/fd 仍会应用父目录的 ignore 文件。这里把 git 仓库根
-	/// （没有仓库则到文件系统根）到搜索目录父级的规则合并成一份，Walker 再叠加各层本地规则。
-	public static GitIgnore ForSearchRoot(string root)
+	/// 搜索起点在子目录时，ripgrep/fd 仍会应用父目录的 ignore 文件。
+	/// VCS 规则按仓库根截断（仓库根之上的 .gitignore 不生效），非 VCS 规则
+	/// （.ignore / .rgignore / .fdignore）不受仓库边界限制；fd 的 --no-require-git
+	/// 还会在非仓库目录里读父级 .gitignore 与全局 git 忽略。
+	internal static GitIgnore ForWalkRoot(string root, FileWalkOptions options)
 	{
 		var directory = Directory.Exists(root)
 			? Path.GetFullPath(root)
@@ -46,40 +82,61 @@ public sealed class GitIgnore
 			return Empty;
 		}
 
-		var gitRoot = FindGitRoot(directory);
-		var stop = gitRoot ?? Path.GetPathRoot(directory) ?? directory;
-		var chain = new List<string>();
-		for (var current = directory; current is { Length: > 0 }; current = Path.GetDirectoryName(current))
+		var combined = new GitIgnore();
+		// 非 VCS 规则从文件系统根一路读下来；顺序由低到高，子目录规则后读。
+		for (var current = Path.GetDirectoryName(directory); current is { Length: > 0 }; current = Path.GetDirectoryName(current))
 		{
-			if (string.Equals(Path.GetFullPath(current), Path.GetFullPath(directory), StringComparison.Ordinal))
-			{
-				continue;
-			}
-
-			chain.Add(current);
-			if (string.Equals(Path.GetFullPath(current), Path.GetFullPath(stop), StringComparison.Ordinal))
-			{
-				break;
-			}
+			combined.AddRange(FromFile(Path.Combine(current, ".ignore"), current, IgnoreSource.Always));
+			combined.AddRange(FromFile(Path.Combine(current, options.FlavorIgnoreFileName), current, IgnoreSource.Always));
 		}
 
-		var combined = new GitIgnore();
-		// 优先级从低到高：全局忽略（core.excludesFile / XDG ignore）→ .git/info/exclude →
-		// 逐层 .gitignore/.ignore/.rgignore。规则是「后出现的覆盖先出现的」，顺序错了
-		// 就会出现「仓库根的 .gitignore 被 info/exclude 反过来压住」这种和 git 不一样的结果。
+		if (options.Flavor == IgnoreFlavor.Fd)
+		{
+			combined.AddRange(FdGlobal(directory));
+		}
+
+		var gitRoot = FindGitRoot(directory);
+		// fd 用 --no-require-git：不在仓库里也读 .gitignore / 全局 git 忽略，且不按仓库边界重置。
+		var vcsActive = gitRoot is not null || options.Flavor == IgnoreFlavor.Fd;
+		if (!vcsActive)
+		{
+			return combined;
+		}
+
 		var baseDirectory = gitRoot ?? directory;
 		combined.AddRange(Global(baseDirectory));
+
 		if (gitRoot is not null)
 		{
-			combined.AddRange(FromFile(Path.Combine(gitRoot, ".git", "info", "exclude"), gitRoot));
-		}
+			// 仓库根之上的 .gitignore 不生效；仓库根自己的规则留给 Walker 读。
+			var chain = new List<string>();
+			if (!SamePath(directory, gitRoot))
+			{
+				for (var current = Path.GetDirectoryName(directory); current is { Length: > 0 }; current = Path.GetDirectoryName(current))
+				{
+					chain.Add(current);
+					if (SamePath(current, gitRoot))
+					{
+						break;
+					}
+				}
+			}
 
-		for (var index = chain.Count - 1; index >= 0; index--)
+			if (chain.Count > 0)
+			{
+				combined.AddRange(FromFile(Path.Combine(gitRoot, ".git", "info", "exclude"), gitRoot, IgnoreSource.LocalGit));
+				for (var index = chain.Count - 1; index >= 0; index--)
+				{
+					combined.AddRange(FromFile(Path.Combine(chain[index], ".gitignore"), chain[index], IgnoreSource.LocalGit));
+				}
+			}
+		}
+		else
 		{
-			var current = chain[index];
-			combined.AddRange(FromFile(Path.Combine(current, ".gitignore"), current));
-			combined.AddRange(FromFile(Path.Combine(current, ".ignore"), current));
-			combined.AddRange(FromFile(Path.Combine(current, ".rgignore"), current));
+			for (var current = Path.GetDirectoryName(directory); current is { Length: > 0 }; current = Path.GetDirectoryName(current))
+			{
+				combined.AddRange(FromFile(Path.Combine(current, ".gitignore"), current, IgnoreSource.LocalGit));
+			}
 		}
 
 		return combined;
@@ -93,10 +150,40 @@ public sealed class GitIgnore
 		var combined = new GitIgnore();
 		foreach (var path in GlobalFiles())
 		{
-			combined.AddRange(FromFile(path, baseDirectory));
+			combined.AddRange(FromFile(path, baseDirectory, IgnoreSource.GlobalGit));
 		}
 
 		return combined;
+	}
+
+	/// fd 自己的全局忽略文件：<c>$XDG_CONFIG_HOME/fd/ignore</c>（缺省 <c>~/.config/fd/ignore</c>）。
+	internal static GitIgnore FdGlobal(string baseDirectory)
+	{
+		var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+		if (home.Length == 0)
+		{
+			return Empty;
+		}
+
+		var configHome = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+		var xdg = string.IsNullOrEmpty(configHome) ? Path.Combine(home, ".config") : configHome;
+		return FromFile(Path.Combine(xdg, "fd", "ignore"), baseDirectory, IgnoreSource.Always);
+	}
+
+	/// 嵌套仓库边界：丢掉从祖先仓库继承的本地 VCS 规则，保留全局 git 忽略与非 VCS 规则。
+	internal GitIgnore WithoutLocalGit()
+	{
+		if (!_rules.Any(static rule => rule.Source == IgnoreSource.LocalGit))
+		{
+			return this;
+		}
+
+		var copy = new GitIgnore();
+		copy._rules.AddRange(_rules.Where(static rule => rule.Source != IgnoreSource.LocalGit));
+		copy._singleBase = copy._rules.Count > 0 && copy._rules.All(rule => string.Equals(rule.BaseDirectory, copy._rules[0].BaseDirectory, StringComparison.Ordinal))
+			? copy._rules[0].BaseDirectory
+			: null;
+		return copy;
 	}
 
 	private static IEnumerable<string> GlobalFiles()
@@ -178,11 +265,11 @@ public sealed class GitIgnore
 		return null;
 	}
 
-	private static string? FindGitRoot(string directory)
+	internal static string? FindGitRoot(string directory)
 	{
 		for (var current = directory; current is { Length: > 0 }; current = Path.GetDirectoryName(current))
 		{
-			if (Directory.Exists(Path.Combine(current, ".git")))
+			if (HasGitMarker(current))
 			{
 				return current;
 			}
@@ -191,16 +278,35 @@ public sealed class GitIgnore
 		return null;
 	}
 
-	public static GitIgnore Parse(IEnumerable<string> lines, string baseDirectory)
+	/// 仓库标记既可能是目录（普通仓库），也可能是文件（worktree / submodule）。
+	internal static bool HasGitMarker(string directory)
+	{
+		var marker = Path.Combine(directory, ".git");
+		return Directory.Exists(marker) || File.Exists(marker);
+	}
+
+	internal static bool SamePath(string left, string right) =>
+		string.Equals(Path.GetFullPath(left), Path.GetFullPath(right),
+			OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+	public static GitIgnore Parse(IEnumerable<string> lines, string baseDirectory) =>
+		Parse(lines, baseDirectory, IgnoreSource.LocalGit);
+
+	internal static GitIgnore Parse(IEnumerable<string> lines, string baseDirectory, IgnoreSource source)
 	{
 		var ignore = new GitIgnore();
 		foreach (var raw in lines)
 		{
-			var rule = Compile(raw, baseDirectory);
+			var rule = Compile(raw, baseDirectory, source);
 			if (rule is not null)
 			{
 				ignore._rules.Add(rule);
 			}
+		}
+
+		if (ignore._rules.Count > 0)
+		{
+			ignore._singleBase = baseDirectory;
 		}
 
 		return ignore;
@@ -208,15 +314,58 @@ public sealed class GitIgnore
 
 	public void AddRange(GitIgnore other)
 	{
-		if (!ReferenceEquals(other, this))
+		if (ReferenceEquals(other, this) || other._rules.Count == 0)
 		{
-			_rules.AddRange(other._rules);
+			return;
+		}
+
+		_rules.AddRange(other._rules);
+		_singleBase = _rules.Count == other._rules.Count
+			? other._singleBase
+			: _rules[0].BaseDirectory;
+		if (_singleBase is not null && _rules.Any(rule => !string.Equals(rule.BaseDirectory, _singleBase, StringComparison.Ordinal)))
+		{
+			_singleBase = null;
 		}
 	}
 
-	public bool IsIgnored(string absolutePath, bool isDirectory)
+	public bool IsIgnored(string absolutePath, bool isDirectory) => Apply(absolutePath, isDirectory, ignored: false);
+
+	/// 把本层规则叠加到已有判定上（跨层时后读的规则覆盖先读的，不能每层各自返回 true 后短路）。
+	/// 相对路径按基准目录算一次：规则通常几十条，逐条 `GetRelativePath` 是遍历的主要成本之一。
+	internal bool Apply(string absolutePath, bool isDirectory, bool ignored)
 	{
-		var ignored = false;
+		if (_rules.Count == 0)
+		{
+			return ignored;
+		}
+
+		if (_singleBase is { } single)
+		{
+			var relative = RelativeTo(single, absolutePath);
+			if (relative is null)
+			{
+				return ignored;
+			}
+
+			foreach (var rule in _rules)
+			{
+				if (rule.DirectoryOnly && !isDirectory)
+				{
+					continue;
+				}
+
+				if (rule.Matches(relative))
+				{
+					ignored = !rule.Negated;
+				}
+			}
+
+			return ignored;
+		}
+
+		// 合并层：按规则自己的基准分组，避免同一基准重复算相对路径。
+		Dictionary<string, string?>? relatives = null;
 		foreach (var rule in _rules)
 		{
 			if (rule.DirectoryOnly && !isDirectory)
@@ -224,7 +373,14 @@ public sealed class GitIgnore
 				continue;
 			}
 
-			if (rule.IsMatch(absolutePath))
+			relatives ??= new Dictionary<string, string?>(StringComparer.Ordinal);
+			if (!relatives.TryGetValue(rule.BaseDirectory, out var relative))
+			{
+				relative = RelativeTo(rule.BaseDirectory, absolutePath);
+				relatives[rule.BaseDirectory] = relative;
+			}
+
+			if (relative is not null && rule.Matches(relative))
 			{
 				ignored = !rule.Negated;
 			}
@@ -233,7 +389,19 @@ public sealed class GitIgnore
 		return ignored;
 	}
 
-	private static IgnoreRule? Compile(string raw, string baseDirectory)
+	/// 基准目录之外的路径返回 null（与 `GetRelativePath` 以 ".." 开头同义）。
+	private static string? RelativeTo(string baseDirectory, string absolutePath)
+	{
+		var relative = Path.GetRelativePath(baseDirectory, absolutePath);
+		if (relative.StartsWith("..", StringComparison.Ordinal))
+		{
+			return null;
+		}
+
+		return OperatingSystem.IsWindows() ? relative.Replace('\\', '/') : relative;
+	}
+
+	private static IgnoreRule? Compile(string raw, string baseDirectory, IgnoreSource source)
 	{
 		var line = raw;
 		if (line.Length == 0 || line[0] == '#')
@@ -275,8 +443,58 @@ public sealed class GitIgnore
 
 		var anchored = line.StartsWith('/') || line.Contains('/');
 		var pattern = line.TrimStart('/');
+		// 绝大多数规则是 `name`、`dir/`、`*.ext`：直接比文件名，别为每个条目跑一次正则。
+		if (!anchored && TryFastPath(pattern, out var literal, out var suffix))
+		{
+			return new IgnoreRule(
+				baseDirectory,
+				Regex: null,
+				Negated: negated,
+				DirectoryOnly: directoryOnly,
+				Source: source,
+				Literal: literal,
+				Suffix: suffix);
+		}
+
 		var regex = BuildRegex(pattern, anchored);
-		return regex is null ? null : new IgnoreRule(baseDirectory, regex, negated, directoryOnly);
+		return regex is null
+			? null
+			: new IgnoreRule(baseDirectory, regex, negated, directoryOnly, source, Literal: null, Suffix: null);
+	}
+
+	/// 无通配的普通名字，或只有前缀 `*.` 的扩展名规则。返回 true 时 <paramref name="literal"/>
+	/// 或 <paramref name="suffix"/> 恰好有一个非空。
+	private static readonly System.Buffers.SearchValues<char> Wildcards =
+		System.Buffers.SearchValues.Create("*?[\\");
+
+	private static bool TryFastPath(string pattern, out string? literal, out string? suffix)
+	{
+		literal = null;
+		suffix = null;
+		if (pattern.Length == 0 || pattern.Contains('/'))
+		{
+			return false;
+		}
+
+		if (pattern[0] == '*' && pattern.Length > 1 && pattern[1] == '.')
+		{
+			var rest = pattern[1..];
+			if (rest.AsSpan().IndexOfAny(Wildcards) < 0)
+			{
+				suffix = rest;
+				return true;
+			}
+
+			return false;
+		}
+
+		if (pattern.AsSpan().IndexOfAny(Wildcards) < 0)
+		{
+			literal = pattern;
+			return true;
+		}
+
+		return false;
 	}
 
 	private static Regex? BuildRegex(string pattern, bool anchored)
@@ -351,7 +569,9 @@ public sealed class GitIgnore
 
 		try
 		{
-			var options = RegexOptions.CultureInvariant | RegexOptions.Compiled;
+			// NonBacktracking：gitignore 的正则由本方法生成，没有反向引用/环视；
+			// 用户仓库里的怪规则也不会把遍历拖进指数回溯。
+			var options = RegexOptions.CultureInvariant | RegexOptions.Compiled | RegexOptions.NonBacktracking;
 			if (OperatingSystem.IsWindows())
 			{
 				options |= RegexOptions.IgnoreCase;
@@ -368,112 +588,155 @@ public sealed class GitIgnore
 		}
 	}
 
-	private sealed record IgnoreRule(string BaseDirectory, Regex Regex, bool Negated, bool DirectoryOnly)
+	private sealed record IgnoreRule(
+		string BaseDirectory,
+		Regex? Regex,
+		bool Negated,
+		bool DirectoryOnly,
+		IgnoreSource Source,
+		string? Literal,
+		string? Suffix)
 	{
-		public bool IsMatch(string absolutePath)
+		private static readonly StringComparison Comparison = OperatingSystem.IsWindows()
+			? StringComparison.OrdinalIgnoreCase
+			: StringComparison.Ordinal;
+
+		/// <param name="relative">已按基准目录算好、并统一成 '/' 分隔的相对路径。</param>
+		public bool Matches(string relative)
 		{
-			var relative = Path.GetRelativePath(BaseDirectory, absolutePath);
-			if (relative.StartsWith("..", StringComparison.Ordinal))
+			if (Regex is { } regex)
 			{
-				return false;
+				return regex.IsMatch(relative);
 			}
 
-			return Regex.IsMatch(relative.Replace('\\', '/'));
+			var slash = relative.LastIndexOf('/');
+			var name = slash < 0 ? relative.AsSpan() : relative.AsSpan(slash + 1);
+			if (Literal is { } literal)
+			{
+				return name.Equals(literal, Comparison);
+			}
+
+			return Suffix is { } suffix && name.EndsWith(suffix, Comparison);
 		}
 	}
 }
 
-public static class FileWalker
+internal static class FileWalker
 {
-	public static IEnumerable<string> EnumerateFiles(string root, bool skipHidden = false, bool includeGitDirectory = false)
+	public static IEnumerable<string> EnumerateFiles(string root, FileWalkOptions options)
 	{
 		if (!Directory.Exists(root))
 		{
 			yield break;
 		}
 
-		var stack = new List<GitIgnore>();
-		var inherited = GitIgnore.ForSearchRoot(root);
-		if (inherited.Count > 0)
-		{
-			stack.Add(inherited);
-		}
-
-		foreach (var file in WalkFiles(root, stack, skipHidden, includeGitDirectory))
+		var state = CreateState(root, options);
+		foreach (var file in WalkFiles(root, state))
 		{
 			yield return file;
 		}
 	}
 
-	public static IEnumerable<string> EnumerateEntries(string root, bool includeGitDirectory = false)
+	public static IEnumerable<string> EnumerateEntries(string root, FileWalkOptions options)
 	{
 		if (!Directory.Exists(root))
 		{
 			yield break;
 		}
 
-		var stack = new List<GitIgnore>();
-		var inherited = GitIgnore.ForSearchRoot(root);
-		if (inherited.Count > 0)
-		{
-			stack.Add(inherited);
-		}
-
-		foreach (var entry in WalkEntries(root, stack, includeGitDirectory))
+		var state = CreateState(root, options);
+		foreach (var entry in WalkEntries(root, state))
 		{
 			yield return entry;
 		}
 	}
 
-	private static IEnumerable<string> WalkFiles(string directory, List<GitIgnore> stack, bool skipHidden, bool includeGitDirectory)
+	private sealed class WalkState
 	{
-		var pushed = false;
-		var local = GitIgnore.FromDirectory(directory);
-		local.AddRange(GitIgnore.FromFile(Path.Combine(directory, ".ignore"), directory));
-		local.AddRange(GitIgnore.FromFile(Path.Combine(directory, ".rgignore"), directory));
-		if (local.Count > 0)
+		public required string Root { get; init; }
+
+		public required FileWalkOptions Options { get; init; }
+
+		public List<GitIgnore> Stack { get; } = [];
+
+		/// 当前是否处于某个 git 仓库内（grep 在进入仓库前不读 .gitignore）。
+		public bool RepositoryActive { get; set; }
+
+		/// 进入嵌套仓库时是否丢掉祖先仓库的本地规则。
+		public bool ResetAtNestedRepository { get; set; }
+
+		public bool GlobalGitLoaded { get; set; }
+	}
+
+	private static WalkState CreateState(string root, FileWalkOptions options)
+	{
+		var full = Path.GetFullPath(root);
+		var gitRoot = GitIgnore.FindGitRoot(full);
+		var state = new WalkState
 		{
-			stack.Add(local);
-			pushed = true;
+			Root = full,
+			Options = options,
+			// fd 的 --no-require-git：不在仓库里也按仓库规则读 .gitignore 与全局忽略。
+			RepositoryActive = gitRoot is not null || options.Flavor == IgnoreFlavor.Fd,
+			// 从非仓库目录开始搜索时，ripgrep 遇到仓库才启用 VCS 规则，且之后仍按仓库边界重置。
+			ResetAtNestedRepository = gitRoot is not null || options.Flavor == IgnoreFlavor.Ripgrep,
+			GlobalGitLoaded = gitRoot is not null || options.Flavor == IgnoreFlavor.Fd,
+		};
+
+		var inherited = GitIgnore.ForWalkRoot(full, options);
+		if (inherited.Count > 0)
+		{
+			state.Stack.Add(inherited);
 		}
+
+		return state;
+	}
+
+	private static IEnumerable<string> WalkFiles(string directory, WalkState state)
+	{
+		var previousRepositoryActive = state.RepositoryActive;
+		EnterRepository(directory, state);
+		// 深度要在 EnterRepository 之后取：进入嵌套仓库会丢掉祖先的本地规则，
+		// 用之前的深度会让本目录这一层永远弹不出去，规则一直留到兄弟目录。
+		var depth = state.Stack.Count;
+		PushLocalLayer(directory, state);
 
 		try
 		{
-			List<string> files;
-			List<string> directories;
+			string[] files;
+			string[] directories;
 			try
 			{
-				files = [.. Directory.EnumerateFiles(directory).OrderBy(static p => p, StringComparer.Ordinal)];
-				directories = [.. Directory.EnumerateDirectories(directory).OrderBy(static p => p, StringComparer.Ordinal)];
+				// GetFiles/GetDirectories 能利用 readdir 的 d_type，不必给每个条目额外 stat。
+				files = Directory.GetFiles(directory);
+				directories = Directory.GetDirectories(directory);
+				Array.Sort(files, StringComparer.Ordinal);
+				Array.Sort(directories, StringComparer.Ordinal);
 			}
-			catch (UnauthorizedAccessException)
-			{
-				yield break;
-			}
-			catch (IOException)
+			catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
 			{
 				yield break;
 			}
 
-			foreach (var file in files)
+			foreach (var entry in files)
 			{
-				if (IsIgnored(stack, file, isDirectory: false))
+				if (IsIgnored(state, entry, isDirectory: false))
 				{
 					continue;
 				}
 
-				if (skipHidden && Path.GetFileName(file).StartsWith('.'))
+				if (state.Options.SkipHidden && Path.GetFileName(entry).StartsWith('.'))
 				{
 					continue;
 				}
 
-				yield return file;
+				yield return entry;
 			}
 
 			foreach (var child in directories)
 			{
 				var name = Path.GetFileName(child);
-				if (!includeGitDirectory && string.Equals(name, ".git", StringComparison.Ordinal))
+				if (!state.Options.IncludeGitDirectory && string.Equals(name, ".git", StringComparison.Ordinal))
 				{
 					continue;
 				}
@@ -484,17 +747,17 @@ public static class FileWalker
 					continue;
 				}
 
-				if (IsIgnored(stack, child, isDirectory: true))
+				if (IsIgnored(state, child, isDirectory: true))
 				{
 					continue;
 				}
 
-				if (skipHidden && name.StartsWith('.'))
+				if (state.Options.SkipHidden && name.StartsWith('.'))
 				{
 					continue;
 				}
 
-				foreach (var file in WalkFiles(child, stack, skipHidden, includeGitDirectory))
+				foreach (var file in WalkFiles(child, state))
 				{
 					yield return file;
 				}
@@ -502,53 +765,59 @@ public static class FileWalker
 		}
 		finally
 		{
-			if (pushed)
+			while (state.Stack.Count > depth)
 			{
-				stack.RemoveAt(stack.Count - 1);
+				state.Stack.RemoveAt(state.Stack.Count - 1);
 			}
+
+			// 离开仓库后 VCS 规则不再生效（ripgrep 按文件所在仓库判断）。
+			state.RepositoryActive = previousRepositoryActive;
 		}
 	}
 
-	private static IEnumerable<string> WalkEntries(string directory, List<GitIgnore> stack, bool includeGitDirectory)
+	private static IEnumerable<string> WalkEntries(string directory, WalkState state)
 	{
-		var pushed = false;
-		var local = GitIgnore.FromDirectory(directory);
-		local.AddRange(GitIgnore.FromFile(Path.Combine(directory, ".ignore"), directory));
-		local.AddRange(GitIgnore.FromFile(Path.Combine(directory, ".rgignore"), directory));
-		if (local.Count > 0)
-		{
-			stack.Add(local);
-			pushed = true;
-		}
+		var previousRepositoryActive = state.RepositoryActive;
+		EnterRepository(directory, state);
+		var depth = state.Stack.Count;
+		PushLocalLayer(directory, state);
 
 		try
 		{
-			List<string> files;
-			List<string> directories;
+			string[] files;
+			string[] directories;
 			try
 			{
-				files = [.. Directory.EnumerateFiles(directory).OrderBy(static p => p, StringComparer.Ordinal)];
-				directories = [.. Directory.EnumerateDirectories(directory).OrderBy(static p => p, StringComparer.Ordinal)];
+				files = Directory.GetFiles(directory);
+				directories = Directory.GetDirectories(directory);
+				Array.Sort(files, StringComparer.Ordinal);
+				Array.Sort(directories, StringComparer.Ordinal);
 			}
-			catch (UnauthorizedAccessException)
-			{
-				yield break;
-			}
-			catch (IOException)
+			catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
 			{
 				yield break;
 			}
 
-			foreach (var child in directories.Concat(files))
+			// 目录在前、文件在后（与 fd 的顺序一致）；两边各自保持字典序。
+			foreach (var child in directories)
 			{
-				var isDirectory = Directory.Exists(child);
 				var name = Path.GetFileName(child);
-				if (!includeGitDirectory && string.Equals(name, ".git", StringComparison.Ordinal))
+				if (!state.Options.IncludeGitDirectory && string.Equals(name, ".git", StringComparison.Ordinal))
 				{
 					continue;
 				}
 
-				if (IsIgnored(stack, child, isDirectory))
+				if (IsIgnored(state, child, isDirectory: true))
+				{
+					continue;
+				}
+
+				yield return child;
+			}
+
+			foreach (var child in files)
+			{
+				if (IsIgnored(state, child, isDirectory: false))
 				{
 					continue;
 				}
@@ -559,7 +828,7 @@ public static class FileWalker
 			foreach (var child in directories)
 			{
 				var name = Path.GetFileName(child);
-				if (string.Equals(name, ".git", StringComparison.Ordinal) || IsIgnored(stack, child, isDirectory: true))
+				if (string.Equals(name, ".git", StringComparison.Ordinal) || IsIgnored(state, child, isDirectory: true))
 				{
 					continue;
 				}
@@ -570,7 +839,7 @@ public static class FileWalker
 					continue;
 				}
 
-				foreach (var entry in WalkEntries(child, stack, includeGitDirectory))
+				foreach (var entry in WalkEntries(child, state))
 				{
 					yield return entry;
 				}
@@ -578,10 +847,68 @@ public static class FileWalker
 		}
 		finally
 		{
-			if (pushed)
+			while (state.Stack.Count > depth)
 			{
-				stack.RemoveAt(stack.Count - 1);
+				state.Stack.RemoveAt(state.Stack.Count - 1);
 			}
+
+			state.RepositoryActive = previousRepositoryActive;
+		}
+	}
+
+	/// 进入一个仓库根：嵌套仓库先丢掉祖先仓库的本地规则，再按自身规则重新加载。
+	private static void EnterRepository(string directory, WalkState state)
+	{
+		if (!GitIgnore.HasGitMarker(directory))
+		{
+			return;
+		}
+
+		if (state.ResetAtNestedRepository && state.RepositoryActive && !GitIgnore.SamePath(directory, state.Root))
+		{
+			for (var index = 0; index < state.Stack.Count; index++)
+			{
+				state.Stack[index] = state.Stack[index].WithoutLocalGit();
+			}
+
+			state.Stack.RemoveAll(static layer => layer.Count == 0);
+			state.RepositoryActive = false;
+		}
+
+		state.RepositoryActive = true;
+
+		// ripgrep 从非仓库目录进入仓库后才开始读全局 git 忽略；fd 在起点已经读过。
+		if (!state.GlobalGitLoaded)
+		{
+			var global = GitIgnore.Global(directory);
+			if (global.Count > 0)
+			{
+				state.Stack.Add(global);
+			}
+
+			state.GlobalGitLoaded = true;
+		}
+	}
+
+	/// 当前目录自己的规则：info/exclude → .gitignore → .ignore → 方言 ignore 文件（后者覆盖前者）。
+	private static void PushLocalLayer(string directory, WalkState state)
+	{
+		var local = new GitIgnore();
+		if (state.RepositoryActive)
+		{
+			local.AddRange(GitIgnore.FromFile(
+				Path.Combine(directory, ".git", "info", "exclude"), directory, IgnoreSource.LocalGit));
+			local.AddRange(GitIgnore.FromFile(
+				Path.Combine(directory, ".gitignore"), directory, IgnoreSource.LocalGit));
+		}
+
+		local.AddRange(GitIgnore.FromFile(
+			Path.Combine(directory, ".ignore"), directory, IgnoreSource.Always));
+		local.AddRange(GitIgnore.FromFile(
+			Path.Combine(directory, state.Options.FlavorIgnoreFileName), directory, IgnoreSource.Always));
+		if (local.Count > 0)
+		{
+			state.Stack.Add(local);
 		}
 	}
 
@@ -608,16 +935,14 @@ public static class FileWalker
 		}
 	}
 
-	private static bool IsIgnored(List<GitIgnore> stack, string path, bool isDirectory)
+	private static bool IsIgnored(WalkState state, string path, bool isDirectory)
 	{
-		foreach (var ignore in stack)
+		var ignored = false;
+		foreach (var layer in state.Stack)
 		{
-			if (ignore.IsIgnored(path, isDirectory))
-			{
-				return true;
-			}
+			ignored = layer.Apply(path, isDirectory, ignored);
 		}
 
-		return false;
+		return ignored;
 	}
 }

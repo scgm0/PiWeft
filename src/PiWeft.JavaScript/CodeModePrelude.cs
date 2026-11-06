@@ -3,8 +3,8 @@ namespace PiWeft.JavaScript;
 /// 在脚本之前求值的 JavaScript。它把宿主桥接函数 <c>__cmCall</c>/<c>__cmOutput</c> 藏在闭包里，
 /// 在它们之上搭出 <c>tools</c>、<c>ALL_TOOLS</c>、<c>searchTools</c>/<c>describeTool</c>、
 /// <c>text</c>/<c>image</c>/<c>exit</c>/<c>console</c>、<c>store</c>/<c>load</c> 与 <c>models.*</c>。
-/// 与 pi 的 prelude 相比，这里不做内置对象的锁定（lockdown）：每次执行都新建并丢弃解释器，
-/// 脚本破坏原型只会影响它自己的这一次结果；换来的是不会和 Jint 的内建实现互相干扰。
+/// 求值前先冻结内置对象与 globalThis（pi 的 prelude lockdown）：脚本改掉
+/// <c>Array.prototype.toJSON</c> 之类会篡改 prelude 向宿主汇报的序列化。
 internal static class CodeModePrelude
 {
 	public const int MaxStoreValueChars = 256 * 1024;
@@ -18,16 +18,6 @@ internal static class CodeModePrelude
 		"""
 		(function (toolsJson, storeJson) {
 			"use strict";
-
-			const stringify = JSON.stringify;
-			const parse = JSON.parse;
-			const ErrorCtor = Error;
-			const TypeErrorCtor = TypeError;
-			const RangeErrorCtor = RangeError;
-			const MAX_STORE_VALUE_CHARS = __MAX_STORE_VALUE_CHARS__;
-			const MAX_STORE_TOTAL_CHARS = __MAX_STORE_TOTAL_CHARS__;
-			const EXIT = Object.freeze({});
-			let finished = false;
 
 			// 宿主桥只留在 prelude 的闭包里：脚本拿不到它们，也就无法伪造输出或提前收尾。
 			const hostOutput = __cmOutput;
@@ -43,6 +33,92 @@ internal static class CodeModePrelude
 			].forEach(function (name) {
 				try { delete globalThis[name]; } catch (error) { }
 			});
+
+			// 冻结从内置对象可达的整张图。只冻结不够：原型上的只读数据属性会让
+			// `this.name = "MyError"` 这类常见写法抛错，所以常被覆盖的属性改成
+			// setter，把值定义到实例上。
+			(function lockdown() {
+				const OVERRIDABLE = new Set(["constructor", "name", "message", "toString", "toLocaleString", "valueOf", "toJSON"]);
+				const seen = new Set([globalThis]);
+				const queue = [];
+				const add = function (value) {
+					if (((typeof value === "object" && value !== null) || typeof value === "function") && !seen.has(value)) {
+						seen.add(value);
+						queue.push(value);
+					}
+				};
+
+				function allowOverride(object, key, value, enumerable) {
+					const descriptor = Object.getOwnPropertyDescriptor({
+						get accessor() { return value; },
+						set accessor(next) {
+							if (this === object) {
+								throw new TypeError("Cannot assign to read only property '" + String(key) + "' of a built-in");
+							}
+							if ((typeof this !== "object" || this === null) && typeof this !== "function") return;
+							Object.defineProperty(this, key, { value: next, writable: true, enumerable: true, configurable: true });
+						}
+					}, "accessor");
+					Object.defineProperty(object, key, {
+						get: descriptor.get,
+						set: descriptor.set,
+						enumerable: enumerable,
+						configurable: false
+					});
+					add(descriptor.get);
+					add(descriptor.set);
+				}
+
+				const keys = Reflect.ownKeys(globalThis);
+				for (let index = 0; index < keys.length; index++) {
+					const descriptor = Object.getOwnPropertyDescriptor(globalThis, keys[index]);
+					add(descriptor.value);
+					add(descriptor.get);
+					add(descriptor.set);
+					if ("value" in descriptor && descriptor.configurable) {
+						Object.defineProperty(globalThis, keys[index], { writable: false, configurable: false });
+					}
+				}
+
+				add(Object.getPrototypeOf(Int8Array));
+				add(Object.getPrototypeOf([][Symbol.iterator]()));
+				add(Object.getPrototypeOf(new Map()[Symbol.iterator]()));
+				add(Object.getPrototypeOf(new Set()[Symbol.iterator]()));
+				add(Object.getPrototypeOf(""[Symbol.iterator]()));
+				add(Object.getPrototypeOf(/a/[Symbol.matchAll]("")));
+
+				while (queue.length > 0) {
+					const object = queue.pop();
+					add(Object.getPrototypeOf(object));
+					const descriptors = Object.getOwnPropertyDescriptors(object);
+					const ownKeys = Reflect.ownKeys(descriptors);
+					for (let index = 0; index < ownKeys.length; index++) {
+						const key = ownKeys[index];
+						const descriptor = descriptors[key];
+						if ("value" in descriptor) {
+							add(descriptor.value);
+							if (descriptor.writable && descriptor.configurable &&
+								(object === Object.prototype || OVERRIDABLE.has(key))) {
+								allowOverride(object, key, descriptor.value, descriptor.enumerable);
+							}
+						} else {
+							add(descriptor.get);
+							add(descriptor.set);
+						}
+					}
+					Object.freeze(object);
+				}
+			})();
+
+			const stringify = JSON.stringify;
+			const parse = JSON.parse;
+			const ErrorCtor = Error;
+			const TypeErrorCtor = TypeError;
+			const RangeErrorCtor = RangeError;
+			const MAX_STORE_VALUE_CHARS = __MAX_STORE_VALUE_CHARS__;
+			const MAX_STORE_TOTAL_CHARS = __MAX_STORE_TOTAL_CHARS__;
+			const EXIT = Object.freeze({});
+			let finished = false;
 
 			function errorText(error) {
 				const head = error && error.message ? (error.name || "Error") + ": " + error.message : String(error);
