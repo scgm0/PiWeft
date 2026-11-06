@@ -413,13 +413,13 @@ internal static class LanczosResampler
 		public required float Scale { get; init; }
 
 		/// 反向索引（仅水平轴需要）。
-		public int[] ReverseOffsets { get; set; }
+		public required int[] ReverseOffsets { get; set; }
 
-		public int[] ReverseCounts { get; set; }
+		public required int[] ReverseCounts { get; set; }
 
-		public int[] ReverseOutputs { get; set; }
+		public required int[] ReverseOutputs { get; set; }
 
-		public float[] ReverseWeights { get; set; }
+		public required float[] ReverseWeights { get; set; }
 	}
 
 	/// 整幅扫描 alpha 通道，判断是否需要预乘。绝大多数照片/截图都不透明，
