@@ -507,9 +507,13 @@ public class CliRunnerTests : IDisposable
 		script.Enqueue("seen");
 		var (runner, output, _) = RunnerFor(environment);
 
+		// 一张真实可解码的 1×1 PNG：附件在进入上下文前会被按模型限制校验，
+		// 假 base64 会被当成坏图丢掉（与 pi 一致）。
+		const string pixel =
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 		var commands = string.Join(
 			'\n',
-			"""{"id":"1","type":"prompt","message":"describe","images":[{"data":"QUJD","mimeType":"image/png"}]}""",
+			$$"""{"id":"1","type":"prompt","message":"describe","images":[{"data":"{{pixel}}","mimeType":"image/png"}]}""",
 			"""{"id":"2","type":"exit"}""");
 
 		await runner.RunAsync(Arguments("--mode", "rpc", "--no-session"), _root, new StringReader(commands), CancellationToken.None);
@@ -521,7 +525,7 @@ public class CliRunnerTests : IDisposable
 			.First(static message => message.Content.Blocks is { Count: > 0 });
 
 		Assert.Equal("describe", Assert.IsType<TextContent>(user.Content.Blocks![0]).Text);
-		Assert.Equal("QUJD", Assert.IsType<ImageContent>(user.Content.Blocks![1]).Data);
+		Assert.Equal(pixel, Assert.IsType<ImageContent>(user.Content.Blocks![1]).Data);
 	}
 
 	[Fact]

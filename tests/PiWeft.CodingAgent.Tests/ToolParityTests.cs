@@ -130,16 +130,8 @@ public sealed class ToolParityTests : IDisposable
 		var textResult = await FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "fake.png" }));
 		Assert.DoesNotContain(textResult.Content, static block => block is ImageContent);
 
-		// 最小 PNG 头：签名 + 13 字节 IHDR；不需要完整像素数据，只验证嗅探。
-		var png = new byte[]
-		{
-			0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-			0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-			0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-			0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		};
 		var pngPath = Path.Combine(_root, "image.txt");
-		File.WriteAllBytes(pngPath, png);
+		File.WriteAllBytes(pngPath, RealOnePixelPng());
 
 		var imageResult = await FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "image.txt" }));
 		Assert.Contains(imageResult.Content, static block => block is ImageContent);
@@ -149,20 +141,35 @@ public sealed class ToolParityTests : IDisposable
 	[Fact]
 	public async Task Read_AddsTheNonVisionNoteWhenTheBoundModelHasNoImageInput()
 	{
-		var png = new byte[]
-		{
-			0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-			0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-			0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-			0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		};
-		File.WriteAllBytes(Path.Combine(_root, "image.png"), png);
+		File.WriteAllBytes(Path.Combine(_root, "image.png"), RealOnePixelPng());
 		var tool = FileTools.Read(_root, static () => ScriptedSessions.Model() with { Input = ["text"] });
 
 		var result = await tool.Execute(Invoke("read", new JsonObject { ["path"] = "image.png" }));
 
 		Assert.Contains("[Current model does not support images.", Text(result));
 	}
+
+	[Fact]
+	public async Task Read_OmitsAThumbnailThatCannotBeDecodedInsteadOfSendingBrokenData()
+	{
+		// 只有 PNG 签名与 IHDR、没有 IDAT/IEND：嗅探得到 image/png，但解码必然失败。
+		// pi 的 read 同样只回一句括注，不会把坏图塞进上下文。
+		File.WriteAllBytes(Path.Combine(_root, "truncated.png"),
+		[
+			0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+			0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+			0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+			0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		]);
+
+		var result = await FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "truncated.png" }));
+
+		Assert.DoesNotContain(result.Content, static block => block is ImageContent);
+		Assert.Contains("[Image omitted: could not be resized below the inline image size limit.]", Text(result));
+	}
+
+	private static byte[] RealOnePixelPng() => Convert.FromBase64String(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
 
 	[Fact]
 	public async Task Bash_NonZeroExitIsAnErrorAndCarriesStructuredContent()

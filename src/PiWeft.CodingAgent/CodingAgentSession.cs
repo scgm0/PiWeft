@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.Imaging;
 using PiWeft.Ai.Json;
 using PiWeft.Ai.Utils;
 using PiWeft.CodingAgent.Compaction;
@@ -375,9 +376,11 @@ public sealed class CodingAgentSession : IDisposable
 			ConvertToLlm = CodingMessages.ConvertToLlm,
 			TransformContext = TransformContextAsync,
 			BeforeToolCall = GuardedBeforeToolCallAsync,
-			AfterToolCall = options.AfterToolCall,
+			// 工具结果的图片也要过一遍限制（MCP/扩展/截图工具）；用户钩子先跑，再归一化它的输出。
+			AfterToolCall = NormalizeToolResultImagesAsync,
 			PrepareNextTurn = PrepareNextTurnAsync,
 			WillRetry = ShouldRetryAssistant,
+			NormalizeQueuedMessage = NormalizeQueuedMessageAsync,
 			Options = _streamOptions,
 		});
 
@@ -538,6 +541,212 @@ public sealed class CodingAgentSession : IDisposable
 		var blocks = new List<ContentBlock>(images.Count + 1) { new TextContent { Text = expanded } };
 		blocks.AddRange(images);
 		return new UserMessage { Content = MessageContent.FromBlocks(blocks), Timestamp = timestamp };
+	}
+
+	/// 附件图片按当前模型的 <c>inputLimits.images.resize</c> 归一化：限制内原样保留
+	/// （动画 GIF/WebP 也不动），超限才解码、应用 EXIF 方向、缩放并重编码；失败的那张
+	/// 改成一句括注。与 pi 的 <c>_normalizePromptImages</c> 同义。
+	/// <para>
+	/// 归一化放在「真正要进上下文」的时刻，而不是 <see cref="PrepareInput"/>：
+	/// 解码 + 重采样是 CPU 重活（12MP 照片数百毫秒），<see cref="PrepareInput"/> 在桌面端
+	/// 是 UI 线程上的同步调用；排队消息也可能在等待期间换了模型。
+	/// </para>
+	private UserMessage NormalizeMessage(UserMessage message)
+	{
+		if (message.Content.Blocks is not { Count: > 0 } blocks ||
+			!blocks.Any(static block => block is ImageContent))
+		{
+			return message;
+		}
+
+		var options = ImageResizeOptions.FromInputLimits(Model.InputLimits);
+		var normalized = new List<ContentBlock>(blocks.Count);
+		var hints = new List<string>();
+		var changed = false;
+
+		foreach (var block in blocks)
+		{
+			if (block is not ImageContent image)
+			{
+				normalized.Add(block);
+				continue;
+			}
+
+			if (!TryDecodeBase64(image.Data, out var bytes))
+			{
+				hints.Add("[Image omitted: data is not valid base64.]");
+				changed = true;
+				continue;
+			}
+
+			var processed = ImagePipeline.ProcessBytes(bytes, image.MimeType, options);
+			if (!processed.Ok)
+			{
+				hints.Add(processed.Error ?? "[Image omitted.]");
+				changed = true;
+				continue;
+			}
+
+			// 未重编码时沿用原始 base64 字符串：省一次大字符串的分配与拷贝。
+			// 判据用「原样返回同一个数组」而不是比较 mime：扩展名与内容不符时 mime 会变，
+			// 但字节没变，仍可复用调用方手里的 base64。
+			var unchanged = ReferenceEquals(processed.Bytes, bytes);
+			normalized.Add(unchanged
+				? image
+				: new ImageContent { Data = Convert.ToBase64String(processed.Bytes), MimeType = processed.MimeType });
+			changed |= !unchanged;
+			hints.AddRange(processed.Hints);
+		}
+
+		if (!changed && hints.Count == 0)
+		{
+			return message;
+		}
+
+		if (hints.Count > 0)
+		{
+			AppendHints(normalized, hints);
+		}
+
+		return message with { Content = MessageContent.FromBlocks(normalized) };
+	}
+
+	/// 工具结果的图片同样会进入历史与后续每个请求（MCP、扩展、截图工具），
+	/// 与 pi 的 <c>normalizeToolResultImages</c> 同义：先跑用户钩子，再把结果里的图片按当前模型
+	/// 限制缩放/转码；括注作为额外的文本块追加在后面。与 <c>read</c> 的差别是失败时**保留原图块**：
+	/// 工具已经产出了它，删掉等于改变工具行为。
+	private async ValueTask<AfterToolCallResult?> NormalizeToolResultImagesAsync(
+		AfterToolCallContext context,
+		CancellationToken cancellationToken)
+	{
+		var hook = _userAfterToolCall is { } userHook
+			? await userHook(context, cancellationToken).ConfigureAwait(false)
+			: null;
+
+		var content = hook?.Content ?? context.Result.Content;
+		if (!content.Any(static block => block is ImageContent))
+		{
+			return hook;
+		}
+
+		var normalized = await Task.Run(() => NormalizeImageBlocks(content), cancellationToken).ConfigureAwait(false);
+		if (ReferenceEquals(normalized, content))
+		{
+			// 没有变化：原样交回用户钩子的结果（可能为 null，表示不改写）。
+			return hook;
+		}
+
+		return new AfterToolCallResult
+		{
+			Content = normalized,
+			Details = hook?.Details,
+			HasDetails = hook?.HasDetails ?? false,
+			StructuredContent = hook?.StructuredContent,
+			HasStructuredContent = hook?.HasStructuredContent ?? false,
+			IsError = hook?.IsError,
+			Usage = hook?.Usage,
+			Terminate = hook?.Terminate,
+		};
+	}
+
+	/// 逐块处理图片；没有任何改动时返回原列表（调用方据此跳过重写）。
+	private List<ContentBlock>? NormalizeImageBlocks(IReadOnlyList<ContentBlock> content)
+	{
+		var options = ImageResizeOptions.FromInputLimits(Model.InputLimits);
+		List<ContentBlock>? normalized = null;
+		for (var index = 0; index < content.Count; index++)
+		{
+			if (content[index] is not ImageContent image)
+			{
+				normalized?.Add(content[index]);
+				continue;
+			}
+
+			// 解不开/处理失败：保留原图块（与 pi 一致），不删工具产出。
+			if (!TryDecodeBase64(image.Data, out var bytes))
+			{
+				normalized?.Add(image);
+				continue;
+			}
+
+			var processed = ImagePipeline.ProcessBytes(bytes, image.MimeType, options);
+			if (!processed.Ok)
+			{
+				normalized?.Add(image);
+				continue;
+			}
+
+			var bytesUnchanged = ReferenceEquals(processed.Bytes, bytes);
+			if (bytesUnchanged && processed.Hints.Count == 0)
+			{
+				normalized?.Add(image);
+				continue;
+			}
+
+			normalized ??= [.. content.Take(index)];
+			normalized.Add(bytesUnchanged
+				? image
+				: new ImageContent { Data = Convert.ToBase64String(processed.Bytes), MimeType = processed.MimeType });
+			if (processed.Hints.Count > 0)
+			{
+				normalized.Add(new TextContent { Text = string.Join("\n", processed.Hints) });
+			}
+		}
+
+		return normalized;
+	}
+
+	/// 把括注并进第一个文本块（没有就补一个），与 pi 把 hints 拼进 prompt 的位置一致。
+	private static void AppendHints(List<ContentBlock> blocks, IReadOnlyList<string> hints)
+	{
+		var text = string.Join("\n", hints);
+		for (var index = 0; index < blocks.Count; index++)
+		{
+			if (blocks[index] is TextContent existing)
+			{
+				blocks[index] = new TextContent
+				{
+					Text = existing.Text.Length > 0 ? $"{existing.Text}\n\n{text}" : text,
+				};
+				return;
+			}
+		}
+
+		blocks.Insert(0, new TextContent { Text = text });
+	}
+
+	private static bool TryDecodeBase64(string data, out byte[] bytes)
+	{
+		try
+		{
+			bytes = Convert.FromBase64String(data);
+			return true;
+		}
+		catch (FormatException)
+		{
+			bytes = [];
+			return false;
+		}
+	}
+
+	private ValueTask<Message> NormalizeQueuedMessageAsync(Message message, CancellationToken cancellationToken) =>
+		new(NormalizeMessageAsync(message, cancellationToken));
+
+	/// 归一化是 CPU 密集的：放到线程池，别占住桌面 UI 线程或 RPC 事件循环。
+	private Task<Message> NormalizeMessageAsync(Message message, CancellationToken cancellationToken)
+	{
+		if (message is not UserMessage user ||
+			user.Content.Blocks is not { Count: > 0 } blocks ||
+			!blocks.Any(static block => block is ImageContent))
+		{
+			return Task.FromResult(message);
+		}
+
+		return Task.Run<Message>(() =>
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			return NormalizeMessage(user);
+		}, cancellationToken);
 	}
 
 	/// 把叶子移动到 <paramref name="targetId"/>，并先把被放弃的路径摘要成一条
@@ -2249,7 +2458,8 @@ public sealed class CodingAgentSession : IDisposable
 	{
 		ThrowIfDisposed();
 		// 展开技能命令与提示词模板，让 CLI、RPC、桌面与交互模式共享同一语义。
-		var message = PrepareInput(text);
+		// 图片在这之后按当前模型归一化（PrepareInput 保持同步：计划模式与模板展开必须立即生效）。
+		var message = await NormalizeMessageAsync(PrepareInput(text), cancellationToken).ConfigureAwait(false);
 		using var run = BeginRun(cancellationToken);
 		try
 		{
@@ -2834,6 +3044,8 @@ public sealed class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
+		// 用户消息真正发送前才归一化图片：桌面端的 PrepareInput 在 UI 线程上，不能在那里解码大图。
+		message = await NormalizeMessageAsync(message, cancellationToken).ConfigureAwait(false);
 		_cacheWarmer?.Cancel();
 		_overflowRecoveryAttempted = false;
 		using var run = BeginRun(cancellationToken);

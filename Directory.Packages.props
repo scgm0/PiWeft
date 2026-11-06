@@ -10,6 +10,14 @@
     <PackageVersion Include="MiniPty" Version="1.3.0" />
     <PackageVersion Include="OldBit.Beep" Version="1.0.3" />
     <PackageVersion Include="Jint" Version="5.0.0-preview.2329" />
+    <!-- 图片编解码：纯托管、net10.0 单目标、IsAotCompatible。只取 read/附件需要的五种格式，
+         不引 Sdcb.SimdCodecs 门面包（它会拖上 TIFF/J2K/JBIG2 等用不到的解码器）。 -->
+    <PackageVersion Include="Sdcb.SimdCodecs.Abstractions" Version="1.4.0" />
+    <PackageVersion Include="Sdcb.SimdCodecs.Jpeg" Version="1.4.0" />
+    <PackageVersion Include="Sdcb.SimdCodecs.Png" Version="1.4.0" />
+    <PackageVersion Include="Sdcb.SimdCodecs.Gif" Version="1.4.0" />
+    <PackageVersion Include="Sdcb.SimdCodecs.Webp" Version="1.4.0" />
+    <PackageVersion Include="Sdcb.SimdCodecs.Bmp" Version="1.4.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />

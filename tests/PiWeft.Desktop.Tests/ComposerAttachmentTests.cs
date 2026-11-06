@@ -13,6 +13,9 @@ namespace PiWeft.Desktop.Tests;
 [Collection("mewui-controls")]
 public sealed class ComposerAttachmentTests : IDisposable
 {
+	private static byte[] OnePixelPng() => Convert.FromBase64String(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-attachments-" + Guid.NewGuid().ToString("N"));
 	public ComposerAttachmentTests() => Directory.CreateDirectory(_root);
 
@@ -51,7 +54,7 @@ public sealed class ComposerAttachmentTests : IDisposable
 		var text = Path.Combine(_root, "file with spaces.txt");
 		File.WriteAllText(text, "text");
 		var image = Path.Combine(_root, "photo.png");
-		File.WriteAllBytes(image, [1, 2, 3]);
+		File.WriteAllBytes(image, OnePixelPng());
 		var composer = Find<MultiLineTextBox>(tab.View).Single();
 		composer.Text = "before after";
 		composer.Select(6, 0);
@@ -71,7 +74,7 @@ public sealed class ComposerAttachmentTests : IDisposable
 	{
 		using var tab = Tab();
 		var image = Path.Combine(_root, "photo.png");
-		File.WriteAllBytes(image, [1, 2, 3]);
+		File.WriteAllBytes(image, OnePixelPng());
 		await tab.AddFilesAsync([image]);
 		tab.SendFromShortcut();
 		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
@@ -83,7 +86,7 @@ public sealed class ComposerAttachmentTests : IDisposable
 	{
 		using var tab = Tab(vision: false);
 		var image = Path.Combine(_root, "photo.png");
-		File.WriteAllBytes(image, [1, 2, 3]);
+		File.WriteAllBytes(image, OnePixelPng());
 		await tab.AddFilesAsync([image]);
 		Toasts.ClearRecent();
 		await tab.SendAsync("inspect");

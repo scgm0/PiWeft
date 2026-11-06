@@ -111,6 +111,37 @@ public class QueueModeTests
 	}
 
 	[Fact]
+	public async Task QueuedMessagesAreNormalizedRightBeforeTheyEnterTheContext()
+	{
+		// 与 pi 的 _normalizeQueuedMessageImages 同义：steering/follow-up 在出队交付前
+		// 再过一遍（排队期间模型可能换过），而不是入队时。
+		var normalized = 0;
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("first");
+		script.EnqueueText("second");
+
+		var agent = new Agent(new AgentOptions
+		{
+			Model = FakeStream.Model(),
+			StreamFn = script.Invoke,
+			NormalizeQueuedMessage = (message, _) =>
+			{
+				normalized++;
+				return ValueTask.FromResult(message);
+			},
+		});
+
+		agent.Steer(new UserMessage { Content = MessageContent.FromText("steer"), Timestamp = 1 });
+
+		await agent.PromptAsync("go");
+
+		Assert.Equal(1, normalized);
+		Assert.Contains(
+			script.Requests.SelectMany(static request => (IEnumerable<Message>)request.Messages),
+			static m => m is UserMessage u && u.Content.Text == "steer");
+	}
+
+	[Fact]
 	public async Task OneAtATimeDeliversASingleSteeringMessagePerDrainPoint()
 	{
 		var (agent, script) = Build(AgentQueueMode.OneAtATime, tool =>

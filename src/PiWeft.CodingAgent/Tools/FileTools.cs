@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.Imaging;
 
 namespace PiWeft.CodingAgent.Tools;
 
@@ -27,7 +28,9 @@ public static class FileTools
 		},
 		OutputSchema = ReadOutputSchema(),
 		ConstrainedSampling = PiWeft.Ai.ConstrainedSampling.JsonSchema(),
-		Execute = invocation => Task.FromResult(ReadFile(cwd, invocation, model)),
+		// 读文件本身是同步 IO，图片还要解码/缩放：放到线程池，别在内核把工具调用
+		// 同步跑在桌面 UI 线程上时卡住整窗（一张 12MP 照片要几百毫秒）。
+		Execute = invocation => Task.Run(() => ReadFile(cwd, invocation, model)),
 	};
 
 	private static AgentToolResult ReadFile(string cwd, AgentToolInvocation invocation, Func<Model?>? model)
@@ -46,12 +49,49 @@ public static class FileTools
 		var mimeType = DetectImageMimeType(absolutePath);
 		if (mimeType is not null)
 		{
+			var currentModel = model?.Invoke();
 			var bytes = File.ReadAllBytes(absolutePath);
-			var encoded = Convert.ToBase64String(bytes);
+			// pi 的 read 会按模型限制缩放/转码（autoResizeImages 默认开）：
+			// 超限的图片先应用 EXIF 方向、Lanczos3 缩小，再在 PNG/JPEG 里挑能进预算的那个。
+			var processed = ImagePipeline.Process(
+				bytes,
+				mimeType,
+				ImageResizeOptions.FromInputLimits(currentModel?.InputLimits));
 			var note = $"Read image file [{mimeType}]";
-			if (model?.Invoke() is { SupportsImages: false })
+			if (processed.Ok)
+			{
+				note = $"Read image file [{processed.MimeType}]";
+				foreach (var hint in processed.Hints)
+				{
+					note += "\n" + hint;
+				}
+			}
+			else if (processed.Error is { Length: > 0 } error)
+			{
+				note += "\n" + error;
+			}
+
+			if (currentModel is { SupportsImages: false })
 			{
 				note += "\n[Current model does not support images. The image will be omitted from this request.]";
+			}
+
+			var imageDetails = new JsonObject
+			{
+				["path"] = absolutePath,
+				["type"] = "image",
+				["mimeType"] = processed.Ok ? processed.MimeType : mimeType,
+				["resized"] = processed.WasResized,
+			};
+
+			if (!processed.Ok)
+			{
+				// 与 pi 一致：转不了/缩不下来的图片只留说明，不把坏数据塞进上下文。
+				return new AgentToolResult
+				{
+					Content = [new TextContent { Text = note }],
+					Details = imageDetails,
+				};
 			}
 
 			return new AgentToolResult
@@ -59,14 +99,14 @@ public static class FileTools
 				Content =
 				[
 					new TextContent { Text = note },
-					new ImageContent { Data = encoded, MimeType = mimeType },
+					new ImageContent { Data = processed.Data, MimeType = processed.MimeType },
 				],
-				Details = new JsonObject { ["path"] = absolutePath, ["type"] = "image", ["mimeType"] = mimeType },
+				Details = imageDetails,
 				StructuredContent = new JsonObject
 				{
 					["type"] = "image",
-					["data"] = encoded,
-					["mimeType"] = mimeType,
+					["data"] = processed.Data,
+					["mimeType"] = processed.MimeType,
 					["note"] = note,
 				},
 			};

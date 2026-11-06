@@ -36,6 +36,10 @@ public sealed record AgentOptions
 
 	public Func<AssistantMessage, bool>? WillRetry { get; init; }
 
+	/// 队列消息（steering / follow-up）真正交给模型之前的归一化钩子。pi 在出队时按当前模型
+	/// 处理图片（_normalizeQueuedMessageImages）：排队期间模型可能换过，限制也跟着变。
+	public Func<Message, CancellationToken, ValueTask<Message>>? NormalizeQueuedMessage { get; init; }
+
 	public StreamOptions Options { get; init; } = new();
 }
 
@@ -466,7 +470,7 @@ public sealed class Agent
 			await EmitAsync(update).ConfigureAwait(false);
 		}
 
-		return messages;
+		return await NormalizeDrainedAsync(messages, cancellationToken).ConfigureAwait(false);
 	}
 
 	private async ValueTask<IReadOnlyList<Message>> DrainFollowUp(CancellationToken cancellationToken)
@@ -484,7 +488,26 @@ public sealed class Agent
 			await EmitAsync(update).ConfigureAwait(false);
 		}
 
-		return messages;
+		return await NormalizeDrainedAsync(messages, cancellationToken).ConfigureAwait(false);
+	}
+
+	/// 出队的消息按当前模型归一化（图片缩放/转码）。没有钩子或没有消息时原样返回。
+	private async ValueTask<IReadOnlyList<Message>> NormalizeDrainedAsync(
+		IReadOnlyList<Message> messages,
+		CancellationToken cancellationToken)
+	{
+		if (messages.Count == 0 || _options.NormalizeQueuedMessage is not { } normalize)
+		{
+			return messages;
+		}
+
+		var normalized = new List<Message>(messages.Count);
+		foreach (var message in messages)
+		{
+			normalized.Add(await normalize(message, cancellationToken).ConfigureAwait(false));
+		}
+
+		return normalized;
 	}
 
 	private QueueUpdateEvent QueueUpdate() => new()

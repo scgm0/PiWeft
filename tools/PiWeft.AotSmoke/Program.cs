@@ -817,6 +817,35 @@ if (!codeMode.Ok || codeMode.Value?.GetValue<int>() != 42 || codeModeText != "co
 	return 1;
 }
 
+// 图片管线：Sdcb.SimdCodecs 的分格式解码器要在裁剪/原生编译后仍然可用。
+var smokePixels = new byte[4 * 4 * 4];
+for (var index = 0; index < smokePixels.Length; index += 4)
+{
+	smokePixels[index] = 200;
+	smokePixels[index + 3] = 255;
+}
+
+var smokePng = Sdcb.SimdCodecs.Png.PngWriter.Encode(smokePixels, 4, 4);
+var smokeImage = PiWeft.Imaging.ImagePipeline.Process(smokePng, "image/png");
+Console.WriteLine($"image pipeline: ok={smokeImage.Ok} mime={smokeImage.MimeType} resized={smokeImage.WasResized}");
+if (!smokeImage.Ok || smokeImage.MimeType != "image/png")
+{
+	Console.WriteLine($"image pipeline failed: {smokeImage.Error}");
+	return 1;
+}
+
+// 真正走一遍重采样：Lanczos3、反向散射、Vector 累加、ArrayPool 与并行分带都要在 AOT 下可执行。
+var smokeResized = PiWeft.Imaging.ImagePipeline.Process(
+	smokePng,
+	"image/png",
+	new PiWeft.Imaging.ImageResizeOptions { MaxWidth = 2, MaxHeight = 2 });
+Console.WriteLine($"image resize: ok={smokeResized.Ok} mime={smokeResized.MimeType} resized={smokeResized.WasResized}");
+if (!smokeResized.Ok || !smokeResized.WasResized)
+{
+	Console.WriteLine($"image resize failed: {smokeResized.Error}");
+	return 1;
+}
+
 await VerifyHostLogsAsync();
 Console.WriteLine("AOT SMOKE OK");
 return 0;

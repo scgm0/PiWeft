@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<IsAotCompatible>true</IsAotCompatible>
+		<RootNamespace>PiWeft.Imaging</RootNamespace>
+		<AssemblyName>PiWeft.Imaging</AssemblyName>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="PiWeft.Imaging.Tests" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- 只引需要的格式包。门面 Sdcb.SimdCodecs 会把 TIFF/J2K/JBIG2 等一起拉进来。 -->
+		<PackageReference Include="Sdcb.SimdCodecs.Abstractions" />
+		<PackageReference Include="Sdcb.SimdCodecs.Jpeg" />
+		<PackageReference Include="Sdcb.SimdCodecs.Png" />
+		<PackageReference Include="Sdcb.SimdCodecs.Gif" />
+		<PackageReference Include="Sdcb.SimdCodecs.Webp" />
+		<PackageReference Include="Sdcb.SimdCodecs.Bmp" />
+	</ItemGroup>
+
+</Project>
