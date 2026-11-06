@@ -194,7 +194,7 @@ public sealed class ImagePipelineTests
 		Assert.Equal(defaults.MaxWidth, invalid.MaxWidth);
 		Assert.Equal(defaults.MaxHeight, invalid.MaxHeight);
 		Assert.Equal(defaults.MaxBytes, invalid.MaxBytes);
-		// 质量只有「夹到 1..100」这一条：500 变成 100，而不是回落默认值。
+		// 质量只有「夹到 1..100」这一条：500 变成 100，不回落默认值。
 		Assert.Equal(100, invalid.JpegQuality);
 	}
 

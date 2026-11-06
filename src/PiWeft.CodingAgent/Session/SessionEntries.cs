@@ -29,7 +29,7 @@ public abstract record SessionEntry
 	public string Timestamp { get; init; } = string.Empty;
 
 	/// 该条目类型没建模的顶层字段，写回时原样输出。
-	/// 新增字段时不丢数据靠这里，而不是手写转换补丁。
+	/// 新增字段时不丢数据靠这里，不靠手写转换补丁。
 	public System.Text.Json.Nodes.JsonObject? Extra { get; init; }
 }
 
@@ -166,8 +166,8 @@ public sealed record SessionInfoEntry : SessionEntry
 
 /// 未知条目类型：整行原样保留。
 /// 以前未知类型会被当 <see cref="CustomEntry"/> 收下，但 <see cref="CustomEntry.Type"/> 恒为
-/// <c>custom</c>，写回就成了 <c>{"type":"custom","customType":"&lt;原类型&gt;","data":{整行}}</c>——
-/// 一次重写就把这行改写成完全不同的语义。新增条目类型时这里保持原样，等模型补齐。
+/// <c>custom</c>，写回就成了 <c>{"type":"custom","customType":"&lt;原类型&gt;","data":{整行}}</c>，
+/// 一次重写就把这行改成完全不同的语义。新增条目类型时这里保持原样，等模型补齐。
 public sealed record UnknownSessionEntry : SessionEntry
 {
 	public required System.Text.Json.Nodes.JsonObject Raw { get; init; }

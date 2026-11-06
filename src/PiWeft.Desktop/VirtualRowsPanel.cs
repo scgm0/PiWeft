@@ -5,17 +5,17 @@ using Aprillz.MewUI.Controls;
 namespace PiWeft.Desktop;
 
 /// <summary>
-/// 行高度不定的虚拟化面板，供会话时间线与执行过程组体共用。它替换 MewUI 的
-/// <c>VariableHeightItemsPresenter</c>：每行先有自己的估算高度，实测只改这一行，
-/// 不会因为「已测量行的运行平均」被一行 10k DIP 的离群行牵动而让整段 extent 一起收缩。
+/// 行高度不定的虚拟化面板，会话时间线与执行过程组体共用。替换 MewUI 的
+/// <c>VariableHeightItemsPresenter</c>：每行有自己的估算高度，实测只改这一行，
+/// 不会因为一行 10k DIP 的离群行拉动「已测量行的运行平均」，让整段 extent 一起收缩。
 /// </summary>
 /// <remarks>
 /// 高度缓存分三段：<c>_heights</c>（按行缓存，含行边距）、<c>_measured</c>（是否实测过）、
 /// <c>_prefix</c>（前缀和，布局/命中/定位都用它）。三者按几何增长复用；前缀和只在高度/行数/宽度
 /// 变化时失效，滚动通知里的阅读点捕获是 O(log n)。
 ///
-/// 面板不持有行数据：行数与取行都走构造时的委托，行列表的所有权与差异计算留在调用方
-/// （<c>MessageRows</c> / <c>StepRows</c>），这样流式期每帧的 <c>SameEntry</c> 比较只做一次。
+/// 面板不持有行数据：行数与取行走构造时的委托，行列表的所有权与差异计算留在调用方
+/// （<c>MessageRows</c> / <c>StepRows</c>），流式期每帧的 <c>SameEntry</c> 比较只做一次。
 /// </remarks>
 internal sealed class VirtualRowsPanel<TItem, THost> : Panel
     where TItem : class
@@ -180,7 +180,7 @@ internal sealed class VirtualRowsPanel<TItem, THost> : Panel
         }
 
         // 高度实测改了内容坐标系：浏览态下把「锚点上方的高度变化」补到当前偏移上。
-        // 只用相对量，不用测量时的绝对 offset——动画可能已经又走了一帧。
+        // 只用相对量，不用测量时的绝对 offset，动画可能已经又走了一帧。
         if (changed && scroll is not null && (PreserveReadingAnchor?.Invoke() ?? true))
         {
             var shift = _prefix[Math.Min(anchorIndex, _count2 - 1)] - anchorTopBefore;
@@ -202,8 +202,7 @@ internal sealed class VirtualRowsPanel<TItem, THost> : Panel
     }
 
     /// 把待补的坐标系平移写进视口。被部分夹掉时留下差额，下一轮再补；
-    /// 一点都没生效说明已经顶在边界上，差额必须丢弃——否则以后内容变长时它会突然补上，
-    /// 表现成一次没有输入来源的跳动。
+    /// 一点没生效说明已顶在边界，差额丢弃；否则内容变长时它会突然补上，变成一次没有输入来源的跳动。
     private void ApplyShift(ScrollViewer? scroll, ref double offset, ref double placementY)
     {
         if (Math.Abs(_pendingShift) <= 0.5 || scroll is null) return;
@@ -302,11 +301,10 @@ internal sealed class VirtualRowsPanel<TItem, THost> : Panel
             foreach (var host in _realized.Values) _release(host);
             _realized.Clear();
         }
-        // Panel.Clear() 无条件作废测量。空面板在 Arrange 里每帧调它会让布局自激
-        // （空会话 = 每帧 Arrange → Clear → InvalidateMeasure → 再 Measure/Arrange，桌面卡死）。
+        // Panel.Clear() 无条件作废测量。空面板在 Arrange 里每帧调用会让布局自激：
+        // 空会话每帧 Arrange → Clear → InvalidateMeasure → 再 Measure/Arrange，桌面卡死。
         if (Children.Count > 0) Clear();
-        // 池里的空宿主也要走一次释放：UiLifetime 会回收它们持有的图片/文本资源，
-        // 只丢引用的话要等 GC 才真正放手。
+        // 池里的空宿主也要走一次释放：UiLifetime 会回收它们持有的图片与文本资源，只丢引用要等 GC。
         foreach (var host in _pool) UiLifetime.Release(host);
         _pool.Clear();
         _pendingShift = 0;

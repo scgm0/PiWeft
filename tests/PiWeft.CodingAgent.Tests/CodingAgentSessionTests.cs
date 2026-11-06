@@ -194,7 +194,7 @@ public class CodingAgentSessionTests : IDisposable
 		await session.PromptAsync("first");
 		Assert.Equal(first.SessionId, script.LastOptions!.SessionId);
 
-		// fork / switch_session 换掉 Session 后，请求标识必须跟着换，不能沿用旧会话 ID。
+		// fork / switch_session 换掉 Session 后，请求标识跟着换，不沿用旧会话 ID。
 		var second = SessionManager.InMemory(_root);
 		session.SwitchSession(second);
 		await session.PromptAsync("second");
@@ -233,7 +233,7 @@ public class CodingAgentSessionTests : IDisposable
 		Assert.Contains("Use read to examine files instead of cat or sed.", projected);
 		Assert.Contains(SystemPrompt.Preamble, projected);
 
-		// 会话文件里不存系统提示词（与 pi 一致），所以文件不因换工具而变化 —— 变化的只有投影。
+		// 会话文件里不存系统提示词（与 pi 一致），文件不因换工具而变化，变化的只有投影。
 		Assert.DoesNotContain(
 			session.Session.Entries,
 			entry => entry is SessionMessageEntry { Message: SystemMessage });
@@ -248,8 +248,8 @@ public class CodingAgentSessionTests : IDisposable
 	{
 		using var session = CreateSession(new ScriptedStreamFn());
 
-		// 系统提示词是运行时构造的：投影里有，会话文件里没有（与 pi 一致，
-		// 否则真实 pi 读这个会话时会把 role:system 的消息当成历史）。
+		// 系统提示词在运行时构造：投影里有，会话文件里没有。与 pi 一致，
+		// 否则真实 pi 读这个会话时会把 role:system 当成历史。
 		var system = Assert.IsType<SystemMessage>(session.ProjectedMessages[0]);
 
 		Assert.Equal(
@@ -593,8 +593,8 @@ public class SettingsTests : IDisposable
 	}
 }
 
-/// 自动重试：可重试的失败会退避后重跑，失败的那次尝试从模型投影里移除（文件里保留），
-/// 并发出 <c>auto_retry_start</c> / <c>auto_retry_end</c> 事件 —— 与 pi 的行为一致。
+/// 自动重试：可重试的失败退避后重跑，失败的那次尝试从模型投影里移除（文件里保留），
+/// 并发出 <c>auto_retry_start</c> / <c>auto_retry_end</c> 事件，与 pi 一致。
 public class AutoRetryTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "pi-retry-" + Guid.NewGuid().ToString("N")[..8]);
@@ -697,7 +697,7 @@ public class AutoRetryTests : IDisposable
 
 	/// 火山方舟的排队错误把「稍后再试」藏在 HTTP 403 的嵌套 JSON 里（10605 / RESOURCE_LIMIT /
 	/// retryAfterSeconds），通用限流字样一个都没有：本来分类器判不出可重试，自动重试直接跳过。
-	/// 这里既验重试会发生，也验等待时长听供应商的而不是指数退避。
+	/// 这里验两件事：重试会发生；等待时长用供应商给的，不用指数退避。
 	[Fact]
 	public async Task ProviderQueueErrorRetriesAfterTheAdvertisedDelay()
 	{
@@ -796,7 +796,7 @@ public class AutoRetryTests : IDisposable
 		script.EnqueueError("Service Unavailable");
 		script.EnqueueText("should not run");
 
-		// 退避时间给足，确保取消只能来自 Abort() 而不是自然到点。
+		// 退避时间给足，取消只能来自 Abort()，不会自然到点。
 		using var session = CreateSession(script, new RetryPolicy(BaseDelayMs: 5_000, MaxRetries: 3));
 		var retryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		using var subscription = session.Subscribe(@event =>
@@ -1117,7 +1117,7 @@ public sealed class CacheWarmerTests
 
 		// 刷新间隔只有 1 秒（缓存寿命 11 秒、预留 10 秒余量），所以在「第几次刷新」这个维度上
 		// 轮询必然踩到竞态：刚看到 usages==1，第二次刷新就已经把 Requests 加了第二条。
-		// 改成在状态回调里数 scheduled 的次数——Start 先置一次，第二次就代表第一次刷新收尾，
+		// 改成在状态回调里数 scheduled 的次数：Start 先置一次，第二次就代表第一次刷新收尾，
 		// 那一刻把状态快照下来，之后所有断言都基于这份快照。
 		var firstRefreshDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		using var warmer = new PiWeft.CodingAgent.Compaction.CacheWarmer(

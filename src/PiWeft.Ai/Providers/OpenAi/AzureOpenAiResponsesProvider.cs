@@ -8,9 +8,9 @@ using PiWeft.Ai.Json;
 using PiWeft.Ai.Utils;
 namespace PiWeft.Ai.Providers.OpenAi;
 
-/// Azure OpenAI Responses API（<c>azure-openai-responses</c>）的流式适配器。它沿用 OpenAI Responses 的
-/// 线格式，区别有三点：端点带 API 版本、凭据放在 <c>api-key</c> 头里，
-/// 并且请求体里写的是 Azure 的<em>部署名</em>而不是模型名。
+/// Azure OpenAI Responses API（<c>azure-openai-responses</c>）的流式适配器。沿用 OpenAI Responses 的
+/// 线格式，区别有三点：端点带 API 版本，凭据放在 <c>api-key</c> 头里，
+/// 请求体里写的是 Azure 部署名，不是模型名。
 public sealed class AzureOpenAiResponsesProvider : IApiProvider
 {
 	public const string ApiId = "azure-openai-responses";
@@ -170,7 +170,7 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 		request.Headers.TryAddWithoutValidation("accept", "text/event-stream");
 		request.Headers.TryAddWithoutValidation("user-agent", SharedHttpClient.UserAgent);
 
-		// Azure 用 api-key 头鉴权，而不是 bearer 令牌。
+		// Azure 用 api-key 头鉴权，不用 bearer 令牌。
 		request.Headers.TryAddWithoutValidation("api-key", apiKey);
 
 		if (model.Headers is { Count: > 0 } modelHeaders)

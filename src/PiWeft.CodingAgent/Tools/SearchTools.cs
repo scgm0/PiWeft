@@ -69,7 +69,7 @@ public static class SearchTools
 			throw new InvalidOperationException($"Cannot read directory: {exception.Message}", exception);
 		}
 
-		// pi 的 ls 用大小写不敏感排序，而不是 Ordinal（B.txt 不会排到 a.txt 前面）。
+		// pi 的 ls 用大小写不敏感排序，不用 Ordinal（B.txt 不会排到 a.txt 前面）。
 		entries.Sort(StringComparer.CurrentCultureIgnoreCase);
 
 		if (entries.Count == 0)

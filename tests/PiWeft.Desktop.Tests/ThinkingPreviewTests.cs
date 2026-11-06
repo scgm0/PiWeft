@@ -47,7 +47,7 @@ public sealed class ThinkingPreviewTests
 		Assert.True(line.FollowTail, "流式思考的单行预览必须处于尾随（跑马灯）状态");
 		Assert.Equal("先看一下目录结构", PreviewText(line));
 
-		// 新一行写进来：预览立刻跟到最新一行，而不是停在首行不动。
+		// 新一行写进来：预览跟到最新一行，不停在首行。
 		view.Update(Live("先看一下目录结构\n再看 entry 的投影方式", streaming: true));
 		Pump(view.View);
 		Assert.Equal("再看 entry 的投影方式", PreviewText(line));
@@ -89,7 +89,7 @@ public sealed class ThinkingPreviewTests
 		Pump(view.View);
 		Assert.Equal("上一条的首行", PreviewText(PreviewLine(view.View)));
 
-		// 行视图被回收给另一条消息：首行缓存在身份变化时必须作废，否则新行穿着上一条的摘要。
+		// 行视图被回收给另一条消息：身份变了，首行缓存要作废，否则新行带着上一条的摘要。
 		view.Update(Live("新一条的首行", streaming: false, id: "entry/2") with { Timestamp = 2 });
 		Pump(view.View);
 		Assert.Equal("新一条的首行", PreviewText(PreviewLine(view.View)));
@@ -153,7 +153,7 @@ public sealed class ThinkingPreviewTests
 	[Fact]
 	public void HeadlessPreviewRevealsTheWholeLineAtOnce()
 	{
-		// PaceStreamForTest 不开：没时钟可摊平，预览直接显示完整一行（历史行为，单测与自检依赖它）。
+		// 不开 PaceStreamForTest：没有时钟可摊平，预览直接显示完整一行；单测与自检依赖这个历史行为。
 		using var guard = new TextFocusScrollGuard(new ScrollViewer());
 		var view = new AssistantMessageView(Live("一帧就到齐的整块内容", streaming: true), _ => { }, guard);
 		Pump(view.View);

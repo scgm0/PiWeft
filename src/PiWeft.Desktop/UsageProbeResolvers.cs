@@ -275,7 +275,7 @@ internal static class UsageProbeResolvers
 
 	// ── Sub2API ────────────────────────────────────────────────────────────
 
-	/// Sub2API 网关 GET /v1/usage：响应随计费形态分三支——钱包（顶层 balance + unit）、
+	/// Sub2API 网关 GET /v1/usage：响应随计费形态分三支：钱包（顶层 balance + unit）、
 	/// 订阅（subscription 日/周/月 usage/limit 对）、key 额度（quota 三件套 + rate_limits[]）。
 	/// 面板 JWT 余额段（/api/v1/auth/me）不在此解析：PiWeft 只保留主用量。
 	private static UsageProbeResponse ParseSub2ApiUsage(JsonObject root)

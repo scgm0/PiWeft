@@ -1119,10 +1119,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		return panel;
 	}
 
-	/// 列表条目要补的那一份行间距，与正文段落同一个口径（字号 × 倍率 − 字体自然行高）。
-	/// 段落内部的行距由 <see cref="MarkdownParagraphView"/> 加在行与行之间，而单行条目没有
-	/// 「行与行之间」，不补就会被正文抢先：同样 16 px 字号，正文 25.6 DIP、条目只有 19 DIP。
-	/// 嵌套列表的条目再走一次这里，所以多层列表的行距与正文保持一致。
+	/// 列表条目要补的那份行间距，口径与正文段落相同（字号 × 倍率 − 字体自然行高）。
+	/// 段落内部的行距由 <see cref="MarkdownParagraphView"/> 加在行间；单行条目没有「行间」，
+	/// 不补就会比正文矮：16 px 字号下正文 25.6 DIP，条目只有 19 DIP。嵌套列表的条目再走一次这里。
 	private double ListItemLeading()
 	{
 		TextRunStyle style = new(FontFamily, FontSize, FontWeight, FontStyle == FontStyle.Italic);
@@ -1366,8 +1365,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		private const int Capacity = 4096;
 
 		private static readonly object Lock = new();
-		// 节点随值一起保存：命中时 LinkedList.Remove(key) 是 O(n)，在长会话的跨实例复用时
-		// 每个块都会扫一遍 LRU；保存节点后重排/淘汰都是 O(1)。容量与淘汰顺序保持不变。
+		// 节点随值一起保存：LinkedList.Remove(key) 是 O(n)，跨实例复用时每个块都要扫一遍 LRU；
+		// 保存节点后重排与淘汰都是 O(1)。
 		private static readonly Dictionary<HeightKey, (double Height, LinkedListNode<HeightKey> Node)> Heights = [];
 		private static readonly LinkedList<HeightKey> Lru = [];
 
@@ -1487,9 +1486,8 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			// Image-bearing blocks are excluded: their height depends on async resolution, which
 			// the model hash does not cover.
 			var heightKey = new HeightKey(slot.Block.Hash, measureKey, width);
-			// 已附着的元素可能还留着旧宽度下的版面：缓存高度只是「跨实例复用」的快路径，
-			// 对已经建出来的元素必须真的测一遍，否则行高与它画出来的文本行数会不一致
-			// （读者看到的就是相邻块错位、文字叠在一起）。
+			// 已附着的元素可能还留着旧宽度的版面。缓存高度只给跨实例复用，
+			// 已建出来的元素必须真测一遍，否则行高与画出来的文本行数不一致，相邻块会错位、文字叠在一起。
 			if (slot.Element is null && !double.IsNaN(slot.Height = TryCachedHeight(slot.Block, heightKey)))
 			{
 				_prefixValid = false;

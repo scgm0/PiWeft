@@ -4,8 +4,8 @@ using Aprillz.MewUI.Controls;
 namespace PiWeft.Desktop;
 
 /// 命名样式表：界面里长期存在的容器与文本用它上色，颜色由 <see cref="Setter.Create{T}"/> 从主题解析。
-/// 因此切换主题时 MewUI 会重新解析样式并重绘，<b>不需要重建界面</b> —— 这正是官方示例的做法。
-/// 只给需要跟随主题的**颜色**定义样式；字号、内边距之类的静态值仍写在构建代码里，读起来更直观。
+/// 切换主题时 MewUI 会重新解析样式并重绘，不需要重建界面；官方示例也是这个做法。
+/// 只给跟随主题的颜色定义样式；字号、内边距等静态值写在构建代码里。
 /// 消息气泡和工具卡片同样使用命名样式，换肤保留正文控件与 Markdown。
 public static class AppStyles
 {
@@ -112,19 +112,19 @@ public static class AppStyles
 	};
 
 	/// 换肤后重建文本视图，并显式失效排布。
-	/// MewUI 源码 的 <c>MultiLineTextBox</c> 在换肤重建视图时只调用 <c>InvalidateMeasure</c>；
-	/// 若控件此前已被标成测量失效（换肤广播通常如此），这次调用会提前返回，排布标记不会被重新置位。
-	/// 外层横向 ScrollViewer 以无限宽测量时，新视图的视口宽度仍停在 0，<c>TextViewLayout</c>
-	/// 不会物化任何行，代码块/差异文本就只剩背景。这里补一次排布失效，让 ArrangeContent
-	/// 把真实宽度写回视口后再绘制。
+	/// MewUI 的 <c>MultiLineTextBox</c> 换肤重建视图时只调用 <c>InvalidateMeasure</c>；
+	/// 控件此前已被标成测量失效时（换肤广播通常如此），这次调用提前返回，排布标记不会重新置位。
+	/// 外层横向 ScrollViewer 以无限宽测量，新视图的视口宽度停在 0，<c>TextViewLayout</c>
+	/// 不物化任何行，代码块与差异文本只剩背景。这里补一次排布失效，
+	/// 让 ArrangeContent 把真实宽度写回视口后再绘制。
 	public static void RefreshTextView(MultiLineTextBox view)
 	{
 		view.InvalidateTextView();
 		view.InvalidateArrange();
 	}
 
-	/// 遍历子树，把带角色标记的文本重新上色。换主题时调用，比重建界面便宜得多
-	/// （只改颜色，不重新创建控件、也不重新解析 Markdown）。
+	/// 遍历子树，把带角色标记的文本重新上色。换主题时调用，只改颜色，
+	/// 不重建控件、不重解析 Markdown。
 	public static void ApplyTextColors(Element root)
 	{
 		if (root is TextBlock text && text.Tag is string role)
@@ -680,8 +680,8 @@ public static class AppStyles
 						Setters = [Setter.Create(UIElement.OpacityProperty, 0.78)],
 					},
 					// 主按钮没有“未保存”时可点：禁用态整体变灰，不保留醒目的强调白。
-					// 字色取 TextSubtle 而不是 TextFaint：底色已经是 HoverBackground，Faint 在深色
-					// 主题下只剩 1.5:1 的对比，“保存”会真的读不出来；Subtle 仍然明确弱于可用态。
+					// 字色取 TextSubtle，不用 TextFaint：底色是 HoverBackground，Faint 在深色主题下
+					// 只有 1.5:1 对比，「保存」读不出来；Subtle 仍明确弱于可用态。
 					new StateTrigger
 					{
 						Exclude = VisualStateFlags.Enabled,
@@ -709,7 +709,7 @@ public static class AppStyles
 				BasedOn = ButtonInteraction,
 				Setters =
 				[
-					// 底色用「悬停色的零 alpha」而不是 Transparent：黑色全透明到浅灰的插值会经过深灰，
+					// 底色用「悬停色的零 alpha」，不用 Transparent：黑色全透明到浅灰的插值会经过深灰，
 					// 悬停进出时肉眼看到闪一下（MewUI 的 flat 按钮样式也是这么处理的）。
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground.WithAlpha(0))),
 					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),

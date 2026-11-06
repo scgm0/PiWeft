@@ -8,7 +8,7 @@ namespace PiWeft.Desktop.Tests;
 /// 非跟底视口（设置页这类普通 ScrollViewer）的滚轮动画同样会被布局校正打断：
 /// 动画写的是分数偏移，arrange 每次吸附到像素网格都产生一次亚 DIP 的外部位移，
 /// OnScrollChanged 的普通分支没有像 AutoFollowAtEnd 分支那样的校正容差，
-/// 结果是每个滚轮刻度都被拦腰打断——快速滚动一顿一顿、半路丢距离。
+/// 结果是每个滚轮刻度都被拦腰打断：快速滚动一顿一顿、半路丢距离。
 [Collection("mewui-controls")]
 public sealed class SmoothScrollPlainViewportTests
 {

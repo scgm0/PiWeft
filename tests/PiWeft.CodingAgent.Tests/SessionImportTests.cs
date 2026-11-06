@@ -7,10 +7,10 @@ using Xunit;
 namespace PiWeft.CodingAgent.Tests;
 
 /// 外部会话导入：发现 → 转换 → 落盘。
-/// 夹具按 Claude Code 与 Codex CLI 的**磁盘格式**手写（字段名取自这两个工具的公开实现，
-/// 也与 PiDeck 的对应 importer 一致），因为这些工具的会话库不一定存在于开发机上。
-/// 夹具之外还有一条「产物能被 <see cref="SessionManager"/> 正常打开」的断言 ——
-/// 格式对不对，最终由 pi 自己的读取端判定。
+/// 夹具按 Claude Code 与 Codex CLI 的磁盘格式手写，字段名取自这两个工具的公开实现，
+/// 与 PiDeck 的 importer 一致；开发机上不一定有这些工具的会话库。
+/// 另有一条断言要求产物能被 <see cref="SessionManager"/> 打开：格式对不对，
+/// 最终由 pi 自己的读取端判定。
 public class SessionImportTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-import-" + Guid.NewGuid().ToString("N")[..8]);
@@ -79,7 +79,7 @@ public class SessionImportTests : IDisposable
 	}
 
 	/// 只做 JSON 字符串转义。不用 <c>JsonSerializer.Serialize</c>：
-	/// 反射式序列化在裁剪/AOT 下会告警，而这里只需要字符串的一种转义。
+	/// 反射式序列化在裁剪/AOT 下会告警，这里只需要一种转义。
 	private static string Json(string value)
 	{
 		var builder = new System.Text.StringBuilder(value.Length + 8).Append('"');
@@ -172,7 +172,7 @@ public class SessionImportTests : IDisposable
 		Assert.Equal(1000, assistant.Usage.CacheRead);
 		Assert.Equal("claude-sonnet-4-20250514", assistant.Model);
 
-		// tool_result 必须还原成 pi 的 toolResult，而不是用户文本。
+		// tool_result 要还原成 pi 的 toolResult，不当用户文本。
 		var toolResult = Assert.IsType<ToolResultMessage>(messages[2]);
 		Assert.Equal("toolu_1", toolResult.ToolCallId);
 		Assert.True(toolResult.IsError);

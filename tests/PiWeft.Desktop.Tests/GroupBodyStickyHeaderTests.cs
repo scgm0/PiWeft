@@ -7,7 +7,7 @@ using static PiWeft.Desktop.Tests.VisualTree;
 namespace PiWeft.Desktop.Tests;
 
 /// 组体内展开项的标题吸顶（对齐 PiDeck 的 processEntryStickyPolicy）：
-/// 只有「已展开 + 比组体视口更高」的步骤才会在跨过视口顶边时把标题留在那里，
+/// 只有「已展开且比组体视口高」的步骤会在跨过视口顶边时把标题留在那里，
 /// 末尾越过视口后随内容退场；会话里的同名视图不吸顶。
 [Collection("mewui-controls")]
 public sealed class GroupBodyStickyHeaderTests
@@ -138,7 +138,7 @@ public sealed class GroupBodyStickyHeaderTests
 			fixture.ScrollStepPastTop(step, 80);
 			Assert.True(step.HeaderPinned, "a tall expanded step keeps its header at the body top");
 			Assert.InRange(header.Bounds.Y, fixture.ViewportTop - 1, fixture.ViewportTop + 1);
-			// 正文仍在标题下方滚动：标题压住的是它自己的内容，不是别处。
+			// 正文仍在标题下方滚动：标题压住的是自己的内容。
 			Assert.True(step.Bounds.Y < header.Bounds.Y);
 			Assert.True(step.Bounds.Bottom > header.Bounds.Bottom);
 
@@ -307,7 +307,7 @@ public sealed class GroupBodyStickyHeaderTests
 			fixture.ScrollStepPastTop(step, 120);
 			Assert.True(step.HeaderPinned);
 
-			// 从吸顶标题收起：这一项的开头落回视口顶部，而不是留在已经滚走的行顶上（那样标题会直接消失）。
+			// 从吸顶标题收起：这一项的开头落回视口顶部，不留在已经滚走的行顶，否则标题会直接消失。
 			step.IsExpanded = false;
 			fixture.Settle();
 			Assert.False(step.HeaderDisplaced);
@@ -332,7 +332,7 @@ public sealed class GroupBodyStickyHeaderTests
 			fixture.ScrollStepPastTop(step, 120);
 			Assert.True(step.HeaderPinned);
 
-			// 吸顶位置必须真的能点到标题：标题命中优先于压在下面的正文。
+			// 吸顶位置要能点到标题：标题命中优先于压在下面的正文。
 			var header = HeaderOf(step);
 			var headerHit = step.HitTest(new Point(step.Bounds.X + 60, fixture.ViewportTop + 6));
 			Assert.NotNull(headerHit);
@@ -341,7 +341,7 @@ public sealed class GroupBodyStickyHeaderTests
 			Assert.NotNull(bodyHit);
 			Assert.False(bodyHit!.IsDescendantOf(header));
 
-			// 标题在原位时基类会自己判定；吸顶后标题在视口顶部，必须按吸顶位置算一次开合。
+			// 标题在原位时基类自己判定；吸顶后标题在视口顶部，要按吸顶位置算一次开合。
 			var args = new MouseEventArgs(new Point(120, 70), new Point(120, 70), MouseButton.Left);
 			Invoke(HeaderOf(step), "OnMouseDown", args);
 			Invoke(step, "OnMouseDown", args);
@@ -365,6 +365,8 @@ public sealed class GroupBodyStickyHeaderTests
 		}
 	}
 
+	[System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075",
+		Justification = "测试通过反射调用控件的私有方法，类型来自测试程序集。")]
 	private static void Invoke(Element element, string method, MouseEventArgs args) =>
 		element.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(element, [args]);
 
@@ -380,7 +382,7 @@ public sealed class GroupBodyStickyHeaderTests
 			fixture.ScrollStepPastTop(step, 60);
 			Assert.True(step.HeaderPinned);
 
-			// 点吸顶标题上的「回到开头」：按钮自己接管这次按下（Handled），折叠行不能顺手把这一项收起来。
+			// 点吸顶标题上的「回到开头」：按钮接管这次按下（Handled），折叠行不能顺手收起这一项。
 			var button = ReturnToStartOf(step);
 			var args = new MouseEventArgs(new Point(500, 70), new Point(500, 70), MouseButton.Left);
 			Invoke(button, "OnMouseDown", args);

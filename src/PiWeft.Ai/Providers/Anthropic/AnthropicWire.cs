@@ -23,7 +23,7 @@ internal static class AnthropicWire
 		writer.WriteBoolean("stream", true);
 
 		var systemText = Transcript.GetInitialSystemText(messages);
-		// Claude OAuth（sk-ant-oat）必须带 Claude Code 身份提示词；官方 API key 不需要。
+		// Claude OAuth（sk-ant-oat）要带 Claude Code 身份提示词；官方 API key 不需要。
 		if (oauth || !string.IsNullOrWhiteSpace(systemText))
 		{
 			writer.WritePropertyName("system");
@@ -130,9 +130,9 @@ internal static class AnthropicWire
 		writer.WriteEndObject();
 	}
 
-	/// Anthropic 只把根部的 <c>type</c>/<c>properties</c>/<c>required</c> 与共享定义当真：
+	/// Anthropic 只认根部的 <c>type</c>/<c>properties</c>/<c>required</c> 与共享定义：
 	/// 根级 <c>anyOf</c>/<c>oneOf</c>/<c>allOf</c> 会直接 400。严格模式发完整 schema，
-	/// 普通模式只发这根部的四个字段（与 pi 的 <c>legacyInputSchema</c> 一致）。
+	/// 普通模式只发根部四个字段（与 pi 的 <c>legacyInputSchema</c> 一致）。
 	private static void WriteInputSchema(Utf8JsonWriter writer, JsonObject parameters, bool strict)
 	{
 		writer.WriteStartObject();

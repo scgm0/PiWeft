@@ -21,7 +21,7 @@ public static partial class EditDiff
 			return "\n";
 		}
 
-		// 与 pi 一致：以文件中第一个换行的样式为准，而不是“出现过 CRLF 就全转 CRLF”。
+		// 与 pi 一致：以文件中第一个换行的样式为准，不是「出现过 CRLF 就全转 CRLF」。
 		return crlf < lf ? "\r\n" : "\n";
 	}
 

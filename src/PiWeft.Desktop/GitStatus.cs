@@ -173,8 +173,8 @@ public static class GitStatusReader
 			}
 
 			var status = Parse(stdout);
-			// 远端列表要多一次进程调用，但它决定「推送/拉取」按钮的可用性；面板刷新是用户动作
-			// 驱动的，这点开销可以接受。探测失败按「没有远端」处理，按钮退化成不可用而不是报错。
+			// 远端列表多一次进程调用，但决定「推送/拉取」按钮的可用性；面板刷新由用户动作驱动，
+			// 这点开销可以接受。探测失败按「没有远端」处理，按钮变灰，不报错。
 			return status with { HasRemotes = HasRemotes(cwd) };
 		}
 		catch (System.ComponentModel.Win32Exception)
@@ -189,7 +189,7 @@ public static class GitStatusReader
 
 	public static GitUpstream Upstream(string cwd)
 	{
-		// rev-parse 在没有上游时以非 0 退出，这是正常情况而不是错误。
+		// rev-parse 在没有上游时以非 0 退出，属正常情况。
 		var (branchOutput, _) = Run(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
 		var branch = branchOutput.Trim();
 		var (upstreamOutput, exitCode) = Run(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
@@ -241,10 +241,9 @@ public static class GitStatusReader
 	/// 未跟踪文件没有 diff，改为把文件内容当成整段新增显示。
 	public static string Diff(string cwd, string path, bool untracked, int maxLines = 400)
 	{
-		// 未跟踪文件没有 git diff 可比的对象。以前用 `git diff --no-index /dev/null <path>`，
-		// 但 `/dev/null` 只在 POSIX 上存在（Git for Windows 是否认这个字面量取决于版本与配置），
-		// 在 Windows 上会直接失败、界面显示「没有可显示的 diff」。改为自己合成一份全新增的
-		// unified diff：跨平台一致，也不用为只读一份文本多起一个进程。
+		// 未跟踪文件没有 git diff 对象。以前用 `git diff --no-index /dev/null <path>`，但 `/dev/null`
+		// 只在 POSIX 上存在（Git for Windows 认不认这个字面量取决于版本和配置），Windows 上直接失败，
+		// 界面显示「没有可显示的 diff」。改为自己合成一份全新增的 unified diff，跨平台一致，也省一次进程。
 		if (untracked)
 		{
 			return UntrackedDiff(cwd, path, maxLines);
@@ -345,8 +344,8 @@ public static class GitStatusReader
 			var stderrTask = process.StandardError.ReadToEndAsync();
 			if (!process.WaitForExit(10_000))
 			{
-				// 不能在这里直接 GetResult：子进程还活着时读管道会一直等下去，UI 就冻住了。
-				// 先杀掉整棵进程树，再给读任务一个很短的收尾窗口，最后按超时返回。
+				// 不能直接 GetResult：子进程还活着时读管道会一直等，UI 卡死。先杀掉整棵进程树，
+				// 再给读任务一个很短的收尾窗口，最后按超时返回。
 				try
 				{
 					process.Kill(entireProcessTree: true);
@@ -418,8 +417,8 @@ public static class GitStatusReader
 	}
 
 	/// 让 git 说英文。失败分类（<see cref="GitFailure"/>）按英文特征串匹配，用户机器上的
-	/// 本地化输出会让它静默失配 —— 中文环境里 <c>git pull</c> 的报错是「无法快进」而不是
-	/// "Not possible to fast-forward"。这里只影响 git 自己的消息，不影响路径与内容字节。
+	/// 本地化输出会让它静默失配：中文环境里 <c>git pull</c> 的报错是「无法快进」，
+	/// 不是 "Not possible to fast-forward"。这里只影响 git 自己的消息，不影响路径与内容字节。
 	internal static void ApplyLocale(ProcessStartInfo startInfo)
 	{
 		startInfo.Environment["LC_ALL"] = "C";
@@ -429,7 +428,7 @@ public static class GitStatusReader
 
 	/// 解析 <c>git status --porcelain=v1 -b -z</c> 的输出（字段以 NUL 分隔）。
 	/// 必须是 <c>-z</c> 形态：非 <c>-z</c> 时 git 会对非 ASCII 路径做八进制转义
-	/// （<c>"\344\270\255..."</c>），给带空格的路径加引号，而解析按固定列取子串 ——
+	/// （<c>"\344\270\255..."</c>），给带空格的路径加引号，而解析按固定列取子串；
 	/// 中文或 emoji 文件名会拿到一串转义文本，后续「暂存 / 打开」全部指向不存在的路径。
 	/// <c>-z</c> 输出原始 UTF-8 字节且不带引号，是 git 唯一保证机器可读的形态。
 	public static GitStatus Parse(string output)

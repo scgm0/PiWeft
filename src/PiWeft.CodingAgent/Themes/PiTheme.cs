@@ -108,7 +108,7 @@ public sealed record PiTheme
 		foreach (var (token, node) in colorObject)
 		{
 			// 只接受字符串或整数两种写法；小数等其它数字形态按「值不合法」记诊断，
-			// 而不是让 GetValue<int> 抛出逃逸到发现流程之外。
+			// 不让 GetValue<int> 抛出的异常逃到发现流程之外。
 			var raw = node is JsonValue value
 				? value.GetValueKind() switch
 				{
@@ -131,7 +131,7 @@ public sealed record PiTheme
 			}
 			else
 			{
-				// pi 把未定义变量与循环引用视为主题无效 —— 颜色值写错同样如此。
+				// pi 把未定义变量与循环引用视为主题无效，颜色值写错也一样。
 				error = $"颜色角色 {token} 无法解析：{parseError}";
 				return null;
 			}

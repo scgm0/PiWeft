@@ -299,7 +299,7 @@ public sealed class SettingsView
 	private void Toast(string message, ToastKind kind = ToastKind.Info) => Toasts.Show(_sectionTitle, message, kind);
 
 	/// 最近一次分区构建失败的原因；正常时为 <c>null</c>。
-	/// 图标缺失一类的错误会记在这里并给出可见提示，而不是留下空白面板。
+	/// 图标缺失一类错误记在这里并给出可见提示，不留空白面板。
 	internal string? LastSectionError { get; private set; }
 
 	public void Refresh()
@@ -614,7 +614,7 @@ public sealed class SettingsView
 		}
 
 		// 只靠失焦保存不可靠：用户改完直接点设置页其它控件、关弹窗，可能根本不会触发 LostFocus。
-		// 停手 600 ms 后目自动落盘（与声音分区那种“改动即时生效”一致），失焦再充一次。
+		// 停手 600 ms 后自动落盘（与声音分区的「改动即时生效」一致），失焦再存一次。
 		var promptGate = new DispatcherTimer(TimeSpan.FromMilliseconds(600));
 		promptGate.Tick += () =>
 		{
@@ -676,7 +676,7 @@ public sealed class SettingsView
 		control);
 
 	/// 安全门分区。分区自己写 <c>settings.json</c>；保存成功后通过 <see cref="SecurityChanged"/>
-	/// 通知宿主把新配置推给所有已打开的会话 —— 只刷新设置页等于改了个看不见的开关。
+	/// 通知宿主把新配置推给所有已打开的会话，只刷新设置页等于改了个看不见的开关。
 	private Element SoundSection()
 	{
 		_sounds ??= new SoundSection();
@@ -1094,7 +1094,7 @@ public sealed class SettingsView
 		return tile;
 	}
 
-	/// 一行「名称 …… 数值」：名称靠左、数值靠右对齐成表，备注只进悬浮提示 ——
+	/// 一行「名称 …… 数值」：名称靠左，数值靠右对齐成表，备注只进悬浮提示；
 	/// 三列同屏会把名称挤成省略号，反而看不清是谁的耗时。
 	private static Element MetricLine(string name, string value, string? note)
 	{
@@ -1347,14 +1347,14 @@ public sealed class SettingsView
 			return false;
 		}
 
-		// 只按下 Ctrl/Shift/Alt 本身（Key.None）不算绑定，继续等主键 ——
+		// 只按下 Ctrl/Shift/Alt 本身（Key.None）不算绑定，继续等主键；
 		// 否则用户一按 Ctrl 就被记录成 "Ctrl" 这种无效组合。
 		if (key == Key.None)
 		{
 			return false;
 		}
 
-		// 至少要带一个修饰键，或者是功能键 —— 否则会和普通打字冲突。
+		// 至少要带一个修饰键，或者是功能键，否则会和普通打字冲突。
 		var usable = key is >= Key.F1 and <= Key.F24 || (modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0;
 		if (!usable)
 		{

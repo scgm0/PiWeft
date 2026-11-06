@@ -36,7 +36,7 @@ public class GitStatusTests
 		Assert.Equal("新增", status.Changes[2].Label);
 		Assert.Equal("删除", status.Changes[3].Label);
 
-		// 改名显示目标路径，而不是 "old -> new"。
+		// 改名显示目标路径，不显示 "old -> new"。
 		Assert.Equal("改名", status.Changes[4].Label);
 		Assert.Equal("new/name.txt", status.Changes[4].Path);
 	}
@@ -122,7 +122,7 @@ public class GitDiffTests
 	public void UntrackedFileIsRenderedWithoutInvokingGit()
 	{
 		// 未跟踪文件没有 git diff 可比的对象。以前用 `git diff --no-index /dev/null <path>`，
-		// 而 /dev/null 只在 POSIX 上存在 —— Windows 上界面会显示「没有可显示的 diff」。
+		// 而 /dev/null 只在 POSIX 上存在，Windows 上界面会显示「没有可显示的 diff」。
 		var root = Path.Combine(Path.GetTempPath(), "piweft-untracked-" + Guid.NewGuid().ToString("N")[..8]);
 		Directory.CreateDirectory(root);
 		try

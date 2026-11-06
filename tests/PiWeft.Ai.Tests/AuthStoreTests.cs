@@ -239,7 +239,7 @@ public class AuthStoreTests : IDisposable
 	{
 		if (OperatingSystem.IsWindows()) return;
 
-		// 10 万字符远超 64 KiB：必须在读入上限处终止，而不是先 ReadToEnd 再判断。
+		// 10 万字符远超 64 KiB：在读入上限处终止，不先 ReadToEnd 再判断。
 		WriteAuth("""{"deepseek":{"type":"api_key","key":"!yes x | head -c 100000"}}""");
 
 		Assert.Null(await AuthStore.ReadApiKeyAsync(Provider, _agentDir));

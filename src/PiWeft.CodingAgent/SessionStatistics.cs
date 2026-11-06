@@ -148,7 +148,7 @@ internal sealed class ActiveIntervalUnion
 	}
 }
 
-/// 会话统计的累加器。抽成对象是为了让「增量累加」只维护一份状态，而不是在缓存里摊成十几个局部变量。
+/// 会话统计的累加器。抽成对象，让「增量累加」只维护一份状态，不在缓存里摊成十几个局部变量。
 internal sealed class StatisticsAccumulator
 {
 	private double _hitSum;

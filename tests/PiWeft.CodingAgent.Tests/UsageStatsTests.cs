@@ -143,7 +143,7 @@ public class UsageStatsTests : IDisposable
 		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { MaxLineBytes = 1024 });
 		Assert.Equal(10, report.Totals.Input);
 
-		// 不存在的根目录返回空报告而不是抛异常。
+		// 不存在的根目录返回空报告，不抛异常。
 		Assert.Empty(UsageStats.Scan(Path.Combine(_root, "missing")).Days);
 		Assert.Equal(0, UsageStats.Scan(Path.Combine(_root, "missing")).Totals.Tokens);
 	}

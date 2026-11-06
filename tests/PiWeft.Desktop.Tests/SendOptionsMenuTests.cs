@@ -8,7 +8,7 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// 发送弹窗（PiDeck 的 Split Send 同款）：投递方式是两行项——标题写动作、
+/// 发送弹窗（PiDeck 的 Split Send 同款）：投递方式是两行项，标题写动作、
 /// 第二行写协议名与生效时机。点击项即执行对应动作（弹窗自身的开关由框
 /// 架的原生 Popup 负责，无头测试里不涉及）。
 [Collection("mewui-controls")]
@@ -25,7 +25,7 @@ public sealed class SendOptionsMenuTests
 		]);
 
 		var texts = Find<TextBlock>(content).Select(block => block.Text).ToArray();
-		// 每一行都是「动作标题 + 生效时机」，而不是把协议名塞进标题尾巴。
+		// 每一行都是「动作标题 + 生效时机」，不把协议名塞进标题尾巴。
 		Assert.Contains(Strings.SteerCurrentTurn, texts);
 		Assert.Contains(Strings.SteerCurrentTurnHint, texts);
 		Assert.Contains(Strings.QueueNextTurn, texts);

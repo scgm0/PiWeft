@@ -33,7 +33,7 @@ internal static class DesktopTheme
 		var parsed = ThemeCatalog.Load(theme, cwd, agentDir, includeProject: true);
 		if (parsed is null)
 		{
-			// 主题被删除或损坏时回退到内建深色，而不是让界面起不来。
+			// 主题被删除或损坏时回退到内建深色，不让界面起不来。
 			return new Resolution(ThemeVariant.Dark, null, null);
 		}
 

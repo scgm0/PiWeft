@@ -76,15 +76,15 @@ internal sealed class ToolMessageView
 
 	public Border View { get; }
 
-	/// 流式输出每来一段就整行重建，会白白重造 Border / Expander / 秒表，还把这行打回虚拟化估算高度。
-	/// 这里只接「同一次调用仍在输出」的更新：表头状态与摘要都只依赖参数，多数拍一个字都不用改。
-	/// 换成固定耗时/错误样式（完成、失败、停止）、表头控件类型变化（ToolStartedAt 出现）或参数换代，
-	/// 以及行体已经展开（是展开那一刻的快照，还挂着 StickyExpander 的视口）时返回 false，交给整行重建。
+	/// 流式输出每来一段就整行重建，会重造 Border / Expander / 秒表，还把这行打回虚拟化估算高度。
+	/// 这里只接「同一次调用仍在输出」的更新：表头与摘要只依赖参数，多数拍不用改。
+	/// 换成固定耗时或错误样式（完成、失败、停止）、表头控件类型变化（ToolStartedAt 出现）、参数换代，
+	/// 或行体已展开（是展开那一刻的快照，还挂着 StickyExpander 的视口）时返回 false，交给整行重建。
 	internal bool Update(ChatEntry entry)
 	{
 		if (!CanUpdate(entry)) return false;
-		// 表头摘要只依赖工具名与参数（参数缺失时才退到正文）。参数还是同一个字符串引用时不必重算：
-		// bash/terminal 的摘要每次都要解析一遍参数 JSON，流式期每 40ms 一次是白烧。
+		// 表头摘要只依赖工具名与参数，参数缺失时才退到正文。参数仍是同一个字符串引用时不必重算：
+		// bash/terminal 的摘要每次都要解析参数 JSON，流式期每 40ms 一次是白烧。
 		if (entry.ToolName != _entry.ToolName || entry.ToolArguments is not { Length: > 0 } ||
 			!ReferenceEquals(entry.ToolArguments, _entry.ToolArguments))
 		{

@@ -48,8 +48,8 @@ public static partial class ContextOverflow
 		message.StopReason == StopReason.Error && IsOverflowText(message.ErrorMessage);
 
 	/// <summary>
-	/// 判断一段错误文本是否是「请求太大」而不是普通限流。压缩摘要请求本身也可能太大：
-	/// gateway 会把超出 prefill 容量的请求报成 429 prefill_cap_refused，而不是 413。
+	/// 判断一段错误文本是「请求太大」还是普通限流。压缩摘要请求本身也可能太大：
+	/// gateway 会把超出 prefill 容量的请求报成 429 prefill_cap_refused，而非 413。
 	/// </summary>
 	public static bool IsOverflowText(string? errorMessage)
 	{

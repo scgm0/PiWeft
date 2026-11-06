@@ -71,8 +71,8 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 	public event Action<string, JsonObject?>? NotificationReceived;
 
 	/// 连接中断时传输层补充的诊断说明，例如 stdio 进程的退出码与 stderr 摘要。
-	/// 读取循环失败挂起请求时会把它并入异常消息，否则用户只能看到一句
-	/// "connection closed"，无从判断服务器为何退出。
+	/// 读取循环失败时并进挂起请求的异常消息；否则用户只看到一句
+	/// "connection closed"，不知道服务器为何退出。
 	public volatile string? ClosureDiagnostics;
 
 	public static async Task<McpClient> ConnectAsync(
@@ -349,8 +349,8 @@ public sealed class McpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDis
 		_writer.Dispose();
 		_writeGate.Dispose();
 
-		// 给读取循环一点时间去发现流已关闭；调用方仍持有的流可能让它一直阻塞，
-		// 而释放操作不能因此被拖住。
+		// 给读取循环一点时间发现流已关闭；调用方仍持有的流可能让它一直阻塞，
+		// 释放操作不能因此被拖住。
 		await Task.WhenAny(_readLoop, Task.Delay(TimeSpan.FromMilliseconds(150))).ConfigureAwait(false);
 	}
 

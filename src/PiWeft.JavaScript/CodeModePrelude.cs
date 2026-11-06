@@ -210,7 +210,7 @@ internal static class CodeModePrelude
 				},
 			});
 
-			// 读取不存在的成员时直接报错并提示相近的名字，而不是留到后面变成 "not a function"。
+			// 读取不存在的成员时直接报错并提示相近的名字，不留到后面变成 "not a function"。
 			function comparable(name) {
 				return name.toLowerCase().replace(/[^a-z0-9]/g, "");
 			}

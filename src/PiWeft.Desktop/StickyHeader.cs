@@ -4,14 +4,14 @@ using Aprillz.MewUI.Rendering;
 
 namespace PiWeft.Desktop;
 
-/// 过程组组体内的步骤折叠行：展开后比组体视口更高的项，标题在本项范围内吸顶
+/// 过程组组体内的步骤折叠行：展开后比组体视口高的项，标题在本项范围内吸顶
 /// （对齐 PiDeck 的 <c>processEntryStickyPolicy</c>：只对跨过视口顶边的展开项生效，
-/// 本项末尾越过视口后标题随内容一起退场；不复制标题、不套第二层滚动条）。
+/// 本项末尾越过视口后标题随内容退场；不复制标题，也不套第二层滚动条）。
 /// MewUI 没有 CSS 的 position:sticky，也没有可用的渲染变换，因此吸顶由本控件自己完成：
 /// <list type="number">
 /// <item>排布阶段把 Header 放到视口顶边（在本项范围内 clamp），正文留在原排布位置继续滚动；</item>
-/// <item>绘制阶段先画正文（裁掉吸顶标题覆盖的那一段），再画标题与箭头 —— 正文不会盖住吸顶标题，
-/// 标题背后也不需要不透明底色（裁掉的那段露出阅读区本身的背景，主题换肤不会失配）。
+/// <item>绘制阶段先画正文（裁掉吸顶标题覆盖的那一段），再画标题与箭头；正文不会盖住标题，
+/// 标题背后也不用不透明底色（裁掉的部分露出阅读区背景，换肤不会失配）。
 /// 通过 <see cref="IVisualTreeHost.VisitChildren" /> 先交正文、再交标题，框架按顺序绘制；
 /// 命中测试会反向探测，标题仍在正文之上优先命中。</item>
 /// <item>吸顶时标题右侧只多一个「回到这一步的开头」图标（滚回开头的同时解除组体跟底）。</item>
@@ -36,8 +36,8 @@ internal sealed class StickyExpander : Expander, IVisualTreeHost
 	// PiDeck 的 pinned：标题真的贴在组体视口顶边、且本项仍跨过顶边（本项末尾退场时不属于此列）。
 	private bool _stuck;
 	private bool _returnShown;
-	// 本次 MouseDown 是否起于标题：Pointer 位置在窗口外取不到（无窗口的布局测试），
-	// 因此用同一次事件对象来判断，而不是自己算坐标。
+	// 本次 MouseDown 是否起于标题：窗口外取不到 Pointer 位置（无窗口的布局测试），
+	// 因此用同一次事件对象判断，不自己算坐标。
 	private MouseEventArgs? _headerDown;
 	// 吸顶标题的整条横带（含箭头区）：点击判定与分隔线都按它算。
 	private Rect _headerBand;

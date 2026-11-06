@@ -230,8 +230,8 @@ public class RealPromptFidelityTests
 	[Fact]
 	public void ToolAndRuleLinesMatchPi()
 	{
-		// 用所有真实会话的并集，而不是第一份：todo 这类工具由扩展提供，
-		// 早期会话可能没有，但只要有任一会话声明过，就应该能按 pi 原文匹配上。
+		// 用所有真实会话的并集，不用第一份：todo 这类工具由扩展提供，
+		// 早期会话可能没有，但只要有任一会话声明过，就能按 pi 原文匹配上。
 		var sessions = SectionedSystemMessages().ToList();
 		if (sessions.Count == 0)
 		{

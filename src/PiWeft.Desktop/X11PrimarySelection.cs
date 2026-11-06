@@ -88,7 +88,7 @@ internal sealed partial class X11PrimarySelection : IPrimarySelection, IDisposab
 				throw new InvalidOperationException("X11 PRIMARY resources unavailable");
 			// 只在自己的窗口上订阅属性变化；服务 INCR 时再单独订阅 requestor 窗口。
 			XSelectInput(_display, _requestWindow, PropertyChangeMask);
-			// ICCCM：分块大小相对握手得到的 maximum-request-size，而不是固定常数。
+			// ICCCM：分块大小按握手得到的 maximum-request-size 计算，不用固定常数。
 			var requestSize = XExtendedMaxRequestSize(_display);
 			if (requestSize <= 0) requestSize = FallbackRequestSize;
 			_chunkBytes = (int)Math.Clamp(requestSize / 2, MinChunkBytes, MaxChunkBytes);

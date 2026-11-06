@@ -5,7 +5,7 @@ using Xunit;
 namespace PiWeft.Desktop.Tests;
 
 /// D-04：远端同步工作流。用一个裸仓库当远端，跑真实的 fetch/pull/push 往返，
-/// 不 mock git —— 这些操作的语义全在同 git 的行为里，打桩只会验证我们的假设。
+/// 不 mock git：这些操作的语义全在 git 本身的行为里，打桩只验证我们的假设。
 public class GitRemoteTests : IDisposable
 {
 	private readonly string _base = Path.Combine(Path.GetTempPath(), "piweft-gitremote-" + Guid.NewGuid().ToString("N")[..8]);

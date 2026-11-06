@@ -14,14 +14,12 @@ public sealed record MigrationReport(IReadOnlyList<string> MigratedAuthProviders
 
 /// 启动期的一次性迁移，镜像 pi 的 <c>migrations.ts</c>：
 /// <list type="bullet">
-/// <item><description><strong>凭据</strong>：<c>oauth.json</c> 与 <c>settings.json.apiKeys</c> 合并成
-/// <c>auth.json</c>（pi 0.30 起的唯一凭据文件）。不做这一步，老用户会显示「未登录」。</description></item>
-/// <item><description><strong>会话落点</strong>：pi v0.30.0 曾把会话写在 agent 根目录，之后改成
-/// <c>sessions/&lt;编码后的 cwd&gt;/</c>；根目录里遗留的 <c>*.jsonl</c> 要搬回去，否则侧栏看不到。</description></item>
-/// <item><description><strong>资源目录</strong>：<c>commands/</c> 改名为 <c>prompts/</c>。</description></item>
+/// <item><description>凭据：<c>oauth.json</c> 与 <c>settings.json.apiKeys</c> 合并成 <c>auth.json</c>
+/// （pi 0.30 起唯一的凭据文件），否则老用户显示「未登录」。</description></item>
+/// <item><description>会话落点：根目录遗留的 <c>*.jsonl</c> 搬进 <c>sessions/&lt;编码 cwd&gt;/</c>，否则侧栏看不到。</description></item>
+/// <item><description>资源目录：<c>commands/</c> 改名 <c>prompts/</c>。</description></item>
 /// </list>
-/// 每一步都失败关闭：单个文件读不懂只记警告，不阻塞启动、也不删除来源文件。
-/// 迁移是幂等的，可以每次启动都跑。
+/// 每一步失败关闭：单个文件读不懂只记警告，不阻塞启动，也不删来源文件。迁移幂等，每次启动都可跑。
 public static class AgentMigrations
 {
 	private static readonly JsonSerializerOptions WriteOptions = new()

@@ -6,7 +6,7 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// 流式思考与步骤行展开后的布局收敛：两者都要求“行在 arrange 阶段变高后重新测高并发布 extent”。
+/// 流式思考与步骤行展开后的布局收敛：两种情况都要求「行在 arrange 阶段变高后重新测高并发布 extent」。
 [Collection("mewui-controls")]
 public sealed class StreamingThinkingTests
 {
@@ -83,9 +83,9 @@ public sealed class StreamingThinkingTests
 	[Fact]
 	public void ExpandingAToolRowAfterAQueuedStreamingFollowKeepsTheReadingPosition()
 	{
-		// 流式思考那一帧把「布局后继续跟底」排进了队列；同一帧里读者点开了另一个工具步骤。
-		// 展开是阅读行为，必须取消还在排队的跟底动作，否则预览行会被拽到新的末尾 ——
-		// 这就是「偶发：展开步骤行时组体进度没固定在步骤行预览」。
+		// 流式思考那一帧把「布局后继续跟底」排进了队列，同一帧里读者点开了另一个工具步骤。
+		// 展开是阅读行为，要取消排队的跟底动作，否则预览行会被拽到新的末尾，
+		// 即「偶发：展开步骤行时组体进度没固定在步骤行预览」。
 		using var guard = new TextFocusScrollGuard(new ScrollViewer());
 		var members = Enumerable.Range(0, 30).Select(Tool).ToList();
 		members[6] = Thinking("初始思考");
@@ -152,7 +152,7 @@ public sealed class StreamingThinkingTests
 			entry = Thinking(string.Join("\n\n", Enumerable.Range(0, step + 1).Select(i => $"reasoning paragraph {i}")));
 			view.Update(entry);
 			Pump(view.View);
-			// 展开的思考必须跟着流式增量走，而不是停在展开时的那一版。
+			// 展开的思考跟着流式增量走，不停在展开时的那一版。
 			Assert.Equal(entry.Thinking, markdown.Source);
 		}
 
@@ -585,7 +585,7 @@ public sealed class StreamingThinkingTests
 			Pump(view.View);
 		}
 		// 思考行整个在视口上方：它长多少，内容坐标系就整体下移多少。面板把这段差值补进偏移，
-		// 读者看到的那一行因此不动（而不是让内容被顶上去）。
+		// 读者看到的那一行因此不动，内容不会被顶上去。
 		Assert.InRange(anchor.Bounds.Y, y - 1, y + 1);
 		var grown = SmoothScroll.For(body).MaxVerticalOffset - max;
 		Assert.True(grown > 20, $"the thinking block above the viewport must grow: {grown:0.#}");
@@ -744,7 +744,7 @@ public sealed class StreamingThinkingTests
 		guard.Track(markdown);
 
 		// 思考是过程组的最后一步；展开后把它滚到组体末尾（长内容再按末尾定位），
-		// 让虚拟化器重新实现这一行，而不是拿展开前缓存的中间偏移硬套。
+		// 让虚拟化器重新实现这一行，不拿展开前缓存的中间偏移硬套。
 		body.SetScrollOffsets(0, double.MaxValue);
 		Settle(view);
 		for (var pass = 0; pass < 2; pass++)

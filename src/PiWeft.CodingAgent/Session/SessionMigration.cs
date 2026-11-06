@@ -18,7 +18,7 @@ internal static class SessionMigration
 {
 	/// 就地把 <paramref name="entries"/>（头部 + 条目，按文件顺序）升级到
 	/// <see cref="SessionFormat.CurrentVersion"/>；返回是否发生了迁移。
-	/// 没有头部（外部工具写出的会话）时不做迁移 —— pi 的加载分支也只对带头部的文件调用
+	/// 没有头部（外部工具写出的会话）时不做迁移；pi 的加载分支也只对带头部的文件调用
 	/// <c>migrateToCurrentVersion</c>，把无头文件补一个头部是另一条路径（见 SessionManager.Persist）。
 	public static bool Migrate(List<object> entries)
 	{

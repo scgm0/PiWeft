@@ -52,7 +52,7 @@ public static partial class Strings
 	public static string McpSignedOut(string name) => "已清除 " + name + " 的凭据。";
 
 	public static string McpBrowserFailed(string url) => "打不开浏览器，请手动访问：" + url;
-	public const string ConfigMcpHint = "添加 stdio 或 HTTP 服务，为 Agent 扩展工具。保存后重启应用生效。";
+	public const string ConfigMcpHint = "添加 stdio 或 HTTP 服务，为 Agent 扩展工具。保存后重启生效。";
 	public const string ConfigCredentialsHint = "API Key 保存在本机；已有凭据仅显示供应商和认证类型。";
 	public const string ToolExpandHint = "展开查看参数、输出或差异";
 

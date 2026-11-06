@@ -5,18 +5,18 @@ using Xunit.Abstractions;
 
 namespace PiWeft.Desktop.Tests;
 
-/// 「首次打开复杂会话，快速上滚时会话进度跳变/回退」的回归：打开时只有尾部行有实测高度，
-/// 上方历史行用的是虚拟化器的运行平均估算；上滚后实测行高修正会改写偏移（锚点校正）。
-/// 普通 <see cref="SmoothScroll"/> 要么把可见校正当读者接管而停止滑行，要么让目标留在旧
-/// 坐标系里；结果是滚了很多却几乎没动、甚至反向滑回去。会话时间线必须把校当内容坐标系平移。
+/// 「首次打开复杂会话，快速上滚时会话进度跳变或回退」的回归：打开时只有尾部行有实测高度，
+/// 上方历史行用虚拟化器的运行平均估算；上滚后实测行高修正会改写偏移（锚点校正）。
+/// 普通 <see cref="SmoothScroll"/> 会把可见校正当读者接管而停止滑行，或让目标留在旧坐标系，
+/// 结果是滚了很多却几乎没动，甚至反向滑回去。会话时间线要把校正当内容坐标系平移。
 /// 帧驱动分两条：<see cref="AnimationFrames.Frame(SmoothScroll)"/> 钉住每帧 dt（曲线确定，
 /// 距离断言可以收到 ±2%），以及真实 dt 的 <see cref="RealFrames"/>（覆盖「不钳制 dt」那条性质，
-/// 只断言不漂移/不拖长尾，默认跳过 —— 见其注释）。
+/// 只断言不漂移、不拖长尾，默认跳过（见其注释）。
 [Collection("mewui-controls")]
 public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 {
-	// 44 格 × 默认 50 DIP：40 格时最后几格仍在估算段里翻平均，44 格把手势推过整段估算区，
-	// 校正集中在可数的几帧里完成，曲线在固定 dt 下完全确定。
+	// 44 格 × 默认 50 DIP：40 格时最后几格还在估算段里翻平均；44 格把手势推过整段估算区，
+	// 校正集中在可数的几帧里，曲线在固定 dt 下完全确定。
 	private const int Notches = 44;
 
 	private static void Pump(UIElement view, double width = 700, double height = 600)
@@ -61,7 +61,7 @@ public sealed class VirtualizedWheelCorrectionTests(ITestOutputHelper output)
 
 	private static Fixture Build(bool historyTall)
 	{
-		// 滚轮步长是**进程级**全局量：AppFonts.Register()（桌面启动与 AppFontTests 都会调）把它
+		// 滚轮步长是进程级全局量：AppFonts.Register()（桌面启动与 AppFontTests 都会调）把它
 		// 设成 100 DIP，而 MewUI 缺省是 50。于是同一段断言在「本用例先跑」和「字体测试先跑」
 		// 两种进程里读到不同的步长，手势走过的内容量差一倍，比例断言自然一个过一个挂。
 		// 用例自己钉住它并在 Dispose 里还原：与执行顺序无关，也不影响其它用例。

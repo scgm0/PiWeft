@@ -41,8 +41,8 @@ internal static class UserReferenceRichText
 		{
 			box.EditableRegions = new ReferenceEditableRegions(box);
 			// 组合输入（中文/日文 IME）前先把光标挪出 chip 内部：组合文本必须落在引用之外。
-			// 投影在组合期间保持挂载，chip 不会退回原始路径 —— 等长投影让 MewUI 按源文偏移
-			// 绘制的组合下划线/选区仍然落在文本内，见 <see cref="ReferenceProjection"/>。
+			// 投影在组合期间保持挂载，chip 不会退回原始路径。等长投影让 MewUI 按源文偏移
+			// 绘制的组合下划线、选区仍落在文本内，见 <see cref="ReferenceProjection"/>。
 			box.TextCompositionStart += _ => NormalizeCaret(box);
 		}
 		IUserChip? hint = null;
@@ -152,7 +152,7 @@ internal static class UserReferenceRichText
 				{
 					var document = new Rect(line.DocumentX + rect.X, line.DocumentY + rect.Y, rect.Width, rect.Height);
 					if (!document.Contains(local)) continue;
-					// chip 的窗口矩形：悬浮提示直接锚在它下面，而不是整个文本框。
+					// chip 的窗口矩形：悬浮提示锚在它下面，不用整个文本框。
 					return new ChipHit(chip, new Rect(content.X + document.X, content.Y + document.Y, document.Width, document.Height));
 				}
 			}

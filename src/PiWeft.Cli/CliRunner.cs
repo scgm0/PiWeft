@@ -56,7 +56,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		_arguments = arguments;
 		AppLog.For<CliRunner>().ZLogInformation($"CLI run: mode={arguments.Mode.ToString()}");
 
-		// 兼容参数被静默吞掉会让用户以为功能生效了（例如 -e 期望扩展加载）；显式提示一次。
+		// 兼容参数被静默吞掉，用户会以为功能生效了（例如 -e 期望扩展加载）；显式提示一次。
 		foreach (var flag in arguments.AcceptedCompatFlags)
 		{
 			error.WriteLine($"pi: warning: {flag} is accepted for pi/PiDeck compatibility but not implemented in this port (see --help).");
@@ -277,7 +277,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		var sessionPath = CliEnvironment.ResolveSessionPath(source, cwd, arguments.SessionDir)
 			?? throw new InvalidOperationException($"Session not found: {source}");
 
-		// 导出是只读操作：不记录初始思考级别，也不把旧版会话回写成新格式（内存里仍按当前格式解释）。
+		// 导出是只读操作：不记录初始思考级别，也不把旧版会话回写成新格式，内存里仍按当前格式解释。
 		using var session = environment.CreateSession(
 			arguments,
 			cwd,
@@ -298,8 +298,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	public static string VersionString => RpcContractVersion;
 
 
-	/// 扩展 flag 的收口：没有注册者的未知选项、或 string 类型缺值，都按 pi 的语义报错退出。
-	/// 放在会话建好之后 —— 只有加载过扩展才知道哪些 flag 是合法的。
+	/// 扩展 flag 的收口：没有注册者的未知选项、string 类型缺值，都按 pi 的语义报错退出。
+	/// 放在会话建好之后，只有加载过扩展才知道哪些 flag 合法。
 	private int? RejectUnknownExtensionFlags(CodingAgentSession session)
 	{
 		var failed = false;
@@ -334,8 +334,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			await RunAndPrintAsync(session, message, cancellationToken).ConfigureAwait(false);
 		}
 
-		// 与 pi 一致：被输出上限截断时打印部分文本、在 stderr 说明原因，并以 1 退出 ——
-		// 静默地以 0 退出会让脚本把半截回答当成完整结果。
+		// 与 pi 一致：被输出上限截断时打印部分文本，在 stderr 说明原因，并以 1 退出。
+		// 静默以 0 退出，脚本会把半截回答当成完整结果。
 		if (LastStopReasonIsTruncated(session))
 		{
 			error.WriteLine("Response was truncated: the model reached its output token limit.");
@@ -347,7 +347,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	}
 
 	/// 把管道 stdin、<c>@file</c> 附件与第一个命令行提示合成初始提示，其余提示保持顺序。
-	/// 返回的列表至少含一项（可能为空字符串），保证无参数调用仍会跑一轮。
+	/// 返回列表至少一项（可能为空字符串），无参数调用也会跑一轮。
 	private static async Task<(List<string> Prompts, List<ImageContent> Images)> PreparePromptsAsync(
 		CliArguments arguments,
 		string cwd,
@@ -492,8 +492,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		}
 
 		WriteRecord(AgentEventWriter.AgentSettled(LastStopReasonWasAborted(session)));
-		// 与 pi 一致：被输出上限截断时打印部分文本、在 stderr 说明原因，并以 1 退出 ——
-		// 静默地以 0 退出会让脚本把半截回答当成完整结果。
+		// 与 pi 一致：被输出上限截断时打印部分文本，在 stderr 说明原因，并以 1 退出。
+		// 静默以 0 退出，脚本会把半截回答当成完整结果。
 		if (LastStopReasonIsTruncated(session))
 		{
 			error.WriteLine("Response was truncated: the model reached its output token limit.");
@@ -526,8 +526,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 	private IDisposable? _sessionEvents;
 
-	/// 订阅当前会话的代理事件并写成 JSONL。订阅绑定在会话实例上：<c>new_session</c> 会换掉实例，
-	/// 必须重新订阅，否则客户端只收到 response、收不到任何 message_*/tool_* 事件。
+	/// 订阅当前会话的代理事件并写成 JSONL。订阅绑定在会话实例上，<c>new_session</c> 换实例后
+	/// 要重新订阅，否则客户端只收到 response，收不到 message_* / tool_* 事件。
 	private void SubscribeSessionEvents()
 	{
 		_sessionEvents?.Dispose();
@@ -538,8 +538,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		});
 	}
 
-	/// RPC 模式：在 stdin/stdout 上运行长驻的 JSONL 命令/响应/事件协议。不输出会话头部，
-	/// 客户端改为调用 <c>get_state</c>。
+	/// RPC 模式：在 stdin/stdout 上运行长驻的 JSONL 命令、响应与事件协议。不输出会话头部，
+	/// 客户端改调 <c>get_state</c>。
 	private async Task<int> RunRpcAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
 		_arguments = arguments;
@@ -1622,7 +1622,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			throw new InvalidOperationException($"Session file not found: {sourcePath}");
 		}
 
-		// pi 的 /import 是“导入并 resume”：替换当前会话，而不是把消息追加到当前分支。
+		// pi 的 /import 是「导入并 resume」：替换当前会话，不把消息追加到当前分支。
 		return SessionManager.Open(Path.GetFullPath(sourcePath));
 	}
 

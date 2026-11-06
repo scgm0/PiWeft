@@ -627,7 +627,7 @@ public class ChatViewModelTests : IDisposable
 		var send = viewModel.SendAsync("run the slow tool");
 		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-		// 流式工具行必须带开始时刻：过程投影会拿它当秒表起点，而不是每帧用当前时间重置。
+		// 流式工具行要带开始时刻：过程投影拿它当秒表起点，不用每帧的当前时间重置。
 		var live = Assert.Single(viewModel.Entries(), entry => entry.EntryId == "live-tool/call-slow");
 		Assert.True(live.IsStreaming);
 		Assert.NotNull(live.ToolStartedAt);

@@ -74,7 +74,7 @@ public static class AppIcons
 					image,
 					// 字色不写死：不设前景色，继承 Button 的 Foreground，让主按钮样式在可用 / 禁用两态
 					// 自己切换（TextOnAccent ↔ TextFaint）。写死 OnAccentText 的话，禁用态
-					// 会变成深色字压在深色底上——看上去像已经消失的按钮。
+					// 会变成深色字压在深色底上，看上去像已经消失的按钮。
 					new TextBlock().Text(text).FontSize(AppTheme.FontSizeControl)
 						.VerticalAlignment(VerticalAlignment.Center)))
 			.OnClick(onClick)
@@ -85,7 +85,7 @@ public static class AppIcons
 	/// <paramref name="strong"/> 把图标也提亮到主文字色：侧栏顶部的「新建 / 搜索会话」这类主要入口用得上。
 	public static Button TextButton(string icon, string text, Action onClick, bool strong = false)
 	{
-		// 只记「跟随主文字色」这个语义，不记当时的具体颜色 —— 否则换肤后图标会停在旧主题的色值上。
+		// 只记「跟随主文字色」这个语义，不记具体颜色，否则换肤后图标停在旧主题的色值上。
 		var image = new Image().Source(Get(icon, strong ? AppTheme.TextPrimary : null)).Width(14).Height(14)
 			.VerticalAlignment(VerticalAlignment.Center);
 		Track(image, icon, tint: null, role: strong ? AppStyles.RolePrimary : null);

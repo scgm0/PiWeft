@@ -191,7 +191,7 @@ public sealed class AuthCommandProcessTests : IDisposable
 		Assert.Contains("保留", raw);
 		Assert.DoesNotContain("\\u", raw);
 
-		// codex 已经登出，但 deepseek 的 api_key 仍在 —— 两个 provider 的凭据互不影响。
+		// codex 已登出，deepseek 的 api_key 仍在，两个 provider 的凭据互不影响。
 		Assert.Equal(1, (await RunAsync("auth", "check", "--provider", "openai-codex")).ExitCode);
 		Assert.Equal(0, (await RunAsync("auth", "check", "--provider", "deepseek")).ExitCode);
 	}
@@ -226,7 +226,7 @@ public sealed class AuthCommandProcessTests : IDisposable
 	[Fact]
 	public async Task ApiKeyProviderIsDetectedFromAuthJsonAndCanBePrinted()
 	{
-		// 这正是用户遇到 401 的场景：key 存在 auth.json 里而不是环境变量。
+		// 这正是用户遇到 401 的场景：key 存在 auth.json 里，不在环境变量。
 		var path = Path.Combine(_root, "auth.json");
 		File.WriteAllText(
 			path,

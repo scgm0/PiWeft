@@ -7,7 +7,7 @@ namespace PiWeft.Mcp.Tests;
 
 /// <see cref="McpLogin"/> 是 CLI（<c>pi mcp login</c>）与桌面配置页共用的授权入口。
 /// 这里钉住三件事：分支选择（客户端凭据 vs 浏览器授权码）、令牌落盘位置、
-/// 以及状态查询（未授权 / 已授权 / 已过期）——界面上的三个按钮文案全靠它。
+/// 以及状态查询（未授权、已授权、已过期），界面上的三个按钮文案全靠它。
 public sealed class McpLoginTests : IDisposable
 {
 	private const string Endpoint = "https://mcp.example/mcp";
@@ -128,13 +128,13 @@ public sealed class McpLoginTests : IDisposable
 	}
 
 	[Fact]
-	public void StdioServersHaveNoAuthorization()
+	public async Task StdioServersHaveNoAuthorization()
 	{
 		// stdio 没有 OAuth；界面因此不给它显示授权入口，点了只会让人以为能修好连接问题。
 		var config = new McpServerConfig { Name = "local", Command = "mcp-server" };
 		Assert.False(McpLogin.SignedIn(config, _agentDir));
 
-		var outcome = McpLogin.RunAsync(new HttpClient(), config, _agentDir).GetAwaiter().GetResult();
+		var outcome = await McpLogin.RunAsync(new HttpClient(), config, _agentDir);
 		Assert.False(outcome.Ok);
 		Assert.Contains("HTTP", outcome.Message, StringComparison.Ordinal);
 	}
@@ -165,6 +165,6 @@ public sealed class McpLoginTests : IDisposable
 
 		Assert.True(McpLogin.Logout(config, _agentDir));
 		Assert.False(McpLogin.SignedIn(config, _agentDir));
-		Assert.False(McpLogin.Logout(config, _agentDir), "重复登出应当报告「没有东西可清除」而不是假装成功");
+		Assert.False(McpLogin.Logout(config, _agentDir), "重复登出应当报告「没有东西可清除」，不应假装成功");
 	}
 }

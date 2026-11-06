@@ -160,8 +160,8 @@ internal static class TrajectoryBuilder
 		return draft.Complete(now);
 	}
 
-	/// 增量重建：复用 <paramref name="reuse"/> 里已收口的轮，只从 <paramref name="startIndex"/>
-	/// 开始重建尾部（通常是最后一轮）。数据源是 append-only 的分支时，流式每秒的刷新从
+	/// 增量重建：复用 <paramref name="reuse"/> 里已收口的轮，只从 <paramref name="startIndex"/> 开始
+	/// 重建尾部（通常是最后一轮）。数据源是 append-only 分支时，流式每秒的刷新从
 	/// O(整份历史) 降到 O(最后一轮)。
 	internal static TrajectoryModel BuildTail(
 		IReadOnlyList<SessionEntry> entries,
@@ -189,7 +189,7 @@ internal static class TrajectoryBuilder
 			return;
 		}
 
-		// 流式行永远在投影尾部：从后往前遇到第一条已落盘的行就停，空闲时是 O(1)。
+		// 流式行总在投影尾部：从后往前遇到第一条已落盘的行就停，空闲时是 O(1)。
 		for (var index = liveRows.Count - 1; index >= 0; index--)
 		{
 			var row = liveRows[index];
@@ -526,8 +526,8 @@ internal static class TrajectoryBuilder
 				tool.DurationMs = result.DurationMs;
 				tool.Status = result.IsError ? "error" : "done";
 				tool.IsError = result.IsError;
-				// 工具的真实起止是「结果时刻 − 实测耗时」：用助手消息时间推算会把整段生成时间
-				// 都算进工具（模型写完正文才执行工具），长回复的工具条会被拉成几十秒。
+				// 工具的真实起止是「结果时刻 − 实测耗时」。用助手消息时间推算会把整段生成时间算进工具，
+				// 模型写完正文才执行工具，长回复的工具条会被拉成几十秒。
 				if (result.DurationMs is > 0 && at > 0)
 				{
 					tool.StartedAt = at - (long)result.DurationMs.Value;

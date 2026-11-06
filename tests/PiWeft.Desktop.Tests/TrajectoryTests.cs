@@ -236,7 +236,7 @@ public class TrajectoryTests
 		AssertSameModel(
 			TrajectoryBuilder.Build([.. entries], [], Base + 6000, busy: true),
 			afterTailAppend);
-		// 增量路径真的复用了已收口的第一轮（而不是重新构建了整份会话）。
+		// 增量路径复用了已收口的第一轮，没有重建整份会话。
 		Assert.Same(afterSecondUser.Turns[0], afterTailAppend.Turns[0]);
 
 		entries.Add(Entry("result-2", Base + 5600, Result("c2", Base + 5600, "file", duration: 100)));

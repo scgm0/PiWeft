@@ -11,7 +11,7 @@ namespace PiWeft.Desktop;
 /// <list type="bullet">
 /// <item>竖线光标根本不是竖线，只是「字符变色 + 多一条下划线」；</item>
 /// <item>块光标只盖住该 run 自己的排布宽度；行尾那一格没有字形可亮，还要临时补一个 run，
-/// 于是块落在「最后一个有字形的格子」后面 —— 光标越往右，块偏得越左；</item>
+/// 于是块落在「最后一个有字形的格子」后面，光标越往右，块偏得越左；</item>
 /// <item>失焦的空心框用 <see cref="Controls.Border"/> 画在小数坐标上，1 DIP 描边落在像素之间，
 /// 上下两条边被抗锯齿吃掉，只剩左右两撇 <c>[ ]</c>。</item>
 /// </list>
@@ -22,7 +22,7 @@ namespace PiWeft.Desktop;
 /// <item>绝对位置在 <see cref="OnRender"/> 里用 <see cref="Element.Bounds"/> 现算：
 /// 拖拽改变面板尺寸时，排版与重绘是同一轮，光标跟着文字同帧移动；
 /// 要是把绝对坐标在重绘前算好存下，拖高时 arrange 在绘制之后，光标就会停在旧行上。</item>
-/// <item>四条边都贴到设备像素，描边按一个物理像素计 —— 失焦就是完整的一圈空心框；</item>
+/// <item>四条边都贴到设备像素，描边按一个物理像素计，失焦就是完整的一圈空心框；</item>
 /// <item>同一个类用两份：实心块那份排在文本行底下（块是「格子背景」，块下那个字符由文本层
 /// 按底色绘制，仍然读得出来）；竖线/底线/失焦空心框那份排在文本行之上，不遮字，
 /// 单元格自带背景色（vim 高亮行、状态栏）时也不会被盖掉。</item>
@@ -135,7 +135,7 @@ internal sealed class TerminalCursorLayer : FrameworkElement
 
 			case TerminalCursorStyle.Underline:
 			{
-				// 下划线：格底一条线，画在字符底下而不是压在字符上。
+				// 下划线：格底一条线，画在字符底下，不压在字符上。
 				var height = Math.Max(thickness, Math.Round(cell.Height * UnderlineHeightRatio * scale) / scale);
 				context.FillRectangle(new Rect(cell.X, cell.Bottom - height, cell.Width, height), _color);
 				break;

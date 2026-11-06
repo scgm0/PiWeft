@@ -7,8 +7,8 @@ using ZLogger;
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-// 进程标记（与 pi 的 cli/rpc 入口一致）：子进程与扩展凭它识别「宿主是 pi」。
-// SDK 嵌入时由宿主自行决定是否设置，因此只在值缺失时补默认。
+// 进程标记（与 pi 的 cli/rpc 入口一致）：子进程与扩展靠它识别「宿主是 pi」。
+// SDK 嵌入时由宿主决定是否设置，这里只在缺值时补默认。
 Environment.SetEnvironmentVariable("AI_AGENT", Environment.GetEnvironmentVariable("AI_AGENT") ?? "pi");
 Environment.SetEnvironmentVariable("PI_CODING_AGENT", Environment.GetEnvironmentVariable("PI_CODING_AGENT") ?? "true");
 
@@ -25,8 +25,8 @@ if (args.Length == 0 || args[0] is not ("--version" or "-v" or "--help" or "-h")
 		PiWeft.CodingAgent.Settings.CodingAgentSettings.GlobalHttpProxy());
 }
 
-// 子命令（auth/mcp/package）可能跑网络请求或外部进程：未预期的异常要转成
-// 「pi: ...」+ 退出码 1，而不是让 .NET 的栈回溯直接砸到用户脸上。
+// 子命令（auth/mcp/package）可能跑网络请求或外部进程：未预期的异常转成
+// 「pi: ...」加退出码 1，不把 .NET 栈回溯直接甩给用户。
 async Task<int?> RunPreParseAsync(string label, Func<Task<int?>> command)
 {
 	try
@@ -52,9 +52,9 @@ if (args.Length > 0 && args[0] == "--offline")
 	args = args[1..];
 }
 
-// 凭据命令最先处理，并且**不经过通用参数解析**：它们有自己的开关
-// （--json / --credentials / --no-refresh / --min-expiry），通用解析器会把它们当成未知选项。
-// 这也和 pi 一致 —— 官方在解析参数之前先看是不是 auth 命令。
+// 凭据命令最先处理，不经过通用参数解析：它们有自己的开关
+// （--json / --credentials / --no-refresh / --min-expiry），通用解析器会当成未知选项。
+// 这与 pi 一致：官方在解析参数之前先看是不是 auth 命令。
 if (args.Length > 0 && args[0] is "login" or "logout" or "auth")
 {
 	var authExit = await RunPreParseAsync("auth", () =>

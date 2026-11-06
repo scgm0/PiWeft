@@ -71,9 +71,8 @@ internal sealed record UsageProbeResponse(
 	UsageCredits? Credits = null,
 	UsageBooster? Booster = null);
 
-/// 内置候选表与探测规则（对齐 PiDeck 的 providerUsageProbe）：
-/// 新增供应商只在这里补「端点 + 解析」，不发散到 UI/IPC。
-/// 用户维护的旧版 probes 数组（usage-probes.json 的 probes）合并在本表之后。
+/// 内置候选表与探测规则（对齐 PiDeck 的 providerUsageProbe）。新增供应商只在这里补
+/// 「端点 + 解析」，不散到 UI 与 IPC。用户维护的旧版 probes 数组合并在本表之后。
 internal static class UsageProbes
 {
 	public const int MaxResponseBytes = 1024 * 1024;
@@ -175,7 +174,7 @@ internal static class UsageProbes
 			TemplateId: "minimax-plan", Parse: new(UsageParseKind.Custom, Resolver: "minimax-plan")),
 
 		// 通用 OpenAI 兼容网关：多数中转站实现官方 /v1/usage（{ balance, unit }）。
-		// 不限定 baseUrl，仅靠 apiTypes 收窄到 OpenAI 协议，放在末尾——前面带域名的专有候选优先。
+		// 不限定 baseUrl，只靠 apiTypes 收窄到 OpenAI 协议，放在末尾；前面带域名的专有候选优先。
 		new("/usage", ApiTypes: ["openai-completions", "openai-responses", "openai-codex-responses"],
 			Parse: new(UsageParseKind.Balance, ValuePath: "balance", CurrencyPath: "unit")),
 	];
@@ -224,7 +223,7 @@ internal static class UsageProbes
 		var versioned = EnsureVersionPath(trimmed);
 		var urls = new List<string> { versioned + candidate.Path, trimmed + candidate.Path };
 		// 站点根兜底只给内置候选：官方余额端点（/user/balance、/users/me/balance）常挂在
-		// host 根，而 models.json 的 baseUrl 可能已带 /v1——前两条都会 404，第三条才是真端点。
+		// host 根，而 models.json 的 baseUrl 可能已带 /v1；前两条都会 404，第三条才是真端点。
 		// 用户探针按 skill 约定就是「相对 baseUrl 的路径」，不擅自换根。
 		if (candidate.TemplateId.Length > 0 && Uri.TryCreate(trimmed, UriKind.Absolute, out var origin))
 			urls.Add(origin.GetLeftPart(UriPartial.Authority) + candidate.Path);

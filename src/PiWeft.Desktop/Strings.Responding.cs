@@ -38,8 +38,7 @@ public static partial class Strings
 	public const string RespondingTipsSetting = "等待时轮播功能提示";
 
 	public const string RespondingTipsSettingDesc =
-		"会话进行期间，在状态条右侧一行小字轮播本应用的能力入口（命令面板、排队发送、@ 引用等）。" +
-		"关掉只影响这一行提示，不影响里面提到的任何功能。";
+		"会话进行时在状态条右侧轮播能力入口（命令面板、排队发送、@ 引用等）。关掉只关提示，不影响功能。";
 
 	public const string RespondingTipShortcutToken = "{shortcut}";
 }

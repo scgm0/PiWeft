@@ -19,7 +19,7 @@ public sealed class AutoRetryUiTests
 		using var session = new CodingAgentSession(new CodingAgentSessionOptions
 		{
 			Cwd = manager.Cwd, Session = manager, Model = model, Tools = [], Skills = [], PromptTemplates = [], Persist = false,
-			// 退避时间给足：测试要在等待窗口里看到状态条，而不是让重试自然到点。
+			// 退避时间给足：测试要在等待窗口里看到状态条，不让重试自然到点。
 			Settings = new CodingAgentSettings { Retry = new RetryPolicy(BaseDelayMs: 5_000) },
 			StreamFn = (streamModel, _, _) => FakeStreams.Error(streamModel, "Service Unavailable"),
 		});

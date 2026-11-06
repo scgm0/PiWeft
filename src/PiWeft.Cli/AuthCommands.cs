@@ -593,7 +593,7 @@ public static class AuthCommands
 			var key = await AuthStore.ReadApiKeyAsync(provider, agentDir, cancellationToken).ConfigureAwait(false)
 				?? ProviderEnvironment.ResolveEnvironmentKey(provider);
 			// Vertex ADC / Bedrock AWS 没有单个 API Key 可打印；给 auth check 一个可读的
-			// 「已由环境提供」标记，而不是把可用凭据误报成 invalid。
+			// 「已由环境提供」标记，不把可用凭据误报成 invalid。
 			return key ?? (HasProviderAmbient(provider) ? "ambient" : null);
 		}
 

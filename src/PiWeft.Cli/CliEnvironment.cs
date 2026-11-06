@@ -115,7 +115,7 @@ public sealed class CliEnvironment
 		string cwd,
 		HttpMessageHandler? handler)
 	{
-		// 信任决策只看**全局** settings.defaultProjectTrust（项目设置不能自我授权）。
+		// 信任决策只看全局 settings.defaultProjectTrust，项目设置不能自我授权。
 		// 不受信时不合并项目设置，避免一个未受信项目通过 .pi/settings.json 影响行为。
 		var defaultTrust = CodingAgentSettings.GlobalDefaultProjectTrust();
 		var projectTrusted = ProjectTrust.Resolve(cwd, arguments.ProjectTrustOverride, defaultTrust);
@@ -284,8 +284,8 @@ public sealed class CliEnvironment
 			return available[0];
 		}
 
-		// 完全没有密钥时，仍然以第一个受支持的对话模型启动，让桌面客户端能访问到 RPC 面并展示模型选择；
-		// 之后发送提示会以 provider 自己的“缺少密钥”错误失败，这与 pi 在 RPC 模式下的体验一致。
+		// 完全没有密钥时，仍以第一个受支持的对话模型启动，桌面客户端能访问 RPC 面并展示模型选择；
+		// 发送提示会以 provider 自己的「缺少密钥」错误失败，与 pi 的 RPC 模式一致。
 		foreach (var candidate in registry.ChatModels())
 		{
 			if (SupportsApi(candidate.Api))
@@ -333,7 +333,7 @@ public sealed class CliEnvironment
 	}
 
 	/// 按 <c>provider/id</c>、精确 id、glob 模式或子串查找模型。与 pi 1.3.0 一致：
-	/// 同名 id 出现在多个 provider 时优先选择**有可用凭据**的那个，仍然无法区分时返回 null
+	/// 同名 id 出现在多个 provider 时优先选有可用凭据的那个，仍无法区分时返回 null，
 	/// 由调用方报「模型未找到/有歧义」。
 	public static Model? FindModel(
 		ModelRegistry registry,
@@ -344,8 +344,8 @@ public sealed class CliEnvironment
 	{
 		if (pattern.Length == 0)
 		{
-			// 空模式（例如 `--model=`）会让后面的子串匹配 `Contains("")` 恒真，
-			// 静默选中目录里的第一个模型；这里显式返回未命中，交给调用方报错。
+			// 空模式（例如 `--model=`）会让后面的子串匹配 `Contains("")` 恒真，静默选中第一个模型；
+			// 这里显式返回未命中，交给调用方报错。
 			return null;
 		}
 
@@ -359,8 +359,8 @@ public sealed class CliEnvironment
 			return byKey;
 		}
 
-		// 裸 id 命中多个 provider：优先有凭据者；不知道凭据情况（未传 key 信息）或仍然并列时
-		// 维持「有歧义」的返回，让调用方报错而不是猜一个。
+		// 裸 id 命中多个 provider：优先有凭据者；不知道凭据情况或仍然并列时返回「有歧义」，
+		// 让调用方报错，不猜一个。
 		var byId = registry.FindById(pattern)
 			.Where(m => SupportsApi(m.Api))
 			.Where(m => provider is null || string.Equals(m.Provider, provider, StringComparison.Ordinal))
@@ -832,7 +832,7 @@ public sealed class CliEnvironment
 			return SessionManager.ContinueRecent(cwd, sessionDir);
 		}
 
-		// 与 pi 一致：--session-id 指向的会话已存在就继续用它，而不是每次都造新文件 ——
+		// 与 pi 一致：--session-id 指向的会话已存在就继续用它，不每次造新文件；
 		// 否则同一条命令跑两次会得到两个同 id 会话，之后 --session 的命中就不确定了。
 		if (arguments.SessionId is { Length: > 0 } sessionId &&
 			FindSessionById(sessionId, cwd, sessionDir) is { } existing)

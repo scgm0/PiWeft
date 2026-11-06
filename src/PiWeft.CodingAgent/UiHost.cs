@@ -17,7 +17,7 @@ public sealed record UiWidgetRequest(string Key, IReadOnlyList<string>? Lines, s
 public sealed record UiTitleRequest(string Title);
 
 /// 宿主交互能力。CLI 交互模式、RPC 与桌面各自实现；headless（print/JSON）不提供实现，
-/// <c>ask_question</c> 会明确告知模型当前环境无法交互，而不是静默阻塞。
+/// <c>ask_question</c> 会明确告知模型当前环境无法交互，不静默阻塞。
 /// 对话框方法对应 pi RPC <c>extension_ui</c> 协议（select/confirm/input/editor），
 /// 返回 <c>null</c> 表示取消、超时或宿主不支持；<see cref="Notify"/> 是不等待回应的通知。
 public interface IUiHost

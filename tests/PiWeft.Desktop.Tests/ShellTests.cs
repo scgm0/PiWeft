@@ -59,7 +59,7 @@ public class ShellTests : IDisposable
 		// 首条用户消息也作为摘要留档，供列表与标题使用。
 		Assert.Equal("first question", named.Preview);
 
-		// 没有命名的会话用第一条用户消息当标题，而不是文件名。
+		// 没有命名的会话用第一条用户消息当标题，不用文件名。
 		var unnamed = items.Single(static item => item.Name.Length == 0);
 		Assert.Equal("another question", unnamed.Display);
 	}
@@ -429,7 +429,7 @@ public class SessionContentSearchTests : IDisposable
 	[Fact]
 	public void SummaryPrefersTheMessageTextOverRawJson()
 	{
-		// 真实会话行是 JSONL；摘要应当取自消息文本，而不是把字段名一起端出来。
+		// 真实会话行是 JSONL；摘要取自消息文本，不把字段名一起端出来。
 		var line = """{"type":"message","id":"ab","message":{"role":"user","content":"请把 diff 渲染成统一格式"}}""";
 		var summary = SessionCatalog.Summarize(line, "diff 渲染");
 
@@ -460,8 +460,8 @@ public class SessionContentSearchTests : IDisposable
 	}
 }
 
-/// 图标资源与源码的一致性：界面代码里写错一个图标名，MewUI 会在构建界面时抛异常并被 UI 线程吞掉 ——
-/// 表现是「某个标签页打不开」这种极难定位的故障（设置面板就曾因为缺 rotate-ccw.svg 而整个打不开）。
+/// 图标资源与源码的一致性：界面代码里写错一个图标名，MewUI 会在构建界面时抛异常并被 UI 线程吞掉，
+/// 表现为「某个标签页打不开」这种极难定位的故障（设置面板曾因缺 rotate-ccw.svg 而整个打不开）。
 public class IconResourceTests
 {
 	[Fact]

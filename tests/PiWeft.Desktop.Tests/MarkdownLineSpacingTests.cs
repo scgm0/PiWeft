@@ -58,7 +58,7 @@ public sealed class MarkdownLineSpacingTests
 	[Fact]
 	public void RequestedScaleBelowNaturalHeightNeverCompressesLines()
 	{
-		// 1.0 倍小于字体的自然行高：宁可维持自然行高，也不能让上下行咬在一起。
+		// 1.0 倍小于字体自然行高：维持自然行高，别让上下行咬在一起。
 		double natural = Height(16, new MarkdownTheme { LineHeightScale = 0 }, MarkdownBlockKind.Paragraph, FourLines);
 		Assert.Equal(natural, Height(16, new MarkdownTheme { LineHeightScale = 1 }, MarkdownBlockKind.Paragraph, FourLines), 1);
 	}
@@ -75,7 +75,7 @@ public sealed class MarkdownLineSpacingTests
 	[Fact]
 	public void ChangingTheThemeRelayoutsTheDocument()
 	{
-		// 主题里的行距倍率必须进 MeasureKey，否则改了设置文档高度还是旧值。
+		// 主题里的行距倍率要进 MeasureKey，否则改了设置文档高度还是旧值。
 		const string paragraph =
 			"alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november " +
 			"oscar papa quebec romeo sierra tango uniform victor whiskey x-ray yankee zulu";
@@ -91,13 +91,13 @@ public sealed class MarkdownLineSpacingTests
 	[Fact]
 	public void SingleLineListItemsTakeTheWholeLinePitch()
 	{
-		// 单行条目里没有「行与行之间」，行距得由列表行补齐：3 个条目 == 3 个 1.6em 的行框。
-		// 不补的话，同一个字号下列表会比正文挤（19 DIP vs 25.6 DIP）。
+		// 单行条目没有「行间」，行距由列表行补齐：3 个条目就是 3 个 1.6em 行框。
+		// 不补的话，同一字号下列表比正文挤（19 DIP 对 25.6 DIP）。
 		double natural = Height(16, TightTheme, MarkdownBlockKind.Paragraph, "aaaa");
 		double loosened = ViewHeight(new MarkdownTheme(), "- alpha\n- bravo\n- charlie", 520);
 		double tightened = ViewHeight(TightTheme, "- alpha\n- bravo\n- charlie", 520);
 
-		// 控件把高度向上取整到设备像素，所以这里用区间而不是小数位比较。
+		// 控件把高度向上取整到设备像素，这里用区间比较，不比小数位。
 		Assert.InRange(loosened, 3 * 16 * 1.6 - 1, 3 * 16 * 1.6 + 1);
 		Assert.InRange(tightened, 3 * natural - 1, 3 * natural + 1);
 	}
@@ -105,7 +105,7 @@ public sealed class MarkdownLineSpacingTests
 	[Fact]
 	public void WrappingListItemKeepsOnePitchPerLine()
 	{
-		// 多行条目：正文部分已经自带了行与行之间的间距，条目只能再补一份，不能按行重复加。
+		// 多行条目：正文已经带上行间间距，条目只再补一份，不按行重复加。
 		const string item = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november";
 		double natural = Height(16, TightTheme, MarkdownBlockKind.Paragraph, "aaaa");
 		double tightened = ViewHeight(TightTheme, $"- {item}", 260);
@@ -214,7 +214,7 @@ public sealed class MarkdownLineSpacingTests
 		var point = new Point(second.Bounds.X + 4, second.Bounds.Y - 1);
 
 		Assert.True(view.BeginSelectionAtForTest(point, 2));
-		// 命中的是第二个条目（选区文本带条目标记前缀），而不是上一个条目的。
+		// 命中的是第二个条目（选区文本带条目标记前缀），不是上一个条目的。
 		Assert.Contains("bravo", view.SelectedText);
 		Assert.DoesNotContain("alpha", view.SelectedText);
 	}

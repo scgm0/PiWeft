@@ -7,11 +7,11 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Cli;
 
-/// <c>/share</c>：把**当前分支**导出成带 <c>pi.share</c> 尾条目的 JSONL，上传为私有 gist 或
-/// Radius artifact，并返回 pi 的会话查看器地址。
-/// 与 pi 的差异只在传输层：pi 用 <c>gh gist create</c>，这里优先用 <c>gh</c>、没有时退回
-/// <c>GITHUB_TOKEN</c> 的 HTTP API。产物语义保持一致 —— 整份会话文件里可能有多条分支，
-/// 查看器要的是当前这条；系统提示词与工具 schema 不在会话文件里，必须由尾条目补上。
+/// <c>/share</c>：把当前分支导出成带 <c>pi.share</c> 尾条目的 JSONL，上传为私有 gist 或
+/// Radius artifact，返回 pi 的会话查看器地址。
+/// 与 pi 的差异只在传输层：pi 用 <c>gh gist create</c>，这里优先用 <c>gh</c>，没有时退回
+/// <c>GITHUB_TOKEN</c> 的 HTTP API。产物语义一致：会话文件里可能有多条分支，查看器要当前这条；
+/// 系统提示词与工具 schema 不在文件里，由尾条目补上。
 public static class SessionSharing
 {
 	private const string DefaultViewerUrl = "https://pi.dev/session/";
@@ -131,7 +131,7 @@ public static class SessionSharing
 
 		if (gistUrl is null)
 		{
-			// gh 没登录/没安装，token 也没有：把两条线索都告诉用户，而不是只说「失败」。
+			// gh 没登录或没安装，token 也没有：两条线索都告诉用户，不只说「失败」。
 			var reason = ghError ?? tokenError ?? "无法创建 gist。";
 			return (false, null, reason + " 先运行 gh auth login，或设置 GITHUB_TOKEN / GH_TOKEN。");
 		}

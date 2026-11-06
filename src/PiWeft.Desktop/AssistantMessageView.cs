@@ -16,7 +16,7 @@ internal sealed class AssistantMessageView : IDisposable
 	// 跑马灯容器：流式期把最新一行的行尾贴到右边缘，定稿后回到行首 + 省略号。
 	private readonly MarqueeLine _previewLine;
 	// 逐字推进：思考与正文各一把打字机，共用一条帧泵。网络一次推一整块，画面每帧只多露几个字，
-	// 跑马灯与流式正文才是「流」而不是一跳一跳。
+	// 跑马灯与流式正文才有流动感，不会整块跳出来。
 	private readonly Typewriter _thinkingType = new();
 	private readonly Typewriter _bodyType = new();
 	private readonly StreamPump _pump;
@@ -189,8 +189,8 @@ internal sealed class AssistantMessageView : IDisposable
 			_thinkingTimer.SetSpan(0, null);
 		}
 
-		// 打字机与预览缓存都属于「这一条消息」：行视图会被回收给另一条，身份一变就整体重来。
-		// 比 id + 时间戳而不是比引用：同一条消息的每个流式帧都是新的 record。
+		// 打字机与预览缓存属于这一条消息：行视图会被回收给另一条，身份一变就整体重来。
+		// 比 id + 时间戳，不比引用：同一条消息的每个流式帧都是新的 record。
 		var identity = (entry.EntryId, entry.Timestamp);
 		if (identity != _streamIdentity)
 		{
@@ -199,8 +199,8 @@ internal sealed class AssistantMessageView : IDisposable
 			_thinkingType.Reset();
 			_bodyType.Reset();
 		}
-		// 逐字只对「正在流的这一段」生效：这一行已经定稿、或是打开的旧会话，就直接全量显示 ——
-		// 把几百 KB 的历史思考从头打一遍是灾难。
+		// 逐字只对正在流的那一段生效；已定稿的行与打开的旧会话直接全量显示。
+		// 几百 KB 的历史思考从头打一遍没法看。
 		_thinkingType.Set(entry.ThinkingSource, PacedStream && entry.IsThinking);
 		_bodyType.Set(entry.BodyText, PacedStream && entry.IsStreaming);
 		// 数据帧自己也推一格：没有帧泵（自检/单测）时这就是唯一的推进通道。
@@ -220,9 +220,8 @@ internal sealed class AssistantMessageView : IDisposable
 			}
 			else if (_followingThinking)
 			{
-				// 思考结束只停止“思考自身的跟底”，不要把已置底的组体自动跟随也关掉：
-				// 组体滚动条仍在底部时，后续工具步骤应继续贴底；用户上滚时 SmoothScroll
-				// 自己会退出跟底。
+				// 思考结束只停思考自身的跟底，不关已置底的组体自动跟随：
+				// 组体滚动条还在底部时，后续工具步骤要继续贴底；用户上滚时 SmoothScroll 会自己退出。
 				_followingThinking = false;
 			}
 		}
@@ -330,7 +329,7 @@ internal sealed class AssistantMessageView : IDisposable
 	}
 
 	/// 写预览行：文本没变就不碰 TextBlock（Text 是 AffectsLayout，赋值会把整行重新测量），
-	/// 但排布模式每帧都要对一下 —— 流式结束那一帧正是从尾随切回首行的时机。
+	/// 但排布模式每帧都要对一下，流式结束那一帧正是从尾随切回首行的时机。
 	private void SetPreview(string text, bool followTail)
 	{
 		if (!string.Equals(_previewText, text, StringComparison.Ordinal))
@@ -372,7 +371,7 @@ internal sealed class AssistantMessageView : IDisposable
 	}
 
 	/// 把打字机的可见前缀喂给 Markdown 视图：视图里已经有 text[..feed.Shown]、且新文本仍是上一次的继续时，
-	/// 只 Append 新露出的那几个字 —— 增量小，解析仍由控件按尾块增量完成，宿主不整串比较也不整串拷贝。
+	/// 只 Append 新露出的那几个字：增量小，解析由控件按尾块增量完成，宿主不整串比较、不整串拷贝。
 	/// 文本被改写（编辑重发、换行绑定、收缩）、视图换了或已经定稿时退回整篇赋值；
 	/// 可见前缀一个字都没多（只是尾部又长了一点）时什么都不做。
 	private void FeedMarkdown(
@@ -464,7 +463,7 @@ internal sealed class AssistantMessageView : IDisposable
 	private MarkdownView EnsureBodyMarkdown() => _bodyMarkdown ??= CreateMarkdownView(AppTheme.FontSizeChat);
 
 	/// 全部消息视图共享同一份 Options 与 Theme 实例：两者都进高度缓存的 MeasureKey，而 record
-	/// 对 HashSet/委托字段按实例比较——每视图新建一份会让跨实例缓存永不命中。
+	/// 对 HashSet 与委托字段按实例比较，每视图新建一份会让跨实例缓存不命中。
 	internal static readonly MarkdownOptions SharedMarkdownOptions = new()
 	{
 		// 与应用层「链接只放行 http/https」一致，下沉为控件库的第二道闸门（图片同样受限）。

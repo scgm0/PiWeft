@@ -79,7 +79,7 @@ public sealed class SoundSection
 	}
 
 	/// 一行事件：左侧开关与说明，右侧音效下拉 + 试听。
-	/// 事件开关关闭时下拉仍可改（先配好再打开），但试听按钮始终可用——试听本来就是为了选个音。
+	/// 事件开关关闭时下拉仍可改（先配好再打开），试听按钮始终可用：试听本来就是为了选个音。
 	private Element EventRow(SoundAlertSettings settings, SoundAlertKind kind)
 	{
 		var config = settings.For(kind);

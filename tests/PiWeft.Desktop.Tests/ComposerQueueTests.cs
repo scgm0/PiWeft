@@ -71,7 +71,7 @@ public sealed class ComposerQueueTests
 		Assert.False(tab.IsStreaming);
 		Assert.Equal("second", tab.Session.Session.LastAssistantText());
 
-		// 中断的那次也必须以 aborted 条目落盘，而不是只停在内存里的半截流。
+		// 中断的那次也要以 aborted 条目落盘，不能只停在内存里的半截流。
 		Assert.Contains(tab.Session.Session.Entries, entry =>
 			entry is SessionMessageEntry { Message: AssistantMessage { StopReason: StopReason.Aborted } });
 	}

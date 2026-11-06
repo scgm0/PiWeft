@@ -14,7 +14,7 @@ public sealed record GitCommitAssistant(
 	Action? OpenSettings = null);
 
 /// 提交摘要失败的可判别原因。对齐 PiDeck 的 <c>GIT_COMMIT_*</c> 错误码：界面据此给出
-/// 不同动作（去暂存 / 去设置 / 稍后重试 / 展开原始报错），而不是所有失败都一句「生成失败」。
+/// 不同动作（去暂存、去设置、稍后重试、展开原始报错），不用一句「生成失败」盖住所有情况。
 internal enum GitSummaryFailure
 {
 	EmptyDiff,
@@ -46,9 +46,9 @@ internal static class GitCommitMessage
 {
 	public const int MaxDiffCharacters = 8000;
 
-	/// 一次摘要的等待上限。PiDeck 用 60 秒，但它的摘要进程不带推理预算；这里默认跟随会话的
-	/// 思考级别，一次 thinking 往返在慢网关上会超过 60 秒，所以放宽到 90 秒。
-	/// 界面进度条与取消令牌都读这一个数，免得两处各写一份互相漂移。
+	/// 一次摘要的等待上限。PiDeck 用 60 秒，但它的摘要进程不带推理预算；这里跟随会话的
+	/// 思考级别，慢网关上一次 thinking 往返会超过 60 秒，因此放宽到 90 秒。
+	/// 界面进度条与取消令牌都读这一个数，避免两处各写一份。
 	public const int GenerationTimeoutSeconds = 90;
 
 	public const string DiffPlaceholder = "{diff}";
@@ -84,8 +84,8 @@ internal static class GitCommitMessage
 	public static string NormalizeTemplate(string? template) =>
 		string.IsNullOrWhiteSpace(template) ? DefaultPromptTemplate : template.Trim();
 
-	/// 用模板拼 prompt。<c>{diff}</c> 会被替换成真实 diff；模板忘了写占位符时附在末尾，
-	/// 否则摘要请求会退化成“让模型猜改了什么”。
+	/// 用模板拼 prompt。<c>{diff}</c> 替换成真实 diff；模板漏了占位符就附在末尾，
+	/// 否则摘要请求会变成让模型猜改了什么。
 	public static string BuildPrompt(string diff, string? template = null)
 	{
 		var value = NormalizeTemplate(template);

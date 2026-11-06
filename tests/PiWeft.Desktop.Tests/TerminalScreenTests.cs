@@ -371,7 +371,7 @@ public sealed class TerminalScreenTests
 	{
 		var screen = NewScreen(columns: 10, rows: 2);
 
-		// 🇨🇳🇯🇵：四个区域指示符配成两面旗，占四格而不是八格。
+		// 🇨🇳🇯🇵：四个区域指示符配成两面旗，占四格。
 		screen.Feed("\U0001F1E8\U0001F1F3\U0001F1EF\U0001F1F5".AsSpan());
 
 		var run = Assert.Single(screen.GetRuns(0, []));
@@ -513,7 +513,7 @@ public sealed class TerminalScreenTests
 		screen.Resize(10, 6);
 		Assert.Equal(stable, screen.LineVersion(0));
 
-		// 列宽变化会重排每一行，缓存必须整体作废。
+		// 列宽变化会重排每一行，缓存整体作废。
 		screen.Resize(12, 6);
 		Assert.NotEqual(stable, screen.LineVersion(0));
 	}
@@ -853,7 +853,7 @@ public sealed class TerminalScreenTests
 		Assert.Equal(0, screen.ScrollbackLines);
 		Assert.Equal(promptRow, screen.CursorRow);
 
-		// 提示符在视口里只有一份：没被顶出屏幕，shell 重画时才会盖住自己而不是另起一份。
+		// 提示符在视口里只有一份：没被顶出屏幕，shell 重画时盖住自己，不会另起一份。
 		var text = screen.GetText();
 		Assert.Equal(1, text.Split('\n').Count(line => line.StartsWith("~/repo", StringComparison.Ordinal)));
 		Assert.Equal("~/repo on main\n$", text.TrimEnd('\n'));

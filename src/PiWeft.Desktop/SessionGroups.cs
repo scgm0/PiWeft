@@ -3,7 +3,7 @@ using PiWeft.Cli;
 namespace PiWeft.Desktop;
 
 /// 侧栏两个分段的归属规则：工作目录就是聊天目录的会话属于「对话」，其余属于「项目」。
-/// 与 PiDeck 的内置 Chat 项目一致 —— 「对话」是一块没有项目上下文的聊天工作区，
+/// 与 PiDeck 的内置 Chat 项目一致：「对话」是一块没有项目上下文的聊天工作区，
 /// 不是全部会话的平铺；否则同一批会话会在两个分段里重复出现。
 internal static class SessionGroups
 {

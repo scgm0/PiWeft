@@ -2,14 +2,13 @@ using System.Diagnostics;
 
 namespace PiWeft.Ai;
 
-/// 给响应体加「空闲超时」：连续 <see cref="_timeout"/> 没有读到任何字节就失败。
-/// 为什么不是总时长：模型思考几分钟仍在产出 delta 是合法长流，用总时长会在正常路径上切断它。
-/// 反过来，供应商把连接挂着不发也不关时，<see cref="HttpClient"/> 的 <c>Timeout = Infinite</c>
-/// 会让这一轮永远等下去 —— pi 用 <c>settings.httpIdleTimeoutMs</c>（默认 300 秒）兜住这种情况。
-/// 计时用 <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> 反复续期，不轮询：
-/// 每读到数据就把到期时刻推到「现在 + 超时」，一个流从头到尾只有一个定时器。
-/// 超时抛 <see cref="IOException"/> 而不是 <see cref="OperationCanceledException"/>：
-/// 用户没按中断，把它报成「已中止」会误导；IOException 会走自动重试的分类器（文案里带 timeout）。
+/// 响应体的空闲超时：连续 <see cref="_timeout"/> 收不到字节就失败。
+/// 按空闲而非总时长计时：模型思考几分钟但仍在产出 delta，属于合法长流。
+/// 供应商挂住连接不发也不关时，<see cref="HttpClient"/>（<c>Timeout = Infinite</c>）会无限等待，
+/// 对应 pi 的 <c>settings.httpIdleTimeoutMs</c>，默认 300 秒。
+/// 每读到数据就 <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> 续期，一个流只有一个定时器。
+/// 超时抛 <see cref="IOException"/> 而不抛 <see cref="OperationCanceledException"/>：
+/// 用户没按中断，报成「已中止」会误导；IOException 还会进自动重试的分类器（文案带 timeout）。
 internal sealed class IdleTimeoutStream : Stream
 {
 	private static readonly TimeSpan MinimumRenewInterval = TimeSpan.FromMilliseconds(50);
@@ -59,15 +58,13 @@ internal sealed class IdleTimeoutStream : Stream
 
 	public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
 
-	// 走 Memory 重载，而不是基组的数组重载：后者会退回 BeginRead/EndRead，
-	// 对只实现了异步读的内层流（以及很多测试替身）等于把读退回同步路径。
+	// 走 Memory 重载：数组重载会退回 BeginRead/EndRead，只实现异步读的内层流等于退回同步路径。
 	public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
 		ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
 
 	public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
 	{
-		// 调用方的令牌通常就是请求令牌：这时直接用共享的 linked 源，不为每次读建一个 CTS。
-		// 一次长流有上万个读，每个都分配再释放 CancellationTokenSource 是白扔的对象。
+		// 调用方令牌通常就是请求令牌，直接复用 linked 源；长流上万次读，每次建一个 CTS 是白费分配。
 		var (token, perCall) = Link(cancellationToken);
 		try
 		{
@@ -97,14 +94,13 @@ internal sealed class IdleTimeoutStream : Stream
 		return (_linked.Token, null);
 	}
 
-	/// 是「空闲到期」而不是用户中止或提前释放：请求令牌没被取消、本流也没在释放
-	/// （<see cref="Release"/> 会取消计时令牌，那之后到来的取消不该被说成超时）。
+	/// 空闲到期，不是用户中止或提前释放：请求令牌没取消，本流也没在释放。
+	/// <see cref="Release"/> 会取消计时令牌，那之后到来的取消不算超时。
 	private bool IsIdleTimeout() =>
 		_idle.IsCancellationRequested && !_requestToken.IsCancellationRequested && !_disposed;
 
-	/// 把到期时刻推到「现在 + 超时」。数据密集时最多每 50 ms 动一次定时器：
-	/// 于是空闲窗口可能被提前至多 50 ms 判定 —— 相对默认的 300 秒可以忽略，
-	/// 但换来的是「一秒几百个 SSE 分片也不反复重置定时器」。
+	/// 到期时刻推到「现在 + 超时」。数据密集时每 50 ms 最多动一次定时器，
+	/// 空闲判定因此可能提前 50 ms；相对默认 300 秒可忽略，换来一秒几百个 SSE 分片也不重置定时器。
 	private void Renew()
 	{
 		var now = Stopwatch.GetTimestamp();
@@ -154,9 +150,8 @@ internal sealed class IdleTimeoutStream : Stream
 		await base.DisposeAsync().ConfigureAwait(false);
 	}
 
-	/// 释放顺序：标记已释放 → 取消计时 → 释放内层流 → 才释放令牌源。
-	/// 内层可能还有一个挂着注册的读在等取消；先把流关掉，那个注册一定已经走完，
-	/// 之后 dispose 才不会撞上「令牌源已释放」。
+	/// 释放顺序：标记已释放 → 取消计时 → 关内层流 → 释放令牌源。
+	/// 内层可能还有登记了取消的读；先关流，等注册走完再 dispose 令牌源，才不会撞上「已释放」。
 	private void ReleaseCore()
 	{
 		if (_disposed)

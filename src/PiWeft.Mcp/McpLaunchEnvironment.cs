@@ -7,12 +7,12 @@ namespace PiWeft.Mcp;
 /// <c>/usr/bin:/bin:/usr/sbin:/sbin</c>，Homebrew、nvm、fnm 等安装的 <c>node</c> 不在其中，
 /// 于是 <c>mcp.json</c> 里的 <c>"command": "node"</c> 会以 ENOENT 失败，报错形如
 /// <c>An error occurred trying to start process 'node' with working directory '/'. No such file or directory</c>
-/// —— 报错里的工作目录 <c>/</c> 也来自同一次图标启动。
-/// 这里按 PiDeck <c>PiLocator</c> 的顺序组装子进程 PATH：**env PATH → 登录 shell PATH →
-/// 包管理器/版本管理器目录 → 平台兜底目录**。顺序即优先级，已有 PATH 永远占先；新增目录
-/// 只能追加到同类之后，否则会静默改掉用户原本启动的可执行文件。
-/// 探测登录 shell 必须异步：同步读会在登录脚本慢或卡住时冻结调用线程（PiDeck 的 M1 根因）。
-/// 因此 <see cref="EffectivePath"/> 只读缓存、绝不阻塞，<see cref="WarmAsync"/> 负责预热。
+/// 报错里的工作目录 <c>/</c> 也来自同一次图标启动。
+/// 这里按 PiDeck <c>PiLocator</c> 的顺序组装子进程 PATH：env PATH → 登录 shell PATH →
+/// 包管理器/版本管理器目录 → 平台兜底目录。顺序即优先级，已有 PATH 占先；新增目录
+/// 只能追加到同类之后，否则会改掉用户原本启动的可执行文件。
+/// 探测登录 shell 要异步：同步读会在登录脚本慢或卡住时冻结调用线程（PiDeck 的 M1 根因）。
+/// 因此 <see cref="EffectivePath"/> 只读缓存、不阻塞，<see cref="WarmAsync"/> 负责预热。
 internal static class McpLaunchEnvironment
 {
 	internal static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(3);
@@ -47,7 +47,7 @@ internal static class McpLaunchEnvironment
 		}
 
 		// Windows 不改写命令：图形外壳已带系统合并 PATH，CreateProcess 另有查找规则，
-		// 保持既有行为比统一语义更重要。
+		// 保持既有行为。
 		if (OperatingSystem.IsWindows())
 		{
 			return (command, path);
@@ -63,7 +63,7 @@ internal static class McpLaunchEnvironment
 			: "Use an absolute command path or add its directory to PATH.");
 
 	/// 异步预热登录 shell 的 PATH。并发调用共享同一次探测，失败或超时按空串负缓存。
-	/// Windows 没有对应方式，图形外壳已拿到系统合并 PATH。
+	/// Windows 没有对应方式，外壳已拿到系统合并 PATH。
 	internal static Task WarmAsync()
 	{
 		if (OperatingSystem.IsWindows())
@@ -240,7 +240,7 @@ internal static class McpLaunchEnvironment
 
 		// 版本管理器：每个 node 版本各有一个 bin 目录，只靠 <root>/current 会漏掉未切软链的机器。
 		// 顺序按版本号从新到旧：目录名字典序会把 v12 排在 v24 前面，而 PATH 查找按顺序取
-		// 第一个命中——GUI 启动就会解析到最老的 node，跑不了新语法（如 ??），服务器直接
+		// 第一个命中的是旧版本时，GUI 启动会解析到最老的 node，跑不了新语法（如 ??），服务器直接
 		// SyntaxError 退出（Node 12 + `??` 的真实案例）。nvm 的 default 别名最贴近用户
 		// 终端里的选择，解析得到就放在最前。
 		entries.Add(Path.Combine(home, ".nvm", "current", "bin"));

@@ -5,7 +5,7 @@ using Xunit;
 namespace PiWeft.Desktop.Tests;
 
 /// 剪贴板互转用的编解码器：PNG 编码与 DIB 读写都必须原样往返。
-/// 解码一侧用框架的 <see cref="ImageDecoders"/> 交叉验证 —— 那是另一套实现，也正是运行时真正用到的那条路径。
+/// 解码一侧用框架的 <see cref="ImageDecoders"/> 交叉验证：那是另一套实现，也是运行时真正走的路径。
 [Collection("mewui-controls")]
 public sealed class ClipboardImageCodecTests
 {
@@ -133,7 +133,7 @@ public sealed class ClipboardImageCodecTests
 	public void UnsupportedOrTruncatedDibsAreRejected()
 	{
 		Assert.False(DibCodec.TryRead([], out _));
-		// 8 位调色板 DIB 不在支持范围，但必须是「失败」而不是解出垃圾。
+		// 8 位调色板 DIB 不在支持范围，结果是「失败」，不能解出垃圾。
 		Assert.False(DibCodec.TryRead(BuildDib(2, 2, bitCount: 8, topDown: false, rows: [[0, 0]]), out _));
 		Assert.False(DibCodec.TryRead(BuildDib(4, 4, bitCount: 24, topDown: false, rows: [[1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0]]), out _));
 	}

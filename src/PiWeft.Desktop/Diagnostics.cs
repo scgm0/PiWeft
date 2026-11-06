@@ -12,19 +12,19 @@ using ZLogger;
 
 namespace PiWeft.Desktop;
 
-/// 性能诊断采样（对齐 PiDeck 设置里的「性能诊断」）：默认关闭，关闭时调用点只做一次布尔判断，
-/// 不分配、不落盘。采样分三档，成本依次递增，热路径只走前两档：
+/// 性能诊断采样，对齐 PiDeck 设置里的「性能诊断」。默认关闭，关闭时调用点只做一次布尔判断，
+/// 不分配、不落盘。采样分三档，成本递增，热路径只走前两档：
 /// <list type="bullet">
-/// <item><description>帧档：<see cref="ObserveFrame"/> 每帧写几个定长槽位与几个 Interlocked 计数，
-/// 一帧约百纳秒、零分配，给出帧成本分布、掉帧/长帧、每帧分配、GC 暂停、输入→绘制延迟与绘制量；</description></item>
-/// <item><description>计数档：<see cref="Count"/> 只累加事件次数（行 realize/回收、重建轮次等），
-/// 同样零分配；<see cref="Slow"/> 是「计数 + 只在超过阈值时才落明细」的组合，明细文本延迟到超阈值后才生成；</description></item>
+/// <item><description>帧档：<see cref="ObserveFrame"/> 每帧写几个定长槽位与 Interlocked 计数，
+/// 一帧约百纳秒、零分配，给出帧成本、掉帧/长帧、每帧分配、GC 暂停、输入→绘制延迟；</description></item>
+/// <item><description>计数档：<see cref="Count"/> 只累加事件次数（行 realize/回收、重建轮次等），零分配；
+/// <see cref="Slow"/> 只在超过阈值时生成明细；</description></item>
 /// <item><description>明细档：<see cref="Record(string,double,string?)"/> 每次约 2 µs 与近 1 KB 垃圾，
-/// 因此只给低频粗路径（启动、打开会话、投影、定稿）与慢于阈值的帧使用。</description></item>
+/// 只给低频路径与慢帧。</description></item>
 /// </list>
-/// 打开后每秒采一次进程内存/CPU 与 UI 队列延迟，明细逐条写入
-/// <c>&lt;agentDir&gt;/diagnostics/timings-*.jsonl</c>，并按名称聚合次数/总耗时/最大/分位数，
-/// 供「优化前后对照」与「谁把 UI 线程占住了」这类排查使用。
+/// 打开后每秒采一次进程内存、CPU 与 UI 队列延迟，明细写入
+/// <c>&lt;agentDir&gt;/diagnostics/timings-*.jsonl</c>，按名称聚合次数、总耗时、最大值与分位数，
+/// 用来对照优化前后，或排查谁占住了 UI 线程。
 internal sealed partial class Diagnostics
 {
 	internal readonly record struct Timing(string Name, DateTime StartedAt, double DurationMs, string? Detail, int ThreadId);
@@ -70,7 +70,7 @@ internal sealed partial class Diagnostics
 		int ImageDraws,
 		int ClipCount);
 
-	/// 最近一秒的窗口值：与累计值分开，文件里才能画出真正的逐秒曲线。
+	/// 最近一秒的窗口值，与累计值分开；文件里才能画出逐秒曲线。
 	internal readonly record struct FrameWindowStats(
 		long Frames,
 		double Fps,
@@ -124,7 +124,7 @@ internal sealed partial class Diagnostics
 
 	private const double SlowPathMs = 200;
 
-	// 帧档的环形缓冲必须是 2 的幂：热路径用 & 取模，不做除法也不取余。
+	// 帧档的环形缓冲取 2 的幂：热路径用 & 取模，不做除法也不取余。
 	private const int FrameSlots = 2048;
 	private const int SampleSlots = 64;
 	private const int InputSlots = 512;
@@ -142,8 +142,8 @@ internal sealed partial class Diagnostics
 	internal const double LongFrameReportMs = 50;
 	private const double LongFrameMs = LongFrameReportMs;
 	private const double IdleGapMs = 400;
-	/// 没有应用侧请求时，间隔超过这个长度就当作空闲而不是帧成本：框架内部重绘（悬停、动画）
-	/// 通常紧跟上一帧，真正的长帧会有输入或应用侧请求在前面。
+	/// 没有应用侧请求时，间隔超过这个长度按空闲处理，不计帧成本：框架内部重绘（悬停、动画）
+	/// 通常紧跟上一帧，长帧前面会有输入或应用侧请求。
 	private const double UnsolicitedFrameCapMs = 50;
 	private const double InputWindowMs = 1000;
 	private static readonly long JankWarnIntervalTicks = Stopwatch.Frequency;
@@ -262,7 +262,7 @@ internal sealed partial class Diagnostics
 	public static string? LastError => Volatile.Read(ref _lastError);
 
 	/// 按设置开关启停。重复设置同值不会重开文件，避免设置页抖一下就把日志切成两份。
-	/// 诊断是辅助功能：目录不可写、磁盘满或文件被占用时必须静默降级，不能影响主流程。
+	/// 诊断是辅助功能：目录不可写、磁盘满或文件被占用时静默降级，不影响主流程。
 	public static void SetEnabled(bool enabled, string? agentDir = null)
 	{
 		if (!enabled)
@@ -358,10 +358,10 @@ internal sealed partial class Diagnostics
 			$"shape={stats.PrimitiveStats.ShapeCount} clip={stats.PrimitiveStats.ClipCount}");
 	}
 
-	/// 应用侧发起一次重绘（数据变更、滚动动画、流式打字机等）。记下最早的那次请求，
-	/// <see cref="ObserveFrame"/> 用它把「按请求重绘前的空闲」从「本帧真实成本」里切掉。
-	/// 不依赖框架回调，因此 MewUI 不需要任何改动；覆盖不到的框架内部重绘（悬停、框架动画）
-	/// 退回帧间隔口径，见 <see cref="ObserveFrame"/>。
+	/// 应用侧发起一次重绘（数据变更、滚动动画、流式打字机等）。记下最早那一次，
+	/// <see cref="ObserveFrame"/> 用它把重绘前的空闲从本帧成本里切掉。
+	/// 不依赖框架回调，MewUI 无需改动；覆盖不到的框架内部重绘（悬停、框架动画）
+	/// 退回帧间隔口径。
 	public static void NoteFrameRequest()
 	{
 		if (!_enabled) return;
@@ -502,10 +502,10 @@ internal sealed partial class Diagnostics
 	public static void NoteInput()
 	{
 		if (!_enabled) return;
-		// 输入本身就是一次重绘请求：空闲从输入那一刻结束，而不是从下一帧开始算。
+		// 输入本身就是重绘请求：空闲从输入那一刻结束，不从下一帧算起。
 		NoteFrameRequest();
 		var now = Stopwatch.GetTimestamp();
-		// 一帧内可能有多条输入：保留最早的那条，下一帧记的是最坏等待，而不是最后一次。
+		// 一帧内可能有多条输入：保留最早那条，记的是最坏等待。
 		var current = Interlocked.Read(ref _inputPendingTicks);
 		while (current == 0L || now < current)
 		{
@@ -658,7 +658,7 @@ internal sealed partial class Diagnostics
 	private static long _framesLastSecondSnapshot;
 
 	/// 帧档汇总：分位数只在读面板时算一次（拷贝到排序缓冲再取），
-	/// 因此热路径永远只需要写一个槽位。
+	/// 因此热路径只写一个槽位。
 	private static FrameStats BuildFrameStats()
 	{
 		var frames = Interlocked.Read(ref _frameCount);
@@ -808,7 +808,7 @@ internal sealed partial class Diagnostics
 
 	private static double TicksToMs(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
-	/// CPU tick 是 TimeSpan 的 100 ns，不是 Stopwatch tick；单独抽出来便于测试换算口径。
+	/// CPU tick 是 TimeSpan 的 100 ns，与 Stopwatch tick 不同；单独抽出来便于测试。
 	internal static double CpuPercentFromTicks(long cpuTicks, long wallTicks, int cores)
 	{
 		if (cores <= 0 || wallTicks <= 0) return 0;
@@ -951,7 +951,7 @@ internal sealed partial class Diagnostics
 			Volatile.Write(ref _gen0Collections, GC.CollectionCount(0));
 			Volatile.Write(ref _gen2Collections, GC.CollectionCount(2));
 
-			// 大对象堆 / Pinned Object Heap：判断「托管堆涨的是谁」时必须分开看。
+			// 大对象堆 / Pinned Object Heap：判断「托管堆涨的是谁」时要分开看。
 			var generations = info.GenerationInfo;
 			Interlocked.Exchange(ref _lohBytes, generations.Length > 3 ? generations[3].SizeAfterBytes : 0);
 			Interlocked.Exchange(ref _pohBytes, generations.Length > 4 ? generations[4].SizeAfterBytes : 0);
@@ -1143,7 +1143,7 @@ internal sealed partial class Diagnostics
 			$"pending={Interlocked.Read(ref _poolPendingWork)} dropped-lines={Interlocked.Read(ref _droppedLines)}";
 
 		// 渲染缓存台账（框架自己统计的像素/几何字节）：工作集是 GB 级时托管堆说明不了问题，
-		// 必须把文本位图/几何/图集/图片/持久表面分开记，才看得出是哪一类在长。
+		// 要把文本位图、几何、图集、图片、持久表面分开记，才看得出哪一类在长。
 		var resources = RenderResourceMetrics.Snapshot();
 		detail += $" rtext={resources.TextCacheBytes / 1024}KiB rgeom={resources.GeometryCacheBytes / 1024}KiB " +
 			$"ratlas={resources.AtlasPageCount}/{resources.AtlasPageBytes / 1024}KiB " +
@@ -1210,9 +1210,9 @@ internal sealed partial class Diagnostics
 		Interlocked.Exchange(ref _frameBudgetTicks, (long)(Stopwatch.Frequency * budget / 1000));
 	}
 
-	/// UI 队列延迟：从池线程投递一个工作项，量它被 UI 线程接手前排队了多久。
-	/// 用 Input 优先级而不是默认的 Normal：Normal 比 Input/Render 都高，会插队，
-	/// 测出来的不是输入/绘制真正排了多久。
+	/// UI 队列延迟：从池线程投递工作项，量它被 UI 线程接手前排队多久。
+	/// 用 Input 优先级，不用默认的 Normal：Normal 比 Input/Render 高，会插队，
+	/// 测出的就不是输入/绘制的排队时间。
 	private static void ProbeQueueLag()
 	{
 		if (!Application.IsRunning || Application.Current?.Dispatcher is not { } dispatcher)

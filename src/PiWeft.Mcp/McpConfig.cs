@@ -305,7 +305,7 @@ public static partial class McpConfig
 		{
 			if (!IsValidName(name))
 			{
-				continue; // 名称非法时跳过该条目，而不是让整个文件失败
+				continue; // 名称非法时跳过该条目，不让整个文件失败
 			}
 
 			if (!canonical.Add(CanonicalName(name)))

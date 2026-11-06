@@ -9,13 +9,13 @@ public enum ExtensionLanguage
 	TypeScript,
 }
 
-/// 一个被发现到的扩展文件。<see cref="Supported"/> 为 <see langword="false"/> 的条目仍然会进列表 ——
-/// 界面上要能告诉用户「这个扩展没加载，原因是 X」，静默跳过是最难排查的行为。
+/// 一个被发现到的扩展文件。<see cref="Supported"/> 为 <see langword="false"/> 的条目也进列表：
+/// 界面要能告诉用户「这个扩展没加载，原因是 X」，静默跳过最难排查。
 public sealed record ExtensionDescriptor
 {
 	public const string DirectoryName = "extensions";
 
-	/// 扩展源文件的绝对路径。叫 <c>FilePath</c> 而不是 <c>Path</c>：
+	/// 扩展源文件的绝对路径。叫 <c>FilePath</c>，不叫 <c>Path</c>：
 	/// 记录内的成员会把 <c>Path</c> 解析到这个属性，遮蔽 <c>System.IO.Path</c> 类型，
 	/// 于是同一个文件里所有 <c>Path.GetFileName(...)</c> 都编不过（或更糟：解析到别处）。
 	public required string FilePath { get; init; }
@@ -51,7 +51,7 @@ public sealed record ExtensionDescriptor
 			_ => ExtensionLanguage.Javascript,
 		};
 
-	/// 发现全局 + 项目扩展。项目部分只在受信任时纳入 —— 扩展能注册工具与命令并影响系统提示词，
+	/// 发现全局与项目扩展。项目部分只在受信任时纳入：扩展能注册工具与命令并影响系统提示词，
 	/// 让一个克隆下来的仓库自带扩展就生效，等于让仓库在用户机器上执行代码。
 	/// <param name="cwd">会话工作目录。</param>
 	/// <param name="trusted">项目是否受信任。</param>

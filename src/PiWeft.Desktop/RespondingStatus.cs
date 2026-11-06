@@ -68,7 +68,7 @@ internal static class RespondingStatusPolicy
 	/// 优先级：退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗。
 	/// 正文排在思考之前：思考收尾与正文首字可能落在同一批更新里，先判正文可以避免
 	/// 状态条从「正在生成回复」退回「正在思考」再跳回来。
-	/// 预热与空窗的分别只看一件事——本回合有没有已经出现可见的行。
+	/// 预热与空窗的分别只看一件事：本回合有没有出现可见的行。
 	public static RespondingKind KindOf(in RespondingInput input)
 	{
 		if (input.Retrying) return RespondingKind.Retrying;
@@ -81,7 +81,7 @@ internal static class RespondingStatusPolicy
 
 	/// 时间线尾部要不要补一行「正在等第一句话」。条件是这一轮还没落下任何可见输出，
 	/// 且屏幕上没有任何一段还在流：轮次中间的 steering 消息会让最后一行回到用户行，
-	/// 而上一段的工具可能仍在跑——那时候屏幕上的事实是「正在执行命令」，
+	/// 而上一段的工具可能仍在跑，那时屏幕上的事实是「正在执行命令」，
 	/// 占位行既说谎，又与状态条争同一个实时秒数。
 	public static bool NeedsPendingRow(in RespondingInput input) =>
 		!input.TurnHasOutput && !input.LiveTool && !input.LiveBody && !input.LiveThinking &&

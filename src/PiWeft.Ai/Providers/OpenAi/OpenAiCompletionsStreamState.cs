@@ -80,7 +80,7 @@ internal sealed class OpenAiCompletionsStreamState
 
 		var choice = choices[0];
 
-		// 有些 provider（如 Moonshot）把用量放在 choice 上而不是 chunk 上。
+		// 有些 provider（如 Moonshot）把用量放在 choice 上，不在 chunk 上。
 		if (!hasChunkUsage &&
 			choice.TryGetProperty("usage", out var choiceUsage) &&
 			choiceUsage.ValueKind == JsonValueKind.Object)

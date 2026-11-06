@@ -65,9 +65,9 @@ public sealed class McpProcess : IAsyncDisposable
 			throw new InvalidOperationException($"Failed to start MCP server '{config.Name}' ({config.Command})");
 		}
 
-		// 持续读取 stderr，避免话多的服务器因管道写满而阻塞；同时保留一份有界摘要，
-		// 进程异常退出时挂起请求能带上退出码与最后几行 stderr，而不是只有一句
-		// "connection closed"——那句话没有任何可操作的信息（见 McpClient.ClosureDiagnostics）。
+		// 持续读取 stderr，避免话多的服务器写满管道而阻塞；同时留一份有界摘要。
+		// 进程异常退出时，挂起请求能带上退出码与最后几行 stderr，不只一句
+		// "connection closed"（见 McpClient.ClosureDiagnostics）。
 		var stderrTail = new StderrTail(capacity: 4000);
 		var exitDetail = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 		_ = Task.Run(async () =>
@@ -120,12 +120,12 @@ public sealed class McpProcess : IAsyncDisposable
 		}
 		catch (Exception exception)
 		{
-			// 握手失败时尽量带上服务器的退出码与 stderr 摘要：正在崩溃的进程几乎都已退出，
-			// 短等一拍就够；还活着的服务器按失败原因本身处理（超时/协议错误），杀掉后不猜退出码。
+			// 握手失败时尽量带上退出码与 stderr 摘要：正在崩溃的进程几乎都已退出，短等一拍即可；
+			// 还活着的服务器按失败原因处理（超时/协议错误），杀掉后不猜退出码。
 			var detail = await ExitDetailAsync(process, stderrTail, wait: TimeSpan.FromMilliseconds(500))
 				.ConfigureAwait(false);
 
-			// 握手失败时必须杀掉已经拉起来的进程：否则它会一直挂着，占住内存与管道。
+			// 握手失败要杀掉已拉起的进程，否则它一直挂着，占住内存与管道。
 			try
 			{
 				if (!process.HasExited)
@@ -162,7 +162,7 @@ public sealed class McpProcess : IAsyncDisposable
 	}
 
 	/// 汇总服务器进程的退出诊断：退出码与 stderr 尾部。先给正在退出的进程一小段时间，
-	/// 超时后按仍存活处理；两者都拿不到就返回空串，调用方沿用原始错误。
+	/// 超时按仍存活处理；两者都拿不到就返回空串，调用方沿用原始错误。
 	private static async Task<string> ExitDetailAsync(Process process, StderrTail stderrTail, TimeSpan wait)
 	{
 		try

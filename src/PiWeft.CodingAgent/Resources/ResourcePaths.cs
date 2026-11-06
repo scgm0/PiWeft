@@ -99,7 +99,7 @@ public static class ResourcePaths
 		{
 			yield return current.FullName;
 
-			// 遇到仓库根时终止项目内的发现。worktree 与 submodule 的 .git 是文件而不是目录，
+			// 遇到仓库根时终止项目内的发现。worktree 与 submodule 的 .git 是文件，不是目录，
 			// 只判断目录会让发现一路扫到文件系统根，把仓库外的 .pi / .agents 也当成项目资源。
 			if (File.Exists(Path.Combine(current.FullName, ".git")) || Directory.Exists(Path.Combine(current.FullName, ".git")))
 			{

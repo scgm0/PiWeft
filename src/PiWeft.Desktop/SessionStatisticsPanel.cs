@@ -31,7 +31,7 @@ public sealed class SessionStatisticsPanel
 		var scroll = new ScrollViewer().SmoothScrolling().Content(new StackPanel().Spacing(AppTheme.Space2).Children(_body, _usage))
 			.AutoVerticalScroll().NoHorizontalScroll().MaxHeight(480);
 		// 标题区与 PiDeck 的上下文弹窗同结构：先给结论（已用百分比 + ~已用/窗口），
-		// 再用一条三段占用条与图例拆开系统 / 工具 / 对话——只看一个百分比无法判断
+		// 再用一条三段占用条与图例拆开系统、工具、对话；只看一个百分比无法判断
 		// 是上下文真的长，还是工具 schema 很大。
 		var heading = new StackPanel().Spacing(AppTheme.Space2).Children(
 			new DockPanel().LastChildFill().Children(

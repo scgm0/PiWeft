@@ -51,7 +51,7 @@ public sealed class RespondingStatusTests : IDisposable
 	[Fact]
 	public void NothingOnScreenYetIsWarmingUpNotIdle()
 	{
-		// 首轮发出后到首 token 之前：屏幕上只有用户自己那条，这段必须判成预热而不是「没在跑」。
+		// 首轮发出后到首 token 之前：屏幕上只有用户自己那条，这段要判成预热，不是「没在跑」。
 		Assert.Equal(RespondingKind.Starting, RespondingStatusPolicy.KindOf(Input(output: false)));
 		Assert.Equal(RespondingKind.Starting, RespondingStatusPolicy.KindOf(Input(elapsed: 40_000)));
 	}

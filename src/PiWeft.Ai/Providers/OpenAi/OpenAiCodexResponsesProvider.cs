@@ -12,7 +12,7 @@ namespace PiWeft.Ai.Providers.OpenAi;
 
 /// ChatGPT Codex 后端（<c>openai-codex-responses</c>）的流式适配器。它使用 Responses 线格式，
 /// 面向 <c>https://chatgpt.com/backend-api/codex</c>，用 ChatGPT OAuth 凭据鉴权，并且始终发送
-/// <c>store: false</c> —— 该端点强制要求这个值。
+/// <c>store: false</c>，该端点强制要求这个值。
 public sealed class OpenAiCodexResponsesProvider : IApiProvider
 {
 	public const string ApiId = "openai-codex-responses";

@@ -69,7 +69,7 @@ internal sealed class MarkdownListPanel : Panel
 		{
 			double height = double.IsNaN(row.Height) ? 0 : row.Height;
 			// 补出来的行间距上下均分：条目文字落在自己那一行的行框里，标记也跟第一行对齐，
-			// 而不是把整段推到行框下沿。
+			// 不把整段推到行框下沿。
 			double offset = Math.Min(row.Leading / 2, Math.Max(0, height - row.Leading));
 			double childHeight = Math.Max(0, height - row.Leading);
 			row.Marker.Arrange(new Rect(bounds.X, y + offset, _markerWidth, childHeight));

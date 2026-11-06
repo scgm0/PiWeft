@@ -5,18 +5,17 @@ using System.Runtime.InteropServices;
 
 namespace PiWeft.Imaging;
 
-/// 可分离的 Lanczos3 重采样，带预乘 alpha。与 pi 的 Photon <c>Lanczos3</c> 同一个核；
-/// 缩小时按比例放宽核半径（标准做法），否则大比例缩小会走样。
+/// 可分离的 Lanczos3 重采样，带预乘 alpha。核与 pi 的 Photon <c>Lanczos3</c> 相同；
+/// 缩小时按比例放宽核半径，否则大比例缩小会走样。
 /// <para>
-/// 预乘是为了透明像素的边缘：直接对未预乘的 RGBA 做加权和，透明区域里隐藏的颜色会渗进
-/// 边缘；预乘后再滤波、最后除回去，透明像素才不会被染色。pi 的 Photon 走的是未预乘路径，
-/// 这里选择视觉上更正确的一侧。
+/// 预乘是为透明像素的边缘：直接对未预乘 RGBA 加权，透明区域里隐藏的颜色会渗进边缘；
+/// 预乘后滤波、最后除回去，透明像素才不会被染色。Photon 走未预乘路径，这里选了视觉上更正确的一侧。
 /// </para>
 /// <para>
-/// 性能上有三件事值得保留：核的源下标与权重在构造轴时一次算完（内层循环里没有 clamp 与
-/// 除法）；纵向加权用 <see cref="Vector{T}"/> 一次累加 4–8 个像素；分带缓冲从
-/// <see cref="ArrayPool{T}"/> 取并跨带复用，既没有整幅 float 中间图，也不制造 LOH 垃圾。
-/// 不透明图（绝大多数照片）在写出时走 alpha≈1 快路径，省掉三次除法。
+/// 三处性能安排：核的源下标与权重在构造轴时一次算完，内层循环没有 clamp 与除法；
+/// 纵向加权用 <see cref="Vector{T}"/> 一次累加 4–8 个像素；分带缓冲从
+/// <see cref="ArrayPool{T}"/> 取并跨带复用，没有整幅 float 中间图，也不制造 LOH 垃圾。
+/// 不透明图写出时走 alpha≈1 快路径，省掉三次除法。
 /// </para>
 internal static class LanczosResampler
 {

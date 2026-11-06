@@ -585,10 +585,10 @@ public static class FileWalker
 		}
 	}
 
-	/// 是否是符号链接/重解析点。读不到属性时按「不进入」处理 —— 宁可少扫一点，也不要因为
+	/// 是否是符号链接/重解析点。读不到属性时按「不进入」处理：宁可少扫一点，也不让
 	/// 自指软链接把 grep/find 拖进无限递归。
 	/// 目录本身是「链接」才不跟随：符号链接与目录联接（junction）。
-	/// Windows 上可重解析点不只是链接——OneDrive 等云占位符也是，而它们是货真价实的目录，
+	/// Windows 上的可重解析点不只有链接：OneDrive 等云占位符也是，而它们是普通目录，
 	/// 按「凡是 reparse point 都跳过」会把整片同步目录悄悄漏掉。LinkTarget 只对真正的链接返回非空。
 	private static bool IsReparsePoint(string path)
 	{

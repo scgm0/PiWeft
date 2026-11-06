@@ -45,7 +45,7 @@ public static class SystemPrompt
 	public static SystemMessage Build(SystemPromptOptions options)
 	{
 		// 自定义提示词取代默认 preamble，并且不再生成 tools/rules/docs 章节（与 pi 的 customPrompt 一致）；
-		// project_context、skills、addendum 与 cwd 仍然附加，因为它们是上下文而不是前缀。
+		// project_context、skills、addendum 与 cwd 仍然附加，它们是上下文，不是前缀。
 		var custom = options.CustomPrompt is { Length: > 0 };
 
 		var sections = new Dictionary<string, string?>(StringComparer.Ordinal)
@@ -237,7 +237,7 @@ public static class SystemPromptFiles
 /// <item>先加载 agent 目录里的全局文件，再按「最外层 → 最近」追加祖先目录的文件；</item>
 /// <item>每级目录只取一个文件（按 <see cref="FileNames"/> 顺序）；</item>
 /// <item>按**真实路径**去重：把 AGENTS.md 符号链接到 CLAUDE.md 之类的写法不会重复注入；</item>
-/// <item>嵌套 git worktree 里符号链接到主仓库的那一份要跳过 —— 否则同一份说明会出现两次。</item>
+/// <item>嵌套 git worktree 里符号链接到主仓库的那一份要跳过，否则同一份说明会出现两次。</item>
 /// </list>
 public static class ContextFiles
 {
@@ -291,7 +291,7 @@ public static class ContextFiles
 				continue;
 			}
 
-			// 比较**目录**的真实路径加文件名，而不是文件本身的真实路径：
+			// 比较目录的真实路径加文件名，不比较文件本身的真实路径：
 			// worktree 里的 AGENTS.md 若符号链接到主仓库的文件，它解析出来正是被遮蔽的那条路径。
 			if (shadowed is not null &&
 				string.Equals(Path.Combine(Canonicalize(directory), Path.GetFileName(file.Path)), shadowed, StringComparison.Ordinal))

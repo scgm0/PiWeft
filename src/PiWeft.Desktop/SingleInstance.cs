@@ -4,7 +4,7 @@ using System.Text;
 namespace PiWeft.Desktop;
 
 /// 保证每个用户只有一个实例：第二次启动会立即退出（并尽量让已运行的实例把窗口带到前台），
-/// 而不是让两个窗口同时编辑同一批会话。
+/// 不让两个窗口同时编辑同一批会话。
 /// Unix 使用 agent 目录下的 socket：已有实例持有时绑定会失败（<c>EADDRINUSE</c>），该 socket 同时充当激活通道；
 /// Windows 没有这种 socket，改用命名互斥体。
 public sealed class SingleInstance : IDisposable

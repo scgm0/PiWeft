@@ -107,10 +107,7 @@ public static partial class Strings
 	// 性能诊断（对齐 PiDeck 设置里的同名开关）
 	public const string SettingsDiagnostics = "性能诊断";
 	public const string DiagnosticsDesc =
-		"三档采样：帧档（应用侧重绘请求→FrameRendered 的真实帧成本，p50/p95、掉帧/长帧/停顿、每帧分配、GC 占比、输入→绘制延迟与绘制量）、" +
-		"计数档（行构建/回收、重建轮次等 churn 次数）、明细档（打开会话、投影、慢帧、Markdown 定稿等关键耗时，逐条落盘）。" +
-		"每秒写一行窗口值 + 累计值，可暂停刷新、压堆、导出 Chrome Trace 到 Perfetto/Chrome DevTools 查看；" +
-		"默认关闭，关闭时调用点只剩一次布尔判断。";
+		"采样帧成本、事件次数与关键路径耗时，写入诊断目录。默认关闭。";
 	public const string DiagnosticsRefresh = "刷新采样";
 	public const string DiagnosticsOpenFolder = "打开诊断目录";
 	public const string DiagnosticsReset = "清空统计";
@@ -121,9 +118,9 @@ public static partial class Strings
 	public const string DiagnosticsExportTrace = "导出 Chrome Trace";
 	public const string DiagnosticsExportFirefox = "导出 Firefox Profile";
 	public const string DiagnosticsExportHint =
-		"Chrome Trace Event Format：Perfetto、Chrome DevTools 可直接打开；Firefox Profiler 可导入为 marker。speedscope 不支持该格式。";
+		"Perfetto 与 Chrome DevTools 可直接打开。Firefox Profiler 可导入为 marker，speedscope 不支持。";
 	public const string DiagnosticsExportFirefoxHint =
-		"Gecko profile：在 profiler.firefox.com 打开，span 显示为 marker，逐秒指标显示为 counter 轨道；与 Ultra 的 trace 用同一个查看器。";
+		"在 profiler.firefox.com 打开：span 显示为 marker，逐秒指标是 counter 轨道。";
 	public const string DiagnosticsExporting = "正在导出 Trace…";
 	public const string DiagnosticsExportEmpty = "还没有可导出的采集文件。";
 	public const string DiagnosticsCompacting = "正在压堆…";
@@ -133,25 +130,24 @@ public static partial class Strings
 	public const string DiagnosticsMemory = "内存";
 	public const string DiagnosticsQueueLag = "UI 队列延迟";
 	public const string DiagnosticsQueue = "诊断队列";
-	public const string DiagnosticsOff = "采样未开启：打开开关后再操作一次，就能看到各阶段的耗时。";
-	public const string DiagnosticsNoData = "还没有记录到耗时；开关打开后的操作才会被记下来。";
+	public const string DiagnosticsOff = "打开开关后操作一次，即可看到各阶段耗时。";
+	public const string DiagnosticsNoData = "还没有记录；打开开关后的操作才会被记录。";
 	public const string DiagnosticsStatsHeader = "按名称汇总（次数 · 总耗时 · p95 · 最大）";
 	public const string DiagnosticsRecentHeader = "最近耗时";
 	public const string DiagnosticsPath = "耗时文件";
 	public const string DiagnosticsStarted = "性能诊断已开始采样";
 	public const string DiagnosticsStopped = "性能诊断已停止";
-	public const string DiagnosticsFrameHeader = "帧档（真实帧成本 · 每帧零分配）";
+	public const string DiagnosticsFrameHeader = "帧档";
 	public const string DiagnosticsOverview = "概览";
 	public const string DiagnosticsMemoryHeader = "内存与 GC";
 	public const string LabelPoh = "POH";
 	public const string DiagnosticsMemoryHint =
-		"托管堆只会在 GC 需要时才回收：gen2 次数几乎不动而堆持续变大，是「还没收」而不是「漏了」。" +
-		"要判定泄漏，点「压一次堆」看剩余；同一个操作重复做，剩余一路抬高才是泄漏。";
+		"点「压一次堆」看剩余；重复同一操作，剩余持续抬高才是泄漏。";
 	public const string DiagnosticsLoopHeader = "渲染循环";
 	public const string DiagnosticsLoopHint =
-		"连续循环用帧间隔中位数换算 FPS；按请求重绘时帧间隔包含空闲，不能换算 FPS，只看真实帧成本与停顿。";
+		"连续循环按帧间隔中位数算 FPS；按请求重绘时只看帧成本。";
 	public const string DiagnosticsCompact = "压一次堆";
-	public const string DiagnosticsCompactHint = "完整回收并显示剩余托管堆";
+	public const string DiagnosticsCompactHint = "压堆后的剩余";
 	public static string DiagnosticsCompactResult(long before, long after, double pauseMs) =>
 		$"回收前 {FormatBytes(before)} → 剩余 {FormatBytes(after)}（GC 用了 {pauseMs:0}ms）";
 	public const string LabelWorkingSet = "工作集";
@@ -174,7 +170,7 @@ public static partial class Strings
 	public const string LabelFrameCounts = "掉帧 / 长帧 / 停顿（最近一秒）";
 	public const string LabelAllocPerFrame = "每帧分配";
 	public const string LabelDrawCalls = "绘制调用";
-	public const string DiagnosticsCountersHeader = "事件计数（帧档与 churn 档）";
+	public const string DiagnosticsCountersHeader = "事件计数";
 	public static string FormatBytes(long bytes) => bytes switch
 	{
 		>= 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024 * 1024):0.##} GiB",
@@ -207,7 +203,7 @@ public static partial class Strings
 	public const string Save = "保存";
 	public const string Cancel = "取消";
 	public static string ShortcutsIgnored(string ids) => $"配置里有无法识别的快捷键项，已忽略：{ids}";
-	public const string ShortcutsEditHint = "点「改键」后直接按新的组合键即可绑定，也可以输入组合串再回车；留空或点「恢复默认」回到默认值。";
+	public const string ShortcutsEditHint = "点「改键」后按新组合键即可绑定，也可以输入组合串回车；留空或点「恢复默认」回到默认值。";
 	public static string ShortcutsConflictLine(string first, string second, string binding) =>
 		$"{binding} 同时绑给了「{first}」和「{second}」";
 	public const string MakeDefaultModel = "把当前模型设为默认";
@@ -260,11 +256,11 @@ public static partial class Strings
 	public const string ResourcesThemes = "主题";
 	public const string ResourcesExtensions = "扩展";
 
-	public const string ResourcesExtensionHint = "按 pi 约定发现的全局与项目扩展。这里只列举，不执行；加载失败或需要转译的扩展会写出原因。";
+	public const string ResourcesExtensionHint = "按 pi 约定发现的全局与项目扩展。这里只列举，不执行；失败或需转译的会写出原因。";
 
 	public const string ResourcesPackages = "pi 包";
 
-	public const string ResourcesSkillHint = "技能按描述在任务匹配时进入系统提示词；也可以用 /skill:name 显式触发。";
+	public const string ResourcesSkillHint = "技能在任务匹配时按描述进入系统提示词，也可以用 /skill:name 显式触发。";
 	public const string ResourcesPromptHint = "提示词模板以文件名作为斜杠命令，例如 review.md 对应 /review。";
 	public const string ResourcesThemeHint = "主题在「外观」页选择；这里列出已发现的主题文件与解析结果。";
 	public const string ResourcesPackageHint = "用 pi install <source> 添加包，或直接编辑 settings.json 的 packages。";
@@ -304,7 +300,7 @@ public static partial class Strings
 
 	// 分支树
 	public const string BranchPanelTitle = "会话分支";
-	public const string BranchPanelHint = "每个条目一行；「跳到此处」把当前叶子移回该条目，之后的对话落在新分支上（不改写历史）。";
+	public const string BranchPanelHint = "每个条目一行；「跳到此处」把当前叶子移回该条目，之后的对话落在新分支，不改写历史。";
 	public const string JumpHere = "跳到此处";
 	public const string JumpWithSummary = "摘要后跳转";
 	public const string BranchEntrySystem = "系统提示";
@@ -412,9 +408,9 @@ public static partial class Strings
 
 	public const string ImportScanning = "正在扫描本机的外部会话…";
 
-	public const string ImportHint = "导入只读取源文件，不会修改原工具的会话库。重复导入会再留一份产物，不覆盖上一次的转换结果。";
+	public const string ImportHint = "导入只读源文件，不改原工具的会话库。重复导入会再留一份产物，不覆盖上一次结果。";
 
-	public const string ImportEmptyHint = "本机没有找到可导入的外部会话。Claude Code 的会话在 ~/.claude/projects，Codex CLI 的在 ~/.codex/sessions。";
+	public const string ImportEmptyHint = "没有找到可导入的外部会话。Claude Code 在 ~/.claude/projects，Codex CLI 在 ~/.codex/sessions。";
 
 	public static string ImportDone(string label, int messages) => $"已导入 {label} 会话（{messages} 条消息）。";
 
@@ -432,7 +428,7 @@ public static partial class Strings
 
 	public const string GitUnstaged = "未暂存";
 
-	// 远端同步与 stash（D-04）。失败提示按「用户能照着做」来写，而不是转述 git 的英文报错。
+	// 远端同步与 stash（D-04）。失败提示按「用户能照着做」来写，不转述 git 的英文报错。
 	public const string GitPull = "拉取";
 
 	public const string GitPush = "推送";
@@ -461,13 +457,13 @@ public static partial class Strings
 
 	public const string GitStashReferenceInvalid = "stash 引用不合法。";
 
-	public const string GitNoRemote = "这个仓库没有配置远端，推送/拉取都用不了。先 git remote add origin <url>。";
+	public const string GitNoRemote = "这个仓库没有远端，推送和拉取都不可用。先 git remote add origin <url>。";
 
-	public const string GitNoUpstream = "当前分支没有上游分支。可以先推送一次建立跟踪，或 git branch --set-upstream-to。";
+	public const string GitNoUpstream = "当前分支没有上游。先推送一次建立跟踪，或 git branch --set-upstream-to。";
 
-	public const string GitUnknownRemote = "远端名不存在：这个仓库没有对应的 remote，先用 git remote add 配置。";
+	public const string GitUnknownRemote = "远端名不存在，先 git remote add 配置。";
 
-	public const string GitAmbiguousRemote = "这个仓库有多个远端且没有 origin，无法自动选择推送目标。请先 git branch --set-upstream-to 指定。";
+	public const string GitAmbiguousRemote = "多个远端且没有 origin，无法确定推送目标。先 git branch --set-upstream-to 指定。";
 
 	public const string GitDetachedHead = "处于分离头指针状态，没有可推送的分支。先切回一个分支。";
 
@@ -485,13 +481,13 @@ public static partial class Strings
 
 	public const string GitPushRejected = "远端有你本地没有的提交，推送被拒绝。先拉取再推送。";
 
-	public const string GitAuthFailed = "认证失败：这台机器上没有可用的凭据。先在终端里 git push 一次完成登录，或配置 credential helper / SSH key。";
+	public const string GitAuthFailed = "认证失败：本机没有可用凭据。先在终端 git push 登录，或配置 credential helper / SSH key。";
 
 	public const string GitNetworkFailed = "连不上远端：检查网络、代理与远端地址。";
 
 	public const string GitLocalChangesBlock = "本地改动会被覆盖，拉取中止。先把改动提交或「暂存改动」后再拉取。";
 
-	public const string GitNotFastForward = "分支已分叉，不能快进合入。这一步需要人工决定合并还是变基，请在终端处理。";
+	public const string GitNotFastForward = "分支已分叉，不能快进。合并还是变基要人工决定，请在终端处理。";
 
 	public const string GitConflict = "有冲突。请在终端解决后提交；stash 应用的冲突会让条目保留下来。";
 
@@ -536,7 +532,7 @@ public static partial class Strings
 
 	public const string GitSummaryEmpty = "模型没有返回提交摘要。";
 
-	public const string GitSummaryTruncated = "模型只在做推理、没返回正文（输出被长度上限截断了）。把提交摘要的思考级别调低一档再试。";
+	public const string GitSummaryTruncated = "模型只做了推理，没返回正文（输出被长度上限截断）。把提交摘要的思考级别调低一档再试。";
 
 	public const string GitSummaryBusy = "会话正在运行，完成后再生成提交摘要。";
 
@@ -614,7 +610,7 @@ public static partial class Strings
 
 	public const string GitSummarySettings = "提交摘要默认配置";
 
-	public const string GitSummarySettingsHint = "Git 面板的 AI 按钮默认使用当前会话模型与思考级别；在这里可以改成固定模型/级别，并自定义提交信息的提示词模板。";
+	public const string GitSummarySettingsHint = "AI 按钮默认用当前会话的模型与思考级别；这里可改成固定模型、级别和模板。";
 
 	public const string GitSummarySettingsOpen = "更改默认配置";
 
@@ -686,12 +682,12 @@ public static partial class Strings
 
 	public const string SoundAlertPreview = "试听";
 
-	public const string SoundAlertHint = "完成与出错默认开启；等待输入默认关闭，避免连续提问时一直响。同一会话 8 秒内只响一次，多会话同时完成时只响最近一次。改动立即写入 desktop.json 的 soundAlert 段。";
+	public const string SoundAlertHint = "完成与出错默认开启，等待输入默认关闭。同一会话 8 秒内只响一次，多会话只响最近一次。改动立即保存。";
 
 	// 安全门设置页（设置 → 运行 → 安全门）。文案对齐 PiDeck 的安全管理面板。
 	public const string SettingsSecurity = "安全门";
 
-	public const string SecurityScope = "改动立即写入全局 settings.json 的 security 段，并对后续工具调用生效；项目级设置里的 security 段被忽略（仓库不该能关掉本机防护）。";
+	public const string SecurityScope = "改动写入全局 settings.json，对后续工具调用生效。项目级 security 段被忽略。";
 
 	public const string SecurityGroup = "安全门";
 
@@ -699,7 +695,7 @@ public static partial class Strings
 
 	public const string SecurityEnabledTip = "关闭时完全放行";
 
-	public const string SecurityEnabledHint = "总开关。关闭时无论档位怎么设都完全放行。";
+	public const string SecurityEnabledHint = "关闭时完全放行，不看档位。";
 
 	public const string SecurityDefaultLevel = "默认档位";
 
@@ -739,21 +735,21 @@ public static partial class Strings
 
 	public const string SecurityCustomAllowDirs = "额外允许的目录";
 
-	public const string SecurityCustomAllowDirsHint = "一行一条，仅在路径边界为「工作目录 + 允许目录」时生效；支持 ~ 与相对会话工作目录的路径。";
+	public const string SecurityCustomAllowDirsHint = "一行一条，仅在路径边界为「工作目录 + 允许目录」时生效；支持 ~ 和相对会话目录的路径。";
 
 	public const string SecurityDenyDirs = "禁地（无条件拒绝）";
 
-	public const string SecurityDenyDirsHint = "一行一条。命中的路径读写都拒绝，且没有绕过出口；空行会被忽略。";
+	public const string SecurityDenyDirsHint = "一行一条。命中的路径读写都拒绝，没有绕过出口；空行忽略。";
 
 	public const string SecurityDenyBash = "危险命令模式";
 
-	public const string SecurityDenyBashHint = "一行一条正则（忽略大小写），命中即拒绝执行。内建档自带一张「只含不可逆操作」的表，清空它就等于不拦任何命令。";
+	public const string SecurityDenyBashHint = "一行一条正则（忽略大小写），命中即拒绝。内建表只含不可逆操作，清空就什么都不拦。";
 
 	public const string SecurityApplyList = "应用列表";
 
 	public const string SecurityToolActions = "工具动作";
 
-	public const string SecurityToolActionsHint = "放行 / 确认 / 拒绝。确认会弹框问用户；没有可用来确认的界面时按拒绝处理。路径边界与危险命令的检查独立于这里，任何动作下都会生效。";
+	public const string SecurityToolActionsHint = "放行、确认、拒绝。确认会弹框；没有界面时按拒绝处理。路径边界与危险命令检查独立于这里。";
 
 	public const string SecurityDefaultAction = "其它工具（含 MCP 与自定义工具）";
 
@@ -765,7 +761,7 @@ public static partial class Strings
 
 	public const string SecuritySessionLevels = "按会话覆盖";
 
-	public const string SecuritySessionHint = "以下会话使用各自的档位（在会话输入框的「安全」按钮上切换），其余会话用默认档。";
+	public const string SecuritySessionHint = "以下会话用自己的档位（在输入框的「安全」按钮切换），其余用默认档。";
 
 	public const string SecurityClearOverride = "清除该会话的覆盖";
 
@@ -803,7 +799,7 @@ public static partial class Strings
 
 	public const string ConfigFetchNoNew = "拉取到的模型都已存在，没有新增。";
 
-	public static string ConfigFetchDone(int added, int total) => $"拉取到 {total} 个模型，新增 {added} 个（默认参数，可在表单里修改）。";
+	public static string ConfigFetchDone(int added, int total) => $"拉取到 {total} 个模型，新增 {added} 个，参数可在表单里改。";
 
 	public static string ConfigFetchUnsupported(string api) => $"该 API 不支持远程拉取：{api}";
 
@@ -915,9 +911,9 @@ public static partial class Strings
 	public static string AskQuestionProgress(int index, int total) => $"第 {index}/{total} 题";
 
 	// 卡片里不写“怎么推进”，就没人知道点一下选项算不算答完：一行提示把规则写当场。
-	public const string AskHintSelect = "点一个选项即答完本题，并自动到下一题；也可以直接输入自定义答案。";
+	public const string AskHintSelect = "点选项即答完本题，自动到下一题；也可直接输入。";
 
-	public const string AskHintSelectLast = "点一个选项即答完并提交整张卡片；也可以直接输入自定义答案。";
+	public const string AskHintSelectLast = "点选项即答完并提交整张卡片；也可直接输入。";
 
 	public const string AskHintConfirm = "选是/否即答完本题，并自动到下一题。";
 
@@ -1007,7 +1003,7 @@ public static partial class Strings
 
 	public const string TerminalShellInvalid = "找不到这个 Shell，仍使用当前设置。";
 
-	public const string TerminalHint = "命令 Dock：在项目目录里启动交互式 shell（伪终端）。";
+	public const string TerminalHint = "在项目目录里启动交互式 shell。";
 
 	public const string CloseTerminal = "收起终端";
 
@@ -1029,11 +1025,11 @@ public static partial class Strings
 
 	public const string CheckpointCreated = "已创建检查点。";
 
-	public const string CheckpointRestored = "已恢复工作区文件（快照之后新增的未跟踪文件会保留）。";
+	public const string CheckpointRestored = "已恢复工作区文件；快照后新增的未跟踪文件保留。";
 
 	public const string CheckpointRefresh = "刷新检查点";
 
-	public const string CheckpointHint = "每轮发送前自动快照（同一仓库每分钟最多一次）。恢复只回写工作区文件，不动分支、索引与提交；快照之后新增的未跟踪文件会保留。";
+	public const string CheckpointHint = "每轮发送前自动快照（同一仓库每分钟最多一次）。恢复只回写工作区，不动分支、索引与提交；快照后新增的未跟踪文件保留。";
 
 	public const string CheckpointDiff = "查看变更概览";
 

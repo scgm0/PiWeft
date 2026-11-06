@@ -7,7 +7,7 @@ using PiWeft.CodingAgent.Session;
 namespace PiWeft.CodingAgent.Import;
 
 /// 一个可导入的外部会话（只读摘要）。<see cref="Source"/> + <see cref="SessionId"/> 唯一确定一条，
-/// 列表与命令行都用它们挑目标 —— 传路径也行，但用户手上通常只有「第 3 条 Claude 会话」这种信息。
+/// 列表与命令行都用它们挑目标。传路径也行，但用户手上通常只有「第 3 条 Claude 会话」这种信息。
 public sealed record ImportedSession
 {
 	public required string Source { get; init; }
@@ -60,7 +60,7 @@ public interface IExternalSessionImporter
 
 /// 外部会话导入：发现 → 转换 → 写成 pi v3 JSONL。
 /// 落盘是原子的（同目录临时文件 + rename），并且**文件名由源会话的创建时间与 id 决定**，
-/// 所以重复导入同一条会话会覆盖上一次的产物而不是堆出副本 —— 源会话后来续聊了，重导一次就同步。
+/// 重复导入同一条会话会覆盖上一次的产物，不堆副本；源会话后来续聊，重导一次就同步。
 /// 导入产物里会多一条 <c>custom</c> 条目记下来源（<c>piweft-import</c>），便于事后追溯是哪台工具的哪个文件，
 /// 也方便将来换转换器时判断哪些产物该重导。它不参与模型上下文。
 public static class SessionImportService
@@ -430,7 +430,7 @@ public static class SessionImportService
 	}
 
 	/// 布尔字段的真值判断。<c>isSidechain</c>/<c>isMeta</c> 这类标记是 JSON 布尔，
-	/// 用 <see cref="Text"/> 读会得到 <see langword="null"/> 而不是 <c>false</c> —— 那正好是
+	/// 用 <see cref="Text"/> 读会得到 <see langword="null"/>，不是 <c>false</c>；那正好是
 	/// 「该跳过却没跳过」的来源。
 	internal static bool IsTrue(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<bool>(out var flag) && flag;
@@ -464,7 +464,7 @@ internal sealed class ImportIds
 			}
 		}
 
-		// 极端情况下退回序号式 id，保证唯一而不是抛异常。
+		// 极端情况下退回序号式 id，保证唯一，不抛异常。
 		return $"z{_used.Count:x7}";
 	}
 }

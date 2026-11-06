@@ -17,8 +17,8 @@ public sealed partial class GitView : IDisposable
 
 	private readonly Grid _host = new();
 	private readonly HashSet<string> _collapsedDirectories = new(StringComparer.Ordinal);
-	// 分节宿主：交互态变化只换需要变的那一节。整棵面板重建会把光标下的行、滚动位置与悬停态
-	// 一起丢掉 —— 点一下文件就「不跟手」，就是这个原因。
+	// 分节宿主：交互态变化只换需要变的那一节。整棵面板重建会丢掉光标下的行、滚动位置与悬停态，
+	// 点一下文件就「不跟手」。
 	private readonly Grid _root = new();
 	private readonly DockPanel _changesBody = new DockPanel().LastChildFill();
 	private readonly Border _notRepoHost = new();
@@ -100,7 +100,7 @@ public sealed partial class GitView : IDisposable
 		_moreSash = new PaneSash(() => _panes.More, height => SetPaneBody(Pane.More, height), SavePanes);
 		_panes = GitPaneLayout.Decode(DesktopPreference.Load().GitPanes.GetValueOrDefault(_cwd()));
 
-		// 进度条向 PiDeck 看齐：按等待上限爬升（而不是无限循环的不确定条），让用户知道还剩多久。
+		// 进度条向 PiDeck 看齐：按等待上限爬升，不用无限循环的不确定条，让用户知道还剩多久。
 		_summaryTimer.Tick += UpdateSummaryProgress;
 
 		// 骨架只搭一次：DockPanel 的子级顺序即停靠顺序。底部先停靠的在最下面，
@@ -110,8 +110,8 @@ public sealed partial class GitView : IDisposable
 			_composerHost.DockTop(),
 			_diffHost.DockBottom(),
 			_listHost);
-		// 一行一节；吸掉剩余空间的那行由 ApplyPaneHeights 指定（见 AbsorberRow）。
-		// 折叠某一节后剩余高度要给还别的节，否则原地留一块空白。
+		// 一行一节，吸掉剩余空间的那行由 ApplyPaneHeights 指定（见 AbsorberRow）。
+		// 折叠某一节后，剩余高度要还给别的节，否则原地留一块空白。
 		_root.Children(
 			_branchBarHost.Row(0),
 			_notRepoHost.Row(1),
@@ -1648,7 +1648,7 @@ public sealed partial class GitView : IDisposable
 	/// 带差异计数的同步按钮（对齐 PiDeck 的 push/pull 徽标）：计数是「这一键现在能推出去/拉进来多少提交」，
 	/// 只在该方向真有差异时出现；这一键正在执行时先收起，免得数字停在旧值上。
 	/// 布局照 PiDeck：图标保持居中，计数做成压在按钮右上角的小圆牌。箭头图标的右上是空角，
-	/// 圆牌落在那里不遮笔画，也不必把图标挤歪 —— 把图标挪到左下（第一版的做法）会让整行看着歪。
+	/// 圆牌落在那里不遮笔画，也不必把图标挤歪；把图标挪到左下（第一版的做法）会让整行看着歪。
 	private static Button ToolbarCountButton(string icon, string tooltip, Action action, int count, bool running)
 	{
 		if (count <= 0 || running)
@@ -1814,7 +1814,7 @@ public sealed partial class GitView : IDisposable
 	}
 
 	/// 让按钮的显示内容不参与命中测试。不关掉时，鼠标在一行里走过图标/文字/计数会让命中叶子不断换，
-	/// 每换一次都要重算悬停链并重绘一帧 —— 快速扫过列表时输入队列就是这么堆起来的（高亮「不跟手」）。
+	/// 每换一次都要重算悬停链并重绘一帧；快速扫过列表时输入队列就是这样堆起来的（高亮「不跟手」）。
 	/// 按钮本体仍然命中（整行一次），行尾的动作按钮是兄弟节点，不受影响。
 	private static void FlatContent(StackPanel content) => content.IsHitTestVisible = false;
 

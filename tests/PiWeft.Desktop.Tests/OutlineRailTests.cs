@@ -64,7 +64,7 @@ public sealed class OutlineRailTests
 		IReadOnlyList<int> positions = [0, 40, 90];
 		Assert.Equal(1, OutlineRailTicks.ActiveIndex(positions, 45));
 		Assert.Equal(2, OutlineRailTicks.ActiveIndex(positions, 400));
-		// 锚点在最上面那条之前 → 退回第一条，而不是没有高亮。
+		// 锚点在最上面那条之前 → 退回第一条，不留空高亮。
 		Assert.Equal(0, OutlineRailTicks.ActiveIndex(positions, -20));
 		Assert.Equal(-1, OutlineRailTicks.ActiveIndex([], 10));
 	}

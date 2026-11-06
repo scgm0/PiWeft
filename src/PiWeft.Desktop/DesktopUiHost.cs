@@ -8,7 +8,7 @@ namespace PiWeft.Desktop;
 /// 内联问询卡（<see cref="AskQuestionPanel"/>）。卡片在 UI 线程上构建，代理循环在后台等待回答。
 /// 为什么不再有窗口级弹窗：PiDeck 的 ask 卡片钉在对话区底部，与输入框同级，用户能一边翻历史
 /// 一边回答；遮罩弹窗会把整窗压暗并抢走滚动。同一个面板也承接扩展的
-/// <c>select / confirm / editor</c> 请求 —— 它们同样是“代理停下等你输入”。
+/// <c>select / confirm / editor</c> 请求，它们同样是「代理停下等你输入」。
 internal sealed class DesktopUiHost : IUiHost
 {
 	private SessionTab? _tab;

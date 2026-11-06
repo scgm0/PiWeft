@@ -22,7 +22,7 @@ internal readonly record struct TerminalColor(TerminalColorKind Kind, byte Index
 }
 
 /// 渲染端可绘制的一段同色文本；<see cref="Column"/> 是它起始的单元格列，<see cref="Cells"/> 是它占的格数
-/// （宽字符与 emoji 占两格，组合符号零格）。渲染端按格数而不是字符数算列，簇里有多少码元都不影响对齐。
+/// （宽字符与 emoji 占两格，组合符号零格）。渲染端按格数算列，不看字符数；簇里有多少码元都不影响对齐。
 internal readonly record struct TerminalRun(
 	string Text,
 	int Column,
@@ -216,8 +216,8 @@ internal sealed class TerminalScreen
 		var widthChanged = columns != _columns;
 		var oldRows = _rows;
 
-		// 只改高度时视口底部锚定（多出来的历史在顶部长出来），光标要跟着它所在的那一行走，
-		// 否则行数一变光标就跳到别的行上——拖分隔条时会看到提示符和光标脱节。
+		// 只改高度时视口底部锚定（多出的历史在顶部长出来），光标跟着它所在的行走；
+		// 否则行数一变光标就跳到别的行，拖分隔条时提示符和光标脱节。
 		var oldBase = Math.Max(0, _primary.Count - oldRows);
 		var cursorBufferRow = oldBase + _cursorRow;
 
@@ -568,10 +568,9 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// 收回撑满视口用的尾部空行。视口底部锚定（BufferBase = Count - rows），这些空行留着
-	/// 就被当成真实历史：拖分隔条把终端拉高再缩回时，提示符会被顶出视口、光标被映到别的行，
-	/// shell 收到 SIGWINCH 重画提示符就留下几行重复文本。
-	/// 只收回「整行没内容、在光标行以下、且缓冲区仍不短于视口」的末尾行，光标绝对行不变。
+	/// 收回撑满视口的尾部空行。视口底部锚定（BufferBase = Count - rows），空行留着会被当成历史：
+	/// 拉高再缩回时，提示符被顶出视口，光标映到别的行，shell 收到 SIGWINCH 重画就留下重复文本。
+	/// 只收回「整行没内容、在光标行以下、缓冲区仍不短于视口」的末尾行，光标绝对行不变。
 	private void TrimViewportPadding(int cursorAbsoluteRow)
 	{
 		var keep = Math.Max(_rows, Math.Min(_primary.Count, cursorAbsoluteRow + 1));
@@ -698,8 +697,8 @@ internal sealed class TerminalScreen
 		}
 	}
 
-	/// 主屏重排：把软换行的行拼回逻辑行，再按新列宽重新切分。
-	/// 光标、视口与软换行标记一起迁移，缩放窗口不再截断长命令行。
+	/// 主屏重排：把软换行的行拼回逻辑行，按新列宽重新切分。
+	/// 光标、视口与软换行标记一起迁移，缩放窗口不会截断长命令行。
 	private void ReflowPrimary(int oldRows, out int cursorRow, out int cursorColumn, out int viewTopRow)
 	{
 		var source = _primary;
@@ -906,8 +905,8 @@ internal sealed class TerminalScreen
 	}
 
 
-	/// 喂入一段（可跨块的）终端输出。普通文本用 <see cref="SearchValues{T}"/> 批量跳过，
-	/// 版本号每块只递增一次：高频输出时不再为每个字符做一次失效标记。
+	/// 喂入一段可跨块的终端输出。普通文本用 <see cref="SearchValues{T}"/> 批量跳过，
+	/// 版本号每块只递增一次，高频输出不再逐字符做失效标记。
 	public void Feed(ReadOnlySpan<char> text)
 	{
 		if (text.IsEmpty)
@@ -956,8 +955,8 @@ internal sealed class TerminalScreen
 		return SearchValues.Create(chars);
 	}
 
-	/// 批量写入一段可打印文本。按码点而不是按 char 走：代理对、组合符号、ZWJ 链都归一个簇、占一格。
-	/// 末尾那个孤立高代理留到下一块再拼——PTY 读块会把它劈开。
+	/// 批量写入可打印文本。按码点处理，不按 char：代理对、组合符号、ZWJ 链都归一个簇、占一格。
+	/// 末尾孤立的高代理留到下一块再拼，PTY 读块会把它劈开。
 	private void WriteSpan(ReadOnlySpan<char> text)
 	{
 		if (_pendingHighSurrogate != '\0')
@@ -1839,7 +1838,7 @@ internal sealed class TerminalScreen
 	}
 
 	/// 写入一个码点。零宽续接码元（组合符号、变体选择符、ZWJ 链、肤色修饰、Hangul 中/终声、
-	/// 区域指示符的第二半）并进上一格而不开新格——列号不再因为“一个簇好几个码元”而漂移。
+	/// 区域指示符的第二半）并进上一格而不开新格，列号不再因为「一个簇好几个码元」而漂移。
 	private void WriteRune(char first, char second)
 	{
 		var mapped = MapCharset(first);

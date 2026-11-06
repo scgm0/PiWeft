@@ -21,7 +21,7 @@ public sealed partial class MainWindow
 		_sessionTree.ItemPadding = new Thickness(8, 2, 8 + AppTheme.Space3, 2);
 		_sessionTree.ItemTemplate<TreeViewNode>(context =>
 		{
-			// 项目分组行带文件夹图标，会话行不带 —— 层级一眼可辨。
+			// 项目分组行带文件夹图标，会话行不带，层级一眼可辨。
 			var folder = AppIcons.Icon("folder-open", AppStyles.RoleSubtle, 14)
 				.Margin(new Thickness(0, 0, 6, 0));
 			var title = new TextBlock().FontSize(AppTheme.FontSizeControl).PrimaryText()

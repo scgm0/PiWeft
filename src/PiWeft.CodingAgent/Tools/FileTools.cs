@@ -232,7 +232,7 @@ public static class FileTools
 	/// 就地写入（与 pi 的 <c>fs.writeFile</c> 同语义）：打开现有的 inode、截断、写满。
 	/// 不换文件，是因为「换文件」不是写入而是「注销旧文件再建一个新的」：硬链接会断开、
 	/// 别的进程已经打开的句柄还指着旧内容、ACL/扩展属性/inode 全变。pi 接受写到一半
-	/// 崩溃留下半截文件——这里同理；需要原子性的会话/设置/导入各自走自己的临时文件+rename。
+	/// 崩溃留下半截文件，这里同理；需要原子性的会话、设置、导入各自走临时文件 + rename。
 	private static void WriteInPlace(string path, string content)
 	{
 		// 写入跟随符号链接：FileMode.Create 在链接路径上打开的就是目标文件，
@@ -473,7 +473,7 @@ public static class FileTools
 		["truncation"] = truncation.ToJson(),
 	};
 
-	/// 按文件头识别图片，而不是按扩展名。pi 的 mime.ts 同样只接受可安全内联的静态图片。
+	/// 按文件头识别图片，不看扩展名。pi 的 mime.ts 同样只接受可安全内联的静态图片。
 	private static string? DetectImageMimeType(string path)
 	{
 		const int sniffBytes = 4100;

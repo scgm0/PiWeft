@@ -32,9 +32,9 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 系统提示词只在运行时构造，不写入会话。未知字段原样保留：会话头、条目顶层、已知角色的未建模字段（`Extra`）、未知角色整体（`CustomMessage.Raw`）、未知条目（`UnknownSessionEntry`）；`usage` / `usage.cost` 的未知字段同样保留。新增已知角色字段时须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys`。
 - 默认工具与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 `todo` 与 `ask_question`；Windows 默认含 `powershell`。`grep`/`find`/`ls`/`codemode` 需显式开启。`--tools` 支持整体替换、`+name`/`-name` 与 `--exclude-tools` 通配。
 - `write`/`edit` 就地写入（与 pi 的 `fs.writeFile` 同语义）：保持 inode、硬链接、权限位与已打开句柄；会话/设置/导入这些需要原子性的落盘仍走同目录临时文件 + rename。
-- 图片进入上下文前按模型 `inputLimits.images.resize` 处理（`read` 工具与所有用户附件共用同一条管线）：限制内原样保留（动画 GIF/WebP 不动），超限则先应用 EXIF 方向、按 Lanczos3 缩到 `maxWidth/maxHeight`，再在 PNG 与 JPEG 质量阶梯（`jpegQuality`/85/70/55/40）里取能进 base64 字节预算的最小者，仍超就按 0.75 递减到 1×1；输出带尺寸映射括注。无法解码的图片只留一句括注，不把坏数据塞进上下文。
+- 图片进上下文前按模型 `inputLimits.images.resize` 处理，`read` 工具与所有用户附件共用同一条管线。限制内原样保留（动画 GIF/WebP 不动）；超限先应用 EXIF 方向，按 Lanczos3 缩到 `maxWidth/maxHeight`，再在 PNG 与 JPEG 质量阶梯（`jpegQuality`/85/70/55/40）里取能进 base64 字节预算的最小者，仍超就按 0.75 递减到 1×1。输出带尺寸映射括注；无法解码的图只留一句括注，坏数据不进上下文。
 - 工具结果的图片（MCP、扩展、截图工具）也在进入历史前按同一套限制处理，括注作为额外文本块追加；与 `read` 的区别是处理失败时保留原图块（工具已经产出它，删掉等于改变工具行为）。
-- 附件归一化在「真正进上下文」时才做：`PrepareInput` 保持同步（计划模式标记与模板展开必须立即生效），`PromptAsync` 与 steering/follow-up 出队时在线程池上跑解码/缩放（`AgentOptions.NormalizeQueuedMessage`），排队期间换模型也会按新限制重新处理；`read` 工具同样把读文件与图片处理交给线程池。
+- 附件归一化在进上下文时才做：`PrepareInput` 保持同步，计划模式标记与模板展开要立即生效；`PromptAsync` 与 steering/follow-up 出队时在线程池上跑解码/缩放（`AgentOptions.NormalizeQueuedMessage`），排队期间换模型也会按新限制重新处理。`read` 工具同样把读文件与图片处理交给线程池。
 - bash / powershell 子进程注入 `PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，启动时设置 `AI_AGENT=pi`、`PI_CODING_AGENT=true`；`settings.shellPath` / `shellCommandPrefix` 控制 shell 与前缀。
 - bash 路径、输出与收尾：命令输出进入上下文/会话前剥掉 ANSI 与 NUL/控制字符（工具保留 CR，与 pi 的精确输出一致），完整输出临时文件为 0600；shell 先退出、后台进程仍占管道时 timeout 仍然生效，并在状态行报告 shell 的真实退出码。Unix 用 `setsid` 建立独立进程组，超时/取消整组 `SIGKILL`（无 `setsid` 时退回整树 kill）；Windows 用 System32 的 `taskkill /F /T`。用户 `!` 命令的流式事件是 `bash_execution_update.delta` 文本块并去掉 CR，与 pi 的 bash-executor 一致。
 - 生效 settings：`shellPath`、`shellCommandPrefix`、`sessionDir`、`defaultTools`、`cacheWarming`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`compaction`、`retry`、`transport`、`httpIdleTimeoutMs`、`httpProxy`、`extensions`、`skills`、`prompts`、`themes`、`packages`、`enableSkillCommands`、`defaultProjectTrust`、`sessionShareDestination`、`codemode`、`security`。其余键保留不生效。
@@ -95,8 +95,8 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 生图/分类网关已接入 codemode，但没有一级入口；虚拟模型路由已实现，扩展宿主动态注册未接；Codex `websocket-cached` 未复用连接。虚拟模型的图片限制按外层模型条目的 `inputLimits` 取，未使用路由目标模型的限制。
 - 桌面历史仍全量在内存（分支/fork/搜索/todo/`context_edit` 依赖全量）；完整 VT100 边界、终端多标签、快照回放未覆盖。
 - `grep`/`find` 仍是进程内实现，不依赖外部二进制：glob 已覆盖 `{a,b}` 分支、`[!a]` 取反、`**` 与 fd 的 smart-case、路径型 pattern 任意深度匹配，ignore 已覆盖父目录、嵌套仓库边界、全局 `~/.config/git/ignore` 与 `core.excludesFile`。剩余差异是正则方言（.NET `NonBacktracking` 而非 Rust regex）与遍历顺序（进程内为确定性排序，fd 未定义）。
-- `grep`/`find` 不跟随符号链接与目录联接；Windows 上只有真正的链接才跳过（OneDrive 等云同步占位符也是 reparse point，但它们是普通目录，照常遍历）。
-- 图片管线只处理 pi 支持的五种内联格式（PNG/JPEG/GIF/WebP/BMP）；AVIF/HEIC/TIFF 等需要先转成 PNG。`inputLimits.images.maxPerMessage` / `maxPerRequest` 尚未强制。缩放/预乘语义与 Photon 不完全逐字节一致（本实现预乘 alpha，透明边缘更干净）。
+- `grep`/`find` 不跟随符号链接与目录联接；Windows 上只跳过真正的链接；OneDrive 等云同步占位符也是 reparse point，但属于普通目录，照常遍历。
+- 图片管线只处理 pi 支持的五种内联格式（PNG/JPEG/GIF/WebP/BMP）；AVIF/HEIC/TIFF 等需要先转成 PNG。`inputLimits.images.maxPerMessage` / `maxPerRequest` 尚未强制。缩放与预乘语义和 Photon 不完全逐字节一致：本实现预乘 alpha，透明边缘更干净。
 - `constrainedSampling` 已声明在 `read`/`bash`/`edit`/`write` 并在 provider 层落地 strict JSON schema（Anthropic 含额度超限降级重发，OpenAI Completions/Responses、Google VALIDATED、Bedrock、Mistral）。grammar 变体（codemode 的 lark 约束）尚未实现。
 - Windows/macOS 原生窗口、发布包、真实供应商联网与 PiDeck 完整 e2e 仍需实机验证。Windows 的 Git Bash 发现顺序、旧版 WSL 的 `-s` + stdin、PowerShell 7 优先与 UTF-8 前置、`taskkill /F /T`、`/c/` `/mnt/c/` 路径换算已按 pi 审计对齐，但缺少实机回归。
 

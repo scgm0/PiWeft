@@ -171,7 +171,7 @@ public sealed class Utf8LineReader : IDisposable
 		_stream.Dispose();
 		ArrayPool<byte>.Shared.Return(_readBuffer);
 		// 行缓冲会跟着最大的一行长膨胀（几 MB 的会话正文很常见）。
-		// 这么大的数组还给共享池就等于进程永久留着它 —— 超过阈值直接交给 GC，
+		// 这么大的数组还给共享池，等于进程永久留着它；超过阈值直接交给 GC，
 		// 池里只留正常尺寸的分桶，下一次读还能复用。
 		if (_lineBuffer.Length <= MaxPooledLineBuffer)
 		{

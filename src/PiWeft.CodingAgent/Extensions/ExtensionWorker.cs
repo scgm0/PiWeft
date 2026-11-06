@@ -5,7 +5,7 @@ namespace PiWeft.CodingAgent.Extensions;
 /// 一个扩展的专用线程与任务队列。
 /// Jint 的 <see cref="Jint.Engine"/> 不是线程安全的：扩展注册期（加载时）与运行期（事件回调、
 /// 工具执行）都会调用它，而这些调用来自代理线程、工具线程与 UI 线程。所以每个扩展一个线程，
-/// 所有进入该引擎的调用都在这里排队执行 —— 这既是线程安全，也顺带得到「一个卡死的扩展
+/// 所有进入该引擎的调用都在这里排队执行，这既是线程安全，也顺带得到「一个卡死的扩展
 /// 不会拖住别的扩展与会话」的隔离性（超时后放弃等待并把该扩展标记为无响应）。
 /// 队列是 FIFO 且**允许重入**：扩展的 <c>execute</c> 在 worker 上跑，期间宿主可能回调
 /// <c>pi.ui.confirm</c>；那种回调如果排队等待自己就会死锁，所以已在 worker 线程时会直接内联执行。
@@ -18,7 +18,7 @@ internal sealed class ExtensionWorker : IDisposable
 	private volatile bool _stopping;
 
 	/// worker 自身的故障。本程序集不依赖日志框架（宿主各自有 sink），所以只收集、由宿主读走并上报。
-	/// 一个扩展的内部错误绝不能杀掉 worker 线程 —— 那会让后面所有扩展调用永远挂着。
+	/// 一个扩展的内部错误不能杀掉 worker 线程，否则后面所有扩展调用都会挂着。
 	public ConcurrentQueue<Exception> Faults { get; } = new();
 
 	public ExtensionWorker(string name)
@@ -100,7 +100,7 @@ internal sealed class ExtensionWorker : IDisposable
 			_signal.Wait(TimeSpan.FromMilliseconds(200));
 		}
 
-		// 退出前排空剩余项，让等待方的 Task 都能落到「已停止」而不是永远挂着。
+		// 退出前排空剩余项，让等待方的 Task 都落到「已停止」，不挂着。
 		while (_queue.TryDequeue(out var action))
 		{
 			try

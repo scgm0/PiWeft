@@ -94,7 +94,7 @@ public static class CodeModeDeclarations
 			if (context.Resolving.Contains(reference) || context.Expansions >= MaxRefExpansions) return "unknown";
 			var target = ResolveRef(reference, context.Root);
 			if (target is null) return "unknown";
-			// 沿当前路径进出（而不是每层拷贝集合），深度优先的兄弟分支仍可再次展开。
+			// 沿当前路径进出，不每层拷贝集合，深度优先的兄弟分支仍可再次展开。
 			if (!context.Resolving.Add(reference)) return "unknown";
 			context.Expansions++;
 			try

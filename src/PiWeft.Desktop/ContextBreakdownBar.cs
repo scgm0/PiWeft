@@ -6,7 +6,7 @@ namespace PiWeft.Desktop;
 /// 上下文占用条 + 三段图例（系统 / 工具 / 对话），对齐 PiDeck 的 ContextMeter 面板：
 /// 一条按窗口比例画的分段进度条，下面三行「色块 + 名称 + ~token」。
 /// 为什么不用 <see cref="ProgressBar"/>：它只能表达一个标量。上下文占用里真正值得看的
-/// 是构成——同是 40%，系统提示词与工具 schema 吃满和对话本身长，处理方式完全不同。
+/// 是构成：同是 40%，系统提示词与工具 schema 吃满和对话本身长，处理方式完全不同。
 internal sealed class ContextBreakdownBar
 {
 	private const double BarHeight = 4;

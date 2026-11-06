@@ -7,8 +7,8 @@ namespace PiWeft.Desktop;
 
 /// 界面偏好：主题、窗口状态、置顶、最近项目/模型与快捷键。存放在 <c>&lt;agentDir&gt;/desktop.json</c>，
 /// 与 pi 的会话、设置文件放在一起，便于一起备份或迁移。
-/// 主题既可以在这里持久化（启动前用 <c>ThemeManager.Default</c> 应用），也可以在运行期间通过
-/// MewUI 的 <c>Application.SetTheme</c> 立即切换；两者最终落到同一个取值。
+/// 主题可以在这里持久化（启动前用 <c>ThemeManager.Default</c> 应用），
+/// 也可以在运行期间用 MewUI 的 <c>Application.SetTheme</c> 切换；两者落到同一个值。
 public sealed record DesktopPreference
 {
 	public const string DarkTheme = "dark";
@@ -39,8 +39,8 @@ public sealed record DesktopPreference
 
 	public double? WindowTop { get; init; }
 
-	/// 工作区侧栏状态与拖拽宽度（DIP）。默认收起：侧栏展开要扫一遍全部会话摘要
-	/// （几百份时是上百 MB 的读盘），收着就先不付这笔钱，展开时再加载。
+	/// 工作区侧栏状态与拖拽宽度（DIP）。默认收起：展开要扫全部会话摘要
+	/// （几百份时是上百 MB 读盘），收着就不付这笔钱。
 	public bool SidebarCollapsed { get; init; } = true;
 	public double SidebarWidth { get; init; } = AppTheme.SidebarWidth;
 
@@ -50,12 +50,12 @@ public sealed record DesktopPreference
 	/// 并把关键路径耗时写进 <c>&lt;agentDir&gt;/diagnostics/</c>，用于优化前后对照。
 	public bool Diagnostics { get; init; }
 
-	/// 等待期的功能提示轮播（状态条右侧那一行小字）。默认显示：它是唯一曝光
-	/// 「没有可见入口」的能力的机会；关掉只关提示本身，不影响里面提到的功能。
+	/// 等待期的功能提示轮播（状态条右侧那行小字）。默认显示：这是唯一能曝光
+	/// 「没有可见入口」能力的地方；关掉只关提示，不影响功能。
 	public bool RespondingTips { get; init; } = true;
 
-	/// 右侧功能面板的拖拽宽度（DIP）。面板本身属于会话、默认收起，因此折叠状态与分段
-	/// 不落盘；只有宽度是窗口级、跨会话共享的偏好。
+	/// 右侧功能面板的拖拽宽度（DIP）。面板属于会话且默认收起，折叠状态与分段不落盘；
+	/// 只有宽度是窗口级偏好，跨会话共享。
 	public double RightPanelWidth { get; init; } = AppTheme.RightPanelWidth;
 
 	/// 右侧「轨迹」分段底部检查器的高度（DIP）。拖动分隔条时记下，重开面板沿用它；
@@ -365,7 +365,7 @@ public sealed record DesktopPreference
 			{
 				WriteIndented = true,
 
-				// 快捷键里会出现 "+"，默认转义会写成 + —— 文件要能让人直接看懂和手改。
+				// 快捷键里会出现 "+"，默认转义会写成 +，文件要能让人直接看懂和手改。
 				Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 			}));
 	}

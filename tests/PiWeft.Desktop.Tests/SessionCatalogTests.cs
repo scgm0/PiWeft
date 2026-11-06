@@ -94,8 +94,8 @@ public sealed class SessionCatalogTests
 	}
 }
 
-/// 目录快速字节判定必须与完整 JSON 解析逐字段一致：条数、预览、名字、cwd 都不能因为
-/// 「跳过解析」而变化。这里刻意覆盖边界形状：正文里出现同名字段、超长前缀、断行、纯图片消息。
+/// 目录快速字节判定要与完整 JSON 解析逐字段一致：条数、预览、名字、cwd 不因
+/// 「跳过解析」而变化。这里覆盖边界形状：正文里出现同名字段、超长前缀、断行、纯图片消息。
 public sealed class SessionCatalogFastScanTests
 {
 	private static void AssertSameAgreement(params string[] lines)
@@ -191,7 +191,7 @@ public sealed class SessionCatalogFastScanTests
 	[Fact]
 	public void ExternalExportSpacingAndKeyOrderStillAgree()
 	{
-		// 外部导出的写法：type 在前、冒号后带空格。快速路径必须也认这种形状。
+		// 外部导出的写法：type 在前、冒号后带空格。快速路径也要认这种形状。
 		var lines = new[]
 		{
 			"""{"type": "session", "version": 3, "id": "s", "timestamp": "t", "cwd": "/tmp/pi"}""",
@@ -213,7 +213,7 @@ public sealed class SessionCatalogFastScanTests
 	[Fact]
 	public void ContentCarryingTheHeaderKeysDoesNotConfuseTheFastPath()
 	{
-		// 正文里就写着 "type" / "role"，而且 content 出现在真键之前 —— 必须退回完整解析。
+		// 正文里就写着 "type" / "role"，content 又出现在真键之前，要退回完整解析。
 		AssertSameAgreement(
 			"""{"content": "讨论 \"type\": \"message\" 与 \"role\": \"assistant\" 的写法", "type": "message", "id": "u", "message": {"role": "user", "content": "正文"}}""",
 			"""{"id":"x","parentId":"u","type":"message","message":{"role":"assistant","content":"ok"}}""");
@@ -233,7 +233,7 @@ public sealed class SessionCatalogFastScanTests
 
 /// 侧栏只扫「会显示出来的那些」：文件数超过 limit 时按修改时间截断，
 /// 但不能改变排序语义，也不能让截断之外的文件影响结果。
-// 改了进程级 PI_CODING_AGENT_DIR：必须与其它同类测试串行，否则会互相读到对方的会话目录。
+// 改了进程级 PI_CODING_AGENT_DIR：与其它同类测试串行，否则会互相读到对方的会话目录。
 [Collection("process-environment")]
 public sealed class SessionCatalogTruncationTests : IDisposable
 {
@@ -413,7 +413,7 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 		}, agent);
 
 		// Invalidate 只改内存（UI 线程上不读写磁盘）：这一次扫描必须全量重读，
-		// 而不是拿那条越界偏移续扫，否则预览会是重写前的旧文本。
+		// 不拿那条越界偏移续扫，否则预览会是重写前的旧文本。
 		var catalog = new SessionCatalog();
 		catalog.Invalidate(path);
 		var item = Assert.Single(catalog.List());
@@ -469,7 +469,7 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 
 		var warm = Assert.Single(catalog.List());
 		Assert.Equal(122, warm.MessageCount);
-		// 只读新增的那几十字节，而不是把整份文件再来一遍。
+		// 只读新增的那几十字节，不把整份文件再来一遍。
 		Assert.True(
 			catalog.ScannedBytesForTests < fullLength / 4,
 			$"续扫没有生效：重读了 {catalog.ScannedBytesForTests} 字节（整份 {fullLength}）");

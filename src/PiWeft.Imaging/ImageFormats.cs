@@ -181,7 +181,7 @@ internal static class ImageFormats
 		}
 		catch (Exception exception) when (exception is InvalidDataException or ArgumentException or IndexOutOfRangeException)
 		{
-			// 损坏/截断的图片：由上层改写成「无法转换」的提示，而不是让工具失败。
+			// 损坏或截断的图片：上层改写成「无法转换」的提示，不让工具失败。
 			return false;
 		}
 	}

@@ -95,7 +95,7 @@ internal static class ExecutionProcess
 						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true };
 					if (!live && item.Role == ChatRole.Tool && item.IsStreaming)
 						item = item with { IsStreaming = false, IsStopped = true };
-					// 工具步骤也用调用 id 而不是消息条目 id 作键：流式消息落盘后
+					// 工具步骤用调用 id 作键，不用消息条目 id：流式消息落盘后
 					// ChatViewModel 会换掉行 EntryId，否则组键/展开态会跟着重建。
 					if (item.Role == ChatRole.Tool && item.ToolCallId is { Length: > 0 } toolCallId)
 						item = item with { EntryId = $"tool/{toolCallId}" };
@@ -382,7 +382,7 @@ internal static class ExecutionProcess
 		return Strings.ToolDetail(arguments);
 	}
 
-	/// 形参是 span 而不是数组：这条路径在一次投影里会被每个工具条目调用一次，
+	/// 形参用 span，不用数组：这条路径在一次投影里会被每个工具条目调用一次，
 	/// <c>params string[]</c> 每次调用都要分配一个小数组，而实参全是内联字面量。
 	private static string? JsonField(string arguments, params ReadOnlySpan<string> names)
 	{
@@ -430,7 +430,7 @@ internal sealed class ExecutionProcessProjector
 		var lastUser = LastUserIndex(entries);
 		// 缓存能担保的前缀是「上一次投影时的最后一个用户消息」之前的行：那些轮次早已定稿，
 		// 投影结果与 busy 无关。因此 busy 翻转（回合开始/结束）与新用户消息都只需要从旧的
-		// 轮次边界重投尾部——长会话上一次全量要一百多毫秒，恰好发生在每回合的起止帧。
+		// 轮次边界重投尾部。长会话上一次全量要一百多毫秒，正好落在每回合的起止帧上。
 		if (lastUser >= 0 && _lastUserSourceIndex >= 0 && lastUser >= _lastUserSourceIndex &&
 			PrefixEquals(entries, _source, _lastUserSourceIndex))
 		{

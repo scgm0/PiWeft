@@ -133,7 +133,7 @@ public sealed record ChatEntry
 	}
 }
 
-/// 一次自动重试的界面状态。退避倒计时结束后 <see cref="RetryAtUnixMs"/> 成为过去时刻，
+/// 一次自动重试的界面状态。倒计时结束后 <see cref="RetryAtUnixMs"/> 成为过去时刻，
 /// 界面据此从「N 秒后重试」切回「正在自动重试 n/m」。
 public sealed record ChatRetryStatus(
 	int Attempt,
@@ -159,8 +159,8 @@ public sealed record ChatRetryNotice(bool Success, int Attempt, int MaxAttempts,
 /// 把 <see cref="CodingAgentSession"/> 转成聊天视图要渲染的行，外加底部状态栏的一行文字。
 /// 这里不依赖任何 UI 框架，可以无窗口运行，因此映射逻辑都能被单元测试覆盖；窗口只订阅
 /// <see cref="Changed"/> 并在 UI 线程重绘。
-/// 聊天记录由会话的投影消息推导，而不是逐事件累加：会话已经处理了压缩、上下文编辑和分支切换，
-/// 视图因此不会与模型真正看到的内容产生偏差。唯一增量跟踪的是尚未落盘的流式文本。
+/// 聊天记录由会话的投影消息推导，不逐事件累加：压缩、上下文编辑和分支切换都已由会话处理，
+/// 视图不会偏离模型看到的内容。只有尚未落盘的流式文本走增量。
 public sealed class ChatViewModel : IDisposable
 {
 	private readonly Lock _gate = new();
@@ -180,8 +180,8 @@ public sealed class ChatViewModel : IDisposable
 	// 追加式缓冲：片段不可变、快照共享，UI 线程读旧快照时不会碰到被下一轮清空的缓冲。
 	private readonly StreamingBuffer _streamingText = new();
 	private readonly StreamingBuffer _streamingThinking = new();
-	// 回合代号：ResetStreaming 时推进。快照只有同回合、同来源才谈得上「纯追加」，
-	// 否则下一回合可能在新长度上误把上一回合的前缀当成仍然成立。
+	// 回合代号在 ResetStreaming 时推进。只有同回合、同来源的快照才谈得上纯追加，
+	// 否则下一回合会拿新长度去套上一回合的前缀。
 	private int _streamingGeneration;
 	private long _streamingTimestamp;
 	private long _streamingThinkingStartedAt;

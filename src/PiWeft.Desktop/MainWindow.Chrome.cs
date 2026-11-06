@@ -7,9 +7,8 @@ namespace PiWeft.Desktop;
 /// Windows 与 macOS 用 <see cref="Window.ExtendClientAreaTitleBarHeight"/> 把客户区延伸到原生标题栏：
 /// 系统继续负责圆角、阴影、缩放与 macOS 的红绿灯；X11 没有等价能力，只能改为无边框窗口，
 /// 于是移动、八向缩放与三个窗口按钮全部由应用绘制（<see cref="Window.DragMove"/> /
-/// <see cref="Window.DragResize"/>）。标题栏左段与侧栏同色、右段与主区同色，页签条和窗口按钮
-/// 都在右段里，内容仍从标题栏下方开始 —— 这样既不新增一条全局工具栏，又比一条横贯全宽的
-/// 中性色顶栏更贴近 PiDeck 的窗框层次。
+/// <see cref="Window.DragResize"/>）。标题栏左段与侧栏同色，右段与主区同色；页签条和窗口按钮
+/// 都在右段，内容仍从标题栏下方开始。这样不新增全局工具栏，层次也贴近 PiDeck 的窗框。
 public sealed partial class MainWindow
 {
 	private const double ShadowExtent = 12;
@@ -17,8 +16,8 @@ public sealed partial class MainWindow
 	private const double ShadowOffset = 2;
 
 	/// 窗口级浮层的可见区域：跳过标题栏；X11 正常窗口还要跳过透明阴影边，
-	/// 否则浮层的透明捕获层会盖住标题栏底部或压出圆角窗框。
-	/// 最大化/全屏时透明阴影边已不存在，浮层要贴住窗口四边，否则四周会留一圈亮边。
+	/// 否则透明捕获层会盖住标题栏底部，或压出圆角窗框。最大化/全屏时没有阴影边，
+	/// 浮层贴住窗口四边，否则四周留一圈亮边。
 	internal static Thickness OverlayInsetFor(WindowState state)
 	{
 		if (UsesNativeWindowFrame || state is WindowState.Maximized or WindowState.FullScreen)
@@ -87,8 +86,8 @@ public sealed partial class MainWindow
 
 	private Color? _nativeBorderColor;
 
-	/// 是否保留系统原生窗框。X11 的扩展标题栏只是「去掉装饰」，无法保留原生按钮，
-	/// 所以只有 Win32/macOS 走原生扩展路径。
+	/// 是否保留系统原生窗框。X11 的扩展标题栏只去掉装饰，保不住原生按钮，
+	/// 因此只有 Win32/macOS 走原生扩展路径。
 	private static bool UsesNativeWindowFrame =>
 #if MEWUI_WIN32 || MEWUI_MACOS
 		true;
@@ -117,7 +116,7 @@ public sealed partial class MainWindow
 	private UIElement BuildChromeShell()
 	{
 		// 窗口按钮浮在内容之上：右侧面板展开时它们落在面板页签条的右端，
-		// 收起时落在主标题栏右端，与 PiDeck 一样属于窗框而不是某一列。
+		// 收起时落在主标题栏右端，与 PiDeck 一样属于窗框，不属于某一列。
 		var shell = new Grid()
 			.Children(new ContentPresenter(), _windowActionsOverlay);
 
@@ -154,7 +153,7 @@ public sealed partial class MainWindow
 
 	private UIElement BuildSidebarTitleBar()
 	{
-		// 项目铭牌是标签而不是元数据：用 UI 字体、次要文字色，完整路径留在悬停提示里。
+		// 项目铭牌是标签，不当元数据：用 UI 字体、次要文字色，完整路径留在悬停提示里。
 		_tabCaption = new TextBlock()
 			.Text(ShortCwd(_cwd))
 			.FontSize(AppTheme.FontSizeCaption)
@@ -324,7 +323,7 @@ public sealed partial class MainWindow
 			.Children(_chromeActionsSeparator, _titleBarButtons);
 	}
 
-	/// 同步唤醒键：没有会话时不占位；展开时呈强调弱底。位置由布局决定 ——
+	/// 同步唤醒键：没有会话时不占位；展开时呈强调弱底。位置由布局决定；
 	/// 它是主标题栏右端的最后一项，面板展开时主标题栏变窄，它自然停在面板左缘。
 	private void UpdateRightPanelButton()
 	{
@@ -546,7 +545,7 @@ public sealed partial class MainWindow
 	};
 
 	/// 标题栏的空白处拖动窗口，双击最大化/还原。macOS 的原生拖动会进入 AppKit 的事件循环，
-	/// 第二次按下时不能再启动，否则双击事件收不到 —— 因此只让单击启动拖动（与 MewUI 示例一致）。
+	/// 第二次按下时不能再启动，否则双击事件收不到，因此只让单击启动拖动（与 MewUI 示例一致）。
 	private void AttachTitleBarDrag(UIElement zone)
 	{
 		zone.OnMouseDown(e =>

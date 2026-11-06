@@ -6,7 +6,7 @@ namespace PiWeft.CodingAgent.Tests;
 
 /// 未知字段的无损往返。pi 与其外围工具会往会话行里塞模型层还不认识的字段
 /// （codemode 的 <c>message.nestedCalls</c> 就是真实一例），本端口读进来再写回去时
-/// 必须原样搬回 —— 否则 <c>fork</c>、导入后落盘就是一次静默的数据丢失。
+/// 要原样搬回，否则 <c>fork</c>、导入后落盘就是一次静默的数据丢失。
 public class SessionUnknownFieldTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-unknown-fields-" + Guid.NewGuid().ToString("N"));

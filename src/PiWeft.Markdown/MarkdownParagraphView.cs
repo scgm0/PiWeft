@@ -847,13 +847,11 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 
 	protected override void ArrangeContent(Rect bounds)
 	{
-		// 开了布局取整的父级（表格的 Grid）在 arrange 阶段把轨道按设备像素对齐，而 measure 的
-		// 约束仍是非整数宽度（MewUI 的约定：measure 保留未取整的轨道，arrange 的落点要等网格最终位置才知道），
-		// 再加上本文本块测量时给自己留的一像素余量，同一段文字「测宽 215 / 排宽 216」是正常的：
-		// 不是版面失效，也不需要重测。以前这里按 0.01 DIP 判等，表格里每轮 arrange 都重新标脏
-		// measure，形成 measure → arrange → InvalidateMeasure → measure 的死循环，整个窗口 100% CPU 卡死。
-		// 只有可排宽度比已排版宽度窄出两设备像素以上时才可能需要重排（文字会被裁掉）；
-		// 宽出来只是多了点余量，按原版面绘制即可。
+		// 开了布局取整的父级（表格的 Grid）在 arrange 阶段把轨道按设备像素对齐，measure 的约束仍是
+		// 非整数宽度；再加上文本块测量时给自己留的一像素余量，同一段文字「测宽 215 / 排宽 216」是正常的。
+		// 以前这里按 0.01 DIP 判等，表格里每轮 arrange 都重新标脏 measure，
+		// 形成 measure → arrange → InvalidateMeasure → measure 的死循环，整个窗口 100% CPU 卡死。
+		// 只有可排宽度比已排版宽度窄出两设备像素以上时才可能需要重排；宽出来只是多了余量。
 		if (_wrap && double.IsFinite(bounds.Width) && double.IsFinite(_width))
 		{
 			double scale = GetDpi() / 96.0;
@@ -906,16 +904,15 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			return;
 		}
 
-		// 流式追加只会把尾块版面置空再 InvalidateVisual：动画脉冲驱动的连续渲染可能先于测量到来，
-		// 这时拿到的就是 null 版面，一个异常会让整帧的绘制全部作废（看到的就是丢帧）。
-		// 这里按当前 arrange 宽度补一次版面：EnsureLayout 幂等，真正的测量随后只会命中缓存。
-		// 还没排过版（宽度不可用）时不补：那种版面只会白建一遍再被测量推翻，留给下一帧。
+		// 流式追加只把尾块版面置空再 InvalidateVisual；动画脉冲驱动的渲染可能先于测量到来，
+		// 拿到 null 版面，一个异常会让整帧绘制作废，表现为丢帧。
+		// 这里按当前 arrange 宽度补一次版面：EnsureLayout 幂等，随后的测量只会命中缓存。
+		// 宽度不可用时不补，补出来的版面会被测量推翻，留给下一帧。
 		if (MissingLayout())
 		{
 			if (Bounds.Width <= 1) return;
-			// 只有渲染宽度与「测量时用的宽度」一致，补出来的版面才与该轮测量等价；
-			// 在别的宽度上重排会让 chunk 的 Top/总高与父级已排好的行高不一致，
-			// 后画的块就会叠到下一块上（偶发错位重叠）。宽度变了就留给下一轮测量。
+			// 只有渲染宽度等于测量宽度，补出来的版面才与该轮测量等价；在其他宽度上重排，
+			// chunk 的 Top 与总高会与父级行高不一致，后面的块会叠到下一块上。宽度变了就留给下一轮测量。
 			if (!LayoutWidthMatches(Bounds.Width)) return;
 			EnsureLayout(Bounds.Width);
 			// 版面已经比父级给的高度更高：这一帧先不画（画出去就会压到下一块），
@@ -957,7 +954,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			// Transient: false 是**必需的**，不是保守选择。流式尾块每帧都换文本，配合 Transient: true
 			// 会走 MewVG 的「临时文本贴图」：那条路径只在窗口帧的 EndFrame 里回收（
 			// `MewVGTextCache.ReleasePendingDeletes`），而保留帧/透明度组用的**离屏**帧会话
-			// （`X11OffscreenFrameSession.EndFrame`）没有调用它 —— 每帧新建一张永不释放的贴图，
+			// （`X11OffscreenFrameSession.EndFrame`）没有调用它，每帧新建一张不释放的贴图，
 			// 实测 60fps 下 `text=` 以 ~20 MiB/s 无上限增长，对话越久工作集越大（GB 级）。
 			// 走普通缓存路径后文本位图受 16 MiB LRU 约束（滚动/定稿都会淘汰），实测 100 秒流式后
 			// 工作集稳定在 ~310 MiB。上游修复：离屏帧会话也应在 EndFrame 里调用

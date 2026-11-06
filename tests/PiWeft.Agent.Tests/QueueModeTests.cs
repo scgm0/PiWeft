@@ -114,7 +114,7 @@ public class QueueModeTests
 	public async Task QueuedMessagesAreNormalizedRightBeforeTheyEnterTheContext()
 	{
 		// 与 pi 的 _normalizeQueuedMessageImages 同义：steering/follow-up 在出队交付前
-		// 再过一遍（排队期间模型可能换过），而不是入队时。
+		// 再过一遍（排队期间模型可能换过），不在入队时。
 		var normalized = 0;
 		var script = new ScriptedStreamFn();
 		script.EnqueueText("first");

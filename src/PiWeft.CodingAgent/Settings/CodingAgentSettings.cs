@@ -24,8 +24,7 @@ public sealed record BranchSummarySettings
 	public bool SkipPrompt { get; init; }
 }
 
-/// 本端口读取的 pi <c>settings.json</c> 子集。未知键会被忽略，因此完整的 pi 设置文件也能
-/// 正常加载而不报错。
+/// 本端口读取的 pi <c>settings.json</c> 子集。未知键忽略，完整的 pi 设置文件也能正常加载。
 public sealed record CodingAgentSettings
 {
 	public string? DefaultProvider { get; init; }
@@ -57,8 +56,8 @@ public sealed record CodingAgentSettings
 
 	public CodemodeSettings Codemode { get; init; } = new();
 
-	/// 工具调用安全门，对应 <c>settings.security</c>。默认等于没装这道门（<c>off</c> 档、完全放行）；
-	/// 只从<strong>全局</strong>设置读取，见 <see cref="SecurityConfig.Load"/>。
+	/// 工具调用安全门，对应 <c>settings.security</c>。默认 <c>off</c>，全部放行；
+	/// 只从全局设置读取，见 <see cref="SecurityConfig.Load"/>。
 	public SecurityConfig Security { get; init; } = SecurityConfig.Off;
 
 	public bool EnableSkillCommands { get; init; } = true;
@@ -86,7 +85,7 @@ public sealed record CodingAgentSettings
 	public int HttpIdleTimeoutMs { get; init; } = DefaultHttpIdleTimeoutMs;
 
 	/// pi 的 <c>settings.httpProxy</c>：设置 <c>HTTP_PROXY</c>/<c>HTTPS_PROXY</c>。
-	/// 只读**全局**设置 —— 项目配置能把流量导到任意代理，等同于让仓库劫持用户请求。
+	/// 只读全局设置：项目配置能把流量导到任意代理，等于让仓库劫持用户请求。
 	public string? HttpProxy { get; init; }
 
 	public string? ShellPath { get; init; }
@@ -123,8 +122,7 @@ public sealed record CodingAgentSettings
 		var merged = Merge(global, project);
 
 		// extensions 的相对路径按声明作用域解析（pi 的 getBaseDirForScope）：用户级是 agentDir，
-		// 项目级是 <cwd>/.pi。绝不能拿 cwd 当用户级路径的基准 —— 一个不可信仓库里放个同名文件
-		// 就能顶替用户全局声明的扩展。
+		// 项目级是 <cwd>/.pi。不能拿 cwd 当用户级路径的基准，不可信仓库里放个同名文件就能顶替全局扩展。
 		var declared = project?.Extensions ?? global?.Extensions;
 		var baseDirectory = project?.Extensions is not null
 			? Path.GetDirectoryName(ProjectPath(cwd))!
@@ -163,7 +161,7 @@ public sealed record CodingAgentSettings
 			}
 			catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
 			{
-				// 坏路径原样保留：加载期会以「不存在」报告，而不是让整个设置读取失败。
+				// 坏路径原样保留：加载期报「不存在」，不让整个设置读取失败。
 				resolved.Add(expanded);
 			}
 		}
@@ -182,7 +180,7 @@ public sealed record CodingAgentSettings
 		ReadFile(GlobalPath(agentDir))?.DefaultProjectTrust ?? "ask";
 
 	/// 把默认模型写进**全局**设置文件（<c>&lt;agentDir&gt;/settings.json</c>）。
-	/// 只改动 <c>defaultProvider</c> 与 <c>defaultModel</c> 两个键，其它字段（包括本端口未建模的键）原样保留 ——
+	/// 只改 <c>defaultProvider</c> 与 <c>defaultModel</c> 两个键，其它字段（含本端口未建模的键）原样保留；
 	/// 用户的配置文件不能被我们覆盖掉。
 	public static void SetDefaultModel(string provider, string model, string? agentDir = null)
 	{
@@ -371,7 +369,7 @@ public sealed record CodingAgentSettings
 	}
 
 	/// 把设置写入项目文件。**保留文件里本端口未建模的键**（例如 <c>$schema</c> 与上游新增项），
-	/// 只覆盖我们认识的字段 —— 否则一次保存就会把用户的其它配置抹掉。
+	/// 只覆盖认识的字段，否则一次保存就会抹掉用户的其它配置。
 	public static void SaveProject(string cwd, CodingAgentSettings settings)
 	{
 		var path = ProjectPath(cwd);
@@ -405,7 +403,7 @@ public sealed record CodingAgentSettings
 		}
 		catch (Exception ex) when (ex is JsonException or IOException)
 		{
-			// 文件坏了就以它为基础重建，而不是让整个操作失败。
+			// 文件坏了就以它为基础重建，不让整个操作失败。
 			return new JsonObject();
 		}
 	}
@@ -537,7 +535,7 @@ public sealed record CodingAgentSettings
 			return;
 		}
 
-		// 用数组构造器而不是 JsonArray.Add<T>：泛型 Add 在 AOT 下会触发 IL2026/IL3050。
+		// 用数组构造器，不用 JsonArray.Add<T>：泛型 Add 在 AOT 下会触发 IL2026/IL3050。
 		var nodes = new JsonNode?[values.Count];
 		for (var index = 0; index < values.Count; index++)
 		{

@@ -102,7 +102,7 @@ internal sealed class X11ClipboardImages : IClipboardImages
 			if (process is null) return null;
 
 			// 先等退出再读：这里的输出只是目标列表，远小于管道缓冲。反过来先读的话，
-			// 剪贴板 owner 挂住不关 stdout 会让 ReadToEnd 永不返回 —— 而本方法在按键
+			// 剪贴板 owner 挂住不关 stdout 会让 ReadToEnd 无法返回，而本方法在按键
 			// 处理里同步调用，UI 会整个冻住，WaitForExit 的超时根本轮不到执行。
 			if (!process.WaitForExit(TimeoutMs)) return null;
 			var text = process.StandardOutput.ReadToEnd();

@@ -284,7 +284,7 @@ internal sealed class TrajectoryView : IDisposable
 			}
 		}
 
-		// 构建成功后才记签名：构建抛错时下一次秒表会重试，而不是永久跳过。
+		// 构建成功后才记签名：构建抛错时下一次秒表会重试，不永久跳过。
 		_signature = signature;
 
 		if (!_foldInitialized)
@@ -528,8 +528,8 @@ internal sealed class TrajectoryView : IDisposable
 			}
 		}
 
-		// 全局折叠/展开是一张总览动作：回到账本顶部（窗口第一轮），不要停在旧偏移的
-		// 中段——内容缩短后旧偏移会被夹到底部，看起来像跳到了另一轮。
+		// 全局折叠/展开是总览动作：回到账本顶部（窗口第一轮），不停在旧偏移的中段；
+		// 内容缩短后旧偏移会被夹到底部，看起来像跳到了另一轮。
 		Render(keepScroll: false);
 		ScheduleAfterLayout(() => _ledgerScroll.SetScrollOffsets(0, 0));
 	}
@@ -1098,11 +1098,11 @@ internal sealed class TrajectoryView : IDisposable
 					.FontWeight(FontWeight.SemiBold)
 					.SubtleText()
 					.VerticalAlignment(VerticalAlignment.Center));
-		// 用有界 MultiLineTextBox，而不是在检查器里再套一个 ScrollViewer：
-		// 嵌套的 SmoothScrollViewer 会把滚轮判给外层（检查点页曾修过同一个问题）。
-		// 这里也不给文本框装 SmoothScrolling：它嵌在检查器的平滑视口里，平滑控制器接管滚轮后
-		// 要经滚动条回写文本偏移，嵌套场景里算不出正确余量，表现是吞掉滚轮却不移动；
-		// 文本控件内建的滚轮处理直接写偏移，超过 200 DIP 才内部滚动，短文本仍长到内容高度。
+		// 用有界 MultiLineTextBox，不在检查器里再套 ScrollViewer：嵌套的 SmoothScrollViewer
+		// 会把滚轮判给外层（检查点页修过同一个问题）。文本框也不装 SmoothScrolling：
+		// 它嵌在检查器的平滑视口里，平滑控制器接管滚轮后要经滚动条回写文本偏移，
+		// 嵌套场景算不出余量，滚轮会被吞掉。文本控件内建的滚轮处理直接写偏移，
+		// 内容超过 200 DIP 才内部滚动。
 		var body = MessageText.Create(display, muted: true, mono: true, fontSize: AppTheme.FontSizeMicro,
 				smoothScroll: false)
 			.MaxHeight(InspectorTextMaxHeight);
@@ -1160,8 +1160,8 @@ internal sealed class TrajectoryView : IDisposable
 	{
 		var last = source.Entries.Count > 0 ? source.Entries[^1] : null;
 		var live = source.LiveRows.Count > 0 ? source.LiveRows[^1] : null;
-		// 流式摘要通常在 2048 个原始字符内就能凑满 96 个可见字符；超过后不再因正文增长重建：
-		// 一条很长的单轮会话从「每秒重建整轮」降成「只在落盘/工具结果变化时重建」。
+		// 流式摘要通常在 2048 个原始字符内就凑满 96 个可见字符，超过后不再因正文增长重建，
+		// 很长的单轮会话从每秒重建整轮降到只在落盘或工具结果变化时重建。
 		return new SourceSignature(
 			source.Entries.Count,
 			last?.Id,
@@ -1280,7 +1280,7 @@ internal sealed class TrajectoryView : IDisposable
 }
 
 /// 概览泳道：四条 lane 上按时间布刻度，点击刻度选中对应记录。
-/// 与 PiDeck 的轨迹概览同义；只画数据，不建控件（几百条记录也不会变成几百个可命中的按钮）。
+/// 与 PiDeck 的轨迹概览同义；只画数据，不建控件，几百条记录也不会变成几百个可命中的按钮。
 internal sealed class TrajectoryOverview : FrameworkElement
 {
 	public const double LaneHeight = 15;

@@ -154,7 +154,7 @@ public static class Checkpoints
 	}
 
 	/// 检查点相对当前工作区的逐文件变更概览（`git diff --stat`）。
-	/// 回退预览默认展示它而不是完整补丁：340 个文件的补丁有 5 万多行，
+	/// 回退预览默认展示它，不展示完整补丁：340 个文件的补丁有 5 万多行，
 	/// 一次性建文本控件会把面板拖死；概览只有文件数那么多行，完整补丁交给编辑器。
 	public static (string Stat, string? Error) Stat(string cwd, string sha)
 	{

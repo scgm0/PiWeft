@@ -6,11 +6,11 @@ using PiWeft.CodingAgent.Session;
 namespace PiWeft.Desktop;
 
 /// 导入外部会话：把 Claude Code / Codex CLI 留在本机的会话搬进 pi 的会话目录。
-/// 与 PiDeck 的「导入会话」弹窗同一件事，但这里只做**只读列举 + 逐条导入**：外部会话库可能不存在、
-/// 可能很大，弹窗一打开就把几万条会话读进内存是不可接受的 —— 列举在后台线程按头部摘要跑，
+/// 与 PiDeck 的「导入会话」弹窗相同，这里只做只读列举与逐条导入：外部会话库可能不存在、
+/// 也可能很大，弹窗一打开就读几万条会话不可接受。列举在后台线程按头部摘要跑，
 /// 有上限（<see cref="SessionImportService.MaxSessions"/>），导入才做全量读取。
-/// 空态要说明「去哪里找过」，而不是只说「没有」：用户下一步就得靠这句话判断是没装那个工具、
-/// 还是会话库被放在了别处。
+/// 空态要说明「去哪里找过」，不能只说「没有」：用户靠这句话判断是没装那个工具，
+/// 还是会话库放在了别处。
 public sealed class SessionImportDialog
 {
 	private const double PanelWidth = 720;
@@ -169,7 +169,7 @@ public sealed class SessionImportDialog
 			TaskScheduler.Default);
 	}
 
-	/// 同步扫描并重建（测试与宿主自检用）。真机上走 <see cref="Reload"/> 的后台路径 ——
+	/// 同步扫描并重建（测试与宿主自检用）。真机走 <see cref="Reload"/> 的后台路径；
 	/// 在 UI 线程读上千个文件头部会把窗口卡住。
 	internal void ReloadSync() =>
 		FinishLoading(

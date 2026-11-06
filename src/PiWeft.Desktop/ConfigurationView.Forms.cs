@@ -587,7 +587,7 @@ internal sealed partial class ConfigurationView
 				if (entries is null) next.Remove("defaultTools");
 				else
 				{
-					// 用数组构造器而不是 JsonArray.Add<T>：泛型 Add 在裁剪/AOT 下会触发 IL2026/IL3050。
+					// 用数组构造器，不用 JsonArray.Add<T>：泛型 Add 在裁剪/AOT 下会触发 IL2026/IL3050。
 					var nodes = new JsonNode?[entries.Count];
 					for (var index = 0; index < entries.Count; index++) nodes[index] = JsonValue.Create(entries[index]);
 					next["defaultTools"] = new JsonArray(nodes);

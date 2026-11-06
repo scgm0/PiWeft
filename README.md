@@ -1,9 +1,9 @@
 # PiWeft
 
-PiWeft 是 C# / .NET 10 的编码智能体：NativeAOT CLI `pi` + MewUI 桌面工作台 `piweft-desktop`，会话文件与 pi 兼容。
+PiWeft 是 C# / .NET 10 的编码智能体，含 NativeAOT CLI `pi` 与 MewUI 桌面工作台 `piweft-desktop`。会话文件与 pi 兼容。
 
 - [项目状态](docs/00-status.md) · [pi / PiDeck 兼容](docs/01-parity.md) · [性能](docs/02-performance.md) · [codemode](docs/03-codemode.md) · [Markdown](docs/04-markdown.md) · [视觉契约](DESIGN.md)
-- 保留 pi 的参数、RPC JSONL 协议与环境变量；`PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、`.pi`、配置文件名和 v3 JSONL 会话格式不变。
+- 沿用 pi 的参数、RPC JSONL 协议与环境变量：`PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、`.pi`、配置文件名和 v3 JSONL 会话格式不变。
 
 ## 构建与运行
 
@@ -25,7 +25,7 @@ MewUI 只从 `external/MewUI` 源码子模块构建。更新上游：
 git add external/MewUI
 ```
 
-更新后跑全量桌面测试、NativeAOT 发布和 `--ui-smoke stream`。`external/Directory.*.props` 隔离 PiWeft 的包管理与分析器设置。
+更新后跑全量桌面测试、NativeAOT 发布与 `--ui-smoke stream`。`external/Directory.*.props` 隔离 PiWeft 的包管理与分析器设置。
 
 ## 打包
 

@@ -6,7 +6,7 @@ using PiWeft.CodingAgent.Settings;
 namespace PiWeft.CodingAgent;
 
 /// 项目信任：决定是否加载项目级资源（技能、提示词模板、MCP、项目设置）。
-/// 与 pi 的 <c>trust.json</c> 同构——<c>&lt;agentDir&gt;/trust.json</c> 是「规范化绝对路径 → true/false/null」的对象，
+/// 与 pi 的 <c>trust.json</c> 同构：<c>&lt;agentDir&gt;/trust.json</c> 是「规范化绝对路径 → true/false/null」的对象，
 /// 查找时从工作目录逐级向上取第一个决策。默认由 <c>settings.defaultProjectTrust</c> 决定。
 public static class ProjectTrust
 {

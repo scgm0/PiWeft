@@ -85,8 +85,8 @@ public static partial class AuthStore
 		}
 	}
 
-	/// 删除任意类型的凭据（API Key / OAuth）。桌面端「退出登录」与「清除 API Key」
-	/// 都走这里：auth.json 一个 provider 只有一份凭据，按类型删会留下无法解释的半状态。
+	/// 删除任意类型的凭据（API Key / OAuth）。「退出登录」与「清除 API Key」都走这里：
+	/// auth.json 一个 provider 只有一份凭据，按类型删会留下解释不了的半状态。
 	public static bool RemoveCredential(string provider, string? agentDir = null)
 	{
 		lock (AuthFileGate.Gate)
@@ -218,8 +218,7 @@ public static partial class AuthStore
 				return null;
 			}
 
-			// 输出上限 64 KiB 是读入上限，不是“读完再检查”：超限立即杀进程，
-			// 避免一条命令先吃掉几百 MB 内存再被判定失败。
+			// 64 KiB 是读入上限，不是读完再检查：超限立即杀进程，避免一条命令先吃掉几百 MB 内存。
 			var stdout = process.StandardOutput;
 			var output = Task.Run(() => ReadCommandOutput(process, stdout));
 			var error = process.StandardError;
@@ -230,7 +229,7 @@ public static partial class AuthStore
 				return null;
 			}
 
-			// 进程已退出；输出流最多再等 2 秒，防止游离子进程占着管道不放。
+			// 进程已退出；输出流最多再等 2 秒，防止残留子进程占着管道不放。
 			try
 			{
 				if (!output.Wait(2_000))
@@ -295,7 +294,7 @@ public static partial class AuthStore
 				return null;
 			}
 
-			// 进程已退出；输出流最多再等 2 秒，防止游离子进程占着管道不放。
+			// 进程已退出；输出流最多再等 2 秒，防止残留子进程占着管道不放。
 			(string? Text, bool Truncated) result;
 			try
 			{
@@ -312,7 +311,7 @@ public static partial class AuthStore
 				return null;
 			}
 
-			// 输出截断即视为失败：被截断的 key 一定是坏的。
+			// 输出被截断即失败：截断的 key 一定是坏的。
 			if (result.Truncated || result.Text is null || process.ExitCode != 0)
 			{
 				return null;
@@ -495,8 +494,8 @@ public static partial class AuthStore
 		return (string.IsNullOrEmpty(resolved) ? null : resolved, false);
 	}
 
-	/// 不含解析结果的存储快照。认证页需要同时展示「有 Key / 只有 env / 命令型 / 模板变量缺失」，
-	/// 不能用 <see cref="ReadApiKey"/>（它会把后三种都折叠成 null）。
+	/// 不含解析结果的存储快照。认证页要同时展示「有 Key / 只有 env / 命令型 / 模板变量缺失」，
+	/// 不能用 <see cref="ReadApiKey"/>，它会把后三种都折叠成 null。
 	public sealed record StoredApiKey(string? Key, IReadOnlyDictionary<string, string> Environment, bool HasUsableKey)
 	{
 		public bool HasKey => !string.IsNullOrEmpty(Key);
@@ -687,7 +686,7 @@ public static partial class AuthStore
 	internal static (string Key, Dictionary<string, string>? Env)? ReadCredential(JsonNode? node)
 	{
 		// key 可以缺失：pi 的 credential-chain 登录会只写 {type:"api_key", env:{...}}，
-		// 甚至只写 {type:"api_key"}。把它们当成「没有可解析 Key」而不是「不是凭据」，
+		// 甚至只写 {type:"api_key"}。把它们当成「没有可解析 Key」，不当成「不是凭据」，
 		// 否则认证页会把已保存的外部凭据显示成未配置。
 		if (node is not JsonObject entry || entry["type"] is not JsonValue type ||
 			!type.TryGetValue<string>(out var kind) || kind != "api_key") return null;

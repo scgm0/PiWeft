@@ -91,9 +91,9 @@ public sealed record StreamOptions : ProviderRequestOptions
 
 	public string? Transport { get; init; }
 
-	/// 响应体空闲超时（毫秒）：连续这么久没有收到任何字节就失败。
-	/// <see langword="null"/> 或 <c>0</c> 表示不设限。长思考由这个计时器而不是总时长兜底 ——
-	/// 总时长会把「慢但仍在产出」的合法长流切断。
+	/// 响应体空闲超时（毫秒）：连续这么久收不到字节就失败。
+	/// <see langword="null"/> 或 <c>0</c> 表示不设限。长思考靠这个计时器兜底，不用总时长，
+	/// 否则「慢但仍在产出」的合法长流会被切断。
 	public int? IdleTimeoutMs { get; init; }
 
 	public string? ThinkingLevel { get; init; }

@@ -4,8 +4,8 @@ using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
 
-/// 工具调用安全门。默认等级必须是完全放行（<c>off</c>）——引入这道门不能改变任何既有行为；
-/// 上保护靠显式选 <c>standard</c> / <c>strict</c>。
+/// 工具调用安全门。默认等级完全放行（<c>off</c>），引入这道门不改变既有行为；
+/// 要保护得显式选 <c>standard</c> / <c>strict</c>。
 public class ToolSecurityTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-security-" + Guid.NewGuid().ToString("N")[..8]);
@@ -60,7 +60,7 @@ public class ToolSecurityTests : IDisposable
 	{
 		var settings = PiWeft.CodingAgent.Settings.CodingAgentSettings.Merge(null, null);
 
-		// 门是挂着的（Enabled 默认 true），但默认档位什么都不限制 —— 引入这道门不改变任何既有行为。
+		// 门挂着（Enabled 默认 true），但默认档位什么都不限制，引入这道门不改变既有行为。
 		Assert.True(settings.Security.Enabled);
 		Assert.Equal(ToolSecurity.OffLevel, settings.Security.DefaultLevelId);
 		Assert.Null(settings.Security.Resolve(null).BlockingReason("bash", CmdArg("rm -rf /"), _root));
@@ -135,7 +135,7 @@ public class ToolSecurityTests : IDisposable
 	[InlineData("ls -la && cat README.md")]
 	public void StandardAllowsEverydayCommands(string command)
 	{
-		// 本端口没有「先确认再执行」的审批窗口，所以日常动作不能被拒绝 ——
+		// 本端口没有「先确认再执行」的审批窗口，日常动作不能被拒绝；
 		// 危险命令表只收不可逆的破坏性操作。
 		Assert.Null(ToolSecurity.Standard.BlockingReason("bash", CmdArg(command), _root));
 	}

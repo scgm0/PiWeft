@@ -93,7 +93,7 @@ public sealed partial class SessionTab
 		var anchorRow = _timeline.RowAtViewportAnchor();
 		if (anchorRow < 0) return;
 		// 锚点常常在很长的助手回复/过程行内，原问题已被虚拟化回收。
-		// 从「任意角色的当前行」倒找前一条问题，而不是把下一条可见问题误认成当前项。
+		// 从「任意角色的当前行」倒找前一条问题，不把下一条可见问题误认成当前项。
 		var ordinal = OutlineRailTicks.ActiveIndex(_outlineUserRows, anchorRow);
 		_outline.SetActiveRow(ordinal >= 0 ? _outlineUserRows[ordinal] : -1);
 	}

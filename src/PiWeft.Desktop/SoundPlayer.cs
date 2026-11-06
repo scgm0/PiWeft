@@ -20,13 +20,11 @@ public enum SoundAlertPreset
 /// 提示音播放器：把嵌入的 WAV 落到 <c>&lt;agentDir&gt;/sounds/</c> 缓存，按 PCM 交给
 /// <see href="https://github.com/oldbit-com/Beep">OldBit.Beep</see> 播放
 /// （Windows WASAPI、macOS AudioToolbox、Linux ALSA，都是系统框架，无随包原生库）。
-/// 选择 Beep 而不是平台命令或更大的音频引擎：它只有 64 KB、纯 P/Invoke、
-/// 三个平台的正式后端齐全，音量内建；PiDeck 那种「一个短提示音」的需求用不上
-/// 引擎级的混音/录音能力。平台命令（paplay / afplay / winmm）保留为兜底：
-/// Linux 缺 libasound、容器里没有音频服务、或 Beep 初始化失败时仍然有声音。
-/// 设备生命周期：Beep 在构造时打开音频设备、<c>Stop</c> 时关闭。提示音频率很低，
-/// 所以每次播放构造一个实例、播完即弃——空闲时不占音频设备，代价是每次
-/// 10–50 ms 的开关设备延迟，对提示音完全够用。
+/// 选 Beep，不用平台命令或更大的音频引擎：只有 64 KB、纯 P/Invoke，三个平台的后端齐全，
+/// 音量内建；短提示音用不上混音与录音。平台命令（paplay / afplay / winmm）留作兜底：
+/// Linux 缺 libasound、容器没有音频服务、或 Beep 初始化失败时仍有声音。
+/// 设备生命周期：Beep 构造时打开音频设备，<c>Stop</c> 时关闭。提示音频率低，
+/// 每次播放构造一个实例、播完即弃，空闲时不占设备；代价是每次 10–50 ms 的开关延迟。
 internal static partial class SoundPlayer
 {
 	internal const double DefaultVolume = 0.6;
@@ -51,8 +49,8 @@ internal static partial class SoundPlayer
 	private static readonly SemaphoreSlim Gate = new(1, 1);
 
 	/// 播放指定预设；<paramref name="volume"/> 取 0–1。任何失败都不向调用方抛。
-	/// 播放要开关音频设备并等音效放完（最多 1 秒），所以在 UI 线程上只投递、不等待：
-	/// 会话完成事件与设置页试听都从 UI 线程来，同步等会把界面冻住。
+	/// 播放要开关音频设备并等音效放完（最多 1 秒），UI 线程上只投递、不等待：
+	/// 会话完成与设置页试听都从 UI 线程来，同步等会冻住界面。
 	public static void Play(SoundAlertPreset preset, double volume)
 	{
 		var level = ClampVolume(volume);
@@ -93,8 +91,8 @@ internal static partial class SoundPlayer
 				return;
 			}
 
-			// 回退：Beep 起不来（缺 libasound、无音频服务、设备被独占）时用平台命令，
-			// 音量通过缩放后的 WAV 副本实现——两条路径的音量语义保持一致。
+			// 回退：Beep 起不来（缺 libasound、无音频服务、设备被独占）时用平台命令；
+			// 音量通过缩放后的 WAV 副本实现，两条路径语义一致。
 			if (ScaledPath(preset, path, level) is { } scaled)
 			{
 				PlayFile(scaled);

@@ -2,8 +2,8 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai;
 
-/// 严格 schema 变换遇到 provider 明确不接受的形状。是「这个工具不能走严格模式」，
-/// 不是请求失败：<c>strict: "prefer"</c> 的工具应当回落到普通 schema。
+/// 严格 schema 变换遇到 provider 不接受的形状：这个工具不能走严格模式，
+/// 不是请求失败。<c>strict: "prefer"</c> 的工具应回落到普通 schema。
 public sealed class UnsupportedStrictJsonSchemaException(string message) : Exception(message);
 
 /// provider 自己的严格模式白名单：返回 true 表示该 keyword/value 会被拒绝（整个请求 400）。
@@ -13,12 +13,12 @@ public delegate bool UnsupportedStrictSchemaKeyword(string key, JsonNode? value)
 /// <c>packages/ai/src/api/constrained-sampling.ts</c> 同义。
 /// 工具只表达「希望被约束采样」，能不能给由 provider 与模型能力决定：
 /// <list type="bullet">
-/// <item><c>strict: "prefer"</c> —— 能严格就严格，schema 不被接受时静默回落；</item>
-/// <item><c>strict: "require"</c> —— 不能严格就报错，绝不悄悄降低约束。</item>
+/// <item><c>strict: "prefer"</c>：能严格就严格，schema 不被接受时静默回落；</item>
+/// <item><c>strict: "require"</c>：不能严格就报错，不悄悄降低约束。</item>
 /// </list>
-/// 严格 schema 是 provider 侧的方言：可选属性必须写成 <c>anyOf: [schema, null]</c> 且全部列进
-/// <c>required</c>、<c>additionalProperties: false</c>；重排完成后模型只能产出符合 schema 的参数，
-/// 解析失败与「参数少一层」这类返工就不必再指望提示词。
+/// 严格 schema 是 provider 侧的方言：可选属性写成 <c>anyOf: [schema, null]</c> 并全部列进
+/// <c>required</c>、<c>additionalProperties: false</c>。重排后模型只能产出符合 schema 的参数，
+/// 不必再指望提示词兜住解析失败。
 public static class ConstrainedSampling
 {
 	public const string JsonSchemaType = "json_schema";
@@ -140,8 +140,8 @@ public static class ConstrainedSampling
 		(key == "format" && !(value is JsonValue formatValue &&
 			formatValue.TryGetValue<string>(out var format) && AnthropicStrictStringFormats.Contains(format)));
 
-	/// 数值 node 的整型读数。schema 里的数字可能是代码里建的 <see cref="JsonValue"/>（int/long），
-	/// 也可能是 JSON 解析出来的 JsonElement，两种盒子都要能读。
+	/// 数值 node 的整型读数。schema 里的数字可能来自代码建的 <see cref="JsonValue"/>（int/long），
+	/// 也可能来自 JSON 解析的 JsonElement，两种都要能读。
 	private static bool TryIntegral(JsonNode? node, out long value)
 	{
 		value = 0;

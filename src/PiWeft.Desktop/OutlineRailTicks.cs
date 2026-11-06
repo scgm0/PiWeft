@@ -1,7 +1,7 @@
 namespace PiWeft.Desktop;
 
 /// 会话定位轴（右缘刻度）的刻度规划。PiDeck 的 <c>planRailTicks</c> 同款纯函数：
-/// 优先全量展示（间距按可用高度收缩），压到下限仍放不下时均匀抽稀，但首尾刻度强制保留——
+/// 优先全量展示（间距按可用高度收缩），压到下限仍放不下时均匀抽稀，首尾刻度强制保留。
 /// 最顶刻度必须能回到第一条用户消息，最底刻度必须对应最后一条。
 internal static class OutlineRailTicks
 {

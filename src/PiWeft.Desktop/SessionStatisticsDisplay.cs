@@ -72,7 +72,7 @@ public sealed record SessionStatisticsDisplay(SessionStatistics Totals, long Con
 	}
 
 	/// 拆分上下文占用（PiDeck 的三段口径）：系统提示词与工具 schema 是“固定开销”，
-	/// 对话是剩下的部分。系统与工具直接按字符估算，对话取「总占用 − 两者」的差值——
+	/// 对话是剩下的部分。系统与工具直接按字符估算，对话取「总占用 − 两者」的差值。
 	/// 总占用里包含 thinking、图片等估算器不单列的内容，差值把它们归到对话里，
 	/// 三段之和因此总等于总占用，进度条不会多出一截空隙。
 	internal static ContextBreakdown ContextBreakdownOf(IReadOnlyList<Message> messages, IReadOnlyList<AgentTool> tools, long contextTokens)

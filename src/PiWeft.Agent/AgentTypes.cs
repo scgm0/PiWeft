@@ -85,7 +85,7 @@ public sealed record AgentTool
 	public string? NamespaceInstructions { get; init; }
 
 	/// 结构化输出（<see cref="AgentToolResult.StructuredContent"/>）的 JSON Schema。
-	/// 声明后，codemode 脚本里的嵌套调用解析为该结构而不是文本。
+	/// 声明后，codemode 脚本里的嵌套调用解析为该结构，不按文本处理。
 	public JsonObject? OutputSchema { get; init; }
 
 	/// 受约束采样声明（见 <see cref="PiWeft.Ai.ConstrainedSampling"/>）。

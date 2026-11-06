@@ -38,8 +38,8 @@ public sealed record AwsCredentials
 	}
 }
 
-/// AWS Signature Version 4 请求签名。按规范直接实现，因此不需要 AWS SDK，
-/// 让 NativeAOT 构建不必引入依赖反射的库。
+/// AWS Signature Version 4 请求签名。按规范直接实现，不引 AWS SDK，
+/// NativeAOT 构建也就不必带上依赖反射的库。
 public static class AwsSignatureV4
 {
 	public const string Algorithm = "AWS4-HMAC-SHA256";
@@ -58,9 +58,9 @@ public static class AwsSignatureV4
 		public required IReadOnlyDictionary<string, string> Headers { get; init; }
 	}
 
-	/// 对请求签名。请求头里必须已经包含 <c>host</c>，否则要显式提供 Host 值。
-	/// <paramref name="includeContentHash"/> 会加上 Bedrock 必需的 <c>x-amz-content-sha256</c>；
-	/// 而经典的 SigV4 测试向量里还没有这个头。
+	/// 对请求签名。请求头里要已包含 <c>host</c>，否则显式提供 Host 值。
+	/// <paramref name="includeContentHash"/> 加上 Bedrock 必需的 <c>x-amz-content-sha256</c>；
+	/// 经典 SigV4 测试向量里没有这个头。
 	public static Signed Sign(
 		string method,
 		string url,

@@ -8,7 +8,7 @@ using Xunit;
 namespace PiWeft.CodingAgent.Tests;
 
 /// 安全门的接线验证：纯策略单测在 <see cref="ToolSecurityTests"/>，这里证明它真的挂在
-/// 工具调用链路上 —— 直接工具调用与 codemode 嵌套调用都要被拦住，<c>off</c> 等级下必须完全不干预。
+/// 工具调用链路上：直接工具调用与 codemode 嵌套调用都要被拦住，<c>off</c> 等级下完全不干预。
 public class ToolSecuritySessionTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-security-session-" + Guid.NewGuid().ToString("N")[..8]);
@@ -154,7 +154,7 @@ public class ToolSecuritySessionTests : IDisposable
 	public void StaticPatternTablesAreLoaded()
 	{
 		// 静态属性按文本顺序初始化：模式表若声明在档位快照之后，Standard 拿到的就是 null，
-		// 表现为「危险命令表静默失效」而不是编译错误。这条把这个顺序约束钉住。
+		// 表现为「危险命令表静默失效」，编译也不报错。这条钉住顺序约束。
 		Assert.NotEmpty(ToolSecurity.Standard.DenyBashPatterns);
 		Assert.NotEmpty(ToolSecurity.Strict.DenyBashPatterns);
 		Assert.Equal(3, ToolSecurity.Builtins.Count);
@@ -174,7 +174,7 @@ public class ToolSecuritySessionTests : IDisposable
 		Assert.Equal("standard", config.Resolve(null).Level);
 		Assert.Equal("strict", config.Resolve("/tmp/x/a.jsonl").Level);
 
-		// 覆盖指向不存在的档位时退回默认档，而不是卡死或猜一个更严的档。
+		// 覆盖指向不存在的档位时退回默认档，不卡死，也不猜更严的档。
 		var broken = config with
 		{
 			SessionLevels = new Dictionary<string, string>(StringComparer.Ordinal) { ["/tmp/x/b.jsonl"] = "nope" },
@@ -287,7 +287,7 @@ public class ToolSecuritySessionTests : IDisposable
 
 		var removed = config.WithoutLevel("mine");
 		Assert.Null(removed.Find("mine"));
-		// 删掉当前默认档时回退 off，而不是留一个悬空引用。
+		// 删掉当前默认档时回退 off，不留悬空引用。
 		Assert.Equal("off", removed.DefaultLevelId);
 	}
 
@@ -353,7 +353,7 @@ public class ToolSecuritySessionTests : IDisposable
 		// 其它设置键不能被安全门的写入吃掉。
 		var settingsPath = Path.Combine(agentDir, "settings.json");
 		// 插一个无关键（安全门的写入必须保留用户手写的其它设置）。落盘是缩进格式，
-		// 所以按 JSON 改而不是拼字符串。
+		// 所以按 JSON 改，不拼字符串。
 		var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
 		root.Insert(0, "theme", "dark");
 		File.WriteAllText(settingsPath, root.ToJsonString());
@@ -396,7 +396,7 @@ public class ToolSecuritySessionTests : IDisposable
 		Assert.Throws<InvalidDataException>(() => SecurityConfig.Save(SecurityConfig.Off with { DefaultLevelId = "standard" }, agentDir));
 		Assert.Equal("{ 这不是 JSON", File.ReadAllText(path));
 
-		// 读取端要能扛住同样的坏文件：按「没有安全门」处理而不是抛出去。
+		// 读取端要能扛住同样的坏文件：按「没有安全门」处理，不抛出去。
 		Assert.Equal("off", SecurityConfig.Load(agentDir).Resolve(null).Level);
 	}
 }

@@ -161,7 +161,7 @@ public class JsonEscapingTests
 	[Fact]
 	public void JsonNodesAndMessagesKeepQuotesEscapedWithoutUnicodeEscapes()
 	{
-		// JsonNode 与消息写出都必须保留 \" 转义，而不是换成 \u0022。
+		// JsonNode 与消息写出都要保留 \" 转义，不换成 \u0022。
 		var node = new System.Text.Json.Nodes.JsonObject { ["command"] = Command };
 		var nodeJson = node.ToJsonString(PiWeft.Ai.Json.PiJson.NodeOptions);
 		Assert.Contains("\"command\":\"echo \\\"=== 我这条会话的启动时间 ===\\\"\"", nodeJson);

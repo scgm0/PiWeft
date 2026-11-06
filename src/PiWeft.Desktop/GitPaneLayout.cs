@@ -24,7 +24,7 @@ internal readonly record struct GitPaneLayout(
 		Math.Clamp(body, MinBody, Math.Max(MinBody, max));
 
 	/// 落盘格式：<c>图=200:1|比较=160:0|更多=140:0|更改=1</c>（正文高度:展开）。
-	/// 用短键而不是 JSON：这条记录按仓库存在 desktop.json 的一个字符串值里，读的人要能一眼看懂。
+	/// 用短键，不用 JSON：这条记录按仓库存在 desktop.json 的一个字符串值里，读的人要能一眼看懂。
 	public string Encode() =>
 		$"图={Graph:0}:{(GraphOpen ? 1 : 0)}|比较={Compare:0}:{(CompareOpen ? 1 : 0)}|" +
 		$"更多={More:0}:{(MoreOpen ? 1 : 0)}|更改={(ChangesOpen ? 1 : 0)}";

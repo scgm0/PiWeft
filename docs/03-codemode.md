@@ -38,7 +38,7 @@ codemode 描述按命名空间分组，`inlineBudget`（默认 3000 token）控�
 
 ## 沙箱
 
-每次执行新建引擎，手动搭建与 `ForUntrustedCode` 相同的预算（语句 200 万、托管 256 MiB、时限、源码/AST 上限、栈守卫），关闭 interop 反射/写入口；不启用 `ForUntrustedCode` 本身，因为其不可变配置会永久禁 eval。默认无超时（只有 `@options.timeout_ms` 与 abort）；无挂起工具/定时任务时报「Promise 永远不会落定」；并发解释器上限 2。专用后台线程泵 `Engine.Tasks`，脚本代码与 await 续体始终同线程。这是线程级隔离，不是 OS 沙箱。
+每次执行新建引擎，手动搭建与 `ForUntrustedCode` 相同的预算（语句 200 万、托管 256 MiB、时限、源码/AST 上限、栈守卫），关闭 interop 反射/写入口；不直接启用 `ForUntrustedCode`：它的不可变配置会永久禁 eval。默认无超时（只有 `@options.timeout_ms` 与 abort）；无挂起工具/定时任务时报「Promise 永远不会落定」；并发解释器上限 2。专用后台线程泵 `Engine.Tasks`，脚本代码与 await 续体始终同线程。这是线程级隔离，不是 OS 沙箱。
 
 ## 宿主脚本与 AOT
 
@@ -50,7 +50,7 @@ codemode 描述按命名空间分组，`inlineBudget`（默认 3000 token）控�
   `ClrFunction` + `JsValue`，运行时不需要反射式 CLR 投影，关掉后裁剪器能去掉整条反射链。
   ILC 仍会为 `Jint.dll` 聚合报告 IL2104/IL3053（程序集自带的反射标注），由宿主按第三方
   依赖统一忽略；执行路径已在 `tools/PiWeft.AotSmoke` 实跑。
-- AOT 下脚本包装必须用 async **箭头**函数：`async function` + 直接 eval 会触发 Jint 泛型分派缺陷。
+- AOT 下脚本包装要用 async 箭头函数：`async function` + 直接 eval 会触发 Jint 泛型分派缺陷。
 - 硬 CPU/内存/生命周期边界仍需受限进程或容器，并通过 RPC 调用工具。
 
 ## 验证

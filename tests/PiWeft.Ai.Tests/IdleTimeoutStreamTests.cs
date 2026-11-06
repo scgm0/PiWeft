@@ -171,7 +171,7 @@ public class IdleTimeoutStreamTests
 		await using var stream = new IdleTimeoutStream(new SilentStream(), TimeSpan.FromMilliseconds(400), CancellationToken.None);
 		var buffer = new byte[16];
 
-		// 期望 IOException（空闲超时），而不是 NotSupportedException（退回同步读）。
+		// 期望 IOException（空闲超时），不是 NotSupportedException（退回同步读）。
 		await Assert.ThrowsAsync<IOException>(
 			async () => { _ = await stream.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None); });
 	}
@@ -179,7 +179,7 @@ public class IdleTimeoutStreamTests
 	[Fact]
 	public async Task SseParserSurfacesTheIdleTimeoutInsteadOfEndingTheStream()
 	{
-		// 计时器只负责取消读取；SseParser 必须把取消翻译成错误，而不是当成正常流结束 ——
+		// 计时器只负责取消读取；SseParser 要把取消翻译成错误，不能当成正常流结束。
 		// 后者会让模型收到一条「成功的空回复」，比报错难查得多。
 		await using var stream = new IdleTimeoutStream(new SilentStream(), TimeSpan.FromMilliseconds(400), CancellationToken.None);
 		var parser = System.Net.ServerSentEvents.SseParser.Create<bool>(stream, static (_, _) => true);

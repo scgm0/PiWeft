@@ -17,8 +17,8 @@ public sealed class SmoothScrollTests
 		view.Arrange(new Rect(0, 0, 200, 200));
 	}
 
-	/// 推进一帧：新的衰减物理按真实经过时间计算，假时钟只负责触发 Tick，
-	/// 所以帧间隔必须真的存在（否则 dt≈0，画面不动）。
+	/// 推进一帧：衰减按真实经过时间计算，假时钟只负责触发 Tick，
+	/// 帧间隔要真的存在，否则 dt≈0，画面不动。
 	private static void Frame(int milliseconds = 16)
 	{
 		Thread.Sleep(milliseconds);
@@ -130,7 +130,7 @@ public sealed class SmoothScrollTests
 		Assert.Equal(step, innerSmooth.TargetVerticalOffset);
 		Assert.False(outerSmooth.IsAnimating);
 
-		// 内层到底：Viewport 自带的滚轮处理会在原地标记 Handled，所以必须由内层先交接给外层。
+		// 内层到底：Viewport 自带的滚轮处理会在原地标记 Handled，所以要由内层先交接给外层。
 		innerSmooth.JumpToEnd();
 		down = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
 		innerSmooth.RouteWheel(down);
@@ -227,8 +227,8 @@ public sealed class SmoothScrollTests
 	[Fact]
 	public void WheelStreamAccumulatesIntoOneContinuousAnimation()
 	{
-		// 高频分数增量（触控板/惯性）与离散刻度共用同一条指数衰减曲线：
-		// 连续输入只累加目标、动画不重启，所以速度是连续的（不从头再来一次缓动）。
+		// 高频分数增量（触控板/惯性）与离散刻度共用一条指数衰减曲线：
+		// 连续输入只累加目标，动画不重启，速度保持连续。
 		var view = View();
 		Layout(view);
 		using var smooth = SmoothScroll.For(view);
@@ -399,8 +399,8 @@ public sealed class SmoothScrollTests
 	[Fact]
 	public void RepeatedKeyPressesStepImmediatelyWithoutRestartingTheCurve()
 	{
-		// 长按方向键时平台会重复发 KeyDown。每次重复都从零速重开曲线，会让位移只剩
-		// 单次曲线的第一小段；重复键直接落位，速度才与浏览器一致。
+		// 长按方向键时平台会重复发 KeyDown。每次从零速重开曲线，位移只剩单次曲线的第一小段；
+		// 重复键直接落位，速度才与浏览器一致。
 		var view = View();
 		Layout(view);
 		using var smooth = SmoothScroll.For(view);

@@ -3,7 +3,7 @@ using Aprillz.MewUI;
 namespace PiWeft.Desktop;
 
 /// 一套配色。「织机」设计语言（见仓库根 DESIGN.md）：暖墨色底 + 黄铜单强调色，
-/// 深色与浅色各一份，由 <see cref="AppTheme.For"/> 按当前主题解析 ——
+/// 深色与浅色各一份，由 <see cref="AppTheme.For"/> 按当前主题解析。
 /// 样式 setter 与运行时取值共用同一份定义。
 public sealed record AppPalette
 {

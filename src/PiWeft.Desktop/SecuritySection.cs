@@ -254,7 +254,7 @@ public sealed class SecuritySection
 		return panel;
 	}
 
-	/// 工具动作矩阵。只列内置工具集里真实存在的工具 —— 列一堆本端口没有的工具
+	/// 工具动作矩阵。只列内置工具集里真实存在的工具；列本端口没有的工具，
 	/// 会让人以为配了就有用。
 	private Element ToolActionsEditor(ToolSecurity level)
 	{
@@ -357,7 +357,7 @@ public sealed class SecuritySection
 		return level with { ToolActions = actions };
 	}
 
-	/// 应用一次修改并落盘。写盘失败时恢复原配置并显示原因 —— 界面上显示的是「已生效」的
+	/// 应用一次修改并落盘。写盘失败时恢复原配置并显示原因；界面显示「已生效」的
 	/// 假象比报错更糟。
 	private void Update(Func<SecurityConfig, SecurityConfig> mutate)
 	{

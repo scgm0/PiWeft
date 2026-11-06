@@ -35,20 +35,19 @@ internal sealed class SmoothScroll : IDisposable
 	private const double CorrectionTolerance = 2;
 	internal bool AutoFollowAtEnd { get; set; }
 
-	/// 测试专用：把每帧 dt 钉成固定秒数。曲线故意按真实流逝时间推进（见 <see cref="Advance"/> 里
-	/// “不要钳制 dt”的注释），所以拿墙钟喂帧的用例在满载机器上会抖出几十毫秒的帧间隔，
-	/// 「滚轮这段手势走了多少 DIP」就跟着抖成 flake。生产永不赋值：dt 仍是真实时间，
-	/// 手感与语义完全不变；赋值时连秒表都不用读。
+	/// 测试专用：把每帧 dt 钉成固定秒数。曲线按真实时间推进（见 <see cref="Advance"/> 里
+	/// 「不要钳制 dt」），用墙钟喂帧的用例在满载机器上会抖出几十毫秒间隔，滚动距离跟着变成 flake。
+	/// 生产不赋值，dt 仍是真实时间；赋值后连秒表都不读。
 	internal double? FrameDtSeconds { get; set; }
 
-	/// 视口内容按实测行高虚拟化（会话时间线、执行过程组体）时，重排会把「估算行高被修正」
-	/// 换算成一次偏移校正直接写回视口。滚轮滑行期间必须把这次校正当成内容坐标系平移，
-	/// 而不是读者接管滚动：否则目标停在旧坐标系里，快速滚动会多走或倒退一个校正量。
+	/// 视口按实测行高虚拟化时（会话时间线、执行过程组体），重排会把「估算行高被修正」
+	/// 换算成一次偏移校正写回视口。滚轮滑行期间要把这次校正当成内容坐标系平移，不能当读者接管；
+	/// 否则目标停在旧坐标系里，快速滚动会多走或倒退一个校正量。
 	internal bool CompensateLayoutCorrections { get; set; }
 
 	internal bool ReaderEscaped => _readerEscaped;
 	// 读者明确上滚过（滚轮/键盘/滚动条/恢复历史位置）。只有这种意图能挡住「置底即跟底」；
-	// 布局测高、presenter 切换、展开折叠引起的位移都不算，否则跟底会被静默关掉且再不恢复。
+	// 布局测高、presenter 切换、展开折叠的位移都不算，否则跟底会被静默关掉且不再恢复。
 	private bool _readerEscaped;
 
 	internal void SuppressAutoFollow()
@@ -58,16 +57,15 @@ internal sealed class SmoothScroll : IDisposable
 		Stop();
 	}
 
-	// 跟底（内容增长）用指数衰减：目标每帧都在变，衰减不会因为重排而反复重启。
-	// 距离越远衰减越快：既保留近距的柔和尾巴，又让几万 DIP 的「回到最新」在几百毫秒内
-	// 收敛到阈值，而不是靠一个固定时长上限突然落位。
+	// 跟底用指数衰减：目标每帧都在变，衰减不会因重排反复重启。
+	// 距离越远衰减越快，近距有柔和尾巴，几万 DIP 的「回到最新」也能在几百毫秒内收敛，不用固定时长上限。
 	private const double MinDecayRate = 18.0;
 	private const double MaxDecayBoost = 24.0;
 	private const double DecayDistanceScale = 1.8;
 
-	// 输入驱动的滚动复刻 Chromium 的 ScrollOffsetAnimationCurve：固定起步时长 + 距离项，
-	// 配 CSS ease（cubic-bezier(0.25, 0.1, 0.25, 1)）——正是 PiDeck（Electron/Chromium）
-	// 滚轮的手感来源：一次滚动在 ~300ms 内到位，没有指数衰减的长尾。
+	// 输入驱动的滚动照搬 Chromium 的 ScrollOffsetAnimationCurve：固定起步时长 + 距离项，
+	// 配 CSS ease（cubic-bezier(0.25, 0.1, 0.25, 1)）。PiDeck（Electron/Chromium）的滚轮手感
+	// 就来自这里：一次滚动约 300ms 到位，没有指数衰减的长尾。
 	private const double BaseDurationSeconds = 0.15;
 	private const double DurationPerDip = 0.0012;
 	private const double MinDurationSeconds = 0.10;
@@ -82,7 +80,7 @@ internal sealed class SmoothScroll : IDisposable
 	// whole device pixels; skipping a repeat write avoids an arrange/SceneChanged for sub-pixel
 	// movement that would land on the same pixel.
 	private Point _lastAppliedOffset = new(double.NaN, double.NaN);
-	// 重定向时沿用上一帧速度：连续滚轮/按键在曲线中途续接，而不是每次从零速重新起一条 ease。
+	// 重定向沿用上一帧速度：连续滚轮/按键在曲线中途续接，不从零速重开一条 ease。
 	private Point _fromVelocity;
 	private Point _velocity;
 	private bool _hermite;
@@ -151,9 +149,8 @@ internal sealed class SmoothScroll : IDisposable
 		0, MaxVerticalOffset);
 	public event Action<double>? VerticalInput;
 
-	/// 本视口消费了滚轮输入、且祖先链上还有另一个受控视口（嵌套滚动，如执行过程的组体）
-	/// 时，把本视口报给最近那个受控祖先。外层会话的跟底状态机看不见嵌套输入，
-	/// 需要这份通知判断「读者正在嵌套视口里离开末尾阅读」。
+	/// 本视口消费了滚轮输入、祖先链上还有受控视口时（嵌套滚动，如执行过程组体），
+	/// 把本视口报给最近的受控祖先。外层跟底状态机看不见嵌套输入，靠这份通知判断读者正在离开末尾。
 	internal event Action<ScrollViewer>? NestedInput;
 
 	private void NotifyNestedAncestor()
@@ -214,11 +211,9 @@ internal sealed class SmoothScroll : IDisposable
 		var delta = WheelDelta(horizontal, vertical);
 		if (delta.X == 0 && delta.Y == 0)
 		{
-			// 目标已顶到边界、而偏移还在向它收敛（在途动画或本帧待处理量）：这一格的信息
-			// 已被在途滚动完全覆盖，直接吞掉。不能不处理——事件会继续冒泡到本视口自己的
-			// 内建 OnMouseWheel，ScrollBy 会把偏移瞬间推一格，和还在收敛的动画抢同一个
-			// 视口：快速滚动一下一下地跳（短页面目标几乎立刻触边，必现）。只有偏移也
-			// 真正停稳在边界时才把这一格交给外层视口（组体 → 会话）。
+			// 目标已顶到边界、偏移还在收敛（在途动画或本帧待处理量）：这一格已被在途滚动覆盖，直接吞掉。
+			// 不处理的话事件会冒泡到本视口内建的 OnMouseWheel，ScrollBy 把偏移瞬间推一格，
+			// 和收敛中的动画抢视口，快速滚动会一下一下地跳。偏移停稳在边界后才把这一格交给外层。
 			if (IsAnimating || _pendingWheel.X != 0 || _pendingWheel.Y != 0)
 			{
 				args.Handled = true;
@@ -383,9 +378,8 @@ internal sealed class SmoothScroll : IDisposable
 		else JumpToEnd();
 	}
 
-	/// 展开正在流式输出的内容后，让视口持续贴住内容末尾：立即露出当前末尾，之后每次内容变高
-	/// （思考的 Markdown 解析、行高变化）都在布局落定后再落位。与 <see cref="FollowEnd"/> 不同，
-	/// 它不依赖动画，所以长内容每帧增长时也能跟上。
+	/// 展开流式内容后让视口贴住末尾：先露出当前末尾，之后每次内容变高（Markdown 解析、行高变化）
+	/// 都在布局落定后落位。不走动画，长内容每帧增长也能跟上。
 	public void FollowGrowth()
 	{
 		if (_disposed) return;
@@ -401,9 +395,8 @@ internal sealed class SmoothScroll : IDisposable
 
 	public void StopFollowingGrowth() => _followGrowth = false;
 
-	/// 把视口定位到指定偏移并解除跟底（「回到本项开头」这类阅读定位，不是读者滚动）。
-	/// 与直接写 ScrollViewer 的区别：同时取消在途动画与本帧待处理输入，并明确记下「读者已离开末尾」，
-	/// 下一帧的内容增长不会再把读者拽回去。
+	/// 把视口定位到指定偏移并解除跟底（「回到本项开头」这样的阅读定位）。
+	/// 同时取消在途动画与本帧输入，并记下「读者已离开末尾」，下一帧的内容增长不会再拉回去。
 	internal void RestoreReadingOffset(double vertical)
 	{
 		if (_disposed) return;
@@ -490,9 +483,8 @@ internal sealed class SmoothScroll : IDisposable
 			if (element is UIElement { IsVisible: false }) { Stop(); return; }
 		}
 
-		// 根据自上一帧流逝的真实时间计算指数衰减系数。卡顿之后按真实时长推进：输入曲线
-		// 直接落位到目标、衰减曲线一步收敛。不要在这里钳制 dt——钳制会把每次主线程停顿
-		// 拉长成数倍时长的追赶，滚动中忽快忽慢、松手后拖出可见的滑行尾巴（漂移）。
+		// 按上一帧以来的真实时间算指数衰减。卡顿后按真实时长推进：输入曲线直接落位，衰减一步收敛。
+		// 不要钳制 dt，否则主线程每停顿一次都要用数倍时长追赶，滚动忽快忽慢，松手后还会滑行。
 		var pinnedDt = FrameDtSeconds;
 		double dt = pinnedDt ?? _renderClock.Elapsed.TotalSeconds;
 		if (pinnedDt is null) _renderClock.Restart();
@@ -629,7 +621,7 @@ internal sealed class SmoothScroll : IDisposable
 		// 虚拟化 presenter 在重排时会把「估算行高被实测修正」换算成一次偏移校正，直接写视口。
 		// 读者正在滚轮滑行时，这次校正改的是内容坐标系：例如上方未测量行实测后变高，同一条
 		// 内容的坐标整体下移，presenter 就把偏移加大同样的量。若目标仍停在旧坐标系，滑行会
-		// 多走/倒退一个校正量——快速上滚时表现为「滚了很多却几乎没动，随后被拉回去」。
+		// 多走或倒退一个校正量，快速上滚时表现为「滚了很多却几乎没动，随后被拉回去」。
 		// 把曲线随校正一起平移，读者输入的距离仍原样兑现；这不是读者接管，不能停掉动画。
 		var compensated = false;
 		// 只有 extent 同时被重算的位移才是「行高实测」引起的坐标系平移；extent 不变的
@@ -648,9 +640,9 @@ internal sealed class SmoothScroll : IDisposable
 		}
 		if (AutoFollowAtEnd)
 		{
-			// 跟随态由几何决定：滚动条停在底部就跟随，读者明确上滚才离开。
-			// 这样 presenter 切换、行高重测、展开/折叠都不会把跟随永久关掉；
-			// 「展开步骤后停在预览行」靠 StopFollowingGrowth 清掉本次跟随，再由几何保持。
+			// 跟随态由几何决定：滚动条在底部就跟随，读者上滚才离开。
+			// presenter 切换、行高重测、展开折叠都不会永久关掉跟随；「展开步骤后停在预览行」
+			// 由 StopFollowingGrowth 清掉本次跟随，之后交给几何。
 			var distance = maximum - offset.Y;
 			if (maximum > AutoFollowTolerance)
 			{
@@ -665,12 +657,10 @@ internal sealed class SmoothScroll : IDisposable
 				}
 				else if (!extentChanged)
 				{
-					// extent 稳定却被外部移动（滚动条拖动、焦点、程序化定位）：离开末尾。
+					// extent 稳定却被外部移动（拖滚动条、焦点、程序化定位）：离开末尾。
 					_followGrowth = false;
-					// 像素舍入/锚点校正量级的微位移（虚拟化 presenter 重排时直接写视口）不是读者
-					// 接管：停掉动画会把置顶阅读的连续滚轮打成一顿一顿，直到读者上滚设置 escape
-					// 才恢复。可见幅度的外部位移若已按坐标系平移（compensated）也继续滑行；
-					// 只有无法解释的外部位移才结束在途动画。
+					// 像素舍入级微位移（presenter 重排直接写视口）不算读者接管，停动画会把连续滚轮打顿；
+					// 可见幅度且已按坐标系平移的继续滑行；只有解释不了的外部位移才结束动画。
 					if (!compensated && !IsApplyingOffset && Math.Abs(offset.Y - _lastOffset.Y) > CorrectionTolerance) StopAnimation();
 				}
 				// extent 增长且读者没上滚：保持现状，不把布局校正误判成离开。
@@ -678,12 +668,10 @@ internal sealed class SmoothScroll : IDisposable
 		}
 		else if (!IsApplyingOffset && offset != _lastOffset)
 		{
-			// 虚拟化行在 arrange 阶段被重新测高时，presenter 会请求一次锚点校正并把远端
-			// extent 一起改大。这属于布局，不是读者意图；若把它当成上滚，跟底会在第一帧
-			// 被静默取消，组体进度随即停在半路。只有 extent 没变的手工位移才算接管。
-			// 非跟底视口（设置页等）同样适用：动画写的是分数偏移，arrange 每次把它吸附到
-			// 像素网格都会产生一次亚 DIP 的外部位移——没有容差，平滑滚动每个刻度都会被
-			// 拦腰打断，只剩下一格格的重新起步（一顿一顿 + 半路丢距离）。
+			// 虚拟化行在 arrange 阶段被重新测高时，presenter 请求锚点校正并把远端 extent 改大。
+			// 这是布局，不是读者意图；当成上滚会让跟底在第一帧被取消，组体进度停在半路。
+			// 只有 extent 没变的手工位移才算接管。非跟底视口（设置页等）同样适用：动画写分数偏移，
+			// arrange 每次吸附到像素网格都会产生亚 DIP 位移；没有容差，每个刻度都会被拦腰打断。
 			var correction = Math.Max(Math.Abs(offset.X - _lastOffset.X), Math.Abs(offset.Y - _lastOffset.Y));
 			if (!compensated && (!_followGrowth || !extentChanged) && correction > CorrectionTolerance)
 			{
@@ -788,9 +776,8 @@ internal sealed class SmoothScroll : IDisposable
 		_toEnd = false;
 		_velocity = default;
 		_hermite = false;
-		// dt 由真实时钟驱动时，动画终点也是帧间计时的起点：不归零的话，下一次手势的第一帧
-		// 会带上「动画结束到现在」的全部流逝时间（几十到几百 ms），一次性跨出大半段距离。
-		// 钉住 dt 的测试路径不读秒表，归零与否没有影响。
+		// dt 由真实时钟驱动时，动画终点也是帧间计时的起点。不归零，下一次手势的第一帧会带上
+		// 「动画结束到现在」的全部时间（几十到几百 ms），一次跨出大半段距离。钉住 dt 的测试不读秒表。
 		_renderClock.Reset();
 	}
 
@@ -866,7 +853,7 @@ internal sealed class SmoothScroll : IDisposable
 	}
 }
 
-/// 嵌套滚动链：内层视口在边界放行后，滚轮沿祖先链找到下一个真正滚得动的视口。
+/// 嵌套滚动链：内层视口到边界放行后，滚轮沿祖先链找下一个能滚的视口。
 internal static class ScrollCascade
 {
 	/// 从 <paramref name="origin"/> 的父级向上找最近的可滚动祖先视口并接管这次滚轮。
@@ -880,7 +867,7 @@ internal static class ScrollCascade
 		for (var parent = origin.Parent; parent is not null; parent = parent.Parent)
 		{
 			if (parent is not ScrollViewer viewport || !viewport.IsVisible) continue;
-			// 只接管已经平滑滚动的视口：不在滚轮路径上顺手给无关容器装控制器。
+			// 只接管已经平滑滚动的视口，不顺手给无关容器装控制器。
 			if (SmoothScroll.Find(viewport) is not { } smooth) continue;
 			var delta = smooth.WheelDelta(horizontal, vertical);
 			if (delta.X == 0 && delta.Y == 0) continue;

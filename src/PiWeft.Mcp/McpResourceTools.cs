@@ -236,7 +236,7 @@ public static class McpResourceTools
 		{
 			var provider = FindProvider(servers, serverName);
 			// 指定服务器时本应返回一页；本客户端会自行翻页，因此传入游标只是
-			// 再返回一遍完整列表，而不是报错。
+			// 再返回一遍完整列表，不报错。
 			var items = await all(provider, cancellationToken).ConfigureAwait(false);
 
 			var page = new List<JsonNode?>();

@@ -40,7 +40,7 @@ public sealed class ButtonInteractionTests
 	{
 		// 主按钮的标签不写死颜色，继承按钮的 Foreground：可用是反色、禁用是被压暗的次要色。
 		// 写死 OnAccentText 的那一版在禁用时会把深色字压在深灰底上（设置页的「保存」、
-		// 问询卡的「下一题」都栽在这条上），所以这里断言「跟着状态变」而不是某个固定值。
+		// 问询卡的「下一题」都栽在这条上），所以断言「跟着状态变」，不写死固定值。
 		var label = new TextBlock().Text("next").FontSize(AppTheme.FontSizeCaption);
 		var button = new TestButton().Content(label).StyleName(AppStyles.PrimaryButton);
 		var root = new Border().StyleSheet(AppStyles.Create()).Child(button);

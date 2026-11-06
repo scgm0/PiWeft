@@ -5,19 +5,16 @@ using Aprillz.MewUI;
 
 namespace PiWeft.Desktop;
 
-/// 内嵌字体：把界面用到的字体打进程序集，渲染效果不再取决于机器上装了什么。
+/// 内嵌字体：界面用到的字体打进程序集，渲染不依赖机器上装了什么。
 /// <list type="bullet">
-/// <item>界面正文用 <b>HarmonyOS Sans SC</b> 的官方静态字重（Regular / Bold）。早前用 fontTools
-/// 把三个字重合成过一个可变字体，但插值后的笔画粗细在原字重之间不够均匀，因此改回官方文件；
-/// 界面只用两档字重，Medium 没有引用，就没有嵌进来。</item>
-/// <item>代码块、工具输出等等宽文本用 <b>Maple Mono NF CN</b>（静态 Regular）。Maple Mono 的可变字体只有拉丁版，
-/// 没有 CJK；用 CN 版是为了让代码里的中文注释也能等宽对齐，NF 版额外的 Nerd Font 图标供终端里的 powerline 提示符使用。</item>
+/// <item>正文用 HarmonyOS Sans SC 官方静态字重（Regular / Bold）。可变字体插值后的笔画不均匀，已改回；
+/// 界面只用两档，Medium 不嵌。</item>
+/// <item>代码与终端用 Maple Mono NF CN（静态 Regular）。CN 版带 CJK，代码里的中文注释能对齐；
+/// NF 版的 Nerd Font 图标供 powerline 提示符使用。</item>
 /// </list>
-/// 使用官方静态字重资源；MewUI 源码 的注册表按字族只保留最后一个文件，
-/// 因此 Regular 最后注册，Normal 使用原版正文笔画，Bold 请求由各平台后端处理。
-/// 另外给 Regular 注册一个显式的字族别名 <c>HarmonyOS_Sans_SC_Regular</c>，并把它设为
-/// 全局默认字体：即使系统里也装了同名字族，默认正文也一定落到内嵌的 Regular 文件。
-/// 许可原文随包放在 <c>Resources/fonts</c>；注册失败时退回字体栈里的 <c>sans-serif</c>/<c>monospace</c>。
+/// Regular 最后注册（MewUI 注册表按字族只保留最后一个文件），并注册字族别名
+/// <c>HarmonyOS_Sans_SC_Regular</c> 作全局默认，系统装了同名字族也落到内嵌文件。
+/// 许可原文在 <c>Resources/fonts</c>；注册失败退回 <c>sans-serif</c>/<c>monospace</c>。
 public static class AppFonts
 {
 	private const string ResourcePrefix = "PiWeft.Desktop.Resources.fonts.";

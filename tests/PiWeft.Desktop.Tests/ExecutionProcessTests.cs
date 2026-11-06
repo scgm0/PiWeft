@@ -124,8 +124,8 @@ public sealed class ExecutionProcessTests
 	[Fact]
 	public void BusyFlipsAndNewTurnsReuseTheProjectedPrefixWithoutFullPasses()
 	{
-		// 回合起止（busy 翻转）与新一轮用户消息只影响最后一轮的投影；长会话上一次
-		// 全量要一百多毫秒，恰好落在 UI 线程的每回合起止帧上。
+		// 回合起止（busy 翻转）与新一轮用户消息只影响最后一轮的投影；长会话全量一次要一百多毫秒，
+		// 正好落在 UI 线程的每回合起止帧上。
 		var entries = new List<ChatEntry>();
 		for (var i = 0; i < 120; i++)
 		{
@@ -154,7 +154,7 @@ public sealed class ExecutionProcessTests
 		Assert.Equal(fullAfterFirst, projector.FullPasses);
 		Assert.True(projector.TailPasses >= 5);
 
-		// 历史前缀被改写（分支/编辑）：缓存失效，必须回退全量。
+		// 历史前缀被改写（分支/编辑）：缓存失效，回退全量。
 		entries[1] = Answer("a0", "rewritten");
 		AssertProjection(entries, false, projector);
 		Assert.True(projector.FullPasses > fullAfterFirst);
@@ -370,7 +370,7 @@ public sealed class ExecutionProcessTests
 		var before = body.MaxVerticalOffset;
 		Assert.True(before > 0);
 
-		// 展开第一行：行高变大，组体的可滚范围必须跟着长，否则新增内容滚不到。
+		// 展开第一行：行高变大，组体的可滚范围要跟着长，否则新增内容滚不到。
 		var tool = Find<Expander>(viewport).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
 		tool.IsExpanded = true;
 		ConversationPerformanceTests.Layout(view.View);
@@ -413,7 +413,7 @@ public sealed class ExecutionProcessTests
 		var restored = Find<Expander>(restoredViewport).First(expander => HoverHints.Text(expander) == Strings.ToolExpandHint);
 		Assert.True(restored.IsExpanded);
 		var host = (FrameworkElement)restored.Parent!;
-		// 行必须按展开后的内容测量，不能停在折叠时的一行摘要高度。
+		// 行按展开后的内容测量，不停在折叠时的一行摘要高度。
 		Assert.True(host.Bounds.Height > 100, $"restored row kept the collapsed height: {host.Bounds.Height}");
 		Assert.Equal(host.DesiredSize.Height, host.Bounds.Height, 1.0);
 		// 恢复后的可滚范围仍然覆盖全部步骤（估算值随实测均值变化，只要求它没有塌回折叠态）。
@@ -431,7 +431,7 @@ public sealed class ExecutionProcessTests
 			Role = ChatRole.Tool, EntryId = $"step-{index}/result", ToolCallId = $"step-{index}", ToolName = "read",
 			Text = $"output {index}" + string.Concat(Enumerable.Repeat("\nline", 10)),
 		};
-		// 中间回复把过程切成两组：每组的追帧状态必须各自独立。
+		// 中间回复把过程切成两组，每组的追帧状态各自独立。
 		// 每组 12 步（超过 300 的组体高度）才能让「展开后滚动范围变大」这个断言成立。
 		var process = ExecutionProcess.Project([
 			User("first"), .. Enumerable.Range(0, 12).Select(Step), Answer("interim", "continue"),
@@ -678,7 +678,7 @@ public sealed class ExecutionProcessTests
 		Assert.Contains(Find<TextBlock>(group.Header!), text => text.Text == "已读取文件");
 
 		// Nodes 复用同一份成员数组；这次只在原位置换掉末尾成员，数量不变。
-		// 组头缓存必须看条目引用而不是数组引用，否则会继续显示旧的“已读取文件”。
+		// 组头缓存看条目引用，不看数组引用，否则会继续显示旧的「已读取文件」。
 		var rewritten = process with
 		{
 			ProcessEntries = [Tool("one", "ok") with { ToolName = "bash" }],
@@ -826,7 +826,7 @@ public sealed class ExecutionProcessTests
 		tool.IsExpanded = true;
 		ConversationPerformanceTests.Layout(view.View);
 
-		// 小组的组体由内容撑高：步骤展开后必须跟着长，而不是停在折叠时的几行高度。
+		// 小组的组体由内容撑高：步骤展开后要跟着长，不停在折叠时的几行高度。
 		Assert.True(viewport.ViewportHeight > collapsed + 60,
 			$"group body did not grow: {collapsed} -> {viewport.ViewportHeight}");
 		Assert.True(viewport.ViewportHeight <= 302,
@@ -942,7 +942,7 @@ public sealed class ExecutionProcessTests
 		ConversationPerformanceTests.Layout(view.View);
 		var viewport = Assert.Single(Find<ScrollViewer>(group.Content!));
 
-		// 流式更新会让栈布局重新绑定每一行：回调必须捕获对应的行，而不是循环结束后越界的索引。
+		// 流式更新会让栈布局重新绑定每一行：回调要捕获对应的行，不用循环结束后越界的索引。
 		var changed = Enumerable.Range(0, 4)
 			.Select(i => Tool($"call-{i}", $"changed {i}\n" + string.Join('\n', Enumerable.Repeat("line", 4))))
 			.ToArray();
@@ -980,7 +980,7 @@ public sealed class ExecutionProcessTests
 		ConversationPerformanceTests.Layout(view.View);
 		Assert.True(body.IsFollowingGrowth, "expanding streaming thinking should make the group body follow its tail");
 
-		// 思考继续增长：组体保持在新的末尾，而不是停在展开时的位置。
+		// 思考继续增长：组体保持在新的末尾，不停在展开时的位置。
 		view.Update(ExecutionProcess.Project([
 			User("first"),
 			new ChatEntry { Role = ChatRole.Assistant, EntryId = "think", Text = string.Empty, Thinking = thinkingText + "\n" + thinkingText, IsThinking = true, IsStreaming = true },
@@ -1204,7 +1204,7 @@ public sealed class ExecutionProcessTests
 	public void StreamingThinkingInsideAGroupNeverLocksTheConversationBackToTheTail()
 	{
 		// 回归：展开的思考在流式期每帧都会请求「继续跟底」。以前这条路直接走 ScrollToLatest，
-		// 把「跟底」重新锁上 —— 读者上滚一格，下一帧就被拽回末尾，会话根本拖不动。
+		// 把「跟底」重新锁上：读者上滚一格，下一帧就被拽回末尾，会话根本拖不动。
 		ChatEntry Thought(string text) => new()
 		{
 			Role = ChatRole.Assistant, EntryId = "think", Timestamp = 1, Text = string.Empty,

@@ -74,7 +74,7 @@ public static partial class PromptTemplates
 	}
 
 	/// 按空白切分参数字符串，并识别单引号与双引号。
-	/// 空的引号参数（<c>""</c> / <c>''</c>）是一个位置参数，不能丢弃 ——
+	/// 空的引号参数（<c>""</c> / <c>''</c>）是一个位置参数，不能丢弃；
 	/// 丢掉会让后面的参数错位、默认值失真（pi 1.3.0 修正的正是这个行为）。
 	public static string[] ParseArgs(string argsString)
 	{

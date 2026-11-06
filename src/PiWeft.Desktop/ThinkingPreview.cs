@@ -14,12 +14,12 @@ internal static class ThinkingPreview
 	private const int FirstLineLimit = 72;
 
 	/// 流式中的最新一行：先裁掉尾部空白，再回退到最后一个换行之后。
-	/// 思考是追加式增长的，回扫距离只有一行的长度，比每帧从头扫一遍整篇正文便宜得多；
-	/// 先裁尾也让「最新一行」必定非空（行首缩进留在开头，由跑马灯自己推出画面）。
+	/// 思考是追加式增长，回扫距离只有一行，比每帧从头扫整篇便宜。
+	/// 先裁尾也保证「最新一行」非空；行首缩进留在开头，由跑马灯推出画面。
 	internal static string LatestLine(string thinking) => LatestLine(thinking, thinking.Length);
 
-	/// 只把前 <paramref name="length"/> 个字符当作已经写好的内容取最新一行：打字机逐帧推进时，
-	/// 预览要看的不是「模型已经发完的那一行」，而是「已经露出来的那几个字」。
+	/// 只把前 <paramref name="length"/> 个字符当作已写好的内容取最新一行。打字机逐帧推进时，
+	/// 预览要看的是已露出的那几个字，不是模型已经发完的那一行。
 	internal static string LatestLine(string thinking, int length) => LatestLine(new StreamText(thinking), length);
 
 	internal static string LatestLine(in StreamText thinking, int length)
@@ -31,8 +31,8 @@ internal static class ThinkingPreview
 	{
 		var limit = Math.Clamp(length, 0, thinking.Length);
 		// 只需要行尾那一段：跑马灯最多露出 LiveLineLimit 个字，更早的一定为负偏移裁在画面外。
-		// 换行也只在这段窗口里回找 —— 不这样封顶的话，模型写出一段不带换行的长句时
-		// 每帧都要反向扫完整篇（实测 32K 字一轮扫描就足以掉帧），TextBlock 也会重排整行。
+		// 换行也只在这段窗口里回找。不封顶的话，模型写一段不带换行的长句，
+		// 每帧都要反向扫完整篇（32K 字一轮就足以掉帧），TextBlock 也会重排整行。
 		// TrimEnd first, bounded to the same whitespace margin as before: slicing a 1600-char
 		// window every frame just to drop its tail allocated a temporary string twice this size.
 		var end = limit;
@@ -86,11 +86,11 @@ internal static class ThinkingPreview
 	private const int LiveLineLimit = 600;
 }
 
-/// 流式文本的打字机：把「一次到达一整块 delta」摊成「每帧多打几个字」。
-/// 与 PiDeck 的 useSmoothStream 同一套节奏：积压越多推进越快（backlog / 3），每帧封顶 24 字；
-/// 同时滞后不能拖远 —— 跑马灯与正文都要「跟住最新」，落下几百字就变成在看旧文本。
-/// 游标是「权威文本里的一个前缀长度」，不复制文本：流式快照每帧都是新字符串，
-/// 复制一份可见前缀等于每帧拷一遍整篇正文。消费端自己按 <see cref="Shown"/> 取前缀。
+/// 流式文本的打字机：把一次到达的整块 delta 摊成每帧多打几个字。
+/// 节奏与 PiDeck 的 useSmoothStream 相同：积压越多推进越快（backlog / 3），每帧封顶 24 字；
+/// 滞后不能拖远，跑马灯与正文都要跟住最新，落几百字就变成在看旧文本。
+/// 游标是权威文本里的一个前缀长度，不复制文本：流式快照每帧都是新字符串，
+/// 复制可见前缀等于每帧拷一遍正文。消费端按 <see cref="Shown"/> 自己取前缀。
 internal sealed class Typewriter
 {
 	private const int CatchUpDivisor = 3;
@@ -118,8 +118,8 @@ internal sealed class Typewriter
 		_shown = 0;
 	}
 
-	/// 喂入最新的完整文本。<paramref name="animated"/> = false（没窗口驱动：自检/单测，或这一行已经是
-	/// 历史行）时直接全露出：逐字只对「正在流的这一行」有意义，打开旧会话把几百 KB 打一遍是灾难。
+	/// 喂入最新的完整文本。<paramref name="animated"/> = false（没有窗口驱动，或这一行已是历史行）时
+	/// 直接全露出：逐字只对正在流的那一行有意义，打开旧会话把几百 KB 打一遍没法看。
 	internal void Set(in StreamText text, bool animated)
 	{
 		if (text.SameAs(_target))
@@ -134,23 +134,23 @@ internal sealed class Typewriter
 			_shown = text.Length;
 			return;
 		}
-		// 一上来就接手一大段存量（视图被回收/重建、滚动时重新实现的行）：整段直接显示。
-		// 逐字的意义是「看着这句被写出来」，而这只对在本视图里从零开始的行成立；
-		// 把已经存在的半篇旧文本重打一遍，读起来像是内容在倒退。
+		// 一上来就接手一大段存量（视图回收/重建、滚动时重新实现的行）：整段直接显示。
+		// 逐字是「看着这句被写出来」，只对在本视图里从零开始的行成立；
+		// 把已有的半篇旧文本重打一遍，读起来像内容在倒退。
 		if (fresh && text.Length > RevealOnBirth)
 		{
 			_shown = text.Length;
 			return;
 		}
-		// 文本变短 = 内容被改写或换了新一轮思考：从第一个字重新打，而不是拿着旧游标切新文本。
+		// 文本变短 = 内容被改写或换了新一轮思考：从第一个字重新打，不拿旧游标切新文本。
 		if (_shown > text.Length) _shown = 0;
 	}
 
 	/// 推进一帧：返回本帧是否真的多打了字（没新字就不用碰任何下游视图）。
-	/// 长文本自动降频：可见前缀越长，Markdown 尾块重排越贵（实测 6K 字 0.25ms/帧、24K 字 0.72ms/帧），
-	/// 每帧都重排会把整窗拖进持续高负载。8K 字以内逐帧推，更大文本降到 16ms / 33ms 一跳：
-	/// 60fps 与 30fps 的逐字观感区分不出来，重排次数却减半到三分之一；
-	/// 而 30fps × 每帧 24 字 = 720 字/秒，仍快过任何真实输出速率，不会因为降频而追不上。
+	/// 长文本自动降频：可见前缀越长，Markdown 尾块重排越贵（6K 字 0.25ms/帧、24K 字 0.72ms/帧），
+	/// 每帧重排会把整窗拖进高负载。8K 字以内逐帧推，更大降到 16ms / 33ms 一跳：
+	/// 60fps 与 30fps 的逐字观感分不出来，重排次数减半到三分之一；
+	/// 30fps × 24 字 = 720 字/秒，仍快过真实输出速率。
 	internal bool Advance()
 	{
 		var backlog = _target.Length - _shown;
@@ -162,7 +162,7 @@ internal sealed class Typewriter
 			if (now - _lastStepAt < interval) return false;
 			_lastStepAt = now;
 		}
-		// 落下太多就补跳一段：宁可少打几个字，也不能停在半句上重打。
+		// 落下太多就补跳一段：少打几个字，也别停在半句上重打。
 		if (backlog > MaxLag) _shown = _target.Length - MaxLag;
 		var step = Math.Min(MaxStepPerFrame, Math.Max(1, (_target.Length - _shown) / CatchUpDivisor));
 		var next = Math.Min(_target.Length, _shown + step);
@@ -205,7 +205,7 @@ internal sealed class StreamPump(FrameworkElement owner, Action onFrame) : IDisp
 	}
 
 	/// 这一行现在值不值得继续吃帧。三道闸，任一不过就该停：
-	/// 1) 还挂在窗口上 —— AnimationClock 是进程级注册，只要还有时钟在跑，宿主就进入持续渲染；
+	/// 1) 还挂在窗口上。AnimationClock 是进程级注册，只要还有时钟在跑，宿主就进入持续渲染；
 	///    一个泄漏在已拆分行上的时钟等于把整个应用拖进满帧重绘（也会污染靠
 	///    AnimationManager 手动推帧的测试）。
 	/// 2) 祖先没有把它关掉（折叠、切走的标签页、行被回收）。
@@ -241,7 +241,7 @@ internal sealed class StreamPump(FrameworkElement owner, Action onFrame) : IDisp
 }
 
 /// 单行预览的尾部跟随容器（流式跑马灯）：把最新一行的<b>行尾</b>贴到可用宽度右边缘，
-/// 左侧溢出由裁剪切掉 —— 新字符不断把旧字符推出左边缘，读到的始终是刚写下的那几个字。
+/// 左侧溢出由裁剪切掉：新字符不断把旧字符推出左边缘，读到的始终是刚写下的那几个字。
 /// 结束（<see cref="FollowTail"/> = false）后交回普通排版：行首对齐，超出部分由 TextBlock 自己的
 /// 尾部省略号截断，摘要回到从头部读起。
 /// 跟尾期间另有一道「扫光」从行首掠到行尾（和 PiDeck 同构），用动态提示「这一行还在写」；

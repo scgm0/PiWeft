@@ -248,13 +248,13 @@ public static partial class McpOAuth
 		}
 	}
 
-	/// 配置里是否同时给了 <c>clientId</c> 与 <c>clientSecret</c>：此时用客户端凭据授权
-	/// （RFC 6749 §4.4），不需要浏览器参与。
+	/// 配置里同时给了 <c>clientId</c> 与 <c>clientSecret</c> 时，用客户端凭据授权
+	/// （RFC 6749 §4.4），不需要浏览器。
 	public static bool UsesClientCredentials(McpServerConfig config) =>
 		config.ClientId is { Length: > 0 } && config.ClientSecret is { Length: > 0 };
 
 	/// 客户端凭据授权：直接向令牌端点请求访问令牌并写进存储。
-	/// 适用于网关/机器账号等无需用户参与的场景；没有 refresh token，到期后重新走本流程。
+	/// 用于网关、机器账号等无需用户参与的场景；没有 refresh token，到期后重走本流程。
 	public static async Task<McpOAuthResult> ClientCredentialsAsync(
 		HttpClient http,
 		string endpoint,
@@ -528,7 +528,7 @@ public static partial class McpOAuth
 					continue;
 				}
 
-				// RFC 9207：带 iss 时必须能校验；校验不了就失败，而不是接受未知发行方。
+				// RFC 9207：带 iss 时要能校验；校验不了就失败，不接受未知发行方。
 				var issuerValid = issuer is null
 					? expectedIssuer is null
 					: expectedIssuer is not null && string.Equals(issuer, expectedIssuer, StringComparison.Ordinal);

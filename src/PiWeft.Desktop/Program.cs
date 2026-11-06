@@ -246,7 +246,7 @@ public static class Program
 	}
 
 	/// 注册平台宿主与渲染后端。这里按**构建时**的目标平台选择（csproj 用 <c>TargetPlatform</c> 与
-	/// 条件包引用决定），而不是运行时探测 —— MewUI 的注册 API 是按包提供的，编译进哪个包就用哪个。
+	/// 条件包引用决定），不在运行时探测：MewUI 的注册 API 按包提供，编译进哪个包就用哪个。
 	private static void RegisterPlatform()
 	{
 #if MEWUI_WIN32

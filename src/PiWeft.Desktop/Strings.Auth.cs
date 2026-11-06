@@ -4,7 +4,7 @@ public static partial class Strings
 {
 	// ── 订阅登录：状态与结果 ──────────────────────────────────────────────
 	public const string AuthSubscriptionTitle = "供应商认证";
-	public const string AuthSubscriptionHint = "每个供应商显示可用的登录方式：订阅账号用 OAuth / 设备码，API Key 直接写入全局 auth.json。同一个供应商只保存一份凭据，保存 API Key 会替换已有 OAuth；退出登录会删除 auth.json 里的条目，但不会改进程环境变量。";
+	public const string AuthSubscriptionHint = "订阅登录用 OAuth 或设备码，API Key 写入全局 auth.json。保存 API Key 会替换已有 OAuth；退出登录只删 auth.json 条目，不改环境变量。";
 	public const string AuthLoggedOut = "未登录";
 	public const string AuthExpired = "凭据已过期，请刷新或重新登录";
 	public const string AuthNeverExpires = "长期有效";
@@ -26,7 +26,7 @@ public static partial class Strings
 	public const string AuthPromptTitle = "需要输入";
 	public const string AuthPromptDefault = "请按上方提示输入后继续。";
 	public const string AuthPromptSubmit = "提交";
-	public const string AuthPromptEmptyHint = "可以直接提交空内容（例如 GitHub 企业域名留空表示 github.com）。";
+	public const string AuthPromptEmptyHint = "可以提交空内容（例如 GitHub 企业域名留空表示 github.com）。";
 	public const string AuthLoginStarting = "正在申请授权…";
 	public const string AuthLoginRunning = "等待授权完成…";
 	public const string AuthLoginRefreshing = "登录成功，正在刷新模型目录…";
@@ -68,10 +68,10 @@ public static partial class Strings
 	public const string AuthKeyChange = "更换 API Key";
 	public const string AuthKeyEdit = "编辑凭据";
 	public const string AuthKeyClear = "清除凭据";
-	public const string AuthKeyDialogSubtitle = "凭据只写入本机 auth.json；界面不回显、不记录输入内容。已有 Key 留空表示保持不变。";
+	public const string AuthKeyDialogSubtitle = "凭据只写本机 auth.json，界面不回显也不记录。已有 Key 留空表示保留。";
 	public const string AuthKeyExistingHint = "已保存；留空保持不变";
-	public const string AuthKeyCommandHint = "以 ! 开头表示命令型凭据：请求时执行命令并读取 stdout，失败回落环境变量。";
-	public const string AuthKeyEnvironmentHint = "额外字段保存到该凭据的 env，请求时优先于进程环境变量；留空则继续使用进程环境。";
+	public const string AuthKeyCommandHint = "以 ! 开头表示命令型凭据：请求时执行命令读 stdout，失败回落环境变量。";
+	public const string AuthKeyEnvironmentHint = "额外字段存到该凭据的 env，请求时优先于进程环境；留空则用进程环境。";
 	public const string AuthKeyMethodLabel = "认证方式";
 	public const string AuthKeySave = "保存凭据";
 	public const string AuthKeyEnvironmentOnly = "该凭据由环境变量提供，桌面端不会删除它。";
@@ -85,7 +85,7 @@ public static partial class Strings
 	public static string AuthKeyDialogTitleFor(string provider) => $"API Key · {provider}";
 	public static string AuthKeySaved(string provider) => $"{provider} 的凭据已保存，模型目录已更新。";
 	public static string AuthKeyCleared(string provider) => $"已删除 {provider} 的凭据。";
-	public static string AuthKeyClearConfirm(string provider) => $"删除「{provider}」在 auth.json 里的凭据？环境变量不会被修改。";
+	public static string AuthKeyClearConfirm(string provider) => $"删除「{provider}」在 auth.json 里的凭据？环境变量不变。";
 	public static string AuthKeyFieldRequired(string label) => $"请输入{label}。";
 	public static string AuthCatalogRefreshFailed(string error) => $"账号模型目录刷新失败（不影响登录）：{error}";
 	public const string AuthLogEmpty = "等待授权流程输出…";

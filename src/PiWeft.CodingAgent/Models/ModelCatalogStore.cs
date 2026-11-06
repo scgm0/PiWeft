@@ -110,8 +110,8 @@ public static class ModelCatalogStore
 	public static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(6);
 
 	/// 是否该刷了：取缓存里最新的 <c>checkedAt</c> 与 <see cref="RefreshInterval"/> 比较。
-	/// 没有缓存或时间戳缺失/在未来（手改文件、时钟回拨）时都返回 <see langword="true"/> ——
-	/// 节流不该变成「永远不刷新」。
+	/// 没有缓存，或时间戳缺失、在未来（手改文件、时钟回拨）时返回 <see langword="true"/>。
+	/// 节流不该变成永不刷新。
 	public static bool ShouldRefresh(string? agentDir = null, TimeSpan? interval = null, DateTimeOffset? now = null)
 	{
 		var root = ReadRoot(agentDir);
@@ -244,7 +244,7 @@ public static class ModelCatalogStore
 				providerNodes[providerId] = new JsonObject
 				{
 					["models"] = models,
-					// 服务端没给 Last-Modified 时留 0，而不是把「现在」当成资源修改时间：
+					// 服务端没给 Last-Modified 时留 0，不把「现在」当成资源修改时间：
 					// 后者会让下一次的 If-Modified-Since 说是现在，撞上时钟偏差就永久 304。
 					["lastModified"] = response.Content.Headers.LastModified?.ToUnixTimeMilliseconds() ?? 0,
 					["checkedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),

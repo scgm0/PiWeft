@@ -9,8 +9,8 @@ namespace PiWeft.CodingAgent.Security;
 /// 安全门的整体配置：总开关 + 默认档位 + 档位表 + 按会话覆盖。
 /// 形状与持久化位置对齐 PiDeck 的 <c>security-config</c>（本项目存在 <c>settings.json</c> 的
 /// <c>security</c> 段里，见 <c>CodingAgentSettings</c>）。
-/// <see cref="Enabled"/> 默认 <see langword="true"/> 但 <see cref="DefaultLevelId"/> 默认
-/// <c>off</c>：门是挂着的，只是没设任何限制 —— 引入它不改变任何既有行为，也不破坏 pi 兼容语义。
+/// <see cref="Enabled"/> 默认 <see langword="true"/>，<see cref="DefaultLevelId"/> 默认
+/// <c>off</c>：门挂着但没设限制。引入它不改变既有行为，也不破坏 pi 兼容语义。
 public sealed record SecurityConfig
 {
 	public const int SchemaVersion = 1;
@@ -21,15 +21,15 @@ public sealed record SecurityConfig
 
 	public IReadOnlyList<ToolSecurity> Levels { get; init; } = ToolSecurity.Builtins;
 
-	/// 会话级覆盖：会话文件路径 → 档位 id。与 PiDeck 的 <c>sessionLevels</c> 同语义 ——
-	/// 项目里多数会话可以放心跑，个别要动生产代码的临时收紧，不该逼用户改全局档位。
+	/// 会话级覆盖：会话文件路径 → 档位 id。与 PiDeck 的 <c>sessionLevels</c> 同语义：
+	/// 个别会话要动生产代码时临时收紧，不必改全局档位。
 	public IReadOnlyDictionary<string, string> SessionLevels { get; init; } =
 		new Dictionary<string, string>(StringComparer.Ordinal);
 
 	public static SecurityConfig Off { get; } = new();
 
-	/// 单档位的隐式转换：让 <c>new { Security = ToolSecurity.Strict }</c> 这类写法继续有效 ——
-	/// 该档位成为默认档，并替换掉同 id 的内建档（自定义档则追加）。
+	/// 单档位的隐式转换：让 <c>new { Security = ToolSecurity.Strict }</c> 这类写法继续有效。
+	/// 该档位成为默认档，并替换同 id 的内建档；自定义档追加。
 	public static implicit operator SecurityConfig(ToolSecurity level) =>
 		(Off with { DefaultLevelId = level.Level }).WithLevel(level);
 
@@ -52,8 +52,7 @@ public sealed record SecurityConfig
 	}
 
 	/// 某个会话生效的档位。关闭总开关时返回 <see cref="ToolSecurity.Off"/>；
-	/// 覆盖指向不存在的档位时退回默认档，默认档也不存在时按 <c>off</c> 处理 ——
-	/// 配置写错不该把用户的工作流卡死。
+	/// 覆盖指向不存在的档位时退回默认档，默认档也没有则按 <c>off</c> 处理，配置写错不该卡死工作流。
 	public ToolSecurity Resolve(string? sessionFilePath)
 	{
 		if (!Enabled)
@@ -163,9 +162,8 @@ public sealed record SecurityConfig
 	}
 
 	/// 从 <c>&lt;agentDir&gt;/settings.json</c> 读安全配置。
-	/// <strong>只读全局设置</strong>：项目里的 <c>.pi/settings.json</c> 会随仓库一起分发，
-	/// 让它能改自己的安全档位等于让一个仓库关掉用户机器上的防护，或者反过来把工作流卡死。
-	/// 项目设置里的 <c>security</c> 段被忽略。
+	/// 只读全局设置：项目里的 <c>.pi/settings.json</c> 随仓库分发，让它改安全档位，等于让仓库
+	/// 关掉用户机器上的防护，或者反过来卡死工作流。项目设置里的 <c>security</c> 段忽略。
 	public static SecurityConfig Load(string? agentDir = null)
 	{
 		var path = System.IO.Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "settings.json");
@@ -232,7 +230,7 @@ public sealed record SecurityConfig
 	}
 
 	/// 序列化成 <c>settings.json</c> 的 <c>security</c> 段。默认形状（开着门但什么都不限制）
-	/// 不写任何键 —— 配置里塞一堆等于默认的字段会让手写配置的人看不懂。
+	/// 不写任何键：配置里塞一堆等于默认的字段，手写配置的人看不懂。
 	public JsonObject ToJson()
 	{
 		var root = new JsonObject();
@@ -251,9 +249,9 @@ public sealed record SecurityConfig
 		var edited = Levels.Where(IsEdited).ToList();
 		if (custom.Count > 0 || edited.Count > 0)
 		{
-			// 用 JsonArray(IReadOnlyList<JsonNode?>) 而不是 JsonArray().Add(x)：
-			// 后者会绑定到泛型 Add<T>，在 trim/AOT 分析里报 IL2026/IL3050（与本仓库其它
-			// 写 JSON 的地方同一规避手法）。
+			// 用 JsonArray(IReadOnlyList<JsonNode?>)，不用 JsonArray().Add(x)：
+			// 后者会绑定到泛型 Add<T>，在 trim/AOT 分析里报 IL2026/IL3050。
+			// 仓库里其它写 JSON 的地方也是同一规避手法。
 			var nodes = new List<JsonNode?>();
 			foreach (var level in Levels)
 			{
@@ -281,7 +279,7 @@ public sealed record SecurityConfig
 	}
 
 	/// 读取旧形状：安全段里直接平铺的档位字段（没有 <c>levels</c> 数组时）。
-	/// 没有这类字段就返回 <see langword="null"/> —— 只有内建 id、总开关与会话覆盖时不该造出一个档位。
+	/// 没有这类字段就返回 <see langword="null"/>：只有内建 id、总开关与会话覆盖时不造档位。
 	private static ToolSecurity? FlatOverride(JsonObject root, string defaultLevel)
 	{
 		string[] keys = ["protectSensitivePaths", "pathPolicy", "customAllowDirs", "denyDirs", "denyBashPatterns", "defaultAction", "toolActions"];
@@ -378,7 +376,7 @@ public sealed record SecurityConfig
 	}
 
 	/// 从 <c>settings.json</c> 的 <c>security</c> 段还原。缺字段按默认解释；
-	/// 未识别的档位名一律按 <c>off</c>，绝不猜一个更严的档 —— 写错的配置不该卡死用户。
+	/// 未识别的档位名一律按 <c>off</c>，不猜更严的档；写错的配置不该卡死用户。
 	public static SecurityConfig FromJson(JsonNode? node)
 	{
 		if (node is not JsonObject root)
@@ -393,7 +391,7 @@ public sealed record SecurityConfig
 
 		// 上一轮的形状把这些字段平铺在 security 段本身（没有 levels 数组）。必须把它们
 		// 套到 `level` 指名的档位上：否则用户改过的路径边界/目录/命令表会被静默忽略，
-		// 配置看起来还在、实际退回了内建档 —— 那是最坏的一种失效（界面显示已限制）。
+		// 配置看起来还在、实际退回了内建档，这是最坏的一种失效：界面显示已限制。
 		// 上一轮的形状把这些字段平铺在 security 段本身（没有 levels 数组）。
 		if (FlatOverride(root, defaultLevel) is { } flat)
 		{

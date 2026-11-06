@@ -65,8 +65,8 @@ public sealed record CodingAgentSessionOptions
 	/// 显式 <c>--model</c> 由调用方关掉这个开关，模型已不存在时自动回退到 <see cref="Model"/>。
 	public bool RestoreRecordedModel { get; init; }
 
-	/// 思考级别。为 <c>null</c> 时沿用会话里记录的级别（恢复会话时就是上次的），没有记录则为
-	/// <see cref="ThinkingLevels.Off"/> —— 与 pi 一致：显式指定优先，其次会话记录，最后默认值。
+	/// 思考级别。为 <c>null</c> 时沿用会话记录（恢复会话时就是上次的），没有记录则用
+	/// <see cref="ThinkingLevels.Off"/>。与 pi 一致：显式指定 > 会话记录 > 默认值。
 	public string? ThinkingLevel { get; init; }
 
 	public IReadOnlyList<AgentTool>? Tools { get; init; }
@@ -92,7 +92,7 @@ public sealed record CodingAgentSessionOptions
 	public IUiHost? UiHost { get; init; }
 
 	/// 项目是否受信任。为 false 时不加载项目级技能与提示词模板（<c>&lt;cwd&gt;/.pi/skills</c>、
-	/// <c>.agents/skills</c> 等），但仍加载用户级目录。上下文文件不受影响（与 pi 一致）。
+	/// <c>.agents/skills</c> 等），用户级目录照常加载。上下文文件不受影响，与 pi 一致。
 	public bool ProjectTrusted { get; init; } = true;
 
 	public StreamOptions Options { get; init; } = new();
@@ -108,12 +108,12 @@ public sealed record CodingAgentSessionOptions
 	public Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? AfterToolCall { get; init; }
 
 	/// 扩展的 <c>cache_warming_decision</c> 处理器：返回 <c>warm</c>/<c>stop</c> 覆盖 pi 的决策，
-	/// 返回 <c>null</c> 或抛异常时沿用 pi 的决策。
+	/// <c>null</c> 或抛异常时沿用原决策。
 	public Func<CacheWarmingDecisionEvent, CancellationToken, Task<string?>>? DecideCacheWarming { get; init; }
 }
 
-/// 一个编码代理会话：分章节的系统提示词、内置工具、仅追加的会话文件与代理循环接在一起。
-/// 已落盘的消息才是权威记录，因此每次请求发送的都是会话当前分支的投影。
+/// 一个编码代理会话：分章节的系统提示词、内置工具、仅追加的会话文件与代理循环。
+/// 已落盘的消息是权威记录，每次请求发送的都是当前分支的投影。
 public sealed class CodingAgentSession : IDisposable
 {
 	private readonly AgentRuntime _agent;
@@ -183,8 +183,8 @@ public sealed class CodingAgentSession : IDisposable
 
 	private readonly Func<AfterToolCallContext, CancellationToken, ValueTask<AfterToolCallResult?>>? _userAfterToolCall;
 
-	/// 进程内 JS 扩展宿主。默认按 pi 约定发现全局与项目扩展；宿主可以传 <c>extensions: null</c>
-	/// 关掉（测试与一次性会话用）。
+	/// 进程内 JS 扩展宿主。默认按 pi 约定发现全局与项目扩展；传 <c>extensions: null</c> 关闭，
+	/// 测试与一次性会话用。
 	public ExtensionHost? Extensions { get; private set; }
 
 	public IReadOnlyDictionary<string, ExtensionFlag> ExtensionFlags =>
@@ -287,10 +287,7 @@ public sealed class CodingAgentSession : IDisposable
 			}
 		}
 
-		// 扩展工具并表要在内置工具集定好之后、代理建立之前：
-		// 早了会被 _fullTools 的赋值覆盖，晚了 ApplyTools 还没有 _agent 可用。
-		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
-		// 写进去的话，真实 pi 读这个会话时会把 role:system 的消息当成历史，污染上下文。
+		// 系统提示词只在运行时构造，不写进会话文件：真实 pi 读回时会把 role:system 当成历史，污染上下文。
 		_systemPromptSections = new SystemPromptOptions
 		{
 			Cwd = Cwd,
@@ -313,9 +310,8 @@ public sealed class CodingAgentSession : IDisposable
 
 		_toolSearch = new Lazy<AgentTool>(CreateToolSearchTool);
 
-		// 系统提示词只在运行时构造，不写进会话文件 —— 与 pi 一致。
-		// 扩展工具并表要在内置工具集定稿之后、代理建立之前：早了会被覆盖，
-		// 晚了 ApplyTools 还没有 _agent 可用（第一版就在这里 NRE）。
+		// 扩展工具并表要在内置工具集定稿之后、代理建立之前：早了会被 _fullTools 覆盖，
+		// 晚了 ApplyTools 还没有 _agent 可用。
 		_sessionOptions = options;
 		_builtinTools = builtins;
 		_fullTools = builtins;
@@ -370,8 +366,8 @@ public sealed class CodingAgentSession : IDisposable
 			Model = initialModel,
 			ThinkingLevel = ThinkingLevelResolver.Clamp(initialModel, requestedThinkingLevel),
 			StreamFn = _routedStreamFn,
-			// 用 _fullTools 而不是局部的 builtins：扩展注册的工具在 LoadExtensions 里并进了
-			// _fullTools，用局部变量会把它们从代理的工具集里丢掉（工具能被执行却不出现在声明里）。
+			// 用 _fullTools，不用局部的 builtins：扩展工具在 LoadExtensions 里并入了 _fullTools，
+			// 用局部变量会丢掉它们，工具能执行但不出现在声明里。
 			Tools = [.. _fullTools.Select(static builtin => builtin.Tool)],
 			ConvertToLlm = CodingMessages.ConvertToLlm,
 			TransformContext = TransformContextAsync,
@@ -409,7 +405,7 @@ public sealed class CodingAgentSession : IDisposable
 	public CodingAgentSettings Settings { get; }
 
 	/// 当前生效的安全门配置。启动时来自 <c>settings.security</c>（只读全局），
-	/// 用户在界面上改档位时就地替换 —— 换档不该重建会话，也不该要求重启。
+	/// 用户在界面上改档位时就地替换，换档不重建会话，也不要求重启。
 	public SecurityConfig Security { get; set; } = SecurityConfig.Off;
 
 	public string SecurityLevelId => Security.Resolve(Session.SessionFile).Level;
@@ -479,7 +475,7 @@ public sealed class CodingAgentSession : IDisposable
 		};
 
 		// 扩展也要重载：改完扩展文件还要重启应用才生效，等于没有热更新。
-		// 只有宿主自己加载的才重建 —— 注入进来的（options.Extensions）生命周期归宿主，
+		// 只有宿主自己加载的才重建。注入进来的（options.Extensions）生命周期归宿主，
 		// 这里擅自 Dispose 别人的宿主是越界。
 		if (_ownsExtensions)
 		{
@@ -547,7 +543,7 @@ public sealed class CodingAgentSession : IDisposable
 	/// （动画 GIF/WebP 也不动），超限才解码、应用 EXIF 方向、缩放并重编码；失败的那张
 	/// 改成一句括注。与 pi 的 <c>_normalizePromptImages</c> 同义。
 	/// <para>
-	/// 归一化放在「真正要进上下文」的时刻，而不是 <see cref="PrepareInput"/>：
+	/// 归一化放在要进上下文的时刻，不放在 <see cref="PrepareInput"/>：
 	/// 解码 + 重采样是 CPU 重活（12MP 照片数百毫秒），<see cref="PrepareInput"/> 在桌面端
 	/// 是 UI 线程上的同步调用；排队消息也可能在等待期间换了模型。
 	/// </para>
@@ -588,7 +584,7 @@ public sealed class CodingAgentSession : IDisposable
 			}
 
 			// 未重编码时沿用原始 base64 字符串：省一次大字符串的分配与拷贝。
-			// 判据用「原样返回同一个数组」而不是比较 mime：扩展名与内容不符时 mime 会变，
+			// 判据用「原样返回同一个数组」，不比较 mime：扩展名与内容不符时 mime 会变，
 			// 但字节没变，仍可复用调用方手里的 base64。
 			var unchanged = ReferenceEquals(processed.Bytes, bytes);
 			normalized.Add(unchanged
@@ -955,7 +951,7 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// <summary>
 	/// 与 pi 的 estimateProjectedContextTokens 一致：最后一次 usage 之后如果发生过
-	/// compaction / context_edit，那条 usage 的 input 已经不能代表当前投影，必须退回全量估算。
+	/// compaction / context_edit，那条 usage 的 input 已不能代表当前投影，退回全量估算。
 	/// 否则压缩完的大会话仍会显示/判断成 600K+，小窗口模型会反复触发压缩。
 	/// </summary>
 	private bool UsageAnchorValid(long revision)
@@ -991,7 +987,7 @@ public sealed class CodingAgentSession : IDisposable
 		Compaction.ContextTokens.CalculateContextTokens(message.Usage) > 0;
 
 	/// 与 <see cref="Compaction.ContextTokens.EstimateContextTokens"/> 同语义，但按消息引用复用已估算的
-	/// 前缀：追加一条消息只重新估算那一条，而不是整段历史。26,983 条的真实会话里，这一步从
+	/// 前缀：追加一条消息只重新估算那一条，不重算整段历史。26,983 条的真实会话里，这一步从
 	/// 约 124 ms（UI 线程）降到不足 1 ms；分支导航或上下文编辑改写了前缀时，退回到第一个不一致处重算。
 	private (long Tokens, int? LastUsageIndex) EstimateContextIncrementally(
 		IReadOnlyList<Message> messages,
@@ -1480,7 +1476,7 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		// 扩展的 tool_call 钩子在安全门之前：扩展可以主动拦下调用（例如禁止某类写），
-		// 但**不能绕过**安全门 —— 被它放行的调用仍要过档位检查。
+		// 但不能绕过安全门，被它放行的调用仍要过档位检查。
 		if (Extensions is { } extensions && extensions.ListensTo("tool_call"))
 		{
 			var payload = new System.Text.Json.Nodes.JsonObject
@@ -1488,8 +1484,8 @@ public sealed class CodingAgentSession : IDisposable
 				["toolName"] = context.ToolCall.Name,
 				["arguments"] = System.Text.Json.Nodes.JsonNode.Parse(context.Arguments.ToJsonString()),
 			};
-			// 必须用返回值：处理器在 JS 侧改的是那一份对象，宿主拿回的是重新解析出来的副本，
-			// 读原 payload 会永远看不到扩展的改写（第一版就在这里漏掉了拦截）。
+			// 用返回值：处理器在 JS 侧改的是那一份对象，宿主拿回的是重新解析的副本，
+			// 读原 payload 看不到扩展的改写（第一版在这里漏掉了拦截）。
 			var outcome = extensions.Dispatch("tool_call", payload);
 			if (outcome["block"]?.GetValue<bool>() == true)
 			{
@@ -1499,8 +1495,8 @@ public sealed class CodingAgentSession : IDisposable
 		}
 
 		// 安全门在用户钩子之前：宿主钩子拿到的是已经过安全判定的调用。
-		// 这里是所有工具调用的唯一汇合点 —— 直接调用、codemode 里的嵌套调用、以及 MCP 工具
-		// 都经过它（见 ExecuteNestedToolAsync），所以只需在这里拦一次。
+		// 所有工具调用的唯一汇合点：直接调用、codemode 里的嵌套调用、MCP 工具都经过它
+		// （见 ExecuteNestedToolAsync），只需在这里拦一次。
 		if (await SecurityGateAsync(context, cancellationToken).ConfigureAwait(false) is { } gated)
 		{
 			return gated;
@@ -1513,7 +1509,7 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// 发现并加载扩展，把注册的工具并进本会话的工具集。
 	/// 项目扩展只在受信时加载（扩展能注册工具、改工具调用，不受信等于让仓库在用户机器上执行代码）；
-	/// 单个扩展加载失败只影响它自己，会话照常起 —— 一个坏扩展不该让整个工作台打不开。
+	/// 单个扩展加载失败只影响它自己，会话照常起；一个坏扩展不该让整个工作台打不开。
 	private static void ApplyFlagValues(ExtensionHost host, IReadOnlyDictionary<string, string?> values)
 	{
 		if (values.Count > 0)
@@ -1554,8 +1550,8 @@ public sealed class CodingAgentSession : IDisposable
 			return;
 		}
 
-		// 只并表、不重建提示词：本方法必须在 _fullTools 定稿之后、代理建立之前调用 ——
-		// 早了会被覆盖，晚了 ApplyTools 还没有 _agent 可用（第一版就在这里 NRE）。
+		// 只并表、不重建提示词：本方法要在 _fullTools 定稿之后、代理建立之前调用；
+		// 早了会被覆盖，晚了 ApplyTools 还没有 _agent 可用。
 		var taken = new HashSet<string>(StringComparer.Ordinal);
 		foreach (var builtin in _builtinTools)
 		{
@@ -1584,8 +1580,8 @@ public sealed class CodingAgentSession : IDisposable
 
 	/// 安全门判定：档位按**会话文件路径**解析（<c>sessionLevels</c> 可以逐会话收紧），
 	/// 拒绝直接挡下并给出原因；要求确认时通过宿主的确认对话框问用户。
-	/// 没有宿主（RPC / print / 守护进程直连）时 ask 退化为<strong>拒绝</strong>：无审批人在场却放行，
-	/// 等于这道门只在有人看着时才关上 —— 那是最坏的一种失效模式。
+	/// 没有宿主（RPC / print / 守护进程直连）时 ask 退化为拒绝：无审批人在场却放行，
+	/// 等于这道门只在有人看着时才关上。
 	private async ValueTask<BeforeToolCallResult?> SecurityGateAsync(
 		BeforeToolCallContext context,
 		CancellationToken cancellationToken)
@@ -1935,7 +1931,7 @@ public sealed class CodingAgentSession : IDisposable
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
-			// 取消不是工具失败：让沙箱把这次调用标成 cancelled，而不是一个 error 结果。
+			// 取消不是工具失败：让沙箱把这次调用标成 cancelled，不产出 error 结果。
 			throw;
 		}
 		catch (Exception ex)
@@ -2458,7 +2454,7 @@ public sealed class CodingAgentSession : IDisposable
 	{
 		ThrowIfDisposed();
 		// 展开技能命令与提示词模板，让 CLI、RPC、桌面与交互模式共享同一语义。
-		// 图片在这之后按当前模型归一化（PrepareInput 保持同步：计划模式与模板展开必须立即生效）。
+		// 图片在这之后按当前模型归一化。PrepareInput 保持同步：计划模式与模板展开要立即生效。
 		var message = await NormalizeMessageAsync(PrepareInput(text), cancellationToken).ConfigureAwait(false);
 		using var run = BeginRun(cancellationToken);
 		try
@@ -3044,14 +3040,14 @@ public sealed class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
-		// 用户消息真正发送前才归一化图片：桌面端的 PrepareInput 在 UI 线程上，不能在那里解码大图。
+		// 用户消息发送前才归一化图片：桌面端的 PrepareInput 在 UI 线程上，不能在那里解码大图。
 		message = await NormalizeMessageAsync(message, cancellationToken).ConfigureAwait(false);
 		_cacheWarmer?.Cancel();
 		_overflowRecoveryAttempted = false;
 		using var run = BeginRun(cancellationToken);
 		try
 		{
-			// 与字符串重载一致：先自动压缩，再按重试策略运行；重试同样走"继续"而不是重新提问。
+			// 与字符串重载一致：先自动压缩，再按重试策略运行；重试走「继续」，不重新提问。
 			await AutoCompactAsync(run.Token).ConfigureAwait(false);
 			var messages = await RunWithRetryAsync(
 				attempt => attempt == 0
@@ -3138,7 +3134,7 @@ public sealed class CodingAgentSession : IDisposable
 		public string? FullOutputPath { get; init; }
 	}
 
-	/// 立即执行一条 shell 命令，并记为 <c>bashExecution</c> 消息，因此下一次提示能看到它 ——
+	/// 立即执行一条 shell 命令，并记为 <c>bashExecution</c> 消息，下一次提示能看到它；
 	/// 除非设置了 <paramref name="excludeFromContext"/>。交互模式的 <c>!</c> 命令与 RPC 的 <c>bash</c>
 	/// 命令都由它支撑。
 	public async Task<BashRunResult> RunBashAsync(
@@ -3272,8 +3268,7 @@ public sealed class CodingAgentSession : IDisposable
 		}
 		else if (projected[0] is SystemMessage existing)
 		{
-			// 替换章节而不是把它们拍平，这样 provider 侧缓存仍能看到相同的分界
-			// （preamble、tools、rules 等）。
+			// 替换章节而不拍平，provider 侧缓存仍能看到相同的分界（preamble、tools、rules 等）。
 			result = new List<Message>(projected)
 			{
 				[0] = existing with
@@ -3450,7 +3445,7 @@ public sealed class CodingAgentSession : IDisposable
 	private string? _persistedThinkingLevel;
 
 	/// 会话文件里最近一次写入的 thinking level。只在第一次需要时重建分支上下文（O(n)），
-	/// 之后随写入同步更新 —— 否则每条消息结束都会把整个分支遍历一遍。
+	/// 之后随写入同步更新，否则每条消息结束都要遍历一遍分支。
 	private string? PersistedThinkingLevel()
 	{
 		if (!_persistedThinkingLevelLoaded)

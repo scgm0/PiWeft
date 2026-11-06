@@ -59,7 +59,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 可用模型要求 API 已实现且能解析凭据；不执行命令型凭据、不发网络探测。
 - 命令/模型/图片面板是窗口级覆盖层，同一窗口只开一个；Esc 关闭，切换标签清理。
 - `ask_question` 是会话内联卡片（非遮罩）：题卡标签 + 进度 + 整行选项 + 自定义输入 + review 确认页；卡片打开时输入区折叠，页签标题加 `●`。
-- 等待态常驻输入卡上方，阶段优先级退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗；预热期三句轮播，回合内空窗只说「正在处理」；静默 2 秒补「本轮已 N 秒」。时间线尾部的等待占位行只在真正等首 token（最后一行是用户消息且没有任何一行在流）时出现，它报时的时候状态条不再重复同一个数字。
+- 等待态常驻输入卡上方，阶段优先级退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗；预热期三句轮播，回合内空窗只说「正在处理」；静默 2 秒补「本轮已 N 秒」。时间线尾部的等待占位行只在等首 token 时出现，条件是最后一行是用户消息且没有任何一行在流；它报时的时候状态条不再重复同一个数字。
 - 提示音：完成/出错/等待输入三类，默认完成与出错开、音量 0.6；会话完成 8 秒、全局 1.5 秒冷却；出错按边沿、等待输入按批去重；「仅失焦提醒」在前台静默。
 - 跨项目会话使用各自 cwd；运行时发送键变中断，保留草稿并禁用模型切换与历史修改。Split Send 菜单支持 steer / follow-up / 中断，排队卡可撤回或丢弃。
 - Markdown 链接只放行 http/https；编辑器优先 `$VISUAL` / `$EDITOR`；HTML 导出无脚本且自包含。
@@ -70,7 +70,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 
 ## Linux PRIMARY 与图片剪贴板
 
-- Linux 选中的正文、Markdown、代码/工具输出和输入框文本自动发布到 PRIMARY；中键在可点击位置插入，不自动发送且可撤销。普通 Ctrl+C/V 走 CLIPBOARD；密码框不发布。
+- Linux 下选中的正文、Markdown、代码/工具输出和输入框文本自动发布到 PRIMARY；中键在可点击位置插入，不自动发送，可撤销。普通 Ctrl+C/V 走 CLIPBOARD；密码框不发布。
 - PRIMARY 默认由进程内 X11 实现持有（独立 Display + 事件线程，`libX11.so.6`，`poll` + `eventfd`，大文本按 ICCCM INCR 分块）。失败时按 `xclip` → `xsel` 回退；无 DISPLAY 才用 `wl-copy`/`wl-paste`。
 - 图片粘贴：剪贴板有图片就作为附件，否则交回文本粘贴；右键「粘贴」走同一命令；预览可「复制图片」。
 - 解码统一用 MewUI `ImageDecoders` / `ImageSource.CopyPixels`；Windows DIB↔PNG 为纯托管最小实现。
@@ -145,7 +145,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 
 桌面复用 `PiWeft.Ai.Auth` 的 OAuth（与 `pi login` 同一套流程和 `auth.json`）：Anthropic（授权码）、OpenAI ChatGPT（回环）、Codex（设备码）、GitHub Copilot（设备码 + 企业域名）、xAI、Kimi、Meta、Radius（设备码）、OpenRouter（浏览器换取 Key）。面板实时输出日志，提取授权 URL/设备码，支持输入授权码/回调 URL、取消和重试；凭据由 `OAuthStore`/`CodexAuth` 原子写入全局 `auth.json`（Unix 0600），界面不显示 token。登录/退出后重建模型环境并推给所有标签页。
 
-API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-key]` 共用同一份供应商事实：标准供应商一个 `key`，Cloudflare / Vertex / Bedrock 使用额外 `env` 字段或环境变量 marker。这些字段不只是展示：Cloudflare 占位符由凭据 env 展开、网关令牌走 `cf-aig-authorization`，Vertex API Key 走 express 端点、ADC 读取凭据文件与项目/区域，Bedrock AWS 密钥参与 SigV4 签名。认证页把 OAuth 与 API Key 合并成一行，显示已保存 / 环境变量 / 命令型 / 外部凭据 / 未配置与过期状态；内置目录覆盖 `models.json` 全部 42 个供应商，自定义 auth.json 条目也能编辑或删除。API Key 面板不回显已保存密钥，留空表示保留；覆盖 OAuth 前必须确认。
+API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-key]` 共用同一份供应商事实：标准供应商一个 `key`，Cloudflare / Vertex / Bedrock 使用额外 `env` 字段或环境变量 marker。这些字段参与请求：Cloudflare 占位符由凭据 env 展开、网关令牌走 `cf-aig-authorization`，Vertex API Key 走 express 端点、ADC 读取凭据文件与项目/区域，Bedrock AWS 密钥参与 SigV4 签名。认证页把 OAuth 与 API Key 合并成一行，显示已保存 / 环境变量 / 命令型 / 外部凭据 / 未配置与过期状态；内置目录覆盖 `models.json` 全部 42 个供应商，自定义 auth.json 条目也能编辑或删除。API Key 面板不回显已保存密钥，留空表示保留；覆盖 OAuth 前必须确认。
 
 ### 供应商请求头与会话亲和
 

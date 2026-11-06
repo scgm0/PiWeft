@@ -122,7 +122,7 @@ internal static class OpenAiResponsesWire
 			switch (message)
 			{
 				case SystemMessage:
-					// 提示词放在顶层的 "instructions" 字段里，而不是作为输入项。
+					// 提示词放在顶层 "instructions" 字段，不作为输入项。
 					break;
 
 				case UserMessage user:
@@ -214,7 +214,7 @@ internal static class OpenAiResponsesWire
 					}
 					catch (JsonException)
 					{
-						// 签名损坏时直接丢弃，而不是让整个请求失败。
+						// 签名损坏时直接丢弃，不让整个请求失败。
 					}
 
 					break;

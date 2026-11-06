@@ -51,7 +51,7 @@ public class DesktopPreferenceTests : IDisposable
 	[Fact]
 	public void RespondingTipsDefaultOnAndOnlyTheOffStateIsWritten()
 	{
-		// 默认显示：等待期那一行提示是新用户唯一的入口曝光，读不到键时不能意外关掉。
+		// 默认显示：等待期那行提示是新用户唯一的入口曝光，读不到键时不该关掉。
 		Assert.True(DesktopPreference.Load(_agentDir).RespondingTips);
 
 		(DesktopPreference.Load(_agentDir) with { RespondingTips = false }).Save(_agentDir);
@@ -134,7 +134,7 @@ public class DesktopPreferenceTests : IDisposable
 		Assert.Equal(80, loaded.WindowLeft);
 		Assert.Equal(40, loaded.WindowTop);
 
-		// 非法尺寸会被忽略而不是写进文件。
+		// 非法尺寸被忽略，不写进文件。
 		DesktopPreference.Load(_agentDir).WithWindow(0, -1, 0, 0).Save(_agentDir);
 		Assert.Null(DesktopPreference.Load(_agentDir).WindowWidth);
 	}
@@ -196,7 +196,7 @@ public class DesktopPreferenceTests : IDisposable
 		var preference = DesktopPreference.Load(_agentDir);
 		Assert.True(preference.SidebarCollapsed);
 		Assert.Equal(336, preference.SidebarWidth);
-		// 非布尔的脏值按「没写」处理：回落到默认的收起状态，而不是意外展开。
+		// 非布尔的脏值按「没写」处理，回落到默认的收起状态。
 		File.WriteAllText(DesktopPreference.Path(_agentDir), "{\"sidebarWidth\":99999,\"sidebarCollapsed\":42}");
 		preference = DesktopPreference.Load(_agentDir);
 		Assert.True(preference.SidebarCollapsed);

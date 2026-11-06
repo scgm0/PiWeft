@@ -53,8 +53,8 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	public Action? FollowConversation { get; set; }
 
 	/// 流式内容的后续帧请求「继续贴底」：只有读者仍停在末尾时才生效。
-	/// 展开是读者的一次阅读意图，此后每帧一次的续跟不是——不能拿它把已经上滚的读者拽回末尾，
-	/// 更不能把跟底状态重新锁上（否则展开着的思考只要还在流，会话就再也滚不动）。
+	/// 展开是读者的阅读意图，此后每帧一次的续跟不是：不能拿它把已经上滚的读者拽回末尾，
+	/// 也不能重新锁上跟底，否则展开着的思考只要还在流，会话就滚不动。
 	public Action? ContinueConversationFollowing { get; set; }
 
 	public Action? PauseFollowing { get; set; }
@@ -65,7 +65,7 @@ internal sealed class TextFocusScrollGuard : IDisposable
 	/// （读者的展开动作）或 <see cref="ContinueConversationFollowing"/>（之后的逐帧续跟）承接，
 	/// 过程组的组体这类嵌套视口由自己的 <see cref="SmoothScroll"/> 持续贴底。
 	/// 只有在读者本就看着末尾时才继续贴底：正在向上浏览时展开思考，不应该把读者拽到末尾。
-	/// 这也与组体的「置底才跟随」一致——上滚之后展开/折叠不能抢走阅读位置。
+	/// 这也与组体的「置底才跟随」一致：上滚之后，展开或折叠不能抢走阅读位置。
 	/// <param name="byReader">
 	/// 这次跟底来自读者的展开动作（true），还是流式内容每帧一次的续跟（false）。
 	/// 续跟只延续已有的跟底意图，不会把上滚离开末尾的读者重新锁回末尾。

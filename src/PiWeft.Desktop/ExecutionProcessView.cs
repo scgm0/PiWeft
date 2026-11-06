@@ -9,8 +9,8 @@ internal sealed class ExecutionProcessView
 	private readonly Func<ChatEntry, UIElement> _create;
 	private readonly TextFocusScrollGuard? _focus;
 	private bool _metricsQueued;
-	// 展开/收起步骤后"把预览行钉在原位"的收尾动作：必须在本帧布局之后立刻执行，
-	// 不能等到下一次无关的 ScrollChanged —— 那时行已经移位，读者会看到一次迟到跳动。
+	// 展开/收起步骤后「把预览行钉在原位」的收尾：在本帧布局之后立刻执行，
+	// 不能等下一次无关的 ScrollChanged，那时行已移位，会看到一次迟到的跳动。
 	private readonly List<Action> _pendingClamps = [];
 	private readonly TextBlock _header = new();
 	private readonly WrapPanel _stats = new();
@@ -151,9 +151,9 @@ internal sealed class ExecutionProcessView
 		KickBodyLayout();
 	}
 
-	/// 组体视口清单。每个组在 <see cref="CompleteBody" /> 时就已知自己的视口，这里不再每帧
-	/// 遍历整棵树去找：流式期 <see cref="KickBodyLayout" /> / <see cref="SyncBodyMetrics" />
-	/// 每次都要跑，白走一遍可视化树（含逐节点 List 分配）是纯开销。
+	/// 组体视口清单。每个组在 <see cref="CompleteBody" /> 时就知道自己的视口，不必每帧遍历整棵树：
+	/// 流式期 <see cref="KickBodyLayout" /> / <see cref="SyncBodyMetrics" /> 每次都要跑，
+	/// 遍历可视化树加逐节点 List 分配是纯开销。
 	private readonly List<ScrollViewer> _bodyViewports = [];
 
 	private List<ScrollViewer> BodyViewports() => _bodyViewports;
@@ -317,9 +317,9 @@ internal sealed class ExecutionProcessView
 
 	private Slot Group(string key, IReadOnlyList<ChatEntry> entries, bool running)
 	{
-		// 小组用内容驱动的栈：展开一行，组体就跟着长高（最高 300）。
-		// 步骤多到一屏放不下时改走虚拟化面板，此时内容必然超过 300，组体固定限高才不会因为
-		// 估算行高停在折叠高度上。
+		// 小组用内容驱动的栈：展开一行，组体长高（上限 300）。
+		// 步骤多到一屏放不下时改用虚拟化面板；内容必然超过 300，组体固定限高，
+		// 免得估算行高停在折叠高度。
 		const int stackLimit = 24;
 		const double bodyMaxHeight = 300;
 		var members = entries;
@@ -340,7 +340,7 @@ internal sealed class ExecutionProcessView
 		var switchQueued = false;
 		// 自动展开的「正在运行」组跟住最新步骤；手动展开的组从头看。
 		var followOnOpen = false;
-		// 展开/收起步骤后把它的预览行固定在原屏幕位置，而不是滚向内容末尾。
+		// 展开/收起步骤后把预览行固定在原屏幕位置，不滚向内容末尾。
 		// 虚拟化行可能在重测过程中被换掉，因此同时记住步骤索引，布局后再解析当前宿主。
 		Grid? anchorRow = null;
 		double anchorOffset = 0;
@@ -351,8 +351,8 @@ internal sealed class ExecutionProcessView
 		// A virtualized presenter may correct the viewport offset while a streaming row is
 		// remeasured. Reassert the pre-layout follow intent in the Render-stage settle.
 		var followAfterLayout = false;
-		// 流式思考/正文只原位更新已实现的那一行，不重建行：
-		// 重建会把该行已测高度作废成估算值，组体 extent 先缩后涨，看起来就是进度跳变。
+		// 流式思考/正文只原位更新已实现的那一行：重建会把实测高度作废成估算值，
+		// 组体 extent 先缩后涨，看起来就是进度跳变。
 		var inPlaceRows = new List<int>();
 		// 内容未变（或可原位更新）的行：高度缓存按身份沿用，重排时由面板补偿坐标系平移。
 		var keptRows = new List<int>();
@@ -470,7 +470,7 @@ internal sealed class ExecutionProcessView
 				PreserveReadingAnchor = () => viewport is null || SmoothScroll.Find(viewport) is not { IsFollowingGrowth: true },
 			};
 			// 组体与整段过程一样是「可滚动的小窗」：内层能滚就滚内层，内层到边界（或内容装得下）
-			// 才把滚轮交还外层会话——由 SmoothScroll 在视口边界上交接（ScrollCascade）。
+			// 才把滚轮交还外层会话，由 SmoothScroll 在视口边界交接（ScrollCascade）。
 			// 能走到虚拟化说明行数已经超过一屏；固定组体高度，滚轮与追帧都只作用在内层。
 			viewport = new ScrollViewer().Content(panel).MaxHeight(bodyMaxHeight)
 				.SmoothScrolling().NoHorizontalScroll();
@@ -484,7 +484,7 @@ internal sealed class ExecutionProcessView
 			if (viewport is { } registered && !_bodyViewports.Contains(registered)) _bodyViewports.Add(registered);
 			// 组体是“最新步骤”的窗口：滚动条置底时持续跟随新步骤；用户上滚后暂停，
 			// 回到底部（滚轮/键盘/拖动滚动条）自动重新锁底。
-			// 组体就是“最新步骤”的窗口：置底即跟随。这里不能做任何抑制——栈/虚拟化切换、
+			// 组体是「最新步骤」的窗口：置底即跟随。这里不做抑制：栈/虚拟化切换、
 			// 步骤行回收后的重建都只是布局，不是读者的阅读意图；恢复态在 Restore 里单独处理。
 			if (viewport is not null) SmoothScroll.For(viewport).AutoFollowAtEnd = true;
 			// 展开项标题在组体里吸顶：栈布局的行在建视口之前就已经绑好，这里补挂一次。
@@ -540,7 +540,7 @@ internal sealed class ExecutionProcessView
 				var preservePreview = entry.Role == ChatRole.Tool;
 				if (expanded && preservePreview) StopGroupFollow();
 				// 从吸顶标题收起：读者读的是这一项的开头，收起后标题应当落在视口顶部，
-				// 而不是把已经滚走的行顶留在原处（那样标题会直接消失）。
+				// 不把已经滚走的行顶留在原处，否则标题会直接消失。
 				var collapseFromPinned = !expanded && expander is StickyExpander { HeaderDisplaced: true };
 				InvalidateRow(row, index, preservePreview, collapseFromPinned);
 			});

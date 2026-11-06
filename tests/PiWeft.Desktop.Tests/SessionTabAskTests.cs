@@ -18,7 +18,7 @@ public sealed class SessionTabAskTests
 	];
 
 	[Fact]
-	public void AskCardSitsInTheComposerColumnAndCollapsesTheInputArea()
+	public async Task AskCardSitsInTheComposerColumnAndCollapsesTheInputArea()
 	{
 		using var session = ConversationPerformanceTests.CreateSession(2);
 		using var tab = new SessionTab(session, [session.Model], "ask", availableModels: null);
@@ -37,7 +37,7 @@ public sealed class SessionTabAskTests
 
 		Assert.False(tab.AskPending);
 		Assert.True(tab.InputAreaVisible);
-		Assert.True(AskQuestions.ParseResponse(pending.Result, Questions).Cancelled);
+		Assert.True(AskQuestions.ParseResponse(await pending, Questions).Cancelled);
 	}
 
 	private static string? ContentText(Button button) =>

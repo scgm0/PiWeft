@@ -6,7 +6,7 @@ using PiWeft.CodingAgent.Session;
 namespace PiWeft.CodingAgent.Themes;
 
 /// 监视主题根目录（用户、项目、settings 声明与包）的 <c>*.json</c> 变化，
-/// 防抖后触发一次回调。坏文件不产生事件语义变化——由调用方重新解析并决定是否换肤。
+/// 防抖后触发一次回调。坏文件不产生事件语义变化，由调用方重新解析并决定是否换肤。
 /// 文件系统不可用（目录不存在、平台不支持）时返回的实例静默失效。
 public sealed class ThemeWatcher : IDisposable
 {
@@ -62,7 +62,7 @@ public sealed class ThemeWatcher : IDisposable
 			}
 		}
 
-		// 根目录本身晚建（用户现在才创建 themes 目录）也算一次变更；父目录不存在时跳过 ——
+		// 根目录晚建（用户刚创建 themes 目录）也算一次变更；父目录不存在时跳过，
 		// 此时用户还没有开始放主题，等下次启动再建立监视即可。
 		var parents = roots
 			.Select(static root => Path.GetDirectoryName(root.Path))

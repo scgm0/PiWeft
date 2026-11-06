@@ -48,7 +48,7 @@ Markdig 1.x 不识别 `> [!NOTE]`：解析 QuoteBlock 时识别 `NOTE`/`TIP`/`IM
 
 ## 高度缓存与分块布局
 
-`MarkdownView` 维护进程级 LRU（4096 条）块高度缓存，键为「块模型哈希 + 字体/主题/DPI + 精确宽度」；命中高度与重测逐像素一致。含图片的块与流式尾块不入缓存。**宿主必须全视图共享同一份 Options 与 Theme 实例**，否则缓存永不命中。
+`MarkdownView` 维护进程级 LRU（4096 条）块高度缓存，键为「块模型哈希 + 字体/主题/DPI + 精确宽度」；命中高度与重测逐像素一致。含图片的块与流式尾块不入缓存。宿主必须全视图共用同一份 Options 与 Theme 实例，否则缓存永不命中。
 
 `MarkdownParagraphView` 把段落切成 `Chunk`：
 
@@ -72,7 +72,7 @@ Markdig 1.x 不识别 `> [!NOTE]`：解析 QuoteBlock 时识别 `NOTE`/`TIP`/`IM
 
 ### 流式尾块不要用 transient
 
-尾块每帧换文本，**不要**标 `TextDrawOptions.Transient = true`：MewVG 的临时文本槽位只在窗口帧 `EndFrame` 回收，离屏帧会话不会释放，60 fps 下约 6 MiB/s 增长。尾块走普通文本缓存，受 16 MiB LRU 约束，滚动/定稿自然淘汰。
+尾块每帧换文本，不要标 `TextDrawOptions.Transient = true`：MewVG 的临时文本槽位只在窗口帧 `EndFrame` 回收，离屏帧会话不会释放，60 fps 下约 6 MiB/s 增长。尾块走普通文本缓存，受 16 MiB LRU 约束，滚动/定稿自然淘汰。
 
 ## 代码块、回收、选区
 

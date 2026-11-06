@@ -81,7 +81,7 @@ public class ResourceRegressionTests : IDisposable
 			Path.Combine(_agentDir, "themes", "bad-name.json"),
 			"""{ "name": 123, "colors": { "text": "#ffffff" } }""");
 
-		// 颜色是小数：GetValue<int> 会抛，必须按「值不合法」处理而不是让发现流程失败。
+		// 颜色是小数：GetValue<int> 会抛，按「值不合法」处理，不让发现流程失败。
 		File.WriteAllText(
 			Path.Combine(_agentDir, "themes", "fractional.json"),
 			"""{ "name": "fractional", "colors": { "text": "#ffffff", "accent": 1.5 } }""");

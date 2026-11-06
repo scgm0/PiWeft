@@ -360,7 +360,7 @@ public class AnthropicProviderTests
 		}
 	}
 
-	/// 只实现 Memory 版 ReadAsync —— 与真实网络流一样没有可用的同步读。
+	/// 只实现 Memory 版 ReadAsync，与真实网络流一样没有可用的同步读。
 	internal sealed class PartialThenStalledStream : Stream
 	{
 		private readonly byte[] _prefix;
@@ -440,8 +440,8 @@ public class AnthropicProviderTests
 		{
 			using var source = new CancellationTokenSource();
 
-			// 中止的时刻钉在「首批字节已交给解析器」那一刻，而不是 sleep：
-			// 并行跑测试时按时间取消会飘到请求前或请求后，断言就不稳定了。
+			// 中止的时刻钉在「首批字节已交给解析器」那一刻，不用 sleep：
+			// 并行跑测试时按时间取消会飘到请求前或请求后，断言不稳定。
 			var provider = StalledProvider(source.Cancel);
 			var stream = provider.Stream(
 				Sonnet(),

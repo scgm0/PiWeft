@@ -2,9 +2,9 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai.Utils;
 
-/// 模型目录里 <c>compat</c> 的读取口径。pi 把这些能力开关放在模型条目的
-/// <c>compat</c> 里（<c>supportsStrictMode</c>、<c>supportsOpenAIGrammarTools</c> 等），
-/// 缺省即「没有声明」：调用方决定缺省值，不要在这里替 provider 猜。
+/// 模型目录里 <c>compat</c> 的读取口径。pi 把能力开关放在模型条目的 <c>compat</c> 里
+/// （<c>supportsStrictMode</c>、<c>supportsOpenAIGrammarTools</c> 等），缺省即「没有声明」：
+/// 缺省值由调用方决定，这里不替 provider 猜。
 internal static class ModelCompat
 {
 	/// 布尔开关；字段缺失或不是布尔时返回 <c>null</c>。

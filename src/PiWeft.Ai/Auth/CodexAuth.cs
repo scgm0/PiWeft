@@ -341,7 +341,7 @@ public static class CodexAuth
 	}
 
 	/// 写入凭据，同时保留文件中其它 provider 的条目。写入是原子的，Unix 下仅用户可读写；
-	/// 文件存在但无法解析时**拒绝覆盖** —— 否则会把其它供应商的凭据整片抹掉。
+	/// 文件存在但无法解析时拒绝覆盖，否则会把其它供应商的凭据整片抹掉。
 	public static void Save(CodexCredentials credentials, string? agentDir = null)
 	{
 		lock (AuthFileGate.Gate)

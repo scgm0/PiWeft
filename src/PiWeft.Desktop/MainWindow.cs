@@ -75,7 +75,7 @@ public sealed partial class MainWindow : Window
 	private readonly CancellationTokenSource _sessionAbort = new();
 	// 窗口已关闭：后台打开可能在取消落地前就跑完了，不能再往死窗口里塞标签页。
 	private bool _sessionHostClosed;
-	// 在途的后台打开数量；自检与无人值守演练用它等标签页就位，而不是猜固定延时。
+	// 在途的后台打开数量；自检与无人值守演练用它等标签页就位，不猜固定延时。
 	private int _pendingSessionOpens;
 	private IReadOnlyList<SessionListItem> _allSessions = [];
 	private IReadOnlyList<Model> _models = [];
@@ -126,7 +126,7 @@ public sealed partial class MainWindow : Window
 		// 窗口本身显式使用内嵌 Regular：默认样式、继承文本与框架对话框都从这里拿到同一张脸。
 		this.FontFamily = AppFonts.DefaultUi;
 		this.FontWeight = FontWeight.Normal;
-		// 自定义标题栏必须在显示原生窗口之前定型：Win32/macOS 走客户区延伸，X11 走无边框。
+		// 自定义标题栏要在显示原生窗口前定型：Win32/macOS 走客户区延伸，X11 走无边框。
 		ConfigureWindowFrame();
 
 		// 模型与会话都由界面决定，因此这里只用最少的默认开关。
@@ -160,7 +160,7 @@ public sealed partial class MainWindow : Window
 		this.OnKeyDown(key =>
 		{
 			// 设置面板正在等待用户按下新组合键：优先把这次按键交给它。
-			// 走窗口级处理（而不是输入框）是刻意的 —— 输入法会吞掉合成出来的可打印字符。
+			// 走窗口级处理，不走输入框，是刻意的：输入法会吞掉合成的可打印字符。
 			if (_settingsView?.CapturingId is not null)
 			{
 				if (key.Key == Key.Escape)
@@ -292,7 +292,7 @@ public sealed partial class MainWindow : Window
 		// 主区仍直接是内容，不新增全局工具栏。
 
 		// 新建会话 + 搜索会话（两条与侧栏同色的导航行）+ 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
-		// 「搜索会话」不是常驻输入框：点击打开搜索弹窗（Ctrl+K），结果按名称、路径与正文过滤。
+		// 「搜索会话」不是常驻输入框，点击打开搜索弹窗（Ctrl+K），结果按名称、路径与正文过滤。
 		_sessionSearch = new SessionSearchPalette(
 			() => _allSessions, OpenSessionFromSearch, () => !_sessionsLoaded);
 		_sessionSearch.Closed += FocusActiveEntry;
@@ -332,7 +332,7 @@ public sealed partial class MainWindow : Window
 		ConfigureChatsRows();
 		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
-		// 聊天目录还没有会话时给一句引导，而不是一片空白；列表铺满剩余高度，提示叠在列表上方。
+		// 聊天目录还没有会话时给一句引导，不留空白；列表铺满剩余高度，提示叠在列表上方。
 		_chatsEmpty = new TextBlock()
 			.Text(Strings.ChatsEmpty)
 			.FontSize(AppTheme.FontSizeCaption)
@@ -396,8 +396,8 @@ public sealed partial class MainWindow : Window
 						.HorizontalAlignment(HorizontalAlignment.Center));
 		}
 
-		// 页脚入口：四个内容列按各自宽度排（文字不会被裁），剩余宽度由三个弹性列平分 ——
-		// 侧栏越宽间距越大，越窄间距越小，但入口本身始终保持完整。侧栏折叠入口移到标题栏。
+		// 页脚入口：四个内容列按各自宽度排（文字不被裁），剩余宽度由三个弹性列平分；
+		// 侧栏越宽间距越大，越窄越小，入口本身始终完整。侧栏折叠入口移到标题栏。
 		var sidebarFooter = new Border()
 			.BorderBrush(AppTheme.BorderSubtle).BorderThickness(new Thickness(0, 1, 0, 0))
 			.Margin(new Thickness(0, AppTheme.Space2, 0, 0))
@@ -427,8 +427,8 @@ public sealed partial class MainWindow : Window
 			.WithTheme((theme, tabs) => tabs.Background = AppTheme.For(theme).WindowBackground);
 		_tabControl.SelectionChanged += _ => UpdateStatus();
 
-		// 准备阶段的会话面板：加载提示不是叠在上面的卡片，而是这个面板自己的内容之一，
-		// 加载中用进度段落替掉欢迎文案，结束后再换回来。
+		// 准备阶段的会话面板：加载提示是面板自己的内容之一，不是叠在上面的卡片；
+		// 加载中用进度段落替掉欢迎文案，结束后换回。
 		_welcomeTitle = new TextBlock()
 			.Text(Strings.WelcomeTitle)
 			.FontSize(20)
@@ -613,7 +613,7 @@ public sealed partial class MainWindow : Window
 		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 
 		// 三条互不依赖的后台任务：环境、侧栏摘要扫描、首个会话的解析。
-		// 关键是它们不能串成一条链 —— 侧栏在会话多的机器上要扫上百 MB（实测 78 份 / 304 MB / 约 900 ms），
+		// 关键是它们不能串成一条链。侧栏在会话多的机器上要扫上百 MB（实测 78 份 / 304 MB / 约 900 ms），
 		// 而开会话只需要环境；以前把三者打包进一个 Task.Run，等于让首个会话陪着扫完整个目录。
 		var prefetchPath = preference.Pinned.Count == 0 ? _catalog.MostRecentPath() : null;
 		var prefetch = prefetchPath is null ? null : Task.Run(() => _catalog.Open(prefetchPath, _cwd));
@@ -705,7 +705,7 @@ public sealed partial class MainWindow : Window
 		}
 		else if (!opening)
 		{
-			// 首次启动停在「对话」：在聊天目录里开一个，而不是往当前项目里塞一个空会话。
+			// 首次启动停在「对话」：在聊天目录里开一个，不往当前项目塞空会话。
 			NewChatSession();
 		}
 
@@ -1095,7 +1095,7 @@ public sealed partial class MainWindow : Window
 					value.TotalBytes <= 0 ? null : value.Fraction);
 			});
 
-			// 外部会话的头部可能没有 cwd；桌面用当前项目兜底，而不是守护进程的启动目录。
+			// 外部会话的头部可能没有 cwd；桌面用当前项目兜底，不用守护进程的启动目录。
 			var lines = 0;
 			var counting = new UiProgress<SessionReadProgress>(value => Volatile.Write(ref lines, value.Lines));
 			var read = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
@@ -1235,7 +1235,7 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// 等待在途的后台打开结束。会话打开改成异步后，启动时「立刻就有标签页」不再成立；
-	/// 自检与演练流程必须显式等待，否则在满载机器上会读到空标签页。
+	/// 自检与演练流程要显式等待，否则满载机器上会读到空标签页。
 	private async Task WaitForSessionOpensAsync(int timeoutMs = 30_000)
 	{
 		var waited = 0;
@@ -1338,7 +1338,7 @@ public sealed partial class MainWindow : Window
 		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
 		// 那条链路会顺带把会话列表重_stat 一遇。
 		tab.AskChanged += _ => UpdateTabHeaders();
-		// 发过一条消息才记「上次真正用过的模型」（PiDeck 的 lastUsedModel）：选而未发不算。
+		// 发过一条消息才记「上次用过的模型」（PiDeck 的 lastUsedModel），选而未发不算。
 		tab.MessageSent += sent => RememberUsedModel(sent.Session.Model);
 		tab.StateChanged += _ =>
 		{
@@ -1352,7 +1352,7 @@ public sealed partial class MainWindow : Window
 		};
 		tab.Forked += _ => RefreshSessions(force: true);
 		// 编辑重发会原地重写会话文件（墓碑截断）：不换文件，但长度/内容都变了，
-		// 侧栏摘要缓存必须先失效，否则会沿用截断前的预览与条目数。
+		// 侧栏摘要缓存要先失效，否则会沿用截断前的预览与条目数。
 		tab.Rewritten += rewritten =>
 		{
 			_catalog.Invalidate(rewritten.Session.Session.SessionFile);
@@ -1440,8 +1440,8 @@ public sealed partial class MainWindow : Window
 		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
 		if (_lastSessionTab is { } previous && !ReferenceEquals(entry, previous)) previous.HideTransientPanels();
 
-		// 加载中（或停在错误态）时准备阶段面板必须可见，加载段落才有地方显示；
-		// 同时旧会话视图整体让位——这段时间屏幕上只该有加载提示，不该透出上一个会话。
+		// 加载中（或停在错误态）时准备阶段面板要可见，加载段落才有地方显示；
+		// 同时旧会话视图整体让位：这段时间屏幕上只该有加载提示，不透出上一个会话。
 		var loading = _sessionLoading.Showing;
 		_welcome.IsVisible(entry is null || loading);
 		_tabControl.IsVisible(entry is not null && !loading);
@@ -1494,7 +1494,7 @@ public sealed partial class MainWindow : Window
 					PrepareHoverSmoke();
 					break;
 				case "loading":
-					// 在已有标签页之上再打开一个会话：后台解析期间主区必须只剩加载提示，
+					// 在已有标签页之上再打开一个会话：后台解析期间主区只留加载提示，
 					// 不能把上一个会话透出来（历史缺陷：加载段落直接浮在旧会话正文上）。
 					if (loadingTarget is { } other)
 					{
@@ -1817,7 +1817,7 @@ public sealed partial class MainWindow : Window
 			}
 			if (view == "resources" && _settingsView?.LastSectionError is { Length: > 0 } error)
 			{
-				// 资源页构建失败（例如引用了不存在的内嵌图标）必须在无人值守演练里暴露出来。
+				// 资源页构建失败（例如引用不存在的内嵌图标）要在无人值守演练里暴露出来。
 				Console.Error.WriteLine($"piweft-desktop: resources smoke failed: {error}");
 				Environment.ExitCode = 1;
 			}
@@ -2167,7 +2167,7 @@ public sealed partial class MainWindow : Window
 
 		// 连续点击只应用最后一次：每次 SetTheme 都会触发整树重排重绘，
 		// 高频连发可能让虚拟化行里的文本视图重建到一半又被下一次打断（代码块丢文本）。
-		// 这里用可取消的 Task.Delay 而不是 DispatcherTimer：MewUI 源码版里
+		// 这里用可取消的 Task.Delay，不用 DispatcherTimer：MewUI 源码版里
 		// DispatcherTimer.Start() 从 UI 回调内重入时可能不排程，主题会一直停在旧值。
 		_themeApplyCancellation?.Cancel();
 		var cancellation = new CancellationTokenSource();
@@ -2335,7 +2335,7 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// 认证变化后重建模型环境：OAuth 凭据会改变可用模型集合（Copilot/Radius 还会改端点），
-	/// 已打开的标签页也必须换到新的模型源，否则登录成功却看不到新模型。
+	/// 已打开的标签页要换到新的模型源，否则登录成功却看不到新模型。
 	private void RefreshAuthModels()
 	{
 		try
@@ -2539,12 +2539,12 @@ public sealed partial class MainWindow : Window
 
 
 	/// 侧栏项目是否默认展开：只认「用户上次展开过」与「包含当前选中会话」两种。
-	/// 默认折叠——会话多的机器上全展开等于每次启动都把整份清单铺出来。
+	/// 默认折叠：会话多的机器上全展开，等于每次启动都铺一遍整份清单。
 	internal static bool ShouldExpandProject(string? projectCwd, bool containsSelected, IReadOnlyList<string> expandedProjects) =>
 		projectCwd is { Length: > 0 } && (containsSelected || expandedProjects.Contains(projectCwd, StringComparer.Ordinal));
 
-	/// 该项目节点里是否有当前会话。按路径比对而不是会话 id：外部工具生成的会话
-	/// 头部 id 可能与文件名里的 uuid 不一致，用 id 会漏判、把选中项折在看不见的地方。
+	/// 该项目节点里是否有当前会话。按路径比对，不按会话 id：外部工具生成的会话
+	/// 头部 id 可能与文件名里的 uuid 不一致，用 id 会漏判，把选中项折在看不见的地方。
 	private static bool ContainsSession(TreeViewNode project, string? sessionPath)
 	{
 		if (sessionPath is null) return false;
@@ -2902,7 +2902,7 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// 把后台线程的进度汇报转到 UI 线程。<see cref="Progress{T}"/> 依赖同步上下文，
-	/// 而 MewUI 不安装它，回调会落在线程池上直接碰 BusyIndicator —— 所以自己调度。
+	/// 而 MewUI 不安装它，回调会落在线程池上直接碰 BusyIndicator，所以自己调度。
 	private sealed class UiProgress<T>(Action<T> apply) : IProgress<T>
 	{
 		public void Report(T value) => Dispatch(() => apply(value));

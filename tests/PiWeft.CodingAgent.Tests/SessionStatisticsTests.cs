@@ -218,7 +218,7 @@ public sealed class SessionStatisticsTests
 	{
 		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
 		manager.AppendMessage(new UserMessage());
-		// 并发/派生任务：两条回复部分重叠（[1000,3000] 与 [2000,4000]），并集是 3000 而不是 4000。
+		// 并发/派生任务：两条回复部分重叠（[1000,3000] 与 [2000,4000]），并集是 3000，不是 4000。
 		manager.AppendMessage(Assistant(0, 0, 0, duration: 2000) with { Timestamp = 1_000, Usage = OutputOnly(100) });
 		manager.AppendMessage(Assistant(0, 0, 0, duration: 2000) with { Timestamp = 2_000, Usage = OutputOnly(100) });
 		// 转精确模式后再追加的区间也要算进去（排序是就地的，追加落在已排序前缀之后）。

@@ -7,7 +7,7 @@ namespace PiWeft.Desktop;
 
 /// API Key 凭据编辑面板（窗口级浮层）。
 ///
-/// 为什么是表单而不是照搬 pi 的逐步 prompt：桌面端同时要展示供应商、当前凭据状态、
+/// 为什么用表单，不照搬 pi 的逐步 prompt：桌面端同时要展示供应商、当前凭据状态、
 /// 多字段（Cloudflare 账户/网关、Vertex 项目/区域、Bedrock AWS 密钥），一次看全比
 /// 连续弹三次输入框更好核对。字段模型来自 <see cref="ProviderAuthCatalog"/>，与 CLI
 /// 共用同一份「这个供应商要哪些字段」的事实。

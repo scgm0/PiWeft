@@ -27,23 +27,23 @@ public sealed record ExtensionState
 public sealed record ExtensionFlag(string Name, string Type, string Description, object? Default);
 
 /// 进程内 JS 扩展宿主：发现 → 沙箱执行 → 收集注册项（工具、命令、事件钩子）→ 派发事件。
-/// 沙箱与 codemode 同一套纪律：Jint 解释器不给扩展任何宿主能力（无 <c>fs</c>、无 <c>net</c>、无 <c>require</c>），
-/// 扩展唯一能碰到外面的通道是显式注册的 <c>__pi*</c> 宿主函数，<c>pi</c> 对象本身由这些函数在 JS 侧组装
-/// （与 <c>CodeModePrelude</c> 同一手法）。所有桥用 <see cref="ClrFunction"/> 注册：不走反射包装，
-/// 因而在 NativeAOT/裁剪下不产生 IL2026/IL2111。
-/// 两条明确的限制，都在界面里可见、不静默降级：
+/// 沙箱与 codemode 同一套纪律：Jint 解释器不给扩展宿主能力（无 <c>fs</c>、<c>net</c>、<c>require</c>），
+/// 唯一出口是显式注册的 <c>__pi*</c> 宿主函数，<c>pi</c> 对象由这些函数在 JS 侧组装，
+/// 与 <c>CodeModePrelude</c> 同法。所有桥用 <see cref="ClrFunction"/> 注册，不经反射包装，
+/// NativeAOT/裁剪下不产生 IL2026/IL2111。
+/// 两条限制都在界面里可见，不静默降级：
 /// <list type="bullet">
-/// <item><description><strong>只执行 JavaScript</strong>：TypeScript 扩展需要构建期转译（本端口不内置转译器），
-/// 发现到时逐条说明原因，而不是悄悄不加载。</description></item>
-/// <item><description><strong>处理器必须同步</strong>：返回 Promise 会被拒绝并说明原因（异步要等事件循环泵
-/// 接进宿主）。把 <c>[object Promise]</c> 当成结果交给模型，比直接报错难查得多。</description></item>
+/// <item><description><strong>只执行 JavaScript</strong>：TypeScript 扩展要构建期转译（本端口不内置），
+/// 发现到时逐条说明原因，不悄悄跳过。</description></item>
+/// <item><description><strong>处理器必须同步</strong>：返回 Promise 会被拒绝并说明原因（异步需要把事件循环泵
+/// 接进宿主）。把 <c>[object Promise]</c> 当结果交给模型，比直接报错更难查。</description></item>
 /// </list>
 public sealed class ExtensionHost : IDisposable
 {
 	private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(10);
 
 	/// 在 JS 侧组装 <c>pi</c>：每个方法都转调宿主函数，注册结果通过 <c>__piRegister*</c> 交回宿主。
-	/// 用 <c>globalThis.pi</c> 而不是 let/const：扩展文件与这段前缀同处一个脚本作用域。
+	/// 用 <c>globalThis.pi</c>，不用 let/const：扩展文件与这段前缀同处一个脚本作用域。
 	private const string Prelude = """
 		globalThis.pi = (function () {
 			function callable(value) { return typeof value === "function"; }
@@ -52,7 +52,7 @@ public sealed class ExtensionHost : IDisposable
 			//   pi.registerCommand("x", { description, handler })   ← pi 的文档形态
 			//   pi.registerCommand("x", "描述", handler)             ← 位置参数形态
 			//   pi.registerCommand("x", handler)                    ← 只有处理器
-			// 只认第一种的话，第二种的 handler 会被当成「不是函数」而静默丢掉命令。
+			// 只认第一种，第二种的 handler 会被当成「不是函数」，命令静默丢失。
 			function commandDefinition(second, third) {
 				if (callable(third)) { return { description: text(second), handler: third }; }
 				if (callable(second)) { return { description: "", handler: second }; }
@@ -130,7 +130,7 @@ public sealed class ExtensionHost : IDisposable
 
 	/// 把命令行里的未知 flag 分配给已注册的扩展 flag（pi 的 <c>flagValues</c> 同义）：
 	/// boolean 一律视为 <c>true</c>，string 需要值；没有值的 string 记一条诊断。
-	/// 返回没有对应扩展的 flag 名 —— 真正的拼写错误必须报出来。
+	/// 返回没有对应扩展的 flag 名；拼写错误要报出来。
 	public IReadOnlyList<string> ApplyFlagValues(IReadOnlyDictionary<string, string?> values)
 	{
 		_flagErrors.Clear();
@@ -249,7 +249,7 @@ public sealed class ExtensionHost : IDisposable
 			return state;
 		}
 
-		// ESM 语法在这里还是不可用。与其让解析器抛一个看不懂的语法错，不如直说。
+		// ESM 语法在这里不可用。与其让解析器抛看不懂的语法错，不如直说。
 		if (HasModuleSyntax(source))
 		{
 			state.Diagnostics.Add("扩展用了 ESM 的 import/export 语句；宿主按脚本执行扩展文件，请改用 `module.exports = function (pi) { ... }`。");
@@ -566,7 +566,7 @@ public sealed class ExtensionHost : IDisposable
 			for (var i = 0; i < list.length; i++) {
 				var outcome = list[i](payload);
 				// async 函数返回 Promise：只有 JS 侧能准确认出它（C# 看到的是已返回的 undefined）。
-				// 不支持异步就明说，而不是把 [object Promise] 当结果继续用。
+				// 不支持异步就明说，不把 [object Promise] 当结果继续用。
 				if (outcome && typeof outcome.then === "function") {
 					__piDiagnose(name + " 处理器返回了 Promise：当前扩展宿主只支持同步处理器，返回值已丢弃。");
 				}

@@ -20,9 +20,9 @@ public static class RetryClassifier
 {
 	public const int DefaultMaxAgentDelayMs = 60_000;
 
-	/// 供应商明确要求等待超过这么久（例如配额要到明天才重置）时，自动重试没有意义：
-	/// 退避上限只有 60 秒，提前重试只会一次又一次撞同一面墙，还会让会话看起来卡在「正在重试」。
-	/// 这类错误直接交给用户决定换模型还是等重置。
+	/// 供应商明确要求等待超过这么久（例如配额要到明天才重置）时不自动重试：
+	/// 退避上限 60 秒，提前重试只会再撞一次，会话还一直卡在「正在重试」。
+	/// 这类错误交给用户决定换模型还是等重置。
 	public const int MaxAutoRetryServerDelayMs = 15 * 60 * 1000;
 
 	/// 明确不可重试的用量/配额类错误：这些是账号级限制，等几秒重试也不会变好。
@@ -48,8 +48,8 @@ public static class RetryClassifier
 
 	/// 供应商把「正在排队、等一会儿再来」装在非 429 的响应里：火山方舟用 HTTP 403 返回
 	/// <c>{"code":"10605","message":"...\\"isQueued\\":true,...\\"retryAfterSeconds\\":30}"}</c>
-	/// （<c>RESOURCE_LIMIT</c>），字面上没有任何通用限流词，靠 <see cref="Retryable"/> 判不出来，
-	/// 于是自动重试直接跳过这次失败。这些标记本身就是临时限流的语义，单独认这一类。
+	/// （<c>RESOURCE_LIMIT</c>），字面没有通用限流词，<see cref="Retryable"/> 判不出来，
+	/// 自动重试会跳过这次失败。这些标记本身表示临时限流，单独认一类。
 	private static readonly Regex Queued = new(
 		string.Join('|',
 		[
@@ -202,9 +202,9 @@ public static class RetryClassifier
 		return null;
 	}
 
-	/// 第 <paramref name="attempt"/> 次重试前真正要等的时长。供应商明确给了等待提示就听它的
-	/// ——排队时提前重试只会再撞一次 403——并按 <see cref="RetryPolicy.MaxAgentDelayMs"/> 封顶；
-	/// 没有提示则回落到 <see cref="DelayMs(RetryPolicy,int)"/> 的指数退避。
+	/// 第 <paramref name="attempt"/> 次重试前要等的时长。供应商给了等待提示就用它，
+	/// 提前重试只会再撞一次 403；结果按 <see cref="RetryPolicy.MaxAgentDelayMs"/> 封顶。
+	/// 没有提示则用 <see cref="DelayMs(RetryPolicy,int)"/> 的指数退避。
 	public static int DelayMs(RetryPolicy policy, int attempt, string? errorMessage)
 	{
 		if (ServerDelayMs(errorMessage) is not int hint)

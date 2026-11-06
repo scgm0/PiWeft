@@ -506,7 +506,7 @@ public class HeaderOnlyTimeoutTests
 			HttpRequestMessage request,
 			CancellationToken cancellationToken)
 		{
-			// 头部必须真的「立刻」返回。这里不能 `await Task.Yield()`——线程池繁忙时它能把
+			// 头部要真的「立刻」返回。这里不能用 `await Task.Yield()`：线程池繁忙时它能把
 			// 头部推迟到超过配置的 50 ms 请求超时，超时就真的在「等头部」阶段触发，
 			// 测试于是在验证一个它没打算验证的场景，随机变红。
 			cancellationToken.ThrowIfCancellationRequested();

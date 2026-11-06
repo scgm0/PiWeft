@@ -23,9 +23,8 @@ internal static class SharedHttpClient
 
 internal static class ProviderHttp
 {
-	/// 读取响应体，并按 <see cref="StreamOptions.IdleTimeoutMs"/> 包一层空闲超时。
-	/// 所有 provider 的流式读取都必须走这里：直接 <c>ReadAsStreamAsync</c> 的话，
-	/// 供应商把连接挂着不发也不关时这一轮会永远等下去（HttpClient 是 Infinite 超时）。
+	/// 读取响应体，按 <see cref="StreamOptions.IdleTimeoutMs"/> 包一层空闲超时。
+	/// provider 的流式读取统一走这里：直接 <c>ReadAsStreamAsync</c>，供应商挂住连接时整轮会无限等待。
 	public static async Task<Stream> ReadBodyAsync(
 		HttpResponseMessage response,
 		StreamOptions options,
@@ -37,13 +36,12 @@ internal static class ProviderHttp
 			: stream;
 	}
 
-	/// 错误响应体的读取上限。各 provider 只把前 2000 字符写进错误文案，但网关偶尔会返回
-	/// 整页 HTML 甚至几十 MB 的诊断内容：不设上限就等于「一次失败的请求先吃掉一大块内存」，
-	/// 而且这笔分配还在自动重试的循环里。
+	/// 错误响应体的读取上限。provider 只用前 2000 字符写错误文案，但网关可能返回整页 HTML
+	/// 甚至几十 MB 内容；不设上限，一次失败请求就会吃掉一大块内存，而且还在重试循环里。
 	private const int MaxErrorBodyBytes = 1 << 20;
 
-	/// 读取响应体文本（错误响应说明等），同样受 <see cref="StreamOptions.IdleTimeoutMs"/> 约束。
-	/// 错误体也可能被网关挂着不发：只给成功路径设空闲超时，等于把挂死风险留给最常见的失败分支。
+	/// 读取错误响应体文本，同样受 <see cref="StreamOptions.IdleTimeoutMs"/> 约束。
+	/// 网关也会挂住错误体；只给成功路径设超时，就把挂死风险留给了最常见的失败分支。
 	public static async Task<string> ReadBodyTextAsync(
 		HttpResponseMessage response,
 		StreamOptions options,
@@ -115,21 +113,21 @@ internal static class ProviderHttp
 	public static string TimeoutMessage(HeaderTimeoutScope scope) =>
 		scope.TimedOut ? "Request timed out while waiting for response headers" : "Request timed out";
 
-	/// 开始一段「等响应头」的超时。返回的作用域把调用方的取消与超时合并，供发送请求时使用；
-	/// 正文读取请一律使用 <c>options.CancellationToken</c>。
-	/// 计时从第一次读取 <see cref="HeaderTimeoutScope.Token"/>（真正发请求）时才开始：
-	/// 凭据解析、OAuth 刷新与命令型凭据不消耗请求超时，也避免为失败的解析白建计时器。
+	/// 开始一段「等响应头」的超时。返回的作用域合并调用方的取消与超时，发送请求时使用；
+	/// 正文读取一律用 <c>options.CancellationToken</c>。
+	/// 计时从第一次读 <see cref="HeaderTimeoutScope.Token"/>（发请求）开始：
+	/// 凭据解析、OAuth 刷新与命令型凭据不占请求超时，失败的解析也不会白建计时器。
 	public static HeaderTimeoutScope BeginHeaderTimeout(StreamOptions options)
 	{
-		// 等响应头也受空闲超时兜底：连接建立了但服务端一直不回头，否则这一轮会无限等下去
-		// （HttpClient 是 Infinite，正文计时器此时还没建立）。显式的请求超时优先。
+		// 等响应头也靠空闲超时兜底：连接建立后服务端不回头，这一轮就无限等下去
+		// （HttpClient 是 Infinite，正文计时器还没建立）。显式请求超时优先。
 		var timeoutMs = options.TimeoutMs is > 0 ? options.TimeoutMs : options.IdleTimeoutMs;
 		return new HeaderTimeoutScope(options.CancellationToken, timeoutMs);
 	}
 }
 
-/// 「等待响应头」的超时作用域。pi 1.2.0 起超时只覆盖等响应头这一步：长流（长时间思考、慢生成）
-/// 不能被固定时限切断，正文停滞交给 HTTP 客户端自己处理。
+/// 「等待响应头」的超时作用域。pi 1.2.0 起超时只覆盖这一步：长流（长时间思考、慢生成）
+/// 不能被固定时限切断，正文停滞交给 HTTP 客户端处理。
 public sealed class HeaderTimeoutScope : IDisposable
 {
 	private readonly CancellationToken _callerToken;
@@ -176,8 +174,8 @@ public sealed class HeaderTimeoutScope : IDisposable
 
 	public bool TimedOut => _timeout is { IsCancellationRequested: true };
 
-	/// 响应头已经拿到：停止计时并释放定时器。长流期间不再背着一个无用的 CTS，
-	/// 后续正文超时也不会被误报成「等响应头超时」。
+	/// 响应头已拿到：停止计时并释放定时器，长流期间不再背一个无用的 CTS，
+	/// 正文超时也不会被误报成「等响应头超时」。
 	public void Stop()
 	{
 		if (_disposed)
@@ -260,9 +258,9 @@ public static partial class ProviderEnvironment
 		return builder.ToString();
 	});
 
-	/// 每个 provider 一把刷新锁：并发请求同时发现 access token 过期时只让一个去换，
-	/// 其余等它写回 auth.json 后直接复用新令牌。否则多个线程拿同一个 refresh token 竞争，
-	/// 在会轮转 refresh token 的供应商上会把凭据互相作废。
+	/// 每个 provider 一把刷新锁：并发发现 token 过期时只让一个去换，
+	/// 其余等它写回 auth.json 后复用新令牌。否则多个线程拿同一个 refresh token 竞争，
+	/// 在轮换 refresh token 的供应商上会互相作废凭据。
 	private static readonly ConcurrentDictionary<string, SemaphoreSlim> OAuthRefreshGates = new(StringComparer.Ordinal);
 
 	private static Task<Auth.OAuthCredential?> RefreshProviderAsync(
@@ -302,8 +300,8 @@ public static partial class ProviderEnvironment
 			}
 
 			var toRefresh = current ?? credential;
-			// 刷新一旦开始就不再跟随请求取消：供应商可能已轮换 refresh token，
-			// 中途取消会让刚下发的新令牌丢失。真正的网络等待由各家 HttpClient 的 30 秒超时兜底。
+			// 刷新开始后不跟随请求取消：供应商可能已轮换 refresh token，中途取消会丢掉新令牌。
+			// 网络等待由各家 HttpClient 的 30 秒超时兜底。
 			return await RefreshProviderAsync(provider, toRefresh, CancellationToken.None).ConfigureAwait(false);
 		}
 		catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException or Auth.CodexAuthException)
@@ -340,8 +338,8 @@ public static partial class ProviderEnvironment
 		return Environment.GetEnvironmentVariable(name) is { Length: > 0 } fromProcess ? fromProcess : null;
 	}
 
-	/// 展开模型目录里的 <c>{ENV_NAME}</c>（Cloudflare 的账户/网关 ID 等）。
-	/// 缺失值直接报错：静默保留花括号会请求一个必然 404 的地址，比失败更难排查。
+	/// 展开模型目录里的 <c>{ENV_NAME}</c>（Cloudflare 账户/网关 ID 等）。
+	/// 缺值直接报错：留着花括号会请求一个必然 404 的地址，更难排查。
 	public static string ExpandBaseUrl(string provider, string baseUrl)
 	{
 		if (!baseUrl.Contains('{', StringComparison.Ordinal)) return baseUrl;
@@ -354,12 +352,10 @@ public static partial class ProviderEnvironment
 		});
 	}
 
-	/// 与 pi 一致的顺序：显式选项 → <c>auth.json</c> 里存储的凭据 → 该 provider 的环境变量 →
-	/// 一小组 OpenAI 兼容网关通用的兜底变量。
-	/// 存储优先这一步很关键：<c>pi login</c> 与桌面端都把 key 写进 <c>auth.json</c>，只认环境变量会让
-	/// 这些用户收到 401。
-	/// 读盘、命令型凭据与 OAuth 刷新全部走异步链路；等待刷新闸门时响应取消，
-	/// 但刷新本身不跟随取消，避免轮换型 refresh token 被丢掉。
+	/// 顺序与 pi 一致：显式选项 → <c>auth.json</c> 凭据 → provider 环境变量 → OpenAI 兼容网关的兜底变量。
+	/// 存储排在环境变量前：<c>pi login</c> 与桌面端都写 <c>auth.json</c>，只认环境变量会让这些用户收到 401。
+	/// 读盘、命令型凭据与 OAuth 刷新全走异步；等刷新闸门时响应取消，刷新本身不跟随取消，
+	/// 否则轮换型 refresh token 会丢。
 	public static async Task<string?> ResolveApiKeyAsync(
 		string provider,
 		StreamOptions options,
@@ -388,9 +384,8 @@ public static partial class ProviderEnvironment
 			return stored;
 		}
 
-		// OAuth 凭据（Anthropic / xAI 等）以 access token 形式复用 API key 通道；
-		// AnthropicProvider 会按 sk-ant-oat 前缀切换成 Bearer 请求。
-		// 与 API Key 共用同一次读盘/解析，避免同一份 auth.json 读两遍。
+		// OAuth 凭据以 access token 复用 API key 通道，AnthropicProvider 按 sk-ant-oat 前缀切 Bearer。
+		// 与 API Key 共用一次读盘/解析，auth.json 只读一遍。
 		var oauth = Auth.OAuthStore.ReadCredential(root?[provider]);
 		if (oauth is { Access.Length: > 0 })
 		{

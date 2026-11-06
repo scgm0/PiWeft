@@ -76,7 +76,7 @@ public sealed class SessionParallelReadTests : IDisposable
 		Assert.Equal(8000, actual.Count);
 		Assert.Equal(expectedCount, reopened.Entries.Count);
 		Assert.Equal(sequential, actual);
-		// 头部被正确识别（不在 Entries 里但参与建树），且没有重复 id —— 重复意味着边界行被两段都读了。
+		// 头部被正确识别（不在 Entries 里但参与建树），且没有重复 id；重复意味着边界行被两段都读了。
 		Assert.Equal(manager.SessionId, reopened.SessionId);
 		Assert.Equal(actual.Count, actual.Distinct().Count());
 	}
@@ -136,8 +136,8 @@ public sealed class SessionParallelReadTests : IDisposable
 		Assert.Equal(manager.Entries.Count, reopened.Entries.Count);
 	}
 
-	/// 并行分段读会真的从多个线程调 <see cref="IProgress{T}.Report"/>，收集器必须自己保证线程安全——
-	/// 裸 <c>List.Add</c> 并发写会丢元素甚至把内部数组搅乱，表现为「进度不能倒退」随机变红。
+	/// 并行分段读会从多个线程调 <see cref="IProgress{T}.Report"/>，收集器自己保证线程安全：
+	/// 裸 <c>List.Add</c> 并发写会丢元素甚至搅乱内部数组，「进度不能倒退」会随机变红。
 	private sealed class Collector : IProgress<SessionReadProgress>
 	{
 		private readonly List<SessionReadProgress> _reports = [];

@@ -3,9 +3,9 @@ using System.Diagnostics;
 namespace PiWeft.Desktop;
 
 /// 一次 Git 写操作的结果。<see cref="Message"/> 是给人看的一句话结论（成功摘要或分类后的失败原因），
-/// <see cref="Detail"/> 是 git 的原始输出尾部，只在需要排查时展示 —— 直接把
+/// <see cref="Detail"/> 是 git 的原始输出尾部，只在排查时展示。把
 /// <c>fatal: could not read Username for 'https://github.com': terminal prompts disabled</c>
-/// 甩到状态行里，用户只知道「失败了」。
+/// 直接甩到状态行里，用户只知道「失败了」。
 public sealed record GitResult(bool Ok, string Message, string? Detail = null)
 {
 	public static GitResult Success(string message = "") => new(true, message);
@@ -15,10 +15,10 @@ public sealed record GitResult(bool Ok, string Message, string? Detail = null)
 
 public sealed record GitStashEntry(string Reference, string Description);
 
-/// 把 git 的原始输出翻成一句能照着做的中文。git 的错误文本是稳定的英文（且被脚本广泛依赖），
-/// 所以按特征串分类是可靠的；分类不出来就退回 output 的首行，至少不吞信息。
-/// 注意区分「工作区状态不对」与「环境/认证/网络不通」：前者用户能自己解决，
-/// 后者要看凭据或代理 —— 提示必须不同，否则用户会去错误的方向折腾。
+/// 把 git 的原始输出翻成一句能照着做的中文。git 的错误文本是稳定的英文，也被脚本广泛依赖，
+/// 按特征串分类可靠；分类不出来就退回 output 首行，至少不吞信息。
+/// 要区分「工作区状态不对」与「环境/认证/网络不通」：前者用户自己能解决，后者要看凭据或代理。
+/// 两类提示混在一起，用户会往错误的方向折腾。
 public static class GitFailure
 {
 	public static string? Classify(string output)
@@ -237,7 +237,7 @@ public static class GitWriter
 	}
 
 	/// 拉取。<c>--ff-only</c> 是刻意选的：这里没有冲突解决界面，自动 merge 或 rebase 会把仓库
-	/// 推进到一个用户无法从界面收拾的状态；不能快进时宁可报错并提示用户去终端处理。
+	/// 推进到无法从界面收拾的状态；不能快进就报错，提示用户去终端。
 	public static GitResult Pull(string cwd)
 	{
 		if (!HasRemotes(cwd))
@@ -253,8 +253,8 @@ public static class GitWriter
 		return RunNetwork(cwd, ["pull", "--ff-only"], Strings.GitPullDone);
 	}
 
-	/// 推送。没有上游分支时自动 <c>push -u</c> 建立跟踪 —— 首次推送是最常见的动作，
-	/// 而 <c>git push</c> 在无上游时的报错恰好是新手最容易卡住的地方。
+	/// 推送。没有上游分支时自动 <c>push -u</c> 建立跟踪：首次推送是最常见的动作，
+	/// 而 <c>git push</c> 在无上游时的报错正是新手最容易卡住的地方。
 	public static GitResult Push(string cwd)
 	{
 		if (!HasRemotes(cwd))
@@ -315,7 +315,7 @@ public static class GitWriter
 		}
 
 		// 没有改动时 git 也返回 0，只在输出里说 "No local changes to save"。
-		// 这不是错误，但必须说出来 —— 否则用户会以为东西已经收进去了。
+		// 这不是错误，但要说出来，否则用户会以为东西已经收进去了。
 		var output = Combine(capture.Stdout, capture.Stderr);
 		return output.Contains("No local changes to save", StringComparison.OrdinalIgnoreCase)
 			? GitResult.Failure(Strings.GitStashNothing)
@@ -428,7 +428,7 @@ public static class GitWriter
 	}
 
 	/// 捕获一次 git 调用。stdout/stderr 并发读：顺序读时子进程某个缓冲（约 64KB）写满就会阻塞，
-	/// 进而永远不退出 —— 那 WaitForExit 的超时也等不到，UI 会冻结。
+	/// 导致进程不退出，WaitForExit 的超时也等不到，UI 会冻结。
 	private static GitCapture RunCapture(
 		string cwd,
 		string[] arguments,

@@ -165,6 +165,7 @@ public sealed class MarkdownStreamRepairTests(ITestOutputHelper output)
 				previous.Blocks.Select(static block => block.Hash));
 		}
 
+		Assert.NotNull(previous);
 		// Reading Source materializes the accumulated builder exactly once per read.
 		Assert.Equal(source, previous.Source);
 		Assert.Equal(source, previous.Source);
@@ -190,6 +191,8 @@ public sealed class MarkdownStreamRepairTests(ITestOutputHelper output)
 				expected.Blocks.Select(static block => block.Hash),
 				previous.Blocks.Select(static block => block.Hash));
 		}
+
+		Assert.NotNull(previous);
 		Assert.Equal(source, previous.Source);
 	}
 }

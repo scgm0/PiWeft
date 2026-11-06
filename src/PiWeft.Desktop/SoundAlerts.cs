@@ -63,9 +63,9 @@ public sealed record SoundAlertSettings
 }
 
 /// 提示音调度：把会话状态边沿与等待输入翻译成「该不该响」，再交给 <see cref="SoundPlayer"/>。
-/// 规则照搬 PiDeck 的 soundAlertTracker：
-/// - 完成：同一会话 8 秒冷却（settled 与状态兜底可能双触发），并带 1.5 秒全局冷却，
-/// 多个会话同时完成时只响最近一次，避免叠音；
+/// 规则与 PiDeck 的 soundAlertTracker 相同：
+/// - 完成：同一会话 8 秒冷却（settled 与状态兜底可能双触发），另有 1.5 秒全局冷却，
+/// 多个会话同时完成只响最近一次，不叠音；
 /// - 出错：只有「从非错误变成错误」才响，启动时已经挂着的错误不是新事件；
 /// - 等待输入：同一会话的一批请求只响一次，全部回答完再重置，下次新批才再响；
 /// - 仅失焦：主窗口在前台时整体静默（应用内 toast 不受影响）。
@@ -95,8 +95,8 @@ internal sealed class SoundAlerts
 	private SoundAlertSettings? _cachedSettings;
 	private DateTimeOffset _cachedSettingsAt = DateTimeOffset.MinValue;
 
-	/// 报告一个会话的运行态。由宿在会话状态变化时调用（同一状态重复调用是安全的）：
-	/// 只在「流式 → 空闲」与非错误 → 错误的边沿上响。
+	/// 报告一个会话的运行态。宿主在状态变化时调用，重复调用同一状态是安全的。
+	/// 只在「流式 → 空闲」与「非错误 → 错误」的边沿上响。
 	/// <param name="sessionId">会话标识；空串表示无法归属（直接忽略）。</param>
 	/// <param name="streaming">该会话是否正在运行。</param>
 	/// <param name="error">当前错误文本；无错误传 null。</param>

@@ -104,8 +104,8 @@ public sealed class RightPanel : IDisposable
 				.LastChildFill()
 				.Children(_header.DockTop(), _host));
 
-		// 窄面板（360 是允许的下限）放不下四个「图标 + 文字」页签：低于阈值时只留图标，
-		// 完整名称仍在悬停提示里。窗口按钮的右上角预留宽度不变，避免页签钻到按钮下面。
+		// 窄面板（下限 360）放不下四个「图标 + 文字」页签，低于阈值只留图标，
+		// 完整名称放在悬停提示里。窗口按钮的右上角预留宽度不变，免得页签钻到按钮下面。
 		_view.SizeChanged += args => UpdateTabDensity(args.NewSize.Width);
 		UpdateTabs();
 		_trajectoryTimer.Tick += TickTrajectory;
@@ -153,8 +153,7 @@ public sealed class RightPanel : IDisposable
 			Refresh();
 		}
 
-		// 轨迹页是唯一需要「边跑边看」的分段：面板开着时每秒推一次进度，
-		// 切到别的分段或收起就停，静态分段不占调度。
+		// 轨迹页是唯一要边跑边看的分段：面板开着时每秒推一次进度，切走或收起就停。
 		_trajectoryTimer.Stop();
 		if (section == RightPanelSection.Trajectory)
 		{

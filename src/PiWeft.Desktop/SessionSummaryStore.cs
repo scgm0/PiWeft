@@ -14,7 +14,7 @@ internal sealed record SessionSummaryStamp
 
 	public required long Offset { get; init; }
 
-	/// 续扫点之前那一小段字节的指纹。0 表示没有（旧缓存）：这种情况不续扫，直接全量重扫——
+	/// 续扫点之前那一小段字节的指纹。0 表示没有（旧缓存）：这种情况不续扫，直接全量重扫。
 	/// 会话被原地重写后偏移已经失效，宁可多读一遍也不能拿着错位置续读。
 	public long TailHash { get; init; }
 
@@ -31,7 +31,7 @@ internal sealed record SessionSummaryStamp
 
 /// 侧栏摘要的磁盘缓存（<c>&lt;agentDir&gt;/session-summaries.json</c>）。
 /// 为什么需要它：<see cref="SessionCatalog"/> 的进程内摘要缓存只在一次运行里有效，
-/// 而侧栏列表要显示每个会话的**消息数**与首条预览 —— 这两样都得读到文件尾部才能得到。
+/// 而侧栏列表要显示每个会话的消息数与首条预览，两样都得读到文件尾部。
 /// 实测 92 个会话 / 331 MiB 的冷扫描是 **1100 ms**（每次启动都要付），
 /// 而这些文件绝大多数自上次启动后根本没变。把摘要按（长度 + mtime + 首行指纹）持久化之后，
 /// 启动只需要 stat 一遍文件。
@@ -159,7 +159,7 @@ internal static class SessionSummaryStore
 	}
 
 	/// 读整数。必须是 <c>long</c>：mtime 的 ticks 与首行指纹都是 64 位，
-	/// 走 <c>double</c> 会在 2^53 以上丢精度 —— 那样读回来的 ticks 永远对不上，缓存等于没命中。
+	/// 走 <c>double</c> 会在 2^53 以上丢精度，读回来的 ticks 对不上，缓存等于没命中。
 	private static long? Number(JsonNode? node)
 	{
 		if (node is not JsonValue value)

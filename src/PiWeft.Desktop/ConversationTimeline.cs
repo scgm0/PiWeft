@@ -49,8 +49,8 @@ internal sealed class ConversationTimeline : IDisposable
 		SmoothScroll.For(Scroll).CompensateLayoutCorrections = true;
 		Scroll.MouseDown += CancelJump;
 		Scroll.MouseWheel += CancelJump;
-		// 输入→绘制延迟的取样点：指针与滚轮在会话这一层最先被看到（下游控件常把事件处理掉，
-		// 冒泡不到窗口根），这里记一次时间戳，下一帧由诊断的帧档算出延迟。
+		// 输入→绘制延迟的取样点：指针与滚轮在会话这一层最先被看到，下游控件常把事件处理掉，
+		// 冒泡不到窗口根。这里记一次时间戳，下一帧由帧档算出延迟。
 		Scroll.MouseDown += _ => Diagnostics.NoteInput();
 		Scroll.MouseWheel += _ => Diagnostics.NoteInput();
 	}
@@ -134,8 +134,8 @@ internal sealed class ConversationTimeline : IDisposable
 		if (entry.Role == ChatRole.Process) return 72 + AppTheme.Space3;
 		if (entry.Role == ChatRole.Tool) return 48 + AppTheme.Space3;
 
-		// 中文和代码混合时一行大约 14 DIP/字符；宁可略估小（实测变大只会扩展 extent）
-		// 也不要把长行估得过大，因为收缩才容易触发夹取。
+		// 中文和代码混合时一行约 14 DIP/字符。宁可略估小：实测变大只会扩展 extent，
+		// 估得过大则会在收缩时触发夹取。
 		var charsPerLine = Math.Max(24, width / 14.0);
 		var lines = (double)entry.TextLength / charsPerLine;
 		// 流式行的正文是增量快照，materialize 整篇只为数个换行不划算：只按字符数粗估。
@@ -152,14 +152,13 @@ internal sealed class ConversationTimeline : IDisposable
 		return Math.Clamp(height, 36 + AppTheme.Space3, 12_000);
 	}
 
-	/// 折叠开关改变行高后立刻重排一次，并按新内容重算滚动范围、把偏移收回到末尾之内。
-	/// 手动滚动或改窗口大小本来会顺手做这件事；不主动做的话，面板会继续用旧的行高，
-	/// 表现为折叠内容下方空出一块、直到重排才恢复。
+	/// 折叠开关改变行高后立刻重排一次，按新内容重算滚动范围，把偏移收回到末尾。
+	/// 不主动做的话，面板会继续用旧行高，折叠内容下方空出一块，直到下次重排才恢复。
 	/// <param name="source">触发重排的元素（折叠开关）；给出时只刷新它所在的那一行。</param>
 	public void RefreshLayout(Element? source = null)
 	{
-		// 只让 ScrollViewer 失效还不够：已实现行的测量缓存仍然有效，element.Measure
-		// 会直接复用旧 DesiredSize（旧行高）。窗口大小变化能修好，正是因为它改了测量约束。
+		// 只让 ScrollViewer 失效还不够：已实现行的测量缓存仍有效，element.Measure 会复用旧 DesiredSize。
+		// 窗口大小变化能修好，是因为它改了测量约束。
 		if (HostOf(source) is { } host) InvalidateMeasureTree(host);
 		else foreach (var visible in _visible) InvalidateMeasureTree(visible);
 		View.InvalidateMeasure();
@@ -470,7 +469,7 @@ internal sealed class ConversationTimeline : IDisposable
 		/// Streaming and process rows have a persistent view that can absorb new data without
 		/// rebuilding. Other replacements change identity or presentation and still need a rebind.
 		/// 流式行落盘时 EntryId 会从 live-assistant/… 变成会话条目 id（时间戳与图片不变）：
-		/// 这仍是一次原位收尾——发 Replace 会把该行已测高度作废成估算值，长回复定稿的一瞬
+		/// 这仍是一次原位收尾：发 Replace 会把该行已测高度作废成估算值，长回复定稿的一瞬
 		/// 滚动范围先缩后涨，跟底读者看到一次跳动（组内步骤列表见 StepRows 的同一处理）。
 		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
 			(Equals(Key(current), Key(next)) && next.Role == ChatRole.Process) ||

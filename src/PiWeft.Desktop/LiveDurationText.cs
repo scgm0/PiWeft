@@ -5,7 +5,7 @@ namespace PiWeft.Desktop;
 
 /// 运行中步骤的秒表文本（PiDeck 的 <c>LiveDuration</c> 同构）：
 /// 执行中每 100 ms 用「当前时刻 - 开始时刻」刷新一次，结束后停在固定耗时。
-/// 节拍放在控件自己身上，而不是让宿主整帧重绘：一次 tick 只改这一枚 TextBlock，
+/// 节拍放在控件自己身上，不让宿主整帧重绘：一次 tick 只改这一枚 TextBlock，
 /// 过程组的行布局、虚拟化列表和会话视口都不会因为计时器重新投影。
 /// 与 <see cref="PendingReplyView"/> 一样，不可见时不写文本；但<b>不停表</b>：
 /// MewUI 滚动只 InvalidateArrange，不重新测量，所以「下次测量再启动」永远等不到

@@ -2,7 +2,7 @@ namespace PiWeft.Desktop;
 
 /// 启动目录兜底。
 /// 图形外壳启动的进程不继承终端的工作目录：macOS 的 launchd 把 cwd 设为 <c>/</c>，于是「项目」
-/// 变成文件系统根目录 —— 窗口标题显示 <c>PiWeft Desktop — /</c>，会话写进按 <c>/</c> 编码的目录，
+/// 变成文件系统根目录：窗口标题显示 <c>PiWeft Desktop — /</c>，会话写进按 <c>/</c> 编码的目录，
 /// 文件浏览器、Git 面板与 MCP 子进程的工作目录也都落在根目录上。
 /// 终端启动（或显式 <c>--cwd</c>）不做任何推断，保持原样。
 internal static class StartupDirectory

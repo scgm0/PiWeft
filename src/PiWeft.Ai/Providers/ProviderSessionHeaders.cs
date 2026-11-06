@@ -2,8 +2,8 @@ using System.Net.Http;
 
 namespace PiWeft.Ai.Providers;
 
-/// 会话亲和请求头：pi 的模型 compat 允许网关按会话粘性路由/缓存。
-/// 缺失时通常不会 400（OpenCode 的 session 头是特例），但会把同一会话的请求打散到不同副本，
+/// 会话亲和请求头：pi 的模型 compat 允许网关按会话粘性路由、缓存。
+/// 缺失时通常不会 400（OpenCode 的 session 头是特例），但同一会话的请求会散到不同副本，
 /// 表现为缓存不命中、首 token 变慢。规则与 pi-ai 的 createClient 一致：
 /// - openrouter 格式：<c>x-session-id</c>；
 /// - openai 格式：<c>session_id</c> + <c>x-client-request-id</c>（completions 另加 <c>x-session-affinity</c>）；
@@ -69,8 +69,8 @@ public static class ProviderSessionHeaders
 	}
 }
 
-/// GitHub Copilot 的动态请求头（静态头在模型目录的 headers 里，动态头必须按本次消息算）：
-/// <c>X-Initiator</c>、<c>Openai-Intent</c>，含图片时追加 <c>Copilot-Vision-Request</c>。
+/// GitHub Copilot 的动态请求头：静态头在模型目录的 headers 里，动态头按本次消息算，
+/// 包括 <c>X-Initiator</c>、<c>Openai-Intent</c>，含图片时追加 <c>Copilot-Vision-Request</c>。
 public static class CopilotHeaders
 {
 	public static void Apply(Model model, IReadOnlyList<Message> messages, HttpRequestMessage request)

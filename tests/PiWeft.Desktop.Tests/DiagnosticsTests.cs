@@ -9,8 +9,8 @@ using static PiWeft.Desktop.Tests.VisualTree;
 
 namespace PiWeft.Desktop.Tests;
 
-/// 性能诊断采样的契约：默认关闭且零副作用，开启后按名称聚合、逐条落盘、
-/// 重复设置同值不重开文件，关掉之后必须把缓冲里的记录写完。
+/// 性能诊断采样的契约：默认关闭且零副作用；开启后按名称聚合、逐条落盘；
+/// 重复设置同值不重开文件；关掉后要把缓冲里的记录写完。
 [Collection("mewui-controls")]
 public sealed class DiagnosticsTests : IDisposable
 {
@@ -20,7 +20,7 @@ public sealed class DiagnosticsTests : IDisposable
 
 	public void Dispose()
 	{
-		// 采样器是进程级单例：测试结束必须关掉，否则别的用例会读到开着的状态。
+		// 采样器是进程级单例：测试结束要关掉，否则别的用例会读到开着的状态。
 		Diagnostics.Close();
 		if (Directory.Exists(_agentDir))
 		{
@@ -248,7 +248,7 @@ public sealed class DiagnosticsTests : IDisposable
 		Assert.True(Diagnostics.Enabled);
 
 		var stats = new RenderStats(412, 96, Primitives());
-		// 预热：桶的首次创建会分配，之后热路径必须一个字节都不产生。
+		// 预热：桶的首次创建会分配，之后热路径不产生字节。
 		for (var index = 0; index < 64; index++)
 		{
 			Diagnostics.ObserveFrame(stats);
@@ -298,8 +298,8 @@ public sealed class DiagnosticsTests : IDisposable
 	[Fact]
 	public void TheWheelSamplingPointFeedsTheFrameTier()
 	{
-		// 滚轮在文本上会被阅读守卫接管、不再冒泡到窗口根，所以取样点必须挂在那里；
-		// 这条测试钉住「守卫 → 帧档」的连线，而不是只测帧档本身。
+		// 滚轮在文本上会被阅读守卫接管，不再冒泡到窗口根，所以取样点挂在那里；
+		// 这条测试钉住「守卫 → 帧档」的连线，不只测帧档本身。
 		Diagnostics.SetEnabled(true, _agentDir);
 		Diagnostics.Reset();
 
@@ -526,7 +526,7 @@ public sealed class DiagnosticsTests : IDisposable
 	[Fact]
 	public void FrameBudgetSnapsToCommonRefreshRates()
 	{
-		// 启动/动画噪声会把中位间隔抬到 24.6 ms：吸附到 16.7 ms，而不是发明一个 40 fps 的预算。
+		// 启动/动画噪声会把中位间隔抬到 24.6 ms：吸附到 16.7 ms，不发明 40 fps 的预算。
 		Assert.Equal(1000.0 / 60, Diagnostics.SnapFrameBudget(16.4), 1);
 		Assert.Equal(1000.0 / 60, Diagnostics.SnapFrameBudget(24.6), 1);
 		Assert.Equal(1000.0 / 120, Diagnostics.SnapFrameBudget(8.5), 1);

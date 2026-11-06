@@ -7,7 +7,7 @@ using Xunit;
 namespace PiWeft.CodingAgent.Tests;
 
 /// 编辑重发不再为每次重发派生一份新会话文件（否则侧栏每改一次就多一条同名会话）：
-/// 在同一份文件里把被放弃的分支改成墓碑。这里锁住三件事 —— 会话 id 与文件不变、
+/// 在同一份文件里把被放弃的分支改成墓碑。这里锁住三件事：会话 id 与文件不变、
 /// 旧分支从投影与树里消失、之后追加的消息接在截断点上。
 public class SessionTruncateForResendTests : IDisposable
 {

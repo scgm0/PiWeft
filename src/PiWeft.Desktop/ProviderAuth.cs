@@ -27,7 +27,7 @@ internal sealed record AuthProvider(
 	bool Refreshable = true,
 	string DocsUrl = "");
 
-/// 从 auth.json 的凭据形状推断当前应该展示/校验哪种 API Key 方式。
+/// 从 auth.json 的凭据形状推断该展示、校验哪种 API Key 方式。
 /// 状态行和编辑面板共用这套规则，否则会出现「状态按 API Key 校验、面板按 ADC 展示」的分叉。
 internal static class ProviderKeySelection
 {
@@ -74,8 +74,8 @@ internal static class ProviderKeySelection
 }
 
 /// 认证页的一行：OAuth 与 API Key 两种凭据合并成同一个供应商视图。
-/// auth.json 一个 provider 只能存一份凭据，所以两种状态必须一起展示，
-/// 否则「OAuth 未登录」与「API Key 已配置」会像两个不同供应商。
+/// auth.json 一个 provider 只存一份凭据，两种状态要一起展示，
+/// 否则「OAuth 未登录」与「API Key 已配置」看起来像两个供应商。
 internal sealed record ProviderAuthStatus(
 	string Id,
 	string Name,
@@ -294,7 +294,7 @@ internal static class ProviderAuthService
 				codex.Expires > 0 ? codex.ExpiresAt : null, accountId, null, null, stored, environmentSource);
 		}
 
-		// Vertex 的 ADC 默认文件没有环境变量可指向；状态行直接说明来源，而不是「未配置」。
+		// Vertex 的 ADC 默认文件没有环境变量可指向；状态行直接说明来源，不写「未配置」。
 		var ambient = environmentSource is null && stored is null &&
 			string.Equals(descriptor.Id, "google-vertex", StringComparison.Ordinal) &&
 			GoogleAdc.HasConfiguredCredentials(stored: null);

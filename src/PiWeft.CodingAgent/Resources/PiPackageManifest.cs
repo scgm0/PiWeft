@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace PiWeft.CodingAgent.Resources;
 
 /// <c>package.json</c> 里的 <c>pi</c> 字段：包声明的技能、提示词模板、主题与扩展路径。
-/// 与 pi 的 <c>PiManifest</c> 一致 —— 只有「全为字符串的数组」才生效，否则该字段被忽略。
+/// 与 pi 的 <c>PiManifest</c> 一致：只有「全为字符串的数组」才生效，否则该字段被忽略。
 public sealed record PiPackageManifest
 {
 	public IReadOnlyList<string> Extensions { get; init; } = [];

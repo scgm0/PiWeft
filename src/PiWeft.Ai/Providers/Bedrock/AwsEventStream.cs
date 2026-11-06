@@ -34,7 +34,7 @@ public sealed record AwsEventStreamMessage
 }
 
 /// <c>application/vnd.amazon.eventstream</c> 分帧的解码器，Bedrock 等 AWS 流式 API 都用这种格式。
-/// 每条消息依次为：总长度、头部长度、前导 CRC、头部、payload、消息 CRC —— 全部大端序。
+/// 每条消息依次为：总长度、头部长度、前导 CRC、头部、payload、消息 CRC，全部大端序。
 public static class AwsEventStream
 {
 	public const int PreludeLength = 12;

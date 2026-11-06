@@ -13,7 +13,7 @@ public static class PiEnvironment
 
 	public static void Configure(bool offlineArgument = false)
 	{
-		// 每次按「参数 + 环境变量」重新求值，而不是 OR 上旧值：进程内重置（测试、宿主重启）
+		// 每次按「参数 + 环境变量」重新求值，不 OR 旧值：进程内重置（测试、宿主重启）
 		// 需要能关掉；真正进入离线时下面会把环境变量写成 1，所以重复调用仍然是幂等的。
 		Offline = offlineArgument || IsTruthy(Environment.GetEnvironmentVariable(OfflineVariable));
 		if (Offline)

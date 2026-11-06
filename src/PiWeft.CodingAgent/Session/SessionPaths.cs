@@ -9,7 +9,7 @@ public static class SessionPaths
 	public const string ConfigDirName = ".pi";
 
 	/// agent 目录：<c>$PI_CODING_AGENT_DIR</c> 或 <c>~/.pi/agent</c>。
-	/// 环境变量里的 <c>~</c> 会展开 —— 否则 <c>PI_CODING_AGENT_DIR=~/pi-agent</c> 会被当成相对路径。
+	/// 环境变量里的 <c>~</c> 会展开，否则 <c>PI_CODING_AGENT_DIR=~/pi-agent</c> 会被当成相对路径。
 	public static string GetAgentDir() =>
 		Environment.GetEnvironmentVariable(EnvAgentDir) is { Length: > 0 } configured
 			? UserPath.ExpandTilde(configured)

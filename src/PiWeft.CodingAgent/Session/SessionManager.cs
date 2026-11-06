@@ -195,8 +195,8 @@ public sealed partial class SessionManager
 			throw new InvalidOperationException($"Cannot fork: source session has no header: {resolved}");
 		}
 
-		// fork 只读源文件，但派生出来的会话必须是当前格式：v1 条目没有 id，直接复制
-		// 到新文件会让分支投影只剩最后一条。迁移只在内存里做，源文件交给 pi/下一次打开处理。
+		// fork 只读源文件，派生会话必须是当前格式：v1 条目没有 id，直接复制过去会让分支投影只剩最后一条。
+		// 迁移只在内存里做，源文件交给 pi 或下一次打开处理。
 		SessionMigration.Migrate(entries);
 
 		var manager = Create(targetCwd, sessionDir, id, parentSession: resolved);
@@ -274,9 +274,9 @@ public sealed partial class SessionManager
 		RebuildIndex();
 	}
 
-	/// 旧版会话升级到当前格式。内存里总会升级（否则 v1 的树与分支投影是坏的），
-	/// 只有 <paramref name="rewriteFile"/> 时才回写磁盘：pi 打开会话即迁移并重写，
-	/// 本端口保持一致；只读导出只解释不落盘。
+	/// 旧版会话升级到当前格式。内存里总会升级，否则 v1 的树与分支投影是坏的；
+	/// 只有 <paramref name="rewriteFile"/> 时才回写磁盘。pi 打开会话即迁移并重写，
+	/// 本端口保持一致；只读导出只解释，不落盘。
 	private void MigrateLegacyEntries(SessionHeader? header, bool rewriteFile)
 	{
 		// 当前版本的会话占绝大多数：先用已解析的头部挡掉，避免每次打开都线性扫一遍条目。
@@ -302,13 +302,13 @@ public sealed partial class SessionManager
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			// 只读介质或磁盘满：内存里已经升级，仍然能正常浏览与继续对话；
-			// 把会话打不开当成迁移失败是更坏的交换（用户只想看旧对话）。
+			// 只读介质或磁盘满：内存里已升级，仍能浏览与继续对话。
+			// 因为迁移失败就打不开会话，是更坏的交换。
 		}
 	}
 
-	/// 把整份会话按当前格式重写：同目录临时文件 + 原子替换，写到一半崩溃不会留下半个会话。
-	/// 格式升级与「编辑重发」截断会用到；正常路径仍然只追加。
+	/// 把整份会话按当前格式重写：同目录临时文件加原子替换，中途崩溃不会留下半个会话。
+	/// 用于格式升级与「编辑重发」截断；正常路径只追加。
 	/// <param name="source">要写入的条目序列；为空时写当前内存视图。</param>
 	private void RewriteFile(IReadOnlyList<object>? source = null)
 	{
@@ -317,8 +317,8 @@ public sealed partial class SessionManager
 			return;
 		}
 
-		// 会话文件可能是符号链接（dotfiles 管理器很常见）：写入要跟随到目标，
-		// 否则一次迁移会把链接替换成普通文件，目标里的旧内容还留在原地。
+		// 会话文件可能是符号链接（dotfiles 管理器常见）：写入要跟随到目标，
+		// 否则一次迁移会把链接换成普通文件，目标里的旧内容还留在原地。
 		var target = ResolveSessionTarget(path);
 		var directory = Path.GetDirectoryName(target);
 		if (directory is not { Length: > 0 })
@@ -509,7 +509,7 @@ public sealed partial class SessionManager
 			}
 
 			// 快路径：绝大多数行都还没跑够 4 MB，不进锁。（读旧值只会让我们多进一次锁，
-			// 不影响单调性——判断真伪都在锁内重做。）
+			// 不影响单调性，判断真伪都在锁内重做。）
 			if (Interlocked.Read(ref bytesRead) - Volatile.Read(ref reportedBytes) < 4 * 1024 * 1024)
 			{
 				return;
@@ -563,7 +563,7 @@ public sealed partial class SessionManager
 	}
 
 	/// 只有几十 MB 级别的文件才值得并行：小文件切段后，句柄与调度开销比省下的时间还多。
-	/// 并行度也留余量 —— 打开会话时 UI 线程还要建树，不该把整机核数吃满。
+	/// 并行度留余量：打开会话时 UI 线程还要建树，不该吃满整机核数。
 	private static int ChunkCount(long totalBytes)
 	{
 		if (totalBytes < 8 * 1024 * 1024)
@@ -610,7 +610,7 @@ public sealed partial class SessionManager
 			}
 			catch (System.Text.Json.JsonException)
 			{
-				// 跳过格式错误的行，而不是丢掉后面的会话内容。
+				// 跳过格式错误的行，不丢掉后面的会话内容。
 			}
 
 			onLine?.Invoke(delta, 1);
@@ -925,7 +925,7 @@ public sealed partial class SessionManager
 
 		// 文件里没有头部（外部工具写出的会话）时先补一个，别让它一直缺下去：
 		// pi 与 PiDeck 都按「首行是 session 头」解析，缺头的文件读不出会话身份。
-		// 头部必须落在第一行，所以这里整体重写文件，而不是追加到末尾。
+		// 头部要落在第一行，所以这里整体重写文件，不追加到末尾。
 		if (Header is null)
 		{
 			var header = new SessionHeader
@@ -936,7 +936,7 @@ public sealed partial class SessionManager
 			};
 
 			// 补头部要整体重写文件：写穿符号链接，否则链接会被替换成普通文件（与 RewriteFile 同一理由）。
-			// 用临时文件 + 原子替换而不是原地截断重写：外部工具写出的会话可能很大，
+			// 用临时文件 + 原子替换，不原地截断重写：外部工具写出的会话可能很大，
 			// 截断后写到一半崩溃会把整份会话弄丢。
 			var target = ResolveSessionTarget(SessionFile);
 			PrependHeader(target, header);

@@ -34,10 +34,10 @@ public static class ToolAction
 	};
 }
 
-/// 一个安全档位的策略。在 <c>beforeToolCall</c> 钩子里按工具名与参数判定 —— 与 PiDeck 的
+/// 一个安全档位的策略。在 <c>beforeToolCall</c> 钩子里按工具名与参数判定，与 PiDeck 的
 /// <c>security/policy.ts</c> 同一套语义（工具动作、路径边界、敏感文件、危险命令表、禁地）。
-/// 与 PiDeck 的一处差异是有意为之：PiDeck 的 <c>ask</c> 依赖它的确认弹窗；本端口也有确认通道
-/// （<c>IUiHost</c>），但**没有宿主时 ask 退化为拒绝**（无审批人在场却放行等于没有这道门）。
+/// 与 PiDeck 的差异是有意的：PiDeck 的 <c>ask</c> 依赖确认弹窗；本端口也有确认通道
+/// （<c>IUiHost</c>），但没有宿主时 ask 退化为拒绝，无审批人在场却放行，等于没有这道门。
 public sealed record ToolSecurity
 {
 	public const string OffLevel = "off";
@@ -45,9 +45,9 @@ public sealed record ToolSecurity
 	public const string StrictLevel = "strict";
 
 	/// 默认敏感路径：<c>.env</c> 家族、<c>.git</c> 元数据、私钥、包管理凭据、证书。
-	/// 这两张模式表必须声明在 <see cref="Standard"/> / <see cref="Strict"/> / <see cref="Builtins"/>
-	/// **之前**：静态属性按文本顺序初始化，顺序反了档位拿到的就是 <see langword="null"/>，
-	/// 表现为「危险命令表静默失效」而不是编译错误（有过先例，故地复发过一次）。
+	/// 这两张模式表要声明在 <see cref="Standard"/> / <see cref="Strict"/> / <see cref="Builtins"/> 之前：
+	/// 静态属性按文本顺序初始化，顺序反了档位拿到 <see langword="null"/>，危险命令表静默失效，
+	/// 编译也不报错（复发过一次）。
 	/// 与 PiDeck <c>DEFAULT_SENSITIVE_PATH_PATTERNS</c> 逐条一致。
 	public static IReadOnlyList<string> SensitivePathPatterns { get; } =
 	[
@@ -58,10 +58,10 @@ public sealed record ToolSecurity
 		@"(\.pem|\.key|\.p12)$",
 	];
 
-	/// 不可逆的破坏性命令。刻意只收「执行完就没有回头路」的那些：删除根/家目录、格式化、
-	/// 直接写块设备、fork bomb、关机、提权式改根权限、Windows 的 format / rd 根目录。
-	/// <c>cp</c>/<c>mv</c>/<c>npm install</c>/<c>git commit</c> 这类日常动作不在其中 ——
-	/// 它们在 PiDeck 里是「问一下」，本端口在没有审批人时把 ask 退化为拒绝，收进来会毁掉正常工作流。
+	/// 不可逆的破坏性命令。只收「执行完没有回头路」的：删除根或家目录、格式化、直接写块设备、
+	/// fork bomb、关机、提权改根权限、Windows 的 format / rd 根目录。
+	/// <c>cp</c>、<c>mv</c>、<c>npm install</c>、<c>git commit</c> 这类日常动作不收：
+	/// PiDeck 里它们只是「问一下」，本端口无审批人时 ask 退化为拒绝，收进来会毁掉正常工作流。
 	public static IReadOnlyList<string> CatastrophicCommands { get; } =
 	[
 		@"\brm\s+(-[A-Za-z-]+\s+)*(-[A-Za-z]*[rR][A-Za-z]*\s+)*(-[A-Za-z]*[fF][A-Za-z]*\s+)*(/(\*)?|~(\/\*)?|\$HOME(\/\*)?|%USERPROFILE%(\/\*)?)\s*($|[;&|])",
@@ -182,7 +182,7 @@ public sealed record ToolSecurity
 	/// <paramref name="cwd"/> 是会话工作目录，用于路径边界与相对路径解析。
 	public SecurityDecision Evaluate(string toolName, JsonObject arguments, string cwd)
 	{
-		// 1. 工具动作（allow/ask/deny）：显式 deny 直接结束；ask 记下但仍要继续查路径与命令 ——
+		// 1. 工具动作（allow/ask/deny）：显式 deny 直接结束；ask 记下，但仍要继续查路径与命令，
 		//    「要问一下」不等于「不用检查是否越界/是否灾难性」。
 		var action = ActionOf(toolName);
 		string? askReason = action == ToolAction.Ask
@@ -254,7 +254,7 @@ public sealed record ToolSecurity
 			: new SecurityDecision(SecurityEffect.Ask, askReason);
 	}
 
-	/// 只判「是否被拒绝」的便捷入口（无需审批的调用方用）。Ask 不在此列 —— 它不是拒绝。
+	/// 只判「是否被拒绝」的便捷入口（无需审批的调用方用）。Ask 不算拒绝。
 	/// 返回 <see langword="null"/> 表示可以执行。
 	public string? BlockingReason(string toolName, JsonObject arguments, string cwd) =>
 		Evaluate(toolName, arguments, cwd) is { Effect: SecurityEffect.Deny } denied ? denied.Reason : null;
@@ -380,7 +380,7 @@ public sealed record ToolSecurity
 	}
 
 	/// 解析符号链接，得到用于比较的真实路径。不存在的尾部（例如要新建的文件）按「已存在的最近祖先是真实路径」
-	/// 拼回去 —— 否则 <c>link/to/new.txt</c> 会拿字面量去和真实前缀比较，边界检查被链接绕过去。
+	/// 拼回去，否则 <c>link/to/new.txt</c> 会拿字面量去和真实前缀比较，边界检查被链接绕过去。
 	private static string RealPath(string path) => Resolve(path, depth: 0);
 
 	private static string Resolve(string path, int depth)

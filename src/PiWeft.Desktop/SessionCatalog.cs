@@ -33,7 +33,8 @@ public sealed record SessionListItem
 			: Strings.UntitledSession;
 }
 
-/// 列出并打开磁盘上的会话。文件格式与 pi CLI 共用，因此终端里开的会话会出现在这里，反之亦然。
+/// 列出并打开磁盘上的会话。文件格式与 pi CLI 共用：终端里开的会话会出现在这里，
+/// 桌面会话在终端也能打开。
 public sealed class SessionCatalog
 {
 	private readonly Dictionary<string, SummaryStamp> _summaries = new(StringComparer.Ordinal);
@@ -167,9 +168,8 @@ public sealed class SessionCatalog
 		var trash = $"{Path.DirectorySeparatorChar}.trash{Path.DirectorySeparatorChar}";
 		var candidates = paths.Where(path => path.Contains(trash, StringComparison.Ordinal) == archived).ToArray();
 
-		// 只扫「会显示出来的那些」：侧栏按修改时间倒序取前 limit 条，
-		// 所以先只 stat 排序、再对头部做摘要扫描。会话上千份的机器上，
-		// 这一步把要读的字节数从「全部」降到「前 200 份」——不需要任何磁盘缓存。
+		// 只扫会显示出来的部分：侧栏按修改时间倒序取前 limit 条，先 stat 排序，再扫头部摘要。
+		// 会话上千份时，要读的字节从全部降到前 200 份，不用磁盘缓存。
 		if (cwdFilter is null && candidates.Length > limit && limit > 0)
 		{
 			candidates = [.. candidates
@@ -181,9 +181,8 @@ public sealed class SessionCatalog
 
 		var items = new SessionListItem[candidates.Length];
 
-		// 会话之间互不依赖：一份会话就是一个文件，摘要扫描按文件并行。
-		// 这是启动时最大的一笔 IO+解析（实测 78 份 / 304 MB / 单线程约 900 ms），
-		// 并行后随核数下降，而 UI 线程全程不参与。
+		// 会话之间互不依赖，摘要扫描按文件并行。这是启动时最大的一笔 IO 与解析
+		// （实测 78 份 / 304 MB / 单线程约 900 ms）；并行后随核数下降，UI 线程不参与。
 		if (candidates.Length > 1 && ScanParallelism(candidates.Length) > 1)
 		{
 			Parallel.For(
@@ -243,8 +242,8 @@ public sealed class SessionCatalog
 		}
 	}
 
-	/// 扫描并行度：文件数量够多才值得开线程（每份会话都要读全文，属 IO+CPU 混合）。
-	/// 留一个核给 UI 线程，别让打开会话时的时间线布局抢不到 CPU。
+	/// 扫描并行度：文件够多才开线程，每份会话都要读全文，属 IO + CPU 混合。
+	/// 留一个核给 UI 线程，时间线布局才抢得到 CPU。
 	private static int ScanParallelism(int fileCount)
 	{
 		if (fileCount <= 1) return 1;
@@ -380,7 +379,7 @@ public sealed class SessionCatalog
 	public sealed record ContentMatch(SessionListItem Session, string Excerpt);
 
 	/// 在会话正文里找关键字。只扫描最近的若干个文件、每个文件最多读 <paramref name="maxBytesPerFile"/>，
-	/// 命中即停 —— 聊天记录里工具输出往往很长，全量读会拖慢输入。
+	/// 命中即停：聊天记录里工具输出往往很长，全量读会拖慢输入。
 	public static IReadOnlyList<ContentMatch> SearchContent(
 		IReadOnlyList<SessionListItem> sessions,
 		string? query,
@@ -687,7 +686,7 @@ public sealed class SessionCatalog
 		try
 		{
 			// 续扫前先验明正身：同名文件被整份替换过（长度恰好也变了）时不能拿旧前缀当起点。
-			// 首行 + 续扫点之前的一小段尾巴都要对得上——会话被原地重写时首行通常不变，
+			// 首行与续扫点之前的一小段尾巴都要对得上。会话被原地重写时首行通常不变，
 			// 只有尾巴能证明「这几十 MB 前缀确实是上次看到的那一份」。
 			var start = resumeFrom;
 			if (start > 0 && (!HeadMatches(path, headHash) || !TailMatches(path, start, known!.TailHash)))
@@ -699,7 +698,7 @@ public sealed class SessionCatalog
 
 			using var lines = new Utf8LineReader(path, start);
 			// 首行（会话头部）的指纹用来判断下次能不能续扫；整份扫描时只看第一行，
-			// 不能逐行覆盖——覆盖后存下来的是末行指纹，而校验读的是首行，于是续扫永远失败。
+			// 不能逐行覆盖：覆盖后存下来的是末行指纹，校验却读首行，续扫会永远失败。
 			var fingerprintFirstLine = start == 0;
 			while (lines.TryReadLine(out var line))
 			{
@@ -1121,7 +1120,7 @@ public sealed class SessionCatalog
 	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLineForTest(string line) =>
 		ScanLinesForTest([line]);
 
-	/// 窗口less 测试用：按真实读盘顺序扫描——先走快速字节判定，判定不了才完整解析。
+	/// 无窗口测试用：按真实读盘顺序扫描，先走快速字节判定，判定不了才完整解析。
 	/// 与 <see cref="ScanLinesForTest"/> 的结果必须逐字段相同，否则快速路径改写了目录语义。
 	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLinesFastForTest(IEnumerable<string> lines)
 	{

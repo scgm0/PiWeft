@@ -59,10 +59,9 @@ public sealed class FoldScrollTests
 		Assert.True(smooth.MaxVerticalOffset > 1000);
 
 		conversation.ScrollToLatest();
-		// 收敛判据是「动画停下且真的到末尾」，不是「跑够 N 帧就算完」：跟底每帧都会重测行高，
-		// 目标 MaxVerticalOffset 会被不断推后，动画随之延长；而 16ms 只是虚拟时间的一帧，
-		// 并行跑整套测试时每帧推进的行数会变。固定 40 帧在满负载下不够（实测会稳定变红），
-		// 所以按虚拟时间给足预算，收敛即退出。
+		// 收敛判据是「动画停下且到了末尾」，不是「跑够 N 帧」。跟底每帧都重测行高，
+		// 目标 MaxVerticalOffset 不断后移，动画随之延长；16ms 只是虚拟时间的一帧，
+		// 并行跑整套测试时每帧推进的行数会变。固定 40 帧在满负载下不够，所以按虚拟时间给足预算，收敛即退出。
 		for (var frame = 0; frame < 400; frame++)
 		{
 			Thread.Sleep(2);
@@ -118,8 +117,8 @@ public sealed class FoldScrollTests
 	[Fact]
 	public void WheelOverGroupTextScrollsTheGroupBodyBeforeTheConversation()
 	{
-		// 组体里的思考文本/工具输出是可选择的文字控件：它们曾把滚轮直接转给会话，
-		// 于是组体永远滚不动、整段会话跟着动（滚动穿透）。
+		// 组体里的思考文本与工具输出是可选择文字控件，曾把滚轮直接转给会话，
+		// 组体滚不动、整段会话跟着动（滚动穿透）。
 		var text = MessageText.Create(string.Join('\n', Enumerable.Range(0, 60).Select(i => $"step {i}")));
 		var group = new ScrollViewer().Content(new StackPanel().Children(text))
 			.AutoVerticalScroll().NoHorizontalScroll().MaxHeight(160).SmoothScrolling();

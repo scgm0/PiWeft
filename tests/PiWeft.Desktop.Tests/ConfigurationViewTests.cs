@@ -87,7 +87,7 @@ public sealed class ConfigurationViewTests : IDisposable
 		await view.OpenAsync(ConfigFile.Settings);
 		ConversationPerformanceTests.Layout(view.View, 640, 720);
 
-		// 默认工具：「全部禁用」写成显式空数组（pi 语义），而不是退回默认集。
+		// 默认工具：「全部禁用」写成显式空数组（pi 语义），不退回默认集。
 		ClickText(view.View, Strings.ConfigToolsDisableAll);
 		Assert.True(view.IsDirty);
 		view.SaveDraft();
@@ -260,7 +260,7 @@ public sealed class ConfigurationViewTests : IDisposable
 		Assert.Contains(Strings.McpReauthorize, texts);
 		Assert.True(ButtonsLabeled(view, Strings.McpSignout).Single().IsVisible);
 
-		// 令牌过期要报「已过期」而不是笼统的「已授权」：两者的处理动作不同。
+		// 令牌过期要报「已过期」，不报笼统的「已授权」：两者的处理动作不同。
 		PiWeft.Mcp.McpOAuthStore.Save("https://mcp.example/mcp", new PiWeft.Mcp.McpOAuthToken
 		{
 			Access = "stale",

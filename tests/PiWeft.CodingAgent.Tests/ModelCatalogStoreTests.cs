@@ -45,7 +45,7 @@ public sealed class ModelCatalogStoreTests : IDisposable
 		Assert.True(throttled.NothingToDo, "节流窗口内不该发任何请求");
 		Assert.True((await ModelCatalogStore.RefreshAllAsync(_root, handler: handler, force: true)).Updated > 0);
 
-		// 时间戳缺失 = 没有节流依据，必须放行而不是永远不刷。
+		// 时间戳缺失 = 没有节流依据，放行，不要永不刷新。
 		var undated = Path.Combine(_root, "undated");
 		Directory.CreateDirectory(undated);
 		File.WriteAllText(Path.Combine(undated, "models-store.json"),

@@ -16,15 +16,15 @@ public sealed record ShellResult(string Output, int? ExitCode, bool Cancelled)
 
 	public int TotalLines { get; init; }
 
-	/// Output 只是尾部窗口：完整内容见 FullOutputPath。
-	/// 命令输出可以任意大（`yes`、`find /`、`grep -r`），不能拿全量字符串赌内存。
+	/// Output 只是尾部窗口，完整内容见 FullOutputPath。命令输出可以任意大
+	/// （`yes`、`find /`、`grep -r`），不能拿全量字符串赌内存。
 	public bool OutputTruncated { get; init; }
 
 	/// 命令因超时被终止。调用方应带着已捕获的输出报错。
 	public bool TimedOut { get; init; }
 
-	/// 超时发生时 shell 本身已经先退出（后台进程仍占着管道）。
-	/// 此时输出末尾属于后台进程，状态行需要同时报告 shell 的真实退出码。
+	/// 超时发生时 shell 已先退出，后台进程仍占着管道。输出末尾属于后台进程，
+	/// 状态行要同时报告 shell 的真实退出码。
 	public bool ShellExitedBeforeTimeout { get; init; }
 
 	public int? ShellExitCode { get; init; }
@@ -93,8 +93,8 @@ public static class ShellRunner
 	}
 
 	/// 在 <paramref name="cwd"/> 执行 <paramref name="command"/>，按到达顺序合并 stdout 与 stderr。
-	/// 取消/超时会杀掉进程组（无 setsid 时退回整棵进程树），并把已经收到的输出带回结果。
-	/// <paramref name="onOutput"/> 收到的是清洗后的文本块，不是按行拆分。
+	/// 取消或超时杀掉进程组（无 setsid 时退回整棵进程树），已收到的输出带回结果。
+	/// <paramref name="onOutput"/> 收到清洗后的文本块，不按行拆分。
 	public static async Task<ShellResult> RunAsync(
 		string command,
 		string cwd,
@@ -152,7 +152,7 @@ public static class ShellRunner
 		if (useProcessGroup)
 		{
 			// 不用 `--`：BusyBox 的 setsid 不解析选项分隔符，会把 `--` 当成程序名。
-			// shell 路径是绝对路径（或 sh），不会以 `-` 开头被 setsid 误认为选项。
+			// shell 路径是绝对路径或 sh，不会以 `-` 开头被当成选项。
 			arguments.Insert(0, shell.FileName);
 			fileName = setsid!;
 		}
@@ -341,7 +341,7 @@ public static class ShellRunner
 			}
 
 			// 没有 timeout 时不能让一个永远写输出的后台进程把会话挂死；有 timeout 时
-			// 交给 cancellation 收尾 —— 2 秒硬上限会在 timeout 之前把命令误报成成功。
+			// 交给 cancellation 收尾；2 秒硬上限会在 timeout 之前把命令误报成成功。
 			if (!hasTimeout && Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds >= ExitHardCapMs)
 			{
 				break;
@@ -474,7 +474,7 @@ public static class ShellRunner
 		var tailRead = tail.Length;
 
 		// 头部可能停在 UTF-8 多字节序列中间：不 flush 的 Decoder 会扣住未完成的码点，
-		// 而不是像 GetString 那样留下一个替换字符。
+		// 不像 GetString 那样留下一个替换字符。
 		var headDecoder = Encoding.UTF8.GetDecoder();
 		var headChars = new char[headDecoder.GetCharCount(head, 0, headRead)];
 		headDecoder.GetChars(head, 0, headRead, headChars, 0);

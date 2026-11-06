@@ -74,7 +74,7 @@ internal sealed class DiagnosticsLiveView : StackPanel
 				? $"p50 / p95（最近一秒）· 累计 p95 {frame.P95Ms:0.0}ms · 预算 {budget:0.0}ms"
 				: frame.Frames > 0
 					? $"p50 / p95（累计）· 预算 {budget:0.0}ms"
-					: "等待第一帧；按请求重绘时只统计真实帧成本");
+					: "等待第一帧");
 		_frameCounts.Set(
 			$"{window.DroppedFrames} / {window.LongFrames} / {window.IdleGaps}",
 			$"最近一秒掉帧/长帧/停顿 · 累计 {frame.DroppedFrames}/{frame.LongFrames}/{frame.IdleGaps} · 最长停顿 {frame.MaxGapMs:0}ms");
@@ -103,7 +103,7 @@ internal sealed class DiagnosticsLiveView : StackPanel
 			(Strings.LabelFrameRate, fresh.ContinuousLoop
 				? $"{frame.Fps:0.#} fps · 帧间隔 p50 {frame.GapP50Ms:0.0}ms / p95 {frame.GapP95Ms:0.0}ms"
 				: $"按请求重绘 · 最近一秒 {fresh.FramesPerSecond:0} 帧 · 典型 FPS 不适用",
-				fresh.ContinuousLoop ? "连续循环：帧间隔可换算 FPS" : "按请求循环：帧间隔包含空闲，不能换算 FPS"),
+				fresh.ContinuousLoop ? "帧间隔可换算 FPS" : "帧间隔含空闲，不换算 FPS"),
 			(Strings.LabelInputLatency, frame.Inputs > 0
 				? $"p95 {frame.InputP95Ms:0.0}ms · 最大 {frame.InputMaxMs:0.0}ms（样本 {frame.Inputs}）"
 				: "还没有按键/滚轮样本", (string?)null),

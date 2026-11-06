@@ -11,7 +11,7 @@ internal static class MarkdownMetrics
 	private const double UnwrappedWidth = 1_000_000;
 
 	// 探针结果的键空间本来很小（字族 × 字号档 × 字重 × DPI），但宿主连续缩放字号时仍可能不断引入新键：
-	// 所以用 LRU 淘汰而不是「满了就清盘」——清盘会把已有答案全丢了，下一帧又得重新探，
+	// 所以用 LRU 淘汰，不用「满了就清盘」：清盘会把已有答案全丢了，下一帧又得重新探，
 	// 把一次性成本变成每帧成本。
 	private const int Capacity = 128;
 
@@ -23,7 +23,7 @@ internal static class MarkdownMetrics
 	private readonly record struct FontKey(string? Family, double Size, FontWeight Weight, bool Italic, uint Dpi);
 
 	/// 每行需要补的附加行间距（DIP）：<c>字号 × 倍率</c> 与字体自然行高之差。
-	/// 差为负时返回 0——倍率低于自然行高就不压缩，否则上下行会咬在一起（CJK 字体自然行高本来就大）。
+	/// 差为负时返回 0：倍率低于自然行高就不压缩，否则上下行会咬在一起（CJK 字体自然行高本来就大）。
 	/// 倍率非有限或 ≤ 0 视为关闭行距。
 	public static double LineSpacing(ITextEngine engine, TextRunStyle style, uint dpi, double scale)
 	{

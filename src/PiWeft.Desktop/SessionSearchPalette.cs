@@ -15,7 +15,7 @@ public sealed class SessionSearchPalette
 	private const int MaxRows = 200;
 	private readonly Func<IReadOnlyList<SessionListItem>> _sessions;
 	private readonly Action<SessionListItem> _open;
-	// 侧栏摘要改成按需加载后，搜索可能先于列表就绪打开：此时给出「正在读取」而不是「没有匹配」。
+	// 侧栏摘要改成按需加载后，搜索可能先于列表就绪打开：此时给出「正在读取」，不是「没有匹配」。
 	private readonly Func<bool> _loading;
 	private readonly TextBox _query;
 	private readonly TextBlock _hint;

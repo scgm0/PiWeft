@@ -15,9 +15,9 @@ public interface IMcpAccessTokenProvider
 	Task<string?> RefreshAsync(CancellationToken cancellationToken);
 }
 
-/// 基于 streamable HTTP 传输的 MCP 客户端：每条 JSON-RPC 消息都以 POST 发往同一个端点，
-/// 服务器要么回单个 JSON 对象，要么用 SSE 流回传响应。本端不使用会话状态，
-/// 服务器下发的会话 id 若存在则原样回传。
+/// 基于 streamable HTTP 传输的 MCP 客户端：每条 JSON-RPC 消息都以 POST 发往同一端点，
+/// 服务器回单个 JSON 对象，或用 SSE 流回传。本端不维护会话状态，
+/// 服务器下发的会话 id 原样回传。
 public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyncDisposable
 {
 	private readonly HttpClient _http;
@@ -255,8 +255,8 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		}
 	}
 
-	/// 启动独立通知流。它与请求-响应共用同一个端点，但必须绕开 <c>_gate</c> ——
-	/// 长连接会永久占住那把锁，让所有请求饿死。
+	/// 启动独立通知流。它与请求-响应共用端点，但要绕开 <c>_gate</c>：
+	/// 长连接会一直占着锁，让所有请求饿死。
 	private void StartNotificationStream()
 	{
 		var notifications = new CancellationTokenSource();
@@ -300,8 +300,8 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 
 				if (response.StatusCode == HttpStatusCode.Unauthorized)
 				{
-					// 主动刷新一次令牌：应用空闲时没有 POST 请求去触发刷新，
-					// 否则这条流会一直用过期令牌拿 401，永远恢复不了。
+					// 主动刷新一次令牌：应用空闲时没有 POST 请求触发刷新，
+					// 这条流会一直拿过期令牌换 401，恢复不了。
 					_notificationStreamActive = false;
 					if (_tokens is not null)
 					{
@@ -354,8 +354,8 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 					}
 				}
 
-				// 服务器把流正常关闭（例如代理回了 200 + 空正文立刻断开）时也必须退避，
-				// 否则这里会零延迟地无限重连，把服务器打爆。
+				// 服务器正常关闭流（例如代理回 200 + 空正文后立刻断开）时也要退避，
+				// 否则会零延迟无限重连。
 				attempt++;
 				if (!await DelayAsync(attempt, cancellationToken).ConfigureAwait(false))
 				{
@@ -650,7 +650,7 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		return null;
 	}
 
-	/// 解析一帧 SSE 数据。坏帧（服务器发来非法 JSON）直接跳过而不是抛出：
+	/// 解析一帧 SSE 数据。坏帧（服务器发来非法 JSON）直接跳过，不抛出：
 	/// 通知流的后台任务一旦 fault，连 <see cref="DisposeAsync"/> 都会被带着抛出。
 	private static JsonDocument? ParseFrame(string eventName, ReadOnlySpan<byte> data)
 	{

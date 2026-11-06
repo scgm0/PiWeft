@@ -65,12 +65,12 @@ public static partial class Strings
 	public const string UsageCategoryBalance = "余额";
 	public const string UsageCategoryPlan = "套餐";
 	public const string UsageCategorySubscription = "订阅";
-	public const string UsageHintNone = "不选模板：按供应商地址自动匹配内置适配，并合并 probes 数组里的手写探针。";
+	public const string UsageHintNone = "不选模板：按供应商地址匹配内置适配，并合并 probes 里的手写探针。";
 	public const string UsageHintBuiltin = "该供应商已内置适配，无需填写字段；启用后即可查询。";
-	public const string UsageHintGeneral = "适用于实现 OpenAI 兼容 /usage（{ balance, unit }）的网关；凭据与地址留空时使用供应商配置。";
-	public const string UsageHintNewApi = "New API / OneAPI 中转站：访问令牌在站点「个人设置 → 安全」生成，积分自动换算为美元。";
-	public const string UsageHintCookie = "自研网关的网页后台接口：需要登录态 Cookie（F12 → Network → 请求头 Cookie），不能使用 API Key。";
-	public const string UsageHintSub2Api = "Sub2API 自部署网关：钱包 / 订阅 / Key 额度三种形态按响应自动分流，凭据沿用供应商 API Key。";
+	public const string UsageHintGeneral = "适用于实现 OpenAI 兼容 /usage（{ balance, unit }）的网关；凭据与地址留空时用供应商配置。";
+	public const string UsageHintNewApi = "New API / OneAPI 中转站：访问令牌在「个人设置 → 安全」生成，积分换算为美元。";
+	public const string UsageHintCookie = "自研网关的网页后台接口：需要登录 Cookie（F12 → Network → 请求头），不能用 API Key。";
+	public const string UsageHintSub2Api = "Sub2API 自部署网关：钱包、订阅、Key 额度按响应分流，凭据沿用供应商 API Key。";
 	public const string UsageApiKey = "API Key（留空使用供应商凭据）";
 	public const string UsageApiKeyPlaceholder = "留空自动使用供应商配置";
 	public const string UsageBaseUrl = "请求地址（留空使用供应商地址）";
@@ -93,7 +93,7 @@ public static partial class Strings
 	public const string UsageTesting = "正在测试…";
 	public const string UsageTestSuccess = "测试成功";
 	public const string UsageTestFailed = "测试失败";
-	public const string UsageLegacyNotice = "检测到旧版 usage-queries.json 配置：自动识别模式下会优先使用；选择模板或删除旧文件后停用。";
+	public const string UsageLegacyNotice = "检测到旧版 usage-queries.json：自动识别模式下优先使用，选模板或删旧文件后停用。";
 	public const string UsageNewApiNeeds = "New API 模板需要访问令牌和用户 ID。";
 	public const string UsageCookieNeeds = "Cookie 模板需要 Cookie、接口路径和余额字段路径。";
 

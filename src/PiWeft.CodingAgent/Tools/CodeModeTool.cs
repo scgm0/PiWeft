@@ -14,7 +14,7 @@ public sealed record CodeModeHost
 {
 	public required Func<IReadOnlyList<AgentTool>> Tools { get; init; }
 
-	/// 按名称执行嵌套调用；必须走参数校验、钩子与中断，而不是直接调用 <see cref="AgentTool.Execute"/>。
+	/// 按名称执行嵌套调用，走参数校验、钩子与中断，不直接调用 <see cref="AgentTool.Execute"/>。
 	/// 最后一个参数是本次 codemode 执行的消息快照（供钩子上下文复用），没有会话时为 <c>null</c>。
 	public required Func<string, JsonObject, string, CancellationToken, IReadOnlyList<Message>?, Task<AgentToolCallOutcome>> ExecuteTool { get; init; }
 
@@ -196,8 +196,8 @@ public static class CodeModeTool
 		public List<CatalogEntry> Entries { get; } = [];
 	}
 
-	/// 预算选择（pi 的 selectCatalog）：每一轮让每个组放入它最便宜且放得下的工具；
-	/// 放不下的组本轮退出，其它组继续。这样每个命名空间都先被代表，再逐步补全。
+	/// 预算选择（pi 的 selectCatalog）：每轮让各组放入最便宜且放得下的工具，放不下的组本轮退出。
+	/// 每个命名空间先有代表，再逐步补全。
 	private static HashSet<string> SelectCatalog(IReadOnlyList<CatalogGroup> groups, int budget)
 	{
 		var queues = groups
@@ -336,7 +336,7 @@ public static class CodeModeTool
 		var output = result.Output;
 		if (result.Ok && result.Value is not null)
 		{
-			// 返回值与 text() 一样参与输出编号，console 永远在最后。
+			// 返回值与 text() 一样参与输出编号，console 总在最后。
 			output = [.. output, new CodeModeTextItem { Text = ValueText(result.Value) }];
 		}
 

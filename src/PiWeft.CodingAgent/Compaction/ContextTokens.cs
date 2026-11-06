@@ -46,7 +46,7 @@ public static class ContextTokens
 		return (chars + 3) / 4; // 即 ceil(chars / 4)
 	}
 
-	/// 估算的上下文大小：以最后一次可用用量为基准，其后的内容按估算累加 —— pi 也这么做，
+	/// 估算的上下文大小：以最后一次可用用量为基准，其后的内容按估算累加；pi 也这么做，
 	/// 以免很长的工具结果被重复计算。
 	public static (long Tokens, int? LastUsageIndex) EstimateContextTokens(IReadOnlyList<Message> messages)
 	{

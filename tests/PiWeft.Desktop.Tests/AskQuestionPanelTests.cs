@@ -147,7 +147,7 @@ public sealed class AskQuestionPanelTests
 	{
 		// 页脚主按钮的底色是强调色（深色主题下是近白）。以前文字复用了「正文主色」的
 		// Label()，近白的字压在近白的底上，「下一题」看着就像一块禁用态的灰斑。
-		// 修法不是把字写死成 OnAccentText —— 那样禁用时又会变成深色字压深色底；
+		// 修法不是把字写死成 OnAccentText：那样禁用时又会变成深色字压深色底；
 		// 而是不给标签任何前景色与角色，让它继承按钮：可用 TextOnAccent、禁用 TextFaint。
 		// 「下一题」只在中间的自由输入题上出现，所以这里拿三道题。
 		var panel = new AskQuestionPanel();

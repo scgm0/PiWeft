@@ -9,8 +9,8 @@ namespace PiWeft.CodingAgent.Import;
 /// 每行一条记录：<c>{"type":"user"|"assistant"|...,"message":{...},"cwd":..,"sessionId":..,"timestamp":..}</c>。
 /// <c>message.content</c> 是块数组：<c>text</c> / <c>thinking</c> / <c>tool_use</c> / <c>tool_result</c>。
 /// 跳过 <c>isSidechain</c>（子代理的旁支 transcript）与 <c>isMeta</c>（宿主注入的元信息，不是对话）。
-/// <c>tool_result</c> 块写在 user 行里，必须还原成 pi 的 <c>toolResult</c> 消息 ——
-/// 当成用户文本会让模型看到「工具输出」的原始 JSON，也会破坏 toolCall ↔ toolResult 的配对。
+/// <c>tool_result</c> 块写在 user 行里，要还原成 pi 的 <c>toolResult</c> 消息；
+/// 当成用户文本会让模型看到「工具输出」的原始 JSON，也会破坏 toolCall 与 toolResult 的配对。
 internal sealed class ClaudeCodeImporter : IExternalSessionImporter
 {
 	public string Key => "claude";
@@ -139,7 +139,7 @@ internal sealed class ClaudeCodeImporter : IExternalSessionImporter
 	}
 
 	/// user 行可能同时承载「用户输入」与「工具结果」：一行里先有 tool_result 块、后有文本时，
-	/// 工具结果必须排在前面 —— 否则 user 气泡会插在 toolCall 与 toolResult 之间。
+	/// 工具结果排在前面，否则 user 气泡会插在 toolCall 与 toolResult 之间。
 	private static string? AppendUser(
 		JsonObject record,
 		List<SessionEntry> entries,

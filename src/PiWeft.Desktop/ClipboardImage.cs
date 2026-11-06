@@ -49,7 +49,7 @@ internal static class ClipboardImages
 	internal static string PastedName(string mimeType) => "pasted-" + Guid.NewGuid().ToString("N")[..8] + Extension(mimeType);
 
 	/// 声明的 MIME 与其字节内容是否相符。剪贴板 owner 常常只是「声明」了某个类型，
-	/// 读回来才发现是空数据或别的东西，签名校验让这些情况退回文本粘贴而不是粘上坏图。
+	/// 读回来才发现是空数据或别的东西；签名校验让这些情况退回文本粘贴，不粘坏图。
 	internal static bool LooksLike(string mimeType, ReadOnlySpan<byte> data)
 	{
 		if (data.Length < 4) return false;

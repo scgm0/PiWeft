@@ -37,7 +37,7 @@ public static class CodingMessages
 		role is "bashExecution" or "custom" or "branchSummary" or "compactionSummary";
 
 	/// 把代理的会话记录转换成 provider 能理解的消息：纯状态消息被过滤掉，
-	/// 自定义角色变成 user 消息 —— 与 pi 的 <c>convertToLlm</c> 完全一致。
+	/// 自定义角色变成 user 消息，与 pi 的 <c>convertToLlm</c> 完全一致。
 	public static IReadOnlyList<Message> ConvertToLlm(IReadOnlyList<Message> messages, CancellationToken cancellationToken)
 	{
 		var converted = new List<Message>(messages.Count);

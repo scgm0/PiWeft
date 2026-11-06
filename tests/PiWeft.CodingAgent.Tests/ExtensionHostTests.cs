@@ -10,7 +10,7 @@ namespace PiWeft.CodingAgent.Tests;
 
 /// 扩展宿主的可执行契约：发现 → 沙箱执行 → 注册 → 回调。
 /// 全部用临时目录里的真实扩展文件，因为「宿主能跑」这件事只能靠真的跑一遍来证明。
-/// 其中一个用例改 <c>PI_CODING_AGENT_DIR</c>（会话按它发现扩展），所以整个类归到串行集合里 ——
+/// 其中一个用例改 <c>PI_CODING_AGENT_DIR</c>（会话按它发现扩展），所以整个类归到串行集合；
 /// 并行跑时别的测试会读到对方设置的 agent 目录。
 [Collection("process-environment")]
 public sealed class ExtensionHostTests : IDisposable
@@ -169,7 +169,7 @@ public sealed class ExtensionHostTests : IDisposable
 
 
 	[Fact]
-	public void RegisteredToolExecutesItsJavascriptImplementation()
+	public async Task RegisteredToolExecutesItsJavascriptImplementation()
 	{
 		using var host = new ExtensionHost();
 		Write("echo.js", """
@@ -191,13 +191,13 @@ public sealed class ExtensionHostTests : IDisposable
 		Assert.Equal("把输入原样返回", tool.Description);
 		Assert.NotNull(tool.Parameters["properties"]);
 
-		var result = tool.Execute(new AgentToolInvocation
+		var result = await tool.Execute(new AgentToolInvocation
 		{
 			ToolCallId = "c1",
 			ToolName = "echo",
 			Arguments = new System.Text.Json.Nodes.JsonObject { ["text"] = "hi" },
 			CancellationToken = CancellationToken.None,
-		}).GetAwaiter().GetResult();
+		});
 
 		Assert.False(result.IsError);
 		Assert.Equal(" echoed:hi", Assert.IsType<PiWeft.Ai.TextContent>(result.Content[0]).Text);
@@ -226,7 +226,7 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
-	public void ToolReturningAStringIsAccepted()
+	public async Task ToolReturningAStringIsAccepted()
 	{
 		using var host = new ExtensionHost();
 		Write("plain.js", """
@@ -236,18 +236,18 @@ public sealed class ExtensionHostTests : IDisposable
 			""");
 		host.Load(_cwd, trusted: true, _agentDir);
 
-		var result = host.Tools[0].Execute(new AgentToolInvocation
+		var result = await host.Tools[0].Execute(new AgentToolInvocation
 		{
 			ToolCallId = "c1",
 			ToolName = "plain",
 			Arguments = new JsonObject(),
-		}).GetAwaiter().GetResult();
+		});
 
 		Assert.Equal("直接给字符串", Assert.IsType<PiWeft.Ai.TextContent>(result.Content[0]).Text);
 	}
 
 	[Fact]
-	public void ToolErrorsReachTheModelAsErrors()
+	public async Task ToolErrorsReachTheModelAsErrors()
 	{
 		using var host = new ExtensionHost();
 		Write("bad.js", """
@@ -257,8 +257,7 @@ public sealed class ExtensionHostTests : IDisposable
 			""");
 		host.Load(_cwd, trusted: true, _agentDir);
 
-		var result = host.Tools[0].Execute(new AgentToolInvocation { ToolCallId = "c", ToolName = "bad", Arguments = new JsonObject() })
-			.GetAwaiter().GetResult();
+		var result = await host.Tools[0].Execute(new AgentToolInvocation { ToolCallId = "c", ToolName = "bad", Arguments = new JsonObject() });
 
 		Assert.True(result.IsError);
 		Assert.Equal("参数不对", Assert.IsType<PiWeft.Ai.TextContent>(result.Content[0]).Text);
@@ -469,7 +468,7 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
-	public void ExtensionFlagsReceiveValuesAndUnknownFlagsAreReturned()
+	public async Task ExtensionFlagsReceiveValuesAndUnknownFlagsAreReturned()
 	{
 		using var host = new ExtensionHost();
 		Write("flags.js", """
@@ -495,12 +494,12 @@ public sealed class ExtensionHostTests : IDisposable
 		Assert.Equal(["nope"], unknown);
 		Assert.Equal("strict", host.Flags["plan"].Default is "off" ? "strict" : "unexpected");
 
-		var result = host.Tools[0].Execute(new AgentToolInvocation
+		var result = await host.Tools[0].Execute(new AgentToolInvocation
 		{
 			ToolCallId = "c1",
 			ToolName = "flags",
 			Arguments = new JsonObject(),
-		}).GetAwaiter().GetResult();
+		});
 
 		Assert.Equal("strict:true", Assert.IsType<PiWeft.Ai.TextContent>(result.Content[0]).Text);
 	}

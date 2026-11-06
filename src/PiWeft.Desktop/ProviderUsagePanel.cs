@@ -435,7 +435,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 			if (_document is not { } document) return;
 			if (!File.Exists(document.Path))
 			{
-				// CreateNew 而不是 WriteAllText：并行创建/外部写入时不会把别人的内容覆盖掉。
+				// CreateNew 而非 WriteAllText：并行创建或外部写入时不会覆盖别人的内容。
 				using var stream = new FileStream(document.Path, FileMode.CreateNew);
 			}
 			if (!Shell.OpenInEditor(document.Path)) Toasts.Error(View, Strings.ConfigFailed);

@@ -85,7 +85,7 @@ public class SessionOpenProgressTests : IDisposable
 	{
 		var manager = Build(2000);
 		using var cts = new CancellationTokenSource();
-		// 读取线程上汇报进度，达到阈值就请求取消：验证解析真的会中断，而不是跑完才检查。
+		// 读取线程上汇报进度，达到阈值就请求取消：验证解析会中断，不是跑完才检查。
 		var progress = new CancelAfter(cts, threshold: 500);
 
 		Assert.Throws<OperationCanceledException>(() => SessionManager.Open(

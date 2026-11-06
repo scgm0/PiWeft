@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PiWeft.Desktop.Tests;
 
-/// 侧栏摘要的磁盘缓存。它换掉的是「每次启动把 300+ MiB 会话全扫一遍」——
+/// 侧栏摘要的磁盘缓存。它换掉的是「每次启动把 300+ MiB 会话全扫一遍」。
 /// 失效判据必须与内存缓存完全一致（长度 / mtime / 首行指纹），否则会显示过期的消息数与预览。
 public class SessionSummaryStoreTests : IDisposable
 {

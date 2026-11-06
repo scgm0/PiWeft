@@ -74,7 +74,7 @@ public sealed class ProviderKeyPanelTests
 			Assert.Equal("project", stored.Environment["GOOGLE_CLOUD_PROJECT"]);
 			Assert.Equal("us-central1", stored.Environment["GOOGLE_CLOUD_LOCATION"]);
 
-			// 再次打开要自动落在 ADC 方式上，而不是回到空的 API Key 表单。
+			// 再次打开要落在 ADC 方式上，不回空的 API Key 表单。
 			var reopened = new ProviderKeyPanel(
 				ProviderAuthService.Statuses(directory.FullName).Single(item => item.Id == "google-vertex"),
 				directory.FullName, (_, _) => { });

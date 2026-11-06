@@ -8,7 +8,7 @@ namespace PiWeft.CodingAgent.Resources;
 
 public sealed record ResourceRoot(string Path, ResourceOrigin Origin);
 
-/// 资源页显示的一个扩展条目。<see cref="Note"/> 承载「为什么没生效」——
+/// 资源页显示的一个扩展条目。<see cref="Note"/> 承载「为什么没生效」；
 /// 加载失败或 TypeScript 未转译的扩展如果只字不提，用户会以为它在跑。
 public sealed record ExtensionEntry(string Name, string Path, string Origin, bool Loaded, string Note);
 

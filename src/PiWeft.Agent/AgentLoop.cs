@@ -5,7 +5,7 @@ using PiWeft.Ai.Utils;
 
 namespace PiWeft.Agent;
 
-/// 代理主循环。全程使用 <see cref="Message"/>，只在真正请求 provider 的边界上转换成对方要的形状。
+/// 代理主循环。全程使用 <see cref="Message"/>，只在请求 provider 的边界上转换成对方要的形状。
 /// 对应 pi 的 <c>agent-loop.ts</c>。
 public static class AgentLoop
 {
@@ -40,8 +40,8 @@ public static class AgentLoop
 		return newMessages;
 	}
 
-	/// 从当前上下文继续一次运行，不新增消息。上下文的最后一条消息必须能转换成
-	/// <c>user</c> 或 <c>toolResult</c>，否则 provider 会拒绝该请求。
+	/// 从当前上下文继续一次运行，不新增消息。最后一条消息要能转换成 <c>user</c> 或
+	/// <c>toolResult</c>，否则 provider 会拒绝请求。
 	public static async Task<IReadOnlyList<Message>> ContinueAsync(
 		AgentContext context,
 		AgentLoopConfig config,
@@ -171,8 +171,8 @@ public static class AgentLoop
 
 					if (toolCalls.Count > 0)
 					{
-						// 停止原因是 "length" 说明输出被截断，此时每个工具调用的参数都可能不完整。
-						// 全部按失败处理，绝不执行残缺的调用。
+						// 停止原因是 "length" 说明输出被截断，工具调用参数可能不完整，
+						// 全部按失败处理，不执行残缺的调用。
 						var batch = message.StopReason == StopReason.Length
 							? await FailTruncatedAsync(toolCalls, emit)
 							: await ExecuteToolCallsAsync(context, message, toolCalls, config, emit, cancellationToken);
@@ -230,8 +230,8 @@ public static class AgentLoop
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
-			// 取消也可能发生在自动压缩、请求准备或回合钩子里；这些路径没有经过 provider，
-			// 仍需补一条 aborted 助手消息并发出 turn_end / agent_end，避免客户端永远等不到本次运行结束。
+			// 取消也可能发生在自动压缩、请求准备或回合钩子里。这些路径没有经过 provider，
+			// 仍要补一条 aborted 助手消息并发出 turn_end / agent_end，客户端才不会一直等下去。
 			AssistantMessage aborted;
 			if (context.Messages.Count > 0 && context.Messages[^1] is AssistantMessage { StopReason: StopReason.Aborted } existing)
 			{
@@ -339,9 +339,9 @@ public static class AgentLoop
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
-			// 取消先打断了 channel 的读取，provider 随后推送的 aborted 事件往往读不到。
-			// 必须在这里把已经收到的部分落成 aborted 消息：否则本次运行没有 message_end /
-			// agent_end，会话不落盘，桌面也会一直停在「运行中」而无法再次发送。
+			// 取消先打断 channel 的读取，provider 随后推送的 aborted 事件往往读不到。
+			// 这里要把已收到的部分落成 aborted 消息，否则本次运行没有 message_end / agent_end，
+			// 会话不落盘，桌面停在「运行中」，无法再次发送。
 			var aborted = AbortedAssistant(partial, config, Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
 			if (addedPartial)
 			{

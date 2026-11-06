@@ -12,12 +12,12 @@ using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
-/// D-03：命令 Dock。用 MiniPty 在项目目录里启动一个真正的伪终端（交互式 shell），
-/// 输出交给 <see cref="TerminalScreen"/> 做 ANSI/VT 解析后按行渲染，键盘与 IME 输入直接写回 PTY。
-/// 交互对齐 xterm.js 的常用部分：scrollback 与滚动条、鼠标拖选/双击选词/三击选行/Alt 区块选择、
-/// Shift+滚轮本地滚动、应用鼠标上报（1000/1002/1003 + SGR 1006/1016 + urxvt 1015）、
-/// bracketed paste（多行先确认）。支持缩放重排、DECSCUSR 光标形态与闪烁、DECSCNM 反色、
-/// OSC 4/10/11/12 调色、OSC 8 超链接（Ctrl+点击）。少数边界序列按 xterm.js 近似处理。
+/// D-03：命令 Dock。MiniPty 在项目目录里启动交互式 shell，输出经 <see cref="TerminalScreen"/> 做
+/// ANSI/VT 解析后按行渲染，键盘与 IME 输入直接写回 PTY。交互对齐 xterm.js 的常用部分：
+/// scrollback 与滚动条、拖选/双击选词/三击选行/Alt 区块选择、Shift+滚轮本地滚动、
+/// 鼠标上报（1000/1002/1003 + SGR 1006/1016 + urxvt 1015）、bracketed paste（多行先确认）、
+/// 缩放重排、DECSCUSR 光标形态与闪烁、DECSCNM 反色、OSC 4/10/11/12 调色、
+/// OSC 8 超链接（Ctrl+点击）。少数边界序列按 xterm.js 近似。
 public sealed class TerminalDock : IDisposable, ITerminalInputSink
 {
 	private const int MinColumns = 20;
@@ -199,9 +199,9 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			.VerticalAlignment(VerticalAlignment.Top)
 			.Child(_imeLabel);
 
-		// 光标不再靠「给 run 铺背景 / 把字符染色加下划线」近似：形状由光标层按字格几何画。
-		// 实心块是「格子的背景」，排在文本行底下，块下那个字符仍读得出来；
-		// 竖线、底线与失焦的空心框不遮字，排在文本行之上，单元格自带背景色时也不会被盖掉。
+		// 光标形状由光标层按字格几何绘制，不靠给 run 铺背景或染色加下划线。
+		// 实心块画成格子背景，排在文本行底下，块下的字符仍可读；
+		// 竖线、底线与失焦空心框排在文本行之上，不遮字，也不会被单元格背景盖掉。
 		_cursorUnder = new TerminalCursorLayer();
 		_cursorOver = new TerminalCursorLayer();
 
@@ -223,8 +223,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			actions.Children(AppIcons.Button("x", Strings.CloseTerminal, onClose));
 		}
 
-		// 紧凑形态给会话底部的终端面板用：标题行只有一行 —— 左边「终端」，右边 shell / 重启 / 清屏 / 收起；
-		// 说明文本默认隐藏，只在 shell 失败/退出时显示一行省略的诊断。
+		// 紧凑形态给会话底部的终端面板：标题行只有一行，左边「终端」，右边 shell / 重启 / 清屏 / 收起；
+		// 说明文本默认隐藏，shell 失败或退出时显示一行诊断。
 		var header = compact
 			? new StackPanel()
 				.Spacing(AppTheme.Space1)
@@ -396,8 +396,8 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 	internal Rect CursorSurfaceForTest => _lineHost.Bounds;
 
-	/// 窗口less 测试用：光标格是否正好压在它所属的那个文本行上。
-	/// 拖高时布局回调先于子元素 arrange，绝对坐标只能在渲染时现算，否则光标停在旧行。
+	/// 无窗口测试用：光标格是否压在所属文本行上。
+	/// 拖高时布局回调先于子元素 arrange，绝对坐标只能渲染时现算，否则光标停在旧行。
 	internal bool CursorSitsOnItsRowForTest
 	{
 		get
@@ -464,7 +464,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			.HorizontalAlignment(HorizontalAlignment.Center)
 			.VerticalAlignment(VerticalAlignment.Center));
 
-		// 命令必须注册在菜单的 placement target 上，否则菜单项点击找不到处理程序。
+		// 命令注册在菜单的 placement target 上，否则菜单项点击找不到处理程序。
 		var auto = new Command("pi.terminal.shell.auto", Strings.TerminalShellAuto);
 		_shellButton.Commands.Register(auto, () => SelectShell(string.Empty));
 		menu.Items.Add(new MenuItem(auto)
@@ -1633,7 +1633,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			_screen.HostForeground = ToRgb(AppTheme.TerminalForeground);
 			_screen.HostBackground = ToRgb(AppTheme.TerminalBackground);
 			var colorVersion = _screen.ColorVersion;
-			// DECSCUSR / DECSCNM / OSC 4/10/11/12 只改整屏渲染参数，不碰行内容，必须主动全量重绘一次。
+			// DECSCUSR / DECSCNM / OSC 4/10/11/12 只改整屏渲染参数，不碰行内容，要主动全量重绘一次。
 			var renderChanged = _paintCursorStyle != _cachedCursorStyle ||
 				_paintReverseVideo != _cachedReverseVideo ||
 				colorVersion != _cachedColorVersion;
@@ -1679,7 +1679,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 					continue;
 				}
 
-				// 光标那一格永远单独切一个 run（run.Cursor）：一个簇要么整格高亮、要么整格不碰，
+				// 光标那一格单独切一个 run（run.Cursor）：一个簇要么整格高亮、要么整格不碰，
 				// 不会在组合符号中间断开。失焦时也要切：光标层要靠这个边界量出那一格在哪。
 				_screen.GetRuns(row, _lineRuns[row], _lineBuilders[row], cursorInRow);
 				_cachedBufferRows[row] = bufferRow;
@@ -1741,7 +1741,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 			view.Inlines.Clear();
 			foreach (var run in runs)
 			{
-				// 光标格由屏幕自己切出来（run.Cursor）：一个簇永远整格高亮，不会在组合符号中间断开。
+				// 光标格由屏幕自己切出来（run.Cursor）：一个簇整格高亮，不会在组合符号中间断开。
 				// 只有聚焦才把块下那个字符按底色画；失焦时文本一个字也不动，空心框是纯几何。
 				// 行尾之外的光标不再补一个 run：格子由光标层按列号画，补位只会把块拽到行内容末尾。
 				AddRun(view, run, run.Text, run.Cursor && focusedCursor);
@@ -1791,7 +1791,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 	/// 光标格（**相对于终端表面左上角**）。横向跟着本行的真实排布量：回退字体的字宽、宽字符、
 	/// 粗体都会让「列号 × 格宽」与字符实际位置对不上，只有按排布量才压得住它所属那一格；
 	/// 纵向用「视口行 × 行高」：所有文本行与两层光标共用同一个栅格单元，行高固定、间距为 0，
-	/// 这个相对位置天然跟得住。绝对坐标交给光标层在渲染时按当前 Bounds 现算 ——
+	/// 这个相对位置天然跟得住。绝对坐标交给光标层在渲染时按当前 Bounds 现算。
 	/// 要是在重绘前就把它算死，拖高时 arrange 发生在绘制之后，光标会一直停在旧行上。
 	/// 量不到排布时退回格网数学。
 	private Rect CursorCellRect(int viewportRow, int column)
@@ -1809,7 +1809,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 
 		// 量不到排布（光标落在行尾空白里，那些格根本没有字形）：按格网算。
 		// 旧实现在这里给行尾光标补一个 run，于是块画在「最后一个有字形的格子」后面，
-		// 光标越往右走块偏得越多 —— 看起来就是光标整块偏左。
+		// 光标越往右走块偏得越多，看起来就是光标整块偏左。
 		return new Rect(
 			column * _cellWidth,
 			viewportRow * _lineHeight,
@@ -1967,7 +1967,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 				element.Background = AppTheme.TerminalSelection;
 			}
 			// SGR 7（反白）把默认前景换成了背景色：不写明背景时字符会被画成“底色叠底色”，
-			// 例如 zsh 对括号粘贴高亮的输入看起来就像整段消失。反白行必须显式铺上交换后的背景。
+			// 例如 zsh 对括号粘贴高亮的输入看起来就像整段消失。反白行要显式铺上交换后的背景。
 			else if (_paintReverseVideo || explicitDefault || run.Reverse || run.Background.Kind != TerminalColorKind.Default)
 			{
 				element.Background = background;

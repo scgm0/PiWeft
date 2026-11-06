@@ -57,7 +57,7 @@ public static class ImagePipeline
 
 	/// <summary>
 	/// 处理一张图片。<paramref name="bytes"/> 是原始文件字节，<paramref name="mimeType"/>
-	/// 是嗅探/声明出来的类型（可带参数，也可为空——以字节头为准）。
+	/// 是嗅探或声明出来的类型（可带参数，也可为空，以字节头为准）。
 	/// </summary>
 	public static ImageProcessResult Process(
 		ReadOnlySpan<byte> bytes,
@@ -66,7 +66,7 @@ public static class ImagePipeline
 		bool autoResize = true) => Process(bytes.ToArray(), mimeType, options, autoResize);
 
 	/// <see cref="Process(ReadOnlySpan{byte}, string, ImageResizeOptions?, bool)"/> 的数组重载：
-	/// 限制内的图片原样返回，连一次整图拷贝都省掉。
+	/// 限制内的图片原样返回，整图拷贝都省掉。
 	public static ImageProcessResult Process(
 		byte[] bytes,
 		string mimeType,
@@ -85,8 +85,8 @@ public static class ImagePipeline
 		};
 	}
 
-	/// 与 <see cref="Process"/> 相同，但不做 base64：附件归一化在「未重编码」时
-	/// 直接复用调用方手里的 base64 字符串，省掉一次大字符串分配。
+	/// 与 <see cref="Process"/> 相同，但不做 base64：附件归一化在未重编码时
+	/// 直接复用调用方的 base64 字符串，省一次大字符串分配。
 	public static ImageProcessBytesResult ProcessBytes(
 		byte[] bytes,
 		string mimeType,
@@ -111,7 +111,7 @@ public static class ImagePipeline
 		}
 
 		// 与 pi 的 resizeImageInProcess 一样先完整解码：坏图在这一步就会失败，
-		// 而不是等 provider 收到一段解不开的字节。解码后才知道显示尺寸（方向 5–8 宽高互换）。
+		// 不等 provider 收到一段解不开的字节。解码后才知道显示尺寸（方向 5–8 宽高互换）。
 		if (!ImageFormats.TryDecodeRgba8(normalized, out var rgba, out var width, out var height, out var orientation))
 		{
 			return BytesFailure(CannotResizeMessage);

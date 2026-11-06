@@ -496,7 +496,7 @@ public class McpExposureTests
 		var server = Assert.Single(McpConfig.Merge(file, null));
 		Assert.Equal("codemode", server.Exposure);
 		Assert.Equal("hidden", server.ToolExposure!["t"]);
-		// 未知值回落到默认（与 pi 一致是 codemode），而不是让服务器或工具消失。
+		// 未知值回落到默认（与 pi 一致是 codemode），不让服务器或工具消失。
 		Assert.Equal("codemode", server.ToolExposure!["u"]);
 	}
 }

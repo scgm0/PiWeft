@@ -36,12 +36,11 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ConversationScroll _conversationScroll;
 	private readonly TextFocusScrollGuard _textFocus;
 	private readonly MultiLineTextBox _composer;
-	/// 占位提示。实例一律经 <see cref="BuildComposerHint"/> 创建（显示换新见 <see cref="ShowComposerHint"/>）：
-	/// 构造与换新的每一枚都必须不可命中，否则提示盖在输入框上会吞掉那一行的点击。
+	/// 占位提示。实例一律经 <see cref="BuildComposerHint"/> 创建（换新见 <see cref="ShowComposerHint"/>）：
+	/// 每一枚都不能命中，否则提示盖在输入框上会吞掉那一行的点击。
 	private TextBlock _composerHint = BuildComposerHint();
-	/// 最近一次组合事件的记录。只在框架没有实现 <c>ITextCompositionClient</c> 时作为兜底：
-	/// 事件可能迟到或丢（Update 在 End 之后到达、组合被取消不发 End），
-	/// 拿它当权威状态会让占位永久消失。
+	/// 最近一次组合事件。只在框架没有实现 <c>ITextCompositionClient</c> 时兜底：
+	/// 事件可能迟到或丢（Update 在 End 之后到达、组合取消不发 End），拿它当权威状态会让占位永久消失。
 	private bool _composing;
 	private DispatcherTimer? _composerHintTimer;
 	private Grid? _composerHintHost;
@@ -86,7 +85,7 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Dictionary<string, string> _extensionStatuses = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, IReadOnlyList<string>> _extensionWidgets = new(StringComparer.Ordinal);
 	private string _filter = string.Empty;
-	// 开始搜索前读者所在的行：清空过滤后回到原位置，而不是被重新投影的列表甩到末尾。
+	// 开始搜索前读者所在的行：清空过滤后回到原位置，不被重新投影的列表甩到末尾。
 	private ConversationTimeline.ReadingPoint _filterAnchor;
 	private bool _filterWasFollowing;
 	private IReadOnlyList<ChatEntry>? _projectedSource;
@@ -176,7 +175,7 @@ public sealed partial class SessionTab : IDisposable
 	public event Action<SessionTab>? Forked;
 
 	/// 会话文件被原地重写（「编辑重发」的墓碑截断）后触发：会话 id 与文件不变，
-	/// 但宿主必须丢弃该文件的侧栏摘要缓存，否则会继续用截断前的预览与条数。
+	/// 宿主需要丢弃该文件的侧栏摘要缓存，否则会继续用截断前的预览与条数。
 	public event Action<SessionTab>? Rewritten;
 
 	public event Action<SessionTab>? StateChanged;
@@ -214,13 +213,12 @@ public sealed partial class SessionTab : IDisposable
 			{
 				var palette = AppTheme.For(theme);
 				button.Background = palette.CardBackground;
-				// BorderSubtle 在深浅主题里都贴底色；用更亮的 TextFaint 让轮廓真正可见。
+				// BorderSubtle 在深浅主题里都贴底色，轮廓用更亮的 TextFaint。
 				button.BorderBrush = palette.TextFaint;
 				button.BorderThickness = 1;
 			});
-		// 圆钮与它的投影合成一个元素：阴影由框架的 ShadowDecorator 画在自己的画布内，
-		// 圆钮是其唯一子级、由装饰器排布。旧的「阴影画布 + 居中子级」是两块互相独立的录制，
-		// 局部重绘里会出现只剩图标或只剩阴影的分层残缺。
+		// 圆钮与投影合成一个元素：ShadowDecorator 在自己的画布内画阴影，圆钮是它唯一的子级。
+		// 拆成「阴影画布 + 居中子级」是两块独立录制，局部重绘会出现只剩图标或只剩阴影的残缺。
 		_scrollToLatestFloat = new ShadowDecorator
 		{
 			Child = _scrollToLatest,
@@ -237,8 +235,8 @@ public sealed partial class SessionTab : IDisposable
 			Overlap = 3,
 		}.Children(_scrollToLatestFloat);
 		// 正文区几何变化的驱动器：铺满 _mainArea（无背景、不吃命中、DesiredSize 为 0 不影响布局）。
-		// 浮层挂在窗口 OverlayLayer 上，自己的 Bounds 始终是整个客户区，正文区变化时框架会跳过它的
-		// arrange —— 没有这个驱动器，圆钮就停在旧位置、不跟随待办卡展开/搜索条出现/分栏拖动。
+		// 浮层挂在窗口 OverlayLayer 上，Bounds 始终是整个客户区，正文区变化时框架会跳过它的 arrange。
+		// 没有这个驱动器，圆钮会停在旧位置，不跟随待办卡展开、搜索条出现或分栏拖动。
 		_scrollToLatestWatcher = new FloatingTracker
 		{
 			Changed = HandleFloatingRootChanged,
@@ -248,8 +246,7 @@ public sealed partial class SessionTab : IDisposable
 		ApplyFloatingShadow();
 		// 浮层一直参与布局，只用 opacity 隐藏：待办卡展开/收起会改变消息区高度，若用 IsVisible
 		// 跳过 arrange，重新出现时图标缓存可能停在旧位置、和按钮底分离。
-		// 隐藏只切这一个节点的 opacity，且只有 0 与 1 两个值（本按钮没有 opacity 过渡），
-		// 因此不会把浮层带进 0<opacity<1 的合成分支。
+		// 隐藏只切这一个节点的 opacity，取 0 或 1；按钮没有过渡，浮层不会落进 0<opacity<1 的合成分支。
 		_scrollToLatestFloat.Opacity = 0;
 
 		Session = session;
@@ -294,7 +291,7 @@ public sealed partial class SessionTab : IDisposable
 		_textFocus.LayoutInvalidated = fold => _timeline.RefreshLayout(fold);
 		// 展开正在流式的思考时，外层会话重新贴住内容末尾（嵌套的组体则由它自己的视口跟随）。
 		_textFocus.FollowConversation = () => _conversationScroll!.ScrollToLatest();
-		// 展开之后的流式续跟只能「保持」跟底：读者一上滚就得放手，不能每帧把会话拉回末尾。
+		// 展开之后的流式续跟只保持跟底：读者上滚就放手，不每帧拉回末尾。
 		_textFocus.ContinueConversationFollowing = () => _conversationScroll!.ContinueFollowing();
 		_textFocus.PauseFollowing = () => _conversationScroll!.Browse();
 		_conversationScroll = new ConversationScroll(_scroll, visible => SetScrollToLatestVisible(visible && _messages.IsVisible), _timeline);
@@ -321,9 +318,9 @@ public sealed partial class SessionTab : IDisposable
 				ShowComposerHint(value.Length == 0);
 				RefreshCommandBar();
 			})
-			// 中文/日文输入法组合期间正文还没落到 Text：只看 Text 长度会让占位一直留在原地，
-			// 而 IME 的组合串也画在同一行，两者叠在一起（「速度|消息，@ 引用文件…」）。
-			// 组合期间先让位，组合结束再按最终的 Text 决定恢复。
+			// 中文/日文输入法组合期间正文还没落到 Text。只看 Text 长度，占位会一直留在原地，
+			// 而组合串也画在同一行（「速度|消息，@ 引用文件…」），两者会叠在一起。
+			// 组合期间先让位，结束后再按最终的 Text 决定是否恢复。
 			.OnTextCompositionStart(_ => ComposerCompositionStarted())
 			.OnTextCompositionUpdate(_ => ComposerCompositionStarted())
 			.OnTextCompositionEnd(_ => ComposerCompositionEnded())
@@ -332,7 +329,7 @@ public sealed partial class SessionTab : IDisposable
 				// 文件引用是行内原子：方向键跳过、Backspace/Delete 整枚删除。
 				if (UserReferenceRichText.TryHandleKey(_composer!, key)) return;
 
-				// Enter 发送，Shift+Enter 换行 —— 与占位符里的提示一致。
+				// Enter 发送，Shift+Enter 换行，与占位符提示一致。
 				if (key.Key == Key.Enter && !key.ShiftKey)
 				{
 					key.Handled = true;
@@ -349,9 +346,9 @@ public sealed partial class SessionTab : IDisposable
 		// 草稿里的文件引用和 /skill:名称 都用行内 chip 显示；原始 @"..." / /skill:... 仍留在文档里。
 		UserReferenceRichText.Attach(_composer, editable: true, cwd: Session.Cwd, skillLocation: SkillLocation);
 
-		// 默认右键菜单的「粘贴」只判断剪贴板有无文本，纯图片剪贴板时菜单项是灰的。
+		// 默认右键菜单的「粘贴」只看剪贴板有无文本，纯图片时菜单项是灰的。
 		// 替换同一个语义命令：菜单、快捷键与工具栏仍走 StandardCommands.Paste，
-		// 但执行时先尝试图片，再回退到文本框自己的文本粘贴。
+		// 执行时先试图片，再回退到文本框自己的文本粘贴。
 		_composer.Commands.Unregister(StandardCommands.Paste);
 		_composer.Commands.Register(StandardCommands.Paste, this,
 			static tab => tab.PasteFromClipboard(),
@@ -425,9 +422,9 @@ public sealed partial class SessionTab : IDisposable
 				.Children(_thinkingLabel, thinkingChevron))
 			.OnClick(ShowThinkingMenu);
 
-		// 左群是会改变下一条消息的开关与插入动作（计划、附件、引用、命令、终端），窄窗口自动换行；
+		// 左群是改变下一条消息的开关与插入动作（计划、附件、引用、命令、终端），窄窗口自动换行；
 		// 中群是模型与思考强度铭牌（PiDeck 同款：provider/model · max ▾，居中）；
-		// 右群是连接测试与发送/中断，发送永远贴在最右。
+		// 右群是连接测试与发送/中断，发送固定在最右。
 		var reference = new Button().Ghost().MinWidth(28).Padding(new Thickness(4, 2, 4, 2))
 			.Content(new TextBlock().Text("@").FontSize(AppTheme.FontSizeChat).MutedText()
 				.VerticalAlignment(VerticalAlignment.Center))
@@ -499,14 +496,14 @@ public sealed partial class SessionTab : IDisposable
 			.Children(_queueCard.View, _todoCard.View, _extensionCard.View);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
-		// 三段都预留固定宽度：呼吸点在长与缩、状态短语在轮换、提示每七秒换一条，
-		// 三者同时把行宽推来推去的话，等待中的眼睛就会看到整条线左右晃。
+		// 三段各留固定宽度：呼吸点伸缩、状态短语轮换、提示每七秒换一条；
+		// 同时推挤行宽的话，整条线会左右晃。
 		_busyIcon = AppIcons.Icon("loader-circle", AppStyles.RoleInfo, 13);
 		_busyPulse
 			.FontSize(AppTheme.FontSizeMicro)
 			.FontFamily(AppTheme.MonoFont)
-			// 固定宽度按最宽的一帧（「···」）留够：等宽 12px 的三枚点约 22 DIP，
-			// 给 20 会被裁掉最后一点；再宽就只是白白把状态短语推远。
+			// 固定宽度按最宽的一帧（「···」）留：等宽 12px 的三枚点约 22 DIP，
+			// 给 20 会裁掉最后一点，再宽只会把状态短语推远。
 			.Width(24)
 			.VerticalAlignment(VerticalAlignment.Center);
 		_busyText
@@ -522,16 +519,15 @@ public sealed partial class SessionTab : IDisposable
 			.IsVisible(false);
 		_busyTip
 			.FontSize(AppTheme.FontSizeMicro)
-			// 旁注用「次要」而不是「最弱」：深色主题下 FaintText 在卡外底色上几乎看不见，
-			// 而这一行的全部意义就是被人看见（提示的是没有可见入口的能力）。
+			// 旁注用「次要」，不用「最弱」：深色主题下 FaintText 在卡外底色上几乎看不见，
+			// 而这一行就是要让人看见（提示的是没有可见入口的能力）。
 			.SubtleText()
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.IsVisible(false);
-		// 宽度跟输入卡一致、且与内容长度无关：提示每七秒换一条、状态短语也在换，
-		// 若宽度跟内容走（Center + 内容宽），整行包括行首图标会跟着左右跳，等待中的眼睛
-		// 特别容易注意到这个。外面这层 ReadingColumn 按可用宽度报尺寸（与扩展卡同一套），
-		// 于是变长的是行尾那一句，行首永远钉在输入卡的左缘。
+		// 宽度跟输入卡一致，与内容长度无关：提示每七秒换一条，状态短语也在换。
+		// 宽度跟内容走的话，整行连行首图标都会左右跳。外层 ReadingColumn 按可用宽度报尺寸，
+		// 变长的只有行尾那句，行首钉在输入卡左缘。
 		_busyLine = new Border()
 			.Child(new DockPanel().LastChildFill().Spacing(6)
 				.Children(_busyIcon, _busyPulse, _busyText, _busyDivider, _busyTip));
@@ -601,7 +597,7 @@ public sealed partial class SessionTab : IDisposable
 
 		_status.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont);
 
-		// 标题行：左状态铭牌（等宽小字），右动作簇；不再是一块独立底色的条。
+		// 标题行：左状态铭牌（等宽小字），右动作簇，不再是一块独立底色的条。
 		// 会话头行（状态铭牌 + 视图切换/搜索/重试）：空会话时整行隐藏，出现第一条消息后再显示。
 		_headerRow = new Border()
 			.Background(AppTheme.Transparent)
@@ -719,8 +715,8 @@ public sealed partial class SessionTab : IDisposable
 
 	internal bool InputAreaVisible => _inputStack.IsVisible;
 
-	/// 问询卡开关时收起/恢复输入区（PiDeck 同款：代理在等回答，输入框不能继续抢焦点），
-	/// 并通知宿主刷新页签标题，让后台会话的提问也能被看到。
+	/// 问询卡开关时收起/恢复输入区（PiDeck 同款：代理在等回答，输入框不该抢焦点），
+	/// 并通知宿主刷新页签标题，后台会话的提问也能看到。
 	private void OnAskVisibilityChanged(bool open)
 	{
 		if (_disposed)
@@ -772,7 +768,7 @@ public sealed partial class SessionTab : IDisposable
 			return flat.Length <= 24 ? flat : string.Concat(flat.AsSpan(0, 24), "…");
 		}
 
-		// 没有名字也没有消息时用通用名，而不是把 id 摆给用户看。
+		// 没有名字也没有消息时用通用名，不把 id 摆给用户。
 		return Strings.UntitledSession;
 	}
 
@@ -872,9 +868,8 @@ public sealed partial class SessionTab : IDisposable
 
 	public void Dispose()
 	{
-		// 流式运行中直接释放会留下一轮孤儿运行：agent 继续烧 token 执行工具，
-		// 而持久化监听已退订、这一轮的结果不会再落盘。这里先发中止信号（安全网）；
-		// 用户主动关闭走 CloseAsync，会等这轮收尾落盘。
+		// 流式运行中直接释放会留下一轮孤儿运行：agent 继续消耗 token 执行工具，
+		// 持久化监听已退订，结果不会落盘。这里先发中止信号兜底；CloseAsync 会等这轮收尾落盘。
 		try
 		{
 			CancelPendingSend();
@@ -990,7 +985,7 @@ public sealed partial class SessionTab : IDisposable
 		_timeline.ApplyReadingWidth();
 		_composerPane.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		_widgetColumn.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
-		// 进行态行也在这一列里：它必须跟着阅读宽度走，否则改完宽度后状态条会跟输入卡错位。
+		// 进行态行也在这列里：跟着阅读宽度走，否则改完宽度后状态条会和输入卡错位。
 		_busyColumn.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		_readingStatisticsBar.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6);
 		if (_askCard is not null)
@@ -1036,9 +1031,9 @@ public sealed partial class SessionTab : IDisposable
 	/// 编辑重发带回的图片没有文件路径；附件按路径去重，这里给一个稳定的合成前缀。
 	private const string EditImagePrefix = "edit-resend:";
 
-	/// 「编辑重发」：把原文放回输入框，并记下要回到的条目。发送时先把该条目及其之后的分支
-	/// 在原地截断成墓碑（同一份会话文件），修改后的提问接在后面 —— 原历史仍可回看，
-	/// 侧栏也不会因为每次重发多出一条会话。原消息的图片一并带回附件区，重发才会带上同样的内容块。
+	/// 「编辑重发」：把原文放回输入框，并记下要回到的条目。发送时把该条目及其之后的分支
+	/// 原地截断成墓碑（同一份会话文件），修改后的提问接在后面，原历史仍可回看，
+	/// 侧栏也不会每次重发多出一条会话。原消息的图片一并带回附件区。
 	private void PrepareEdit(string entryId, string text, IReadOnlyList<ChatImage> images)
 	{
 		if (IsStreaming)
@@ -1077,8 +1072,8 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_sending = true;
-		// 状态条要回答「已经等了多久」，得有一个属于本回合的起点；AgentStart 比这里晚到，
-		// 中间那一段（检查点快照、分支切换、展开附件）也用同一个时钟。
+		// 状态条要回答「已经等了多久」，需要一个属于本回合的起点。AgentStart 比这里晚到，
+		// 中间那段（检查点快照、分支切换、展开附件）也用同一个时钟。
 		_turnStarted = Stopwatch.GetTimestamp();
 		var sendAbort = new CancellationTokenSource();
 		lock (_sendAbortGate)
@@ -1096,12 +1091,12 @@ public sealed partial class SessionTab : IDisposable
 			// 发送前自动打一个检查点（每仓库每分钟最多一次，且工作区有改动才打），
 			// 让模型的改动可以回滚；快照走后台，避免阻塞界面。
 			await Task.Run(() => Checkpoints.AutoSnapshot(Session.Cwd, TimeSpan.FromMinutes(1)), cancellationToken).ConfigureAwait(false);
-			// 检查点期间用户也可能按下中断：此时 agent 还没开始，必须在这里就停下，
-			// 否则中断按钮看似生效，消息仍会在快照结束后发出去。
+			// 检查点期间用户也可能按中断：agent 还没开始，要在这里停下，
+			// 否则中断按钮看似生效，消息仍会在快照结束后发出。
 			cancellationToken.ThrowIfCancellationRequested();
 
-			// 编辑重发：在同一份会话文件里把原提问及其之后的分支改成墓碑，再发送修改后的内容。
-			// 不创建新会话文件 —— 否则每改一次侧栏就多出一条完全同名的会话。
+			// 编辑重发：在同一份会话文件里把原提问及之后的分支改成墓碑，再发送修改后的内容。
+			// 不创建新会话文件，否则每改一次侧栏就多出一条同名会话。
 			if (_pendingBranchEntryId is { Length: > 0 } branchId)
 			{
 				_pendingBranchEntryId = null;
@@ -1217,10 +1212,9 @@ public sealed partial class SessionTab : IDisposable
 	private void ApplyFloatingShadow() =>
 		_scrollToLatestFloat.ShadowColor = Color.FromArgb(AppTheme.IsLightTheme ? (byte)0x22 : (byte)0x96, 0, 0, 0);
 
-	/// 挂到窗口后把浮层宿主升入窗口的 OverlayLayer：浮层与正文是两个独立的绘制根，
-	/// 时间线行在流式/回收中被整块重绘时不会再把与自己重叠的按钮像素盖掉
-	/// （保留场景对正文脏区的重绘不保证回放树序在它之上的兄弟内容）。
-	/// 未挂窗（单元测试直接排布 <c>tab.View</c>）时宿主留在主区里，位置算法完全相同。
+	/// 挂窗后把浮层宿主升入窗口 OverlayLayer：浮层与正文是两个独立的绘制根，
+	/// 时间线行整块重绘时不会盖掉与自己重叠的按钮像素。
+	/// 未挂窗时（单元测试直接排布 <c>tab.View</c>）宿主留在主区，位置算法相同。
 	private void HandleFloatingRootChanged(Element? oldRoot, Element? newRoot)
 	{
 		if (newRoot is Window window)
@@ -1254,10 +1248,10 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// 浮层宿主：把圆钮摆在 <see cref="Anchor"/> 的水平居中、下缘越过其底边 <see cref="Overlap"/> 的位置。
-	/// 摆位在每轮 arrange 里按锚点的实时 Bounds 计算 —— 正文区宽/高怎么变（分栏拖动、侧栏折叠、
-	/// 待办卡展开收起、窗口缩放）都不需要同步代码；OverlayLayer 只给客户区矩形这一个约束，
-	/// 所以锚点必须自己读，而不是把边界换算成 margin 存起来。
-	/// 自身对命中透明：只有圆钮（经由 ShadowDecorator 转发给子级）可点，其余区域照常滚正文。
+	/// 每轮 arrange 按锚点实时的 Bounds 计算，正文区宽高怎么变（分栏拖动、侧栏折叠、
+	/// 待办卡展开收起、窗口缩放）都不用同步代码；OverlayLayer 只约束客户区矩形，
+	/// 锚点要自己读，不能把边界换算成 margin 存起来。
+	/// 自身对命中透明：只有圆钮（经 ShadowDecorator 转发给子级）可点，其余区域照常滚正文。
 	private sealed class FloatingAnchor : Panel
 	{
 		internal Element? Anchor;
@@ -1309,8 +1303,7 @@ public sealed partial class SessionTab : IDisposable
 			}
 		}
 
-		/// 宿主铺满正文区，但只有圆钮可命中：其余位置一律穿透，滚轮与悬停照常落到正文，
-		/// 不会像 Panel 的默认实现那样把自己当作命中结果。
+		/// 宿主铺满正文区，只有圆钮可命中，其余位置穿透，滚轮与悬停照常落到正文。
 		protected override UIElement? OnHitTest(Point point)
 		{
 			if (!IsVisible || !IsHitTestVisible)
@@ -1330,7 +1323,7 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	/// 浮层驱动器：两件事——跟踪本标签页的视觉根（挂层/摘层），以及在正文区被重新摆位时要求浮层重排。
+	/// 浮层驱动器：跟踪本标签页的视觉根（挂层/摘层），正文区重新摆位时要求浮层重排。
 	/// 它自己铺满正文区，因此正文区的任何移动或缩放都会走到它的 ArrangeContent。
 	private sealed class FloatingTracker : Grid
 	{
@@ -1451,7 +1444,7 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// 空会话：提示文本与输入区（含状态栏）作为一个整体居中，落在消息区正中；
-	/// 有记录后输入区回到贴底的自适应行。只换网格行，不重建输入框 —— 草稿、附件与焦点都保留。
+	/// 有记录后输入区回到贴底的自适应行。只换网格行，不重建输入框，草稿、附件与焦点都保留。
 	private void SetEmptyState(bool empty)
 	{
 		_emptyCard.IsVisible(empty);
@@ -1697,8 +1690,8 @@ public sealed partial class SessionTab : IDisposable
 
 	private string SecurityKey => Session.Session.SessionFile ?? $"session:{Session.Session.SessionId}";
 
-	/// 档位按钮的提示直接说清「现在生效的是哪档、为什么」——总开关关掉时档位标签会有欺骗性，
-	/// 这时必须写明门没开，而不是显示一个看起来像在管的档位名。
+	/// 档位按钮的提示要说清「现在生效的是哪档、为什么」。总开关关掉时档位标签有欺骗性，
+	/// 要写明门没开，不能显示一个看起来像在管的档位名。
 	private void UpdateSecurityButton()
 	{
 		var config = Session.Security;
@@ -1714,8 +1707,8 @@ public sealed partial class SessionTab : IDisposable
 				: Strings.SecurityFollowHint(level.Name, level.Description));
 	}
 
-	/// 按会话切换安全档位。列表里给「跟随默认」而不是直接列档位：
-	/// 清除覆盖与选了一个恰好等于默认的档位在配置上是两件事，混在一起会留下永远清不掉的脏键。
+	/// 按会话切换安全档位。列表里给「跟随默认」，不直接列档位：
+	/// 清除覆盖与选一个等于默认的档位在配置上是两件事，混在一起会留下清不掉的脏键。
 	private void ShowSecurityMenu()
 	{
 		if (_disposed)
@@ -1844,8 +1837,8 @@ public sealed partial class SessionTab : IDisposable
 
 	/// 输入以 <c>/</c> 开头时，在输入框上方列出匹配的斜杠命令（提示词模板与技能），点击即补全。
 	/// 命令数据来自会话发现的结果，与 RPC 的 <c>get_commands</c> 同源。
-	/// 创建占位提示：样式与命中设置在这一处配齐 —— 提示叠在输入框上，
-	/// 任何一枚（构造的或换新的）都必须 IsHitTestVisible(false)，点击才能穿到输入框。
+	/// 创建占位提示：样式与命中设置在这一处配齐。提示叠在输入框上，
+	/// 每一枚（构造的或换新的）都要 IsHitTestVisible(false)，点击才能穿到输入框。
 	private static TextBlock BuildComposerHint()
 	{
 		var hint = new TextBlock().FontSize(AppTheme.FontSizeChat).SubtleText()
@@ -1858,8 +1851,8 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// 显隐占位提示。显示即换一枚新实例：
-	/// 保留场景把提示节点首次录制的光栅固化在节点上 —— 此后强制重绘、文本重建都换不掉，
-	/// 输入内容再删除后重放的仍是那截被裁掉的占位；新实例没有旧录制，完整绘制。
+	/// 保留场景把提示节点首次录制的光栅固化在节点上。此后强制重绘、文本重建都换不掉，
+	/// 删掉输入内容再重放，留下的仍是那截被裁掉的占位；新实例没有旧录制，完整绘制。
 	/// 换新延迟一拍，让「无提示」先被完整录制一帧，避免新旧光栅混在同一脏区。
 	private void ShowComposerHint(bool visible)
 	{
@@ -1877,7 +1870,7 @@ public sealed partial class SessionTab : IDisposable
 
 		_composerHint.IsVisible(false);
 		// 复用同一个定时器并把 200 ms 重新起算：连续打字时每键一次 Stop/Start，
-		// 而不是每键 new + Dispose 一个 DispatcherTimer（后者每次都排一次调度器注册）。
+		// 不每键 new + Dispose 一个 DispatcherTimer，后者每次都要排一次调度器注册。
 		var timer = _composerHintTimer;
 		if (timer is null)
 		{
@@ -1886,7 +1879,7 @@ public sealed partial class SessionTab : IDisposable
 			{
 				timer.Stop();
 				// 这一拍（200ms）里用户可能又输入了内容、或输入法重新进入组合：
-				// 到点时重新求值，而不是沿用调用瞬间的判断。
+				// 到点时重新求值，不沿用调用瞬间的判断。
 				if (_composer.Text.Length > 0 || IsComposingNow()) return;
 				SwapComposerHint();
 			};
@@ -1899,7 +1892,7 @@ public sealed partial class SessionTab : IDisposable
 		timer.Start();
 	}
 
-	/// 现在是否真的在组合。以框架的 <see cref="ITextCompositionClient.IsComposing"/> 为准——
+	/// 现在是否在组合。以框架的 <see cref="ITextCompositionClient.IsComposing"/> 为准；
 	/// 它在组合提交/取消时由框架自己复位；我们记的事件状态只作为兜底。
 	/// 只认事件状态时，「组合已结束但 End 没到」会让占位永久消失（中文输入后删空文本即复现）。
 	private bool IsComposingNow() =>
@@ -1914,7 +1907,7 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// 组合结束：按提交后的正文决定占位要不要回来（取消组合时正文仍为空）。
-	/// 这里显式清掉事件状态，并重新按「文本为空」求值——即使 End 之后又来一次
+	/// 这里显式清掉事件状态，并重新按「文本为空」求值。即使 End 之后又来一次
 	/// 迟到的 Update 把状态置回 true，<see cref="IsComposingNow"/> 仍以框架状态为准。
 	internal void ComposerCompositionEnded()
 	{
@@ -2014,8 +2007,8 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// 会话进行态（PiDeck respondingKind 同语义）。判定与措辞都在
-	/// <see cref="RespondingStatusPolicy"/>：只要这一轮还在跑就永远有一句可说，
-	/// 不再出现「完全没提示」的空窗（首轮发送后到首 token 之前就是这一段）。
+	/// <see cref="RespondingStatusPolicy"/>：这一轮还在跑就有一句可说，
+	/// 不会出现「完全没提示」的空窗（首轮发送后到首 token 之前就是这一段）。
 	/// 本回合的一帧事实。状态条的措辞与尾部占位行都从这一份输入派生，
 	/// 两处不会各算一遍（否则每一试就多一次 O(n) 扫描，也容易走偏）；
 	/// 占位行是否真的显示要等这份输入出来才能定（见 <see cref="RespondingStatusPolicy.NeedsPendingRow"/>）。
@@ -2076,8 +2069,8 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// 本回合有没有已经落下可见的行。屏幕上最后一行还是用户自己那条，就说明请求还没换回
-	/// 任何东西——这一段是「预热 + 等首 token」，和「工具收口、下一段还没开始」的空窗不是一回事：
-	/// 前者看不见子阶段，可以给几句真话轮着说；后者只能说「正在处理」。
+	/// 任何东西。这一段是「预热 + 等首 token」，和「工具收口、下一段还没开始」的空窗不同：
+	/// 前者看不见子阶段，可以轮换几句；后者只能说「正在处理」。
 	private static bool TurnHasOutput(IReadOnlyList<ChatEntry> rows) =>
 		rows.Count > 0 && rows[^1].Role != ChatRole.User;
 
@@ -2131,7 +2124,7 @@ public sealed partial class SessionTab : IDisposable
 
 		// 应用侧重绘请求：帧档用「请求 → 呈现」量真实成本，把按请求重绘前的空闲切掉。
 		Diagnostics.NoteFrameRequest();
-		// 流式期每 40 ms 合并一次渲染；只把真正贵的帧记进诊断，否则文件会被无害的抖动填满。
+		// 流式期每 40 ms 合并一次渲染；只把明显慢的帧记进诊断，否则文件会被无害抖动填满。
 		var renderWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 
 		var all = _chat.Entries();
@@ -2201,7 +2194,7 @@ public sealed partial class SessionTab : IDisposable
 		}
 		if (statsWatch is not null)
 		{
-			// 渲染每帧都发生：常态只计数，真正慢的那几次才落明细（否则诊断自身就是垃圾源）。
+			// 渲染每帧都发生：常态只计数，慢的那几次才落明细，否则诊断自身就是垃圾源。
 			Diagnostics.Slow("render.stats", statsWatch, 8, static rows => $"rows={rows}", all.Count);
 		}
 
@@ -2239,7 +2232,7 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		// 心跳只在跑回合的时候开：推流期数据帧自己会把帧打进来，但模型一旦卡顿、工具一旦跑久，
-		// 屏幕就不再有事件——没有这一拍，呼吸点会停在半道上，看起来就像卡死了。
+		// 屏幕就不再有事件。没有这一拍，呼吸点会停在半道上，看起来像卡死了。
 		if (busy)
 		{
 			if (!_busyTimer.IsEnabled) _busyTimer.Start();
@@ -2429,7 +2422,7 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// 一条排队消息：序号 + 预览 + 投递时机标签 + 「撤回」「丢弃」。
-	/// 与 PiDeck 的排队行一致——悬停给全文，行内只留一行省略号。
+	/// 与 PiDeck 的排队行一致：悬停给全文，行内只留一行省略号。
 	private UIElement QueuedRow(ChatQueuedMessage queued, int index)
 	{
 		var preview = Strings.QueuedPreview(queued.Text, queued.ImageCount);
@@ -2498,7 +2491,7 @@ public sealed partial class SessionTab : IDisposable
 
 		Notify(Strings.QueuedRetracted);
 		FocusComposer();
-		// 光标停在撤回内容之后：接着写的那一句应该紧跟着被撤回的消息，而不是跑到末尾。
+		// 光标停在撤回内容之后：接着写的那一句紧跟着被撤回的消息，不跑到末尾。
 		// 放在 Focus 之后：聚焦本身可能把光标规范化到末尾。
 		_composer.CaretPosition = Math.Min(restored.Length, queued.Text.TrimEnd().Length);
 	}
@@ -2865,7 +2858,7 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	/// 运行中发送键右侧的菜单（PiDeck 的 Split Send 下拉同款）：每项是「标题 + 生效时机」
-	/// 两行。投递方式是发送前最难猜的部分——「— steer」这种尾缀说明不了它什么时候生效，
+	/// 两行。投递方式是发送前最难猜的部分，「— steer」这种尾缀说明不了它什么时候生效，
 	/// 所以协议名与时机写在第二行。
 	private void ShowSendMenu()
 	{

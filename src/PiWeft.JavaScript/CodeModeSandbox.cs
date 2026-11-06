@@ -10,9 +10,9 @@ using Jint.Runtime.Interop;
 
 namespace PiWeft.JavaScript;
 
-/// 在受限的 Jint 解释器里运行模型写的 JavaScript。每次 <see cref="ExecuteAsync"/> 新建并丢弃引擎，
-/// 脚本唯一能碰到宿主的地方是 <see cref="CodeModeTool"/> 暴露的函数；工具结果不进入 LLM 上下文，
-/// 进入上下文的只有脚本的输出与返回值。
+/// 在受限的 Jint 解释器里运行模型写的 JavaScript。每次 <see cref="ExecuteAsync"/> 新建并丢弃引擎；
+/// 脚本只能经 <see cref="CodeModeTool"/> 暴露的函数碰到宿主。工具结果不进 LLM 上下文，
+/// 进上下文的只有脚本的输出与返回值。
 public sealed class CodeModeSandbox
 {
 	private static readonly TimeSpan MaxEffectiveTimeout = TimeSpan.FromDays(1);
@@ -106,10 +106,10 @@ public sealed class CodeModeSandbox
 		using var engine = new Engine(engineOptions);
 		string? finishedJson = null;
 		var pendingCalls = 0;
-		// 宿主桥一律用 ClrFunction 注册：它把回调存成 JsCallDelegate 字段、调用时直接执行，
-		// 不经过 DelegateWrapper 的反射包装（Delegate.CreateDelegate/DynamicInvoke），
-		// 因此不会在 NativeAOT/裁剪分析里产生 IL2026/IL2111 警告，也是 Jint 官方推荐的 AOT 用法。
-		// 参数在回调里显式转换；prelude 已校验过类型，非字符串参数会以异常形式暴露。
+		// 宿主桥一律用 ClrFunction 注册：回调存成 JsCallDelegate 字段，调用时直接执行，
+		// 不经 DelegateWrapper 的反射包装（Delegate.CreateDelegate / DynamicInvoke），
+		// NativeAOT 与裁剪分析不会报 IL2026/IL2111。参数在回调里显式转换；
+		// prelude 已校验类型，非字符串参数会以异常暴露。
 		engine.SetValue("__cmFinish", new ClrFunction(engine, "__cmFinish", (thisArg, args) =>
 		{
 			finishedJson = args.At(0).AsString();
@@ -401,14 +401,14 @@ public sealed class CodeModeSandbox
 			engine.SetValue("__cmRuntime", runtime);
 
 			// 包装前缀与脚本首行同一行，行号与输入完全一致（与 pi 相同）。
-			// 用 async 箭头而不是 async function：箭头没有自己的 arguments 绑定，
-			// Jint 就不会在含 eval 的函数里走 argumentsList.ToArray() —— 那条路在 NativeAOT 下会
+			// 用 async 箭头，不用 async function：箭头没有自己的 arguments 绑定，
+			// Jint 不会在含 eval 的函数里走 argumentsList.ToArray()，那条路在 NativeAOT 下会
 			// 撞上 Jint 的泛型接口分派缺陷（RhpCidResolve 直接 FailFast）。
 			var scriptFn = engine.Evaluate("(async () => {" + code + "\n})", "codemode.js");
 			engine.SetValue("__cmScriptFn", scriptFn);
 
 			// 不用 EvaluateAsync：它在每个 await 之后把续体交给线程池。这里只启动 async 函数，
-			// 由 worker 线程自己泵引擎的任务队列，脚本的全部代码都在同一个线程上执行。
+			// worker 线程自己泵引擎的任务队列，脚本全部代码都在同一线程执行。
 			engine.Evaluate("__cmRuntime.run(__cmScriptFn)", "codemode.js");
 			// 取消（时限/调用方中止）时唤醒等待中的 worker：无需 1ms 轮询。
 			using (token.Register(static state => ((CodeModeWorker)state!).Wake(), worker))

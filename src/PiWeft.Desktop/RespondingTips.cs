@@ -2,7 +2,7 @@ namespace PiWeft.Desktop;
 
 /// 状态条右侧的功能提示轮播（PiDeck 的 <c>RespondingTips</c> 同义）。
 /// 等待期是用户唯一的注意力空档：回复还没字可看，中断又太早。用这一行曝光
-/// 「没有可见入口」的能力——命令面板、排队发送、@ 引用、提示音。
+/// 「没有可见入口」的能力：命令面板、排队发送、@ 引用、提示音。
 /// 收录规则（照 PiDeck）：
 /// 1. 只写本应用真的做得到的事，能给出入口的才写；
 /// 2. 键位不写死，只记动作标识，实际按键由生效的 <see cref="ShortcutMap"/> 渲染，用户改过键也不会说错；
@@ -29,7 +29,7 @@ internal static class RespondingTips
 
 	/// 随机起点：短等待往往撑不过一整轮，固定从第一条开始等于只有第一条有曝光。
 	/// 进程内一次抽样，每回合再用回合起点错开一次；之后按本回合已用时间推进，
-	/// 同一回合内读起来就是稳定的轮播，而不是每一拍乱跳。
+	/// 同一回合内读起来是稳定的轮播，不会每一拍乱跳。
 	private static readonly int _offset = Random.Shared.Next(Entries.Length);
 
 	public static Func<bool> EnabledProvider { get; set; } = static () => ReadPreference();

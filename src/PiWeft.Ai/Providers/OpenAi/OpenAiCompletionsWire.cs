@@ -40,8 +40,8 @@ internal static class OpenAiCompletionsWire
 
 		if (thinkingMode is not null)
 		{
-			// DeepSeek 的开关与强度是两个字段：type 决定是否思考，reasoning_effort 只决定档位。
-			// 它的默认值是「开启」，所以「关闭」必须显式写出来。
+			// DeepSeek 的开关与强度是两个字段：type 决定是否思考，reasoning_effort 只管档位。
+			// 默认是「开启」，关闭要显式写出来。
 			writer.WritePropertyName("thinking");
 			writer.WriteStartObject();
 			writer.WriteString("type", thinkingMode);
@@ -268,7 +268,7 @@ internal static class OpenAiCompletionsWire
 	}
 
 	/// 这个模型的工具是否带 <c>strict</c>。pi 对 OpenAI 兼容端点默认带上
-	/// （<c>compat.supportsStrictMode !== false</c>）；少数端点会拒绝未知字段，目录里显式关掉。
+	/// （<c>compat.supportsStrictMode !== false</c>）；少数端点拒绝未知字段，在目录里显式关掉。
 	internal static bool StrictSamplingFor(Model model) => ModelCompat.FlagOr(model, "supportsStrictMode", true);
 
 	internal static void WriteTools(Utf8JsonWriter writer, IReadOnlyList<Tool> tools, bool supportsStrictMode)
