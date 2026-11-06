@@ -3,9 +3,10 @@
 	<PropertyGroup>
 		<RootNamespace>PiWeft.JavaScript</RootNamespace>
 		<AssemblyName>PiWeft.JavaScript</AssemblyName>
-		<!-- 宿主桥全部经 ClrFunction 注册，本项目自身满足 AOT/裁剪分析器要求；
-		     Jint 解释器内部的反射仍会产生程序集级聚合警告（IL2104/IL3053），
-		     由 AOT 发布的宿主项目按第三方依赖统一忽略。 -->
+		<!-- 宿主桥全部经 ClrFunction 注册，本项目自身满足 AOT/裁剪分析器要求；根目录
+		     Directory.Build.props 把 Jint.Runtime.Interop.ReflectionEnabled 关掉，运行时不会
+		     建立反射式 CLR 投影。Jint 解释器内部仍保留反射标注，会产生程序集级聚合警告
+		     （IL2104/IL3053），由 AOT 发布的宿主项目按第三方依赖统一忽略。 -->
 	</PropertyGroup>
 
 	<ItemGroup>

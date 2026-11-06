@@ -24,4 +24,14 @@
 	<MewUISourceRoot Condition="'$(MewUISourceRoot)' == ''">$(MSBuildThisFileDirectory)external/MewUI/</MewUISourceRoot>
   </PropertyGroup>
 
+  <ItemGroup>
+	<!-- Jint 5 的反射式 CLR 投影只落在本宿主未使用的能力上：codemode 与扩展宿主一律经 ClrFunction
+	     传 JsValue，FromObject 只用于字符串与标量。关掉这个进程级开关后，运行时不再有
+	     ReflectionHostInterop，裁剪器也能连根去掉整条反射链（AOT 产物小约 0.5 MB；ILC 仍会
+	     为 Jint.dll 聚合报告 IL2104/IL3053，那是程序集自带标注，不代表本项目可修）。
+	     开关默认 true；这里显式声明，让测试与 AOT 发布共用同一份运行时配置。
+	     见 Jint 5 迁移文档 6.8。 -->
+	<RuntimeHostConfigurationOption Include="Jint.Runtime.Interop.ReflectionEnabled" Value="false" Trim="true" />
+  </ItemGroup>
+
 </Project>

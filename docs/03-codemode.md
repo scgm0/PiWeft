@@ -2,7 +2,7 @@
 
 内置 `codemode` 让模型写 JavaScript，在 Jint 5 沙箱里调用其它工具。默认不启用：`--tools +codemode` 或 `settings.defaultTools: ["+codemode"]` 选中；存在 MCP `codemode` exposure 工具时自动启用（`settings.codemode.autoEnable`）。
 
-实现位于 `src/PiWeft.JavaScript` 与 `src/PiWeft.CodingAgent/CodeMode*`。Jint 固定 `5.0.0-preview.2322`，只由 `nuget.config` 的 `Jint-preview` 源提供；升级前先确认该预览包仍可还原。
+实现位于 `src/PiWeft.JavaScript` 与 `src/PiWeft.CodingAgent/CodeMode*`。Jint 版本固定在 `Directory.Packages.props`（当前 `5.0.0-preview.2364`），只由 `nuget.config` 的 `Jint-preview` 源提供；升级前先确认该预览包仍可还原。
 
 ## 脚本面
 
@@ -45,7 +45,11 @@ codemode 描述按命名空间分组，`inlineBudget`（默认 3000 token）控�
 `models.json` 的虚拟模型动态路由使用 `ScriptFunction`（同一套 Jint 约束）：每次新建解释器，只收到 `request`/`ctx` 两个 JSON 值，支持 async/await，有超时/语句/内存/源码上限；没有 codemode 的 `tools`/`models`/`store` 桥。
 
 - 未移植 prelude lockdown；命名空间只来自 MCP；顶层 `arguments` 与 pi 略有差异。
-- `PiWeft.JavaScript` 关闭 AOT/trim 分析器，CLI 发布带 Jint 裁剪警告；执行路径已在 `tools/PiWeft.AotSmoke` 实跑。
+- `PiWeft.JavaScript` 自身通过 AOT/trim 分析器；根目录 `Directory.Build.props` 把
+  `Jint.Runtime.Interop.ReflectionEnabled` 设为 `false`（Jint 5 迁移文档 6.8）：宿主桥全是
+  `ClrFunction` + `JsValue`，运行时不需要反射式 CLR 投影，关掉后裁剪器能去掉整条反射链。
+  ILC 仍会为 `Jint.dll` 聚合报告 IL2104/IL3053（程序集自带的反射标注），由宿主按第三方
+  依赖统一忽略；执行路径已在 `tools/PiWeft.AotSmoke` 实跑。
 - AOT 下脚本包装必须用 async **箭头**函数：`async function` + 直接 eval 会触发 Jint 泛型分派缺陷。
 - 硬 CPU/内存/生命周期边界仍需受限进程或容器，并通过 RPC 调用工具。
 
