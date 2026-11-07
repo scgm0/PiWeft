@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.IO.MemoryMappedFiles;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -166,30 +167,45 @@ public static class SearchTools
 		var matchesPath = pattern.Contains('/');
 		var results = new List<string>();
 		var resultLimitReached = false;
+		var limitHit = 0;
 
 		var fullRoot = Path.GetFullPath(root);
 		var rootPrefix = fullRoot[^1] is '/' or '\\' ? fullRoot.Length : fullRoot.Length + 1;
-		foreach (var entry in FileWalker.EnumerateEntries(root, FileWalkerOptions(IgnoreFlavor.Fd)))
+
+		// 匹配在 worker 线程上做（每条目录的条目一次），结果按完成顺序到达；
+		// 收集到 limit 条后再等到下一条即证明「还有更多」。
+		using var walk = FileWalker.Start(
+			root,
+			FileWalkerOptions(IgnoreFlavor.Fd),
+			visitDirectories: true,
+			stop: () => Volatile.Read(ref limitHit) != 0,
+			visit: entry =>
+			{
+				var entryPath = entry.Path;
+				var relative = entryPath.Length > rootPrefix ? entryPath.AsSpan(rootPrefix) : entryPath.AsSpan();
+				var name = LastSegment(relative);
+				// fd 的目录结果带尾斜杠：`src/` 这种 pattern 只匹配目录，而我们的相对路径不带斜杠。
+				var matched = matcher.IsMatch(matchesPath ? relative : name)
+					|| (entry.IsDirectory && matcher.IsMatchWithTrailingSlash(relative));
+				if (!matched)
+				{
+					return null;
+				}
+
+				return entry.IsDirectory ? string.Concat(relative, "/") : relative.ToString();
+			});
+
+		foreach (var match in walk.Read())
 		{
 			ThrowIfAborted(invocation.CancellationToken);
-			var entryPath = entry.Path;
-			var relative = entryPath.Length > rootPrefix ? entryPath.AsSpan(rootPrefix) : entryPath.AsSpan();
-			var name = LastSegment(relative);
-			// fd 的目录结果带尾斜杠：`src/` 这种 pattern 只匹配目录，而我们的相对路径不带斜杠。
-			var matched = matcher.IsMatch(matchesPath ? relative : name)
-				|| (entry.IsDirectory && matcher.IsMatchWithTrailingSlash(relative));
-			if (!matched)
-			{
-				continue;
-			}
-
 			if (results.Count >= limit)
 			{
 				resultLimitReached = true;
+				Volatile.Write(ref limitHit, 1);
 				break;
 			}
 
-			results.Add(entry.IsDirectory ? string.Concat(relative, "/") : relative.ToString());
+			results.Add(match);
 		}
 
 		if (results.Count == 0)
@@ -302,63 +318,76 @@ public static class SearchTools
 		var prefilter = matcherRegex is null ? null : TryLiteralPrefilter(pattern, literal, ignoreCase);
 
 		var budget = new ScanBudget(limit);
-		var scans = new System.Collections.Concurrent.ConcurrentBag<(int Index, FileScan Scan)>();
-		var index = -1;
-		var parallelOptions = new ParallelOptions { CancellationToken = invocation.CancellationToken };
+		var cancellationToken = invocation.CancellationToken;
+
+		// 边遍历边扫：文件在 walker 的 worker 线程上直接扫掉，遍历与扫描重叠，
+		// 结果按完成顺序到达并就地合并（rg 的输出顺序也不确定）。
+		FileScan? ScanFile(string file)
+		{
+			if (budget.Exhausted || !GlobAccepts(file))
+			{
+				return null;
+			}
+
+			var scan = new FileScan(file, root is { Length: > 0 } ? root : cwd, file == root, context, budget);
+			if (needle is not null)
+			{
+				ScanLiteral(scan, file, pattern, needle, byteValues!, cancellationToken);
+			}
+			else
+			{
+				ScanRegex(scan, file, matcherRegex!, prefilter, cancellationToken);
+			}
+
+			// 没有命中也没有撞上限的文件不必进结果队列（无命中场景下大多数文件如此）。
+			return scan.MatchCount == 0 && !scan.BudgetHit ? null : scan;
+		}
+
+		var output = new MatchBuffer();
+		var matches = 0;
+		var matchLimitReached = false;
+		var linesTruncated = false;
 		try
 		{
-			// 边遍历边扫：目录遍历与文件扫描重叠，不必先攒齐文件列表。
-			// 索引取枚举顺序（Parallel.ForEach 的枚举在调用线程上顺序发生），合并时据此保持顺序。
-			Parallel.ForEach(
-				singleFile ? (IEnumerable<string>)[root] : FileWalker.EnumerateFiles(root, FileWalkerOptions(IgnoreFlavor.Ripgrep)),
-				parallelOptions,
-				file =>
+			if (singleFile)
+			{
+				Merge(ScanFile(root));
+			}
+			else
+			{
+				// 命中额度用完就不再下探：rg 命中够数也会杀掉搜索。
+				using var walk = FileWalker.Start(
+					root,
+					FileWalkerOptions(IgnoreFlavor.Ripgrep),
+					visitDirectories: false,
+					stop: () => budget.Exhausted,
+					visit: file => ScanFile(file.Path));
+
+				foreach (var scan in walk.Read())
 				{
-					var position = Interlocked.Increment(ref index);
-					if (budget.Exhausted || !GlobAccepts(file))
-					{
-						return;
-					}
-
-					var display = file == root
-						? Path.GetFileName(file)
-						: ToolPaths.RelativeTo(file, root is { Length: > 0 } ? root : cwd);
-					var scan = new FileScan(display, context, budget);
-					if (needle is not null)
-					{
-						ScanLiteral(scan, file, pattern, needle, byteValues!, invocation.CancellationToken);
-					}
-					else
-					{
-						ScanRegex(scan, file, matcherRegex!, prefilter, invocation.CancellationToken);
-					}
-
-					scans.Add((position, scan));
-				});
+					Merge(scan);
+				}
+			}
 		}
 		catch (OperationCanceledException)
 		{
 			throw new InvalidOperationException("Operation aborted");
 		}
 
-		var ordered = scans.ToArray();
-		Array.Sort(ordered, static (left, right) => left.Index.CompareTo(right.Index));
-
-		// 并行扫描的结果按文件顺序合并，上限与尾随上下文在这里一次性裁决，
-		// 输出与单线程逐个文件扫完全一致。
-		var output = new MatchBuffer();
-		var matches = 0;
-		var matchLimitReached = false;
-		var linesTruncated = false;
-		foreach (var (_, scan) in ordered)
+		void Merge(FileScan? scan)
 		{
+			if (scan is null)
+			{
+				return;
+			}
+
 			linesTruncated |= scan.LinesTruncated;
 			matchLimitReached |= scan.BudgetHit;
 			var allowed = limit - matches;
 			if (allowed <= 0)
 			{
 				matchLimitReached |= scan.MatchCount > 0;
-				continue;
+				return;
 			}
 
 			if (scan.MatchCount <= allowed)
@@ -369,7 +398,7 @@ public static class SearchTools
 				}
 
 				matches += scan.MatchCount;
-				continue;
+				return;
 			}
 
 			var seen = 0;
@@ -476,14 +505,22 @@ public static class SearchTools
 	}
 
 	/// 单个文件的行扫描状态机：前导上下文、尾随窗口、上限判断都在这里。
-	private sealed class FileScan(string display, int context, ScanBudget budget)
+	/// <param name="displayBase">显示路径的基准目录；<paramref name="isRoot"/> 为真时只显示文件名。</param>
+	private sealed class FileScan(string file, string displayBase, bool isRoot, int context, ScanBudget budget)
 	{
-		private readonly Queue<(long Number, string Text)> _pending = new();
+		private static readonly List<ScanLine> Empty = [];
+
+		private Queue<(long Number, string Text)>? _pending;
+		private List<ScanLine>? _lines;
+		private string? _display;
 		private long _nextLine;
 		private long _trailingUntil = -1;
 		private bool _limitHit;
 
-		public List<ScanLine> Lines { get; } = [];
+		/// 显示用的相对路径：没有命中就不必算（无命中是最常见的情况）。
+		private string Display => _display ??= isRoot ? Path.GetFileName(file) : ToolPaths.RelativeTo(file, displayBase);
+
+		public IReadOnlyList<ScanLine> Lines => _lines ?? Empty;
 
 		public int MatchCount { get; private set; }
 
@@ -525,12 +562,15 @@ public static class SearchTools
 			{
 				if (budget.TryTake())
 				{
-					foreach (var previous in _pending)
+					if (_pending is { } pending)
 					{
-						Emit(previous.Number, previous.Text, isMatch: false);
-					}
+						foreach (var previous in pending)
+						{
+							Emit(previous.Number, previous.Text, isMatch: false);
+						}
 
-					_pending.Clear();
+						pending.Clear();
+					}
 					Emit(lineIndex, text, isMatch: true);
 					MatchCount++;
 					_trailingUntil = lineIndex + context;
@@ -559,16 +599,17 @@ public static class SearchTools
 			if (lineIndex <= _trailingUntil)
 			{
 				Emit(lineIndex, text, isMatch: false);
-				_pending.Clear();
+				_pending?.Clear();
 				return;
 			}
 
 			if (context > 0)
 			{
-				_pending.Enqueue((lineIndex, new string(text)));
-				while (_pending.Count > context)
+				var pending = _pending ??= new Queue<(long Number, string Text)>();
+				pending.Enqueue((lineIndex, new string(text)));
+				while (pending.Count > context)
 				{
-					_pending.Dequeue();
+					pending.Dequeue();
 				}
 			}
 		}
@@ -577,7 +618,7 @@ public static class SearchTools
 		{
 			var (lineText, lineTruncated) = Truncate.Line(new string(text));
 			LinesTruncated |= lineTruncated;
-			Lines.Add(new ScanLine($"{display}{(isMatch ? ':' : '-')}{number + 1}{(isMatch ? ':' : '-')} {lineText}", isMatch));
+			(_lines ??= []).Add(new ScanLine($"{Display}{(isMatch ? ':' : '-')}{number + 1}{(isMatch ? ':' : '-')} {lineText}", isMatch));
 		}
 	}
 
@@ -673,6 +714,80 @@ public static class SearchTools
 	/// 的 svg/二进制）租一整块 LOH 数组。切块点对齐到最后一个 '\n'，行语义不变。
 	private const int ScanChunkSize = 256 * 1024;
 
+	/// 大文件走 mmap：不复制、不用缓冲，直接对映射出来的字节做 SIMD 查找。
+	/// 阈值以上的文件在页缓存里本来就是共享页，映射比「读进池化缓冲」少一次拷贝。
+	private const int MmapThreshold = 1 << 20;
+
+	private ref struct MappedFile
+	{
+		private MemoryMappedFile? _map;
+		private MemoryMappedViewAccessor? _view;
+		private unsafe byte* _pointer;
+
+		public unsafe ReadOnlySpan<byte> Span { get; private set; }
+
+		public static bool TryOpen(string path, out MappedFile mapped)
+		{
+			mapped = default;
+			try
+			{
+				var info = new FileInfo(path);
+				if (!info.Exists || info.Length <= 0 || info.Length > int.MaxValue)
+				{
+					return false;
+				}
+
+				var map = MemoryMappedFile.CreateFromFile(
+					path, FileMode.Open, mapName: null, capacity: 0, MemoryMappedFileAccess.Read);
+				var view = map.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+				unsafe
+				{
+					byte* pointer = null;
+					view.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+					if (pointer is null)
+					{
+						view.Dispose();
+						map.Dispose();
+						return false;
+					}
+
+					mapped = new MappedFile
+					{
+						_map = map,
+						_view = view,
+						_pointer = pointer,
+					};
+					mapped.Span = new ReadOnlySpan<byte>(
+						pointer + view.PointerOffset,
+						(int)Math.Min(info.Length, int.MaxValue));
+				}
+
+				return true;
+			}
+			catch (Exception exception) when (
+				exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+			{
+				// 映射失败（网络盘、权限、伪文件）就走普通读。
+				return false;
+			}
+		}
+
+		public void Dispose()
+		{
+			unsafe
+			{
+				if (_pointer is not null && _view is not null)
+				{
+					_view.SafeMemoryMappedViewHandle.ReleasePointer();
+					_pointer = null;
+				}
+			}
+
+			_view?.Dispose();
+			_map?.Dispose();
+		}
+	}
+
 	private static void ScanLiteral(
 		FileScan scan,
 		string file,
@@ -702,8 +817,146 @@ public static class SearchTools
 				return;
 			}
 
+			if (stream.Length >= MmapThreshold && MappedFile.TryOpen(file, out var mapped))
+			{
+				using (mapped)
+				{
+					var data = mapped.Span;
+					if (data.Length >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
+					{
+						data = data[3..];
+					}
+
+					ScanByteSpan(scan, data, needle, values, cancellationToken);
+					return;
+				}
+			}
+
 			stream.Position = headRead >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF ? 3 : 0;
 			ScanByteChunks(scan, stream, needle, values, cancellationToken);
+		}
+	}
+
+	/// 整份字节 span 的扫描：mmap 路径直接调它，分块路径把每块喂进来。
+	private static void ScanByteSpan(
+		FileScan scan,
+		ReadOnlySpan<byte> data,
+		byte[] needle,
+		SearchValues<byte> values,
+		CancellationToken cancellationToken)
+	{
+		if (scan.NeedsContext)
+		{
+			ScanByteLines(data, 0, cancellationToken);
+		}
+		else
+		{
+			ScanByteMatches(data, 0, cancellationToken);
+		}
+
+		void ScanByteMatches(ReadOnlySpan<byte> span, long line, CancellationToken token)
+		{
+			var position = 0;
+			while (position < span.Length)
+			{
+				var hit = span[position..].IndexOf(needle);
+				if (hit < 0)
+				{
+					return;
+				}
+
+				var absolute = position + hit;
+				var lineStart = absolute == 0 ? 0 : span[..absolute].LastIndexOf((byte)'\n') + 1;
+				line += span[position..lineStart].Count((byte)'\n');
+				var end = span[lineStart..].IndexOf((byte)'\n');
+				var lineEnd = end < 0 ? span.Length : lineStart + end;
+				Emit(span[lineStart..lineEnd], isMatch: true, line);
+				if (scan.Stopped || token.IsCancellationRequested)
+				{
+					token.ThrowIfCancellationRequested();
+					return;
+				}
+
+				if (end < 0)
+				{
+					return;
+				}
+
+				line++;
+				position = lineEnd + 1;
+			}
+		}
+
+		void ScanByteLines(ReadOnlySpan<byte> span, long line, CancellationToken token)
+		{
+			var position = 0;
+			var lineStart = 0;
+			var matched = false;
+			while (position < span.Length)
+			{
+				var next = span[position..].IndexOfAny(values);
+				if (next < 0)
+				{
+					matched |= span[position..].IndexOf(needle) >= 0;
+					break;
+				}
+
+				var absolute = position + next;
+				if (span[absolute] == (byte)'\n')
+				{
+					Emit(span[lineStart..absolute], matched, line);
+					line++;
+					if (scan.Stopped || token.IsCancellationRequested)
+					{
+						token.ThrowIfCancellationRequested();
+						return;
+					}
+
+					matched = false;
+					lineStart = absolute + 1;
+					position = lineStart;
+					continue;
+				}
+
+				if (span[absolute..].StartsWith(needle))
+				{
+					matched = true;
+					position = absolute + needle.Length;
+					continue;
+				}
+
+				position = absolute + 1;
+			}
+
+			if (lineStart < span.Length)
+			{
+				Emit(span[lineStart..], matched, line);
+			}
+		}
+
+		void Emit(ReadOnlySpan<byte> line, bool isMatch, long lineNumber)
+		{
+			if (line.Length > 0 && line[^1] == (byte)'\r')
+			{
+				line = line[..^1];
+			}
+
+			if (!isMatch && !scan.NeedsContext)
+			{
+				scan.Add(lineNumber, false, default);
+				return;
+			}
+
+			var chars = ArrayPool<char>.Shared.Rent(Encoding.UTF8.GetMaxCharCount(line.Length));
+			try
+			{
+				var count = Encoding.UTF8.GetChars(line, chars);
+				scan.Add(lineNumber, isMatch, chars.AsSpan(0, count));
+			}
+			finally
+			{
+				ArrayPool<char>.Shared.Return(chars);
+			}
 		}
 	}
 
@@ -1182,17 +1435,23 @@ public static class SearchTools
 		{
 			var ignoreCase = GlobSyntax.IsSmartCaseInsensitive(pattern);
 			var comparison = ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-			if (!pattern.Contains('/'))
+
+			// `**/x` 在 fd 的 --full-path 语义下等于「任意深度的 x」，可以按名字比较，
+			// 与 `x` 完全等价，因此 `**/*.json` 不必走正则。
+			var namePattern = pattern.StartsWith("**/", StringComparison.Ordinal) && !pattern.AsSpan(3).Contains('/')
+				? pattern[3..]
+				: pattern;
+			if (!namePattern.Contains('/'))
 			{
-				if (pattern.StartsWith("*.", StringComparison.Ordinal)
-					&& pattern.AsSpan(1).IndexOfAny(GlobMetaCharacters) < 0)
+				if (namePattern.StartsWith("*.", StringComparison.Ordinal)
+					&& namePattern.AsSpan(1).IndexOfAny(GlobMetaCharacters) < 0)
 				{
-					return new GlobMatcher(null, pattern[1..], null, comparison);
+					return new GlobMatcher(null, namePattern[1..], null, comparison);
 				}
 
-				if (pattern.AsSpan().IndexOfAny(GlobMetaCharacters) < 0)
+				if (namePattern.AsSpan().IndexOfAny(GlobMetaCharacters) < 0)
 				{
-					return new GlobMatcher(pattern, null, null, comparison);
+					return new GlobMatcher(namePattern, null, null, comparison);
 				}
 			}
 

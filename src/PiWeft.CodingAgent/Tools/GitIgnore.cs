@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.IO.Enumeration;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -61,7 +62,6 @@ public sealed class GitIgnore
 	internal int BaseLength => _baseDirectory.Length;
 
 	internal string BaseDirectory => _baseDirectory;
-
 
 	public static GitIgnore FromDirectory(string directory) =>
 		FromFile(Path.Combine(directory, ".gitignore"), directory);
@@ -425,6 +425,13 @@ public sealed class GitIgnore
 		var matcher = _matcher ??= BuildMatcher();
 		if (matcher.HasPositive && MatchesPositive(matcher, relative, name, isDirectory))
 		{
+			// 正向命中且没有否定规则命中时，最后命中的必然是正向规则，结果就是「忽略」。
+			// 只有真的存在否定命中才需要按序求值（196 条规则的全量扫描是命中路径的主要成本）。
+			if (matcher.Negatives is null || !MatchesNegatives(matcher, relative, name, isDirectory))
+			{
+				return true;
+			}
+
 			return ApplyOrdered(relative, name, isDirectory, ignored);
 		}
 
@@ -464,9 +471,9 @@ public sealed class GitIgnore
 			}
 		}
 
-		if (matcher.NameGlobs is { } nameGlobs)
+		if (!name.IsEmpty && matcher.NameGlobsByChar is { } byChar && byChar.TryGetValue(name[0], out var charBucket))
 		{
-			foreach (var (pattern, patternScope) in nameGlobs)
+			foreach (var (pattern, patternScope) in charBucket)
 			{
 				if ((patternScope & scope) != 0 && pattern.MatchesName(name))
 				{
@@ -475,34 +482,78 @@ public sealed class GitIgnore
 			}
 		}
 
-		if (matcher.PathByHead is not null || matcher.PathOpen is not null)
+		if (!name.IsEmpty && matcher.NameGlobsByLastChar is { } byLast && byLast.TryGetValue(name[^1], out var lastBucket))
 		{
-			var separator = relative.IndexOf('/');
-			var head = separator < 0 ? relative : relative[..separator];
-			if (matcher.PathByHead is { } byHead && byHead.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(head, out var bucket))
+			foreach (var (pattern, patternScope) in lastBucket)
 			{
-				foreach (var (pattern, patternScope) in bucket)
+				if ((patternScope & scope) != 0 && pattern.MatchesName(name))
 				{
-					if ((patternScope & scope) != 0 && pattern.MatchesPath(relative))
-					{
-						return true;
-					}
-				}
-			}
-
-			if (matcher.PathOpen is { } open)
-			{
-				foreach (var (pattern, patternScope) in open)
-				{
-					if ((patternScope & scope) != 0 && pattern.MatchesPath(relative))
-					{
-						return true;
-					}
+					return true;
 				}
 			}
 		}
 
-		return false;
+		if (matcher.NameGlobsOpen is { } openNames)
+		{
+			foreach (var (pattern, patternScope) in openNames)
+			{
+				if ((patternScope & scope) != 0 && pattern.MatchesName(name))
+				{
+					return true;
+				}
+			}
+		}
+
+		if (matcher.PathByHead is null && matcher.PathByAnyDepth is null && matcher.PathOpen is null)
+		{
+			return false;
+		}
+
+		var separator = relative.IndexOf('/');
+		var head = separator < 0 ? relative : relative[..separator];
+		if (matcher.PathByHead is { } pathByHead
+			&& pathByHead.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(head, out var headBucket)
+			&& MatchesAny(headBucket, relative, scope))
+		{
+			return true;
+		}
+
+		if (matcher.PathByAnyDepth is { } anyDepth)
+		{
+			var lookup = anyDepth.GetAlternateLookup<ReadOnlySpan<char>>();
+			var rest = relative;
+			while (!rest.IsEmpty)
+			{
+				var slash = rest.IndexOf('/');
+				var segment = slash < 0 ? rest : rest[..slash];
+				if (lookup.TryGetValue(segment, out var segmentBucket) && MatchesAny(segmentBucket, relative, scope))
+				{
+					return true;
+				}
+
+				if (slash < 0)
+				{
+					break;
+				}
+
+				rest = rest[(slash + 1)..];
+			}
+		}
+
+		return matcher.PathOpen is { } open && MatchesAny(open, relative, scope);
+
+		static bool MatchesAny(List<(SegmentPattern Pattern, int Scope)> bucket, ReadOnlySpan<char> path, int scope)
+		{
+			foreach (var (pattern, patternScope) in bucket)
+			{
+				if ((patternScope & scope) != 0 && pattern.MatchesPath(path))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
 	}
 
 	private static bool MatchesNegatives(
@@ -545,6 +596,7 @@ public sealed class GitIgnore
 		return ignored;
 	}
 
+
 	private RuleMatcher BuildMatcher()
 	{
 		var matcher = new RuleMatcher();
@@ -586,7 +638,8 @@ public sealed class GitIgnore
 				}
 				else if (path.AnyDepthSegment is not null)
 				{
-					(matcher.NameGlobs ??= []).Add((path, scope));
+					// `**/[Bb]in` 之类：按首字符分桶，别再逐条试。
+					matcher.AddNameGlob(path, scope, path.AnyDepthSegment is { } inner ? SegmentPattern.FirstCharsOf(inner) : null);
 				}
 				else
 				{
@@ -595,7 +648,7 @@ public sealed class GitIgnore
 			}
 			else if (rule.NameGlob is { } nameGlob)
 			{
-				(matcher.NameGlobs ??= []).Add((nameGlob, scope));
+				matcher.AddNameGlob(nameGlob, scope);
 			}
 		}
 
@@ -604,8 +657,11 @@ public sealed class GitIgnore
 		return matcher;
 	}
 
-	/// 规则索引。纯名字与扩展名走字典；路径规则按首段分桶，
-	/// 这样一次条目匹配只需要 1–2 次字典查找加上少量段匹配，跟规则总数无关。
+	/// <summary>规则索引：名字/扩展名走字典，名字通配按首字符分桶，路径规则按首段或 `**/x` 的 x 分桶。</summary>
+	/// <remarks>
+	/// vendored 仓库里一个 .gitignore 有几百条规则，`[Bb]in/`、`[Dd]ebug*/` 这类带字符类的
+	/// 名字规则如果只放在一张线性表里，单条目要跑上百次段匹配（实测 10 µs/层）。
+	/// </remarks>
 	private sealed class RuleMatcher
 	{
 		public Dictionary<string, int>? Names;
@@ -616,35 +672,117 @@ public sealed class GitIgnore
 
 		public Dictionary<string, int>.AlternateLookup<ReadOnlySpan<char>> SuffixesLookup;
 
-		public List<(SegmentPattern Pattern, int Scope)>? NameGlobs;
+		public Dictionary<char, List<(SegmentPattern Pattern, int Scope)>>? NameGlobsByChar;
+
+		public Dictionary<char, List<(SegmentPattern Pattern, int Scope)>>? NameGlobsByLastChar;
+
+		public List<(SegmentPattern Pattern, int Scope)>? NameGlobsOpen;
 
 		/// 首段是字面量的路径规则（`src/bin`、`obj/` 这类）。
 		public Dictionary<string, List<(SegmentPattern Pattern, int Scope)>>? PathByHead;
 
+		/// `**/x/...`：按 x 分桶，只看路径里出现过的段。
+		public Dictionary<string, List<(SegmentPattern Pattern, int Scope)>>? PathByAnyDepth;
 
-		/// 首段是 '**' 或带通配的路径规则，只能逐条试。
+		/// `**/[Pp]ackages/...` 这类首段是字符类的，按首字符分桶。
+		public Dictionary<char, List<(SegmentPattern Pattern, int Scope)>>? PathByAnyDepthChar;
+
+		/// 首段是通配的路径规则。
 		public List<(SegmentPattern Pattern, int Scope)>? PathOpen;
 
 		public List<IgnoreRule>? Negatives;
 
 		public bool HasPositive;
 
+		public void AddNameGlob(SegmentPattern pattern, int scope)
+		{
+			AddNameGlob(pattern, scope, pattern.FirstChars);
+		}
+
+		public void AddNameGlob(SegmentPattern pattern, int scope, char[]? firstChars)
+		{
+			if (firstChars is { Length: > 0 })
+			{
+				Bucket(ref NameGlobsByChar, firstChars, pattern, scope);
+				return;
+			}
+
+			// `*` 开头的规则按末尾字符再分一次桶：名字末字符不在候选里就必然不命中。
+			if (pattern.NameLastChars is { Length: > 0 } lastChars)
+			{
+				Bucket(ref NameGlobsByLastChar, lastChars, pattern, scope);
+				return;
+			}
+
+			(NameGlobsOpen ??= []).Add((pattern, scope));
+		}
+
+		private static void Bucket(
+			ref Dictionary<char, List<(SegmentPattern Pattern, int Scope)>>? target,
+			char[] keys,
+			SegmentPattern pattern,
+			int scope)
+		{
+			target ??= new Dictionary<char, List<(SegmentPattern, int)>>();
+			foreach (var c in keys)
+			{
+				if (!target.TryGetValue(c, out var bucket))
+				{
+					bucket = [];
+					target[c] = bucket;
+				}
+
+				bucket.Add((pattern, scope));
+			}
+		}
+
 		public void AddPath(SegmentPattern pattern, int scope)
 		{
 			if (pattern.Head is { } head)
 			{
-				PathByHead ??= new Dictionary<string, List<(SegmentPattern, int)>>(StringComparer.Ordinal);
-				if (!PathByHead.TryGetValue(head, out var bucket))
+				Add(PathByHead ??= new Dictionary<string, List<(SegmentPattern, int)>>(StringComparer.Ordinal), head, pattern, scope);
+				return;
+			}
+
+			if (pattern.AnyDepthHead is { } anyDepth)
+			{
+				Add(PathByAnyDepth ??= new Dictionary<string, List<(SegmentPattern, int)>>(StringComparer.Ordinal), anyDepth, pattern, scope);
+				return;
+			}
+
+			if (pattern.AnyDepthHeadChars is { Length: > 0 } chars)
+			{
+				PathByAnyDepthChar ??= new Dictionary<char, List<(SegmentPattern, int)>>();
+				foreach (var c in chars)
 				{
-					bucket = [];
-					PathByHead[head] = bucket;
+					if (!PathByAnyDepthChar.TryGetValue(c, out var bucket))
+					{
+						bucket = [];
+						PathByAnyDepthChar[c] = bucket;
+					}
+
+					bucket.Add((pattern, scope));
 				}
 
-				bucket.Add((pattern, scope));
 				return;
 			}
 
 			(PathOpen ??= []).Add((pattern, scope));
+		}
+
+		private static void Add(
+			Dictionary<string, List<(SegmentPattern Pattern, int Scope)>> target,
+			string key,
+			SegmentPattern pattern,
+			int scope)
+		{
+			if (!target.TryGetValue(key, out var bucket))
+			{
+				bucket = [];
+				target[key] = bucket;
+			}
+
+			bucket.Add((pattern, scope));
 		}
 	}
 
@@ -773,6 +911,100 @@ public sealed class GitIgnore
 		public string? AnyDepthSegment =>
 			_segments is [null, { } segment] ? segment : null;
 
+		/// `**/x/...` 里的 x：可以按「路径里有这一段」快速筛。
+		public string? AnyDepthHead =>
+			_segments is [null, { } head, _, ..] && head.AsSpan().IndexOfAny(WildcardCharacters) < 0 ? head : null;
+
+		/// `**/x/...` 里的 x 是字符类开头时（`[Pp]ackages`），按首字符分桶。
+		public char[]? AnyDepthHeadChars =>
+			_segments is [null, { } head, _, ..] && AnyDepthHead is null ? FirstCharsOf(head) : null;
+
+		/// 单段（按名字匹配）规则的首字符候选；通配开头或候选太多时返回 null。
+		public char[]? FirstChars =>
+			_segments.Length == 1 && _segments[0] is { } segment ? FirstCharsOf(segment) : null;
+
+		/// 按名字匹配的规则的末尾字符候选。`*` 开头的规则靠它做二次分桶：
+		/// vendored 的 .gitignore 里十几条 `*.[Cc]ache`、`*~` 这类规则要能一次查表就跳过。
+		public char[]? NameLastChars =>
+			_segments switch
+			{
+				[null, { } segment] => LastCharsOf(segment),
+				[{ } segment] => LastCharsOf(segment),
+				_ => null,
+			};
+
+		/// 模式末尾可能出现的字符；末尾是 `*`、`?` 或区间/取反类时放弃。
+		public static char[]? LastCharsOf(string pattern)
+		{
+			if (pattern.Length == 0)
+			{
+				return null;
+			}
+
+			var last = pattern[^1];
+			if (last is '*' or '?' or '\\')
+			{
+				return null;
+			}
+
+			if (last != ']')
+			{
+				return IgnoreCase && char.IsLetter(last)
+					? [char.ToUpperInvariant(last), char.ToLowerInvariant(last)]
+					: [last];
+			}
+
+			var open = pattern.LastIndexOf('[');
+			if (open < 0)
+			{
+				return [last];
+			}
+
+			var body = pattern.AsSpan(open + 1, pattern.Length - open - 2);
+			if (body.Length == 0 || body[0] is '!' or '^' || body.IndexOf('-') >= 0 || body.Length > 8)
+			{
+				return null;
+			}
+
+			return body.ToArray();
+		}
+
+		/// 段的首字符候选：字面量、简单字符类（`[Bb]`），超过 8 个或含区间/取反就放弃。
+		public static char[]? FirstCharsOf(string segment)
+		{
+			if (segment.Length == 0)
+			{
+				return null;
+			}
+
+			var first = segment[0];
+			if (first == '*')
+			{
+				return null;
+			}
+
+			if (first != '[')
+			{
+				return IgnoreCase && char.IsLetter(first)
+					? [char.ToUpperInvariant(first), char.ToLowerInvariant(first)]
+					: [first];
+			}
+
+			var close = segment.IndexOf(']', 1);
+			if (close < 1)
+			{
+				return [first];
+			}
+
+			var body = segment.AsSpan(1, close - 1);
+			if (body.Length == 0 || body[0] is '!' or '^' || body.IndexOf('-') >= 0 || body.Length > 8)
+			{
+				return null;
+			}
+
+			return body.ToArray();
+		}
+
 		public static SegmentPattern ParseName(string pattern) =>
 			new([pattern], null);
 
@@ -819,27 +1051,152 @@ public sealed class GitIgnore
 		public bool MatchesName(ReadOnlySpan<char> name) =>
 			MatchSegment(_segments[^1] ?? "*", name);
 
-		public bool MatchesPath(ReadOnlySpan<char> relative) => MatchFrom(0, relative, exhausted: false);
-
-		/// <param name="exhausted">路径已经没有下一段了（与「下一段是空串」不同，后者不存在）。</param>
-		private bool MatchFrom(int segmentIndex, ReadOnlySpan<char> path, bool exhausted)
+		/// 模式里是否含 '**' 段：含的话需要先切分路径再回溯。
+		public bool HasAnyDepth
 		{
-			if (segmentIndex == _segments.Length)
+			get
+			{
+				foreach (var segment in _segments)
+				{
+					if (segment is null)
+					{
+						return true;
+					}
+				}
+
+				return false;
+			}
+		}
+
+		/// 在已切好的分段上匹配（调用方一次切分、多个模式复用）。
+		public bool MatchesSegments(ReadOnlySpan<char> path, ReadOnlySpan<Range> segments) =>
+			MatchFrom(0, path, segments, 0);
+
+		/// 无 '**' 的路径模式：逐段推进，首段不匹配就立刻退出，不必切分整条路径。
+		public bool MatchesLinear(ReadOnlySpan<char> path)
+		{
+			for (var index = 0; index < _segments.Length; index++)
+			{
+				var segment = _segments[index]!;
+				var separator = path.IndexOf('/');
+				var current = separator < 0 ? path : path[..separator];
+				if (!MatchSegment(segment, current))
+				{
+					return false;
+				}
+
+				var last = index == _segments.Length - 1;
+				if (last)
+				{
+					return separator < 0;
+				}
+
+				if (separator < 0)
+				{
+					return false;
+				}
+
+				path = path[(separator + 1)..];
+			}
+
+			return path.IsEmpty;
+		}
+
+		public bool MatchesPath(ReadOnlySpan<char> relative)
+		{
+			// 先把路径切成分段，再在分段上做回溯：旧实现每次尝试 '**' 都重新 IndexOf 切一遍，
+			// 7 段路径配 3 段模式要几十次 IndexOf，单条目就是微秒级。
+			Span<Range> stackSegments = stackalloc Range[32];
+			var count = SplitSegments(relative, stackSegments);
+			if (count < 0)
+			{
+				return MatchesSlow(relative);
+			}
+
+			return MatchFrom(0, relative, stackSegments[..count], 0);
+		}
+
+		private static int SplitSegments(ReadOnlySpan<char> path, Span<Range> ranges)
+		{
+			var count = 0;
+			var start = 0;
+			for (var index = 0; index <= path.Length; index++)
+			{
+				if (index != path.Length && path[index] != '/')
+				{
+					continue;
+				}
+
+				if (count == ranges.Length)
+				{
+					return -1;
+				}
+
+				ranges[count++] = new Range(start, index);
+				start = index + 1;
+			}
+
+			return count;
+		}
+
+		private bool MatchesSlow(ReadOnlySpan<char> relative) => MatchFromSlow(0, relative, exhausted: false);
+
+		private bool MatchFrom(
+			int patternIndex,
+			ReadOnlySpan<char> path,
+			ReadOnlySpan<Range> segments,
+			int segmentIndex)
+		{
+			if (patternIndex == _segments.Length)
+			{
+				return segmentIndex == segments.Length;
+			}
+
+			var segment = _segments[patternIndex];
+			if (segment is null)
+			{
+				if (patternIndex == _segments.Length - 1)
+				{
+					// 末尾的 '**' 与 git 一致：匹配 a 之下的一切，不含 a 自己。
+					return segmentIndex < segments.Length;
+				}
+
+				for (var skip = 0; segmentIndex + skip <= segments.Length; skip++)
+				{
+					if (MatchFrom(patternIndex + 1, path, segments, segmentIndex + skip))
+					{
+						return true;
+					}
+				}
+
+				return false;
+			}
+
+			if (segmentIndex == segments.Length)
+			{
+				return false;
+			}
+
+			return MatchSegment(segment, path[segments[segmentIndex]]) && MatchFrom(patternIndex + 1, path, segments, segmentIndex + 1);
+		}
+
+		/// 超过 32 段（病态路径）时退回逐段切片，语义相同。
+		private bool MatchFromSlow(int patternIndex, ReadOnlySpan<char> path, bool exhausted)
+		{
+			if (patternIndex == _segments.Length)
 			{
 				return exhausted;
 			}
 
-			var segment = _segments[segmentIndex];
+			var segment = _segments[patternIndex];
 			if (segment is null)
 			{
-				if (segmentIndex == _segments.Length - 1)
+				if (patternIndex == _segments.Length - 1)
 				{
-					// 末尾的 '**' 与 git 一致：匹配 a 之下的一切，不含 a 自己。
 					return !exhausted;
 				}
 
-				// 中间的 '**'：先试「吃 0 段」，再逐段尝试。
-				if (MatchFrom(segmentIndex + 1, path, exhausted))
+				if (MatchFromSlow(patternIndex + 1, path, exhausted))
 				{
 					return true;
 				}
@@ -854,7 +1211,7 @@ public sealed class GitIgnore
 					}
 
 					rest = rest[(slash + 1)..];
-					if (MatchFrom(segmentIndex + 1, rest, exhausted: false))
+					if (MatchFromSlow(patternIndex + 1, rest, exhausted: false))
 					{
 						return true;
 					}
@@ -871,10 +1228,10 @@ public sealed class GitIgnore
 			var separator = path.IndexOf('/');
 			if (separator < 0)
 			{
-				return MatchSegment(segment, path) && MatchFrom(segmentIndex + 1, default, exhausted: true);
+				return MatchSegment(segment, path) && MatchFromSlow(patternIndex + 1, default, exhausted: true);
 			}
 
-			return MatchSegment(segment, path[..separator]) && MatchFrom(segmentIndex + 1, path[(separator + 1)..], exhausted: false);
+			return MatchSegment(segment, path[..separator]) && MatchFromSlow(patternIndex + 1, path[(separator + 1)..], exhausted: false);
 		}
 
 		private static readonly SearchValues<char> WildcardCharacters = SearchValues.Create("*?[\\");
@@ -1058,57 +1415,37 @@ public sealed class GitIgnore
 
 /// 遍历目录：单趟 <see cref="FileSystemEnumerable{TResult}"/> 取名字与类型（Linux 上是 d_type，
 /// 不必为每条 stat），忽略规则按前缀切片匹配，不产生中间字符串。
+/// <summary>流式并行遍历：目录是工作项，条目在 worker 线程上直接交给访问者，结果按完成顺序交付。</summary>
+/// <remarks>
+/// 没有「先建整棵树再按序拼回」的中间层：访问者返回非空即入结果队列，消费方边遍历边取。
+/// 顺序因此是完成顺序（rg/fd 也是），换来少一层节点树和一次装配遍历。
+/// </remarks>
 internal static class FileWalker
 {
-	public static IEnumerable<string> EnumerateFiles(string root, FileWalkOptions options)
+	public static FileWalk<TResult> Start<TResult>(
+		string root,
+		FileWalkOptions options,
+		bool visitDirectories,
+		Func<bool>? stop,
+		Func<FileEntry, TResult?> visit)
+		where TResult : class
 	{
-		foreach (var entry in Enumerate(root, options, directoriesFirst: false))
+		var walk = new FileWalk<TResult>(options, visitDirectories, stop, visit);
+		if (Directory.Exists(root))
 		{
-			if (!entry.IsDirectory)
-			{
-				yield return entry.Path;
-			}
+			var state = CreateState(root, options);
+			walk.Start(state.Root, state);
 		}
-	}
-
-	public static IEnumerable<FileEntry> EnumerateEntries(string root, FileWalkOptions options) =>
-		Enumerate(root, options, directoriesFirst: true);
-
-	private static IEnumerable<FileEntry> Enumerate(string root, FileWalkOptions options, bool directoriesFirst)
-	{
-		if (!Directory.Exists(root))
+		else
 		{
-			yield break;
+			walk.Start(null, null);
 		}
 
-		var state = CreateState(root, options);
-		foreach (var entry in Walk(state.Root, state, directoriesFirst))
-		{
-			yield return entry;
-		}
+		return walk;
 	}
 
-	private sealed class WalkState
-	{
-		public required string Root { get; init; }
 
-		public required FileWalkOptions Options { get; init; }
-
-		public List<GitIgnore> Layers { get; } = [];
-
-		/// 当前是否处于某个 git 仓库内（grep 在进入仓库前不读 .gitignore）。
-		public bool RepositoryActive { get; set; }
-
-		/// 进入嵌套仓库时是否丢掉祖先仓库的本地规则。
-		public bool ResetAtNestedRepository { get; set; }
-
-		public bool GlobalGitLoaded { get; set; }
-
-	}
-
-	private readonly record struct DirectoryEntry(string Name, bool IsDirectory);
-
-	private static WalkState CreateState(string root, FileWalkOptions options)
+	internal static WalkState CreateState(string root, FileWalkOptions options)
 	{
 		var full = Path.GetFullPath(root);
 		var gitRoot = GitIgnore.FindGitRoot(full);
@@ -1127,132 +1464,7 @@ internal static class FileWalker
 		return state;
 	}
 
-	private static IEnumerable<FileEntry> Walk(string directory, WalkState state, bool directoriesFirst)
-	{
-		var previousRepositoryActive = state.RepositoryActive;
-		// 深度取在 EnterRepository 之前：它压入的全局 git 规则要随本目录一起弹掉，
-		// 否则兄弟目录会带着上一个仓库的基准目录做切片。
-		var depth = state.Layers.Count;
-		var previousGlobalGitLoaded = state.GlobalGitLoaded;
-		var previousLayers = EnterRepository(directory, state);
-
-		try
-		{
-			var listing = ListDirectory(directory);
-			if (listing is null)
-			{
-				yield break;
-			}
-
-			PushLocalLayer(directory, state, listing);
-
-			if (directoriesFirst)
-			{
-				foreach (var entry in YieldDirectories(directory, listing, state))
-				{
-					yield return entry;
-				}
-
-				foreach (var entry in YieldFiles(directory, listing, state))
-				{
-					yield return entry;
-				}
-
-				foreach (var entry in Descend(directory, listing, state, directoriesFirst))
-				{
-					yield return entry;
-				}
-			}
-			else
-			{
-				foreach (var entry in YieldFiles(directory, listing, state))
-				{
-					yield return entry;
-				}
-
-				foreach (var entry in Descend(directory, listing, state, directoriesFirst))
-				{
-					yield return entry;
-				}
-			}
-		}
-		finally
-		{
-			RestoreLayers(state, depth, previousLayers);
-
-			// 离开仓库后 VCS 规则不再生效（ripgrep 按文件所在仓库判断）。
-			state.RepositoryActive = previousRepositoryActive;
-			state.GlobalGitLoaded = previousGlobalGitLoaded;
-		}
-	}
-
-	private static IEnumerable<FileEntry> YieldFiles(string directory, List<DirectoryEntry> listing, WalkState state)
-	{
-		foreach (var entry in listing)
-		{
-			if (entry.IsDirectory)
-			{
-				continue;
-			}
-
-			var path = string.Concat(directory, "/", entry.Name);
-			if (IsIgnored(state, path, entry.Name, isDirectory: false))
-			{
-				continue;
-			}
-
-			yield return new FileEntry(path, IsDirectory: false);
-		}
-	}
-
-	private static IEnumerable<FileEntry> YieldDirectories(string directory, List<DirectoryEntry> listing, WalkState state)
-	{
-		foreach (var entry in listing)
-		{
-			if (!entry.IsDirectory || !IsCandidate(state, entry.Name))
-			{
-				continue;
-			}
-
-			var path = string.Concat(directory, "/", entry.Name);
-			if (IsIgnored(state, path, entry.Name, isDirectory: true))
-			{
-				continue;
-			}
-
-			yield return new FileEntry(path, IsDirectory: true);
-		}
-	}
-
-	private static IEnumerable<FileEntry> Descend(string directory, List<DirectoryEntry> listing, WalkState state, bool directoriesFirst)
-	{
-		foreach (var entry in listing)
-		{
-			if (!entry.IsDirectory || !IsCandidate(state, entry.Name))
-			{
-				continue;
-			}
-
-			var path = string.Concat(directory, "/", entry.Name);
-			if (IsIgnored(state, path, entry.Name, isDirectory: true))
-			{
-				continue;
-			}
-
-			// 不跟随符号链接目录：d_type 已把链接标成非目录，这里再挡一次 GetDirectories 语义的旧路径。
-			if (IsReparsePoint(path))
-			{
-				continue;
-			}
-
-			foreach (var child in Walk(path, state, directoriesFirst))
-			{
-				yield return child;
-			}
-		}
-	}
-
-	private static bool IsCandidate(WalkState state, string name)
+	internal static bool IsCandidate(WalkState state, string name)
 	{
 		if (!state.Options.IncludeGitDirectory && string.Equals(name, ".git", StringComparison.Ordinal))
 		{
@@ -1262,7 +1474,7 @@ internal static class FileWalker
 		return !state.Options.SkipHidden || !name.StartsWith('.');
 	}
 
-	private static bool IsIgnored(WalkState state, string path, ReadOnlySpan<char> name, bool isDirectory)
+	internal static bool IsIgnored(WalkState state, ReadOnlySpan<char> path, ReadOnlySpan<char> name, bool isDirectory)
 	{
 		var ignored = false;
 		foreach (var layer in state.Layers)
@@ -1270,12 +1482,12 @@ internal static class FileWalker
 			// 层的基准目录一定是当前目录的祖先：直接切片，省掉每条目一次 GetRelativePath。
 			// 前缀比较只是保险，代价是每条目几十次字符比较。
 			var baseLength = layer.BaseLength;
-			if (path.Length <= baseLength || !path.AsSpan(0, baseLength).SequenceEqual(layer.BaseDirectory))
+			if (path.Length <= baseLength || !path[..baseLength].SequenceEqual(layer.BaseDirectory))
 			{
 				continue;
 			}
 
-			var relative = path.AsSpan(baseLength + 1);
+			var relative = path[(baseLength + 1)..];
 			ignored = layer.Apply(relative, name, isDirectory, ignored);
 		}
 
@@ -1283,54 +1495,49 @@ internal static class FileWalker
 	}
 
 	/// 单趟列举：名字与类型一次到手。返回 null 表示目录读不了（与 rg/fd 一样跳过）。
-	private static List<DirectoryEntry>? ListDirectory(string directory)
+	private static readonly EnumerationOptions ListOptions = new()
 	{
-		var options = new EnumerationOptions
-		{
-			RecurseSubdirectories = false,
-			AttributesToSkip = 0,
-			IgnoreInaccessible = true,
-			ReturnSpecialDirectories = false,
-		};
+		RecurseSubdirectories = false,
+		AttributesToSkip = 0,
+		IgnoreInaccessible = true,
+		ReturnSpecialDirectories = false,
+	};
 
-		var entries = new List<DirectoryEntry>(64);
+	internal static int MaxNameLength(List<DirectoryEntry> listing)
+	{
+		var max = 0;
+		foreach (var entry in listing)
+		{
+			max = Math.Max(max, entry.Name.Length);
+		}
+
+		return max;
+	}
+
+	/// 列举目录到调用方给的列表里（worker 复用同一个列表，省掉每条目录一次分配）。
+	internal static bool TryListDirectory(string directory, List<DirectoryEntry> entries)
+	{
+		entries.Clear();
 		try
 		{
 			foreach (var entry in new FileSystemEnumerable<DirectoryEntry>(
 				directory,
 				static (ref FileSystemEntry source) => new DirectoryEntry(source.FileName.ToString(), source.IsDirectory),
-				options))
+				ListOptions))
 			{
 				entries.Add(entry);
 			}
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			return null;
+			return false;
 		}
 
 		entries.Sort(static (left, right) => string.CompareOrdinal(left.Name, right.Name));
-		return entries;
+		return true;
 	}
 
-	private static void RestoreLayers(WalkState state, int depth, List<GitIgnore>? previousLayers)
-	{
-		if (previousLayers is not null)
-		{
-			state.Layers.Clear();
-			state.Layers.AddRange(previousLayers);
-			return;
-		}
-
-		while (state.Layers.Count > depth)
-		{
-			state.Layers.RemoveAt(state.Layers.Count - 1);
-		}
-	}
-
-	/// 进入一个仓库根：嵌套仓库先丢掉祖先仓库的本地规则，再按自身规则重新加载。
-	/// 返回进入前的整层快照；没有改动共享栈时返回 null，调用方省一次拷贝。
-	private static List<GitIgnore>? EnterRepository(string directory, WalkState state)
+	internal static List<GitIgnore>? EnterRepository(string directory, WalkState state)
 	{
 		if (!GitIgnore.HasGitMarker(directory))
 		{
@@ -1340,6 +1547,7 @@ internal static class FileWalker
 		List<GitIgnore>? previousLayers = null;
 		if (state.ResetAtNestedRepository && state.RepositoryActive && !GitIgnore.SamePath(directory, state.Root))
 		{
+			state.EnsureLayersOwned();
 			previousLayers = [.. state.Layers];
 			for (var index = 0; index < state.Layers.Count; index++)
 			{
@@ -1355,6 +1563,7 @@ internal static class FileWalker
 		// ripgrep 从非仓库目录进入仓库后才开始读全局 git 忽略；fd 在起点已经读过。
 		if (!state.GlobalGitLoaded)
 		{
+			state.EnsureLayersOwned();
 			state.Layers.AddRange(GitIgnore.GlobalLayers(directory));
 			state.GlobalGitLoaded = true;
 		}
@@ -1364,7 +1573,7 @@ internal static class FileWalker
 
 	/// 当前目录自己的规则：info/exclude → .gitignore → .ignore → 方言 ignore 文件（后者覆盖前者）。
 	/// 文件是否存在从目录列举里就能看出来，不再逐目录探测。
-	private static void PushLocalLayer(string directory, WalkState state, List<DirectoryEntry> listing)
+	internal static void PushLocalLayer(string directory, WalkState state, List<DirectoryEntry> listing)
 	{
 		var hasGitIgnore = false;
 		var hasIgnore = false;
@@ -1422,6 +1631,7 @@ internal static class FileWalker
 		{
 			if (ignore.Count > 0)
 			{
+				state.EnsureLayersOwned();
 				state.Layers.Add(ignore);
 			}
 		}
@@ -1430,7 +1640,7 @@ internal static class FileWalker
 	/// 是否是符号链接/重解析点。读不到属性时按「不进入」处理：宁可少扫一点，也不让
 	/// 自指软链接把 grep/find 拖进无限递归。Windows 上的可重解析点不只有链接（OneDrive
 	/// 占位符也是普通目录），所以拿到 ReparsePoint 还要看 LinkTarget。
-	private static bool IsReparsePoint(string path)
+	internal static bool IsReparsePoint(string path)
 	{
 		try
 		{
@@ -1447,3 +1657,300 @@ internal static class FileWalker
 		}
 	}
 }
+
+/// <summary>一次遍历的句柄：worker 线程产出结果，消费方边遍历边取；<see cref="Dispose"/> 收尾。</summary>
+internal sealed class FileWalk<TResult> : IDisposable
+	where TResult : class
+{
+	private readonly BlockingCollection<TResult> _results = new();
+	private readonly ConcurrentBag<DirectoryWork> _work = [];
+	private readonly FileWalkOptions _options;
+	private readonly bool _visitDirectories;
+	private readonly Func<bool>? _stop;
+	private readonly Func<FileEntry, TResult?> _visit;
+	private readonly Task[] _workers;
+	private int _pending;
+	private int _running;
+	private int _stopped;
+	private bool _started;
+	private Exception? _error;
+
+	public FileWalk(
+		FileWalkOptions options,
+		bool visitDirectories,
+		Func<bool>? stop,
+		Func<FileEntry, TResult?> visit)
+	{
+		_options = options;
+		_visitDirectories = visitDirectories;
+		_stop = stop;
+		_visit = visit;
+		_workers = new Task[Math.Max(1, Environment.ProcessorCount)];
+	}
+
+	/// <summary>按完成顺序取结果；遍历结束（或出错）时返回。</summary>
+	public IEnumerable<TResult> Read()
+	{
+		foreach (var result in _results.GetConsumingEnumerable())
+		{
+			yield return result;
+		}
+
+		if (_error is { } error)
+		{
+			System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+		}
+	}
+
+	public void Dispose()
+	{
+		// 消费方提前退出（find 撞到结果上限）时，通知 worker 别再下探。
+		Interlocked.Exchange(ref _stopped, 1);
+		try
+		{
+			if (_started)
+			{
+				Task.WaitAll(_workers);
+			}
+		}
+		catch (AggregateException)
+		{
+			// worker 的异常记在 _error 里，由 Read 抛出。
+		}
+
+		_results.Dispose();
+	}
+
+	public void Start(string? root, WalkState? state)
+	{
+		if (root is null || state is null)
+		{
+			_results.CompleteAdding();
+			return;
+		}
+
+		_work.Add(new DirectoryWork(root, state));
+		_pending = 1;
+		_running = _workers.Length;
+		_started = true;
+		for (var index = 0; index < _workers.Length; index++)
+		{
+			_workers[index] = Task.Run(WorkerLoop);
+		}
+	}
+
+	private bool Stopping() =>
+		Volatile.Read(ref _stopped) != 0 || (_stop is not null && _stop());
+
+	private void WorkerLoop()
+	{
+		var worker = new WorkerContext();
+		try
+		{
+			while (true)
+			{
+				if (Stopping())
+				{
+					break;
+				}
+
+				if (!_work.TryTake(out var work))
+				{
+					if (Volatile.Read(ref _pending) == 0)
+					{
+						break;
+					}
+
+					worker.Spin.SpinOnce();
+					continue;
+				}
+
+				worker.Spin.Reset();
+				try
+				{
+					// 第一个子目录就地继续、其余入队：少一半队列操作，同一线程顺着子树走。
+					while (true)
+					{
+						var children = Process(work, worker);
+						if (children is null || children.Count == 0 || Stopping())
+						{
+							break;
+						}
+
+						for (var index = children.Count - 1; index >= 1; index--)
+						{
+							Interlocked.Increment(ref _pending);
+							_work.Add(children[index]);
+						}
+
+						work = children[0];
+					}
+				}
+				finally
+				{
+					Interlocked.Decrement(ref _pending);
+				}
+			}
+		}
+		catch (Exception exception)
+		{
+			Interlocked.CompareExchange(ref _error, exception, null);
+			Interlocked.Exchange(ref _stopped, 1);
+		}
+		finally
+		{
+			if (Interlocked.Decrement(ref _running) == 0)
+			{
+				_results.CompleteAdding();
+			}
+		}
+	}
+
+	/// <summary>处理一个目录：产出条目、返回可见子目录（第一个由调用方就地继续）。</summary>
+	private List<DirectoryWork>? Process(DirectoryWork work, WorkerContext worker)
+	{
+		var state = work.State;
+		var directory = work.Directory;
+		FileWalker.EnterRepository(directory, state);
+
+		if (!FileWalker.TryListDirectory(directory, worker.Listing))
+		{
+			return null;
+		}
+
+		FileWalker.PushLocalLayer(directory, state, worker.Listing);
+
+		var prefixLength = directory.Length;
+		var capacity = prefixLength + 1 + FileWalker.MaxNameLength(worker.Listing);
+		if (worker.Buffer.Length < capacity)
+		{
+			worker.Buffer = new char[Math.Max(capacity, worker.Buffer.Length * 2)];
+		}
+
+		var buffer = worker.Buffer;
+		directory.AsSpan().CopyTo(buffer);
+		buffer[prefixLength] = '/';
+		var at = prefixLength + 1;
+
+		List<DirectoryWork>? children = null;
+		foreach (var entry in worker.Listing)
+		{
+			if (!entry.IsDirectory || !FileWalker.IsCandidate(state, entry.Name))
+			{
+				continue;
+			}
+
+			var name = entry.Name;
+			name.CopyTo(buffer.AsSpan(at));
+			var path = buffer.AsSpan(0, at + name.Length);
+			if (FileWalker.IsIgnored(state, path, name, isDirectory: true))
+			{
+				continue;
+			}
+
+			var full = new string(path);
+			if (FileWalker.IsReparsePoint(full))
+			{
+				continue;
+			}
+
+			(children ??= []).Add(new DirectoryWork(full, state.Clone()));
+			if (_visitDirectories)
+			{
+				Emit(new FileEntry(full, IsDirectory: true));
+			}
+		}
+
+		foreach (var entry in worker.Listing)
+		{
+			if (entry.IsDirectory)
+			{
+				continue;
+			}
+
+			if (Stopping())
+			{
+				break;
+			}
+
+			var name = entry.Name;
+			name.CopyTo(buffer.AsSpan(at));
+			var path = buffer.AsSpan(0, at + name.Length);
+			if (FileWalker.IsIgnored(state, path, name, isDirectory: false))
+			{
+				continue;
+			}
+
+			Emit(new FileEntry(new string(path), IsDirectory: false));
+		}
+
+		return children;
+	}
+
+	private void Emit(FileEntry entry)
+	{
+		if (_visit(entry) is { } result)
+		{
+			_results.Add(result);
+		}
+	}
+
+	/// 每个 worker 私有的缓冲：路径拼接与目录列举列表都复用。
+	private sealed class WorkerContext
+	{
+		public char[] Buffer = new char[1024];
+
+		public readonly List<DirectoryEntry> Listing = new(16);
+
+		public readonly SpinWait Spin;
+	}
+}
+
+/// <summary>一次目录遍历里逐级继承的状态：祖先规则链（写时复制）与仓库边界标志。</summary>
+internal sealed class WalkState
+{
+	public required string Root { get; init; }
+
+	public required FileWalkOptions Options { get; init; }
+
+	private List<GitIgnore> _layers = [];
+
+	private bool _owned = true;
+
+	/// 祖先链。子节点共享父节点的列表，只有真的要压栈时才复制（只有少数目录有 ignore 文件）。
+	public List<GitIgnore> Layers => _layers;
+
+	/// 当前是否处于某个 git 仓库内（grep 在进入仓库前不读 .gitignore）。
+	public bool RepositoryActive { get; set; }
+
+	/// 进入嵌套仓库时是否丢掉祖先仓库的本地规则。
+	public bool ResetAtNestedRepository { get; set; }
+
+	public bool GlobalGitLoaded { get; set; }
+
+	public void EnsureLayersOwned()
+	{
+		if (!_owned)
+		{
+			_layers = [.. _layers];
+			_owned = true;
+		}
+	}
+
+	/// 分支节点拿到的是祖先链的引用：层本身不可变，写时再复制。
+	public WalkState Clone() => new()
+	{
+		Root = Root,
+		Options = Options,
+		RepositoryActive = RepositoryActive,
+		ResetAtNestedRepository = ResetAtNestedRepository,
+		GlobalGitLoaded = GlobalGitLoaded,
+		_layers = _layers,
+		_owned = false,
+	};
+}
+/// <summary>目录列举结果：名字与类型。</summary>
+internal readonly record struct DirectoryEntry(string Name, bool IsDirectory);
+
+/// <summary>一个待遍历的目录及其生效的规则状态。</summary>
+internal readonly record struct DirectoryWork(string Directory, WalkState State);

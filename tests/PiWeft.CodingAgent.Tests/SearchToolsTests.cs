@@ -46,6 +46,20 @@ public sealed class SearchToolsTests : IDisposable
 	}
 
 	[Fact]
+	public void WalkOfMissingRootYieldsNothingAndDisposesCleanly()
+	{
+		var options = new FileWalkOptions { Flavor = IgnoreFlavor.Ripgrep, IncludeGitDirectory = true };
+		using var walk = FileWalker.Start<string>(
+			Path.Combine(_root, "does-not-exist"),
+			options,
+			visitDirectories: false,
+			stop: null,
+			visit: static entry => entry.Path);
+
+		Assert.Empty(walk.Read());
+	}
+
+	[Fact]
 	public async Task Find_ExpandsBraceAlternativesLikeFd()
 	{
 		Write("a.ts", "x");
