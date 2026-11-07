@@ -120,6 +120,53 @@ public class ToolTests : IDisposable
 	}
 
 
+	[Theory]
+	[InlineData("")]
+	[InlineData("plain ascii")]
+	[InlineData("汉字与 emoji 😀 混排")]
+	[InlineData("\uD800")]
+	public async Task Write_ProducesTheSameUtf8BytesAsTheEncoder(string content)
+	{
+		// 分块编码写入必须与一次性 GetBytes 逐字节相同，包括边界与非法代理项。
+		var name = $"exact-{content.Length}.txt";
+		await FileTools.Write(_root).Execute(Invoke("write", new JsonObject
+		{
+			["path"] = name,
+			["content"] = content,
+		}));
+
+		var expected = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
+		Assert.Equal(expected, File.ReadAllBytes(Path.Combine(_root, name)));
+	}
+
+	[Fact]
+	public async Task Write_SplitsSurrogatePairsAcrossChunkBoundaries()
+	{
+		// 16 KiB 分块：把 emoji（代理对）放在 16384 字符边界两侧，验证不会被拆成两个替换字符。
+		var content = new string('a', 16383) + "😀" + "😀" + new string('汉', 10) + "\uD800" + new string('b', 20);
+		await FileTools.Write(_root).Execute(Invoke("write", new JsonObject
+		{
+			["path"] = "boundary.txt",
+			["content"] = content,
+		}));
+
+		var expected = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
+		Assert.Equal(expected, File.ReadAllBytes(Path.Combine(_root, "boundary.txt")));
+	}
+
+	[Fact]
+	public async Task Write_TruncatesExistingLongerContent()
+	{
+		Write("shrink.txt", new string('x', 5000));
+		await FileTools.Write(_root).Execute(Invoke("write", new JsonObject
+		{
+			["path"] = "shrink.txt",
+			["content"] = "short",
+		}));
+
+		Assert.Equal("short", File.ReadAllText(Path.Combine(_root, "shrink.txt")));
+	}
+
 	[Fact]
 	public async Task Write_CreatesParentDirectories()
 	{

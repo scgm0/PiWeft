@@ -37,6 +37,7 @@
 | 本仓 279 MiB `grep` 无命中 | 5.6 s → 0.09–0.11 s（rg 0.045 s） |
 | `grep` 命中若干条（额度内） | 1.6 s → 6–10 ms（rg 0.05 s：我们命中够了就停遍历） |
 | 23 MB 单文件 `grep` | 3.5 ms（mmap，6.6 GB/s；rg 3.7 ms） |
+| `write` 1 MB / 10 MB | 分块编码写入后 0.78 ms / 8.9 ms（pi 1.33 ms / 11.9 ms）；100 B–2 KB 均 0.04 ms（pi 0.07–0.17 ms） |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
 | NativeAOT 桌面体积（linux-x64，当前提交） | 75.8 MiB；开启 `EventSourceSupport` 77.4 MiB（+1.6 MiB / +2.1%，换来 `dotnet-counters`/`dotnet-trace` 可附着）。旧记录 62.4 MB / 64.0 MB 来自更早构建，需按当前提交重测 |
 
@@ -64,6 +65,7 @@
 - 规则链写时复制：没有 ignore 文件的目录（绝大多数）直接共享父节点的层列表，只有真的压栈才复制。目录列举列表、路径缓冲按 worker 复用；`grep` 的 `FileScan` 里显示路径、行表、前导上下文队列全部惰性分配（无命中的文件不产生这些分配，也不进结果队列）。每趟遍历分配 12 → 10 MiB。路径缓冲每个 worker 复用（对应 `ignore` 的 `PathBuf` push/pop），只有留下来的条目才 `new string`。单趟 `FileSystemEnumerable` 拿名字与 d_type（不再 `GetFiles` + `GetDirectories` 两趟），相对路径按「当前目录前缀 + 名字」切片，规则基准目录只做一次前缀比较。子模块边界按整栈快照还原（此前进入嵌套仓库会永久丢掉祖先规则，本仓多列出 7,213 个 `bin`/`obj` 文件）。输出与 `rg --files --hidden` 逐行相同。
 - `find` 的 glob 匹配与 `grep` 的扫描都在 worker 线程上做（访问者返回匹配结果或扫描结果），消费方只收集/合并。`grep` 的合并就地做：每到达一个文件结果就按上限与尾随上下文裁决，不再攒一份 `List<FileScan>` 再遍历。命中额度用完时遍历停止下探（`rg` 命中够数也会杀掉搜索），因此**撞到上限时的结果集不保证顺序一致**，与 rg 相同。
 - `grep` 读大文件走 mmap（≥1 MiB）：映射出来的字节直接做 SIMD 查找，不复制、不用池化缓冲（`MemoryMappedFile` 只能通过指针取 span，`PiWeft.CodingAgent` 为此打开 `AllowUnsafeBlocks`）。映射失败或非普通文件退回分块读。匹配分两条路。字面量（`literal`，或 pattern 里没有正则元字符）走字节匹配：`SearchValues<byte>`/`IndexOf` 直接在字节上找，命中后才解码那一行；无命中时整份文件只做一次 SIMD 查找。正则走字符路径，但先用 pattern 里最长的字面量片段做块级预筛，整块不含该片段就不解码。小文件按 256 KiB 分块读（切点对齐换行符），避免为 20 MB 以上的文件租 LOH 数组。上限与尾随上下文在合并阶段裁决。
+- `write` 不再整份 `Encoding.GetBytes`：改成 16 KiB 字符分块 + `Encoder.Convert` 写进池化缓冲（峰值分配从「内容大小」降到 ~48 KiB），`FileStream` 关掉内部缓冲并声明顺序写。10 MB 写入 16 ms → 8.9 ms。有测试逐字节比对一次性编码结果（含分块边界上的代理对与孤立代理项）。
 - `edit` 的行级 diff 从全表 LCS（2 万行两侧 1.6 GB、23 s）换成「公共前后缀 + 两侧唯一行锚点 + 最长递增子序列」，内存与行数线性；2 万行单处替换 24.7 s → 24 ms，patch 只含改动附近的 hunk。
 - JSON Schema 的 `$ref` 解析按 schema 根缓存（`ConditionalWeakTable` + `ConcurrentDictionary`），同一工具每次调用的参数校验不再重走 pointer。
 

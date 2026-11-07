@@ -364,11 +364,39 @@ public static class FileTools
 	{
 		// 写入跟随符号链接：FileMode.Create 在链接路径上打开的就是目标文件，
 		// 不解析也能保持链接本身不变（rename 式写入会把链接换成普通文件）。
-		using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
-		var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-		var bytes = encoding.GetBytes(content);
-		stream.Write(bytes, 0, bytes.Length);
+		// 分块编码写入：不整份 GetBytes，十几 MB 的写入不再多一次等大分配。
+		using var stream = new FileStream(
+			path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite, bufferSize: 0, FileOptions.SequentialScan);
+		if (content.Length == 0)
+		{
+			return;
+		}
+
+		var encoder = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetEncoder();
+		var buffer = ArrayPool<byte>.Shared.Rent(Encoding.UTF8.GetMaxByteCount(WriteChunkChars));
+		try
+		{
+			var remaining = content.AsSpan();
+			while (!remaining.IsEmpty)
+			{
+				var chunk = remaining.Length > WriteChunkChars ? remaining[..WriteChunkChars] : remaining;
+				var last = chunk.Length == remaining.Length;
+				encoder.Convert(chunk, buffer, flush: last, out var charsUsed, out var bytesUsed, out _);
+				if (bytesUsed > 0)
+				{
+					stream.Write(buffer, 0, bytesUsed);
+				}
+
+				remaining = remaining[charsUsed..];
+			}
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(buffer);
+		}
 	}
+
+	private const int WriteChunkChars = 16 * 1024;
 
 	private static AgentToolResult WriteFile(string cwd, AgentToolInvocation invocation)
 	{
