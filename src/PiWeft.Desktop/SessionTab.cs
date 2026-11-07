@@ -378,11 +378,11 @@ public sealed partial class SessionTab : IDisposable
 			.IsVisible(false);
 		_sendMenuButton = new Button()
 			.Content(new Grid().Children(new GlyphElement().Kind(GlyphKind.ChevronDown).GlyphSize(3)
-				.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).TextOnAccent)
 				.HorizontalAlignment(HorizontalAlignment.Center)
 				.VerticalAlignment(VerticalAlignment.Center)))
 			.OnClick(ShowSendMenu)
-			.Primary().Height(AppTheme.ControlHeightMd).MinWidth(28)
+			.StyleName(AppStyles.AccentSegmentButton)
+			.Height(AppTheme.ControlHeightMd).MinWidth(28)
 			.CornerRadius(0).Padding(new Thickness(5, 0, 7, 0))
 			.VerticalAlignment(VerticalAlignment.Center).IsVisible(false)
 			.HoverTip(Strings.SendOptions);

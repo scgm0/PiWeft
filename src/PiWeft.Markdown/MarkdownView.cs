@@ -833,6 +833,10 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 					{
 						return false;
 					}
+					// 单元格是流式长出来的：先有行、后有段落。新加进来的段落不会再走
+					// CreateTableCellBorder，必须在这里补回表格字号，否则它按正文 16px 排版，
+					// 行高比表头高一档，表格在流式期间会自己长高。
+					SetFontSize(content, TableCellFontSize);
 				}
 				cell++;
 			}
@@ -1210,7 +1214,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	private Border CreateTableCellBorder(MarkdownBlock cell, bool header, int rowIndex, bool lastRow)
 	{
 		FrameworkElement content = CreateChildStack(cell.Children, 0);
-		SetFontSize(content, Math.Max(11, FontSize * _theme.TableFontSizeScale));
+		SetFontSize(content, TableCellFontSize);
 		if (header)
 		{
 			SetBold(content);
@@ -1276,6 +1280,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		}
 		return length;
 	}
+
+	/// 表格正文的字号：比消息正文小一档，但下限 11 DIP。
+	private double TableCellFontSize => Math.Max(11, FontSize * _theme.TableFontSizeScale);
 
 	private static Color TableHeaderBackground(Theme theme)
 		=> theme.Palette.ControlBackground.Lerp(theme.Palette.ButtonFace, 0.7);

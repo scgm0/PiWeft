@@ -78,6 +78,9 @@ public static class AppStyles
 
 	// 按钮
 	public const string PrimaryButton = "pi-button-primary";
+
+	/// 主按钮旁的展开段：与主按钮共用强调色底，禁用时只压暗图标，不换成一块深灰。
+	public const string AccentSegmentButton = "pi-button-accent-segment";
 	public const string CodeButton = "pi-button-code";
 	public const string GhostButton = "pi-button-ghost";
 	public const string SelectedButton = "pi-button-selected";
@@ -690,6 +693,39 @@ public static class AppStyles
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle)),
 						],
+					},
+				],
+			})
+			.With(AccentSegmentButton, () => new Style(typeof(Button))
+			{
+				BasedOn = ButtonInteraction,
+				Transitions = [Transition.Create(UIElement.OpacityProperty)],
+				Setters =
+				[
+					// 与主按钮同一块强调色底：两段拼起来才是完整的发送按钮。
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent)),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextOnAccent)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, 0.0),
+					Setter.Create(UIElement.OpacityProperty, 1.0),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(UIElement.OpacityProperty, 0.9)],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(UIElement.OpacityProperty, 0.78)],
+					},
+					// 禁用只压暗箭头，不设背景触发器：底色保持强调色，和主按钮仍是同一块。
+					new StateTrigger
+					{
+						Exclude = VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle))],
 					},
 				],
 			})

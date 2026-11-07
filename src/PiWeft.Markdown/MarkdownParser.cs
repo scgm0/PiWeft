@@ -153,14 +153,22 @@ public static class MarkdownParser
 		MarkdownPipeline pipeline = Pipelines.GetValue(options, static value => BuildPipeline(value));
 		Markdig.Syntax.MarkdownDocument parsed = Markdig.Markdown.Parse(tail, pipeline);
 
+		// 尾解析可能吐出多个起点都等于 tailStart 的顶层块：表格停在半个 `|` 上时，
+		// Markdig 会在表格前多映射一个空段落。只丢最后一块会让这个段落（以及之前各帧的重复）
+		// 永远留在前缀里，所以从前缀中删掉所有起点落在尾解析里的旧块。
+		int reuseCount = previous.Blocks.Count - 1;
+		while (reuseCount > 0 && previous.Blocks[reuseCount - 1].SourceStart >= tailStart)
+		{
+			reuseCount--;
+		}
+
 		// Seed uniqueness from the blocks that are not re-parsed. The document already carries the
 		// anchor table for the whole previous revision, so copy its prefix instead of walking every
-		// historical block on every append. The replaced last block is excluded by its top index.
+		// historical block on every append. Replaced blocks are excluded by their top index.
 		var anchors = new HashSet<string>(StringComparer.Ordinal);
-		int replacedTopIndex = previous.Blocks.Count - 1;
 		foreach (var (anchor, topIndex) in previous.AnchorBlocks)
 		{
-			if (topIndex != replacedTopIndex)
+			if (topIndex < reuseCount)
 			{
 				anchors.Add(anchor);
 			}
@@ -173,8 +181,8 @@ public static class MarkdownParser
 		}
 		MarkdownHashBuilder.Assign(tailBlocks);
 
-		List<MarkdownBlock> blocks = new(previous.Blocks.Count + tailBlocks.Count);
-		for (int index = 0; index < previous.Blocks.Count - 1; index++)
+		List<MarkdownBlock> blocks = new(reuseCount + tailBlocks.Count);
+		for (int index = 0; index < reuseCount; index++)
 		{
 			blocks.Add(previous.Blocks[index]);
 		}
@@ -186,7 +194,7 @@ public static class MarkdownParser
 			blocks,
 			options,
 			previous,
-			reusedBlockCount: previous.Blocks.Count - 1)
+			reusedBlockCount: reuseCount)
 		{
 			TailRepaired = suffix.Length > 0
 		};
@@ -479,6 +487,12 @@ public static class MarkdownParser
 			case LeafBlock leaf when leaf.Inline is not null:
 			{
 				List<MarkdownRun> runs = MapInlines(leaf.Inline, options, source);
+				// 表格末尾的半行会让 Markdig 额外吐出一个没有 run 的段落块（Span 与表格同起点）。
+				// 它不承载任何文字，保留下来只会在段落之间撑出一整行空白。
+				if (runs.Count == 0)
+				{
+					return null;
+				}
 				return new MarkdownBlock
 				{
 					Kind = MarkdownBlockKind.Paragraph,

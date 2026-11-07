@@ -104,6 +104,42 @@ public sealed class MarkdownLayoutConsistencyTests(ITestOutputHelper output)
 	}
 
 	[Fact]
+	public void StreamedTableFinalizeKeepsTheTableDirectlyBelowTheList()
+	{
+		// 表格行会多次停在半个 `|` 上。增量解析曾把那一刻多出的空段落留在列表与表格之间，
+		// 每帧再叠一个，最后表现为列表和表格之间一大段空白。
+		const string source = "开头\n\n- 一项\n- 二项\n\n| a | b |\n| --- | --- |\n| c | d |\n| e | f |";
+		var streamed = new MarkdownView { IsStreaming = true, FontSize = 16 };
+		var scroll = Host(streamed);
+		try
+		{
+			for (int index = 0; index < source.Length; index++)
+			{
+				streamed.Append(source[index].ToString());
+				Layout(scroll, 640);
+			}
+			streamed.IsStreaming = false;
+			Layout(scroll, 640);
+
+			var full = new MarkdownView { FontSize = 16, Source = source };
+			var fullScroll = Host(full);
+			try
+			{
+				Assert.Equal(full.BlockCount, streamed.BlockCount);
+				Assert.InRange(streamed.TotalHeight, full.TotalHeight - 1, full.TotalHeight + 1);
+			}
+			finally
+			{
+				UiLifetime.Release(fullScroll);
+			}
+		}
+		finally
+		{
+			UiLifetime.Release(scroll);
+		}
+	}
+
+	[Fact]
 	public void TableCellsDoNotRemeasureWhenTheGridSnapsTracksToDevicePixels()
 	{
 		// 4 列星号轨道的表格在非整数可用宽度上会得到 215.5 这样的轨道：measure 用未取整的宽度，

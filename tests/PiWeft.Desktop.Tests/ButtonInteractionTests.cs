@@ -59,6 +59,25 @@ public sealed class ButtonInteractionTests
 	}
 
 	[Fact]
+	public void AccentSegmentKeepsAccentBackgroundAndDimsOnlyTheGlyph()
+	{
+		var glyph = new GlyphElement();
+		var button = new TestButton().Content(new Grid().Children(glyph)).StyleName(AppStyles.AccentSegmentButton);
+		var root = new Border().StyleSheet(AppStyles.Create()).Child(button);
+		button.Measure(new Size(80, 40));
+
+		Assert.Equal(AppTheme.Accent, button.Background);
+		Assert.Equal(AppTheme.TextOnAccent, glyph.Foreground);
+
+		// 禁用时底色仍与主按钮同色，只有箭头降为次要色；换回深灰会在白底主按钮旁切出异色块。
+		button.IsEnabled(false);
+		button.RefreshState();
+		Assert.Equal(AppTheme.Accent, button.Background);
+		Assert.Equal(AppTheme.TextSubtle, glyph.Foreground);
+		GC.KeepAlive(root);
+	}
+
+	[Fact]
 	public void ExplicitCursorOverridesTheButtonStyle()
 	{
 		var button = new Button().Cursor(CursorType.Arrow);

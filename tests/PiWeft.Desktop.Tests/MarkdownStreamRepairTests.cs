@@ -59,6 +59,8 @@ public sealed class MarkdownStreamRepairTests(ITestOutputHelper output)
 		"1. ordered **one\n2. ordered two\n\nsetext\n====\ntail `code\n",
 		"[ref][id]\n\n[id]: https://example.com\n\nsee **ref now",
 		"first\r\n\r\n**second\r\n\r\n- item `x\r\n",
+		// 表格每行都可能停在半个 `|` 上：增量解析要丢掉那一帧多出来的空段落块。
+		"intro\n\n| a | b |\n|---|---|\n| c | d |\n| e | f |\n",
 	];
 
 	public static TheoryData<int> StreamingIndices()
@@ -100,6 +102,24 @@ public sealed class MarkdownStreamRepairTests(ITestOutputHelper output)
 			repairedFrames += suffix.Length > 0 ? 1 : 0;
 		}
 		output.WriteLine($"doc {docIndex}: {source.Length} chars, {repairedFrames} repaired frames");
+	}
+
+	[Fact]
+	public void FinalizeDropsParagraphsLeftByAnIncompleteTableRow()
+	{
+		const string source = "intro\n\n| a | b |\n| --- | --- |\n| c | d |\n| e | f |";
+		MarkdownDocument? streamed = null;
+		// 一字符一帧：表格行多次停在 `|` 后面，最容易留下重复的空段落。
+		for (int length = 1; length <= source.Length; length++)
+		{
+			streamed = MarkdownParser.Parse(source[..length], null, streamed, streaming: true);
+		}
+		MarkdownDocument final = MarkdownParser.Parse(source, null, streamed, streaming: false);
+		MarkdownDocument fresh = MarkdownParser.Parse(source);
+
+		Assert.Equal(fresh.Blocks.Select(static block => block.Hash), final.Blocks.Select(static block => block.Hash));
+		Assert.DoesNotContain(final.Blocks, static block =>
+			block.Kind == MarkdownBlockKind.Paragraph && block.Runs.Count == 0);
 	}
 
 	[Fact]
