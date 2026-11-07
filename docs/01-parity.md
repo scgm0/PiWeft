@@ -270,7 +270,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | PI-10 | 资源/主题 | 发现、解析、热重载已实现；缺资源编辑界面与包筛选可视化 |
 | PI-11 | 项目信任 | 已实现 |
 | PI-12 | 行内 shell 与环境变量 | 已实现 |
-| PI-13 | Windows powershell | 已实现 |
+| PI-13 | powershell 工具 | 已实现：全平台都在工具目录里、默认不启用，非 Windows 执行时返回 pi 原文 `The powershell tool is only available on Windows.` |
 | PI-14 | CLI 键位 | 未实现 `keybindings.json` |
 | PI-15 | 斜杠命令 | `/copy`、`/import`、`/share`、`/bug`、`/llama`、`/settings` 已实现 |
 | PI-16 | 子工具账本 | `nestedCalls` / `parentToolCallId` 尚未产出 |

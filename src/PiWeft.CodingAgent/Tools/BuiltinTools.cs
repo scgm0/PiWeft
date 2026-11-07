@@ -21,12 +21,12 @@ public static class BuiltinTools
 			"Execute bash commands (ls, grep, find, etc.)",
 			["You can inspect PI_* environment variables for current model and session details."]),
 
-		.. OperatingSystem.IsWindows()
-			? [new BuiltinTool(
-				PowerShellTool.Create(cwd),
-				"Execute PowerShell commands",
-				["You can inspect PI_* environment variables for current model and session details."])]
-			: Array.Empty<BuiltinTool>(),
+		// powershell 与 pi 一样始终在目录里：非 Windows 上执行时才报
+		// 「The powershell tool is only available on Windows.」，默认不启用。
+		new BuiltinTool(
+			PowerShellTool.Create(cwd),
+			"Execute PowerShell commands",
+			["You can inspect PI_* environment variables for current model and session details."]),
 
 		new BuiltinTool(
 			FileTools.Edit(cwd),

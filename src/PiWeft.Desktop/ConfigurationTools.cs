@@ -14,12 +14,9 @@ internal static class ConfigurationTools
 
 	private static List<string> BuildCatalog()
 	{
-		// powershell 只在 Windows 上声明，与 BuiltinTools.Create 保持一致。
-		List<string> names = ["read", "bash"];
-		if (OperatingSystem.IsWindows()) names.Add("powershell");
-		names.AddRange(["edit", "write", "grep", "find", "ls", "todo", "ask_question"]);
-		// codemode 默认不启用：与 BuiltinTools.Catalog 一样只出现在目录里，需要显式选中。
-		names.Add("codemode");
+		// 与 BuiltinTools.Create 一致：powershell 在所有平台都在目录里（PiDeck 的目录也只列一份），
+		// 默认不启用，非 Windows 执行时才报错。codemode 同理，只是多一个扩展分组。
+		List<string> names = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls", "todo", "ask_question", "codemode"];
 		return names;
 	}
 

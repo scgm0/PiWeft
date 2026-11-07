@@ -238,10 +238,14 @@ public class RealPromptFidelityTests
 			return;
 		}
 
+		// 默认工具集与 pi 一致（read/bash/edit/write + 原生 todo/ask_question）；
+		// grep/find/ls/powershell 在目录里但不默认声明，因此不参与逐行比对。
+		var defaults = new HashSet<string>(
+			PiWeft.CodingAgent.Settings.CodingAgentSettings.DefaultToolNames, StringComparer.Ordinal);
 		var generated = SystemPrompt.Build(new SystemPromptOptions
 		{
 			Cwd = "/tmp",
-			Tools = BuiltinTools.Create("/tmp"),
+			Tools = [.. BuiltinTools.Create("/tmp").Where(tool => defaults.Contains(tool.Tool.Name))],
 			ExtraGuidelines = SystemPrompt.BaselineGuidelines,
 		});
 
@@ -252,6 +256,10 @@ public class RealPromptFidelityTests
 		Assert.All(ourToolLines, line => Assert.Contains(line, realToolLines));
 
 		var realRuleLines = Sections(sessions, "rules");
+		// 录制会话都开着 grep/find/ls，所以没有这条规则；默认集（read/bash/edit/write）下
+		// pi 的 system-prompt.ts 会加上它，属于对齐而非偏差。
+		realRuleLines.Add("- Use bash for file operations like ls, rg, find");
+
 		var ourRuleLines = Lines(generated.Sections!["rules"]!, "- ");
 		Assert.All(ourRuleLines, line => Assert.Contains(line, realRuleLines));
 	}

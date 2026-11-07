@@ -242,7 +242,14 @@ public sealed partial class CodingAgentSession : IDisposable
 		List<BuiltinTool> builtins;
 		if (options.Tools is null)
 		{
-			builtins = [.. defaults, .. options.ExtraTools.Select(static tool => new BuiltinTool(tool, tool.Description, []))];
+			// 与 pi 一致：没显式给工具列表时只启用 read/bash/edit/write（外加原生 todo/ask_question）。
+			// 目录里的 grep/find/ls/powershell/codemode 需要 --tools 或 defaultTools 显式开启。
+			var presets = new HashSet<string>(PiWeft.CodingAgent.Settings.CodingAgentSettings.DefaultToolNames, StringComparer.Ordinal);
+			builtins =
+			[
+				.. defaults.Where(tool => presets.Contains(tool.Tool.Name)),
+				.. options.ExtraTools.Select(static tool => new BuiltinTool(tool, tool.Description, [])),
+			];
 		}
 		else
 		{

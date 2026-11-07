@@ -80,6 +80,7 @@ public sealed class ConfigurationToolsTests
 		Assert.Contains("codemode", ConfigurationTools.Catalog);
 		Assert.True(ConfigurationTools.IsExtension("codemode"));
 		Assert.False(ConfigurationTools.IsExtension("read"));
-		Assert.Equal(OperatingSystem.IsWindows(), ConfigurationTools.Catalog.Contains("powershell"));
+		// 与 pi 一致：powershell 全平台都在目录里（不默认启用），非 Windows 执行时才报错。
+		Assert.Contains("powershell", ConfigurationTools.Catalog);
 	}
 }

@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Settings;
+using PiWeft.CodingAgent.Tools;
 using PiWeft.CodingAgent.Session;
 using Xunit;
 
@@ -134,6 +135,23 @@ public class CodingAgentSessionTests : IDisposable
 			Skills = [],
 		});
 
+	private CodingAgentSession CreateSessionWithTools(ScriptedStreamFn script, IEnumerable<string> extraTools)
+	{
+		var catalog = BuiltinTools.CatalogTools(_root);
+		var names = new HashSet<string>(CodingAgentSettings.DefaultToolNames, StringComparer.Ordinal);
+		names.UnionWith(extraTools);
+		return new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = SessionManager.Create(_root, Path.Combine(_root, "sessions")),
+			Skills = [],
+			Tools = [.. catalog.Where(tool => names.Contains(tool.Name))],
+		});
+	}
+
+
 	[Fact]
 	public async Task VirtualModelRoutesToPhysicalModelAndKeepsVirtualSelection()
 	{
@@ -256,8 +274,10 @@ public class CodingAgentSessionTests : IDisposable
 			["preamble", "tools", "rules", "cwd"],
 			system.Sections!.Keys.ToList());
 		Assert.NotNull(system.ToolsAdded);
-		Assert.Equal(9, system.ToolsAdded!.Count);
-		Assert.Equal(9, session.Tools.Count);
+		// 与 pi 一致：默认集只有 read/bash/edit/write，另加 PiDeck 依赖的原生 todo/ask_question。
+		// grep/find/ls/powershell/codemode 进目录但不默认启用。
+		Assert.Equal(6, system.ToolsAdded!.Count);
+		Assert.Equal(6, session.Tools.Count);
 		Assert.Contains(session.Tools, static tool => tool.Name == "todo");
 		Assert.Contains(session.Tools, static tool => tool.Name == "ask_question");
 
@@ -390,10 +410,11 @@ public class CodingAgentSessionTests : IDisposable
 		File.WriteAllText(Path.Combine(_root, "here.txt"), "local\n");
 
 		var script = new ScriptedStreamFn();
+		// ls 默认不启用（与 pi 的默认工具集一致），这里显式打开来验证工具拿到的是会话 cwd。
 		script.EnqueueToolCall("c1", "ls", new JsonObject());
 		script.EnqueueText("listed");
 
-		using var session = CreateSession(script);
+		using var session = CreateSessionWithTools(script, ["ls"]);
 		await session.PromptAsync("list");
 
 		var toolResult = session.Session.Entries

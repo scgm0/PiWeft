@@ -446,4 +446,24 @@ public sealed class ToolParityTests : IDisposable
 		}
 	}
 
+	[Fact]
+	public async Task PowerShell_IsDeclaredOnEveryPlatformButRejectsExecutionOutsideWindows()
+	{
+		// 与 pi 一致：工具始终在目录里、默认不启用；非 Windows 上执行才报这句话。
+		var tool = BuiltinTools.CatalogTools(Path.GetTempPath()).Single(static t => t.Name == "powershell");
+		Assert.Equal("Execute PowerShell commands", BuiltinTools.Catalog(Path.GetTempPath()).Single(t => t.Tool.Name == "powershell").Snippet);
+		// 默认集（session/CLI 按 DefaultToolNames 过滤）不含它。
+		Assert.DoesNotContain("powershell", PiWeft.CodingAgent.Settings.CodingAgentSettings.DefaultToolNames);
+
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var error = await Assert.ThrowsAsync<InvalidOperationException>(() => tool.Execute(Invoke("powershell", new JsonObject
+		{
+			["command"] = "echo hi",
+		})));
+		Assert.Contains("The powershell tool is only available on Windows.", error.Message);
+	}
 }
