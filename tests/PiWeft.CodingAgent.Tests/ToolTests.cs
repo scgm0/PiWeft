@@ -223,6 +223,43 @@ public class ToolTests : IDisposable
 		Assert.Equal("replaced\nnext\n", File.ReadAllText(Path.Combine(_root, "a.txt")));
 	}
 
+	[Fact]
+	public async Task Edit_LargeFileProducesLocalPatch()
+	{
+		// 回归：曾经用全表 LCS 算 diff，2 万行两侧要 1.6 GB、几十秒。
+		var lines = Enumerable.Range(0, 20_000).Select(static i => $"line {i} content").ToArray();
+		Write("big.txt", string.Join('\n', lines) + "\n");
+
+		var result = await FileTools.Edit(_root).Execute(Invoke("edit", new JsonObject
+		{
+			["path"] = "big.txt",
+			["edits"] = new JsonArray(new JsonObject { ["oldText"] = "line 10000 content", ["newText"] = "line 10000 changed" }),
+		}));
+
+		var patch = result.Details!["patch"]!.GetValue<string>();
+		Assert.Contains("line 10000 changed", patch);
+		Assert.True(patch.Split('\n').Length < 30, $"patch 只应包含改动附近的行，实际 {patch.Split('\n').Length} 行");
+		Assert.Equal(10_001, result.Details["firstChangedLine"]!.GetValue<int>());
+		Assert.Contains("line 10000 changed", File.ReadAllText(Path.Combine(_root, "big.txt")));
+	}
+
+	[Fact]
+	public async Task Edit_DiffFallsBackForWhollyRewrittenText()
+	{
+		// 两侧没有共用行时拿不到锚点，退化为整段删加，但仍要给出能读的 hunk。
+		Write("a.txt", "aaa\nbbb\nccc\nddd\neee\nfff\n");
+		var result = await FileTools.Edit(_root).Execute(Invoke("edit", new JsonObject
+		{
+			["path"] = "a.txt",
+			["edits"] = new JsonArray(new JsonObject { ["oldText"] = "bbb\nccc\nddd", ["newText"] = "111\n222\n333" }),
+		}));
+
+		var diff = result.Details!["diff"]!.GetValue<string>();
+		Assert.Contains("-2 bbb", diff);
+		Assert.Contains("+2 111", diff);
+		Assert.Equal("aaa\n111\n222\n333\neee\nfff\n", File.ReadAllText(Path.Combine(_root, "a.txt")));
+	}
+
 
 	[Fact]
 	public async Task Ls_ListsDirectoriesWithSlash()

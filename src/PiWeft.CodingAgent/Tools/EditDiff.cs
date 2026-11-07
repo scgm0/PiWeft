@@ -426,24 +426,6 @@ public static partial class EditDiff
 		var before = SplitKeepingTrailing(baseContent);
 		var after = SplitKeepingTrailing(newContent);
 
-		if (before.Length > 20_000 || after.Length > 20_000)
-		{
-			// 输入过大时退化为整文件替换。
-			var header = $"--- {path}\n+++ {path}\n@@ -1,{before.Length} +1,{after.Length} @@\n";
-			var body = new StringBuilder(header);
-			foreach (var line in before)
-			{
-				body.Append('-').Append(line).Append('\n');
-			}
-
-			foreach (var line in after)
-			{
-				body.Append('+').Append(line).Append('\n');
-			}
-
-			return body.ToString();
-		}
-
 		var edits = DiffLines(before, after);
 		var output = new StringBuilder();
 		output.Append("--- ").Append(path).Append('\n');
@@ -549,57 +531,170 @@ public static partial class EditDiff
 
 	private static List<DiffLine> DiffLines(string[] before, string[] after)
 	{
-		// 经典 LCS 表；调用前已对输入规模做了上限约束。
-		var n = before.Length;
-		var m = after.Length;
-		var lcs = new int[n + 1, m + 1];
-
-		for (var i = n - 1; i >= 0; i--)
-		{
-			for (var j = m - 1; j >= 0; j--)
-			{
-				lcs[i, j] = string.Equals(before[i], after[j], StringComparison.Ordinal)
-					? lcs[i + 1, j + 1] + 1
-					: Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
-			}
-		}
-
-		var result = new List<DiffLine>(n + m);
-		var x = 0;
-		var y = 0;
-		while (x < n && y < m)
-		{
-			if (string.Equals(before[x], after[y], StringComparison.Ordinal))
-			{
-				result.Add(new DiffLine(DiffKind.Same, before[x]));
-				x++;
-				y++;
-			}
-			else if (lcs[x + 1, y] >= lcs[x, y + 1])
-			{
-				result.Add(new DiffLine(DiffKind.Remove, before[x]));
-				x++;
-			}
-			else
-			{
-				result.Add(new DiffLine(DiffKind.Add, after[y]));
-				y++;
-			}
-		}
-
-		while (x < n)
-		{
-			result.Add(new DiffLine(DiffKind.Remove, before[x]));
-			x++;
-		}
-
-		while (y < m)
-		{
-			result.Add(new DiffLine(DiffKind.Add, after[y]));
-			y++;
-		}
-
+		var result = new List<DiffLine>(before.Length + after.Length);
+		DiffRange(before, 0, before.Length, after, 0, after.Length, result, depth: 0);
 		return result;
+	}
+
+	/// <summary>行级 diff 的递归单元：先削公共前后缀，再按锚点行切分，最后退化为整段替换。</summary>
+	/// <remarks>
+	/// 不用 LCS 表：2 万行两侧要 1.6 GB，20 万行直接挂起。锚点法的内存与行数线性，
+	/// 单处修改经前后缀削减后中段只剩改动处。
+	/// </remarks>
+	private static void DiffRange(
+		string[] before, int beforeStart, int beforeEnd,
+		string[] after, int afterStart, int afterEnd,
+		List<DiffLine> result, int depth)
+	{
+		while (beforeStart < beforeEnd && afterStart < afterEnd
+			&& string.Equals(before[beforeStart], after[afterStart], StringComparison.Ordinal))
+		{
+			result.Add(new DiffLine(DiffKind.Same, before[beforeStart]));
+			beforeStart++;
+			afterStart++;
+		}
+
+		var suffix = 0;
+		while (beforeStart < beforeEnd - suffix && afterStart < afterEnd - suffix
+			&& string.Equals(before[beforeEnd - 1 - suffix], after[afterEnd - 1 - suffix], StringComparison.Ordinal))
+		{
+			suffix++;
+		}
+
+		var beforeTail = beforeEnd - suffix;
+		var afterTail = afterEnd - suffix;
+
+		var anchors = depth < MaxDiffDepth
+			? FindAnchors(before, beforeStart, beforeTail, after, afterStart, afterTail)
+			: [];
+
+		if (anchors.Count == 0)
+		{
+			for (var i = beforeStart; i < beforeTail; i++)
+			{
+				result.Add(new DiffLine(DiffKind.Remove, before[i]));
+			}
+
+			for (var i = afterStart; i < afterTail; i++)
+			{
+				result.Add(new DiffLine(DiffKind.Add, after[i]));
+			}
+		}
+		else
+		{
+			var previousBefore = beforeStart;
+			var previousAfter = afterStart;
+			foreach (var (beforeIndex, afterIndex) in anchors)
+			{
+				DiffRange(before, previousBefore, beforeIndex, after, previousAfter, afterIndex, result, depth + 1);
+				result.Add(new DiffLine(DiffKind.Same, before[beforeIndex]));
+				previousBefore = beforeIndex + 1;
+				previousAfter = afterIndex + 1;
+			}
+
+			DiffRange(before, previousBefore, beforeTail, after, previousAfter, afterTail, result, depth + 1);
+		}
+
+		for (var i = 0; i < suffix; i++)
+		{
+			result.Add(new DiffLine(DiffKind.Same, before[beforeEnd - suffix + i]));
+		}
+	}
+
+	private const int MaxDiffDepth = 64;
+
+	/// <summary>两侧都只出现一次的行，取最长递增子序列作为单调锚点。</summary>
+	private static List<(int Before, int After)> FindAnchors(
+		string[] before, int beforeStart, int beforeEnd,
+		string[] after, int afterStart, int afterEnd)
+	{
+		if (beforeEnd - beforeStart < 2 || afterEnd - afterStart < 2)
+		{
+			return [];
+		}
+
+		var counts = new Dictionary<string, (int Before, int After, int BeforeIndex, int AfterIndex)>(StringComparer.Ordinal);
+		for (var i = beforeStart; i < beforeEnd; i++)
+		{
+			ref var entry = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(counts, before[i], out _);
+			entry.Before++;
+			entry.BeforeIndex = i;
+		}
+
+		for (var i = afterStart; i < afterEnd; i++)
+		{
+			if (!counts.TryGetValue(after[i], out var entry))
+			{
+				continue;
+			}
+
+			entry.After++;
+			entry.AfterIndex = i;
+			counts[after[i]] = entry;
+		}
+
+		var ordered = new List<(int Before, int After)>(counts.Count);
+		foreach (var entry in counts.Values)
+		{
+			if (entry.Before == 1 && entry.After == 1)
+			{
+				ordered.Add((entry.BeforeIndex, entry.AfterIndex));
+			}
+		}
+
+		if (ordered.Count == 0)
+		{
+			return [];
+		}
+
+		ordered.Sort(static (left, right) => left.Before.CompareTo(right.Before));
+		return LongestIncreasingAfter(ordered);
+	}
+
+	/// <summary>按 <c>After</c> 求最长递增子序列，保证锚点在两侧同时单调。</summary>
+	private static List<(int Before, int After)> LongestIncreasingAfter(List<(int Before, int After)> candidates)
+	{
+		var tails = new int[candidates.Count];
+		var previous = new int[candidates.Count];
+		var length = 0;
+		for (var i = 0; i < candidates.Count; i++)
+		{
+			var value = candidates[i].After;
+			int low = 0, high = length;
+			while (low < high)
+			{
+				var middle = (low + high) >> 1;
+				if (candidates[tails[middle]].After < value)
+				{
+					low = middle + 1;
+				}
+				else
+				{
+					high = middle;
+				}
+			}
+
+			previous[i] = low > 0 ? tails[low - 1] : -1;
+			tails[low] = i;
+			if (low == length)
+			{
+				length++;
+			}
+		}
+
+		if (length == 0)
+		{
+			return [];
+		}
+
+		var chain = new List<(int Before, int After)>(length);
+		for (var index = tails[length - 1]; index >= 0; index = previous[index])
+		{
+			chain.Add(candidates[index]);
+		}
+
+		chain.Reverse();
+		return chain;
 	}
 
 	private static string[] SplitKeepingTrailing(string content)

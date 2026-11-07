@@ -278,6 +278,28 @@ public sealed class SearchToolsTests : IDisposable
 	}
 
 	[Fact]
+	public async Task NestedRepository_KeepsAncestorRulesForSiblings()
+	{
+		// 回归：进入嵌套仓库曾就地改写共享规则栈且不还原，子模块之后遍历到的
+		// 兄弟目录全部失去祖先的 .gitignore。目录按序数排序，a_repo 先于 z_dir。
+		MakeRepository(string.Empty);
+		MakeRepository("a_repo");
+		Write(".gitignore", "**/bin/\n");
+		Write("a_repo/keep.txt", "needle\n");
+		Write("a_repo/bin/drop.cs", "needle\n");
+		Write("z_dir/bin/drop.cs", "needle\n");
+
+		var find = Text(await SearchTools.Find(_root).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "*.cs" })));
+		Assert.DoesNotContain("z_dir/bin/drop.cs", find);
+
+		var grep = Text(await SearchTools.Grep(_root).Execute(
+			Invoke("grep", new JsonObject { ["pattern"] = "needle" })));
+		Assert.DoesNotContain("z_dir/bin/drop.cs", grep);
+		Assert.Contains("a_repo/keep.txt", grep);
+	}
+
+	[Fact]
 	public async Task Find_ReadsFdIgnoreAndGrepDoesNot()
 	{
 		Write(".fdignore", "foo.txt\n");
