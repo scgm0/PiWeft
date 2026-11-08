@@ -130,7 +130,8 @@ internal sealed class ComposerAddMenu : IDisposable
 			.OnClick(() =>
 			{
 				Close();
-				options.SelectMode(active ? ComposerMode.Normal : mode);
+				// 再点当前项回普通：切换规则只放在 SelectMode 一处，菜单只报「点了哪一项」。
+				options.SelectMode(mode);
 			});
 	}
 

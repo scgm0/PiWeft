@@ -23,13 +23,22 @@ internal sealed class ModelPicker
 	private readonly TextBlock _hint;
 	private readonly TextBlock _count = new();
 	private readonly TextBlock _empty = new();
-	private IReadOnlyList<Model> _snapshot = [];
+	private readonly HashSet<(string Provider, string Id)> _recent = [];
+	private ProviderGroup[] _groups = [];
 	private IReadOnlyList<TreeViewNode> _matches = [];
-	private IReadOnlyList<TreeViewNode> _groups = [];
+	private int _total;
+	private string _currentProvider = string.Empty;
+	private string _currentId = string.Empty;
 	private Window? _window;
 	private int _index;
-	private IReadOnlyList<string> _recent = [];
 	private readonly OverlayFade _fade;
+
+	/// 一条模型在快照里的全部派生数据：节点（跨按键复用）与归一化搜索文本。
+	private sealed record Entry(Model Model, TreeViewNode Node, string Search);
+
+	/// 一个供应商分组。节点在弹窗生命周期内复用，只替换 Children：
+	/// 每次按键都造新节点会让 TreeView 的展开状态表按按键数增长。
+	private sealed record ProviderGroup(TreeViewNode Node, Entry[] Entries);
 
 	public ModelPicker(Func<IReadOnlyList<Model>> models, Func<Model> current, Action<Model> pick)
 	{
@@ -65,7 +74,7 @@ internal sealed class ModelPicker
 				else if (key.Key is Key.Down or Key.Up && _matches.Count > 0)
 				{
 					_index = Math.Clamp(_index + (key.Key == Key.Down ? 1 : -1), 0, _matches.Count - 1);
-					foreach (var group in _groups.Where(group => group.Children.Contains(_matches[_index]))) _tree.Expand(group);
+					foreach (var group in _groups.Where(group => group.Node.Children.Contains(_matches[_index]))) _tree.Expand(group.Node);
 					_tree.SelectedNode = _matches[_index];
 					key.Handled = true;
 				}
@@ -137,7 +146,7 @@ internal sealed class ModelPicker
 					.FontFamily(AppTheme.MonoFont)
 					.FontWeight(FontWeight.Normal);
 				meta.Text(Strings.ModelMeta(model)).IsVisible(true);
-				check.IsVisible(IsCurrent(model));
+				check.IsVisible(IsCurrentModel(model));
 				row.HoverTip($"{model.Provider}/{model.Id}\n{model.Name} · {Strings.ModelCapabilities(model)}");
 			}
 			else
@@ -177,7 +186,7 @@ internal sealed class ModelPicker
 	public bool IsOpen => View.IsVisible;
 	public event Action? Closed;
 
-	/// 打开时按可用宽度定宽；窄窗口里跟随可用宽度。
+	/// 换模型源（认证变化后可能整份目录都变了）。弹窗开着就立即重建快照。
 	public void SetSource(Func<IReadOnlyList<Model>> models)
 	{
 		_models = models;
@@ -187,10 +196,15 @@ internal sealed class ModelPicker
 	public void Show(UIElement owner)
 	{
 		if (owner.FindVisualRoot() is not Window window) return;
-		if (IsOpen) { if (_fade.IsClosing) _fade.Reopen(); _query.Focus(); return; }
+		if (IsOpen)
+		{
+			if (_fade.IsClosing) _fade.Reopen();
+			_query.Focus();
+			return;
+		}
+
 		_window = window;
-		_recent = DesktopPreference.Load().RecentModels;
-		_snapshot = [.. _models().DistinctBy(static model => (model.Provider, model.Id))];
+		Rebuild();
 		_query.Text = string.Empty;
 		_hint.IsVisible(true);
 		Refresh();
@@ -207,6 +221,14 @@ internal sealed class ModelPicker
 		_fade.Close(CloseNow);
 	}
 
+	/// 立即收起，不做淡出：标签页关闭或会话切走时，淡出只会让浮层多挂在窗口上。
+	public void CloseInstantly()
+	{
+		if (!IsOpen) return;
+		_fade.Cancel();
+		CloseNow();
+	}
+
 	private void CloseNow()
 	{
 		View.IsVisible(false);
@@ -215,62 +237,111 @@ internal sealed class ModelPicker
 		_tree.ItemsSource(Array.Empty<TreeViewNode>());
 		_matches = [];
 		_groups = [];
-		_snapshot = [];
-		_recent = [];
+		_total = 0;
 		Closed?.Invoke();
 	}
 
 	private void Reload()
 	{
-		_snapshot = [.. _models().DistinctBy(static model => (model.Provider, model.Id))];
+		Rebuild();
 		Refresh();
 	}
 
-	private void Refresh()
+	/// 重建目录快照：分组顺序、组内顺序与搜索文本都在这里算一次，
+	/// 之后每次按键只做子串比对，不再格式化字符串。
+	private void Rebuild()
 	{
 		var current = _current();
-		var matches = _snapshot.Where(model => Matches(model, _query.Text)).ToArray();
-		// 当前模型所在的供应商排在最前，其余按字母序；组内当前模型、最近使用、字母序。
-		var nodes = matches.GroupBy(static model => model.Provider)
-			.OrderBy(group => group.Key == current.Provider ? 0 : 1).ThenBy(static group => group.Key, StringComparer.Ordinal)
-			.Select(group => new TreeViewNode(group.Key,
-				[.. group.OrderBy(model => model.Id == current.Id && model.Provider == current.Provider ? 0 :
-					_recent.Contains($"{model.Provider}/{model.Id}") ? 1 : 2).ThenBy(static model => model.Id, StringComparer.Ordinal)
-					.Select(model => new TreeViewNode(model.Provider + "/" + model.Id, tag: model))]))
-			.ToArray();
-		_tree.ItemsSource(nodes);
-		foreach (var node in nodes)
+		_currentProvider = current.Provider;
+		_currentId = current.Id;
+
+		_recent.Clear();
+		foreach (var key in DesktopPreference.Load().RecentModels)
 		{
-			if (_query.Text.Trim().Length > 0 || ReferenceEquals(node, nodes[0])) _tree.Expand(node);
+			var slash = key.IndexOf('/');
+			if (slash > 0 && slash + 1 < key.Length)
+			{
+				_recent.Add((key[..slash], key[(slash + 1)..]));
+			}
 		}
-		_groups = nodes;
-		_matches = [.. nodes.SelectMany(static node => node.Children)];
+
+		var models = _models().DistinctBy(static model => (model.Provider, model.Id)).ToArray();
+		_total = models.Length;
+		// 当前模型所在的供应商排在最前，其余按字母序；组内当前模型、最近使用、字母序。
+		_groups = [.. models
+			.GroupBy(static model => model.Provider)
+			.OrderBy(group => string.Equals(group.Key, _currentProvider, StringComparison.Ordinal) ? 0 : 1)
+			.ThenBy(static group => group.Key, StringComparer.Ordinal)
+			.Select(group => new ProviderGroup(new TreeViewNode(group.Key),
+			[
+				.. group
+					.OrderBy(model => IsCurrentModel(model) ? 0 : _recent.Contains((model.Provider, model.Id)) ? 1 : 2)
+					.ThenBy(static model => model.Id, StringComparer.Ordinal)
+					.Select(EntryFor)
+			]))];
+	}
+
+	private static Entry EntryFor(Model model) => new(
+		model,
+		new TreeViewNode(model.Provider + "/" + model.Id, tag: model),
+		// 能力文案也进搜索词：搜「图片」「推理」能挑出对应模型。
+		SearchText.Normalize($"{model.Provider} {model.Id} {model.Name} {Strings.ModelMeta(model)}"));
+
+	private void Refresh()
+	{
+		var words = SearchText.Words(_query.Text);
+		var roots = new List<TreeViewNode>(_groups.Length);
+		var matches = new List<TreeViewNode>();
+		foreach (var group in _groups)
+		{
+			// 匹配为空的组不建子列表：一次按键里大部分组都是空的，白造 10 个 List 不划算。
+			List<TreeViewNode>? children = null;
+			foreach (var entry in group.Entries)
+			{
+				if (!SearchText.ContainsAll(entry.Search, words))
+				{
+					continue;
+				}
+
+				(children ??= new List<TreeViewNode>(group.Entries.Length)).Add(entry.Node);
+			}
+
+			group.Node.Children = children ?? [];
+			if (children is null)
+			{
+				continue;
+			}
+
+			roots.Add(group.Node);
+			matches.AddRange(children);
+		}
+
+		_tree.ItemsSource(roots);
+		var filtering = words.Length > 0;
+		foreach (var node in roots)
+		{
+			if (filtering || ReferenceEquals(node, roots[0])) _tree.Expand(node);
+		}
+
+		_matches = matches;
 		_index = 0;
 		_tree.SelectedNode = _matches.Count > 0 ? _matches[0] : null;
 		// 过滤重建后旧偏移会落在新列表的中段甚至末尾；搜索/刷新都要从第一行开始。
 		_tree.ScrollIntoView(0);
-		_count.Text(Strings.ModelResultCount(matches.Length, _snapshot.Count)).IsVisible(matches.Length > 0);
-		_tree.IsVisible(matches.Length > 0);
-		_empty.Text(_snapshot.Count == 0 ? Strings.ModelNoneAvailable : Strings.ModelNoMatch).IsVisible(matches.Length == 0);
+		_count.Text(Strings.ModelResultCount(matches.Count, _total)).IsVisible(matches.Count > 0);
+		_tree.IsVisible(matches.Count > 0);
+		_empty.Text(_total == 0 ? Strings.ModelNoneAvailable : Strings.ModelNoMatch).IsVisible(matches.Count == 0);
 	}
 
-	/// 搜索：空格分隔的词都要命中，比较前去掉分隔符（gpt4o 也能命中 gpt-4o）。
-	internal static bool Matches(Model model, string? query)
-	{
-		var text = query?.Trim() ?? string.Empty;
-		if (text.Length == 0)
-		{
-			return true;
-		}
+	/// 单条模型的匹配判定：与 <see cref="Refresh"/> 走同一套归一化，供测试与排查用。
+	internal static bool Matches(Model model, string? query) =>
+		SearchText.ContainsAll(
+			SearchText.Normalize($"{model.Provider} {model.Id} {model.Name} {Strings.ModelMeta(model)}"),
+			SearchText.Words(query));
 
-		var haystack = Normalize($"{model.Provider} {model.Id} {model.Name} {Strings.ModelMeta(model)}");
-		var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-		return words.All(word => haystack.Contains(Normalize(word), StringComparison.OrdinalIgnoreCase));
-	}
-
-	private static string Normalize(string value) => string.Concat(value.Where(char.IsLetterOrDigit));
-
-	private bool IsCurrent(Model model) => model.Id == _current().Id && model.Provider == _current().Provider;
+	private bool IsCurrentModel(Model model) =>
+		string.Equals(model.Id, _currentId, StringComparison.Ordinal) &&
+		string.Equals(model.Provider, _currentProvider, StringComparison.Ordinal);
 
 	private void PickSelected()
 	{

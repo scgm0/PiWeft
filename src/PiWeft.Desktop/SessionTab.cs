@@ -952,11 +952,12 @@ public sealed partial class SessionTab : IDisposable
 		_composerHintTimer?.Dispose();
 		_composerHintTimer = null;
 		// 发送弹窗、思考强度弹层、加号菜单与选择器都是原生/窗口浮层，不随 View 释放；
-		// 标签关掉时要关窗并释放 Popup 的原生资源。
+		// 标签关掉时要关窗并释放 Popup 的原生资源。选择器直接收，不留正在跑的淡出。
 		_sendMenu.Dispose();
 		_thinkingPicker.Dispose();
 		_composerAddMenu.Dispose();
-		_composerPicker.Hide();
+		_composerPicker.CloseInstantly();
+		_modelPicker.CloseInstantly();
 		_securityMenu.Dispose();
 		_scroll.ScrollChanged -= OutlineScrolled;
 		_outline.Dispose();

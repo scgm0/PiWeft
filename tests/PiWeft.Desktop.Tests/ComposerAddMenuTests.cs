@@ -45,7 +45,7 @@ public sealed class ComposerAddMenuTests
 	}
 
 	[Fact]
-	public void TheActiveModeIsTickedAndClickingItReturnsToNormal()
+	public void TheActiveModeIsTickedAndClickingItReportsThatSameMode()
 	{
 		var modes = new List<ComposerMode>();
 		var content = new ComposerAddMenu().BuildForTests(Options(ComposerMode.Plan, modes: modes));
@@ -57,10 +57,11 @@ public sealed class ComposerAddMenuTests
 		var ticked = Assert.Single(checks, check => check.IsVisible);
 		Assert.NotNull(ticked.Source);
 
-		// 第 4、5 行分别是目标与计划；点已勾选的计划回到普通。
+		// 第 4、5 行分别是目标与计划。菜单只报「点了哪一项」，
+		// 「再点当前项回普通」由 SessionTab.SelectMode 统一决定（见 ComposerModeTests）。
 		var rows = Find<Button>(content).ToArray();
 		ImagePreviewTests.Click(rows[4]);
-		Assert.Equal([ComposerMode.Normal], modes);
+		Assert.Equal([ComposerMode.Plan], modes);
 	}
 
 	[Fact]

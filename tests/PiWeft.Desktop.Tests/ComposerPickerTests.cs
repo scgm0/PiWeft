@@ -80,6 +80,85 @@ public sealed class ComposerPickerTests
 		Assert.Equal(0, window.OverlayLayer.Count);
 	}
 
+	[Fact]
+	public void ReopeningWithAnotherContentSwapsTheListAndClearsTheQuery()
+	{
+		var picker = new ComposerPicker();
+		var window = new Window();
+		var skills = new[] { Item("deploy") };
+		var prompts = new[] { Item("review") };
+
+		picker.Show(window, Strings.SkillPickerTitle, Strings.SkillPickerPlaceholder,
+			Strings.SkillPickerEmpty, Strings.SkillPickerNoMatch, skills, _ => { });
+		var query = Find<TextBox>(picker.View).Single();
+		query.Text = "deploy";
+
+		// 「+」菜单还在时直接选另一类条目：已打开的选择器必须换内容，不能静默忽略。
+		picker.Show(window, Strings.PromptPickerTitle, Strings.PromptPickerPlaceholder,
+			Strings.PromptPickerEmpty, Strings.PromptPickerNoMatch, prompts, _ => { });
+
+		Assert.True(picker.IsOpen);
+		Assert.Equal(["review"], picker.Matches.Select(item => item.Name));
+		Assert.Equal(string.Empty, query.Text);
+		Assert.Contains(Find<TextBlock>(picker.View), block => block.Text == Strings.PromptPickerTitle);
+	}
+
+	[Fact]
+	public void FilteringReusesTheRowAlreadyBuiltForAnItem()
+	{
+		var deploy = Item("deploy", "把构建发布到测试环境");
+		var review = Item("review", "只读审查改动", "用户");
+		var picker = new ComposerPicker();
+		var window = new Window();
+		picker.Show(window, Strings.SkillPickerTitle, Strings.SkillPickerPlaceholder,
+			Strings.SkillPickerEmpty, Strings.SkillPickerNoMatch, [deploy, review], _ => { });
+
+		var row = RowFor(picker, deploy);
+		var query = Find<TextBox>(picker.View).Single();
+		query.Text = "deploy";
+
+		Assert.Same(row, RowFor(picker, deploy));
+		picker.Hide();
+	}
+
+	[Fact]
+	public void RefilteringLeavesExactlyOneHighlightedRow()
+	{
+		var alpha = Item("alpha", "第一项");
+		var beta = Item("beta", "第二项");
+		var picker = new ComposerPicker();
+		var window = new Window();
+		picker.Show(window, Strings.SkillPickerTitle, Strings.SkillPickerPlaceholder,
+			Strings.SkillPickerEmpty, Strings.SkillPickerNoMatch, [alpha, beta], _ => { });
+
+		var query = Find<TextBox>(picker.View).Single();
+		// 先把高亮移到第二行，再收窄到只剩第一行，最后放开：复用行不能残留第二枚高亮。
+		Press(query, Key.Down);
+		Assert.Equal("/beta", Highlighted(picker));
+		query.Text = "alph";
+		Assert.Equal("/alpha", Highlighted(picker));
+		query.Text = string.Empty;
+		Assert.Equal("/alpha", Highlighted(picker));
+		Assert.Single(PickerRows(picker), row => row.StyleName == AppStyles.SelectedButton);
+		picker.Hide();
+	}
+
+	private static IEnumerable<Button> PickerRows(ComposerPicker picker) =>
+		Find<Button>(picker.View).Where(button =>
+			button.Content is Grid grid &&
+			Find<TextBlock>(grid).Any(block => block.Text.StartsWith('/')));
+
+	private static string? Highlighted(ComposerPicker picker) =>
+		PickerRows(picker)
+			.FirstOrDefault(row => row.StyleName == AppStyles.SelectedButton) is { Content: Grid grid }
+			? Find<TextBlock>(grid).First(block => block.Text.StartsWith('/')).Text
+			: null;
+
+	private static Button RowFor(ComposerPicker picker, ComposerPicker.Item item) =>
+		Find<Button>(picker.View).Single(button =>
+			button.Content is Grid grid &&
+			Find<TextBlock>(grid).Any(block => block.Text == item.Title));
+
 	private static void Press(UIElement element, Key key) =>
 		typeof(UIElement).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(element, [new KeyEventArgs(key, 0)]);
 }

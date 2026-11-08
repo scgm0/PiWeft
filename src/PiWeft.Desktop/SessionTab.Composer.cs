@@ -41,7 +41,8 @@ public sealed partial class SessionTab
 			ShowSkillPicker,
 			ShowPromptPicker,
 			SelectMode,
-			CanSelectMode: !IsStreaming));
+			// 流式期间工具集不能换；计划执行中换模式会丢掉待办进度。
+			CanSelectMode: !IsStreaming && !Session.PlanExecutionEnabled));
 	}
 
 	private void ShowSkillPicker()
@@ -89,7 +90,9 @@ public sealed partial class SessionTab
 	/// 不等下一条无标记消息（PiDeck 的 pi 分支同样马上发 /goal pause）。
 	private void SelectMode(ComposerMode mode)
 	{
-		if (_disposed || IsStreaming)
+		// 计划执行中不能改模式：进入或退出计划模式都会清掉正在勾进度的步骤
+		// （SetPlanMode 同时结束执行态），用户会丢掉整张待办。执行完或停止后再切换。
+		if (_disposed || IsStreaming || Session.PlanExecutionEnabled)
 		{
 			return;
 		}

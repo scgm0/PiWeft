@@ -168,6 +168,38 @@ public sealed class ModelPickerTests
 		Assert.False(ModelPicker.Matches(model, "gpt5"));
 	}
 
+	[Fact]
+	public void SearchAlsoMatchesContextWindowAndCapabilityWords()
+	{
+		var model = Model("current") with { ContextWindow = 128_000, Input = ["text", "image"], Reasoning = true };
+
+		// 能力文案也在快照的搜索文本里：不用记得模型 id 也能挑出来。
+		Assert.True(ModelPicker.Matches(model, "图片"));
+		Assert.True(ModelPicker.Matches(model, "推理"));
+		Assert.True(ModelPicker.Matches(model, "128k"));
+	}
+
+	[Fact]
+	public void FilteringByProviderKeepsEveryModelOfThatGroup()
+	{
+		var models = new[] { Model("alpha"), Model("beta"), Model("gamma", "other") };
+		var picker = new ModelPicker(() => models, () => models[0], _ => { });
+		var window = new Window();
+		picker.Show(window);
+		picker.View.Measure(new Size(900, 700));
+		picker.View.Arrange(new Rect(0, 0, 900, 700));
+
+		var query = Find<TextBox>(picker.View).Single();
+		query.Text = "fixture";
+		picker.View.Measure(new Size(900, 700));
+		picker.View.Arrange(new Rect(0, 0, 900, 700));
+
+		// 供应商名在快照的搜索文本里：命中后整组都在，另一个供应商不出现。
+		Assert.Contains(Find<TextBlock>(picker.View), block => block.Text == "2 " + Strings.ModelsCountUnit);
+		Assert.DoesNotContain(Find<TextBlock>(picker.View), block => block.Text == "other");
+		picker.Hide();
+	}
+
 	private static void Key(UIElement element, Aprillz.MewUI.Key key) =>
 		typeof(UIElement).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(element, [new KeyEventArgs(key, 0)]);
 }
