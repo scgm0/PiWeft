@@ -30,8 +30,11 @@ public static partial class Strings
 
 	public static string SessionSearchTruncated(int shown, int total) => $"显示前 {shown} / {total} 个会话，继续输入以缩小范围";
 	public static string ProjectOpenFailed(string reason) => $"打开项目失败：{reason}";
+	public static string ModelMeta(PiWeft.Ai.Model model) =>
+		$"{model.ContextWindow / 1000.0:0.#}k · {(model.SupportsImages ? ModelVision : ModelTextOnly)}{(model.Reasoning ? $" · {ModelReasoning}" : string.Empty)}";
+
 	public static string ModelCapabilities(PiWeft.Ai.Model model) =>
-		$"{model.Provider} · {model.ContextWindow / 1000.0:0.#}k · {(model.SupportsImages ? ModelVision : ModelTextOnly)}{(model.Reasoning ? $" · {ModelReasoning}" : string.Empty)}";
+		$"{model.Provider} · {ModelMeta(model)}";
 	public const string NewSession = "新建";
 	public const string UntitledSession = "未命名会话";
 	public const string Rename = "重命名";
@@ -71,7 +74,6 @@ public static partial class Strings
 	public const string BrokenImage = "（图片数据无法解码）";
 	public const string PaletteButton = "命令";
 
-	public const string ComposerReference = "引用文件（@）";
 	public const string PinnedMark = "★";
 	public const string RemoveAttachment = "移除";
 	public const string EditImageLabel = "随消息图片";
@@ -769,11 +771,9 @@ public static partial class Strings
 
 	public const string SecurityFollowDefault = "跟随默认档位";
 
-	public const string SecurityTitle = "安全档位";
+	public const string SecurityMenuHint = "为当前会话选择档位；立即写入 settings.json，对后续工具调用生效。";
 
 	public const string SecurityDisabledHint = "安全门总开关已关闭，所有工具调用直接放行。到设置 → 安全门里开启。";
-
-	public static string SecurityLevelOption(string name, bool builtin) => builtin ? name : $"{name}（自定义）";
 
 	public static string SecurityFollowHint(string name, string description) =>
 		$"安全档位：跟随默认「{name}」\n{description}\n点击按本会话切换档位";

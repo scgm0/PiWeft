@@ -90,8 +90,10 @@ public sealed class ModelPickerTests
 		var rows = Find<Button>(picker.View).Where(button => button.Tag is TreeViewNode { Tag: PiWeft.Ai.Model }).ToArray();
 		Assert.NotEmpty(rows);
 		Assert.True(rows.Length < 30, $"Realized {rows.Length} rows for a 360 px viewport");
-		Assert.Contains(Find<TextBlock>(picker.View), block => block.Text == "fixture · 1000 " + Strings.ModelsCountUnit);
-		Assert.Contains(Find<TextBlock>(picker.View), block => block.Text == "✓ fixture/model-0000");
+		Assert.Contains(Find<TextBlock>(picker.View), block => block.Text == "fixture");
+		Assert.Contains(Find<TextBlock>(picker.View), block => block.Text == "1000 " + Strings.ModelsCountUnit);
+		Assert.Contains(Find<TextBlock>(picker.View), block => block.Text == "fixture/Display model-0000");
+		Assert.Contains(Find<Image>(picker.View), image => Equals(image.Tag, ModelPicker.CurrentCheckTag) && image.IsVisible);
 		var chosen = Assert.IsType<Model>(((TreeViewNode)rows[0].Tag!).Tag);
 		ImagePreviewTests.Click(rows[0]);
 		Assert.Same(chosen, selected);
@@ -154,6 +156,16 @@ public sealed class ModelPickerTests
 		picker.Show(window);
 		Assert.Equal(2, calls);
 		picker.Hide();
+	}
+
+	[Fact]
+	public void SearchIgnoresSeparatorsBetweenModelIdWords()
+	{
+		var model = Model("gpt-4o");
+		Assert.True(ModelPicker.Matches(model, "gpt4o"));
+		Assert.True(ModelPicker.Matches(model, "gpt 4o"));
+		Assert.True(ModelPicker.Matches(model, "fixture"));
+		Assert.False(ModelPicker.Matches(model, "gpt5"));
 	}
 
 	private static void Key(UIElement element, Aprillz.MewUI.Key key) =>

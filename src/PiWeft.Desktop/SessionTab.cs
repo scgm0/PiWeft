@@ -134,14 +134,24 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _copyReply;
 	private readonly Button _modelButton;
 	private readonly TextBlock _modelLabel = new();
-	private readonly Button _planButton;
-	private readonly TextBlock _planLabel = new();
+	private readonly Button _addButton;
+	private readonly Button _modeChip;
+	private readonly Image _goalModeIcon;
+	private readonly Image _planModeIcon;
+	private readonly TextBlock _modeChipLabel = new();
+	private readonly ComposerAddMenu _composerAddMenu = new();
+	private readonly ComposerPicker _composerPicker = new();
+	/// 目标模式是输入区自己的开关：会话侧的目标要在第一条带标记的消息里才创建，
+	/// 计划模式则直接落在 <see cref="Session"/> 上，两者互斥。
+	private bool _goalMode;
+	private ComposerMode _renderedMode = ComposerMode.Normal;
 	private readonly Button _testButton;
 	private bool _testing;
 	private readonly ModelPicker _modelPicker;
 	private readonly ImagePreview _imagePreview = new();
 	private readonly Button _thinkingButton;
 	private readonly TextBlock _thinkingLabel = new();
+	private readonly ThinkingPicker _thinkingPicker = new();
 
 	/// 输入区上方的会话进行态指示行（PiDeck responding 条）。
 	/// 只要这一轮还在跑就一直占位：[图标] [呼吸点] [状态短语 · 事实后缀] | [功能提示]。
@@ -163,6 +173,11 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _terminalButton;
 
 	private readonly Button _securityButton;
+	private readonly Image _securityOffIcon;
+	private readonly Image _securityAlertIcon;
+	private readonly Image _securityCheckIcon;
+	private readonly Image _securityCustomIcon;
+	private readonly SecurityMenu _securityMenu = new();
 	private readonly Border _terminalPane;
 	private readonly SplitPanel _terminalSplit;
 	private TerminalDock? _terminal;
@@ -392,23 +407,44 @@ public sealed partial class SessionTab : IDisposable
 			.Child(new StackPanel().Orientation(Orientation.Horizontal)
 				.VerticalAlignment(VerticalAlignment.Center).Children(_sendButton, _sendDivider, _sendMenuButton));
 
-		var attach = AppIcons.Button("image-plus", Strings.AttachFiles, () => _ = AttachImageAsync());
-		var commands = AppIcons.Button("square-slash", Strings.Commands, () => _composer.Text = "/");
-
-		_planLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText();
-		_planButton = new Button().Ghost().Content(_planLabel).HoverTip(Strings.PlanModeHint)
-			.OnClick(TogglePlanMode);
+		_addButton = AppIcons.Button("layout-grid", Strings.ComposerAddTitle, ShowComposerAddMenu);
+		_goalModeIcon = AppIcons.Icon("target", AppStyles.RoleSubtle, 12).IsVisible(false);
+		_planModeIcon = AppIcons.Icon("list-checks", AppStyles.RoleSubtle, 12).IsVisible(false);
+		_modeChipLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText();
+		var modeChipClose = AppIcons.Icon("x", AppStyles.RoleSubtle, 11);
+		_modeChip = new Button().Ghost()
+			.Padding(new Thickness(6, 2, 5, 2))
+			.MinHeight(AppTheme.ControlHeightMd)
+			.CornerRadius(AppTheme.RadiusSm)
+			.Content(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(4)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					new Grid().Width(14).Children(_goalModeIcon, _planModeIcon),
+					_modeChipLabel,
+					modeChipClose))
+			.OnClick(() => SelectMode(ComposerMode.Normal))
+			.IsVisible(false);
 		_terminalButton = AppIcons.Button("terminal", Strings.Terminal, ToggleTerminal);
-		_securityButton = AppIcons.Button("shield", Strings.SecurityTitle, ShowSecurityMenu);
+		_securityOffIcon = AppIcons.Icon("shield-off", AppStyles.RoleSubtle, 16).IsVisible(false);
+		_securityAlertIcon = AppIcons.Icon("shield-alert", AppStyles.RoleSubtle, 16).IsVisible(false);
+		_securityCheckIcon = AppIcons.Icon("shield-check", AppStyles.RoleSubtle, 16).IsVisible(false);
+		_securityCustomIcon = AppIcons.Icon("shield", AppStyles.RoleSubtle, 16).IsVisible(false);
+		_securityButton = new Button().Ghost()
+			.Content(new Grid().Width(16).Children(
+				_securityOffIcon, _securityAlertIcon, _securityCheckIcon, _securityCustomIcon))
+			.OnClick(ShowSecurityMenu);
 		_testButton = AppIcons.Button("refresh-cw", Strings.TestConnection, () => _ = TestConnectionAsync());
 
 		_modelPicker = new ModelPicker(availableModels ?? (() => models), () => Session.Model, SelectModel);
 		_modelPicker.Closed += FocusComposer;
+		_composerPicker.Closed += FocusComposer;
 		_modelButton = new Button().Ghost().MaxWidth(248).MinHeight(AppTheme.ControlHeightMd)
 			.Content(_modelLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText())
 			.OnClick(ShowModelPicker);
 
-		// 思考强度与模型名同级：都是安静的 ghost 文本，不带边框/底色；点开才出现单选菜单。
+		// 思考强度与模型名同级：都是安静的 ghost 文本，不带边框/底色；点开才出现强度弹层。
 		_thinkingLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText();
 		var thinkingChevron = new GlyphElement()
 			.Kind(GlyphKind.ChevronDown)
@@ -420,18 +456,13 @@ public sealed partial class SessionTab : IDisposable
 				.Spacing(2)
 				.VerticalAlignment(VerticalAlignment.Center)
 				.Children(_thinkingLabel, thinkingChevron))
-			.OnClick(ShowThinkingMenu);
+			.OnClick(ShowThinkingPicker);
 
-		// 左群是改变下一条消息的开关与插入动作（计划、附件、引用、命令、终端），窄窗口自动换行；
+		// 左群是改变下一条消息的动作与模式（加号菜单、当前模式 chip、终端、安全），窄窗口自动换行；
 		// 中群是模型与思考强度铭牌（PiDeck 同款：provider/model · max ▾，居中）；
 		// 右群是连接测试与发送/中断，发送固定在最右。
-		var reference = new Button().Ghost().MinWidth(28).Padding(new Thickness(4, 2, 4, 2))
-			.Content(new TextBlock().Text("@").FontSize(AppTheme.FontSizeChat).MutedText()
-				.VerticalAlignment(VerticalAlignment.Center))
-			.OnClick(InsertReference)
-			.HoverTip(Strings.ComposerReference);
 		var leftActions = new WrapPanel().Spacing(4).VerticalAlignment(VerticalAlignment.Center)
-			.Children(_planButton, attach, reference, commands, _terminalButton, _securityButton);
+			.Children(_addButton, _modeChip, _terminalButton, _securityButton);
 		var centerActions = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(2)
@@ -920,8 +951,13 @@ public sealed partial class SessionTab : IDisposable
 		_composerHintTimer?.Stop();
 		_composerHintTimer?.Dispose();
 		_composerHintTimer = null;
-		// 发送弹窗是原生浮层，不随 View 释放；标签关掉时要关窗并释放 Popup 的原生资源。
+		// 发送弹窗、思考强度弹层、加号菜单与选择器都是原生/窗口浮层，不随 View 释放；
+		// 标签关掉时要关窗并释放 Popup 的原生资源。
 		_sendMenu.Dispose();
+		_thinkingPicker.Dispose();
+		_composerAddMenu.Dispose();
+		_composerPicker.Hide();
+		_securityMenu.Dispose();
 		_scroll.ScrollChanged -= OutlineScrolled;
 		_outline.Dispose();
 		_conversationScroll.Dispose();
@@ -1011,6 +1047,7 @@ public sealed partial class SessionTab : IDisposable
 		AppStyles.ApplyTextColors(_statisticsPanel.View);
 		AppStyles.ApplyTextColors(_usagePanel.View);
 		AppStyles.ApplyTextColors(_branchPanel.View);
+		AppStyles.ApplyTextColors(_composerPicker.View);
 		AppStyles.ApplyTextColors(_imagePreview.View);
 		// 进行态条的图标是直接取色的（没进 AppIcons 的角色跟踪表），换肤后要重新取一次；
 		// 清掉 kind 就是让它下一帧按新主题重新上色，而文字那几段已经由角色重上色。
@@ -1113,10 +1150,15 @@ public sealed partial class SessionTab : IDisposable
 				});
 			}
 
+			// 目标模式的隐藏标记只在这里合一次：带图片与纯文字两条发送路径共用同一份正文。
+			var outgoing = text.Trim().Length > 0 || _attachments.Count > 0
+				? ComposerPrompt.Compose(text, Mode)
+				: text;
+
 			if (_attachments.Count > 0)
 			{
 				// 展开技能命令/提示词模板，并把图片作为内容块随消息发出。
-				var message = Session.PrepareInput(text, [.. _attachments.Select(static item => item.Content)]);
+				var message = Session.PrepareInput(outgoing, [.. _attachments.Select(static item => item.Content)]);
 
 				_attachments.Clear();
 				Dispatch(RefreshAttachments);
@@ -1125,7 +1167,7 @@ public sealed partial class SessionTab : IDisposable
 			}
 			else
 			{
-				await _chat.SendAsync(text, cancellationToken).ConfigureAwait(false);
+				await _chat.SendAsync(outgoing, cancellationToken).ConfigureAwait(false);
 			}
 		}
 		catch (OperationCanceledException)
@@ -1553,6 +1595,13 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
+	/// 仅 <c>--ui-smoke thinking</c>：打开思考强度弹层供外部脚本截图。
+	internal void ShowThinkingPickerForSmoke()
+	{
+		ShowThinkingPicker();
+		Console.WriteLine($"thinking-picker-open:{_thinkingPicker.IsOpen} level={Session.ThinkingLevel}");
+	}
+
 	private void SelectModel(Model model)
 	{
 		if (IsStreaming || _disposed)
@@ -1599,17 +1648,6 @@ public sealed partial class SessionTab : IDisposable
 			_testing = false;
 			Dispatch(() => Render());
 		}
-	}
-
-	private void TogglePlanMode()
-	{
-		if (IsStreaming || _disposed)
-		{
-			return;
-		}
-
-		Session.SetPlanMode(!Session.PlanModeEnabled);
-		Render();
 	}
 
 	public bool IsTerminalOpen => _terminalOpen;
@@ -1690,6 +1728,9 @@ public sealed partial class SessionTab : IDisposable
 
 	private string SecurityKey => Session.Session.SessionFile ?? $"session:{Session.Session.SessionId}";
 
+	/// 仅供 --ui-smoke composer-security：打开安全档位菜单，外部脚本趁机截图。
+	internal void PrepareSecurityMenuSmoke() => ShowSecurityMenu();
+
 	/// 档位按钮的提示要说清「现在生效的是哪档、为什么」。总开关关掉时档位标签有欺骗性，
 	/// 要写明门没开，不能显示一个看起来像在管的档位名。
 	private void UpdateSecurityButton()
@@ -1700,6 +1741,14 @@ public sealed partial class SessionTab : IDisposable
 			config.SessionLevels.TryGetValue(SecurityKey, out var assigned) &&
 			!string.Equals(assigned, config.DefaultLevelId, StringComparison.Ordinal);
 
+		// 盾形图标表达保护强度：停用与关闭档都是划掉盾，严格档是警报盾。
+		var icon = config.Enabled ? SecurityMenu.IconFor(level.Level) : "shield-off";
+		_securityOffIcon.IsVisible(icon == "shield-off");
+		_securityAlertIcon.IsVisible(icon == "shield-alert");
+		_securityCheckIcon.IsVisible(icon == "shield-check");
+		_securityCustomIcon.IsVisible(icon == "shield");
+		_securityButton.Opacity = config.Enabled ? 1 : 0.6;
+
 		_securityButton.HoverTip(!config.Enabled
 			? Strings.SecurityDisabledHint
 			: overridden
@@ -1707,8 +1756,8 @@ public sealed partial class SessionTab : IDisposable
 				: Strings.SecurityFollowHint(level.Name, level.Description));
 	}
 
-	/// 按会话切换安全档位。列表里给「跟随默认」，不直接列档位：
-	/// 清除覆盖与选一个等于默认的档位在配置上是两件事，混在一起会留下清不掉的脏键。
+	/// 按会话切换安全档位。总开关关闭时也打开菜单：顶部的提示行说明为什么不能选，
+	/// 比只弹一句 toast 更容易找到恢复路径。
 	private void ShowSecurityMenu()
 	{
 		if (_disposed)
@@ -1717,41 +1766,13 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		var config = SecurityConfig.Load();
-		if (!config.Enabled)
-		{
-			Toasts.Show(View, Strings.SecurityDisabledHint);
-			return;
-		}
+		var effective = config.Resolve(SecurityKey);
+		var hasOverride = config.Enabled &&
+			config.SessionLevels.TryGetValue(SecurityKey, out var assigned) &&
+			!string.Equals(assigned, config.DefaultLevelId, StringComparison.Ordinal);
 
-		// 与思考强度菜单一致：MewUI 的 MenuItem 没有 IsCheckable，当前项用图标列的勾表达。
 		HoverHints.Cancel(_securityButton);
-
-		var current = config.SessionLevels.TryGetValue(SecurityKey, out var existing) ? existing : null;
-		var checkIcon = new IconTemplate(size => new GlyphElement()
-			.Kind(GlyphKind.CheckMark)
-			.GlyphSize(4)
-			.Foreground(AppTheme.Accent)
-			.HorizontalAlignment(HorizontalAlignment.Center)
-			.VerticalAlignment(VerticalAlignment.Center));
-
-		var menu = new ContextMenu();
-
-		var follow = new Command("pi.security.follow", Strings.SecurityFollowDefault);
-		_securityButton.Commands.Register(follow, () => ApplySecurityLevel(null));
-		menu.Items.Add(new MenuItem(follow) { Icon = current is null ? checkIcon : null });
-
-		foreach (var level in config.Levels)
-		{
-			var captured = level;
-			var command = new Command($"pi.security.{captured.Level}", Strings.SecurityLevelOption(captured.Name, captured.Builtin));
-			_securityButton.Commands.Register(command, () => ApplySecurityLevel(captured.Level));
-			menu.Items.Add(new MenuItem(command)
-			{
-				Icon = string.Equals(current, captured.Level, StringComparison.Ordinal) ? checkIcon : null,
-			});
-		}
-
-		menu.Show(_securityButton);
+		_securityMenu.Show(_securityButton, config.Enabled, config.Levels, effective.Level, hasOverride, ApplySecurityLevel);
 	}
 
 	private void ApplySecurityLevel(string? levelId)
@@ -1772,7 +1793,7 @@ public sealed partial class SessionTab : IDisposable
 		RefreshPickers();
 	}
 
-	private void ShowThinkingMenu()
+	private void ShowThinkingPicker()
 	{
 		if (IsStreaming || _disposed)
 		{
@@ -1785,30 +1806,13 @@ public sealed partial class SessionTab : IDisposable
 			return;
 		}
 
-		// 点击后指针仍在按钮上，先收起悬停提示，避免它压在刚打开的菜单上。
+		// 点击后指针仍在按钮上，先收起悬停提示，避免它压在刚打开的弹层上。
 		HoverHints.Cancel(_thinkingButton);
-
-		// 当前级别在菜单图标列打勾；MewUI 源码 的 MenuItem 还没有 IsCheckable，
-		// 用 IconTemplate 表达同一层信息。
-		var checkIcon = new IconTemplate(size => new GlyphElement()
-			.Kind(GlyphKind.CheckMark)
-			.GlyphSize(4)
-			.Foreground(AppTheme.Accent)
-			.HorizontalAlignment(HorizontalAlignment.Center)
-			.VerticalAlignment(VerticalAlignment.Center));
-
-		var menu = new ContextMenu();
-		foreach (var level in levels)
-		{
-			var command = new Command($"pi.thinking.{level}", Strings.ThinkingLevelName(level));
-			_thinkingButton.Commands.Register(command, () => SelectThinkingLevel(level));
-			menu.Items.Add(new MenuItem(command)
-			{
-				Icon = string.Equals(level, Session.ThinkingLevel, StringComparison.Ordinal) ? checkIcon : null,
-			});
-		}
-
-		menu.Show(_thinkingButton);
+		_thinkingPicker.Show(
+			_thinkingButton,
+			levels,
+			ThinkingLevelResolver.Clamp(Session.Model, Session.ThinkingLevel),
+			SelectThinkingLevel);
 	}
 
 	private void SelectThinkingLevel(string level)
@@ -1997,13 +2001,6 @@ public sealed partial class SessionTab : IDisposable
 		// 铭牌跟 PiDeck 同款拼成一行：provider/model · max ▾；级别用原始短名，中文全名放在提示里。
 		_thinkingLabel.Text($"· {Session.ThinkingLevel}");
 		_thinkingButton.HoverTip($"{Strings.ThinkingLevelTitle}：{thinking}");
-	}
-
-	private void InsertReference()
-	{
-		if (_disposed) return;
-		_composer.Focus();
-		_composer.EnterText(_composer.CaretPosition, 0, "@");
 	}
 
 	/// 会话进行态（PiDeck respondingKind 同语义）。判定与措辞都在
@@ -2269,8 +2266,14 @@ public sealed partial class SessionTab : IDisposable
 		_sendMenuButton.IsEnabled = _chat.IsStreaming;
 		_modelButton.IsEnabled = !busy;
 		_thinkingButton.IsEnabled = !busy;
-		_planLabel.Text(Session.PlanModeEnabled ? Strings.PlanModeOn : Strings.PlanMode);
-		_planButton.IsEnabled = !busy;
+		var mode = Mode;
+		if (mode != _renderedMode)
+		{
+			_renderedMode = mode;
+			UpdateModeChip();
+		}
+
+		_modeChip.IsEnabled = !busy;
 		_testButton.IsEnabled = !busy && !_testing;
 		// 这两个开关以前每帧都整表扫描一遍（流式期就是每 40 ms 扫两千行，还各分配一个枚举器）。
 		// 用户行与「有没有正文」只随投影结果变化，按行数与过滤条件缓存即可。
@@ -2631,6 +2634,9 @@ public sealed partial class SessionTab : IDisposable
 		_imagePreview.Hide();
 		_statisticsPanel.Hide();
 		_modelPicker.Hide();
+		_composerAddMenu.Close();
+		_composerPicker.Hide();
+		_securityMenu.Close();
 		_usagePanel.Hide();
 	}
 
@@ -2895,7 +2901,8 @@ public sealed partial class SessionTab : IDisposable
 		try
 		{
 			var images = _attachments.Select(static item => item.Content).ToArray();
-			var queued = steer ? _chat.Steer(text, images) : _chat.FollowUp(text, images);
+			var outgoing = ComposerPrompt.Compose(text, Mode);
+			var queued = steer ? _chat.Steer(outgoing, images) : _chat.FollowUp(outgoing, images);
 			if (!queued) return;
 			_composer.Text = string.Empty;
 			_attachments.Clear();

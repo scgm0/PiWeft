@@ -1493,6 +1493,18 @@ public sealed partial class MainWindow : Window
 				case "hints":
 					PrepareHoverSmoke();
 					break;
+				case "composer-add":
+					// 视觉验收：把合并后的「+」菜单摆出来，截图核对分组、图标与勾选态。
+					CurrentTab()?.PrepareComposerAddSmoke();
+					break;
+				case "composer-picker":
+					// 视觉验收：技能/提示词选择器的空态、搜索行与脚注。
+					CurrentTab()?.PrepareSkillPickerSmoke();
+					break;
+				case "composer-security":
+					// 视觉验收：会话底栏的安全档位菜单。
+					CurrentTab()?.PrepareSecurityMenuSmoke();
+					break;
 				case "loading":
 					// 在已有标签页之上再打开一个会话：后台解析期间主区只留加载提示，
 					// 不能把上一个会话透出来（历史缺陷：加载段落直接浮在旧会话正文上）。
@@ -1598,6 +1610,9 @@ public sealed partial class MainWindow : Window
 					break;
 				case "model":
 					CurrentTab()?.ShowModelPicker();
+					break;
+				case "thinking":
+					CurrentTab()?.ShowThinkingPickerForSmoke();
 					break;
 				case "import":
 					// 导入弹窗的视觉验收：列表与空态都要能截图。
