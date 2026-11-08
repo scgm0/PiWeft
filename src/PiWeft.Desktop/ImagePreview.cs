@@ -85,6 +85,7 @@ internal sealed class ImagePreview
 	private Window? _window;
 	private UIElement? _returnFocus;
 	private PreviewPayload? _payload;
+	private readonly OverlayFade _fade;
 
 	public ImagePreview()
 	{
@@ -105,6 +106,7 @@ internal sealed class ImagePreview
 				.VerticalAlignment(VerticalAlignment.Center).OnMouseDown(args => args.Handled = true),
 			_actions)
 			.OnKeyDown(key => { if (key.Key == Key.Escape) { key.Handled = true; Hide(); } });
+		_fade = new OverlayFade((FrameworkElement)View);
 	}
 
 	public UIElement View { get; }
@@ -115,7 +117,17 @@ internal sealed class ImagePreview
 	public void Show(UIElement owner, ImageSource source)
 	{
 		if (owner.FindVisualRoot() is not Window window) return;
-		if (_window is not null && !ReferenceEquals(_window, window)) Hide();
+		if (_window is not null && !ReferenceEquals(_window, window)) { _fade.Cancel(); CloseNow(); }
+		if (IsOpen)
+		{
+			if (_fade.IsClosing) _fade.Reopen();
+			_image.Source(source);
+			_payload = ChatImages.PayloadOf(source);
+			_copy.IsVisible(_payload is not null);
+			_close.Focus();
+			return;
+		}
+
 		_window = window;
 		_image.Source(source);
 		_payload = ChatImages.PayloadOf(source);
@@ -124,12 +136,18 @@ internal sealed class ImagePreview
 		TransientOverlay.Open(window, View, Hide);
 		if (!IsOpen) _returnFocus = window.FocusManager.FocusedElement;
 		View.IsVisible(true);
+		_fade.Open();
 		_close.Focus();
 	}
 
 	public void Hide()
 	{
-		if (!IsOpen) return;
+		if (!IsOpen || _fade.IsClosing) return;
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		View.IsVisible(false);
 		if (_window is { } window) TransientOverlay.Remove(window, View);
 		_window = null;

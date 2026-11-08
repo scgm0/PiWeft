@@ -37,6 +37,7 @@ internal sealed class ProviderLoginPanel
 	private bool _cancelRequested;
 	private int _generation;
 	private UIElement? _view;
+	private OverlayFade? _fade;
 
 	public ProviderLoginPanel(AuthProvider provider, string agentDir)
 	{
@@ -124,13 +125,15 @@ internal sealed class ProviderLoginPanel
 	}
 
 	public UIElement View => _view ?? throw new InvalidOperationException("ProviderLoginPanel is constructed eagerly.");
+	private OverlayFade Fade => _fade ??= new OverlayFade((FrameworkElement)View);
 	public event Action<AuthProvider>? Completed;
 	public event Action? Closed;
 
 	public void Show(UIElement owner)
 	{
 		if (owner.FindVisualRoot() is not Window window) return;
-		Hide();
+		StopWork();
+		if (_view is { IsVisible: true }) { Fade.Cancel(); CloseNow(); }
 		_window = window;
 		if (View is FrameworkElement element)
 		{
@@ -140,6 +143,7 @@ internal sealed class ProviderLoginPanel
 		}
 		window.OverlayLayer.Add(View);
 		View.IsVisible(true);
+		Fade.Open();
 		View.Focus();
 		_pump.Start();
 		StartLogin();
@@ -354,6 +358,13 @@ internal sealed class ProviderLoginPanel
 
 	public void Hide()
 	{
+		StopWork();
+		if (_view is null || !_view.IsVisible || Fade.IsClosing) return;
+		Fade.Close(CloseNow);
+	}
+
+	private void StopWork()
+	{
 		_generation++;
 		_running = false;
 		_abort?.Cancel();
@@ -362,7 +373,11 @@ internal sealed class ProviderLoginPanel
 		_pending?.TrySetCanceled();
 		_pending = null;
 		_pump.Stop();
-		if (_view is null || !_view.IsVisible) return;
+	}
+
+	private void CloseNow()
+	{
+		if (_view is null) return;
 		_view.IsVisible(false);
 		_window?.OverlayLayer.Remove(_view);
 		_window = null;

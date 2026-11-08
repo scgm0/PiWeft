@@ -27,6 +27,7 @@ internal sealed class ComposerPicker
 	private Action<Item>? _pick;
 	private string _emptyText = string.Empty;
 	private string _noMatchText = string.Empty;
+	private readonly OverlayFade _fade;
 
 	/// 选择器条目。Title 是插入输入框的斜杠命令，Origin 回答「这个技能/模板从哪来」。
 	internal sealed record Item(string Icon, string Token, string Name, string Description, string Origin)
@@ -136,6 +137,7 @@ internal sealed class ComposerPicker
 				key.Handled = true;
 				Hide();
 			});
+		_fade = new OverlayFade((FrameworkElement)View);
 	}
 
 	public UIElement View { get; }
@@ -155,6 +157,7 @@ internal sealed class ComposerPicker
 
 		if (IsOpen)
 		{
+			if (_fade.IsClosing) _fade.Reopen();
 			_query.Focus();
 			return;
 		}
@@ -173,16 +176,22 @@ internal sealed class ComposerPicker
 		TransientOverlay.Open(window, View, Hide);
 		AppStyles.ApplyTextColors(View);
 		View.IsVisible(true);
+		_fade.Open();
 		_query.Focus();
 	}
 
 	public void Hide()
 	{
-		if (!IsOpen)
+		if (!IsOpen || _fade.IsClosing)
 		{
 			return;
 		}
 
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		View.IsVisible(false);
 		if (_window is { } window)
 		{

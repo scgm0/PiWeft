@@ -42,6 +42,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 	private Window? _window;
 	private CancellationTokenSource? _abort;
 	private int _generation;
+	private OverlayFade? _fade;
 	private ConfigurationStore? _store;
 	private ConfigurationDocument? _document;
 	private Model? _model;
@@ -52,6 +53,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 	private UIElement? _view;
 
 	public UIElement View => _view ??= BuildView();
+	private OverlayFade Fade => _fade ??= new OverlayFade((FrameworkElement)View);
 	public event Action? Closed;
 	public event Action? Saved;
 	public event Action<ProviderUsageResult>? ResultReady;
@@ -122,7 +124,8 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 	public void Show(UIElement owner)
 	{
 		if (owner.FindVisualRoot() is not Window window) return;
-		Hide();
+		CancelWork();
+		if (_view is { IsVisible: true }) { Fade.Cancel(); CloseNow(); }
 		_window = window;
 		if (View is FrameworkElement element)
 		{
@@ -132,6 +135,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		}
 		window.OverlayLayer.Add(View);
 		View.IsVisible(true);
+		Fade.Open();
 		try
 		{
 			_model = current();
@@ -448,10 +452,21 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 
 	public void Hide()
 	{
+		CancelWork();
+		if (_view is not { IsVisible: true } || Fade.IsClosing) return;
+		Fade.Close(CloseNow);
+	}
+
+	private void CancelWork()
+	{
 		_generation++;
 		_abort?.Cancel();
 		_abort = null;
-		if (_view is null || !_view.IsVisible) return;
+	}
+
+	private void CloseNow()
+	{
+		if (_view is null) return;
 		_view.IsVisible(false);
 		_window?.OverlayLayer.Remove(_view);
 		_window = null;

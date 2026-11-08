@@ -29,6 +29,7 @@ internal sealed class ModelPicker
 	private Window? _window;
 	private int _index;
 	private IReadOnlyList<string> _recent = [];
+	private readonly OverlayFade _fade;
 
 	public ModelPicker(Func<IReadOnlyList<Model>> models, Func<Model> current, Action<Model> pick)
 	{
@@ -169,6 +170,7 @@ internal sealed class ModelPicker
 					new Border().StyleName(AppStyles.Card).CornerRadius(AppTheme.RadiusMd)
 						.Padding(new Thickness(AppTheme.Space3)).Child(content)))
 			.OnKeyDown(key => { if (key.Key == Key.Escape) { Hide(); key.Handled = true; } });
+		_fade = new OverlayFade((FrameworkElement)View);
 	}
 
 	public UIElement View { get; }
@@ -185,7 +187,7 @@ internal sealed class ModelPicker
 	public void Show(UIElement owner)
 	{
 		if (owner.FindVisualRoot() is not Window window) return;
-		if (IsOpen) { _query.Focus(); return; }
+		if (IsOpen) { if (_fade.IsClosing) _fade.Reopen(); _query.Focus(); return; }
 		_window = window;
 		_recent = DesktopPreference.Load().RecentModels;
 		_snapshot = [.. _models().DistinctBy(static model => (model.Provider, model.Id))];
@@ -195,12 +197,18 @@ internal sealed class ModelPicker
 		TransientOverlay.Open(window, View, Hide);
 		AppStyles.ApplyTextColors(View);
 		View.IsVisible(true);
+		_fade.Open();
 		_query.Focus();
 	}
 
 	public void Hide()
 	{
-		if (!IsOpen) return;
+		if (!IsOpen || _fade.IsClosing) return;
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		View.IsVisible(false);
 		if (_window is { } window) TransientOverlay.Remove(window, View);
 		_window = null;

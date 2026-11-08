@@ -33,6 +33,7 @@ internal sealed class ProviderKeyPanel
 	private readonly Dictionary<string, string> _initialEnvironment;
 	private readonly string? _initialKey;
 	private Window? _window;
+	private readonly OverlayFade _fade;
 	private ProviderKeyOption _selected;
 	private bool _syncing;
 	private bool _saving;
@@ -127,6 +128,7 @@ internal sealed class ProviderKeyPanel
 			});
 
 		BuildFields();
+		_fade = new OverlayFade(_view);
 	}
 
 	public UIElement View => _view;
@@ -134,7 +136,7 @@ internal sealed class ProviderKeyPanel
 	public void Show(UIElement owner)
 	{
 		if (owner.FindVisualRoot() is not Window window) return;
-		Hide();
+		if (_view.IsVisible) { _fade.Cancel(); CloseNow(); }
 		_window = window;
 		if (View is FrameworkElement element)
 		{
@@ -145,6 +147,7 @@ internal sealed class ProviderKeyPanel
 
 		window.OverlayLayer.Add(View);
 		View.IsVisible(true);
+		_fade.Open();
 		AppStyles.ApplyTextColors(View);
 		_firstInput?.Focus();
 		if (_firstInput is null) View.Focus();
@@ -324,7 +327,12 @@ internal sealed class ProviderKeyPanel
 
 	public void Hide()
 	{
-		if (!_view.IsVisible) return;
+		if (!_view.IsVisible || _fade.IsClosing) return;
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		_view.IsVisible(false);
 		_window?.OverlayLayer.Remove(_view);
 		_window = null;

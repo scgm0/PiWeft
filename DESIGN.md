@@ -69,4 +69,5 @@ PiWeft（weft = 纬线）是一台织机：会话是经线，agent 的每一步�
 - 颜色只经 `AppPalette` → `AppStyles` 命名样式或 `AppTheme.For(theme)`；不改硬编码。
 - 换肤不重建界面：依赖 MewUI 样式重解析；消息保留 Markdown 实例、选区、展开状态与草稿。
 - 所有可点元素有 hover、键盘可达、焦点可见；主按钮 hover / pressed 用 90% / 78% 不透明度表达。
+- 弹层与窗口浮层：进入 200ms ease-out-quint，退出 120ms ease-out-cubic；不加缩放与位移。
 - 设置背景用纯压暗，不做模糊（框架无 backdrop filter；位图缓存会连离屏内容一起快照，内存代价过大）。

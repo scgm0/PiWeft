@@ -14,7 +14,7 @@ internal sealed class ThinkingPicker : IDisposable
 	private const double AnchorGap = 6;
 	private const double BodySpacing = 10;
 
-	private readonly Popup _popup = new();
+	private readonly FadePopup _popup = new();
 	private readonly List<TextBlock> _tickTexts = [];
 	private IReadOnlyList<string> _levels = [];
 	private Action<string>? _pick;
@@ -42,8 +42,7 @@ internal sealed class ThinkingPicker : IDisposable
 			return;
 		}
 
-		_popup.Content = Build(levels, current, pick);
-		_popup.ShowAt(anchor, Anchor(anchor), PopupAnchorSide.Above);
+		_popup.Show(Build(levels, current, pick), anchor, Anchor(anchor), PopupAnchorSide.Above);
 		// Popup 自身不搬焦点；滑条要能用方向键，只能这里主动对焦。
 		_slider?.Focus();
 	}
@@ -51,7 +50,6 @@ internal sealed class ThinkingPicker : IDisposable
 	public void Close()
 	{
 		_popup.Close();
-		ReleaseContent();
 	}
 
 	public void Dispose()
@@ -256,15 +254,6 @@ internal sealed class ThinkingPicker : IDisposable
 
 		// 一次关闭只提交一次；再收到关闭通知（内容释放、重复 Close）时不再重复落盘。
 		_pick = null;
-	}
-
-	private void ReleaseContent()
-	{
-		if (_popup.Content is { } content)
-		{
-			UiLifetime.Release(content);
-			_popup.Content = null;
-		}
 	}
 
 	/// 档位名按强度条上的刻度点定位，而不是平分列宽：5 档以上平分时中间几档

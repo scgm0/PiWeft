@@ -29,6 +29,7 @@ public sealed class SessionSearchPalette
 	private int _version;
 	private CancellationTokenSource? _contentSearch;
 	private Window? _window;
+	private readonly OverlayFade _fade;
 
 	public event Action? Closed;
 
@@ -110,6 +111,7 @@ public sealed class SessionSearchPalette
 				key.Handled = true;
 				Hide();
 			});
+		_fade = new OverlayFade((FrameworkElement)View);
 	}
 
 	public UIElement View { get; }
@@ -122,6 +124,7 @@ public sealed class SessionSearchPalette
 		if (owner.FindVisualRoot() is not Window window) return;
 		if (IsOpen)
 		{
+			if (_fade.IsClosing) _fade.Reopen();
 			_query.Focus();
 			return;
 		}
@@ -133,15 +136,21 @@ public sealed class SessionSearchPalette
 		TransientOverlay.Open(window, View, Hide);
 		AppStyles.ApplyTextColors(View);
 		View.IsVisible(true);
+		_fade.Open();
 		_query.Focus();
 	}
 
 	public void Hide()
 	{
-		if (!IsOpen) return;
+		if (!IsOpen || _fade.IsClosing) return;
 		_contentSearch?.Cancel();
 		_contentSearch = null;
 		_version++;
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		View.IsVisible(false);
 		if (_window is { } window)
 		{

@@ -18,6 +18,7 @@ public sealed class SessionStatisticsPanel
 	private readonly Button _overview;
 	private readonly Button _details;
 	private Window? _window;
+	private readonly OverlayFade _fade;
 	private SessionStatisticsDisplay? _display;
 	private bool _showDetails;
 
@@ -67,6 +68,7 @@ public sealed class SessionStatisticsPanel
 				key.Handled = true;
 				Hide();
 			});
+		_fade = new OverlayFade((FrameworkElement)View);
 	}
 
 	public UIElement View { get; }
@@ -77,7 +79,7 @@ public sealed class SessionStatisticsPanel
 	{
 		if (owner.FindVisualRoot() is not Window window) return;
 		Update(display, busy);
-		if (IsOpen) { _usageSummary?.Show(); return; }
+		if (IsOpen) { if (_fade.IsClosing) _fade.Reopen(); _usageSummary?.Show(); return; }
 		_window = window;
 		if (View is FrameworkElement element)
 		{
@@ -88,6 +90,7 @@ public sealed class SessionStatisticsPanel
 		window.OverlayLayer.Add(View);
 		View.IsVisible(true);
 		AppStyles.ApplyTextColors(View);
+		_fade.Open();
 		_overview.Focus();
 		_usageSummary?.Show();
 	}
@@ -151,7 +154,12 @@ public sealed class SessionStatisticsPanel
 	public void Hide()
 	{
 		_usageSummary?.Hide();
-		if (!IsOpen) return;
+		if (!IsOpen || _fade.IsClosing) return;
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		View.IsVisible(false);
 		_window?.OverlayLayer.Remove(View);
 		_window = null;

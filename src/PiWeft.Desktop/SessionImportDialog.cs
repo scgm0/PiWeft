@@ -28,6 +28,7 @@ public sealed class SessionImportDialog
 	private IReadOnlyList<ImportedSession> _sessions = [];
 	private bool _loading;
 	private bool _importing;
+	private readonly OverlayFade _fade;
 
 	public event Action? Closed;
 
@@ -96,6 +97,7 @@ public sealed class SessionImportDialog
 					Hide();
 				}
 			});
+		_fade = new OverlayFade((FrameworkElement)View);
 	}
 
 	public UIElement View { get; }
@@ -113,6 +115,7 @@ public sealed class SessionImportDialog
 
 		if (IsOpen)
 		{
+			if (_fade.IsClosing) _fade.Reopen();
 			return;
 		}
 
@@ -120,16 +123,22 @@ public sealed class SessionImportDialog
 		TransientOverlay.Open(window, View, Hide);
 		AppStyles.ApplyTextColors(View);
 		View.IsVisible(true);
+		_fade.Open();
 		Reload();
 	}
 
 	public void Hide()
 	{
-		if (!IsOpen)
+		if (!IsOpen || _fade.IsClosing)
 		{
 			return;
 		}
 
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		View.IsVisible(false);
 		if (_window is { } window)
 		{

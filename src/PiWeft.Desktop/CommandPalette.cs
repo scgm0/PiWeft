@@ -20,6 +20,7 @@ public sealed class CommandPalette
 	private IReadOnlyList<PaletteCommand> _matches = [];
 	private int _selectedIndex;
 	private Window? _window;
+	private readonly OverlayFade _fade;
 
 	public event Action? Closed;
 
@@ -96,6 +97,7 @@ public sealed class CommandPalette
 					Hide();
 				}
 			});
+		_fade = new OverlayFade((FrameworkElement)View);
 	}
 
 	public UIElement View { get; }
@@ -106,6 +108,7 @@ public sealed class CommandPalette
 		if (owner.FindVisualRoot() is not Window window) return;
 		if (IsOpen)
 		{
+			if (_fade.IsClosing) _fade.Reopen();
 			_query.Focus();
 			return;
 		}
@@ -119,16 +122,22 @@ public sealed class CommandPalette
 		TransientOverlay.Open(window, View, Hide);
 		AppStyles.ApplyTextColors(View);
 		View.IsVisible(true);
+		_fade.Open();
 		_query.Focus();
 	}
 
 	public void Hide()
 	{
-		if (!IsOpen)
+		if (!IsOpen || _fade.IsClosing)
 		{
 			return;
 		}
 
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		View.IsVisible(false);
 		if (_window is { } window)
 		{

@@ -19,6 +19,7 @@ internal sealed class SettingsDialog
 	private readonly TextBlock _dirtyLabel;
 
 	private readonly Border _titleBarDim;
+	private readonly OverlayFade _fade;
 
 	private Window? _window;
 	private bool _closing;
@@ -82,6 +83,7 @@ internal sealed class SettingsDialog
 				key.Handled = true;
 				_ = RequestCloseAsync();
 			});
+		_fade = new OverlayFade((FrameworkElement)View);
 	}
 
 	public UIElement View { get; }
@@ -96,6 +98,7 @@ internal sealed class SettingsDialog
 		if (IsOpen)
 		{
 			// 已经打开：只把焦点带回弹窗，不重置正在编辑的配置草稿。
+			if (_fade.IsClosing) _fade.Reopen();
 			UpdateHeader();
 			_settings.FocusNavigation();
 			return;
@@ -110,12 +113,18 @@ internal sealed class SettingsDialog
 		_settings.Refresh();
 		UpdateHeader();
 		AppStyles.ApplyTextColors((Element)View);
+		_fade.Open();
 		_settings.FocusNavigation();
 	}
 
 	public void Hide()
 	{
-		if (!IsOpen) return;
+		if (!IsOpen || _fade.IsClosing) return;
+		_fade.Close(CloseNow);
+	}
+
+	private void CloseNow()
+	{
 		View.IsVisible(false);
 		if (_window is { } window)
 		{

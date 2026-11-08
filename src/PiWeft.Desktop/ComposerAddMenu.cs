@@ -15,7 +15,7 @@ internal sealed class ComposerAddMenu : IDisposable
 
 	private static readonly Thickness RowPadding = new(AppTheme.Space3 - 2, 6, AppTheme.Space3, 6);
 
-	private readonly Popup _popup = new();
+	private readonly FadePopup _popup = new();
 
 	/// 打开菜单需要的动作与当前模式。回调在菜单关闭后执行，动作可以安全地再开别的浮层。
 	/// <param name="CanSelectMode">流式运行中计划/目标不能切换；附件与插入仍可用。</param>
@@ -41,8 +41,7 @@ internal sealed class ComposerAddMenu : IDisposable
 			return;
 		}
 
-		_popup.Content = Build(options);
-		_popup.ShowAt(anchor, HoverHints.Anchor(anchor), PopupAnchorSide.Above);
+		_popup.Show(Build(options), anchor, HoverHints.Anchor(anchor), PopupAnchorSide.Above);
 	}
 
 	public bool IsOpen => _popup.IsOpen;
@@ -57,15 +56,7 @@ internal sealed class ComposerAddMenu : IDisposable
 		_popup.Dispose();
 	}
 
-	public void Close()
-	{
-		_popup.Close();
-		if (_popup.Content is { } content)
-		{
-			UiLifetime.Release(content);
-			_popup.Content = null;
-		}
-	}
+	public void Close() => _popup.Close();
 
 	private UIElement Build(Options options)
 	{

@@ -16,7 +16,7 @@ internal sealed class SecurityMenu : IDisposable
 
 	private static readonly Thickness RowPadding = new(AppTheme.Space2, 6, AppTheme.Space2, 6);
 
-	private readonly Popup _popup = new();
+	private readonly FadePopup _popup = new();
 
 	private sealed record Options(
 		bool Enabled,
@@ -39,8 +39,8 @@ internal sealed class SecurityMenu : IDisposable
 			return;
 		}
 
-		_popup.Content = Build(new Options(enabled, levels, effectiveLevelId, hasOverride, select));
-		_popup.ShowAt(anchor, HoverHints.Anchor(anchor), PopupAnchorSide.Above);
+		_popup.Show(Build(new Options(enabled, levels, effectiveLevelId, hasOverride, select)),
+			anchor, HoverHints.Anchor(anchor), PopupAnchorSide.Above);
 	}
 
 	public bool IsOpen => _popup.IsOpen;
@@ -67,15 +67,7 @@ internal sealed class SecurityMenu : IDisposable
 		_popup.Dispose();
 	}
 
-	public void Close()
-	{
-		_popup.Close();
-		if (_popup.Content is { } content)
-		{
-			UiLifetime.Release(content);
-			_popup.Content = null;
-		}
-	}
+	public void Close() => _popup.Close();
 
 	private UIElement Build(Options options)
 	{

@@ -31,8 +31,7 @@ internal sealed class SendOptionsMenu : IDisposable
 
 	private static readonly Thickness RowPadding = new(AppTheme.Space3 - 2, 7, AppTheme.Space3, 7);
 
-	private readonly Popup _popup = new();
-	private Window? _window;
+	private readonly FadePopup _popup = new();
 
 	public void Show(FrameworkElement anchor, IReadOnlyList<Item> items)
 	{
@@ -45,16 +44,12 @@ internal sealed class SendOptionsMenu : IDisposable
 
 		// 先收掉上一次：标签被移出窗口时 anchor 可能已经找不到窗口，旧菜单不能留着。
 		Close();
-		if (anchor.FindVisualRoot() is not Window window)
+		if (anchor.FindVisualRoot() is not Window)
 		{
 			return;
 		}
 
-		_window = window;
-		Release();
-		_popup.Content = Build(items);
-		// 菜单在输入框上方展开：锚点用整块发送键，贴它的上沿；框架在上方放不下时自动翻到下方。
-		_popup.ShowAt(anchor, HoverHints.Anchor(anchor), PopupAnchorSide.Above);
+		_popup.Show(Build(items), anchor, HoverHints.Anchor(anchor), PopupAnchorSide.Above);
 	}
 
 	public bool IsOpen => _popup.IsOpen;
@@ -69,26 +64,7 @@ internal sealed class SendOptionsMenu : IDisposable
 		_popup.Dispose();
 	}
 
-	public void Close()
-	{
-		_popup.Close();
-		if (_window is { } window && _popup.Content is not null)
-		{
-			UiLifetime.Release(_popup.Content);
-			_popup.Content = null;
-		}
-
-		_window = null;
-	}
-
-	private void Release()
-	{
-		if (_popup.Content is { } old)
-		{
-			UiLifetime.Release(old);
-			_popup.Content = null;
-		}
-	}
+	public void Close() => _popup.Close();
 
 	internal UIElement BuildForTests(IReadOnlyList<Item> items) => Build(items);
 
