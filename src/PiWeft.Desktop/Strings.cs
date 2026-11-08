@@ -7,10 +7,8 @@ public static partial class Strings
 	public static string WindowTitle(string cwd) => $"PiWeft Desktop — {cwd}";
 
 	// 侧栏
-	public const string OpenProject = "打开项目";
 	public const string RecentProjects = "最近项目";
 	public const string OpenProjectDirectory = "打开工作目录";
-	public const string ProjectOpened = "已打开项目窗口。";
 	public const string SelectModel = "选择模型";
 	public const string ModelSearchPlaceholder = "搜索模型、供应商或能力…";
 	public const string RefreshModels = "刷新可用模型";
@@ -29,7 +27,7 @@ public static partial class Strings
 	public static string ModelResultCount(int shown, int total) => $"{shown} / {total} 个模型";
 
 	public static string SessionSearchTruncated(int shown, int total) => $"显示前 {shown} / {total} 个会话，继续输入以缩小范围";
-	public static string ProjectOpenFailed(string reason) => $"打开项目失败：{reason}";
+	public static string ProjectAddFailed(string reason) => $"添加项目失败：{reason}";
 	public static string ModelMeta(PiWeft.Ai.Model model) =>
 		$"{model.ContextWindow / 1000.0:0.#}k · {(model.SupportsImages ? ModelVision : ModelTextOnly)}{(model.Reasoning ? $" · {ModelReasoning}" : string.Empty)}";
 

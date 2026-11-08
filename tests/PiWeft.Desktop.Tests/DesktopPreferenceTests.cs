@@ -475,9 +475,11 @@ public sealed class ExpandedProjectsPreferenceTests : IDisposable
 	[Fact]
 	public void ExpandedProjectsRoundTrip()
 	{
-		(DesktopPreference.Load(_agentDir) with { ExpandedProjects = ["/work/alpha", "/work/beta"] }).Save(_agentDir);
+		var alpha = Path.Combine(Path.GetTempPath(), "piweft-expanded-alpha");
+		var beta = Path.Combine(Path.GetTempPath(), "piweft-expanded-beta");
+		(DesktopPreference.Load(_agentDir) with { ExpandedProjects = [alpha, beta] }).Save(_agentDir);
 		var loaded = DesktopPreference.Load(_agentDir);
-		Assert.Equal(["/work/alpha", "/work/beta"], loaded.ExpandedProjects);
+		Assert.Equal([alpha, beta], loaded.ExpandedProjects);
 
 		(loaded with { ExpandedProjects = [] }).Save(_agentDir);
 		Assert.Empty(DesktopPreference.Load(_agentDir).ExpandedProjects);
@@ -488,10 +490,16 @@ public sealed class ExpandedProjectsPreferenceTests : IDisposable
 	[Fact]
 	public void MalformedEntriesAreSkippedInsteadOfBreakingTheWholeFile()
 	{
-		File.WriteAllText(DesktopPreference.Path(_agentDir),
-			"""{"theme":"light","expandedProjects":["/ok",42,null,"",{"a":1}]}""");
+		var okay = Path.Combine(Path.GetTempPath(), "piweft-expanded-ok");
+		var root = new JsonObject
+		{
+			["theme"] = "light",
+			["expandedProjects"] = new JsonArray(
+				JsonValue.Create(okay), JsonValue.Create(42), null, JsonValue.Create(string.Empty), new JsonObject { ["a"] = 1 }),
+		};
+		File.WriteAllText(DesktopPreference.Path(_agentDir), root.ToJsonString());
 		var preference = DesktopPreference.Load(_agentDir);
-		Assert.Equal(["/ok"], preference.ExpandedProjects);
+		Assert.Equal([okay], preference.ExpandedProjects);
 		// 同一份文件里的其它字段照常生效。
 		Assert.Equal(DesktopPreference.LightTheme, preference.Theme);
 
@@ -541,5 +549,66 @@ public class ProjectExpansionRuleTests
 		// 没有工作目录的「?」分组不参与记忆。
 		Assert.False(MainWindow.ShouldExpandProject(null, containsSelected: false, remembered));
 		Assert.False(MainWindow.ShouldExpandProject(string.Empty, containsSelected: false, remembered));
+	}
+}
+
+/// 「添加项目 / 移除项目」落盘的清单。侧栏项目的主来源是会话分组，
+/// 这份清单让还没有会话的目录也能占一行，并把移除过的目录挡在列表外。
+public sealed class ProjectListPreferenceTests : IDisposable
+{
+	private readonly string _agentDir = Path.Combine(Path.GetTempPath(), "piweft-projects-" + Guid.NewGuid().ToString("N")[..8]);
+	private readonly string _project = Path.Combine(Path.GetTempPath(), "piweft-project-" + Guid.NewGuid().ToString("N")[..8]);
+
+	public ProjectListPreferenceTests() => Directory.CreateDirectory(_agentDir);
+
+	public void Dispose()
+	{
+		if (Directory.Exists(_agentDir))
+		{
+			Directory.Delete(_agentDir, recursive: true);
+		}
+
+		GC.SuppressFinalize(this);
+	}
+
+	[Fact]
+	public void AddedProjectIsPersistedAndTrailingSeparatorsCollapse()
+	{
+		DesktopPreference.Load(_agentDir)
+			.WithProject(_project)
+			.WithProject(_project + Path.DirectorySeparatorChar)
+			.Save(_agentDir);
+
+		var preference = DesktopPreference.Load(_agentDir);
+		Assert.Equal([_project], preference.Projects);
+		Assert.Empty(preference.DismissedProjects);
+	}
+
+	[Fact]
+	public void RemovingAProjectHidesItUntilItIsAddedAgain()
+	{
+		DesktopPreference.Load(_agentDir).WithProject(_project).WithoutProject(_project).Save(_agentDir);
+
+		var preference = DesktopPreference.Load(_agentDir);
+		Assert.Empty(preference.Projects);
+		Assert.Equal([_project], preference.DismissedProjects);
+
+		// 再次添加同一个目录（换了结尾分隔符的写法）要取消隐藏，而不是留下两条互相矛盾的记录。
+		preference.WithProject(_project + Path.DirectorySeparatorChar).Save(_agentDir);
+		preference = DesktopPreference.Load(_agentDir);
+		Assert.Equal([_project], preference.Projects);
+		Assert.Empty(preference.DismissedProjects);
+	}
+
+	[Fact]
+	public void LegacyDuplicatesAndBadEntriesAreCleanedOnLoad()
+	{
+		var other = Path.Combine(Path.GetTempPath(), "piweft-project-other");
+		File.WriteAllText(DesktopPreference.Path(_agentDir),
+			$$"""{"projects":[{{JsonValue.Create(_project)!.ToJsonString()}},{{JsonValue.Create(_project + Path.DirectorySeparatorChar)!.ToJsonString()}},42,null,"",{"a":1}],"recentProjects":[{{JsonValue.Create(other + Path.DirectorySeparatorChar)!.ToJsonString()}}]}""");
+
+		var preference = DesktopPreference.Load(_agentDir);
+		Assert.Equal([_project], preference.Projects);
+		Assert.Equal([other], preference.RecentProjects);
 	}
 }

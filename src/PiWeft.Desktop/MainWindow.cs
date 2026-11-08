@@ -58,7 +58,6 @@ public sealed partial class MainWindow : Window
 	private Button _addProjectButton = null!;
 	private bool _projectsTab;
 	private string? _renamingPath;
-	private readonly HashSet<string> _removedProjects = new(StringComparer.Ordinal);
 	// 正在后台解析的会话文件：同一份文件只允许一次打开，连点也不会排队重复读几十 MB。
 	private readonly HashSet<string> _openingSessions = new(StringComparer.Ordinal);
 	// 启动时提前并行解析的首个会话：侧栏摘要扫描和它读的是同一份文件，别让打开流程再读一遍。
@@ -85,6 +84,7 @@ public sealed partial class MainWindow : Window
 	private IReadOnlyList<TreeViewNode> _chatNodes = [];
 
 	private TextBlock _chatsEmpty = null!;
+	private TextBlock _projectsEmpty = null!;
 
 	private SessionSearchPalette _sessionSearch = null!;
 	private SessionImportDialog _importDialog = null!;
@@ -332,9 +332,19 @@ public sealed partial class MainWindow : Window
 		ConfigureChatsRows();
 		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
-		// 聊天目录还没有会话时给一句引导，不留空白；列表铺满剩余高度，提示叠在列表上方。
+		// 还没有会话时给一句引导，不留空白；列表铺满剩余高度，提示叠在列表上方。
 		_chatsEmpty = new TextBlock()
 			.Text(Strings.ChatsEmpty)
+			.FontSize(AppTheme.FontSizeCaption)
+			.SubtleText()
+			.TextWrapping(TextWrapping.Wrap)
+			.Margin(new Thickness(10, AppTheme.Space2, 6, 0))
+			.VerticalAlignment(VerticalAlignment.Top)
+			.IsHitTestVisible(false)
+			.IsVisible(false);
+
+		_projectsEmpty = new TextBlock()
+			.Text(Strings.ProjectsEmpty)
 			.FontSize(AppTheme.FontSizeCaption)
 			.SubtleText()
 			.TextWrapping(TextWrapping.Wrap)
@@ -421,7 +431,7 @@ public sealed partial class MainWindow : Window
 						new Border()
 							.Background(AppTheme.Transparent)
 							.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
-							.Child(new Grid().Children(_sessionTree, _chatsTree.IsVisible(false), _chatsEmpty)))));
+							.Child(new Grid().Children(_sessionTree, _projectsEmpty, _chatsTree.IsVisible(false), _chatsEmpty)))));
 
 		_tabControl = new TabControl().BorderThickness(0).CornerRadius(0).Padding(Thickness.Zero)
 			.WithTheme((theme, tabs) => tabs.Background = AppTheme.For(theme).WindowBackground);
@@ -792,19 +802,18 @@ public sealed partial class MainWindow : Window
 		// 否则同一批会话会在两个分段里重复出现，项目视图失去区分度。
 		var chats = SessionGroups.Chats(rows, _chatWorkspace);
 
-		// 按工作目录分组：项目是父节点，会话是子节点（树默认展开），与 PiDeck 的项目视图一致。
+		// 按工作目录分组：项目是父节点，会话是子节点，与 PiDeck 的项目视图一致。
+		// 清单由「会话分组」与设置里「添加项目」的记录合并而成：空目录也能占一行，
+		// 否则添加一个还没有会话的文件夹时侧栏毫无变化；移除过的目录不再由会话扫描加回来。
 		// 聊天目录里的会话只属于「对话」，不再作为项目出现在这里。
-		var nodes = SessionGroups.Projects(rows, _chatWorkspace)
-			.DistinctBy(static item => item.Path)
-			.GroupBy(static item => item.Cwd)
-			.OrderByDescending(static group => group.Max(static item => item.Modified))
+		var nodes = SessionGroups.ProjectGroups(rows, _chatWorkspace, preference.Projects, preference.DismissedProjects)
 			.Select(group => new TreeViewNode(
-				ProjectLabel(group.Key, group.Count()),
-				[.. group
+				ProjectLabel(group.Cwd, group.Sessions.Count),
+				[.. group.Sessions
 					.OrderByDescending(item => preference.IsPinned(item.Id))
 					.ThenByDescending(static item => item.Modified)
 					.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item))],
-				tag: group.Key))
+				tag: group.Cwd))
 			.ToList();
 
 		_pinnedSessionIds = preference.Pinned.ToHashSet(StringComparer.Ordinal);
@@ -840,20 +849,11 @@ public sealed partial class MainWindow : Window
 				.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item)),
 		];
 		_chatsTree.ItemsSource(_chatNodes);
-		_chatsEmpty.IsVisible(!_projectsTab && _chatNodes.Count == 0);
+		UpdateSidebarEmptyHints();
 
 		if (selectedId is not null)
 		{
 			RestoreSelection(selectedId);
-		}
-
-		if (_allSessions.Count == 0)
-		{
-			_banner.Text(Strings.NoSessions);
-		}
-		else
-		{
-			_banner.Text(string.Empty);
 		}
 	}
 
@@ -2425,7 +2425,7 @@ public sealed partial class MainWindow : Window
 		{
 			new(Strings.NewSession, Strings.ShortcutNewSession, NewSessionFromCurrentView),
 			new(Strings.SessionSearch, Strings.ShortcutSearchSessions, () => _sessionSearch.Toggle(this)),
-			new(Strings.OpenProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
+			new(Strings.AddProject, "Ctrl+Shift+O", () => _ = ChooseProjectAsync()),
 			new(Strings.ImportTitle, string.Empty, () => _importDialog.Show(this)),
 			new(Strings.SelectModel, "Ctrl+M", () => CurrentTab()?.ShowModelPicker()),
 			new(Strings.Settings, Strings.ShortcutSettings, OpenSettingsDialog),
@@ -2465,7 +2465,7 @@ public sealed partial class MainWindow : Window
 
 		foreach (var project in DesktopPreference.Load().RecentProjects.Where(Directory.Exists))
 		{
-			commands.Add(new PaletteCommand($"{Strings.RecentProjects} · {ShortCwd(project)}", project, () => OpenProject(project)));
+			commands.Add(new PaletteCommand($"{Strings.RecentProjects} · {ShortCwd(project)}", project, () => _ = OpenProjectAsync(project)));
 		}
 
 		// 会话标签跳转。

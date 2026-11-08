@@ -77,6 +77,17 @@ public static class Program
 			}
 		}
 
+		// 同一目录的不同写法（结尾带分隔符）落到同一个实例键；否则再启动一次同一文件夹
+		// 会得到第二个窗口，两个进程同时编辑同一批会话。
+		try
+		{
+			cwd = SessionGroups.ProjectPath(cwd);
+		}
+		catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			AppLog.For<MainWindow>().ZLogWarning($"Invalid working directory: {ex.Message}");
+		}
+
 		if (!Directory.Exists(cwd))
 		{
 			AppLog.For<MainWindow>().ZLogWarning($"Working directory does not exist");

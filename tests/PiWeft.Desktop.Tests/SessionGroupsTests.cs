@@ -58,4 +58,66 @@ public class SessionGroupsTests
 		Assert.False(SessionGroups.IsChat(session, chat));
 		Assert.Equal(["orphan"], SessionGroups.Projects([session], chat).Select(static item => item.Id));
 	}
+
+	[Fact]
+	public void ProjectPathDropsTrailingSeparatorsAndRelativeSegments()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-project-path");
+
+		Assert.Equal(root, SessionGroups.ProjectPath(root + Path.DirectorySeparatorChar));
+		Assert.Equal(root, SessionGroups.ProjectPath(Path.Combine(root, "..", "piweft-project-path")));
+		Assert.True(SessionGroups.SamePath(root, root + Path.DirectorySeparatorChar + "."));
+	}
+
+	[Fact]
+	public void AddedFolderWithoutSessionsStillGetsARow()
+	{
+		var empty = Path.Combine(Path.GetTempPath(), "piweft-empty-project");
+
+		var group = Assert.Single(SessionGroups.ProjectGroups([], string.Empty, [empty], []));
+
+		Assert.Equal(SessionGroups.ProjectPath(empty), group.Cwd);
+		Assert.Empty(group.Sessions);
+	}
+
+	[Fact]
+	public void TheSameFolderIsOneRowHoweverItIsSpelled()
+	{
+		var project = Path.Combine(Path.GetTempPath(), "piweft-project");
+		var session = Item("project-1", project);
+
+		var group = Assert.Single(SessionGroups.ProjectGroups(
+			[session], string.Empty, [project + Path.DirectorySeparatorChar], []));
+
+		Assert.Equal(["project-1"], group.Sessions.Select(static item => item.Id));
+	}
+
+	[Fact]
+	public void RemovedProjectsStayHiddenEvenWhenSessionsRemainOnDisk()
+	{
+		var removed = Path.Combine(Path.GetTempPath(), "piweft-removed");
+		var kept = Path.Combine(Path.GetTempPath(), "piweft-kept");
+
+		var group = Assert.Single(SessionGroups.ProjectGroups(
+			[Item("removed-1", removed), Item("kept-1", kept)],
+			string.Empty,
+			[removed, kept],
+			[removed]));
+
+		Assert.Equal(SessionGroups.ProjectPath(kept), group.Cwd);
+		Assert.Equal(["kept-1"], group.Sessions.Select(static item => item.Id));
+	}
+
+	[Fact]
+	public void ProjectsWithSessionsSortBeforeAddedFoldersWithoutThem()
+	{
+		var empty = Path.Combine(Path.GetTempPath(), "piweft-empty");
+		var active = Path.Combine(Path.GetTempPath(), "piweft-active");
+
+		var groups = SessionGroups.ProjectGroups([Item("s", active)], string.Empty, [empty], []);
+
+		Assert.Equal(
+			[SessionGroups.ProjectPath(active), SessionGroups.ProjectPath(empty)],
+			groups.Select(static group => group.Cwd));
+	}
 }

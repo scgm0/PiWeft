@@ -23,6 +23,13 @@ public sealed record DesktopPreference
 	/// 会话多的机器上，全部展开等于每次都要把整份清单铺出来。
 	public IReadOnlyList<string> ExpandedProjects { get; init; } = [];
 
+	/// 用户显式添加过的项目（工作目录）。侧栏「项目」的主来源仍是会话分组；
+	/// 这份清单让还没有会话的目录也能占一行，添加动作才有可见结果。
+	public IReadOnlyList<string> Projects { get; init; } = [];
+
+	/// 用户从侧栏移除过的项目。会话文件留在磁盘上，扫描仍会分组，靠这份清单挡住（对齐 PiDeck 的 dismissed-project-paths）。
+	public IReadOnlyList<string> DismissedProjects { get; init; } = [];
+
 	public IReadOnlyList<string> RecentProjects { get; init; } = [];
 	public IReadOnlyList<string> RecentModels { get; init; } = [];
 
@@ -149,7 +156,7 @@ public sealed record DesktopPreference
 					: new DesktopPreference().SidebarCollapsed,
 				SidebarWidth = Math.Clamp(Number(root, "sidebarWidth", positive: true) ?? AppTheme.SidebarWidth, 200, 480),
 				SidebarProjects = root?["sidebarProjects"] is JsonValue tab && tab.TryGetValue<bool>(out var projects) && projects,
-				ExpandedProjects = ReadStringArray(root?["expandedProjects"]),
+				ExpandedProjects = ReadProjectPaths(root?["expandedProjects"]),
 				Diagnostics = root?["diagnostics"] is JsonValue diagnostics && diagnostics.TryGetValue<bool>(out var on) && on,
 				// 默认开：键缺失或类型不对都算开，只有显式写 false 才关。
 				RespondingTips = root?["respondingTips"] is not JsonValue respondingTips ||
@@ -184,7 +191,9 @@ public sealed record DesktopPreference
 				WindowTop = Number(root, "windowTop"),
 				Pinned = ReadPinned(root),
 				Shortcuts = ReadShortcuts(root),
-				RecentProjects = ReadList(root, "recentProjects"),
+				Projects = ReadProjectPaths(root?["projects"]),
+				DismissedProjects = ReadProjectPaths(root?["dismissedProjects"]),
+				RecentProjects = ReadProjectPaths(root?["recentProjects"]),
 				RecentModels = ReadList(root, "recentModels"),
 				SoundAlert = SoundAlertJson.Parse(root?["soundAlert"]),
 			};
@@ -325,6 +334,8 @@ public sealed record DesktopPreference
 		{
 			root["terminalShell"] = TerminalShell.Trim();
 		}
+		WriteProjectPaths(root, "projects", Projects);
+		WriteProjectPaths(root, "dismissedProjects", DismissedProjects);
 		WriteList(root, "recentProjects", RecentProjects);
 		WriteList(root, "recentModels", RecentModels);
 
@@ -426,8 +437,30 @@ public sealed record DesktopPreference
 
 	public DesktopPreference RememberProject(string cwd) => this with
 	{
-		RecentProjects = Prepend(RecentProjects, System.IO.Path.GetFullPath(cwd)),
+		RecentProjects = Prepend(RecentProjects, SessionGroups.ProjectPath(cwd)),
 	};
+
+	/// 添加项目：记进清单，并从「已移除」里去掉同一目录的旧记录（同一个目录换了写法也算同一个）。
+	public DesktopPreference WithProject(string cwd)
+	{
+		var path = SessionGroups.ProjectPath(cwd);
+		return this with
+		{
+			Projects = [path, .. Projects.Where(item => !SessionGroups.SamePath(item, path))],
+			DismissedProjects = [.. DismissedProjects.Where(item => !SessionGroups.SamePath(item, path))],
+		};
+	}
+
+	/// 从侧栏移除项目：删掉清单记录并记进「已移除」。只动清单，磁盘上的会话文件保留。
+	public DesktopPreference WithoutProject(string cwd)
+	{
+		var path = SessionGroups.ProjectPath(cwd);
+		return this with
+		{
+			Projects = [.. Projects.Where(item => !SessionGroups.SamePath(item, path))],
+			DismissedProjects = [path, .. DismissedProjects.Where(item => !SessionGroups.SamePath(item, path))],
+		};
+	}
 
 	public DesktopPreference RememberModel(string provider, string id) => this with
 	{
@@ -445,6 +478,40 @@ public sealed record DesktopPreference
 
 	private static IReadOnlyList<string> Prepend(IReadOnlyList<string> items, string value) =>
 		[value, .. items.Where(item => !string.Equals(item, value, StringComparison.Ordinal)).Take(7)];
+
+	/// 项目路径按统一写法读：旧文件里同一目录可能同时存在带与不带结尾分隔符的两条记录。
+	private static IReadOnlyList<string> ReadProjectPaths(JsonNode? node)
+	{
+		if (node is not JsonArray array) return [];
+		var paths = new List<string>(array.Count);
+		foreach (var item in array)
+		{
+			if (item is not JsonValue value || !value.TryGetValue<string>(out var text) || text.Length == 0) continue;
+			try
+			{
+				var path = SessionGroups.ProjectPath(text);
+				if (!paths.Contains(path, StringComparer.Ordinal)) paths.Add(path);
+			}
+			catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+			{
+				// 手改文件留下的坏路径读不出来，丢掉即可，不能让整份偏好失效。
+			}
+		}
+
+		return paths;
+	}
+
+	private static void WriteProjectPaths(JsonObject root, string key, IReadOnlyList<string> items)
+	{
+		if (items.Count == 0)
+		{
+			root.Remove(key);
+		}
+		else
+		{
+			root[key] = new JsonArray([.. items.Select(static item => (JsonNode?)JsonValue.Create(item))]);
+		}
+	}
 
 	private static IReadOnlyList<string> ReadList(JsonObject? root, string key) =>
 		root?[key] is JsonArray array
@@ -518,21 +585,6 @@ public sealed record DesktopPreference
 		}
 
 		return shortcuts;
-	}
-
-	private static IReadOnlyList<string> ReadStringArray(JsonNode? node)
-	{
-		if (node is not JsonArray array) return [];
-		var values = new List<string>(array.Count);
-		foreach (var item in array)
-		{
-			if (item is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > 0)
-			{
-				values.Add(text);
-			}
-		}
-
-		return values;
 	}
 
 	private static double? Number(JsonObject? root, string name, bool positive = false) =>

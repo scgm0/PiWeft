@@ -1245,7 +1245,7 @@ public sealed class SettingsView
 			(ShortcutActions.Send, Strings.ShortcutSend),
 			(ShortcutActions.SearchSessions, Strings.ShortcutSearch),
 			(ShortcutActions.NewSession, Strings.ShortcutNew),
-			(ShortcutActions.OpenProject, Strings.OpenProject),
+			(ShortcutActions.OpenProject, Strings.AddProject),
 			(ShortcutActions.Models, Strings.SelectModel),
 			(ShortcutActions.CloseTab, Strings.ShortcutClose),
 			(ShortcutActions.Settings, Strings.ShortcutSettingsPanel),

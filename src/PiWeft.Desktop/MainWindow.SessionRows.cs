@@ -179,7 +179,7 @@ public sealed partial class MainWindow
 		_addProjectButton.IsVisible(projects);
 		_sessionTree.IsVisible(projects);
 		_chatsTree.IsVisible(!projects);
-		_chatsEmpty.IsVisible(!projects && _chatNodes.Count == 0);
+		UpdateSidebarEmptyHints();
 
 		if (!persist)
 		{
@@ -198,6 +198,53 @@ public sealed partial class MainWindow
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Save sidebar tab", ex);
+		}
+	}
+
+	/// 分段里的空态提示：列表空了也不会只剩一片空白。
+	private void UpdateSidebarEmptyHints()
+	{
+		_projectsEmpty.IsVisible(_projectsTab && _sessionNodes.Count == 0);
+		_chatsEmpty.IsVisible(!_projectsTab && _chatNodes.Count == 0);
+	}
+
+	/// 添加项目后的揭示：侧栏收着先展开，再切到「项目」分段。少了这两步，
+	/// 用户看到的只是原列表不变，以为添加没生效。
+	private void RevealSidebarProjects()
+	{
+		if (!_sidebarPreferred)
+		{
+			_sidebarPreferred = true;
+			ApplySidebarLayout();
+			SaveWindowState();
+		}
+
+		ShowSidebarView(projects: true);
+	}
+
+	/// 展开项目行并滚进可视区。不抢当前选中项：选中行代表正在打开的会话。
+	private void RevealProject(string cwd)
+	{
+		var node = _sessionNodes.FirstOrDefault(node =>
+			node.Tag is string project && project.Length > 0 && SessionGroups.SamePath(project, cwd));
+		if (node is null)
+		{
+			return;
+		}
+
+		_sessionTree.Expand(node);
+
+		// ScrollIntoView 收的是展开后的可见行序号；自己数一遍，不去动选中项。
+		var index = 0;
+		foreach (var candidate in _sessionNodes)
+		{
+			if (ReferenceEquals(candidate, node))
+			{
+				_sessionTree.ScrollIntoView(index);
+				return;
+			}
+
+			index += 1 + (_sessionTree.IsExpanded(candidate) ? candidate.Children.Count : 0);
 		}
 	}
 
@@ -265,15 +312,32 @@ public sealed partial class MainWindow
 
 	private void RemoveProject(string cwd)
 	{
-		_removedProjects.Add(Path.GetFullPath(cwd));
-		var preference = DesktopPreference.Load();
-		if (preference.RecentProjects.Contains(cwd, StringComparer.Ordinal))
+		string path;
+		try
 		{
-			preference = preference with
-			{
-				RecentProjects = [.. preference.RecentProjects.Where(p => !string.Equals(p, cwd, StringComparison.Ordinal))],
-			};
-			preference.Save();
+			path = SessionGroups.ProjectPath(cwd);
+		}
+		catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			_banner.Text(Strings.ProjectRemoveFailed(cwd));
+			return;
+		}
+
+		// 没有工作目录的旧会话聚成的「?」分组不是一个目录，没有可移除的记录。
+		if (path.Length == 0)
+		{
+			return;
+		}
+
+		try
+		{
+			DesktopPreference.Load().WithoutProject(path).Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Remove project", ex);
+			_banner.Text(Strings.ProjectRemoveFailed(ex.Message));
+			return;
 		}
 
 		RefreshSessions(force: true);

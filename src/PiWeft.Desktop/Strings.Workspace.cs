@@ -63,6 +63,10 @@ public static partial class Strings
 	public const string ChatsEmpty = "还没有对话。这里的会话不属于任何项目，点「新建」开始一个。";
 	public static string ChatWorkspaceFailed(string reason) => $"无法使用聊天目录：{reason}";
 	public const string AddProject = "添加项目";
+	public const string ProjectsEmpty = "还没有项目。点上方「添加项目」选择一个文件夹，之后可在它下面新建任务。";
+	public static string ProjectAdded(string name) => $"项目已添加：{name}";
+	public const string ProjectChatWorkspace = "聊天目录属于「对话」分段，不能添加为项目。";
+	public static string ProjectRemoveFailed(string reason) => $"移除项目失败：{reason}";
 	public const string SessionMenuRename = "重命名会话";
 	public const string SessionMenuArchive = "归档会话";
 	public const string ProjectMenuRemove = "移除";

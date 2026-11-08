@@ -14,31 +14,74 @@ public sealed partial class MainWindow
 			// 平台不提供原生实现时，MewUI 会自动回退到内置对话框。
 			var folder = await FileDialog.SelectFolderAsync(new FolderDialogOptions
 			{
-				Title = Strings.OpenProject,
+				Title = Strings.AddProject,
 				Owner = this,
 				InitialDirectory = CurrentSession()?.Cwd ?? _cwd,
 			});
 			if (folder is not null)
 			{
-				OpenProject(folder);
+				await OpenProjectAsync(folder);
 			}
 		}
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Choose project directory", ex);
-			_banner.Text(Strings.ProjectOpenFailed(ex.Message));
+			_banner.Text(Strings.ProjectAddFailed(ex.Message));
 		}
 	}
 
-	private void OpenProject(string cwd)
+	/// 把文件夹加入侧栏「项目」。只改清单，不另开窗口：另一个进程的同尺寸窗口正好盖住当前窗口，
+	/// 看起来像没反应；项目列表多出一行才是看得见的反馈，任务在行内菜单里新建。
+	private async Task OpenProjectAsync(string cwd)
 	{
-		if (Path.GetFullPath(cwd) == Path.GetFullPath(_cwd))
+		string path;
+		try
 		{
-			Activate();
+			path = SessionGroups.ProjectPath(cwd);
+		}
+		catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			_banner.Text(Strings.ProjectAddFailed(cwd));
 			return;
 		}
 
-		_banner.Text(ProjectLauncher.Open(cwd) ? Strings.ProjectOpened : Strings.ProjectOpenFailed(cwd));
+		if (!Directory.Exists(path))
+		{
+			_banner.Text(Strings.ProjectAddFailed(Strings.NoSuchDirectory(path)));
+			return;
+		}
+
+		// 聊天目录属于「对话」分段：加进项目清单也只会是一行没有会话的空目录。
+		if (SessionGroups.SamePath(path, _chatWorkspace))
+		{
+			_banner.Text(Strings.ProjectChatWorkspace);
+			return;
+		}
+
+		try
+		{
+			DesktopPreference.Load().WithProject(path).Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Save project list", ex);
+			_banner.Text(Strings.ProjectAddFailed(ex.Message));
+			return;
+		}
+
+		_banner.Text(string.Empty);
+
+		// 侧栏首次展开要先扫会话，拿到数据才能定位新行。
+		RevealSidebarProjects();
+		await EnsureSessionsLoadedAsync().ConfigureAwait(true);
+		if (_sessionHostClosed)
+		{
+			return;
+		}
+
+		RefreshSessions(force: true);
+		RevealProject(path);
+		Toasts.Success(this, Strings.ProjectAdded(ShortCwd(path)));
 	}
 
 	private ContextMenu TabMenu(FrameworkElement owner, object entry)

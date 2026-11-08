@@ -109,7 +109,7 @@ public sealed class ShortcutMap
 	[
 		new(ShortcutActions.Palette, "通用", "命令面板", "Ctrl+P"),
 		new(ShortcutActions.NewSession, "会话", "新建会话", "Ctrl+T"),
-		new(ShortcutActions.OpenProject, "项目", "打开项目", "Ctrl+Shift+O"),
+		new(ShortcutActions.OpenProject, "项目", "添加项目", "Ctrl+Shift+O"),
 		new(ShortcutActions.Models, "会话", "选择模型", "Ctrl+M"),
 		new(ShortcutActions.SearchSessions, "会话", "搜索会话", "Ctrl+K"),
 		new(ShortcutActions.CloseTab, "标签", "关闭当前标签", "Ctrl+W"),
