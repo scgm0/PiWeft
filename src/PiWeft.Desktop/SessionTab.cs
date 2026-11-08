@@ -2634,9 +2634,10 @@ public sealed partial class SessionTab : IDisposable
 		_imagePreview.Hide();
 		_statisticsPanel.Hide();
 		_modelPicker.Hide();
-		_composerAddMenu.Close();
+		// 切标签时弹层跟着走：淡出只会把旧菜单多留在窗口上，直接收。
+		_composerAddMenu.CloseInstantly();
 		_composerPicker.Hide();
-		_securityMenu.Close();
+		_securityMenu.CloseInstantly();
 		_usagePanel.Hide();
 	}
 

@@ -83,7 +83,7 @@ internal sealed class SettingsDialog
 				key.Handled = true;
 				_ = RequestCloseAsync();
 			});
-		_fade = new OverlayFade((FrameworkElement)View);
+		_fade = new OverlayFade((FrameworkElement)View, _titleBarDim);
 	}
 
 	public UIElement View { get; }
@@ -139,7 +139,8 @@ internal sealed class SettingsDialog
 
 	public async Task<bool> RequestCloseAsync()
 	{
-		if (!IsOpen) return true;
+		// 淡出期间再按 Esc：这次关闭已经在收尾，不再走一遍「放弃修改？」。
+		if (!IsOpen || _fade.IsClosing) return true;
 		if (_closing) return false;
 		_closing = true;
 		try

@@ -14,17 +14,37 @@ internal sealed class FadePopup : IDisposable
 	private const int FadeInMs = 200;
 	private const int FadeOutMs = 120;
 
+	// 幽灵起点低于这个值就等于没画出来过，直接释放内容，不再空跑一段动画。
+	private const double GhostMinOpacity = 0.01;
+
 	private readonly Popup _popup = new();
+	private readonly AnimationClock _fadeClock;
+	private readonly AnimationClock _ghostClock;
 	private Window? _window;
-	private AnimationClock? _clock;
-	private Panel? _ghostHost;
 	private Window? _ghostWindow;
-	private AnimationClock? _ghostClock;
+	private Panel? _ghostHost;
+	private UIElement? _fadeSurface;
+	private double _fadeFrom;
+	private double _fadeTo;
+	private double _ghostFrom;
 	private double _surfaceOpacity = 1;
-	private bool _disposing;
+	private bool _disposed;
 	private bool _suppressGhost;
 
-	public FadePopup() => _popup.Closed += OnPopupClosed;
+	public FadePopup()
+	{
+		_popup.Closed += OnPopupClosed;
+		_fadeClock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), Easing.EaseOutQuint)
+		{
+			TickCallback = OnFadeTick,
+			CompletedCallback = OnFadeCompleted,
+		};
+		_ghostClock = new AnimationClock(TimeSpan.FromMilliseconds(FadeOutMs), Easing.EaseOutCubic)
+		{
+			TickCallback = OnGhostTick,
+			CompletedCallback = FinishGhost,
+		};
+	}
 
 	public bool IsOpen => _popup.IsOpen;
 
@@ -35,6 +55,8 @@ internal sealed class FadePopup : IDisposable
 
 	public void Show(UIElement content, UIElement anchor, Rect anchorInWindow, PopupAnchorSide side)
 	{
+		ObjectDisposedException.ThrowIf(_disposed, this);
+
 		FinishGhost();
 		if (_popup.IsOpen)
 		{
@@ -47,7 +69,6 @@ internal sealed class FadePopup : IDisposable
 		ReleaseContent();
 		StopFade();
 		_window = anchor.FindVisualRoot() as Window;
-		content.IsHitTestVisible = true;
 		content.Opacity = 0;
 		_popup.Content = content;
 		_popup.ShowAt(anchor, anchorInWindow, side);
@@ -62,11 +83,11 @@ internal sealed class FadePopup : IDisposable
 		{
 			// chrome 的 opacity 连落影一起淡入；内容先恢复，避免两套透明度相乘。
 			content.Opacity = 1;
-			StartFade(surface, 0, 1, Easing.EaseOutQuint, null);
+			StartFade(surface);
 		}
 		else
 		{
-			StartFade(content, 0, 1, Easing.EaseOutQuint, null);
+			StartFade(content);
 		}
 	}
 
@@ -82,9 +103,30 @@ internal sealed class FadePopup : IDisposable
 		ReleaseContent();
 	}
 
+	/// 立即关掉，不做淡出。同一个 Popup 马上要再开一次，或会话切走、浮层跟随标签页一起消失时用：
+	/// 那时淡出只会把旧菜单多留在窗口上 120ms，还白白往 OverlayLayer 挂一层幽灵。
+	public void CloseInstantly()
+	{
+		if (_popup.IsOpen)
+		{
+			_suppressGhost = true;
+			_popup.Close();
+			_suppressGhost = false;
+			return;
+		}
+
+		FinishGhost();
+		ReleaseContent();
+	}
+
 	public void Dispose()
 	{
-		_disposing = true;
+		if (_disposed)
+		{
+			return;
+		}
+
+		_disposed = true;
 		FinishGhost();
 		StopFade();
 		_suppressGhost = true;
@@ -99,6 +141,7 @@ internal sealed class FadePopup : IDisposable
 	{
 		StopFade();
 		var content = _popup.Content;
+		// 先取边界：内容一旦摘下父级，后续布局不再保证它停在原位。
 		var bounds = content?.Bounds ?? default;
 		var opacity = _surfaceOpacity;
 		var window = _window;
@@ -107,7 +150,7 @@ internal sealed class FadePopup : IDisposable
 
 		if (content is { } released)
 		{
-			if (_disposing || _suppressGhost || e.Kind == PopupCloseKind.Lifecycle || !Application.IsRunning ||
+			if (_suppressGhost || e.Kind == PopupCloseKind.Lifecycle || !Application.IsRunning ||
 				window is null || !window.IsVisible)
 			{
 				UiLifetime.Release(released);
@@ -124,7 +167,7 @@ internal sealed class FadePopup : IDisposable
 	private void ShowGhost(Window window, UIElement content, Rect bounds, double opacity)
 	{
 		FinishGhost();
-		if (bounds.Width <= 0 || bounds.Height <= 0 || opacity <= 0.01)
+		if (bounds.Width <= 0 || bounds.Height <= 0 || opacity <= GhostMinOpacity)
 		{
 			UiLifetime.Release(content);
 			return;
@@ -133,91 +176,88 @@ internal sealed class FadePopup : IDisposable
 		var host = new GhostLayer(bounds, content) { Opacity = opacity };
 		_ghostHost = host;
 		_ghostWindow = window;
+		_ghostFrom = opacity;
 		window.OverlayLayer.Add(host);
+		_ghostClock.Start();
+	}
 
-		if (!Application.IsRunning)
+	private void OnGhostTick(double progress)
+	{
+		if (_ghostHost is not { } host)
+		{
+			_ghostClock.Stop();
+			return;
+		}
+
+		// 浮层被提前摘掉（窗口关闭、OverlayLayer 释放）就不用再画，直接收尾。
+		if (host.Parent is null)
 		{
 			FinishGhost();
 			return;
 		}
 
-		var clock = new AnimationClock(TimeSpan.FromMilliseconds(FadeOutMs), Easing.EaseOutCubic);
-		clock.TickCallback = progress =>
-		{
-			if (host.Parent is null)
-			{
-				FinishGhost();
-				return;
-			}
-
-			host.Opacity = opacity * (1 - progress);
-		};
-		clock.CompletedCallback = FinishGhost;
-		_ghostClock = clock;
-		clock.Start();
+		host.Opacity = _ghostFrom * (1 - progress);
 	}
 
 	private void FinishGhost()
 	{
-		if (_ghostClock is { } clock)
+		_ghostClock.Stop();
+		_ghostFrom = 0;
+		if (_ghostHost is not { } host)
 		{
-			clock.TickCallback = null;
-			clock.CompletedCallback = null;
-			clock.Stop();
-			_ghostClock = null;
-		}
-
-		if (_ghostHost is { } host)
-		{
-			_ghostWindow?.OverlayLayer.Remove(host);
-			_ghostHost = null;
-			_ghostWindow = null;
-			UiLifetime.Release(host);
-		}
-	}
-
-	private void StartFade(UIElement surface, double from, double to, Func<double, double> easing, Action? completed)
-	{
-		StopFade();
-		_surfaceOpacity = from;
-		surface.Opacity = from;
-		if (!Application.IsRunning)
-		{
-			surface.Opacity = to;
-			_surfaceOpacity = to;
-			completed?.Invoke();
 			return;
 		}
 
-		var clock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), easing);
-		clock.TickCallback = progress =>
+		_ghostHost = null;
+		var window = _ghostWindow;
+		_ghostWindow = null;
+		window?.OverlayLayer.Remove(host);
+		UiLifetime.Release(host);
+	}
+
+	private void StartFade(UIElement surface)
+	{
+		StopFade();
+		_fadeSurface = surface;
+		_fadeFrom = 0;
+		_fadeTo = 1;
+		_surfaceOpacity = 0;
+		surface.Opacity = 0;
+		if (!Application.IsRunning)
 		{
-			var value = from + ((to - from) * progress);
+			surface.Opacity = 1;
+			_surfaceOpacity = 1;
+			_fadeSurface = null;
+			return;
+		}
+
+		_fadeClock.Start();
+	}
+
+	private void OnFadeTick(double progress)
+	{
+		var value = _fadeFrom + ((_fadeTo - _fadeFrom) * progress);
+		_surfaceOpacity = value;
+		if (_fadeSurface is { } surface)
+		{
 			surface.Opacity = value;
-			_surfaceOpacity = value;
-		};
-		clock.CompletedCallback = () =>
+		}
+	}
+
+	private void OnFadeCompleted()
+	{
+		_surfaceOpacity = _fadeTo;
+		if (_fadeSurface is { } surface)
 		{
-			surface.Opacity = to;
-			_surfaceOpacity = to;
-			_clock = null;
-			completed?.Invoke();
-		};
-		_clock = clock;
-		clock.Start();
+			surface.Opacity = _fadeTo;
+			_fadeSurface = null;
+		}
 	}
 
 	private void StopFade()
 	{
-		if (_clock is not { } clock)
-		{
-			return;
-		}
-
-		clock.TickCallback = null;
-		clock.CompletedCallback = null;
-		clock.Stop();
-		_clock = null;
+		_fadeClock.Stop();
+		_fadeSurface = null;
 	}
 
 	private void ReleaseContent()

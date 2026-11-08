@@ -36,7 +36,7 @@ internal sealed class ThinkingPicker : IDisposable
 			return;
 		}
 
-		Close();
+		CloseInstantly();
 		if (anchor.FindVisualRoot() is not Window window)
 		{
 			return;
@@ -47,17 +47,17 @@ internal sealed class ThinkingPicker : IDisposable
 		_slider?.Focus();
 	}
 
-	public void Close()
-	{
-		_popup.Close();
-	}
+	public void Close() => _popup.Close();
+
+	/// 立即关掉，不做淡出：重开或随标签页一起收起。
+	public void CloseInstantly() => _popup.CloseInstantly();
 
 	public void Dispose()
 	{
 		// 标签关闭时已经拖到一半的草稿没有落盘价值；先断开回调，Close 就不再提交。
 		_pick = null;
 		_popup.Closed -= OnClosed;
-		Close();
+		CloseInstantly();
 		_popup.Dispose();
 	}
 

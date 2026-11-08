@@ -33,7 +33,7 @@ internal sealed class SecurityMenu : IDisposable
 			return;
 		}
 
-		Close();
+		CloseInstantly();
 		if (anchor.FindVisualRoot() is not Window)
 		{
 			return;
@@ -63,11 +63,14 @@ internal sealed class SecurityMenu : IDisposable
 
 	public void Dispose()
 	{
-		Close();
+		CloseInstantly();
 		_popup.Dispose();
 	}
 
 	public void Close() => _popup.Close();
+
+	/// 立即关掉，不做淡出：同一个入口马上要重开，或随标签页一起收起。
+	public void CloseInstantly() => _popup.CloseInstantly();
 
 	private UIElement Build(Options options)
 	{

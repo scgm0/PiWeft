@@ -26,7 +26,8 @@ internal sealed class ProviderLoginPanel
 	private readonly Button _retry;
 	private readonly Button _cancel;
 	private readonly Button _done;
-	private readonly object _logGate = new();
+	// 日志由后台认证线程写入、UI 泵按帧读取；Lock 比 object 锁省一次 Monitor 包装。
+	private readonly Lock _logGate = new();
 	private readonly StringBuilder _log = new();
 	private readonly DispatcherTimer _pump;
 	private Window? _window;

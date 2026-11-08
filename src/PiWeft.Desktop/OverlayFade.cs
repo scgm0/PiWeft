@@ -6,27 +6,42 @@ namespace PiWeft.Desktop;
 
 /// 窗口浮层的整块淡入淡出：进入 200ms ease-out-quint，退出 120ms ease-out-cubic。
 /// 退出用 ease-out、时长也比 PiDeck 的 200ms 短：ease-in 开头几乎不动，关闭看起来会先卡一下。
+/// 时钟与回调都是字段：Duration 与 EasingFunction 本来就可写，每次开关重造时钟只是给 GC 添活。
 internal sealed class OverlayFade
 {
 	private const int FadeInMs = 200;
 	private const int FadeOutMs = 120;
 
+	// 起点低于这个值就当作已经看不见：直接收尾，不再空跑一帧。
+	private const double HiddenThreshold = 0.01;
+
 	private readonly FrameworkElement _view;
-	private AnimationClock? _clock;
-	private Action? _completed;
+	// 与主浮层同生共死的附属元素（例如最大化时补的标题栏压暗条）：单独一层，不跟着主浮层淡出就会硬切。
+	private readonly FrameworkElement? _companion;
+	private readonly AnimationClock _clock;
+	private double _from;
+	private double _to;
+	private Action? _onClosed;
 	private bool _closing;
 
-	public OverlayFade(FrameworkElement view) => _view = view;
+	public OverlayFade(FrameworkElement view, FrameworkElement? companion = null)
+	{
+		_view = view;
+		_companion = companion;
+		_clock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), Easing.EaseOutQuint)
+		{
+			TickCallback = OnTick,
+			CompletedCallback = OnCompleted,
+		};
+	}
 
 	public bool IsClosing => _closing;
 
 	public void Open()
 	{
 		_closing = false;
-		_completed = null;
-		Stop();
-		_view.IsHitTestVisible = true;
-		Start(0, 1, FadeInMs, Easing.EaseOutQuint, null);
+		_onClosed = null;
+		Start(0, 1, FadeInMs, Easing.EaseOutQuint);
 	}
 
 	/// 淡出途中又要显示同一个浮层：从当前不透明度接回 1，避免闪一下。
@@ -34,23 +49,20 @@ internal sealed class OverlayFade
 	{
 		var from = Math.Clamp(_view.Opacity, 0, 1);
 		_closing = false;
-		_completed = null;
-		Stop();
-		_view.IsHitTestVisible = true;
-		Start(from, 1, FadeInMs, Easing.EaseOutQuint, null);
+		_onClosed = null;
+		Start(from, 1, FadeInMs, Easing.EaseOutQuint);
 	}
 
 	/// 立即放弃正在进行的淡出/淡入，不触发关闭回调；调用方随后自己做同步收尾。
 	public void Cancel()
 	{
 		_closing = false;
-		_completed = null;
+		_onClosed = null;
 		Stop();
-		_view.Opacity = 1;
-		_view.IsHitTestVisible = true;
+		SetOpacity(1);
 	}
 
-	public void Close(Action completed)
+	public void Close(Action closed)
 	{
 		if (_closing)
 		{
@@ -59,77 +71,88 @@ internal sealed class OverlayFade
 
 		if (!Application.IsRunning)
 		{
-			// 无头环境没有帧脉冲，直接收尾。
-			_view.Opacity = 1;
-			completed();
+			SetOpacity(1);
+			closed();
 			return;
 		}
 
 		_closing = true;
-		_completed = completed;
-		_view.IsHitTestVisible = false;
+		_onClosed = closed;
 		var from = Math.Clamp(_view.Opacity, 0, 1);
-		if (from <= 0.01)
+		if (from <= HiddenThreshold)
 		{
 			FinishClose();
 			return;
 		}
 
-		Start(from, 0, FadeOutMs, Easing.EaseOutCubic, FinishClose);
+		Start(from, 0, FadeOutMs, Easing.EaseOutCubic);
 	}
 
-	private void Start(double from, double to, int durationMs, Func<double, double> easing, Action? completed)
+	private void Start(double from, double to, int durationMs, Func<double, double> easing)
 	{
-		_view.Opacity = from;
+		Stop();
+		_from = from;
+		_to = to;
+		SetOpacity(from);
 		if (!Application.IsRunning)
 		{
-			_view.Opacity = to;
-			completed?.Invoke();
+			SetOpacity(to);
 			return;
 		}
 
-		var clock = new AnimationClock(TimeSpan.FromMilliseconds(durationMs), easing);
-		clock.TickCallback = progress =>
+		_clock.Duration = TimeSpan.FromMilliseconds(durationMs);
+		_clock.EasingFunction = easing;
+		_clock.Start();
+	}
+
+	// 每帧只读一个父指针就够判断「还在不在窗口里」：OverlayLayer 摘层、窗口关闭都会把它置空。
+	private void OnTick(double progress)
+	{
+		if (_view.Parent is null)
 		{
-			// 窗口/浮层在动画途中被拆掉时不要再碰已离树的元素。
-			if (_view.FindVisualRoot() is null)
+			if (_closing)
+			{
+				FinishClose();
+			}
+			else
 			{
 				Stop();
-				return;
 			}
 
-			_view.Opacity = from + ((to - from) * progress);
-		};
-		clock.CompletedCallback = () =>
+			return;
+		}
+
+		SetOpacity(_from + ((_to - _from) * progress));
+	}
+
+	private void OnCompleted()
+	{
+		SetOpacity(_to);
+		if (_closing)
 		{
-			_view.Opacity = to;
-			_clock = null;
-			completed?.Invoke();
-		};
-		_clock = clock;
-		clock.Start();
+			FinishClose();
+		}
 	}
 
 	private void FinishClose()
 	{
 		Stop();
 		_closing = false;
-		var completed = _completed;
-		_completed = null;
-		_view.Opacity = 1;
-		completed?.Invoke();
+		var closed = _onClosed;
+		_onClosed = null;
+		SetOpacity(1);
+		closed?.Invoke();
 	}
 
-	private void Stop()
+	private void SetOpacity(double opacity)
 	{
-		if (_clock is not { } clock)
+		_view.Opacity = opacity;
+		if (_companion is not null)
 		{
-			return;
+			_companion.Opacity = opacity;
 		}
-
-		clock.TickCallback = null;
-		clock.CompletedCallback = null;
-		clock.Stop();
-		_clock = null;
 	}
+
+	// Stop 自带「没在跑就返回」，这里不再重复判断：时钟在完成回调里已经自行停掉。
+	private void Stop() => _clock.Stop();
 }

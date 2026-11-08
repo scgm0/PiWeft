@@ -41,6 +41,7 @@ internal sealed class AskQuestionPanel
 	private Grid? _overlayHost;
 	private Window? _overlayWindow;
 	private OverlayFade? _overlayFade;
+	private int _overlayGeneration;
 	private bool _finishing;
 
 	private string? _alertSessionId;
@@ -167,6 +168,7 @@ internal sealed class AskQuestionPanel
 
 		_overlayHost = host;
 		_overlayWindow = window;
+		_overlayGeneration++;
 		TransientOverlay.Open(window, host, () => Finish(cancelled: true));
 		_overlayFade = new OverlayFade(host);
 		_overlayFade.Open();
@@ -201,6 +203,8 @@ internal sealed class AskQuestionPanel
 		_current = 0;
 		_expanded = true;
 		_submitting = false;
+		// 新一批接管：上一批的淡出回调不再算数，也不能把这一批一起收掉。
+		_finishing = false;
 		_completion = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
 		_cancellation = cancellationToken.Register(static state => ((AskQuestionPanel)state!).DispatchCancel(), this);
 
@@ -248,19 +252,32 @@ internal sealed class AskQuestionPanel
 		if (overlay is not null && _overlayFade is { IsClosing: false } fade && Application.IsRunning)
 		{
 			_finishing = true;
-			fade.Close(() => CompleteFinish(overlay, completion, answers, incomplete));
+			var window = _overlayWindow;
+			var generation = _overlayGeneration;
+			fade.Close(() => CompleteFinish(overlay, window, generation, completion, answers, incomplete));
 			return;
 		}
 
-		CompleteFinish(overlay, completion, answers, incomplete);
+		CompleteFinish(overlay, _overlayWindow, _overlayGeneration, completion, answers, incomplete);
 	}
 
 	private void CompleteFinish(
 		Grid? overlay,
+		Window? window,
+		int generation,
 		TaskCompletionSource<string?> completion,
 		List<AskAnswer> answers,
 		bool incomplete)
 	{
+		// 淡出还没完就来了新一批：只把这个旧浮层从层里摘掉，共享状态与卡片归新一批。
+		if (overlay is not null && generation != _overlayGeneration)
+		{
+			if (window is not null) TransientOverlay.Remove(window, overlay);
+			overlay.Clear();
+			completion.TrySetResult(AskQuestions.EncodeResponse(answers, incomplete));
+			return;
+		}
+
 		_finishing = false;
 		_questions = [];
 		_answers.Clear();
@@ -276,7 +293,7 @@ internal sealed class AskQuestionPanel
 		if (overlay is not null)
 		{
 			_overlayHost = null;
-			if (_overlayWindow is { } window)
+			if (window is not null)
 			{
 				TransientOverlay.Remove(window, overlay);
 			}

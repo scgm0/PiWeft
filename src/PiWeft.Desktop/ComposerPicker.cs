@@ -321,6 +321,8 @@ internal sealed class ComposerPicker
 
 	private void Choose(Item item)
 	{
+		// 淡出这 120ms 里视图还在：双击一行不能把同一条斜杠命令插两遍。
+		if (_fade.IsClosing) return;
 		var pick = _pick;
 		Hide();
 		pick?.Invoke(item);

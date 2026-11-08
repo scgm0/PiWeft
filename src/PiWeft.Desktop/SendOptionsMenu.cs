@@ -43,7 +43,7 @@ internal sealed class SendOptionsMenu : IDisposable
 		}
 
 		// 先收掉上一次：标签被移出窗口时 anchor 可能已经找不到窗口，旧菜单不能留着。
-		Close();
+		CloseInstantly();
 		if (anchor.FindVisualRoot() is not Window)
 		{
 			return;
@@ -60,11 +60,14 @@ internal sealed class SendOptionsMenu : IDisposable
 	/// 每个会话标签各有一个菜单实例，反复开关标签就会累积。
 	public void Dispose()
 	{
-		Close();
+		CloseInstantly();
 		_popup.Dispose();
 	}
 
 	public void Close() => _popup.Close();
+
+	/// 立即关掉，不做淡出：同一个入口马上要重开，或随标签页一起收起。
+	public void CloseInstantly() => _popup.CloseInstantly();
 
 	internal UIElement BuildForTests(IReadOnlyList<Item> items) => Build(items);
 

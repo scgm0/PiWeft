@@ -282,7 +282,13 @@ internal sealed class ModelPicker
 		else if (_matches.Count > 0 && _matches[_index].Tag is Model model) Pick(model);
 	}
 
-	private void Pick(Model model) { Hide(); _pick(model); }
+	private void Pick(Model model)
+	{
+		// 淡出这 120ms 里视图还在：连点两行不能挑两次模型。
+		if (_fade.IsClosing) return;
+		Hide();
+		_pick(model);
+	}
 
 	/// 模型行的选中底色用调色板的 AccentSoft，不跟随框架默认的 SelectionBackground
 	///（浅色高亮在深色主题里太跳）；只作用于这个弹窗，侧栏树保持原样。

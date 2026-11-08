@@ -165,6 +165,8 @@ public sealed class CommandPalette
 
 	private void Run(PaletteCommand command)
 	{
+		// 淡出这 120ms 里视图还在：回车连按两次不能把命令跑两遍。
+		if (_fade.IsClosing) return;
 		Hide();
 		command.Run();
 	}
