@@ -1,4 +1,3 @@
-using System.Text.Json.Nodes;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 
@@ -11,14 +10,16 @@ internal sealed class ToolMessageView
 	private readonly StickyExpander _expander;
 	private readonly TextFocusScrollGuard _focus;
 	private readonly Action<ImageSource>? _preview;
+	private readonly Action<string>? _copy;
 	// 就地更新会换掉这个引用（条目不可变，事件到达时整份换新）；主题回调和行体构建都读它。
 	private ChatEntry _entry;
 
-	public ToolMessageView(ChatEntry entry, TextFocusScrollGuard focus, Action<ImageSource>? preview = null)
+	public ToolMessageView(ChatEntry entry, TextFocusScrollGuard focus, Action<ImageSource>? preview = null, Action<string>? copy = null)
 	{
 		_entry = entry;
 		_focus = focus;
 		_preview = preview;
+		_copy = copy;
 		// 紧凑工具行：Expander 的单个箭头 + 工具名 + 状态 + 耗时 + 等宽行动摘要。
 		// 过程组里不再套状态徽章 pill：一排 pill 会把行高拉高、也会把单行预览挤短。
 		var name = new TextBlock().Text(entry.ToolName ?? "工具")
@@ -114,47 +115,167 @@ internal sealed class ToolMessageView
 
 	private Border BuildBody(ChatEntry entry)
 	{
-		var detailSource = DetailSource(entry);
+		var details = ToolCallDetails.For(entry);
 		var body = new StackPanel().Spacing(AppTheme.Space2);
-		if (entry.ToolArguments is { Length: > 0 } && detailSource != entry.Text)
+		Button? copy = null;
+		if (_copy is not null && entry.ToolArguments is { Length: > 0 } arguments &&
+			(details.Fields.Count > 0 || details.BlockText is { Length: > 0 } || details.Todos.Count > 0 || details.Fallback is { Length: > 0 }))
 		{
-			body.Children(SectionLabel(Strings.ToolCommandLabel));
-			var input = MessageText.Create(detailSource, muted: true, mono: true, fontSize: AppTheme.FontSizeCaption);
-			// 代码表面随主题在深浅之间切换，文字颜色必须一起跟着换，不能停在创建时的快照上。
-			input.WithTheme((theme, text) =>
-			{
-				text.Foreground = AppTheme.For(theme).CodeText;
-				AppStyles.RefreshTextView(text);
-			});
-			input.Tag = null;
-			_focus.Track(input);
-			body.Children(input);
+			// 参数分栏后不再是可选中的文本，给一个整包复制入口；原文保持 JSON，不带展示层的改写。
+			copy = AppIcons.Button("copy", Strings.CopyToolArguments, () => _copy(arguments), size: 12);
+		}
+		var copyPending = copy is not null;
+		if (details.Fields.Count > 0)
+		{
+			var fields = FieldRows(details.Fields);
+			body.Children(copyPending ? WithTrailing(fields, copy!) : fields);
+			copyPending = false;
+		}
+		if (details.BlockText is { Length: > 0 } blockText)
+		{
+			body.Children(SectionRow(details.BlockLabel ?? Strings.ToolArgsLabel, copyPending ? copy : null));
+			copyPending = false;
+			body.Children(Code(blockText));
+		}
+		if (details.Todos.Count > 0)
+		{
+			body.Children(SectionRow(Strings.ToolPlanLabel, copyPending ? copy : null));
+			copyPending = false;
+			body.Children(TodoRows(details.Todos));
+		}
+		if (details.Fallback is { Length: > 0 } fallback)
+		{
+			body.Children(SectionRow(Strings.ToolArgsLabel, copyPending ? copy : null));
+			copyPending = false;
+			body.Children(Code(fallback));
 		}
 		if (entry.Patch is { Length: > 0 } patch)
 		{
-			body.Children(SectionLabel(Strings.ToolDiffLabel));
 			var host = new Border();
-			var unified = new Button().StyleName(AppStyles.CodeButton).Content(CodeLabel(Strings.DiffUnified)).OnClick(() => host.Child(DiffView.Render(patch, _focus)));
-			var sideBySide = new Button().StyleName(AppStyles.CodeButton).Content(CodeLabel(Strings.DiffSideBySide)).OnClick(() => host.Child(DiffView.RenderSideBySide(patch, _focus)));
-			host.Child(DiffView.Render(patch, _focus));
-			body.Children(new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(unified, sideBySide), host);
+			var unified = new Button().StyleName(AppStyles.CodeButton).Content(CodeLabel(Strings.DiffUnified)).OnClick(() => ReplaceDiff(host, () => DiffView.Render(patch, _focus)));
+			var sideBySide = new Button().StyleName(AppStyles.CodeButton).Content(CodeLabel(Strings.DiffSideBySide)).OnClick(() => ReplaceDiff(host, () => DiffView.RenderSideBySide(patch, _focus)));
+			ReplaceDiff(host, () => DiffView.Render(patch, _focus));
+			// 分区标题与视图切换同一行：展开后第一眼看到改动，不用先跨过一行按钮。
+			body.Children(new Grid().Columns("*,Auto,Auto").Children(
+				SectionLabel(Strings.ToolDiffLabel).Column(0).VerticalAlignment(VerticalAlignment.Center),
+				unified.Column(1).Margin(new Thickness(6, 0, 0, 0)),
+				sideBySide.Column(2).Margin(new Thickness(4, 0, 0, 0))), host);
 		}
-		if (entry.Text.Length > 0)
+		var result = ResultText(entry, details);
+		if (result is { Length: > 0 })
 		{
 			body.Children(SectionLabel(Strings.ToolResultLabel));
-			var text = MessageText.Create(entry.Text, muted: true, mono: true, fontSize: AppTheme.FontSizeCaption);
-			text.WithTheme((theme, block) =>
-			{
-				block.Foreground = AppTheme.For(theme).CodeText;
-				AppStyles.RefreshTextView(block);
-			});
-			text.Tag = null;
-			_focus.Track(text);
-			body.Children(text);
+			body.Children(Code(result));
 		}
 		foreach (var image in entry.Images) body.Children(SessionTab.ImageView(image, _preview));
 		return new Border().StyleName(AppStyles.Code).CornerRadius(AppTheme.RadiusSm)
 			.Padding(new Thickness(AppTheme.Space2)).Margin(new Thickness(0, AppTheme.Space2, 0, 0)).Child(body);
+	}
+
+	private static string? ResultText(ChatEntry entry, ToolCallDetails details)
+	{
+		var source = entry.Text;
+		var text = source.AsSpan().TrimEnd("\r\n");
+		if (text.Length == 0) return null;
+		// 运行中的工具在拿到结果前，Text 是参数或「→ 名称 参数」占位，别再当成结果重复一遍。
+		// 中断的工具也可能停在参数占位上；完成后的输出即使碰巧和命令/内容相同也是真结果。
+		if (entry.ToolArguments is { Length: > 0 } arguments &&
+			((entry.IsStreaming || entry.IsStopped) &&
+				(text.SequenceEqual(arguments.AsSpan()) || text.StartsWith("→ ", StringComparison.Ordinal) ||
+				 entry.IsStreaming && details.BlockText is { } block && text.SequenceEqual(block.AsSpan().TrimEnd("\r\n")))))
+		{
+			return null;
+		}
+
+		return text.Length == source.Length ? source : text.ToString();
+	}
+
+	private static Grid WithTrailing(Element content, Button copy) => new Grid().Columns("*,Auto").Children(
+		content.Column(0),
+		copy.Column(1).VerticalAlignment(VerticalAlignment.Top));
+
+	private static Grid SectionRow(string label, Button? copy)
+	{
+		var row = new Grid().Columns("*,Auto").Children(
+			SectionLabel(label).Column(0).VerticalAlignment(VerticalAlignment.Center));
+		if (copy is not null) row.Children(copy.Column(1).VerticalAlignment(VerticalAlignment.Center));
+		return row;
+	}
+
+	private Grid FieldRows(IReadOnlyList<ToolCallField> fields)
+	{
+		// 一个 Grid 而不是每行一个：Auto 标签列要跨行共用，否则「忽略大小写」会把值列推歪。
+		var grid = new Grid().Columns("Auto,*")
+			.Rows(string.Join(",", Enumerable.Repeat("Auto", fields.Count)));
+		for (var index = 0; index < fields.Count; index++)
+		{
+			var field = fields[index];
+			var label = new TextBlock().Text(field.Label)
+				.FontSize(AppTheme.FontSizeMicro).SubtleText()
+				.Margin(new Thickness(0, 1, 12, 1)).VerticalAlignment(VerticalAlignment.Center);
+			// 值用可选中文本控件：路径、模式可以直接拖选复制，和 bash 命令一致。
+			// 居中而不是顶对齐：值用的字号比标签大，顶对齐会让文字基线差两三像素。
+			var value = Code(field.Value).Margin(new Thickness(0, 1, 0, 1))
+				.VerticalAlignment(VerticalAlignment.Center);
+			grid.Children(label.Row(index).Column(0), value.Row(index).Column(1));
+		}
+		return grid;
+	}
+
+	private static void ReplaceDiff(Border host, Func<UIElement> render)
+	{
+		// 反复切换统一/并排会换掉整棵 diff 子树：先释放旧控件，别让 TextBox 的事件订阅跟着堆。
+		if (host.Child is { } old) UiLifetime.Release(old);
+		host.Child(render());
+	}
+
+	private StackPanel TodoRows(IReadOnlyList<ToolCallTodo> todos)
+	{
+		var panel = new StackPanel().Spacing(4);
+		foreach (var todo in todos)
+		{
+			var text = Selectable(todo.Text).VerticalAlignment(VerticalAlignment.Center);
+			text.WithTheme((theme, block) =>
+			{
+				var palette = AppTheme.For(theme);
+				block.Foreground = todo.Status switch
+				{
+					"completed" => palette.TextFaint,
+					"in_progress" => palette.TextPrimary,
+					_ => palette.TextMuted,
+				};
+				AppStyles.RefreshTextView(block);
+			});
+			panel.Children(new Grid().Columns("Auto,*").Children(
+				new TodoStatusGlyph(todo.Status).Column(0),
+				text.Column(1).Margin(new Thickness(8, 0, 0, 0))));
+		}
+		return panel;
+	}
+
+	private MultiLineTextBox Selectable(string text)
+	{
+		var view = MessageText.Create(text, fontSize: AppTheme.FontSizeCaption, smoothScroll: false);
+		if (MessageText.IsLargeText(text)) view.MaxHeight(MessageText.LargeTextMaxHeight);
+		view.Tag = null;
+		_focus.Track(view);
+		return view;
+	}
+
+	private MultiLineTextBox Code(string text)
+	{
+		var view = MessageText.Create(text, muted: true, mono: true, fontSize: AppTheme.FontSizeCaption);
+		// 超过阈值时只给固定视口，TextViewLayout 只物化可见行；整篇撑高会在超大文件上卡顿。
+		if (MessageText.IsLargeText(text)) view.MaxHeight(MessageText.LargeTextMaxHeight);
+		// 代码表面随主题在深浅之间切换，文字颜色必须一起跟着换，不能停在创建时的快照上。
+		view.WithTheme((theme, block) =>
+		{
+			block.Foreground = AppTheme.For(theme).CodeText;
+			AppStyles.RefreshTextView(block);
+		});
+		view.Tag = null;
+		_focus.Track(view);
+		return view;
 	}
 
 	private static TextBlock Timing(ChatEntry entry)
@@ -175,21 +296,6 @@ internal sealed class ToolMessageView
 		timing.FontFamily(AppTheme.MonoFont);
 		if (timing is LiveDurationText) timing.TextAlignment(TextAlignment.Right).MinWidth(44);
 		return timing;
-	}
-
-	private static string DetailSource(ChatEntry entry)
-	{
-		if (entry.ToolArguments is not { Length: > 0 } arguments) return entry.Text;
-		if (entry.ToolName is not ("bash" or "terminal")) return arguments;
-		try
-		{
-			if (JsonNode.Parse(arguments) is JsonObject root && root["command"]?.GetValue<string>() is { Length: > 0 } command)
-				return command;
-		}
-		catch (Exception error) when (error is System.Text.Json.JsonException or InvalidOperationException or FormatException)
-		{
-		}
-		return arguments;
 	}
 
 	private static TextBlock SectionLabel(string text) => new TextBlock()

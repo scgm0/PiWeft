@@ -864,9 +864,11 @@ internal sealed class ExecutionProcessView
 					icon.Source(AppIcons.Get(ExecutionProcess.GroupIcon(next), AppStyles.ColorForRole(AppStyles.RoleAccent)));
 					label.Text(ExecutionProcess.RunningLabel(next));
 					var latest = next.Count > 0 ? next[^1] : null;
+					// 表头摘要只依赖参数；只有参数缺失时才退回正文。流式 bash 每来一段输出都换一次
+					// TextLength，若也当作缓存键，会把同一段 command 每拍重新解析一遍 JSON。
+					var textChanged = latest is { ToolArguments: not { Length: > 0 } } && latest.TextLength != detailLength;
 					if (latest is null || latest.ToolName != detailTool ||
-						!ReferenceEquals(latest.ToolArguments, detailArguments) ||
-						latest.TextLength != detailLength)
+						!ReferenceEquals(latest.ToolArguments, detailArguments) || textChanged)
 					{
 						detailTool = latest?.ToolName;
 						detailArguments = latest?.ToolArguments;

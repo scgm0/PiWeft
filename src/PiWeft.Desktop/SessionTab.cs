@@ -2685,7 +2685,7 @@ public sealed partial class SessionTab : IDisposable
 		{
 			ChatRole.User => Bubble(entry),
 			ChatRole.Process => new ExecutionProcessView(entry, Row, _textFocus).View,
-			ChatRole.Tool => new ToolMessageView(entry, _textFocus, PreviewImage).View,
+			ChatRole.Tool => new ToolMessageView(entry, _textFocus, PreviewImage, CopyText).View,
 			ChatRole.Error => Card(entry, Strings.RoleError),
 			_ => new AssistantMessageView(entry, CopyText, _textFocus, PreviewImage, OpenMessageLink).View,
 		};

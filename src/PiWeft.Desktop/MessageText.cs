@@ -6,6 +6,15 @@ namespace PiWeft.Desktop;
 
 internal static class MessageText
 {
+	/// 超过这个规模改用固定视口：<c>SizeToDocument</c> 会把整份文档逐行撑开，展开大文件会卡住界面。
+	internal const int LargeTextCharacters = 32 * 1024;
+	internal const int LargeTextLines = 400;
+	internal const double LargeTextMaxHeight = 240;
+
+	/// 大文本按字符数或行数判定；字符数先短路，常见的小代码块不必扫换行。
+	internal static bool IsLargeText(string text) =>
+		text.Length >= LargeTextCharacters || text.AsSpan().Count('\n') >= LargeTextLines;
+
 	public static void Update(MultiLineTextBox text, string value)
 	{
 		var previous = text.Text;

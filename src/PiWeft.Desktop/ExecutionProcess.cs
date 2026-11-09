@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+using System.Text.Json;
 
 namespace PiWeft.Desktop;
 
@@ -205,7 +205,7 @@ internal static class ExecutionProcess
 
 			var kind = entry.ToolName switch
 			{
-				"read" => 0, "write" => 1, "edit" => 2, "bash" => 3,
+				"read" => 0, "write" => 1, "edit" => 2, "bash" or "terminal" or "powershell" => 3,
 				"grep" or "find" or "ls" => 4, "todo" => 5, "ask_question" => 6, _ => 7,
 			};
 			var bit = 1 << kind;
@@ -251,7 +251,7 @@ internal static class ExecutionProcess
 		"read" => Strings.ProcessGroupRead,
 		"write" => Strings.ProcessGroupWrite,
 		"edit" => Strings.ProcessGroupEdit,
-		"bash" or "terminal" => Strings.ProcessGroupCommands,
+		"bash" or "terminal" or "powershell" => Strings.ProcessGroupCommands,
 		"grep" or "find" or "ls" => Strings.ProcessGroupSearch,
 		"todo" => Strings.ProcessGroupTodo,
 		"ask_question" => Strings.ProcessGroupAsk,
@@ -275,7 +275,7 @@ internal static class ExecutionProcess
 	{
 		"read" => "file-text",
 		"write" or "edit" => "square-pen",
-		"bash" or "terminal" => "terminal",
+		"bash" or "terminal" or "powershell" => "terminal",
 		"grep" or "find" or "ls" => "search",
 		"todo" => "list-checks",
 		"ask_question" => "circle-question-mark",
@@ -305,31 +305,44 @@ internal static class ExecutionProcess
 			return null;
 		}
 
+		JsonDocument document;
 		try
 		{
-			if (JsonNode.Parse(arguments) is not JsonObject root)
+			document = JsonDocument.Parse(arguments);
+		}
+		catch (Exception error) when (error is JsonException or ArgumentException)
+		{
+			return null;
+		}
+
+		using (document)
+		{
+			var root = document.RootElement;
+			if (root.ValueKind != JsonValueKind.Object)
 			{
 				return null;
 			}
 
-			if (root["question"]?.GetValue<string>() is { Length: > 0 } single)
+			if (root.TryGetProperty("question", out var single) && single.ValueKind == JsonValueKind.String &&
+				single.GetString() is { Length: > 0 } text)
 			{
-				return Strings.ToolDetail(single);
+				return Strings.ToolDetail(text);
 			}
 
-			if (root["questions"] is JsonArray questions)
+			if (root.TryGetProperty("questions", out var questions) && questions.ValueKind == JsonValueKind.Array)
 			{
-				foreach (var item in questions)
+				foreach (var item in questions.EnumerateArray())
 				{
-					if (item is JsonObject question && question["question"]?.GetValue<string>() is { Length: > 0 } text)
+					if (item.ValueKind != JsonValueKind.Object ||
+						!item.TryGetProperty("question", out var value) || value.ValueKind != JsonValueKind.String ||
+						value.GetString() is not { Length: > 0 } question)
 					{
-						return Strings.ToolDetail(text);
+						continue;
 					}
+
+					return Strings.ToolDetail(question);
 				}
 			}
-		}
-		catch (Exception error) when (error is System.Text.Json.JsonException or InvalidOperationException or FormatException)
-		{
 		}
 
 		return null;
@@ -343,9 +356,15 @@ internal static class ExecutionProcess
 			return AskQuestionPreview(entry) ?? string.Empty;
 		}
 
+		if (entry.ToolName is "todo")
+		{
+			return ToolCallDetails.TodoPreview(entry.ToolArguments) ??
+				Strings.ToolDetail(entry.ToolArguments is { Length: > 0 } todoArguments ? todoArguments : entry.Text);
+		}
+
 		var verb = entry.ToolName switch
 		{
-			"bash" or "terminal" => Strings.ToolActionExecute,
+			"bash" or "terminal" or "powershell" => Strings.ToolActionExecute,
 			"read" => Strings.ToolActionRead,
 			"write" or "edit" => Strings.ToolActionEdit,
 			"grep" or "find" or "ls" => Strings.ToolActionSearch,
@@ -366,7 +385,7 @@ internal static class ExecutionProcess
 			return Strings.ToolDetail(entry.Text);
 		}
 
-		if (entry.ToolName is "bash" or "terminal" && JsonField(arguments, "command") is { } command)
+		if (entry.ToolName is "bash" or "terminal" or "powershell" && JsonField(arguments, "command") is { } command)
 		{
 			return Strings.ToolDetail(command);
 		}
@@ -386,21 +405,32 @@ internal static class ExecutionProcess
 	/// <c>params string[]</c> 每次调用都要分配一个小数组，而实参全是内联字面量。
 	private static string? JsonField(string arguments, params ReadOnlySpan<string> names)
 	{
+		JsonDocument document;
 		try
 		{
-			if (JsonNode.Parse(arguments) is JsonObject root)
+			document = JsonDocument.Parse(arguments);
+		}
+		catch (Exception error) when (error is JsonException or ArgumentException)
+		{
+			return null;
+		}
+
+		using (document)
+		{
+			var root = document.RootElement;
+			if (root.ValueKind != JsonValueKind.Object)
 			{
-				foreach (var name in names)
+				return null;
+			}
+
+			foreach (var name in names)
+			{
+				if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&
+					value.GetString() is { Length: > 0 } text)
 				{
-					if (root[name]?.GetValue<string>() is { Length: > 0 } value)
-					{
-						return value;
-					}
+					return text;
 				}
 			}
-		}
-		catch (Exception error) when (error is System.Text.Json.JsonException or InvalidOperationException or FormatException)
-		{
 		}
 
 		return null;

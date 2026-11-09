@@ -1092,11 +1092,70 @@ public static partial class Strings
 
 	// 工具卡片展开后的分区标题与状态文案。
 	public const string ToolCommandLabel = "命令";
+	public const string ToolContentLabel = "内容";
+	public const string ToolCodeLabel = "代码";
+	public const string ToolPlanLabel = "计划";
+	public const string ToolArgsLabel = "参数";
+	public const string ToolQuestionLabel = "问题";
+	public const string CopyToolArguments = "复制参数";
 	public const string ToolResultLabel = "结果";
 	public const string ToolDiffLabel = "差异";
 	public const string ToolRunning = "运行中";
 	public const string ToolCompleted = "已完成";
 	public const string ToolFailed = "失败";
+
+	// 工具参数的关键字面：不译参数名，展开后按中文标签分栏。
+	public const string ToolFieldPath = "路径";
+	public const string ToolFieldPattern = "模式";
+	public const string ToolFieldGlob = "文件";
+	public const string ToolFieldRange = "范围";
+	public const string ToolFieldLimit = "上限";
+	public const string ToolFieldLines = "行数";
+	public const string ToolFieldEdits = "修改";
+	public const string ToolFieldTimeout = "超时";
+	public const string ToolFieldAction = "操作";
+	public const string ToolFieldTodo = "待办";
+	public const string ToolFieldStatus = "状态";
+	public const string ToolFieldId = "编号";
+	public const string ToolFieldContext = "上下文";
+	public const string ToolFieldIgnoreCase = "忽略大小写";
+	public const string ToolFieldLiteral = "字面匹配";
+
+	public static string ToolReadRange(long? offset, long? limit) => (offset, limit) switch
+	{
+		({ } start, { } count) => $"第 {start} 行起，最多 {count} 行",
+		({ } start, null) => $"第 {start} 行起",
+		(null, { } count) => $"最多 {count} 行",
+		_ => string.Empty,
+	};
+
+	public static string ToolLineCount(int lines) => $"{lines} 行";
+
+	public static string ToolEditCount(int edits) => $"{edits} 处";
+
+	public static string ToolTimeout(double seconds) =>
+		$"{seconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)} 秒";
+
+	public static string ToolTodoAction(string action) => action switch
+	{
+		"list" => "查看计划",
+		"add" => "新增待办",
+		"update" => "更新待办",
+		"delete" => "删除待办",
+		"replace" => "重写计划",
+		"restore" => "恢复计划",
+		"clear" => "清空计划",
+		_ => action,
+	};
+
+	public static string ToolTodoCount(int count) => $"{count} 项";
+
+	public static string ToolTodoStatus(string status) => status switch
+	{
+		"completed" => "已完成",
+		"in_progress" => "进行中",
+		_ => "待处理",
+	};
 
 	public static string ToolDetail(string text) => Summarize(text);
 

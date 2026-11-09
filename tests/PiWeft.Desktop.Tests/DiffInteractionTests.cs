@@ -68,6 +68,52 @@ public sealed class DiffInteractionTests
 		UiLifetime.Release(view);
 	}
 
+	[Fact]
+	public void LargeDiffUsesBoundedViewportAndKeepsGutterInSync()
+	{
+		var lineCount = MessageText.LargeTextLines + 1;
+		var lines = string.Join('\n', Enumerable.Range(0, lineCount).Select(index => $" line {index}"));
+		var view = DiffView.Render($"@@ -1,{lineCount} +1,{lineCount} @@\n{lines}\n");
+		ConversationPerformanceTests.Layout(view, 600, 400);
+		var texts = Find<MultiLineTextBox>(view).ToArray();
+		var body = texts.Single(text => text.IsHitTestVisible);
+		var gutter = texts.Single(text => !text.IsHitTestVisible);
+		Assert.Equal(MessageText.LargeTextMaxHeight, body.MaxHeight);
+		Assert.Equal(MessageText.LargeTextMaxHeight, gutter.MaxHeight);
+		Assert.InRange(body.ActualHeight, 1, MessageText.LargeTextMaxHeight + 1);
+		Assert.InRange(gutter.ActualHeight, 1, MessageText.LargeTextMaxHeight + 1);
+
+		body.MakeVisible(new Rect(0, 300, 1, body.TextViewportBounds.Height));
+		ConversationPerformanceTests.Layout(view, 600, 400);
+
+		Assert.True(body.VerticalOffset > 0);
+		Assert.InRange(gutter.VerticalOffset, body.VerticalOffset - 1, body.VerticalOffset + 1);
+		UiLifetime.Release(view);
+	}
+
+	[Fact]
+	public void LargeSideBySideDiffKeepsBothSidesAndGuttersInSync()
+	{
+		var lineCount = MessageText.LargeTextLines + 1;
+		var lines = string.Join('\n', Enumerable.Range(0, lineCount).Select(index => $" line {index}"));
+		var view = DiffView.RenderSideBySide($"@@ -1,{lineCount} +1,{lineCount} @@\n{lines}\n", null);
+		ConversationPerformanceTests.Layout(view, 600, 400);
+		var texts = Find<MultiLineTextBox>(view).ToArray();
+		var bodies = texts.Where(text => text.IsHitTestVisible).ToArray();
+		Assert.Equal(2, bodies.Length);
+		Assert.All(texts, text => Assert.Equal(MessageText.LargeTextMaxHeight, text.MaxHeight));
+		Assert.All(texts, text => Assert.InRange(text.ActualHeight, 1, MessageText.LargeTextMaxHeight + 1));
+
+		bodies[0].MakeVisible(new Rect(0, 300, 1, bodies[0].TextViewportBounds.Height));
+		ConversationPerformanceTests.Layout(view, 600, 400);
+
+		Assert.True(bodies[0].VerticalOffset > 0);
+		Assert.All(bodies, body => Assert.InRange(body.VerticalOffset, bodies[0].VerticalOffset - 1, bodies[0].VerticalOffset + 1));
+		foreach (var gutter in texts.Where(text => !text.IsHitTestVisible))
+			Assert.InRange(gutter.VerticalOffset, bodies[0].VerticalOffset - 1, bodies[0].VerticalOffset + 1);
+		UiLifetime.Release(view);
+	}
+
 	private sealed class Clipboard : IClipboardService
 	{
 		public string Text = string.Empty;
