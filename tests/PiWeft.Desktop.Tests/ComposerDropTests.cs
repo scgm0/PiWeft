@@ -39,6 +39,33 @@ public sealed class ComposerDropTests : IDisposable
 	}
 
 	[Fact]
+	public void TextPathsStopAfterOneHundredLines()
+	{
+		var files = Enumerable.Range(0, 150).Select(index => Path.Combine(_root, $"f{index}.txt")).ToArray();
+		foreach (var file in files) File.WriteAllText(file, "text");
+		var data = new DataObject();
+		data.SetText(string.Join('\n', files));
+
+		Assert.Equal(files.Take(100), ComposerDrop.Paths(data, _root));
+	}
+
+	[Fact]
+	public void CanAcceptSeesStandardAndImageFormats()
+	{
+		var text = new DataObject();
+		text.SetText("x");
+		Assert.True(ComposerDrop.CanAccept(text));
+
+		var image = new DataObject();
+		image.SetData("image/png", new byte[] { 1 });
+		Assert.True(ComposerDrop.CanAccept(image));
+
+		var unknown = new DataObject();
+		unknown.SetData("application/x-unknown", 1);
+		Assert.False(ComposerDrop.CanAccept(unknown));
+	}
+
+	[Fact]
 	public async Task ImageFileIsEncodedWithItsMimeType()
 	{
 		var path = Path.Combine(_root, "photo.JPG");

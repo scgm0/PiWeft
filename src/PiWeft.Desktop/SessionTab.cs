@@ -656,7 +656,7 @@ public sealed partial class SessionTab : IDisposable
 			.Children(_widgetColumn, _emptyCard.IsVisible(false), _busyColumn, composerPane);
 
 		// 问询卡片与会话同宽同列：真实窗口里该宽由 ReadingPreferences 随阅读宽度再算一次。
-		_askPanel = new AskQuestionPanel(OnAskVisibilityChanged);
+		_askPanel = new AskQuestionPanel(OnAskVisibilityChanged, () => Session.Cwd);
 		_askCard = _askPanel.View
 			.MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
 			.HorizontalAlignment(HorizontalAlignment.Center)
@@ -756,6 +756,9 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_inputStack.IsVisible(!open);
+		// 问询卡打开时主输入区已折叠；外层继续接掉落点只会把路径写进看不见的草稿。
+		// 只留卡片自己作为落点。
+		View.AllowDrop = !open;
 		AskChanged?.Invoke(this);
 	}
 

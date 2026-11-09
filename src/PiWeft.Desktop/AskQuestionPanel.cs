@@ -30,6 +30,9 @@ internal sealed class AskQuestionPanel
 	private readonly List<AskAnswer?> _answers = [];
 	private readonly List<List<AskOption>> _extraOptions = [];
 	private readonly List<HashSet<int>> _multiSelected = [];
+	private readonly List<string> _textDrafts = [];
+	private readonly List<string> _customDrafts = [];
+	private int _draftGeneration;
 	private int _current;
 	private bool _review;
 	private bool _expanded = true;
@@ -46,10 +49,13 @@ internal sealed class AskQuestionPanel
 
 	private string? _alertSessionId;
 	private string? _alertRequestId;
+	private readonly Func<string>? _cwd;
+	private AskTextTarget? _textTarget;
 
-	public AskQuestionPanel(Action<bool>? openChanged = null)
+	public AskQuestionPanel(Action<bool>? openChanged = null, Func<string>? cwd = null)
 	{
 		_openChanged = openChanged;
+		_cwd = cwd;
 
 		_chevron = new GlyphElement()
 			.Kind(GlyphKind.ChevronUp)
@@ -118,6 +124,10 @@ internal sealed class AskQuestionPanel
 			.WithTheme((theme, border) => border.BorderBrush = AppTheme.For(theme).BorderSubtle)
 			.HorizontalAlignment(HorizontalAlignment.Stretch)
 			.IsVisible(false)
+			.AllowDrop()
+			.OnDragEnter(OnFilesDragOver)
+			.OnDragOver(OnFilesDragOver)
+			.OnDrop(OnFilesDropped)
 			// Esc = 取消整批（PiDeck 同款）：卡片是会话里唯一的阻塞点，键盘要能直接退出。
 			.OnKeyDown(key =>
 			{
@@ -189,15 +199,22 @@ internal sealed class AskQuestionPanel
 		}
 
 		_questions = questions;
+		// 先换代：上一批控件的迟到回调不能写进新一批草稿。
+		_draftGeneration++;
 		_review = review && questions.Count > 1;
 		_answers.Clear();
 		_answers.AddRange(Enumerable.Repeat<AskAnswer?>(null, questions.Count));
 		_extraOptions.Clear();
 		_multiSelected.Clear();
+		_textDrafts.Clear();
+		_customDrafts.Clear();
 		for (var index = 0; index < questions.Count; index++)
 		{
 			_extraOptions.Add([]);
 			_multiSelected.Add([]);
+			// 草稿按题保存：切题、多选重绘、拖入路径后都不会丢；新一批用 prefill 重新开始。
+			_textDrafts.Add(questions[index].Prefill ?? string.Empty);
+			_customDrafts.Add(string.Empty);
 		}
 
 		_current = 0;
@@ -279,11 +296,17 @@ internal sealed class AskQuestionPanel
 		}
 
 		_finishing = false;
+		// 先作废旧控件的输入回调，再清空/重填草稿：IME 提交可能在这两步之间才到达。
+		_draftGeneration++;
+		ReleaseFocus();
 		_questions = [];
 		_answers.Clear();
 		_extraOptions.Clear();
 		_multiSelected.Clear();
+		_textDrafts.Clear();
+		_customDrafts.Clear();
 		_draftAnswer = null;
+		_textTarget = null;
 		_primary = null;
 		_body.Clear();
 		_tabs.Clear();
@@ -305,6 +328,21 @@ internal sealed class AskQuestionPanel
 
 		_openChanged?.Invoke(false);
 		completion.TrySetResult(AskQuestions.EncodeResponse(answers, incomplete));
+	}
+
+	/// 收起前把焦点从即将移除的编辑器上摘掉：IME 提交和按键不能再落到已脱离树的控件上。
+	private void ReleaseFocus()
+	{
+		if (View.FindVisualRoot() is not Window window)
+		{
+			return;
+		}
+
+		if (window.FocusManager.FocusedElement is { } focused &&
+			(ReferenceEquals(focused, View) || View.IsAncestorOf(focused)))
+		{
+			window.FocusManager.ClearFocus();
+		}
 	}
 
 	private void ToggleExpanded()
@@ -405,8 +443,11 @@ internal sealed class AskQuestionPanel
 
 	private void RenderBody()
 	{
+		// 每次重建正文都换一代：旧控件即使迟到 TextChanged 也不再写草稿。
+		_draftGeneration++;
 		_body.Clear();
 		_draftAnswer = null;
+		_textTarget = null;
 		if (_review && _current == _questions.Count)
 		{
 			RenderReview();
@@ -522,12 +563,24 @@ internal sealed class AskQuestionPanel
 		RenderOptions(question, multi: false);
 
 		// 选择题总留一个自定义输入（与 PiDeck 的 allowOther 同义）：Enter 或「使用」提交。
-		var custom = CustomInputBox(question);
+		var questionIndex = _current;
+		var draftGeneration = _draftGeneration;
+		var custom = CustomInputBox(question, _customDrafts[questionIndex]);
+		_textTarget = For(custom);
 		var use = new Button().Ghost()
 			.Content(new TextBlock().Text(Strings.AskCustomUse).FontSize(AppTheme.FontSizeCaption).PrimaryText())
-			.IsEnabled(false)
+			.IsEnabled(!string.IsNullOrWhiteSpace(_customDrafts[questionIndex]))
 			.OnClick(() => CommitCustom(question, custom));
-		custom.OnTextChanged(value => use.IsEnabled(!string.IsNullOrWhiteSpace(value)));
+		custom.OnTextChanged(value =>
+		{
+			if (draftGeneration != _draftGeneration)
+			{
+				return;
+			}
+
+			_customDrafts[questionIndex] = value;
+			use.IsEnabled(!string.IsNullOrWhiteSpace(value));
+		});
 		custom.OnKeyDown(key =>
 		{
 			if (key.Key != Key.Enter)
@@ -546,27 +599,45 @@ internal sealed class AskQuestionPanel
 	{
 		RenderOptions(question, multi: true);
 
-		var custom = CustomInputBox(question);
+		var questionIndex = _current;
+		var draftGeneration = _draftGeneration;
+		var custom = CustomInputBox(question, _customDrafts[questionIndex]);
+		_textTarget = For(custom);
 		var add = new Button().Ghost()
 			.Content(new TextBlock().Text(Strings.AskCustomAdd).FontSize(AppTheme.FontSizeCaption).PrimaryText())
-			.IsEnabled(false);
+			.IsEnabled(!string.IsNullOrWhiteSpace(_customDrafts[questionIndex]));
 		void AddCustom()
 		{
+			if (draftGeneration != _draftGeneration)
+			{
+				return;
+			}
+
 			var text = custom.Text?.Trim() ?? string.Empty;
 			if (text.Length == 0)
 			{
 				return;
 			}
 
-			_extraOptions[_current].Add(new AskOption(text, text, null));
-			_multiSelected[_current].Add(OptionsFor(question).Count - 1);
+			_extraOptions[questionIndex].Add(new AskOption(text, text, null));
+			_multiSelected[questionIndex].Add(OptionsFor(question).Count - 1);
+			_customDrafts[questionIndex] = string.Empty;
 			custom.Text = string.Empty;
 			add.IsEnabled(false);
 			RenderCard();
 		}
 
 		add.OnClick(AddCustom);
-		custom.OnTextChanged(value => add.IsEnabled(!string.IsNullOrWhiteSpace(value)));
+		custom.OnTextChanged(value =>
+		{
+			if (draftGeneration != _draftGeneration)
+			{
+				return;
+			}
+
+			_customDrafts[questionIndex] = value;
+			add.IsEnabled(!string.IsNullOrWhiteSpace(value));
+		});
 		custom.OnKeyDown(key =>
 		{
 			if (key.Key != Key.Enter)
@@ -629,17 +700,29 @@ internal sealed class AskQuestionPanel
 
 	private void RenderText(AskQuestion question, bool multiLine)
 	{
-		var prefill = question.Prefill ?? string.Empty;
+		var questionIndex = _current;
+		var draftGeneration = _draftGeneration;
+		var draft = _textDrafts[questionIndex];
 		if (multiLine)
 		{
 			var editor = new MultiLineTextBox().PrimarySelection()
 				.Height(120)
 				.StyleName(AppStyles.TextInput)
-				.Text(prefill)
+				.Text(draft)
 				.Placeholder(question.Placeholder ?? string.Empty);
 			_body.Children(editor);
+			_textTarget = new AskTextTarget(editor, () => editor.Text, value => editor.Text = value);
 			_draftAnswer = () => AnswerOf(question, editor.Text);
-			editor.OnTextChanged(_ => RefreshPrimaryState());
+			editor.OnTextChanged(value =>
+			{
+				if (draftGeneration != _draftGeneration)
+				{
+					return;
+				}
+
+				_textDrafts[questionIndex] = value;
+				RefreshPrimaryState();
+			});
 			// 多行编辑沿用提交框的约定：Ctrl+Enter 提交，普通 Enter 换行。
 			editor.OnKeyDown(key =>
 			{
@@ -656,11 +739,21 @@ internal sealed class AskQuestionPanel
 
 		var text = new TextBox().PrimarySelection()
 			.StyleName(AppStyles.TextInputLine)
-			.Text(prefill)
+			.Text(draft)
 			.Placeholder(question.Placeholder ?? string.Empty);
 		_body.Children(text);
+		_textTarget = For(text);
 		_draftAnswer = () => AnswerOf(question, text.Text);
-		text.OnTextChanged(_ => RefreshPrimaryState());
+		text.OnTextChanged(value =>
+		{
+			if (draftGeneration != _draftGeneration)
+			{
+				return;
+			}
+
+			_textDrafts[questionIndex] = value;
+			RefreshPrimaryState();
+		});
 		text.OnKeyDown(key =>
 		{
 			if (key.Key != Key.Enter)
@@ -876,9 +969,72 @@ internal sealed class AskQuestionPanel
 		return all;
 	}
 
-	private TextBox CustomInputBox(AskQuestion question) => new TextBox().PrimarySelection()
+	private TextBox CustomInputBox(AskQuestion question, string text) => new TextBox().PrimarySelection()
 		.StyleName(AppStyles.TextInputLine)
+		.Text(text)
 		.Placeholder(question.Placeholder ?? Strings.AskCustomPlaceholder);
+
+	private static AskTextTarget For(TextBox box) => new(box, () => box.Text, value => box.Text = value);
+
+	/// 卡片打开时主输入区已经折叠，拖放继续冒泡只会写进看不见的草稿。
+	/// 卡片自己接管落点：有文本题就把路径插到当前输入框，没有就明确拒绝。
+	private void OnFilesDragOver(DragEventArgs e)
+	{
+		var accepts = IsOpen && _expanded && !_submitting && !_finishing && _textTarget is not null &&
+			ComposerDrop.CanAccept(e.Data) && (e.AllowedEffects & DragDropEffects.Copy) != 0;
+		e.Accepted = accepts;
+		e.Effect = accepts ? DragDropEffects.Copy : DragDropEffects.None;
+		e.Handled = true;
+	}
+
+	private void OnFilesDropped(DragEventArgs e)
+	{
+		OnFilesDragOver(e);
+		if (!e.Accepted || _textTarget is not { } target)
+		{
+			return;
+		}
+
+		// 格式在 DragOver 时就已宣告，路径要到 Drop 才拿得到（X11 尤其如此）。
+		e.Accepted = false;
+		e.Effect = DragDropEffects.None;
+		var paths = ComposerDrop.Paths(e.Data, _cwd?.Invoke() ?? Environment.CurrentDirectory);
+		if (paths.Count == 0)
+		{
+			return;
+		}
+
+		InsertReferences(target, paths);
+		e.Accepted = true;
+		e.Effect = DragDropEffects.Copy;
+	}
+
+	private static void InsertReferences(AskTextTarget target, IReadOnlyList<string> paths)
+	{
+		var text = target.Text;
+		var start = Math.Clamp(target.Control.SelectionStart, 0, text.Length);
+		var length = Math.Clamp(target.Control.SelectionLength, 0, text.Length - start);
+		var end = start + length;
+		var references = string.Join(" ", paths.Select(ComposerDrop.Reference));
+		var before = start > 0 && !char.IsWhiteSpace(text[start - 1]) ? " " : string.Empty;
+		var after = end < text.Length && !char.IsWhiteSpace(text[end]) ? " " : string.Empty;
+		var insertion = before + references + after;
+		target.Text = string.Concat(text.AsSpan(0, start), insertion, text.AsSpan(end));
+		target.Control.Select(start + insertion.Length, 0);
+		target.Control.Focus();
+		target.Control.ScrollToCaret();
+	}
+
+	private sealed class AskTextTarget(TextBase control, Func<string> getText, Action<string> setText)
+	{
+		public TextBase Control { get; } = control;
+
+		public string Text
+		{
+			get => getText();
+			set => setText(value);
+		}
+	}
 
 	/// 卡片打开后把焦点交给真正要用的控件：文本题给输入框（一进来就能打字），
 	/// 选项题给第一个可点的按钮（回车/空格就能选）。之前主按钮禁用时一个控件都拿不到焦点，

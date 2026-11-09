@@ -29,6 +29,8 @@ public sealed class SessionTabAskTests
 
 		Assert.True(tab.AskPending);
 		Assert.False(tab.InputAreaVisible);
+		// 卡片自己接落点：外层不再收路径，避免写进已折叠的草稿。
+		Assert.False(tab.View.AllowDrop);
 		// 卡片在会话视图里（不是窗口 OverlayLayer），选项、自定义输入与关闭键都在。
 		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == "选哪个？");
 		Assert.Contains(Find<Button>(tab.View), button => ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true);
@@ -37,6 +39,7 @@ public sealed class SessionTabAskTests
 
 		Assert.False(tab.AskPending);
 		Assert.True(tab.InputAreaVisible);
+		Assert.True(tab.View.AllowDrop);
 		Assert.True(AskQuestions.ParseResponse(await pending, Questions).Cancelled);
 	}
 

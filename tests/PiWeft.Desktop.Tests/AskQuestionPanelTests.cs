@@ -1,6 +1,7 @@
 using System.Reflection;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Platform;
 using PiWeft.CodingAgent;
 using PiWeft.Desktop;
 using Xunit;
@@ -43,6 +44,239 @@ public sealed class AskQuestionPanelTests
 		Assert.Contains(Find<TextBox>(panel.View), box => box.Placeholder == Strings.AskCustomPlaceholder);
 		panel.Close();
 	}
+
+	[Fact]
+	public void TextDraftsSurviveNavigation()
+	{
+		var panel = new AskQuestionPanel();
+		var host = new StackPanel();
+		_ = new Window().Content(host);
+		host.Children(panel.View);
+		_ = panel.ShowAsync(
+			[
+				new AskQuestion("q1", "input", "第一题？", null, "第一题占位", null),
+				new AskQuestion("q2", "input", "第二题？", null, "第二题占位", null),
+			],
+			review: false,
+			CancellationToken.None);
+
+		var first = Find<TextBox>(panel.View).Single(box => box.Placeholder == "第一题占位");
+		first.Text = "第一题草稿";
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
+			ContentText(button) == Strings.AskNext && button.IsEnabled));
+
+		var second = Find<TextBox>(panel.View).Single(box => box.Placeholder == "第二题占位");
+		second.Text = "第二题草稿";
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
+			ContentText(button) == Strings.AskPrevious));
+
+		var firstAgain = Find<TextBox>(panel.View).Single(box => box.Placeholder == "第一题占位");
+		Assert.Equal("第一题草稿", firstAgain.Text);
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
+			ContentText(button) == Strings.AskNext && button.IsEnabled));
+
+		var secondAgain = Find<TextBox>(panel.View).Single(box => box.Placeholder == "第二题占位");
+		Assert.Equal("第二题草稿", secondAgain.Text);
+		panel.Close();
+	}
+
+	[Fact]
+	public void CustomDraftsSurviveNavigationAndOptionToggles()
+	{
+		var panel = new AskQuestionPanel();
+		var host = new StackPanel();
+		_ = new Window().Content(host);
+		host.Children(panel.View);
+		_ = panel.ShowAsync(
+			[
+				new AskQuestion("q1", "select", "选哪个？", [new AskOption("选项 A", "A", null)], null, null),
+				new AskQuestion("q2", "multi_select", "多选？", [new AskOption("选项 B", "B", null)], null, null),
+			],
+			review: false,
+			CancellationToken.None);
+
+		var selectCustom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		selectCustom.Text = "单选自定义草稿";
+		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
+			ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true));
+
+		// 第二题是多选：勾选项会重绘正文，自定义输入要从草稿恢复。
+		var multiCustom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		multiCustom.Text = "多选自定义草稿";
+		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
+			ContentText(button)?.Contains("选项 B", StringComparison.Ordinal) == true));
+
+		multiCustom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		Assert.Equal("多选自定义草稿", multiCustom.Text);
+		Assert.True(Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskCustomAdd).IsEnabled);
+
+		// 回到第一题：单选自定义草稿也要还在，且「使用」可用。
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
+			ContentText(button) == Strings.AskPrevious));
+		selectCustom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		Assert.Equal("单选自定义草稿", selectCustom.Text);
+		Assert.True(Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskCustomUse).IsEnabled);
+		panel.Close();
+	}
+
+	[Fact]
+	public void EditorDraftsSurviveNavigation()
+	{
+		var panel = new AskQuestionPanel();
+		var host = new StackPanel();
+		_ = new Window().Content(host);
+		host.Children(panel.View);
+		_ = panel.ShowAsync(
+			[
+				new AskQuestion("q1", "select", "选哪个？", [new AskOption("选项 A", "A", null)], null, null),
+				new AskQuestion("q2", "editor", "写点什么？", null, "编辑器占位", null),
+			],
+			review: false,
+			CancellationToken.None);
+
+		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
+			ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true));
+		var editor = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "编辑器占位");
+		editor.Text = "多行草稿";
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
+			ContentText(button) == Strings.AskPrevious));
+
+		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
+			ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true));
+		editor = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "编辑器占位");
+		Assert.Equal("多行草稿", editor.Text);
+		panel.Close();
+	}
+
+	[Fact]
+	public void NewBatchResetsDrafts()
+	{
+		var panel = new AskQuestionPanel();
+		var host = new StackPanel();
+		_ = new Window().Content(host);
+		host.Children(panel.View);
+		_ = panel.ShowAsync(
+			[new AskQuestion("q1", "input", "题？", null, "旧占位", null)],
+			review: false,
+			CancellationToken.None);
+
+		var oldBox = Find<TextBox>(panel.View).Single(box => box.Placeholder == "旧占位");
+		oldBox.Text = "旧草稿";
+		panel.Close();
+		// 旧控件已脱离树；迟到的 TextChanged 必须被世代号忽略，不能写进下一批草稿。
+		oldBox.Text = "关闭后写入";
+		_ = panel.ShowAsync(
+			[new AskQuestion("q1", "input", "题？", null, "新占位", null)],
+			review: false,
+			CancellationToken.None);
+
+		Assert.Equal(string.Empty, Find<TextBox>(panel.View).Single(box => box.Placeholder == "新占位").Text);
+		panel.Close();
+	}
+
+	[Fact]
+	public void DroppingAPathInsertsAReferenceAtTheCaret()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "pi-ask-drop-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var file = Path.Combine(root, "file with spaces.txt");
+			File.WriteAllText(file, "text");
+			var panel = new AskQuestionPanel(cwd: () => root);
+			var host = new StackPanel();
+			_ = new Window().Content(host);
+			host.Children(panel.View);
+			_ = panel.ShowAsync(
+				[new AskQuestion("q1", "input", "哪个文件？", null, "写点什么", null)],
+				review: false,
+				CancellationToken.None);
+
+			var box = Find<TextBox>(panel.View).Single(candidate => candidate.Placeholder == "写点什么");
+			box.Text = "before after";
+			box.Select(6, 0);
+
+			var data = new DataObject();
+			data.SetStorageItems([file]);
+			var over = new DragEventArgs(data, default, default);
+			RaiseDrag(panel.View, "OnDragOver", over);
+			Assert.True(over.Accepted);
+			Assert.Equal(DragDropEffects.Copy, over.Effect);
+
+			var drop = new DragEventArgs(data, default, default);
+			RaiseDrag(panel.View, "OnDrop", drop);
+			Assert.True(drop.Accepted);
+			var reference = ComposerDrop.Reference(file);
+			Assert.Equal($"before {reference} after", box.Text);
+			Assert.Equal(6 + reference.Length + 1, box.SelectionStart);
+			panel.Close();
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
+	public void DroppingAPathTargetsTheSelectCustomInput()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "pi-ask-drop-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var file = Path.Combine(root, "file.txt");
+			File.WriteAllText(file, "text");
+			var panel = new AskQuestionPanel(cwd: () => root);
+			var host = new StackPanel();
+			_ = new Window().Content(host);
+			host.Children(panel.View);
+			_ = panel.ShowAsync(
+				[new AskQuestion("q1", "select", "选哪个？", [new AskOption("选项 A", "A", null)], null, null)],
+				review: false,
+				CancellationToken.None);
+
+			var custom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+			var data = new DataObject();
+			data.SetStorageItems([file]);
+			var drop = new DragEventArgs(data, default, default);
+			RaiseDrag(panel.View, "OnDrop", drop);
+
+			Assert.True(drop.Accepted);
+			Assert.Equal(ComposerDrop.Reference(file), custom.Text);
+			Assert.True(Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskCustomUse).IsEnabled);
+			panel.Close();
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
+	public void ConfirmQuestionRejectsPathDropsInsteadOfLeakingToTheHiddenComposer()
+	{
+		var panel = new AskQuestionPanel();
+		var host = new StackPanel();
+		_ = new Window().Content(host);
+		host.Children(panel.View);
+		_ = panel.ShowAsync(
+			[new AskQuestion("q1", "confirm", "继续？", null, null, null)],
+			review: false,
+			CancellationToken.None);
+
+		var data = new DataObject();
+		data.SetStorageItems([Path.GetTempPath()]);
+		var args = new DragEventArgs(data, default, default);
+		RaiseDrag(panel.View, "OnDragOver", args);
+
+		Assert.False(args.Accepted);
+		Assert.Equal(DragDropEffects.None, args.Effect);
+		Assert.True(args.Handled);
+		panel.Close();
+	}
+
+	private static void RaiseDrag(UIElement target, string name, DragEventArgs args) =>
+		typeof(UIElement).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, [args]);
 
 	[Fact]
 	public async Task AnsweringOptionsAdvancesAndSubmitsTheBatch()
