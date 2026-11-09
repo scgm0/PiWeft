@@ -66,7 +66,7 @@ public sealed partial class MainWindow : Window
 	private Task? _sessionsLoad;
 	private bool _sessionsLoaded;
 	// 侧栏里展开过的项目（工作目录）。默认折叠，只有这里记录过的才自动展开。
-	private readonly HashSet<string> _expandedProjects = new(StringComparer.Ordinal);
+	private readonly HashSet<string> _expandedProjects = new(SessionGroups.PathComparer);
 	// 准备阶段会话面板里的加载段落（打开会话 / 写回会话名称），以及窗口关闭时中断后台读取的令牌源。
 	private readonly SessionLoadingPanel _sessionLoading = new();
 	private TextBlock _welcomeTitle = null!;
@@ -1198,7 +1198,7 @@ public sealed partial class MainWindow : Window
 	private async Task LoadSessionsAsync(DesktopPreference preference)
 	{
 		// 扫描期间先说明在干什么，避免展开侧栏看到空列表以为没有会话。
-		if (!_projectsTab) _chatsEmpty.Text(Strings.SessionsScanning).IsVisible(true);
+		ShowSidebarScanning();
 		IReadOnlyList<SessionListItem> listed;
 		try
 		{
@@ -1208,13 +1208,13 @@ public sealed partial class MainWindow : Window
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "List sessions", ex);
 			_sessionsLoad = null;
-			if (!_projectsTab) _chatsEmpty.Text(Strings.ChatsEmpty);
+			UpdateSidebarEmptyHints();
 			return;
 		}
 
 		_sessionsLoaded = true;
 		_sessionsLoad = null;
-		if (!_projectsTab) _chatsEmpty.Text(Strings.ChatsEmpty);
+		UpdateSidebarEmptyHints();
 
 		_allSessions = listed;
 		// 置顶的会话排在最前，其余保持最近修改优先。
@@ -2556,7 +2556,7 @@ public sealed partial class MainWindow : Window
 	/// 侧栏项目是否默认展开：只认「用户上次展开过」与「包含当前选中会话」两种。
 	/// 默认折叠：会话多的机器上全展开，等于每次启动都铺一遍整份清单。
 	internal static bool ShouldExpandProject(string? projectCwd, bool containsSelected, IReadOnlyList<string> expandedProjects) =>
-		projectCwd is { Length: > 0 } && (containsSelected || expandedProjects.Contains(projectCwd, StringComparer.Ordinal));
+		projectCwd is { Length: > 0 } && (containsSelected || expandedProjects.Contains(projectCwd, SessionGroups.PathComparer));
 
 	/// 该项目节点里是否有当前会话。按路径比对，不按会话 id：外部工具生成的会话
 	/// 头部 id 可能与文件名里的 uuid 不一致，用 id 会漏判，把选中项折在看不见的地方。
@@ -2911,7 +2911,7 @@ public sealed partial class MainWindow : Window
 			return "?";
 		}
 
-		var trimmed = cwd.TrimEnd(Path.DirectorySeparatorChar);
+		var trimmed = Path.TrimEndingDirectorySeparator(cwd);
 		var name = Path.GetFileName(trimmed);
 		return name.Length > 0 ? name : trimmed;
 	}

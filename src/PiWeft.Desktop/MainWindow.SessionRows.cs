@@ -165,8 +165,13 @@ public sealed partial class MainWindow
 		}
 
 		Add(Strings.ProjectMenuNewTask, () => NewSessionIn(cwd));
-		Add(Strings.ProjectMenuReveal, () => Shell.Open(cwd));
-		Add(Strings.ProjectMenuRemove, () => RemoveProject(cwd));
+		// 没有 cwd 的旧会话聚成「?」分组：它不是一个目录，没有可打开或移除的项目记录。
+		if (cwd.Length > 0)
+		{
+			Add(Strings.ProjectMenuReveal, () => Shell.Open(cwd));
+			Add(Strings.ProjectMenuRemove, () => RemoveProject(cwd));
+		}
+
 		menu.Show(owner);
 	}
 
@@ -201,11 +206,23 @@ public sealed partial class MainWindow
 		}
 	}
 
-	/// 分段里的空态提示：列表空了也不会只剩一片空白。
+	/// 分段里的空态提示：列表空了也不会只剩一片空白；扫描途中说明在读取，别显示成「还没有」。
 	private void UpdateSidebarEmptyHints()
 	{
-		_projectsEmpty.IsVisible(_projectsTab && _sessionNodes.Count == 0);
-		_chatsEmpty.IsVisible(!_projectsTab && _chatNodes.Count == 0);
+		var scanning = !_sessionsLoaded && _sessionsLoad is not null;
+		_projectsEmpty
+			.Text(scanning ? Strings.SessionsScanning : Strings.ProjectsEmpty)
+			.IsVisible(_projectsTab && _sessionNodes.Count == 0);
+		_chatsEmpty
+			.Text(scanning ? Strings.SessionsScanning : Strings.ChatsEmpty)
+			.IsVisible(!_projectsTab && _chatNodes.Count == 0);
+	}
+
+	/// 扫描刚开始：<see cref="_sessionsLoad"/> 要到返回后才赋值，先手写一次「读取中」。
+	private void ShowSidebarScanning()
+	{
+		if (_projectsTab) _projectsEmpty.Text(Strings.SessionsScanning).IsVisible(true);
+		else _chatsEmpty.Text(Strings.SessionsScanning).IsVisible(true);
 	}
 
 	/// 添加项目后的揭示：侧栏收着先展开，再切到「项目」分段。少了这两步，
@@ -223,10 +240,11 @@ public sealed partial class MainWindow
 	}
 
 	/// 展开项目行并滚进可视区。不抢当前选中项：选中行代表正在打开的会话。
-	private void RevealProject(string cwd)
+	/// <paramref name="path"/> 是 <see cref="SessionGroups.ProjectPath"/> 规范化后的目录，与行标签同形。
+	private void RevealProject(string path)
 	{
 		var node = _sessionNodes.FirstOrDefault(node =>
-			node.Tag is string project && project.Length > 0 && SessionGroups.SamePath(project, cwd));
+			node.Tag is string project && project.Length > 0 && SessionGroups.SameKey(project, path));
 		if (node is null)
 		{
 			return;
@@ -312,26 +330,15 @@ public sealed partial class MainWindow
 
 	private void RemoveProject(string cwd)
 	{
-		string path;
-		try
-		{
-			path = SessionGroups.ProjectPath(cwd);
-		}
-		catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-		{
-			_banner.Text(Strings.ProjectRemoveFailed(cwd));
-			return;
-		}
-
-		// 没有工作目录的旧会话聚成的「?」分组不是一个目录，没有可移除的记录。
-		if (path.Length == 0)
+		// 「?」分组没有移除入口；这里兜一层，避免把空串写进已移除清单。
+		if (cwd.Length == 0)
 		{
 			return;
 		}
 
 		try
 		{
-			DesktopPreference.Load().WithoutProject(path).Save();
+			DesktopPreference.Load().WithoutProject(cwd).Save();
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{

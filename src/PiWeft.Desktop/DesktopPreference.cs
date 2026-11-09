@@ -437,13 +437,13 @@ public sealed record DesktopPreference
 
 	public DesktopPreference RememberProject(string cwd) => this with
 	{
-		RecentProjects = Prepend(RecentProjects, SessionGroups.ProjectPath(cwd)),
+		RecentProjects = Prepend(RecentProjects, SessionGroups.ProjectPath(cwd), SessionGroups.PathComparer),
 	};
 
 	/// 添加项目：记进清单，并从「已移除」里去掉同一目录的旧记录（同一个目录换了写法也算同一个）。
 	public DesktopPreference WithProject(string cwd)
 	{
-		var path = SessionGroups.ProjectPath(cwd);
+		var path = SessionGroups.SafeProjectPath(cwd);
 		return this with
 		{
 			Projects = [path, .. Projects.Where(item => !SessionGroups.SamePath(item, path))],
@@ -454,7 +454,7 @@ public sealed record DesktopPreference
 	/// 从侧栏移除项目：删掉清单记录并记进「已移除」。只动清单，磁盘上的会话文件保留。
 	public DesktopPreference WithoutProject(string cwd)
 	{
-		var path = SessionGroups.ProjectPath(cwd);
+		var path = SessionGroups.SafeProjectPath(cwd);
 		return this with
 		{
 			Projects = [.. Projects.Where(item => !SessionGroups.SamePath(item, path))],
@@ -476,21 +476,25 @@ public sealed record DesktopPreference
 			: $"{provider}/{id}",
 	};
 
-	private static IReadOnlyList<string> Prepend(IReadOnlyList<string> items, string value) =>
-		[value, .. items.Where(item => !string.Equals(item, value, StringComparison.Ordinal)).Take(7)];
+	private static IReadOnlyList<string> Prepend(IReadOnlyList<string> items, string value, StringComparer? comparer = null)
+	{
+		var equality = comparer ?? StringComparer.Ordinal;
+		return [value, .. items.Where(item => !equality.Equals(item, value)).Take(7)];
+	}
 
 	/// 项目路径按统一写法读：旧文件里同一目录可能同时存在带与不带结尾分隔符的两条记录。
 	private static IReadOnlyList<string> ReadProjectPaths(JsonNode? node)
 	{
 		if (node is not JsonArray array) return [];
 		var paths = new List<string>(array.Count);
+		var seen = new HashSet<string>(array.Count, SessionGroups.PathComparer);
 		foreach (var item in array)
 		{
 			if (item is not JsonValue value || !value.TryGetValue<string>(out var text) || text.Length == 0) continue;
 			try
 			{
 				var path = SessionGroups.ProjectPath(text);
-				if (!paths.Contains(path, StringComparer.Ordinal)) paths.Add(path);
+				if (seen.Add(path)) paths.Add(path);
 			}
 			catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
 			{

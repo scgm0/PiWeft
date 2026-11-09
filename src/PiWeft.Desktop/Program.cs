@@ -142,8 +142,10 @@ public static class Program
 		}
 
 		// 每个工作目录一个实例，避免两个窗口同时编辑同一批会话。
+		// Windows/macOS 的路径大小写不敏感：同一个目录换了写法也要落到同一个实例键。
+		var identity = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? cwd.ToUpperInvariant() : cwd;
 		var instanceKey = Convert.ToHexString(
-			System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(cwd)))[..12];
+			System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)))[..12];
 
 		using var instance = SingleInstance.Acquire(instanceKey);
 		if (!instance.IsFirstInstance)

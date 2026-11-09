@@ -30,11 +30,19 @@ internal static class SessionGroups
 		IReadOnlyList<string> dismissedProjects)
 	{
 		var dismissed = ToKeys(dismissedProjects);
-		var groups = new Dictionary<string, List<SessionListItem>>(StringComparer.Ordinal);
+		var groups = new Dictionary<string, List<SessionListItem>>(PathComparer);
 		var order = new List<string>();
+		// 会话通常只来自几个工作目录：每次刷新每个目录只规范化一次，省掉每条会话一次 GetFullPath。
+		var keys = new Dictionary<string, string>(PathComparer);
 
-		foreach (var item in Projects(sessions, chatWorkspace).DistinctBy(static item => item.Path))
+		// 直接走一遍全部会话：不先物化「项目会话」列表，刷新时少一次分配与遍历。
+		foreach (var item in sessions.DistinctBy(static item => item.Path))
 		{
+			if (IsChat(item, chatWorkspace))
+			{
+				continue;
+			}
+
 			// 没有 cwd 的旧会话聚成「?」分组：它不是一个目录，不参与移除过滤。
 			var key = item.Cwd.Length == 0 ? string.Empty : PathKey(item.Cwd);
 			if (key.Length > 0 && dismissed.Contains(key))
@@ -44,7 +52,7 @@ internal static class SessionGroups
 
 			if (!groups.TryGetValue(key, out var list))
 			{
-				groups[key] = list = [];
+				groups[key] = list = new List<SessionListItem>(2);
 				order.Add(key);
 			}
 
@@ -54,68 +62,59 @@ internal static class SessionGroups
 		foreach (var path in addedProjects)
 		{
 			var key = PathKey(path);
-			if (dismissed.Contains(key) || groups.ContainsKey(key))
+			if (dismissed.Contains(key))
 			{
 				continue;
 			}
 
-			groups[key] = [];
-			order.Add(key);
+			if (groups.TryAdd(key, []))
+			{
+				order.Add(key);
+			}
 		}
 
-		// 有会话的项目按最近修改排；刚添加、还没有会话的排在后面，并保持添加顺序（新的在前）。
+		// 有会话的项目按最近修改排；刚添加、还没有会话的排在后面（OrderBy 稳定，保持添加顺序）。
 		return
 		[
 			.. order
-				.Select((key, index) => (Key: key, Index: index, Sessions: (IReadOnlyList<SessionListItem>)groups[key]))
+				.Select(key => new ProjectGroup(key, groups[key]))
 				.OrderByDescending(static group => group.Sessions.Count > 0
 					? group.Sessions.Max(static item => item.Modified)
-					: DateTimeOffset.MinValue)
-				.ThenBy(static group => group.Index)
-				.Select(static group => new ProjectGroup(group.Key, group.Sessions)),
+					: DateTimeOffset.MinValue),
 		];
+
+		string PathKey(string path)
+		{
+			if (keys.TryGetValue(path, out var cached))
+			{
+				return cached;
+			}
+
+			var key = SafeProjectPath(path);
+			keys[path] = key;
+			return key;
+		}
 	}
 
 	/// 同一个目录的判定：Windows/macOS 大小写不敏感，Linux 敏感；
-	/// 无法解析成绝对路径时退化为原始字符串比较，绝不抛异常打断侧栏刷新。
-	public static bool SamePath(string left, string right)
-	{
-		var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
-			? StringComparison.OrdinalIgnoreCase
-			: StringComparison.Ordinal;
+	/// 无法解析成绝对路径时退化为原始字符串比较，不抛异常打断侧栏刷新。
+	public static bool SamePath(string left, string right) => SameKey(SafeProjectPath(left), SafeProjectPath(right));
 
-		try
-		{
-			return string.Equals(ProjectPath(left), ProjectPath(right), comparison);
-		}
-		catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-		{
-			return string.Equals(left, right, comparison);
-		}
-	}
+	/// 两个已规范化的项目路径键是否同一个目录。
+	public static bool SameKey(string left, string right) => PathComparer.Equals(left, right);
+
+	/// 项目路径的比较器：Windows/macOS 不区分大小写，Linux 区分。
+	/// 侧栏的字典、集合与展开记录都用它，避免同一个目录因大小写不同占两行。
+	public static StringComparer PathComparer => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+		? StringComparer.OrdinalIgnoreCase
+		: StringComparer.Ordinal;
 
 	/// 项目路径的统一写法：绝对路径，去掉结尾分隔符。同一目录的 `/x`、`/x/`、`/x/../x`
-	/// 落到同一个项目，也落到同一个单实例键。
-	public static string ProjectPath(string path)
-	{
-		var full = Path.GetFullPath(path);
-		var trimmed = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-		return trimmed.Length == 0 ? full : trimmed;
-	}
+	/// 落到同一个项目，也落到同一个单实例键。根目录（`/`、`C:\`）保持原样。
+	public static string ProjectPath(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
-	private static HashSet<string> ToKeys(IReadOnlyList<string> paths)
-	{
-		var keys = new HashSet<string>(StringComparer.Ordinal);
-		foreach (var path in paths)
-		{
-			keys.Add(PathKey(path));
-		}
-
-		return keys;
-	}
-
-	/// 手改文件或旧会话里可能留着解析不了的 cwd：退化成原串参与比较，不让侧栏刷新失败。
-	private static string PathKey(string path)
+	/// <see cref="ProjectPath"/> 的宽松版：手改的偏好或旧会话里解析不了的 cwd 按原串返回。
+	public static string SafeProjectPath(string path)
 	{
 		try
 		{
@@ -125,5 +124,16 @@ internal static class SessionGroups
 		{
 			return path;
 		}
+	}
+
+	private static HashSet<string> ToKeys(IReadOnlyList<string> paths)
+	{
+		var keys = new HashSet<string>(paths.Count, PathComparer);
+		foreach (var path in paths)
+		{
+			keys.Add(SafeProjectPath(path));
+		}
+
+		return keys;
 	}
 }

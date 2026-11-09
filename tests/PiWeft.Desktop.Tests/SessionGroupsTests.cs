@@ -70,6 +70,15 @@ public class SessionGroupsTests
 	}
 
 	[Fact]
+	public void ProjectPathKeepsTheFileSystemRoot()
+	{
+		var root = Path.GetPathRoot(Path.GetTempPath())!;
+
+		Assert.Equal(root, SessionGroups.ProjectPath(root));
+		Assert.Equal(root, SessionGroups.ProjectPath(root + Path.DirectorySeparatorChar));
+	}
+
+	[Fact]
 	public void AddedFolderWithoutSessionsStillGetsARow()
 	{
 		var empty = Path.Combine(Path.GetTempPath(), "piweft-empty-project");
