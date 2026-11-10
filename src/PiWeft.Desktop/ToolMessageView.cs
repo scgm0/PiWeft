@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using System.Globalization;
 
 namespace PiWeft.Desktop;
 
@@ -119,17 +120,25 @@ internal sealed class ToolMessageView
 		var body = new StackPanel().Spacing(AppTheme.Space2);
 		Button? copy = null;
 		if (_copy is not null && entry.ToolArguments is { Length: > 0 } arguments &&
-			(details.Fields.Count > 0 || details.BlockText is { Length: > 0 } || details.Todos.Count > 0 || details.Fallback is { Length: > 0 }))
+			(details.Fields.Count > 0 || details.Exchanges.Count > 0 || details.BlockText is { Length: > 0 } || details.Todos.Count > 0 || details.Fallback is { Length: > 0 }))
 		{
 			// 参数分栏后不再是可选中的文本，给一个整包复制入口；原文保持 JSON，不带展示层的改写。
 			copy = AppIcons.Button("copy", Strings.CopyToolArguments, () => _copy(arguments), size: 12);
 		}
 		var copyPending = copy is not null;
+		var answered = details.Exchanges.Count > 0 && details.Exchanges.All(static exchange => exchange.Answer is { Length: > 0 });
 		if (details.Fields.Count > 0)
 		{
 			var fields = FieldRows(details.Fields);
 			body.Children(copyPending ? WithTrailing(fields, copy!) : fields);
 			copyPending = false;
+		}
+		if (details.Exchanges.Count > 0)
+		{
+			// 答案就贴在题干下；只有没作答（取消/无答案）时才在结果区原样贴回去。
+			body.Children(SectionRow(answered ? Strings.ToolAnswersLabel : Strings.ToolQuestionLabel, copyPending ? copy : null));
+			copyPending = false;
+			body.Children(ExchangeRows(details.Exchanges));
 		}
 		if (details.BlockText is { Length: > 0 } blockText)
 		{
@@ -161,7 +170,7 @@ internal sealed class ToolMessageView
 				unified.Column(1).Margin(new Thickness(6, 0, 0, 0)),
 				sideBySide.Column(2).Margin(new Thickness(4, 0, 0, 0))), host);
 		}
-		var result = ResultText(entry, details);
+		var result = answered ? null : ResultText(entry, details);
 		if (result is { Length: > 0 })
 		{
 			body.Children(SectionLabel(Strings.ToolResultLabel));
@@ -251,6 +260,41 @@ internal sealed class ToolMessageView
 				text.Column(1).Margin(new Thickness(8, 0, 0, 0))));
 		}
 		return panel;
+	}
+
+	private StackPanel ExchangeRows(IReadOnlyList<ToolCallExchange> exchanges)
+	{
+		var rows = new StackPanel().Spacing(AppTheme.Space2);
+		for (var index = 0; index < exchanges.Count; index++)
+		{
+			var exchange = exchanges[index];
+			var content = new StackPanel().Spacing(2).Children(Prose(exchange.Question, muted: true));
+			if (exchange.Answer is { Length: > 0 } answer)
+			{
+				content.Children(new Grid().Columns("Auto,*").Children(
+					new TextBlock().Text("→").FontSize(AppTheme.FontSizeCaption).FaintText()
+						.Margin(new Thickness(0, 0, 6, 0)).VerticalAlignment(VerticalAlignment.Top).Column(0),
+					Prose(answer, muted: false).Column(1)));
+			}
+			// 序号列兼作对齐基准：多题时一眼能把答案对回题干。
+			rows.Children(new Grid().Columns("18,*").Children(
+				new TextBlock().Text((index + 1).ToString(CultureInfo.InvariantCulture))
+					.FontSize(AppTheme.FontSizeMicro).FaintText()
+					.Margin(new Thickness(0, 2, 0, 0)).VerticalAlignment(VerticalAlignment.Top).Column(0),
+				content.Column(1)));
+		}
+		return rows;
+	}
+
+	private MultiLineTextBox Prose(string text, bool muted)
+	{
+		var view = Selectable(text);
+		view.WithTheme((theme, block) =>
+		{
+			block.Foreground = muted ? AppTheme.For(theme).TextMuted : AppTheme.For(theme).TextPrimary;
+			AppStyles.RefreshTextView(block);
+		});
+		return view;
 	}
 
 	private MultiLineTextBox Selectable(string text)

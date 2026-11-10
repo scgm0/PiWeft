@@ -72,8 +72,10 @@ public static class DiffView
 			.Child(new DockPanel().LastChildFill().Children(gutter.DockLeft(), horizontal));
 	}
 
-	/// 并排 diff：左旧右新两列，行数一致逐行对齐；每列可独立横向滚动，纵向共用同步偏移（大补丁走内部限高视口）。
-	/// hunk 头渲染成两列都显示的分隔行。
+	/// 并排 diff：左旧右新两列，行数一致逐行对齐；hunk 头渲染成两列都显示的分隔行。
+	/// 每列是一个可选中、可横向滚动的整篇文本控件：列宽由宿主均分，长行在列内横向滚动，
+	/// 两列的横向偏移同步到同一个绝对值（滚动一列，另一列跟着走），行号列固定在左缘。
+	/// 大补丁的正文限高并在内部纵向滚动，两侧与行号列共用同一纵向偏移。
 	internal static UIElement RenderSideBySide(string patch, TextFocusScrollGuard? focus)
 	{
 		var rows = SideBySideDiff.Parse(patch);
@@ -82,15 +84,16 @@ public static class DiffView
 			return Render(patch, focus);
 		}
 
-		var width = Math.Max(220, AppTheme.MessageMaxWidth / 2 - 12);
 		var oldText = string.Join('\n', rows.Select(row => Line(row, true)));
 		var newText = string.Join('\n', rows.Select(row => Line(row, false)));
 		var large = MessageText.IsLargeText(oldText) || MessageText.IsLargeText(newText);
-		var left = SideColumn(rows, old: true, width, focus, oldText, large);
-		var right = SideColumn(rows, old: false, width, focus, newText, large);
+		var left = SideColumn(rows, old: true, focus, oldText, large);
+		var right = SideColumn(rows, old: false, focus, newText, large);
+		SyncHorizontal(left, right);
 		if (large) SyncSideColumns(left, right);
-		var content = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
-			.Children(left.View, right.View);
+		// 两列等分宽度：列宽跟着宿主走，不固定在阅读宽度的一半上。
+		var content = new Grid().Columns("*,*").Spacing(AppTheme.Space2)
+			.Children(left.View.Column(0), right.View.Column(1));
 
 		return new Border().StyleName(AppStyles.Code)
 			.WithTheme((theme, border) => border.BorderBrush = AppTheme.For(theme).Border)
@@ -99,7 +102,7 @@ public static class DiffView
 			.Child(new ScrollViewer().Content(content).AutoVerticalScroll().NoHorizontalScroll().SmoothScrolling());
 	}
 
-	private static SideColumnView SideColumn(IReadOnlyList<DiffRow> rows, bool old, double width, TextFocusScrollGuard? focus,
+	private static SideColumnView SideColumn(IReadOnlyList<DiffRow> rows, bool old, TextFocusScrollGuard? focus,
 		string text, bool large)
 	{
 		var numbers = string.Join('\n', rows.Select(row => (old ? row.OldNumber : row.NewNumber)?.ToString() ?? string.Empty));
@@ -123,15 +126,42 @@ public static class DiffView
 		gutter.Tag = null;
 		if (large) gutter.MaxHeight(MessageText.LargeTextMaxHeight).VerticalAlignment(VerticalAlignment.Top);
 
-		var view = new Border().Width(width)
-			.Child(new DockPanel().LastChildFill().Children(
-				gutter.DockLeft(),
-				new ScrollViewer().BorderThickness(0).Background(AppTheme.Transparent)
-					.Content(body).AutoHorizontalScroll().NoVerticalScroll().SmoothScrolling()));
-		return new SideColumnView(view, body, gutter);
+		// 行号列固定 40：横向滚动只动正文，行号留在左缘。
+		var scroller = new ScrollViewer().BorderThickness(0).Background(AppTheme.Transparent)
+			.Content(body).AutoHorizontalScroll().NoVerticalScroll().SmoothScrolling();
+		var view = new Grid().Columns("Auto,*").Children(
+			gutter.Column(0),
+			scroller.Column(1));
+		return new SideColumnView(view, body, gutter, scroller);
 	}
 
-	private readonly record struct SideColumnView(Border View, MultiLineTextBox Body, MultiLineTextBox Gutter);
+	private readonly record struct SideColumnView(Grid View, MultiLineTextBox Body, MultiLineTextBox Gutter, ScrollViewer Scroller);
+
+	/// 两列横向偏移同步到同一个绝对值：读一条长行时滚一列，另一列跟着走，
+	/// 行号与两侧内容始终在同一列位置。空一侧的内容更短时会被自身上限夹住，属于预期。
+	private static void SyncHorizontal(SideColumnView left, SideColumnView right)
+	{
+		var syncing = false;
+		left.Scroller.ScrollChanged += () => Sync(left.Scroller, right.Scroller);
+		right.Scroller.ScrollChanged += () => Sync(right.Scroller, left.Scroller);
+
+		void Sync(ScrollViewer source, ScrollViewer target)
+		{
+			if (syncing) return;
+			// 两个视口宽度相同，只有超出宽度的长行才会产生偏移；相同就什么都不做。
+			var offset = source.HorizontalOffset;
+			if (Math.Abs(target.HorizontalOffset - offset) < 0.5) return;
+			syncing = true;
+			try
+			{
+				target.SetScrollOffsets(offset, target.VerticalOffset);
+			}
+			finally
+			{
+				syncing = false;
+			}
+		}
+	}
 
 	private static void SyncVertical(MultiLineTextBox source, MultiLineTextBox target)
 	{

@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace PiWeft.Desktop;
 
 /// 一轮里同一个文件的改动汇总：成功写入次数、增删行数与合并后的统一补丁。
@@ -17,16 +19,14 @@ public sealed record ChatFileChange(string Path, int Count, int Added, int Remov
 /// 路径查找走字典，避免几十次工具调用各扫一遍列表。
 internal sealed class TurnFileChanges
 {
-	private readonly List<ChatFileChange> _items = [];
+	private readonly List<Entry> _entries = [];
 	private readonly Dictionary<string, int> _slots = new(StringComparer.Ordinal);
 
-	public IReadOnlyList<ChatFileChange> Items => _items;
-
-	public int Count => _items.Count;
+	public int Count => _entries.Count;
 
 	public void Clear()
 	{
-		_items.Clear();
+		_entries.Clear();
 		_slots.Clear();
 	}
 
@@ -34,27 +34,60 @@ internal sealed class TurnFileChanges
 	{
 		if (_slots.TryGetValue(path, out var slot))
 		{
-			var current = _items[slot];
-			_items[slot] = current with
-			{
-				Count = current.Count + 1,
-				Added = current.Added + added,
-				Removed = current.Removed + removed,
-				Patch = Join(current.Patch, patch),
-			};
+			_entries[slot].Add(added, removed, patch);
 			return;
 		}
 
-		_slots[path] = _items.Count;
-		_items.Add(new ChatFileChange(path, 1, added, removed, patch));
+		_slots[path] = _entries.Count;
+		_entries.Add(new Entry(path, added, removed, patch));
 	}
 
-	/// 多次修改同一文件时按顺序拼接补丁：diff 视图逐段显示，不去猜原文件内容。
-	/// 中间留一个空行，两段补丁的文件头不会粘在一起。
-	private static string Join(string first, string second)
+	/// 当前累计结果的快照。`List.ToArray` 直接拷数组，避免集合表达式在接口上装箱枚举器。
+	public ChatFileChange[] Snapshot()
 	{
-		if (first.Length == 0) return second;
-		if (second.Length == 0) return first;
-		return first + "\n" + second;
+		var result = new ChatFileChange[_entries.Count];
+		for (var index = 0; index < result.Length; index++) result[index] = _entries[index].ToChange();
+		return result;
+	}
+
+	/// 单文件的可变累计器：每次 Add 重建一条 record 会多出与工具调用次数等量的垃圾。
+	private sealed class Entry
+	{
+		private readonly string _path;
+		private int _count = 1;
+		private int _added;
+		private int _removed;
+		// 单次修改占多数：直接留住工具结果里的补丁字符串，不复制。
+		private string? _singlePatch;
+		private StringBuilder? _patches;
+
+		public Entry(string path, int added, int removed, string patch)
+		{
+			_path = path;
+			_added = added;
+			_removed = removed;
+			if (patch.Length > 0) _singlePatch = patch;
+		}
+
+		public void Add(int added, int removed, string patch)
+		{
+			_count++;
+			_added += added;
+			_removed += removed;
+			if (patch.Length == 0) return;
+			if (_singlePatch is null)
+			{
+				_singlePatch = patch;
+				return;
+			}
+
+			// 多次修改按顺序拼接：diff 视图逐段显示，不去猜原文件内容。
+			// 中间留一个空行，两段补丁的文件头不会粘在一起。
+			_patches ??= new StringBuilder(_singlePatch);
+			_patches.Append('\n').Append(patch);
+		}
+
+		public ChatFileChange ToChange() => new(
+			_path, _count, _added, _removed, _patches?.ToString() ?? _singlePatch ?? string.Empty);
 	}
 }

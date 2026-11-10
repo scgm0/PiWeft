@@ -12,9 +12,9 @@ internal static class FileChipFit
 	/// <param name="available">可用总宽度。</param>
 	/// <param name="moreWidth">给定剩余数量时 +N 按钮的宽度；按钮宽度随数字位数变化。</param>
 	/// <returns>第一行应显示的 chip 数量；0 表示只显示 +N。</returns>
-	public static int Fit(IReadOnlyList<double> widths, double spacing, double available, Func<int, double> moreWidth)
+	public static int Fit(ReadOnlySpan<double> widths, double spacing, double available, Func<int, double> moreWidth)
 	{
-		var total = widths.Count;
+		var total = widths.Length;
 		if (total == 0 || available <= 0) return 0;
 
 		var remaining = total;

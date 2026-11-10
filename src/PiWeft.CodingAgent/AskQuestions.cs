@@ -242,9 +242,12 @@ public static class AskQuestions
 			return "无答案";
 		}
 
-		return string.Join("\n", answers.Select(static answer =>
-			$"{answer.Id}: {(answer.WasCustom ? "(自行输入) " : string.Empty)}{FormatValue(answer.Value)}"));
+		return string.Join("\n", answers.Select(static answer => $"{answer.Id}: {AnswerText(answer)}"));
 	}
+
+	/// 一条答案的展示文本：自行输入带前缀，多选以顿号连接，布尔写「是/否」。
+	public static string AnswerText(AskAnswer answer) =>
+		$"{(answer.WasCustom ? "(自行输入) " : string.Empty)}{FormatValue(answer.Value)}";
 
 	public static JsonObject ResultDetails(IReadOnlyList<AskQuestion> questions, IReadOnlyList<AskAnswer> answers, bool cancelled) => new()
 	{

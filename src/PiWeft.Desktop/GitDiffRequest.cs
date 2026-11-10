@@ -8,8 +8,8 @@ internal enum GitDiffKind
 	Compare,
 }
 
-/// 底部 diff 面板的请求。工作区/暂存、提交内文件与分支比较都走同一块面板，
-/// 切换来源时只换请求，不重建第二套 diff UI。
+/// 一次文件差异请求。工作区/暂存、提交内文件与分支比较都折算成同一份请求，
+/// 由 <see cref="GitView"/> 读补丁后交给 <see cref="FileDiffPreview"/> 浮层。
 internal sealed record GitDiffRequest(
 	GitDiffKind Kind,
 	string Path,
@@ -20,8 +20,6 @@ internal sealed record GitDiffRequest(
 	string? OriginalPath = null,
 	bool Untracked = false)
 {
-	public string ShortCommit => CommitHash is { Length: > 7 } hash ? hash[..7] : CommitHash ?? string.Empty;
-
 	public static GitDiffRequest WorkingTree(string path, bool staged, bool untracked = false) => new(
 		staged ? GitDiffKind.Staged : GitDiffKind.WorkingTree,
 		path,
@@ -43,20 +41,4 @@ internal sealed record GitDiffRequest(
 		BaseHash: baseHash,
 		TargetHash: targetHash,
 		OriginalPath: originalPath);
-
-	public bool MatchesWorkingTree(string path, bool staged) =>
-		(Kind is GitDiffKind.WorkingTree or GitDiffKind.Staged) &&
-		(Kind == GitDiffKind.Staged) == staged &&
-		string.Equals(Path, path, StringComparison.Ordinal);
-
-	public bool MatchesCommit(string hash, string path) =>
-		Kind == GitDiffKind.Commit &&
-		string.Equals(CommitHash, hash, StringComparison.Ordinal) &&
-		string.Equals(Path, path, StringComparison.Ordinal);
-
-	public bool MatchesCompare(string baseHash, string targetHash, string path) =>
-		Kind == GitDiffKind.Compare &&
-		string.Equals(BaseHash, baseHash, StringComparison.Ordinal) &&
-		string.Equals(TargetHash, targetHash, StringComparison.Ordinal) &&
-		string.Equals(Path, path, StringComparison.Ordinal);
 }

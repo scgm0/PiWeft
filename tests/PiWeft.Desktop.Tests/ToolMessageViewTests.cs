@@ -54,6 +54,54 @@ public sealed class ToolMessageViewTests
 		[.. Find<TextBlock>(view.View).Select(block => block.Text)];
 
 	[Fact]
+	public void AskQuestionBodyPairsAnswersAndHidesRawIds()
+	{
+		var arguments = Json(root => root["questions"] = new JsonArray(
+			new JsonObject { ["question"] = "第一题？" },
+			new JsonObject { ["question"] = "第二题？" }));
+		var details = new JsonObject
+		{
+			["answers"] = new JsonArray(
+				new JsonObject
+				{
+					["id"] = "q1", ["type"] = "select", ["value"] = "diff",
+					["label"] = "弹层看 diff",
+				},
+				new JsonObject
+				{
+					["id"] = "q2", ["type"] = "select", ["value"] = "one-row",
+					["label"] = "只占一行，放不下的收进 +N",
+				}),
+		};
+
+		WithExpanded(Tool("ask_question", arguments, text: "q1: diff\nq2: one-row") with { ToolDetails = details }, view =>
+		{
+			Assert.Contains("第一题？", Texts(view));
+			Assert.Contains("弹层看 diff", Texts(view));
+			Assert.Contains("第二题？", Texts(view));
+			Assert.Contains("只占一行，放不下的收进 +N", Texts(view));
+			Assert.DoesNotContain("diff", Texts(view));
+			Assert.DoesNotContain("one-row", Texts(view));
+			Assert.DoesNotContain(Texts(view), text => text.Contains("q1:", StringComparison.Ordinal));
+			Assert.Contains(Strings.ToolAnswersLabel, Labels(view));
+			Assert.DoesNotContain(Strings.ToolResultLabel, Labels(view));
+		});
+	}
+
+	[Fact]
+	public void AskQuestionWithoutAnswerStillShowsTheRawResult()
+	{
+		var arguments = Json(root => root["questions"] = new JsonArray(new JsonObject { ["question"] = "第一题？" }));
+		WithExpanded(Tool("ask_question", arguments, text: "用户取消了提问"), view =>
+		{
+			Assert.Contains("第一题？", Texts(view));
+			Assert.Contains(Strings.ToolQuestionLabel, Labels(view));
+			Assert.Contains(Strings.ToolResultLabel, Labels(view));
+			Assert.Contains("用户取消了提问", Texts(view));
+		});
+	}
+
+	[Fact]
 	public void WriteBodyShowsFileContentAsPlainText()
 	{
 		const string content = "# Note\n\nbody\n";

@@ -1,4 +1,6 @@
+using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Platform;
 using PiWeft.Desktop;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
@@ -111,6 +113,122 @@ public sealed class DiffViewRenderTests
 	}
 
 	[Fact]
+	public void SideBySideColumnsAreSelectableDocuments()
+	{
+		// 并排的两列都是可选中、可复制的整篇文档，和统一视图一样。
+		var view = DiffView.RenderSideBySide(Patch, null);
+		var bodies = Find<MultiLineTextBox>(view).Where(text => text.IsHitTestVisible).ToArray();
+		Assert.Equal(2, bodies.Length);
+
+		var clipboard = new Clipboard();
+		bodies[0].ClipboardService = clipboard;
+		var start = bodies[0].Text.IndexOf("old", StringComparison.Ordinal);
+		bodies[0].Select(start, 3);
+		bodies[0].Copy();
+		Assert.Equal("old", clipboard.Text);
+		UiLifetime.Release(view);
+	}
+
+	[Fact]
+	public void SideBySideColumnsFillTheHostWidthEvenly()
+	{
+		var view = DiffView.RenderSideBySide(Patch, null);
+		ConversationPerformanceTests.Layout(view, 800, 480);
+
+		var columns = Find<Grid>(view).First(grid => grid.Children.Count == 2 && grid.ColumnDefinitions.Count == 2);
+		Assert.Equal(2, columns.Children.Count);
+		Assert.Equal(columns.Children[0].Bounds.Width, columns.Children[1].Bounds.Width, 1);
+		// 列宽跟着宿主（800 - 边框/内边距/间距）走，不再固定为阅读宽度的一半。
+		Assert.True(columns.Children[0].Bounds.Width > 340);
+		Assert.True(columns.Bounds.Width > 700);
+		UiLifetime.Release(view);
+	}
+
+	[Fact]
+	public void ScrollingOneColumnHorizontallyMovesTheOtherToTheSameOffset()
+	{
+		var longLine = new string('甲', 400);
+		var view = DiffView.RenderSideBySide($"@@ -1 +1 @@\n-{longLine}\n+{longLine}", null);
+		ConversationPerformanceTests.Layout(view, 700, 480);
+
+		var scrollers = Find<ScrollViewer>(view)
+			.Where(scroller => scroller.HorizontalScroll == ScrollMode.Auto).ToArray();
+		Assert.Equal(2, scrollers.Length);
+
+		scrollers[0].SetScrollOffsets(180, 0);
+		ConversationPerformanceTests.Layout(view, 700, 480);
+		Assert.True(scrollers[0].HorizontalOffset > 0);
+		Assert.Equal(scrollers[0].HorizontalOffset, scrollers[1].HorizontalOffset, 1);
+
+		// 反方向同样同步：滚右列，左列跟到同一绝对值。
+		scrollers[1].SetScrollOffsets(90, 0);
+		ConversationPerformanceTests.Layout(view, 700, 480);
+		Assert.Equal(90, scrollers[1].HorizontalOffset, 1);
+		Assert.Equal(scrollers[1].HorizontalOffset, scrollers[0].HorizontalOffset, 1);
+		UiLifetime.Release(view);
+	}
+
+	[Fact]
+	public void ShiftWheelOnOneColumnScrollsBothHorizontally()
+	{
+		// 真实输入路径：Shift+滚轮落在正文上，由焦点守卫找到最近的横向视口并滚动，
+		// 另一列跟着到同一绝对值。
+		var longLine = new string('丙', 400);
+		using var guard = new TextFocusScrollGuard(new ScrollViewer());
+		var view = DiffView.RenderSideBySide($"@@ -1 +1 @@\n-{longLine}\n+{longLine}", guard);
+		ConversationPerformanceTests.Layout(view, 700, 480);
+
+		var scrollers = Find<ScrollViewer>(view).Where(s => s.HorizontalScroll == ScrollMode.Auto).ToArray();
+		Assert.Equal(2, scrollers.Length);
+		var body = Find<MultiLineTextBox>(view).First(text => text.IsHitTestVisible);
+
+		// 滚轮向下（Delta.Y = -1）在偏移 0 处才会真正向右滚；向上滚在左缘是空操作。
+		var wheel = new MouseWheelEventArgs(new Point(0, 0), new Point(0, 0), new Vector(0, -1),
+			modifiers: ModifierKeys.Shift);
+		// 滚轮走平滑动画：钉住每帧 dt，再喂几帧让它收敛。
+		AnimationFrames.Pin(SmoothScroll.For(scrollers[0]));
+		guard.RouteWheel(body, wheel);
+		for (var frame = 0; frame < 40; frame++)
+		{
+			AnimationFrames.Advance();
+			ConversationPerformanceTests.Layout(view, 700, 480);
+		}
+
+		Assert.True(wheel.Handled);
+		Assert.True(scrollers[0].HorizontalOffset > 0);
+		Assert.Equal(scrollers[0].HorizontalOffset, scrollers[1].HorizontalOffset, 1);
+		UiLifetime.Release(view);
+	}
+
+	[Fact]
+	public void GutterStaysPutWhileColumnsScrollHorizontally()
+	{
+		var longLine = new string('乙', 400);
+		var view = DiffView.RenderSideBySide($"@@ -1 +1 @@\n-{longLine}\n+{longLine}", null);
+		ConversationPerformanceTests.Layout(view, 700, 480);
+
+		var gutters = Find<MultiLineTextBox>(view).Where(text => !text.IsHitTestVisible).ToArray();
+		Assert.Equal(2, gutters.Length);
+		var before = gutters[0].Bounds.X;
+		var scroller = Find<ScrollViewer>(view).First(s => s.HorizontalScroll == ScrollMode.Auto);
+		scroller.SetScrollOffsets(160, 0);
+		ConversationPerformanceTests.Layout(view, 700, 480);
+		Assert.Equal(before, gutters[0].Bounds.X, 1);
+		UiLifetime.Release(view);
+	}
+
+	[Fact]
+	public void LargeSideBySideStillUsesSelectableTextColumns()
+	{
+		// 大补丁：正文限高并在内部纵向滚动，两侧与行号列共用同一纵向偏移。
+		var lines = string.Join('\n', Enumerable.Range(0, MessageText.LargeTextLines + 1).Select(index => $" line {index}"));
+		var view = DiffView.RenderSideBySide($"@@ -1,0 +1,0 @@\n{lines}", null);
+
+		Assert.Equal(2, Find<MultiLineTextBox>(view).Count(text => text.IsHitTestVisible));
+		Assert.NotEmpty(Find<ScrollViewer>(view));
+	}
+
+	[Fact]
 	public void ToolViewOffersBothDiffModesWhenExpanded()
 	{
 		var entry = new ChatEntry
@@ -130,8 +248,26 @@ public sealed class DiffViewRenderTests
 		expander.IsExpanded = true;
 
 		Assert.Contains(Find<Button>(toolView.View), button => Contains(button, Strings.DiffUnified));
-		Assert.Contains(Find<Button>(toolView.View), button => Contains(button, Strings.DiffSideBySide));
+		var sideBySide = Find<Button>(toolView.View).Single(button => Contains(button, Strings.DiffSideBySide));
+
+		// 工具卡里的并排同样是两列可选中文本，各自横向滚动并同步偏移。
+		ImagePreviewTests.Click(sideBySide);
+		ConversationPerformanceTests.Layout(toolView.View, 880, 720);
+		Assert.True(Find<MultiLineTextBox>(toolView.View).Count(text => text.IsHitTestVisible) >= 2);
+		Assert.Contains(Find<MultiLineTextBox>(toolView.View), text => text.Text.Contains("old", StringComparison.Ordinal));
+		UiLifetime.Release(toolView.View);
 	}
 
 	private static bool Contains(Button button, string text) => Find<TextBlock>(button).Any(block => block.Text == text);
+
+	private sealed class Clipboard : IClipboardService
+	{
+		public string Text = string.Empty;
+
+		public bool TrySetText(string value) { Text = value; return true; }
+
+		public bool TryGetText(out string text) { text = Text; return Text.Length > 0; }
+
+		public bool HasText() => Text.Length > 0;
+	}
 }

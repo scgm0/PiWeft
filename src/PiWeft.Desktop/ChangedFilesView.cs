@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 
@@ -39,6 +40,7 @@ internal sealed class ChangedFilesView
 	private readonly FileChipRow _row;
 	private readonly StackPanel _view;
 	private IReadOnlyList<ChatFileChange>? _shown;
+	private int _count = -1;
 
 	public ChangedFilesView()
 	{
@@ -58,7 +60,12 @@ internal sealed class ChangedFilesView
 	/// 内容没变就不重建 chip：行被回收后重新挂回来、换肤重绘都会走到这里，重建会让行高抖动。
 	public void Update(IReadOnlyList<ChatFileChange> files, Func<ChatFileChange, string> hint, Action<ChatFileChange>? openDiff)
 	{
-		_caption.Text(Strings.ChangedFilesCaption(files.Count));
+		if (files.Count != _count)
+		{
+			_count = files.Count;
+			_caption.Text(Strings.ChangedFilesCaption(files.Count));
+		}
+
 		if (_shown is { } shown && ReferenceEquals(shown, files)) return;
 		_shown = files;
 		_row.SetFiles(files, hint, openDiff);
@@ -78,6 +85,8 @@ internal sealed class FileChipRow : Panel
 	private readonly TextBlock _moreLabel;
 	private readonly GlyphElement _moreGlyph;
 	private readonly Button _more;
+	// 装箱每次测量都要回调：缓存方法组，别让每趟布局都分配一个委托。
+	private readonly Func<int, double> _moreWidth;
 	private bool _expanded;
 	private int _visible;
 	private bool _moreVisible;
@@ -101,6 +110,7 @@ internal sealed class FileChipRow : Panel
 				.VerticalAlignment(VerticalAlignment.Center)
 				.Children(_moreLabel, _moreGlyph))
 			.OnClick(Toggle);
+		_moreWidth = MoreWidth;
 	}
 
 	public void SetFiles(IReadOnlyList<ChatFileChange> files, Func<ChatFileChange, string> hint, Action<ChatFileChange>? openDiff)
@@ -145,7 +155,7 @@ internal sealed class FileChipRow : Panel
 		if (_expanded)
 		{
 			SetMore(Strings.ChangedFilesCollapse, GlyphKind.ChevronUp, visible: true);
-			for (var index = 0; index < _chips.Count; index++) _chips[index].IsVisible = true;
+			for (var index = 0; index < _chips.Count; index++) Show(_chips[index], true);
 			MeasureChips(availableSize.Height);
 			_more.Measure(new Size(double.PositiveInfinity, availableSize.Height));
 			_visible = _chips.Count;
@@ -154,12 +164,12 @@ internal sealed class FileChipRow : Panel
 
 		// 量 +N 前先让它可测；宽度算完再按是否真的溢出决定显隐。
 		_more.IsVisible = true;
-		var count = FileChipFit.Fit(_widths, Gap, width, MoreWidth);
+		var count = FileChipFit.Fit(CollectionsMarshal.AsSpan(_widths), Gap, width, _moreWidth);
 		var hidden = _chips.Count - count;
 		_visible = count;
-		for (var index = 0; index < _chips.Count; index++) _chips[index].IsVisible = index < count;
+		for (var index = 0; index < _chips.Count; index++) Show(_chips[index], index < count);
 		SetMore(Strings.ChangedFilesMore(hidden), GlyphKind.ChevronDown, visible: hidden > 0);
-		return new Size(Math.Min(width, UsedWidth(count)), _chipHeight);
+		return new Size(Math.Min(width, UsedWidth(count)), RowHeight());
 	}
 
 	protected override void ArrangeContent(Rect bounds)
@@ -168,7 +178,7 @@ internal sealed class FileChipRow : Panel
 		if (!_expanded)
 		{
 			var x = bounds.X;
-			var height = Math.Max(_chipHeight, ChipHeight);
+			var height = RowHeight();
 			for (var index = 0; index < _visible; index++)
 			{
 				_chips[index].Arrange(new Rect(x, bounds.Y, _widths[index], height));
@@ -245,9 +255,19 @@ internal sealed class FileChipRow : Panel
 		}
 
 		_moreGlyph.Kind = glyph;
-		_more.IsVisible = visible;
+		Show(_more, visible);
 		_moreVisible = visible;
 	}
+
+	/// 只在显隐真的变化时写属性：每次赋值都会把测量标脏，卷动/改宽时白跑一轮布局。
+	private static void Show(UIElement element, bool visible)
+	{
+		if (element.IsVisible != visible) element.IsVisible = visible;
+	}
+
+	/// 折叠态行高：chip、+N 按钮取高者，再兜底到设计高度。
+	private double RowHeight() =>
+		Math.Max(ChipHeight, _moreVisible ? Math.Max(_chipHeight, _more.DesiredSize.Height) : _chipHeight);
 
 	private double UsedWidth(int visible)
 	{

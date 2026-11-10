@@ -90,9 +90,10 @@ internal static class ExecutionProcess
 				if (ReferenceEquals(entry, answer)) continue;
 				if (entry.Role != ChatRole.Assistant || entry.TextLength > 0 || entry.Images.Count > 0)
 				{
+					// 组内步骤不显示轮末 chip（Compact）：清掉改动列表，省下每帧的补丁字符串比较。
 					var item = entry.ThinkingLength == 0 && !entry.IsThinking
-						? entry with { Compact = true }
-						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true };
+						? entry with { Compact = true, ChangedFiles = [] }
+						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true, ChangedFiles = [] };
 					if (!live && item.Role == ChatRole.Tool && item.IsStreaming)
 						item = item with { IsStreaming = false, IsStopped = true };
 					// 工具步骤用调用 id 作键，不用消息条目 id：流式消息落盘后

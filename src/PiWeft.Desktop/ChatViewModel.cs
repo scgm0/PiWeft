@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
@@ -113,6 +114,9 @@ public sealed record ChatEntry
 
 	public string? Patch { get; init; }
 
+	/// 工具结果附带的 details（ask_question 的题目与答案等），结果正文里的 id 要靠它配回题干。
+	public JsonNode? ToolDetails { get; init; }
+
 	/// 本轮（自上一条用户消息以来）成功修改过的文件，用于回答下方的修改汇总。
 	/// 只在助手正文行有意义。
 	public IReadOnlyList<ChatFileChange> ChangedFiles { get; init; } = [];
@@ -188,6 +192,10 @@ public sealed class ChatViewModel : IDisposable
 	private long _streamingThinkingStartedAt;
 	private long _streamingThinkingEndedAt;
 	private readonly ConcurrentDictionary<long, ChatThinkingTiming> _thinkingTimings = new();
+	// 回合重建会反复回放本轮写工具：补丁解析与 write 的整篇合成对同一工具结果是确定的。
+	// 按结果实例缓存，避免流式期每个事件都重扫同一份补丁。弱键：分支切换或压缩丢掉的消息
+	// 不该被缓存按住（结果里还带着工具输出）。
+	private readonly ConditionalWeakTable<ToolResultMessage, FileChangeInfo> _fileChanges = new();
 	private long _thinkingTimingsRevision;
 	private bool _isThinking;
 	private bool _isStreaming;
@@ -689,7 +697,7 @@ public sealed class ChatViewModel : IDisposable
 				case ToolExecutionStartEvent start:
 					_tools.RemoveAll(tool => tool.ToolCallId == start.ToolCallId);
 					// 开始时刻只在这里取一次：tool_execution_update 会带新的部分结果，但不会重置秒表。
-					_tools.Add(new ToolEntry(start.ToolCallId, start.ToolName, start.Arguments.ToJsonString(PiJson.NodeOptions), null, false, null, NowMs()));
+					_tools.Add(new ToolEntry(start.ToolCallId, start.ToolName, start.Arguments.ToJsonString(PiJson.NodeOptions), null, false, null, NowMs(), null));
 					break;
 
 				case ToolExecutionEndEvent end:
@@ -706,7 +714,8 @@ public sealed class ChatViewModel : IDisposable
 						ToolResultText(end.Result),
 						end.IsError,
 						end.DurationMs,
-						startedAt));
+						startedAt,
+						end.Result.Details));
 					break;
 
 				case QueueUpdateEvent queue:
@@ -1066,8 +1075,8 @@ public sealed class ChatViewModel : IDisposable
 
 					if (results.TryGetValue(call.Id, out var toolResult) && !toolResult.IsError)
 					{
-						var (added, removed, patch) = FileChangeOf(call, toolResult, changedPath);
-						turnChanges.Add(changedPath, added, removed, patch);
+						var change = FileChangeOf(call, toolResult, changedPath);
+						turnChanges.Add(changedPath, change.Added, change.Removed, change.Patch);
 					}
 				}
 
@@ -1085,7 +1094,7 @@ public sealed class ChatViewModel : IDisposable
 						EntryId = entryIds.GetValueOrDefault(message),
 						Images = images,
 						Timestamp = assistant.Timestamp,
-						ChangedFiles = turnChanges.Count > 0 ? [.. turnChanges.Items] : [],
+						ChangedFiles = turnChanges.Count > 0 ? turnChanges.Snapshot() : [],
 					});
 				}
 
@@ -1125,6 +1134,7 @@ public sealed class ChatViewModel : IDisposable
 					Images = ImagesOfBlocks(result.Content),
 					Timestamp = result.Timestamp,
 					Patch = PatchOf(result.Details),
+					ToolDetails = result.Details,
 					IsError = result.IsError,
 					DurationMs = result.DurationMs,
 				});
@@ -1248,24 +1258,36 @@ public sealed class ChatViewModel : IDisposable
 		System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 	}
 
+	private FileChangeInfo FileChangeOf(ToolCall call, ToolResultMessage result, string path)
+	{
+		if (_fileChanges.TryGetValue(result, out var cached)) return cached;
+		// 重建都在 _gate 内串行执行，TryGetValue + Add 不会撞上并发写入。
+		var info = ComputeFileChange(call, result, path);
+		_fileChanges.Add(result, info);
+		return info;
+	}
+
 	/// 把一次成功的写工具调用折算成增删行数与补丁：优先用结果里的统一补丁，
 	/// 历史会话没有补丁时 write 按整篇新增、edit 按参数里的 oldText/newText 估算。
-	private static (int Added, int Removed, string Patch) FileChangeOf(ToolCall call, ToolResultMessage result, string path)
+	private static FileChangeInfo ComputeFileChange(ToolCall call, ToolResultMessage result, string path)
 	{
 		if (PatchOf(result.Details) is { } patch)
 		{
 			var (added, removed) = DiffStats.Count(patch);
-			return (added, removed, patch);
+			return new FileChangeInfo(added, removed, patch);
 		}
 
 		if (call.Name == "write" && StringOf(call.Arguments["content"]) is { } content)
 		{
 			var written = EditDiff.UnifiedPatch(string.Empty, content, path);
 			var (addedLines, removedLines) = DiffStats.Count(written);
-			return (addedLines, removedLines, written);
+			return new FileChangeInfo(addedLines, removedLines, written);
 		}
 
-		return (EditArgumentLines(call.Arguments, "newText"), EditArgumentLines(call.Arguments, "oldText"), string.Empty);
+		return new FileChangeInfo(
+			EditArgumentLines(call.Arguments, "newText"),
+			EditArgumentLines(call.Arguments, "oldText"),
+			string.Empty);
 	}
 
 	private static int EditArgumentLines(JsonObject arguments, string field)
@@ -1284,7 +1306,16 @@ public sealed class ChatViewModel : IDisposable
 		return LineCount(StringOf(arguments[field]));
 	}
 
-	private static int LineCount(string? text) => text is { Length: > 0 } ? text.AsSpan().Count('\n') + 1 : 0;
+	private sealed class FileChangeInfo(int added, int removed, string patch)
+	{
+		public int Added { get; } = added;
+
+		public int Removed { get; } = removed;
+
+		public string Patch { get; } = patch;
+	}
+
+	private static int LineCount(string? text) => text is { Length: > 0 } ? text.Count('\n') + 1 : 0;
 
 	private static string? StringOf(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
@@ -1313,7 +1344,8 @@ public sealed class ChatViewModel : IDisposable
 		string? Result,
 		bool IsError,
 		double? DurationMs,
-		long StartedAt)
+		long StartedAt,
+		JsonNode? Details)
 	{
 		// 流式期每帧都会重投影：已完成的工具结果可能几十 KB，逐帧重拼一遍纯属垃圾。
 		// 条目本身不可变（事件到达时换新实例），缓存一次投影即安全。
@@ -1325,6 +1357,7 @@ public sealed class ChatViewModel : IDisposable
 			ToolName = ToolName,
 			ToolCallId = ToolCallId,
 			ToolArguments = Arguments.Length > 0 ? Arguments : null,
+			ToolDetails = Details,
 			IsStreaming = Result is null,
 			EntryId = $"live-tool/{ToolCallId}",
 			IsError = IsError,

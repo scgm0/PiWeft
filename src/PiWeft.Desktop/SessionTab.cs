@@ -1055,6 +1055,7 @@ public sealed partial class SessionTab : IDisposable
 		AppStyles.ApplyTextColors(_branchPanel.View);
 		AppStyles.ApplyTextColors(_composerPicker.View);
 		AppStyles.ApplyTextColors(_imagePreview.View);
+		_fileDiffPreview.ApplyTheme();
 		// 进行态条的图标是直接取色的（没进 AppIcons 的角色跟踪表），换肤后要重新取一次；
 		// 清掉 kind 就是让它下一帧按新主题重新上色，而文字那几段已经由角色重上色。
 		_busyKind = null;
@@ -2869,7 +2870,10 @@ public sealed partial class SessionTab : IDisposable
 	private void ShowFileDiff(ChatFileChange file)
 	{
 		var fullPath = MessageLinkTarget.Resolve(file.Path, Session.Cwd)?.Target ?? file.Path;
-		_fileDiffPreview.Show(View, file, fullPath, OpenChangedFile);
+		_fileDiffPreview.Show(
+			View,
+			new DiffPreviewContent(file.FileName, string.Empty, fullPath, file.Added, file.Removed, file.Patch),
+			OpenChangedFile);
 	}
 
 	/// 工具参数里可能是相对路径；编辑器和提示里都用解析后的绝对路径。

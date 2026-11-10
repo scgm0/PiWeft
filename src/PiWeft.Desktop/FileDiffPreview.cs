@@ -3,9 +3,23 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// 轮末文件 chip 的 diff 浮层：窗口级浮层，卡片居中，头部是文件名、完整路径、增删行数与操作。
-/// 补丁取自本轮工具结果，不重新读工作区：轮末要确认的是「这一轮改了什么」，
-/// 文件后来可能已被下一轮改过。
+/// 一份差异的浮层内容：标题（文件名）、来源上下文（如「提交 abc123」，可为空）、
+/// 完整路径、增删行数、补丁，以及补丁不可用时的说明。
+/// <param name="Message">替代 diff 显示的说明（读取失败 / 没有差异）；为空时按 <paramref name="Patch"/> 渲染。</param>
+internal sealed record DiffPreviewContent(
+	string Title,
+	string Context,
+	string Path,
+	int Added,
+	int Removed,
+	string Patch,
+	string? Message = null,
+	bool IsError = false,
+	bool CanOpenFile = true);
+
+/// 文件差异浮层：窗口级浮层，卡片居中，头部是文件名、来源、完整路径、增删行数与操作。
+/// 轮末 chip 用它展示本轮补丁（取自工具结果，不重读工作区）；
+/// 右侧 Git 面板用它展示工作区 / 提交 / 分支比较里的单个文件差异。
 internal sealed class FileDiffPreview
 {
 	private const double MaxWidth = 1080;
@@ -14,6 +28,7 @@ internal sealed class FileDiffPreview
 
 	private readonly Grid _view;
 	private readonly TextBlock _title = new();
+	private readonly TextBlock _context = new();
 	private readonly TextBlock _path = new();
 	private readonly TextBlock _stat = new();
 	private readonly Border _body = new();
@@ -26,8 +41,7 @@ internal sealed class FileDiffPreview
 
 	private Window? _window;
 	private UIElement? _returnFocus;
-	private ChatFileChange? _file;
-	private string _fullPath = string.Empty;
+	private DiffPreviewContent? _content;
 	private Action<string>? _openInEditor;
 	private bool _sideBySideMode;
 
@@ -35,6 +49,9 @@ internal sealed class FileDiffPreview
 	{
 		_title.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.SemiBold).PrimaryText()
 			.MaxWidth(260).TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		_context.FontSize(AppTheme.FontSizeMicro).SubtleText()
+			.MaxWidth(160).TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis)
 			.VerticalAlignment(VerticalAlignment.Center);
 		_stat.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).FaintText()
 			.TextWrapping(TextWrapping.NoWrap).VerticalAlignment(VerticalAlignment.Center);
@@ -58,7 +75,7 @@ internal sealed class FileDiffPreview
 
 		var headerContent = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 			.VerticalAlignment(VerticalAlignment.Center)
-			.Children(_title, _stat, _path);
+			.Children(_title, _context, _stat, _path);
 		var header = new Border().StyleName(AppStyles.DialogHeader)
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel().LastChildFill().Children(actions.DockRight(), headerContent));
@@ -69,7 +86,10 @@ internal sealed class FileDiffPreview
 			.Padding(new Thickness(AppTheme.Space2))
 			.SmoothScrolling()
 			.AutoVerticalScroll()
-			.AutoHorizontalScroll()
+			// 不再横向滚动整块 body：并排的两列各自有横向视口，纵向视图给出无限宽会把
+			// 两列的星号宽度压成内容宽，列内的滚动条就永远不出现（只剩这一条外层的）。
+			// 统一视图的长行由它自己的横向视口负责。
+			.NoHorizontalScroll()
 			.Content(_body);
 		// 点击补丁正文会聚焦 MultiLineTextBox：框架的「聚焦元素滚入视野」会把整块正文
 		// 当成一个元素滚到顶端，读者刚滚到的位置就丢了。这里用会话同一套守卫保存/撤回
@@ -107,8 +127,11 @@ internal sealed class FileDiffPreview
 
 	internal bool IsOpen => _view.IsVisible;
 
-	/// 打开某文件的 diff。宿主面缺失（无窗口、无头测试）时静默返回。
-	public void Show(UIElement owner, ChatFileChange file, string fullPath, Action<string> openInEditor)
+	/// 「在编辑器中打开」是否可用：历史来源（提交 / 分支比较）不给这个入口。
+	internal bool CanOpenFile => _open.IsVisible;
+
+	/// 打开一份 diff。宿主面缺失（无窗口、无头测试）时静默返回。
+	public void Show(UIElement owner, DiffPreviewContent content, Action<string>? openInEditor = null)
 	{
 		if (!Application.IsRunning) return;
 		if (owner.FindVisualRoot() is not Window window) return;
@@ -118,7 +141,7 @@ internal sealed class FileDiffPreview
 			CloseNow();
 		}
 
-		Load(file, fullPath, openInEditor);
+		Load(content, openInEditor);
 		_window = window;
 		if (IsOpen)
 		{
@@ -141,19 +164,31 @@ internal sealed class FileDiffPreview
 		_fade.Close(CloseNow);
 	}
 
-	/// 无窗口时装载内容，供无头测试检查头部与 diff 文本。
-	internal void LoadForTests(ChatFileChange file, string fullPath) => Load(file, fullPath, null);
-
-	private void Load(ChatFileChange file, string fullPath, Action<string>? openInEditor)
+	/// 换肤：头部的角色文字重新上色，diff 主体按新配色重画（文本控件的颜色在创建时取）。
+	public void ApplyTheme()
 	{
-		_file = file;
-		_fullPath = fullPath;
+		AppStyles.ApplyTextColors((Element)_view);
+		// 关着的时候不必重建 diff：下次 Show 会按新配色重新装载。
+		if (IsOpen) RenderDiff();
+	}
+
+	/// 无窗口时装载内容，供无头测试检查头部与 diff 文本。
+	internal void LoadForTests(DiffPreviewContent content) => Load(content, null);
+
+	private void Load(DiffPreviewContent content, Action<string>? openInEditor)
+	{
+		_content = content;
 		_openInEditor = openInEditor;
-		_title.Text(file.FileName);
-		_title.HoverTip(fullPath);
-		_path.Text(fullPath);
-		_stat.Text(Strings.ChangedFilesDelta(file.Added, file.Removed));
+		_title.Text(content.Title);
+		_title.HoverTip(content.Path);
+		_context.Text(content.Context);
+		_context.IsVisible = content.Context.Length > 0;
+		_path.Text(content.Path);
+		_path.HoverTip(content.Path);
+		_stat.Text(Strings.ChangedFilesDelta(content.Added, content.Removed));
 		_stat.IsVisible = _stat.Text.Length > 0;
+		// 历史来源（提交 / 分支比较）打开工作区文件会看错版本，这类请求不给编辑器入口。
+		_open.IsVisible = content.CanOpenFile;
 		SetMode(false);
 	}
 
@@ -162,7 +197,7 @@ internal sealed class FileDiffPreview
 		_view.IsVisible = false;
 		if (_window is { } window) TransientOverlay.Remove(window, _view);
 		_window = null;
-		_file = null;
+		_content = null;
 		_openInEditor = null;
 		SetChild(null);
 		_returnFocus?.Focus();
@@ -179,17 +214,34 @@ internal sealed class FileDiffPreview
 
 	private void RenderDiff()
 	{
-		var patch = _file?.Patch ?? string.Empty;
-		UIElement content = patch.Length == 0
-			? new TextBlock()
-				.Text(Strings.GitNoDiff)
+		var content = _content;
+		UIElement body;
+		if (content?.Message is { Length: > 0 } message)
+		{
+			var text = new TextBlock()
+				.Text(message)
 				.FontSize(AppTheme.FontSizeCaption)
-				.MutedText()
-				.Margin(new Thickness(AppTheme.Space3))
-			: _sideBySideMode
-				? DiffView.RenderSideBySide(patch, _focus)
-				: DiffView.Render(patch, _focus);
-		SetChild(content);
+				.TextWrapping(TextWrapping.Wrap)
+				.Margin(new Thickness(AppTheme.Space3));
+			if (content.IsError) text.ErrorText();
+			else text.MutedText();
+			body = text;
+		}
+		else
+		{
+			var patch = content?.Patch ?? string.Empty;
+			body = patch.Length == 0
+				? new TextBlock()
+					.Text(Strings.GitNoDiff)
+					.FontSize(AppTheme.FontSizeCaption)
+					.MutedText()
+					.Margin(new Thickness(AppTheme.Space3))
+				: _sideBySideMode
+					? DiffView.RenderSideBySide(patch, _focus)
+					: DiffView.Render(patch, _focus);
+		}
+
+		SetChild(body);
 	}
 
 	private void SetChild(UIElement? content)
@@ -206,8 +258,8 @@ internal sealed class FileDiffPreview
 
 	private void OpenInEditor()
 	{
-		if (_file is null) return;
-		_openInEditor?.Invoke(_fullPath);
+		if (_content is not { CanOpenFile: true } content) return;
+		_openInEditor?.Invoke(content.Path);
 	}
 
 	private static Button ModeButton(string text, Action onClick) => new Button()

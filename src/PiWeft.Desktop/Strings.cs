@@ -1098,6 +1098,7 @@ public static partial class Strings
 	public const string ToolPlanLabel = "计划";
 	public const string ToolArgsLabel = "参数";
 	public const string ToolQuestionLabel = "问题";
+	public const string ToolAnswersLabel = "问答";
 	public const string CopyToolArguments = "复制参数";
 	public const string ToolResultLabel = "结果";
 	public const string ToolDiffLabel = "差异";

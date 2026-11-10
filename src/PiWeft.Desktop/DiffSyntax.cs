@@ -11,6 +11,34 @@ internal static class DiffSyntax
 		line.StartsWith("+++") || line.StartsWith("---") || line.StartsWith("diff ") ||
 		line.StartsWith("index ") || (!line.IsEmpty && line[0] == '\\');
 
+	/// 解析 hunk 头两侧的行数（头部省略 <c>,数量</c> 时为 1）；认不出来时返回 (0, 0)。
+	/// 行数用来按 hunk 消费内容行：内容行本身以 <c>--</c> / <c>++</c> 开头时，
+	/// 只看前缀无法与文件头区分。
+	public static (int OldCount, int NewCount) HunkLengths(ReadOnlySpan<char> line)
+	{
+		if (!line.StartsWith("@@ -")) return (0, 0);
+		var index = 4;
+		if (!TryReadNumber(line, ref index, out _)) return (0, 0);
+		var oldCount = 1;
+		if (index < line.Length && line[index] == ',')
+		{
+			index++;
+			if (!TryReadNumber(line, ref index, out oldCount)) return (0, 0);
+		}
+
+		if (index + 1 >= line.Length || line[index] != ' ' || line[index + 1] != '+') return (0, 0);
+		index += 2;
+		if (!TryReadNumber(line, ref index, out _)) return (0, 0);
+		var newCount = 1;
+		if (index < line.Length && line[index] == ',')
+		{
+			index++;
+			if (!TryReadNumber(line, ref index, out newCount)) return (0, 0);
+		}
+
+		return (oldCount, newCount);
+	}
+
 	/// 解析 hunk 头的两侧起始行号；认不出来时返回兜底值（行号列最多显示得不准，不会崩）。
 	/// 形状：<c>@@ -旧[,数] +新[,数] @@</c>，尾部可能还有上下文（函数名等）。
 	public static (int OldLine, int NewLine) ParseHunkHeader(ReadOnlySpan<char> line, int fallbackOld, int fallbackNew)

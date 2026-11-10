@@ -2098,7 +2098,10 @@ public sealed partial class MainWindow : Window
 
 		foreach (var (tab, panel) in _sessionPanels)
 		{
-			panel.View.IsVisible(open && ReferenceEquals(tab, active));
+			var visible = open && ReferenceEquals(tab, active);
+			panel.View.IsVisible(visible);
+			// 面板里的 diff 是窗口级浮层，不随面板隐藏：切会话或收起面板时一并收掉。
+			if (!visible) panel.HideOverlays();
 		}
 
 		if (_panelHost.IsVisible != open)

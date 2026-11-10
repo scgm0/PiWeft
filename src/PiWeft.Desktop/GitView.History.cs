@@ -370,20 +370,10 @@ public sealed partial class GitView
 		return body;
 	}
 
-	private UIElement BuildCommitFileRow(GitCommitEntry commit, string? parent, GitCommitFile file)
-	{
-		var selected = _diffRequest?.MatchesCommit(commit.Hash, file.Path) == true;
-		var row = FileLikeRow(file, selected, () =>
-		{
-			_diffRequest = GitDiffRequest.Commit(commit.Hash, parent, file.Path, file.OriginalPath);
-			OpenChangesPane();
-			RebuildGraph();
-			RebuildDiff();
-		});
-		return row;
-	}
+	private UIElement BuildCommitFileRow(GitCommitEntry commit, string? parent, GitCommitFile file) =>
+		FileLikeRow(file, () => ShowDiff(GitDiffRequest.Commit(commit.Hash, parent, file.Path, file.OriginalPath)));
 
-	private UIElement FileLikeRow(GitCommitFile file, bool selected, Action onClick)
+	private UIElement FileLikeRow(GitCommitFile file, Action onClick)
 	{
 		var rowContent = new StackPanel()
 			.Orientation(Orientation.Horizontal)
@@ -408,9 +398,6 @@ public sealed partial class GitView
 
 		return new Border()
 			.CornerRadius(AppTheme.RadiusXs)
-			.WithTheme((theme, border) => border.Background = selected
-				? AppTheme.For(theme).CardBackgroundAlt
-				: AppTheme.For(theme).Transparent)
 			.Child(row);
 	}
 
@@ -660,16 +647,9 @@ public sealed partial class GitView
 
 	private UIElement BuildCompareFileRow(GitBranchComparison result, GitCommitFile file)
 	{
-		var selected = _diffRequest?.MatchesCompare(result.BaseHash, result.TargetHash, file.Path) == true;
 		var label = _compareResultBase + "..." + _compareResultTarget;
-		return FileLikeRow(file, selected, () =>
-		{
-			_diffRequest = GitDiffRequest.Compare(
-				result.BaseHash, result.TargetHash, label, file.Path, file.OriginalPath);
-			OpenChangesPane();
-			RebuildCompare();
-			RebuildDiff();
-		});
+		return FileLikeRow(file, () => ShowDiff(GitDiffRequest.Compare(
+			result.BaseHash, result.TargetHash, label, file.Path, file.OriginalPath)));
 	}
 
 	private static string LetterRole(string letter) => letter switch

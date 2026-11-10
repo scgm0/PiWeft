@@ -6,13 +6,13 @@ namespace PiWeft.Desktop.Tests;
 
 public sealed class ToolCallDetailsTests
 {
-	private static ChatEntry Tool(string name, string? arguments, string? patch = null) => new()
+	private static ChatEntry Tool(string name, string? arguments, string? patch = null, string text = "done") => new()
 	{
 		Role = ChatRole.Tool,
 		ToolName = name,
 		ToolArguments = arguments,
 		Patch = patch,
-		Text = "done",
+		Text = text,
 	};
 
 	private static string Json(Action<JsonObject> build)
@@ -174,18 +174,123 @@ public sealed class ToolCallDetailsTests
 		Assert.Equal("not json", details.Fallback);
 	}
 
+	private static ChatEntry Answered(ChatEntry entry, params (string Id, string Value)[] answers) => entry with
+	{
+		ToolDetails = new JsonObject
+		{
+			["cancelled"] = false,
+			["answers"] = new JsonArray([.. answers.Select(static answer => (JsonNode?)new JsonObject
+			{
+				["id"] = answer.Id,
+				["type"] = "select",
+				["value"] = answer.Value,
+			})]),
+		},
+	};
+
 	[Fact]
-	public void AskQuestionShowsQuestionText()
+	public void AskQuestionPairsAnswersWithQuestions()
+	{
+		var arguments = Json(root => root["questions"] = new JsonArray(
+			new JsonObject { ["question"] = "第一题？" },
+			new JsonObject { ["question"] = "第二题？" }));
+		var details = ToolCallDetails.For(Answered(
+			Tool("ask_question", arguments, text: "q1: diff\nq2: one-row"),
+			("q1", "diff"), ("q2", "one-row")));
+
+		Assert.Equal(2, details.Exchanges.Count);
+		Assert.Equal("第一题？", details.Exchanges[0].Question);
+		Assert.Equal("diff", details.Exchanges[0].Answer);
+		Assert.Equal("第二题？", details.Exchanges[1].Question);
+		Assert.Equal("one-row", details.Exchanges[1].Answer);
+		Assert.Null(details.BlockText);
+	}
+
+	[Fact]
+	public void AskQuestionWithoutAnswersKeepsQuestionsListed()
 	{
 		var details = ToolCallDetails.For(Tool("ask_question", Json(root =>
-		{
-			root["questions"] = new JsonArray(
-				new JsonObject { ["question"] = "第一题？" },
-				new JsonObject { ["question"] = "第二题？" });
-		})));
+			root["questions"] = new JsonArray(new JsonObject { ["question"] = "第一题？" }))));
 
-		Assert.Equal(Strings.ToolQuestionLabel, details.BlockLabel);
-		Assert.Equal("第一题？\n\n第二题？", details.BlockText);
+		var exchange = Assert.Single(details.Exchanges);
+		Assert.Equal("第一题？", exchange.Question);
+		Assert.Null(exchange.Answer);
+		Assert.Null(details.BlockText);
+	}
+
+	[Fact]
+	public void AskQuestionCustomAndMultiLineAnswersKeepTheirShape()
+	{
+		var entry = Tool("ask_question", Json(root =>
+			root["questions"] = new JsonArray(new JsonObject { ["question"] = "写点什么？" })),
+			text: "q1: (自行输入) 第一行\n第二行");
+		var details = ToolCallDetails.For(entry with
+		{
+			ToolDetails = new JsonObject
+			{
+				["answers"] = new JsonArray(new JsonObject
+				{
+					["id"] = "q1", ["type"] = "editor", ["value"] = "第一行\n第二行", ["wasCustom"] = true,
+				}),
+			},
+		});
+
+		Assert.Equal("(自行输入) 第一行\n第二行", Assert.Single(details.Exchanges).Answer);
+	}
+
+	[Fact]
+	public void AskQuestionPartialAnswersAreNotPaired()
+	{
+		var arguments = Json(root => root["questions"] = new JsonArray(
+			new JsonObject { ["question"] = "第一题？" },
+			new JsonObject { ["question"] = "第二题？" }));
+		var details = ToolCallDetails.For(Answered(Tool("ask_question", arguments, text: "q1: diff"), ("q1", "diff")));
+
+		Assert.All(details.Exchanges, static exchange => Assert.Null(exchange.Answer));
+	}
+
+	[Fact]
+	public void AskQuestionShowsTheOptionLabelInsteadOfItsValue()
+	{
+		var entry = Tool("ask_question", Json(root =>
+			root["questions"] = new JsonArray(new JsonObject { ["question"] = "点击文件 chip 时做什么？" })),
+			text: "q1: diff") with
+		{
+			ToolDetails = new JsonObject
+			{
+				["answers"] = new JsonArray(new JsonObject
+				{
+					["id"] = "q1", ["type"] = "select", ["value"] = "diff",
+					["label"] = "弹层看 diff（本轮该文件的补丁）",
+				}),
+			},
+		};
+		var details = ToolCallDetails.For(entry);
+
+		Assert.Equal("弹层看 diff（本轮该文件的补丁）", Assert.Single(details.Exchanges).Answer);
+	}
+
+	[Fact]
+	public void AskQuestionEmptyAnswerIsTreatedAsUnanswered()
+	{
+		var arguments = Json(root => root["questions"] = new JsonArray(new JsonObject { ["question"] = "第一题？" }));
+		var details = ToolCallDetails.For(Answered(Tool("ask_question", arguments, text: "q1: "), ("q1", "")));
+
+		Assert.Null(Assert.Single(details.Exchanges).Answer);
+	}
+
+	[Fact]
+	public void AskQuestionMatchesAnswersByExplicitId()
+	{
+		var arguments = Json(root => root["questions"] = new JsonArray(
+			new JsonObject { ["id"] = "color", ["question"] = "颜色？" },
+			new JsonObject { ["id"] = "logo", ["question"] = "图标？" }));
+		var details = ToolCallDetails.For(Answered(
+			Tool("ask_question", arguments, text: "color: blue\nlogo: by-ext"),
+			("color", "blue"), ("logo", "by-ext")));
+
+		Assert.Equal("blue", details.Exchanges[0].Answer);
+		Assert.Equal("by-ext", details.Exchanges[1].Answer);
 	}
 
 	[Fact]

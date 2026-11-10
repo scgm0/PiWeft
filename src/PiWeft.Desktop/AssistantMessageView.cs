@@ -29,7 +29,9 @@ internal sealed class AssistantMessageView : IDisposable
 	private readonly MarkdownFeed _bodyFeed = new();
 	private readonly Expander _thinking;
 	private readonly Border _body = new();
-	private readonly ChangedFilesView _changedFiles = new();
+	private readonly StackPanel _content;
+	// 轮末 chip 按需创建：大多数助手行没有文件改动，没必要每行都搭一排按钮。
+	private ChangedFilesView? _changedFiles;
 	private readonly Func<ChatFileChange, string> _fileHint;
 	private readonly Action<ChatFileChange>? _openDiff;
 	private readonly Button _copy;
@@ -96,22 +98,21 @@ internal sealed class AssistantMessageView : IDisposable
 		_focus.TrackFold(_thinking, preserveAnchor: false);
 		_copy = AppIcons.Button("copy", Strings.CopyMessage, () => copy(_entry?.Text ?? string.Empty), size: 14);
 		_headerRow = new DockPanel().LastChildFill().Children(_copy.DockRight(), _header);
-		var content = new StackPanel().Spacing(AppTheme.Space2).Children(
+		_content = new StackPanel().Spacing(AppTheme.Space2).Children(
 			_headerRow,
 			_thinking,
-			_body,
-			_changedFiles.View);
+			_body);
 
 		foreach (var image in entry.Images)
 		{
-			content.Children(SessionTab.ImageView(image, preview));
+			_content.Children(SessionTab.ImageView(image, preview));
 		}
 
 		View = new Border()
 			.Padding(entry.Compact ? new Thickness(0, 0, 0, 0) : new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.MaxWidth(AppTheme.MessageMaxWidth)
 			.HorizontalAlignment(HorizontalAlignment.Stretch)
-			.Child(content);
+			.Child(_content);
 		View.Tag = this;
 		// 帧泵挂在本行的根元素上：它按可见性自己止损，宿主不需要记得为「收起/滚出视口」停帧。
 		_pump = new StreamPump(View, PumpFrames);
@@ -236,11 +237,19 @@ internal sealed class AssistantMessageView : IDisposable
 			_followingThinking = false;
 		}
 		var showChanges = !entry.IsStreaming && !entry.Compact && entry.ChangedFiles.Count > 0;
-		_changedFiles.IsVisible = showChanges;
 		if (showChanges)
 		{
+			if (_changedFiles is null)
+			{
+				_changedFiles = new ChangedFilesView();
+				// 固定前缀是「头部、思考、正文」：chip 行插在正文之后、图片之前。
+				_content.Insert(3, _changedFiles.View);
+			}
+
 			_changedFiles.Update(entry.ChangedFiles, _fileHint, _openDiff);
 		}
+
+		if (_changedFiles is not null) _changedFiles.IsVisible = showChanges;
 		RefreshBodyText(entry);
 		SyncPump();
 

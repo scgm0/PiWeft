@@ -27,7 +27,6 @@ public sealed partial class GitView : IDisposable
 	private readonly Border _failureHost = new();
 	private readonly Border _composerHost = new();
 	private readonly Border _listHost = new();
-	private readonly Border _diffHost = new();
 	private readonly Border _graphHost = new();
 	private readonly Border _compareHost = new();
 	private readonly Border _moreHost = new();
@@ -35,11 +34,12 @@ public sealed partial class GitView : IDisposable
 	private readonly PaneSash _compareSash;
 	private readonly PaneSash _moreSash;
 	private GitPaneLayout _panes;
-	private readonly Dictionary<string, Border> _rowFrames = new(StringComparer.Ordinal);
 	private GitStatus? _lastStatus;
 	private bool _sectionsBuilt;
 
-	private GitDiffRequest? _diffRequest;
+	// 与轮末 chip 同一块浮层：右侧面板不再保留内嵌的 diff 卡片。
+	private readonly FileDiffPreview _diffPreview = new();
+	private DiffPreviewContent? _lastDiffContent;
 	private string _graphRef = string.Empty;
 	private int _graphPage = 40;
 	private bool _branchesLoaded;
@@ -108,7 +108,6 @@ public sealed partial class GitView : IDisposable
 		_changesBody.Children(
 			_failureHost.DockTop(),
 			_composerHost.DockTop(),
-			_diffHost.DockBottom(),
 			_listHost);
 		// 一行一节，吸掉剩余空间的那行由 ApplyPaneHeights 指定（见 AbsorberRow）。
 		// 折叠某一节后，剩余高度要还给别的节，否则原地留一块空白。
@@ -132,7 +131,14 @@ public sealed partial class GitView : IDisposable
 
 	public UIElement View { get; }
 
-	public void ApplyTheme() => AppStyles.ApplyTextColors(View);
+	public void ApplyTheme()
+	{
+		AppStyles.ApplyTextColors(View);
+		_diffPreview.ApplyTheme();
+	}
+
+	/// 面板收起或换会话时一并收掉浮层（浮层挂在窗口上，不属于面板的可视树）。
+	public void HideOverlays() => _diffPreview.Hide();
 
 	public void Refresh()
 	{
@@ -186,12 +192,6 @@ public sealed partial class GitView : IDisposable
 
 	private void ApplyStatus(GitStatus status)
 	{
-		if (_diffRequest is { Kind: GitDiffKind.WorkingTree or GitDiffKind.Staged } request &&
-			!status.Changes.Any(change => string.Equals(change.Path, request.Path, StringComparison.Ordinal)))
-		{
-			_diffRequest = null;
-		}
-
 		_lastStatus = status;
 		try
 		{
@@ -264,23 +264,12 @@ public sealed partial class GitView : IDisposable
 		Swap(_failureHost, BuildFailureStrip());
 		RebuildComposer(status);
 		RebuildList();
-		RebuildDiff();
 		ApplyPaneHeights();
 	}
 
 	private void RebuildComposer(GitStatus status) => Swap(_composerHost, BuildCommitComposer(status));
 
-	private void RebuildList()
-	{
-		_rowFrames.Clear();
-		Swap(_listHost, BuildChangeList(_lastStatus!));
-	}
-
-	private void RebuildDiff()
-	{
-		Swap(_diffHost, BuildDiffPane());
-		ApplyRowSelection();
-	}
+	private void RebuildList() => Swap(_listHost, BuildChangeList(_lastStatus!));
 
 	private void RebuildGraph()
 	{
@@ -308,21 +297,6 @@ public sealed partial class GitView : IDisposable
 		RebuildCompare();
 		RebuildMore();
 	}
-
-	private void ApplyRowSelection()
-	{
-		foreach (var (key, frame) in _rowFrames)
-		{
-			var (path, staged) = SplitRowKey(key);
-			frame.Background = _diffRequest?.MatchesWorkingTree(path, staged) == true
-				? AppTheme.CardBackgroundAlt
-				: AppTheme.Transparent;
-		}
-	}
-
-	private static string RowKey(string path, bool staged) => (staged ? "s" : "w") + path;
-
-	private static (string Path, bool Staged) SplitRowKey(string key) => (key[1..], key[0] == 's');
 
 	private static void Swap(Border host, UIElement? content)
 	{
@@ -596,29 +570,6 @@ public sealed partial class GitView : IDisposable
 		ApplyResult(result);
 	}
 
-
-	private UIElement BuildChangesPane(GitStatus status)
-	{
-		var pane = new DockPanel().LastChildFill();
-		pane.Children(BuildChangesHeader(status).DockTop());
-		if (!_panes.ChangesOpen)
-		{
-			return pane;
-		}
-
-		if (BuildFailureStrip() is { } failure)
-		{
-			pane.Children(failure.DockTop());
-		}
-		pane.Children(BuildCommitComposer(status).DockTop());
-		if (BuildDiffPane() is { } diff)
-		{
-			pane.Children(diff.DockBottom());
-		}
-
-		pane.Children(BuildChangeList(status));
-		return pane;
-	}
 
 	private UIElement BuildChangesHeader(GitStatus status)
 	{
@@ -1034,39 +985,22 @@ public sealed partial class GitView : IDisposable
 		action.IsVisible = allowActions;
 		action.Tag = change;
 
-		var frame = new Border()
+		return new Border()
 			.CornerRadius(AppTheme.RadiusXs)
-			.WithTheme((theme, border) => border.Background = _diffRequest?.MatchesWorkingTree(change.Path, stagedSide) == true
-				? AppTheme.For(theme).CardBackgroundAlt
-				: AppTheme.For(theme).Transparent)
 			.Child(new DockPanel().LastChildFill().Children(action.DockRight(), row));
-		// 记下行框：选中态就地改底色，不为了高亮一行而重建整棵改动树。
-		_rowFrames[RowKey(change.Path, stagedSide)] = frame;
-		return frame;
 	}
 
+	/// 点一行改动：读这一份差异并交给浮层，面板本身不再内嵌 diff 卡片。
 	private void SelectDiff(GitChange change, bool stagedSide)
 	{
 		var untracked = change.IndexStatus == "?" && change.WorkTreeStatus == "?";
-		_diffRequest = _diffRequest?.MatchesWorkingTree(change.Path, stagedSide) == true
-			? null
-			: GitDiffRequest.WorkingTree(change.Path, stagedSide, untracked);
-		if (_diffRequest is not null)
-		{
-			OpenChangesPane();
-		}
-
-		// 只重排 diff 那一块并就地改两行底色：树、滚动位置与光标下的悬停态都不动。
-		RebuildDiff();
+		ShowDiff(GitDiffRequest.WorkingTree(change.Path, stagedSide, untracked));
 	}
 
-	private UIElement? BuildDiffPane()
+	/// 读一份差异并打开浮层。工作区/暂存来自 git status，提交与分支比较来自历史读取；
+	/// 读取失败或没有差异时浮层显示说明而不是空卡片。
+	private void ShowDiff(GitDiffRequest request)
 	{
-		if (_diffRequest is not { } request)
-		{
-			return null;
-		}
-
 		var path = request.Path;
 		string diff;
 		string? error = null;
@@ -1098,56 +1032,25 @@ public sealed partial class GitView : IDisposable
 		}
 
 		var (added, removed) = DiffStats.Count(diff);
-		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2);
-		// 提交/比较的 diff 是历史内容，打开工作区文件会看错版本；这两个来源只给关闭。
-		if (request.Kind is GitDiffKind.WorkingTree or GitDiffKind.Staged)
-		{
-			actions.Children(AppIcons.Button("square-pen", Strings.OpenInEditor, () => OpenInEditor(path)));
-		}
-
-		actions.Children(AppIcons.Button("x", Strings.GitCloseDiff, () =>
-		{
-			_diffRequest = null;
-			Refresh();
-		}));
-		var header = new DockPanel().LastChildFill().Children(actions.DockRight(),
-			new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(6)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(
-					new TextBlock().Text(request.Title).FontSize(AppTheme.FontSizeMicro)
-						.MaxWidth(90).FontWeight(FontWeight.SemiBold).PrimaryText()
-						.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
-					new TextBlock().Text(path).FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
-						.MaxWidth(170).SubtleText().TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
-					new TextBlock().Text(GitDiffStat(added, removed)).FontFamily(AppTheme.MonoFont)
-						.FontSize(AppTheme.FontSizeMicro).FaintText()));
-
-		UIElement body = error is not null
-			? new TextBlock().Text(Strings.GitDiffFailedReason(error))
-				.FontSize(AppTheme.FontSizeMicro).TextWrapping(TextWrapping.Wrap)
-				.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Error)
-			: DiffView.Render(diff.Length > 0 ? diff : Strings.GitNoDiff);
-
-		var pane = new StackPanel().Spacing(AppTheme.Space1)
-			.Children(
-				Separator(
-					new Border()
-						.Height(30)
-						.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space1, 0))
-						.Child(header),
-					new Thickness(0, 1, 0, 1)),
-				new ScrollViewer()
-					.SmoothScrolling()
-					.MaxHeight(180)
-					.Content(body)
-					.AutoVerticalScroll()
-					.NoHorizontalScroll());
-
-		return new Border().Padding(new Thickness(0, 0, 0, AppTheme.Space1)).Child(pane);
+		var full = Path.IsPathRooted(path) ? path : Path.Combine(_cwd(), path);
+		var fileName = Path.GetFileName(path);
+		var preview = new DiffPreviewContent(
+			fileName.Length > 0 ? fileName : path,
+			request.Title,
+			full,
+			added,
+			removed,
+			diff,
+			error is not null ? Strings.GitDiffFailedReason(error) : diff.Length == 0 ? Strings.GitNoDiff : null,
+			IsError: error is not null,
+			// 提交/比较是历史内容，打开工作区文件会看错版本。
+			CanOpenFile: request.Kind is GitDiffKind.WorkingTree or GitDiffKind.Staged);
+		_lastDiffContent = preview;
+		_diffPreview.Show(View, preview, OpenInEditor);
 	}
 
+	/// 最近一次交给浮层的差异内容；无窗口的测试用它核对读出的补丁与来源标记。
+	internal DiffPreviewContent? LastDiffContentForTests => _lastDiffContent;
 
 	private UIElement BuildMorePane(GitStatus status)
 	{
@@ -1310,7 +1213,6 @@ public sealed partial class GitView : IDisposable
 			Toasts.Success(View, message);
 			_lastFailureMessage = null;
 			_lastFailureDetail = null;
-			_diffRequest = null;
 			_branchesDirty = true;
 			_graphDirty = true;
 		}
@@ -1690,18 +1592,6 @@ public sealed partial class GitView : IDisposable
 			.HoverTip(tooltip);
 	}
 
-	private void OpenChangesPane()
-	{
-		if (_panes.ChangesOpen)
-		{
-			return;
-		}
-
-		_panes = _panes.WithChanges(true);
-		_changesBody.IsVisible = true;
-		SavePanes();
-	}
-
 	private enum Pane
 	{
 		Graph,
@@ -1923,8 +1813,7 @@ public sealed partial class GitView : IDisposable
 		if (status.Changes.FirstOrDefault() is { } first)
 		{
 			var untracked = first.IndexStatus == "?" && first.WorkTreeStatus == "?";
-			_diffRequest = GitDiffRequest.WorkingTree(first.Path, first.HasStaged, untracked);
-			Refresh();
+			ShowDiff(GitDiffRequest.WorkingTree(first.Path, first.HasStaged, untracked));
 		}
 	}
 

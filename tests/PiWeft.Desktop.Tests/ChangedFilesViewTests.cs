@@ -32,6 +32,20 @@ public sealed class DiffStatsTests
 	}
 
 	[Fact]
+	public void CountsContentThatStartsWithDiffMarkers()
+	{
+		// 删除的内容是 "-- 注释"，补丁行变成 "--- 注释"；新增内容是 "++ 注释"，行变成 "+++ 注释"。
+		// 按前缀判文件头会把这两行一起丢掉，hunk 头里的行数才是权威。
+		const string patch =
+			"--- a/x.cs\n+++ b/x.cs\n@@ -1,3 +1,3 @@\n" +
+			" keep\n" +
+			"--- 注释\n" +
+			"+++ 注释\n" +
+			" tail\n";
+		Assert.Equal((1, 1), DiffStats.Count(patch));
+	}
+
+	[Fact]
 	public void EmptyPatchHasNoLines()
 	{
 		Assert.Equal((0, 0), DiffStats.Count(string.Empty));

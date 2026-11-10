@@ -141,6 +141,8 @@ public sealed class RightPanel : IDisposable
 			return;
 		}
 
+		// 换到别的分段时，上一段的浮层跟着收起。
+		if (section != RightPanelSection.Git) _git?.HideOverlays();
 		_section = section;
 		_open = true;
 		var created = EnsureView(section);
@@ -166,7 +168,11 @@ public sealed class RightPanel : IDisposable
 		_open = false;
 		_trajectoryTimer.Stop();
 		_view.IsVisible(false);
+		_git?.HideOverlays();
 	}
+
+	/// 面板被切走或整体收进时收掉挂在窗口上的浮层（Git 的文件差异）。
+	internal void HideOverlays() => _git?.HideOverlays();
 
 	public void SelectFirstGitChangeForSmoke() => _git?.SelectFirstChangeForSmoke();
 
