@@ -131,6 +131,7 @@ public sealed partial class SessionTab : IDisposable
 
 	private readonly ComposerWidgetCard _extensionCard;
 	private readonly StackPanel _extensionBody = new();
+	private readonly LinkedSessionsCard _linkedSessionsCard;
 	private readonly GoalStripCard _goalStrip;
 	private readonly ReadingColumn _widgetColumn = new();
 	private readonly Button _retry;
@@ -209,6 +210,9 @@ public sealed partial class SessionTab : IDisposable
 
 	/// 快捷消息浮层的「管理」入口：设置弹窗属于宿主，标签只发意图。
 	public event Action<SessionTab>? QuickMessagesSettingsRequested;
+
+	/// 子会话条点击某一行：宿主按会话 id 切到对应标签。
+	public event Action<string>? LinkedSessionOpenRequested;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
 		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null,
@@ -531,6 +535,9 @@ public sealed partial class SessionTab : IDisposable
 			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
 			.MaxHeight(ComposerWidgetListMaxHeight));
 
+		// 子会话条：提议卡片 + 已开出的关联会话；有内容才占位。
+		_linkedSessionsCard = new LinkedSessionsCard();
+
 		// 目标条贴着输入卡（PiDeck 同位置）：目标属于下一轮的输入，不属于本轮结论。
 		_goalStrip = new GoalStripCard(PauseGoal, ResumeGoal, ConfirmClearGoal);
 
@@ -539,7 +546,7 @@ public sealed partial class SessionTab : IDisposable
 		_widgetColumn.Spacing(AppTheme.Space2)
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
 			.IsVisible(false)
-			.Children(_queueCard.View, _todoCard.View, _extensionCard.View, _goalStrip.View);
+			.Children(_queueCard.View, _todoCard.View, _linkedSessionsCard.View, _extensionCard.View, _goalStrip.View);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
 		// 三段各留固定宽度：呼吸点伸缩、状态短语轮换、提示每七秒换一条；
@@ -733,6 +740,11 @@ public sealed partial class SessionTab : IDisposable
 			else NotifyError(message);
 		};
 		if (!ReferenceEquals(_chat.Session, session)) _chat.Attach(session);
+		if (Session.Linked is { } linked)
+		{
+			linked.Changed += OnLinkedSessionsChanged;
+			RefreshLinkedSessions();
+		}
 
 		var pickers = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		RefreshPickers();
@@ -999,6 +1011,11 @@ public sealed partial class SessionTab : IDisposable
 		_textFocus.Dispose();
 		_timeline.Dispose();
 		_terminal?.Dispose();
+		if (Session.Linked is { } linked)
+		{
+			linked.Changed -= OnLinkedSessionsChanged;
+		}
+
 		_chat.Changed -= OnChatChanged;
 		_chat.Dispose();
 		UiLifetime.Release(View);
@@ -2625,9 +2642,9 @@ public sealed partial class SessionTab : IDisposable
 
 	private void RefreshWidgetColumn()
 	{
-		// IsVisible 的同值写入也会触发失效：待办/队列/扩展/目标四处都会调这里，先比较再写。
+		// IsVisible 的同值写入也会触发失效：待办/队列/扩展/子会话/目标五处都会调这里，先比较再写。
 		var visible = _todoCard.View.IsVisible || _extensionCard.View.IsVisible || _queueCard.View.IsVisible ||
-			_goalStrip.View.IsVisible;
+			_linkedSessionsCard.View.IsVisible || _goalStrip.View.IsVisible;
 		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
 	}
 

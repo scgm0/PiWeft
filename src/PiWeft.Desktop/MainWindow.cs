@@ -1341,6 +1341,8 @@ public sealed partial class MainWindow : Window
 		var tab = new SessionTab(session, environment.ListAvailableModels(_arguments.ApiKey), SessionTab.TitleFor(session),
 			() => environment.ListAvailableModels(_arguments.ApiKey), chat, statistics);
 		tab.TitleChanged += _ => UpdateTabHeaders();
+		// 子会话条点「打开」：按会话 id 找到同窗口里的后台标签。
+		tab.LinkedSessionOpenRequested += sessionId => ActivateSession(sessionId);
 		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
 		// 那条链路会顺带把会话列表重_stat 一遇。
 		tab.AskChanged += _ => UpdateTabHeaders();
@@ -1384,6 +1386,34 @@ public sealed partial class MainWindow : Window
 		panel.View.IsVisible(false);
 
 		return tab;
+	}
+
+	/// 切到某个会话的标签（关联会话的「打开」）。找不到时返回 false。
+	internal bool ActivateSession(string sessionId)
+	{
+		var tab = _tabEntries.OfType<SessionTab>()
+			.FirstOrDefault(candidate => string.Equals(SessionIdOf(candidate), sessionId, StringComparison.Ordinal));
+		if (tab is null)
+		{
+			return false;
+		}
+
+		var index = _tabEntries.IndexOf(tab);
+		if (index >= 0 && index < _tabControl.Tabs.Count)
+		{
+			_tabControl.SelectedIndex = index;
+			return true;
+		}
+
+		// 标签已关闭但会话文件还在（子会话条里的已停止项）：从侧栏目录重新打开。
+		var item = _sessions.FirstOrDefault(candidate => string.Equals(candidate.Id, sessionId, StringComparison.Ordinal));
+		if (item is null)
+		{
+			return false;
+		}
+
+		OpenSessionPath(item.Path);
+		return true;
 	}
 
 	/// 登记标签页。TabControl 自带的页签头不渲染：标题栏右段另绘 PiDeck 式页签，
@@ -1550,6 +1580,10 @@ public sealed partial class MainWindow : Window
 					break;
 				case "process":
 					CurrentTab()?.PrepareProcessSmoke();
+					break;
+				case "linked-sessions":
+					// 视觉验收：子会话条里的提议卡片（按钮换行、状态色）。
+					CurrentTab()?.PrepareLinkedSessionsSmoke();
 					break;
 				case "wheel":
 					// 滚动性能采样演练：展开执行过程后持续滚轮压测，供外部剖析对照。

@@ -23,7 +23,7 @@ public sealed class ComposerModeTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	private SessionTab Tab(string reply = "done")
+	private SessionTab Tab(string reply = "done", ILinkedSessionHost? linkedHost = null)
 	{
 		var model = FakeStreams.Model();
 		var session = new CodingAgentSession(new CodingAgentSessionOptions
@@ -34,9 +34,16 @@ public sealed class ComposerModeTests : IDisposable
 			Persist = false,
 			Skills = [],
 			PromptTemplates = [],
+			LinkedSessionHost = linkedHost,
 			StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, reply),
 		});
 		return new SessionTab(session, [model], "modes");
+	}
+
+	private sealed class NoopLinkedHost : ILinkedSessionHost
+	{
+		public Task<CodingAgentSession?> CreateChildAsync(LinkedSessionStartContext context, CancellationToken cancellationToken) =>
+			Task.FromResult<CodingAgentSession?>(null);
 	}
 
 	[Fact]
@@ -118,6 +125,19 @@ public sealed class ComposerModeTests : IDisposable
 		tab.Session.ClearGoal();
 		tab.RefreshGoalStrip();
 		Assert.False(tab.GoalStripVisible);
+	}
+
+	[Fact]
+	public async Task LinkedCardShowsPendingProposals()
+	{
+		using var tab = Tab(linkedHost: new NoopLinkedHost());
+		var hub = Assert.IsType<LinkedSessionHub>(tab.Session.Linked);
+		var result = await hub.StartAsync("补测试", "补一组桌面测试。", LinkedSessionProposal.OwnInitiative);
+		Assert.True(result.Ok, result.Text);
+
+		tab.RefreshLinkedSessions();
+		Assert.True(tab.LinkedCardVisible);
+		Assert.Equal(1, tab.LinkedCardRowCount);
 	}
 
 	[Fact]

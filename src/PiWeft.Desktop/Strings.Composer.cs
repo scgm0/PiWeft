@@ -72,4 +72,41 @@ public static partial class Strings
 	public static string GoalProgress(string phase, int rounds, int max) => $"{phase} · {rounds}/{max}";
 
 	public static string GoalResumeFailed(string reason) => $"恢复目标失败：{reason}";
+
+	// 关联会话：提议卡片与子会话条。措辞对齐 PiDeck 的 linkedSessions.*。
+	public const string LinkedSessionsTitle = "子会话";
+
+	public const string LinkedProposalOffer = "提议开新会话";
+
+	public const string LinkedProposalOwn = "建议的后续任务";
+
+	public const string LinkedProposalPending = "等你决定";
+
+	public const string LinkedNewSession = "新会话";
+
+	public const string LinkedDoHere = "在此做";
+
+	public const string LinkedDismiss = "不要";
+
+	public const string LinkedOpen = "打开";
+
+	public static string LinkedSessionsMeta(int children, int proposals) => (children, proposals) switch
+	{
+		(0, > 0) => $"{proposals} 个提议",
+		(> 0, 0) => $"{children} 个子会话",
+		_ => $"{proposals} 个提议 · {children} 个子会话",
+	};
+
+	public static string LinkedTurns(int turns) => $"{turns} 轮";
+
+	public static string LinkedState(string state) => state switch
+	{
+		LinkedSessionLink.Starting => "启动中",
+		LinkedSessionLink.Running => "运行中",
+		LinkedSessionLink.Idle => "等待中",
+		LinkedSessionLink.Failed => "失败",
+		_ => "已停止",
+	};
+
+	public static string LinkedProposalFailed(string reason) => $"提议操作失败：{reason}";
 }

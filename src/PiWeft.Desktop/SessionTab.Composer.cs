@@ -1,6 +1,7 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Cli;
+using PiWeft.CodingAgent;
 
 namespace PiWeft.Desktop;
 
@@ -28,6 +29,34 @@ public sealed partial class SessionTab
 	internal bool GoalStripVisible => _goalStrip.IsShown;
 
 	internal string? GoalStripPhaseForTests => _goalStrip.IsShown ? _goalStrip.PhaseTextForTests : null;
+
+	internal bool LinkedCardVisible => _linkedSessionsCard.IsShown;
+
+	internal int LinkedCardRowCount => _linkedSessionsCard.RowCount;
+
+	private void OnLinkedSessionsChanged() => Dispatch(RefreshLinkedSessions);
+
+	/// 子会话条：hub 变化（提议/子会话状态/回报）或首次挂载时重建。
+	internal void RefreshLinkedSessions()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_linkedSessionsCard.Render(Session.Linked, OpenLinkedSession, LinkedActionFailed);
+		RefreshWidgetColumn();
+	}
+
+	private void OpenLinkedSession(string sessionId) => LinkedSessionOpenRequested?.Invoke(sessionId);
+
+	private void LinkedActionFailed(string message) => Dispatch(() =>
+	{
+		if (!_disposed)
+		{
+			NotifyError(Strings.LinkedProposalFailed(message));
+		}
+	});
 
 	/// 目标条与扩展卡分开：widget 推送与每帧渲染都会调这里，状态没变就不碰界面。
 	internal void RefreshGoalStrip()
@@ -118,6 +147,14 @@ public sealed partial class SessionTab
 
 	/// 仅供 --ui-smoke composer-picker：打开技能选择器，外部脚本趁机截图。
 	internal void PrepareSkillPickerSmoke() => ShowSkillPicker();
+
+	/// 仅供 --ui-smoke linked-sessions：登记一张 own_initiative 提议，外部脚本截图子会话条。
+	/// 只进内存，不写会话文件，也不开子会话。
+	internal void PrepareLinkedSessionsSmoke() =>
+		_ = Session.Linked?.StartAsync(
+			"补桌面测试",
+			"给子会话条补一组布局截图，检查提议卡片在窄窗口下的换行。",
+			LinkedSessionProposal.OwnInitiative);
 
 	/// 仅供 --ui-smoke quick-messages：打开快捷消息浮层，外部脚本趁机截图。
 	internal void PrepareQuickMessagesSmoke() => ShowQuickMessages();

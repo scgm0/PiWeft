@@ -32,16 +32,19 @@ public static class LinkedSessionsTool
 				Name = StartName,
 				Label = "Start Session",
 				Description =
-					"Start a separate, user-visible session in the same project for a self-contained task. " +
-					"Use it only when the user asked for a separate, parallel or background session, and only for work that outlives this turn with its own output. " +
+					"Start a separate, user-visible session in the same project for a self-contained task, or register a proposal card for the user to decide. " +
+					"initiation decides who approves: user_asked starts immediately (the user explicitly asked for another/parallel/background session); " +
+					"offer asks the user with a New session / Do it here / Dismiss card and waits for the answer (default); " +
+					"own_initiative only shows the card and returns immediately (work you found but the user did not ask for). " +
 					"The child cannot see this conversation: write a self-contained brief with scope, definition of done, how to verify, and what not to touch. " +
-					"The call returns once the child is started; its final reply is reported back here when each turn ends.",
+					"The call returns a JSON status; a started child reports its final reply back here when each turn ends.",
 				Parameters = StartParameters(),
 				Execute = invocation => ExecuteStart(session(), invocation),
 			},
 			"Start a separate, user-visible session for a self-contained task",
 			[
 				"Use start_session only for work that should live beyond this turn and has its own output. Questions, a few file reads, or steps of the current task belong in this session.",
+			"initiation: user_asked when the user explicitly asked for a separate/parallel/background session; offer when the user named the task but did not say how (a card asks New session / Do it here); own_initiative for follow-up work you found but the user did not ask for (card only, no session until the user clicks).",
 				"The brief must be self-contained: the child cannot see this conversation. Write scope, done criteria, verification and forbidden areas in your own words.",
 				"Do not edit the same files from both sessions. Use send_to_session for follow-ups instead of starting another session for the same task.",
 				"A child report is the child's own account, not verified evidence. Check files, diffs and command output before telling the user the work is done; do not predict or poll the child.",
@@ -96,6 +99,12 @@ public static class LinkedSessionsTool
 				["type"] = "string",
 				["description"] = "Self-contained brief for the child: files/scope, definition of done, verification, and forbidden areas.",
 			},
+			["initiation"] = new JsonObject
+			{
+				["type"] = "string",
+				["enum"] = new JsonArray("user_asked", "offer", "own_initiative"),
+				["description"] = "user_asked starts immediately; offer asks the user first and waits (default); own_initiative only registers a proposal card.",
+			},
 		},
 		["required"] = new JsonArray("prompt"),
 	};
@@ -130,6 +139,7 @@ public static class LinkedSessionsTool
 		var result = await hub.StartAsync(
 			Text(invocation.Arguments["title"]),
 			Text(invocation.Arguments["prompt"]) ?? string.Empty,
+			Text(invocation.Arguments["initiation"]) ?? LinkedSessionProposal.Offer,
 			invocation.CancellationToken).ConfigureAwait(false);
 		return result.Ok ? AgentToolResult.Text(result.Text) : AgentToolResult.Error(result.Text);
 	}

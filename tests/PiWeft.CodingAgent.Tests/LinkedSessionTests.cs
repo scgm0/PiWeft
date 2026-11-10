@@ -243,6 +243,128 @@ public sealed class LinkedSessionTests : IDisposable
 	}
 
 	[Fact]
+	public async Task OwnInitiativeRegistersACardAndNewSessionStartsTheChild()
+	{
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到回报。");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("后续任务完成。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateSession(parentStream, host);
+		var hub = Assert.IsType<LinkedSessionHub>(parent.Linked);
+		var proposed = await hub.StartAsync("补测试", "给关联会话补一组测试。", LinkedSessionProposal.OwnInitiative);
+		Assert.True(proposed.Ok, proposed.Text);
+		Assert.Contains("\"status\":\"proposed\"", proposed.Text);
+		Assert.Empty(host.Children);
+		var proposal = Assert.Single(hub.Proposals);
+		Assert.Equal(LinkedSessionProposal.Pending, proposal.Status);
+		Assert.Equal(LinkedSessionProposal.OwnInitiative, proposal.Initiation);
+		var listed = Assert.IsType<JsonArray>(hub.List()["proposals"]);
+		Assert.Equal(proposal.Id, listed[0]!["proposal_id"]!.GetValue<string>());
+
+		var answered = await hub.AnswerProposalAsync(proposal.Id, LinkedSessionAnswers.New);
+		Assert.True(answered.Ok, answered.Text);
+		var child = Assert.Single(host.Children);
+		Assert.Equal(LinkedSessionProposal.Started, Assert.Single(hub.Proposals).Status);
+		Assert.Equal(child.Session.SessionId, Assert.Single(hub.Children).ChildSessionId);
+
+		await WaitForReportsAsync(hub, 1);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
+		child.Dispose();
+	}
+
+	[Fact]
+	public async Task OfferWaitsForTheCardAndReturnsTheAnswerStatus()
+	{
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到回报。");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("批准的会话做完了。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateSession(parentStream, host);
+		var hub = Assert.IsType<LinkedSessionHub>(parent.Linked);
+
+		// 先拒绝一个 offer。
+		var declinedRun = hub.StartAsync("不要这个", "这件事先不做。", LinkedSessionProposal.Offer);
+		var declined = await WaitForPendingProposalAsync(hub, 1);
+		Assert.True((await hub.AnswerProposalAsync(declined.Id, LinkedSessionAnswers.Dismiss)).Ok);
+		var declinedResult = await declinedRun.WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.True(declinedResult.Ok, declinedResult.Text);
+		Assert.Contains("\"status\":\"declined\"", declinedResult.Text);
+		Assert.Empty(host.Children);
+
+		// 再批准一个 offer：工具调用在用户点「新会话」后返回 started。
+		var acceptedRun = hub.StartAsync("批准这个", "这件事值得开。", LinkedSessionProposal.Offer);
+		var accepted = await WaitForPendingProposalAsync(hub, 1);
+		Assert.True((await hub.AnswerProposalAsync(accepted.Id, LinkedSessionAnswers.New)).Ok);
+		var acceptedResult = await acceptedRun.WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.True(acceptedResult.Ok, acceptedResult.Text);
+		Assert.Contains("\"status\":\"started\"", acceptedResult.Text);
+		var child = Assert.Single(host.Children);
+		Assert.Equal(LinkedSessionProposal.Started, hub.Proposals.Single(p => p.Id == accepted.Id).Status);
+
+		await WaitForReportsAsync(hub, 1);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
+		child.Dispose();
+	}
+
+	[Fact]
+	public async Task OwnInitiativeHereSendsTheBriefBackToTheParent()
+	{
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话接手做。");
+		var host = new FakeHost(_root);
+		using var parent = CreateSession(parentStream, host);
+		var hub = Assert.IsType<LinkedSessionHub>(parent.Linked);
+
+		Assert.True((await hub.StartAsync("补文档", "补一段桌面文档。", LinkedSessionProposal.OwnInitiative)).Ok);
+		var proposal = Assert.Single(hub.Proposals);
+		var answered = await hub.AnswerProposalAsync(proposal.Id, LinkedSessionAnswers.Here);
+		Assert.True(answered.Ok, answered.Text);
+		Assert.Equal(LinkedSessionProposal.Here, hub.Proposals.Single().Status);
+
+		var request = Assert.Single(parentStream.Requests);
+		Assert.Contains(request, static message => message is UserMessage user &&
+			(user.Content.Text ?? string.Empty).Contains("在这里做：补文档", StringComparison.Ordinal) &&
+			(user.Content.Text ?? string.Empty).Contains("补一段桌面文档。", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public async Task OfferIsExpiredWhenTheRunIsCancelled()
+	{
+		var host = new FakeHost(_root);
+		using var parent = CreateSession(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<LinkedSessionHub>(parent.Linked);
+		using var cancel = new CancellationTokenSource();
+		cancel.CancelAfter(TimeSpan.FromMilliseconds(50));
+
+		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+			hub.StartAsync("等不到回答", "没人会点这张卡。", LinkedSessionProposal.Offer, cancel.Token));
+		Assert.Equal(LinkedSessionProposal.Expired, Assert.Single(hub.Proposals).Status);
+		Assert.Empty(host.Children);
+	}
+
+	private static async Task<LinkedSessionProposal> WaitForPendingProposalAsync(LinkedSessionHub hub, int count)
+	{
+		for (var attempt = 0; attempt < 400; attempt++)
+		{
+			var pending = hub.Proposals.Where(static proposal => proposal.Status == LinkedSessionProposal.Pending).ToArray();
+			if (pending.Length >= count)
+			{
+				return pending[^1];
+			}
+
+			await Task.Delay(10);
+		}
+
+		throw new TimeoutException("pending proposal did not appear");
+	}
+
+	[Fact]
 	public void WithoutAHostTheLinkedToolsAreNotRegistered()
 	{
 		using var session = CreateSession(new ScriptedStreamFn());

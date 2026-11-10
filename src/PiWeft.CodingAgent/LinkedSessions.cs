@@ -31,6 +31,37 @@ public sealed record LinkedSessionStartContext(
 	string Prompt,
 	string SystemBrief);
 
+/// 关联会话提议：用户点「新会话」才真正开子会话。`offer` 阻塞工具调用等用户回答，
+/// `own_initiative` 只登记卡片、工具立即返回；两者都只在内存里，随父会话关闭消失。
+public sealed record LinkedSessionProposal(
+	string Id,
+	string ParentSessionId,
+	string Title,
+	string Prompt,
+	string Initiation,
+	string Status,
+	long CreatedAt,
+	string? ChildSessionId = null)
+{
+	public const string UserAsked = "user_asked";
+	public const string Offer = "offer";
+	public const string OwnInitiative = "own_initiative";
+
+	public const string Pending = "pending";
+	public const string Started = "started";
+	public const string Here = "here";
+	public const string Dismissed = "dismissed";
+	public const string Expired = "expired";
+}
+
+/// 提议卡片的三个动作。
+public static class LinkedSessionAnswers
+{
+	public const string New = "new";
+	public const string Here = "here";
+	public const string Dismiss = "dismiss";
+}
+
 /// 宿主提供的关联会话能力。不支持时工具不注册，会话也不会报「能开但开不出来」。
 public interface ILinkedSessionHost
 {
@@ -59,17 +90,28 @@ public sealed class LinkedSessionHub : IDisposable
 
 	public const int TitleMaxChars = 80;
 
+	/// offer 等用户回答的上限（PiDeck 同值）。
+	public static readonly TimeSpan OfferTimeout = TimeSpan.FromMinutes(10);
+
 	private readonly CodingAgentSession _owner;
 	private readonly ILinkedSessionHost _host;
 	private CodingAgentSession? _parentSession;
 	private readonly Lock _gate = new();
 	private readonly List<LinkedSessionLink> _children = [];
+	private readonly List<LinkedSessionProposal> _proposals = [];
 	private readonly Dictionary<string, CodingAgentSession> _sessions = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, IDisposable> _subscriptions = new(StringComparer.Ordinal);
+	// offer 的工具调用在这里等用户点卡片；答案到达后由 AnswerProposalAsync 收口。
+	private readonly Dictionary<string, TaskCompletionSource<ProposalOutcome>> _waiters = new(StringComparer.Ordinal);
+	private readonly HashSet<string> _answering = new(StringComparer.Ordinal);
 	// 回报投递串行化：两条子会话同时结束，不能并起两轮父会话请求。
 	private Task _deliveries = Task.CompletedTask;
 	private int _autoContinue;
 	private bool _disposed;
+
+	private sealed record ChildStartResult(bool Ok, string? ChildSessionId, string Text);
+
+	private sealed record ProposalOutcome(string Kind, string? ChildSessionId = null, string? Error = null);
 
 	public LinkedSessionHub(
 		CodingAgentSession owner,
@@ -107,6 +149,18 @@ public sealed class LinkedSessionHub : IDisposable
 		}
 	}
 
+	/// 全部提议快照（含已结算的；界面只画 pending）。
+	public IReadOnlyList<LinkedSessionProposal> Proposals
+	{
+		get
+		{
+			lock (_gate)
+			{
+				return [.. _proposals];
+			}
+		}
+	}
+
 	/// 子会话数量/状态变化；界面可据此刷新列表。
 	public event Action? Changed;
 
@@ -131,8 +185,13 @@ public sealed class LinkedSessionHub : IDisposable
 		}
 	}
 
-	/// 开出子会话并投递第一轮。立即返回，子会话在后台跑；结果由回合回报带回父会话。
-	public async Task<LinkedSessionOperation> StartAsync(string? title, string prompt, CancellationToken cancellationToken = default)
+	/// 开子会话或登记提议。`user_asked` 立即开；`offer` 等用户点卡片后返回；
+	/// `own_initiative` 只登记 pending 卡片并立即返回。结果都是 JSON 状态文本。
+	public async Task<LinkedSessionOperation> StartAsync(
+		string? title,
+		string prompt,
+		string initiation = LinkedSessionProposal.UserAsked,
+		CancellationToken cancellationToken = default)
 	{
 		var brief = (prompt ?? string.Empty).Trim();
 		if (brief.Length == 0)
@@ -141,30 +200,194 @@ public sealed class LinkedSessionHub : IDisposable
 		}
 
 		var cleanTitle = NormalizeTitle(title, brief);
+		var mode = NormalizeInitiation(initiation);
+		if (mode == LinkedSessionProposal.UserAsked)
+		{
+			var started = await StartChildAsync(cleanTitle, brief, cancellationToken).ConfigureAwait(false);
+			return started.Ok ? LinkedSessionOperation.Success(started.Text) : LinkedSessionOperation.Failure(started.Text);
+		}
+
+		var proposal = new LinkedSessionProposal(
+			Guid.NewGuid().ToString("N"),
+			_owner.Session.SessionId,
+			cleanTitle,
+			brief,
+			mode,
+			LinkedSessionProposal.Pending,
+			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+		TaskCompletionSource<ProposalOutcome>? waiter = null;
 		lock (_gate)
 		{
 			if (_disposed)
 			{
 				return LinkedSessionOperation.Failure("the session is closing");
 			}
+
+			_proposals.Add(proposal);
+			if (mode == LinkedSessionProposal.Offer)
+			{
+				// 先登记 waiter 再触发 Changed：卡片可能在两者之间就被点掉。
+				waiter = new TaskCompletionSource<ProposalOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+				_waiters[proposal.Id] = waiter;
+			}
 		}
 
+		Changed?.Invoke();
+		if (mode == LinkedSessionProposal.OwnInitiative)
+		{
+			return LinkedSessionOperation.Success(ProposalStatusJson(
+				"proposed",
+				proposal,
+				note: "已作为卡片展示给用户；用户点「新会话」才会开。不要在回复里再问一遍。"));
+		}
+
+		ProposalOutcome outcome;
+		try
+		{
+			outcome = await waiter!.Task.WaitAsync(OfferTimeout, cancellationToken).ConfigureAwait(false);
+		}
+		catch (TimeoutException)
+		{
+			ExpireProposal(proposal.Id);
+			return LinkedSessionOperation.Success(ProposalStatusJson(
+				"no_answer",
+				proposal,
+				note: "用户没有回答；卡片已失效。不要自行开会话。"));
+		}
+		catch (OperationCanceledException)
+		{
+			ExpireProposal(proposal.Id);
+			throw;
+		}
+
+		return outcome.Kind switch
+		{
+			"started" => LinkedSessionOperation.Success(ProposalStatusJson("started", proposal, outcome.ChildSessionId)),
+			"here" => LinkedSessionOperation.Success(ProposalStatusJson(
+				"do_here",
+				proposal,
+				note: "用户选择在当前会话里做这件事；现在就在这里做，不要再开会话。")),
+			"dismissed" => LinkedSessionOperation.Success(ProposalStatusJson(
+				"declined",
+				proposal,
+				note: "用户不要这个会话，也没让你在这里做。")),
+			_ => LinkedSessionOperation.Failure(outcome.Error ?? "proposal failed"),
+		};
+	}
+
+	/// 用户对提议卡片作答：new 开子会话，here 在当前会话里做，dismiss 丢弃。
+	/// offer 的工具调用在等待这个结果；own_initiative 没有等待者，here 会把简报发回父会话。
+	public async Task<LinkedSessionOperation> AnswerProposalAsync(
+		string proposalId,
+		string answer,
+		CancellationToken cancellationToken = default)
+	{
+		LinkedSessionProposal proposal;
+		lock (_gate)
+		{
+			var index = _proposals.FindIndex(candidate => string.Equals(candidate.Id, proposalId, StringComparison.Ordinal));
+			if (index < 0)
+			{
+				return LinkedSessionOperation.Failure("proposal-not-found");
+			}
+
+			proposal = _proposals[index];
+			if (proposal.Status != LinkedSessionProposal.Pending)
+			{
+				return LinkedSessionOperation.Failure("proposal-settled");
+			}
+
+			if (!_answering.Add(proposalId))
+			{
+				return LinkedSessionOperation.Failure("proposal-busy");
+			}
+		}
+
+		try
+		{
+			switch (answer)
+			{
+				case LinkedSessionAnswers.New:
+				{
+					var started = await StartChildAsync(proposal.Title, proposal.Prompt, cancellationToken).ConfigureAwait(false);
+					if (!started.Ok)
+					{
+						// 开会话失败：own_initiative 回到 pending 让用户能再点，offer 直接失效。
+						UpdateProposal(proposalId, candidate => candidate with
+						{
+							Status = candidate.Initiation == LinkedSessionProposal.OwnInitiative
+								? LinkedSessionProposal.Pending
+								: LinkedSessionProposal.Expired,
+							ChildSessionId = null,
+						});
+						ResolveWaiter(proposalId, new ProposalOutcome("error", Error: started.Text));
+						Changed?.Invoke();
+						return LinkedSessionOperation.Failure(started.Text);
+					}
+
+					var updated = UpdateProposal(proposalId, candidate => candidate with
+					{
+						Status = LinkedSessionProposal.Started,
+						ChildSessionId = started.ChildSessionId,
+					});
+					ResolveWaiter(proposalId, new ProposalOutcome("started", started.ChildSessionId));
+					Changed?.Invoke();
+					return LinkedSessionOperation.Success(ProposalStatusJson("started", updated ?? proposal, started.ChildSessionId));
+				}
+
+				case LinkedSessionAnswers.Here:
+				{
+					var updated = UpdateProposal(proposalId, candidate => candidate with { Status = LinkedSessionProposal.Here });
+					ResolveWaiter(proposalId, new ProposalOutcome("here"));
+					Changed?.Invoke();
+					if (proposal.Initiation == LinkedSessionProposal.OwnInitiative)
+					{
+						await SendHereToParentAsync(proposal, cancellationToken).ConfigureAwait(false);
+					}
+
+					return LinkedSessionOperation.Success(ProposalStatusJson("do_here", updated ?? proposal));
+				}
+
+				case LinkedSessionAnswers.Dismiss:
+				{
+					var updated = UpdateProposal(proposalId, candidate => candidate with { Status = LinkedSessionProposal.Dismissed });
+					ResolveWaiter(proposalId, new ProposalOutcome("dismissed"));
+					Changed?.Invoke();
+					return LinkedSessionOperation.Success(ProposalStatusJson("declined", updated ?? proposal));
+				}
+
+				default:
+					return LinkedSessionOperation.Failure("unknown answer");
+			}
+		}
+		finally
+		{
+			lock (_gate)
+			{
+				_answering.Remove(proposalId);
+			}
+		}
+	}
+
+	private async Task<ChildStartResult> StartChildAsync(string title, string brief, CancellationToken cancellationToken)
+	{
 		var ownerTitle = OwnerTitle();
 		CodingAgentSession? child;
 		try
 		{
 			child = await _host.CreateChildAsync(
-				new LinkedSessionStartContext(_owner, ownerTitle, cleanTitle, brief, SystemBrief(ownerTitle)),
+				new LinkedSessionStartContext(_owner, ownerTitle, title, brief, SystemBrief(ownerTitle)),
 				cancellationToken).ConfigureAwait(false);
 		}
 		catch (Exception ex) when (ex is not OperationCanceledException)
 		{
-			return LinkedSessionOperation.Failure($"failed to create the linked session: {ex.Message}");
+			return new ChildStartResult(false, null, $"failed to create the linked session: {ex.Message}");
 		}
 
 		if (child is null)
 		{
-			return LinkedSessionOperation.Failure("this host cannot open a linked session");
+			return new ChildStartResult(false, null, "this host cannot open a linked session");
 		}
 
 		var childId = child.Session.SessionId;
@@ -178,7 +401,7 @@ public sealed class LinkedSessionHub : IDisposable
 		catch (Exception ex)
 		{
 			child.Dispose();
-			return LinkedSessionOperation.Failure($"failed to observe the linked session: {ex.Message}");
+			return new ChildStartResult(false, null, $"failed to observe the linked session: {ex.Message}");
 		}
 
 		var linkAdded = false;
@@ -189,7 +412,7 @@ public sealed class LinkedSessionHub : IDisposable
 				_children.Add(new LinkedSessionLink(
 					childId,
 					_owner.Session.SessionId,
-					cleanTitle,
+					title,
 					LinkedSessionLink.Starting,
 					0,
 					null,
@@ -205,16 +428,101 @@ public sealed class LinkedSessionHub : IDisposable
 			// 父会话在子会话创建途中关掉了：别留一个没人回报的后台会话。
 			subscription.Dispose();
 			child.Dispose();
-			return LinkedSessionOperation.Failure("the session is closing");
+			return new ChildStartResult(false, null, "the session is closing");
 		}
 
 		Changed?.Invoke();
 		// 首轮在后台跑：工具调用只等「建好并已投递」，不等子会话跑完。
 		_ = RunFirstTurnAsync(childId, child, brief);
-		return LinkedSessionOperation.Success(
-			$"started linked session \"{cleanTitle}\" (session_id: {childId}); its report will arrive here when the turn ends");
+		return new ChildStartResult(
+			true,
+			childId,
+			new JsonObject
+			{
+				["status"] = "started",
+				["session_id"] = childId,
+				["title"] = title,
+			}.ToJsonString());
 	}
 
+	private void ResolveWaiter(string proposalId, ProposalOutcome outcome)
+	{
+		TaskCompletionSource<ProposalOutcome>? waiter;
+		lock (_gate)
+		{
+			_waiters.Remove(proposalId, out waiter);
+		}
+
+		waiter?.TrySetResult(outcome);
+	}
+
+	private void ExpireProposal(string proposalId)
+	{
+		UpdateProposal(proposalId, candidate => candidate with { Status = LinkedSessionProposal.Expired });
+		ResolveWaiter(proposalId, new ProposalOutcome("expired"));
+		Changed?.Invoke();
+	}
+
+	private LinkedSessionProposal? UpdateProposal(
+		string proposalId,
+		Func<LinkedSessionProposal, LinkedSessionProposal> update)
+	{
+		lock (_gate)
+		{
+			var index = _proposals.FindIndex(candidate => string.Equals(candidate.Id, proposalId, StringComparison.Ordinal));
+			if (index < 0)
+			{
+				return null;
+			}
+
+			_proposals[index] = update(_proposals[index]);
+			return _proposals[index];
+		}
+	}
+
+	private async Task SendHereToParentAsync(LinkedSessionProposal proposal, CancellationToken cancellationToken)
+	{
+		var message = new UserMessage
+		{
+			Content = MessageContent.FromText($"在这里做：{proposal.Title}\n\n{proposal.Prompt}"),
+			Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			CustomType = PiWeftProtocol.LinkedMessageType,
+		};
+		await _owner.DeliverMessageAsync(message, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static string ProposalStatusJson(
+		string status,
+		LinkedSessionProposal proposal,
+		string? childSessionId = null,
+		string? note = null)
+	{
+		var data = new JsonObject
+		{
+			["status"] = status,
+			["proposal_id"] = proposal.Id,
+			["title"] = proposal.Title,
+		};
+		if (childSessionId is { Length: > 0 })
+		{
+			data["session_id"] = childSessionId;
+		}
+
+		if (note is { Length: > 0 })
+		{
+			data["note"] = note;
+		}
+
+		return data.ToJsonString();
+	}
+
+	private static string NormalizeInitiation(string? initiation) => initiation switch
+	{
+		LinkedSessionProposal.UserAsked => LinkedSessionProposal.UserAsked,
+		LinkedSessionProposal.OwnInitiative => LinkedSessionProposal.OwnInitiative,
+		// 未知值按 offer 处理：宁可多问一句，也不擅自开后台会话。
+		_ => LinkedSessionProposal.Offer,
+	};
 	/// 给直接关联的会话发一条消息：本会话开出的子会话，或开出本会话的父会话。
 	/// 对方忙时排在当前这一轮之后；本调用不等对方回复。
 	public Task<LinkedSessionOperation> SendAsync(string sessionId, string message, CancellationToken cancellationToken = default)
@@ -300,6 +608,25 @@ public sealed class LinkedSessionHub : IDisposable
 		}
 
 		data["children"] = children;
+
+		var proposals = new JsonArray();
+		foreach (var proposal in Proposals)
+		{
+			if (proposal.Status != LinkedSessionProposal.Pending)
+			{
+				continue;
+			}
+
+			proposals.Add((JsonNode)new JsonObject
+			{
+				["proposal_id"] = proposal.Id,
+				["title"] = proposal.Title,
+				["initiation"] = proposal.Initiation,
+				["status"] = proposal.Status,
+			});
+		}
+
+		data["proposals"] = proposals;
 		return data;
 	}
 
@@ -333,6 +660,7 @@ public sealed class LinkedSessionHub : IDisposable
 	{
 		IDisposable[] subscriptions;
 		CodingAgentSession[] children;
+		TaskCompletionSource<ProposalOutcome>[] waiters;
 		lock (_gate)
 		{
 			if (_disposed)
@@ -343,8 +671,17 @@ public sealed class LinkedSessionHub : IDisposable
 			_disposed = true;
 			subscriptions = [.. _subscriptions.Values];
 			children = [.. _sessions.Values];
+			waiters = [.. _waiters.Values];
 			_subscriptions.Clear();
 			_sessions.Clear();
+			_waiters.Clear();
+			_answering.Clear();
+		}
+
+		// 挂着的 offer 工具调用不能永远等：按会话关闭收口。
+		foreach (var waiter in waiters)
+		{
+			waiter.TrySetResult(new ProposalOutcome("error", Error: "the session is closing"));
 		}
 
 		foreach (var subscription in subscriptions)
