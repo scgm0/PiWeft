@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Cli;
 
 namespace PiWeft.Desktop;
 
@@ -7,6 +8,9 @@ namespace PiWeft.Desktop;
 /// 主文件只保留 composer 的布局与发送链路。
 public sealed partial class SessionTab
 {
+	/// 恢复目标的请求只发一次：续跑会直接拉起一轮模型，连点会排两轮。
+	private bool _goalResuming;
+
 	/// 当前工作模式。目标来自输入区开关，计划落在会话状态上：计划开始执行时
 	/// 会话会把 <see cref="PiWeft.CodingAgent.CodingAgentSession.PlanModeEnabled"/> 置回 false，
 	/// chip 跟着隐藏，不额外维护第二份计划状态。
@@ -20,6 +24,94 @@ public sealed partial class SessionTab
 	internal string? ModeChipTextForTests => _modeChip.IsVisible ? _modeChipLabel.Text : null;
 
 	internal void SelectModeForTests(ComposerMode mode) => SelectMode(mode);
+
+	internal bool GoalStripVisible => _goalStrip.IsShown;
+
+	internal string? GoalStripPhaseForTests => _goalStrip.IsShown ? _goalStrip.PhaseTextForTests : null;
+
+	/// 目标条与扩展卡分开：widget 推送与每帧渲染都会调这里，状态没变就不碰界面。
+	internal void RefreshGoalStrip()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		var goal = Session.Goal;
+		_renderedGoalState = goal;
+		_goalStrip.Render(goal);
+		RefreshWidgetColumn();
+	}
+
+	private void PauseGoal()
+	{
+		if (_disposed || !Session.Goal.Running)
+		{
+			return;
+		}
+
+		Session.PauseGoal();
+		RefreshGoalStrip();
+	}
+
+	private void ResumeGoal()
+	{
+		if (_disposed || _goalResuming)
+		{
+			return;
+		}
+
+		_ = ResumeGoalAsync();
+	}
+
+	private async Task ResumeGoalAsync()
+	{
+		_goalResuming = true;
+		try
+		{
+			await Session.ResumeGoalAsync();
+		}
+		catch (OperationCanceledException)
+		{
+			// 用户中断：与发送路径一致，不当作错误。
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Resume goal", ex);
+			NotifyError(Strings.GoalResumeFailed(ex.Message));
+		}
+		finally
+		{
+			_goalResuming = false;
+			if (!_disposed)
+			{
+				RefreshGoalStrip();
+			}
+		}
+	}
+
+	private async void ConfirmClearGoal()
+	{
+		if (_disposed || Session.Goal.Objective.Length == 0)
+		{
+			return;
+		}
+
+		try
+		{
+			if (!await MessageBox.ConfirmAsync(Strings.GoalClearConfirmTitle, detail: Strings.GoalClearConfirmMessage) || _disposed)
+			{
+				return;
+			}
+
+			Session.ClearGoal();
+			RefreshGoalStrip();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Clear goal", ex);
+		}
+	}
 
 	/// 仅供 --ui-smoke composer-add：打开合并菜单，外部脚本趁机截图。
 	internal void PrepareComposerAddSmoke() => ShowComposerAddMenu();

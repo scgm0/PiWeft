@@ -62,6 +62,8 @@ public static partial class Strings
 	public const string EditAndResend = "编辑重发";
 	public const string EditPending = "已载入该提问：修改后发送会在新分支上继续。";
 	public static string Branched(string path) => $"已在该处开新分支：{path}";
+
+	public static string LinkedSessionStarted(string title) => $"已开始子会话「{title}」，它在后台跑；每轮结束会把结果回报到当前会话。";
 	public static string BranchFailed(string reason) => $"分支失败：{reason}";
 	public const string CloseCurrentTab = "关闭标签";
 	public const string Copied = "已复制。";

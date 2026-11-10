@@ -92,6 +92,15 @@ public sealed record CodingAgentSessionOptions
 
 	public IUiHost? UiHost { get; init; }
 
+	/// 宿主提供的关联会话能力；为 null 时不注册 start_session / send_to_session / list_linked_sessions。
+	public ILinkedSessionHost? LinkedSessionHost { get; init; }
+
+	/// 本会话是关联子会话时，指向开出它的父会话。
+	public CodingAgentSession? LinkedParent { get; init; }
+
+	/// 父会话的展示标题（子会话的系统提示用）。
+	public string? LinkedParentTitle { get; init; }
+
 	/// 项目是否受信任。为 false 时不加载项目级技能与提示词模板（<c>&lt;cwd&gt;/.pi/skills</c>、
 	/// <c>.agents/skills</c> 等），用户级目录照常加载。上下文文件不受影响，与 pi 一致。
 	public bool ProjectTrusted { get; init; } = true;
@@ -217,6 +226,9 @@ public sealed partial class CodingAgentSession : IDisposable
 		_classifiers = options.Classifiers;
 		Session = options.Session
 			?? (options.Persist ? SessionManager.Create(Cwd) : SessionManager.InMemory(Cwd));
+		Linked = options.LinkedSessionHost is { } linkedHost
+			? new LinkedSessionHub(this, linkedHost, options.LinkedParent, options.LinkedParentTitle)
+			: null;
 
 		_explicitSkills = options.Skills;
 		_explicitTemplates = options.PromptTemplates;
@@ -280,6 +292,10 @@ public sealed partial class CodingAgentSession : IDisposable
 			{
 				builtins[index] = AskQuestionToolFactory.Create(() => this);
 			}
+			else if (LinkedSessionsTool.IsName(builtins[index].Tool.Name))
+			{
+				builtins[index] = LinkedSessionsTool.Bind(builtins[index].Tool.Name, () => this);
+			}
 			else if (builtins[index].Tool.Name == "bash")
 			{
 				// bash 需要会话上下文来注入 PI_* 环境变量与 settings 的 shell 配置。
@@ -294,6 +310,19 @@ public sealed partial class CodingAgentSession : IDisposable
 			{
 				// read 需要模型能力来判断是否给出非 vision 提示；图片识别本身按 magic bytes。
 				builtins[index] = builtins[index] with { Tool = FileTools.Read(Cwd, () => _agent?.Model) };
+			}
+		}
+
+		// 关联会话工具跟宿主能力走，不属于 pi 的内置工具集（与 PiDeck 的扩展工具同义）：
+		// 有宿主时无论 --tools 怎么配置都补齐，避免用户自定义 defaultTools 时关联会话静默消失。
+		if (Linked is not null)
+		{
+			foreach (var name in LinkedSessionsTool.Names)
+			{
+				if (!builtins.Any(tool => string.Equals(tool.Tool.Name, name, StringComparison.Ordinal)))
+				{
+					builtins.Add(LinkedSessionsTool.Bind(name, () => this));
+				}
 			}
 		}
 
@@ -443,6 +472,10 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	public SessionManager Session { get; private set; }
 
+	/// 关联会话：开出子会话、互相转发消息、把子会话的回合结果回报到本会话。
+	/// 只在宿主提供了 <see cref="ILinkedSessionHost"/> 时存在；纯 CLI 为 null。
+	public LinkedSessionHub? Linked { get; }
+
 	public AgentRuntime Agent => _agent;
 
 	public Model Model => _agent.Model;
@@ -537,6 +570,10 @@ public sealed partial class CodingAgentSession : IDisposable
 	/// CLI、RPC 与桌面共用这条路径，保证三者的输入语义一致。
 	public UserMessage PrepareInput(string text, IReadOnlyList<ImageContent>? images = null)
 	{
+		// 用户发消息：关联会话的自动续跑额度清零（PiDeck 同义）。
+		// 子会话回报不走这里，所以不会被自己触发的父会话轮次清零。
+		Linked?.NoteUserPrompt();
+
 		// 计划模式：PiDeck 的 Plan 开关会在消息首行注入隐藏标记。带标记就开启，
 		// 随后第一条无标记消息（来自同一开关流）自动退出；/plan 手动的源不自动退出。
 		if (PlanMode.TryStripMarker(text, out var withoutMarker))
@@ -561,13 +598,17 @@ public sealed partial class CodingAgentSession : IDisposable
 			}
 			else if (_goal.Phase is GoalState.Paused or GoalState.Blocked)
 			{
-				SetGoal(objective, resetRounds: false);
+				// 暂停/阻塞 ≠ 完成：正文只是这一轮的指令，目标保持不变（PiDeck 同义）。
+				SetGoal(_goal.Objective, resetRounds: false);
 			}
 			else
 			{
-				_goal = _goal with { Enabled = true, Phase = GoalState.Active };
+				lock (_goalGate)
+				{
+					_goal = _goal with { Enabled = true, Phase = GoalState.Active };
+					PersistGoalState();
+				}
 				PublishGoalWidget();
-				PersistGoalState();
 				RefreshSystemPrompt();
 			}
 		}
@@ -1367,6 +1408,9 @@ public sealed partial class CodingAgentSession : IDisposable
 	}
 
 	public bool IsStreaming => _agent.IsStreaming;
+
+	/// 会话已释放：关联会话的回报/转发不该再拉起它。
+	public bool IsDisposed => _disposed;
 
 	public AgentQueueMode SteeringMode
 	{
@@ -3466,6 +3510,28 @@ public sealed partial class CodingAgentSession : IDisposable
 		return messages;
 	}
 
+	/// 外部注入的一轮（关联会话回报或跨会话消息）：运行中排 follow-up，模式续轮排到队列尾，
+	/// 空闲时立即起一轮。回报不能被并行的 PromptAsync 抢跑，所以与目标/计划共用同一份续轮队列。
+	public async Task DeliverMessageAsync(UserMessage message, CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+		if (IsRunning)
+		{
+			FollowUp(message);
+			return;
+		}
+
+		if (_drainingModeTurn)
+		{
+			// 续轮循环马上要重建投影并 ContinueAsync：把消息写进分支，下一轮自然带上。
+			Session.AppendMessage(message);
+			_pendingModeTurn = true;
+			return;
+		}
+
+		await PromptAsync(message, cancellationToken).ConfigureAwait(false);
+	}
+
 	public void Steer(Message message)
 	{
 		_agent.Steer(message);
@@ -3622,6 +3688,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		_disposed = true;
+		Linked?.Dispose();
 		DispatchSessionLifecycle("session_shutdown");
 		_persistence.Dispose();
 		_cacheWarmLifecycle.Dispose();
@@ -3771,6 +3838,18 @@ public sealed partial class CodingAgentSession : IDisposable
 	/// 用新的工具声明重建，未变动的工具沿用已有的措辞。
 	public void SetTools(IReadOnlyList<AgentTool> tools)
 	{
+		// 没有宿主的会话不保留关联会话工具（工具列表刷新后重新塞回来的也要去掉）。
+		if (Linked is null)
+		{
+			tools = [.. tools.Where(static tool => !LinkedSessionsTool.IsName(tool.Name))];
+		}
+		else
+		{
+			tools = [.. tools, .. LinkedSessionsTool.Names
+				.Where(name => tools.All(tool => !string.Equals(tool.Name, name, StringComparison.Ordinal)))
+				.Select(name => LinkedSessionsTool.Bind(name, () => this).Tool)];
+		}
+
 		// 有 exposure: codemode 的工具时自动补上 codemode（pi 的 autoEnableCodemode 行为）。
 		if (Settings.Codemode.AutoEnable
 			&& tools.Any(static tool => string.Equals(tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal))
@@ -3787,6 +3866,8 @@ public sealed partial class CodingAgentSession : IDisposable
 			{
 				TodoToolFactory.Name => TodoToolFactory.Create(() => Session, PublishTodoWidget).Tool,
 				AskQuestionToolFactory.Name => AskQuestionToolFactory.Create(() => this).Tool,
+				LinkedSessionsTool.StartName or LinkedSessionsTool.SendName or LinkedSessionsTool.ListName =>
+					LinkedSessionsTool.Bind(tool.Name, () => this).Tool,
 				_ => tool,
 			});
 		}
@@ -3807,6 +3888,11 @@ public sealed partial class CodingAgentSession : IDisposable
 					continue;
 				case AskQuestionToolFactory.Name:
 					rebuilt.Add(AskQuestionToolFactory.Create(() => this));
+					continue;
+				case LinkedSessionsTool.StartName:
+				case LinkedSessionsTool.SendName:
+				case LinkedSessionsTool.ListName:
+					rebuilt.Add(LinkedSessionsTool.Bind(tool.Name, () => this));
 					continue;
 				case CodeModeToolFactory.Name:
 					// 工具集变化后 codemode 的描述也要重新列出可调用工具。

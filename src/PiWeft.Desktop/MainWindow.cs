@@ -1140,7 +1140,8 @@ public sealed partial class MainWindow : Window
 				{
 					var session = environment.CreateSession(
 						_arguments, manager.Cwd, session: manager, extraTools: extraTools,
-						recordInitialThinkingLevel: false, uiHost: uiHost, preferredModel: RememberedModel(environment));
+						recordInitialThinkingLevel: false, uiHost: uiHost, preferredModel: RememberedModel(environment),
+						linkedSessionHost: LinkedSessionsHost);
 					// 聊天记录投影是纯模型工作（无 UI 依赖），提前在后台做完，标签页直接接手。
 					var chat = new ChatViewModel();
 					chat.Attach(session);
@@ -1299,7 +1300,8 @@ public sealed partial class MainWindow : Window
 		var uiHost = new DesktopUiHost();
 		OpenPreparedSession(
 			environment.CreateSession(_arguments, manager.Cwd, session: manager, extraTools: McpToolsFor(manager.Cwd),
-				recordInitialThinkingLevel: false, uiHost: uiHost, preferredModel: RememberedModel(environment)),
+				recordInitialThinkingLevel: false, uiHost: uiHost, preferredModel: RememberedModel(environment),
+				linkedSessionHost: LinkedSessionsHost),
 			uiHost);
 	}
 

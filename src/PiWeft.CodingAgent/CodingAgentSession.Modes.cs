@@ -16,9 +16,15 @@ public sealed partial class CodingAgentSession
 
 	private readonly List<PlanStep> _planSteps = [];
 	private bool _planExecution;
-	private GoalState _goal = GoalState.Initial;
-	private bool _pendingModeTurn;
-	private bool _drainingModeTurn;
+	/// 目标状态在 UI 线程（暂停/恢复/清除）与 agent 线程（回合结束推进轮次）两边写：
+	/// 引用字段用 volatile 保证界面读到的不是过期快照，读写都进 <see cref="_goalGate"/>。
+	private volatile GoalState _goal = GoalState.Initial;
+	private readonly Lock _goalGate = new();
+	/// 上一次落盘的目标全文：目标不变时条目省略 objective，避免 32 轮堆 32 份原文。
+	/// 只在 <see cref="_goalGate"/> 内读写。
+	private string _persistedGoalObjective = string.Empty;
+	private volatile bool _pendingModeTurn;
+	private volatile bool _drainingModeTurn;
 
 	public IReadOnlyList<PlanStep> ActivePlanSteps => _planSteps;
 
@@ -75,39 +81,76 @@ public sealed partial class CodingAgentSession
 			return;
 		}
 
-		_goal = _goal with
+		lock (_goalGate)
 		{
-			Enabled = true,
-			Phase = GoalState.Active,
-			Objective = text,
-			RoundsStarted = resetRounds ? 0 : _goal.RoundsStarted,
-			MaxRounds = maxRounds is > 0 ? maxRounds.Value : _goal.MaxRounds,
-			BlockReason = null,
-		};
+			_goal = _goal with
+			{
+				Enabled = true,
+				Phase = GoalState.Active,
+				Objective = text,
+				RoundsStarted = resetRounds ? 0 : _goal.RoundsStarted,
+				MaxRounds = maxRounds is > 0 ? maxRounds.Value : _goal.MaxRounds,
+				BlockReason = null,
+			};
+			PersistGoalState();
+		}
+
 		PublishGoalWidget();
-		PersistGoalState();
 		RefreshSystemPrompt();
 	}
 
 	public void PauseGoal()
 	{
-		if (!_goal.Enabled || _goal.Phase == GoalState.Paused)
+		lock (_goalGate)
 		{
-			return;
+			if (!_goal.Enabled || _goal.Phase == GoalState.Paused)
+			{
+				return;
+			}
+
+			_goal = _goal with { Phase = GoalState.Paused };
+			PersistGoalState();
 		}
 
-		_goal = _goal with { Phase = GoalState.Paused };
 		PublishGoalWidget();
-		PersistGoalState();
 		RefreshSystemPrompt();
 	}
 
 	public void ClearGoal()
 	{
-		_goal = GoalState.Initial;
+		lock (_goalGate)
+		{
+			_goal = GoalState.Initial;
+			// 清除必须落下空目标：省略 objective 会让重启时的回溯穿透到旧目标。
+			PersistGoalState(force: true);
+		}
+
 		PublishGoalWidget();
-		PersistGoalState();
 		RefreshSystemPrompt();
+	}
+
+	/// 恢复目标并补一轮续跑。只把 phase 标回 active 不会让空闲的代理动起来；
+	/// 运行中则只排队，由本轮收尾后的续轮接上。空目标返回 false。
+	public async Task<bool> ResumeGoalAsync(CancellationToken cancellationToken = default)
+	{
+		if (_goal.Objective.Length == 0)
+		{
+			return false;
+		}
+
+		SetGoal(_goal.Objective, resetRounds: false);
+		if (IsRunning)
+		{
+			// 这一轮结束时 goal 还是 active，agent_end 会把它算作一轮并排下一轮。
+			return true;
+		}
+
+		lock (_goalGate)
+		{
+			QueueGoalContinuation();
+		}
+		await RunPendingModeTurnAsync(cancellationToken).ConfigureAwait(false);
+		return true;
 	}
 
 	/// 从会话分支恢复模式状态。计划只在执行态续接（草案恢复回来永远勾不动）；
@@ -115,7 +158,7 @@ public sealed partial class CodingAgentSession
 	private void RestoreModeState()
 	{
 		JsonNode? planData = null;
-		JsonNode? goalData = null;
+		var goalEntries = new List<JsonNode?>();
 		foreach (var entry in Session.GetBranch())
 		{
 			if (entry is CustomEntry custom)
@@ -126,7 +169,7 @@ public sealed partial class CodingAgentSession
 				}
 				else if (custom.CustomType == GoalMode.EntryType)
 				{
-					goalData = custom.Data;
+					goalEntries.Add(custom.Data);
 				}
 			}
 		}
@@ -150,7 +193,9 @@ public sealed partial class CodingAgentSession
 			}
 		}
 
-		_goal = GoalMode.Decode(goalData);
+		_goal = GoalMode.Decode(goalEntries);
+		// 恢复出来的目标已经有带 objective 的记录，下一次落盘不必重复写。
+		_persistedGoalObjective = _goal.Objective;
 	}
 
 	/// 计划状态单独落盘：PiDeck 的 plan 扩展在 session_start 读这条恢复执行态与步骤。
@@ -176,8 +221,13 @@ public sealed partial class CodingAgentSession
 	}
 
 	/// 目标状态单独落盘：字段名与 PiDeck 的 goal 扩展一致。
-	private void PersistGoalState() =>
-		Session.AppendCustom(GoalMode.EntryType, GoalMode.Encode(_goal));
+	/// 目标全文只在变化时写，其余轮次省略 objective 字段。调用方必须持有 <see cref="_goalGate"/>。
+	private void PersistGoalState(bool force = false)
+	{
+		var includeObjective = force || _goal.Objective != _persistedGoalObjective;
+		_persistedGoalObjective = _goal.Objective;
+		Session.AppendCustom(GoalMode.EntryType, GoalMode.Encode(_goal, includeObjective));
+	}
 
 	private void PublishPlanWidget()
 	{
@@ -254,7 +304,7 @@ public sealed partial class CodingAgentSession
 			return;
 		}
 
-		var text = AssistantText(assistant);
+		var text = MessageText.Of(assistant);
 		if (PlanSteps.MarkCompleted(text, _planSteps) > 0)
 		{
 			PublishPlanWidget();
@@ -281,13 +331,13 @@ public sealed partial class CodingAgentSession
 			return;
 		}
 
-		var lastAssistant = end.Messages.OfType<AssistantMessage>().LastOrDefault();
+		var lastAssistant = MessageText.LastAssistant(end.Messages);
 		if (lastAssistant is null || lastAssistant.StopReason is not StopReason.Stop)
 		{
 			return;
 		}
 
-		var steps = PlanSteps.Extract(AssistantText(lastAssistant));
+		var steps = PlanSteps.Extract(MessageText.Of(lastAssistant));
 		if (steps.Count == 0)
 		{
 			return;
@@ -339,56 +389,88 @@ public sealed partial class CodingAgentSession
 
 	private void AdvanceGoal(AgentEndEvent end)
 	{
-		var lastAssistant = end.Messages.OfType<AssistantMessage>().LastOrDefault();
+		var lastAssistant = MessageText.LastAssistant(end.Messages);
 		if (lastAssistant is null)
 		{
+			// 没有助手回复就不续轮，避免空转把轮次烧光（PiDeck 同义）。
+			lock (_goalGate)
+			{
+				PersistGoalState();
+			}
+			PublishGoalWidget();
 			return;
 		}
 
 		// 中止/出错不算一轮：不推进轮次、不自动续轮，否则「点了停止」会立刻再跑起来。
 		if (lastAssistant.StopReason is StopReason.Aborted or StopReason.Error)
 		{
-			PublishGoalWidget();
-			PersistGoalState();
-			return;
-		}
-
-		var reply = AssistantText(lastAssistant);
-		if (GoalMode.DetectTerminal(reply) is { } terminal)
-		{
-			_goal = terminal.Phase == GoalState.Complete
-				? _goal with { Phase = GoalState.Complete, Enabled = false, BlockReason = null }
-				: _goal with { Phase = GoalState.Blocked, BlockReason = terminal.Reason };
-			UiHost?.Notify(new UiNotifyRequest(
-				terminal.Phase == GoalState.Complete
-					? "PiDeck 目标已完成。"
-					: $"PiDeck 目标已阻塞：{terminal.Reason}",
-				terminal.Phase == GoalState.Complete ? "info" : "warning"));
-			PublishGoalWidget();
-			PersistGoalState();
-			RefreshSystemPrompt();
-			return;
-		}
-
-		_goal = _goal with { RoundsStarted = _goal.RoundsStarted + 1 };
-		if (_goal.RoundsStarted >= _goal.MaxRounds)
-		{
-			_goal = _goal with
+			lock (_goalGate)
 			{
-				Phase = GoalState.Blocked,
-				BlockReason = $"reached max rounds ({_goal.MaxRounds})",
-			};
-			UiHost?.Notify(new UiNotifyRequest($"PiDeck 目标已阻塞：达到轮次上限（{_goal.MaxRounds}）。", "warning"));
+				PersistGoalState();
+			}
 			PublishGoalWidget();
-			PersistGoalState();
-			RefreshSystemPrompt();
 			return;
+		}
+
+		(string Text, string Type)? notify = null;
+		var refreshPrompt = false;
+		lock (_goalGate)
+		{
+			if (!_goal.Running)
+			{
+				// 这一轮进行中用户暂停或清除了目标：不再推进轮次，也不再处理终态标记。
+				// 暂停/清除自己已经落盘，这里不重复写条目。
+			}
+			else if (GoalMode.DetectTerminal(MessageText.Of(lastAssistant)) is { } terminal)
+			{
+				_goal = terminal.Phase == GoalState.Complete
+					? _goal with { Phase = GoalState.Complete, Enabled = false, BlockReason = null }
+					: _goal with { Phase = GoalState.Blocked, BlockReason = terminal.Reason };
+				PersistGoalState();
+				refreshPrompt = true;
+				notify = terminal.Phase == GoalState.Complete
+					? ("PiDeck 目标已完成。", "info")
+					: ($"PiDeck 目标已阻塞：{terminal.Reason}", "warning");
+			}
+			else
+			{
+				_goal = _goal with { RoundsStarted = _goal.RoundsStarted + 1 };
+				if (_goal.RoundsStarted >= _goal.MaxRounds)
+				{
+					_goal = _goal with
+					{
+						Phase = GoalState.Blocked,
+						BlockReason = $"reached max rounds ({_goal.MaxRounds})",
+					};
+					PersistGoalState();
+					refreshPrompt = true;
+					notify = ($"PiDeck 目标已阻塞：达到轮次上限（{_goal.MaxRounds}）。", "warning");
+				}
+				else
+				{
+					PersistGoalState();
+					// 续轮与状态更新在同一把锁里决定：暂停不会在两者之间插进来。
+					QueueGoalContinuation();
+				}
+			}
 		}
 
 		PublishGoalWidget();
-		PersistGoalState();
+		if (notify is { } message)
+		{
+			UiHost?.Notify(new UiNotifyRequest(message.Text, message.Type));
+		}
 
-		// 续轮指令写进分支的隐藏消息：本轮已收尾，下一轮由 RunPendingModeTurnAsync 起。
+		if (refreshPrompt)
+		{
+			RefreshSystemPrompt();
+		}
+	}
+
+	/// 续轮指令写进分支的隐藏消息：本轮已收尾，下一轮由 <see cref="RunPendingModeTurnAsync"/> 起。
+	/// 调用方必须持有 <see cref="_goalGate"/>。
+	private void QueueGoalContinuation()
+	{
 		Session.AppendCustomMessage(
 			GoalMode.ContinueRole,
 			MessageContent.FromText(GoalMode.ContinuationText(_goal)),
@@ -434,29 +516,5 @@ public sealed partial class CodingAgentSession
 		{
 			_drainingModeTurn = false;
 		}
-	}
-
-	private static string AssistantText(AssistantMessage message)
-	{
-		if (message.Content.Count == 0)
-		{
-			return string.Empty;
-		}
-
-		var builder = new StringBuilder();
-		foreach (var block in message.Content)
-		{
-			if (block is TextContent text)
-			{
-				if (builder.Length > 0)
-				{
-					builder.Append('\n');
-				}
-
-				builder.Append(text.Text);
-			}
-		}
-
-		return builder.ToString();
 	}
 }

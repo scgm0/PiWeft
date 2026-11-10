@@ -91,6 +91,33 @@ public sealed class ComposerModeTests : IDisposable
 		var message = Assert.IsType<UserMessage>(tab.Session.Session.BuildSessionContext().Messages.First(item => item is UserMessage));
 		Assert.Equal("ship it", message.Content.Text);
 		Assert.DoesNotContain(GoalMode.Marker, message.Content.Text);
+
+		// 完成态的目标条不占位（PiDeck 同义）。
+		tab.RefreshGoalStrip();
+		Assert.False(tab.GoalStripVisible);
+	}
+
+	[Fact]
+	public void GoalStripFollowsTheGoalState()
+	{
+		using var tab = Tab();
+		Assert.False(tab.GoalStripVisible);
+
+		tab.Session.SetGoal("把构建修到全绿");
+		tab.RefreshGoalStrip();
+		Assert.True(tab.GoalStripVisible);
+		Assert.Equal(
+			Strings.GoalProgress(Strings.GoalPhase(GoalState.Active), 0, GoalMode.DefaultMaxRounds),
+			tab.GoalStripPhaseForTests);
+
+		tab.Session.PauseGoal();
+		tab.RefreshGoalStrip();
+		Assert.True(tab.GoalStripVisible);
+		Assert.StartsWith(Strings.GoalPhase(GoalState.Paused), tab.GoalStripPhaseForTests);
+
+		tab.Session.ClearGoal();
+		tab.RefreshGoalStrip();
+		Assert.False(tab.GoalStripVisible);
 	}
 
 	[Fact]

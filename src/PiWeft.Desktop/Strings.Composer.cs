@@ -1,3 +1,5 @@
+using PiWeft.CodingAgent;
+
 namespace PiWeft.Desktop;
 
 /// 输入区「+」菜单与技能/提示词选择器的文案。措辞对齐 PiDeck：菜单项只写动作，
@@ -47,4 +49,27 @@ public static partial class Strings
 
 	/// 带图片但不带文字的发送：目标模式仍然需要一个 objective，和 PiDeck 同一条兜底指令。
 	public const string GoalContinueInstruction = "请继续当前目标。";
+
+	// 目标条：阶段名与 PiDeck 的 dshTools.goalPhase 一致；按钮只写动作。
+	public const string GoalPause = "暂停";
+
+	public const string GoalResume = "恢复";
+
+	public const string GoalClear = "清除";
+
+	public const string GoalClearConfirmTitle = "清除当前目标？";
+
+	public const string GoalClearConfirmMessage = "将清除当前目标并停止自动推进，此操作不可撤销。";
+
+	public static string GoalPhase(string phase) => phase switch
+	{
+		GoalState.Active => "进行中",
+		GoalState.Blocked => "已阻塞",
+		GoalState.Complete => "已完成",
+		_ => "已暂停",
+	};
+
+	public static string GoalProgress(string phase, int rounds, int max) => $"{phase} · {rounds}/{max}";
+
+	public static string GoalResumeFailed(string reason) => $"恢复目标失败：{reason}";
 }

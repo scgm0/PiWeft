@@ -605,7 +605,11 @@ public sealed class CliEnvironment
 		IReadOnlyList<AgentTool>? extraTools = null,
 		bool recordInitialThinkingLevel = true,
 		IUiHost? uiHost = null,
-		Model? preferredModel = null)
+		Model? preferredModel = null,
+		string? extraSystemPrompt = null,
+		ILinkedSessionHost? linkedSessionHost = null,
+		CodingAgentSession? linkedParent = null,
+		string? linkedParentTitle = null)
 	{
 		var manager = session ?? ResolveSession(arguments, cwd, Settings.SessionDir);
 
@@ -661,6 +665,12 @@ public sealed class CliEnvironment
 			: string.Join(
 				"\n\n",
 				arguments.AppendSystemPrompt.Select(value => CliInput.ResolvePromptInput(value, cwd)));
+		if (extraSystemPrompt is { Length: > 0 } extra)
+		{
+			appendSystemPrompt = appendSystemPrompt is { Length: > 0 } existing
+				? $"{existing}\n\n{extra}"
+				: extra;
+		}
 
 		var stream = StreamFnOverride ?? StreamFn;
 		// Resolve models.json credentials from the requested provider for every call, including
@@ -700,6 +710,9 @@ public sealed class CliEnvironment
 			Resources = resources,
 			CustomSystemPrompt = customSystemPrompt,
 			AppendSystemPrompt = appendSystemPrompt,
+			LinkedSessionHost = linkedSessionHost,
+			LinkedParent = linkedParent,
+			LinkedParentTitle = linkedParentTitle,
 			NoContextFiles = arguments.NoContextFiles,
 			// 显式路径来自 settings.extensions 与 -e；-ne 只关发现，显式路径仍然加载（与 pi 一致）。
 			ExtensionPaths = [.. Settings.Extensions, .. arguments.Extensions],

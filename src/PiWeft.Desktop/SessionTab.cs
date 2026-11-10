@@ -126,9 +126,12 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ComposerWidgetCard _queueCard;
 	private readonly StackPanel _queueRows = new();
 	private IReadOnlyList<ChatQueuedMessage>? _renderedQueue;
+	/// 目标条只在会话换了一份目标状态时重绘：Render 每 40ms 一次，别每帧比较整段目标文本。
+	private GoalState? _renderedGoalState;
 
 	private readonly ComposerWidgetCard _extensionCard;
 	private readonly StackPanel _extensionBody = new();
+	private readonly GoalStripCard _goalStrip;
 	private readonly ReadingColumn _widgetColumn = new();
 	private readonly Button _retry;
 	private readonly Button _copyReply;
@@ -528,12 +531,15 @@ public sealed partial class SessionTab : IDisposable
 			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
 			.MaxHeight(ComposerWidgetListMaxHeight));
 
+		// 目标条贴着输入卡（PiDeck 同位置）：目标属于下一轮的输入，不属于本轮结论。
+		_goalStrip = new GoalStripCard(PauseGoal, ResumeGoal, ConfirmClearGoal);
+
 		// 扩展卡与输入卡同宽同列：ReadingColumn 按阅读宽度封顶并撑满可用宽度，
 		// 卡片在自己的列里拉伸，窗口缩放与阅读宽度设置都自动跟随。
 		_widgetColumn.Spacing(AppTheme.Space2)
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
 			.IsVisible(false)
-			.Children(_queueCard.View, _todoCard.View, _extensionCard.View);
+			.Children(_queueCard.View, _todoCard.View, _extensionCard.View, _goalStrip.View);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
 		// 三段各留固定宽度：呼吸点伸缩、状态短语轮换、提示每七秒换一条；
@@ -841,6 +847,13 @@ public sealed partial class SessionTab : IDisposable
 			return;
 		}
 
+		// 目标自成一卡（见 GoalStripCard）：不以原始行进扩展卡，避免同一状态出现两次。
+		if (key == GoalMode.WidgetKey)
+		{
+			RefreshGoalStrip();
+			return;
+		}
+
 		if (lines is null || lines.Count == 0)
 		{
 			_extensionWidgets.Remove(key);
@@ -851,6 +864,14 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		RefreshExtensionWidgets();
+	}
+
+	/// 扩展 / 会话的通知：桌面没有通知中心，落到窗口 toast；warning 用错误色提醒。
+	internal void ShowHostNotice(string message, string notifyType)
+	{
+		if (_disposed || string.IsNullOrWhiteSpace(message)) return;
+		if (notifyType is "warning" or "error") NotifyError(message);
+		else Notify(message);
 	}
 
 	public void SetExtensionTitle(string title)
@@ -2205,6 +2226,10 @@ public sealed partial class SessionTab : IDisposable
 			_renderedQueue = queued;
 			RefreshQueueStrip(queued);
 		}
+		if (!ReferenceEquals(Session.Goal, _renderedGoalState))
+		{
+			RefreshGoalStrip();
+		}
 		if (statsWatch is not null)
 		{
 			// 渲染每帧都发生：常态只计数，慢的那几次才落明细，否则诊断自身就是垃圾源。
@@ -2268,6 +2293,8 @@ public sealed partial class SessionTab : IDisposable
 		}
 		if (_lastBusy != busy)
 		{
+			// 目标续轮、关联会话回报也会拉起一轮，它们不走 SendAsync：状态条的时钟在这里对齐。
+			if (busy && !_sending) _turnStarted = Stopwatch.GetTimestamp();
 			_lastBusy = busy;
 			StateChanged?.Invoke(this);
 		}
@@ -2598,8 +2625,9 @@ public sealed partial class SessionTab : IDisposable
 
 	private void RefreshWidgetColumn()
 	{
-		// IsVisible 的同值写入也会触发失效：待办/队列/扩展三处都会调这里，先比较再写。
-		var visible = _todoCard.View.IsVisible || _extensionCard.View.IsVisible || _queueCard.View.IsVisible;
+		// IsVisible 的同值写入也会触发失效：待办/队列/扩展/目标四处都会调这里，先比较再写。
+		var visible = _todoCard.View.IsVisible || _extensionCard.View.IsVisible || _queueCard.View.IsVisible ||
+			_goalStrip.View.IsVisible;
 		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
 	}
 

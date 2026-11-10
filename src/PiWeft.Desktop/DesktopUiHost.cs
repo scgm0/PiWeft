@@ -69,9 +69,10 @@ internal sealed class DesktopUiHost : IUiHost
 				? answers[0].Value!.GetValue<string>()
 				: null);
 
-	public void Notify(UiNotifyRequest request)
+	public void Notify(UiNotifyRequest request) => Dispatch(() =>
 	{
-	}
+		if (_tab is { } tab) tab.ShowHostNotice(request.Message, request.NotifyType);
+	});
 
 	public void SetStatus(UiStatusRequest request) =>
 		Dispatch(() => _tab?.SetExtensionStatus(request.Key, request.Text));

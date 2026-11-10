@@ -94,8 +94,22 @@ public sealed class PiDeckProtocolTests
 		Assert.Equal("missing key", json["blockReason"]!.GetValue<string>());
 
 		var decoded = GoalMode.Decode(json);
-		Assert.Equal(GoalState.Blocked, decoded.Phase);
+		// 跨重启只恢复为 paused：自动续跑等于绕过用户。阻塞原因保留给界面提示。
+		Assert.Equal(GoalState.Paused, decoded.Phase);
 		Assert.Equal("missing key", decoded.BlockReason);
+		Assert.Equal(5, decoded.RoundsStarted);
+	}
+
+	[Fact]
+	public void GoalSnapshotCanOmitTheUnchangedObjective()
+	{
+		var state = new GoalState(true, GoalState.Active, "ship it", 1, 32, null);
+
+		var json = GoalMode.Encode(state, includeObjective: false);
+
+		Assert.False(json.ContainsKey("objective"));
+		Assert.False(json.ContainsKey("blockReason"));
+		Assert.True(json["enabled"]!.GetValue<bool>());
 	}
 }
 

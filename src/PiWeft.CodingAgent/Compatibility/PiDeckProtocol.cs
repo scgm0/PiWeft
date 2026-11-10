@@ -71,6 +71,12 @@ public static class PiDeckProtocol
 /// 只属于本端口的内部名字。不进 PiDeck 的协议面，也不该借用 <c>pi-deck-</c> 前缀。
 public static class PiWeftProtocol
 {
-	/// 目标续轮消息的消息角色：只作为本次运行的隐藏 follow-up，不写会话文件。
+	/// 目标续轮消息的 custom message 类型：以 <c>display:false</c> 落在会话里，不占时间线。
 	public const string GoalContinueRole = "piweft-goal-continue";
+
+	/// 关联会话的消息类型：子会话首轮与互相转发的消息都带上它，与用户自己发的消息区分。
+	public const string LinkedMessageType = "piweft-linked-session-message";
+
+	/// 子会话回合回报的 custom message 类型：可见，内容带一句「这是子会话自述」的限定。
+	public const string LinkedReportMessageType = "piweft-linked-session-report";
 }

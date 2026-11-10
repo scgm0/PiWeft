@@ -646,6 +646,61 @@ public class ChatViewModelTests : IDisposable
 	}
 
 	[Fact]
+	public async Task TextDeltaWithoutThinkingEndClosesTheThinkingStep()
+	{
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		_streams.Enqueue(model =>
+		{
+			var stream = new AssistantMessageEventStream();
+			var message = new AssistantMessage
+			{
+				Api = model.Api, Provider = model.Provider, Model = model.Id, Timestamp = 321,
+				Content = [new ThinkingContent { Thinking = "plan" }, new TextContent { Text = "answer" }],
+				StopReason = StopReason.Stop,
+			};
+			_ = Task.Run(async () =>
+			{
+				stream.Push(new StartEvent { Partial = message with { Content = [] } });
+				stream.Push(new ThinkingStartEvent { ContentIndex = 0, Partial = message });
+				stream.Push(new ThinkingDeltaEvent { ContentIndex = 0, Delta = "plan", Partial = message });
+				// provider 不补 ThinkingEndEvent：首个正文 delta 必须自己收口思考段。
+				stream.Push(new TextStartEvent { ContentIndex = 1, Partial = message });
+				stream.Push(new TextDeltaEvent { ContentIndex = 1, Delta = "answer", Partial = message });
+				await gate.Task;
+				stream.Push(new DoneEvent { Reason = StopReason.Stop, Partial = message });
+			});
+			return stream;
+		});
+
+		using var session = NewSession();
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+		var run = viewModel.SendAsync("go");
+		try
+		{
+			var live = await WaitForAsync(() =>
+				viewModel.Entries().LastOrDefault(entry => entry.IsStreaming && entry.Text == "answer"));
+			Assert.NotNull(live);
+			Assert.False(live.IsThinking);
+			Assert.NotNull(live.ThinkingEndedAt);
+			Assert.True(live.ThinkingDurationMs >= 0);
+
+			// 过程组最后一步要收口：不再显示「正在思考…」，并带上思考段耗时。
+			var group = Assert.Single(
+				ExecutionProcess.Project(viewModel.Entries(), busy: true),
+				row => row.Role == ChatRole.Process);
+			var process = Assert.Single(group.ProcessEntries, entry => entry.Role == ChatRole.Assistant);
+			Assert.False(process.IsThinking);
+			Assert.Equal(live.ThinkingDurationMs, process.DurationMs);
+		}
+		finally
+		{
+			gate.TrySetResult();
+			await run;
+		}
+	}
+
+	[Fact]
 	public void HistoricalThinkingOnlyMessagesRemainVisibleButRedactedContentDoesNot()
 	{
 		var manager = SessionManager.InMemory(_root);

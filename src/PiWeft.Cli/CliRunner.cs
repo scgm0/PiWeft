@@ -397,7 +397,11 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		return (prompts, images);
 	}
 
-	private async Task RunAndPrintAsync(CodingAgentSession session, Message message, CancellationToken cancellationToken)
+	private Task RunAndPrintAsync(CodingAgentSession session, Message message, CancellationToken cancellationToken) =>
+		RunAndPrintAsync(session, token => session.PromptAsync(message, token), cancellationToken);
+
+	/// 没有新用户消息的运行（目标恢复续跑）：与 Prompt 共用同一份输出收集。
+	private async Task RunAndPrintAsync(CodingAgentSession session, Func<CancellationToken, Task> run, CancellationToken cancellationToken)
 	{
 		var collected = new StringBuilder();
 
@@ -422,7 +426,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 		try
 		{
-			await session.PromptAsync(message, cancellationToken).ConfigureAwait(false);
+			await run(cancellationToken).ConfigureAwait(false);
 		}
 		finally
 		{
@@ -1540,8 +1544,9 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 						}
 						else
 						{
-							session.SetGoal(session.Goal.Objective, resetRounds: false);
 							error.WriteLine($"目标已恢复：{session.Goal.Objective}");
+							// 恢复必须真的跑一轮：只把 phase 标回 active，空闲的代理不会动。
+							await RunAndPrintAsync(session, token => session.ResumeGoalAsync(token), cancellationToken).ConfigureAwait(false);
 						}
 
 						break;

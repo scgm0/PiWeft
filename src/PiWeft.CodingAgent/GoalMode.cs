@@ -83,31 +83,27 @@ public static partial class GoalMode
 	public static string RoundLine(GoalState state) =>
 		$"[GOAL MODE ACTIVE] Round: {state.RoundsStarted + 1}/{state.MaxRounds}";
 
+	/// 续轮指令带轮次，但不重复目标全文（目标在系统提示 section 里）。
 	public static string ContinuationText(GoalState state) =>
+		RoundLine(state) + "\n" +
 		"Continue the current goal.\n" +
-		$"Rounds used: {state.RoundsStarted}/{state.MaxRounds}\n" +
 		"If done, write GOAL_COMPLETE. If blocked, write GOAL_BLOCKED: <reason>.";
 
+	/// widget 行格式与 PiDeck 的 <c>parsePiGoalWidget</c> 一致：首行 <c>phase · n/m</c>，
+	/// 第二行目标全文，阻塞原因第三行；完成或无目标不占位。
 	public static IReadOnlyList<string> WidgetLines(GoalState state)
 	{
-		if (state.Objective.Length == 0)
+		if (state.Objective.Length == 0 || state.Phase == GoalState.Complete)
 		{
 			return [];
 		}
 
-		var phase = state.Phase switch
-		{
-			GoalState.Active => "进行中",
-			GoalState.Blocked => "已阻塞",
-			GoalState.Complete => "已完成",
-			_ => "已暂停",
-		};
 		var lines = new List<string>(3)
 		{
-			$"目标{phase} {state.RoundsStarted}/{state.MaxRounds}",
+			$"{state.Phase} · {state.RoundsStarted}/{state.MaxRounds}",
 			state.Objective,
 		};
-		if (state.BlockReason is { Length: > 0 } reason)
+		if (state.Phase == GoalState.Blocked && state.BlockReason is { Length: > 0 } reason)
 		{
 			lines.Add(reason);
 		}
@@ -115,16 +111,23 @@ public static partial class GoalMode
 		return lines;
 	}
 
-	public static JsonObject Encode(GoalState state)
+	/// 目标全文只在变化时写：32 轮上限下每轮都写一份目标原文会堆满历史。
+	/// 清除要显式写空目标（<paramref name="includeObjective"/> 为 true），读端才不会穿透到旧目标；
+	/// 完成靠 <c>enabled:false</c> 在回溯时截断，不必重复目标。
+	public static JsonObject Encode(GoalState state, bool includeObjective = true)
 	{
 		var data = new JsonObject
 		{
 			["enabled"] = state.Enabled,
 			["phase"] = state.Phase,
-			["objective"] = state.Objective,
 			["roundsStarted"] = state.RoundsStarted,
 			["maxGoalRounds"] = state.MaxRounds,
 		};
+		if (includeObjective)
+		{
+			data["objective"] = state.Objective;
+		}
+
 		if (state.BlockReason is { Length: > 0 } reason)
 		{
 			data["blockReason"] = reason;
@@ -133,38 +136,58 @@ public static partial class GoalMode
 		return data;
 	}
 
-	/// 只恢复「暂停/阻塞/完成」的旧目标：重启后自动续跑等于绕过用户。
-	public static GoalState Decode(JsonNode? data)
+	/// 从单条记录恢复，保留给只读一条条目的调用方。
+	public static GoalState Decode(JsonNode? data) => Decode(data is null ? [] : [data]);
+
+	/// 按分支顺序恢复目标。目标全文不是每条都写，得从尾部往回找最近一条带 objective 的记录；
+	/// 遇到 <c>enabled:false</c> 立即截断，否则清除或完成之后重启会穿透到更早的目标（PiDeck #395）。
+	/// 恢复出来的目标一律为 paused：重启后自动续跑等于绕过用户。
+	public static GoalState Decode(IReadOnlyList<JsonNode?> entries)
 	{
-		if (data is not JsonObject obj)
+		if (entries.Count == 0)
 		{
 			return GoalState.Initial;
 		}
 
-		var objective = obj["objective"] is JsonValue objectiveValue && objectiveValue.TryGetValue<string>(out var text)
-			? text
-			: string.Empty;
-		var phase = obj["phase"] is JsonValue phaseValue && phaseValue.TryGetValue<string>(out var phaseText)
-			? phaseText
-			: GoalState.Paused;
-		if (phase is not (GoalState.Active or GoalState.Paused or GoalState.Blocked or GoalState.Complete))
+		var objective = string.Empty;
+		for (var index = entries.Count - 1; index >= 0; index--)
 		{
-			phase = GoalState.Paused;
+			if (entries[index] is not JsonObject entry)
+			{
+				continue;
+			}
+
+			if (entry["enabled"] is JsonValue enabled && enabled.TryGetValue<bool>(out var on) && !on)
+			{
+				break;
+			}
+
+			if (entry["objective"] is JsonValue value && value.TryGetValue<string>(out var text))
+			{
+				objective = text;
+				break;
+			}
 		}
 
-		var rounds = obj["roundsStarted"] is JsonValue roundsValue && roundsValue.TryGetValue<int>(out var started)
+		if (objective.Length == 0)
+		{
+			return GoalState.Initial;
+		}
+
+		var latest = entries[^1] as JsonObject;
+		var rounds = latest?["roundsStarted"] is JsonValue roundsValue && roundsValue.TryGetValue<int>(out var started)
 			? Math.Max(0, started)
 			: 0;
-		var max = obj["maxGoalRounds"] is JsonValue maxValue && maxValue.TryGetValue<int>(out var limit) && limit > 0
+		var max = latest?["maxGoalRounds"] is JsonValue maxValue && maxValue.TryGetValue<int>(out var limit) && limit > 0
 			? limit
 			: DefaultMaxRounds;
-		var reason = obj["blockReason"] is JsonValue reasonValue && reasonValue.TryGetValue<string>(out var reasonText)
+		var reason = latest?["blockReason"] is JsonValue reasonValue && reasonValue.TryGetValue<string>(out var reasonText)
 			? reasonText
 			: null;
 
 		return new GoalState(
-			Enabled: objective.Length > 0 && phase is GoalState.Paused or GoalState.Blocked or GoalState.Complete,
-			Phase: phase == GoalState.Active ? GoalState.Paused : phase,
+			Enabled: true,
+			Phase: GoalState.Paused,
 			Objective: objective,
 			RoundsStarted: rounds,
 			MaxRounds: max,

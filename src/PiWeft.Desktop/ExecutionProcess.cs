@@ -81,11 +81,11 @@ internal static class ExecutionProcess
 					process.Add(entry with
 					{
 						EntryId = $"thinking/{turnKey}/{thinkingSequence++}", Text = string.Empty, Images = [], Compact = true,
-						// 纯思考回复优先用独立的 thinking_start/end 跨度；历史会话没有这份事实时
-						// 才退回整条回复的 DurationMs（含正文时那不是思考耗时，不显示）。
-						DurationMs = entry.TextLength == 0 && entry.Images.Count == 0
-							? entry.ThinkingDurationMs is { } thinkingMs ? thinkingMs : entry.DurationMs
-							: null,
+						// 独立的 thinking_start/end 跨度优先（有正文的组合消息也用它）；
+						// 历史会话没有这份事实时才退回整条回复的 DurationMs，且只在纯思考时可信。
+						DurationMs = entry.ThinkingDurationMs is { } thinkingMs
+							? thinkingMs
+							: entry.TextLength == 0 && entry.Images.Count == 0 ? entry.DurationMs : null,
 					});
 				if (ReferenceEquals(entry, answer)) continue;
 				if (entry.Role != ChatRole.Assistant || entry.TextLength > 0 || entry.Images.Count > 0)

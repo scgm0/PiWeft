@@ -146,6 +146,42 @@ public sealed class GoalModeTests
 		Assert.Equal(3, state.RoundsStarted);
 		Assert.False(state.Running);
 	}
+
+	[Fact]
+	public void Decode_ScansBackForTheObjectiveAndStopsAtEnabledFalse()
+	{
+		// 目标只在变化时落盘：后续轮次的条目没有 objective。
+		var branch = new JsonNode?[]
+		{
+			GoalMode.Encode(new GoalState(true, GoalState.Active, "ship it", 0, 32, null)),
+			GoalMode.Encode(new GoalState(true, GoalState.Active, "ship it", 1, 32, null), includeObjective: false),
+			GoalMode.Encode(new GoalState(true, GoalState.Blocked, "ship it", 2, 32, "missing key"), includeObjective: false),
+		};
+
+		var state = GoalMode.Decode(branch);
+
+		Assert.Equal("ship it", state.Objective);
+		Assert.Equal(2, state.RoundsStarted);
+		Assert.Equal("missing key", state.BlockReason);
+		Assert.Equal(GoalState.Paused, state.Phase);
+
+		// 清除/完成写在尾部：回溯必须在这里截断，否则旧目标重启后复活。
+		branch = [.. branch, GoalMode.Encode(new GoalState(false, GoalState.Paused, string.Empty, 0, 32, null))];
+		Assert.Equal(GoalState.Initial, GoalMode.Decode(branch));
+	}
+
+	[Fact]
+	public void WidgetLines_MatchThePideckShapeAndHideWhenComplete()
+	{
+		var active = GoalMode.WidgetLines(new GoalState(true, GoalState.Active, "ship it", 3, 32, null));
+		Assert.Equal(["active · 3/32", "ship it"], active);
+
+		var blocked = GoalMode.WidgetLines(new GoalState(true, GoalState.Blocked, "ship it", 3, 32, "missing key"));
+		Assert.Equal(["blocked · 3/32", "ship it", "missing key"], blocked);
+
+		// PiDeck 的 SessionGoalStrip 完成时不渲染。
+		Assert.Empty(GoalMode.WidgetLines(new GoalState(false, GoalState.Complete, "ship it", 3, 32, null)));
+	}
 }
 
 /// 会话侧的计划/目标编排：需要脚本化模型与可编程的 UI 宿主。
@@ -342,6 +378,119 @@ public sealed class SessionModeTests : IDisposable
 		Assert.Equal(GoalState.Paused, session.Goal.Phase);
 		Assert.False(session.Goal.Running);
 		Assert.Single(stream.Requests);
+	}
+
+	[Fact]
+	public async Task GoalMode_KeepsTheObjectiveWhenAPausedGoalGetsAMessage()
+	{
+		var (session, stream, _) = Create();
+		using var _ = session;
+
+		session.SetGoal("把构建修到全绿");
+		session.PauseGoal();
+
+		stream.EnqueueText("换一条思路继续。\nGOAL_COMPLETE");
+		await session.PromptAsync($"{GoalMode.Marker}\n换一条思路试试");
+
+		// 暂停 ≠ 完成：正文只是这一轮的指令，目标不能被替换。
+		Assert.Equal("把构建修到全绿", session.Goal.Objective);
+		Assert.Equal(GoalState.Complete, session.Goal.Phase);
+	}
+
+	[Fact]
+	public async Task GoalMode_ResumeRunsARound()
+	{
+		var (session, stream, _) = Create();
+		using var _ = session;
+
+		session.SetGoal("把构建修到全绿");
+		session.PauseGoal();
+		Assert.False(session.Goal.Running);
+
+		stream.EnqueueText("Resumed and done.\nGOAL_COMPLETE");
+		Assert.True(await session.ResumeGoalAsync());
+
+		// 恢复不能只把 phase 标回 active：空闲会话要真的再跑一轮。
+		Assert.Single(stream.Requests);
+		Assert.Equal(GoalState.Complete, session.Goal.Phase);
+		Assert.Contains(
+			stream.Requests[0],
+			static message => message is UserMessage { CustomType: PiWeftProtocol.GoalContinueRole });
+	}
+
+	[Fact]
+	public async Task GoalMode_WritesTheObjectiveOncePerGoal()
+	{
+		var (session, stream, _) = Create();
+		using var _ = session;
+
+		stream.EnqueueText("First round.");
+		stream.EnqueueText("Finally done.\nGOAL_COMPLETE");
+		await session.PromptAsync($"{GoalMode.Marker}\n把构建修到全绿");
+
+		var goalEntries = session.Session.GetBranch()
+			.OfType<CustomEntry>()
+			.Where(static entry => entry.CustomType == GoalMode.EntryType)
+			.Select(static entry => Assert.IsType<JsonObject>(entry.Data))
+			.ToList();
+
+		// 两轮各写一份状态，但目标全文只写一次；完成条目不写旧目标。
+		Assert.True(goalEntries.Count >= 2);
+		Assert.Single(goalEntries, static entry => entry.ContainsKey("objective"));
+		Assert.Equal(GoalState.Complete, goalEntries[^1]["phase"]!.GetValue<string>());
+	}
+
+	[Fact]
+	public async Task GoalMode_PausingDuringTheRoundDoesNotAdvanceOrContinue()
+	{
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var requests = new List<IReadOnlyList<Message>>();
+		var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			Session = SessionManager.InMemory(_root),
+			Persist = false,
+			Skills = [],
+			PromptTemplates = [],
+			Settings = new CodingAgentSettings(),
+			StreamFn = (model, messages, options) =>
+			{
+				requests.Add([.. messages]);
+				var stream = new AssistantMessageEventStream();
+				var message = ScriptedSessions.Blank(model) with
+				{
+					Content = [new TextContent { Text = "working" }],
+					StopReason = StopReason.Stop,
+				};
+				_ = Task.Run(async () =>
+				{
+					stream.Push(new StartEvent { Partial = message with { Content = [] } });
+					stream.Push(new TextStartEvent { ContentIndex = 0, Partial = message });
+					stream.Push(new TextDeltaEvent { ContentIndex = 0, Delta = "working", Partial = message });
+					started.TrySetResult();
+					await gate.Task;
+					stream.Push(new DoneEvent { Reason = StopReason.Stop, Partial = message });
+				});
+				return stream;
+			},
+		});
+		using var scope = session;
+
+		session.SetGoal("把构建修到全绿");
+		var run = session.PromptAsync("开始");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		// 这一轮还没收尾就暂停：轮次不推进，也不再排续轮。
+		session.PauseGoal();
+		gate.SetResult();
+		await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+		Assert.Equal(GoalState.Paused, session.Goal.Phase);
+		Assert.Equal(0, session.Goal.RoundsStarted);
+		Assert.False(session.Goal.Running);
+		Assert.Single(requests);
 	}
 
 	[Fact]

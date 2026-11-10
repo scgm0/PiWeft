@@ -52,7 +52,8 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 凭据按显式选项、存储凭据、环境变量异步解析；OAuth 刷新有闸门且不跟随请求取消。可恢复错误按 `settings.retry` 退避；供应商 `Retry-After` 优先；要求等待超过 15 分钟的配额冷却不自动重试，直接把错误交回界面。失败尝试保留在文件里，通过 `context_edit` 排除出上下文。
 - 请求过大（`prefill_cap_refused`、413、payload too large、上下文超限）进入 overflow recovery：排除失败尝试后压缩；摘要请求本身过大时按 token 递归对半拆分，先摘要前半段再把它作为 `previousSummary` 摘要后半段。压缩/上下文编辑之后的最后一次 usage 不再充当上下文估算锚点，避免压缩后仍显示 600K。
 - PiDeck 私有名字（`pi-deck-*`、`__PI_DECK_*`、`[PI_DECK_*]`）集中声明在 `Compatibility/PiDeckProtocol.cs`，形状由 `PiDeckProtocolTests` 固定；纯内部名字用 `piweft-` 前缀。
-- 计划模式与目标模式是会话原生行为（不依赖扩展）：计划草案解析 `Plan:` 编号行、`pi-deck-plan-todos` 进度 widget、`[DONE:n]` 勾进度、`[PI_DECK_PLAN_NEXT]` 执行确认；目标模式按 `__PI_DECK_GOAL_MODE__` 标记续轮，`GOAL_COMPLETE` / `GOAL_BLOCKED:` 或轮次上限收尾。状态分别写 `pi-deck-plan-mode` 与 `pi-deck-goal-mode` 自定义条目，跨分支恢复（计划只续执行态，目标只恢复为暂停）。
+- 关联会话是桌面原生能力（`start_session` / `send_to_session` / `list_linked_sessions`）：子会话是同一项目的完整后台会话，独立标签；每轮结束把最后一条回复前 400 字回报父会话，空闲时直接起一轮、忙时排 follow-up。连续 6 次回报自动续跑后停止，用户发消息清零；关系只在进程内。纯 CLI 不注册这三个工具。
+- 计划模式与目标模式是会话原生行为（不依赖扩展）：计划草案解析 `Plan:` 编号行、`pi-deck-plan-todos` 进度 widget、`[DONE:n]` 勾进度、`[PI_DECK_PLAN_NEXT]` 执行确认；目标模式按 `__PI_DECK_GOAL_MODE__` 标记续轮，`GOAL_COMPLETE` / `GOAL_BLOCKED:` 或轮次上限收尾，暂停/阻塞时带标记的正文只当本轮指令、不替换目标。状态分别写 `pi-deck-plan-mode` 与 `pi-deck-goal-mode` 自定义条目，跨分支恢复（计划只续执行态；目标只恢复为暂停，目标全文只在变化时落盘）。桌面目标条可暂停、恢复（空闲时立即补一轮）与清除。
 - bash/powershell 调用前先过 shell 守卫：删除命令的字面量目标复制进系统回收站（Linux XDG Trash、Windows 回收站、macOS 废纸篓，`PIDECK_TRASH_GUARD=off` 关闭），Windows Git Bash 的 `> nul` 改写成 `/dev/null`；`settings.httpProxy` 注入的代理只给模型请求，agent shell 不继承。
 - 提示音与 PiDeck 同义：完成/出错/等待输入三类事件，各有开关与预设 WAV，默认完成与出错开；会话完成 8 秒、全局 1.5 秒冷却；「仅失焦提醒」在前台静默。
 - 等待态由 `RespondingStatusPolicy` 统一判定（退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗）；预热期三句轮播，回合内空窗只说「正在处理」；时间线尾部另有等待占位行（不进模型上下文/会话文件）。

@@ -36,6 +36,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | Git | 状态、目录树、文件差异浮层（与轮末 chip 同一块）、暂存、提交、分支、AI 摘要、图、比较、fetch/pull/push、stash | 冲突界面、rebase/cherry-pick/reset、多远端 |
 | 文件 | 目录导航、Git 标记、内置编辑器、修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
 | 终端 | MiniPty、shell、scrollback、选择、SGR/备用屏、缩放重排、字素对齐、字格光标、OSC 4/8/10/11/12/52、鼠标、bracketed paste、IME、PRIMARY | 完整 VT100 边界、终端内搜索、多标签、快照回放 |
+| 关联会话 | 子会话工具（开 / 发消息 / 列表）、回合回报、自动续跑额度 6、子会话以后台标签打开 | 提议卡片（offer / own_initiative）、关系落盘、子会话条 |
 | 主题/窗口 | 深浅/系统、侧栏收起与宽度恢复、尺寸/位置恢复、单实例 | 自定义强调色、多显示器可见性 |
 
 内嵌浏览器、自动更新、托盘、系统通知不在范围内。
@@ -50,7 +51,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 组内展开项标题吸顶，只对「已展开且高于视口」的步骤生效；从吸顶标题收起时先把本项开头对齐到视口顶部。
 - 消息区右缘定位轴只取真实用户消息；悬浮/键盘聚焦显示摘要与时间，点击/Enter 跳转；长会话先压缩间距再抽稀，保留首尾；窄于 540 DIP 或分支视图隐藏。
 - 会话搜索先匹配标题/首条摘要，220 ms 后扫描正文；每个文件最多 512 KiB，结果最多 200 行。会话内过滤同时匹配正文、思考、工具名与过程步骤。
-- 流式正文与思考共用增量 Markdown：只解析尾块、按模型哈希 diff、原位更新尾块；40 ms 合并刷新。向上浏览立即停跟底，回车/回到底部恢复。
+- 流式正文与思考共用增量 Markdown：只解析尾块、按模型哈希 diff、原位更新尾块；40 ms 合并刷新。向上浏览立即停跟底，回车/回到底部恢复。思考段以 `thinking_end` 或正文块开始为终点；provider 不补 `thinking_end` 时，正文一开始过程组就停止「正在思考…」的秒表。
 - 跟随状态只由滚轮/触控板/键盘/滚动条改变；近底 1–2 px 抖动累计到 25 DIP 才逃逸。嵌套视口到边界后把滚轮交还祖先。
 - 代码块不嵌套纵向视口：普通滚轮滚会话，Shift+滚轮/横向触控板滚代码；复制按钮是宿主注入的 Lucide 图标。
 - 并排 diff 是两列可选中、可横向滚动的整篇文档：列宽均分宿主，长行在列内横向滚动且两列偏移同步到同一绝对值，行号列固定在左缘；大补丁正文限高、两侧与行号列共用纵向偏移。
@@ -63,7 +64,8 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 可用模型要求 API 已实现且能解析凭据；不执行命令型凭据、不发网络探测。
 - 命令/模型/图片面板是窗口级覆盖层，同一窗口只开一个；Esc 关闭，切换标签清理。
 - 计划模式在回合结束时从 `Plan:` / `计划：` 下的编号行取步骤，推 `pi-deck-plan-todos` 草案，再弹 `[PI_DECK_PLAN_NEXT]` 选单：执行会恢复写权限并立刻起一轮，`[DONE:n]` 逐条勾进度；先不执行保持只读，关闭选单退出计划模式。步骤状态写 `pi-deck-plan-mode` 条目，只在执行态随分支恢复。
-- 目标模式带 `__PI_DECK_GOAL_MODE__` 标记进入，续轮指令以隐藏 follow-up 交给模型；`GOAL_COMPLETE` / `GOAL_BLOCKED: 原因` / 轮次上限（默认 32）结束，中止与出错不推进轮次。状态写 `pi-deck-goal-mode` 条目，重启只恢复为暂停。
+- 目标模式带 `__PI_DECK_GOAL_MODE__` 标记进入，续轮指令以隐藏 follow-up 交给模型（首行 `[GOAL MODE ACTIVE] Round: n/m`，目标全文只在系统提示 section 里）；`GOAL_COMPLETE` / `GOAL_BLOCKED: 原因` / 轮次上限（默认 32）结束，中止与出错不推进轮次。暂停/阻塞时带标记的正文只当本轮指令，目标保持不变。状态写 `pi-deck-goal-mode` 条目，目标全文只在变化时落盘、重启只恢复为暂停；`/goal resume` 与目标条的恢复在空闲时真的补一轮。
+- 关联会话由 `start_session` / `send_to_session` / `list_linked_sessions` 驱动（名字与 PiDeck 扩展一致）：子会话是同一项目的完整后台会话，独立标签、不影响当前标签。每轮结束把最后一条回复前 400 字回报父会话；父会话空闲时直接起一轮，忙时排 follow-up。连续 6 次回报自动续跑后停止，用户在父会话发消息清零额度；关系只在进程内，重启后子会话仍在但不再联动。纯 CLI 没有宿主，不注册这三个工具。
 - `ask_question` 是会话内联卡片（非遮罩）：题卡标签 + 进度 + 整行选项 + 自定义输入 + review 确认页；卡片打开时输入区折叠，页签标题加 `●`。文本题与自定义输入支持拖入本地路径，按主输入框的 `@` 引用插入；切题与多选重绘保留未提交草稿。调用展开后按题号列出题目，答完的题在题干下贴选中的选项文案（自定义输入贴原文），取消或没答完时原样贴结果。
 - 等待态常驻输入卡上方，阶段优先级退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗；预热期三句轮播，回合内空窗只说「正在处理」；静默 2 秒补「本轮已 N 秒」。时间线尾部的等待占位行只在等首 token 时出现，条件是最后一行是用户消息且没有任何一行在流；它报时的时候状态条不再重复同一个数字。
 - 提示音：完成/出错/等待输入三类，默认完成与出错开、音量 0.6；会话完成 8 秒、全局 1.5 秒冷却；出错按边沿、等待输入按批去重；「仅失焦提醒」在前台静默。
@@ -200,12 +202,12 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | `pi-deck-plan-todos`（widget key） | 计划草案/进度 widget | `SessionTodoStrip.tsx`、`ComposerComponents.tsx` |
 | `[PI_DECK_PLAN_NEXT]` | 计划确认选单标题前缀 | `renderer/src/utils/askUi.ts` |
 | `pi-deck-plan-execute` / `pi-deck-plan-complete` | 执行指令与完成消息（可见 custom message） | 无按名过滤；沿用只为让 PiDeck 会话历史保持同一形态 |
-| `pi-deck-goal-mode`（custom 条目） | `enabled/phase/objective/roundsStarted/maxGoalRounds/blockReason` | goal 扩展 `session_start` |
-| `pi-deck-goal`（widget key） | 目标进度 widget | `components/session/SessionGoalStrip.tsx` |
+| `pi-deck-goal-mode`（custom 条目） | `enabled/phase/objective/roundsStarted/maxGoalRounds/blockReason`；objective 只在变化时写 | goal 扩展 `session_start` |
+| `pi-deck-goal`（widget key） | 目标进度 widget：首行 `phase · n/m`，第二行目标，阻塞原因第三行；完成不出现 | `components/session/SessionGoalStrip.tsx`、`parsePiGoalWidget` |
 | `__PI_DECK_PLAN_MODE__` / `__PI_DECK_GOAL_MODE__` | composer 注入的模式标记，正文即指令/目标 | `shared/composerModeMarkers.ts` |
 
 - 形状比名字更容易漂移：PiDeck 的待办快照从 v2 变到 v3。名字对、字段错的表现是「静默不显示」，`tests/PiWeft.CodingAgent.Tests/PiDeckProtocolTests.cs` 逐条断言字面量与字段名。
-- 纯内部名字不借前缀：目标续轮消息角色是 `piweft-goal-continue`，不写会话文件。
+- 纯内部名字不借前缀：目标续轮消息角色是 `piweft-goal-continue`，以 `display:false` 的 custom message 落进会话。
 - 升级 PiDeck 时检查：`resources/extensions/pi-deck-*.ts` 的条目/widget 形状、`src/renderer` 的 key 表、`src/main` 的 `customType` 过滤。改名或改形状要同步 `PiDeckProtocol` 与形状测试。
 
 ## 启动迁移、CLI 与网络
@@ -282,7 +284,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | PI-16 | 子工具账本 | `nestedCalls` / `parentToolCallId` 尚未产出 |
 | PI-17 | 分类器方言 | `openai-decisions`、`typesafe-system-one`、`cloudflare-workers-ai-system-one` 已实现；缺其它供应商的私有分类协议 |
 | PI-18 | 网络细项 | Codex `websocket-cached` 复用、zstd/continuation；AWS ambient 链；MCP `cimd` / `mcp-auth.json` |
-| D-01 | 问询/待办/计划 | 已实现，含计划步骤跟踪（`Plan:` 解析、`pi-deck-plan-todos` 进度、`[DONE:n]`、执行确认选单）与目标模式（自动续轮、`GOAL_COMPLETE`/`GOAL_BLOCKED`、轮次上限）；缺独立后台 Ask 工作流 |
+| D-01 | 问询/待办/计划 | 已实现，含计划步骤跟踪（`Plan:` 解析、`pi-deck-plan-todos` 进度、`[DONE:n]`、执行确认选单）与目标模式（自动续轮、`GOAL_COMPLETE`/`GOAL_BLOCKED`、轮次上限、桌面目标条）；缺独立后台 Ask 工作流 |
 | D-02 | 文件工作台 | 导航、编辑、汇总、diff 已实现；缺多文件标签、草稿本、跨行块注释、内嵌浏览器 |
 | D-03 | 内置终端 | MiniPty 与主要 VT 行为；缺 Windows/macOS 实机回归、完整 VT100、多标签、快照回放 |
 | D-04 | Git 工作流 | 暂存/提交/分支/图/比较/远端/stash 已实现；缺冲突界面、rebase/cherry-pick/reset、多远端 |
@@ -296,6 +298,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | D-12 | 桌面集成 | 缺托盘、系统通知、自动更新、快捷浮窗、桌面宠物；诊断包与环境体检未对齐 |
 | D-13 | 交互/长历史 | 缺项目级置顶/排序、拖拽/分屏、完整消息编辑删除、Mermaid/KaTeX；历史分页经实测不做 |
 | D-14 | 工具审批 | 安全门已实现；缺 PiDeck 的独立会话存储位置与 CLI 档位切换 |
+| D-15 | 关联会话 | 子会话工具、回合回报、自动续跑额度 6、后台标签已实现；缺提议卡片、关系落盘、子会话条 |
 
 ## 验证
 

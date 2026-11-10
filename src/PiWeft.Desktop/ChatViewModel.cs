@@ -631,14 +631,18 @@ public sealed class ChatViewModel : IDisposable
 					_streamingTimestamp = assistant.Timestamp;
 					break;
 
+				case MessageUpdateEvent { AssistantMessageEvent: TextStartEvent }:
+					// 正文块一开始就收口思考段：等第一个 delta 会让长回复的过程组
+					// 在正文已经输出后还挂着「正在思考…」的秒表。
+					EndStreamingThinking();
+					break;
+
 				case MessageUpdateEvent { AssistantMessageEvent: TextDeltaEvent delta }:
 					_streamingText.Append(delta.Delta);
 					// 有的 provider 不补 thinking_end：首个正文 delta 就是思考段的事实终点。
-					if (_streamingThinkingStartedAt > 0 && _streamingThinkingEndedAt == 0)
-					{
-						_streamingThinkingEndedAt = NowMs();
-					}
-
+					// 只记结束时间不够——过程组用 IsThinking 决定显示「正在思考…」并继续走秒，
+					// 不在这里收口，正文已经流了很久，最后一步还在计时。
+					EndStreamingThinking();
 					break;
 
 				case MessageUpdateEvent { AssistantMessageEvent: ThinkingStartEvent }:
@@ -668,7 +672,12 @@ public sealed class ChatViewModel : IDisposable
 					break;
 
 				case MessageUpdateEvent { AssistantMessageEvent: ThinkingEndEvent }:
-					_streamingThinkingEndedAt = NowMs();
+					// 正文已经开始就别再用迟到的 thinking_end 延长耗时。
+					if (_streamingThinkingEndedAt == 0)
+					{
+						_streamingThinkingEndedAt = NowMs();
+					}
+
 					_isThinking = false;
 					break;
 
@@ -768,6 +777,16 @@ public sealed class ChatViewModel : IDisposable
 
 		Changed?.Invoke();
 		return ValueTask.CompletedTask;
+	}
+
+	private void EndStreamingThinking()
+	{
+		if (_streamingThinkingStartedAt > 0 && _streamingThinkingEndedAt == 0)
+		{
+			_streamingThinkingEndedAt = NowMs();
+		}
+
+		_isThinking = false;
 	}
 
 	private void ResetStreaming()
