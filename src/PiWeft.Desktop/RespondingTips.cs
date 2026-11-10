@@ -27,6 +27,10 @@ internal static class RespondingTips
 		new("设置 → 提示音：回复完成或出错时响一声，长任务不用盯着屏幕", null),
 	];
 
+	// 渲染结果按条目缓存：状态条每帧都会问 Current，快捷键提示的 Replace 没必要每帧重做。
+	// 设置页改提示开关时调 Invalidate 清空；键位改动重启后随新进程重建。
+	private static readonly string?[] Rendered = new string?[Entries.Length];
+
 	/// 随机起点：短等待往往撑不过一整轮，固定从第一条开始等于只有第一条有曝光。
 	/// 进程内一次抽样，每回合再用回合起点错开一次；之后按本回合已用时间推进，
 	/// 同一回合内读起来是稳定的轮播，不会每一拍乱跳。
@@ -81,7 +85,15 @@ internal static class RespondingTips
 	private static bool _cached = true;
 	private static bool _loaded;
 
-	public static void Invalidate() => Volatile.Write(ref _loaded, false);
+	public static void Invalidate()
+	{
+		for (var index = 0; index < Rendered.Length; index++)
+		{
+			Volatile.Write(ref Rendered[index], null);
+		}
+
+		Volatile.Write(ref _loaded, false);
+	}
 
 	/// 当前这一条提示：<paramref name="elapsedMs"/> 是本回合已用时间，<paramref name="turnSeed"/> 是
 	/// 本回合的单调起点（同一回合内稳定，换一回合换一个相位）。关掉开关或没有可说的内容时返回 null，
@@ -97,7 +109,7 @@ internal static class RespondingTips
 		var phase = (int)((ulong)turnSeed % (ulong)Entries.Length);
 		var start = (_offset + phase) % Entries.Length;
 		var index = (start + (int)(Math.Max(0, elapsedMs) / TipStepMs)) % Entries.Length;
-		return Render(Entries[index]);
+		return RenderCached(index);
 	}
 
 	public static string? At(int index)
@@ -107,7 +119,20 @@ internal static class RespondingTips
 			return null;
 		}
 
-		return Render(Entries[index]);
+		return RenderCached(index);
+	}
+
+	private static string RenderCached(int index)
+	{
+		var cached = Volatile.Read(ref Rendered[index]);
+		if (cached is not null)
+		{
+			return cached;
+		}
+
+		var text = Render(Entries[index]);
+		Volatile.Write(ref Rendered[index], text);
+		return text;
 	}
 
 	private static string Render(in Tip tip)

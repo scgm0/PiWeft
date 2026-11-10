@@ -174,6 +174,23 @@ public sealed class SearchToolsTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Grep_NameOnlyGlobMatchesNestedFiles()
+	{
+		Write("deep/a.txt", "needle\n");
+		Write("deep/b.log", "needle\n");
+
+		var text = Text(await SearchTools.Grep(_root).Execute(Invoke("grep", new JsonObject
+		{
+			["pattern"] = "needle",
+			["glob"] = "*.txt",
+		})));
+
+		// 不带 '/' 的 glob 只比文件名，目录深度不影响命中。
+		Assert.Contains("deep/a.txt", text);
+		Assert.DoesNotContain("deep/b.log", text);
+	}
+
+	[Fact]
 	public async Task Grep_ReportsTheMatchLimitOnlyWhenAnExtraMatchExists()
 	{
 		Write("a.txt", "needle\nneedle\n");

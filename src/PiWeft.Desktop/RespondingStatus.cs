@@ -40,17 +40,28 @@ internal readonly record struct RespondingInput(
 	int RetrySecondsLeft);
 
 /// 状态条一帧要显示的内容。<param name="ElapsedMs">本回合已用时长，呼吸点与短语轮播都按它取帧。</param>
+/// <param name="ShowElapsed">是否在短语后附上「本轮已 N 秒」。延后到 <see cref="Suffix"/> 计算，
+/// 让宿主按秒去重后再生成字符串。</param>
 internal readonly record struct RespondingStatus(
 	RespondingKind Kind,
 	string Icon,
 	string Role,
 	string Phrase,
-	string Suffix,
+	bool ShowElapsed,
 	double ElapsedMs)
 {
 	public string Pulse => RespondingStatusPolicy.PulseAt(ElapsedMs);
 
-	public string Text => Suffix.Length > 0 ? $"{Phrase} · {Suffix}" : Phrase;
+	public string Suffix => ShowElapsed ? Strings.RespondingElapsed(ElapsedMs) : string.Empty;
+
+	public string Text
+	{
+		get
+		{
+			var suffix = Suffix;
+			return suffix.Length > 0 ? $"{Phrase} · {suffix}" : Phrase;
+		}
+	}
 }
 
 /// 状态条的判定与措辞。规则抄 PiDeck：状态必须和「此刻屏幕上在发生什么」对齐，
@@ -111,11 +122,9 @@ internal static class RespondingStatusPolicy
 		// 只按 Kind 放行就会出现两个各自采样的秒数并排跳（占位行 48 秒 / 状态条 49 秒）。
 		var quiet = kind is RespondingKind.Starting or RespondingKind.Waiting
 			or RespondingKind.Executing or RespondingKind.Compacting;
-		var suffix = quiet && !input.PendingRowVisible && input.ElapsedMs >= ElapsedFromMs
-			? Strings.RespondingElapsed(input.ElapsedMs)
-			: string.Empty;
+		var showElapsed = quiet && !input.PendingRowVisible && input.ElapsedMs >= ElapsedFromMs;
 
-		return new RespondingStatus(kind, icon, role, phrase, suffix, input.ElapsedMs);
+		return new RespondingStatus(kind, icon, role, phrase, showElapsed, input.ElapsedMs);
 	}
 
 	public static string StartingPhraseAt(double elapsedMs)

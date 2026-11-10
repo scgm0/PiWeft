@@ -64,6 +64,22 @@ public sealed class MarkdownViewTests
 	}
 
 	[Fact]
+	public void LinkSchemeGateIsCaseInsensitiveAndDropsDisallowedSchemes()
+	{
+		var options = new PiWeft.Markdown.MarkdownOptions
+		{
+			LinkSchemes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "http", "https" },
+		};
+		var document = MarkdownParser.Parse(
+			"[ok](HTTPS://example.com/x) [bad](javascript:alert(1)) [rel](/local)", options);
+		var runs = document.Blocks[0].Runs;
+
+		Assert.Contains(runs, run => run.Text == "ok" && run.Url == "HTTPS://example.com/x");
+		Assert.Contains(runs, run => run.Text == "bad" && run.Url is null);
+		Assert.Contains(runs, run => run.Text == "rel" && run.Url == "/local");
+	}
+
+	[Fact]
 	public void StreamingAppendReusesTheFirstParagraphElement()
 	{
 		var view = new MarkdownView { FontSize = 14 };

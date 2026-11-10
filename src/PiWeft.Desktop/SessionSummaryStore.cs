@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.CodingAgent.Session;
@@ -45,6 +46,13 @@ internal static class SessionSummaryStore
 	private const int PreviewLimit = 200;
 
 	public const int MaxEntries = 4096;
+
+	// JsonSerializerOptions 首次使用后会缓存元数据；每次保存都 new 一份会重建这些缓存。
+	private static readonly JsonSerializerOptions WriteOptions = new()
+	{
+		// 预览里会有中文与路径，转义成 \uXXXX 的话文件没法排查。
+		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+	};
 
 	public static string Path(string? agentDir = null) =>
 		System.IO.Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "session-summaries.json");
@@ -130,7 +138,7 @@ internal static class SessionSummaryStore
 				["name"] = stamp.Name,
 				["cwd"] = stamp.Cwd,
 				["messages"] = stamp.MessageCount,
-				["preview"] = stamp.Preview.Length > PreviewLimit ? stamp.Preview[..PreviewLimit] : stamp.Preview,
+				["preview"] = ClipPreview(stamp.Preview),
 			};
 		}
 
@@ -144,11 +152,7 @@ internal static class SessionSummaryStore
 		{
 			Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
 			var temporary = path + ".tmp";
-			File.WriteAllText(temporary, root.ToJsonString(new JsonSerializerOptions
-			{
-				// 预览里会有中文与路径，转义成 \uXXXX 的话文件没法排查。
-				Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-			}));
+			File.WriteAllText(temporary, root.ToJsonString(WriteOptions));
 
 			File.Move(temporary, path, overwrite: true);
 		}
@@ -156,6 +160,19 @@ internal static class SessionSummaryStore
 		{
 			// 写不了就不写：下次启动多扫一遍而已。
 		}
+	}
+
+	/// 预览截到 200 字；切点落在代理对中间时退回一格，避免半个 emoji。
+	private static string ClipPreview(string preview)
+	{
+		if (preview.Length <= PreviewLimit)
+		{
+			return preview;
+		}
+
+		var length = PreviewLimit;
+		if (char.IsHighSurrogate(preview[length - 1])) length--;
+		return preview[..length];
 	}
 
 	/// 读整数。必须是 <c>long</c>：mtime 的 ticks 与首行指纹都是 64 位，

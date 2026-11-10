@@ -234,5 +234,7 @@ public sealed class RespondingStatusTests : IDisposable
 		RespondingTips.Invalidate();
 
 		Assert.StartsWith("Ctrl+Shift+P", RespondingTips.At(0), StringComparison.Ordinal);
+		// 渲染结果按条目缓存：状态条每帧都会取同一条提示，不能每帧重做 Replace。
+		Assert.Same(RespondingTips.At(0), RespondingTips.At(0));
 	}
 }

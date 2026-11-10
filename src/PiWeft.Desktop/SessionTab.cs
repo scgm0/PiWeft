@@ -171,6 +171,9 @@ public sealed partial class SessionTab : IDisposable
 	private readonly TextBlock _busyTip = new();
 	private RespondingKind? _busyKind;
 	private RespondingStatus? _busyStatus;
+	// 状态条文案按「种类 + 短语 + 秒」去重：Compose 每帧都跑，不缓存的话
+	// 长工具执行期间每帧都会生成一份「本轮已 N 秒」并拼出完整句子。
+	private (RespondingKind Kind, string Phrase, long Second) _busyTextKey = (default, string.Empty, -1);
 	private long _turnStarted;
 
 	private const string PendingReplyEntryId = "live-pending-reply";
@@ -2281,8 +2284,14 @@ public sealed partial class SessionTab : IDisposable
 
 			// 倒计时、已等待时长与轮播短语都会变而 Kind 不变：逐段比一下，没变就不碰排版。
 			if (_busyPulse.Text != active.Pulse) _busyPulse.Text(active.Pulse);
-			var line = active.Text;
-			if (_busyText.Text != line) _busyText.Text(line);
+			var second = active.ShowElapsed ? (long)(active.ElapsedMs / 1000) : -1;
+			var textKey = (active.Kind, active.Phrase, second);
+			if (textKey != _busyTextKey)
+			{
+				_busyTextKey = textKey;
+				var line = active.Text;
+				if (_busyText.Text != line) _busyText.Text(line);
+			}
 			ApplyRespondingTip(active);
 		}
 

@@ -429,8 +429,8 @@ public sealed partial class CodingAgentSession
 				PersistGoalState();
 				refreshPrompt = true;
 				notify = terminal.Phase == GoalState.Complete
-					? ("PiDeck 目标已完成。", "info")
-					: ($"PiDeck 目标已阻塞：{terminal.Reason}", "warning");
+					? ("目标已完成。", "info")
+					: ($"目标已阻塞：{terminal.Reason}", "warning");
 			}
 			else
 			{
@@ -444,7 +444,7 @@ public sealed partial class CodingAgentSession
 					};
 					PersistGoalState();
 					refreshPrompt = true;
-					notify = ($"PiDeck 目标已阻塞：达到轮次上限（{_goal.MaxRounds}）。", "warning");
+					notify = ($"目标已阻塞：达到轮次上限（{_goal.MaxRounds}）。", "warning");
 				}
 				else
 				{

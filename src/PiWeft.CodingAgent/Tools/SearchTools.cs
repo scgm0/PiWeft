@@ -298,9 +298,13 @@ public static class SearchTools
 		var globPattern = excludeGlob ? glob![1..] : glob;
 		var globRegex = globPattern is null ? null : GlobToRegex(globPattern);
 		var root = path is null ? cwd : ToolPaths.ResolveToCwd(path, cwd);
+		// 不带 '/' 的 glob 只比文件名：别为每个文件算一遍相对路径。
+		// 带 '/' 的 glob 才需要相对搜索根的路径；绝对 glob 才需要 GetFullPath。
+		var globAbsolute = globPattern is { Length: > 0 } && globPattern[0] == '/';
+		var globNameOnly = globPattern is { Length: > 0 } && !globAbsolute && !globPattern.AsSpan().Contains('/');
 
 		bool GlobAccepts(string file) =>
-			globRegex is null || GlobMatches(globRegex, globPattern!, file, root) != excludeGlob;
+			globRegex is null || GlobMatches(globRegex, file, root, globAbsolute, globNameOnly) != excludeGlob;
 
 		var singleFile = File.Exists(root);
 		if (!singleFile && !Directory.Exists(root))
@@ -1511,17 +1515,23 @@ public static class SearchTools
 		public string Render() => string.Join('\n', _lines);
 	}
 
-	private static bool GlobMatches(Regex regex, string glob, string file, string root)
+	private static bool GlobMatches(Regex regex, string file, string root, bool absolute, bool nameOnly)
 	{
 		// 与 rg 的 --glob 一致：不带 '/' 的 glob 只比文件名（任意深度），
 		// 带 '/' 的比相对搜索根（以 '/' 开头的绝对 glob 比绝对路径）。
-		if (glob.StartsWith('/'))
+		if (absolute)
 		{
 			return regex.IsMatch(GlobSyntax.NormalizeSlashes(Path.GetFullPath(file)));
 		}
 
+		// 名字匹配直接喂 span，连 Path.GetFileName 的子串分配也省掉。
+		if (nameOnly)
+		{
+			return regex.IsMatch(LastSegment(file.AsSpan()));
+		}
+
 		var relative = GlobSyntax.NormalizeSlashes(ToolPaths.RelativeTo(file, root));
-		return regex.IsMatch(glob.Contains('/') ? relative : Path.GetFileName(file));
+		return regex.IsMatch(relative);
 	}
 
 	private static void ThrowIfAborted(CancellationToken cancellationToken)

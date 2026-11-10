@@ -508,6 +508,7 @@ public sealed class SessionModeTests : IDisposable
 		Assert.Equal(GoalState.Blocked, session.Goal.Phase);
 		Assert.Contains("reached max rounds", session.Goal.BlockReason);
 		Assert.Contains(ui.Notifications, static notify => notify.Message.Contains("轮次上限"));
+		Assert.DoesNotContain(ui.Notifications, static notify => notify.Message.Contains("PiDeck", StringComparison.Ordinal));
 	}
 	[Fact]
 	public void SelectText_StripsMarkersAndSplitsLabels()

@@ -59,6 +59,20 @@ public sealed record BranchSummarySettings
 /// 本端口读取的 pi <c>settings.json</c> 子集。未知键忽略，完整的 pi 设置文件也能正常加载。
 public sealed record CodingAgentSettings
 {
+	// 写文件用的选项只读，第一次序列化后会缓存元数据；保存频繁，不能每次 new。
+	private static readonly JsonSerializerOptions WriteOptions = new()
+	{
+		WriteIndented = true,
+		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+	};
+
+	private static readonly JsonSerializerOptions WriteOptionsIgnoreNull = new()
+	{
+		WriteIndented = true,
+		DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+	};
+
 	public string? DefaultProvider { get; init; }
 
 	public string? DefaultModel { get; init; }
@@ -231,11 +245,7 @@ public sealed record CodingAgentSettings
 
 		File.WriteAllText(
 			path,
-			root.ToJsonString(new JsonSerializerOptions
-			{
-				WriteIndented = true,
-				Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-			}));
+			root.ToJsonString(WriteOptions));
 	}
 
 	/// 把某个模型的默认思考级别写进**全局**设置（<c>modelThinkingLevels</c>，键 <c>provider/modelId</c>）。
@@ -259,11 +269,7 @@ public sealed record CodingAgentSettings
 
 		File.WriteAllText(
 			path,
-			root.ToJsonString(new JsonSerializerOptions
-			{
-				WriteIndented = true,
-				Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-			}));
+			root.ToJsonString(WriteOptions));
 	}
 
 	/// 读取 settings 里的 <c>npmCommand</c>（默认 <c>["npm"]</c>）。该键只在包管理时使用，
@@ -373,11 +379,7 @@ public sealed record CodingAgentSettings
 		}
 
 		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
-		var json = root.ToJsonString(new JsonSerializerOptions
-		{
-			WriteIndented = true,
-			Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-		});
+		var json = root.ToJsonString(WriteOptions);
 
 		try
 		{
@@ -420,12 +422,7 @@ public sealed record CodingAgentSettings
 
 		File.WriteAllText(
 			path,
-			root.ToJsonString(new JsonSerializerOptions
-			{
-				WriteIndented = true,
-				DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-				Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-			}));
+			root.ToJsonString(WriteOptionsIgnoreNull));
 	}
 
 	private static JsonObject ReadExistingObject(string path)

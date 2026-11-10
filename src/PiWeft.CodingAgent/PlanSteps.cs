@@ -111,7 +111,7 @@ public static partial class PlanSteps
 		$"**Plan Steps ({steps.Count})**\n\n{ModelText(steps)}";
 
 	public static string CompleteMessage(IReadOnlyList<PlanStep> steps) =>
-		$"**PiDeck Plan Complete** ✓\n\n{string.Join('\n', steps.Select(static step => $"- {step.Text}"))}";
+		$"**计划已完成** ✓\n\n{string.Join('\n', steps.Select(static step => $"- {step.Text}"))}";
 
 	private static string Clean(string text)
 	{

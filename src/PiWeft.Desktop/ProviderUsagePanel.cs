@@ -386,7 +386,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 
 	private async Task<ProviderUsageResult?> RunAsync(Func<CancellationToken, Task<ProviderUsageResult>> action, TimeSpan timeout)
 	{
-		_abort?.Cancel();
+		Cancellation.CancelQuietly(_abort);
 		var version = ++_generation;
 		var cancellation = new CancellationTokenSource(timeout);
 		_abort = cancellation;
@@ -460,7 +460,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 	private void CancelWork()
 	{
 		_generation++;
-		_abort?.Cancel();
+		Cancellation.CancelQuietly(_abort);
 		_abort = null;
 	}
 

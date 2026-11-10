@@ -153,7 +153,12 @@ internal sealed class ProviderLoginPanel
 
 	private void StartLogin()
 	{
-		_abort?.Cancel();
+		// 先推进代际再取消旧登录：旧 RunAsync 的取消/失败回调会按代际丢弃，
+		// 不会在新登录开始后把状态改成「已取消」。
+		var generation = ++_generation;
+		var previous = _abort;
+		_abort = null;
+		Cancellation.CancelQuietly(previous);
 		_pending?.TrySetCanceled();
 		_pending = null;
 		ClearLog();
@@ -170,14 +175,14 @@ internal sealed class ProviderLoginPanel
 		_abort = cancellation;
 		var output = new AuthLogWriter(Append);
 		var input = new AuthPromptReader(PromptAsync);
-		_ = RunAsync(input, output, cancellation.Token, ++_generation);
+		_ = RunAsync(input, output, cancellation, generation);
 	}
 
-	private async Task RunAsync(TextReader input, TextWriter output, CancellationToken cancellationToken, int generation)
+	private async Task RunAsync(TextReader input, TextWriter output, CancellationTokenSource cancellation, int generation)
 	{
 		try
 		{
-			await ProviderAuthService.LoginAsync(_provider, _agentDir, input, output, cancellationToken);
+			await ProviderAuthService.LoginAsync(_provider, _agentDir, input, output, cancellation.Token);
 			if (generation == _generation) Post(LoginSucceeded);
 		}
 		catch (OperationCanceledException)
@@ -187,6 +192,10 @@ internal sealed class ProviderLoginPanel
 		catch (Exception exception)
 		{
 			if (generation == _generation) Post(() => LoginFailed(exception.Message));
+		}
+		finally
+		{
+			cancellation.Dispose();
 		}
 	}
 
@@ -226,7 +235,7 @@ internal sealed class ProviderLoginPanel
 	private void CancelLogin()
 	{
 		_cancelRequested = true;
-		_abort?.Cancel();
+		Cancellation.CancelQuietly(_abort);
 		_pending?.TrySetCanceled();
 	}
 
@@ -368,8 +377,7 @@ internal sealed class ProviderLoginPanel
 	{
 		_generation++;
 		_running = false;
-		_abort?.Cancel();
-		_abort?.Dispose();
+		Cancellation.CancelQuietly(_abort);
 		_abort = null;
 		_pending?.TrySetCanceled();
 		_pending = null;

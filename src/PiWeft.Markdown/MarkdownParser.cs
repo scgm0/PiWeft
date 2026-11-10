@@ -756,6 +756,16 @@ public static class MarkdownParser
 		{
 			return true;
 		}
+
+		// 常见配置是 OrdinalIgnoreCase 的 HashSet：用 span 查表，免去每个链接一次
+		// substring + ToLowerInvariant 的两份分配。其它 IReadOnlySet 退回原路径。
+		if (schemes is HashSet<string> set &&
+			set.Comparer == StringComparer.OrdinalIgnoreCase &&
+			set.TryGetAlternateLookup<ReadOnlySpan<char>>(out var lookup))
+		{
+			return lookup.Contains(url.AsSpan(0, colon));
+		}
+
 		return schemes.Contains(url[..colon].ToLowerInvariant());
 	}
 

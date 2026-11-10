@@ -50,7 +50,7 @@ internal sealed class UsageStatsView
 	public void Close()
 	{
 		_open = false;
-		_abort?.Cancel();
+		Cancellation.CancelQuietly(_abort);
 		_abort = null;
 	}
 
@@ -62,7 +62,7 @@ internal sealed class UsageStatsView
 		}
 
 		var generation = ++_generation;
-		_abort?.Cancel();
+		Cancellation.CancelQuietly(_abort);
 		var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 		_abort = cancellation;
 		_refresh.IsEnabled = false;

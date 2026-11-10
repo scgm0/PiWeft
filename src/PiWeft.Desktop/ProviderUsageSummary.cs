@@ -437,7 +437,7 @@ internal sealed class ProviderUsageSummary
 	private void Cancel()
 	{
 		_generation++;
-		_abort?.Cancel();
+		Cancellation.CancelQuietly(_abort);
 		_abort = null;
 		_refresh.IsEnabled = true;
 		_timer.Stop();

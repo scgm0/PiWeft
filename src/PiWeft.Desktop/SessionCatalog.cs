@@ -461,16 +461,26 @@ public sealed class SessionCatalog
 		var index = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
 		if (index < 0)
 		{
-			return text.Length <= radius * 2 ? text : string.Concat(text.AsSpan(0, radius * 2), "…");
+			return text.Length <= radius * 2 ? text : Clip(text, radius * 2);
 		}
 
 		var start = Math.Max(0, index - radius);
 		var end = Math.Min(text.Length, index + query.Length + radius);
+		// 切点不能落在代理对中间：否则预览会出现半个 emoji。
+		if (start > 0 && char.IsLowSurrogate(text[start])) start++;
+		if (end < text.Length && char.IsHighSurrogate(text[end - 1])) end--;
 
 		return string.Concat(
 			start > 0 ? "…" : string.Empty,
 			text[start..end],
 			end < text.Length ? "…" : string.Empty);
+	}
+
+	private static string Clip(string text, int limit)
+	{
+		var length = Math.Min(limit, text.Length);
+		if (length > 0 && char.IsHighSurrogate(text[length - 1])) length--;
+		return length >= text.Length ? text : string.Concat(text.AsSpan(0, length), "…");
 	}
 
 	internal static string? ExtractText(string line)
@@ -1180,12 +1190,37 @@ public sealed class SessionCatalog
 			return string.Empty;
 		}
 
-		var flat = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
-		while (flat.Contains("  ", StringComparison.Ordinal))
+		// 单遍折叠空白并截到 42 字：旧实现反复 Replace("  ", " ")，
+		// 一条多空格的长消息会每轮分配一份整串。
+		Span<char> buffer = stackalloc char[42];
+		var length = 0;
+		var pendingSpace = false;
+		foreach (var character in text.AsSpan())
 		{
-			flat = flat.Replace("  ", " ", StringComparison.Ordinal);
+			if (char.IsWhiteSpace(character))
+			{
+				pendingSpace = length > 0;
+				continue;
+			}
+
+			if (pendingSpace)
+			{
+				if (length == buffer.Length) return CutBuffer(buffer);
+				buffer[length++] = ' ';
+				pendingSpace = false;
+			}
+
+			if (length == buffer.Length) return CutBuffer(buffer);
+			buffer[length++] = character;
 		}
 
-		return flat.Length <= 42 ? flat : string.Concat(flat.AsSpan(0, 42), "…");
+		return new string(buffer[..length]);
+
+		static string CutBuffer(ReadOnlySpan<char> buffer)
+		{
+			var cut = buffer.Length;
+			if (char.IsHighSurrogate(buffer[cut - 1])) cut--;
+			return string.Concat(buffer[..cut], "…");
+		}
 	}
 }

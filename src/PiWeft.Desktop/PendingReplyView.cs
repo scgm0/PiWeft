@@ -20,6 +20,8 @@ internal sealed class PendingReplyView : StackPanel
 	private readonly TextBlock _elapsedText;
 	private DispatcherTimer? _clock;
 	private bool _disposed;
+	// 「本轮已 N 秒」只按秒变化；500ms 心跳里同一秒内重复格式化只是白分配。
+	private long _shownSeconds = -1;
 
 	public PendingReplyView(Func<double> elapsedProvider)
 	{
@@ -102,8 +104,17 @@ internal sealed class PendingReplyView : StackPanel
 		_elapsedText.IsVisible(show);
 		if (show)
 		{
-			var text = Strings.RespondingElapsed(elapsed);
-			if (_elapsedText.Text != text) _elapsedText.Text(text);
+			var seconds = (long)(elapsed / 1000);
+			if (seconds != _shownSeconds)
+			{
+				_shownSeconds = seconds;
+				var text = Strings.RespondingElapsed(elapsed);
+				if (_elapsedText.Text != text) _elapsedText.Text(text);
+			}
+		}
+		else
+		{
+			_shownSeconds = -1;
 		}
 	}
 

@@ -104,6 +104,21 @@ public class SessionSummaryStoreTests : IDisposable
 	}
 
 	[Fact]
+	public void PreviewTruncationDoesNotSplitASurrogatePair()
+	{
+		var path = Path.Combine(_root, "a.jsonl");
+		var entries = new Dictionary<string, SessionSummaryStamp>(StringComparer.Ordinal)
+		{
+			[path] = Stamp("a", new string('a', 199) + "🙂tail"),
+		};
+
+		SessionSummaryStore.Save(entries, _root);
+
+		// 第 200 个 char 是 emoji 的高代理项：截到 199，不能留下半个字符。
+		Assert.Equal(new string('a', 199), SessionSummaryStore.Load(_root)[path].Preview);
+	}
+
+	[Fact]
 	public void EntryCountIsCapped()
 	{
 		var entries = new Dictionary<string, SessionSummaryStamp>(StringComparer.Ordinal);
