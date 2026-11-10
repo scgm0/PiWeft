@@ -22,7 +22,8 @@ internal sealed record DiffPreviewContent(
 /// 右侧 Git 面板用它展示工作区 / 提交 / 分支比较里的单个文件差异。
 internal sealed class FileDiffPreview
 {
-	private const double MaxWidth = 1080;
+	// 不能叫 MaxWidth：嵌套类里那个名字会先解析到 FrameworkElement.MaxWidth（∞），上限就形同虚设。
+	private const double MaxCardWidth = 1080;
 
 	private static readonly Color ScrimColor = new(0x9a, 0x00, 0x00, 0x00);
 
@@ -80,24 +81,23 @@ internal sealed class FileDiffPreview
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel().LastChildFill().Children(actions.DockRight(), headerContent));
 
-		var scroll = new ScrollViewer()
+		// 这层只负责把卡片的可用高度交给正文，自己从不滚动：纵向交给 diff 正文的文本控件
+		// （滚动条落在代码块内），横向由各列自己处理。这里若用 Auto 纵向，内容会被按无限高
+		// 测量，正文就不会按窗口高度收口，大补丁又回到固定 240 的视口。
+		var bodyHost = new ScrollViewer()
 			.BorderThickness(0)
 			.Background(AppTheme.Transparent)
 			.Padding(new Thickness(AppTheme.Space2))
-			.SmoothScrolling()
-			.AutoVerticalScroll()
-			// 不再横向滚动整块 body：并排的两列各自有横向视口，纵向视图给出无限宽会把
-			// 两列的星号宽度压成内容宽，列内的滚动条就永远不出现（只剩这一条外层的）。
-			// 统一视图的长行由它自己的横向视口负责。
+			.NoVerticalScroll()
 			.NoHorizontalScroll()
 			.Content(_body);
 		// 点击补丁正文会聚焦 MultiLineTextBox：框架的「聚焦元素滚入视野」会把整块正文
 		// 当成一个元素滚到顶端，读者刚滚到的位置就丢了。这里用会话同一套守卫保存/撤回
 		// 这一帧的视口位移。
-		_focus = new TextFocusScrollGuard(scroll);
+		_focus = new TextFocusScrollGuard(bodyHost);
 
 		var card = new Border().StyleName(AppStyles.Dialog).CornerRadius(AppTheme.RadiusLg)
-			.Child(new DockPanel().LastChildFill().Children(header.DockTop(), scroll));
+			.Child(new DockPanel().LastChildFill().Children(header.DockTop(), bodyHost));
 
 		_view = new Grid().IsVisible(false).Children(
 			new Button()
@@ -225,24 +225,33 @@ internal sealed class FileDiffPreview
 				.Margin(new Thickness(AppTheme.Space3));
 			if (content.IsError) text.ErrorText();
 			else text.MutedText();
-			body = text;
+			body = Scrolling(text);
 		}
 		else
 		{
 			var patch = content?.Patch ?? string.Empty;
 			body = patch.Length == 0
-				? new TextBlock()
+				? Scrolling(new TextBlock()
 					.Text(Strings.GitNoDiff)
 					.FontSize(AppTheme.FontSizeCaption)
 					.MutedText()
-					.Margin(new Thickness(AppTheme.Space3))
+					.Margin(new Thickness(AppTheme.Space3)))
 				: _sideBySideMode
-					? DiffView.RenderSideBySide(patch, _focus)
-					: DiffView.Render(patch, _focus);
+					? DiffView.RenderSideBySide(patch, _focus, capLargeText: false)
+					: DiffView.Render(patch, _focus, capLargeText: false);
 		}
 
 		SetChild(body);
 	}
+
+	/// 说明文字没有自己的视口，长说明在卡片高度内滚动。
+	private static ScrollViewer Scrolling(UIElement content) => new ScrollViewer()
+		.BorderThickness(0)
+		.Background(AppTheme.Transparent)
+		.SmoothScrolling()
+		.AutoVerticalScroll()
+		.NoHorizontalScroll()
+		.Content(content);
 
 	private void SetChild(UIElement? content)
 	{
@@ -275,7 +284,7 @@ internal sealed class FileDiffPreview
 	{
 		protected override Size MeasureContent(Size availableSize)
 		{
-			var width = Math.Min(MaxWidth, Math.Max(0, availableSize.Width - AppTheme.Space6 * 2));
+			var width = Math.Min(MaxCardWidth, Math.Max(0, availableSize.Width - AppTheme.Space6 * 2));
 			var height = Math.Max(0, availableSize.Height - AppTheme.Space6 * 2);
 			var measured = base.MeasureContent(new Size(width, height));
 			return new Size(width, Math.Min(height, measured.Height));

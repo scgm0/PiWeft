@@ -58,14 +58,36 @@ public sealed class DiffInteractionTests
 		var gutter = texts.Single(text => !text.IsHitTestVisible);
 		var body = texts.Single(text => text.IsHitTestVisible);
 		Assert.InRange(Math.Abs(gutter.ActualHeight - body.ActualHeight), 0, 1);
-		var horizontal = Find<ScrollViewer>(view).Single();
-		Assert.Equal(ScrollMode.Disabled, horizontal.VerticalScroll);
+		// 正文自己就是横向视口（不再套一层 ScrollViewer），长行在它内部横向滚动。
 		var left = gutter.Bounds.X;
-		horizontal.SetScrollOffsets(100, 0);
+		ScrollTo(body, 100, 0);
 		ConversationPerformanceTests.Layout(view, 400, 200);
 		Assert.Equal(left, gutter.Bounds.X);
-		Assert.True(horizontal.HorizontalOffset > 0);
+		Assert.True(body.HorizontalOffset > 0);
 		UiLifetime.Release(view);
+	}
+
+	/// 把文本视口滚到绝对偏移：视口大小的矩形只有起点对齐一种落点。
+	private static void ScrollTo(MultiLineTextBox text, double x, double y)
+	{
+		var viewport = text.TextViewportBounds;
+		text.MakeVisible(new Rect(x, y, viewport.Width, viewport.Height));
+	}
+
+	[Fact]
+	public void SelectedDiffTextUsesTheThemeSelectionColor()
+	{
+		// 路径行是 TextFaint；不换色时深色主题的灰色选区（#5a）会把它吞掉。
+		// 两个视图的正文都要设上，行号列不可选中，不用。
+		const string patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+		var unified = DiffView.Render(patch);
+		var sideBySide = DiffView.RenderSideBySide(patch, null);
+		Assert.All(Find<MultiLineTextBox>(unified).Where(text => text.IsHitTestVisible),
+			text => Assert.NotNull(text.SelectionForeground));
+		Assert.All(Find<MultiLineTextBox>(sideBySide).Where(text => text.IsHitTestVisible),
+			text => Assert.NotNull(text.SelectionForeground));
+		UiLifetime.Release(unified);
+		UiLifetime.Release(sideBySide);
 	}
 
 	[Fact]

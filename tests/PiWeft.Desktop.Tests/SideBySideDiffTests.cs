@@ -151,43 +151,42 @@ public sealed class DiffViewRenderTests
 		var view = DiffView.RenderSideBySide($"@@ -1 +1 @@\n-{longLine}\n+{longLine}", null);
 		ConversationPerformanceTests.Layout(view, 700, 480);
 
-		var scrollers = Find<ScrollViewer>(view)
-			.Where(scroller => scroller.HorizontalScroll == ScrollMode.Auto).ToArray();
-		Assert.Equal(2, scrollers.Length);
+		var bodies = Find<MultiLineTextBox>(view).Where(text => text.IsHitTestVisible).ToArray();
+		Assert.Equal(2, bodies.Length);
 
-		scrollers[0].SetScrollOffsets(180, 0);
+		ScrollTo(bodies[0], 180, 0);
 		ConversationPerformanceTests.Layout(view, 700, 480);
-		Assert.True(scrollers[0].HorizontalOffset > 0);
-		Assert.Equal(scrollers[0].HorizontalOffset, scrollers[1].HorizontalOffset, 1);
+		Assert.True(bodies[0].HorizontalOffset > 0);
+		Assert.Equal(bodies[0].HorizontalOffset, bodies[1].HorizontalOffset, 1);
 
 		// 反方向同样同步：滚右列，左列跟到同一绝对值。
-		scrollers[1].SetScrollOffsets(90, 0);
+		ScrollTo(bodies[1], 90, 0);
 		ConversationPerformanceTests.Layout(view, 700, 480);
-		Assert.Equal(90, scrollers[1].HorizontalOffset, 1);
-		Assert.Equal(scrollers[1].HorizontalOffset, scrollers[0].HorizontalOffset, 1);
+		Assert.Equal(90, bodies[1].HorizontalOffset, 1);
+		Assert.Equal(bodies[1].HorizontalOffset, bodies[0].HorizontalOffset, 1);
 		UiLifetime.Release(view);
 	}
 
 	[Fact]
 	public void ShiftWheelOnOneColumnScrollsBothHorizontally()
 	{
-		// 真实输入路径：Shift+滚轮落在正文上，由焦点守卫找到最近的横向视口并滚动，
+		// 真实输入路径：Shift+滚轮落在正文上，正文自己的平滑控制器把它转成横向滚动，
 		// 另一列跟着到同一绝对值。
 		var longLine = new string('丙', 400);
 		using var guard = new TextFocusScrollGuard(new ScrollViewer());
 		var view = DiffView.RenderSideBySide($"@@ -1 +1 @@\n-{longLine}\n+{longLine}", guard);
 		ConversationPerformanceTests.Layout(view, 700, 480);
 
-		var scrollers = Find<ScrollViewer>(view).Where(s => s.HorizontalScroll == ScrollMode.Auto).ToArray();
-		Assert.Equal(2, scrollers.Length);
-		var body = Find<MultiLineTextBox>(view).First(text => text.IsHitTestVisible);
+		var bodies = Find<MultiLineTextBox>(view).Where(text => text.IsHitTestVisible).ToArray();
+		Assert.Equal(2, bodies.Length);
+		var body = bodies[0];
 
 		// 滚轮向下（Delta.Y = -1）在偏移 0 处才会真正向右滚；向上滚在左缘是空操作。
 		var wheel = new MouseWheelEventArgs(new Point(0, 0), new Point(0, 0), new Vector(0, -1),
 			modifiers: ModifierKeys.Shift);
 		// 滚轮走平滑动画：钉住每帧 dt，再喂几帧让它收敛。
-		AnimationFrames.Pin(SmoothScroll.For(scrollers[0]));
-		guard.RouteWheel(body, wheel);
+		AnimationFrames.Pin(SmoothScroll.For(body));
+		SmoothScroll.For(body).RouteWheel(wheel);
 		for (var frame = 0; frame < 40; frame++)
 		{
 			AnimationFrames.Advance();
@@ -195,8 +194,8 @@ public sealed class DiffViewRenderTests
 		}
 
 		Assert.True(wheel.Handled);
-		Assert.True(scrollers[0].HorizontalOffset > 0);
-		Assert.Equal(scrollers[0].HorizontalOffset, scrollers[1].HorizontalOffset, 1);
+		Assert.True(bodies[0].HorizontalOffset > 0);
+		Assert.Equal(bodies[0].HorizontalOffset, bodies[1].HorizontalOffset, 1);
 		UiLifetime.Release(view);
 	}
 
@@ -210,10 +209,11 @@ public sealed class DiffViewRenderTests
 		var gutters = Find<MultiLineTextBox>(view).Where(text => !text.IsHitTestVisible).ToArray();
 		Assert.Equal(2, gutters.Length);
 		var before = gutters[0].Bounds.X;
-		var scroller = Find<ScrollViewer>(view).First(s => s.HorizontalScroll == ScrollMode.Auto);
-		scroller.SetScrollOffsets(160, 0);
+		var body = Find<MultiLineTextBox>(view).First(text => text.IsHitTestVisible);
+		ScrollTo(body, 160, 0);
 		ConversationPerformanceTests.Layout(view, 700, 480);
 		Assert.Equal(before, gutters[0].Bounds.X, 1);
+		Assert.Equal(0, gutters[0].HorizontalOffset, 0.5);
 		UiLifetime.Release(view);
 	}
 
@@ -223,9 +223,18 @@ public sealed class DiffViewRenderTests
 		// 大补丁：正文限高并在内部纵向滚动，两侧与行号列共用同一纵向偏移。
 		var lines = string.Join('\n', Enumerable.Range(0, MessageText.LargeTextLines + 1).Select(index => $" line {index}"));
 		var view = DiffView.RenderSideBySide($"@@ -1,0 +1,0 @@\n{lines}", null);
+		ConversationPerformanceTests.Layout(view, 700, 480);
 
-		Assert.Equal(2, Find<MultiLineTextBox>(view).Count(text => text.IsHitTestVisible));
-		Assert.NotEmpty(Find<ScrollViewer>(view));
+		var bodies = Find<MultiLineTextBox>(view).Where(text => text.IsHitTestVisible).ToArray();
+		Assert.Equal(2, bodies.Length);
+		Assert.All(bodies, body => Assert.True(body.ExtentHeight > body.TextViewportBounds.Height));
+	}
+
+	/// 把文本视口滚到绝对偏移：视口大小的矩形只有起点对齐一种落点。
+	private static void ScrollTo(MultiLineTextBox text, double x, double y)
+	{
+		var viewport = text.TextViewportBounds;
+		text.MakeVisible(new Rect(x, y, viewport.Width, viewport.Height));
 	}
 
 	[Fact]
