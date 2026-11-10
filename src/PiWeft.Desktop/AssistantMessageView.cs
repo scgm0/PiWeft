@@ -76,22 +76,27 @@ internal sealed class AssistantMessageView : IDisposable
 			.IsExpanded(false);
 		_thinking.ExpandedChanged += expanded =>
 		{
-			_previewLine.IsVisible = !expanded && _previewText.Length > 0;
-			if (!expanded)
+			if (expanded)
 			{
-				_followingThinking = false;
-				_focus.StopGrowth(_thinking);
+				_previewLine.IsVisible = false;
+				EnsureThinkingBody();
+				// 用户展开：记住这次阅读意图。若思考正在流式输出就立即贴住末尾；
+				// 尚未开始时由后续 Update 在首个 thinking delta 到来后接管。
+				// 从回收缓存恢复状态时不算一次用户展开，不重新贴底。
+				if (!_focus.SuppressGrowthFollow)
+				{
+					_followingThinking = true;
+					if (_entry?.IsThinking == true) _focus.FollowGrowth(_thinking);
+				}
 				return;
 			}
-			EnsureThinkingBody();
-			// 用户展开：记住这次阅读意图。若思考正在流式输出就立即贴住末尾；
-			// 尚未开始时由后续 Update 在首个 thinking delta 到来后接管。
-			// 从回收缓存恢复状态时不算一次用户展开，不重新贴底。
-			if (!_focus.SuppressGrowthFollow)
-			{
-				_followingThinking = true;
-				if (_entry?.IsThinking == true) _focus.FollowGrowth(_thinking);
-			}
+
+			_followingThinking = false;
+			_focus.StopGrowth(_thinking);
+			// 展开期间 RefreshPreview 不跑；收起时补算，否则预览可能停在展开前的空值，
+			// 折叠后只剩一条没有内容的「思考了 X」。
+			if (_entry is { } entry) RefreshPreview(entry);
+			_previewLine.IsVisible = _previewText.Length > 0;
 		};
 
 		// 思考行内部由组体/跟随增长处理；不要用外层锚点把会话滚动位置带走。

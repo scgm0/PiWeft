@@ -418,12 +418,14 @@ public sealed class ChatViewModel : IDisposable
 				rows.Add(tool.ToEntry());
 			}
 
-			if (_isStreaming && (_streamingText.Length > 0 || _streamingThinking.Length > 0 || _isThinking))
+			// 只有空白的思考不算内容：有的 provider 会先发一个空格（或只有换行）再调工具，
+			// 照原样投影会在过程组里留下一条没有预览、展开也空白的「思考了 X」步骤。
+			if (_isStreaming && (_streamingText.Length > 0 || _streamingThinking.HasText || _isThinking))
 			{
 				// 流式正文/思考只给快照（来源 + 长度），不复制正文：每帧整篇 ToString() 是
 				// 诊断面板「每帧分配」的来源（200K 字回复 = 每帧 ~400 KB）。渲染侧的打字机与
 				// 增量 Markdown 按前缀切片，整篇物化只发生在复制/导出这类冷路径。
-				rows.Add(new ChatEntry
+				var row = new ChatEntry
 				{
 					Role = ChatRole.Assistant,
 					Text = string.Empty,
@@ -434,11 +436,12 @@ public sealed class ChatViewModel : IDisposable
 					Timestamp = _streamingTimestamp,
 					EntryId = $"live-assistant/{_streamingTimestamp}",
 					IsStreaming = true,
-				} with
+				};
+				// 两个来源必须在 Text/Thinking 之后赋值：那两个 init 会把来源清空。
+				rows.Add(row with
 				{
-					// 两个来源必须在 Text/Thinking 之后赋值：那两个 init 会把来源清空。
 					StreamedText = new StreamedText(_streamingText, _streamingGeneration),
-					StreamedThinking = new StreamedText(_streamingThinking, _streamingGeneration),
+					StreamedThinking = _streamingThinking.HasText ? new StreamedText(_streamingThinking, _streamingGeneration) : null,
 				});
 			}
 
@@ -646,7 +649,8 @@ public sealed class ChatViewModel : IDisposable
 					break;
 
 				case MessageUpdateEvent { AssistantMessageEvent: ThinkingStartEvent }:
-					if (_streamingThinking.Length > 0)
+					// 只有已经有可见思考时才插分隔线；纯空白的前一段不算一段。
+					if (_streamingThinking.HasText)
 					{
 						_streamingThinking.Append("\n\n");
 					}
@@ -1236,6 +1240,8 @@ public sealed class ChatViewModel : IDisposable
 		{
 			if (block is ThinkingContent { Redacted: not true, Thinking.Length: > 0 } thinking)
 			{
+				// 纯空白（常见于 provider 只回一个空格）不是可见思考；留着会生成空步骤。
+				if (string.IsNullOrWhiteSpace(thinking.Thinking)) continue;
 				if (builder is null)
 				{
 					builder = new StringBuilder(thinking.Thinking);

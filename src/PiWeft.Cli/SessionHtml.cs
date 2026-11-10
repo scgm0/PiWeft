@@ -76,7 +76,7 @@ public static class SessionHtml
 							builder.Append("<pre>").Append(Escape(text.Text)).Append("</pre>\n");
 							break;
 
-						case ThinkingContent thinking:
+						case ThinkingContent thinking when !string.IsNullOrWhiteSpace(thinking.Thinking):
 							builder.Append("<details><summary>thinking</summary><pre>")
 								.Append(Escape(thinking.Thinking))
 								.Append("</pre></details>\n");

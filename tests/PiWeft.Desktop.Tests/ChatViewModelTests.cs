@@ -725,6 +725,92 @@ public class ChatViewModelTests : IDisposable
 	}
 
 	[Fact]
+	public void WhitespaceOnlyThinkingBlocksAreDroppedFromTheProjection()
+	{
+		var manager = SessionManager.InMemory(_root);
+		// 有的 provider 只回一个空格：不能留下一条没有预览、展开也空白的思考步骤。
+		manager.AppendMessage(new AssistantMessage
+		{
+			Timestamp = 10,
+			Content = [new ThinkingContent { Thinking = " " }],
+			DurationMs = 700,
+		});
+		manager.AppendMessage(new AssistantMessage
+		{
+			Timestamp = 11,
+			Content =
+			[
+				new ThinkingContent { Thinking = "\n  " },
+				new ThinkingContent { Thinking = "real plan" },
+				new TextContent { Text = "answer" },
+			],
+			DurationMs = 1200,
+		});
+
+		using var session = NewSession(manager);
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var row = Assert.Single(viewModel.Entries());
+		Assert.Equal("answer", row.Text);
+		Assert.Equal("real plan", row.Thinking);
+		Assert.Equal(1, ExecutionProcess.Count(viewModel.Entries()).Thinking);
+	}
+
+	[Fact]
+	public async Task StreamingWhitespaceOnlyThinkingIsNotExposedAsContent()
+	{
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		_streams.Enqueue(model =>
+		{
+			var stream = new AssistantMessageEventStream();
+			var message = new AssistantMessage
+			{
+				Api = model.Api, Provider = model.Provider, Model = model.Id, Timestamp = 777,
+				Content = [new ThinkingContent { Thinking = " " }, new TextContent { Text = "answer" }],
+				StopReason = StopReason.Stop,
+			};
+			_ = Task.Run(async () =>
+			{
+				stream.Push(new StartEvent { Partial = message with { Content = [] } });
+				stream.Push(new ThinkingStartEvent { ContentIndex = 0, Partial = message });
+				stream.Push(new ThinkingDeltaEvent { ContentIndex = 0, Delta = " ", Partial = message });
+				await gate.Task;
+				stream.Push(new ThinkingEndEvent { ContentIndex = 0, Content = " ", Partial = message });
+				stream.Push(new TextStartEvent { ContentIndex = 1, Partial = message });
+				stream.Push(new TextDeltaEvent { ContentIndex = 1, Delta = "answer", Partial = message });
+				stream.Push(new DoneEvent { Reason = StopReason.Stop, Partial = message });
+			});
+			return stream;
+		});
+
+		using var session = NewSession();
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+		var run = viewModel.SendAsync("go");
+		try
+		{
+			// 正在思考（IsThinking）仍然保留状态行，但空白 delta 不算内容。
+			var live = await WaitForAsync(() => viewModel.Entries().LastOrDefault(entry => entry.IsStreaming && entry.IsThinking));
+			Assert.NotNull(live);
+			Assert.Equal(0, live!.ThinkingLength);
+			Assert.Empty(live.Thinking);
+			Assert.Null(live.StreamedThinking);
+		}
+		finally
+		{
+			gate.TrySetResult();
+			await run;
+		}
+
+		var final = viewModel.Entries()[^1];
+		Assert.Equal("answer", final.Text);
+		Assert.Equal(0, final.ThinkingLength);
+		Assert.Empty(final.Thinking);
+		Assert.Equal(0, ExecutionProcess.Count(viewModel.Entries()).Thinking);
+	}
+
+	[Fact]
 	public void CommandSearchSupportsMultipleWordsAndKeepsThePrefixFirst()
 	{
 		PaletteCommand[] commands =

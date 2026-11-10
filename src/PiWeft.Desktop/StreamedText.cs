@@ -99,15 +99,19 @@ internal sealed class StreamingBuffer
 	private List<string> _segments = [];
 	private List<int> _starts = [];
 	private int _length;
+	private bool _hasText;
 
 	public int Length => _length;
 	public int SegmentCount => _segments.Count;
+	/// 是否已经有非空白字符：只追加过空格/换行的缓冲不算有内容。
+	public bool HasText => _hasText;
 	internal List<string> Segments => _segments;
 	internal List<int> Starts => _starts;
 
 	public void Append(string delta)
 	{
 		if (string.IsNullOrEmpty(delta)) return;
+		if (!_hasText) _hasText = !string.IsNullOrWhiteSpace(delta);
 		_segments.Add(delta);
 		_starts.Add(_length);
 		_length += delta.Length;
@@ -118,6 +122,7 @@ internal sealed class StreamingBuffer
 		_segments = [];
 		_starts = [];
 		_length = 0;
+		_hasText = false;
 	}
 }
 

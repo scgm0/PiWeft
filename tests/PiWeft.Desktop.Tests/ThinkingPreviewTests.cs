@@ -97,6 +97,29 @@ public sealed class ThinkingPreviewTests
 	}
 
 	[Fact]
+	public void CollapsingAnExpandedThinkingBlockRecomputesThePreview()
+	{
+		using var guard = new TextFocusScrollGuard(new ScrollViewer());
+		var view = new AssistantMessageView(Live(string.Empty, streaming: true), _ => { }, guard);
+		Pump(view.View);
+		var expander = Find<Expander>(view.View).Single();
+		expander.IsExpanded = true;
+		Pump(view.View);
+
+		// 展开期间思考定稿：RefreshPreview 不跑，预览仍停在展开前的空值。
+		view.Update(Live("首行摘要\n后面还有几行", streaming: false) with { IsStreaming = false });
+		Pump(view.View);
+
+		// 收起时必须补算首行，否则折叠后只剩一条没有内容的「思考了 X」。
+		expander.IsExpanded = false;
+		Pump(view.View);
+		var line = PreviewLine(view.View);
+		Assert.True(line.IsVisible);
+		Assert.Equal("首行摘要", PreviewText(line));
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
 	public void MarqueeKeepsTheLineTailAtTheRightEdgeAndTheHeadClipped()
 	{
 		var text = new TextBlock()
