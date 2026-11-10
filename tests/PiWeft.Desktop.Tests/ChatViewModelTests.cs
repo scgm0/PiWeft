@@ -308,7 +308,17 @@ public class ChatViewModelTests : IDisposable
 			StopReason = StopReason.ToolUse,
 			Timestamp = 2,
 		});
-		manager.AppendMessage(new ToolResultMessage { ToolCallId = "c1", ToolName = "edit", Content = [new TextContent { Text = "ok" }], Timestamp = 3 });
+		manager.AppendMessage(new ToolResultMessage
+		{
+			ToolCallId = "c1",
+			ToolName = "edit",
+			Content = [new TextContent { Text = "ok" }],
+			Details = new JsonObject
+			{
+				["patch"] = "--- src/app.cs\n+++ src/app.cs\n@@ -1,1 +1,2 @@\n-old\n+new\n+more\n",
+			},
+			Timestamp = 3,
+		});
 		// 失败的写入不计入汇总。
 		manager.AppendMessage(new ToolResultMessage { ToolCallId = "c2", ToolName = "write", Content = [new TextContent { Text = "fail" }], IsError = true, Timestamp = 4 });
 		manager.AppendMessage(new AssistantMessage
@@ -326,7 +336,125 @@ public class ChatViewModelTests : IDisposable
 		viewModel.Attach(session);
 
 		var assistant = viewModel.Entries().Last(static entry => entry.Role == ChatRole.Assistant);
-		Assert.Equal(["src/app.cs"], assistant.ChangedFiles);
+		var change = Assert.Single(assistant.ChangedFiles);
+		Assert.Equal("src/app.cs", change.Path);
+		Assert.Equal(1, change.Count);
+		Assert.Equal(2, change.Added);
+		Assert.Equal(1, change.Removed);
+		Assert.Contains("+more", change.Patch, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void AssistantRowSumsRepeatedEditsOfTheSameFile()
+	{
+		var manager = SessionManager.InMemory(_root);
+		manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("edit twice"), Timestamp = 1 });
+		manager.AppendMessage(new AssistantMessage
+		{
+			Api = "anthropic-messages",
+			Provider = "test",
+			Model = "test-model",
+			Content =
+			[
+				new ToolCall { Id = "c1", Name = "edit", Arguments = new JsonObject { ["path"] = "src/app.cs" } },
+				new ToolCall { Id = "c2", Name = "edit", Arguments = new JsonObject { ["path"] = "src/app.cs" } },
+			],
+			StopReason = StopReason.ToolUse,
+			Timestamp = 2,
+		});
+		manager.AppendMessage(new ToolResultMessage
+		{
+			ToolCallId = "c1",
+			ToolName = "edit",
+			Content = [new TextContent { Text = "ok" }],
+			Details = new JsonObject
+			{
+				["patch"] = "--- src/app.cs\n+++ src/app.cs\n@@ -1,1 +1,2 @@\n-a\n+b\n+c\n",
+			},
+			Timestamp = 3,
+		});
+		manager.AppendMessage(new ToolResultMessage
+		{
+			ToolCallId = "c2",
+			ToolName = "edit",
+			Content = [new TextContent { Text = "ok" }],
+			Details = new JsonObject
+			{
+				["patch"] = "--- src/app.cs\n+++ src/app.cs\n@@ -5,2 +5,1 @@\n-x\n-y\n+z\n",
+			},
+			Timestamp = 4,
+		});
+		manager.AppendMessage(new AssistantMessage
+		{
+			Api = "anthropic-messages",
+			Provider = "test",
+			Model = "test-model",
+			Content = [new TextContent { Text = "done" }],
+			StopReason = StopReason.Stop,
+			Timestamp = 5,
+		});
+
+		using var session = NewSession(manager);
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var assistant = viewModel.Entries().Last(static entry => entry.Role == ChatRole.Assistant);
+		var change = Assert.Single(assistant.ChangedFiles);
+		Assert.Equal(2, change.Count);
+		Assert.Equal(3, change.Added);
+		Assert.Equal(3, change.Removed);
+		Assert.Equal(2, change.Patch.Split("--- src/app.cs", StringSplitOptions.None).Length - 1);
+	}
+
+	[Fact]
+	public void AssistantRowCountsWholeFileWriteAsAdditions()
+	{
+		var manager = SessionManager.InMemory(_root);
+		manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("write"), Timestamp = 1 });
+		manager.AppendMessage(new AssistantMessage
+		{
+			Api = "anthropic-messages",
+			Provider = "test",
+			Model = "test-model",
+			Content =
+			[
+				new ToolCall
+				{
+					Id = "c1",
+					Name = "write",
+					Arguments = new JsonObject { ["path"] = "src/new.cs", ["content"] = "line1\nline2" },
+				},
+			],
+			StopReason = StopReason.ToolUse,
+			Timestamp = 2,
+		});
+		manager.AppendMessage(new ToolResultMessage
+		{
+			ToolCallId = "c1",
+			ToolName = "write",
+			Content = [new TextContent { Text = "ok" }],
+			Timestamp = 3,
+		});
+		manager.AppendMessage(new AssistantMessage
+		{
+			Api = "anthropic-messages",
+			Provider = "test",
+			Model = "test-model",
+			Content = [new TextContent { Text = "done" }],
+			StopReason = StopReason.Stop,
+			Timestamp = 4,
+		});
+
+		using var session = NewSession(manager);
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		var assistant = viewModel.Entries().Last(static entry => entry.Role == ChatRole.Assistant);
+		var change = Assert.Single(assistant.ChangedFiles);
+		Assert.Equal("src/new.cs", change.Path);
+		Assert.Equal(2, change.Added);
+		Assert.Equal(0, change.Removed);
+		Assert.Contains("+line2", change.Patch, StringComparison.Ordinal);
 	}
 
 	[Fact]

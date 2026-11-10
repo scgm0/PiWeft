@@ -5,6 +5,7 @@ using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Tools;
 
 using PiWeft.Ai.Json;
 using PiWeft.Cli;
@@ -114,7 +115,7 @@ public sealed record ChatEntry
 
 	/// 本轮（自上一条用户消息以来）成功修改过的文件，用于回答下方的修改汇总。
 	/// 只在助手正文行有意义。
-	public IReadOnlyList<string> ChangedFiles { get; init; } = [];
+	public IReadOnlyList<ChatFileChange> ChangedFiles { get; init; } = [];
 
 	public bool IsStreaming { get; init; }
 
@@ -895,7 +896,7 @@ public sealed class ChatViewModel : IDisposable
 		var entryIds = BuildEntryIds();
 		var results = BuildResults(messages, 0);
 		// 本轮（自上一条用户消息以来）成功修改过的文件，附在助手正文行下方。
-		var turnChanges = new List<string>();
+		var turnChanges = new TurnFileChanges();
 		var stableEntryCount = 0;
 		for (var index = 0; index < messages.Count; index++)
 		{
@@ -951,7 +952,7 @@ public sealed class ChatViewModel : IDisposable
 	{
 		var entryIds = BuildEntryIds();
 		var results = BuildResults(messages, start);
-		var turnChanges = new List<string>();
+		var turnChanges = new TurnFileChanges();
 		for (var index = start; index < messages.Count; index++)
 		{
 			AppendMessage(messages[index], entryIds, results, turnChanges);
@@ -1021,7 +1022,7 @@ public sealed class ChatViewModel : IDisposable
 		Message message,
 		Dictionary<Message, string> entryIds,
 		Dictionary<string, ToolResultMessage> results,
-		List<string> turnChanges)
+		TurnFileChanges turnChanges)
 	{
 		switch (message)
 		{
@@ -1063,9 +1064,10 @@ public sealed class ChatViewModel : IDisposable
 						continue;
 					}
 
-					if (results.TryGetValue(call.Id, out var toolResult) && !toolResult.IsError && !turnChanges.Contains(changedPath, StringComparer.Ordinal))
+					if (results.TryGetValue(call.Id, out var toolResult) && !toolResult.IsError)
 					{
-						turnChanges.Add(changedPath);
+						var (added, removed, patch) = FileChangeOf(call, toolResult, changedPath);
+						turnChanges.Add(changedPath, added, removed, patch);
 					}
 				}
 
@@ -1083,7 +1085,7 @@ public sealed class ChatViewModel : IDisposable
 						EntryId = entryIds.GetValueOrDefault(message),
 						Images = images,
 						Timestamp = assistant.Timestamp,
-						ChangedFiles = turnChanges.Count > 0 ? [.. turnChanges] : [],
+						ChangedFiles = turnChanges.Count > 0 ? [.. turnChanges.Items] : [],
 					});
 				}
 
@@ -1245,6 +1247,47 @@ public sealed class ChatViewModel : IDisposable
 		}
 		System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 	}
+
+	/// 把一次成功的写工具调用折算成增删行数与补丁：优先用结果里的统一补丁，
+	/// 历史会话没有补丁时 write 按整篇新增、edit 按参数里的 oldText/newText 估算。
+	private static (int Added, int Removed, string Patch) FileChangeOf(ToolCall call, ToolResultMessage result, string path)
+	{
+		if (PatchOf(result.Details) is { } patch)
+		{
+			var (added, removed) = DiffStats.Count(patch);
+			return (added, removed, patch);
+		}
+
+		if (call.Name == "write" && StringOf(call.Arguments["content"]) is { } content)
+		{
+			var written = EditDiff.UnifiedPatch(string.Empty, content, path);
+			var (addedLines, removedLines) = DiffStats.Count(written);
+			return (addedLines, removedLines, written);
+		}
+
+		return (EditArgumentLines(call.Arguments, "newText"), EditArgumentLines(call.Arguments, "oldText"), string.Empty);
+	}
+
+	private static int EditArgumentLines(JsonObject arguments, string field)
+	{
+		var lines = 0;
+		if (arguments["edits"] is JsonArray edits)
+		{
+			foreach (var edit in edits)
+			{
+				if (edit is JsonObject item) lines += LineCount(StringOf(item[field]));
+			}
+
+			return lines;
+		}
+
+		return LineCount(StringOf(arguments[field]));
+	}
+
+	private static int LineCount(string? text) => text is { Length: > 0 } ? text.AsSpan().Count('\n') + 1 : 0;
+
+	private static string? StringOf(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
 	private static string? PatchOf(JsonNode? details) =>
 		details is JsonObject detailsObject && detailsObject["patch"] is JsonValue patch &&

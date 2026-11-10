@@ -29,7 +29,9 @@ internal sealed class AssistantMessageView : IDisposable
 	private readonly MarkdownFeed _bodyFeed = new();
 	private readonly Expander _thinking;
 	private readonly Border _body = new();
-	private readonly TextBlock _changes = new();
+	private readonly ChangedFilesView _changedFiles = new();
+	private readonly Func<ChatFileChange, string> _fileHint;
+	private readonly Action<ChatFileChange>? _openDiff;
 	private readonly Button _copy;
 	private readonly TextFocusScrollGuard _focus;
 	private readonly Action<string> _openLink;
@@ -39,11 +41,15 @@ internal sealed class AssistantMessageView : IDisposable
 	private bool _followingThinking;
 
 	public AssistantMessageView(ChatEntry entry, Action<string> copy, TextFocusScrollGuard focus, Action<ImageSource>? preview = null,
-		Action<string>? openLink = null)
+		Action<string>? openLink = null, string? cwd = null, Action<ChatFileChange>? openDiff = null)
 	{
 		_focus = focus;
 		_openLink = openLink ?? (url => Shell.OpenMessageLink(url, Environment.CurrentDirectory));
 		_previewImage = preview;
+		_fileHint = cwd is { Length: > 0 }
+			? file => MessageLinkTarget.Resolve(file.Path, cwd)?.Target ?? file.Path
+			: static file => file.Path;
+		_openDiff = openDiff;
 		_header.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText();
 		_thinkingHeader.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium)
 			.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Thinking);
@@ -94,7 +100,7 @@ internal sealed class AssistantMessageView : IDisposable
 			_headerRow,
 			_thinking,
 			_body,
-			_changes.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap).IsVisible(false));
+			_changedFiles.View);
 
 		foreach (var image in entry.Images)
 		{
@@ -230,10 +236,10 @@ internal sealed class AssistantMessageView : IDisposable
 			_followingThinking = false;
 		}
 		var showChanges = !entry.IsStreaming && !entry.Compact && entry.ChangedFiles.Count > 0;
-		_changes.IsVisible(showChanges);
+		_changedFiles.IsVisible = showChanges;
 		if (showChanges)
 		{
-			_changes.Text(Strings.ChangedFilesSummary(entry.ChangedFiles));
+			_changedFiles.Update(entry.ChangedFiles, _fileHint, _openDiff);
 		}
 		RefreshBodyText(entry);
 		SyncPump();

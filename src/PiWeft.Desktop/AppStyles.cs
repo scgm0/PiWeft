@@ -68,6 +68,11 @@ public static class AppStyles
 
 	public const string CardMutedButton = "pi-button-card-muted";
 
+	/// 轮末文件 chip：浅底色、悬停提亮文字；点击打开该文件的 diff。
+	public const string ChangedFileChip = "pi-button-file-chip";
+	/// chip 行尾的 +N / 收起：透明底 + 发丝描边，与文件 chip 区分。
+	public const string ChangedFilesMore = "pi-button-file-more";
+
 	// 文本
 	public const string TextPrimary = "pi-text-primary";
 	public const string TextMuted = "pi-text-muted";
@@ -651,6 +656,59 @@ public static class AppStyles
 						[
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText.WithAlpha(0x2e))),
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText)),
+						],
+					},
+				],
+			})
+			// 轮末文件 chip：底色用内嵌表面，chip 是轮末副产物，亮度低于正文。
+			// 悬停时文字提到主色、底色亮一档，与 PiDeck 的 chip 一样靠「变清楚」反馈。
+			.With(ChangedFileChip, () => new Style(typeof(Button))
+			{
+				BasedOn = ButtonInteraction,
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.ForegroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextMuted)),
+					Setter.Create(Control.BorderThicknessProperty, 0.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusXs),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+				],
+			})
+			// +N / 收起：透明底 + 发丝描边。与文件 chip 同形，但没有文件图标与底色，一眼看出是控件。
+			.With(ChangedFilesMore, () => new Style(typeof(Button))
+			{
+				BasedOn = ButtonInteraction,
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.ForegroundProperty)],
+				Setters =
+				[
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground.WithAlpha(0))),
+					Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle)),
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					Setter.Create(Control.BorderThicknessProperty, 1.0),
+					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusXs),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+							Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle)),
 						],
 					},
 				],

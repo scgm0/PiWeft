@@ -149,6 +149,7 @@ public sealed partial class SessionTab : IDisposable
 	private bool _testing;
 	private readonly ModelPicker _modelPicker;
 	private readonly ImagePreview _imagePreview = new();
+	private readonly FileDiffPreview _fileDiffPreview;
 	private readonly Button _thinkingButton;
 	private readonly TextBlock _thinkingLabel = new();
 	private readonly ThinkingPicker _thinkingPicker = new();
@@ -302,6 +303,7 @@ public sealed partial class SessionTab : IDisposable
 
 		// Restore focus offsets before follow-state observes the scroll notification.
 		_textFocus = new TextFocusScrollGuard(_scroll, anchor => _conversationScroll!.PreserveAnchor(anchor));
+		_fileDiffPreview = new FileDiffPreview();
 		// 折叠开关改变行高：会话视图自己收敛一次，不能等用户滚动才发现内容没了。
 		_textFocus.LayoutInvalidated = fold => _timeline.RefreshLayout(fold);
 		// 展开正在流式的思考时，外层会话重新贴住内容末尾（嵌套的组体则由它自己的视口跟随）。
@@ -2636,6 +2638,7 @@ public sealed partial class SessionTab : IDisposable
 		_outline.HidePreview();
 		_returnToStatistics = false;
 		_imagePreview.Hide();
+		_fileDiffPreview.Hide();
 		_statisticsPanel.Hide();
 		_modelPicker.Hide();
 		// 切标签时弹层跟着走：淡出只会把旧菜单多留在窗口上，直接收。
@@ -2690,7 +2693,7 @@ public sealed partial class SessionTab : IDisposable
 			ChatRole.Process => new ExecutionProcessView(entry, Row, _textFocus).View,
 			ChatRole.Tool => new ToolMessageView(entry, _textFocus, PreviewImage, CopyText).View,
 			ChatRole.Error => Card(entry, Strings.RoleError),
-			_ => new AssistantMessageView(entry, CopyText, _textFocus, PreviewImage, OpenMessageLink).View,
+			_ => new AssistantMessageView(entry, CopyText, _textFocus, PreviewImage, OpenMessageLink, Session.Cwd, ShowFileDiff).View,
 		};
 		_textFocus.TrackTree(row);
 		return row;
@@ -2861,6 +2864,19 @@ public sealed partial class SessionTab : IDisposable
 	private void OpenMessageLink(string url) => Shell.OpenMessageLink(url, Session.Cwd, message => NotifyError(message));
 
 	private void PreviewImage(ImageSource source) => _imagePreview.Show(View, source);
+
+	/// 轮末文件 chip 的左键：打开本轮该文件的补丁浮层。
+	private void ShowFileDiff(ChatFileChange file)
+	{
+		var fullPath = MessageLinkTarget.Resolve(file.Path, Session.Cwd)?.Target ?? file.Path;
+		_fileDiffPreview.Show(View, file, fullPath, OpenChangedFile);
+	}
+
+	/// 工具参数里可能是相对路径；编辑器和提示里都用解析后的绝对路径。
+	private void OpenChangedFile(string path)
+	{
+		if (!Shell.OpenInEditor(path)) NotifyError(Strings.OpenFailed(path));
+	}
 
 	private void PreviewAttachment(ImageContent image)
 	{

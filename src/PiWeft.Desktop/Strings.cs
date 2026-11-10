@@ -1075,14 +1075,15 @@ public static partial class Strings
 		return parts.Count == 0 ? CheckpointUnchanged : string.Join("，", parts);
 	}
 
-	public static string ChangedFilesSummary(IReadOnlyList<string> files)
-	{
-		var names = files.Select(Path.GetFileName).ToList();
-		var shown = string.Join("、", names.Take(4));
-		return names.Count <= 4
-			? $"本轮修改 {files.Count} 个文件：{shown}"
-			: $"本轮修改 {files.Count} 个文件：{shown} 等";
-	}
+	public static string ChangedFilesCaption(int count) => $"本轮修改 {count} 个文件";
+
+	public static string ChangedFilesMore(int count) => $"+{count}";
+
+	/// 增删行数：为 0 的部分不显示，与 chip 上的写法一致。
+	public static string ChangedFilesDelta(int added, int removed) =>
+		added > 0 && removed > 0 ? $"+{added} −{removed}" : added > 0 ? $"+{added}" : removed > 0 ? $"−{removed}" : string.Empty;
+
+	public const string ChangedFilesCollapse = "收起";
 
 	public const string DiffUnified = "统一";
 

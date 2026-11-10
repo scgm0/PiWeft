@@ -1097,7 +1097,7 @@ public sealed partial class GitView : IDisposable
 				break;
 		}
 
-		var (added, removed) = CountDiffLines(diff);
+		var (added, removed) = DiffStats.Count(diff);
 		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2);
 		// 提交/比较的 diff 是历史内容，打开工作区文件会看错版本；这两个来源只给关闭。
 		if (request.Kind is GitDiffKind.WorkingTree or GitDiffKind.Staged)
@@ -1882,30 +1882,6 @@ public sealed partial class GitView : IDisposable
 		AppStyles.RoleError => palette.Error,
 		_ => palette.TextMuted,
 	};
-
-	private static (int Added, int Removed) CountDiffLines(string diff)
-	{
-		var added = 0;
-		var removed = 0;
-		foreach (var line in diff.Split('\n'))
-		{
-			if (line.StartsWith("+++", StringComparison.Ordinal) || line.StartsWith("---", StringComparison.Ordinal))
-			{
-				continue;
-			}
-
-			if (line.StartsWith('+'))
-			{
-				added++;
-			}
-			else if (line.StartsWith('-'))
-			{
-				removed++;
-			}
-		}
-
-		return (added, removed);
-	}
 
 	private static string GitDiffStat(int added, int removed) => Strings.GitDiffStat(added, removed);
 
