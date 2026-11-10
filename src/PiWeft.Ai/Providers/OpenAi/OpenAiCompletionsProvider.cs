@@ -5,6 +5,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 
 using PiWeft.Ai.Json;
+using PiWeft.Ai.Utils;
+
 namespace PiWeft.Ai.Providers.OpenAi;
 
 /// OpenAI 兼容的 Chat Completions API（<c>openai-completions</c>）的流式适配器，既覆盖 OpenAI 本身，
@@ -139,9 +141,16 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		string? thinkingMode,
 		string? apiKey)
 	{
-		var maxTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
+		var maxTokens = OpenAiContextBudget.Clamp(model, messages, options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null));
+		var cacheRetention = options.CacheRetention ?? CacheRetentions.Short;
+		var promptCacheMode = ModelCompat.Text(model, "promptCacheKeyMode") ?? "auto";
+		var promptCacheKey = cacheRetention == CacheRetentions.None ||
+			string.Equals(promptCacheMode, "disabled", StringComparison.OrdinalIgnoreCase) ||
+			string.IsNullOrEmpty(options.SessionId)
+			? null
+			: options.SessionId.Length <= 64 ? options.SessionId : options.SessionId[..64];
 		var bytes = JsonPayload.Write(writer =>
-			OpenAiCompletionsWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, thinkingMode, maxTokens));
+			OpenAiCompletionsWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, thinkingMode, maxTokens, promptCacheKey));
 
 		if (options.OnPayload is { } onPayload)
 		{

@@ -521,6 +521,36 @@ public sealed class ExpandedProjectsPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void QuickMessagesDefaultToTheShippedListAndAnExplicitEmptyListStaysEmpty()
+	{
+		// 没写过偏好：用出厂清单，而不是空。
+		Assert.Equal(QuickMessages.Defaults, DesktopPreference.Load(_agentDir).QuickMessageList);
+
+		// 显式清空必须写成一个空数组：不能删键，否则重启后出厂条目会复活。
+		(DesktopPreference.Load(_agentDir) with { QuickMessageItems = [] }).Save(_agentDir);
+		Assert.Empty(DesktopPreference.Load(_agentDir).QuickMessageList);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.Empty(raw["quickMessages"]!.AsArray());
+	}
+
+	[Fact]
+	public void WithQuickMessagesNormalizesAndDropsTheKeyWhenItMatchesDefaults()
+	{
+		var custom = DesktopPreference.Load(_agentDir).WithQuickMessages([" 继续 ", "", "提交", "继续"]);
+		Assert.Equal(["继续", "提交"], custom.QuickMessageItems);
+		custom.Save(_agentDir);
+		Assert.Equal(["继续", "提交"], DesktopPreference.Load(_agentDir).QuickMessageList);
+
+		// 与出厂清单一致：不写进文件，也不在重启后漂成一份快照。
+		var defaults = DesktopPreference.Load(_agentDir).WithQuickMessages(QuickMessages.Defaults);
+		Assert.Null(defaults.QuickMessageItems);
+		defaults.Save(_agentDir);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw.ContainsKey("quickMessages"));
+		Assert.Equal(QuickMessages.Defaults, DesktopPreference.Load(_agentDir).QuickMessageList);
+	}
+
+	[Fact]
 	public void LastUsedModelIsRememberedSeparatelyFromRecentModels()
 	{
 		DesktopPreference.Load(_agentDir).RememberUsedModel("test", "a").Save(_agentDir);

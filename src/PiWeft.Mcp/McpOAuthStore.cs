@@ -1,4 +1,5 @@
 using System.Text.Json;
+using PiWeft.Ai.Json;
 
 namespace PiWeft.Mcp;
 
@@ -80,7 +81,7 @@ public static class McpOAuthStore
 
 		try
 		{
-			return JsonSerializer.Deserialize(File.ReadAllText(path), McpJsonContext.Default.McpOAuthFile);
+			return JsonSerializer.Deserialize(PiJson.StripBom(File.ReadAllText(path)), McpJsonContext.Default.McpOAuthFile);
 		}
 		catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
 		{
@@ -90,12 +91,21 @@ public static class McpOAuthStore
 
 	private static void Update(string? agentDir, Action<Dictionary<string, McpOAuthToken>> mutate)
 	{
+		var path = Path(agentDir);
+		var directory = System.IO.Path.GetDirectoryName(path);
+		if (directory is { Length: > 0 })
+		{
+			Directory.CreateDirectory(directory);
+		}
+
+		// 两个进程同时刷新时只让一个读改写，避免后写者覆盖新令牌。
+		using var fileLock = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
 		var servers = Read(agentDir)?.Servers is { } existing
 			? new Dictionary<string, McpOAuthToken>(existing, StringComparer.Ordinal)
 			: new Dictionary<string, McpOAuthToken>(StringComparer.Ordinal);
 
 		mutate(servers);
-		WriteAtomically(Path(agentDir), new McpOAuthFile { Servers = servers });
+		WriteAtomically(path, new McpOAuthFile { Servers = servers });
 	}
 
 	private static void WriteAtomically(string path, McpOAuthFile file)

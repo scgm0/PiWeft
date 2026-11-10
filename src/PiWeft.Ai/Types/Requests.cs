@@ -99,6 +99,9 @@ public sealed record StreamOptions : ProviderRequestOptions
 	public string? ThinkingLevel { get; init; }
 
 	public JsonObject? Metadata { get; init; }
+
+	/// settings.thinkingBudgets：minimal / low / medium / high 的自定义 token 预算。
+	public IReadOnlyDictionary<string, int>? ThinkingBudgets { get; init; }
 }
 
 public static class CacheRetentions

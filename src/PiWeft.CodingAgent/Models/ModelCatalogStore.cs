@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.Ai;
+using PiWeft.Ai.Json;
 using PiWeft.Ai.Auth;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
@@ -616,7 +617,7 @@ public static class ModelCatalogStore
 
 		try
 		{
-			return JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+			return JsonNode.Parse(PiJson.StripBom(File.ReadAllText(path))) as JsonObject;
 		}
 		catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
 		{

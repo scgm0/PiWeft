@@ -3,7 +3,7 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// 输入区的「+」菜单、模式 chip 与技能/提示词选择器。合并入口的行为都放这里，
+/// 输入区的「+」菜单、模式 chip、技能/提示词选择器与快捷消息浮层。合并入口的行为都放这里，
 /// 主文件只保留 composer 的布局与发送链路。
 public sealed partial class SessionTab
 {
@@ -26,6 +26,63 @@ public sealed partial class SessionTab
 
 	/// 仅供 --ui-smoke composer-picker：打开技能选择器，外部脚本趁机截图。
 	internal void PrepareSkillPickerSmoke() => ShowSkillPicker();
+
+	/// 仅供 --ui-smoke quick-messages：打开快捷消息浮层，外部脚本趁机截图。
+	internal void PrepareQuickMessagesSmoke() => ShowQuickMessages();
+
+	/// 快捷消息浮层：每次打开重读一份清单，用户在设置里改完切回来就能看到。
+	internal void ShowQuickMessages()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		// 再按一次快捷键收起：呼出类快捷键的普遍预期。
+		if (_quickMessages.IsOpen)
+		{
+			_quickMessages.Hide();
+			return;
+		}
+
+		HoverHints.Cancel(_quickMessagesButton);
+		_quickMessages.Show(_quickMessagesButton, DesktopPreference.Load().QuickMessageList, CanSendQuickMessage(),
+			InsertQuickMessage, SendQuickMessage, () => QuickMessagesSettingsRequested?.Invoke(this), FocusComposer);
+	}
+
+	private void InsertQuickMessage(string text)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_composer.Text = QuickMessages.Append(_composer.Text, text);
+		_composer.Select(_composer.Text.Length, 0);
+		_composer.Focus();
+	}
+
+	/// 直发不经过草稿：用清单原文发一条，用户写了一半的输入与附件都保留（PiDeck 同一契约）。
+	private void SendQuickMessage(string text)
+	{
+		if (_disposed || !CanSendQuickMessage())
+		{
+			return;
+		}
+
+		var message = text.Trim();
+		if (message.Length == 0)
+		{
+			return;
+		}
+
+		_pendingSend = SendAsync(message);
+	}
+
+	/// 直发可用性：运行中发送键是中断，附件与编辑重发状态也不该被清单消息带走。
+	private bool CanSendQuickMessage() =>
+		!_sending && !_chat.IsStreaming && _loadingAttachments == 0 &&
+		_attachments.Count == 0 && _pendingBranchEntryId is null;
 
 	private void ShowComposerAddMenu()
 	{

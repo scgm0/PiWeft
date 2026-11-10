@@ -2,6 +2,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using PiWeft.Ai.Json;
 
 namespace PiWeft.Mcp;
 
@@ -154,7 +155,7 @@ public static partial class McpConfig
 
 		try
 		{
-			return JsonSerializer.Deserialize(File.ReadAllText(path), McpJsonContext.Default.McpConfigFile);
+			return JsonSerializer.Deserialize(PiJson.StripBom(File.ReadAllText(path)), McpJsonContext.Default.McpConfigFile);
 		}
 		catch (JsonException)
 		{
@@ -211,7 +212,7 @@ public static partial class McpConfig
 			// 加载路径允许注释与尾逗号，写回时必须能解析同样的文件：
 			// 一旦解析失败就返回空对象再写回，用户的其它服务器会被整片抹掉。
 			return JsonNode.Parse(
-				File.ReadAllText(path),
+				PiJson.StripBom(File.ReadAllText(path)),
 				nodeOptions: null,
 				documentOptions: new JsonDocumentOptions
 				{

@@ -60,6 +60,7 @@ public static class McpCommands
 			  pi mcp add <name> --url <url> [options]       添加 streamable HTTP 服务器
 			      [--header k=v]... [--bearer-token-env-var <NAME>]
 			      [--auth oauth] [--oauth-client-id id] [--oauth-client-secret secret]
+			      [--oauth-client-registration auto|dcr|cimd]
 			      [--scope a,b] [--exposure codemode|deferred|direct|hidden]
 			      [--description text]
 			  pi mcp remove <name> [--local]                移除服务器（同时清除它的令牌）
@@ -242,6 +243,13 @@ public static class McpCommands
 		var clientSecret = First(options, "oauth-client-secret");
 
 		var scopes = First(options, "scope");
+		var clientRegistration = First(options, "oauth-client-registration");
+		if (clientRegistration is { Length: > 0 } &&
+			clientRegistration is not ("auto" or "dcr" or "cimd"))
+		{
+			error.WriteLine("pi: --oauth-client-registration 只接受 auto、dcr 或 cimd");
+			return 2;
+		}
 		var arguments = command is null
 			? (IReadOnlyList<string>)[]
 			: [.. All(options, "arg"), .. trailing.Skip(1)];
@@ -249,7 +257,7 @@ public static class McpCommands
 		var oauthConfig = url is not null && (string.Equals(authOption, "oauth", StringComparison.OrdinalIgnoreCase) ||
 			clientId is not null || clientSecret is not null ||
 			scopes is { Length: > 0 } || options.ContainsKey("oauth-callback-port") ||
-			options.ContainsKey("oauth-client-name"))
+			options.ContainsKey("oauth-client-name") || clientRegistration is { Length: > 0 })
 				? new McpOAuthConfigEntry
 				{
 					ClientId = clientId,
@@ -257,6 +265,7 @@ public static class McpCommands
 					Scope = scopes,
 					CallbackPort = int.TryParse(First(options, "oauth-callback-port"), out var port) ? port : null,
 					ClientName = First(options, "oauth-client-name"),
+					ClientRegistration = clientRegistration,
 				}
 				: null;
 

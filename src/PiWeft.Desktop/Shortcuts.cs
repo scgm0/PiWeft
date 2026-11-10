@@ -123,6 +123,8 @@ public sealed class ShortcutMap
 		new(ShortcutActions.Refresh, "视图", "刷新会话列表", "Ctrl+R"),
 		new(ShortcutActions.Send, "会话", "发送输入框内容", "Enter"),
 		new(ShortcutActions.Branches, "视图", "分支面板", "Ctrl+B"),
+		// 输入框聚焦时也要生效：这个键的用途就是「打字打到一半插一句」；Ctrl+Shift+M 在文本编辑里没有既有含义。
+		new(ShortcutActions.QuickMessages, "会话", "快捷消息", "Ctrl+Shift+M"),
 	];
 
 	private readonly Dictionary<string, ShortcutBinding> _bindings = new(StringComparer.Ordinal);
@@ -246,4 +248,5 @@ public static class ShortcutActions
 	public const string Refresh = "refresh";
 	public const string Send = "send";
 	public const string Branches = "branches";
+	public const string QuickMessages = "quickMessages";
 }

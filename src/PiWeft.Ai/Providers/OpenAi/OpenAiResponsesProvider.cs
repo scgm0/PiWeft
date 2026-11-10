@@ -111,15 +111,33 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 		string? reasoningEffort,
 		string? apiKey)
 	{
-		var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
-		// 与 pi-ai 一致：Responses 请求用会话 ID 提升 prompt cache 命中；显式 none 时不带。
-		var promptCacheKey = options.CacheRetention == CacheRetentions.None || string.IsNullOrEmpty(options.SessionId)
+		var maxOutputTokens = OpenAiContextBudget.Clamp(model, messages, options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null));
+		var cacheRetention = options.CacheRetention ?? CacheRetentions.Short;
+		var promptCacheMode = ModelCompat.Text(model, "promptCacheKeyMode") ?? "auto";
+		// 与 pi-ai 一致：cacheRetention=none 或显式 disabled 时不带 key。
+		var promptCacheKey = cacheRetention == CacheRetentions.None ||
+			string.Equals(promptCacheMode, "disabled", StringComparison.OrdinalIgnoreCase) ||
+			string.IsNullOrEmpty(options.SessionId)
 			? null
 			: options.SessionId.Length <= 64 ? options.SessionId : options.SessionId[..64];
+		var supportsLongCacheRetention = ModelCompat.FlagOr(model, "supportsLongCacheRetention", true);
+		var explicitPromptCache = ModelCompat.FlagOr(model, "supportsExplicitPromptCacheMode", false);
+		var promptCacheRetention = !explicitPromptCache && cacheRetention == CacheRetentions.Long && supportsLongCacheRetention
+			? "24h"
+			: null;
+		JsonObject? promptCacheOptions = explicitPromptCache
+			? cacheRetention == CacheRetentions.None
+				? new JsonObject { ["mode"] = "explicit" }
+				: cacheRetention == CacheRetentions.Long && supportsLongCacheRetention
+					? new JsonObject { ["ttl"] = "30m" }
+					: null
+			: null;
 		var bytes = JsonPayload.Write(writer =>
 			OpenAiResponsesWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, maxOutputTokens,
 				promptCacheKey: promptCacheKey,
-			supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? false));
+				promptCacheRetention: promptCacheRetention,
+				promptCacheOptions: promptCacheOptions,
+				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? false));
 
 		if (options.OnPayload is { } onPayload)
 		{

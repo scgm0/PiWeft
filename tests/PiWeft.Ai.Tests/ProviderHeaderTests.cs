@@ -65,7 +65,7 @@ public sealed class ProviderHeaderTests
 		var openAiResponses = Request();
 		ProviderSessionHeaders.ApplyResponses(Model("openai", "https://api.openai.com/v1"),
 			new StreamOptions { SessionId = "s" }, openAiResponses);
-		Assert.Equal("s", openAiResponses.Headers.GetValues("session_id").Single());
+		Assert.Equal("s", openAiResponses.Headers.GetValues("session-id").Single());
 		Assert.Equal("s", openAiResponses.Headers.GetValues("x-client-request-id").Single());
 		Assert.False(openAiResponses.Headers.Contains("x-session-affinity"));
 

@@ -20,10 +20,22 @@ internal sealed class ExtensionRegistration
 {
 	public static readonly IReadOnlyCollection<string> SupportedEvents =
 	[
+		"session_start",
+		"session_info_changed",
+		"session_shutdown",
 		"tool_call",
 		"tool_result",
 		"before_agent_start",
+		"agent_start",
 		"agent_end",
+		"turn_start",
+		"turn_end",
+		"message_start",
+		"message_end",
+		"tool_execution_start",
+		"tool_execution_end",
+		"model_select",
+		"thinking_level_select",
 	];
 
 	private readonly List<string> _listeners = [];

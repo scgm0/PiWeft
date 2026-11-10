@@ -44,6 +44,7 @@ internal sealed class ModelTypeJsonConverter : JsonConverter<ModelType>
 [JsonSerializable(typeof(Dictionary<string, List<Model>>))]
 [JsonSerializable(typeof(Model))]
 [JsonSerializable(typeof(Message))]
+[JsonSerializable(typeof(List<ContentBlock>))]
 internal partial class PiJsonContext : JsonSerializerContext
 {
 	static PiJsonContext()

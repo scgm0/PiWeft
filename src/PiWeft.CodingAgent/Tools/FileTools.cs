@@ -510,15 +510,13 @@ public static class FileTools
 		// 直接读字节：基于 StreamReader 的写法会吃掉开头的 BOM，而我们必须保留它。
 		var raw = Encoding.UTF8.GetString(File.ReadAllBytes(absolutePath));
 		var (hadBom, withoutBom) = EditDiff.SplitBom(raw);
-		var lineEnding = EditDiff.DetectLineEnding(withoutBom);
 		var normalized = EditDiff.NormalizeToLf(withoutBom);
 
 		ThrowIfAborted(cancellationToken);
-		var applied = EditDiff.ApplyEdits(normalized, edits, path);
-		var restored = EditDiff.RestoreLineEndings(applied.NewContent, lineEnding);
-		WriteInPlace(absolutePath, hadBom ? "\uFEFF" + restored : restored);
-
+		// FinalContent 只替换命中的片段，未触碰的行保留原文的 CRLF/LF/CR。
+		var applied = EditDiff.ApplyEdits(withoutBom, normalized, edits, path);
 		var diff = EditDiff.DisplayDiff(applied.BaseContent, applied.NewContent);
+		WriteInPlace(absolutePath, hadBom ? "\uFEFF" + applied.FinalContent : applied.FinalContent);
 		return new AgentToolResult
 		{
 			Content =

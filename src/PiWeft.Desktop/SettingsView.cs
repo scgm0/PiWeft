@@ -192,6 +192,7 @@ public sealed class SettingsView
 			AddNavigationButton("overview", "settings", Strings.ConfigOverview);
 			AddNavigationButton("appearance", "contrast", Strings.ConfigAppearance);
 			AddNavigationButton("git", "git-branch", Strings.SettingsGit);
+			AddNavigationButton("quickMessages", "message-square", Strings.SettingsQuickMessages);
 			AddNavigationGroup(Strings.SettingsGroupRuntime, first: false);
 			AddNavigationButton("resources", "book-open", Strings.SettingsResources);
 			AddNavigationButton("session", "message-square", Strings.SettingsSession);
@@ -217,6 +218,7 @@ public sealed class SettingsView
 		"source" => Strings.ConfigSource,
 		"appearance" => Strings.ConfigAppearance,
 		"git" => Strings.SettingsGit,
+		"quickMessages" => Strings.SettingsQuickMessages,
 		"resources" => Strings.SettingsResources,
 		"session" => Strings.SettingsSession,
 		"security" => Strings.SettingsSecurity,
@@ -321,6 +323,7 @@ public sealed class SettingsView
 			{
 				case "appearance": _content.Children(AppearanceSection()); break;
 				case "git": _content.Children(GitSection()); break;
+				case "quickMessages": _content.Children(QuickMessagesSection()); break;
 				case "resources": _content.Children(ResourcesSection()); break;
 				case "session": _content.Children(SessionSection(snapshot.Session)); break;
 				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
@@ -674,6 +677,112 @@ public sealed class SettingsView
 	private static Element SettingField(string label, UIElement control) => new StackPanel().Spacing(4).Children(
 		new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption).SubtleText(),
 		control);
+
+	/// 快捷消息分区：一行一条的纯文本编辑器。
+	/// 落盘到 desktop.json 的 <c>quickMessages</c> 键；停手 600ms 自动保存，
+	/// 不另做保存按钮：这份偏好就在当前窗口生效，不存在草稿概念。
+	private Element QuickMessagesSection()
+	{
+		var snapshot = _snapshot();
+		var agentDir = snapshot.AgentDir;
+		var path = DesktopPreference.Path(agentDir);
+		var items = DesktopPreference.Load(agentDir).QuickMessageList;
+
+		var box = new MultiLineTextBox().PrimarySelection()
+			.Height(240)
+			.FontSize(AppTheme.FontSizeCaption)
+			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))
+			.StyleName(AppStyles.TextInput)
+			.Text(QuickMessages.ToLines(items));
+		var count = new TextBlock().Text(Strings.SettingsQuickMessagesCount(items.Count, QuickMessages.MaxItems))
+			.FontSize(AppTheme.FontSizeMicro).FaintText();
+
+		void Save(string? text)
+		{
+			var next = QuickMessages.ParseLines(text);
+			count.Text(Strings.SettingsQuickMessagesCount(next.Count, QuickMessages.MaxItems));
+			// 已经与当前值一致就不写盘：切分区时失焦也会走到这里，不该为此重写整份偏好。
+			var current = DesktopPreference.Load(agentDir);
+			if (next.SequenceEqual(current.QuickMessageList, StringComparer.Ordinal))
+			{
+				return;
+			}
+
+			try
+			{
+				current.WithQuickMessages(next).Save(agentDir);
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				Toast(Strings.ConfigFailed, ToastKind.Error);
+			}
+		}
+
+		// 与 Git 提示词模板同一个节奏：停手 600ms 落盘，失焦再补一次。
+		// 只靠失焦不可靠：改完直接关设置或切分区时，可能不再有失焦事件。
+		var gate = new DispatcherTimer(TimeSpan.FromMilliseconds(600));
+		gate.Tick += () =>
+		{
+			gate.Stop();
+			Save(box.Text);
+		};
+		box.OnTextChanged(_ =>
+		{
+			gate.Stop();
+			gate.Start();
+		});
+		box.OnLostFocus(() =>
+		{
+			gate.Stop();
+			Save(box.Text);
+		});
+
+		var reset = new Button().Ghost()
+			.Content(new TextBlock().Text(Strings.SettingsQuickMessagesReset).FontSize(AppTheme.FontSizeCaption).PrimaryText())
+			.OnClick(() =>
+			{
+				gate.Stop();
+				box.Text = QuickMessages.ToLines(QuickMessages.Defaults);
+				Save(box.Text);
+				Toast(Strings.SettingsQuickMessagesSaved, ToastKind.Success);
+			});
+		var openFile = new Button().Ghost()
+			.Content(new TextBlock().Text(Strings.SettingsQuickMessagesOpenFile).FontSize(AppTheme.FontSizeCaption).PrimaryText())
+			.OnClick(() =>
+			{
+				gate.Stop();
+				Save(box.Text);
+				// 偏好文件可能还没生成：先落一份再交给外部编辑器，否则找不到路径。
+				if (!File.Exists(path))
+				{
+					DesktopPreference.Load(agentDir).Save(agentDir);
+				}
+
+				if (!Shell.OpenInEditor(path))
+				{
+					Toast(Strings.OpenFailed(path), ToastKind.Error);
+				}
+			});
+
+		var body = new StackPanel().Spacing(AppTheme.Space3).Children(
+			new TextBlock().Text(Strings.SettingsQuickMessagesDesc)
+				.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap),
+			new StackPanel().Spacing(4).Children(
+				new TextBlock().Text(Strings.SettingsQuickMessagesEditor).FontSize(AppTheme.FontSizeCaption).SubtleText(),
+				box,
+				new TextBlock().Text(Strings.SettingsQuickMessagesFormat(QuickMessages.MaxItems, QuickMessages.MaxLength))
+					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap)),
+			new DockPanel().LastChildFill().Children(
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+					.HorizontalAlignment(HorizontalAlignment.Right)
+					.Children(openFile, reset).DockRight(),
+				new StackPanel().Spacing(2).Children(
+					count,
+					new TextBlock().Text(Strings.SettingsQuickMessagesFileHint(path))
+						.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap))));
+
+		return Group("message-square", Strings.SettingsQuickMessages, body);
+	}
 
 	/// 安全门分区。分区自己写 <c>settings.json</c>；保存成功后通过 <see cref="SecurityChanged"/>
 	/// 通知宿主把新配置推给所有已打开的会话，只刷新设置页等于改了个看不见的开关。

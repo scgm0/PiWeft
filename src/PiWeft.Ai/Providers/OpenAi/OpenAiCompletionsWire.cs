@@ -15,7 +15,8 @@ internal static class OpenAiCompletionsWire
 		StreamOptions options,
 		string? reasoningEffort,
 		string? thinkingMode,
-		int? maxTokens)
+		int? maxTokens,
+		string? promptCacheKey = null)
 	{
 		writer.WriteStartObject();
 		writer.WriteString("model", model.Id);
@@ -33,7 +34,7 @@ internal static class OpenAiCompletionsWire
 			writer.WriteNumber("temperature", temperature);
 		}
 
-		if (reasoningEffort is not null)
+		if (reasoningEffort is not null && ModelCompat.FlagOr(model, "supportsReasoningEffort", true))
 		{
 			writer.WriteString("reasoning_effort", reasoningEffort);
 		}
@@ -49,10 +50,18 @@ internal static class OpenAiCompletionsWire
 		}
 
 		writer.WriteBoolean("stream", true);
-		writer.WritePropertyName("stream_options");
-		writer.WriteStartObject();
-		writer.WriteBoolean("include_usage", true);
-		writer.WriteEndObject();
+		if (ModelCompat.FlagOr(model, "supportsUsageInStreaming", true))
+		{
+			writer.WritePropertyName("stream_options");
+			writer.WriteStartObject();
+			writer.WriteBoolean("include_usage", true);
+			writer.WriteEndObject();
+		}
+
+		if (promptCacheKey is { Length: > 0 })
+		{
+			writer.WriteString("prompt_cache_key", promptCacheKey);
+		}
 
 		writer.WritePropertyName("messages");
 		WriteMessages(writer, messages, model);
@@ -60,6 +69,13 @@ internal static class OpenAiCompletionsWire
 		if (tools.Count > 0)
 		{
 			WriteTools(writer, tools, StrictSamplingFor(model));
+		}
+		else if (ModelCompat.FlagOr(model, "requiresToolsWithToolHistory", false) && HasToolHistory(messages))
+		{
+			// 老 LiteLLM 这类端点要求有过工具调用的会话仍带 tools 字段，即使为空。
+			writer.WritePropertyName("tools");
+			writer.WriteStartArray();
+			writer.WriteEndArray();
 		}
 
 		if (options.Metadata?["toolChoice"] is JsonValue toolChoice && toolChoice.TryGetValue<string>(out var choice))
@@ -86,25 +102,37 @@ internal static class OpenAiCompletionsWire
 
 	internal static void WriteMessages(Utf8JsonWriter writer, IReadOnlyList<Message> messages, Model? model = null)
 	{
+		var bridgeAfterToolResult = model is not null &&
+			ModelCompat.FlagOr(model, "requiresAssistantAfterToolResult", false);
+		var lastWasToolResult = false;
 		writer.WriteStartArray();
 		foreach (var message in messages)
 		{
 			switch (message)
 			{
 				case SystemMessage system:
-					WriteSystem(writer, system);
+					WriteSystem(writer, system, model);
+					lastWasToolResult = false;
 					break;
 
 				case UserMessage user:
+					if (bridgeAfterToolResult && lastWasToolResult)
+					{
+						WriteAssistantBridge(writer);
+					}
+
 					WriteUser(writer, user);
+					lastWasToolResult = false;
 					break;
 
 				case AssistantMessage assistant:
 					WriteAssistant(writer, assistant, model);
+					lastWasToolResult = false;
 					break;
 
 				case ToolResultMessage result:
-					WriteToolResult(writer, result);
+					WriteToolResult(writer, result, model);
+					lastWasToolResult = true;
 					break;
 			}
 		}
@@ -112,7 +140,15 @@ internal static class OpenAiCompletionsWire
 		writer.WriteEndArray();
 	}
 
-	private static void WriteSystem(Utf8JsonWriter writer, SystemMessage message)
+	private static void WriteAssistantBridge(Utf8JsonWriter writer)
+	{
+		writer.WriteStartObject();
+		writer.WriteString("role", "assistant");
+		writer.WriteString("content", "I have processed the tool results.");
+		writer.WriteEndObject();
+	}
+
+	private static void WriteSystem(Utf8JsonWriter writer, SystemMessage message, Model? model)
 	{
 		var text = Transcript.GetText(message);
 		if (string.IsNullOrWhiteSpace(text))
@@ -120,8 +156,10 @@ internal static class OpenAiCompletionsWire
 			return;
 		}
 
+		var supportsDeveloperRole = model is not null &&
+			ModelCompat.FlagOr(model, "supportsDeveloperRole", model.BaseUrl.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase));
 		writer.WriteStartObject();
-		writer.WriteString("role", "system");
+		writer.WriteString("role", supportsDeveloperRole ? "developer" : "system");
 		writer.WriteString("content", TextSanitizer.SanitizeSurrogates(text));
 		writer.WriteEndObject();
 	}
@@ -197,6 +235,10 @@ internal static class OpenAiCompletionsWire
 		{
 			writer.WriteString("content", TextSanitizer.SanitizeSurrogates(text));
 		}
+		else if (model is not null && ModelCompat.FlagOr(model, "requiresNonNullAssistantContent", false))
+		{
+			writer.WriteString("content", string.Empty);
+		}
 		else
 		{
 			writer.WriteNull("content");
@@ -249,13 +291,13 @@ internal static class OpenAiCompletionsWire
 		writer.WriteEndObject();
 	}
 
-	private static void WriteToolResult(Utf8JsonWriter writer, ToolResultMessage message)
+	private static void WriteToolResult(Utf8JsonWriter writer, ToolResultMessage message, Model? model = null)
 	{
 		var text = string.Join(
 			"\n",
 			message.Content.OfType<TextContent>().Select(static t => t.Text));
 		var hasImages = message.Content.Any(static b => b is ImageContent);
-		if (text.Length == 0)
+		if (string.IsNullOrWhiteSpace(text))
 		{
 			text = hasImages ? "(see attached image)" : "(no tool output)";
 		}
@@ -263,12 +305,22 @@ internal static class OpenAiCompletionsWire
 		writer.WriteStartObject();
 		writer.WriteString("role", "tool");
 		writer.WriteString("tool_call_id", message.ToolCallId);
+		if (model is not null && message.HasToolName && message.ToolName.Length > 0 &&
+			ModelCompat.FlagOr(model, "requiresToolResultName", false))
+		{
+			writer.WriteString("name", message.ToolName);
+		}
+
 		writer.WriteString("content", TextSanitizer.SanitizeSurrogates(text));
 		writer.WriteEndObject();
 	}
 
 	/// 这个模型的工具是否带 <c>strict</c>。pi 对 OpenAI 兼容端点默认带上
 	/// （<c>compat.supportsStrictMode !== false</c>）；少数端点拒绝未知字段，在目录里显式关掉。
+	private static bool HasToolHistory(IReadOnlyList<Message> messages) =>
+		messages.Any(static message => message is ToolResultMessage ||
+			(message is AssistantMessage assistant && assistant.Content.Any(static block => block is ToolCall)));
+
 	internal static bool StrictSamplingFor(Model model) => ModelCompat.FlagOr(model, "supportsStrictMode", true);
 
 	internal static void WriteTools(Utf8JsonWriter writer, IReadOnlyList<Tool> tools, bool supportsStrictMode)

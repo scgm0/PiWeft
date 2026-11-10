@@ -594,6 +594,9 @@ public sealed class ExtensionHost : IDisposable
 				// 不支持异步就明说，不把 [object Promise] 当结果继续用。
 				if (outcome && typeof outcome.then === "function") {
 					__piDiagnose(name + " 处理器返回了 Promise：当前扩展宿主只支持同步处理器，返回值已丢弃。");
+				} else if (outcome && typeof outcome === "object" && !Array.isArray(outcome)) {
+					// pi 的处理器以返回对象表达结果；宿主读不回 JS 引用，合并到 payload 再回传。
+					for (var key in outcome) { payload[key] = outcome[key]; }
 				}
 			}
 			// 宿主读不回 JS 对象的引用，改过的字段必须显式回传。

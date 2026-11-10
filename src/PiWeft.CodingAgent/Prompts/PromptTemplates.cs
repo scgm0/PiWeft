@@ -81,15 +81,20 @@ public static partial class PromptTemplates
 		var args = new List<string>();
 		var current = new StringBuilder();
 		char? quote = null;
+		var quoteStart = -1;
+		var hasToken = false;
 
-		// 当前词里出现过引号或有实际内容；引号即使立刻闭合也代表一个（可能为空的）参数。
-		var sawToken = false;
-
-		foreach (var c in argsString)
+		for (var i = 0; i < argsString.Length; i++)
 		{
+			var c = argsString[i];
 			if (quote is { } open)
 			{
-				if (c == open)
+				if (c == '\\' && i + 1 < argsString.Length && argsString[i + 1] == open)
+				{
+					current.Append(open);
+					i++;
+				}
+				else if (c == open)
 				{
 					quote = null;
 				}
@@ -98,28 +103,40 @@ public static partial class PromptTemplates
 					current.Append(c);
 				}
 			}
-			else if (c is '"' or '\'')
+			else if (c is '"' or '\'' && !hasToken)
 			{
+				// 引号只在参数开头生效：doesn't 里的撇号按普通字符处理。
 				quote = c;
-				sawToken = true;
+				quoteStart = i;
+				hasToken = true;
 			}
 			else if (char.IsWhiteSpace(c))
 			{
-				if (current.Length > 0 || sawToken)
+				if (hasToken)
 				{
 					args.Add(current.ToString());
 					current.Clear();
-					sawToken = false;
+					hasToken = false;
 				}
 			}
 			else
 			{
 				current.Append(c);
-				sawToken = true;
+				hasToken = true;
+			}
+
+			if (quote is not null && i == argsString.Length - 1)
+			{
+				// 未闭合的引号按普通字符处理，从引号位置重新当作无引号文本扫描。
+				quote = null;
+				current.Clear();
+				current.Append(argsString[quoteStart]);
+				hasToken = true;
+				i = quoteStart;
 			}
 		}
 
-		if (current.Length > 0 || sawToken)
+		if (hasToken)
 		{
 			args.Add(current.ToString());
 		}

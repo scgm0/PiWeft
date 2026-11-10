@@ -99,10 +99,12 @@ public class ProjectTrustTests : IDisposable
 		Assert.False(ProjectTrust.Resolve(project, null, "ask", _agentDir));
 		Assert.True(ProjectTrust.Resolve(project, null, "always", _agentDir));
 
-		// 没有受保护资源时无需信任。
+		// 没有受保护资源时无需信任，但已存的「不信任」仍然优先。
 		var plain = Path.Combine(_root, "plain2");
 		Directory.CreateDirectory(plain);
 		Assert.True(ProjectTrust.Resolve(plain, null, "never", _agentDir));
+		ProjectTrust.Set(_agentDir, plain, false);
+		Assert.False(ProjectTrust.Resolve(plain, null, "always", _agentDir));
 	}
 
 	[Fact]

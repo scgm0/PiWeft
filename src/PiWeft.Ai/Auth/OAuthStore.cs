@@ -95,6 +95,7 @@ public static class OAuthStore
 	{
 		lock (AuthFileGate.Gate)
 		{
+			using var fileLock = AuthFileGate.LockFile(agentDir);
 			// 文件存在但解析失败时拒绝覆盖：否则一次 OAuth 登录会把其它供应商的凭据整片抹掉。
 			var root = ReadRootForWrite(agentDir);
 			var scopes = credential.Scopes is { Count: > 0 }
@@ -120,6 +121,7 @@ public static class OAuthStore
 	{
 		lock (AuthFileGate.Gate)
 		{
+			using var fileLock = AuthFileGate.LockFile(agentDir);
 			var root = ReadRoot(agentDir);
 			if (root is null || !root.Remove(provider))
 			{

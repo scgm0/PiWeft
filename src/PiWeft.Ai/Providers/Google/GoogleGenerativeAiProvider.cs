@@ -195,6 +195,11 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 			return 0;
 		}
 
+		if (options.ThinkingBudgets?.TryGetValue(level, out var custom) == true && custom > 0)
+		{
+			return custom;
+		}
+
 		return level switch
 		{
 			ThinkingLevels.Minimal => 512,

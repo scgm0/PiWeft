@@ -31,6 +31,13 @@ public static class SessionPaths
 
 	public static string NewSessionId() => Guid.CreateVersion7().ToString();
 
+	/// 与 pi 一致：字母、数字、<c>.</c>、<c>_</c>、<c>-</c>，首尾必须是字母或数字。
+	public static bool IsValidSessionId(string id) =>
+		id.Length > 0 &&
+		char.IsAsciiLetterOrDigit(id[0]) &&
+		char.IsAsciiLetterOrDigit(id[^1]) &&
+		id.All(static c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-');
+
 	public static string ToIso8601(DateTimeOffset value) =>
 		value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
 

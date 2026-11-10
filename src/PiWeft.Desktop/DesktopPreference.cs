@@ -33,6 +33,13 @@ public sealed record DesktopPreference
 	public IReadOnlyList<string> RecentProjects { get; init; } = [];
 	public IReadOnlyList<string> RecentModels { get; init; } = [];
 
+	/// 快捷消息清单。null = 没自定义过（用 <see cref="QuickMessages.Defaults"/> 出厂清单），
+	/// 空数组 = 用户清空。两者必须分开，否则清空后重启会复活出厂条目。
+	public IReadOnlyList<string>? QuickMessageItems { get; init; }
+
+	/// 当前生效的快捷消息：自定义清单优先，否则出厂清单。
+	public IReadOnlyList<string> QuickMessageList => QuickMessageItems ?? QuickMessages.Defaults;
+
 	public SoundAlertSettings SoundAlert { get; init; } = new();
 
 	public IReadOnlyDictionary<string, string> Shortcuts { get; init; } =
@@ -195,6 +202,8 @@ public sealed record DesktopPreference
 				DismissedProjects = ReadProjectPaths(root?["dismissedProjects"]),
 				RecentProjects = ReadProjectPaths(root?["recentProjects"]),
 				RecentModels = ReadList(root, "recentModels"),
+				// 键缺失 = 没自定义；类型不是数组 = 文件被改坏，同样回到出厂清单（不清空用户内容，只忽略这一项）。
+				QuickMessageItems = ReadQuickMessages(root?["quickMessages"]),
 				SoundAlert = SoundAlertJson.Parse(root?["soundAlert"]),
 			};
 		}
@@ -339,6 +348,18 @@ public sealed record DesktopPreference
 		WriteList(root, "recentProjects", RecentProjects);
 		WriteList(root, "recentModels", RecentModels);
 
+		// 快捷消息：没自定义时删键，用户清空时写一个空数组（不能省略，否则重启后复活出厂清单）。
+		if (QuickMessageItems is { } quickMessages)
+		{
+			root["quickMessages"] = new JsonArray([
+				.. QuickMessages.Normalize(quickMessages).Select(static item => (JsonNode?)JsonValue.Create(item)),
+			]);
+		}
+		else
+		{
+			root.Remove("quickMessages");
+		}
+
 		// 窗口状态：没有值的字段保持文件里原有的内容。
 		Write(root, "windowWidth", WindowWidth, positive: true);
 		Write(root, "windowHeight", WindowHeight, positive: true);
@@ -399,6 +420,17 @@ public sealed record DesktopPreference
 	public DesktopPreference WithTerminalShell(string shell) => this with { TerminalShell = shell ?? string.Empty };
 
 	public DesktopPreference WithGitCommitModel(string model) => this with { GitCommitModel = (model ?? string.Empty).Trim() };
+
+	/// 写入快捷消息清单。结果与出厂清单完全一致时存 null（删掉键），
+	/// 让没改过内容的用户文件里不出现 20 行噪音；显式清空则存空数组。
+	public DesktopPreference WithQuickMessages(IEnumerable<string?> items)
+	{
+		var normalized = QuickMessages.Normalize(items);
+		return this with
+		{
+			QuickMessageItems = normalized.SequenceEqual(QuickMessages.Defaults, StringComparer.Ordinal) ? null : normalized,
+		};
+	}
 
 	public DesktopPreference WithGitCommitThinking(string level) => this with { GitCommitThinking = (level ?? string.Empty).Trim() };
 
@@ -522,6 +554,32 @@ public sealed record DesktopPreference
 			? [.. array.OfType<JsonValue>().Select(static value => value.TryGetValue<string>(out var text) ? text : null)
 				.Where(static text => !string.IsNullOrWhiteSpace(text)).Cast<string>().Distinct(StringComparer.Ordinal).Take(8)]
 			: [];
+
+	/// 快捷消息是用户会手改的小清单，读出来就按同一套规则清洗；键缺失返回 null（用出厂清单），
+	/// 空数组是「用户清空」的合法状态，不能与缺失混同。
+	private static IReadOnlyList<string>? ReadQuickMessages(JsonNode? node)
+	{
+		if (node is not JsonArray array)
+		{
+			return null;
+		}
+
+		if (array.Count == 0)
+		{
+			return Array.Empty<string>();
+		}
+
+		var items = new List<string>(array.Count);
+		foreach (var item in array)
+		{
+			if (item is JsonValue value && value.TryGetValue<string>(out var text))
+			{
+				items.Add(text);
+			}
+		}
+
+		return QuickMessages.Normalize(items);
+	}
 
 	private static void WriteList(JsonObject root, string key, IReadOnlyList<string> items)
 	{

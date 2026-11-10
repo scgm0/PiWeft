@@ -27,6 +27,9 @@ public static class PiJson
 		return options;
 	}
 
+	/// Windows PowerShell 5.1 等工具会在文件开头写 UTF-8 BOM；JSON 解析器不把它当空白。
+	public static string StripBom(string text) => text.Length > 0 && text[0] == '\uFEFF' ? text[1..] : text;
+
 	public static string SerializeMessage(Message message) =>
 		JsonSerializer.Serialize(message, PiJsonContext.Default.Message);
 
@@ -40,4 +43,12 @@ public static class PiJson
 	public static Message DeserializeMessage(ReadOnlySpan<byte> json) =>
 		JsonSerializer.Deserialize(json, PiJsonContext.Default.Message)
 		?? throw new JsonException("message payload was null");
+
+	/// 内容块列表的源生成序列化；扩展事件与工具结果都走这里，避免 AOT 反射警告。
+	public static JsonNode? SerializeBlocks(IReadOnlyList<ContentBlock> blocks) =>
+		JsonSerializer.SerializeToNode(blocks.ToList(), PiJsonContext.Default.ListContentBlock);
+
+	/// 读回扩展返回的内容块列表；不是数组时调用方应视为未修改。
+	public static List<ContentBlock>? DeserializeBlocks(string json) =>
+		JsonSerializer.Deserialize(json, PiJsonContext.Default.ListContentBlock);
 }

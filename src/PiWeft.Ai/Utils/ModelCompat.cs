@@ -13,4 +13,12 @@ internal static class ModelCompat
 
 	/// 布尔开关，带缺省值。
 	public static bool FlagOr(Model model, string key, bool fallback) => Flag(model, key) ?? fallback;
+
+	/// 字符串字段；缺失或不是字符串时返回 <c>null</c>。
+	public static string? Text(Model model, string key) =>
+		model.Compat?[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+	/// 数组字段；缺失或不是数组时返回空列表。
+	public static IReadOnlyList<JsonNode?> Array(Model model, string key) =>
+		model.Compat?[key] is JsonArray array ? [.. array] : [];
 }

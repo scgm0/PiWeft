@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using PiWeft.Ai;
+using PiWeft.Ai.Json;
 
 namespace PiWeft.CodingAgent.Settings;
 
@@ -117,7 +118,7 @@ public static partial class ModelsFileLoader
 
 		try
 		{
-			return JsonSerializer.Deserialize(File.ReadAllText(path), ModelsJsonContext.Default.ModelsFile);
+			return JsonSerializer.Deserialize(PiJson.StripBom(File.ReadAllText(path)), ModelsJsonContext.Default.ModelsFile);
 		}
 		catch (JsonException)
 		{

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using PiWeft.Ai;
 using PiWeft.Ai.Providers.OpenAi;
 using Xunit;
@@ -175,6 +176,70 @@ public class OpenAiResponsesProviderTests
 		}
 		using var noCacheBody = JsonDocument.Parse(disabled.LastBody!);
 		Assert.False(noCacheBody.RootElement.TryGetProperty("prompt_cache_key", out _));
+	}
+
+	[Fact]
+	public async Task ResponsesDisableStoreAndHonorPromptCacheMode()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiResponsesProvider(new HttpClient(handler));
+		var stream = provider.Stream(
+			Model(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using (var body = JsonDocument.Parse(handler.LastBody!))
+		{
+			Assert.False(body.RootElement.GetProperty("store").GetBoolean());
+			Assert.Equal("session-42", handler.LastRequest!.Headers.GetValues("session-id").Single());
+		}
+
+		var disabledModel = Model() with
+		{
+			Compat = new JsonObject { ["promptCacheKeyMode"] = "disabled" },
+		};
+		var disabled = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var disabledProvider = new OpenAiResponsesProvider(new HttpClient(disabled));
+		var disabledStream = disabledProvider.Stream(
+			disabledModel,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42" });
+		await foreach (var _ in disabledStream)
+		{
+		}
+
+		using var disabledBody = JsonDocument.Parse(disabled.LastBody!);
+		Assert.False(disabledBody.RootElement.TryGetProperty("prompt_cache_key", out _));
+	}
+
+	[Fact]
+	public async Task ResponsesUseExplicitPromptCacheOptionsForLongRetention()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiResponsesProvider(new HttpClient(handler));
+		var model = Model() with
+		{
+			Compat = new JsonObject
+			{
+				["supportsExplicitPromptCacheMode"] = true,
+				["supportsLongCacheRetention"] = true,
+			},
+		};
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", SessionId = "session-42", CacheRetention = CacheRetentions.Long });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var body = JsonDocument.Parse(handler.LastBody!);
+		Assert.Equal("30m", body.RootElement.GetProperty("prompt_cache_options").GetProperty("ttl").GetString());
+		Assert.False(body.RootElement.TryGetProperty("prompt_cache_retention", out _));
 	}
 
 	[Fact]

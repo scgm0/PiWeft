@@ -346,6 +346,7 @@ public static class CodexAuth
 	{
 		lock (AuthFileGate.Gate)
 		{
+			using var fileLock = AuthFileGate.LockFile(agentDir);
 			var path = CredentialsPath(agentDir);
 			Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 

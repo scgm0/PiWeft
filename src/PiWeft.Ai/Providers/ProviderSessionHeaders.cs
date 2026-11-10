@@ -37,7 +37,7 @@ public static class ProviderSessionHeaders
 			return;
 		}
 
-		if (Format(model) == "openai") Add(request, "session_id", options.SessionId);
+		if (Format(model) == "openai") Add(request, "session-id", options.SessionId);
 		Add(request, "x-client-request-id", options.SessionId);
 	}
 

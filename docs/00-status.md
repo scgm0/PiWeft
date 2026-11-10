@@ -22,7 +22,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - .NET 10、`LangVersion=preview`、制表符缩进；文档、界面文案与注释以中文为主。
 - JSON 使用 `System.Text.Json` 源生成与手写转换器；不使用 Newtonsoft.Json 或供应商 SDK，保留 trim/AOT 分析器。
 - 核心库默认无第三方运行时包，例外两处：codemode 的 Jint 5 预览版（`Directory.Packages.props` + `Jint-preview` 源），以及 `PiWeft.Imaging` 的 Sdcb.SimdCodecs 分格式编解码包（纯托管、`net10.0` 单目标、`IsAotCompatible`，只引 Png/Jpeg/Gif/Webp/Bmp/Abstractions，不引会拖上 TIFF/J2K/JBIG2 的门面包）。桌面只用 `external/MewUI` 源码子模块与 `PiWeft.Markdown`（Markdig）。
-- 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线，`<agentDir>/models-store.json` 缓存远程目录。虚拟模型支持静态 `"virtual":{"model":...}` 与动态 `"virtual":{"route":"..."}`，状态写成 `pi.virtual-model-state` 条目。
+- 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线（43 个 provider），`<agentDir>/models-store.json` 缓存远程目录。虚拟模型支持静态 `"virtual":{"model":...}` 与动态 `"virtual":{"route":"..."}`，状态写成 `pi.virtual-model-state` 条目。
 - 不实现 TypeScript 扩展（JS 扩展宿主已实现）、mermaid、KaTeX、托盘、桌面通知、自动更新、崩溃上报、内嵌浏览器；终端用独立 PTY Dock，不嵌第三方终端组件。codemode 默认不启用。
 
 ## 兼容基线
@@ -38,11 +38,11 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - bash / powershell 子进程注入 `PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，启动时设置 `AI_AGENT=pi`、`PI_CODING_AGENT=true`；`settings.shellPath` / `shellCommandPrefix` 控制 shell 与前缀。
 - bash 路径、输出与收尾：命令输出进入上下文/会话前剥掉 ANSI 与 NUL/控制字符（工具保留 CR，与 pi 的精确输出一致），完整输出临时文件为 0600；shell 先退出、后台进程仍占管道时 timeout 仍然生效，并在状态行报告 shell 的真实退出码。Unix 用 `setsid` 建立独立进程组，超时/取消整组 `SIGKILL`（无 `setsid` 时退回整树 kill）；Windows 用 System32 的 `taskkill /F /T`。用户 `!` 命令的流式事件是 `bash_execution_update.delta` 文本块并去掉 CR，与 pi 的 bash-executor 一致。
 - 工具参数校验覆盖 `$ref`/`$defs`、`patternProperties`、`prefixItems` 与单值转数组（pi 1.5 的 pi-schema 子集）；不支持 TypeBox 的 `Refine`/codec 这类超出 JSON Schema 的扩展。`ask_question`/`todo` 的根 schema 不设 `additionalProperties:false`，与 PiDeck 一样容忍旧式顶层字段与未知字段。
-- 生效 settings：`shellPath`、`shellCommandPrefix`、`sessionDir`、`defaultTools`、`cacheWarming`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`compaction`、`retry`、`transport`、`httpIdleTimeoutMs`、`httpProxy`、`extensions`、`skills`、`prompts`、`themes`、`packages`、`enableSkillCommands`、`defaultProjectTrust`、`sessionShareDestination`、`codemode`、`security`。其余键保留不生效。
+- 生效 settings：`shellPath`、`shellCommandPrefix`、`sessionDir`、`defaultTools`、`cacheWarming`（默认 `idle`）、`thinkingBudgets`、`images.blockImages`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`compaction`（含 `modelOverrides`）、`retry`、`transport`、`httpIdleTimeoutMs`、`httpProxy`、`extensions`、`skills`、`prompts`、`themes`、`packages`、`enableSkillCommands`、`defaultProjectTrust`、`sessionShareDestination`、`codemode`、`security`。其余键保留不生效。
 - 启动迁移与 pi 的 `migrations.ts` 对齐：`oauth.json` / `settings.apiKeys` 并入 `auth.json`；根目录 `*.jsonl` 搬入 `sessions/<cwd>/`；`commands/` → `prompts/`；v1/v2 会话升级到 v3 并原子回写。`--export` 只读。
 - 编辑重发不新建会话：`TruncateForResend` 在原 JSONL 里把放弃的提问及后继写成 `deleted` 墓碑，叶子回到父条目。墓碑不进投影/分支树，重试与删除仍走 `context_edit`。
 - `--system-prompt` 替代 preamble，`--append-system-prompt` 追加，`--no-context-files` 停用 AGENTS.md / CLAUDE.md；`--export` 导出 HTML/JSONL；`--models` 限定轮换范围。
-- `pi install/list/remove/update` 管理 npm/git/本地包，`--local` 写项目 `.pi/settings.json`；`settings.npmCommand` 可覆盖 npm。
+- `pi install/list/remove/update` 管理 npm/git/本地包，`--local` 写项目 `.pi/settings.json`；`settings.npmCommand` 可覆盖 npm。`pi update` 提示用发行页更新 NativeAOT 本体，`pi update --extensions` 更新包并报告 npm 版本或 git commit 变化。
 - `pi mcp list|add|remove|login|logout` 管理服务器与 OAuth；配置写 `<agentDir>/mcp.json`，令牌写 `mcp-oauth.json`；写入保留其它键、注释与尾逗号。
 - CLI `@file` 展开为 `<file>` 文本块，图片作为内容块；print/JSON 模式合入重定向 stdin；RPC 拒绝 `@file`。
 - 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开。交互命令含 `/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/todo`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`、`/share`、`/llama`。`!command` 输出并入对话，`!!command` 只执行。
@@ -79,30 +79,32 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 ## Provider、认证与 MCP
 
 - API：`anthropic-messages`、`openai-completions`、`openai-responses`、`openai-codex-responses`、`azure-openai-responses`、`google-generative-ai`、`google-vertex`、`bedrock-converse-stream`、`mistral-conversations`、`pi-messages`。
-- OAuth：ChatGPT/Codex、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius；其它走 API Key。`pi login <provider> [oauth|api-key]` 可选登录方式，API Key 字段来自与桌面端共用的内置供应商目录（Cloudflare/Vertex/Bedrock 多字段）。`pi auth check` 返回 `ready`/`not_ready`/`invalid`，退出码 0/1/2。
+- OAuth：ChatGPT/Codex、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius；其它走 API Key。`pi auth login|logout <provider>` 与旧的 `pi login|logout <provider>` 都可用，`--api-key`/`--no-browser` 按 pi 语义解析。API Key 字段来自与桌面端共用的内置供应商目录（Cloudflare/Vertex/Bedrock 多字段）。`pi auth check` 返回 `ready`/`not_ready`/`invalid`，退出码 0/1/2。
 - `auth.json` 支持明文与 `${VAR}`，命令型凭据以 `!` 开头（10 秒超时、64 KiB、失败回落环境变量），以及 `api_key.env` 的供应商级字段（Cloudflare 账户/网关、Vertex 项目/区域/ADC、AWS 访问密钥）。写入原子，Unix 0600；损坏文件拒绝覆盖。
 - OpenCode / OpenCode Go 请求自动带 `x-opencode-session` 与 `x-opencode-client: piweft`；显式同名头优先。
 - MCP 支持 stdio / streamable HTTP 握手、工具/资源/模板/提示分页、通知与 OAuth（授权码 + PKCE、动态注册、回环回调、401 刷新重放、客户端凭据）。stdio 失败会杀子进程并释放连接。
 
 ## 桌面能力
 
-桌面复用 CLI 的环境装配与同一会话文件，不启动 RPC 子进程。包含多项目/多会话标签、会话树与有界正文搜索、置顶/命名/删除到 `.trash`/恢复、外部会话导入（Claude Code、Codex CLI）、文件浏览与编辑、原生 todo/ask_question/计划模式、资源与主题热重载、模型连接测试/远程目录、Git 全流程（状态、暂存、提交、分支、AI 摘要、图、比较、远端同步、stash）、检查点、轨迹、终端 Dock、用量统计与供应商余额、深浅主题。
+桌面复用 CLI 的环境装配与同一会话文件，不启动 RPC 子进程。包含多项目/多会话标签、会话树与有界正文搜索、置顶/命名/删除到 `.trash`/恢复、外部会话导入（Claude Code、Codex CLI）、文件浏览与编辑、原生 todo/ask_question/计划模式、快捷消息（插入草稿与直发）、资源与主题热重载、模型连接测试/远程目录、Git 全流程（状态、暂存、提交、分支、AI 摘要、图、比较、远端同步、stash）、检查点、轨迹、终端 Dock、用量统计与供应商余额、深浅主题。
 
 详见 [01-parity](01-parity.md) 与 [DESIGN](../DESIGN.md)。
 
 ## 已知限制
 
-- 扩展宿主只支持 JavaScript；TypeScript 需构建期转译；处理器必须同步；无自定义 renderer。扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`（含 `model-only`）/`namespace`/`executionMode`，尚未接 `reachesTools`/`prepareLoadout`/`ctx.executeTool`。
+- 扩展宿主只支持 JavaScript；TypeScript 需构建期转译；ESM 的 `import`/`export` 仍未加载；处理器必须同步；无自定义 renderer。当前派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`，其它事件注册时即报诊断。`message_update`、`tool_execution_update` 与 provider/context 类事件尚未派发。扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`（含 `model-only`）/`namespace`/`executionMode`，尚未接 `reachesTools`/`prepareLoadout`/`ctx.executeTool`。
+- `before_agent_start` 只应用返回的 `systemPrompt`；返回的 `message` 尚未注入会话。
+- 仍缺的 1.5 运行时项：Anthropic `supportsMessageThreads` 服务端续聊；OpenAI `requiresThinkingAsText`、`zaiToolStream`；MCP `cimd`、与 pi 共享 `mcp-auth.json`、后台连接与请求重试。
 - 安全门 `ask` 在没有审批宿主时退化为拒绝；默认档 `off`；CLI 无切换档位命令。
 - CLI 仍是按行 REPL：无完整 TUI、多行编辑、`$EDITOR`、键位绑定与终端图片。
 - 并行工具里同一文件的 `edit`/`write` 已串行化；`nestedCalls` / `parentToolCallId` 尚未产出，只按未知字段保留。
-- 生图/分类网关已接入 codemode，但没有一级入口；虚拟模型路由已实现，扩展宿主动态注册未接；Codex `websocket-cached` 未复用连接。虚拟模型的图片限制按外层模型条目的 `inputLimits` 取，未使用路由目标模型的限制。
+- 生图/分类网关已接入 codemode（含 `openai-decisions`、`typesafe-system-one`、`cloudflare-workers-ai-system-one`），但没有一级入口；虚拟模型路由已实现，扩展宿主动态注册未接；Codex `websocket-cached` 未复用连接。虚拟模型的图片限制按外层模型条目的 `inputLimits` 取，未使用路由目标模型的限制。
 - 桌面历史仍全量在内存（分支/fork/搜索/todo/`context_edit` 依赖全量）；完整 VT100 边界、终端多标签、快照回放未覆盖。
 - `read`/`grep` 流式扫描：只按 `\n` 切行（`read` 保留 CR，`grep` 剥行尾 CR），`read` 只保留会显示的行、`grep` 只保留能进字节预算的行；取消在解码块之间生效。`grep` 识别 UTF-16 BOM，并像 rg 一样搜索二进制文件里的文本行。
 - `grep`/`find` 仍是进程内实现，不依赖外部二进制：glob 已覆盖 `{a,b}` 分支、`[!a]` 取反、`**` 与 fd 的 smart-case、路径型 pattern 任意深度匹配。ignore 按工具分开：`grep` 用 `.ignore`/`.rgignore`，`find` 用 `.ignore`/`.fdignore` 与 `~/.config/fd/ignore`；`.gitignore` 只在仓库内生效（`find` 的 `--no-require-git` 语义除外），进入嵌套仓库时丢掉祖先仓库的本地 VCS 规则，非 VCS 规则与全局 git 忽略保留。剩余差异是正则方言（.NET `NonBacktracking` 而非 Rust regex）、遍历顺序（进程内为确定性排序，fd/rg 未定义），以及超长单行的内存（按行缓冲，不按整文件）。
 - `grep`/`find` 不跟随符号链接与目录联接；Windows 上只跳过真正的链接；OneDrive 等云同步占位符也是 reparse point，但属于普通目录，照常遍历。
-- 图片管线只处理 pi 支持的五种内联格式（PNG/JPEG/GIF/WebP/BMP）；AVIF/HEIC/TIFF 等需要先转成 PNG。`inputLimits.images.maxPerMessage` / `maxPerRequest` 尚未强制。缩放与预乘语义和 Photon 不完全逐字节一致：本实现预乘 alpha，透明边缘更干净。
-- `constrainedSampling` 已声明在 `read`/`bash`/`edit`/`write` 并在 provider 层落地 strict JSON schema（Anthropic 含额度超限降级重发，OpenAI Completions/Responses、Google VALIDATED、Bedrock、Mistral）。grammar 变体（codemode 的 lark 约束）尚未实现。
+- 图片管线只处理 pi 支持的五种内联格式（PNG/JPEG/GIF/WebP/BMP）；AVIF/HEIC/TIFF 等需要先转成 PNG。`inputLimits.images.maxPerMessage` 对用户消息、`maxPerRequest` 对请求投影强制，超出部分以文本括注代替；工具结果只受 `maxPerRequest` 约束。缩放与预乘语义和 Photon 不完全逐字节一致：本实现预乘 alpha，透明边缘更干净。
+- `constrainedSampling` 已声明在 `read`/`bash`/`edit`/`write` 并在 provider 层落地 strict JSON schema（Anthropic 含额度超限的会话级降级，OpenAI Completions/Responses、Google VALIDATED、Bedrock、Mistral）。grammar 变体（codemode 的 lark 约束）尚未实现。
 - Windows/macOS 原生窗口、发布包、真实供应商联网与 PiDeck 完整 e2e 仍需实机验证。Windows 的 Git Bash 发现顺序、旧版 WSL 的 `-s` + stdin、PowerShell 7 优先与 UTF-8 前置、`taskkill /F /T`、`/c/` `/mnt/c/` 路径换算已按 pi 审计对齐，但缺少实机回归。
 
 ## 验证

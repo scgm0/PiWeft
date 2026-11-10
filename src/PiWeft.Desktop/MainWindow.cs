@@ -279,6 +279,10 @@ public sealed partial class MainWindow : Window
 			case ShortcutActions.Branches:
 				CurrentTab()?.ShowBranches();
 				break;
+
+			case ShortcutActions.QuickMessages:
+				CurrentTab()?.ShowQuickMessages();
+				break;
 		}
 	}
 
@@ -1340,6 +1344,12 @@ public sealed partial class MainWindow : Window
 		tab.AskChanged += _ => UpdateTabHeaders();
 		// 发过一条消息才记「上次用过的模型」（PiDeck 的 lastUsedModel），选而未发不算。
 		tab.MessageSent += sent => RememberUsedModel(sent.Session.Model);
+		// 快捷消息浮层的「管理」：设置分区属于宿主，标签只发意图。
+		tab.QuickMessagesSettingsRequested += _tab =>
+		{
+			OpenSettingsDialog();
+			if (_settingsView is { } quickMessages) _ = quickMessages.SelectSectionAsync("quickMessages");
+		};
 		tab.StateChanged += _ =>
 		{
 			UpdateTabHeaders();
@@ -1500,6 +1510,14 @@ public sealed partial class MainWindow : Window
 				case "composer-picker":
 					// 视觉验收：技能/提示词选择器的空态、搜索行与脚注。
 					CurrentTab()?.PrepareSkillPickerSmoke();
+					break;
+				case "quick-messages":
+					// 视觉验收：快捷消息浮层的搜索行、页脚与行尾直发按钮。
+					CurrentTab()?.PrepareQuickMessagesSmoke();
+					break;
+				case "quick-messages-settings":
+					OpenSettingsDialog();
+					if (_settingsView is { } quickMessagesView) _ = quickMessagesView.SelectSectionAsync("quickMessages");
 					break;
 				case "composer-security":
 					// 视觉验收：会话底栏的安全档位菜单。

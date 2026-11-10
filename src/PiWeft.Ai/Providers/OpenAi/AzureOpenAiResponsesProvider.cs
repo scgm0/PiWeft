@@ -139,7 +139,7 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 		string apiVersion,
 		string apiKey)
 	{
-		var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
+		var maxOutputTokens = OpenAiContextBudget.Clamp(model, messages, options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null));
 		var bytes = JsonPayload.Write(writer => OpenAiResponsesWire.WriteRequest(
 			writer,
 			model,

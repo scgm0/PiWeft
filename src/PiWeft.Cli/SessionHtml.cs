@@ -26,6 +26,22 @@ public static class SessionHtml
 		Row(builder, "Thinking level", session.ThinkingLevel);
 		builder.Append("</dl>\n</header>\n<main>\n");
 
+		// pi 1.5 的导出包含运行时系统提示词与工具声明；它们不写会话文件，只能从活会话取。
+		builder.Append("<details class=\"system-prompt\"><summary>system prompt</summary><pre>")
+			.Append(Escape(session.CurrentSystemPrompt))
+			.Append("</pre></details>\n");
+		if (session.DeclaredTools.Count > 0)
+		{
+			builder.Append("<details class=\"tools\"><summary>tools</summary><ul>\n");
+			foreach (var tool in session.DeclaredTools)
+			{
+				builder.Append("<li><code>").Append(Escape(tool.Name)).Append("</code> ")
+					.Append(Escape(tool.Description)).Append("</li>\n");
+			}
+
+			builder.Append("</ul></details>\n");
+		}
+
 		foreach (var message in session.Session.BuildProjectedMessages())
 		{
 			RenderMessage(builder, message);

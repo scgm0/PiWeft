@@ -494,6 +494,71 @@ public class OpenAiCompletionsProviderTests
 		Assert.Equal("Bearer gateway-key", request.Headers.GetValues("cf-aig-authorization").Single());
 		Assert.Null(request.Headers.Authorization);
 	}
+
+	[Fact]
+	public async Task CompatFlagsControlRequestShape()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		var model = Model(provider: "custom", baseUrl: "https://gateway.test/v1") with
+		{
+			Compat = new JsonObject
+			{
+				["supportsDeveloperRole"] = true,
+				["supportsUsageInStreaming"] = false,
+				["supportsReasoningEffort"] = false,
+				["requiresToolsWithToolHistory"] = true,
+				["requiresNonNullAssistantContent"] = true,
+				["requiresToolResultName"] = true,
+				["requiresAssistantAfterToolResult"] = true,
+			},
+		};
+		var context = new Context
+		{
+			SystemPrompt = "be terse",
+			Messages =
+			[
+				new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 },
+				new AssistantMessage
+				{
+					Content = [new ToolCall { Id = "call_1", Name = "read", Arguments = new JsonObject { ["path"] = "a" } }],
+					Timestamp = 2,
+				},
+				new ToolResultMessage
+				{
+					ToolCallId = "call_1",
+					ToolName = "read",
+					Content = [new TextContent { Text = "ok" }],
+					Timestamp = 3,
+				},
+				new UserMessage { Content = MessageContent.FromText("next"), Timestamp = 4 },
+			],
+		};
+
+		var stream = provider.Stream(model, context, new StreamOptions { ApiKey = "test-key", ThinkingLevel = ThinkingLevels.High });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var root = document.RootElement;
+		Assert.False(root.TryGetProperty("stream_options", out _));
+		Assert.False(root.TryGetProperty("reasoning_effort", out _));
+		Assert.Equal("developer", root.GetProperty("messages")[0].GetProperty("role").GetString());
+		Assert.Equal(0, root.GetProperty("tools").GetArrayLength());
+
+		var messages = root.GetProperty("messages");
+		var assistant = messages.EnumerateArray().First(message =>
+			message.GetProperty("role").GetString() == "assistant");
+		Assert.Equal(string.Empty, assistant.GetProperty("content").GetString());
+		var tool = messages.EnumerateArray().First(message =>
+			message.GetProperty("role").GetString() == "tool");
+		Assert.Equal("read", tool.GetProperty("name").GetString());
+		Assert.Contains(messages.EnumerateArray(), message =>
+			message.GetProperty("role").GetString() == "assistant" &&
+			message.GetProperty("content").GetString() == "I have processed the tool results.");
+	}
+
 }
 
 /// 超时只覆盖「等响应头」。pi 1.2.0 修的就是这个：固定时限把长时间思考的流中途切断。

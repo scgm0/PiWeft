@@ -2,7 +2,7 @@
 
 PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electron + React。本文记录桌面功能、配置安全边界与剩余差距。当前实现见 [状态](00-status.md)，视觉契约见 [DESIGN.md](../DESIGN.md)。
 
-对照基准（只读）：pi `v1.3.0+30`（`482c1381a`）、PiDeck 0.9.0；pi_agent_rust / pi-go 仅作方向参考。
+对照基准（只读）：pi `v1.5.2+22`（`b30d54b8a`）、PiDeck 0.9.0；pi_agent_rust / pi-go 仅作方向参考。
 
 ## 视觉与主题
 
@@ -28,10 +28,10 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | 消息 | Markdown、高亮、复制、图片放大、思考折叠 | 代码行号、跨行块注释、更多语言 |
 | 工具 | 折叠摘要、状态/耗时、按工具分栏的参数与输出、统一/并排 diff、大文本固定视口虚拟化；shell 侧删除前备份进回收站、Windows `> nul` 改写、模型专用代理不传给 agent 命令 | 完整文件交互 |
 | 历史 | 编辑重发、重试、fork、分支树、跳转、HTML 导出 | 多选批量、分支比较 |
-| 输入/模型 | 斜杠命令、命令面板、改键、模型筛选/搜索/刷新、记住上次使用、每模型思考档 | 模型收藏 |
+| 输入/模型 | 斜杠命令、命令面板、改键、快捷消息（插入/直发）、模型筛选/搜索/刷新、记住上次使用、每模型思考档 | 模型收藏 |
 | 附件 | 路径引用、图片文件/字节、粘贴、复制预览；进上下文前按模型限制应用 EXIF 方向并缩放/转码 | 更多媒体类型、回复转图片 |
 | 用量 | 会话统计、上下文、费用、缓存、压缩；供应商余额/套餐；跨会话热力图 | 火山 AK/SK、Sub2API 登录态、热力图下钻 |
-| 设置 | 模型/供应商、供应商认证台（40+ 内置、OAuth / API Key 双方法、搜索、状态来源）、Agent、MCP、JSON、作用域、草稿保护、安全门、导入 | 技能/提示词管理、商店、安全门图形编辑与审批 |
+| 设置 | 模型/供应商、供应商认证台（40+ 内置、OAuth / API Key 双方法、搜索、状态来源）、Agent、MCP、JSON、作用域、快捷消息、草稿保护、安全门、导入 | 技能/提示词管理、商店、安全门图形编辑与审批 |
 | MCP | 启动连接、状态、stdio 热刷新、手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、目录树、文件差异浮层（与轮末 chip 同一块）、暂存、提交、分支、AI 摘要、图、比较、fetch/pull/push、stash | 冲突界面、rebase/cherry-pick/reset、多远端 |
 | 文件 | 目录导航、Git 标记、内置编辑器、修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
@@ -59,6 +59,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 轮末修改按文件聚合：chip 显示文件名、本轮改写次数与增删行数；只占一行，放不下的收进 +N 展开。左键打开本轮该文件的补丁浮层（统一/并排，Esc 关闭），补丁取自工具结果。
 - 文件可拖入会话区；目录/文件插入引用，图片后台读取为附件，不自动发送。图片在发送或排队消息出队时（线程池上）按当前模型的 `inputLimits.images.resize` 处理：限制内原样保留，超限才缩放/重编码，失败的那张以一句括注代替。
 - 命令面板每次打开取一份命令快照，最多 12 项；模型选择用虚拟化供应商树，搜索覆盖全部模型。
+- 快捷消息入口在输入区底栏（Ctrl+Shift+M），弹层贴在按钮上方打开，搜索 + 每页 8 条：点条目把原文换行追加到草稿尾，行尾按钮直发且不动草稿与附件。清单存 `desktop.json` 的 `quickMessages`，最多 30 条、单条 200 字；设置「快捷消息」分区一行一条编辑，与出厂清单相同时不写键，显式清空写空数组。运行中、有待发附件或编辑重发未决时直发置灰。
 - 可用模型要求 API 已实现且能解析凭据；不执行命令型凭据、不发网络探测。
 - 命令/模型/图片面板是窗口级覆盖层，同一窗口只开一个；Esc 关闭，切换标签清理。
 - 计划模式在回合结束时从 `Plan:` / `计划：` 下的编号行取步骤，推 `pi-deck-plan-todos` 草案，再弹 `[PI_DECK_PLAN_NEXT]` 选单：执行会恢复写权限并立刻起一轮，`[DONE:n]` 逐条勾进度；先不执行保持只读，关闭选单退出计划模式。步骤状态写 `pi-deck-plan-mode` 条目，只在执行态随分支恢复。
@@ -100,7 +101,8 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 
 - 发现 `<agentDir>/extensions` 与受信项目的 `.pi/extensions`（`.js/.mjs/.cjs`、`.ts/.mts/.cts/.tsx`，排除 `.d.ts`）；显式 `-e` 与 `settings.extensions` 不受信任门控；同一路径只加载一次。
 - 注册面：`pi.on`、`pi.registerTool`、`pi.registerCommand`、`pi.registerFlag`/`getFlag`、`pi.ui.*`。未知 `--flag` 交给注册者，无注册者时报错退出 2。
-- 事件：`tool_call`、`tool_result`、`before_agent_start`、`agent_end`；其它事件注册时即报诊断。
+- 事件：实际派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`；`message_update`、`tool_execution_update`、provider/context 类事件尚未派发。
+- 事件处理器可返回对象；返回值合并进 payload，与就地改写等价。
 - 沙箱无 `fs`/`net`/`require`/动态 import；出口只有显式 `__pi*` 宿主函数，桥一律 `ClrFunction`（AOT 无警告）。
 - 扩展的 `tool_call` 钩子排在安全门之前，但放行的调用仍过档位检查；内置工具优先于同名扩展工具。
 - `/reload` 重建宿主；注入的宿主生命周期归注入方；并表从内置基线重建。单个扩展抛错只记自身诊断；卡死扩展 10 秒切断。
@@ -155,9 +157,9 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 ### 供应商请求头与会话亲和
 
 - OpenCode / OpenCode Go：所有请求补 `x-opencode-session`（当前会话 ID）与 `x-opencode-client: piweft`；显式同名头优先，缺失会被网关 400。
-- 会话亲和：按模型 `compat.sendSessionAffinityHeaders` / `sessionAffinityFormat` 发送 `x-session-id`、`session_id`、`x-client-request-id`、`x-session-affinity` 的子集；OpenRouter 默认 `x-session-id`。
+- 会话亲和：按模型 `compat.sendSessionAffinityHeaders` / `sessionAffinityFormat` 发送 `x-session-id`、`session_id`（Completions）或 `session-id`（Responses）、`x-client-request-id`、`x-session-affinity` 的子集；OpenRouter 默认 `x-session-id`。
 - GitHub Copilot：静态目录头之外，补 `X-Initiator`、`Openai-Intent: conversation-edits`，含图片补 `Copilot-Vision-Request: true`；Anthropic 代理用 Bearer + `anthropic-dangerous-direct-browser-access`。
-- Claude OAuth：Bearer + `claude-cli/2.1.280` UA、`x-app: cli`、浏览器直连标记、`claude-code-20250219,oauth-2025-04-20` beta，并在 system 首块注入 Claude Code 身份提示。
+- Claude OAuth：Bearer + `claude-cli/2.1.322` UA、`x-app: cli`、浏览器直连标记、`claude-code-20250219,oauth-2025-04-20` beta，并在 system 首块注入 Claude Code 身份提示。自适应思考、`supportsTemperature`、错误工具结果图片后置与会话级严格工具降级已接入。
 - provider 级 `headers`/`authHeader` 同时作用于内置、远程缓存与自定义模型，模型同名头优先；`authHeader: true` 追加 `Authorization: Bearer <key>`。
 - OpenRouter `HTTP-Referer`/`X-Title` 与 TokenDance `X-App-URL` 不是功能必需；不伪造公共 app URL。
 
@@ -224,6 +226,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 ### 命令行与网络
 
 - `--offline` / `PI_OFFLINE=1` 跳过模型目录刷新、包更新和启动目录拉取；显式登录、安装与对话照常。
+- `pi update` 在 NativeAOT 构建里提示用发行页更新本体；`pi update --extensions` 更新包并报告 npm 版本或 git commit 变化；`--all` 同时提示本体与更新包。
 - 未知长选项按 `--flag=value` / `--flag value` / 布尔 `--flag` 收集，交给扩展；无人注册报错退出 2。短选项立即报错。
 - `-e/--extension`、`-ne/--no-extensions`、`--theme`、`--skill`、`--prompt-template` 已接线；`--use-theme`、`--tui-mode`、`--autocomplete-max-visible` 只提示一次。
 - `settings.httpProxy` 只读全局并写入 `HTTP_PROXY`/`HTTPS_PROXY`；`PI_SHARE_VIEWER_URL` 覆盖 `/share` 查看器。
@@ -261,12 +264,12 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 
 | 编号 | 能力 | 状态 |
 |---|---|---|
-| PI-01 | JS/TS 扩展 | JS 可用（发现、显式路径、专属线程、工具/命令/事件/flag、reload）；TypeScript 不支持 |
+| PI-01 | JS/TS 扩展 | JS 可用（发现、显式路径、专属线程、工具/命令、会话/回合/消息/工具执行/模型等 16 个事件、flag、reload）；ESM 与异步处理器、流式 update 与 provider/context 事件、TypeScript 不支持 |
 | PI-02 | 扩展 UI | 对话框与 setStatus/setWidget/setTitle/set_editor_text 已实现；扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`/`namespace`/`executionMode`；无自定义 renderer、无 `ctx.executeTool` 扩展入口 |
-| PI-03 | 包管理 | 安装/列表/移除/更新已实现；无依赖冲突治理与资源筛选界面 |
+| PI-03 | 包管理 | 安装/列表/移除/更新已实现，npm/git 更新报告版本或 commit 变化；无自更新执行、依赖冲突治理与资源筛选界面 |
 | PI-04 | 完整 TUI | 行式 REPL；缺多行编辑、`$EDITOR`、TUI 图片粘贴、补全、选择器、终端图片与完整键位 |
 | PI-05 | codemode / tool_search | 已实现（含 worker 排队、`PI_CODEMODE_MAX_WORKERS`、检索 `$ref`、prelude lockdown）；余项只有顶层 `arguments` 等轻微差异 |
-| PI-06 | MCP 高级运行时 | OAuth/PKCE/客户端凭据、callback、401 重放、HTTP 通知已覆盖；缺 `cimd`、完整 `callbackUrl`、与 pi 共享 `mcp-auth.json` |
+| PI-06 | MCP 高级运行时 | OAuth/PKCE/客户端凭据、`callbackUrl`、`clientRegistration` 的 `auto`/`dcr`、401 重放、HTTP 通知已覆盖；缺 `cimd`、与 pi 共享 `mcp-auth.json` |
 | PI-07 | 认证 | OAuth + API Key 全覆盖；桌面与 `pi login` 共用供应商目录，支持 Cloudflare/Vertex/Bedrock 多字段与凭据 env；缺 AWS 配置文件/实例元数据链、OIDC/SSO、多账号 |
 | PI-08 | 动态模型目录 | 远程刷新、离线缓存、账号目录、条件请求、6 小时节流已实现；缺账号能力同步与增量合并 |
 | PI-09 | 高级模型运行时 | 虚拟模型、cache warming、samplingParams、Codex WebSocket、生图/分类已实现；缺扩展注册 route、连接复用、生图入口 |
@@ -277,7 +280,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | PI-14 | CLI 键位 | 未实现 `keybindings.json` |
 | PI-15 | 斜杠命令 | `/copy`、`/import`、`/share`、`/bug`、`/llama`、`/settings` 已实现 |
 | PI-16 | 子工具账本 | `nestedCalls` / `parentToolCallId` 尚未产出 |
-| PI-17 | 分类器方言 | 只有 `openai-decisions`；25 个 `typesafe-system-one` 分类模型不可用 |
+| PI-17 | 分类器方言 | `openai-decisions`、`typesafe-system-one`、`cloudflare-workers-ai-system-one` 已实现；缺其它供应商的私有分类协议 |
 | PI-18 | 网络细项 | Codex `websocket-cached` 复用、zstd/continuation；AWS ambient 链；MCP `cimd` / `mcp-auth.json` |
 | D-01 | 问询/待办/计划 | 已实现，含计划步骤跟踪（`Plan:` 解析、`pi-deck-plan-todos` 进度、`[DONE:n]`、执行确认选单）与目标模式（自动续轮、`GOAL_COMPLETE`/`GOAL_BLOCKED`、轮次上限）；缺独立后台 Ask 工作流 |
 | D-02 | 文件工作台 | 导航、编辑、汇总、diff 已实现；缺多文件标签、草稿本、跨行块注释、内嵌浏览器 |

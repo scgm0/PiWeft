@@ -132,7 +132,9 @@ public static partial class McpOAuth
 	{
 		var authorizationEndpoint = String(document, "authorization_endpoint");
 		var tokenEndpoint = String(document, "token_endpoint");
-		if (authorizationEndpoint is not { Length: > 0 } || tokenEndpoint is not { Length: > 0 })
+		var registrationEndpoint = String(document, "registration_endpoint");
+		if (!IsHttpUrl(authorizationEndpoint) || !IsHttpUrl(tokenEndpoint) ||
+			(registrationEndpoint is { Length: > 0 } && !IsHttpUrl(registrationEndpoint)))
 		{
 			return null;
 		}
@@ -140,10 +142,10 @@ public static partial class McpOAuth
 		var scopes = Strings(document["scopes_supported"]);
 		return new McpAuthorizationServerMetadata
 		{
-			AuthorizationEndpoint = authorizationEndpoint,
-			TokenEndpoint = tokenEndpoint,
+			AuthorizationEndpoint = authorizationEndpoint!,
+			TokenEndpoint = tokenEndpoint!,
 			Issuer = String(document, "issuer") ?? fallbackIssuer,
-			RegistrationEndpoint = String(document, "registration_endpoint"),
+			RegistrationEndpoint = registrationEndpoint,
 			ScopesSupported = scopes.Count > 0 ? scopes : fallbackScopes ?? [],
 		};
 	}
@@ -163,6 +165,48 @@ public static partial class McpOAuth
 	/// 跑完整的授权码 + PKCE 流程并在成功后把令牌写进存储。
 	/// <paramref name="onAuthorizationUrl"/> 用于把授权地址展示给用户（无图形环境时尤其重要）；
 	/// <paramref name="openBrowser"/> 为 <c>false</c> 时不尝试启动浏览器（测试与无人值守场景）。
+	/// 校验 oauth.callbackUrl：只接受 http 回环地址；缺端口时由调用方分配。
+	private static bool TryResolveCallback(
+		McpServerConfig config,
+		out string host,
+		out string path,
+		out int port,
+		out string? error)
+	{
+		host = "127.0.0.1";
+		path = RedirectPath;
+		port = config.OAuth?.CallbackPort is > 0 and <= 65535 ? config.OAuth.CallbackPort.Value : 0;
+		error = null;
+
+		if (config.OAuth?.CallbackUrl is not { Length: > 0 } callbackUrl)
+		{
+			return true;
+		}
+
+		if (!Uri.TryCreate(callbackUrl, UriKind.Absolute, out var uri) ||
+			!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+			!(uri.IsLoopback || string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+				string.Equals(uri.Host, "127.0.0.1", StringComparison.Ordinal) ||
+				string.Equals(uri.Host, "[::1]", StringComparison.Ordinal)))
+		{
+			error = "oauth.callbackUrl 必须是 localhost、127.0.0.1 或 [::1] 上的 http 地址";
+			return false;
+		}
+
+		host = uri.Host;
+		path = uri.AbsolutePath.Length > 0 ? uri.AbsolutePath : RedirectPath;
+		if (!uri.IsDefaultPort)
+		{
+			port = uri.Port;
+		}
+
+		return true;
+	}
+
+	private static bool IsHttpUrl(string? value) =>
+		Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+		(uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
 	public static async Task<McpOAuthResult> AuthorizeAsync(
 		HttpClient http,
 		string endpoint,
@@ -173,8 +217,21 @@ public static partial class McpOAuth
 		CancellationToken cancellationToken,
 		bool openBrowser = true)
 	{
-		var callbackPort = config.OAuth?.CallbackPort is > 0 and <= 65535 ? config.OAuth.CallbackPort.Value : 0;
-		var listener = new TcpListener(IPAddress.Loopback, callbackPort);
+		if (!TryResolveCallback(config, out var callbackHost, out var callbackPath, out var callbackPort, out var callbackError))
+		{
+			return McpOAuthResult.Failure(callbackError!);
+		}
+
+		if (string.Equals(config.OAuth?.ClientRegistration, "cimd", StringComparison.OrdinalIgnoreCase))
+		{
+			return McpOAuthResult.Failure(
+				"MCP OAuth 的 cimd 模式尚未实现；请把 oauth.clientRegistration 设为 auto 或 dcr。");
+		}
+
+		var bindAddress = callbackHost.Contains("::1", StringComparison.Ordinal)
+			? IPAddress.IPv6Loopback
+			: IPAddress.Loopback;
+		var listener = new TcpListener(bindAddress, callbackPort);
 		try
 		{
 			listener.Start();
@@ -187,7 +244,7 @@ public static partial class McpOAuth
 		try
 		{
 			var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-			var redirectUri = $"http://127.0.0.1:{port}{RedirectPath}";
+			var redirectUri = $"http://{callbackHost}:{port}{callbackPath}";
 
 			var existing = McpOAuthStore.Load(endpoint, agentDir);
 			var clientId = config.ClientId ?? existing?.ClientId;

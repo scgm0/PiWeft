@@ -44,7 +44,7 @@ public sealed class ToolParityTests : IDisposable
 	}
 
 	[Fact]
-	public async Task Edit_UsesTheFirstNewlineStyleInsteadOfTurningMixedFilesIntoCrlf()
+	public async Task Edit_PreservesMixedLineEndingsOnUntouchedLines()
 	{
 		var path = Write("mixed.txt", "a\nb\r\nc\n");
 
@@ -54,7 +54,7 @@ public sealed class ToolParityTests : IDisposable
 			["edits"] = new JsonArray(new JsonObject { ["oldText"] = "b", ["newText"] = "B" }),
 		}));
 
-		Assert.Equal("a\nB\nc\n", File.ReadAllText(path));
+		Assert.Equal("a\nB\r\nc\n", File.ReadAllText(path));
 	}
 
 	[Theory]

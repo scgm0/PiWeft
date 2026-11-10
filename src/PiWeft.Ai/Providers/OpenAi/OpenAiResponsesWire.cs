@@ -16,8 +16,10 @@ internal static class OpenAiResponsesWire
 		string? reasoningEffort,
 		int? maxOutputTokens,
 		string? modelNameOverride = null,
-		bool store = true,
+		bool store = false,
 		string? promptCacheKey = null,
+		string? promptCacheRetention = null,
+		JsonObject? promptCacheOptions = null,
 		bool supportsStrictMode = false)
 	{
 		writer.WriteStartObject();
@@ -34,6 +36,17 @@ internal static class OpenAiResponsesWire
 		if (promptCacheKey is { Length: > 0 })
 		{
 			writer.WriteString("prompt_cache_key", promptCacheKey);
+		}
+
+		if (promptCacheRetention is { Length: > 0 })
+		{
+			writer.WriteString("prompt_cache_retention", promptCacheRetention);
+		}
+
+		if (promptCacheOptions is { Count: > 0 })
+		{
+			writer.WritePropertyName("prompt_cache_options");
+			promptCacheOptions.WriteTo(writer);
 		}
 
 		if (!string.IsNullOrWhiteSpace(Transcript.GetInitialSystemText(messages)))
@@ -262,7 +275,7 @@ internal static class OpenAiResponsesWire
 
 		if (images.Count == 0)
 		{
-			writer.WriteString("output", TextSanitizer.SanitizeSurrogates(text.Length > 0 ? text : "(no tool output)"));
+			writer.WriteString("output", TextSanitizer.SanitizeSurrogates(!string.IsNullOrWhiteSpace(text) ? text : "(no tool output)"));
 		}
 		else
 		{
@@ -270,7 +283,7 @@ internal static class OpenAiResponsesWire
 			writer.WriteStartArray();
 			writer.WriteStartObject();
 			writer.WriteString("type", "input_text");
-			writer.WriteString("text", TextSanitizer.SanitizeSurrogates(text.Length > 0 ? text : "(see attached image)"));
+			writer.WriteString("text", TextSanitizer.SanitizeSurrogates(!string.IsNullOrWhiteSpace(text) ? text : "(see attached image)"));
 			writer.WriteEndObject();
 
 			foreach (var image in images)

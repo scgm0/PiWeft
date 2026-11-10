@@ -207,7 +207,7 @@ public sealed class BedrockConverseProvider : IApiProvider
 		var level = ThinkingLevelResolver.Clamp(model, options.ThinkingLevel ?? ThinkingLevels.High);
 		return level == ThinkingLevels.Off
 			? null
-			: Anthropic.AnthropicProvider.BudgetFor(level);
+			: Anthropic.AnthropicProvider.BudgetFor(level, options.ThinkingBudgets);
 	}
 
 	private static void PushFailure(

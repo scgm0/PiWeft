@@ -77,15 +77,16 @@ public static class ProjectTrust
 			return value;
 		}
 
-		if (!HasTrustRequiringProjectResources(cwd))
-		{
-			return true; // 没有需要保护的项目资源，无需信任
-		}
-
 		var resolvedAgentDir = agentDir ?? SessionPaths.GetAgentDir();
+		// 已存决策优先：用户明确选过「不信任」时，即使目录里暂时没有受保护资源也不能翻成信任。
 		if (Get(resolvedAgentDir, cwd) is { } stored)
 		{
 			return stored;
+		}
+
+		if (!HasTrustRequiringProjectResources(cwd))
+		{
+			return true; // 没有需要保护的项目资源，无需信任
 		}
 
 		return defaultTrust switch

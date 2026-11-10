@@ -47,7 +47,11 @@ internal static class AnthropicWire
 			writer.WriteEndArray();
 		}
 
-		if (options.Temperature is { } temperature && !thinking.Enabled)
+		// 扩展思考与高版本 Claude 不支持 temperature；Managed effort 模型也一律不发。
+		if (options.Temperature is { } temperature &&
+			!thinking.Enabled &&
+			!ModelCompat.FlagOr(model, "supportsMidConvoEffort", false) &&
+			ModelCompat.FlagOr(model, "supportsTemperature", true))
 		{
 			writer.WriteNumber("temperature", temperature);
 		}
@@ -89,7 +93,29 @@ internal static class AnthropicWire
 			writer.WriteEndArray();
 		}
 
-		if (thinking.Enabled)
+		if (thinking.IsAdaptive)
+		{
+			writer.WritePropertyName("thinking");
+			writer.WriteStartObject();
+			writer.WriteString("type", "adaptive");
+			writer.WriteString("display", "summarized");
+			if (ModelCompat.FlagOr(model, "supportsMidConvoEffort", false))
+			{
+				// 前缀不一致时由服务端丢弃旧 thinking 块，避免历史里残留的签名让整个会话持续 400。
+				writer.WritePropertyName("block_binding");
+				writer.WriteStartObject();
+				writer.WriteString("prefix_mismatch_behavior", "drop_block");
+				writer.WriteEndObject();
+			}
+
+			writer.WriteEndObject();
+
+			writer.WritePropertyName("output_config");
+			writer.WriteStartObject();
+			writer.WriteString("effort", thinking.Effort ?? "high");
+			writer.WriteEndObject();
+		}
+		else if (thinking.Enabled)
 		{
 			writer.WritePropertyName("thinking");
 			writer.WriteStartObject();
@@ -112,6 +138,8 @@ internal static class AnthropicWire
 			writer.WriteString("user_id", userIdText);
 			writer.WriteEndObject();
 		}
+
+		WriteFallbacks(writer, model);
 
 		if (options.SamplingParams is { Count: > 0 } sampling)
 		{
@@ -193,10 +221,30 @@ internal static class AnthropicWire
 					writer.WriteString("role", "user");
 					writer.WritePropertyName("content");
 					writer.WriteStartArray();
+					var errorImages = new List<(string Caption, IReadOnlyList<ImageContent> Images)>();
 					while (i < messages.Count && messages[i] is ToolResultMessage result)
 					{
-						WriteToolResult(writer, result);
+						var split = SplitErrorImages(result);
+						WriteToolResult(writer, split?.Result ?? result);
+						if (split is { } value)
+						{
+							errorImages.Add((value.Caption, value.Images));
+						}
+
 						i++;
+					}
+
+					// Anthropic 拒绝错误工具结果里出现图片；把图片放到所有 tool_result 之后。
+					foreach (var (caption, images) in errorImages)
+					{
+						writer.WriteStartObject();
+						writer.WriteString("type", "text");
+						writer.WriteString("text", TextSanitizer.SanitizeSurrogates(caption));
+						writer.WriteEndObject();
+						foreach (var image in images)
+						{
+							WriteImage(writer, image);
+						}
 					}
 
 					i--;
@@ -247,15 +295,7 @@ internal static class AnthropicWire
 					writer.WriteEndObject();
 					break;
 				case ImageContent image:
-					writer.WriteStartObject();
-					writer.WriteString("type", "image");
-					writer.WritePropertyName("source");
-					writer.WriteStartObject();
-					writer.WriteString("type", "base64");
-					writer.WriteString("media_type", image.MimeType);
-					writer.WriteString("data", image.Data);
-					writer.WriteEndObject();
-					writer.WriteEndObject();
+					WriteImage(writer, image);
 					break;
 			}
 		}
@@ -356,15 +396,7 @@ internal static class AnthropicWire
 					writer.WriteEndObject();
 					break;
 				case ImageContent image:
-					writer.WriteStartObject();
-					writer.WriteString("type", "image");
-					writer.WritePropertyName("source");
-					writer.WriteStartObject();
-					writer.WriteString("type", "base64");
-					writer.WriteString("media_type", image.MimeType);
-					writer.WriteString("data", image.Data);
-					writer.WriteEndObject();
-					writer.WriteEndObject();
+					WriteImage(writer, image);
 					break;
 			}
 		}
@@ -372,6 +404,86 @@ internal static class AnthropicWire
 		writer.WriteEndArray();
 		writer.WriteBoolean("is_error", message.IsError);
 		writer.WriteEndObject();
+	}
+
+	private const string ErrorToolImagePlaceholder = "(image attached after the tool results)";
+
+	private static void WriteImage(Utf8JsonWriter writer, ImageContent image)
+	{
+		writer.WriteStartObject();
+		writer.WriteString("type", "image");
+		writer.WritePropertyName("source");
+		writer.WriteStartObject();
+		writer.WriteString("type", "base64");
+		writer.WriteString("media_type", image.MimeType);
+		writer.WriteString("data", image.Data);
+		writer.WriteEndObject();
+		writer.WriteEndObject();
+	}
+
+	/// 错误工具结果的图片要移到所有 tool_result 之后；这里把图片换成占位文字并带上图片列表。
+	private static (ToolResultMessage Result, string Caption, IReadOnlyList<ImageContent> Images)? SplitErrorImages(
+		ToolResultMessage message)
+	{
+		if (!message.IsError)
+		{
+			return null;
+		}
+
+		var images = message.Content.OfType<ImageContent>().ToList();
+		if (images.Count == 0)
+		{
+			return null;
+		}
+
+		var content = new List<ContentBlock>(message.Content.Count);
+		var previousWasPlaceholder = false;
+		foreach (var block in message.Content)
+		{
+			if (block is ImageContent)
+			{
+				if (!previousWasPlaceholder)
+				{
+					content.Add(new TextContent { Text = ErrorToolImagePlaceholder });
+				}
+
+				previousWasPlaceholder = true;
+				continue;
+			}
+
+			content.Add(block);
+			previousWasPlaceholder = block is TextContent text &&
+				string.Equals(text.Text, ErrorToolImagePlaceholder, StringComparison.Ordinal);
+		}
+
+		return (
+			message with { Content = content },
+			$"Images from the error result of tool call {message.ToolCallId} ({message.ToolName}):",
+			images);
+	}
+
+	private static void WriteFallbacks(Utf8JsonWriter writer, Model model)
+	{
+		var fallbacks = ModelCompat.Array(model, "allowedFallbackModels")
+			.OfType<JsonObject>()
+			.Select(static item => item["model"] is JsonValue value && value.TryGetValue<string>(out var id) ? id : null)
+			.Where(static id => id is { Length: > 0 })
+			.ToList();
+		if (fallbacks.Count == 0)
+		{
+			return;
+		}
+
+		writer.WritePropertyName("fallbacks");
+		writer.WriteStartArray();
+		foreach (var modelId in fallbacks)
+		{
+			writer.WriteStartObject();
+			writer.WriteString("model", modelId);
+			writer.WriteEndObject();
+		}
+
+		writer.WriteEndArray();
 	}
 
 	private static void WriteCacheControl(Utf8JsonWriter writer, StreamOptions options)

@@ -57,10 +57,17 @@ if (args.Length > 0 && args[0] == "--offline")
 // 这与 pi 一致：官方在解析参数之前先看是不是 auth 命令。
 if (args.Length > 0 && args[0] is "login" or "logout" or "auth")
 {
+	// pi 1.5 的 `pi auth login|logout` 与旧的 `pi login|logout` 共用同一套实现。
+	var authCommand = args[0] == "auth" && args.Length > 1 && args[1] is "login" or "logout"
+		? args[1]
+		: args[0];
+	var authRest = args[0] == "auth" && args.Length > 1 && args[1] is "login" or "logout"
+		? args[2..]
+		: args[1..];
 	var authExit = await RunPreParseAsync("auth", () =>
 		AuthCommands.RunAsync(
-			args[0],
-			args[1..],
+			authCommand,
+			authRest,
 			Console.Out,
 			Console.Error,
 			Console.In,

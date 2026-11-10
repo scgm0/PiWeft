@@ -30,21 +30,30 @@ public sealed record ImageResizeOptions
 
 	public int JpegQuality { get; init; } = DefaultJpegQuality;
 
+	/// <c>inputLimits.images.maxPerMessage</c>；没有声明时不限制。
+	public int MaxPerMessage { get; init; } = int.MaxValue;
+
+	/// <c>inputLimits.images.maxPerRequest</c>；没有声明时不限制。
+	public int MaxPerRequest { get; init; } = int.MaxValue;
+
 	/// 读模型条目的 <c>inputLimits.images.resize</c>；缺字段或类型不对的字段回落到默认值
 	/// （与 pi 的 <c>??</c> 链同义，模型目录不因为一个坏字段就整张图不处理）。
 	public static ImageResizeOptions FromInputLimits(JsonObject? inputLimits)
 	{
-		if (inputLimits?["images"] is not JsonObject images || images["resize"] is not JsonObject resize)
+		if (inputLimits?["images"] is not JsonObject images)
 		{
 			return Default;
 		}
 
+		var resize = images["resize"] as JsonObject;
 		return new ImageResizeOptions
 		{
-			MaxWidth = (int)(PositiveInt(resize["maxWidth"]) ?? DefaultMaxWidth),
-			MaxHeight = (int)(PositiveInt(resize["maxHeight"]) ?? DefaultMaxHeight),
-			MaxBytes = PositiveInt(resize["maxBytes"]) ?? DefaultMaxBytes,
-			JpegQuality = (int)Math.Clamp(PositiveInt(resize["jpegQuality"]) ?? DefaultJpegQuality, 1, 100),
+			MaxWidth = (int)(PositiveInt(resize?["maxWidth"]) ?? DefaultMaxWidth),
+			MaxHeight = (int)(PositiveInt(resize?["maxHeight"]) ?? DefaultMaxHeight),
+			MaxBytes = PositiveInt(resize?["maxBytes"]) ?? DefaultMaxBytes,
+			JpegQuality = (int)Math.Clamp(PositiveInt(resize?["jpegQuality"]) ?? DefaultJpegQuality, 1, 100),
+			MaxPerMessage = (int)(PositiveInt(images["maxPerMessage"]) ?? int.MaxValue),
+			MaxPerRequest = (int)(PositiveInt(images["maxPerRequest"]) ?? int.MaxValue),
 		};
 	}
 

@@ -42,8 +42,21 @@ public static class AuthCommands
 		TextReader input,
 		CancellationToken cancellationToken)
 	{
+		if (rest.Contains("--help") || rest.Contains("-h"))
+		{
+			output.WriteLine("pi auth login <provider> [--api-key] [--no-browser]");
+			return 0;
+		}
+
+		OAuthBrowser.Suppress = rest.Contains("--no-browser");
 		var positional = rest.Where(static value => !value.StartsWith('-')).ToArray();
-		var provider = positional.Length > 0 ? positional[0] : CodexAuth.ProviderKey;
+		if (positional.Length == 0)
+		{
+			error.WriteLine("pi: login requires a provider, for example `pi auth login radius`.");
+			return 2;
+		}
+
+		var provider = positional[0];
 		var method = positional.Length > 1 ? positional[1] : null;
 		var wantsKey = rest.Contains("--api-key") || method is "api-key" or "api_key" or "apikey" or "key";
 		var wantsOAuth = method is "oauth" or "oauth2" or "subscription";
@@ -333,7 +346,19 @@ public static class AuthCommands
 
 	private static int Logout(IReadOnlyList<string> rest, TextWriter output, TextWriter error)
 	{
-		var provider = rest.Count > 0 ? rest[0] : CodexAuth.ProviderKey;
+		if (rest.Contains("--help") || rest.Contains("-h"))
+		{
+			output.WriteLine("pi auth logout <provider>");
+			return 0;
+		}
+
+		if (rest.Count == 0)
+		{
+			error.WriteLine("pi: logout requires a provider, for example `pi auth logout radius`.");
+			return 2;
+		}
+
+		var provider = rest[0];
 		var agentDir = Environment.GetEnvironmentVariable(PiWeft.Ai.Auth.AgentPaths.EnvAgentDir);
 		if (!OAuthStore.RemoveProvider(provider, agentDir))
 		{

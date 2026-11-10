@@ -96,11 +96,16 @@ public static class PackageCommands
 			return 0;
 		}
 
-		// 与 pi 对齐的别名与范围开关：pi update（自更新）、--self/self/pi、--extensions/--all、--models。
-		if (parsed.Self)
+		// 与 pi 对齐：pi update 更新本体；--extensions 更新包；--all 两者都做。
+		var selfOnly = parsed.Self ||
+			(parsed.Source is null && parsed.ExtensionSource is null && !parsed.Extensions && !parsed.All && !parsed.Models);
+		if (selfOnly || parsed.All)
 		{
 			output.WriteLine("pi: 本构建是 NativeAOT 单文件，请用发行页安装包或系统包管理器更新 pi 本体；包与目录更新不受影响。");
-			return 0;
+			if (selfOnly)
+			{
+				return 0;
+			}
 		}
 
 		if (parsed.Models)

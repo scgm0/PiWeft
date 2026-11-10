@@ -5,7 +5,7 @@ namespace PiWeft.CodingAgent.Tools;
 
 public sealed record EditReplacement(string OldText, string NewText);
 
-public sealed record AppliedEdits(string BaseContent, string NewContent);
+public sealed record AppliedEdits(string BaseContent, string NewContent, string FinalContent);
 
 public static partial class EditDiff
 {
@@ -60,7 +60,16 @@ public static partial class EditDiff
 
 	/// 应用互不重叠的替换。每个 <c>oldText</c> 都与原始内容匹配，且必须唯一；
 	/// 匹配不到时会退化为忽略空白的匹配。
-	public static AppliedEdits ApplyEdits(string content, IReadOnlyList<EditReplacement> edits, string path)
+	public static AppliedEdits ApplyEdits(string content, IReadOnlyList<EditReplacement> edits, string path) =>
+		ApplyEdits(content, NormalizeToLf(content), edits, path);
+
+	/// <param name="originalContent">未归一化换行的原文，用来保留未被编辑行的 CRLF/LF/CR。</param>
+	/// <param name="content">LF 归一化后的内容，替换索引与模糊匹配都在它上面计算。</param>
+	public static AppliedEdits ApplyEdits(
+		string originalContent,
+		string content,
+		IReadOnlyList<EditReplacement> edits,
+		string path)
 	{
 		if (edits.Count == 0)
 		{
@@ -125,11 +134,14 @@ public static partial class EditDiff
 
 		// 模糊匹配时，替换发生在归一化视图里；未触碰的行必须从原文件逐字节拷回，
 		// 否则 NFKC 的字符展开/收缩会让索引错位（pi 的 applyReplacementsPreservingUnchangedLines）。
-		var newContent = usedFuzzyMatch
+		var normalizedNewContent = usedFuzzyMatch
 			? ApplyReplacementsPreservingUnchangedLines(content, searchContent, matches)
 			: ApplyReplacements(content, matches, offset: 0);
+		var finalContent = usedFuzzyMatch
+			? normalizedNewContent
+			: ApplyReplacementsToOriginal(originalContent, matches);
 
-		if (string.Equals(baseContent, newContent, StringComparison.Ordinal))
+		if (string.Equals(baseContent, normalizedNewContent, StringComparison.Ordinal))
 		{
 			throw new InvalidOperationException(
 				normalized.Length == 1
@@ -137,7 +149,7 @@ public static partial class EditDiff
 					: $"No changes made to {path}. The replacements produced identical content.");
 		}
 
-		return new AppliedEdits(baseContent, newContent);
+		return new AppliedEdits(baseContent, normalizedNewContent, finalContent);
 	}
 
 	private sealed record TextReplacement(int Index, int Length, string NewText, int EditIndex);
@@ -167,6 +179,77 @@ public static partial class EditDiff
 		}
 
 		return result;
+	}
+
+	/// 把归一化坐标里的替换映射回原文件，保留未触碰行的原始换行；新文本使用插入点的行尾。
+	private static string ApplyReplacementsToOriginal(string originalContent, IReadOnlyList<TextReplacement> replacements)
+	{
+		var crlfBefore = 0;
+		var nextCrlf = originalContent.IndexOf("\r\n", StringComparison.Ordinal);
+		int ToOriginal(int offset)
+		{
+			while (nextCrlf != -1 && nextCrlf - crlfBefore < offset)
+			{
+				crlfBefore++;
+				nextCrlf = originalContent.IndexOf("\r\n", nextCrlf + 2, StringComparison.Ordinal);
+			}
+
+			return offset + crlfBefore;
+		}
+
+		var builder = new StringBuilder(originalContent.Length);
+		var endsWithCr = false;
+		void Push(string part)
+		{
+			if (part.Length == 0)
+			{
+				return;
+			}
+
+			// 接缝左侧是单独的 CR、右侧以 LF 开头时，直接拼接会合成 CRLF。补一个 LF 保持两段行尾。
+			if (endsWithCr && part[0] == '\n')
+			{
+				builder.Append('\n');
+			}
+
+			builder.Append(part);
+			endsWithCr = part[^1] == '\r';
+		}
+
+		var position = 0;
+		foreach (var replacement in replacements)
+		{
+			var start = ToOriginal(replacement.Index);
+			Push(originalContent[position..start]);
+			var ending = GetLineEndingAt(originalContent, start);
+			Push(ending == "\n" ? replacement.NewText : replacement.NewText.Replace("\n", ending, StringComparison.Ordinal));
+			position = ToOriginal(replacement.Index + replacement.Length);
+		}
+
+		Push(originalContent[position..]);
+		return builder.ToString();
+	}
+
+	private static string GetLineEndingAt(string content, int offset)
+	{
+		if (content.Length == 0)
+		{
+			return "\n";
+		}
+
+		var searchFrom = Math.Min(offset, content.Length - 1);
+		var lineFeed = content.IndexOf('\n', searchFrom);
+		if (lineFeed == -1)
+		{
+			lineFeed = content.LastIndexOf('\n', searchFrom);
+		}
+
+		if (lineFeed == -1)
+		{
+			return content.Contains('\r') ? "\r" : "\n";
+		}
+
+		return lineFeed > 0 && content[lineFeed - 1] == '\r' ? "\r\n" : "\n";
 	}
 
 	private static string ApplyReplacementsPreservingUnchangedLines(

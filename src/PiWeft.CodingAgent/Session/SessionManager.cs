@@ -93,6 +93,12 @@ public sealed partial class SessionManager
 		string? parentSession = null,
 		DateTimeOffset? now = null)
 	{
+		if (id is not null && !SessionPaths.IsValidSessionId(id))
+		{
+			throw new InvalidOperationException(
+				$"Invalid session ID \"{id}\": use letters, numbers, \".\", \"_\", \"-\", and start and end with a letter or number.");
+		}
+
 		var dir = sessionDir ?? SessionPaths.GetDefaultSessionDir(cwd);
 		Directory.CreateDirectory(dir);
 

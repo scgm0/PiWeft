@@ -3,10 +3,24 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using PiWeft.Ai;
+using PiWeft.Ai.Json;
 using PiWeft.CodingAgent.Security;
 using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Settings;
+
+public sealed record ImagesSettings
+{
+	/// 对应 <c>settings.images.blockImages</c>：禁止任何图片进入模型上下文。
+	public bool BlockImages { get; init; }
+}
+
+public sealed record CompactionModelOverride
+{
+	public int? ReserveTokens { get; init; }
+
+	public int? KeepRecentTokens { get; init; }
+}
 
 public sealed record CompactionSettings
 {
@@ -15,6 +29,24 @@ public sealed record CompactionSettings
 	public int ReserveTokens { get; init; } = 16384;
 
 	public int KeepRecentTokens { get; init; } = 20000;
+
+	/// 按 <c>provider/modelId</c> 覆盖压缩 token 预算。
+	public IReadOnlyDictionary<string, CompactionModelOverride> ModelOverrides { get; init; } =
+		new Dictionary<string, CompactionModelOverride>(StringComparer.Ordinal);
+
+	public CompactionSettings ForModel(Model model)
+	{
+		if (!ModelOverrides.TryGetValue($"{model.Provider}/{model.Id}", out var value))
+		{
+			return this;
+		}
+
+		return this with
+		{
+			ReserveTokens = value.ReserveTokens ?? ReserveTokens,
+			KeepRecentTokens = value.KeepRecentTokens ?? KeepRecentTokens,
+		};
+	}
 }
 
 public sealed record BranchSummarySettings
@@ -42,7 +74,13 @@ public sealed record CodingAgentSettings
 
 	public string FollowUpMode { get; init; } = "one-at-a-time";
 
-	public string CacheWarming { get; init; } = "streaming";
+	public string CacheWarming { get; init; } = "idle";
+
+	/// <c>settings.thinkingBudgets</c>：思考级别的自定义 token 预算。
+	public IReadOnlyDictionary<string, int> ThinkingBudgets { get; init; } =
+		new Dictionary<string, int>(StringComparer.Ordinal);
+
+	public ImagesSettings Images { get; init; } = new();
 
 	/// 偏好的传输方式：<c>auto</c> / <c>sse</c> / <c>websocket</c> / <c>websocket-cached</c>。
 	/// 目前只有 Codex 的 responses 实现会读它（其它 provider 一律走 HTTP）。
@@ -399,7 +437,7 @@ public sealed record CodingAgentSettings
 
 		try
 		{
-			return JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject();
+			return JsonNode.Parse(PiJson.StripBom(File.ReadAllText(path))) as JsonObject ?? new JsonObject();
 		}
 		catch (Exception ex) when (ex is JsonException or IOException)
 		{
@@ -418,6 +456,31 @@ public sealed record CodingAgentSettings
 		Write(root, "steeringMode", file.SteeringMode);
 		Write(root, "followUpMode", file.FollowUpMode);
 		Write(root, "cacheWarming", file.CacheWarming);
+		if (file.ThinkingBudgets is { Count: > 0 } thinkingBudgets)
+		{
+			var levels = new JsonObject();
+			foreach (var (level, tokens) in thinkingBudgets)
+			{
+				levels[level] = tokens;
+			}
+
+			root["thinkingBudgets"] = levels;
+		}
+
+		if (file.Images is { BlockImages: true })
+		{
+			root["images"] = new JsonObject { ["blockImages"] = true };
+		}
+		else if (root["images"] is JsonObject images)
+		{
+			// 只移除本端口建模的键，图片主题等上游键保持不动。
+			images.Remove("blockImages");
+			if (images.Count == 0)
+			{
+				root.Remove("images");
+			}
+		}
+
 		Write(root, "transport", file.Transport);
 		if (file.SteeringMode is not null)
 		{
@@ -445,6 +508,20 @@ public sealed record CodingAgentSettings
 			Write(target, "enabled", compaction.Enabled);
 			Write(target, "reserveTokens", compaction.ReserveTokens);
 			Write(target, "keepRecentTokens", compaction.KeepRecentTokens);
+			if (compaction.ModelOverrides is { Count: > 0 } overrides)
+			{
+				var nodes = new JsonObject();
+				foreach (var (modelId, value) in overrides)
+				{
+					var node = new JsonObject();
+					Write(node, "reserveTokens", value.ReserveTokens);
+					Write(node, "keepRecentTokens", value.KeepRecentTokens);
+					nodes[modelId] = node;
+				}
+
+				target["modelOverrides"] = nodes;
+			}
+
 			root["compaction"] = target;
 		}
 
@@ -579,7 +656,7 @@ public sealed record CodingAgentSettings
 
 		try
 		{
-			return Normalize(JsonSerializer.Deserialize(File.ReadAllText(path), CodingAgentJsonContext.Default.SettingsFile));
+			return Normalize(JsonSerializer.Deserialize(PiJson.StripBom(File.ReadAllText(path)), CodingAgentJsonContext.Default.SettingsFile));
 		}
 		catch (JsonException)
 		{
@@ -636,13 +713,19 @@ public sealed record CodingAgentSettings
 			: global?.EnabledModels is { Count: > 0 } globalEnabled ? [.. globalEnabled] : [],
 		SteeringMode = project?.SteeringMode ?? global?.SteeringMode ?? "one-at-a-time",
 		FollowUpMode = project?.FollowUpMode ?? global?.FollowUpMode ?? "one-at-a-time",
-		CacheWarming = project?.CacheWarming ?? global?.CacheWarming ?? "streaming",
+		CacheWarming = project?.CacheWarming ?? global?.CacheWarming ?? "idle",
+		ThinkingBudgets = MergeIntDictionary(global?.ThinkingBudgets, project?.ThinkingBudgets),
+		Images = new ImagesSettings
+		{
+			BlockImages = project?.Images?.BlockImages ?? global?.Images?.BlockImages ?? false,
+		},
 		Transport = NormalizeTransport(project?.Transport ?? global?.Transport),
 		Compaction = new CompactionSettings
 		{
 			Enabled = project?.Compaction?.Enabled ?? global?.Compaction?.Enabled ?? true,
 			ReserveTokens = project?.Compaction?.ReserveTokens ?? global?.Compaction?.ReserveTokens ?? 16384,
 			KeepRecentTokens = project?.Compaction?.KeepRecentTokens ?? global?.Compaction?.KeepRecentTokens ?? 20000,
+			ModelOverrides = MergeCompactionOverrides(global?.Compaction?.ModelOverrides, project?.Compaction?.ModelOverrides),
 		},
 		BranchSummary = new BranchSummarySettings
 		{
@@ -740,6 +823,56 @@ public sealed record CodingAgentSettings
 
 	private static IReadOnlyList<string> MergeTools(List<string>? global, List<string>? project) =>
 		MergeDefaultToolEntries(global, project) ?? [];
+
+	private static IReadOnlyDictionary<string, int> MergeIntDictionary(
+		Dictionary<string, int>? global,
+		Dictionary<string, int>? project)
+	{
+		var result = new Dictionary<string, int>(StringComparer.Ordinal);
+		foreach (var source in new[] { global, project })
+		{
+			if (source is null)
+			{
+				continue;
+			}
+
+			foreach (var (key, value) in source)
+			{
+				if (value > 0)
+				{
+					result[key] = value;
+				}
+			}
+		}
+
+		return result;
+	}
+
+	private static IReadOnlyDictionary<string, CompactionModelOverride> MergeCompactionOverrides(
+		Dictionary<string, CompactionModelOverrideFile>? global,
+		Dictionary<string, CompactionModelOverrideFile>? project)
+	{
+		var result = new Dictionary<string, CompactionModelOverride>(StringComparer.Ordinal);
+		foreach (var source in new[] { global, project })
+		{
+			if (source is null)
+			{
+				continue;
+			}
+
+			foreach (var (modelId, value) in source)
+			{
+				result.TryGetValue(modelId, out var existing);
+				result[modelId] = new CompactionModelOverride
+				{
+					ReserveTokens = value.ReserveTokens ?? existing?.ReserveTokens,
+					KeepRecentTokens = value.KeepRecentTokens ?? existing?.KeepRecentTokens,
+				};
+			}
+		}
+
+		return result;
+	}
 
 	private static IReadOnlyList<PackageDeclaration> MergePackages(
 		IReadOnlyList<PackageDeclaration>? global,
@@ -865,6 +998,10 @@ public sealed record CodingAgentSettings
 		SteeringMode = settings.SteeringMode,
 		FollowUpMode = settings.FollowUpMode,
 		CacheWarming = settings.CacheWarming,
+		ThinkingBudgets = settings.ThinkingBudgets.Count > 0
+			? new Dictionary<string, int>(settings.ThinkingBudgets, StringComparer.Ordinal)
+			: null,
+		Images = settings.Images.BlockImages ? new ImagesFile { BlockImages = true } : null,
 		// 只写用户真正改过的值：默认形状每次保存都追加 transport / httpIdleTimeoutMs，
 		// 会把配置文件写成一份「本端口认为的默认值」清单，也让人 diff 不出自己改了什么。
 		Transport = settings.Transport == "auto" ? null : settings.Transport,
@@ -876,6 +1013,16 @@ public sealed record CodingAgentSettings
 			Enabled = settings.Compaction.Enabled,
 			ReserveTokens = settings.Compaction.ReserveTokens,
 			KeepRecentTokens = settings.Compaction.KeepRecentTokens,
+			ModelOverrides = settings.Compaction.ModelOverrides.Count > 0
+				? settings.Compaction.ModelOverrides.ToDictionary(
+					static pair => pair.Key,
+					static pair => new CompactionModelOverrideFile
+					{
+						ReserveTokens = pair.Value.ReserveTokens,
+						KeepRecentTokens = pair.Value.KeepRecentTokens,
+					},
+					StringComparer.Ordinal)
+				: null,
 		},
 		BranchSummary = new BranchSummaryFile
 		{
@@ -951,6 +1098,10 @@ public sealed record SettingsFile
 	public string? FollowUpMode { get; init; }
 
 	public string? CacheWarming { get; init; }
+
+	public Dictionary<string, int>? ThinkingBudgets { get; init; }
+
+	public ImagesFile? Images { get; init; }
 
 	public string? Transport { get; init; }
 
@@ -1046,6 +1197,20 @@ public sealed record CompactionFile
 {
 	public bool? Enabled { get; init; }
 
+	public int? ReserveTokens { get; init; }
+
+	public int? KeepRecentTokens { get; init; }
+
+	public Dictionary<string, CompactionModelOverrideFile>? ModelOverrides { get; init; }
+}
+
+public sealed record ImagesFile
+{
+	public bool? BlockImages { get; init; }
+}
+
+public sealed record CompactionModelOverrideFile
+{
 	public int? ReserveTokens { get; init; }
 
 	public int? KeepRecentTokens { get; init; }

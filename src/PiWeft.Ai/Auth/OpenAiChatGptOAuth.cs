@@ -253,6 +253,11 @@ public static class OpenAiChatGptOAuth
 
 	private static void TryOpenBrowser(string url)
 	{
+		if (OAuthBrowser.Suppress)
+		{
+			return;
+		}
+
 		try
 		{
 			if (OperatingSystem.IsWindows())

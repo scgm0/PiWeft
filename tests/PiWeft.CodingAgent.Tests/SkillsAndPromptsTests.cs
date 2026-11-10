@@ -311,6 +311,21 @@ public class PromptTemplateTests : IDisposable
 		Assert.Equal(["a", ""], PromptTemplates.ParseArgs("a ''"));
 		Assert.Equal([""], PromptTemplates.ParseArgs("\"\""));
 	}
+
+	[Fact]
+	public void ParseArgs_OnlyOpensQuotesAtArgumentStart()
+	{
+		// pi 1.5.1：单词中间的撇号是普通字符，不能吞掉。
+		Assert.Equal(["doesn't"], PromptTemplates.ParseArgs("doesn't"));
+		Assert.Equal(["a\"b"], PromptTemplates.ParseArgs("a\"b"));
+		Assert.Equal(["say \"hi\""], PromptTemplates.ParseArgs("\"say \\\"hi\\\"\""));
+	}
+
+	[Fact]
+	public void ParseArgs_KeepsUnclosedQuoteAsText()
+	{
+		Assert.Equal(["\"unclosed"], PromptTemplates.ParseArgs("\"unclosed"));
+	}
 }
 
 public class BranchSummarizationTests : IDisposable

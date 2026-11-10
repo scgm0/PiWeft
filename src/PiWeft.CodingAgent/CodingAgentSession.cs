@@ -131,6 +131,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	private readonly IDisposable _persistence;
 	private readonly IDisposable _cacheWarmLifecycle;
 	private readonly IDisposable _modeLifecycle;
+	private readonly IDisposable _extensionLifecycle;
 
 	private readonly List<Func<AgentEvent, ValueTask>> _listeners = [];
 
@@ -342,6 +343,8 @@ public sealed partial class CodingAgentSession : IDisposable
 			IdleTimeoutMs = options.Options.IdleTimeoutMs ??
 				(options.Settings.HttpIdleTimeoutMs > 0 ? options.Settings.HttpIdleTimeoutMs : null),
 			Transport = options.Options.Transport ?? options.Settings.Transport,
+			ThinkingBudgets = options.Options.ThinkingBudgets ??
+				(options.Settings.ThinkingBudgets.Count > 0 ? options.Settings.ThinkingBudgets : null),
 		};
 
 		_cacheWarmer = new CacheWarmer(
@@ -413,11 +416,13 @@ public sealed partial class CodingAgentSession : IDisposable
 		_persistence = _agent.Subscribe(PersistAsync);
 		_cacheWarmLifecycle = _agent.Subscribe(CacheWarmLifecycleAsync);
 		_modeLifecycle = _agent.Subscribe(ModeLifecycleAsync);
+		_extensionLifecycle = _agent.Subscribe(ExtensionLifecycleAsync);
 		PublishTodoWidget(CurrentTodo());
 		// 计划/目标模式的状态跟着分支走：执行态续接进度，目标只恢复为暂停。
 		RestoreModeState();
 		PublishPlanWidget();
 		PublishGoalWidget();
+		DispatchSessionLifecycle("session_start");
 	}
 
 	public string Cwd { get; }
@@ -600,16 +605,29 @@ public sealed partial class CodingAgentSession : IDisposable
 			return message;
 		}
 
+		if (Settings.Images.BlockImages)
+		{
+			return message with { Content = MessageContent.FromBlocks(ReplaceImages(blocks, ImageBlockedNote)) };
+		}
+
 		var options = ImageResizeOptions.FromInputLimits(Model.InputLimits);
 		var normalized = new List<ContentBlock>(blocks.Count);
 		var hints = new List<string>();
 		var changed = false;
+		var imageCount = 0;
 
 		foreach (var block in blocks)
 		{
 			if (block is not ImageContent image)
 			{
 				normalized.Add(block);
+				continue;
+			}
+
+			if (++imageCount > options.MaxPerMessage)
+			{
+				hints.Add($"[Image omitted: maxPerMessage={options.MaxPerMessage}.]");
+				changed = true;
 				continue;
 			}
 
@@ -652,47 +670,226 @@ public sealed partial class CodingAgentSession : IDisposable
 		return message with { Content = MessageContent.FromBlocks(normalized) };
 	}
 
+	/// 扩展的 <c>before_agent_start</c>：当前只应用返回的 <c>systemPrompt</c>。
+	/// 返回的 <c>message</c> 还没有注入会话，避免与 PromptAsync 的追加顺序冲突。
+	private void DispatchBeforeAgentStart(Message message)
+	{
+		if (Extensions is not { } extensions || !extensions.ListensTo("before_agent_start"))
+		{
+			return;
+		}
+
+		var payload = new JsonObject
+		{
+			["messageType"] = message is UserMessage ? "user" : "custom",
+			["systemPrompt"] = Transcript.GetText(_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools))),
+		};
+		if (message is UserMessage { Content.IsText: true } user)
+		{
+			payload["prompt"] = user.Content.Text;
+		}
+		else if (message is UserMessage { Content.Blocks: { } blocks })
+		{
+			payload["images"] = PiJson.SerializeBlocks(
+				[.. blocks.OfType<ImageContent>()]);
+		}
+
+		var updated = extensions.Dispatch("before_agent_start", payload);
+		if (updated["systemPrompt"] is JsonValue value &&
+			value.TryGetValue<string>(out var systemPrompt) &&
+			!string.IsNullOrWhiteSpace(systemPrompt))
+		{
+			_refreshedSystemPrompt = new SystemMessage
+			{
+				Content = MessageContent.FromText(systemPrompt),
+				Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			};
+		}
+	}
+
+	/// 扩展的 <c>tool_result</c>：先让扩展改写结果，再跑用户钩子与图片归一化。
+	private AfterToolCallResult? DispatchToolResult(AfterToolCallContext context)
+	{
+		if (Extensions is not { } extensions || !extensions.ListensTo("tool_result"))
+		{
+			return null;
+		}
+
+		var payload = new JsonObject
+		{
+			["toolName"] = context.ToolCall.Name,
+			["toolCallId"] = context.ToolCall.Id,
+			["input"] = context.Arguments.DeepClone(),
+			["content"] = PiJson.SerializeBlocks(context.Result.Content),
+			["isError"] = context.IsError,
+		};
+		if (context.Result.Details is { } details)
+		{
+			payload["details"] = details.DeepClone();
+		}
+		if (context.Result.StructuredContent is { } structured)
+		{
+			payload["structuredContent"] = structured.DeepClone();
+		}
+
+		var updated = extensions.Dispatch("tool_result", payload);
+		var content = ReadContent(updated["content"]);
+		var hasDetails = updated.ContainsKey("details");
+		var hasStructured = updated.ContainsKey("structuredContent");
+		bool? isError = updated["isError"] is JsonValue errorValue && errorValue.TryGetValue<bool>(out var parsedError)
+			? parsedError
+			: null;
+		if (content is null && !hasDetails && !hasStructured && isError is null)
+		{
+			return null;
+		}
+
+		return new AfterToolCallResult
+		{
+			Content = content,
+			Details = hasDetails ? updated["details"]?.DeepClone() : null,
+			HasDetails = hasDetails,
+			StructuredContent = hasStructured ? updated["structuredContent"]?.DeepClone() : null,
+			HasStructuredContent = hasStructured,
+			IsError = isError,
+		};
+	}
+
+	private static IReadOnlyList<ContentBlock>? ReadContent(JsonNode? node) =>
+		node is JsonArray ? PiJson.DeserializeBlocks(node.ToJsonString()) : null;
+
+	/// 扩展的 <c>agent_end</c>：本轮结束、自动重试与后续队列尚未决定时触发。
+	private void DispatchAgentEnd(AgentEndEvent end)
+	{
+		var messages = new JsonArray();
+		foreach (var message in end.Messages)
+		{
+			messages.Add(JsonNode.Parse(PiJson.SerializeMessage(message)));
+		}
+
+		DispatchExtension("agent_end", new JsonObject
+		{
+			["messages"] = messages,
+			["willRetry"] = end.WillRetry,
+		});
+	}
+
 	/// 工具结果的图片同样会进入历史与后续每个请求（MCP、扩展、截图工具），
-	/// 与 pi 的 <c>normalizeToolResultImages</c> 同义：先跑用户钩子，再把结果里的图片按当前模型
+	/// 与 pi 的 <c>normalizeToolResultImages</c> 同义：先跑扩展与用户钩子，再把结果里的图片按当前模型
 	/// 限制缩放/转码；括注作为额外的文本块追加在后面。与 <c>read</c> 的差别是失败时**保留原图块**：
 	/// 工具已经产出了它，删掉等于改变工具行为。
 	private async ValueTask<AfterToolCallResult?> NormalizeToolResultImagesAsync(
 		AfterToolCallContext context,
 		CancellationToken cancellationToken)
 	{
-		var hook = _userAfterToolCall is { } userHook
-			? await userHook(context, cancellationToken).ConfigureAwait(false)
-			: null;
+		var extensionHook = DispatchToolResult(context);
+		if (extensionHook is not null)
+		{
+			context = context with
+			{
+				Result = context.Result with
+				{
+					Content = extensionHook.Content ?? context.Result.Content,
+					Details = extensionHook.HasDetails ? extensionHook.Details : context.Result.Details,
+					StructuredContent = extensionHook.HasStructuredContent ? extensionHook.StructuredContent : context.Result.StructuredContent,
+					IsError = extensionHook.IsError ?? context.Result.IsError,
+				},
+				IsError = extensionHook.IsError ?? context.IsError,
+			};
+		}
 
-		var content = hook?.Content ?? context.Result.Content;
+		var userHook = _userAfterToolCall is { } hook
+			? await hook(context, cancellationToken).ConfigureAwait(false)
+			: null;
+		var merged = MergeAfterToolCallHooks(extensionHook, userHook);
+
+		var content = merged?.Content ?? context.Result.Content;
 		if (!content.Any(static block => block is ImageContent))
 		{
-			return hook;
+			return merged;
 		}
 
 		var normalized = await Task.Run(() => NormalizeImageBlocks(content), cancellationToken).ConfigureAwait(false);
 		if (ReferenceEquals(normalized, content))
 		{
-			// 没有变化：原样交回用户钩子的结果（可能为 null，表示不改写）。
-			return hook;
+			return merged;
 		}
 
 		return new AfterToolCallResult
 		{
 			Content = normalized,
-			Details = hook?.Details,
-			HasDetails = hook?.HasDetails ?? false,
-			StructuredContent = hook?.StructuredContent,
-			HasStructuredContent = hook?.HasStructuredContent ?? false,
-			IsError = hook?.IsError,
-			Usage = hook?.Usage,
-			Terminate = hook?.Terminate,
+			Details = merged?.Details,
+			HasDetails = merged?.HasDetails ?? false,
+			StructuredContent = merged?.StructuredContent,
+			HasStructuredContent = merged?.HasStructuredContent ?? false,
+			IsError = merged?.IsError,
+			Usage = merged?.Usage,
+			Terminate = merged?.Terminate,
+		};
+	}
+
+	private const string ImageBlockedNote = "(image omitted: image input is disabled)";
+
+	private static List<ContentBlock> ReplaceImages(IReadOnlyList<ContentBlock> blocks, string note)
+	{
+		var replaced = new List<ContentBlock>(blocks.Count);
+		var previousWasNote = false;
+		foreach (var block in blocks)
+		{
+			if (block is ImageContent)
+			{
+				if (!previousWasNote)
+				{
+					replaced.Add(new TextContent { Text = note });
+				}
+
+				previousWasNote = true;
+				continue;
+			}
+
+			replaced.Add(block);
+			previousWasNote = block is TextContent text &&
+				string.Equals(text.Text, note, StringComparison.Ordinal);
+		}
+
+		return replaced;
+	}
+
+	private static AfterToolCallResult? MergeAfterToolCallHooks(
+		AfterToolCallResult? extensionHook,
+		AfterToolCallResult? userHook)
+	{
+		if (extensionHook is null)
+		{
+			return userHook;
+		}
+
+		if (userHook is null)
+		{
+			return extensionHook;
+		}
+
+		return new AfterToolCallResult
+		{
+			Content = userHook.Content ?? extensionHook.Content,
+			Details = userHook.HasDetails ? userHook.Details : extensionHook.Details,
+			HasDetails = userHook.HasDetails || extensionHook.HasDetails,
+			StructuredContent = userHook.HasStructuredContent ? userHook.StructuredContent : extensionHook.StructuredContent,
+			HasStructuredContent = userHook.HasStructuredContent || extensionHook.HasStructuredContent,
+			IsError = userHook.IsError ?? extensionHook.IsError,
+			Usage = userHook.Usage ?? extensionHook.Usage,
+			Terminate = userHook.Terminate ?? extensionHook.Terminate,
 		};
 	}
 
 	/// 逐块处理图片；没有任何改动时返回原列表（调用方据此跳过重写）。
 	private List<ContentBlock>? NormalizeImageBlocks(IReadOnlyList<ContentBlock> content)
 	{
+		if (Settings.Images.BlockImages)
+		{
+			return ReplaceImages(content, ImageBlockedNote);
+		}
+
 		var options = ImageResizeOptions.FromInputLimits(Model.InputLimits);
 		List<ContentBlock>? normalized = null;
 		for (var index = 0; index < content.Count; index++)
@@ -808,7 +1005,7 @@ public sealed partial class CodingAgentSession : IDisposable
 			_agent.Model,
 			_directStreamFn,
 			_streamOptions,
-			Settings.Compaction,
+			Settings.Compaction.ForModel(_agent.Model),
 			Settings.BranchSummary,
 			targetId,
 			customInstructions,
@@ -970,7 +1167,7 @@ public sealed partial class CodingAgentSession : IDisposable
 			_agent.Model,
 			_directStreamFn,
 			_streamOptions,
-			Settings.Compaction,
+			Settings.Compaction.ForModel(_agent.Model),
 			Settings.BranchSummary,
 			targetId,
 			customInstructions,
@@ -1093,7 +1290,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	}
 
 	public bool ShouldCompact() =>
-		Compaction.ContextTokens.ShouldCompact(ContextTokens().Tokens, _agent.Model.ContextWindow, Settings.Compaction);
+		Compaction.ContextTokens.ShouldCompact(ContextTokens().Tokens, _agent.Model.ContextWindow, Settings.Compaction.ForModel(_agent.Model));
 
 	/// 摘要较旧的条目并记录一条 <c>compaction</c> 条目。没有可压缩内容时返回 <c>null</c>。
 	/// 完成后会从会话刷新代理的会话记录。
@@ -1122,7 +1319,7 @@ public sealed partial class CodingAgentSession : IDisposable
 					_agent.Model,
 					_directStreamFn,
 					_streamOptions,
-					Settings.Compaction,
+					Settings.Compaction.ForModel(_agent.Model),
 					customInstructions,
 					cancellationToken,
 					thinkingLevel: _agent.ThinkingLevel),
@@ -1603,30 +1800,32 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	private void LoadExtensions(CodingAgentSessionOptions options)
 	{
+		ExtensionHost host;
 		if (options.Extensions is { } provided)
 		{
 			// 宿主注入的扩展宿主由宿主负责释放与重载。
 			Extensions = provided;
 			_ownsExtensions = false;
 			ApplyFlagValues(provided, options.FlagValues);
-			return;
+			host = provided;
 		}
-
-		if (!options.LoadExtensions)
+		else if (!options.LoadExtensions)
 		{
 			// 没加载也就没有可重载/释放的东西：注入分支同理。
 			_ownsExtensions = false;
 			return;
 		}
-
-		var host = new ExtensionHost(options.UiHost);
-		host.Load(
-			Cwd,
-			options.ProjectTrusted,
-			explicitPaths: options.ExtensionPaths,
-			includeDiscovered: options.DiscoverExtensions);
-		ApplyFlagValues(host, options.FlagValues);
-		Extensions = host;
+		else
+		{
+			host = new ExtensionHost(options.UiHost);
+			host.Load(
+				Cwd,
+				options.ProjectTrusted,
+				explicitPaths: options.ExtensionPaths,
+				includeDiscovered: options.DiscoverExtensions);
+			ApplyFlagValues(host, options.FlagValues);
+			Extensions = host;
+		}
 
 		if (host.ToolRegistrations.Count == 0)
 		{
@@ -2543,6 +2742,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		// 展开技能命令与提示词模板，让 CLI、RPC、桌面与交互模式共享同一语义。
 		// 图片在这之后按当前模型归一化。PrepareInput 保持同步：计划模式与模板展开要立即生效。
 		var message = await NormalizeMessageAsync(PrepareInput(text), cancellationToken).ConfigureAwait(false);
+		DispatchBeforeAgentStart(message);
 		IReadOnlyList<Message> messages;
 		using (var run = BeginRun(cancellationToken))
 		{
@@ -2829,6 +3029,85 @@ public sealed partial class CodingAgentSession : IDisposable
 		stream.Push(new ErrorEvent { Reason = reason, Partial = error });
 	}
 
+	/// 低频扩展事件。流式 update 不在每帧派发：Jint 处理器是同步的，逐 delta 回调会把流式渲染拖慢。
+	private ValueTask ExtensionLifecycleAsync(AgentEvent @event)
+	{
+		if (Extensions is null)
+		{
+			return ValueTask.CompletedTask;
+		}
+
+		switch (@event)
+		{
+			case AgentStartEvent:
+				DispatchExtension("agent_start", new JsonObject());
+				break;
+			case AgentEndEvent end:
+				DispatchAgentEnd(end);
+				break;
+			case TurnStartEvent:
+				DispatchExtension("turn_start", new JsonObject());
+				break;
+			case TurnEndEvent turn:
+				DispatchExtension("turn_end", new JsonObject
+				{
+					["message"] = JsonNode.Parse(PiJson.SerializeMessage(turn.Message)),
+					["toolResults"] = new JsonArray([.. turn.ToolResults.Select(static result =>
+						JsonNode.Parse(PiJson.SerializeMessage(result)))]),
+				});
+				break;
+			case MessageStartEvent start:
+				DispatchExtension("message_start", new JsonObject
+				{
+					["message"] = JsonNode.Parse(PiJson.SerializeMessage(start.Message)),
+				});
+				break;
+			case MessageEndEvent end:
+				DispatchExtension("message_end", new JsonObject
+				{
+					["message"] = JsonNode.Parse(PiJson.SerializeMessage(end.Message)),
+				});
+				break;
+			case ToolExecutionStartEvent start:
+				DispatchExtension("tool_execution_start", new JsonObject
+				{
+					["toolCallId"] = start.ToolCallId,
+					["toolName"] = start.ToolName,
+					["input"] = start.Arguments.DeepClone(),
+				});
+				break;
+			case ToolExecutionEndEvent end:
+				DispatchExtension("tool_execution_end", new JsonObject
+				{
+					["toolCallId"] = end.ToolCallId,
+					["toolName"] = end.ToolName,
+					["content"] = PiJson.SerializeBlocks(end.Result.Content),
+					["isError"] = end.IsError,
+					["durationMs"] = end.DurationMs,
+				});
+				break;
+		}
+
+		return ValueTask.CompletedTask;
+	}
+
+	private void DispatchExtension(string @event, JsonObject payload)
+	{
+		if (Extensions is { } extensions && extensions.ListensTo(@event))
+		{
+			extensions.Dispatch(@event, payload);
+		}
+	}
+
+	private void DispatchSessionLifecycle(string @event)
+	{
+		DispatchExtension(@event, new JsonObject
+		{
+			["sessionId"] = Session.SessionId,
+			["sessionFile"] = Session.SessionFile,
+		});
+	}
+
 	private ValueTask CacheWarmLifecycleAsync(AgentEvent @event)
 	{
 		switch (@event)
@@ -2881,7 +3160,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		var (tokens, _) = ContextTokens();
-		if (!Compaction.ContextTokens.ShouldCompact(tokens, _agent.Model.ContextWindow, Settings.Compaction))
+		if (!Compaction.ContextTokens.ShouldCompact(tokens, _agent.Model.ContextWindow, Settings.Compaction.ForModel(_agent.Model)))
 		{
 			return null;
 		}
@@ -2911,7 +3190,7 @@ public sealed partial class CodingAgentSession : IDisposable
 					_agent.Model,
 					_directStreamFn,
 					_streamOptions,
-					Settings.Compaction,
+					Settings.Compaction.ForModel(_agent.Model),
 					customInstructions: null,
 					cancellationToken,
 					thinkingLevel: _agent.ThinkingLevel),
@@ -3135,6 +3414,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		ThrowIfDisposed();
 		// 用户消息发送前才归一化图片：桌面端的 PrepareInput 在 UI 线程上，不能在那里解码大图。
 		message = await NormalizeMessageAsync(message, cancellationToken).ConfigureAwait(false);
+		DispatchBeforeAgentStart(message);
 		_cacheWarmer?.Cancel();
 		_overflowRecoveryAttempted = false;
 		IReadOnlyList<Message> messages;
@@ -3208,6 +3488,10 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		_agent.SetModel(model);
+		DispatchExtension("model_select", new JsonObject
+		{
+			["model"] = PiJson.SerializeModelNode(model),
+		});
 		Session.AppendModelChange(model.Provider, model.Id);
 	}
 
@@ -3222,6 +3506,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		_agent.SetThinkingLevel(clamped);
 		Session.AppendThinkingLevelChange(clamped);
 		Emit(new ThinkingLevelChangedEvent { Level = clamped });
+		DispatchExtension("thinking_level_select", new JsonObject { ["level"] = clamped });
 	}
 
 	public sealed record BashRunResult
@@ -3310,6 +3595,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	{
 		Session.AppendSessionInfo(name);
 		Emit(new SessionInfoChangedEvent { Name = name });
+		DispatchExtension("session_info_changed", new JsonObject { ["name"] = name });
 	}
 
 	private void EmitEntryAppended(string entryId)
@@ -3336,16 +3622,102 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		_disposed = true;
+		DispatchSessionLifecycle("session_shutdown");
 		_persistence.Dispose();
 		_cacheWarmLifecycle.Dispose();
 		_modeLifecycle.Dispose();
+		_extensionLifecycle.Dispose();
+		if (_ownsExtensions)
+		{
+			Extensions?.Dispose();
+			Extensions = null;
+		}
+
 		GC.SuppressFinalize(this);
 	}
 
 	private ValueTask<IReadOnlyList<Message>> TransformContextAsync(
 		IReadOnlyList<Message> messages,
 		CancellationToken cancellationToken) =>
-		ValueTask.FromResult(Project());
+		ValueTask.FromResult(LimitRequestImages(Project()));
+
+	/// <c>inputLimits.images.maxPerRequest</c>：按从新到旧保留图片，超出的换成文本括注。
+	/// 只作用于请求投影，不改会话文件与界面。
+	private IReadOnlyList<Message> LimitRequestImages(IReadOnlyList<Message> messages)
+	{
+		var options = ImageResizeOptions.FromInputLimits(Model.InputLimits);
+		if (options.MaxPerRequest == int.MaxValue)
+		{
+			return messages;
+		}
+
+		var total = 0;
+		foreach (var message in messages)
+		{
+			total += message switch
+			{
+				UserMessage user => user.Content.Blocks?.Count(static block => block is ImageContent) ?? 0,
+				ToolResultMessage toolResult => toolResult.Content.Count(static block => block is ImageContent),
+				CustomMessage custom => custom.Content.Blocks?.Count(static block => block is ImageContent) ?? 0,
+				_ => 0,
+			};
+		}
+
+		if (total <= options.MaxPerRequest)
+		{
+			return messages;
+		}
+
+		var remaining = options.MaxPerRequest;
+		var limitedMessages = new List<Message>(messages.Count);
+		for (var index = messages.Count - 1; index >= 0; index--)
+		{
+			limitedMessages.Add(LimitMessageImages(messages[index], ref remaining, options.MaxPerRequest));
+		}
+
+		limitedMessages.Reverse();
+		return limitedMessages;
+	}
+
+	private static Message LimitMessageImages(Message message, ref int remaining, int limit) => message switch
+	{
+		UserMessage user when user.Content.Blocks is { Count: > 0 } blocks &&
+			LimitBlocks(blocks, ref remaining, limit) is { } limited =>
+			user with { Content = MessageContent.FromBlocks(limited) },
+		ToolResultMessage result when result.Content.Count > 0 &&
+			LimitBlocks(result.Content, ref remaining, limit) is { } limited =>
+			result with { Content = limited },
+		CustomMessage custom when custom.Content.Blocks is { Count: > 0 } blocks &&
+			LimitBlocks(blocks, ref remaining, limit) is { } limited =>
+			custom with { Content = MessageContent.FromBlocks(limited) },
+		_ => message,
+	};
+
+	private static List<ContentBlock>? LimitBlocks(IReadOnlyList<ContentBlock> blocks, ref int remaining, int limit)
+	{
+		List<ContentBlock>? limited = null;
+		for (var index = 0; index < blocks.Count; index++)
+		{
+			var block = blocks[index];
+			if (block is not ImageContent)
+			{
+				limited?.Add(block);
+				continue;
+			}
+
+			if (remaining > 0)
+			{
+				remaining--;
+				limited?.Add(block);
+				continue;
+			}
+
+			limited ??= [.. blocks.Take(index)];
+			limited.Add(new TextContent { Text = $"[Image omitted: maxPerRequest={limit}.]" });
+		}
+
+		return limited;
+	}
 
 	/// 分支投影，外加当前系统提示词。会话运行期间工具集可能变化（例如 MCP 服务器宣告了新工具），
 	/// 所以模型看到的提示词每次都按当前状态重建。

@@ -202,7 +202,7 @@ internal static class GoogleWire
 	private static string ToolResultText(ToolResultMessage message)
 	{
 		var text = string.Join("\n", message.Content.OfType<TextContent>().Select(static block => block.Text));
-		if (text.Length > 0)
+		if (!string.IsNullOrWhiteSpace(text))
 		{
 			return TextSanitizer.SanitizeSurrogates(text);
 		}

@@ -135,12 +135,14 @@ public sealed partial class SessionTab : IDisposable
 	private readonly Button _modelButton;
 	private readonly TextBlock _modelLabel = new();
 	private readonly Button _addButton;
+	private readonly Button _quickMessagesButton;
 	private readonly Button _modeChip;
 	private readonly Image _goalModeIcon;
 	private readonly Image _planModeIcon;
 	private readonly TextBlock _modeChipLabel = new();
 	private readonly ComposerAddMenu _composerAddMenu = new();
 	private readonly ComposerPicker _composerPicker = new();
+	private readonly ComposerQuickMessages _quickMessages = new();
 	/// 目标模式是输入区自己的开关：会话侧的目标要在第一条带标记的消息里才创建，
 	/// 计划模式则直接落在 <see cref="Session"/> 上，两者互斥。
 	private bool _goalMode;
@@ -201,6 +203,9 @@ public sealed partial class SessionTab : IDisposable
 	public event Action<SessionTab>? AskChanged;
 
 	public event Action<SessionTab>? MessageSent;
+
+	/// 快捷消息浮层的「管理」入口：设置弹窗属于宿主，标签只发意图。
+	public event Action<SessionTab>? QuickMessagesSettingsRequested;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
 		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null,
@@ -410,6 +415,8 @@ public sealed partial class SessionTab : IDisposable
 				.VerticalAlignment(VerticalAlignment.Center).Children(_sendButton, _sendDivider, _sendMenuButton));
 
 		_addButton = AppIcons.Button("layout-grid", Strings.ComposerAddTitle, ShowComposerAddMenu);
+		_quickMessagesButton = AppIcons.Button("message-square",
+			Strings.QuickMessagesTooltip(ShortcutMap.Shared.Describe(ShortcutActions.QuickMessages)), ShowQuickMessages);
 		_goalModeIcon = AppIcons.Icon("target", AppStyles.RoleSubtle, 12).IsVisible(false);
 		_planModeIcon = AppIcons.Icon("list-checks", AppStyles.RoleSubtle, 12).IsVisible(false);
 		_modeChipLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText();
@@ -464,7 +471,7 @@ public sealed partial class SessionTab : IDisposable
 		// 中群是模型与思考强度铭牌（PiDeck 同款：provider/model · max ▾，居中）；
 		// 右群是连接测试与发送/中断，发送固定在最右。
 		var leftActions = new WrapPanel().Spacing(4).VerticalAlignment(VerticalAlignment.Center)
-			.Children(_addButton, _modeChip, _terminalButton, _securityButton);
+			.Children(_addButton, _quickMessagesButton, _modeChip, _terminalButton, _securityButton);
 		var centerActions = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(2)
@@ -962,6 +969,7 @@ public sealed partial class SessionTab : IDisposable
 		_thinkingPicker.Dispose();
 		_composerAddMenu.Dispose();
 		_composerPicker.CloseInstantly();
+		_quickMessages.Dispose();
 		_modelPicker.CloseInstantly();
 		_securityMenu.Dispose();
 		_scroll.ScrollChanged -= OutlineScrolled;
@@ -1054,6 +1062,7 @@ public sealed partial class SessionTab : IDisposable
 		AppStyles.ApplyTextColors(_usagePanel.View);
 		AppStyles.ApplyTextColors(_branchPanel.View);
 		AppStyles.ApplyTextColors(_composerPicker.View);
+		_quickMessages.ApplyTheme();
 		AppStyles.ApplyTextColors(_imagePreview.View);
 		_fileDiffPreview.ApplyTheme();
 		// 进行态条的图标是直接取色的（没进 AppIcons 的角色跟踪表），换肤后要重新取一次；
@@ -2645,6 +2654,8 @@ public sealed partial class SessionTab : IDisposable
 		// 切标签时弹层跟着走：淡出只会把旧菜单多留在窗口上，直接收。
 		_composerAddMenu.CloseInstantly();
 		_composerPicker.Hide();
+		// 弹层是原生 Popup：切标签时淡出会把旧清单留在新会话上，直接收。
+		_quickMessages.CloseInstantly();
 		_securityMenu.CloseInstantly();
 		_usagePanel.Hide();
 	}

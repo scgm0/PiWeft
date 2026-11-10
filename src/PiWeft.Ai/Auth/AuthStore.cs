@@ -38,6 +38,7 @@ public static partial class AuthStore
 	{
 		lock (AuthFileGate.Gate)
 		{
+			using var fileLock = AuthFileGate.LockFile(agentDir);
 			var path = Path(agentDir);
 			var root = ReadRootForWrite(path);
 			var existing = root[provider] as JsonObject;
@@ -91,6 +92,7 @@ public static partial class AuthStore
 	{
 		lock (AuthFileGate.Gate)
 		{
+			using var fileLock = AuthFileGate.LockFile(agentDir);
 			var path = Path(agentDir);
 			if (!File.Exists(path)) return false;
 			var root = ReadRootForWrite(path);

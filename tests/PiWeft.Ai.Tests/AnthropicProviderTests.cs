@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using PiWeft.Ai;
 using PiWeft.Ai.Providers.Anthropic;
 using Xunit;
@@ -299,6 +300,178 @@ public class AnthropicProviderTests
 		Assert.Equal("user", messages[2].GetProperty("role").GetString());
 		Assert.Equal("tool_result", messages[2].GetProperty("content")[0].GetProperty("type").GetString());
 		Assert.Equal("toolu_9", messages[2].GetProperty("content")[0].GetProperty("tool_use_id").GetString());
+	}
+
+	private static Model AdaptiveClaude() => Sonnet() with
+	{
+		Id = "claude-opus-5-5",
+		MaxTokens = 128_000,
+		Compat = new JsonObject
+		{
+			["forceAdaptiveThinking"] = true,
+			["supportsMidConvoEffort"] = true,
+			["supportsTemperature"] = false,
+			["supportsStrictTools"] = true,
+			["allowedFallbackModels"] = new JsonArray(new JsonObject
+			{
+				["provider"] = "anthropic",
+				["model"] = "claude-opus-5",
+			}),
+		},
+		ThinkingLevelMap = new Dictionary<string, string?>
+		{
+			["off"] = null,
+			["minimal"] = null,
+			["low"] = "low",
+			["medium"] = "medium",
+			["high"] = "high",
+			["xhigh"] = "xhigh",
+			["max"] = "max",
+		},
+	};
+
+	[Fact]
+	public async Task AdaptiveThinkingUsesEffortAndFallbacks()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			AdaptiveClaude(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+			new StreamOptions { ApiKey = "test-key", Temperature = 0.4, ThinkingLevel = ThinkingLevels.High, MaxTokens = 512 });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var root = document.RootElement;
+		var thinking = root.GetProperty("thinking");
+		Assert.Equal("adaptive", thinking.GetProperty("type").GetString());
+		Assert.Equal("summarized", thinking.GetProperty("display").GetString());
+		Assert.Equal("drop_block", thinking.GetProperty("block_binding").GetProperty("prefix_mismatch_behavior").GetString());
+		Assert.Equal("high", root.GetProperty("output_config").GetProperty("effort").GetString());
+		Assert.False(root.TryGetProperty("temperature", out _));
+		Assert.Equal(512, root.GetProperty("max_tokens").GetInt32());
+		Assert.Equal("claude-opus-5", root.GetProperty("fallbacks")[0].GetProperty("model").GetString());
+		var beta = handler.LastRequest!.Headers.GetValues("anthropic-beta").Single();
+		Assert.Contains("mid-conversation-output-config-2026-07-01", beta);
+		Assert.Contains("thinking-binding-controls-2026-08-01", beta);
+		Assert.Contains("server-side-fallback-2026-07-01", beta);
+	}
+
+	[Fact]
+	public async Task ErrorToolResultImagesMoveAfterAllToolResults()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+
+		var context = new Context
+		{
+			Messages =
+			[
+				new UserMessage { Content = MessageContent.FromText("read it"), Timestamp = 1 },
+				new AssistantMessage
+				{
+					Content = [new ToolCall { Id = "toolu_1", Name = "read", Arguments = new JsonObject { ["path"] = "x" } }],
+					Timestamp = 2,
+				},
+				new ToolResultMessage
+				{
+					ToolCallId = "toolu_1",
+					ToolName = "read",
+					IsError = true,
+					Content =
+					[
+						new TextContent { Text = "failed" },
+						new ImageContent { Data = "aGVsbG8=", MimeType = "image/png" },
+					],
+					Timestamp = 3,
+				},
+			],
+		};
+
+		var stream = provider.Stream(Sonnet() with { Input = ["text", "image"] }, context, new StreamOptions { ApiKey = "test-key", ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var messages = document.RootElement.GetProperty("messages");
+		var user = messages[messages.GetArrayLength() - 1];
+		var content = user.GetProperty("content");
+		var result = content[0];
+		Assert.Equal("tool_result", result.GetProperty("type").GetString());
+		Assert.DoesNotContain(result.GetProperty("content").EnumerateArray(), block =>
+			block.GetProperty("type").GetString() == "image");
+		Assert.Equal("(image attached after the tool results)", result.GetProperty("content")[1].GetProperty("text").GetString());
+		Assert.Equal("text", content[1].GetProperty("type").GetString());
+		Assert.Equal("image", content[2].GetProperty("type").GetString());
+	}
+
+	[Fact]
+	public async Task StrictToolLimitIsRememberedPerSession()
+	{
+		var reject = true;
+		var handler = new FakeHttpHandler
+		{
+			Responder = _ =>
+			{
+				if (reject)
+				{
+					reject = false;
+					return new HttpResponseMessage(HttpStatusCode.BadRequest)
+					{
+						Content = new StringContent(
+							"{\"error\":{\"message\":\"The compiled grammar is too large\"}}",
+							Encoding.UTF8,
+							"application/json"),
+					};
+				}
+
+				return Sse(StreamBody);
+			},
+		};
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var model = Sonnet() with { Compat = new JsonObject { ["supportsStrictTools"] = true } };
+		var tool = new Tool
+		{
+			Name = "read",
+			Description = "read a file",
+			Parameters = new JsonObject
+			{
+				["type"] = "object",
+				["properties"] = new JsonObject { ["path"] = new JsonObject { ["type"] = "string" } },
+			},
+			ConstrainedSampling = ConstrainedSampling.JsonSchema(),
+		};
+		var sessionId = "strict-" + Guid.NewGuid().ToString("N");
+		var context = new Context
+		{
+			Messages =
+			[
+				new SystemMessage { Content = MessageContent.FromText("system"), ToolsAdded = [tool], Timestamp = 1 },
+				new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 2 },
+			],
+		};
+
+		var first = provider.Stream(model, context, new StreamOptions { ApiKey = "test-key", SessionId = sessionId, ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in first)
+		{
+		}
+
+		Assert.Equal(2, handler.Bodies.Count);
+		Assert.Contains("\"strict\":true", handler.Bodies[0]);
+		Assert.DoesNotContain("\"strict\":true", handler.Bodies[1]);
+
+		handler.Bodies.Clear();
+		var second = provider.Stream(model, context, new StreamOptions { ApiKey = "test-key", SessionId = sessionId, ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in second)
+		{
+		}
+
+		Assert.Single(handler.Bodies);
+		Assert.DoesNotContain("\"strict\":true", handler.Bodies[0]);
 	}
 
 	[Fact]

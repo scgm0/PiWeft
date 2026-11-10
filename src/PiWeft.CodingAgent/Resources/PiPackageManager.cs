@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text;
+using PiWeft.Ai.Json;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 
@@ -226,7 +229,7 @@ public static class PiPackageManager
 	{
 		if (spec.Value.StartsWith("npm:", StringComparison.Ordinal))
 		{
-			return await InstallNpmAsync(spec.Value[4..], spec, options, runner, cancellationToken).ConfigureAwait(false);
+			return await UpdateNpmAsync(spec.Value[4..], spec, options, runner, cancellationToken).ConfigureAwait(false);
 		}
 
 		if (IsRemote(spec.Value))
@@ -237,6 +240,7 @@ public static class PiPackageManager
 				return PackageResult.Failure($"{spec.Value} 尚未安装");
 			}
 
+			var before = await GitCommitAsync(root, runner, options.Timeout, cancellationToken).ConfigureAwait(false);
 			var (_, reference) = SplitGitReference(spec.Value);
 			IReadOnlyList<string> arguments = reference is { Length: > 0 }
 				? ["fetch", "--depth", "1", "origin", reference]
@@ -257,10 +261,67 @@ public static class PiPackageManager
 				}
 			}
 
-			return PackageResult.Success($"已更新 {spec.Value}", root);
+			var after = await GitCommitAsync(root, runner, options.Timeout, cancellationToken).ConfigureAwait(false);
+			var version = before is { Length: > 0 } && after is { Length: > 0 } && !string.Equals(before, after, StringComparison.Ordinal)
+				? $"{before} -> {after}"
+				: "已是最新";
+			return PackageResult.Success($"已更新 {spec.Value}（{version}）", root);
 		}
 
 		return PackageResult.Success($"本地包无需更新：{spec.Value}");
+	}
+
+	private static async Task<PackageResult> UpdateNpmAsync(
+		string npmSpec,
+		PackageSource spec,
+		PackageOptions options,
+		IPackageCommandRunner runner,
+		CancellationToken cancellationToken)
+	{
+		var name = PiPackageStore.NpmPackageName(npmSpec);
+		if (name is null)
+		{
+			return PackageResult.Failure($"无法解析 npm 包名：{npmSpec}");
+		}
+
+		var root = Path.Combine(spec.ScopeRoot, ResourcePaths.NpmDirectoryName, "node_modules", name);
+		var before = ReadPackageVersion(root);
+		var installed = await InstallNpmAsync(npmSpec, spec, options, runner, cancellationToken).ConfigureAwait(false);
+		if (!installed.Ok)
+		{
+			return installed;
+		}
+
+		var after = ReadPackageVersion(root);
+		var version = before is { Length: > 0 } && after is { Length: > 0 } && !string.Equals(before, after, StringComparison.Ordinal)
+			? $"{before} -> {after}"
+			: "已是最新";
+		return PackageResult.Success($"已更新 {spec.Value}（{version}）", installed.Detail);
+	}
+
+	private static string? ReadPackageVersion(string root)
+	{
+		try
+		{
+			var path = Path.Combine(root, "package.json");
+			return File.Exists(path) && JsonNode.Parse(PiJson.StripBom(File.ReadAllText(path))) is JsonObject package
+				? package["version"]?.GetValue<string>()
+				: null;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+		{
+			return null;
+		}
+	}
+
+	private static async Task<string?> GitCommitAsync(
+		string root,
+		IPackageCommandRunner runner,
+		TimeSpan timeout,
+		CancellationToken cancellationToken)
+	{
+		var result = await ExecuteAsync("git", ["rev-parse", "--short", "HEAD"], root, timeout, runner, cancellationToken).ConfigureAwait(false);
+		return result.ExitCode == 0 ? result.Output.Trim() : null;
 	}
 
 	private static async Task<PackageResult> MaterializeAsync(

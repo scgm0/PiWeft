@@ -60,7 +60,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var reasoningEffort = OpenAiResponsesProvider.ResolveReasoningEffort(model, options);
-			var maxOutputTokens = options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null);
+			var maxOutputTokens = OpenAiContextBudget.Clamp(model, messages, options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null));
 			var cacheKey = options.SessionId ?? options.Metadata?["prompt_cache_key"]?.GetValue<string>();
 
 			var body = BuildRequestBody(

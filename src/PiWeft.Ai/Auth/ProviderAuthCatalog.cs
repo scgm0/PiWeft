@@ -186,6 +186,7 @@ public static class ProviderAuthCatalog
 			Standard("qwen-token-plan", "Qwen Token Plan", "Qwen Token Plan API key", "QWEN_TOKEN_PLAN_API_KEY"),
 			Standard("qwen-token-plan-cn", "Qwen Token Plan CN", "Qwen Token Plan CN API key", "QWEN_TOKEN_PLAN_CN_API_KEY"),
 			Standard("qwen-token-plan-individual", "Qwen Token Plan Individual", "Qwen Token Plan Individual API key", "QWEN_TOKEN_PLAN_API_KEY"),
+			Standard("qwen-token-plan-individual-cn", "Qwen Token Plan Individual CN", "Qwen Token Plan Individual CN API key", "QWEN_TOKEN_PLAN_CN_API_KEY"),
 			StandardWithOAuth("radius", "Radius", "Radius API key", ["RADIUS_API_KEY"]),
 			Standard("together", "Together", "Together API key", "TOGETHER_API_KEY"),
 			Standard("typesafe", "TypeSafe", "TypeSafe API key", "TYPESAFE_API_KEY"),
