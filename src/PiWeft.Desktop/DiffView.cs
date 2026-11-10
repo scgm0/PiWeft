@@ -1,3 +1,4 @@
+using System.Text;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Text;
@@ -15,12 +16,19 @@ public static class DiffView
 	internal static UIElement Render(string patch, TextFocusScrollGuard? focus, bool capLargeText = true)
 	{
 		var normalized = patch.Replace("\r\n", "\n").Replace('\r', '\n');
-		var numbers = new List<string>();
 		var oldLine = 0;
 		var newLine = 0;
-		// 逐行走 span：一份几千行的补丁用 Split('\n') 会白白分配几千个短字符串，
-		// 而行号列只需要每行一个计数。枚举结果与 Split 一致（含结尾空行）。
 		var lineCount = normalized.Length == 0 ? 1 : normalized.AsSpan().Count('\n') + 1;
+		// 行号列直接写进 StringBuilder：几千行的补丁不再为每行分配一个计数串。
+		// 容量按每行 5 位数字加换行估；长行补丁按字符数估会多占一大截。
+		var gutterText = new StringBuilder((int)Math.Min(normalized.Length / 4L, lineCount * 6L));
+		var firstGutterLine = true;
+		void NextGutterLine()
+		{
+			if (!firstGutterLine) gutterText.Append('\n');
+			firstGutterLine = false;
+		}
+
 		var index = 0;
 		foreach (var line in normalized.AsSpan().EnumerateLines())
 		{
@@ -28,13 +36,18 @@ public static class DiffView
 			if (line.StartsWith("@@"))
 			{
 				(oldLine, newLine) = DiffSyntax.ParseHunkHeader(line, oldLine, newLine);
-				numbers.Add(string.Empty);
+				NextGutterLine();
 			}
-			else if (DiffSyntax.IsMetadata(line) || last && line.IsEmpty) numbers.Add(string.Empty);
-			else if (line.StartsWith("-")) numbers.Add((oldLine++).ToString());
+			else if (DiffSyntax.IsMetadata(line) || last && line.IsEmpty) NextGutterLine();
+			else if (line.StartsWith("-"))
+			{
+				NextGutterLine();
+				gutterText.Append(oldLine++);
+			}
 			else
 			{
-				numbers.Add((newLine++).ToString());
+				NextGutterLine();
+				gutterText.Append(newLine++);
 				if (!line.StartsWith("+")) oldLine++;
 			}
 		}
@@ -57,9 +70,10 @@ public static class DiffView
 			AppStyles.RefreshTextView(view);
 		});
 		focus?.Track(text);
-		// 大补丁行号到四五位，留宽一点。
-		var gutter = MessageText.Create(string.Join('\n', numbers), mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro)
-			.Width(large ? LargeGutterWidth : 40).Focusable(false).IsHitTestVisible(false);
+		// 行号到六位才加宽：行号列的滚动条已隐藏，40 能放下五位数字。
+		var gutterWidth = Math.Max(oldLine, newLine) > 99_999 ? LargeGutterWidth : 40;
+		var gutter = MessageText.Create(gutterText.ToString(), mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro)
+			.Width(gutterWidth).Focusable(false).IsHitTestVisible(false);
 		gutter.WithTheme((theme, block) => block.Foreground = AppTheme.For(theme).TextFaint);
 		gutter.Tag = null;
 		HideScrollBars(gutter);
@@ -68,11 +82,13 @@ public static class DiffView
 		SyncVertical(text, gutter);
 		// 正文直接吃 DockPanel 给的宽高：高度由宿主决定（浮层是窗口高度，工具行是上限），
 		// 文本控件按这个高度收口并只物化可见行，纵向滚动条落在正文自己的右缘。
-		return new Border().StyleName(AppStyles.Code)
+		var view = new Border().StyleName(AppStyles.Code)
 			.WithTheme((theme, border) => border.BorderBrush = AppTheme.For(theme).Border)
 			.BorderThickness(1).CornerRadius(AppTheme.RadiusSm)
 			.Padding(new Thickness(AppTheme.Space2, 4, AppTheme.Space2, 4))
 			.Child(new DockPanel().LastChildFill().Children(gutter.DockLeft(), text));
+		RouteGutterWheel(view, text);
+		return view;
 	}
 
 	/// 并排 diff：左旧右新两列，行数一致逐行对齐；hunk 头渲染成两列都显示的分隔行。
@@ -88,28 +104,63 @@ public static class DiffView
 			return Render(patch, focus, capLargeText);
 		}
 
-		var oldText = string.Join('\n', rows.Select(row => Line(row, true)));
-		var newText = string.Join('\n', rows.Select(row => Line(row, false)));
-		var large = capLargeText && (MessageText.IsLargeText(oldText) || MessageText.IsLargeText(newText));
-		var left = SideColumn(rows, old: true, focus, oldText, large);
-		var right = SideColumn(rows, old: false, focus, newText, large);
+		// 两列正文与行号列一次遍历写进 StringBuilder：几万行的并排补丁不再为每行
+		// 分配中间串，也不再枚举 rows 四遍。
+		var oldText = new StringBuilder(patch.Length / 2);
+		var newText = new StringBuilder(patch.Length / 2);
+		var oldNumbers = new StringBuilder(rows.Count * 3);
+		var newNumbers = new StringBuilder(rows.Count * 3);
+		var maxNumber = 0;
+		for (int rowIndex = 0, rowCount = rows.Count; rowIndex < rowCount; rowIndex++)
+		{
+			var row = rows[rowIndex];
+			if (rowIndex > 0)
+			{
+				oldText.Append('\n');
+				newText.Append('\n');
+				oldNumbers.Append('\n');
+				newNumbers.Append('\n');
+			}
+
+			AppendSideLine(oldText, row, old: true);
+			AppendSideLine(newText, row, old: false);
+			if (row.OldNumber is { } oldNumber)
+			{
+				oldNumbers.Append(oldNumber);
+				maxNumber = Math.Max(maxNumber, oldNumber);
+			}
+
+			if (row.NewNumber is { } newNumber)
+			{
+				newNumbers.Append(newNumber);
+				maxNumber = Math.Max(maxNumber, newNumber);
+			}
+		}
+
+		// 两列行数相同，行数按 rows 判断（N 行文本有 N-1 个换行，与 IsLargeText 的 >= 判定对齐）；
+		// 字符数按缓冲长度，省一次扫描。
+		var large = capLargeText && (oldText.Length >= MessageText.LargeTextCharacters ||
+			newText.Length >= MessageText.LargeTextCharacters || rows.Count > MessageText.LargeTextLines);
+		var wideGutter = maxNumber > 99_999;
+		var left = SideColumn(focus, oldText.ToString(), oldNumbers.ToString(), large, wideGutter);
+		var right = SideColumn(focus, newText.ToString(), newNumbers.ToString(), large, wideGutter);
 		SyncColumns(left, right);
 		// 两列等分宽度：列宽跟着宿主走，不固定在阅读宽度的一半上。
 		var content = new Grid().Columns("*,*").Spacing(AppTheme.Space2)
 			.Children(left.View.Column(0), right.View.Column(1));
 
-		return new Border().StyleName(AppStyles.Code)
+		var view = new Border().StyleName(AppStyles.Code)
 			.WithTheme((theme, border) => border.BorderBrush = AppTheme.For(theme).Border)
 			.BorderThickness(1).CornerRadius(AppTheme.RadiusSm)
 			.Padding(new Thickness(AppTheme.Space2, 4, AppTheme.Space2, 4))
 			.Child(content);
+		RouteGutterWheel(view, left.Body);
+		return view;
 	}
 
-	private static SideColumnView SideColumn(IReadOnlyList<DiffRow> rows, bool old, TextFocusScrollGuard? focus,
-		string text, bool large)
+	private static SideColumnView SideColumn(TextFocusScrollGuard? focus, string text, string numbers, bool large,
+		bool wideGutter)
 	{
-		var numbers = string.Join('\n', rows.Select(row => (old ? row.OldNumber : row.NewNumber)?.ToString() ?? string.Empty));
-
 		var body = MessageText.Create(text, mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro);
 		if (large) body.MaxHeight(MessageText.LargeTextMaxHeight).VerticalAlignment(VerticalAlignment.Top);
 		body.Foreground = AppTheme.TextMuted;
@@ -125,7 +176,7 @@ public static class DiffView
 		focus?.Track(body);
 
 		var gutter = MessageText.Create(numbers, mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro)
-			.Width(large ? LargeGutterWidth : 40).Focusable(false).IsHitTestVisible(false);
+			.Width(wideGutter ? LargeGutterWidth : 40).Focusable(false).IsHitTestVisible(false);
 		gutter.WithTheme((theme, block) => block.Foreground = AppTheme.For(theme).TextFaint);
 		gutter.Tag = null;
 		HideScrollBars(gutter);
@@ -151,6 +202,12 @@ public static class DiffView
 			target.MakeVisible(new Rect(target.ScrollOffset.X, source.ScrollOffset.Y, 1, height));
 		};
 	}
+
+	/// 行号列与内边距不参与命中测试，滚轮落在那里时正文收不到；这里把同一条滚轮
+	/// 交给正文的平滑控制器。正文自己命中时已处理过，不会重复。到边界时控制器会按
+	/// 嵌套视口继续往外滚（对话里的工具行仍能滚会话）。
+	private static void RouteGutterWheel(Border view, MultiLineTextBox body) =>
+		view.MouseWheel += args => SmoothScroll.For(body).RouteWheel(args);
 
 	/// 行号列不参与命中测试，但它也是可滚动文本：视口被夹住时会画一条自己的滚动条，
 	/// 拖不动又和正文那条并排。ScrollBarVisibility 没有 Hidden，只能把绘制压到 0；
@@ -208,28 +265,30 @@ public static class DiffView
 		}
 	}
 
-	private static string Line(DiffRow row, bool old)
+	/// 把一行并排文本追加到列缓冲。空行占位、hunk 头与标记的规则与统一视图一致。
+	private static void AppendSideLine(StringBuilder builder, DiffRow row, bool old)
 	{
 		if (row.Kind == DiffRowKind.Header)
 		{
-			return row.Header;
+			builder.Append(row.Header);
+			return;
 		}
 
 		if ((old ? row.OldNumber : row.NewNumber) is null)
 		{
-			return " ";
+			builder.Append(' ');
+			return;
 		}
 
-		var marker = row.Kind switch
+		builder.Append(row.Kind switch
 		{
-			DiffRowKind.Context => " ",
-			DiffRowKind.Change => old ? "-" : "+",
-			DiffRowKind.Deletion => "-",
-			DiffRowKind.Addition => "+",
-			_ => " ",
-		};
-
-		return marker + (old ? row.OldText : row.NewText);
+			DiffRowKind.Context => ' ',
+			DiffRowKind.Change => old ? '-' : '+',
+			DiffRowKind.Deletion => '-',
+			DiffRowKind.Addition => '+',
+			_ => ' ',
+		});
+		builder.Append(old ? row.OldText : row.NewText);
 	}
 
 	internal static (int OldLine, int NewLine) ParseHunkHeader(string line, int fallbackOld, int fallbackNew) =>

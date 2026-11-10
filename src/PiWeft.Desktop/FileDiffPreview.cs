@@ -74,9 +74,11 @@ internal sealed class FileDiffPreview
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Children(modes, _open, _close);
 
-		var headerContent = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+		// 标题与路径各占一份星号宽度：卡片封顶 1080 后，头部放不下所有 MaxWidth 的和，
+		// StackPanel 不会收缩，路径会压到右侧按钮上。
+		var headerContent = new Grid().Columns("*,Auto,Auto,2*").Spacing(AppTheme.Space2)
 			.VerticalAlignment(VerticalAlignment.Center)
-			.Children(_title, _context, _stat, _path);
+			.Children(_title.Column(0), _context.Column(1), _stat.Column(2), _path.Column(3));
 		var header = new Border().StyleName(AppStyles.DialogHeader)
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel().LastChildFill().Children(actions.DockRight(), headerContent));

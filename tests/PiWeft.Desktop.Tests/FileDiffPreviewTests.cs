@@ -93,6 +93,22 @@ public sealed class FileDiffPreviewTests
 	}
 
 	[Fact]
+	public void HeaderKeepsTheModeButtonsClearOfALongPath()
+	{
+		var preview = new FileDiffPreview();
+		preview.LoadForTests(new DiffPreviewContent(
+			new string('t', 80), new string('c', 40), "/repo/" + new string('p', 300), 108, 27, Patch));
+		Layout(preview);
+
+		// 卡片封顶 1080 后，头部各段的 MaxWidth 之和放不下；标题/路径必须按星号宽度收缩。
+		var path = Find<TextBlock>(preview.View).Single(text => text.Text.StartsWith("/repo/", StringComparison.Ordinal));
+		var track = Find<Border>(preview.View).Single(border => border.StyleName == AppStyles.SegmentTrack);
+		Assert.True(path.Bounds.Right <= track.Bounds.X + 1,
+			$"路径右缘 {path.Bounds.Right} 压到了模式按钮 {track.Bounds.X}");
+		UiLifetime.Release(preview.View);
+	}
+
+	[Fact]
 	public void CardWidthIsCappedAndCentered()
 	{
 		var preview = new FileDiffPreview();

@@ -92,6 +92,19 @@ public class SideBySideDiffTests
 
 	[Fact]
 	public void EmptyPatchProducesNoRows() => Assert.Empty(SideBySideDiff.Parse(string.Empty));
+
+	[Theory]
+	[InlineData("", 0)]
+	[InlineData("\n", 1)] // 开头空行按上下文行处理，结尾空行跳过（旧 Split 行为）
+	[InlineData("a", 1)]
+	[InlineData("a\n", 1)]
+	[InlineData("a\r\n", 1)]
+	[InlineData("a\nb\n", 2)]
+	public void SpanSplittingKeepsTheOldEmptyAndTrailingLineRules(string patch, int expectedRows)
+	{
+		// span 切行必须与 string.Split('\n') 的空项/结尾空行行为一致。
+		Assert.Equal(expectedRows, SideBySideDiff.Parse(patch).Count);
+	}
 }
 
 [Collection("mewui-controls")]

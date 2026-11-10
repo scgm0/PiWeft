@@ -29,21 +29,22 @@ public static class SideBySideDiff
 	{
 		var rows = new List<DiffRow>();
 		var normalized = patch.Replace("\r\n", "\n").Replace('\r', '\n');
-		var lines = normalized.Split('\n');
+		var span = normalized.AsSpan();
+		var lines = SplitLines(span);
 		var oldLine = 0;
 		var newLine = 0;
 
-		for (var index = 0; index < lines.Length; index++)
+		for (var index = 0; index < lines.Count; index++)
 		{
-			var line = lines[index];
-			if (line.StartsWith("@@", StringComparison.Ordinal))
+			var line = span[lines[index]];
+			if (line.StartsWith("@@"))
 			{
 				(oldLine, newLine) = ParseHunkHeader(line, oldLine, newLine);
-				rows.Add(new DiffRow(null, string.Empty, null, string.Empty, DiffRowKind.Header, line));
+				rows.Add(new DiffRow(null, string.Empty, null, string.Empty, DiffRowKind.Header, line.ToString()));
 				continue;
 			}
 
-			if (IsMetadata(line) || index == lines.Length - 1 && line.Length == 0)
+			if (IsMetadata(line) || index == lines.Count - 1 && line.IsEmpty)
 			{
 				continue;
 			}
@@ -52,16 +53,16 @@ public static class SideBySideDiff
 			{
 				// 收集连续的删除与紧接着的新增，按序号配对。
 				var deletions = new List<(int Number, string Text)>();
-				while (index < lines.Length && lines[index].StartsWith('-') && !IsMetadata(lines[index]))
+				while (index < lines.Count && span[lines[index]].StartsWith('-') && !IsMetadata(span[lines[index]]))
 				{
-					deletions.Add((oldLine++, lines[index][1..]));
+					deletions.Add((oldLine++, span[lines[index]][1..].ToString()));
 					index++;
 				}
 
 				var additions = new List<(int Number, string Text)>();
-				while (index < lines.Length && lines[index].StartsWith('+') && !IsMetadata(lines[index]))
+				while (index < lines.Count && span[lines[index]].StartsWith('+') && !IsMetadata(span[lines[index]]))
 				{
-					additions.Add((newLine++, lines[index][1..]));
+					additions.Add((newLine++, span[lines[index]][1..].ToString()));
 					index++;
 				}
 
@@ -84,21 +85,34 @@ public static class SideBySideDiff
 
 			if (line.StartsWith('+'))
 			{
-				rows.Add(new DiffRow(null, string.Empty, newLine++, line[1..], DiffRowKind.Addition));
+				rows.Add(new DiffRow(null, string.Empty, newLine++, line[1..].ToString(), DiffRowKind.Addition));
 				continue;
 			}
 
 			// 上下文行：两侧都有，行号各自递增。
-			var text = line.StartsWith(' ') ? line[1..] : line;
+			var text = (line.StartsWith(' ') ? line[1..] : line).ToString();
 			rows.Add(new DiffRow(oldLine++, text, newLine++, text, DiffRowKind.Context));
 		}
 
 		return rows;
 	}
 
-	// 行分类与 hunk 头解析与统一视图共用：两边各留一份就会在一次修正后只修好一边。
-	private static bool IsMetadata(string line) => DiffSyntax.IsMetadata(line);
+	/// 用 span 切行，不产生每行的字符串；行文本只在需要进 <see cref="DiffRow"/> 时 ToString。
+	/// 切分结果与 <c>Split('\n')</c> 一致（含结尾空行）。
+	private static List<Range> SplitLines(ReadOnlySpan<char> span)
+	{
+		var lines = new List<Range>(span.Count('\n') + 1);
+		foreach (var range in span.Split('\n'))
+		{
+			lines.Add(range);
+		}
 
-	private static (int OldLine, int NewLine) ParseHunkHeader(string line, int fallbackOld, int fallbackNew) =>
+		return lines;
+	}
+
+	// 行分类与 hunk 头解析与统一视图共用：两边各留一份就会在一次修正后只修好一边。
+	private static bool IsMetadata(ReadOnlySpan<char> line) => DiffSyntax.IsMetadata(line);
+
+	private static (int OldLine, int NewLine) ParseHunkHeader(ReadOnlySpan<char> line, int fallbackOld, int fallbackNew) =>
 		DiffSyntax.ParseHunkHeader(line, fallbackOld, fallbackNew);
 }
