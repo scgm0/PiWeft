@@ -9,6 +9,18 @@ public sealed class ConfigurationStoreTests : IDisposable
 	private ConfigurationStore Store => new(Path.Combine(_root, "agent"), Path.Combine(_root, "project"));
 
 	[Fact]
+	public void EmptyConfigFileIsTreatedAsEmptyObject()
+	{
+		var store = Store;
+		var file = store.Read(ConfigFile.Usage);
+		Directory.CreateDirectory(Path.GetDirectoryName(file.Path)!);
+		File.WriteAllText(file.Path, string.Empty);
+		var reread = store.Read(ConfigFile.Usage);
+		Assert.Null(reread.Error);
+		Assert.Empty(reread.Parse());
+	}
+
+	[Fact]
 	public void ProviderEditPreservesUnknownFieldsAndExistingKey()
 	{
 		var store = Store;

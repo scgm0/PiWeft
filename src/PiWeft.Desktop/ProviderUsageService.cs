@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -13,13 +15,23 @@ internal sealed record UsageProbePlan(string BaseUrl, string Token, IReadOnlyLis
 
 internal sealed record UsageProbeAttempt(string Url, string Method, int? Status = null, string? Body = null, bool Shape = false, string? Error = null);
 
+/// 预检结果：失败时也带上 URL、状态和错误，让排查明细能看到 xAI 这类两步探针卡在哪一步。
+internal sealed record UsagePreflightOutcome(string Url, string? Capture = null, int? Status = null, bool Shape = false,
+	string? Error = null);
+
 /// 供应商用量/余额探测：逐候选、逐 URL 尝试，首个解析成功的结果即返回。
 /// 凭据只在主进程发请求；响应原文不落日志、不回传 UI，只保留脱敏截断后的尝试明细。
 internal sealed class ProviderUsageService(HttpClient client)
 {
 	// 总超时由每次探测的 CancellationTokenSource 控制（按 provider 配置 1-300 秒），
 	// HttpClient 自身不设总时限，否则配置成 30 秒也会被 15 秒截断。
-	public static readonly HttpClient Client = new(new HttpClientHandler { AllowAutoRedirect = false })
+	public static readonly HttpClient Client = new(new HttpClientHandler
+	{
+		AllowAutoRedirect = false,
+		// 用量请求无状态：不要复用别的供应商响应留下的 Cookie，也不要为了压缩包手动加解压层。
+		UseCookies = false,
+		AutomaticDecompression = DecompressionMethods.All,
+	})
 	{
 		Timeout = Timeout.InfiniteTimeSpan,
 	};
@@ -41,7 +53,7 @@ internal sealed class ProviderUsageService(HttpClient client)
 		UsageProbeCandidate? legacy, string cwd, CancellationToken cancellationToken, HttpClient? client = null)
 	{
 		var plan = await BuildPlanAsync(model, config, document, legacy, cwd, cancellationToken).ConfigureAwait(false);
-		if (plan.Error is { } error) return ProviderUsageResult.Failure(error);
+		if (plan.Error is { } error) return ProviderUsageResult.Failure(error, intervalMinutes: config.IntervalMinutes);
 		var timeout = TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSecs, 1, 300));
 		return await new ProviderUsageService(client ?? Client)
 			.ProbeAsync(model, plan, timeout, config.IntervalMinutes, cancellationToken)
@@ -153,25 +165,37 @@ internal sealed class ProviderUsageService(HttpClient client)
 		var attempts = new List<UsageProbeAttempt>();
 		var missingKey = false;
 		var startedAt = DateTimeOffset.UtcNow;
+		cancellationToken.ThrowIfCancellationRequested();
 		var baseUri = Uri.TryCreate(plan.BaseUrl, UriKind.Absolute, out var parsedBase) ? parsedBase : null;
 		// 模型自定义头只回发给供应商自己的域：模板允许把用量端点覆盖到别的域，
 		// 但那些自定义头（可能含鉴权/租户标）不应跟着过去。
 		var modelOrigin = Uri.TryCreate(model.BaseUrl, UriKind.Absolute, out var modelBase)
 			? modelBase.GetLeftPart(UriPartial.Authority) : string.Empty;
+		// 配置里的超时是对整次探测的预算，不是每条候选 URL 各给一份。
+		// 否则多候选供应商会把一次查询拖成 N 倍超时，统计面板没有外层兜底时会一直转圈。
+		using var probe = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		probe.CancelAfter(timeout);
 
 		foreach (var candidate in plan.Candidates)
 		{
-			// 链式预检（xAI 先查 identity 拿 userId）：失败则整个候选跳过。
+			if (probe.IsCancellationRequested) break;
+			// 链式预检（xAI 先查 identity 拿 userId）：失败则整个候选跳过，并把失败写进明细。
 			Dictionary<string, string> preflightHeaders = new(StringComparer.OrdinalIgnoreCase);
 			if (candidate.Preflight is { } preflight)
 			{
-				var captured = await RunPreflightAsync(model, plan, preflight, timeout, cancellationToken).ConfigureAwait(false);
-				if (captured is null) continue;
-				preflightHeaders[preflight.CaptureHeader] = captured;
+				var outcome = await RunPreflightAsync(model, plan, preflight, cancellationToken, probe.Token).ConfigureAwait(false);
+				if (outcome.Capture is null)
+				{
+					attempts.Add(new(outcome.Url, "GET", outcome.Status, Shape: outcome.Shape, Error: outcome.Error));
+					if (probe.IsCancellationRequested) break;
+					continue;
+				}
+				preflightHeaders[preflight.CaptureHeader] = outcome.Capture;
 			}
 
 			foreach (var url in UsageProbes.Urls(candidate, plan.BaseUrl))
 			{
+				if (probe.IsCancellationRequested) break;
 				if (!TryValidateUrl(url, baseUri, candidate.AbsoluteUrl.Length > 0, out var uri))
 				{
 					attempts.Add(new(url, candidate.Method, Error: Strings.UsageInvalidConfig));
@@ -192,29 +216,27 @@ internal sealed class ProviderUsageService(HttpClient client)
 				if (candidate.Method == "POST" && candidate.Body is { } body)
 					request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
 
-				using var abort = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-				abort.CancelAfter(timeout);
 				string raw;
 				try
 				{
-					using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, abort.Token)
+					using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, probe.Token)
 						.ConfigureAwait(false);
 					if (!response.IsSuccessStatusCode)
 					{
-						var summary = await ReadBoundedAsync(response, abort.Token).ConfigureAwait(false);
+						var summary = await ReadBoundedAsync(response, probe.Token).ConfigureAwait(false);
 						attempts.Add(new(url, candidate.Method, (int)response.StatusCode,
 							string.IsNullOrWhiteSpace(summary) ? null : Redact(summary, plan.Token)));
 						continue;
 					}
-					raw = await ReadBoundedAsync(response, abort.Token).ConfigureAwait(false);
+					raw = await ReadBoundedAsync(response, probe.Token).ConfigureAwait(false);
 				}
 				catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
 				catch (OperationCanceledException)
 				{
 					attempts.Add(new(url, candidate.Method, Error: "timeout"));
-					continue;
+					break;
 				}
-				catch (InvalidOperationException ex) when (ex.Message == Strings.UsageResponseTooLarge)
+				catch (UsageResponseTooLargeException)
 				{
 					attempts.Add(new(url, candidate.Method, Error: "large"));
 					continue;
@@ -239,44 +261,53 @@ internal sealed class ProviderUsageService(HttpClient client)
 			}
 		}
 
-		if (attempts.Count == 0) return ProviderUsageResult.Failure(Strings.UsageUnavailable);
-		if (attempts.All(attempt => attempt.Error == "large")) return ProviderUsageResult.Failure(Strings.UsageResponseTooLarge);
+		cancellationToken.ThrowIfCancellationRequested();
+		if (attempts.Count == 0) return ProviderUsageResult.Failure(Strings.UsageUnavailable, intervalMinutes: intervalMinutes);
+		if (attempts.All(attempt => attempt.Error == "large"))
+			return ProviderUsageResult.Failure(Strings.UsageResponseTooLarge, intervalMinutes: intervalMinutes);
 		// 全部失败且原因都是「没凭据」时给专属文案，不把用户引向接口排查。
 		if (missingKey && attempts.All(attempt => attempt.Error == Strings.UsageMissingKey))
-			return ProviderUsageResult.Failure(Strings.UsageMissingKey);
-		return ProviderUsageResult.Failure(Strings.UsageUnavailable, BuildDetail(attempts, plan.Token));
+			return ProviderUsageResult.Failure(Strings.UsageMissingKey, intervalMinutes: intervalMinutes);
+		return ProviderUsageResult.Failure(Strings.UsageUnavailable, BuildDetail(attempts, plan.Token), intervalMinutes);
 	}
 
-	private async Task<string?> RunPreflightAsync(Model model, UsageProbePlan plan, UsageProbePreflight preflight, TimeSpan timeout,
-		CancellationToken cancellationToken)
+	private async Task<UsagePreflightOutcome> RunPreflightAsync(Model model, UsageProbePlan plan, UsageProbePreflight preflight,
+		CancellationToken cancellationToken, CancellationToken probeToken)
 	{
 		var baseUri = Uri.TryCreate(plan.BaseUrl, UriKind.Absolute, out var parsedBase) ? parsedBase : null;
 		var modelOrigin = Uri.TryCreate(model.BaseUrl, UriKind.Absolute, out var modelBase)
 			? modelBase.GetLeftPart(UriPartial.Authority) : string.Empty;
+		var last = new UsagePreflightOutcome(preflight.Path);
 		foreach (var url in UsageProbes.Urls(new UsageProbeCandidate(preflight.Path, preflight.AbsoluteUrl), plan.BaseUrl))
 		{
-			if (!TryValidateUrl(url, baseUri, preflight.AbsoluteUrl.Length > 0, out var uri)) continue;
+			last = new UsagePreflightOutcome(url);
+			if (!TryValidateUrl(url, baseUri, preflight.AbsoluteUrl.Length > 0, out var uri))
+			{
+				last = last with { Error = Strings.UsageInvalidConfig };
+				continue;
+			}
 			var sameOrigin = string.Equals(uri.GetLeftPart(UriPartial.Authority), modelOrigin, StringComparison.OrdinalIgnoreCase);
 			var headers = UsageProbes.BuildHeaders(new UsageProbeCandidate(preflight.Path, Headers: preflight.Headers),
 				plan.Token, sameOrigin ? model.Headers : null, sameOrigin);
 			using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+			request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 			foreach (var (name, value) in headers) request.Headers.TryAddWithoutValidation(name, value);
-			using var abort = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-			abort.CancelAfter(timeout);
 			try
 			{
-				using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, abort.Token)
+				using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, probeToken)
 					.ConfigureAwait(false);
-				if (!response.IsSuccessStatusCode) continue;
-				var raw = await ReadBoundedAsync(response, abort.Token).ConfigureAwait(false);
+				if (!response.IsSuccessStatusCode) return last with { Status = (int)response.StatusCode };
+				var raw = await ReadBoundedAsync(response, probeToken).ConfigureAwait(false);
 				var captured = UsageJson.TextAt(JsonNode.Parse(raw), preflight.CapturePath);
-				if (!string.IsNullOrWhiteSpace(captured)) return captured;
+				return string.IsNullOrWhiteSpace(captured) ? last with { Shape = true } : last with { Capture = captured };
 			}
 			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-			catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or IOException or
-				System.Text.Json.JsonException or ArgumentException) { }
+			catch (OperationCanceledException) { return last with { Error = "timeout" }; }
+			catch (UsageResponseTooLargeException) { return last with { Error = "large" }; }
+			catch (Exception ex) when (ex is System.Text.Json.JsonException or ArgumentException) { return last with { Shape = true }; }
+			catch (Exception ex) when (ex is HttpRequestException or IOException) { return last with { Error = "network" }; }
 		}
-		return null;
+		return last;
 	}
 
 	private static bool TryValidateUrl(string url, Uri? baseUri, bool builtinAbsolute, out Uri uri)
@@ -293,17 +324,40 @@ internal sealed class ProviderUsageService(HttpClient client)
 
 	private static async Task<string> ReadBoundedAsync(HttpResponseMessage response, CancellationToken cancellationToken)
 	{
-		if (response.Content.Headers.ContentLength > MaxResponseBytes) throw new InvalidOperationException(Strings.UsageResponseTooLarge);
+		if (response.Content.Headers.ContentLength > MaxResponseBytes) throw new UsageResponseTooLargeException();
 		await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-		using var buffer = new MemoryStream();
-		var bytes = new byte[8192];
-		int count;
-		while ((count = await stream.ReadAsync(bytes, cancellationToken).ConfigureAwait(false)) > 0)
+		// 上限 1 MiB，按需扩容并从 ArrayPool 借缓冲区：一次解析只留一个 string，
+		// 避免 MemoryStream 增长、ToArray 拷贝和每请求一个 8 KiB 数组。
+		var buffer = ArrayPool<byte>.Shared.Rent(8192);
+		try
 		{
-			if (buffer.Length + count > MaxResponseBytes) throw new InvalidOperationException(Strings.UsageResponseTooLarge);
-			buffer.Write(bytes, 0, count);
+			var length = 0;
+			while (true)
+			{
+				if (length == buffer.Length)
+				{
+					var next = ArrayPool<byte>.Shared.Rent((int)Math.Min(buffer.Length * 2L, MaxResponseBytes + 1L));
+					buffer.AsSpan(0, length).CopyTo(next);
+					ArrayPool<byte>.Shared.Return(buffer);
+					buffer = next;
+				}
+				var space = Math.Min(buffer.Length, MaxResponseBytes + 1) - length;
+				var count = await stream.ReadAsync(buffer.AsMemory(length, space), cancellationToken).ConfigureAwait(false);
+				if (count == 0) break;
+				length += count;
+				if (length > MaxResponseBytes) throw new UsageResponseTooLargeException();
+			}
+			return Encoding.UTF8.GetString(buffer, 0, length);
 		}
-		return Encoding.UTF8.GetString(buffer.ToArray());
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(buffer);
+		}
+	}
+
+	private sealed class UsageResponseTooLargeException : InvalidOperationException
+	{
+		public UsageResponseTooLargeException() : base(Strings.UsageResponseTooLarge) { }
 	}
 
 	public const int MaxResponseBytes = UsageProbes.MaxResponseBytes;
@@ -324,7 +378,14 @@ internal sealed class ProviderUsageService(HttpClient client)
 			}
 			else if (attempt.Shape) lines.Add($"{attempt.Method} {attempt.Url} → {Strings.UsageAttemptShape}");
 			else if (attempt.Error is { } error)
-				lines.Add($"{attempt.Method} {attempt.Url} → {(error == Strings.UsageMissingKey ? error : error == "large" ? Strings.UsageResponseTooLarge : error == "timeout" ? Strings.UsageAttemptTimeout : Strings.UsageAttemptNetwork)}");
+			{
+				var reason = error == Strings.UsageMissingKey ? error
+					: error == Strings.UsageInvalidConfig ? error
+					: error == "large" ? Strings.UsageResponseTooLarge
+					: error == "timeout" ? Strings.UsageAttemptTimeout
+					: Strings.UsageAttemptNetwork;
+				lines.Add($"{attempt.Method} {attempt.Url} → {reason}");
+			}
 		}
 		var hint = Hint(attempts);
 		if (hint.Length > 0) { lines.Add(""); lines.Add(Strings.UsageHintTitle + hint); }

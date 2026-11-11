@@ -200,12 +200,33 @@ internal static class UsageProbes
 	{
 		if (candidate.BaseUrlContains is { Count: > 0 } needles)
 		{
-			var lower = baseUrl.ToLowerInvariant();
-			if (!needles.Any(needle => lower.Contains(needle.Trim().ToLowerInvariant(), StringComparison.Ordinal))) return false;
+			// 内置候选只信任 host（可带路径前缀）。子串匹配会让 api.deepseek.com.evil.test
+			// 之类的地址拿到真实 API Key；用户探针保持原有的子串语义，兼容中转站路径。
+			if (candidate.TemplateId.Length > 0)
+			{
+				if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri)) return false;
+				if (!needles.Any(needle => BuiltInMatches(baseUri, needle))) return false;
+			}
+			else if (!needles.Any(needle => baseUrl.Contains(needle.Trim(), StringComparison.OrdinalIgnoreCase)))
+			{
+				return false;
+			}
 		}
 		if (candidate.ApiTypes is { Count: > 0 } types &&
 			!types.Contains(apiType.Trim(), StringComparer.OrdinalIgnoreCase)) return false;
 		return true;
+	}
+
+	private static bool BuiltInMatches(Uri baseUri, string needle)
+	{
+		var value = needle.Trim();
+		if (value.Length == 0) return false;
+		var slash = value.IndexOf('/');
+		var host = slash < 0 ? value : value[..slash];
+		var actualHost = baseUri.Host.TrimEnd('.');
+		if (!actualHost.Equals(host, StringComparison.OrdinalIgnoreCase) &&
+			!actualHost.EndsWith("." + host, StringComparison.OrdinalIgnoreCase)) return false;
+		return slash < 0 || baseUri.AbsolutePath.StartsWith(value[slash..], StringComparison.OrdinalIgnoreCase);
 	}
 
 	public static IReadOnlyList<string> Urls(UsageProbeCandidate candidate, string baseUrl)

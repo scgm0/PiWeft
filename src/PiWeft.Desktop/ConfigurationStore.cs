@@ -46,7 +46,7 @@ public sealed class ConfigurationStore
 		string? error = null;
 		if (revision != "missing")
 		{
-			try { Validate(file, ParseObject(raw)); }
+			try { Validate(file, ParseObject(raw.Length == 0 ? "{}" : raw)); }
 			catch (ArgumentException ex) { error = ex.Message; }
 		}
 		return new(file, project, path, raw, revision, error);

@@ -58,10 +58,7 @@ internal static class UsageProbeStore
 		JsonObject root;
 		try
 		{
-			var info = new FileInfo(path);
-			if (info.Length > MaxBytes) throw new InvalidDataException(Strings.ConfigTooLarge);
-			root = JsonNode.Parse(File.ReadAllText(path).TrimStart('\uFEFF'), documentOptions: ReadOptions) as JsonObject
-				?? throw new ArgumentException(Strings.ConfigObjectRequired);
+			root = ReadObject(path);
 		}
 		catch (Exception ex) when (ex is JsonException or ArgumentException or IOException or InvalidDataException or UnauthorizedAccessException)
 		{
@@ -69,6 +66,30 @@ internal static class UsageProbeStore
 			return new UsageProbeDocument(new Dictionary<string, UsageProbeProviderConfig>(), [], errors, path);
 		}
 		return ReadRoot(root, path);
+	}
+
+	internal static UsageProbeDocument Read(JsonObject root, string path) => ReadRoot(root, path);
+
+	private static JsonObject ReadObject(string path)
+	{
+		// UTF-8 直接解析，省掉 ReadAllText 的 UTF-16 副本；空文件按空配置处理，
+		// 与 ConfigurationDocument.Parse 的 "{}" 约定一致。
+		using var stream = File.OpenRead(path);
+		if (stream.Length > MaxBytes) throw new InvalidDataException(Strings.ConfigTooLarge);
+		var bytes = new byte[(int)stream.Length];
+		stream.ReadExactly(bytes);
+		var span = bytes.AsSpan();
+		if (span.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF])) span = span[3..];
+		if (IsWhiteSpace(span)) return new JsonObject();
+		return JsonNode.Parse(span, documentOptions: ReadOptions) as JsonObject
+			?? throw new ArgumentException(Strings.ConfigObjectRequired);
+	}
+
+	private static bool IsWhiteSpace(ReadOnlySpan<byte> span)
+	{
+		foreach (var value in span)
+			if (value is not ((byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n')) return false;
+		return true;
 	}
 
 	private static UsageProbeDocument ReadRoot(JsonObject root, string path)
@@ -162,10 +183,11 @@ internal static class UsageProbeStore
 	public static UsageProbeRecognition? Recognize(Model model)
 	{
 		var api = NormalizeApi(model.Api);
+		var baseUrl = model.BaseUrl.Trim();
 		foreach (var candidate in UsageProbes.Candidates)
 		{
 			if (candidate.TemplateId.Length == 0) continue;
-			if (!UsageProbes.Applies(candidate, model.BaseUrl, api)) continue;
+			if (!UsageProbes.Applies(candidate, baseUrl, api)) continue;
 			return new UsageProbeRecognition(candidate.TemplateId,
 				UsageProbes.TemplateCategories.GetValueOrDefault(candidate.TemplateId, Strings.UsageCategoryBalance));
 		}
@@ -178,9 +200,8 @@ internal static class UsageProbeStore
 		if (!File.Exists(path)) return null;
 		try
 		{
-			if (new FileInfo(path).Length > MaxBytes) return null;
-			if (JsonNode.Parse(File.ReadAllText(path).TrimStart('\uFEFF'), documentOptions: ReadOptions) is not JsonObject root ||
-				root["providers"] is not JsonObject providers || providers[provider] is not JsonObject entry) return null;
+			var root = ReadObject(path);
+			if (root["providers"] is not JsonObject providers || providers[provider] is not JsonObject entry) return null;
 			var endpoint = Text(entry, "path");
 			if (endpoint.Length == 0) return null;
 			var token = Text(entry, "token");

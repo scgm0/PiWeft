@@ -290,7 +290,10 @@ public sealed partial class SessionTab : IDisposable
 		_statisticsPanel.SetUsage(_usageSummary);
 		_usagePanel = new ProviderUsagePanel(() => Session.Model, () => Session.Cwd);
 		_usagePanel.Saved += _usageSummary.Invalidate;
-		_usagePanel.ResultReady += _usageSummary.ApplyResult;
+		_usagePanel.ResultReady += result =>
+		{
+			if (_usagePanel.Model is { } model) _usageSummary.ApplyResult(result, model);
+		};
 		_usagePanel.Closed += () =>
 		{
 			if (_returnToStatistics && !_disposed)

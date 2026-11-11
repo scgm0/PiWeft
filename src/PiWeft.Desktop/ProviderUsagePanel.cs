@@ -53,6 +53,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 	private UIElement? _view;
 
 	public UIElement View => _view ??= BuildView();
+	public Model? Model => _model;
 	private OverlayFade Fade => _fade ??= new OverlayFade((FrameworkElement)View);
 	public event Action? Closed;
 	public event Action? Saved;
@@ -151,6 +152,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 			// 旧版配置仍在生效（旧版原本就是自动查询）：弹窗按「已启用」展示并提示迁移。
 			if (_config is null && _legacy is not null) _config = new UsageProbeProviderConfig(Enabled: true);
 			_config ??= new UsageProbeProviderConfig();
+			_testButton.IsEnabled = true;
 			BuildForm();
 			_detail.Text(string.Empty);
 			_detailHost.IsVisible(false);
@@ -174,7 +176,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 	{
 		ClearBody();
 		if (_model is not { } model || _config is not { } config) return;
-		_template = config.Template.Length > 0 ? config.Template : _recognized?.TemplateId ?? string.Empty;
+		_template = config.Template;
 		_enabled.IsChecked(config.Enabled);
 		_baseUrl.Text(config.BaseUrl);
 		_apiKey.Text(config.ApiKey);
@@ -191,11 +193,17 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		_pills.Clear();
 		_notice.IsVisible(false);
 		_pills.Children(TemplatePill(string.Empty, Strings.UsageTemplateNone));
-		if (_recognized is { } recognized)
+		if (config.Template.Length > 0)
+		{
+			if (!UsageProbeStore.IsDeclarativeTemplate(config.Template))
+				_pills.Children(TemplatePill(config.Template, Strings.UsageTemplateBuiltin(
+					UsageProbes.TemplateCategories.GetValueOrDefault(config.Template, Strings.UsageCategoryBalance))));
+		}
+		else if (_recognized is { } recognized)
+		{
+			// 自动模式只展示可选的识别结果，不替用户把模板钉死；否则保存会丢掉已有的 key/地址覆盖。
 			_pills.Children(TemplatePill(recognized.TemplateId, Strings.UsageTemplateBuiltin(recognized.Category)));
-		else if (_template.Length > 0 && !UsageProbeStore.IsDeclarativeTemplate(_template))
-			_pills.Children(TemplatePill(_template,
-				Strings.UsageTemplateBuiltin(UsageProbes.TemplateCategories.GetValueOrDefault(_template, Strings.UsageCategoryBalance))));
+		}
 		_pills.Children(
 			TemplatePill("general", Strings.UsageTemplateGeneral),
 			TemplatePill("newapi", Strings.UsageTemplateNewApi),
@@ -289,10 +297,9 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 				BaseUrl = _baseUrl.Text.Trim(),
 			},
 			"sub2api" => config with { BaseUrl = _baseUrl.Text.Trim() },
-			// 自动识别没有表单字段，但配置里可能已有覆盖（旧版迁移或手写），保存时原样保留，
-			// 避免「打开弹窗再保存」把可用的 key/地址清掉；内置模板则只写开关与频率。
-			"" => config with { ApiKey = _config?.ApiKey ?? string.Empty, BaseUrl = _config?.BaseUrl ?? string.Empty },
-			_ => config,
+			// 表单没有显示的字段（key/地址覆盖）保存时原样保留：自动识别与内置模板都可能
+			// 来自旧版迁移或手写配置，不能因为「打开弹窗再保存」就被清掉。
+			_ => config with { ApiKey = _config?.ApiKey ?? string.Empty, BaseUrl = _config?.BaseUrl ?? string.Empty },
 		};
 	}
 
@@ -314,7 +321,8 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 			providers[model.Provider] = UsageProbeStore.ToJson(config);
 			_document = _store.Save(_document, root.ToJsonString(ConfigurationStore.WriteOptions));
 			_config = config;
-			_loaded = UsageProbeStore.Load(SessionPaths.GetAgentDir());
+			// 刚写出的 root 就是最新内容，直接读它，避免在 UI 线程再读盘解析一遍。
+			_loaded = UsageProbeStore.Read(root, _document.Path);
 			Saved?.Invoke();
 			Toasts.Success(View, Strings.UsageSavedToast);
 			_testStatus.IsVisible(false);
@@ -344,7 +352,7 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		_testStatus.Text(Strings.UsageTesting).IsVisible(true).Role(AppStyles.RoleMuted);
 		_detailHost.IsVisible(false);
 		var result = await RunAsync(token => ProviderUsageService.TestAsync(model, config, cwd(), token),
-			TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSecs, 1, 300) + 5));
+			TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSecs, 1, 300) + 5), config.IntervalMinutes);
 		_testButton.IsEnabled = true;
 		if (result is null) return;
 		if (result.Success)
@@ -365,11 +373,11 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		UsageProbeProviderConfig config;
 		try { config = ReadForm(); }
 		catch (ArgumentException) { SetStatus(Strings.UsageInvalidConfig, error: true); return; }
-		var legacy = UsageProbeStore.LoadLegacyCandidate(SessionPaths.GetAgentDir(), model.Provider);
+		var legacy = _legacy;
 		SetStatus(Strings.UsageLoading);
 		_detailHost.IsVisible(false);
 		var result = await RunAsync(token => ProviderUsageService.QueryAsync(model, config, _loaded, legacy, cwd(), token),
-			TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSecs, 1, 300) + 5));
+			TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSecs, 1, 300) + 5), config.IntervalMinutes);
 		if (result is null) return;
 		if (result.Success)
 		{
@@ -384,7 +392,8 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		}
 	}
 
-	private async Task<ProviderUsageResult?> RunAsync(Func<CancellationToken, Task<ProviderUsageResult>> action, TimeSpan timeout)
+	private async Task<ProviderUsageResult?> RunAsync(Func<CancellationToken, Task<ProviderUsageResult>> action, TimeSpan timeout,
+		int intervalMinutes)
 	{
 		Cancellation.CancelQuietly(_abort);
 		var version = ++_generation;
@@ -393,8 +402,8 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
 		ProviderUsageResult result;
 		try { result = await Task.Run(() => action(cancellation.Token), cancellation.Token); }
-		catch (OperationCanceledException) { result = ProviderUsageResult.Failure(Strings.UsageTimeout); }
-		catch (Exception ex) { result = ProviderUsageResult.Failure(ProviderUsageDisplay.ErrorText(ex)); }
+		catch (OperationCanceledException) { result = ProviderUsageResult.Failure(Strings.UsageTimeout, intervalMinutes: intervalMinutes); }
+		catch (Exception ex) { result = ProviderUsageResult.Failure(ProviderUsageDisplay.ErrorText(ex), intervalMinutes: intervalMinutes); }
 		if (dispatcher is not null && !dispatcher.IsOnUIThread)
 		{
 			var completion = new TaskCompletionSource();
@@ -440,7 +449,15 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 			if (!File.Exists(document.Path))
 			{
 				// CreateNew 而非 WriteAllText：并行创建或外部写入时不会覆盖别人的内容。
-				using var stream = new FileStream(document.Path, FileMode.CreateNew);
+				using (var stream = new FileStream(document.Path, FileMode.CreateNew))
+					stream.Write("{}"u8);
+				// 空文件会让 revision 从 missing 变成哈希，随后保存会被判成外部修改；
+				// 新建后重读一次，把基线换成刚落盘的 {}。
+				if (_store is { } store)
+				{
+					_document = store.Read(ConfigFile.Usage);
+					_saveButton.IsVisible(_document.Error is null);
+				}
 			}
 			if (!Shell.OpenInEditor(document.Path)) Toasts.Error(View, Strings.ConfigFailed);
 		}

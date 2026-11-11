@@ -116,7 +116,8 @@ public sealed class ProviderUsageSummaryTests
 	[Fact]
 	public async Task RendersEveryWindowAndAcceptsTestResults()
 	{
-		var summary = new ProviderUsageSummary(() => FakeStreams.Model(), () => "/project", () => { }, (_, _, _) =>
+		var model = FakeStreams.Model();
+		var summary = new ProviderUsageSummary(() => model, () => "/project", () => { }, (_, _, _) =>
 			Task.FromResult(new ProviderUsageResult(true, ProviderUsageKind.Periods,
 				Periods: new UsagePeriods(new UsagePeriod(12), new UsagePeriod(92)), At: DateTimeOffset.UtcNow, IntervalMinutes: 0)));
 		summary.Show();
@@ -124,9 +125,25 @@ public sealed class ProviderUsageSummaryTests
 		Assert.Contains(Find<TextBlock>(summary.View), text => text.Text == "12%");
 		summary.ApplyResult(new ProviderUsageResult(true, ProviderUsageKind.Credits,
 			Credits: new UsageCredits(Windows: [new UsageWindow("fiveHour", 100, 20), new UsageWindow("weekly", Remaining: 3.5)]),
-			At: DateTimeOffset.UtcNow, IntervalMinutes: 0));
+			At: DateTimeOffset.UtcNow, IntervalMinutes: 0), model);
 		await Wait(() => Find<TextBlock>(summary.View).Any(text => text.Text == "20%"));
 		Assert.Contains(Find<TextBlock>(summary.View), text => text.Text == "3.5");
+		summary.Hide();
+		UiLifetime.Release(summary.View);
+	}
+
+	[Fact]
+	public async Task TestResultFromAnotherModelIsIgnored()
+	{
+		var model = FakeStreams.Model();
+		var summary = new ProviderUsageSummary(() => model, () => "/project", () => { }, (_, _, _) =>
+			Task.FromResult(Balance(12.99)));
+		summary.Show();
+		await Wait(() => Find<TextBlock>(summary.View).Any(text => text.Text.Contains("$12.99", StringComparison.Ordinal)));
+		summary.ApplyResult(Balance(99.99), model with { Provider = "other" });
+		await Task.Delay(50);
+		Assert.Contains(Find<TextBlock>(summary.View), text => text.Text.Contains("$12.99", StringComparison.Ordinal));
+		Assert.DoesNotContain(Find<TextBlock>(summary.View), text => text.Text.Contains("99.99", StringComparison.Ordinal));
 		summary.Hide();
 		UiLifetime.Release(summary.View);
 	}

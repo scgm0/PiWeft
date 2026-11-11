@@ -103,11 +103,16 @@ internal sealed class ProviderUsageSummary
 		if (_open) _ = RefreshAsync();
 	}
 
-	public void ApplyResult(ProviderUsageResult result)
+	public void ApplyResult(ProviderUsageResult result, Model model)
 	{
 		if (!result.Success) return;
-		var model = _current();
-		_key = (model.Provider, model.BaseUrl, _cwd());
+		var current = _current();
+		// 弹窗里的测试结果可能晚于会话切模型到达；只接受与当前 provider/地址一致的结果，
+		// 否则会把 A 的余额显示在 B 的统计面板上。
+		if (!string.Equals(current.Provider, model.Provider, StringComparison.Ordinal) ||
+			!string.Equals(current.BaseUrl, model.BaseUrl, StringComparison.Ordinal)) return;
+		Cancel();
+		_key = (current.Provider, current.BaseUrl, _cwd());
 		_result = result;
 		Render(result);
 		StartTimer();
@@ -128,8 +133,15 @@ internal sealed class ProviderUsageSummary
 		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
 		ProviderUsageResult result;
 		try { result = await Task.Run(() => _query(model, cwd, cancellation.Token), cancellation.Token).ConfigureAwait(false); }
-		catch (OperationCanceledException) { result = ProviderUsageResult.Failure(Strings.UsageTimeout); }
-		catch (Exception ex) { result = ProviderUsageResult.Failure(ProviderUsageDisplay.ErrorText(ex)); }
+		catch (OperationCanceledException)
+		{
+			result = ProviderUsageResult.Failure(Strings.UsageTimeout, intervalMinutes: _result?.IntervalMinutes ?? 0);
+		}
+		catch (Exception ex)
+		{
+			// 拿不到配置时按“不自动重试”处理；否则 interval=0 的用户会被异常路径拖回 5 分钟轮询。
+			result = ProviderUsageResult.Failure(ProviderUsageDisplay.ErrorText(ex), intervalMinutes: _result?.IntervalMinutes ?? 0);
+		}
 
 		void Complete()
 		{

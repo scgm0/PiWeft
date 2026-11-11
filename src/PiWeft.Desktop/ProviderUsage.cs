@@ -39,8 +39,9 @@ internal sealed record ProviderUsageResult(
 	DateTimeOffset At = default,
 	int IntervalMinutes = UsageProbeStore.DefaultIntervalMinutes)
 {
-	public static ProviderUsageResult Failure(string error, string? detail = null) =>
-		new(false, Error: error, Detail: detail, At: DateTimeOffset.UtcNow);
+	public static ProviderUsageResult Failure(string error, string? detail = null,
+		int intervalMinutes = UsageProbeStore.DefaultIntervalMinutes) =>
+		new(false, Error: error, Detail: detail, At: DateTimeOffset.UtcNow, IntervalMinutes: intervalMinutes);
 
 	public static ProviderUsageResult DisabledResult() =>
 		new(false, Error: Strings.UsageDisabled, Disabled: true, At: DateTimeOffset.UtcNow, IntervalMinutes: 0);
@@ -111,19 +112,20 @@ internal static class ProviderUsageDisplay
 	public static double? WindowPercent(UsageWindow window)
 	{
 		var used = window.Used ?? (window.Remaining is { } remaining && window.Total is { } total ? total - remaining : null);
-		if (window.Total is { } limit && limit > 0 && used is { } value) return Math.Clamp(value / limit * 100, 0, 100);
+		if (window.Total is { } limit && limit > 0 && used is { } value)
+		{
+			var computed = value / limit * 100;
+			if (double.IsFinite(computed)) return Math.Clamp(computed, 0, 100);
+		}
 		return window.Percent is { } percent && double.IsFinite(percent) ? Math.Clamp(percent, 0, 100) : null;
 	}
 
 	public static double? PeriodPercent(UsagePeriods? periods)
 	{
 		if (periods is null) return null;
-		var values = new[] { periods.Rolling, periods.Weekly, periods.Monthly }
-			.Select(period => period?.Percent)
-			.Where(percent => percent is not null)
-			.Select(percent => Math.Clamp(percent!.Value, 0, 100))
-			.ToArray();
-		return values.Length == 0 ? null : values.Max();
+		var max = MaxPercent(null, periods.Rolling);
+		max = MaxPercent(max, periods.Weekly);
+		return MaxPercent(max, periods.Monthly);
 	}
 
 	public static double? UsagePercent(ProviderUsageResult result)
@@ -131,19 +133,27 @@ internal static class ProviderUsageDisplay
 		if (!result.Success) return null;
 		if (result.Kind == ProviderUsageKind.Periods) return PeriodPercent(result.Periods);
 		if (result.Kind != ProviderUsageKind.Credits || result.Credits is not { } credits) return null;
-		var windowPercents = (credits.Windows ?? [])
-			.Select(WindowPercent)
-			.Where(percent => percent is not null)
-			.Select(percent => Math.Clamp(percent!.Value, 0, 100))
-			.ToArray();
-		if (windowPercents.Length > 0) return windowPercents.Max();
+		double? max = null;
+		if (credits.Windows is { } windows)
+			foreach (var window in windows) max = MaxPercent(max, WindowPercent(window));
+		if (max is not null) return max;
 		if (credits.Total is { } total && total > 0)
 		{
 			var used = credits.Used ?? (credits.Remaining is { } remaining ? total - remaining : null);
-			if (used is { } value) return Math.Clamp(value / total * 100, 0, 100);
+			if (used is { } value && double.IsFinite(value)) return Math.Clamp(value / total * 100, 0, 100);
 		}
 		return null;
 	}
+
+	private static double? MaxPercent(double? current, UsagePeriod? period) =>
+		period?.Percent is { } percent && double.IsFinite(percent)
+			? Math.Max(current ?? 0, Math.Clamp(percent, 0, 100))
+			: current;
+
+	private static double? MaxPercent(double? current, double? percent) =>
+		percent is { } value && double.IsFinite(value)
+			? Math.Max(current ?? 0, Math.Clamp(value, 0, 100))
+			: current;
 
 	public static Tone PercentTone(double? percent) => percent switch
 	{
