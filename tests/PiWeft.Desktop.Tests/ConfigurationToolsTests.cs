@@ -57,6 +57,18 @@ public sealed class ConfigurationToolsTests
 	}
 
 	[Fact]
+	public void AvailableHidesDisabledBuiltinExtensions()
+	{
+		var rules = new PiWeft.CodingAgent.Extensions.ExtensionRules([], ["-builtin:tool-search"]);
+
+		Assert.DoesNotContain("tool_search", ConfigurationTools.Available(rules));
+		Assert.Contains("codemode", ConfigurationTools.Available(rules));
+
+		var all = new PiWeft.CodingAgent.Extensions.ExtensionRules([], []);
+		Assert.Equal(ConfigurationTools.Catalog, ConfigurationTools.Available(all));
+	}
+
+	[Fact]
 	public void ProjectLayerResolvesAgainstTheInheritedEntries()
 	{
 		IReadOnlyList<string> global = new[] { "read", "bash" };

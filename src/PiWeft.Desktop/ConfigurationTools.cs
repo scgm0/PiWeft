@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.Desktop;
@@ -12,6 +13,18 @@ internal static class ConfigurationTools
 
 	public static bool IsExtension(string name) =>
 		name is "codemode" or "tool_search";
+
+	/// 可添加的工具目录，去掉被 <c>settings.extensions</c> 关掉的内置扩展。
+	/// 不加这层过滤，选中的工具会被会话在构造时剔除，开关看起来像没生效。
+	public static IReadOnlyList<string> Available(ExtensionRules rules) =>
+	[
+		.. Catalog.Where(name => name switch
+		{
+			"codemode" => rules.IsBuiltinEnabled(ExtensionRules.CodemodeBuiltin),
+			"tool_search" => rules.IsBuiltinEnabled(ExtensionRules.ToolSearchBuiltin),
+			_ => true,
+		}),
+	];
 
 	private static List<string> BuildCatalog()
 	{

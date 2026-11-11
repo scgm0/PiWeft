@@ -493,6 +493,14 @@ internal sealed partial class ConfigurationView
 		retryMaxInput.OnTextChanged(_ => retryMaxChanged = true);
 		retryDelayInput.OnTextChanged(_ => retryDelayChanged = true);
 
+		// 被 settings.extensions 关掉的内置扩展不进可添加列表（会话构造时也会剔除它们）。
+		var globalSettings = _store.Read(ConfigFile.Settings);
+		var projectSettings = _store.Read(ConfigFile.Settings, project: true);
+		var rules = new PiWeft.CodingAgent.Extensions.ExtensionRules(
+			globalSettings.Error is null ? ExtensionSettings.ReadEntries(globalSettings.Parse()) : [],
+			projectSettings.Error is null ? ExtensionSettings.ReadEntries(projectSettings.Parse()) : []);
+		var availableTools = ConfigurationTools.Available(rules);
+
 		// 工具与 Codemode：项目层以全局原始条目为基线回验，chips 显示的集合就是保存后运行时解析出的集合。
 		var baseEntries = _project ? ConfigurationTools.ReadEntries(global) : null;
 		var initialEntries = ConfigurationTools.ReadEntries(_root);
@@ -643,7 +651,7 @@ internal sealed partial class ConfigurationView
 				.HorizontalAlignment(HorizontalAlignment.Center)
 				.VerticalAlignment(VerticalAlignment.Center));
 			var menu = new ContextMenu();
-			foreach (var name in ConfigurationTools.Catalog)
+			foreach (var name in availableTools)
 			{
 				var tool = name;
 				var enabled = ConfigurationTools.IsEnabled(baseEntries, entries, tool);
