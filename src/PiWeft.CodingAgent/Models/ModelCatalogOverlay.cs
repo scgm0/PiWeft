@@ -1,10 +1,10 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Session;
-using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent.Models;
 
@@ -23,6 +23,9 @@ public static class ModelCatalogFiles
 
 	/// 单份目录的大小上限。内嵌目录约 1.3 MB，16 MB 足够容纳上游扩张。
 	public const int MaxCatalogBytes = 16 * 1024 * 1024;
+
+	/// 单份目录的模型条数上限。当前上游 1773 条；上限只用于挡住损坏/恶意目录的无界分配。
+	public const int MaxCatalogModels = 100_000;
 
 	/// 元数据文件的大小上限。
 	public const int MaxMetaBytes = 64 * 1024;
@@ -77,8 +80,11 @@ internal sealed record ModelCatalogMeta
 	public string? ETag { get; init; }
 }
 
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, AllowDuplicateProperties = false, MaxDepth = 32)]
 [JsonSerializable(typeof(ModelCatalogMeta))]
+[JsonSerializable(typeof(Dictionary<string, List<Model>>))]
+[JsonSerializable(typeof(Dictionary<string, Dictionary<string, Model>>))]
+[JsonSerializable(typeof(Model))]
 internal partial class ModelCatalogJsonContext : JsonSerializerContext;
 
 /// 内置目录之上的一层在线目录：读取校验通过才生效，否则回退内嵌 <c>models.json</c>。
@@ -86,6 +92,11 @@ internal partial class ModelCatalogJsonContext : JsonSerializerContext;
 public static class ModelCatalogOverlay
 {
 	private static readonly Lazy<EmbeddedCatalog> Embedded = new(ReadEmbedded);
+	private static readonly Lock CacheGate = new();
+
+	// 当前覆盖层只解析一次。启动、设置页重建、检查更新会反复读同一对文件；
+	// 没有缓存时每次都要反序列化上千条模型。键里带元数据原文，覆盖层被改写后会自然失效。
+	private static CachedOverlay? _cache;
 
 	/// 内嵌目录的摘要与条目数，供在线检查比较。
 	internal static EmbeddedCatalog Builtin => Embedded.Value;
@@ -115,8 +126,7 @@ public static class ModelCatalogOverlay
 
 		try
 		{
-			using var stream = new MemoryStream(overlay.Catalog, writable: false);
-			return registry.AddCatalog(stream);
+			return registry.AddCatalog(overlay.Models);
 		}
 		catch (JsonException)
 		{
@@ -152,6 +162,15 @@ public static class ModelCatalogOverlay
 	internal static ModelCatalogInfo EffectiveInfo(string? agentDir = null) =>
 		ReadOverlay(agentDir)?.Info ?? new ModelCatalogInfo(Builtin.ProviderCount, Builtin.EntryCount, null, null, null);
 
+	/// 覆盖层写入或删除后清掉已解析快照，避免继续持有旧模型。
+	internal static void InvalidateCache()
+	{
+		lock (CacheGate)
+		{
+			_cache = null;
+		}
+	}
+
 	/// 读取并校验覆盖层。两个文件必须成对存在，摘要必须与目录内容一致。
 	internal static OverlaySnapshot? ReadOverlay(string? agentDir = null)
 	{
@@ -173,25 +192,42 @@ public static class ModelCatalogOverlay
 			}
 
 			var catalog = File.ReadAllBytes(catalogPath);
-			var meta = JsonSerializer.Deserialize(File.ReadAllText(metaPath), ModelCatalogJsonContext.Default.ModelCatalogMeta);
+			var metaText = File.ReadAllText(metaPath);
+			var meta = JsonSerializer.Deserialize(metaText, ModelCatalogJsonContext.Default.ModelCatalogMeta);
 			if (meta is null || string.IsNullOrWhiteSpace(meta.Digest))
 			{
 				return null;
 			}
 
-			if (!string.Equals(Digest(catalog), meta.Digest, StringComparison.OrdinalIgnoreCase))
+			var catalogDigest = Digest(catalog);
+			if (!string.Equals(catalogDigest, meta.Digest, StringComparison.OrdinalIgnoreCase))
 			{
 				return null;
 			}
 
+			lock (CacheGate)
+			{
+				if (_cache is { } cached &&
+					string.Equals(cached.CatalogPath, catalogPath, StringComparison.Ordinal) &&
+					string.Equals(cached.CatalogDigest, catalogDigest, StringComparison.Ordinal) &&
+					string.Equals(cached.MetaText, metaText, StringComparison.Ordinal))
+				{
+					return cached.Snapshot;
+				}
+			}
+
 			var models = ParseCatalog(catalog);
 			var summary = Summarize(models);
-			return new OverlaySnapshot(
-				catalog,
+			var snapshot = new OverlaySnapshot(
 				meta,
 				models,
-				CanonicalDigest(models),
 				new ModelCatalogInfo(summary.ProviderCount, summary.EntryCount, meta.FetchedAt, meta.Source, meta.PackageVersion));
+			lock (CacheGate)
+			{
+				_cache = new CachedOverlay(catalogPath, catalogDigest, metaText, snapshot);
+			}
+
+			return snapshot;
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
 		{
@@ -208,7 +244,7 @@ public static class ModelCatalogOverlay
 			throw new JsonException("model catalog size is out of range");
 		}
 
-		var providers = JsonSerializer.Deserialize(catalog, ModelsJsonContext.Default.DictionaryStringListModel)
+		var providers = JsonSerializer.Deserialize(catalog, ModelCatalogJsonContext.Default.DictionaryStringListModel)
 			?? throw new JsonException("model catalog was empty");
 
 		var result = new Dictionary<string, List<Model>>(providers.Count, StringComparer.Ordinal);
@@ -220,16 +256,42 @@ public static class ModelCatalogOverlay
 				throw new JsonException("model catalog has an empty provider id");
 			}
 
-			var list = new List<Model>(models.Count);
-			foreach (var model in models)
+			if (models is null)
 			{
+				throw new JsonException($"model catalog provider '{providerId}' has no models array");
+			}
+
+			// 绝大多数条目已经把 provider 写对：只在校验时顺手改，不为这 1700 条再做一次拷贝。
+			var list = models;
+			for (var index = 0; index < models.Count; index++)
+			{
+				var model = models[index];
+				if (model is null)
+				{
+					throw new JsonException($"model catalog entry of '{providerId}' is null");
+				}
+
 				if (string.IsNullOrWhiteSpace(model.Id))
 				{
 					throw new JsonException($"model catalog entry of '{providerId}' has an empty id");
 				}
 
-				list.Add(model.Provider == providerId ? model : model with { Provider = providerId });
-				total++;
+				if (++total > ModelCatalogFiles.MaxCatalogModels)
+				{
+					throw new JsonException($"model catalog has more than {ModelCatalogFiles.MaxCatalogModels} models");
+				}
+
+				if (model.Provider == providerId)
+				{
+					continue;
+				}
+
+				if (ReferenceEquals(list, models))
+				{
+					list = new List<Model>(models);
+				}
+
+				list[index] = model with { Provider = providerId };
 			}
 
 			if (list.Count > 0)
@@ -245,6 +307,8 @@ public static class ModelCatalogOverlay
 	internal static string CanonicalDigest(IReadOnlyDictionary<string, List<Model>> catalog)
 	{
 		using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		var buffer = new ArrayBufferWriter<byte>(4096);
+		using var writer = new Utf8JsonWriter(buffer);
 		foreach (var provider in catalog.Keys.OrderBy(static key => key, StringComparer.Ordinal))
 		{
 			var models = catalog[provider];
@@ -263,7 +327,11 @@ public static class ModelCatalogOverlay
 			hash.AppendData([0]);
 			foreach (var id in unique.Keys.OrderBy(static key => key, StringComparer.Ordinal))
 			{
-				hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(unique[id], ModelsJsonContext.Default.Model));
+				buffer.Clear();
+				writer.Reset();
+				JsonSerializer.Serialize(writer, unique[id], ModelCatalogJsonContext.Default.Model);
+				writer.Flush();
+				hash.AppendData(buffer.WrittenSpan);
 				hash.AppendData([0]);
 			}
 		}
@@ -279,23 +347,71 @@ public static class ModelCatalogOverlay
 
 	private static EmbeddedCatalog ReadEmbedded()
 	{
+		var bytes = ReadEmbeddedBytes();
+		var models = ParseCatalog(bytes);
+		var summary = Summarize(models);
+		return new EmbeddedCatalog(summary.ProviderCount, summary.EntryCount);
+	}
+
+	private static byte[] ReadEmbeddedBytes()
+	{
 		using var source = ModelRegistry.OpenEmbeddedCatalog();
 		using var buffer = new MemoryStream();
 		source.CopyTo(buffer);
-		var bytes = buffer.ToArray();
-		var models = ParseCatalog(bytes);
-		var summary = Summarize(models);
-		return new EmbeddedCatalog(Digest(bytes), CanonicalDigest(models), summary.ProviderCount, summary.EntryCount);
+		return buffer.ToArray();
 	}
+
+	internal static string ComputeEmbeddedContentDigest()
+	{
+		var models = ParseCatalog(ReadEmbeddedBytes());
+		return CanonicalDigest(models);
+	}
+
+	private sealed record CachedOverlay(string CatalogPath, string CatalogDigest, string MetaText, OverlaySnapshot Snapshot);
 }
 
 internal sealed record CatalogSummary(int ProviderCount, int EntryCount);
 
-internal sealed record EmbeddedCatalog(string Digest, string ContentDigest, int ProviderCount, int EntryCount);
+internal sealed class EmbeddedCatalog
+{
+	private readonly Lazy<string> _contentDigest = new(
+		ModelCatalogOverlay.ComputeEmbeddedContentDigest,
+		LazyThreadSafetyMode.ExecutionAndPublication);
 
-internal sealed record OverlaySnapshot(
-	byte[] Catalog,
-	ModelCatalogMeta Meta,
-	IReadOnlyDictionary<string, List<Model>> Models,
-	string ContentDigest,
-	ModelCatalogInfo Info);
+	public EmbeddedCatalog(int providerCount, int entryCount)
+	{
+		ProviderCount = providerCount;
+		EntryCount = entryCount;
+	}
+
+	public int ProviderCount { get; }
+
+	public int EntryCount { get; }
+
+	/// 只在检查更新时用；状态页与启动只需要条目数，不必先序列化 1700 条模型。
+	public string ContentDigest => _contentDigest.Value;
+}
+
+internal sealed class OverlaySnapshot
+{
+	private readonly Lazy<string> _contentDigest;
+
+	public OverlaySnapshot(ModelCatalogMeta meta, IReadOnlyDictionary<string, List<Model>> models, ModelCatalogInfo info)
+	{
+		Meta = meta;
+		Models = models;
+		Info = info;
+		// 摘要只在检查更新时用；启动与设置页只需要解析结果，别为它们算一遍 1700 条序列化。
+		_contentDigest = new Lazy<string>(
+			() => ModelCatalogOverlay.CanonicalDigest(models),
+			LazyThreadSafetyMode.ExecutionAndPublication);
+	}
+
+	public ModelCatalogMeta Meta { get; }
+
+	public IReadOnlyDictionary<string, List<Model>> Models { get; }
+
+	public ModelCatalogInfo Info { get; }
+
+	public string ContentDigest => _contentDigest.Value;
+}

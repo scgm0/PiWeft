@@ -6,7 +6,7 @@ public static partial class Strings
 {
 	public const string SettingsModelCatalog = "模型目录";
 	public const string ModelCatalogDescription =
-		"内置目录随版本发布；这里从 pi-ai 取最新目录覆盖到 agent 目录，拉不到时回退 GitHub main。覆盖文件可随时还原。";
+		"内置目录随版本发布；这里从 pi-ai 取最新目录覆盖到 agent 目录，没有 npm 覆盖版时可用 GitHub main 兜底。覆盖文件可随时还原。";
 	public const string ModelCatalogSource = "目录更新源";
 	public const string ModelCatalogSourceValue = "pi-ai npm（最新）· GitHub main 兜底";
 	public const string ModelCatalogBuiltin = "内置目录";
@@ -29,6 +29,7 @@ public static partial class Strings
 	public const string ModelCatalogFailValidation = "下载内容没有通过校验，已保留当前目录。";
 	public const string ModelCatalogFailWrite = "目录写入失败，请检查 agent 目录权限与磁盘空间。";
 	public const string ModelCatalogFailNoBackup = "没有可恢复的上一个覆盖版。";
+	public const string ModelCatalogFailBackup = "上一个覆盖版已损坏，无法恢复；当前目录未改动。";
 	public const string ModelCatalogFailUnexpected = "模型目录操作失败。";
 	public const string ModelCatalogBannerUpdated = "模型目录已更新。";
 	public const string ModelCatalogBannerRestored = "已还原为内置目录。";

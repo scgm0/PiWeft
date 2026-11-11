@@ -99,7 +99,7 @@ internal sealed class ModelCatalogSection
 		SetNotice(Strings.ModelCatalogChecking, error: false);
 		try
 		{
-			var result = await OnlineModelCatalog.CheckAsync(_agentDir).ConfigureAwait(false);
+			var result = await Task.Run(() => OnlineModelCatalog.CheckAsync(_agentDir)).ConfigureAwait(false);
 			await ToUiThreadAsync().ConfigureAwait(true);
 			if (!result.Ok)
 			{
@@ -134,7 +134,7 @@ internal sealed class ModelCatalogSection
 		SetNotice(Strings.ModelCatalogUpdating, error: false);
 		try
 		{
-			var result = await OnlineModelCatalog.UpdateAsync(_agentDir).ConfigureAwait(false);
+			var result = await Task.Run(() => OnlineModelCatalog.UpdateAsync(_agentDir)).ConfigureAwait(false);
 			await ToUiThreadAsync().ConfigureAwait(true);
 			if (!result.Ok)
 			{
@@ -175,12 +175,13 @@ internal sealed class ModelCatalogSection
 			await ToUiThreadAsync().ConfigureAwait(true);
 			if (!result.Ok)
 			{
-				SetNotice(FailureText(result.Error), error: true);
+				SetNotice(FailureText(result.Error, restore: true), error: true);
 			}
 			else
 			{
 				SetNotice(builtin ? Strings.ModelCatalogBannerRestored : Strings.ModelCatalogBannerRestoredPrevious, error: false);
-				_changed();
+				// 没有覆盖层时「还原内置版」只回报状态，不必重建整个模型环境。
+				if (result.Updated) _changed();
 			}
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
@@ -238,11 +239,11 @@ internal sealed class ModelCatalogSection
 		? Strings.ModelCatalogNone
 		: Strings.ModelCatalogOverlayInfo(info.Version, info.FetchedAt, info.ProviderCount, info.EntryCount);
 
-	private static string FailureText(ModelCatalogError error) => error switch
+	private static string FailureText(ModelCatalogError error, bool restore = false) => error switch
 	{
 		ModelCatalogError.Offline => Strings.ModelCatalogOffline,
 		ModelCatalogError.Network => Strings.ModelCatalogFailNetwork,
-		ModelCatalogError.Validation => Strings.ModelCatalogFailValidation,
+		ModelCatalogError.Validation => restore ? Strings.ModelCatalogFailBackup : Strings.ModelCatalogFailValidation,
 		ModelCatalogError.Write => Strings.ModelCatalogFailWrite,
 		ModelCatalogError.NoBackup => Strings.ModelCatalogFailNoBackup,
 		_ => Strings.ModelCatalogFailUnexpected,

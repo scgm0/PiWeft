@@ -172,7 +172,15 @@ public sealed class ModelRegistry
 		ArgumentNullException.ThrowIfNull(stream);
 		var providers = JsonSerializer.Deserialize(stream, PiJsonContext.Default.DictionaryStringListModel)
 			?? throw new JsonException("model catalog was empty");
+		return AddCatalog(providers);
+	}
 
+	/// 合并已解析的 provider 目录。覆盖层读取时已经解析过一次，用它复用结果，
+	/// 不再为同一份 JSON 付第二次反序列化成本。
+	/// <returns>合入的模型数。</returns>
+	public int AddCatalog(IReadOnlyDictionary<string, List<Model>> providers)
+	{
+		ArgumentNullException.ThrowIfNull(providers);
 		var incoming = new List<Model>();
 		foreach (var (providerId, models) in providers)
 		{
@@ -181,8 +189,18 @@ public sealed class ModelRegistry
 				throw new JsonException("model catalog has an empty provider id");
 			}
 
+			if (models is null)
+			{
+				throw new JsonException($"model catalog provider '{providerId}' has no models array");
+			}
+
 			foreach (var model in models)
 			{
+				if (model is null)
+				{
+					throw new JsonException($"model catalog entry of '{providerId}' is null");
+				}
+
 				if (string.IsNullOrWhiteSpace(model.Id))
 				{
 					throw new JsonException($"model catalog entry of '{providerId}' has an empty id");

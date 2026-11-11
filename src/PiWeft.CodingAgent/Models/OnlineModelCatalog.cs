@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net;
 using System.Text.Json;
 using PiWeft.CodingAgent.Session;
@@ -183,10 +184,8 @@ public static class OnlineModelCatalog
 			{
 				if (hasCatalog && hasMeta && ModelCatalogOverlay.ReadOverlay(agentDir) is not null)
 				{
-					// 先复制成对备份，再删当前文件：中途失败时最新的一对仍在盘上，
-					// 不会留下「目录备份是新的、元数据备份是旧的」那种无法恢复的半成品。
-					File.Copy(catalogPath, ModelCatalogFiles.CatalogBackupPath(agentDir), overwrite: true);
-					File.Copy(metaPath, ModelCatalogFiles.MetaBackupPath(agentDir), overwrite: true);
+					// 先写两枚临时副本，再替换旧的备份对；中途失败不会留下「目录是新的、元数据是旧的」。
+					BackupPair(catalogPath, metaPath, ModelCatalogFiles.CatalogBackupPath(agentDir), ModelCatalogFiles.MetaBackupPath(agentDir));
 					File.Delete(catalogPath);
 					File.Delete(metaPath);
 				}
@@ -200,9 +199,11 @@ public static class OnlineModelCatalog
 			}
 			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 			{
+				ModelCatalogOverlay.InvalidateCache();
 				return new ModelCatalogUpdateResult(false, false, ModelCatalogError.Write, ex.Message);
 			}
 
+			ModelCatalogOverlay.InvalidateCache();
 			return new ModelCatalogUpdateResult(true, true, ModelCatalogError.None, null);
 		}
 	}
@@ -408,20 +409,30 @@ public static class OnlineModelCatalog
 		}
 
 		await using var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-		using var buffer = new MemoryStream();
-		var chunk = new byte[64 * 1024];
-		int read;
-		while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+		// 43 个数据文件并发下载时，每份再临时分配 64 KB 归零缓冲区没必要；租一块循环用。
+		var chunk = ArrayPool<byte>.Shared.Rent(64 * 1024);
+		try
 		{
-			if (buffer.Length + read > maxBytes)
+			using var buffer = content.Headers.ContentLength is { } expected && expected <= maxBytes
+				? new MemoryStream((int)expected)
+				: new MemoryStream();
+			int read;
+			while ((read = await stream.ReadAsync(chunk.AsMemory(0, chunk.Length), cancellationToken).ConfigureAwait(false)) > 0)
 			{
-				throw new JsonException($"catalog content exceeds {maxBytes} bytes");
+				if (buffer.Length + read > maxBytes)
+				{
+					throw new JsonException($"catalog content exceeds {maxBytes} bytes");
+				}
+
+				buffer.Write(chunk, 0, read);
 			}
 
-			buffer.Write(chunk, 0, read);
+			return buffer.ToArray();
 		}
-
-		return buffer.ToArray();
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(chunk);
+		}
 	}
 
 	/// 写入覆盖层：先把当前有效的一对文件复制为备份，再原子替换两个文件。
@@ -439,12 +450,52 @@ public static class OnlineModelCatalog
 		var hasCurrentPair = File.Exists(catalogPath) && File.Exists(metaPath);
 		if (hasCurrentPair && ModelCatalogOverlay.ReadOverlay(directory) is not null)
 		{
-			File.Copy(catalogPath, catalogBackup, overwrite: true);
-			File.Copy(metaPath, metaBackup, overwrite: true);
+			BackupPair(catalogPath, metaPath, catalogBackup, metaBackup);
 		}
 
 		WriteAtomically(catalogPath, catalog);
 		WriteAtomically(metaPath, JsonSerializer.SerializeToUtf8Bytes(meta, ModelCatalogJsonContext.Default.ModelCatalogMeta));
+		ModelCatalogOverlay.InvalidateCache();
+	}
+
+	/// 成对备份：两枚临时文件都写成功后才替换旧备份，失败时清掉可能只替换了一半的新备份。
+	private static void BackupPair(string catalogPath, string metaPath, string catalogBackup, string metaBackup)
+	{
+		// 两个进程可能同时写同一份备份：临时文件名带上 GUID，避免互相覆盖/删除。
+		var catalogTemporary = $"{catalogBackup}.{Guid.NewGuid():N}.tmp";
+		var metaTemporary = $"{metaBackup}.{Guid.NewGuid():N}.tmp";
+		try
+		{
+			File.Copy(catalogPath, catalogTemporary, overwrite: true);
+			File.Copy(metaPath, metaTemporary, overwrite: true);
+		}
+		catch
+		{
+			TryDelete(catalogTemporary);
+			TryDelete(metaTemporary);
+			throw;
+		}
+
+		var catalogMoved = false;
+		try
+		{
+			File.Move(catalogTemporary, catalogBackup, overwrite: true);
+			catalogMoved = true;
+			File.Move(metaTemporary, metaBackup, overwrite: true);
+		}
+		catch
+		{
+			// 只换了一半的备份无法通过校验：宁可清掉，也不要让「恢复上一个覆盖版」指向错配的一对。
+			// 第一枚还没换时旧备份仍是完整的，保留它。
+			if (catalogMoved)
+			{
+				TryDelete(catalogBackup);
+				TryDelete(metaBackup);
+			}
+			TryDelete(catalogTemporary);
+			TryDelete(metaTemporary);
+			throw;
+		}
 	}
 
 	private static void WriteAtomically(string path, ReadOnlySpan<byte> bytes)
@@ -452,7 +503,7 @@ public static class OnlineModelCatalog
 		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
 		try
 		{
-			File.WriteAllBytes(temporary, bytes.ToArray());
+			File.WriteAllBytes(temporary, bytes);
 			File.Move(temporary, path, overwrite: true);
 		}
 		finally

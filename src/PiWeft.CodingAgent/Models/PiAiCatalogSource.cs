@@ -1,29 +1,45 @@
+using System.Buffers;
+using System.Formats.Tar;
 using System.Globalization;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 using PiWeft.Ai;
-using PiWeft.CodingAgent.Settings;
 
 namespace PiWeft.CodingAgent.Models;
 
 /// pi-ai npm 包里的现成目录。数据文件按 API 分组（<c>{ group: { key: model } }</c>），
 /// 每个模型自带 provider；合并成 PiWeft 的 <c>provider → models</c> 格式即可直接用。
-/// 逐文件 SHA-256 与包里的 <c>.manifest.json</c> 对齐，代理或 CDN 返回半份内容会被拒绝。
+///
+/// 取目录只下载一个 npm tarball（约 0.9 MB），在内存里用 <see cref="TarReader"/> 取
+/// <c>dist/providers/data/*.json</c>，不落盘。tarball 先过 registry 的 SHA-512 完整性，
+/// 每个数据文件再过包内 <c>.manifest.json</c> 的 SHA-256，代理或 CDN 返回半份内容会被拒绝。
 internal static class PiAiCatalogSource
 {
 	public const string PackageName = "@earendil-works/pi-ai";
 
-	private const string DataDirectory = "dist/providers/data/";
-	private const int MaxManifestBytes = 256 * 1024;
+	private const string DataPrefix = "package/dist/providers/data/";
+	private const string ManifestName = ".manifest.json";
+	private const int MaxMetadataBytes = 256 * 1024;
+	private const int MaxTarballBytes = 16 * 1024 * 1024;
+	private const int MaxDecompressedBytes = 64 * 1024 * 1024;
 	private const int MaxDataFileBytes = 4 * 1024 * 1024;
+	private const int MaxTotalBytes = 32 * 1024 * 1024;
 	private const int MaxFiles = 256;
-	private const int ParallelDownloads = 6;
 
-	/// 版本解析源：国内镜像优先，官方兜底。
-	public static IReadOnlyList<string> RegistryUrls { get; } =
+	private static readonly string PackageFileName = PackageName[(PackageName.IndexOf('/') + 1)..];
+
+	private static readonly JsonDocumentOptions StrictDocument = new()
+	{
+		AllowDuplicateProperties = false,
+		MaxDepth = 32,
+	};
+
+	/// 两个 npm registry 的元数据与 tarball 地址。国内镜像优先，官方兜底。
+	private static readonly RegistryEndpoint[] Registries =
 	[
-		$"https://registry.npmmirror.com/{PackageName}/latest",
-		$"https://registry.npmjs.org/{PackageName}/latest",
+		new("registry.npmmirror.com"),
+		new("registry.npmjs.org"),
 	];
 
 	/// 数据来源优先级：先 pi-ai npm（最新），拿不到时由调用方回退仓库单文件。
@@ -34,103 +50,238 @@ internal static class PiAiCatalogSource
 		ModelCatalogFetchOptions options,
 		CancellationToken cancellationToken)
 	{
-		try
+		ModelCatalogError lastError = ModelCatalogError.Network;
+		var lastMessage = string.Empty;
+		foreach (var registry in Registries)
 		{
-			var version = await ResolveLatestVersionAsync(http, options.Timeout, cancellationToken).ConfigureAwait(false);
-			if (version is null)
+			cancellationToken.ThrowIfCancellationRequested();
+			try
 			{
-				return PiAiSourceOutcome.Failed(ModelCatalogError.Network, "cannot resolve pi-ai latest version");
-			}
-
-			if (currentVersion is not null)
-			{
-				var comparison = CompareSemver(version, currentVersion);
-				// 远端不高于当前版本：不降级。版本相同就不必下载 43 个数据文件。
-				if (comparison <= 0)
+				var package = await ResolvePackageAsync(http, registry, options.Timeout, cancellationToken).ConfigureAwait(false);
+				if (currentVersion is not null && CompareSemver(package.Version, currentVersion) <= 0)
 				{
-					return PiAiSourceOutcome.NotModified(version);
+					// 远端不高于当前版本：不降级，也不必下载 tarball。
+					return PiAiSourceOutcome.NotModified(package.Version);
+				}
+
+				var tarball = await GetAsync(
+					http,
+					package.TarballUrl ?? registry.TarballUrl(package.Version),
+					MaxTarballBytes,
+					options.Timeout,
+					cancellationToken).ConfigureAwait(false);
+				if (!VerifyIntegrity(tarball, package.Integrity))
+				{
+					throw new JsonException("pi-ai tarball failed integrity check");
+				}
+
+				return PiAiSourceOutcome.Updated(BuildCandidate(tarball, package.Version, cancellationToken));
+			}
+			catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+			{
+				lastError = ModelCatalogError.Network;
+				lastMessage = $"pi-ai request timed out on {registry.Host}";
+			}
+			catch (Exception ex) when (ex is JsonException or InvalidDataException or FormatException)
+			{
+				lastError = ModelCatalogError.Validation;
+				lastMessage = $"{registry.Host}: {ex.Message}";
+			}
+			catch (HttpRequestException ex)
+			{
+				if (lastError != ModelCatalogError.Validation) lastError = ModelCatalogError.Network;
+				lastMessage = $"{registry.Host}: {ex.Message}";
+			}
+			catch (IOException ex)
+			{
+				if (lastError != ModelCatalogError.Validation) lastError = ModelCatalogError.Network;
+				lastMessage = $"{registry.Host}: {ex.Message}";
+			}
+		}
+
+		return PiAiSourceOutcome.Failed(lastError, lastMessage);
+	}
+
+	private static async Task<PiAiPackage> ResolvePackageAsync(
+		HttpClient http,
+		RegistryEndpoint registry,
+		TimeSpan timeout,
+		CancellationToken cancellationToken)
+	{
+		var bytes = await GetAsync(http, registry.LatestUrl, MaxMetadataBytes, timeout, cancellationToken).ConfigureAwait(false);
+		using var document = JsonDocument.Parse(bytes, StrictDocument);
+		var root = document.RootElement;
+		if (root.ValueKind != JsonValueKind.Object ||
+			!root.TryGetProperty("version", out var versionElement) ||
+			versionElement.ValueKind != JsonValueKind.String)
+		{
+			throw new JsonException("pi-ai metadata has no version");
+		}
+
+		var version = NormalizeVersion(versionElement.GetString());
+		if (version is null)
+		{
+			throw new JsonException("pi-ai metadata has an invalid version");
+		}
+
+		string? tarballUrl = null;
+		string? integrity = null;
+		if (root.TryGetProperty("dist", out var dist) && dist.ValueKind == JsonValueKind.Object)
+		{
+			if (dist.TryGetProperty("tarball", out var tarball) && tarball.ValueKind == JsonValueKind.String)
+			{
+				var candidate = tarball.GetString();
+				if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+				{
+					tarballUrl = candidate;
 				}
 			}
 
-			var baseUrl = $"https://cdn.jsdelivr.net/npm/{PackageName}@{version}/{DataDirectory}";
-			var manifestBytes = await GetAsync(http, baseUrl + ".manifest.json", MaxManifestBytes, options.Timeout, cancellationToken)
-				.ConfigureAwait(false);
-			var manifestHash = ModelCatalogOverlay.Digest(manifestBytes);
-			var (files, generatedAt) = ParseManifest(manifestBytes);
-			var contents = await DownloadFilesAsync(http, baseUrl, files, options.Timeout, cancellationToken).ConfigureAwait(false);
-			var providers = Merge(files.Keys, contents);
+			if (dist.TryGetProperty("integrity", out var sri) && sri.ValueKind == JsonValueKind.String)
+			{
+				integrity = sri.GetString();
+			}
+		}
 
-			// 用 PiWeft 的落盘格式重新序列化；后续读取与内嵌目录走同一条解析路径。
-			var catalog = JsonSerializer.SerializeToUtf8Bytes(providers, ModelsJsonContext.Default.DictionaryStringListModel);
-			var parsed = ModelCatalogOverlay.ParseCatalog(catalog);
-			var summary = ModelCatalogOverlay.Summarize(parsed);
-			var info = new ModelCatalogInfo(
-				summary.ProviderCount,
-				summary.EntryCount,
-				generatedAt ?? DateTimeOffset.UtcNow,
-				"pi-ai",
-				version);
-			return PiAiSourceOutcome.Updated(new CatalogCandidate(
-				catalog,
-				ModelCatalogOverlay.CanonicalDigest(parsed),
-				info,
-				ETag: null,
-				DataManifestHash: manifestHash));
-		}
-		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+		return new PiAiPackage(version, tarballUrl, integrity);
+	}
+
+	private static CatalogCandidate BuildCandidate(byte[] tarball, string version, CancellationToken cancellationToken)
+	{
+		// 先解压到内存再交给 TarReader：tar 可以 seek，跳过源码/类型声明条目更快；
+		// 同时给解压总量设上限，压缩炸弹不会把进程拖进无界解压。
+		using var decompressed = new MemoryStream();
+		using (var gzip = new GZipStream(new MemoryStream(tarball, writable: false), CompressionMode.Decompress))
 		{
-			return PiAiSourceOutcome.Failed(ModelCatalogError.Network, "pi-ai catalog request timed out");
+			CopyBounded(gzip, decompressed, MaxDecompressedBytes, cancellationToken);
 		}
-		catch (JsonException ex)
+
+		decompressed.Position = 0;
+		using var reader = new TarReader(decompressed);
+		var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+		byte[]? manifest = null;
+		var totalBytes = 0L;
+
+		while (reader.GetNextEntry() is { } entry)
 		{
-			return PiAiSourceOutcome.Failed(ModelCatalogError.Validation, ex.Message);
+			cancellationToken.ThrowIfCancellationRequested();
+			if (!entry.Name.StartsWith(DataPrefix, StringComparison.Ordinal) ||
+				!entry.Name.EndsWith(".json", StringComparison.Ordinal) ||
+				entry.DataStream is null)
+			{
+				continue;
+			}
+
+			var name = entry.Name[DataPrefix.Length..];
+			if (name.Length == 0 || name.Contains('/') || name.Contains('\\') || name.Contains("..", StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			var bytes = ReadEntry(entry.DataStream, entry.Length, cancellationToken);
+			totalBytes += bytes.Length;
+			if (totalBytes > MaxTotalBytes)
+			{
+				throw new JsonException($"pi-ai catalog exceeds {MaxTotalBytes} bytes");
+			}
+
+			if (name == ManifestName)
+			{
+				manifest = bytes;
+			}
+			else
+			{
+				files[name] = bytes;
+			}
 		}
-		catch (HttpRequestException ex)
+
+		if (manifest is null)
 		{
-			return PiAiSourceOutcome.Failed(ModelCatalogError.Network, ex.Message);
+			throw new JsonException("pi-ai tarball has no data manifest");
 		}
-		catch (IOException ex)
+
+		var manifestHash = ModelCatalogOverlay.Digest(manifest);
+		var (expected, generatedAt) = ParseManifest(manifest);
+		foreach (var (name, hash) in expected)
 		{
-			return PiAiSourceOutcome.Failed(ModelCatalogError.Network, ex.Message);
+			if (!files.TryGetValue(name, out var bytes))
+			{
+				throw new JsonException($"pi-ai tarball is missing {name}");
+			}
+
+			var actual = Convert.ToHexStringLower(SHA256.HashData(bytes));
+			if (!string.Equals(actual, hash, StringComparison.OrdinalIgnoreCase))
+			{
+				throw new JsonException($"pi-ai data file {name} does not match its manifest hash");
+			}
+		}
+
+		var providers = Merge(expected.Keys, files);
+		// 用 PiWeft 的落盘格式重新序列化；后续读取与内嵌目录走同一条解析路径。
+		var catalog = JsonSerializer.SerializeToUtf8Bytes(providers, ModelCatalogJsonContext.Default.DictionaryStringListModel);
+		var parsed = ModelCatalogOverlay.ParseCatalog(catalog);
+		var summary = ModelCatalogOverlay.Summarize(parsed);
+		var info = new ModelCatalogInfo(
+			summary.ProviderCount,
+			summary.EntryCount,
+			generatedAt ?? DateTimeOffset.UtcNow,
+			"pi-ai",
+			version);
+		return new CatalogCandidate(
+			catalog,
+			ModelCatalogOverlay.CanonicalDigest(parsed),
+			info,
+			ETag: null,
+			DataManifestHash: manifestHash);
+	}
+
+	private static void CopyBounded(Stream source, Stream destination, int limit, CancellationToken cancellationToken)
+	{
+		var chunk = ArrayPool<byte>.Shared.Rent(64 * 1024);
+		try
+		{
+			var total = 0;
+			int read;
+			while ((read = source.Read(chunk, 0, chunk.Length)) > 0)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				total += read;
+				if (total > limit)
+				{
+					throw new JsonException($"pi-ai tarball expands beyond {limit} bytes");
+				}
+
+				destination.Write(chunk, 0, read);
+			}
+		}
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(chunk);
 		}
 	}
 
-	private static async Task<string?> ResolveLatestVersionAsync(HttpClient http, TimeSpan timeout, CancellationToken cancellationToken)
+	private static byte[] ReadEntry(Stream stream, long length, CancellationToken cancellationToken)
 	{
-		foreach (var url in RegistryUrls)
+		if (length is < 0 or > MaxDataFileBytes)
 		{
-			try
-			{
-				var bytes = await GetAsync(http, url, 64 * 1024, timeout, cancellationToken).ConfigureAwait(false);
-				using var document = JsonDocument.Parse(bytes);
-				if (document.RootElement.ValueKind == JsonValueKind.Object &&
-					document.RootElement.TryGetProperty("version", out var version) &&
-					version.ValueKind == JsonValueKind.String)
-				{
-					var text = version.GetString()?.Trim();
-					if (!string.IsNullOrEmpty(text) && text.Length <= 64 &&
-						text.All(static ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '-' or '+'))
-					{
-						return text;
-					}
-				}
-			}
-			catch (Exception ex) when (ex is JsonException or HttpRequestException or IOException or OperationCanceledException)
-			{
-				// 换下一个镜像；取消由调用方检查，超时只影响这一路。
-				if (cancellationToken.IsCancellationRequested)
-				{
-					throw;
-				}
-			}
+			throw new JsonException($"pi-ai data entry exceeds {MaxDataFileBytes} bytes");
 		}
 
-		return null;
+		using var buffer = new MemoryStream((int)length);
+		// TarReader 的 DataStream 已按条目长度截断；CopyTo 内部用池化缓冲，不用逐条再分配。
+		stream.CopyTo(buffer);
+		if (buffer.Length > MaxDataFileBytes)
+		{
+			throw new JsonException($"pi-ai data entry exceeds {MaxDataFileBytes} bytes");
+		}
+
+		cancellationToken.ThrowIfCancellationRequested();
+		return buffer.ToArray();
 	}
 
 	private static (Dictionary<string, string> Files, DateTimeOffset? GeneratedAt) ParseManifest(byte[] bytes)
 	{
-		using var document = JsonDocument.Parse(bytes);
+		using var document = JsonDocument.Parse(bytes, StrictDocument);
 		var root = document.RootElement;
 		if (root.ValueKind != JsonValueKind.Object ||
 			!root.TryGetProperty("files", out var files) ||
@@ -183,72 +334,35 @@ internal static class PiAiCatalogSource
 		return (result, generatedAt);
 	}
 
-	private static async Task<Dictionary<string, byte[]>> DownloadFilesAsync(
-		HttpClient http,
-		string baseUrl,
-		IReadOnlyDictionary<string, string> files,
-		TimeSpan timeout,
-		CancellationToken cancellationToken)
-	{
-		var contents = new Dictionary<string, byte[]>(files.Count, StringComparer.Ordinal);
-		using var gate = new SemaphoreSlim(ParallelDownloads);
-		var tasks = files.Select(async file =>
-		{
-			await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-			try
-			{
-				var bytes = await GetAsync(http, baseUrl + file.Key, MaxDataFileBytes, timeout, cancellationToken).ConfigureAwait(false);
-				var actual = Convert.ToHexStringLower(SHA256.HashData(bytes));
-				if (!string.Equals(actual, file.Value, StringComparison.OrdinalIgnoreCase))
-				{
-					throw new JsonException($"pi-ai data file {file.Key} does not match its manifest hash");
-				}
-
-				lock (contents)
-				{
-					contents[file.Key] = bytes;
-				}
-			}
-			finally
-			{
-				gate.Release();
-			}
-		});
-
-		await Task.WhenAll(tasks).ConfigureAwait(false);
-		return contents;
-	}
-
 	private static Dictionary<string, List<Model>> Merge(IEnumerable<string> fileNames, IReadOnlyDictionary<string, byte[]> contents)
 	{
 		var providers = new Dictionary<string, List<Model>>(StringComparer.Ordinal);
+		var total = 0;
 		foreach (var name in fileNames.OrderBy(static key => key, StringComparer.Ordinal))
 		{
-			using var document = JsonDocument.Parse(contents[name]);
-			if (document.RootElement.ValueKind != JsonValueKind.Object)
-			{
-				throw new JsonException($"pi-ai data file {name} is not an object");
-			}
+			// 每个文件是 { API 分组: { 模型键: 模型 } }。一次源生成反序列化拿到全部模型，
+			// 比先建 JsonDocument 再逐条解析少一层 DOM 与中间对象。
+			var groups = JsonSerializer.Deserialize(contents[name], ModelCatalogJsonContext.Default.DictionaryStringDictionaryStringModel)
+				?? throw new JsonException($"pi-ai data file {name} is empty");
 
-			// 文件结构是 { API 分组: { 模型键: 模型 } }；分组顺序与条目顺序都照上游保留。
-			foreach (var group in document.RootElement.EnumerateObject())
+			// 分组顺序与条目顺序都照上游保留，重复 ID 的覆盖顺序才与内嵌目录一致。
+			foreach (var group in groups.Values)
 			{
-				if (group.Value.ValueKind != JsonValueKind.Object)
+				if (group is null)
 				{
 					continue;
 				}
 
-				foreach (var entry in group.Value.EnumerateObject())
+				foreach (var model in group.Values)
 				{
-					if (entry.Value.ValueKind != JsonValueKind.Object)
+					if (model is null || string.IsNullOrWhiteSpace(model.Id))
 					{
 						continue;
 					}
 
-					var model = JsonSerializer.Deserialize(entry.Value, ModelsJsonContext.Default.Model);
-					if (model is null || string.IsNullOrWhiteSpace(model.Id))
+					if (++total > ModelCatalogFiles.MaxCatalogModels)
 					{
-						continue;
+						throw new JsonException($"pi-ai catalog has more than {ModelCatalogFiles.MaxCatalogModels} models");
 					}
 
 					// 极少数条目缺 provider；用文件名兜底，避免模型落进空分组。
@@ -286,15 +400,60 @@ internal static class PiAiCatalogSource
 		return await OnlineModelCatalog.ReadBoundedAsync(response.Content, maxBytes, cancellation.Token).ConfigureAwait(false);
 	}
 
+	private static bool VerifyIntegrity(byte[] tarball, string? integrity)
+	{
+		// npm 的 dist.integrity 是 sha512；没有它时仍有逐文件 SHA-256 兜底。
+		if (string.IsNullOrWhiteSpace(integrity))
+		{
+			return true;
+		}
+
+		const string prefix = "sha512-";
+		if (!integrity.StartsWith(prefix, StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		try
+		{
+			var expected = Convert.FromBase64String(integrity[prefix.Length..]);
+			return CryptographicOperations.FixedTimeEquals(SHA512.HashData(tarball), expected);
+		}
+		catch (FormatException)
+		{
+			return false;
+		}
+	}
+
+	private static string? NormalizeVersion(string? value)
+	{
+		var text = value?.Trim();
+		if (text is { Length: > 1 } && text[0] == 'v')
+		{
+			text = text[1..];
+		}
+
+		if (string.IsNullOrEmpty(text) || text.Length > 64 ||
+			!text.All(static ch => char.IsAsciiLetterOrDigit(ch) || ch is '.' or '-' or '+'))
+		{
+			return null;
+		}
+
+		return text;
+	}
+
 	/// semver 比较：主版本逐段数值，预发布段按数值/字典序。解析失败按 0 处理。
 	internal static int CompareSemver(string left, string right)
 	{
 		static (int[] Numbers, string[] Pre) Parse(string value)
 		{
 			var parts = value.Trim().Split('-', 2);
-			var numbers = parts[0].Split('.').Select(part =>
+			// semver 允许 `+build` 元数据：它不参与优先级比较，必须在拆段前去掉。
+			var main = parts[0].Split('+', 2)[0];
+			var numbers = main.Split('.').Select(part =>
 				int.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) ? number : 0).ToArray();
-			return (numbers, parts.Length > 1 ? parts[1].Split('.') : []);
+			var pre = parts.Length > 1 ? parts[1].Split('+', 2)[0] : string.Empty;
+			return (numbers, pre.Length > 0 ? pre.Split('.') : []);
 		}
 
 		var (leftNumbers, leftPre) = Parse(left);
@@ -366,6 +525,15 @@ internal static class PiAiCatalogSource
 
 		return 0;
 	}
+
+	private sealed record RegistryEndpoint(string Host)
+	{
+		public string LatestUrl => $"https://{Host}/{PackageName}/latest";
+
+		public string TarballUrl(string version) => $"https://{Host}/{PackageName}/-/{PackageFileName}-{version}.tgz";
+	}
+
+	private sealed record PiAiPackage(string Version, string? TarballUrl, string? Integrity);
 }
 
 internal enum PiAiSourceStatus

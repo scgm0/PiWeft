@@ -2465,7 +2465,10 @@ public sealed partial class MainWindow : Window
 			return;
 		}
 
-		if (preference.ModelCatalogCheckedAt is { } checkedAt && now - checkedAt < TimeSpan.FromHours(24))
+		// 检查时间在未来（手改文件、时钟回拨）时按「该查」处理，避免节流变成永不检查。
+		if (preference.ModelCatalogCheckedAt is { } checkedAt &&
+			checkedAt <= now &&
+			now - checkedAt < TimeSpan.FromHours(24))
 		{
 			return;
 		}

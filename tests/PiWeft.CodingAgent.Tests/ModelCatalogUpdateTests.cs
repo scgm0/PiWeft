@@ -1,8 +1,11 @@
+using System.Formats.Tar;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using PiWeft.CodingAgent.Models;
 using Xunit;
 
@@ -55,6 +58,19 @@ public sealed class ModelCatalogUpdateTests : IDisposable
 	}
 
 	[Fact]
+	public void OverlayCacheDropsOldContentAfterRewrite()
+	{
+		WriteOverlay(Catalog("claude-v1"), version: null);
+		Assert.NotNull(ModelCatalogOverlay.CreateRegistry(_root).Get("anthropic", "claude-v1"));
+
+		// 直接改写文件（绕过写入器）也必须失效：缓存键里带目录摘要与元数据原文。
+		WriteOverlay(Catalog("claude-v2"), version: null);
+		var registry = ModelCatalogOverlay.CreateRegistry(_root);
+		Assert.NotNull(registry.Get("anthropic", "claude-v2"));
+		Assert.Null(registry.Get("anthropic", "claude-v1"));
+	}
+
+	[Fact]
 	public async Task RepoUpdateBacksUpAndBothRestoresWork()
 	{
 		var body = Catalog("claude-x");
@@ -93,6 +109,21 @@ public sealed class ModelCatalogUpdateTests : IDisposable
 		Assert.Null(ModelCatalogOverlay.CreateRegistry(_root).Get("anthropic", "claude-x"));
 	}
 
+	[Theory]
+	[InlineData("""{"anthropic":null}""")]
+	[InlineData("""{"anthropic":[null]}""")]
+	public async Task MalformedRepoCatalogIsRejectedInsteadOfCrashing(string body)
+	{
+		var handler = new RouteHandler(_ => Json(body));
+		var options = new ModelCatalogFetchOptions { IncludePiAi = false, Urls = [RepoUrl] };
+
+		var result = await OnlineModelCatalog.UpdateAsync(_root, handler, options);
+
+		Assert.False(result.Ok);
+		Assert.Equal(ModelCatalogError.Validation, result.Error);
+		Assert.False(File.Exists(ModelCatalogFiles.CatalogPath(_root)));
+	}
+
 	[Fact]
 	public void RestorePreviousWithoutBackupReportsNoBackup()
 	{
@@ -124,15 +155,7 @@ public sealed class ModelCatalogUpdateTests : IDisposable
 	[Fact]
 	public async Task NpmSourceWritesPackageVersionAndSecondCheckSkipsDownloads()
 	{
-		var modelFile = PiAiFile("claude-x");
-		var manifest = Manifest(modelFile);
-		var handler = new RouteHandler(request => request.RequestUri!.AbsolutePath switch
-		{
-			var path when path.EndsWith("/latest", StringComparison.Ordinal) => Json("""{"version":"1.5.2"}"""),
-			var path when path.EndsWith("/.manifest.json", StringComparison.Ordinal) => Json(manifest),
-			var path when path.EndsWith("/anthropic.json", StringComparison.Ordinal) => Json(modelFile),
-			_ => Json("", HttpStatusCode.NotFound),
-		});
+		var (handler, _) = NpmFixture();
 		var options = new ModelCatalogFetchOptions { IncludeRepo = false };
 
 		var update = await OnlineModelCatalog.UpdateAsync(_root, handler, options);
@@ -142,7 +165,7 @@ public sealed class ModelCatalogUpdateTests : IDisposable
 		Assert.NotNull(ModelCatalogOverlay.CreateRegistry(_root).Get("anthropic", "claude-x"));
 		Assert.Equal("1.5.2", ModelCatalogOverlay.Status(_root).Overlay!.Version);
 
-		// 覆盖版已经写明 pi-ai 版本：下一次检查只解析版本号，不再下载数据文件。
+		// 覆盖版已经写明 pi-ai 版本：下一次检查只解析一次元数据，不再下载 tarball。
 		var before = handler.Requests.Count;
 		var check = await OnlineModelCatalog.CheckAsync(_root, handler, options);
 		Assert.True(check.Ok);
@@ -151,17 +174,54 @@ public sealed class ModelCatalogUpdateTests : IDisposable
 	}
 
 	[Fact]
+	public async Task NpmRegistryFailureFallsBackToTheOfficialRegistry()
+	{
+		var (tarball, registry) = NpmPackage();
+		var handler = new RouteHandler(request =>
+		{
+			if (request.RequestUri!.Host == "registry.npmmirror.com")
+			{
+				return Json("", HttpStatusCode.ServiceUnavailable);
+			}
+
+			return request.RequestUri.AbsolutePath switch
+			{
+				var path when path.EndsWith("/latest", StringComparison.Ordinal) => Json(registry),
+				"/pi-ai.tgz" => Binary(tarball),
+				_ => Json("", HttpStatusCode.NotFound),
+			};
+		});
+
+		var result = await OnlineModelCatalog.UpdateAsync(_root, handler, new ModelCatalogFetchOptions { IncludeRepo = false });
+
+		Assert.True(result.Ok);
+		Assert.True(result.Updated);
+		Assert.Contains(handler.Requests, request => request.RequestUri!.Host == "registry.npmjs.org");
+	}
+
+	[Fact]
 	public async Task NpmManifestHashMismatchLeavesNoOverlay()
 	{
+		var tarball = Tarball(
+			"""{"schemaVersion":6,"files":{"anthropic.json":"deadbeef"}}""",
+			PiAiFile("claude-x"));
+		var registry = RegistryJson(tarball);
+		var handler = NpmHandler(registry, tarball);
+
+		var result = await OnlineModelCatalog.UpdateAsync(_root, handler, new ModelCatalogFetchOptions { IncludeRepo = false });
+
+		Assert.False(result.Ok);
+		Assert.Equal(ModelCatalogError.Validation, result.Error);
+		Assert.False(File.Exists(ModelCatalogFiles.CatalogPath(_root)));
+	}
+
+	[Fact]
+	public async Task NpmTarballIntegrityMismatchIsRejected()
+	{
 		var modelFile = PiAiFile("claude-x");
-		var wrongManifest = """{"schemaVersion":6,"files":{"anthropic.json":"deadbeef"}}""";
-		var handler = new RouteHandler(request => request.RequestUri!.AbsolutePath switch
-		{
-			var path when path.EndsWith("/latest", StringComparison.Ordinal) => Json("""{"version":"1.5.2"}"""),
-			var path when path.EndsWith("/.manifest.json", StringComparison.Ordinal) => Json(wrongManifest),
-			var path when path.EndsWith("/anthropic.json", StringComparison.Ordinal) => Json(modelFile),
-			_ => Json("", HttpStatusCode.NotFound),
-		});
+		var tarball = Tarball(Manifest(modelFile), modelFile);
+		var registry = RegistryJson(tarball, integrity: "sha512-AAAA");
+		var handler = NpmHandler(registry, tarball);
 
 		var result = await OnlineModelCatalog.UpdateAsync(_root, handler, new ModelCatalogFetchOptions { IncludeRepo = false });
 
@@ -177,8 +237,8 @@ public sealed class ModelCatalogUpdateTests : IDisposable
 		var repoHits = 0;
 		var handler = new RouteHandler(request =>
 		{
-			if (request.RequestUri!.Host == "cdn.jsdelivr.net" ||
-				request.RequestUri.Host.StartsWith("registry.", StringComparison.Ordinal))
+			if (request.RequestUri!.Host.StartsWith("registry.", StringComparison.Ordinal) ||
+				request.RequestUri.Host == "packages.test")
 			{
 				return Json("", HttpStatusCode.ServiceUnavailable);
 			}
@@ -254,6 +314,8 @@ public sealed class ModelCatalogUpdateTests : IDisposable
 		Assert.True(PiAiCatalogSource.CompareSemver("1.5.2", "1.5.2-beta.1") > 0);
 		Assert.True(PiAiCatalogSource.CompareSemver("1.5.2-beta.2", "1.5.2-beta.10") < 0);
 		Assert.Equal(0, PiAiCatalogSource.CompareSemver("1.5.2", "1.5.2"));
+		Assert.Equal(0, PiAiCatalogSource.CompareSemver("1.5.2+build.7", "1.5.2"));
+		Assert.True(PiAiCatalogSource.CompareSemver("1.5.3", "1.5.2-beta.1+build") > 0);
 	}
 
 	private void WriteOverlay(string catalog, string? version, string? digestOverride = null)
@@ -286,6 +348,63 @@ public sealed class ModelCatalogUpdateTests : IDisposable
 		var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(modelFile)));
 		return """{"schemaVersion":6,"generatedAt":"2026-11-10T12:05:37.628Z","files":{"anthropic.json":"__HASH__"}}""".Replace("__HASH__", hash, StringComparison.Ordinal);
 	}
+
+	private static (RouteHandler Handler, byte[] Tarball) NpmFixture()
+	{
+		var (tarball, registry) = NpmPackage();
+		return (NpmHandler(registry, tarball), tarball);
+	}
+
+	private static (byte[] Tarball, string Registry) NpmPackage()
+	{
+		var modelFile = PiAiFile("claude-x");
+		var tarball = Tarball(Manifest(modelFile), modelFile);
+		return (tarball, RegistryJson(tarball));
+	}
+
+	private static RouteHandler NpmHandler(string registry, byte[] tarball) => new(request =>
+		request.RequestUri!.AbsolutePath switch
+		{
+			var path when path.EndsWith("/latest", StringComparison.Ordinal) => Json(registry),
+			"/pi-ai.tgz" => Binary(tarball),
+			_ => Json("", HttpStatusCode.NotFound),
+		});
+
+	private static string RegistryJson(byte[] tarball, string? integrity = null)
+	{
+		var sri = integrity ?? "sha512-" + Convert.ToBase64String(SHA512.HashData(tarball));
+		return new JsonObject
+		{
+			["version"] = "1.5.2",
+			["dist"] = new JsonObject
+			{
+				["tarball"] = "https://packages.test/pi-ai.tgz",
+				["integrity"] = sri,
+			},
+		}.ToJsonString();
+	}
+
+	private static byte[] Tarball(string manifest, string modelFile)
+	{
+		using var output = new MemoryStream();
+		using (var gzip = new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true))
+		{
+			using var tar = new TarWriter(gzip, TarEntryFormat.Pax, leaveOpen: true);
+			WriteTarEntry(tar, "package/dist/providers/data/.manifest.json", Encoding.UTF8.GetBytes(manifest));
+			WriteTarEntry(tar, "package/dist/providers/data/anthropic.json", Encoding.UTF8.GetBytes(modelFile));
+		}
+
+		return output.ToArray();
+	}
+
+	private static void WriteTarEntry(TarWriter tar, string name, byte[] bytes)
+	{
+		using var data = new MemoryStream(bytes);
+		tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, name) { DataStream = data });
+	}
+
+	private static HttpResponseMessage Binary(byte[] body) =>
+		new(HttpStatusCode.OK) { Content = new ByteArrayContent(body) };
 
 	private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK, string? etag = null)
 	{
