@@ -270,7 +270,7 @@ internal sealed class AssistantMessageView : IDisposable
 		{
 			// 思考还在写：首行随时会被新的一行顶掉，每帧跟着最新一行走。
 			_previewSettled = false;
-			SetPreview(ThinkingPreview.LatestLine(entry.ThinkingSource, _thinkingType.Shown), followTail: true);
+			SetPreview(ThinkingPreview.LatestLineSpan(entry.ThinkingSource, _thinkingType.Shown), followTail: true);
 		}
 		else if (!_previewSettled)
 		{
@@ -350,12 +350,12 @@ internal sealed class AssistantMessageView : IDisposable
 
 	/// 写预览行：文本没变就不碰 TextBlock（Text 是 AffectsLayout，赋值会把整行重新测量），
 	/// 但排布模式每帧都要对一下，流式结束那一帧正是从尾随切回首行的时机。
-	private void SetPreview(string text, bool followTail)
+	private void SetPreview(ReadOnlySpan<char> text, bool followTail)
 	{
-		if (!string.Equals(_previewText, text, StringComparison.Ordinal))
+		if (!text.SequenceEqual(_previewText))
 		{
-			_previewText = text;
-			_thinkingPreview.Text = text;
+			_previewText = text.ToString();
+			_thinkingPreview.Text = _previewText;
 		}
 		_previewLine.FollowTail = followTail;
 	}

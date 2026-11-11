@@ -11,11 +11,20 @@ public sealed partial class SessionTab
 
 	/// 右侧定位轴只由用户行决定，而 <paramref name="stablePrefix"/> 之前的行投影器已经保证与上一次
 	/// 引用一致，所以那里的大纲条目原样留着，只校验尾部、只补新增的用户行。
+	/// 全量重投时前缀引用不再可靠，<paramref name="prefixReused"/> 为 false，整表重建。
 	/// 以前这里每帧为上千行重建两个列表并整表比较（1000 轮历史约 60 KB/帧的纯浪费），
 	/// 流式期最明显的无谓分配就是它。
-	private void SyncOutline(IReadOnlyList<ChatEntry> entries, int stablePrefix)
+	private void SyncOutline(IReadOnlyList<ChatEntry> entries, int stablePrefix, bool prefixReused)
 	{
+		// 全量重投（过滤切换、分支改写）会让用户行的下标整体移动；旧行号不能再信任，
+		// 直接从零重建。尾投时前缀行仍是原对象，保留已确认的行号并只补尾部。
 		var changed = false;
+		if (!prefixReused)
+		{
+			changed = _outlineItems.Count > 0;
+			_outlineSources.Clear();
+			_outlineItems.Clear();
+		}
 
 		// 尾部倒着收：行号越界或引用变了的用户行丢掉，遇到仍然成立的就停下。
 		while (_outlineSources.Count > 0 && _outlineSources[^1].Row >= stablePrefix)

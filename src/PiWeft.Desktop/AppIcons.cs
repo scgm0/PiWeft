@@ -16,6 +16,7 @@ public static class AppIcons
 	private const string ResourcePrefix = "PiWeft.Desktop.Resources.icons.";
 
 	private static readonly Dictionary<(string Name, uint Tint), SvgImageSource> Cache = [];
+	private static readonly Lock CacheGate = new();
 
 	private static readonly List<WeakReference<Image>> Live = [];
 	private static int _trackedSinceSweep;
@@ -29,7 +30,7 @@ public static class AppIcons
 		var color = tint ?? AppTheme.TextMuted;
 		var key = (name, Pack(color));
 
-		lock (Cache)
+		lock (CacheGate)
 		{
 			if (Cache.TryGetValue(key, out var cached))
 			{
@@ -105,7 +106,7 @@ public static class AppIcons
 
 	public static void RefreshAll()
 	{
-		lock (Cache)
+		lock (CacheGate)
 		{
 			for (var index = Live.Count - 1; index >= 0; index--)
 			{
@@ -136,7 +137,7 @@ public static class AppIcons
 
 	private static void Track(Image image, string icon, Color? tint, bool onAccent = false, string? role = null)
 	{
-		lock (Cache)
+		lock (CacheGate)
 		{
 			Info.Add(image, new IconInfo(icon, tint, onAccent, role));
 			if (++_trackedSinceSweep >= 128)

@@ -85,6 +85,13 @@ public sealed class StreamedTextTests
 		multi.Append("ghi");
 		var multiSnapshot = Snapshot(multi);
 		Assert.Equal("cdefg", multiSnapshot.Slice(2, 5));
+		// 单行预览走的无分配路径必须与 Slice 的区间语义一致（含跨片段与 clamp）。
+		Span<char> copy = stackalloc char[8];
+		multiSnapshot.CopyTo(2, 5, copy);
+		Assert.Equal("cdefg", new string(copy[..5]));
+		var plain = new StreamText("abcdefghi");
+		plain.CopyTo(2, 5, copy);
+		Assert.Equal("cdefg", new string(copy[..5]));
 		Assert.Equal("abcdefghi", multiSnapshot.Slice(-4, 100));
 		Assert.Equal("h", multiSnapshot.Slice(7, 1));
 		Assert.Equal(string.Empty, multiSnapshot.Slice(9, 3));

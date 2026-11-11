@@ -15,7 +15,7 @@ internal sealed class MarkdownImageLoader : IMarkdownImageResolver
 
 	public static readonly MarkdownImageLoader Shared = new();
 
-	private readonly object _lock = new();
+	private readonly Lock _lock = new();
 	// 缓存值带 LRU 节点：图片解析命中时不再线性扫描链表。
 	private readonly Dictionary<string, (ImageSource? Source, LinkedListNode<string> Node)> _cache = [];
 	private readonly LinkedList<string> _lru = [];

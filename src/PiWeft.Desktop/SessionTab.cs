@@ -2212,7 +2212,8 @@ public sealed partial class SessionTab : IDisposable
 
 		var all = _chat.Entries();
 		var matched = _filter.Length == 0 ? all : [.. all.Where(entry => Matches(entry, _filter))];
-		if (!ReferenceEquals(_projectedSource, all) || _projectedFilter != _filter || _projectedBusy != IsStreaming)
+		var projected = !ReferenceEquals(_projectedSource, all) || _projectedFilter != _filter || _projectedBusy != IsStreaming;
+		if (projected)
 		{
 			var project = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 			_projectedRows = _projector.Project(matched, IsStreaming);
@@ -2228,6 +2229,9 @@ public sealed partial class SessionTab : IDisposable
 			_projectedBusy = IsStreaming;
 		}
 		var entries = _projectedRows;
+		// 这一帧复用上一帧的投影时，行表与大纲都已经是同一份数组；不能沿用上一次
+		// 「全量重投」的标记，否则每个无事件的重绘都会重新迁移高度、重建大纲。
+		var prefixReused = !projected || _projector.LastPrefixReused;
 
 		if (_filter.Length > 0)
 		{
@@ -2395,8 +2399,8 @@ public sealed partial class SessionTab : IDisposable
 		// 预热占据位：大纲、计数、空会话判定都继续看真投影，这一行只给行宿主看。
 		var timelineRows = pending ? AppendPending(entries) : entries;
 		var realize = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-		_timeline.SetEntries(timelineRows, force, _projector.LastStablePrefix, _projector.LastPrefixReused);
-		SyncOutline(entries, _projector.LastStablePrefix);
+		_timeline.SetEntries(timelineRows, force, _projector.LastStablePrefix, prefixReused);
+		SyncOutline(entries, _projector.LastStablePrefix, prefixReused);
 		if (realize is not null)
 		{
 			Diagnostics.Slow("timeline.realize", realize, 8, static rows => $"rows={rows}", timelineRows.Count);

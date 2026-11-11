@@ -327,6 +327,23 @@ public sealed class ThinkingPreviewTests
 	}
 
 	[Fact]
+	public void CollapsedExpanderContentStopsItsPumps()
+	{
+		// MewUI 折叠 Expander 时不把 Content 交给视觉树，但 Parent 链与 IsVisible 看不出来；
+		// 帧泵/秒表必须自己认这一层，否则收起的执行过程仍在后台每帧跑。
+		var inner = new Border();
+		var body = new Border().Child(inner);
+		var header = new TextBlock();
+		var expander = new Expander().Header(header).Content(body).IsExpanded(false);
+		Assert.True(StreamPump.HiddenByCollapsedExpander(body));
+		Assert.True(StreamPump.HiddenByCollapsedExpander(inner));
+		// Header 在折叠后仍然可见，里面的秒表（思考/工具标题）不能停。
+		Assert.False(StreamPump.HiddenByCollapsedExpander(header));
+		expander.IsExpanded = true;
+		Assert.False(StreamPump.HiddenByCollapsedExpander(body));
+	}
+
+	[Fact]
 	public void ShortStreamingLineStaysAtTheLeftEdge()
 	{
 		// 行还没写满可用宽度时不该往右贴：PiDeck 的 scrollLeft = scrollWidth - clientWidth 在这种情况下是 0。

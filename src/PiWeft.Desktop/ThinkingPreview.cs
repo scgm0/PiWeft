@@ -24,19 +24,20 @@ internal static class ThinkingPreview
 
 	internal static string LatestLine(in StreamText thinking, int length)
 	{
-		return LatestLine(thinking, length, LiveLineLimit + TrailingWhitespaceMargin);
+		return LatestLineSpan(thinking, length).ToString();
 	}
 
-	private static string LatestLine(in StreamText thinking, int length, int window)
+	/// 与 <see cref="LatestLine(in StreamText, int)"/> 同一窗口，返回线程复用的字符缓冲：
+	/// 调用方必须立即消费（比较/赋值），下一次调用会覆盖它。流式期每帧都要取一次尾部窗口，
+	/// 这里省掉原先 `Slice` 的临时字符串与 `TrimStart` 的副本。
+	internal static ReadOnlySpan<char> LatestLineSpan(in StreamText thinking, int length)
 	{
 		var limit = Math.Clamp(length, 0, thinking.Length);
 		// 只需要行尾那一段：跑马灯最多露出 LiveLineLimit 个字，更早的一定为负偏移裁在画面外。
 		// 换行也只在这段窗口里回找。不封顶的话，模型写一段不带换行的长句，
 		// 每帧都要反向扫完整篇（32K 字一轮就足以掉帧），TextBlock 也会重排整行。
-		// TrimEnd first, bounded to the same whitespace margin as before: slicing a 1600-char
-		// window every frame just to drop its tail allocated a temporary string twice this size.
 		var end = limit;
-		var floor = Math.Max(0, limit - window);
+		var floor = Math.Max(0, limit - LiveLineWindow);
 		while (end > floor && char.IsWhiteSpace(thinking.At(end - 1)))
 		{
 			end--;
@@ -45,17 +46,21 @@ internal static class ThinkingPreview
 		var from = Math.Max(0, end - LiveLineLimit);
 		// 窗口起点不能落在代理对中间（半个 emoji 会画出 tofu）。
 		if (from > 0 && char.IsLowSurrogate(thinking.At(from))) from++;
-		var span = thinking.Slice(from, end - from).AsSpan();
-		if (span.Length > LiveLineLimit)
-		{
-			span = span[^LiveLineLimit..];
-			// 二次封顶同样不能把代理对劈开：行首要丢掉孤立的后半个。
-			if (char.IsLowSurrogate(span[0])) span = span[1..];
-		}
+		var count = end - from;
+		if (count <= 0) return ReadOnlySpan<char>.Empty;
+		var buffer = _lineBuffer ??= new char[LiveLineWindow];
+		if (count > buffer.Length) count = buffer.Length;
+		thinking.CopyTo(from, count, buffer);
+		var span = buffer.AsSpan(0, count);
 		var newline = span.LastIndexOfAny('\n', '\r');
-		var line = newline < 0 ? span : span[(newline + 1)..];
-		return line.TrimStart().ToString();
+		span = newline < 0 ? span : span[(newline + 1)..];
+		return span.TrimStart();
 	}
+
+	private const int LiveLineWindow = LiveLineLimit + TrailingWhitespaceMargin;
+
+	[ThreadStatic]
+	private static char[]? _lineBuffer;
 
 	private const int TrailingWhitespaceMargin = 1024;
 
@@ -216,12 +221,26 @@ internal sealed class StreamPump(FrameworkElement owner, Action onFrame) : IDisp
 		if (node.FindVisualRoot() is not Window) return false;
 		var bounds = node.Bounds;
 		if (bounds.Width <= 0 || bounds.Height <= 0) return false;
-		for (var parent = node.Parent; parent is not null; parent = parent.Parent)
+		Element? child = node;
+		for (var parent = node.Parent; parent is not null; child = parent, parent = parent.Parent)
 		{
 			if (parent is UIElement { IsVisible: false }) return false;
+			// 折叠的 Expander 不把 Content 交给视觉树，但 Parent 链和 IsVisible 都看不出这一点。
+			if (parent is Expander { IsExpanded: false } expander && ReferenceEquals(expander.Content, child)) return false;
 			if (parent is ScrollViewer viewport && !Intersects(viewport.Bounds, bounds)) return false;
 		}
 		return true;
+	}
+
+	/// 节点是否在某个已折叠 Expander 的 Content 里。Header 始终可见，因此只看孩子在链上是否就是 Content。
+	internal static bool HiddenByCollapsedExpander(Element node)
+	{
+		Element? child = node;
+		for (var parent = node.Parent; parent is not null; child = parent, parent = parent.Parent)
+		{
+			if (parent is Expander { IsExpanded: false } expander && ReferenceEquals(expander.Content, child)) return true;
+		}
+		return false;
 	}
 
 	private static bool Intersects(Rect a, Rect b) =>

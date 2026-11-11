@@ -74,9 +74,11 @@ internal static class ExecutionProcess
 			// live-assistant/... 变成会话条目 id，用轮次 + 序号代替。否则组键/步骤键
 			// 在思考结束的瞬间变化，虚拟化行被重建、展开的思考也随之折叠。
 			var thinkingSequence = 0;
-			var process = new List<ChatEntry>();
+			var process = new List<ChatEntry>(unique.Count);
+			double? answerDuration = null;
 			foreach (var entry in unique)
 			{
+				if (entry.Role == ChatRole.Assistant) answerDuration = entry.DurationMs;
 				if (entry.ThinkingLength > 0 || entry.IsThinking)
 				{
 					var step = entry with
@@ -119,7 +121,7 @@ internal static class ExecutionProcess
 					EntryId = $"process/{turnKey}",
 					Timestamp = unique[0].Timestamp, ProcessEntries = process, IsStreaming = live,
 					// 总耗时取自本轮最终回复；思考/工具行本身没有独立的墙钟时间。
-					DurationMs = unique.LastOrDefault(static entry => entry.Role == ChatRole.Assistant)?.DurationMs,
+					DurationMs = answerDuration,
 				});
 			if (answer is not null)
 			{
@@ -143,8 +145,10 @@ internal static class ExecutionProcess
 		var interim = 0;
 		var errors = 0;
 		var stopped = 0;
-		foreach (var entry in entries)
+		// 索引循环：IReadOnlyList<T> 的 foreach 每帧都要分配一个接口枚举器。
+		for (var index = 0; index < entries.Count; index++)
 		{
+			var entry = entries[index];
 			if (entry.Role == ChatRole.Tool)
 			{
 				tools++;
@@ -214,8 +218,9 @@ internal static class ExecutionProcess
 		var count = 0;
 		var seen = 0;
 		var truncated = false;
-		foreach (var entry in entries)
+		for (var index = 0; index < entries.Count; index++)
 		{
+			var entry = entries[index];
 			if (entry.Role != ChatRole.Tool)
 			{
 				continue;

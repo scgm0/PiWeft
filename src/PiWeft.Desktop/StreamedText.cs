@@ -45,6 +45,26 @@ public sealed class StreamedText
 
 	public string Materialize() => _materialized ??= Slice(0, _length);
 
+	/// 把区间写进调用方的缓冲，不产生临时字符串（单行预览每帧都要取一次尾部窗口）。
+	internal void CopyTo(int start, int count, Span<char> destination)
+	{
+		start = Math.Clamp(start, 0, _length);
+		count = Math.Clamp(count, 0, _length - start);
+		if (count > destination.Length) count = destination.Length;
+		if (count == 0) return;
+		var written = 0;
+		var segment = Locate(start);
+		while (written < count && segment < _segmentCount)
+		{
+			var text = _segments[segment];
+			var offset = start + written - _starts[segment];
+			var take = Math.Min(text.Length - offset, count - written);
+			text.AsSpan(offset, take).CopyTo(destination[written..]);
+			written += take;
+			segment++;
+		}
+	}
+
 	public string Slice(int start, int count)
 	{
 		start = Math.Clamp(start, 0, _length);
@@ -189,6 +209,20 @@ internal readonly struct StreamText
 			return count == 0 ? string.Empty : _plain.Substring(start, count);
 		}
 		return _live?.Slice(start, count) ?? string.Empty;
+	}
+
+	/// 与 <see cref="Slice"/> 同区间，但直接写进调用方缓冲，不做分配。
+	internal void CopyTo(int start, int count, Span<char> destination)
+	{
+		if (_plain is not null)
+		{
+			start = Math.Clamp(start, 0, _plain.Length);
+			count = Math.Clamp(count, 0, _plain.Length - start);
+			if (count > destination.Length) count = destination.Length;
+			if (count > 0) _plain.AsSpan(start, count).CopyTo(destination);
+			return;
+		}
+		_live?.CopyTo(start, count, destination);
 	}
 
 	public string Materialize() => _plain ?? _live?.Materialize() ?? string.Empty;

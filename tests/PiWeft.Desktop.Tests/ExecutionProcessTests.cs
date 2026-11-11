@@ -268,6 +268,32 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void ExpandingAfterGroupsAdvanceWhileCollapsedOpensTheLatestGroup()
+	{
+		// 收起执行过程时不再建树/跟流；期间新增的过程组要在展开那一帧补上自动展开，
+		// 不能停在收起前那组的旧状态。
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		ChatEntry Process(params ChatEntry[] content) => ExecutionProcess.Project([User("first"), .. content], true)[1];
+		var view = new ExecutionProcessView(Process(Tool("one", "output")), entry => entry.Role == ChatRole.Tool
+			? new ToolMessageView(entry, focus).View : new AssistantMessageView(entry, _ => { }, focus).View);
+		ConversationPerformanceTests.Layout(view.View);
+		var run = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionExpandHint);
+		Assert.True(run.IsExpanded);
+
+		run.IsExpanded = false;
+		view.Update(Process(Tool("one", "output"), Answer("interim", "continue"), Tool("two", "output")));
+		ConversationPerformanceTests.Layout(view.View);
+
+		run.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var groups = Find<Expander>(run.Content!).Where(expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint).ToArray();
+		Assert.Equal(2, groups.Length);
+		Assert.False(groups[0].IsExpanded);
+		Assert.True(groups[1].IsExpanded);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
 	public void CollapsedProcessReleasesNestedScrollAnimations()
 	{
 		using var focus = new TextFocusScrollGuard(new ScrollViewer());

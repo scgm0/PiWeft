@@ -40,6 +40,8 @@ internal sealed class ExecutionProcessView
 	private ChatEntry _entry;
 	private ExecutionProcess.Stats _statsSnapshot;
 	private bool _statsValid;
+	private double? _totalDuration;
+	private bool _totalValid;
 	private string? _latestGroup;
 	private bool _automatic;
 	// 只在「流式最新组自动展开」这一条通道上跟随末尾；手动展开/恢复展开不跟随。
@@ -92,7 +94,11 @@ internal sealed class ExecutionProcessView
 		View.Tag = this;
 		_fold.ExpandedChanged += expanded =>
 		{
-			if (expanded) Build();
+			if (!expanded) return;
+			Build();
+			// 收起期间内容不参与视觉树，动画与秒表会停；展开后整棵内容重新测量，
+			// 各控件的 MeasureContent 负责把它们重新挂回帧泵/计时器。
+			ConversationTimeline.InvalidateMeasureTree(View);
 		};
 		Track("run", _fold, entry.IsStreaming);
 		Update(entry);
@@ -254,7 +260,9 @@ internal sealed class ExecutionProcessView
 		// 错误已在计数里显示，不再追加第二个红叉；运行中也不能预先打成功勾。
 		_ok.IsVisible(!entry.IsStreaming && stats.Errors == 0 && stats.Stopped == 0);
 		_running.IsVisible(entry.IsStreaming);
-		if (_fold.IsExpanded || _fold.Content is not null) Build();
+		// 收起时组头和步骤都看不见：不建树、不跟流。展开时 ExpandedChanged 会补一次 Build，
+		// 放下期间累积的内容也在那一帧对齐。
+		if (_fold.IsExpanded) Build();
 	}
 
 	private void Build()
@@ -267,7 +275,12 @@ internal sealed class ExecutionProcessView
 					.Children(_body.Spacing(2), _footer)));
 		}
 		var duration = _entry.DurationMs;
-		_total.Text(duration is { } value ? Strings.ExecutionTotal(value) : string.Empty);
+		if (!_totalValid || duration != _totalDuration)
+		{
+			_totalValid = true;
+			_totalDuration = duration;
+			_total.Text(duration is { } value ? Strings.ExecutionTotal(value) : string.Empty);
+		}
 		_total.IsVisible(duration is not null);
 		Nodes(_entry.ProcessEntries);
 		var nodes = _nodes;
@@ -296,7 +309,9 @@ internal sealed class ExecutionProcessView
 			_slots.Add(slot);
 			_body.Children(slot.Host);
 		}
-		if (_entry.IsStreaming && _fold.IsExpanded && latest != _latestGroup && latest is not null)
+		// 流式期推进到新组时自动换到最新组；收起期间没跑 Build，展开这一帧补上（_latestGroup 非空说明
+		// 之前跟踪过运行态，不是首次展开历史过程）。
+		if (latest != _latestGroup && latest is not null && (_entry.IsStreaming || _latestGroup is not null))
 		{
 			_automatic = true;
 			try
@@ -913,7 +928,7 @@ internal sealed class ExecutionProcessView
 
 		if (content.Tag is ChatEntry previous && ConversationTimeline.SameEntry(previous, entry)) return;
 		if (content.Tag is ChatEntry { IsStreaming: true } streaming && entry.Role == ChatRole.Assistant &&
-			streaming.Timestamp == entry.Timestamp && streaming.Images.SequenceEqual(entry.Images) &&
+			streaming.Timestamp == entry.Timestamp && ConversationTimeline.SameItems(streaming.Images, entry.Images) &&
 			content.Child is Border { Tag: AssistantMessageView assistant })
 		{
 			// 流式思考只更新既有视图，不重建行。
@@ -1052,8 +1067,10 @@ internal sealed class ExecutionProcessView
 			else
 			{
 				FlushGroup();
-				var node = Take($"interim/{Id(entry, i)}", group: false);
-				node.Entries = [entry];
+				var node = Take(entry, i, group: false);
+				// 中间回复行只有一个成员：复用同一份单元素数组，避免每帧新分配。
+				if (node.Entries is ChatEntry[] { Length: 1 } single) single[0] = entry;
+				else node.Entries = [entry];
 				node.Version++;
 				used++;
 			}
@@ -1067,7 +1084,7 @@ internal sealed class ExecutionProcessView
 		void FlushGroup()
 		{
 			if (members.Count == 0) return;
-			var node = Take($"group/{Id(members[0], used)}", group: true);
+			var node = Take(members[0], used, group: true);
 			node.Buffer.Clear();
 			node.Buffer.AddRange(members);
 			// 成员数量与上一次相同就继续用同一份数组：稳定后这一步不再分配。
@@ -1085,20 +1102,36 @@ internal sealed class ExecutionProcessView
 			used++;
 		}
 
-		Node Take(string key, bool group)
+		Node Take(ChatEntry anchor, int index, bool group)
 		{
+			Node node;
 			if (used < nodes.Count)
 			{
-				var existing = nodes[used];
-				existing.Key = key;
-				existing.Group = group;
-				return existing;
+				node = nodes[used];
+			}
+			else
+			{
+				node = new Node();
+				nodes.Add(node);
 			}
 
-			var created = new Node { Key = key, Group = group };
-			nodes.Add(created);
-			return created;
+			// 键只用于识别槽位。锚点的 EntryId 每帧都是重新格式化的新字符串，按值比较后
+			// 沿用旧键，稳定的组/中间回复就不会每帧再分配一次插值字符串。
+			if (node.Key.Length > 0 && node.Group == group && SameAnchor(node, anchor, index)) return node;
+			node.Group = group;
+			node.AnchorId = anchor.EntryId;
+			node.AnchorRole = anchor.Role;
+			node.AnchorTimestamp = anchor.Timestamp;
+			node.AnchorIndex = index;
+			node.Key = $"{(group ? "group" : "interim")}/{Id(anchor, index)}";
+			return node;
 		}
+
+		static bool SameAnchor(Node node, ChatEntry anchor, int index) =>
+			anchor.EntryId is { } id
+				? string.Equals(node.AnchorId, id, StringComparison.Ordinal)
+				: node.AnchorId is null && node.AnchorRole == anchor.Role &&
+				  node.AnchorTimestamp == anchor.Timestamp && node.AnchorIndex == index;
 	}
 
 	private static StackPanel Stat(string icon, string role, TextBlock count)
@@ -1235,7 +1268,7 @@ internal sealed class ExecutionProcessView
 			(current.Role == ChatRole.Tool && current.IsStreaming && next.Role == ChatRole.Tool &&
 				next.IsStreaming && current.ToolCallId == next.ToolCallId) ||
 			(current.Role == ChatRole.Assistant && current.IsStreaming && next.Role == ChatRole.Assistant &&
-				current.Timestamp == next.Timestamp && current.Images.SequenceEqual(next.Images));
+				current.Timestamp == next.Timestamp && ConversationTimeline.SameItems(current.Images, next.Images));
 	}
 
 	/// 过程组/中间回复的节点。做成可变类是为了让 <see cref="Nodes"/> 在流式期原地复用：
@@ -1245,6 +1278,11 @@ internal sealed class ExecutionProcessView
 		public string Key = string.Empty;
 		public IReadOnlyList<ChatEntry> Entries = [];
 		public bool Group;
+		// 键的锚点（组的首个成员 / 中间回复本身）：用于按值判断键能否沿用。
+		internal string? AnchorId;
+		internal ChatRole AnchorRole;
+		internal long AnchorTimestamp;
+		internal int AnchorIndex;
 		// 复用时的成员缓冲；只在内容真的变化时才换新数组，稳定后就一直用同一份。
 		internal readonly List<ChatEntry> Buffer = [];
 		internal int Version;

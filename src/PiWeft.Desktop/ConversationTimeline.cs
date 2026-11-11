@@ -282,7 +282,7 @@ internal sealed class ConversationTimeline : IDisposable
 			return;
 		}
 		if (host.Tag is ChatEntry { IsStreaming: true } streaming && entry.Role == ChatRole.Assistant &&
-			streaming.Timestamp == entry.Timestamp && streaming.Images.SequenceEqual(entry.Images) &&
+			streaming.Timestamp == entry.Timestamp && SameItems(streaming.Images, entry.Images) &&
 			host.Content is Border { Tag: AssistantMessageView assistant })
 		{
 			assistant.Update(entry);
@@ -388,6 +388,19 @@ internal sealed class ConversationTimeline : IDisposable
 	internal static bool SameEntry(ChatEntry left, ChatEntry right) =>
 		SameEntryCore(left, right, ignoreToolArguments: false);
 
+	/// 按下标比较两个列表。`IReadOnlyList<T>.SequenceEqual` 会为两侧各取一次接口枚举器，
+	/// 流式期每帧每行都会走到这里；空列表（图片/改动汇总的常态）应当直接命中引用相等。
+	internal static bool SameItems<T>(IReadOnlyList<T> left, IReadOnlyList<T> right)
+	{
+		if (ReferenceEquals(left, right)) return true;
+		var count = left.Count;
+		if (count != right.Count) return false;
+		var comparer = EqualityComparer<T>.Default;
+		for (var index = 0; index < count; index++)
+			if (!comparer.Equals(left[index], right[index])) return false;
+		return true;
+	}
+
 	private static bool SameEntryCore(ChatEntry left, ChatEntry right, bool ignoreToolArguments)
 	{
 		if (ReferenceEquals(left, right)) return true;
@@ -400,7 +413,7 @@ internal sealed class ConversationTimeline : IDisposable
 			left.DurationMs != right.DurationMs || left.ToolStartedAt != right.ToolStartedAt || left.Patch != right.Patch ||
 			(!ignoreToolArguments && left.ToolArguments != right.ToolArguments) || left.ToolCallId != right.ToolCallId ||
 			left.Compact != right.Compact ||
-			!left.Images.SequenceEqual(right.Images) || !left.ChangedFiles.SequenceEqual(right.ChangedFiles) ||
+			!SameItems(left.Images, right.Images) || !SameItems(left.ChangedFiles, right.ChangedFiles) ||
 			left.ProcessEntries.Count != right.ProcessEntries.Count)
 		{
 			return false;
@@ -474,7 +487,7 @@ internal sealed class ConversationTimeline : IDisposable
 		private static bool CanUpdateInPlace(ChatEntry current, ChatEntry next) =>
 			(Equals(Key(current), Key(next)) && next.Role == ChatRole.Process) ||
 			(current.IsStreaming && next.Role == ChatRole.Assistant && current.Timestamp == next.Timestamp &&
-				current.Images.SequenceEqual(next.Images)) ||
+				SameItems(current.Images, next.Images)) ||
 			// 工具行的流式输出：同一次调用每来一段就换一条 ChatEntry，只有正文在长；
 			// 表头只依赖参数（见 ToolMessageView.Update），原地重绑才能保住行高与秒表。
 			(current.Role == ChatRole.Tool && current.IsStreaming && next.Role == ChatRole.Tool &&

@@ -11,6 +11,7 @@ namespace PiWeft.Desktop;
 /// MewUI 滚动只 InvalidateArrange，不重新测量，所以「下次测量再启动」永远等不到
 /// （实测：计时停在离开视口那一刻）。空转一拍只做一次 <see cref="StreamPump.NeedsFrames"/> 向上遍历，
 /// 10Hz 量级可不计；无窗口（自检/单测）时只显示一次初值，不建计时器。
+/// 折叠的 Expander 内容例外：它不参与视觉树，停表后展开会重新测量，因此那里真正停表。
 internal sealed class LiveDurationText : TextBlock
 {
 	private const int TickIntervalMs = 100;
@@ -52,6 +53,8 @@ internal sealed class LiveDurationText : TextBlock
 	private void Start()
 	{
 		if (_startedAt <= 0 || _endedAt > 0 || _clock is not null || _disposed || !Application.IsRunning) return;
+		// 折叠内容里的行可能被上层重新测量；真开始后下拍也会停，不如这里直接不建计时器。
+		if (StreamPump.HiddenByCollapsedExpander(this)) return;
 		_clock = new DispatcherTimer(TimeSpan.FromMilliseconds(TickIntervalMs));
 		_clock.OnTick(Tick);
 		_clock.Start();
@@ -59,8 +62,18 @@ internal sealed class LiveDurationText : TextBlock
 
 	private void Tick()
 	{
-		// 不可见的拍只跳过写入，绝不停表：滚出视口再回来不会有测量来叫醒它，
-		// 停了读数就冻在离开那一刻（折叠、切走的标签页同理）。自己被显式隐藏时也不必写，
+		// 折叠的 Expander 内容不再参与视觉树；重新展开会重新测量，MeasureContent 会再 Start，
+		// 所以这条路可以真正停表，免得收起执行过程后隐藏的步骤每秒白跳十次。
+		if (StreamPump.HiddenByCollapsedExpander(this))
+		{
+			Stop();
+			// 重新展开时做一次测量才能再 Start；不靠折叠动画或无关数据帧碰巧唤醒这一行。
+			InvalidateMeasure();
+			return;
+		}
+
+		// 其余不可见的拍只跳过写入，绝不停表：滚出视口再回来不会有测量来叫醒它，
+		// 停了读数就冻在离开那一刻（切走的标签页同理）。自己被显式隐藏时也不必写，
 		// 但要停表得由宿主收口跨度（见 AssistantMessageView）。
 		if (!IsVisible || !StreamPump.NeedsFrames(this)) return;
 
