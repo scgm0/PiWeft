@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using PiWeft.Ai;
+using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Session;
 using Xunit;
 
@@ -497,6 +498,31 @@ public class TrajectoryTests
 		// 轨迹耗时来自会话文件，缺失或异常时也由同一个函数兜底（NaN/负数按 0 排版）。
 		Assert.Equal(Strings.FormatDuration(0), TrajectoryFormat.Duration(double.NaN));
 		Assert.Equal(Strings.FormatDuration(0), TrajectoryFormat.Duration(-1));
+	}
+
+	[Fact]
+	public void ContinuationMarkerShowsAsANamedProcessRecord()
+	{
+		var entries = new List<SessionEntry>
+		{
+			Entry("user", Base, User("question", Base)),
+			Entry("answer", Base + 1000, Assistant(Base + 1000, [TextContent.Of("half")], stop: StopReason.Error)),
+			new CustomMessageEntry
+			{
+				Id = "continue",
+				Timestamp = Iso(Base + 2000),
+				CustomType = PiWeftProtocol.ContinueGenerationRole,
+				Content = MessageContent.Empty,
+				Display = false,
+			},
+		};
+
+		var model = TrajectoryBuilder.Build(entries, [], Base + 5000);
+
+		// 空正文不能落成一行「—」：过程泳道直接写出它是继续生成。
+		var record = Assert.Single(model.Records, static item => item.Kind == TrajectoryKind.Custom);
+		Assert.Equal(Strings.ContinueRequested, record.Summary);
+		Assert.Equal(PiWeftProtocol.ContinueGenerationRole, record.CustomType);
 	}
 
 	[Fact]

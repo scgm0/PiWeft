@@ -1363,7 +1363,7 @@ public sealed partial class SessionTab : IDisposable
 				Render();
 				if (failure is not null)
 				{
-					NotifyError(Strings.SendFailed(failure));
+					NotifyError(continueGeneration ? Strings.ContinueFailed(failure) : Strings.SendFailed(failure));
 				}
 
 				RefreshTitle();
@@ -2218,6 +2218,10 @@ public sealed partial class SessionTab : IDisposable
 			}
 
 			if (row.IsStreaming) return KindOf(row);
+
+			// 继续生成的收据开的是新的一轮，前面不可能还有在跑的行：
+			// 等首 token 的每一帧都倒扫到底的话，长会话就是白烧。
+			if (row.Role == ChatRole.Notice) break;
 		}
 
 		return (false, false, false);

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using PiWeft.Ai;
+using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
@@ -290,6 +291,12 @@ internal static class TrajectoryBuilder
 					AddProcess(entry.Id, TrajectoryKind.Custom, at,
 						TrajectoryText.CustomSummary(custom.CustomType, custom.Data), customType: custom.CustomType,
 						detail: custom.Data?.ToJsonString());
+					break;
+
+				case CustomMessageEntry custom when custom.CustomType == PiWeftProtocol.ContinueGenerationRole:
+					// 空标记没有正文：写清楚它是哪一类过程，免得轨迹里只剩一行「—」。
+					AddProcess(entry.Id, TrajectoryKind.Custom, at, Strings.ContinueRequested,
+						customType: custom.CustomType);
 					break;
 
 				case CustomMessageEntry custom:

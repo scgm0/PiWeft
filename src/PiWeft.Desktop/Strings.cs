@@ -81,6 +81,7 @@ public static partial class Strings
 	public const string EditImageLabel = "随消息图片";
 	public static string AttachFailed(string reason) => $"附加图片失败：{reason}";
 	public static string SendFailed(string reason) => $"发送失败：{reason}";
+	public static string ContinueFailed(string reason) => $"继续生成失败：{reason}";
 
 	// 顶栏与欢迎页
 	public const string AppName = "PiWeft Desktop";

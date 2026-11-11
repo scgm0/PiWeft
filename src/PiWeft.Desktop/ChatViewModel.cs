@@ -545,10 +545,17 @@ public sealed class ChatViewModel : IDisposable
 		await RunAsync(() => session.PromptAsync(text, cancellationToken)).ConfigureAwait(false);
 	}
 
-	/// 手动继续生成：不新增提问，接着失败/中断/截断的那一轮再跑一次。
+	/// 手动继续生成：不新增提问，接着失败或截断的那一轮再跑一次。
 	public async Task ContinueAsync(CancellationToken cancellationToken = default)
 	{
 		var session = Session ?? throw new InvalidOperationException("尚未绑定会话");
+		// 点下去的瞬间后台可能刚起了一轮（子会话回报、目标恢复）：静默放弃，
+		// 不把这种竞态写成错误横幅。
+		if (!session.CanContinueGeneration())
+		{
+			return;
+		}
+
 		await RunAsync(() => session.ContinueGenerationAsync(cancellationToken)).ConfigureAwait(false);
 	}
 
@@ -1095,7 +1102,8 @@ public sealed class ChatViewModel : IDisposable
 						Role = ChatRole.Notice,
 						Text = Strings.ContinueRequested,
 						Timestamp = user.Timestamp,
-						EntryId = entryIds.GetValueOrDefault(message),
+						// 自定义消息不在 _entryIds 里；时间戳稳定，重开会话也是同一个行标识。
+						EntryId = entryIds.GetValueOrDefault(message) ?? $"continue/{user.Timestamp}",
 						Compact = true,
 					});
 					return;

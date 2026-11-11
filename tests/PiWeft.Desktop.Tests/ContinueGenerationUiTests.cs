@@ -60,4 +60,71 @@ public sealed class ContinueGenerationUiTests
 		ConversationPerformanceTests.Layout(tab);
 		Assert.Contains(Find<TextBlock>(tab.View), static block => block.Text == Strings.ContinueRequested);
 	}
+
+	[Fact]
+	public async Task ContinueShowsTheWaitingPlaceholderUntilTheFirstToken()
+	{
+		var calls = 0;
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		var model = FakeStreams.Model();
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = manager.Cwd,
+			Session = manager,
+			Model = model,
+			Tools = [],
+			Skills = [],
+			PromptTemplates = [],
+			Persist = false,
+			Settings = new CodingAgentSettings { Retry = new RetryPolicy(Enabled: false) },
+			StreamFn = (streamModel, _, _) =>
+			{
+				if (Interlocked.Increment(ref calls) == 1)
+				{
+					return FakeStreams.Error(streamModel, "Service Unavailable");
+				}
+
+				// 首 token 前的等待窗口：只在开始事件后停住，不推任何正文。
+				var blank = new AssistantMessage
+				{
+					Api = streamModel.Api,
+					Provider = streamModel.Provider,
+					Model = streamModel.Id,
+					Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+				};
+				var stream = new AssistantMessageEventStream();
+				_ = Task.Run(async () =>
+				{
+					stream.Push(new StartEvent { Partial = blank });
+					started.TrySetResult();
+					await release.Task.ConfigureAwait(false);
+					stream.Push(new DoneEvent { Reason = StopReason.Stop, Partial = blank with { StopReason = StopReason.Stop } });
+				});
+				return stream;
+			},
+		});
+		using var tab = new SessionTab(session, [model], "continue-wait");
+		tab.SetExtensionText("hi");
+		tab.SendFromShortcut();
+		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+
+		Assert.Equal(Strings.Continue, tab.PrimaryLabelForTests);
+		tab.PrimaryActionForTests();
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+		ConversationPerformanceTests.Layout(tab);
+
+		// 收据行开的新一轮还没吐出正文：尾部要有等待占位行，不能把上一轮的半截回答当成输出。
+		Assert.True(tab.ChatStreaming);
+		Assert.NotEmpty(Find<PendingReplyView>(tab.View));
+
+		release.TrySetResult();
+		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+		ConversationPerformanceTests.Layout(tab);
+		Assert.Empty(Find<PendingReplyView>(tab.View));
+	}
 }

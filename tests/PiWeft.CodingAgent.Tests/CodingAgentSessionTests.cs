@@ -321,12 +321,13 @@ public class CodingAgentSessionTests : IDisposable
 		using var session = CreateSession(script);
 		Assert.False(session.CanContinueGeneration());
 
-		// 成功那一轮没什么可继续的；继续只接失败、中断或被截断的回合。
+		// 成功那一轮没什么可继续的；继续只接失败或被截断的回合。
 		foreach (var (reason, expected) in new[]
 		{
 			(StopReason.Stop, false),
 			(StopReason.Error, true),
-			(StopReason.Aborted, true),
+			// 中断的助手消息不进重放，继续只会变成重提，跟「重试」重复。
+			(StopReason.Aborted, false),
 			(StopReason.Length, true),
 		})
 		{

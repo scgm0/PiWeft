@@ -19,6 +19,34 @@ public sealed class ExecutionProcessTests
 	private static ChatEntry Tool(string id, string text, bool pending = false) =>
 		new() { Role = ChatRole.Tool, EntryId = $"{id}/{(pending ? "call" : "result")}", ToolCallId = id, ToolName = "read", Text = text, IsStreaming = pending };
 
+	private static ChatEntry Receipt(string id) =>
+		new() { Role = ChatRole.Notice, EntryId = id, Text = Strings.ContinueRequested, Compact = true };
+
+	[Fact]
+	public void IncrementalProjectionKeepsOneReceiptAcrossContinuationFrames()
+	{
+		var entries = new List<ChatEntry>
+		{
+			User("first"),
+			Answer("failed", "half an answer"),
+			Receipt("continue-1"),
+		};
+		var projector = new ExecutionProcessProjector();
+
+		AssertProjection(entries, true, projector);
+		// 第二帧会走尾投：收据是新轮次的边界，前缀不能把提问与半截回答再铺一遍。
+		AssertProjection(entries, true, projector);
+
+		entries.Add(Answer("retry", "full answer"));
+		AssertProjection(entries, false, projector);
+		AssertProjection(entries, false, projector);
+
+		entries.Add(Answer("failed-2", string.Empty));
+		entries.Add(Receipt("continue-2"));
+		AssertProjection(entries, false, projector);
+		AssertProjection(entries, false, projector);
+	}
+
 	[Fact]
 	public void GroupHeadSummaryListsToolKindsAndCollapsesPastThree()
 	{

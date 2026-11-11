@@ -3513,10 +3513,12 @@ public sealed partial class CodingAgentSession : IDisposable
 		return messages;
 	}
 
-	/// <summary>上一轮是否停在可继续的位置：失败、被中断或输出被截断。</summary>
+	/// <summary>上一轮是否停在可继续的位置：请求失败或输出被截断。</summary>
 	public bool CanContinueGeneration()
 	{
-		if (_agent.IsStreaming)
+		// IsRunning 比 _agent.IsStreaming 早：自动压缩、请求准备期间还没有流，
+		// 但跑已经开始了，再起一轮会被代理当成重入。
+		if (_agent.IsStreaming || IsRunning)
 		{
 			return false;
 		}
@@ -3532,7 +3534,9 @@ public sealed partial class CodingAgentSession : IDisposable
 				case UserMessage:
 					return false;
 				case AssistantMessage assistant:
-					return assistant.StopReason is StopReason.Error or StopReason.Aborted or StopReason.Length;
+					// 主动中断不接：Aborted 的助手消息在重放时被丢弃（半截推理与不完整工具调用不能回放），
+					// 「继续」会静默变成重新提问，跟标题栏的「重试」重复。
+					return assistant.StopReason is StopReason.Error or StopReason.Length;
 			}
 		}
 
@@ -3543,9 +3547,9 @@ public sealed partial class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> ContinueGenerationAsync(CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
-		if (_agent.IsStreaming)
+		if (_agent.IsStreaming || IsRunning)
 		{
-			throw new InvalidOperationException("Cannot continue while the session is streaming");
+			throw new InvalidOperationException("Cannot continue while the session is running");
 		}
 
 		if (!CanContinueGeneration())
