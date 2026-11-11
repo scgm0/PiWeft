@@ -2,7 +2,9 @@ using System.Net;
 using System.Text;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Subagents;
 
 using PiWeft.Ai.Json;
 namespace PiWeft.Cli;
@@ -51,10 +53,25 @@ public static class SessionHtml
 		return builder.ToString();
 	}
 
-	private static string SessionTitle(CodingAgentSession session) =>
-		session.SessionName
-		?? session.Session.FirstUserMessageText()
-		?? $"Session {session.Session.SessionId}";
+	private static string ReportLabel(string? customType) => customType switch
+	{
+		SubagentHub.ResultMessageType => "subagent result",
+		SubagentHub.MessageType => "subagent message",
+		PiWeftProtocol.LinkedReportMessageType => "linked session report",
+		PiWeftProtocol.LinkedMessageType => "linked session message",
+		_ => "report",
+	};
+
+	private static string SessionTitle(CodingAgentSession session)
+	{
+		if (session.SessionName is { Length: > 0 } name)
+		{
+			return name;
+		}
+
+		var first = session.Session.FirstUserMessageText();
+		return first is { Length: > 0 } ? first : $"Session {session.Session.SessionId}";
+	}
 
 	private static void RenderMessage(StringBuilder builder, Message message)
 	{
@@ -62,6 +79,16 @@ public static class SessionHtml
 		{
 			case UserMessage { Content.Text: { Length: 0 } }:
 				// 继续生成的空标记只是准入记录，没有正文，不进导出的阅读视图。
+				break;
+
+			// 注入的回报是 user 角色，但用户没写它：导出里也单列一类，别冒充用户发言。
+			case UserMessage user when !user.IsUserAuthored:
+				if (!user.Display) break;
+				builder.Append("<article class=\"report\">\n<h2>")
+					.Append(Escape(ReportLabel(user.CustomType)))
+					.Append("</h2>\n");
+				RenderContent(builder, user.Content);
+				builder.Append("</article>\n");
 				break;
 
 			case UserMessage user:
@@ -179,6 +206,7 @@ public static class SessionHtml
 		article.user { border-color: #4a9; }
 		article.assistant { border-color: #48c; }
 		article.tool-result { border-color: #c94; }
+		article.report { border-color: #888c; opacity: .9; }
 		pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .35rem 0; font-size: .9rem; }
 		pre.tool { opacity: .85; }
 		pre.error { color: #c33; }

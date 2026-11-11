@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using PiWeft.CodingAgent.Subagents;
 
 namespace PiWeft.Desktop;
 
@@ -23,22 +25,21 @@ internal static class ExecutionProcess
 		for (var index = start; index < entries.Count; index++)
 		{
 			var entry = entries[index];
-			if (entry.Role == ChatRole.User)
+			if (entry.Role.IsTurnBoundary())
 			{
-				Flush(false);
-				lastTurnStart = rows.Count;
-				rows.Add(entry);
-				turnId = entry.EntryId ?? $"user/{rows.Count}/{entry.Timestamp}";
-			}
-			else if (entry.Role == ChatRole.Notice)
-			{
-				// 继续生成的收据自己开一轮：前面失败的那一轮要保独立，
+				// 用户消息与继续生成收据都自己开一轮：前一轮要保独立，
 				// 否则它的半截回答会被挤进下一轮的过程组。
 				Flush(false);
 				lastTurnStart = rows.Count;
 				rows.Add(entry);
-				turnId = entry.EntryId ?? $"notice/{rows.Count}/{entry.Timestamp}";
+				turnId = entry.EntryId ?? entry.Role switch
+				{
+					ChatRole.User => $"user/{rows.Count}/{entry.Timestamp}",
+					_ => $"notice/{rows.Count}/{entry.Timestamp}",
+				};
 			}
+			// 回报不另起一轮：它触发了新的一次请求，但从用户视角仍是同一问一答里的一段，
+			// 折进当前执行过程组当一步，避免时间线上冒出第二个「执行过程」。
 			else turn.Add(entry);
 		}
 		Flush(busy);
@@ -145,7 +146,11 @@ internal static class ExecutionProcess
 		}
 	}
 
-	public readonly record struct Stats(int Tools, int Thinking, int Interim, int Errors, int Stopped);
+	public readonly record struct Stats(int Tools, int Thinking, int Interim, int Errors, int Stopped)
+	{
+		/// 回报也算一步：统计口径与「能不能折进过程组」保持一致。
+		public int Reports { get; init; }
+	}
 
 	public static Stats Count(IReadOnlyList<ChatEntry> entries)
 	{
@@ -154,6 +159,7 @@ internal static class ExecutionProcess
 		var interim = 0;
 		var errors = 0;
 		var stopped = 0;
+		var reports = 0;
 		// 索引循环：IReadOnlyList<T> 的 foreach 每帧都要分配一个接口枚举器。
 		for (var index = 0; index < entries.Count; index++)
 		{
@@ -161,6 +167,11 @@ internal static class ExecutionProcess
 			if (entry.Role == ChatRole.Tool)
 			{
 				tools++;
+			}
+
+			if (entry.Role == ChatRole.Report)
+			{
+				reports++;
 			}
 
 			if (entry.ThinkingLength > 0 || entry.IsThinking)
@@ -184,7 +195,7 @@ internal static class ExecutionProcess
 			}
 		}
 
-		return new Stats(tools, thinking, interim, errors, stopped);
+		return new Stats(tools, thinking, interim, errors, stopped) { Reports = reports };
 	}
 
 	public static string Summary(IReadOnlyList<ChatEntry> entries)
@@ -230,16 +241,21 @@ internal static class ExecutionProcess
 		for (var index = 0; index < entries.Count; index++)
 		{
 			var entry = entries[index];
-			if (entry.Role != ChatRole.Tool)
+			// 回报也是一步：不单列的话，含回报的组会被一句「执行了命令」概括掉。
+			var kind = entry.Role switch
+			{
+				ChatRole.Report => 8,
+				ChatRole.Tool => entry.ToolName switch
+				{
+					"read" => 0, "write" => 1, "edit" => 2, "bash" or "terminal" or "powershell" => 3,
+					"grep" or "find" or "ls" => 4, "todo" => 5, "ask_question" => 6, _ => 7,
+				},
+				_ => -1,
+			};
+			if (kind < 0)
 			{
 				continue;
 			}
-
-			var kind = entry.ToolName switch
-			{
-				"read" => 0, "write" => 1, "edit" => 2, "bash" or "terminal" or "powershell" => 3,
-				"grep" or "find" or "ls" => 4, "todo" => 5, "ask_question" => 6, _ => 7,
-			};
 			var bit = 1 << kind;
 			if ((seen & bit) != 0) continue;
 			seen |= bit;
@@ -263,6 +279,7 @@ internal static class ExecutionProcess
 	[
 		"已读取文件", "已写入文件", "修改了文件", "执行了命令",
 		"已搜索代码", "更新了计划", "已向你提问", "已调用工具",
+		"收到子代理回报",
 	];
 
 	public static string RunningLabel(IReadOnlyList<ChatEntry> entries)
@@ -410,6 +427,22 @@ internal static class ExecutionProcess
 				Strings.ToolDetail(entry.ToolArguments is { Length: > 0 } todoArguments ? todoArguments : entry.Text);
 		}
 
+		// 子代理工具：行内只给「委派谁 / 等谁 / 发给谁」，完整参数留在展开里。
+		if (SubagentTools.IsName(entry.ToolName ?? string.Empty))
+		{
+			var target = SubagentActionDetail(entry);
+			var action = entry.ToolName switch
+			{
+				SubagentTools.DelegateName => Strings.ToolActionDelegate,
+				SubagentTools.WaitName => Strings.ToolActionSubagentWait,
+				SubagentTools.ListName => Strings.ToolActionSubagentList,
+				SubagentTools.SendName => Strings.ToolActionSubagentSend,
+				_ => Strings.ToolActionSubagentStop,
+			};
+
+			return target.Length == 0 ? action : Strings.ToolAction(action, target, running);
+		}
+
 		var verb = entry.ToolName switch
 		{
 			"bash" or "terminal" or "powershell" => Strings.ToolActionExecute,
@@ -424,6 +457,89 @@ internal static class ExecutionProcess
 		}
 
 		return Strings.ToolAction(verb, DetailPreview(entry), running);
+	}
+
+	/// <summary>子代理工具的行内摘要：delegate 给角色加任务首行，其余给目标名。</summary>
+	private static string SubagentActionDetail(ChatEntry entry)
+	{
+		var arguments = entry.ToolArguments;
+		if (arguments is not { Length: > 0 })
+		{
+			return Strings.ToolDetail(entry.Text);
+		}
+
+		if (entry.ToolName == SubagentTools.DelegateName)
+		{
+			var agent = JsonField(arguments, "agent");
+			var task = JsonField(arguments, "task");
+			if (agent is null) return Strings.ToolDetail(arguments);
+			return task is { Length: > 0 }
+				? Strings.ToolDetail($"{agent} · {TaskLine(task)}")
+				: Strings.ToolDetail(agent);
+		}
+
+		if (entry.ToolName == SubagentTools.WaitName)
+		{
+			var names = JsonStringArray(arguments, "names");
+			return names is { Length: > 0 } ? Strings.ToolDetail(names) : Strings.ToolActionSubagentWaitAll;
+		}
+
+		if (entry.ToolName == SubagentTools.ListName)
+		{
+			return string.Empty;
+		}
+
+		return Strings.ToolDetail(JsonField(arguments, "id") ?? arguments);
+	}
+
+	/// 任务首行：子代理的简短够用，多行 brief 在展开里看全文。
+	private static string TaskLine(string task)
+	{
+		var span = task.AsSpan().Trim();
+		var newline = span.IndexOfAny('\n', '\r');
+		if (newline > 0)
+		{
+			span = span[..newline];
+		}
+
+		return span.Length <= 48 ? span.ToString() : string.Concat(span[..48], "…");
+	}
+
+	/// 读一个字符串数组字段，拼成逗号列表；非数组或空时返回 null。
+	private static string? JsonStringArray(string arguments, string field)
+	{
+		JsonDocument document;
+		try
+		{
+			document = JsonDocument.Parse(arguments);
+		}
+		catch (Exception error) when (error is JsonException or ArgumentException)
+		{
+			return null;
+		}
+
+		using (document)
+		{
+			if (document.RootElement.ValueKind != JsonValueKind.Object ||
+				!document.RootElement.TryGetProperty(field, out var value) || value.ValueKind != JsonValueKind.Array)
+			{
+				return null;
+			}
+
+			var builder = new StringBuilder(32);
+			foreach (var item in value.EnumerateArray())
+			{
+				if (item.ValueKind != JsonValueKind.String || item.GetString() is not { Length: > 0 } text)
+				{
+					continue;
+				}
+
+				if (builder.Length > 0) builder.Append(", ");
+				builder.Append(text);
+			}
+
+			return builder.Length > 0 ? builder.ToString() : null;
+		}
 	}
 
 	private static string DetailPreview(ChatEntry entry)
@@ -552,7 +668,7 @@ internal sealed class ExecutionProcessProjector
 	{
 		for (var index = entries.Count - 1; index >= 0; index--)
 		{
-			if (entries[index].Role is ChatRole.User or ChatRole.Notice)
+			if (entries[index].Role.IsTurnBoundary())
 			{
 				return index;
 			}

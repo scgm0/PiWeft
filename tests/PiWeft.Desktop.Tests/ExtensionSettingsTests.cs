@@ -96,21 +96,21 @@ public sealed class ExtensionSettingsTests : IDisposable
 		ConversationPerformanceTests.Layout(view.View, 800, 720);
 
 		var toggles = Find<ToggleSwitch>(view.View).ToArray();
-		// 4 个 Pi 内置 + 10 个桌面内置 + 1 个刚发现的文件扩展。
-		Assert.Equal(15, toggles.Length);
+		// 5 个 Pi 内置 + 10 个桌面内置 + 1 个刚发现的文件扩展。
+		Assert.Equal(16, toggles.Length);
 		var texts = Find<TextBlock>(view.View).Select(static block => block.Text ?? string.Empty).ToArray();
 		Assert.Contains("pi-deck-ask-question", texts);
 		Assert.DoesNotContain(texts, static text => text.Contains(".ts", StringComparison.Ordinal));
 
-		// 前四行是 builtin:mcp / llama.cpp / codemode / tool-search，最后一行的文件扩展可写盘。
+		// 前五行是 builtin:mcp / llama.cpp / codemode / tool-search / subagent，最后一行的文件扩展可写盘。
 		toggles[0].IsChecked = false;
 		var entries = JsonNode.Parse(File.ReadAllText(SettingsPath))!["extensions"]!.AsArray()
 			.Select(node => node!.GetValue<string>()).ToArray();
 		Assert.Contains("-builtin:mcp", entries);
 
 		toggles = Find<ToggleSwitch>(view.View).ToArray();
-		Assert.Equal(15, toggles.Length);
-		toggles[14].IsChecked = false;
+		Assert.Equal(16, toggles.Length);
+		toggles[15].IsChecked = false;
 		entries = JsonNode.Parse(File.ReadAllText(SettingsPath))!["extensions"]!.AsArray()
 			.Select(node => node!.GetValue<string>()).ToArray();
 		Assert.Contains("-" + Path.GetFullPath(extensionPath).Replace('\\', '/'), entries);

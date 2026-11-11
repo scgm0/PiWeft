@@ -1279,7 +1279,9 @@ public sealed partial class SessionManager
 		using var scope = _stateGate.EnterScope();
 		foreach (var entry in _fileEntries.OfType<SessionEntry>())
 		{
-			if (entry is SessionMessageEntry { Message: UserMessage user } && ContentText(user.Content) is { Length: > 0 } text)
+			// 回报开场的会话不该拿机器文本当标题。
+			if (entry is SessionMessageEntry { Message: UserMessage user } && user.IsUserAuthored &&
+				ContentText(user.Content) is { Length: > 0 } text)
 			{
 				return text;
 			}

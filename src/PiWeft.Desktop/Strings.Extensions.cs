@@ -5,7 +5,7 @@ public static partial class Strings
 	public const string SettingsExtensions = "扩展";
 	public const string SettingsBuiltinExtensions = "Pi 内置扩展";
 	public const string SettingsBuiltinExtensionsHint =
-		"Pi 随 CLI 分发，默认加载的四个内置扩展。开关写入全局 settings.json 的 extensions（builtin: 条目），与命令行 pi config 等价；项目规则仍可覆盖，改动在下次新建会话或重启后生效。";
+		"Pi 随 CLI 分发，默认加载的内置扩展。开关写入全局 settings.json 的 extensions（builtin: 条目），与命令行 pi config 等价；项目规则仍可覆盖，改动在下次新建会话或重启后生效。";
 	public const string SettingsDesktopExtensions = "桌面内置扩展";
 	public const string SettingsDesktopExtensionsHint =
 		"PiDeck 随桌面分发的内置扩展，本端口由 C# 原生实现，随应用提供，不能单独关闭。";
@@ -26,6 +26,7 @@ public static partial class Strings
 	public const string SettingsBuiltinLlamaHint = "本地 llama.cpp provider 支持。";
 	public const string SettingsBuiltinCodemodeHint = "codemode 脚本工具；MCP 默认 exposure 依赖它。";
 	public const string SettingsBuiltinToolSearchHint = "tool_search 工具；deferred exposure 的服务器依赖它。";
+	public const string SettingsBuiltinSubagentHint = "delegate 系列工具：把任务交给子代理，最终回复回到父会话。";
 
 	public const string DesktopExtensionRequestSizeRecovery =
 		"请求体超限自动恢复：识别网关 413/请求体过大错误，允许临时切换大上限模型压缩，解除无法发送的死锁。";

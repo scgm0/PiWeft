@@ -16,6 +16,7 @@ using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Models;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
+using PiWeft.CodingAgent.Subagents;
 using PiWeft.CodingAgent.Tools;
 using PiWeft.JavaScript;
 
@@ -102,6 +103,27 @@ public sealed record CodingAgentSessionOptions
 
 	/// 父会话的展示标题（子会话的系统提示用）。
 	public string? LinkedParentTitle { get; init; }
+
+	/// 宿主提供的子代理能力；为 null 时不注册 delegate 系列工具。
+	public ISubagentHost? SubagentHost { get; init; }
+
+	/// 本会话的委派深度。顶层为 0，子代理会话为 1。
+	public int SubagentDepth { get; init; }
+
+	/// 深度上限：达到上限的会话不再注册委派工具。默认 1，只允许一层委派。
+	public int MaxSubagentDepth { get; init; } = 1;
+
+	/// 同一个父会话同时活跃的子代理数量上限。
+	public int MaxActiveSubagents { get; init; } = 4;
+
+	/// 每个用户回合最多启动多少个子代理；防止回报触发的连锁委派无限扩张。
+	public int MaxSubagentSpawns { get; init; } = 32;
+
+	/// 子代理角色目录；省略时按 cwd 发现。子会话由宿主传入父会话的目录，避免重复扫描。
+	public Subagents.SubagentCatalog? Agents { get; init; }
+
+	/// 本会话是子代理会话时，指向开出它的父会话；子会话关闭时用它更新父会话里的状态。
+	public CodingAgentSession? SubagentParent { get; init; }
 
 	/// 项目是否受信任。为 false 时不加载项目级技能与提示词模板（<c>&lt;cwd&gt;/.pi/skills</c>、
 	/// <c>.agents/skills</c> 等），用户级目录照常加载。上下文文件不受影响，与 pi 一致。
@@ -230,6 +252,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		Security = options.Settings.Security;
 		UiHost = options.UiHost;
 		ProjectTrusted = options.ProjectTrusted;
+		SubagentParent = options.SubagentParent;
 		_images = options.Images;
 		_classifiers = options.Classifiers;
 		Session = options.Session
@@ -237,6 +260,22 @@ public sealed partial class CodingAgentSession : IDisposable
 		Linked = options.LinkedSessionHost is { } linkedHost
 			? new LinkedSessionHub(this, linkedHost, options.LinkedParent, options.LinkedParentTitle)
 			: null;
+
+		// 没有宿主就不扫角色目录：CLI、测试与子代理会话不会为这个功能付启动成本。
+		Subagents = options.SubagentHost is { } subagentHost
+			&& options.SubagentDepth < options.MaxSubagentDepth
+			&& Settings.IsBuiltinExtensionEnabled(ExtensionRules.SubagentBuiltin)
+				? new SubagentHub(
+					this,
+					subagentHost,
+					options.Agents ?? SubagentCatalog.Discover(
+						Cwd,
+						agentDir: null,
+						includeProject: options.ProjectTrusted),
+					options.SubagentDepth,
+					options.MaxActiveSubagents,
+					options.MaxSubagentSpawns)
+				: null;
 
 		_explicitSkills = options.Skills;
 		_explicitTemplates = options.PromptTemplates;
@@ -353,6 +392,23 @@ public sealed partial class CodingAgentSession : IDisposable
 					builtins.Add(LinkedSessionsTool.Bind(name, () => this));
 				}
 			}
+		}
+
+		// 委派工具同样跟宿主能力与深度走：子代理会话拿到的是 0 个工具，递归默认停在第一层。
+		if (Subagents is { } subagents)
+		{
+			foreach (var name in SubagentTools.Names)
+			{
+				if (!builtins.Any(tool => string.Equals(tool.Tool.Name, name, StringComparison.Ordinal)))
+				{
+					builtins.Add(SubagentTools.Bind(name, subagents));
+				}
+			}
+		}
+		else
+		{
+			// 调用方手工传入的委派工具在没有 hub 时不能复活。
+			builtins.RemoveAll(static tool => SubagentTools.IsName(tool.Tool.Name));
 		}
 
 		// 系统提示词只在运行时构造，不写进会话文件：真实 pi 读回时会把 role:system 当成历史，污染上下文。
@@ -505,6 +561,13 @@ public sealed partial class CodingAgentSession : IDisposable
 	/// 只在宿主提供了 <see cref="ILinkedSessionHost"/> 时存在；纯 CLI 为 null。
 	public LinkedSessionHub? Linked { get; }
 
+	/// 异步委派：开出子代理、把最终回复送回本会话。
+	/// 宿主支持且未达到深度上限时为非 null；子代理会话本身为 null。
+	public SubagentHub? Subagents { get; }
+
+	/// 本会话是子代理会话时，指向开出它的父会话。
+	public CodingAgentSession? SubagentParent { get; }
+
 	public AgentRuntime Agent => _agent;
 
 	public Model Model => _agent.Model;
@@ -601,9 +664,10 @@ public sealed partial class CodingAgentSession : IDisposable
 	/// CLI、RPC 与桌面共用这条路径，保证三者的输入语义一致。
 	public UserMessage PrepareInput(string text, IReadOnlyList<ImageContent>? images = null)
 	{
-		// 用户发消息：关联会话的自动续跑额度清零（PiDeck 同义）。
+		// 用户发消息：关联会话的自动续跑额度与子代理启动预算清零（PiDeck 同义）。
 		// 子会话回报不走这里，所以不会被自己触发的父会话轮次清零。
 		Linked?.NoteUserPrompt();
+		Subagents?.NoteUserPrompt();
 
 		// 计划模式：PiDeck 的 Plan 开关会在消息首行注入隐藏标记。带标记就开启，
 		// 随后第一条无标记消息（来自同一开关流）自动退出；/plan 手动的源不自动退出。
@@ -3745,7 +3809,9 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		_disposed = true;
+		SubagentParent?.Subagents?.NoteChildClosed(Session.SessionId);
 		Linked?.Dispose();
+		Subagents?.Dispose();
 		DispatchSessionLifecycle("session_shutdown");
 		_persistence.Dispose();
 		_cacheWarmLifecycle.Dispose();

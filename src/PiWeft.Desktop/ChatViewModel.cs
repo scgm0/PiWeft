@@ -7,6 +7,7 @@ using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Subagents;
 using PiWeft.CodingAgent.Tools;
 
 using PiWeft.Ai.Json;
@@ -28,6 +29,18 @@ public enum ChatRole
 
 	/// 一轮开始时的事件收据（目前只有「已请求继续生成」），不占用户气泡也不进过程组。
 	Notice,
+
+	/// 外部注入的一轮起因：子代理回报、关联会话消息。它是模型看到的 user 消息，
+	/// 但不是用户写的，所以不用用户气泡（否则「撤回」会把机器文本当草稿放回输入框）。
+	Report,
+}
+
+/// 轮次边界：用户消息与继续生成收据。过程组与尾投都按这两个角色切。
+/// 注入的回报不是边界行：它折进下一轮的执行过程组里（见 ExecutionProcess.ProjectRange）。
+public static class ChatRoles
+{
+	public static bool IsTurnBoundary(this ChatRole role) =>
+		role is ChatRole.User or ChatRole.Notice;
 }
 
 public sealed record ChatImage(string Data, string MimeType);
@@ -110,6 +123,9 @@ public sealed record ChatEntry
 
 	public string? EntryId { get; init; }
 
+	/// 回报行的来源标题（「子代理回报「scout-1」」）；其它角色不用。
+	public string? Label { get; init; }
+
 	public IReadOnlyList<ChatImage> Images { get; init; } = [];
 
 	public long Timestamp { get; init; }
@@ -161,7 +177,11 @@ public sealed record ChatRetryStatus(
 /// <param name="Text">预览文本（只取正文，不含图片数据）。</param>
 /// <param name="ImageCount">随行的图片张数。</param>
 /// <param name="Steer">true 表示下一次模型调用前插入当前回合，false 表示排队到下一轮。</param>
-public sealed record ChatQueuedMessage(Message Message, string Text, int ImageCount, bool Steer);
+public sealed record ChatQueuedMessage(Message Message, string Text, int ImageCount, bool Steer)
+{
+	/// 排队的是用户写的消息。注入的回报不能「撤回」：那会把机器文本当成草稿塞回输入框。
+	public bool IsUserAuthored => Message is not UserMessage { CustomType: not null };
+}
 
 public sealed record ChatRetryNotice(bool Success, int Attempt, int MaxAttempts, string? FinalError);
 
@@ -1110,6 +1130,23 @@ public sealed class ChatViewModel : IDisposable
 				}
 
 				if (!user.Display) return;
+
+				// 子代理回报、关联会话消息：模型看到的是 user 消息，但用户没写它。
+				var injectedText = TextOf(user.Content);
+				if (InjectedContext.Label(user.CustomType, injectedText) is { } label)
+				{
+					var injected = injectedText;
+					_entries.Add(new ChatEntry
+					{
+						Role = ChatRole.Report,
+						Label = InjectedContext.Title(label, injected),
+						Text = injected,
+						Timestamp = user.Timestamp,
+						EntryId = entryIds.GetValueOrDefault(message),
+					});
+					return;
+				}
+
 				_entries.Add(new ChatEntry
 				{
 					Role = ChatRole.User,
@@ -1205,6 +1242,10 @@ public sealed class ChatViewModel : IDisposable
 					IsError = result.IsError,
 					DurationMs = result.DurationMs,
 				});
+
+				// wait_subagents 取走的结果不会再有消息投递（同一段正文不进两次上下文）。
+				// 时间线仍要看得见：按工具结果里的结构化数据补一张只读回报卡，纯显示、不写会话。
+				AppendWaitedReports(result, entryIds.GetValueOrDefault(message));
 				return;
 			}
 
@@ -1219,6 +1260,39 @@ public sealed class ChatViewModel : IDisposable
 
 				return;
 			}
+		}
+	}
+
+	/// 被 wait 取走的子代理结果：每个有正文的子代理补一张只读回报卡。
+	/// 只认 `delivered: true` 的行——否则结果本来就会以消息形式投递，会画出两张卡。
+	private void AppendWaitedReports(ToolResultMessage result, string? entryId)
+	{
+		if (!string.Equals(result.ToolName, SubagentTools.WaitName, StringComparison.Ordinal) ||
+			result.Details is not JsonObject details ||
+			details["subagents"] is not JsonArray rows)
+		{
+			return;
+		}
+
+		for (var index = 0; index < rows.Count; index++)
+		{
+			if (rows[index] is not JsonObject row ||
+				row["returned"]?.GetValue<bool>() != true ||
+				row["result"]?.GetValue<string>() is not { Length: > 0 } text)
+			{
+				continue;
+			}
+
+			var agent = row["agent"]?.GetValue<string>() ?? string.Empty;
+			var name = row["name"]?.GetValue<string>() ?? agent;
+			_entries.Add(new ChatEntry
+			{
+				Role = ChatRole.Report,
+				Label = InjectedContext.Title(Strings.ReportSubagentResult, $"子代理「{name}」"),
+				Text = text,
+				Timestamp = result.Timestamp,
+				EntryId = $"{entryId ?? result.ToolCallId}/wait-report/{index}",
+			});
 		}
 	}
 

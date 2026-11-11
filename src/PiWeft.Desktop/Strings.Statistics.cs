@@ -30,6 +30,27 @@ public static partial class Strings
 	public const string ToolActionRead = "读取";
 	public const string ToolActionEdit = "修改";
 	public const string ToolActionSearch = "搜索";
+	public const string ToolActionDelegate = "委派";
+	public const string ToolActionSubagentWait = "等待子代理";
+	public const string ToolActionSubagentList = "列出子代理";
+	public const string ToolActionSubagentSend = "通知子代理";
+	public const string ToolActionSubagentStop = "停止子代理";
+	public static string ToolTimeoutMilliseconds(long milliseconds) =>
+		milliseconds >= 60000 ? $"{milliseconds / 60000} 分钟" : $"{milliseconds} 毫秒";
+	public const string ToolActionSubagentWaitAll = "全部在跑的子代理";
+	public const string ToolFieldAgent = "角色";
+	public const string ToolFieldSubagentName = "名字";
+	public const string ToolFieldSubagentNames = "等待目标";
+	public const string ToolFieldSubagentTarget = "子代理";
+	public const string ToolFieldTask = "任务";
+	public const string ToolFieldMessage = "消息";
+
+	public static string ToolContextMode(string mode) => mode switch
+	{
+		"fork" => "继承当前会话",
+		"fresh" => "全新会话",
+		_ => mode,
+	};
 
 	public const string SessionStatistics = "会话统计";
 	public const string StatisticsUsage = "累计用量";

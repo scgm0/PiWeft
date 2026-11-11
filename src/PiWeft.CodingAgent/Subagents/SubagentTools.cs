@@ -1,0 +1,349 @@
+using System.Text;
+using System.Text.Json.Nodes;
+using PiWeft.Agent;
+using PiWeft.CodingAgent.Tools;
+
+namespace PiWeft.CodingAgent.Subagents;
+
+/// <summary>
+/// 子代理的五个工具：<c>delegate</c> 启动，<c>wait_subagents</c> 等待，
+/// <c>list_subagents</c> 查看，<c>send_to_subagent</c> 追加消息，<c>stop_subagent</c> 停掉。
+/// 名字与 pi 的 <c>subagent</c> 区分开：这里只做异步委派。
+/// </summary>
+public static class SubagentTools
+{
+	/// <summary>启动一个子代理。</summary>
+	public const string DelegateName = "delegate";
+
+	/// <summary>等待子代理结束一轮。</summary>
+	public const string WaitName = "wait_subagents";
+
+	/// <summary>列出本会话的子代理与可用角色。</summary>
+	public const string ListName = "list_subagents";
+
+	/// <summary>给子代理追加一条消息。</summary>
+	public const string SendName = "send_to_subagent";
+
+	/// <summary>停掉子代理当前回合。</summary>
+	public const string StopName = "stop_subagent";
+
+	/// <summary>五个工具名，按注册顺序。</summary>
+	public static IReadOnlyList<string> Names { get; } = [DelegateName, WaitName, ListName, SendName, StopName];
+
+	/// <summary>是否是子代理工具。</summary>
+	public static bool IsName(string name) =>
+		name is DelegateName or WaitName or ListName or SendName or StopName;
+
+	/// <summary>按名字取一个工具。会话构造时按名字逐个绑定，这里不重复构造整份清单。</summary>
+	public static BuiltinTool Bind(string name, SubagentHub hub)
+	{
+		ArgumentNullException.ThrowIfNull(hub);
+		foreach (var tool in Create(hub))
+		{
+			if (string.Equals(tool.Tool.Name, name, StringComparison.Ordinal))
+			{
+				return tool;
+			}
+		}
+
+		throw new ArgumentOutOfRangeException(nameof(name), name, "unknown subagent tool");
+	}
+
+	/// <summary>全部五个工具。</summary>
+	public static IReadOnlyList<BuiltinTool> Create(SubagentHub hub)
+	{
+		ArgumentNullException.ThrowIfNull(hub);
+		return
+		[
+			new BuiltinTool(
+				new AgentTool
+				{
+					Name = DelegateName,
+					Label = "Delegate",
+					Description = DelegateDescription(hub.Catalog),
+					Parameters = DelegateParameters(),
+					Execute = invocation => ExecuteDelegateAsync(hub, invocation),
+				},
+				"Start a subagent on a self-contained task; its final reply arrives as a message",
+				[
+					"Write the task as a self-contained brief: scope, done criteria, how to verify, what not to touch. The child cannot see this conversation.",
+					"Start independent delegations in one assistant message and keep working while they run. When only waiting is left, call wait_subagents or end your turn; the result starts a new turn.",
+					"Do not edit the same files from both sides. Review the child's diff and command output before reporting the work as done.",
+				]),
+
+			new BuiltinTool(
+				new AgentTool
+				{
+					Name = WaitName,
+					Label = "Wait Subagents",
+					Description =
+						"Wait until the named subagents finish a turn, or until the timeout (default 10 minutes). " +
+						"Returns state and result text for each; results taken this way are not delivered again as a separate message. " +
+						"Omit names to wait for every running subagent.",
+					Parameters = WaitParameters(),
+					Execute = invocation => ExecuteWaitAsync(hub, invocation),
+				},
+				"Wait for subagents to finish a turn",
+				[
+					"Use wait_subagents only when the next step depends on the result; otherwise end your turn and let the completion message wake you.",
+				]),
+
+			new BuiltinTool(
+				new AgentTool
+				{
+					Name = ListName,
+					Label = "List Subagents",
+					Description =
+						"List the subagents this session started and the agent roles available to delegate. " +
+						"Rows marked finished come from earlier sessions and have no live session; their transcript is in the session file.",
+					Parameters = new JsonObject
+					{
+						["type"] = "object",
+						["properties"] = new JsonObject(),
+					},
+					Execute = _ =>
+					{
+						var text = hub.Describe(out var details);
+						return Task.FromResult(AgentToolResult.Text(text, details));
+					},
+				},
+				"List running and finished subagents",
+				[]),
+
+			new BuiltinTool(
+				new AgentTool
+				{
+					Name = SendName,
+					Label = "Send To Subagent",
+					Description =
+						"Send a follow-up message to a subagent by name or session id. " +
+						"The child sees it as its next user message; this call does not wait for the reply.",
+					Parameters = SendParameters(),
+					Execute = invocation => ExecuteSendAsync(hub, invocation),
+				},
+				"Send a follow-up message to a subagent",
+				[
+					"Use send_to_subagent for extra requirements on an existing child; do not start a second subagent for the same task.",
+				]),
+
+			new BuiltinTool(
+				new AgentTool
+				{
+					Name = StopName,
+					Label = "Stop Subagent",
+					Description = "Stop a subagent's current turn. The child session stays readable and can be inspected.",
+					Parameters = TargetParameters("name or session id"),
+					Execute = invocation => Task.FromResult(ExecuteStop(hub, invocation)),
+				},
+				"Stop a subagent's current turn",
+				[]),
+		];
+	}
+
+	private static async Task<AgentToolResult> ExecuteDelegateAsync(SubagentHub hub, AgentToolInvocation invocation)
+	{
+		var agent = JsonArgs.String(invocation.Arguments["agent"]);
+		var task = JsonArgs.String(invocation.Arguments["task"]);
+		if (string.IsNullOrWhiteSpace(agent))
+		{
+			return AgentToolResult.Error("agent is required");
+		}
+
+		if (string.IsNullOrWhiteSpace(task))
+		{
+			return AgentToolResult.Error("task is required");
+		}
+
+		var name = JsonArgs.String(invocation.Arguments["name"]);
+		var context = JsonArgs.String(invocation.Arguments["context"]);
+		var outcome = await hub.StartAsync(
+			new SubagentStartRequest(agent, task, name, context),
+			invocation.CancellationToken).ConfigureAwait(false);
+
+		return outcome.Ok
+			? AgentToolResult.Text(outcome.Text, new JsonObject
+			{
+				["name"] = outcome.Name,
+				["session_id"] = outcome.SessionId,
+				["status"] = "started",
+			})
+			: AgentToolResult.Error(outcome.Text);
+	}
+
+	private static async Task<AgentToolResult> ExecuteWaitAsync(SubagentHub hub, AgentToolInvocation invocation)
+	{
+		var targets = ReadNames(invocation.Arguments["names"]);
+		var timeoutMs = JsonArgs.Int(invocation.Arguments["timeout_ms"]);
+		var timeout = timeoutMs is > 0
+			? TimeSpan.FromMilliseconds(Math.Min(timeoutMs.Value, 1_800_000))
+			: SubagentHub.DefaultWaitTimeout;
+
+		// 等待期间把「在等谁、在干什么」推给界面：一次工具调用可能阻塞十分钟。
+		var outcome = await hub.WaitAsync(
+			targets,
+			timeout,
+			invocation.CancellationToken,
+			invocation.OnUpdate is { } onUpdate
+				? text => onUpdate(AgentToolResult.Text(text))
+				: null).ConfigureAwait(false);
+		return outcome.Ok
+			? AgentToolResult.Text(outcome.Text, outcome.Details)
+			: AgentToolResult.Error(outcome.Text);
+	}
+
+	private static async Task<AgentToolResult> ExecuteSendAsync(SubagentHub hub, AgentToolInvocation invocation)
+	{
+		var target = JsonArgs.String(invocation.Arguments["id"]);
+		var message = JsonArgs.String(invocation.Arguments["message"]);
+		if (string.IsNullOrWhiteSpace(target))
+		{
+			return AgentToolResult.Error("id is required");
+		}
+
+		if (string.IsNullOrWhiteSpace(message))
+		{
+			return AgentToolResult.Error("message is required");
+		}
+
+		// 会话没打开时会先冷恢复（读会话文件、重建子会话），比一次工具调用稍慢。
+		var outcome = await hub.SendAsync(target, message, invocation.CancellationToken).ConfigureAwait(false);
+		return outcome.Ok ? AgentToolResult.Text(outcome.Text) : AgentToolResult.Error(outcome.Text);
+	}
+
+	private static AgentToolResult ExecuteStop(SubagentHub hub, AgentToolInvocation invocation)
+	{
+		var target = JsonArgs.String(invocation.Arguments["id"]);
+		if (string.IsNullOrWhiteSpace(target))
+		{
+			return AgentToolResult.Error("id is required");
+		}
+
+		var outcome = hub.Stop(target);
+		return outcome.Ok ? AgentToolResult.Text(outcome.Text) : AgentToolResult.Error(outcome.Text);
+	}
+
+	private static IReadOnlyList<string>? ReadNames(JsonNode? node)
+	{
+		if (node is not JsonArray array || array.Count == 0)
+		{
+			return null;
+		}
+
+		var names = new List<string>(array.Count);
+		foreach (var item in array)
+		{
+			if (item is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > 0)
+			{
+				names.Add(text);
+			}
+		}
+
+		return names.Count == 0 ? null : names;
+	}
+
+	private static string DelegateDescription(SubagentCatalog catalog)
+	{
+		var builder = new StringBuilder(256);
+		builder.Append(
+			"Start a subagent on a self-contained task. Returns immediately with the subagent name; " +
+			"the final reply arrives as a message when the child finishes a turn. ");
+		builder.Append("Available agents: ");
+		var first = true;
+		foreach (var definition in catalog.All)
+		{
+			if (!first)
+			{
+				builder.Append("; ");
+			}
+
+			builder.Append(definition.Name).Append(": ").Append(definition.Description);
+			first = false;
+		}
+
+		return builder.ToString();
+	}
+
+	private static JsonObject DelegateParameters() => new()
+	{
+		["type"] = "object",
+		["properties"] = new JsonObject
+		{
+			["agent"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = "Agent role to run. See the tool description for the available names.",
+			},
+			["task"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = "Self-contained brief: scope, done criteria, how to verify, what not to touch. The child cannot see this conversation.",
+			},
+			["name"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = "Optional name for this child, unique among your subagents: 1-32 lower-case letters, digits or hyphens, starting with a letter.",
+			},
+			["context"] = new JsonObject
+			{
+				["type"] = "string",
+				["enum"] = new JsonArray("fresh", "fork"),
+				["description"] =
+					"Context mode. fresh gives the child only the task; " +
+					"fork seeds it with this conversation up to the last completed turn.",
+			},
+		},
+		["required"] = new JsonArray("agent", "task"),
+	};
+
+	private static JsonObject WaitParameters() => new()
+	{
+		["type"] = "object",
+		["properties"] = new JsonObject
+		{
+			["names"] = new JsonObject
+			{
+				["type"] = "array",
+				["items"] = new JsonObject { ["type"] = "string" },
+				["description"] = "Subagent names or session ids. Omit to wait for every running subagent.",
+			},
+			["timeout_ms"] = new JsonObject
+			{
+				["type"] = "integer",
+				["description"] = "Maximum wait in milliseconds; defaults to 600000 (10 minutes), capped at 1800000.",
+			},
+		},
+	};
+
+	private static JsonObject SendParameters() => new()
+	{
+		["type"] = "object",
+		["properties"] = new JsonObject
+		{
+			["id"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = "Subagent name or session id.",
+			},
+			["message"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = "What to add or change. The child receives it as its next user message.",
+			},
+		},
+		["required"] = new JsonArray("id", "message"),
+	};
+
+	private static JsonObject TargetParameters(string description) => new()
+	{
+		["type"] = "object",
+		["properties"] = new JsonObject
+		{
+			["id"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = description,
+			},
+		},
+		["required"] = new JsonArray("id"),
+	};
+}

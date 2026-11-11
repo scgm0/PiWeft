@@ -506,8 +506,10 @@ internal sealed class AssistantMessageView : IDisposable
 		BlockSpacing = AppTheme.Space2,
 		ListIndent = 28,
 		CardCornerRadius = AppTheme.RadiusXl,
-		CodeBackgroundSelector = theme => AppTheme.For(theme).CodeBackground,
-		InlineCodeBackgroundSelector = theme => AppTheme.For(theme).CardBackgroundAlt,
+		// 代码块底色比页面低一档：深色主题 Page #141414 → 块 #252525，浅色 #ffffff → #f0f0f0。
+		// 用 CodeBackground（#0f0f0f / #f6f6f6）在页面上几乎看不出块边界。
+		CodeBackgroundSelector = theme => AppTheme.For(theme).CardBackgroundAlt,
+		InlineCodeBackgroundSelector = theme => AppTheme.For(theme).CodeBackground.Lerp(AppTheme.For(theme).CardBackgroundAlt, 0.5),
 		InlineCodeBorderSelector = theme => AppTheme.For(theme).Border,
 		// GFM alerts：NOTE/TIP/IMPORTANT/WARNING/CAUTION 的语义色与中文标签。
 		AlertColorSelector = (theme, kind) => kind switch
@@ -530,41 +532,7 @@ internal sealed class AssistantMessageView : IDisposable
 		},
 	};
 
-	private MarkdownView CreateMarkdownView(double fontSize, bool muted = false)
-	{
-		// 会话本身已经有纵向视口，每条回复只负责排版；块回收由外层视口驱动。
-		var view = new MarkdownView
-		{
-			FontSize = fontSize,
-			FontWeight = FontWeight.Normal,
-			Options = SharedMarkdownOptions,
-			MarkdownTheme = SharedMarkdownTheme,
-		};
-		// Markdown 图片：data/本地文件/https 走共享 loader（有上限与失败缓存），
-		// 点击交给与附件同一套全尺寸预览。
-		view.ImageResolver = MarkdownImageLoader.Shared;
-		view.ImageRequested += args =>
-		{
-			if (args.Image is { } source) _previewImage?.Invoke(source);
-		};
-		// 丢渲染一旦发生就要在 timings 里留下现场（窗口/偏移/高度），否则只能靠猜：
-		// 正常情况下这条分支永远不走，成本为零。
-		view.NothingRealized += geometry =>
-		{
-			Diagnostics.Count("markdown.empty.realize");
-			Diagnostics.Record("markdown.empty.realize", 0, geometry);
-		};
-		view.SelectionChanged += () => PrimarySelectionText.Service?.Publish(
-			view.SelectedText.Length <= LinuxPrimarySelection.MaxCharacters ? view.SelectedText : string.Empty);
-		_focus.Track(view);
-		view.LinkRequested += link => _openLink(link.Url);
-		view.CodeTextCreated = (text, language) => ConfigureCodeText(text, language, _focus, muted);
-		// Link paragraphs are their own focus targets. Without a guard a click asks the group body
-		// and the conversation to scroll the focused paragraph into view, which can move the
-		// reader's position even though the clicked word was already visible.
-		view.FocusableElementCreated = paragraph => _focus.Track(paragraph);
-		if (muted) view.WithTheme((theme, element) => element.Foreground = AppTheme.For(theme).TextMuted);
-		return view.SmoothScrolling();
-	}
+	private MarkdownView CreateMarkdownView(double fontSize, bool muted = false) =>
+		MarkdownViews.Create(fontSize, _focus, _previewImage, _openLink, muted);
 
 }

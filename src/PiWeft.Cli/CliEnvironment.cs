@@ -16,6 +16,7 @@ using PiWeft.CodingAgent.Resources;
 using PiWeft.Mcp;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
+using PiWeft.CodingAgent.Subagents;
 using PiWeft.CodingAgent.Tools;
 
 namespace PiWeft.Cli;
@@ -624,7 +625,10 @@ public sealed class CliEnvironment
 		string? extraSystemPrompt = null,
 		ILinkedSessionHost? linkedSessionHost = null,
 		CodingAgentSession? linkedParent = null,
-		string? linkedParentTitle = null)
+		string? linkedParentTitle = null,
+		ISubagentHost? subagentHost = null,
+		int subagentDepth = 0,
+		SubagentCatalog? agents = null)
 	{
 		var manager = session ?? ResolveSession(arguments, cwd, Settings.SessionDir);
 
@@ -728,6 +732,9 @@ public sealed class CliEnvironment
 			LinkedSessionHost = linkedSessionHost,
 			LinkedParent = linkedParent,
 			LinkedParentTitle = linkedParentTitle,
+			SubagentHost = subagentHost,
+			SubagentDepth = subagentDepth,
+			Agents = agents,
 			NoContextFiles = arguments.NoContextFiles,
 			// 显式路径来自 settings.extensions 与 -e；-ne 只关发现，显式路径仍然加载（与 pi 一致）。
 			ExtensionPaths = [.. Settings.Extensions, .. arguments.Extensions],
@@ -737,6 +744,178 @@ public sealed class CliEnvironment
 			ProjectTrusted = projectTrusted,
 		});
 	}
+
+	/// <summary>
+	/// 建一个子代理会话：角色工具白名单、模型与思考级别、角色提示词加委派边界。
+	/// 子会话不加载扩展、不带关联会话工具，避免递归开启子会话。
+	/// </summary>
+	public CodingAgentSession CreateChildSession(
+		CliArguments arguments,
+		string cwd,
+		SessionManager session,
+		SubagentStartContext context,
+		SubagentCatalog catalog,
+		ISubagentHost? subagentHost,
+		IReadOnlyList<AgentTool>? extraTools,
+		IUiHost? uiHost)
+	{
+		ArgumentNullException.ThrowIfNull(arguments);
+		ArgumentNullException.ThrowIfNull(session);
+		ArgumentNullException.ThrowIfNull(context);
+
+		var definition = context.Agent;
+		var model = ResolveChildModel(definition) ?? context.Parent.Model;
+		var tools = ChildTools(
+			arguments,
+			cwd,
+			definition,
+			extraTools,
+			context.Parent.Tools,
+			context.Parent.PlanModeEnabled);
+		var boundary = SubagentHub.BuildBoundary(context);
+		var appendSystemPrompt = definition.SystemPrompt.Length > 0
+			? string.Concat(definition.SystemPrompt, "\n\n", boundary)
+			: boundary;
+
+		var stream = StreamFnOverride ?? StreamFn;
+		StreamFn sessionStream = (requested, messages, options) => stream(requested, messages, options with
+		{
+			ApiKey = arguments.ApiKey ?? ProviderApiKeys.GetValueOrDefault(requested.Provider),
+		});
+
+		var projectTrusted = arguments.ProjectTrustOverride ?? ProjectTrusted;
+		return new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = cwd,
+			Model = model,
+			RestoreRecordedModel = false,
+			StreamFn = sessionStream,
+			Registry = Registry,
+			ApiKeyForProvider = provider => arguments.ApiKey ?? ProviderApiKeys.GetValueOrDefault(provider),
+			Images = Images,
+			Classifiers = Classifiers,
+			// 角色没写级别时沿用父会话当前级别，而不是回到全局默认。
+			ThinkingLevel = definition.Thinking ?? context.Parent.ThinkingLevel,
+			Tools = tools,
+			Session = session,
+			Persist = true,
+			RecordInitialThinkingLevel = false,
+			Settings = Settings,
+			Options = new StreamOptions { ApiKey = arguments.ApiKey },
+			// 子会话与父会话同 cwd：资源快照直接复用，免去每个子代理重扫技能与模板目录。
+			Resources = context.Parent.Resources,
+			AppendSystemPrompt = appendSystemPrompt,
+			NoContextFiles = arguments.NoContextFiles,
+			// 子代理不加载扩展：工具面保持角色白名单，也避免扩展在子会话里注册额外工具。
+			LoadExtensions = false,
+			DiscoverExtensions = false,
+			SubagentHost = subagentHost,
+			SubagentDepth = context.Depth,
+			MaxSubagentDepth = 1,
+			SubagentParent = context.Parent,
+			Agents = catalog,
+			UiHost = uiHost,
+			ProjectTrusted = projectTrusted,
+		});
+	}
+
+	private Model? ResolveChildModel(SubagentDefinition definition)
+	{
+		var spec = definition.Model?.Trim();
+		return string.IsNullOrEmpty(spec) ? null : Registry.Resolve(spec);
+	}
+
+	private IReadOnlyList<AgentTool> ChildTools(
+		CliArguments arguments,
+		string cwd,
+		SubagentDefinition definition,
+		IReadOnlyList<AgentTool>? extraTools,
+		IReadOnlyList<AgentTool> inherited,
+		bool planMode)
+	{
+		if (arguments.NoTools)
+		{
+			return [];
+		}
+
+		var catalog = BuiltinTools.Catalog(cwd);
+		var byName = new Dictionary<string, AgentTool>(catalog.Count, StringComparer.Ordinal);
+		foreach (var builtin in catalog)
+		{
+			byName[builtin.Tool.Name] = builtin.Tool;
+		}
+
+		var selected = new List<AgentTool>(definition.Tools?.Count ?? inherited.Count);
+		if (definition.Tools is { Count: > 0 } allowed)
+		{
+			foreach (var name in allowed)
+			{
+				// 计划模式连角色的显式白名单也不能解锁 edit/write。
+				if (IsChildForbidden(name) || (planMode && PlanMode.DisabledTools.Contains(name, StringComparer.Ordinal)))
+				{
+					continue;
+				}
+
+				if (byName.TryGetValue(name, out var tool))
+				{
+					selected.Add(tool);
+				}
+			}
+		}
+		else
+		{
+			// 继承父会话「当前可用」的工具名，而不是环境里的完整目录：--tools 与计划模式的
+			// 过滤对子代理同样生效；工具实例仍按子会话重新绑定（PI_SESSION_ID 等不能串）。
+			var names = new HashSet<string>(inherited.Count, StringComparer.Ordinal);
+			foreach (var tool in inherited)
+			{
+				if (!IsChildForbidden(tool.Name))
+				{
+					names.Add(tool.Name);
+				}
+			}
+
+			foreach (var builtin in catalog)
+			{
+				if (names.Contains(builtin.Tool.Name))
+				{
+					selected.Add(builtin.Tool);
+				}
+			}
+
+			// MCP 工具只在角色没写白名单时继承，与父会话的 mcp__ 过滤规则一致。
+			foreach (var tool in FilterExtraTools(arguments, extraTools ?? []))
+			{
+				if (!IsChildForbidden(tool.Name))
+				{
+					selected.Add(tool);
+				}
+			}
+		}
+
+		foreach (var name in definition.ExcludeTools)
+		{
+			selected.RemoveAll(tool => string.Equals(tool.Name, name, StringComparison.Ordinal));
+		}
+
+		return selected;
+	}
+
+	/// <summary>委派、关联会话与 codemode 不进子会话：递归与工具面都收在第一层。</summary>
+	private static readonly FrozenSet<string> ChildForbiddenTools = FrozenSet.ToFrozenSet(
+	[
+		SubagentTools.DelegateName,
+		SubagentTools.WaitName,
+		SubagentTools.ListName,
+		SubagentTools.SendName,
+		SubagentTools.StopName,
+		LinkedSessionsTool.StartName,
+		LinkedSessionsTool.SendName,
+		LinkedSessionsTool.ListName,
+		CodeModeTool.Name,
+	], StringComparer.Ordinal);
+
+	private static bool IsChildForbidden(string name) => ChildForbiddenTools.Contains(name);
 
 	private static IReadOnlyList<CodingAgent.Resources.ResourceRoot> ExplicitRoots(IReadOnlyList<string> paths, string cwd)
 	{

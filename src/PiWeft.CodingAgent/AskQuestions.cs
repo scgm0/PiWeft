@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using PiWeft.Ai.Json;
 
 using PiWeft.CodingAgent.Compatibility;
 
@@ -105,7 +106,7 @@ public static class AskQuestions
 			[EnvelopeKey] = 1,
 			["review"] = review,
 			["questions"] = new JsonArray([.. array]),
-		}.ToJsonString();
+		}.ToJsonString(PiJson.NodeOptions);
 	}
 
 	public static IReadOnlyList<AskQuestion>? ParseEnvelope(string? title)
@@ -227,7 +228,7 @@ public static class AskQuestions
 			array.Add(item);
 		}
 
-		return new JsonObject { ["cancelled"] = cancelled, ["answers"] = new JsonArray([.. array]) }.ToJsonString();
+		return new JsonObject { ["cancelled"] = cancelled, ["answers"] = new JsonArray([.. array]) }.ToJsonString(PiJson.NodeOptions);
 	}
 
 	public static string ResultText(IReadOnlyList<AskAnswer> answers, bool cancelled)

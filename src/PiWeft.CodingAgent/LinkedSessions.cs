@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.Ai.Json;
 using PiWeft.CodingAgent.Compatibility;
 
 namespace PiWeft.CodingAgent;
@@ -442,7 +443,7 @@ public sealed class LinkedSessionHub : IDisposable
 				["status"] = "started",
 				["session_id"] = childId,
 				["title"] = title,
-			}.ToJsonString());
+			}.ToJsonString(PiJson.NodeOptions));
 	}
 
 	private void ResolveWaiter(string proposalId, ProposalOutcome outcome)
@@ -513,7 +514,7 @@ public sealed class LinkedSessionHub : IDisposable
 			data["note"] = note;
 		}
 
-		return data.ToJsonString();
+		return data.ToJsonString(PiJson.NodeOptions);
 	}
 
 	private static string NormalizeInitiation(string? initiation) => initiation switch

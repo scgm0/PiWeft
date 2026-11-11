@@ -34,7 +34,69 @@ public sealed partial class SessionTab
 
 	internal int LinkedCardRowCount => _linkedSessionsCard.RowCount;
 
+	internal bool SubagentCardVisible => _subagentCard.IsShown;
+
+	internal int SubagentCardRowCount => _subagentCard.RowCount;
+
 	private void OnLinkedSessionsChanged() => Dispatch(RefreshLinkedSessions);
+
+	private int _subagentRefreshQueued;
+
+	// 子代理每开始一个工具都会触发 Changed。逐条 BeginInvoke 会把整张卡重建多次，
+	// 顺带打掉正在显示的 tooltip；同一拍里只排一次刷新。
+	private void OnSubagentsChanged()
+	{
+		if (Interlocked.Exchange(ref _subagentRefreshQueued, 1) == 1)
+		{
+			return;
+		}
+
+		Dispatch(() =>
+		{
+			Interlocked.Exchange(ref _subagentRefreshQueued, 0);
+			RefreshSubagents();
+		});
+	}
+
+	/// 子代理条：启动、结束、停止都会触发；重建行与卡片可见性。
+	internal void RefreshSubagents()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_subagentCard.Render(
+			Session.Subagents,
+			OpenLinkedSession,
+			StopSubagent,
+			message =>
+			{
+				if (!_disposed)
+				{
+					NotifyError(message);
+				}
+			});
+		RefreshWidgetColumn();
+	}
+
+	private bool StopSubagent(string name)
+	{
+		if (_disposed || Session.Subagents is not { } hub)
+		{
+			return false;
+		}
+
+		try
+		{
+			return hub.Stop(name).Ok;
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Stop subagent", ex);
+			return false;
+		}
+	}
 
 	/// 子会话条：hub 变化（提议/子会话状态/回报）或首次挂载时重建。
 	internal void RefreshLinkedSessions()

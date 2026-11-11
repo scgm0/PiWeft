@@ -1151,7 +1151,7 @@ public sealed partial class MainWindow : Window
 					var session = environment.CreateSession(
 						_arguments, manager.Cwd, session: manager, extraTools: extraTools,
 						recordInitialThinkingLevel: false, uiHost: uiHost, preferredModel: RememberedModel(environment),
-						linkedSessionHost: LinkedSessionsHost);
+						linkedSessionHost: LinkedSessionsHost, subagentHost: SubagentSessionsHost);
 					// 聊天记录投影是纯模型工作（无 UI 依赖），提前在后台做完，标签页直接接手。
 					var chat = new ChatViewModel();
 					chat.Attach(session);
@@ -1311,7 +1311,7 @@ public sealed partial class MainWindow : Window
 		OpenPreparedSession(
 			environment.CreateSession(_arguments, manager.Cwd, session: manager, extraTools: McpToolsFor(manager.Cwd),
 				recordInitialThinkingLevel: false, uiHost: uiHost, preferredModel: RememberedModel(environment),
-				linkedSessionHost: LinkedSessionsHost),
+				linkedSessionHost: LinkedSessionsHost, subagentHost: SubagentSessionsHost),
 			uiHost);
 	}
 
@@ -1411,20 +1411,25 @@ public sealed partial class MainWindow : Window
 	{
 		var tab = _tabEntries.OfType<SessionTab>()
 			.FirstOrDefault(candidate => string.Equals(SessionIdOf(candidate), sessionId, StringComparison.Ordinal));
-		if (tab is null)
+		if (tab is not null)
 		{
-			return false;
+			var index = _tabEntries.IndexOf(tab);
+			if (index >= 0 && index < _tabControl.Tabs.Count)
+			{
+				_tabControl.SelectedIndex = index;
+				return true;
+			}
 		}
 
-		var index = _tabEntries.IndexOf(tab);
-		if (index >= 0 && index < _tabControl.Tabs.Count)
+		// 标签没开（重启后子代理条里的历史项）：从侧栏目录里找到会话文件再打开。
+		// 目录可能是启动时那次扫描的快照，先按当前快照找，找不到就重扫一次。
+		var item = FindSessionItem(sessionId);
+		if (item is null)
 		{
-			_tabControl.SelectedIndex = index;
-			return true;
+			RefreshSessions(force: true);
+			item = FindSessionItem(sessionId);
 		}
 
-		// 标签已关闭但会话文件还在（子会话条里的已停止项）：从侧栏目录重新打开。
-		var item = _sessions.FirstOrDefault(candidate => string.Equals(candidate.Id, sessionId, StringComparison.Ordinal));
 		if (item is null)
 		{
 			return false;
@@ -1433,6 +1438,9 @@ public sealed partial class MainWindow : Window
 		OpenSessionPath(item.Path);
 		return true;
 	}
+
+	private SessionListItem? FindSessionItem(string sessionId) =>
+		_sessions.FirstOrDefault(candidate => string.Equals(candidate.Id, sessionId, StringComparison.Ordinal));
 
 	/// 登记标签页。TabControl 自带的页签头不渲染：标题栏右段另绘 PiDeck 式页签，
 	/// 切换/关闭都在那里完成；命令面板里也保留同一组「关闭当前/其他/全部标签」动作。

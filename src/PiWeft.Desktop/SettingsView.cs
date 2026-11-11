@@ -925,6 +925,7 @@ public sealed class SettingsView
 		ExtensionRules.LlamaCppBuiltin => Strings.SettingsBuiltinLlamaHint,
 		ExtensionRules.CodemodeBuiltin => Strings.SettingsBuiltinCodemodeHint,
 		ExtensionRules.ToolSearchBuiltin => Strings.SettingsBuiltinToolSearchHint,
+		ExtensionRules.SubagentBuiltin => Strings.SettingsBuiltinSubagentHint,
 		_ => string.Empty,
 	};
 

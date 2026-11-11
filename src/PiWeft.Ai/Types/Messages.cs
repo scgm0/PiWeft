@@ -70,6 +70,12 @@ public sealed record UserMessage : Message
 	/// 这类消息仍参与模型上下文，但对话里是否显示由 <see cref="Display"/> 决定。
 	public string? CustomType { get; init; }
 
+	/// 用户亲手写的消息。注入的上下文（子代理回报、关联会话消息、继续生成收据）
+	/// 一样是 user 角色，但都带 <see cref="CustomType"/>；标题、分叉点、重试与导出
+	/// 都按这个区分，否则机器文本会冒充用户提问。
+	[JsonIgnore]
+	public bool IsUserAuthored => CustomType is null;
+
 	/// 是否在对话时间线里显示；对应会话文件的 <c>display</c> 字段。
 	/// 目标模式 / 计划模式这类内部上下文注入是 <see langword="false"/>，不占用户气泡。
 	public bool Display { get; init; } = true;

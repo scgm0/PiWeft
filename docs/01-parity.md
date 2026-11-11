@@ -106,7 +106,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 
 - 发现 `<agentDir>/extensions` 与受信项目的 `.pi/extensions`（`.js/.mjs/.cjs`、`.ts/.mts/.cts/.tsx`，排除 `.d.ts`）；显式 `-e` 与 `settings.extensions` 不受信任门控；同一路径只加载一次。
 - `settings.extensions` 的 `!glob`/`+path`/`-path` 过滤发现结果（`!` 只实现 `*`/`**`/`?`，不支持字符类）：全局按「排除 → 包含 → 排除」、项目最后一条匹配覆盖，与 pi 的 package-manager 一致。停用的扩展仍出现在设置页，只是不进宿主。
-- 内置扩展是原生实现；`-builtin:mcp`/`-builtin:llama.cpp`/`-builtin:codemode`/`-builtin:tool-search` 分别关掉 MCP 连接、`/llama`、codemode 与 `tool_search`。设置页开关写 `settings.json`，改动在新建会话或重启后生效。
+- 内置扩展是原生实现；`-builtin:mcp`/`-builtin:llama.cpp`/`-builtin:codemode`/`-builtin:tool-search`/`-builtin:subagent` 分别关掉 MCP 连接、`/llama`、codemode、`tool_search` 与子代理委派。设置页开关写 `settings.json`，改动在新建会话或重启后生效。
 - 桌面设置页另列「桌面内置扩展」：只列已移植的 PiDeck `pi-deck-*`（去 `.ts` 后缀），随应用提供、不写 `settings.extensions`，开关只读。
 - `tool_search` 与 codemode 一样是目录里的内置工具，但默认启用（pi 的 `builtin:tool-search` 是 `defaultActive: false`）：MCP 工具默认 codemode exposure，不默认开启就没有发现入口。`-tool_search` 与 `-builtin:tool-search` 都能关掉它。
 - 「Agent 设置」的工具清单是整份目录：被 `settings.extensions` 挡住的内置扩展仍列在「内置扩展工具」里，名字压暗并提示原因；已写在 `defaultTools` 里的同样压暗，计数只算真会加载的工具。

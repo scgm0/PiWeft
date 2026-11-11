@@ -8,6 +8,7 @@ using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Security;
 using PiWeft.CodingAgent.Tools;
 using PiWeft.Cli;
+using PiWeft.Markdown;
 
 namespace PiWeft.Desktop;
 
@@ -127,7 +128,7 @@ public sealed partial class SessionTab : IDisposable
 	private readonly WrapPanel _commandBar = new();
 	private readonly Border _editNotice;
 
-	private const double ComposerWidgetListMaxHeight = 180;
+	internal const double ComposerWidgetListMaxHeight = 180;
 	private readonly ComposerWidgetCard _todoCard;
 	private readonly StackPanel _todoRows = new();
 	private readonly ScrollViewer _todoScroll;
@@ -145,6 +146,8 @@ public sealed partial class SessionTab : IDisposable
 	private readonly ComposerWidgetCard _extensionCard;
 	private readonly StackPanel _extensionBody = new();
 	private readonly LinkedSessionsCard _linkedSessionsCard;
+
+	private readonly SubagentCard _subagentCard;
 	private readonly GoalStripCard _goalStrip;
 	private readonly ReadingColumn _widgetColumn = new();
 	private readonly Button _retry;
@@ -558,6 +561,9 @@ public sealed partial class SessionTab : IDisposable
 		// 子会话条：提议卡片 + 已开出的关联会话；有内容才占位。
 		_linkedSessionsCard = new LinkedSessionsCard();
 
+		// 子代理条：只列本会话开出的子代理，运行中可以停。
+		_subagentCard = new SubagentCard();
+
 		// 目标条贴着输入卡（PiDeck 同位置）：目标属于下一轮的输入，不属于本轮结论。
 		_goalStrip = new GoalStripCard(PauseGoal, ResumeGoal, ConfirmClearGoal);
 
@@ -566,7 +572,7 @@ public sealed partial class SessionTab : IDisposable
 		_widgetColumn.Spacing(AppTheme.Space2)
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
 			.IsVisible(false)
-			.Children(_queueCard.View, _todoCard.View, _linkedSessionsCard.View, _extensionCard.View, _goalStrip.View);
+			.Children(_queueCard.View, _todoCard.View, _linkedSessionsCard.View, _subagentCard.View, _extensionCard.View, _goalStrip.View);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
 		// 三段各留固定宽度：呼吸点伸缩、状态短语轮换、提示每七秒换一条；
@@ -766,6 +772,12 @@ public sealed partial class SessionTab : IDisposable
 			RefreshLinkedSessions();
 		}
 
+		if (Session.Subagents is { } subagents)
+		{
+			subagents.Changed += OnSubagentsChanged;
+			RefreshSubagents();
+		}
+
 		var pickers = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		RefreshPickers();
 		if (pickers is not null)
@@ -810,6 +822,11 @@ public sealed partial class SessionTab : IDisposable
 	}
 
 	internal bool QueueCardVisible => _queueCard.View.IsVisible;
+
+	internal int QueueCardRowCount => _queueRows.Children.Count;
+
+	/// 测试用：直接把一份队列快照铺到排队卡上，不需要真跑一轮。
+	internal void RefreshQueueForTests(IReadOnlyList<ChatQueuedMessage> queued) => RefreshQueueStrip(queued);
 
 	internal SendOptionsMenu SendMenuForTests => _sendMenu;
 
@@ -1034,6 +1051,11 @@ public sealed partial class SessionTab : IDisposable
 		if (Session.Linked is { } linked)
 		{
 			linked.Changed -= OnLinkedSessionsChanged;
+		}
+
+		if (Session.Subagents is { } subagents)
+		{
+			subagents.Changed -= OnSubagentsChanged;
 		}
 
 		_chat.Changed -= OnChatChanged;
@@ -2603,8 +2625,8 @@ public sealed partial class SessionTab : IDisposable
 		RefreshWidgetColumn();
 	}
 
-	/// 一条排队消息：序号 + 预览 + 投递时机标签 + 「撤回」「丢弃」。
-	/// 与 PiDeck 的排队行一致：悬停给全文，行内只留一行省略号。
+	/// 一条排队消息：序号 + 投递时机徽标 + 预览 + 「撤回」「丢弃」。
+	/// 版式对齐 PiDeck 的排队行：徽标在左、正文占满、动作贴右；悬停给全文，行内只留一行省略号。
 	private UIElement QueuedRow(ChatQueuedMessage queued, int index)
 	{
 		var preview = Strings.QueuedPreview(queued.Text, queued.ImageCount);
@@ -2615,24 +2637,36 @@ public sealed partial class SessionTab : IDisposable
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.TextWrapping(TextWrapping.NoWrap)
 			.VerticalAlignment(VerticalAlignment.Center)
-			.HoverTip(Strings.QueuedRowTip(index, queued.Steer, preview));
+			.HoverTip(queued.IsUserAuthored
+				? Strings.QueuedRowTip(index, queued.Steer, preview)
+				: Strings.QueuedInjectedTip(preview));
 
+		// 徽标在左（PiDeck 的排队行同位置）：它是分类，不是动作，别和按钮挤在右边。
 		var badge = new TextBlock()
-			.Text(queued.Steer ? Strings.QueuedSteer : Strings.QueuedFollowUp)
+			.Text(queued.IsUserAuthored
+				? queued.Steer ? Strings.QueuedSteer : Strings.QueuedFollowUp
+				: Strings.QueuedInjected)
 			.FontSize(AppTheme.FontSizeMicro)
 			.SubtleText()
 			.VerticalAlignment(VerticalAlignment.Center)
-			.Margin(new Thickness(AppTheme.Space2, 0, AppTheme.Space1, 0));
+			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
+			.DockLeft();
 
-		var retract = AppIcons.Button("pencil", Strings.QueuedRetract, () => RetractQueued(queued))
-			.StyleName(AppStyles.GhostButton);
-		var discard = AppIcons.Button("x", Strings.QueuedDiscard, () => DiscardQueued(queued))
-			.StyleName(AppStyles.GhostButton);
+		var row = new DockPanel().LastChildFill().MinHeight(20).Children(badge);
 
-		var row = new DockPanel()
-			.LastChildFill()
-			.MinHeight(20)
-			.Children(discard.DockRight(), retract.DockRight(), badge.DockRight(), text);
+		// 注入的回报没有「撤回/丢弃」：它不是用户的草稿，撤回到输入框只会把机器文本塞进草稿。
+		// DockRight 先加的在最右：丢弃贴边，撤回在它左边。
+		if (queued.IsUserAuthored)
+		{
+			row.Children(
+				AppIcons.Button("x", Strings.QueuedDiscard, () => DiscardQueued(queued))
+					.StyleName(AppStyles.GhostButton).DockRight(),
+				AppIcons.Button("pencil", Strings.QueuedRetract, () => RetractQueued(queued))
+					.StyleName(AppStyles.GhostButton).DockRight());
+		}
+
+		// 正文最后加：LastChildFill 只认最后一个子级，早加会让它去填充按钮，被拉成一条长条。
+		row.Children(text);
 
 		// 序号用等宽小字：多条时能对得上「第几条」，但比图标省宽度。
 		return new DockPanel()
@@ -2763,7 +2797,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		// IsVisible 的同值写入也会触发失效：待办/队列/扩展/子会话/目标五处都会调这里，先比较再写。
 		var visible = _todoCard.View.IsVisible || _extensionCard.View.IsVisible || _queueCard.View.IsVisible ||
-			_linkedSessionsCard.View.IsVisible || _goalStrip.View.IsVisible;
+			_linkedSessionsCard.View.IsVisible || _subagentCard.View.IsVisible || _goalStrip.View.IsVisible;
 		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
 	}
 
@@ -2870,6 +2904,7 @@ public sealed partial class SessionTab : IDisposable
 			ChatRole.Tool => new ToolMessageView(entry, _textFocus, PreviewImage, CopyText).View,
 			ChatRole.Error => Card(entry, Strings.RoleError),
 			ChatRole.Notice => NoticeRow(entry),
+			ChatRole.Report => ReportRow(entry),
 			_ => new AssistantMessageView(entry, CopyText, _textFocus, PreviewImage, OpenMessageLink, Session.Cwd, ShowFileDiff).View,
 		};
 		_textFocus.TrackTree(row);
@@ -2889,6 +2924,96 @@ public sealed partial class SessionTab : IDisposable
 				.Children(
 					AppIcons.Icon("play", AppStyles.RoleSubtle, 12),
 					new TextBlock().Text(entry.Text).FontSize(AppTheme.FontSizeMicro).SubtleText()));
+
+	/// 注入的回报：过程组里的一步。默认一行（标题 + 首行预览），展开才读全文。
+	/// 它是模型看到的 user 消息，但用户没写它，所以不进用户气泡，也没有「撤回输入框」。
+	private UIElement ReportRow(ChatEntry entry)
+	{
+		var title = new TextBlock()
+			.Text(entry.Label ?? Strings.ReportSubagentResult)
+			.FontSize(AppTheme.FontSizeCaption)
+			.PrimaryText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		var preview = new TextBlock()
+			.Text(InjectedContext.Preview(entry.Text, 80))
+			.FontSize(AppTheme.FontSizeMicro)
+			.MutedText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.TextWrapping(TextWrapping.NoWrap)
+			.VerticalAlignment(VerticalAlignment.Center);
+		var time = new TextBlock()
+			.Text(entry.Timestamp > 0
+				? DateTimeOffset.FromUnixTimeMilliseconds(entry.Timestamp).ToLocalTime().ToString("HH:mm")
+				: string.Empty)
+			.FontSize(AppTheme.FontSizeMicro)
+			.FaintText()
+			.VerticalAlignment(VerticalAlignment.Center);
+
+		var header = new Grid()
+			.Columns("Auto,Auto,*,Auto")
+			.Spacing(6)
+			.Children(
+				AppIcons.Icon("git-branch", AppStyles.RoleInfo, 12).Column(0),
+				title.Column(1),
+				preview.Column(2).Margin(new Thickness(AppTheme.Space2, 0, 0, 0)),
+				time.Column(3));
+
+		var expander = new StickyExpander()
+			.Header(header)
+			.IsExpanded(false)
+			.HoverTip(Strings.ReportExpandHint);
+		expander.ExpandedChanged += expanded =>
+		{
+			if (!expanded || expander.Content is not null)
+			{
+				return;
+			}
+
+			expander.Content(ReportBody(entry));
+			ConversationTimeline.InvalidateMeasureTree(expander);
+		};
+
+		return new Border()
+			.CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(0, 2, 0, 2))
+			.MaxWidth(AppTheme.MessageMaxWidth)
+			.Child(expander);
+	}
+
+	/// 展开后的正文：与助手回复同一套 Markdown 接线，右上角给整段复制。
+	private UIElement ReportBody(ChatEntry entry)
+	{
+		var markdown = MarkdownViews.Create(
+			AppTheme.FontSizeChat,
+			_textFocus,
+			PreviewImage,
+			OpenMessageLink);
+		markdown.Source = entry.Text;
+
+		var copy = AppIcons.Button("copy", Strings.CopyReport, () => CopyText(entry.Text), size: 12);
+		var bar = new DockPanel().LastChildFill().Children(copy.DockRight(),
+			new TextBlock().Text(entry.Label ?? Strings.ReportSubagentResult)
+				.FontSize(AppTheme.FontSizeMicro).SubtleText()
+				.VerticalAlignment(VerticalAlignment.Center));
+
+		// 长审阅给固定视口自己滚，不把时间线顶走。
+		UIElement body = entry.TextLength >= ReportViewportCharacters
+			? new ScrollViewer()
+				.Content(markdown)
+				.AutoVerticalScroll()
+				.NoHorizontalScroll()
+				.MaxHeight(ReportViewportHeight)
+			: markdown;
+
+		return new Border()
+			.Padding(new Thickness(0, AppTheme.Space2, 0, 0))
+			.Child(new StackPanel().Spacing(AppTheme.Space1).Children(bar, body));
+	}
+
+	private const int ReportViewportCharacters = 1600;
+
+	private const double ReportViewportHeight = 320;
 
 	/// 用户消息：右侧内嵌气泡，与助手回复（左侧正文）一眼分开；技能上下文收成 chip，
 	/// 文件引用在正文里由投影层显示成行内 chip。正文保持可选中，时间与操作在气泡下方，图片缩略图在气泡上方。

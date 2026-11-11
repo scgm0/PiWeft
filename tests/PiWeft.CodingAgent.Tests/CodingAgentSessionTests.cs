@@ -87,6 +87,8 @@ internal sealed class ScriptedStreamFn
 
 	public Model? LastModel { get; private set; }
 
+	public void Enqueue(Func<Model, AssistantMessageEventStream> response) => _responses.Enqueue(response);
+
 	public void EnqueueText(string text) => _responses.Enqueue(model => ScriptedSessions.Text(model, text));
 
 	public void EnqueueError(string message) => _responses.Enqueue(model => ScriptedSessions.Error(model, message));

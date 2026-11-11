@@ -70,6 +70,7 @@ public sealed partial class MainWindow
 				preferredModel: context.Parent.Model,
 				extraSystemPrompt: context.SystemBrief,
 				linkedSessionHost: prepared.Host,
+				subagentHost: SubagentSessionsHost,
 				linkedParent: context.Parent,
 				linkedParentTitle: context.ParentTitle),
 			cancellationToken).ConfigureAwait(false);

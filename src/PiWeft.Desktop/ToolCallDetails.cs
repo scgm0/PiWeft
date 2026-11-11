@@ -70,6 +70,10 @@ internal sealed record ToolCallDetails(
 				"todo" => Todo(root) ?? Unknown(root),
 				"ask_question" => Ask(root, entry) ?? Unknown(root),
 				"codemode" => Code(root) ?? Unknown(root),
+				"delegate" => Delegate(root) ?? Unknown(root),
+				"wait_subagents" => SubagentWait(root) ?? Unknown(root),
+				"send_to_subagent" => SubagentSend(root) ?? Unknown(root),
+				"stop_subagent" => IdField(root) ?? Unknown(root),
 				_ => Unknown(root),
 			};
 		}
@@ -101,6 +105,53 @@ internal sealed record ToolCallDetails(
 			return label;
 		}
 	}
+
+	/// 一次委派：角色、名字、上下文模式是字段，任务全文放进正文块。
+	private static ToolCallDetails? Delegate(JsonElement root)
+	{
+		if (Text(root, "agent") is not { } agent) return null;
+		var fields = new List<ToolCallField> { new(Strings.ToolFieldAgent, agent) };
+		if (Text(root, "name") is { } name) fields.Add(new(Strings.ToolFieldSubagentName, name));
+		if (Text(root, "context") is { Length: > 0 } context) fields.Add(new(Strings.ToolFieldContext, Strings.ToolContextMode(context)));
+		var task = StringValue(root, "task");
+		return new ToolCallDetails(fields, Strings.ToolFieldTask, task, [], task is null ? Pretty(root) : null);
+	}
+
+	private static ToolCallDetails? SubagentWait(JsonElement root)
+	{
+		var fields = new List<ToolCallField>();
+		if (root.TryGetProperty("names", out var names) && names.ValueKind == JsonValueKind.Array)
+		{
+			var list = new List<string>(names.GetArrayLength());
+			foreach (var item in names.EnumerateArray())
+			{
+				if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } text) list.Add(text);
+			}
+
+			if (list.Count > 0) fields.Add(new(Strings.ToolFieldSubagentNames, string.Join(", ", list)));
+		}
+
+		if (Integer(root, "timeout_ms") is { } timeout) fields.Add(new(Strings.ToolFieldTimeout, Strings.ToolTimeoutMilliseconds(timeout)));
+		return fields.Count > 0 ? new ToolCallDetails(fields, null, null, [], null) : null;
+	}
+
+	/// 发给子代理的消息：目标是字段，正文是消息全文。
+	private static ToolCallDetails? SubagentSend(JsonElement root)
+	{
+		if (Text(root, "id") is not { } id) return null;
+		var message = StringValue(root, "message");
+		return new ToolCallDetails(
+			[new(Strings.ToolFieldSubagentTarget, id)],
+			Strings.ToolFieldMessage,
+			message,
+			[],
+			message is null ? Pretty(root) : null);
+	}
+
+	private static ToolCallDetails? IdField(JsonElement root) =>
+		Text(root, "id") is { } id
+			? new ToolCallDetails([new(Strings.ToolFieldSubagentTarget, id)], null, null, [], null)
+			: null;
 
 	private static ToolCallDetails? Shell(JsonElement root)
 	{

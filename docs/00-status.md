@@ -47,12 +47,13 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - `pi mcp list|add|remove|login|logout` 管理服务器与 OAuth；配置写 `<agentDir>/mcp.json`，令牌写 `<agentDir>/mcp-auth.json`（与 pi 同一份文件、同一套键与状态形状，旧的 `mcp-oauth.json` 首次读取时迁移）。写入保留其它键、注释与尾逗号。
 - CLI `@file` 展开为 `<file>` 文本块，图片作为内容块；print/JSON 模式合入重定向 stdin；RPC 拒绝 `@file`。
 - 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开。交互命令含 `/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/todo`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`、`/share`、`/llama`。`!command` 输出并入对话，`!!command` 只执行。
-- `-e/--extension` 加载显式扩展文件/目录/`builtin:<name>`/`npm:<pkg>[@ver]`/`git:<repo>@<ref>`；后两者物化到 `<agentDir>/extension-packages/`（无精确版本时每次启动重装或跟分支），离线只认缓存，失败进诊断。`-ne/--no-extensions` 只关闭约定发现。未知 `--flag` 交给扩展 `pi.registerFlag`，无人注册时退出 2。`settings.extensions` 的 `+path`/`-path`/`!glob` 过滤扩展；`-builtin:mcp`、`-builtin:codemode`、`-builtin:tool-search`、`-builtin:llama.cpp` 关闭对应原生能力。桌面设置页「扩展」提供这些开关。
+- `-e/--extension` 加载显式扩展文件/目录/`builtin:<name>`/`npm:<pkg>[@ver]`/`git:<repo>@<ref>`；后两者物化到 `<agentDir>/extension-packages/`（无精确版本时每次启动重装或跟分支），离线只认缓存，失败进诊断。`-ne/--no-extensions` 只关闭约定发现。未知 `--flag` 交给扩展 `pi.registerFlag`，无人注册时退出 2。`settings.extensions` 的 `+path`/`-path`/`!glob` 过滤扩展；`-builtin:mcp`、`-builtin:codemode`、`-builtin:tool-search`、`-builtin:llama.cpp`、`-builtin:subagent` 关闭对应原生能力。桌面设置页「扩展」提供这些开关。
 - 网络：`httpIdleTimeoutMs` 默认 300 秒，按读取续期；只切断停滞流，不限制长流。严格区分用户中止（`aborted`，不重试）与空闲超时（`error`，可重试）。`httpProxy` 只读全局设置。`--offline` / `PI_OFFLINE=1` 跳过自动网络操作。
 - 项目信任：`<agentDir>/trust.json` 从 cwd 逐级向上取第一个决策；`-a/--approve`、`-na/--no-approve` 覆盖；默认 `ask`。不受信时不合并项目设置、不连项目 MCP、不读项目模型/技能/提示词。RPC/print 无法弹框时按不受信处理。
 - 凭据按显式选项、存储凭据、环境变量异步解析；OAuth 刷新有闸门且不跟随请求取消。可恢复错误按 `settings.retry` 退避；供应商 `Retry-After` 优先；要求等待超过 15 分钟的配额冷却不自动重试，直接把错误交回界面。失败尝试保留在文件里，通过 `context_edit` 排除出上下文。
 - 请求过大（`prefill_cap_refused`、413、payload too large、上下文超限）进入 overflow recovery：排除失败尝试后压缩；摘要请求本身过大时按 token 递归对半拆分，先摘要前半段再把它作为 `previousSummary` 摘要后半段。压缩/上下文编辑之后的最后一次 usage 不再充当上下文估算锚点，避免压缩后仍显示 600K。
 - PiDeck 私有名字（`pi-deck-*`、`__PI_DECK_*`、`[PI_DECK_*]`）集中声明在 `Compatibility/PiDeckProtocol.cs`，形状由 `PiDeckProtocolTests` 固定；纯内部名字用 `piweft-` 前缀。
+- 子代理是会话原生能力（`delegate` / `wait_subagents` / `list_subagents` / `send_to_subagent` / `stop_subagent`）：异步委派给带角色的子会话，最终回复作为消息回到父会话，父会话空闲时直接起一轮。角色来自 `.pi/agents/**/*.md`、`<agentDir>/agents/**/*.md` 与内置 `scout` / `reviewer` / `worker`；深度上限 1，并发上限 4，每个用户回合最多启动 32 个；子会话开后台标签，输入区子代理条可打开或停止；`context: fork` 截到最后一个完整回合；关系条目落盘（含会话文件），重启后恢复列表并能冷恢复继续对话；结果在父会话回合结束时投递，工具行按字段展示；回报按助手排版渲染，不算用户提问（`UserMessage.IsUserAuthored`，分叉、重试、标题、导出都不认它）；`customType`/`display` 与人 pi 同形状落盘，重启后仍是回报。`-builtin:subagent` 关闭。详见 [05-subagent](05-subagent.md)。
 - 关联会话是桌面原生能力（`start_session` / `send_to_session` / `list_linked_sessions`）：子会话是同一项目的完整后台会话，独立标签；每轮结束把最后一条回复前 400 字回报父会话，空闲时直接起一轮、忙时排 follow-up。连续 6 次回报自动续跑后停止，用户发消息清零。`offer` 出提议卡等用户选「新会话 / 在此做 / 不要」（最长 10 分钟）；`own_initiative` 只登记卡片、工具立即返回。输入区上方的子会话条列出待决定提议与已开子会话。关系只在进程内。纯 CLI 不注册这三个工具。
 - 计划模式与目标模式是会话原生行为（不依赖扩展）：计划草案解析 `Plan:` 编号行、`pi-deck-plan-todos` 进度 widget、`[DONE:n]` 勾进度、`[PI_DECK_PLAN_NEXT]` 执行确认；目标模式按 `__PI_DECK_GOAL_MODE__` 标记续轮，`GOAL_COMPLETE` / `GOAL_BLOCKED:` 或轮次上限收尾，暂停/阻塞时带标记的正文只当本轮指令、不替换目标。状态分别写 `pi-deck-plan-mode` 与 `pi-deck-goal-mode` 自定义条目，跨分支恢复（计划只续执行态；目标只恢复为暂停，目标全文只在变化时落盘）。桌面目标条可暂停、恢复（空闲时立即补一轮）与清除。
 - bash/powershell 调用前先过 shell 守卫：删除命令的字面量目标复制进系统回收站（Linux XDG Trash、Windows 回收站、macOS 废纸篓，`PIDECK_TRASH_GUARD=off` 关闭），Windows Git Bash 的 `> nul` 改写成 `/dev/null`；`settings.httpProxy` 注入的代理只给模型请求，agent shell 不继承。
@@ -109,6 +110,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - `grep`/`find` 不跟随符号链接与目录联接；Windows 上只跳过真正的链接；OneDrive 等云同步占位符也是 reparse point，但属于普通目录，照常遍历。
 - 图片管线只处理 pi 支持的五种内联格式（PNG/JPEG/GIF/WebP/BMP）；AVIF/HEIC/TIFF 等需要先转成 PNG。`inputLimits.images.maxPerMessage` 对用户消息、`maxPerRequest` 对请求投影强制，超出部分以文本括注代替；工具结果只受 `maxPerRequest` 约束。缩放与预乘语义和 Photon 不完全逐字节一致：本实现预乘 alpha，透明边缘更干净。
 - `constrainedSampling` 已声明在 `read`/`bash`/`edit`/`write` 并在 provider 层落地 strict JSON schema（Anthropic 含额度超限的会话级降级，OpenAI Completions/Responses、Google VALIDATED、Bedrock、Mistral）。grammar 变体（codemode 的 lark 约束）尚未实现。
+- 子代理不支持外部 CLI 角色；恢复出的子代理没有活会话，不能再发消息；没有 worktree 隔离，跨文件并发写仍要父会话复核。
 - Windows/macOS 原生窗口、发布包、真实供应商联网与 PiDeck 完整 e2e 仍需实机验证。Windows 的 Git Bash 发现顺序、旧版 WSL 的 `-s` + stdin、PowerShell 7 优先与 UTF-8 前置、`taskkill /F /T`、`/c/` `/mnt/c/` 路径换算已按 pi 审计对齐，但缺少实机回归。
 
 ## 验证

@@ -1,4 +1,5 @@
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Subagents;
 
 namespace PiWeft.Desktop;
 
@@ -109,4 +110,44 @@ public static partial class Strings
 	};
 
 	public static string LinkedProposalFailed(string reason) => $"提议操作失败：{reason}";
+
+	// 子代理：只做异步委派，措辞与工具名区分开。
+	public const string SubagentCardTitle = "子代理";
+
+	public const string SubagentStop = "停止";
+
+	public static string SubagentCardMeta(int active, int total) => active > 0
+		? $"{active} 个在跑 · 共 {total} 个"
+		: $"共 {total} 个";
+
+	public static string SubagentStateText(SubagentState state) => state switch
+	{
+		SubagentState.Starting => "启动中",
+		SubagentState.Running => "运行中",
+		// Idle 是「这一轮做完了，还能继续发消息」，不是「在等什么」。
+		SubagentState.Idle => "已完成",
+		SubagentState.Failed => "失败",
+		_ => "已停止",
+	};
+
+	public const string SubagentRestoredState = "已结束";
+
+	public const string SubagentResumable = "可继续";
+
+	public const string ReportExpandHint = "展开子代理回报全文";
+
+	// 注入的回报：不是用户写的气泡，单独一种行。
+	public const string ReportSubagentResult = "子代理回报";
+
+	public const string ReportSubagentMessage = "子代理消息";
+
+	public const string ReportLinkedChild = "子会话回报";
+
+	public const string ReportLinkedMessage = "关联会话消息";
+
+	public const string QueuedInjected = "回报";
+
+	public static string QueuedInjectedTip(string preview) => $"等待下一轮处理的回报：{preview}";
+
+	public static string SubagentStopFailed(string name) => $"停不掉子代理「{name}」，它可能已经结束。";
 }

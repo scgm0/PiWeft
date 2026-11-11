@@ -132,7 +132,8 @@ public sealed partial class SessionManager
 		var messages = new List<ForkMessage>();
 		foreach (var entry in GetBranch())
 		{
-			if (entry is SessionMessageEntry { Message: UserMessage user })
+			// 注入的回报不是用户提问：列进来当分叉点，分叉后模型会以为自己被这么问过。
+			if (entry is SessionMessageEntry { Message: UserMessage user } && user.IsUserAuthored)
 			{
 				messages.Add(new ForkMessage(entry.Id, user.Content.Text ?? string.Empty));
 			}

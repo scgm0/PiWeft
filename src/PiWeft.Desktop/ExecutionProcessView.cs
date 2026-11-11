@@ -15,10 +15,12 @@ internal sealed class ExecutionProcessView
 	private readonly TextBlock _header = new();
 	private readonly WrapPanel _stats = new();
 	private readonly StackPanel _toolStat;
+	private readonly StackPanel _reportStat;
 	private readonly StackPanel _thinkingStat;
 	private readonly StackPanel _interimStat;
 	private readonly StackPanel _errorStat;
 	private readonly TextBlock _toolCount = new();
+	private readonly TextBlock _reportCount = new();
 	private readonly TextBlock _thinkingCount = new();
 	private readonly TextBlock _interimCount = new();
 	private readonly TextBlock _errorCount = new();
@@ -54,10 +56,11 @@ internal sealed class ExecutionProcessView
 		_header.Text(Strings.ExecutionProcess).FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium).PrimaryText();
 		_stats.Spacing(8).VerticalAlignment(VerticalAlignment.Center);
 		_toolStat = Stat("terminal", AppStyles.RoleSubtle, _toolCount);
+		_reportStat = Stat("git-branch", AppStyles.RoleInfo, _reportCount);
 		_thinkingStat = Stat("sparkles", AppStyles.RoleThinking, _thinkingCount);
 		_interimStat = Stat("message-square", AppStyles.RoleInfo, _interimCount);
 		_errorStat = Stat("x", AppStyles.RoleError, _errorCount);
-		_stats.Children(_toolStat, _thinkingStat, _interimStat, _errorStat);
+		_stats.Children(_toolStat, _reportStat, _thinkingStat, _interimStat, _errorStat);
 		_ok = new GlyphElement().Kind(GlyphKind.CheckMark).GlyphSize(3)
 			.WithTheme((theme, glyph) => glyph.Foreground = AppTheme.For(theme).Success)
 			.VerticalAlignment(VerticalAlignment.Center);
@@ -248,10 +251,12 @@ internal sealed class ExecutionProcessView
 			_statsValid = true;
 			_statsSnapshot = stats;
 			_toolCount.Text(stats.Tools.ToString());
+			_reportCount.Text(stats.Reports.ToString());
 			_thinkingCount.Text(stats.Thinking.ToString());
 			_interimCount.Text(stats.Interim.ToString());
 			_errorCount.Text(stats.Errors.ToString()).ErrorText();
 			_toolStat.IsVisible(stats.Tools > 0);
+			_reportStat.IsVisible(stats.Reports > 0);
 			_thinkingStat.IsVisible(stats.Thinking > 0);
 			_interimStat.IsVisible(stats.Interim > 0);
 			_errorStat.IsVisible(stats.Errors > 0);
@@ -1090,7 +1095,8 @@ internal sealed class ExecutionProcessView
 		for (var i = 0; i < entries.Count; i++)
 		{
 			var entry = entries[i];
-			if (entry.Role == ChatRole.Tool || entry.ThinkingLength > 0 || entry.IsThinking)
+			// 回报也是过程组的一步：它撑满时间线会把正文挤走，收进组里默认只占一行。
+			if (entry.Role is ChatRole.Tool or ChatRole.Report || entry.ThinkingLength > 0 || entry.IsThinking)
 			{
 				if (memberCount == 0) memberStart = i;
 				memberCount++;
@@ -1187,6 +1193,7 @@ internal sealed class ExecutionProcessView
 			},
 			ChatRole.Assistant when entry.ThinkingLength > 0 || entry.IsThinking => "sparkles",
 			ChatRole.Assistant => "message-square",
+			ChatRole.Report => "git-branch",
 			ChatRole.Error => "x",
 			_ => "ellipsis",
 		};
@@ -1195,6 +1202,7 @@ internal sealed class ExecutionProcessView
 		{
 			ChatRole.Assistant when entry.ThinkingLength > 0 || entry.IsThinking => AppStyles.RoleThinking,
 			ChatRole.Assistant => AppStyles.RoleInfo,
+			ChatRole.Report => AppStyles.RoleInfo,
 			ChatRole.Error => AppStyles.RoleSubtle,
 			_ => AppStyles.RoleSubtle,
 		};

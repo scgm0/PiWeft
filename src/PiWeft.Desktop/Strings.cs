@@ -59,6 +59,8 @@ public static partial class Strings
 	public const string Abort = "中断";
 	public const string CopyLastReply = "复制回复";
 	public const string CopyMessage = "复制这条回复";
+
+	public const string CopyReport = "复制这条回报";
 	public const string Retry = "重试";
 	public const string BranchHere = "在此分支";
 	public const string EditAndResend = "编辑重发";
@@ -66,6 +68,9 @@ public static partial class Strings
 	public static string Branched(string path) => $"已在该处开新分支：{path}";
 
 	public static string LinkedSessionStarted(string title) => $"已开始子会话「{title}」，它在后台跑；每轮结束会把结果回报到当前会话。";
+	public static string SubagentStarted(string name) => $"已启动子代理「{name}」，它在后台跑；每轮结束会把最终回复送回当前会话。";
+
+	public static string SubagentReopened(string name) => $"已重新打开子代理「{name}」，接着发消息就是继续这段对话。";
 	public static string BranchFailed(string reason) => $"分支失败：{reason}";
 	public const string CloseCurrentTab = "关闭标签";
 	public const string Copied = "已复制。";

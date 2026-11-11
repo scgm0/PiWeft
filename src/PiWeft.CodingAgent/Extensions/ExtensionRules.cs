@@ -22,9 +22,12 @@ public sealed class ExtensionRules
 	/// <summary>内置 tool_search 扩展名。</summary>
 	public const string ToolSearchBuiltin = "tool-search";
 
-	/// <summary>随 CLI 分发的四个内置扩展，顺序与 pi 的配置界面一致。</summary>
+	/// <summary>内置子代理扩展名。</summary>
+	public const string SubagentBuiltin = "subagent";
+
+	/// <summary>随 CLI 分发的内置扩展，顺序与 pi 的配置界面一致。</summary>
 	public static IReadOnlyList<string> BuiltinNames { get; } =
-		[McpBuiltin, LlamaCppBuiltin, CodemodeBuiltin, ToolSearchBuiltin];
+		[McpBuiltin, LlamaCppBuiltin, CodemodeBuiltin, ToolSearchBuiltin, SubagentBuiltin];
 
 	private static readonly StringComparison PathComparison =
 		OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()

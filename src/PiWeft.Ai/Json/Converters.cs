@@ -391,7 +391,8 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 	// 新增字段时同步名单，否则重写时会被当成未知字段重复输出。
 	private static readonly string[] SystemKeys = ["role", "content", "sections", "toolsAdded", "toolsRemoved", "timestamp"];
 
-	private static readonly string[] UserKeys = ["role", "content", "timestamp"];
+	// customType/display 是 pi 的注入消息标记：漏写的话重启后回报就变回普通用户提问。
+	private static readonly string[] UserKeys = ["role", "content", "customType", "display", "timestamp"];
 
 	private static readonly string[] AssistantKeys =
 	[
@@ -461,6 +462,8 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 				? MessageContent.FromText(PiJsonValue.Str(content) ?? string.Empty)
 				: MessageContent.FromBlocks(PiJsonValue.ReadBlocks(content))
 			: MessageContent.Empty,
+		CustomType = PiJsonValue.Str(obj, "customType"),
+		Display = PiJsonValue.Bool(obj, "display") ?? true,
 		Timestamp = PiJsonValue.Long(obj, "timestamp") ?? 0,
 		Extra = PiJsonValue.ReadExtras(obj, UserKeys),
 	};
@@ -564,6 +567,14 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 				writer.WriteString("role", "user");
 				writer.WritePropertyName("content");
 				WriteMessageContent(writer, user.Content);
+				// 注入消息（回报、关联会话、继续生成收据）靠这两项与用户提问区分；
+				// 不写回去，重启后分叉点、重试、标题与导出都会把它们当成用户说的话。
+				PiJsonValue.WriteOptional(writer, "customType", user.CustomType);
+				if (!user.Display)
+				{
+					writer.WriteBoolean("display", false);
+				}
+
 				break;
 			case AssistantMessage assistant:
 				writer.WriteString("role", "assistant");
