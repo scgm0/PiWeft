@@ -475,6 +475,176 @@ public class AnthropicProviderTests
 	}
 
 	[Fact]
+	public void ThreadStateContinuesWhenOnlyNewMessagesWereAdded()
+	{
+		var sessionId = "probe-" + Guid.NewGuid().ToString("N");
+		var first = new JsonObject
+		{
+			["model"] = "claude-sonnet-4-5",
+			["system"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "be terse" }),
+			["messages"] = new JsonArray(new JsonObject { ["role"] = "user", ["content"] = "hi" }),
+		};
+
+		AnthropicThreads.Record(sessionId, first, new JsonArray(new JsonObject
+		{
+			["role"] = "assistant",
+			["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "Hello world" }),
+		}), "msg_1");
+
+		var second = new JsonObject
+		{
+			["model"] = "claude-sonnet-4-5",
+			["system"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "be terse" }),
+			["messages"] = new JsonArray(
+				new JsonObject { ["role"] = "user", ["content"] = "hi" },
+				new JsonObject
+				{
+					["role"] = "assistant",
+					["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "Hello world" }),
+				},
+				new JsonObject { ["role"] = "user", ["content"] = "again" }),
+		};
+
+		var kind = AnthropicThreads.Decide(sessionId, second, out var prefixCount, out var replyId);
+		Assert.Equal(AnthropicThreads.RequestKind.Continue, kind);
+		Assert.Equal(2, prefixCount);
+		Assert.Equal("msg_1", replyId);
+
+		var bytes = AnthropicThreads.WriteBody(second, kind, prefixCount, replyId);
+		var prepared = System.Text.Json.Nodes.JsonNode.Parse(bytes)!.AsObject();
+		Assert.Equal("continue", prepared["thread"]!["type"]!.GetValue<string>());
+		Assert.Equal("again", prepared["messages"]![0]!["content"]!.GetValue<string>());
+	}
+
+	private const string TextOnlyStreamBody = """
+		event: message_start
+		data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-5","usage":{"input_tokens":10}}}
+
+		event: content_block_start
+		data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+		event: content_block_delta
+		data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello world"}}
+
+		event: content_block_stop
+		data: {"type":"content_block_stop","index":0}
+
+		event: message_delta
+		data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
+
+		event: message_stop
+		data: {"type":"message_stop"}
+
+		""";
+
+	[Fact]
+	public async Task MessageThreadsSendOnlyNewMessagesOnTheSecondRequest()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(TextOnlyStreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var sessionId = "thread-" + Guid.NewGuid().ToString("N");
+		var first = new Context
+		{
+			SystemPrompt = "be terse",
+			Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }],
+		};
+
+		var firstStream = provider.Stream(Sonnet(), first, new StreamOptions { ApiKey = "test-key", SessionId = sessionId, ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in firstStream)
+		{
+		}
+
+		using (var document = JsonDocument.Parse(handler.Bodies[0]))
+		{
+			Assert.Equal("create", document.RootElement.GetProperty("thread").GetProperty("type").GetString());
+		}
+
+		// 第二次请求带上了上一次的助手回复，thread 只发新增的那条用户消息。
+		var second = new Context
+		{
+			SystemPrompt = "be terse",
+			Messages =
+			[
+				new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 },
+				new AssistantMessage
+				{
+					Api = AnthropicProvider.ApiId,
+					Provider = "anthropic",
+					Model = "claude-sonnet-4-5",
+					Content = [new TextContent { Text = "Hello world" }],
+					StopReason = StopReason.Stop,
+					Timestamp = 2,
+				},
+				new UserMessage { Content = MessageContent.FromText("again"), Timestamp = 3 },
+			],
+		};
+
+		var secondStream = provider.Stream(Sonnet(), second, new StreamOptions { ApiKey = "test-key", SessionId = sessionId, ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in secondStream)
+		{
+		}
+
+		using var secondBody = JsonDocument.Parse(handler.Bodies[1]);
+		var root = secondBody.RootElement;
+		Assert.Equal("continue", root.GetProperty("thread").GetProperty("type").GetString());
+		Assert.Equal("msg_1", root.GetProperty("thread").GetProperty("previous_message_id").GetString());
+		Assert.Single(root.GetProperty("messages").EnumerateArray());
+		Assert.Equal("again", root.GetProperty("messages")[0].GetProperty("content").GetString());
+		Assert.False(root.TryGetProperty("system", out _));
+		Assert.False(root.TryGetProperty("tools", out _));
+	}
+
+	[Fact]
+	public async Task ThreadRejectionFallsBackToAFullRequest()
+	{
+		var rejections = 0;
+		var handler = new FakeHttpHandler
+		{
+			Responder = request =>
+			{
+				if (rejections == 0 && request.Content is not null &&
+					request.Content.ReadAsStringAsync().GetAwaiter().GetResult().Contains("\"thread\"", StringComparison.Ordinal))
+				{
+					rejections++;
+					return new HttpResponseMessage(HttpStatusCode.BadRequest)
+					{
+						Content = new StringContent(
+							"""{"error":{"details":{"error_code":"thread_unsupported_request"}}}""",
+							Encoding.UTF8,
+							"application/json"),
+					};
+				}
+
+				return Sse(StreamBody);
+			},
+		};
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var sessionId = "thread-off-" + Guid.NewGuid().ToString("N");
+		var context = new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] };
+
+		var stream = provider.Stream(Sonnet(), context, new StreamOptions { ApiKey = "test-key", SessionId = sessionId, ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in stream)
+		{
+		}
+
+		Assert.Equal(2, handler.Bodies.Count);
+		using (var rejected = JsonDocument.Parse(handler.Bodies[0]))
+			Assert.True(rejected.RootElement.TryGetProperty("thread", out _));
+		using (var resent = JsonDocument.Parse(handler.Bodies[1]))
+			Assert.False(resent.RootElement.TryGetProperty("thread", out _));
+
+		// 之后同一会话不再带 thread。
+		handler.Bodies.Clear();
+		var next = provider.Stream(Sonnet(), context, new StreamOptions { ApiKey = "test-key", SessionId = sessionId, ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in next)
+		{
+		}
+
+		using var plain = JsonDocument.Parse(handler.Bodies[0]);
+		Assert.False(plain.RootElement.TryGetProperty("thread", out _));
+	}
+
+	[Fact]
 	public async Task HttpErrorBecomesErrorEvent()
 	{
 		var handler = new FakeHttpHandler

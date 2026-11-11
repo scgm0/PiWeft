@@ -1341,6 +1341,14 @@ public sealed partial class MainWindow : Window
 		var tab = new SessionTab(session, environment.ListAvailableModels(_arguments.ApiKey), SessionTab.TitleFor(session),
 			() => environment.ListAvailableModels(_arguments.ApiKey), chat, statistics);
 		tab.TitleChanged += _ => UpdateTabHeaders();
+		// 首轮发送前等 MCP direct 工具连上（pi 的 10 秒上限）；服务器在后台连接。
+		tab.AwaitDirectMcpTools = async token =>
+		{
+			if (_mcp is { } connection)
+			{
+				await connection.WaitForDirectToolsAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
+			}
+		};
 		// 子会话条点「打开」：按会话 id 找到同窗口里的后台标签。
 		tab.LinkedSessionOpenRequested += sessionId => ActivateSession(sessionId);
 		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
@@ -2836,7 +2844,8 @@ public sealed partial class MainWindow : Window
 		try
 		{
 			var mcpWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-			var connection = await McpServers.ConnectConfiguredAsync(
+			// 后台连接：立刻拿到连接对象，服务器连上后就地填充工具并通知会话。
+			var connection = await McpServers.ConnectConfiguredInBackgroundAsync(
 				_cwd,
 				onError: message => Dispatch(() => _banner.Text($"MCP：{message}")),
 				includeProject: _environment?.ProjectTrusted ?? true).ConfigureAwait(false);

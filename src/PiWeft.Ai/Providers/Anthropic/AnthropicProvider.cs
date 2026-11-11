@@ -67,14 +67,29 @@ public sealed class AnthropicProvider : IApiProvider
 			// 命中时把「希望严格」的降级成普通 schema 重发一次；声明了 require 的仍会报错。
 			var hasPreferredStrictTools = HasPreferredStrictTools(model, tools);
 			var disablePreferredStrictTools = StrictToolsDisabledForSession(options);
+			// message thread：session id 存在且端点支持时，后续请求只发新增消息。
+			var threadSessionId = ThreadSessionId(model, options);
+			var threadRetried = false;
 			while (true)
 			{
 				// 上一次尝试可能已经把响应头等到了（严限重试）：先收掉它的计时器。
 				headerTimeout?.Dispose();
 				headerTimeout = ProviderHttp.BeginHeaderTimeout(options);
-				using var request = BuildRequest(
-					model, messages, tools, options, apiKey, thinking, maxTokens, disablePreferredStrictTools, out var payloadJson);
-				options.NotifyStreamEvent(payloadJson, model);
+				var bytes = BuildPayload(model, messages, tools, options, thinking, maxTokens, disablePreferredStrictTools);
+				JsonObject? fullBody = null;
+				if (threadSessionId is { } session)
+				{
+					// 只有 thread 模式才需要把请求体读成对象：普通请求直接用字节，省一次解析。
+					fullBody = JsonNode.Parse(bytes) as JsonObject;
+					if (fullBody is not null)
+					{
+						var kind = AnthropicThreads.Decide(session, fullBody, out var prefixCount, out var replyId);
+						bytes = AnthropicThreads.WriteBody(fullBody, kind, prefixCount, replyId);
+					}
+				}
+
+				using var request = BuildRequest(model, bytes, messages, options, apiKey);
+				options.NotifyStreamEvent(bytes, model);
 
 				using var response = await _http
 					.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
@@ -91,23 +106,50 @@ public sealed class AnthropicProvider : IApiProvider
 
 					await ParseAsync(bodyStream, model, options, stream, startedAt, options.CancellationToken)
 						.ConfigureAwait(false);
+					if (threadSessionId is { } recordSession && fullBody is not null)
+					{
+						await RecordThreadReplyAsync(recordSession, fullBody, model, stream).ConfigureAwait(false);
+					}
+
 					return;
 				}
 
-				var body = await ProviderHttp.ReadBodyTextAsync(response, options, options.CancellationToken).ConfigureAwait(false);
+				var bodyText = await ProviderHttp.ReadBodyTextAsync(response, options, options.CancellationToken).ConfigureAwait(false);
 				if (!disablePreferredStrictTools && hasPreferredStrictTools &&
-					(int)response.StatusCode == 400 && ConstrainedSampling.IsStrictToolLimitError(body))
+					(int)response.StatusCode == 400 && ConstrainedSampling.IsStrictToolLimitError(bodyText))
 				{
 					disablePreferredStrictTools = true;
 					RememberStrictToolLimit(options);
 					continue;
 				}
 
+				// thread 被拒（过期、并发续接、前缀变了、端点不认识 thread 字段）时重发一次完整请求。
+				if (threadSessionId is { } failedSession && !threadRetried &&
+					(int)response.StatusCode == 400 && fullBody is not null)
+				{
+					var code = ThreadErrorCode(bodyText);
+					if (AnthropicThreads.StartsNewThread(code))
+					{
+						threadRetried = true;
+						AnthropicThreads.Reset(failedSession);
+						continue;
+					}
+
+					if (AnthropicThreads.ThreadsUnsupported(code, (int)response.StatusCode, bodyText))
+					{
+						// 端点不支持 thread：本会话之后按普通请求发送，重发时不带 thread。
+						threadRetried = true;
+						AnthropicThreads.TurnOff(failedSession);
+						threadSessionId = null;
+						continue;
+					}
+				}
+
 				Fail(
 					stream,
 					model,
 					startedAt,
-					$"Anthropic request failed ({(int)response.StatusCode}): {Truncate(body, 2000)}");
+					$"Anthropic request failed ({(int)response.StatusCode}): {Truncate(bodyText, 2000)}");
 				return;
 			}
 		}
@@ -151,18 +193,17 @@ public sealed class AnthropicProvider : IApiProvider
 		return false;
 	}
 
-	private HttpRequestMessage BuildRequest(
+	/// 构造完整请求体（未加 thread）。message thread 的哈希与续接都基于这份字节。
+	private static byte[] BuildPayload(
 		Model model,
 		IReadOnlyList<Message> messages,
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
-		string apiKey,
 		ThinkingConfig thinking,
 		int maxTokens,
-		bool disablePreferredStrictTools,
-		out string payloadJson)
+		bool disablePreferredStrictTools)
 	{
-		var isAnthropicOAuth = apiKey.StartsWith("sk-ant-oat", StringComparison.Ordinal);
+		var isAnthropicOAuth = (options.ApiKey ?? string.Empty).StartsWith("sk-ant-oat", StringComparison.Ordinal);
 		var bytes = JsonPayload.Write(writer => AnthropicWire.WriteRequest(
 			writer, model, messages, tools, options, thinking, maxTokens, isAnthropicOAuth, disablePreferredStrictTools));
 
@@ -175,7 +216,71 @@ public sealed class AnthropicProvider : IApiProvider
 			}
 		}
 
-		payloadJson = Encoding.UTF8.GetString(bytes);
+		return bytes;
+	}
+
+	private static string? ThreadSessionId(Model model, StreamOptions options)
+	{
+		if (string.IsNullOrEmpty(options.SessionId) ||
+			string.Equals(options.CacheRetention, CacheRetentions.None, StringComparison.Ordinal) ||
+			!AnthropicThreads.Enabled(model) ||
+			AnthropicThreads.IsOff(options.SessionId))
+		{
+			return null;
+		}
+
+		return options.SessionId;
+	}
+
+	/// Anthropic 把 thread 相关错误码放在 <c>error.details.error_code</c>。
+	internal static string? ThreadErrorCode(string body)
+	{
+		try
+		{
+			return JsonNode.Parse(body)?["error"]?["details"]?["error_code"] is JsonValue value &&
+				value.TryGetValue<string>(out var code)
+				? code
+				: null;
+		}
+		catch (JsonException)
+		{
+			return null;
+		}
+	}
+
+	/// 记录下一次可续接的位置：完整请求消息 + 本次回复。fallback 回复服务器不保存，跳过。
+	private static async Task RecordThreadReplyAsync(
+		string sessionId,
+		JsonObject fullBody,
+		Model model,
+		AssistantMessageEventStream stream)
+	{
+		try
+		{
+			var reply = await stream.Result.ConfigureAwait(false);
+			// 服务端 fallback（回复模型与请求模型不同）的回复服务器不保存，不能续接。
+			if (reply.ResponseId is not { Length: > 0 } replyId ||
+				(reply.ResponseModel is { Length: > 0 } reported && !string.Equals(reported, model.Id, StringComparison.Ordinal)))
+			{
+				return;
+			}
+
+			AnthropicThreads.Record(sessionId, fullBody, AnthropicWire.WriteAssistantReply(reply), replyId);
+		}
+		catch (Exception)
+		{
+			// 记录失败只是下一次请求重发完整上下文，不影响本次回复。
+		}
+	}
+
+	private HttpRequestMessage BuildRequest(
+		Model model,
+		byte[] bytes,
+		IReadOnlyList<Message> messages,
+		StreamOptions options,
+		string apiKey)
+	{
+		var isAnthropicOAuth = apiKey.StartsWith("sk-ant-oat", StringComparison.Ordinal);
 
 		var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
 			? DefaultBaseUrl

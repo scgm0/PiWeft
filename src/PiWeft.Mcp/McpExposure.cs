@@ -66,6 +66,22 @@ public static class McpExposure
 		return Normalize(config.Exposure) ?? Default;
 	}
 
+	/// 服务器是否声明了直接给模型的工具。首轮请求只为这类服务器等连接完成。
+	public static bool HasDirectTools(McpServerConfig config)
+	{
+		if (Normalize(config.Exposure) == Direct)
+		{
+			return true;
+		}
+
+		if (config.ToolExposure is { Count: > 0 } overrides)
+		{
+			return overrides.Values.Any(static value => Normalize(value) == Direct);
+		}
+
+		return false;
+	}
+
 	public static bool IsFullyHidden(McpServerConfig config) =>
 		Normalize(config.Exposure) == Hidden && config.ToolExposure is not { Count: > 0 };
 

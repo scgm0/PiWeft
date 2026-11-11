@@ -266,7 +266,7 @@ public class McpOAuthTests : IDisposable
 
 		Assert.True(result.Ok, result.Error);
 		Assert.Equal("cc-access", result.Token!.Access);
-		Assert.Equal("cc-access", McpOAuthStore.Load(Endpoint, _agentDir)!.Access);
+		Assert.Equal("cc-access", McpOAuthStore.Load("gateway", Endpoint, _agentDir)!.Access);
 
 		var tokenCall = Assert.Single(handler.Calls, call => call.Url.EndsWith("/token", StringComparison.Ordinal));
 		Assert.Contains("grant_type=client_credentials", tokenCall.Body);
@@ -341,7 +341,7 @@ public class McpOAuthTests : IDisposable
 		Assert.Equal("access-1", result.Token!.Access);
 		// 没有配置 clientId 时应走动态注册。
 		Assert.Equal("dynamic-client", result.Token.ClientId);
-		Assert.Equal("access-1", McpOAuthStore.Load(Endpoint, _agentDir)!.Access);
+		Assert.Equal("access-1", McpOAuthStore.Load("remote", Endpoint, _agentDir)!.Access);
 		Assert.Contains("grant_type=authorization_code", server.LastTokenBody);
 		Assert.Contains("code_verifier=", server.LastTokenBody);
 	}
@@ -396,6 +396,9 @@ internal sealed class FakeOAuthServer : IDisposable
 	public string BaseUrl { get; }
 
 	public string? LastTokenBody { get; private set; }
+
+	/// 是否走到了动态注册端点；CIMD 场景应当为 false。
+	public bool RegistrationCalled { get; private set; }
 
 	public void Dispose()
 	{
@@ -473,6 +476,7 @@ internal sealed class FakeOAuthServer : IDisposable
 				break;
 
 			case "/register":
+				RegistrationCalled = true;
 				json = new JsonObject { ["client_id"] = "dynamic-client" }.ToJsonString();
 				break;
 

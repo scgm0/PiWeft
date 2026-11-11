@@ -199,7 +199,8 @@ public static partial class EditDiff
 
 		var builder = new StringBuilder(originalContent.Length);
 		var endsWithCr = false;
-		void Push(string part)
+		// 用 span 拼接：原文切片是零拷贝，逐段 Substring 会把整份文件再复制一遍。
+		void Push(ReadOnlySpan<char> part)
 		{
 			if (part.Length == 0)
 			{
@@ -220,13 +221,13 @@ public static partial class EditDiff
 		foreach (var replacement in replacements)
 		{
 			var start = ToOriginal(replacement.Index);
-			Push(originalContent[position..start]);
+			Push(originalContent.AsSpan(position, start - position));
 			var ending = GetLineEndingAt(originalContent, start);
-			Push(ending == "\n" ? replacement.NewText : replacement.NewText.Replace("\n", ending, StringComparison.Ordinal));
+			Push(ending == "\n" ? replacement.NewText.AsSpan() : replacement.NewText.Replace("\n", ending, StringComparison.Ordinal).AsSpan());
 			position = ToOriginal(replacement.Index + replacement.Length);
 		}
 
-		Push(originalContent[position..]);
+		Push(originalContent.AsSpan(position));
 		return builder.ToString();
 	}
 

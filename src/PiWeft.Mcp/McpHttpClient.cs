@@ -502,6 +502,8 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 			}
 
 			// 访问令牌可能在长时间运行后过期：401 时刷新一次并重放同一个请求。
+			// 408/429/5xx 是瞬时故障，按 pi 的做法重试两次（服务器给出 Retry-After 时优先照办）。
+			var retries = 0;
 			for (var attempt = 0; ; attempt++)
 			{
 				using var request = await CreateRequestAsync(record, cancellationToken).ConfigureAwait(false);
@@ -516,6 +518,17 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 					_tokens is not null &&
 					await _tokens.RefreshAsync(cancellationToken).ConfigureAwait(false) is not null)
 				{
+					continue;
+				}
+
+				if (IsTransient(response.StatusCode) && retries < MaxTransientRetries)
+				{
+					retries++;
+					if (!await DelayForRetryAsync(response, retries, timeout.Token).ConfigureAwait(false))
+					{
+						return (null, SessionId);
+					}
+
 					continue;
 				}
 
@@ -546,6 +559,47 @@ public sealed class McpHttpClient : IMcpToolInvoker, IMcpResourceProvider, IAsyn
 		finally
 		{
 			_gate.Release();
+		}
+	}
+
+	private const int MaxTransientRetries = 2;
+
+	/// 网关与代理常见的瞬时故障：请求超时、限流、上游不可用。
+	private static bool IsTransient(HttpStatusCode status) =>
+		status is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or HttpStatusCode.BadGateway
+			or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout
+		|| (int)status is >= 500 and < 600;
+
+	/// Retry-After（秒或 HTTP 日期）优先，其次 0.5s/1s 指数退避；超过剩余超时预算就放弃。
+	private async Task<bool> DelayForRetryAsync(
+		HttpResponseMessage response,
+		int retry,
+		CancellationToken cancellationToken)
+	{
+		var delay = response.Headers.RetryAfter switch
+		{
+			{ Delta: { } delta } => delta,
+			{ Date: { } date } => date - DateTimeOffset.UtcNow,
+			_ => TimeSpan.FromMilliseconds(500 * Math.Pow(2, retry - 1)),
+		};
+		if (delay < TimeSpan.Zero)
+		{
+			delay = TimeSpan.Zero;
+		}
+
+		if (delay > TimeSpan.FromSeconds(30))
+		{
+			return false;
+		}
+
+		try
+		{
+			await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+			return true;
+		}
+		catch (OperationCanceledException)
+		{
+			return false;
 		}
 	}
 

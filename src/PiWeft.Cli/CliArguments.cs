@@ -419,7 +419,7 @@ public sealed record CliArguments
 		  --skill <path>                 Load an explicit skill file or directory (repeatable)
 		  --prompt-template <path>       Load an explicit prompt template (repeatable)
 		  --theme <path>                 Load an explicit theme file or directory (repeatable)
-		  -e, --extension <path>         Load an extension file, directory or builtin:<name> (repeatable)
+		  -e, --extension <source>       Load an extension file, directory, builtin:<name>, npm:<pkg> or git:<repo> (repeatable)
 		  -ne, --no-extensions           Disable extension discovery (explicit -e paths still load)
 		  --no-themes                    Disable theme discovery
 		  --models <patterns>            Comma-separated model patterns for Ctrl+P cycling

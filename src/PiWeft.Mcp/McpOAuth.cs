@@ -21,6 +21,15 @@ public sealed record McpAuthorizationServerMetadata
 	public string? RegistrationEndpoint { get; init; }
 
 	public IReadOnlyList<string> ScopesSupported { get; init; } = [];
+
+	/// RFC 7591 的公开客户端能力：授权服务器是否接受 Client ID Metadata Document。
+	public bool ClientIdMetadataDocumentSupported { get; init; }
+
+	/// RFC 9207：授权响应是否带 <c>iss</c>。不带时文档与回调路径要按 MCP 服务器区分。
+	public bool AuthorizationResponseIssParameterSupported { get; init; }
+
+	/// 令牌端点接受的客户端认证方式；CIMD 要求包含 <c>none</c>（公开客户端）。
+	public IReadOnlyList<string> TokenEndpointAuthMethodsSupported { get; init; } = [];
 }
 
 public sealed record McpProtectedResourceMetadata
@@ -147,6 +156,9 @@ public static partial class McpOAuth
 			Issuer = String(document, "issuer") ?? fallbackIssuer,
 			RegistrationEndpoint = registrationEndpoint,
 			ScopesSupported = scopes.Count > 0 ? scopes : fallbackScopes ?? [],
+			ClientIdMetadataDocumentSupported = Bool(document, "client_id_metadata_document_supported"),
+			AuthorizationResponseIssParameterSupported = Bool(document, "authorization_response_iss_parameter_supported"),
+			TokenEndpointAuthMethodsSupported = Strings(document["token_endpoint_auth_methods_supported"]),
 		};
 	}
 
@@ -165,6 +177,21 @@ public static partial class McpOAuth
 	/// 跑完整的授权码 + PKCE 流程并在成功后把令牌写进存储。
 	/// <paramref name="onAuthorizationUrl"/> 用于把授权地址展示给用户（无图形环境时尤其重要）；
 	/// <paramref name="openBrowser"/> 为 <c>false</c> 时不尝试启动浏览器（测试与无人值守场景）。
+	/// 是否用 Client ID Metadata Document 代替动态注册。
+	/// <c>cimd</c> 一定用；<c>dcr</c> 一定注册；<c>auto</c> 只在没配 clientName 且文档列得出回调时用。
+	internal static bool ShouldUseClientMetadataDocument(
+		string registrationMode,
+		McpServerConfig config,
+		McpAuthorizationServerMetadata metadata,
+		string redirectUri) => registrationMode switch
+		{
+			"cimd" => true,
+			"dcr" => false,
+			_ => config.OAuth?.ClientName is not { Length: > 0 } &&
+				metadata.ClientIdMetadataDocumentSupported &&
+				McpClientMetadataDocuments.ListsRedirectUrl(redirectUri),
+		};
+
 	/// 校验 oauth.callbackUrl：只接受 http 回环地址；缺端口时由调用方分配。
 	private static bool TryResolveCallback(
 		McpServerConfig config,
@@ -222,10 +249,19 @@ public static partial class McpOAuth
 			return McpOAuthResult.Failure(callbackError!);
 		}
 
-		if (string.Equals(config.OAuth?.ClientRegistration, "cimd", StringComparison.OrdinalIgnoreCase))
+		var registrationMode = config.OAuth?.ClientRegistration is { Length: > 0 } mode
+			? mode.ToLowerInvariant()
+			: "auto";
+		if (registrationMode is not ("auto" or "dcr" or "cimd"))
 		{
 			return McpOAuthResult.Failure(
-				"MCP OAuth 的 cimd 模式尚未实现；请把 oauth.clientRegistration 设为 auto 或 dcr。");
+				$"oauth.clientRegistration 只接受 auto、dcr 或 cimd，收到「{registrationMode}」");
+		}
+
+		if (registrationMode == "cimd" &&
+			(config.ClientId is { Length: > 0 } || config.OAuth?.ClientName is { Length: > 0 }))
+		{
+			return McpOAuthResult.Failure("oauth.clientRegistration 为 cimd 时不能再配置 clientId 或 clientName");
 		}
 
 		var bindAddress = callbackHost.Contains("::1", StringComparison.Ordinal)
@@ -246,22 +282,40 @@ public static partial class McpOAuth
 			var port = ((IPEndPoint)listener.LocalEndpoint).Port;
 			var redirectUri = $"http://{callbackHost}:{port}{callbackPath}";
 
-			var existing = McpOAuthStore.Load(endpoint, agentDir);
+			var existing = McpOAuthStore.Load(config.Name, endpoint, agentDir);
 			var clientId = config.ClientId ?? existing?.ClientId;
 			if (clientId is not { Length: > 0 })
 			{
-				var registration = await RegisterClientAsync(
-					http,
-					metadata,
-					redirectUri,
-					cancellationToken,
-					config.OAuth?.ClientName).ConfigureAwait(false);
-				if (!registration.Ok)
+				// 先看能不能用 Client ID Metadata Document；不能才动态注册。
+				var documents = ShouldUseClientMetadataDocument(registrationMode, config, metadata, redirectUri)
+					? McpClientMetadataDocuments.Resolve(endpoint, redirectUri, metadata)
+					: null;
+				if (registrationMode == "cimd" && documents is null)
 				{
-					return registration;
+					return McpOAuthResult.Failure(
+						"授权服务器不支持公开客户端的 Client ID Metadata Documents；改用 oauth.clientRegistration = \"dcr\" 或配置 clientId");
 				}
 
-				clientId = registration.Token!.Access;
+				if (documents is { } document)
+				{
+					clientId = document.Url;
+					redirectUri = document.RedirectUrl;
+				}
+				else
+				{
+					var registration = await RegisterClientAsync(
+						http,
+						metadata,
+						redirectUri,
+						cancellationToken,
+						config.OAuth?.ClientName).ConfigureAwait(false);
+					if (!registration.Ok)
+					{
+						return registration;
+					}
+
+					clientId = registration.Token!.Access;
+				}
 			}
 
 			var verifier = Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(VerifierBytes));
@@ -296,7 +350,7 @@ public static partial class McpOAuth
 				return token;
 			}
 
-			McpOAuthStore.Save(endpoint, token.Token!, agentDir);
+			McpOAuthStore.Save(config.Name, endpoint, token.Token!, agentDir);
 			return token;
 		}
 		finally
@@ -358,7 +412,7 @@ public static partial class McpOAuth
 			return token;
 		}
 
-		McpOAuthStore.Save(endpoint, token.Token!, agentDir);
+		McpOAuthStore.Save(config.Name, endpoint, token.Token!, agentDir);
 		return token;
 	}
 
@@ -398,13 +452,21 @@ public static partial class McpOAuth
 
 	/// 取一个可直接使用的令牌：已保存且不在刷新窗口内就原样返回；否则尝试刷新。
 	/// 没有保存过令牌时返回 <c>null</c>（调用方应引导用户执行 <c>pi mcp login</c>）。
+	public static Task<McpOAuthToken?> ResolveAsync(
+		HttpClient http,
+		string endpoint,
+		string? agentDir,
+		CancellationToken cancellationToken) =>
+		ResolveAsync(http, serverName: null, endpoint, agentDir, cancellationToken);
+
 	public static async Task<McpOAuthToken?> ResolveAsync(
 		HttpClient http,
+		string? serverName,
 		string endpoint,
 		string? agentDir,
 		CancellationToken cancellationToken)
 	{
-		var token = McpOAuthStore.Load(endpoint, agentDir);
+		var token = McpOAuthStore.Load(serverName, endpoint, agentDir);
 		if (token is null)
 		{
 			return null;
@@ -422,7 +484,7 @@ public static partial class McpOAuth
 			return token;
 		}
 
-		McpOAuthStore.Save(endpoint, refreshed.Token!, agentDir);
+		McpOAuthStore.Save(serverName, endpoint, refreshed.Token!, agentDir);
 		return refreshed.Token;
 	}
 
@@ -715,6 +777,9 @@ public static partial class McpOAuth
 			return null;
 		}
 	}
+
+	private static bool Bool(JsonObject? document, string name) =>
+		document?[name] is JsonValue value && value.TryGetValue<bool>(out var flag) && flag;
 
 	private static string? String(JsonObject? document, string name) =>
 		document?[name] is JsonValue value && value.GetValueKind() == JsonValueKind.String

@@ -111,7 +111,7 @@ public static class McpCommands
 				foreach (var server in configured)
 				{
 					states.TryGetValue(server.Name, out var state);
-					var token = server.Url is { Length: > 0 } endpoint ? McpOAuthStore.Load(endpoint, agentDir) : null;
+					var token = server.Url is { Length: > 0 } endpoint ? McpOAuthStore.Load(server.Name, endpoint, agentDir) : null;
 					var tools = connection.Tools
 						.Where(tool => tool.Name.StartsWith($"mcp__{McpToolAdapter.Sanitize(server.Name)}__", StringComparison.Ordinal))
 						.Select(static tool => (JsonNode?)JsonValue.Create(tool.Name))
@@ -248,6 +248,13 @@ public static class McpCommands
 			clientRegistration is not ("auto" or "dcr" or "cimd"))
 		{
 			error.WriteLine("pi: --oauth-client-registration 只接受 auto、dcr 或 cimd");
+			return 2;
+		}
+
+		if (clientRegistration == "cimd" &&
+			(clientId is { Length: > 0 } || First(options, "oauth-client-name") is { Length: > 0 }))
+		{
+			error.WriteLine("pi: cimd 不能与 --oauth-client-id 或 --oauth-client-name 同时使用");
 			return 2;
 		}
 		var arguments = command is null
@@ -448,7 +455,7 @@ public static class McpCommands
 			return 1;
 		}
 
-		output.WriteLine(McpOAuthStore.Remove(endpoint, agentDir)
+		output.WriteLine(McpOAuthStore.Remove(name, endpoint, agentDir)
 			? $"已登出 {name}"
 			: $"{name} 没有保存的令牌");
 		return 0;

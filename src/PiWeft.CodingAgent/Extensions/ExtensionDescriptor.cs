@@ -30,13 +30,16 @@ public sealed record ExtensionDescriptor
 
 	public bool Missing { get; init; }
 
-	public bool Supported => Language == ExtensionLanguage.Javascript && !Missing;
+	/// 物化失败的原因（离线且无缓存、npm/git 命令失败）。为空时按常规规则判断。
+	public string? Error { get; init; }
 
-	public string? UnsupportedReason => Missing
+	public bool Supported => Language == ExtensionLanguage.Javascript && !Missing && Error is null;
+
+	public string? UnsupportedReason => Error ?? (Missing
 		? "扩展文件或目录不存在。"
 		: Language == ExtensionLanguage.TypeScript
 			? "当前扩展宿主只执行 JavaScript；TypeScript 扩展需要先在构建期转译成 JS（本端口不内置 TS 转译器，见 docs/01-parity.md 的 PI-01）。"
-			: null;
+			: null);
 
 	public static string GlobalDirectory(string? agentDir = null) =>
 		Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), DirectoryName);
@@ -142,6 +145,27 @@ public sealed record ExtensionDescriptor
 				Language = ExtensionLanguage.Javascript,
 				Builtin = true,
 			});
+			return;
+		}
+
+		// pi 的 `-e npm:<pkg>[@ver]` / `-e git:<repo>@<ref>`：先物化到 agent 目录再按目录加载。
+		if (ExtensionPackageCache.IsPackageSpec(value))
+		{
+			var packageRoot = ExtensionPackageCache.Resolve(value, agentDir, out var packageError);
+			if (packageRoot is null)
+			{
+				into.Add(new ExtensionDescriptor
+				{
+					FilePath = value,
+					Origin = "显式",
+					Project = false,
+					Language = ExtensionLanguage.Javascript,
+					Error = packageError ?? "无法物化扩展包",
+				});
+				return;
+			}
+
+			Collect(into, packageRoot, Origin: "显式", project: false);
 			return;
 		}
 

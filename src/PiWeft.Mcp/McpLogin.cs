@@ -72,7 +72,7 @@ public static class McpLogin
 	/// 是否已经存有可用令牌（含已过期的：过期只是「要重新授权」，不是「从没授权过」，
 	/// 界面上要能区分这两种状态）。
 	public static McpOAuthToken? StoredToken(McpServerConfig server, string? agentDir = null) =>
-		server.Url is { Length: > 0 } url ? McpOAuthStore.Load(url, agentDir) : null;
+		server.Url is { Length: > 0 } url ? McpOAuthStore.Load(server.Name, url, agentDir) : null;
 
 	public static bool SignedIn(McpServerConfig server, string? agentDir = null) => StoredToken(server, agentDir) is not null;
 
@@ -80,7 +80,7 @@ public static class McpLogin
 		StoredToken(server, agentDir) is { } token && token.IsExpiring(DateTimeOffset.UtcNow, TimeSpan.Zero);
 
 	public static bool Logout(McpServerConfig server, string? agentDir = null) =>
-		server.Url is { Length: > 0 } url && McpOAuthStore.Remove(url, agentDir);
+		server.Url is { Length: > 0 } url && McpOAuthStore.Remove(server.Name, url, agentDir);
 
 	/// 发一次 <c>initialize</c> 只为拿 <c>WWW-Authenticate</c>：OAuth 发现规范允许服务器用该头
 	/// 指明该用哪个授权服务器，漏了它就只能靠猜测的元数据地址（有些服务器不提供默认地址）。

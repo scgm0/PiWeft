@@ -26,6 +26,8 @@ public sealed partial class SessionTab : IDisposable
 	private int _renderPending;
 	private volatile bool _disposed;
 	private bool _sending;
+
+	private bool _directMcpToolsWaited;
 	private Task _pendingSend = Task.CompletedTask;
 	private Task _pendingPaste = Task.CompletedTask;
 	private CancellationTokenSource? _compactionAbort;
@@ -1147,6 +1149,32 @@ public sealed partial class SessionTab : IDisposable
 		_editNotice.IsVisible(true);
 	}
 
+	/// 发送前等待 MCP direct 工具连接（首轮，pi 的 10 秒上限）。宿主设置；null 表示不等。
+	public Func<CancellationToken, Task>? AwaitDirectMcpTools { get; set; }
+
+	private async Task AwaitDirectMcpToolsOnceAsync(CancellationToken cancellationToken)
+	{
+		if (AwaitDirectMcpTools is not { } wait || _directMcpToolsWaited)
+		{
+			return;
+		}
+
+		_directMcpToolsWaited = true;
+		try
+		{
+			await wait(cancellationToken).ConfigureAwait(false);
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception exception)
+		{
+			// 等待失败只是首轮少几个工具，不阻断发送。
+			AppLog.Failure(AppLog.For<SessionTab>(), "MCP direct tool wait", exception);
+		}
+	}
+
 	public async Task SendAsync(string text)
 	{
 		if (_sending || _chat.IsStreaming || _disposed)
@@ -1184,6 +1212,7 @@ public sealed partial class SessionTab : IDisposable
 		{
 			// 发送前自动打一个检查点（每仓库每分钟最多一次，且工作区有改动才打），
 			// 让模型的改动可以回滚；快照走后台，避免阻塞界面。
+			await AwaitDirectMcpToolsOnceAsync(cancellationToken).ConfigureAwait(false);
 			await Task.Run(() => Checkpoints.AutoSnapshot(Session.Cwd, TimeSpan.FromMinutes(1)), cancellationToken).ConfigureAwait(false);
 			// 检查点期间用户也可能按中断：agent 还没开始，要在这里停下，
 			// 否则中断按钮看似生效，消息仍会在快照结束后发出。

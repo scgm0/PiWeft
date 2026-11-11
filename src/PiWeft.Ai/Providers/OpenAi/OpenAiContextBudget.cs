@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
 namespace PiWeft.Ai.Providers.OpenAi;
 
 /// pi 的 <c>clampMaxTokensToContext</c> 轻量版：输入按字符粗估，给输出留 15% 输入余量。
@@ -39,7 +42,7 @@ internal static class OpenAiContextBudget
 					{
 						foreach (var tool in tools)
 						{
-							chars += tool.Name.Length + tool.Description.Length + tool.Parameters.ToJsonString().Length;
+							chars += tool.Name.Length + tool.Description.Length + JsonSize(tool.Parameters);
 						}
 					}
 
@@ -54,7 +57,7 @@ internal static class OpenAiContextBudget
 						{
 							TextContent text => text.Text.Length,
 							ThinkingContent thinking => thinking.Thinking.Length,
-							ToolCall call => call.Name.Length + call.Arguments.ToJsonString().Length,
+							ToolCall call => call.Name.Length + JsonSize(call.Arguments),
 							_ => 0,
 						};
 					}
@@ -88,6 +91,22 @@ internal static class OpenAiContextBudget
 				_ => 0,
 			})
 			: content.Text?.Length ?? 0;
+
+	/// 估算一个 JSON 节点序列化后的字符数，不分配字符串：每个请求都要过一遍全部工具参数与调用参数，
+	/// <c>ToJsonString()</c> 会给每个调用分配一份完整副本。
+	private static long JsonSize(JsonNode? node) => node switch
+	{
+		null => 4, // "null"
+		JsonValue value => value.GetValueKind() switch
+		{
+			JsonValueKind.String => 2 + (value.TryGetValue<string>(out var text) ? text.Length : 8),
+			JsonValueKind.True or JsonValueKind.False => 5,
+			_ => 12, // 数字：按平均长度估
+		},
+		JsonArray array => 2 + array.Sum(static item => JsonSize(item) + 1),
+		JsonObject obj => 2 + obj.Sum(static pair => pair.Key.Length + 4 + JsonSize(pair.Value)),
+		_ => 8,
+	};
 
 	private static long ContentChars(IReadOnlyList<ContentBlock> blocks) =>
 		blocks.Sum(static block => block switch

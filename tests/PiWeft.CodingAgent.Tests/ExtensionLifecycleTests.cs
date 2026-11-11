@@ -83,6 +83,8 @@ public sealed class ExtensionLifecycleTests : IDisposable
 		session.Dispose();
 
 		Assert.Contains("EXT-MARK", session.CurrentSystemPrompt, StringComparison.Ordinal);
+		// 扩展看到的是基础提示词，不会把上一轮的改写再叠一遍。
+		Assert.Single(System.Text.RegularExpressions.Regex.Matches(session.CurrentSystemPrompt, "EXT-MARK"));
 		var result = Assert.Single(session.Messages.OfType<ToolResultMessage>());
 		Assert.Equal("rewritten-echo", Assert.IsType<TextContent>(Assert.Single(result.Content)).Text);
 		foreach (var expected in new[]

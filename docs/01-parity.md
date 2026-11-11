@@ -162,7 +162,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 - OpenCode / OpenCode Go：所有请求补 `x-opencode-session`（当前会话 ID）与 `x-opencode-client: piweft`；显式同名头优先，缺失会被网关 400。
 - 会话亲和：按模型 `compat.sendSessionAffinityHeaders` / `sessionAffinityFormat` 发送 `x-session-id`、`session_id`（Completions）或 `session-id`（Responses）、`x-client-request-id`、`x-session-affinity` 的子集；OpenRouter 默认 `x-session-id`。
 - GitHub Copilot：静态目录头之外，补 `X-Initiator`、`Openai-Intent: conversation-edits`，含图片补 `Copilot-Vision-Request: true`；Anthropic 代理用 Bearer + `anthropic-dangerous-direct-browser-access`。
-- Claude OAuth：Bearer + `claude-cli/2.1.322` UA、`x-app: cli`、浏览器直连标记、`claude-code-20250219,oauth-2025-04-20` beta，并在 system 首块注入 Claude Code 身份提示。自适应思考、`supportsTemperature`、错误工具结果图片后置与会话级严格工具降级已接入。
+- Claude OAuth：Bearer + `claude-cli/2.1.322` UA、`x-app: cli`、浏览器直连标记、`claude-code-20250219,oauth-2025-04-20` beta，并在 system 首块注入 Claude Code 身份提示。自适应思考、`supportsTemperature`、错误工具结果图片后置、会话级严格工具降级与 message thread 续聊已接入。
 - provider 级 `headers`/`authHeader` 同时作用于内置、远程缓存与自定义模型，模型同名头优先；`authHeader: true` 追加 `Authorization: Bearer <key>`。
 - OpenRouter `HTTP-Referer`/`X-Title` 与 TokenDance `X-App-URL` 不是功能必需；不伪造公共 app URL。
 
@@ -267,12 +267,12 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 
 | 编号 | 能力 | 状态 |
 |---|---|---|
-| PI-01 | JS/TS 扩展 | JS 可用（发现、显式路径、专属线程、工具/命令、会话/回合/消息/工具执行/模型等 16 个事件、flag、reload）；ESM 与异步处理器、流式 update 与 provider/context 事件、TypeScript 不支持 |
+| PI-01 | JS/TS 扩展 | JS 可用（发现、`-e npm:`/`git:`、专属线程、工具/命令、会话/回合/消息/工具执行/模型等 16 个事件、flag、reload）；ESM 与异步处理器、流式 update 与 provider/context 事件、TypeScript 不支持 |
 | PI-02 | 扩展 UI | 对话框与 setStatus/setWidget/setTitle/set_editor_text 已实现；扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`/`namespace`/`executionMode`；无自定义 renderer、无 `ctx.executeTool` 扩展入口 |
 | PI-03 | 包管理 | 安装/列表/移除/更新已实现，npm/git 更新报告版本或 commit 变化；无自更新执行、依赖冲突治理与资源筛选界面 |
 | PI-04 | 完整 TUI | 行式 REPL；缺多行编辑、`$EDITOR`、TUI 图片粘贴、补全、选择器、终端图片与完整键位 |
 | PI-05 | codemode / tool_search | 已实现（含 worker 排队、`PI_CODEMODE_MAX_WORKERS`、检索 `$ref`、prelude lockdown）；余项只有顶层 `arguments` 等轻微差异 |
-| PI-06 | MCP 高级运行时 | OAuth/PKCE/客户端凭据、`callbackUrl`、`clientRegistration` 的 `auto`/`dcr`、401 重放、HTTP 通知已覆盖；缺 `cimd`、与 pi 共享 `mcp-auth.json` |
+| PI-06 | MCP 高级运行时 | OAuth/PKCE/客户端凭据、`callbackUrl`、`clientRegistration` 的 `auto`/`dcr`/`cimd`、与 pi 共享 `mcp-auth.json`、401 重放、HTTP 通知、瞬时故障重试、`mcp.log`、后台并行连接与首轮 direct 等待已覆盖；缺跨进程刷新锁 |
 | PI-07 | 认证 | OAuth + API Key 全覆盖；桌面与 `pi login` 共用供应商目录，支持 Cloudflare/Vertex/Bedrock 多字段与凭据 env；缺 AWS 配置文件/实例元数据链、OIDC/SSO、多账号 |
 | PI-08 | 动态模型目录 | 远程刷新、离线缓存、账号目录、条件请求、6 小时节流已实现；缺账号能力同步与增量合并 |
 | PI-09 | 高级模型运行时 | 虚拟模型、cache warming、samplingParams、Codex WebSocket、生图/分类已实现；缺扩展注册 route、连接复用、生图入口 |
@@ -284,7 +284,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | PI-15 | 斜杠命令 | `/copy`、`/import`、`/share`、`/bug`、`/llama`、`/settings` 已实现 |
 | PI-16 | 子工具账本 | `nestedCalls` / `parentToolCallId` 尚未产出 |
 | PI-17 | 分类器方言 | `openai-decisions`、`typesafe-system-one`、`cloudflare-workers-ai-system-one` 已实现；缺其它供应商的私有分类协议 |
-| PI-18 | 网络细项 | Codex `websocket-cached` 复用、zstd/continuation；AWS ambient 链；MCP `cimd` / `mcp-auth.json` |
+| PI-18 | 网络细项 | Codex `websocket-cached` 复用、zstd/continuation；AWS ambient 链 |
 | D-01 | 问询/待办/计划 | 已实现，含计划步骤跟踪（`Plan:` 解析、`pi-deck-plan-todos` 进度、`[DONE:n]`、执行确认选单）与目标模式（自动续轮、`GOAL_COMPLETE`/`GOAL_BLOCKED`、轮次上限、桌面目标条）；缺独立后台 Ask 工作流 |
 | D-02 | 文件工作台 | 导航、编辑、汇总、diff 已实现；缺多文件标签、草稿本、跨行块注释、内嵌浏览器 |
 | D-03 | 内置终端 | MiniPty 与主要 VT 行为；缺 Windows/macOS 实机回归、完整 VT100、多标签、快照回放 |

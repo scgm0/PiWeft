@@ -410,7 +410,6 @@ public static partial class McpConfig
 	ReadCommentHandling = JsonCommentHandling.Skip,
 	AllowTrailingCommas = true)]
 [JsonSerializable(typeof(McpConfigFile))]
-[JsonSerializable(typeof(McpOAuthFile))]
 internal partial class McpJsonContext : JsonSerializerContext
 {
 	// 保留源生成选项，只替换编码器。

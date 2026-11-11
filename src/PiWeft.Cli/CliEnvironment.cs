@@ -182,8 +182,10 @@ public sealed class CliEnvironment
 		return (new CliEnvironment(registry, gateway, images, classifiers, settings, model, tools, customModels.ApiKeys, projectTrusted), null);
 	}
 
-	private static readonly Dictionary<string, string> DefaultModelPerProvider = new(StringComparer.Ordinal)
-	{
+	/// 启动时按 provider 查一次；冻结字典让查找走预计算哈希，不再走可变字典的分支。
+	private static readonly System.Collections.Frozen.FrozenDictionary<string, string> DefaultModelPerProvider =
+		new Dictionary<string, string>(StringComparer.Ordinal)
+		{
 		["amazon-bedrock"] = "us.anthropic.claude-opus-5-5",
 		["ant-ling"] = "Ring-2.6-1T",
 		["anthropic"] = "claude-opus-5-5",
@@ -226,7 +228,7 @@ public sealed class CliEnvironment
 		["xiaomi-token-plan-cn"] = "mimo-v2.6-pro",
 		["xiaomi-token-plan-ams"] = "mimo-v2.6-pro",
 		["xiaomi-token-plan-sgp"] = "mimo-v2.6-pro",
-	};
+		}.ToFrozenDictionary(StringComparer.Ordinal);
 
 	public static Model? ResolveModel(
 		ModelRegistry registry,

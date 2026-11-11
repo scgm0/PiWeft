@@ -18,15 +18,22 @@ public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 	private readonly string _endpoint;
 	private readonly string? _agentDir;
 	private readonly McpServerConfig? _config;
+	private readonly string? _serverName;
 	private readonly Lock _gate = new();
 	private McpOAuthToken? _cached;
 
-	public McpOAuthTokenProvider(string endpoint, string? agentDir = null, HttpClient? http = null, McpServerConfig? config = null)
+	public McpOAuthTokenProvider(
+		string endpoint,
+		string? agentDir = null,
+		HttpClient? http = null,
+		McpServerConfig? config = null,
+		string? serverName = null)
 	{
 		_http = http ?? SharedHttp;
 		_endpoint = endpoint;
 		_agentDir = agentDir;
 		_config = config;
+		_serverName = serverName ?? config?.Name;
 	}
 
 	public McpOAuthToken? Cached
@@ -51,7 +58,7 @@ public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 			}
 		}
 
-		var token = await McpOAuth.ResolveAsync(_http, _endpoint, _agentDir, cancellationToken).ConfigureAwait(false);
+		var token = await McpOAuth.ResolveAsync(_http, _serverName, _endpoint, _agentDir, cancellationToken).ConfigureAwait(false);
 		if (token is null && _config is not null && McpOAuth.UsesClientCredentials(_config))
 		{
 			// 没有已存令牌且配置了客户端凭据：静默取一次令牌，不需要 pi mcp login。
@@ -74,7 +81,7 @@ public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 		McpOAuthToken? current;
 		lock (_gate)
 		{
-			current = _cached ?? McpOAuthStore.Load(_endpoint, _agentDir);
+			current = _cached ?? McpOAuthStore.Load(_serverName, _endpoint, _agentDir);
 		}
 
 		if (current is null)
@@ -108,7 +115,7 @@ public sealed class McpOAuthTokenProvider : IMcpAccessTokenProvider
 			return null;
 		}
 
-		McpOAuthStore.Save(_endpoint, refreshed.Token!, _agentDir);
+		McpOAuthStore.Save(_serverName, _endpoint, refreshed.Token!, _agentDir);
 		lock (_gate)
 		{
 			_cached = refreshed.Token;

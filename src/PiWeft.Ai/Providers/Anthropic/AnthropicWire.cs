@@ -406,6 +406,19 @@ internal static class AnthropicWire
 		writer.WriteEndObject();
 	}
 
+	/// 把一条助手消息按线上形态写成 <c>messages</c> 数组里的一项，供 message thread 记录前缀。
+	public static JsonArray WriteAssistantReply(AssistantMessage message)
+	{
+		var bytes = JsonPayload.Write(writer =>
+		{
+			writer.WriteStartArray();
+			WriteAssistant(writer, message);
+			writer.WriteEndArray();
+		});
+
+		return JsonNode.Parse(bytes) as JsonArray ?? [];
+	}
+
 	private const string ErrorToolImagePlaceholder = "(image attached after the tool results)";
 
 	private static void WriteImage(Utf8JsonWriter writer, ImageContent image)

@@ -21,7 +21,7 @@ public sealed class ProviderStreamEventTests
 			},
 		};
 
-		options.NotifyStreamEvent("""{"type":"delta","text":"hi"}""", model);
+		options.NotifyStreamEvent(System.Text.Encoding.UTF8.GetBytes("""{"type":"delta","text":"hi"}"""), model);
 
 		Assert.NotNull(seen);
 		Assert.Equal("delta", seen!["type"]!.GetValue<string>());

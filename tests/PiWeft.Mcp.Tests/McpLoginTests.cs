@@ -76,7 +76,7 @@ public sealed class McpLoginTests : IDisposable
 		Assert.True(outcome.Ok, outcome.Message);
 		Assert.False(outcome.UsedBrowser);
 		Assert.Equal(0, opened); // 配了客户端凭据就不该再要浏览器
-		Assert.Equal("cc-1", McpOAuthStore.Load(Endpoint, _agentDir)!.Access);
+		Assert.Equal("cc-1", McpOAuthStore.Load("gateway", Endpoint, _agentDir)!.Access);
 	}
 
 	/// 浏览器授权码流要**等回调**才返回：这段等待必须可取消，否则用户在界面上关掉弹窗
@@ -107,7 +107,7 @@ public sealed class McpLoginTests : IDisposable
 		cts.Cancel();
 		var outcome = await run;
 		Assert.False(outcome.Ok);
-		Assert.False(McpOAuthStore.Load(Endpoint, _agentDir) is not null, "取消后不该留下半截凭据");
+		Assert.False(McpOAuthStore.Load("remote", Endpoint, _agentDir) is not null, "取消后不该留下半截凭据");
 	}
 
 	[Fact]

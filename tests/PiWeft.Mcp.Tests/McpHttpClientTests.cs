@@ -298,6 +298,9 @@ public class McpHttpClientTests
 	public async Task TransportFailuresBecomeMcpExceptions()
 	{
 		var handler = new FakeMcpHttpHandler();
+		// 瞬时状态重试两次后仍失败，才把错误交给调用方。
+		handler.EnqueueStatus(HttpStatusCode.ServiceUnavailable, "upstream down");
+		handler.EnqueueStatus(HttpStatusCode.ServiceUnavailable, "upstream down");
 		handler.EnqueueStatus(HttpStatusCode.ServiceUnavailable, "upstream down");
 
 		var error = await Assert.ThrowsAsync<McpException>(() =>
@@ -305,6 +308,7 @@ public class McpHttpClientTests
 
 		Assert.Equal(503, error.Code);
 		Assert.Contains("upstream down", error.Message);
+		Assert.Equal(3, handler.Requests.Count);
 	}
 
 	[Fact]

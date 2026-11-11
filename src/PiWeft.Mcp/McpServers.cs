@@ -358,6 +358,15 @@ public static class McpToolAdapter
 
 public sealed record McpServerState(string Name, bool Connected, int ToolCount, string? Error);
 
+/// 一台服务器连接的结果，后台连接时按配置顺序摊进 <see cref="McpConnection"/>。
+internal sealed record ServerConnectResult(
+	IReadOnlyList<IAsyncDisposable> Transports,
+	McpConnection.ServerEntry? Entry,
+	IReadOnlyList<AgentTool> Tools,
+	IMcpResourceProvider? ResourceServer,
+	McpServerState? State,
+	string? Error);
+
 public sealed class McpConnection : IAsyncDisposable
 {
 	private readonly List<IAsyncDisposable> _transports;
@@ -367,6 +376,18 @@ public sealed class McpConnection : IAsyncDisposable
 	private readonly List<string> _errors;
 	private readonly List<McpServerState> _states;
 	private readonly SemaphoreSlim _refreshGate = new(1, 1);
+	private readonly McpServerLog? _log;
+
+	// 后台连接的进度：结果按配置下标就位，全部完成后按顺序摊进各列表。
+	private readonly Lock _fillGate = new();
+	private readonly Dictionary<int, ServerConnectResult?> _fillResults = [];
+	private readonly List<int> _directPending = [];
+	private readonly List<string> _pendingErrors = [];
+	private TaskCompletionSource _directReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+	private TaskCompletionSource _fillComplete = new(TaskCreationOptions.RunContinuationsAsynchronously);
+	private Task? _fill;
+	private bool _filling;
+	private int _nextFillIndex;
 
 	internal McpConnection(
 		List<IAsyncDisposable> transports,
@@ -374,7 +395,8 @@ public sealed class McpConnection : IAsyncDisposable
 		List<AgentTool> tools,
 		List<IMcpResourceProvider> resourceServers,
 		List<string> errors,
-		List<McpServerState> states)
+		List<McpServerState> states,
+		McpServerLog? log = null)
 	{
 		_transports = transports;
 		_servers = servers;
@@ -382,19 +404,57 @@ public sealed class McpConnection : IAsyncDisposable
 		_resourceServers = resourceServers;
 		_errors = errors;
 		_states = states;
+		_log = log;
 	}
 
 	internal sealed record ServerEntry(string Name, IMcpToolInvoker Client, TimeSpan Timeout);
 
-	/// 所有已连接服务器的工具，已加命名空间。服务器发出 <c>tools/list_changed</c> 时，
-	/// 同一个列表实例会被就地更新，因此持有该引用的地方都能看到刷新结果。
-	public IReadOnlyList<AgentTool> Tools => _tools;
+	/// 所有已连接服务器的工具，已加命名空间。后台连接与 <c>tools/list_changed</c> 会在另一个线程上
+	/// 改写这些列表，因此读到的是一份快照：直接返回内部列表会让调用方在枚举时撞上
+	/// "Collection was modified"。
+	public IReadOnlyList<AgentTool> Tools
+	{
+		get
+		{
+			lock (_fillGate)
+			{
+				return [.. _tools];
+			}
+		}
+	}
 
-	public IReadOnlyList<IMcpResourceProvider> ResourceServers => _resourceServers;
+	public IReadOnlyList<IMcpResourceProvider> ResourceServers
+	{
+		get
+		{
+			lock (_fillGate)
+			{
+				return [.. _resourceServers];
+			}
+		}
+	}
 
-	public IReadOnlyList<McpServerState> Servers => _states;
+	public IReadOnlyList<McpServerState> Servers
+	{
+		get
+		{
+			lock (_fillGate)
+			{
+				return [.. _states];
+			}
+		}
+	}
 
-	public IReadOnlyList<string> Errors => _errors;
+	public IReadOnlyList<string> Errors
+	{
+		get
+		{
+			lock (_fillGate)
+			{
+				return [.. _errors];
+			}
+		}
+	}
 
 	public event Action<McpConnection>? ToolsChanged;
 
@@ -402,13 +462,219 @@ public sealed class McpConnection : IAsyncDisposable
 
 	public event Action<McpConnection, string>? PromptsChanged;
 
+	/// 后台连接是否还在进行。
+	public bool IsConnecting
+	{
+		get
+		{
+			lock (_fillGate)
+			{
+				return _filling;
+			}
+		}
+	}
+
+	/// 是否还有 direct 工具在连接：首轮请求只在它为 true 时等待。
+	public bool HasPendingDirectTools
+	{
+		get
+		{
+			lock (_fillGate)
+			{
+				return _directPending.Count > 0;
+			}
+		}
+	}
+
+	/// 等 direct 工具连上（pi 的首轮等待，默认 10 秒）。没有 direct 服务器时立刻返回。
+	public async Task WaitForDirectToolsAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+	{
+		Task ready;
+		lock (_fillGate)
+		{
+			if (_directPending.Count == 0)
+			{
+				return;
+			}
+
+			ready = _directReady.Task;
+		}
+
+		try
+		{
+			await ready.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+		}
+		catch (TimeoutException)
+		{
+			// 超时就用已经连上的工具：没连上的服务器按未声明处理。
+		}
+	}
+
+	/// 等所有服务器连接结束（codemode 脚本、tool_search、资源工具需要全量工具时用）。
+	public async Task WaitForAllAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+	{
+		Task? fill;
+		lock (_fillGate)
+		{
+			fill = _fill;
+		}
+
+		if (fill is null)
+		{
+			return;
+		}
+
+		try
+		{
+			await fill.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+		}
+		catch (TimeoutException)
+		{
+		}
+	}
+
+	/// 记录需要为 direct 工具等待的服务器下标（后台连接启动前由 <see cref="McpServers"/> 设置）。
+	internal void ExpectDirectTools(int index)
+	{
+		lock (_fillGate)
+		{
+			_directPending.Add(index);
+		}
+	}
+
+	internal void TrackFill(Task fill)
+	{
+		lock (_fillGate)
+		{
+			_fill = fill;
+			_filling = !fill.IsCompleted;
+		}
+	}
+
+	/// 一台服务器连完：按配置顺序摊进各列表，并通知宿主刷新工具。
+	internal void Merge(int index, ServerConnectResult? result)
+	{
+		List<McpServerState>? states;
+		List<string>? errors;
+		lock (_fillGate)
+		{
+			_fillResults[index] = result;
+			_directPending.Remove(index);
+			if (_directPending.Count == 0)
+			{
+				_directReady.TrySetResult();
+			}
+
+			(states, errors) = ApplyInOrder();
+			if (states is { Count: > 0 })
+			{
+				_states.AddRange(states);
+			}
+
+			if (errors is { Count: > 0 })
+			{
+				_errors.AddRange(errors);
+			}
+		}
+
+		if (result is not null)
+		{
+			ToolsChanged?.Invoke(this);
+		}
+	}
+
+	internal void CompleteFill()
+	{
+		lock (_fillGate)
+		{
+			// 取消或异常会让结果停在不连续的下标上；收尾时按顺序补摊，否则它们的传输不会被释放。
+			var (states, errors) = ApplyInOrder();
+			while (_fillResults.Count > 0)
+			{
+				_nextFillIndex = _fillResults.Keys.Min();
+				var (moreStates, moreErrors) = ApplyInOrder();
+				states ??= moreStates;
+				errors ??= moreErrors;
+				if (moreStates is { Count: > 0 })
+				{
+					(states ??= []).AddRange(moreStates);
+				}
+
+				if (moreErrors is { Count: > 0 })
+				{
+					(errors ??= []).AddRange(moreErrors);
+				}
+			}
+
+			if (states is { Count: > 0 })
+			{
+				_states.AddRange(states);
+			}
+
+			if (errors is { Count: > 0 })
+			{
+				_errors.AddRange(errors);
+			}
+
+			_filling = false;
+			_directPending.Clear();
+			_directReady.TrySetResult();
+			_fillComplete.TrySetResult();
+		}
+	}
+
+	/// 把已经就位的连续前缀摊进列表，保持与配置一致的顺序。
+	/// 返回本次新增的状态与错误；调用方在锁外写入公开列表。
+	private (List<McpServerState>? States, List<string>? Errors) ApplyInOrder()
+	{
+		List<McpServerState>? states = null;
+		List<string>? errors = null;
+		while (_fillResults.TryGetValue(_nextFillIndex, out var result))
+		{
+			_fillResults.Remove(_nextFillIndex);
+			_nextFillIndex++;
+			if (result is null)
+			{
+				continue;
+			}
+
+			_transports.AddRange(result.Transports);
+			if (result.Entry is { } entry)
+			{
+				_servers.Add(entry);
+			}
+			_tools.AddRange(result.Tools);
+			if (result.ResourceServer is { } resources)
+			{
+				_resourceServers.Add(resources);
+			}
+			if (result.State is { } state)
+			{
+				(states ??= []).Add(state);
+			}
+			if (result.Error is { } error)
+			{
+				(errors ??= []).Add(error);
+			}
+		}
+
+		return (states, errors);
+	}
+
 	public async Task RefreshToolsAsync(CancellationToken cancellationToken = default)
 	{
 		await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 		try
 		{
 			var next = new List<AgentTool>();
-			foreach (var server in _servers)
+			// 后台连接可能正在往 _servers 里追加：先取快照再逐个列举。
+			ServerEntry[] servers;
+			lock (_fillGate)
+			{
+				servers = [.. _servers];
+			}
+
+			foreach (var server in servers)
 			{
 				foreach (var tool in await server.Client.ListToolsAsync(cancellationToken).ConfigureAwait(false))
 				{
@@ -416,17 +682,20 @@ public sealed class McpConnection : IAsyncDisposable
 				}
 			}
 
-			_tools.Clear();
-			_tools.AddRange(next);
-
-			// 刷新工具数，界面上的状态跟着更新。
-			for (var index = 0; index < _states.Count; index++)
+			lock (_fillGate)
 			{
-				var state = _states[index];
-				if (state.Connected)
+				_tools.Clear();
+				_tools.AddRange(next);
+
+				// 刷新工具数，界面上的状态跟着更新。
+				for (var index = 0; index < _states.Count; index++)
 				{
-					var prefix = $"mcp__{McpToolAdapter.Sanitize(state.Name)}__";
-					_states[index] = state with { ToolCount = next.Count(tool => tool.Name.StartsWith(prefix, StringComparison.Ordinal)) };
+					var state = _states[index];
+					if (state.Connected)
+					{
+						var prefix = $"mcp__{McpToolAdapter.Sanitize(state.Name)}__";
+						_states[index] = state with { ToolCount = next.Count(tool => tool.Name.StartsWith(prefix, StringComparison.Ordinal)) };
+					}
 				}
 			}
 		}
@@ -444,10 +713,14 @@ public sealed class McpConnection : IAsyncDisposable
 		ToolsChanged?.Invoke(this);
 	}
 
-	internal void OnNotification(string server, string method)
+	internal void OnNotification(string server, string method, System.Text.Json.Nodes.JsonObject? parameters = null)
 	{
 		switch (method)
 		{
+			case "notifications/message":
+				_log?.Write(server, parameters);
+				break;
+
 			case "notifications/tools/list_changed":
 				_ = RefreshToolsAsync();
 				break;
@@ -464,6 +737,25 @@ public sealed class McpConnection : IAsyncDisposable
 
 	public async ValueTask DisposeAsync()
 	{
+		// 后台连接可能还在跑：先等它收尾（上限 5 秒），否则会漏掉刚连上的进程与连接。
+		Task? fill;
+		lock (_fillGate)
+		{
+			fill = _fill;
+		}
+
+		if (fill is { IsCompleted: false })
+		{
+			try
+			{
+				await fill.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+			}
+			catch (Exception)
+			{
+				// 连接失败或超时：已经建立的传输仍然要释放。
+			}
+		}
+
 		foreach (var transport in _transports)
 		{
 			await transport.DisposeAsync().ConfigureAwait(false);
@@ -483,11 +775,22 @@ public static class McpServers
 {
 	/// 连接所有启用的服务器。单个服务器启动失败不会影响其它服务器，其失败原因会记录在
 	/// <see cref="McpConnection.Errors"/> 中。
-	public static async Task<McpConnection> ConnectAllAsync(
+	public static Task<McpConnection> ConnectAllAsync(
 		IReadOnlyList<McpServerConfig> servers,
 		Action<string>? onError = null,
 		CancellationToken cancellationToken = default,
-		string? agentDir = null)
+		string? agentDir = null) =>
+		ConnectAllAsync(servers, onError, cancellationToken, agentDir, background: false);
+
+	/// <param name="background">为 <see langword="true"/> 时立刻返回连接对象，服务器在后台连上后
+	/// 就地填充工具与状态，并通过 <see cref="McpConnection.ToolsChanged"/> 通知宿主。
+	/// 首轮请求用 <see cref="McpConnection.WaitForDirectToolsAsync"/> 只为 direct 工具等连接。</param>
+	public static async Task<McpConnection> ConnectAllAsync(
+		IReadOnlyList<McpServerConfig> servers,
+		Action<string>? onError,
+		CancellationToken cancellationToken,
+		string? agentDir,
+		bool background)
 	{
 		var transports = new List<IAsyncDisposable>();
 		var connected = new List<McpConnection.ServerEntry>();
@@ -495,129 +798,225 @@ public static class McpServers
 		var resourceServers = new List<IMcpResourceProvider>();
 		var errors = new List<string>();
 		var states = new List<McpServerState>();
-		var connection = new McpConnection(transports, connected, tools, resourceServers, errors, states);
+		var connection = new McpConnection(
+			transports,
+			connected,
+			tools,
+			resourceServers,
+			errors,
+			states,
+			new McpServerLog(agentDir));
 
-		foreach (var config in servers)
+		for (var index = 0; index < servers.Count; index++)
 		{
-			if (!config.Enabled)
+			if (servers[index].Enabled && McpExposure.HasDirectTools(servers[index]))
 			{
-				continue;
-			}
-
-			if (!config.IsStdio && !config.IsHttp)
-			{
-				var reason = $"{config.Name}: entry has neither command nor url";
-				errors.Add(reason);
-				states.Add(new McpServerState(config.Name, Connected: false, 0, "entry has neither command nor url"));
-				onError?.Invoke(reason);
-				continue;
-			}
-
-			// 整台服务器都不可达时不连接，省下一个进程/连接。
-			if (McpExposure.IsFullyHidden(config))
-			{
-				states.Add(new McpServerState(config.Name, Connected: false, 0, McpExposure.Hidden));
-				continue;
-			}
-
-			var toolCount = 0;
-
-			try
-			{
-				IMcpToolInvoker client;
-				IMcpResourceProvider? resources = null;
-
-				if (config.IsHttp)
-				{
-				// 声明 auth: oauth 的服务器用存储里的访问令牌（必要时自动刷新）；
-				// 配置了 clientId+clientSecret 时可静默走客户端凭据授权。
-				IMcpAccessTokenProvider? tokens = config.UsesOAuth
-					? new McpOAuthTokenProvider(config.Url!, agentDir, config: config)
-					: null;
-
-					var http = await McpHttpClient
-						.ConnectAsync(
-							config.Url!,
-							config.Headers,
-							config.TimeoutSpan,
-							cancellationToken: cancellationToken,
-							tokens: tokens)
-						.ConfigureAwait(false);
-
-					http.ConfiguredServerName = config.Name;
-					transports.Add(http);
-					client = http;
-					resources = http;
-
-					// HTTP 走独立的 SSE 通知流；服务器拒绝（404/405）时客户端会静默降级，
-					// 与 stdio 的通知路径共用同一套热刷新逻辑。
-					var httpName = config.Name;
-					http.NotificationReceived += (method, _) => connection.OnNotification(httpName, method);
-				}
-				else
-				{
-					var process = await McpProcess.StartAsync(config, cancellationToken).ConfigureAwait(false);
-					transports.Add(process);
-					client = process.Client;
-					resources = process.Client;
-
-					var serverName = config.Name;
-					process.Client.NotificationReceived += (method, _) => connection.OnNotification(serverName, method);
-				}
-
-				connected.Add(new McpConnection.ServerEntry(config.Name, client, config.TimeoutSpan));
-
-				// 服务器 initialize 的 instructions 进入命名空间说明（pi 的 describeNamespace 返回它）。
-				var namespaceInstructions = client switch
-				{
-					McpClient stdio => stdio.Instructions,
-					McpHttpClient http => http.Instructions,
-					_ => null,
-				};
-
-				foreach (var tool in await client.ListToolsAsync(cancellationToken).ConfigureAwait(false))
-				{
-					// hidden 的工具不可达；其余交给会话按 exposure 决定声明还是只给脚本。
-					var exposure = McpExposure.Resolve(config, tool.Name);
-					if (!McpExposure.IsVisible(exposure))
-					{
-						continue;
-					}
-
-					tools.Add(McpToolAdapter.Create(
-						client,
-						config.Name,
-						tool,
-						config.TimeoutSpan,
-						exposure,
-						config.Description,
-						namespaceInstructions));
-					toolCount++;
-				}
-
-				states.Add(new McpServerState(config.Name, Connected: true, toolCount, Error: null));
-
-				// 只有声明了该能力的服务器才会被资源工具指向。
-				if (resources is not null && resources.Capabilities.HasResources)
-				{
-					resourceServers.Add(resources);
-				}
-			}
-			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-			{
-				throw; // 调用方中止了整个连接过程
-			}
-			catch (Exception ex)
-			{
-				// 单个服务器的失败（包括它自己的请求超时）只上报，不致命。
-				var reason = $"{config.Name}: {ex.Message}";
-				errors.Add(reason);
-				states.Add(new McpServerState(config.Name, Connected: false, 0, ex.Message));
-				onError?.Invoke(reason);
+				connection.ExpectDirectTools(index);
 			}
 		}
 
+		var fill = FillAsync(connection, servers, onError, agentDir, cancellationToken);
+		connection.TrackFill(fill);
+		if (background)
+		{
+			return connection;
+		}
+
+		await fill.ConfigureAwait(false);
 		return connection;
+	}
+
+	/// 各服务器并行连接：stdio 要起进程、HTTP 要握手，串行时 N 台服务器的启动时间相加。
+	/// 后台模式下每台连上就地合并并通知，宿主不必等全部完成。
+	private static async Task FillAsync(
+		McpConnection connection,
+		IReadOnlyList<McpServerConfig> servers,
+		Action<string>? onError,
+		string? agentDir,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			await Parallel.ForEachAsync(
+				Enumerable.Range(0, servers.Count),
+				new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = cancellationToken },
+				async (index, token) =>
+				{
+					var config = servers[index];
+					ServerConnectResult? result;
+					try
+					{
+						result = await ConnectOneAsync(config, connection, agentDir, token).ConfigureAwait(false);
+					}
+					catch (OperationCanceledException) when (token.IsCancellationRequested)
+					{
+						throw;
+					}
+					catch (Exception exception)
+					{
+						result = new ServerConnectResult(
+							[],
+							null,
+							[],
+							null,
+							new McpServerState(config.Name, Connected: false, 0, exception.Message),
+							$"{config.Name}: {exception.Message}");
+					}
+
+					connection.Merge(index, result);
+					if (result?.Error is { } error)
+					{
+						onError?.Invoke(error);
+					}
+				}).ConfigureAwait(false);
+		}
+		finally
+		{
+			connection.CompleteFill();
+		}
+	}
+
+
+	private static async Task<ServerConnectResult?> ConnectOneAsync(
+		McpServerConfig config,
+		McpConnection connection,
+		string? agentDir,
+		CancellationToken cancellationToken)
+	{
+		if (!config.Enabled)
+		{
+			return null;
+		}
+
+		if (!config.IsStdio && !config.IsHttp)
+		{
+			return new ServerConnectResult(
+				[],
+				null,
+				[],
+				null,
+				new McpServerState(config.Name, Connected: false, 0, "entry has neither command nor url"),
+				$"{config.Name}: entry has neither command nor url");
+		}
+
+		// 整台服务器都不可达时不连接，省下一个进程/连接。
+		if (McpExposure.IsFullyHidden(config))
+		{
+			return new ServerConnectResult(
+				[],
+				null,
+				[],
+				null,
+				new McpServerState(config.Name, Connected: false, 0, McpExposure.Hidden),
+				null);
+		}
+
+		var transports = new List<IAsyncDisposable>(1);
+		try
+		{
+			IMcpToolInvoker client;
+			IMcpResourceProvider? resources;
+
+			if (config.IsHttp)
+			{
+				// 声明 auth: oauth 的服务器用存储里的访问令牌（必要时自动刷新）；
+				// 配置了 clientId+clientSecret 时可静默走客户端凭据授权。
+				IMcpAccessTokenProvider? tokens = config.UsesOAuth
+					? new McpOAuthTokenProvider(config.Url!, agentDir, config: config, serverName: config.Name)
+					: null;
+
+				var http = await McpHttpClient
+					.ConnectAsync(
+						config.Url!,
+						config.Headers,
+						config.TimeoutSpan,
+						cancellationToken: cancellationToken,
+						tokens: tokens)
+					.ConfigureAwait(false);
+
+				http.ConfiguredServerName = config.Name;
+				transports.Add(http);
+				client = http;
+				resources = http;
+
+				// HTTP 走独立的 SSE 通知流；服务器拒绝（404/405）时客户端会静默降级，
+				// 与 stdio 的通知路径共用同一套热刷新逻辑。
+				var httpName = config.Name;
+				http.NotificationReceived += (method, payload) => connection.OnNotification(httpName, method, payload);
+			}
+			else
+			{
+				var process = await McpProcess.StartAsync(config, cancellationToken).ConfigureAwait(false);
+				transports.Add(process);
+				client = process.Client;
+				resources = process.Client;
+
+				var serverName = config.Name;
+				process.Client.NotificationReceived += (method, payload) => connection.OnNotification(serverName, method, payload);
+			}
+
+			// 服务器 initialize 的 instructions 进入命名空间说明（pi 的 describeNamespace 返回它）。
+			var namespaceInstructions = client switch
+			{
+				McpClient stdio => stdio.Instructions,
+				McpHttpClient http => http.Instructions,
+				_ => null,
+			};
+
+			var tools = new List<AgentTool>();
+			foreach (var tool in await client.ListToolsAsync(cancellationToken).ConfigureAwait(false))
+			{
+				// hidden 的工具不可达；其余交给会话按 exposure 决定声明还是只给脚本。
+				var exposure = McpExposure.Resolve(config, tool.Name);
+				if (!McpExposure.IsVisible(exposure))
+				{
+					continue;
+				}
+
+				tools.Add(McpToolAdapter.Create(
+					client,
+					config.Name,
+					tool,
+					config.TimeoutSpan,
+					exposure,
+					config.Description,
+					namespaceInstructions));
+			}
+
+			return new ServerConnectResult(
+				transports,
+				new McpConnection.ServerEntry(config.Name, client, config.TimeoutSpan),
+				tools,
+				// 只有声明了该能力的服务器才会被资源工具指向。
+				resources is not null && resources.Capabilities.HasResources ? resources : null,
+				new McpServerState(config.Name, Connected: true, tools.Count, Error: null),
+				null);
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			foreach (var transport in transports)
+			{
+				await transport.DisposeAsync().ConfigureAwait(false);
+			}
+
+			throw; // 调用方中止了整个连接过程
+		}
+		catch (Exception ex)
+		{
+			foreach (var transport in transports)
+			{
+				await transport.DisposeAsync().ConfigureAwait(false);
+			}
+
+			// 单个服务器的失败（包括它自己的请求超时）只上报，不致命。
+			return new ServerConnectResult(
+				[],
+				null,
+				[],
+				null,
+				new McpServerState(config.Name, Connected: false, 0, ex.Message),
+				$"{config.Name}: {ex.Message}");
+		}
 	}
 
 	public static Task<McpConnection> ConnectConfiguredAsync(
@@ -627,4 +1026,13 @@ public static class McpServers
 		CancellationToken cancellationToken = default,
 		bool includeProject = true) =>
 		ConnectAllAsync(McpConfig.Load(cwd, agentDir, includeProject), onError, cancellationToken, agentDir);
+
+	/// 启动后立刻返回，服务器在后台连接；首轮请求用 <see cref="McpConnection.WaitForDirectToolsAsync"/> 等 direct 工具。
+	public static Task<McpConnection> ConnectConfiguredInBackgroundAsync(
+		string cwd,
+		string? agentDir = null,
+		Action<string>? onError = null,
+		CancellationToken cancellationToken = default,
+		bool includeProject = true) =>
+		ConnectAllAsync(McpConfig.Load(cwd, agentDir, includeProject), onError, cancellationToken, agentDir, background: true);
 }

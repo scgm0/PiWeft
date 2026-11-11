@@ -87,8 +87,19 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			{
 				if (!arguments.NoMcp && !arguments.NoTools)
 				{
-					// 先连接 MCP 服务器，使其工具包含在提示词的工具声明里。
+					// 服务器在后台连接。RPC 是控制面：客户端拿 get_state 就要看到完整工具表，
+					// 所以等全部连完；其它模式只为 direct 工具等（pi 的 10 秒上限）。
 					await ConnectMcpAsync(cwd, environment.ProjectTrusted, cancellationToken).ConfigureAwait(false);
+					if (arguments.Mode == CliMode.Rpc)
+					{
+						await _mcp!.WaitForAllAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+					}
+					else
+					{
+						await _mcp!.WaitForDirectToolsAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+					}
+
+					RefreshExtraTools();
 				}
 
 			return arguments.Mode switch
@@ -124,18 +135,20 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 	private async Task ConnectMcpAsync(string cwd, bool includeProject, CancellationToken cancellationToken)
 	{
-		_mcp = await McpServers.ConnectConfiguredAsync(
+		// 后台连接：会话立刻可用，服务器连上后把工具补进当前会话与后续会话。
+		_mcp = await McpServers.ConnectConfiguredInBackgroundAsync(
 			cwd,
 			onError: static message => Console.Error.WriteLine($"pi: mcp {message}"),
 			includeProject: includeProject).ConfigureAwait(false);
 
 		// 资源工具会指向所有声明了 resources 能力的已连接服务器。
 		_resourceTools = McpResourceTools.Create(() => _mcp.ResourceServers);
-		_extraTools = [.. _mcp.Tools, .. _resourceTools];
 
-		// 服务器在运行期间增删工具时，会刷新当前会话的工具集。
+		// 先挂监听再取快照：反过来的话，两步之间连上的服务器会把工具漏掉。
+		// 服务器在运行期间增删工具时，会刷新当前会话与后续会话的工具集。
 		_mcp.ToolsChanged += connection =>
 		{
+			RefreshExtraTools();
 			var session = _session;
 			if (session is null)
 			{
@@ -152,7 +165,12 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				Console.Error.WriteLine($"pi: mcp tool refresh failed: {ex.Message}");
 			}
 		};
+
+		RefreshExtraTools();
 	}
+
+	private void RefreshExtraTools() =>
+		_extraTools = _mcp is null ? [] : [.. _mcp.Tools, .. _resourceTools];
 
 	private JsonObject McpStatus()
 	{

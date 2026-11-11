@@ -134,6 +134,10 @@ public sealed partial class CodingAgentSession : IDisposable
 	private SystemPromptOptions _systemPromptSections = null!;
 
 	private SystemMessage? _refreshedSystemPrompt;
+
+	/// 扩展 <c>before_agent_start</c> 为本轮改写的提示词。只在本轮生效：下一轮仍从
+	/// <see cref="_refreshedSystemPrompt"/> 重新算，否则每轮都在上一轮结果上追加，提示词会无限变长。
+	private SystemMessage? _extensionSystemPrompt;
 	private IReadOnlyList<Message>? _projectedCache;
 	private long _projectedCacheRevision = -1;
 	private SystemMessage? _projectedCachePrompt;
@@ -176,6 +180,8 @@ public sealed partial class CodingAgentSession : IDisposable
 	private bool _planModeFromMarker;
 	private bool _todoWidgetPublished;
 	private IReadOnlyList<Message>? _contextMessages;
+	private IReadOnlyList<Message>? _imageCountSource;
+	private int _imageCount;
 	private (long Tokens, int? LastUsageIndex) _contextTokens;
 	private bool _contextAnchorValid = true;
 	private long _contextAnchorRevision = -1;
@@ -493,7 +499,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	public string CurrentSystemPrompt =>
 		// 系统提示词按具名章节存放（preamble/tools/rules/cwd…），发给模型前才拼成文本；
 		// /share 要的是模型实际看到的那一份，所以走同一个渲染函数。
-		Transcript.GetText(_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools)));
+		Transcript.GetText(_extensionSystemPrompt ?? (_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools))));
 
 	public IReadOnlyList<Message> Messages => Project();
 
@@ -539,6 +545,8 @@ public sealed partial class CodingAgentSession : IDisposable
 		{
 			Extensions?.Dispose();
 			Extensions = null;
+			// -e npm:/git: 的解析结果也要重查：改了包版本后 /reload 就该拿到新代码。
+			ExtensionPackageCache.Invalidate();
 			LoadExtensions(_sessionOptions! with { Extensions = null });
 		}
 
@@ -720,10 +728,12 @@ public sealed partial class CodingAgentSession : IDisposable
 			return;
 		}
 
+		// 始终以基础提示词为输入：扩展看到的是「没有它自己上一轮改动」的版本。
+		var basePrompt = _refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools));
 		var payload = new JsonObject
 		{
 			["messageType"] = message is UserMessage ? "user" : "custom",
-			["systemPrompt"] = Transcript.GetText(_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools))),
+			["systemPrompt"] = Transcript.GetText(basePrompt),
 		};
 		if (message is UserMessage { Content.IsText: true } user)
 		{
@@ -736,16 +746,15 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		var updated = extensions.Dispatch("before_agent_start", payload);
-		if (updated["systemPrompt"] is JsonValue value &&
+		_extensionSystemPrompt = updated["systemPrompt"] is JsonValue value &&
 			value.TryGetValue<string>(out var systemPrompt) &&
-			!string.IsNullOrWhiteSpace(systemPrompt))
-		{
-			_refreshedSystemPrompt = new SystemMessage
-			{
-				Content = MessageContent.FromText(systemPrompt),
-				Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-			};
-		}
+			!string.IsNullOrWhiteSpace(systemPrompt)
+				? new SystemMessage
+				{
+					Content = MessageContent.FromText(systemPrompt),
+					Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+				}
+				: null;
 	}
 
 	/// 扩展的 <c>tool_result</c>：先让扩展改写结果，再跑用户钩子与图片归一化。
@@ -3718,19 +3727,26 @@ public sealed partial class CodingAgentSession : IDisposable
 			return messages;
 		}
 
-		var total = 0;
-		foreach (var message in messages)
+		// 每次请求都要数一遍图片；投影对象在无变化时是同一个实例，按引用缓存计数。
+		if (!ReferenceEquals(_imageCountSource, messages))
 		{
-			total += message switch
+			var counted = 0;
+			foreach (var message in messages)
 			{
-				UserMessage user => user.Content.Blocks?.Count(static block => block is ImageContent) ?? 0,
-				ToolResultMessage toolResult => toolResult.Content.Count(static block => block is ImageContent),
-				CustomMessage custom => custom.Content.Blocks?.Count(static block => block is ImageContent) ?? 0,
-				_ => 0,
-			};
+				counted += message switch
+				{
+					UserMessage user => user.Content.Blocks?.Count(static block => block is ImageContent) ?? 0,
+					ToolResultMessage toolResult => toolResult.Content.Count(static block => block is ImageContent),
+					CustomMessage custom => custom.Content.Blocks?.Count(static block => block is ImageContent) ?? 0,
+					_ => 0,
+				};
+			}
+
+			_imageCountSource = messages;
+			_imageCount = counted;
 		}
 
-		if (total <= options.MaxPerRequest)
+		if (_imageCount <= options.MaxPerRequest)
 		{
 			return messages;
 		}
@@ -3794,7 +3810,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	{
 		// The prompt is built once and only replaced when tools/resources rebuild it. Reusing the
 		// projected list also keeps the historical Message instances stable for incremental views.
-		var prompt = _refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools));
+		var prompt = _extensionSystemPrompt ?? (_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools)));
 		var revision = Session.Revision;
 		if (_projectedCache is { } cached &&
 			_projectedCacheRevision == revision &&

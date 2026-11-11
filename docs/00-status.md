@@ -43,10 +43,10 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 编辑重发不新建会话：`TruncateForResend` 在原 JSONL 里把放弃的提问及后继写成 `deleted` 墓碑，叶子回到父条目。墓碑不进投影/分支树，重试与删除仍走 `context_edit`。
 - `--system-prompt` 替代 preamble，`--append-system-prompt` 追加，`--no-context-files` 停用 AGENTS.md / CLAUDE.md；`--export` 导出 HTML/JSONL；`--models` 限定轮换范围。
 - `pi install/list/remove/update` 管理 npm/git/本地包，`--local` 写项目 `.pi/settings.json`；`settings.npmCommand` 可覆盖 npm。`pi update` 提示用发行页更新 NativeAOT 本体，`pi update --extensions` 更新包并报告 npm 版本或 git commit 变化。
-- `pi mcp list|add|remove|login|logout` 管理服务器与 OAuth；配置写 `<agentDir>/mcp.json`，令牌写 `mcp-oauth.json`；写入保留其它键、注释与尾逗号。
+- `pi mcp list|add|remove|login|logout` 管理服务器与 OAuth；配置写 `<agentDir>/mcp.json`，令牌写 `<agentDir>/mcp-auth.json`（与 pi 同一份文件、同一套键与状态形状，旧的 `mcp-oauth.json` 首次读取时迁移）。写入保留其它键、注释与尾逗号。
 - CLI `@file` 展开为 `<file>` 文本块，图片作为内容块；print/JSON 模式合入重定向 stdin；RPC 拒绝 `@file`。
 - 技能命令 `/skill:name` 与提示词模板在 `CodingAgentSession` 内统一展开。交互命令含 `/model`、`/thinking`、`/compact`、`/plan`、`/reload`、`/copy`、`/todo`、`/import`、`/bug`、`/new`、`/resume`、`/session`、`/name`、`/tree`、`/fork`、`/clone`、`/export`、`/scoped-models`、`/mcp`、`/trust`、`/settings`、`/login`、`/logout`、`/hotkeys`、`/changelog`、`/help`、`/share`、`/llama`。`!command` 输出并入对话，`!!command` 只执行。
-- `-e/--extension` 加载显式扩展文件/目录/`builtin:<name>`；`-ne/--no-extensions` 只关闭约定发现。未知 `--flag` 交给扩展 `pi.registerFlag`，无人注册时退出 2。
+- `-e/--extension` 加载显式扩展文件/目录/`builtin:<name>`/`npm:<pkg>[@ver]`/`git:<repo>@<ref>`；后两者物化到 `<agentDir>/extension-packages/`（无精确版本时每次启动重装或跟分支），离线只认缓存，失败进诊断。`-ne/--no-extensions` 只关闭约定发现。未知 `--flag` 交给扩展 `pi.registerFlag`，无人注册时退出 2。
 - 网络：`httpIdleTimeoutMs` 默认 300 秒，按读取续期；只切断停滞流，不限制长流。严格区分用户中止（`aborted`，不重试）与空闲超时（`error`，可重试）。`httpProxy` 只读全局设置。`--offline` / `PI_OFFLINE=1` 跳过自动网络操作。
 - 项目信任：`<agentDir>/trust.json` 从 cwd 逐级向上取第一个决策；`-a/--approve`、`-na/--no-approve` 覆盖；默认 `ask`。不受信时不合并项目设置、不连项目 MCP、不读项目模型/技能/提示词。RPC/print 无法弹框时按不受信处理。
 - 凭据按显式选项、存储凭据、环境变量异步解析；OAuth 刷新有闸门且不跟随请求取消。可恢复错误按 `settings.retry` 退避；供应商 `Retry-After` 优先；要求等待超过 15 分钟的配额冷却不自动重试，直接把错误交回界面。失败尝试保留在文件里，通过 `context_edit` 排除出上下文。
@@ -83,7 +83,9 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - OAuth：ChatGPT/Codex、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius；其它走 API Key。`pi auth login|logout <provider>` 与旧的 `pi login|logout <provider>` 都可用，`--api-key`/`--no-browser` 按 pi 语义解析。API Key 字段来自与桌面端共用的内置供应商目录（Cloudflare/Vertex/Bedrock 多字段）。`pi auth check` 返回 `ready`/`not_ready`/`invalid`，退出码 0/1/2。
 - `auth.json` 支持明文与 `${VAR}`，命令型凭据以 `!` 开头（10 秒超时、64 KiB、失败回落环境变量），以及 `api_key.env` 的供应商级字段（Cloudflare 账户/网关、Vertex 项目/区域/ADC、AWS 访问密钥）。写入原子，Unix 0600；损坏文件拒绝覆盖。
 - OpenCode / OpenCode Go 请求自动带 `x-opencode-session` 与 `x-opencode-client: piweft`；显式同名头优先。
-- MCP 支持 stdio / streamable HTTP 握手、工具/资源/模板/提示分页、通知与 OAuth（授权码 + PKCE、动态注册、回环回调、401 刷新重放、客户端凭据）。stdio 失败会杀子进程并释放连接。
+- Anthropic message thread：会话有 id 且端点支持时，后续请求只发新增消息；前缀变化或服务器拒绝时退回完整请求并重开 thread，端点不认识 `thread` 字段时本会话关闭。`compat.supportsMessageThreads` 可覆盖默认（只有直连 `api.anthropic.com` 默认开）。
+- MCP OAuth 客户端身份支持 `auto`/`dcr`/`cimd`：`cimd` 用 pi 的 Client ID Metadata Document（`https://pi.dev/oauth/client.json`，授权服务器不带 `iss` 时按服务器派生路径），`auto` 在服务器支持公开客户端文档且未配 `clientName` 时优先用它。
+- MCP 支持 stdio / streamable HTTP 握手、工具/资源/模板/提示分页、通知与 OAuth（授权码 + PKCE、动态注册、回环回调、401 刷新重放、客户端凭据）。stdio 失败会杀子进程并释放连接。服务器在后台并行连接（上限 8），首轮只为 `direct` 工具等 10 秒、RPC 等全部连完，其余服务器按需等待；408/429/5xx 重试两次（`Retry-After` 优先），`notifications/message` 写入 `<agentDir>/mcp.log`（5 MB 滚动）。
 
 ## 桌面能力
 
@@ -95,7 +97,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 - 扩展宿主只支持 JavaScript；TypeScript 需构建期转译；ESM 的 `import`/`export` 仍未加载；处理器必须同步；无自定义 renderer。当前派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`，其它事件注册时即报诊断。`message_update`、`tool_execution_update` 与 provider/context 类事件尚未派发。扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`（含 `model-only`）/`namespace`/`executionMode`，尚未接 `reachesTools`/`prepareLoadout`/`ctx.executeTool`。
 - `before_agent_start` 只应用返回的 `systemPrompt`；返回的 `message` 尚未注入会话。
-- 仍缺的 1.5 运行时项：Anthropic `supportsMessageThreads` 服务端续聊；OpenAI `requiresThinkingAsText`、`zaiToolStream`；MCP `cimd`、与 pi 共享 `mcp-auth.json`、后台连接与请求重试。
+- 仍缺的 1.5 运行时项：OpenAI `requiresThinkingAsText`、`zaiToolStream`；MCP 跨进程刷新锁。
 - 安全门 `ask` 在没有审批宿主时退化为拒绝；默认档 `off`；CLI 无切换档位命令。
 - CLI 仍是按行 REPL：无完整 TUI、多行编辑、`$EDITOR`、键位绑定与终端图片。
 - 并行工具里同一文件的 `edit`/`write` 已串行化；`nestedCalls` / `parentToolCallId` 尚未产出，只按未知字段保留。
