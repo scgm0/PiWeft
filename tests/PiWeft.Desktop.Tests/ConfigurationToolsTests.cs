@@ -63,9 +63,12 @@ public sealed class ConfigurationToolsTests
 
 		Assert.DoesNotContain("tool_search", ConfigurationTools.Available(rules));
 		Assert.Contains("codemode", ConfigurationTools.Available(rules));
+		Assert.Contains("tool_search", ConfigurationTools.Unavailable(rules));
+		Assert.DoesNotContain("codemode", ConfigurationTools.Unavailable(rules));
 
 		var all = new PiWeft.CodingAgent.Extensions.ExtensionRules([], []);
 		Assert.Equal(ConfigurationTools.Catalog, ConfigurationTools.Available(all));
+		Assert.Empty(ConfigurationTools.Unavailable(all));
 	}
 
 	[Fact]

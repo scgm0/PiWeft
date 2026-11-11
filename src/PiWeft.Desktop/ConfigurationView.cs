@@ -206,20 +206,30 @@ internal sealed partial class ConfigurationView
 	private static StackPanel Field(string title, UIElement input) => new StackPanel().Spacing(4).Children(Label(title), input);
 	private static TextBlock Hint(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap);
-	private static UIElement ToolChip(string name, Action remove) => new Border()
-		.CornerRadius(AppTheme.RadiusSm).BorderThickness(1)
-		.Padding(new Thickness(8, 1, 2, 1))
-		.WithTheme((theme, border) =>
-		{
-			var palette = AppTheme.For(theme);
-			border.Background = palette.CardBackgroundAlt;
-			border.BorderBrush = palette.BorderSubtle;
-		})
-		.Child(new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
-			.VerticalAlignment(VerticalAlignment.Center).Children(
-				new TextBlock().Text(name).FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont)
-					.PrimaryText().VerticalAlignment(VerticalAlignment.Center),
-				AppIcons.Button("x", Strings.ConfigRemoveTool(name), remove, size: 10)));
+	/// 一枚工具 chip；<paramref name="disabled"/> 表示它被「扩展」里的内置开关挡下，
+	/// 名字压暗并给出原因，× 仍可用（把已经失效的条目清掉）。
+	private static UIElement ToolChip(string name, Action remove, bool disabled = false)
+	{
+		var label = new TextBlock().Text(name).FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont)
+			.VerticalAlignment(VerticalAlignment.Center);
+		if (disabled) label.FaintText(); else label.PrimaryText();
+
+		var chip = new Border()
+			.CornerRadius(AppTheme.RadiusSm).BorderThickness(1)
+			.Padding(new Thickness(8, 1, 2, 1))
+			.WithTheme((theme, border) =>
+			{
+				var palette = AppTheme.For(theme);
+				border.Background = palette.CardBackgroundAlt;
+				border.BorderBrush = disabled ? palette.Warning : palette.BorderSubtle;
+			})
+			.Child(new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+				.VerticalAlignment(VerticalAlignment.Center).Children(
+					label,
+					AppIcons.Button("x", Strings.ConfigRemoveTool(name), remove, size: 10)));
+		return chip;
+	}
+
 	private static Button ActionButton(string title, Action action) => new Button().Content(Label(title)).OnClick(action);
 
 	private static Element FormCard(string title, string hint, params UIElement[] fields) => new Border()

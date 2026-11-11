@@ -138,6 +138,23 @@ public sealed class ConfigurationViewTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ToolsBlockedByExtensionSwitchesAreShownAsDisabled()
+	{
+		Store.Save(
+			Store.Read(ConfigFile.Settings),
+			"""{"defaultTools":["read","tool_search","codemode"],"extensions":["-builtin:tool-search","-builtin:codemode"]}""");
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+		ConversationPerformanceTests.Layout(view.View, 640, 720);
+
+		var texts = Find<TextBlock>(view.View).Select(static block => block.Text ?? string.Empty).ToArray();
+		// 计数只算真会加载的工具；被挡下的两项另起一行说明原因。
+		Assert.Contains(Strings.ConfigToolsEnabledCount(1), texts);
+		Assert.Contains(Strings.ConfigToolsBlockedNote("tool_search、codemode"), texts);
+		Assert.Equal(2, Find<TextBlock>(view.View).Count(static block => block.Text is "tool_search" or "codemode"));
+	}
+
+	[Fact]
 	public async Task ToolSearchIsListedAsADefaultToolAndCanBeTurnedOff()
 	{
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });

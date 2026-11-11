@@ -71,7 +71,9 @@ public static partial class Strings
 	public const string ConfigToolsTitle = "工具与 Codemode";
 	public const string ConfigToolsHint = "工具与 codemode 的设置，改动写入 settings.json。";
 	public const string ConfigDefaultTools = "默认工具";
-	public const string ConfigDefaultToolsHint = "在 Pi 默认集上增减。codemode 要显式选中，或由 MCP 默认暴露激活。";
+	public const string ConfigDefaultToolsHint = "在 Pi 默认集上增减。codemode 与 tool_search 还要在「扩展」里打开对应的内置开关才可用。";
+	public const string ConfigToolDisabledByExtension = "已在「扩展」中停用";
+	public static string ConfigToolsBlockedNote(string names) => names + " 已在「扩展」中停用，运行时不会加载。";
 	public const string ConfigToolsUsingDefault = "使用 Pi 默认集";
 	public const string ConfigToolsReset = "恢复默认";
 	public const string ConfigInheritGlobal = "继承全局";

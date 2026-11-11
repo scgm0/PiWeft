@@ -14,6 +14,23 @@ internal static class ConfigurationTools
 	public static bool IsExtension(string name) =>
 		name is "codemode" or "tool_search";
 
+	/// 被 <c>settings.extensions</c> 关掉的内置扩展对应的工具名。这些工具留在 defaultTools 里也不会加载。
+	public static IReadOnlySet<string> Unavailable(ExtensionRules rules)
+	{
+		var names = new HashSet<string>(StringComparer.Ordinal);
+		if (!rules.IsBuiltinEnabled(ExtensionRules.CodemodeBuiltin))
+		{
+			names.Add("codemode");
+		}
+
+		if (!rules.IsBuiltinEnabled(ExtensionRules.ToolSearchBuiltin))
+		{
+			names.Add("tool_search");
+		}
+
+		return names;
+	}
+
 	/// 可添加的工具目录，去掉被 <c>settings.extensions</c> 关掉的内置扩展。
 	/// 不加这层过滤，选中的工具会被会话在构造时剔除，开关看起来像没生效。
 	public static IReadOnlyList<string> Available(ExtensionRules rules) =>

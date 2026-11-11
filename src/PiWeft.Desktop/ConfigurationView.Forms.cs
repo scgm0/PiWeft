@@ -510,6 +510,7 @@ internal sealed partial class ConfigurationView
 			.VerticalAlignment(VerticalAlignment.Center);
 		var disabledWarning = Hint(Strings.ConfigToolsAllDisabled).IsVisible(false)
 			.WithTheme((theme, block) => block.Foreground = AppTheme.For(theme).Error);
+		var blockedNote = Hint(string.Empty).IsVisible(false);
 		Button addTool = null!;
 		addTool = AppIcons.TextButton("plus", Strings.ConfigToolAdd, () => ShowToolMenu());
 		var resetTools = AppIcons.TextButton("rotate-ccw",
@@ -554,7 +555,8 @@ internal sealed partial class ConfigurationView
 					chips,
 					new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 						.VerticalAlignment(VerticalAlignment.Center).Children(addTool, resetTools, disableTools, toolsStatus),
-					disabledWarning),
+					disabledWarning,
+					blockedNote),
 				Field(Strings.ConfigCodemodeMode, mode),
 				Hint(Strings.ConfigCodemodeModeHint),
 				Field(Strings.ConfigCodemodeBudget, budgetInput),
@@ -627,6 +629,7 @@ internal sealed partial class ConfigurationView
 		{
 			chips.Clear();
 			var effective = ConfigurationTools.ResolveInLayer(baseEntries, entries);
+			var blocked = ConfigurationTools.Unavailable(rules);
 			foreach (var name in effective)
 			{
 				var tool = name;
@@ -635,11 +638,18 @@ internal sealed partial class ConfigurationView
 					entries = ConfigurationTools.SetEnabled(baseEntries, entries, tool, false);
 					SetDirty(true);
 					RefreshTools();
-				}));
+				}, disabled: blocked.Contains(tool)));
 			}
+
+			// 计数只算真会加载的工具；被扩展开关挡下的单独写一行原因，
+			// 否则「已启用」列表里出现一个运行时不存在的工具，开关看起来像坏了。
+			var active = effective.Count(name => !blocked.Contains(name));
 			toolsStatus.Text(entries is not null
-				? Strings.ConfigToolsEnabledCount(effective.Count)
+				? Strings.ConfigToolsEnabledCount(active)
 				: _project ? Strings.ConfigInheritGlobal : Strings.ConfigToolsUsingDefault);
+			var blockedNames = effective.Where(blocked.Contains).ToArray();
+			blockedNote.Text(blockedNames.Length == 0 ? string.Empty : Strings.ConfigToolsBlockedNote(string.Join("、", blockedNames)));
+			blockedNote.IsVisible(blockedNames.Length > 0);
 			disabledWarning.IsVisible(ConfigurationTools.DisablesAll(entries));
 		}
 
