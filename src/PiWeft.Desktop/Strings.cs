@@ -54,6 +54,8 @@ public static partial class Strings
 	// 输入区
 	public const string ComposerPlaceholder = "输入消息，@ 引用文件，/ 运行命令，& 引用会话…";
 	public const string Send = "发送";
+	public const string Continue = "继续生成";
+	public const string ContinueRequested = "已请求继续生成";
 	public const string Abort = "中断";
 	public const string CopyLastReply = "复制回复";
 	public const string CopyMessage = "复制这条回复";

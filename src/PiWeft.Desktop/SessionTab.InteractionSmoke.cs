@@ -10,6 +10,12 @@ public sealed partial class SessionTab
 {
 	internal void RenderForTests() => Render();
 
+	/// 仅供测试：主按钮当前文案（发送 / 继续生成 / 中断）。
+	internal string PrimaryLabelForTests => _sendLabel.Text;
+
+	/// 仅供测试：点主按钮。
+	internal void PrimaryActionForTests() => OnPrimaryAction();
+
 	private static bool SweepProbe => Environment.GetEnvironmentVariable("PIWEFT_SWEEP_PROBE") == "1";
 
 	/// 仅供 --ui-smoke waiting：摆出「首轮已发出、首 token 还没到」的一帧，供截图验收。

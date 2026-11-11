@@ -27,7 +27,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | 搜索 | 元数据 + 有界正文搜索、会话内过滤 | 正则、命中高亮 |
 | 消息 | Markdown、高亮、复制、图片放大、思考折叠 | 代码行号、跨行块注释、更多语言 |
 | 工具 | 折叠摘要、状态/耗时、按工具分栏的参数与输出、统一/并排 diff、大文本固定视口虚拟化；shell 侧删除前备份进回收站、Windows `> nul` 改写、模型专用代理不传给 agent 命令 | 完整文件交互 |
-| 历史 | 编辑重发、重试、fork、分支树、跳转、HTML 导出 | 多选批量、分支比较 |
+| 历史 | 编辑重发、重试、继续生成、fork、分支树、跳转、HTML 导出 | 多选批量、分支比较 |
 | 输入/模型 | 斜杠命令、命令面板、改键、快捷消息（插入/直发）、模型筛选/搜索/刷新、记住上次使用、每模型思考档 | 模型收藏 |
 | 附件 | 路径引用、图片文件/字节、粘贴、复制预览；进上下文前按模型限制应用 EXIF 方向并缩放/转码 | 更多媒体类型、回复转图片 |
 | 用量 | 会话统计、上下文、费用、缓存、压缩；供应商余额/套餐；跨会话热力图 | 火山 AK/SK、Sub2API 登录态、热力图下钻 |
@@ -71,6 +71,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 等待态常驻输入卡上方，阶段优先级退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗；预热期三句轮播，回合内空窗只说「正在处理」；静默 2 秒补「本轮已 N 秒」。时间线尾部的等待占位行只在等首 token 时出现，条件是最后一行是用户消息且没有任何一行在流；它报时的时候状态条不再重复同一个数字。
 - 提示音：完成/出错/等待输入三类，默认完成与出错开、音量 0.6；会话完成 8 秒、全局 1.5 秒冷却；出错按边沿、等待输入按批去重；「仅失焦提醒」在前台静默。
 - 跨项目会话使用各自 cwd；运行时发送键变中断，保留草稿并禁用模型切换与历史修改。Split Send 菜单支持 steer / follow-up / 中断，排队卡可撤回或丢弃。
+- 继续生成：上一轮失败、被中断或输出被截断后，草稿为空时发送键变「继续生成」。点它不新增提问，先落一条空的隐藏 custom message（`piweft-continue`）当新回合的准入标记；时间线上只留一行「已请求继续生成」，失败那轮保持独立，半截回答不会被下一轮挤进过程组。有草稿、有待发附件或编辑重发未决时不接管主按钮；空草稿回车仍不动作。
 - Markdown 链接只放行 http/https；编辑器优先 `$VISUAL` / `$EDITOR`；HTML 导出无脚本且自包含。
 
 ### 历史思考耗时
@@ -107,7 +108,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 内置扩展是原生实现；`-builtin:mcp`/`-builtin:llama.cpp`/`-builtin:codemode`/`-builtin:tool-search` 分别关掉 MCP 连接、`/llama`、codemode 与 `tool_search`。设置页开关写 `settings.json`，改动在新建会话或重启后生效。
 - 桌面设置页另列「桌面内置扩展」：只列已移植的 PiDeck `pi-deck-*`（去 `.ts` 后缀），随应用提供、不写 `settings.extensions`，开关只读。
 - `tool_search` 与 codemode 一样是目录里的内置工具，但默认启用（pi 的 `builtin:tool-search` 是 `defaultActive: false`）：MCP 工具默认 codemode exposure，不默认开启就没有发现入口。`-tool_search` 与 `-builtin:tool-search` 都能关掉它。
-- 「Agent 设置」的工具清单按 `settings.extensions` 过滤：被内置开关挡下的工具不进添加菜单，已写在 `defaultTools` 里的压暗显示并注明原因，计数只算真会加载的工具。
+- 「Agent 设置」的工具清单是整份目录：被 `settings.extensions` 挡住的内置扩展仍列在「内置扩展工具」里，名字压暗并提示原因；已写在 `defaultTools` 里的同样压暗，计数只算真会加载的工具。
 - 注册面：`pi.on`、`pi.registerTool`、`pi.registerCommand`、`pi.registerFlag`/`getFlag`、`pi.ui.*`。未知 `--flag` 交给注册者，无注册者时报错退出 2。
 - 事件：实际派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`；`message_update`、`tool_execution_update`、provider/context 类事件尚未派发。
 - 事件处理器可返回对象；返回值合并进 payload，与就地改写等价。
@@ -213,7 +214,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | `__PI_DECK_PLAN_MODE__` / `__PI_DECK_GOAL_MODE__` | composer 注入的模式标记，正文即指令/目标 | `shared/composerModeMarkers.ts` |
 
 - 形状比名字更容易漂移：PiDeck 的待办快照从 v2 变到 v3。名字对、字段错的表现是「静默不显示」，`tests/PiWeft.CodingAgent.Tests/PiDeckProtocolTests.cs` 逐条断言字面量与字段名。
-- 纯内部名字不借前缀：目标续轮消息角色是 `piweft-goal-continue`，以 `display:false` 的 custom message 落进会话。
+- 纯内部名字不借前缀：目标续轮消息角色是 `piweft-goal-continue`，继续生成的空标记是 `piweft-continue`，都以 `display:false` 的 custom message 落进会话。
 - 升级 PiDeck 时检查：`resources/extensions/pi-deck-*.ts` 的条目/widget 形状、`src/renderer` 的 key 表、`src/main` 的 `customType` 过滤。改名或改形状要同步 `PiDeckProtocol` 与形状测试。
 
 ## 启动迁移、CLI 与网络

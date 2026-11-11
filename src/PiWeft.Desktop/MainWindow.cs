@@ -1821,6 +1821,11 @@ public sealed partial class MainWindow : Window
 					_settingsView?.ShowConfiguration();
 					if (_settingsView is { } configuration) _ = configuration.SelectSectionAsync(view);
 					break;
+				case "config-tools":
+					// 视觉验收：Agent 页与「添加工具」下拉（分组、复选态、扩展停用行）。
+					OpenSettingsDialog();
+					if (_settingsView is { } toolsView) _ = toolsView.OpenToolMenuSmokeAsync();
+					break;
 				case "sidebar":
 					ToggleSidebar();
 					break;

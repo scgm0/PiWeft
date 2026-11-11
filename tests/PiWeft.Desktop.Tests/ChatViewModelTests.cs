@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.Desktop;
@@ -1038,6 +1039,68 @@ public class ChatViewModelTests : IDisposable
 
 		viewModel.Detach();
 		Assert.Null(viewModel.Session);
+	}
+
+	[Fact]
+	public async Task FailedTurnOffersContinueAndTheEmptyMarkerOnlyShowsAsAReceipt()
+	{
+		_streams.Enqueue(static model => FakeStreams.Error(model, "Service Unavailable"));
+		_streams.Enqueue(static model => FakeStreams.Text(model, "continued answer"));
+
+		using var session = NewSession(retry: new RetryPolicy(Enabled: false));
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		await viewModel.SendAsync("hi").WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.True(viewModel.CanContinue());
+
+		await viewModel.ContinueAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+		var rows = viewModel.Entries();
+		// 继续生成不冒充用户提问：时间线上只有原来那条提问，续轮留一行收据。
+		Assert.Single(rows, static row => row.Role == ChatRole.User);
+		var receipt = Assert.Single(rows, static row => row.Role == ChatRole.Notice);
+		Assert.Equal(Strings.ContinueRequested, receipt.Text);
+		Assert.Contains(rows, static row => row.Role == ChatRole.Assistant && row.Text == "continued answer");
+
+		// 标记是空的隐藏消息，重开应用也只显示成收据。
+		var marker = Assert.Single(session.Session.Entries.OfType<CustomMessageEntry>());
+		Assert.Equal(PiWeftProtocol.ContinueGenerationRole, marker.CustomType);
+		Assert.False(marker.Display);
+		Assert.Equal(string.Empty, marker.Content.Text);
+		Assert.False(viewModel.CanContinue());
+	}
+
+	[Fact]
+	public async Task ContinueKeepsEligibilityWhenTheContinuedTurnFailsAgain()
+	{
+		_streams.Enqueue(static model => FakeStreams.Error(model, "Service Unavailable"));
+		_streams.Enqueue(static model => FakeStreams.Error(model, "Service Unavailable"));
+
+		using var session = NewSession(retry: new RetryPolicy(Enabled: false));
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		await viewModel.SendAsync("hi").WaitAsync(TimeSpan.FromSeconds(5));
+		await viewModel.ContinueAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+		Assert.True(viewModel.CanContinue());
+		Assert.Single(viewModel.Entries(), static row => row.Role == ChatRole.Notice);
+	}
+
+	[Fact]
+	public async Task CompletedTurnDoesNotOfferContinue()
+	{
+		_streams.Enqueue(static model => FakeStreams.Text(model, "done"));
+
+		using var session = NewSession();
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		await viewModel.SendAsync("hi").WaitAsync(TimeSpan.FromSeconds(5));
+
+		Assert.False(viewModel.CanContinue());
+		Assert.DoesNotContain(viewModel.Entries(), static row => row.Role == ChatRole.Notice);
 	}
 
 	private static async Task<ChatEntry?> WaitForAsync(Func<ChatEntry?> probe)

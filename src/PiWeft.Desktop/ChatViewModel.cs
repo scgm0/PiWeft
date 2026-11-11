@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Tools;
 
@@ -24,6 +25,9 @@ public enum ChatRole
 	Error,
 
 	Process,
+
+	/// 一轮开始时的事件收据（目前只有「已请求继续生成」），不占用户气泡也不进过程组。
+	Notice,
 }
 
 public sealed record ChatImage(string Data, string MimeType);
@@ -537,22 +541,39 @@ public sealed class ChatViewModel : IDisposable
 			return;
 		}
 
+		var session = Session ?? throw new InvalidOperationException("尚未绑定会话");
+		await RunAsync(() => session.PromptAsync(text, cancellationToken)).ConfigureAwait(false);
+	}
+
+	/// 手动继续生成：不新增提问，接着失败/中断/截断的那一轮再跑一次。
+	public async Task ContinueAsync(CancellationToken cancellationToken = default)
+	{
+		var session = Session ?? throw new InvalidOperationException("尚未绑定会话");
+		await RunAsync(() => session.ContinueGenerationAsync(cancellationToken)).ConfigureAwait(false);
+	}
+
+	/// 上一轮是否可以继续生成。界面用它把发送键换成「继续生成」。
+	public bool CanContinue()
+	{
+		lock (_gate)
+		{
+			return _session?.CanContinueGeneration() ?? false;
+		}
+	}
+
+	/// 发送与继续共用一条收口：中断不当作错误，失败只记一条消息，结束总通知界面。
+	private async Task RunAsync(Func<Task> run)
+	{
 		lock (_gate)
 		{
 			// 上一轮被中断后留下的中止标记不能污染这一次重试收口判定。
 			_aborting = false;
-		}
-
-		var session = Session ?? throw new InvalidOperationException("尚未绑定会话");
-
-		lock (_gate)
-		{
 			_error = null;
 		}
 
 		try
 		{
-			await session.PromptAsync(text, cancellationToken).ConfigureAwait(false);
+			await run().ConfigureAwait(false);
 		}
 		catch (OperationCanceledException)
 		{
@@ -1065,6 +1086,21 @@ public sealed class ChatViewModel : IDisposable
 				// 扩展注入的内部上下文（目标模式 / 计划模式等 display:false）仍参与模型上下文，
 				// 也仍是一轮的边界，但不占用户气泡：和 PiDeck 一样不把这类注入铺在对话里。
 				turnChanges.Clear();
+				// 手动继续生成落一条空的自定义消息：它开一轮新请求，不该冒充用户提问，
+				// 只在时间线上留一行收据。
+				if (user.CustomType == PiWeftProtocol.ContinueGenerationRole)
+				{
+					_entries.Add(new ChatEntry
+					{
+						Role = ChatRole.Notice,
+						Text = Strings.ContinueRequested,
+						Timestamp = user.Timestamp,
+						EntryId = entryIds.GetValueOrDefault(message),
+						Compact = true,
+					});
+					return;
+				}
+
 				if (!user.Display) return;
 				_entries.Add(new ChatEntry
 				{

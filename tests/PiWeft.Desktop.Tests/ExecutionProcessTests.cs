@@ -171,6 +171,28 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void ContinuationReceiptStartsANewTurnSoTheFailedAnswerStaysWhole()
+	{
+		var receipt = new ChatEntry
+		{
+			Role = ChatRole.Notice, EntryId = "continue", Text = Strings.ContinueRequested, Compact = true,
+		};
+		// 被截断的那一轮没有错误行：最后一条助手消息本身就是可见回答。
+		var truncated = Answer("truncated", "half an answer");
+		var rows = ExecutionProcess.Project(
+			[User("first"), truncated, receipt, Answer("retry", "full answer")],
+			false);
+
+		// 失败那一轮要保独立：半截回答不能被下一轮挤进过程组。
+		Assert.Contains(rows, static row => row.Role == ChatRole.Assistant && row.Text == "half an answer");
+		Assert.Contains(rows, static row => row.Role == ChatRole.Notice && row.Text == Strings.ContinueRequested);
+		Assert.Equal("full answer", rows[^1].Text);
+		Assert.DoesNotContain(
+			rows.Where(static row => row.Role == ChatRole.Process).SelectMany(static row => row.ProcessEntries),
+			static item => item.Text == "half an answer");
+	}
+
+	[Fact]
 	public void StreamingTextAndImageOnlyFinalAnswerRemainOutsideTheFold()
 	{
 		var image = new ChatImage("data", "image/png");

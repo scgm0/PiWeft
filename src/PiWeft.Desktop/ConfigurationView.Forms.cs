@@ -493,13 +493,12 @@ internal sealed partial class ConfigurationView
 		retryMaxInput.OnTextChanged(_ => retryMaxChanged = true);
 		retryDelayInput.OnTextChanged(_ => retryDelayChanged = true);
 
-		// 被 settings.extensions 关掉的内置扩展不进可添加列表（会话构造时也会剔除它们）。
+		// 被 settings.extensions 关掉的内置扩展也进目录，菜单里压暗并说明原因（会话构造时仍会剔除它们）。
 		var globalSettings = _store.Read(ConfigFile.Settings);
 		var projectSettings = _store.Read(ConfigFile.Settings, project: true);
 		var rules = new PiWeft.CodingAgent.Extensions.ExtensionRules(
 			globalSettings.Error is null ? ExtensionSettings.ReadEntries(globalSettings.Parse()) : [],
 			projectSettings.Error is null ? ExtensionSettings.ReadEntries(projectSettings.Parse()) : []);
-		var availableTools = ConfigurationTools.Available(rules);
 
 		// 工具与 Codemode：项目层以全局原始条目为基线回验，chips 显示的集合就是保存后运行时解析出的集合。
 		var baseEntries = _project ? ConfigurationTools.ReadEntries(global) : null;
@@ -656,26 +655,45 @@ internal sealed partial class ConfigurationView
 		void ShowToolMenu()
 		{
 			HoverHints.Cancel(addTool);
-			var check = new IconTemplate(size => new GlyphElement().Kind(GlyphKind.CheckMark).GlyphSize(4)
-				.Foreground(AppTheme.Accent)
-				.HorizontalAlignment(HorizontalAlignment.Center)
-				.VerticalAlignment(VerticalAlignment.Center));
-			var menu = new ContextMenu();
-			foreach (var name in availableTools)
-			{
-				var tool = name;
-				var enabled = ConfigurationTools.IsEnabled(baseEntries, entries, tool);
-				var command = new Command($"pi.config.tool.{tool}", tool);
-				addTool.Commands.Register(command, () =>
+			_toolMenu ??= new ToolPickerMenu();
+			_toolMenu.Show(addTool, new ToolPickerMenu.Options(
+				ConfigurationTools.Catalog,
+				ConfigurationTools.Unavailable(rules),
+				name => ConfigurationTools.IsEnabled(baseEntries, entries, name),
+				name => entries?.Contains("-" + name, StringComparer.Ordinal) == true,
+				name =>
 				{
-					entries = ConfigurationTools.SetEnabled(baseEntries, entries, tool, !enabled);
+					var enabled = ConfigurationTools.IsEnabled(baseEntries, entries, name);
+					entries = ConfigurationTools.SetEnabled(baseEntries, entries, name, !enabled);
 					SetDirty(true);
 					RefreshTools();
-				});
-				menu.Items.Add(new MenuItem(command) { Icon = enabled ? check : null });
-			}
-			menu.Show(addTool);
+				}));
 		}
+
+		_showToolMenu = ShowToolMenu;
+	}
+
+	/// 仅供 <c>--ui-smoke config-tools</c>：先把工具卡滚进视口，下一帧再摆出「添加工具」下拉。
+	/// 刚建出来的控件没有 Bounds，直接开会按 (0,0) 摆放，截图只能看到弹层挂在窗口外。
+	internal void OpenToolMenuForSmoke()
+	{
+		var timer = new DispatcherTimer(TimeSpan.FromMilliseconds(250));
+		var step = 0;
+		timer.Tick += () =>
+		{
+			step++;
+			if (step == 1)
+			{
+				_scroll.SetScrollOffsets(0, double.MaxValue);
+				return;
+			}
+
+			timer.Stop();
+			timer.Dispose();
+			_showToolMenu?.Invoke();
+			Console.WriteLine("piweft-desktop: ui smoke 已打开工具下拉");
+		};
+		timer.Start();
 	}
 
 	private static bool ReadEnabled(JsonObject root, string key, bool fallback) =>

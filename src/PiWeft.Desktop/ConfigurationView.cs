@@ -9,6 +9,7 @@ internal sealed partial class ConfigurationView
 	private readonly ConfigurationStore _store;
 	private readonly Action<ConfigFile> _saved;
 	private readonly StackPanel _body = new();
+	private readonly ScrollViewer _scroll = new();
 	private readonly TextBlock _notice = new();
 	private readonly TextBlock _path = new();
 	private readonly TextBlock _dirtyLabel = new();
@@ -23,6 +24,10 @@ internal sealed partial class ConfigurationView
 	private bool _revealed;
 	private bool _authBusy;
 	private Action? _saveForm;
+	/// 下拉实例在页面级别复用：换页或重读时跟着释放，免得留下一个还挂在窗口上的原生弹层。
+	private ToolPickerMenu? _toolMenu;
+	/// 仅供 <c>--ui-smoke config-tools</c>：把「添加工具」下拉摆出来供截图；离开 Agent 页后在 Build 里清掉。
+	private Action? _showToolMenu;
 
 	public ConfigurationView(string agentDir, string cwd, Action<ConfigFile> saved)
 	{
@@ -47,7 +52,7 @@ internal sealed partial class ConfigurationView
 				_path.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap),
 				_notice.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
 			).DockTop(),
-			new ScrollViewer().SmoothScrolling().Content(_body.Spacing(AppTheme.Space3)).AutoVerticalScroll().NoHorizontalScroll());
+			_scroll.SmoothScrolling().Content(_body.Spacing(AppTheme.Space3)).AutoVerticalScroll().NoHorizontalScroll());
 		Load();
 	}
 
@@ -111,6 +116,9 @@ internal sealed partial class ConfigurationView
 	private void Build()
 	{
 		_saveForm = null;
+		_showToolMenu = null;
+		_toolMenu?.Dispose();
+		_toolMenu = null;
 		_body.Clear();
 		// 切走认证页后释放整棵 42 行控件树与凭据快照，避免旧页面控件被 _authRows 长期持有。
 		_authRows.Clear();

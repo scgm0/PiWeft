@@ -3513,6 +3513,56 @@ public sealed partial class CodingAgentSession : IDisposable
 		return messages;
 	}
 
+	/// <summary>上一轮是否停在可继续的位置：失败、被中断或输出被截断。</summary>
+	public bool CanContinueGeneration()
+	{
+		if (_agent.IsStreaming)
+		{
+			return false;
+		}
+
+		var messages = Session.BuildProjectedMessages();
+		for (var index = messages.Count - 1; index >= 0; index--)
+		{
+			switch (messages[index])
+			{
+				case UserMessage user when user.CustomType == PiWeftProtocol.ContinueGenerationRole:
+					// 上一次继续留下的空标记不结束资格：它自己没产出任何消息时还能再点一次。
+					continue;
+				case UserMessage:
+					return false;
+				case AssistantMessage assistant:
+					return assistant.StopReason is StopReason.Error or StopReason.Aborted or StopReason.Length;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>不新增提问，接着上一轮继续跑一轮。</summary>
+	public async Task<IReadOnlyList<Message>> ContinueGenerationAsync(CancellationToken cancellationToken = default)
+	{
+		ThrowIfDisposed();
+		if (_agent.IsStreaming)
+		{
+			throw new InvalidOperationException("Cannot continue while the session is streaming");
+		}
+
+		if (!CanContinueGeneration())
+		{
+			throw new InvalidOperationException("Cannot continue: the last turn did not fail or get cut off");
+		}
+
+		_cacheWarmer?.Cancel();
+		_overflowRecoveryAttempted = false;
+		// 空的隐藏消息是这一轮的准入标记：pi 的 continue 要求最后一条不是 assistant，
+		// 失败回合留下的正好是 assistant。重放时 provider 丢掉空的 user 正文，
+		// 所以模型看到的是同一个提问，或那段被截断的半截回答。
+		Session.AppendCustomMessage(PiWeftProtocol.ContinueGenerationRole, MessageContent.Empty, display: false);
+		_agent.SetMessages(Session.BuildProjectedMessages());
+		return await ContinueAsync(cancellationToken).ConfigureAwait(false);
+	}
+
 	/// 外部注入的一轮（关联会话回报或跨会话消息）：运行中排 follow-up，模式续轮排到队列尾，
 	/// 空闲时立即起一轮。回报不能被并行的 PromptAsync 抢跑，所以与目标/计划共用同一份续轮队列。
 	public async Task DeliverMessageAsync(UserMessage message, CancellationToken cancellationToken = default)

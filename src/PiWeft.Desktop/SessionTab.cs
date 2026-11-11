@@ -73,6 +73,17 @@ public sealed partial class SessionTab : IDisposable
 	private long _statisticsRevision = -1;
 	private int _statisticsWindow;
 	private bool _lastBusy;
+	// 主按钮三态：运行中中断，草稿空且上一轮可继续时继续生成，其余发送。
+	private enum PrimaryAction
+	{
+		Send,
+
+		Continue,
+
+		Abort,
+	}
+
+	private PrimaryAction _primaryAction = PrimaryAction.Send;
 	private readonly WrapPanel _attachmentBar = new();
 	private readonly Button _scrollToLatest;
 	private readonly ShadowDecorator _scrollToLatestFloat;
@@ -354,6 +365,7 @@ public sealed partial class SessionTab : IDisposable
 			{
 				ShowComposerHint(value.Length == 0);
 				RefreshCommandBar();
+				RefreshPrimaryAction();
 			})
 			// 中文/日文输入法组合期间正文还没落到 Text。只看 Text 长度，占位会一直留在原地，
 			// 而组合串也画在同一行（「速度|消息，@ 引用文件…」），两者会叠在一起。
@@ -400,11 +412,11 @@ public sealed partial class SessionTab : IDisposable
 		_commandBar.Spacing(AppTheme.Space2).Margin(new Thickness(0, 0, 0, 4)).IsVisible(false);
 
 		_sendIcon.Width(14).Height(14).VerticalAlignment(VerticalAlignment.Center)
-			.WithTheme((theme, image) => image.Source = AppIcons.Get(_lastBusy ? "x" : "arrow-up", AppTheme.For(theme).TextOnAccent));
+			.WithTheme((theme, image) => image.Source = AppIcons.Get(IconOf(_primaryAction), AppTheme.For(theme).TextOnAccent));
 		_sendButton = new Button()
 			.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6).Children(
 				_sendIcon, _sendLabel.Text(Strings.Send).FontSize(AppTheme.FontSizeCaption).OnAccentText()))
-			.OnClick(Send)
+			.OnClick(OnPrimaryAction)
 			.OnMouseDown(_ => Diagnostics.NoteInput())
 			.Primary().Height(AppTheme.ControlHeightMd)
 			.CornerRadius(0)
@@ -1073,6 +1085,52 @@ public sealed partial class SessionTab : IDisposable
 		_pendingSend = SendAsync(text);
 	}
 
+	/// 主按钮：运行中中断，可继续时继续生成，否则发送。回车仍走 <see cref="Send"/>：
+	/// 空草稿回车不动作，与 pi 一致。
+	private void OnPrimaryAction()
+	{
+		if (CanContinueGeneration())
+		{
+			_pendingSend = ContinueGenerationAsync();
+			return;
+		}
+
+		Send();
+	}
+
+	/// 继续生成只在草稿空、没有附件或待重发编辑时接管主按钮：有内容时主按钮仍然是发送。
+	private bool CanContinueGeneration() =>
+		!_sending && !_chat.IsStreaming && _pendingBranchEntryId is null &&
+		_loadingAttachments == 0 && _attachments.Count == 0 &&
+		string.IsNullOrWhiteSpace(_composer.Text) && _chat.CanContinue();
+
+	private void RefreshPrimaryAction() => ApplyPrimaryAction(_sending || _chat.IsStreaming);
+
+	private void ApplyPrimaryAction(bool busy)
+	{
+		var action = busy
+			? PrimaryAction.Abort
+			: CanContinueGeneration() ? PrimaryAction.Continue : PrimaryAction.Send;
+		if (action == _primaryAction) return;
+		_primaryAction = action;
+		_sendLabel.Text(action switch
+		{
+			PrimaryAction.Abort => Strings.Abort,
+			PrimaryAction.Continue => Strings.Continue,
+			_ => Strings.Send,
+		});
+		_sendIcon.Source(AppIcons.Get(IconOf(action), AppTheme.TextOnAccent));
+		_sendMenuButton.IsVisible(busy);
+		_sendDivider.IsVisible(busy);
+	}
+
+	private static string IconOf(PrimaryAction action) => action switch
+	{
+		PrimaryAction.Abort => "x",
+		PrimaryAction.Continue => "play",
+		_ => "arrow-up",
+	};
+
 	private readonly StackPanel _readingStatisticsBar;
 
 	private void ApplyReadingPreferences()
@@ -1178,22 +1236,32 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
-	public async Task SendAsync(string text)
+	public async Task SendAsync(string text) =>
+		await DispatchTurnAsync(text, continueGeneration: false).ConfigureAwait(false);
+
+	/// 继续生成：不碰草稿与附件，与发送共用同一套收口（回合时钟、中断、错误提示）。
+	private async Task ContinueGenerationAsync() =>
+		await DispatchTurnAsync(string.Empty, continueGeneration: true).ConfigureAwait(false);
+
+	private async Task DispatchTurnAsync(string text, bool continueGeneration)
 	{
 		if (_sending || _chat.IsStreaming || _disposed)
 		{
 			return;
 		}
-		if (_loadingAttachments > 0)
+		if (!continueGeneration)
 		{
-			Notify(Strings.AttachmentLoading);
-			return;
-		}
-		if (_attachments.Count > 0 && !Session.Model.SupportsImages)
-		{
-			NotifyError(Strings.ImageModelRequired);
-			_composer.Text = text;
-			return;
+			if (_loadingAttachments > 0)
+			{
+				Notify(Strings.AttachmentLoading);
+				return;
+			}
+			if (_attachments.Count > 0 && !Session.Model.SupportsImages)
+			{
+				NotifyError(Strings.ImageModelRequired);
+				_composer.Text = text;
+				return;
+			}
 		}
 
 		_sending = true;
@@ -1220,6 +1288,12 @@ public sealed partial class SessionTab : IDisposable
 			// 检查点期间用户也可能按中断：agent 还没开始，要在这里停下，
 			// 否则中断按钮看似生效，消息仍会在快照结束后发出。
 			cancellationToken.ThrowIfCancellationRequested();
+
+			if (continueGeneration)
+			{
+				await _chat.ContinueAsync(cancellationToken).ConfigureAwait(false);
+				return;
+			}
 
 			// 编辑重发：在同一份会话文件里把原提问及之后的分支改成墓碑，再发送修改后的内容。
 			// 不创建新会话文件，否则每改一次侧栏就多出一条同名会话。
@@ -1624,6 +1698,7 @@ public sealed partial class SessionTab : IDisposable
 		if (_attachments.Count == 0)
 		{
 			_attachmentBar.IsVisible(false);
+			RefreshPrimaryAction();
 			return;
 		}
 
@@ -1644,6 +1719,7 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_attachmentBar.IsVisible(true);
+		RefreshPrimaryAction();
 	}
 
 	private void CopyLastReply()
@@ -2158,7 +2234,7 @@ public sealed partial class SessionTab : IDisposable
 	/// 任何东西。这一段是「预热 + 等首 token」，和「工具收口、下一段还没开始」的空窗不同：
 	/// 前者看不见子阶段，可以轮换几句；后者只能说「正在处理」。
 	private static bool TurnHasOutput(IReadOnlyList<ChatEntry> rows) =>
-		rows.Count > 0 && rows[^1].Role != ChatRole.User;
+		rows.Count > 0 && rows[^1].Role is not (ChatRole.User or ChatRole.Notice);
 
 	private double TurnElapsedMs()
 	{
@@ -2360,13 +2436,7 @@ public sealed partial class SessionTab : IDisposable
 			_lastBusy = busy;
 			StateChanged?.Invoke(this);
 		}
-		if (_lastBusy != busy || _sendLabel.Text != (busy ? Strings.Abort : Strings.Send))
-		{
-			_sendLabel.Text(busy ? Strings.Abort : Strings.Send);
-			_sendIcon.Source(AppIcons.Get(busy ? "x" : "arrow-up", AppTheme.TextOnAccent));
-			_sendMenuButton.IsVisible(busy);
-			_sendDivider.IsVisible(busy);
-		}
+		ApplyPrimaryAction(busy);
 
 		_sendMenuButton.IsEnabled = _chat.IsStreaming;
 		_modelButton.IsEnabled = !busy;
@@ -2795,11 +2865,26 @@ public sealed partial class SessionTab : IDisposable
 			ChatRole.Process => new ExecutionProcessView(entry, Row, _textFocus).View,
 			ChatRole.Tool => new ToolMessageView(entry, _textFocus, PreviewImage, CopyText).View,
 			ChatRole.Error => Card(entry, Strings.RoleError),
+			ChatRole.Notice => NoticeRow(entry),
 			_ => new AssistantMessageView(entry, CopyText, _textFocus, PreviewImage, OpenMessageLink, Session.Cwd, ShowFileDiff).View,
 		};
 		_textFocus.TrackTree(row);
 		return row;
 	}
+
+	/// 继续生成的收据：一行图标 + 文案。它开一轮新请求，但用户没有写字，
+	/// 所以不用用户气泡也不用错误卡。
+	private static UIElement NoticeRow(ChatEntry entry) =>
+		new Border()
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space1, AppTheme.Space3, AppTheme.Space1))
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Child(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(AppTheme.Space2)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					AppIcons.Icon("play", AppStyles.RoleSubtle, 12),
+					new TextBlock().Text(entry.Text).FontSize(AppTheme.FontSizeMicro).SubtleText()));
 
 	/// 用户消息：右侧内嵌气泡，与助手回复（左侧正文）一眼分开；技能上下文收成 chip，
 	/// 文件引用在正文里由投影层显示成行内 chip。正文保持可选中，时间与操作在气泡下方，图片缩略图在气泡上方。

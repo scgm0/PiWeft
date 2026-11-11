@@ -74,6 +74,9 @@ public static class PiWeftProtocol
 	/// 目标续轮消息的 custom message 类型：以 <c>display:false</c> 落在会话里，不占时间线。
 	public const string GoalContinueRole = "piweft-goal-continue";
 
+	/// 手动继续生成的空标记：内容为空、<c>display:false</c>，只用来开一轮新的请求。
+	public const string ContinueGenerationRole = "piweft-continue";
+
 	/// 关联会话的消息类型：子会话首轮与互相转发的消息都带上它，与用户自己发的消息区分。
 	public const string LinkedMessageType = "piweft-linked-session-message";
 

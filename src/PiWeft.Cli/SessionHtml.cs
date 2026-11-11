@@ -60,6 +60,10 @@ public static class SessionHtml
 	{
 		switch (message)
 		{
+			case UserMessage { Content.Text: { Length: 0 } }:
+				// 继续生成的空标记只是准入记录，没有正文，不进导出的阅读视图。
+				break;
+
 			case UserMessage user:
 				builder.Append("<article class=\"user\">\n<h2>user</h2>\n");
 				RenderContent(builder, user.Content);

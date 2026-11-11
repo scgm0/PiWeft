@@ -30,6 +30,15 @@ internal static class ExecutionProcess
 				rows.Add(entry);
 				turnId = entry.EntryId ?? $"user/{rows.Count}/{entry.Timestamp}";
 			}
+			else if (entry.Role == ChatRole.Notice)
+			{
+				// 继续生成的收据自己开一轮：前面失败的那一轮要保独立，
+				// 否则它的半截回答会被挤进下一轮的过程组。
+				Flush(false);
+				lastTurnStart = rows.Count;
+				rows.Add(entry);
+				turnId = entry.EntryId ?? $"notice/{rows.Count}/{entry.Timestamp}";
+			}
 			else turn.Add(entry);
 		}
 		Flush(busy);

@@ -41,6 +41,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 生效 settings：`shellPath`、`shellCommandPrefix`、`sessionDir`、`defaultTools`、`cacheWarming`（默认 `idle`）、`thinkingBudgets`、`images.blockImages`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`compaction`（含 `modelOverrides`）、`retry`、`transport`、`httpIdleTimeoutMs`、`httpProxy`、`extensions`、`skills`、`prompts`、`themes`、`packages`、`enableSkillCommands`、`defaultProjectTrust`、`sessionShareDestination`、`codemode`、`security`。其余键保留不生效。
 - 启动迁移与 pi 的 `migrations.ts` 对齐：`oauth.json` / `settings.apiKeys` 并入 `auth.json`；根目录 `*.jsonl` 搬入 `sessions/<cwd>/`；`commands/` → `prompts/`；v1/v2 会话升级到 v3 并原子回写。`--export` 只读。
 - 编辑重发不新建会话：`TruncateForResend` 在原 JSONL 里把放弃的提问及后继写成 `deleted` 墓碑，叶子回到父条目。墓碑不进投影/分支树，重试与删除仍走 `context_edit`。
+- 手动继续生成与自动重试分开：上一轮失败、被中断或输出被截断后，草稿为空时发送键变「继续生成」。它不新增提问，先追加一条空的隐藏 `piweft-continue` custom message 再续跑；重放时空正文被 provider 丢掉，所以模型看到的是同一个提问或被截断的半截回答。继续失败后仍保留继续资格。
 - `--system-prompt` 替代 preamble，`--append-system-prompt` 追加，`--no-context-files` 停用 AGENTS.md / CLAUDE.md；`--export` 导出 HTML/JSONL；`--models` 限定轮换范围。
 - `pi install/list/remove/update` 管理 npm/git/本地包，`--local` 写项目 `.pi/settings.json`；`settings.npmCommand` 可覆盖 npm。`pi update` 提示用发行页更新 NativeAOT 本体，`pi update --extensions` 更新包并报告 npm 版本或 git commit 变化。
 - `pi mcp list|add|remove|login|logout` 管理服务器与 OAuth；配置写 `<agentDir>/mcp.json`，令牌写 `<agentDir>/mcp-auth.json`（与 pi 同一份文件、同一套键与状态形状，旧的 `mcp-oauth.json` 首次读取时迁移）。写入保留其它键、注释与尾逗号。

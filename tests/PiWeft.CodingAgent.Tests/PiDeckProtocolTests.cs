@@ -38,6 +38,7 @@ public sealed class PiDeckProtocolTests
 
 		// 纯内部名字不借用 PiDeck 前缀。
 		Assert.Equal("piweft-goal-continue", PiWeftProtocol.GoalContinueRole);
+		Assert.Equal("piweft-continue", PiWeftProtocol.ContinueGenerationRole);
 	}
 
 	[Fact]

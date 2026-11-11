@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
@@ -311,6 +312,63 @@ public class CodingAgentSessionTests : IDisposable
 		Assert.IsType<SystemMessage>(session.Messages[0]);
 		Assert.IsType<UserMessage>(session.Messages[1]);
 		Assert.IsType<AssistantMessage>(session.Messages[2]);
+	}
+
+	[Fact]
+	public void ContinueEligibilityFollowsTheStopReasonOfTheLastTurn()
+	{
+		var script = new ScriptedStreamFn();
+		using var session = CreateSession(script);
+		Assert.False(session.CanContinueGeneration());
+
+		// 成功那一轮没什么可继续的；继续只接失败、中断或被截断的回合。
+		foreach (var (reason, expected) in new[]
+		{
+			(StopReason.Stop, false),
+			(StopReason.Error, true),
+			(StopReason.Aborted, true),
+			(StopReason.Length, true),
+		})
+		{
+			session.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("q") });
+			session.Session.AppendMessage(new AssistantMessage
+			{
+				Content = [new TextContent { Text = "a" }],
+				StopReason = reason,
+			});
+			Assert.Equal(expected, session.CanContinueGeneration());
+		}
+	}
+
+	[Fact]
+	public async Task ContinueGenerationRunsTheSameQuestionAgainWithAHiddenMarker()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueError("Service Unavailable");
+		script.EnqueueText("continued answer");
+
+		using var session = CreateSession(script);
+		// 继续生成是手动动作，与自动重试策略无关。
+		session.SetAutoRetryEnabled(false);
+
+		await session.PromptAsync("question");
+		Assert.True(session.CanContinueGeneration());
+
+		await session.ContinueGenerationAsync();
+
+		Assert.Equal(2, script.Requests.Count);
+		var replay = script.Requests[1];
+		// 末尾的空隐藏标记就是这一轮的准入；失败那条助手消息在 wire 层被丢掉
+		// （见 MessageTransformTests.FailedAssistantMessagesAreNotReplayed）。
+		Assert.Contains(replay, static message => message is UserMessage { Content.Text: "question" });
+		var marker = Assert.IsType<UserMessage>(replay[^1]);
+		Assert.Equal(PiWeftProtocol.ContinueGenerationRole, marker.CustomType);
+		Assert.False(marker.Display);
+		Assert.Equal(string.Empty, marker.Content.Text);
+		var stored = Assert.Single(session.Session.Entries.OfType<CustomMessageEntry>());
+		Assert.Equal(PiWeftProtocol.ContinueGenerationRole, stored.CustomType);
+		Assert.False(stored.Display);
+		Assert.False(session.CanContinueGeneration());
 	}
 
 	[Fact]

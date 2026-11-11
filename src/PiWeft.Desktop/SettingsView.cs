@@ -295,6 +295,13 @@ public sealed class SettingsView
 		if (_configuration.IsValueCreated) _configuration.Value.StartAuthLoginForSmoke(providerId);
 	}
 
+	internal async Task OpenToolMenuSmokeAsync()
+	{
+		await SwitchModeAsync(true);
+		await SelectSectionAsync("agent");
+		if (_configuration.IsValueCreated) _configuration.Value.OpenToolMenuForSmoke();
+	}
+
 	internal async Task SelectSectionAsync(string section)
 	{
 		if (_section == section) return;
