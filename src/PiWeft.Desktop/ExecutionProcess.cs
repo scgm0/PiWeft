@@ -267,6 +267,13 @@ internal static class ExecutionProcess
 
 	public static string RunningLabel(IReadOnlyList<ChatEntry> entries)
 	{
+		// 组头跟着最新一步走：思考接在工具后面时，按最近一次工具报类别会让组头一直挂着
+		// 「正在运行命令」，而组体最后一行已经是「正在思考…」。
+		if (EndsWithThinking(entries))
+		{
+			return Strings.ProcessGroupThinking;
+		}
+
 		for (var index = entries.Count - 1; index >= 0; index--)
 		{
 			if (entries[index].Role == ChatRole.Tool)
@@ -277,6 +284,10 @@ internal static class ExecutionProcess
 
 		return Strings.ProcessGroupAnalyzing;
 	}
+
+	/// 组只把工具与思考切成成员，最后一步是 Assistant 就是尚未收口的思考行。
+	private static bool EndsWithThinking(IReadOnlyList<ChatEntry> entries) =>
+		entries.Count > 0 && entries[^1].Role == ChatRole.Assistant;
 
 	private static string RunningLabelFor(string? toolName) => toolName switch
 	{
@@ -292,6 +303,11 @@ internal static class ExecutionProcess
 
 	public static string GroupIcon(IReadOnlyList<ChatEntry> entries)
 	{
+		if (EndsWithThinking(entries))
+		{
+			return "sparkles";
+		}
+
 		for (var index = entries.Count - 1; index >= 0; index--)
 		{
 			if (entries[index].Role == ChatRole.Tool)
@@ -477,7 +493,6 @@ internal sealed class ExecutionProcessProjector
 	private ChatEntry[] _projected = [];
 	private int _lastBoundarySourceIndex = -1;
 	private int _prefixRows;
-	private bool _busy;
 
 	public int LastStablePrefix { get; private set; }
 
@@ -515,7 +530,6 @@ internal sealed class ExecutionProcessProjector
 				_prefixRows += lastTurnStart;
 				_lastBoundarySourceIndex = lastBoundary;
 			}
-			_busy = busy;
 			LastStablePrefix = stablePrefix;
 			LastPrefixReused = true;
 			return rows;
@@ -527,7 +541,6 @@ internal sealed class ExecutionProcessProjector
 		_projected = [.. full];
 		_lastBoundarySourceIndex = lastBoundary;
 		_prefixRows = lastBoundary >= 0 ? lastTurnStartFull : 0;
-		_busy = busy;
 		LastStablePrefix = _prefixRows;
 		LastPrefixReused = false;
 		return _projected;

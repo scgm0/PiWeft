@@ -11,7 +11,8 @@ public static partial class Strings
 	public const string StepBackToStart = "回到这一步的开头";
 	public static string ExecutionTotal(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
 
-	// 过程组组头（PiDeck 同款）：运行态按最新工具类别给「正在…」，纯思考组退回「正在分析请求」。
+	// 过程组组头（PiDeck 同款）：最新一步是思考时给「正在思考」，否则按最近一次工具调用给「正在…」。
+	public const string ProcessGroupThinking = "正在思考";
 	public const string ProcessGroupAnalyzing = "正在分析请求";
 	public const string ProcessGroupAnalyzed = "已完成分析";
 	public const string ProcessGroupRead = "正在读取文件";

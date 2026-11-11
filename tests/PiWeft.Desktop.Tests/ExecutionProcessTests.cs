@@ -84,6 +84,141 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void RunningGroupHeaderReportsThinkingWhenTheLatestStepIsThinking()
+	{
+		var tool = Tool("call", "output");
+		var thinking = Answer("thinking", string.Empty, "plan") with { IsThinking = true, IsStreaming = true };
+		// 思考接在工具后面：组头跟着最新一步换词，不再停在上一个工具的动作上。
+		Assert.Equal(Strings.ProcessGroupThinking, ExecutionProcess.RunningLabel([tool, thinking]));
+		Assert.Equal("sparkles", ExecutionProcess.GroupIcon([tool, thinking]));
+		// 思考期间没有工具在跑：组头不挂实时详情。
+		Assert.Null(ExecutionProcess.RunningDetail([tool, thinking]));
+		// 下一步是工具时回到类别文案。
+		var next = Tool("call-2", string.Empty, pending: true);
+		Assert.Equal(Strings.ProcessGroupRead, ExecutionProcess.RunningLabel([tool, thinking, next]));
+		Assert.Equal("file-text", ExecutionProcess.GroupIcon([tool, thinking, next]));
+	}
+
+	[Fact]
+	public void RunningGroupHeaderFollowsStreamingThinkingWithoutRebuildingTheGroup()
+	{
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		ChatEntry Process(IReadOnlyList<ChatEntry> members) => new()
+		{
+			Role = ChatRole.Process, Text = string.Empty, EntryId = "process/turn", IsStreaming = true,
+			ProcessEntries = members,
+		};
+		ChatEntry Thinking(bool live) => new()
+		{
+			Role = ChatRole.Assistant, EntryId = "live-assistant/1", Timestamp = 1, Text = string.Empty,
+			Thinking = "plan", IsThinking = live, IsStreaming = live, ThinkingStartedAt = live ? 1_000 : null,
+		};
+
+		var tool = Tool("call", "output");
+		var view = new ExecutionProcessView(
+			Process([tool, Thinking(true)]), entry => new AssistantMessageView(entry, _ => { }, focus).View, focus);
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.Contains(Find<TextBlock>(view.View), text => text.Text == Strings.ProcessGroupThinking);
+		Assert.DoesNotContain(Find<TextBlock>(view.View), text => text.Text == Strings.ProcessGroupRead);
+
+		view.Update(Process([tool, Thinking(false), Tool("call-2", string.Empty, pending: true)]));
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.Contains(Find<TextBlock>(view.View), text => text.Text == Strings.ProcessGroupRead);
+		Assert.DoesNotContain(Find<TextBlock>(view.View), text => text.Text == Strings.ProcessGroupThinking);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void AppendingAStepToAnOpenGroupKeepsTheStackRows()
+	{
+		// 回归：以前每追加一步都 RebuildStack 整块重建，展开步骤里的焦点与选区会一起丢掉。
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		ChatEntry Process(params ChatEntry[] content) => new()
+		{
+			Role = ChatRole.Process, Text = string.Empty, EntryId = "process/turn", IsStreaming = true,
+			ProcessEntries = content,
+		};
+		UIElement Create(ChatEntry entry) => entry.Role == ChatRole.Tool
+			? new ToolMessageView(entry, focus).View
+			: new AssistantMessageView(entry, _ => { }, focus).View;
+		var view = new ExecutionProcessView(Process(Tool("one", "output"), Tool("two", "output")), Create, focus);
+		ConversationPerformanceTests.Layout(view.View);
+		var group = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var body = Assert.Single(Find<ScrollViewer>(group.Content!));
+		var before = StepRowHosts(body);
+		Assert.Equal(2, before.Count);
+
+		view.Update(Process(Tool("one", "output"), Tool("two", "output"), Tool("three", "output")));
+		ConversationPerformanceTests.Layout(view.View);
+
+		var after = StepRowHosts(body);
+		Assert.Equal(3, after.Count);
+		// 已实现的前两行原地保留；只有新追加的那一行需要创建。
+		Assert.Same(before[0], after[0]);
+		Assert.Same(before[1], after[1]);
+
+		// 尾部收缩（刚追加的那一步被投影合并掉）：只释放多出来的行，前面的宿主仍保留。
+		view.Update(Process(Tool("one", "output"), Tool("two", "output")));
+		ConversationPerformanceTests.Layout(view.View);
+		var shrunk = StepRowHosts(body);
+		Assert.Equal(2, shrunk.Count);
+		Assert.Same(before[0], shrunk[0]);
+		Assert.Same(before[1], shrunk[1]);
+		UiLifetime.Release(view.View);
+	}
+
+	[Fact]
+	public void UnchangedGroupContentDoesNotInvalidateTheBodyLayout()
+	{
+		// 流式期每帧都会把重新投影的过程行喂给视图；内容没变时组体不该再作废一次排列，
+		// 否则一顿 40 ms 一帧的推流里，前面已经稳定的历史组每帧都白重排整块行表。
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		var probes = new List<MeasureProbe>();
+		ChatEntry Process(params ChatEntry[] content) => new()
+		{
+			Role = ChatRole.Process, Text = string.Empty, EntryId = "process/turn", IsStreaming = true,
+			ProcessEntries = content,
+		};
+		UIElement Create(ChatEntry entry)
+		{
+			var probe = new MeasureProbe();
+			probes.Add(probe);
+			return probe;
+		}
+		var view = new ExecutionProcessView(Process(Tool("one", "output"), Tool("two", "output")), Create, focus);
+		ConversationPerformanceTests.Layout(view.View);
+		var group = Assert.Single(Find<Expander>(view.View), expander => HoverHints.Text(expander) == Strings.ExecutionGroupHint);
+		group.IsExpanded = true;
+		ConversationPerformanceTests.Layout(view.View);
+		var measures = probes.Sum(probe => probe.Measures);
+		Assert.True(measures > 0, "the step rows must have been measured at least once");
+
+		// 同一份内容（新记录、值相等）再喂一遍：不重建，也不作废排列。
+		view.Update(Process(Tool("one", "output"), Tool("two", "output")));
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.Equal(measures, probes.Sum(probe => probe.Measures));
+
+		// 内容真变了（工具输出增长）：这一步仍要走重测。
+		view.Update(Process(Tool("one", "output grown"), Tool("two", "output")));
+		ConversationPerformanceTests.Layout(view.View);
+		Assert.True(probes.Sum(probe => probe.Measures) > measures);
+		UiLifetime.Release(view.View);
+	}
+
+	private sealed class MeasureProbe : ContentControl
+	{
+		public int Measures { get; private set; }
+
+		protected override Size MeasureContent(Size availableSize)
+		{
+			Measures++;
+			return base.MeasureContent(availableSize);
+		}
+	}
+
+	[Fact]
 	public void OneFoldPerTurnKeepsFinalAnswerVisibleAndCountsEachToolOnce()
 	{
 		var rows = ExecutionProcess.Project([

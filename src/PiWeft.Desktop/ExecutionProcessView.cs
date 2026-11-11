@@ -35,7 +35,6 @@ internal sealed class ExecutionProcessView
 	private readonly List<Slot> _slots = [];
 	// Nodes() 的复用缓冲：流式期每帧都会重建节点列表，不能每次都新建对象。
 	private readonly List<Node> _nodes = [];
-	private readonly List<ChatEntry> _memberScratch = [];
 	private int _nodeCount;
 	private ChatEntry _entry;
 	private ExecutionProcess.Stats _statsSnapshot;
@@ -293,6 +292,9 @@ internal sealed class ExecutionProcessView
 		for (var i = _slots.Count - 1; i >= reset; i--)
 		{
 			var slot = _slots[i];
+			// 先拆组体再释放行：组体的视口登记在 _bodyViewports 里，不拆会一直拖着
+			// 已释放的行树（也会被每帧的 KickBodyLayout / SyncBodyMetrics 扫到）。
+			slot.Retire?.Invoke();
 			UiLifetime.Release(slot.Host);
 			_body.Remove(slot.Host);
 			_slots.RemoveAt(i);
@@ -414,7 +416,7 @@ internal sealed class ExecutionProcessView
 
 		Track(key, fold, false, group: true);
 		var host = new Border().Padding(new Thickness(2, 0, 0, 0)).Child(fold);
-		var slot = new Slot(key, host, Update);
+		var slot = new Slot(key, host, Update, DestroyBody);
 		Update(entries, running);
 		return slot;
 
@@ -474,7 +476,7 @@ internal sealed class ExecutionProcessView
 				source.ItemAt,
 				StepRowHost,
 				(host, entry, index) => BindStepRow(host, entry, index),
-				host => UnbindStep(host, key))
+				host => UnbindStep(host))
 			{
 				Key = static entry => (object?)entry.EntryId ?? entry,
 				Same = ConversationTimeline.SameEntry,
@@ -536,17 +538,21 @@ internal sealed class ExecutionProcessView
 		void AddStackRows()
 		{
 			if (stack is null) return;
-			for (var index = 0; index < members.Count; index++)
-			{
-				var row = StepRowHost();
-				BindStepRow(row, members[index], index);
-				stack.Children(row);
-				stackEntries.Add(members[index]);
-				stackHosts.Add(row);
-			}
+			for (var index = 0; index < members.Count; index++) AppendStackRow(members[index], index);
 		}
 
-		void BindStepRow(Grid row, ChatEntry entry, int index) =>
+		void AppendStackRow(ChatEntry entry, int index)
+		{
+			if (stack is null) return;
+			var row = StepRowHost();
+			BindStepRow(row, entry, index);
+			// 直接 Add：Fluent 的 Children(row) 每次都要给 params 数组分配一个一元数组。
+			stack.Add(row);
+			stackEntries.Add(entry);
+			stackHosts.Add(row);
+		}
+
+		bool BindStepRow(Grid row, ChatEntry entry, int index) =>
 			BindStep(row, entry, index, key, viewport, (expanded, expander) =>
 			{
 				// A tool detail is a reading action: keep its preview row pinned. A thinking
@@ -560,9 +566,10 @@ internal sealed class ExecutionProcessView
 				InvalidateRow(row, index, preservePreview, collapseFromPinned);
 			});
 
-		void SyncStackRows()
+		/// 返回这一帧的步骤内容是否变化：没变就不必作废组体排列。
+		bool SyncStackRows()
 		{
-			if (stack is null) return;
+			if (stack is null) return false;
 			if (members.Count > stackLimit)
 			{
 				// 流式更新可能恰好发生在会话列表的测量/排布里；此时换 presenter 会重建整棵组体，
@@ -570,7 +577,7 @@ internal sealed class ExecutionProcessView
 				if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 				{
 					SwitchToVirtualBody();
-					return;
+					return true;
 				}
 				if (!switchQueued)
 				{
@@ -581,34 +588,47 @@ internal sealed class ExecutionProcessView
 						if (body is not null && stack is not null && members.Count > stackLimit) SwitchToVirtualBody();
 					});
 				}
-				return;
+				return false;
 			}
-			if (!StackMatches())
-			{
-				RebuildStack();
-				return;
-			}
-			for (var index = 0; index < members.Count; index++)
-			{
-				// BindStep 遇到相同内容会直接返回；流式更新则保留展开状态原地更新。
-				// 注意：不能把循环变量 index 带进回调；展开回调在循环结束后才触发，会拿到越界索引。
-				BindStepRow(stackHosts[index], members[index], index);
-				stackEntries[index] = members[index];
-			}
-		}
-
-		bool StackMatches()
-		{
-			if (stackHosts.Count != members.Count) return false;
-			for (var index = 0; index < members.Count; index++)
+			// 结构不一致时只搬差异那一段：流式期每追加一步就重建整块组体会把展开步骤里的
+			// 焦点与选区一起丢掉，也把刚量好的行高打回估算值。
+			var prefix = Math.Min(stackHosts.Count, members.Count);
+			for (var index = 0; index < prefix; index++)
 			{
 				var left = stackEntries[index];
 				var right = members[index];
 				if (!ReferenceEquals(left, right) &&
 					(left.Role != right.Role || left.ToolCallId != right.ToolCallId || left.EntryId != right.EntryId))
-					return false;
+				{
+					RebuildStack();
+					return true;
+				}
 			}
-			return true;
+			var changed = false;
+			for (var index = 0; index < prefix; index++)
+			{
+				// BindStep 遇到相同内容会直接返回；流式更新则保留展开状态原地更新。
+				// 注意：不能把循环变量 index 带进回调；展开回调在循环结束后才触发，会拿到越界索引。
+				changed |= BindStepRow(stackHosts[index], members[index], index);
+				stackEntries[index] = members[index];
+			}
+			for (var index = prefix; index < members.Count; index++)
+			{
+				AppendStackRow(members[index], index);
+				changed = true;
+			}
+			// 尾部收缩：组内步骤一般在末尾增减，只释放多出来的行。
+			for (var index = stackHosts.Count - 1; index >= members.Count; index--)
+			{
+				var row = stackHosts[index];
+				stack?.Remove(row);
+				UnbindStep(row);
+				UiLifetime.Release(row);
+				stackHosts.RemoveAt(index);
+				stackEntries.RemoveAt(index);
+				changed = true;
+			}
+			return changed;
 		}
 
 		void RebuildStack()
@@ -617,7 +637,7 @@ internal sealed class ExecutionProcessView
 			stack.Clear();
 			foreach (var row in stackHosts)
 			{
-				UnbindStep(row, key);
+				UnbindStep(row);
 				UiLifetime.Release(row);
 			}
 			stackEntries.Clear();
@@ -678,24 +698,20 @@ internal sealed class ExecutionProcessView
 			// update and reassert it after layout; a real wheel/scrollbar gesture still wins later
 			// in the same frame.
 			var following = viewport is not null && SmoothScroll.Find(viewport)?.IsFollowingGrowth == true;
-			if (following)
-			{
-				followAfterLayout = true;
-				QueuePendingClamp(FollowAfterLayout);
-			}
-			else
+			if (!following)
 			{
 				// The reader scrolled away between updates: do not let an old layout-follow
 				// action pull the body back to the tail.
 				followAfterLayout = false;
 				_pendingClamps.Remove(FollowAfterLayout);
 			}
+			var changed = false;
 			if (panel is not null && rows is not null)
 			{
 				inPlaceRows.Clear();
 				keptRows.Clear();
 				var anchor = panel.CaptureShiftAnchor();
-				var previous = rows.Set(members, inPlaceRows, keptRows, out var changed);
+				var previous = rows.Set(members, inPlaceRows, keptRows, out changed);
 				// 内容与行数都没变时跳过：ApplyRows 会作废测量，流式期每帧都做等于白跑一遍布局。
 				if (changed) panel.ApplyRows(previous, rows.Count, keptRows, anchor);
 				// 原位更新的行不重建，但要让它们的子树重新测量；面板 Arrange 会重绑整段实现范围，
@@ -709,7 +725,15 @@ internal sealed class ExecutionProcessView
 					if (viewport is null || !row.IsDescendantOf(viewport)) BindStepRow(row, members[index], index);
 				}
 			}
-			else SyncStackRows();
+			else changed = SyncStackRows();
+			// 内容没变时组体的排列仍然有效：每帧作废一次会让整块行表重新 arrange，
+			// 而流式期前面的历史组本来就不动（一顿 40 ms 一帧的推流里就是白烧）。
+			if (!changed) return;
+			if (following)
+			{
+				followAfterLayout = true;
+				QueuePendingClamp(FollowAfterLayout);
+			}
 			// 流式思考/正文在组体里增长时同样要走 arrange 重测，否则行高停在展开时的那一版。
 			if (body is not null) KickBodyLayout();
 			if (following && viewport is not null && SmoothScroll.Find(viewport) is { } smooth)
@@ -910,7 +934,8 @@ internal sealed class ExecutionProcessView
 	/// 组内的步骤行：只为视口建摘要，展开时才建具体内容；折叠/滚出视口即释放。
 	private Grid StepRowHost() => new Grid().Columns("22,*");
 
-	private void BindStep(Grid host, ChatEntry entry, int index, string groupKey, ScrollViewer? bodyViewport,
+	/// <returns>这一步是否真的重绑了内容（决定组体要不要重排）。</returns>
+	private bool BindStep(Grid host, ChatEntry entry, int index, string groupKey, ScrollViewer? bodyViewport,
 		Action<bool, Expander> layoutChanged)
 	{
 		// 行宿主带着当前下标：面板按需回收/复用，宿主本身不记录身份；测试与诊断靠它定位行。
@@ -926,7 +951,7 @@ internal sealed class ExecutionProcessView
 		if (icon.Parent is null) host.Children(icon.Column(0), content.Column(1));
 		icon.Source(AppIcons.Get(StepIcon.IconFor(entry), AppStyles.ColorForRole(StepIcon.RoleFor(entry))));
 
-		if (content.Tag is ChatEntry previous && ConversationTimeline.SameEntry(previous, entry)) return;
+		if (content.Tag is ChatEntry previous && ConversationTimeline.SameEntry(previous, entry)) return false;
 		if (content.Tag is ChatEntry { IsStreaming: true } streaming && entry.Role == ChatRole.Assistant &&
 			streaming.Timestamp == entry.Timestamp && ConversationTimeline.SameItems(streaming.Images, entry.Images) &&
 			content.Child is Border { Tag: AssistantMessageView assistant })
@@ -934,14 +959,14 @@ internal sealed class ExecutionProcessView
 			// 流式思考只更新既有视图，不重建行。
 			assistant.Update(entry);
 			content.Tag = entry;
-			return;
+			return true;
 		}
 		if (content.Tag is ChatEntry { IsStreaming: true } && entry.Role == ChatRole.Tool &&
 			content.Child is Border { Tag: ToolMessageView tool } && tool.Update(entry))
 		{
 			// 工具步骤仍在输出：表头/秒表都就地更新，不重建行（图标只依赖工具名，不会变）。
 			content.Tag = entry;
-			return;
+			return true;
 		}
 		// The key is only needed when this row's content is actually rebuilt; formatting it before
 		// the equal/streaming fast paths allocated one string per visible step per streaming frame.
@@ -953,6 +978,7 @@ internal sealed class ExecutionProcessView
 		// 虚拟化列表的行是延后创建的：那时组体视口已经就绪，可以在这一层直接挂上吸顶宿主。
 		if (bodyViewport is { } body) AttachSticky(view, host, body);
 		TrackStepStates(stepKey, view, layoutChanged);
+		return true;
 	}
 
 	private static void AttachSticky(Element root, FrameworkElement rowHost, ScrollViewer body)
@@ -961,7 +987,7 @@ internal sealed class ExecutionProcessView
 			if (expander is StickyExpander sticky) sticky.AttachBody(body, rowHost);
 	}
 
-	private void UnbindStep(Grid host, string groupKey)
+	private static void UnbindStep(Grid host)
 	{
 		if (host.Children.Count < 2 || host.Children[1] is not Border content) return;
 		if (content.Child is { } old) UiLifetime.Release(old);
@@ -1052,53 +1078,48 @@ internal sealed class ExecutionProcessView
 
 	private static string Id(ChatEntry entry, int index) => entry.EntryId ?? $"{entry.Role}/{entry.Timestamp}/{index}";
 
-	/// 把过程条目切成「过程组 / 中间回复」。节点对象与成员缓冲按索引复用：
+	/// 把过程条目切成「过程组 / 中间回复」。节点对象按索引复用、成员数组按数量复用：
 	/// 流式期每帧都会走这里，反复 new 列表与数组纯属给 GC 添活。
 	private List<Node> Nodes(IReadOnlyList<ChatEntry> entries)
 	{
 		var nodes = _nodes;
 		var used = 0;
-		var members = _memberScratch;
-		members.Clear();
+		var memberStart = 0;
+		var memberCount = 0;
+		// 成员只记区间，不再往一块成员缓冲里逐个搬：分组最后直接写进节点的数组。
 		for (var i = 0; i < entries.Count; i++)
 		{
 			var entry = entries[i];
-			if (entry.Role == ChatRole.Tool || entry.ThinkingLength > 0 || entry.IsThinking) members.Add(entry);
-			else
+			if (entry.Role == ChatRole.Tool || entry.ThinkingLength > 0 || entry.IsThinking)
 			{
-				FlushGroup();
-				var node = Take(entry, i, group: false);
-				// 中间回复行只有一个成员：复用同一份单元素数组，避免每帧新分配。
-				if (node.Entries is ChatEntry[] { Length: 1 } single) single[0] = entry;
-				else node.Entries = [entry];
-				node.Version++;
-				used++;
+				if (memberCount == 0) memberStart = i;
+				memberCount++;
+				continue;
 			}
+
+			FlushGroup();
+			var node = Take(entry, i, group: false);
+			// 中间回复行只有一个成员：复用同一份单元素数组，避免每帧新分配。
+			if (node.Entries is ChatEntry[] { Length: 1 } single) single[0] = entry;
+			else node.Entries = [entry];
+			used++;
 		}
 
 		FlushGroup();
-		// 多余的旧节点留着复用（下次组数变多时直接取），但不再参与本轮。
-		for (var i = used; i < nodes.Count; i++) nodes[i].Version++;
 		_nodeCount = used;
 		return nodes;
 		void FlushGroup()
 		{
-			if (members.Count == 0) return;
-			var node = Take(members[0], used, group: true);
-			node.Buffer.Clear();
-			node.Buffer.AddRange(members);
+			if (memberCount == 0) return;
+			var node = Take(entries[memberStart], used, group: true);
 			// 成员数量与上一次相同就继续用同一份数组：稳定后这一步不再分配。
-			if (node.Entries is not ChatEntry[] previous || previous.Length != node.Buffer.Count)
+			if (node.Entries is not ChatEntry[] members || members.Length != memberCount)
 			{
-				node.Entries = node.Buffer.ToArray();
+				members = new ChatEntry[memberCount];
+				node.Entries = members;
 			}
-			else
-			{
-				for (var index = 0; index < previous.Length; index++) previous[index] = node.Buffer[index];
-			}
-
-			node.Version++;
-			members.Clear();
+			for (var offset = 0; offset < memberCount; offset++) members[offset] = entries[memberStart + offset];
+			memberCount = 0;
 			used++;
 		}
 
@@ -1217,8 +1238,9 @@ internal sealed class ExecutionProcessView
 					changed = true;
 					_items[index] = next;
 					// 工具/流式助手步骤有持久视图，能原地吸收新的输出；其余改变内容时要重建。
-					if (CanUpdateInPlace(current, next)) inPlace.Add(index);
-					if (CanUpdateInPlace(current, next) || ConversationTimeline.SameMetadataOnly(current, next)) kept.Add(index);
+					var inPlaceable = CanUpdateInPlace(current, next);
+					if (inPlaceable) inPlace.Add(index);
+					if (inPlaceable || ConversationTimeline.SameMetadataOnly(current, next)) kept.Add(index);
 				}
 				return previous;
 			}
@@ -1235,9 +1257,11 @@ internal sealed class ExecutionProcessView
 					kept.Add(index);
 					continue;
 				}
-				if (CanUpdateInPlace(current, next) || ConversationTimeline.SameMetadataOnly(current, next))
+				// 同一条判定可接两次调用：类型/流式状态的连续 && 链，重复一遍纯属白算。
+				var inPlaceable = CanUpdateInPlace(current, next);
+				if (inPlaceable || ConversationTimeline.SameMetadataOnly(current, next))
 				{
-					if (CanUpdateInPlace(current, next)) inPlace.Add(index);
+					if (inPlaceable) inPlace.Add(index);
 					kept.Add(index);
 				}
 			}
@@ -1283,9 +1307,6 @@ internal sealed class ExecutionProcessView
 		internal ChatRole AnchorRole;
 		internal long AnchorTimestamp;
 		internal int AnchorIndex;
-		// 复用时的成员缓冲；只在内容真的变化时才换新数组，稳定后就一直用同一份。
-		internal readonly List<ChatEntry> Buffer = [];
-		internal int Version;
 	}
-	private sealed record Slot(string Key, Border Host, Action<IReadOnlyList<ChatEntry>, bool> Update);
+	private sealed record Slot(string Key, Border Host, Action<IReadOnlyList<ChatEntry>, bool> Update, Action? Retire = null);
 }

@@ -51,6 +51,7 @@ public sealed class MessageLinkTests
 	[InlineData("file://remote-server/share/file.cs")]
 	[InlineData("#section")]
 	[InlineData("invalid\npath")]
+	[InlineData("invalid\u0085path")]
 	public void UnsafeSchemesRemoteSharesAndDocumentAnchorsNeverStartAProcess(string url)
 	{
 		Assert.Null(MessageLinkTarget.Resolve(url, Environment.CurrentDirectory));
