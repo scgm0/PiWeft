@@ -170,7 +170,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 
 配置在 `~/.pi/agent/usage-probes.json`（与 PiDeck 同构）：`providers` 由弹窗维护，`probes` 供手写，运行时按 `baseUrl` 合并。旧 `usage-queries.json` 只读兼容。默认关闭，需显式启用。
 
-内置候选：OpenCode、DeepSeek、OpenRouter、Kimi、Moonshot、SiliconFlow、智谱 GLM、Codex、xAI、Command Code、TokenDance、MiniMax、通用 `/usage`。结果统一为 `periods` / `balance` / `credits`。展示为进度条（≥90% 红、≥70% 橙）与剩余量；失败显示尝试过的 URL、HTTP 状态/超时与脱敏摘要。安全边界：不跟 3xx；仅 HTTPS 或本机 HTTP；跨域只允许内置官方地址；模型自定义头只回发供应商域；响应 ≤1 MiB；明细抹掉 Key 并截断 240 字符。
+内置候选：OpenCode Go、DeepSeek、OpenRouter、Kimi、Moonshot、SiliconFlow、智谱 GLM、Codex、xAI、Command Code、TokenDance、MiniMax、通用 `/usage`。OpenCode Go 走 origin 下的 `/zen/go/v1/usage`；OpenCode Zen 的用量在 Console 预算接口，需要 workspace 凭据，暂不内置。结果统一为 `periods` / `balance` / `credits`。展示为进度条（≥90% 红、≥70% 橙）与剩余量；失败显示尝试过的 URL、HTTP 状态/超时与脱敏摘要。安全边界：不跟 3xx；仅 HTTPS 或本机 HTTP；跨域只允许内置官方地址；模型自定义头只回发供应商域；响应 ≤1 MiB；明细抹掉 Key 并截断 240 字符。
 
 ### 工具调用安全门
 

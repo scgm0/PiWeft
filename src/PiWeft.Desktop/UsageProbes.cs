@@ -79,9 +79,10 @@ internal static class UsageProbes
 
 	public static readonly IReadOnlyList<UsageProbeCandidate> Candidates =
 	[
-		// opencode / opencode-go 网关：/v1/usage 直接给出三档占用百分比 + 重置时间。
-		// host 路径随上游注册表改名（zen / inference），两种都要匹配。
-		new("/usage", BaseUrlContains: ["opencode.ai/zen", "opencode.ai/inference"], TemplateId: "opencode-usage"),
+		// OpenCode Go：origin 下的 /zen/go/v1/usage 给出滚动、周、月三档占用百分比与重置时间。
+		// baseUrl 在 /inference/go/...（或旧 /zen/go/...）之下，端点不在推理路径里，故 rootPath。
+		new("/zen/go/v1/usage", RootPath: true, BaseUrlContains: ["opencode.ai/zen/go", "opencode.ai/inference/go"],
+			TemplateId: "opencode-usage"),
 
 		// DeepSeek：/user/balance。total_balance 在部分部署里是字符串，解析器已兼容。
 		new("/user/balance", BaseUrlContains: ["api.deepseek.com"], TemplateId: "deepseek-balance",
