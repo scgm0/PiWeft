@@ -527,11 +527,16 @@ public sealed class CliEnvironment
 
 		// 目录含默认不启用的 codemode，这样 --tools/--exclude-tools/defaultTools 才能选中它。
 		var catalog = arguments.NoBuiltinTools ? [] : BuiltinTools.CatalogTools(cwd);
-		// settings.extensions 关掉 builtin:codemode 后，目录里也不该再有它：
+		// settings.extensions 关掉 builtin:codemode / builtin:tool-search 后，目录里也不该再有它：
 		// 否则 defaultTools 写 +codemode 仍会把它带回来。
 		if (!settings.IsBuiltinExtensionEnabled(ExtensionRules.CodemodeBuiltin))
 		{
 			catalog = [.. catalog.Where(tool => !string.Equals(tool.Name, CodeModeTool.Name, StringComparison.Ordinal))];
+		}
+
+		if (!settings.IsBuiltinExtensionEnabled(ExtensionRules.ToolSearchBuiltin))
+		{
+			catalog = [.. catalog.Where(tool => !string.Equals(tool.Name, ToolSearchTool.Name, StringComparison.Ordinal))];
 		}
 
 		if (catalog.Count == 0)

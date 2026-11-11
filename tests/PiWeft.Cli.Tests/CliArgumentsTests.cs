@@ -330,11 +330,27 @@ public class CliEnvironmentTests
 	public void ResolveTools_DefaultsToThePiToolSet()
 	{
 		// 与 pi 一致：默认 read/bash/edit/write，grep/find/ls 默认关闭；
-		// 另外保留 PiDeck 依赖的原生 todo/ask_question。
+		// 另外保留 PiDeck 依赖的原生 todo/ask_question，以及发现 MCP 工具的 tool_search。
 		var tools = CliEnvironment.ResolveTools(new CliArguments(), Path.GetTempPath());
 		Assert.Equal(
-			["read", "bash", "edit", "write", "todo", "ask_question"],
+			["tool_search", "read", "bash", "edit", "write", "todo", "ask_question"],
 			tools.Select(static tool => tool.Name));
+	}
+
+	[Fact]
+	public void ResolveTools_CanDisableToolSearch()
+	{
+		var tools = CliEnvironment.ResolveTools(new CliArguments { Tools = ["-tool_search"] }, Path.GetTempPath());
+
+		Assert.DoesNotContain(tools, static tool => tool.Name == "tool_search");
+
+		// 显式关闭 builtin:tool-search 时目录里也不再有它，纯名字列表选不回来。
+		var settings = new PiWeft.CodingAgent.Settings.CodingAgentSettings
+		{
+			ExtensionRules = new PiWeft.CodingAgent.Extensions.ExtensionRules(["-builtin:tool-search"], []),
+		};
+		var blocked = CliEnvironment.ResolveTools(new CliArguments { Tools = ["tool_search"] }, Path.GetTempPath(), settings);
+		Assert.Empty(blocked);
 	}
 
 	[Fact]

@@ -30,7 +30,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - CLI 产物/程序集名保持 `pi`；`--version` 报告 RPC 契约版本 **1.3.0**。
 - 保留 `PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、项目 `.pi`、配置文件名与 v3 JSONL 会话格式。损坏的会话头 `cwd` 回退到当前目录。
 - 系统提示词只在运行时构造，不写入会话。未知字段原样保留：会话头、条目顶层、已知角色的未建模字段（`Extra`）、未知角色整体（`CustomMessage.Raw`）、未知条目（`UnknownSessionEntry`）；`usage` / `usage.cost` 的未知字段同样保留。新增已知角色字段时须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys`。
-- 默认工具与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 `todo` 与 `ask_question`；Windows 默认含 `powershell`。`grep`/`find`/`ls`/`codemode` 需显式开启。`--tools` 支持整体替换、`+name`/`-name` 与 `--exclude-tools` 通配。
+- 默认工具与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 `todo`、`ask_question` 与 `tool_search`（MCP 工具默认是 codemode exposure，靠它发现）；Windows 默认含 `powershell`。`grep`/`find`/`ls`/`codemode` 需显式开启。`--tools` 支持整体替换、`+name`/`-name` 与 `--exclude-tools` 通配。
 - `write`/`edit` 就地写入（与 pi 的 `fs.writeFile` 同语义）：保持 inode、硬链接、权限位与已打开句柄；会话/设置/导入这些需要原子性的落盘仍走同目录临时文件 + rename。
 - 图片进上下文前按模型 `inputLimits.images.resize` 处理，`read` 工具与所有用户附件共用同一条管线。限制内原样保留（动画 GIF/WebP 不动）；超限先应用 EXIF 方向，按 Lanczos3 缩到 `maxWidth/maxHeight`，再在 PNG 与 JPEG 质量阶梯（`jpegQuality`/85/70/55/40）里取能进 base64 字节预算的最小者，仍超就按 0.75 递减到 1×1。输出带尺寸映射括注；无法解码的图只留一句括注，坏数据不进上下文。
 - 工具结果的图片（MCP、扩展、截图工具）也在进入历史前按同一套限制处理，括注作为额外文本块追加；与 `read` 的区别是处理失败时保留原图块（工具已经产出它，删掉等于改变工具行为）。

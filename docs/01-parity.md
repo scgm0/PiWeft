@@ -105,6 +105,8 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 发现 `<agentDir>/extensions` 与受信项目的 `.pi/extensions`（`.js/.mjs/.cjs`、`.ts/.mts/.cts/.tsx`，排除 `.d.ts`）；显式 `-e` 与 `settings.extensions` 不受信任门控；同一路径只加载一次。
 - `settings.extensions` 的 `!glob`/`+path`/`-path` 过滤发现结果（`!` 只实现 `*`/`**`/`?`，不支持字符类）：全局按「排除 → 包含 → 排除」、项目最后一条匹配覆盖，与 pi 的 package-manager 一致。停用的扩展仍出现在设置页，只是不进宿主。
 - 内置扩展是原生实现；`-builtin:mcp`/`-builtin:llama.cpp`/`-builtin:codemode`/`-builtin:tool-search` 分别关掉 MCP 连接、`/llama`、codemode 与 `tool_search`。设置页开关写 `settings.json`，改动在新建会话或重启后生效。
+- 桌面设置页另列「桌面内置扩展」：只列已移植的 PiDeck `pi-deck-*`（去 `.ts` 后缀），随应用提供、不写 `settings.extensions`，开关只读。
+- `tool_search` 与 codemode 一样是目录里的内置工具，但默认启用（pi 的 `builtin:tool-search` 是 `defaultActive: false`）：MCP 工具默认 codemode exposure，不默认开启就没有发现入口。`-tool_search` 与 `-builtin:tool-search` 都能关掉它。
 - 注册面：`pi.on`、`pi.registerTool`、`pi.registerCommand`、`pi.registerFlag`/`getFlag`、`pi.ui.*`。未知 `--flag` 交给注册者，无注册者时报错退出 2。
 - 事件：实际派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`；`message_update`、`tool_execution_update`、provider/context 类事件尚未派发。
 - 事件处理器可返回对象；返回值合并进 payload，与就地改写等价。

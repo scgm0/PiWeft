@@ -138,6 +138,23 @@ public sealed class ConfigurationViewTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ToolSearchIsListedAsADefaultToolAndCanBeTurnedOff()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+		ConversationPerformanceTests.Layout(view.View, 640, 720);
+
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == "tool_search");
+
+		// 和别的默认工具一样用 chip 的 × 关掉，只写增量。
+		ImagePreviewTests.Click(Find<Button>(view.View)
+			.First(button => HoverHints.Text(button) == Strings.ConfigRemoveTool("tool_search")));
+		view.SaveDraft();
+		Assert.Equal(new[] { "-tool_search" }, Store.Read(ConfigFile.Settings).Parse()["defaultTools"]!
+			.AsArray().Select(node => node!.GetValue<string>()));
+	}
+
+	[Fact]
 	public void SaveAvailabilityTracksTheDraftAndRaisesStateChanges()
 	{
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });

@@ -50,8 +50,9 @@ public class SelfCheckTests : IDisposable
 		Assert.True(process.ExitCode == 0, $"self-check exited {process.ExitCode}\n{stdout}\n{stderr}");
 		Assert.Contains("PiWeft Desktop 自检", stdout);
 		Assert.Contains(Strings.SelfCheckModel, stdout);
-		// 与 pi 的默认工具集一致（grep/find/ls 默认关闭），外加 PiDeck 依赖的 todo/ask_question。
-		Assert.Contains($"{Strings.SelfCheckTools}: read, bash, edit, write, todo, ask_question", stdout);
+		// 与 pi 的默认工具集一致（grep/find/ls 默认关闭），外加 PiDeck 依赖的 todo/ask_question
+		// 与发现 MCP 工具用的 tool_search。
+		Assert.Contains($"{Strings.SelfCheckTools}: tool_search, read, bash, edit, write, todo, ask_question", stdout);
 		Assert.Contains(Strings.SelfCheckModels, stdout);
 		Assert.Contains(Strings.SelfCheckOk, stdout);
 		Assert.Contains("Logging started: application=desktop", stderr);

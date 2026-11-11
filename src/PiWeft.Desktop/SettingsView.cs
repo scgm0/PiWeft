@@ -855,6 +855,19 @@ public sealed class SettingsView
 		var discovered = descriptors
 			.Where(static descriptor => !descriptor.Builtin)
 			.ToArray();
+		var desktopRows = new StackPanel().Spacing(AppTheme.Space2);
+		foreach (var extension in DesktopExtensions.All)
+		{
+			desktopRows.Children(ExtensionToggleRow(
+				extension.Name,
+				extension.Description,
+				enabled: true,
+				toggleable: false,
+				detail: Strings.SettingsDesktopExtensionNative,
+				onChanged: static _ => { },
+				stateText: Strings.SettingsDesktopExtensionBadge));
+		}
+
 		var extensionRows = new StackPanel().Spacing(AppTheme.Space2);
 		if (discovered.Length == 0)
 		{
@@ -885,6 +898,9 @@ public sealed class SettingsView
 				Hint(Strings.SettingsBuiltinExtensionsHint),
 				builtins,
 				Hint(Strings.SettingsExtensionsRestart))),
+			Group("layout-grid", Strings.SettingsDesktopExtensions, new StackPanel().Spacing(AppTheme.Space3).Children(
+				Hint(Strings.SettingsDesktopExtensionsHint),
+				desktopRows)),
 			Group("package", Strings.SettingsInstalledExtensions, new StackPanel().Spacing(AppTheme.Space3).Children(
 				Hint(Strings.SettingsInstalledExtensionsHint),
 				extensionRows,

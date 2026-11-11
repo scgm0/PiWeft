@@ -43,6 +43,20 @@ public sealed class ConfigurationToolsTests
 	}
 
 	[Fact]
+	public void ToolSearchIsAToggleableDefaultTool()
+	{
+		// tool_search 在默认集里：关掉写增量，界面上就是一个能开关的普通工具。
+		Assert.Contains("tool_search", CodingAgentSettings.DefaultToolNames);
+		Assert.Contains("tool_search", ConfigurationTools.Resolve(null));
+
+		var without = ConfigurationTools.SetEnabled(null, null, "tool_search", false);
+		Assert.Equal(new[] { "-tool_search" }, without);
+		Assert.DoesNotContain("tool_search", ConfigurationTools.Resolve(without));
+
+		Assert.Null(ConfigurationTools.SetEnabled(null, without, "tool_search", true));
+	}
+
+	[Fact]
 	public void ProjectLayerResolvesAgainstTheInheritedEntries()
 	{
 		IReadOnlyList<string> global = new[] { "read", "bash" };
@@ -78,7 +92,9 @@ public sealed class ConfigurationToolsTests
 	{
 		Assert.Equal("read", ConfigurationTools.Catalog[0]);
 		Assert.Contains("codemode", ConfigurationTools.Catalog);
+		Assert.Contains("tool_search", ConfigurationTools.Catalog);
 		Assert.True(ConfigurationTools.IsExtension("codemode"));
+		Assert.True(ConfigurationTools.IsExtension("tool_search"));
 		Assert.False(ConfigurationTools.IsExtension("read"));
 		// 与 pi 一致：powershell 全平台都在目录里（不默认启用），非 Windows 执行时才报错。
 		Assert.Contains("powershell", ConfigurationTools.Catalog);

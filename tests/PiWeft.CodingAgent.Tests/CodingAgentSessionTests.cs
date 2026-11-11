@@ -275,12 +275,13 @@ public class CodingAgentSessionTests : IDisposable
 			["preamble", "tools", "rules", "cwd"],
 			system.Sections!.Keys.ToList());
 		Assert.NotNull(system.ToolsAdded);
-		// 与 pi 一致：默认集只有 read/bash/edit/write，另加 PiDeck 依赖的原生 todo/ask_question。
+		// 默认集是 read/bash/edit/write，另加 PiDeck 依赖的原生 todo/ask_question 与 tool_search。
 		// grep/find/ls/powershell/codemode 进目录但不默认启用。
-		Assert.Equal(6, system.ToolsAdded!.Count);
-		Assert.Equal(6, session.Tools.Count);
+		Assert.Equal(7, system.ToolsAdded!.Count);
+		Assert.Equal(7, session.Tools.Count);
 		Assert.Contains(session.Tools, static tool => tool.Name == "todo");
 		Assert.Contains(session.Tools, static tool => tool.Name == "ask_question");
+		Assert.Contains(session.Tools, static tool => tool.Name == "tool_search");
 
 		Assert.DoesNotContain(
 			session.Session.Entries,
@@ -434,6 +435,43 @@ public class CodingAgentSessionTests : IDisposable
 		session.Dispose();
 
 		await Assert.ThrowsAsync<ObjectDisposedException>(() => session.PromptAsync("hi"));
+	}
+
+	[Fact]
+	public void ToolSearchIsOptionalAndRespectsTheBuiltinSwitch()
+	{
+		var withoutSearch = BuiltinTools.Tools(_root).Where(static tool => tool.Name != "tool_search").ToArray();
+		using var disabled = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+			Session = SessionManager.Create(_root, SessionsDir),
+			Skills = [],
+			Tools = withoutSearch,
+		});
+
+		// defaultTools 写 -tool_search 时调用方不传它，会话也不补回来。
+		Assert.DoesNotContain(disabled.Tools, static tool => tool.Name == "tool_search");
+		Assert.DoesNotContain(disabled.DeclaredTools, static tool => tool.Name == "tool_search");
+
+		// builtin:tool-search 停用时，即使工具集里带着占位也不能声明。
+		using var blocked = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+			Session = SessionManager.Create(_root, SessionsDir),
+			Skills = [],
+			Tools = BuiltinTools.Tools(_root),
+			Settings = new CodingAgentSettings
+			{
+				ExtensionRules = new ExtensionRules(["-builtin:tool-search"], []),
+			},
+		});
+
+		Assert.DoesNotContain(blocked.Tools, static tool => tool.Name == "tool_search");
+		Assert.DoesNotContain(blocked.DeclaredTools, static tool => tool.Name == "tool_search");
 	}
 
 	[Fact]

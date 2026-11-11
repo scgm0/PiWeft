@@ -10,13 +10,14 @@ internal static class ConfigurationTools
 {
 	public static IReadOnlyList<string> Catalog { get; } = BuildCatalog();
 
-	public static bool IsExtension(string name) => string.Equals(name, "codemode", StringComparison.Ordinal);
+	public static bool IsExtension(string name) =>
+		name is "codemode" or "tool_search";
 
 	private static List<string> BuildCatalog()
 	{
 		// 与 BuiltinTools.Create 一致：powershell 在所有平台都在目录里（PiDeck 的目录也只列一份），
 		// 默认不启用，非 Windows 执行时才报错。codemode 同理，只是多一个扩展分组。
-		List<string> names = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls", "todo", "ask_question", "codemode"];
+		List<string> names = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls", "todo", "ask_question", "tool_search", "codemode"];
 		return names;
 	}
 

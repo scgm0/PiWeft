@@ -167,7 +167,9 @@ public sealed record CodingAgentSettings
 	/// 未配置 <c>defaultTools</c> 时的默认工具集，与 pi 一致（<c>read</c>/<c>bash</c>/<c>edit</c>/<c>write</c>），
 	/// 另外保留 PiDeck 依赖的原生 <c>todo</c> 与 <c>ask_question</c>。
 	/// pi 默认关闭的 <c>grep</c>/<c>find</c>/<c>ls</c> 需要 <c>--tools</c> 或 <c>defaultTools</c> 显式开启。
-	public static readonly string[] DefaultToolNames = ["read", "bash", "edit", "write", "todo", "ask_question"];
+	/// <c>tool_search</c> 也在默认集：MCP 工具默认是 codemode exposure，没有它就只能靠 codemode
+	/// 发现；关掉它和关掉其它工具一样写 <c>-tool_search</c>。
+	public static readonly string[] DefaultToolNames = ["read", "bash", "edit", "write", "todo", "ask_question", "tool_search"];
 
 	public static string GlobalPath(string? agentDir = null) =>
 		Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "settings.json");

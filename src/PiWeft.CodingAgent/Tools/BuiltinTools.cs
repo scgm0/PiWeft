@@ -11,6 +11,10 @@ public static class BuiltinTools
 {
 	public static IReadOnlyList<BuiltinTool> Create(string cwd, Func<PiWeft.Ai.Model?>? model = null) =>
 	[
+		// tool_search 与 pi 的 builtin:tool-search 同义：MCP 工具默认是 codemode exposure，
+		// 没有它就只能靠 codemode 发现。默认启用，可像其它工具一样用 defaultTools 关掉。
+		ToolSearchTool.CreatePlaceholder(),
+
 		new BuiltinTool(
 			FileTools.Read(cwd, model),
 			"Read file contents",

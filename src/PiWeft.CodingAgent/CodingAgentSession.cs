@@ -27,6 +27,7 @@ using AgentRuntime = PiWeft.Agent.Agent;
 
 // 会话上也有 `Tools` 属性，因此给 todo 工具工厂起别名。
 using TodoToolFactory = PiWeft.CodingAgent.Tools.TodoTool;
+using ToolSearchToolFactory = PiWeft.CodingAgent.Tools.ToolSearchTool;
 using AskQuestionToolFactory = PiWeft.CodingAgent.Tools.AskQuestionTool;
 
 // `PiWeft.JavaScript` 里也有 CodeModeTool（沙箱侧类型），这里只用工具工厂。
@@ -287,6 +288,11 @@ public sealed partial class CodingAgentSession : IDisposable
 			}
 		}
 
+		// tool_search 与 codemode 一样需要会话上下文：目录里是占位，这里换成绑定实现。
+		_toolSearch = Settings.IsBuiltinExtensionEnabled(ExtensionRules.ToolSearchBuiltin)
+			? new Lazy<AgentTool>(CreateToolSearchTool)
+			: null;
+
 		// 把占位的 todo 工具换成绑定到本会话的版本，使其能读写当前分支的 PiDeck 兼容快照。
 		// 切换会话（SwitchSession/ForkAt）时闭包会读到新的 Session，无需重建工具。
 		for (var index = 0; index < builtins.Count; index++)
@@ -302,6 +308,10 @@ public sealed partial class CodingAgentSession : IDisposable
 			else if (LinkedSessionsTool.IsName(builtins[index].Tool.Name))
 			{
 				builtins[index] = LinkedSessionsTool.Bind(builtins[index].Tool.Name, () => this);
+			}
+			else if (_toolSearch is { } toolSearch && builtins[index].Tool.Name == ToolSearchToolFactory.Name)
+			{
+				builtins[index] = new BuiltinTool(toolSearch.Value, ToolSearchToolFactory.Snippet, []);
 			}
 			else if (builtins[index].Tool.Name == "bash")
 			{
@@ -320,10 +330,16 @@ public sealed partial class CodingAgentSession : IDisposable
 			}
 		}
 
-		// builtin:codemode 停用时，即使调用方把目录里的占位也传进来，也不能让它复活。
+		// builtin:codemode / builtin:tool-search 停用时，即使调用方把目录里的占位也传进来，
+		// 也不能让它们复活。
 		if (!Settings.IsBuiltinExtensionEnabled(ExtensionRules.CodemodeBuiltin))
 		{
 			builtins.RemoveAll(static tool => string.Equals(tool.Tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal));
+		}
+
+		if (_toolSearch is null)
+		{
+			builtins.RemoveAll(static tool => string.Equals(tool.Tool.Name, ToolSearchToolFactory.Name, StringComparison.Ordinal));
 		}
 
 		// 关联会话工具跟宿主能力走，不属于 pi 的内置工具集（与 PiDeck 的扩展工具同义）：
@@ -361,10 +377,6 @@ public sealed partial class CodingAgentSession : IDisposable
 		{
 			builtins.Add(CodeModeToolFactory.CreatePlaceholder());
 		}
-
-		_toolSearch = Settings.IsBuiltinExtensionEnabled(ExtensionRules.ToolSearchBuiltin)
-			? new Lazy<AgentTool>(CreateToolSearchTool)
-			: null;
 
 		// 扩展工具并表要在内置工具集定稿之后、代理建立之前：早了会被 _fullTools 覆盖，
 		// 晚了 ApplyTools 还没有 _agent 可用。
@@ -1629,11 +1641,10 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		var loaded = LoadedToolNames();
-		var hasDiscovery = effective.Any(static tool => IsDiscoveryExposure(tool.Tool.Exposure));
-		var toolSearch = hasDiscovery ? _toolSearch?.Value : null;
 
 		// 声明给模型：direct 工具 + tool_search 加载过的非 direct 工具。
-		var declared = new List<BuiltinTool>(effective.Count + 1);
+		// tool_search 自己就是 direct 工具，走同一条路径进来，不额外补一份。
+		var declared = new List<BuiltinTool>(effective.Count);
 		foreach (var tool in effective)
 		{
 			var exposure = tool.Tool.Exposure;
@@ -1643,11 +1654,6 @@ public sealed partial class CodingAgentSession : IDisposable
 			{
 				declared.Add(tool);
 			}
-		}
-
-		if (toolSearch is not null)
-		{
-			declared.Add(new BuiltinTool(toolSearch, "Search for tools that are not loaded yet and load the matches", []));
 		}
 
 		var codemodeActive = effective.Any(static tool => tool.Tool.Name == CodeModeToolFactory.Name);
@@ -1671,10 +1677,6 @@ public sealed partial class CodingAgentSession : IDisposable
 		List<AgentTool> callableTools = [.. effective
 			.Select(static tool => tool.Tool)
 			.Where(static tool => tool.Exposure != ToolExposure.ModelOnly)];
-		if (toolSearch is not null)
-		{
-			callableTools.Add(toolSearch);
-		}
 		_agent.SetTools(callableTools, declared.Select(static tool => tool.Tool).ToList());
 		_promptTools = declared;
 		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(declared));
@@ -1684,7 +1686,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	private void RefreshSystemPrompt() =>
 		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(_promptTools));
 
-	private const string ToolSearchName = "tool_search";
+	private const string ToolSearchName = ToolSearchToolFactory.Name;
 
 	private static bool IsDiscoveryExposure(string exposure) =>
 		string.Equals(exposure, ToolExposure.Codemode, StringComparison.Ordinal)
@@ -2076,28 +2078,8 @@ public sealed partial class CodingAgentSession : IDisposable
 	{
 		Name = ToolSearchName,
 		Label = ToolSearchName,
-		Description =
-			$"# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\n" +
-			$"Some of the tools, such as tools of MCP servers, may not have been provided to you upfront, and you should use this tool (`{ToolSearchName}`) to search for the required tools. " +
-			$"For MCP tool discovery, always use `{ToolSearchName}`.",
-		Parameters = new JsonObject
-		{
-			["type"] = "object",
-			["properties"] = new JsonObject
-			{
-				["query"] = new JsonObject
-				{
-					["type"] = "string",
-					["description"] = "Search query for deferred tools.",
-				},
-				["limit"] = new JsonObject
-				{
-					["type"] = "number",
-					["description"] = "Maximum number of tools to return. Defaults to 8.",
-				},
-			},
-			["required"] = new JsonArray("query"),
-		},
+		Description = ToolSearchToolFactory.Description,
+		Parameters = ToolSearchToolFactory.Parameters(),
 		Execute = SearchToolsAsync,
 	};
 
@@ -3893,6 +3875,12 @@ public sealed partial class CodingAgentSession : IDisposable
 			tools = [.. tools, CodeModeToolFactory.CreatePlaceholder().Tool];
 		}
 
+		// builtin:tool-search 停用时，刷新工具集也不能把它带回来。
+		if (_toolSearch is null)
+		{
+			tools = [.. tools.Where(static tool => !string.Equals(tool.Name, ToolSearchToolFactory.Name, StringComparison.Ordinal))];
+		}
+
 		// 同样把占位 todo 工具换成绑定到本会话的版本，保持提示词与执行一致。
 		var bound = new List<AgentTool>(tools.Count);
 		foreach (var tool in tools)
@@ -3903,6 +3891,7 @@ public sealed partial class CodingAgentSession : IDisposable
 				AskQuestionToolFactory.Name => AskQuestionToolFactory.Create(() => this).Tool,
 				LinkedSessionsTool.StartName or LinkedSessionsTool.SendName or LinkedSessionsTool.ListName =>
 					LinkedSessionsTool.Bind(tool.Name, () => this).Tool,
+				ToolSearchToolFactory.Name when _toolSearch is { } lazy => lazy.Value,
 				_ => tool,
 			});
 		}

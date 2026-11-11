@@ -45,6 +45,18 @@ public sealed class ExtensionSettingsTests : IDisposable
 		});
 
 	[Fact]
+	public void DesktopBuiltinCatalogMatchesPiDeckEntries()
+	{
+		var all = DesktopExtensions.All;
+
+		// PiDeck 的 14 个内置项里只有 10 个已移植；未移植的不列出，避免看起来在生效。
+		Assert.Equal(10, all.Count);
+		Assert.All(all, static extension => Assert.DoesNotContain(".ts", extension.Name, StringComparison.Ordinal));
+		Assert.Contains(all, static extension => extension.Name == "pi-deck-request-size-recovery");
+		Assert.DoesNotContain(all, static extension => extension.Name == "pi-deck-model-trace");
+	}
+
+	[Fact]
 	public void WriterChangesOnlyTheExtensionsArray()
 	{
 		Directory.CreateDirectory(AgentDir);
@@ -84,17 +96,21 @@ public sealed class ExtensionSettingsTests : IDisposable
 		ConversationPerformanceTests.Layout(view.View, 800, 720);
 
 		var toggles = Find<ToggleSwitch>(view.View).ToArray();
-		Assert.Equal(5, toggles.Length);
+		// 4 个 Pi 内置 + 10 个桌面内置 + 1 个刚发现的文件扩展。
+		Assert.Equal(15, toggles.Length);
+		var texts = Find<TextBlock>(view.View).Select(static block => block.Text ?? string.Empty).ToArray();
+		Assert.Contains("pi-deck-ask-question", texts);
+		Assert.DoesNotContain(texts, static text => text.Contains(".ts", StringComparison.Ordinal));
 
-		// 前四行是 builtin:mcp / llama.cpp / codemode / tool-search，第五行是刚发现的扩展。
+		// 前四行是 builtin:mcp / llama.cpp / codemode / tool-search，最后一行的文件扩展可写盘。
 		toggles[0].IsChecked = false;
 		var entries = JsonNode.Parse(File.ReadAllText(SettingsPath))!["extensions"]!.AsArray()
 			.Select(node => node!.GetValue<string>()).ToArray();
 		Assert.Contains("-builtin:mcp", entries);
 
 		toggles = Find<ToggleSwitch>(view.View).ToArray();
-		Assert.Equal(5, toggles.Length);
-		toggles[4].IsChecked = false;
+		Assert.Equal(15, toggles.Length);
+		toggles[14].IsChecked = false;
 		entries = JsonNode.Parse(File.ReadAllText(SettingsPath))!["extensions"]!.AsArray()
 			.Select(node => node!.GetValue<string>()).ToArray();
 		Assert.Contains("-" + Path.GetFullPath(extensionPath).Replace('\\', '/'), entries);
