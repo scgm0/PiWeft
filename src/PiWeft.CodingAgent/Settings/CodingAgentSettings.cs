@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using PiWeft.Ai;
 using PiWeft.Ai.Json;
+using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Security;
 using PiWeft.CodingAgent.Session;
 
@@ -124,6 +125,15 @@ public sealed record CodingAgentSettings
 
 	public IReadOnlyList<string> Extensions { get; init; } = [];
 
+	/// 当前生效的扩展过滤规则。加载时构建一次，避免每次判断都重新分配。
+	public ExtensionRules ExtensionRules { get; init; } = ExtensionRules.Empty;
+
+	/// 判断一个扩展路径是否启用。没有匹配规则时返回 <see langword="true"/>。
+	public bool IsExtensionEnabled(string path) => ExtensionRules.IsEnabled(path);
+
+	/// 判断一个内置扩展是否启用。
+	public bool IsBuiltinExtensionEnabled(string name) => ExtensionRules.IsBuiltinEnabled(name);
+
 	/// 项目信任的默认决策：<c>always</c>、<c>never</c> 或 <c>ask</c>。
 	/// 默认 <c>ask</c>（与 pi 一致）：交互场景弹卡询问，RPC/print 等无 UI 场景按不受信处理。
 	public string DefaultProjectTrust { get; init; } = "ask";
@@ -176,14 +186,20 @@ public sealed record CodingAgentSettings
 		// extensions 的相对路径按声明作用域解析（pi 的 getBaseDirForScope）：用户级是 agentDir，
 		// 项目级是 <cwd>/.pi。不能拿 cwd 当用户级路径的基准，不可信仓库里放个同名文件就能顶替全局扩展。
 		var declared = project?.Extensions ?? global?.Extensions;
+		var projectBaseDirectory = Path.GetDirectoryName(ProjectPath(cwd))!;
 		var baseDirectory = project?.Extensions is not null
-			? Path.GetDirectoryName(ProjectPath(cwd))!
+			? projectBaseDirectory
 			: resolvedAgentDir;
+		var globalFilters = ResolveExtensionFilters(global?.Extensions, resolvedAgentDir);
+		var projectFilters = ResolveExtensionFilters(project?.Extensions, projectBaseDirectory);
 
 		// 安全门只认全局设置，而且要读原始 JSON：档位表与会话覆盖都不是扁平字段。
 		return merged with
 		{
 			Extensions = ResolveExtensionPaths(declared, baseDirectory),
+			ExtensionRules = globalFilters.Count == 0 && projectFilters.Count == 0
+				? ExtensionRules.Empty
+				: new ExtensionRules(globalFilters, projectFilters),
 			Security = SecurityConfig.Load(resolvedAgentDir),
 		};
 	}
@@ -199,8 +215,15 @@ public sealed record CodingAgentSettings
 		foreach (var raw in paths)
 		{
 			var value = raw.Trim();
-			if (value.Length == 0)
+			if (value.Length == 0 || ExtensionRules.IsRule(value))
 			{
+				continue;
+			}
+
+			// builtin: 是虚拟标识符，不是文件路径；原样交给扩展发现。
+			if (value.StartsWith("builtin:", StringComparison.Ordinal))
+			{
+				resolved.Add(value);
 				continue;
 			}
 
@@ -219,6 +242,40 @@ public sealed record CodingAgentSettings
 		}
 
 		return resolved;
+	}
+
+	/// <c>+</c>/<c>-</c>/<c>!</c> 规则按声明层各自的基准目录展开成绝对路径；
+	/// 显式路径只是来源声明，不参与过滤。
+	private static IReadOnlyList<string> ResolveExtensionFilters(
+		IReadOnlyList<string>? entries,
+		string baseDirectory)
+	{
+		if (entries is not { Count: > 0 })
+		{
+			return [];
+		}
+
+		var filters = new List<string>(entries.Count);
+		foreach (var raw in entries)
+		{
+			var value = raw.Trim();
+			if (value.Length < 2 || value[0] is not ('+' or '-' or '!'))
+			{
+				continue;
+			}
+
+			var body = value[1..].Trim();
+			if (body.Length == 0)
+			{
+				continue;
+			}
+
+			filters.Add(value[0] + (value[0] == '!'
+				? ExtensionRules.ResolvePattern(body, baseDirectory)
+				: ExtensionRules.ResolveExact(body, baseDirectory)));
+		}
+
+		return filters;
 	}
 
 	/// 只读**全局**设置里的 <c>httpProxy</c>。启动期就要把代理装进环境变量，而完整的

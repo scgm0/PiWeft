@@ -215,15 +215,22 @@ public sealed class ExtensionHost : IDisposable
 		bool trusted = true,
 		string? agentDir = null,
 		IReadOnlyList<string>? explicitPaths = null,
-		bool includeDiscovered = true)
+		bool includeDiscovered = true,
+		ExtensionRules? rules = null)
 	{
 		if (_disposed)
 		{
 			return;
 		}
 
-		foreach (var descriptor in ExtensionDescriptor.Discover(cwd, trusted, agentDir, explicitPaths, includeDiscovered))
+		foreach (var descriptor in ExtensionDescriptor.Discover(cwd, trusted, agentDir, explicitPaths, includeDiscovered, rules))
 		{
+			// 停用的扩展不执行；发现结果仍保留给设置页画开关。
+			if (!descriptor.Enabled)
+			{
+				continue;
+			}
+
 			Load(descriptor);
 		}
 	}
@@ -232,6 +239,12 @@ public sealed class ExtensionHost : IDisposable
 	{
 		var state = new ExtensionState { Descriptor = descriptor };
 		_states.Add(state);
+
+		if (!descriptor.Enabled)
+		{
+			state.Diagnostics.Add("扩展已在 settings.extensions 中停用。");
+			return state;
+		}
 
 		if (descriptor.Builtin)
 		{

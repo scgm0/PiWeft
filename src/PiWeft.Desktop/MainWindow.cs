@@ -5,6 +5,7 @@ using PiWeft.Ai;
 using PiWeft.Cli;
 using PiWeft.Agent;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Models;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
@@ -27,6 +28,7 @@ public sealed partial class MainWindow : Window
 	private readonly List<object> _tabEntries = [];
 	private McpConnection? _mcp;
 	private IReadOnlyList<AgentTool> _mcpTools = [];
+	private readonly SemaphoreSlim _mcpReconnectGate = new(1, 1);
 	private SettingsView? _settingsView;
 
 	private SettingsDialog? _settingsDialog;
@@ -2902,6 +2904,7 @@ public sealed partial class MainWindow : Window
 		AgentDir = SessionPaths.GetAgentDir(),
 		LoadArchived = () => _catalog.ListDeleted(),
 		Cwd = CurrentSession()?.Cwd ?? _cwd,
+		ProjectTrusted = CurrentSession()?.ProjectTrusted ?? _environment?.ProjectTrusted ?? true,
 		ModelCount = _models.Count,
 		Models = _models,
 		Tools = [.. CurrentSession()?.Tools.Select(static tool => tool.Name) ?? []],
@@ -2909,18 +2912,65 @@ public sealed partial class MainWindow : Window
 		Resources = CurrentSession()?.Resources ?? ResourceResolver.Resolve(
 			CurrentSession()?.Cwd ?? _cwd,
 			SessionPaths.GetAgentDir(),
-			_environment?.ProjectTrusted ?? true),
-		McpServers = [.. _mcp?.Servers.Select(state => new McpServerStatus(state.Name, state.Connected, state.ToolCount, state.Error)) ?? []],
+			_environment?.ProjectTrusted ?? true,
+			settings: _environment?.Settings),
+		McpServers = McpBuiltinEnabled
+			? [.. _mcp?.Servers.Select(state => new McpServerStatus(state.Name, state.Connected, state.ToolCount, state.Error)) ?? []]
+			: [],
 		Session = CurrentSession(),
 	};
 
 	private CodingAgentSession? CurrentSession() => CurrentTab()?.Session ?? _lastSessionTab?.Session;
 
+	/// 内置 mcp 扩展被 settings.extensions 停用，或命令行显式关了 MCP/工具时不连服务器，
+	/// 新会话也不再挂 MCP 工具。
+	private bool McpBuiltinEnabled =>
+		!_arguments.NoMcp
+		&& !_arguments.NoTools
+		&& (_environment?.Settings.IsBuiltinExtensionEnabled(ExtensionRules.McpBuiltin) ?? true);
+
 	private IReadOnlyList<AgentTool> McpToolsFor(string cwd) =>
-		string.Equals(Path.GetFullPath(cwd), Path.GetFullPath(_cwd), StringComparison.Ordinal) ? _mcpTools : [];
+		McpBuiltinEnabled && string.Equals(Path.GetFullPath(cwd), Path.GetFullPath(_cwd), StringComparison.Ordinal) ? _mcpTools : [];
 
 	private async Task ConnectMcpAsync()
 	{
+		if (!McpBuiltinEnabled)
+		{
+			var disabled = _mcp;
+			Dispatch(() =>
+			{
+				_mcp = null;
+				_mcpTools = [];
+				// 连接被停用后，已打开会话里的 MCP 工具也要撤掉，避免继续调用已释放的连接。
+				foreach (var tab in _tabEntries.OfType<SessionTab>())
+				{
+					try
+					{
+						var tools = tab.Session.Tools;
+						if (tools.Any(static tool => tool.Name.StartsWith("mcp__", StringComparison.Ordinal)
+							|| McpResourceTools.IsResourceTool(tool.Name)))
+						{
+							tab.Session.SetTools(WithoutMcp(tools));
+						}
+					}
+					catch (ObjectDisposedException)
+					{
+						// 标签正在关闭：跳过。
+					}
+				}
+
+				_banner.Text(_arguments.NoMcp || _arguments.NoTools
+					? Strings.McpDisabledByFlag
+					: Strings.McpBuiltinDisabled);
+			});
+			if (disabled is not null)
+			{
+				_ = DisposeMcpAsync(disabled);
+			}
+
+			return;
+		}
+
 		try
 		{
 			var mcpWatch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
@@ -2929,6 +2979,21 @@ public sealed partial class MainWindow : Window
 				_cwd,
 				onError: message => Dispatch(() => _banner.Text($"MCP：{message}")),
 				includeProject: _environment?.ProjectTrusted ?? true).ConfigureAwait(false);
+
+			// 连接期间开关可能被关掉：不要在设置已经生效后把连接装回去。
+			if (!McpBuiltinEnabled)
+			{
+				try
+				{
+					await connection.DisposeAsync().ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					AppLog.Failure(AppLog.For<MainWindow>(), "Dispose MCP connection after disable", ex);
+				}
+
+				return;
+			}
 
 			if (mcpWatch is not null)
 			{
@@ -2982,22 +3047,42 @@ public sealed partial class MainWindow : Window
 
 	internal async Task ReconnectMcpAsync()
 	{
-		var previous = _mcp;
-		_mcp = null;
-		_mcpTools = [];
-		if (previous is not null)
+		// 设置页的 mcp 开关与重连按钮可能连续触发；并发重建会释放刚建好的连接。
+		if (!await _mcpReconnectGate.WaitAsync(0).ConfigureAwait(false))
 		{
-			try
-			{
-				await previous.DisposeAsync().ConfigureAwait(false);
-			}
-			catch (Exception ex)
-			{
-				AppLog.Failure(AppLog.For<MainWindow>(), "Dispose MCP before reconnect", ex);
-			}
+			return;
 		}
 
-		await ConnectMcpAsync().ConfigureAwait(false);
+		try
+		{
+			var previous = _mcp;
+			_mcp = null;
+			_mcpTools = [];
+			await DisposeMcpAsync(previous).ConfigureAwait(false);
+
+			await ConnectMcpAsync().ConfigureAwait(false);
+		}
+		finally
+		{
+			_mcpReconnectGate.Release();
+		}
+	}
+
+	private static async Task DisposeMcpAsync(McpConnection? connection)
+	{
+		if (connection is null)
+		{
+			return;
+		}
+
+		try
+		{
+			await connection.DisposeAsync().ConfigureAwait(false);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Dispose MCP connection", ex);
+		}
 	}
 
 	private static IReadOnlyList<AgentTool> ToolSetFor(McpConnection connection) =>

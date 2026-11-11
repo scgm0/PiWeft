@@ -10,6 +10,7 @@ using PiWeft.Ai.Providers.Mistral;
 using PiWeft.Ai.Providers.PiMessages;
 using PiWeft.Ai.Providers.OpenAi;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Models;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.Mcp;
@@ -526,6 +527,13 @@ public sealed class CliEnvironment
 
 		// 目录含默认不启用的 codemode，这样 --tools/--exclude-tools/defaultTools 才能选中它。
 		var catalog = arguments.NoBuiltinTools ? [] : BuiltinTools.CatalogTools(cwd);
+		// settings.extensions 关掉 builtin:codemode 后，目录里也不该再有它：
+		// 否则 defaultTools 写 +codemode 仍会把它带回来。
+		if (!settings.IsBuiltinExtensionEnabled(ExtensionRules.CodemodeBuiltin))
+		{
+			catalog = [.. catalog.Where(tool => !string.Equals(tool.Name, CodeModeTool.Name, StringComparison.Ordinal))];
+		}
+
 		if (catalog.Count == 0)
 		{
 			return [];
@@ -629,7 +637,7 @@ public sealed class CliEnvironment
 
 		// 环境启动时已解析好的决策；若本次调用显式带 --approve/--no-approve 则以它为准。
 		var projectTrusted = arguments.ProjectTrustOverride ?? ProjectTrusted;
-		var resources = ResourceResolver.Resolve(cwd, agentDir: null, includeProject: projectTrusted);
+		var resources = ResourceResolver.Resolve(cwd, agentDir: null, includeProject: projectTrusted, settings: Settings);
 		var explicitSkillRoots = ExplicitRoots(arguments.Skills, cwd);
 		var explicitTemplateRoots = ExplicitRoots(arguments.PromptTemplates, cwd);
 		var explicitThemeRoots = ExplicitRoots(arguments.Themes, cwd);

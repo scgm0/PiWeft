@@ -88,6 +88,21 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
+	public void DisabledExtensionStaysDiscoverableButDoesNotLoad()
+	{
+		var path = Path.GetFullPath(Write("off.js", "module.exports = function (pi) {};"));
+		var rules = new ExtensionRules(["-" + path], []);
+
+		using var host = new ExtensionHost();
+		host.Load(_cwd, trusted: true, _agentDir, rules: rules);
+
+		// 停用只阻止执行，发现结果仍保留，设置页才能把开关重新打开。
+		Assert.Empty(host.States);
+		var descriptor = Assert.Single(ExtensionDescriptor.Discover(_cwd, trusted: true, _agentDir, rules: rules));
+		Assert.False(descriptor.Enabled);
+	}
+
+	[Fact]
 	public void DeclarationFilesAreNotTreatedAsExtensions()
 	{
 		Write("types.d.ts", "export declare const x: number;");

@@ -256,10 +256,6 @@ public static partial class Strings
 	public const string SettingsResources = "资源";
 	public const string ResourcesPrompts = "提示词模板";
 	public const string ResourcesThemes = "主题";
-	public const string ResourcesExtensions = "扩展";
-
-	public const string ResourcesExtensionHint = "按 pi 约定发现的全局与项目扩展。这里只列举，不执行；失败或需转译的会写出原因。";
-
 	public const string ResourcesPackages = "pi 包";
 
 	public const string ResourcesSkillHint = "技能在任务匹配时按描述进入系统提示词，也可以用 /skill:name 显式触发。";

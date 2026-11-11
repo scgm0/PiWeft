@@ -10,7 +10,14 @@ public sealed record ResourceRoot(string Path, ResourceOrigin Origin);
 
 /// 资源页显示的一个扩展条目。<see cref="Note"/> 承载「为什么没生效」；
 /// 加载失败或 TypeScript 未转译的扩展如果只字不提，用户会以为它在跑。
-public sealed record ExtensionEntry(string Name, string Path, string Origin, bool Loaded, string Note);
+/// <see cref="Enabled"/> 是 settings 过滤规则的投影：停用的条目仍列出，方便重新打开。
+public sealed record ExtensionEntry(
+	string Name,
+	string Path,
+	string Origin,
+	bool Loaded,
+	string Note,
+	bool Enabled = true);
 
 public sealed record ResourceSnapshot
 {
@@ -37,11 +44,13 @@ public static class ResourceResolver
 	public static ResourceSnapshot Resolve(
 		string cwd,
 		string? agentDir = null,
-		bool includeProject = true)
+		bool includeProject = true,
+		CodingAgentSettings? settings = null)
 	{
 		var resolvedAgentDir = agentDir ?? SessionPaths.GetAgentDir();
 		var diagnostics = new List<string>();
 		var packages = PiPackageStore.Discover(cwd, resolvedAgentDir, includeProject);
+		settings ??= CodingAgentSettings.Load(cwd, resolvedAgentDir, includeProject);
 
 		return new ResourceSnapshot
 		{
@@ -49,16 +58,18 @@ public static class ResourceResolver
 			Templates = Prompts.PromptTemplates.Discover(PromptRoots(cwd, resolvedAgentDir, includeProject, packages)),
 			Themes = ThemeCatalog.Discover(ThemeRoots(cwd, resolvedAgentDir, includeProject, packages), diagnostics),
 			Packages = packages,
-			// 只发现、不执行：资源页要在会话建立之前就能列出扩展并说明状态，
-			// 而执行扩展代码属于宿主的事（ExtensionHost）。
+			// 只发现、不执行：资源快照要在会话建立之前就能列出扩展并说明状态，
+			// 而执行扩展代码属于宿主的事（ExtensionHost）。settings 的显式路径由宿主加载，
+			// 这里只跟约定目录和过滤规则，避免打开设置时顺手物化远端包。
 			Extensions = [.. PiWeft.CodingAgent.Extensions.ExtensionDescriptor
-				.Discover(cwd, includeProject, resolvedAgentDir)
+				.Discover(cwd, includeProject, resolvedAgentDir, rules: settings.ExtensionRules)
 				.Select(static descriptor => new ExtensionEntry(
 					Path.GetFileNameWithoutExtension(descriptor.FilePath),
 					descriptor.FilePath,
 					descriptor.Origin,
 					Loaded: false,
-					Note: descriptor.Supported ? string.Empty : descriptor.UnsupportedReason ?? "未加载"))],
+					Note: descriptor.Supported ? string.Empty : descriptor.UnsupportedReason ?? "未加载",
+					Enabled: descriptor.Enabled))],
 			Diagnostics = diagnostics,
 		};
 	}

@@ -283,6 +283,22 @@ public sealed class ExtensionDiscoveryTests : IDisposable
 	}
 
 	[Fact]
+	public void DisabledExtensionsStayInTheSnapshot()
+	{
+		var path = Path.Combine(AgentDir, "extensions", "off.js");
+		File.WriteAllText(path, "module.exports = function (pi) {};");
+		File.WriteAllText(
+			Path.Combine(AgentDir, "settings.json"),
+			new JsonObject { ["extensions"] = new JsonArray("-" + Path.GetFullPath(path)) }.ToJsonString());
+
+		var entry = Assert.Single(ResourceResolver.Resolve(Project, AgentDir, includeProject: true).Extensions);
+
+		// 资源快照要把停用状态带出来；否则设置页无从画开关。
+		Assert.False(entry.Enabled);
+		Assert.Equal("off", entry.Name);
+	}
+
+	[Fact]
 	public void ExtensionsAreListedWithTheirReasonAndRespectTrust()
 	{
 		File.WriteAllText(Path.Combine(AgentDir, "extensions", "good.js"), "module.exports = function (pi) {};");

@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
+using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
 using PiWeft.CodingAgent.Session;
@@ -433,6 +434,50 @@ public class CodingAgentSessionTests : IDisposable
 		session.Dispose();
 
 		await Assert.ThrowsAsync<ObjectDisposedException>(() => session.PromptAsync("hi"));
+	}
+
+	[Fact]
+	public void DisabledBuiltinExtensionsStayOutOfTheToolSet()
+	{
+		var deferred = new AgentTool
+		{
+			Name = "mcp__demo__lookup",
+			Label = "lookup",
+			Description = "Look something up.",
+			Exposure = ToolExposure.Deferred,
+			Execute = static _ => Task.FromResult(AgentToolResult.Text("ok")),
+		};
+		var script = new ScriptedStreamFn();
+		using var disabled = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = SessionManager.Create(_root, SessionsDir),
+			Skills = [],
+			ExtraTools = [deferred],
+			Settings = new CodingAgentSettings
+			{
+				ExtensionRules = new ExtensionRules(["-builtin:codemode", "-builtin:tool-search"], []),
+			},
+		});
+
+		var disabledTools = disabled.Tools.Select(static tool => tool.Name).ToArray();
+		Assert.DoesNotContain("codemode", disabledTools);
+		Assert.DoesNotContain("tool_search", disabledTools);
+
+		using var enabled = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = SessionManager.Create(_root, SessionsDir),
+			Skills = [],
+			ExtraTools = [deferred],
+		});
+
+		// deferred 工具需要 tool_search 才能被发现；开关打开时它回到工具集。
+		Assert.Contains("tool_search", enabled.Tools.Select(static tool => tool.Name));
 	}
 }
 
@@ -1181,4 +1226,5 @@ public sealed class CacheWarmerTests
 		Assert.Equal("scheduled", afterFirstRefresh!.State);
 		Assert.Equal("warm", afterFirstRefresh.Decision!.Action);
 	}
+
 }

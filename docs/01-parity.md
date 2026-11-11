@@ -103,6 +103,8 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 `src/PiWeft.CodingAgent/Extensions/`。一个扩展 = 一个 Jint 引擎 + 专属线程；注册与回调都投递到该线程。
 
 - 发现 `<agentDir>/extensions` 与受信项目的 `.pi/extensions`（`.js/.mjs/.cjs`、`.ts/.mts/.cts/.tsx`，排除 `.d.ts`）；显式 `-e` 与 `settings.extensions` 不受信任门控；同一路径只加载一次。
+- `settings.extensions` 的 `!glob`/`+path`/`-path` 过滤发现结果（`!` 只实现 `*`/`**`/`?`，不支持字符类）：全局按「排除 → 包含 → 排除」、项目最后一条匹配覆盖，与 pi 的 package-manager 一致。停用的扩展仍出现在设置页，只是不进宿主。
+- 内置扩展是原生实现；`-builtin:mcp`/`-builtin:llama.cpp`/`-builtin:codemode`/`-builtin:tool-search` 分别关掉 MCP 连接、`/llama`、codemode 与 `tool_search`。设置页开关写 `settings.json`，改动在新建会话或重启后生效。
 - 注册面：`pi.on`、`pi.registerTool`、`pi.registerCommand`、`pi.registerFlag`/`getFlag`、`pi.ui.*`。未知 `--flag` 交给注册者，无注册者时报错退出 2。
 - 事件：实际派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`；`message_update`、`tool_execution_update`、provider/context 类事件尚未派发。
 - 事件处理器可返回对象；返回值合并进 payload，与就地改写等价。

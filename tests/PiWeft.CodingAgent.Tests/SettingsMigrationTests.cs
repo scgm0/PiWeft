@@ -175,6 +175,85 @@ public class SettingsMigrationTests : IDisposable
 	}
 
 	[Fact]
+	public void DoubleStarSlashMatchesZeroSegmentsToo()
+	{
+		WriteGlobal("""{"extensions":["!**/*.test.js"]}""");
+
+		var settings = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+		var top = Path.Combine(AgentDir, "top.test.js");
+		var nested = Path.Combine(AgentDir, "a", "b", "deep.test.js");
+
+		// minimatch 的 **/ 可以跨零段；只写成 .*/ 会漏掉当前目录。
+		Assert.False(settings.IsExtensionEnabled(top));
+		Assert.False(settings.IsExtensionEnabled(nested));
+	}
+
+	[Fact]
+	public void ExtensionGlobWithoutADirectoryMatchesAnyDepth()
+	{
+		WriteGlobal("""{"extensions":["!*.test.js"]}""");
+
+		var settings = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+		var top = Path.Combine(AgentDir, "x.test.js");
+		var nested = Path.Combine(AgentDir, "nested", "deep", "x.test.js");
+
+		// pi 会拿文件名单独匹配 !*.test.js；不能只排除 <agentDir> 顶层。
+		Assert.False(settings.IsExtensionEnabled(top));
+		Assert.False(settings.IsExtensionEnabled(nested));
+		Assert.True(settings.IsExtensionEnabled(Path.Combine(AgentDir, "nested", "deep", "x.js")));
+	}
+
+	[Fact]
+	public void ExtensionGlobCollapsesDotsBeforeMatching()
+	{
+		WriteGlobal("""{"extensions":["!../ext/*.js"]}""");
+
+		var settings = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+		var outside = Path.GetFullPath(Path.Combine(AgentDir, "..", "ext", "x.js"));
+
+		// ! 的相对路径先按 agentDir 折叠 ..，再与绝对路径比对。
+		Assert.False(settings.IsExtensionEnabled(outside));
+	}
+
+	[Fact]
+	public void ExtensionFiltersResolveAgainstTheirDeclarationScope()
+	{
+		WriteGlobal("""{"extensions":["ext/on.js","-ext/off.js","+builtin:mcp"]}""");
+		var global = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+		var on = Path.GetFullPath(Path.Combine(AgentDir, "ext", "on.js"));
+		var off = Path.GetFullPath(Path.Combine(AgentDir, "ext", "off.js"));
+
+		// 显式路径只保留来源声明；过滤规则单独解析，不混进 Extensions。
+		Assert.Equal(new[] { on }, global.Extensions);
+		Assert.True(global.IsExtensionEnabled(on));
+		Assert.False(global.IsExtensionEnabled(off));
+		Assert.True(global.IsBuiltinExtensionEnabled("mcp"));
+		Assert.True(global.IsBuiltinExtensionEnabled("codemode"));
+
+		var projectDir = Path.Combine(Project, ".pi");
+		Directory.CreateDirectory(projectDir);
+		File.WriteAllText(Path.Combine(projectDir, "settings.json"),
+			"""{"extensions":["-off.js","-builtin:mcp"]}""");
+		var merged = CodingAgentSettings.Load(Project, AgentDir);
+		var projectOff = Path.GetFullPath(Path.Combine(projectDir, "off.js"));
+
+		Assert.False(merged.IsExtensionEnabled(projectOff));
+		// 项目规则最后求值，可以覆盖全局的 +builtin:mcp。
+		Assert.False(merged.IsBuiltinExtensionEnabled("mcp"));
+	}
+
+	[Fact]
+	public void ExplicitBuiltinExtensionStaysAVirtualIdentifier()
+	{
+		WriteGlobal("""{"extensions":["builtin:mcp"]}""");
+
+		var settings = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+
+		// builtin: 不是文件路径，不能被拼成 <agentDir>/builtin:mcp。
+		Assert.Equal(new[] { "builtin:mcp" }, settings.Extensions);
+	}
+
+	[Fact]
 	public void RelativeExtensionsResolveAgainstTheirDeclarationScope()
 	{
 		WriteGlobal("""{"extensions":["ext/user.js"]}""");

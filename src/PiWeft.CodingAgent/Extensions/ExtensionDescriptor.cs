@@ -30,6 +30,10 @@ public sealed record ExtensionDescriptor
 
 	public bool Missing { get; init; }
 
+	/// 设置里的 <c>+</c>/<c>-</c> 规则是否允许加载。停用的扩展仍进入发现结果，
+	/// 界面要能看到它并重新打开。
+	public bool Enabled { get; init; } = true;
+
 	/// 物化失败的原因（离线且无缓存、npm/git 命令失败）。为空时按常规规则判断。
 	public string? Error { get; init; }
 
@@ -63,12 +67,14 @@ public sealed record ExtensionDescriptor
 	/// 显式路径不受项目信任门控：它是用户自己写下的，不是仓库自带的。</param>
 	/// <param name="includeDiscovered">是否按约定目录发现。<c>-ne/--no-extensions</c> 关掉发现，
 	/// 但仍加载显式路径（与 pi 一致）。</param>
+	/// <param name="rules">settings 里的过滤规则；停用的条目仍然返回，只是 <see cref="Enabled"/> 为 false。</param>
 	public static IReadOnlyList<ExtensionDescriptor> Discover(
 		string cwd,
 		bool trusted = true,
 		string? agentDir = null,
 		IReadOnlyList<string>? explicitPaths = null,
-		bool includeDiscovered = true)
+		bool includeDiscovered = true,
+		ExtensionRules? rules = null)
 	{
 		var found = new List<ExtensionDescriptor>();
 		if (includeDiscovered)
@@ -85,7 +91,22 @@ public sealed record ExtensionDescriptor
 			CollectExplicit(found, path, cwd, agentDir);
 		}
 
-		return Dedupe(found);
+		var deduped = Dedupe(found);
+		if (rules is null || rules.IsEmpty)
+		{
+			return deduped;
+		}
+
+		// 停用的条目保留在列表里，界面据此画开关；真正加载时由宿主跳过。
+		return
+		[
+			.. deduped.Select(descriptor => descriptor with
+			{
+				Enabled = descriptor.Builtin
+					? rules.IsBuiltinEnabled(descriptor.FilePath["builtin:".Length..])
+					: rules.IsEnabled(descriptor.FilePath),
+			}),
+		];
 	}
 
 	/// 同一个文件既被约定目录发现、又被 <c>-e</c> 指到时只加载一次（pi 按解析后的路径去重）。

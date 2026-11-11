@@ -194,7 +194,7 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	private IReadOnlyList<BuiltinTool> _fullTools = [];
 
-	private readonly Lazy<AgentTool> _toolSearch;
+	private readonly Lazy<AgentTool>? _toolSearch;
 
 	private const string ToolLoadEntryType = "tool-load";
 
@@ -239,7 +239,7 @@ public sealed partial class CodingAgentSession : IDisposable
 
 		_explicitSkills = options.Skills;
 		_explicitTemplates = options.PromptTemplates;
-		Resources = options.Resources ?? ResourceResolver.Resolve(Cwd, agentDir: null, includeProject: options.ProjectTrusted);
+		Resources = options.Resources ?? ResourceResolver.Resolve(Cwd, agentDir: null, includeProject: options.ProjectTrusted, settings: options.Settings);
 		if (options.Skills is not null || options.PromptTemplates is not null)
 		{
 			// CLI 的 --no-skills / --no-prompt-templates 以显式空列表表达，优先于自动发现。
@@ -320,6 +320,12 @@ public sealed partial class CodingAgentSession : IDisposable
 			}
 		}
 
+		// builtin:codemode 停用时，即使调用方把目录里的占位也传进来，也不能让它复活。
+		if (!Settings.IsBuiltinExtensionEnabled(ExtensionRules.CodemodeBuiltin))
+		{
+			builtins.RemoveAll(static tool => string.Equals(tool.Tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal));
+		}
+
 		// 关联会话工具跟宿主能力走，不属于 pi 的内置工具集（与 PiDeck 的扩展工具同义）：
 		// 有宿主时无论 --tools 怎么配置都补齐，避免用户自定义 defaultTools 时关联会话静默消失。
 		if (Linked is not null)
@@ -347,14 +353,18 @@ public sealed partial class CodingAgentSession : IDisposable
 		};
 
 		// 有 exposure: codemode 的工具时自动启用 codemode（pi 的 autoEnableCodemode 行为）。
-		if (Settings.Codemode.AutoEnable
+		// 内置扩展开关优先：关掉 codemode 后即使工具声明了 codemode exposure 也不补工具。
+		if (Settings.IsBuiltinExtensionEnabled(ExtensionRules.CodemodeBuiltin)
+			&& Settings.Codemode.AutoEnable
 			&& builtins.Any(static tool => string.Equals(tool.Tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal))
 			&& builtins.TrueForAll(static tool => !string.Equals(tool.Tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)))
 		{
 			builtins.Add(CodeModeToolFactory.CreatePlaceholder());
 		}
 
-		_toolSearch = new Lazy<AgentTool>(CreateToolSearchTool);
+		_toolSearch = Settings.IsBuiltinExtensionEnabled(ExtensionRules.ToolSearchBuiltin)
+			? new Lazy<AgentTool>(CreateToolSearchTool)
+			: null;
 
 		// 扩展工具并表要在内置工具集定稿之后、代理建立之前：早了会被 _fullTools 覆盖，
 		// 晚了 ApplyTools 还没有 _agent 可用。
@@ -526,7 +536,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	{
 		ThrowIfDisposed();
 
-		var resolved = ResourceResolver.Resolve(Cwd, agentDir: null, includeProject: ProjectTrusted);
+		var resolved = ResourceResolver.Resolve(Cwd, agentDir: null, includeProject: ProjectTrusted, settings: Settings);
 		Resources = resolved with
 		{
 			// 显式传入的列表（--no-skills 等）在重载后继续生效。
@@ -1620,7 +1630,7 @@ public sealed partial class CodingAgentSession : IDisposable
 
 		var loaded = LoadedToolNames();
 		var hasDiscovery = effective.Any(static tool => IsDiscoveryExposure(tool.Tool.Exposure));
-		var toolSearch = hasDiscovery ? _toolSearch.Value : null;
+		var toolSearch = hasDiscovery ? _toolSearch?.Value : null;
 
 		// 声明给模型：direct 工具 + tool_search 加载过的非 direct 工具。
 		var declared = new List<BuiltinTool>(effective.Count + 1);
@@ -1876,7 +1886,8 @@ public sealed partial class CodingAgentSession : IDisposable
 				Cwd,
 				options.ProjectTrusted,
 				explicitPaths: options.ExtensionPaths,
-				includeDiscovered: options.DiscoverExtensions);
+				includeDiscovered: options.DiscoverExtensions,
+				rules: options.Settings.ExtensionRules);
 			ApplyFlagValues(host, options.FlagValues);
 			Extensions = host;
 		}
@@ -3855,6 +3866,12 @@ public sealed partial class CodingAgentSession : IDisposable
 	/// 用新的工具声明重建，未变动的工具沿用已有的措辞。
 	public void SetTools(IReadOnlyList<AgentTool> tools)
 	{
+		// builtin:codemode 停用后，MCP 工具刷新也不能把 codemode 带回来。
+		if (!Settings.IsBuiltinExtensionEnabled(ExtensionRules.CodemodeBuiltin))
+		{
+			tools = [.. tools.Where(static tool => !string.Equals(tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal))];
+		}
+
 		// 没有宿主的会话不保留关联会话工具（工具列表刷新后重新塞回来的也要去掉）。
 		if (Linked is null)
 		{
@@ -3868,7 +3885,8 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		// 有 exposure: codemode 的工具时自动补上 codemode（pi 的 autoEnableCodemode 行为）。
-		if (Settings.Codemode.AutoEnable
+		if (Settings.IsBuiltinExtensionEnabled(ExtensionRules.CodemodeBuiltin)
+			&& Settings.Codemode.AutoEnable
 			&& tools.Any(static tool => string.Equals(tool.Exposure, ToolExposure.Codemode, StringComparison.Ordinal))
 			&& tools.All(static tool => !string.Equals(tool.Name, CodeModeToolFactory.Name, StringComparison.Ordinal)))
 		{

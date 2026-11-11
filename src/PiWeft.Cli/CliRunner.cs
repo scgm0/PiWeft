@@ -6,6 +6,7 @@ using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Compaction;
+using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Stats;
@@ -85,21 +86,26 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 			try
 			{
-				if (!arguments.NoMcp && !arguments.NoTools)
+				if (!arguments.NoMcp
+					&& !arguments.NoTools
+					&& environment.Settings.IsBuiltinExtensionEnabled(ExtensionRules.McpBuiltin))
 				{
 					// 服务器在后台连接。RPC 是控制面：客户端拿 get_state 就要看到完整工具表，
 					// 所以等全部连完；其它模式只为 direct 工具等（pi 的 10 秒上限）。
 					await ConnectMcpAsync(cwd, environment.ProjectTrusted, cancellationToken).ConfigureAwait(false);
-					if (arguments.Mode == CliMode.Rpc)
+					if (_mcp is { } mcp)
 					{
-						await _mcp!.WaitForAllAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
-					}
-					else
-					{
-						await _mcp!.WaitForDirectToolsAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
-					}
+						if (arguments.Mode == CliMode.Rpc)
+						{
+							await mcp.WaitForAllAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+						}
+						else
+						{
+							await mcp.WaitForDirectToolsAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+						}
 
-					RefreshExtraTools();
+						RefreshExtraTools();
+					}
 				}
 
 			return arguments.Mode switch
@@ -1097,7 +1103,18 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 						await previous.DisposeAsync().ConfigureAwait(false);
 					}
 
-					await ConnectMcpAsync(_cwd, environment.ProjectTrusted, cancellationToken).ConfigureAwait(false);
+					if (!_arguments!.NoMcp
+						&& !_arguments.NoTools
+						&& environment.Settings.IsBuiltinExtensionEnabled(ExtensionRules.McpBuiltin))
+					{
+						await ConnectMcpAsync(_cwd, environment.ProjectTrusted, cancellationToken).ConfigureAwait(false);
+					}
+					else
+					{
+						// 关掉内置 mcp 后重建工具集，旧连接的工具不能留在会话里。
+						RefreshExtraTools();
+					}
+
 					session.SetTools(environment.ComposeTools(_arguments!, _extraTools));
 					WriteRecord(Response(id, "reconnect_mcp", true, McpStatus(), null));
 					break;
@@ -1973,6 +1990,12 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 			case "/llama":
 			{
+				if (!session.Settings.IsBuiltinExtensionEnabled(ExtensionRules.LlamaCppBuiltin))
+				{
+					error.WriteLine("pi: 内置扩展 llama.cpp 已在 settings.extensions 中停用。");
+					return true;
+				}
+
 				var separator = rest.IndexOf(' ');
 				var action = separator < 0 ? (rest.Length > 0 ? rest : "list") : rest[..separator];
 				var argument = separator < 0 ? null : rest[(separator + 1)..].Trim();

@@ -2,7 +2,9 @@ using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Resources;
+using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Themes;
 using PiWeft.Cli;
@@ -16,6 +18,8 @@ public sealed record SettingsSnapshot
 	public required string AgentDir { get; init; }
 
 	public required string Cwd { get; init; }
+
+	public bool ProjectTrusted { get; init; } = true;
 
 	public required int ModelCount { get; init; }
 
@@ -56,6 +60,7 @@ public sealed class SettingsView
 	private readonly ScrollViewer _systemView;
 	private Button? _activeNavigationButton;
 	private bool _configMode;
+	private bool _extensionBusy;
 	private string _section = "overview";
 
 	private ShortcutMap _shortcuts = new(DesktopPreference.Load().Shortcuts);
@@ -197,6 +202,7 @@ public sealed class SettingsView
 			AddNavigationButton("git", "git-branch", Strings.SettingsGit);
 			AddNavigationButton("quickMessages", "message-square", Strings.SettingsQuickMessages);
 			AddNavigationGroup(Strings.SettingsGroupRuntime, first: false);
+			AddNavigationButton("extensions", "package", Strings.SettingsExtensions);
 			AddNavigationButton("resources", "book-open", Strings.SettingsResources);
 			AddNavigationButton("session", "message-square", Strings.SettingsSession);
 			AddNavigationButton("sounds", "bell", Strings.SettingsSounds);
@@ -223,6 +229,7 @@ public sealed class SettingsView
 		"appearance" => Strings.ConfigAppearance,
 		"git" => Strings.SettingsGit,
 		"quickMessages" => Strings.SettingsQuickMessages,
+		"extensions" => Strings.SettingsExtensions,
 		"resources" => Strings.SettingsResources,
 		"session" => Strings.SettingsSession,
 		"security" => Strings.SettingsSecurity,
@@ -329,6 +336,7 @@ public sealed class SettingsView
 				case "appearance": _content.Children(AppearanceSection()); break;
 				case "git": _content.Children(GitSection()); break;
 				case "quickMessages": _content.Children(QuickMessagesSection()); break;
+				case "extensions": _content.Children(ExtensionsSection(snapshot)); break;
 				case "resources": _content.Children(ResourcesSection()); break;
 				case "session": _content.Children(SessionSection(snapshot.Session)); break;
 				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
@@ -813,6 +821,205 @@ public sealed class SettingsView
 
 	public event Action? SecurityChanged;
 
+	/// 扩展分区：内置扩展开关写 <c>builtin:name</c>，文件扩展开关写绝对路径。
+	/// 两者都只改 <c>settings.json</c> 的 <c>extensions</c> 数组；其它键与显式路径原样保留。
+	private Element ExtensionsSection(SettingsSnapshot snapshot)
+	{
+		var settings = CodingAgentSettings.Load(snapshot.Cwd, snapshot.AgentDir, snapshot.ProjectTrusted);
+		// 只做扩展发现，不走 ResourceResolver：这里不需要扫技能、提示词、主题与包目录。
+		var descriptors = ExtensionDescriptor.Discover(
+			snapshot.Cwd,
+			snapshot.ProjectTrusted,
+			snapshot.AgentDir,
+			settings.Extensions,
+			rules: settings.ExtensionRules);
+
+		var builtins = new StackPanel().Spacing(AppTheme.Space2);
+		foreach (var name in ExtensionRules.BuiltinNames)
+		{
+			var enabled = settings.IsBuiltinExtensionEnabled(name);
+			builtins.Children(ExtensionToggleRow(
+				"builtin:" + name,
+				BuiltinExtensionHint(name),
+				enabled,
+				toggleable: true,
+				detail: null,
+				onChanged: value => SetBuiltinExtension(snapshot, name, value)));
+		}
+
+		builtins.Children(new TextBlock()
+			.Text(Strings.SettingsExtensionsFile(CodingAgentSettings.GlobalPath(snapshot.AgentDir)))
+			.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+
+		// builtin: 条目在上面的内置分组里单独画，不在「已安装扩展」里重列一遍。
+		var discovered = descriptors
+			.Where(static descriptor => !descriptor.Builtin)
+			.ToArray();
+		var extensionRows = new StackPanel().Spacing(AppTheme.Space2);
+		if (discovered.Length == 0)
+		{
+			extensionRows.Children(new TextBlock().Text(Strings.SettingsExtensionsEmpty)
+				.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
+		}
+		else
+		{
+			foreach (var extension in discovered)
+			{
+				var supported = extension.Supported;
+				var detail = supported
+					? extension.FilePath
+					: extension.UnsupportedReason + " · " + extension.FilePath;
+				extensionRows.Children(ExtensionToggleRow(
+					Path.GetFileNameWithoutExtension(extension.FilePath),
+					extension.Origin,
+					enabled: extension.Enabled && supported,
+					toggleable: supported,
+					detail,
+					value => SetExtension(snapshot, extension.FilePath, value),
+					stateText: supported ? null : Strings.SettingsExtensionsUnavailable));
+			}
+		}
+
+		var panel = new StackPanel().Spacing(AppTheme.Space4).Children(
+			Group("sparkles", Strings.SettingsBuiltinExtensions, new StackPanel().Spacing(AppTheme.Space3).Children(
+				Hint(Strings.SettingsBuiltinExtensionsHint),
+				builtins,
+				Hint(Strings.SettingsExtensionsRestart))),
+			Group("package", Strings.SettingsInstalledExtensions, new StackPanel().Spacing(AppTheme.Space3).Children(
+				Hint(Strings.SettingsInstalledExtensionsHint),
+				extensionRows,
+				new TextBlock().Text(Strings.SettingsExtensionsFile(CodingAgentSettings.GlobalPath(snapshot.AgentDir)))
+					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap),
+				Hint(Strings.SettingsExtensionsRestart))));
+		panel.Children(AppIcons.TextButton("refresh-cw", Strings.SettingsExtensionsRefresh, Refresh)
+			.HorizontalAlignment(HorizontalAlignment.Left));
+		return panel;
+	}
+
+	private static string BuiltinExtensionHint(string name) => name switch
+	{
+		ExtensionRules.McpBuiltin => Strings.SettingsBuiltinMcpHint,
+		ExtensionRules.LlamaCppBuiltin => Strings.SettingsBuiltinLlamaHint,
+		ExtensionRules.CodemodeBuiltin => Strings.SettingsBuiltinCodemodeHint,
+		ExtensionRules.ToolSearchBuiltin => Strings.SettingsBuiltinToolSearchHint,
+		_ => string.Empty,
+	};
+
+	/// 一行扩展：左边名字、状态与说明，右边开关。不可加载的条目也画出开关位置，
+	/// 但禁用点击，避免用户以为写一条规则就能让 TypeScript 扩展跑起来。
+	private Element ExtensionToggleRow(
+		string title,
+		string description,
+		bool enabled,
+		bool toggleable,
+		string? detail,
+		Action<bool> onChanged,
+		string? stateText = null)
+	{
+		var state = new TextBlock()
+			.Text(stateText ?? (enabled ? Strings.SettingsExtensionsEnabled : Strings.SettingsExtensionsDisabled))
+			.FontSize(AppTheme.FontSizeMicro)
+			.VerticalAlignment(VerticalAlignment.Center);
+		if (enabled && stateText is null)
+		{
+			state.Role(AppStyles.RoleSuccess);
+		}
+		else
+		{
+			state.FaintText();
+		}
+		var heading = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+			.VerticalAlignment(VerticalAlignment.Center).Children(
+				new TextBlock().Text(title).FontSize(AppTheme.FontSizeControl)
+					.PrimaryText().VerticalAlignment(VerticalAlignment.Center),
+				state);
+		var text = new StackPanel().Spacing(2).Children(
+			heading,
+			new TextBlock().Text(description).FontSize(AppTheme.FontSizeCaption)
+				.MutedText().TextWrapping(TextWrapping.Wrap));
+		if (detail is { Length: > 0 })
+		{
+			text.Children(new TextBlock().Text(detail).FontSize(AppTheme.FontSizeMicro)
+				.FaintText().TextWrapping(TextWrapping.Wrap));
+		}
+
+		var toggle = new ToggleSwitch().IsChecked(enabled)
+			.IsEnabled(toggleable && !_extensionBusy)
+			.VerticalAlignment(VerticalAlignment.Center);
+		toggle.OnCheckedChanged(value =>
+		{
+			if (!_extensionBusy)
+			{
+				onChanged(value);
+			}
+		});
+
+		return new Border().StyleName(AppStyles.CardMuted).CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
+			.Child(new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
+				.Children(text.Column(0), toggle.Column(1)));
+	}
+
+	private void SetExtension(SettingsSnapshot snapshot, string path, bool enabled)
+	{
+		if (_extensionBusy)
+		{
+			return;
+		}
+
+		_extensionBusy = true;
+		try
+		{
+			if (!ExtensionSettings.TrySetEnabled(snapshot.AgentDir, path, enabled, out var error))
+			{
+				Toast(Strings.SettingsExtensionsFailed(error), ToastKind.Error);
+				return;
+			}
+
+			_saved(ConfigFile.Settings);
+			Toast(Strings.SettingsExtensionsSaved, ToastKind.Success);
+		}
+		finally
+		{
+			_extensionBusy = false;
+			// 无论成功还是冲突，都按磁盘上的实际状态重建：开关不能停在用户点过的位置。
+			Refresh();
+		}
+	}
+
+	private void SetBuiltinExtension(SettingsSnapshot snapshot, string name, bool enabled)
+	{
+		if (_extensionBusy)
+		{
+			return;
+		}
+
+		_extensionBusy = true;
+		try
+		{
+			if (!ExtensionSettings.TrySetBuiltinEnabled(snapshot.AgentDir, name, enabled, out var error))
+			{
+				Toast(Strings.SettingsExtensionsFailed(error), ToastKind.Error);
+				return;
+			}
+
+			_saved(ConfigFile.Settings);
+			// mcp 是连接型内置能力：开关后立刻重建连接，别让已打开的会话继续拿旧工具。
+			if (string.Equals(name, ExtensionRules.McpBuiltin, StringComparison.Ordinal)
+				&& _reconnectMcp is { } reconnect)
+			{
+				_ = reconnect();
+			}
+
+			Toast(Strings.SettingsExtensionsSaved, ToastKind.Success);
+		}
+		finally
+		{
+			_extensionBusy = false;
+			Refresh();
+		}
+	}
+
 	private Element ResourcesSection()
 	{
 		var snapshot = _snapshot();
@@ -841,29 +1048,6 @@ public sealed class SettingsView
 				package.Source,
 				package.Scope == ResourceScope.Project ? Strings.ConfigProject : Strings.ConfigGlobal,
 				package.Root))))));
-
-		// 扩展单列一节：加载失败或 TypeScript 未转译的扩展必须看得见原因，
-		// 否则用户会以为它正在生效。
-		if (resources.Extensions.Count > 0)
-		{
-			var extensionRows = new List<ResourceRow>();
-			foreach (var extension in resources.Extensions)
-			{
-				// 加载失败或需要转译的原因直接接在名字后面：这些扩展看起来「在列表里」，
-				// 不写原因就等于告诉用户它在生效。
-				var name = extension.Note.Length > 0
-					? extension.Name + " · " + extension.Note
-					: extension.Name;
-				extensionRows.Add(new ResourceRow(name, string.Empty, extension.Origin, extension.Path));
-			}
-
-			panel.Children(Group(
-				"package",
-				Strings.ResourcesExtensions,
-				new StackPanel().Spacing(AppTheme.Space3).Children(
-					Hint(Strings.ResourcesExtensionHint),
-					ResourceList(extensionRows))));
-		}
 
 		if (resources.Diagnostics.Count > 0)
 		{

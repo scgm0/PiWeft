@@ -157,6 +157,8 @@ public sealed class ConfigurationStore
 			BoolFields(root, "enableSkillCommands");
 			// defaultTools 是字符串条目数组（纯名字或 +/- 增量）；写错了在加载时提示，不静默忽略。
 			StringArray(root, "defaultTools");
+			// extensions 同理：显式路径或 +path/-path/!glob，数组里混进对象时不要静默丢弃。
+			StringArray(root, "extensions");
 			if (root.ContainsKey("codemode") && root["codemode"] is not JsonObject)
 				throw new ArgumentException(Strings.ConfigInvalidValue("codemode"));
 			foreach (var section in new[] { "compaction", "retry" })
