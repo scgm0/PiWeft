@@ -123,7 +123,7 @@ public sealed class CliEnvironment
 		var defaultTrust = CodingAgentSettings.GlobalDefaultProjectTrust();
 		var projectTrusted = ProjectTrust.Resolve(cwd, arguments.ProjectTrustOverride, defaultTrust);
 		var settings = CodingAgentSettings.Load(cwd, agentDir: null, includeProject: projectTrusted);
-		var registry = ModelRegistry.LoadDefault();
+		var registry = ModelCatalogOverlay.CreateRegistry();
 
 		// models.json 会新增或替换目录条目，兼容端点就是靠它注册进来的。
 		// 项目级文件能改写端点与请求头，必须跟 settings 用同一套信任门控。
@@ -468,7 +468,7 @@ public sealed class CliEnvironment
 
 	public static ModelRegistry BuildRegistry(string cwd)
 	{
-		var registry = ModelRegistry.LoadDefault();
+		var registry = ModelCatalogOverlay.CreateRegistry();
 		var userModels = ModelsFileLoader.Read(ModelsFileLoader.UserPath());
 		var projectModels = ModelsFileLoader.Read(ModelsFileLoader.ProjectPath(cwd));
 		// 先叠加远程缓存与自定义模型，再应用 provider 级设置：否则缓存目录里已有 headers 的模型

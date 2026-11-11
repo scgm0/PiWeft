@@ -589,6 +589,74 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void ATurnClosedAsDoneNeverKeepsALiveThinkingStep()
+	{
+		// 运行中插入的 Steering 用户消息会把上一轮按 non-live 收口。这一步不能保留 live 快照：
+		// 否则它带着「正在思考…」和秒表被推进缓存前缀，后续帧不再重投，计时永远停不下来。
+		var live = new ChatEntry
+		{
+			Role = ChatRole.Assistant, EntryId = "live-assistant/1", Timestamp = 1, Text = string.Empty,
+			Thinking = "plan", IsThinking = true, IsStreaming = true, ThinkingStartedAt = 1_000,
+		};
+		var rows = ExecutionProcess.Project([User("u0"), live, User("u1")], busy: true);
+		var process = rows[1];
+		Assert.False(process.IsStreaming);
+		var step = Assert.Single(process.ProcessEntries);
+		Assert.False(step.IsThinking);
+		Assert.False(step.IsStreaming);
+
+		// 工具行同理：收口后不能再挂着运行中的秒表。
+		var tool = new ChatEntry
+		{
+			Role = ChatRole.Tool, EntryId = "live-tool/1", ToolCallId = "1", ToolName = "bash",
+			Text = "→ bash", IsStreaming = true, ToolStartedAt = 1_000,
+		};
+		var stopped = Assert.Single(ExecutionProcess.Project([User("u0"), tool, User("u1")], busy: true)[1].ProcessEntries);
+		Assert.False(stopped.IsStreaming);
+		Assert.True(stopped.IsStopped);
+	}
+
+	[Fact]
+	public void PromotingANewTurnRebindsThePreviousTurnsRunningStep()
+	{
+		// 回归：上一轮的最后一次渲染还是流式快照，紧接着的新用户消息在同一个 40 ms 帧里到达。
+		// 投影会把上一轮定稿后移进缓存前缀；行表必须在这一帧重绑它，而不能信任「前缀未变」。
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		static ChatEntry Thought(bool live) => new()
+		{
+			Role = ChatRole.Assistant, EntryId = live ? "live-assistant/1" : "assistant/1", Timestamp = 1,
+			Text = string.Empty, Thinking = "plan\nNow write file.", IsThinking = live, IsStreaming = live,
+			ThinkingStartedAt = 1_000, ThinkingEndedAt = live ? null : 2_000,
+		};
+		UIElement Create(ChatEntry entry) => entry.Role switch
+		{
+			ChatRole.Process => new ExecutionProcessView(entry, Create, focus).View,
+			ChatRole.Tool => new ToolMessageView(entry, focus).View,
+			_ => new AssistantMessageView(entry, _ => { }, focus).View,
+		};
+
+		var projector = new ExecutionProcessProjector();
+		var liveEntries = new List<ChatEntry> { User("u0"), Thought(live: true) };
+		var rows = projector.Project(liveEntries, busy: true);
+		using var timeline = new ConversationTimeline(Create);
+		timeline.SetEntries(rows);
+		ConversationPerformanceTests.Layout(timeline.View);
+		// 流式最新组自动展开：思考步骤和它的秒表已经挂在画面里。
+		Assert.Contains(Find<TextBlock>(timeline.View), text => text.Text == Strings.ThinkingActive);
+		Assert.NotEmpty(Find<LiveDurationText>(timeline.View));
+
+		// 上一轮的助手已经落盘，同一批里来了新的用户消息。
+		var closed = new List<ChatEntry> { User("u0"), Thought(live: false), User("u1") };
+		var next = projector.Project(closed, busy: true);
+		timeline.SetEntries(next, false, projector.LastStablePrefix, projector.LastPrefixReused);
+		ConversationPerformanceTests.Layout(timeline.View);
+
+		Assert.DoesNotContain(Find<TextBlock>(timeline.View), text => text.Text == Strings.ThinkingActive);
+		Assert.DoesNotContain(Find<LiveDurationText>(timeline.View), timer => timer.IsVisible);
+		Assert.Contains(Find<TextBlock>(timeline.View), text => text.Text == Strings.ThinkingDuration(1_000));
+	}
+
+	[Fact]
 	public void DurationReadingsPadSecondsToOneDecimalPlace()
 	{
 		// 步骤行的读数固定一位小数：1.9s / 2.0s / 2.1s，不再出现窄一格的「2s」。

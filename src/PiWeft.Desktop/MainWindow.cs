@@ -5,6 +5,7 @@ using PiWeft.Ai;
 using PiWeft.Cli;
 using PiWeft.Agent;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Models;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Stats;
@@ -681,6 +682,13 @@ public sealed partial class MainWindow : Window
 		_environments[Path.GetFullPath(_cwd)] = environment;
 		_models = environment.ListAvailableModels(_arguments.ApiKey);
 		AppLog.For<MainWindow>().ZLogInformation($"Desktop ready: models={_models.Count}, tools={environment.Tools.Count}");
+
+		// 在线模型目录：默认每天检查一次，发现新版本就拉取并热替换。
+		// 无人值守演练与离线模式跳过，避免测试写真实 agent 目录或发网络请求。
+		if (SmokeTab is null && UiSmoke is null && !ThemeSmoke)
+		{
+			_ = AutoUpdateModelCatalogAsync();
+		}
 
 		// 侧栏收起时完全不扫摘要：首个会话用 stat 出来的路径直接开，列表等展开或搜索时再加载。
 		// 侧栏展开（或存在置顶会话，需要按置顶顺序选首个）时才加载。
@@ -1826,6 +1834,11 @@ public sealed partial class MainWindow : Window
 					OpenSettingsDialog();
 					if (_settingsView is { } diagnosticsView) _ = diagnosticsView.SelectSectionAsync("diagnostics");
 					break;
+				case "catalog":
+					// 模型目录分区：状态行与按钮可用性都取决于本地覆盖层，截图前不联网。
+					OpenSettingsDialog();
+					if (_settingsView is { } catalogView) _ = catalogView.SelectSectionAsync("catalog");
+					break;
 				case "branch":
 					CurrentTab()?.ShowBranches();
 					break;
@@ -2384,7 +2397,7 @@ public sealed partial class MainWindow : Window
 		{
 			if (_settingsView is null)
 			{
-				_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync);
+				_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync, ReloadModelsAfterCatalogChange);
 				// 安全门改动要立刻推给所有已打开的会话，否则界面档位与实际执行用的档位会不一致。
 				_settingsView.SecurityChanged += ApplySecurityToSessions;
 				// OAuth 登录/退出改写了 auth.json：重建可用模型并把新模型源推给已打开的标签页。
@@ -2416,7 +2429,12 @@ public sealed partial class MainWindow : Window
 
 	/// 认证变化后重建模型环境：OAuth 凭据会改变可用模型集合（Copilot/Radius 还会改端点），
 	/// 已打开的标签页要换到新的模型源，否则登录成功却看不到新模型。
-	private void RefreshAuthModels()
+	private void RefreshAuthModels() => ReloadModels(Strings.AuthModelsRefreshed);
+
+	/// 在线目录覆盖层写入或还原后重建环境：内置目录的模板与可用模型都来自注册表。
+	private void ReloadModelsAfterCatalogChange() => ReloadModels(null);
+
+	private void ReloadModels(string? banner)
 	{
 		try
 		{
@@ -2427,13 +2445,72 @@ public sealed partial class MainWindow : Window
 			_environments[Path.GetFullPath(_cwd)] = environment;
 			_models = environment.ListAvailableModels(_arguments.ApiKey);
 			UpdateSessionModelSources();
-			AppLog.For<MainWindow>().ZLogInformation($"Auth model refresh: models={_models.Count}");
-			_banner.Text(Strings.AuthModelsRefreshed);
+			AppLog.For<MainWindow>().ZLogInformation($"Model environment reloaded: models={_models.Count}");
+			if (banner is not null) _banner.Text(banner);
 		}
 		catch (Exception ex) when (ex is IOException or ArgumentException or InvalidOperationException)
 		{
 			_banner.Text(Strings.ConfigFailed);
 		}
+	}
+
+	/// 启动后的模型目录检查：默认 24 小时一次。失败只记日志，不打断启动；
+	/// 检查时间先写盘，网络不通时也不会每次启动都重试。
+	private async Task AutoUpdateModelCatalogAsync()
+	{
+		var preference = DesktopPreference.Load();
+		var now = DateTimeOffset.UtcNow;
+		if (!preference.ModelCatalogAutoUpdate || PiEnvironment.Offline)
+		{
+			return;
+		}
+
+		if (preference.ModelCatalogCheckedAt is { } checkedAt && now - checkedAt < TimeSpan.FromHours(24))
+		{
+			return;
+		}
+
+		try
+		{
+			(preference with { ModelCatalogCheckedAt = now }).Save();
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Save model catalog check time", ex);
+		}
+
+		ModelCatalogUpdateResult result;
+		try
+		{
+			result = await Task.Run(() => OnlineModelCatalog.UpdateAsync()).ConfigureAwait(false);
+		}
+		catch (Exception ex) when (ex is IOException or InvalidOperationException or HttpRequestException)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Auto update model catalog", ex);
+			return;
+		}
+
+		if (!result.Ok)
+		{
+			AppLog.For<MainWindow>().ZLogWarning($"Model catalog auto check failed: {result.Error} {result.Message}");
+			return;
+		}
+
+		if (!result.Updated)
+		{
+			return;
+		}
+
+		var message = result.Info is { } info
+			? Strings.ModelCatalogUpdated(info.Version, info.EntryCount)
+			: Strings.ModelCatalogBannerUpdated;
+		Dispatch(() =>
+		{
+			if (_sessionHostClosed) return;
+			ReloadModelsAfterCatalogChange();
+			_banner.Text(message);
+			if (_settingsDialog?.IsOpen == true) _settingsView?.Refresh();
+		});
 	}
 
 	private void UpdateSessionModelSources()

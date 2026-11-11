@@ -68,6 +68,12 @@ public sealed record DesktopPreference
 	/// 「没有可见入口」能力的地方；关掉只关提示，不影响功能。
 	public bool RespondingTips { get; init; } = true;
 
+	/// 在线模型目录自动检查开关。默认开：启动后检查一次，发现新目录拉取并启用。
+	public bool ModelCatalogAutoUpdate { get; init; } = true;
+
+	/// 上一次自动检查的时间（写盘为 ISO 8601）。用于 24 小时节流；手动检查不写这里。
+	public DateTimeOffset? ModelCatalogCheckedAt { get; init; }
+
 	/// 右侧功能面板的拖拽宽度（DIP）。面板属于会话且默认收起，折叠状态与分段不落盘；
 	/// 只有宽度是窗口级偏好，跨会话共享。
 	public double RightPanelWidth { get; init; } = AppTheme.RightPanelWidth;
@@ -168,6 +174,14 @@ public sealed record DesktopPreference
 				// 默认开：键缺失或类型不对都算开，只有显式写 false 才关。
 				RespondingTips = root?["respondingTips"] is not JsonValue respondingTips ||
 					!respondingTips.TryGetValue<bool>(out var tipsOff) || tipsOff,
+				ModelCatalogAutoUpdate = root?["modelCatalogAutoUpdate"] is not JsonValue catalogAuto ||
+					!catalogAuto.TryGetValue<bool>(out var catalogAutoOff) || catalogAutoOff,
+				ModelCatalogCheckedAt = root?["modelCatalogCheckedAt"] is JsonValue catalogChecked &&
+					catalogChecked.TryGetValue<string>(out var catalogCheckedText) &&
+					DateTimeOffset.TryParse(catalogCheckedText, System.Globalization.CultureInfo.InvariantCulture,
+						System.Globalization.DateTimeStyles.AssumeUniversal, out var catalogCheckedAt)
+						? catalogCheckedAt
+						: null,
 				RightPanelWidth = Math.Clamp(Number(root, "rightPanelWidth", positive: true) ?? AppTheme.RightPanelWidth,
 					AppTheme.RightPanelMinWidth, AppTheme.RightPanelMaxWidth),
 				TrajectoryInspectorHeight = Math.Clamp(
@@ -264,6 +278,23 @@ public sealed record DesktopPreference
 		else
 		{
 			root["respondingTips"] = false;
+		}
+		// 自动更新目录默认开：只在关掉时落盘。检查时间每次自动检查前写一次，用于节流。
+		if (ModelCatalogAutoUpdate)
+		{
+			root.Remove("modelCatalogAutoUpdate");
+		}
+		else
+		{
+			root["modelCatalogAutoUpdate"] = false;
+		}
+		if (ModelCatalogCheckedAt is { } catalogCheckedAt)
+		{
+			root["modelCatalogCheckedAt"] = catalogCheckedAt.ToUniversalTime().ToString("O");
+		}
+		else
+		{
+			root.Remove("modelCatalogCheckedAt");
 		}
 		root["sidebarWidth"] = double.IsFinite(SidebarWidth) ? Math.Clamp(SidebarWidth, 200, 480) : AppTheme.SidebarWidth;
 		root["rightPanelWidth"] = double.IsFinite(RightPanelWidth)

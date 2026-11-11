@@ -162,7 +162,7 @@ public static class ModelCatalogStore
 			return new RefreshOutcome(0, 0, 0);
 		}
 
-		var registry = ModelRegistry.LoadDefault();
+		var registry = ModelCatalogOverlay.CreateRegistry();
 		var providers = registry.Providers.OrderBy(static id => id, StringComparer.Ordinal).ToList();
 		var root = ReadRoot(agentDir) ?? new JsonObject();
 		var providerNodes = root["providers"] as JsonObject ?? new JsonObject();
@@ -491,7 +491,7 @@ public static class ModelCatalogStore
 				return false;
 			}
 
-			var registry = ModelRegistry.LoadDefault();
+			var registry = ModelCatalogOverlay.CreateRegistry();
 			var items = new JsonArray();
 			foreach (var item in data)
 			{

@@ -78,7 +78,8 @@ internal static class ExecutionProcess
 			foreach (var entry in unique)
 			{
 				if (entry.ThinkingLength > 0 || entry.IsThinking)
-					process.Add(entry with
+				{
+					var step = entry with
 					{
 						EntryId = $"thinking/{turnKey}/{thinkingSequence++}", Text = string.Empty, Images = [], Compact = true,
 						// 独立的 thinking_start/end 跨度优先（有正文的组合消息也用它）；
@@ -86,7 +87,13 @@ internal static class ExecutionProcess
 						DurationMs = entry.ThinkingDurationMs is { } thinkingMs
 							? thinkingMs
 							: entry.TextLength == 0 && entry.Images.Count == 0 ? entry.DurationMs : null,
-					});
+					};
+					// 已收口的轮次不可能还在思考：中途插入的用户消息会把上一轮按 non-live 投影，
+					// 留下 live 快照就会带着「正在思考…」和秒表被缓存进前缀，之后没人再更新这一行。
+					if (!live && (step.IsThinking || step.IsStreaming))
+						step = step with { IsThinking = false, IsStreaming = false };
+					process.Add(step);
+				}
 				if (ReferenceEquals(entry, answer)) continue;
 				if (entry.Role != ChatRole.Assistant || entry.TextLength > 0 || entry.Images.Count > 0)
 				{
@@ -94,8 +101,10 @@ internal static class ExecutionProcess
 					var item = entry.ThinkingLength == 0 && !entry.IsThinking
 						? entry with { Compact = true, ChangedFiles = [] }
 						: entry with { Thinking = string.Empty, IsThinking = false, Compact = true, ChangedFiles = [] };
-					if (!live && item.Role == ChatRole.Tool && item.IsStreaming)
-						item = item with { IsStreaming = false, IsStopped = true };
+					if (!live && item.IsStreaming)
+						item = item.Role == ChatRole.Tool
+							? item with { IsStreaming = false, IsStopped = true }
+							: item with { IsStreaming = false };
 					// 工具步骤用调用 id 作键，不用消息条目 id：流式消息落盘后
 					// ChatViewModel 会换掉行 EntryId，否则组键/展开态会跟着重建。
 					if (item.Role == ChatRole.Tool && item.ToolCallId is { Length: > 0 } toolCallId)
@@ -112,7 +121,15 @@ internal static class ExecutionProcess
 					// 总耗时取自本轮最终回复；思考/工具行本身没有独立的墙钟时间。
 					DurationMs = unique.LastOrDefault(static entry => entry.Role == ChatRole.Assistant)?.DurationMs,
 				});
-			if (answer is not null) rows.Add(answer.ThinkingLength == 0 && !answer.IsThinking ? answer : answer with { Thinking = string.Empty, IsThinking = false });
+			if (answer is not null)
+			{
+				var finalAnswer = answer.ThinkingLength == 0 && !answer.IsThinking
+					? answer
+					: answer with { Thinking = string.Empty, IsThinking = false };
+				// 收口后的轮次不再显示「正在回复…」：live 快照被按 non-live 投影时也要落定。
+				if (!live && finalAnswer.IsStreaming) finalAnswer = finalAnswer with { IsStreaming = false };
+				rows.Add(finalAnswer);
+			}
 			turn.Clear();
 		}
 	}
@@ -472,6 +489,10 @@ internal sealed class ExecutionProcessProjector
 			_projected.AsSpan(0, _prefixRows).CopyTo(rows);
 			tail.CopyTo(rows.AsSpan(_prefixRows));
 			_projected = rows;
+			// 消费端（时间线行表）手里还是上一帧的行。这一帧若把刚收口的一轮从尾部移进前缀，
+			// 那些行是本次重新投影的，未必与上一帧同引用；只能先担保旧前缀，下一帧再担保整段。
+			// 否则行表会跳过它们、继续用上一帧的流式快照，思考/工具秒表就停不下来。
+			var stablePrefix = _prefixRows;
 			if (lastUser != _lastUserSourceIndex)
 			{
 				// 新一轮开始：前一次的流式尾部随本轮定稿，从现在起由新边界担保。
@@ -481,7 +502,7 @@ internal sealed class ExecutionProcessProjector
 				_lastUserSourceIndex = lastUser;
 			}
 			_busy = busy;
-			LastStablePrefix = _prefixRows;
+			LastStablePrefix = stablePrefix;
 			LastPrefixReused = true;
 			return rows;
 		}

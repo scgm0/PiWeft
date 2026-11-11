@@ -5,6 +5,8 @@ using PiWeft.Ai.Providers.Bedrock;
 using PiWeft.Ai.Providers.Google;
 
 using PiWeft.Ai.Json;
+using PiWeft.CodingAgent.Models;
+
 namespace PiWeft.Cli;
 
 public static class AuthCommands
@@ -66,7 +68,7 @@ public static class AuthCommands
 			return 2;
 		}
 
-		if (!ModelRegistry.LoadDefault().Providers.Contains(provider, StringComparer.Ordinal))
+		if (!ModelCatalogOverlay.CreateRegistry().Providers.Contains(provider, StringComparer.Ordinal))
 		{
 			error.WriteLine($"pi: Unknown provider '{provider}'.");
 			return 2;

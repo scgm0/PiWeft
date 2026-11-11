@@ -52,6 +52,7 @@ public sealed class SettingsView
 	private readonly Func<Task>? _reconnectMcp;
 
 	private readonly Func<Task>? _reloadResources;
+	private readonly Action? _modelsChanged;
 	private readonly ScrollViewer _systemView;
 	private Button? _activeNavigationButton;
 	private bool _configMode;
@@ -66,13 +67,15 @@ public sealed class SettingsView
 		Func<SettingsSnapshot> snapshot,
 		Action<ConfigFile>? saved = null,
 		Func<Task>? reconnectMcp = null,
-		Func<Task>? reloadResources = null)
+		Func<Task>? reloadResources = null,
+		Action? modelsChanged = null)
 	{
 		_snapshot = snapshot;
 		var initial = snapshot();
 		_saved = saved ?? (_ => { });
 		_reconnectMcp = reconnectMcp;
 		_reloadResources = reloadResources;
+		_modelsChanged = modelsChanged;
 		_configuration = new(() =>
 		{
 			var view = new ConfigurationView(initial.AgentDir, initial.Cwd, _saved);
@@ -201,6 +204,7 @@ public sealed class SettingsView
 			AddNavigationButton("shortcuts", "terminal", Strings.SettingsShortcuts);
 			AddNavigationGroup(Strings.MaintenanceGroup, first: false);
 			AddNavigationButton("archive", "trash", Strings.SettingsArchive);
+			AddNavigationButton("catalog", "package", Strings.SettingsModelCatalog);
 			AddNavigationButton("logs", "folder-open", Strings.SettingsLogs);
 			AddNavigationButton("diagnostics", "list-checks", Strings.SettingsDiagnostics);
 			AddNavigationButton("about", "settings", Strings.SettingsAbout);
@@ -224,6 +228,7 @@ public sealed class SettingsView
 		"security" => Strings.SettingsSecurity,
 		"sounds" => Strings.SettingsSounds,
 		"archive" => Strings.SettingsArchive,
+		"catalog" => Strings.SettingsModelCatalog,
 		"shortcuts" => Strings.SettingsShortcuts,
 		"diagnostics" => Strings.SettingsDiagnostics,
 		"logs" => Strings.SettingsLogs,
@@ -329,6 +334,7 @@ public sealed class SettingsView
 				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
 				case "sounds": _content.Children(SoundSection()); break;
 				case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
+				case "catalog": _content.Children(new ModelCatalogSection(snapshot.AgentDir, _modelsChanged ?? (() => { })).View); break;
 				case "shortcuts": _content.Children(ShortcutSection()); break;
 				case "logs": _content.Children(LogSection()); break;
 				case "diagnostics": _content.Children(DiagnosticsSection()); break;

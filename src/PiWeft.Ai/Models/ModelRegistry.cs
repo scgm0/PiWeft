@@ -7,7 +7,8 @@ namespace PiWeft.Ai;
 /// 以内嵌资源 <c>Resources/models.json</c> 的形式存在，因此离线与 NativeAOT 环境都能用。
 public sealed class ModelRegistry
 {
-	private const string ResourceSuffix = "Resources.models.json";
+	/// 内嵌目录的资源名后缀；在线目录更新用它校验兜底基线。
+	public const string EmbeddedCatalogResourceSuffix = "Resources.models.json";
 
 	private readonly Dictionary<string, Model> _byKey = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, List<Model>> _byProvider = new(StringComparer.Ordinal);
@@ -142,30 +143,68 @@ public sealed class ModelRegistry
 	public IReadOnlyList<Model> FindById(string modelId) =>
 		[.. _byKey.Values.Where(candidate => string.Equals(candidate.Id, modelId, StringComparison.Ordinal))];
 
-	public static ModelRegistry LoadDefault()
+	/// 打开内嵌模型目录。调用方负责释放。
+	public static Stream OpenEmbeddedCatalog()
 	{
 		var assembly = typeof(ModelRegistry).Assembly;
-		var name = Array.Find(assembly.GetManifestResourceNames(), n => n.EndsWith(ResourceSuffix, StringComparison.Ordinal))
-			?? throw new InvalidOperationException($"embedded model catalog '{ResourceSuffix}' is missing");
+		var name = Array.Find(assembly.GetManifestResourceNames(), n => n.EndsWith(EmbeddedCatalogResourceSuffix, StringComparison.Ordinal))
+			?? throw new InvalidOperationException($"embedded model catalog '{EmbeddedCatalogResourceSuffix}' is missing");
 
-		using var stream = assembly.GetManifestResourceStream(name)
+		return assembly.GetManifestResourceStream(name)
 			?? throw new InvalidOperationException($"embedded model catalog '{name}' could not be opened");
+	}
 
-		var providers = JsonSerializer.Deserialize(stream, PiJsonContext.Default.DictionaryStringListModel)
-			?? throw new JsonException("embedded model catalog was empty");
-
+	/// 读取内嵌模型目录的新注册表。
+	public static ModelRegistry LoadDefault()
+	{
+		using var stream = OpenEmbeddedCatalog();
 		var registry = new ModelRegistry();
-		foreach (var (_, models) in providers)
+		registry.AddCatalog(stream);
+		return registry;
+	}
+
+	/// 合并一份 <c>provider → 模型</c> 目录，格式与内嵌 <c>models.json</c> 相同。
+	/// 条目缺 id 时整份拒绝：在线目录是一个文件，缺字段通常意味着下载被截断，
+	/// 半份目录比没有目录更难排查。provider 以分组键为准。
+	/// <returns>合入的模型数。</returns>
+	public int AddCatalog(Stream stream)
+	{
+		ArgumentNullException.ThrowIfNull(stream);
+		var providers = JsonSerializer.Deserialize(stream, PiJsonContext.Default.DictionaryStringListModel)
+			?? throw new JsonException("model catalog was empty");
+
+		var incoming = new List<Model>();
+		foreach (var (providerId, models) in providers)
 		{
+			if (string.IsNullOrWhiteSpace(providerId))
+			{
+				throw new JsonException("model catalog has an empty provider id");
+			}
+
 			foreach (var model in models)
 			{
+				if (string.IsNullOrWhiteSpace(model.Id))
+				{
+					throw new JsonException($"model catalog entry of '{providerId}' has an empty id");
+				}
+
 				// OpenRouter 对 openrouter/auto 之类的路由模型报 -1 作为「价格取决于它选中的模型」的
 				// 占位值；pi 把负价一律当 0（否则界面会显示 -$1,000,000/1M）。
-				registry.Add(SanitizeCost(model));
+				incoming.Add(SanitizeCost(model with { Provider = providerId }));
 			}
 		}
 
-		return registry;
+		if (incoming.Count == 0)
+		{
+			throw new JsonException("model catalog has no models");
+		}
+
+		foreach (var model in incoming)
+		{
+			Add(model);
+		}
+
+		return incoming.Count;
 	}
 
 	internal static Model SanitizeCost(Model model)

@@ -1,4 +1,5 @@
 using PiWeft.Ai;
+using System.Text;
 using Xunit;
 
 namespace PiWeft.Ai.Tests;
@@ -46,6 +47,28 @@ public class ModelTests
 		Assert.NotNull(model);
 		Assert.Equal(300, model!.PromptCache!["short"]);
 		Assert.Equal(3600, model.PromptCache["long"]);
+	}
+
+	[Fact]
+	public void AddCatalogUsesTheProviderKeyAndClampsNegativeCosts()
+	{
+		using var stream = new MemoryStream(Encoding.UTF8.GetBytes(
+			"""{"demo":[{"id":"x","provider":"wrong","cost":{"input":-1,"output":2,"cacheRead":0,"cacheWrite":0}}]}"""));
+		var registry = new ModelRegistry();
+
+		Assert.Equal(1, registry.AddCatalog(stream));
+		var model = registry.Get("demo", "x");
+		Assert.NotNull(model);
+		Assert.Equal("demo", model!.Provider);
+		Assert.Equal(0, model.Cost.Input);
+	}
+
+	[Fact]
+	public void AddCatalogRejectsEntriesWithoutId()
+	{
+		using var stream = new MemoryStream(Encoding.UTF8.GetBytes("""{"demo":[{"name":"no id"}]}"""));
+
+		Assert.ThrowsAny<System.Text.Json.JsonException>(() => new ModelRegistry().AddCatalog(stream));
 	}
 
 	[Fact]

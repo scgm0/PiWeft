@@ -49,6 +49,28 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void ModelCatalogAutoUpdateDefaultsOnAndRoundTripsCheckedAt()
+	{
+		Assert.True(DesktopPreference.Load(_agentDir).ModelCatalogAutoUpdate);
+
+		var checkedAt = DateTimeOffset.UtcNow;
+		(DesktopPreference.Load(_agentDir) with
+		{
+			ModelCatalogAutoUpdate = false,
+			ModelCatalogCheckedAt = checkedAt,
+		}).Save(_agentDir);
+
+		var loaded = DesktopPreference.Load(_agentDir);
+		Assert.False(loaded.ModelCatalogAutoUpdate);
+		Assert.Equal(checkedAt.ToUniversalTime(), loaded.ModelCatalogCheckedAt!.Value.ToUniversalTime());
+
+		(loaded with { ModelCatalogAutoUpdate = true, ModelCatalogCheckedAt = null }).Save(_agentDir);
+		loaded = DesktopPreference.Load(_agentDir);
+		Assert.True(loaded.ModelCatalogAutoUpdate);
+		Assert.Null(loaded.ModelCatalogCheckedAt);
+	}
+
+	[Fact]
 	public void RespondingTipsDefaultOnAndOnlyTheOffStateIsWritten()
 	{
 		// 默认显示：等待期那行提示是新用户唯一的入口曝光，读不到键时不该关掉。

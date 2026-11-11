@@ -473,6 +473,8 @@ public static partial class ModelsFileLoader
 [JsonSerializable(typeof(ModelsOverrideEntry))]
 [JsonSerializable(typeof(Model))]
 [JsonSerializable(typeof(ModelCost))]
+[JsonSerializable(typeof(Dictionary<string, List<Model>>))]
+[JsonSerializable(typeof(Dictionary<string, Dictionary<string, Model>>))]
 internal partial class ModelsJsonContext : JsonSerializerContext
 {
 	// 保留源生成选项，只替换编码器。

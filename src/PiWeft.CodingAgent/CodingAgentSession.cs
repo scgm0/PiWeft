@@ -13,6 +13,7 @@ using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Security;
 using PiWeft.CodingAgent.Extensions;
+using PiWeft.CodingAgent.Models;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Tools;
@@ -161,7 +162,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	private readonly StreamFn _streamFn;
 	private readonly StreamFn _routedStreamFn;
 	private readonly StreamFn _directStreamFn;
-	private static readonly Lazy<ModelRegistry> FallbackModelRegistry = new(ModelRegistry.LoadDefault);
+	private static readonly Lazy<ModelRegistry> FallbackModelRegistry = new(() => ModelCatalogOverlay.CreateRegistry());
 
 	private readonly ModelRegistry? _registry;
 	private readonly Func<string, string?>? _apiKeyForProvider;
