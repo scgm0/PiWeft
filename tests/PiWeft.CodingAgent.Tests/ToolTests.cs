@@ -65,20 +65,23 @@ public class ToolTests : IDisposable
 	}
 
 	[Fact]
-	public async Task Read_OffsetBeyondEnd_Throws()
+	public async Task Read_OffsetBeyondEnd_ReturnsError()
 	{
 		Write("a.txt", "one\n");
-		var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-			FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "a.txt", ["offset"] = 99 })));
+		var result = await FileTools.Read(_root).Execute(
+			Invoke("read", new JsonObject { ["path"] = "a.txt", ["offset"] = 99 }));
 
-		Assert.Contains("beyond end of file", error.Message);
+		Assert.True(result.IsError);
+		Assert.Contains("beyond end of file", Text(result));
 	}
 
 	[Fact]
-	public async Task Read_MissingFile_Throws()
+	public async Task Read_MissingFile_ReturnsError()
 	{
-		await Assert.ThrowsAsync<FileNotFoundException>(() =>
-			FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "nope.txt" })));
+		var result = await FileTools.Read(_root).Execute(Invoke("read", new JsonObject { ["path"] = "nope.txt" }));
+
+		Assert.True(result.IsError);
+		Assert.Equal("File not found: nope.txt", Text(result));
 	}
 
 	[Fact]

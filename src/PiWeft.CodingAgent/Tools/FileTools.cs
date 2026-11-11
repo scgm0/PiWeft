@@ -44,7 +44,9 @@ public static class FileTools
 
 		if (!File.Exists(absolutePath))
 		{
-			throw new FileNotFoundException($"File not found: {path}", absolutePath);
+			// 模型给错路径是常见情况：返回错误结果而不是抛异常，否则调试器会在
+			// 第一次异常处中断，模型也拿不到可继续的错误信息。
+			return AgentToolResult.Error($"File not found: {path}");
 		}
 
 		var mimeType = DetectImageMimeType(absolutePath);
@@ -127,7 +129,7 @@ public static class FileTools
 
 		if (startLine >= totalFileLines)
 		{
-			throw new InvalidOperationException(
+			return AgentToolResult.Error(
 				$"Offset {offset} is beyond end of file ({totalFileLines} lines total)");
 		}
 
