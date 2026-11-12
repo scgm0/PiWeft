@@ -6,8 +6,9 @@ namespace PiWeft.Ai;
 
 /// 助手或用户消息中的一个内容块，对应 <c>TextContent | ThinkingContent | ImageContent | ToolCall</c>
 /// （来自 <c>@earendil-works/pi-ai</c>）。序列化时带显式的 <c>type</c> 判别字段。
+/// <c>closed</c> 把可行类固定在程序集内，处理内容块的 switch 由编译器验证是否兑尽所有情形。
 [JsonConverter(typeof(ContentBlockJsonConverter))]
-public abstract record ContentBlock
+public closed record ContentBlock
 {
 	public abstract string Type { get; }
 }

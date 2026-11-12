@@ -19,7 +19,9 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 | `PiWeft.Desktop` | 多项目、多会话工作台，进程内驱动 `CodingAgentSession` |
 | `tools/` | AOT 冒烟、MCP fixture、基准、截图脚本、图标获取 |
 
-- .NET 11、`LangVersion=preview`（C# 15）、制表符缩进；文档、界面文案与注释以中文为主。
+- .NET 11、`LangVersion=preview`（C# 15）、Runtime Async、制表符缩进；文档、界面文案与注释以中文为主。
+- Runtime Async 由 `Directory.Build.props` 的 `Features=runtime-async=on` 全局开启：async 方法不再生成状态机，热执行栈只剩真实帧，CLI 的 NativeAOT 产物体积 -2.3%。少数写法（自定义 `AsyncMethodBuilder`、async 方法里的 `ref`/`unsafe` 布局）不受支持；SDK 11.0.100 不接 `UseRuntimeAsync` 开关，单个项目要退出就在它的 csproj 里覆写 `<Features></Features>`。
+- 种类固定的抽象记录标 `closed`（内容块、助手事件、会话条目、分类问题/答案、codemode 输出项）：可行类固定在程序集内，消费方的 `switch` 不写兜底分支也能通过编译，新增种类时会直接编译报错而不是静默走默认分支。
 - JSON 使用 `System.Text.Json` 源生成与手写转换器；不使用 Newtonsoft.Json 或供应商 SDK，保留 trim/AOT 分析器。
 - 核心库默认无第三方运行时包，例外两处：codemode 的 Jint 5 预览版（`Directory.Packages.props` + `Jint-preview` 源），以及 `PiWeft.Imaging` 的 Sdcb.SimdCodecs 分格式编解码包（纯托管、`net10.0` 单目标、`IsAotCompatible`，只引 Png/Jpeg/Gif/Webp/Bmp/Abstractions，不引会拖上 TIFF/J2K/JBIG2 的门面包）。桌面只用 `external/MewUI` 源码子模块与 `PiWeft.Markdown`（Markdig）。
 - 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线（43 个 provider），`<agentDir>/models-store.json` 缓存远程目录。设置页「模型目录」下载 pi-ai npm 整包 tarball 生成最新目录写入 `<agentDir>/model-catalog.json`（GitHub main 单文件兜底），tarball 过 registry SHA-512、包内逐文件 SHA-256，覆盖层解析结果在进程内缓存；保留上一个覆盖版，桌面启动时每天自动检查一次，CLI 与桌面读取同一份覆盖层。虚拟模型支持静态 `"virtual":{"model":...}` 与动态 `"virtual":{"route":"..."}`，状态写成 `pi.virtual-model-state` 条目。

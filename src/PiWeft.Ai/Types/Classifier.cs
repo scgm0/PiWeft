@@ -2,7 +2,8 @@ using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai;
 
-public abstract record ClassifierQuestion
+/// <c>closed</c>：问题种类固定在程序集内，提供商层的 switch 由编译器验证兑尽。
+public closed record ClassifierQuestion
 {
 	public abstract string Type { get; }
 
@@ -42,7 +43,8 @@ public sealed record ClassifierContext
 		new Dictionary<string, ClassifierQuestion>();
 }
 
-public abstract record ClassifierAnswer
+/// <c>closed</c>：答案种类固定在程序集内，解析侧的 switch 由编译器验证兑尽。
+public closed record ClassifierAnswer
 {
 	public abstract string Type { get; }
 }

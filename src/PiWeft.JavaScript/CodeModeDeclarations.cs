@@ -280,7 +280,7 @@ public static class CodeModeDeclarations
 				continue;
 			}
 
-			foreach (var value in values.Distinct(JsonNodeComparer.Instance))
+			foreach (var value in values.Distinct(JsonNodeComparer))
 			{
 				if (Number(value) is { } number) tags.Add($"@{keyword} {number}");
 				else if (Str(value) is { } text) tags.Add($"@{keyword} {text}");
@@ -374,12 +374,8 @@ public static class CodeModeDeclarations
 
 	private static string? Json(JsonNode? node) => node?.ToJsonString();
 
-	private sealed class JsonNodeComparer : IEqualityComparer<JsonNode?>
-	{
-		public static JsonNodeComparer Instance { get; } = new();
-
-		public bool Equals(JsonNode? x, JsonNode? y) => JsonNode.DeepEquals(x, y);
-
-		public int GetHashCode(JsonNode? obj) => obj?.ToJsonString().GetHashCode(StringComparison.Ordinal) ?? 0;
-	}
+	// .NET 11 EqualityComparer.Create：不再为一次性比较器建一个嵌套类。
+	private static readonly IEqualityComparer<JsonNode?> JsonNodeComparer = EqualityComparer<JsonNode?>.Create(
+		static (x, y) => JsonNode.DeepEquals(x, y),
+		static node => node?.ToJsonString().GetHashCode(StringComparison.Ordinal) ?? 0);
 }

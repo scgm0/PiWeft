@@ -136,7 +136,7 @@ public static class ContextTokens
 		TextContent text => text.Text.Length,
 		ImageContent => EstimatedImageChars,
 		ThinkingContent thinking => thinking.Thinking.Length,
-		_ => 0,
+		ToolCall => 0,
 	};
 
 	private static long RawChars(JsonObject raw)

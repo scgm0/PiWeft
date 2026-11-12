@@ -49,7 +49,8 @@ public sealed record CodeModeModelsRequest
 	public string? Id { get; init; }
 }
 
-public abstract record CodeModeOutputItem;
+/// <c>closed</c>：输出项只有文本与图片两种，消费方的 switch 由编译器验证兑尽。
+public closed record CodeModeOutputItem;
 
 public sealed record CodeModeTextItem : CodeModeOutputItem
 {

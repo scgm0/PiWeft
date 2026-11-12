@@ -161,8 +161,8 @@ internal static class MarkdownStreamRepair
 							open.Add(new OpenConstruct(ConstructKind.CodeSpan, '`', run));
 						}
 						position = text.Length;
-						// 带标签的 break 仍是预览版特性，部分 IDE 与旧编译器不认；goto 目标即下一轮循环检查。
-						goto nextLine;
+						// 跳回外层逐行循环的下一轮检查（内层 continue 只会接着扫这一行）。
+						continue nextLine;
 					}
 					index += run;
 					continue;

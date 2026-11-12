@@ -34,16 +34,18 @@ public static class ConstrainedSampling
 	];
 
 	/// Anthropic 严格工具额外拒绝这些 bounds 关键字（整个请求 400）。
-	private static readonly HashSet<string> AnthropicUnsupportedKeywords = new(StringComparer.Ordinal)
-	{
+	private static readonly HashSet<string> AnthropicUnsupportedKeywords =
+	[
+		with(StringComparer.Ordinal),
 		"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "maxItems",
 		"uniqueItems", "minContains", "maxContains", "minProperties", "maxProperties",
-	};
+	];
 
-	private static readonly HashSet<string> AnthropicStrictStringFormats = new(StringComparer.Ordinal)
-	{
+	private static readonly HashSet<string> AnthropicStrictStringFormats =
+	[
+		with(StringComparer.Ordinal),
 		"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid",
-	};
+	];
 
 	/// Claude 拒绝严格工具超限时的报错特征（20 个严格工具、16 个可选/联合类型参数等）。
 	private static readonly string[] StrictToolLimitErrorMessages =

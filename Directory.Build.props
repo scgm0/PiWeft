@@ -5,6 +5,11 @@
 	<TargetFramework>net11.0</TargetFramework>
 	<!-- .NET 11 SDK 的 preview 对应 C# 15。 -->
 	<LangVersion>preview</LangVersion>
+	<!-- Runtime Async：编译器不再为 async 方法生成状态机，挂起/恢复交给运行时。
+	     收益是热执行栈只剩真实方法帧（异常与诊断日志里的栈可读性）与更低分配；
+	     代价是少数写法（自定义 AsyncMethodBuilder、async 里的 ref/unsafe 布局）不再受支持。
+	     SDK 11.0.100 尚未接 UseRuntimeAsync 开关，单个项目要退出就在它的 csproj 里覆写 <Features></Features>。 -->
+	<Features>runtime-async=on</Features>
 	<Nullable>enable</Nullable>
 	<ImplicitUsings>enable</ImplicitUsings>
 	<TreatWarningsAsErrors>false</TreatWarningsAsErrors>

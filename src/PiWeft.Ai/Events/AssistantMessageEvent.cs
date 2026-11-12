@@ -5,7 +5,8 @@ namespace PiWeft.Ai;
 /// <see cref="DoneEvent"/> 终止。若请求尚未开始生成就失败，流可以直接以 <see cref="ErrorEvent"/> 终止；
 /// 而在 <c>start</c> 之后发生的失败同样以 <c>error</c> 终止。
 /// 文本与思考块在各自的 <c>*_start</c> 事件时还是空的，只通过 <c>*_delta</c> 事件增长。
-public abstract record AssistantMessageEvent
+/// <c>closed</c>：事件种类固定在程序集内，消费方的 switch 由编译器验证兑尽。
+public closed record AssistantMessageEvent
 {
 	public required AssistantMessage Partial { get; init; }
 }

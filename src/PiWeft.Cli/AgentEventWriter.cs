@@ -27,7 +27,8 @@ public static class AgentEventWriter
 			Write(writer, @event);
 		}
 
-		return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+		// GetBuffer 跳过 ToArray 的整份拷贝：这两处是流式每条事件的必经路径。
+		return System.Text.Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
 	}
 
 	public static void Write(Utf8JsonWriter writer, AgentEvent @event)
@@ -301,7 +302,7 @@ public static class AgentEventWriter
 			writer.WriteEndObject();
 		}
 
-		return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+		return System.Text.Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
 	}
 
 	private static void WriteToolResult(Utf8JsonWriter writer, AgentToolResult result)

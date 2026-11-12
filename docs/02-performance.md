@@ -38,6 +38,7 @@
 | `grep` 命中若干条（额度内） | 1.6 s → 6–10 ms（rg 0.05 s：我们命中够了就停遍历） |
 | 23 MB 单文件 `grep` | 3.5 ms（mmap，6.6 GB/s；rg 3.7 ms） |
 | `write` 1 MB / 10 MB | 分块编码写入后 0.78 ms / 8.9 ms（pi 1.33 ms / 11.9 ms）；100 B–2 KB 均 0.04 ms（pi 0.07–0.17 ms） |
+| CLI NativeAOT 产物（linux-x64，Release） | runtime-async 关 32,060,744 B → 开 31,321,368 B（-739,376 B，**-2.3%**） |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
 | NativeAOT 桌面体积（linux-x64，当前提交） | 75.8 MiB；开启 `EventSourceSupport` 77.4 MiB（+1.6 MiB / +2.1%，换来 `dotnet-counters`/`dotnet-trace` 可附着）。旧记录 62.4 MB / 64.0 MB 来自更早构建，需按当前提交重测 |
 

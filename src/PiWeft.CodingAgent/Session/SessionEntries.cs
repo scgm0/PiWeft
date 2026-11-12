@@ -21,7 +21,8 @@ public sealed record SessionHeader
 	public System.Text.Json.Nodes.JsonObject? Extra { get; init; }
 }
 
-public abstract record SessionEntry
+/// <c>closed</c>：条目种类固定在程序集内，写盘与界面上的 switch 由编译器验证兑尽。
+public closed record SessionEntry
 {
 	public abstract string Type { get; }
 

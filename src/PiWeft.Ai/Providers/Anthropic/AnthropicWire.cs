@@ -308,7 +308,8 @@ internal static class AnthropicWire
 	{
 		TextContent text => !string.IsNullOrWhiteSpace(text.Text),
 		ImageContent => true,
-		_ => false,
+		ThinkingContent => false,
+		ToolCall => false,
 	};
 
 	private static void WriteAssistant(Utf8JsonWriter writer, AssistantMessage message)
