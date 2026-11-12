@@ -12,11 +12,14 @@ public class McpProcessTests
 {
 	private static string DotnetHost => Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
 
+	// 夹具是独立项目，按 TargetFramework 分目录。测试程序集与夹具同框架，取运行时主版本免硬编码。
+	private static readonly string FixtureTfm = $"net{Environment.Version.Major}.0";
+
 	private static string FixtureAssembly()
 	{
 		var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name;
 		var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../tools/PiWeft.Mcp.FixtureServer/bin",
-			configuration, "net10.0/PiWeft.Mcp.FixtureServer.dll"));
+			configuration, FixtureTfm, "PiWeft.Mcp.FixtureServer.dll"));
 		Assert.True(File.Exists(path), $"fixture is not built: {path}");
 		return path;
 	}

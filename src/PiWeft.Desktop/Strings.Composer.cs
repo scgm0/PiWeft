@@ -100,6 +100,9 @@ public static partial class Strings
 
 	public static string LinkedTurns(int turns) => $"{turns} 轮";
 
+	/// 子代理卡的总耗时：从 delegate 到回合结束，含工具与等待，不是模型回复耗时。
+	public static string SubagentElapsed(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
+
 	public static string LinkedState(string state) => state switch
 	{
 		LinkedSessionLink.Starting => "启动中",

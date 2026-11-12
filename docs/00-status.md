@@ -1,6 +1,6 @@
 # PiWeft 状态
 
-PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .NET 10：NativeAOT CLI `pi` 与 MewUI 桌面工作台 `piweft-desktop`。会话文件与 pi、PiDeck 互通，但不是完整移植。
+PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .NET 11：NativeAOT CLI `pi` 与 MewUI 桌面工作台 `piweft-desktop`。会话文件与 pi、PiDeck 互通，但不是完整移植。
 
 构建/打包见 [README](../README.md)；兼容与差距见 [01-parity](01-parity.md)；性能见 [02-performance](02-performance.md)；codemode 见 [03-codemode](03-codemode.md)；Markdown 见 [04-markdown](04-markdown.md)。
 
@@ -19,7 +19,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 | `PiWeft.Desktop` | 多项目、多会话工作台，进程内驱动 `CodingAgentSession` |
 | `tools/` | AOT 冒烟、MCP fixture、基准、截图脚本、图标获取 |
 
-- .NET 10、`LangVersion=preview`、制表符缩进；文档、界面文案与注释以中文为主。
+- .NET 11、`LangVersion=preview`（C# 15）、制表符缩进；文档、界面文案与注释以中文为主。
 - JSON 使用 `System.Text.Json` 源生成与手写转换器；不使用 Newtonsoft.Json 或供应商 SDK，保留 trim/AOT 分析器。
 - 核心库默认无第三方运行时包，例外两处：codemode 的 Jint 5 预览版（`Directory.Packages.props` + `Jint-preview` 源），以及 `PiWeft.Imaging` 的 Sdcb.SimdCodecs 分格式编解码包（纯托管、`net10.0` 单目标、`IsAotCompatible`，只引 Png/Jpeg/Gif/Webp/Bmp/Abstractions，不引会拖上 TIFF/J2K/JBIG2 的门面包）。桌面只用 `external/MewUI` 源码子模块与 `PiWeft.Markdown`（Markdig）。
 - 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线（43 个 provider），`<agentDir>/models-store.json` 缓存远程目录。设置页「模型目录」下载 pi-ai npm 整包 tarball 生成最新目录写入 `<agentDir>/model-catalog.json`（GitHub main 单文件兜底），tarball 过 registry SHA-512、包内逐文件 SHA-256，覆盖层解析结果在进程内缓存；保留上一个覆盖版，桌面启动时每天自动检查一次，CLI 与桌面读取同一份覆盖层。虚拟模型支持静态 `"virtual":{"model":...}` 与动态 `"virtual":{"route":"..."}`，状态写成 `pi.virtual-model-state` 条目。
@@ -53,7 +53,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 凭据按显式选项、存储凭据、环境变量异步解析；OAuth 刷新有闸门且不跟随请求取消。可恢复错误按 `settings.retry` 退避；供应商 `Retry-After` 优先；要求等待超过 15 分钟的配额冷却不自动重试，直接把错误交回界面。失败尝试保留在文件里，通过 `context_edit` 排除出上下文。
 - 请求过大（`prefill_cap_refused`、413、payload too large、上下文超限）进入 overflow recovery：排除失败尝试后压缩；摘要请求本身过大时按 token 递归对半拆分，先摘要前半段再把它作为 `previousSummary` 摘要后半段。压缩/上下文编辑之后的最后一次 usage 不再充当上下文估算锚点，避免压缩后仍显示 600K。
 - PiDeck 私有名字（`pi-deck-*`、`__PI_DECK_*`、`[PI_DECK_*]`）集中声明在 `Compatibility/PiDeckProtocol.cs`，形状由 `PiDeckProtocolTests` 固定；纯内部名字用 `piweft-` 前缀。
-- 子代理是会话原生能力（`delegate` / `wait_subagents` / `list_subagents` / `read_subagent` / `send_to_subagent` / `stop_subagent`）：异步委派给带角色的子会话，最终回复作为消息回到父会话，父会话空闲时直接起一轮。角色来自 `.pi/agents/**/*.md`、`<agentDir>/agents/**/*.md` 与内置 `scout` / `reviewer` / `worker`；深度上限 1，并发上限 4，每个用户回合最多启动 32 个；子会话开后台标签并在侧栏挂在父会话下，输入区子代理条可打开或停止；`context: fork` 截到最后一个完整回合；计划模式与工具白名单收窄会传给子会话；`delegate` 支持 `output_schema`（JSON Schema 子集，校验失败标 failed）；`send_to_subagent` 支持 `follow_up`/`steer`/`auto`；连续 6 次回报拉起父会话后停投；单次运行默认 30 分钟超时；子代理条显示累计 token 与耗时；fork 历史超过 100k 字符只保留最近一段；关系条目落盘（含会话文件），重启后恢复列表并能冷恢复继续对话；结果在父会话回合结束时投递，工具行按字段展示；回报按助手排版渲染，不算用户提问（`UserMessage.IsUserAuthored`，分叉、重试、标题、导出都不认它）；`customType`/`display` 与人 pi 同形状落盘，重启后仍是回报。`-builtin:subagent` 关闭。详见 [05-subagent](05-subagent.md)。
+- 子代理是会话原生能力（`delegate` / `wait_subagents` / `list_subagents` / `read_subagent` / `send_to_subagent` / `stop_subagent`）：异步委派给带角色的子会话，最终回复作为消息回到父会话，父会话空闲时直接起一轮。角色来自 `.pi/agents/**/*.md`、`<agentDir>/agents/**/*.md` 与内置 `scout` / `reviewer` / `worker`；深度上限 1，并发上限 4，每个用户回合最多启动 32 个；子会话开后台标签并在侧栏挂在父会话下，输入区子代理条可打开或停止；`context: fork` 截到最后一个完整回合；计划模式与工具白名单收窄会传给子会话；`delegate` 支持 `output_schema`（JSON Schema 子集，校验失败标 failed）；`send_to_subagent` 支持 `follow_up`/`steer`/`auto`；连续 6 次回报拉起父会话后停投；单次运行默认 30 分钟超时；子代理条显示输入 + 输出 token 与总耗时；fork 历史超过 100k 字符只保留最近一段；关系条目落盘（含会话文件），重启后恢复列表并能冷恢复继续对话；结果在父会话回合结束时投递，工具行按字段展示；回报按助手排版渲染，不算用户提问（`UserMessage.IsUserAuthored`，分叉、重试、标题、导出都不认它）；`customType`/`display` 与人 pi 同形状落盘，重启后仍是回报。`-builtin:subagent` 关闭。详见 [05-subagent](05-subagent.md)。
 - 关联会话是桌面原生能力（`start_session` / `send_to_session` / `list_linked_sessions`）：子会话是同一项目的完整后台会话，独立标签；每轮结束把最后一条回复前 400 字回报父会话，空闲时直接起一轮、忙时排 follow-up。连续 6 次回报自动续跑后停止，用户发消息清零。`offer` 出提议卡等用户选「新会话 / 在此做 / 不要」（最长 10 分钟）；`own_initiative` 只登记卡片、工具立即返回。输入区上方的子会话条列出待决定提议与已开子会话。关系只在进程内。纯 CLI 不注册这三个工具。
 - 计划模式与目标模式是会话原生行为（不依赖扩展）：计划草案解析 `Plan:` 编号行、`pi-deck-plan-todos` 进度 widget、`[DONE:n]` 勾进度、`[PI_DECK_PLAN_NEXT]` 执行确认；目标模式按 `__PI_DECK_GOAL_MODE__` 标记续轮，`GOAL_COMPLETE` / `GOAL_BLOCKED:` 或轮次上限收尾，暂停/阻塞时带标记的正文只当本轮指令、不替换目标。状态分别写 `pi-deck-plan-mode` 与 `pi-deck-goal-mode` 自定义条目，跨分支恢复（计划只续执行态；目标只恢复为暂停，目标全文只在变化时落盘）。桌面目标条可暂停、恢复（空闲时立即补一轮）与清除。
 - bash/powershell 调用前先过 shell 守卫：删除命令的字面量目标复制进系统回收站（Linux XDG Trash、Windows 回收站、macOS 废纸篓，`PIDECK_TRASH_GUARD=off` 关闭），Windows Git Bash 的 `> nul` 改写成 `/dev/null`；`settings.httpProxy` 注入的代理只给模型请求，agent shell 不继承。

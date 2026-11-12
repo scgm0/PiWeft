@@ -229,11 +229,13 @@ public class CliEndToEndTests : IDisposable
 	private static string? FixtureAssembly()
 	{
 		var directory = AppContext.BaseDirectory;
+		// 夹具是独立项目，按 TargetFramework 分目录。测试程序集与夹具同框架，取运行时主版本免硬编码。
+		var tfm = $"net{Environment.Version.Major}.0";
 		var candidates = new[]
 		{
 			Path.Combine(directory, "PiWeft.Mcp.FixtureServer.dll"),
-			Path.Combine(directory, "..", "..", "..", "..", "..", "tools", "PiWeft.Mcp.FixtureServer", "bin", "Debug", "net10.0", "PiWeft.Mcp.FixtureServer.dll"),
-			Path.Combine(directory, "..", "..", "..", "..", "..", "tools", "PiWeft.Mcp.FixtureServer", "bin", "Release", "net10.0", "PiWeft.Mcp.FixtureServer.dll"),
+			Path.Combine(directory, "..", "..", "..", "..", "..", "tools", "PiWeft.Mcp.FixtureServer", "bin", "Debug", tfm, "PiWeft.Mcp.FixtureServer.dll"),
+			Path.Combine(directory, "..", "..", "..", "..", "..", "tools", "PiWeft.Mcp.FixtureServer", "bin", "Release", tfm, "PiWeft.Mcp.FixtureServer.dll"),
 		};
 
 		return candidates.Select(Path.GetFullPath).FirstOrDefault(File.Exists);

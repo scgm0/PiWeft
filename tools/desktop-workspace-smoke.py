@@ -16,7 +16,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path(tempfile.mkdtemp(prefix="piweft-workspace-"))
-APP = Path(os.environ.get("PI_WORKSPACE_SMOKE_APP", ROOT / "src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll"))
+APP = Path(os.environ.get("PI_WORKSPACE_SMOKE_APP", ROOT / "src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll"))
 CASES = [("chat", "dark", 1280, 820), ("appearance", "dark", 1280, 820),
          ("agent", "light", 1280, 820), ("mcp", "dark", 1280, 820),
          ("chat", "dark", 720, 520), ("sidebar", "dark", 1280, 820),

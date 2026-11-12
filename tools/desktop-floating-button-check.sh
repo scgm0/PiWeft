@@ -7,7 +7,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 session="${1:-$(ls -t "$HOME/.pi/agent/sessions/--home-scgm-RiderProjects-PiWeft--/"*.jsonl 2>/dev/null | head -1)}"
 [[ -n "${session:-}" ]] || { echo "没有可用会话，参数传入一个 .jsonl"; exit 2; }
 output="$(mktemp -d /tmp/piweft-floating-check-XXXXXX)"
-dll="$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll"
+dll="$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll"
 [[ -f "$dll" ]] || { echo "先构建桌面端：dotnet build src/PiWeft.Desktop"; exit 2; }
 
 agent="$output/agent"; mkdir -p "$agent/sessions/--home-scgm-RiderProjects-PiWeft--" "$output/frames"

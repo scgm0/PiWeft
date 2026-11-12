@@ -55,7 +55,7 @@ for theme in dark light; do
   # 面板跟着会话的工作目录走：把草稿会话指到夹具仓库上。
   jq --arg workspace "$work" '. + {chatWorkspace: $workspace}' \
     "$root/tests/PiWeft.Desktop.Tests/Fixtures/desktop-$theme.json" >"$output/$theme/agent/desktop.json"
-  HOME="$output/$theme/home" PI_CODING_AGENT_DIR="$output/$theme/agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
+  HOME="$output/$theme/home" PI_CODING_AGENT_DIR="$output/$theme/agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll" \
     --cwd "$work" --ui-smoke checkpoints-diff >"$output/$theme/stdout.log" 2>"$output/$theme/stderr.log" &
   app_pid=$!
   sleep 5

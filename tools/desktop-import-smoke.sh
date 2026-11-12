@@ -31,7 +31,7 @@ JSON
 jq --arg workspace "$work" '. + {chatWorkspace: $workspace}' \
   "$root/tests/PiWeft.Desktop.Tests/Fixtures/desktop-dark.json" >"$output/agent/desktop.json"
 
-HOME="$home" PI_CODING_AGENT_DIR="$output/agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
+HOME="$home" PI_CODING_AGENT_DIR="$output/agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll" \
   --cwd "$work" --ui-smoke import >"$output/stdout.log" 2>"$output/stderr.log" &
 app_pid=$!
 sleep 5

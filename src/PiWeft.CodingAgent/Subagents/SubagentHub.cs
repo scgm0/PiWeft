@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
@@ -59,7 +60,7 @@ public sealed record SubagentRun
 	/// <summary>最近一轮的最终回复。</summary>
 	public string? Result { get; init; }
 
-	/// <summary>子会话累计 token 数。</summary>
+	/// <summary>子会话累计输入 + 输出 token；不含缓存命中。</summary>
 	public long Tokens { get; init; }
 
 	/// <summary>子会话累计费用。</summary>
@@ -230,6 +231,8 @@ public sealed class SubagentHub : IDisposable
 		public JsonObject? OutputSchema { get; set; }
 
 		public JsonNode? StructuredOutput { get; set; }
+
+		public int TokensVersion { get; set; } = 1;
 	}
 
 	private sealed record PendingResult(string Name, bool Failed, string Text, long Turn, JsonNode? Structured = null);
@@ -335,6 +338,7 @@ public sealed class SubagentHub : IDisposable
 							Agent = data["agent"]?.GetValue<string>() ?? string.Empty,
 							Label = data["label"]?.GetValue<string>() ?? string.Empty,
 							Depth = data["depth"]?.GetValue<int>() ?? 1,
+							StartedAt = ReadLong(data["startedAt"]) ?? 0,
 							State = SubagentState.Stopped,
 							PlanMode = ReadPlanMode(data["planMode"]),
 							Restored = true,
@@ -363,12 +367,22 @@ public sealed class SubagentHub : IDisposable
 					state.OutputSchema = schema.DeepClone().AsObject();
 				}
 
+				if (ReadLong(data["tokensVersion"]) is { } version)
+				{
+					state.TokensVersion = (int)version;
+				}
+
 				continue;
 			}
 
 			if (!restored.TryGetValue(name, out var finished))
 			{
 				continue;
+			}
+
+			if (ReadLong(data["tokensVersion"]) is { } tokensVersion)
+			{
+				finished.TokensVersion = (int)tokensVersion;
 			}
 
 			var persistedStructured = data["structuredOutput"]?.DeepClone();
@@ -396,6 +410,7 @@ public sealed class SubagentHub : IDisposable
 					: finished.Run.Result,
 				Tokens = ReadLong(data["tokens"]) ?? finished.Run.Tokens,
 				Cost = ReadDouble(data["cost"]) ?? finished.Run.Cost,
+				FinishedAt = ReadLong(data["finishedAt"]) ?? finished.Run.FinishedAt,
 				StructuredOutput = kind is "failed" or "stopped"
 					? null
 					: persistedStructured ?? finished.Run.StructuredOutput,
@@ -409,6 +424,35 @@ public sealed class SubagentHub : IDisposable
 			{
 				var state = restored[name];
 				// 恢复出来的正文算作一轮，未投递：wait 还能把它取回去一次。
+				// 旧版本把 TotalTokens（含 cacheRead）写进 tokens；按会话文件重算成
+				// 与标签页一致的输入 + 输出，避免历史卡片一直显示 68k。
+				if (state.TokensVersion < 2 && state.Run.SessionFile is { Length: > 0 } usageFile)
+				{
+					try
+					{
+						var childManager = SessionManager.Open(usageFile);
+						var statistics = new SessionStatisticsCache().Get(childManager);
+						state.Run = state.Run with
+						{
+							Tokens = statistics.Input + statistics.Output,
+							Cost = statistics.Cost,
+							StartedAt = state.Run.StartedAt > 0
+								? state.Run.StartedAt
+								: ParseUnixMs(childManager.Header?.Timestamp),
+							FinishedAt = state.Run.FinishedAt > 0
+								? state.Run.FinishedAt
+								: ParseUnixMs(childManager.Entries.Count > 0
+									? childManager.Entries[^1].Timestamp
+									: childManager.Header?.Timestamp),
+						};
+						state.TokensVersion = 2;
+					}
+					catch (Exception)
+					{
+						// 子会话文件缺失或损坏：保留条目里的旧值。
+					}
+				}
+
 				if (state.Run.Result is { Length: > 0 } result)
 				{
 					state.TurnSeq = 1;
@@ -2191,6 +2235,7 @@ public sealed class SubagentHub : IDisposable
 				["state"] = StateName(run.State),
 				["turns"] = run.Turns,
 				["tokens"] = run.Tokens,
+				["tokensVersion"] = 2,
 				["cost"] = run.Cost,
 				["label"] = run.Label,
 				// 只存摘要：恢复后的列表够用，完整正文在子会话文件里。
@@ -2367,6 +2412,11 @@ public sealed class SubagentHub : IDisposable
 	private static bool ReadPlanMode(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<bool>(out var planMode) && planMode;
 
+	private static long ParseUnixMs(string? timestamp) =>
+		DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value)
+			? value.ToUnixTimeMilliseconds()
+			: 0;
+
 	private static long? ReadLong(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<long>(out var number) ? number : null;
 
@@ -2381,7 +2431,8 @@ public sealed class SubagentHub : IDisposable
 		try
 		{
 			var statistics = session.Statistics();
-			return (statistics.Tokens, statistics.Cost);
+			// 与标签页「输入 / 输出 token」同一数法；TotalTokens 含 cacheRead，直接显示会比标签页大一截。
+			return (statistics.Input + statistics.Output, statistics.Cost);
 		}
 		catch (Exception)
 		{

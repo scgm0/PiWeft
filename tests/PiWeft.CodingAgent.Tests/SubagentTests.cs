@@ -188,6 +188,29 @@ public sealed class SubagentTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Usage_ExcludesCacheHitsToMatchTheSessionPanel()
+	{
+		var childStream = new ScriptedStreamFn();
+		childStream.Enqueue(model => ScriptedSessions.Text(model, "带缓存的回复。", new Usage
+		{
+			Input = 10,
+			Output = 5,
+			CacheRead = 100,
+			TotalTokens = 115,
+		}));
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "第一轮结束");
+
+		Assert.Equal(15, hub.Runs.Single().Tokens);
+	}
+
+	[Fact]
 	public async Task Usage_IsExposedInTheRunAndListDetails()
 	{
 		var childStream = new ScriptedStreamFn();
@@ -663,6 +686,61 @@ public sealed class SubagentTests : IDisposable
 		Assert.True(restored.Tokens > 0, "恢复后用量应从条目读回");
 		Assert.True(restored.Restored);
 		Assert.False(string.IsNullOrEmpty(restored.SessionId));
+	}
+
+	[Fact]
+	public void Restart_RecomputesLegacyTokenCounts()
+	{
+		var manager = SessionManager.Create(_root, Path.Combine(_root, "sessions"));
+		var childManager = SessionManager.Create(
+			_root,
+			Path.Combine(_root, "children"),
+			parentSession: manager.SessionFile,
+			origin: "subagent");
+		childManager.AppendMessage(new UserMessage
+		{
+			Content = "任务。",
+			Timestamp = 1,
+		});
+		childManager.AppendMessage(ScriptedSessions.Blank(ScriptedSessions.Model()) with
+		{
+			Content = [new TextContent { Text = "结论。" }],
+			StopReason = StopReason.Stop,
+			Usage = new Usage { Input = 10, Output = 5, CacheRead = 100, TotalTokens = 115 },
+			Timestamp = 2,
+		});
+		manager.AppendCustom(SubagentHub.EntryType, new JsonObject
+		{
+			["kind"] = "start",
+			["name"] = "scout-1",
+			["agent"] = "scout",
+			["session"] = childManager.SessionId,
+			["file"] = childManager.SessionFile,
+			["depth"] = 1,
+		});
+		manager.AppendCustom(SubagentHub.EntryType, new JsonObject
+		{
+			["kind"] = "idle",
+			["name"] = "scout-1",
+			["agent"] = "scout",
+			["session"] = childManager.SessionId,
+			["file"] = childManager.SessionFile,
+			["depth"] = 1,
+			["turns"] = 1,
+			["tokens"] = 115,
+			["result"] = "旧结果。",
+		});
+
+		Assert.NotNull(manager.SessionFile);
+		using var parent = CreateParent(
+			new ScriptedStreamFn(),
+			new FakeHost(_root),
+			session: SessionManager.Open(manager.SessionFile));
+
+		var restored = Assert.Single(parent.Subagents!.Runs);
+		Assert.Equal(15, restored.Tokens);
+		Assert.True(restored.StartedAt > 0);
+		Assert.True(restored.FinishedAt >= restored.StartedAt);
 	}
 
 	[Fact]

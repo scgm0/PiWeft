@@ -5,7 +5,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 output="$(mktemp -d /tmp/pi-auth-login-smoke-XXXXXX)"
-app="${PI_AUTH_SMOKE_APP:-$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll}"
+app="${PI_AUTH_SMOKE_APP:-$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll}"
 app_pid=""
 server_pid=""
 cleanup() {

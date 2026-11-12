@@ -349,6 +349,8 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 		Assert.Equal(2, limited.Count);
 		Assert.Equal(parent0, limited[0].Path);
 		Assert.Equal(child0, limited[1].Path);
+		Assert.Equal(parent0, limited[1].ParentSession);
+		Assert.Equal("subagent", limited[1].Origin);
 	}
 
 	[Fact]

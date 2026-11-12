@@ -141,7 +141,7 @@ internal sealed class SubagentCard
 
 		if (run.IsTerminal && run.FinishedAt > run.StartedAt)
 		{
-			meta += $" · {Strings.FormatDuration(run.FinishedAt - run.StartedAt)}";
+			meta += $" · {Strings.SubagentElapsed(run.FinishedAt - run.StartedAt)}";
 		}
 
 		return meta;

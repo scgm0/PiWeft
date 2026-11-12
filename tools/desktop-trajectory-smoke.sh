@@ -149,7 +149,7 @@ with open(path, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(line, ensure_ascii=False) + "\n")
 PY
 
-  HOME="$output/$theme/home" PI_CODING_AGENT_DIR="$agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
+  HOME="$output/$theme/home" PI_CODING_AGENT_DIR="$agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll" \
     --cwd "$project" --ui-smoke "$view" >"$output/$theme/stdout.log" 2>"$output/$theme/stderr.log" &
   app_pid=$!
   sleep 5

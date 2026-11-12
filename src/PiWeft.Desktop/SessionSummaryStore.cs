@@ -47,7 +47,7 @@ internal sealed record SessionSummaryStamp
 /// 文件不存在、缓存损坏、版本不符 → 当作没有缓存，最坏退化成一次全扫。
 internal static class SessionSummaryStore
 {
-	public const int Version = 3;
+	public const int Version = 4;
 
 	private const int PreviewLimit = 200;
 

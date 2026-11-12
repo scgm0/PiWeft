@@ -32,7 +32,7 @@ internal static class ScriptedSessions
 		Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 	};
 
-	public static AssistantMessageEventStream Text(Model model, string text)
+	public static AssistantMessageEventStream Text(Model model, string text, Usage? usage = null)
 	{
 		var stream = new AssistantMessageEventStream();
 		var blank = Blank(model);
@@ -40,7 +40,7 @@ internal static class ScriptedSessions
 		{
 			Content = [new TextContent { Text = text }],
 			StopReason = StopReason.Stop,
-			Usage = new Usage { Input = 10, Output = 5, TotalTokens = 15, Cost = new UsageCost { Total = 0.5 } },
+			Usage = usage ?? new Usage { Input = 10, Output = 5, TotalTokens = 15, Cost = new UsageCost { Total = 0.5 } },
 		};
 
 		stream.Push(new StartEvent { Partial = blank });

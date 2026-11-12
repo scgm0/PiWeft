@@ -25,7 +25,7 @@ fi
 mkdir -p "$agent/sessions/--home-scgm-RiderProjects-PiWeft--"
 cp "$session" "$agent/sessions/--home-scgm-RiderProjects-PiWeft--/"
 
-PI_CODING_AGENT_DIR="$agent" PIWEFT_MARKDOWN_HEIGHT_CACHE="${HEIGHT_CACHE:-1}" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
+PI_CODING_AGENT_DIR="$agent" PIWEFT_MARKDOWN_HEIGHT_CACHE="${HEIGHT_CACHE:-1}" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll" \
   --cwd "/home/scgm/RiderProjects/PiWeft" --ui-smoke scroll-sweep \
   >"$output/stdout.log" 2>"$output/stderr.log" &
 app_pid=$!

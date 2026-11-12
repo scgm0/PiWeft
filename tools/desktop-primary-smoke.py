@@ -12,7 +12,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path(tempfile.mkdtemp(prefix="piweft-primary-"))
-APP = Path(os.environ.get("PI_WORKSPACE_SMOKE_APP", ROOT / "src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll"))
+APP = Path(os.environ.get("PI_WORKSPACE_SMOKE_APP", ROOT / "src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll"))
 agent, project = OUTPUT / "agent", OUTPUT / "project"
 agent.mkdir()
 project.mkdir()

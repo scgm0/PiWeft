@@ -110,7 +110,7 @@ You review HTTP handlers. Report findings with file and line references.
 - `customType` 与 `display` 跟 pi 同一形状落盘（`{"role":"user","customType":"…"}`，隐藏注入才写 `"display":false`）。漏写会让重启后的回报变回普通提问：分叉、重试、标题与导出全跟着错。
 - 修落盘之前的旧会话没有类型标记：桌面按正文前缀（`子代理「`、`子会话「`、`来自父会话「`）认回来，只影响显示，不改文件，也不让它们从分叉点里消失。
 - 排队卡里回报没有「撤回输入框」与「丢弃」：把机器文本撤进草稿没有意义。
-- 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。运行中额外显示当前工具（`运行中 · read src/Auth.cs`），同一个值也进 `list_subagents`。完成的行再带累计 token 与运行时长；`list_subagents` 的 `Details` 里是 `tokens` / `cost` / `elapsed_ms`。
+- 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。运行中额外显示当前工具（`运行中 · read src/Auth.cs`），同一个值也进 `list_subagents`。完成的行再带输入 + 输出 token 与总耗时（含工具与等待，不是模型回复耗时）；`list_subagents` 的 `Details` 里是 `tokens` / `cost` / `elapsed_ms`。旧条目里的 `tokens` 曾按 `TotalTokens`（含 cacheRead）记录，恢复时会按子会话文件重算成与标签页「输入 / 输出 token」一致的口径。
 - `wait_subagents` 阻塞期间每 5 秒把「在等谁、在干什么」推一次，界面不会只剩一行「等了十分钟」。
 
 ## 生命周期

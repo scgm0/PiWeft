@@ -30,7 +30,7 @@ for theme in dark light; do
 }
 JSON
 
-  HOME="$home" PI_CODING_AGENT_DIR="$agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
+  HOME="$home" PI_CODING_AGENT_DIR="$agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll" \
     --cwd "$work" --ui-smoke config-tools >"$output/$theme/stdout.log" 2>"$output/$theme/stderr.log" &
   app_pid=$!
   # 会话打开 1.5 s 后派发演练，再等两帧排布才摆出下拉；5 s 时弹层已经稳定。

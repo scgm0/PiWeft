@@ -209,9 +209,11 @@ public sealed class CodeModeSandboxTests
 	public async Task Execute_TimeoutCancelsPendingToolCalls()
 	{
 		var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		// 时限要够冷启动：首次执行要建引擎、解析 prelude 并 JIT，实测 ~450ms。
+		// 给 300ms 会让整个预算在脚本调到 tools.hang 之前就用完，断言测的就不再是取消。
 		var sandbox = new CodeModeSandbox(new CodeModeSandboxOptions
 		{
-			Timeout = TimeSpan.FromMilliseconds(300),
+			Timeout = TimeSpan.FromSeconds(2),
 			Tools =
 			[
 				Tool("hang", async (_, cancellationToken) =>

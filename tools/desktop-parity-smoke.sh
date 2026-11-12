@@ -15,7 +15,7 @@ for theme in dark light; do
   mkdir -p "$output/$theme/agent" "$output/$theme/project"
   cp "$root/tests/PiWeft.Desktop.Tests/Fixtures/config-models.json" "$output/$theme/agent/models.json"
   cp "$root/tests/PiWeft.Desktop.Tests/Fixtures/desktop-$theme.json" "$output/$theme/agent/desktop.json"
-  PI_CODING_AGENT_DIR="$output/$theme/agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
+  PI_CODING_AGENT_DIR="$output/$theme/agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll" \
     --cwd "$output/$theme/project" --ui-smoke config >"$output/$theme/stdout.log" 2>"$output/$theme/stderr.log" &
   app_pid=$!
   sleep 4

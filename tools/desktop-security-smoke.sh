@@ -37,7 +37,7 @@ for theme in dark light; do
 }
 JSON
 
-  HOME="$home" PI_CODING_AGENT_DIR="$agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net10.0/piweft-desktop.dll" \
+  HOME="$home" PI_CODING_AGENT_DIR="$agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll" \
     --cwd "$work" --ui-smoke security >"$output/$theme/stdout.log" 2>"$output/$theme/stderr.log" &
   app_pid=$!
   # --ui-smoke 目标在会话打开后再等 1.5 s 才派发，界面驻留 7 s：4 s 时窗口已经切到安全门分区。
