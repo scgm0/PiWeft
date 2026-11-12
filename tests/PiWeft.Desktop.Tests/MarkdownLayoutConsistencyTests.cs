@@ -140,6 +140,68 @@ public sealed class MarkdownLayoutConsistencyTests(ITestOutputHelper output)
 	}
 
 	[Fact]
+	public void BlocksAreClippedToTheViewAndTheirOwnSlot()
+	{
+		// 块的排布矩形由 MarkdownView 按测得的块高给出。块在 arrange 之后才长高（补实现新块、
+		// 外层漏测）时，超出部分必须裁掉，否则会画到下一块或下一行上。
+		var markdown = new MarkdownView
+		{
+			Source = string.Join("\n\n", Enumerable.Range(0, 6).Select(i => $"第 {i} 段 " + new string('文', 60))),
+		};
+		var scroll = Host(markdown);
+		try
+		{
+			var blocks = Find<MarkdownParagraphView>(markdown).ToArray();
+			Assert.NotEmpty(blocks);
+			foreach (var block in blocks)
+			{
+				var clip = markdown.ChildClipForTest(block);
+				Assert.NotNull(clip);
+				var rect = clip.Value.Rect;
+				// 纵向只允许 3 DIP 余量（行内代码底色/选区），再往外就会压到相邻块。
+				Assert.True(rect.Top >= markdown.Bounds.Top - 3.5 && rect.Bottom <= markdown.Bounds.Bottom + 3.5,
+					$"block clip {rect} leaves the view {markdown.Bounds}");
+				Assert.True(rect.Top >= block.Bounds.Top - 3.5 && rect.Bottom <= block.Bounds.Bottom + 3.5,
+					$"block clip {rect} leaves its own slot {block.Bounds}");
+				Assert.True(rect.Contains(block.Bounds),
+					$"block clip {rect} cuts the block it belongs to {block.Bounds}");
+			}
+		}
+		finally
+		{
+			UiLifetime.Release(scroll);
+		}
+	}
+
+	[Fact]
+	public void ParagraphSkipsTheFrameWhenItsArrangedHeightIsStale()
+	{
+		// 外层漏测时（虚拟化行在自己的 arrange 里长高），段落版面是新文本的高度，Bounds 还是旧的。
+		// 这一帧不能再画：画出去就压到下一块上，等下一次测量把行高补齐。
+		var markdown = new MarkdownView { Source = "短" };
+		var scroll = Host(markdown);
+		try
+		{
+			var paragraph = Assert.Single(Find<MarkdownParagraphView>(markdown));
+			var staleHeight = paragraph.Bounds.Height;
+			markdown.Source = string.Join("", Enumerable.Repeat("把这一段写得足够长，长到在旧高度里放不下。", 6));
+			// 只测量：版面换成新文本，排布高度仍是旧的那一版。
+			scroll.Measure(new Size(640, 700));
+			Assert.True(paragraph.DesiredSize.Height > staleHeight + 1,
+				$"新文本没有长高：desired={paragraph.DesiredSize.Height:0.#} stale={staleHeight:0.#}");
+			paragraph.Arrange(new Rect(paragraph.Bounds.X, paragraph.Bounds.Y, paragraph.Bounds.Width, staleHeight));
+			Assert.False(paragraph.FitsArrangedHeight);
+
+			Layout(scroll, 640);
+			Assert.True(paragraph.FitsArrangedHeight);
+		}
+		finally
+		{
+			UiLifetime.Release(scroll);
+		}
+	}
+
+	[Fact]
 	public void TableCellsDoNotRemeasureWhenTheGridSnapsTracksToDevicePixels()
 	{
 		// 4 列星号轨道的表格在非整数可用宽度上会得到 215.5 这样的轨道：measure 用未取整的宽度，

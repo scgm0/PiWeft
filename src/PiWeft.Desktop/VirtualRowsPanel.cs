@@ -192,6 +192,15 @@ internal sealed class VirtualRowsPanel<TItem, THost> : Panel
         // 后者不摆位会在 prefix 变化后停在旧坐标上，可能盖住可见行。
         PlaceAll(bounds.X, placementY, width);
 
+        // 行在自己的 arrange 里改高：Markdown 的 arrange 会补实现新块并就地测量，这时行已经
+        // 摆过位，下一行还停在旧位置，长出来的正文就压在它上面。同一帧把变脏的行重测一次再摆
+        // 一遍，行高与后续行的位置一起落到最终值；再长也只补一轮，剩下的交给下一次布局。
+        if (SettleRowsAfterArrange(first, last, width, ref changed))
+        {
+            EnsurePrefix();
+            PlaceAll(bounds.X, placementY, width);
+        }
+
         if (changed)
         {
             // ScrollViewer 的 extent 来自 Measure 后的 DesiredSize；这里主动失效一次，
@@ -214,6 +223,27 @@ internal sealed class VirtualRowsPanel<TItem, THost> : Panel
         if (Math.Abs(applied) > 0.5 && Math.Abs(applied - shift) > 0.5) _pendingShift = shift - applied;
         offset = scroll.VerticalOffset;
         placementY -= offset - before;
+    }
+
+    /// <summary>
+    /// 重测上一轮放置时变脏的行：它们在 arrange 里改了高度，面板手里的高度晚一轮；
+    /// 返回 true 表示调用方要把所有行再摆一遍。
+    /// </summary>
+    private bool SettleRowsAfterArrange(int first, int last, double width, ref bool changed)
+    {
+        var limit = Math.Min(last, _count2 - 1);
+        var dirty = false;
+        for (var index = Math.Max(0, first); index <= limit; index++)
+        {
+            if (_realized.TryGetValue(index, out var host) && host.IsMeasureDirty)
+            {
+                dirty = true;
+                break;
+            }
+        }
+        if (!dirty) return false;
+        if (MeasureRange(first, last, width)) changed = true;
+        return true;
     }
 
     private bool MeasureRange(int first, int last, double width)

@@ -1781,6 +1781,26 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		return unmeasured;
 	}
 
+	/// <summary>把每个块纵向裁到它排布到的矩形与本视图之内，块长高后压不到下一块或下一行上。</summary>
+	protected override ChildClip? GetChildClip(UIElement child)
+	{
+		if (Bounds.Width <= 0 || Bounds.Height <= 0)
+		{
+			return null;
+		}
+		// 只裁纵向：行内代码底色与选区会往外铺几像素，横向裁在块的矩形上会削掉它们的边缘。
+		// 留 3 DIP 余量给这两层，仍然能挡住块长高后压到下一块/下一行的那部分正文。
+		double top = Math.Max(Bounds.Top, child.Bounds.Top) - 3;
+		double bottom = Math.Min(Bounds.Bottom, child.Bounds.Bottom) + 3;
+		if (bottom <= top)
+		{
+			return new ChildClip(Rect.Empty);
+		}
+		return new ChildClip(new Rect(Bounds.X - 8, top, Bounds.Width + 16, bottom - top));
+	}
+
+	internal ChildClip? ChildClipForTest(UIElement child) => GetChildClip(child);
+
 	protected override void OnRender(IGraphicsContext context)
 	{
 		base.OnRender(context);

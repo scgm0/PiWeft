@@ -140,6 +140,9 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 	/// Layout width assigned by EnsureLayout; NaN until the paragraph was measured, so a
 	/// NaN here on a realized element means it would render blank.
 	internal double LayoutWidthForTest => _width;
+
+	/// <summary>排出来的文本是否装得进父级给的高度；装不下就不画，等下一次测量把行高补齐。</summary>
+	internal bool FitsArrangedHeight => Bounds.Height <= 0.5 || TextHeight() <= Bounds.Height + 0.5;
 	internal bool IsStreaming { get; set; }
 	internal IReadOnlyList<MarkdownRun> Runs => _runs;
 	internal void SetBlock(
@@ -915,9 +918,15 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			// chunk 的 Top 与总高会与父级行高不一致，后面的块会叠到下一块上。宽度变了就留给下一轮测量。
 			if (!LayoutWidthMatches(Bounds.Width)) return;
 			EnsureLayout(Bounds.Width);
-			// 版面已经比父级给的高度更高：这一帧先不画（画出去就会压到下一块），
-			// 下一次测量会把行高补齐。少一帧正文也比两行字叠在一起强。
-			if (Bounds.Height > 0.5 && TextHeight() > Bounds.Height + 0.5) return;
+		}
+
+		// 版面比父级给的高度更高：这一帧先不画。画出去就会压到下一块或下一行，
+		// 下一次测量会把行高补齐。少一帧正文也比两行字叠在一起强。
+		// 这一判断不只管「补版面」那条路：外层漏测（虚拟化行在 arrange 里长高、滚动中
+		// 补实现新块）时版面是现成的，Bounds 却是旧的，文字照样会溢出自己的排布矩形。
+		if (!FitsArrangedHeight)
+		{
+			return;
 		}
 
 		for (int index = 0; index < _chunks.Count; index++)
