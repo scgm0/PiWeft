@@ -33,6 +33,21 @@ public sealed class SessionCatalogTests
 	}
 
 	[Fact]
+	public void SessionHeaderCarriesTheParentSession()
+	{
+		var child = SessionCatalog.ScanLineForTest("""
+			{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp/pi","parentSession":"parent","origin":"subagent"}
+			""");
+		Assert.Equal("parent", child.ParentSession);
+		Assert.Equal("subagent", child.Origin);
+
+		var root = SessionCatalog.ScanLineForTest("""
+			{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp/pi"}
+			""");
+		Assert.Null(root.ParentSession);
+	}
+
+	[Fact]
 	public void CountsToolResultsAndSkipsTheirLargeContent()
 	{
 		var line = """
@@ -296,6 +311,75 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 		Assert.Equal(8, all.Count);
 		Assert.Equal(paths[7], all[0].Path);
 		Assert.Equal(paths[0], all[^1].Path);
+	}
+
+	[Fact]
+	public void ChildSessionsDoNotConsumeTopLevelSlots()
+	{
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		string Write(string id, string? parent, int day)
+		{
+			var path = Path.Combine(sessions, $"2026-02-0{day}T00-00-00-000Z_{id}.jsonl");
+			var parentField = parent is null ? string.Empty : $",\"parentSession\":\"{parent}\",\"origin\":\"subagent\"";
+			File.WriteAllLines(path,
+			[
+				$"{{\"type\":\"session\",\"version\":3,\"id\":\"{id}\",\"timestamp\":\"t\",\"cwd\":\"/tmp/x\"{parentField}}}",
+				$"{{\"id\":\"u-{id}\",\"parentId\":\"{id}\",\"type\":\"message\",\"timestamp\":\"t\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"{id}\"}}],\"timestamp\":1}}}}",
+			]);
+			File.SetLastWriteTimeUtc(path, new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(day));
+			return path;
+		}
+
+		var parent0 = Write("p0", null, 2);
+		var child0 = Write("c0", parent0, 1);
+		Write("p1", null, 0);
+
+		var catalog = new SessionCatalog();
+		// 先全量扫一次，让摘要缓存知道 c0 是子会话。
+		Assert.Equal(3, catalog.List(limit: 99).Count);
+
+		var limited = catalog.List(limit: 1);
+
+		// 1 个顶层名额给 p0；c0 作为它的子会话跟着带上，p1 被挤掉。
+		Assert.Equal(2, limited.Count);
+		Assert.Equal(parent0, limited[0].Path);
+		Assert.Equal(child0, limited[1].Path);
+	}
+
+	[Fact]
+	public void OrphanChildrenStillShowWhenNoParentIsAvailable()
+	{
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		for (var index = 0; index < 3; index++)
+		{
+			var path = Path.Combine(sessions, $"2026-03-0{index + 1}T00-00-00-000Z_c{index}.jsonl");
+			File.WriteAllLines(path,
+			[
+				$"{{\"type\":\"session\",\"version\":3,\"id\":\"c{index}\",\"timestamp\":\"t\",\"cwd\":\"/tmp/x\",\"parentSession\":\"gone\",\"origin\":\"subagent\"}}",
+				$"{{\"id\":\"u{index}\",\"parentId\":\"c{index}\",\"type\":\"message\",\"timestamp\":\"t\",\"message\":{{\"role\":\"user\",\"content\":\"问题 {index}\",\"timestamp\":1}}}}",
+			]);
+			File.SetLastWriteTimeUtc(path, new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(index));
+		}
+
+		var catalog = new SessionCatalog();
+		// 先扫一次，让缓存记住这些文件是子会话。
+		Assert.Equal(3, catalog.List(limit: 99).Count);
+
+		var limited = catalog.List(limit: 2);
+
+		// 没有父会话可挂，子会话仍按顶层返回，不能整批消失。
+		Assert.Equal(2, limited.Count);
+		Assert.All(limited, item => Assert.Equal("gone", item.ParentSession));
 	}
 
 	[Fact]

@@ -1264,7 +1264,7 @@ public sealed class ChatViewModel : IDisposable
 	}
 
 	/// 被 wait 取走的子代理结果：每个有正文的子代理补一张只读回报卡。
-	/// 只认 `delivered: true` 的行——否则结果本来就会以消息形式投递，会画出两张卡。
+	/// 只认 `returned: true` 的行——否则结果本来就会以消息形式投递，会画出两张卡。
 	private void AppendWaitedReports(ToolResultMessage result, string? entryId)
 	{
 		if (!string.Equals(result.ToolName, SubagentTools.WaitName, StringComparison.Ordinal) ||

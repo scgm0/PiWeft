@@ -823,10 +823,10 @@ public sealed partial class MainWindow : Window
 		var nodes = SessionGroups.ProjectGroups(rows, _chatWorkspace, preference.Projects, preference.DismissedProjects)
 			.Select(group => new TreeViewNode(
 				ProjectLabel(group.Cwd, group.Sessions.Count),
-				[.. group.Sessions
+				[.. SessionGroups.Nest([.. group.Sessions
 					.OrderByDescending(item => preference.IsPinned(item.Id))
-					.ThenByDescending(static item => item.Modified)
-					.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item))],
+					.ThenByDescending(static item => item.Modified)])
+					.Select(entry => SessionNode(entry, preference))],
 				tag: group.Cwd))
 			.ToList();
 
@@ -854,15 +854,17 @@ public sealed partial class MainWindow : Window
 		}
 
 		// 「对话」分段：聊天目录里的会话按置顶、最近修改平铺，不分组。
+		var orderedChats = chats
+			.DistinctBy(static item => item.Path)
+			.OrderByDescending(item => preference.IsPinned(item.Id))
+			.ThenByDescending(static item => item.Modified)
+			.ToArray();
 		_chatNodes =
 		[
-			.. chats
-				.DistinctBy(static item => item.Path)
-				.OrderByDescending(item => preference.IsPinned(item.Id))
-				.ThenByDescending(static item => item.Modified)
-				.Select(item => new TreeViewNode(SessionLine(item, preference), tag: item)),
+			.. SessionGroups.Nest(orderedChats).Select(entry => SessionNode(entry, preference)),
 		];
 		_chatsTree.ItemsSource(_chatNodes);
+		ExpandCurrentSessionPath();
 		UpdateSidebarEmptyHints();
 
 		if (selectedId is not null)
@@ -880,6 +882,12 @@ public sealed partial class MainWindow : Window
 
 		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}";
 	}
+
+	/// 递归建侧栏会话行：子代理/关联子会话挂在父会话下面。
+	private TreeViewNode SessionNode(SessionTreeEntry entry, DesktopPreference preference) =>
+		new(SessionLine(entry.Item, preference),
+			[.. entry.Children.Select(child => SessionNode(child, preference))],
+			tag: entry.Item);
 
 	private void OnSessionSelected(object? item)
 	{
@@ -2720,19 +2728,82 @@ public sealed partial class MainWindow : Window
 
 	/// 该项目节点里是否有当前会话。按路径比对，不按会话 id：外部工具生成的会话
 	/// 头部 id 可能与文件名里的 uuid 不一致，用 id 会漏判，把选中项折在看不见的地方。
+	/// 当前标签是嵌套的子会话时，把父会话行一起展开，选中的行才看得见。
+	private void ExpandCurrentSessionPath()
+	{
+		if (CurrentTab()?.Session.Session.SessionFile is not { Length: > 0 } path)
+		{
+			return;
+		}
+
+		foreach (var project in _sessionNodes)
+		{
+			if (ExpandToNode(project, path, _sessionTree.Expand))
+			{
+				return;
+			}
+		}
+
+		foreach (var chat in _chatNodes)
+		{
+			if (ExpandToNode(chat, path, _chatsTree.Expand))
+			{
+				return;
+			}
+		}
+	}
+
+	private static bool ExpandToNode(TreeViewNode node, string path, Action<TreeViewNode> expand)
+	{
+		if (node.Tag is SessionListItem item && string.Equals(item.Path, path, StringComparison.Ordinal))
+		{
+			return true;
+		}
+
+		foreach (var child in node.Children)
+		{
+			if (ExpandToNode(child, path, expand))
+			{
+				expand(node);
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	private static bool ContainsSession(TreeViewNode project, string? sessionPath)
 	{
 		if (sessionPath is null) return false;
 		foreach (var child in project.Children)
 		{
-			if (child.Tag is SessionListItem item &&
-				string.Equals(item.Path, sessionPath, StringComparison.Ordinal))
+			if (FindSessionNode(child, sessionPath) is not null)
 			{
 				return true;
 			}
 		}
 
 		return false;
+	}
+
+	private static TreeViewNode? FindSessionNode(TreeViewNode node, string sessionIdOrPath)
+	{
+		if (node.Tag is SessionListItem item &&
+			(string.Equals(item.Path, sessionIdOrPath, StringComparison.Ordinal) ||
+			 string.Equals(item.Id, sessionIdOrPath, StringComparison.Ordinal)))
+		{
+			return node;
+		}
+
+		foreach (var child in node.Children)
+		{
+			if (FindSessionNode(child, sessionIdOrPath) is { } found)
+			{
+				return found;
+			}
+		}
+
+		return null;
 	}
 
 	private void RememberProjectExpanded(object? item, bool expanded)
@@ -2765,9 +2836,9 @@ public sealed partial class MainWindow : Window
 		{
 			foreach (var chat in _chatNodes)
 			{
-				if (chat.Tag is SessionListItem item && string.Equals(item.Id, sessionId, StringComparison.Ordinal))
+				if (FindSessionNode(chat, sessionId) is { } node)
 				{
-					_chatsTree.SelectedNode = chat;
+					_chatsTree.SelectedNode = node;
 					return;
 				}
 			}
@@ -2776,9 +2847,9 @@ public sealed partial class MainWindow : Window
 			{
 				foreach (var child in project.Children)
 				{
-					if (child.Tag is SessionListItem item && string.Equals(item.Id, sessionId, StringComparison.Ordinal))
+					if (FindSessionNode(child, sessionId) is { } node)
 					{
-						_sessionTree.SelectedNode = child;
+						_sessionTree.SelectedNode = node;
 						return;
 					}
 				}

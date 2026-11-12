@@ -36,6 +36,28 @@ public class PlanModeTests : IDisposable
 		Assert.IsType<SystemMessage>(session.ProjectedMessages[0]);
 
 	[Fact]
+	public void InitialPlanMode_StartsReadOnly()
+	{
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+			Session = SessionManager.InMemory(_root),
+			Persist = false,
+			Skills = [],
+			PromptTemplates = [],
+			Tools = PiWeft.CodingAgent.Tools.BuiltinTools.Tools(_root),
+			InitialPlanMode = true,
+		});
+
+		Assert.True(session.PlanModeEnabled);
+		Assert.DoesNotContain(session.Tools, static tool => tool.Name is "edit" or "write");
+		Assert.Contains(session.Tools, static tool => tool.Name == "read");
+		Assert.Contains("plan_mode", Prompt(session).Sections!.Keys);
+	}
+
+	[Fact]
 	public void SetPlanMode_RemovesWriteToolsAndAddsThePromptSection()
 	{
 		using var session = Session();

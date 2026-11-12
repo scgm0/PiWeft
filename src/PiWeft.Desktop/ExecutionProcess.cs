@@ -444,6 +444,7 @@ internal static class ExecutionProcess
 				SubagentTools.DelegateName => Strings.ToolActionDelegate,
 				SubagentTools.WaitName => Strings.ToolActionSubagentWait,
 				SubagentTools.ListName => Strings.ToolActionSubagentList,
+				SubagentTools.ReadName => Strings.ToolActionSubagentRead,
 				SubagentTools.SendName => Strings.ToolActionSubagentSend,
 				_ => Strings.ToolActionSubagentStop,
 			};

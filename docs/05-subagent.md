@@ -29,22 +29,45 @@
 
 | 工具 | 用途 |
 |---|---|
-| `delegate` | `{ agent, task, name?, context? }`，启动子代理，立即返回 |
+| `delegate` | `{ agent, task, name?, context?, output_schema? }`，启动子代理，立即返回 |
 | `wait_subagents` | `{ names?, timeout_ms? }`，等到结束一轮或超时 |
 | `list_subagents` | 本会话的子代理与可用角色 |
-| `send_to_subagent` | `{ id, message }`，追加一轮，不等回复 |
+| `read_subagent` | `{ id, max_chars? }`，读子会话最近的助手正文；截断或重启后取全文 |
+| `send_to_subagent` | `{ id, message, mode? }`，追加消息，不等回复；`mode` 为 `follow_up`（默认）、`steer` 或 `auto` |
 | `stop_subagent` | `{ id }`，停当前回合，子会话仍可读 |
 
-工具只在宿主支持子会话且深度未到上限时注册。纯 CLI、`--tools none`、子代理会话本身都拿不到这些工具。
+工具只在宿主支持子会话且深度未到上限时注册。纯 CLI、`--tools none`、子代理会话本身都拿不到这些工具。`read_subagent` 从活会话的投影或会话文件读最近 40 段助手正文，默认 12k、上限 48k。
 
 开启 codemode 后，脚本可以 `await tools.delegate(...)` 批量启动，再用 `await tools.wait_subagents(...)` 收集结果。Jint 已经在依赖里，不需要第二个 JS 运行时。
 
 ## 上下文
 
 - `fresh`（默认）：子会话只看得到任务本身。
-- `fork`：把本会话当前分支投影里最后一条不含工具调用的助手消息及其之前的内容写进子会话。当前回合的助手消息一定带 `delegate` 调用，所以截到这里就避开了半截回合。没有已完成回合时直接拒绝，提示改用 `fresh`。
+- `fork`：把本会话当前分支投影里最后一条不含工具调用的助手消息及其之前的内容写进子会话。当前回合的助手消息一定带 `delegate` 调用，所以截到这里就避开了半截回合。历史超过 100k 字符时只保留最近一段，并以一条「历史已截断」的用户消息开头；没有已完成回合时直接拒绝，提示改用 `fresh`。
 
 fork 的子会话仍用角色的系统提示词与委派边界，不会复用父会话的请求前缀。
+
+父会话在计划模式下，子会话建好就进入计划模式：`edit`/`write` 从工具面拿掉，`bash` 仍保留但只允许只读命令。计划模式是创建时的快照，冷恢复沿用 `planMode` 条目。
+
+`wait_subagents` 的单次正文预算 24k。装不下的结果标成 `returned: false` 留在未投递状态，下一次 `wait_subagents` 还能取；不再出现「正文被丢掉但仍报已投递」。工具结果的 `Details` 里每行带 `session_file`，截断时正文末尾也给这个路径。
+
+## 结构化结果
+
+`delegate` 的 `output_schema` 要求子代理最终回复返回一个符合 schema 的 JSON 值。schema 只接受一个子集，遇到不认识的 keyword 直接拒绝，不会静默放宽：
+
+- 根节点必须是 `object`。
+- 支持 `type`（`object`/`array`/`string`/`number`/`integer`/`boolean`/`null`）、`properties`、`required`、`items`、`enum`、`additionalProperties`（布尔或 schema）、`description`/`title`/`default`/`examples`/`$schema`。
+- 不支持 `pattern`、`anyOf`、`oneOf`、`allOf`、`$ref` 等；定义阶段就会报错。
+- 默认与 JSON Schema 一致：未写 `additionalProperties` 时允许多余字段，写 `false` 才拒绝。
+
+子代理的系统提示词里会附上 schema。结束时从最终回复提取 JSON：整段是 JSON 就直接用，否则取最后一个 ` ```json ` 围栏块，再退回首尾大括号之间的内容。校验失败把这一轮标成 `failed`，正文后追加错误原因；校验通过的结果同时出现在：
+
+- 投递消息里的 `structured_output:` 段；
+- `wait_subagents` 的 `Details[].structured_output` 与结果正文；
+- `list_subagents` 的 `Details[].structured_output`；
+- `read_subagent` 读回的正文。
+
+schema 只在 `start` 条目落盘一次，`structuredOutput` 随 `idle`/`failed` 条目落盘；重启后列表与 `wait` 仍能看到结构化结果。
 
 ## 角色文件
 
@@ -64,9 +87,11 @@ You review HTTP handlers. Report findings with file and line references.
 ```
 
 - `name`：小写字母开头，只含小写字母、数字与连字符，最长 32，不能是 `lead`。省略时用文件名。
-- `tools`：子会话工具白名单。支持逗号列表与 `- item` 块列表。省略时沿用父会话可用的工具。
+- `tools`：子会话工具白名单。支持逗号列表与 `- item` 块列表，也接受 MCP 工具名。省略时沿用父会话可用的工具。
 - `excludeTools`：在白名单之上再排除。
-- 计划模式下 `edit`/`write` 即使在白名单里也会被拿掉；父会话用 `--tools` 收窄过的工具，子会话不会绕过。
+- 白名单只做收窄。父会话用 `--tools` 给了纯名字列表时，白名单不能再加回列表外的工具；父会话没显式收窄时，白名单可以补 `read`/`grep`/`find`/`ls` 这类只读发现工具，内置 `scout` 依赖这一点。写工具、shell 和已停用的内置扩展不能这样加回来。
+- 被拒的工具写进子会话系统提示词，模型不会按白名单猜；`--exclude-tools`、`NoBuiltinTools` 与计划模式同样先生效。
+- 计划模式下 `edit`/`write` 即使在白名单里也会被拿掉；`bash` 留下，但子会话本身也在计划模式，会拦只读命令以外的调用。
 - `model`：`provider/id`，或唯一 id。解析失败回落父会话模型。
 - `thinking`：子会话思考级别，省略时沿用父会话当前级别。
 - 正文：追加在子会话系统提示词后面，再后面是委派边界。
@@ -85,17 +110,21 @@ You review HTTP handlers. Report findings with file and line references.
 - `customType` 与 `display` 跟 pi 同一形状落盘（`{"role":"user","customType":"…"}`，隐藏注入才写 `"display":false`）。漏写会让重启后的回报变回普通提问：分叉、重试、标题与导出全跟着错。
 - 修落盘之前的旧会话没有类型标记：桌面按正文前缀（`子代理「`、`子会话「`、`来自父会话「`）认回来，只影响显示，不改文件，也不让它们从分叉点里消失。
 - 排队卡里回报没有「撤回输入框」与「丢弃」：把机器文本撤进草稿没有意义。
-- 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。运行中额外显示当前工具（`运行中 · read src/Auth.cs`），同一个值也进 `list_subagents`。
+- 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。运行中额外显示当前工具（`运行中 · read src/Auth.cs`），同一个值也进 `list_subagents`。完成的行再带累计 token 与运行时长；`list_subagents` 的 `Details` 里是 `tokens` / `cost` / `elapsed_ms`。
 - `wait_subagents` 阻塞期间每 5 秒把「在等谁、在干什么」推一次，界面不会只剩一行「等了十分钟」。
 
 ## 生命周期
 
 - 深度上限 1。子代理会话不注册 `delegate` 系列工具，也不带关联会话工具，递归停在第一层。
-- 并发上限 4，超了直接拒绝，不排队。
+- 并发上限 4，超了直接拒绝，不排队。给空闲子代理发消息也算开一轮，同样受这个上限约束；首轮还在启动时 `send_to_subagent` 先排队，不会和首轮抢子会话。
 - 每个用户回合最多启动 32 个；子代理回报触发的父会话轮次不重置预算，用户自己发消息才清零。
-- 子会话在桌面上开一个后台标签，不抢当前标签；有 UI 宿主，所以子代理可以自己用 `ask_question` 问用户。
+- 连续 6 次回报拉起父会话后停止自动投递，用户发消息清零。停投的正文仍在 `Result` 与子会话文件里，`wait_subagents` 还能取。
+- 单次运行默认 30 分钟超时。到点把状态落到 `failed` 并投递一条带 `timed out` 的结果，迟到的 `agent_end` 不会把失败改回 idle；再发消息就是新的一次运行，重新计时。
+- `send_to_subagent` 的 `steer` 把消息放进当前运行的 steering 队列，下一个工具边界生效；空闲时用 `follow_up`，`auto` 在运行中选 steer、否则退回 follow_up。
+- 子会话在桌面上开一个后台标签，不抢当前标签；侧栏里挂在父会话下面，不占顶层会话行，也不占侧栏 200 条的顶层名额。当前标签是子会话时，父行会自动展开。有 UI 宿主，所以子代理可以自己用 `ask_question` 问用户。
 - 子会话不加载扩展，工具面只有角色白名单。
-- 子会话头写 `parentSession`，父会话写 `piweft-subagent` 自定义条目（`start` / `started` / `idle` / `failed` / `stopped`，结束条目带 400 字摘要）。重启后按条目恢复列表；恢复项没有活会话（`list_subagents` 里 `restored: true`），`send_to_subagent` 会提示会话未打开，桌面仍可按 `session_id` 打开子会话转录。
+- 子会话只弱引用父会话：父标签关掉、子标签还开着时，父会话的整份消息不会被吊住。父标签关闭会停掉正在跑的子代理，避免结果无处投递还继续烧 token；子会话标签与文件保留，仍可读取或继续。
+- 子会话头写 `parentSession`，父会话写 `piweft-subagent` 自定义条目（`start` / `started` / `idle` / `failed` / `stopped`，结束条目带 400 字摘要）。重启后按条目恢复列表（`list_subagents` 里 `restored: true`）；恢复项没有活会话，但 `send_to_subagent` 会按会话文件冷恢复，重新订阅并继续对话。计划模式下建的关系把 `planMode` 一起落盘，恢复后仍只读。
 - 同一时刻结束的多个子代理合并成一条消息，避免一次拉起多轮父会话。
 - `stop_subagent` 只停当前回合；子会话还在，可以继续读，也可以再 `send_to_subagent`。关掉子会话标签也同理：状态落到 stopped，会话文件还在，发消息就会冷恢复。停过之后再发消息，新一轮的结论照常回报（`Stopping` 只属于被停的那一轮）。
 - 建子会话是慢活：这期间被停掉，首轮不会再起，工具调用收到「stopped before its first turn」。

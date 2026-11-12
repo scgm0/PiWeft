@@ -5,6 +5,9 @@ namespace PiWeft.Desktop;
 /// 侧栏「项目」的一行：规范化后的工作目录，以及它下面的会话。刚添加、还没开过任务的目录会话为空。
 internal sealed record ProjectGroup(string Cwd, IReadOnlyList<SessionListItem> Sessions);
 
+/// 侧栏里的一棵会话树：子会话挂在父会话下面，父会话缺失时子会话自己当根。
+internal sealed record SessionTreeEntry(SessionListItem Item, IReadOnlyList<SessionTreeEntry> Children);
+
 /// 侧栏两个分段的归属规则：工作目录就是聊天目录的会话属于「对话」，其余属于「项目」。
 /// 与 PiDeck 的内置 Chat 项目一致：「对话」是一块没有项目上下文的聊天工作区，
 /// 不是全部会话的平铺；否则同一批会话会在两个分段里重复出现。
@@ -18,6 +21,89 @@ internal static class SessionGroups
 
 	public static IReadOnlyList<SessionListItem> Projects(IEnumerable<SessionListItem> sessions, string chatWorkspace) =>
 		[.. sessions.Where(item => !IsChat(item, chatWorkspace))];
+
+	/// 把子会话挂到父会话下面；父会话不在列表里时子会话保持顶层。
+	/// 用 visited 兜住手改文件造成的环，最坏退化成平铺，不递归到栈溢出。
+	public static IReadOnlyList<SessionTreeEntry> Nest(IReadOnlyList<SessionListItem> sessions)
+	{
+		if (sessions.Count == 0)
+		{
+			return [];
+		}
+
+		// 子会话头的 parentSession 可能写父会话 id，也可能写父会话文件路径
+		//（桌面建子会话时写的是 ParentFile）。两种都要认，否则侧栏挂不上去。
+		var byKey = new Dictionary<string, string>(sessions.Count * 2, StringComparer.Ordinal);
+		foreach (var item in sessions)
+		{
+			byKey[item.Id] = item.Id;
+			if (item.Path.Length > 0)
+			{
+				byKey[item.Path] = item.Id;
+			}
+		}
+
+		var byParent = new Dictionary<string, List<SessionListItem>>(StringComparer.Ordinal);
+		var roots = new List<SessionListItem>();
+		foreach (var item in sessions)
+		{
+			if (item.Origin == "subagent" &&
+				item.ParentSession.Length > 0 &&
+				byKey.TryGetValue(item.ParentSession, out var parentId) &&
+				parentId != item.Id)
+			{
+				if (!byParent.TryGetValue(parentId, out var children))
+				{
+					byParent[parentId] = children = [];
+				}
+
+				children.Add(item);
+			}
+			else
+			{
+				roots.Add(item);
+			}
+		}
+
+		var visited = new HashSet<string>(StringComparer.Ordinal);
+		var result = new List<SessionTreeEntry>(sessions.Count);
+		foreach (var item in roots)
+		{
+			result.Add(Build(item, 0, []));
+		}
+
+		// 环或父会话缺失时也要有入口：没访问过的一律当根。
+		foreach (var item in sessions)
+		{
+			if (!visited.Contains(item.Id))
+			{
+				result.Add(Build(item, 0, []));
+			}
+		}
+
+		return result;
+
+		SessionTreeEntry Build(SessionListItem item, int depth, HashSet<string> path)
+		{
+			visited.Add(item.Id);
+			if (depth >= 8 || !byParent.TryGetValue(item.Id, out var children) || children.Count == 0)
+			{
+				return new SessionTreeEntry(item, []);
+			}
+
+			var branch = new HashSet<string>(path, StringComparer.Ordinal) { item.Id };
+			var nested = new List<SessionTreeEntry>(children.Count);
+			foreach (var child in children)
+			{
+				if (!branch.Contains(child.Id) && !visited.Contains(child.Id))
+				{
+					nested.Add(Build(child, depth + 1, branch));
+				}
+			}
+
+			return new SessionTreeEntry(item, nested);
+		}
+	}
 
 	/// 侧栏「项目」的完整清单：会话分组加「添加项目」记录，同一个目录只出现一行。
 	/// 空目录也要留下，否则添加一个还没有会话的文件夹时侧栏没有任何变化。

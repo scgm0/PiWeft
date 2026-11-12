@@ -28,6 +28,12 @@ internal sealed record SessionSummaryStamp
 	public required int MessageCount { get; init; }
 
 	public required string Preview { get; init; }
+
+	/// <summary>子会话的父会话 id；普通会话为空。</summary>
+	public string ParentSession { get; init; } = string.Empty;
+
+	/// <summary>派生来源；子代理为 <c>subagent</c>。</summary>
+	public string Origin { get; init; } = string.Empty;
 }
 
 /// 侧栏摘要的磁盘缓存（<c>&lt;agentDir&gt;/session-summaries.json</c>）。
@@ -41,7 +47,7 @@ internal sealed record SessionSummaryStamp
 /// 文件不存在、缓存损坏、版本不符 → 当作没有缓存，最坏退化成一次全扫。
 internal static class SessionSummaryStore
 {
-	public const int Version = 1;
+	public const int Version = 3;
 
 	private const int PreviewLimit = 200;
 
@@ -101,6 +107,8 @@ internal static class SessionSummaryStore
 					Cwd = Text(item["cwd"]),
 					MessageCount = (int)(Number(item["messages"]) ?? 0),
 					Preview = Text(item["preview"]),
+					ParentSession = Text(item["parentSession"]),
+					Origin = Text(item["origin"]),
 				};
 			}
 
@@ -139,6 +147,8 @@ internal static class SessionSummaryStore
 				["cwd"] = stamp.Cwd,
 				["messages"] = stamp.MessageCount,
 				["preview"] = ClipPreview(stamp.Preview),
+				["parentSession"] = stamp.ParentSession,
+				["origin"] = stamp.Origin,
 			};
 		}
 

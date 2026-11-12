@@ -63,10 +63,13 @@ public sealed class SubagentToolDisplayTests
 	}
 
 	[Fact]
-	public void ListSummaryHasNoDanglingDetail()
+	public void ListAndReadSummariesMatchTheTool()
 	{
-		var entry = Call("list_subagents", "{}");
-		Assert.Equal("列出子代理", ExecutionProcess.ToolAction(entry, running: false));
+		var list = Call("list_subagents", "{}");
+		Assert.Equal("列出子代理", ExecutionProcess.ToolAction(list, running: false));
+
+		var read = Call("read_subagent", """{"id":"scout-1"}""");
+		Assert.Equal("读取子代理 scout-1", ExecutionProcess.ToolAction(read, running: false));
 	}
 
 	[Fact]

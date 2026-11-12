@@ -27,7 +27,7 @@ public sealed class SubagentChildSessionTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	private CodingAgentSession CreateParent()
+	private CodingAgentSession CreateParent(IReadOnlyList<AgentTool>? tools = null)
 	{
 		var model = TestModels.Model();
 		return new CodingAgentSession(new CodingAgentSessionOptions
@@ -40,10 +40,11 @@ public sealed class SubagentChildSessionTests : IDisposable
 			Skills = [],
 			PromptTemplates = [],
 			Settings = new CodingAgentSettings(),
+			Tools = tools,
 		});
 	}
 
-	private (CliEnvironment Environment, CliArguments Arguments) Environment()
+	private (CliEnvironment Environment, CliArguments Arguments) Environment(params string[] extra)
 	{
 		var model = TestModels.Model();
 		var registry = new ModelRegistry();
@@ -54,7 +55,7 @@ public sealed class SubagentChildSessionTests : IDisposable
 			model,
 			BuiltinTools.Tools(_root),
 			new ScriptedStreamFn().Invoke);
-		var arguments = CliArguments.Parse(["--no-session"]).Arguments!;
+		var arguments = CliArguments.Parse(["--no-session", .. extra]).Arguments!;
 		return (environment, arguments);
 	}
 
@@ -122,6 +123,8 @@ public sealed class SubagentChildSessionTests : IDisposable
 		Assert.DoesNotContain("write", names);
 		Assert.Contains("read", names);
 		Assert.Contains("bash", names);
+		Assert.True(child.PlanModeEnabled);
+		Assert.Contains("<plan_mode>", child.CurrentSystemPrompt);
 
 		// 显式白名单同样过计划模式。
 		var explicitWrite = new SubagentDefinition
@@ -142,6 +145,76 @@ public sealed class SubagentChildSessionTests : IDisposable
 			uiHost: null);
 
 		Assert.Equal(["bash", "read"], explicitChild.Tools.Select(static tool => tool.Name).Order(StringComparer.Ordinal));
+		// bash 留在工具面里，但会话本身也在计划模式：GuardedBeforeToolCall 会拦住写操作。
+		Assert.True(explicitChild.PlanModeEnabled);
+		Assert.Contains("<plan_mode>", explicitChild.CurrentSystemPrompt);
+	}
+
+	[Fact]
+	public void ChildSession_DoesNotWidenAnExplicitToolAllowlist()
+	{
+		using var parent = CreateParent([FileTools.Read(_root)]);
+		var (environment, arguments) = Environment("--tools", "read");
+		var definition = new SubagentDefinition
+		{
+			Name = "worker",
+			Description = "writer",
+			Tools = ["read", "grep", "write", "bash"],
+		};
+
+		var context = new SubagentStartContext(parent, "父会话", definition, "worker-1", "改一下。", 1);
+		using var child = environment.CreateChildSession(
+			arguments,
+			_root,
+			SessionManager.InMemory(_root),
+			context,
+			SubagentCatalog.Empty,
+			subagentHost: null,
+			extraTools: null,
+			uiHost: null);
+
+		// 父会话用 --tools read 收窄过：角色白名单不能再加回 grep、write、bash。
+		Assert.Equal(["read"], child.Tools.Select(static tool => tool.Name));
+		Assert.Contains("工具限制", child.CurrentSystemPrompt);
+		Assert.Contains("grep", child.CurrentSystemPrompt);
+		Assert.Contains("write", child.CurrentSystemPrompt);
+	}
+
+	[Fact]
+	public void ChildSession_PutsTheOutputSchemaInTheBoundary()
+	{
+		using var parent = CreateParent();
+		var (environment, arguments) = Environment();
+		var definition = new SubagentDefinition
+		{
+			Name = "reviewer",
+			Description = "review",
+			Tools = ["read"],
+		};
+		var context = new SubagentStartContext(parent, "父会话", definition, "reviewer-1", "检查。", 1)
+		{
+			OutputSchema = new System.Text.Json.Nodes.JsonObject
+			{
+				["type"] = "object",
+				["properties"] = new System.Text.Json.Nodes.JsonObject
+				{
+					["status"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "string" },
+				},
+			},
+		};
+
+		using var child = environment.CreateChildSession(
+			arguments,
+			_root,
+			SessionManager.InMemory(_root),
+			context,
+			SubagentCatalog.Empty,
+			subagentHost: null,
+			extraTools: null,
+			uiHost: null);
+
+		Assert.Contains("最终回复必须是一个 JSON 值", child.CurrentSystemPrompt);
+		Assert.Contains("\"status\"", child.CurrentSystemPrompt);
 	}
 
 	[Fact]

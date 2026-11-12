@@ -73,7 +73,7 @@ public sealed class SubagentCardTests : IDisposable
 		Assert.True(tab.SubagentCardVisible);
 		Assert.Equal(1, tab.SubagentCardRowCount);
 		// 完成一轮是「已完成」，不是「等待中」：Idle 表示还能继续发消息，不是在等什么。
-		Assert.Contains(Find<Aprillz.MewUI.Controls.TextBlock>(tab.View), block => block.Text == "已完成 · 1 轮");
+		Assert.Contains(Find<Aprillz.MewUI.Controls.TextBlock>(tab.View), block => block.Text.StartsWith("已完成 · 1 轮", StringComparison.Ordinal));
 	}
 
 	[Fact]

@@ -91,6 +91,7 @@ public sealed partial class SessionManager
 		string? sessionDir = null,
 		string? id = null,
 		string? parentSession = null,
+		string? origin = null,
 		DateTimeOffset? now = null)
 	{
 		if (id is not null && !SessionPaths.IsValidSessionId(id))
@@ -112,6 +113,7 @@ public sealed partial class SessionManager
 			Timestamp = timestamp,
 			Cwd = manager.Cwd,
 			ParentSession = parentSession,
+			Origin = origin,
 		});
 
 		File.WriteAllText(manager.SessionFile, SessionJson.Serialize(manager.Header!) + "\n");

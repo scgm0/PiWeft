@@ -128,9 +128,23 @@ internal sealed class SubagentCard
 			return $"{phase} · {activity}";
 		}
 
-		return run.Restored && run.SessionFile is { Length: > 0 }
-			? $"{phase} · {Strings.LinkedTurns(run.Turns)} · {Strings.SubagentResumable}"
-			: $"{phase} · {Strings.LinkedTurns(run.Turns)}";
+		var meta = $"{phase} · {Strings.LinkedTurns(run.Turns)}";
+		if (run.Restored && run.SessionFile is { Length: > 0 })
+		{
+			meta += $" · {Strings.SubagentResumable}";
+		}
+
+		if (run.Tokens > 0)
+		{
+			meta += $" · {TrajectoryFormat.CompactTokens(run.Tokens)} tk";
+		}
+
+		if (run.IsTerminal && run.FinishedAt > run.StartedAt)
+		{
+			meta += $" · {Strings.FormatDuration(run.FinishedAt - run.StartedAt)}";
+		}
+
+		return meta;
 	}
 
 	private static (Border Row, TextBlock Meta) Row(

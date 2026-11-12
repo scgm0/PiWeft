@@ -90,6 +90,11 @@ public static class SessionJson
 			writer.WriteString("parentSession", parent);
 		}
 
+		if (header.Origin is { Length: > 0 } origin)
+		{
+			writer.WriteString("origin", origin);
+		}
+
 		PiJsonValue.WriteExtras(writer, header.Extra);
 		writer.WriteEndObject();
 	}
@@ -270,7 +275,7 @@ public static class SessionJson
 		Timestamp = PiJsonValue.Str(obj, "timestamp") ?? string.Empty,
 		Cwd = PiJsonValue.Str(obj, "cwd") ?? string.Empty,
 		ParentSession = PiJsonValue.Str(obj, "parentSession"),
-		Extra = PiJsonValue.ReadExtras(obj, "type", "version", "id", "timestamp", "cwd", "parentSession"),
+		Extra = PiJsonValue.ReadExtras(obj, "type", "version", "id", "timestamp", "cwd", "parentSession", "origin"),
 	};
 
 	public static SessionEntry ParseEntry(JsonObject obj, string type)

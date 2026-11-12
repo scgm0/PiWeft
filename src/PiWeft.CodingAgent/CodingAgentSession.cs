@@ -119,6 +119,12 @@ public sealed record CodingAgentSessionOptions
 	/// 每个用户回合最多启动多少个子代理；防止回报触发的连锁委派无限扩张。
 	public int MaxSubagentSpawns { get; init; } = 32;
 
+	/// <summary>建会话时直接进入计划模式；子代理用它继承父会话的只读边界。</summary>
+	public bool InitialPlanMode { get; init; }
+
+	/// <summary>子代理单次运行的时限；到点停止并投递失败结果。小于等于零时用默认 30 分钟。</summary>
+	public TimeSpan SubagentRunTimeout { get; init; } = TimeSpan.FromMinutes(30);
+
 	/// 子代理角色目录；省略时按 cwd 发现。子会话由宿主传入父会话的目录，避免重复扫描。
 	public Subagents.SubagentCatalog? Agents { get; init; }
 
@@ -242,6 +248,9 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	private CodingAgentSessionOptions? _sessionOptions;
 
+	// 子会话只弱引用父会话：父标签关掉、子标签还开着时，不能让子会话把整份父会话留住。
+	private readonly WeakReference<CodingAgentSession>? _subagentParent;
+
 	public CodingAgentSession(CodingAgentSessionOptions options)
 	{
 		ArgumentNullException.ThrowIfNull(options);
@@ -252,7 +261,9 @@ public sealed partial class CodingAgentSession : IDisposable
 		Security = options.Settings.Security;
 		UiHost = options.UiHost;
 		ProjectTrusted = options.ProjectTrusted;
-		SubagentParent = options.SubagentParent;
+		_subagentParent = options.SubagentParent is { } subagentParent
+			? new WeakReference<CodingAgentSession>(subagentParent)
+			: null;
 		_images = options.Images;
 		_classifiers = options.Classifiers;
 		Session = options.Session
@@ -274,7 +285,8 @@ public sealed partial class CodingAgentSession : IDisposable
 						includeProject: options.ProjectTrusted),
 					options.SubagentDepth,
 					options.MaxActiveSubagents,
-					options.MaxSubagentSpawns)
+					options.MaxSubagentSpawns,
+					runTimeout: options.SubagentRunTimeout)
 				: null;
 
 		_explicitSkills = options.Skills;
@@ -397,11 +409,12 @@ public sealed partial class CodingAgentSession : IDisposable
 		// 委派工具同样跟宿主能力与深度走：子代理会话拿到的是 0 个工具，递归默认停在第一层。
 		if (Subagents is { } subagents)
 		{
-			foreach (var name in SubagentTools.Names)
+			// 一次建齐：Bind(name) 会为每个名字重建全部工具与参数 schema。
+			foreach (var tool in SubagentTools.Create(subagents))
 			{
-				if (!builtins.Any(tool => string.Equals(tool.Tool.Name, name, StringComparison.Ordinal)))
+				if (!builtins.Any(existing => string.Equals(existing.Tool.Name, tool.Tool.Name, StringComparison.Ordinal)))
 				{
-					builtins.Add(SubagentTools.Bind(name, subagents));
+					builtins.Add(tool);
 				}
 			}
 		}
@@ -436,7 +449,8 @@ public sealed partial class CodingAgentSession : IDisposable
 
 		// 扩展工具并表要在内置工具集定稿之后、代理建立之前：早了会被 _fullTools 覆盖，
 		// 晚了 ApplyTools 还没有 _agent 可用。
-		_sessionOptions = options;
+		// 不把父会话留在 options 里：这个字段会跟会话一样长命。
+		_sessionOptions = options with { SubagentParent = null };
 		_builtinTools = builtins;
 		_fullTools = builtins;
 		LoadExtensions(options);
@@ -534,6 +548,13 @@ public sealed partial class CodingAgentSession : IDisposable
 		PublishTodoWidget(CurrentTodo());
 		// 计划/目标模式的状态跟着分支走：执行态续接进度，目标只恢复为暂停。
 		RestoreModeState();
+		if (options.InitialPlanMode && !PlanModeEnabled)
+		{
+			// SetPlanMode 同时过滤工具、加 plan_mode 章节并落一条计划条目；
+			// 子会话因此和父会话一样停在只读边界上。
+			SetPlanMode(true);
+		}
+
 		PublishPlanWidget();
 		PublishGoalWidget();
 		DispatchSessionLifecycle("session_start");
@@ -565,8 +586,9 @@ public sealed partial class CodingAgentSession : IDisposable
 	/// 宿主支持且未达到深度上限时为非 null；子代理会话本身为 null。
 	public SubagentHub? Subagents { get; }
 
-	/// 本会话是子代理会话时，指向开出它的父会话。
-	public CodingAgentSession? SubagentParent { get; }
+	/// 本会话是子代理会话时，指向开出它的父会话。父会话已回收时为 null。
+	public CodingAgentSession? SubagentParent =>
+		_subagentParent is { } weak && weak.TryGetTarget(out var parent) ? parent : null;
 
 	public AgentRuntime Agent => _agent;
 

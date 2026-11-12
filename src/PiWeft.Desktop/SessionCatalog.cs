@@ -24,6 +24,12 @@ public sealed record SessionListItem
 
 	public string Preview { get; init; } = string.Empty;
 
+	/// 子会话的父会话 id；普通会话为空。
+	public string ParentSession { get; init; } = string.Empty;
+
+	/// 派生来源；子代理为 subagent，分支/普通会话为空。
+	public string Origin { get; init; } = string.Empty;
+
 	/// 列表里的标题：会话名优先，其次第一条用户消息，最后退回「新会话」。
 	/// 文件名（时间戳 + id）对用户没有意义，不拿出来当标题。
 	public string Display => Name.Length > 0
@@ -93,6 +99,8 @@ public sealed class SessionCatalog
 						Modified = new DateTime(stamp.LastWriteTicks, DateTimeKind.Utc),
 						MessageCount = stamp.MessageCount,
 						Preview = stamp.Preview,
+						ParentSession = stamp.ParentSession,
+						Origin = stamp.Origin,
 					},
 					stamp.Offset,
 					stamp.HeadHash,
@@ -135,6 +143,11 @@ public sealed class SessionCatalog
 
 	private IReadOnlyList<SessionListItem> ListCore(bool archived, string? cwdFilter, int limit)
 	{
+		if (limit <= 0)
+		{
+			return [];
+		}
+
 		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		Interlocked.Exchange(ref _scanTicks, 0);
 		Interlocked.Exchange(ref _scanCount, 0);
@@ -172,11 +185,55 @@ public sealed class SessionCatalog
 		// 会话上千份时，要读的字节从全部降到前 200 份，不用磁盘缓存。
 		if (cwdFilter is null && candidates.Length > limit && limit > 0)
 		{
-			candidates = [.. candidates
+			// 子会话不占顶层名额：已缓存的子会话先跳过，选中父会话后再把它们带上，
+			// 即使它们的修改时间比名额线更旧。未缓存的仍按修改时间参与。
+			var ordered = candidates
 				.Select(static path => (Path: path, Write: LastWriteOf(path)))
 				.OrderByDescending(static entry => entry.Write)
-				.Take(limit)
-				.Select(static entry => entry.Path)];
+				.ToArray();
+			var selected = new List<string>(limit);
+			var selectedIds = new HashSet<string>(StringComparer.Ordinal);
+			foreach (var entry in ordered)
+			{
+				if (selected.Count >= limit)
+				{
+					break;
+				}
+
+				if (TryGetCachedItem(entry.Path, out var cached) &&
+					cached.Origin == "subagent" && cached.ParentSession.Length > 0)
+				{
+					continue;
+				}
+
+				selected.Add(entry.Path);
+				selectedIds.Add(SessionIdFromPath(entry.Path));
+				selectedIds.Add(entry.Path);
+			}
+
+			var selectedPaths = new HashSet<string>(selected, StringComparer.Ordinal);
+			foreach (var entry in ordered)
+			{
+				if (selectedPaths.Contains(entry.Path) ||
+					!TryGetCachedItem(entry.Path, out var cached) ||
+					cached.Origin != "subagent" ||
+					cached.ParentSession.Length == 0 ||
+					!selectedIds.Contains(cached.ParentSession))
+				{
+					continue;
+				}
+
+				selected.Add(entry.Path);
+			}
+
+			// 父会话都没了（删档、归档或全被过滤）时，子会话本身就是入口，
+			// 不能因为缓存里带 parentSession 就整批隐身。
+			if (selected.Count == 0)
+			{
+				selected.AddRange(ordered.Take(limit).Select(static entry => entry.Path));
+			}
+
+			candidates = [.. selected];
 		}
 
 		var items = new SessionListItem[candidates.Length];
@@ -196,9 +253,42 @@ public sealed class SessionCatalog
 			for (var index = 0; index < candidates.Length; index++) items[index] = ToItem(candidates[index]);
 		}
 
-		var result = items
+		var filtered = items
 			.Where(item => cwdFilter is null || string.Equals(item.Cwd, cwdFilter, StringComparison.Ordinal))
-			.OrderByDescending(static item => item.Modified).Take(limit).ToArray();
+			.OrderByDescending(static item => item.Modified).ToArray();
+		// limit 数的是顶层会话：先把子会话从名额里拿掉，再把它们的行带上。
+		// 父会话不在本次扫描结果里时，子会话按顶层处理，避免被静默丢掉。
+		// parentSession 可能是 id，也可能是文件路径：两种都建键。
+		var byKey = new Dictionary<string, SessionListItem>(filtered.Length * 2, StringComparer.Ordinal);
+		foreach (var item in filtered)
+		{
+			byKey[item.Id] = item;
+			if (item.Path.Length > 0)
+			{
+				byKey[item.Path] = item;
+			}
+		}
+
+		var rootIds = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var item in filtered)
+		{
+			var hasParent = item.Origin == "subagent" &&
+				item.ParentSession.Length > 0 &&
+				byKey.TryGetValue(item.ParentSession, out var parent) &&
+				parent.Id != item.Id;
+			if (!hasParent && rootIds.Count < limit)
+			{
+				rootIds.Add(item.Id);
+			}
+		}
+
+		var result = filtered
+			.Where(item => rootIds.Contains(item.Id) ||
+				(item.Origin == "subagent" &&
+				 item.ParentSession.Length > 0 &&
+				 byKey.TryGetValue(item.ParentSession, out var parent) &&
+				 rootIds.Contains(parent.Id)))
+			.ToArray();
 
 		// A machine may have thousands of old sessions; cap the metadata cache as well as the visible list.
 		lock (_summaryGate)
@@ -228,6 +318,29 @@ public sealed class SessionCatalog
 		}
 
 		return result;
+	}
+
+	private bool TryGetCachedItem(string path, out SessionListItem item)
+	{
+		lock (_summaryGate)
+		{
+			if (_summaries.TryGetValue(path, out var stamp))
+			{
+				item = stamp.Item;
+				return true;
+			}
+		}
+
+		item = null!;
+		return false;
+	}
+
+	/// 文件名是 <c>&lt;时间戳&gt;_&lt;uuid&gt;</c>，取最后一个下划线之后的部分作为会话 id。
+	private static string SessionIdFromPath(string path)
+	{
+		var id = Path.GetFileNameWithoutExtension(path);
+		var separator = id.LastIndexOf('_');
+		return separator >= 0 && separator + 1 < id.Length ? id[(separator + 1)..] : id;
 	}
 
 	private static DateTime LastWriteOf(string path)
@@ -648,14 +761,7 @@ public sealed class SessionCatalog
 		}
 
 		if (cached is not null && cached.LastWrite == modified && cached.Length == length) return cached.Item;
-		var id = Path.GetFileNameWithoutExtension(path);
-
-		// 文件名是 <时间戳>_<uuid>，取最后一个下划线之后的部分作为 id。
-		var separator = id.LastIndexOf('_');
-		if (separator >= 0 && separator + 1 < id.Length)
-		{
-			id = id[(separator + 1)..];
-		}
+		var id = SessionIdFromPath(path);
 
 		// 缓存里那一行就是文件前缀的扫描结果：文件变长时把它当续扫起点。
 		CatalogScan scan;
@@ -677,6 +783,7 @@ public sealed class SessionCatalog
 				Name = previous.Name.Length == 0 ? null : previous.Name,
 				Cwd = previous.Cwd.Length == 0 ? string.Empty : previous.Cwd,
 				Preview = previous.Preview.Length == 0 ? null : previous.Preview,
+				ParentSession = previous.ParentSession.Length == 0 ? null : previous.ParentSession,
 				Messages = previous.MessageCount,
 			};
 			resumeFrom = known.Offset;
@@ -761,6 +868,8 @@ public sealed class SessionCatalog
 			Modified = modified,
 			MessageCount = scan.Messages,
 			Preview = scan.Preview ?? string.Empty,
+			ParentSession = scan.ParentSession ?? string.Empty,
+			Origin = scan.Origin ?? string.Empty,
 		};
 		// 读过的字节数总是累计：它只是一次原子加法（每份文件一次），
 		// 而「续扫到底有没有生效」是回归测试唯一能观察到的量，不能只在开诊断时才有值。
@@ -818,6 +927,8 @@ public sealed class SessionCatalog
 		public string? Name;
 		public string? Cwd;
 		public string? Preview;
+		public string? ParentSession;
+		public string? Origin;
 		public int Messages;
 	}
 
@@ -935,6 +1046,8 @@ public sealed class SessionCatalog
 		string? type = null;
 		string? cwd = null;
 		string? name = null;
+		string? parentSession = null;
+		string? origin = null;
 		var hasCwd = false;
 		while (reader.Read())
 		{
@@ -965,6 +1078,16 @@ public sealed class SessionCatalog
 				reader.Read();
 				name = reader.GetString();
 			}
+			else if (reader.ValueTextEquals("parentSession"u8))
+			{
+				reader.Read();
+				parentSession = reader.GetString();
+			}
+			else if (reader.ValueTextEquals("origin"u8))
+			{
+				reader.Read();
+				origin = reader.GetString();
+			}
 			else if (reader.ValueTextEquals("message"u8))
 			{
 				reader.Read();
@@ -985,6 +1108,8 @@ public sealed class SessionCatalog
 		if (type == "session" && hasCwd)
 		{
 			scan.Cwd = cwd ?? string.Empty;
+			scan.ParentSession = parentSession;
+			scan.Origin = origin;
 		}
 		else if (type == "session_info")
 		{
@@ -1127,12 +1252,12 @@ public sealed class SessionCatalog
 		return builder?.ToString();
 	}
 
-	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLineForTest(string line) =>
+	internal static (string? Cwd, string? Name, string? Preview, int Messages, string? ParentSession, string? Origin) ScanLineForTest(string line) =>
 		ScanLinesForTest([line]);
 
 	/// 无窗口测试用：按真实读盘顺序扫描，先走快速字节判定，判定不了才完整解析。
 	/// 与 <see cref="ScanLinesForTest"/> 的结果必须逐字段相同，否则快速路径改写了目录语义。
-	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLinesFastForTest(IEnumerable<string> lines)
+	internal static (string? Cwd, string? Name, string? Preview, int Messages, string? ParentSession, string? Origin) ScanLinesFastForTest(IEnumerable<string> lines)
 	{
 		var scan = new CatalogScan();
 		foreach (var raw in lines)
@@ -1159,10 +1284,10 @@ public sealed class SessionCatalog
 			}
 		}
 
-		return (scan.Cwd, scan.Name, scan.Preview, scan.Messages);
+		return (scan.Cwd, scan.Name, scan.Preview, scan.Messages, scan.ParentSession, scan.Origin);
 	}
 
-	internal static (string? Cwd, string? Name, string? Preview, int Messages) ScanLinesForTest(IEnumerable<string> lines)
+	internal static (string? Cwd, string? Name, string? Preview, int Messages, string? ParentSession, string? Origin) ScanLinesForTest(IEnumerable<string> lines)
 	{
 		var scan = new CatalogScan();
 		foreach (var line in lines)
@@ -1180,7 +1305,7 @@ public sealed class SessionCatalog
 			scan = candidate;
 		}
 
-		return (scan.Cwd, scan.Name, scan.Preview, scan.Messages);
+		return (scan.Cwd, scan.Name, scan.Preview, scan.Messages, scan.ParentSession, scan.Origin);
 	}
 
 	private static string Summarize(string? text)

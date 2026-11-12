@@ -33,6 +33,7 @@ public static partial class Strings
 	public const string ToolActionDelegate = "委派";
 	public const string ToolActionSubagentWait = "等待子代理";
 	public const string ToolActionSubagentList = "列出子代理";
+	public const string ToolActionSubagentRead = "读取子代理";
 	public const string ToolActionSubagentSend = "通知子代理";
 	public const string ToolActionSubagentStop = "停止子代理";
 	public static string ToolTimeoutMilliseconds(long milliseconds) =>

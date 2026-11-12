@@ -42,7 +42,7 @@ public class SessionSummaryStoreTests : IDisposable
 	{
 		var entries = new Dictionary<string, SessionSummaryStamp>(StringComparer.Ordinal)
 		{
-			[Path.Combine(_root, "a.jsonl")] = Stamp("a", "预览 A"),
+			[Path.Combine(_root, "a.jsonl")] = Stamp("a", "预览 A") with { ParentSession = "parent", Origin = "subagent" },
 			[Path.Combine(_root, "b.jsonl")] = Stamp("b", "预览 B"),
 		};
 
@@ -61,6 +61,8 @@ public class SessionSummaryStoreTests : IDisposable
 		Assert.Equal(638000000000000000, a.LastWriteTicks);
 		Assert.Equal(12345, a.HeadHash);
 		Assert.Equal(42, a.Offset);
+		Assert.Equal("parent", a.ParentSession);
+		Assert.Equal("subagent", a.Origin);
 	}
 
 	[Fact]

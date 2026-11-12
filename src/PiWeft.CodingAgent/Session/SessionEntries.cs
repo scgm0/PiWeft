@@ -15,6 +15,9 @@ public sealed record SessionHeader
 
 	public string? ParentSession { get; init; }
 
+	/// <summary>派生会话的来源标记；子代理为 <c>subagent</c>，分支/普通会话为空。</summary>
+	public string? Origin { get; init; }
+
 	public System.Text.Json.Nodes.JsonObject? Extra { get; init; }
 }
 

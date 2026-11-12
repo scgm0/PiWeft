@@ -61,7 +61,8 @@ public sealed partial class MainWindow
 					var manager = SessionManager.Create(
 						prepared.Cwd,
 						prepared.SessionDir,
-						parentSession: prepared.ParentFile);
+						parentSession: prepared.ParentFile,
+						origin: "subagent");
 					try
 					{
 						// fork：把父会话最后一段完整回合写进子会话，再交给会话构造投影。
@@ -211,7 +212,11 @@ public sealed partial class MainWindow
 							context.Agent,
 							context.Name,
 							string.Empty,
-							context.Depth),
+							context.Depth)
+						{
+							PlanMode = context.PlanMode,
+							OutputSchema = context.OutputSchema,
+						},
 						prepared.Catalog,
 						prepared.Host,
 						prepared.ExtraTools,

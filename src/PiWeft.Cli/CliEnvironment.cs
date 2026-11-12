@@ -765,7 +765,7 @@ public sealed class CliEnvironment
 
 		var definition = context.Agent;
 		var model = ResolveChildModel(definition) ?? context.Parent.Model;
-		var tools = ChildTools(
+		var (tools, rejectedTools) = ChildTools(
 			arguments,
 			cwd,
 			definition,
@@ -776,6 +776,15 @@ public sealed class CliEnvironment
 		var appendSystemPrompt = definition.SystemPrompt.Length > 0
 			? string.Concat(definition.SystemPrompt, "\n\n", boundary)
 			: boundary;
+		if (rejectedTools.Count > 0)
+		{
+			// 角色文件写了父会话没授予的工具：告诉子模型别调用，避免它按白名单猜。
+			appendSystemPrompt = string.Concat(
+				appendSystemPrompt,
+				"\n\n工具限制：父会话没有授予 ",
+				string.Join(", ", rejectedTools),
+				"，不要调用它们。");
+		}
 
 		var stream = StreamFnOverride ?? StreamFn;
 		StreamFn sessionStream = (requested, messages, options) => stream(requested, messages, options with
@@ -800,6 +809,7 @@ public sealed class CliEnvironment
 			Session = session,
 			Persist = true,
 			RecordInitialThinkingLevel = false,
+			InitialPlanMode = context.PlanMode || context.Parent.PlanModeEnabled,
 			Settings = Settings,
 			Options = new StreamOptions { ApiKey = arguments.ApiKey },
 			// 子会话与父会话同 cwd：资源快照直接复用，免去每个子代理重扫技能与模板目录。
@@ -825,7 +835,7 @@ public sealed class CliEnvironment
 		return string.IsNullOrEmpty(spec) ? null : Registry.Resolve(spec);
 	}
 
-	private IReadOnlyList<AgentTool> ChildTools(
+	private (IReadOnlyList<AgentTool> Tools, IReadOnlyList<string> Rejected) ChildTools(
 		CliArguments arguments,
 		string cwd,
 		SubagentDefinition definition,
@@ -835,7 +845,7 @@ public sealed class CliEnvironment
 	{
 		if (arguments.NoTools)
 		{
-			return [];
+			return ([], []);
 		}
 
 		var catalog = BuiltinTools.Catalog(cwd);
@@ -845,14 +855,69 @@ public sealed class CliEnvironment
 			byName[builtin.Tool.Name] = builtin.Tool;
 		}
 
+		// MCP 工具也能进角色白名单；父会话的 mcp__ 过滤先生效。
+		var extras = FilterExtraTools(arguments, extraTools ?? []);
+		foreach (var tool in extras)
+		{
+			byName[tool.Name] = tool;
+		}
+
+		var inheritedNames = new HashSet<string>(inherited.Count, StringComparer.Ordinal);
+		foreach (var tool in inherited)
+		{
+			if (!IsChildForbidden(tool.Name))
+			{
+				inheritedNames.Add(tool.Name);
+			}
+		}
+
+		var rejected = new List<string>();
 		var selected = new List<AgentTool>(definition.Tools?.Count ?? inherited.Count);
 		if (definition.Tools is { Count: > 0 } allowed)
 		{
-			foreach (var name in allowed)
+			// 父会话用 --tools 给了纯名字列表时，角色白名单只能从这份列表里取；
+			// --tools +grep 这类增删不改变可追加的只读发现工具。
+			var hasExplicitAllow = arguments.Tools.Any(static entry =>
+				entry.Length > 0 && !entry.StartsWith('+') && !entry.StartsWith('-') && !IsMcpPattern(entry));
+
+			foreach (var rawName in allowed)
 			{
+				var name = rawName.Trim();
+				if (name.Length == 0)
+				{
+					continue;
+				}
+
 				// 计划模式连角色的显式白名单也不能解锁 edit/write。
 				if (IsChildForbidden(name) || (planMode && PlanMode.DisabledTools.Contains(name, StringComparer.Ordinal)))
 				{
+					Reject(name);
+					continue;
+				}
+
+				if (arguments.ExcludeTools.Any(pattern => MatchesName(pattern, name)) ||
+					arguments.Tools.Any(entry => entry.Length > 1 && entry[0] == '-' && MatchesName(entry[1..], name)))
+				{
+					Reject(name);
+					continue;
+				}
+
+				var explicitlyAllowed = arguments.Tools.Any(entry =>
+					entry.Length > 0 && !entry.StartsWith('+') && !entry.StartsWith('-') &&
+					!IsMcpPattern(entry) && MatchesName(entry, name));
+				if (hasExplicitAllow && !explicitlyAllowed)
+				{
+					Reject(name);
+					continue;
+				}
+
+				// 白名单只做收窄，唯一例外是父会话默认没开、又完全只读的发现工具。
+				// 内置 scout/reviewer 依赖这一点；写工具和 shell 不能这样加回来。
+				var readOnlyAddition = name is "read" or "grep" or "find" or "ls";
+				if (!inheritedNames.Contains(name) &&
+					!(readOnlyAddition && !hasExplicitAllow && !arguments.NoBuiltinTools))
+				{
+					Reject(name);
 					continue;
 				}
 
@@ -860,33 +925,28 @@ public sealed class CliEnvironment
 				{
 					selected.Add(tool);
 				}
+				else
+				{
+					Reject(name);
+				}
 			}
 		}
 		else
 		{
 			// 继承父会话「当前可用」的工具名，而不是环境里的完整目录：--tools 与计划模式的
 			// 过滤对子代理同样生效；工具实例仍按子会话重新绑定（PI_SESSION_ID 等不能串）。
-			var names = new HashSet<string>(inherited.Count, StringComparer.Ordinal);
-			foreach (var tool in inherited)
-			{
-				if (!IsChildForbidden(tool.Name))
-				{
-					names.Add(tool.Name);
-				}
-			}
-
 			foreach (var builtin in catalog)
 			{
-				if (names.Contains(builtin.Tool.Name))
+				if (inheritedNames.Contains(builtin.Tool.Name))
 				{
 					selected.Add(builtin.Tool);
 				}
 			}
 
-			// MCP 工具只在角色没写白名单时继承，与父会话的 mcp__ 过滤规则一致。
-			foreach (var tool in FilterExtraTools(arguments, extraTools ?? []))
+			foreach (var tool in extras)
 			{
-				if (!IsChildForbidden(tool.Name))
+				if (inheritedNames.Contains(tool.Name) &&
+					selected.All(existing => !string.Equals(existing.Name, tool.Name, StringComparison.Ordinal)))
 				{
 					selected.Add(tool);
 				}
@@ -898,7 +958,15 @@ public sealed class CliEnvironment
 			selected.RemoveAll(tool => string.Equals(tool.Name, name, StringComparison.Ordinal));
 		}
 
-		return selected;
+		return (selected, rejected);
+
+		void Reject(string name)
+		{
+			if (!rejected.Contains(name))
+			{
+				rejected.Add(name);
+			}
+		}
 	}
 
 	/// <summary>委派、关联会话与 codemode 不进子会话：递归与工具面都收在第一层。</summary>
@@ -907,6 +975,7 @@ public sealed class CliEnvironment
 		SubagentTools.DelegateName,
 		SubagentTools.WaitName,
 		SubagentTools.ListName,
+		SubagentTools.ReadName,
 		SubagentTools.SendName,
 		SubagentTools.StopName,
 		LinkedSessionsTool.StartName,

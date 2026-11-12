@@ -15,6 +15,60 @@ public class SessionGroupsTests
 	};
 
 	[Fact]
+	public void SubagentSessionsNestUnderTheirParent()
+	{
+		var cwd = Path.Combine(Path.GetTempPath(), "piweft-nest");
+		var parent = Item("parent", cwd);
+		var child = Item("child", cwd) with { ParentSession = "parent", Origin = "subagent" };
+		var grandchild = Item("grand", cwd) with { ParentSession = "child", Origin = "subagent" };
+		var sibling = Item("sibling", cwd);
+
+		var tree = SessionGroups.Nest([parent, sibling, child, grandchild]);
+
+		Assert.Equal(["parent", "sibling"], tree.Select(static entry => entry.Item.Id));
+		var parentNode = Assert.Single(tree, static entry => entry.Item.Id == "parent");
+		var childNode = Assert.Single(parentNode.Children);
+		Assert.Equal("child", childNode.Item.Id);
+		Assert.Equal("grand", Assert.Single(childNode.Children).Item.Id);
+	}
+
+	[Fact]
+	public void ParentSessionPathAlsoNestsUnderTheParent()
+	{
+		var cwd = Path.Combine(Path.GetTempPath(), "piweft-nest");
+		var parent = Item("parent", cwd);
+		var child = Item("child", cwd) with { ParentSession = parent.Path, Origin = "subagent" };
+
+		var entry = Assert.Single(SessionGroups.Nest([parent, child]));
+		Assert.Equal("parent", entry.Item.Id);
+		Assert.Equal("child", Assert.Single(entry.Children).Item.Id);
+	}
+
+	[Fact]
+	public void ChildWithoutItsParentStaysTopLevel()
+	{
+		var cwd = Path.Combine(Path.GetTempPath(), "piweft-nest");
+		var orphan = Item("child", cwd) with { ParentSession = "missing", Origin = "subagent" };
+
+		var entry = Assert.Single(SessionGroups.Nest([orphan]));
+		Assert.Equal("child", entry.Item.Id);
+		Assert.Empty(entry.Children);
+	}
+
+	[Fact]
+	public void NestBreaksParentCyclesInsteadOfRecursing()
+	{
+		var cwd = Path.Combine(Path.GetTempPath(), "piweft-nest");
+		var a = Item("a", cwd) with { ParentSession = "b", Origin = "subagent" };
+		var b = Item("b", cwd) with { ParentSession = "a", Origin = "subagent" };
+
+		var entry = Assert.Single(SessionGroups.Nest([a, b]));
+		Assert.Equal("a", entry.Item.Id);
+		Assert.Equal("b", Assert.Single(entry.Children).Item.Id);
+		Assert.Empty(entry.Children[0].Children);
+	}
+
+	[Fact]
 	public void ChatAndProjectSessionsAreSplitByWorkingDirectory()
 	{
 		var chat = Path.Combine(Path.GetTempPath(), "piweft-chat-workspace");
