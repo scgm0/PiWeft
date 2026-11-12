@@ -68,6 +68,34 @@ public sealed class SettingsParityTests : IDisposable
 	}
 
 	[Fact]
+	public void ImagesAutoResizeIsReadWrittenAndMerged()
+	{
+		WriteGlobal("""{"images":{"autoResize":false,"blockImages":true}}""");
+
+		var settings = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+		Assert.False(settings.Images.AutoResize);
+		Assert.True(settings.Images.BlockImages);
+
+		var file = CodingAgentSettings.ToFile(settings);
+		Assert.False(file.Images!.AutoResize);
+		Assert.True(file.Images.BlockImages);
+
+		Directory.CreateDirectory(Path.Combine(Project, ".pi"));
+		CodingAgentSettings.SaveProject(Project, settings);
+		var written = System.Text.Json.Nodes.JsonNode.Parse(
+			File.ReadAllText(Path.Combine(Project, ".pi", "settings.json")))!;
+		Assert.False(written["images"]!["autoResize"]!.GetValue<bool>());
+		Assert.True(written["images"]!["blockImages"]!.GetValue<bool>());
+
+		// 项目覆盖优先；默认档（自动缩放开、不拦图）不写 images。
+		File.WriteAllText(Path.Combine(Project, ".pi", "settings.json"), """{"images":{"autoResize":true}}""");
+		var merged = CodingAgentSettings.Load(Project, AgentDir, includeProject: true);
+		Assert.True(merged.Images.AutoResize);
+		Assert.True(merged.Images.BlockImages);
+		Assert.Null(CodingAgentSettings.ToFile(merged with { Images = new ImagesSettings() }).Images);
+	}
+
+	[Fact]
 	public void ThinkingBudgetsAndImageBlockAreReadAndWritten()
 	{
 		WriteGlobal("""{"thinkingBudgets":{"low":1234,"high":4321},"images":{"blockImages":true}}""");

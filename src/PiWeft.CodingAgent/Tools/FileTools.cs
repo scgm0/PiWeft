@@ -10,7 +10,7 @@ namespace PiWeft.CodingAgent.Tools;
 
 public static class FileTools
 {
-	public static AgentTool Read(string cwd, Func<Model?>? model = null) => new()
+	public static AgentTool Read(string cwd, Func<Model?>? model = null, Func<bool>? autoResize = null) => new()
 	{
 		Name = "read",
 		Label = "read",
@@ -31,10 +31,14 @@ public static class FileTools
 		ConstrainedSampling = PiWeft.Ai.ConstrainedSampling.JsonSchema(),
 		// 读文件本身是同步 IO，图片还要解码/缩放：放到线程池，别在内核把工具调用
 		// 同步跑在桌面 UI 线程上时卡住整窗（一张 12MP 照片要几百毫秒）。
-		Execute = invocation => Task.Run(() => ReadFile(cwd, invocation, model)),
+		Execute = invocation => Task.Run(() => ReadFile(cwd, invocation, model, autoResize)),
 	};
 
-	private static AgentToolResult ReadFile(string cwd, AgentToolInvocation invocation, Func<Model?>? model)
+	private static AgentToolResult ReadFile(
+		string cwd,
+		AgentToolInvocation invocation,
+		Func<Model?>? model,
+		Func<bool>? autoResize)
 	{
 		ThrowIfAborted(invocation.CancellationToken);
 		var path = RequiredString(invocation, "path");
@@ -59,7 +63,8 @@ public static class FileTools
 			var processed = ImagePipeline.Process(
 				bytes,
 				mimeType,
-				ImageResizeOptions.FromInputLimits(currentModel?.InputLimits));
+				ImageResizeOptions.FromInputLimits(currentModel?.InputLimits),
+				autoResize?.Invoke() ?? true);
 			var note = $"Read image file [{mimeType}]";
 			if (processed.Ok)
 			{

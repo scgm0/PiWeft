@@ -304,7 +304,7 @@ public sealed partial class CodingAgentSession : IDisposable
 
 		// 内置工具的提示词元数据以名称索引：命令行/桌面会传入已经过滤的 AgentTool 列表，
 		// 这里按名称把短 snippet 与 guidelines 重新挂回去，保证提示词与 pi/PiDeck 一致。
-		var defaults = BuiltinTools.Create(Cwd, () => _agent?.Model);
+		var defaults = BuiltinTools.Create(Cwd, () => _agent?.Model, () => Settings.Images.AutoResize);
 		var defaultsByName = new Dictionary<string, BuiltinTool>(defaults.Count, StringComparer.Ordinal);
 		foreach (var tool in defaults)
 		{
@@ -377,7 +377,7 @@ public sealed partial class CodingAgentSession : IDisposable
 			else if (builtins[index].Tool.Name == "read")
 			{
 				// read 需要模型能力来判断是否给出非 vision 提示；图片识别本身按 magic bytes。
-				builtins[index] = builtins[index] with { Tool = FileTools.Read(Cwd, () => _agent?.Model) };
+				builtins[index] = builtins[index] with { Tool = FileTools.Read(Cwd, () => _agent?.Model, () => Settings.Images.AutoResize) };
 			}
 		}
 
@@ -796,7 +796,7 @@ public sealed partial class CodingAgentSession : IDisposable
 				continue;
 			}
 
-			var processed = ImagePipeline.ProcessBytes(bytes, image.MimeType, options);
+			var processed = ImagePipeline.ProcessBytes(bytes, image.MimeType, options, autoResize: Settings.Images.AutoResize);
 			if (!processed.Ok)
 			{
 				hints.Add(processed.Error ?? "[Image omitted.]");
@@ -1066,7 +1066,7 @@ public sealed partial class CodingAgentSession : IDisposable
 				continue;
 			}
 
-			var processed = ImagePipeline.ProcessBytes(bytes, image.MimeType, options);
+			var processed = ImagePipeline.ProcessBytes(bytes, image.MimeType, options, autoResize: Settings.Images.AutoResize);
 			if (!processed.Ok)
 			{
 				normalized?.Add(image);
@@ -3851,7 +3851,47 @@ public sealed partial class CodingAgentSession : IDisposable
 	private ValueTask<IReadOnlyList<Message>> TransformContextAsync(
 		IReadOnlyList<Message> messages,
 		CancellationToken cancellationToken) =>
-		ValueTask.FromResult(LimitRequestImages(Project()));
+		ValueTask.FromResult(LimitRequestImages(BlockRequestImages(Project())));
+
+	/// <c>images.blockImages</c> 的请求层兜底，与 pi 在 <c>convertToLlm</c> 里的过滤同义：
+	/// 设置打开之前就写进历史的图片、扩展注入的 <see cref="CustomMessage"/> 图片，
+	/// 也要在发出去之前换成一句括注。只作用于请求投影，不改会话文件与界面。
+	private IReadOnlyList<Message> BlockRequestImages(IReadOnlyList<Message> messages)
+	{
+		if (!Settings.Images.BlockImages)
+		{
+			return messages;
+		}
+
+		List<Message>? blocked = null;
+		for (var index = 0; index < messages.Count; index++)
+		{
+			var message = messages[index];
+			Message? replacement = message switch
+			{
+				UserMessage user when HasImages(user.Content.Blocks) =>
+					user with { Content = MessageContent.FromBlocks(ReplaceImages(user.Content.Blocks!, ImageBlockedNote)) },
+				ToolResultMessage result when result.Content.Any(static block => block is ImageContent) =>
+					result with { Content = ReplaceImages(result.Content, ImageBlockedNote) },
+				CustomMessage custom when HasImages(custom.Content.Blocks) =>
+					custom with { Content = MessageContent.FromBlocks(ReplaceImages(custom.Content.Blocks!, ImageBlockedNote)) },
+				_ => null,
+			};
+
+			if (replacement is null)
+			{
+				blocked?.Add(message);
+				continue;
+			}
+
+			(blocked ??= [.. messages.Take(index)]).Add(replacement);
+		}
+
+		return blocked ?? messages;
+	}
+
+	private static bool HasImages(IReadOnlyList<ContentBlock>? blocks) =>
+		blocks is { Count: > 0 } && blocks.Any(static block => block is ImageContent);
 
 	/// <c>inputLimits.images.maxPerRequest</c>：按从新到旧保留图片，超出的换成文本括注。
 	/// 只作用于请求投影，不改会话文件与界面。
@@ -4077,7 +4117,7 @@ public sealed partial class CodingAgentSession : IDisposable
 					continue;
 				case "read":
 					rebuilt.Add(known.TryGetValue(tool.Name, out var readDescribed)
-						? readDescribed with { Tool = FileTools.Read(Cwd, () => _agent?.Model) }
+						? readDescribed with { Tool = FileTools.Read(Cwd, () => _agent?.Model, () => Settings.Images.AutoResize) }
 						: new BuiltinTool(tool, tool.Description, []));
 					continue;
 			}

@@ -139,6 +139,28 @@ public sealed class ToolParityTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Read_KeepsOriginalBytesWhenAutoResizeIsOff()
+	{
+		var png = Sdcb.SimdCodecs.Png.PngWriter.Encode(new byte[4 * 4 * 4], 4, 4);
+		File.WriteAllBytes(Path.Combine(_root, "shot.png"), png);
+		var model = ScriptedSessions.Model() with
+		{
+			Input = ["text", "image"],
+			InputLimits = new JsonObject
+			{
+				["images"] = new JsonObject { ["resize"] = new JsonObject { ["maxWidth"] = 2, ["maxHeight"] = 2 } },
+			},
+		};
+		var tool = FileTools.Read(_root, () => model, static () => false);
+
+		var result = await tool.Execute(Invoke("read", new JsonObject { ["path"] = "shot.png" }));
+
+		var image = Assert.Single(result.Content.OfType<ImageContent>());
+		Assert.Equal(Convert.ToBase64String(png), image.Data);
+		Assert.DoesNotContain("[Image: original", Text(result));
+	}
+
+	[Fact]
 	public async Task Read_AddsTheNonVisionNoteWhenTheBoundModelHasNoImageInput()
 	{
 		File.WriteAllBytes(Path.Combine(_root, "image.png"), RealOnePixelPng());

@@ -12,6 +12,10 @@ namespace PiWeft.CodingAgent.Settings;
 
 public sealed record ImagesSettings
 {
+	/// 对应 <c>settings.images.autoResize</c>：进上下文前按模型 <c>inputLimits.images.resize</c>
+	/// 缩放转码。关掉后仍做格式归一（AVIF/HEIC 转 PNG），尺寸与编码原样发送。
+	public bool AutoResize { get; init; } = true;
+
 	/// 对应 <c>settings.images.blockImages</c>：禁止任何图片进入模型上下文。
 	public bool BlockImages { get; init; }
 }
@@ -523,13 +527,17 @@ public sealed record CodingAgentSettings
 			root["thinkingBudgets"] = levels;
 		}
 
-		if (file.Images is { BlockImages: true })
+		if (file.Images is { } imageSettings && (imageSettings.AutoResize is not null || imageSettings.BlockImages is not null))
 		{
-			root["images"] = new JsonObject { ["blockImages"] = true };
+			var images = root["images"] as JsonObject ?? [];
+			SetBool(images, "autoResize", imageSettings.AutoResize);
+			SetBool(images, "blockImages", imageSettings.BlockImages);
+			root["images"] = images;
 		}
 		else if (root["images"] is JsonObject images)
 		{
 			// 只移除本端口建模的键，图片主题等上游键保持不动。
+			images.Remove("autoResize");
 			images.Remove("blockImages");
 			if (images.Count == 0)
 			{
@@ -634,6 +642,19 @@ public sealed record CodingAgentSettings
 		if (value is not null)
 		{
 			root[name] = JsonValue.Create(value.Value);
+		}
+	}
+
+	/// 写入或移除一个布尔键：null 表示「本端口不改这个键」，文件里已有的值保持不动。
+	private static void SetBool(JsonObject node, string name, bool? value)
+	{
+		if (value is bool flag)
+		{
+			node[name] = JsonValue.Create(flag);
+		}
+		else
+		{
+			node.Remove(name);
 		}
 	}
 
@@ -773,6 +794,7 @@ public sealed record CodingAgentSettings
 		ThinkingBudgets = MergeIntDictionary(global?.ThinkingBudgets, project?.ThinkingBudgets),
 		Images = new ImagesSettings
 		{
+			AutoResize = project?.Images?.AutoResize ?? global?.Images?.AutoResize ?? true,
 			BlockImages = project?.Images?.BlockImages ?? global?.Images?.BlockImages ?? false,
 		},
 		Transport = NormalizeTransport(project?.Transport ?? global?.Transport),
@@ -1057,7 +1079,14 @@ public sealed record CodingAgentSettings
 		ThinkingBudgets = settings.ThinkingBudgets.Count > 0
 			? new Dictionary<string, int>(settings.ThinkingBudgets, StringComparer.Ordinal)
 			: null,
-		Images = settings.Images.BlockImages ? new ImagesFile { BlockImages = true } : null,
+		// 只写改过的键：默认档（自动缩放开、不拦图）不写 images，让配置里看不出「本端口认为的默认值」。
+		Images = settings.Images is { AutoResize: true, BlockImages: false }
+			? null
+			: new ImagesFile
+			{
+				AutoResize = settings.Images.AutoResize ? null : false,
+				BlockImages = settings.Images.BlockImages ? true : null,
+			},
 		// 只写用户真正改过的值：默认形状每次保存都追加 transport / httpIdleTimeoutMs，
 		// 会把配置文件写成一份「本端口认为的默认值」清单，也让人 diff 不出自己改了什么。
 		Transport = settings.Transport == "auto" ? null : settings.Transport,
@@ -1262,6 +1291,8 @@ public sealed record CompactionFile
 
 public sealed record ImagesFile
 {
+	public bool? AutoResize { get; init; }
+
 	public bool? BlockImages { get; init; }
 }
 

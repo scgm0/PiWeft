@@ -1,6 +1,7 @@
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Settings;
 using Xunit;
 
 namespace PiWeft.CodingAgent.Tests;
@@ -307,6 +308,136 @@ public class PromptInputTests : IDisposable
 		Assert.NotEqual(Convert.ToBase64String(png), image.Data);
 		var hint = Assert.IsType<TextContent>(result.Content[1]).Text;
 		Assert.Contains("[Image: original 4x4, displayed at 2x2.", hint, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task PromptAsync_LeavesImagesUntouchedWhenAutoResizeIsOff()
+	{
+		// pi 的 images.autoResize=false：不缩放、不重编码，也不补尺寸括注。
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("done");
+		var model = ScriptedSessions.Model() with
+		{
+			InputLimits = new System.Text.Json.Nodes.JsonObject
+			{
+				["images"] = new System.Text.Json.Nodes.JsonObject
+				{
+					["resize"] = new System.Text.Json.Nodes.JsonObject { ["maxWidth"] = 2, ["maxHeight"] = 2 },
+				},
+			},
+		};
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = model,
+			StreamFn = script.Invoke,
+			Session = SessionManager.InMemory(_root),
+			Skills = [],
+			PromptTemplates = [],
+			CustomSystemPrompt = "custom",
+			Settings = new CodingAgentSettings { Images = new ImagesSettings { AutoResize = false } },
+		});
+
+		var fourByFour = Sdcb.SimdCodecs.Png.PngWriter.Encode(new byte[4 * 4 * 4], 4, 4);
+		var data = Convert.ToBase64String(fourByFour);
+		await session.PromptAsync(session.PrepareInput(
+			"look at this",
+			[new ImageContent { Data = data, MimeType = "image/png" }]));
+
+		var user = Assert.IsType<UserMessage>(script.Requests[0].Single(static m => m is UserMessage));
+		var blocks = user.Content.Blocks!;
+		Assert.Equal("look at this", Assert.IsType<TextContent>(blocks[0]).Text);
+		Assert.Equal(data, Assert.IsType<ImageContent>(blocks[1]).Data);
+	}
+
+	[Fact]
+	public async Task ToolResultImagesAreLeftAloneWhenAutoResizeIsOff()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueToolCall("c1", "shot", new System.Text.Json.Nodes.JsonObject());
+		script.EnqueueText("done");
+
+		var png = Sdcb.SimdCodecs.Png.PngWriter.Encode(new byte[4 * 4 * 4], 4, 4);
+		var data = Convert.ToBase64String(png);
+		var tool = new PiWeft.Agent.AgentTool
+		{
+			Name = "shot",
+			Label = "shot",
+			Description = "take a screenshot",
+			Parameters = new System.Text.Json.Nodes.JsonObject { ["type"] = "object" },
+			Execute = _ => Task.FromResult(new PiWeft.Agent.AgentToolResult
+			{
+				Content = [new ImageContent { Data = data, MimeType = "image/png" }],
+			}),
+		};
+
+		var model = ScriptedSessions.Model() with
+		{
+			InputLimits = new System.Text.Json.Nodes.JsonObject
+			{
+				["images"] = new System.Text.Json.Nodes.JsonObject
+				{
+					["resize"] = new System.Text.Json.Nodes.JsonObject { ["maxWidth"] = 2, ["maxHeight"] = 2 },
+				},
+			},
+		};
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = model,
+			StreamFn = script.Invoke,
+			Session = SessionManager.InMemory(_root),
+			Skills = [],
+			PromptTemplates = [],
+			CustomSystemPrompt = "custom",
+			ExtraTools = [tool],
+			LoadExtensions = false,
+			DiscoverExtensions = false,
+			Settings = new CodingAgentSettings { Images = new ImagesSettings { AutoResize = false } },
+		});
+
+		await session.PromptAsync("go");
+
+		var result = Assert.IsType<PiWeft.Ai.ToolResultMessage>(
+			script.Requests[1].Single(static m => m is PiWeft.Ai.ToolResultMessage));
+		var image = Assert.IsType<ImageContent>(Assert.Single(result.Content));
+		Assert.Equal(data, image.Data);
+	}
+
+	[Fact]
+	public async Task BlockImages_StripsHistoryImagesFromTheRequest()
+	{
+		// 设置打开前就进了历史的图片不走发送路径的归一化；请求投影时仍要换成括注（pi 在 convertToLlm 里做同一件事）。
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("done");
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = SessionManager.InMemory(_root),
+			Skills = [],
+			PromptTemplates = [],
+			CustomSystemPrompt = "custom",
+			Settings = new CodingAgentSettings { Images = new ImagesSettings { BlockImages = true } },
+		});
+
+		session.Session.AppendMessage(new UserMessage
+		{
+			Content = MessageContent.FromBlocks([
+				new TextContent { Text = "earlier" },
+				new ImageContent { Data = OnePixelPng, MimeType = "image/png" },
+			]),
+		});
+
+		await session.PromptAsync("next");
+
+		var earlier = Assert.IsType<UserMessage>(script.Requests[0].First(static m => m is UserMessage));
+		var blocks = earlier.Content.Blocks!;
+		Assert.DoesNotContain(blocks, static block => block is ImageContent);
+		Assert.Contains(
+			blocks.OfType<TextContent>(),
+			static text => text.Text.Contains("(image omitted", StringComparison.Ordinal));
 	}
 
 	[Fact]
