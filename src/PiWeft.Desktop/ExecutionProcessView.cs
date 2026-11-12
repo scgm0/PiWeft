@@ -108,6 +108,9 @@ internal sealed class ExecutionProcessView
 
 	public Border View { get; }
 
+	/// <summary>组体内容长高时同一帧补跟底的次数，供测试确认这条路径真的走到了。</summary>
+	internal int ContentSizeFollows { get; private set; }
+
 	/// The step list only re-measures rows while arranging, and an ancestor that was already
 	/// measure-dirty leaves the arrange clean — a row that grows (expanded step, streaming thinking)
 	/// would then keep its old height and the body would neither grow nor scroll to it. Invalidate the
@@ -376,6 +379,9 @@ internal sealed class ExecutionProcessView
 		// 流式思考/正文只原位更新已实现的那一行：重建会把实测高度作废成估算值，
 		// 组体 extent 先缩后涨，看起来就是进度跳变。
 		var inPlaceRows = new List<int>();
+		// 订阅组体内容的尺寸变化：流式思考/工具输出在测量里长高时，extent 已经发布，
+		// 这里同一帧补跟底，新露出的一行才不会在视口底边被切掉一截。
+		FrameworkElement? followedContent = null;
 		// 内容未变（或可原位更新）的行：高度缓存按身份沿用，重排时由面板补偿坐标系平移。
 		var keptRows = new List<int>();
 		// 组头与 PiDeck 过程组同构：类别图标 + 主文案 + 「·」+ 等宽实时详情；运行时图标走强调色。
@@ -501,9 +507,28 @@ internal sealed class ExecutionProcessView
 			CompleteBody(viewport);
 		}
 
+		void OnBodyContentSized(SizeChangedEventArgs _)
+		{
+			if (viewport is not { } target) return;
+			if (SmoothScroll.Find(target) is not { IsFollowingGrowth: true } smooth) return;
+			// 已经贴着末尾（内容没长高）就不用写偏移，免得在排布里多排一轮。
+			if (smooth.MaxVerticalOffset - target.VerticalOffset <= 0.5) return;
+			ContentSizeFollows++;
+			smooth.FollowGrowth();
+		}
+
 		void CompleteBody(FrameworkElement content)
 		{
 			if (viewport is { } registered && !_bodyViewports.Contains(registered)) _bodyViewports.Add(registered);
+			// 订阅的是视口里的内容（栈/虚拟化面板），不是视口自己：视口高度被 MaxHeight 钉住，
+			// 内容长高时它不会变。
+			var sized = (content as ScrollViewer)?.Content as FrameworkElement ?? content;
+			if (!ReferenceEquals(followedContent, sized))
+			{
+				if (followedContent is { } previous) previous.SizeChanged -= OnBodyContentSized;
+				followedContent = sized;
+				sized.SizeChanged += OnBodyContentSized;
+			}
 			// 组体是“最新步骤”的窗口：滚动条置底时持续跟随新步骤；用户上滚后暂停，
 			// 回到底部（滚轮/键盘/拖动滚动条）自动重新锁底。
 			// 组体是「最新步骤」的窗口：置底即跟随。这里不做抑制：栈/虚拟化切换、
@@ -877,6 +902,11 @@ internal sealed class ExecutionProcessView
 		void DestroyBody()
 		{
 			if (body is not { } content) return;
+			if (followedContent is { } followed)
+			{
+				followed.SizeChanged -= OnBodyContentSized;
+				followedContent = null;
+			}
 			if (viewport is { } retired) _bodyViewports.Remove(retired);
 			body = null;
 			panel?.DisposePanel();

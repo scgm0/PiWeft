@@ -27,6 +27,10 @@ public sealed class GroupBodyFollowTests
 		IsThinking = thinking,
 	};
 
+	// 一行写长一点：组体视口只有 275 DIP，行太短的话几十行也装得下，测不到「长高后还贴底」。
+	private static string LongThinking(int lines) =>
+		string.Join('\n', Enumerable.Range(0, lines).Select(line => $"第 {line} 行思考：这一段写长一点，让组体真的超出视口高度。"));
+
 	private static ChatEntry Bash(int index, bool running = false) => new()
 	{
 		Role = ChatRole.Tool,
@@ -174,6 +178,36 @@ public sealed class GroupBodyFollowTests
 			fixture.Members.Add(Bash(100, running: true));
 			fixture.Apply();
 			Assert.True(fixture.Smooth.IsFollowingGrowth);
+			Assert.InRange(fixture.DistanceFromEnd, 0, 1);
+		}
+		finally
+		{
+			UiLifetime.Release(fixture.View.View);
+		}
+	}
+
+	[Fact]
+	public void AStreamingThinkingLineFollowsWithinTheLayoutPass()
+	{
+		// 组体内容在测量里长高时，末行要同一帧贴到视口底边；等 Render 阶段的 SyncBodyMetrics
+		// 再跟底会晚一帧，新露出的一行就贴在视口底边被切掉一截，快速推流时看起来像闪烁。
+		var fixture = Build([Bash(0), Bash(1), Thinking(LongThinking(30))]);
+		try
+		{
+			var thinking = Find<Expander>(fixture.Body).Single(expander => HoverHints.Text(expander) is null or "");
+			thinking.IsExpanded = true;
+			fixture.ScrollToEnd();
+			Assert.True(fixture.Smooth.IsFollowingGrowth);
+
+			var before = fixture.Smooth.MaxVerticalOffset;
+			fixture.Members[^1] = Thinking(LongThinking(90));
+			fixture.View.Update(fixture.Process with { ProcessEntries = [.. fixture.Members], IsStreaming = true });
+			// 只给布局：不调用 SyncBodyMetrics（那是下一帧 Render 阶段的补刀）。
+			Pump(fixture.View.View);
+			Pump(fixture.View.View);
+
+			Assert.True(fixture.Smooth.MaxVerticalOffset > before + 40, "思考正文没有长高");
+			Assert.True(fixture.View.ContentSizeFollows > 0, "内容长高没有走同一帧跟底");
 			Assert.InRange(fixture.DistanceFromEnd, 0, 1);
 		}
 		finally

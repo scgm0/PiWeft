@@ -53,6 +53,15 @@ internal sealed class ConversationScroll : IDisposable
 		_smooth.VerticalInput += OnVerticalInput;
 		_smooth.NestedInput += OnNestedInput;
 		if (_smooth.VerticalBar is { } bar) bar.MouseDown += OnScrollBarPointer;
+		// 内容在测量/排布里长高时，extent 已经发布；这里同一帧落位，新露出一行不会先被
+		// 视口底边切掉一截。等 Render 阶段的 QueueFollow 会晚一帧，快速推流时看起来像闪烁。
+		if (view.Content is FrameworkElement content) content.SizeChanged += OnContentSizeChanged;
+	}
+
+	private void OnContentSizeChanged(SizeChangedEventArgs _)
+	{
+		if (_disposed || !Following || _restoringReadingPoint || _readingAnchor is not null) return;
+		FollowAfterLayout();
 	}
 
 	public bool Following { get; private set; } = true;
@@ -455,6 +464,7 @@ internal sealed class ConversationScroll : IDisposable
 		_disposed = true;
 		_readingAnchor = null;
 		_view.ScrollChanged -= OnScrollChanged;
+		if (_view.Content is FrameworkElement content) content.SizeChanged -= OnContentSizeChanged;
 		_smooth.VerticalInput -= OnVerticalInput;
 		_smooth.NestedInput -= OnNestedInput;
 		if (_smooth.VerticalBar is { } bar) bar.MouseDown -= OnScrollBarPointer;
