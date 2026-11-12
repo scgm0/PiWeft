@@ -74,6 +74,9 @@ public sealed class MarkdownBlock
 	public string? Alert { get; init; }
 
 	public ulong Hash { get; internal set; }
+
+	/// <summary>子树里是否有图片 run：高度异步变化，不能进跨实例高度缓存。</summary>
+	public bool HasImage { get; internal set; }
 }
 
 public sealed record MarkdownTextUnit(

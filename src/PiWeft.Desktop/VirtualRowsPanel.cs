@@ -190,6 +190,7 @@ internal sealed class VirtualRowsPanel<TItem, THost> : Panel
 
         // 一轮放置：已实现的行 + 视口外被焦点钉住的行都按最新 prefix 摆位，
         // 后者不摆位会在 prefix 变化后停在旧坐标上，可能盖住可见行。
+        var anchorTop = _prefix[Math.Min(anchorIndex, _count2 - 1)];
         PlaceAll(bounds.X, placementY, width);
 
         // 行在自己的 arrange 里改高：Markdown 的 arrange 会补实现新块并就地测量，这时行已经
@@ -198,6 +199,17 @@ internal sealed class VirtualRowsPanel<TItem, THost> : Panel
         if (SettleRowsAfterArrange(first, last, width, ref changed))
         {
             EnsurePrefix();
+            // 变高的行在阅读锚点上方时，内容坐标系又平移了一次。浏览态要像前一阶段那样把这段
+            // 差额补进偏移，否则读者正看的那一行会往上跳一截。
+            if (scroll is not null && (PreserveReadingAnchor?.Invoke() ?? true))
+            {
+                var shift = _prefix[Math.Min(anchorIndex, _count2 - 1)] - anchorTop;
+                if (Math.Abs(shift) > 0.5)
+                {
+                    _pendingShift += shift;
+                    ApplyShift(scroll, ref offset, ref placementY);
+                }
+            }
             PlaceAll(bounds.X, placementY, width);
         }
 

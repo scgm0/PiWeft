@@ -109,6 +109,34 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 	}
 
 	[Fact]
+	public void RemovingARowRepaintsTheViewportButStreamingUpdatesDoNot()
+	{
+		// 行被移除时留下一块不再属于任何场景节点的像素（见 ConversationTimeline.SetEntries 的注释）：
+		// 部分重绘和滚动都不会带走它，只能整视口重画。纯追加/原位更新不该付这次重画。
+		using var focus = new TextFocusScrollGuard(new ScrollViewer());
+		using var timeline = new ConversationTimeline(entry => new AssistantMessageView(entry, _ => { }, focus).View);
+		var history = new ChatEntry { Role = ChatRole.Assistant, Text = "previous", EntryId = "previous" };
+		var answer = new ChatEntry { Role = ChatRole.Assistant, Text = "answer", EntryId = "live-assistant/1", Timestamp = 1, IsStreaming = true };
+		var tool = new ChatEntry { Role = ChatRole.Tool, ToolName = "bash", Text = "output", EntryId = "tool/1", ToolCallId = "call-1" };
+		timeline.SetEntries([history, answer]);
+		Layout(timeline.View);
+		var before = timeline.RepaintOnStructuralChangeCount;
+		// 流式原位更新：行没离开，不重画。
+		timeline.SetEntries([history, answer with { Text = "answer grows" }], prefixReused: true);
+		Layout(timeline.View);
+		Assert.Equal(before, timeline.RepaintOnStructuralChangeCount);
+		// 回答行被换成工具行（同一行数但行被替换）：要重画。
+		timeline.SetEntries([history, tool], prefixReused: true);
+		Layout(timeline.View);
+		var replaced = timeline.RepaintOnStructuralChangeCount;
+		Assert.True(replaced > before);
+		// 工具行被移除（行数减少）：要重画。
+		timeline.SetEntries([history], prefixReused: true);
+		Layout(timeline.View);
+		Assert.True(timeline.RepaintOnStructuralChangeCount > replaced);
+	}
+
+	[Fact]
 	public void StreamingTailKeepsTheSelectedHistoryAndTheThinkingExpander()
 	{
 		using var focus = new TextFocusScrollGuard(new ScrollViewer());

@@ -69,6 +69,48 @@ public sealed class RowArrangeGrowthTests(ITestOutputHelper output)
 	}
 
 	[Fact]
+	public void ARowThatGrowsAboveTheAnchorKeepsTheVisibleRowInPlace()
+	{
+		var items = Enumerable.Range(0, 30).Select(index => $"row-{index}").ToList();
+		var panel = new VirtualRowsPanel<string, GrowRow>(
+			() => items.Count,
+			index => index < items.Count ? items[index] : null,
+			() => new GrowRow(),
+			(host, item, index) =>
+			{
+				if (host.Item == item) return;
+				host.Item = item;
+				host.ContentHeight = 40;
+			},
+			_ => { });
+		var scroll = new ScrollViewer().Content(panel).AutoVerticalScroll().NoHorizontalScroll();
+		panel.Scroll = scroll;
+		Pump(scroll);
+		scroll.SetScrollOffsets(0, 600);
+		Pump(scroll);
+		var anchor = Assert.IsType<GrowRow>(panel.HostAt(15));
+		var anchorY = anchor.Bounds.Y;
+		var offset = scroll.VerticalOffset;
+
+		// 视口上方一行在 arrange 里长高 120：浏览态下偏移要跟着补 120，读者看的那一行不动。
+		var growing = Assert.IsType<GrowRow>(panel.HostAt(8));
+		growing.GrowOnArrange = true;
+		growing.InvalidateArrange();
+		Pump(scroll);
+		Assert.Equal(offset + 120, scroll.VerticalOffset, 1);
+		Assert.Equal(anchorY, anchor.Bounds.Y, 1);
+	}
+
+	private static void Pump(ScrollViewer scroll)
+	{
+		for (var pass = 0; pass < 3; pass++)
+		{
+			scroll.Measure(new Size(400, 300));
+			scroll.Arrange(new Rect(0, 0, 400, 300));
+		}
+	}
+
+	[Fact]
 	public void RowsThatKeepTheirHeightAreMeasuredOnce()
 	{
 		var panel = Build(growFirst: false);

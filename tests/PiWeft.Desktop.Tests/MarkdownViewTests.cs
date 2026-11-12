@@ -64,6 +64,22 @@ public sealed class MarkdownViewTests
 	}
 
 	[Fact]
+	public void BlocksKnowWhetherTheirSubtreeCarriesAnImage()
+	{
+		// 跨实例高度缓存每个块每次测量都要问一次「子树里有图吗」：答案在哈希阶段跟着子块一起
+		// 算好，避免测量时再递归整棵子树。
+		var document = MarkdownParser.Parse(
+			"plain\n\n- item\n  - nested ![alt](file:///tmp/a.png)\n\n![top](file:///tmp/b.png)");
+		var plain = document.Blocks[0];
+		var list = document.Blocks[1];
+		var image = document.Blocks[2];
+		Assert.False(plain.HasImage);
+		Assert.True(list.HasImage);
+		Assert.True(image.HasImage);
+		Assert.DoesNotContain(document.Blocks[0].Children, static child => child.HasImage);
+	}
+
+	[Fact]
 	public void LinkSchemeGateIsCaseInsensitiveAndDropsDisallowedSchemes()
 	{
 		var options = new PiWeft.Markdown.MarkdownOptions

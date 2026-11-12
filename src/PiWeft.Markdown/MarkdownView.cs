@@ -1335,28 +1335,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			? Math.Max(1.05, 2.0 - (block.Level - 1) * 0.18)
 			: 1;
 
-	private static bool HasImages(MarkdownBlock block)
-	{
-		foreach (MarkdownRun run in block.Runs)
-		{
-			if (run.Image && run.Url is not null)
-			{
-				return true;
-			}
-		}
-		foreach (MarkdownBlock child in block.Children)
-		{
-			if (HasImages(child))
-			{
-				return true;
-			}
-		}
-		return false;
-	}
-
 	private static double TryCachedHeight(MarkdownBlock block, in HeightKey key)
 	{
-		if (HasImages(block) || !HeightCache.TryGet(key, out double height))
+		if (block.HasImage || !HeightCache.TryGet(key, out double height))
 		{
 			return double.NaN;
 		}
@@ -1371,7 +1352,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	{
 		private const int Capacity = 4096;
 
-		private static readonly object Lock = new();
+		private static readonly Lock Gate = new();
 		// 节点随值一起保存：LinkedList.Remove(key) 是 O(n)，跨实例复用时每个块都要扫一遍 LRU；
 		// 保存节点后重排与淘汰都是 O(1)。
 		private static readonly Dictionary<HeightKey, (double Height, LinkedListNode<HeightKey> Node)> Heights = [];
@@ -1379,7 +1360,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 		public static bool TryGet(in HeightKey key, out double height)
 		{
-			lock (Lock)
+			lock (Gate)
 			{
 				if (Heights.TryGetValue(key, out var entry))
 				{
@@ -1395,7 +1376,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 		public static void Store(in HeightKey key, double height)
 		{
-			lock (Lock)
+			lock (Gate)
 			{
 				if (Heights.TryGetValue(key, out var existing))
 				{
@@ -1419,7 +1400,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 		internal static void ClearForTest()
 		{
-			lock (Lock)
+			lock (Gate)
 			{
 				Heights.Clear();
 				Lru.Clear();
@@ -1430,7 +1411,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		{
 			get
 			{
-				lock (Lock)
+				lock (Gate)
 				{
 					return Heights.Count;
 				}
@@ -1511,7 +1492,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 			slot.Height = LayoutRounding.RoundToPixel(Math.Max(0, slot.Element.DesiredSize.Height), dpiScale);
 			// 流式帧不入缓存：尾块每帧都是新哈希（修补后缀在变），会把历史条目挤出 LRU；
 			// 非尾块的高度本来就在槽位上，无需预热。
-			if (!IsStreaming && !HasImages(slot.Block))
+			if (!IsStreaming && !slot.Block.HasImage)
 			{
 				HeightCache.Store(heightKey, slot.Height);
 			}

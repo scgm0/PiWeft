@@ -15,7 +15,7 @@ internal static class MarkdownMetrics
 	// 把一次性成本变成每帧成本。
 	private const int Capacity = 128;
 
-	private static readonly object Lock = new();
+	private static readonly Lock Gate = new();
 	// 节点与值一起保存，命中时 O(1) 重排；否则每个段落布局都要线性扫一遍 LRU。
 	private static readonly Dictionary<FontKey, (double Height, LinkedListNode<FontKey> Node)> NaturalLineHeights = [];
 	private static readonly LinkedList<FontKey> Lru = [];
@@ -41,7 +41,7 @@ internal static class MarkdownMetrics
 	public static double NaturalLineHeight(ITextEngine engine, TextRunStyle style, uint dpi)
 	{
 		FontKey key = new(style.FontFamily, style.FontSize, style.Weight, style.Italic, dpi);
-		lock (Lock)
+		lock (Gate)
 		{
 			if (NaturalLineHeights.TryGetValue(key, out var cached))
 			{
@@ -70,7 +70,7 @@ internal static class MarkdownMetrics
 			// 后端给出不可用的度量时，宁可不加行距，也不要到处凭空撑高。
 			return 0;
 		}
-		lock (Lock)
+		lock (Gate)
 		{
 			if (NaturalLineHeights.TryGetValue(key, out var existing))
 			{

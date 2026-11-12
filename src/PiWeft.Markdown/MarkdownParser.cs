@@ -1133,10 +1133,13 @@ internal static class MarkdownHashBuilder
 
 	private static ulong Assign(MarkdownBlock block)
 	{
+		bool hasImage = false;
 		foreach (MarkdownBlock child in block.Children)
 		{
 			Assign(child);
+			hasImage |= child.HasImage;
 		}
+		block.HasImage = hasImage;
 
 		ulong hash = MarkdownHash.Begin();
 		hash = MarkdownHash.Add(hash, (int)block.Kind);
@@ -1157,6 +1160,9 @@ internal static class MarkdownHashBuilder
 		}
 		foreach (MarkdownRun run in block.Runs)
 		{
+			// 同一次遍历里顺手记下图片 run：跨实例高度缓存每个块每次测量都要问一次，
+			// 递归子树在那里是 O(块数 × 子树大小)。
+			block.HasImage |= run.Image && run.Url is not null;
 			hash = MarkdownHash.Add(hash, run.Text);
 			hash = MarkdownHash.Add(hash, (int)run.Style);
 			hash = MarkdownHash.Add(hash, run.Url);

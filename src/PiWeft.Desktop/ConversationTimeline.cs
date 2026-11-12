@@ -80,6 +80,9 @@ internal sealed class ConversationTimeline : IDisposable
 
 	internal int VisibleRowCount => _visible.Count;
 
+	/// <summary>结构变化触发整视口重画的次数，供测试确认「行离场会要求重画」这条策略。</summary>
+	internal int RepaintOnStructuralChangeCount { get; private set; }
+
 	internal int RowAtViewportAnchor() => _list.IndexAtViewportAnchor(28);
 
 	public void SetEntries(
@@ -96,7 +99,16 @@ internal sealed class ConversationTimeline : IDisposable
 		var oldEntries = structural ? _rows.Snapshot() : default;
 		// 迁移/重排会把行整体平移：先按顶部行记住阅读位置，布局前后补偿同样的量。
 		var anchor = structural ? _list.CaptureShiftAnchor() : default;
-		_rows.Update(entries, stablePrefix, prefixReused, _inPlaceUpdates, _keptUpdates, structural);
+		_rows.Update(entries, stablePrefix, prefixReused, _inPlaceUpdates, _keptUpdates, structural, out var rowsReplaced);
+		// 行被移除或替换时，离开的元素里溢出的绘制（正文越过自己排布矩形的那部分）不属于任何
+		// 场景节点：部分重绘只覆盖行矩形与新露出的带，滚动也不会带走这些像素，于是留下贴在旧屏幕
+		// 位置、滚动不变的残影，直到下一块更大的重绘盖上去。这里整视口重画一次清掉它们；
+		// 流式原位更新不离开任何元素，不付这次重画。
+		if (rebuild || rowsReplaced || !prefixReused)
+		{
+			View.InvalidateVisual();
+			RepaintOnStructuralChangeCount++;
+		}
 		// churn 计数（零分配）：流式期原位更新的行数，是「重建 vs 复用」最直接的对照量。
 		if (_inPlaceUpdates.Count > 0) Diagnostics.Count("row.inplace", _inPlaceUpdates.Count);
 		// 行数/顺序没变时不用碰高度缓存：流式行的增长由 Arrange 重测，再经「总高度变化」发布 extent。
@@ -468,7 +480,7 @@ internal sealed class ConversationTimeline : IDisposable
 		public ChatEntry? EntryAt(int index) => (uint)index < (uint)_entries.Count ? _entries[index] : null;
 		public string GetText(int index) => string.Empty;
 		public void Invalidate() => Changed?.Invoke(new ItemsChange(ItemsChangeKind.Reset, 0, Count));
-		public void Clear() => Update([], 0, false, [], [], false);
+		public void Clear() => Update([], 0, false, [], [], false, out _);
 
 		/// 复用同一块快照缓冲：结构变化（追加一行、过程组重排）在流式期每回合会发生几十次，
 		/// 每次 <c>[.. _entries]</c> 都会分配一个与历史行数等长的数组。
@@ -503,8 +515,10 @@ internal sealed class ConversationTimeline : IDisposable
 			bool prefixReused,
 			List<int> inPlace,
 			List<int> kept,
-			bool collectKept)
+			bool collectKept,
+			out bool replaced)
 		{
+			replaced = false;
 			var common = Math.Min(Count, entries.Count);
 			// The projector reuses every row before the current turn by reference. Start the
 			// comparison there instead of walking the whole history on every streaming frame.
@@ -534,6 +548,7 @@ internal sealed class ConversationTimeline : IDisposable
 						if (runStart >= 0)
 						{
 							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, i - runStart));
+							replaced = true;
 							runStart = -1;
 						}
 						continue;
@@ -546,6 +561,7 @@ internal sealed class ConversationTimeline : IDisposable
 						if (runStart >= 0)
 						{
 							Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, i - runStart));
+							replaced = true;
 							runStart = -1;
 						}
 					}
@@ -554,13 +570,18 @@ internal sealed class ConversationTimeline : IDisposable
 						runStart = i;
 					}
 				}
-				if (runStart >= 0) Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, common - runStart));
+				if (runStart >= 0)
+				{
+					Changed?.Invoke(new ItemsChange(ItemsChangeKind.Replace, runStart, common - runStart));
+					replaced = true;
+				}
 			}
 			if (entries.Count < Count)
 			{
 				var removed = Count - entries.Count;
 				_entries.RemoveRange(entries.Count, removed);
 				Changed?.Invoke(new ItemsChange(ItemsChangeKind.Remove, entries.Count, removed));
+				replaced = true;
 			}
 			else if (entries.Count > Count)
 			{
