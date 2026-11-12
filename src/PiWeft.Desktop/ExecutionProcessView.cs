@@ -510,6 +510,13 @@ internal sealed class ExecutionProcessView
 		void OnBodyContentSized(SizeChangedEventArgs _)
 		{
 			if (viewport is not { } target) return;
+			if (followedContent is { } sized)
+			{
+				// 组体这一帧既移动又长高时，前面已经稳定的行只被场景当作「跟着帧平移」，
+				// 一旦平移量算错，它们就停在旧坐标上，直到有东西让它重录（读者选一下、点一下）。
+				// 这里让内容整棵重录一次：流式行本来每帧都重录，静态行靠它回到正确坐标。
+				sized.InvalidateVisual();
+			}
 			if (SmoothScroll.Find(target) is not { IsFollowingGrowth: true } smooth) return;
 			// 已经贴着末尾（内容没长高）就不用写偏移，免得在排布里多排一轮。
 			if (smooth.MaxVerticalOffset - target.VerticalOffset <= 0.5) return;
