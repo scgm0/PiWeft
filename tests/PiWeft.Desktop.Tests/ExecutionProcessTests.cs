@@ -371,6 +371,34 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void CommittedTailWithTheStreamingAnswerIsNotShownTwice()
+	{
+		// 会话先追加、视图模型还没收到 MessageEnd：同一条助手消息同时以落盘行与流式行出现。
+		// 落盘的那份不能被当成中间回复折进过程组，否则同一段正文同时出现在组里和助手消息行上。
+		var committed = Answer("live-assistant/1", "三处都修。先是结果编码与可读性：", "plan") with { Timestamp = 7 };
+		var live = committed with { EntryId = "live-assistant/7", IsStreaming = true };
+		var rows = ExecutionProcess.Project([User("q"), Tool("call", "output"), committed, live], busy: true);
+
+		var process = rows[1];
+		Assert.DoesNotContain(process.ProcessEntries, static entry => entry.Role == ChatRole.Assistant && entry.Text.Length > 0);
+		Assert.Equal(1, ExecutionProcess.Count(process.ProcessEntries).Thinking);
+		var answer = Assert.Single(rows, static row => row.Role == ChatRole.Assistant);
+		Assert.Equal("三处都修。先是结果编码与可读性：", answer.Text);
+	}
+
+	[Fact]
+	public void EarlierAssistantTextWithItsOwnTimestampStaysAnInterimStep()
+	{
+		// 去重只认同一条消息（时间戳相同）：此前落定的中间回复仍是组内的一步。
+		var earlier = Answer("earlier", "checking") with { Timestamp = 1 };
+		var live = Answer("live-assistant/2", "done") with { Timestamp = 2, IsStreaming = true };
+		var rows = ExecutionProcess.Project([User("q"), earlier, live], busy: true);
+
+		Assert.Contains(rows[1].ProcessEntries, static entry => entry.Text == "checking");
+		Assert.Equal("done", rows[^1].Text);
+	}
+
+	[Fact]
 	public void ProcessAndGroupsAreLazyAndNestedStateSurvivesRecycling()
 	{
 		using var focus = new TextFocusScrollGuard(new ScrollViewer());

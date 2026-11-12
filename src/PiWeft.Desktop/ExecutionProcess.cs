@@ -89,6 +89,14 @@ internal static class ExecutionProcess
 			foreach (var entry in unique)
 			{
 				if (entry.Role == ChatRole.Assistant) answerDuration = entry.DurationMs;
+				// 会话先落盘、视图模型的流式行还没收口时，同一条助手消息会同时以落盘行与流式行
+				// 出现（时间戳相同）。只留流式那一行：落盘的那份否则会被当成中间回复折进过程组，
+				// 同一段正文出现在组里和助手消息行两处，思考也会多出一步。
+				if (!ReferenceEquals(entry, answer) && entry.Role == ChatRole.Assistant && !entry.IsStreaming &&
+					answer is { IsStreaming: true, Timestamp: not 0 } && entry.Timestamp == answer.Timestamp)
+				{
+					continue;
+				}
 				if (entry.ThinkingLength > 0 || entry.IsThinking)
 				{
 					var step = entry with
