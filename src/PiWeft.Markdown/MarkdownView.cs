@@ -70,6 +70,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	private ScrollViewer? _scroll;
 	private int _visibleFirst = -1;
 	private int _visibleLast = -1;
+	// 已经实现的最后一块。流式期它是唯一允许溢出排布矩形的块：它下面没有别的块，
+	// 裁掉只是因为测量晚了一帧，代价却是新露出的一行先缺半截再补齐。
+	private FrameworkElement? _tailElement;
 	private int _slotGeneration;
 	private bool _disposed;
 
@@ -1581,6 +1584,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 		_visibleFirst = first;
 		_visibleLast = last;
+		_tailElement = attachLast >= 0 && _slots[attachLast].Attached ? _slots[attachLast].Element : null;
 		if (!attachedAny)
 		{
 			// 只在「文档非空但一个块都没附着」时上报：这是正常回收永远不走的分支，
@@ -1769,6 +1773,12 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		{
 			return null;
 		}
+		// 流式尾块每帧都在长高，测量晚一帧时排布矩形还是旧高度：这时不裁，让新露出的一行
+		// 完整画出来（尾块下面没有别的块）。裁了就是「一行先缺半截、下一帧补齐」的闪烁。
+		if (IsStreaming && ReferenceEquals(child, _tailElement))
+		{
+			return null;
+		}
 		// 只裁纵向：行内代码底色与选区会往外铺几像素，横向裁在块的矩形上会削掉它们的边缘。
 		// 留 3 DIP 余量给这两层，仍然能挡住块长高后压到下一块/下一行的那部分正文。
 		double top = Math.Max(Bounds.Top, child.Bounds.Top) - 3;
@@ -1781,6 +1791,9 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	}
 
 	internal ChildClip? ChildClipForTest(UIElement child) => GetChildClip(child);
+
+	/// <summary>流式期最后一块的溢出由它自己负责；其他块与定稿后仍按排布矩形裁剪。</summary>
+	internal FrameworkElement? TailElementForTest => _tailElement;
 
 	protected override void OnRender(IGraphicsContext context)
 	{

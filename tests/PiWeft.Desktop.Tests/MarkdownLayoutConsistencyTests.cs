@@ -202,6 +202,62 @@ public sealed class MarkdownLayoutConsistencyTests(ITestOutputHelper output)
 	}
 
 	[Fact]
+	public void StreamingTailIsNotClippedUntilItIsFinalized()
+	{
+		// 流式尾块每帧都在长高：不裁它，新露出的一行才不会先缺半截再补齐。
+		// 其他块与定稿后的尾块仍按排布矩形裁剪，越界绘制压不到相邻内容。
+		var markdown = new MarkdownView
+		{
+			IsStreaming = true,
+			Source = "第一段\n\n第二段\n\n第三段正在写",
+		};
+		var scroll = Host(markdown);
+		try
+		{
+			var blocks = Find<MarkdownParagraphView>(markdown).ToArray();
+			Assert.True(blocks.Length >= 2);
+			var tail = markdown.TailElementForTest;
+			Assert.NotNull(tail);
+			Assert.Null(markdown.ChildClipForTest(tail));
+			var other = blocks.First(block => !ReferenceEquals(block, tail));
+			Assert.NotNull(markdown.ChildClipForTest(other));
+
+			markdown.IsStreaming = false;
+			Layout(scroll, 640);
+			Assert.NotNull(markdown.ChildClipForTest(tail));
+		}
+		finally
+		{
+			UiLifetime.Release(scroll);
+		}
+	}
+
+	[Fact]
+	public void StreamingParagraphKeepsDrawingWhenItsArrangedHeightIsStale()
+	{
+		// 同一份「测量晚一帧」的状态：流式期照画（尾块下面没有别的块），定稿后才吞掉这一帧。
+		var markdown = new MarkdownView { Source = "短", IsStreaming = true };
+		var scroll = Host(markdown);
+		try
+		{
+			var paragraph = Assert.Single(Find<MarkdownParagraphView>(markdown));
+			var staleHeight = paragraph.Bounds.Height;
+			markdown.Source = string.Join("", Enumerable.Repeat("把这一段写得足够长，长到在旧高度里放不下。", 6));
+			scroll.Measure(new Size(640, 700));
+			paragraph.Arrange(new Rect(paragraph.Bounds.X, paragraph.Bounds.Y, paragraph.Bounds.Width, staleHeight));
+			Assert.False(paragraph.FitsArrangedHeight);
+			Assert.True(paragraph.ShouldDraw);
+
+			markdown.IsStreaming = false;
+			Assert.False(paragraph.ShouldDraw);
+		}
+		finally
+		{
+			UiLifetime.Release(scroll);
+		}
+	}
+
+	[Fact]
 	public void TableCellsDoNotRemeasureWhenTheGridSnapsTracksToDevicePixels()
 	{
 		// 4 列星号轨道的表格在非整数可用宽度上会得到 215.5 这样的轨道：measure 用未取整的宽度，

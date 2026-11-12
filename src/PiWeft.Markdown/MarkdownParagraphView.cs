@@ -143,6 +143,12 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 
 	/// <summary>排出来的文本是否装得进父级给的高度；装不下就不画，等下一次测量把行高补齐。</summary>
 	internal bool FitsArrangedHeight => Bounds.Height <= 0.5 || TextHeight() <= Bounds.Height + 0.5;
+
+	/// <summary>
+	/// 这一帧要不要画。流式期尾块每帧都在长高，测量晚一帧是常态：这时宁可让它溢出（尾块下面
+	/// 没有别的块），也不能吞掉新露出的一行，否则读者看到的是正文一闪一闪。
+	/// </summary>
+	internal bool ShouldDraw => IsStreaming || FitsArrangedHeight;
 	internal bool IsStreaming { get; set; }
 	internal IReadOnlyList<MarkdownRun> Runs => _runs;
 	internal void SetBlock(
@@ -924,7 +930,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		// 下一次测量会把行高补齐。少一帧正文也比两行字叠在一起强。
 		// 这一判断不只管「补版面」那条路：外层漏测（虚拟化行在 arrange 里长高、滚动中
 		// 补实现新块）时版面是现成的，Bounds 却是旧的，文字照样会溢出自己的排布矩形。
-		if (!FitsArrangedHeight)
+		if (!ShouldDraw)
 		{
 			return;
 		}
