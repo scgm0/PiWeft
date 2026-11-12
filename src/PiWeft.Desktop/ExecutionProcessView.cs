@@ -534,7 +534,7 @@ internal sealed class ExecutionProcessView
 			{
 				if (followedContent is { } previous) previous.SizeChanged -= OnBodyContentSized;
 				followedContent = sized;
-				sized.SizeChanged += OnBodyContentSized;
+				if (Environment.GetEnvironmentVariable("PIWEFT_NO_BODY_FOLLOW") != "1") sized.SizeChanged += OnBodyContentSized;
 			}
 			// 组体是“最新步骤”的窗口：滚动条置底时持续跟随新步骤；用户上滚后暂停，
 			// 回到底部（滚轮/键盘/拖动滚动条）自动重新锁底。

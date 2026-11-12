@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Collections.Immutable;
 using PiWeft.Ai;
 
@@ -21,6 +22,7 @@ public sealed partial class SessionManager
 	private readonly System.Buffers.ArrayBufferWriter<byte> _persistBuffer = new(1024);
 	private string? _leafId;
 	private IReadOnlyList<SessionEntry>? _entriesSnapshot;
+	private IReadOnlyDictionary<string, string>? _labelsSnapshot;
 	private ImmutableList<SessionEntry>? _branchSnapshot;
 	private IReadOnlyList<Message>? _projectedSnapshot;
 	private List<Message>? _incrementalBase;
@@ -33,6 +35,7 @@ public sealed partial class SessionManager
 	{
 		_revision++;
 		_entriesSnapshot = null;
+		_labelsSnapshot = null;
 		if (!keepBranch)
 		{
 			_branchSnapshot = null;
@@ -64,9 +67,17 @@ public sealed partial class SessionManager
 
 	public string SessionId { get; private set; }
 
+	/// 当前叶子。引用读是原子的，不取闸：读到的可能是刚被下一次追加换掉的值，
+	/// 只适合展示与跳转。要基于叶子做决定（校验、算父链接）必须进闸。
 	public string? LeafId => _leafId;
 
-	public int EntryCount => _byId.Count;
+	public int EntryCount
+	{
+		get
+		{
+			lock (_stateGate) return _byId.Count;
+		}
+	}
 
 	public IReadOnlyList<SessionEntry> Entries
 	{
@@ -281,6 +292,10 @@ public sealed partial class SessionManager
 		if (entry is LabelEntry { Label: { Length: > 0 } label } labelEntry)
 		{
 			_labelsById[labelEntry.TargetId] = label;
+		}
+		else if (entry is LabelEntry { Label: null } cleared)
+		{
+			_labelsById.Remove(cleared.TargetId);
 		}
 
 		if (entry is not DeletedEntry)
@@ -722,46 +737,33 @@ public sealed partial class SessionManager
 
 	public string AppendMessage(Message message) => Append(new SessionMessageEntry
 	{
-		Id = NextId(),
-		ParentId = _leafId,
 		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 		Message = message,
-	});
+	}).Id;
 
 	public string AppendModelChange(string provider, string modelId) => Append(new ModelChangeEntry
 	{
-		Id = NextId(),
-		ParentId = _leafId,
 		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 		Provider = provider,
 		ModelId = modelId,
-	});
+	}).Id;
 
 	public string AppendThinkingLevelChange(string thinkingLevel) => Append(new ThinkingLevelChangeEntry
 	{
-		Id = NextId(),
-		ParentId = _leafId,
 		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 		ThinkingLevel = thinkingLevel,
-	});
+	}).Id;
 
 	public UsageEntry AppendUsage(string kind, string provider, string model, Usage usage, string? note = null)
-	{
-		var entry = new UsageEntry
+		=> (UsageEntry)Append(new UsageEntry
 		{
-			Id = NextId(),
-			ParentId = _leafId,
 			Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 			Kind = kind,
 			Provider = provider,
 			Model = model,
 			Usage = usage,
 			Note = note,
-		};
-
-		Append(entry);
-		return entry;
-	}
+		});
 
 	public string AppendCompaction(
 		string summary,
@@ -772,8 +774,6 @@ public sealed partial class SessionManager
 		System.Text.Json.Nodes.JsonNode? details = null,
 		bool? fromHook = null) => Append(new CompactionEntry
 	{
-		Id = NextId(),
-		ParentId = _leafId,
 		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 		Summary = summary,
 		FirstKeptEntryId = firstKeptEntryId,
@@ -782,7 +782,7 @@ public sealed partial class SessionManager
 		Usage = usage,
 		Details = details,
 		FromHook = fromHook,
-	});
+	}).Id;
 
 	public string AppendBranchSummary(
 		string fromId,
@@ -790,23 +790,19 @@ public sealed partial class SessionManager
 		Usage? usage = null,
 		System.Text.Json.Nodes.JsonNode? details = null) => Append(new BranchSummaryEntry
 	{
-		Id = NextId(),
-		ParentId = _leafId,
 		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 		FromId = fromId,
 		Summary = summary,
 		Usage = usage,
 		Details = details,
-	});
+	}).Id;
 
 	public string AppendCustom(string customType, System.Text.Json.Nodes.JsonNode? data = null) => Append(new CustomEntry
 	{
-		Id = NextId(),
-		ParentId = _leafId,
 		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 		CustomType = customType,
 		Data = data,
-	});
+	}).Id;
 
 	public string AppendCustomMessage(
 		string customType,
@@ -814,27 +810,25 @@ public sealed partial class SessionManager
 		bool display = true,
 		System.Text.Json.Nodes.JsonNode? details = null) => Append(new CustomMessageEntry
 	{
-		Id = NextId(),
-		ParentId = _leafId,
 		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 		CustomType = customType,
 		Content = content,
 		Display = display,
 		Details = details,
-	});
+	}).Id;
 
 	public string AppendSessionInfo(string? name) => Append(new SessionInfoEntry
 	{
-		Id = NextId(),
-		ParentId = _leafId,
 		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 		Name = name,
-	});
+	}).Id;
 
 	/// 追加一条上下文编辑：<paramref name="replacement"/> 为 null 表示把目标条目从模型上下文中移除，
 	/// 有值则替换其内容。pi 的重试就靠它把失败的那次尝试从投影里去掉（原文保留在文件里）。
 	public string AppendContextEdit(string targetId, MessageContent? replacement)
 	{
+		// 校验与追加要在同一个闸里：分开的话目标可能在两步之间被换掉。
+		using var scope = _stateGate.EnterScope();
 		if (!_byId.ContainsKey(targetId))
 		{
 			throw new InvalidOperationException($"Entry {targetId} not found");
@@ -842,48 +836,38 @@ public sealed partial class SessionManager
 
 		return Append(new ContextEditEntry
 		{
-			Id = NextId(),
-			ParentId = _leafId,
 			Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 			TargetId = targetId,
 			Replacement = replacement,
-		});
+		}).Id;
 	}
 
 	public string AppendLabelChange(string targetId, string? label)
 	{
+		// 标签的增删由 Append 在闸内完成，这里只做存在性校验。
+		using var scope = _stateGate.EnterScope();
 		if (!_byId.ContainsKey(targetId))
 		{
 			throw new InvalidOperationException($"Entry {targetId} not found");
 		}
 
-		var entry = new LabelEntry
+		return Append(new LabelEntry
 		{
-			Id = NextId(),
-			ParentId = _leafId,
 			Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
 			TargetId = targetId,
 			Label = label,
-		};
-
-		Append(entry);
-		if (label is { Length: > 0 })
-		{
-			_labelsById[targetId] = label;
-		}
-		else
-		{
-			_labelsById.Remove(targetId);
-		}
-
-		return entry.Id;
+		}).Id;
 	}
 
-	private string Append(SessionEntry entry)
+	private SessionEntry Append(SessionEntry entry)
 	{
 		using var scope = _stateGate.EnterScope();
-		var extendsBranch = entry.ParentId == _leafId;
+
+		// Id 与父链接都在闸内定。闸外读 _leafId 的话两个并发追加会挂到同一个父上，
+		// 文件里出现分叉而不是一条链；NextId 也要读 _byId，同样不能落在闸外。
 		var previousLeafId = _leafId;
+		entry = entry with { Id = NextId(), ParentId = previousLeafId };
+
 		var hadLabel = false;
 		string? previousLabel = null;
 		if (entry is LabelEntry capturedLabel)
@@ -891,15 +875,16 @@ public sealed partial class SessionManager
 			hadLabel = _labelsById.TryGetValue(capturedLabel.TargetId, out previousLabel);
 		}
 
+		// 这一条总接在当前叶子后面，增量投影可以保留；只有能改早前消息的条目要整体重建。
 		// A normal message only extends the projection. Edits, compaction and summaries can
 		// change earlier messages, so those still rebuild it from the branch.
 		Invalidate(
-			keepIncrementalProjection: extendsBranch &&
+			keepIncrementalProjection:
 				entry is not (ContextEditEntry or CompactionEntry or BranchSummaryEntry or CustomMessageEntry),
-			keepBranch: extendsBranch);
+			keepBranch: true);
 		_fileEntries.Add(entry);
 		_byId[entry.Id] = entry;
-		if (extendsBranch && _branchSnapshot is { } branch)
+		if (_branchSnapshot is { } branch)
 		{
 			// ImmutableList shares the old path; the projection's cached branch stays unchanged.
 			_branchSnapshot = branch.Add(entry);
@@ -908,6 +893,10 @@ public sealed partial class SessionManager
 		if (entry is LabelEntry { Label: { Length: > 0 } label } labelEntry)
 		{
 			_labelsById[labelEntry.TargetId] = label;
+		}
+		else if (entry is LabelEntry { Label: null } cleared)
+		{
+			_labelsById.Remove(cleared.TargetId);
 		}
 
 		_leafId = entry.Id;
@@ -923,7 +912,7 @@ public sealed partial class SessionManager
 			throw;
 		}
 
-		return entry.Id;
+		return entry;
 	}
 
 	/// 追加失败（磁盘满、只读、被独占）时把内存回退到追加之前。
@@ -1340,7 +1329,18 @@ public sealed partial class SessionManager
 		return name;
 	}
 
-	public IReadOnlyDictionary<string, string> Labels => _labelsById;
+	/// 标签快照。返回的是冻结副本，不是线上字典：调用方在锁外枚举它，
+	/// 而追加在后台线程发生，直接给出白线字典会拼“Collection was modified”。
+	public IReadOnlyDictionary<string, string> Labels
+	{
+		get
+		{
+			lock (_stateGate)
+			{
+				return _labelsSnapshot ??= _labelsById.ToFrozenDictionary(StringComparer.Ordinal);
+			}
+		}
+	}
 
 	public SessionInfo ToSessionInfo()
 	{
