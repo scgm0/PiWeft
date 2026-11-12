@@ -86,6 +86,16 @@
 - 常态打开中位 ~5 ms、p90 80 ms；唯一 1.7 s 的样本是 45 MiB 外部 transcript 导入产物。
 - 若将来接入，触发条件应按字节阈值（如 32 MiB）隔离异常，而不是全局替换。
 
+## 为什么行模型不用 union
+
+轨迹面板/时间线的行模型（`LedgerRow`、`TrajectoryLedgerItem`）保持 `class`，不换成 C# 15 的 struct union：
+
+- MewUI 的条目管道是 `object` 的：`IItemsView.GetItem(int)` 返回 `object?`，`IDataTemplate.Bind` 的公共入口接收 `object?`。行对象进列表时就装箱了，换成 struct 只会多箱几次，每次 rebind 都算一次。
+- 自注册 `MewProperty<LedgerRow>` 也不行：`PropertyValueStore.Entry` 的 `Value`/`RawValue` 都是 `object?`，任何 `MewProperty<T>` 的 `T` 都会装箱。
+- `Tag` 换强类型字段只能省一次属性查找与一次转型，与分配无关；行控件已改用 `LedgerRowView.Row`（`TrajectoryView.cs`）就是这个微清理，不再扩。
+- 真要零分配，前提是把 MewUI 的条目管道泛型化（`IItemsView<T>`、模板只走强类型），那是改上游子模块。而账本按 `turnWindow` 分窗、行数几百、每秒重建一次，单行 32 B，收益 ~10 KB/s，不值。
+- 这一块真正值得做的是**行视图复用与增量 diff**（重建行表时复用未变的行），不涉及 MewUI 也不涉及 union。
+
 ## 诊断面板
 
 设置 → 维护 → 性能诊断，默认关闭；关闭时调用点只做一次布尔判断。打开后实时区每秒原地更新文本与帧条，不重建控件树；面板摘下或暂停刷新后脉冲停止。按钮提供暂停/继续、刷新、压堆、清空、打开目录与导出 Chrome Trace。

@@ -128,7 +128,7 @@ internal sealed class TrajectoryView : IDisposable
 			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, AppTheme.Space2));
 		_ledger.ItemTemplate = new DelegateTemplate<LedgerRow>(
 			_ => CreateRowView(),
-			(view, row, _, _) => BindRow((Button)view, row));
+			(view, row, _, _) => BindRow((LedgerRowView)view, row));
 		ScrollViewer? ledgerScroll = null;
 		((IVisualTreeHost)_ledger).VisitChildren(child =>
 		{
@@ -632,28 +632,35 @@ internal sealed class TrajectoryView : IDisposable
 		}
 	}
 
-	private Button CreateRowView()
+	/// 列表行控件自带一行。MewUI 的 <c>Tag</c> 是 <see cref="MewProperty{object}"/>，读写都要走属性存储；
+	/// 行只在绑定与点击时用，一个字段就够。基类是 <c>Button</c> 而不是 <c>Control</c>：
+	/// 默认样式与具名样式都按基类链解析，子类直接沿用。
+	private sealed class LedgerRowView : Button
 	{
-		Button? view = null;
-		view = new Button()
-			.Height(RowHeight)
+		public LedgerRow? Row;
+	}
+
+	private LedgerRowView CreateRowView()
+	{
+		var view = new LedgerRowView();
+		view.Height(RowHeight)
 			.MinHeight(RowHeight)
 			.HorizontalAlignment(HorizontalAlignment.Stretch)
 			.CornerRadius(0)
 			.BorderThickness(0)
 			.Padding(Thickness.Zero)
-			.OnClick(() => Activate(view!.Tag as LedgerRow));
+			.OnClick(() => Activate(view.Row));
 		return view;
 	}
 
-	private void BindRow(Button view, LedgerRow row)
+	private void BindRow(LedgerRowView view, LedgerRow row)
 	{
-		if (view.Tag is LedgerRow.Header previous)
+		if (view.Row is LedgerRow.Header previous)
 		{
 			_liveDurations.Remove(previous.Turn.Index);
 		}
 
-		view.Tag = row;
+		view.Row = row;
 		view.Content = new Border()
 			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space3, 0))
 			.BorderThickness(row is LedgerRow.Header ? new Thickness(0) : new Thickness(0, 0, 0, 1))
