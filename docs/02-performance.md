@@ -41,7 +41,7 @@
 | CLI NativeAOT 产物（linux-x64，Release） | runtime-async 关 32,060,744 B → 开 31,321,368 B（-739,376 B，**-2.3%**） |
 | `SessionManager.Open` 46 MB / 26,984 行（只读+建索引，9 轮中位） | `List<object>` 管线 402 ms / 249.2 MiB → `List<SessionLine>` union 管线 403 ms / 249.2 MiB（各 5 次采样，无差异） |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
-| NativeAOT 桌面体积（linux-x64，当前提交） | 75.8 MiB；开启 `EventSourceSupport` 77.4 MiB（+1.6 MiB / +2.1%，换来 `dotnet-counters`/`dotnet-trace` 可附着）。旧记录 62.4 MB / 64.0 MB 来自更早构建，需按当前提交重测 |
+| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 79.6 MiB（83,495,608 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）。旧记录 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
 
 内存读法：工作集包含字体映射、GPU/驱动共享表面与保留合成；判断泄漏看趋势与 `runtime.window` 的 `rtext/rgeom/ratlas/rpersist/rscratch/rdecoded/rbitmap/rvector/rencoded` 台账，再用 `dotnet-counters`/`dotnet-trace` 与 `smaps_rollup` 对照。发布版已打开 NativeAOT 的 `EventSourceSupport`（实测 +1.6 MiB），`dotnet-counters collect` 已验证可附着；但 NativeAOT 仍不支持 `dotnet-gcdump` 的堆分析，托管堆趋势以自带窗口值为准。打开含大量截图的会话会一次性抬高工作集，不属于逐帧增长。
 

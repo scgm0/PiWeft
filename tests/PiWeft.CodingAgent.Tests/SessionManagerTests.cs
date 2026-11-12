@@ -436,6 +436,29 @@ public class SessionFileEncodingTests : IDisposable
 	}
 
 	[Fact]
+	public void HeaderFieldsIncludingOriginRoundTrip()
+	{
+		// origin 曾经只写不读：排除名单里有它、却没有赋给属性，重写一次就把子代理来源永久丢掉。
+		const string headerLine =
+			"""{"type":"session","version":3,"id":"child","timestamp":"2026-10-19T16:52:43.514Z","cwd":"/w","parentSession":"/p","origin":"subagent"}""";
+		var header = Assert.IsType<SessionHeader>(SessionLines.Header(SessionJson.ParseLine(headerLine)));
+		Assert.Equal("subagent", header.Origin);
+		Assert.True(JsonNode.DeepEquals(JsonNode.Parse(headerLine), JsonNode.Parse(SessionJson.Serialize(header))));
+	}
+
+	[Theory]
+	[InlineData("""{"type":"label","id":"l1","parentId":"m1","timestamp":"t","targetId":"m1","label":"chapter-1"}""")]
+	[InlineData("""{"type":"label","id":"l2","parentId":null,"timestamp":"t","targetId":"m1"}""")]
+	[InlineData("""{"type":"session_info","id":"i1","parentId":null,"timestamp":"t","name":"重构会话"}""")]
+	[InlineData("""{"type":"session_info","id":"i2","parentId":null,"timestamp":"t"}""")]
+	public void LabelAndSessionInfoEntriesRoundTrip(string line)
+	{
+		// 这两种条目以前没有往返用例，写错字段名不会被发现。
+		var entry = SessionLines.Entry(SessionJson.ParseLine(line));
+		Assert.True(JsonNode.DeepEquals(JsonNode.Parse(line), JsonNode.Parse(SessionJson.Serialize(entry))));
+	}
+
+	[Fact]
 	public void ChineseAndQuotesAreWrittenReadable()
 	{
 		var manager = SessionManager.Create(_root, Path.Combine(_root, "sessions"));

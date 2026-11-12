@@ -98,6 +98,9 @@ public sealed partial class SessionManager
 	{
 		get
 		{
+			// 和 Revision/Entries 同一个闸：追加在后台线程发生，这里要遍历 _fileEntries，
+			// 不加锁会撞上「Collection was modified」。Lock 可重入，ToSessionInfo 持闸调用不会死锁。
+			using var scope = _stateGate.EnterScope();
 			foreach (var line in _fileEntries)
 			{
 				if (line is SessionHeader header)
