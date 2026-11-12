@@ -132,6 +132,10 @@ public sealed class SessionCatalog
 					Cwd = entry.Value.Item.Cwd,
 					MessageCount = entry.Value.Item.MessageCount,
 					Preview = entry.Value.Item.Preview,
+					// 文件没变时下次启动直接复用这条摘要，不再读文件；
+					// 漏写 parentSession / origin 会让子代理会话重启后挂不回父会话。
+					ParentSession = entry.Value.Item.ParentSession,
+					Origin = entry.Value.Item.Origin,
 				},
 				StringComparer.Ordinal);
 		}
@@ -783,7 +787,10 @@ public sealed class SessionCatalog
 				Name = previous.Name.Length == 0 ? null : previous.Name,
 				Cwd = previous.Cwd.Length == 0 ? string.Empty : previous.Cwd,
 				Preview = previous.Preview.Length == 0 ? null : previous.Preview,
+				// 续扫从上一轮的偏移开始，读不到首行头部：parentSession 与 origin 只能继承。
+				// 漏掉 origin 时子代理会话会被当成顶层会话，侧栏里掉出父会话。
 				ParentSession = previous.ParentSession.Length == 0 ? null : previous.ParentSession,
+				Origin = previous.Origin.Length == 0 ? null : previous.Origin,
 				Messages = previous.MessageCount,
 			};
 			resumeFrom = known.Offset;

@@ -70,6 +70,9 @@ public sealed partial class MainWindow : Window
 	private bool _sessionsLoaded;
 	// 侧栏里展开过的项目（工作目录）。默认折叠，只有这里记录过的才自动展开。
 	private readonly HashSet<string> _expandedProjects = new(SessionGroups.PathComparer);
+	// 展开过的会话行（会话文件路径）：子代理会话挂在父行下，默认折叠，
+	// 而每轮刷新都重建整棵树，不记下来就一折到底。只在内存里，重启后恢复默认。
+	private readonly HashSet<string> _expandedSessionRows = new(StringComparer.Ordinal);
 	// 准备阶段会话面板里的加载段落（打开会话 / 写回会话名称），以及窗口关闭时中断后台读取的令牌源。
 	private readonly SessionLoadingPanel _sessionLoading = new();
 	private TextBlock _welcomeTitle = null!;
@@ -336,6 +339,8 @@ public sealed partial class MainWindow : Window
 		// 程序化重建时的同值调用不会触发这两个事件，因此不会把默认状态写进偏好。
 		_sessionTree.Expanding += args => RememberProjectExpanded(args.Item, expanded: true);
 		_sessionTree.Collapsing += args => RememberProjectExpanded(args.Item, expanded: false);
+		_sessionTree.Expanding += args => RememberSessionRowExpanded(args.Item, expanded: true);
+		_sessionTree.Collapsing += args => RememberSessionRowExpanded(args.Item, expanded: false);
 		ConfigureChatsRows();
 		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
@@ -853,6 +858,12 @@ public sealed partial class MainWindow : Window
 			}
 		}
 
+		// 会话行（子代理的父行）同样重建后要恢复展开状态。
+		foreach (var node in nodes)
+		{
+			ExpandRememberedSessionRows(node, _sessionTree);
+		}
+
 		// 「对话」分段：聊天目录里的会话按置顶、最近修改平铺，不分组。
 		var orderedChats = chats
 			.DistinctBy(static item => item.Path)
@@ -864,6 +875,11 @@ public sealed partial class MainWindow : Window
 			.. SessionGroups.Nest(orderedChats).Select(entry => SessionNode(entry, preference)),
 		];
 		_chatsTree.ItemsSource(_chatNodes);
+		foreach (var node in _chatNodes)
+		{
+			ExpandRememberedSessionRows(node, _chatsTree);
+		}
+
 		ExpandCurrentSessionPath();
 		UpdateSidebarEmptyHints();
 
@@ -2825,6 +2841,38 @@ public sealed partial class MainWindow : Window
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Save expanded projects", ex);
+		}
+	}
+
+	/// 记下用户展开的会话行。刷新会重建整棵树，不记就一折到底；只存内存，不写偏好。
+	private void RememberSessionRowExpanded(object? item, bool expanded)
+	{
+		if (item is not TreeViewNode { Tag: SessionListItem session } || session.Path.Length == 0)
+		{
+			return;
+		}
+
+		if (expanded)
+		{
+			_expandedSessionRows.Add(session.Path);
+		}
+		else
+		{
+			_expandedSessionRows.Remove(session.Path);
+		}
+	}
+
+	/// 重建后重新展开记过的会话行。项目行不算：它的展开状态另有偏好管。
+	private void ExpandRememberedSessionRows(TreeViewNode node, TreeView tree)
+	{
+		foreach (var child in node.Children)
+		{
+			if (child.Tag is SessionListItem { Path.Length: > 0 } session && _expandedSessionRows.Contains(session.Path))
+			{
+				tree.Expand(child);
+			}
+
+			ExpandRememberedSessionRows(child, tree);
 		}
 	}
 

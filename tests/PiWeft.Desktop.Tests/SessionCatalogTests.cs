@@ -385,6 +385,77 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 	}
 
 	[Fact]
+	public void AppendingToAChildSessionKeepsItsParent()
+	{
+		// 子代理会一直往子会话里追加消息，侧栏因此每一轮都走「续扫」分支。
+		// 续扫从上次的偏移开始，读不到首行头部的 parentSession / origin，
+		// 这两个字段只能从缓存那一行继承下来，否则子会话会掉成顶层会话。
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		var parentPath = Path.Combine(sessions, "2026-04-01T00-00-00-000Z_parent.jsonl");
+		File.WriteAllLines(parentPath,
+		[
+			"""{"type":"session","version":3,"id":"parent","timestamp":"t","cwd":"/tmp/x"}""",
+		]);
+		var childPath = Path.Combine(sessions, "2026-04-02T00-00-00-000Z_child.jsonl");
+		File.WriteAllLines(childPath,
+		[
+			$"{{\"type\":\"session\",\"version\":3,\"id\":\"child\",\"timestamp\":\"t\",\"cwd\":\"/tmp/x\",\"parentSession\":\"{parentPath}\",\"origin\":\"subagent\"}}",
+			"""{"id":"u1","parentId":"child","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"跑一下"}],"timestamp":1}}""",
+		]);
+
+		var catalog = new SessionCatalog();
+		var first = catalog.List();
+		var firstChild = first.Single(item => item.Id == "child");
+		Assert.Equal("subagent", firstChild.Origin);
+		Assert.Equal(parentPath, firstChild.ParentSession);
+
+		File.AppendAllLines(childPath,
+		[
+			"""{"id":"a1","parentId":"u1","type":"message","timestamp":"t","message":{"role":"assistant","content":[{"type":"text","text":"好"}],"timestamp":2}}""",
+		]);
+
+		var secondChild = catalog.List().Single(item => item.Id == "child");
+		Assert.Equal(2, secondChild.MessageCount);
+		Assert.Equal("subagent", secondChild.Origin);
+		Assert.Equal(parentPath, secondChild.ParentSession);
+	}
+
+	[Fact]
+	public void PersistedSummaryKeepsTheParentSessionAfterRestart()
+	{
+		// 磁盘摘要只记长度与修改时间，没变过的文件下次启动不会再读一遍。
+		// parentSession / origin 不在落盘字段里的话，重启后子会话就再也挂不回父会话。
+		var agent = Path.Combine(_root, "agent");
+		var sessions = Path.Combine(agent, "sessions", PiWeft.CodingAgent.Session.SessionPaths.EncodeCwd(_root));
+		Directory.CreateDirectory(sessions);
+		_previousAgentDir["PI_CODING_AGENT_DIR"] = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR") ?? string.Empty;
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", agent);
+
+		var parentPath = Path.Combine(sessions, "2026-05-01T00-00-00-000Z_parent.jsonl");
+		File.WriteAllLines(parentPath,
+		[
+			"""{"type":"session","version":3,"id":"parent","timestamp":"t","cwd":"/tmp/x"}""",
+		]);
+		File.WriteAllLines(Path.Combine(sessions, "2026-05-02T00-00-00-000Z_child.jsonl"),
+		[
+			$"{{\"type\":\"session\",\"version\":3,\"id\":\"child\",\"timestamp\":\"t\",\"cwd\":\"/tmp/x\",\"parentSession\":\"{parentPath}\",\"origin\":\"subagent\"}}",
+			"""{"id":"u1","parentId":"child","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"跑一下"}],"timestamp":1}}""",
+		]);
+
+		Assert.Equal(2, new SessionCatalog().List().Count);
+
+		// 新实例模拟下一次启动：只有磁盘摘要可用，文件一个字节都没变。
+		var reopened = new SessionCatalog().List().Single(item => item.Id == "child");
+		Assert.Equal("subagent", reopened.Origin);
+		Assert.Equal(parentPath, reopened.ParentSession);
+	}
+
+	[Fact]
 	public void RepeatedListReusesSummariesInsteadOfRescanning()
 	{
 		var agent = Path.Combine(_root, "agent");

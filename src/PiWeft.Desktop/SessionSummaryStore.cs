@@ -36,6 +36,7 @@ internal sealed record SessionSummaryStamp
 	public string Origin { get; init; } = string.Empty;
 }
 
+
 /// 侧栏摘要的磁盘缓存（<c>&lt;agentDir&gt;/session-summaries.json</c>）。
 /// 为什么需要它：<see cref="SessionCatalog"/> 的进程内摘要缓存只在一次运行里有效，
 /// 而侧栏列表要显示每个会话的消息数与首条预览，两样都得读到文件尾部。
@@ -47,7 +48,9 @@ internal sealed record SessionSummaryStamp
 /// 文件不存在、缓存损坏、版本不符 → 当作没有缓存，最坏退化成一次全扫。
 internal static class SessionSummaryStore
 {
-	public const int Version = 4;
+	/// 缓存结构变了就 +1：旧条目里缺的字段不会凭空补上，只能整份丢掉重扫。
+	/// 4 → 5：补上 parentSession / origin，让子代理会话重启后仍能挂回父会话。
+	public const int Version = 5;
 
 	private const int PreviewLimit = 200;
 
