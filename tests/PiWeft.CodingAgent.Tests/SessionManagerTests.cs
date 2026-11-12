@@ -338,7 +338,7 @@ public class SessionManagerTests : IDisposable
 		const string line =
 			"""{"type":"message","id":"aabbccdd","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"bashExecution","command":"ls","output":"a\nb","exitCode":0,"cancelled":false,"truncated":false,"timestamp":1767225600000}}""";
 
-		var parsed = Assert.IsAssignableFrom<SessionEntry>(SessionJson.ParseLine(line));
+		var parsed = SessionLines.Entry(SessionJson.ParseLine(line));
 		var message = Assert.IsType<CustomMessage>(Assert.IsType<SessionMessageEntry>(parsed).Message);
 		Assert.Equal("bashExecution", message.CustomRole);
 
@@ -426,12 +426,12 @@ public class SessionFileEncodingTests : IDisposable
 	{
 		const string headerLine =
 			"""{"type":"session","version":3,"id":"external","timestamp":"2026-10-19T16:52:43.514Z","cwd":"","vendorExtras":{"session_id":"unknown","mode":"test"}}""";
-		var header = Assert.IsType<SessionHeader>(SessionJson.ParseLine(headerLine));
+		var header = Assert.IsType<SessionHeader>(SessionLines.Header(SessionJson.ParseLine(headerLine)));
 		Assert.True(JsonNode.DeepEquals(JsonNode.Parse(headerLine), JsonNode.Parse(SessionJson.Serialize(header))));
 
 		const string resultLine =
 			"""{"type":"message","id":"aaaa1111","parentId":null,"timestamp":"2026-10-19T16:52:43.514Z","message":{"role":"toolResult","toolCallId":"call_1","content":[],"isError":false,"timestamp":1}}""";
-		var result = Assert.IsType<SessionMessageEntry>(SessionJson.ParseLine(resultLine));
+		var result = Assert.IsType<SessionMessageEntry>(SessionLines.Entry(SessionJson.ParseLine(resultLine)));
 		Assert.True(JsonNode.DeepEquals(JsonNode.Parse(resultLine), JsonNode.Parse(SessionJson.Serialize(result))));
 	}
 

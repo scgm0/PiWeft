@@ -96,8 +96,8 @@ public class SessionOpenProgressTests : IDisposable
 	public void Utf8ParseLine_MatchesTheStringOverload()
 	{
 		var manager = Build(20);
-		var bytes = new List<object>();
-		var texts = new List<object>();
+		var bytes = new List<SessionLine>();
+		var texts = new List<SessionLine>();
 
 		using (var reader = new Utf8LineReader(manager.SessionFile!))
 		{
@@ -120,10 +120,10 @@ public class SessionOpenProgressTests : IDisposable
 
 		Assert.NotEmpty(bytes);
 		Assert.Equal(texts.Count, bytes.Count);
-		Assert.IsType<SessionHeader>(bytes[0]);
+		Assert.IsType<SessionHeader>(bytes[0].Header);
 		Assert.Equal(
-			texts.OfType<SessionEntry>().Select(static entry => entry.Id),
-			bytes.OfType<SessionEntry>().Select(static entry => entry.Id));
+			texts.Select(static line => line.Entry).OfType<SessionEntry>().Select(static entry => entry.Id),
+			bytes.Select(static line => line.Entry).OfType<SessionEntry>().Select(static entry => entry.Id));
 	}
 
 	[Fact]

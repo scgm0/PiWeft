@@ -74,7 +74,7 @@ public sealed class InjectedMessageRoundTripTests
 		Assert.DoesNotContain("customType", json);
 		Assert.DoesNotContain("display", json);
 
-		var parsed = Assert.IsType<SessionMessageEntry>(SessionJson.ParseLine(json));
+		var parsed = Assert.IsType<SessionMessageEntry>(SessionLines.Entry(SessionJson.ParseLine(json)));
 		var user = Assert.IsType<UserMessage>(parsed.Message);
 		Assert.True(user.Display);
 		Assert.True(user.IsUserAuthored);

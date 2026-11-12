@@ -20,7 +20,7 @@ internal static class SessionMigration
 	/// <see cref="SessionFormat.CurrentVersion"/>；返回是否发生了迁移。
 	/// 没有头部（外部工具写出的会话）时不做迁移；pi 的加载分支也只对带头部的文件调用
 	/// <c>migrateToCurrentVersion</c>，把无头文件补一个头部是另一条路径（见 SessionManager.Persist）。
-	public static bool Migrate(List<object> entries)
+	public static bool Migrate(List<SessionLine> entries)
 	{
 		var headerIndex = entries.FindIndex(static entry => entry is SessionHeader);
 		if (headerIndex < 0)
@@ -28,7 +28,11 @@ internal static class SessionMigration
 			return false;
 		}
 
-		var header = (SessionHeader)entries[headerIndex];
+		if (entries[headerIndex] is not SessionHeader header)
+		{
+			return false;
+		}
+
 		if (header.Version >= SessionFormat.CurrentVersion)
 		{
 			return false;
@@ -49,12 +53,12 @@ internal static class SessionMigration
 		return true;
 	}
 
-	private static void MigrateV1ToV2(List<object> entries)
+	private static void MigrateV1ToV2(List<SessionLine> entries)
 	{
 		var taken = new HashSet<string>(StringComparer.Ordinal);
-		foreach (var entry in entries.OfType<SessionEntry>())
+		foreach (var line in entries)
 		{
-			if (entry.Id.Length > 0)
+			if (line is SessionEntry entry && entry.Id.Length > 0)
 			{
 				taken.Add(entry.Id);
 			}
@@ -121,7 +125,7 @@ internal static class SessionMigration
 		return unknown with { Id = id, ParentId = parentId, Raw = raw };
 	}
 
-	private static void MigrateV2ToV3(List<object> entries)
+	private static void MigrateV2ToV3(List<SessionLine> entries)
 	{
 		for (var index = 0; index < entries.Count; index++)
 		{

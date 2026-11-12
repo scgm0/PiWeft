@@ -21,6 +21,25 @@ public sealed record SessionHeader
 	public System.Text.Json.Nodes.JsonObject? Extra { get; init; }
 }
 
+/// 会话文件的一行：头部或条目。取代原来的 <c>object</c>，读取管线上不再有裸转型，
+/// 对一行的 switch 由编译器验证是否两路都写了。
+public union SessionLine(SessionHeader, SessionEntry)
+{
+	/// 这一行是头部时的头部，否则 null。
+	public SessionHeader? Header => this switch
+	{
+		SessionHeader header => header,
+		_ => null,
+	};
+
+	/// 这一行是条目时的条目，否则 null。
+	public SessionEntry? Entry => this switch
+	{
+		SessionEntry entry => entry,
+		_ => null,
+	};
+}
+
 /// <c>closed</c>：条目种类固定在程序集内，写盘与界面上的 switch 由编译器验证兑尽。
 public closed record SessionEntry
 {

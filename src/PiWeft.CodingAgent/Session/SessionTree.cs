@@ -303,7 +303,7 @@ public sealed partial class SessionManager
 
 		// 先按 parentId 建一次子索引，再自顶向下收集整棵子树；逐条目扫全表在长会话里是 O(n²)。
 		var children = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-		foreach (var entry in _fileEntries.OfType<SessionEntry>())
+		foreach (var entry in EnumerateEntries())
 		{
 			if (entry is DeletedEntry || entry.ParentId is not { Length: > 0 } parentId)
 			{
@@ -353,7 +353,7 @@ public sealed partial class SessionManager
 		}
 
 		var timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow);
-		var rewritten = new List<object>(_fileEntries.Count);
+		var rewritten = new List<SessionLine>(_fileEntries.Count);
 		var truncated = 0;
 		foreach (var item in _fileEntries)
 		{
@@ -395,7 +395,7 @@ public sealed partial class SessionManager
 		using var scope = _stateGate.EnterScope();
 		var resolved = Path.GetFullPath(path);
 		var entries = ReadFileEntries(resolved);
-		var header = entries.OfType<SessionHeader>().FirstOrDefault();
+		var header = entries.Select(static line => line.Header).FirstOrDefault();
 
 		_fileEntries.Clear();
 		_fileEntries.AddRange(entries);

@@ -200,7 +200,7 @@ public class SessionTruncateForResendTests : IDisposable
 		};
 
 		var line = SessionJson.Serialize(original);
-		var parsed = Assert.IsType<DeletedEntry>(SessionJson.ParseLine(line));
+		var parsed = Assert.IsType<DeletedEntry>(SessionLines.Entry(SessionJson.ParseLine(line)));
 
 		Assert.Equal(original.OriginalEntryId, parsed.OriginalEntryId);
 		Assert.Equal(original.Reason, parsed.Reason);

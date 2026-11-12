@@ -27,7 +27,7 @@ public class SessionUnknownFieldTests : IDisposable
 
 	private static string RoundTrip(string line)
 	{
-		var parsed = Assert.IsAssignableFrom<SessionEntry>(SessionJson.ParseLine(line));
+		var parsed = SessionLines.Entry(SessionJson.ParseLine(line));
 		var buffer = new System.Buffers.ArrayBufferWriter<byte>();
 		SessionJson.WriteEntryLine(buffer, parsed);
 		return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan).TrimEnd('\n');
@@ -90,7 +90,7 @@ public class SessionUnknownFieldTests : IDisposable
 		// 以前未知类型会被当成 custom 收下，写回就变成 {"type":"custom","customType":"...","data":{整行}}。
 		const string line = """{"type":"usage_v2","id":"c1","parentId":null,"timestamp":"t","kind":"cache_warm","tokens":{"in":3},"nested":{"a":1}}""";
 
-		var parsed = Assert.IsType<UnknownSessionEntry>(SessionJson.ParseLine(line));
+		var parsed = Assert.IsType<UnknownSessionEntry>(SessionLines.Entry(SessionJson.ParseLine(line)));
 		Assert.Equal("usage_v2", parsed.Type);
 		Assert.Equal("usage_v2", parsed.Raw["type"]!.GetValue<string>());
 		AssertSameJson(line, RoundTrip(line));
@@ -102,7 +102,7 @@ public class SessionUnknownFieldTests : IDisposable
 		const string line = """{"type":"model_change","id":"d1","parentId":null,"timestamp":"t","provider":"p","modelId":"m","switchedBy":"user"}""";
 		AssertSameJson(line, RoundTrip(line));
 
-		var parsed = Assert.IsType<ModelChangeEntry>(SessionJson.ParseLine(line));
+		var parsed = Assert.IsType<ModelChangeEntry>(SessionLines.Entry(SessionJson.ParseLine(line)));
 		Assert.Equal("user", parsed.Extra!["switchedBy"]!.GetValue<string>());
 	}
 

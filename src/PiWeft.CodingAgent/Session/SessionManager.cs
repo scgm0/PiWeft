@@ -14,7 +14,7 @@ public sealed partial class SessionManager
 {
 	private readonly Lock _stateGate = new();
 	private long _revision;
-	private readonly List<object> _fileEntries = [];
+	private readonly List<SessionLine> _fileEntries = [];
 	private readonly Dictionary<string, SessionEntry> _byId = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _labelsById = new(StringComparer.Ordinal);
 	private readonly bool _persist;
@@ -72,8 +72,19 @@ public sealed partial class SessionManager
 	{
 		get
 		{
-			lock (_stateGate) return _entriesSnapshot ??=
-				Array.AsReadOnly(_fileEntries.OfType<SessionEntry>().ToArray());
+			lock (_stateGate) return _entriesSnapshot ??= Array.AsReadOnly([.. EnumerateEntries()]);
+		}
+	}
+
+	/// 按文件顺序枚举条目行；头部落在这之外。
+	private IEnumerable<SessionEntry> EnumerateEntries()
+	{
+		foreach (var line in _fileEntries)
+		{
+			if (line is SessionEntry entry)
+			{
+				yield return entry;
+			}
 		}
 	}
 
@@ -83,7 +94,21 @@ public sealed partial class SessionManager
 		return (_revision, SessionId, Entries);
 	}
 
-	public SessionHeader? Header => _fileEntries.OfType<SessionHeader>().FirstOrDefault();
+	public SessionHeader? Header
+	{
+		get
+		{
+			foreach (var line in _fileEntries)
+			{
+				if (line is SessionHeader header)
+				{
+					return header;
+				}
+			}
+
+			return null;
+		}
+	}
 
 
 	public static SessionManager Create(
@@ -149,7 +174,7 @@ public sealed partial class SessionManager
 		// 头部几乎总在第一行：先看首项，损坏/外部文件再退回全表扫描。
 		var header = entries.Count > 0 && entries[0] is SessionHeader first
 			? first
-			: entries.OfType<SessionHeader>().FirstOrDefault();
+			: entries.Select(static line => line.Header).FirstOrDefault();
 		var cwd = NormalizeCwd(cwdOverride)
 			?? NormalizeCwd(header?.Cwd)
 			?? NormalizeCwd(cwdFallback)
@@ -198,7 +223,7 @@ public sealed partial class SessionManager
 		var resolved = Path.GetFullPath(sourcePath);
 		var entries = ReadFileEntries(resolved);
 
-		if (!entries.OfType<SessionHeader>().Any())
+		if (!entries.Any(static line => line is SessionHeader))
 		{
 			throw new InvalidOperationException($"Cannot fork: source session has no header: {resolved}");
 		}
@@ -210,8 +235,13 @@ public sealed partial class SessionManager
 		var manager = Create(targetCwd, sessionDir, id, parentSession: resolved);
 		try
 		{
-			foreach (var entry in entries.OfType<SessionEntry>())
+			foreach (var line in entries)
 			{
+				if (line is not SessionEntry entry)
+				{
+					continue;
+				}
+
 				manager.AppendExisting(entry, persist: false);
 			}
 
@@ -275,7 +305,7 @@ public sealed partial class SessionManager
 		return manager;
 	}
 
-	private void LoadEntries(List<object> entries, SessionHeader? header)
+	private void LoadEntries(List<SessionLine> entries, SessionHeader? header)
 	{
 		_fileEntries.AddRange(entries);
 		SessionId = header?.Id ?? SessionPaths.NewSessionId();
@@ -318,7 +348,7 @@ public sealed partial class SessionManager
 	/// 把整份会话按当前格式重写：同目录临时文件加原子替换，中途崩溃不会留下半个会话。
 	/// 用于格式升级与「编辑重发」截断；正常路径只追加。
 	/// <param name="source">要写入的条目序列；为空时写当前内存视图。</param>
-	private void RewriteFile(IReadOnlyList<object>? source = null)
+	private void RewriteFile(IReadOnlyList<SessionLine>? source = null)
 	{
 		if (SessionFile is not { Length: > 0 } path || !File.Exists(path))
 		{
@@ -455,12 +485,12 @@ public sealed partial class SessionManager
 		}
 	}
 
-	private static List<object> ReadFileEntries(
+	private static List<SessionLine> ReadFileEntries(
 		string path,
 		IProgress<SessionReadProgress>? progress = null,
 		CancellationToken cancellationToken = default)
 	{
-		var entries = new List<object>();
+		var entries = new List<SessionLine>();
 		if (!File.Exists(path))
 		{
 			return entries;
@@ -495,10 +525,10 @@ public sealed partial class SessionManager
 
 		// 会话文件是行式 JSON，条目之间只靠 parentId 关联，解析阶段互不依赖：
 		// 按字节切成几段并行扫，结果按段序拼接，顺序与单线程读完全一致。
-		var parts = new List<object>?[chunks];
+		var parts = new List<SessionLine>?[chunks];
 		for (var index = 0; index < chunks; index++)
 		{
-			parts[index] = new List<object>();
+			parts[index] = new List<SessionLine>();
 		}
 
 		long bytesRead = 0;
@@ -596,7 +626,7 @@ public sealed partial class SessionManager
 		string path,
 		long from,
 		long to,
-		List<object> sink,
+		List<SessionLine> sink,
 		CancellationToken cancellationToken,
 		Action<int, int>? onLine = null)
 	{
@@ -663,7 +693,7 @@ public sealed partial class SessionManager
 		_labelsById.Clear();
 		_leafId = null;
 
-		foreach (var entry in _fileEntries.OfType<SessionEntry>())
+		foreach (var entry in EnumerateEntries())
 		{
 			_byId[entry.Id] = entry;
 
@@ -898,13 +928,13 @@ public sealed partial class SessionManager
 	/// 缓存一律丢弃重建，只把叶子与标签恢复成原值。
 	private void Rollback(SessionEntry entry, string? previousLeafId, bool hadLabel, string? previousLabel)
 	{
-		if (_fileEntries.Count > 0 && ReferenceEquals(_fileEntries[^1], entry))
+		if (_fileEntries.Count > 0 && ReferenceEquals(_fileEntries[^1].Value, entry))
 		{
 			_fileEntries.RemoveAt(_fileEntries.Count - 1);
 		}
 		else
 		{
-			_fileEntries.RemoveAll(item => ReferenceEquals(item, entry));
+			_fileEntries.RemoveAll(item => ReferenceEquals(item.Value, entry));
 		}
 
 		_byId.Remove(entry.Id);
@@ -1279,7 +1309,7 @@ public sealed partial class SessionManager
 	public string FirstUserMessageText()
 	{
 		using var scope = _stateGate.EnterScope();
-		foreach (var entry in _fileEntries.OfType<SessionEntry>())
+		foreach (var entry in EnumerateEntries())
 		{
 			// 回报开场的会话不该拿机器文本当标题。
 			if (entry is SessionMessageEntry { Message: UserMessage user } && user.IsUserAuthored &&
@@ -1296,7 +1326,7 @@ public sealed partial class SessionManager
 	{
 		using var scope = _stateGate.EnterScope();
 		string? name = null;
-		foreach (var entry in _fileEntries.OfType<SessionEntry>())
+		foreach (var entry in EnumerateEntries())
 		{
 			if (entry is SessionInfoEntry info)
 			{
@@ -1318,7 +1348,7 @@ public sealed partial class SessionManager
 		var messageCount = 0;
 		var allText = new System.Text.StringBuilder();
 
-		foreach (var entry in _fileEntries.OfType<SessionEntry>())
+		foreach (var entry in EnumerateEntries())
 		{
 			if (DateTimeOffset.TryParse(entry.Timestamp, out var entryTime) && entryTime > modified)
 			{

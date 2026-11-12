@@ -220,7 +220,7 @@ public static class SessionJson
 		writer.WriteEndObject();
 	}
 
-	public static object? ParseLine(string line)
+	public static SessionLine? ParseLine(string line)
 	{
 		if (string.IsNullOrWhiteSpace(line))
 		{
@@ -232,7 +232,7 @@ public static class SessionJson
 
 	/// 直接从 UTF-8 字节解析一行。会话文件动辄几十 MB，逐行转成 string 再解析会多一次
 	/// 整文件规模的分配；这里让 <see cref="JsonNode"/> 自己解码。
-	public static object? ParseLine(ReadOnlySpan<byte> utf8Line)
+	public static SessionLine? ParseLine(ReadOnlySpan<byte> utf8Line)
 	{
 		if (utf8Line.IsEmpty || IsWhiteSpace(utf8Line))
 		{
@@ -242,7 +242,7 @@ public static class SessionJson
 		return ParseNode(JsonNode.Parse(utf8Line));
 	}
 
-	private static object? ParseNode(JsonNode? node) => node is JsonObject obj ? ParseObject(obj) : null;
+	private static SessionLine? ParseNode(JsonNode? node) => node is JsonObject obj ? ParseObject(obj) : null;
 
 	private static bool IsWhiteSpace(ReadOnlySpan<byte> line)
 	{
@@ -257,7 +257,7 @@ public static class SessionJson
 		return true;
 	}
 
-	public static object? ParseObject(JsonObject obj)
+	public static SessionLine? ParseObject(JsonObject obj)
 	{
 		var type = PiJsonValue.Str(obj, "type");
 		return type switch
@@ -275,6 +275,8 @@ public static class SessionJson
 		Timestamp = PiJsonValue.Str(obj, "timestamp") ?? string.Empty,
 		Cwd = PiJsonValue.Str(obj, "cwd") ?? string.Empty,
 		ParentSession = PiJsonValue.Str(obj, "parentSession"),
+		// origin 曾被排进 Extra 却没人读回来：写得出、读不回，重写一次就把子代理来源丢了。
+		Origin = PiJsonValue.Str(obj, "origin"),
 		Extra = PiJsonValue.ReadExtras(obj, "type", "version", "id", "timestamp", "cwd", "parentSession", "origin"),
 	};
 
