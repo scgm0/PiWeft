@@ -26,7 +26,7 @@ public class ShellTests : IDisposable
 
 		if (Directory.Exists(_root))
 		{
-			Directory.Delete(_root, recursive: true);
+			TempDirectory.Delete(_root);
 		}
 
 		GC.SuppressFinalize(this);
@@ -341,7 +341,7 @@ public class SessionContentSearchTests : IDisposable
 		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", null);
 		if (Directory.Exists(_root))
 		{
-			Directory.Delete(_root, recursive: true);
+			TempDirectory.Delete(_root);
 		}
 
 		GC.SuppressFinalize(this);
@@ -408,13 +408,119 @@ public class SessionContentSearchTests : IDisposable
 	}
 
 	[Fact]
+	public void ContentSearchCoversTheWholeFileNotJustOneWindow()
+	{
+		// 会话只追加：最早的对话在文件头部。全文搜索要能从头部几百 KB 之外找到关键字。
+		var path = Path.Combine(_root, "whole.jsonl");
+		File.WriteAllText(path, "早期的关键字\n" + new string('中', 400_000) + "\n最近的关键字");
+		var rows = new[] { new SessionListItem { Id = "whole", Path = path } };
+
+		Assert.Contains("早期的关键字", Assert.Single(SessionCatalog.SearchContent(rows, "早期的关键字")).Excerpt);
+		Assert.Contains("最近的关键字", Assert.Single(SessionCatalog.SearchContent(rows, "最近的关键字")).Excerpt);
+	}
+
+	[Fact]
+	public void ContentSearchFindsKeywordsThatStraddleTheChunkBoundary()
+	{
+		// 读盘是分块的：关键字正好压在块边界上也不能漏。
+		var path = Path.Combine(_root, "boundary.jsonl");
+		File.WriteAllText(path, new string('a', (1024 * 1024) - 2) + "needle\n");
+		var rows = new[] { new SessionListItem { Id = "boundary", Path = path } };
+
+		Assert.Single(SessionCatalog.SearchContent(rows, "needle"));
+	}
+
+	[Fact]
+	public void ContentSearchBudgetCoversSessionsInListOrder()
+	{
+		// 预算按列表顺序摊：前面的会话先读满，轮到谁额度不够就只读它的尾部，再后面的整份跳过。
+		// 摊法是预先算好的，同一条关键字不会因为线程调度时松时紧少搜几份。
+		var first = Path.Combine(_root, "first.jsonl");
+		var second = Path.Combine(_root, "second.jsonl");
+		File.WriteAllText(first, "第一份里有 needle\n");
+		File.WriteAllText(second, "第二份里也有 needle\n");
+		var rows = new[]
+		{
+			new SessionListItem { Id = "first", Path = first },
+			new SessionListItem { Id = "second", Path = second },
+		};
+
+		var firstOnly = SessionCatalog.SearchContent(
+			rows, "needle", maxBytesTotal: new FileInfo(first).Length);
+		Assert.Equal(["first"], firstOnly.Select(static match => match.Session.Id));
+
+		Assert.Equal(2, SessionCatalog.SearchContent(rows, "needle", maxBytesTotal: 1 << 20).Count);
+	}
+
+	[Fact]
+	public void ContentSearchReadsTheTailWhenThePerFileBudgetIsSmall()
+	{
+		// 会话只追加：早期内容在最前面。一份超过预算的会话，用户想找的通常是刚说过的话。
+		var path = Path.Combine(_root, "tail.jsonl");
+		File.WriteAllText(path, "needle\n" + new string('中', 200_000) + "\n最近的这句话");
+		var rows = new[] { new SessionListItem { Id = "tail", Path = path } };
+
+		var recent = Assert.Single(SessionCatalog.SearchContent(rows, "最近的这句话", maxBytesPerFile: 1024));
+		Assert.Contains("最近的这句话", recent.Excerpt);
+
+		// 预算只盖住尾部时，开头的关键字不在搜索范围里。
+		Assert.Empty(SessionCatalog.SearchContent(rows, "needle", maxBytesPerFile: 1024));
+	}
+
+	[Fact]
 	public void ContentSearchStopsAtTheByteBudgetEvenInsideOneLargeLine()
 	{
+		// 预算之外的字节一律不读，哪怕整份文件只有一行。
 		var path = Path.Combine(_root, "long.jsonl");
-		File.WriteAllText(path, new string('中', 100) + "needle");
+		File.WriteAllText(path, "needle" + new string('中', 100));
 		var rows = new[] { new SessionListItem { Id = "long", Path = path } };
 		Assert.Empty(SessionCatalog.SearchContent(rows, "needle", maxBytesPerFile: 200));
 		Assert.Single(SessionCatalog.SearchContent(rows, "needle", maxBytesPerFile: 306));
+	}
+
+	[Fact]
+	public void ContentSearchDoesNotSplitMultiByteCharactersAtTheWindowEdge()
+	{
+		// 窗口从字符中间切下去时不能把半个字解码成 U+FFFD 丢给用户看。
+		var path = Path.Combine(_root, "edge.jsonl");
+		File.WriteAllText(path, new string('中', 100) + "\n第一个关键字");
+		var rows = new[] { new SessionListItem { Id = "edge", Path = path } };
+
+		var match = Assert.Single(SessionCatalog.SearchContent(rows, "第一个关键字", maxBytesPerFile: 301));
+		Assert.DoesNotContain('\uFFFD', match.Excerpt);
+	}
+
+	[Fact]
+	public void ContentSearchFoldsNonAsciiCaseLikeOrdinalIgnoreCase()
+	{
+		// 折叠是 rune 级的：拉丁变音、西里尔字母的大小写都要认，口径与 OrdinalIgnoreCase 一致。
+		var path = Path.Combine(_root, "fold.jsonl");
+		File.WriteAllText(path, "Änderung 与 ПРИВЕТ 都在这行\n");
+		var rows = new[] { new SessionListItem { Id = "fold", Path = path } };
+
+		var latin = Assert.Single(SessionCatalog.SearchContent(rows, "änderung"));
+		Assert.Contains("Änderung", latin.Excerpt);
+		Assert.Single(SessionCatalog.SearchContent(rows, "привет"));
+
+		// 与 OrdinalIgnoreCase 同口径：'İ' 和 'i' 不算同一个字，所以查 istanbul 命中不了 İstanbul。
+		var turkish = Path.Combine(_root, "turkish.jsonl");
+		File.WriteAllText(turkish, "İstanbul\n");
+		var turkishRows = new[] { new SessionListItem { Id = "turkish", Path = turkish } };
+		Assert.Empty(SessionCatalog.SearchContent(turkishRows, "istanbul"));
+		Assert.Single(SessionCatalog.SearchContent(turkishRows, "İstanbul"));
+	}
+
+	[Fact]
+	public void ContentSearchToleratesBudgetsSmallerThanTheKeyword()
+	{
+		// 预算比关键字还小时，一块里攒不出一截重叠：直接结束，不能去切越界区间。
+		var path = Path.Combine(_root, "tiny.jsonl");
+		File.WriteAllText(path, new string('x', 4096) + "needle");
+		var rows = new[] { new SessionListItem { Id = "tiny", Path = path } };
+
+		Assert.Empty(SessionCatalog.SearchContent(rows, "needle", maxBytesTotal: 3));
+		Assert.Empty(SessionCatalog.SearchContent(rows, "needle", maxBytesTotal: 5));
+		Assert.Empty(SessionCatalog.SearchContent(rows, "needle", maxBytesPerFile: 2));
 	}
 
 	[Fact]
@@ -445,6 +551,18 @@ public class SessionContentSearchTests : IDisposable
 		var summary = SessionCatalog.Summarize(line, "ab");
 
 		Assert.Contains("ab", summary);
+	}
+
+	[Fact]
+	public void TruncatedJsonLineStillYieldsMessageText()
+	{
+		// 正文搜索只读文件尾部，最后一行常常是半个 JSON 对象（窗口切断了它）。
+		// 完整文档式的解析会整行报错，摘要就只能把原始 JSON 端给用户。
+		var line = """{"type":"message","id":"ab","message":{"role":"assistant","content":[{"type":"text","text":"请把 diff 渲染成统一格式"}],"tim""";
+		var summary = SessionCatalog.Summarize(line, "diff 渲染");
+
+		Assert.Contains("diff 渲染成统一格式", summary);
+		Assert.DoesNotContain("\"type\"", summary);
 	}
 
 	[Fact]

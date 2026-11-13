@@ -269,7 +269,7 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 
 		if (Directory.Exists(_root))
 		{
-			Directory.Delete(_root, recursive: true);
+			TempDirectory.Delete(_root);
 		}
 
 		GC.SuppressFinalize(this);
@@ -447,7 +447,9 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 			"""{"id":"u1","parentId":"child","type":"message","timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"跑一下"}],"timestamp":1}}""",
 		]);
 
-		Assert.Equal(2, new SessionCatalog().List().Count);
+		var first = new SessionCatalog();
+		Assert.Equal(2, first.List().Count);
+		first.FlushSummaries();
 
 		// 新实例模拟下一次启动：只有磁盘摘要可用，文件一个字节都没变。
 		var reopened = new SessionCatalog().List().Single(item => item.Id == "child");
@@ -578,6 +580,7 @@ public sealed class SessionCatalogTruncationTests : IDisposable
 		Assert.Equal(1, item.MessageCount);
 
 		// 写回磁盘的是重扫后的新摘要（旧偏移已被丢弃），下一次启动不会拿它续扫。
+		catalog.FlushSummaries();
 		Assert.True(SessionSummaryStore.Load(agent).TryGetValue(path, out var stamp));
 		Assert.Equal(1, stamp.MessageCount);
 		Assert.Equal("真正的问题", stamp.Preview);

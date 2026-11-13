@@ -79,7 +79,12 @@ public sealed partial class MainWindow
 			return;
 		}
 
-		RefreshSessions(force: true);
+		// 新加的项目要先出现在侧栏里才能定位：刷新完再展开那一行。
+		if (!await RefreshSessionsAsync().ConfigureAwait(true) || _sessionHostClosed)
+		{
+			return;
+		}
+
 		RevealProject(path);
 		Toasts.Success(this, Strings.ProjectAdded(ShortCwd(path)));
 	}

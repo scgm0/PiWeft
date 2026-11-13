@@ -16,7 +16,7 @@ public class SessionSummaryStoreTests : IDisposable
 	{
 		try
 		{
-			Directory.Delete(_root, recursive: true);
+			TempDirectory.Delete(_root);
 		}
 		catch (IOException)
 		{
@@ -167,7 +167,7 @@ public sealed class SessionCatalogSummaryCacheTests : IDisposable
 
 		try
 		{
-			Directory.Delete(_root, recursive: true);
+			TempDirectory.Delete(_root);
 		}
 		catch (IOException)
 		{
@@ -190,9 +190,12 @@ public sealed class SessionCatalogSummaryCacheTests : IDisposable
 	public void SummarySurvivesIntoTheNextRun()
 	{
 		var path = WriteSession("s1", "AAAA");
-		var first = Assert.Single(new SessionCatalog().List());
+		var catalog = new SessionCatalog();
+		var first = Assert.Single(catalog.List());
 		Assert.Equal("AAAA", first.Preview);
 		Assert.Equal(1, first.MessageCount);
+		// 摘要在后台线程落盘，关窗时 FlushSummaries 同步补一次；这里显式调它代替关窗。
+		catalog.FlushSummaries();
 		Assert.True(File.Exists(SessionSummaryStore.Path(_agent)), "摘要应写回磁盘");
 
 		// 同长度、同 mtime 地改内容：只有「真的没有重扫」才会仍然报旧预览。
@@ -217,11 +220,14 @@ public sealed class SessionCatalogSummaryCacheTests : IDisposable
 	{
 		var path = WriteSession("s1", "甲");
 		WriteSession("s2", "乙");
-		Assert.Equal(2, new SessionCatalog().List().Count);
+		var catalog = new SessionCatalog();
+		Assert.Equal(2, catalog.List().Count);
+		catalog.FlushSummaries();
 		Assert.Equal(2, SessionSummaryStore.Load(_agent).Count);
 
 		File.Delete(path);
-		Assert.Single(new SessionCatalog().List());
+		Assert.Single(catalog.List());
+		catalog.FlushSummaries();
 
 		// 已删除的路径不该留在缓存文件里（缓存不能变成会话内容的残留副本）。
 		var saved = SessionSummaryStore.Load(_agent);

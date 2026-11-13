@@ -30,15 +30,26 @@ public sealed class SessionSearchPalette
 	private CancellationTokenSource? _contentSearch;
 	private Window? _window;
 	private readonly OverlayFade _fade;
+	// 全量会话：侧栏只留最新 200 条，搜索要能翻到更旧的。打开弹窗后后台装一次，
+	// 关闭时丢掉（侧栏刷新后会话文件已经变了）。
+	private readonly Func<Task<IReadOnlyList<SessionListItem>>>? _everySession;
+	private IReadOnlyList<SessionListItem>? _everySessionRows;
+	// 「正在装」用独立标记，不能拿任务本身当标记：宿主缓存命中时装载同步跑完，
+	// 任务赋值会落在清空之后，字段就永远非空，全量列表再也装不上。
+	private bool _everySessionLoading;
 
 	public event Action? Closed;
 
 	public SessionSearchPalette(
-		Func<IReadOnlyList<SessionListItem>> sessions, Action<SessionListItem> open, Func<bool>? loading = null)
+		Func<IReadOnlyList<SessionListItem>> sessions,
+		Action<SessionListItem> open,
+		Func<bool>? loading = null,
+		Func<Task<IReadOnlyList<SessionListItem>>>? everySession = null)
 	{
 		_sessions = sessions;
 		_open = open;
 		_loading = loading ?? (static () => false);
+		_everySession = everySession;
 
 		// 提示文本自己画：框架的 Placeholder 聚焦即隐藏，而弹窗一打开就聚焦在输入框上。
 		_hint = new TextBlock().Text(Strings.SessionSearch)
@@ -131,11 +142,14 @@ public sealed class SessionSearchPalette
 
 		_query.Text = string.Empty;
 		_hint.IsVisible(true);
-		Refresh();
+		// 每次打开重新装全量列表：侧栏刷新后旧列表里的预览与修改时间已经不对了。
+		_everySessionRows = null;
 		_window = window;
 		TransientOverlay.Open(window, View, Hide);
 		AppStyles.ApplyTextColors(View);
 		View.IsVisible(true);
+		// 先可见再刷新：宿主缓存命中时全量列表同步就位，这一次就能直接渲染出完整结果。
+		Refresh();
 		_fade.Open();
 		_query.Focus();
 	}
@@ -191,11 +205,48 @@ public sealed class SessionSearchPalette
 
 	private void Refresh(string? queryText = null)
 	{
-		var all = _sessions();
+		// 全量列表没到之前先用侧栏的那 200 条，结果马上有；到了之后由下一轮 Refresh 换掉。
+		var all = Volatile.Read(ref _everySessionRows) ?? _sessions();
 		var query = queryText ?? _query.Text;
 		_matches = SessionCatalog.Search(all, query);
 		Render(_matches, []);
 		StartContentSearch(all, query);
+		StartEverySessionLoad();
+	}
+
+	/// 全量列表每次打开装一次：装的过程中用户继续敲字，等它回来再重渲染。
+	private void StartEverySessionLoad()
+	{
+		if (_everySession is null || _everySessionRows is not null || _everySessionLoading)
+		{
+			return;
+		}
+
+		_everySessionLoading = true;
+		_ = LoadEverySessionAsync();
+	}
+
+	private async Task LoadEverySessionAsync()
+	{
+		try
+		{
+			var rows = await _everySession!().ConfigureAwait(false);
+			// 先存下再回 UI 线程：没有消息循环时（无窗口测试）也能拿到结果。
+			Volatile.Write(ref _everySessionRows, rows);
+			Dispatch(() =>
+			{
+				_everySessionLoading = false;
+				if (IsOpen)
+				{
+					Refresh();
+				}
+			});
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<SessionSearchPalette>(), "List all sessions for search", ex);
+			_everySessionLoading = false;
+		}
 	}
 
 	private void Render(IReadOnlyList<SessionListItem> metadata, IReadOnlyList<SessionCatalog.ContentMatch> content)
@@ -228,9 +279,11 @@ public sealed class SessionSearchPalette
 		if (_targets.Count == 0)
 		{
 			// 列表还在后台扫：说「正在读取」，不要说「暂无会话」。
-			var text = _loading()
+			// 全量列表到手就等于知道答案了：这时说「暂无会话」，不能说成还在读取。
+			var known = Volatile.Read(ref _everySessionRows) ?? _sessions();
+			var text = _everySessionRows is null && _loading()
 				? Strings.SessionsScanning
-				: _sessions().Count == 0 ? Strings.NoSessions : Strings.NoMatches;
+				: known.Count == 0 ? Strings.NoSessions : Strings.NoMatches;
 			_status.Text(text).IsVisible(true);
 			return;
 		}

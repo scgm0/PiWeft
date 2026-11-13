@@ -171,6 +171,44 @@ public sealed class SessionSearchPaletteTests
 	}
 
 	[Fact]
+	public void EverySessionListSurvivesReopeningThePalette()
+	{
+		// 宿主缓存命中时全量列表同步就位。装载标记要是写成「已完成的任务」，
+		// 从第二次打开起就会以为还在装，全量列表再也装不上，搜索悄悄退回侧栏那 200 条。
+		var recent = new[] { Item("recent", "/work/alpha") };
+		var full = new[] { Item("recent", "/work/alpha"), Item("很久以前的会话", "/work/alpha") };
+		var palette = new SessionSearchPalette(
+			() => recent, static _ => { }, null, () => Task.FromResult<IReadOnlyList<SessionListItem>>(full));
+
+		for (var open = 1; open <= 3; open++)
+		{
+			var owner = new Border();
+			_ = new Window().Content(owner);
+			palette.Show(owner);
+			Assert.Equal(2, palette.Matches.Count);
+			Assert.Contains(palette.Matches, item => item.Id == "很久以前的会话");
+			palette.Hide();
+		}
+	}
+
+	[Fact]
+	public void EmptyHistoryStopsSayingScanningOnceTheFullListArrives()
+	{
+		// 侧栏收起时「列表还没加载」并不代表搜索源没数据：全量列表到手后就该说「暂无会话」。
+		var owner = new Border();
+		_ = new Window().Content(owner);
+		var loading = true;
+		var palette = new SessionSearchPalette(
+			() => [], static _ => { }, () => loading, () => Task.FromResult<IReadOnlyList<SessionListItem>>([]));
+
+		palette.Show(owner);
+		Assert.Contains(
+			Find<TextBlock>(palette.View),
+			block => block.IsVisible && block.Text == Strings.NoSessions);
+		palette.Hide();
+	}
+
+	[Fact]
 	public void DetachedOwnersDoNotOpenThePalette()
 	{
 		var palette = new SessionSearchPalette(() => Catalog, static _ => { });

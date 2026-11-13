@@ -83,6 +83,11 @@ public sealed partial class MainWindow : Window
 	// 在途的后台打开数量；自检与无人值守演练用它等标签页就位，不猜固定延时。
 	private int _pendingSessionOpens;
 	private IReadOnlyList<SessionListItem> _allSessions = [];
+	// 在飞的那次侧栏扫描：后来的刷新排它后面，保证落地顺序与请求顺序一致。
+	private Task<bool>? _refreshInFlight;
+	// 搜索弹窗的全量列表：侧栏只留最新 200 条，搜索要能翻到更旧的会话。
+	// 侧栏刷新（RefreshSessions）把它作废；同时只有一个装载在飞，避免连按 Ctrl+K 重扫。
+	private Task<IReadOnlyList<SessionListItem>>? _searchSessionsTask;
 	private IReadOnlyList<Model> _models = [];
 
 	private readonly string _chatWorkspace;
@@ -304,7 +309,7 @@ public sealed partial class MainWindow : Window
 		// 新建会话 + 搜索会话（两条与侧栏同色的导航行）+ 会话列表；全局动作（面板/Git/设置/主题）收进底部一行。
 		// 「搜索会话」不是常驻输入框，点击打开搜索弹窗（Ctrl+K），结果按名称、路径与正文过滤。
 		_sessionSearch = new SessionSearchPalette(
-			() => _allSessions, OpenSessionFromSearch, () => !_sessionsLoaded);
+			() => _allSessions, OpenSessionFromSearch, () => !_sessionsLoaded, SearchSessionsAsync);
 		_sessionSearch.Closed += FocusActiveEntry;
 
 		// 导入外部会话：导入后立刻刷新侧栏，新会话马上能打开。
@@ -342,6 +347,9 @@ public sealed partial class MainWindow : Window
 		_sessionTree.Expanding += args => RememberSessionRowExpanded(args.Item, expanded: true);
 		_sessionTree.Collapsing += args => RememberSessionRowExpanded(args.Item, expanded: false);
 		ConfigureChatsRows();
+		// 「对话」分段同样能挂子代理会话，展开状态也得记住，否则每次刷新都折回去。
+		_chatsTree.Expanding += args => RememberSessionRowExpanded(args.Item, expanded: true);
+		_chatsTree.Collapsing += args => RememberSessionRowExpanded(args.Item, expanded: false);
 		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
 		// 还没有会话时给一句引导，不留空白；列表铺满剩余高度，提示叠在列表上方。
@@ -612,6 +620,8 @@ public sealed partial class MainWindow : Window
 			// 每个会话面板里的伪终端都要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
 			foreach (var panel in _sessionPanels.Values) panel.Dispose();
 			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
+			// 侧栏摘要平时在后台线程写，关窗时同步落一次：最后一轮的会话状态不能随进程退出丢掉。
+			_catalog.FlushSummaries();
 			CapturePanelWidth();
 			SaveWindowState();
 		});
@@ -787,22 +797,82 @@ public sealed partial class MainWindow : Window
 			return;
 		}
 
-		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
-		// 搜索弹窗需要全部会话；侧栏的两个分段在 UpdateSessionList 里分流。
-		_allSessions = _catalog.List();
+		_ = RefreshSessionsAsync();
+	}
 
-		// 置顶的会话排在最前，其余保持最近修改优先。
-		var preference = DesktopPreference.Load();
+	/// 侧栏刷新：扫描扔给后台线程（改名、编辑重发都会让一份会话整扫，十几 MB 那份实测 30 ms），
+	/// 树的重建仍在 UI 线程。
+	/// 同一时刻只跑一次扫描：后来的请求排在前一次后面，落地顺序因此与请求顺序一致。
+	/// 换成「允许并行、只认最后发起的那次」会让拿到旧结果的那次刷新被静默丢弃，
+	/// 等它结果的调用方（加项目、打开关联会话）就什么也不做了。
+	private async Task<bool> RefreshSessionsAsync()
+	{
+		if (_refreshInFlight is { IsCompleted: false } running)
+		{
+			await running.ConfigureAwait(true);
+		}
+
+		var task = RefreshOnceAsync();
+		_refreshInFlight = task;
+		return await task.ConfigureAwait(true);
+	}
+
+	private async Task<bool> RefreshOnceAsync()
+	{
+		if (!_sessionsLoaded)
+		{
+			await EnsureSessionsLoadedAsync().ConfigureAwait(true);
+			return _sessionsLoaded;
+		}
+
+		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
+		IReadOnlyList<SessionListItem> listed;
+		try
+		{
+			listed = await Task.Run(() => _catalog.List()).ConfigureAwait(true);
+		}
+		catch (Exception ex)
+		{
+			// 刷新失败就保持当前列表：与首次加载同一口径，不因一次读目录失败把侧栏清空。
+			AppLog.Failure(AppLog.For<MainWindow>(), "List sessions", ex);
+			return false;
+		}
+
+		return await DispatchAsync(() =>
+		{
+			if (_sessionHostClosed || !_sessionsLoaded)
+			{
+				return false;
+			}
+
+			ApplySessions(listed);
+			if (watch is not null)
+			{
+				Diagnostics.Record("sidebar.refresh", watch, $"sessions={_allSessions.Count}");
+			}
+
+			return true;
+		}, CancellationToken.None).ConfigureAwait(true);
+	}
+
+	/// 把扫到的清单落进侧栏：置顶排最前，剩下的按修改时间（列表本身已排好）。
+	private void ApplySessions(IReadOnlyList<SessionListItem> listed, DesktopPreference? preference = null)
+	{
+		preference ??= DesktopPreference.Load();
 		_allSessions =
 		[
-			.. _allSessions.Where(item => preference.IsPinned(item.Id)),
-			.. _allSessions.Where(item => !preference.IsPinned(item.Id)),
+			.. listed.Where(item => preference.IsPinned(item.Id)),
+			.. listed.Where(item => !preference.IsPinned(item.Id)),
 		];
 
 		FilterSessions(preference);
-		if (watch is not null)
+		// 全量搜索列表跟着会话文件一起变，下次打开搜索弹窗重扫。
+		_searchSessionsTask = null;
+		// 归档、删除、移到别处的会话不再有行：展开记录跟着清，否则只增不减。
+		if (_expandedSessionRows.Count > 0)
 		{
-			Diagnostics.Record("sidebar.refresh", watch, $"sessions={_allSessions.Count}");
+			var aliveRows = _allSessions.Select(static item => item.Path).ToHashSet(StringComparer.Ordinal);
+			_expandedSessionRows.RemoveWhere(path => !aliveRows.Contains(path));
 		}
 	}
 
@@ -1255,17 +1325,24 @@ public sealed partial class MainWindow : Window
 		_sessionsLoad = null;
 		UpdateSidebarEmptyHints();
 
-		_allSessions = listed;
-		// 置顶的会话排在最前，其余保持最近修改优先。
-		_allSessions =
-		[
-			.. _allSessions.Where(item => preference.IsPinned(item.Id)),
-			.. _allSessions.Where(item => !preference.IsPinned(item.Id)),
-		];
-		FilterSessions(preference);
+		ApplySessions(listed, preference);
 
 		// 搜索可能先于列表打开：拿到数据后按当前关键字重跑一次。
 		_sessionSearch.Reload();
+	}
+
+	/// 搜索弹窗的会话来源：后台扫一次全量列表（摘要缓存命中时只是 stat 一遍目录），
+	/// 结果缓到下次侧栏刷新。
+	private Task<IReadOnlyList<SessionListItem>> SearchSessionsAsync()
+	{
+		if (_searchSessionsTask is { } running)
+		{
+			return running;
+		}
+
+		var task = Task.Run(() => _catalog.List(limit: int.MaxValue));
+		_searchSessionsTask = task;
+		return task;
 	}
 
 	private async Task WaitForSidebarAsync(int timeoutMs = 30_000)
@@ -1384,7 +1461,7 @@ public sealed partial class MainWindow : Window
 			}
 		};
 		// 子会话条点「打开」：按会话 id 找到同窗口里的后台标签。
-		tab.LinkedSessionOpenRequested += sessionId => ActivateSession(sessionId);
+		tab.LinkedSessionOpenRequested += sessionId => _ = ActivateSessionAsync(sessionId);
 		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
 		// 那条链路会顺带把会话列表重_stat 一遇。
 		tab.AskChanged += _ => UpdateTabHeaders();
@@ -1430,19 +1507,13 @@ public sealed partial class MainWindow : Window
 		return tab;
 	}
 
-	/// 切到某个会话的标签（关联会话的「打开」）。找不到时返回 false。
-	internal bool ActivateSession(string sessionId)
+	/// 切到某个会话的标签（关联会话的「打开」）。找不到时返回 false；
+	/// 侧栏快照里没有时先后台重扫一次目录再找（重扫不能占 UI 线程）。
+	internal async Task<bool> ActivateSessionAsync(string sessionId)
 	{
-		var tab = _tabEntries.OfType<SessionTab>()
-			.FirstOrDefault(candidate => string.Equals(SessionIdOf(candidate), sessionId, StringComparison.Ordinal));
-		if (tab is not null)
+		if (TryActivateTab(sessionId))
 		{
-			var index = _tabEntries.IndexOf(tab);
-			if (index >= 0 && index < _tabControl.Tabs.Count)
-			{
-				_tabControl.SelectedIndex = index;
-				return true;
-			}
+			return true;
 		}
 
 		// 标签没开（重启后子代理条里的历史项）：从侧栏目录里找到会话文件再打开。
@@ -1450,8 +1521,8 @@ public sealed partial class MainWindow : Window
 		var item = FindSessionItem(sessionId);
 		if (item is null)
 		{
-			RefreshSessions(force: true);
-			item = FindSessionItem(sessionId);
+			await RefreshSessionsAsync().ConfigureAwait(true);
+			item = _sessionHostClosed ? null : FindSessionItem(sessionId);
 		}
 
 		if (item is null)
@@ -1460,6 +1531,25 @@ public sealed partial class MainWindow : Window
 		}
 
 		OpenSessionPath(item.Path);
+		return true;
+	}
+
+	private bool TryActivateTab(string sessionId)
+	{
+		var tab = _tabEntries.OfType<SessionTab>()
+			.FirstOrDefault(candidate => string.Equals(SessionIdOf(candidate), sessionId, StringComparison.Ordinal));
+		if (tab is null)
+		{
+			return false;
+		}
+
+		var index = _tabEntries.IndexOf(tab);
+		if (index < 0 || index >= _tabControl.Tabs.Count)
+		{
+			return false;
+		}
+
+		_tabControl.SelectedIndex = index;
 		return true;
 	}
 
@@ -1564,14 +1654,32 @@ public sealed partial class MainWindow : Window
 
 	/// 无人值守的界面演练：启动后打开指定视图并停留若干秒（外部脚本趁机截图），随后退出。
 	/// 键盘/鼠标注入在 Wayland 会话里不可靠，这种方式能稳定覆盖各个视图。
+	/// 仅供 <c>--ui-smoke sidebar-refresh</c>：新建一份会话后走一次侧栏刷新，
+	/// 报告刷新是否落地与前后行数。侧栏刷新改成后台扫描后，只有这条演练能证明
+	/// 「扫描完真的回到了界面」，而不只是把任务发出去就完了。
+	private async Task RunSidebarRefreshSmokeAsync()
+	{
+		// 只是要一份新会话文件出现在目录里；管理器不参与后续操作。
+		_catalog.Create(_cwd);
+		var before = _sessions.Count;
+		var applied = await RefreshSessionsAsync().ConfigureAwait(true);
+		var after = _sessions.Count;
+		Console.WriteLine($"piweft-desktop: sidebar-refresh applied={applied} before={before} after={after}");
+		if (!applied || after != before + 1)
+		{
+			Console.Error.WriteLine("piweft-desktop: sidebar-refresh 没有把新会话刷进侧栏");
+			Environment.ExitCode = 1;
+		}
+	}
+
 	private async Task RunUiSmokeAsync(string view)
 	{
 		// 首个会话在后台解析：先等它建好标签页再演练。
 		// 侧栏摘要按需加载，演练不主动等它（需要它的演练目标自己展开侧栏）。
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
-		if (view == "loading")
+		if (view is "loading" or "sidebar-refresh")
 		{
-			// 这个演练要「在已有标签页之上再开一个会话」，得先有会话列表才能挑目标。
+			// 这两项演练都看侧栏数据：一个要挑目标会话，一个要数行数。
 			await EnsureSessionsLoadedAsync().ConfigureAwait(false);
 		}
 
@@ -1622,6 +1730,11 @@ public sealed partial class MainWindow : Window
 						Environment.ExitCode = 1;
 					}
 
+					break;
+				case "sidebar-refresh":
+					// 视觉验收不需要，但异步刷新的回归需要在真窗口里跑一次：
+					// 新建一份会话后刷新侧栏，报告刷新前后行数，确认新行确实落地。
+					_ = RunSidebarRefreshSmokeAsync();
 					break;
 				case "references":
 					// 视觉验收入口：同时展示草稿引用条、历史文件 chip 和技能 chip。

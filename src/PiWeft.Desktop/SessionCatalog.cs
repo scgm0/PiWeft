@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
+using Microsoft.Win32.SafeHandles;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Session;
 using PiWeft.Cli;
@@ -51,6 +51,9 @@ public sealed class SessionCatalog
 	private long _scanBytes;
 	// 摘要缓存被并行扫描读写；扫描本身在锁外，只有查表与写回加锁。
 	private readonly Lock _summaryGate = new();
+	// 落盘串行：后台写与关窗时的同步写不能同时动同一个临时文件。
+	private readonly Lock _persistGate = new();
+	private bool _persistPending;
 	/// 侧栏一行的缓存。会话文件是只追加的，因此除了长度/时间戳之外还记住
 	/// 上次扫到的行边界与首行指纹：文件变长时只扫新增的字节，不重读整份几十 MB。
 	private sealed record SummaryStamp(
@@ -109,9 +112,56 @@ public sealed class SessionCatalog
 		}
 	}
 
+	/// 摘要落盘。会话流式期间每轮刷新都会弄脏，写盘不能占着 UI 线程（上千条会话时
+	/// 整份重写是十几毫秒）。单飞：一次写在飞时不再排队，下一次刷新再补。
 	private void PersistSummaries()
 	{
-		Dictionary<string, SessionSummaryStamp> snapshot;
+		lock (_summaryGate)
+		{
+			if (!_summariesDirty || _persistPending) return;
+			_persistPending = true;
+		}
+
+		// 目录在调度时就定下：写盘在后台跑，不能等到执行时再去读环境变量
+		// （测试里会在进程内换 agent 目录，换完再读就把缓存写进了别人的目录）。
+		var agentDir = SessionPaths.GetAgentDir();
+		_ = Task.Run(() =>
+		{
+			try
+			{
+				lock (_persistGate)
+				{
+					WriteSummaries(agentDir);
+				}
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				AppLog.Failure(AppLog.For<SessionCatalog>(), "Persist session summaries", ex);
+			}
+			finally
+			{
+				lock (_summaryGate)
+				{
+					_persistPending = false;
+				}
+			}
+		});
+	}
+
+	/// 立刻把待写的摘要落盘。后台写可能在飞，先等它，避免两路同时写同一个临时文件。
+	/// 关窗时调：后台写的最后一份数据不能在进程退出时丢掉。
+	public void FlushSummaries()
+	{
+		var agentDir = SessionPaths.GetAgentDir();
+		lock (_persistGate)
+		{
+			WriteSummaries(agentDir);
+		}
+	}
+
+	private void WriteSummaries(string agentDir)
+	{
+		Dictionary<string, SessionSummaryStamp>? snapshot;
 		lock (_summaryGate)
 		{
 			if (!_summariesDirty) return;
@@ -140,8 +190,19 @@ public sealed class SessionCatalog
 				StringComparer.Ordinal);
 		}
 
-		SessionSummaryStore.Save(snapshot);
+		SessionSummaryStore.Save(snapshot, agentDir);
 	}
+
+	/// 会话目录的列举选项：一个子目录读不了（权限、挂载点掉线）时跳过它，
+	/// 不能让整次侧栏刷新抛异常。`AttributesToSkip = 0` 保持与旧的重载一致：
+	/// 旧重载不跳隐藏项，会话目录里确实可能有隐藏的归档目录。
+	private static readonly EnumerationOptions SessionListOptions = new()
+	{
+		RecurseSubdirectories = true,
+		AttributesToSkip = 0,
+		IgnoreInaccessible = true,
+		ReturnSpecialDirectories = false,
+	};
 
 	public IReadOnlyList<SessionListItem> List(string? cwdFilter = null, int limit = 200) => ListCore(false, cwdFilter, limit);
 
@@ -171,7 +232,7 @@ public sealed class SessionCatalog
 			return [];
 		}
 
-		var paths = Directory.EnumerateFiles(root, "*" + SessionFormat.Extension, SearchOption.AllDirectories).ToArray();
+		var paths = Directory.EnumerateFiles(root, "*" + SessionFormat.Extension, SessionListOptions).ToArray();
 		var alive = paths.ToHashSet(StringComparer.Ordinal);
 		lock (_summaryGate)
 		{
@@ -484,7 +545,8 @@ public sealed class SessionCatalog
 				File.Delete(item.Path);
 				removed++;
 			}
-			catch (IOException ex)
+			// 只读文件、权限不足都不能让剩下的归档停在原地：能删多少删多少。
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 			{
 				AppLog.Failure(AppLog.For<SessionCatalog>(), "Delete archived session", ex);
 			}
@@ -495,67 +557,406 @@ public sealed class SessionCatalog
 
 	public sealed record ContentMatch(SessionListItem Session, string Excerpt);
 
-	/// 在会话正文里找关键字。只扫描最近的若干个文件、每个文件最多读 <paramref name="maxBytesPerFile"/>，
-	/// 命中即停：聊天记录里工具输出往往很长，全量读会拖慢输入。
+	/// 在会话正文里找关键字，扫的是文件全文：会话只追加，早期的对话在文件头部，
+	/// 只读尾部时更早的内容永远搜不到。
+	/// 读盘按 1 MB 分块，块之间留一截重叠，关键字跨块也能命中；比较在 UTF-8 字节上做，
+	/// 只有命中行附近的一小段才解码成字符串。
+	/// 大小写按大写形态折叠比对（与 <see cref="StringComparison.OrdinalIgnoreCase"/> 同口径），
+	/// 拉丁变音、西里尔字母的大小写都认；没有大小写之分的字（中日韩、数字）走精确匹配的快路径。
+	/// <paramref name="maxBytesTotal"/> 是一次搜索的读盘预算：会话上万的机器上扫完几十 GB
+	/// 会把一次按键拖成几秒，到预算就停（列表靠前的会话先读到）。
+	/// <paramref name="maxBytesPerFile"/> 是单份上限，超出时读尾部——新内容更可能是要找的。
 	public static IReadOnlyList<ContentMatch> SearchContent(
 		IReadOnlyList<SessionListItem> sessions,
 		string? query,
 		int maxFiles = 200,
-		int maxBytesPerFile = 512 * 1024,
+		long maxBytesPerFile = long.MaxValue,
+		long maxBytesTotal = 512L * 1024 * 1024,
 		CancellationToken cancellationToken = default)
 	{
 		var trimmed = query?.Trim() ?? string.Empty;
-		if (trimmed.Length == 0)
+		if (trimmed.Length == 0 || maxBytesPerFile <= 0 || maxBytesTotal <= 0)
 		{
 			return [];
 		}
 
-		var matches = new List<ContentMatch>();
-
-		foreach (var session in sessions.Take(maxFiles))
+		var scanCount = Math.Min(Math.Max(maxFiles, 0), sessions.Count);
+		if (scanCount == 0)
 		{
-			cancellationToken.ThrowIfCancellationRequested();
-			var excerpt = FindInFile(session.Path, trimmed, maxBytesPerFile, cancellationToken);
+			return [];
+		}
+
+		// 关键字只编码一次：每份会话都要拿它扫几 MB。
+		var needle = new ContentNeedle(trimmed);
+		if (needle.Length == 0)
+		{
+			return [];
+		}
+
+		// 每份会话读多少字节先按列表顺序定下来：预算被工作线程抢占着扣的话，
+		// 同一条关键字的命中范围会随线程调度变，两次按键的结果不一样。
+		var windows = PlanWindows(sessions, scanCount, maxBytesPerFile, maxBytesTotal);
+		var matches = new ContentMatch?[scanCount];
+		void Scan(int index)
+		{
+			// 取消检查放在扫描体里而不是抛异常：Parallel.For 会把体内抛出的
+			// OperationCanceledException 包成 AggregateException，调用方只认 OCE。
+			if (cancellationToken.IsCancellationRequested)
+			{
+				return;
+			}
+
+			var excerpt = FindInFile(
+				sessions[index].Path, needle, trimmed, windows[index], cancellationToken);
 			if (excerpt is not null)
 			{
-				matches.Add(new ContentMatch(session, excerpt));
+				matches[index] = new ContentMatch(sessions[index], excerpt);
 			}
 		}
 
-		return matches;
+		var parallelism = ScanParallelism(scanCount);
+		if (parallelism > 1)
+		{
+			Parallel.For(0, scanCount, new ParallelOptions
+			{
+				MaxDegreeOfParallelism = parallelism,
+				CancellationToken = cancellationToken,
+			}, Scan);
+		}
+		else
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			for (var index = 0; index < scanCount; index++)
+			{
+				Scan(index);
+			}
+		}
+
+		var result = new List<ContentMatch>(scanCount);
+		foreach (var match in matches)
+		{
+			if (match is not null)
+			{
+				result.Add(match);
+			}
+		}
+
+		return result;
 	}
 
-	private static string? FindInFile(string path, string query, int maxBytes, CancellationToken cancellationToken)
+	/// 分块读的大小。块越小跨块重叠的开销越多，越大则取消与预算的粒度越粗。
+	private const int ScanChunkBytes = 1 << 20;
+
+	/// 命中行前后读多少字节来凑摘要。
+	private const int ExcerptMarginBytes = 4 * 1024;
+
+	/// 按列表顺序摊读盘预算：列表前面（更新）的会话先读满，轮到哪份超额度就截到剩余额度读尾部，
+	/// 再后面的整份跳过。命中范围因此是确定的，不随线程调度变。
+	private static long[] PlanWindows(
+		IReadOnlyList<SessionListItem> sessions, int count, long maxBytesPerFile, long maxBytesTotal)
 	{
-		if (maxBytes <= 0) return null;
-		// Limit the actual bytes, including a single huge JSONL line. Reuse the read buffer between files.
-		var limit = Math.Min(maxBytes, 512 * 1024);
-		var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(limit);
+		var windows = new long[count];
+		var left = maxBytesTotal;
+		for (var index = 0; index < count && left > 0; index++)
+		{
+			var window = Math.Min(Math.Min(PathLength(sessions[index].Path), maxBytesPerFile), left);
+			if (window <= 0)
+			{
+				continue;
+			}
+
+			windows[index] = window;
+			left -= window;
+		}
+
+		return windows;
+	}
+
+	private static long PathLength(string path)
+	{
 		try
 		{
-			using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-			var length = 0;
-			while (length < limit)
+			return new FileInfo(path).Length;
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			return 0;
+		}
+	}
+
+	private static string? FindInFile(
+		string path,
+		ContentNeedle needle,
+		string query,
+		long maxBytes,
+		CancellationToken cancellationToken)
+	{
+		if (maxBytes <= 0) return null;
+
+		// 折叠比较时命中在文本里占的字节数可能与关键字本身不同（同一个字在不同大小写下编码长度可能差 1~3 字节），
+		// 跨块重叠按最坏情况——每个 rune 4 字节——留。关键字比一块还长时把块也放大。
+		var maxSpan = Math.Max(needle.Length, needle.Folded.Length * 4);
+		var chunk = Math.Max(ScanChunkBytes, maxSpan);
+		var overlap = maxSpan - 1;
+		var bytes = System.Buffers.ArrayPool<byte>.Shared.Rent(chunk + overlap);
+		try
+		{
+			using var handle = File.OpenHandle(
+				path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+			var length = RandomAccess.GetLength(handle);
+			if (length <= 0) return null;
+
+			// 单份上限小于文件时读尾部；否则从文件头开始的全文。
+			var window = Math.Min(length, maxBytes);
+			var start = length - window;
+			var filled = 0;
+			while (true)
 			{
-				cancellationToken.ThrowIfCancellationRequested();
-				var count = file.Read(buffer, length, Math.Min(8192, limit - length));
-				if (count == 0) break;
-				length += count;
+				if (cancellationToken.IsCancellationRequested) return null;
+
+				// 先看这份文件还剩多少没读：小文件读满就结束，不占一整块的缓冲。
+				var want = (int)Math.Min(chunk, length - (start + filled));
+				if (want <= 0) return null;
+
+				var read = ReadChunk(handle, bytes.AsSpan(filled, want), start + filled);
+				filled += read;
+				if (read == 0) return null;
+
+				var index = IndexOf(bytes.AsSpan(0, filled), needle, out var hitLength);
+				if (index >= 0)
+				{
+					var hit = start + index;
+					return Excerpt(handle, hit, hit + hitLength, length, query);
+				}
+
+				if (read < want) return null;
+
+				// 这一块还没攒够一截重叠（预算被切得比关键字还小）：
+				// 再往前推也拼不出完整关键字，直接结束，别去切越界的区间。
+				if (filled <= overlap) return null;
+
+				// 把尾巴搬到块首：下一块如果从这截里切开关键字，还能命中。
+				bytes.AsSpan(filled - overlap, overlap).CopyTo(bytes);
+				start += filled - overlap;
+				filled = overlap;
 			}
-			cancellationToken.ThrowIfCancellationRequested();
-			var text = System.Text.Encoding.UTF8.GetString(buffer, 0, length);
-			var hit = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
-			if (hit < 0) return null;
-			var start = hit == 0 ? 0 : text.LastIndexOf('\n', hit - 1) + 1;
-			var end = text.IndexOf('\n', hit);
-			return Summarize(text[start..(end < 0 ? text.Length : end)], query);
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{
 			AppLog.Failure(AppLog.For<SessionCatalog>(), "Search session content", ex);
 			return null;
 		}
-		finally { System.Buffers.ArrayPool<byte>.Shared.Return(buffer); }
+		finally
+		{
+			System.Buffers.ArrayPool<byte>.Shared.Return(bytes);
+		}
+	}
+
+	/// 字节级查找。没有大小写的关键字（中日韩、数字、标点）直接走向量化的 `IndexOf`；
+	/// 带字母时逐个 rune 折成大写再比，候选位置由首字节的几种写法筛出来。
+	/// <paramref name="length"/> 是命中在文本里实际占的字节数：同一个字在不同大小写下编码长度可能不同。
+	private static int IndexOf(ReadOnlySpan<byte> haystack, in ContentNeedle needle, out int length)
+	{
+		if (!needle.Cased)
+		{
+			length = needle.Length;
+			return haystack.IndexOf(needle.Utf8);
+		}
+
+		var at = 0;
+		while (at < haystack.Length)
+		{
+			var index = haystack[at..].IndexOfAny(needle.FirstBytes);
+			if (index < 0) break;
+
+			index += at;
+			if (MatchesAt(haystack[index..], needle.Folded, out length)) return index;
+			at = index + 1;
+		}
+
+		length = 0;
+		return -1;
+	}
+
+	private static bool MatchesAt(ReadOnlySpan<byte> haystack, ReadOnlySpan<Rune> folded, out int consumed)
+	{
+		consumed = 0;
+		foreach (var expected in folded)
+		{
+			// 块尾切在多字节字符中间时解不出 rune：这段交给下一块（重叠里带着完整字节）。
+			if (Rune.DecodeFromUtf8(haystack[consumed..], out var rune, out var size) != System.Buffers.OperationStatus.Done)
+			{
+				return false;
+			}
+
+			if (Fold(rune) != expected) return false;
+			consumed += size;
+		}
+
+		return true;
+	}
+
+	/// 折成大写形态判定相等，与 <see cref="StringComparison.OrdinalIgnoreCase"/> 同口径（都是比大写）。
+	/// 只折 BMP：补充平面里的字母在 OrdinalIgnoreCase 下也不折，多折反而会让摘要那边找不回来。
+	private static Rune Fold(Rune rune) => rune.Value <= 0xFFFF ? Rune.ToUpperInvariant(rune) : rune;
+
+	private static int ReadChunk(SafeFileHandle handle, Span<byte> destination, long offset)
+	{
+		var read = 0;
+		while (read < destination.Length)
+		{
+			var count = RandomAccess.Read(handle, destination[read..], offset + read);
+			if (count <= 0) break;
+			read += count;
+		}
+
+		return read;
+	}
+
+	/// 命中行的摘要：只读关键字前后各几 KB，不给一句摘要去解几十 MB。
+	private static string? Excerpt(
+		SafeFileHandle handle, long from, long to, long length, string query)
+	{
+		var start = Math.Max(0, from - ExcerptMarginBytes);
+		var end = Math.Min(length, to + ExcerptMarginBytes);
+		var count = (int)(end - start);
+		if (count <= 0) return null;
+
+		var bytes = System.Buffers.ArrayPool<byte>.Shared.Rent(count);
+		var chars = System.Buffers.ArrayPool<char>.Shared.Rent(count);
+		try
+		{
+			var read = ReadChunk(handle, bytes.AsSpan(0, count), start);
+			if (read <= 0) return null;
+
+			var window8 = Utf8Window(bytes.AsSpan(0, read));
+			var decoded = System.Text.Encoding.UTF8.GetChars(window8, chars);
+			ReadOnlySpan<char> text = chars.AsSpan(0, decoded);
+
+			var hit = text.IndexOf(query.AsSpan(), StringComparison.OrdinalIgnoreCase);
+			if (hit < 0)
+			{
+				// 折叠能命中的字节，解码后按 OrdinalIgnoreCase 也应该找得到；
+				// 真找不到（窗口边界缺了开头）就把整段当摘要。
+				return Summarize(new string(text), query);
+			}
+
+			var (lineStart, lineEnd) = ExcerptBounds(text, hit, query.Length);
+			return Summarize(new string(text[lineStart..lineEnd]), query);
+		}
+		finally
+		{
+			System.Buffers.ArrayPool<byte>.Shared.Return(bytes);
+			System.Buffers.ArrayPool<char>.Shared.Return(chars);
+		}
+	}
+
+	/// 一次搜索的关键字：原样字节、折成大写后的 rune 序列、首字节候选集。
+	private readonly struct ContentNeedle
+	{
+		public ContentNeedle(string query)
+		{
+			Utf8 = System.Text.Encoding.UTF8.GetBytes(query);
+
+			var folded = new List<Rune>(Utf8.Length);
+			var cased = false;
+			foreach (var rune in query.EnumerateRunes())
+			{
+				folded.Add(Fold(rune));
+				// 有大小写之分的字才需要折叠比较；中日韩、数字、标点都走精确匹配的快路径。
+				cased |= rune.Value <= 0xFFFF && Rune.ToUpperInvariant(rune) != Rune.ToLowerInvariant(rune);
+			}
+
+			Folded = [.. folded];
+			Cased = cased;
+			Rune.DecodeFromUtf16(query, out var first, out _);
+			FirstBytes = FirstBytesOf(first);
+		}
+
+		public readonly byte[] Utf8;
+
+		public readonly Rune[] Folded;
+
+		public readonly System.Buffers.SearchValues<byte> FirstBytes;
+
+		/// 关键字里有大小写之分的字，得折着比。
+		public readonly bool Cased;
+
+		public int Length => Utf8.Length;
+	}
+
+	/// 关键字第一个字的几种写法（原形、大写、小写）各自的首字节：候选位置靠它一次筛出来，
+	/// 之后才逐个 rune 折叠比对。像 'ı'/'I' 这种共享同一大写字形、却互不为大小写形式的异体，
+	/// 只有当关键字本身带着那个写法时才会命中。
+	private static System.Buffers.SearchValues<byte> FirstBytesOf(Rune first)
+	{
+		Span<Rune> variants = [first, Fold(first), Rune.ToLowerInvariant(first)];
+		Span<byte> encoded = stackalloc byte[4];
+		Span<byte> candidates = stackalloc byte[4];
+		var count = 0;
+		foreach (var variant in variants)
+		{
+			if (variant.EncodeToUtf8(encoded) <= 0) continue;
+
+			var lead = encoded[0];
+			var seen = false;
+			for (var index = 0; index < count; index++)
+			{
+				seen |= candidates[index] == lead;
+			}
+
+			if (!seen)
+			{
+				candidates[count++] = lead;
+			}
+		}
+
+		return System.Buffers.SearchValues.Create(candidates[..count]);
+	}
+
+	/// 尾部窗口可能切在多字节字符中间：开头丢掉续字节，结尾丢掉被截断的那几个字节，
+	/// 否则摘要里会出现 U+FFFD。
+	private static ReadOnlySpan<byte> Utf8Window(ReadOnlySpan<byte> bytes)
+	{
+		while (bytes.Length > 0 && (bytes[0] & 0xC0) == 0x80) bytes = bytes[1..];
+
+		var back = 0;
+		while (back < 3 && back < bytes.Length && (bytes[^(back + 1)] & 0xC0) == 0x80)
+		{
+			back++;
+		}
+
+		if (back < bytes.Length)
+		{
+			var expected = bytes[^(back + 1)] switch { >= 0xF0 => 4, >= 0xE0 => 3, >= 0xC0 => 2, _ => 1 };
+			if (expected > back + 1)
+			{
+				bytes = bytes[..(bytes.Length - back - 1)];
+			}
+		}
+
+		return bytes;
+	}
+
+	/// 命中行的边界。一条工具输出可以是一行几百 KB，只留关键字附近的一段：
+	/// 再长也只是为了给一行摘要，却要解码整行。
+	private static (int Start, int End) ExcerptBounds(ReadOnlySpan<char> text, int hit, int length)
+	{
+		const int radius = 4096;
+		var lineStart = hit == 0 ? 0 : text[..hit].LastIndexOf('\n') + 1;
+		var newline = text[(hit + length)..].IndexOf('\n');
+		var lineEnd = newline < 0 ? text.Length : hit + length + newline;
+		if (lineEnd - lineStart <= radius * 2)
+		{
+			return (lineStart, lineEnd);
+		}
+
+		var start = Math.Max(lineStart, hit - radius);
+		var end = Math.Min(lineEnd, hit + length + radius);
+		// 切点不能落在代理对中间：摘要会露出半个 emoji。
+		if (start > lineStart && char.IsLowSurrogate(text[start])) start++;
+		if (end < lineEnd && char.IsHighSurrogate(text[end - 1])) end--;
+		return (start, end);
 	}
 
 	/// 把命中行压成一段以关键字为中心的摘要。会话文件是 JSONL，命中多半在消息文本里，
@@ -600,60 +1001,35 @@ public sealed class SessionCatalog
 		return length >= text.Length ? text : string.Concat(text.AsSpan(0, length), "…");
 	}
 
+	/// 取 JSON 行里的字符串值（跳过键名）。
+	/// 用的是 <c>isFinalBlock: false</c> 的读取器：正文搜索只读文件尾部，最后一行常常是半个 JSON，
+	/// 完整文档式的解析（JsonNode）会整行报错，摘要就只能退回原始 JSON 噪音。
 	internal static string? ExtractText(string line)
 	{
+		if (line.Length == 0 || line[0] != '{')
+		{
+			return null;
+		}
+
 		try
 		{
-			var node = JsonNode.Parse(line);
-			if (node is null)
+			var reader = new Utf8JsonReader(
+				System.Text.Encoding.UTF8.GetBytes(line), isFinalBlock: false, state: default);
+			List<string>? parts = null;
+			while (reader.Read())
 			{
-				return null;
+				if (reader.TokenType == JsonTokenType.String && reader.GetString() is { Length: > 0 } text)
+				{
+					parts ??= [];
+					parts.Add(text);
+				}
 			}
 
-			var parts = new List<string>();
-			CollectStrings(node, parts);
-
-			return parts.Count == 0 ? null : string.Join(' ', parts);
+			return parts is null ? null : string.Join(' ', parts);
 		}
 		catch (JsonException)
 		{
 			return null;
-		}
-	}
-
-	private static void CollectStrings(JsonNode node, List<string> parts)
-	{
-		switch (node)
-		{
-			case JsonValue value when value.TryGetValue<string>(out var text):
-				if (text.Length > 0)
-				{
-					parts.Add(text);
-				}
-
-				break;
-
-			case JsonObject obj:
-				foreach (var (_, child) in obj)
-				{
-					if (child is not null)
-					{
-						CollectStrings(child, parts);
-					}
-				}
-
-				break;
-
-			case JsonArray array:
-				foreach (var child in array)
-				{
-					if (child is not null)
-					{
-						CollectStrings(child, parts);
-					}
-				}
-
-				break;
 		}
 	}
 
@@ -673,7 +1049,7 @@ public sealed class SessionCatalog
 		DateTime newestWrite = default;
 		try
 		{
-			foreach (var path in Directory.EnumerateFiles(root, "*" + SessionFormat.Extension, SearchOption.AllDirectories))
+			foreach (var path in Directory.EnumerateFiles(root, "*" + SessionFormat.Extension, SessionListOptions))
 			{
 				if (path.Contains($"{Path.DirectorySeparatorChar}.trash{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
 				{

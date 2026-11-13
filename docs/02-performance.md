@@ -48,7 +48,8 @@
 
 ## 已落地的热路径
 
-- 侧栏摘要持久化到 `<agentDir>/session-summaries.json`，键为长度 + mtime + 首行指纹；追加时用尾巴指纹续扫，原地重写则整扫。缓存损坏退化为全扫；删除会话的条目下次构建时清除。
+- 侧栏摘要持久化到 `<agentDir>/session-summaries.json`，键为长度 + mtime + 首行指纹；追加时用尾巴指纹续扫，原地重写则整扫。缓存损坏退化为全扫；删除会话的条目下次构建时清除。读写走 System.Text.Json 源生成（141 条 83 KB 的缓存：装载 1.08 MB 分配 → 0.38 MB，2.3 ms → 1.4 ms），落盘在后台线程单飞，关窗时同步补一次。
+- 会话搜索的正文扫描按 1 MB 分块扫全文，块间留关键字长度减一的重叠；比较在 UTF-8 字节上做：没有 ASCII 字母的关键字（中日韩）走向量化 `IndexOf`，带大小写的逐个 rune 折成大写，先用 `SearchValues<byte>` 筛候选首字节再比。只有命中行前后 8 KB 才解码，摘要仍从 JSON 里取字符串值。总读盘预算 512 MB，按列表顺序预先摊好每份读多少字节（额度不够的那份读尾部，再后面的整份跳过），命中范围不随线程调度变。实测 141 份会话 / 470 MB：命中 20–25 ms / 0.3 MB 分配，未命中 59 ms（无大小写、精确路径）到 80–173 ms（带大小写的折叠路径，要逐候选解 rune）/ 0.02–0.07 MB；此前的「只读尾部 512 KB」是 110–136 ms / 118 MB，覆盖范围反而只有全文的七分之一。
 - 会话解析用 `Utf8LineReader` + `SessionJson.ParseLine(ReadOnlySpan<byte>)`；大文件按 2–3 段并行，顺序与单线程一致；进度按字节汇报。`Utf8LineReader` 对超大行缓冲（>256 KiB）交给 GC，不归还共享池。
 - 会话 JSONL 追加用 `File.AppendAllBytes` + 可复用 `ArrayBufferWriter<byte>`；SSE 每流复用 UTF-8 缓冲。
 - 分支快照用不可变列表结构共享；`BuildProjectedMessages()` 在纯追加时复用前缀；`ChatViewModel.Rebuild()` 只重算最后一个用户轮次；过程投影只重投当前轮；统计只消费新增条目。

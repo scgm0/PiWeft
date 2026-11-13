@@ -1,6 +1,7 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
@@ -36,6 +37,46 @@ internal sealed record SessionSummaryStamp
 	public string Origin { get; init; } = string.Empty;
 }
 
+/// 缓存文件的结构。与 <see cref="SessionSummaryStamp"/> 分开是为了让磁盘键名保持稳定且短：
+/// 这个文件是排查侧栏问题的第一现场，键名不该跟着内部类型改名。
+internal sealed class SessionSummaryFile
+{
+	[JsonPropertyName("version")] public int Version { get; init; }
+
+	[JsonPropertyName("entries")] public Dictionary<string, SessionSummaryEntry>? Entries { get; init; }
+}
+
+internal sealed class SessionSummaryEntry
+{
+	[JsonPropertyName("length")] public long Length { get; init; }
+
+	[JsonPropertyName("mtime")] public long LastWriteTicks { get; init; }
+
+	[JsonPropertyName("head")] public long HeadHash { get; init; }
+
+	[JsonPropertyName("offset")] public long Offset { get; init; }
+
+	[JsonPropertyName("tail")] public long TailHash { get; init; }
+
+	[JsonPropertyName("id")] public string Id { get; init; } = string.Empty;
+
+	[JsonPropertyName("name")] public string Name { get; init; } = string.Empty;
+
+	[JsonPropertyName("cwd")] public string Cwd { get; init; } = string.Empty;
+
+	[JsonPropertyName("messages")] public int MessageCount { get; init; }
+
+	[JsonPropertyName("preview")] public string Preview { get; init; } = string.Empty;
+
+	[JsonPropertyName("parentSession")] public string ParentSession { get; init; } = string.Empty;
+
+	[JsonPropertyName("origin")] public string Origin { get; init; } = string.Empty;
+}
+
+/// 源生成的序列化元数据：摘要文件在启动时整份读取，`JsonNode` 那套树会给每个值都建一个节点，
+/// 实测 141 条 83 KB 的缓存要分配 1 MB 上下。生成器按目标类型直接读，不再有中间树。
+[JsonSerializable(typeof(SessionSummaryFile))]
+internal sealed partial class SessionSummaryJsonContext : JsonSerializerContext;
 
 /// 侧栏摘要的磁盘缓存（<c>&lt;agentDir&gt;/session-summaries.json</c>）。
 /// 为什么需要它：<see cref="SessionCatalog"/> 的进程内摘要缓存只在一次运行里有效，
@@ -56,12 +97,15 @@ internal static class SessionSummaryStore
 
 	public const int MaxEntries = 4096;
 
-	// JsonSerializerOptions 首次使用后会缓存元数据；每次保存都 new 一份会重建这些缓存。
-	private static readonly JsonSerializerOptions WriteOptions = new()
+	// 预览里会有中文与路径，转义成 \uXXXX 的话文件没法排查。
+	// 编码器只能在运行时的选项里改；类型信息仍来自源生成上下文，不退回反射。
+	private static readonly JsonSerializerOptions WriteOptions = new(SessionSummaryJsonContext.Default.Options)
 	{
-		// 预览里会有中文与路径，转义成 \uXXXX 的话文件没法排查。
 		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
+
+	private static readonly JsonTypeInfo<SessionSummaryFile> FileTypeInfo =
+		(JsonTypeInfo<SessionSummaryFile>)WriteOptions.GetTypeInfo(typeof(SessionSummaryFile));
 
 	public static string Path(string? agentDir = null) =>
 		System.IO.Path.Combine(agentDir ?? SessionPaths.GetAgentDir(), "session-summaries.json");
@@ -77,41 +121,35 @@ internal static class SessionSummaryStore
 
 		try
 		{
-			if (JsonNode.Parse(File.ReadAllText(path)) is not JsonObject root ||
-				Number(root["version"]) != Version ||
-				root["entries"] is not JsonObject items)
+			// 按字节读：8 万行的缓存文件不必先解成 UTF-16 字符串再解析。
+			var file = JsonSerializer.Deserialize(
+				File.ReadAllBytes(path), SessionSummaryJsonContext.Default.SessionSummaryFile);
+			if (file is null || file.Version != Version || file.Entries is null)
 			{
 				return entries;
 			}
 
-			foreach (var (key, node) in items)
+			foreach (var (key, item) in file.Entries)
 			{
-				if (node is not JsonObject item)
-				{
-					continue;
-				}
-
-				var length = Number(item["length"]);
-				var lastWrite = Number(item["mtime"]);
-				if (length is null || lastWrite is null)
+				if (item is null)
 				{
 					continue;
 				}
 
 				entries[key] = new SessionSummaryStamp
 				{
-					Length = length.Value,
-					LastWriteTicks = lastWrite.Value,
-					HeadHash = Number(item["head"]) ?? 0,
-					Offset = Number(item["offset"]) ?? 0,
-					TailHash = Number(item["tail"]) ?? 0,
-					Id = Text(item["id"]),
-					Name = Text(item["name"]),
-					Cwd = Text(item["cwd"]),
-					MessageCount = (int)(Number(item["messages"]) ?? 0),
-					Preview = Text(item["preview"]),
-					ParentSession = Text(item["parentSession"]),
-					Origin = Text(item["origin"]),
+					Length = item.Length,
+					LastWriteTicks = item.LastWriteTicks,
+					HeadHash = item.HeadHash,
+					Offset = item.Offset,
+					TailHash = item.TailHash,
+					Id = item.Id,
+					Name = item.Name,
+					Cwd = item.Cwd,
+					MessageCount = item.MessageCount,
+					Preview = item.Preview,
+					ParentSession = item.ParentSession,
+					Origin = item.Origin,
 				};
 			}
 
@@ -128,7 +166,8 @@ internal static class SessionSummaryStore
 	public static void Save(IReadOnlyDictionary<string, SessionSummaryStamp> entries, string? agentDir = null)
 	{
 		var path = Path(agentDir);
-		var items = new JsonObject();
+		var items = new Dictionary<string, SessionSummaryEntry>(
+			Math.Min(entries.Count, MaxEntries), StringComparer.Ordinal);
 		var count = 0;
 
 		foreach (var (key, stamp) in entries.OrderByDescending(static entry => entry.Value.LastWriteTicks))
@@ -138,34 +177,38 @@ internal static class SessionSummaryStore
 				break;
 			}
 
-			items[key] = new JsonObject
+			items[key] = new SessionSummaryEntry
 			{
-				["length"] = stamp.Length,
-				["mtime"] = stamp.LastWriteTicks,
-				["head"] = stamp.HeadHash,
-				["offset"] = stamp.Offset,
-				["tail"] = stamp.TailHash,
-				["id"] = stamp.Id,
-				["name"] = stamp.Name,
-				["cwd"] = stamp.Cwd,
-				["messages"] = stamp.MessageCount,
-				["preview"] = ClipPreview(stamp.Preview),
-				["parentSession"] = stamp.ParentSession,
-				["origin"] = stamp.Origin,
+				Length = stamp.Length,
+				LastWriteTicks = stamp.LastWriteTicks,
+				HeadHash = stamp.HeadHash,
+				Offset = stamp.Offset,
+				TailHash = stamp.TailHash,
+				Id = stamp.Id,
+				Name = stamp.Name,
+				Cwd = stamp.Cwd,
+				MessageCount = stamp.MessageCount,
+				Preview = ClipPreview(stamp.Preview),
+				ParentSession = stamp.ParentSession,
+				Origin = stamp.Origin,
 			};
 		}
 
-		var root = new JsonObject
-		{
-			["version"] = Version,
-			["entries"] = items,
-		};
+		var root = new SessionSummaryFile { Version = Version, Entries = items };
 
 		try
 		{
-			Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+			var directory = System.IO.Path.GetDirectoryName(path)!;
+			// 目录不在了就不写：后台落盘可能比环境先消失（测试删临时目录、agent 目录被换掉），
+			// 这时写回去等于把一个已删的目录重新建出来。
+			if (!Directory.Exists(directory))
+			{
+				return;
+			}
+
+			Directory.CreateDirectory(directory);
 			var temporary = path + ".tmp";
-			File.WriteAllText(temporary, root.ToJsonString(WriteOptions));
+			File.WriteAllBytes(temporary, JsonSerializer.SerializeToUtf8Bytes(root, FileTypeInfo));
 
 			File.Move(temporary, path, overwrite: true);
 		}
@@ -187,24 +230,4 @@ internal static class SessionSummaryStore
 		if (char.IsHighSurrogate(preview[length - 1])) length--;
 		return preview[..length];
 	}
-
-	/// 读整数。必须是 <c>long</c>：mtime 的 ticks 与首行指纹都是 64 位，
-	/// 走 <c>double</c> 会在 2^53 以上丢精度，读回来的 ticks 对不上，缓存等于没命中。
-	private static long? Number(JsonNode? node)
-	{
-		if (node is not JsonValue value)
-		{
-			return null;
-		}
-
-		if (value.TryGetValue<long>(out var integer))
-		{
-			return integer;
-		}
-
-		return value.TryGetValue<double>(out var number) ? (long)number : null;
-	}
-
-	private static string Text(JsonNode? node) =>
-		node is JsonValue value && value.TryGetValue<string>(out var text) ? text : string.Empty;
 }
