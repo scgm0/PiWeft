@@ -381,18 +381,24 @@ public sealed class ExtensionHost : IDisposable
 		return engine.Invoke("piweftToolResult").AsString();
 	}
 
-	public void RunCommand(string name, string argument)
+	/// 执行已注册的扩展命令；名字不存在返回 <see langword="false" />。
+	/// prompt 路径要与 pi 一样把扩展命令当「已处理」，不能当普通消息发给模型。
+	public bool TryRunCommand(string name, string argument)
 	{
+		if (_disposed)
+		{
+			return false;
+		}
+
 		foreach (var state in _states)
 		{
 			var command = state.Registration.Commands.FirstOrDefault(candidate =>
 				string.Equals(candidate.Name, name, StringComparison.Ordinal));
-			if (command is null)
+			if (command is null || state.Worker is not { } worker)
 			{
 				continue;
 			}
 
-			var worker = state.Worker!;
 			try
 			{
 				if (worker.OnWorkerThread)
@@ -410,9 +416,13 @@ public sealed class ExtensionHost : IDisposable
 				state.Diagnostics.Add($"命令 {name} 失败：{Describe(exception)}");
 			}
 
-			return;
+			return true;
 		}
+
+		return false;
 	}
+
+	public void RunCommand(string name, string argument) => TryRunCommand(name, argument);
 
 	private void Register(ExtensionState state, string source)
 	{
@@ -509,7 +519,7 @@ public sealed class ExtensionHost : IDisposable
 			{
 				var result = engine.Invoke("piweftCallCommand", name, argument);
 				RejectPromise(result, $"命令 {name}", state);
-			}));
+			}, state.Descriptor.FilePath));
 			return JsValue.Undefined;
 		}));
 

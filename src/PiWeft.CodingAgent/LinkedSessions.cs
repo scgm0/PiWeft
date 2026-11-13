@@ -192,8 +192,16 @@ public sealed class LinkedSessionHub : IDisposable
 		string? title,
 		string prompt,
 		string initiation = LinkedSessionProposal.UserAsked,
+		string? proposalId = null,
 		CancellationToken cancellationToken = default)
 	{
+		// PiDeck 0.12：用户说「开第二个」时用 proposal_id 启动已登记 own_initiative 提议，
+		// 不再重复给 title/prompt。
+		if (proposalId is { Length: > 0 } existing)
+		{
+			return await AnswerProposalAsync(existing, LinkedSessionAnswers.New, cancellationToken).ConfigureAwait(false);
+		}
+
 		var brief = (prompt ?? string.Empty).Trim();
 		if (brief.Length == 0)
 		{
@@ -441,6 +449,9 @@ public sealed class LinkedSessionHub : IDisposable
 			new JsonObject
 			{
 				["status"] = "started",
+				// 同时给 snake_case 与 camelCase：PiDeck 0.12 的卡片读 sessionId，
+				// 旧调用方与本仓测试仍读 session_id。
+				["sessionId"] = childId,
 				["session_id"] = childId,
 				["title"] = title,
 			}.ToJsonString(PiJson.NodeOptions));
@@ -501,11 +512,14 @@ public sealed class LinkedSessionHub : IDisposable
 		var data = new JsonObject
 		{
 			["status"] = status,
+			// PiDeck 的卡片按 camelCase 找提议与子会话；snake_case 保留给旧调用方。
+			["proposalId"] = proposal.Id,
 			["proposal_id"] = proposal.Id,
 			["title"] = proposal.Title,
 		};
 		if (childSessionId is { Length: > 0 })
 		{
+			data["sessionId"] = childSessionId;
 			data["session_id"] = childSessionId;
 		}
 
@@ -574,7 +588,12 @@ public sealed class LinkedSessionHub : IDisposable
 			// 只投递不等对方跑完：send_to_session 的语义是「排进去」。
 			_ = DeliverQuietlyAsync(target, outgoing);
 
-			return Task.FromResult(LinkedSessionOperation.Success($"sent to {sessionId}"));
+			return Task.FromResult(LinkedSessionOperation.Success(new JsonObject
+			{
+				["status"] = "sent",
+				["sessionId"] = sessionId,
+				["session_id"] = sessionId,
+			}.ToJsonString(PiJson.NodeOptions)));
 		}
 		catch (Exception ex)
 		{
@@ -590,6 +609,7 @@ public sealed class LinkedSessionHub : IDisposable
 		{
 			data["parent"] = new JsonObject
 			{
+				["sessionId"] = parent.ParentSessionId,
 				["session_id"] = parent.ParentSessionId,
 				["title"] = parent.Title,
 			};
@@ -600,10 +620,13 @@ public sealed class LinkedSessionHub : IDisposable
 		{
 			children.Add((JsonNode)new JsonObject
 			{
+				["sessionId"] = link.ChildSessionId,
 				["session_id"] = link.ChildSessionId,
 				["title"] = link.Title,
 				["state"] = link.State,
+				["turnCount"] = link.TurnCount,
 				["turns"] = link.TurnCount,
+				["lastReport"] = link.LastReport ?? string.Empty,
 				["last_report"] = link.LastReport ?? string.Empty,
 			});
 		}
@@ -620,6 +643,7 @@ public sealed class LinkedSessionHub : IDisposable
 
 			proposals.Add((JsonNode)new JsonObject
 			{
+				["proposalId"] = proposal.Id,
 				["proposal_id"] = proposal.Id,
 				["title"] = proposal.Title,
 				["initiation"] = proposal.Initiation,

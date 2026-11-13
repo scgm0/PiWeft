@@ -183,6 +183,13 @@ internal static class AnthropicWire
 		(parameters["properties"] as JsonObject ?? new JsonObject()).WriteTo(writer);
 		writer.WritePropertyName("required");
 		(parameters["required"] as JsonArray ?? new JsonArray()).WriteTo(writer);
+		// pi 1.5.2+：非严格模式也保留根 additionalProperties，模型才会知道是否允许多余参数。
+		if (!strict && parameters["additionalProperties"] is { } additionalProperties)
+		{
+			writer.WritePropertyName("additionalProperties");
+			additionalProperties.WriteTo(writer);
+		}
+
 		foreach (var key in new[] { "$defs", "definitions" })
 		{
 			if (parameters[key] is { } definitions)

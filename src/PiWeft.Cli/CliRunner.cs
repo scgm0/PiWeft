@@ -1306,6 +1306,14 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			? command["message"]!.GetValue<string>()
 			: throw new InvalidOperationException("message is required");
 
+		// 系统/扩展命令先于 streaming 判定：pi 的 prompt 也是先执行扩展命令、再处理队列。
+		// PiDeck 0.12 的目标条、计划开关与重载菜单都走这条路，命中后不能写成用户消息。
+		if (session.TryExecuteSystemCommand(text, cancellationToken, out _))
+		{
+			WriteRecord(Response(id, "prompt", true, new JsonObject { ["disposition"] = "handled" }, null));
+			return;
+		}
+
 		if (session.IsStreaming)
 		{
 			var behavior = command["streamingBehavior"]?.GetValue<string>();

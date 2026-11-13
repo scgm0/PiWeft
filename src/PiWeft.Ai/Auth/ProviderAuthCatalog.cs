@@ -179,14 +179,18 @@ public static class ProviderAuthCatalog
 			Standard("nvidia", "NVIDIA", "NVIDIA API key", "NVIDIA_API_KEY"),
 			StandardWithOAuth("openai", "OpenAI", "OpenAI API key", ["OPENAI_API_KEY"]),
 			// Codex 只认 CodexAuth 的 OAuth 设备码凭据；同键 API Key 不参与可用性筛选。
-			new("openai-codex", "OpenAI Codex (legacy)", null, Docs("openai-codex"), OAuth: true),
+			new("openai-codex", "OpenAI Codex", null, Docs("openai-codex"), OAuth: true),
 			Standard("opencode", "OpenCode Zen", "OpenCode API key", "OPENCODE_API_KEY"),
 			Standard("opencode-go", "OpenCode Go", "OpenCode API key", "OPENCODE_API_KEY"),
 			StandardWithOAuth("openrouter", "OpenRouter", "OpenRouter API key", ["OPENROUTER_API_KEY"]),
-			Standard("qwen-token-plan", "Qwen Token Plan", "Qwen Token Plan API key", "QWEN_TOKEN_PLAN_API_KEY"),
-			Standard("qwen-token-plan-cn", "Qwen Token Plan CN", "Qwen Token Plan CN API key", "QWEN_TOKEN_PLAN_CN_API_KEY"),
-			Standard("qwen-token-plan-individual", "Qwen Token Plan Individual", "Qwen Token Plan Individual API key", "QWEN_TOKEN_PLAN_API_KEY"),
-			Standard("qwen-token-plan-individual-cn", "Qwen Token Plan Individual CN", "Qwen Token Plan Individual CN API key", "QWEN_TOKEN_PLAN_CN_API_KEY"),
+			Standard("qwen-token-plan", "Qwen Token Plan Team", "Qwen Token Plan Team API key",
+				"QWEN_TOKEN_PLAN_TEAM_API_KEY", "QWEN_TOKEN_PLAN_API_KEY"),
+			Standard("qwen-token-plan-cn", "Qwen Token Plan Team CN", "Qwen Token Plan Team CN API key",
+				"QWEN_TOKEN_PLAN_TEAM_CN_API_KEY", "QWEN_TOKEN_PLAN_CN_API_KEY"),
+			Standard("qwen-token-plan-individual", "Qwen Token Plan Individual", "Qwen Token Plan Individual API key",
+				"QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY", "QWEN_TOKEN_PLAN_API_KEY"),
+			Standard("qwen-token-plan-individual-cn", "Qwen Token Plan Individual CN", "Qwen Token Plan Individual CN API key",
+				"QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY", "QWEN_TOKEN_PLAN_CN_API_KEY"),
 			StandardWithOAuth("radius", "Radius", "Radius API key", ["RADIUS_API_KEY"]),
 			Standard("together", "Together", "Together API key", "TOGETHER_API_KEY"),
 			Standard("typesafe", "TypeSafe", "TypeSafe API key", "TYPESAFE_API_KEY"),
@@ -203,8 +207,8 @@ public static class ProviderAuthCatalog
 		return [.. providers.OrderBy(static provider => provider.Name, StringComparer.OrdinalIgnoreCase)];
 	}
 
-	private static ProviderAuthDescriptor Standard(string id, string name, string label, string environmentName) =>
-		new(id, name, StandardKey(label, environmentName), Docs(id));
+	private static ProviderAuthDescriptor Standard(string id, string name, string label, params string[] environmentNames) =>
+		new(id, name, StandardKey(label, environmentNames), Docs(id));
 
 	private static ProviderAuthDescriptor Standard(string id, string name, ProviderKeyAuth key) =>
 		new(id, name, key, Docs(id));

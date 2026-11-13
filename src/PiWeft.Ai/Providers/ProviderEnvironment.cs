@@ -231,6 +231,22 @@ public static partial class ProviderEnvironment
 	/// 进程环境中该 provider 的 API Key；主变量优先，再查兼容旧变量名。
 	public static string? ResolveEnvironmentKey(string provider)
 	{
+		// pi 1.5.2+：Qwen Token Plan 拆成 Team / Individual 各自的变量，且新变量优先于旧变量。
+		// 必须放在 KeyName 之前：旧变量是 KeyName 推导出的主名字，先查主名字会让它反超新变量。
+		var splitPlanKey = provider switch
+		{
+			"qwen-token-plan" => Environment.GetEnvironmentVariable("QWEN_TOKEN_PLAN_TEAM_API_KEY") ??
+				Environment.GetEnvironmentVariable("QWEN_TOKEN_PLAN_API_KEY"),
+			"qwen-token-plan-cn" => Environment.GetEnvironmentVariable("QWEN_TOKEN_PLAN_TEAM_CN_API_KEY") ??
+				Environment.GetEnvironmentVariable("QWEN_TOKEN_PLAN_CN_API_KEY"),
+			"qwen-token-plan-individual" => Environment.GetEnvironmentVariable("QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY") ??
+				Environment.GetEnvironmentVariable("QWEN_TOKEN_PLAN_API_KEY"),
+			"qwen-token-plan-individual-cn" => Environment.GetEnvironmentVariable("QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY") ??
+				Environment.GetEnvironmentVariable("QWEN_TOKEN_PLAN_CN_API_KEY"),
+			_ => null,
+		};
+		if (!string.IsNullOrEmpty(splitPlanKey)) return splitPlanKey;
+
 		var primary = Environment.GetEnvironmentVariable(KeyName(provider));
 		if (!string.IsNullOrEmpty(primary)) return primary;
 		return provider switch

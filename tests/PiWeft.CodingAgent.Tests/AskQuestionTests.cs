@@ -238,4 +238,109 @@ public class AskQuestionTests : IDisposable
 		Assert.Equal("继续？", result.Value["questions"]![0]!["question"]!.GetValue<string>());
 	}
 
+
+	[Fact]
+	public void ParseResponse_ClosedCardKeepsPartialAnswers()
+	{
+		var questions = new List<AskQuestion>
+		{
+			new("q1", "input", "名字？", null, null, null),
+			new("q2", "input", "城市？", null, null, null),
+		};
+
+		// PiDeck 0.12：cancelled 信封带答案 = 答了一半后关闭，不是整单取消。
+		var response = AskQuestions.ParseResponse(
+			"""{"cancelled":true,"answers":[{"id":"q1","type":"input","value":"张三"}]}""",
+			questions);
+
+		Assert.False(response.Cancelled);
+		Assert.True(response.Closed);
+		Assert.Equal("张三", Assert.Single(response.Answers).Value!.GetValue<string>());
+
+		var text = AskQuestions.ResultText(questions, response.Answers, response.Cancelled, response.Closed);
+		Assert.Contains("用户关闭了提问卡", text);
+		Assert.Contains("q1: 张三", text);
+		Assert.Contains("q2: (未作答)", text);
+	}
+
+	[Fact]
+	public void ParseResponse_SkippedQuestionCountsAsSettled()
+	{
+		var questions = new List<AskQuestion>
+		{
+			new("q1", "input", "名字？", null, null, null),
+			new("q2", "multi_select", "选？", [new AskOption("A", "A", null)], null, null),
+		};
+
+		var response = AskQuestions.ParseResponse(
+			"""{"cancelled":false,"answers":[{"id":"q1","type":"input","value":null,"skipped":true},{"id":"q2","type":"multi_select","value":["A"]}]}""",
+			questions);
+
+		Assert.False(response.Cancelled);
+		Assert.False(response.Closed);
+		Assert.True(response.Answers[0].Skipped);
+
+		var text = AskQuestions.ResultText(questions, response.Answers, response.Cancelled, response.Closed);
+		Assert.Contains("q1: (用户跳过，未作答)", text);
+		Assert.Contains("q2: A", text);
+	}
+
+	[Fact]
+	public void EncodeResponse_RoundTripsSkippedAnswers()
+	{
+		var encoded = AskQuestions.EncodeResponse(
+			[new AskAnswer("q1", "input", null, null, false, Skipped: true)],
+			cancelled: false);
+		var response = AskQuestions.ParseResponse(encoded, [new AskQuestion("q1", "input", "名字？", null, null, null)]);
+
+		Assert.False(response.Cancelled);
+		Assert.True(Assert.Single(response.Answers).Skipped);
+	}
+
+	[Fact]
+	public void FromToolArguments_ReadsMultiIntentKeysAndAliases()
+	{
+		var questions = AskQuestions.FromToolArguments(new JsonObject
+		{
+			["questions"] = new JsonArray(
+				new JsonObject
+				{
+					["question"] = "选哪几个？",
+					["type"] = "select",
+					["multi_select"] = true,
+					["options"] = new JsonArray("A", "B"),
+				},
+				new JsonObject
+				{
+					["question"] = "写点东西",
+					["type"] = "multi-select",
+					["options"] = new JsonArray("A", "B"),
+				},
+				new JsonObject
+				{
+					["question"] = "长文本",
+					["multiline"] = true,
+				}),
+		});
+
+		Assert.Equal("multi_select", questions[0].Type);
+		Assert.Equal("multi_select", questions[1].Type);
+		Assert.Equal("editor", questions[2].Type);
+	}
+
+	[Fact]
+	public void FromToolArguments_FoldsOuterTypeAndDeduplicatesIds()
+	{
+		var questions = AskQuestions.FromToolArguments(new JsonObject
+		{
+			["type"] = "multi_select",
+			["questions"] = new JsonArray(
+				new JsonObject { ["id"] = "q1", ["question"] = "第一题", ["options"] = new JsonArray("A", "B") },
+				new JsonObject { ["id"] = "q1", ["question"] = "第二题", ["options"] = new JsonArray("A", "B") }),
+		});
+
+		Assert.All(questions, static question => Assert.Equal("multi_select", question.Type));
+		Assert.Equal("q1", questions[0].Id);
+		Assert.Equal("q1-2", questions[1].Id);
+	}
 }

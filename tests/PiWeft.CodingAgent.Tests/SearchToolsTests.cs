@@ -95,7 +95,7 @@ public sealed class SearchToolsTests : IDisposable
 	}
 
 	[Fact]
-	public async Task Find_MatchesPathPatternsAtAnyDepthLikeFullPath()
+	public async Task Find_AnchorsPathPatternsAtTheSearchDirectory()
 	{
 		Write("src/a.ts", "x");
 		Write("deep/nested/src/b.ts", "x");
@@ -103,9 +103,29 @@ public sealed class SearchToolsTests : IDisposable
 		var lines = Text(await SearchTools.Find(_root).Execute(
 			Invoke("find", new JsonObject { ["pattern"] = "src/*.ts" }))).Split('\n');
 
-		// pi 会给路径型 pattern 补 `**/`（fd --full-path），因此深层同名目录也命中。
-		Assert.Contains("src/a.ts", lines);
-		Assert.Contains("deep/nested/src/b.ts", lines);
+		// pi 1.5.2+：路径型 pattern 相对搜索目录锚定；要深层匹配得写 **/src/*.ts。
+		Assert.Equal(["src/a.ts"], lines);
+
+		var anyDepth = Text(await SearchTools.Find(_root).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "**/src/*.ts" }))).Split('\n');
+		Assert.Contains("src/a.ts", anyDepth);
+		Assert.Contains("deep/nested/src/b.ts", anyDepth);
+	}
+
+	[Fact]
+	public async Task Find_StripsLeadingDotSlashAndSupportsAbsolutePatterns()
+	{
+		Write("src/a.ts", "x");
+		Write("lib/b.ts", "x");
+
+		var dotSlash = Text(await SearchTools.Find(_root).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = "./src/*.ts" }))).Trim();
+		Assert.Equal("src/a.ts", dotSlash);
+
+		var absolute = Path.Combine(_root, "lib", "*.ts").Replace('\\', '/');
+		var absoluteResult = Text(await SearchTools.Find(_root).Execute(
+			Invoke("find", new JsonObject { ["pattern"] = absolute }))).Trim();
+		Assert.Equal("lib/b.ts", absoluteResult);
 	}
 
 	[Fact]

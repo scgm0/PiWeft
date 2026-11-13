@@ -109,4 +109,105 @@ public sealed class ExtensionLifecycleTests : IDisposable
 
 		public void Notify(UiNotifyRequest request) => Notifications.Add(request.Message);
 	}
+
+	[Fact]
+	public async Task BeforeAgentStartMutatesSystemPromptSections()
+	{
+		var extensionPath = Path.Combine(_root, "sections.js");
+		File.WriteAllText(extensionPath, """
+			module.exports = function (pi) {
+				pi.on("before_agent_start", function (event) {
+					event.systemPromptOptions.sections["extension_section"] = "SECTION-TEXT";
+					return undefined;
+				});
+			};
+			""");
+
+		using var extensions = new ExtensionHost();
+		extensions.Load(_root, trusted: true, Path.Combine(_root, "agent"), [extensionPath], includeDiscovered: false);
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("done");
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = SessionManager.InMemory(_root),
+			Skills = [],
+			Settings = new CodingAgentSettings(),
+			Extensions = extensions,
+		});
+
+		await session.PromptAsync("hi");
+
+		// 基础提示词里没有这一段；扩展改的是 systemPromptOptions.sections，本轮请求要带上。
+		Assert.Contains("SECTION-TEXT", session.CurrentSystemPrompt, StringComparison.Ordinal);
+		Assert.Single(System.Text.RegularExpressions.Regex.Matches(session.CurrentSystemPrompt, "SECTION-TEXT"));
+	}
+
+	[Fact]
+	public async Task BeforeAgentStartMessageIsInjectedAfterTheUserPrompt()
+	{
+		var extensionPath = Path.Combine(_root, "context.js");
+		File.WriteAllText(extensionPath, """
+			module.exports = function (pi) {
+				pi.on("before_agent_start", function () {
+					return { message: { customType: "ext-context", content: "EXT-CONTEXT", display: false } };
+				});
+			};
+			""");
+
+		using var extensions = new ExtensionHost();
+		extensions.Load(_root, trusted: true, Path.Combine(_root, "agent"), [extensionPath], includeDiscovered: false);
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("done");
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = SessionManager.InMemory(_root),
+			Skills = [],
+			Settings = new CodingAgentSettings(),
+			Extensions = extensions,
+		});
+
+		await session.PromptAsync("hi");
+
+		var request = Assert.Single(script.Requests);
+		var injected = Assert.Single(request.OfType<UserMessage>(), static message => message.CustomType == "ext-context");
+		Assert.Equal("EXT-CONTEXT", injected.Content.Text);
+		Assert.False(injected.Display);
+		Assert.Contains(session.Messages.OfType<UserMessage>(), static message => message.CustomType == "ext-context");
+	}
+
+	[Fact]
+	public void SystemCommandExecutesRegisteredExtensionCommands()
+	{
+		var extensionPath = Path.Combine(_root, "command.js");
+		File.WriteAllText(extensionPath, """
+			module.exports = function (pi) {
+				pi.registerCommand("hello", { description: "say hello", handler: function (argument) { pi.ui.notify("hello " + argument, "info"); } });
+			};
+			""");
+
+		var ui = new RecordingUi();
+		using var extensions = new ExtensionHost(ui);
+		extensions.Load(_root, trusted: true, Path.Combine(_root, "agent"), [extensionPath], includeDiscovered: false);
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+			Session = SessionManager.InMemory(_root),
+			Skills = [],
+			Settings = new CodingAgentSettings(),
+			Extensions = extensions,
+			UiHost = ui,
+		});
+
+		Assert.True(session.TryExecuteSystemCommand("/hello weft", CancellationToken.None, out _));
+		Assert.Contains("hello weft", ui.Notifications);
+		Assert.False(session.TryExecuteSystemCommand("/not-a-command", CancellationToken.None, out _));
+	}
 }

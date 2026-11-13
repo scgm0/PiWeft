@@ -56,6 +56,7 @@ public sealed class LinkedSessionTests : IDisposable
 
 		var started = await hub.StartAsync("修构建", "把构建修到全绿。");
 		Assert.True(started.Ok, started.Text);
+		Assert.Contains("\"sessionId\"", started.Text);
 
 		var child = Assert.Single(host.Children);
 		Assert.Equal("把构建修到全绿。", host.Contexts[0].Prompt);
@@ -257,12 +258,14 @@ public sealed class LinkedSessionTests : IDisposable
 		var proposed = await hub.StartAsync("补测试", "给关联会话补一组测试。", LinkedSessionProposal.OwnInitiative);
 		Assert.True(proposed.Ok, proposed.Text);
 		Assert.Contains("\"status\":\"proposed\"", proposed.Text);
+		Assert.Contains("\"proposalId\"", proposed.Text);
 		Assert.Empty(host.Children);
 		var proposal = Assert.Single(hub.Proposals);
 		Assert.Equal(LinkedSessionProposal.Pending, proposal.Status);
 		Assert.Equal(LinkedSessionProposal.OwnInitiative, proposal.Initiation);
 		var listed = Assert.IsType<JsonArray>(hub.List()["proposals"]);
 		Assert.Equal(proposal.Id, listed[0]!["proposal_id"]!.GetValue<string>());
+		Assert.Equal(proposal.Id, listed[0]!["proposalId"]!.GetValue<string>());
 
 		var answered = await hub.AnswerProposalAsync(proposal.Id, LinkedSessionAnswers.New);
 		Assert.True(answered.Ok, answered.Text);
@@ -343,7 +346,7 @@ public sealed class LinkedSessionTests : IDisposable
 		cancel.CancelAfter(TimeSpan.FromMilliseconds(50));
 
 		await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-			hub.StartAsync("等不到回答", "没人会点这张卡。", LinkedSessionProposal.Offer, cancel.Token));
+			hub.StartAsync("等不到回答", "没人会点这张卡。", LinkedSessionProposal.Offer, cancellationToken: cancel.Token));
 		Assert.Equal(LinkedSessionProposal.Expired, Assert.Single(hub.Proposals).Status);
 		Assert.Empty(host.Children);
 	}
@@ -449,5 +452,35 @@ public sealed class LinkedSessionTests : IDisposable
 			Contexts.Add(context);
 			return Task.FromResult<CodingAgentSession?>(child);
 		}
+	}
+
+	[Fact]
+	public async Task OwnInitiativeProposalCanBeStartedByProposalId()
+	{
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到回报。");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("第二个任务完成。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateSession(parentStream, host);
+		var hub = Assert.IsType<LinkedSessionHub>(parent.Linked);
+		var proposed = await hub.StartAsync("补文档", "补一段桌面文档。", LinkedSessionProposal.OwnInitiative);
+		Assert.True(proposed.Ok, proposed.Text);
+		var proposal = Assert.Single(hub.Proposals);
+
+		// PiDeck 0.12 的 start_session { proposal_id }：不再重复给 title/prompt。
+		var started = await hub.StartAsync(null, string.Empty, LinkedSessionProposal.OwnInitiative, proposal.Id);
+
+		Assert.True(started.Ok, started.Text);
+		Assert.Contains("\"status\":\"started\"", started.Text);
+		Assert.Contains("\"sessionId\"", started.Text);
+		Assert.Equal(LinkedSessionProposal.Started, Assert.Single(hub.Proposals).Status);
+		Assert.Single(host.Children);
+
+		await WaitForReportsAsync(hub, 1);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
+		host.Children[0].Dispose();
 	}
 }

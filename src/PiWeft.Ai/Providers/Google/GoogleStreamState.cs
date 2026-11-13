@@ -323,14 +323,26 @@ internal sealed class GoogleStreamState
 	{
 		"STOP" => (StopReason.Stop, null),
 		"MAX_TOKENS" => (StopReason.Length, null),
-		"SAFETY" => (StopReason.Error, "Response blocked by safety filters"),
-		"RECITATION" => (StopReason.Error, "Response blocked for recitation"),
+		// 每次请求的 token 上限，不续接 continuation token；与 pi 的 FinishReason.CONTINUATION 同义。
+		"CONTINUATION" => (StopReason.Length, null),
 		"BLOCKLIST" => (StopReason.Error, "Response blocked by the blocklist"),
 		"PROHIBITED_CONTENT" => (StopReason.Error, "Response blocked: prohibited content"),
 		"SPII" => (StopReason.Error, "Response blocked: sensitive personal information"),
-		"MALFORMED_FUNCTION_CALL" => (StopReason.Error, "Malformed function call"),
+		"SAFETY" => (StopReason.Error, "Response blocked by safety filters"),
 		"IMAGE_SAFETY" => (StopReason.Error, "Image blocked by safety filters"),
-		_ => (StopReason.Stop, null),
+		"IMAGE_PROHIBITED_CONTENT" => (StopReason.Error, "Image blocked: prohibited content"),
+		"IMAGE_RECITATION" => (StopReason.Error, "Image blocked for recitation"),
+		"IMAGE_OTHER" => (StopReason.Error, "Image blocked: other reason"),
+		"RECITATION" => (StopReason.Error, "Response blocked for recitation"),
+		"FINISH_REASON_UNSPECIFIED" => (StopReason.Error, "Response ended without a finish reason"),
+		"OTHER" => (StopReason.Error, "Response ended: other reason"),
+		"LANGUAGE" => (StopReason.Error, "Response blocked: unsupported language"),
+		"MALFORMED_FUNCTION_CALL" => (StopReason.Error, "Malformed function call"),
+		"UNEXPECTED_TOOL_CALL" => (StopReason.Error, "Unexpected tool call"),
+		"TOO_MANY_TOOL_CALLS" => (StopReason.Error, "Too many tool calls"),
+		"NO_IMAGE" => (StopReason.Error, "No image was generated"),
+		// 原始响应里的未知值不能当正常结束：按错误交回界面，避免半截回答被当成完整结果。
+		_ => (StopReason.Error, $"Unhandled stop reason: {reason}"),
 	};
 
 	private void EnsureStarted()

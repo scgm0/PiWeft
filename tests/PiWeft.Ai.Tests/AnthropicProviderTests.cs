@@ -916,6 +916,43 @@ public class AnthropicProviderTests
 	}
 
 	[Fact]
+	public async Task NonStrictSchemasKeepRootAdditionalProperties()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+		var tool = StrictReadTool() with
+		{
+			ConstrainedSampling = null,
+			Parameters = new System.Text.Json.Nodes.JsonObject
+			{
+				["type"] = "object",
+				["properties"] = new System.Text.Json.Nodes.JsonObject
+				{
+					["path"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "string" },
+				},
+				["required"] = new System.Text.Json.Nodes.JsonArray("path"),
+				["additionalProperties"] = false,
+			},
+		};
+
+		var stream = provider.Stream(
+			Sonnet(),
+			new Context
+			{
+				Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }],
+				Tools = [tool],
+			},
+			new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var body = JsonDocument.Parse(handler.LastBody!);
+		var schema = body.RootElement.GetProperty("tools")[0].GetProperty("input_schema");
+		Assert.False(schema.GetProperty("additionalProperties").GetBoolean());
+	}
+
+	[Fact]
 	public async Task StrictToolLimitRejectionIsRetriedWithoutPreferredStrictTools()
 	{
 		var attempts = 0;

@@ -112,6 +112,44 @@ public class ConstrainedSamplingTests
 	}
 
 	[Fact]
+	public void NodesWithoutTypeAreRejectedUnlessTheyUseAnyOfOrEnum()
+	{
+		Assert.Throws<UnsupportedStrictJsonSchemaException>(() => ConstrainedSampling.MakeStrictJsonSchema(
+			new JsonObject
+			{
+				["type"] = "object",
+				["properties"] = new JsonObject { ["anything"] = new JsonObject() },
+			}));
+
+		Assert.Throws<UnsupportedStrictJsonSchemaException>(() => ConstrainedSampling.MakeStrictJsonSchema(
+			new JsonObject
+			{
+				["type"] = "object",
+				["properties"] = new JsonObject { ["version"] = new JsonObject { ["const"] = "v1" } },
+			}));
+
+		// 裸 enum 与 anyOf 算有类型，可以进严格模式。
+		ConstrainedSampling.MakeStrictJsonSchema(new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject { ["mode"] = new JsonObject { ["enum"] = new JsonArray("fast", "slow") } },
+		});
+		ConstrainedSampling.MakeStrictJsonSchema(new JsonObject
+		{
+			["type"] = "object",
+			["properties"] = new JsonObject
+			{
+				["value"] = new JsonObject
+				{
+					["anyOf"] = new JsonArray(
+						new JsonObject { ["type"] = "string" },
+						new JsonObject { ["type"] = "null" }),
+				},
+			},
+		});
+	}
+
+	[Fact]
 	public void TupleItemsAndBooleanSchemasAreRejected()
 	{
 		Assert.Throws<UnsupportedStrictJsonSchemaException>(() => ConstrainedSampling.MakeStrictJsonSchema(

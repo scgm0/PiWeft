@@ -151,11 +151,17 @@ public sealed partial class SessionManager
 				continue;
 			}
 
-			var text = string.Concat(assistant.Content.OfType<TextContent>().Select(static block => block.Text));
-			if (text.Length > 0)
+			var blocks = assistant.Content.OfType<TextContent>().ToList();
+			var text = string.Concat(blocks.Select(static block => block.Text));
+			// pi 1.5.2+：中止/失败/只有工具调用的轮次如果没留下正文，跳过它继续往前找；
+			// 正常结束的轮次即使没有正文也当作「最后一条回复」。
+			if (assistant.StopReason != StopReason.Stop &&
+				!blocks.Any(static block => !string.IsNullOrWhiteSpace(block.Text)))
 			{
-				return text;
+				continue;
 			}
+
+			return text;
 		}
 
 		return null;

@@ -79,11 +79,6 @@ public static class FileTools
 				note += "\n" + error;
 			}
 
-			if (currentModel is { SupportsImages: false })
-			{
-				note += "\n[Current model does not support images. The image will be omitted from this request.]";
-			}
-
 			var imageDetails = new JsonObject
 			{
 				["path"] = absolutePath,
@@ -91,6 +86,13 @@ public static class FileTools
 				["mimeType"] = processed.Ok ? processed.MimeType : mimeType,
 				["resized"] = processed.WasResized,
 			};
+
+			if (currentModel is { SupportsImages: false })
+			{
+				// pi 1.5.2+：警告不写进结果正文，模型换到视觉模型后不会再回放这段过期文本。
+				// 请求投影会把图片换成 placeholder，桌面从 details 重画提示。
+				imageDetails["imageUnsupportedByModel"] = currentModel.Id;
+			}
 
 			if (!processed.Ok)
 			{

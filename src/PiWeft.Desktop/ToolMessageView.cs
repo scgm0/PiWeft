@@ -170,6 +170,14 @@ internal sealed class ToolMessageView
 				unified.Column(1).Margin(new Thickness(6, 0, 0, 0)),
 				sideBySide.Column(2).Margin(new Thickness(4, 0, 0, 0))), host);
 		}
+		if (entry.ToolDetails is System.Text.Json.Nodes.JsonObject detailNode &&
+			detailNode["imageUnsupportedByModel"]?.GetValue<string>() is { Length: > 0 } unsupportedModel)
+		{
+			// pi 1.5.2+：警告不进结果正文，桌面从 details 补一行给用户看。
+			body.Children(new TextBlock().Text(Strings.ToolImageUnsupported(unsupportedModel))
+				.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap));
+		}
+
 		var result = answered ? null : ResultText(entry, details);
 		if (result is { Length: > 0 })
 		{

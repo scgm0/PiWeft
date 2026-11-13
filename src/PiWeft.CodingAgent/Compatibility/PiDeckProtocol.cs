@@ -4,12 +4,13 @@ namespace PiWeft.CodingAgent.Compatibility;
 /// 但 PiDeck 的渲染层与历史读取器按它们取数据，把 `customPiPath` 指向本端口时
 /// 两边必须用同一套名字与字段形状，所以集中在这里，改名前先确认 PiDeck 仍读。
 /// <para>
-/// 对齐基准：PiDeck 0.10.0 的 <c>resources/extensions/pi-deck-ask-question.ts</c>、
+/// 对齐基准：PiDeck 0.12.0 的 <c>resources/extensions/pi-deck-ask-question.ts</c>、
 /// <c>pi-deck-todo.ts</c>、<c>pi-deck-todo-state.ts</c>、<c>pi-deck-plan-mode.ts</c>、
-/// <c>pi-deck-goal-mode.ts</c>。PiDeck 侧对应读取点：<c>src/main/feishu/AskCard.ts</c>、
+/// <c>pi-deck-goal-mode.ts</c>、<c>pi-deck-linked-sessions.ts</c>。PiDeck 侧对应读取点：<c>src/main/feishu/AskCard.ts</c>、
 /// <c>src/main/pi/extensionUiGate.ts</c>、<c>src/main/pi/SessionHistoryReader.ts</c>、
 /// <c>src/main/ipc/sessionIpc.ts</c>、<c>src/renderer/src/components/session/{SessionTodoStrip,SessionGoalStrip,agentTodoParser}.tsx</c>、
-/// <c>src/renderer/src/utils/askUi.ts</c>、<c>src/shared/composerModeMarkers.ts</c>。
+/// <c>src/renderer/src/utils/askUi.ts</c>、<c>src/shared/composerModeMarkers.ts</c>、
+/// <c>src/renderer/src/components/session/LinkedSessionToolCard.tsx</c>。
 /// </para>
 public static class PiDeckProtocol
 {

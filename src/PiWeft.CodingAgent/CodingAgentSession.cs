@@ -828,21 +828,35 @@ public sealed partial class CodingAgentSession : IDisposable
 		return message with { Content = MessageContent.FromBlocks(normalized) };
 	}
 
-	/// 扩展的 <c>before_agent_start</c>：当前只应用返回的 <c>systemPrompt</c>。
-	/// 返回的 <c>message</c> 还没有注入会话，避免与 PromptAsync 的追加顺序冲突。
-	private void DispatchBeforeAgentStart(Message message)
+	/// 扩展的 <c>before_agent_start</c>：应用返回的 <c>systemPrompt</c>、就地修改的
+	/// <c>systemPromptOptions.sections</c>，以及要注入本轮的隐藏 <c>message</c>。
+	/// 注入的消息作为 <see cref="UserMessage"/> 跟在用户消息后面进入同一轮，
+	/// 由 MessageStart/End 事件照常落盘。
+	private IReadOnlyList<Message> DispatchBeforeAgentStart(Message message)
 	{
 		if (Extensions is not { } extensions || !extensions.ListensTo("before_agent_start"))
 		{
-			return;
+			return [message];
 		}
 
 		// 始终以基础提示词为输入：扩展看到的是「没有它自己上一轮改动」的版本。
 		var basePrompt = _refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools));
+		var baseSections = basePrompt.Sections;
+		var sectionsNode = new JsonObject();
+		if (baseSections is not null)
+		{
+			foreach (var pair in baseSections)
+			{
+				sectionsNode[pair.Key] = pair.Value;
+			}
+		}
+
 		var payload = new JsonObject
 		{
 			["messageType"] = message is UserMessage ? "user" : "custom",
 			["systemPrompt"] = Transcript.GetText(basePrompt),
+			// pi 1.5.x 的可变章节；PiDeck 0.12 的 plan/goal/security 扩展优先改这里。
+			["systemPromptOptions"] = new JsonObject { ["sections"] = sectionsNode },
 		};
 		if (message is UserMessage { Content.IsText: true } user)
 		{
@@ -854,16 +868,102 @@ public sealed partial class CodingAgentSession : IDisposable
 				[.. blocks.OfType<ImageContent>()]);
 		}
 
+		var baseSystemPrompt = Transcript.GetText(basePrompt);
 		var updated = extensions.Dispatch("before_agent_start", payload);
-		_extensionSystemPrompt = updated["systemPrompt"] is JsonValue value &&
+		// payload 里本来就带 systemPrompt；只有扩展把它改成别的文本才算覆盖。
+		// 只改 sections 的扩展（PiDeck 0.12 的 plan/goal）不能因为回声覆盖掉自己的章节。
+		if (updated["systemPrompt"] is JsonValue value &&
 			value.TryGetValue<string>(out var systemPrompt) &&
-			!string.IsNullOrWhiteSpace(systemPrompt)
-				? new SystemMessage
+			!string.IsNullOrWhiteSpace(systemPrompt) &&
+			!string.Equals(systemPrompt, baseSystemPrompt, StringComparison.Ordinal))
+		{
+			_extensionSystemPrompt = new SystemMessage
+			{
+				Content = MessageContent.FromText(systemPrompt),
+				Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			};
+		}
+		else
+		{
+			_extensionSystemPrompt = SectionsPrompt(updated, baseSections, basePrompt);
+		}
+
+		return WithExtensionMessage(message, updated);
+	}
+
+	/// 把扩展就地改写的 sections 变成本轮的 system 消息；没有变化返回 null。
+	private static SystemMessage? SectionsPrompt(
+		JsonObject updated,
+		Dictionary<string, string?>? original,
+		SystemMessage basePrompt)
+	{
+		if (updated["systemPromptOptions"] is not JsonObject options ||
+			options["sections"] is not JsonObject sections)
+		{
+			return null;
+		}
+
+		var changed = original is null || original.Count != sections.Count;
+		var merged = new Dictionary<string, string?>(StringComparer.Ordinal);
+		foreach (var pair in sections)
+		{
+			var text = pair.Value is JsonValue value && value.GetValueKind() == JsonValueKind.String
+				? value.GetValue<string>()
+				: pair.Value?.ToString();
+			merged[pair.Key] = text;
+			if (!changed &&
+				(original is null ||
+					!original.TryGetValue(pair.Key, out var existing) ||
+					!string.Equals(existing, text, StringComparison.Ordinal)))
+			{
+				changed = true;
+			}
+		}
+
+		if (!changed && original is not null)
+		{
+			foreach (var key in original.Keys)
+			{
+				if (!sections.ContainsKey(key))
 				{
-					Content = MessageContent.FromText(systemPrompt),
-					Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+					changed = true;
+					break;
 				}
-				: null;
+			}
+		}
+
+		return changed
+			? new SystemMessage
+			{
+				Content = MessageContent.Empty,
+				Sections = merged,
+				ToolsAdded = basePrompt.ToolsAdded,
+				Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			}
+			: null;
+	}
+
+	/// 应用 before_agent_start 返回的隐藏消息。PiDeck 的 goal 用它在每轮带上 Round 行。
+	private static IReadOnlyList<Message> WithExtensionMessage(Message message, JsonObject updated)
+	{
+		if (updated["message"] is not JsonObject custom ||
+			custom["customType"] is not JsonValue typeValue ||
+			typeValue.GetValueKind() != JsonValueKind.String ||
+			typeValue.GetValue<string>() is not { Length: > 0 } customType)
+		{
+			return [message];
+		}
+
+		var injected = new UserMessage
+		{
+			Content = PiJsonValue.ReadMessageContent(custom["content"]),
+			Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			CustomType = customType,
+			// display 缺省为 true；只有显式 false 才不进时间线。
+			Display = custom["display"] is not JsonValue display ||
+				display.GetValueKind() != JsonValueKind.False,
+		};
+		return [message, injected];
 	}
 
 	/// 扩展的 <c>tool_result</c>：先让扩展改写结果，再跑用户钩子与图片归一化。
@@ -2875,7 +2975,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		// 展开技能命令与提示词模板，让 CLI、RPC、桌面与交互模式共享同一语义。
 		// 图片在这之后按当前模型归一化。PrepareInput 保持同步：计划模式与模板展开要立即生效。
 		var message = await NormalizeMessageAsync(PrepareInput(text), cancellationToken).ConfigureAwait(false);
-		DispatchBeforeAgentStart(message);
+		var prompts = DispatchBeforeAgentStart(message);
 		IReadOnlyList<Message> messages;
 		using (var run = BeginRun(cancellationToken))
 		{
@@ -2885,7 +2985,7 @@ public sealed partial class CodingAgentSession : IDisposable
 				messages = await RunWithRetryAsync(
 					// 只有首次才追加用户消息；重试时它已经在投影里，再 PromptAsync 会写第二份进内存与 JSONL。
 					attempt => attempt == 0
-						? _agent.PromptAsync(message, run.Token)
+						? _agent.PromptAsync(prompts, run.Token)
 						: _agent.ContinueAsync(run.Token),
 					run.Token).ConfigureAwait(false);
 				ThrowIfCallerCancelled(cancellationToken);
@@ -3547,7 +3647,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		ThrowIfDisposed();
 		// 用户消息发送前才归一化图片：桌面端的 PrepareInput 在 UI 线程上，不能在那里解码大图。
 		message = await NormalizeMessageAsync(message, cancellationToken).ConfigureAwait(false);
-		DispatchBeforeAgentStart(message);
+		var prompts = DispatchBeforeAgentStart(message);
 		_cacheWarmer?.Cancel();
 		_overflowRecoveryAttempted = false;
 		IReadOnlyList<Message> messages;
@@ -3559,7 +3659,7 @@ public sealed partial class CodingAgentSession : IDisposable
 				await AutoCompactAsync(run.Token).ConfigureAwait(false);
 				messages = await RunWithRetryAsync(
 					attempt => attempt == 0
-						? _agent.PromptAsync(message, run.Token)
+						? _agent.PromptAsync(prompts, run.Token)
 						: _agent.ContinueAsync(run.Token),
 					run.Token).ConfigureAwait(false);
 				ThrowIfCallerCancelled(cancellationToken);

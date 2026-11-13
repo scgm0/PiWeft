@@ -571,6 +571,75 @@ public class RpcSessionCommandTests : IDisposable
 			node["type"]?.GetValue<string>() == "response" &&
 			node["command"]?.GetValue<string>() == "extension_ui_response");
 	}
+	[Fact]
+	public async Task GetCommandsListsTheBuiltinReloadCommandForPiDeck()
+	{
+		var (environment, output) = Setup();
+		var runner = new CliRunner(environment, output, new StringWriter());
+
+		var records = await RunAsync(
+			runner,
+			Arguments(),
+			string.Join('\n', """{"id":"1","type":"get_commands"}""", """{"id":"2","type":"exit"}"""),
+			output);
+
+		var reload = ResponseFor(records, "get_commands")["data"]!["commands"]!.AsArray()
+			.Single(static node => node!["name"]!.GetValue<string>() == "reload")!;
+		Assert.Equal("extension", reload["source"]!.GetValue<string>());
+		// PiDeck 按 basename 认 pi-deck-runtime.ts，路径本身可以是虚拟的。
+		Assert.Equal("pi-deck-runtime.ts", Path.GetFileName(reload["sourceInfo"]!["path"]!.GetValue<string>()));
+	}
+
+	[Fact]
+	public async Task PromptHandlesPlanCommandsWithoutWritingUserMessages()
+	{
+		var (environment, output) = Setup();
+		var runner = new CliRunner(environment, output, new StringWriter());
+
+		var records = await RunAsync(
+			runner,
+			Arguments(),
+			string.Join(
+				'\n',
+				"""{"id":"1","type":"prompt","message":"/plan"}""",
+				"""{"id":"2","type":"get_state"}""",
+				"""{"id":"3","type":"prompt","message":"/plan off"}""",
+				"""{"id":"4","type":"get_state"}""",
+				"""{"id":"5","type":"exit"}"""),
+			output);
+
+		var prompts = records.Where(static node =>
+			node["type"]!.GetValue<string>() == "response" && node["command"]!.GetValue<string>() == "prompt").ToList();
+		Assert.All(prompts, static node => Assert.Equal("handled", node["data"]!["disposition"]!.GetValue<string>()));
+		var states = records.Where(static node =>
+			node["type"]!.GetValue<string>() == "response" && node["command"]!.GetValue<string>() == "get_state").ToList();
+		Assert.True(states[0]["data"]!["planMode"]!.GetValue<bool>());
+		Assert.False(states[1]["data"]!["planMode"]!.GetValue<bool>());
+	}
+
+	[Fact]
+	public async Task PromptHandlesGoalAndReloadWithoutWritingMessages()
+	{
+		var (environment, output) = Setup();
+		var runner = new CliRunner(environment, output, new StringWriter());
+
+		var records = await RunAsync(
+			runner,
+			Arguments(),
+			string.Join(
+				'\n',
+				"""{"id":"1","type":"prompt","message":"/goal 修复构建"}""",
+				"""{"id":"2","type":"prompt","message":"/goal pause"}""",
+				"""{"id":"3","type":"prompt","message":"/reload"}""",
+				"""{"id":"4","type":"get_messages"}""",
+				"""{"id":"5","type":"exit"}"""),
+			output);
+
+		var prompts = records.Where(static node =>
+			node["type"]!.GetValue<string>() == "response" && node["command"]!.GetValue<string>() == "prompt").ToList();
+		Assert.All(prompts, static node => Assert.Equal("handled", node["data"]!["disposition"]!.GetValue<string>()));
+		Assert.Empty(ResponseFor(records, "get_messages")["data"]!["messages"]!.AsArray());
+	}
 }
 
 internal static class CliTestJson

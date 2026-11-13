@@ -277,11 +277,14 @@ internal sealed record ToolCallDetails(
 		if (exchanges.Count == 0) return null;
 
 		var answers = Answers(entry.ToolDetails);
-		// 只配齐了才并到题目上：缺一半时分开显示会让人以为另一题没问。
-		if (answers is not null && ids.TrueForAll(answers.ContainsKey))
+		// 逐题合并：关闭卡片时只有部分题有答案，已答/已跳过的照常显示，其余留空。
+		if (answers is not null)
 		{
 			for (var index = 0; index < exchanges.Count; index++)
-				exchanges[index] = exchanges[index] with { Answer = answers[ids[index]] };
+			{
+				if (answers.TryGetValue(ids[index], out var text))
+					exchanges[index] = exchanges[index] with { Answer = text };
+			}
 		}
 		return new ToolCallDetails([], Strings.ToolQuestionLabel, null, [], null) { Exchanges = exchanges };
 	}
@@ -293,6 +296,11 @@ internal sealed record ToolCallDetails(
 		foreach (var node in array)
 		{
 			if (node is not JsonObject item || item["id"]?.GetValue<string>() is not { Length: > 0 } id) continue;
+			if (item["skipped"]?.GetValue<bool>() == true)
+			{
+				answers[id] = AskQuestions.AnswerText(new AskAnswer(id, item["type"]?.GetValue<string>() ?? "input", null, null, false, Skipped: true));
+				continue;
+			}
 			// 选项的 value 只是机器 id（diff、one-row）；给人看的是 label，没有 label 的自定义输入/文本题才退回值。
 			var text = item["label"]?.GetValue<string>();
 			if (text is not { Length: > 0 })

@@ -174,28 +174,42 @@ public sealed partial class CodingAgentSession
 			}
 		}
 
-		if (planData is JsonObject plan && plan["executing"]?.GetValue<bool>() == true &&
-			plan["todos"] is JsonArray todos)
+		var stalePlanDraft = false;
+		if (planData is JsonObject plan)
 		{
-			_planExecution = true;
-			_planSteps.Clear();
-			foreach (var node in todos)
+			if (plan["executing"]?.GetValue<bool>() == true && plan["todos"] is JsonArray todos)
 			{
-				if (node is JsonObject item &&
-					item["step"] is JsonValue stepValue && stepValue.TryGetValue<int>(out var step) &&
-					item["text"] is JsonValue textValue && textValue.TryGetValue<string>(out var text))
+				_planExecution = true;
+				_planSteps.Clear();
+				foreach (var node in todos)
 				{
-					_planSteps.Add(new PlanStep(
-						step,
-						text,
-						item["completed"]?.GetValue<bool>() == true));
+					if (node is JsonObject item &&
+						item["step"] is JsonValue stepValue && stepValue.TryGetValue<int>(out var step) &&
+						item["text"] is JsonValue textValue && textValue.TryGetValue<string>(out var text))
+					{
+						_planSteps.Add(new PlanStep(
+							step,
+							text,
+							item["completed"]?.GetValue<bool>() == true));
+					}
 				}
+			}
+			else if (plan["todos"] is JsonArray { Count: > 0 })
+			{
+				// PiDeck 0.12：非执行态的草案永远勾不动，重开只会挂成「N 待处理」。
+				// 丢弃后要写回一条空状态，否则会话文件里的旧 todos 每次都被读回来。
+				stalePlanDraft = true;
 			}
 		}
 
 		_goal = GoalMode.Decode(goalEntries);
 		// 恢复出来的目标已经有带 objective 的记录，下一次落盘不必重复写。
 		_persistedGoalObjective = _goal.Objective;
+
+		if (stalePlanDraft)
+		{
+			PersistPlanState();
+		}
 	}
 
 	/// 计划状态单独落盘：PiDeck 的 plan 扩展在 session_start 读这条恢复执行态与步骤。
@@ -516,5 +530,144 @@ public sealed partial class CodingAgentSession
 		{
 			_drainingModeTurn = false;
 		}
+	}
+
+	/// 处理宿主斜杠命令（与 pi 的 extension command 同序）。
+	/// <para>
+	/// PiDeck 0.12 的目标条、计划开关与重载菜单都把这些命令当 prompt 发下来；
+	/// 不接管就会被写进用户消息、交给模型当正文回答。命中后不写会话，RPC 回
+	/// <c>disposition:"handled"</c>，PiDeck 据此撤掉乐观用户消息。
+	/// </para>
+	public bool TryExecuteSystemCommand(string text, CancellationToken cancellationToken, out string? message)
+	{
+		message = null;
+		var trimmed = text.Trim();
+		if (trimmed.Length < 2 || trimmed[0] != '/')
+		{
+			return false;
+		}
+
+		var space = trimmed.IndexOf(' ');
+		var name = space < 0 ? trimmed[1..] : trimmed[1..space];
+		var argument = space < 0 ? string.Empty : trimmed[(space + 1)..].Trim();
+
+		// 扩展命令优先：pi 的 prompt 先走 _tryExecuteExtensionCommand，再轮到内置命令。
+		if (Extensions?.TryRunCommand(name, argument) == true)
+		{
+			return true;
+		}
+
+		switch (name)
+		{
+			case "reload":
+				// 重载会重建工具与扩展；运行中换工具面会让进行中的回合与工具表错位。
+				if (IsStreaming || IsCompacting)
+				{
+					message = "Wait for the current response to finish before reloading.";
+					return true;
+				}
+
+				ReloadResources();
+				message = $"已重载 {Resources.Skills.Count} 个技能、{Resources.Templates.Count} 个提示词模板、{Resources.Themes.Count} 个主题。";
+				return true;
+
+			case "plan":
+			{
+				// 与 pi-deck-plan-mode 的 /plan 同义：on/off 显式切换，其余参数切换当前状态。
+				var normalized = argument.ToLowerInvariant();
+				if (normalized is "on" or "enable" or "enabled")
+				{
+					SetPlanMode(true);
+				}
+				else if (normalized is "off" or "disable" or "disabled" or "normal")
+				{
+					SetPlanMode(false);
+				}
+				else
+				{
+					SetPlanMode(!PlanModeEnabled);
+				}
+
+				message = PlanModeEnabled ? "计划模式已开启：只读探索，edit / write 已停用。" : "计划模式已关闭。";
+				return true;
+			}
+
+			case "goal":
+			{
+				// 与 pi-deck-goal-mode 的 /goal 同义：pause/clear/resume 控制已有目标，
+				// 其余参数就是新目标，空参数查看进度。
+				var normalized = argument.ToLowerInvariant();
+				if (normalized is "pause" or "off" or "disable")
+				{
+					PauseGoal();
+					message = "目标模式已暂停。";
+				}
+				else if (normalized is "clear" or "reset")
+				{
+					ClearGoal();
+					message = "目标已清除。";
+				}
+				else if (normalized is "resume" or "on" or "enable")
+				{
+					if (_goal.Objective.Length == 0)
+					{
+						message = "没有可恢复的目标，请先输入目标。";
+					}
+					else
+					{
+						StartGoalContinuationInBackground(cancellationToken);
+						message = $"目标已恢复：{_goal.Objective}";
+					}
+				}
+				else if (argument.Length == 0)
+				{
+					message = _goal.Objective.Length == 0
+						? "当前没有目标。发送一条目标，或使用 /goal <目标>。"
+						: $"目标（{_goal.Phase}）{_goal.RoundsStarted}/{_goal.MaxRounds}\n{_goal.Objective}";
+				}
+				else
+				{
+					SetGoal(argument);
+					message = $"目标模式已开启：{_goal.Objective}";
+				}
+
+				return true;
+			}
+
+			default:
+				return false;
+		}
+	}
+
+	/// 恢复目标要真的起一轮，但不能阻塞 prompt 的 handled 响应：PiDeck 的目标条只等 RPC 回执，
+	/// 等整轮跑完会把按钮卡成 busy。异常在后台收口，交给会话的错误事件/通知。
+	private void StartGoalContinuationInBackground(CancellationToken cancellationToken)
+	{
+		SetGoal(_goal.Objective, resetRounds: false);
+		if (IsRunning)
+		{
+			return;
+		}
+
+		lock (_goalGate)
+		{
+			QueueGoalContinuation();
+		}
+
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				await RunPendingModeTurnAsync(cancellationToken).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				// 会话关闭/用户中止：续轮取消是正常收尾。
+			}
+			catch (Exception exception)
+			{
+				UiHost?.Notify(new UiNotifyRequest($"目标续轮失败：{exception.Message}", "error"));
+			}
+		});
 	}
 }

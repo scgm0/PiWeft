@@ -239,14 +239,16 @@ public sealed class ToolCallDetailsTests
 	}
 
 	[Fact]
-	public void AskQuestionPartialAnswersAreNotPaired()
+	public void AskQuestionPartialAnswersOnlyPairTheAnsweredQuestion()
 	{
 		var arguments = Json(root => root["questions"] = new JsonArray(
 			new JsonObject { ["question"] = "第一题？" },
 			new JsonObject { ["question"] = "第二题？" }));
 		var details = ToolCallDetails.For(Answered(Tool("ask_question", arguments, text: "q1: diff"), ("q1", "diff")));
 
-		Assert.All(details.Exchanges, static exchange => Assert.Null(exchange.Answer));
+		// 关闭卡片时只有部分题有答案：已答的照常显示，未答的留空。
+		Assert.Equal("diff", details.Exchanges[0].Answer);
+		Assert.Null(details.Exchanges[1].Answer);
 	}
 
 	[Fact]

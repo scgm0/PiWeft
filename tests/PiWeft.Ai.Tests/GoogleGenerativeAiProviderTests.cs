@@ -254,6 +254,60 @@ public class GoogleGenerativeAiProviderTests
 	}
 
 	[Fact]
+	public async Task ContinuationFinishReasonMapsToLength()
+	{
+		const string body = """
+			data: {"candidates":[{"content":{"role":"model","parts":[{"text":"continued"}]},"finishReason":"CONTINUATION"}]}
+
+			""";
+
+		var handler = new FakeHttpHandler { Responder = _ => Sse(body) };
+		var provider = new GoogleGenerativeAiProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = "k" });
+
+		var events = new List<AssistantMessageEvent>();
+		await foreach (var @event in stream)
+		{
+			events.Add(@event);
+		}
+
+		// pi 1.5.2+：SDK 的自动续接关掉后，CONTINUATION 按 length 结束一轮。
+		var done = Assert.IsType<DoneEvent>(events[^1]);
+		Assert.Equal(StopReason.Length, done.Reason);
+		Assert.Equal("CONTINUATION", done.Message.RawStopReason);
+	}
+
+	[Theory]
+	[InlineData("IMAGE_PROHIBITED_CONTENT")]
+	[InlineData("FINISH_REASON_UNSPECIFIED")]
+	[InlineData("NO_IMAGE")]
+	[InlineData("UNKNOWN_FINISH")]
+	public async Task BlockedOrUnknownFinishReasonsBecomeErrors(string finishReason)
+	{
+		var body = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"" + finishReason + "\"}]}\n\n";
+
+		var handler = new FakeHttpHandler { Responder = _ => Sse(body) };
+		var provider = new GoogleGenerativeAiProvider(new HttpClient(handler));
+		var stream = provider.Stream(
+			Model(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = "k" });
+
+		var events = new List<AssistantMessageEvent>();
+		await foreach (var @event in stream)
+		{
+			events.Add(@event);
+		}
+
+		var error = Assert.IsType<ErrorEvent>(events[^1]);
+		Assert.Equal(StopReason.Error, error.Reason);
+	}
+
+	[Fact]
 	public void ThinkingBudgetFollowsLevelAndModelSupport()
 	{
 		var model = Model();

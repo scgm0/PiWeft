@@ -251,6 +251,11 @@ public class RetryClassifierTests
 	[InlineData("HTTP/2 stream failed")]
 	[InlineData("request to https://ark.cn-beijing.volces.com failed, reason: ")]
 	[InlineData("connection refused")]
+	[InlineData("Connection closed.")]
+	[InlineData("connection reset by peer")]
+	[InlineData("read ECONNRESET")]
+	[InlineData("write EPIPE")]
+	[InlineData("connect ETIMEDOUT 1.2.3.4:443")]
 	[InlineData("fetch failed")]
 	[InlineData("Anthropic stream ended before message_stop")]
 	[InlineData("Request timed out")]
@@ -328,6 +333,8 @@ public class RetryClassifierTests
 	[InlineData("request req_429abc failed")]
 	[InlineData("processed 1500 bytes")]
 	[InlineData("trace id 9500f")]
+	[InlineData("upstream retry marker ECONNRESETX")]
+	[InlineData("socket code_ETIMEDOUT_seen")]
 	public void StatusCodesInsideIdentifiersDoNotTriggerRetries(string message) =>
 		Assert.False(RetryClassifier.IsRetryable(Failure(message)));
 

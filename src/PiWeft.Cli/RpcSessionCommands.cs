@@ -162,6 +162,31 @@ public sealed partial class CliRunner
 	{
 		var commands = new List<JsonNode?>();
 
+		// 扩展命令：pi 的 get_commands 把它们报成 source:"extension"，PiDeck 的斜杠菜单
+		// 与 /reload 的来源校验都靠 sourceInfo.path。
+		foreach (var command in session.Extensions?.Commands ?? [])
+		{
+			commands.Add(new JsonObject
+			{
+				["name"] = command.Name,
+				["description"] = command.Description,
+				["source"] = "extension",
+				["sourceInfo"] = SourceInfoRecord(command.SourcePath ?? string.Empty, "extension"),
+			});
+		}
+
+		// pi 的 /reload 只在 TUI 里执行；PiDeck 经 pi-deck-runtime.ts 注册成扩展命令，
+		// 再按 basename 找回来。本端口把它列为同名的内置扩展命令，由 prompt 路径执行。
+		commands.Add(new JsonObject
+		{
+			["name"] = "reload",
+			["description"] = "Reload extensions, skills, prompts, themes, and context files",
+			["source"] = "extension",
+			["sourceInfo"] = SourceInfoRecord(
+				Path.Combine(SessionPaths.GetAgentDir(), "extensions", "pi-deck-runtime.ts"),
+				"extension"),
+		});
+
 		foreach (var template in session.PromptTemplates)
 		{
 			commands.Add(new JsonObject

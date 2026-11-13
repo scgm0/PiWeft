@@ -177,7 +177,7 @@ public static class ProjectTrust
 			.InputAsync(new UiInputRequest(envelope, AskQuestions.EnvelopePlaceholder), cancellationToken)
 			.ConfigureAwait(false);
 
-		var (answers, _) = AskQuestions.ParseResponse(raw, [question]);
+		var answers = AskQuestions.ParseResponse(raw, [question]).Answers;
 		var choice = answers.Count > 0 && answers[0].Value is { } value && value.GetValueKind() == System.Text.Json.JsonValueKind.String
 			? value.GetValue<string>()
 			: string.Empty;

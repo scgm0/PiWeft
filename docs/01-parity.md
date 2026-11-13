@@ -2,7 +2,7 @@
 
 PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electron + React。本文记录桌面功能、配置安全边界与剩余差距。当前实现见 [状态](00-status.md)，视觉契约见 [DESIGN.md](../DESIGN.md)。
 
-对照基准（只读）：pi `v1.5.2+22`（`b30d54b8a`）、PiDeck 0.9.0；pi_agent_rust / pi-go 仅作方向参考。
+对照基准（只读）：pi `v1.5.2+171`（`ff7414d51`，2026-11-13）、PiDeck `0.12.0`（`3273dcbfa`）；pi_agent_rust / pi-go 仅作方向参考。
 
 ## 视觉与主题
 
@@ -70,7 +70,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 目标模式带 `__PI_DECK_GOAL_MODE__` 标记进入，续轮指令以隐藏 follow-up 交给模型（首行 `[GOAL MODE ACTIVE] Round: n/m`，目标全文只在系统提示 section 里）；`GOAL_COMPLETE` / `GOAL_BLOCKED: 原因` / 轮次上限（默认 32）结束，中止与出错不推进轮次。暂停/阻塞时带标记的正文只当本轮指令，目标保持不变。状态写 `pi-deck-goal-mode` 条目，目标全文只在变化时落盘、重启只恢复为暂停；`/goal resume` 与目标条的恢复在空闲时真的补一轮。
 - 关联会话由 `start_session` / `send_to_session` / `list_linked_sessions` 驱动（名字与 PiDeck 扩展一致）：子会话是同一项目的完整后台会话，独立标签、不影响当前标签。每轮结束把最后一条回复前 400 字回报父会话；父会话空闲时直接起一轮，忙时排 follow-up。连续 6 次回报自动续跑后停止，用户在父会话发消息清零额度；关系只在进程内，重启后子会话仍在但不再联动。纯 CLI 没有宿主，不注册这三个工具。
 - 提议卡片分两种：`offer` 默认，`start_session` 等用户点「新会话 / 在此做 / 不要」，最长 10 分钟，超时按没回答返回；`own_initiative` 只登记卡片、工具立即返回，用户点「在此做」会把简报作为用户消息发回父会话。桌面子会话条列出待决定提议与已开子会话，子会话行点击切到后台标签。
-- `ask_question` 是会话内联卡片（非遮罩）：题卡标签 + 进度 + 整行选项 + 自定义输入 + review 确认页；卡片打开时输入区折叠，页签标题加 `●`。文本题与自定义输入支持拖入本地路径，按主输入框的 `@` 引用插入；切题与多选重绘保留未提交草稿。调用展开后按题号列出题目，答完的题在题干下贴选中的选项文案（自定义输入贴原文），取消或没答完时原样贴结果。
+- `ask_question` 是会话内联卡片（非遮罩）：题卡标签 + 进度 + 整行选项 + 自定义输入 + 「跳过」 + review 确认页；卡片打开时输入区折叠，页签标题加 `●`。文本题与自定义输入支持拖入本地路径，按主输入框的 `@` 引用插入；切题与多选重绘保留未提交草稿。逐题可跳过；关闭卡片时已答内容照样交回模型（`closed`），只有一题都没答才是取消。调用展开后按题号列出题目，答完的题在题干下贴选中的选项文案（自定义输入贴原文），未答/跳过各自标明。
 - 等待态常驻输入卡上方，阶段优先级退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗；预热期三句轮播，回合内空窗只说「正在处理」；静默 2 秒补「本轮已 N 秒」。时间线尾部的等待占位行只在等首 token 时出现，条件是最后一行是用户消息且没有任何一行在流；它报时的时候状态条不再重复同一个数字。
 - 提示音：完成/出错/等待输入三类，默认完成与出错开、音量 0.6；会话完成 8 秒、全局 1.5 秒冷却；出错按边沿、等待输入按批去重；「仅失焦提醒」在前台静默。
 - 跨项目会话使用各自 cwd；运行时发送键变中断，保留草稿并禁用模型切换与历史修改。Split Send 菜单支持 steer / follow-up / 中断，排队卡可撤回或丢弃。
@@ -114,7 +114,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 「Agent 设置」的工具清单是整份目录：被 `settings.extensions` 挡住的内置扩展仍列在「内置扩展工具」里，名字压暗并提示原因；已写在 `defaultTools` 里的同样压暗，计数只算真会加载的工具。
 - 注册面：`pi.on`、`pi.registerTool`、`pi.registerCommand`、`pi.registerFlag`/`getFlag`、`pi.ui.*`。未知 `--flag` 交给注册者，无注册者时报错退出 2。
 - 事件：实际派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`；`message_update`、`tool_execution_update`、provider/context 类事件尚未派发。
-- 事件处理器可返回对象；返回值合并进 payload，与就地改写等价。
+- 事件处理器可返回对象；返回值合并进 payload，与就地改写等价。`before_agent_start` 提供可变的 `systemPromptOptions.sections`，返回的 `systemPrompt` 覆盖整段提示词，返回的 `message` 作为隐藏 custom message 跟在用户消息后进入本轮并落盘。
 - 沙箱无 `fs`/`net`/`require`/动态 import；出口只有显式 `__pi*` 宿主函数，桥一律 `ClrFunction`（AOT 无警告）。
 - 扩展的 `tool_call` 钩子排在安全门之前，但放行的调用仍过档位检查；内置工具优先于同名扩展工具。
 - `/reload` 重建宿主；注入的宿主生命周期归注入方；并表从内置基线重建。单个扩展抛错只记自身诊断；卡死扩展 10 秒切断。
@@ -166,6 +166,8 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 
 API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-key]` 共用同一份供应商事实：标准供应商一个 `key`，Cloudflare / Vertex / Bedrock 使用额外 `env` 字段或环境变量 marker。这些字段参与请求：Cloudflare 占位符由凭据 env 展开、网关令牌走 `cf-aig-authorization`，Vertex API Key 走 express 端点、ADC 读取凭据文件与项目/区域，Bedrock AWS 密钥参与 SigV4 签名。认证页把 OAuth 与 API Key 合并成一行，显示已保存 / 环境变量 / 命令型 / 外部凭据 / 未配置与过期状态；内置目录覆盖 `models.json` 全部 42 个供应商，自定义 auth.json 条目也能编辑或删除。API Key 面板不回显已保存密钥，留空表示保留；覆盖 OAuth 前必须确认。
 
+- Qwen Token Plan 拆成 Team / Individual 两组网关与模型清单，新变量 `QWEN_TOKEN_PLAN_TEAM_API_KEY` / `..._TEAM_CN_...` / `..._INDIVIDUAL_...` / `..._INDIVIDUAL_CN_...` 优先于旧的 `QWEN_TOKEN_PLAN_API_KEY` / `..._CN_...`，旧变量继续可用。
+
 ### 供应商请求头与会话亲和
 
 - OpenCode / OpenCode Go：所有请求补 `x-opencode-session`（当前会话 ID）与 `x-opencode-client: piweft`；显式同名头优先，缺失会被网关 400。
@@ -216,6 +218,8 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | `pi-deck-goal`（widget key） | 目标进度 widget：首行 `phase · n/m`，第二行目标，阻塞原因第三行；完成不出现 | `components/session/SessionGoalStrip.tsx`、`parsePiGoalWidget` |
 | `__PI_DECK_PLAN_MODE__` / `__PI_DECK_GOAL_MODE__` | composer 注入的模式标记，正文即指令/目标 | `shared/composerModeMarkers.ts` |
 
+- ask 信封的答案在 0.12 增加 `skipped:true`；用户答了一部分后关闭卡片时返回 `{cancelled:true,answers:[...]}`，已答内容有效、未答题目按未作答处理。结果文本逐题列出 `(未作答)` 与 `(用户跳过，未作答)`，details 带 `closed:true`。
+- 关联会话三个工具由 `pi-deck-linked-sessions.ts` 定义；`start_session` 支持 `proposal_id` 启动已登记提议，结果同时给 `sessionId`/`session_id` 与 `proposalId`/`proposal_id`（PiDeck 卡片读 camelCase）。
 - 形状比名字更容易漂移：PiDeck 的待办快照从 v2 变到 v3。名字对、字段错的表现是「静默不显示」，`tests/PiWeft.CodingAgent.Tests/PiDeckProtocolTests.cs` 逐条断言字面量与字段名。
 - 纯内部名字不借前缀：目标续轮消息角色是 `piweft-goal-continue`，继续生成的空标记是 `piweft-continue`，都以 `display:false` 的 custom message 落进会话。
 - 升级 PiDeck 时检查：`resources/extensions/pi-deck-*.ts` 的条目/widget 形状、`src/renderer` 的 key 表、`src/main` 的 `customType` 过滤。改名或改形状要同步 `PiDeckProtocol` 与形状测试。
@@ -277,7 +281,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | 编号 | 能力 | 状态 |
 |---|---|---|
 | PI-01 | JS/TS 扩展 | JS 可用（发现、`-e npm:`/`git:`、专属线程、工具/命令、会话/回合/消息/工具执行/模型等 16 个事件、flag、reload）；ESM 与异步处理器、流式 update 与 provider/context 事件、TypeScript 不支持 |
-| PI-02 | 扩展 UI | 对话框与 setStatus/setWidget/setTitle/set_editor_text 已实现；扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`/`namespace`/`executionMode`；无自定义 renderer、无 `ctx.executeTool` 扩展入口 |
+| PI-02 | 扩展 UI | 对话框与 setStatus/setWidget/setTitle/set_editor_text 已实现；扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`/`namespace`/`executionMode`；`before_agent_start` 支持 sections 与注入 message；无自定义 renderer、无 `ctx.executeTool` 扩展入口 |
 | PI-03 | 包管理 | 安装/列表/移除/更新已实现，npm/git 更新报告版本或 commit 变化；无自更新执行、依赖冲突治理与资源筛选界面 |
 | PI-04 | 完整 TUI | 行式 REPL；缺多行编辑、`$EDITOR`、TUI 图片粘贴、补全、选择器、终端图片与完整键位 |
 | PI-05 | codemode / tool_search | 已实现（含 worker 排队、`PI_CODEMODE_MAX_WORKERS`、检索 `$ref`、prelude lockdown）；余项只有顶层 `arguments` 等轻微差异 |

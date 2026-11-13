@@ -161,14 +161,16 @@ public sealed class ToolParityTests : IDisposable
 	}
 
 	[Fact]
-	public async Task Read_AddsTheNonVisionNoteWhenTheBoundModelHasNoImageInput()
+	public async Task Read_KeepsTheNonVisionWarningOutOfTheModelText()
 	{
 		File.WriteAllBytes(Path.Combine(_root, "image.png"), RealOnePixelPng());
-		var tool = FileTools.Read(_root, static () => ScriptedSessions.Model() with { Input = ["text"] });
+		var tool = FileTools.Read(_root, static () => ScriptedSessions.Model() with { Id = "text-only", Input = ["text"] });
 
 		var result = await tool.Execute(Invoke("read", new JsonObject { ["path"] = "image.png" }));
 
-		Assert.Contains("[Current model does not support images.", Text(result));
+		// pi 1.5.2+：警告只在 details 里，历史不会因为换到视觉模型而回放过期文本。
+		Assert.DoesNotContain("does not support images", Text(result));
+		Assert.Equal("text-only", result.Details?["imageUnsupportedByModel"]?.GetValue<string>());
 	}
 
 	[Fact]

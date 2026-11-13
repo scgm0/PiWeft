@@ -189,7 +189,7 @@ internal sealed class DesktopUiHost : IUiHost
 		try
 		{
 			var raw = await panel.ShowOverlayAsync(window, [question], review: false, cancellationToken).ConfigureAwait(true);
-			var (answers, _) = AskQuestions.ParseResponse(raw, [question]);
+			var answers = AskQuestions.ParseResponse(raw, [question]).Answers;
 			completion.TrySetResult(project(answers));
 		}
 		catch (Exception ex)
@@ -208,7 +208,7 @@ internal sealed class DesktopUiHost : IUiHost
 		try
 		{
 			var raw = await tab.AskPanel.ShowAsync([question], review: false, cancellationToken).ConfigureAwait(true);
-			var (answers, _) = AskQuestions.ParseResponse(raw, [question]);
+			var answers = AskQuestions.ParseResponse(raw, [question]).Answers;
 			completion.TrySetResult(project(answers));
 		}
 		catch (Exception ex)

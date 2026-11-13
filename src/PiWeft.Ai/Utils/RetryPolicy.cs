@@ -113,8 +113,14 @@ public static class RetryClassifier
 			"connection.?error",
 			"connection.?refused",
 			"connection.?lost",
+			// 网关把中途断开包装成 Anthropic 风格的 api_error；PI 1.5.2+ 新增。
+			"connection.?closed",
+			"connection reset by peer",
 			"other side closed",
 			"fetch failed",
+			// 裸 Node socket 错误码（read ECONNRESET / write EPIPE / connect ETIMEDOUT）。
+			// 码本身不能是更长标识符的一部分，否则 request id 里的字符串会误命中。
+			@"(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])",
 			@"request to \S+ failed",
 			"getaddrinfo",
 			"ENOTFOUND",

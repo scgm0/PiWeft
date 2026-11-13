@@ -138,7 +138,7 @@ public static class SearchTools
 				["pattern"] = new JsonObject
 				{
 					["type"] = "string",
-					["description"] = "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
+					["description"] = "Glob pattern relative to the search directory, e.g. 'src/**/*.ts'. Without '/', e.g. '*.ts', it matches file names at any depth",
 				},
 				["path"] = new JsonObject { ["type"] = "string", ["description"] = "Directory to search in (default: current directory)" },
 				["limit"] = new JsonObject { ["type"] = "number", ["description"] = "Maximum number of results (default: 1000)" },
@@ -160,11 +160,25 @@ public static class SearchTools
 			throw new InvalidOperationException($"Path not found: {root}");
 		}
 
-		// fd 的 --glob 是 smart-case：pattern 里没有大写字母就大小写不敏感。
-		// 路径型 pattern 在 fd 里是对绝对路径匹配（pi 用 --full-path + **/ 前缀），
-		// 因此在任意深度都能命中。
-		var matcher = GlobMatcher.Create(pattern, anyDepth: true);
+		// 与 pi 1.5.2+ 的 find 一致：先去掉开头的 ./，Windows 的反斜杠按分隔符处理；
+		// 路径型 pattern 锚定在搜索目录，不带 '/' 的仍按文件名任意深度匹配，
+		// 绝对 pattern 对绝对路径匹配。
+		var windows = OperatingSystem.IsWindows();
+		if (windows)
+		{
+			pattern = pattern.Replace('\\', '/');
+		}
+
+		while (pattern.StartsWith("./", StringComparison.Ordinal))
+		{
+			pattern = pattern[2..];
+		}
+
+		var absolutePattern = Path.IsPathRooted(pattern);
 		var matchesPath = pattern.Contains('/');
+		// fd 的 --glob 是 smart-case：pattern 里没有大写字母就大小写不敏感。
+		// 路径型 pattern 锚定在搜索目录，不再补 **/ 前缀；要任意深度得显式写 **/src/*.ts。
+		var matcher = GlobMatcher.Create(pattern, anyDepth: false);
 		var results = new List<string>();
 		var resultLimitReached = false;
 		var limitHit = 0;
@@ -185,14 +199,18 @@ public static class SearchTools
 				var relative = entryPath.Length > rootPrefix ? entryPath.AsSpan(rootPrefix) : entryPath.AsSpan();
 				var name = LastSegment(relative);
 				// fd 的目录结果带尾斜杠：`src/` 这种 pattern 只匹配目录，而我们的相对路径不带斜杠。
-				var matched = matcher.IsMatch(matchesPath ? relative : name)
-					|| (entry.IsDirectory && matcher.IsMatchWithTrailingSlash(relative));
+				var matched = absolutePattern
+					? MatchAbsoluteFindPattern(matcher, entryPath, windows) ||
+						(entry.IsDirectory && MatchAbsoluteFindDirectory(matcher, entryPath, windows))
+					: MatchRelativeFindPattern(matcher, matchesPath, relative, name, windows) ||
+						(entry.IsDirectory && MatchRelativeFindDirectory(matcher, matchesPath, relative, windows));
 				if (!matched)
 				{
 					return null;
 				}
 
-				return entry.IsDirectory ? string.Concat(relative, "/") : relative.ToString();
+				var result = windows ? GlobSyntax.NormalizeSlashes(relative.ToString()) : relative.ToString();
+				return entry.IsDirectory ? string.Concat(result, "/") : result;
 			});
 
 		foreach (var match in walk.Read())
@@ -263,7 +281,11 @@ public static class SearchTools
 			{
 				["pattern"] = new JsonObject { ["type"] = "string", ["description"] = "Search pattern (regex or literal string)" },
 				["path"] = new JsonObject { ["type"] = "string", ["description"] = "Directory or file to search (default: current directory)" },
-				["glob"] = new JsonObject { ["type"] = "string", ["description"] = "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" },
+				["glob"] = new JsonObject
+				{
+					["type"] = "string",
+					["description"] = "Filter files by glob pattern relative to path, e.g. 'src/**/*.ts'. Without '/', e.g. '*.ts', it matches file names at any depth",
+				},
 				["ignoreCase"] = new JsonObject { ["type"] = "boolean", ["description"] = "Case-insensitive search (default: false)" },
 				["literal"] = new JsonObject { ["type"] = "boolean", ["description"] = "Treat pattern as literal string instead of regex (default: false)" },
 				["context"] = new JsonObject { ["type"] = "number", ["description"] = "Number of lines to show before and after each match (default: 0)" },
@@ -1513,6 +1535,42 @@ public static class SearchTools
 		}
 
 		public string Render() => string.Join('\n', _lines);
+	}
+
+	/// find 的相对候选：路径型 pattern 比相对路径，名称型比文件名。
+	private static bool MatchRelativeFindPattern(GlobMatcher matcher, bool matchesPath, ReadOnlySpan<char> relative, ReadOnlySpan<char> name, bool windows)
+	{
+		if (!matchesPath)
+		{
+			return matcher.IsMatch(name);
+		}
+
+		return matcher.IsMatch(windows ? GlobSyntax.NormalizeSlashes(relative.ToString()).AsSpan() : relative);
+	}
+
+	/// 目录候选额外试一次带尾斜杠的形式（`src/` 这种 pattern）。
+	private static bool MatchRelativeFindDirectory(GlobMatcher matcher, bool matchesPath, ReadOnlySpan<char> relative, bool windows)
+	{
+		if (!matchesPath)
+		{
+			return false;
+		}
+
+		return matcher.IsMatchWithTrailingSlash(windows ? GlobSyntax.NormalizeSlashes(relative.ToString()).AsSpan() : relative);
+	}
+
+	/// fd 的 --full-path 语义：绝对 pattern 对绝对路径匹配，Windows 分隔符先归一。
+	private static bool MatchAbsoluteFindPattern(GlobMatcher matcher, string entryPath, bool windows)
+	{
+		var absolute = Path.GetFullPath(entryPath);
+		return matcher.IsMatch(windows ? GlobSyntax.NormalizeSlashes(absolute).AsSpan() : absolute.AsSpan());
+	}
+
+	/// 绝对目录 pattern 带尾斜杠的形式。
+	private static bool MatchAbsoluteFindDirectory(GlobMatcher matcher, string entryPath, bool windows)
+	{
+		var absolute = Path.GetFullPath(entryPath);
+		return matcher.IsMatchWithTrailingSlash(windows ? GlobSyntax.NormalizeSlashes(absolute).AsSpan() : absolute.AsSpan());
 	}
 
 	private static bool GlobMatches(Regex regex, string file, string root, bool absolute, bool nameOnly)

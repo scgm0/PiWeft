@@ -5,7 +5,8 @@ namespace PiWeft.CodingAgent.Extensions;
 public sealed record ExtensionCommand(
 	string Name,
 	string Description,
-	Action<string> Invoke);
+	Action<string> Invoke,
+	string? SourcePath = null);
 
 /// 扩展注册的工具与提示词元数据。pi 的 <c>promptSnippet</c>/<c>promptGuidelines</c>
 /// 决定工具是否出现在 Available tools 与 Guidelines 章节，不能只靠 label 兜底。

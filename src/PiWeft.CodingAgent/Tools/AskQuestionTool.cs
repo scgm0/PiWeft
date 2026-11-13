@@ -49,7 +49,7 @@ public static class AskQuestionTool
 						{
 							["type"] = "string",
 							["enum"] = new JsonArray([.. AskQuestions.Types.Select(static type => (JsonNode?)JsonValue.Create(type))]),
-							["description"] = "Defaults to select when options are provided, otherwise input; set it explicitly for confirm/editor/multi_select",
+							["description"] = "Defaults to select when options are provided, otherwise input; set it explicitly for confirm/editor/multi_select. 多选必须写 type: \"multi_select\"（不要写 multi_select: true）",
 						},
 						["question"] = new JsonObject { ["type"] = "string", ["description"] = "The question or prompt to display" },
 						["options"] = new JsonObject
@@ -114,11 +114,11 @@ public static class AskQuestionTool
 				.InputAsync(new UiInputRequest(envelope, AskQuestions.EnvelopePlaceholder), invocation.CancellationToken)
 				.ConfigureAwait(false);
 
-			var (answers, cancelled) = AskQuestions.ParseResponse(raw, questions);
+			var response = AskQuestions.ParseResponse(raw, questions);
 			return new AgentToolResult
 			{
-				Content = [new PiWeft.Ai.TextContent { Text = AskQuestions.ResultText(answers, cancelled) }],
-				Details = AskQuestions.ResultDetails(questions, answers, cancelled),
+				Content = [new PiWeft.Ai.TextContent { Text = AskQuestions.ResultText(questions, response.Answers, response.Cancelled, response.Closed) }],
+				Details = AskQuestions.ResultDetails(questions, response.Answers, response.Cancelled, response.Closed),
 			};
 		}
 		catch (Exception)

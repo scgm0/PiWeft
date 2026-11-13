@@ -10,7 +10,7 @@ public static class LlamaRouter
 {
 	public const string BaseUrlVariable = "LLAMA_BASE_URL";
 	public const string ApiKeyVariable = "LLAMA_API_KEY";
-	public const string DefaultBaseUrl = "http://127.0.0.1:8080";
+	public const string DefaultBaseUrl = "http://127.0.0.1:9931";
 
 	public sealed record ModelInfo(
 		string Id,

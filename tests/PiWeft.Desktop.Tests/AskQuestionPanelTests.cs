@@ -303,6 +303,36 @@ public sealed class AskQuestionPanelTests
 	}
 
 	[Fact]
+	public async Task SkippingEveryQuestionSubmitsSettledAnswers()
+	{
+		var (panel, pending) = Show();
+
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskSkip));
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskSkip));
+
+		var response = AskQuestions.ParseResponse(await pending, Questions);
+		Assert.False(response.Cancelled);
+		Assert.False(response.Closed);
+		Assert.All(response.Answers, static answer => Assert.True(answer.Skipped));
+	}
+
+	[Fact]
+	public async Task ClosingAfterAPartialAnswerKeepsTheAnswer()
+	{
+		var (panel, pending) = Show();
+
+		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
+			ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true));
+		panel.Close();
+
+		var response = AskQuestions.ParseResponse(await pending, Questions);
+		Assert.True(response.Closed);
+		Assert.False(response.Cancelled);
+		Assert.Equal("A", Assert.Single(response.Answers).Value!.GetValue<string>());
+		Assert.Contains("用户关闭了提问卡", AskQuestions.ResultText(Questions, response.Answers, response.Cancelled, response.Closed));
+	}
+
+	[Fact]
 	public async Task ReviewTabCollectsTheLastSubmit()
 	{
 		var (panel, pending) = Show(review: true);

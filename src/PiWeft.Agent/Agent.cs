@@ -363,14 +363,18 @@ public sealed class Agent
 			},
 			cancellationToken);
 
-	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
+	public Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default) =>
+		PromptAsync([message], cancellationToken);
+
+	/// 一轮带多条起始消息：用户消息之后可以跟扩展在 before_agent_start 注入的隐藏上下文。
+	public async Task<IReadOnlyList<Message>> PromptAsync(IReadOnlyList<Message> prompts, CancellationToken cancellationToken = default)
 	{
 		using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		var context = BeginRun(linked);
 		try
 		{
 			return await AgentLoop.RunAsync(
-				[message],
+				prompts,
 				context,
 				BuildConfig(),
 				_options.StreamFn,

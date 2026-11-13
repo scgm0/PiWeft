@@ -105,8 +105,12 @@ public static class LinkedSessionsTool
 				["enum"] = new JsonArray("user_asked", "offer", "own_initiative"),
 				["description"] = "user_asked starts immediately; offer asks the user first and waits (default); own_initiative only registers a proposal card.",
 			},
+			["proposal_id"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = "Start a previously registered own_initiative proposal (when the user says to open it); title/prompt can be omitted then.",
+			},
 		},
-		["required"] = new JsonArray("prompt"),
 	};
 
 	private static JsonObject SendParameters() => new()
@@ -140,8 +144,9 @@ public static class LinkedSessionsTool
 			Text(invocation.Arguments["title"]),
 			Text(invocation.Arguments["prompt"]) ?? string.Empty,
 			Text(invocation.Arguments["initiation"]) ?? LinkedSessionProposal.Offer,
+			Text(invocation.Arguments["proposal_id"]),
 			invocation.CancellationToken).ConfigureAwait(false);
-		return result.Ok ? AgentToolResult.Text(result.Text) : AgentToolResult.Error(result.Text);
+		return Operation(result);
 	}
 
 	private static async Task<AgentToolResult> ExecuteSend(CodingAgentSession? session, AgentToolInvocation invocation)
@@ -156,7 +161,7 @@ public static class LinkedSessionsTool
 			Text(invocation.Arguments["session_id"]) ?? string.Empty,
 			Text(invocation.Arguments["message"]) ?? string.Empty,
 			invocation.CancellationToken).ConfigureAwait(false);
-		return result.Ok ? AgentToolResult.Text(result.Text) : AgentToolResult.Error(result.Text);
+		return Operation(result);
 	}
 
 	private static Task<AgentToolResult> ExecuteList(CodingAgentSession? session, AgentToolInvocation invocation)
@@ -169,6 +174,10 @@ public static class LinkedSessionsTool
 
 		return Task.FromResult(AgentToolResult.Text(hub.List().ToJsonString()));
 	}
+
+	/// PiDeck 的关联会话卡片按「失败：」前缀识别错误；成功结果是 JSON 文本。
+	private static AgentToolResult Operation(LinkedSessionOperation result) =>
+		result.Ok ? AgentToolResult.Text(result.Text) : AgentToolResult.Error("失败：" + result.Text);
 
 	private static string? Text(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<string>(out var text) && text.Trim().Length > 0

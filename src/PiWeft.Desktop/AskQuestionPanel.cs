@@ -260,10 +260,10 @@ internal sealed class AskQuestionPanel
 		SoundAlerts.Shared.CompleteWaiting(_alertSessionId, _alertRequestId);
 		_alertRequestId = null;
 
-		var answers = !cancelled
-			? _answers.Where(static answer => answer is not null).Select(static answer => answer!).ToList()
-			: [];
-		// 未作答的问题按取消处理，让工具结果明确说明。
+		// 关闭卡片时保留已答与已跳过的题：PiDeck 0.12 把「答一半关闭」当 closed，
+		// 不是整单取消；一题都没答才是 canceled。
+		var answers = _answers.Where(static answer => answer is not null).Select(static answer => answer!).ToList();
+		// 未作答的问题按未作答处理，让工具结果逐题说明。
 		var incomplete = cancelled || answers.Count < _questions.Count;
 		var overlay = _overlayHost;
 		if (overlay is not null && _overlayFade is { IsClosing: false } fade && Application.IsRunning)
@@ -391,6 +391,7 @@ internal sealed class AskQuestionPanel
 		{
 			var captured = index;
 			var answered = _answers[index] is not null;
+			var skipped = _answers[index]?.Skipped == true;
 			var active = _current == index;
 			var content = new StackPanel().Orientation(Orientation.Horizontal).Spacing(4)
 				.VerticalAlignment(VerticalAlignment.Center).Children(
@@ -399,7 +400,12 @@ internal sealed class AskQuestionPanel
 					new TextBlock().Text(Shorten(_questions[index].Question)).FontSize(AppTheme.FontSizeMicro)
 						.TextTrimming(TextTrimming.CharacterEllipsis).MaxWidth(140)
 						.Role(active ? AppStyles.RolePrimary : AppStyles.RoleMuted));
-			if (answered)
+			if (skipped)
+			{
+				content.Children(new TextBlock().Text(Strings.AskSkipped).FontSize(AppTheme.FontSizeMicro)
+					.MutedText());
+			}
+			else if (answered)
 			{
 				content.Children(AppIcons.Icon("check", AppStyles.RoleSuccess, 11));
 			}
@@ -802,6 +808,7 @@ internal sealed class AskQuestionPanel
 		{
 			var captured = index;
 			var answered = _answers[index] is not null;
+			var skipped = _answers[index]?.Skipped == true;
 			var label = _answers[index] is { } answer && answer.Label is { Length: > 0 } text
 				? text
 				: answered ? Strings.AskAnswered : Strings.AskUnanswered;
@@ -815,7 +822,7 @@ internal sealed class AskQuestionPanel
 					new TextBlock().Text(_questions[index].Question).FontSize(AppTheme.FontSizeCaption)
 						.PrimaryText().TextTrimming(TextTrimming.CharacterEllipsis).Column(1),
 					new TextBlock().Text(label).FontSize(AppTheme.FontSizeMicro)
-						.Role(answered ? AppStyles.RoleSuccess : AppStyles.RoleFaint)
+						.Role(skipped ? AppStyles.RoleFaint : answered ? AppStyles.RoleSuccess : AppStyles.RoleFaint)
 						.Margin(new Thickness(AppTheme.Space2, 0, 0, 0)).Column(2)))
 				.OnClick(() => JumpTo(captured)));
 		}
@@ -857,9 +864,10 @@ internal sealed class AskQuestionPanel
 					.Content(new TextBlock().Text(Strings.AskPrevious).FontSize(AppTheme.FontSizeCaption).PrimaryText())
 					.IsEnabled(_current > 0)
 					.OnClick(() => JumpTo(_current - 1)));
-				_footer.IsVisible(true);
 			}
 
+			_footer.Children(SkipButton());
+			_footer.IsVisible(true);
 			return;
 		}
 
@@ -871,12 +879,62 @@ internal sealed class AskQuestionPanel
 				.OnClick(() => JumpTo(_current - 1)));
 		}
 
+		_footer.Children(SkipButton());
 		_primary = new Button().Primary()
 			.Content(AccentLabel(_current == _questions.Count - 1 && !_review ? Strings.AskSubmit : Strings.AskNext))
 			.IsEnabled(_draftAnswer?.Invoke() is not null)
 			.OnClick(SubmitDraft);
 		_footer.Children(_primary);
 		_footer.IsVisible(true);
+	}
+
+	/// 跳过当前题：再点一次取消跳过。跳过算已处理，不阻塞整卡提交。
+	private Button SkipButton()
+	{
+		var skipped = _answers[_current]?.Skipped == true;
+		return new Button().Ghost()
+			.Content(new TextBlock().Text(skipped ? Strings.AskSkipped : Strings.AskSkip)
+				.FontSize(AppTheme.FontSizeCaption).MutedText())
+			.HoverTip(Strings.AskHintSkip)
+			.OnClick(SkipCurrent);
+	}
+
+	private void SkipCurrent()
+	{
+		if (_submitting || _current < 0 || _current >= _questions.Count)
+		{
+			return;
+		}
+
+		var question = _questions[_current];
+		if (_answers[_current]?.Skipped == true)
+		{
+			_answers[_current] = null;
+			RenderCard();
+			return;
+		}
+
+		_answers[_current] = new AskAnswer(question.Id, question.Type, null, null, false, Skipped: true);
+		if (_answers.All(static item => item is not null))
+		{
+			if (_review)
+			{
+				_current = _questions.Count;
+				RenderCard();
+				return;
+			}
+
+			_submitting = true;
+			Finish(cancelled: false);
+			return;
+		}
+
+		if (NextUnanswered() is { } next)
+		{
+			_current = next;
+		}
+
+		RenderCard();
 	}
 
 	private void SubmitDraft()

@@ -910,6 +910,12 @@ public static partial class Strings
 
 	public const string AskUnanswered = "未作答";
 
+	public const string AskSkip = "跳过";
+
+	public const string AskSkipped = "已跳过";
+
+	public const string AskHintSkip = "跳过本题；跳过算已处理，不影响其它题。";
+
 	public static string AskProgress(int answered, int total) => $"{answered}/{total}";
 
 	public static string AskQuestionProgress(int index, int total) => $"第 {index}/{total} 题";
@@ -1107,6 +1113,8 @@ public static partial class Strings
 	public const string ToolAnswersLabel = "问答";
 	public const string CopyToolArguments = "复制参数";
 	public const string ToolResultLabel = "结果";
+
+	public static string ToolImageUnsupported(string model) => $"当前模型 {model} 不支持图片；这张图片不会随请求发送。";
 	public const string ToolDiffLabel = "差异";
 	public const string ToolRunning = "运行中";
 	public const string ToolCompleted = "已完成";
