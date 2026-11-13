@@ -124,6 +124,7 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 			}
 		}
 
+		options.NotifyRequestPayload(bytes, model);
 		var baseUrl = string.IsNullOrEmpty(model.BaseUrl)
 			? "https://generativelanguage.googleapis.com/v1beta"
 			: ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');

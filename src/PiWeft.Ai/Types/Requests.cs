@@ -51,6 +51,9 @@ public record ProviderRequestOptions
 
 	public Action<JsonNode, Model>? OnProviderStreamEvent { get; init; }
 
+	/// 请求体在发出前回调一次（模型请求快照用）。只在观察者存在时解析，正常路径不付代价。
+	public Action<JsonNode, Model>? OnProviderRequestPayload { get; init; }
+
 	public HttpMessageHandler? HttpHandler { get; init; }
 
 	/// Raises <see cref="OnProviderStreamEvent"/> only when someone listens. The callback argument
@@ -63,6 +66,21 @@ public record ProviderRequestOptions
 		{
 			callback(JsonNode.Parse(payload)!, model);
 		}
+	}
+
+	/// 请求体字节的回调：没有观察者时完全不解析。
+	internal void NotifyRequestPayload(ReadOnlySpan<byte> payload, Model model)
+	{
+		if (OnProviderRequestPayload is { } callback)
+		{
+			callback(JsonNode.Parse(payload)!, model);
+		}
+	}
+
+	/// 已有对象形态的请求体（例如 Codex WebSocket）直接回调。
+	internal void NotifyRequestPayload(JsonNode payload, Model model)
+	{
+		OnProviderRequestPayload?.Invoke(payload, model);
 	}
 
 	/// <inheritdoc cref="NotifyStreamEvent(ReadOnlySpan{byte}, Model)"/>

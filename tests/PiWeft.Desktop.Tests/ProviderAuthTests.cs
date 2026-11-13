@@ -348,4 +348,16 @@ public sealed class ProviderAuthTests
 		Assert.Contains("ANTHROPIC_API_KEY", ProviderAuthCatalog.Find("anthropic")!.ApiKey!.EnvironmentNames);
 		Assert.True(ProviderAuthCatalog.Find("anthropic")!.OAuth);
 	}
+
+	[Fact]
+	public void BuiltInCatalogPutsPartnersFirst()
+	{
+		var ids = ProviderAuthCatalog.BuiltIns.Select(static provider => provider.Id).ToList();
+
+		// pi 1.5.2+ 的 /login 顺序：Radius / OpenRouter 在最前，其余按名称。
+		Assert.Equal("openrouter", ids[0]);
+		Assert.Equal("radius", ids[1]);
+		var rest = ids.Skip(2).Select(id => ProviderAuthCatalog.Find(id)!.Name).ToList();
+		Assert.Equal(rest.OrderBy(name => name, StringComparer.OrdinalIgnoreCase), rest);
+	}
 }

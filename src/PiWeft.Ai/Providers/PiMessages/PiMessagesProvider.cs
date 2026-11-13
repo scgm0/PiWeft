@@ -179,6 +179,7 @@ public sealed class PiMessagesProvider : IApiProvider
 			writer.WriteEndObject();
 		});
 
+		options.NotifyRequestPayload(bytes, model);
 		if (options.OnPayload is { } onPayload)
 		{
 			var node = JsonNode.Parse(bytes);

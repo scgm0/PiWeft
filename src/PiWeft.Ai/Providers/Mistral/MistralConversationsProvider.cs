@@ -192,6 +192,7 @@ public sealed class MistralConversationsProvider : IApiProvider
 			}
 		}
 
+		options.NotifyRequestPayload(bytes, model);
 		var baseUrl = ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 		var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/chat/completions")
 		{

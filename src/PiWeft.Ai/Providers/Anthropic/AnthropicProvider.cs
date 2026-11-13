@@ -89,7 +89,8 @@ public sealed class AnthropicProvider : IApiProvider
 				}
 
 				using var request = BuildRequest(model, bytes, messages, options, apiKey);
-				options.NotifyStreamEvent(bytes, model);
+				// 这是请求体（模型请求快照的观测点），不是流式事件。
+				options.NotifyRequestPayload(bytes, model);
 
 				using var response = await _http
 					.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)

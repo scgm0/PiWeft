@@ -198,6 +198,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	private readonly ImagesGateway? _images;
 	private readonly ClassifiersGateway? _classifiers;
 	private readonly StreamOptions _streamOptions;
+	private readonly PiDeckModelTrace? _modelTrace;
 	private bool _disposed;
 	private readonly Lock _statisticsGate = new();
 
@@ -258,7 +259,8 @@ public sealed partial class CodingAgentSession : IDisposable
 		Cwd = Path.GetFullPath(options.Cwd);
 		Settings = options.Settings;
 		// 安全门跟着会话走：档位可以按会话文件路径覆盖，界面改档也直接落在这里。
-		Security = options.Settings.Security;
+		// PiDeck 注入 PIDECK_SECURITY_CONFIG 时以它的快照为准（切 customPiPath 后策略不丢）。
+		Security = PiDeckSecuritySnapshot.Load() ?? options.Settings.Security;
 		UiHost = options.UiHost;
 		ProjectTrusted = options.ProjectTrusted;
 		_subagentParent = options.SubagentParent is { } subagentParent
@@ -465,7 +467,9 @@ public sealed partial class CodingAgentSession : IDisposable
 		_apiKeyForProvider = options.ApiKeyForProvider;
 		_routedStreamFn = StreamWithVirtualRouting;
 		_directStreamFn = StreamDirectWithVirtualRouting;
-		_streamOptions = options.Options with
+		// PiDeck 注入快照端点时把请求体与响应状态推回去（「模型」视图的数据源）。
+		_modelTrace = PiDeckModelTrace.FromEnvironment(Session.SessionId);
+		_streamOptions = (_modelTrace?.Attach(options.Options) ?? options.Options) with
 		{
 			TimeoutMs = options.Options.TimeoutMs ?? options.Settings.TimeoutMs,
 			IdleTimeoutMs = options.Options.IdleTimeoutMs ??
@@ -545,6 +549,8 @@ public sealed partial class CodingAgentSession : IDisposable
 		_cacheWarmLifecycle = _agent.Subscribe(CacheWarmLifecycleAsync);
 		_modeLifecycle = _agent.Subscribe(ModeLifecycleAsync);
 		_extensionLifecycle = _agent.Subscribe(ExtensionLifecycleAsync);
+		// PiDeck 注入 PIDECK_AUTO_SESSION_TITLE=1 时给空白会话自动命名。
+		InitializeAutoTitle();
 		PublishTodoWidget(CurrentTodo());
 		// 计划/目标模式的状态跟着分支走：执行态续接进度，目标只恢复为暂停。
 		RestoreModeState();
@@ -2125,7 +2131,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		BeforeToolCallContext context,
 		CancellationToken cancellationToken)
 	{
-		var level = Security.Resolve(Session.SessionFile);
+		var level = PiDeckSecuritySnapshot.Resolve(Security, Session.SessionFile);
 		var decision = level.Evaluate(context.ToolCall.Name, context.Arguments, Cwd);
 		if (decision.Effect == SecurityEffect.Allow)
 		{
@@ -3902,6 +3908,8 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	public void SetSessionName(string? name)
 	{
+		// 用户/宿主自己改名：取消自动命名，手动意图优先。
+		NoteManualSessionName();
 		Session.AppendSessionInfo(name);
 		Emit(new SessionInfoChangedEvent { Name = name });
 		DispatchExtension("session_info_changed", new JsonObject { ["name"] = name });
@@ -3931,6 +3939,11 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		_disposed = true;
+		_modelTrace?.Dispose();
+		_autoTitleLifecycle?.Dispose();
+		CancelAutoTitle();
+		_autoTitleCancellation?.Dispose();
+		_autoTitleCancellation = null;
 		SubagentParent?.Subagents?.NoteChildClosed(Session.SessionId);
 		Linked?.Dispose();
 		Subagents?.Dispose();

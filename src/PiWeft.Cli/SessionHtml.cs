@@ -73,6 +73,14 @@ public static class SessionHtml
 		return first is { Length: > 0 } ? first : $"Session {session.Session.SessionId}";
 	}
 
+	/// 单条消息的渲染结果（导出回归测试用，不写文件）。
+	internal static string RenderMessageForTests(Message message)
+	{
+		var builder = new StringBuilder();
+		RenderMessage(builder, message);
+		return builder.ToString();
+	}
+
 	private static void RenderMessage(StringBuilder builder, Message message)
 	{
 		switch (message)
@@ -135,7 +143,9 @@ public static class SessionHtml
 			case ToolResultMessage result:
 				builder.Append("<article class=\"tool-result\">\n<h2>tool</h2>\n");
 				builder.Append("<p class=\"tool\">").Append(Escape(result.ToolName)).Append("</p>\n");
-				RenderBlocks(builder, result.Content);
+				// 工具输出常带终端颜色与 OSC 8 超链接：转成内联样式与 <a>，
+				// 否则导出文件里露出的是 `[38;2;…m` 这样的转义码。
+				RenderBlocks(builder, result.Content, ansi: true);
 				builder.Append("</article>\n");
 				break;
 
@@ -157,25 +167,25 @@ public static class SessionHtml
 		}
 	}
 
-	private static void RenderContent(StringBuilder builder, MessageContent content)
+	private static void RenderContent(StringBuilder builder, MessageContent content, bool ansi = false)
 	{
 		if (content.Blocks is { Count: > 0 } blocks)
 		{
-			RenderBlocks(builder, blocks);
+			RenderBlocks(builder, blocks, ansi);
 			return;
 		}
 
-		builder.Append("<pre>").Append(Escape(content.Text ?? string.Empty)).Append("</pre>\n");
+		builder.Append("<pre>").Append(RenderText(content.Text ?? string.Empty, ansi)).Append("</pre>\n");
 	}
 
-	private static void RenderBlocks(StringBuilder builder, IReadOnlyList<ContentBlock> blocks)
+	private static void RenderBlocks(StringBuilder builder, IReadOnlyList<ContentBlock> blocks, bool ansi = false)
 	{
 		foreach (var block in blocks)
 		{
 			switch (block)
 			{
 				case TextContent text:
-					builder.Append("<pre>").Append(Escape(text.Text)).Append("</pre>\n");
+					builder.Append("<pre>").Append(RenderText(text.Text, ansi)).Append("</pre>\n");
 					break;
 
 				case ImageContent image:
@@ -193,6 +203,10 @@ public static class SessionHtml
 		builder.Append("<dt>").Append(Escape(label)).Append("</dt><dd>").Append(Escape(value)).Append("</dd>\n");
 
 	private static string Escape(string value) => WebUtility.HtmlEncode(value);
+
+	/// 工具输出走 ANSI 转换；其余正文只剥转义码，不解释颜色。
+	private static string RenderText(string value, bool ansi) =>
+		ansi ? AnsiHtml.ToHtml(value) : Escape(AnsiHtml.StripEscapes(value));
 
 	private const string Styles = """
 		:root { color-scheme: light dark; }

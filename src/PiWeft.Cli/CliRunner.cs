@@ -319,7 +319,13 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 	public const string RpcContractVersion = "1.3.0";
 
-	public static string VersionString => RpcContractVersion;
+	/// `--version` 报告的是**兼容的 pi 版本**，不是本端口的契约版本：PiDeck 拿它做功能门槛
+	/// （`piVersionAtLeast(version, "0.99.0")`、`MIN_PI_VERSION = "1.0.0"`）与「有新版本」比较。
+	/// 报 1.3.0 会让 PiDeck 每轮都提示升级到一个它实际用不上的 npm 包；
+	/// 报得比实现高又会让它启用本端口没有的能力。这里取对齐基准 pi `v1.5.2`。
+	public const string PiCompatibilityVersion = "1.5.2";
+
+	public static string VersionString => PiCompatibilityVersion;
 
 
 	/// 扩展 flag 的收口：没有注册者的未知选项、string 类型缺值，都按 pi 的语义报错退出。
@@ -1977,7 +1983,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				return true;
 
 			case "/changelog":
-				error.WriteLine($"PiWeft（RPC 契约 {RpcContractVersion}）。上游变更：https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md");
+				error.WriteLine($"PiWeft（兼容 pi {PiCompatibilityVersion}，RPC 契约 {RpcContractVersion}）。上游变更：https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md");
 				return true;
 
 			case "/share":

@@ -496,4 +496,13 @@ public class CliEnvironmentTests
 		var (_, shortError) = CliArguments.Parse(["-z"]);
 		Assert.NotNull(shortError);
 	}
+
+	[Fact]
+	public void VersionReportsTheCompatiblePiVersion()
+	{
+		// PiDeck 把 `pi --version` 当功能门槛与更新比较用：报 RPC 契约版本会让它一直提示升级。
+		Assert.Equal("1.5.2", CliRunner.PiCompatibilityVersion);
+		Assert.Equal(CliRunner.PiCompatibilityVersion, CliRunner.VersionString);
+		Assert.Equal("1.3.0", CliRunner.RpcContractVersion);
+	}
 }

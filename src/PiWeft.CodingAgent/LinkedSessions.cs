@@ -15,7 +15,8 @@ public sealed record LinkedSessionLink(
 	string State,
 	int TurnCount,
 	string? LastReport,
-	long LastReportAt)
+	long LastReportAt,
+	long CreatedAt = 0)
 {
 	public const string Starting = "starting";
 	public const string Running = "running";
@@ -123,6 +124,7 @@ public sealed class LinkedSessionHub : IDisposable
 		_owner = owner;
 		_host = host;
 		_parentSession = parentSession;
+		RestoreFromStore();
 		Parent = parentSession is null
 			? null
 			: new LinkedSessionLink(
@@ -133,6 +135,61 @@ public sealed class LinkedSessionHub : IDisposable
 				0,
 				null,
 				0);
+	}
+
+	/// 从落盘的关系表恢复子会话与待决定提议。重启后没有活运行时，子会话一律 stopped；
+	/// 只有 own_initiative 提议能恢复——offer 的等待者随进程消失，恢复出来也点不动。
+	private void RestoreFromStore()
+	{
+		LinkedSessionSnapshot snapshot;
+		try
+		{
+			snapshot = LinkedSessionStore.Load();
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return;
+		}
+
+		var sessionId = _owner.Session.SessionId;
+		foreach (var link in snapshot.Links)
+		{
+			if (string.Equals(link.ParentSessionId, sessionId, StringComparison.Ordinal))
+			{
+				_children.Add(link);
+			}
+		}
+
+		foreach (var proposal in snapshot.Proposals)
+		{
+			if (!string.Equals(proposal.ParentSessionId, sessionId, StringComparison.Ordinal) ||
+				proposal.Status != LinkedSessionProposal.Pending ||
+				proposal.Initiation != LinkedSessionProposal.OwnInitiative)
+			{
+				continue;
+			}
+
+			_proposals.Add(proposal);
+		}
+	}
+
+	/// 把本会话的关系与提议写回 `<agentDir>/linked-sessions.json`；失败只丢这次落盘。
+	private void Persist()
+	{
+		try
+		{
+			LinkedSessionSnapshot snapshot;
+			lock (_gate)
+			{
+				snapshot = new LinkedSessionSnapshot([.. _children], [.. _proposals]);
+			}
+
+			LinkedSessionStore.Merge(_owner.Session.SessionId, _owner.Cwd, snapshot);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+		{
+			// 关系表只服务于重启后的展示，写不进去不影响本轮联动。
+		}
 	}
 
 	/// 本会话被哪个父会话开出；不是关联子会话时为 null。
@@ -242,6 +299,7 @@ public sealed class LinkedSessionHub : IDisposable
 			}
 		}
 
+		Persist();
 		Changed?.Invoke();
 		if (mode == LinkedSessionProposal.OwnInitiative)
 		{
@@ -331,7 +389,8 @@ public sealed class LinkedSessionHub : IDisposable
 							ChildSessionId = null,
 						});
 						ResolveWaiter(proposalId, new ProposalOutcome("error", Error: started.Text));
-						Changed?.Invoke();
+						Persist();
+		Changed?.Invoke();
 						return LinkedSessionOperation.Failure(started.Text);
 					}
 
@@ -341,7 +400,8 @@ public sealed class LinkedSessionHub : IDisposable
 						ChildSessionId = started.ChildSessionId,
 					});
 					ResolveWaiter(proposalId, new ProposalOutcome("started", started.ChildSessionId));
-					Changed?.Invoke();
+					Persist();
+		Changed?.Invoke();
 					return LinkedSessionOperation.Success(ProposalStatusJson("started", updated ?? proposal, started.ChildSessionId));
 				}
 
@@ -349,7 +409,8 @@ public sealed class LinkedSessionHub : IDisposable
 				{
 					var updated = UpdateProposal(proposalId, candidate => candidate with { Status = LinkedSessionProposal.Here });
 					ResolveWaiter(proposalId, new ProposalOutcome("here"));
-					Changed?.Invoke();
+					Persist();
+		Changed?.Invoke();
 					if (proposal.Initiation == LinkedSessionProposal.OwnInitiative)
 					{
 						await SendHereToParentAsync(proposal, cancellationToken).ConfigureAwait(false);
@@ -362,7 +423,8 @@ public sealed class LinkedSessionHub : IDisposable
 				{
 					var updated = UpdateProposal(proposalId, candidate => candidate with { Status = LinkedSessionProposal.Dismissed });
 					ResolveWaiter(proposalId, new ProposalOutcome("dismissed"));
-					Changed?.Invoke();
+					Persist();
+		Changed?.Invoke();
 					return LinkedSessionOperation.Success(ProposalStatusJson("declined", updated ?? proposal));
 				}
 
@@ -425,7 +487,8 @@ public sealed class LinkedSessionHub : IDisposable
 					LinkedSessionLink.Starting,
 					0,
 					null,
-					0));
+					0,
+					DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
 				_sessions[childId] = child;
 				_subscriptions[childId] = subscription;
 				linkAdded = true;
@@ -440,6 +503,7 @@ public sealed class LinkedSessionHub : IDisposable
 			return new ChildStartResult(false, null, "the session is closing");
 		}
 
+		Persist();
 		Changed?.Invoke();
 		// 首轮在后台跑：工具调用只等「建好并已投递」，不等子会话跑完。
 		_ = RunFirstTurnAsync(childId, child, brief);
@@ -472,6 +536,7 @@ public sealed class LinkedSessionHub : IDisposable
 	{
 		UpdateProposal(proposalId, candidate => candidate with { Status = LinkedSessionProposal.Expired });
 		ResolveWaiter(proposalId, new ProposalOutcome("expired"));
+		Persist();
 		Changed?.Invoke();
 	}
 
@@ -671,6 +736,7 @@ public sealed class LinkedSessionHub : IDisposable
 		}
 
 		subscription?.Dispose();
+		Persist();
 		Changed?.Invoke();
 	}
 
@@ -762,6 +828,7 @@ public sealed class LinkedSessionHub : IDisposable
 			_children[index] = _children[index] with { State = state };
 		}
 
+		Persist();
 		Changed?.Invoke();
 	}
 
@@ -820,6 +887,7 @@ public sealed class LinkedSessionHub : IDisposable
 			_children[index] = link;
 		}
 
+		Persist();
 		Changed?.Invoke();
 		if (!TryConsumeAutoContinue())
 		{

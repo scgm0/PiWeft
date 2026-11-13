@@ -547,6 +547,24 @@ public class RpcSessionCommandTests : IDisposable
 	}
 
 	[Fact]
+	public void ExportHtmlConvertsToolAnsiAndLinks()
+	{
+		var html = SessionHtml.RenderMessageForTests(new PiWeft.Ai.ToolResultMessage
+		{
+			ToolCallId = "1",
+			ToolName = "bash",
+			Content =
+			[
+				new PiWeft.Ai.TextContent { Text = "\u001b[31mred\u001b[0m \u001b]8;;https://example.com\u0007link\u001b]8;;\u0007" },
+			],
+		});
+
+		Assert.Contains("<span style=\"color:#800000\">red</span>", html);
+		Assert.Contains("<a href=\"https://example.com\">link</a>", html);
+		Assert.DoesNotContain('\u001b', html);
+	}
+
+	[Fact]
 	public async Task RetryAndExtensionUiCommandsAreAccepted()
 	{
 		var (environment, output) = Setup();

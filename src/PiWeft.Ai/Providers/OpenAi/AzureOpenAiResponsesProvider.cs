@@ -160,6 +160,7 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 			}
 		}
 
+		options.NotifyRequestPayload(bytes, model);
 		var url = $"{baseUrl}/responses?api-version={Uri.EscapeDataString(apiVersion)}";
 		var request = new HttpRequestMessage(HttpMethod.Post, url)
 		{

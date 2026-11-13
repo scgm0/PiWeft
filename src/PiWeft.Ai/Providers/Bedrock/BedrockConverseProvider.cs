@@ -120,6 +120,7 @@ public sealed class BedrockConverseProvider : IApiProvider
 			}
 		}
 
+		options.NotifyRequestPayload(bytes, model);
 		var url = BuildUrl(model);
 		var region = ResolveRegion(model);
 

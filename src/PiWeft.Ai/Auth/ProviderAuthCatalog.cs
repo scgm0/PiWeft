@@ -204,8 +204,19 @@ public static class ProviderAuthCatalog
 			Standard("zai-coding-cn", "Z.AI Coding CN", StandardKey("Z.AI Coding CN API key", "ZAI_CODING_CN_API_KEY", "ZAI_API_KEY")),
 		};
 
-		return [.. providers.OrderBy(static provider => provider.Name, StringComparer.OrdinalIgnoreCase)];
+		// pi 1.5.2+ 的 /login 列表：Radius 与 OpenRouter 作为优先伙伴排在最前（界面上标 ✦），
+		// 其余按名称排序。桌面与 `pi login` 共用这一份顺序。
+		return
+		[
+			.. providers
+				.OrderBy(static provider => PartnerRank(provider.Id))
+				.ThenBy(static provider => provider.Name, StringComparer.OrdinalIgnoreCase),
+		];
 	}
+
+	/// 优先伙伴：0 排在最前，其余 1。
+	private static int PartnerRank(string id) =>
+		id is "radius" or "openrouter" ? 0 : 1;
 
 	private static ProviderAuthDescriptor Standard(string id, string name, string label, params string[] environmentNames) =>
 		new(id, name, StandardKey(label, environmentNames), Docs(id));

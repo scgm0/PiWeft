@@ -151,6 +151,7 @@ public sealed class GoogleVertexProvider : IApiProvider
 			}
 		}
 
+		options.NotifyRequestPayload(bytes, model);
 		var url = BuildUrl(model, options, apiKey is not null, stored);
 		var request = new HttpRequestMessage(HttpMethod.Post, url)
 		{

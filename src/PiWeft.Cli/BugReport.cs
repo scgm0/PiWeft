@@ -68,6 +68,7 @@ public static class BugReport
 		builder.AppendLine();
 
 		builder.AppendLine("## Environment");
+		builder.AppendLine($"- PiWeft pi compatibility: {CliRunner.PiCompatibilityVersion}");
 		builder.AppendLine($"- PiWeft RPC contract: {CliRunner.RpcContractVersion}");
 		builder.AppendLine($"- Runtime: {Environment.Version}");
 		builder.AppendLine($"- OS: {Environment.OSVersion} ({System.Runtime.InteropServices.RuntimeInformation.OSDescription})");

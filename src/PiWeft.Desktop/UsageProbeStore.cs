@@ -15,6 +15,10 @@ internal sealed record UsageProbeProviderConfig(
 	string CookiePath = "",
 	string ValuePath = "",
 	string CurrencyPath = "",
+	/// Sub2API 面板登录态（PiDeck 的 usage-probes.json 同名字段）：余额段用网页后台 JWT。
+	string PanelJwt = "",
+	/// 面板续期用的 refresh token（上游单次轮转；续期成功后要立刻回写）。
+	string PanelRefreshToken = "",
 	int TimeoutSecs = UsageProbeStore.DefaultTimeoutSeconds,
 	int IntervalMinutes = UsageProbeStore.DefaultIntervalMinutes);
 
@@ -115,6 +119,42 @@ internal static class UsageProbeStore
 		return new UsageProbeDocument(providers, probes, errors, path);
 	}
 
+	/// 只改面板登录态两个字段，不整条重写：上游 refresh token 单次轮转，续期成功后必须
+	/// 立刻落盘；providers 条目里的其它字段与未知键按磁盘原样保留。
+	public static bool UpdatePanelTokens(string agentDir, string provider, string panelJwt, string? panelRefreshToken)
+	{
+		try
+		{
+			var path = System.IO.Path.Combine(agentDir, FileName);
+			var root = File.Exists(path) ? ReadObject(path) : new JsonObject();
+			if (root["providers"] is not JsonObject providers || providers[provider] is not JsonObject entry)
+			{
+				return false;
+			}
+
+			entry["panelJwt"] = panelJwt;
+			if (panelRefreshToken is { Length: > 0 } refresh)
+			{
+				entry["panelRefreshToken"] = refresh;
+			}
+
+			var directory = System.IO.Path.GetDirectoryName(path);
+			if (directory is { Length: > 0 })
+			{
+				Directory.CreateDirectory(directory);
+			}
+
+			var temp = path + ".tmp";
+			File.WriteAllText(temp, root.ToJsonString(ConfigurationStore.WriteOptions));
+			File.Move(temp, path, overwrite: true);
+			return true;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException or ArgumentException)
+		{
+			return false;
+		}
+	}
+
 	public static UsageProbeProviderConfig? LoadProvider(string agentDir, string provider) =>
 		Load(agentDir).Providers.GetValueOrDefault(provider);
 
@@ -131,6 +171,8 @@ internal static class UsageProbeStore
 			CookiePath: Text(entry, "cookiePath"),
 			ValuePath: Text(entry, "valuePath"),
 			CurrencyPath: Text(entry, "currencyPath"),
+			PanelJwt: Text(entry, "panelJwt"),
+			PanelRefreshToken: Text(entry, "panelRefreshToken"),
 			TimeoutSecs: Number(entry, "timeoutSecs") ?? DefaultTimeoutSeconds,
 			IntervalMinutes: Number(entry, "intervalMinutes") ?? DefaultIntervalMinutes);
 		Validate(config);
@@ -153,6 +195,8 @@ internal static class UsageProbeStore
 		Add("cookiePath", config.CookiePath);
 		Add("valuePath", config.ValuePath);
 		Add("currencyPath", config.CurrencyPath);
+		Add("panelJwt", config.PanelJwt);
+		Add("panelRefreshToken", config.PanelRefreshToken);
 		entry["timeoutSecs"] = config.TimeoutSecs;
 		entry["intervalMinutes"] = config.IntervalMinutes;
 		return entry;
@@ -169,7 +213,7 @@ internal static class UsageProbeStore
 			throw new ArgumentException(Strings.UsageInvalidConfig);
 		if (config.CookiePath.Length > 0 && (!config.CookiePath.StartsWith('/') || config.CookiePath.Any(char.IsControl)))
 			throw new ArgumentException(Strings.UsageInvalidConfig);
-		foreach (var value in new[] { config.ApiKey, config.AccessToken, config.UserId, config.Cookie, config.ValuePath, config.CurrencyPath })
+		foreach (var value in new[] { config.ApiKey, config.AccessToken, config.UserId, config.Cookie, config.ValuePath, config.CurrencyPath, config.PanelJwt, config.PanelRefreshToken })
 			if (value.Any(char.IsControl)) throw new ArgumentException(Strings.UsageInvalidConfig);
 	}
 

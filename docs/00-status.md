@@ -31,7 +31,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 ## 兼容基线
 
-- CLI 产物/程序集名保持 `pi`；`--version` 报告 RPC 契约版本 **1.3.0**。
+- CLI 产物/程序集名保持 `pi`；`--version` 报告兼容的 pi 版本 **1.5.2**（PiDeck 拿它做功能门槛与更新比较），RPC 契约版本 1.3.0 只出现在 `/changelog` 与 `--bug` 报告里。
 - 保留 `PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、项目 `.pi`、配置文件名与 v3 JSONL 会话格式。损坏的会话头 `cwd` 回退到当前目录。
 - 系统提示词只在运行时构造，不写入会话。未知字段原样保留：会话头、条目顶层、已知角色的未建模字段（`Extra`）、未知角色整体（`CustomMessage.Raw`）、未知条目（`UnknownSessionEntry`）；`usage` / `usage.cost` 的未知字段同样保留。新增已知角色字段时须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys`。
 - `find` 的路径型 pattern 锚定搜索目录（`src/*.ts` 不再匹配 `pkg/src/a.ts`，要任意深度写 `**/src/*.ts`），开头的 `./` 会剥掉，绝对 pattern 按绝对路径匹配；`read` 的「模型不支持图片」只写进 details，不进结果正文。
@@ -58,6 +58,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 凭据按显式选项、存储凭据、环境变量异步解析；OAuth 刷新有闸门且不跟随请求取消。可恢复错误按 `settings.retry` 退避；供应商 `Retry-After` 优先；要求等待超过 15 分钟的配额冷却不自动重试，直接把错误交回界面。失败尝试保留在文件里，通过 `context_edit` 排除出上下文。
 - 请求过大（`prefill_cap_refused`、413、payload too large、上下文超限）进入 overflow recovery：排除失败尝试后压缩；摘要请求本身过大时按 token 递归对半拆分，先摘要前半段再把它作为 `previousSummary` 摘要后半段。压缩/上下文编辑之后的最后一次 usage 不再充当上下文估算锚点，避免压缩后仍显示 600K。
 - PiDeck 私有名字（`pi-deck-*`、`__PI_DECK_*`、`[PI_DECK_*]`）集中声明在 `Compatibility/PiDeckProtocol.cs`，形状由 `PiDeckProtocolTests` 固定；纯内部名字用 `piweft-` 前缀。
+- PiDeck 宿主通道：`PIDECK_SECURITY_CONFIG`（策略快照接管档位/路径/危险命令）、`PIDECK_MODEL_TRACE_URL`（模型请求快照）、`PIDECK_AUTO_SESSION_TITLE`（首轮自动命名，先 `setStatus("pideck:auto-title")` 再改名）都已接线；关联会话的关系与提议落在 `<agentDir>/linked-sessions.json`，重启后仍可见（子会话按 `stopped` 恢复）。
 - PiDeck 0.12 互通：`/goal pause|resume|clear`、`/plan [off]`、`/reload` 在 RPC prompt 路径返回 `disposition:"handled"`，不写用户消息；`get_commands` 列出扩展命令与虚拟 `reload`（来源路径以 `pi-deck-runtime.ts` 结尾）；ask 支持 `skipped` 与部分关闭（`closed`）；关联会话结果同时给 camelCase 与 snake_case，`start_session` 支持 `proposal_id`。
 - 子代理是会话原生能力（`delegate` / `wait_subagents` / `list_subagents` / `read_subagent` / `send_to_subagent` / `stop_subagent`）：异步委派给带角色的子会话，最终回复作为消息回到父会话，父会话空闲时直接起一轮。角色来自 `.pi/agents/**/*.md`、`<agentDir>/agents/**/*.md` 与内置 `scout` / `reviewer` / `worker`；深度上限 1，并发上限 4，每个用户回合最多启动 32 个；子会话开后台标签并在侧栏挂在父会话下，输入区子代理条可打开或停止；`context: fork` 截到最后一个完整回合；计划模式与工具白名单收窄会传给子会话；`delegate` 支持 `output_schema`（JSON Schema 子集，校验失败标 failed）；`send_to_subagent` 支持 `follow_up`/`steer`/`auto`；连续 6 次回报拉起父会话后停投；单次运行默认 30 分钟超时；子代理条显示输入 + 输出 token 与总耗时；fork 历史超过 100k 字符只保留最近一段；关系条目落盘（含会话文件），重启后恢复列表并能冷恢复继续对话；结果在父会话回合结束时投递，工具行按字段展示；回报按助手排版渲染，不算用户提问（`UserMessage.IsUserAuthored`，分叉、重试、标题、导出都不认它）；`customType`/`display` 与人 pi 同形状落盘，重启后仍是回报。`-builtin:subagent` 关闭。详见 [05-subagent](05-subagent.md)。
 - 关联会话是桌面原生能力（`start_session` / `send_to_session` / `list_linked_sessions`）：子会话是同一项目的完整后台会话，独立标签；每轮结束把最后一条回复前 400 字回报父会话，空闲时直接起一轮、忙时排 follow-up。连续 6 次回报自动续跑后停止，用户发消息清零。`offer` 出提议卡等用户选「新会话 / 在此做 / 不要」（最长 10 分钟）；`own_initiative` 只登记卡片、工具立即返回。输入区上方的子会话条列出待决定提议与已开子会话。关系只在进程内。纯 CLI 不注册这三个工具。

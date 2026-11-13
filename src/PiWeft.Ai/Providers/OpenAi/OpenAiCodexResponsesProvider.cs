@@ -178,6 +178,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			}
 		}
 
+		options.NotifyRequestPayload(bytes, model);
 		return bytes;
 	}
 

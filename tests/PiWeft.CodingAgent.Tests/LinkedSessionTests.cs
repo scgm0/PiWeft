@@ -11,14 +11,22 @@ using Xunit;
 namespace PiWeft.CodingAgent.Tests;
 
 /// 关联会话：子会话回合结束回报父会话、自动续跑额度与互相发消息。
+[Collection("process-environment")]
 public sealed class LinkedSessionTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-linked-" + Guid.NewGuid().ToString("N")[..8]);
+	private readonly string? _previousAgentDir = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR");
 
-	public LinkedSessionTests() => Directory.CreateDirectory(_root);
+	public LinkedSessionTests()
+	{
+		Directory.CreateDirectory(_root);
+		// 关系表落到 agent 目录：测试必须指到临时目录，不能写用户的 ~/.pi/agent。
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", Path.Combine(_root, "agent"));
+	}
 
 	public void Dispose()
 	{
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _previousAgentDir);
 		if (Directory.Exists(_root))
 		{
 			Directory.Delete(_root, recursive: true);
@@ -27,13 +35,13 @@ public sealed class LinkedSessionTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	private CodingAgentSession CreateSession(ScriptedStreamFn stream, ILinkedSessionHost? host = null) =>
+	private CodingAgentSession CreateSession(ScriptedStreamFn stream, ILinkedSessionHost? host = null, string? sessionId = null) =>
 		new(new CodingAgentSessionOptions
 		{
 			Cwd = _root,
 			Model = ScriptedSessions.Model(),
 			StreamFn = stream.Invoke,
-			Session = SessionManager.InMemory(_root),
+			Session = SessionManager.InMemory(_root, sessionId),
 			Persist = false,
 			Skills = [],
 			PromptTemplates = [],
@@ -482,5 +490,88 @@ public sealed class LinkedSessionTests : IDisposable
 		await WaitForReportsAsync(hub, 1);
 		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
 		host.Children[0].Dispose();
+	}
+
+	[Fact]
+	public async Task RelationshipsAndProposalsSurviveARestart()
+	{
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到回报。");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("子会话做完了一轮。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		string sessionId;
+		using (var parent = CreateSession(parentStream, host))
+		{
+			sessionId = parent.Session.SessionId;
+			var hub = Assert.IsType<LinkedSessionHub>(parent.Linked);
+			Assert.True((await hub.StartAsync("修构建", "把构建修到全绿。")).Ok);
+			Assert.True((await hub.StartAsync("补文档", "补一段桌面文档。", LinkedSessionProposal.OwnInitiative)).Ok);
+			await WaitForReportsAsync(hub, 1);
+			await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
+		}
+
+		Assert.True(File.Exists(Path.Combine(_root, "agent", "linked-sessions.json")));
+
+		// 重启：关系与待决定提议都要回来；子会话没有活运行时，状态按 stopped 恢复。
+		using var reopened = CreateSession(new ScriptedStreamFn(), host, sessionId);
+		var restored = Assert.IsType<LinkedSessionHub>(reopened.Linked);
+		var child = Assert.Single(restored.Children);
+		Assert.Equal("修构建", child.Title);
+		Assert.Equal(LinkedSessionLink.Stopped, child.State);
+		Assert.Equal(1, child.TurnCount);
+		Assert.Contains("子会话做完了一轮。", child.LastReport);
+		var proposal = Assert.Single(restored.Proposals);
+		Assert.Equal("补文档", proposal.Title);
+		Assert.Equal(LinkedSessionProposal.OwnInitiative, proposal.Initiation);
+	}
+
+	[Fact]
+	public async Task RestoredProposalCanStillBeStarted()
+	{
+		var host = new FakeHost(_root);
+		string proposalId;
+		string sessionId;
+		using (var parent = CreateSession(new ScriptedStreamFn(), host))
+		{
+			sessionId = parent.Session.SessionId;
+			var hub = Assert.IsType<LinkedSessionHub>(parent.Linked);
+			Assert.True((await hub.StartAsync("补测试", "补一组测试。", LinkedSessionProposal.OwnInitiative)).Ok);
+			proposalId = Assert.Single(hub.Proposals).Id;
+		}
+
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("补好了。");
+		host.Streams.Enqueue(childStream);
+		using var reopened = CreateSession(new ScriptedStreamFn(), host, sessionId);
+		var restored = Assert.IsType<LinkedSessionHub>(reopened.Linked);
+
+		var started = await restored.StartAsync(null, string.Empty, LinkedSessionProposal.OwnInitiative, proposalId);
+
+		Assert.True(started.Ok, started.Text);
+		Assert.Contains("\"status\":\"started\"", started.Text);
+		Assert.Single(host.Children);
+		await WaitForReportsAsync(restored, 1);
+		await restored.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
+		host.Children[0].Dispose();
+	}
+
+	[Fact]
+	public void ExpiredProposalsAreNotRestored()
+	{
+		var directory = Path.Combine(_root, "agent");
+		Directory.CreateDirectory(directory);
+		var created = DateTimeOffset.UtcNow.AddDays(-8).ToUnixTimeMilliseconds();
+		File.WriteAllText(
+			Path.Combine(directory, "linked-sessions.json"),
+			$$"""
+			{"links":[],"proposals":[{"id":"old","parentSessionId":"parent","title":"旧提议","prompt":"p","initiation":"own_initiative","status":"pending","createdAt":{{created}}}]}
+			""");
+
+		var snapshot = LinkedSessionStore.Load(directory);
+
+		Assert.Empty(snapshot.Proposals);
 	}
 }

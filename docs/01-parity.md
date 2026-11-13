@@ -30,13 +30,13 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | 历史 | 编辑重发、重试、继续生成、fork、分支树、跳转、HTML 导出 | 多选批量、分支比较 |
 | 输入/模型 | 斜杠命令、命令面板、改键、快捷消息（插入/直发）、模型筛选/搜索/刷新、记住上次使用、每模型思考档 | 模型收藏 |
 | 附件 | 路径引用、图片文件/字节、粘贴、复制预览；进上下文前按模型限制应用 EXIF 方向并缩放/转码，`images.autoResize` 可关，`images.blockImages` 可拦（含历史图片） | 更多媒体类型、回复转图片 |
-| 用量 | 会话统计、上下文、费用、缓存、压缩；供应商余额/套餐；跨会话热力图 | 火山 AK/SK、Sub2API 登录态、热力图下钻 |
+| 用量 | 会话统计、上下文、费用、缓存、压缩；供应商余额/套餐；Sub2API 面板余额与续期；跨会话热力图 | 火山 AK/SK、热力图下钻 |
 | 设置 | 模型/供应商、供应商认证台（40+ 内置、OAuth / API Key 双方法、搜索、状态来源）、Agent、MCP、JSON、作用域、快捷消息、草稿保护、安全门、导入 | 技能/提示词管理、商店、安全门图形编辑与审批 |
 | MCP | 启动连接、状态、stdio 热刷新、手动重连 | 自动重连、跨项目运行时管理 |
 | Git | 状态、目录树、文件差异浮层（与轮末 chip 同一块）、暂存、提交、分支、AI 摘要、图、比较、fetch/pull/push、stash | 冲突界面、rebase/cherry-pick/reset、多远端 |
 | 文件 | 目录导航、Git 标记、内置编辑器、修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
 | 终端 | MiniPty、shell、scrollback、选择、SGR/备用屏、缩放重排、字素对齐、字格光标、OSC 4/8/10/11/12/52、鼠标、bracketed paste、IME、PRIMARY | 完整 VT100 边界、终端内搜索、多标签、快照回放 |
-| 关联会话 | 子会话工具（开 / 发消息 / 列表）、提议卡片（offer / own_initiative）、回合回报、自动续跑额度 6、子会话条、以后台标签打开 | 关系与提议落盘 |
+| 关联会话 | 子会话工具（开 / 发消息 / 列表）、提议卡片（offer / own_initiative）、回合回报、自动续跑额度 6、子会话条、以后台标签打开、关系与提议落盘 | 跨进程恢复联动 |
 | 主题/窗口 | 深浅/系统、侧栏收起与宽度恢复、尺寸/位置恢复、单实例 | 自定义强调色、多显示器可见性 |
 
 内嵌浏览器、自动更新、托盘、系统通知不在范围内。
@@ -68,7 +68,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 命令/模型/图片面板是窗口级覆盖层，同一窗口只开一个；Esc 关闭，切换标签清理。
 - 计划模式在回合结束时从 `Plan:` / `计划：` 下的编号行取步骤，推 `pi-deck-plan-todos` 草案，再弹 `[PI_DECK_PLAN_NEXT]` 选单：执行会恢复写权限并立刻起一轮，`[DONE:n]` 逐条勾进度；先不执行保持只读，关闭选单退出计划模式。步骤状态写 `pi-deck-plan-mode` 条目，只在执行态随分支恢复。
 - 目标模式带 `__PI_DECK_GOAL_MODE__` 标记进入，续轮指令以隐藏 follow-up 交给模型（首行 `[GOAL MODE ACTIVE] Round: n/m`，目标全文只在系统提示 section 里）；`GOAL_COMPLETE` / `GOAL_BLOCKED: 原因` / 轮次上限（默认 32）结束，中止与出错不推进轮次。暂停/阻塞时带标记的正文只当本轮指令，目标保持不变。状态写 `pi-deck-goal-mode` 条目，目标全文只在变化时落盘、重启只恢复为暂停；`/goal resume` 与目标条的恢复在空闲时真的补一轮。
-- 关联会话由 `start_session` / `send_to_session` / `list_linked_sessions` 驱动（名字与 PiDeck 扩展一致）：子会话是同一项目的完整后台会话，独立标签、不影响当前标签。每轮结束把最后一条回复前 400 字回报父会话；父会话空闲时直接起一轮，忙时排 follow-up。连续 6 次回报自动续跑后停止，用户在父会话发消息清零额度；关系只在进程内，重启后子会话仍在但不再联动。纯 CLI 没有宿主，不注册这三个工具。
+- 关联会话由 `start_session` / `send_to_session` / `list_linked_sessions` 驱动（名字与 PiDeck 扩展一致）：子会话是同一项目的完整后台会话，独立标签、不影响当前标签。每轮结束把最后一条回复前 400 字回报父会话；父会话空闲时直接起一轮，忙时排 follow-up。连续 6 次回报自动续跑后停止，用户在父会话发消息清零额度。关系与提议落在 `<agentDir>/linked-sessions.json`（字段与 PiDeck 同名），重启后子会话与 `own_initiative` 提议仍在，子会话按 `stopped` 恢复（没有活运行时）；`offer` 提议的等待者随进程消失，不恢复。纯 CLI 没有宿主，不注册这三个工具。
 - 提议卡片分两种：`offer` 默认，`start_session` 等用户点「新会话 / 在此做 / 不要」，最长 10 分钟，超时按没回答返回；`own_initiative` 只登记卡片、工具立即返回，用户点「在此做」会把简报作为用户消息发回父会话。桌面子会话条列出待决定提议与已开子会话，子会话行点击切到后台标签。
 - `ask_question` 是会话内联卡片（非遮罩）：题卡标签 + 进度 + 整行选项 + 自定义输入 + 「跳过」 + review 确认页；卡片打开时输入区折叠，页签标题加 `●`。文本题与自定义输入支持拖入本地路径，按主输入框的 `@` 引用插入；切题与多选重绘保留未提交草稿。逐题可跳过；关闭卡片时已答内容照样交回模型（`closed`），只有一题都没答才是取消。调用展开后按题号列出题目，答完的题在题干下贴选中的选项文案（自定义输入贴原文），未答/跳过各自标明。
 - 等待态常驻输入卡上方，阶段优先级退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗；预热期三句轮播，回合内空窗只说「正在处理」；静默 2 秒补「本轮已 N 秒」。时间线尾部的等待占位行只在等首 token 时出现，条件是最后一行是用户消息且没有任何一行在流；它报时的时候状态条不再重复同一个数字。
@@ -181,6 +181,8 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 
 配置在 `~/.pi/agent/usage-probes.json`（与 PiDeck 同构）：`providers` 由弹窗维护，`probes` 供手写，运行时按 `baseUrl` 合并。旧 `usage-queries.json` 只读兼容。默认关闭，需显式启用。超时预算覆盖整次探测（预检 + 所有候选 URL），失败也会沿用配置的自动查询间隔。
 
+Sub2API 模板除网关 apiKey 的 `/v1/usage` 外，还用 `panelJwt` 查面板钱包余额（`GET {origin}/api/v1/auth/me`，取 `data.balance`）。JWT 的 `exp` 提前 60 秒视作过期，或 `/auth/me` 返回 401 时，用 `panelRefreshToken` 调 `POST /api/v1/auth/refresh` 续期一次并重试；上游轮转后的 token 对立刻回写 `usage-probes.json`（单次轮转，不落盘下次就废）。这两个字段不在弹窗里编辑，保存其它字段时原样保留。
+
 内置候选：OpenCode Go、DeepSeek、OpenRouter、Kimi、Moonshot、SiliconFlow、智谱 GLM、Codex、xAI、Command Code、TokenDance、MiniMax、通用 `/usage`。OpenCode Go 走 origin 下的 `/zen/go/v1/usage`；OpenCode Zen 的用量在 Console 预算接口，需要 workspace 凭据，暂不内置。结果统一为 `periods` / `balance` / `credits`。展示为进度条（≥90% 红、≥70% 橙）与剩余量；失败显示尝试过的 URL、HTTP 状态/超时与脱敏摘要。安全边界：不跟 3xx；仅 HTTPS 或本机 HTTP；内置候选按 host（可带路径前缀）匹配，用户 probes 仍按 `baseUrlContains` 子串匹配；跨域只允许内置官方地址；模型自定义头只回发供应商域；响应 ≤1 MiB；明细抹掉 Key 并截断 240 字符。
 
 ### 工具调用安全门
@@ -219,10 +221,24 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | `__PI_DECK_PLAN_MODE__` / `__PI_DECK_GOAL_MODE__` | composer 注入的模式标记，正文即指令/目标 | `shared/composerModeMarkers.ts` |
 
 - ask 信封的答案在 0.12 增加 `skipped:true`；用户答了一部分后关闭卡片时返回 `{cancelled:true,answers:[...]}`，已答内容有效、未答题目按未作答处理。结果文本逐题列出 `(未作答)` 与 `(用户跳过，未作答)`，details 带 `closed:true`。
-- 关联会话三个工具由 `pi-deck-linked-sessions.ts` 定义；`start_session` 支持 `proposal_id` 启动已登记提议，结果同时给 `sessionId`/`session_id` 与 `proposalId`/`proposal_id`（PiDeck 卡片读 camelCase）。
+- 关联会话三个工具由 `pi-deck-linked-sessions.ts` 定义；`start_session` 支持 `proposal_id` 启动已登记提议，结果同时给 `sessionId`/`session_id` 与 `proposalId`/`proposal_id`（PiDeck 卡片读 camelCase）。关系与提议存 `<agentDir>/linked-sessions.json`，形状对齐 `shared/types/linkedSessions.ts`。
 - 形状比名字更容易漂移：PiDeck 的待办快照从 v2 变到 v3。名字对、字段错的表现是「静默不显示」，`tests/PiWeft.CodingAgent.Tests/PiDeckProtocolTests.cs` 逐条断言字面量与字段名。
 - 纯内部名字不借前缀：目标续轮消息角色是 `piweft-goal-continue`，继续生成的空标记是 `piweft-continue`，都以 `display:false` 的 custom message 落进会话。
 - 升级 PiDeck 时检查：`resources/extensions/pi-deck-*.ts` 的条目/widget 形状、`src/renderer` 的 key 表、`src/main` 的 `customType` 过滤。改名或改形状要同步 `PiDeckProtocol` 与形状测试。
+
+## PiDeck 宿主通道
+
+PiDeck 用环境变量把宿主能力交给 pi；把 `customPiPath` 指向本端口时这些通道要能接上，否则对应功能在切换后静默消失。
+
+| 变量 | PiDeck 侧 | 本端口 |
+|---|---|---|
+| `PIDECK_SECURITY_CONFIG` / `PIDECK_SESSION_ID` | 策略快照 `security-policy.json` + 会话 id | 读快照映射成 `SecurityConfig`（档位、工具动作、路径边界、危险命令），按会话 id 取覆盖；坏快照按 off 放行 |
+| `PIDECK_MODEL_TRACE_URL` / `PIDECK_MODEL_TRACE_TOKEN` | 回环端点，`POST` 请求/响应帧 | 请求体发出前推 `kind:"request"`（1.5 MB 头部截断），响应头到达推 `kind:"response"`，按到达顺序配对；最多 4 条并发，2 秒超时，失败只丢这一条 |
+| `PIDECK_AUTO_SESSION_TITLE` | `1` / `0` | 为 `1` 时在首轮结束后给空白会话自动命名：先 `setStatus("pideck:auto-title", 标题)` 再改名，PiDeck 只认紧邻的那次 `session_info_changed`；手动改名取消自动命名 |
+| `PIDECK_LINKED_SESSIONS_URL` / `PIDECK_LINKED_SESSIONS_TOKEN` | 关联会话端点 | 本端口原生实现三个工具，不读这两个变量 |
+
+- 自动标题的旁路请求用独立 Context（只带标题 system prompt 与首条用户/助手文本），30 秒预算、最多两次（第二次升输出预算），失败只是本轮不命名。只命名空白会话；`/命令` 开头的输入不参与；只插模板/技能的消息直接用块标签当标题。
+- 导出 HTML 把工具输出里的 ANSI 转成内联样式、OSC 8 超链接转成 `<a>`（只放行 http/https/mailto），其余转义序列丢弃；与 pi 1.5.2+ 的 `ansi-to-html.ts` 同义。
 
 ## 启动迁移、CLI 与网络
 
@@ -241,6 +257,7 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 
 ### 命令行与网络
 
+- `--version` 报告**兼容的 pi 版本**（`1.5.2`），不是 RPC 契约版本：PiDeck 拿它做功能门槛与更新比较，报契约版本会让它一直提示升级到用不上的 npm 包。RPC 契约版本（`1.3.0`）留在 `/changelog` 与 `--bug` 报告里。
 - `--offline` / `PI_OFFLINE=1` 跳过模型目录刷新、包更新和启动目录拉取；显式登录、安装与对话照常。
 - `pi update` 在 NativeAOT 构建里提示用发行页更新本体；`pi update --extensions` 更新包并报告 npm 版本或 git commit 变化；`--all` 同时提示本体与更新包。
 - 未知长选项按 `--flag=value` / `--flag value` / 布尔 `--flag` 收集，交给扩展；无人注册报错退出 2。短选项立即报错。
@@ -304,15 +321,15 @@ API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-ke
 | D-04 | Git 工作流 | 暂存/提交/分支/图/比较/远端/stash 已实现；缺冲突界面、rebase/cherry-pick/reset、多远端 |
 | D-05 | 检查点 | 快照/概览/恢复已实现；缺与回合关联、恢复后清理未跟踪文件、分页、按范围回退 |
 | D-06 | 配置深度 | 连接测试、远程目录、价格、订阅 OAuth 已实现；缺供应商迁移、收藏/排序、专用目录、多账号 |
-| D-07 | 用量 | `usage-probes.json`、三种形态、多窗口、自动查询、失败明细已实现；缺火山 AK/SK、Sub2API、热力图下钻 |
+| D-07 | 用量 | `usage-probes.json`、三种形态、多窗口、自动查询、失败明细已实现；Sub2API 面板 JWT 余额与 refresh token 轮转回写已接入；缺火山 AK/SK、热力图下钻 |
 | D-08 | 技能/插件生态 | 资源发现与资源页；缺商店、中文提示词库、包安装可视化、独立宿主插件 |
 | D-09 | 多后端/导入 | Claude Code / Codex CLI 导入；缺 DSH/ACP 与 SQLite 格式 |
 | D-10 | 多模态 | 图片输入/预览；缺视觉桥、生图入口、语音/视频 |
 | D-11 | 远程/自动化 | 缺局域网 Web、实时推送、隧道、飞书、定时任务 |
 | D-12 | 桌面集成 | 缺托盘、系统通知、自动更新、快捷浮窗、桌面宠物；诊断包与环境体检未对齐 |
 | D-13 | 交互/长历史 | 缺项目级置顶/排序、拖拽/分屏、完整消息编辑删除、Mermaid/KaTeX；历史分页经实测不做 |
-| D-14 | 工具审批 | 安全门已实现；缺 PiDeck 的独立会话存储位置与 CLI 档位切换 |
-| D-15 | 关联会话 | 子会话工具、提议卡片（offer / own_initiative）、回合回报、自动续跑额度 6、子会话条、后台标签已实现；缺关系与提议落盘 |
+| D-14 | 工具审批 | 安全门已实现；`PIDECK_SECURITY_CONFIG` 快照接管档位与路径边界；缺 PiDeck 的独立会话存储位置与 CLI 档位切换 |
+| D-15 | 关联会话 | 子会话工具、提议卡片（offer / own_initiative）、回合回报、自动续跑额度 6、子会话条、后台标签、关系与提议落盘已实现；缺跨进程恢复联动 |
 
 ## 验证
 

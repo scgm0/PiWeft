@@ -256,8 +256,9 @@ internal sealed class ProviderUsageService(HttpClient client)
 					attempts.Add(new(url, candidate.Method, Shape: true));
 					continue;
 				}
-				return new ProviderUsageResult(true, parsed.Kind, parsed.Periods, parsed.Balance, parsed.Currency,
+				var result = new ProviderUsageResult(true, parsed.Kind, parsed.Periods, parsed.Balance, parsed.Currency,
 					parsed.Credits, parsed.Booster, At: startedAt, IntervalMinutes: intervalMinutes);
+				return await WithPanelBalanceAsync(model, result, intervalMinutes, cancellationToken).ConfigureAwait(false);
 			}
 		}
 
@@ -269,6 +270,46 @@ internal sealed class ProviderUsageService(HttpClient client)
 		if (missingKey && attempts.All(attempt => attempt.Error == Strings.UsageMissingKey))
 			return ProviderUsageResult.Failure(Strings.UsageMissingKey, intervalMinutes: intervalMinutes);
 		return ProviderUsageResult.Failure(Strings.UsageUnavailable, BuildDetail(attempts, plan.Token), intervalMinutes);
+	}
+
+	/// Sub2API 的余额段：网关 apiKey 的 `/v1/usage` 不含面板钱包，PiDeck 另用网页后台 JWT
+	/// 查 `GET /api/v1/auth/me`。主结果已经有余额时不覆盖；面板任何失败都只让这一段缺席。
+	private async Task<ProviderUsageResult> WithPanelBalanceAsync(
+		Model model,
+		ProviderUsageResult result,
+		int intervalMinutes,
+		CancellationToken cancellationToken)
+	{
+		if (result.Balance is not null)
+		{
+			return result;
+		}
+
+		var agentDir = SessionPaths.GetAgentDir();
+		var config = UsageProbeStore.Load(agentDir).Providers.GetValueOrDefault(model.Provider);
+		if (config is null ||
+			!string.Equals(config.Template, "sub2api", StringComparison.Ordinal) ||
+			config.PanelJwt.Length == 0)
+		{
+			return result;
+		}
+
+		var baseUrl = config.BaseUrl.Length > 0 ? config.BaseUrl : model.BaseUrl;
+		var timeout = TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSecs, 1, 300));
+		var (balance, rotated) = await Sub2ApiPanel
+			.FetchBalanceAsync(client, baseUrl, new Sub2ApiPanel.Tokens(config.PanelJwt, config.PanelRefreshToken), timeout,
+				DateTimeOffset.UtcNow, cancellationToken)
+			.ConfigureAwait(false);
+
+		if (rotated is not null)
+		{
+			// 上游轮转 refresh token：不立刻回写，下一次过期就彻底续不上。
+			UsageProbeStore.UpdatePanelTokens(agentDir, model.Provider, rotated.AccessToken, rotated.RefreshToken);
+		}
+
+		return balance is null
+			? result
+			: result with { Balance = balance.Value, Currency = balance.Currency ?? result.Currency };
 	}
 
 	private async Task<UsagePreflightOutcome> RunPreflightAsync(Model model, UsageProbePlan plan, UsageProbePreflight preflight,

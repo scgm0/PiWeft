@@ -296,7 +296,13 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 				CurrencyPath = _currencyPath.Text.Trim(),
 				BaseUrl = _baseUrl.Text.Trim(),
 			},
-			"sub2api" => config with { BaseUrl = _baseUrl.Text.Trim() },
+			// 面板登录态不在表单里编辑：打开弹窗再保存不能把 PiDeck 写下的 token 清掉。
+			"sub2api" => config with
+			{
+				BaseUrl = _baseUrl.Text.Trim(),
+				PanelJwt = _config?.PanelJwt ?? string.Empty,
+				PanelRefreshToken = _config?.PanelRefreshToken ?? string.Empty,
+			},
 			// 表单没有显示的字段（key/地址覆盖）保存时原样保留：自动识别与内置模板都可能
 			// 来自旧版迁移或手写配置，不能因为「打开弹窗再保存」就被清掉。
 			_ => config with { ApiKey = _config?.ApiKey ?? string.Empty, BaseUrl = _config?.BaseUrl ?? string.Empty },

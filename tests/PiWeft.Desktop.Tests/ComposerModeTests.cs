@@ -10,11 +10,18 @@ namespace PiWeft.Desktop.Tests;
 public sealed class ComposerModeTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-modes-" + Guid.NewGuid().ToString("N")[..8]);
+	private readonly string? _previousAgentDir = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR");
 
-	public ComposerModeTests() => Directory.CreateDirectory(_root);
+	public ComposerModeTests()
+	{
+		Directory.CreateDirectory(_root);
+		// 关联会话的关系表落在 agent 目录：测试指到临时目录，不写用户的 ~/.pi/agent。
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", Path.Combine(_root, "agent"));
+	}
 
 	public void Dispose()
 	{
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _previousAgentDir);
 		if (Directory.Exists(_root))
 		{
 			Directory.Delete(_root, recursive: true);
