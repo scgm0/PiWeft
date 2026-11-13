@@ -57,6 +57,8 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 项目信任：`<agentDir>/trust.json` 从 cwd 逐级向上取第一个决策；`-a/--approve`、`-na/--no-approve` 覆盖；默认 `ask`。不受信时不合并项目设置、不连项目 MCP、不读项目模型/技能/提示词。RPC/print 无法弹框时按不受信处理。
 - 凭据按显式选项、存储凭据、环境变量异步解析；OAuth 刷新有闸门且不跟随请求取消。可恢复错误按 `settings.retry` 退避；供应商 `Retry-After` 优先；要求等待超过 15 分钟的配额冷却不自动重试，直接把错误交回界面。失败尝试保留在文件里，通过 `context_edit` 排除出上下文。
 - 请求过大（`prefill_cap_refused`、413、payload too large、上下文超限）进入 overflow recovery：排除失败尝试后压缩；摘要请求本身过大时按 token 递归对半拆分，先摘要前半段再把它作为 `previousSummary` 摘要后半段。压缩/上下文编辑之后的最后一次 usage 不再充当上下文估算锚点，避免压缩后仍显示 600K。
+- 溢出识别不只靠错误文本：`input + cacheRead` 超过窗口的静默溢出、`length` 结束且输出为 0、以及 `context window exceeded` 一类错误都算。`length` 结束但输出没到模型上限时做一次「排除半截回复 + 压缩 + 重试」。失败的尝试连同配对的工具结果一起用 `context_edit` 排除。
+- 自动压缩失败只发 `compaction_end` 错误，不拦用户提问，也不中断正在跑的工具回合；摘要请求只重试瞬态错误，且不写缓存前缀。摘要末尾附 `<read-files>` / `<modified-files>`（跨压缩累积），压缩检查点保存合并后的系统提示词。
 - PiDeck 私有名字（`pi-deck-*`、`__PI_DECK_*`、`[PI_DECK_*]`）集中声明在 `Compatibility/PiDeckProtocol.cs`，形状由 `PiDeckProtocolTests` 固定；纯内部名字用 `piweft-` 前缀。
 - PiDeck 宿主通道：`PIDECK_SECURITY_CONFIG`（策略快照接管档位/路径/危险命令）、`PIDECK_MODEL_TRACE_URL`（模型请求快照）、`PIDECK_AUTO_SESSION_TITLE`（首轮自动命名，先 `setStatus("pideck:auto-title")` 再改名）都已接线；关联会话的关系与提议落在 `<agentDir>/linked-sessions.json`，重启后仍可见（子会话按 `stopped` 恢复）。
 - PiDeck 0.12 互通：`/goal pause|resume|clear`、`/plan [off]`、`/reload` 在 RPC prompt 路径返回 `disposition:"handled"`，不写用户消息；`get_commands` 列出扩展命令与虚拟 `reload`（来源路径以 `pi-deck-runtime.ts` 结尾）；ask 支持 `skipped` 与部分关闭（`closed`）；关联会话结果同时给 camelCase 与 snake_case，`start_session` 支持 `proposal_id`。

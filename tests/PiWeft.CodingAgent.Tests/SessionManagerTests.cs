@@ -192,6 +192,32 @@ public class SessionManagerTests : IDisposable
 	}
 
 	[Fact]
+	public void BuildContextEntries_DropsOlderCompactionsInTheKeptRange()
+	{
+		var manager = SessionManager.Create("/tmp/p", SessionDir);
+		var one = manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("one"), Timestamp = 1 });
+		manager.AppendMessage(new AssistantMessage { Api = "a", Provider = "p", Model = "m", Timestamp = 2 });
+		manager.AppendCompaction("first summary", one, 100);
+		manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("two"), Timestamp = 3 });
+		manager.AppendMessage(new AssistantMessage { Api = "a", Provider = "p", Model = "m", Timestamp = 4 });
+
+		// 第二次压缩把切点放回第一次压缩之前的条目：旧 compaction 落在保留范围内。
+		manager.AppendCompaction("second summary", one, 200);
+
+		var entries = manager.BuildContextEntries();
+
+		Assert.Single(entries.OfType<CompactionEntry>());
+		Assert.Equal("second summary", Assert.IsType<CompactionEntry>(entries[0]).Summary);
+		Assert.DoesNotContain(entries, static entry => entry is CompactionEntry { Summary: "first summary" });
+
+		var context = manager.BuildProjectedMessages();
+		Assert.Contains(context, static message =>
+			message is UserMessage user && user.Content.Text!.Contains("second summary", StringComparison.Ordinal));
+		Assert.DoesNotContain(context, static message =>
+			message is UserMessage user && user.Content.Text!.Contains("first summary", StringComparison.Ordinal));
+	}
+
+	[Fact]
 	public void BuildProjectedMessages_AppliesContextEdits()
 	{
 		var manager = SessionManager.Create("/tmp/p", SessionDir);

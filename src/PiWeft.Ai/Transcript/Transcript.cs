@@ -42,7 +42,15 @@ public static class Transcript
 				{
 					foreach (var (name, value) in systemSections)
 					{
-						sections[name] = value;
+						// null 表示删除章节，不能留成键值都存在的 null。
+						if (value is null)
+						{
+							sections.Remove(name);
+						}
+						else
+						{
+							sections[name] = value;
+						}
 					}
 				}
 
@@ -99,18 +107,89 @@ public static class Transcript
 		return builder.ToString();
 	}
 
+	/// <summary>合并所有 system 消息得到当前的工具集：后出现的 ToolsRemoved 删除后出现的 ToolsAdded 添加。</summary>
 	public static IReadOnlyList<Tool> GetTools(IReadOnlyList<Message> messages)
 	{
-		IReadOnlyList<Tool> tools = [];
+		var tools = new Dictionary<string, Tool>(StringComparer.Ordinal);
 		foreach (var message in messages)
 		{
-			if (message is SystemMessage { ToolsAdded: { Count: > 0 } added })
+			if (message is not SystemMessage system)
 			{
-				tools = added;
+				continue;
+			}
+
+			if (system.ToolsRemoved is { Count: > 0 } removed)
+			{
+				foreach (var tool in removed)
+				{
+					tools.Remove(tool.Name);
+				}
+			}
+
+			if (system.ToolsAdded is { Count: > 0 } added)
+			{
+				foreach (var tool in added)
+				{
+					tools[tool.Name] = tool;
+				}
 			}
 		}
 
-		return tools;
+		return [.. tools.Values];
+	}
+
+	/// 把所有 system 消息重放成一条：正文按顺序拼接，sections 按名字覆盖（null 删除），
+	/// 工具按增删顺序合并。压缩的检查点用它保存当时的完整提示词状态。
+	public static SystemMessage? GetCurrentSystemMessage(IReadOnlyList<Message> messages)
+	{
+		var content = new List<string>();
+		var sections = new Dictionary<string, string?>(StringComparer.Ordinal);
+		long? timestamp = null;
+		var found = false;
+		foreach (var message in messages)
+		{
+			if (message is not SystemMessage system)
+			{
+				continue;
+			}
+
+			found = true;
+			timestamp ??= system.Timestamp;
+			var text = GetText(system);
+			if (text.Length > 0)
+			{
+				content.Add(text);
+			}
+
+			if (system.Sections is { Count: > 0 } systemSections)
+			{
+				foreach (var (name, value) in systemSections)
+				{
+					if (value is null)
+					{
+						sections.Remove(name);
+					}
+					else
+					{
+						sections[name] = value;
+					}
+				}
+			}
+		}
+
+		var tools = GetTools(messages);
+		if (!found && tools.Count == 0)
+		{
+			return null;
+		}
+
+		return new SystemMessage
+		{
+			Content = MessageContent.FromText(string.Join("\n\n", content)),
+			Sections = sections.Count > 0 ? sections : null,
+			ToolsAdded = tools.Count > 0 ? tools : null,
+			Timestamp = timestamp ?? 0,
+		};
 	}
 
 	public static string GetInitialSystemText(IReadOnlyList<Message> messages)

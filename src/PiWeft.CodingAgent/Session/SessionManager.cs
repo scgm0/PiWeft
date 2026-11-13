@@ -772,17 +772,24 @@ public sealed partial class SessionManager
 		SystemMessage? systemMessage = null,
 		Usage? usage = null,
 		System.Text.Json.Nodes.JsonNode? details = null,
-		bool? fromHook = null) => Append(new CompactionEntry
+		bool? fromHook = null)
 	{
-		Timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow),
-		Summary = summary,
-		FirstKeptEntryId = firstKeptEntryId,
-		TokensBefore = tokensBefore,
-		SystemMessage = systemMessage,
-		Usage = usage,
-		Details = details,
-		FromHook = fromHook,
-	}).Id;
+		var now = DateTimeOffset.UtcNow;
+		return Append(new CompactionEntry
+		{
+			Timestamp = SessionPaths.ToIso8601(now),
+			Summary = summary,
+			FirstKeptEntryId = firstKeptEntryId,
+			TokensBefore = tokensBefore,
+			// 与 pi 一致：检查点时间戳跟 compaction 条目对齐，回放时不保留旧提示词的构建时间。
+			SystemMessage = systemMessage is { } checkpoint
+				? checkpoint with { Timestamp = now.ToUnixTimeMilliseconds() }
+				: null,
+			Usage = usage,
+			Details = details,
+			FromHook = fromHook,
+		}).Id;
+	}
 
 	public string AppendBranchSummary(
 		string fromId,
@@ -1029,6 +1036,25 @@ public sealed partial class SessionManager
 		return path;
 	}
 
+	/// <summary>从当前叶子向根找第一条满足条件的条目；不构建分支快照。谓词在会话锁内执行，不能回调本管理器。</summary>
+	public SessionEntry? FindFromLeaf(Func<SessionEntry, bool> match)
+	{
+		ArgumentNullException.ThrowIfNull(match);
+		using var scope = _stateGate.EnterScope();
+		var currentId = _leafId;
+		while (currentId is not null && _byId.TryGetValue(currentId, out var current))
+		{
+			if (match(current))
+			{
+				return current;
+			}
+
+			currentId = current.ParentId;
+		}
+
+		return null;
+	}
+
 	private ImmutableList<SessionEntry> BuildBranchPath(string? leafId)
 	{
 		var path = new List<SessionEntry>();
@@ -1061,40 +1087,36 @@ public sealed partial class SessionManager
 			return path;
 		}
 
-		var compactionIndex = -1;
-		for (var i = 0; i < path.Count; i++)
-		{
-			if (path[i].Id == compaction.Id)
-			{
-				compactionIndex = i;
-				break;
-			}
-		}
-
-		if (compactionIndex < 0)
-		{
-			return path;
-		}
-
 		var contextEntries = new List<SessionEntry> { compaction };
 		var foundFirstKept = false;
-		for (var i = 0; i < compactionIndex; i++)
+		var beforeCompaction = true;
+		foreach (var entry in path)
 		{
-			var entry = path[i];
-			if (entry.Id == compaction.FirstKeptEntryId)
+			if (beforeCompaction)
 			{
-				foundFirstKept = true;
+				if (entry.Id == compaction.Id)
+				{
+					beforeCompaction = false;
+					continue;
+				}
+
+				if (entry.Id == compaction.FirstKeptEntryId)
+				{
+					foundFirstKept = true;
+				}
+
+				// 被保留范围内的旧 compaction 不再贡献消息：最新检查点已经取代它。
+				// 留着会把旧摘要重复放进投影，也会让 Compactor 把旧摘要当成 previousSummary。
+				if (foundFirstKept && entry is not CompactionEntry &&
+					entry is not SessionMessageEntry { Message: SystemMessage })
+				{
+					contextEntries.Add(entry);
+				}
+
+				continue;
 			}
 
-			if (foundFirstKept && !(entry is SessionMessageEntry { Message: SystemMessage }))
-			{
-				contextEntries.Add(entry);
-			}
-		}
-
-		for (var i = compactionIndex + 1; i < path.Count; i++)
-		{
-			contextEntries.Add(path[i]);
+			contextEntries.Add(entry);
 		}
 
 		return contextEntries;
@@ -1444,6 +1466,19 @@ public sealed partial class SessionManager
 	/// 把单个条目投影成模型可见消息，并应用针对它的 <c>context_edit</c>（<c>null</c> 表示移除）。
 	internal static IReadOnlyList<Message> ProjectEntry(SessionEntry entry, ContextEditEntry? edit)
 	{
+		// 单个消息条目是最常见的形态，避免为一条消息分配 List 再走一遍替换循环。
+		if (entry is SessionMessageEntry messageEntry)
+		{
+			if (edit is null)
+			{
+				return [messageEntry.Message];
+			}
+
+			return edit.Replacement is { } singleReplacement
+				? [ReplaceContent(messageEntry.Message, singleReplacement)]
+				: [];
+		}
+
 		var messages = ToMessages(entry);
 		if (edit is not { Replacement: { } replacement })
 		{

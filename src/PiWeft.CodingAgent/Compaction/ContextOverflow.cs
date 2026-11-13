@@ -23,6 +23,8 @@ public static partial class ContextOverflow
 		AvailableContextSize(),
 		GreaterThanContextLength(),
 		ContextWindowExceedsLimit(),
+		ContextWindowExceeded(),
+		ModelContextWindowExceeded(),
 		ExceededModelTokenLimit(),
 		TooLargeForModel(),
 		PromptHasTokens(),
@@ -44,8 +46,46 @@ public static partial class ContextOverflow
 		TooManyRequests(),
 	];
 
+	/// <summary>只看错误文本的溢出判定；有窗口大小时用带 window 的重载。</summary>
 	public static bool IsOverflow(AssistantMessage message) =>
 		message.StopReason == StopReason.Error && IsOverflowText(message.ErrorMessage);
+
+	/// <summary>
+	/// 带窗口大小的溢出判定。除了错误文本，还识别两类不报错的溢出：请求成功但
+	/// input + cacheRead 超过窗口（z.ai），以及服务端把输入截到窗口后没有输出余量、
+	/// 以 length 结束（Xiaomi MiMo）。窗口为 0 时只看错误文本。
+	/// </summary>
+	public static bool IsOverflow(AssistantMessage message, int contextWindow)
+	{
+		if (message.StopReason == StopReason.Error)
+		{
+			return IsOverflowText(message.ErrorMessage) ||
+				(string.Equals(message.Provider, "cerebras", StringComparison.OrdinalIgnoreCase) &&
+					BodylessStatus().IsMatch(message.ErrorMessage ?? string.Empty));
+		}
+
+		if (contextWindow <= 0)
+		{
+			return false;
+		}
+
+		var inputTokens = message.Usage.Input + message.Usage.CacheRead;
+		return message.StopReason switch
+		{
+			StopReason.Stop => inputTokens > contextWindow,
+			StopReason.Length => message.Usage.Output == 0 && inputTokens >= contextWindow * 0.99,
+			_ => false,
+		};
+	}
+
+	/// <summary>
+	/// length 结束且输出没到模型的输出上限：可能是上下文挤压或供应商截断。
+	/// <paramref name="desiredMaxOutput"/> 要传请求钳制之前的原始上限。
+	/// </summary>
+	public static bool IsRecoverableLength(AssistantMessage message, int desiredMaxOutput) =>
+		message.StopReason == StopReason.Length &&
+		desiredMaxOutput > 0 &&
+		message.Usage.Output < desiredMaxOutput;
 
 	/// <summary>
 	/// 判断一段错误文本是「请求太大」还是普通限流。压缩摘要请求本身也可能太大：
@@ -113,6 +153,16 @@ public static partial class ContextOverflow
 
 	[GeneratedRegex(@"context window exceeds limit", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
 	private static partial Regex ContextWindowExceedsLimit();
+
+	[GeneratedRegex(@"context window exceeded", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+	private static partial Regex ContextWindowExceeded();
+
+	[GeneratedRegex(@"model_context_window_exceeded", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+	private static partial Regex ModelContextWindowExceeded();
+
+	// 只有 Cerebras 的空响应体溢出算上下文问题，其余供应商的 400/413 空响应按瞬态重试。
+	[GeneratedRegex(@"^4(?:00|13)\s*(?:status code)?\s*\(no body\)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+	private static partial Regex BodylessStatus();
 
 	[GeneratedRegex(@"exceeded model token limit", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
 	private static partial Regex ExceededModelTokenLimit();

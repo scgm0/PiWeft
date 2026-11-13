@@ -50,6 +50,36 @@ public static class CompactionPrompts
 		- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 		- UPDATE "Next Steps" based on what was accomplished
 		- PRESERVE exact file paths, function names, and error messages
+		- If something is no longer relevant, you may remove it
+
+		Use this EXACT format:
+
+		## Goal
+		[Preserve existing goals, add new ones if the task expanded]
+
+		## Constraints & Preferences
+		- [Preserve existing, add new ones discovered]
+
+		## Progress
+		### Done
+		- [x] [Include previously done items AND newly completed items]
+
+		### In Progress
+		- [ ] [Current work - update based on progress]
+
+		### Blocked
+		- [Current blockers - remove if resolved]
+
+		## Key Decisions
+		- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+		## Next Steps
+		1. [Update based on current state]
+
+		## Critical Context
+		- [Preserve important context, add new if needed]
+
+		Keep each section concise. Preserve exact file paths, function names, and error messages.
 		""";
 
 	public const string UpdateSummarizationPrompt = """
@@ -60,8 +90,17 @@ public static class CompactionPrompts
 	public const string TurnPrefixSummarizationPrompt = """
 		The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
 
-		Create a structured summary of this earlier context that another LLM will use to continue the work. Focus on what is needed to understand the later messages.
+		Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
 
-		Preserve exact file paths, function names, and error messages.
+		## Original Request
+		[What did the user ask for?]
+
+		## Progress So Far
+		- [Key decisions and work completed in these messages]
+
+		## Context Needed to Continue
+		- [Information from these messages needed to understand the later work]
+
+		Only summarize information explicitly present above. Do not infer or recreate later messages.
 		""";
 }

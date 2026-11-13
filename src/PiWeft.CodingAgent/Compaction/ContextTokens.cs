@@ -38,7 +38,7 @@ public static class ContextTokens
 			SystemMessage system => SystemChars(system),
 			UserMessage user => ContentChars(user.Content),
 			AssistantMessage assistant => AssistantChars(assistant),
-			ToolResultMessage result => result.Content.Sum(BlockChars),
+			ToolResultMessage result => BlocksChars(result.Content),
 			CustomMessage custom => custom.Raw is { } raw ? RawChars(raw) : ContentChars(custom.Content),
 			_ => 0,
 		};
@@ -114,7 +114,7 @@ public static class ContextTokens
 				TextContent text => text.Text.Length,
 				ThinkingContent thinking => thinking.Thinking.Length,
 				ToolCall call => call.Name.Length + call.Arguments.ToJsonString(PiJson.NodeOptions).Length,
-				_ => 0,
+				ImageContent => 0,
 			};
 		}
 
@@ -128,16 +128,25 @@ public static class ContextTokens
 			return content.Text?.Length ?? 0;
 		}
 
-		return (content.Blocks ?? []).Sum(BlockChars);
+		return BlocksChars(content.Blocks ?? []);
 	}
 
-	private static long BlockChars(ContentBlock block) => block switch
+	private static long BlocksChars(IReadOnlyList<ContentBlock> blocks)
 	{
-		TextContent text => text.Text.Length,
-		ImageContent => EstimatedImageChars,
-		ThinkingContent thinking => thinking.Thinking.Length,
-		ToolCall => 0,
-	};
+		long chars = 0;
+		foreach (var block in blocks)
+		{
+			chars += block switch
+			{
+				TextContent text => text.Text.Length,
+				ImageContent => EstimatedImageChars,
+				ThinkingContent thinking => thinking.Thinking.Length,
+				ToolCall => 0,
+			};
+		}
+
+		return chars;
+	}
 
 	private static long RawChars(JsonObject raw)
 	{

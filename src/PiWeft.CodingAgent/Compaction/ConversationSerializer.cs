@@ -20,7 +20,18 @@ public static class ConversationSerializer
 
 	public static string Serialize(IEnumerable<Message> messages)
 	{
-		var parts = new List<string>();
+		var builder = new StringBuilder();
+		var first = true;
+
+		void Separate()
+		{
+			if (!first)
+			{
+				builder.Append("\n\n");
+			}
+
+			first = false;
+		}
 
 		foreach (var message in messages)
 		{
@@ -31,7 +42,8 @@ public static class ConversationSerializer
 					var content = ContentText(user.Content);
 					if (content.Length > 0)
 					{
-						parts.Add($"[User]: {content}");
+						Separate();
+						builder.Append("[User]: ").Append(content);
 					}
 
 					break;
@@ -39,27 +51,47 @@ public static class ConversationSerializer
 
 				case AssistantMessage assistant:
 				{
-					var calls = new List<string>();
-					foreach (var block in assistant.Content)
-					{
-						if (block is ToolCall call)
-						{
-							var arguments = string.Join(
-								", ",
-								call.Arguments.Select(pair => $"{pair.Key}={pair.Value?.ToJsonString(PiJson.NodeOptions) ?? "null"}"));
-							calls.Add($"{call.Name}({arguments})");
-						}
-					}
-
 					var text = ContentText(assistant.Content);
 					if (text.Length > 0)
 					{
-						parts.Add($"[Assistant]: {text}");
+						Separate();
+						builder.Append("[Assistant]: ").Append(text);
 					}
 
-					if (calls.Count > 0)
+					var firstCall = true;
+					foreach (var block in assistant.Content)
 					{
-						parts.Add($"[Assistant tool calls]: {string.Join("; ", calls)}");
+						if (block is not ToolCall call)
+						{
+							continue;
+						}
+
+						if (firstCall)
+						{
+							Separate();
+							builder.Append("[Assistant tool calls]: ");
+							firstCall = false;
+						}
+						else
+						{
+							builder.Append("; ");
+						}
+
+						builder.Append(call.Name).Append('(');
+						var firstArgument = true;
+						foreach (var (key, value) in call.Arguments)
+						{
+							if (!firstArgument)
+							{
+								builder.Append(", ");
+							}
+
+							firstArgument = false;
+							builder.Append(key).Append('=')
+								.Append(value?.ToJsonString(PiJson.NodeOptions) ?? "null");
+						}
+
+						builder.Append(')');
 					}
 
 					break;
@@ -70,7 +102,8 @@ public static class ConversationSerializer
 					var content = ContentText(result.Content);
 					if (content.Length > 0)
 					{
-						parts.Add($"[Tool result]: {Truncate(content, ToolResultMaxChars)}");
+						Separate();
+						builder.Append("[Tool result]: ").Append(Truncate(content, ToolResultMaxChars));
 					}
 
 					break;
@@ -78,7 +111,7 @@ public static class ConversationSerializer
 			}
 		}
 
-		return string.Join("\n\n", parts);
+		return builder.ToString();
 	}
 
 	public static FileOperations CollectFileOperations(IEnumerable<Message> messages)
@@ -91,27 +124,28 @@ public static class ConversationSerializer
 				continue;
 			}
 
-			foreach (var call in assistant.Content.OfType<ToolCall>())
+			foreach (var block in assistant.Content)
 			{
+				if (block is not ToolCall call)
+				{
+					continue;
+				}
+
 				var path = StringArgument(call.Arguments, "path");
 				if (path.Length == 0)
 				{
 					continue;
 				}
 
+				// 与 pi 的 addFileOp 一致：只有 read 算读，write/edit 算改。
+				// grep/find/ls 的 path 可能是目录，不当成读过的文件写进摘要。
 				switch (call.Name)
 				{
 					case "read":
-					case "grep":
-					case "find":
-					case "ls":
 						operations.ReadFiles.Add(path);
 						break;
 					case "write":
-						operations.ModifiedFiles.Add(path);
-						break;
 					case "edit":
-						operations.ReadFiles.Add(path);
 						operations.ModifiedFiles.Add(path);
 						break;
 				}
@@ -121,37 +155,52 @@ public static class ConversationSerializer
 		return operations;
 	}
 
+	/// <summary>算最终文件清单：改过的文件不再列在只读清单里。</summary>
+	public static (IReadOnlyList<string> ReadFiles, IReadOnlyList<string> ModifiedFiles) ComputeFileLists(
+		FileOperations operations)
+	{
+		var modified = operations.ModifiedFiles.OrderBy(static f => f, StringComparer.Ordinal).ToArray();
+		var read = operations.ReadFiles
+			.Where(path => !operations.ModifiedFiles.Contains(path))
+			.OrderBy(static f => f, StringComparer.Ordinal)
+			.ToArray();
+		return (read, modified);
+	}
+
+	/// 渲染成 pi 的 `<read-files>` / `<modified-files>` 片段，前面带两个换行便于直接接在摘要后。
 	public static string FormatFileOperations(IReadOnlyCollection<string> readFiles, IReadOnlyCollection<string> modifiedFiles)
 	{
-		if (readFiles.Count == 0 && modifiedFiles.Count == 0)
+		var modified = new HashSet<string>(modifiedFiles, StringComparer.Ordinal);
+		var readOnly = readFiles.Where(path => !modified.Contains(path)).ToArray();
+		if (readOnly.Length == 0 && modified.Count == 0)
 		{
 			return string.Empty;
 		}
 
-		var builder = new StringBuilder();
-		if (readFiles.Count > 0)
+		var sections = new List<string>(2);
+		if (readOnly.Length > 0)
 		{
-			builder.Append("<read-files>\n");
-			foreach (var file in readFiles.OrderBy(static f => f, StringComparer.Ordinal))
+			var builder = new StringBuilder("<read-files>\n");
+			foreach (var file in readOnly.OrderBy(static f => f, StringComparer.Ordinal))
 			{
 				builder.Append(file).Append('\n');
 			}
 
-			builder.Append("</read-files>\n");
+			sections.Add(builder.Append("</read-files>").ToString());
 		}
 
-		if (modifiedFiles.Count > 0)
+		if (modified.Count > 0)
 		{
-			builder.Append("<modified-files>\n");
-			foreach (var file in modifiedFiles.OrderBy(static f => f, StringComparer.Ordinal))
+			var builder = new StringBuilder("<modified-files>\n");
+			foreach (var file in modified.OrderBy(static f => f, StringComparer.Ordinal))
 			{
 				builder.Append(file).Append('\n');
 			}
 
-			builder.Append("</modified-files>\n");
+			sections.Add(builder.Append("</modified-files>").ToString());
 		}
 
-		return builder.ToString().TrimEnd('\n');
+		return "\n\n" + string.Join("\n\n", sections);
 	}
 
 	internal static string ContentText(MessageContent content)

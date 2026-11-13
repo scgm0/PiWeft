@@ -75,6 +75,26 @@ internal static class ScriptedSessions
 		stream.Push(new DoneEvent { Reason = StopReason.ToolUse, Partial = message });
 		return stream;
 	}
+
+	public static AssistantMessageEventStream Truncated(Model model, string text, long outputTokens)
+	{
+		var stream = new AssistantMessageEventStream();
+		var blank = Blank(model);
+		var message = blank with
+		{
+			Content = [new TextContent { Text = text }],
+			StopReason = StopReason.Length,
+			Usage = new Usage { Input = 10, Output = outputTokens, TotalTokens = 10 + outputTokens },
+		};
+
+		stream.Push(new StartEvent { Partial = blank });
+		stream.Push(new TextStartEvent { ContentIndex = 0, Partial = message });
+		stream.Push(new TextDeltaEvent { ContentIndex = 0, Delta = text, Partial = message });
+		stream.Push(new TextEndEvent { ContentIndex = 0, Content = text, Partial = message });
+		stream.Push(new DoneEvent { Reason = StopReason.Length, Partial = message });
+		return stream;
+	}
+
 }
 
 internal sealed class ScriptedStreamFn

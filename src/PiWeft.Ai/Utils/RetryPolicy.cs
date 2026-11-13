@@ -167,18 +167,29 @@ public static class RetryClassifier
 			return false;
 		}
 
-		if (NonRetryable.IsMatch(message.ErrorMessage))
+		return IsRetryableErrorMessage(message.ErrorMessage);
+	}
+
+	/// <summary>按错误文本判断瞬态失败；摘要、分类器等不经过助手消息的调用也用它。</summary>
+	public static bool IsRetryableErrorMessage(string? errorMessage)
+	{
+		if (string.IsNullOrEmpty(errorMessage))
 		{
 			return false;
 		}
 
-		// 配额冷却几个小时（甚至一天）时，60 秒退避只会重复失败；让错误立即回到界面。
-		if (ServerDelayMs(message.ErrorMessage) is { } serverDelay && serverDelay > MaxAutoRetryServerDelayMs)
+		if (NonRetryable.IsMatch(errorMessage))
 		{
 			return false;
 		}
 
-		return Retryable.IsMatch(message.ErrorMessage) || Queued.IsMatch(message.ErrorMessage);
+		// 配额冷却几个小时（甚至一天）时，60 秒退避只会重复失败；让错误立即返回。
+		if (ServerDelayMs(errorMessage) is { } serverDelay && serverDelay > MaxAutoRetryServerDelayMs)
+		{
+			return false;
+		}
+
+		return Retryable.IsMatch(errorMessage) || Queued.IsMatch(errorMessage);
 	}
 
 	/// 错误文本里供应商明确要求的等待时长。取第一个能解析出正秒数的提示；

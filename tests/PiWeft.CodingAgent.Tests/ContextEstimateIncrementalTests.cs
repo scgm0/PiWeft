@@ -143,6 +143,92 @@ public sealed class ContextEstimateIncrementalTests : IDisposable
 		var (tokens, index) = session.ContextTokens();
 		Assert.Null(index);
 		Assert.True(tokens < 10_000, $"after compaction the stale usage anchor must be ignored, got {tokens}");
+		// 尾部复用不能把压缩前的估算错位到新投影上。
+		AssertSame(session, manager);
+	}
+
+	[Fact]
+	public void MatchesReferenceEstimateAcrossRepeatedCompactionsAndNavigation()
+	{
+		var manager = SessionManager.Create(_root, Path.Combine(_root, "sessions"));
+		var session = Create(manager);
+		manager.AppendMessage(System());
+		manager.AppendMessage(User("one", 1));
+		manager.AppendMessage(Assistant("a1", 2));
+		var kept = manager.AppendMessage(User("two", 3));
+		manager.AppendMessage(Assistant("a2", 4));
+		AssertSame(session, manager);
+
+		manager.AppendCompaction("summary one", kept, 100);
+		AssertSame(session, manager);
+
+		manager.AppendMessage(User("three", 5));
+		AssertSame(session, manager);
+		manager.AppendMessage(Assistant("a3", 6));
+		AssertSame(session, manager);
+		var keptAgain = manager.AppendMessage(User("four", 7));
+		manager.AppendMessage(Assistant("a4", 8));
+		AssertSame(session, manager);
+
+		manager.AppendCompaction("summary two", keptAgain, 200);
+		AssertSame(session, manager);
+
+		manager.Branch(kept);
+		AssertSame(session, manager);
+	}
+
+	[Fact]
+	public void MatchesReferenceEstimateUnderInterleavedHistoryChanges()
+	{
+		var random = new Random(20261113);
+		var manager = SessionManager.Create(_root, Path.Combine(_root, "sessions"));
+		var session = Create(manager);
+		manager.AppendMessage(System());
+		var messageIds = new List<string> { manager.AppendMessage(User("u0", 1)) };
+
+		for (var step = 0; step < 120; step++)
+		{
+			switch (random.Next(6))
+			{
+				case 0:
+					messageIds.Add(manager.AppendMessage(User($"u{step}", step * 4 + 2)));
+					break;
+				case 1:
+					messageIds.Add(manager.AppendMessage(Assistant($"a{step}", step * 4 + 3)));
+					break;
+				case 2:
+					if (messageIds.Count > 0)
+					{
+						manager.AppendContextEdit(
+							messageIds[random.Next(messageIds.Count)],
+							random.Next(2) == 0 ? (MessageContent?)null : MessageContent.FromText($"edited {step}"));
+					}
+
+					break;
+				case 3:
+					if (messageIds.Count > 0)
+					{
+						manager.AppendCompaction(
+							$"summary {step}",
+							messageIds[random.Next(messageIds.Count)],
+							step * 100);
+					}
+
+					break;
+				case 4:
+					if (messageIds.Count > 0)
+					{
+						manager.Branch(messageIds[random.Next(messageIds.Count)]);
+					}
+
+					break;
+				default:
+					messageIds.Add(manager.AppendMessage(Tool($"tool {step}", step * 4 + 4)));
+					break;
+			}
+
+			AssertSame(session, manager);
+		}
 	}
 
 	private static void AssertSame(CodingAgentSession session, SessionManager manager)

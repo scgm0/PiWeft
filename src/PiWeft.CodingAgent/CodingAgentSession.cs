@@ -185,6 +185,8 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	private readonly Lock _abortGate = new();
 	private CancellationTokenSource? _runAbort;
+	private readonly Lock _compactionGate = new();
+	private volatile bool _isCompacting;
 
 	private bool? _autoRetryOverride;
 	private bool _overflowRecoveryAttempted;
@@ -613,7 +615,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	public string CurrentSystemPrompt =>
 		// 系统提示词按具名章节存放（preamble/tools/rules/cwd…），发给模型前才拼成文本；
 		// /share 要的是模型实际看到的那一份，所以走同一个渲染函数。
-		Transcript.GetText(_extensionSystemPrompt ?? (_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools))));
+		Transcript.GetText(CurrentPromptMessage);
 
 	public IReadOnlyList<Message> Messages => Project();
 
@@ -621,7 +623,30 @@ public sealed partial class CodingAgentSession : IDisposable
 	/// 其中的系统提示词会被重建。
 	public IReadOnlyList<Message> ProjectedMessages => Project();
 
-	public bool IsCompacting { get; private set; }
+	/// <summary>会话是否正在进行压缩。</summary>
+	public bool IsCompacting => _isCompacting;
+
+	private bool TryBeginCompaction()
+	{
+		lock (_compactionGate)
+		{
+			if (_isCompacting)
+			{
+				return false;
+			}
+
+			_isCompacting = true;
+			return true;
+		}
+	}
+
+	private void EndCompaction()
+	{
+		lock (_compactionGate)
+		{
+			_isCompacting = false;
+		}
+	}
 
 	public int PendingMessageCount => _agent.PendingMessageCount;
 
@@ -1469,23 +1494,17 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		_contextAnchorRevision = revision;
-		var branch = Session.GetBranch();
-		var lastInvalidating = -1;
-		var lastUsage = -1;
-		for (var index = 0; index < branch.Count; index++)
-		{
-			switch (branch[index])
-			{
-				case CompactionEntry or ContextEditEntry:
-					lastInvalidating = index;
-					break;
-				case SessionMessageEntry { Message: AssistantMessage assistant } when HasUsableUsage(assistant):
-					lastUsage = index;
-					break;
-			}
-		}
 
-		_contextAnchorValid = lastUsage > lastInvalidating;
+		// 从叶子往上找到第一条相关条目就够了：命中带用量的助手回复说明它之后没有失效信号；
+		// 先碰到 compaction/context_edit 则锚点已失效。不必构建整条分支。
+		var lastRelevant = Session.FindFromLeaf(static entry => entry switch
+		{
+			CompactionEntry or ContextEditEntry => true,
+			SessionMessageEntry { Message: AssistantMessage assistant } => HasUsableUsage(assistant),
+			_ => false,
+		});
+
+		_contextAnchorValid = lastRelevant is SessionMessageEntry { Message: AssistantMessage };
 		return _contextAnchorValid;
 	}
 
@@ -1496,28 +1515,61 @@ public sealed partial class CodingAgentSession : IDisposable
 	/// 与 <see cref="Compaction.ContextTokens.EstimateContextTokens"/> 同语义，但按消息引用复用已估算的
 	/// 前缀：追加一条消息只重新估算那一条，不重算整段历史。26,983 条的真实会话里，这一步从
 	/// 约 124 ms（UI 线程）降到不足 1 ms；分支导航或上下文编辑改写了前缀时，退回到第一个不一致处重算。
+	/// <para>
+	/// 压缩会把旧前缀换成摘要、保留尾部消息：尾部引用对齐时直接搬运旧估算值，
+	/// 压缩后不再为整条保留历史重新估算。
+	/// </para>
 	private (long Tokens, int? LastUsageIndex) EstimateContextIncrementally(
 		IReadOnlyList<Message> messages,
 		bool useUsageAnchor)
 	{
+		var previous = _estimateSource;
+		var oldCount = previous is null ? 0 : Math.Min(_estimateCount, previous.Count);
+
 		var reusable = 0;
-		if (ReferenceEquals(_estimateSource, messages))
+		if (previous is not null)
 		{
-			reusable = Math.Min(_estimateCount, messages.Count);
-		}
-		else if (_estimateSource is { } previous)
-		{
-			var limit = Math.Min(Math.Min(previous.Count, messages.Count), _estimateCount);
+			var limit = Math.Min(oldCount, messages.Count);
 			while (reusable < limit && ReferenceEquals(previous[reusable], messages[reusable])) reusable++;
+		}
+
+		// 同一列表引用时只能按末尾追加处理；就地改写无法用引用比较发现。
+		var sameList = ReferenceEquals(previous, messages);
+		var appendOnly = reusable == oldCount && _estimateCount == oldCount && messages.Count >= oldCount;
+		var copiedSuffix = 0;
+
+		if (!appendOnly && !sameList && previous is not null && reusable < Math.Min(oldCount, messages.Count))
+		{
+			var limit = Math.Min(oldCount, messages.Count) - reusable;
+			while (copiedSuffix < limit &&
+				ReferenceEquals(previous[oldCount - 1 - copiedSuffix], messages[messages.Count - 1 - copiedSuffix]))
+			{
+				copiedSuffix++;
+			}
 		}
 
 		if (_estimateValues.Length < messages.Count)
 		{
 			// 追加式增长：按倍增扩容，避免每条新消息都重分配整段数组。
-			Array.Resize(ref _estimateValues, Math.Max(messages.Count, _estimateValues.Length * 2 + 64));
+			var capacity = Math.Max(messages.Count, _estimateValues.Length * 2 + 64);
+			var resized = GC.AllocateUninitializedArray<long>(capacity);
+			Array.Copy(_estimateValues, resized, _estimateCount);
+			_estimateValues = resized;
 		}
 
-		for (var i = reusable; i < messages.Count; i++)
+		if (copiedSuffix > 0)
+		{
+			// 源与目标可能重叠，Array.Copy 按 memmove 语义处理。
+			Array.Copy(
+				_estimateValues,
+				oldCount - copiedSuffix,
+				_estimateValues,
+				messages.Count - copiedSuffix,
+				copiedSuffix);
+		}
+
+		var estimateEnd = messages.Count - copiedSuffix;
+		for (var i = reusable; i < estimateEnd; i++)
 		{
 			_estimateValues[i] = Compaction.ContextTokens.EstimateTokens(messages[i]);
 		}
@@ -1525,10 +1577,22 @@ public sealed partial class CodingAgentSession : IDisposable
 		_estimateSource = messages;
 		_estimateCount = messages.Count;
 
-		long total = 0;
-		for (var i = 0; i < messages.Count; i++)
+		long total;
+		if (appendOnly)
 		{
-			total += _estimateValues[i];
+			total = _estimateTotal;
+			for (var i = oldCount; i < messages.Count; i++)
+			{
+				total += _estimateValues[i];
+			}
+		}
+		else
+		{
+			total = 0;
+			for (var i = 0; i < messages.Count; i++)
+			{
+				total += _estimateValues[i];
+			}
 		}
 
 		_estimateTotal = total;
@@ -1544,14 +1608,14 @@ public sealed partial class CodingAgentSession : IDisposable
 			return (total, null);
 		}
 
-		// 有可用用量时：锚点及其之前按真实用量，之后按估算累加。
-		long before = 0;
-		for (var i = 0; i <= anchor.Value.Index; i++)
+		// 有可用用量时：锚点之前按真实用量，之后按估算累加。只求尾部，不再扫锚点前的前缀。
+		long trailing = 0;
+		for (var i = anchor.Value.Index + 1; i < messages.Count; i++)
 		{
-			before += _estimateValues[i];
+			trailing += _estimateValues[i];
 		}
 
-		return (Compaction.ContextTokens.CalculateContextTokens(anchor.Value.Usage) + (total - before), anchor.Value.Index);
+		return (Compaction.ContextTokens.CalculateContextTokens(anchor.Value.Usage) + trailing, anchor.Value.Index);
 	}
 
 	public bool ShouldCompact() =>
@@ -1572,12 +1636,17 @@ public sealed partial class CodingAgentSession : IDisposable
 			throw new InvalidOperationException("Cannot compact while the session is streaming");
 		}
 
-		_cacheWarmer?.Cancel();
-		IsCompacting = true;
-		Emit(new CompactionStartEvent { Reason = reason });
+		if (!TryBeginCompaction())
+		{
+			throw new InvalidOperationException("Cannot compact while compaction is already in progress");
+		}
+
 		CompactionResult? result;
 		try
 		{
+			_cacheWarmer?.Cancel();
+			Emit(new CompactionStartEvent { Reason = reason });
+			var tokensBefore = ContextTokens().Tokens;
 			result = await RunSummarizationWithRetryAsync(
 				() => Compactor.CompactAsync(
 					Session,
@@ -1587,20 +1656,26 @@ public sealed partial class CodingAgentSession : IDisposable
 					Settings.Compaction.ForModel(_agent.Model),
 					customInstructions,
 					cancellationToken,
-					thinkingLevel: _agent.ThinkingLevel),
+					thinkingLevel: _agent.ThinkingLevel,
+					currentSystemMessage: CurrentSystemMessageSnapshot(),
+					tokensBefore: tokensBefore),
 				"compaction",
 				reason,
 				cancellationToken).ConfigureAwait(false);
+
+			if (result is not null)
+			{
+				AppendTodoBriefAfterCompaction();
+				_agent.SetMessages(Session.BuildProjectedMessages());
+			}
 		}
 		catch (OperationCanceledException)
 		{
-			IsCompacting = false;
 			Emit(new CompactionEndEvent { Reason = reason, Aborted = true, WillRetry = willRetry });
 			throw;
 		}
 		catch (Exception exception)
 		{
-			IsCompacting = false;
 			Emit(new CompactionEndEvent
 			{
 				Reason = reason,
@@ -1611,13 +1686,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 		finally
 		{
-			IsCompacting = false;
-		}
-
-		if (result is not null)
-		{
-			AppendTodoBriefAfterCompaction();
-			_agent.SetMessages(Session.BuildProjectedMessages());
+			EndCompaction();
 		}
 
 		Emit(new CompactionEndEvent
@@ -3049,7 +3118,8 @@ public sealed partial class CodingAgentSession : IDisposable
 
 				throw;
 			}
-			catch (Exception exception) when (attempt < maxAttempts)
+			catch (Exception exception) when (
+				attempt < maxAttempts && RetryClassifier.IsRetryableErrorMessage(exception.Message))
 			{
 				retried = true;
 				var delay = RetryClassifier.DelayMs(policy, attempt, exception.Message);
@@ -3376,6 +3446,14 @@ public sealed partial class CodingAgentSession : IDisposable
 		UiHost?.SetStatus(new UiStatusRequest("piweft:cache-warming", text));
 	}
 
+	/// 压缩检查点带上当前运行时提示词（pi 会把它写进 compaction 条目的 systemMessage）。
+	private SystemMessage CurrentPromptMessage =>
+		_extensionSystemPrompt ?? (_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools)));
+
+	private SystemMessage CurrentSystemMessageSnapshot() =>
+		// 检查点只记完整工具集；ToolsRemoved 是会话内的增量，不该跟着检查点走。
+		CurrentPromptMessage with { ToolsRemoved = null };
+
 	private void StartCacheWarmer()
 	{
 		try
@@ -3404,7 +3482,17 @@ public sealed partial class CodingAgentSession : IDisposable
 			return null;
 		}
 
-		await CompactDuringRunAsync(CompactionReasons.Threshold, cancellationToken).ConfigureAwait(false);
+		try
+		{
+			await CompactDuringRunAsync(CompactionReasons.Threshold, cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is not OperationCanceledException)
+		{
+			// 压缩只是为下一个请求腾空间；摘要服务挂了不应该中断正在跑的工具回合。
+			// CompactDuringRunAsync 已经发过 compaction_end 错误事件。
+			return null;
+		}
+
 		return new AgentTurnUpdate
 		{
 			Context = new AgentContext
@@ -3417,12 +3505,17 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	private async Task CompactDuringRunAsync(string reason, CancellationToken cancellationToken)
 	{
-		_cacheWarmer?.Cancel();
-		IsCompacting = true;
-		Emit(new CompactionStartEvent { Reason = reason });
+		if (!TryBeginCompaction())
+		{
+			return;
+		}
+
 		CompactionResult? result;
 		try
 		{
+			_cacheWarmer?.Cancel();
+			Emit(new CompactionStartEvent { Reason = reason });
+			var tokensBefore = ContextTokens().Tokens;
 			result = await RunSummarizationWithRetryAsync(
 				() => Compactor.CompactAsync(
 					Session,
@@ -3432,31 +3525,31 @@ public sealed partial class CodingAgentSession : IDisposable
 					Settings.Compaction.ForModel(_agent.Model),
 					customInstructions: null,
 					cancellationToken,
-					thinkingLevel: _agent.ThinkingLevel),
+					thinkingLevel: _agent.ThinkingLevel,
+					currentSystemMessage: CurrentSystemMessageSnapshot(),
+					tokensBefore: tokensBefore),
 				"compaction",
 				reason,
 				cancellationToken).ConfigureAwait(false);
+
+			if (result is not null)
+			{
+				AppendTodoBriefAfterCompaction();
+			}
 		}
 		catch (OperationCanceledException)
 		{
-			IsCompacting = false;
 			Emit(new CompactionEndEvent { Reason = reason, Aborted = true });
 			throw;
 		}
 		catch (Exception exception)
 		{
-			IsCompacting = false;
 			Emit(new CompactionEndEvent { Reason = reason, ErrorMessage = exception.Message });
 			throw;
 		}
 		finally
 		{
-			IsCompacting = false;
-		}
-
-		if (result is not null)
-		{
-			AppendTodoBriefAfterCompaction();
+			EndCompaction();
 		}
 
 		Emit(new CompactionEndEvent
@@ -3486,7 +3579,40 @@ public sealed partial class CodingAgentSession : IDisposable
 				var last = LastAssistantMessage(messages);
 				var policy = Settings.Retry;
 
-				if (last is null || last.StopReason != StopReason.Error)
+				if (last is null)
+				{
+					FinishRetry(success: true, finalError: null);
+					return messages;
+				}
+
+				var sameModel = IsSameModelResponse(last);
+				var responseModel = sameModel ? ResponseModel(last) ?? _agent.Model : _agent.Model;
+				var overflow = sameModel && ContextOverflow.IsOverflow(last, responseModel.ContextWindow);
+				var recoverableLength = sameModel &&
+					ContextOverflow.IsRecoverableLength(last, responseModel.MaxTokens);
+
+				// 静默溢出：回复本身成功，压缩后保留它。continue 无法接在已完成的助手回复后面，
+				// 也不能为了压缩丢掉一个完整回答。
+				if (overflow && last.StopReason == StopReason.Stop)
+				{
+					try
+					{
+						await CompactAsync(
+							customInstructions: null,
+							cancellationToken,
+							CompactionReasons.Overflow,
+							willRetry: false).ConfigureAwait(false);
+					}
+					catch (Exception exception) when (exception is not OperationCanceledException)
+					{
+						// 压缩失败不能作废一个已经拿到的回答；下一轮还会再试。
+					}
+
+					FinishRetry(success: true, finalError: null);
+					return messages;
+				}
+
+				if (last.StopReason != StopReason.Error && !recoverableLength)
 				{
 					FinishRetry(success: true, finalError: null);
 					return messages;
@@ -3494,8 +3620,18 @@ public sealed partial class CodingAgentSession : IDisposable
 
 				routeFailed = last;
 
-				if (!_overflowRecoveryAttempted && ContextOverflow.IsOverflow(last))
+				if (overflow || recoverableLength)
 				{
+					if (_overflowRecoveryAttempted)
+					{
+						FinishRetry(
+							success: false,
+							overflow
+								? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+								: "Truncated response recovery failed after one compact-and-retry attempt.");
+						return messages;
+					}
+
 					_overflowRecoveryAttempted = true;
 					OmitFromContext(last);
 					try
@@ -3507,14 +3643,27 @@ public sealed partial class CodingAgentSession : IDisposable
 							willRetry: true).ConfigureAwait(false);
 						if (compacted is null)
 						{
-							FinishRetry(success: false, "Context overflow recovery could not compact the conversation.");
-							return messages;
+							if (overflow)
+							{
+								FinishRetry(success: false, "Context overflow recovery could not compact the conversation.");
+								return messages;
+							}
+
+							// 可恢复截断没有旧历史可压时也重试一次：agent_end 已经对外承诺 willRetry，
+							// 这里直接放弃会让关联会话/子代理一直停在 Running。
+							_agent.SetMessages(Project());
 						}
 					}
 					catch (Exception exception) when (exception is not OperationCanceledException)
 					{
-						FinishRetry(success: false, $"Context overflow recovery failed: {exception.Message}");
-						return messages;
+						if (overflow)
+						{
+							FinishRetry(success: false, $"Context overflow recovery failed: {exception.Message}");
+							return messages;
+						}
+
+						// 摘要失败不该把可恢复截断的那次重试也吞掉：半截回复已移出投影，继续重试一次。
+						_agent.SetMessages(Project());
 					}
 
 					attempt++;
@@ -3591,20 +3740,65 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	private bool ShouldRetryAssistant(AssistantMessage message)
 	{
+		var sameModel = IsSameModelResponse(message);
+		var messageModel = sameModel ? ResponseModel(message) ?? _agent.Model : _agent.Model;
+
+		if (message.StopReason == StopReason.Length)
+		{
+			return sameModel &&
+				!_overflowRecoveryAttempted &&
+				ContextOverflow.IsRecoverableLength(message, messageModel.MaxTokens);
+		}
+
 		if (message.StopReason != StopReason.Error)
 		{
 			return false;
 		}
 
-		if (!_overflowRecoveryAttempted && ContextOverflow.IsOverflow(message))
+		if (sameModel &&
+			!_overflowRecoveryAttempted &&
+			ContextOverflow.IsOverflow(message, messageModel.ContextWindow))
 		{
 			return true;
 		}
 
+		// 普通瞬态错误与模型无关：换过模型也还是同一个退避重试。
 		var policy = Settings.Retry;
 		return AutoRetryEnabled &&
 			_retryAttempt < Math.Max(0, policy.MaxRetries) &&
 			RetryClassifier.IsRetryable(message);
+	}
+
+	/// 溢出判定要看产生这条回复的模型：虚拟模型每轮记录的是物理 provider/model。
+	private Model? ResponseModel(AssistantMessage message)
+	{
+		var current = _agent.Model;
+		if (!VirtualModels.IsVirtual(current))
+		{
+			return current;
+		}
+
+		return _registry?.Get(message.Provider, message.Model) is { } physical && !VirtualModels.IsVirtual(physical)
+			? physical
+			: null;
+	}
+
+	/// 换过模型后，旧模型留下的溢出错误/截断不该触发新模型的恢复。空的供应商标识视为同一模型。
+	private bool IsSameModelResponse(AssistantMessage message)
+	{
+		var current = _agent.Model;
+		if (VirtualModels.IsVirtual(current))
+		{
+			// 虚拟模型本身不产生回复；能解析回物理模型就算同一选择。
+			return string.IsNullOrEmpty(message.Provider) ||
+				string.IsNullOrEmpty(message.Model) ||
+				ResponseModel(message) is not null;
+		}
+
+		return (string.IsNullOrEmpty(message.Provider) ||
+				string.Equals(message.Provider, current.Provider, StringComparison.Ordinal)) &&
+			(string.IsNullOrEmpty(message.Model) ||
+				string.Equals(message.Model, current.Id, StringComparison.Ordinal));
 	}
 
 	private static AssistantMessage? LastAssistantMessage(IReadOnlyList<Message> messages)
@@ -3620,15 +3814,45 @@ public sealed partial class CodingAgentSession : IDisposable
 		return null;
 	}
 
+	/// 把一条失败的尝试移出模型投影（会话文件保留）。助手消息里的工具调用与它后面
+	/// 配对的工具结果要一起移除：只删调用会留下孤立的工具结果，下一次请求会被拒绝。
 	private void OmitFromContext(Message message)
 	{
-		foreach (var entry in Session.Entries.OfType<SessionMessageEntry>())
+		var branch = Session.GetBranch();
+		for (var index = branch.Count - 1; index >= 0; index--)
 		{
-			if (ReferenceEquals(entry.Message, message))
+			if (branch[index] is not SessionMessageEntry entry || !ReferenceEquals(entry.Message, message))
 			{
-				Session.AppendContextEdit(entry.Id, replacement: null);
-				return;
+				continue;
 			}
+
+			Session.AppendContextEdit(entry.Id, replacement: null);
+			if (message is AssistantMessage assistant)
+			{
+				var toolCallIds = assistant.Content
+					.OfType<ToolCall>()
+					.Select(static call => call.Id)
+					.Where(static id => id.Length > 0)
+					.ToHashSet(StringComparer.Ordinal);
+				if (toolCallIds.Count > 0)
+				{
+					for (var i = index + 1; i < branch.Count; i++)
+					{
+						if (branch[i] is SessionMessageEntry { Message: AssistantMessage })
+						{
+							break;
+						}
+
+						if (branch[i] is SessionMessageEntry { Message: ToolResultMessage result } &&
+							toolCallIds.Contains(result.ToolCallId))
+						{
+							Session.AppendContextEdit(branch[i].Id, replacement: null);
+						}
+					}
+				}
+			}
+
+			return;
 		}
 	}
 
@@ -3641,10 +3865,18 @@ public sealed partial class CodingAgentSession : IDisposable
 
 		if (ShouldCompact())
 		{
-			await CompactAsync(
-				customInstructions: null,
-				cancellationToken,
-				CompactionReasons.Threshold).ConfigureAwait(false);
+			try
+			{
+				await CompactAsync(
+					customInstructions: null,
+					cancellationToken,
+					CompactionReasons.Threshold).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is not OperationCanceledException)
+			{
+				// 自动压缩失败不能把用户的提问也拦下来：CompactAsync 已经发出带错误信息的
+				// compaction_end，请求照常继续，真的溢出时再走 overflow recovery。
+			}
 		}
 	}
 
@@ -4099,7 +4331,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	{
 		// The prompt is built once and only replaced when tools/resources rebuild it. Reusing the
 		// projected list also keeps the historical Message instances stable for incremental views.
-		var prompt = _extensionSystemPrompt ?? (_refreshedSystemPrompt ??= SystemPrompt.Build(SectionsFor(_promptTools)));
+		var prompt = CurrentPromptMessage;
 		var revision = Session.Revision;
 		if (_projectedCache is { } cached &&
 			_projectedCacheRevision == revision &&

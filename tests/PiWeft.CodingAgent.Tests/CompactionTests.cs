@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Session;
@@ -163,6 +164,7 @@ public class CompactionTests : IDisposable
 					new ToolCall { Id = "1", Name = "read", Arguments = new JsonObject { ["path"] = "read.txt" } },
 					new ToolCall { Id = "2", Name = "write", Arguments = new JsonObject { ["path"] = "new.txt" } },
 					new ToolCall { Id = "3", Name = "edit", Arguments = new JsonObject { ["path"] = "edit.txt" } },
+					new ToolCall { Id = "4", Name = "grep", Arguments = new JsonObject { ["path"] = "src" } },
 				],
 				Timestamp = 1,
 			},
@@ -172,12 +174,16 @@ public class CompactionTests : IDisposable
 
 		Assert.Contains("read.txt", operations.ReadFiles);
 		Assert.Contains("new.txt", operations.ModifiedFiles);
-		Assert.Contains("edit.txt", operations.ReadFiles);
+		Assert.DoesNotContain("edit.txt", operations.ReadFiles);
 		Assert.Contains("edit.txt", operations.ModifiedFiles);
+		// 目录不是读过的文件。
+		Assert.DoesNotContain("src", operations.ReadFiles);
 
 		var formatted = ConversationSerializer.FormatFileOperations(operations.ReadFiles, operations.ModifiedFiles);
-		Assert.Contains("<read-files>", formatted);
-		Assert.Contains("<modified-files>", formatted);
+		Assert.StartsWith("\n\n", formatted);
+		Assert.Contains("<read-files>\nread.txt\n</read-files>", formatted);
+		Assert.Contains("<modified-files>\nedit.txt\nnew.txt\n</modified-files>", formatted);
+		Assert.DoesNotContain("read-files>\nread.txt\nedit.txt", formatted);
 	}
 
 
@@ -601,6 +607,57 @@ public class CompactionTests : IDisposable
 	}
 
 	[Fact]
+	public async Task NavigateWithSummaryMovesTheBranchWhenSummaryIsSkipped()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		var root = session.AppendMessage(User("root", 1));
+		session.AppendMessage(Assistant("answer", 2));
+		session.AppendMessage(User("leaf", 3));
+
+		var script = new ScriptedStreamFn();
+		var result = await BranchSummarizer.NavigateWithSummaryAsync(
+			session,
+			ScriptedSessions.Model(),
+			script.Invoke,
+			new StreamOptions(),
+			new CompactionSettings(),
+			new BranchSummarySettings { SkipPrompt = true },
+			root);
+
+		Assert.Null(result);
+		Assert.Empty(script.Requests);
+		Assert.Equal(root, session.LeafId);
+	}
+
+	[Fact]
+	public async Task NavigateWithSummaryMovesTheBranchWhenOnlyToolResultsAreAbandoned()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		var root = session.AppendMessage(User("root", 1));
+		session.AppendMessage(new ToolResultMessage
+		{
+			ToolName = "read",
+			ToolCallId = "call",
+			Content = [new TextContent { Text = "tool output" }],
+			Timestamp = 2,
+		});
+
+		var script = new ScriptedStreamFn();
+		var result = await BranchSummarizer.NavigateWithSummaryAsync(
+			session,
+			ScriptedSessions.Model(),
+			script.Invoke,
+			new StreamOptions(),
+			new CompactionSettings(),
+			new BranchSummarySettings(),
+			root);
+
+		Assert.Null(result);
+		Assert.Empty(script.Requests);
+		Assert.Equal(root, session.LeafId);
+	}
+
+	[Fact]
 	public async Task SummarizationRequestsUseTheSessionThinkingLevel()
 	{
 		// 推理模型：会话思考级别要传给摘要请求（固定 off 会让支持推理的模型只拿 effort=none，
@@ -623,6 +680,8 @@ public class CompactionTests : IDisposable
 
 		Assert.NotNull(result);
 		Assert.Equal(ThinkingLevels.High, script.LastOptions!.ThinkingLevel);
+		// 摘要是一次性请求：不写缓存前缀。
+		Assert.Equal(CacheRetentions.None, script.LastOptions.CacheRetention);
 
 		var branchSession = SessionManager.Create(_root, SessionsDir);
 		var root = branchSession.AppendMessage(User("root", 1));
@@ -643,6 +702,422 @@ public class CompactionTests : IDisposable
 		Assert.Equal(ThinkingLevels.High, branchScript.LastOptions!.ThinkingLevel);
 	}
 
+
+	[Fact]
+	public void OverflowDetection_CoversSilentAndLengthStops()
+	{
+		var silent = Assistant("ok") with
+		{
+			StopReason = StopReason.Stop,
+			Usage = new Usage { Input = 1200, TotalTokens = 1200 },
+		};
+		Assert.True(ContextOverflow.IsOverflow(silent, 1000));
+		Assert.False(ContextOverflow.IsOverflow(silent with { Usage = new Usage { Input = 100 } }, 1000));
+
+		var truncated = Assistant("") with
+		{
+			StopReason = StopReason.Length,
+			Usage = new Usage { Input = 990, Output = 0 },
+		};
+		Assert.True(ContextOverflow.IsOverflow(truncated, 1000));
+		Assert.False(ContextOverflow.IsOverflow(
+			truncated with { Usage = new Usage { Input = 100, Output = 10 } },
+			1000));
+
+		Assert.True(ContextOverflow.IsRecoverableLength(truncated with { Usage = new Usage { Output = 100 } }, 4096));
+		Assert.False(ContextOverflow.IsRecoverableLength(truncated with { Usage = new Usage { Output = 4096 } }, 4096));
+
+		Assert.True(ContextOverflow.IsOverflowText("context window exceeded"));
+		Assert.True(ContextOverflow.IsOverflowText("model_context_window_exceeded"));
+		Assert.False(ContextOverflow.IsOverflowText("429 rate limit exceeded"));
+	}
+
+	[Fact]
+	public async Task CompactAsync_AppendsFileListsAndAccumulatesPreviousDetails()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("one", 1));
+		session.AppendMessage(new AssistantMessage
+		{
+			Api = "test",
+			Provider = "test",
+			Model = "m",
+			Content =
+			[
+				new ToolCall { Id = "r", Name = "read", Arguments = new JsonObject { ["path"] = "a.txt" } },
+				new ToolCall { Id = "e", Name = "edit", Arguments = new JsonObject { ["path"] = "b.txt" } },
+			],
+			StopReason = StopReason.ToolUse,
+			Usage = new Usage(),
+			Timestamp = 2,
+		});
+		session.AppendMessage(Assistant("done one", 3));
+		session.AppendMessage(User("two", 4));
+		session.AppendMessage(Assistant("done two", 5));
+
+		var settings = new CompactionSettings { ReserveTokens = 4096, KeepRecentTokens = 1 };
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("history summary");
+		script.EnqueueText("turn prefix");
+		var result = await Compactor.CompactAsync(
+			session,
+			ScriptedSessions.Model(),
+			script.Invoke,
+			new StreamOptions(),
+			settings);
+
+		Assert.NotNull(result);
+		Assert.Contains("<read-files>\na.txt\n</read-files>", result!.Summary);
+		Assert.Contains("<modified-files>\nb.txt\n</modified-files>", result.Summary);
+		var details = Assert.IsType<JsonObject>(result.Details);
+		Assert.Equal(["a.txt"], details["readFiles"]!.AsArray().Select(static node => node!.GetValue<string>()));
+		Assert.Equal(["b.txt"], details["modifiedFiles"]!.AsArray().Select(static node => node!.GetValue<string>()));
+
+		// 第二次压缩：上一次的文件清单仍要留在 details 里。
+		session.AppendMessage(User("three", 6));
+		session.AppendMessage(Assistant("done three", 7));
+		session.AppendMessage(User("four", 8));
+		session.AppendMessage(Assistant("done four", 9));
+		var second = new ScriptedStreamFn();
+		second.EnqueueText("history two");
+		second.EnqueueText("turn prefix two");
+		var again = await Compactor.CompactAsync(
+			session,
+			ScriptedSessions.Model(),
+			second.Invoke,
+			new StreamOptions(),
+			settings);
+
+		Assert.NotNull(again);
+		var secondDetails = Assert.IsType<JsonObject>(again!.Details);
+		Assert.Equal(["a.txt"], secondDetails["readFiles"]!.AsArray().Select(static node => node!.GetValue<string>()));
+		Assert.Equal(["b.txt"], secondDetails["modifiedFiles"]!.AsArray().Select(static node => node!.GetValue<string>()));
+		Assert.Contains("<modified-files>\nb.txt\n</modified-files>", again.Summary);
+	}
+
+	[Fact]
+	public async Task CompactAsync_SplitTurnWithoutHistoryReusesPreviousSummary()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("old", 1));
+		session.AppendMessage(Assistant("old answer", 2));
+		session.AppendCompaction("previous summary", session.Entries[1].Id, 100);
+
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("turn prefix only");
+		var result = await Compactor.CompactAsync(
+			session,
+			ScriptedSessions.Model(),
+			script.Invoke,
+			new StreamOptions(),
+			new CompactionSettings { ReserveTokens = 4096, KeepRecentTokens = 1 });
+
+		Assert.NotNull(result);
+		Assert.Single(script.Requests);
+		Assert.StartsWith("previous summary\n\n---\n\n**Turn Context (split turn):**", result!.Summary);
+		Assert.Contains("turn prefix only", result.Summary);
+	}
+
+	[Fact]
+	public async Task CompactAsync_MergesSystemMessagesInTheCheckpoint()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(new SystemMessage
+		{
+			Content = MessageContent.Empty,
+			Sections = new Dictionary<string, string?> { ["preamble"] = "base" },
+			ToolsAdded = [new Tool { Name = "read", Description = "", Parameters = new JsonObject { ["type"] = "object" } }],
+			Timestamp = 0,
+		});
+		session.AppendMessage(new SystemMessage
+		{
+			Content = MessageContent.Empty,
+			Sections = new Dictionary<string, string?> { ["extra"] = "more" },
+			ToolsAdded = [new Tool { Name = "write", Description = "", Parameters = new JsonObject { ["type"] = "object" } }],
+			ToolsRemoved = [new ToolReference { Name = "read" }],
+			Timestamp = 0,
+		});
+		session.AppendMessage(User("one", 1));
+		session.AppendMessage(Assistant("a1", 2));
+		session.AppendMessage(User("two", 3));
+
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("summary");
+		var result = await Compactor.CompactAsync(
+			session,
+			ScriptedSessions.Model(),
+			script.Invoke,
+			new StreamOptions(),
+			new CompactionSettings { ReserveTokens = 4096, KeepRecentTokens = 1 });
+
+		Assert.NotNull(result);
+		var checkpoint = Assert.IsType<CompactionEntry>(session.Entries[^1]).SystemMessage;
+		Assert.NotNull(checkpoint);
+		Assert.Equal("base", checkpoint!.Sections!["preamble"]);
+		Assert.Equal("more", checkpoint.Sections["extra"]);
+		Assert.Equal(["write"], checkpoint.ToolsAdded!.Select(static tool => tool.Name));
+	}
+
+	[Fact]
+	public async Task AutoCompactionFailureDoesNotBlockThePrompt()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("first", 1));
+		session.AppendMessage(Assistant("answer", 2));
+
+		var script = new ScriptedStreamFn();
+		script.EnqueueError("invalid api key");
+		script.EnqueueText("answer without compaction");
+
+		using var coding = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model() with { ContextWindow = 10 },
+			StreamFn = script.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				Compaction = new CompactionSettings { Enabled = true, ReserveTokens = 1, KeepRecentTokens = 1 },
+				Retry = new RetryPolicy(Enabled: false),
+			},
+		});
+
+		await coding.PromptAsync("next question");
+
+		Assert.DoesNotContain(session.Entries, static entry => entry is CompactionEntry);
+		var last = coding.Messages.OfType<AssistantMessage>().Last();
+		Assert.Equal("answer without compaction", string.Concat(last.Content.OfType<TextContent>().Select(static block => block.Text)));
+	}
+
+	[Fact]
+	public async Task RecoverableLengthStopCompactsAndRetries()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("earlier", 1));
+		session.AppendMessage(Assistant("earlier answer", 2));
+
+		var script = new ScriptedStreamFn();
+		script.Enqueue(model => ScriptedSessions.Truncated(model, "partial answer", outputTokens: 10));
+		script.EnqueueText("summary");
+		script.EnqueueText("recovered answer");
+
+		using var coding = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				Compaction = new CompactionSettings { Enabled = true, ReserveTokens = 16384, KeepRecentTokens = 1 },
+				Retry = new RetryPolicy(Enabled: false),
+			},
+		});
+
+		await coding.PromptAsync("go");
+
+		Assert.Contains(session.Entries, static entry => entry is CompactionEntry);
+		var last = coding.Messages.OfType<AssistantMessage>().Last();
+		Assert.Equal("recovered answer", string.Concat(last.Content.OfType<TextContent>().Select(static block => block.Text)));
+		Assert.Equal(3, script.Requests.Count);
+	}
+
+	[Fact]
+	public async Task RecoverableLengthWithoutCompactableHistoryStillRetries()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+
+		var script = new ScriptedStreamFn();
+		script.Enqueue(model => ScriptedSessions.Truncated(model, "partial answer", outputTokens: 10));
+		script.EnqueueText("recovered answer");
+
+		using var coding = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				// 默认 keepRecent 远大于这段上下文：压缩找不到切点，但截断仍应重试一次。
+				Compaction = new CompactionSettings { Enabled = true, ReserveTokens = 16384, KeepRecentTokens = 20000 },
+				Retry = new RetryPolicy(Enabled: false),
+			},
+		});
+
+		await coding.PromptAsync("go");
+
+		Assert.DoesNotContain(session.Entries, static entry => entry is CompactionEntry);
+		Assert.Contains(session.Entries, static entry => entry is ContextEditEntry);
+		var last = coding.Messages.OfType<AssistantMessage>().Last();
+		Assert.Equal("recovered answer", string.Concat(last.Content.OfType<TextContent>().Select(static block => block.Text)));
+		Assert.Equal(2, script.Requests.Count);
+	}
+
+	[Fact]
+	public async Task RecoverableLengthRetriesEvenWhenSummarizationFails()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("earlier", 1));
+		session.AppendMessage(Assistant("earlier answer", 2));
+
+		var script = new ScriptedStreamFn();
+		script.Enqueue(model => ScriptedSessions.Truncated(model, "partial answer", outputTokens: 10));
+		script.EnqueueError("invalid api key");
+		script.EnqueueText("recovered answer");
+
+		using var coding = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				Compaction = new CompactionSettings { Enabled = true, ReserveTokens = 16384, KeepRecentTokens = 1 },
+				Retry = new RetryPolicy(Enabled: false),
+			},
+		});
+
+		await coding.PromptAsync("go");
+
+		Assert.DoesNotContain(session.Entries, static entry => entry is CompactionEntry);
+		var last = coding.Messages.OfType<AssistantMessage>().Last();
+		Assert.Equal("recovered answer", string.Concat(last.Content.OfType<TextContent>().Select(static block => block.Text)));
+		Assert.Equal(3, script.Requests.Count);
+	}
+
+	[Fact]
+	public async Task RetryableErrorFromAnotherModelStillRetries()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+
+		var script = new ScriptedStreamFn();
+		script.Enqueue(_ => ScriptedSessions.Error(ScriptedSessions.Model("other-model"), "rate limit exceeded"));
+		script.EnqueueText("recovered answer");
+
+		using var coding = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				Compaction = new CompactionSettings { Enabled = true, ReserveTokens = 16384, KeepRecentTokens = 20000 },
+				Retry = new RetryPolicy(Enabled: true, MaxRetries: 1, BaseDelayMs: 0),
+			},
+		});
+
+		var events = new List<AgentEvent>();
+		using var subscription = coding.Subscribe(@event =>
+		{
+			events.Add(@event);
+			return ValueTask.CompletedTask;
+		});
+
+		await coding.PromptAsync("go");
+
+		Assert.Contains(events, static @event => @event is AgentEndEvent { WillRetry: true });
+		Assert.Equal(2, script.Requests.Count);
+		var last = coding.Messages.OfType<AssistantMessage>().Last();
+		Assert.Equal("recovered answer", string.Concat(last.Content.OfType<TextContent>().Select(static block => block.Text)));
+	}
+
+	[Fact]
+	public async Task SilentOverflowCompactsWithoutDiscardingTheAnswer()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("earlier", 1));
+		session.AppendMessage(Assistant("earlier answer", 2));
+
+		var script = new ScriptedStreamFn();
+		script.Enqueue(model => ScriptedSessions.Text(
+			model,
+			"answer",
+			new Usage { Input = 200_000, Output = 5, TotalTokens = 200_005 }));
+		script.EnqueueText("history summary");
+		script.EnqueueText("turn prefix");
+
+		using var coding = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				Compaction = new CompactionSettings { Enabled = true, ReserveTokens = 16384, KeepRecentTokens = 1 },
+				Retry = new RetryPolicy(Enabled: false),
+			},
+		});
+
+		await coding.PromptAsync("go");
+
+		Assert.Contains(session.Entries, static entry => entry is CompactionEntry);
+		var last = coding.Messages.OfType<AssistantMessage>().Last();
+		Assert.Equal("answer", string.Concat(last.Content.OfType<TextContent>().Select(static block => block.Text)));
+	}
+
+	[Fact]
+	public async Task SummarizationRetriesOnlyTransientErrors()
+	{
+		var session = SessionManager.Create(_root, SessionsDir);
+		session.AppendMessage(SystemPromptMessage());
+		session.AppendMessage(User("first", 1));
+		session.AppendMessage(Assistant("answer", 2));
+		session.AppendMessage(User("second", 3));
+
+		var deterministic = new ScriptedStreamFn();
+		deterministic.EnqueueError("invalid api key");
+		using (var coding = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = deterministic.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				Compaction = new CompactionSettings { ReserveTokens = 4096, KeepRecentTokens = 1 },
+				Retry = new RetryPolicy(Enabled: true, MaxRetries: 2, BaseDelayMs: 0),
+			},
+		}))
+		{
+			await Assert.ThrowsAsync<InvalidOperationException>(() => coding.CompactAsync());
+		}
+
+		Assert.Single(deterministic.Requests);
+
+		var transient = new ScriptedStreamFn();
+		transient.EnqueueError("rate limit exceeded");
+		transient.EnqueueText("summary after retry");
+		using var retry = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = transient.Invoke,
+			Session = session,
+			Settings = new CodingAgentSettings
+			{
+				Compaction = new CompactionSettings { ReserveTokens = 4096, KeepRecentTokens = 1 },
+				Retry = new RetryPolicy(Enabled: true, MaxRetries: 2, BaseDelayMs: 0),
+			},
+		});
+
+		var result = await retry.CompactAsync();
+
+		Assert.NotNull(result);
+		Assert.Equal(2, transient.Requests.Count);
+		Assert.Contains("summary after retry", result!.Summary);
+	}
 
 internal sealed class PrefillRecoveryStreamFn
 {

@@ -119,10 +119,18 @@ public static class BranchSummarizer
 
 		if (branchSettings.SkipPrompt)
 		{
+			// skipPrompt 只跳过摘要确认，分支仍然要移动；否则「跳转」会静默失败。
+			session.Branch(targetId);
 			return null;
 		}
 
 		var messages = SelectWithinBudget(abandoned, model.ContextWindow, branchSettings.ReserveTokens);
+		if (messages.Count == 0)
+		{
+			// 被放弃的路径只含工具结果时没有可摘要内容；直接跳转，不为空会话发请求。
+			session.Branch(targetId);
+			return null;
+		}
 
 		var instructions = customInstructions is { Length: > 0 } focus
 			? $"{BranchSummaryPrompt}\n\nAdditional focus: {focus}"
@@ -141,12 +149,12 @@ public static class BranchSummarizer
 			thinkingLevel: thinkingLevel).ConfigureAwait(false);
 
 		var fileOperations = CollectFileOperations(abandoned, messages);
+		var (readFiles, modifiedFiles) = ConversationSerializer.ComputeFileLists(fileOperations);
+		summary += ConversationSerializer.FormatFileOperations(readFiles, modifiedFiles);
 		var details = new JsonObject
 		{
-			["readFiles"] = new JsonArray([.. fileOperations.ReadFiles.OrderBy(static f => f, StringComparer.Ordinal)
-				.Select(static f => (JsonNode?)JsonValue.Create(f))]),
-			["modifiedFiles"] = new JsonArray([.. fileOperations.ModifiedFiles.OrderBy(static f => f, StringComparer.Ordinal)
-				.Select(static f => (JsonNode?)JsonValue.Create(f))]),
+			["readFiles"] = new JsonArray([.. readFiles.Select(static f => (JsonNode?)JsonValue.Create(f))]),
+			["modifiedFiles"] = new JsonArray([.. modifiedFiles.Select(static f => (JsonNode?)JsonValue.Create(f))]),
 		};
 
 		session.Branch(targetId);
@@ -156,8 +164,8 @@ public static class BranchSummarizer
 		{
 			Summary = summary,
 			Usage = usage,
-			ReadFiles = [.. fileOperations.ReadFiles],
-			ModifiedFiles = [.. fileOperations.ModifiedFiles],
+			ReadFiles = readFiles,
+			ModifiedFiles = modifiedFiles,
 			SummarizedEntries = abandoned.Count,
 		};
 	}
@@ -181,17 +189,16 @@ public static class BranchSummarizer
 		}
 
 		var abandoned = CollectAbandonedEntries(session, leafId, targetId);
-		if (abandoned.Count == 0)
-		{
-			return null;
-		}
-
-		if (branchSettings.SkipPrompt)
+		if (abandoned.Count == 0 || branchSettings.SkipPrompt)
 		{
 			return null;
 		}
 
 		var messages = SelectWithinBudget(abandoned, model.ContextWindow, branchSettings.ReserveTokens);
+		if (messages.Count == 0)
+		{
+			return null;
+		}
 
 		var instructions = customInstructions is { Length: > 0 } focus
 			? $"{BranchSummaryPrompt}\n\nAdditional focus: {focus}"
@@ -210,13 +217,15 @@ public static class BranchSummarizer
 			thinkingLevel: thinkingLevel).ConfigureAwait(false);
 
 		var fileOperations = CollectFileOperations(abandoned, messages);
+		var (readFiles, modifiedFiles) = ConversationSerializer.ComputeFileLists(fileOperations);
+		summary += ConversationSerializer.FormatFileOperations(readFiles, modifiedFiles);
 
 		return new BranchSummaryResult
 		{
 			Summary = summary,
 			Usage = usage,
-			ReadFiles = [.. fileOperations.ReadFiles],
-			ModifiedFiles = [.. fileOperations.ModifiedFiles],
+			ReadFiles = readFiles,
+			ModifiedFiles = modifiedFiles,
 			SummarizedEntries = abandoned.Count,
 		};
 	}

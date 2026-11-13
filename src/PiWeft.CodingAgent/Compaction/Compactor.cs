@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Agent;
 using PiWeft.Ai;
@@ -25,43 +26,102 @@ public sealed record CompactionResult
 /// 之后由上下文构建器回放。对应 pi 的 <c>compaction.ts</c>。
 public static class Compactor
 {
+	private readonly record struct CutPointEvaluation(
+		CompactionPlan? Plan,
+		IReadOnlyList<Message>[] Projected,
+		int StartIndex);
+
 	public static CompactionPlan? FindCutPoint(
 		IReadOnlyList<SessionEntry> entries,
 		int startIndex,
 		int endIndex,
 		long keepRecentTokens,
-		IReadOnlyDictionary<string, ContextEditEntry>? edits = null)
+		IReadOnlyDictionary<string, ContextEditEntry>? edits = null) =>
+		EvaluateCutPoint(entries, startIndex, endIndex, keepRecentTokens, edits).Plan;
+
+	/// 一次投影算完切点、回合起点与该条目是否贡献上下文：旧实现按条目反复
+	/// <see cref="MessagesFor"/> 并各走一遍 LINQ，大会话在压缩时会多分配数万个小列表。
+	private static CutPointEvaluation EvaluateCutPoint(
+		IReadOnlyList<SessionEntry> entries,
+		int startIndex,
+		int endIndex,
+		long keepRecentTokens,
+		IReadOnlyDictionary<string, ContextEditEntry>? edits)
 	{
 		if (startIndex >= endIndex)
 		{
-			return null;
+			return new CutPointEvaluation(null, [], startIndex);
 		}
 
+		var count = endIndex - startIndex;
+		var projected = new IReadOnlyList<Message>[count];
 		var cutPoints = new List<int>();
-		for (var i = startIndex; i < endIndex; i++)
+		var blocksCut = new bool[count];
+		var turnStarts = new bool[count];
+
+		// entries 可能是 ImmutableList（压缩前没有检查点），逐项 foreach 避免 O(log n) 索引。
+		var position = 0;
+		foreach (var entry in entries)
 		{
-			if (entries[i] is CompactionEntry)
+			if (position >= endIndex)
 			{
+				break;
+			}
+
+			if (position < startIndex)
+			{
+				position++;
 				continue;
 			}
 
-			if (MessagesFor(entries[i], edits).Any(IsCutPointMessage))
+			var offset = position - startIndex;
+			position++;
+			var messages = MessagesFor(entry, edits);
+			projected[offset] = messages;
+
+			if (entry is CompactionEntry)
 			{
-				cutPoints.Add(i);
+				blocksCut[offset] = true;
+				continue;
 			}
+
+			var cutPoint = false;
+			var turnStart = false;
+			foreach (var message in messages)
+			{
+				cutPoint |= IsCutPointMessage(message);
+				turnStart |= IsTurnStartMessage(message);
+				if (cutPoint && turnStart)
+				{
+					break;
+				}
+			}
+
+			if (cutPoint)
+			{
+				cutPoints.Add(startIndex + offset);
+			}
+
+			blocksCut[offset] = messages.Count > 0;
+			turnStarts[offset] = turnStart;
 		}
 
 		if (cutPoints.Count == 0)
 		{
-			return new CompactionPlan(startIndex, -1, false);
+			return new CutPointEvaluation(new CompactionPlan(startIndex, -1, false), projected, startIndex);
 		}
 
 		long accumulated = 0;
 		var cutIndex = cutPoints[0];
-
 		for (var i = endIndex - 1; i >= startIndex; i--)
 		{
-			var entryTokens = MessagesFor(entries[i], edits).Sum(ContextTokens.EstimateTokens);
+			var messages = projected[i - startIndex];
+			long entryTokens = 0;
+			foreach (var message in messages)
+			{
+				entryTokens += ContextTokens.EstimateTokens(message);
+			}
+
 			if (entryTokens == 0)
 			{
 				continue;
@@ -75,44 +135,41 @@ public static class Compactor
 
 			// 优先取该条目处或其之后最近的合法切点；若末尾的工具结果本身就超预算，
 			// 则改为保留它们前面那次助手的工具调用。
-			var candidate = cutPoints.FirstOrDefault(point => point >= i, -1);
-			cutIndex = candidate >= 0 ? candidate : cutPoints[^1];
+			var cutPosition = cutPoints.BinarySearch(i);
+			cutIndex = cutPosition >= 0
+				? cutPoints[cutPosition]
+				: ~cutPosition < cutPoints.Count ? cutPoints[~cutPosition] : cutPoints[^1];
 			break;
 		}
 
 		// 把紧邻的、对上下文没有贡献的条目一并纳入。
-		while (cutIndex > startIndex)
+		while (cutIndex > startIndex && !blocksCut[cutIndex - 1 - startIndex])
 		{
-			var previous = entries[cutIndex - 1];
-			if (previous is CompactionEntry || MessagesFor(previous).Count > 0)
-			{
-				break;
-			}
-
 			cutIndex--;
 		}
 
-		var startsTurn = MessagesFor(entries[cutIndex], edits).Any(IsTurnStartMessage);
-		var turnStartIndex = startsTurn ? -1 : FindTurnStartIndex(entries, cutIndex, startIndex);
-
-		return new CompactionPlan(cutIndex, turnStartIndex, !startsTurn && turnStartIndex != -1);
-	}
-
-	public static int FindTurnStartIndex(IReadOnlyList<SessionEntry> entries, int entryIndex, int startIndex)
-	{
-		for (var i = entryIndex; i >= startIndex; i--)
+		var startsTurn = turnStarts[cutIndex - startIndex];
+		var turnStartIndex = -1;
+		if (!startsTurn)
 		{
-			if (MessagesFor(entries[i]).Any(IsTurnStartMessage))
+			for (var i = cutIndex - 1; i >= startIndex; i--)
 			{
-				return i;
+				if (turnStarts[i - startIndex])
+				{
+					turnStartIndex = i;
+					break;
+				}
 			}
 		}
 
-		return -1;
+		var plan = new CompactionPlan(cutIndex, turnStartIndex, !startsTurn && turnStartIndex != -1);
+		return new CutPointEvaluation(plan, projected, startIndex);
 	}
 
 	/// 就地压缩会话：摘要切点之前的全部内容，并追加一条 <c>compaction</c> 条目。
 	/// 没有值得压缩的内容时返回 <c>null</c>。
+	/// <param name="currentSystemMessage">当前运行时提示词；为 <c>null</c> 时从分支里的 system 消息合并。</param>
+	/// <param name="tokensBefore">调用方已算好的压缩前上下文 token；省略时现场估算。</param>
 	public static async Task<CompactionResult?> CompactAsync(
 		SessionManager session,
 		Model model,
@@ -121,7 +178,9 @@ public static class Compactor
 		CompactionSettings settings,
 		string? customInstructions = null,
 		CancellationToken cancellationToken = default,
-		string? thinkingLevel = null)
+		string? thinkingLevel = null,
+		SystemMessage? currentSystemMessage = null,
+		long? tokensBefore = null)
 	{
 		ArgumentNullException.ThrowIfNull(session);
 		ArgumentNullException.ThrowIfNull(model);
@@ -129,16 +188,23 @@ public static class Compactor
 
 		var entries = session.BuildContextEntries();
 
-		// 从前一次压缩之后开始摘要（如果存在）。
+		// 从前一次压缩之后开始摘要（如果存在）。BuildContextEntries 把最新检查点放在最前，
+		// 与 pi 的 findIndex 一致，取第一个就是最新的那个。
 		var startIndex = 0;
 		string? previousSummary = null;
-		for (var i = 0; i < entries.Count; i++)
+		CompactionEntry? previousCompaction = null;
+		var entryIndex = 0;
+		foreach (var entry in entries)
 		{
-			if (entries[i] is CompactionEntry previous)
+			if (entry is CompactionEntry previous)
 			{
 				previousSummary = previous.Summary;
-				startIndex = i + 1;
+				previousCompaction = previous;
+				startIndex = entryIndex + 1;
+				break;
 			}
+
+			entryIndex++;
 		}
 
 		// 开头的 system 消息就是提示词，由压缩检查点直接携带，从不参与摘要。
@@ -150,71 +216,110 @@ public static class Compactor
 		// 与实时上下文相同的投影规则：context_edit 隐藏的尝试不计 token、不进入摘要，
 		// 内容替换按替换后的版本摘要（参照 pi 的 buildSessionProjection）。
 		var edits = SessionManager.LatestContextEdits(entries);
-		var plan = FindCutPoint(entries, startIndex, entries.Count, settings.KeepRecentTokens, edits);
+		var evaluation = EvaluateCutPoint(entries, startIndex, entries.Count, settings.KeepRecentTokens, edits);
+		var plan = evaluation.Plan;
 		if (plan is null || plan.FirstKeptEntryIndex <= startIndex)
 		{
 			return null;
 		}
 
-		var historyEnd = plan.IsSplitTurn && plan.TurnStartIndex > startIndex
+		// 与 pi 一致：拆分回合时历史到回合起点为止，起点之前的消息全归入 turn prefix，
+		// 即使那一段刚好从切点边界开始（此时历史为空，用上一次摘要充当）。
+		var historyEnd = plan.IsSplitTurn
 			? plan.TurnStartIndex
 			: plan.FirstKeptEntryIndex;
 
-		var historyMessages = MessagesBetween(entries, startIndex, historyEnd, edits);
+		var historyMessages = FlattenProjected(evaluation.Projected, startIndex, historyEnd, evaluation.StartIndex);
 		var turnPrefixMessages = plan.IsSplitTurn
-			? MessagesBetween(entries, historyEnd, plan.FirstKeptEntryIndex, edits)
+			? FlattenProjected(evaluation.Projected, historyEnd, plan.FirstKeptEntryIndex, evaluation.StartIndex)
 			: [];
 
-		var tokensBefore = ContextTokens.EstimateContextTokens(session.BuildProjectedMessages()).Tokens;
+		// 调用方（会话）已有增量估算缓存，直接传进来，避免压缩前再整段估算一次。
+		var estimatedTokensBefore = tokensBefore ?? ContextTokens.EstimateContextTokens(session.BuildProjectedMessages()).Tokens;
 
-		var history = await GenerateSummaryAsync(
-			model,
-			streamFn,
-			options,
-			settings,
-			historyMessages,
-			customInstructions,
-			previousSummary,
-			cancellationToken,
-			thinkingLevel: thinkingLevel).ConfigureAwait(false);
-
-		var summary = history.Text;
-		var usage = history.Usage;
-
-		if (turnPrefixMessages.Count > 0)
+		string summary;
+		Usage usage;
+		if (plan.IsSplitTurn && turnPrefixMessages.Count > 0)
 		{
+			// 切点之前没有新的可摘要内容时，用上一次摘要当作历史；pi 同样不为空历史发请求。
+			string historyText;
+			Usage historyUsage = new();
+			var summarizedHistory = historyMessages.Count > 0;
+			if (summarizedHistory)
+			{
+				var history = await GenerateSummaryAsync(
+					model,
+					streamFn,
+					options,
+					settings,
+					historyMessages,
+					customInstructions,
+					previousSummary,
+					cancellationToken,
+					thinkingLevel: thinkingLevel).ConfigureAwait(false);
+				historyText = history.Text;
+				historyUsage = history.Usage;
+			}
+			else
+			{
+				historyText = previousSummary ?? "No prior history.";
+			}
+
 			var turnPrefix = await GenerateSummaryAsync(
 				model,
 				streamFn,
 				options,
 				settings,
 				turnPrefixMessages,
-				customInstructions: null,
+				customInstructions,
 				previousSummary: null,
 				cancellationToken,
 				CompactionPrompts.TurnPrefixSummarizationPrompt,
 				thinkingLevel).ConfigureAwait(false);
 
-			summary = $"{summary}\n\n---\n\n**Turn Context (split turn):**\n\n{turnPrefix.Text}";
-			usage = CombineUsage(usage, turnPrefix.Usage);
+			summary = $"{historyText}\n\n---\n\n**Turn Context (split turn):**\n\n{turnPrefix.Text}";
+			usage = summarizedHistory ? CombineUsage(historyUsage, turnPrefix.Usage) : turnPrefix.Usage;
+		}
+		else
+		{
+			if (historyMessages.Count == 0)
+			{
+				return null;
+			}
+
+			var history = await GenerateSummaryAsync(
+				model,
+				streamFn,
+				options,
+				settings,
+				historyMessages,
+				customInstructions,
+				previousSummary,
+				cancellationToken,
+				thinkingLevel: thinkingLevel).ConfigureAwait(false);
+			summary = history.Text;
+			usage = history.Usage;
 		}
 
 		var firstKeptEntryId = entries[plan.FirstKeptEntryIndex].Id;
-		var checkpoint = LastSystemMessage(session);
+		var checkpoint = currentSystemMessage ?? MergeSystemMessages(session);
 
-		var details = ConversationSerializer.CollectFileOperations(historyMessages.Concat(turnPrefixMessages));
+		// 文件清单跨压缩累积：上一次压缩读/过的文件仍然影响后续继续工作。
+		var fileOperations = ConversationSerializer.CollectFileOperations(historyMessages.Concat(turnPrefixMessages));
+		MergePreviousFileOperations(previousCompaction, fileOperations);
+		var (readFiles, modifiedFiles) = ConversationSerializer.ComputeFileLists(fileOperations);
+		summary += ConversationSerializer.FormatFileOperations(readFiles, modifiedFiles);
+
 		var detailsNode = new JsonObject
 		{
-			["readFiles"] = new JsonArray([.. details.ReadFiles.OrderBy(static f => f, StringComparer.Ordinal)
-				.Select(static f => (JsonNode?)JsonValue.Create(f))]),
-			["modifiedFiles"] = new JsonArray([.. details.ModifiedFiles.OrderBy(static f => f, StringComparer.Ordinal)
-				.Select(static f => (JsonNode?)JsonValue.Create(f))]),
+			["readFiles"] = new JsonArray([.. readFiles.Select(static f => (JsonNode?)JsonValue.Create(f))]),
+			["modifiedFiles"] = new JsonArray([.. modifiedFiles.Select(static f => (JsonNode?)JsonValue.Create(f))]),
 		};
 
 		session.AppendCompaction(
 			summary,
 			firstKeptEntryId,
-			tokensBefore,
+			estimatedTokensBefore,
 			checkpoint,
 			usage,
 			detailsNode);
@@ -222,7 +327,7 @@ public static class Compactor
 		return new CompactionResult
 		{
 			FirstKeptEntryId = firstKeptEntryId,
-			TokensBefore = tokensBefore,
+			TokensBefore = estimatedTokensBefore,
 			Summary = summary,
 			Usage = usage,
 			Details = detailsNode,
@@ -253,13 +358,16 @@ public static class Compactor
 		}
 
 		var conversationText = ConversationSerializer.Serialize(messages);
-		var promptText = $"<conversation>\n{conversationText}\n</conversation>\n\n";
+		var promptBuilder = new StringBuilder(
+			conversationText.Length + (previousSummary?.Length ?? 0) + basePrompt.Length + 64);
+		promptBuilder.Append("<conversation>\n").Append(conversationText).Append("\n</conversation>\n\n");
 		if (previousSummary is { Length: > 0 })
 		{
-			promptText += $"<previous-summary>\n{previousSummary}\n</previous-summary>\n\n";
+			promptBuilder.Append("<previous-summary>\n").Append(previousSummary).Append("\n</previous-summary>\n\n");
 		}
 
-		promptText += basePrompt;
+		promptBuilder.Append(basePrompt);
+		var promptText = promptBuilder.ToString();
 
 		var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 		var promptMessages = new List<Message>
@@ -282,6 +390,8 @@ public static class Compactor
 			options with
 			{
 				MaxTokens = model.MaxTokens > 0 ? model.MaxTokens : null,
+				// 摘要是单次请求，写缓存前缀不划算，还会挤掉正在用的会话缓存（pi 同义）。
+				CacheRetention = CacheRetentions.None,
 				// 与 pi 的 createSummarizationOptions 一致：推理模型沿用会话的思考级别（off 时仍是 off）。
 				// 以前固定 off 会让支持思考的模型只拿 effort=none，某些模型直接以 400 拒绝摘要请求。
 				ThinkingLevel = model.Reasoning ? thinkingLevel ?? ThinkingLevels.Off : ThinkingLevels.Off,
@@ -416,30 +526,52 @@ public static class Compactor
 		},
 	};
 
-	private static SystemMessage? LastSystemMessage(SessionManager session)
+	private static SystemMessage? MergeSystemMessages(SessionManager session) =>
+		Transcript.GetCurrentSystemMessage(session.BuildProjectedMessages());
+
+	private static void MergePreviousFileOperations(
+		CompactionEntry? previous,
+		ConversationSerializer.FileOperations operations)
 	{
-		SystemMessage? checkpoint = null;
-		foreach (var entry in session.GetBranch())
+		if (previous is not { Details: JsonObject details } || previous.FromHook == true)
 		{
-			if (entry is SessionMessageEntry { Message: SystemMessage system })
-			{
-				checkpoint = system;
-			}
+			return;
 		}
 
-		return checkpoint;
+		AddPaths(details["readFiles"], operations.ReadFiles);
+		AddPaths(details["modifiedFiles"], operations.ModifiedFiles);
 	}
 
-	private static List<Message> MessagesBetween(
-		IReadOnlyList<SessionEntry> entries,
+	private static void AddPaths(JsonNode? node, HashSet<string> target)
+	{
+		if (node is not JsonArray array)
+		{
+			return;
+		}
+
+		foreach (var item in array)
+		{
+			if (item?.GetValueKind() == System.Text.Json.JsonValueKind.String)
+			{
+				target.Add(item.GetValue<string>());
+			}
+		}
+	}
+
+	private static List<Message> FlattenProjected(
+		IReadOnlyList<Message>[] projected,
 		int start,
 		int end,
-		IReadOnlyDictionary<string, ContextEditEntry>? edits = null)
+		int origin)
 	{
-		var messages = new List<Message>();
+		var messages = new List<Message>(end - start);
 		for (var i = start; i < end; i++)
 		{
-			messages.AddRange(MessagesFor(entries[i], edits));
+			var slice = projected[i - origin];
+			if (slice.Count > 0)
+			{
+				messages.AddRange(slice);
+			}
 		}
 
 		return messages;

@@ -80,6 +80,20 @@ public static class AgentLoop
 		var explicitContinuation = false;
 		var turnOpen = true;
 
+		// 与 pi 的 agent_end.willRetry 同义：由最后一条助手消息推出接下来会不会重试。
+		bool RetryAfterEnd()
+		{
+			for (var index = newMessages.Count - 1; index >= 0; index--)
+			{
+				if (newMessages[index] is AssistantMessage last)
+				{
+					return config.WillRetry?.Invoke(last) == true;
+				}
+			}
+
+			return false;
+		}
+
 		// 调用方等待期间输入的 steering 会在第一次请求之前送达。
 		try
 		{
@@ -160,7 +174,7 @@ public static class AgentLoop
 						await emit(new AgentEndEvent
 						{
 							Messages = newMessages,
-							WillRetry = config.WillRetry?.Invoke(message) == true,
+							WillRetry = RetryAfterEnd(),
 						});
 						return;
 					}
@@ -197,7 +211,7 @@ public static class AgentLoop
 
 					if (action == AgentTurnAction.End)
 					{
-						await emit(new AgentEndEvent { Messages = newMessages });
+						await emit(new AgentEndEvent { Messages = newMessages, WillRetry = RetryAfterEnd() });
 						return;
 					}
 
@@ -226,7 +240,7 @@ public static class AgentLoop
 				break;
 			}
 
-			await emit(new AgentEndEvent { Messages = newMessages });
+			await emit(new AgentEndEvent { Messages = newMessages, WillRetry = RetryAfterEnd() });
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
