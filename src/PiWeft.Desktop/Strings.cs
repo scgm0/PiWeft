@@ -1134,6 +1134,10 @@ public static partial class Strings
 	public const string ToolFieldStatus = "状态";
 	public const string ToolFieldId = "编号";
 	public const string ToolFieldContext = "上下文";
+	public const string ToolFieldLabel = "标签";
+	public const string ToolFieldAny = "等待方式";
+
+	public const string ToolAnyOne = "任一完成";
 	public const string ToolFieldIgnoreCase = "忽略大小写";
 	public const string ToolFieldLiteral = "字面匹配";
 

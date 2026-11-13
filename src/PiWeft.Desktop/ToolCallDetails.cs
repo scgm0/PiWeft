@@ -112,6 +112,7 @@ internal sealed record ToolCallDetails(
 		if (Text(root, "agent") is not { } agent) return null;
 		var fields = new List<ToolCallField> { new(Strings.ToolFieldAgent, agent) };
 		if (Text(root, "name") is { } name) fields.Add(new(Strings.ToolFieldSubagentName, name));
+		if (Text(root, "label") is { } label) fields.Add(new(Strings.ToolFieldLabel, label));
 		if (Text(root, "context") is { Length: > 0 } context) fields.Add(new(Strings.ToolFieldContext, Strings.ToolContextMode(context)));
 		var task = StringValue(root, "task");
 		return new ToolCallDetails(fields, Strings.ToolFieldTask, task, [], task is null ? Pretty(root) : null);
@@ -132,6 +133,11 @@ internal sealed record ToolCallDetails(
 		}
 
 		if (Integer(root, "timeout_ms") is { } timeout) fields.Add(new(Strings.ToolFieldTimeout, Strings.ToolTimeoutMilliseconds(timeout)));
+		if (root.TryGetProperty("any", out var any) && any.ValueKind == JsonValueKind.True)
+		{
+			fields.Add(new(Strings.ToolFieldAny, Strings.ToolAnyOne));
+		}
+
 		return fields.Count > 0 ? new ToolCallDetails(fields, null, null, [], null) : null;
 	}
 

@@ -77,6 +77,41 @@ public sealed class SubagentCardTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ExpandingARowShowsTaskResultAndModelWithoutOpeningTheTab()
+	{
+		var model = FakeStreams.Model();
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = model,
+			StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, "完成。"),
+			Session = SessionManager.InMemory(_root),
+			Persist = false,
+			Skills = [],
+			PromptTemplates = [],
+			SubagentHost = new FakeHost(_root, model),
+			Agents = SubagentCatalog.Discover(_root, "missing-agent-dir", includeProject: false),
+		});
+
+		var hub = Assert.IsType<SubagentHub>(session.Subagents);
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "看下登录流程。"));
+		Assert.True(started.Ok, started.Text);
+		await WaitForIdleAsync(hub, "scout-1");
+
+		using var tab = new SessionTab(session, [model], "subagents-expanded");
+		ConversationPerformanceTests.Layout(tab.View, 960, 720);
+		tab.SubagentCardForTests.ToggleExpandedForTests("scout-1");
+		ConversationPerformanceTests.Layout(tab.View, 960, 720);
+
+		var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(tab.View);
+		Assert.Contains(blocks, block => block.Text == Strings.SubagentBrief);
+		Assert.Contains(blocks, block => block.Text == "看下登录流程。");
+		Assert.Contains(blocks, block => block.Text == Strings.SubagentResult);
+		Assert.Contains(blocks, block => block.Text == "结论。");
+		Assert.Contains(blocks, block => block.Text.StartsWith("scout · test/test-model", StringComparison.Ordinal));
+	}
+
+	[Fact]
 	public void SessionWithoutAHostHidesTheCard()
 	{
 		var model = FakeStreams.Model();

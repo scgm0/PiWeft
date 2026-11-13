@@ -103,6 +103,46 @@ public class AgentLoopTests
 	}
 
 	[Fact]
+	public async Task ConcurrentToolUpdatesAreSerializedAndAllEmitted()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueToolCalls(StopReason.ToolUse, ("c1", "fanout", new JsonObject()));
+		script.EnqueueText("done");
+
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var agent = new Agent(new AgentOptions
+		{
+			Model = FakeStream.Model(),
+			StreamFn = script.Invoke,
+			Tools =
+			[
+				Tool("fanout", async invocation =>
+				{
+					var workers = Enumerable.Range(0, 4).Select(worker => Task.Run(async () =>
+					{
+						await gate.Task.ConfigureAwait(false);
+						for (var index = 0; index < 50; index++)
+						{
+							invocation.OnUpdate!(AgentToolResult.Text($"{worker}:{index}"));
+						}
+					})).ToArray();
+
+					gate.SetResult();
+					await Task.WhenAll(workers).ConfigureAwait(false);
+					return AgentToolResult.Text("ok");
+				}),
+			],
+			ToolExecution = ToolExecutionMode.Sequential,
+		});
+
+		var recorder = new EventRecorder();
+		using var subscription = agent.Subscribe(recorder.Record);
+		await agent.PromptAsync("go");
+
+		Assert.Equal(200, recorder.Events.OfType<ToolExecutionUpdateEvent>().Count());
+	}
+
+	[Fact]
 	public async Task BeforeToolCallCanBlockExecution()
 	{
 		var script = new ScriptedStreamFn();

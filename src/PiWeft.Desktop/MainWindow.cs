@@ -1464,7 +1464,13 @@ public sealed partial class MainWindow : Window
 		tab.LinkedSessionOpenRequested += sessionId => _ = ActivateSessionAsync(sessionId);
 		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
 		// 那条链路会顺带把会话列表重_stat 一遇。
-		tab.AskChanged += _ => UpdateTabHeaders();
+		tab.AskChanged += changed =>
+		{
+			UpdateTabHeaders();
+			SyncSubagentAwaiting(changed);
+		};
+		// 子代理在后台标签里开始/结束等回答：父标签也显示圆点，并弹一次 toast。
+		tab.SubagentAwaitChanged += _ => UpdateTabHeaders();
 		// 发过一条消息才记「上次用过的模型」（PiDeck 的 lastUsedModel），选而未发不算。
 		tab.MessageSent += sent => RememberUsedModel(sent.Session.Model);
 		// 快捷消息浮层的「管理」：设置分区属于宿主，标签只发意图。

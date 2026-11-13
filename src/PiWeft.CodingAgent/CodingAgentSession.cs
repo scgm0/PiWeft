@@ -176,7 +176,10 @@ public sealed partial class CodingAgentSession : IDisposable
 	private readonly IDisposable _modeLifecycle;
 	private readonly IDisposable _extensionLifecycle;
 
-	private readonly List<Func<AgentEvent, ValueTask>> _listeners = [];
+	// 写少读多：订阅/退订用写时复制，Emit 每帧只读一次数组快照，不在流式热路径上加锁或复制。
+	// 订阅可能在会话跑一轮时发生（子代理在工具调用里挂父级监听），工具也能在后台线程推 update。
+	private volatile Func<AgentEvent, ValueTask>[] _listeners = [];
+	private readonly Lock _listenerGate = new();
 
 	private int _retryAttempt;
 	private AssistantMessage? _routeFailed;
@@ -1752,14 +1755,42 @@ public sealed partial class CodingAgentSession : IDisposable
 	public IDisposable Subscribe(Func<AgentEvent, ValueTask> listener)
 	{
 		var subscription = _agent.Subscribe(listener);
-		_listeners.Add(listener);
+		lock (_listenerGate)
+		{
+			_listeners = [.. _listeners, listener];
+		}
 
-		return new ListenerHandle(subscription, _listeners, listener);
+		return new ListenerHandle(subscription, this, listener);
+	}
+
+	private void RemoveListener(Func<AgentEvent, ValueTask> listener)
+	{
+		lock (_listenerGate)
+		{
+			var index = Array.IndexOf(_listeners, listener);
+			if (index < 0)
+			{
+				return;
+			}
+
+			if (_listeners.Length == 1)
+			{
+				_listeners = [];
+				return;
+			}
+
+			var next = new Func<AgentEvent, ValueTask>[_listeners.Length - 1];
+			Array.Copy(_listeners, 0, next, 0, index);
+			Array.Copy(_listeners, index + 1, next, index, _listeners.Length - index - 1);
+			_listeners = next;
+		}
 	}
 
 	private void Emit(AgentEvent @event)
 	{
-		foreach (var listener in _listeners.ToArray())
+		// 数组只整体替换，不在原数组上增删；这里拿到的是某一代的稳定快照。
+		var listeners = _listeners;
+		foreach (var listener in listeners)
 		{
 			listener(@event).AsTask().GetAwaiter().GetResult();
 		}
@@ -1767,21 +1798,20 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	private sealed class ListenerHandle(
 		IDisposable inner,
-		List<Func<AgentEvent, ValueTask>> listeners,
+		CodingAgentSession session,
 		Func<AgentEvent, ValueTask> listener) : IDisposable
 	{
-		private bool _disposed;
+		private int _disposed;
 
 		public void Dispose()
 		{
-			if (_disposed)
+			if (Interlocked.Exchange(ref _disposed, 1) != 0)
 			{
 				return;
 			}
 
-			_disposed = true;
 			inner.Dispose();
-			listeners.Remove(listener);
+			session.RemoveListener(listener);
 		}
 	}
 

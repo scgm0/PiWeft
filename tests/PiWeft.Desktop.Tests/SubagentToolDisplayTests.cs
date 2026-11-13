@@ -54,6 +54,30 @@ public sealed class SubagentToolDisplayTests
 	}
 
 	[Fact]
+	public void DelegateLabelWinsInTheSummaryAndFields()
+	{
+		var entry = Call("delegate", """{"agent":"scout","label":"登录入口","task":"找出登录流程。"}""");
+		Assert.Equal("委派 scout · 登录入口", ExecutionProcess.ToolAction(entry, running: false));
+		var details = ToolCallDetails.For(entry);
+		Assert.Contains(details.Fields, field => field.Label == Strings.ToolFieldLabel && field.Value == "登录入口");
+	}
+
+	[Fact]
+	public void ExpandedWaitAnyShowsTheWaitMode()
+	{
+		var entry = Call("wait_subagents", """{"names":["a","b"],"any":true}""");
+		var details = ToolCallDetails.For(entry);
+		Assert.Contains(details.Fields, field => field.Label == Strings.ToolFieldAny && field.Value == Strings.ToolAnyOne);
+	}
+
+	[Fact]
+	public void WaitAnySummarySaysOneTargetIsEnough()
+	{
+		var entry = Call("wait_subagents", """{"names":["a","b"],"any":true}""");
+		Assert.Equal("等待子代理 a, b · 任一完成", ExecutionProcess.ToolAction(entry, running: false));
+	}
+
+	[Fact]
 	public void ExpandedWaitShowsTargetsAndTimeout()
 	{
 		var entry = Call("wait_subagents", """{"names":["a","b"],"timeout_ms":120000}""");

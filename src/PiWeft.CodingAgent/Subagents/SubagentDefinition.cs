@@ -311,7 +311,7 @@ public sealed class SubagentCatalog
 
 	private static readonly string[] WorkerTools = ["read", "grep", "find", "ls", "edit", "write", "bash", "todo"];
 
-	/// <summary>随 CLI 分发的三个角色。用户或项目同名文件覆盖它们。</summary>
+	/// <summary>随 CLI 分发的四个角色。用户或项目同名文件覆盖它们。</summary>
 	public static IReadOnlyList<SubagentDefinition> Builtin { get; } =
 	[
 		new SubagentDefinition
@@ -334,6 +334,16 @@ public sealed class SubagentCatalog
 				"You review a change without editing files. Check it against the task, tests, edge cases, " +
 				"and unnecessary complexity. Report concrete findings with file and line references, ordered " +
 				"by severity. If the change looks fine, say so in one line. Do not restate the diff.",
+		},
+		new SubagentDefinition
+		{
+			Name = "oracle",
+			Description = "A second opinion before acting: challenges assumptions and recommends the safest next step.",
+			Tools = ScoutTools,
+			SystemPrompt =
+				"You are the advisory reviewer. Read the code and the request, then challenge the assumptions behind the " +
+				"proposed direction. Point out what could break, what is missing, and the safest next move. Do not edit files. " +
+				"Answer with concrete file references and a short recommended execution prompt.",
 		},
 		new SubagentDefinition
 		{

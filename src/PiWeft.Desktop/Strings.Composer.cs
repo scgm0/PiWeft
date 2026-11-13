@@ -103,6 +103,17 @@ public static partial class Strings
 	/// 子代理卡的总耗时：从 delegate 到回合结束，含工具与等待，不是模型回复耗时。
 	public static string SubagentElapsed(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
 
+	public static string SubagentUsage(long tokens, double cost)
+	{
+		var usage = tokens > 0 ? $"{TrajectoryFormat.CompactTokens(tokens)} tk" : string.Empty;
+		if (cost <= 0)
+		{
+			return usage;
+		}
+
+		return usage.Length == 0 ? $"${cost:0.0000}" : $"{usage} · ${cost:0.0000}";
+	}
+
 	public static string LinkedState(string state) => state switch
 	{
 		LinkedSessionLink.Starting => "启动中",
@@ -119,9 +130,11 @@ public static partial class Strings
 
 	public const string SubagentStop = "停止";
 
-	public static string SubagentCardMeta(int active, int total) => active > 0
-		? $"{active} 个在跑 · 共 {total} 个"
-		: $"共 {total} 个";
+	public static string SubagentCardMeta(int active, int total, int shown = -1)
+	{
+		var text = active > 0 ? $"{active} 个在跑 · 共 {total} 个" : $"共 {total} 个";
+		return shown >= 0 && shown < total ? $"{text} · 显示 {shown} 个" : text;
+	}
 
 	public static string SubagentStateText(SubagentState state) => state switch
 	{
@@ -133,9 +146,20 @@ public static partial class Strings
 		_ => "已停止",
 	};
 
-	public const string SubagentRestoredState = "已结束";
-
 	public const string SubagentResumable = "可继续";
+
+	/// <summary>子代理在自己的标签里打开问询卡：状态行与卡片提示都用这一句。</summary>
+	public const string SubagentAwaitingState = "等待回答";
+
+	public const string SubagentAwaitingHint = "子代理在自己的标签里等你回答，点开子会话处理。";
+
+	public const string SubagentProgress = "进度";
+
+	public const string SubagentBrief = "任务";
+
+	public const string SubagentResult = "最近回复";
+
+	public static string SubagentAwaitingInput(string name) => $"子代理「{name}」在等你回答。";
 
 	public const string ReportExpandHint = "展开子代理回报全文";
 

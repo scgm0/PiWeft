@@ -42,8 +42,17 @@ public sealed record SubagentRun
 	/// <summary>角色名。</summary>
 	public required string Agent { get; init; }
 
-	/// <summary>启动时的一句话描述。</summary>
+	/// <summary>启动时的一句话描述；显式 label 优先，否则取任务首行。</summary>
 	public string Label { get; init; } = string.Empty;
+
+	/// <summary>任务全文，供卡片展开与恢复后查看；超过 <see cref="SubagentHub.MaxBriefChars"/> 的部分截断。</summary>
+	public string Brief { get; init; } = string.Empty;
+
+	/// <summary>子会话模型，<c>provider/id</c>；启动完成前为空串。</summary>
+	public string Model { get; init; } = string.Empty;
+
+	/// <summary>子会话思考级别；启动完成前为空串。</summary>
+	public string Thinking { get; init; } = string.Empty;
 
 	/// <summary>委派深度，顶层子代理为 1。</summary>
 	public int Depth { get; init; }
@@ -56,6 +65,12 @@ public sealed record SubagentRun
 
 	/// <summary>运行中正在调用的工具与摘要（<c>read src/a.cs</c>）；结束或未开始时为 null。</summary>
 	public string? Activity { get; init; }
+
+	/// <summary>最近一条助手正文的首行摘要，给等待与卡片显示进度；新一轮开始时清空。</summary>
+	public string? Progress { get; init; }
+
+	/// <summary>子代理在自己的标签里等用户回答 <c>ask_question</c>；只影响展示与等待提示。</summary>
+	public bool AwaitingUser { get; init; }
 
 	/// <summary>最近一轮的最终回复。</summary>
 	public string? Result { get; init; }
@@ -81,6 +96,9 @@ public sealed record SubagentRun
 	/// <summary>从会话条目恢复出来的历史运行，没有活会话。</summary>
 	public bool Restored { get; init; }
 
+	/// <summary>是否真的在跑：启动中或运行中。</summary>
+	public bool IsActive => State is SubagentState.Starting or SubagentState.Running;
+
 	/// <summary>是否已结束一轮且可以继续发消息。</summary>
 	public bool IsTerminal => State is SubagentState.Idle or SubagentState.Failed or SubagentState.Stopped;
 }
@@ -88,6 +106,9 @@ public sealed record SubagentRun
 /// <summary>启动子代理的请求。</summary>
 public sealed record SubagentStartRequest(string Agent, string Task, string? Name = null, string? Context = null)
 {
+	/// <summary>卡片上的一句话标签；省略时取任务首行。</summary>
+	public string? Label { get; init; }
+
 	/// <summary>要求最终回复返回的 JSON Schema；null 表示不要求。</summary>
 	public JsonObject? OutputSchema { get; init; }
 }
@@ -192,6 +213,12 @@ public sealed class SubagentHub : IDisposable
 	/// <summary><c>read_subagent</c> 一次最多返回的字符数。</summary>
 	public const int MaxReadChars = 48_000;
 
+	/// <summary>任务全文进卡片与 session 条目的上限；完整 brief 本来就在模型输入里。</summary>
+	public const int MaxBriefChars = 4_000;
+
+	/// <summary>进度摘要上限，按首行截断。</summary>
+	public const int MaxProgressChars = 240;
+
 	/// <summary>Details 里给界面卡片留的正文上限：工具正文已经带全文，这里只够画卡。</summary>
 	public const int MaxCardChars = 4_000;
 
@@ -211,6 +238,9 @@ public sealed class SubagentHub : IDisposable
 		public CodingAgentSession? Session { get; set; }
 
 		public IDisposable? Subscription { get; set; }
+
+		/// 冷恢复只允许一个调用方建标签；并行 send 在这里排队，避免同一历史项开出两个会话。
+		public SemaphoreSlim? ReopenGate { get; set; }
 
 		public TaskCompletionSource<TurnResult> Completion { get; set; } =
 			new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -233,6 +263,9 @@ public sealed class SubagentHub : IDisposable
 		public JsonNode? StructuredOutput { get; set; }
 
 		public int TokensVersion { get; set; } = 1;
+
+		/// 并行工具调用时按开始顺序记着，最后一个结束不会把仍在跑的那一个清掉。
+		public List<(string Id, string Description)> ActiveTools { get; } = [];
 	}
 
 	private sealed record PendingResult(string Name, bool Failed, string Text, long Turn, JsonNode? Structured = null);
@@ -284,25 +317,48 @@ public sealed class SubagentHub : IDisposable
 	public event Action? Changed;
 
 	/// <summary>本会话开出的子代理快照，按启动顺序。</summary>
-	public IReadOnlyList<SubagentRun> Runs
-	{
-		get
-		{
-			lock (_gate)
-			{
-				var runs = new SubagentRun[_order.Count];
-				for (var index = 0; index < _order.Count; index++)
-				{
-					runs[index] = _runs[_order[index]].Run;
-				}
+	public IReadOnlyList<SubagentRun> Runs => RunsSnapshot();
 
-				return runs;
+	/// <summary>
+	/// 返回调用方独占的数组，按启动顺序。界面可以原地排序，不必再复制一份；
+	/// 数组与 hub 内部状态分离，改数组不会影响运行。
+	/// </summary>
+	public SubagentRun[] RunsSnapshot()
+	{
+		lock (_gate)
+		{
+			var runs = new SubagentRun[_order.Count];
+			for (var index = 0; index < _order.Count; index++)
+			{
+				runs[index] = _runs[_order[index]].Run;
 			}
+
+			return runs;
 		}
 	}
 
 	/// <summary>角色目录。</summary>
 	public SubagentCatalog Catalog => _catalog;
+
+	/// <summary>是否有子代理正在等用户回答；页签圆点用它，避免每次活动都复制整份运行列表。</summary>
+	public bool HasAwaitingUser
+	{
+		get
+		{
+			lock (_gate)
+			{
+				foreach (var state in _runs.Values)
+				{
+					if (state.Run.AwaitingUser)
+					{
+						return true;
+					}
+				}
+
+				return false;
+			}
+		}
+	}
 
 	/// <summary>
 	/// 从父会话的 <c>piweft-subagent</c> 条目恢复历史运行。恢复出来的项没有活会话：
@@ -337,6 +393,9 @@ public sealed class SubagentHub : IDisposable
 							Name = name,
 							Agent = data["agent"]?.GetValue<string>() ?? string.Empty,
 							Label = data["label"]?.GetValue<string>() ?? string.Empty,
+							Brief = data["brief"]?.GetValue<string>() ?? string.Empty,
+							Model = data["model"]?.GetValue<string>() ?? string.Empty,
+							Thinking = data["thinking"]?.GetValue<string>() ?? string.Empty,
 							Depth = data["depth"]?.GetValue<int>() ?? 1,
 							StartedAt = ReadLong(data["startedAt"]) ?? 0,
 							State = SubagentState.Stopped,
@@ -359,6 +418,9 @@ public sealed class SubagentHub : IDisposable
 						: state.Run.SessionFile,
 					Agent = data["agent"]?.GetValue<string>() ?? state.Run.Agent,
 					Label = data["label"]?.GetValue<string>() ?? state.Run.Label,
+					Brief = data["brief"]?.GetValue<string>() ?? state.Run.Brief,
+					Model = data["model"]?.GetValue<string>() ?? state.Run.Model,
+					Thinking = data["thinking"]?.GetValue<string>() ?? state.Run.Thinking,
 					PlanMode = state.Run.PlanMode || ReadPlanMode(data["planMode"]),
 					State = SubagentState.Stopped,
 				};
@@ -426,24 +488,31 @@ public sealed class SubagentHub : IDisposable
 				// 恢复出来的正文算作一轮，未投递：wait 还能把它取回去一次。
 				// 旧版本把 TotalTokens（含 cacheRead）写进 tokens；按会话文件重算成
 				// 与标签页一致的输入 + 输出，避免历史卡片一直显示 68k。
-				if (state.TokensVersion < 2 && state.Run.SessionFile is { Length: > 0 } usageFile)
+				// 时间戳另有一条兼容路径：更早的条目没写 startedAt/finishedAt，恢复后卡片会没有总耗时。
+				var needsFile = state.Run.SessionFile is { Length: > 0 } &&
+					(state.TokensVersion < 2 || state.Run.StartedAt == 0 ||
+					 (state.Run.IsTerminal && state.Run.FinishedAt == 0));
+				if (needsFile)
 				{
+					var usageFile = state.Run.SessionFile!;
 					try
 					{
 						var childManager = SessionManager.Open(usageFile);
-						var statistics = new SessionStatisticsCache().Get(childManager);
+						var recomputeUsage = state.TokensVersion < 2;
+						var statistics = recomputeUsage ? new SessionStatisticsCache().Get(childManager) : null;
+						var finishedAt = state.Run.FinishedAt > 0
+							? state.Run.FinishedAt
+							: ParseUnixMs(childManager.Entries.Count > 0
+								? childManager.Entries[^1].Timestamp
+								: childManager.Header?.Timestamp);
 						state.Run = state.Run with
 						{
-							Tokens = statistics.Input + statistics.Output,
-							Cost = statistics.Cost,
+							Tokens = statistics is null ? state.Run.Tokens : statistics.Input + statistics.Output,
+							Cost = statistics?.Cost ?? state.Run.Cost,
 							StartedAt = state.Run.StartedAt > 0
 								? state.Run.StartedAt
 								: ParseUnixMs(childManager.Header?.Timestamp),
-							FinishedAt = state.Run.FinishedAt > 0
-								? state.Run.FinishedAt
-								: ParseUnixMs(childManager.Entries.Count > 0
-									? childManager.Entries[^1].Timestamp
-									: childManager.Header?.Timestamp),
+							FinishedAt = state.Run.IsTerminal ? finishedAt : state.Run.FinishedAt,
 						};
 						state.TokensVersion = 2;
 					}
@@ -495,9 +564,14 @@ public sealed class SubagentHub : IDisposable
 	public static string BuildBoundary(SubagentStartContext context)
 	{
 		ArgumentNullException.ThrowIfNull(context);
+		var history = context.Task.Length == 0
+			? "这是既有子会话的继续；之前的对话在上下文里，新消息写在后续用户消息里。\n"
+			: context.Seed is { Count: > 0 }
+				? "你继承了父会话到上一个完整回合为止的历史；之后的内容你看不到，本次任务写在最后一条用户消息里。\n"
+				: "你看不到父会话的历史，任务全部写在第一条用户消息里。\n";
 		var boundary = string.Concat(
 			"你是父会话「", context.ParentTitle, "」开出的子代理「", context.Name, "」，角色「", context.Agent.Name, "」。\n",
-			"你看不到父会话的历史，任务全部写在第一条用户消息里。\n",
+			history,
 			"把结论写进最终回复：做了什么、结果在哪、还差什么。需要用户拍板时，写出阻塞点和选项后停下；",
 			"你有自己的标签页，用户可能看到也可能不看。不要只停在提问上等回答。\n",
 			"不要开新的子代理，也不要把工作推回父会话。");
@@ -554,7 +628,7 @@ public sealed class SubagentHub : IDisposable
 		if (request.OutputSchema is not null)
 		{
 			outputSchema = request.OutputSchema.DeepClone().AsObject();
-			if (outputSchema.ToJsonString().Length > 32_000)
+			if (outputSchema.ToJsonString(PiJson.NodeOptions).Length > 32_000)
 			{
 				return new SubagentStartOutcome(false, "output_schema is too large; keep it under 32000 characters");
 			}
@@ -578,6 +652,13 @@ public sealed class SubagentHub : IDisposable
 		if (name.Length > 0 && !SubagentCatalog.IsValidName(name))
 		{
 			return new SubagentStartOutcome(false, "name must be 1-32 lower-case letters, digits or hyphens, start with a letter, and not be \"lead\"");
+		}
+
+		// 显式 label 只做展示：仍限制成一行，卡片标题不会被多行 brief 撑开。
+		var label = FirstLine(request.Label ?? string.Empty, 120);
+		if (label.Length == 0)
+		{
+			label = FirstLine(task, 80);
 		}
 
 		RunState state;
@@ -615,7 +696,8 @@ public sealed class SubagentHub : IDisposable
 				{
 					Name = name,
 					Agent = definition.Name,
-					Label = FirstLine(task, 80),
+					Label = label,
+					Brief = Clip(task, MaxBriefChars),
 					Depth = _depth + 1,
 					PlanMode = planMode,
 					StartedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -687,6 +769,8 @@ public sealed class SubagentHub : IDisposable
 				{
 					SessionId = sessionId,
 					SessionFile = child.Session.SessionFile,
+					Model = ModelLabel(child.Model),
+					Thinking = child.ThinkingLevel,
 				};
 				subscription.Dispose();
 				child.Dispose();
@@ -699,6 +783,8 @@ public sealed class SubagentHub : IDisposable
 			{
 				SessionId = sessionId,
 				SessionFile = child.Session.SessionFile,
+				Model = ModelLabel(child.Model),
+				Thinking = child.ThinkingLevel,
 			};
 		}
 
@@ -718,12 +804,43 @@ public sealed class SubagentHub : IDisposable
 	/// <param name="timeout">最长等待。</param>
 	/// <param name="cancellationToken">取消。</param>
 	/// <param name="progress">等待期间的进度快照；界面用它显示「等的是谁、在干什么」。</param>
-	public async Task<SubagentOutcome> WaitAsync(
+	public Task<SubagentOutcome> WaitAsync(
 		IReadOnlyList<string>? targets,
 		TimeSpan timeout,
 		CancellationToken cancellationToken = default,
+		Action<string>? progress = null) =>
+		WaitAsync(targets, timeout, any: false, cancellationToken, progress);
+
+	/// <summary>
+	/// 等到目标子代理结束一轮或超时；<paramref name="any"/> 为 true 时第一个结束就返回。
+	/// </summary>
+	/// <param name="targets">目标子代理名或会话 id；省略时等全部在跑的。</param>
+	/// <param name="timeout">最长等待。</param>
+	/// <param name="any">第一个目标结束就返回；其余仍在跑的目标保持未投递。</param>
+	/// <param name="cancellationToken">取消。</param>
+	/// <param name="progress">等待期间的进度快照；界面用它显示「等的是谁、在干什么」。</param>
+	public async Task<SubagentOutcome> WaitAsync(
+		IReadOnlyList<string>? targets,
+		TimeSpan timeout,
+		bool any,
+		CancellationToken cancellationToken = default,
 		Action<string>? progress = null)
 	{
+		// 心跳与完成通知可能从不同线程推进度，回调本身串行化；上层 OnUpdate 也不是线程安全的。
+		var progressGate = new Lock();
+		void Report(string text)
+		{
+			if (progress is null)
+			{
+				return;
+			}
+
+			lock (progressGate)
+			{
+				progress(text);
+			}
+		}
+
 		List<RunState> waiting;
 		var completedTurns = new Dictionary<string, TurnResult>(StringComparer.Ordinal);
 		var pending = new List<(RunState State, Task<TurnResult> Task)>();
@@ -775,26 +892,42 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		var timedOut = false;
-		if (pending.Count > 0)
+		// any 只要有一个目标已经结束就立即返回；继续等 pending 会把「等一个」变成「等全部」。
+		if (pending.Count > 0 && !(any && completedTurns.Count > 0))
 		{
-			progress?.Invoke(ProgressText(waiting, "waiting"));
+			Report(ProgressText(waiting, "waiting"));
 
 			// .NET 9 的 Task.WhenEach：完成一个就推进一次。再加一条定时汇报，
 			// 让「一个子代理跑十分钟」也不至于整段没有进度。
 			using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 			deadline.CancelAfter(timeout);
 			using var heartbeat = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
-			var reporter = ReportProgressAsync(waiting, progress, heartbeat.Token);
+			var reporter = ReportProgressAsync(waiting, progress is null ? null : Report, heartbeat.Token);
+			var tasks = pending.Select(static item => item.Task).ToArray();
 			try
 			{
-				await foreach (var completed in Task.WhenEach(pending.Select(static item => item.Task)).WithCancellation(deadline.Token).ConfigureAwait(false))
+				if (any)
 				{
-					if (completed.IsCompletedSuccessfully && taskNames.TryGetValue(completed, out var name))
+					// 第一个结束就拿到结果；其余任务不 await，免得把「等一个」拖成「等全部」。
+					var first = await Task.WhenAny(tasks).WaitAsync(deadline.Token).ConfigureAwait(false);
+					if (first.IsCompletedSuccessfully && taskNames.TryGetValue(first, out var name))
 					{
-						completedTurns[name] = completed.Result;
+						completedTurns[name] = first.Result;
 					}
 
-					progress?.Invoke(ProgressText(waiting, "waiting"));
+					Report(ProgressText(waiting, "waiting"));
+				}
+				else
+				{
+					await foreach (var completed in Task.WhenEach(tasks).WithCancellation(deadline.Token).ConfigureAwait(false))
+					{
+						if (completed.IsCompletedSuccessfully && taskNames.TryGetValue(completed, out var name))
+						{
+							completedTurns[name] = completed.Result;
+						}
+
+						Report(ProgressText(waiting, "waiting"));
+					}
 				}
 			}
 			catch (OperationCanceledException)
@@ -810,6 +943,7 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		// 超时、被移除或任务异常：用当前状态补一份快照，别让结果段落空着。
+		var stillRunning = 0;
 		lock (_gate)
 		{
 			foreach (var state in waiting)
@@ -821,14 +955,31 @@ public sealed class SubagentHub : IDisposable
 						state.Run.Result ?? string.Empty,
 						state.StructuredOutput);
 				}
+
+				if (state.Run.IsActive)
+				{
+					stillRunning++;
+				}
 			}
 		}
 
 
 		var details = new JsonArray();
 		var text = new StringBuilder(256);
-		text.Append(timedOut ? "wait_subagents timed out; some subagents are still running." : "wait_subagents")
-			.Append('\n');
+		if (timedOut)
+		{
+			text.Append("wait_subagents timed out; some subagents are still running.");
+		}
+		else if (any && stillRunning > 0)
+		{
+			text.Append("wait_subagents returned early; ").Append(stillRunning).Append(" subagents are still running.");
+		}
+		else
+		{
+			text.Append("wait_subagents");
+		}
+
+		text.Append('\n');
 		var budget = MaxWaitChars;
 		var results = new StringBuilder(256);
 		lock (_gate)
@@ -847,7 +998,11 @@ public sealed class SubagentHub : IDisposable
 				{
 					["name"] = run.Name,
 					["agent"] = run.Agent,
+					["label"] = run.Label,
+					["model"] = run.Model,
+					["thinking"] = run.Thinking,
 					["state"] = StateName(run.State),
+					["restored"] = run.Restored,
 					["turns"] = run.Turns,
 					["tokens"] = run.Tokens,
 					["cost"] = run.Cost,
@@ -856,6 +1011,8 @@ public sealed class SubagentHub : IDisposable
 					["session_file"] = run.SessionFile,
 					["structured_output"] = turnResult.Structured,
 					["activity"] = run.Activity,
+					["progress"] = run.Progress,
+					["awaiting_user"] = run.AwaitingUser,
 					// returned：这次工具调用把正文带回去了，所以它不会再走消息投递。
 					// 桌面据此补一张只读回报卡；delivered 是「调用前就已经投递过」，两者不同。
 					["delivered"] = alreadyDelivered,
@@ -866,6 +1023,11 @@ public sealed class SubagentHub : IDisposable
 
 				text.Append("- ").Append(run.Name).Append(" (").Append(run.Agent).Append(") · ")
 					.Append(StateName(run.State)).Append(" · ").Append(run.Turns).Append(" turns");
+				if (run.AwaitingUser)
+				{
+					text.Append(" · waiting for user input");
+				}
+
 				if (run.Activity is { Length: > 0 } activity)
 				{
 					text.Append(" · ").Append(activity);
@@ -923,11 +1085,17 @@ public sealed class SubagentHub : IDisposable
 		{
 			text.Append("\nEnd your turn instead of waiting again; the result arrives as a message when it finishes.");
 		}
+		else if (any && stillRunning > 0)
+		{
+			text.Append("\nCall wait_subagents again to collect the rest; results not returned here arrive as messages when this turn ends.");
+		}
 
 		text.Append(results);
 		return new SubagentOutcome(true, text.ToString().TrimEnd(), new JsonObject
 		{
 			["timed_out"] = timedOut,
+			["any"] = any,
+			["still_running"] = stillRunning,
 			["subagents"] = details,
 		});
 	}
@@ -958,18 +1126,32 @@ public sealed class SubagentHub : IDisposable
 					["elapsed_ms"] = ElapsedMs(run),
 					["structured_output"] = run.StructuredOutput,
 					["label"] = run.Label,
+					["model"] = run.Model,
+					["thinking"] = run.Thinking,
 					["activity"] = run.Activity,
+					["progress"] = run.Progress,
+					["awaiting_user"] = run.AwaitingUser,
 					["restored"] = run.Restored,
 					["resumable"] = run.SessionFile is { Length: > 0 },
 					["result"] = run.Result is { Length: > 0 } result ? Clip(result, 400) : null,
 				});
 
 				text.Append("- ").Append(run.Name).Append(" (").Append(run.Agent).Append(") · ")
-					.Append(run.Restored ? "finished" : StateName(run.State))
+					.Append(StateName(run.State))
 					.Append(" · ").Append(run.Turns).Append(" turns");
+				if (run.AwaitingUser)
+				{
+					text.Append(" · waiting for user input");
+				}
+
 				if (run.Activity is { Length: > 0 } activity)
 				{
 					text.Append(" · ").Append(activity);
+				}
+
+				if (run.Progress is { Length: > 0 } progress)
+				{
+					text.Append(" · ").Append(Clip(progress, 80));
 				}
 
 				if (run.Label.Length > 0)
@@ -1173,7 +1355,7 @@ public sealed class SubagentHub : IDisposable
 		{
 			state = ResolveOneLocked(target);
 			running = state is not null &&
-				(state.Run.State is SubagentState.Starting or SubagentState.Running || state.Session is { IsRunning: true });
+				(state.Run.IsActive || state.Session is { IsRunning: true });
 			// steer 只认「正在跑」：状态已经回 idle、但 PromptAsync 还没完全退栈时不收，
 			// 否则消息会被塞进一个已经结束的回合。
 			canSteer = state?.Run.State == SubagentState.Running && state.Session is { IsRunning: true };
@@ -1219,16 +1401,44 @@ public sealed class SubagentHub : IDisposable
 		// 停过、关过标签的子代理照样能继续：会话文件还在就冷恢复。
 		// stop_subagent 停的是当前回合，不是这段关系。
 
-		if (state.Session is not { } session || session.IsDisposed)
+		CodingAgentSession? session;
+		lock (_gate)
 		{
-			var reopened = await ReopenAsync(state, cancellationToken).ConfigureAwait(false);
-			if (reopened is null)
+			session = state.Session;
+		}
+
+		if (session is not { IsDisposed: false })
+		{
+			SemaphoreSlim reopenGate;
+			lock (_gate)
 			{
-				return new SubagentOutcome(false,
-					"the subagent session is not open and cannot be reopened; its transcript is in the session file");
+				reopenGate = state.ReopenGate ??= new SemaphoreSlim(1, 1);
 			}
 
-			session = reopened;
+			await reopenGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+			try
+			{
+				// 排队期间别的调用方可能已经把它打开；先看一次，别重复建标签。
+				lock (_gate)
+				{
+					session = state.Session;
+				}
+
+				if (session is not { IsDisposed: false })
+				{
+					session = await ReopenAsync(state, cancellationToken).ConfigureAwait(false);
+				}
+			}
+			finally
+			{
+				reopenGate.Release();
+			}
+		}
+
+		if (session is null)
+		{
+			return new SubagentOutcome(false,
+				"the subagent session is not open and cannot be reopened; its transcript is in the session file");
 		}
 
 		lock (_gate)
@@ -1342,12 +1552,17 @@ public sealed class SubagentHub : IDisposable
 			current.Subscription = subscription;
 			// Stopping 只描述「当前这一轮被叫停」，冷恢复之后新的一轮要能正常收尾。
 			current.Stopping = false;
+			current.ActiveTools.Clear();
 			current.Run = current.Run with
 			{
 				Restored = false,
 				State = SubagentState.Idle,
 				PlanMode = run.PlanMode || _owner.PlanModeEnabled,
 				Activity = null,
+				Progress = null,
+				AwaitingUser = false,
+				Model = ModelLabel(child.Model),
+				Thinking = child.ThinkingLevel,
 				SessionFile = child.Session.SessionFile ?? run.SessionFile,
 			};
 		}
@@ -1376,9 +1591,13 @@ public sealed class SubagentHub : IDisposable
 
 			state.Stopping = true;
 			CancelDeadlineLocked(state);
+			state.ActiveTools.Clear();
 			state.Run = state.Run with
 			{
 				State = SubagentState.Stopped,
+				Activity = null,
+				Progress = null,
+				AwaitingUser = false,
 				FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			};
 			state.Completion.TrySetResult(new TurnResult(0, string.Empty));
@@ -1427,11 +1646,19 @@ public sealed class SubagentHub : IDisposable
 			state.Subscription?.Dispose();
 			state.Subscription = null;
 			state.Session = null;
+			state.ActiveTools.Clear();
 			CancelDeadlineLocked(state);
+			// 已排队的 AgentEnd 可能在 Dispose 之后才到：标成 Stopping，迟到的收尾只能落 Stopped，
+			// 不能把已关闭的子会话又改回 Idle 并投递结果。
+			state.Stopping = true;
+			state.TimedOut = false;
 			// 子会话标签关掉后不能继续发消息，状态一律落到 stopped。
 			state.Run = state.Run with
 			{
 				State = SubagentState.Stopped,
+				Activity = null,
+				Progress = null,
+				AwaitingUser = false,
 				FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			};
 			state.Completion.TrySetResult(new TurnResult(0, string.Empty));
@@ -1440,11 +1667,55 @@ public sealed class SubagentHub : IDisposable
 		Changed?.Invoke();
 	}
 
+	/// <summary>
+	/// 子会话开始或结束等待用户回答：只更新展示状态。找不到对应运行（历史项、关联会话）时返回 null。
+	/// </summary>
+	/// <param name="sessionId">子会话 id。</param>
+	/// <param name="awaiting">是否正在等回答。</param>
+	public SubagentRun? NoteChildAwaiting(string sessionId, bool awaiting)
+	{
+		SubagentRun? snapshot;
+		lock (_gate)
+		{
+			if (_disposed)
+			{
+				return null;
+			}
+
+			RunState? state = null;
+			foreach (var candidate in _runs.Values)
+			{
+				if (string.Equals(candidate.Run.SessionId, sessionId, StringComparison.Ordinal))
+				{
+					state = candidate;
+					break;
+				}
+			}
+
+			if (state is null || state.Run.IsTerminal)
+			{
+				return null;
+			}
+
+			if (state.Run.AwaitingUser == awaiting)
+			{
+				return null;
+			}
+
+			state.Run = state.Run with { AwaitingUser = awaiting };
+			snapshot = state.Run;
+		}
+
+		Changed?.Invoke();
+		return snapshot;
+	}
+
 	public void Dispose()
 	{
 		IDisposable[] subscriptions;
 		TaskCompletionSource<TurnResult>[] completions;
 		CodingAgentSession[] active;
+		IDisposable? parentSubscription;
 		lock (_gate)
 		{
 			if (_disposed)
@@ -1453,16 +1724,18 @@ public sealed class SubagentHub : IDisposable
 			}
 
 			_disposed = true;
+			parentSubscription = _parentSubscription;
+			_parentSubscription = null;
 			subscriptions = [.. _runs.Values.Select(static state => state.Subscription).OfType<IDisposable>()];
 			completions = [.. _runs.Values.Select(static state => state.Completion)];
 			active = [.. _runs.Values
-				.Where(static state => state.Run.State is SubagentState.Starting or SubagentState.Running)
+				.Where(static state => state.Run.IsActive)
 				.Select(static state => state.Session)
 				.OfType<CodingAgentSession>()];
 			foreach (var state in _runs.Values)
 			{
 				CancelDeadlineLocked(state);
-				if (state.Run.State is SubagentState.Starting or SubagentState.Running)
+				if (state.Run.IsActive)
 				{
 					// 父会话关了，结果已经无处投递：停掉正在跑的子代理，别继续烧 token。
 					// 子会话标签与文件保留，用户仍可在子标签里读或继续。
@@ -1484,6 +1757,7 @@ public sealed class SubagentHub : IDisposable
 			completion.TrySetResult(new TurnResult(0, string.Empty));
 		}
 
+		parentSubscription?.Dispose();
 		foreach (var subscription in subscriptions)
 		{
 			subscription.Dispose();
@@ -1511,7 +1785,22 @@ public sealed class SubagentHub : IDisposable
 				break;
 
 			case ToolExecutionStartEvent tool:
-				SetActivity(name, DescribeTool(tool.ToolName, tool.Arguments));
+				StartTool(name, tool.ToolCallId, DescribeTool(tool.ToolName, tool.Arguments));
+				break;
+
+			case ToolExecutionEndEvent tool:
+				// 并行工具里一个结束不代表都结束：仍活跃的按最后开始的显示。
+				EndTool(name, tool.ToolCallId);
+				if (string.Equals(tool.ToolName, "ask_question", StringComparison.Ordinal))
+				{
+					ClearAwaiting(name);
+				}
+
+				break;
+
+			case MessageEndEvent { Message: AssistantMessage assistant }:
+				// 每完成一条助手消息就更新进度：长回合里 parent 的 wait 与卡片能看到它写到了哪。
+				SetProgress(name, MessageText.Of(assistant));
 				break;
 
 			case AgentEndEvent { WillRetry: false } end:
@@ -1553,7 +1842,14 @@ public sealed class SubagentHub : IDisposable
 				state.Completion = new TaskCompletionSource<TurnResult>(TaskCreationOptions.RunContinuationsAsynchronously);
 			}
 
-			state.Run = state.Run with { State = SubagentState.Running };
+			state.ActiveTools.Clear();
+			state.Run = state.Run with
+			{
+				State = SubagentState.Running,
+				Activity = null,
+				Progress = null,
+				AwaitingUser = false,
+			};
 			running = state;
 		}
 
@@ -1607,6 +1903,7 @@ public sealed class SubagentHub : IDisposable
 			state.TimedOut = true;
 			state.Stopping = true;
 			state.StructuredOutput = null;
+			state.ActiveTools.Clear();
 			state.ResultTurn = ++state.TurnSeq;
 			turn = state.ResultTurn;
 			text = TimeoutText();
@@ -1617,6 +1914,8 @@ public sealed class SubagentHub : IDisposable
 				Result = text,
 				StructuredOutput = null,
 				Activity = null,
+				Progress = null,
+				AwaitingUser = false,
 				FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			};
 			state.Completion.TrySetResult(new TurnResult(turn, text));
@@ -1681,15 +1980,39 @@ public sealed class SubagentHub : IDisposable
 		: $"subagent timed out after {_runTimeout.TotalSeconds:0.#} seconds";
 
 	/// 子代理此刻在干什么：工具名加一个能认出来的参数，卡片与 list_subagents 都用它。
-	private void SetActivity(string name, string activity)
+	/// 并行工具调用各自记账：结束一个时若还有别的在跑，Activity 换成剩下最后开始的那个。
+	private void StartTool(string name, string callId, string description)
 	{
 		lock (_gate)
 		{
-			if (!_runs.TryGetValue(name, out var state) || state.Stopping)
+			if (!_runs.TryGetValue(name, out var state) || state.Stopping || state.Run.IsTerminal)
 			{
 				return;
 			}
 
+			RemoveToolLocked(state, callId);
+			state.ActiveTools.Add((callId, description));
+			state.Run = state.Run with { Activity = description };
+		}
+
+		Changed?.Invoke();
+	}
+
+	private void EndTool(string name, string callId)
+	{
+		lock (_gate)
+		{
+			if (!_runs.TryGetValue(name, out var state) || state.Stopping || state.Run.IsTerminal)
+			{
+				return;
+			}
+
+			if (!RemoveToolLocked(state, callId))
+			{
+				return;
+			}
+
+			var activity = state.ActiveTools.Count > 0 ? state.ActiveTools[^1].Description : null;
 			if (string.Equals(state.Run.Activity, activity, StringComparison.Ordinal))
 			{
 				return;
@@ -1699,6 +2022,61 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		Changed?.Invoke();
+	}
+
+	/// 助手正文的进度摘要：只取首行，避免进度把卡片与 wait 的心跳撑成多行。
+	private void SetProgress(string name, string text)
+	{
+		var progress = FirstLine(text, MaxProgressChars);
+		if (progress.Length == 0)
+		{
+			return;
+		}
+
+		lock (_gate)
+		{
+			if (!_runs.TryGetValue(name, out var state) || state.Stopping || state.Run.IsTerminal ||
+				string.Equals(state.Run.Progress, progress, StringComparison.Ordinal))
+			{
+				return;
+			}
+
+			state.Run = state.Run with { Progress = progress };
+		}
+
+		Changed?.Invoke();
+	}
+
+	private void ClearAwaiting(string name)
+	{
+		var changed = false;
+		lock (_gate)
+		{
+			if (_runs.TryGetValue(name, out var state) && state.Run.AwaitingUser)
+			{
+				state.Run = state.Run with { AwaitingUser = false };
+				changed = true;
+			}
+		}
+
+		if (changed)
+		{
+			Changed?.Invoke();
+		}
+	}
+
+	private static bool RemoveToolLocked(RunState state, string callId)
+	{
+		for (var index = 0; index < state.ActiveTools.Count; index++)
+		{
+			if (string.Equals(state.ActiveTools[index].Id, callId, StringComparison.Ordinal))
+			{
+				state.ActiveTools.RemoveAt(index);
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private static string DescribeTool(string tool, JsonObject arguments)
@@ -1737,6 +2115,7 @@ public sealed class SubagentHub : IDisposable
 			}
 
 			CancelDeadlineLocked(state);
+			state.ActiveTools.Clear();
 
 			if (state.Stopping)
 			{
@@ -1745,6 +2124,9 @@ public sealed class SubagentHub : IDisposable
 				{
 					State = SubagentState.Stopped,
 					StructuredOutput = null,
+					Activity = null,
+					Progress = null,
+					AwaitingUser = false,
 					FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 				};
 				state.Completion.TrySetResult(new TurnResult(0, string.Empty));
@@ -1777,6 +2159,8 @@ public sealed class SubagentHub : IDisposable
 					Result = text,
 					StructuredOutput = structured,
 					Activity = null,
+					Progress = null,
+					AwaitingUser = false,
 					FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 				};
 				state.Completion.TrySetResult(new TurnResult(state.ResultTurn, text, structured));
@@ -1842,6 +2226,14 @@ public sealed class SubagentHub : IDisposable
 				if (run.Activity is { Length: > 0 } activity)
 				{
 					builder.Append('(').Append(activity).Append(')');
+				}
+				else if (run.AwaitingUser)
+				{
+					builder.Append(" (waiting for user)");
+				}
+				else if (run.Progress is { Length: > 0 } progress)
+				{
+					builder.Append(" (").Append(Clip(progress, 60)).Append(')');
 				}
 			}
 		}
@@ -2131,7 +2523,7 @@ public sealed class SubagentHub : IDisposable
 		var active = 0;
 		foreach (var state in _runs.Values)
 		{
-			if (state.Run.State is SubagentState.Starting or SubagentState.Running)
+			if (state.Run.IsActive)
 			{
 				active++;
 			}
@@ -2150,7 +2542,7 @@ public sealed class SubagentHub : IDisposable
 			var active = new List<RunState>(_runs.Count);
 			foreach (var name in _order)
 			{
-				if (!_runs[name].Run.IsTerminal)
+				if (_runs[name].Run.IsActive)
 				{
 					active.Add(_runs[name]);
 				}
@@ -2238,9 +2630,20 @@ public sealed class SubagentHub : IDisposable
 				["tokensVersion"] = 2,
 				["cost"] = run.Cost,
 				["label"] = run.Label,
+				["model"] = run.Model,
+				["thinking"] = run.Thinking,
+				// 卡片的总耗时与「运行中」秒表都从这两个时间戳算；旧条目没有就按会话文件回填。
+				["startedAt"] = run.StartedAt > 0 ? run.StartedAt : null,
+				["finishedAt"] = run.FinishedAt > 0 ? run.FinishedAt : null,
 				// 只存摘要：恢复后的列表够用，完整正文在子会话文件里。
 				["result"] = run.Result is { Length: > 0 } result ? Clip(result, 400) : null,
 			};
+			if (kind == "start")
+			{
+				// brief 只在 start 里写一次：它本来就在委派请求里，每轮状态变化重写会白白撑大父会话文件。
+				data["brief"] = run.Brief;
+			}
+
 			if (kind == "start" && state.OutputSchema is { } outputSchema)
 			{
 				// schema 只在 start 条目写一次；每次状态变化都写会把会话文件撑大。
@@ -2369,7 +2772,7 @@ public sealed class SubagentHub : IDisposable
 	private static int EstimateSeedChars(Message message) => message switch
 	{
 		UserMessage user => user.Content.Text?.Length ?? 0,
-		AssistantMessage assistant => MessageText.Of(assistant).Length,
+		AssistantMessage assistant => MessageText.TextLength(assistant),
 		ToolResultMessage result => TextChars(result.Content),
 		_ => 0,
 	};
@@ -2425,6 +2828,9 @@ public sealed class SubagentHub : IDisposable
 
 	private static long ElapsedMs(SubagentRun run) =>
 		run.FinishedAt > run.StartedAt && run.StartedAt > 0 ? run.FinishedAt - run.StartedAt : 0;
+
+	private static string ModelLabel(Model model) =>
+		model.Provider.Length > 0 ? string.Concat(model.Provider, "/", model.Id) : model.Id;
 
 	private static (long Tokens, double Cost) UsageOf(CodingAgentSession session)
 	{

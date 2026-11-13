@@ -539,7 +539,8 @@ public sealed partial class MainWindow
 	private static string EntryTitle(object entry) => entry switch
 	{
 		// 阻塞式问询卡在等回答：页签带个圆点，后台会话不必靠声音才知道卡住了（PiDeck 的 PendingAskBadge 同义）。
-		SessionTab tab => tab.AskPending ? "\u25cf " + tab.Title : tab.Title,
+		// 子代理在自己的标签里提问时，父标签同样带圆点：用户不必逐个后台标签找是谁卡住了。
+		SessionTab tab => tab.AskPending || tab.HasAwaitingSubagent ? "\u25cf " + tab.Title : tab.Title,
 		UsageStatsView => Strings.UsageStatsTitle,
 		_ => string.Empty,
 	};

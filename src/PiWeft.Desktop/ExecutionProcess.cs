@@ -481,7 +481,13 @@ internal static class ExecutionProcess
 		{
 			var agent = JsonField(arguments, "agent");
 			var task = JsonField(arguments, "task");
+			var label = JsonField(arguments, "label");
 			if (agent is null) return Strings.ToolDetail(arguments);
+			if (label is { Length: > 0 })
+			{
+				return Strings.ToolDetail($"{agent} · {label}");
+			}
+
 			return task is { Length: > 0 }
 				? Strings.ToolDetail($"{agent} · {TaskLine(task)}")
 				: Strings.ToolDetail(agent);
@@ -490,7 +496,10 @@ internal static class ExecutionProcess
 		if (entry.ToolName == SubagentTools.WaitName)
 		{
 			var names = JsonStringArray(arguments, "names");
-			return names is { Length: > 0 } ? Strings.ToolDetail(names) : Strings.ToolActionSubagentWaitAll;
+			var detail = names is { Length: > 0 } ? Strings.ToolDetail(names) : Strings.ToolActionSubagentWaitAll;
+			return HasTrueFlag(arguments, "any")
+				? $"{detail} · {Strings.ToolAnyOne}"
+				: detail;
 		}
 
 		if (entry.ToolName == SubagentTools.ListName)
@@ -572,6 +581,21 @@ internal static class ExecutionProcess
 		}
 
 		return Strings.ToolDetail(arguments);
+	}
+
+	private static bool HasTrueFlag(string arguments, string name)
+	{
+		try
+		{
+			using var document = JsonDocument.Parse(arguments);
+			return document.RootElement.ValueKind == JsonValueKind.Object &&
+				document.RootElement.TryGetProperty(name, out var value) &&
+				value.ValueKind == JsonValueKind.True;
+		}
+		catch (Exception error) when (error is JsonException or ArgumentException)
+		{
+			return false;
+		}
 	}
 
 	/// 形参用 span，不用数组：这条路径在一次投影里会被每个工具条目调用一次，

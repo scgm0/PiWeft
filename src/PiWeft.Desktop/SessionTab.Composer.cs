@@ -38,6 +38,8 @@ public sealed partial class SessionTab
 
 	internal int SubagentCardRowCount => _subagentCard.RowCount;
 
+	internal SubagentCard SubagentCardForTests => _subagentCard;
+
 	private void OnLinkedSessionsChanged() => Dispatch(RefreshLinkedSessions);
 
 	private int _subagentRefreshQueued;
@@ -78,6 +80,15 @@ public sealed partial class SessionTab
 				}
 			});
 		RefreshWidgetColumn();
+
+		// 页签圆点只在「有子代理开始/结束等回答」时翻转；工具活动不碰标题栏。
+		// 用卡片这一帧的快照，不再让 hub 扫描第二遍。
+		var awaiting = _subagentCard.HasAwaiting;
+		if (awaiting != _awaitingSubagents)
+		{
+			_awaitingSubagents = awaiting;
+			SubagentAwaitChanged?.Invoke(this);
+		}
 	}
 
 	private bool StopSubagent(string name)

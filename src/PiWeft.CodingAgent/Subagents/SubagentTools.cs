@@ -70,9 +70,10 @@ public static class SubagentTools
 				},
 				"Start a subagent on a self-contained task; its final reply arrives as a message",
 				[
-					"Write the task as a self-contained brief: scope, done criteria, how to verify, what not to touch. The child cannot see this conversation.",
+					"Write the task as a self-contained brief: scope, done criteria, how to verify, what not to touch. The child cannot see this conversation unless you pass context \"fork\".",
 					"Start independent delegations in one assistant message and keep working while they run. When only waiting is left, call wait_subagents or end your turn; the result starts a new turn.",
-					"Do not edit the same files from both sides. Review the child's diff and command output before reporting the work as done.",
+					"Collect the subagent results you need before giving the user a final answer.",
+					"Do not edit the same files from both sides. Bash, formatters and code generators can overwrite concurrent edits; coordinate them explicitly and review the final diff.",
 				]),
 
 			new BuiltinTool(
@@ -83,7 +84,7 @@ public static class SubagentTools
 					Description =
 						"Wait until the named subagents finish a turn, or until the timeout (default 10 minutes). " +
 						"Returns state and result text for each; results taken this way are not delivered again as a separate message. " +
-						"Omit names to wait for every running subagent.",
+						"Omit names to wait for every running subagent; pass any = true to return as soon as one finishes.",
 					Parameters = WaitParameters(),
 					Execute = invocation => ExecuteWaitAsync(hub, invocation),
 				},
@@ -175,6 +176,7 @@ public static class SubagentTools
 		}
 
 		var name = JsonArgs.String(invocation.Arguments["name"]);
+		var label = JsonArgs.String(invocation.Arguments["label"]);
 		var context = JsonArgs.String(invocation.Arguments["context"]);
 		var schemaNode = invocation.Arguments["output_schema"];
 		if (schemaNode is not null and not JsonObject)
@@ -184,7 +186,7 @@ public static class SubagentTools
 
 		var outputSchema = schemaNode is JsonObject schema ? schema.DeepClone().AsObject() : null;
 		var outcome = await hub.StartAsync(
-			new SubagentStartRequest(agent, task, name, context) { OutputSchema = outputSchema },
+			new SubagentStartRequest(agent, task, name, context) { Label = label, OutputSchema = outputSchema },
 			invocation.CancellationToken).ConfigureAwait(false);
 
 		return outcome.Ok
@@ -200,6 +202,7 @@ public static class SubagentTools
 	private static async Task<AgentToolResult> ExecuteWaitAsync(SubagentHub hub, AgentToolInvocation invocation)
 	{
 		var targets = ReadNames(invocation.Arguments["names"]);
+		var any = JsonArgs.Bool(invocation.Arguments["any"]) ?? false;
 		var timeoutMs = JsonArgs.Int(invocation.Arguments["timeout_ms"]);
 		var timeout = timeoutMs is > 0
 			? TimeSpan.FromMilliseconds(Math.Min(timeoutMs.Value, 1_800_000))
@@ -209,6 +212,7 @@ public static class SubagentTools
 		var outcome = await hub.WaitAsync(
 			targets,
 			timeout,
+			any,
 			invocation.CancellationToken,
 			invocation.OnUpdate is { } onUpdate
 				? text => onUpdate(AgentToolResult.Text(text))
@@ -282,24 +286,46 @@ public static class SubagentTools
 		return names.Count == 0 ? null : names;
 	}
 
+	private const int MaxListedAgents = 24;
+
+	private const int MaxListedDescriptionChars = 200;
+
 	private static string DelegateDescription(SubagentCatalog catalog)
 	{
 		var builder = new StringBuilder(256);
 		builder.Append(
 			"Start a subagent on a self-contained task. Returns immediately with the subagent name; " +
 			"the final reply arrives as a message when the child finishes a turn. " +
-			"Pass output_schema when the parent needs a validated JSON result. ");
+			"Pass label for a short title in lists and cards; pass output_schema when the parent needs a validated JSON result. ");
 		builder.Append("Available agents: ");
-		var first = true;
+		var listed = 0;
 		foreach (var definition in catalog.All)
 		{
-			if (!first)
+			if (listed == MaxListedAgents)
+			{
+				break;
+			}
+
+			if (listed > 0)
 			{
 				builder.Append("; ");
 			}
 
-			builder.Append(definition.Name).Append(": ").Append(definition.Description);
-			first = false;
+			// 角色文件是用户可加的；描述没有上限时，每次请求都为一个长目录付 token。
+			var description = definition.Description;
+			if (description.Length > MaxListedDescriptionChars)
+			{
+				description = string.Concat(description.AsSpan(0, MaxListedDescriptionChars).TrimEnd(), "…");
+			}
+
+			builder.Append(definition.Name).Append(": ").Append(description);
+			listed++;
+		}
+
+		var remaining = catalog.All.Count - listed;
+		if (remaining > 0)
+		{
+			builder.Append("; +").Append(remaining).Append(" more (list_subagents)");
 		}
 
 		return builder.ToString();
@@ -324,6 +350,11 @@ public static class SubagentTools
 			{
 				["type"] = "string",
 				["description"] = "Optional name for this child, unique among your subagents: 1-32 lower-case letters, digits or hyphens, starting with a letter.",
+			},
+			["label"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = "Optional one-line label for lists and cards; defaults to the first line of the task.",
 			},
 			["context"] = new JsonObject
 			{
@@ -360,6 +391,11 @@ public static class SubagentTools
 			{
 				["type"] = "integer",
 				["description"] = "Maximum wait in milliseconds; defaults to 600000 (10 minutes), capped at 1800000.",
+			},
+			["any"] = new JsonObject
+			{
+				["type"] = "boolean",
+				["description"] = "Return as soon as one target finishes; omit or false to wait for every target.",
 			},
 		},
 	};

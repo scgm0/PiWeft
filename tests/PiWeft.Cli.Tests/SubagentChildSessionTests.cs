@@ -94,6 +94,62 @@ public sealed class SubagentChildSessionTests : IDisposable
 	}
 
 	[Fact]
+	public void ChildSession_ForkBoundaryDescribesTheInheritedHistory()
+	{
+		using var parent = CreateParent();
+		var (environment, arguments) = Environment();
+		var definition = new SubagentDefinition
+		{
+			Name = "scout",
+			Description = "recon",
+			SystemPrompt = "You investigate a codebase.",
+			Tools = ["read"],
+		};
+		var seed = new Message[]
+		{
+			new UserMessage { Content = "父会话的历史提问。", Timestamp = 1 },
+		};
+		var context = new SubagentStartContext(parent, "父会话", definition, "scout-1", "接着看。", 1, seed);
+		using var child = environment.CreateChildSession(
+			arguments,
+			_root,
+			SessionManager.InMemory(_root),
+			context,
+			SubagentCatalog.Empty,
+			subagentHost: null,
+			extraTools: null,
+			uiHost: null);
+
+		Assert.Contains("你继承了父会话到上一个完整回合为止的历史", child.CurrentSystemPrompt);
+		Assert.DoesNotContain("你看不到父会话的历史", child.CurrentSystemPrompt);
+	}
+
+	[Fact]
+	public void ChildSession_ReopenBoundaryDescribesAContinuation()
+	{
+		using var parent = CreateParent();
+		var (environment, arguments) = Environment();
+		var definition = new SubagentDefinition
+		{
+			Name = "scout",
+			Description = "recon",
+			Tools = ["read"],
+		};
+		var context = new SubagentStartContext(parent, "父会话", definition, "scout-1", string.Empty, 1);
+		using var child = environment.CreateChildSession(
+			arguments,
+			_root,
+			SessionManager.InMemory(_root),
+			context,
+			SubagentCatalog.Empty,
+			subagentHost: null,
+			extraTools: null,
+			uiHost: null);
+
+		Assert.Contains("既有子会话的继续", child.CurrentSystemPrompt);
+	}
+
+	[Fact]
 	public void ChildSession_FollowsPlanModeAndTheParentToolSet()
 	{
 		using var parent = CreateParent();

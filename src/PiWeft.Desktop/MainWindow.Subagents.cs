@@ -35,6 +35,45 @@ public sealed partial class MainWindow
 
 	private DesktopSubagentHost? _subagentHost;
 
+	/// 子会话的 ask_question 开合时同步到父会话的 hub：卡片显示「等待回答」，父标签加圆点。
+	/// 这条链路只服务当前窗口里开着的子代理；父标签没开或不是子代理（关联会话）时什么也不做。
+	private void SyncSubagentAwaiting(SessionTab child)
+	{
+		if (_sessionHostClosed)
+		{
+			return;
+		}
+
+		var reference = child.Session.Session.Header?.ParentSession;
+		if (reference is not { Length: > 0 })
+		{
+			return;
+		}
+
+		SessionTab? parent = null;
+		foreach (var entry in _tabEntries)
+		{
+			if (entry is SessionTab candidate &&
+				(string.Equals(candidate.Session.Session.SessionFile, reference, StringComparison.Ordinal) ||
+				 string.Equals(candidate.Session.Session.SessionId, reference, StringComparison.Ordinal)))
+			{
+				parent = candidate;
+				break;
+			}
+		}
+
+		if (parent?.Session.Subagents is not { } hub)
+		{
+			return;
+		}
+
+		var run = hub.NoteChildAwaiting(child.Session.Session.SessionId, child.AskPending);
+		if (run is { AwaitingUser: true })
+		{
+			Toasts.Show(this, Strings.SubagentAwaitingInput(run.Name));
+		}
+	}
+
 	/// 所有会话共用同一个宿主；多线程首次调用用 LazyInitializer 保证只建一个。
 	private DesktopSubagentHost SubagentSessionsHost =>
 		LazyInitializer.EnsureInitialized(ref _subagentHost, () => new DesktopSubagentHost(this));

@@ -627,6 +627,9 @@ public static class AgentLoop
 		CancellationToken cancellationToken)
 	{
 		var updates = new List<ValueTask>();
+		// 工具可以从后台线程推 update（Bash、子代理等待心跳都会）：列表与停止标记要自己串行化。
+		// 先发出去的 update 必须在结果返回前发完，否则 UI 会先收到结果、后收到旧进度。
+		var updateGate = new Lock();
 		var acceptingUpdates = true;
 		var startedAt = Stopwatch.GetTimestamp();
 
@@ -640,36 +643,50 @@ public static class AgentLoop
 				CancellationToken = cancellationToken,
 				OnUpdate = partial =>
 				{
-					if (!acceptingUpdates)
+					lock (updateGate)
 					{
-						return;
-					}
+						if (!acceptingUpdates)
+						{
+							return;
+						}
 
-					updates.Add(emit(new ToolExecutionUpdateEvent
-					{
-						ToolCallId = toolCall.Id,
-						ToolName = toolCall.Name,
-						Arguments = prepared.Arguments,
-						PartialResult = partial,
-					}));
+						updates.Add(emit(new ToolExecutionUpdateEvent
+						{
+							ToolCallId = toolCall.Id,
+							ToolName = toolCall.Name,
+							Arguments = prepared.Arguments,
+							PartialResult = partial,
+						}));
+					}
 				},
 			}).ConfigureAwait(false);
 
 			var durationMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
-			acceptingUpdates = false;
+			lock (updateGate)
+			{
+				acceptingUpdates = false;
+			}
+
 			await AwaitUpdatesAsync(updates).ConfigureAwait(false);
 			return new ExecutedToolCallOutcome(result, result.IsError, durationMs);
 		}
 		catch (Exception ex)
 		{
 			var durationMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
-			acceptingUpdates = false;
+			lock (updateGate)
+			{
+				acceptingUpdates = false;
+			}
+
 			await AwaitUpdatesAsync(updates).ConfigureAwait(false);
 			return new ExecutedToolCallOutcome(AgentToolResult.Error(ex.Message), true, durationMs);
 		}
 		finally
 		{
-			acceptingUpdates = false;
+			lock (updateGate)
+			{
+				acceptingUpdates = false;
+			}
 		}
 	}
 

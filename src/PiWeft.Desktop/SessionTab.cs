@@ -148,6 +148,8 @@ public sealed partial class SessionTab : IDisposable
 	private readonly LinkedSessionsCard _linkedSessionsCard;
 
 	private readonly SubagentCard _subagentCard;
+	/// 上一次算出的「有子代理在等回答」：避免每次工具活动都去刷页签标题。
+	private bool _awaitingSubagents;
 	private readonly GoalStripCard _goalStrip;
 	private readonly ReadingColumn _widgetColumn = new();
 	private readonly Button _retry;
@@ -232,6 +234,9 @@ public sealed partial class SessionTab : IDisposable
 
 	/// 子会话条点击某一行：宿主按会话 id 切到对应标签。
 	public event Action<string>? LinkedSessionOpenRequested;
+
+	/// 子代理从「没在等」变成「在等回答」（或反向）时触发；页签圆点靠它刷新。
+	public event Action<SessionTab>? SubagentAwaitChanged;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
 		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null,
@@ -802,6 +807,8 @@ public sealed partial class SessionTab : IDisposable
 	internal AskQuestionPanel AskPanel => _askPanel;
 
 	internal bool AskPending => _askPanel.IsOpen;
+
+	internal bool HasAwaitingSubagent => _awaitingSubagents;
 
 	internal bool InputAreaVisible => _inputStack.IsVisible;
 

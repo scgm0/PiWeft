@@ -912,7 +912,7 @@ public sealed class CliEnvironment
 				}
 
 				// 白名单只做收窄，唯一例外是父会话默认没开、又完全只读的发现工具。
-				// 内置 scout/reviewer 依赖这一点；写工具和 shell 不能这样加回来。
+				// 内置 scout/reviewer/oracle 依赖这一点；写工具和 shell 不能这样加回来。
 				var readOnlyAddition = name is "read" or "grep" or "find" or "ls";
 				if (!inheritedNames.Contains(name) &&
 					!(readOnlyAddition && !hasExplicitAllow && !arguments.NoBuiltinTools))

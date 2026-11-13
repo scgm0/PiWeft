@@ -79,6 +79,12 @@ internal sealed class ComposerWidgetCard
 		get => _meta.Text;
 		set
 		{
+			// 子代理每开始/结束一个工具都会重算卡头；文本没变就别触发一次排版。
+			if (string.Equals(_meta.Text, value, StringComparison.Ordinal))
+			{
+				return;
+			}
+
 			_meta.Text(value);
 			_meta.IsVisible(value.Length > 0);
 		}

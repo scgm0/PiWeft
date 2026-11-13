@@ -52,7 +52,9 @@ public sealed class Agent
 
 	private readonly Lock _gate = new();
 	private readonly List<Message> _messages = [];
-	private readonly List<Func<AgentEvent, ValueTask>> _listeners = [];
+	// 事件每来一条就遍历一次监听器：数组整体替换，读取不加锁也不复制。
+	private volatile Func<AgentEvent, ValueTask>[] _listeners = [];
+	private readonly Lock _listenersGate = new();
 	private readonly Queue<Message> _steering = new();
 	private readonly Queue<Message> _followUp = new();
 
@@ -199,12 +201,35 @@ public sealed class Agent
 
 	public IDisposable Subscribe(Func<AgentEvent, ValueTask> listener)
 	{
-		lock (_gate)
+		lock (_listenersGate)
 		{
-			_listeners.Add(listener);
+			_listeners = [.. _listeners, listener];
 		}
 
 		return new Subscription(this, listener);
+	}
+
+	private void RemoveListener(Func<AgentEvent, ValueTask> listener)
+	{
+		lock (_listenersGate)
+		{
+			var index = Array.IndexOf(_listeners, listener);
+			if (index < 0)
+			{
+				return;
+			}
+
+			if (_listeners.Length == 1)
+			{
+				_listeners = [];
+				return;
+			}
+
+			var next = new Func<AgentEvent, ValueTask>[_listeners.Length - 1];
+			Array.Copy(_listeners, 0, next, 0, index);
+			Array.Copy(_listeners, index + 1, next, index, _listeners.Length - index - 1);
+			_listeners = next;
+		}
 	}
 
 	public AgentQueueMode SteeringMode
@@ -552,12 +577,7 @@ public sealed class Agent
 			}
 		}
 
-		Func<AgentEvent, ValueTask>[] listeners;
-		lock (_gate)
-		{
-			listeners = [.. _listeners];
-		}
-
+		var listeners = _listeners;
 		foreach (var listener in listeners)
 		{
 			await listener(@event).ConfigureAwait(false);
@@ -575,10 +595,7 @@ public sealed class Agent
 				return;
 			}
 
-			lock (agent._gate)
-			{
-				agent._listeners.Remove(listener);
-			}
+			agent.RemoveListener(listener);
 		}
 	}
 }

@@ -21,6 +21,21 @@ internal static class MessageText
 		return null;
 	}
 
+	/// 助手正文的总字符数：fork 估算历史大小时只关心长度，不必把正文拼出来。
+	public static int TextLength(AssistantMessage message)
+	{
+		var total = 0;
+		foreach (var block in message.Content)
+		{
+			if (block is TextContent text)
+			{
+				total += text.Text.Length;
+			}
+		}
+
+		return total;
+	}
+
 	/// 助手消息里的正文块按段落拼接；思考、工具调用不算。
 	public static string Of(AssistantMessage message)
 	{
