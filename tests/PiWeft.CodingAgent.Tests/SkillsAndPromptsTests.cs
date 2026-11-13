@@ -1,6 +1,7 @@
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Compaction;
 using PiWeft.CodingAgent.Prompts;
+using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 using Xunit;
@@ -258,6 +259,19 @@ public class PromptTemplateTests : IDisposable
 		Assert.Equal(2, templates.Count);
 		Assert.Equal("project review: $ARGUMENTS", templates.Single(static t => t.Name == "review").Content);
 		Assert.Contains(templates, static t => t.Name == "other");
+	}
+
+	[Fact]
+	public void SubagentBuiltinTemplatesAreOptInAndUserTemplatesWin()
+	{
+		var builtins = PromptTemplates.WithSubagentBuiltins([]);
+		Assert.Contains(builtins, static template => template.Name == "scout" && template.Origin.Scope == ResourceScope.Builtin);
+		Assert.Contains(builtins, static template => template.Name == "parallel-review");
+		Assert.Contains(builtins, static template => template.Name == "review-loop");
+
+		var custom = new PromptTemplate { Name = "scout", Content = "custom scout", FilePath = "custom/scout.md" };
+		var merged = PromptTemplates.WithSubagentBuiltins([custom]);
+		Assert.Equal("custom scout", merged.Single(static template => template.Name == "scout").Content);
 	}
 
 	[Fact]

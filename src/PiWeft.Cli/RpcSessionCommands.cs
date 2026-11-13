@@ -285,6 +285,7 @@ public sealed partial class CliRunner
 	{
 		ResourceScope.Project => "project",
 		ResourceScope.Package => "package",
+		ResourceScope.Builtin => "builtin",
 		_ => "user",
 	};
 

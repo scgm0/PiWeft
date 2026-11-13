@@ -75,10 +75,21 @@ schema 只在 `start` 条目落盘一次，`structuredOutput` 随 `idle`/`failed
 
 ## 系统提示词
 
-- 父会话不读单独的「子代理说明文件」。六个工具各带 `Snippet` 与 `Guidelines`，只在工具真正注册时才进 `<tools>` 与 `<rules>`；角色目录写在 `delegate` 的工具描述里，最多列 24 个、每个描述 200 字，其余用 `list_subagents` 查。`-builtin:subagent`、没有宿主、子代理深度到上限时，这些文字一起消失，不会留下过期的委派指令。
+- 父会话不读单独的「子代理说明文件」。六个工具各带 `Snippet` 与 `Guidelines`，只在工具真正注册时才进 `<tools>` 与 `<rules>`；`delegate` 的工具描述只列 `advertise: true` 的角色，最多 24 个、每个描述 200 字，其余用 `list_subagents` 查。内置角色默认广告；新角色默认不广告，覆盖同名内置角色时沿用内置值，写 `advertise: false` 可以隐藏。`-builtin:subagent`、没有宿主、子代理深度到上限时，这些文字一起消失，不会留下过期的委派指令。
+- `delegate` 的 snippet 与 guidelines 直接说明使用时机：直接工作为默认，独立侦察/审查/实现切片才委派；scout 用于不熟悉代码，reviewer 用于非平凡改动，oracle 用于风险决策，worker 用于自包含实现。只有工具可见时才出现。
 - 子会话的系统提示词是「基础提示词 + 角色正文 + 委派边界」。边界写明父会话与子代理名字、能否看到历史、结论写进最终回复、不要开新子代理；角色白名单里被父会话拒绝的工具也追加在这里。`output_schema` 附在边界末尾。
 - `fresh` 的边界说「看不到父会话的历史，任务写在第一条用户消息里」；`fork` 说「继承了到上一个完整回合为止的历史，本次任务写在最后一条用户消息里」；冷恢复的继续会话说「之前的对话在上下文里，新消息写在后续用户消息里」。三种措辞不能共用，否则模型会误判历史范围。
 - 不把运行中的子代理列表塞进系统提示词。它每次变化都会改前缀，破坏 provider 的缓存；要看谁在跑，用 `list_subagents` 或 `wait_subagents`。pi-subagents 的 `active_subagents` 与 `advertised_subagents` 是可选章节，deepseek 的 `tool:subagent` 是固定章节；这里取前者「按需查」的语义，避免每轮变提示词。
+
+## 提示词模板
+
+有子代理宿主的会话额外提供三个内置模板，纯 CLI 不出现：
+
+- `/scout`：在规划或实现前并行启动 scout，收集入口、数据流、约束与风险。
+- `/parallel-review`：并行启动 fresh-context reviewer，按正确性、测试、简洁性等角度审查当前改动。
+- `/review-loop`：在 worker 与 reviewer 之间循环，最多 3 轮，只修被接受的 P0/P1。
+
+模板本身只是普通 `PromptTemplate`，用户或项目的 `prompts/<name>.md` 同名覆盖；`--no-prompt-templates` 仍然优先，不会把内置模板塞回去。`PromptTemplates.Discover` 不带内置项，`CodingAgentSession` 只在 `Subagents != null` 时合并。
 
 ## 角色文件
 
@@ -92,6 +103,7 @@ tools: read, grep, find, ls
 excludeTools: write
 model: anthropic/claude-sonnet-4
 thinking: high
+advertise: true
 ---
 
 You review HTTP handlers. Report findings with file and line references.
@@ -105,6 +117,7 @@ You review HTTP handlers. Report findings with file and line references.
 - 计划模式下 `edit`/`write` 即使在白名单里也会被拿掉；`bash` 留下，但子会话本身也在计划模式，会拦只读命令以外的调用。
 - `model`：`provider/id`，或唯一 id。解析失败回落父会话模型。
 - `thinking`：子会话思考级别，省略时沿用父会话当前级别。
+- `advertise`：是否把角色名与描述放进 `delegate` 的工具描述。内置角色为 `true`；新角色省略为 `false`，覆盖同名内置角色时沿用内置值。完整目录始终用 `list_subagents` 查。
 - 正文：追加在子会话系统提示词后面，再后面是委派边界。
 
 内置四个角色：`scout`（只读侦察）、`reviewer`（只读审查）、`oracle`（第二意见，挑战假设但不改文件）、`worker`（实现，带 `edit`/`write`/`bash`）。

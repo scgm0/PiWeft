@@ -755,6 +755,118 @@ public sealed class SubagentTests : IDisposable
 	}
 
 	[Fact]
+	public void DelegateDescriptionOnlyListsAdvertisedRoles()
+	{
+		var agents = Path.Combine(_root, ".pi", "agents");
+		Directory.CreateDirectory(agents);
+		File.WriteAllText(Path.Combine(agents, "hidden.md"),
+			"""
+			---
+			name: hidden
+			description: hidden description
+			---
+			Hidden role.
+			""");
+		File.WriteAllText(Path.Combine(agents, "shown.md"),
+			"""
+			---
+			name: shown
+			description: shown description
+			advertise: true
+			---
+			Shown role.
+			""");
+
+		var catalog = SubagentCatalog.Discover(_root, "missing-agent-dir", includeProject: true);
+		Assert.False(catalog.Get("hidden")!.Advertise);
+		Assert.True(catalog.Get("shown")!.Advertise);
+		Assert.True(catalog.Get("scout")!.Advertise);
+
+		using var parent = CreateParent(new ScriptedStreamFn(), new FakeHost(_root), catalog: catalog);
+		var tool = parent.Tools.Single(item => item.Name == SubagentTools.DelegateName);
+		Assert.Contains("shown", tool.Description);
+		Assert.DoesNotContain("hidden", tool.Description);
+		Assert.Contains("+1 more", tool.Description);
+
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+		var listing = hub.Describe(out var details);
+		Assert.Contains("hidden: hidden description (not advertised)", listing);
+		Assert.Contains(details["available"]!.AsArray(), static row =>
+			row!["name"]!.GetValue<string>() == "hidden" &&
+			row["advertise"]!.GetValue<bool>() == false);
+	}
+
+	[Fact]
+	public void OverridingABuiltinKeepsItsAdvertisedDefaultUnlessSpecified()
+	{
+		var agents = Path.Combine(_root, ".pi", "agents");
+		Directory.CreateDirectory(agents);
+		var path = Path.Combine(agents, "scout.md");
+		File.WriteAllText(path,
+			"""
+			---
+			name: scout
+			description: custom scout
+			---
+			Custom scout.
+			""");
+		Assert.True(SubagentCatalog.Discover(_root, "missing-agent-dir", includeProject: true).Get("scout")!.Advertise);
+
+		File.WriteAllText(path,
+			"""
+			---
+			name: scout
+			description: custom scout
+			advertise: false
+			---
+			Custom scout.
+			""");
+		Assert.False(SubagentCatalog.Discover(_root, "missing-agent-dir", includeProject: true).Get("scout")!.Advertise);
+	}
+
+	[Fact]
+	public void DelegateGuidelinesDescribeWhenToDelegate()
+	{
+		using var parent = CreateParent(new ScriptedStreamFn(), new FakeHost(_root));
+		var tools = SubagentTools.Create(Assert.IsType<SubagentHub>(parent.Subagents));
+		var delegateTool = tools.Single(tool => tool.Tool.Name == SubagentTools.DelegateName);
+		Assert.Contains(delegateTool.Guidelines, static guideline => guideline.Contains("Direct work is the default", StringComparison.Ordinal));
+		Assert.Contains(delegateTool.Guidelines, static guideline => guideline.Contains("Use scout before planning", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void BuiltinSubagentPromptTemplatesFollowTheHost()
+	{
+		using var withHost = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+			Session = SessionManager.InMemory(_root),
+			Persist = false,
+			Skills = [],
+			Settings = new CodingAgentSettings(),
+			SubagentHost = new FakeHost(_root),
+			Agents = Builtins,
+		});
+		Assert.Contains(withHost.PromptTemplates, static template =>
+			template.Name == "scout" && template.Origin.Scope == PiWeft.CodingAgent.Resources.ResourceScope.Builtin);
+
+		using var withoutHost = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+			Session = SessionManager.InMemory(_root),
+			Persist = false,
+			Skills = [],
+			Settings = new CodingAgentSettings(),
+		});
+		Assert.DoesNotContain(withoutHost.PromptTemplates, static template =>
+			template.Origin.Scope == PiWeft.CodingAgent.Resources.ResourceScope.Builtin);
+	}
+
+	[Fact]
 	public void DelegateDescriptionCapsTheAgentCatalog()
 	{
 		var agents = Path.Combine(_root, ".pi", "agents");
@@ -766,6 +878,7 @@ public sealed class SubagentTests : IDisposable
 				---
 				name: agent-{index}
 				description: {new string('x', 300)}
+				advertise: true
 				---
 				Do the work.
 				""");

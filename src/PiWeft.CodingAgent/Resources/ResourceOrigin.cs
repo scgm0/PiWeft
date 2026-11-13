@@ -7,6 +7,9 @@ public enum ResourceScope
 	User,
 
 	Package,
+
+	/// <summary>随程序分发、但没有实体文件的资源（目前是子代理提示词模板）。</summary>
+	Builtin,
 }
 
 /// 一个资源的来源：作用域、根目录与优先级。优先级数字越小越优先，
@@ -27,9 +30,14 @@ public readonly record struct ResourceOrigin(
 
 	public const int PackageRank = 4;
 
+	public const int BuiltinRank = 5;
+
 	public static readonly ResourceOrigin ProjectAuto = new(ResourceScope.Project, string.Empty, ProjectRank);
 
 	public static readonly ResourceOrigin UserAuto = new(ResourceScope.User, string.Empty, UserRank);
+
+	/// <summary>内置资源；优先级最低，用户/项目/包的同名资源覆盖它。</summary>
+	public static readonly ResourceOrigin Builtin = new(ResourceScope.Builtin, "<builtin>", BuiltinRank);
 
 	public ResourceOrigin WithRoot(string root) => this with { Root = root };
 
@@ -39,6 +47,7 @@ public readonly record struct ResourceOrigin(
 		{
 			ResourceScope.Project => "项目",
 			ResourceScope.Package => "包",
+			ResourceScope.Builtin => "内置",
 			_ => "用户",
 		};
 }

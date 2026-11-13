@@ -68,8 +68,10 @@ public static class SubagentTools
 					Parameters = DelegateParameters(),
 					Execute = invocation => ExecuteDelegateAsync(hub, invocation),
 				},
-				"Start a subagent on a self-contained task; its final reply arrives as a message",
+				"Delegate focused, independent work to a subagent; it works in its own context and returns the final result",
 				[
+					"Direct work is the default. Delegate when the user or project instructions ask for it, or when a self-contained research, review, or implementation pass clearly helps; keep small tasks direct.",
+					"Use scout before planning in unfamiliar code, reviewer after non-trivial edits, oracle for risky decisions, and worker for a scoped implementation slice.",
 					"Write the task as a self-contained brief: scope, done criteria, how to verify, what not to touch. The child cannot see this conversation unless you pass context \"fork\".",
 					"Start independent delegations in one assistant message and keep working while they run. When only waiting is left, call wait_subagents or end your turn; the result starts a new turn.",
 					"Collect the subagent results you need before giving the user a final answer.",
@@ -294,9 +296,11 @@ public static class SubagentTools
 	{
 		var builder = new StringBuilder(256);
 		builder.Append(
-			"Start a subagent on a self-contained task. Returns immediately with the subagent name; " +
-			"the final reply arrives as a message when the child finishes a turn. " +
-			"Pass label for a short title in lists and cards; pass output_schema when the parent needs a validated JSON result. ");
+			"Delegate focused, independent work (research, a scoped implementation, an analysis) when doing it here " +
+			"would consume this conversation's context. Returns immediately with the subagent name; the child works " +
+			"in its own context and returns the final result, not intermediate steps. The final reply arrives as a " +
+			"message when the child finishes a turn. Pass label for a short title in lists and cards; pass " +
+			"output_schema when the parent needs a validated JSON result. ");
 		builder.Append("Available agents: ");
 		var listed = 0;
 		foreach (var definition in catalog.All)
@@ -304,6 +308,11 @@ public static class SubagentTools
 			if (listed == MaxListedAgents)
 			{
 				break;
+			}
+
+			if (definition.Advertise != true)
+			{
+				continue;
 			}
 
 			if (listed > 0)
@@ -320,6 +329,12 @@ public static class SubagentTools
 
 			builder.Append(definition.Name).Append(": ").Append(description);
 			listed++;
+		}
+
+		if (listed == 0)
+		{
+			builder.Append("none advertised; call list_subagents for the full catalog");
+			return builder.ToString();
 		}
 
 		var remaining = catalog.All.Count - listed;

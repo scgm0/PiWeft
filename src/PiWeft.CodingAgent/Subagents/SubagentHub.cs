@@ -219,6 +219,10 @@ public sealed class SubagentHub : IDisposable
 	/// <summary>进度摘要上限，按首行截断。</summary>
 	public const int MaxProgressChars = 240;
 
+	private const int MaxListedAgents = 32;
+
+	private const int MaxAgentDescriptionChars = 200;
+
 	/// <summary>Details 里给界面卡片留的正文上限：工具正文已经带全文，这里只够画卡。</summary>
 	public const int MaxCardChars = 4_000;
 
@@ -1175,24 +1179,43 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		var available = new JsonArray();
-		var names = new StringBuilder();
+		var listed = 0;
+		text.Append("agents:\n");
 		foreach (var definition in _catalog.All)
 		{
 			available.Add((JsonNode)new JsonObject
 			{
 				["name"] = definition.Name,
 				["description"] = definition.Description,
+				["advertise"] = definition.Advertise == true,
 			});
 
-			if (names.Length > 0)
+			if (listed >= MaxListedAgents)
 			{
-				names.Append(", ");
+				continue;
 			}
 
-			names.Append(definition.Name);
+			// 未广告的角色只能在这里被发现；只给名字不够，模型不知道它是做什么的。
+			text.Append("- ").Append(definition.Name).Append(": ")
+				.Append(Clip(definition.Description, MaxAgentDescriptionChars));
+			if (definition.Advertise != true)
+			{
+				text.Append(" (not advertised)");
+			}
+
+			text.Append('\n');
+			listed++;
 		}
 
-		text.Append("agents: ").Append(names.Length > 0 ? names.ToString() : "(none)");
+		if (_catalog.All.Count == 0)
+		{
+			text.Append("- (none)\n");
+		}
+		else if (_catalog.All.Count > listed)
+		{
+			text.Append("- +").Append(_catalog.All.Count - listed).Append(" more\n");
+		}
+
 		details = new JsonObject
 		{
 			["subagents"] = rows,

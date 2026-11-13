@@ -55,7 +55,8 @@ public static class ResourceResolver
 		return new ResourceSnapshot
 		{
 			Skills = Skills.Skills.Discover(SkillRoots(cwd, resolvedAgentDir, includeProject, packages)),
-			Templates = Prompts.PromptTemplates.Discover(PromptRoots(cwd, resolvedAgentDir, includeProject, packages)),
+			Templates = Prompts.PromptTemplates.WithSubagentBuiltins(
+				Prompts.PromptTemplates.Discover(PromptRoots(cwd, resolvedAgentDir, includeProject, packages))),
 			Themes = ThemeCatalog.Discover(ThemeRoots(cwd, resolvedAgentDir, includeProject, packages), diagnostics),
 			Packages = packages,
 			// 只发现、不执行：资源快照要在会话建立之前就能列出扩展并说明状态，

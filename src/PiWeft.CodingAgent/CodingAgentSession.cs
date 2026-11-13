@@ -309,6 +309,26 @@ public sealed partial class CodingAgentSession : IDisposable
 			};
 		}
 
+		// 子代理提示词模板只在确实能委派的会话里出现；--no-prompt-templates 的显式空列表
+		// 仍然优先，不会把内置模板塞回去。子会话会继承父会话的 Resources，这里要反向裁掉。
+		if (options.PromptTemplates is null)
+		{
+			if (Subagents is not null)
+			{
+				Resources = Resources with
+				{
+					Templates = Prompts.PromptTemplates.WithSubagentBuiltins(Resources.Templates),
+				};
+			}
+			else if (Resources.Templates.Any(static template => template.Origin.Scope == ResourceScope.Builtin))
+			{
+				Resources = Resources with
+				{
+					Templates = [.. Resources.Templates.Where(static template => template.Origin.Scope != ResourceScope.Builtin)],
+				};
+			}
+		}
+
 		// 内置工具的提示词元数据以名称索引：命令行/桌面会传入已经过滤的 AgentTool 列表，
 		// 这里按名称把短 snippet 与 guidelines 重新挂回去，保证提示词与 pi/PiDeck 一致。
 		var defaults = BuiltinTools.Create(Cwd, () => _agent?.Model, () => Settings.Images.AutoResize);

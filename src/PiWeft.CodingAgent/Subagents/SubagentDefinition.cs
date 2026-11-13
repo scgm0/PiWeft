@@ -26,6 +26,12 @@ public sealed record SubagentDefinition
 	/// <summary>子会话思考级别。</summary>
 	public string? Thinking { get; init; }
 
+	/// <summary>
+	/// 是否把角色名与描述放进 <c>delegate</c> 的模型可见目录。null 表示跟随同名角色的既有值；
+	/// 新角色未写时为 false。完整列表始终可由 <c>list_subagents</c> 查到。
+	/// </summary>
+	public bool? Advertise { get; init; }
+
 	/// <summary>来源目录：<c>builtin</c>、<c>user</c> 或 <c>project</c>。</summary>
 	public string Source { get; init; } = "builtin";
 
@@ -139,7 +145,9 @@ public sealed class SubagentCatalog
 				continue;
 			}
 
-			byName[definition.Name] = definition;
+			// 覆盖同名内置角色时，不写 advertise 就沿用内置的可见性；新角色默认不进目录。
+			var advertise = definition.Advertise ?? byName.GetValueOrDefault(definition.Name)?.Advertise ?? false;
+			byName[definition.Name] = definition with { Advertise = advertise };
 		}
 	}
 
@@ -225,6 +233,9 @@ public sealed class SubagentCatalog
 
 		var body = text[bodyStart..].Trim();
 		var description = fields.GetValueOrDefault("description")?.Trim() ?? string.Empty;
+		bool? advertise = bool.TryParse(fields.GetValueOrDefault("advertise"), out var configuredAdvertise)
+			? configuredAdvertise
+			: null;
 
 		return new SubagentDefinition
 		{
@@ -235,6 +246,7 @@ public sealed class SubagentCatalog
 			ExcludeTools = SplitList(fields.GetValueOrDefault("excludeTools")) ?? [],
 			Model = Trimmed(fields.GetValueOrDefault("model")),
 			Thinking = Trimmed(fields.GetValueOrDefault("thinking")),
+			Advertise = advertise,
 			Source = source,
 			FilePath = path,
 		};
@@ -317,6 +329,7 @@ public sealed class SubagentCatalog
 		new SubagentDefinition
 		{
 			Name = "scout",
+			Advertise = true,
 			Description = "Fast codebase recon: relevant files, entry points, data flow, risks.",
 			Tools = ScoutTools,
 			SystemPrompt =
@@ -328,6 +341,7 @@ public sealed class SubagentCatalog
 		new SubagentDefinition
 		{
 			Name = "reviewer",
+			Advertise = true,
 			Description = "Read-only review against the task, tests, edge cases, and simplicity.",
 			Tools = ScoutTools,
 			SystemPrompt =
@@ -338,6 +352,7 @@ public sealed class SubagentCatalog
 		new SubagentDefinition
 		{
 			Name = "oracle",
+			Advertise = true,
 			Description = "A second opinion before acting: challenges assumptions and recommends the safest next step.",
 			Tools = ScoutTools,
 			SystemPrompt =
@@ -348,6 +363,7 @@ public sealed class SubagentCatalog
 		new SubagentDefinition
 		{
 			Name = "worker",
+			Advertise = true,
 			Description = "Implementation work: edits files, validates, reports blockers instead of guessing.",
 			Tools = WorkerTools,
 			SystemPrompt =

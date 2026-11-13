@@ -20,6 +20,114 @@ public sealed record PromptTemplate
 /// 加载并展开斜杠命令提示词模板。对应 pi 的 <c>prompt-templates.ts</c>。
 public static partial class PromptTemplates
 {
+	/// <summary>
+	/// 子代理会话可用的内置模板。只在会话确实有 <c>delegate</c> 工具时合并，
+	/// 纯 CLI（没有子代理宿主）不会出现这些命令。
+	/// </summary>
+	public static IReadOnlyList<PromptTemplate> SubagentBuiltins { get; } =
+	[
+		new PromptTemplate
+		{
+			Name = "scout",
+			Description = "先用 scout 收集代码上下文，再规划或实现。",
+			FilePath = "builtin:scout",
+			Origin = ResourceOrigin.Builtin,
+			Content =
+				"""
+				Use the `delegate` tool to gather context before planning or editing.
+
+				Launch one or more independent scouting tasks in the same assistant message:
+				- `agent: "scout"`
+				- `context: "fresh"` unless the scout must see this conversation
+				- `label`: a short title
+				- `task`: the specific paths, symbols, questions, and what to verify
+
+				Ask each scout to report concise findings with file and line references: entry points, data flow,
+				constraints, existing patterns, risks, and remaining questions. Do not edit files.
+
+				After launching, keep only useful independent work. When only waiting is left, end your turn; results
+				arrive as messages. Call `wait_subagents` only when the next step needs the result now.
+
+				User request: $ARGUMENTS
+				""",
+		},
+		new PromptTemplate
+		{
+			Name = "parallel-review",
+			Description = "并行启动 fresh-context reviewer，对当前改动做多角度审查。",
+			FilePath = "builtin:parallel-review",
+			Origin = ResourceOrigin.Builtin,
+			Content =
+				"""
+				Run a fresh-context parallel review of the current work with the `delegate` tool.
+
+				Launch two or three reviewers in one assistant message with distinct angles:
+				1. Correctness and regressions
+				2. Tests and validation
+				3. Simplicity and maintainability, or a higher-value angle for this change
+
+				Use `agent: "reviewer"`, `context: "fresh"`, and a task that tells each reviewer to inspect the
+				repository, applicable instructions, and the current diff directly. Require evidence with file and
+				line references and severity P0/P1/P2. Reviewers must not edit files.
+
+				While they run, continue narrow checks. Call `wait_subagents` only if the next decision needs their
+				output. Synthesize the findings; do not blindly apply every suggestion.
+
+				User request: $ARGUMENTS
+				""",
+		},
+		new PromptTemplate
+		{
+			Name = "review-loop",
+			Description = "在实现与审查之间循环，最多 3 轮，直到没有 P0/P1。",
+			FilePath = "builtin:review-loop",
+			Origin = ResourceOrigin.Builtin,
+			Content =
+				"""
+				Run a bounded parent-orchestrated review loop for the requested work. Maximum 3 rounds.
+
+				1. If implementation is requested, delegate one `worker` with a scoped brief and one writer boundary.
+				2. Launch two or three fresh `reviewer`s in one assistant message with distinct angles. Reviewers
+				   inspect the repository, instructions, and current diff directly; no edits.
+				3. Apply only accepted P0/P1 fixes with one `worker`. Do not apply every suggestion.
+				4. Re-review only if the fix made material changes. Stop when no P0/P1 remains, or after 3 rounds.
+
+				Keep the parent as decision maker. Use one writer at a time. When only waiting is left, end your turn;
+				results arrive as messages. Call `wait_subagents` only when the next step needs the result now.
+				Validate before reporting done.
+
+				User request: $ARGUMENTS
+				""",
+		},
+	];
+
+	/// <summary>按名字合并内置子代理模板；用户/项目同名模板优先。</summary>
+	public static IReadOnlyList<PromptTemplate> WithSubagentBuiltins(IReadOnlyList<PromptTemplate> templates)
+	{
+		if (SubagentBuiltins.Count == 0)
+		{
+			return templates;
+		}
+
+		var names = new HashSet<string>(templates.Count + SubagentBuiltins.Count, StringComparer.Ordinal);
+		var merged = new List<PromptTemplate>(templates.Count + SubagentBuiltins.Count);
+		foreach (var template in templates)
+		{
+			names.Add(template.Name);
+			merged.Add(template);
+		}
+
+		foreach (var template in SubagentBuiltins)
+		{
+			if (names.Add(template.Name))
+			{
+				merged.Add(template);
+			}
+		}
+
+		return merged;
+	}
+
 	public static IReadOnlyList<PromptTemplate> Discover(string cwd, string? agentDir = null, bool includeProject = true)
 	{
 		var resolvedAgentDir = agentDir ?? Session.SessionPaths.GetAgentDir();
