@@ -56,7 +56,7 @@ internal sealed class ProviderUsageService(HttpClient client)
 		if (plan.Error is { } error) return ProviderUsageResult.Failure(error, intervalMinutes: config.IntervalMinutes);
 		var timeout = TimeSpan.FromSeconds(Math.Clamp(config.TimeoutSecs, 1, 300));
 		return await new ProviderUsageService(client ?? Client)
-			.ProbeAsync(model, plan, timeout, config.IntervalMinutes, cancellationToken)
+			.ProbeAsync(model, config, plan, timeout, config.IntervalMinutes, cancellationToken)
 			.ConfigureAwait(false);
 	}
 
@@ -159,8 +159,8 @@ internal sealed class ProviderUsageService(HttpClient client)
 		}
 	}
 
-	public async Task<ProviderUsageResult> ProbeAsync(Model model, UsageProbePlan plan, TimeSpan timeout, int intervalMinutes,
-		CancellationToken cancellationToken)
+	public async Task<ProviderUsageResult> ProbeAsync(Model model, UsageProbeProviderConfig config, UsageProbePlan plan,
+		TimeSpan timeout, int intervalMinutes, CancellationToken cancellationToken)
 	{
 		var attempts = new List<UsageProbeAttempt>();
 		var missingKey = false;
@@ -258,7 +258,7 @@ internal sealed class ProviderUsageService(HttpClient client)
 				}
 				var result = new ProviderUsageResult(true, parsed.Kind, parsed.Periods, parsed.Balance, parsed.Currency,
 					parsed.Credits, parsed.Booster, At: startedAt, IntervalMinutes: intervalMinutes);
-				return await WithPanelBalanceAsync(model, result, intervalMinutes, cancellationToken).ConfigureAwait(false);
+				return await WithPanelBalanceAsync(model, config, result, cancellationToken).ConfigureAwait(false);
 			}
 		}
 
@@ -276,18 +276,11 @@ internal sealed class ProviderUsageService(HttpClient client)
 	/// 查 `GET /api/v1/auth/me`。主结果已经有余额时不覆盖；面板任何失败都只让这一段缺席。
 	private async Task<ProviderUsageResult> WithPanelBalanceAsync(
 		Model model,
+		UsageProbeProviderConfig config,
 		ProviderUsageResult result,
-		int intervalMinutes,
 		CancellationToken cancellationToken)
 	{
-		if (result.Balance is not null)
-		{
-			return result;
-		}
-
-		var agentDir = SessionPaths.GetAgentDir();
-		var config = UsageProbeStore.Load(agentDir).Providers.GetValueOrDefault(model.Provider);
-		if (config is null ||
+		if (result.Balance is not null ||
 			!string.Equals(config.Template, "sub2api", StringComparison.Ordinal) ||
 			config.PanelJwt.Length == 0)
 		{
@@ -304,7 +297,7 @@ internal sealed class ProviderUsageService(HttpClient client)
 		if (rotated is not null)
 		{
 			// 上游轮转 refresh token：不立刻回写，下一次过期就彻底续不上。
-			UsageProbeStore.UpdatePanelTokens(agentDir, model.Provider, rotated.AccessToken, rotated.RefreshToken);
+			UsageProbeStore.UpdatePanelTokens(SessionPaths.GetAgentDir(), model.Provider, rotated.AccessToken, rotated.RefreshToken);
 		}
 
 		return balance is null

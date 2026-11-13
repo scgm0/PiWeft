@@ -109,6 +109,33 @@ public sealed class PiDeckModelTraceTests : IDisposable
 		Assert.StartsWith("中", truncated, StringComparison.Ordinal);
 		// 恰好落在 ASCII 边界时不能把整串原样返回。
 		Assert.Equal(new string('a', 10), PiDeckModelTrace.TruncateJsonHead(new string('a', 20), 10));
+
+		// 字符数小于上限但字节数超了：按字符判断会放过三倍于上限的 CJK 内容。
+		var cjk = PiDeckModelTrace.TruncateJsonHead(new string('中', 5), 10);
+		Assert.True(Encoding.UTF8.GetByteCount(cjk) <= 10);
+		Assert.Equal(3, cjk.Length);
+	}
+
+	[Fact]
+	public void AttachKeepsExistingCallbacks()
+	{
+		using var trace = Assert.IsType<PiDeckModelTrace>(PiDeckModelTrace.FromEnvironment("ses-attach"));
+		var payloadCalls = 0;
+		var responseCalls = 0;
+		var options = new StreamOptions
+		{
+			OnProviderRequestPayload = (_, _) => payloadCalls++,
+			OnResponse = (_, _) => responseCalls++,
+		};
+
+		var attached = trace.Attach(options);
+		var model = new Model { Id = "test-model", Provider = "test" };
+		attached.NotifyRequestPayload(new JsonObject { ["model"] = "test-model" }, model);
+		attached.OnResponse?.Invoke(new ProviderResponse { Status = 200 }, model);
+
+		// 两个回调都要跑：只保留其中一个会让请求帧永远配不上响应。
+		Assert.Equal(1, payloadCalls);
+		Assert.Equal(1, responseCalls);
 	}
 
 	[Fact]

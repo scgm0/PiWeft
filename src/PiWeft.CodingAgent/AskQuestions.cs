@@ -212,16 +212,16 @@ public static class AskQuestions
 				}
 
 				answers.Add(new AskAnswer(
-					item["id"]?.GetValue<string>() ?? string.Empty,
-					item["type"]?.GetValue<string>() ?? "input",
+					Text(item["id"]) ?? string.Empty,
+					Text(item["type"]) ?? "input",
 					item["value"]?.DeepClone(),
-					item["label"]?.GetValue<string>(),
-					item["wasCustom"]?.GetValue<bool>() == true,
-					item["skipped"]?.GetValue<bool>() == true));
+					Text(item["label"]),
+					Bool(item["wasCustom"]),
+					Bool(item["skipped"])));
 			}
 		}
 
-		var cancelledFlag = obj["cancelled"]?.GetValue<bool>() == true;
+		var cancelledFlag = Bool(obj["cancelled"]);
 		var answeredAny = answers.Any(HasAnswerValue);
 		if (cancelledFlag)
 		{
@@ -479,10 +479,10 @@ public static class AskQuestions
 		return new AskQuestion(
 			id,
 			type,
-			item["question"]?.GetValue<string>() ?? string.Empty,
+			Text(item["question"]) ?? string.Empty,
 			effectiveOptions,
-			item["placeholder"]?.GetValue<string>(),
-			item["prefill"]?.GetValue<string>());
+			Text(item["placeholder"]),
+			Text(item["prefill"]));
 	}
 
 	private static string ResolveType(JsonObject item, IReadOnlyList<AskOption>? options, string? fallbackType)
@@ -664,16 +664,24 @@ public static class AskQuestions
 
 			if (raw is JsonObject obj)
 			{
-				var label = obj["label"]?.GetValue<string>() ?? string.Empty;
+				var label = Text(obj["label"]) ?? string.Empty;
 				options.Add(new AskOption(
 					label,
-					obj["value"]?.GetValue<string>() ?? label,
-					obj["description"]?.GetValue<string>()));
+					Text(obj["value"]) ?? label,
+					Text(obj["description"])));
 			}
 		}
 
 		return options.Count > 0 ? options : null;
 	}
+
+	/// 取值都走 TryGetValue：模型（`type`/`question`）与宿主（答案信封）都可能给错类型，
+	/// `GetValue<T>` 会抛 InvalidOperationException，一个错字段就让整次提问失败。
+	private static string? Text(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+	private static bool Bool(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<bool>(out var flag) && flag;
 
 	private static bool IsAnswered(JsonNode? value)
 	{

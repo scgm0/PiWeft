@@ -122,24 +122,37 @@ public sealed partial class CodingAgentSession
 			return;
 		}
 
-		var input = AutoTitle.Build(FirstUserText(), FirstCompletedAssistantText());
-		if (input is null)
-		{
-			return;
-		}
-
+		// 构造输入要跑块正则与脱敏正则，首条消息可能是几 MB 的粘贴内容：放到后台线程，
+		// 别在 agent 事件回调里卡住本轮结束事件。
 		_autoTitleAttempts++;
 		_autoTitleAttemptedRun = _autoTitleRun;
-
-		if (input.DirectTitle is { Length: > 0 } direct)
-		{
-			// 只插了模板/技能、没写正文：标签本身就是最准确的标题，不再花一次模型请求。
-			ApplyAutoTitle(direct);
-			return;
-		}
-
 		_autoTitlePending = true;
-		_ = Task.Run(() => RequestAutoTitleAsync(input));
+		_ = Task.Run(() => PrepareAndRequestAutoTitleAsync(FirstUserText(), FirstCompletedAssistantText()));
+	}
+
+	private async Task PrepareAndRequestAutoTitleAsync(string? userText, string? assistantText)
+	{
+		try
+		{
+			var input = AutoTitle.Build(userText, assistantText);
+			if (input is null)
+			{
+				return;
+			}
+
+			if (input.DirectTitle is { Length: > 0 } direct)
+			{
+				// 只插了模板/技能、没写正文：标签本身就是最准确的标题，不再花一次模型请求。
+				ApplyAutoTitle(direct);
+				return;
+			}
+
+			await RequestAutoTitleAsync(input).ConfigureAwait(false);
+		}
+		finally
+		{
+			_autoTitlePending = false;
+		}
 	}
 
 	private string? FirstUserText()
@@ -240,10 +253,6 @@ public sealed partial class CodingAgentSession
 		catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException or ObjectDisposedException or NotSupportedException)
 		{
 			// 标题是非关键旁路：认证失败、模型异常都只让这一轮不命名。
-		}
-		finally
-		{
-			_autoTitlePending = false;
 		}
 	}
 

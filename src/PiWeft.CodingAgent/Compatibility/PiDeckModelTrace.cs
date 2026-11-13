@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Text;
@@ -28,6 +29,10 @@ public sealed class PiDeckModelTrace : IDisposable
 	public const int MaxPayloadBytes = 1_536_000;
 
 	private const int MaxInFlight = 4;
+
+	/// 未配对的请求上限。请求失败/取消时 provider 不会回调响应，队列只增不减会一直吃内存；
+	/// 超出后丢最旧的，配对顺序对不上最多让几条快照的 durationMs 失真。
+	private const int MaxPending = 64;
 
 	private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(2);
 
@@ -83,6 +88,10 @@ public sealed class PiDeckModelTrace : IDisposable
 			var traceId = NewTraceId();
 			// 先入队再发送：响应一定晚于本次回调，入队顺序就是配对顺序。
 			_pending.Enqueue(new PendingRequest(traceId, startedAt));
+			while (_pending.Count > MaxPending)
+			{
+				_pending.TryDequeue(out _);
+			}
 
 			Post(new JsonObject
 			{
@@ -92,7 +101,7 @@ public sealed class PiDeckModelTrace : IDisposable
 				["model"] = model.Id,
 				["provider"] = model.Provider,
 				["sessionId"] = _sessionId,
-				["payloadJson"] = truncated ? TruncateJsonHead(json, MaxPayloadBytes) : json,
+				["payloadJson"] = truncated ? TruncateJsonHead(json, MaxPayloadBytes, bytes) : json,
 				["payloadBytes"] = bytes,
 				["truncated"] = truncated,
 				["messageCount"] = CountArray(payload, ["messages", "input", "contents"]),
@@ -124,11 +133,16 @@ public sealed class PiDeckModelTrace : IDisposable
 		});
 	}
 
-	/// 把请求/响应回调挂到一份流选项上；已经挂过的不覆盖。
+	/// 把请求/响应回调挂到一份流选项上。已有的回调先跑、不被吞掉：响应回调漏挂会让
+	/// 请求帧永远配不上，pending 队列只增不减。
 	public StreamOptions Attach(StreamOptions options) => options with
 	{
-		OnProviderRequestPayload = options.OnProviderRequestPayload ?? OnRequestPayload,
-		OnResponse = options.OnResponse ?? ((response, _) => OnResponse(response)),
+		OnProviderRequestPayload = options.OnProviderRequestPayload is { } existingPayload
+			? (payload, model) => { existingPayload(payload, model); OnRequestPayload(payload, model); }
+			: OnRequestPayload,
+		OnResponse = options.OnResponse is { } existingResponse
+			? (response, model) => { existingResponse(response, model); OnResponse(response); }
+			: (response, _) => OnResponse(response),
 	};
 
 	public void Dispose() => Interlocked.Exchange(ref _disposed, 1);
@@ -137,39 +151,56 @@ public sealed class PiDeckModelTrace : IDisposable
 	internal static string NewTraceId() =>
 		$"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x")}-{Guid.NewGuid().ToString("N")[..8]}";
 
-	/// 按 UTF-8 字节保留 JSON 前缀。先按字符切（字符数不超过上限时字节数最多 3 倍，
-	/// 不必为几十 MB 的图片 payload 分配等长缓冲），再回退到完整字符边界：
+	/// 按 UTF-8 字节保留 JSON 前缀。用 <see cref="Encoder.Convert(ReadOnlySpan{char}, Span{byte}, bool, out int, out int, out bool)" />
+	/// 直接编码到租来的缓冲：`GetBytes` 要求目标够长，几十 MB 的图片 payload 会白分配一份等长数组；
+	/// 字符数也不等于字节数（CJK 一字三字节），只按字符判断会放过三倍于上限的内容。
 	/// 截断点落在多字节字符中间会在尾部留下半个序列，读回来就是 U+FFFD。
-	internal static string TruncateJsonHead(string json, int maxBytes)
+	internal static string TruncateJsonHead(string json, int maxBytes, int knownBytes = -1)
 	{
-		if (json.Length <= maxBytes)
+		// 字符数不等于字节数：CJK 一个字符三字节，按字符判断会放过三倍于上限的 payload。
+		if ((knownBytes >= 0 ? knownBytes : Encoding.UTF8.GetByteCount(json)) <= maxBytes)
 		{
 			return json;
 		}
 
-		var head = Encoding.UTF8.GetBytes(json[..maxBytes]);
-
-		var limit = maxBytes;
-		while (limit > 0)
+		var rented = ArrayPool<byte>.Shared.Rent(maxBytes);
+		try
 		{
-			var last = head[limit - 1];
-			if ((last & 0xC0) == 0x80)
+			var head = rented.AsSpan(0, maxBytes);
+			Encoding.UTF8.GetEncoder().Convert(
+				json.AsSpan(0, Math.Min(json.Length, maxBytes)),
+				head,
+				flush: true,
+				out _,
+				out var written,
+				out _);
+
+			var limit = written;
+			while (limit > 0)
 			{
-				// 续字节：继续往前退到它的首字节。
+				var last = head[limit - 1];
+				if ((last & 0xC0) == 0x80)
+				{
+					// 续字节：继续往前退到它的首字节。
+					limit--;
+					continue;
+				}
+
+				var length = last < 0x80 ? 1 : last >= 0xF0 ? 4 : last >= 0xE0 ? 3 : last >= 0xC0 ? 2 : 0;
+				if (length > 0 && limit - 1 + length <= maxBytes)
+				{
+					break;
+				}
+
 				limit--;
-				continue;
 			}
 
-			var length = last < 0x80 ? 1 : last >= 0xF0 ? 4 : last >= 0xE0 ? 3 : last >= 0xC0 ? 2 : 0;
-			if (length > 0 && limit - 1 + length <= maxBytes)
-			{
-				break;
-			}
-
-			limit--;
+			return Encoding.UTF8.GetString(head[..limit]);
 		}
-
-		return Encoding.UTF8.GetString(head, 0, limit);
+		finally
+		{
+			ArrayPool<byte>.Shared.Return(rented);
+		}
 	}
 
 	private static int? CountArray(JsonNode payload, string[] keys)

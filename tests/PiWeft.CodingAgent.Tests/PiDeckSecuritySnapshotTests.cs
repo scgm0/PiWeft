@@ -108,4 +108,40 @@ public sealed class PiDeckSecuritySnapshotTests : IDisposable
 		var resolved = PiDeckSecuritySnapshot.Resolve((SecurityConfig)ToolSecurity.Strict, sessionFile: null);
 		Assert.Equal(ToolSecurity.StrictLevel, resolved.Level);
 	}
+
+	[Fact]
+	public void TypeMismatchedSnapshotFallsBackInsteadOfThrowing()
+	{
+		// 手改坏的快照（schemaVersion 写成字符串）不能让 GetValue 的异常逃进工具调用路径。
+		WriteSnapshot("""{"schemaVersion":"1","enabled":true,"levels":[]}""");
+		Environment.SetEnvironmentVariable(PiDeckSecuritySnapshot.SessionIdVariable, null);
+
+		var config = Assert.IsType<SecurityConfig>(PiDeckSecuritySnapshot.Load());
+		Assert.False(config.Enabled);
+
+		WriteSnapshot("""{"schemaVersion":1,"enabled":"yes","defaultLevelId":42,"levels":[{"id":1}]}""");
+		PiDeckSecuritySnapshot.ResetCache();
+
+		var tolerant = Assert.IsType<SecurityConfig>(PiDeckSecuritySnapshot.Load());
+		Assert.True(tolerant.Enabled);
+		Assert.Equal(ToolSecurity.OffLevel, tolerant.DefaultLevelId);
+	}
+
+	[Fact]
+	public void ThrottledReloadKeepsLastSnapshotUntilCacheReset()
+	{
+		var path = WriteSnapshot("""
+			{"schemaVersion":1,"enabled":true,"defaultLevelId":"strict",
+			 "levels":[{"id":"strict","toolActions":{"bash":"ask"},"defaultAction":"deny"}]}
+			""");
+		Assert.Equal(ToolSecurity.StrictLevel, PiDeckSecuritySnapshot.Resolve(SecurityConfig.Off, null).Level);
+
+		// 节流窗口内不再 stat/读盘：文件被删掉也仍返回上次的档位。
+		File.Delete(path);
+		Assert.Equal(ToolSecurity.StrictLevel, PiDeckSecuritySnapshot.Resolve(SecurityConfig.Off, null).Level);
+
+		// 清缓存后回到「文件不存在 → 放行」。
+		PiDeckSecuritySnapshot.ResetCache();
+		Assert.Equal(ToolSecurity.OffLevel, PiDeckSecuritySnapshot.Resolve(SecurityConfig.Off, null).Level);
+	}
 }

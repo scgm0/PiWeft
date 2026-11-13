@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using PiWeft.CodingAgent.Tools;
@@ -301,14 +302,15 @@ public sealed record ToolSecurity
 				continue;
 			}
 
+			if (Compiled(pattern) is not { } regex)
+			{
+				continue;
+			}
+
 			bool matched;
 			try
 			{
-				matched = Regex.IsMatch(command, pattern, RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
-			}
-			catch (ArgumentException)
-			{
-				continue;
+				matched = regex.IsMatch(command);
 			}
 			catch (RegexMatchTimeoutException)
 			{
@@ -363,21 +365,32 @@ public sealed record ToolSecurity
 		var normalized = NormalizeForCompare(path);
 		foreach (var pattern in SensitivePathPatterns)
 		{
-			try
+			// 内置模式都是常量；真出现语法错误时跳过，不要把安全门自己搞崩。
+			if (Compiled(pattern) is { } regex && regex.IsMatch(normalized))
 			{
-				if (Regex.IsMatch(normalized, pattern, RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)))
-				{
-					return true;
-				}
-			}
-			catch (ArgumentException)
-			{
-				// 内置模式都是常量；真出现语法错误时跳过，不要把安全门自己搞崩。
+				return true;
 			}
 		}
 
 		return false;
 	}
+
+	/// 按模式缓存编译结果。`Regex.IsMatch(input, pattern, …)` 每次都要走静态缓存查找，
+	/// 而默认缓存只有 15 条：内置敏感路径 + 各档位危险模式一多就互相挤掉，等于每次工具调用都重新解析正则。
+	private static readonly ConcurrentDictionary<string, Regex?> PatternCache = new(StringComparer.Ordinal);
+
+	private static Regex? Compiled(string pattern) =>
+		PatternCache.GetOrAdd(pattern, static value =>
+		{
+			try
+			{
+				return new Regex(value, RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
+			}
+			catch (ArgumentException)
+			{
+				return null;
+			}
+		});
 
 	/// 解析符号链接，得到用于比较的真实路径。不存在的尾部（例如要新建的文件）按「已存在的最近祖先是真实路径」
 	/// 拼回去，否则 <c>link/to/new.txt</c> 会拿字面量去和真实前缀比较，边界检查被链接绕过去。

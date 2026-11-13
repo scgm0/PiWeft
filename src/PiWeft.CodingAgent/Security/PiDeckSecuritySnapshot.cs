@@ -21,11 +21,20 @@ public static class PiDeckSecuritySnapshot
 
 	public const string SessionIdVariable = "PIDECK_SESSION_ID";
 
+	/// 与扩展的 RELOAD_THROTTLE_MS 同值：工具调用会连着来（一次 code 模式能触发几十个），
+	/// 每次 stat 一遍文件是白付的系统调用。窗口内按 mtime + 长度判断是否换过档。
+	private static readonly TimeSpan ReloadThrottle = TimeSpan.FromSeconds(2);
+
 	private static readonly Lock Gate = new();
 
 	private static CachedSnapshot? _cache;
 
-	private sealed record CachedSnapshot(string Path, long Length, long ModifiedTicks, SecurityConfig Config);
+	private sealed record CachedSnapshot(
+		string Path,
+		long Length,
+		long ModifiedTicks,
+		long CheckedAt,
+		SecurityConfig Config);
 
 	/// 只供测试清缓存：生产每次读盘按 mtime 自动失效。
 	internal static void ResetCache()
@@ -47,10 +56,28 @@ public static class PiDeckSecuritySnapshot
 
 		try
 		{
+			var now = Environment.TickCount64;
+			lock (Gate)
+			{
+				// 节流窗口内直接用上次结果：省掉每次工具调用的 stat。
+				if (_cache is { } cached &&
+					string.Equals(cached.Path, path, StringComparison.Ordinal) &&
+					now - cached.CheckedAt < ReloadThrottle.TotalMilliseconds)
+				{
+					return cached.Config;
+				}
+			}
+
 			var info = new FileInfo(path);
 			if (!info.Exists)
 			{
-				return SecurityConfig.Off with { Enabled = false };
+				var missing = SecurityConfig.Off with { Enabled = false };
+				lock (Gate)
+				{
+					_cache = new CachedSnapshot(path, -1, 0, now, missing);
+				}
+
+				return missing;
 			}
 
 			lock (Gate)
@@ -60,20 +87,31 @@ public static class PiDeckSecuritySnapshot
 					cached.Length == info.Length &&
 					cached.ModifiedTicks == info.LastWriteTimeUtc.Ticks)
 				{
+					_cache = cached with { CheckedAt = now };
 					return cached.Config;
 				}
 			}
 
 			var text = File.ReadAllText(path);
-			var config = Parse(text);
+			SecurityConfig config;
+			try
+			{
+				config = Parse(text);
+			}
+			catch (JsonException)
+			{
+				config = SecurityConfig.Off with { Enabled = false };
+			}
+
+			// 坏快照也进缓存：否则每次工具调用都要重读一遍同一个坏文件。
 			lock (Gate)
 			{
-				_cache = new CachedSnapshot(path, info.Length, info.LastWriteTimeUtc.Ticks, config);
+				_cache = new CachedSnapshot(path, info.Length, info.LastWriteTimeUtc.Ticks, now, config);
 			}
 
 			return config;
 		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or FormatException)
 		{
 			return SecurityConfig.Off with { Enabled = false };
 		}
@@ -92,8 +130,8 @@ public static class PiDeckSecuritySnapshot
 			return ToolSecurity.Off;
 		}
 
-		var sessionId = Environment.GetEnvironmentVariable(SessionIdVariable);
-		if (sessionId is { Length: > 0 } &&
+		// 会话 id 不缓存：同一进程里可能有多个会话（桌面），环境变量按会话换。
+		if (Environment.GetEnvironmentVariable(SessionIdVariable) is { Length: > 0 } sessionId &&
 			snapshot.SessionLevels.TryGetValue(sessionId, out var overridden) &&
 			snapshot.Find(overridden) is { } level)
 		{
@@ -111,13 +149,13 @@ public static class PiDeckSecuritySnapshot
 			throw new JsonException("security snapshot must be an object");
 		}
 
-		if (root["schemaVersion"]?.GetValue<int>() is not 1)
+		if (Integer(root["schemaVersion"]) is not 1)
 		{
 			throw new JsonException("unsupported security snapshot schemaVersion");
 		}
 
-		var enabled = root["enabled"]?.GetValue<bool>() ?? true;
-		var defaultLevel = root["defaultLevelId"]?.GetValue<string>()?.Trim() ?? ToolSecurity.OffLevel;
+		var enabled = Flag(root["enabled"]) ?? true;
+		var defaultLevel = Text(root["defaultLevelId"])?.Trim() ?? ToolSecurity.OffLevel;
 		var levels = new List<ToolSecurity>();
 		if (root["levels"] is JsonArray rawLevels)
 		{
@@ -140,8 +178,7 @@ public static class PiDeckSecuritySnapshot
 		{
 			foreach (var pair in rawSessions)
 			{
-				if (pair.Value is JsonValue value && value.GetValueKind() == JsonValueKind.String &&
-					value.GetValue<string>() is { Length: > 0 } levelId)
+				if (Text(pair.Value) is { Length: > 0 } levelId)
 				{
 					sessionLevels[pair.Key] = levelId;
 				}
@@ -159,13 +196,13 @@ public static class PiDeckSecuritySnapshot
 
 	private static ToolSecurity? ParseLevel(JsonObject level)
 	{
-		var id = level["id"]?.GetValue<string>()?.Trim();
+		var id = Text(level["id"])?.Trim();
 		if (string.IsNullOrEmpty(id))
 		{
 			return null;
 		}
 
-		var defaultAction = ToolAction.Normalize(level["defaultAction"]?.GetValue<string>());
+		var defaultAction = ToolAction.Normalize(Text(level["defaultAction"]));
 		// PiDeck 只管控 MANAGED_TOOLS；未列出的工具一律放行。本端口的 Evaluate 会对任意工具
 		// 应用 DefaultAction，因此把 8 个受管工具逐个写进 ToolActions，再把 DefaultAction 设成
 		// allow，等价于扩展的「其它工具直接 return undefined」。
@@ -174,9 +211,9 @@ public static class PiDeckSecuritySnapshot
 		{
 			foreach (var (tool, value) in rawActions)
 			{
-				if (value is JsonValue action && action.GetValueKind() == JsonValueKind.String)
+				if (Text(value) is { } action)
 				{
-					actions[tool] = ToolAction.Normalize(action.GetValue<string>());
+					actions[tool] = ToolAction.Normalize(action);
 				}
 			}
 		}
@@ -186,7 +223,7 @@ public static class PiDeckSecuritySnapshot
 			actions.TryAdd(tool, defaultAction);
 		}
 
-		var pathPolicy = level["pathPolicy"]?.GetValue<string>()?.Trim().ToLowerInvariant() switch
+		var pathPolicy = Text(level["pathPolicy"])?.Trim().ToLowerInvariant() switch
 		{
 			"workspace" => ToolPathPolicy.Workspace,
 			"custom" => ToolPathPolicy.Custom,
@@ -196,10 +233,10 @@ public static class PiDeckSecuritySnapshot
 		return new ToolSecurity
 		{
 			Level = id,
-			Name = level["name"]?.GetValue<string>() is { Length: > 0 } name ? name : id,
-			Description = level["description"]?.GetValue<string>() ?? string.Empty,
-			Builtin = level["builtin"]?.GetValue<bool>() == true,
-			ProtectSensitivePaths = level["protectSensitivePaths"]?.GetValue<bool>() == true,
+			Name = Text(level["name"]) is { Length: > 0 } name ? name : id,
+			Description = Text(level["description"]) ?? string.Empty,
+			Builtin = Flag(level["builtin"]) == true,
+			ProtectSensitivePaths = Flag(level["protectSensitivePaths"]) == true,
 			PathPolicy = pathPolicy,
 			CustomAllowDirs = Strings(level["customAllowDirs"]),
 			DenyDirs = Strings(level["denyDirs"]),
@@ -219,8 +256,7 @@ public static class PiDeckSecuritySnapshot
 		var values = new List<string>(array.Count);
 		foreach (var item in array)
 		{
-			if (item is JsonValue value && value.GetValueKind() == JsonValueKind.String &&
-				value.GetValue<string>() is { Length: > 0 } text)
+			if (Text(item) is { Length: > 0 } text)
 			{
 				values.Add(text);
 			}
@@ -228,4 +264,15 @@ public static class PiDeckSecuritySnapshot
 
 		return values;
 	}
+
+	/// 取值都用 TryGetValue：`GetValue<T>` 在类型不符时抛 InvalidOperationException，
+	/// 一个手改坏的快照就会把异常带进工具调用路径。
+	private static string? Text(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+	private static int? Integer(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
+
+	private static bool? Flag(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<bool>(out var flag) ? flag : null;
 }

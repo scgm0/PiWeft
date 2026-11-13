@@ -44,7 +44,9 @@ public static partial class AutoTitle
 			return null;
 		}
 
-		var (text, blockOnly) = TitleTextFromUserInput(firstUserText);
+		// 粘贴几 MB 的日志时别让四条块正则与五条脱敏正则扫全文：真正发出去的只有前
+		// MaxUserInputChars 个码点，切在它 16 倍处不可能把要发送的片段切坏。
+		var (text, blockOnly) = TitleTextFromUserInput(CapInput(firstUserText, MaxUserInputChars * 16));
 		if (blockOnly)
 		{
 			return new TitleInput(text, null, null);
@@ -53,7 +55,9 @@ public static partial class AutoTitle
 		return new TitleInput(
 			null,
 			PrepareInputText(text, MaxUserInputChars),
-			string.IsNullOrWhiteSpace(firstAssistantText) ? null : PrepareInputText(firstAssistantText, MaxAssistantInputChars));
+			string.IsNullOrWhiteSpace(firstAssistantText)
+				? null
+				: PrepareInputText(CapInput(firstAssistantText, MaxAssistantInputChars * 16), MaxAssistantInputChars));
 	}
 
 	/// 斜杠命令开头的输入不参与命名：那是命令，不是任务描述。
@@ -202,29 +206,25 @@ public static partial class AutoTitle
 		return MarkerTagTitle().IsMatch(trimmed);
 	}
 
-	/// 按码点截断，不在多字节字符中间切开。
+	/// 按码点截断，不在多字节字符中间切开。先算 UTF-16 下标再切一次子串：
+	/// 逐码点 `rune.ToString()` 会为每个字符分配一个字符串。
 	public static string Truncate(string text, int maxChars)
 	{
-		var count = text.EnumerateRunes().Count();
-		if (count <= maxChars)
+		var index = 0;
+		for (var count = 0; count < maxChars && index < text.Length; count++)
 		{
-			return text.TrimEnd();
+			Rune.DecodeFromUtf16(text.AsSpan(index), out _, out var consumed);
+			index += consumed;
 		}
 
-		var builder = new StringBuilder(text.Length);
-		var written = 0;
-		foreach (var rune in text.EnumerateRunes())
-		{
-			if (written++ >= maxChars)
-			{
-				break;
-			}
-
-			builder.Append(rune.ToString());
-		}
-
-		return builder.ToString().TrimEnd();
+		return index >= text.Length ? text.TrimEnd() : text[..index].TrimEnd();
 	}
+
+	/// 粗切输入：只保证不切断代理对，正则与脱敏都在这个窗口内跑。
+	private static string CapInput(string text, int maxChars) =>
+		text.Length <= maxChars
+			? text
+			: text[..(char.IsHighSurrogate(text[maxChars - 1]) ? maxChars - 1 : maxChars)];
 
 	private static string CollapseWhitespace(string text) => Whitespace().Replace(text, " ").Trim();
 

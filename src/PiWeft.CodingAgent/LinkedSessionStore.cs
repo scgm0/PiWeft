@@ -58,6 +58,12 @@ public static class LinkedSessionStore
 	{
 		lock (Gate)
 		{
+			// 文件大到读不动时不要覆盖写：Load 返回空，写回会把别的父会话的条目全删掉。
+			if (IsOversized(agentDir))
+			{
+				return;
+			}
+
 			var existing = Load(agentDir);
 			var links = existing.Links
 				.Where(link => !string.Equals(link.ParentSessionId, parentSessionId, StringComparison.Ordinal))
@@ -69,6 +75,19 @@ public static class LinkedSessionStore
 				.ToList();
 
 			Write(links, proposals, projectId, agentDir);
+		}
+	}
+
+	private static bool IsOversized(string? agentDir)
+	{
+		try
+		{
+			var info = new FileInfo(PathFor(agentDir));
+			return info.Exists && info.Length > MaxBytes;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return true;
 		}
 	}
 
@@ -145,7 +164,7 @@ public static class LinkedSessionStore
 						Text(item, "title") ?? "子会话",
 						// 重启后没有活运行时：恢复出来一律按 stopped，避免界面显示「运行中」。
 						LinkedSessionLink.Stopped,
-						(int)Number(item, "turnCount"),
+						(int)Math.Clamp(Number(item, "turnCount"), 0, int.MaxValue),
 						Text(item, "lastReport"),
 						Number(item, "lastReportAt"),
 						Number(item, "createdAt")));
@@ -190,9 +209,7 @@ public static class LinkedSessionStore
 	}
 
 	private static string? Text(JsonObject item, string key) =>
-		item[key] is JsonValue value && value.GetValueKind() == JsonValueKind.String
-			? value.GetValue<string>()
-			: null;
+		item[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
 	private static long Number(JsonObject item, string key) =>
 		item[key] is JsonValue value && value.TryGetValue<long>(out var number) ? number : 0;

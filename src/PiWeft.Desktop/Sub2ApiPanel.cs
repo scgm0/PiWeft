@@ -120,7 +120,10 @@ internal static partial class Sub2ApiPanel
 		DateTimeOffset now,
 		CancellationToken cancellationToken)
 	{
-		if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var origin) || origin.Scheme is not ("https" or "http"))
+		// 与用量探测同一套安全边界：只走 HTTPS 或本机 HTTP，令牌不能明文发到远端。
+		if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var origin) ||
+			origin.Scheme is not ("https" or "http") ||
+			(origin.Scheme == "http" && !origin.IsLoopback))
 		{
 			return (null, null);
 		}
@@ -128,11 +131,15 @@ internal static partial class Sub2ApiPanel
 		var root = origin.GetLeftPart(UriPartial.Authority);
 		var current = tokens;
 		Refreshed? rotated = null;
+		// refresh token 单次轮转：同一次查询里只许续一次。续期失败后再拿同一个 token 重试，
+		// 服务端可能已经把它用掉了，重试只会把两边都搞成不可用。
+		var refreshAttempted = false;
 		using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		budget.CancelAfter(timeout);
 
 		if (current.RefreshToken is { Length: > 0 } && NeedsRefresh(current.AccessToken, now))
 		{
+			refreshAttempted = true;
 			rotated = await RefreshAsync(client, root, current.RefreshToken, budget.Token).ConfigureAwait(false);
 			if (rotated is not null)
 			{
@@ -141,7 +148,7 @@ internal static partial class Sub2ApiPanel
 		}
 
 		var (balance, unauthorized) = await ReadBalanceAsync(client, root, current.AccessToken, budget.Token).ConfigureAwait(false);
-		if (balance is null && unauthorized && current.RefreshToken is { Length: > 0 } && rotated is null)
+		if (balance is null && unauthorized && !refreshAttempted && current.RefreshToken is { Length: > 0 })
 		{
 			// 本地 exp 没到但服务端提前失效（时钟偏差/被撤销）：续一次再重试同一个端点。
 			rotated = await RefreshAsync(client, root, current.RefreshToken, budget.Token).ConfigureAwait(false);

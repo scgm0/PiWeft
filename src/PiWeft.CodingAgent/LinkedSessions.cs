@@ -390,7 +390,7 @@ public sealed class LinkedSessionHub : IDisposable
 						});
 						ResolveWaiter(proposalId, new ProposalOutcome("error", Error: started.Text));
 						Persist();
-		Changed?.Invoke();
+						Changed?.Invoke();
 						return LinkedSessionOperation.Failure(started.Text);
 					}
 
@@ -401,7 +401,7 @@ public sealed class LinkedSessionHub : IDisposable
 					});
 					ResolveWaiter(proposalId, new ProposalOutcome("started", started.ChildSessionId));
 					Persist();
-		Changed?.Invoke();
+					Changed?.Invoke();
 					return LinkedSessionOperation.Success(ProposalStatusJson("started", updated ?? proposal, started.ChildSessionId));
 				}
 
@@ -410,7 +410,7 @@ public sealed class LinkedSessionHub : IDisposable
 					var updated = UpdateProposal(proposalId, candidate => candidate with { Status = LinkedSessionProposal.Here });
 					ResolveWaiter(proposalId, new ProposalOutcome("here"));
 					Persist();
-		Changed?.Invoke();
+					Changed?.Invoke();
 					if (proposal.Initiation == LinkedSessionProposal.OwnInitiative)
 					{
 						await SendHereToParentAsync(proposal, cancellationToken).ConfigureAwait(false);
@@ -424,7 +424,7 @@ public sealed class LinkedSessionHub : IDisposable
 					var updated = UpdateProposal(proposalId, candidate => candidate with { Status = LinkedSessionProposal.Dismissed });
 					ResolveWaiter(proposalId, new ProposalOutcome("dismissed"));
 					Persist();
-		Changed?.Invoke();
+					Changed?.Invoke();
 					return LinkedSessionOperation.Success(ProposalStatusJson("declined", updated ?? proposal));
 				}
 

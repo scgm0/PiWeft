@@ -1,5 +1,5 @@
+using System.Buffers;
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace PiWeft.Cli;
 
@@ -7,13 +7,29 @@ namespace PiWeft.Cli;
 /// SGR（标准色、256 色、真彩、粗体/暗色/斜体/下划线）转成内联样式，
 /// OSC 8 超链接转成 <c>&lt;a&gt;</c>（只放行 http/https/mailto），
 /// 其余 CSI / OSC / APC 序列与孤立 ESC 一律丢掉——否则导出文件里会露出 <c>[38;2;…m</c> 这样的乱码。
-public static partial class AnsiHtml
+/// <para>
+/// 用状态机而不是正则：工具结果动辄上万行，逐段 <c>Match</c> 会为每段分配子串，
+/// 进度条这类每条行都带颜色的输出尤其贵。没有 ESC 的文本走一次 <see cref="string.IndexOf(char)" /> 直接返回。
+/// </para>
+public static class AnsiHtml
 {
+	private const char Escape = '\u001b';
+
+	private const char Bell = '\u0007';
+
 	private static readonly string[] AnsiColors =
 	[
 		"#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0",
 		"#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff",
 	];
+
+	/// 256 色表的 232..255 灰阶与 16..231 立方体是纯函数，先算好：每条 SGR 都会查一次。
+	private static readonly string[] ExtendedColors = BuildExtendedColors();
+
+	private static readonly SearchValues<char> HtmlEscapes = SearchValues.Create("&<>\"'");
+
+	private static readonly SearchValues<char> ControlCharacters = SearchValues.Create(
+		[.. Enumerable.Range(0, 0x20).Select(static code => (char)code), '\u007f']);
 
 	private sealed class TextStyle
 	{
@@ -31,16 +47,39 @@ public static partial class AnsiHtml
 
 		public bool Any => Foreground is not null || Background is not null || Bold || Dim || Italic || Underline;
 
-		public string ToCss()
+		/// 直接写进结果缓冲：每条 SGR 都会重写一次样式，拼临时字符串不值当。
+		public void AppendCss(StringBuilder target)
 		{
-			var parts = new List<string>(6);
-			if (Foreground is not null) parts.Add($"color:{Foreground}");
-			if (Background is not null) parts.Add($"background-color:{Background}");
-			if (Bold) parts.Add("font-weight:bold");
-			if (Dim) parts.Add("opacity:0.6");
-			if (Italic) parts.Add("font-style:italic");
-			if (Underline) parts.Add("text-decoration:underline");
-			return string.Join(';', parts);
+			var first = true;
+			if (Foreground is { } foreground)
+			{
+				Separate(target, "color:", foreground, ref first);
+			}
+
+			if (Background is { } background)
+			{
+				Separate(target, "background-color:", background, ref first);
+			}
+
+			if (Bold)
+			{
+				Separate(target, "font-weight:", "bold", ref first);
+			}
+
+			if (Dim)
+			{
+				Separate(target, "opacity:", "0.6", ref first);
+			}
+
+			if (Italic)
+			{
+				Separate(target, "font-style:", "italic", ref first);
+			}
+
+			if (Underline)
+			{
+				Separate(target, "text-decoration:", "underline", ref first);
+			}
 		}
 
 		public void Reset()
@@ -52,11 +91,22 @@ public static partial class AnsiHtml
 			Italic = false;
 			Underline = false;
 		}
+
+		private static void Separate(StringBuilder target, string property, string value, ref bool first)
+		{
+			if (!first)
+			{
+				target.Append(';');
+			}
+
+			first = false;
+			target.Append(property).Append(value);
+		}
 	}
 
 	/// 去掉所有转义序列与孤立 ESC，保留纯文本。
 	public static string StripEscapes(string text) =>
-		text.Length == 0 ? text : EscapePattern().Replace(text, string.Empty).Replace("\u001b", string.Empty);
+		text.Length == 0 || text.IndexOf(Escape) < 0 ? text : Render(text, html: false);
 
 	/// 转成 HTML。文本按行保留空白（由外层 <c>&lt;pre&gt;</c> 负责换行）。
 	public static string ToHtml(string text)
@@ -66,6 +116,11 @@ public static partial class AnsiHtml
 			return text;
 		}
 
+		return text.IndexOf(Escape) < 0 ? EscapeHtml(text) : Render(text, html: true);
+	}
+
+	private static string Render(string text, bool html)
+	{
 		var result = new StringBuilder(text.Length + 32);
 		var style = new TextStyle();
 		var inSpan = false;
@@ -83,64 +138,101 @@ public static partial class AnsiHtml
 
 		void OpenSpan()
 		{
-			if (style.Any)
+			if (html && style.Any)
 			{
-				result.Append("<span style=\"").Append(style.ToCss()).Append("\">");
+				result.Append("<span style=\"");
+				style.AppendCss(result);
+				result.Append("\">");
 				inSpan = true;
 			}
 		}
 
-		foreach (Match match in EscapePattern().Matches(text))
+		while (cursor < text.Length)
 		{
-			if (match.Index > cursor)
+			var start = text.IndexOf(Escape, cursor);
+			if (start < 0)
 			{
-				result.Append(EscapeHtml(text[cursor..match.Index].Replace("\u001b", string.Empty)));
+				AppendText(result, text.AsSpan(cursor), html);
+				break;
 			}
 
-			cursor = match.Index + match.Length;
-			var sgr = match.Groups[1];
-			var osc = match.Groups[2];
-
-			if (sgr.Success)
+			if (start > cursor)
 			{
-				CloseSpan();
-				ApplySgr(sgr.Value, style);
-				OpenSpan();
-				continue;
+				AppendText(result, text.AsSpan(cursor, start - cursor), html);
 			}
 
-			if (osc.Success)
+			// 孤立 ESC：只丢这一个字符，后面的文本照常保留。
+			if (start + 1 >= text.Length)
 			{
-				var hyperlink = Osc8().Match(osc.Value);
-				if (!hyperlink.Success)
-				{
+				break;
+			}
+
+			cursor = start + 1;
+			switch (text[cursor])
+			{
+				case '[':
+					// CSI：参数字节 0x30-0x3F、中间字节 0x20-0x2F、终止字节 0x40-0x7E。
+					var index = cursor + 1;
+					while (index < text.Length && text[index] is >= '\u0030' and <= '\u003f')
+					{
+						index++;
+					}
+
+					while (index < text.Length && text[index] is >= '\u0020' and <= '\u002f')
+					{
+						index++;
+					}
+
+					if (index >= text.Length || text[index] is < '\u0040' or > '\u007e')
+					{
+						// 不是完整序列：丢掉 ESC，`[` 与后面按正文保留。
+						continue;
+					}
+
+					var final = text[index];
+					var parameters = text.AsSpan(cursor + 1, index - cursor - 1);
+					cursor = index + 1;
+					if (final != 'm')
+					{
+						continue;
+					}
+
+					CloseSpan();
+					ApplySgr(parameters, style);
+					OpenSpan();
 					continue;
-				}
 
-				// 浏览器会剥掉 URL 里的 C0 控制符：先清掉再判协议。
-				var url = ControlCharacters().Replace(hyperlink.Groups[1].Value.Trim(), string.Empty);
-				CloseSpan();
-				if (inLink)
-				{
-					result.Append("</a>");
-					inLink = false;
-				}
+				case ']':
+				case '_':
+					// OSC / APC：BEL 或 ST（ESC \）收尾。OSC 8 是超链接，APC 一律丢弃。
+					var isOsc = text[cursor] == ']';
+					var terminated = TryScanControlString(text, start, cursor + 1, out var payload, out var next);
+					cursor = next;
+					if (!html || !terminated || !isOsc || !TryParseLink(payload, out var url))
+					{
+						continue;
+					}
 
-				if (url.Length > 0 && SafeLink().IsMatch(url))
-				{
-					result.Append("<a href=\"").Append(EscapeHtml(url)).Append("\">");
-					inLink = true;
-				}
+					CloseSpan();
+					if (inLink)
+					{
+						result.Append("</a>");
+						inLink = false;
+					}
 
-				OpenSpan();
+					if (url.Length > 0)
+					{
+						result.Append("<a href=\"").Append(EscapeHtml(url)).Append("\">");
+						inLink = true;
+					}
+
+					OpenSpan();
+					continue;
+
+				default:
+					// 其它 ESC 序列（如 `ESC ( B`）：只丢 ESC。
+					continue;
 			}
-
-			// 其它 CSI / APC 序列直接丢弃。
-		}
-
-		if (cursor < text.Length)
-		{
-			result.Append(EscapeHtml(text[cursor..].Replace("\u001b", string.Empty)));
 		}
 
 		CloseSpan();
@@ -152,15 +244,102 @@ public static partial class AnsiHtml
 		return result.ToString();
 	}
 
-	private static void ApplySgr(string parameters, TextStyle style)
+	/// 扫到 BEL 或 ST 为止。未收尾时按「只丢 ESC」处理，游标停在 ESC 之后。
+	private static bool TryScanControlString(
+		string text,
+		int escapeIndex,
+		int start,
+		out ReadOnlySpan<char> payload,
+		out int next)
 	{
-		var codes = parameters.Length == 0
-			? [0]
-			: parameters.Split(';').Select(static part => int.TryParse(part, out var value) ? value : 0).ToArray();
-
-		for (var index = 0; index < codes.Length; index++)
+		for (var index = start; index < text.Length; index++)
 		{
-			var code = codes[index];
+			if (text[index] == Bell)
+			{
+				payload = text.AsSpan(start, index - start);
+				next = index + 1;
+				return true;
+			}
+
+			if (text[index] == Escape && index + 1 < text.Length && text[index + 1] == '\\')
+			{
+				payload = text.AsSpan(start, index - start);
+				next = index + 2;
+				return true;
+			}
+		}
+
+		payload = default;
+		next = escapeIndex + 1;
+		return false;
+	}
+
+	/// OSC 8 的形状是 `8;参数;URL`；其它 OSC（改标题、改剪贴板）没有链接。
+	private static bool TryParseLink(ReadOnlySpan<char> payload, out string url)
+	{
+		url = string.Empty;
+		if (!payload.StartsWith("8;", StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		var separator = payload[2..].IndexOf(';');
+		if (separator < 0)
+		{
+			return false;
+		}
+
+		// 浏览器会剥掉 URL 里的 C0 控制符：先清掉再判协议，否则 `java\tscript:` 能混过去。
+		var raw = payload[(separator + 3)..].Trim();
+		if (raw.IndexOfAny(ControlCharacters) >= 0)
+		{
+			var cleaned = new StringBuilder(raw.Length);
+			foreach (var character in raw)
+			{
+				if (character is >= '\u0020' and not '\u007f')
+				{
+					cleaned.Append(character);
+				}
+			}
+
+			raw = cleaned.ToString().AsSpan().Trim();
+		}
+
+		var text = raw.ToString();
+		if (text.Length == 0 || !IsSafeLink(text))
+		{
+			return true;
+		}
+
+		url = text;
+		return true;
+	}
+
+	/// 只放行 http/https/mailto：导出的 HTML 会在浏览器里打开，`javascript:` 与 `data:` 都不能落地。
+	private static bool IsSafeLink(ReadOnlySpan<char> url)
+	{
+		foreach (var scheme in (ReadOnlySpan<string>)["https:", "http:", "mailto:"])
+		{
+			if (url.StartsWith(scheme, StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private static void ApplySgr(ReadOnlySpan<char> parameters, TextStyle style)
+	{
+		if (parameters.IsEmpty)
+		{
+			style.Reset();
+			return;
+		}
+
+		while (true)
+		{
+			var code = NextParameter(ref parameters);
 			switch (code)
 			{
 				case 0:
@@ -192,7 +371,7 @@ public static partial class AnsiHtml
 					style.Foreground = AnsiColors[code - 30];
 					break;
 				case 38:
-					index += ApplyExtended(codes, index, value => style.Foreground = value);
+					ApplyExtended(ref parameters, ref style.Foreground);
 					break;
 				case 39:
 					style.Foreground = null;
@@ -201,7 +380,7 @@ public static partial class AnsiHtml
 					style.Background = AnsiColors[code - 40];
 					break;
 				case 48:
-					index += ApplyExtended(codes, index, value => style.Background = value);
+					ApplyExtended(ref parameters, ref style.Background);
 					break;
 				case 49:
 					style.Background = null;
@@ -213,75 +392,126 @@ public static partial class AnsiHtml
 					style.Background = AnsiColors[code - 100 + 8];
 					break;
 			}
+
+			if (parameters.IsEmpty)
+			{
+				return;
+			}
 		}
 	}
 
-	/// 扩展色：<c>38;5;N</c> 与 <c>38;2;R;G;B</c>。返回额外消费的参数个数。
-	private static int ApplyExtended(int[] codes, int index, Action<string> apply)
+	/// 扩展色：`38;5;N` 与 `38;2;R;G;B`，消费掉后面的参数。
+	private static void ApplyExtended(ref ReadOnlySpan<char> parameters, ref string? slot)
 	{
-		if (index + 1 >= codes.Length)
+		if (parameters.IsEmpty)
 		{
-			return 0;
+			return;
 		}
 
-		if (codes[index + 1] == 5 && index + 2 < codes.Length)
+		var mode = NextParameter(ref parameters);
+		if (mode == 5 && !parameters.IsEmpty)
 		{
-			apply(Color256(codes[index + 2]));
-			return 2;
+			slot = Color256(NextParameter(ref parameters));
 		}
-
-		if (codes[index + 1] == 2 && index + 4 < codes.Length)
+		else if (mode == 2 && !parameters.IsEmpty)
 		{
-			apply($"rgb({codes[index + 2]},{codes[index + 3]},{codes[index + 4]})");
-			return 4;
-		}
+			var red = NextParameter(ref parameters);
+			if (parameters.IsEmpty)
+			{
+				return;
+			}
 
-		return 0;
+			var green = NextParameter(ref parameters);
+			if (parameters.IsEmpty)
+			{
+				return;
+			}
+
+			var blue = NextParameter(ref parameters);
+			slot = $"rgb({red},{green},{blue})";
+		}
 	}
 
-	private static string Color256(int index)
+	/// 取下一个 `;` 分隔的参数；空段与非法数字都按 0（与旧实现一致）。
+	private static int NextParameter(ref ReadOnlySpan<char> parameters)
 	{
-		if (index < 0)
+		var separator = parameters.IndexOf(';');
+		var token = separator < 0 ? parameters : parameters[..separator];
+		parameters = separator < 0 ? default : parameters[(separator + 1)..];
+
+		var value = 0;
+		foreach (var character in token)
 		{
-			index = 0;
+			if (character is < '0' or > '9')
+			{
+				return 0;
+			}
+
+			// 越界的参数只会来自坏输出：夹到 0，别让一次乘法溢出成负色号。
+			value = value > 9999 ? value : (value * 10) + (character - '0');
 		}
 
-		if (index < 16)
-		{
-			return AnsiColors[index];
-		}
+		return value;
+	}
 
-		if (index < 232)
+	private static string Color256(int index) =>
+		index >= 0 && index < ExtendedColors.Length ? ExtendedColors[index] : ExtendedColors[0];
+
+	private static string[] BuildExtendedColors()
+	{
+		var colors = new string[256];
+		Array.Copy(AnsiColors, colors, AnsiColors.Length);
+		for (var index = 16; index < 232; index++)
 		{
 			var cube = index - 16;
-			var red = cube / 36;
-			var green = cube % 36 / 6;
-			var blue = cube % 6;
-			return $"#{Component(red):x2}{Component(green):x2}{Component(blue):x2}";
-
-			static int Component(int value) => value == 0 ? 0 : 55 + value * 40;
+			colors[index] = $"#{Component(cube / 36):x2}{Component(cube % 36 / 6):x2}{Component(cube % 6):x2}";
 		}
 
-		var gray = Math.Min(255, 8 + (index - 232) * 10);
-		return $"#{gray:x2}{gray:x2}{gray:x2}";
+		for (var index = 232; index < 256; index++)
+		{
+			var gray = Math.Min(255, 8 + ((index - 232) * 10));
+			colors[index] = $"#{gray:x2}{gray:x2}{gray:x2}";
+		}
+
+		return colors;
+
+		static int Component(int value) => value == 0 ? 0 : 55 + (value * 40);
 	}
 
-	private static string EscapeHtml(string text) =>
-		text.Replace("&", "&amp;")
-			.Replace("<", "&lt;")
-			.Replace(">", "&gt;")
-			.Replace("\"", "&quot;")
-			.Replace("'", "&#039;");
+	private static void AppendText(StringBuilder result, ReadOnlySpan<char> text, bool html)
+	{
+		if (!html)
+		{
+			result.Append(text);
+			return;
+		}
 
-	[GeneratedRegex("\u001b\\[([\\d;]*)m|\u001b\\[[0-?]*[ -/]*[@-~]|\u001b\\]([^\u0007\u001b]*)(?:\u0007|\u001b\\\\)|\u001b_[^\u0007\u001b]*(?:\u0007|\u001b\\\\)")]
-	private static partial Regex EscapePattern();
+		while (true)
+		{
+			var index = text.IndexOfAny(HtmlEscapes);
+			if (index < 0)
+			{
+				result.Append(text);
+				return;
+			}
 
-	[GeneratedRegex("^8;[^;]*;(.*)$", RegexOptions.Singleline)]
-	private static partial Regex Osc8();
+			result.Append(text[..index]);
+			result.Append(text[index] switch
+			{
+				'&' => "&amp;",
+				'<' => "&lt;",
+				'>' => "&gt;",
+				'"' => "&quot;",
+				_ => "&#039;",
+			});
+			text = text[(index + 1)..];
+		}
+	}
 
-	[GeneratedRegex("^(?:https?:|mailto:)", RegexOptions.IgnoreCase)]
-	private static partial Regex SafeLink();
-
-	[GeneratedRegex("[\\x00-\\x1f\\x7f]")]
-	private static partial Regex ControlCharacters();
+	private static string EscapeHtml(ReadOnlySpan<char> text)
+	{
+		var result = new StringBuilder(text.Length);
+		AppendText(result, text, html: true);
+		return result.ToString();
+	}
 }

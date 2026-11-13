@@ -58,4 +58,24 @@ public sealed class AnsiHtmlTests
 		Assert.StartsWith("&lt;b&gt;<span style=\"font-weight:bold\">bold</span>", html);
 		Assert.Contains("&amp; &lt;/b&gt;", html);
 	}
+
+	[Fact]
+	public void UnterminatedControlStringsAndSmuggledSchemesAreDropped()
+	{
+		// 没有 BEL/ST 收尾的 OSC：只丢 ESC，后面的正文照常保留（与旧正则同语义）。
+		Assert.Equal("]8;;https://example.com text", AnsiHtml.ToHtml("\u001b]8;;https://example.com text"));
+
+		// URL 里夹 C0 控制符试图拼出 javascript:，浏览器会剥掉控制符，所以必须先剥再判协议。
+		var smuggled = AnsiHtml.ToHtml("\u001b]8;;java\tscript:alert(1)\u0007x\u001b]8;;\u0007");
+		Assert.DoesNotContain("<a", smuggled);
+		Assert.Contains("x", smuggled);
+	}
+
+	[Fact]
+	public void PlainTextSkipsTheScanner()
+	{
+		Assert.Equal("plain text", AnsiHtml.ToHtml("plain text"));
+		Assert.Same("plain text", AnsiHtml.StripEscapes("plain text"));
+		Assert.Equal("&lt;a&gt;", AnsiHtml.ToHtml("<a>"));
+	}
 }
