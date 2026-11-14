@@ -125,13 +125,13 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
-	public void EsmSyntaxGetsAnActionableMessage()
+	public void UnresolvableEsmImportIsReported()
 	{
-		// 让解析器抛 "Identifier expected" 之类的错误，用户看不出问题出在模块语法上。
-		var state = Load("esm.js", "import fs from 'fs';\nexport default function (pi) {}");
+		// ESM 现在走宿主模块加载器；宿主没提供的模块要在诊断里说清，而不是抛解析错。
+		var state = Load("esm.js", "import missing from 'a-package-that-does-not-exist';\nexport default function (pi) {}");
 
 		Assert.False(state.Loaded);
-		Assert.Contains(state.Diagnostics, message => message.Contains("module.exports", StringComparison.Ordinal));
+		Assert.Contains(state.Diagnostics, message => message.Contains("ESM", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -165,21 +165,20 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
-	public void AsyncHandlerIsRejectedWithAnExplanation()
+	public void AsyncHandlerResultIsAppliedAfterThePromiseSettles()
 	{
 		using var host = new ExtensionHost();
 		Write("async.js", """
 			module.exports = function (pi) {
-				pi.on('tool_call', async function (payload) { return 1; });
+				pi.on('tool_call', async function (payload) { await Promise.resolve(); return { note: "async" }; });
 			};
 			""");
 		host.Load(_cwd, trusted: true, _agentDir);
 
-		var payload = new JsonObject { ["toolName"] = "bash" };
-		host.Dispatch("tool_call", payload);
+		var payload = host.Dispatch("tool_call", new JsonObject { ["toolName"] = "bash" });
 
-		// 静默丢掉 async 处理器的返回值比报错难查得多。
-		Assert.Contains(host.States[0].Diagnostics, message => message.Contains("Promise", StringComparison.Ordinal));
+		Assert.Equal("async", payload["note"]!.GetValue<string>());
+		Assert.DoesNotContain(host.States[0].Diagnostics, message => message.Contains("Promise", StringComparison.Ordinal));
 	}
 
 

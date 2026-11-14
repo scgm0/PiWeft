@@ -20,6 +20,10 @@ public sealed record ExtensionDescriptor
 	/// 于是同一个文件里所有 <c>Path.GetFileName(...)</c> 都编不过（或更糟：解析到别处）。
 	public required string FilePath { get; init; }
 
+	/// 发现这个扩展的根目录（约定目录、显式文件所在目录、npm/git 包根）。
+	/// ESM 的模块加载器钉在这里：相对 import 与 node_modules 都不得逃出这个目录。
+	public string? BasePath { get; init; }
+
 	public required string Origin { get; init; }
 
 	public required bool Project { get; init; }
@@ -42,7 +46,7 @@ public sealed record ExtensionDescriptor
 	public string? UnsupportedReason => Error ?? (Missing
 		? "扩展文件或目录不存在。"
 		: Language == ExtensionLanguage.TypeScript
-			? "当前扩展宿主只执行 JavaScript；TypeScript 扩展需要先在构建期转译成 JS（本端口不内置 TS 转译器，见 docs/01-parity.md 的 PI-01）。"
+			? "当前扩展宿主只执行 JavaScript；TypeScript 扩展需要先在构建期转译成 .js 或 .mjs（本端口不内置 TS 转译器，见 docs/01-parity.md 的 PI-01）。"
 			: null);
 
 	public static string GlobalDirectory(string? agentDir = null) =>
@@ -186,7 +190,7 @@ public sealed record ExtensionDescriptor
 				return;
 			}
 
-			Collect(into, packageRoot, Origin: "显式", project: false);
+			Collect(into, packageRoot, Origin: "显式", project: false, skipDependencies: true);
 			return;
 		}
 
@@ -201,7 +205,7 @@ public sealed record ExtensionDescriptor
 
 		if (Directory.Exists(path))
 		{
-			Collect(into, path, Origin: "显式", project: false);
+			Collect(into, path, Origin: "显式", project: false, skipDependencies: true);
 			return;
 		}
 
@@ -210,6 +214,7 @@ public sealed record ExtensionDescriptor
 			into.Add(new ExtensionDescriptor
 			{
 				FilePath = path,
+				BasePath = Path.GetDirectoryName(path),
 				Origin = "显式",
 				Project = false,
 				Language = LanguageOf(path),
@@ -227,7 +232,7 @@ public sealed record ExtensionDescriptor
 		});
 	}
 
-	private static void Collect(List<ExtensionDescriptor> into, string directory, string Origin, bool project)
+	private static void Collect(List<ExtensionDescriptor> into, string directory, string Origin, bool project, bool skipDependencies = false)
 	{
 		if (!Directory.Exists(directory))
 		{
@@ -238,8 +243,10 @@ public sealed record ExtensionDescriptor
 		try
 		{
 			// 只收扩展能写的几种后缀；目录里混着的 .d.ts、README 等不该变成「加载失败的扩展」。
+			// npm/git 包里另跳过 node_modules：依赖里的 JS 不是扩展，一枚包可能带上千个文件。
 			files = Directory.GetFiles(directory, "*.*", SearchOption.AllDirectories)
 				.Where(IsExtensionFile)
+				.Where(path => !skipDependencies || !IsDependencyFile(path, directory))
 				.ToArray();
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -252,11 +259,19 @@ public sealed record ExtensionDescriptor
 			into.Add(new ExtensionDescriptor
 			{
 				FilePath = path,
+				BasePath = directory,
 				Origin = Origin,
 				Project = project,
 				Language = LanguageOf(path),
 			});
 		}
+	}
+
+	private static bool IsDependencyFile(string path, string root)
+	{
+		var relative = Path.GetRelativePath(root, path);
+		return relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+			.Any(static segment => string.Equals(segment, "node_modules", StringComparison.OrdinalIgnoreCase));
 	}
 
 	private static readonly HashSet<string> ExtensionExtensions = new(StringComparer.OrdinalIgnoreCase)

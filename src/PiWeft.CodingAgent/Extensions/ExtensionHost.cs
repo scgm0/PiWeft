@@ -4,6 +4,7 @@ using Jint;
 using Jint.Native;
 using Jint.Runtime;
 using Jint.Runtime.Interop;
+using Jint.Runtime.Modules;
 using PiWeft.Agent;
 
 namespace PiWeft.CodingAgent.Extensions;
@@ -31,12 +32,14 @@ public sealed record ExtensionFlag(string Name, string Type, string Description,
 /// 唯一出口是显式注册的 <c>__pi*</c> 宿主函数，<c>pi</c> 对象由这些函数在 JS 侧组装，
 /// 与 <c>CodeModePrelude</c> 同法。所有桥用 <see cref="ClrFunction"/> 注册，不经反射包装，
 /// NativeAOT/裁剪下不产生 IL2026/IL2111。
-/// 两条限制都在界面里可见，不静默降级：
+/// 当前支持的扩展形态：
 /// <list type="bullet">
-/// <item><description><strong>只执行 JavaScript</strong>：TypeScript 扩展要构建期转译（本端口不内置），
-/// 发现到时逐条说明原因，不悄悄跳过。</description></item>
-/// <item><description><strong>处理器必须同步</strong>：返回 Promise 会被拒绝并说明原因（异步需要把事件循环泵
-/// 接进宿主）。把 <c>[object Promise]</c> 当结果交给模型，比直接报错更难查。</description></item>
+/// <item><description><strong>CommonJS 脚本</strong>：<c>module.exports = function (pi) {...}</c>。</description></item>
+/// <item><description><strong>ESM</strong>：<c>export default function (pi) {...}</c>，相对 import 与 <c>typebox</c>
+/// 由 <see cref="ExtensionModules"/> 提供；模块加载根是发现目录。</description></item>
+/// <item><description><strong>异步处理器</strong>：Promise 由 <c>UnwrapIfPromise</c> 驱动到结束，不把
+/// <c>[object Promise]</c> 当结果交给模型。</description></item>
+/// <item><description><strong>TypeScript 仍需构建期转译</strong>：发现到时逐条说明原因，不悄悄跳过。</description></item>
 /// </list>
 public sealed class ExtensionHost : IDisposable
 {
@@ -271,12 +274,8 @@ public sealed class ExtensionHost : IDisposable
 			return state;
 		}
 
-		// ESM 语法在这里不可用。与其让解析器抛看不懂的语法错，不如直说。
-		if (HasModuleSyntax(source))
-		{
-			state.Diagnostics.Add("扩展用了 ESM 的 import/export 语句；宿主按脚本执行扩展文件，请改用 `module.exports = function (pi) { ... }`。");
-			return state;
-		}
+		// ESM 走 Jint 的模块加载器，加载根就是发现目录：相对 import 与 node_modules 都不能逃出去。
+		var esm = IsEsm(descriptor, source);
 
 		var worker = new ExtensionWorker(Path.GetFileNameWithoutExtension(descriptor.FilePath));
 		state.Worker = worker;
@@ -286,7 +285,7 @@ public sealed class ExtensionHost : IDisposable
 			// 注册期在扩展线程上跑完：引擎此后只被这个线程碰（事件与工具调用由宿主投递进来）。
 			worker.RunAsync(() =>
 			{
-				Register(state, source);
+				Register(state, source, descriptor, esm);
 				return true;
 			}, InvokeTimeout).GetAwaiter().GetResult();
 			state.Loaded = true;
@@ -338,7 +337,7 @@ public sealed class ExtensionHost : IDisposable
 				var updated = state.Worker!.OnWorkerThread
 					? LatestPayload(state, @event)
 					: state.Worker.RunAsync(() => LatestPayload(state, @event), InvokeTimeout).GetAwaiter().GetResult();
-				if (JsonNode.Parse(updated) is JsonObject parsed)
+				if (updated.Length > 0 && JsonNode.Parse(updated) is JsonObject parsed)
 				{
 					payload = parsed;
 				}
@@ -360,7 +359,8 @@ public sealed class ExtensionHost : IDisposable
 	{
 		// 用 Invoke(全局函数名, object[])：这个版本的 Jint 没有 JsValue.From/Create，
 		// 字符串参数由 Invoke 自己转换。
-		state.Engine!.Invoke("piweftCallHandler", @event, json);
+		var result = state.Engine!.Invoke("piweftCallHandler", @event, json);
+		AwaitScriptResult(result, $"{@event} 处理器", state);
 	}
 
 	internal Task<string> InvokeToolByNameAsync(ExtensionState state, string toolName, string argumentsJson)
@@ -377,7 +377,8 @@ public sealed class ExtensionHost : IDisposable
 	private string InvokeToolOnWorker(ExtensionState state, string toolName, string argumentsJson)
 	{
 		var engine = state.Engine!;
-		engine.Invoke("piweftTool", toolName, argumentsJson);
+		var result = engine.Invoke("piweftTool", toolName, argumentsJson);
+		AwaitScriptResult(result, $"工具 {toolName}", state);
 		return engine.Invoke("piweftToolResult").AsString();
 	}
 
@@ -424,9 +425,21 @@ public sealed class ExtensionHost : IDisposable
 
 	public void RunCommand(string name, string argument) => TryRunCommand(name, argument);
 
-	private void Register(ExtensionState state, string source)
+	private void Register(ExtensionState state, string source, ExtensionDescriptor descriptor, bool esm)
 	{
-		var engine = new Engine();
+		var options = new Options();
+		if (esm)
+		{
+			var basePath = descriptor.BasePath
+				?? Path.GetDirectoryName(descriptor.FilePath)
+				?? Directory.GetCurrentDirectory();
+			options.UseModules(new NodeStyleModuleLoader(basePath, new NodeModuleLoaderOptions
+			{
+				ExtensionProbing = true,
+			}));
+		}
+
+		var engine = new Engine(options);
 		state.Engine = engine;
 		var registration = state.Registration;
 
@@ -518,7 +531,7 @@ public sealed class ExtensionHost : IDisposable
 			registration.AddCommand(new ExtensionCommand(name, description, argument =>
 			{
 				var result = engine.Invoke("piweftCallCommand", name, argument);
-				RejectPromise(result, $"命令 {name}", state);
+				AwaitScriptResult(result, $"命令 {name}", state);
 			}, state.Descriptor.FilePath));
 			return JsValue.Undefined;
 		}));
@@ -576,29 +589,38 @@ public sealed class ExtensionHost : IDisposable
 		// 处理器与命令函数留在 JS 侧的注册表里，宿主只通过下面这几个 JS 函数调它们。
 		engine.Evaluate(HandlerRegistry);
 		engine.Evaluate(Prelude);
+
+		if (esm)
+		{
+			ImportEsmExtension(engine, descriptor, state);
+			return;
+		}
+
 		engine.Evaluate(source);
 
-		// pi 的扩展是 `export default function (pi) {...}`；脚本形态下约定 module.exports。
-		// 用户代码可能改写 module.exports（整体赋值）或 module.exports.default；两种都认。
-		engine.Evaluate("""
+		// 脚本形态下约定 module.exports；用户代码可能改写 module.exports（整体赋值）或
+		// module.exports.default，两种都认。入口自身可以是 async，返回的 Promise 同样驱动到结束。
+		var entry = engine.Evaluate("""
 			(function () {
 				var exported = (typeof module === "object" && module) ? module.exports : undefined;
 				if (exported && exported.default) { exported = exported.default; }
 				else if (exported === globalThis.exports && typeof globalThis.exports === "object" && Object.keys(globalThis.exports).length) {
 					exported = globalThis.exports.default || globalThis.exports;
 				}
-				if (typeof exported === "function") { exported(globalThis.pi); }
-				else if (exported !== undefined && exported !== null && typeof exported === "object") {
+				if (typeof exported === "function") { return exported(globalThis.pi); }
+				if (exported !== undefined && exported !== null && typeof exported === "object") {
 					// 也支持 { default: fn } 之外的对象形态：有 handler 字段就用它
 					__piDiagnose("扩展导出的不是函数：应为 module.exports = function (pi) { ... }。");
 				}
+				return undefined;
 			})();
 			""");
+		AwaitScriptResult(entry, "扩展入口", state);
 	}
 
 	private const string HandlerRegistry = """
-		// 扩展按 pi 的约定写 `module.exports = function (pi) {...}`；宿主不提供 require/imports，
-		// 但必须提供 module/exports 这两个名字，否则扩展第一行就 "module is not defined"。
+		// 扩展可以写 `module.exports = function (pi) {...}`（CJS）或 `export default function (pi) {...}`（ESM）；
+		// CJS 路径要这两个全局名字，否则扩展第一行就 "module is not defined"。
 		globalThis.module = { exports: {} };
 		globalThis.exports = module.exports;
 		globalThis.piweftHandlers = Object.create(null);
@@ -608,24 +630,39 @@ public sealed class ExtensionHost : IDisposable
 			if (!piweftHandlers[name]) { piweftHandlers[name] = []; }
 		};
 		globalThis.piweftStoreHandler = function (name, handler) { piweftOn(name); piweftHandlers[name].push(handler); };
+		// 返回值可能是 Promise：返回给宿主，由 C# 侧 UnwrapIfPromise 驱动到结束。
 		globalThis.piweftCallHandler = function (name, payloadJson) {
 			var list = piweftHandlers[name] || [];
 			var payload = JSON.parse(payloadJson);
-			for (var i = 0; i < list.length; i++) {
-				var outcome = list[i](payload);
-				// async 函数返回 Promise：只有 JS 侧能准确认出它（C# 看到的是已返回的 undefined）。
-				// 不支持异步就明说，不把 [object Promise] 当结果继续用。
-				if (outcome && typeof outcome.then === "function") {
-					__piDiagnose(name + " 处理器返回了 Promise：当前扩展宿主只支持同步处理器，返回值已丢弃。");
-				} else if (outcome && typeof outcome === "object" && !Array.isArray(outcome)) {
+			var index = 0;
+
+			function merge(outcome) {
+				if (outcome && typeof outcome === "object" && !Array.isArray(outcome)) {
 					// pi 的处理器以返回对象表达结果；宿主读不回 JS 引用，合并到 payload 再回传。
 					for (var key in outcome) { payload[key] = outcome[key]; }
 				}
 			}
-			// 宿主读不回 JS 对象的引用，改过的字段必须显式回传。
-			piweftPending.event = name;
-			piweftPending.result = JSON.stringify(payload);
-			return undefined;
+
+			function step() {
+				while (index < list.length) {
+					var outcome = list[index++](payload);
+					if (outcome && typeof outcome.then === "function") {
+						return outcome.then(
+							function (value) { merge(value); return step(); },
+							function (error) {
+								__piDiagnose(name + " 处理器失败：" + String(error && error.message || error));
+								return step();
+							});
+					}
+					merge(outcome);
+				}
+				// 宿主读不回 JS 对象的引用，改过的字段必须显式回传。
+				piweftPending.event = name;
+				piweftPending.result = JSON.stringify(payload);
+				return undefined;
+			}
+
+			return step();
 		};
 		globalThis.piweftLatest = function (name) {
 			return piweftPending.event === name ? piweftPending.result : "";
@@ -639,7 +676,9 @@ public sealed class ExtensionHost : IDisposable
 			}
 			var outcome = handler(argument);
 			if (outcome && typeof outcome.then === "function") {
-				__piDiagnose("命令 \"" + name + "\" 返回了 Promise：当前扩展宿主只支持同步处理器。");
+				return outcome.then(undefined, function (error) {
+					__piDiagnose("命令 \"" + name + "\" 失败：" + String(error && error.message || error));
+				});
 			}
 			return undefined;
 		};
@@ -647,7 +686,14 @@ public sealed class ExtensionHost : IDisposable
 		globalThis.piweftStoreTool = function (name, handler) { piweftTools[name] = handler; };
 		globalThis.piweftTool = function (name, argumentsJson) {
 			var tool = piweftTools[name];
-			piweftTool.last = tool ? tool(JSON.parse(argumentsJson)) : { isError: true, error: "未注册的工具 " + name };
+			if (!tool) { piweftTool.last = { isError: true, error: "未注册的工具 " + name }; return undefined; }
+			var outcome = tool(JSON.parse(argumentsJson));
+			if (outcome && typeof outcome.then === "function") {
+				return outcome.then(
+					function (value) { piweftTool.last = value; },
+					function (error) { piweftTool.last = { isError: true, error: String(error && error.message || error) }; });
+			}
+			piweftTool.last = outcome;
 			return undefined;
 		};
 		globalThis.piweftToolResult = function () {
@@ -769,15 +815,47 @@ public sealed class ExtensionHost : IDisposable
 		}));
 	}
 
-	/// 处理器返回 Promise 时明确报告。异步支持要等事件循环泵接进宿主；在那之前把
-	/// <c>[object Promise]</c> 当成结果交给模型，是最难排查的一种静默错误。
-	/// Jint 直接给了 <c>IsPromise()</c>，不用靠探测 <c>then</c> 属性猜。
-	private static void RejectPromise(JsValue? value, string what, ExtensionState state)
+	/// 把扩展返回的 Promise 驱动到结束。Jint 的 <c>UnwrapIfPromise</c> 会在超时或拒绝时抛异常；
+	/// 超时按宿主预算处理，拒绝按扩展自己的诊断处理，两者都不能拖垮宿主。
+	private static void AwaitScriptResult(JsValue value, string what, ExtensionState state)
 	{
-		if (value is not null && value.IsPromise())
+		if (!value.IsPromise())
 		{
-			state.Diagnostics.Add($"{what} 返回了 Promise：当前扩展宿主只支持同步处理器，返回值已丢弃。");
+			return;
 		}
+
+		try
+		{
+			value.UnwrapIfPromise(InvokeTimeout);
+		}
+		catch (Exception exception) when (exception is PromiseRejectedException or JavaScriptException
+			or TimeoutException or InvalidOperationException)
+		{
+			state.Diagnostics.Add($"{what} 失败：{Describe(exception)}");
+		}
+	}
+
+	private static void ImportEsmExtension(Engine engine, ExtensionDescriptor descriptor, ExtensionState state)
+	{
+		var specifier = "./" + Path.GetFileName(descriptor.FilePath);
+		JsValue module;
+		try
+		{
+			ExtensionModules.Register(engine);
+			module = engine.Modules.Import(specifier);
+		}
+		catch (Exception exception) when (exception is not OutOfMemoryException)
+		{
+			throw new InvalidOperationException($"ESM 扩展加载失败：{exception.Message}", exception);
+		}
+
+		var exported = module.AsObject().Get("default");
+		if (!exported.IsCallable())
+		{
+			throw new InvalidOperationException("ESM 扩展没有默认导出函数：应写 export default function (pi) { ... }。");
+		}
+
+		AwaitScriptResult(engine.Invoke(exported, engine.GetValue("pi")), "扩展入口", state);
 	}
 
 	/// 扩展给的数组可能混着非字符串（`aliases: ["a", 1]`）：只收字符串，不因为一个坏项让整个扩展加载失败。
@@ -977,6 +1055,22 @@ public sealed class ExtensionHost : IDisposable
 		}
 
 		return true;
+	}
+
+	private static bool IsEsm(ExtensionDescriptor descriptor, string source)
+	{
+		var extension = Path.GetExtension(descriptor.FilePath);
+		if (string.Equals(extension, ".mjs", StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		if (string.Equals(extension, ".cjs", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		return HasModuleSyntax(source);
 	}
 
 	private static bool HasModuleSyntax(string source)
