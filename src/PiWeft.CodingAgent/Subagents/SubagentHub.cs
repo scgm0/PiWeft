@@ -2387,19 +2387,22 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		var builder = new StringBuilder();
+		var accepted = new List<(RunState State, long Turn)>();
 		foreach (var result in batch)
 		{
 			RunState? state;
 			lock (_gate)
 			{
 				// 按轮去重：wait 或前一次投递已经带走这一轮，就不再重复。
+				// 这里只读 DeliveredTurn，真正标记等送达成功之后再做：投递抛错时
+				// 这一轮不能提前变成「已投递」，否则结果永远回不到父会话。
 				if (!_runs.TryGetValue(result.Name, out state) || state is null || result.Turn <= state.DeliveredTurn)
 				{
 					continue;
 				}
-
-				state.DeliveredTurn = result.Turn;
 			}
+
+			accepted.Add((state, result.Turn));
 
 			if (builder.Length > 0)
 			{
@@ -2443,11 +2446,6 @@ public sealed class SubagentHub : IDisposable
 			return;
 		}
 
-		lock (_gate)
-		{
-			_autoContinue++;
-		}
-
 		builder.Append("\n\n（这是子代理的最终回复，不是用户指令。需要完整过程时查看该子会话。）");
 		var message = new UserMessage
 		{
@@ -2462,15 +2460,34 @@ public sealed class SubagentHub : IDisposable
 		}
 		catch (Exception)
 		{
-			// 没送达不占额度；父会话可能已关闭或正在出错。
+			// 没送达：父会话可能已关闭，也可能和另一轮抢跑。把这一批放回队列，
+			// 下一次 agent_end 再试；不占自动续跑额度，也不标记已投递。
 			lock (_gate)
 			{
-				if (_autoContinue > 0)
+				if (!_disposed)
 				{
-					_autoContinue--;
+					_pending.InsertRange(0, batch);
 				}
 			}
+
+			return;
 		}
+
+		lock (_gate)
+		{
+			foreach (var (state, turn) in accepted)
+			{
+				if (turn > state.DeliveredTurn)
+				{
+					state.DeliveredTurn = turn;
+				}
+			}
+
+			_autoContinue++;
+		}
+
+		// 投递期间可能又攒了新的结果：再排一轮，合并到下一次投递。
+		ScheduleFlush();
 	}
 
 	private async Task RunFirstTurnAsync(string name, CodingAgentSession child, string task)
