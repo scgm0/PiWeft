@@ -256,7 +256,7 @@ internal static class ExecutionProcess
 			// 回报也是一步：不单列的话，含回报的组会被一句「执行了命令」概括掉。
 			var kind = entry.Role switch
 			{
-				ChatRole.Report => 8,
+				ChatRole.Report => ReportKind(entry),
 				ChatRole.Tool => entry.ToolName switch
 				{
 					"read" => 0, "write" => 1, "edit" => 2, "bash" or "terminal" or "powershell" => 3,
@@ -291,8 +291,23 @@ internal static class ExecutionProcess
 	[
 		"已读取文件", "已写入文件", "修改了文件", "执行了命令",
 		"已搜索代码", "更新了计划", "已向你提问", "已调用工具",
-		"收到子代理回报",
+		"收到子代理回报", "收到子代理消息", "收到子会话回报", "收到关联会话消息",
 	];
+
+	/// 回报的类别按行标题区分：关联会话消息不是子代理回报，不能都写成同一句话。
+	private static int ReportKind(ChatEntry entry)
+	{
+		var label = entry.Label;
+		if (label is null)
+		{
+			return 8;
+		}
+
+		if (label.StartsWith(Strings.ReportSubagentMessage, StringComparison.Ordinal)) return 9;
+		if (label.StartsWith(Strings.ReportLinkedChild, StringComparison.Ordinal)) return 10;
+		if (label.StartsWith(Strings.ReportLinkedMessage, StringComparison.Ordinal)) return 11;
+		return 8;
+	}
 
 	public static string RunningLabel(IReadOnlyList<ChatEntry> entries)
 	{

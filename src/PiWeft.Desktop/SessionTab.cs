@@ -3004,23 +3004,11 @@ public sealed partial class SessionTab : IDisposable
 				.FontSize(AppTheme.FontSizeMicro).SubtleText()
 				.VerticalAlignment(VerticalAlignment.Center));
 
-		// 长审阅给固定视口自己滚，不把时间线顶走。
-		UIElement body = entry.TextLength >= ReportViewportCharacters
-			? new ScrollViewer()
-				.Content(markdown)
-				.AutoVerticalScroll()
-				.NoHorizontalScroll()
-				.MaxHeight(ReportViewportHeight)
-			: markdown;
-
+		// 回报正文直接在时间线里展开，不再套一层自己的滚动：外层已经在滚，嵌套滚轮会把鼠标困在里面。
 		return new Border()
 			.Padding(new Thickness(0, AppTheme.Space2, 0, 0))
-			.Child(new StackPanel().Spacing(AppTheme.Space1).Children(bar, body));
+			.Child(new StackPanel().Spacing(AppTheme.Space1).Children(bar, markdown));
 	}
-
-	private const int ReportViewportCharacters = 1600;
-
-	private const double ReportViewportHeight = 320;
 
 	/// 用户消息：右侧内嵌气泡，与助手回复（左侧正文）一眼分开；技能上下文收成 chip，
 	/// 文件引用在正文里由投影层显示成行内 chip。正文保持可选中，时间与操作在气泡下方，图片缩略图在气泡上方。

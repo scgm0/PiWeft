@@ -65,6 +65,18 @@ public sealed class ExecutionProcessTests
 	}
 
 	[Fact]
+	public void GroupHeadSummaryNamesEachInjectedReportKind()
+	{
+		static ChatEntry Report(string label, int index) =>
+			new() { Role = ChatRole.Report, EntryId = $"report/{index}", Label = label, Text = "body" };
+
+		Assert.Equal("收到子代理回报", ExecutionProcess.GroupSummary([Report(Strings.ReportSubagentResult, 0)]));
+		Assert.Equal("收到子代理消息", ExecutionProcess.GroupSummary([Report(Strings.ReportSubagentMessage, 0)]));
+		Assert.Equal("收到子会话回报", ExecutionProcess.GroupSummary([Report(Strings.ReportLinkedChild, 0)]));
+		Assert.Equal("收到关联会话消息", ExecutionProcess.GroupSummary([Report(Strings.ReportLinkedMessage, 0)]));
+	}
+
+	[Fact]
 	public void RunningAskQuestionUsesItsOwnGroupLabelAndQuestionPreview()
 	{
 		var entries = new[]
