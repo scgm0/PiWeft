@@ -139,6 +139,25 @@ public class SessionMigrationTests : IDisposable
 	}
 
 	[Fact]
+	public void Open_WithoutUpgradeDoesNotAppendATrailingNewline()
+	{
+		var path = TempFile("no-newline.jsonl");
+		var content =
+			"""{"type":"session","version":3,"id":"s-no-newline","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/workspace/legacy"}""" + "\n" +
+			"""{"type":"message","id":"aaaaaaa1","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi","timestamp":1}}""";
+		File.WriteAllText(path, content);
+
+		var manager = SessionManager.Open(path, upgradeFile: false);
+
+		Assert.Single(manager.Entries);
+		Assert.Equal(content, File.ReadAllText(path));
+
+		// 正常打开（会追加）时才补换行，否则下一次追加会粘在上一行尾部。
+		SessionManager.Open(path);
+		Assert.EndsWith("\n", File.ReadAllText(path));
+	}
+
+	[Fact]
 	public void Open_MigratesThroughASymlinkedSessionFile()
 	{
 		if (OperatingSystem.IsWindows())

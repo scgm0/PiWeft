@@ -183,7 +183,7 @@ public sealed partial class SessionManager
 		bool upgradeFile = true)
 	{
 		var resolved = Path.GetFullPath(path);
-		var entries = ReadFileEntries(resolved, progress, cancellationToken);
+		var entries = ReadFileEntries(resolved, progress, cancellationToken, repairTrailingNewline: upgradeFile);
 
 		// 头部几乎总在第一行：先看首项，损坏/外部文件再退回全表扫描。
 		var header = entries.Count > 0 && entries[0] is SessionHeader first
@@ -506,7 +506,8 @@ public sealed partial class SessionManager
 	private static List<SessionLine> ReadFileEntries(
 		string path,
 		IProgress<SessionReadProgress>? progress = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		bool repairTrailingNewline = false)
 	{
 		var entries = new List<SessionLine>();
 		if (!File.Exists(path))
@@ -537,7 +538,11 @@ public sealed partial class SessionManager
 			});
 
 			progress?.Report(new SessionReadProgress(totalBytes, totalBytes, counted));
-			EnsureTrailingNewline(target);
+			if (repairTrailingNewline)
+			{
+				EnsureTrailingNewline(target);
+			}
+
 			return entries;
 		}
 
@@ -614,7 +619,11 @@ public sealed partial class SessionManager
 		}
 
 		progress?.Report(new SessionReadProgress(totalBytes, totalBytes, (int)Interlocked.Read(ref linesRead)));
-		EnsureTrailingNewline(target);
+		if (repairTrailingNewline)
+		{
+			EnsureTrailingNewline(target);
+		}
+
 		return entries;
 	}
 
