@@ -17,7 +17,7 @@ internal static class InjectedContext
 	private static string? LabelFor(string customType) => customType switch
 	{
 		SubagentHub.ResultMessageType => Strings.ReportSubagentResult,
-		SubagentHub.MessageType => Strings.ReportSubagentMessage,
+		SubagentHub.MessageType => Strings.ReportParentMessage,
 		PiWeftProtocol.LinkedReportMessageType => Strings.ReportLinkedChild,
 		PiWeftProtocol.LinkedMessageType => Strings.ReportLinkedMessage,
 		_ => null,

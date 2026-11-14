@@ -90,6 +90,23 @@ public sealed class InjectedReportTests : IDisposable
 	}
 
 	[Fact]
+	public void ParentSubagentMessage_IsLabeledFromTheChildSide()
+	{
+		var (session, chat) = Create();
+		using var _ = session;
+		using var __ = chat;
+
+		session.Session.AppendCustomMessage(
+			SubagentHub.MessageType,
+			MessageContent.FromText("来自父会话「主」：\n再看一下测试。"));
+
+		var row = Assert.Single(chat.Entries());
+		Assert.Equal(ChatRole.Report, row.Role);
+		// 子会话收到的这条是父会话发来的，标题不能从发件方写成「子代理消息」。
+		Assert.Equal("父会话消息「主」", row.Label);
+	}
+
+	[Fact]
 	public void ReportIsFoldedIntoTheProcessGroupAndCollapsedByDefault()
 	{
 		var (session, chat) = Create();

@@ -166,7 +166,8 @@ public static partial class Strings
 	// 注入的回报：不是用户写的气泡，单独一种行。
 	public const string ReportSubagentResult = "子代理回报";
 
-	public const string ReportSubagentMessage = "子代理消息";
+	// 子代理收到的是父会话发来的，标签从收件方看。
+	public const string ReportParentMessage = "父会话消息";
 
 	public const string ReportLinkedChild = "子会话回报";
 

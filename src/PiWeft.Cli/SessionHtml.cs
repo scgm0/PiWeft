@@ -62,7 +62,7 @@ public static class SessionHtml
 	private static string ReportLabel(string? customType) => customType switch
 	{
 		SubagentHub.ResultMessageType => "subagent result",
-		SubagentHub.MessageType => "subagent message",
+		SubagentHub.MessageType => "parent session message",
 		PiWeftProtocol.LinkedReportMessageType => "linked session report",
 		PiWeftProtocol.LinkedMessageType => "linked session message",
 		_ => "report",
