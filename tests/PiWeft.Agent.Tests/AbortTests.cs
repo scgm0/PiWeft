@@ -155,4 +155,43 @@ public class AbortTests
 		Assert.Equal(StopReason.Aborted, Assert.IsType<AssistantMessage>(messages[^1]).StopReason);
 		Assert.Equal("agent_end", recorder.Names.Last());
 	}
+
+	[Fact]
+	public async Task AbortDuringToolBatchAnswersEveryToolCall()
+	{
+		// pi #9986：批量中途取消时，没跑到的调用也要有 tool_result，否则会话里留下
+		// 没有配对的 tool_use，下一次请求只能靠重放补丁才发得出去。
+		var model = FakeStream.Model();
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var script = new ScriptedStreamFn();
+		script.EnqueueToolCalls(StopReason.ToolUse,
+			("c1", "wait", new JsonObject()),
+			("c2", "wait", new JsonObject()),
+			("c3", "wait", new JsonObject()));
+
+		var agent = new Agent(new AgentOptions
+		{
+			Model = model,
+			StreamFn = script.Invoke,
+			Tools = [WaitingTool(started)],
+			ToolExecution = ToolExecutionMode.Sequential,
+		});
+
+		var recorder = new EventRecorder();
+		using var subscription = agent.Subscribe(recorder.Record);
+
+		var prompt = agent.PromptAsync("go");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		agent.Abort();
+
+		var messages = await prompt.WaitAsync(TimeSpan.FromSeconds(5));
+
+		var results = messages.OfType<ToolResultMessage>().Where(result => result.ToolName == "wait").ToList();
+		Assert.Equal(["c1", "c2", "c3"], results.Select(result => result.ToolCallId));
+		Assert.All(results, result => Assert.True(result.IsError));
+		Assert.Equal(2, results.Count(result =>
+			result.Content.OfType<TextContent>().Any(text => text.Text == "Operation aborted")));
+		Assert.Equal(3, recorder.Names.Count(name => name == "tool_start:wait"));
+		Assert.Equal(3, recorder.Names.Count(name => name == "tool_end:wait"));
+	}
 }

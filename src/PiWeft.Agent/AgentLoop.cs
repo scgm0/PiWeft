@@ -446,11 +446,6 @@ public static class AgentLoop
 			await EmitToolResultMessageAsync(message, emit);
 			finalizedCalls.Add(finalized);
 			messages.Add(message);
-
-			if (cancellationToken.IsCancellationRequested)
-			{
-				break;
-			}
 		}
 
 		return new ExecutedToolCallBatch(messages, ShouldTerminate(finalizedCalls));
@@ -481,11 +476,6 @@ public static class AgentLoop
 				await EmitToolExecutionEndAsync(immediate, emit);
 				var captured = immediate;
 				entries.Add(() => Task.FromResult(captured));
-				if (cancellationToken.IsCancellationRequested)
-				{
-					break;
-				}
-
 				continue;
 			}
 
@@ -509,11 +499,6 @@ public static class AgentLoop
 				await EmitToolExecutionEndAsync(finalized, emit);
 				return finalized;
 			});
-
-			if (cancellationToken.IsCancellationRequested)
-			{
-				break;
-			}
 		}
 
 		var ordered = await Task.WhenAll(entries.Select(entry => entry())).ConfigureAwait(false);
@@ -566,6 +551,13 @@ public static class AgentLoop
 		AgentLoopConfig config,
 		CancellationToken cancellationToken)
 	{
+		// 取消在批量中途到达时，后面的调用也要有结果。提前退出会让会话里的 tool_use
+		// 没有配对的 tool_result，下一次请求多一道补丁才能发出去（pi #9986）。
+		if (cancellationToken.IsCancellationRequested)
+		{
+			return (null, Immediate(toolCall, "Operation aborted"));
+		}
+
 		var tool = context.ResolveTools().FirstOrDefault(t => string.Equals(t.Name, toolCall.Name, StringComparison.Ordinal));
 		if (tool is null)
 		{
