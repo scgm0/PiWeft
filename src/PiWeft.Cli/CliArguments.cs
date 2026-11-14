@@ -55,6 +55,9 @@ public sealed record CliArguments
 
 	public string? Export { get; init; }
 
+	/// <c>--safe</c>：导出时脱敏（凭据、路径、思考与工具输出）。
+	public bool Safe { get; init; }
+
 	public bool? ProjectTrustOverride { get; init; }
 
 	public bool NoBuiltinTools { get; init; }
@@ -263,6 +266,10 @@ public sealed record CliArguments
 						result = result with { Export = Value() };
 						break;
 
+					case "--safe":
+						result = result with { Safe = true };
+						break;
+
 					case "-a" or "--approve":
 						result = result with { ProjectTrustOverride = true };
 						break;
@@ -424,6 +431,7 @@ public sealed record CliArguments
 		  --no-themes                    Disable theme discovery
 		  --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
 		  --export <session> [output]    Export a session file to HTML and exit
+		  --safe                         Redact credentials, paths, thinking and tool output in exports
 		  --list-models [search]         List available models
 		  --verbose                      Force verbose startup
 		  --offline                      Accepted for compatibility (no effect in this port)

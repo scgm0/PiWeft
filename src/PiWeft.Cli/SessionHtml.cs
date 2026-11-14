@@ -13,40 +13,46 @@ namespace PiWeft.Cli;
 /// 然后是当前分支的每条消息。不含脚本与外部资源，因此文件在任何地方都能打开。
 public static class SessionHtml
 {
-	public static string Render(CodingAgentSession session)
+	public static string Render(CodingAgentSession session, bool safe = false)
 	{
+		var scope = safe ? RedactionScope.From(session.Cwd) : null;
+		var title = scope is null ? SessionTitle(session) : SessionRedaction.Text(SessionTitle(session), scope);
 		var builder = new StringBuilder();
 		builder.Append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
-		builder.Append("<title>").Append(Escape(SessionTitle(session))).Append("</title>\n");
+		builder.Append("<title>").Append(Escape(title)).Append("</title>\n");
 		builder.Append("<style>\n").Append(Styles).Append("</style>\n</head>\n<body>\n");
 
-		builder.Append("<header>\n<h1>").Append(Escape(SessionTitle(session))).Append("</h1>\n<dl>\n");
+		builder.Append("<header>\n<h1>").Append(Escape(title)).Append("</h1>\n<dl>\n");
 		Row(builder, "Session", session.Session.SessionId);
-		Row(builder, "File", session.Session.SessionFile ?? "(not persisted)");
-		Row(builder, "Working directory", session.Cwd);
+		Row(builder, "File", safe ? SessionRedaction.HiddenSessionFile : session.Session.SessionFile ?? "(not persisted)");
+		Row(builder, "Working directory", safe ? SessionRedaction.HiddenWorkspace : session.Cwd);
 		Row(builder, "Model", $"{session.Model.Provider}/{session.Model.Id}");
 		Row(builder, "Thinking level", session.ThinkingLevel);
 		builder.Append("</dl>\n</header>\n<main>\n");
 
 		// pi 1.5 的导出包含运行时系统提示词与工具声明；它们不写会话文件，只能从活会话取。
-		builder.Append("<details class=\"system-prompt\"><summary>system prompt</summary><pre>")
-			.Append(Escape(session.CurrentSystemPrompt))
-			.Append("</pre></details>\n");
-		if (session.DeclaredTools.Count > 0)
+		// 安全导出跳过：系统提示词里带工作目录、项目规则与用户配置。
+		if (!safe)
 		{
-			builder.Append("<details class=\"tools\"><summary>tools</summary><ul>\n");
-			foreach (var tool in session.DeclaredTools)
+			builder.Append("<details class=\"system-prompt\"><summary>system prompt</summary><pre>")
+				.Append(Escape(session.CurrentSystemPrompt))
+				.Append("</pre></details>\n");
+			if (session.DeclaredTools.Count > 0)
 			{
-				builder.Append("<li><code>").Append(Escape(tool.Name)).Append("</code> ")
-					.Append(Escape(tool.Description)).Append("</li>\n");
-			}
+				builder.Append("<details class=\"tools\"><summary>tools</summary><ul>\n");
+				foreach (var tool in session.DeclaredTools)
+				{
+					builder.Append("<li><code>").Append(Escape(tool.Name)).Append("</code> ")
+						.Append(Escape(tool.Description)).Append("</li>\n");
+				}
 
-			builder.Append("</ul></details>\n");
+				builder.Append("</ul></details>\n");
+			}
 		}
 
 		foreach (var message in session.Session.BuildProjectedMessages())
 		{
-			RenderMessage(builder, message);
+			RenderMessage(builder, scope is null ? message : SessionRedaction.Message(message, scope));
 		}
 
 		builder.Append("</main>\n</body>\n</html>\n");

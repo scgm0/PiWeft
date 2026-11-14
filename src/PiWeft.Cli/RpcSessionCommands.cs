@@ -362,7 +362,7 @@ public sealed partial class CliRunner
 		return models;
 	}
 
-	private string ExportHtml(CodingAgentSession session, string? outputPath)
+	private string ExportHtml(CodingAgentSession session, string? outputPath, bool safe = false)
 	{
 		var path = outputPath is { Length: > 0 }
 			? Path.GetFullPath(outputPath)
@@ -376,7 +376,7 @@ public sealed partial class CliRunner
 			Directory.CreateDirectory(directory);
 		}
 
-		File.WriteAllText(path, SessionHtml.Render(session));
+		File.WriteAllText(path, SessionHtml.Render(session, safe));
 		return path;
 	}
 }

@@ -21,6 +21,7 @@ public static class SessionSharing
 	public static async Task<(bool Ok, string? Url, string? Error)> ShareAsync(
 		CodingAgentSession session,
 		string destination,
+		bool safe = false,
 		CancellationToken cancellationToken = default)
 	{
 		var shareDestination = destination is "gist" or "radius" ? destination : session.Settings.SessionShareDestination;
@@ -36,7 +37,7 @@ public static class SessionSharing
 			return (false, null, "未登录 Radius；先运行 pi login radius，或把 sessionShareDestination 设为 gist。");
 		}
 
-		var jsonl = BuildShareJsonl(session);
+		var jsonl = BuildShareJsonl(session, safe);
 		if (string.Equals(shareDestination, "radius", StringComparison.OrdinalIgnoreCase))
 		{
 			return await ShareViaRadiusAsync(jsonl, cancellationToken).ConfigureAwait(false);
@@ -47,27 +48,39 @@ public static class SessionSharing
 
 	/// 导出当前分支 + <c>pi.share</c> 尾条目。头部用当前时间戳（与 pi 的
 	/// <c>serializeSessionBranch</c> 一致），条目按分支顺序重挂 <c>parentId</c>，第一条为根。
-	internal static string BuildShareJsonl(CodingAgentSession session)
+	/// <paramref name="safe"/> 为 true 时隐藏思考、工具结果与系统提示词，并抹掉凭据与工作目录。
+	internal static string BuildShareJsonl(CodingAgentSession session, bool safe = false)
 	{
+		var scope = safe ? RedactionScope.From(session.Session.Cwd) : null;
 		var timestamp = SessionPaths.ToIso8601(DateTimeOffset.UtcNow);
 		var builder = new StringBuilder();
-		builder.Append(SessionJson.Serialize(new SessionHeader
-		{
-			Id = session.Session.SessionId,
-			Timestamp = timestamp,
-			Cwd = session.Session.Cwd,
-		})).Append('\n');
+		builder.Append(SessionJson.Serialize(safe
+			? SessionRedaction.Header(new SessionHeader
+			{
+				Id = session.Session.SessionId,
+				Timestamp = timestamp,
+				Cwd = session.Session.Cwd,
+			}, scope!)
+			: new SessionHeader
+			{
+				Id = session.Session.SessionId,
+				Timestamp = timestamp,
+				Cwd = session.Session.Cwd,
+			})).Append('\n');
 
 		string? parentId = null;
 		foreach (var entry in session.Session.GetBranch())
 		{
-			builder.Append(SessionJson.Serialize(WithParent(entry, parentId))).Append('\n');
+			var exportEntry = WithParent(entry, parentId);
+			builder.Append(SessionJson.Serialize(safe
+				? SessionRedaction.Entry(exportEntry, scope!)
+				: exportEntry)).Append('\n');
 			parentId = entry.Id;
 		}
 
 		var data = new JsonObject
 		{
-			["systemPrompt"] = session.CurrentSystemPrompt,
+			["systemPrompt"] = safe ? SessionRedaction.HiddenSystemPrompt : session.CurrentSystemPrompt,
 			["tools"] = new JsonArray([.. session.Tools.Select(static tool => (JsonNode)new JsonObject
 			{
 				["name"] = tool.Name,
@@ -75,6 +88,10 @@ public static class SessionSharing
 				["parameters"] = tool.Parameters.DeepClone(),
 			})]),
 		};
+		if (safe)
+		{
+			data["redacted"] = true;
+		}
 
 		builder.Append(SessionJson.Serialize(new CustomEntry
 		{
@@ -149,7 +166,22 @@ public static class SessionSharing
 		var path = Path.Combine(Path.GetTempPath(), $"piweft-share-{Guid.NewGuid():N}.jsonl");
 		try
 		{
-			await File.WriteAllTextAsync(path, jsonl, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+			var options = new FileStreamOptions
+			{
+				Mode = FileMode.CreateNew,
+				Access = FileAccess.Write,
+			};
+			// 整份会话可能带密钥：同机其他用户不该能读这份临时文件。
+			if (!OperatingSystem.IsWindows())
+			{
+				options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+			}
+
+			await using (var stream = new FileStream(path, options))
+			{
+				var bytes = new UTF8Encoding(false).GetBytes(jsonl);
+				await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+			}
 
 			var status = await RunAsync("gh", ["auth", "status"], cancellationToken).ConfigureAwait(false);
 			if (status is null || status.Value.ExitCode != 0)

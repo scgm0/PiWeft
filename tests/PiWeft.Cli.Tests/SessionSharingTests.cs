@@ -87,6 +87,130 @@ public sealed class SessionSharingTests : IDisposable
 	}
 
 	[Fact]
+	public void SafeExportHidesThinkingToolOutputsPathsAndCredentials()
+	{
+		using var session = CreateSession(out var manager);
+		var secret = "sk-" + new string('a', 24);
+		manager.AppendMessage(new UserMessage
+		{
+			Content = MessageContent.FromText($"deploy {secret} under {_root}/src"),
+			Timestamp = 1,
+		});
+		manager.AppendMessage(new AssistantMessage
+		{
+			Content =
+			[
+				new ThinkingContent { Thinking = "private chain of thought" },
+				new TextContent { Text = "run the command" },
+				new ToolCall
+				{
+					Id = "t1",
+					Name = "bash",
+					Arguments = new JsonObject { ["command"] = "cat /etc/shadow" },
+				},
+			],
+			StopReason = StopReason.ToolUse,
+			Timestamp = 2,
+		});
+		manager.AppendMessage(new ToolResultMessage
+		{
+			ToolCallId = "t1",
+			ToolName = "bash",
+			Content = [new TextContent { Text = "token=supersecretvalue" }],
+			Details = new JsonObject { ["raw"] = "keep me out" },
+			Timestamp = 3,
+		});
+
+		var plain = SessionSharing.BuildShareJsonl(session);
+		Assert.Contains(secret, plain);
+		Assert.Contains("supersecretvalue", plain);
+
+		var lines = SessionSharing.BuildShareJsonl(session, safe: true)
+			.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+			.Select(line => JsonNode.Parse(line)!.AsObject())
+			.ToArray();
+		var json = string.Join('\n', lines.Select(line => line.ToJsonString()));
+
+		Assert.Equal(SessionRedaction.HiddenWorkspace, lines[0]["cwd"]!.GetValue<string>());
+		Assert.DoesNotContain(secret, json);
+		Assert.DoesNotContain("private chain of thought", json);
+		Assert.DoesNotContain("supersecretvalue", json);
+		Assert.DoesNotContain("/etc/shadow", json);
+		Assert.DoesNotContain("keep me out", json);
+		Assert.DoesNotContain(_root, json);
+		Assert.Contains(SessionRedaction.HiddenToolResult, json);
+		Assert.Contains(SessionRedaction.HiddenWorkspace, lines[1]["message"]!["content"]!.GetValue<string>());
+
+		var trailing = lines[^1]["data"]!.AsObject();
+		Assert.Equal(SessionRedaction.HiddenSystemPrompt, trailing["systemPrompt"]!.GetValue<string>());
+		Assert.True(trailing["redacted"]!.GetValue<bool>());
+	}
+
+	[Fact]
+	public void SafeHtmlExportHidesThinkingToolOutputsAndPaths()
+	{
+		using var session = CreateSession(out var manager);
+		manager.AppendMessage(new UserMessage
+		{
+			Content = MessageContent.FromText($"open {_root}/notes.txt"),
+			Timestamp = 1,
+		});
+		manager.AppendMessage(new AssistantMessage
+		{
+			Content =
+			[
+				new ThinkingContent { Thinking = "private chain of thought" },
+				new TextContent { Text = "the answer" },
+			],
+			StopReason = StopReason.Stop,
+			Timestamp = 2,
+		});
+		manager.AppendMessage(new ToolResultMessage
+		{
+			ToolCallId = "t1",
+			ToolName = "bash",
+			Content = [new TextContent { Text = "token=supersecretvalue" }],
+			Timestamp = 3,
+		});
+
+		var html = SessionHtml.Render(session, safe: true);
+
+		Assert.DoesNotContain("private chain of thought", html);
+		Assert.DoesNotContain("supersecretvalue", html);
+		Assert.DoesNotContain(_root, html);
+		Assert.DoesNotContain("system prompt", html);
+		Assert.Contains(SessionRedaction.HiddenToolResult, html);
+		Assert.Contains("the answer", html);
+	}
+
+	[Fact]
+	public void SafeJsonlExportNeverOverwritesTheLiveSessionFile()
+	{
+		var sessionDir = Path.Combine(_root, "sessions");
+		var manager = SessionManager.Create(_root, sessionDir);
+		manager.AppendMessage(new UserMessage
+		{
+			Content = MessageContent.FromText("token=supersecretvalue"),
+			Timestamp = 1,
+		});
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = TestModels.Model(),
+			StreamFn = static (model, messages, options) => throw new NotSupportedException(),
+			Session = manager,
+			Persist = false,
+		});
+
+		var path = CliRunner.ExportJsonl(session, manager.SessionFile, safe: true);
+
+		Assert.NotEqual(manager.SessionFile, path);
+		Assert.EndsWith(".safe.jsonl", path);
+		Assert.DoesNotContain("supersecretvalue", File.ReadAllText(path));
+		Assert.Contains("supersecretvalue", File.ReadAllText(manager.SessionFile!));
+	}
+
+	[Fact]
 	public void ViewerUrlUsesThePiDefaultAndHonorsTheEnvironmentOverride()
 	{
 		var previous = Environment.GetEnvironmentVariable("PI_SHARE_VIEWER_URL");

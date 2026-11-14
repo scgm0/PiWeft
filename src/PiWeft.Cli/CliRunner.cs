@@ -259,7 +259,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		["cost"] = totals.Cost,
 	};
 
-	internal static string ExportJsonl(CodingAgentSession session, string? outputPath)
+	internal static string ExportJsonl(CodingAgentSession session, string? outputPath, bool safe = false)
 	{
 		var path = outputPath is { Length: > 0 }
 			? Path.GetFullPath(outputPath)
@@ -273,7 +273,18 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			Directory.CreateDirectory(directory);
 		}
 
-		if (session.Session.SessionFile is { Length: > 0 } source &&
+		// 安全导出不能回写原会话：没给输出路径时重新选一个名字。
+		if (safe &&
+			session.Session.SessionFile is { Length: > 0 } sessionFile &&
+			string.Equals(Path.GetFullPath(sessionFile), path, StringComparison.Ordinal))
+		{
+			path = Path.Combine(
+				directory ?? ".",
+				Path.GetFileNameWithoutExtension(path) + ".safe" + Path.GetExtension(path));
+		}
+
+		if (!safe &&
+			session.Session.SessionFile is { Length: > 0 } source &&
 			File.Exists(source) &&
 			!string.Equals(Path.GetFullPath(source), path, StringComparison.Ordinal))
 		{
@@ -281,15 +292,16 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			return path;
 		}
 
+		var scope = safe ? RedactionScope.From(session.Session.Cwd) : null;
 		var lines = new List<string>();
 		if (session.Session.Header is { } header)
 		{
-			lines.Add(SessionJson.Serialize(header));
+			lines.Add(SessionJson.Serialize(scope is null ? header : SessionRedaction.Header(header, scope)));
 		}
 
 		foreach (var entry in session.Session.Entries)
 		{
-			lines.Add(SessionJson.Serialize(entry));
+			lines.Add(SessionJson.Serialize(scope is null ? entry : SessionRedaction.Entry(entry, scope)));
 		}
 
 		File.WriteAllText(path, string.Join('\n', lines) + "\n");
@@ -311,8 +323,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		var requested = arguments.Prompts.Count > 0 ? arguments.Prompts[0] : null;
 		var outputPath = requested is not null &&
 			requested.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)
-				? ExportJsonl(session, requested)
-				: ExportHtml(session, requested);
+				? ExportJsonl(session, requested, arguments.Safe)
+				: ExportHtml(session, requested, arguments.Safe);
 		output.WriteLine($"Exported to: {outputPath}");
 		return 0;
 	}
@@ -823,7 +835,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 				case "export_html":
 				{
-					var path = ExportHtml(session, command["outputPath"]?.GetValue<string>());
+					var safe = command["safe"] is JsonValue flag && flag.TryGetValue<bool>(out var requested) && requested;
+					var path = ExportHtml(session, command["outputPath"]?.GetValue<string>(), safe);
 					WriteRecord(Response(id, "export_html", true, new JsonObject { ["path"] = path }, null));
 					break;
 				}
@@ -1737,7 +1750,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		  /tree                     查看分支树
 		  /fork                     从某条用户消息分叉
 		  /clone                    把当前分支复制为新会话
-		  /export [路径]            导出 HTML；路径以 .jsonl 结尾时导出 JSONL
+		  /export [路径] [--safe]   导出 HTML；路径以 .jsonl 结尾时导出 JSONL；--safe 脱敏
+		  /share [gist|radius] [--safe]  分享当前分支；--safe 隐藏思考、工具结果与凭据
 		  /scoped-models            查看 --models 轮换范围
 		  /mcp                      查看已连接的 MCP 服务器与工具
 		  /trust                    查看当前项目信任状态
@@ -1935,11 +1949,13 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 			case "/export":
 			{
-				var exportPath = rest.Length > 0 ? rest : null;
+				var tokens = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+				var safe = tokens.Contains("--safe", StringComparer.Ordinal);
+				var exportPath = tokens.FirstOrDefault(token => token != "--safe") is { Length: > 0 } path ? path : null;
 				output.WriteLine(exportPath is not null &&
 					exportPath.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)
-						? $"Exported to: {ExportJsonl(session, exportPath)}"
-						: $"Exported to: {ExportHtml(session, exportPath)}");
+						? $"Exported to: {ExportJsonl(session, exportPath, safe)}"
+						: $"Exported to: {ExportHtml(session, exportPath, safe)}");
 				return true;
 			}
 
@@ -1988,8 +2004,10 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 			case "/share":
 			{
-				var destination = rest is "gist" or "radius" ? rest : "auto";
-				var (ok, url, message) = await SessionSharing.ShareAsync(session, destination, cancellationToken).ConfigureAwait(false);
+				var tokens = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+				var safe = tokens.Contains("--safe", StringComparer.Ordinal);
+				var destination = tokens.FirstOrDefault(token => token is "gist" or "radius") ?? "auto";
+				var (ok, url, message) = await SessionSharing.ShareAsync(session, destination, safe, cancellationToken).ConfigureAwait(false);
 				if (ok && url is not null)
 				{
 					output.WriteLine($"Shared: {url}");
