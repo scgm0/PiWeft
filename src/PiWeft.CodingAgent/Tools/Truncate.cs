@@ -43,16 +43,16 @@ public static class Truncate
 
 	public static TruncationResult Head(string content, int maxLines = DefaultMaxLines, long maxBytes = DefaultMaxBytes)
 	{
-		var totalBytes = ByteCount(content);
-		var lines = SplitLines(content);
-		var totalLines = lines.Count;
+		var span = content.AsSpan();
+		var totalBytes = Encoding.UTF8.GetByteCount(span);
+		var totalLines = CountLines(span);
 
 		if (totalLines <= maxLines && totalBytes <= maxBytes)
 		{
 			return Untruncated(content, totalLines, totalBytes, maxLines, maxBytes);
 		}
 
-		if (lines.Count > 0 && ByteCount(lines[0]) > maxBytes)
+		if (totalLines > 0 && Utf8ByteCount(FirstLine(span)) > maxBytes)
 		{
 			return new TruncationResult
 			{
@@ -69,29 +69,39 @@ public static class Truncate
 			};
 		}
 
-		var kept = new List<string>();
+		var kept = 0;
 		long outputBytes = 0;
+		var outputEnd = 0;
+		var position = 0;
 		var truncatedBy = "lines";
 
-		for (var i = 0; i < lines.Count && i < maxLines; i++)
+		while (position < span.Length && kept < maxLines)
 		{
-			var lineBytes = ByteCount(lines[i]) + (i > 0 ? 1 : 0);
+			var lineEnd = LineEnd(span, position);
+			var lineBytes = Utf8ByteCount(span[position..lineEnd]) + (kept > 0 ? 1 : 0);
 			if (outputBytes + lineBytes > maxBytes)
 			{
 				truncatedBy = "bytes";
 				break;
 			}
 
-			kept.Add(lines[i]);
+			kept++;
 			outputBytes += lineBytes;
+			outputEnd = lineEnd;
+			if (lineEnd == span.Length)
+			{
+				break;
+			}
+
+			position = lineEnd + 1;
 		}
 
-		if (kept.Count >= maxLines && outputBytes <= maxBytes)
+		if (kept >= maxLines && outputBytes <= maxBytes)
 		{
 			truncatedBy = "lines";
 		}
 
-		var output = string.Join("\n", kept);
+		var output = span[..outputEnd].ToString();
 		return new TruncationResult
 		{
 			Content = output,
@@ -99,7 +109,7 @@ public static class Truncate
 			TruncatedBy = truncatedBy,
 			TotalLines = totalLines,
 			TotalBytes = totalBytes,
-			OutputLines = kept.Count,
+			OutputLines = kept,
 			OutputBytes = ByteCount(output),
 			MaxLines = maxLines,
 			MaxBytes = maxBytes,
@@ -108,48 +118,74 @@ public static class Truncate
 
 	public static TruncationResult Tail(string content, int maxLines = DefaultMaxLines, long maxBytes = DefaultMaxBytes)
 	{
-		var totalBytes = ByteCount(content);
-		var lines = SplitLines(content);
-		var totalLines = lines.Count;
+		var span = content.AsSpan();
+		var totalBytes = Encoding.UTF8.GetByteCount(span);
+		var totalLines = CountLines(span);
 
 		if (totalLines <= maxLines && totalBytes <= maxBytes)
 		{
 			return Untruncated(content, totalLines, totalBytes, maxLines, maxBytes);
 		}
 
-		var kept = new List<string>();
+		// SplitLines 会丢掉结尾换行产生的空行；尾部切片也要按同样口径找最后一行。
+		var contentEnd = span.Length;
+		if (contentEnd > 0 && span[contentEnd - 1] == '\n')
+		{
+			contentEnd--;
+		}
+
+		var kept = 0;
 		long outputBytes = 0;
+		var outputStart = contentEnd;
+		var lineEnd = contentEnd;
+		var atStart = span.Length == 0;
 		var truncatedBy = "lines";
 		var lastLinePartial = false;
+		string? partial = null;
 
-		for (var i = lines.Count - 1; i >= 0 && kept.Count < maxLines; i--)
+		while (!atStart && kept < maxLines)
 		{
-			var lineBytes = ByteCount(lines[i]) + (kept.Count > 0 ? 1 : 0);
+			var lineStart = lineEnd;
+			while (lineStart > 0 && span[lineStart - 1] != '\n')
+			{
+				lineStart--;
+			}
+
+			var lineBytes = Utf8ByteCount(span[lineStart..lineEnd]) + (kept > 0 ? 1 : 0);
 			if (outputBytes + lineBytes > maxBytes)
 			{
 				truncatedBy = "bytes";
-				if (kept.Count == 0)
+				if (kept == 0)
 				{
 					// 最后一行本身就超过上限：保留它的尾部。
-					var partial = TakeBytesFromEnd(lines[i], maxBytes);
-					kept.Insert(0, partial);
+					partial = TakeBytesFromEnd(span[lineStart..lineEnd].ToString(), maxBytes);
 					outputBytes = ByteCount(partial);
+					kept = 1;
 					lastLinePartial = true;
 				}
 
 				break;
 			}
 
-			kept.Insert(0, lines[i]);
+			kept++;
 			outputBytes += lineBytes;
+			outputStart = lineStart;
+			if (lineStart == 0)
+			{
+				atStart = true;
+			}
+			else
+			{
+				lineEnd = lineStart - 1;
+			}
 		}
 
-		if (kept.Count >= maxLines && outputBytes <= maxBytes)
+		if (kept >= maxLines && outputBytes <= maxBytes)
 		{
 			truncatedBy = "lines";
 		}
 
-		var output = string.Join("\n", kept);
+		var output = partial ?? span[outputStart..contentEnd].ToString();
 		return new TruncationResult
 		{
 			Content = output,
@@ -157,7 +193,7 @@ public static class Truncate
 			TruncatedBy = truncatedBy,
 			TotalLines = totalLines,
 			TotalBytes = totalBytes,
-			OutputLines = kept.Count,
+			OutputLines = kept,
 			OutputBytes = ByteCount(output),
 			LastLinePartial = lastLinePartial,
 			MaxLines = maxLines,
@@ -197,21 +233,32 @@ public static class Truncate
 
 	internal static long ByteCount(string value) => Encoding.UTF8.GetByteCount(value);
 
-	internal static List<string> SplitLines(string content)
+	private static int CountLines(ReadOnlySpan<char> content)
 	{
-		if (content.Length == 0)
+		if (content.IsEmpty)
 		{
-			return [];
+			return 0;
 		}
 
-		var lines = new List<string>(content.Split('\n'));
-		if (content.EndsWith('\n') && lines.Count > 0)
-		{
-			lines.RemoveAt(lines.Count - 1);
-		}
-
-		return lines;
+		var lines = content.Count('\n') + 1;
+		return content[^1] == '\n' ? lines - 1 : lines;
 	}
+
+	private static ReadOnlySpan<char> FirstLine(ReadOnlySpan<char> content)
+	{
+		var newline = content.IndexOf('\n');
+		return newline < 0 ? content : content[..newline];
+	}
+
+	private static int LineEnd(ReadOnlySpan<char> content, int start)
+	{
+		var newline = content[start..].IndexOf('\n');
+		return newline < 0 ? content.Length : start + newline;
+	}
+
+	/// 绝大多数 shell 输出是 ASCII，先用 <see cref="Ascii.IsValid(ReadOnlySpan{char})"/> 走免编码器的路。
+	private static long Utf8ByteCount(ReadOnlySpan<char> value) =>
+		Ascii.IsValid(value) ? value.Length : Encoding.UTF8.GetByteCount(value);
 
 	private static TruncationResult Untruncated(string content, int totalLines, long totalBytes, int maxLines, long maxBytes) =>
 		new()
