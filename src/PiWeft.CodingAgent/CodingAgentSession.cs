@@ -4041,14 +4041,30 @@ public sealed partial class CodingAgentSession : IDisposable
 		return await ContinueAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	/// 外部注入的一轮（关联会话回报或跨会话消息）：运行中排 follow-up，模式续轮排到队列尾，
-	/// 空闲时立即起一轮。回报不能被并行的 PromptAsync 抢跑，所以与目标/计划共用同一份续轮队列。
-	public async Task DeliverMessageAsync(UserMessage message, CancellationToken cancellationToken = default)
+	/// 外部注入的一轮（关联会话回报或跨会话消息）：运行中默认 steer（当前工具批次结束、
+	/// 下一次模型请求前投递），显式 <see cref="MessageDeliveryMode.FollowUp"/> 才等整轮结束；
+	/// 模式续轮排到队列尾，空闲时立即起一轮。
+	public Task DeliverMessageAsync(UserMessage message, CancellationToken cancellationToken = default) =>
+		DeliverMessageAsync(message, MessageDeliveryMode.Auto, cancellationToken);
+
+	/// 同上，显式指定投递方式。
+	public async Task DeliverMessageAsync(
+		UserMessage message,
+		MessageDeliveryMode mode,
+		CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
 		if (IsRunning)
 		{
-			FollowUp(message);
+			if (mode == MessageDeliveryMode.FollowUp)
+			{
+				FollowUp(message);
+			}
+			else
+			{
+				Steer(message);
+			}
+
 			return;
 		}
 

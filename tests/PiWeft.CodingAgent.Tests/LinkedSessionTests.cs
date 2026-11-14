@@ -182,6 +182,45 @@ public sealed class LinkedSessionTests : IDisposable
 	}
 
 	[Fact]
+	public async Task SendToSession_SteerReachesARunningChildBeforeItsNextRequest()
+	{
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到回报。");
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var childStream = new ScriptedStreamFn();
+		childStream.Enqueue(model => GatedText(model, "第一轮完成。", gate.Task));
+		childStream.EnqueueText("按提醒补完了。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateSession(parentStream, host);
+		var hub = Assert.IsType<LinkedSessionHub>(parent.Linked);
+		Assert.True((await hub.StartAsync("等提醒", "先跑第一轮。")).Ok);
+		var childId = Assert.Single(hub.Children).ChildSessionId;
+		var child = Assert.Single(host.Children);
+		await Eventually.IsTrue(() => child.IsRunning, "子会话进入运行态");
+
+		var sent = await hub.SendAsync(childId, "顺便检查 null。", MessageDeliveryMode.Steer);
+		Assert.True(sent.Ok, sent.Text);
+		Assert.Contains("\"mode\":\"steer\"", sent.Text);
+		await Eventually.IsTrue(() => child.PendingQueues().Steering.Count > 0, "steer 进入子会话队列");
+
+		gate.SetResult();
+		await Eventually.IsTrue(() => childStream.Requests.Count >= 2, "steer 后子会话继续请求");
+		Assert.Contains(childStream.Requests, request => request.Any(message =>
+			message is UserMessage user &&
+			user.Content.Text is { } text &&
+			text.Contains("顺便检查 null", StringComparison.Ordinal)));
+
+		await WaitForReportsAsync(hub, 1);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
+		foreach (var childSession in host.Children)
+		{
+			childSession.Dispose();
+		}
+	}
+
+	[Fact]
 	public async Task ReportClipsLongRepliesAndCollapsesBlankLines()
 	{
 		var parentStream = new ScriptedStreamFn();
@@ -394,6 +433,30 @@ public sealed class LinkedSessionTests : IDisposable
 		Assert.Contains(session.Tools, static tool => tool.Name == LinkedSessionsTool.StartName);
 		Assert.Contains(session.Tools, static tool => tool.Name == LinkedSessionsTool.SendName);
 		Assert.Contains(session.Tools, static tool => tool.Name == LinkedSessionsTool.ListName);
+	}
+
+	private static AssistantMessageEventStream GatedText(Model model, string text, Task gate)
+	{
+		var stream = new AssistantMessageEventStream();
+		_ = Task.Run(async () =>
+		{
+			var blank = ScriptedSessions.Blank(model);
+			var message = blank with
+			{
+				Content = [new TextContent { Text = text }],
+				StopReason = StopReason.Stop,
+				Usage = new Usage { Input = 10, Output = 5, TotalTokens = 15 },
+			};
+
+			stream.Push(new StartEvent { Partial = blank });
+			stream.Push(new TextStartEvent { ContentIndex = 0, Partial = message });
+			await gate.ConfigureAwait(false);
+			stream.Push(new TextDeltaEvent { ContentIndex = 0, Delta = text, Partial = message });
+			stream.Push(new TextEndEvent { ContentIndex = 0, Content = text, Partial = message });
+			stream.Push(new DoneEvent { Reason = StopReason.Stop, Partial = message });
+		});
+
+		return stream;
 	}
 
 	private static async Task WaitForReportsAsync(LinkedSessionHub hub, int turns)

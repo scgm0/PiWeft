@@ -1091,7 +1091,7 @@ public sealed class SubagentHub : IDisposable
 		}
 		else if (any && stillRunning > 0)
 		{
-			text.Append("\nCall wait_subagents again to collect the rest; results not returned here arrive as messages when this turn ends.");
+			text.Append("\nCall wait_subagents again to collect the rest; results not returned here arrive as steering messages before the next model request.");
 		}
 
 		text.Append(results);
@@ -2221,7 +2221,7 @@ public sealed class SubagentHub : IDisposable
 
 		// 父会话正在跑一轮：先攒着。这一轮里可能正阻塞在 wait_subagents 上，
 		// 抢先把结果排成 follow-up 会让同一段正文既被 wait 取走又被投递。
-		// 回合结束（agent_end）时再决定投递，见 OnParentEvent。
+		// 父会话运行中也会由子代理完成事件直接 schedule（steer），agent_end 只是另一条重试入口。
 		if (_owner.IsRunning)
 		{
 			return;
@@ -2346,17 +2346,6 @@ public sealed class SubagentHub : IDisposable
 			await Task.Delay(_coalesce).ConfigureAwait(false);
 		}
 
-		if (_owner.IsRunning)
-		{
-			// 父会话又跑起来了：留着，下一次 agent_end 再说。
-			lock (_gate)
-			{
-				_flushScheduled = false;
-			}
-
-			return;
-		}
-
 		PendingResult[] batch;
 		lock (_gate)
 		{
@@ -2456,7 +2445,10 @@ public sealed class SubagentHub : IDisposable
 
 		try
 		{
-			await _owner.DeliverMessageAsync(message).ConfigureAwait(false);
+			// 父会话运行中默认 steer：当前工具批次结束、下一次模型请求前就能看到回报，
+			// 不再等整轮结束。wait_subagents 与这里靠 DeliveredTurn 在 _gate 下二选一，
+			// 同一轮正文不会同时进工具结果和 steer。
+			await _owner.DeliverMessageAsync(message, MessageDeliveryMode.Auto).ConfigureAwait(false);
 		}
 		catch (Exception)
 		{

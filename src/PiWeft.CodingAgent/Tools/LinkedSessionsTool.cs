@@ -57,13 +57,15 @@ public static class LinkedSessionsTool
 				Label = "Send To Session",
 				Description =
 					"Send a message to a directly linked session: a child you started, or the parent session that started you. " +
-					"The message queues behind the recipient's current turn; this call does not wait for a reply.",
+					"A running recipient gets it as steering before its next model request; follow_up waits for the whole turn. " +
+					"An idle recipient starts a turn. This call does not wait for a reply.",
 				Parameters = SendParameters(),
 				Execute = invocation => ExecuteSend(session(), invocation),
 			},
 			"Send a follow-up message to a linked parent or child session",
 			[
 				"Use send_to_session for requirements on a linked session; do not start another session for the same task.",
+				"mode defaults to auto: a running recipient is steered before its next request. Use follow_up when the message must not interrupt the current turn.",
 			]),
 
 		new BuiltinTool(
@@ -126,7 +128,13 @@ public static class LinkedSessionsTool
 			["message"] = new JsonObject
 			{
 				["type"] = "string",
-				["description"] = "Message to send; it queues behind the recipient's current turn.",
+				["description"] = "Message to send; a running recipient gets it before its next model request unless mode is follow_up.",
+			},
+			["mode"] = new JsonObject
+			{
+				["type"] = "string",
+				["enum"] = new JsonArray("auto", "steer", "follow_up"),
+				["description"] = "auto/steer inject into a running turn before the next request; follow_up waits for the whole turn. Default auto.",
 			},
 		},
 		["required"] = new JsonArray("session_id", "message"),
@@ -160,9 +168,17 @@ public static class LinkedSessionsTool
 		var result = await hub.SendAsync(
 			Text(invocation.Arguments["session_id"]) ?? string.Empty,
 			Text(invocation.Arguments["message"]) ?? string.Empty,
+			ParseMode(Text(invocation.Arguments["mode"])),
 			invocation.CancellationToken).ConfigureAwait(false);
 		return Operation(result);
 	}
+
+	private static MessageDeliveryMode ParseMode(string? mode) => mode switch
+	{
+		"steer" => MessageDeliveryMode.Steer,
+		"follow_up" or "follow-up" => MessageDeliveryMode.FollowUp,
+		_ => MessageDeliveryMode.Auto,
+	};
 
 	private static Task<AgentToolResult> ExecuteList(CodingAgentSession? session, AgentToolInvocation invocation)
 	{

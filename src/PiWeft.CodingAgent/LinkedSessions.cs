@@ -605,7 +605,11 @@ public sealed class LinkedSessionHub : IDisposable
 	};
 	/// 给直接关联的会话发一条消息：本会话开出的子会话，或开出本会话的父会话。
 	/// 对方忙时排在当前这一轮之后；本调用不等对方回复。
-	public Task<LinkedSessionOperation> SendAsync(string sessionId, string message, CancellationToken cancellationToken = default)
+	public Task<LinkedSessionOperation> SendAsync(
+		string sessionId,
+		string message,
+		MessageDeliveryMode mode = MessageDeliveryMode.Auto,
+		CancellationToken cancellationToken = default)
 	{
 		var text = (message ?? string.Empty).Trim();
 		if (text.Length == 0)
@@ -650,12 +654,18 @@ public sealed class LinkedSessionHub : IDisposable
 
 		try
 		{
-			// 只投递不等对方跑完：send_to_session 的语义是「排进去」。
-			_ = DeliverQuietlyAsync(target, outgoing);
+			// 只投递不等对方跑完：运行中默认 steer，下一次模型请求前到；空闲直接起一轮。
+			_ = DeliverQuietlyAsync(target, outgoing, mode);
 
 			return Task.FromResult(LinkedSessionOperation.Success(new JsonObject
 			{
-				["status"] = "sent",
+				["status"] = mode == MessageDeliveryMode.FollowUp ? "sent" : "steered",
+				["mode"] = mode switch
+				{
+					MessageDeliveryMode.Steer => "steer",
+					MessageDeliveryMode.FollowUp => "follow_up",
+					_ => "auto",
+				},
 				["sessionId"] = sessionId,
 				["session_id"] = sessionId,
 			}.ToJsonString(PiJson.NodeOptions)));
@@ -962,11 +972,14 @@ public sealed class LinkedSessionHub : IDisposable
 		}
 	}
 
-	private static async Task DeliverQuietlyAsync(CodingAgentSession target, UserMessage message)
+	private static async Task DeliverQuietlyAsync(
+		CodingAgentSession target,
+		UserMessage message,
+		MessageDeliveryMode mode = MessageDeliveryMode.Auto)
 	{
 		try
 		{
-			await target.DeliverMessageAsync(message).ConfigureAwait(false);
+			await target.DeliverMessageAsync(message, mode).ConfigureAwait(false);
 		}
 		catch
 		{
