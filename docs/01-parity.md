@@ -118,7 +118,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 沙箱无 `fs`/`net`/`require`/动态 import；出口只有显式 `__pi*` 宿主函数，桥一律 `ClrFunction`（AOT 无警告）。
 - 扩展的 `tool_call` 钩子排在安全门之前，但放行的调用仍过档位检查；内置工具优先于同名扩展工具。
 - `/reload` 重建宿主；注入的宿主生命周期归注入方；并表从内置基线重建。单个扩展抛错只记自身诊断；卡死扩展 10 秒切断。
-- 限制：只执行 JavaScript（TS 需转译）；处理器必须同步，返回 Promise 会明确报告并丢弃。
+- 限制：TypeScript 需构建期转译；自定义 renderer 与 `ctx.executeTool` 未接。ESM 与异步处理器已支持；`message_update`、`tool_execution_update` 与 provider/context 类事件尚未派发。
 
 ## Git 远端同步与 stash
 
@@ -164,7 +164,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 
 桌面复用 `PiWeft.Ai.Auth` 的 OAuth（与 `pi login` 同一套流程和 `auth.json`）：Anthropic（授权码）、OpenAI ChatGPT（回环）、Codex（设备码）、GitHub Copilot（设备码 + 企业域名）、xAI、Kimi、Meta、Radius（设备码）、OpenRouter（浏览器换取 Key）。面板实时输出日志，提取授权 URL/设备码，支持输入授权码/回调 URL、取消和重试；凭据由 `OAuthStore`/`CodexAuth` 原子写入全局 `auth.json`（Unix 0600），界面不显示 token。登录/退出后重建模型环境并推给所有标签页。
 
-API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-key]` 共用同一份供应商事实：标准供应商一个 `key`，Cloudflare / Vertex / Bedrock 使用额外 `env` 字段或环境变量 marker。这些字段参与请求：Cloudflare 占位符由凭据 env 展开、网关令牌走 `cf-aig-authorization`，Vertex API Key 走 express 端点、ADC 读取凭据文件与项目/区域，Bedrock AWS 密钥参与 SigV4 签名。认证页把 OAuth 与 API Key 合并成一行，显示已保存 / 环境变量 / 命令型 / 外部凭据 / 未配置与过期状态；内置目录覆盖 `models.json` 全部 42 个供应商，自定义 auth.json 条目也能编辑或删除。API Key 面板不回显已保存密钥，留空表示保留；覆盖 OAuth 前必须确认。
+API Key 目录在 `ProviderAuthCatalog`，与 `pi login <provider> [oauth|api-key]` 共用同一份供应商事实：标准供应商一个 `key`，Cloudflare / Vertex / Bedrock 使用额外 `env` 字段或环境变量 marker。这些字段参与请求：Cloudflare 占位符由凭据 env 展开、网关令牌走 `cf-aig-authorization`，Vertex API Key 走 express 端点、ADC 读取凭据文件与项目/区域，Bedrock AWS 密钥参与 SigV4 签名。认证页把 OAuth 与 API Key 合并成一行，显示已保存 / 环境变量 / 命令型 / 外部凭据 / 未配置与过期状态；内置 API Key 目录覆盖 42 个供应商（`openai-codex` 只有 OAuth），自定义 auth.json 条目也能编辑或删除。API Key 面板不回显已保存密钥，留空表示保留；覆盖 OAuth 前必须确认。
 
 - Qwen Token Plan 拆成 Team / Individual 两组网关与模型清单，新变量 `QWEN_TOKEN_PLAN_TEAM_API_KEY` / `..._TEAM_CN_...` / `..._INDIVIDUAL_...` / `..._INDIVIDUAL_CN_...` 优先于旧的 `QWEN_TOKEN_PLAN_API_KEY` / `..._CN_...`，旧变量继续可用。
 
@@ -265,7 +265,7 @@ PiDeck 用环境变量把宿主能力交给 pi；把 `customPiPath` 指向本端
 - `settings.httpProxy` 只读全局并写入 `HTTP_PROXY`/`HTTPS_PROXY`；`PI_SHARE_VIEWER_URL` 覆盖 `/share` 查看器。
 - 显式超时只覆盖等响应头；`httpIdleTimeoutMs` 兜底响应体/错误体，按读取续期，一个流一个定时器。错误体另限 1 MiB。用户中止 → `aborted`，空闲超时 → `error` 且可重试；`SseParser` 的取消必须转异常，避免把半截流当正常结束。
 - `settings.transport` 目前只影响 Codex responses；写错收敛到 `auto`。OpenCode 会话头覆盖压缩、摘要、缓存预热、探测与 Git 摘要。
-- `/share` 只导出当前分支并在链尾追加 `pi.share`（系统提示 + 工具 schema）；优先 `gh gist create`，回退 `GITHUB_TOKEN`/`GH_TOKEN`；Radius 上传 ndjson。
+- `/share` 只导出当前分支并在链尾追加 `pi.share`（系统提示 + 工具 schema）；优先 `gh gist create`，回退 `GITHUB_TOKEN`/`GH_TOKEN`；Radius 上传 ndjson。`/share --safe`、`/export --safe` 与 RPC `export_html` 的 `safe` 隐藏思考、工具结果与系统提示，抹掉常见凭据与工作目录；上传用的临时文件在 Unix 上 0600。
 - `edit`/`write` 按规范化路径条带锁串行化；原子写入与会话头部补写跟随符号链接写目标，不替换链接本身。
 
 ## 虚拟模型 route
@@ -297,7 +297,7 @@ PiDeck 用环境变量把宿主能力交给 pi；把 `customPiPath` 指向本端
 
 | 编号 | 能力 | 状态 |
 |---|---|---|
-| PI-01 | JS/TS 扩展 | JS 可用（发现、`-e npm:`/`git:`、专属线程、工具/命令、会话/回合/消息/工具执行/模型等 16 个事件、flag、reload）；ESM 与异步处理器、流式 update 与 provider/context 事件、TypeScript 不支持 |
+| PI-01 | JS/TS 扩展 | JS 可用（发现、`-e npm:`/`git:`、专属线程、工具/命令、会话/回合/消息/工具执行/模型等 16 个事件、flag、reload）；ESM 的 `import`/`export`、相对 import、`typebox` 与 `@earendil-works/pi-*` 宿主模块、异步处理器可用；流式 update 与 provider/context 事件、TypeScript 不支持 |
 | PI-02 | 扩展 UI | 对话框与 setStatus/setWidget/setTitle/set_editor_text 已实现；扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`/`namespace`/`executionMode`；`before_agent_start` 支持 sections 与注入 message；无自定义 renderer、无 `ctx.executeTool` 扩展入口 |
 | PI-03 | 包管理 | 安装/列表/移除/更新已实现，npm/git 更新报告版本或 commit 变化；无自更新执行、依赖冲突治理与资源筛选界面 |
 | PI-04 | 完整 TUI | 行式 REPL；缺多行编辑、`$EDITOR`、TUI 图片粘贴、补全、选择器、终端图片与完整键位 |
