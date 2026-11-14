@@ -1412,28 +1412,38 @@ internal static class TrajectoryText
 			return string.Empty;
 		}
 
+		// 延迟正文的 At(index) 每次都要解码整块正文，逐字符扫是 O(n²)。按窗口取前缀，
+		// 每块只解一次；总量封顶，避免全空白的异常输入把整篇解出来。
+		const int WindowCharacters = 4096;
+		const int MaxScanCharacters = 64 * 1024;
 		var builder = new StringBuilder(limit + 1);
 		var whitespace = false;
-		for (var index = 0; index < text.Length; index++)
+		var scanned = 0;
+		while (scanned < text.Length && scanned < MaxScanCharacters)
 		{
-			var character = text.At(index);
-			if (char.IsWhiteSpace(character))
+			var chunk = text.Slice(scanned, Math.Min(WindowCharacters, text.Length - scanned));
+			foreach (var character in chunk)
 			{
-				whitespace = builder.Length > 0;
-				continue;
+				if (char.IsWhiteSpace(character))
+				{
+					whitespace = builder.Length > 0;
+					continue;
+				}
+
+				if (whitespace && builder.Length > 0)
+				{
+					builder.Append(' ');
+				}
+
+				whitespace = false;
+				builder.Append(character);
+				if (builder.Length >= limit)
+				{
+					return FinishSummary(builder, limit);
+				}
 			}
 
-			if (whitespace && builder.Length > 0)
-			{
-				builder.Append(' ');
-			}
-
-			whitespace = false;
-			builder.Append(character);
-			if (builder.Length >= limit)
-			{
-				return FinishSummary(builder, limit);
-			}
+			scanned += chunk.Length;
 		}
 
 		return builder.ToString();

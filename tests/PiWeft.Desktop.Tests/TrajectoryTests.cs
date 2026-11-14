@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json.Nodes;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Compatibility;
@@ -406,6 +407,24 @@ public class TrajectoryTests
 			[new ThinkingContent { Thinking = new string('\n', 300) + new string('c', 200) }], 96);
 		Assert.Equal(96, newlines.Length);
 		Assert.StartsWith("ccc", newlines, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void StreamTextSummaryMatchesThePlainStringForADeferredBody()
+	{
+		var body = string.Join('\n', Enumerable.Repeat("lorem ipsum dolor sit amet", 5000));
+		var deferred = new StreamText(new DeferredText(
+		[
+			TextContent.FromUtf8(Encoding.UTF8.GetBytes(body), body.Length),
+		]));
+
+		Assert.Equal(TrajectoryText.Summarize(body, 96), TrajectoryText.Summarize(deferred, 96));
+		Assert.Equal(
+			TrajectoryText.Summarize("   " + body, 96),
+			TrajectoryText.Summarize(new StreamText(new DeferredText(
+			[
+				TextContent.FromUtf8(Encoding.UTF8.GetBytes("   " + body), body.Length + 3),
+			])), 96));
 	}
 
 	[Fact]
