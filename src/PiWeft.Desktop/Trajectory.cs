@@ -551,7 +551,7 @@ internal static class TrajectoryBuilder
 				Id = $"tool-result:{entryId}",
 				Kind = TrajectoryKind.Tool,
 				Lane = TrajectoryLane.Tools,
-				Summary = TrajectoryText.Summarize(TrajectoryText.BlocksText(result.Content), SummaryLimit),
+				Summary = TrajectoryText.BlocksSummary(result.Content, SummaryLimit),
 				StartedAt = started,
 				EndedAt = at,
 				DurationMs = result.DurationMs,
@@ -1286,10 +1286,15 @@ internal static class TrajectoryText
 			return string.Empty;
 		}
 
+		// 延迟正文（大段工具输出）整篇物化只为取几十个字符不划算：每块只解一段有界前缀。
+		// 预算按「每个摘要字符最多扫这么多原文字符」估，够跳过缩进与空行；
+		// 全是空白的块可能因此摘要偏短，这就是这个上界的代价。
+		const int ScanBudgetPerCharacter = 64;
+
 		StringBuilder? builder = null;
 		foreach (var block in blocks)
 		{
-			if (block is not TextContent text || text.Text.Length == 0)
+			if (block is not TextContent text || text.TextLength == 0)
 			{
 				continue;
 			}
@@ -1303,7 +1308,12 @@ internal static class TrajectoryText
 				break;
 			}
 
-			var summary = Summarize(text.Text, remaining);
+			var window = text.Prefix(Math.Min(text.TextLength, remaining * ScanBudgetPerCharacter));
+			var summary = Summarize(window, remaining);
+			if (summary.Length == 0)
+			{
+				continue;
+			}
 			if (builder is null)
 			{
 				if (summary.Length >= limit)
