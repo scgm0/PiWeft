@@ -91,20 +91,23 @@ public static class ShellRunner
 
 	private const int UpdateThrottleMs = 100;
 
-	/// <summary>Unix 上 setsid 会让 shell 成为新会话/进程组组长，超时才能整组杀掉后台进程（pi 的 detached: true 语义）。</summary>
+	/// <summary>活动容器表：setsid 进程组与 systemd scope 都在这个闸下登记，退出时统一清理。</summary>
 	private static readonly Lock GroupGate = new();
 	private static readonly HashSet<int> ActiveGroups = [];
+	private static readonly HashSet<string> ActiveScopes = [];
 	private static bool _setsidResolved;
 	private static string? _setsidPath;
 
 	static ShellRunner()
 	{
 		// pi 在进程退出时用 killTrackedDetachedChildren 清理正在运行的 shell 组。
-		AppDomain.CurrentDomain.ProcessExit += static (_, _) => KillActiveProcessGroups();
+		AppDomain.CurrentDomain.ProcessExit += static (_, _) => KillActiveContainers();
 	}
 
 	/// 在 <paramref name="cwd"/> 执行 <paramref name="command"/>，按到达顺序合并 stdout 与 stderr。
-	/// 取消或超时杀掉进程组（无 setsid 时退回整棵进程树），已收到的输出带回结果。
+	/// 命令结束后处置这次调用的整个容器：Linux 是 systemd scope（cgroup），Windows 是 Job，
+	/// 其余 Unix 是 setsid 进程组。命令自己 setsid、被 reparent 的后代也在容器里，
+	/// `dotnet build` 留下的 MSBuild 节点与 VBCSCompiler 因此不会活过工具调用。
 	/// <paramref name="onOutput"/> 收到清洗后的文本块，不按行拆分。
 	public static async Task<ShellResult> RunAsync(
 		string command,
@@ -149,23 +152,33 @@ public static class ShellRunner
 			? PowerShellCommand()
 			: ShellCommand(invocation?.ShellPath);
 
-		// 与 pi 的 detached: true 对齐：Unix 上通过 setsid 把 shell 放进独立进程组。
-		// 没有 setsid 时退回 .NET 的整树 kill（shell 已退出时无法追踪被 reparent 的后代）。
+		// 容器优先级：Linux 用 systemd scope（cgroup 里 setsid 也跑不掉），
+		// 其余 Unix 用 setsid 建独立进程组。都没有时只能靠 .NET 的整树 kill，
+		// shell 先退出时它找不到被 reparent 的后代。
+		var scope = LinuxCommandScope.TryCreate();
 		var setsid = ResolveSetsid();
-		var useProcessGroup = setsid is not null;
 		var fileName = shell.FileName;
 		var arguments = new List<string>(shell.Arguments);
 		if (!shell.CommandFromStdin)
 		{
-			arguments.Add(command);
+			arguments.Add(scope is null ? command : scope.EscapeCommand(command));
 		}
 
-		if (useProcessGroup)
+		if (scope is not null)
+		{
+			// scope 收进程，setsid 收控制终端：两者都在时 sudo/ssh/编辑器
+			// 不能到用户终端上要输入，否则会一直挂到 timeout。
+			arguments = setsid is null
+				? [.. scope.Arguments, shell.FileName, .. arguments]
+				: [.. scope.Arguments, setsid, shell.FileName, .. arguments];
+			fileName = scope.FileName;
+		}
+		else if (setsid is not null)
 		{
 			// 不用 `--`：BusyBox 的 setsid 不解析选项分隔符，会把 `--` 当成程序名。
 			// shell 路径是绝对路径或 sh，不会以 `-` 开头被当成选项。
 			arguments.Insert(0, shell.FileName);
-			fileName = setsid!;
+			fileName = setsid;
 		}
 
 		var startInfo = new ProcessStartInfo
@@ -232,14 +245,23 @@ public static class ShellRunner
 		using var process = new Process { StartInfo = startInfo };
 		if (!process.Start())
 		{
-			throw new InvalidOperationException($"Failed to start {shell.FileName}");
+			throw new InvalidOperationException($"Failed to start {fileName}");
 		}
 
-		int? processGroupId = useProcessGroup ? process.Id : null;
+		// scope 里的 pid 是 systemd-run 自己，不是进程组；进程组只在 setsid 路径下有效。
+		int? processGroupId = scope is null && setsid is not null ? process.Id : null;
 		if (processGroupId is { } groupId)
 		{
 			TrackProcessGroup(groupId);
 		}
+
+		if (scope is not null)
+		{
+			TrackScope(scope.Unit);
+		}
+
+		// Job 要尽早赋值：子进程在这之前派生的进程不会被算进 Job。
+		var job = scope is null ? WindowsJobObject.TryAssign(process) : null;
 
 		try
 		{
@@ -275,6 +297,10 @@ public static class ShellRunner
 				await DrainAfterExitAsync(pumps, capture, readCancellation, cancellation.Token, timeoutSeconds is not null)
 					.ConfigureAwait(false);
 
+				// shell 退出不等于命令收工：`dotnet build` 的 MSBuild 节点与 VBCSCompiler
+				// 本来就要活过构建，还会占着 bin/obj 与 socket。容器是这次调用的边界。
+				KillLeftovers(scope, job, processGroupId);
+
 				return CompleteCapture(
 					capture,
 					exitCode: process.ExitCode,
@@ -286,7 +312,7 @@ public static class ShellRunner
 			{
 				var timedOut = !cancellationToken.IsCancellationRequested;
 				var shellExit = DescribeShellExit(process, startedAt);
-				TryKill(process, processGroupId);
+				TryKill(process, scope, job, processGroupId);
 				await DrainAfterCancellationAsync(pumps, readCancellation).ConfigureAwait(false);
 
 				var result = CompleteCapture(
@@ -306,7 +332,7 @@ public static class ShellRunner
 			}
 			catch
 			{
-				TryKill(process, processGroupId);
+				TryKill(process, scope, job, processGroupId);
 				readCancellation.Cancel();
 				throw;
 			}
@@ -317,6 +343,13 @@ public static class ShellRunner
 			{
 				UntrackProcessGroup(group);
 			}
+
+			if (scope is not null)
+			{
+				UntrackScope(scope.Unit);
+			}
+
+			job?.Dispose();
 		}
 	}
 
@@ -708,9 +741,14 @@ public static class ShellRunner
 	[DllImport("libc", EntryPoint = "kill", SetLastError = true)]
 	private static extern int SysKill(int pid, int signal);
 
-	/// <summary>Unix 上优先杀掉整个进程组；shell 先退出时也能命中后台进程（pi 的 kill(-pid) 语义）。</summary>
-	private static void TryKill(Process process, int? processGroupId)
+	/// <summary>取消/超时：先整树杀（立即），scope 再收被 reparent 或自己 setsid 的后代。</summary>
+	private static void TryKill(Process process, LinuxCommandScope? scope, WindowsJobObject? job, int? processGroupId)
 	{
+		if (job is not null && job.Terminate())
+		{
+			return;
+		}
+
 		if (processGroupId is { } group && TryKillProcessGroup(group))
 		{
 			return;
@@ -721,6 +759,16 @@ public static class ShellRunner
 			return;
 		}
 
+		KillProcessTree(process);
+
+		if (scope is not null)
+		{
+			scope.Kill();
+		}
+	}
+
+	private static void KillProcessTree(Process process)
+	{
 		try
 		{
 			if (!process.HasExited)
@@ -733,6 +781,28 @@ public static class ShellRunner
 		{
 			// 进程刚好退出、没有权限杀某个后代，或平台不支持整树杀进程。
 			// 清理是尽力而为：不能因为杀不掉后台进程把已经拿到的输出丢掉。
+		}
+	}
+
+	/// <summary>命令正常结束后的收尾：只杀容器里剩下的成员，shell 自己已经退出。</summary>
+	private static void KillLeftovers(LinuxCommandScope? scope, WindowsJobObject? job, int? processGroupId)
+	{
+		if (scope is not null)
+		{
+			scope.Kill();
+			return;
+		}
+
+		if (job is not null)
+		{
+			// 关句柄就是 KILL_ON_JOB_CLOSE；finally 里的 Dispose 不会重复。
+			job.Dispose();
+			return;
+		}
+
+		if (processGroupId is { } group)
+		{
+			_ = TryKillProcessGroup(group);
 		}
 	}
 
@@ -888,27 +958,51 @@ public static class ShellRunner
 		}
 	}
 
-	private static void KillActiveProcessGroups()
+	private static void TrackScope(string unit)
 	{
-		int[] groups;
 		lock (GroupGate)
 		{
-			if (ActiveGroups.Count == 0)
+			ActiveScopes.Add(unit);
+		}
+	}
+
+	private static void UntrackScope(string unit)
+	{
+		lock (GroupGate)
+		{
+			ActiveScopes.Remove(unit);
+		}
+	}
+
+	private static void KillActiveContainers()
+	{
+		int[] groups;
+		string[] scopes;
+		lock (GroupGate)
+		{
+			if (ActiveGroups.Count == 0 && ActiveScopes.Count == 0)
 			{
 				return;
 			}
 
 			groups = [.. ActiveGroups];
+			scopes = [.. ActiveScopes];
 			ActiveGroups.Clear();
+			ActiveScopes.Clear();
 		}
 
 		foreach (var group in groups)
 		{
 			TryKillProcessGroup(group);
 		}
+
+		foreach (var unit in scopes)
+		{
+			LinuxCommandScope.KillUnit(unit, LinuxCommandScope.ShutdownTimeoutMs);
+		}
 	}
 
-	private static string? FindOnPath(string executable)
+	internal static string? FindOnPath(string executable)
 	{
 		// Windows 上不能只靠 File.Exists：Store 版 bash/pwsh 是 reparse point，
 		// 而且安装目录不一定在 PATH 的普通目录项里。与 pi 一样问 where。

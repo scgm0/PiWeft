@@ -245,6 +245,105 @@ public sealed class ShellOutputTests : IDisposable
 	}
 
 	[Fact]
+	public async Task PidVariableReachesTheShellUnchanged()
+	{
+		if (!OperatingSystem.IsLinux())
+		{
+			return; // 断言依赖 setsid（Linux 有，macOS 默认没有）
+		}
+
+		// systemd-run 的 scope 模式会还原 argv 里的 $$（见 LinuxCommandScope.EscapeCommand）。
+		// 会话号与 $$ 相等只在 pid 原样到达 shell 时成立：少补偿得到 "$"，多补偿得到
+		// 拼起来的假 pid，ps 查不到会话。
+		var result = await ShellRunner.RunAsync(
+			"echo \"$$:$(ps -o sid= -p $$ | tr -d ' ')\"",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			CancellationToken.None);
+
+		var parts = result.Output.Trim().Split(':');
+		Assert.Equal(2, parts.Length);
+		Assert.Equal(parts[0], parts[1]);
+		Assert.True(int.TryParse(parts[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var pid) && pid > 0, $"output was {result.Output}");
+	}
+
+	[Theory]
+	[InlineData("echo $$", true, "echo $$$$")]
+	[InlineData("a$$b$$", true, "a$$$$b$$$$")]
+	[InlineData("echo $$", false, "echo $$")]
+	[InlineData("echo $HOME $1 $$", true, "echo $HOME $1 $$$$")]
+	public void EscapeCommandDoublesDoubleDollarsOnlyWhenSystemdCollapsesThem(
+		string command,
+		bool collapsesDoubleDollar,
+		string expected)
+	{
+		Assert.Equal(expected, LinuxCommandScope.EscapeCommand(command, collapsesDoubleDollar));
+	}
+
+	[Fact]
+	public async Task LeftoverBackgroundProcessIsKilledWhenTheCommandSucceeds()
+	{
+		if (!OperatingSystem.IsLinux())
+		{
+			return; // 只看 Linux：macOS 没有 cgroup，ProcessIsAlive 也没 /proc 可读
+		}
+
+		var pidFile = Path.Combine(_root, "leftover.pid");
+		var result = await ShellRunner.RunAsync(
+			$"sleep 60 & echo $! > '{pidFile}'; echo ok",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			CancellationToken.None);
+
+		Assert.Equal(0, result.ExitCode);
+		Assert.Contains("ok", result.Output);
+
+		var pid = int.Parse(File.ReadAllText(pidFile).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+		Assert.True(
+			await WaitForProcessDeathAsync(pid, TimeSpan.FromSeconds(3)),
+			$"background process {pid} survived a successful command");
+	}
+
+	[Fact]
+	public async Task ScopeKillsAProcessThatLeftTheProcessGroup()
+	{
+		if (!LinuxCommandScope.IsAvailable)
+		{
+			return; // 没有 user systemd 时只能退回进程组，进程自己 setsid 就跑掉了
+		}
+
+		var pidFile = Path.Combine(_root, "escaped.pid");
+		var result = await ShellRunner.RunAsync(
+			$"setsid bash -c 'echo $$ > {pidFile}; exec sleep 60' & " +
+			$"for i in $(seq 1 250); do [ -s {pidFile} ] && break; sleep 0.02; done; echo started",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			CancellationToken.None);
+
+		Assert.Contains("started", result.Output);
+		Assert.True(File.Exists(pidFile), "the escaped process never wrote its pid");
+
+		var pid = int.Parse(File.ReadAllText(pidFile).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+		Assert.True(
+			await WaitForProcessDeathAsync(pid, TimeSpan.FromSeconds(3)),
+			$"process {pid} escaped the scope");
+	}
+
+	private static async Task<bool> WaitForProcessDeathAsync(int pid, TimeSpan timeout)
+	{
+		var deadline = DateTime.UtcNow + timeout;
+		while (DateTime.UtcNow < deadline && ProcessIsAlive(pid))
+		{
+			await Task.Delay(25);
+		}
+
+		return !ProcessIsAlive(pid);
+	}
+
+	[Fact]
 	public async Task TimeoutStillAppliesWhenTheShellExitedAndABackgroundProcessKeepsWriting()
 	{
 		if (OperatingSystem.IsWindows())
