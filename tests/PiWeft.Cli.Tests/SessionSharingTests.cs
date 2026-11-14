@@ -211,6 +211,27 @@ public sealed class SessionSharingTests : IDisposable
 	}
 
 	[Fact]
+	public void HtmlAndJsonlExportKeepDeferredToolResultText()
+	{
+		using var session = CreateSession(out var manager);
+		var text = new string('x', 20_000) + " END";
+		manager.AppendMessage(new ToolResultMessage
+		{
+			ToolCallId = "call-1",
+			ToolName = "bash",
+			Content = [TextContent.FromUtf8(System.Text.Encoding.UTF8.GetBytes(text), text.Length)],
+			Timestamp = 1,
+		});
+
+		var html = SessionHtml.Render(session);
+		Assert.Contains(" END", html);
+
+		var path = Path.Combine(_root, "export.jsonl");
+		CliRunner.ExportJsonl(session, path);
+		Assert.Contains(" END", File.ReadAllText(path));
+	}
+
+	[Fact]
 	public void ViewerUrlUsesThePiDefaultAndHonorsTheEnvironmentOverride()
 	{
 		var previous = Environment.GetEnvironmentVariable("PI_SHARE_VIEWER_URL");
