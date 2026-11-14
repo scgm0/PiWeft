@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -267,8 +268,8 @@ public static class ShellRunner
 		{
 			using var readCancellation = new CancellationTokenSource();
 			var updateGate = new object();
-			var stdout = PumpAsync(process.StandardOutput.BaseStream, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
-			var stderr = PumpAsync(process.StandardError.BaseStream, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
+			var stdout = PumpAsync(process.StandardOutput.BaseStream, OutputCapture.OutputChannel.Stdout, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
+			var stderr = PumpAsync(process.StandardError.BaseStream, OutputCapture.OutputChannel.Stderr, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
 			var pumps = Task.WhenAll(stdout, stderr);
 			var startedAt = Stopwatch.GetTimestamp();
 
@@ -465,19 +466,21 @@ public static class ShellRunner
 
 	private static async Task PumpAsync(
 		Stream stream,
+		OutputCapture.OutputChannel channel,
 		OutputCapture capture,
 		Action<string>? onOutput,
 		Action<ShellSnapshot>? onSnapshot,
 		object updateGate,
 		CancellationToken cancellationToken)
 	{
-		var buffer = new byte[8192];
+		// 每个 pump 一块池化缓冲：小命令每次调用就要两条管道，8192 字节的新数组不值得干等着 GC。
+		var buffer = ArrayPool<byte>.Shared.Rent(8192);
 		var lastSnapshot = Stopwatch.GetTimestamp();
 		try
 		{
 			while (!cancellationToken.IsCancellationRequested)
 			{
-				var read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+				var read = await stream.ReadAsync(buffer.AsMemory(0, 8192), cancellationToken).ConfigureAwait(false);
 				if (read <= 0)
 				{
 					break;
@@ -486,7 +489,7 @@ public static class ShellRunner
 				// onOutput 是行回调，必须在同一条锁里投递，否则 stdout/stderr 的行序会乱。
 				lock (updateGate)
 				{
-					capture.Append(buffer.AsSpan(0, read), onOutput);
+					capture.Append(buffer, read, channel, onOutput);
 					if (onSnapshot is not null &&
 						Stopwatch.GetElapsedTime(lastSnapshot).TotalMilliseconds >= UpdateThrottleMs)
 					{
@@ -505,6 +508,12 @@ public static class ShellRunner
 		}
 		catch (IOException)
 		{
+		}
+		finally
+		{
+			// 不清零：同一块输出的文本还在 _tail 和 string 里，池内残留不会多泄露什么，
+			// 每次 memset 8KB 只是白花 CPU。
+			ArrayPool<byte>.Shared.Return(buffer);
 		}
 	}
 
@@ -1113,7 +1122,15 @@ public static class ShellRunner
 		private readonly string _prefix;
 		private readonly bool _stripCarriageReturns;
 		private readonly Lock _gate = new();
-		private readonly Decoder _decoder = Encoding.UTF8.GetDecoder();
+		/// <summary>stdout / stderr 各用一条 decoder：半字符跨块时不能被另一条流的字节接上。</summary>
+		public enum OutputChannel
+		{
+			Stdout,
+			Stderr,
+		}
+
+		private readonly Decoder _stdoutDecoder = Encoding.UTF8.GetDecoder();
+		private readonly Decoder _stderrDecoder = Encoding.UTF8.GetDecoder();
 		private readonly StringBuilder _tail = new();
 		private readonly List<byte[]> _pendingBytes = [];
 		private FileStream? _file;
@@ -1140,9 +1157,9 @@ public static class ShellRunner
 		/// <summary>最近一次收到管道数据的时间戳。shell 退出后用它判断后台进程是否还在写。</summary>
 		public long LastActivityTicks => Interlocked.Read(ref _lastActivityTicks);
 
-		public void Append(ReadOnlySpan<byte> data, Action<string>? onOutput)
+		public void Append(byte[] buffer, int length, OutputChannel channel, Action<string>? onOutput)
 		{
-			if (data.Length == 0)
+			if (length == 0)
 			{
 				return;
 			}
@@ -1161,7 +1178,7 @@ public static class ShellRunner
 
 				Interlocked.Exchange(ref _lastActivityTicks, Stopwatch.GetTimestamp());
 
-				var text = DecodeAndSanitizeLocked(data.ToArray());
+				var text = DecodeAndSanitizeLocked(buffer, length, channel);
 				if (text.Length > 0)
 				{
 					AppendTextLocked(text, onOutput);
@@ -1194,7 +1211,7 @@ public static class ShellRunner
 			{
 				if (!_closed)
 				{
-					FlushDecoderLocked();
+					FlushDecodersLocked();
 					if (ShouldUseTempFile())
 					{
 						EnsureFileLocked();
@@ -1231,17 +1248,25 @@ public static class ShellRunner
 			return content;
 		}
 
-		private string DecodeAndSanitizeLocked(byte[] chunk)
+		private string DecodeAndSanitizeLocked(byte[] buffer, int length, OutputChannel channel)
 		{
-			var charCount = _decoder.GetCharCount(chunk, 0, chunk.Length);
+			var decoder = channel == OutputChannel.Stdout ? _stdoutDecoder : _stderrDecoder;
+			var charCount = decoder.GetCharCount(buffer.AsSpan(0, length), flush: false);
 			if (charCount == 0)
 			{
+				// GetCharCount 不会把没走完的 UTF-8 序列存进 decoder；要再调一次 GetChars
+				// （目标为空）才会把尾字节留到下一块，否则跨块的字符会变成 U+FFFD。
+				_ = decoder.GetChars(buffer.AsSpan(0, length), Span<char>.Empty, flush: false);
 				return string.Empty;
 			}
 
-			var chars = new char[charCount];
-			_decoder.GetChars(chunk, 0, chunk.Length, chars, 0);
-			return SanitizeWithPendingAnsiLocked(new string(chars));
+			// 直接解到 string 的缓冲区：8KB 一块的 char[] 拷贝加上 ToArray，会把整段输出
+			// 放大成两倍以上的垃圾。
+			var text = string.Create(
+				charCount,
+				(Decoder: decoder, Buffer: buffer, Length: length),
+				static (chars, state) => state.Decoder.GetChars(state.Buffer.AsSpan(0, state.Length), chars, flush: false));
+			return SanitizeWithPendingAnsiLocked(text);
 		}
 
 		private string SanitizeWithPendingAnsiLocked(string text)
@@ -1260,16 +1285,10 @@ public static class ShellRunner
 				: sanitized;
 		}
 
-		private void FlushDecoderLocked()
+		private void FlushDecodersLocked()
 		{
-			var chars = new char[4];
-			var count = _decoder.GetChars(Array.Empty<byte>(), 0, 0, chars, 0, flush: true);
-			var flushed = count > 0 ? new string(chars, 0, count) : string.Empty;
-			var text = SanitizeWithPendingAnsiLocked(flushed);
-			if (text.Length > 0)
-			{
-				AppendTextLocked(text, _onOutput);
-			}
+			FlushDecoderLocked(_stdoutDecoder);
+			FlushDecoderLocked(_stderrDecoder);
 
 			// 输出在半个转义序列里结束：ESC 本身会被控制字符清洗掉，余下可见字符保留。
 			if (_pendingAnsi.Length > 0)
@@ -1287,6 +1306,18 @@ public static class ShellRunner
 			}
 		}
 
+		private void FlushDecoderLocked(Decoder decoder)
+		{
+			var chars = new char[4];
+			var count = decoder.GetChars(Array.Empty<byte>(), 0, 0, chars, 0, flush: true);
+			var flushed = count > 0 ? new string(chars, 0, count) : string.Empty;
+			var text = SanitizeWithPendingAnsiLocked(flushed);
+			if (text.Length > 0)
+			{
+				AppendTextLocked(text, _onOutput);
+			}
+		}
+
 		private void AppendTextLocked(string text, Action<string>? onOutput)
 		{
 			if (text.Length == 0)
@@ -1294,20 +1325,29 @@ public static class ShellRunner
 				return;
 			}
 
-			var bytes = Encoding.UTF8.GetBytes(text);
-			_totalTextBytes += bytes.Length;
+			long byteCount;
 			if (_file is not null)
 			{
-				WriteToFileLocked(bytes);
+				// 写盘时直接拿到编码后的字节数，不用再单独 GetByteCount 扫一遍。
+				byteCount = WriteToFileLocked(text);
 			}
 			else if (!_fileUnavailable)
 			{
-				// 文件不可写时只保留尾部窗口；继续攒 bytes 会把内存重新拖爆。
-				_pendingBytes.Add(bytes);
+				// 输出还没超过阈值，文件没建：先攒原始字节，EnsureFileLocked 时一次写进去。
+				var pending = Encoding.UTF8.GetBytes(text);
+				byteCount = pending.Length;
+				_pendingBytes.Add(pending);
+			}
+			else
+			{
+				// 临时文件不可写：只维护字节数，不再攒内容（会把内存重新拖爆）。
+				byteCount = Encoding.UTF8.GetByteCount(text);
 			}
 
+			_totalTextBytes += byteCount;
+
 			_tail.Append(text);
-			_tailBytes += bytes.Length;
+			_tailBytes += byteCount;
 
 			var newlines = 0;
 			var lastNewline = -1;
@@ -1344,24 +1384,47 @@ public static class ShellRunner
 
 		private void TrimTailLocked()
 		{
-			var bytes = Encoding.UTF8.GetBytes(_tail.ToString());
-			if (bytes.LongLength <= MaxRollingBytes)
+			// 窗口每满 2× 就裁一次，大输出（grep -r、构建日志）会反复进来。
+			// 以前每次把整窗变成 string + byte[] 再切；这里只用池化缓冲，切割规则不变。
+			var length = _tail.Length;
+			var chars = ArrayPool<char>.Shared.Rent(length);
+			var bytes = ArrayPool<byte>.Shared.Rent(Encoding.UTF8.GetMaxByteCount(length));
+			try
 			{
-				_tailBytes = bytes.LongLength;
-				return;
-			}
+				_tail.CopyTo(0, chars, length);
+				var byteLength = Encoding.UTF8.GetBytes(chars.AsSpan(0, length), bytes);
+				if (byteLength <= MaxRollingBytes)
+				{
+					_tailBytes = byteLength;
+					return;
+				}
 
-			var start = (int)(bytes.LongLength - MaxRollingBytes);
-			while (start < bytes.Length && (bytes[start] & 0xC0) == 0x80)
+				var start = (int)(byteLength - MaxRollingBytes);
+				while (start < byteLength && (bytes[start] & 0xC0) == 0x80)
+				{
+					start++;
+				}
+
+				_tailStartsAtLineBoundary = start == 0 ? _tailStartsAtLineBoundary : bytes[start - 1] == (byte)'\n';
+				var tailLength = byteLength - start;
+				var tailChars = ArrayPool<char>.Shared.Rent(Encoding.UTF8.GetMaxCharCount(tailLength));
+				try
+				{
+					var tailCharCount = Encoding.UTF8.GetChars(bytes.AsSpan(start, tailLength), tailChars);
+					_tail.Clear().Append(tailChars.AsSpan(0, tailCharCount));
+					_tailBytes = Encoding.UTF8.GetByteCount(tailChars.AsSpan(0, tailCharCount));
+					_tailTruncated = true;
+				}
+				finally
+				{
+					ArrayPool<char>.Shared.Return(tailChars);
+				}
+			}
+			finally
 			{
-				start++;
+				ArrayPool<char>.Shared.Return(chars);
+				ArrayPool<byte>.Shared.Return(bytes);
 			}
-
-			_tailStartsAtLineBoundary = start == 0 ? _tailStartsAtLineBoundary : bytes[start - 1] == (byte)'\n';
-			var text = Encoding.UTF8.GetString(bytes, start, bytes.Length - start);
-			_tail.Clear().Append(text);
-			_tailBytes = Encoding.UTF8.GetByteCount(text);
-			_tailTruncated = true;
 		}
 
 		private bool ShouldUseTempFile() => _totalTextBytes > MaxBytes || _totalLines > MaxLines;
@@ -1409,31 +1472,43 @@ public static class ShellRunner
 			}
 		}
 
-		private void WriteToFileLocked(byte[] chunk)
+		private int WriteToFileLocked(string text)
 		{
+			var buffer = ArrayPool<byte>.Shared.Rent(Encoding.UTF8.GetMaxByteCount(text.Length));
 			try
 			{
-				_file!.Write(chunk, 0, chunk.Length);
-			}
-			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-			{
-				// 写到一半失败：完整输出已经不可信，删掉残留文件，之后只保留内存窗口。
-				_pendingBytes.Clear();
-				_fileUnavailable = true;
-				_file?.Dispose();
-				_file = null;
-				if (_path is not null)
+				var written = Encoding.UTF8.GetBytes(text, buffer);
+				try
 				{
-					try
-					{
-						File.Delete(_path);
-					}
-					catch (Exception cleaned) when (cleaned is IOException or UnauthorizedAccessException)
-					{
-					}
-
-					_path = null;
+					_file!.Write(buffer.AsSpan(0, written));
 				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 写到一半失败：完整输出已经不可信，删掉残留文件，之后只保留内存窗口。
+					// 字节数照旧算：文本已经产生了，TotalBytes 不能因为落盘失败变小。
+					_pendingBytes.Clear();
+					_fileUnavailable = true;
+					_file?.Dispose();
+					_file = null;
+					if (_path is not null)
+					{
+						try
+						{
+							File.Delete(_path);
+						}
+						catch (Exception cleaned) when (cleaned is IOException or UnauthorizedAccessException)
+						{
+						}
+
+						_path = null;
+					}
+				}
+
+				return written;
+			}
+			finally
+			{
+				ArrayPool<byte>.Shared.Return(buffer);
 			}
 		}
 

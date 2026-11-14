@@ -88,14 +88,11 @@ internal sealed class LinuxCommandScope
 			return;
 		}
 
-		_ = Run(tools.Systemctl, KillArguments(unit), timeoutMs);
+		_ = Run(tools.Systemctl, ["--user", "kill", "--kill-who=all", "--signal=SIGKILL", unit], timeoutMs);
 	}
 
 	/// <summary>杀掉单元里残留的所有进程。</summary>
 	public void Kill() => KillUnit(Unit);
-
-	private static string[] KillArguments(string unit) =>
-		["--user", "kill", "--kill-who=all", "--signal=SIGKILL", unit];
 
 	private static Toolchain? ProbeToolchain()
 	{
@@ -131,7 +128,7 @@ internal sealed class LinuxCommandScope
 	}
 
 	/// <summary>同步跑一个管理命令；超时就杀掉它。成功返回 stdout，否则 <c>null</c>，从不抛异常。</summary>
-	private static string? Run(string fileName, IReadOnlyList<string> arguments, int timeoutMs)
+	private static string? Run(string fileName, ReadOnlySpan<string> arguments, int timeoutMs)
 	{
 		try
 		{

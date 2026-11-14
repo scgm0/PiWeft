@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Tools;
 using Xunit;
@@ -330,6 +331,116 @@ public sealed class ShellOutputTests : IDisposable
 		Assert.True(
 			await WaitForProcessDeathAsync(pid, TimeSpan.FromSeconds(3)),
 			$"process {pid} escaped the scope");
+	}
+
+	[Fact]
+	public async Task ConcurrentCommandsKeepTheirOutputApart()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return; // 依赖 POSIX sh 的重定向
+		}
+
+		var calls = Enumerable
+			.Range(0, 6)
+			.Select(index => ShellRunner.RunAsync(
+				$"sleep 0.1; echo out{index}; echo err{index} >&2; exit {index}",
+				_root,
+				timeoutSeconds: 30,
+				onOutput: null,
+				CancellationToken.None))
+			.ToArray();
+		var results = await Task.WhenAll(calls);
+
+		for (var index = 0; index < results.Length; index++)
+		{
+			Assert.Equal(index, results[index].ExitCode);
+			Assert.Contains($"out{index}", results[index].Output);
+			Assert.Contains($"err{index}", results[index].Output);
+			Assert.DoesNotContain($"out{(index + 1) % results.Length}", results[index].Output);
+		}
+	}
+
+	[Fact]
+	public async Task CancellationKillsTheContainersLeftovers()
+	{
+		if (!LinuxCommandScope.IsAvailable)
+		{
+			return; // 无 cgroup 时 setsid 出去的后代不在进程组里，本就杀不到
+		}
+
+		var pidFile = Path.Combine(_root, "cancelled.pid");
+		using var cancellation = new CancellationTokenSource();
+		var run = ShellRunner.RunAsync(
+			$"setsid bash -c 'echo $$ > {pidFile}; exec sleep 60' & " +
+			$"for i in $(seq 1 250); do [ -s {pidFile} ] && break; sleep 0.02; done; exec sleep 60",
+			_root,
+			timeoutSeconds: null,
+			onOutput: null,
+			cancellation.Token);
+
+		var deadline = DateTime.UtcNow.AddSeconds(5);
+		while (DateTime.UtcNow < deadline && !File.Exists(pidFile))
+		{
+			await Task.Delay(20);
+		}
+
+		Assert.True(File.Exists(pidFile), "the background process never wrote its pid");
+		var pid = int.Parse(
+			File.ReadAllText(pidFile).Trim(),
+			System.Globalization.CultureInfo.InvariantCulture);
+		await cancellation.CancelAsync();
+		var result = await run;
+
+		Assert.True(result.Cancelled);
+		Assert.True(
+			await WaitForProcessDeathAsync(pid, TimeSpan.FromSeconds(3)),
+			$"process {pid} survived cancellation");
+	}
+
+	[Fact]
+	public async Task MultiByteOutputStaysValidAcrossTailTrimming()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return; // cat 与多字节输出
+		}
+
+		var path = Path.Combine(_root, "multi-byte.txt");
+		// 长度不是单元长度的整数倍：裁剪点会落在多字节字符中间，要验跳过续字节的切割。
+		var content = "x" + string.Concat(Enumerable.Repeat("国际é", 60_000));
+		File.WriteAllText(path, content);
+
+		var result = await ShellRunner.RunAsync($"cat '{path}'", _root, 60, null, CancellationToken.None);
+
+		Assert.Equal(0, result.ExitCode);
+		Assert.True(result.OutputTruncated);
+		Assert.Equal(Encoding.UTF8.GetByteCount(content), result.TotalBytes);
+		Assert.DoesNotContain('\uFFFD', result.Output);
+		Assert.EndsWith("国际é", result.Output);
+	}
+
+	[Fact]
+	public async Task MultiByteCharacterSplitAcrossStreamsStaysIntact()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return; // 用 POSIX printf 写出半个 UTF-8 序列
+		}
+
+		// C3 是 é 的首字节，A9 是续字节。首块只有一个不完整字符时 decoder 要把尾字节留到下一块；
+		// stderr 插在中间时，两条流各用一个 decoder，不能把 stdout 的半个字符接上。
+		var result = await ShellRunner.RunAsync(
+			"printf '\\303'; sleep 0.2; printf 'stderr' >&2; sleep 0.2; printf '\\251\\n'",
+			_root,
+			timeoutSeconds: 30,
+			onOutput: null,
+			CancellationToken.None);
+
+		Assert.Equal(0, result.ExitCode);
+		Assert.DoesNotContain('\uFFFD', result.Output);
+		Assert.Contains("stderr", result.Output);
+		Assert.Contains("é", result.Output);
 	}
 
 	private static async Task<bool> WaitForProcessDeathAsync(int pid, TimeSpan timeout)
