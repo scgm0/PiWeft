@@ -1349,16 +1349,11 @@ public static class ShellRunner
 			_tail.Append(text);
 			_tailBytes += byteCount;
 
-			var newlines = 0;
-			var lastNewline = -1;
-			for (var index = 0; index < text.Length; index++)
-			{
-				if (text[index] == '\n')
-				{
-					newlines++;
-					lastNewline = index;
-				}
-			}
+			var span = text.AsSpan();
+			// 构建日志这类大输出每块都要数换行；Count/LastIndexOf 走向量化路径，
+			// 比逐字符分支快一个数量级。
+			var newlines = span.Count('\n');
+			var lastNewline = newlines > 0 ? span.LastIndexOf('\n') : -1;
 
 			if (newlines == 0)
 			{
@@ -1385,14 +1380,16 @@ public static class ShellRunner
 		private void TrimTailLocked()
 		{
 			// 窗口每满 2× 就裁一次，大输出（grep -r、构建日志）会反复进来。
-			// 以前每次把整窗变成 string + byte[] 再切；这里只用池化缓冲，切割规则不变。
-			var length = _tail.Length;
-			var chars = ArrayPool<char>.Shared.Rent(length);
-			var bytes = ArrayPool<byte>.Shared.Rent(Encoding.UTF8.GetMaxByteCount(length));
+			// 直接从 StringBuilder 的块编码，省掉一次整窗 char[] 拷贝；切割规则不变。
+			var bytes = ArrayPool<byte>.Shared.Rent(Encoding.UTF8.GetMaxByteCount(_tail.Length));
 			try
 			{
-				_tail.CopyTo(0, chars, length);
-				var byteLength = Encoding.UTF8.GetBytes(chars.AsSpan(0, length), bytes);
+				var byteLength = 0;
+				foreach (var chunk in _tail.GetChunks())
+				{
+					byteLength += Encoding.UTF8.GetBytes(chunk.Span, bytes.AsSpan(byteLength));
+				}
+
 				if (byteLength <= MaxRollingBytes)
 				{
 					_tailBytes = byteLength;
@@ -1412,7 +1409,8 @@ public static class ShellRunner
 				{
 					var tailCharCount = Encoding.UTF8.GetChars(bytes.AsSpan(start, tailLength), tailChars);
 					_tail.Clear().Append(tailChars.AsSpan(0, tailCharCount));
-					_tailBytes = Encoding.UTF8.GetByteCount(tailChars.AsSpan(0, tailCharCount));
+					// bytes 由 _tail 编码而来，切在字符边界上，重新编码的字节数与 tailLength 相等。
+					_tailBytes = tailLength;
 					_tailTruncated = true;
 				}
 				finally
@@ -1422,7 +1420,6 @@ public static class ShellRunner
 			}
 			finally
 			{
-				ArrayPool<char>.Shared.Return(chars);
 				ArrayPool<byte>.Shared.Return(bytes);
 			}
 		}

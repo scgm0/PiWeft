@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -21,6 +22,14 @@ internal static partial class ShellTextSanitizer
 	/// <summary>流式输出里最多扣住这么长的未完成转义序列，避免无界等待。</summary>
 	private const int MaxPendingAnsiLength = 256;
 
+	// 每块输出都要先扫一遍 ANSI 起始符与控制字符；SearchValues 让这两次预检走向量化路径。
+	private static readonly SearchValues<char> AnsiStarts = SearchValues.Create("\u001B\u009B");
+
+	private static readonly SearchValues<char> RemovedControlChars = SearchValues.Create(
+		"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008\u000B\u000C\u000E\u000F" +
+		"\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001A\u001B\u001C\u001D\u001E\u001F" +
+		"\uFFF9\uFFFA\uFFFB");
+
 	[GeneratedRegex("(?:" + OscStart + @"[\s\S]*?" + St + ")|" + CsiStart + CsiFinal, RegexOptions.CultureInvariant)]
 	private static partial Regex AnsiRegex();
 
@@ -35,7 +44,7 @@ internal static partial class ShellTextSanitizer
 	/// </summary>
 	public static (string Complete, string Pending) SplitIncompleteAnsiSuffix(string value)
 	{
-		if (!value.Contains('\u001B') && !value.Contains('\u009B'))
+		if (value.AsSpan().IndexOfAny(AnsiStarts) < 0)
 		{
 			return (value, string.Empty);
 		}
@@ -54,7 +63,7 @@ internal static partial class ShellTextSanitizer
 
 	public static string StripAnsi(string value)
 	{
-		if (!value.Contains('\u001B') && !value.Contains('\u009B'))
+		if (value.AsSpan().IndexOfAny(AnsiStarts) < 0)
 		{
 			return value;
 		}
@@ -73,17 +82,7 @@ internal static partial class ShellTextSanitizer
 		}
 
 		var stripped = StripAnsi(value);
-		var needsWork = false;
-		foreach (var ch in stripped)
-		{
-			if (IsRemovedControl(ch))
-			{
-				needsWork = true;
-				break;
-			}
-		}
-
-		if (!needsWork)
+		if (stripped.AsSpan().IndexOfAny(RemovedControlChars) < 0)
 		{
 			return stripped;
 		}
