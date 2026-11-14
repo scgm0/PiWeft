@@ -162,7 +162,9 @@ public sealed class LinkedSessionTests : IDisposable
 		await WaitForReportsAsync(hub, 1);
 		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
 
-		Assert.True((await hub.SendAsync(childId, "顺便补一下文档。")).Ok);
+		var sent = await hub.SendAsync(childId, "顺便补一下文档。");
+		Assert.True(sent.Ok, sent.Text);
+		Assert.Contains("\"status\":\"sent\"", sent.Text);
 		await WaitForReportsAsync(hub, 2);
 		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -202,6 +204,7 @@ public sealed class LinkedSessionTests : IDisposable
 
 		var sent = await hub.SendAsync(childId, "顺便检查 null。", MessageDeliveryMode.Steer);
 		Assert.True(sent.Ok, sent.Text);
+		Assert.Contains("\"status\":\"steered\"", sent.Text);
 		Assert.Contains("\"mode\":\"steer\"", sent.Text);
 		await Eventually.IsTrue(() => child.PendingQueues().Steering.Count > 0, "steer 进入子会话队列");
 

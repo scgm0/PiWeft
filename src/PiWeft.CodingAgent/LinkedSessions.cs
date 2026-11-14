@@ -655,11 +655,13 @@ public sealed class LinkedSessionHub : IDisposable
 		try
 		{
 			// 只投递不等对方跑完：运行中默认 steer，下一次模型请求前到；空闲直接起一轮。
+			var steering = mode != MessageDeliveryMode.FollowUp && target.IsRunning;
 			_ = DeliverQuietlyAsync(target, outgoing, mode);
 
 			return Task.FromResult(LinkedSessionOperation.Success(new JsonObject
 			{
-				["status"] = mode == MessageDeliveryMode.FollowUp ? "sent" : "steered",
+				// steered 只在真的插进运行中的回合时为真；空闲时是起了一轮，仍报 sent。
+				["status"] = steering ? "steered" : "sent",
 				["mode"] = mode switch
 				{
 					MessageDeliveryMode.Steer => "steer",
