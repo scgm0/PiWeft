@@ -6,6 +6,10 @@ namespace PiWeft.Desktop;
 
 internal static class ExecutionProcess
 {
+	/// 表头摘要只读正文开头的这么多字符。步骤摘要只留前 80 个非空白字符，这个窗口足够跳过大段
+	/// 缩进与空行，又不至于为一行摘要把几十 KB 的工具输出解出来。
+	internal const int SummaryPrefix = 4096;
+
 	public static IReadOnlyList<ChatEntry> Project(IReadOnlyList<ChatEntry> entries, bool busy) =>
 		ProjectRange(entries, 0, busy, out _);
 
@@ -432,7 +436,7 @@ internal static class ExecutionProcess
 		if (entry.ToolName is "todo")
 		{
 			return ToolCallDetails.TodoPreview(entry.ToolArguments) ??
-				Strings.ToolDetail(entry.ToolArguments is { Length: > 0 } todoArguments ? todoArguments : entry.Text);
+				Strings.ToolDetail(entry.ToolArguments is { Length: > 0 } todoArguments ? todoArguments : entry.TextPrefix(SummaryPrefix));
 		}
 
 		// 子代理工具：行内只给「委派谁 / 等谁 / 发给谁」，完整参数留在展开里。
@@ -462,7 +466,7 @@ internal static class ExecutionProcess
 		};
 		if (verb is null)
 		{
-			return Strings.ToolDetail(entry.ToolArguments is { Length: > 0 } arguments ? arguments : entry.Text);
+			return Strings.ToolDetail(entry.ToolArguments is { Length: > 0 } arguments ? arguments : entry.TextPrefix(SummaryPrefix));
 		}
 
 		return Strings.ToolAction(verb, DetailPreview(entry), running);
@@ -474,7 +478,7 @@ internal static class ExecutionProcess
 		var arguments = entry.ToolArguments;
 		if (arguments is not { Length: > 0 })
 		{
-			return Strings.ToolDetail(entry.Text);
+			return Strings.ToolDetail(entry.TextPrefix(SummaryPrefix));
 		}
 
 		if (entry.ToolName == SubagentTools.DelegateName)
@@ -564,7 +568,7 @@ internal static class ExecutionProcess
 	{
 		if (entry.ToolArguments is not { Length: > 0 } arguments)
 		{
-			return Strings.ToolDetail(entry.Text);
+			return Strings.ToolDetail(entry.TextPrefix(SummaryPrefix));
 		}
 
 		if (entry.ToolName is "bash" or "terminal" or "powershell" && JsonField(arguments, "command") is { } command)

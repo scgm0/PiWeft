@@ -55,7 +55,7 @@ internal static class OpenAiContextBudget
 					{
 						chars += block switch
 						{
-							TextContent text => text.Text.Length,
+							TextContent text => text.TextLength,
 							ThinkingContent thinking => thinking.Thinking.Length,
 							ToolCall call => call.Name.Length + JsonSize(call.Arguments),
 							_ => 0,
@@ -86,7 +86,7 @@ internal static class OpenAiContextBudget
 		content.Blocks is { Count: > 0 } blocks
 			? blocks.Sum(static block => block switch
 			{
-				TextContent text => text.Text.Length,
+				TextContent text => text.TextLength,
 				ImageContent => 0,
 				_ => 0,
 			})
@@ -111,7 +111,7 @@ internal static class OpenAiContextBudget
 	private static long ContentChars(IReadOnlyList<ContentBlock> blocks) =>
 		blocks.Sum(static block => block switch
 		{
-			TextContent text => text.Text.Length,
+			TextContent text => text.TextLength,
 			ImageContent => 0,
 			_ => 0,
 		});

@@ -151,7 +151,9 @@ internal sealed class ConversationTimeline : IDisposable
 		var charsPerLine = Math.Max(24, width / 14.0);
 		var lines = (double)entry.TextLength / charsPerLine;
 		// 流式行的正文是增量快照，materialize 整篇只为数个换行不划算：只按字符数粗估。
-		if (entry.TextLength > 0 && !entry.IsStreaming && entry.StreamedText is null)
+		// 超过 NewlineScanLimit 的行同样跳过：延迟正文的换行数再多，也改不了这个粗估的量级。
+		const int NewlineScanLimit = 8192;
+		if (entry.TextLength is > 0 and <= NewlineScanLimit && !entry.IsStreaming && entry.StreamedText is null)
 		{
 			// MemoryExtensions.Count 是向量化实现：整段正文扫一遍比逐字符快一个量级。
 			var newlines = entry.Text.AsSpan().Count('\n') + 1;

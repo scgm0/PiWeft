@@ -1,6 +1,9 @@
+using System.Buffers;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Text.Unicode;
 
 namespace PiWeft.Ai.Json;
 
@@ -77,11 +80,7 @@ internal static class PiJsonValue
 		var type = Str(obj, "type") ?? throw new JsonException("content block is missing its type");
 		return type switch
 		{
-			"text" => new TextContent
-			{
-				Text = Str(obj, "text") ?? string.Empty,
-				TextSignature = Str(obj, "textSignature"),
-			},
+			"text" => ReadTextBlock(obj),
 			"thinking" => new ThinkingContent
 			{
 				Thinking = Str(obj, "thinking") ?? string.Empty,
@@ -104,6 +103,37 @@ internal static class PiJsonValue
 			},
 			_ => throw new JsonException($"unknown content block type '{type}'"),
 		};
+	}
+
+	/// 大段正文（工具输出）先按字符串读出、立刻编码成 UTF-8 再丢掉字符串：稳态只留一份
+	/// UTF-8，峰值多一份临时字符串（逐行解析，随即变成垃圾）。往返仍按字符串写，输出逐字节不变。
+	private static TextContent ReadTextBlock(JsonObject obj)
+	{
+		var text = Str(obj, "text") ?? string.Empty;
+		var signature = Str(obj, "textSignature");
+		if (text.Length > TextContent.DeferredTextThreshold && TryEncodeUtf8(text, out var utf8))
+		{
+			return TextContent.FromOwnedUtf8(utf8, text.Length) with { TextSignature = signature };
+		}
+
+		return new TextContent { Text = text, TextSignature = signature };
+	}
+
+	/// 编码的同时校验 UTF-16：孤立代理项编成 UTF-8 会变成 U+FFFD，回来就不是同一段文字了
+	/// （会话文件里可以出现 <c>"\ud800"</c> 这类转义，内存里构造的 JsonObject 也可能带）。
+	/// 这类输入建不了延迟存储，退回字符串。校验与编码同一趟，不额外扫一遍正文。
+	private static bool TryEncodeUtf8(string text, out byte[] utf8)
+	{
+		var bytes = GC.AllocateUninitializedArray<byte>(Encoding.UTF8.GetByteCount(text));
+		if (Utf8.FromUtf16(text, bytes, out _, out var written, replaceInvalidSequences: false) != OperationStatus.Done)
+		{
+			utf8 = [];
+			return false;
+		}
+
+		// 长度已在上面算过，写不满只可能是编码器判了非法输入；这种情况已经在上面返回了。
+		utf8 = written == bytes.Length ? bytes : bytes[..written];
+		return true;
 	}
 
 	public static List<ContentBlock> ReadBlocks(JsonNode? node)

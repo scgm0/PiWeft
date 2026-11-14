@@ -56,26 +56,48 @@ public sealed record ChatEntry
 
 	public required ChatRole Role { get; init; }
 
-	/// 正文。流式行由 <see cref="StreamedText"/> 提供，这里只在复制/导出这类冷路径上整篇物化；
-	/// 逐帧渲染走 <see cref="BodyText"/>，不会产生整篇字符串拷贝。
+	/// 正文。流式行由 <see cref="StreamedText"/> 提供，已落盘的工具结果由 <see cref="Deferred"/> 提供，
+	/// 这里只在复制/导出这类冷路径上整篇物化；逐帧渲染走 <see cref="BodyText"/>，不会产生整篇字符串拷贝。
 	public required string Text
 	{
-		get => _text ?? StreamedText?.Materialize() ?? string.Empty;
+		get => _text ?? StreamedText?.Materialize() ?? Deferred?.Materialize() ?? string.Empty;
 		init
 		{
 			_text = string.IsNullOrEmpty(value) ? null : value;
-			// 显式给了正文就不再使用流式来源：投影用 with { Text = … } 抹掉正文时必须真的抹掉。
+			// 显式给了正文就不再使用流式/延迟来源：投影用 with { Text = … } 抹掉正文时必须真的抹掉。
 			StreamedText = null;
+			Deferred = null;
 		}
 	}
 
+	/// 已落盘工具结果的正文来源。初始化顺序必须在 <see cref="Text"/> 之后：那个 init 会把它清空。
+	internal DeferredText? Deferred { get; init; }
+
 	public StreamedText? StreamedText { get; init; }
 
-	public int TextLength => _text is not null ? _text.Length : StreamedText?.Length ?? 0;
+	public int TextLength => _text is not null ? _text.Length : StreamedText?.Length ?? Deferred?.Length ?? 0;
+
+	/// 正文前 <paramref name="maxCharacters"/> 个字符。表头摘要、单行预览用它：不必为一行字把几十 KB 解出来。
+	internal string TextPrefix(int maxCharacters)
+	{
+		if (maxCharacters <= 0 || TextLength == 0)
+		{
+			return string.Empty;
+		}
+
+		if (_text is not null)
+		{
+			return _text.Length <= maxCharacters ? _text : _text[..maxCharacters];
+		}
+
+		return StreamedText is { } live
+			? live.Slice(0, maxCharacters)
+			: Deferred?.Prefix(maxCharacters) ?? string.Empty;
+	}
 
 	internal StreamText BodyText => _text is not null
 		? new StreamText(_text)
-		: StreamedText is { } live ? new StreamText(live) : StreamText.Empty;
+		: StreamedText is { } live ? new StreamText(live) : Deferred is { } deferred ? new StreamText(deferred) : StreamText.Empty;
 
 	public string Thinking
 	{
@@ -147,7 +169,10 @@ public sealed record ChatEntry
 	{
 		if (ReferenceEquals(this, other)) return true;
 		if (_text is not null || other._text is not null) return string.Equals(_text, other._text, StringComparison.Ordinal);
-		return StreamedText is { } mine ? mine.SameSnapshot(other.StreamedText) : other.StreamedText is null;
+		if (StreamedText is not null || other.StreamedText is not null)
+			return StreamedText is { } mine ? mine.SameSnapshot(other.StreamedText) : false;
+		// 延迟正文不可变：同一批内容块的来源就算同一段正文，不为了比较把它拼出来。
+		return Deferred is { } deferred ? deferred.SameAs(other.Deferred) : other.Deferred is null;
 	}
 
 	internal bool SameThinking(ChatEntry other)
@@ -1234,7 +1259,9 @@ public sealed class ChatViewModel : IDisposable
 					EntryId = entryIds.GetValueOrDefault(message),
 					ToolName = result.ToolName,
 					ToolCallId = result.ToolCallId,
-					Text = TextOfBlocks(result.Content),
+					Text = string.Empty,
+					// 工具输出常在几十 KB 量级：投影时不拼成字符串，展开/复制时再解。
+					Deferred = DeferredText.Of(result.Content),
 					Images = ImagesOfBlocks(result.Content),
 					Timestamp = result.Timestamp,
 					Patch = PatchOf(result.Details),

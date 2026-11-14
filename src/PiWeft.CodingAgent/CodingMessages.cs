@@ -139,7 +139,7 @@ public static class CodingMessages
 			{
 				tokens += block switch
 				{
-					TextContent text => text.Text.Length / 4,
+					TextContent text => text.TextLength / 4,
 					ThinkingContent thinking => thinking.Thinking.Length / 4,
 					ToolCall call => (call.Name.Length + call.Arguments.ToJsonString(PiJson.NodeOptions).Length) / 4,
 					ImageContent => 1000,

@@ -29,7 +29,7 @@ internal static class MessageText
 		{
 			if (block is TextContent text)
 			{
-				total += text.Text.Length;
+				total += text.TextLength;
 			}
 		}
 

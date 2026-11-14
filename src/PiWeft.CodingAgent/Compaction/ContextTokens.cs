@@ -111,7 +111,7 @@ public static class ContextTokens
 		{
 			chars += block switch
 			{
-				TextContent text => text.Text.Length,
+				TextContent text => text.TextLength,
 				ThinkingContent thinking => thinking.Thinking.Length,
 				ToolCall call => call.Name.Length + call.Arguments.ToJsonString(PiJson.NodeOptions).Length,
 				ImageContent => 0,
@@ -138,7 +138,7 @@ public static class ContextTokens
 		{
 			chars += block switch
 			{
-				TextContent text => text.Text.Length,
+				TextContent text => text.TextLength,
 				ImageContent => EstimatedImageChars,
 				ThinkingContent thinking => thinking.Thinking.Length,
 				ToolCall => 0,

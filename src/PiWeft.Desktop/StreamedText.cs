@@ -146,32 +146,45 @@ internal sealed class StreamingBuffer
 	}
 }
 
-/// 文本的两种来源：普通字符串（历史行、工具输出）或流式快照。消费端只依赖这几个操作，
-/// 因此同一段「打字机 / 增量 Markdown」代码对两种来源都成立，不必为流式单独维护一份副本。
+/// 文本的三种来源：普通字符串（历史行、工具输出）、流式快照，或者已落盘消息的延迟正文。
+/// 消费端只依赖这几个操作，因此同一段「打字机 / 增量 Markdown」代码对三种来源都成立，
+/// 不必为每种来源单独维护一份副本。
 internal readonly struct StreamText
 {
 	private readonly string? _plain;
 	private readonly StreamedText? _live;
+	private readonly DeferredText? _deferred;
 
 	public StreamText(string text)
 	{
 		_plain = text;
 		_live = null;
+		_deferred = null;
 	}
 
 	public StreamText(StreamedText text)
 	{
 		_plain = null;
 		_live = text;
+		_deferred = null;
+	}
+
+	public StreamText(DeferredText text)
+	{
+		_plain = null;
+		_live = null;
+		_deferred = text;
 	}
 
 	public static StreamText Empty => default;
 
 	public static implicit operator StreamText(string text) => new(text);
 
-	public int Length => _plain?.Length ?? _live?.Length ?? 0;
+	public int Length => _plain?.Length ?? _live?.Length ?? _deferred?.Length ?? 0;
 
-	public char At(int index) => _plain is not null ? _plain[index] : _live?.At(index) ?? '\0';
+	public char At(int index) => _plain is not null
+		? _plain[index]
+		: _live is not null ? _live.At(index) : _deferred?.At(index) ?? '\0';
 
 	public bool SameAs(in StreamText other)
 	{
@@ -181,8 +194,14 @@ internal readonly struct StreamText
 		}
 		if (_plain is null && other._plain is null)
 		{
-			return (_live is null && other._live is null) || (_live is not null && _live.SameSnapshot(other._live));
+			if (_live is not null || other._live is not null)
+			{
+				return _live is not null && _live.SameSnapshot(other._live);
+			}
+
+			return (_deferred is null && other._deferred is null) || (_deferred is not null && _deferred.SameAs(other._deferred));
 		}
+
 		return false;
 	}
 
@@ -195,7 +214,13 @@ internal readonly struct StreamText
 		}
 		if (_plain is null && previous._plain is null)
 		{
-			return _live is not null && previous._live is not null && _live.Continues(previous._live);
+			if (_live is not null || previous._live is not null)
+			{
+				return _live is not null && previous._live is not null && _live.Continues(previous._live);
+			}
+
+			// 延迟正文不可变：同一批内容块就是同一段正文，不存在「续接」。
+			return _deferred is not null && _deferred.SameAs(previous._deferred);
 		}
 		return false;
 	}
@@ -208,7 +233,7 @@ internal readonly struct StreamText
 			count = Math.Clamp(count, 0, _plain.Length - start);
 			return count == 0 ? string.Empty : _plain.Substring(start, count);
 		}
-		return _live?.Slice(start, count) ?? string.Empty;
+		return _live is not null ? _live.Slice(start, count) : _deferred?.Slice(start, count) ?? string.Empty;
 	}
 
 	/// 与 <see cref="Slice"/> 同区间，但直接写进调用方缓冲，不做分配。
@@ -222,8 +247,17 @@ internal readonly struct StreamText
 			if (count > 0) _plain.AsSpan(start, count).CopyTo(destination);
 			return;
 		}
-		_live?.CopyTo(start, count, destination);
+		if (_live is not null)
+		{
+			_live.CopyTo(start, count, destination);
+			return;
+		}
+		if (_deferred is { } deferred)
+		{
+			var slice = deferred.Slice(start, count);
+			slice.AsSpan(0, Math.Min(slice.Length, destination.Length)).CopyTo(destination);
+		}
 	}
 
-	public string Materialize() => _plain ?? _live?.Materialize() ?? string.Empty;
+	public string Materialize() => _plain ?? _live?.Materialize() ?? _deferred?.Materialize() ?? string.Empty;
 }
