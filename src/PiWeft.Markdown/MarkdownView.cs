@@ -484,9 +484,11 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 
 		_slotsScratch = _slots;
 		_slots = slots;
-		if (_prefix.Length != newCount + 1)
+		// 块数是流式期最常变的量：一个参数一个大小会每新增一块就重新分配一次前缀和数组，
+		// 按几何增长摊掉这笔分配，旧值在 EnsurePrefix 里会整段重写。
+		if (_prefix.Length < newCount + 1)
 		{
-			_prefix = new double[newCount + 1];
+			_prefix = new double[Math.Max(newCount + 1, _prefix.Length * 2)];
 		}
 		_prefixValid = false;
 		_visibleFirst = -1;
@@ -1602,19 +1604,22 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 		{
 			return;
 		}
-		if (_prefix.Length != _slots.Count + 1)
+		if (_prefix.Length < _slots.Count + 1)
 		{
-			_prefix = new double[_slots.Count + 1];
+			_prefix = new double[Math.Max(_slots.Count + 1, _prefix.Length * 2)];
 		}
 		double spacing = Math.Max(0, _theme.BlockSpacing);
 		double sum = 0;
 		_prefix[0] = 0;
-		for (int index = 0; index < _slots.Count; index++)
+		// 逐帧对全部块重算前缀和：span 化后内层循环只剩一次数组边界检查。
+		Span<BlockSlot> slots = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_slots);
+		Span<double> prefix = _prefix;
+		for (int index = 0; index < slots.Length; index++)
 		{
-			double height = double.IsNaN(_slots[index].Height) ? FallbackEstimate : _slots[index].Height;
-			_slots[index].Top = sum;
+			double height = double.IsNaN(slots[index].Height) ? FallbackEstimate : slots[index].Height;
+			slots[index].Top = sum;
 			sum += height + spacing;
-			_prefix[index + 1] = sum;
+			prefix[index + 1] = sum;
 		}
 		_prefixValid = true;
 	}

@@ -23,6 +23,7 @@
 | 常规会话打开合计 | 中位 ~5 ms、p90 80 ms、18 MiB 262 ms、45 MiB 1.7 s |
 | 堆占用 | 约为文件 3×（45.3 MiB → 137–172 MiB） |
 | 流式每帧分配（时间线 + Markdown） | ~0.7 KiB；`Entries()` 重建约 1.3 KB/帧（修复前 394 KB/帧） |
+| 流式每帧分配（`--ui-smoke stream`，诊断 `alloc/frame` 逐秒采样） | 文档最大时（末尾）299 KB/帧 → 174 KB/帧；全程均值 143 KB → 111 KB，中位 174 KB → 156 KB（同一脚本、Release、80 s，语料无上限地往同一条回复追加） |
 | 32 K 尾部追加 | 中位 0.7–2 ms，p90 1–4 ms，~0.1 MiB/帧 |
 | 24 K 单段落逐段追加 | 中位 4–7 ms，p90 8–15 ms，~0.5 MiB/帧 |
 | 32 K 单段落一次性全量布局 | ~79 ms（历史消息首次进入的一次性成本） |
@@ -41,7 +42,9 @@
 | CLI NativeAOT 产物（linux-x64，Release） | 当前提交 31,671,672 B。runtime-async 的 A/B 在同一棵树上量：关 32,060,744 B → 开 31,321,368 B（-739,376 B，**-2.3%**） |
 | `SessionManager.Open` 46 MB / 26,984 行（只读+建索引，9 轮中位） | `List<object>` 管线 402 ms / 249.2 MiB → `List<SessionLine>` union 管线 403 ms / 249.2 MiB（各 5 次采样，无差异） |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
-| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 80.0 MiB（83,929,152 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）。旧记录 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
+| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 80.6 MiB（84,471,776 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
+| MewUI 子模块更新（2b93028 → 553f28d）的产物体积代价 | 同一份代码只换子模块：84,459,584 B → 84,475,952 B，+16,368 B（+0.02%）。新增的 X11 AT-SPI2 代码与 `Tmds.DBus.Protocol` 依赖在 automation 关掉后被裁掉 |
+| `Aprillz.MewUI.Automation.Enabled` 不写 vs 写 false | 84,830,160 B → 84,475,952 B，省 354,208 B：不写这一项时裁剪器拿不到 feature 值，ILLink 里 `featurevalue="false"` 的替换不生效，整条 automation 树留在产物里 |
 | 第三方包升级的产物体积代价（linux-x64，Release，NativeAOT） | ZLogger 2.6.2 / Markdig 1.6.0 / MiniPty 1.6.0 / Test.Sdk 18.12.0 / Jint 2428 / Sdcb.SimdCodecs 2.0.0：CLI +337,712 B（+1.08%），桌面 +433,544 B（+0.52%）；其中 Jint 单独占 +41,200 B |
 
 内存读法：工作集包含字体映射、GPU/驱动共享表面与保留合成；判断泄漏看趋势与 `runtime.window` 的 `rtext/rgeom/ratlas/rpersist/rscratch/rdecoded/rbitmap/rvector/rencoded` 台账，再用 `dotnet-counters`/`dotnet-trace` 与 `smaps_rollup` 对照。发布版已打开 NativeAOT 的 `EventSourceSupport`（实测 +1.6 MiB），`dotnet-counters collect` 已验证可附着；但 NativeAOT 仍不支持 `dotnet-gcdump` 的堆分析，托管堆趋势以自带窗口值为准。打开含大量截图的会话会一次性抬高工作集，不属于逐帧增长。
@@ -57,6 +60,10 @@
 - 分支快照用不可变列表结构共享；`BuildProjectedMessages()` 在纯追加时复用前缀；`ChatViewModel.Rebuild()` 只重算最后一个用户轮次；过程投影只重投当前轮；统计只消费新增条目。
 - 流式正文/思考改为追加式 `StreamedText` 快照，长度与行相等判定 O(1)，整篇物化只在复制/导出发生。
 - Markdown 解析按尾块增量，块级模型哈希做前后缀 diff；段落按已闭合行分块，只重排开放尾块；代码块 `ReplaceRange`；定稿只切 `IsStreaming`。
+- 增量解析的文档簿记不再按整篇重建：文本单元下标直接记在 `MarkdownBlock.TextUnitIndex`（原来每帧为整份文档重建一张 块→下标 字典），锚点表在尾块没有标题/锚点、被替掉的旧块也没有锚点时按引用共享上一版（原来每帧复制两份）。800 块、每帧都带一个新标题（最坏形状）的逐帧追加从 151 KB 降到 100 KB；无标题的纯段落递增约 20 B/块（100→400 块时 12–18 KB/帧）。
+- 段落渲染的 paint span 按「run 版本 + 块边界 + 链接色/标记色」缓存：流式期逐帧重绘可见块时，不再为每个块新建 `List` 与 `ToArray()`。
+- `MarkdownView` 的前缀和数组按几何增长复用，重算循环走 `CollectionsMarshal.AsSpan`；尾块检测 `ContainsLinkReferenceDefinition` 先用一次向量化 `IndexOf("]:")` 排掉没有链接定义的帧（每帧都会调用）。
+- 流式每帧的账单还有一条固定项：开放尾块每帧都要重新解析与重排，单段落追加的成本与段落长度成正比（文档里的 0.5 MiB/帧就是这一项），不属于簿记开销。
 - 虚拟化只建视口附近控件；离屏释放正文/Markdown/图片，保留展开状态；分支树延迟构建；Replace 只覆盖变化的连续行段。
 - 平滑滚动按帧合并输入、Hermite 续接、设备像素提交；虚拟化高度校正时平移动画目标，避免「滚很多却回退」。
 - 会话时间线与执行过程组体共用 PiWeft 自己的虚拟化面板（`VirtualRowsPanel`）：每行独立估算高度、维护前缀和与阅读锚点，不再依赖 MewUI presenter 的全局运行平均；前缀和只在行数/高度/宽度变化时重算（滚动通知里的阅读点捕获是 O(log n)），高度缓存与快照缓冲按几何增长复用，行回收遍历零分配。结构变化（插入/删除/过程组重排）按顶部行身份补偿坐标系平移（跟底时让位给追末尾）；extent 收缩把 reader 夹到新末尾后，再用行内偏移映射回原处。
@@ -98,6 +105,15 @@
 - `Tag` 换强类型字段只能省一次属性查找与一次转型，与分配无关；行控件已改用 `LedgerRowView.Row`（`TrajectoryView.cs`）就是这个微清理，不再扩。
 - 真要零分配，前提是把 MewUI 的条目管道泛型化（`IItemsView<T>`、模板只走强类型），那是改上游子模块。而账本按 `turnWindow` 分窗、行数几百、每秒重建一次，单行 32 B，收益 ~10 KB/s，不值。
 - 这一块真正值得做的是**行视图复用与增量 diff**（重建行表时复用未变的行），不涉及 MewUI 也不涉及 union。
+
+## 本轮审计记录（MewUI 553f28d 之后）
+
+只列有代码证据的结论。口径：`dotnet build -p:AnalysisMode=All` 加人工读码，再用 `--ui-smoke stream` + 诊断 `alloc/frame` 对照。
+
+- 已修：流式增量解析的文档簿记每帧按整篇重建（文本单元下标字典、锚点表复制）。见上方「已落地的热路径」前四条。
+- 已核对无问题：会话追加在 `_stateGate` 内写文件并在失败时回滚；`Utf8LineReader` 的零拷贝快路径与池化上限；`grep`/`find` 的字节扫描、`SearchValues` 预筛、mmap 阈值与上限即停；SSE 复用字节缓冲、每事件只留一份 `JsonDocument`；`Agent._listeners` 写时复制 + `volatile`；`CodingAgentSession` 的 run CTS 由 `using` 持有；诊断帧档/计数档常态零分配（有测试守着）。
+- 分析器全量模式共 7571 条，逐类看过：`CA2000` 的 `StringContent`/`FormUrlEncodedContent` 是 GC 压力不是句柄泄漏（冷路径）；`CA2213` 命中的 UI 控件由可视树释放；`CA2012` 的 `List<ValueTask>` 是「收集后各 await 一次」的合法用法；`CA1508` 在 `union` 模式匹配上误报（`SessionLine` 的 `is` 分支被当成必真）。没有发现功能 bug。
+- 没有采纳：`MewUITouch`/`MewUIEnvironmentDebugLogging` 等开关的裁剪收益未测，改行为不值；条目管道泛型化是改上游，理由见上一节。
 
 ## 诊断面板
 

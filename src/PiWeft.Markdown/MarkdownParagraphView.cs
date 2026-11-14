@@ -285,6 +285,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 
 	private void RebuildRuns(MarkdownBlock block)
 	{
+		_paintsVersion++;
 		_runs = block.Runs.Count == 0 ? [] : block.Runs.ToArray();
 		_runStarts = new int[_runs.Length];
 		// Most streamed paragraphs have neither links nor images. Allocating two empty Lists (and
@@ -941,29 +942,26 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			ITextLayout layout = chunk.Layout!;
 			DrawInlineCodeChips(context, chunk);
 			DrawSelection(context, chunk);
-			List<TextPaintSpan> paints = [];
-			for (int runIndex = 0; runIndex < _runs.Length; runIndex++)
+
+			// 每帧重建 paint span 列表与数组：流式期逐帧重绘可见块时，这些数组是纯掩码，
+			// 内容只随 run/主题/块边界变。按它们做键缓存，没变就不分配。
+			Color linkColor = _theme.LinkForeground ?? Theme.Palette.Accent;
+			Color markedBackground = _theme.MarkedBackground ?? Theme.Palette.Accent.WithAlpha(64);
+			TextPaintSpan[]? paints = chunk.Paints;
+			if (paints is null ||
+				chunk.PaintsVersion != _paintsVersion ||
+				chunk.PaintsStart != chunk.Start ||
+				chunk.PaintsEnd != chunk.End ||
+				chunk.PaintsLink != linkColor ||
+				chunk.PaintsMarked != markedBackground)
 			{
-				MarkdownRun run = _runs[runIndex];
-				int runStart = _runStarts[runIndex];
-				int runLength = VisualText(run).Length;
-				int from = Math.Max(runStart, chunk.Start);
-				int to = Math.Min(runStart + runLength, chunk.End);
-				if (to <= from)
-				{
-					continue;
-				}
-				bool link = run.Url is not null && !run.Image;
-				// Inline code gets a padded, rounded chip drawn behind the text instead of a
-				// per-glyph rectangular background.
-				Color? background = (run.Style & MarkdownRunStyle.Marked) != 0
-					? _theme.MarkedBackground ?? Theme.Palette.Accent.WithAlpha(64)
-					: null;
-				paints.Add(new TextPaintSpan(
-					new TextRange(from - chunk.Start, to - from),
-					link ? _theme.LinkForeground ?? Theme.Palette.Accent : null,
-					background,
-					link ? TextDecoration.Underline : TextDecoration.None));
+				paints = BuildPaints(chunk, linkColor, markedBackground);
+				chunk.Paints = paints;
+				chunk.PaintsVersion = _paintsVersion;
+				chunk.PaintsStart = chunk.Start;
+				chunk.PaintsEnd = chunk.End;
+				chunk.PaintsLink = linkColor;
+				chunk.PaintsMarked = markedBackground;
 			}
 
 			// Transient: false 是**必需的**，不是保守选择。流式尾块每帧都换文本，配合 Transient: true
@@ -976,7 +974,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			// `TextCache.ReleasePendingDeletes()`，届时可以重新评估临时路径。
 			var options = new TextDrawOptions(
 				Foreground,
-				paints.Count == 0 ? default : paints.ToArray(),
+				paints,
 				Owner: chunk);
 			context.Text.Draw(layout, new Point(Bounds.X, Bounds.Y + chunk.Top), in options);
 		}
@@ -1295,6 +1293,14 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		public string? Text { get; set; }
 		public ITextLayout? Layout { get; set; }
 		public double Top { get; set; }
+
+		// 逐帧复用的 paint span 缓存，键为 run 版本 + 块边界 + 链接/标记色。
+		public TextPaintSpan[]? Paints;
+		public int PaintsVersion = -1;
+		public int PaintsStart;
+		public int PaintsEnd;
+		public Color PaintsLink;
+		public Color PaintsMarked;
 	}
 
 	private sealed class ImageSlot(MarkdownRun run)
@@ -1307,4 +1313,35 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 	}
 
 	private readonly record struct LinkRun(int Start, int Length, MarkdownRun Run);
+
+	private int _paintsVersion;
+
+	private TextPaintSpan[] BuildPaints(Chunk chunk, Color linkColor, Color markedBackground)
+	{
+		List<TextPaintSpan>? paints = null;
+		for (int runIndex = 0; runIndex < _runs.Length; runIndex++)
+		{
+			MarkdownRun run = _runs[runIndex];
+			int runStart = _runStarts[runIndex];
+			int runLength = VisualText(run).Length;
+			int from = Math.Max(runStart, chunk.Start);
+			int to = Math.Min(runStart + runLength, chunk.End);
+			if (to <= from)
+			{
+				continue;
+			}
+
+			bool link = run.Url is not null && !run.Image;
+			// Inline code gets a padded, rounded chip drawn behind the text instead of a
+			// per-glyph rectangular background.
+			Color? background = (run.Style & MarkdownRunStyle.Marked) != 0 ? markedBackground : null;
+			(paints ??= new List<TextPaintSpan>(4)).Add(new TextPaintSpan(
+				new TextRange(from - chunk.Start, to - from),
+				link ? linkColor : null,
+				background,
+				link ? TextDecoration.Underline : TextDecoration.None));
+		}
+
+		return paints is null ? [] : paints.ToArray();
+	}
 }

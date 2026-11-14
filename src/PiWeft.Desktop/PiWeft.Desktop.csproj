@@ -77,6 +77,10 @@
 		     LOH 门槛，持续落入只随 Gen2 回收的大对象堆（实测 89 MiB / 37.9 MiB 碎片）。
 		     把门槛提到 1 MiB：这些字符串改走可压缩的分代堆，Gen0/Gen2 都能便宜地收走。 -->
 		<RuntimeHostConfigurationOption Include="System.GC.LOHThreshold" Value="1048576" Trim="false" />
+		<!-- 无障碍：MewUI 的 automation 树（UIA / NSAccessibility / AT-SPI2）。本项目不需要，显式写 false：
+		     不写这一项时裁剪器拿不到开关值，ILLink 里 featurevalue="false" 的替换不生效，
+		     整条 automation 代码会留在产物里（实测 84,830,160 B 对 84,475,952 B，差 354,208 B）。 -->
+		<RuntimeHostConfigurationOption Include="Aprillz.MewUI.Automation.Enabled" Value="false" Trim="true" />
 	</ItemGroup>
 
 	<ItemGroup>

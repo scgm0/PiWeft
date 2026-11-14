@@ -77,6 +77,9 @@ public sealed class MarkdownBlock
 
 	/// <summary>子树里是否有图片 run：高度异步变化，不能进跨实例高度缓存。</summary>
 	public bool HasImage { get; internal set; }
+
+	/// <summary>这个块在所属文档文本单元里的下标，由收集阶段写入；没有文本单元的块为 -1。</summary>
+	internal int TextUnitIndex { get; set; } = -1;
 }
 
 public sealed record MarkdownTextUnit(
@@ -89,7 +92,6 @@ public sealed record MarkdownTextUnit(
 
 public sealed class MarkdownDocument
 {
-	private readonly Dictionary<MarkdownBlock, int> _unitIndex = new(ReferenceEqualityComparer.Instance);
 	private readonly string? _sourceText;
 	private readonly StringBuilder? _sourceBuilder;
 	private readonly int[] _unitStarts;
@@ -103,21 +105,23 @@ public sealed class MarkdownDocument
 		StringBuilder? sourceBuilder,
 		IReadOnlyList<MarkdownBlock> blocks,
 		MarkdownOptions options)
-		: this(sourceText, sourceBuilder, blocks, options, previous: null, reusedBlockCount: 0)
+		: this(sourceText, sourceBuilder, blocks, options, previous: null, reusedBlockCount: 0, anchorTable: null)
 	{
 	}
 
 	/// Builds a document whose first <paramref name="reusedBlockCount"/> blocks are the unchanged prefix
 	/// of <paramref name="previous"/>. Streaming appends replace only the old tail; rebuilding the
-	/// anchor table and selectable text units for the whole history on every frame is O(document) work
-	/// even though the parser already reparsed only the tail.
+	/// selectable text units for the whole history on every frame is O(document) work even though
+	/// the parser already reparsed only the tail. <paramref name="anchorTable"/> lets the caller hand
+	/// in a table it already built, and share the previous one when the tail contributed no anchor.
 	internal MarkdownDocument(
 		string? sourceText,
 		StringBuilder? sourceBuilder,
 		IReadOnlyList<MarkdownBlock> blocks,
 		MarkdownOptions options,
 		MarkdownDocument? previous,
-		int reusedBlockCount)
+		int reusedBlockCount,
+		Dictionary<string, int>? anchorTable = null)
 	{
 		_sourceText = sourceText;
 		_sourceBuilder = sourceBuilder;
@@ -127,36 +131,32 @@ public sealed class MarkdownDocument
 		reusedBlockCount = Math.Clamp(reusedBlockCount, 0, Math.Min(previous?.Blocks.Count ?? 0, blocks.Count));
 		ReusedBlockCount = previous is null ? 0 : reusedBlockCount;
 
-		Dictionary<string, int> anchorBlocks;
 		List<MarkdownTextUnit> units;
 		int[] starts;
 		if (previous is null || reusedBlockCount == 0)
 		{
-			(anchorBlocks, units, starts) = BuildAll(blocks);
+			anchorTable ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+			(units, starts) = BuildAll(blocks, anchorTable);
 		}
 		else
 		{
-			(anchorBlocks, units, starts) = BuildIncremental(previous, blocks, reusedBlockCount);
+			anchorTable ??= RebuildAnchors(previous, blocks, reusedBlockCount);
+			(units, starts) = BuildIncremental(previous, blocks, reusedBlockCount);
 		}
 
-		// The mapping is derived from the text units; rebuilding it in one pass is cheaper than
-		// threading a dictionary through the recursive collector on every append.
-		for (int index = 0; index < units.Count; index++)
-		{
-			_unitIndex[units[index].Block] = index;
-		}
-
-		AnchorBlocks = anchorBlocks;
+		AnchorTable = anchorTable;
 		TextUnits = units;
 		_unitStarts = starts;
 	}
 
+	/// <summary>锚点表；与上一版文档共享同一个实例时不再复制。</summary>
+	internal Dictionary<string, int> AnchorTable { get; }
+
 	internal int ReusedBlockCount { get; }
 
-	private static (Dictionary<string, int> Anchors, List<MarkdownTextUnit> Units, int[] Starts) BuildAll(
-		IReadOnlyList<MarkdownBlock> blocks)
+	private static (List<MarkdownTextUnit> Units, int[] Starts) BuildAll(
+		IReadOnlyList<MarkdownBlock> blocks, Dictionary<string, int> anchors)
 	{
-		var anchors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 		var units = new List<MarkdownTextUnit>();
 		var starts = new int[blocks.Count + 1];
 		for (int index = 0; index < blocks.Count; index++)
@@ -167,23 +167,14 @@ public sealed class MarkdownDocument
 		}
 
 		starts[blocks.Count] = units.Count;
-		return (anchors, units, starts);
+		return (units, starts);
 	}
 
-	private static (Dictionary<string, int> Anchors, List<MarkdownTextUnit> Units, int[] Starts) BuildIncremental(
+	private static (List<MarkdownTextUnit> Units, int[] Starts) BuildIncremental(
 		MarkdownDocument previous,
 		IReadOnlyList<MarkdownBlock> blocks,
 		int reusedBlockCount)
 	{
-		var anchors = new Dictionary<string, int>(previous.AnchorBlocks, StringComparer.OrdinalIgnoreCase);
-		// Drop anchors contributed by the replaced suffix before adding the freshly parsed tail.
-		// Only values owned by those top-level blocks may be removed: an anchor duplicated in an
-		// unchanged earlier block must keep its first definition.
-		for (int index = reusedBlockCount; index < previous.Blocks.Count; index++)
-		{
-			RemoveAnchors(previous.Blocks[index], index, anchors);
-		}
-
 		int prefixUnits = previous._unitStarts[reusedBlockCount];
 		var units = new List<MarkdownTextUnit>(prefixUnits + Math.Max(0, blocks.Count - reusedBlockCount));
 		for (int index = 0; index < prefixUnits; index++)
@@ -196,15 +187,36 @@ public sealed class MarkdownDocument
 		for (int index = reusedBlockCount; index < blocks.Count; index++)
 		{
 			starts[index] = units.Count;
-			CollectAnchors(blocks[index], index, anchors);
 			CollectTextUnits(blocks[index], "\n", index, units);
 		}
 
 		starts[blocks.Count] = units.Count;
-		return (anchors, units, starts);
+		return (units, starts);
 	}
 
-	private static void RemoveAnchors(MarkdownBlock block, int topIndex, Dictionary<string, int> anchors)
+	/// 锚点表只在片尾真的带了锚点（标题等）时才重建：流式增长的一整段普通段落按引用共享上一版。
+	private static Dictionary<string, int> RebuildAnchors(
+		MarkdownDocument previous,
+		IReadOnlyList<MarkdownBlock> blocks,
+		int reusedBlockCount)
+	{
+		var anchors = new Dictionary<string, int>(previous.AnchorTable, StringComparer.OrdinalIgnoreCase);
+		// Drop anchors contributed by the replaced suffix before adding the freshly parsed tail.
+		// Only values owned by those top-level blocks may be removed: an anchor duplicated in an
+		// unchanged earlier block must keep its first definition.
+		for (int index = reusedBlockCount; index < previous.Blocks.Count; index++)
+		{
+			RemoveAnchors(previous.Blocks[index], index, anchors);
+		}
+		for (int index = reusedBlockCount; index < blocks.Count; index++)
+		{
+			CollectAnchors(blocks[index], index, anchors);
+		}
+
+		return anchors;
+	}
+
+	internal static void RemoveAnchors(MarkdownBlock block, int topIndex, Dictionary<string, int> anchors)
 	{
 		Remove(block.Anchor);
 		foreach (string alias in block.Aliases)
@@ -239,10 +251,10 @@ public sealed class MarkdownDocument
 
 	public bool HasLinkReferenceDefinitions { get; init; }
 	public MarkdownOptions Options { get; }
-	public IReadOnlyDictionary<string, int> AnchorBlocks { get; }
+	public IReadOnlyDictionary<string, int> AnchorBlocks => AnchorTable;
 	public IReadOnlyList<MarkdownTextUnit> TextUnits { get; }
 
-	public int GetTextUnit(MarkdownBlock block) => _unitIndex.TryGetValue(block, out int index) ? index : -1;
+	public int GetTextUnit(MarkdownBlock block) => block.TextUnitIndex;
 
 	public static string VisualText(MarkdownRun run) => run.Image && run.Text.Length == 0 ? "\uFFFC" : run.Text;
 
@@ -259,6 +271,9 @@ public sealed class MarkdownDocument
 			case MarkdownBlockKind.Heading:
 			case MarkdownBlockKind.Code:
 				bool hasLinks = block.Runs.Any(static run => VisualText(run).Length > 0 && run.Url != null);
+				// 块自己记住下标：每个块只产出一个文本单元，前缀块的下标在追加路径上不变，
+				// 因此不需要每帧为整份文档重建一张 块→下标 的字典。
+				block.TextUnitIndex = units.Count;
 				units.Add(new MarkdownTextUnit(block, block.Text, separator, topIndex, hasLinks));
 				break;
 
@@ -303,7 +318,7 @@ public sealed class MarkdownDocument
 		}
 	}
 
-	private static void CollectAnchors(MarkdownBlock block, int topIndex, Dictionary<string, int> anchors)
+	internal static void CollectAnchors(MarkdownBlock block, int topIndex, Dictionary<string, int> anchors)
 	{
 		if (!string.IsNullOrEmpty(block.Anchor))
 		{

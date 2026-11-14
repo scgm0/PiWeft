@@ -1463,7 +1463,7 @@ public sealed partial class MainWindow : Window
 		// 子会话条点「打开」：按会话 id 找到同窗口里的后台标签。
 		tab.LinkedSessionOpenRequested += sessionId => _ = ActivateSessionAsync(sessionId);
 		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
-		// 那条链路会顺带把会话列表重_stat 一遇。
+		// 那条链路会顺带把会话列表重 stat 一遍。
 		tab.AskChanged += changed =>
 		{
 			UpdateTabHeaders();

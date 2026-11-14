@@ -162,19 +162,35 @@ public static class MarkdownParser
 			reuseCount--;
 		}
 
-		// Seed uniqueness from the blocks that are not re-parsed. The document already carries the
-		// anchor table for the whole previous revision, so copy its prefix instead of walking every
-		// historical block on every append. Replaced blocks are excluded by their top index.
-		var anchors = new HashSet<string>(StringComparer.Ordinal);
-		foreach (var (anchor, topIndex) in previous.AnchorBlocks)
+		// Seed uniqueness from the blocks that are not re-parsed. The common streaming frame grows
+		// one open paragraph and adds no anchor at all, so it maps the tail with an empty seed first
+		// and shares the previous anchor table instead of copying every historical anchor.
+		var scratchAnchors = new HashSet<string>(StringComparer.Ordinal);
+		List<MarkdownBlock> tailBlocks = MapChildren(parsed, tail, options, scratchAnchors);
+
+		Dictionary<string, int>? anchorTable = null;
+		if (ReplacedBlocksHaveAnchors(previous.Blocks, reuseCount) || scratchAnchors.Count > 0)
 		{
-			if (topIndex < reuseCount)
+			anchorTable = new Dictionary<string, int>(previous.AnchorTable, StringComparer.OrdinalIgnoreCase);
+			for (int index = reuseCount; index < previous.Blocks.Count; index++)
 			{
-				anchors.Add(anchor);
+				MarkdownDocument.RemoveAnchors(previous.Blocks[index], index, anchorTable);
+			}
+
+			// 重映射尾块：种子取去掉被替换部分后的锚点名，同名标题才能拿到不同锚点。
+			var seed = new HashSet<string>(anchorTable.Keys, StringComparer.Ordinal);
+			tailBlocks = MapChildren(parsed, tail, options, seed);
+			for (int index = 0; index < tailBlocks.Count; index++)
+			{
+				MarkdownDocument.CollectAnchors(tailBlocks[index], reuseCount + index, anchorTable);
 			}
 		}
+		else
+		{
+			// 尾块没有锚点：上一版的表仍然成立，直接共享。
+			anchorTable = previous.AnchorTable;
+		}
 
-		List<MarkdownBlock> tailBlocks = MapChildren(parsed, tail, options, anchors);
 		foreach (MarkdownBlock block in tailBlocks)
 		{
 			ShiftSourceOffsets(block, tailStart);
@@ -194,11 +210,30 @@ public static class MarkdownParser
 			blocks,
 			options,
 			previous,
-			reusedBlockCount: reuseCount)
+			reusedBlockCount: reuseCount,
+			anchorTable: anchorTable)
 		{
 			TailRepaired = suffix.Length > 0
 		};
 		return true;
+	}
+
+	/// 被尾解析替掉的旧块里有没有锚点：没有的话锚点表可以按引用共享上一版，不必每帧复制。
+	private static bool ReplacedBlocksHaveAnchors(IReadOnlyList<MarkdownBlock> blocks, int reuseCount)
+	{
+		for (int index = reuseCount; index < blocks.Count; index++)
+		{
+			if (HasAnchor(blocks[index]))
+			{
+				return true;
+			}
+		}
+
+		return false;
+
+		static bool HasAnchor(MarkdownBlock block)
+			=> !string.IsNullOrEmpty(block.Anchor) || block.Aliases.Count > 0 ||
+				block.Children.Any(static child => HasAnchor(child));
 	}
 
 	private static void ShiftSourceOffsets(MarkdownBlock block, int offset)
@@ -228,6 +263,13 @@ public static class MarkdownParser
 	/// path, while a false negative could leave earlier link URLs stale.
 	internal static bool ContainsLinkReferenceDefinition(ReadOnlySpan<char> text)
 	{
+		// 流式期每帧都会拿整段尾块来问一次：绝大多数尾块里没有 "]:"，先用一次向量化
+		// 查找排掉，比逐行走一遍行边界便宜一个数量级。
+		if (text.IndexOf("]:", StringComparison.Ordinal) < 0)
+		{
+			return false;
+		}
+
 		int lineStart = 0;
 		while (lineStart < text.Length)
 		{
