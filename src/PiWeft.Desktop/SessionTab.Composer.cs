@@ -2,6 +2,7 @@ using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Cli;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Subagents;
 
 namespace PiWeft.Desktop;
 
@@ -68,17 +69,7 @@ public sealed partial class SessionTab
 			return;
 		}
 
-		_subagentCard.Render(
-			Session.Subagents,
-			OpenLinkedSession,
-			StopSubagent,
-			message =>
-			{
-				if (!_disposed)
-				{
-					NotifyError(message);
-				}
-			});
+		_subagentCard.Render(Session.Subagents);
 		RefreshWidgetColumn();
 
 		// 页签圆点只在「有子代理开始/结束等回答」时翻转；工具活动不碰标题栏。
@@ -106,6 +97,14 @@ public sealed partial class SessionTab
 		{
 			AppLog.Failure(AppLog.For<SessionTab>(), "Stop subagent", ex);
 			return false;
+		}
+	}
+
+	private void SubagentFailed(string message)
+	{
+		if (!_disposed)
+		{
+			NotifyError(message);
 		}
 	}
 
@@ -228,6 +227,70 @@ public sealed partial class SessionTab
 			"补桌面测试",
 			"给子会话条补一组布局截图，检查提议卡片在窄窗口下的换行。",
 			LinkedSessionProposal.OwnInitiative);
+
+	/// 仅供 --ui-smoke subagents：把子代理卡摆成运行中 / 失败可继续 / 等待回答三行，外部脚本截图。
+	/// 只进内存，不建子会话，不写会话文件。
+	internal void PrepareSubagentsSmoke()
+	{
+		var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+		SubagentRun[] runs =
+		[
+			new()
+			{
+				Name = "desktop-hot",
+				SessionId = "subagent-smoke-running",
+				Agent = "scout",
+				Label = "桌面热路径与每帧分配审计",
+				Brief = "在仓库里找出每帧都会走到的路径，列出分配热点。",
+				Model = "opencode-go/deepseek-v4.1-flash",
+				Thinking = "max",
+				State = SubagentState.Running,
+				Turns = 1,
+				Activity = "read src/PiWeft.Desktop/SessionTab.cs",
+				Tokens = 31_500,
+				Cost = 0.0071,
+				StartedAt = now - 42_000,
+			},
+			new()
+			{
+				Name = "core-hot",
+				SessionId = "subagent-smoke-failed",
+				SessionFile = "/tmp/piweft-subagents/core-hot.jsonl",
+				Agent = "scout",
+				Label = "核心库热路径与并发审计",
+				Brief = "审计核心库的并发路径与锁粒度。",
+				Model = "opencode-go/deepseek-v4.1-flash",
+				Thinking = "max",
+				State = SubagentState.Failed,
+				Turns = 1,
+				Result = "Request aborted",
+				Tokens = 102_932,
+				Cost = 0.0257,
+				StartedAt = now - 205_000,
+				FinishedAt = now - 1_000,
+				Restored = true,
+			},
+			new()
+			{
+				Name = "reviewer-1",
+				SessionId = "subagent-smoke-awaiting",
+				Agent = "reviewer",
+				Label = "审查子代理卡的布局改动",
+				Brief = "审查改动，给出 P0/P1 问题。",
+				Model = "opencode-go/deepseek-v4.1-flash",
+				Thinking = "high",
+				State = SubagentState.Running,
+				Turns = 1,
+				AwaitingUser = true,
+				Tokens = 18_240,
+				Cost = 0.0042,
+				StartedAt = now - 12_000,
+			},
+		];
+
+		_subagentCard.RenderRunsForSmoke(runs);
+		RefreshWidgetColumn();
+	}
 
 	/// 仅供 --ui-smoke quick-messages：打开快捷消息浮层，外部脚本趁机截图。
 	internal void PrepareQuickMessagesSmoke() => ShowQuickMessages();

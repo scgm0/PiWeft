@@ -27,7 +27,7 @@ public sealed class SubagentCardTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	private sealed class FakeHost(string root, Model model) : ISubagentHost
+	private sealed class FakeHost(string root, Model model, Func<Model, AssistantMessageEventStream>? stream = null) : ISubagentHost
 	{
 		public Task<CodingAgentSession?> CreateChildAsync(SubagentStartContext context, CancellationToken cancellationToken)
 		{
@@ -35,7 +35,7 @@ public sealed class SubagentCardTests : IDisposable
 			{
 				Cwd = root,
 				Model = model,
-				StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, "结论。"),
+				StreamFn = (streamModel, _, _) => (stream ?? (static m => FakeStreams.Text(m, "结论。")))(streamModel),
 				Session = SessionManager.InMemory(root),
 				Persist = false,
 				Skills = [],
@@ -112,6 +112,85 @@ public sealed class SubagentCardTests : IDisposable
 	}
 
 	[Fact]
+	public async Task RefreshWithoutChangesDoesNotReformatTheRows()
+	{
+		var model = FakeStreams.Model();
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = model,
+			StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, "完成。"),
+			Session = SessionManager.InMemory(_root),
+			Persist = false,
+			Skills = [],
+			PromptTemplates = [],
+			SubagentHost = new FakeHost(_root, model),
+			Agents = SubagentCatalog.Discover(_root, "missing-agent-dir", includeProject: false),
+		});
+
+		var hub = Assert.IsType<SubagentHub>(session.Subagents);
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "看下登录流程。"));
+		Assert.True(started.Ok, started.Text);
+		await WaitForIdleAsync(hub, "scout-1");
+
+		using var tab = new SessionTab(session, [model], "subagents-alloc");
+		ConversationPerformanceTests.Layout(tab.View, 960, 720);
+		for (var index = 0; index < 8; index++)
+		{
+			tab.RefreshSubagents();
+		}
+
+		const int iterations = 100;
+		var before = GC.GetAllocatedBytesForCurrentThread();
+		for (var index = 0; index < iterations; index++)
+		{
+			tab.RefreshSubagents();
+		}
+
+		var perRefresh = (GC.GetAllocatedBytesForCurrentThread() - before) / (double)iterations;
+		// 稳定期只剩 hub 快照数组（调用方独占，无法复用）。再每次拼状态字、身份行就会退回几百字节。
+		Assert.True(perRefresh < 256, $"每次刷新分配 {perRefresh:0.0} B，超过只复制快照的量");
+	}
+
+	[Fact]
+	public async Task FailedSubagentShowsTheReasonWithoutExpanding()
+	{
+		var model = FakeStreams.Model();
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = model,
+			StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, "完成。"),
+			Session = SessionManager.InMemory(_root),
+			Persist = false,
+			Skills = [],
+			PromptTemplates = [],
+			SubagentHost = new FakeHost(_root, model, static m => FakeStreams.Error(m, "Request aborted")),
+			Agents = SubagentCatalog.Discover(_root, "missing-agent-dir", includeProject: false),
+		});
+
+		var hub = Assert.IsType<SubagentHub>(session.Subagents);
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "看下登录流程。"));
+		Assert.True(started.Ok, started.Text);
+		await WaitForStateAsync(hub, "scout-1", SubagentState.Failed);
+
+		using var tab = new SessionTab(session, [model], "subagents-failed");
+		ConversationPerformanceTests.Layout(tab.View, 960, 720);
+
+		var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(tab.View).ToArray();
+		// 收起时也要看得到失败原因，不必先展开再翻「最近回复」。
+		var reason = Assert.Single(blocks, block => block.Text == "Request aborted");
+		Assert.True(reason.IsVisible);
+		Assert.Equal(AppStyles.RoleError, reason.Tag);
+
+		var status = Assert.Single(blocks, block => block.Text.StartsWith("失败 · 1 轮", StringComparison.Ordinal));
+		Assert.Equal(AppStyles.RoleError, status.Tag);
+
+		// 耗时只在行右侧走一次秒表；不再有第二份「总耗时」把同一件事说两遍。
+		Assert.DoesNotContain(blocks, block => block.Text.StartsWith("总耗时", StringComparison.Ordinal));
+	}
+
+	[Fact]
 	public void SessionWithoutAHostHidesTheCard()
 	{
 		var model = FakeStreams.Model();
@@ -133,12 +212,15 @@ public sealed class SubagentCardTests : IDisposable
 		Assert.Equal(0, tab.SubagentCardRowCount);
 	}
 
-	private static async Task WaitForIdleAsync(SubagentHub hub, string name)
+	private static async Task WaitForIdleAsync(SubagentHub hub, string name) =>
+		await WaitForStateAsync(hub, name, SubagentState.Idle);
+
+	private static async Task WaitForStateAsync(SubagentHub hub, string name, SubagentState state)
 	{
 		var deadline = Environment.TickCount64 + 10_000;
 		while (Environment.TickCount64 < deadline)
 		{
-			if (hub.Runs.SingleOrDefault(run => run.Name == name)?.State == SubagentState.Idle)
+			if (hub.Runs.SingleOrDefault(run => run.Name == name)?.State == state)
 			{
 				return;
 			}
@@ -146,6 +228,6 @@ public sealed class SubagentCardTests : IDisposable
 			await Task.Delay(10);
 		}
 
-		throw new TimeoutException("子代理没有在 10 秒内结束第一轮");
+		throw new TimeoutException($"子代理没有在 10 秒内进入 {state}");
 	}
 }

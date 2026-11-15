@@ -1754,6 +1754,10 @@ public sealed partial class MainWindow : Window
 					// 视觉验收：子会话条里的提议卡片（按钮换行、状态色）。
 					CurrentTab()?.PrepareLinkedSessionsSmoke();
 					break;
+				case "subagents":
+					// 视觉验收：子代理卡的三态行（运行中 / 失败可继续 / 等待回答）。
+					CurrentTab()?.PrepareSubagentsSmoke();
+					break;
 				case "wheel":
 					// 滚动性能采样演练：展开执行过程后持续滚轮压测，供外部剖析对照。
 					CurrentTab()?.PrepareWheelSmoke();
@@ -2041,9 +2045,10 @@ public sealed partial class MainWindow : Window
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
 		// scroll-sweep 从会话底部按 0.9 s 一步扫完整条会话，需要更长的驻留。
 		// git-summary 要等一次真实的模型往返（开思考时轻松过 10 秒）。
+		// subagents 要拍默认、悬停、展开三张。
 		await Task.Delay(view is "scroll-sweep" ? 50000
 			: view is "stream" ? 120000
-			: view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" ? 30000
+			: view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" or "subagents" ? 30000
 			: view is "git-summary" ? 75000
 			: 7000).ConfigureAwait(false);
 		// 加载提示会阻止关窗；退出前先确认没有在途的打开。

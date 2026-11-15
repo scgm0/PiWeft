@@ -4,13 +4,18 @@ using PiWeft.CodingAgent.Subagents;
 
 namespace PiWeft.Desktop;
 
-/// 输入区上方的「子代理」卡：列出本会话开出的子代理，点行打开子会话标签，运行中的可以停。
-/// 每行可展开：任务、进度、最近回复与用量都在卡里看得到，不必先切到子会话标签。
-/// 子代理每开始一个工具都会推一次状态，只有「结构」变了才重建行，否则只改那一行右侧的文字。
+/// 输入区上方的「子代理」卡：列出本会话开出的子代理，点行展开详情，行尾的打开键切到子会话标签，
+/// 运行中的可以停。每行左侧是状态图标，名字与一句任务之后是右侧的耗时与用量；
+/// 任务全文、进度与最近回复在展开区里看得到，不必先切到子会话标签。
+/// 子代理每开始一个工具都会推一次状态，只有「结构」变了才重建行，否则只改那一行的文字。
 internal sealed class SubagentCard
 {
 	private const int BriefPreviewChars = 600;
 	private const int ResultPreviewChars = 1_200;
+	// 失败原因只留一行：卡在输入框上方，整段铺开会把别的子代理挤出视口。
+	private const int FailurePreviewChars = 160;
+	// 展开区从名字下面起排：8 头部内边距 + 14 状态图标 + 6 间距。
+	private const double BodyIndent = 28;
 	// 卡片是快速状态视图，不是完整档案：只画最近的结束项，避免长会话把整棵 UI 拖重。
 	// 更早的运行仍在 hub、侧栏与 list_subagents 里，功能不丢。
 	private const int MaxDisplayedRuns = 20;
@@ -21,30 +26,49 @@ internal sealed class SubagentCard
 	private readonly List<RowState> _rendered = [];
 	// 展开状态按名字记：状态变化会让整行重建，展开的内容不能跟着合上。
 	private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
+	// 回调在标签构造时给一次：刷新不带参数，调用点就不会每次建闭包与委托。
+	private readonly Action<string> _openChild;
+	private readonly Func<string, bool> _stopChild;
+	private readonly Action<string> _failed;
+	// 行数据来源：真实会话取 hub 快照；--ui-smoke 直接给一组固定快照，截图不受回合节奏影响。
 	private SubagentHub? _hub;
-	private Action<string>? _openChild;
-	private Func<string, bool>? _stopChild;
-	private Action<string>? _failed;
+	private SubagentRun[]? _smokeRuns;
+	// 卡头三个数是每次刷新的固定开销：没变就不重新拼字符串。
+	private (int Active, int Total, int Shown) _meta = (-1, -1, -1);
 
 	private sealed record RowState(
 		string Name,
 		string SessionId,
 		string SessionFile,
+		string Agent,
+		string Label,
 		string Model,
 		string Thinking,
 		SubagentState State,
 		bool Restored,
 		bool Awaiting,
-		long Tokens,
-		double Cost,
-		string Role,
+		int Turns,
+		bool Expanded,
 		TextBlock Status,
+		TextBlock Resumable,
+		TextBlock Identity,
+		TextBlock Activity,
+		TextBlock Failure,
 		LiveDurationText Duration,
 		TextBlock Usage,
-		TextBlock? Progress);
+		TextBlock? Progress,
+		long Tokens,
+		double Cost,
+		string? ActivityValue,
+		string? ProgressValue,
+		string? ResultValue);
 
-	public SubagentCard()
+	public SubagentCard(Action<string> openChild, Func<string, bool> stopChild, Action<string> failed)
 	{
+		// 回调在标签构造时给一次：读屏每有工具起止就刷新，逐个参数传会在调用点建闭包与委托。
+		_openChild = openChild;
+		_stopChild = stopChild;
+		_failed = failed;
 		_rows.Spacing(6);
 		_card = new ComposerWidgetCard("sparkles", Strings.SubagentCardTitle);
 		_card.Body.Children(new ScrollViewer()
@@ -70,34 +94,36 @@ internal sealed class SubagentCard
 		Toggle(name);
 	}
 
-	public void Render(
-		SubagentHub? hub,
-		Action<string> openChild,
-		Func<string, bool> stopChild,
-		Action<string> failed)
+	public void Render(SubagentHub? hub)
 	{
 		_hub = hub;
-		_openChild = openChild;
-		_stopChild = stopChild;
-		_failed = failed;
+		_smokeRuns = null;
 		Refresh(force: false);
+	}
+
+	/// 仅供 <c>--ui-smoke subagents</c>：行直接吃这组快照，不建子会话。
+	internal void RenderRunsForSmoke(SubagentRun[] runs)
+	{
+		_hub = null;
+		_smokeRuns = runs;
+		Refresh(force: true);
 	}
 
 	private void Refresh(bool force)
 	{
-		if (_hub is not { } hub)
+		if (_hub is null && _smokeRuns is null)
 		{
 			HasAwaiting = false;
 			_card.Show(false);
 			return;
 		}
 
-		var runs = hub.RunsSnapshot();
+		var runs = _smokeRuns ?? _hub!.RunsSnapshot();
 		if (runs.Length == 0)
 		{
 			HasAwaiting = false;
 			_card.Show(false);
-			_rows.Clear();
+			ClearRows();
 			_rendered.Clear();
 			_expanded.Clear();
 			return;
@@ -121,7 +147,13 @@ internal sealed class SubagentCard
 
 		var ordered = Ordered(runs);
 		var displayCount = Math.Min(ordered.Length, MaxDisplayedRuns);
-		_card.Meta = Strings.SubagentCardMeta(active, runs.Length, displayCount);
+		var metaKey = (active, runs.Length, displayCount);
+		if (metaKey != _meta)
+		{
+			_meta = metaKey;
+			_card.Meta = Strings.SubagentCardMeta(active, runs.Length, displayCount);
+		}
+
 		// 只在结构变化时重建：活动变化（当前工具）只改文字，保住 hover 提示与卡内焦点。
 		if (!force && SameStructure(ordered, displayCount))
 		{
@@ -134,12 +166,24 @@ internal sealed class SubagentCard
 		}
 
 		_rendered.Clear();
-		_rows.Clear();
+		ClearRows();
 		for (var index = 0; index < displayCount; index++)
 		{
 			var (row, meta) = Row(ordered[index]);
 			_rendered.Add(meta);
 			_rows.Add(row);
+		}
+	}
+
+	/// 行里的 <see cref="LiveDurationText"/> 自己跑 100 ms 定时器：只摘不释放会把表留到进程结束。
+	/// 重建只发生在状态变化时，逐个 Remove 的挪动成本远小于泄漏。
+	private void ClearRows()
+	{
+		while (_rows.Children.Count > 0)
+		{
+			var row = _rows.Children[^1];
+			_rows.Remove(row);
+			UiLifetime.Release(row);
 		}
 	}
 
@@ -167,7 +211,8 @@ internal sealed class SubagentCard
 		return runs;
 	}
 
-	/// 行数、名字、会话 id、状态、是否历史项都没变：可以只更新文字。
+	/// 行数、名字、会话 id、状态、轮数、角色、模型都没变：可以只更新计时与文本块。
+	/// 状态字、身份行、「可继续」与失败原因只依赖这些字段，所以它们只在重建时写一次。
 	private bool SameStructure(SubagentRun[] runs, int count)
 	{
 		if (count != _rendered.Count)
@@ -180,7 +225,10 @@ internal sealed class SubagentCard
 			var run = runs[index];
 			var row = _rendered[index];
 			if (run.State != row.State || run.Restored != row.Restored || run.AwaitingUser != row.Awaiting ||
+				run.Turns != row.Turns ||
 				!string.Equals(run.Name, row.Name, StringComparison.Ordinal) ||
+				!string.Equals(run.Agent, row.Agent, StringComparison.Ordinal) ||
+				!string.Equals(run.Label, row.Label, StringComparison.Ordinal) ||
 				!string.Equals(run.SessionId, row.SessionId, StringComparison.Ordinal) ||
 				!string.Equals(run.SessionFile ?? string.Empty, row.SessionFile, StringComparison.Ordinal) ||
 				!string.Equals(run.Model, row.Model, StringComparison.Ordinal) ||
@@ -193,53 +241,59 @@ internal sealed class SubagentCard
 		return true;
 	}
 
+	/// 结构没变时只写会变的那几样：当前工具、进度、用量、失败原因、秒表。
+	/// 每次都先比源值，字符串只在真变了才拼；刷新高峰（每个工具起止都推一次）不产生垃圾。
 	private static RowState SetMeta(RowState row, SubagentRun run)
 	{
-		var status = StatusText(run);
-		if (!string.Equals(row.Status.Text, status, StringComparison.Ordinal))
-		{
-			row.Status.Text(status);
-		}
-
-		var role = StatusRole(run);
-		if (!string.Equals(row.Role, role, StringComparison.Ordinal))
-		{
-			row.Status.Role(role);
-			row = row with { Role = role };
-		}
-
 		row.Duration.SetSpan(run.StartedAt, EndedAt(run));
-		row.Duration.IsVisible(run.StartedAt > 0);
+		var hasDuration = run.StartedAt > 0;
+		if (row.Duration.IsVisible != hasDuration)
+		{
+			row.Duration.IsVisible(hasDuration);
+		}
+
 		if (row.Tokens != run.Tokens || row.Cost != run.Cost)
 		{
-			var usage = Strings.SubagentUsage(run.Tokens, run.Cost);
-			if (!string.Equals(row.Usage.Text, usage, StringComparison.Ordinal))
-			{
-				row.Usage.Text(usage);
-			}
-
-			row.Usage.IsVisible(usage.Length > 0);
+			SetText(row.Usage, Strings.SubagentUsage(run.Tokens, run.Cost));
 			row = row with { Tokens = run.Tokens, Cost = run.Cost };
 		}
 
-		if (row.Progress is { } progress)
+		if (!string.Equals(row.ActivityValue, run.Activity, StringComparison.Ordinal))
 		{
-			var text = run.Progress is { Length: > 0 } value
-				? $"{Strings.SubagentProgress}：{value}"
-				: string.Empty;
-			if (!string.Equals(progress.Text, text, StringComparison.Ordinal))
-			{
-				progress.Text(text);
-			}
+			SetText(row.Activity, ActivityText(run));
+			row = row with { ActivityValue = run.Activity };
+		}
 
-			progress.IsVisible(text.Length > 0);
+		if (row.Progress is { } progress &&
+			!string.Equals(row.ProgressValue, run.Progress, StringComparison.Ordinal))
+		{
+			SetText(progress, run.Progress is { Length: > 0 } value ? $"{Strings.SubagentProgress}：{value}" : string.Empty);
+			row = row with { ProgressValue = run.Progress };
+		}
+
+		if (!ReferenceEquals(row.ResultValue, run.Result))
+		{
+			SetText(row.Failure, FailurePreview(run, row.Expanded));
+			row = row with { ResultValue = run.Result };
 		}
 
 		return row;
 	}
 
-	/// 运行中加一句「在干什么」：只有状态与轮数时，长任务看着像卡住了。
-	/// 历史项仍显示最后状态；能不能继续由「可继续」标出来。
+	/// 写文本顺手同步可见性：空串的行不该占位，而每次刷新重复写同一个值只会白跑一遍布局脏标记。
+	private static void SetText(TextBlock block, string text)
+	{
+		if (string.Equals(block.Text, text, StringComparison.Ordinal))
+		{
+			return;
+		}
+
+		block.Text(text);
+		block.IsVisible(text.Length > 0);
+	}
+
+	/// 状态字只留状态与轮数：当前工具与进度各占一行，挤进同一句只会互相挤掉。
+	/// 「可继续」是能力不是状态，单独上弱色，不跟着失败一起变红。
 	private static string StatusText(SubagentRun run)
 	{
 		if (run.AwaitingUser)
@@ -248,23 +302,48 @@ internal sealed class SubagentCard
 		}
 
 		var phase = Strings.SubagentStateText(run.State);
-		if (run.Activity is { Length: > 0 } activity)
+		return run.Turns > 0 ? $"{phase} · {Strings.LinkedTurns(run.Turns)}" : phase;
+	}
+
+	private static string ResumableText(SubagentRun run) =>
+		run.Restored && run.SessionFile is { Length: > 0 } ? $"· {Strings.SubagentResumable}" : string.Empty;
+
+	/// 运行中的当前工具（<c>read src/Auth.cs</c>）；结束后清空，历史项不显示。
+	private static string ActivityText(SubagentRun run) =>
+		run.IsActive && !run.AwaitingUser ? run.Activity ?? string.Empty : string.Empty;
+
+	/// 失败行的原因：展开时交给「失败原因」段，收起时只留一行。
+	/// 直接在结果文本的 span 上截首行，不在长正文上先复制一份再裁剪。
+	private static string FailurePreview(SubagentRun run, bool expanded)
+	{
+		if (expanded || run.State != SubagentState.Failed || run.Result is not { Length: > 0 } result)
 		{
-			return $"{phase} · {activity}";
+			return string.Empty;
 		}
 
-		if (run.Progress is { Length: > 0 } progress)
+		var end = result.IndexOf('\n');
+		var line = (end < 0 ? result.AsSpan() : result.AsSpan(0, end)).Trim();
+		return line.Length <= FailurePreviewChars
+			? line.ToString()
+			: string.Concat(line[..FailurePreviewChars], "…");
+	}
+
+	/// 状态图标：颜色与形状都表意，文字再写一遍状态名，色弱也读得出。
+	private static string StateIcon(SubagentRun run)
+	{
+		if (run.AwaitingUser)
 		{
-			return $"{phase} · {progress}";
+			return "circle-question-mark";
 		}
 
-		var meta = $"{phase} · {Strings.LinkedTurns(run.Turns)}";
-		if (run.Restored && run.SessionFile is { Length: > 0 })
+		return run.State switch
 		{
-			meta += $" · {Strings.SubagentResumable}";
-		}
-
-		return meta;
+			SubagentState.Starting => "circle-dashed",
+			SubagentState.Running => "loader-circle",
+			SubagentState.Idle => "circle-check",
+			SubagentState.Failed => "x",
+			_ => "square-slash",
+		};
 	}
 
 	private static string StatusRole(SubagentRun run)
@@ -284,40 +363,30 @@ internal sealed class SubagentCard
 		};
 	}
 
-	private (Border Row, RowState Meta) Row(SubagentRun run)
+	private (UIElement Row, RowState Meta) Row(SubagentRun run)
 	{
 		var expanded = _expanded.Contains(run.Name);
-		var icon = AppIcons.Icon(
-			"sparkles",
-			run.Restored ? AppStyles.RoleFaint : StatusRole(run),
-			13);
+		var role = StatusRole(run);
+
+		// 状态图标承担颜色与形状，状态字再写一遍：色弱和截图里都读得出。
+		// 不做旋转：子代理可能跑十分钟，AnimationClock 会把宿主拖进持续重绘；右侧的秒表已经在动。
+		var glyph = AppIcons.Icon(StateIcon(run), role, 14);
+		glyph.VerticalAlignment = VerticalAlignment.Top;
+		glyph.Margin(new Thickness(0, 2, 0, 0));
 
 		var name = new TextBlock()
 			.Text(run.Name)
 			.FontSize(AppTheme.FontSizeCaption)
+			.FontWeight(FontWeight.Medium)
 			.PrimaryText()
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.VerticalAlignment(VerticalAlignment.Center);
 		var label = new TextBlock()
 			.Text(run.Label)
 			.FontSize(AppTheme.FontSizeMicro)
-			.SubtleText()
+			.MutedText()
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.VerticalAlignment(VerticalAlignment.Center);
-		var title = new Grid()
-			.Columns("Auto,*")
-			.Spacing(6)
-			.Children(name.Column(0), label.Column(1));
-
-		var status = new TextBlock()
-			.Text(StatusText(run))
-			.FontSize(AppTheme.FontSizeMicro)
-			.Role(StatusRole(run))
-			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.VerticalAlignment(VerticalAlignment.Center);
-		var info = new StackPanel()
-			.Spacing(1)
-			.Children(title, status);
 
 		var duration = new LiveDurationText(run.StartedAt, EndedAt(run))
 		{
@@ -326,88 +395,139 @@ internal sealed class SubagentCard
 			HorizontalAlignment = HorizontalAlignment.Right,
 		};
 		duration.SubtleText();
+		if (run.IsActive)
+		{
+			// 运行中的秒表每 100 ms 换一次字宽；固定最小宽，右侧用量与展开键不跟着跳。
+			duration.TextAlignment(TextAlignment.Right).MinWidth(44);
+		}
+
 		duration.IsVisible(run.StartedAt > 0);
 		var usageText = Strings.SubagentUsage(run.Tokens, run.Cost);
 		var usage = new TextBlock()
 			.Text(usageText)
 			.FontSize(AppTheme.FontSizeMicro)
+			.FontFamily(AppTheme.MonoFont)
 			.SubtleText()
 			.HorizontalAlignment(HorizontalAlignment.Right)
 			.VerticalAlignment(VerticalAlignment.Center);
 		usage.IsVisible(usageText.Length > 0);
-		var stats = new StackPanel()
-			.Spacing(1)
-			.HorizontalAlignment(HorizontalAlignment.Right)
-			.Children(duration, usage);
 
-		var chevron = new GlyphElement()
-			.Kind(expanded ? GlyphKind.ChevronUp : GlyphKind.ChevronDown)
-			.GlyphSize(3)
-			.VerticalAlignment(VerticalAlignment.Center)
-			.WithTheme((theme, element) => element.Foreground = AppTheme.For(theme).TextSubtle);
+		var titleLine = new Grid()
+			.Columns("Auto,*,Auto,Auto")
+			.Spacing(6)
+			.Children(name.Column(0), label.Column(1), duration.Column(2), usage.Column(3));
+
+		var status = new TextBlock()
+			.Text(StatusText(run))
+			.FontSize(AppTheme.FontSizeMicro)
+			.Role(role)
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		var resumableText = ResumableText(run);
+		var resumable = new TextBlock()
+			.Text(resumableText)
+			.FontSize(AppTheme.FontSizeMicro)
+			.SubtleText()
+			.VerticalAlignment(VerticalAlignment.Center);
+		resumable.IsVisible(resumableText.Length > 0);
+		var identity = new TextBlock()
+			.Text(IdentityLine(run))
+			.FontSize(AppTheme.FontSizeMicro)
+			.FontFamily(AppTheme.MonoFont)
+			.SubtleText()
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		var statusLine = new Grid()
+			.Columns("Auto,Auto,*")
+			.Spacing(4)
+			.Children(status.Column(0), resumable.Column(1), identity.Column(2));
+
+		var activityText = ActivityText(run);
+		var activity = new TextBlock()
+			.Text(activityText)
+			.FontSize(AppTheme.FontSizeMicro)
+			.FontFamily(AppTheme.MonoFont)
+			.SubtleText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		activity.IsVisible(activityText.Length > 0);
+
+		var failureText = FailurePreview(run, expanded);
+		var failure = new TextBlock()
+			.Text(failureText)
+			.FontSize(AppTheme.FontSizeMicro)
+			.ErrorText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		failure.IsVisible(failureText.Length > 0);
+
+		var content = new StackPanel()
+			.Spacing(1)
+			.Children(
+				titleLine,
+				statusLine,
+				activity,
+				failure,
+				new TextBlock()
+					.Text(Strings.SubagentAwaitingHint)
+					.FontSize(AppTheme.FontSizeMicro)
+					.Role(AppStyles.RoleWarning)
+					.TextWrapping(TextWrapping.Wrap)
+					.IsVisible(run.AwaitingUser));
 
 		var header = new Button()
 			.Ghost()
-			.Padding(new Thickness(0))
+			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space1, AppTheme.Space1))
 			.Content(new Grid()
-				.Columns("Auto,*,Auto,Auto")
-				.Spacing(8)
-				.Children(icon.Column(0), info.Column(1), stats.Column(2), chevron.Column(3)))
+				.Columns("Auto,*")
+				.Spacing(6)
+				.Children(glyph.Column(0), content.Column(1)))
 			.OnClick(() => Toggle(run.Name))
 			.HoverTip(run.Result is { Length: > 0 } result ? $"{run.Agent}：{Preview(result)}" : $"{run.Agent}：{run.Label}")
 			.HorizontalAlignment(HorizontalAlignment.Stretch);
 
-		var grid = new Grid()
-			.Columns("*,Auto,Auto")
-			.Spacing(4)
-			.Children(header.Column(0));
-
+		var actions = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.HorizontalAlignment(HorizontalAlignment.Right);
 		if (run.SessionId.Length > 0)
 		{
-			grid.Children(AppIcons.Button("external-link", Strings.LinkedOpen, () => _openChild?.Invoke(run.SessionId), size: 12)
-				.Column(1)
+			actions.Children(AppIcons.Button("external-link", Strings.LinkedOpen, () => _openChild?.Invoke(run.SessionId), size: 12)
 				.VerticalAlignment(VerticalAlignment.Center));
 		}
 
 		if (run.IsActive)
 		{
-			grid.Children(
+			actions.Children(
 				AppIcons.Button("square-slash", Strings.SubagentStop, () =>
 					{
 						if (_stopChild is not { } stop || !stop(run.Name))
 						{
 							_failed?.Invoke(Strings.SubagentStopFailed(run.Name));
 						}
-					})
-					.Column(2)
+					}, size: 12)
 					.VerticalAlignment(VerticalAlignment.Center));
 		}
 
+		var chevron = new Button()
+			.Ghost()
+			.Padding(new Thickness(AppTheme.Space1))
+			.Content(new GlyphElement()
+				.Kind(expanded ? GlyphKind.ChevronUp : GlyphKind.ChevronDown)
+				.GlyphSize(3)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.WithTheme((theme, element) => element.Foreground = AppTheme.For(theme).TextSubtle))
+			.OnClick(() => Toggle(run.Name))
+			.VerticalAlignment(VerticalAlignment.Center);
+
+		var head = new Grid()
+			.Columns("*,Auto,Auto")
+			.Spacing(2)
+			.Children(header.Column(0), actions.Column(1), chevron.Column(2));
+
 		var body = new List<UIElement>(5);
-		var metaLine = MetaLine(run);
-		if (metaLine.Length > 0)
-		{
-			body.Add(new TextBlock()
-				.Text(metaLine)
-				.FontSize(AppTheme.FontSizeMicro)
-				.FontFamily(AppTheme.MonoFont)
-				.SubtleText()
-				.TextWrapping(TextWrapping.Wrap));
-		}
-
-		if (run.AwaitingUser)
-		{
-			body.Add(new Border()
-				.StyleName(AppStyles.CardMuted)
-				.CornerRadius(AppTheme.RadiusSm)
-				.Padding(new Thickness(AppTheme.Space2))
-				.Child(new TextBlock()
-					.Text(Strings.SubagentAwaitingHint)
-					.FontSize(AppTheme.FontSizeMicro)
-					.Role(AppStyles.RoleWarning)
-					.TextWrapping(TextWrapping.Wrap)));
-		}
-
 		TextBlock? progress = null;
 		if (expanded)
 		{
@@ -426,7 +546,9 @@ internal sealed class SubagentCard
 
 			if (run.Result is { Length: > 0 } resultText)
 			{
-				body.Add(Section(Strings.SubagentResult, Clip(resultText, ResultPreviewChars)));
+				body.Add(Section(
+					run.State == SubagentState.Failed ? Strings.SubagentFailure : Strings.SubagentResult,
+					Clip(resultText, ResultPreviewChars)));
 			}
 
 			if (run.SessionFile is { Length: > 0 } file)
@@ -441,31 +563,42 @@ internal sealed class SubagentCard
 		}
 
 		var stack = new StackPanel()
-			.Spacing(4)
-			.Children([grid, .. body]);
+			.Spacing(2)
+			.Children(head);
+		if (body.Count > 0)
+		{
+			stack.Children(new StackPanel()
+				.Spacing(4)
+				.Margin(new Thickness(BodyIndent, 0, AppTheme.Space1, AppTheme.Space1))
+				.Children([.. body]));
+		}
 
-		var row = new Border()
-			.StyleName(AppStyles.CardMuted)
-			.CornerRadius(AppTheme.RadiusSm)
-			.Padding(new Thickness(AppTheme.Space1, AppTheme.Space1, AppTheme.Space1, AppTheme.Space1))
-			.Child(stack);
-
-		return (row, new RowState(
+		return (stack, new RowState(
 			run.Name,
 			run.SessionId,
 			run.SessionFile ?? string.Empty,
+			run.Agent,
+			run.Label,
 			run.Model,
 			run.Thinking,
 			run.State,
 			run.Restored,
 			run.AwaitingUser,
-			run.Tokens,
-			run.Cost,
-			StatusRole(run),
+			run.Turns,
+			expanded,
 			status,
+			resumable,
+			identity,
+			activity,
+			failure,
 			duration,
 			usage,
-			progress));
+			progress,
+			run.Tokens,
+			run.Cost,
+			run.Activity,
+			run.Progress,
+			run.Result));
 	}
 
 	private static long? EndedAt(SubagentRun run)
@@ -479,10 +612,9 @@ internal sealed class SubagentCard
 		return run.FinishedAt > run.StartedAt ? run.FinishedAt : run.StartedAt;
 	}
 
-	private static string MetaLine(SubagentRun run)
+	private static string IdentityLine(SubagentRun run)
 	{
-		var parts = new List<string>(4);
-		parts.Add(run.Agent);
+		List<string> parts = [run.Agent];
 		if (run.Model.Length > 0)
 		{
 			parts.Add(run.Model);
@@ -491,11 +623,6 @@ internal sealed class SubagentCard
 		if (run.Thinking.Length > 0 && !string.Equals(run.Thinking, "off", StringComparison.Ordinal))
 		{
 			parts.Add(run.Thinking);
-		}
-
-		if (EndedAt(run) is { } endedAt && endedAt > run.StartedAt)
-		{
-			parts.Add(Strings.SubagentElapsed(endedAt - run.StartedAt));
 		}
 
 		return string.Join(" · ", parts);

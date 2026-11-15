@@ -567,7 +567,7 @@ public sealed partial class SessionTab : IDisposable
 		_linkedSessionsCard = new LinkedSessionsCard();
 
 		// 子代理条：只列本会话开出的子代理，运行中可以停。
-		_subagentCard = new SubagentCard();
+		_subagentCard = new SubagentCard(OpenLinkedSession, StopSubagent, SubagentFailed);
 
 		// 目标条贴着输入卡（PiDeck 同位置）：目标属于下一轮的输入，不属于本轮结论。
 		_goalStrip = new GoalStripCard(PauseGoal, ResumeGoal, ConfirmClearGoal);

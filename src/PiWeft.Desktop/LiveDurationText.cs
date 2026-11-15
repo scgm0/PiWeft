@@ -53,6 +53,8 @@ internal sealed class LiveDurationText : TextBlock
 	private void Start()
 	{
 		if (_startedAt <= 0 || _endedAt > 0 || _clock is not null || _disposed || !Application.IsRunning) return;
+		// 还没挂到窗口的子树（正在构建、即将加入）不建表：挂上后的测量会再进来。
+		if (FindVisualRoot() is not Window) return;
 		// 折叠内容里的行可能被上层重新测量；真开始后下拍也会停，不如这里直接不建计时器。
 		if (StreamPump.HiddenByCollapsedExpander(this)) return;
 		_clock = new DispatcherTimer(TimeSpan.FromMilliseconds(TickIntervalMs));
@@ -75,7 +77,17 @@ internal sealed class LiveDurationText : TextBlock
 		// 其余不可见的拍只跳过写入，绝不停表：滚出视口再回来不会有测量来叫醒它，
 		// 停了读数就冻在离开那一刻（切走的标签页同理）。自己被显式隐藏时也不必写，
 		// 但要停表得由宿主收口跨度（见 AssistantMessageView）。
-		if (!IsVisible || !StreamPump.NeedsFrames(this)) return;
+		if (!IsVisible || !StreamPump.NeedsFrames(this))
+		{
+			// 例外：宿主重建或虚拟化回收会把元素从窗口摘掉，这时没有任何测量会再叫醒它。
+			// 停表；重新挂回会触发测量，MeasureContent 再 Start。
+			if (FindVisualRoot() is not Window)
+			{
+				Stop();
+			}
+
+			return;
+		}
 
 		UpdateText(NowMs());
 	}

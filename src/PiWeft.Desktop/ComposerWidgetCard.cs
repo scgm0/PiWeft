@@ -102,7 +102,14 @@ internal sealed class ComposerWidgetCard
 		}
 	}
 
-	public void Show(bool visible) => View.IsVisible(visible);
+	public void Show(bool visible)
+	{
+		// 同值写入同样会走一遍属性管线；子代理每有工具起止就刷一次，先比较再写。
+		if (View.IsVisible != visible)
+		{
+			View.IsVisible(visible);
+		}
+	}
 
 	private void Toggle()
 	{

@@ -100,9 +100,6 @@ public static partial class Strings
 
 	public static string LinkedTurns(int turns) => $"{turns} 轮";
 
-	/// 子代理卡的总耗时：从 delegate 到回合结束，含工具与等待，不是模型回复耗时。
-	public static string SubagentElapsed(double milliseconds) => $"总耗时 {FormatDuration(milliseconds)}";
-
 	public static string SubagentUsage(long tokens, double cost)
 	{
 		var usage = tokens > 0 ? $"{TrajectoryFormat.CompactTokens(tokens)} tk" : string.Empty;
@@ -158,6 +155,9 @@ public static partial class Strings
 	public const string SubagentBrief = "任务";
 
 	public const string SubagentResult = "最近回复";
+
+	/// <summary>失败行的展开段取这个标题：那里的正文是错误原因，不是助手回复。</summary>
+	public const string SubagentFailure = "失败原因";
 
 	public static string SubagentAwaitingInput(string name) => $"子代理「{name}」在等你回答。";
 
