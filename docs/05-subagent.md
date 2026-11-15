@@ -160,7 +160,7 @@ You review HTTP handlers. Report findings with file and line references.
 - 角色目录每个会话建一次，`FrozenDictionary` 查找；子代理复用父会话的目录与资源快照，不重扫技能与模板目录。
 - `System.Threading.Lock` 保护 hub 状态，事件回调返回 `ValueTask`。
 - `wait_subagents` 用 .NET 9 的 `Task.WhenEach`：完成一个就推进一次，另有一条 5 秒心跳只负责「还在跑」的进度；截止时间用 `CancellationTokenSource.CancelAfter` 表达，超时只停止等待，子代理继续跑。
-- 桌面子代理卡按结构比较：行数、名字、角色、轮数、会话 id、状态变了才重建行；活动、进度、用量、失败原因先比源值再写文本，稳定期每次刷新只剩一份 hub 快照数组（单行约 40 B，`SubagentCardTests` 守着这个下限），不拼字符串也不改布局。重建时旧行 `UiLifetime.Release`，行里的 100 ms 秒表不会留到进程结束；`LiveDurationText` 也从窗口摘掉即停表。
+- 桌面子代理卡按结构比较：行数、名字、角色、轮数、会话 id、状态变了才重建行；活动、进度、用量、失败原因先比源值再写文本。易变列放在可变的 `LiveState` 里原地写，不用 record `with` 复制整行；稳定期每次刷新只剩一份 hub 快照数组（单行约 40 B，`SubagentCardTests` 守着这个下限），不拼字符串也不改布局。重建时旧行 `UiLifetime.Release`，行里的 100 ms 秒表不会留到进程结束；`LiveDurationText` 也从窗口摘掉即停表。
 - 结果投递有 200ms 合并窗口，N 个子代理同时结束只拉起一轮父会话；投递走 `Task.Run`，不捕获 UI 上下文。
 - 结果截断用 span，不切数组；正文超过 12k 字符只保留头部并指向子会话文件。工具结果 `Details` 里给界面卡片留的正文压到 4k，避免同一段正文在会话文件里存两份。
 - 全部代码无反射、无动态、无第三方依赖，NativeAOT 安全。

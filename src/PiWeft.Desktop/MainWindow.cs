@@ -1652,7 +1652,6 @@ public sealed partial class MainWindow : Window
 			case SessionTab active:
 				_lastSessionTab = active;
 				RestoreSelection(active.Session.Session.SessionId);
-				UpdateTabHeaders();
 				UpdateProjectCaption();
 				return;
 		}

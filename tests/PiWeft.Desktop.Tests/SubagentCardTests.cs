@@ -3,6 +3,7 @@ using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Subagents;
+using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
@@ -210,6 +211,50 @@ public sealed class SubagentCardTests : IDisposable
 
 		Assert.False(tab.SubagentCardVisible);
 		Assert.Equal(0, tab.SubagentCardRowCount);
+	}
+
+	[Fact]
+	public void WheelOverALongListGlidesInsteadOfJumping()
+	{
+		// 卡片常驻在输入框上方：17 个子代理时一屏只看得到三行多，滚动得逐格落下而不是瞬移。
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(Enumerable.Range(0, 17).Select(index => new SubagentRun
+		{
+			Name = $"scout-{index}",
+			SessionId = $"subagent-{index}",
+			Agent = "scout",
+			Label = $"任务 {index}",
+			Model = "test/test-model",
+			State = SubagentState.Idle,
+			Turns = 1,
+			Tokens = 1_000,
+			Cost = 0.001,
+			StartedAt = 1_000 + index,
+			FinishedAt = 2_000 + index,
+		}).ToArray());
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var scroll = Find<ScrollViewer>(card.View).Single(view => view.Content is StackPanel);
+			var smooth = Assert.IsType<SmoothScroll>(SmoothScroll.Find(scroll));
+			var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+			Assert.True(smooth.MaxVerticalOffset > step, "17 行应该撑出可滚范围");
+
+			var wheel = new MouseWheelEventArgs(
+				new Point(0, 0), new Point(0, 0), new Vector(0, -1),
+				leftButton: false, rightButton: false, middleButton: false, modifiers: ModifierKeys.None);
+			smooth.RouteWheel(wheel);
+
+			Assert.True(wheel.Handled);
+			Assert.True(smooth.IsAnimating, "滚轮应交给平滑滚动，而不是由 ScrollViewer 瞬移一格");
+			Assert.Equal(step, smooth.TargetVerticalOffset);
+			Assert.True(scroll.VerticalOffset < step, "落位要经过动画，不能在一帧内跳到目标");
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
 	}
 
 	private static async Task WaitForIdleAsync(SubagentHub hub, string name) =>

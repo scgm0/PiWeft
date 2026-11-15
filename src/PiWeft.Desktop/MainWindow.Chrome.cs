@@ -42,7 +42,7 @@ public sealed partial class MainWindow
 
 	private DockPanel _sidebarColumn = null!;
 
-	private StackPanel _titleTabs = null!;
+	private TitleTabStrip _titleTabStrip = null!;
 
 	private Button _showSidebarButton = null!;
 
@@ -80,9 +80,10 @@ public sealed partial class MainWindow
 
 	private readonly List<TitleTabView> _titleTabViews = [];
 
-	private string _titleBarTabTitles = string.Empty;
-
 	private int _titleBarSelectedIndex = -1;
+
+	// 选中项按条目而不是索引认：关掉前面的标签会让索引变，选中的人没变。
+	private object? _titleBarSelectedEntry;
 
 	private Color? _nativeBorderColor;
 
@@ -210,25 +211,19 @@ public sealed partial class MainWindow
 		_showSidebarButton = BuildChromeIconButton("panel-left", Strings.ToggleSidebar, ToggleSidebar);
 		_showSidebarButton.Margin(new Thickness(6, 0, 4, 0)).IsVisible(false);
 
-		_titleTabs = new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(2)
-			.VerticalAlignment(VerticalAlignment.Center);
+		_titleTabStrip = new TitleTabStrip();
 
 		var newTabButton = BuildChromeGlyphButton(
 			GlyphKind.Plus,
 			Strings.NewSession,
 			NewSessionFromCurrentView);
-		newTabButton.Margin(new Thickness(4, 0, 0, 0));
+		newTabButton.Margin(new Thickness(4, 0, 0, 0)).VerticalAlignment(VerticalAlignment.Center);
 
-		var tabsRow = new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.HorizontalAlignment(HorizontalAlignment.Left)
-			.VerticalAlignment(VerticalAlignment.Center)
-			.Children(_titleTabs, newTabButton);
-
-		// 页签与按钮之外的空白仍属于标题栏拖动区；页签过多时裁切，避免压到窗口按钮。
-		var tabArea = new Grid { ClipToBounds = true }.Children(tabsRow);
+		// 页签条超出宽度时横向滚动；加号固定在右端，页签再多也够得到。
+		// 页签与按钮之外的空白仍属于标题栏拖动区（ScrollViewer 自己不拦左键）。
+		var tabArea = new Grid { ClipToBounds = true }
+			.Columns("*,Auto")
+			.Children(_titleTabStrip.View.Column(0), newTabButton.Column(1));
 
 		// 右段工具组：唤醒键 + 命令入口。窗口按钮在窗框顶层（BuildWindowActionsOverlay），
 		// 面板展开时它们落在面板页签右端，收起时落在主标题栏右端。
@@ -389,10 +384,11 @@ public sealed partial class MainWindow
 			.HoverTip(tip);
 	}
 
-	/// 标题栏页签的签名检查：只有标签集合、标题或选中项变化时才重建，流式状态刷新不会打断焦点。
+	/// 标题栏页签的签名检查：条目变化才重建，标题与选中项在原控件上更新，
+	/// 流式状态刷新不会换掉按钮，也不会丢焦点和悬停提示。
 	private void SyncTitleBarTabs(bool force = false)
 	{
-		if (_titleTabs is null)
+		if (_titleTabStrip is null)
 		{
 			return;
 		}
@@ -411,39 +407,76 @@ public sealed partial class MainWindow
 			}
 		}
 
-		var titles = string.Join('\u001f', _tabEntries.Select(EntryTitle));
-		var titlesChanged = titles != _titleBarTabTitles;
 		var selectionChanged = selected != _titleBarSelectedIndex;
-		if (!force && sameEntries && !titlesChanged && !selectionChanged)
+		var selectedEntry = selected >= 0 && selected < _tabEntries.Count ? _tabEntries[selected] : null;
+		var entryChanged = !ReferenceEquals(selectedEntry, _titleBarSelectedEntry);
+
+		if (!force && sameEntries)
 		{
+			// 标题变化（子代理等待圆点、会话标题）只改文字：不重建按钮，宽度变化交给布局。
+			var selectedTitleChanged = UpdateTitleBarTabTitles(selected);
+			if (selectionChanged)
+			{
+				_titleBarSelectedIndex = selected;
+				_titleBarSelectedEntry = selectedEntry;
+				UpdateTitleBarTabSelection(selected);
+			}
+			else if (selectedTitleChanged && selected >= 0 && selected < _titleTabViews.Count)
+			{
+				// 当前页签变宽（标题从「新会话」变成任务名）可能把行尾关闭键挤出视口。
+				_titleTabStrip.Reveal(_titleTabViews[selected].Button);
+			}
+
 			return;
 		}
 
-		// 只有选中项变化：原位更新样式，不重建控件，鼠标/键盘焦点留在页签上。
-		if (!force && sameEntries && !titlesChanged)
-		{
-			_titleBarSelectedIndex = selected;
-			UpdateTitleBarTabSelection(selected);
-			return;
-		}
-
+		// 条目换了（新开/关闭/重排）：整条重建，不能把读者手动滚到的位置抢回去。
+		// 只有选中项换了一个条目才把当前页签滚进视口；关掉别的标签只让索引变化，
+		// 读者看到的位置保持不动。
+		var reveal = force || entryChanged;
 		_titleBarTabEntries.Clear();
 		_titleBarTabEntries.AddRange(_tabEntries);
-		_titleBarTabTitles = titles;
 		_titleBarSelectedIndex = selected;
-		RebuildTitleBarTabs(selected);
+		_titleBarSelectedEntry = selectedEntry;
+		RebuildTitleBarTabs(selected, reveal || _titleTabStrip.HasPendingReveal);
 	}
 
-	private void RebuildTitleBarTabs(int selected)
+	/// 标题是页签里唯一会原地变的文字；改完不重排整条按钮。返回值表示当前页签是否变了宽度。
+	private bool UpdateTitleBarTabTitles(int selected)
 	{
-		_titleTabs.Clear();
+		var selectedChanged = false;
+		for (var index = 0; index < _titleTabViews.Count; index++)
+		{
+			var view = _titleTabViews[index];
+			var title = EntryTitle(_tabEntries[index]);
+			if (string.Equals(view.Label.Text, title, StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			view.Label.Text(title);
+			HoverHints.Set(view.Button, title);
+			selectedChanged |= index == selected;
+		}
+
+		return selectedChanged;
+	}
+
+	private void RebuildTitleBarTabs(int selected, bool reveal)
+	{
+		_titleTabStrip.Clear();
 		_titleTabViews.Clear();
 
 		for (var index = 0; index < _tabEntries.Count; index++)
 		{
 			var view = BuildTitleTab(_tabEntries[index], index == selected);
 			_titleTabViews.Add(view);
-			_titleTabs.Add(view.Button);
+			_titleTabStrip.Add(view.Button);
+		}
+
+		if (reveal && selected >= 0 && selected < _titleTabViews.Count)
+		{
+			_titleTabStrip.Reveal(_titleTabViews[selected].Button);
 		}
 	}
 
@@ -455,6 +488,12 @@ public sealed partial class MainWindow
 			var active = index == selected;
 			view.Button.StyleName(active ? AppStyles.TitleBarTabActive : AppStyles.TitleBarTab);
 			view.Close.IsVisible(active);
+		}
+
+		// 快捷键 Ctrl+1…9 可能选中被滚出视口的页签；切完把它滚回来。
+		if (selected >= 0 && selected < _titleTabViews.Count)
+		{
+			_titleTabStrip.Reveal(_titleTabViews[selected].Button);
 		}
 	}
 
@@ -497,10 +536,11 @@ public sealed partial class MainWindow
 			}
 		});
 
-		return new TitleTabView(tab, close);
+		return new TitleTabView(tab, close, label);
 	}
 
-	private sealed record TitleTabView(Button Button, Button Close);
+	// 三个引用的小视图元组：每次重建按值放进列表，不再为每个页签多建一个对象。
+	private readonly record struct TitleTabView(Button Button, Button Close, TextBlock Label);
 
 	private Button BuildTitleTabClose(object entry)
 	{
@@ -530,7 +570,9 @@ public sealed partial class MainWindow
 
 		if (_tabControl.SelectedIndex != index)
 		{
+			// TabControl 的 SelectionChanged 已经跑过一遍 UpdateStatus，这里再调会把页签条扫第二遍。
 			_tabControl.SelectedIndex = index;
+			return;
 		}
 
 		UpdateStatus();

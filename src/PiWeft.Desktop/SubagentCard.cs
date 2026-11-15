@@ -57,11 +57,18 @@ internal sealed class SubagentCard
 		LiveDurationText Duration,
 		TextBlock Usage,
 		TextBlock? Progress,
-		long Tokens,
-		double Cost,
-		string? ActivityValue,
-		string? ProgressValue,
-		string? ResultValue);
+		LiveState Live);
+
+	// 每个工具起止都会变的源值放可变对象：每次刷新原地改，
+	// 不用 record with 复制整行（结构字段与控制引用占了二十多项）。
+	private sealed class LiveState(long tokens, double cost, string? activity, string? progress, string? result)
+	{
+		public long Tokens { get; set; } = tokens;
+		public double Cost { get; set; } = cost;
+		public string? ActivityValue { get; set; } = activity;
+		public string? ProgressValue { get; set; } = progress;
+		public string? ResultValue { get; set; } = result;
+	}
 
 	public SubagentCard(Action<string> openChild, Func<string, bool> stopChild, Action<string> failed)
 	{
@@ -71,7 +78,9 @@ internal sealed class SubagentCard
 		_failed = failed;
 		_rows.Spacing(6);
 		_card = new ComposerWidgetCard("sparkles", Strings.SubagentCardTitle);
+		// 二十行共用 180 DIP 视口，滚轮瞬移会看丢当前行；与其它浮层一样走平滑滚动。
 		_card.Body.Children(new ScrollViewer()
+			.SmoothScrolling()
 			.Content(_rows)
 			.AutoVerticalScroll()
 			.NoHorizontalScroll()
@@ -159,7 +168,7 @@ internal sealed class SubagentCard
 		{
 			for (var index = 0; index < displayCount; index++)
 			{
-				_rendered[index] = SetMeta(_rendered[index], ordered[index]);
+				SetMeta(_rendered[index], ordered[index]);
 			}
 
 			return;
@@ -242,8 +251,8 @@ internal sealed class SubagentCard
 	}
 
 	/// 结构没变时只写会变的那几样：当前工具、进度、用量、失败原因、秒表。
-	/// 每次都先比源值，字符串只在真变了才拼；刷新高峰（每个工具起止都推一次）不产生垃圾。
-	private static RowState SetMeta(RowState row, SubagentRun run)
+	/// 每次都先比源值，字符串只在真变了才拼；变化路径不复制整行，只有文本格式化本身会分配。
+	private static void SetMeta(RowState row, SubagentRun run)
 	{
 		row.Duration.SetSpan(run.StartedAt, EndedAt(run));
 		var hasDuration = run.StartedAt > 0;
@@ -252,32 +261,32 @@ internal sealed class SubagentCard
 			row.Duration.IsVisible(hasDuration);
 		}
 
-		if (row.Tokens != run.Tokens || row.Cost != run.Cost)
+		var live = row.Live;
+		if (live.Tokens != run.Tokens || live.Cost != run.Cost)
 		{
 			SetText(row.Usage, Strings.SubagentUsage(run.Tokens, run.Cost));
-			row = row with { Tokens = run.Tokens, Cost = run.Cost };
+			live.Tokens = run.Tokens;
+			live.Cost = run.Cost;
 		}
 
-		if (!string.Equals(row.ActivityValue, run.Activity, StringComparison.Ordinal))
+		if (!string.Equals(live.ActivityValue, run.Activity, StringComparison.Ordinal))
 		{
 			SetText(row.Activity, ActivityText(run));
-			row = row with { ActivityValue = run.Activity };
+			live.ActivityValue = run.Activity;
 		}
 
 		if (row.Progress is { } progress &&
-			!string.Equals(row.ProgressValue, run.Progress, StringComparison.Ordinal))
+			!string.Equals(live.ProgressValue, run.Progress, StringComparison.Ordinal))
 		{
 			SetText(progress, run.Progress is { Length: > 0 } value ? $"{Strings.SubagentProgress}：{value}" : string.Empty);
-			row = row with { ProgressValue = run.Progress };
+			live.ProgressValue = run.Progress;
 		}
 
-		if (!ReferenceEquals(row.ResultValue, run.Result))
+		if (!ReferenceEquals(live.ResultValue, run.Result))
 		{
 			SetText(row.Failure, FailurePreview(run, row.Expanded));
-			row = row with { ResultValue = run.Result };
+			live.ResultValue = run.Result;
 		}
-
-		return row;
 	}
 
 	/// 写文本顺手同步可见性：空串的行不该占位，而每次刷新重复写同一个值只会白跑一遍布局脏标记。
@@ -594,11 +603,7 @@ internal sealed class SubagentCard
 			duration,
 			usage,
 			progress,
-			run.Tokens,
-			run.Cost,
-			run.Activity,
-			run.Progress,
-			run.Result));
+			new LiveState(run.Tokens, run.Cost, run.Activity, run.Progress, run.Result)));
 	}
 
 	private static long? EndedAt(SubagentRun run)

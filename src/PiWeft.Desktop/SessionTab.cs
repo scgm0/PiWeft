@@ -537,6 +537,7 @@ public sealed partial class SessionTab : IDisposable
 
 		_todoRows.Spacing(6);
 		_todoScroll = new ScrollViewer()
+			.SmoothScrolling()
 			.Content(_todoRows)
 			.AutoVerticalScroll()
 			.NoHorizontalScroll()
@@ -548,6 +549,7 @@ public sealed partial class SessionTab : IDisposable
 		// 排队条只列尚未投递给模型的消息；高度上限与待办卡同口径，多条时在卡内滚动。
 		_queueCard = new ComposerWidgetCard("list-ordered", Strings.QueuedMessagesTitle);
 		_queueCard.Body.Children(new ScrollViewer()
+			.SmoothScrolling()
 			.Content(_queueRows)
 			.AutoVerticalScroll()
 			.NoHorizontalScroll()
@@ -557,6 +559,7 @@ public sealed partial class SessionTab : IDisposable
 		_extensionBody.Spacing(AppTheme.Space2);
 		_extensionCard = new ComposerWidgetCard("package", Strings.ExtensionWidgetsTitle);
 		_extensionCard.Body.Children(new ScrollViewer()
+			.SmoothScrolling()
 			.Content(_extensionBody)
 			.AutoVerticalScroll()
 			.NoHorizontalScroll()
