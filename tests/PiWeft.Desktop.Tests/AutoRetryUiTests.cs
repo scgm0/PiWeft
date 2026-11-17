@@ -50,4 +50,38 @@ public sealed class AutoRetryUiTests
 		Assert.Null(tab.Chat.TakeRetryNotice());
 		Assert.Null(tab.Chat.Error);
 	}
+
+	[Fact]
+	public async Task BackgroundTurnKeepsThePrimaryButtonOnAbortDuringBackoff()
+	{
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		var model = FakeStreams.Model();
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = manager.Cwd, Session = manager, Model = model, Tools = [], Skills = [], PromptTemplates = [], Persist = false,
+			Settings = new CodingAgentSettings { Retry = new RetryPolicy(BaseDelayMs: 5_000) },
+			StreamFn = (streamModel, _, _) => FakeStreams.Error(streamModel, "Service Unavailable"),
+		});
+		using var tab = new SessionTab(session, [model], "background-retry");
+
+		// 后台注入的一轮（关联会话回报同路径）不经过标签的 _sending。
+		var run = session.PromptAsync("hi");
+		for (var attempt = 0; attempt < 300 && tab.Chat.Retry is null; attempt++)
+		{
+			await Task.Delay(10);
+		}
+
+		Assert.NotNull(tab.Chat.Retry);
+		tab.RenderForTests();
+
+		// 退避也是这一轮的一部分：主按钮仍在中断，状态条报重试倒计时，不假装空闲。
+		Assert.Equal(Strings.Abort, tab.PrimaryLabelForTests);
+		Assert.Equal(RespondingKind.Retrying, tab.BusyStatus?.Kind);
+
+		// 点主按钮就中止退避，不能落到 Send（） 上再撞一次「已在运行」。
+		tab.PrimaryActionForTests();
+		await run.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+		Assert.Equal(Strings.Send, tab.PrimaryLabelForTests);
+	}
 }

@@ -62,6 +62,35 @@ public class QueueModeTests
 	}
 
 	[Fact]
+	public void HasPendingUserInputIgnoresInjectedContext()
+	{
+		var agent = new Agent(new AgentOptions
+		{
+			Model = FakeStream.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+		});
+
+		Assert.False(agent.HasPendingUserInput());
+
+		// 注入的回报只是上下文：它不占用户的发送位。
+		agent.Steer(new UserMessage
+		{
+			CustomType = "linked-report",
+			Content = MessageContent.FromText("report"),
+			Timestamp = 1,
+		});
+		Assert.False(agent.HasPendingUserInput());
+
+		// 两条队列都算：用户写的东西还没投递给模型。
+		agent.FollowUp(new UserMessage { Content = MessageContent.FromText("b"), Timestamp = 2 });
+		Assert.True(agent.HasPendingUserInput());
+
+		agent.ClearQueue();
+		agent.Steer(new UserMessage { Content = MessageContent.FromText("c"), Timestamp = 3 });
+		Assert.True(agent.HasPendingUserInput());
+	}
+
+	[Fact]
 	public void RemoveQueuedDropsOnlyThatMessageAndKeepsOrder()
 	{
 		var agent = new Agent(new AgentOptions

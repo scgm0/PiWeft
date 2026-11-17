@@ -3979,12 +3979,19 @@ public sealed partial class CodingAgentSession : IDisposable
 		return messages;
 	}
 
-	/// <summary>上一轮是否停在可继续的位置：请求失败或输出被截断。</summary>
+	/// <summary>上一轮是否停在可继续的位置：瞬态失败或输出被截断。</summary>
 	public bool CanContinueGeneration()
 	{
 		// IsRunning 比 _agent.IsStreaming 早：自动压缩、请求准备期间还没有流，
 		// 但跑已经开始了，再起一轮会被代理当成重入。
 		if (_agent.IsStreaming || IsRunning)
+		{
+			return false;
+		}
+
+		// 用户写好的消息还没投递：继续会插到它前面，顺序就变了。
+		// 注入的上下文不拦，它会随继续这次请求一起交给模型。
+		if (_agent.HasPendingUserInput())
 		{
 			return false;
 		}
@@ -3997,12 +4004,15 @@ public sealed partial class CodingAgentSession : IDisposable
 				case UserMessage user when user.CustomType == PiWeftProtocol.ContinueGenerationRole:
 					// 上一次继续留下的空标记不结束资格：它自己没产出任何消息时还能再点一次。
 					continue;
-				case UserMessage:
+				case UserMessage { IsUserAuthored: true }:
 					return false;
+				case UserMessage:
+					// 注入的上下文（回报、模式续轮）不重置资格。
+					continue;
 				case AssistantMessage assistant:
 					// 主动中断不接：Aborted 的助手消息在重放时被丢弃（半截推理与不完整工具调用不能回放），
 					// 「继续」会静默变成重新提问，跟标题栏的「重试」重复。
-					return assistant.StopReason is StopReason.Error or StopReason.Length;
+					return ContinuationPolicy.IsContinuable(assistant);
 			}
 		}
 
@@ -4018,9 +4028,15 @@ public sealed partial class CodingAgentSession : IDisposable
 			throw new InvalidOperationException("Cannot continue while the session is running");
 		}
 
+		// 先分出来：用户排队在先，报错要说清是排队，而不是「上一轮不值得继续」。
+		if (_agent.HasPendingUserInput())
+		{
+			throw new InvalidOperationException("Cannot continue while user input is queued");
+		}
+
 		if (!CanContinueGeneration())
 		{
-			throw new InvalidOperationException("Cannot continue: the last turn did not fail or get cut off");
+			throw new InvalidOperationException("Cannot continue: the last turn did not end in a transient failure or a cut-off reply");
 		}
 
 		_cacheWarmer?.Cancel();

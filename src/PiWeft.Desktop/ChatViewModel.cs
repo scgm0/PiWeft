@@ -607,10 +607,14 @@ public sealed class ChatViewModel : IDisposable
 	/// 上一轮是否可以继续生成。界面用它把发送键换成「继续生成」。
 	public bool CanContinue()
 	{
+		CodingAgentSession? session;
 		lock (_gate)
 		{
-			return _session?.CanContinueGeneration() ?? false;
+			session = _session;
 		}
+
+		// 会话侧的资格判定要取会话锁、扫投影：不在聊天锁里做，后台事件不用等它。
+		return session?.CanContinueGeneration() ?? false;
 	}
 
 	/// 发送与继续共用一条收口：中断不当作错误，失败只记一条消息，结束总通知界面。

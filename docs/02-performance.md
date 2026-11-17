@@ -58,6 +58,7 @@
 - 会话解析用 `Utf8LineReader` + `SessionJson.ParseLine(ReadOnlySpan<byte>)`；大文件按 2–3 段并行，顺序与单线程一致；进度按字节汇报。`Utf8LineReader` 对超大行缓冲（>256 KiB）交给 GC，不归还共享池。
 - 会话 JSONL 追加用 `File.AppendAllBytes` + 可复用 `ArrayBufferWriter<byte>`；SSE 每流复用 UTF-8 缓冲。
 - 分支快照用不可变列表结构共享；`BuildProjectedMessages()` 在纯追加时复用前缀；`ChatViewModel.Rebuild()` 只重算最后一个用户轮次；过程投影只重投当前轮；统计只消费新增条目。
+- 继续生成的资格查询走「投影倒扫 + 错误文本定性」：定性结果按助手消息对象缓存（`ConditionalWeakTable`），错误文本可以带整段供应商响应体。带 146 字错误的 2000 条会话，每次查询 17.7 µs → 0.24 µs、0 分配（Release，100 万次）；界面每个按键与每帧都会问一次。
 - 流式正文/思考改为追加式 `StreamedText` 快照，长度与行相等判定 O(1)，整篇物化只在复制/导出发生。
 - Markdown 解析按尾块增量，块级模型哈希做前后缀 diff；段落按已闭合行分块，只重排开放尾块；代码块 `ReplaceRange`；定稿只切 `IsStreaming`。
 - 增量解析的文档簿记不再按整篇重建：文本单元下标直接记在 `MarkdownBlock.TextUnitIndex`（原来每帧为整份文档重建一张 块→下标 字典），锚点表在尾块没有标题/锚点、被替掉的旧块也没有锚点时按引用共享上一版（原来每帧复制两份）。800 块、每帧都带一个新标题（最坏形状）的逐帧追加从 151 KB 降到 100 KB；无标题的纯段落递增约 20 B/块（100→400 块时 12–18 KB/帧）。

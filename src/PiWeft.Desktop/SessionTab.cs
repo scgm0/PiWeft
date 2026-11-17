@@ -863,7 +863,9 @@ public sealed partial class SessionTab : IDisposable
 
 	public UIElement View { get; }
 
-	public bool IsStreaming => _sending || _chat.IsStreaming;
+	// 退避也是这一轮的一部分：后台轮次（关联会话回报、目标续轮）不走标签的 _sending，
+	// 只认流的话退避期会把主按钮与状态条掉回空闲。
+	public bool IsStreaming => _sending || _chat.IsStreaming || _chat.Retry is { Running: true };
 
 	public static string TitleFor(CodingAgentSession session)
 	{
@@ -1097,7 +1099,7 @@ public sealed partial class SessionTab : IDisposable
 
 	private void Send()
 	{
-		if (_sending || _chat.IsStreaming)
+		if (IsStreaming)
 		{
 			_compactionAbort?.Cancel();
 			CancelPendingSend();
@@ -1133,13 +1135,14 @@ public sealed partial class SessionTab : IDisposable
 		Send();
 	}
 
-	/// 继续生成只在草稿空、没有附件或待重发编辑时接管主按钮：有内容时主按钮仍然是发送。
+	/// 继续生成只在草稿空、没有附件、没有待重发编辑时接管主按钮：有内容时主按钮仍然是发送。
+	/// 排队的用户消息与上一轮的失败类型由会话判：注入的上下文不拦继续。
 	private bool CanContinueGeneration() =>
-		!_sending && !_chat.IsStreaming && _pendingBranchEntryId is null &&
+		!IsStreaming && _pendingBranchEntryId is null &&
 		_loadingAttachments == 0 && _attachments.Count == 0 &&
 		string.IsNullOrWhiteSpace(_composer.Text) && _chat.CanContinue();
 
-	private void RefreshPrimaryAction() => ApplyPrimaryAction(_sending || _chat.IsStreaming);
+	private void RefreshPrimaryAction() => ApplyPrimaryAction(IsStreaming);
 
 	private void ApplyPrimaryAction(bool busy)
 	{
@@ -1280,7 +1283,7 @@ public sealed partial class SessionTab : IDisposable
 
 	private async Task DispatchTurnAsync(string text, bool continueGeneration)
 	{
-		if (_sending || _chat.IsStreaming || _disposed)
+		if (IsStreaming || _disposed)
 		{
 			return;
 		}
@@ -2407,7 +2410,7 @@ public sealed partial class SessionTab : IDisposable
 			Diagnostics.Slow("render.stats", statsWatch, 8, static rows => $"rows={rows}", all.Count);
 		}
 
-		var busy = _sending || _chat.IsStreaming;
+		var busy = IsStreaming;
 		// 只要这一轮还在跑，状态条就一直在那儿：以前「没有流式行」直接不显示，
 		// 首轮发送后到首 token 之前那段最长的等待反而一片空白。
 		// 占位行是否显示变成本帧输入的一部分：它决定谁在报「本轮已 N 秒」。

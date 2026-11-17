@@ -62,6 +62,114 @@ public sealed class ContinueGenerationUiTests
 	}
 
 	[Fact]
+	public async Task AccountErrorsLeaveThePrimaryButtonOnSend()
+	{
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		var model = FakeStreams.Model();
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = manager.Cwd,
+			Session = manager,
+			Model = model,
+			Tools = [],
+			Skills = [],
+			PromptTemplates = [],
+			Persist = false,
+			Settings = new CodingAgentSettings { Retry = new RetryPolicy(Enabled: false) },
+			// 配额类错误重跑同一条请求只会同样失败：主按钮不换「继续生成」。
+			StreamFn = (streamModel, _, _) => FakeStreams.Error(streamModel, "insufficient_quota"),
+		});
+		using var tab = new SessionTab(session, [model], "continue-quota");
+		tab.SetExtensionText("hi");
+		tab.SendFromShortcut();
+		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+
+		Assert.False(session.CanContinueGeneration());
+		Assert.Equal(Strings.Send, tab.PrimaryLabelForTests);
+	}
+
+	[Fact]
+	public async Task QueuedUserMessageKeepsThePrimaryButtonOnSend()
+	{
+		var calls = 0;
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		var model = FakeStreams.Model();
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = manager.Cwd,
+			Session = manager,
+			Model = model,
+			Tools = [],
+			Skills = [],
+			PromptTemplates = [],
+			Persist = false,
+			Settings = new CodingAgentSettings { Retry = new RetryPolicy(Enabled: false) },
+			StreamFn = (streamModel, _, _) => Interlocked.Increment(ref calls) == 1
+				? FakeStreams.Error(streamModel, "Service Unavailable")
+				: FakeStreams.Text(streamModel, "continued answer"),
+		});
+		using var tab = new SessionTab(session, [model], "continue-queued");
+		tab.SetExtensionText("hi");
+		tab.SendFromShortcut();
+		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+		Assert.Equal(Strings.Continue, tab.PrimaryLabelForTests);
+
+		// 排队中的用户消息先投递，继续不能插队。
+		session.FollowUp(new UserMessage { Content = MessageContent.FromText("queued question") });
+		tab.RenderForTests();
+		Assert.Equal(Strings.Send, tab.PrimaryLabelForTests);
+
+		// 排队的消息撤掉，继续资格回来。
+		session.ClearQueue();
+		tab.RenderForTests();
+		Assert.Equal(Strings.Continue, tab.PrimaryLabelForTests);
+	}
+
+	[Fact]
+	public async Task ContinueSurvivesRestartFromTheSessionFile()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-continue-restart-" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(root);
+		try
+		{
+			var model = FakeStreams.Model();
+			var manager = SessionManager.Create(root, Path.Combine(root, "sessions"));
+			using (var session = new CodingAgentSession(new CodingAgentSessionOptions
+			{
+				Cwd = root, Session = manager, Model = model, Tools = [], Skills = [], PromptTemplates = [],
+				Settings = new CodingAgentSettings { Retry = new RetryPolicy(Enabled: false) },
+				StreamFn = (streamModel, _, _) => FakeStreams.Error(streamModel, "Service Unavailable"),
+			}))
+			{
+				using var tab = new SessionTab(session, [model], "before-restart");
+				tab.SetExtensionText("hi");
+				tab.SendFromShortcut();
+				await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
+				tab.RenderForTests();
+				Assert.Equal(Strings.Continue, tab.PrimaryLabelForTests);
+			}
+
+			// 重启后按会话文件冷恢复：失败那一轮还在，主按钮仍是「继续生成」。
+			var reopened = SessionManager.Open(manager.SessionFile!);
+			using var resumed = new CodingAgentSession(new CodingAgentSessionOptions
+			{
+				Cwd = root, Session = reopened, Model = model, Tools = [], Skills = [], PromptTemplates = [],
+				Settings = new CodingAgentSettings { Retry = new RetryPolicy(Enabled: false) },
+				StreamFn = (streamModel, _, _) => FakeStreams.Text(streamModel, "continued answer"),
+			});
+			using var resumedTab = new SessionTab(resumed, [model], "after-restart");
+			resumedTab.RenderForTests();
+			Assert.Equal(Strings.Continue, resumedTab.PrimaryLabelForTests);
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
 	public async Task ContinueShowsTheWaitingPlaceholderUntilTheFirstToken()
 	{
 		var calls = 0;

@@ -343,14 +343,16 @@ public class CodingAgentSessionTests : IDisposable
 		using var session = CreateSession(script);
 		Assert.False(session.CanContinueGeneration());
 
-		// 成功那一轮没什么可继续的；继续只接失败或被截断的回合。
-		foreach (var (reason, expected) in new[]
+		// 成功那一轮没什么可继续的；继续只接瞬态失败与被截断的回合。
+		foreach (var (reason, error, expected) in new[]
 		{
-			(StopReason.Stop, false),
-			(StopReason.Error, true),
+			(StopReason.Stop, null, false),
+			(StopReason.Error, "Service Unavailable", true),
+			// 账号类错误重跑同一条请求只会同样失败，交给标题栏的「重试」。
+			(StopReason.Error, "insufficient_quota", false),
 			// 中断的助手消息不进重放，继续只会变成重提，跟「重试」重复。
-			(StopReason.Aborted, false),
-			(StopReason.Length, true),
+			(StopReason.Aborted, null, false),
+			(StopReason.Length, null, true),
 		})
 		{
 			session.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("q") });
@@ -358,9 +360,148 @@ public class CodingAgentSessionTests : IDisposable
 			{
 				Content = [new TextContent { Text = "a" }],
 				StopReason = reason,
+				ErrorMessage = error,
 			});
 			Assert.Equal(expected, session.CanContinueGeneration());
 		}
+	}
+
+	[Theory]
+	[InlineData("429 Too Many Requests", true)]
+	[InlineData("Request timed out", true)]
+	[InlineData("stream ended before message_stop", true)]
+	[InlineData("The service is temporarily unavailable", true)]
+	[InlineData("insufficient_quota", false)]
+	[InlineData("401 Unauthorized: invalid api key", false)]
+	[InlineData("Provider finish_reason: content_filter", false)]
+	[InlineData("", false)]
+	public void ContinueEligibilityOnlyAcceptsTransientFailures(string error, bool expected)
+	{
+		var failed = new AssistantMessage { StopReason = StopReason.Error, ErrorMessage = error };
+
+		// 手动继续的判定不读自动重试的开关与次数：关掉重试也照样能继续。
+		Assert.Equal(expected, ContinuationPolicy.IsContinuable(failed));
+	}
+
+	[Fact]
+	public void ContinuationVerdictDoesNotLeakBetweenMessages()
+	{
+		var transient = new AssistantMessage { StopReason = StopReason.Error, ErrorMessage = "Service Unavailable" };
+		var quota = new AssistantMessage { StopReason = StopReason.Error, ErrorMessage = "insufficient_quota" };
+
+		// 结论按消息对象缓存：换一条消息必须重新判，不能沿用上一条的结论。
+		Assert.True(ContinuationPolicy.IsContinuable(transient));
+		Assert.False(ContinuationPolicy.IsContinuable(quota));
+		Assert.True(ContinuationPolicy.IsContinuable(transient));
+	}
+
+	[Fact]
+	public async Task ContinueWaitsForQueuedUserInput()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("continued answer");
+		using var session = CreateSession(script);
+		session.SetAutoRetryEnabled(false);
+
+		session.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("q") });
+		session.Session.AppendMessage(new AssistantMessage
+		{
+			Content = [new TextContent { Text = "a" }],
+			StopReason = StopReason.Error,
+			ErrorMessage = "Service Unavailable",
+		});
+		Assert.True(session.CanContinueGeneration());
+
+		// 用户自己写的那条还没投递：继续会插到它前面，按钮得让位。
+		session.FollowUp(new UserMessage { Content = MessageContent.FromText("queued question") });
+		Assert.False(session.CanContinueGeneration());
+		await Assert.ThrowsAsync<InvalidOperationException>(() => session.ContinueGenerationAsync());
+
+		session.ClearQueue();
+		Assert.True(session.CanContinueGeneration());
+		await session.ContinueGenerationAsync();
+		Assert.False(session.CanContinueGeneration());
+	}
+
+	[Fact]
+	public async Task InjectedContextDoesNotBlockContinueAndIsSentWithIt()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("continued answer");
+		using var session = CreateSession(script);
+		session.SetAutoRetryEnabled(false);
+
+		session.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("q") });
+		session.Session.AppendMessage(new AssistantMessage
+		{
+			Content = [new TextContent { Text = "a" }],
+			StopReason = StopReason.Error,
+			ErrorMessage = "Service Unavailable",
+		});
+		// 注入的回报只是上下文：它卡在队列里时继续照样可用，并随请求一起交给模型。
+		session.Steer(new UserMessage
+		{
+			CustomType = PiWeftProtocol.LinkedReportMessageType,
+			Content = MessageContent.FromText("subagent report"),
+		});
+		Assert.True(session.CanContinueGeneration());
+
+		await session.ContinueGenerationAsync();
+		Assert.Contains(script.Requests[0], static message => message is UserMessage { Content.Text: "subagent report" });
+	}
+
+	[Fact]
+	public async Task ContinueGenerationKeepsEligibilityWhenTheRetryFailsAgain()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueError("Service Unavailable");
+		script.EnqueueError("Service Unavailable");
+		script.EnqueueText("done");
+		using var session = CreateSession(script);
+		session.SetAutoRetryEnabled(false);
+
+		await session.PromptAsync("question");
+		Assert.True(session.CanContinueGeneration());
+
+		await session.ContinueGenerationAsync();
+		Assert.True(session.CanContinueGeneration());
+
+		await session.ContinueGenerationAsync();
+		Assert.False(session.CanContinueGeneration());
+	}
+
+	[Fact]
+	public async Task ContinueEligibilityAndReceiptSurviveReopen()
+	{
+		string file;
+		var script = new ScriptedStreamFn();
+		script.EnqueueError("Service Unavailable");
+		using (var session = CreateSession(script))
+		{
+			session.SetAutoRetryEnabled(false);
+			await session.PromptAsync("question");
+			Assert.True(session.CanContinueGeneration());
+			file = session.Session.SessionFile!;
+		}
+
+		// 进程重启：资格从会话文件里的失败回合恢复，不靠内存状态。
+		var reopened = SessionManager.Open(file);
+		var resumeScript = new ScriptedStreamFn();
+		resumeScript.EnqueueText("continued answer");
+		using (var resumed = CreateSession(resumeScript, reopened))
+		{
+			Assert.True(resumed.CanContinueGeneration());
+			await resumed.ContinueGenerationAsync();
+
+			// 重开后重放的是同一个提问；本轮成功后资格收回。
+			Assert.Contains(resumeScript.Requests[0], static message => message is UserMessage { Content.Text: "question" });
+			Assert.False(resumed.CanContinueGeneration());
+		}
+
+		// 空的准入标记与时间线上的「已请求继续生成」都随会话文件留下。
+		var again = SessionManager.Open(file);
+		Assert.Contains(again.Entries.OfType<CustomMessageEntry>(), static entry =>
+			entry.CustomType == PiWeftProtocol.ContinueGenerationRole && !entry.Display);
 	}
 
 	[Fact]

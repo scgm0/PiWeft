@@ -289,6 +289,28 @@ public sealed class Agent
 		}
 	}
 
+	/// <summary>队列里还有用户亲手写、尚未投递给模型的消息。注入的上下文不算。</summary>
+	public bool HasPendingUserInput()
+	{
+		lock (_gate)
+		{
+			return HasUserAuthored(_steering) || HasUserAuthored(_followUp);
+		}
+
+		static bool HasUserAuthored(Queue<Message> queue)
+		{
+			foreach (var message in queue)
+			{
+				if (message is UserMessage { IsUserAuthored: true })
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+	}
+
 	public (IReadOnlyList<Message> Steering, IReadOnlyList<Message> FollowUp) ClearQueue()
 	{
 		lock (_gate)
