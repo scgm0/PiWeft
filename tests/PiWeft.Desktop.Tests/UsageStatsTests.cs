@@ -159,12 +159,12 @@ public sealed class UsageStatsPanelTests
 			// 让后台扫描落地，再验证重进时复用同一块面板而不是重新创建。
 			await Task.Delay(200);
 			Assert.Equal(1, cache.Scans);
-			var before = Find<TextBlock>(settings.View).Single(text => text.Text == Strings.UsageStatsAppUsage);
+			var before = Find<TextBlock>(settings.View).First(text => text.Text.StartsWith(Strings.UsageStatsSourceHint, StringComparison.Ordinal));
 
 			await settings.SelectSectionAsync("overview");
 			await settings.SelectSectionAsync("usage");
 
-			var after = Find<TextBlock>(settings.View).Single(text => text.Text == Strings.UsageStatsAppUsage);
+			var after = Find<TextBlock>(settings.View).First(text => text.Text.StartsWith(Strings.UsageStatsSourceHint, StringComparison.Ordinal));
 			Assert.Same(before, after);
 			// 共享缓存已能在指纹/代数未变时直接命中，不再重扫。
 			Assert.Equal(1, cache.Scans);

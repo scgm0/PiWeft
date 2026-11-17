@@ -2,10 +2,9 @@ namespace PiWeft.Desktop;
 
 public static partial class Strings
 {
-	// ── 使用统计：应用用量 ────────────────────────────────────────────────
+	// ── 使用统计 ──────────────────────────────────────────────────────────
 	public const string SettingsUsageStats = "使用统计";
 	public const string SettingsGroupData = "数据与统计";
-	public const string UsageStatsAppUsage = "应用用量";
 	public const string UsageStatsSourceHint = "来自本机会话历史。";
 	public const string UsageStatsTruncatedHint = "扫描达到上限，统计只含部分会话。";
 	public const string UsageStatsLifetimeTotal = "累计 Token 数";

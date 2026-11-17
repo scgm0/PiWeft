@@ -5,7 +5,7 @@ using PiWeft.CodingAgent.Stats;
 
 namespace PiWeft.Desktop;
 
-/// 使用统计的「应用用量」面板：汇总条、活动热力图、区间趋势与模型占比。
+/// 使用统计面板：汇总条、活动热力图、区间趋势与模型占比。
 /// 扫描通过共享 UsageStatsCache 在后台线程执行；区间切换只换下半页，不重扫会话。
 internal sealed class UsageStatsPanel
 {
@@ -49,7 +49,7 @@ internal sealed class UsageStatsPanel
 		_staticBody.Spacing(AppTheme.Space3);
 		_rangeBody.Spacing(AppTheme.Space3);
 		_root.Spacing(AppTheme.Space3).MaxWidth(960)
-			.Children(Header(), _source, _staticBody, _rangeBody, Footer());
+			.Children(_source, _staticBody, _rangeBody, Footer());
 		Render();
 	}
 
@@ -201,18 +201,6 @@ internal sealed class UsageStatsPanel
 		_refreshedAt = refreshedAt;
 		_busy = false;
 		Render();
-	}
-
-	private Element Header()
-	{
-		return new Border()
-			.Padding(new Thickness(8, 2, 8, 2))
-			.CornerRadius(AppTheme.RadiusXs)
-			.WithTheme(static (theme, border) => border.Background = AppTheme.For(theme).CardBackgroundAlt)
-			.Child(new TextBlock().Text(Strings.UsageStatsAppUsage)
-				.FontSize(AppTheme.FontSizeMicro).MutedText()
-				.VerticalAlignment(VerticalAlignment.Center))
-			.VerticalAlignment(VerticalAlignment.Center);
 	}
 
 	private Element Footer()
