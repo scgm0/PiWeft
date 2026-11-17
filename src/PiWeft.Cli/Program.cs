@@ -16,6 +16,12 @@ using var logging = args is ["--version"] or ["-v"] or ["--help"] or ["-h"]
 	? null
 	: AppLog.Start("cli");
 
+// 上次运行崩了要让用户知道：日志文件只有主动打开才看得到。
+if (logging is not null && CrashLog.TakeUnnotified() is { } crash)
+{
+	Console.Error.WriteLine($"pi: 上次运行异常退出（{crash.Timestamp.ToLocalTime():yyyy-MM-dd HH:mm}）。日志：{AppLog.DirectoryPath}");
+}
+
 // 代理与离线开关要在任何子命令分发（auth/mcp/import/package）之前生效：
 // `pi update --models`、`pi mcp login` 都可能发起网络请求，晚一步设置就只对主对话生效。
 if (args.Length == 0 || args[0] is not ("--version" or "-v" or "--help" or "-h"))
@@ -172,7 +178,7 @@ try
 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
 {
 	// 迁移失败不该阻止会话启动：旧格式仍按旧路径读取。
-	AppLog.For<CliRunner>().ZLogWarning($"startup migrations failed: {exception.Message}");
+	AppLog.Warning(AppLog.For<CliRunner>(), "startup migrations failed", exception);
 }
 
 // pi 的 --offline 等价于 PI_OFFLINE=1；代理已在子命令分发前装好。

@@ -1,4 +1,5 @@
 using Aprillz.MewUI;
+using Microsoft.Extensions.Logging;
 using PiWeft.Cli;
 using ZLogger;
 
@@ -10,7 +11,9 @@ public static class Program
 {
 	public static int Main(string[] args)
 	{
-		using var logging = AppLog.Start("desktop", logToConsole: true);
+		// 级别优先取 PI_LOG_LEVEL（临时排障），否则用设置页存下的值。
+		using var logging = AppLog.Start("desktop", logToConsole: true,
+			minimumLevel: LogLevelOf(DesktopPreference.Load().MinimumLogLevel));
 		try
 		{
 			var exitCode = Run(args);
@@ -20,10 +23,15 @@ public static class Program
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Desktop startup", ex);
+			CrashLog.Record(CrashKind.FatalError, ex);
 			Console.Error.WriteLine($"piweft-desktop: {Strings.WindowStartFailed(ex.Message)}");
 			return 1;
 		}
 	}
+
+	/// 把设置页存的级别转成枚举；认不出来就用 null（退回 PI_LOG_LEVEL 或默认值）。
+	private static LogLevel? LogLevelOf(string? value) =>
+		Enum.TryParse<LogLevel>(value, ignoreCase: true, out var level) && Enum.IsDefined(level) ? level : null;
 
 	private static int Run(string[] args)
 	{
@@ -85,7 +93,7 @@ public static class Program
 		}
 		catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
 		{
-			AppLog.For<MainWindow>().ZLogWarning($"Invalid working directory: {ex.Message}");
+			AppLog.Warning(AppLog.For<MainWindow>(), "Invalid working directory", ex);
 		}
 
 		if (!Directory.Exists(cwd))
@@ -94,6 +102,9 @@ public static class Program
 			Console.Error.WriteLine($"piweft-desktop: {Strings.NoSuchDirectory(cwd)}");
 			return 2;
 		}
+
+		// 日志脱敏按实际工作目录算：启动目录可能被替换成最近项目，启动那一刻并不准。
+		AppLog.ConfigureRedaction(cwd);
 
 		// 启动期迁移（pi 的 migrations.ts）：旧凭据、旧会话落点与 commands/ 目录先搬到当前格式。
 		// 项目级迁移只处理已受信项目；启动时还没来得及询问的，会在下次受信启动时迁移。
@@ -107,7 +118,7 @@ public static class Program
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
 		{
-			AppLog.For<MainWindow>().ZLogWarning($"startup migrations failed: {exception.Message}");
+			AppLog.Warning(AppLog.For<MainWindow>(), "startup migrations failed", exception);
 		}
 
 		// 离线模式与代理必须在建 HTTP 客户端之前生效（见 PiEnvironment 的说明）。
@@ -121,6 +132,8 @@ public static class Program
 		Application.DispatcherUnhandledException += args =>
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "UI dispatcher", args.Exception);
+			// 拦下来不等于没出事：界面态可能已经错乱，留一条记录给下次启动提示。
+			CrashLog.Record(CrashKind.DispatcherException, args.Exception, cwd: cwd);
 			Console.Error.WriteLine($"piweft-desktop: UI 线程异常：{args.Exception}");
 			args.Handled = true;
 		};
@@ -175,22 +188,28 @@ public static class Program
 			// 在这里挂一个 Render 优先级的工作项，它一定排在首帧绘制之后，用来量首屏时延。
 			Application.Run(window, () =>
 			{
-				if (!Diagnostics.Enabled || Application.Current?.Dispatcher is not { } dispatcher)
+				if (Application.Current?.Dispatcher is not { } dispatcher)
 				{
 					return;
 				}
 
-				var firstPaint = System.Diagnostics.Stopwatch.StartNew();
+				var firstPaint = Diagnostics.Enabled ? System.Diagnostics.Stopwatch.StartNew() : null;
 				dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
 				{
-					Diagnostics.Record("startup.first-paint", firstPaint);
-					Console.WriteLine($"piweft-desktop: first-paint {firstPaint.Elapsed.TotalMilliseconds:0} ms");
+					if (firstPaint is not null)
+					{
+						Diagnostics.Record("startup.first-paint", firstPaint);
+						Console.WriteLine($"piweft-desktop: first-paint {firstPaint.Elapsed.TotalMilliseconds:0} ms");
+					}
+
+					ReportPreviousCrash(window);
 				});
 			});
 		}
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Desktop runtime", ex);
+			CrashLog.Record(CrashKind.FatalError, ex, cwd: cwd);
 			Console.Error.WriteLine($"piweft-desktop: {Strings.WindowStartFailed(ex.ToString())}");
 			return 1;
 		}
@@ -201,6 +220,17 @@ public static class Program
 		}
 
 		return 0;
+	}
+
+	/// 上次运行崩了就提示一次：日志放在 agent 目录里，用户不主动找是看不到的。
+	private static void ReportPreviousCrash(MainWindow window)
+	{
+		if (CrashLog.TakeUnnotified() is not { } crash)
+		{
+			return;
+		}
+
+		Toasts.Error(window, Strings.CrashNotice(crash.Timestamp.ToLocalTime()));
 	}
 
 	/// 不打开窗口地校验运行环境：模型解析、provider 网关、发现的工具与会话目录。

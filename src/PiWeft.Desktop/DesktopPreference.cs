@@ -64,6 +64,10 @@ public sealed record DesktopPreference
 	/// 并把关键路径耗时写进 <c>&lt;agentDir&gt;/diagnostics/</c>，用于优化前后对照。
 	public bool Diagnostics { get; init; }
 
+	/// 应用日志的最低级别（Trace/Debug/Information/Warning/Error/Critical）。
+	/// 默认 Information；<c>PI_LOG_LEVEL</c> 环境变量优先，用于临时排障。
+	public string MinimumLogLevel { get; init; } = "Information";
+
 	/// 等待期的功能提示轮播（状态条右侧那行小字）。默认显示：这是唯一能曝光
 	/// 「没有可见入口」能力的地方；关掉只关提示，不影响功能。
 	public bool RespondingTips { get; init; } = true;
@@ -171,6 +175,10 @@ public sealed record DesktopPreference
 				SidebarProjects = root?["sidebarProjects"] is JsonValue tab && tab.TryGetValue<bool>(out var projects) && projects,
 				ExpandedProjects = ReadProjectPaths(root?["expandedProjects"]),
 				Diagnostics = root?["diagnostics"] is JsonValue diagnostics && diagnostics.TryGetValue<bool>(out var on) && on,
+				MinimumLogLevel = root?["logLevel"] is JsonValue logLevel && logLevel.TryGetValue<string>(out var logLevelText) &&
+					!string.IsNullOrWhiteSpace(logLevelText)
+					? logLevelText
+					: new DesktopPreference().MinimumLogLevel,
 				// 默认开：键缺失或类型不对都算开，只有显式写 false 才关。
 				RespondingTips = root?["respondingTips"] is not JsonValue respondingTips ||
 					!respondingTips.TryGetValue<bool>(out var tipsOff) || tipsOff,
@@ -269,6 +277,15 @@ public sealed record DesktopPreference
 		else
 		{
 			root.Remove("diagnostics");
+		}
+		// 级别默认 Information：只有用户改过才落盘，读写端对默认值的口径保持一致。
+		if (string.Equals(MinimumLogLevel, new DesktopPreference().MinimumLogLevel, StringComparison.OrdinalIgnoreCase))
+		{
+			root.Remove("logLevel");
+		}
+		else
+		{
+			root["logLevel"] = MinimumLogLevel;
 		}
 		// 等待提示默认显示：只在用户关掉时落盘一个 false。
 		if (RespondingTips)

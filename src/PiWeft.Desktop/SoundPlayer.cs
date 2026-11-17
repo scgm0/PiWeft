@@ -242,7 +242,7 @@ internal static partial class SoundPlayer
 			or PlatformNotSupportedException)
 		{
 			// 没有音频设备 / 缺 libasound / WASAPI 初始化失败：留给平台命令回退。
-			AppLog.For<SoundAlerts>().ZLogDebug($"Beep playback unavailable: {ex.Message}");
+			AppLog.For<SoundAlerts>().ZLogDebug($"Beep playback unavailable: {AppLog.Redactor.Text(ex.Message)}");
 			return false;
 		}
 		finally

@@ -14,7 +14,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 | `PiWeft.JavaScript` | Jint 5 沙箱、codemode 源码解析与 TypeScript 声明 |
 | `PiWeft.Imaging` | 图片管线：按模型 `inputLimits.images.resize` 应用 EXIF 方向、Lanczos3 缩放、PNG/JPEG 字节预算选择（Sdcb.SimdCodecs 分格式编解码） |
 | `PiWeft.Mcp` | stdio / streamable HTTP、分页、工具、资源、提示、通知与 OAuth |
-| `PiWeft.Cli` | 参数与环境装配、text / print / JSON / RPC、认证、HTML 导出、宿主日志 |
+| `PiWeft.Cli` | 参数与环境装配、text / print / JSON / RPC、认证、HTML 导出、宿主日志（脱敏、崩溃记录、诊断包） |
 | `PiWeft.Markdown` | 增量 Markdown 文档模型、块级 diff、分块布局与精确高度回收 |
 | `PiWeft.Desktop` | 多项目、多会话工作台，进程内驱动 `CodingAgentSession` |
 | `tools/` | AOT 冒烟、MCP fixture、基准、截图脚本、图标获取 |
@@ -33,6 +33,8 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 - CLI 产物/程序集名保持 `pi`；`--version` 报告兼容的 pi 版本 **1.5.2**（PiDeck 拿它做功能门槛与更新比较），RPC 契约版本 1.3.0 只出现在 `/changelog` 与 `--bug` 报告里。
 - 保留 `PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、项目 `.pi`、配置文件名与 v3 JSONL 会话格式。损坏的会话头 `cwd` 回退到当前目录。
+- 日志：`<agentDir>/logs/piweft-<app>-<pid>-<日期>-<序号>.log`，一行一条，按天与 4 MB 滚动，保留 14 天、最多 31 个文件。`PI_LOG_LEVEL` 或设置页「日志 → 日志级别」控制级别，改动立即生效；设置页可筛选、搜索、分页、复制、导出诊断包与清空。异常记录在写入前、诊断包在导出前都过脱敏：家目录 → `~`、agent 目录 → `<agent>`、工作目录 → `<workspace>`、凭据 → `***`。异常记录保留类型、脱敏后的消息、内部异常链与栈。
+- 崩溃记录：`<agentDir>/crashes.json` 保留最近 5 条、7 天内的记录，下次启动提示一次（桌面 toast，CLI stderr）。
 - 系统提示词只在运行时构造，不写入会话。未知字段原样保留：会话头、条目顶层、已知角色的未建模字段（`Extra`）、未知角色整体（`CustomMessage.Raw`）、未知条目（`UnknownSessionEntry`）；`usage` / `usage.cost` 的未知字段同样保留。新增已知角色字段时须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys`。
 - `find` 的路径型 pattern 锚定搜索目录（`src/*.ts` 不再匹配 `pkg/src/a.ts`，要任意深度写 `**/src/*.ts`），开头的 `./` 会剥掉，绝对 pattern 按绝对路径匹配；`read` 的「模型不支持图片」只写进 details，不进结果正文。
 - 默认工具与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 `todo`、`ask_question` 与 `tool_search`（MCP 工具默认是 codemode exposure，靠它发现）；Windows 默认含 `powershell`。`grep`/`find`/`ls`/`codemode` 需显式开启。`--tools` 支持整体替换、`+name`/`-name` 与 `--exclude-tools` 通配。

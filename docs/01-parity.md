@@ -157,7 +157,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 源文件（模型、认证、设置、MCP、`usage-probes.json`）可显示、编辑和修复损坏文件；草稿独立于主题刷新，切页/重载/关闭均保护未保存修改。
 - 文件读写限制在 agent 目录与固定项目 `.pi` 路径；认证不写项目作用域；读写 ≤2 MiB；只接受对象根节点并校验关键字段。
 - 写入用同目录临时文件 + flush + 原子替换；Unix 新配置 0600；桌面写入有排他锁并检测 pi `.lock` 与 revision；不宣称与非协作编辑器事务互斥。
-- 导出移除 API Key、认证字段、headers/env/OAuth 与 URL 查询/userinfo；不自动导出 auth.json；日志不输出配置内容或异常原文。
+- 导出移除 API Key、认证字段、headers/env/OAuth 与 URL 查询/userinfo；不自动导出 auth.json。日志与诊断包不输出配置内容：凭据与异常原文先过脱敏再落盘或外发。
 - 模型目录/Agent 设置只作用于新会话；已有会话不运行时替换。MCP 保存后需手动重连。
 
 ### 供应商认证

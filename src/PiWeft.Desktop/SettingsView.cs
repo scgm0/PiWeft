@@ -1161,19 +1161,65 @@ public sealed class SettingsView
 
 	private Element LogSection()
 	{
+		var snapshot = _snapshot();
+		// 目录自己拼：AppLog 只在真实进程里 Start 过，测试与自检路径下 DirectoryPath 是空的。
+		var directory = Path.Combine(snapshot.AgentDir, "logs");
+		var levels = new (string Label, Microsoft.Extensions.Logging.LogLevel Level)[]
+		{
+			(Strings.LogLevelTrace, Microsoft.Extensions.Logging.LogLevel.Trace),
+			(Strings.LogLevelDebug, Microsoft.Extensions.Logging.LogLevel.Debug),
+			(Strings.LogLevelInfo, Microsoft.Extensions.Logging.LogLevel.Information),
+			(Strings.LogLevelWarning, Microsoft.Extensions.Logging.LogLevel.Warning),
+			(Strings.LogLevelError, Microsoft.Extensions.Logging.LogLevel.Error),
+		};
+
+		// 写入级别：只影响之后产生的记录，改完立即生效（过滤规则每次记录时读一遍）。
+		var picker = new ComboBox()
+			.ItemsSource(ItemsView.Create(levels.Select(static entry => entry.Label).ToArray()))
+			.Width(140);
+		picker.SelectedIndex = Math.Max(0, Array.FindIndex(levels, entry => entry.Level == AppLog.MinimumLevel));
+		picker.SelectionChanged += _ =>
+		{
+			var index = Math.Clamp(picker.SelectedIndex, 0, levels.Length - 1);
+			try
+			{
+				// 重新读一遍再写：手里这份是分区构建时取的，别的分区可能已经改过其它字段。
+				(DesktopPreference.Load(snapshot.AgentDir) with { MinimumLogLevel = levels[index].Level.ToString() })
+					.Save(snapshot.AgentDir);
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				AppLog.Failure(AppLog.For<SettingsView>(), "Save log level", ex);
+				Toast(Strings.ThemeChangeFailed(ex.Message), ToastKind.Error);
+				return;
+			}
+
+			AppLog.SetMinimumLevel(levels[index].Level);
+			Toast(Strings.LogLevelUpdated(levels[index].Label), ToastKind.Success);
+		};
+
+		var header = new DockPanel().LastChildFill().Children(
+			new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+				.Children(new TextBlock().Text(Strings.LogLevel)
+						.FontSize(AppTheme.FontSizeMicro).SubtleText()
+						.VerticalAlignment(VerticalAlignment.Center),
+					picker,
+					AppIcons.Button("copy", Strings.CopyLogDirectory, () =>
+					{
+						var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
+						if (clipboard?.TrySetText(directory) == true) Toast(Strings.Copied, ToastKind.Success);
+						else Toast(Strings.ClipboardUnavailable, ToastKind.Error);
+					}),
+					AppIcons.Button("folder-open", Strings.OpenLogDirectory, () => OpenLogDirectory(directory)))
+				.DockRight(),
+			new TextBlock().Text(directory).FontSize(AppTheme.FontSizeCaption)
+				.MutedText().TextWrapping(TextWrapping.Wrap).HoverTip(directory));
+
 		return Group("folder-open", Strings.SettingsLogs, new StackPanel().Spacing(AppTheme.Space3).Children(
-			new TextBlock().Text(AppLog.DirectoryPath).FontSize(AppTheme.FontSizeCaption)
-				.MutedText().TextWrapping(TextWrapping.Wrap),
-			new DockPanel().LastChildFill().Children(
-				AppIcons.Button("folder-open", Strings.OpenLogDirectory, OpenLogDirectory).DockRight(),
-				AppIcons.Button("copy", Strings.CopyLogDirectory, () =>
-				{
-					var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
-					if (clipboard?.TrySetText(AppLog.DirectoryPath) == true) Toast(Strings.Copied, ToastKind.Success);
-					else Toast(Strings.ClipboardUnavailable, ToastKind.Error);
-				}).DockRight(),
-				new TextBlock().Text($"{Strings.LogLevel}：{AppLog.MinimumLevel}")
-					.FontSize(AppTheme.FontSizeMicro).SubtleText())));
+			header,
+			new TextBlock().Text(Strings.LogLevelHint)
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap),
+			new LogViewer(snapshot.AgentDir, snapshot.Cwd)));
 	}
 
 	/// 性能诊断：开关 + 即时快照 + 按名称聚合的耗时。面板本身不轮询，
@@ -1452,20 +1498,20 @@ public sealed class SettingsView
 		}
 	}
 
-	private void OpenLogDirectory()
+	private void OpenLogDirectory(string directory)
 	{
 		try
 		{
-			Directory.CreateDirectory(AppLog.DirectoryPath);
-			if (!Shell.Open(AppLog.DirectoryPath))
+			Directory.CreateDirectory(directory);
+			if (!Shell.Open(directory))
 			{
-				Toast(Strings.OpenFailed(AppLog.DirectoryPath), ToastKind.Error);
+				Toast(Strings.OpenFailed(directory), ToastKind.Error);
 			}
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{
 			AppLog.Failure(AppLog.For<SettingsView>(), "Open log directory", ex);
-			Toast(Strings.OpenFailed(AppLog.DirectoryPath), ToastKind.Error);
+			Toast(Strings.OpenFailed(directory), ToastKind.Error);
 		}
 	}
 

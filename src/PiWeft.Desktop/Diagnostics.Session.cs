@@ -87,7 +87,7 @@ internal sealed partial class Diagnostics
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			AppLog.For<Diagnostics>().ZLogWarning($"Diagnostics cleanup skipped: {exception.Message}");
+			AppLog.Warning(AppLog.For<Diagnostics>(), "Diagnostics cleanup skipped", exception);
 		}
 	}
 
@@ -123,7 +123,7 @@ internal sealed partial class Diagnostics
 		}
 		catch (Exception exception) when (exception is IOException or ObjectDisposedException)
 		{
-			AppLog.For<Diagnostics>().ZLogWarning($"Diagnostics close skipped: {exception.Message}");
+			AppLog.Warning(AppLog.For<Diagnostics>(), "Diagnostics close skipped", exception);
 		}
 	}
 }

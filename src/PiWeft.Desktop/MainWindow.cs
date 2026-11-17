@@ -2071,6 +2071,11 @@ public sealed partial class MainWindow : Window
 					OpenSettingsDialog();
 					if (_settingsView is { } quickMessagesView) _ = quickMessagesView.SelectSectionAsync("quickMessages");
 					break;
+				case "logs-settings":
+					// 视觉验收：日志分区的级别下拉、筛选行、记录列表与翻页。
+					OpenSettingsDialog();
+					if (_settingsView is { } logsView) _ = logsView.SelectSectionAsync("logs");
+					break;
 				case "composer-security":
 					// 视觉验收：会话底栏的安全档位菜单。
 					CurrentTab()?.PrepareSecurityMenuSmoke();
@@ -3014,7 +3019,8 @@ public sealed partial class MainWindow : Window
 
 		if (!result.Ok)
 		{
-			AppLog.For<MainWindow>().ZLogWarning($"Model catalog auto check failed: {result.Error} {result.Message}");
+			var detail = AppLog.Redactor.Text($"{result.Error} {result.Message}");
+			AppLog.For<MainWindow>().ZLogWarning($"Model catalog auto check failed: {detail}");
 			return;
 		}
 
@@ -3714,7 +3720,7 @@ public sealed partial class MainWindow : Window
 			}
 			catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
 			{
-				AppLog.For<MainWindow>().ZLogWarning($"Invalid session cwd, falling back to the process directory: cwd={cwd}, error={ex.Message}");
+				AppLog.Warning(AppLog.For<MainWindow>(), $"Invalid session cwd, falling back to the process directory: cwd={cwd}", ex);
 			}
 		}
 

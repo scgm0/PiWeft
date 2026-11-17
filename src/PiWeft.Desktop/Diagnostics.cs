@@ -1090,7 +1090,7 @@ internal sealed partial class Diagnostics
 		}
 		catch (Exception exception)
 		{
-			AppLog.For<Diagnostics>().ZLogWarning($"Render cache trim skipped: {exception.Message}");
+			AppLog.Warning(AppLog.For<Diagnostics>(), "Render cache trim skipped", exception);
 		}
 	}
 
@@ -1231,7 +1231,7 @@ internal sealed partial class Diagnostics
 		}
 		catch (Exception ex)
 		{
-			AppLog.For<Diagnostics>().ZLogWarning($"Queue probe skipped: {ex.Message}");
+			AppLog.Warning(AppLog.For<Diagnostics>(), "Queue probe skipped", ex);
 		}
 	}
 

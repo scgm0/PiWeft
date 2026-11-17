@@ -5,11 +5,12 @@ using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Cli;
 
-/// 安全导出（`/share --safe`、`--export --safe`）的脱敏范围：工作目录、家目录、常见凭据。
-internal sealed record RedactionScope(string? Cwd, string? Home)
+/// 安全导出（`/share --safe`、`--export --safe`）与日志出口共用的脱敏范围：
+/// 工作目录、家目录、agent 目录、常见凭据。
+internal sealed record RedactionScope(string? Cwd, string? Home, string? AgentDir = null)
 {
-	public static RedactionScope From(string? cwd) =>
-		new(cwd, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+	public static RedactionScope From(string? cwd, string? agentDir = null) =>
+		new(cwd, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), agentDir);
 }
 
 /// 把会话改写成可以放到共享链接里的版本。默认导出保持字节兼容，只有显式 `--safe` 才走这里。
@@ -20,6 +21,7 @@ internal static partial class SessionRedaction
 	public const string HiddenSystemPrompt = "[system prompt hidden]";
 	public const string HiddenImage = "[image hidden]";
 	public const string HiddenWorkspace = "<workspace>";
+	public const string HiddenAgentDir = "<agent>";
 	public const string HiddenSessionFile = "<session file>";
 
 	private static StringComparison PathComparison =>
@@ -159,6 +161,13 @@ internal static partial class SessionRedaction
 	private static string ReplacePaths(string value, RedactionScope scope)
 	{
 		var text = value;
+		// agent 目录常在 home 下：先换掉更长的那个，导出里才看得出「这是 agent 目录」而不是一串 ~ 子路径。
+		if (scope.AgentDir is { Length: > 1 } agentDir &&
+			!string.Equals(agentDir, scope.Cwd, PathComparison))
+		{
+			text = ReplacePrefix(text, agentDir, HiddenAgentDir, PathComparison);
+		}
+
 		if (scope.Cwd is { Length: > 1 } cwd)
 		{
 			text = ReplacePrefix(text, cwd, HiddenWorkspace, PathComparison);
@@ -176,6 +185,12 @@ internal static partial class SessionRedaction
 	/// 只替换完整路径前缀：放在 <c>/home/user</c> 里不能把 <c>/home/username</c> 一起换掉。
 	private static string ReplacePrefix(string text, string prefix, string replacement, StringComparison comparison)
 	{
+		// 绝大多数日志行里根本没有这个前缀：先探一次，省掉每行的 StringBuilder。
+		if (text.IndexOf(prefix, comparison) < 0)
+		{
+			return text;
+		}
+
 		var index = 0;
 		var builder = new System.Text.StringBuilder(text.Length);
 		while (index < text.Length)
