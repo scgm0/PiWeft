@@ -108,8 +108,9 @@ public sealed class BedrockConverseProvider : IApiProvider
 		int? maxTokens,
 		AwsCredentials credentials)
 	{
-		var bytes = JsonPayload.Write(writer =>
-			BedrockWire.WriteRequest(writer, model, messages, tools, options, thinkingBudget, maxTokens));
+		var bytes = JsonPayload.Write(
+			writer => BedrockWire.WriteRequest(writer, model, messages, tools, options, thinkingBudget, maxTokens),
+			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
 		{

@@ -29,7 +29,10 @@ internal static class BedrockWire
 		}
 
 		writer.WritePropertyName("messages");
-		WriteMessages(writer, messages);
+		// Bedrock 按 cachePoint 切缓存；不加的话每轮都把整段对话重算一遍。
+		var cacheRetention = options.CacheRetention ?? CacheRetentions.Short;
+		var cachePoint = cacheRetention != CacheRetentions.None && SupportsPromptCaching(model);
+		WriteMessages(writer, model, messages, cachePoint, cacheRetention == CacheRetentions.Long);
 
 		if (tools.Count > 0)
 		{
@@ -112,8 +115,14 @@ internal static class BedrockWire
 		writer.WriteEndObject();
 	}
 
-	private static void WriteMessages(Utf8JsonWriter writer, IReadOnlyList<Message> messages)
+	private static void WriteMessages(
+		Utf8JsonWriter writer,
+		Model model,
+		IReadOnlyList<Message> messages,
+		bool cachePoint,
+		bool longTtl)
 	{
+		var last = messages.Count - 1;
 		writer.WriteStartArray();
 		for (var i = 0; i < messages.Count; i++)
 		{
@@ -124,7 +133,7 @@ internal static class BedrockWire
 					break;
 
 				case UserMessage user:
-					WriteUser(writer, user);
+					WriteUser(writer, user, cachePoint && i == last, longTtl);
 					break;
 
 				case AssistantMessage assistant:
@@ -133,30 +142,51 @@ internal static class BedrockWire
 
 				case ToolResultMessage:
 				{
-					// Bedrock 要求同一轮次的所有 toolResult 块放在一条 user 消息内。
+					// Bedrock 要求同一轮次的所有 toolResult 块放在一条 user 消息内，且一个 toolUseId
+					// 只能出现一次：文本与图片写在同一个 toolResult 的 content 数组里。
 					writer.WriteStartObject();
 					writer.WriteString("role", "user");
 					writer.WritePropertyName("content");
 					writer.WriteStartArray();
 
+					// Claude 拒绝错误工具结果里的非文本内容，图片挪到本轮所有结果之后。
+					var moveErrorImages = IsAnthropicClaude(model);
+					var trailing = new List<(ToolResultMessage Result, IReadOnlyList<ImageContent> Images)>();
+
 					while (i < messages.Count && messages[i] is ToolResultMessage result)
 					{
-						if (result.Content.Count == 0)
+						var moved = moveErrorImages && result.IsError
+							? result.Content.OfType<ImageContent>().ToList()
+							: [];
+						WriteToolResult(writer, result, moved.Count > 0);
+						if (moved.Count > 0)
 						{
-							WriteToolResultBlock(writer, result, null);
-						}
-						else
-						{
-							foreach (var block in result.Content)
-							{
-								WriteToolResultBlock(writer, result, block);
-							}
+							trailing.Add((result, moved));
 						}
 
 						i++;
 					}
 
 					i--;
+					foreach (var (result, images) in trailing)
+					{
+						writer.WriteStartObject();
+						writer.WriteString(
+							"text",
+							TextSanitizer.SanitizeSurrogates(
+								$"Images from the error result of tool call {result.ToolCallId} ({result.ToolName}):"));
+						writer.WriteEndObject();
+						foreach (var image in images)
+						{
+							WriteImageBlock(writer, image);
+						}
+					}
+
+					if (cachePoint && i == last)
+					{
+						WriteCachePoint(writer, longTtl);
+					}
+
 					writer.WriteEndArray();
 					writer.WriteEndObject();
 					break;
@@ -167,7 +197,7 @@ internal static class BedrockWire
 		writer.WriteEndArray();
 	}
 
-	private static void WriteUser(Utf8JsonWriter writer, UserMessage message)
+	private static void WriteUser(Utf8JsonWriter writer, UserMessage message, bool cachePoint, bool longTtl)
 	{
 		if (message.Content.IsText)
 		{
@@ -183,6 +213,11 @@ internal static class BedrockWire
 			writer.WriteStartObject();
 			writer.WriteString("text", TextSanitizer.SanitizeSurrogates(message.Content.Text));
 			writer.WriteEndObject();
+			if (cachePoint)
+			{
+				WriteCachePoint(writer, longTtl);
+			}
+
 			writer.WriteEndArray();
 			writer.WriteEndObject();
 			return;
@@ -208,18 +243,14 @@ internal static class BedrockWire
 					writer.WriteEndObject();
 					break;
 				case ImageContent image:
-					writer.WriteStartObject();
-					writer.WritePropertyName("image");
-					writer.WriteStartObject();
-					writer.WriteString("format", FormatOf(image.MimeType));
-					writer.WritePropertyName("source");
-					writer.WriteStartObject();
-					writer.WriteString("bytes", image.Data);
-					writer.WriteEndObject();
-					writer.WriteEndObject();
-					writer.WriteEndObject();
+					WriteImageBlock(writer, image);
 					break;
 			}
+		}
+
+		if (cachePoint)
+		{
+			WriteCachePoint(writer, longTtl);
 		}
 
 		writer.WriteEndArray();
@@ -261,51 +292,116 @@ internal static class BedrockWire
 		writer.WriteEndObject();
 	}
 
-	private static void WriteToolResultBlock(Utf8JsonWriter writer, ToolResultMessage message, ContentBlock? block)
+	private static void WriteToolResult(Utf8JsonWriter writer, ToolResultMessage message, bool imagesMovedOut)
 	{
 		writer.WriteStartObject();
 		writer.WritePropertyName("toolResult");
 		writer.WriteStartObject();
 		writer.WriteString("toolUseId", message.ToolCallId);
+		writer.WritePropertyName("content");
+		writer.WriteStartArray();
 
-		var text = block switch
+		var wroteContent = false;
+		var wrotePlaceholder = false;
+		foreach (var block in message.Content)
 		{
-			TextContent content => content.Text,
-			null => string.Join("\n", message.Content.OfType<TextContent>().Select(static c => c.Text)),
-			_ => null,
-		};
+			switch (block)
+			{
+				case TextContent text when !string.IsNullOrWhiteSpace(text.Text):
+					writer.WriteStartObject();
+					writer.WriteString("text", TextSanitizer.SanitizeSurrogates(text.Text));
+					writer.WriteEndObject();
+					wroteContent = true;
+					break;
+				case ImageContent image when !imagesMovedOut:
+					WriteImageBlock(writer, image);
+					wroteContent = true;
+					break;
+				case ImageContent when imagesMovedOut:
+					// 图片已移到本轮之后；这里留一句话，让模型知道原位曾有图。
+					if (!wrotePlaceholder)
+					{
+						writer.WriteStartObject();
+						writer.WriteString("text", ErrorToolImagePlaceholder);
+						writer.WriteEndObject();
+						wrotePlaceholder = true;
+						wroteContent = true;
+					}
 
-		// Bedrock 也接受工具结果里的图片。
-		if (block is ImageContent)
-		{
-			writer.WritePropertyName("content");
-			writer.WriteStartArray();
-			writer.WriteStartObject();
-			writer.WritePropertyName("image");
-			writer.WriteStartObject();
-			writer.WriteString("format", FormatOf(((ImageContent)block).MimeType));
-			writer.WritePropertyName("source");
-			writer.WriteStartObject();
-			writer.WriteString("bytes", ((ImageContent)block).Data);
-			writer.WriteEndObject();
-			writer.WriteEndObject();
-			writer.WriteEndObject();
-			writer.WriteEndArray();
+					break;
+			}
 		}
-		else
+
+		if (!wroteContent)
 		{
-			writer.WritePropertyName("content");
-			writer.WriteStartArray();
 			writer.WriteStartObject();
-			writer.WriteString("text", TextSanitizer.SanitizeSurrogates(text ?? "(no output)"));
+			writer.WriteString("text", "(no output)");
 			writer.WriteEndObject();
-			writer.WriteEndArray();
 		}
 
+		writer.WriteEndArray();
 		writer.WriteString("status", message.IsError ? "error" : "success");
 		writer.WriteEndObject();
 		writer.WriteEndObject();
 	}
+
+	/// Bedrock 的提示词缓存只对能带 cachePoint 的模型开放；不支持的模型收到 cachePoint 会直接报错。
+	private static bool SupportsPromptCaching(Model model)
+	{
+		if (!Contains(model, "claude"))
+		{
+			// 应用推理配置的 ARN 不带模型名，用环境变量显式开启。
+			return Environment.GetEnvironmentVariable("AWS_BEDROCK_FORCE_CACHE") == "1";
+		}
+
+		return Contains(model, "fable-5") || Contains(model, "opus-5") || Contains(model, "sonnet-5") ||
+			Contains(model, "haiku-5") || Contains(model, "-4-") ||
+			Contains(model, "claude-3-7-sonnet") || Contains(model, "claude-3-5-haiku");
+	}
+
+	private static bool Contains(Model model, string value) =>
+		model.Id.Contains(value, StringComparison.OrdinalIgnoreCase) ||
+		model.Name.Contains(value, StringComparison.OrdinalIgnoreCase);
+
+	private static void WriteCachePoint(Utf8JsonWriter writer, bool longTtl)
+	{
+		writer.WriteStartObject();
+		writer.WritePropertyName("cachePoint");
+		writer.WriteStartObject();
+		writer.WriteString("type", "default");
+		if (longTtl)
+		{
+			writer.WriteString("ttl", "1h");
+		}
+
+		writer.WriteEndObject();
+		writer.WriteEndObject();
+	}
+
+	private static void WriteImageBlock(Utf8JsonWriter writer, ImageContent image)
+	{
+		writer.WriteStartObject();
+		writer.WritePropertyName("image");
+		writer.WriteStartObject();
+		writer.WriteString("format", FormatOf(image.MimeType));
+		writer.WritePropertyName("source");
+		writer.WriteStartObject();
+		writer.WriteString("bytes", image.Data);
+		writer.WriteEndObject();
+		writer.WriteEndObject();
+		writer.WriteEndObject();
+	}
+
+	/// Claude 拒绝错误工具结果里除文本以外的内容，图片要挪到本轮结果之后。
+	private const string ErrorToolImagePlaceholder = "(image attached after the tool results)";
+
+	/// Claude 拒绝错误工具结果里除文本以外的内容，图片要挪到本轮结果之后。
+	private static bool IsAnthropicClaude(Model model) =>
+		model.Id.Contains("anthropic.claude", StringComparison.OrdinalIgnoreCase) ||
+		model.Id.Contains("anthropic/claude", StringComparison.OrdinalIgnoreCase) ||
+		model.Name.Contains("anthropic.claude", StringComparison.OrdinalIgnoreCase) ||
+		model.Name.Contains("anthropic/claude", StringComparison.OrdinalIgnoreCase) ||
+		model.Name.Contains("claude", StringComparison.OrdinalIgnoreCase);
 
 	internal static string FormatOf(string mimeType) => mimeType switch
 	{

@@ -205,8 +205,10 @@ public sealed class AnthropicProvider : IApiProvider
 		bool disablePreferredStrictTools)
 	{
 		var isAnthropicOAuth = (options.ApiKey ?? string.Empty).StartsWith("sk-ant-oat", StringComparison.Ordinal);
-		var bytes = JsonPayload.Write(writer => AnthropicWire.WriteRequest(
-			writer, model, messages, tools, options, thinking, maxTokens, isAnthropicOAuth, disablePreferredStrictTools));
+		var bytes = JsonPayload.Write(
+			writer => AnthropicWire.WriteRequest(
+				writer, model, messages, tools, options, thinking, maxTokens, isAnthropicOAuth, disablePreferredStrictTools),
+			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
 		{

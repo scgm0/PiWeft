@@ -2312,6 +2312,17 @@ public sealed partial class MainWindow : Window
 				case "settings":
 					OpenSettingsDialog();
 					break;
+				case "settings-search":
+					// 视觉验收：搜索框、结果行、面包屑与命中加粗。
+					OpenSettingsDialog();
+					if (_settingsView is { } searchView) searchView.SearchForSmoke("模型");
+					break;
+				case "config-dirty":
+					// 视觉验收：导航未保存点与标题栏「模型 · 未保存」。
+					OpenSettingsDialog();
+					_settingsView?.ShowConfiguration();
+					_settingsView?.MarkConfigDirtyForSmoke();
+					break;
 				case "resources":
 					OpenSettingsDialog();
 					if (_settingsView is { } resourceView) _ = resourceView.SelectSectionAsync("resources");

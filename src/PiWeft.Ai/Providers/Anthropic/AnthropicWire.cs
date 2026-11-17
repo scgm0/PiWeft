@@ -57,7 +57,7 @@ internal static class AnthropicWire
 		}
 
 		writer.WritePropertyName("messages");
-		WriteMessages(writer, messages);
+		WriteMessages(writer, messages, options);
 
 		if (tools.Count > 0)
 		{
@@ -66,8 +66,11 @@ internal static class AnthropicWire
 			var supportsStrictTools = ModelCompat.FlagOr(model, "supportsStrictTools", false);
 			writer.WritePropertyName("tools");
 			writer.WriteStartArray();
-			foreach (var tool in tools)
+			var cacheTools = ModelCompat.FlagOr(model, "supportsCacheControlOnTools", true) &&
+				CacheEnabled(options);
+			for (var index = 0; index < tools.Count; index++)
 			{
+				var tool = tools[index];
 				// disablePreferredStrictTools：严格工具额度已超限，"prefer" 的工具不再要严格。
 				var strict =
 					disablePreferredStrictTools && ConstrainedSampling.PrefersStrictJsonSchema(tool)
@@ -87,6 +90,11 @@ internal static class AnthropicWire
 
 				writer.WritePropertyName("input_schema");
 				WriteInputSchema(writer, parameters, strict == true);
+				if (cacheTools && index == tools.Count - 1)
+				{
+					WriteCacheControl(writer, options);
+				}
+
 				writer.WriteEndObject();
 			}
 
@@ -202,8 +210,14 @@ internal static class AnthropicWire
 		writer.WriteEndObject();
 	}
 
-	private static void WriteMessages(Utf8JsonWriter writer, IReadOnlyList<Message> messages)
+	private static bool CacheEnabled(StreamOptions options) =>
+		(options.CacheRetention ?? CacheRetentions.Short) != CacheRetentions.None;
+
+	private static void WriteMessages(Utf8JsonWriter writer, IReadOnlyList<Message> messages, StreamOptions options)
 	{
+		// 会话历史的缓存断点要落在最后一条 user 消息上，否则每轮都把整段历史重算一遍。
+		var cacheLast = CacheEnabled(options);
+		var last = messages.Count - 1;
 		writer.WriteStartArray();
 		for (var i = 0; i < messages.Count; i++)
 		{
@@ -214,7 +228,7 @@ internal static class AnthropicWire
 					break;
 
 				case UserMessage user:
-					WriteUser(writer, user);
+					WriteUser(writer, user, options, cacheLast && i == last);
 					break;
 
 				case AssistantMessage assistant:
@@ -232,7 +246,8 @@ internal static class AnthropicWire
 					while (i < messages.Count && messages[i] is ToolResultMessage result)
 					{
 						var split = SplitErrorImages(result);
-						WriteToolResult(writer, split?.Result ?? result);
+						// 断点只能落一个；有后续错误图片时留给最后那张图。
+						WriteToolResult(writer, split?.Result ?? result, options, cacheLast && i == last && split is null);
 						if (split is { } value)
 						{
 							errorImages.Add((value.Caption, value.Images));
@@ -242,15 +257,16 @@ internal static class AnthropicWire
 					}
 
 					// Anthropic 拒绝错误工具结果里出现图片；把图片放到所有 tool_result 之后。
+					var putCache = cacheLast && i - 1 == last;
 					foreach (var (caption, images) in errorImages)
 					{
 						writer.WriteStartObject();
 						writer.WriteString("type", "text");
 						writer.WriteString("text", TextSanitizer.SanitizeSurrogates(caption));
 						writer.WriteEndObject();
-						foreach (var image in images)
+						for (var imageIndex = 0; imageIndex < images.Count; imageIndex++)
 						{
-							WriteImage(writer, image);
+							WriteImage(writer, images[imageIndex], options, putCache && imageIndex == images.Count - 1);
 						}
 					}
 
@@ -265,7 +281,7 @@ internal static class AnthropicWire
 		writer.WriteEndArray();
 	}
 
-	private static void WriteUser(Utf8JsonWriter writer, UserMessage message)
+	private static void WriteUser(Utf8JsonWriter writer, UserMessage message, StreamOptions options, bool cache)
 	{
 		if (message.Content.IsText)
 		{
@@ -276,13 +292,38 @@ internal static class AnthropicWire
 
 			writer.WriteStartObject();
 			writer.WriteString("role", "user");
-			writer.WriteString("content", TextSanitizer.SanitizeSurrogates(message.Content.Text));
+			if (cache)
+			{
+				// 字符串 content 放不下 cache_control，得改成单块数组。
+				writer.WritePropertyName("content");
+				writer.WriteStartArray();
+				writer.WriteStartObject();
+				writer.WriteString("type", "text");
+				writer.WriteString("text", TextSanitizer.SanitizeSurrogates(message.Content.Text));
+				WriteCacheControl(writer, options);
+				writer.WriteEndObject();
+				writer.WriteEndArray();
+			}
+			else
+			{
+				writer.WriteString("content", TextSanitizer.SanitizeSurrogates(message.Content.Text));
+			}
+
 			writer.WriteEndObject();
 			return;
 		}
 
 		var blocks = message.Content.Blocks ?? [];
-		if (!blocks.Any(IsRenderableUserBlock))
+		var renderable = 0;
+		foreach (var candidate in blocks)
+		{
+			if (IsRenderableUserBlock(candidate))
+			{
+				renderable++;
+			}
+		}
+
+		if (renderable == 0)
 		{
 			return;
 		}
@@ -291,18 +332,26 @@ internal static class AnthropicWire
 		writer.WriteString("role", "user");
 		writer.WritePropertyName("content");
 		writer.WriteStartArray();
+		var written = 0;
 		foreach (var block in blocks)
 		{
 			switch (block)
 			{
 				case TextContent text when !string.IsNullOrWhiteSpace(text.Text):
+					written++;
 					writer.WriteStartObject();
 					writer.WriteString("type", "text");
 					writer.WriteString("text", TextSanitizer.SanitizeSurrogates(text.Text));
+					if (cache && written == renderable)
+					{
+						WriteCacheControl(writer, options);
+					}
+
 					writer.WriteEndObject();
 					break;
 				case ImageContent image:
-					WriteImage(writer, image);
+					written++;
+					WriteImage(writer, image, options, cache && written == renderable);
 					break;
 			}
 		}
@@ -386,25 +435,37 @@ internal static class AnthropicWire
 		writer.WriteEndObject();
 	}
 
-	private static void WriteToolResult(Utf8JsonWriter writer, ToolResultMessage message)
+	private static void WriteToolResult(
+		Utf8JsonWriter writer,
+		ToolResultMessage message,
+		StreamOptions options,
+		bool cache)
 	{
 		writer.WriteStartObject();
 		writer.WriteString("type", "tool_result");
 		writer.WriteString("tool_use_id", message.ToolCallId);
 		writer.WritePropertyName("content");
 		writer.WriteStartArray();
-		foreach (var block in message.Content)
+		var total = message.Content.Count;
+		for (var index = 0; index < total; index++)
 		{
+			var block = message.Content[index];
+			var putCache = cache && index == total - 1;
 			switch (block)
 			{
 				case TextContent text:
 					writer.WriteStartObject();
 					writer.WriteString("type", "text");
 					writer.WriteString("text", TextSanitizer.SanitizeSurrogates(text.Text));
+					if (putCache)
+					{
+						WriteCacheControl(writer, options);
+					}
+
 					writer.WriteEndObject();
 					break;
 				case ImageContent image:
-					WriteImage(writer, image);
+					WriteImage(writer, image, options, putCache);
 					break;
 			}
 		}
@@ -429,7 +490,7 @@ internal static class AnthropicWire
 
 	private const string ErrorToolImagePlaceholder = "(image attached after the tool results)";
 
-	private static void WriteImage(Utf8JsonWriter writer, ImageContent image)
+	private static void WriteImage(Utf8JsonWriter writer, ImageContent image, StreamOptions? options = null, bool cache = false)
 	{
 		writer.WriteStartObject();
 		writer.WriteString("type", "image");
@@ -439,6 +500,11 @@ internal static class AnthropicWire
 		writer.WriteString("media_type", image.MimeType);
 		writer.WriteString("data", image.Data);
 		writer.WriteEndObject();
+		if (cache && options is not null)
+		{
+			WriteCacheControl(writer, options);
+		}
+
 		writer.WriteEndObject();
 	}
 

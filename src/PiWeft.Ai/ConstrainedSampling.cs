@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 
 namespace PiWeft.Ai;
@@ -112,6 +113,10 @@ public static class ConstrainedSampling
 	public static JsonObject GetJsonSchemaToolParameters(Tool tool, bool? strict) =>
 		strict == true ? MakeStrictJsonSchema(tool.Parameters) : tool.Parameters;
 
+	// 工具 schema 构造后不再修改，所以严格版可以按实例缓存：
+	// 每轮对话都要深拷贝 + 递归改写十来个工具，这份开销是白付的。
+	private static readonly ConditionalWeakTable<JsonObject, JsonObject> StrictSchemas = new();
+
 	/// 把工具 schema 改写成 provider 严格模式接受的子集（pi 的 makeStrictJsonSchema）：
 	/// 可选属性包成 <c>anyOf: [schema, null]</c>、全部属性进 <c>required</c>、
 	/// 关闭 <c>additionalProperties</c>，并在遇到无法表达的形状时抛出
@@ -120,11 +125,22 @@ public static class ConstrainedSampling
 		JsonObject schema,
 		UnsupportedStrictSchemaKeyword? unsupportedKeyword = null)
 	{
+		// 带自定义白名单时结果与 provider 相关，不进共享缓存。
+		if (unsupportedKeyword is null && StrictSchemas.TryGetValue(schema, out var cached))
+		{
+			return cached;
+		}
+
 		var cloned = (JsonObject)schema.DeepClone();
 		MakeNodeStrict(cloned, unsupportedKeyword);
 		if (Str(cloned, "type") != "object")
 		{
 			throw new UnsupportedStrictJsonSchemaException("root schema must have type object");
+		}
+
+		if (unsupportedKeyword is null)
+		{
+			StrictSchemas.AddOrUpdate(schema, cloned);
 		}
 
 		return cloned;

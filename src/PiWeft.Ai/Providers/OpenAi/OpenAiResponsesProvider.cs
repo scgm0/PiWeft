@@ -132,12 +132,13 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 					? new JsonObject { ["ttl"] = "30m" }
 					: null
 			: null;
-		var bytes = JsonPayload.Write(writer =>
-			OpenAiResponsesWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, maxOutputTokens,
+		var bytes = JsonPayload.Write(
+			writer => OpenAiResponsesWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, maxOutputTokens,
 				promptCacheKey: promptCacheKey,
 				promptCacheRetention: promptCacheRetention,
 				promptCacheOptions: promptCacheOptions,
-				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? false));
+				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? false),
+			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
 		{

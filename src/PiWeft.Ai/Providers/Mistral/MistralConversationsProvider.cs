@@ -144,7 +144,7 @@ public sealed class MistralConversationsProvider : IApiProvider
 			}
 
 			writer.WritePropertyName("messages");
-			OpenAiCompletionsWire.WriteMessages(writer, messages);
+			OpenAiCompletionsWire.WriteMessages(writer, messages, model);
 
 			if (tools.Count > 0)
 			{
@@ -181,7 +181,7 @@ public sealed class MistralConversationsProvider : IApiProvider
 			}
 
 			writer.WriteEndObject();
-		});
+		}, Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
 		{

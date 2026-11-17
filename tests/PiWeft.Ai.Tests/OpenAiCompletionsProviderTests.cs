@@ -176,6 +176,114 @@ public class OpenAiCompletionsProviderTests
 	}
 
 	[Fact]
+	public async Task SendsToolResultImagesInFollowUpUserMessage()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		var context = new Context
+		{
+			Messages =
+			[
+				new UserMessage { Content = MessageContent.FromText("读两张图"), Timestamp = 1 },
+				new AssistantMessage
+				{
+					Content =
+					[
+						new ToolCall { Id = "call_1", Name = "read", Arguments = new() { ["path"] = "a.png" } },
+						new ToolCall { Id = "call_2", Name = "read", Arguments = new() { ["path"] = "b.png" } },
+					],
+					Timestamp = 2,
+				},
+				new ToolResultMessage
+				{
+					ToolCallId = "call_1",
+					ToolName = "read",
+					Content =
+					[
+						new TextContent { Text = "Read image file [image/png]" },
+						new ImageContent { Data = "AAAA", MimeType = "image/png" },
+					],
+					Timestamp = 3,
+				},
+				new ToolResultMessage
+				{
+					ToolCallId = "call_2",
+					ToolName = "read",
+					Content =
+					[
+						new TextContent { Text = "Read image file [image/png]" },
+						new ImageContent { Data = "BBBB", MimeType = "image/png" },
+					],
+					Timestamp = 4,
+				},
+			],
+		};
+
+		var stream = provider.Stream(
+			Model() with { Input = ["text", "image"] },
+			context,
+			new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var messages = document.RootElement.GetProperty("messages");
+		Assert.Equal(
+			["user", "assistant", "tool", "tool", "user"],
+			Enumerable.Range(0, messages.GetArrayLength())
+				.Select(i => messages[i].GetProperty("role").GetString()));
+
+		// tool 消息只带文本，两张图合并到下一条 user 消息。
+		Assert.Equal("Read image file [image/png]", messages[2].GetProperty("content").GetString());
+		var content = messages[4].GetProperty("content");
+		Assert.Equal("Attached image(s) from tool result:", content[0].GetProperty("text").GetString());
+		Assert.Equal(3, content.GetArrayLength());
+		Assert.Equal("data:image/png;base64,AAAA", content[1].GetProperty("image_url").GetProperty("url").GetString());
+		Assert.Equal("data:image/png;base64,BBBB", content[2].GetProperty("image_url").GetProperty("url").GetString());
+	}
+
+	[Fact]
+	public async Task OmitsToolResultImagesForTextOnlyModel()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		var context = new Context
+		{
+			Messages =
+			[
+				new UserMessage { Content = MessageContent.FromText("读图"), Timestamp = 1 },
+				new AssistantMessage
+				{
+					Content = [new ToolCall { Id = "call_1", Name = "read", Arguments = new() { ["path"] = "a.png" } }],
+					Timestamp = 2,
+				},
+				new ToolResultMessage
+				{
+					ToolCallId = "call_1",
+					ToolName = "read",
+					Content =
+					[
+						new TextContent { Text = "Read image file [image/png]" },
+						new ImageContent { Data = "AAAA", MimeType = "image/png" },
+					],
+					Timestamp = 3,
+				},
+			],
+		};
+
+		var stream = provider.Stream(Model(), context, new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var messages = document.RootElement.GetProperty("messages");
+		Assert.Equal(3, messages.GetArrayLength());
+		Assert.DoesNotContain("image_url", handler.LastBody!);
+	}
+
+	[Fact]
 	public async Task UsesMaxCompletionTokensOnOpenAi()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };

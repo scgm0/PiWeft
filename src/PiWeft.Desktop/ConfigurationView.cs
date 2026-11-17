@@ -12,7 +12,7 @@ internal sealed partial class ConfigurationView
 	private readonly ScrollViewer _scroll = new();
 	private readonly TextBlock _notice = new();
 	private readonly TextBlock _path = new();
-	private readonly TextBlock _dirtyLabel = new();
+	private readonly TextBlock _dirtyLabel = new TextBlock().Text(Strings.ConfigReady);
 	private readonly ComboBox _scope = new();
 	private ConfigurationDocument? _document;
 	private JsonObject _root = new();
@@ -42,17 +42,23 @@ internal sealed partial class ConfigurationView
 			_ = SwitchScopeAsync(requested);
 		};
 		View = new DockPanel().LastChildFill().Children(
-			new StackPanel().Spacing(AppTheme.Space2).Children(
-				new DockPanel().LastChildFill().Children(
-					new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(
-						_scope,
-						AppIcons.Button("refresh-cw", Strings.ConfigReload, () => _ = ReloadAsync()),
-						AppIcons.Button("folder-open", Strings.ConfigOpenFile, OpenFile)).DockRight(),
-					_dirtyLabel.FontSize(AppTheme.FontSizeCaption).AccentText()).Margin(new Thickness(0, 0, 0, 4)),
-				_path.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap),
-				_notice.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
-			).DockTop(),
-			_scroll.SmoothScrolling().Content(_body.Spacing(AppTheme.Space3)).AutoVerticalScroll().NoHorizontalScroll());
+			new StackPanel().Spacing(AppTheme.Space2)
+				.Padding(new Thickness(0, 0, AppTheme.Space4, 0))
+				.Children(
+					new DockPanel().LastChildFill().Children(
+						new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(
+							_scope,
+							AppIcons.Button("refresh-cw", Strings.ConfigReload, () => _ = ReloadAsync()),
+							AppIcons.Button("folder-open", Strings.ConfigOpenFile, OpenFile)).DockRight(),
+						_dirtyLabel.FontSize(AppTheme.FontSizeCaption).AccentText()).Margin(new Thickness(0, 0, 0, 4)),
+					_path.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap),
+					_notice.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
+				).DockTop(),
+			// 与设置页内容区一致：右内边距放在滚动内容侧，滚动条贴弹窗右缘，
+			// 行尾按钮不压在滚动条下面。
+			_scroll.SmoothScrolling().Content(_body.Spacing(AppTheme.Space3))
+				.Padding(new Thickness(0, 0, AppTheme.Space4, 0))
+				.AutoVerticalScroll().NoHorizontalScroll());
 		Load();
 	}
 
@@ -62,6 +68,9 @@ internal sealed partial class ConfigurationView
 	public event Action? StateChanged;
 	public event Action? AuthChanged;
 	internal void SaveDraft() => Guard(() => _saveForm?.Invoke());
+
+	/// <summary>仅用于 <c>--ui-smoke config-dirty</c>：只标脏，不写盘。</summary>
+	internal void MarkDirtyForSmoke() => SetDirty(true);
 	public void Discard() => Load();
 	public void ApplyTheme() => AppStyles.ApplyTextColors((Element)View);
 
@@ -76,7 +85,10 @@ internal sealed partial class ConfigurationView
 		return true;
 	}
 
-	public Task<bool> CanDiscardAsync() => _dirty ? MessageBox.ConfirmAsync(Strings.ConfigDiscard) : Task.FromResult(true);
+	public Task<bool> CanDiscardAsync() => _dirty
+		? MessageBox.ConfirmAsync(Strings.ConfigDiscardNamed(
+			SettingsSections.Title(SettingsSections.SectionOf(_file))))
+		: Task.FromResult(true);
 
 	private async Task SwitchScopeAsync(bool project)
 	{
@@ -151,6 +163,8 @@ internal sealed partial class ConfigurationView
 
 	private void SetDirty(bool value)
 	{
+		// 表单每次键入都会调 SetDirty(true)：已经脏时不必再刷一次标题栏/导航点。
+		if (_dirty == value) return;
 		_dirty = value;
 		_dirtyLabel.Text(value ? Strings.ConfigDirty : Strings.ConfigReady);
 		StateChanged?.Invoke();

@@ -207,6 +207,16 @@ public sealed class ConfigurationViewTests : IDisposable
 	}
 
 	[Fact]
+	public void FreshViewShowsReadyLabel()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+
+		var field = typeof(ConfigurationView).GetField("_dirtyLabel", BindingFlags.Instance | BindingFlags.NonPublic)!;
+		var label = Assert.IsType<TextBlock>(field.GetValue(view));
+		Assert.Equal(Strings.ConfigReady, label.Text);
+	}
+
+	[Fact]
 	public void SaveAvailabilityTracksTheDraftAndRaisesStateChanges()
 	{
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });

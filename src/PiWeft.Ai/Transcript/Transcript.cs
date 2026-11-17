@@ -82,8 +82,7 @@ public static class Transcript
 	}
 
 	public static string GetText(SystemMessage message)
-	{
-		if (message.Sections is not { Count: > 0 } sections)
+	{		if (message.Sections is not { Count: > 0 } sections)
 		{
 			return message.Text;
 		}
@@ -105,6 +104,83 @@ public static class Transcript
 		}
 
 		return builder.ToString();
+	}
+
+	/// 序列化前的请求体大小预估。图片以 base64 存在，字符数就是 UTF8 字节数；
+	/// 按它预分配缓冲，大图请求不必反复翻倍扩容。
+	public static int EstimateRequestBytes(IReadOnlyList<Message> messages, IReadOnlyList<Tool>? tools = null)
+	{
+		var total = 4096;
+		foreach (var message in messages)
+		{
+			switch (message)
+			{
+				case UserMessage user:
+					total += user.Content.IsText
+						? EstimateText(user.Content.Text)
+						: EstimateBlocks(user.Content.Blocks);
+					break;
+
+				case AssistantMessage assistant:
+					foreach (var block in assistant.Content)
+					{
+						total += block switch
+						{
+							TextContent text => EstimateText(text.Text),
+							ThinkingContent thinking => EstimateText(thinking.Thinking),
+							ToolCall => 512,
+							_ => 64,
+						};
+					}
+
+					break;
+
+				case ToolResultMessage result:
+					total += EstimateBlocks(result.Content);
+					break;
+
+				case SystemMessage system:
+					total += system.Content.IsText
+						? EstimateText(system.Content.Text)
+						: EstimateBlocks(system.Content.Blocks);
+					break;
+			}
+		}
+
+		if (tools is { Count: > 0 })
+		{
+			// 工具 schema 是节点树，遍历统计比直接序列化还贵；按每个 2 KB 的实测上限估。
+			total += tools.Count * 2048;
+		}
+
+		return total;
+	}
+
+	// 宁可高估：扩一次容就要整块拷贝，比多分配几百字节贵得多。
+	private static int EstimateText(string? text) => text is null ? 0 : text.Length * 2 + 16;
+
+	private static int EstimateBlocks(IReadOnlyList<ContentBlock>? blocks)
+	{
+		if (blocks is not { Count: > 0 })
+		{
+			return 0;
+		}
+
+		var total = 32;
+		foreach (var block in blocks)
+		{
+			total += block switch
+			{
+				// base64 只含 ASCII，长度就是 UTF8 字节数。
+				ImageContent image => image.Data.Length + 64,
+				TextContent text => EstimateText(text.Text),
+				ThinkingContent thinking => EstimateText(thinking.Thinking),
+				ToolCall => 512,
+				_ => 64,
+			};
+		}
+
+		return total;
 	}
 
 	/// <summary>合并所有 system 消息得到当前的工具集：后出现的 ToolsRemoved 删除后出现的 ToolsAdded 添加。</summary>

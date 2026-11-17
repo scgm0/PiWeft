@@ -112,8 +112,22 @@ public static partial class Strings
 	public const string SettingsEnvironment = "运行环境";
 	public const string SettingsLogs = "日志";
 
+	// 设置搜索：入口在内容列顶部，结果替换分区内容。
+	public const string SettingsSearchPlaceholder = "搜索设置项…";
+	public const string SettingsSearchHint = "搜索分区与设置项。↑↓ 选择，Enter 打开，Esc 清除；Ctrl+F 随时回到搜索框。";
+	public const string SettingsSearchKeys = "↑↓ 选择 · Enter 打开 · Esc 清除";
+	public const string SettingsSearchResults = "搜索结果";
+	public const string SettingsSearchNoResults = "没有匹配的设置项。换个说法，或只输入一个词。";
+	public const string SettingsSearchClear = "清除搜索";
+	public const string SettingsCopyValue = "复制";
+	public const string SettingsOpenFolder = "打开目录";
+	public static string SettingsSearchCount(int count) => $"{count} 个结果";
+	public static string ConfigDirtyNamed(string section) => $"{section} · 未保存";
+	public static string ConfigDiscardNamed(string section) => $"「{section}」有未保存的修改，放弃这些修改？";
+
 	// 性能诊断（对齐 PiDeck 设置里的同名开关）
 	public const string SettingsDiagnostics = "性能诊断";
+	public const string SettingsDiagnosticsToggle = "性能诊断开关";
 	public const string DiagnosticsDesc =
 		"采样帧成本、事件次数与关键路径耗时，写入诊断目录。默认关闭。";
 	public const string DiagnosticsRefresh = "刷新采样";

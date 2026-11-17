@@ -79,6 +79,14 @@ internal sealed class SettingsDialog
 				.Child(new DialogSurface().Content(card)))
 			.OnKeyDown(key =>
 			{
+				// Ctrl+F：从任何可聚焦控件回到搜索框。
+				if (key.ControlKey && key.Key == Key.F)
+				{
+					key.Handled = true;
+					_settings.FocusSearch();
+					return;
+				}
+
 				if (key.Key != Key.Escape) return;
 				key.Handled = true;
 				_ = RequestCloseAsync();
@@ -105,6 +113,8 @@ internal sealed class SettingsDialog
 		}
 
 		_window = window;
+		// 弹窗关闭后视图仍保留；重开时清掉上一次的搜索，回到最后停留的分区。
+		_settings.ResetSearch();
 		View.IsVisible(true);
 		TransientOverlay.Open(window, View, Hide);
 		window.WindowStateChanged += OnWindowStateChanged;
@@ -232,6 +242,10 @@ internal sealed class SettingsDialog
 		var dirty = configuration && _settings.IsDirty;
 		_saveButton.IsVisible(configuration);
 		_saveButton.IsEnabled(dirty && _settings.CanSave);
+		// 标题栏直接写分区名：用户不用回想刚才改的是模型还是 Agent 设置。
+		_dirtyLabel.Text(dirty && _settings.DirtySectionTitle is { Length: > 0 } section
+			? Strings.ConfigDirtyNamed(section)
+			: Strings.ConfigDirty);
 		_dirtyLabel.IsVisible(dirty);
 	}
 

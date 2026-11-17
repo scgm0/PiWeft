@@ -104,11 +104,12 @@ internal static class OpenAiCompletionsWire
 	{
 		var bridgeAfterToolResult = model is not null &&
 			ModelCompat.FlagOr(model, "requiresAssistantAfterToolResult", false);
+		var supportsImages = model?.SupportsImages ?? false;
 		var lastWasToolResult = false;
 		writer.WriteStartArray();
-		foreach (var message in messages)
+		for (var i = 0; i < messages.Count; i++)
 		{
-			switch (message)
+			switch (messages[i])
 			{
 				case SystemMessage system:
 					WriteSystem(writer, system, model);
@@ -130,14 +131,70 @@ internal static class OpenAiCompletionsWire
 					lastWasToolResult = false;
 					break;
 
-				case ToolResultMessage result:
-					WriteToolResult(writer, result, model);
-					lastWasToolResult = true;
+				case ToolResultMessage:
+				{
+					// tool 消息只能带文本，图片单独放进紧随其后的 user 消息。工具结果常常
+					// 连续出现（并行 read），所以先收集整批再一次性写，避免每个结果各配一条消息。
+					var images = new List<ImageContent>();
+					while (i < messages.Count && messages[i] is ToolResultMessage result)
+					{
+						WriteToolResult(writer, result, model);
+						if (supportsImages)
+						{
+							images.AddRange(result.Content.OfType<ImageContent>());
+						}
+
+						i++;
+					}
+
+					i--;
+					if (images.Count > 0)
+					{
+						if (bridgeAfterToolResult)
+						{
+							WriteAssistantBridge(writer);
+						}
+
+						WriteToolResultImages(writer, images);
+						// 图片消息已经是 user，后面紧跟的 user 消息不必再插桥接。
+						lastWasToolResult = false;
+					}
+					else
+					{
+						lastWasToolResult = true;
+					}
+
 					break;
+				}
 			}
 		}
 
 		writer.WriteEndArray();
+	}
+
+	private static void WriteToolResultImages(Utf8JsonWriter writer, IReadOnlyList<ImageContent> images)
+	{
+		writer.WriteStartObject();
+		writer.WriteString("role", "user");
+		writer.WritePropertyName("content");
+		writer.WriteStartArray();
+		writer.WriteStartObject();
+		writer.WriteString("type", "text");
+		writer.WriteString("text", "Attached image(s) from tool result:");
+		writer.WriteEndObject();
+		foreach (var image in images)
+		{
+			writer.WriteStartObject();
+			writer.WriteString("type", "image_url");
+			writer.WritePropertyName("image_url");
+			writer.WriteStartObject();
+			writer.WriteString("url", $"data:{image.MimeType};base64,{image.Data}");
+			writer.WriteEndObject();
+			writer.WriteEndObject();
+		}
+
+		writer.WriteEndArray();
+		writer.WriteEndObject();
 	}
 
 	private static void WriteAssistantBridge(Utf8JsonWriter writer)

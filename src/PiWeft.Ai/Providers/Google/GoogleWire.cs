@@ -131,6 +131,11 @@ internal static class GoogleWire
 	{
 		writer.WriteStartArray();
 		var pendingToolResults = new List<ToolResultMessage>();
+		var supportsImages = model.SupportsImages;
+		// Gemini 3+ 接受 functionResponse.parts 里的图片；更老的模型只能另起一条 user content。
+		var inlineFunctionImages = SupportsMultimodalFunctionResponse(model.Id);
+		// 只有一部分模型用 id 配对工具调用；两边要么都带，要么都不带。
+		var includeToolCallId = RequiresToolCallId(model.Id);
 
 		void FlushToolResults()
 		{
@@ -139,6 +144,8 @@ internal static class GoogleWire
 				return;
 			}
 
+			var trailingImages = new List<ImageContent>();
+
 			// Gemini 要求同一轮次的所有 functionResponse 放在同一条 user content 内。
 			writer.WriteStartObject();
 			writer.WriteString("role", "user");
@@ -146,10 +153,16 @@ internal static class GoogleWire
 			writer.WriteStartArray();
 			foreach (var result in pendingToolResults)
 			{
+				var images = supportsImages ? result.Content.OfType<ImageContent>().ToList() : [];
 				writer.WriteStartObject();
 				writer.WritePropertyName("functionResponse");
 				writer.WriteStartObject();
 				writer.WriteString("name", result.ToolName);
+				if (includeToolCallId && result.ToolCallId.Length > 0)
+				{
+					writer.WriteString("id", result.ToolCallId);
+				}
+
 				writer.WritePropertyName("response");
 				writer.WriteStartObject();
 				if (result.IsError)
@@ -162,12 +175,51 @@ internal static class GoogleWire
 				}
 
 				writer.WriteEndObject();
+
+				if (images.Count > 0)
+				{
+					if (inlineFunctionImages)
+					{
+						writer.WritePropertyName("parts");
+						writer.WriteStartArray();
+						foreach (var image in images)
+						{
+							WriteInlineData(writer, image);
+						}
+
+						writer.WriteEndArray();
+					}
+					else
+					{
+						trailingImages.AddRange(images);
+					}
+				}
+
 				writer.WriteEndObject();
 				writer.WriteEndObject();
 			}
 
 			writer.WriteEndArray();
 			writer.WriteEndObject();
+
+			if (trailingImages.Count > 0)
+			{
+				writer.WriteStartObject();
+				writer.WriteString("role", "user");
+				writer.WritePropertyName("parts");
+				writer.WriteStartArray();
+				writer.WriteStartObject();
+				writer.WriteString("text", "Tool result image:");
+				writer.WriteEndObject();
+				foreach (var image in trailingImages)
+				{
+					WriteInlineData(writer, image);
+				}
+
+				writer.WriteEndArray();
+				writer.WriteEndObject();
+			}
+
 			pendingToolResults.Clear();
 		}
 
@@ -208,6 +260,17 @@ internal static class GoogleWire
 		}
 
 		return message.Content.Any(static block => block is ImageContent) ? "(see attached image)" : "(no output)";
+	}
+
+	private static void WriteInlineData(Utf8JsonWriter writer, ImageContent image)
+	{
+		writer.WriteStartObject();
+		writer.WritePropertyName("inlineData");
+		writer.WriteStartObject();
+		writer.WriteString("mimeType", image.MimeType);
+		writer.WriteString("data", image.Data);
+		writer.WriteEndObject();
+		writer.WriteEndObject();
 	}
 
 	private static void WriteUser(Utf8JsonWriter writer, UserMessage message)
@@ -251,13 +314,7 @@ internal static class GoogleWire
 					writer.WriteEndObject();
 					break;
 				case ImageContent image:
-					writer.WriteStartObject();
-					writer.WritePropertyName("inlineData");
-					writer.WriteStartObject();
-					writer.WriteString("mimeType", image.MimeType);
-					writer.WriteString("data", image.Data);
-					writer.WriteEndObject();
-					writer.WriteEndObject();
+					WriteInlineData(writer, image);
 					break;
 			}
 		}
@@ -331,7 +388,7 @@ internal static class GoogleWire
 					writer.WriteString("name", call.Name);
 					writer.WritePropertyName("args");
 					call.Arguments.WriteTo(writer);
-					if (!string.IsNullOrEmpty(call.Id))
+					if (RequiresToolCallId(model.Id) && !string.IsNullOrEmpty(call.Id))
 					{
 						writer.WriteString("id", call.Id);
 					}
@@ -352,15 +409,47 @@ internal static class GoogleWire
 	}
 
 	/// Gemini 3+ 在 VALIDATED 工具模式里强制 required 参数；更老的模型没有这个模式。
-	internal static bool SupportsStrictToolSampling(string modelId)
+	internal static bool SupportsStrictToolSampling(string modelId) => GeminiMajorVersion(modelId) is { } major && major >= 3;
+
+	/// 只有 Gemini 3+ 接受 functionResponse.parts 里的图片；其他模型另起一条 user content。
+	internal static bool SupportsMultimodalFunctionResponse(string modelId) =>
+		GeminiMajorVersion(modelId) is not { } major || major >= 3;
+
+	/// 只有 Claude、gpt-oss 和 Gemini 3+ 用 id 配对工具调用；其余模型收到 id 会被当成未知字段。
+	internal static bool RequiresToolCallId(string modelId) =>
+		modelId.StartsWith("claude-", StringComparison.OrdinalIgnoreCase) ||
+		modelId.StartsWith("gpt-oss-", StringComparison.OrdinalIgnoreCase) ||
+		GeminiMajorVersion(modelId) is { } major && major >= 3;
+
+	// 每个请求要问好几次版本号；手写解析避开正则与 ToLowerInvariant 的分配。
+	private static int? GeminiMajorVersion(string modelId)
 	{
-		var match = System.Text.RegularExpressions.Regex.Match(
-			modelId.ToLowerInvariant(),
-			"^gemini(?:-live)?-(\\d+)",
-			System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-		return match.Success &&
-			int.TryParse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture, out var major) &&
-			major >= 3;
+		var span = modelId.AsSpan().Trim();
+		if (!span.StartsWith("gemini", StringComparison.OrdinalIgnoreCase))
+		{
+			return null;
+		}
+
+		span = span[6..];
+		if (span.StartsWith("-live", StringComparison.OrdinalIgnoreCase))
+		{
+			span = span[5..];
+		}
+
+		if (span.Length < 2 || span[0] != '-')
+		{
+			return null;
+		}
+
+		var major = 0;
+		var digits = 0;
+		for (var i = 1; i < span.Length && char.IsAsciiDigit(span[i]); i++)
+		{
+			major = major * 10 + (span[i] - '0');
+			digits++;
+		}
+
+		return digits > 0 ? major : null;
 	}
 
 	/// Gemini 忽略 parametersJsonSchema 里的 <c>const</c>：字符串/数字常量改写成单值 enum。

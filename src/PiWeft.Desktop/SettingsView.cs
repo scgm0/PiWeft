@@ -1,5 +1,7 @@
 using Aprillz.MewUI;
+using Aprillz.MewUI.Automation;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Input;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Extensions;
@@ -65,6 +67,18 @@ public sealed class SettingsView
 	private readonly Func<Task>? _reloadResources;
 	private readonly Action? _modelsChanged;
 	private readonly ScrollViewer _systemView;
+	private readonly ScrollViewer _searchView;
+	private readonly StackPanel _searchResults = new();
+	private readonly TextBlock _searchHint = new();
+	private readonly TextBox _searchBox;
+	private readonly Button _searchClear;
+	private readonly List<Button> _searchRows = [];
+	private readonly Dictionary<string, FrameworkElement> _anchors = new(StringComparer.Ordinal);
+	private IReadOnlyList<SettingsSearchHit> _searchHits = [];
+	private int _searchIndex;
+	private string _searchQuery = string.Empty;
+	private Border? _dirtyDot;
+	private bool _pickingSearch;
 	private readonly UsageStatsCache? _usageStatsCache;
 	private UsageStatsPanel? _usageStats;
 	private Button? _activeNavigationButton;
@@ -105,29 +119,82 @@ public sealed class SettingsView
 		_configuration = new(() =>
 		{
 			var view = new ConfigurationView(initial.AgentDir, initial.Cwd, _saved);
-			view.StateChanged += () => StateChanged?.Invoke();
+			view.StateChanged += () =>
+			{
+				UpdateDirtyIndicator();
+				StateChanged?.Invoke();
+			};
 			view.AuthChanged += () => AuthChanged?.Invoke();
 			return view;
 		});
 		_content.Spacing(AppTheme.Space4).MaxWidth(960);
-		_systemView = new ScrollViewer().SmoothScrolling().Content(_content).AutoVerticalScroll().NoHorizontalScroll();
-		var main = _main = new Grid().Children(_systemView);
+		// 滚动条是覆盖在内容上的细条，贴着 ScrollViewer 右缘画。内容让出 16 DIP，
+		// 卡片右缘与滚动条之间就有固定空隙，滚动时不会被压住。
+		_systemView = new ScrollViewer().SmoothScrolling().Content(_content)
+			.Padding(new Thickness(0, 0, AppTheme.Space4, 0))
+			.AutoVerticalScroll().NoHorizontalScroll();
+
+		// 搜索框放在内容列顶部而不是导航轨：结果行需要整行宽度，窄轨里既放不下提示也放不下面包屑。
+		// 查询期间结果列表替代分区内容，导航轨保持可点，草稿与滚动位置不受影响。
+		_searchBox = new TextBox().PrimarySelection()
+			.StyleName(AppStyles.TextInputLine)
+			.Height(AppTheme.ControlHeightMd)
+			.FontSize(AppTheme.FontSizeCaption)
+			// 右侧给清除键留位置，长查询不会钻到键下面。
+			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space6 + 2, 0))
+			.Placeholder(Strings.SettingsSearchPlaceholder)
+			.OnTextChanged(_ => ApplySearch())
+			.OnKeyDown(OnSearchKeyDown)
+			.HoverTip(Strings.SettingsSearchHint);
+		AutomationProperties.SetName(_searchBox, Strings.SettingsSearchPlaceholder);
+		AutomationProperties.SetHelpText(_searchBox, Strings.SettingsSearchHint);
+		_searchHint.FontSize(AppTheme.FontSizeMicro).FaintText()
+			.VerticalAlignment(VerticalAlignment.Center)
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.Margin(new Thickness(AppTheme.Space3, 0, 0, 0))
+			.Text(Strings.SettingsSearchKeys);
+		var searchIcon = AppIcons.Icon("search", AppStyles.RoleSubtle, 14)
+			.Margin(new Thickness(0, 0, AppTheme.Space2, 0));
+		_searchClear = RowAction("x", Strings.SettingsSearchClear, () => ClearSearch())
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(0, 0, AppTheme.Space1, 0));
+		_searchClear.IsVisible(false);
+		// 清除键叠在输入框右端内部；外层 Grid 限宽 420，窗口变窄时跟着缩。
+		var searchInput = new Grid().MaxWidth(420).HorizontalAlignment(HorizontalAlignment.Stretch)
+			.Children(_searchBox, _searchClear);
+		var searchRow = new DockPanel().LastChildFill()
+			.Children(searchIcon.DockLeft(), _searchHint.DockRight(), searchInput);
+		// 窄窗口先保输入框：提示行暂时让位，键盘说明仍在输入框的悬停提示里。
+		searchRow.SizeChanged += args => _searchHint.IsVisible(args.NewSize.Width >= SearchHintMinWidth);
+
+		_searchResults.Spacing(SearchRowSpacing);
+		_searchView = new ScrollViewer().SmoothScrolling().Content(_searchResults)
+			.Padding(new Thickness(0, 0, AppTheme.Space4, 0))
+			.AutoVerticalScroll().NoHorizontalScroll().IsVisible(false);
+		var main = _main = new Grid().Children(_systemView, _searchView);
 
 		// 弹窗左侧导航轨：顶部是「系统设置 / 配置管理」分段，下面是分区列表。
 		_navigation.Spacing(2);
+		// 右内边距放在内容侧，滚动条才能贴到导航轨的分隔线旁边；分段按钮与分区名
+		// 因此停在滚动条左侧，悬停和点击都不会误触滚动条。
 		var navigationColumn = new Border().StyleName(AppStyles.DialogNav).Width(196)
-			.Padding(new Thickness(10, AppTheme.Space3, 10, AppTheme.Space3))
+			.Padding(new Thickness(10, AppTheme.Space3, 0, AppTheme.Space3))
 			.Child(new ScrollViewer().SmoothScrolling().Content(_navigation)
+				.Padding(new Thickness(0, 0, 10, 0))
 				.AutoVerticalScroll().NoHorizontalScroll());
 
-		// 右侧内容区：分区标题固定在顶部，只有卡片列表滚动。
+		// 右侧内容区：分区标题与搜索框固定在顶部，只有卡片列表滚动。
 		var sectionHeader = new DockPanel().LastChildFill()
-			.Margin(new Thickness(0, 0, 0, AppTheme.Space3))
 			.Children(_sectionTitle.FontSize(AppTheme.FontSizeTitle)
 				.FontWeight(FontWeight.SemiBold).PrimaryText().VerticalAlignment(VerticalAlignment.Center));
+		var header = new StackPanel().Spacing(AppTheme.Space2)
+			.Margin(new Thickness(0, 0, AppTheme.Space4, AppTheme.Space3))
+			.Children(sectionHeader, searchRow);
+		// 右内边距不再包住整列：滚动条要贴弹窗右缘。内容侧的留白交给 _systemView 的 Padding。
 		var contentColumn = new Border().StyleName(AppStyles.DialogContent)
-			.Padding(new Thickness(AppTheme.Space4 + 4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space4))
-			.Child(new DockPanel().LastChildFill().Children(sectionHeader.DockTop(), main));
+			.Padding(new Thickness(AppTheme.Space4 + 4, AppTheme.Space3, 0, AppTheme.Space4))
+			.Child(new DockPanel().LastChildFill().Children(header.DockTop(), main));
 		View = new Grid().Columns("auto,*")
 			.Children(navigationColumn.Column(0), contentColumn.Column(1));
 		BuildNavigation();
@@ -145,6 +212,12 @@ public sealed class SettingsView
 		if (_configuration.IsValueCreated) _configuration.Value.SaveDraft();
 	}
 
+	/// <summary>仅用于 <c>--ui-smoke config-dirty</c>：把配置草稿标脏，截图导航点与标题栏状态。</summary>
+	internal void MarkConfigDirtyForSmoke()
+	{
+		if (_configuration.IsValueCreated) _configuration.Value.MarkDirtyForSmoke();
+	}
+
 	public void FocusNavigation()
 	{
 		if (_activeNavigationButton is { } active)
@@ -160,6 +233,12 @@ public sealed class SettingsView
 				button.Focus();
 				return;
 			}
+
+			if (child is Grid grid && grid.Children.OfType<Button>().FirstOrDefault() is { } nested)
+			{
+				nested.Focus();
+				return;
+			}
 		}
 	}
 
@@ -170,21 +249,66 @@ public sealed class SettingsView
 		AppStyles.ApplyTextColors((Element)View);
 	}
 
-	public Task<bool> CanCloseAsync() => _configuration.IsValueCreated ? _configuration.Value.CanDiscardAsync() : Task.FromResult(true);
+	/// <summary>关闭前确认：有未保存草稿时询问，确认放弃后真正回滚到磁盘内容。</summary>
+	public async Task<bool> CanCloseAsync()
+	{
+		if (!_configuration.IsValueCreated) return true;
+		if (!await _configuration.Value.CanDiscardAsync()) return false;
+		// 用户确认「放弃」后必须真的丢掉草稿；只隐藏弹窗会让下次打开又看到旧修改。
+		if (_configuration.Value.IsDirty) _configuration.Value.Discard();
+		return true;
+	}
 	public bool IsDirty => _configuration.IsValueCreated && _configuration.Value.IsDirty;
+
+	/// <summary>有未保存修改时返回当前配置分区名，供标题栏显示「模型 · 未保存」。</summary>
+	public string? DirtySectionTitle => _configMode && IsDirty
+		? SettingsSections.Title(_section)
+		: null;
+
+	/// <summary>把键盘焦点交给搜索框（Ctrl+F）；已有查询时全选，输入直接替换。</summary>
+	public void FocusSearch()
+	{
+		_searchBox.Focus();
+		_searchBox.SelectAll();
+	}
+
+	/// <summary>仅用于 <c>--ui-smoke settings-search</c>：填入查询词供截图。</summary>
+	internal void SearchForSmoke(string query) => _searchBox.Text = query;
+
+	/// <summary>测试用：当前分区标识。</summary>
+	internal string CurrentSection => _section;
+
+	/// <summary>测试用：当前搜索结果数。</summary>
+	internal int SearchResultCount => _searchHits.Count;
+
+	/// <summary>测试用：选中一条搜索结果并完成跳转。</summary>
+	internal Task SelectSearchResultForTest(int index) => PickSearchHitAsync(index);
+
+	/// <summary>关闭后重开时回到分区内容，不带着上一次的搜索结果。</summary>
+	internal void ResetSearch() => ClearSearch(focusSearch: false);
 
 	public void ShowConfiguration() => _ = SwitchModeAsync(true);
 
-	private async Task SwitchModeAsync(bool config)
+	private bool IsSearching => _searchQuery.Length > 0;
+
+	private async Task<bool> SwitchModeAsync(bool config)
 	{
-		if (_configMode == config) return;
-		if (!config && !await _configuration.Value.CanDiscardAsync()) return;
+		if (_configMode == config)
+		{
+			if (IsSearching) ClearSearch();
+			return true;
+		}
+
+		if (!config && !await _configuration.Value.CanDiscardAsync()) return false;
 		if (!config) _configuration.Value.Discard();
 		else
 		{
-			if (!await _configuration.Value.OpenAsync(ConfigFile.Models)) return;
+			if (!await _configuration.Value.OpenAsync(ConfigFile.Models)) return false;
 			if (!_main.Children.Contains(_configuration.Value.View)) _main.Children(_configuration.Value.View);
 		}
+
+		// 切换已成功才收起结果页；放弃修改时保留用户正在看的搜索。
+		if (IsSearching) ClearSearch(focusSearch: false);
 		_configMode = config;
 		_section = config ? "models" : "overview";
 		_configuration.Value.View.IsVisible(config);
@@ -193,12 +317,14 @@ public sealed class SettingsView
 		Refresh();
 		StateChanged?.Invoke();
 		FocusNavigation();
+		return true;
 	}
 
 	private void BuildNavigation()
 	{
 		_navigation.Clear();
 		_activeNavigationButton = null;
+		_dirtyDot = null;
 
 		// 分段切换：与 PiDeck 一样放在导航顶部，两个分区在同一块轨道里。
 		_navigation.Children(new Border().StyleName(AppStyles.SegmentTrack)
@@ -207,66 +333,34 @@ public sealed class SettingsView
 				ModeButton("settings", Strings.SystemSettings, !_configMode, () => _ = SwitchModeAsync(false)).Column(0),
 				ModeButton("square-pen", Strings.ConfigTitle, _configMode, () => _ = SwitchModeAsync(true)).Column(1))));
 
+		var dirtySection = _configMode ? _section : null;
 		if (_configMode)
 		{
 			AddNavigationGroup(Strings.ConfigurationGroup, first: true);
-			AddNavigationButton("models", "settings", Strings.ConfigModels);
-			AddNavigationButton("auth", "key-round", Strings.ConfigAuth);
-			AddNavigationButton("agent", "wrench", Strings.ConfigSettings);
-			AddNavigationButton("mcp", "terminal", Strings.SettingsMcp);
-			AddNavigationButton("source", "square-pen", Strings.ConfigSource);
+			foreach (var section in SettingsSections.Config)
+			{
+				AddNavigationButton(section.Id, section.Icon, section.Title,
+					dirtyIndicator: string.Equals(section.Id, dirtySection, StringComparison.Ordinal));
+			}
 		}
 		else
 		{
-			AddNavigationGroup(Strings.SettingsGroupGeneral, first: true);
-			AddNavigationButton("overview", "settings", Strings.ConfigOverview);
-			AddNavigationButton("appearance", "contrast", Strings.ConfigAppearance);
-			AddNavigationButton("git", "git-branch", Strings.SettingsGit);
-			AddNavigationButton("quickMessages", "message-square", Strings.SettingsQuickMessages);
-			AddNavigationGroup(Strings.SettingsGroupRuntime, first: false);
-			AddNavigationButton("extensions", "package", Strings.SettingsExtensions);
-			AddNavigationButton("resources", "book-open", Strings.SettingsResources);
-			AddNavigationButton("session", "message-square", Strings.SettingsSession);
-			AddNavigationButton("sounds", "bell", Strings.SettingsSounds);
-			AddNavigationButton("security", "shield", Strings.SettingsSecurity);
-			AddNavigationButton("shortcuts", "terminal", Strings.SettingsShortcuts);
-			AddNavigationGroup(Strings.SettingsGroupData, first: false);
-			AddNavigationButton("usage", "chart-column", Strings.SettingsUsageStats);
-			AddNavigationGroup(Strings.MaintenanceGroup, first: false);
-			AddNavigationButton("archive", "trash", Strings.SettingsArchive);
-			AddNavigationButton("catalog", "package", Strings.SettingsModelCatalog);
-			AddNavigationButton("logs", "folder-open", Strings.SettingsLogs);
-			AddNavigationButton("diagnostics", "list-checks", Strings.SettingsDiagnostics);
-			AddNavigationButton("about", "settings", Strings.SettingsAbout);
+			var first = true;
+			foreach (var (label, sections) in SettingsSections.Groups)
+			{
+				AddNavigationGroup(label, first);
+				first = false;
+				foreach (var section in sections)
+				{
+					AddNavigationButton(section.Id, section.Icon, section.Title);
+				}
+			}
 		}
 
-		_sectionTitle.Text(SectionTitle(_section));
+		_sectionTitle.Text(IsSearching ? Strings.SettingsSearchResults : SectionTitle(_section));
 	}
 
-	private static string SectionTitle(string id) => id switch
-	{
-		"models" => Strings.ConfigModels,
-		"auth" => Strings.ConfigAuth,
-		"agent" => Strings.ConfigSettings,
-		"mcp" => Strings.SettingsMcp,
-		"source" => Strings.ConfigSource,
-		"appearance" => Strings.ConfigAppearance,
-		"git" => Strings.SettingsGit,
-		"quickMessages" => Strings.SettingsQuickMessages,
-		"extensions" => Strings.SettingsExtensions,
-		"resources" => Strings.SettingsResources,
-		"session" => Strings.SettingsSession,
-		"security" => Strings.SettingsSecurity,
-		"sounds" => Strings.SettingsSounds,
-		"usage" => Strings.SettingsUsageStats,
-		"archive" => Strings.SettingsArchive,
-		"catalog" => Strings.SettingsModelCatalog,
-		"shortcuts" => Strings.SettingsShortcuts,
-		"diagnostics" => Strings.SettingsDiagnostics,
-		"logs" => Strings.SettingsLogs,
-		"about" => Strings.SettingsAbout,
-		_ => Strings.ConfigOverview,
-	};
+	private static string SectionTitle(string id) => SettingsSections.Title(id);
 
 	private void AddNavigationGroup(string title, bool first)
 	{
@@ -275,7 +369,7 @@ public sealed class SettingsView
 			.Margin(new Thickness(AppTheme.Space2, first ? 0 : AppTheme.Space3, 0, AppTheme.Space1)));
 	}
 
-	private void AddNavigationButton(string id, string icon, string title)
+	private void AddNavigationButton(string id, string icon, string title, bool dirtyIndicator = false)
 	{
 		var active = id == _section;
 		var label = new TextBlock().Text(title).FontSize(AppTheme.FontSizeControl);
@@ -290,7 +384,27 @@ public sealed class SettingsView
 			.MinHeight(AppTheme.ControlHeightMd + 2)
 			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0));
 		if (active) _activeNavigationButton = button;
-		_navigation.Children(button);
+
+		// 未保存时只有当前配置分区有点；点不参与命中测试，点击落回按钮。
+		if (!dirtyIndicator)
+		{
+			_navigation.Children(button);
+			return;
+		}
+
+		_dirtyDot = new Border().Width(6).Height(6).CornerRadius(3)
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
+			.IsHitTestVisible(false)
+			.WithTheme(static (theme, dot) => dot.Background = AppTheme.For(theme).Warning);
+		_dirtyDot.IsVisible(IsDirty);
+		_navigation.Children(new Grid().Children(button, _dirtyDot));
+	}
+
+	private void UpdateDirtyIndicator()
+	{
+		_dirtyDot?.IsVisible(_configMode && IsDirty);
 	}
 
 	private static Button ModeButton(string icon, string text, bool active, Action onClick)
@@ -329,12 +443,21 @@ public sealed class SettingsView
 
 	internal async Task SelectSectionAsync(string section)
 	{
-		if (_section == section) return;
+		if (_section == section)
+		{
+			// 点导航离开搜索时回到分区内容；同一分区也把结果页收起来。
+			if (IsSearching) ClearSearch(focusSearch: false);
+			return;
+		}
+
 		if (_configMode)
 		{
-			var file = section switch { "auth" => ConfigFile.Auth, "agent" => ConfigFile.Settings, "mcp" => ConfigFile.Mcp, _ => ConfigFile.Models };
+			var file = SettingsSections.FileOf(section);
+			// 放弃修改被取消时保留搜索，不要把用户正在看的结果清掉。
 			if (!await _configuration.Value.OpenAsync(file, section == "source")) return;
 		}
+
+		if (IsSearching) ClearSearch(focusSearch: false);
 		if (_section == "usage" && section != "usage")
 		{
 			_usageStats?.Cancel();
@@ -372,6 +495,7 @@ public sealed class SettingsView
 			_usageStats?.Cancel();
 		}
 		_content.Clear();
+		_anchors.Clear();
 		SmoothScroll.For(_systemView).Stop();
 		_systemView.SetScrollOffsets(0, 0);
 		LastSectionError = null;
@@ -407,14 +531,19 @@ public sealed class SettingsView
 				case "diagnostics": _content.Children(DiagnosticsSection()); break;
 				case "about": _content.Children(AboutSection()); break;
 				default:
+				{
+					var tools = snapshot.Tools.Count == 0 ? "—" : string.Join(", ", snapshot.Tools);
 					_content.Children(Section(Strings.SettingsEnvironment, [
-						(Strings.SettingsAgentDir, snapshot.AgentDir), (Strings.SettingsCwd, snapshot.Cwd),
-						(Strings.SettingsModels, snapshot.ModelCount.ToString()),
-						(Strings.SettingsTools, snapshot.Tools.Count == 0 ? "—" : string.Join(", ", snapshot.Tools))]),
+						new(Strings.SettingsAgentDir, snapshot.AgentDir, Copy: snapshot.AgentDir, OpenPath: snapshot.AgentDir),
+						new(Strings.SettingsCwd, snapshot.Cwd, Copy: snapshot.Cwd, OpenPath: snapshot.Cwd),
+						new(Strings.SettingsModels, snapshot.ModelCount.ToString()),
+						new(Strings.SettingsTools, tools, Copy: snapshot.Tools.Count == 0 ? null : tools)]),
 						Section(Strings.SettingsSkills, snapshot.Skills.Count == 0
-							? [(Strings.SettingsNone, "")] : [.. snapshot.Skills.Select(name => (name, string.Empty))]),
+							? [new InfoRow(Strings.SettingsNone, string.Empty)]
+							: [.. snapshot.Skills.Select(name => new InfoRow(name, string.Empty))]),
 						McpSection(snapshot.McpServers));
 					break;
+				}
 			}
 		}
 		catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException)
@@ -425,7 +554,235 @@ public sealed class SettingsView
 			_content.Children(new TextBlock().Text(Strings.ConfigFailed)
 				.FontSize(AppTheme.FontSizeControl).MutedText().TextWrapping(TextWrapping.Wrap));
 		}
+
+		_systemView.IsVisible(!IsSearching);
+		_searchView.IsVisible(IsSearching);
+		if (IsSearching) ApplySearch();
 	}
+
+	/// <summary>注册一个搜索锚点：命中后聚焦这个控件，滚动容器会把它带进视口。</summary>
+	private void Anchor(string key, FrameworkElement element) => _anchors[key] = element;
+
+	private void OnSearchKeyDown(KeyEventArgs key)
+	{
+		if (!IsSearching) return;
+		switch (key.Key)
+		{
+			case Key.Escape:
+				key.Handled = true;
+				ClearSearch();
+				break;
+			case Key.Down:
+				key.Handled = true;
+				SelectSearchIndex(_searchIndex + 1);
+				break;
+			case Key.Up:
+				key.Handled = true;
+				SelectSearchIndex(_searchIndex - 1);
+				break;
+			case Key.Enter:
+				key.Handled = true;
+				if (_searchHits.Count > 0) _ = PickSearchHitAsync(_searchIndex);
+				break;
+		}
+	}
+
+	private void ClearSearch(bool focusSearch = true)
+	{
+		if ((_searchBox.Text ?? string.Empty).Length > 0)
+		{
+			// 置空会触发 OnTextChanged → ApplySearch，由它恢复分区内容。
+			_searchBox.Text = string.Empty;
+		}
+		else
+		{
+			ApplySearch();
+		}
+
+		if (focusSearch) _searchBox.Focus();
+	}
+
+	private void ApplySearch()
+	{
+		var query = _searchBox.Text?.Trim() ?? string.Empty;
+		var searching = query.Length > 0;
+		// 只多敲了空格、或已经回到分区内容：不重建结果列表。
+		if (string.Equals(query, _searchQuery, StringComparison.Ordinal) &&
+			_searchView.IsVisible == searching)
+		{
+			return;
+		}
+
+		_searchQuery = query;
+		_searchClear.IsVisible(searching);
+		if (!searching)
+		{
+			_searchHits = [];
+			_searchIndex = 0;
+			_searchRows.Clear();
+			_searchResults.Clear();
+			_searchView.IsVisible(false);
+			SmoothScroll.For(_searchView).Stop();
+			_searchView.SetScrollOffsets(0, 0);
+			_systemView.IsVisible(!_configMode);
+			if (_configuration.IsValueCreated) _configuration.Value.View.IsVisible(_configMode);
+			_searchHint.Text(Strings.SettingsSearchKeys);
+			_sectionTitle.Text(SectionTitle(_section));
+			return;
+		}
+
+		_searchHits = SettingsSearch.Match(_searchQuery);
+		// -1 让 RenderSearchResults 末尾的 SelectSearchIndex(0) 把首行设为选中态。
+		_searchIndex = -1;
+		_searchView.IsVisible(true);
+		SmoothScroll.For(_searchView).Stop();
+		_searchView.SetScrollOffsets(0, 0);
+		_systemView.IsVisible(false);
+		if (_configuration.IsValueCreated) _configuration.Value.View.IsVisible(false);
+		_sectionTitle.Text(Strings.SettingsSearchResults);
+		_searchHint.Text(_searchHits.Count == 0
+			? Strings.SettingsSearchCount(0)
+			: Strings.SettingsSearchCount(_searchHits.Count));
+		RenderSearchResults();
+	}
+
+	private void RenderSearchResults()
+	{
+		_searchResults.Clear();
+		_searchRows.Clear();
+		if (_searchHits.Count == 0)
+		{
+			_searchResults.Children(new TextBlock().Text(Strings.SettingsSearchNoResults)
+				.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
+			return;
+		}
+
+		for (var index = 0; index < _searchHits.Count; index++)
+		{
+			var position = index;
+			var hit = _searchHits[index];
+			var title = new TextBlock().FontSize(AppTheme.FontSizeControl).PrimaryText()
+				.TextTrimming(TextTrimming.CharacterEllipsis)
+				.VerticalAlignment(VerticalAlignment.Center);
+			if (hit.TitleIndices.Count == 0)
+			{
+				// 分区名/别名命中时标题没有高亮段，直接给文本，省掉一层 Run。
+				title.Text(hit.Entry.Title);
+			}
+			else
+			{
+				foreach (var (text, isHit) in SettingsSearch.Segments(hit.Entry.Title, hit.TitleIndices))
+				{
+					title.Inlines.Add(new Run(text)
+					{
+						// 命中段只加粗：主文字色已经是最高对比，再换色会像链接。
+						FontWeight = isHit ? FontWeight.SemiBold : null,
+					});
+				}
+			}
+
+			var breadcrumb = new TextBlock().Text(hit.Entry.SectionTitle)
+				.FontSize(AppTheme.FontSizeCaption).MutedText()
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Margin(new Thickness(AppTheme.Space3, 0, 0, 0));
+			var content = new DockPanel().LastChildFill();
+			// 分区入口的标题就是面包屑，再标一次只会重复；具体设置项一律标注归属，
+			// 即使它的名字刚好与分区同名（例如「性能诊断开关」）也能分清。
+			if (!hit.Entry.Id.StartsWith("section:", StringComparison.Ordinal))
+			{
+				content.Children(breadcrumb.DockRight());
+			}
+
+			content.Children(title);
+			var row = new Button().Height(SearchRowHeight)
+				.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0))
+				.StyleName(AppStyles.GhostButton)
+				.Content(content)
+				.OnClick(() => _ = PickSearchHitAsync(position))
+				.HoverTip(hit.Entry.SectionTitle);
+			row.MouseEnter += () => SelectSearchIndex(position);
+			_searchRows.Add(row);
+			_searchResults.Children(row);
+		}
+
+		SelectSearchIndex(0);
+	}
+
+	private void SelectSearchIndex(int index)
+	{
+		if (_searchRows.Count == 0) return;
+		var count = _searchRows.Count;
+		var next = ((index % count) + count) % count;
+		var previous = _searchIndex;
+		_searchIndex = next;
+		// 只重设两行：方向键连按时不再对整张结果表重解样式。
+		if (previous >= 0 && previous < count && previous != next)
+		{
+			_searchRows[previous].StyleName(AppStyles.GhostButton);
+		}
+
+		if (previous != next) _searchRows[next].StyleName(AppStyles.SelectedButton);
+
+		var top = _searchIndex * SearchRowPitch;
+		var viewport = _searchView.Bounds.Height;
+		if (viewport <= 0) return;
+		var offset = _searchView.VerticalOffset;
+		// 键盘选择要立即到位；先停掉滚轮留下的平滑动画，否则两者会抢同一个偏移。
+		SmoothScroll.For(_searchView).Stop();
+		if (top < offset)
+		{
+			_searchView.SetScrollOffsets(0, top);
+		}
+		else if (top + SearchRowHeight > offset + viewport)
+		{
+			_searchView.SetScrollOffsets(0, top + SearchRowHeight - viewport);
+		}
+	}
+
+	private async Task PickSearchHitAsync(int index)
+	{
+		// 回车连按/双击结果行会重入：进行中的一次没结束前忽略后续点击，避免弹两次放弃确认。
+		if (_pickingSearch || index < 0 || index >= _searchHits.Count) return;
+		_pickingSearch = true;
+		try
+		{
+			var entry = _searchHits[index].Entry;
+			if (_configMode != entry.Config && !await SwitchModeAsync(entry.Config)) return;
+			await SelectSectionAsync(entry.Section);
+			if (entry.Anchor is not { } anchorKey || !_anchors.TryGetValue(anchorKey, out var anchor)) return;
+
+			// 新分区还没排版，立刻 Focus 时控件尺寸为 0，ScrollViewer 不会滚动。
+			// 排到 Render 优先级：Layout 优先级更高，先完成布局再定位。
+			var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
+			if (dispatcher is null)
+			{
+				if (anchor.IsVisible) anchor.Focus();
+				return;
+			}
+
+			dispatcher.BeginInvoke(DispatcherPriority.Render, () =>
+			{
+				if (anchor.IsVisible) anchor.Focus();
+			});
+		}
+		catch (Exception ex)
+		{
+			// 事件处理器的 async 任务没人 await：异常必须就地记录，不然会静默丢掉。
+			AppLog.Failure(AppLog.For<SettingsView>(), "Open settings search result", ex);
+			Toast(Strings.ConfigFailed, ToastKind.Error);
+		}
+		finally
+		{
+			_pickingSearch = false;
+		}
+	}
+
+	private const double SearchRowHeight = 44;
+	private const double SearchRowSpacing = 2;
+	private const double SearchRowPitch = SearchRowHeight + SearchRowSpacing;
+
+	// 低于这个宽度时结果提示行让位给输入框。
+	private const double SearchHintMinWidth = 480;
 
 	private Element AppearanceSection()
 	{
@@ -454,6 +811,7 @@ public sealed class SettingsView
 		var picker = new ComboBox()
 			.ItemsSource(ItemsView.Create(entries.Select(entry => entry.Label).ToArray()))
 			.Width(220);
+		Anchor("appearance.theme", picker);
 		picker.SelectedIndex = Math.Max(
 			0,
 			entries.FindIndex(entry => string.Equals(entry.Value, current, StringComparison.Ordinal)));
@@ -527,6 +885,8 @@ public sealed class SettingsView
 			.SelectedIndex(Math.Max(0, Array.IndexOf(sizes, preference.ChatFontSize)));
 		var width = new ComboBox().Width(180).ItemsSource(ItemsView.Create(new[] { Strings.ReadingCompact, Strings.ReadingComfortable, Strings.ReadingWide }))
 			.SelectedIndex(Math.Max(0, Array.IndexOf(widths, preference.ReadingWidth)));
+		Anchor("appearance.font", font);
+		Anchor("appearance.width", width);
 		var sample = new TextBlock().Text(Strings.ReadingSample).FontSize(preference.ChatFontSize).PrimaryText().TextWrapping(TextWrapping.Wrap);
 		void SaveReading()
 		{
@@ -546,6 +906,7 @@ public sealed class SettingsView
 			.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
 			.MaxWidth(760));
 		tips.IsChecked(preference.RespondingTips);
+		Anchor("appearance.tips", tips);
 		tips.OnCheckedChanged(_ =>
 		{
 			var shown = tips.IsChecked == true;
@@ -594,6 +955,7 @@ public sealed class SettingsView
 			: models.FirstOrDefault(model => string.Equals($"{model.Provider}/{model.Id}", fixedModelKey, StringComparison.Ordinal));
 
 		var modelPicker = new ComboBox().ItemsSource(ItemsView.Create(modelLabels.ToArray())).Width(360);
+		Anchor("git.model", modelPicker);
 		modelPicker.SelectedIndex = selectedModel is null
 			? 0
 			: Math.Max(0, models.IndexOf(selectedModel) + 1);
@@ -606,6 +968,7 @@ public sealed class SettingsView
 		thinkingLabels.AddRange(levels.Select(Strings.ThinkingLevelName));
 		var fixedThinking = preference.GitCommitThinking.Trim();
 		var thinkingPicker = new ComboBox().ItemsSource(ItemsView.Create(thinkingLabels.ToArray())).Width(220);
+		Anchor("git.thinking", thinkingPicker);
 		thinkingPicker.SelectedIndex = fixedThinking.Length == 0
 			? 0
 			: Math.Max(0, levels.ToList().FindIndex(level => string.Equals(level, fixedThinking, StringComparison.Ordinal)) + 1);
@@ -678,6 +1041,7 @@ public sealed class SettingsView
 			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))
 			.StyleName(AppStyles.TextInput)
 			.Text(preference.GitCommitPrompt is { Length: > 0 } customPrompt ? customPrompt : GitCommitMessage.DefaultPromptTemplate);
+		Anchor("git.prompt", promptBox);
 		void SavePromptTemplate(string? text)
 		{
 			var next = GitCommitMessage.IsDefaultTemplate(text) || string.IsNullOrWhiteSpace(text) ? string.Empty : text;
@@ -767,6 +1131,7 @@ public sealed class SettingsView
 			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))
 			.StyleName(AppStyles.TextInput)
 			.Text(QuickMessages.ToLines(items));
+		Anchor("quickMessages.editor", box);
 		var count = new TextBlock().Text(Strings.SettingsQuickMessagesCount(items.Count, QuickMessages.MaxItems))
 			.FontSize(AppTheme.FontSizeMicro).FaintText();
 
@@ -1229,6 +1594,7 @@ public sealed class SettingsView
 		var picker = new ComboBox()
 			.ItemsSource(ItemsView.Create(levels.Select(static entry => entry.Label).ToArray()))
 			.Width(140);
+		Anchor("logs.level", picker);
 		picker.SelectedIndex = Math.Max(0, Array.FindIndex(levels, entry => entry.Level == AppLog.MinimumLevel));
 		picker.SelectionChanged += _ =>
 		{
@@ -1256,12 +1622,7 @@ public sealed class SettingsView
 						.FontSize(AppTheme.FontSizeMicro).SubtleText()
 						.VerticalAlignment(VerticalAlignment.Center),
 					picker,
-					AppIcons.Button("copy", Strings.CopyLogDirectory, () =>
-					{
-						var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
-						if (clipboard?.TrySetText(directory) == true) Toast(Strings.Copied, ToastKind.Success);
-						else Toast(Strings.ClipboardUnavailable, ToastKind.Error);
-					}),
+					AppIcons.Button("copy", Strings.CopyLogDirectory, () => CopyValue(directory)),
 					AppIcons.Button("folder-open", Strings.OpenLogDirectory, () => OpenLogDirectory(directory)))
 				.DockRight(),
 			new TextBlock().Text(directory).FontSize(AppTheme.FontSizeCaption)
@@ -1296,6 +1657,7 @@ public sealed class SettingsView
 			.MaxWidth(760));
 		// 勾选框放在说明前面：整段文案就是这一项的描述，与 PiDeck 的行式布局一致。
 		toggle.IsChecked(preference.Diagnostics);
+		Anchor("diagnostics.toggle", toggle);
 		toggle.OnCheckedChanged(_ =>
 		{
 			var enabled = toggle.IsChecked == true;
@@ -1586,18 +1948,89 @@ public sealed class SettingsView
 			new Border().Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space4))
 				.Child(content)));
 
-	private static Element Section(string title, IReadOnlyList<(string Label, string Value)> rows)
-	{
-		var body = new StackPanel().Spacing(4);
-		foreach (var (label, value) in rows)
+	/// <summary>分组里的一行值：标签靠左，值可复制、可打开所在位置。</summary>
+	/// <param name="Label">左侧字段名。</param>
+	/// <param name="Value">右侧值；空串显示为 —。</param>
+	/// <param name="Copy">非空时给一个复制按钮。</param>
+	/// <param name="OpenPath">非空时给一个打开按钮：目录用文件管理器，文件用默认编辑器。</param>
+	/// <param name="Mono">元数据用等宽；DESIGN.md 要求路径、id、统计一律等宽。</param>
+	/// <param name="Hint">值被截断或需要补充说明时的悬浮提示。</param>
+	private sealed record InfoRow(
+		string Label,
+		string Value,
+		string? Copy = null,
+		string? OpenPath = null,
+		bool Mono = true,
+		string? Hint = null);
+
+	private Element Section(string title, IReadOnlyList<InfoRow> rows) => Group("settings", title, Rows(rows));
+
+	private StackPanel Rows(IReadOnlyList<InfoRow> rows)
+	{		var body = new StackPanel().Spacing(4);
+		foreach (var row in rows)
 		{
-			body.Children(new DockPanel().LastChildFill().Margin(new Thickness(0, 4, 0, 4)).Children(
-				new TextBlock().Text(label).Width(116).FontSize(AppTheme.FontSizeCaption).SubtleText().DockLeft(),
-				new TextBlock().Text(value.Length == 0 ? "—" : value).TextWrapping(TextWrapping.Wrap)
-					.FontSize(AppTheme.FontSizeCaption).PrimaryText().HoverTip(value)));
+			var actions = new StackPanel().Orientation(Orientation.Horizontal)
+				.Spacing(2).VerticalAlignment(VerticalAlignment.Center);
+			if (row.Copy is { Length: > 0 } copy)
+			{
+				actions.Children(RowAction("copy", Strings.SettingsCopyValue, () => CopyValue(copy)));
+			}
+
+			if (row.OpenPath is { Length: > 0 } openPath)
+			{
+				var isDirectory = Directory.Exists(openPath);
+				actions.Children(RowAction(
+					isDirectory ? "folder-open" : "square-pen",
+					isDirectory ? Strings.SettingsOpenFolder : Strings.ConfigOpenFile,
+					() => OpenLocation(openPath)));
+			}
+
+			var value = new TextBlock().Text(row.Value.Length == 0 ? "—" : row.Value)
+				.FontSize(AppTheme.FontSizeCaption).PrimaryText().TextWrapping(TextWrapping.Wrap);
+			if (row.Mono) value.FontFamily(AppTheme.MonoFont);
+			var hint = row.Hint ?? (row.Value.Length > 48 ? row.Value : null);
+			if (hint is not null) value.HoverTip(hint);
+
+			var line = new DockPanel().LastChildFill().Margin(new Thickness(0, 4, 0, 4));
+			if (actions.Children.Count > 0) line.Children(actions.DockRight());
+			line.Children(
+				new TextBlock().Text(row.Label).Width(116).FontSize(AppTheme.FontSizeCaption)
+					.SubtleText().TextTrimming(TextTrimming.CharacterEllipsis).DockLeft(),
+				value);
+			body.Children(line);
 		}
 
-		return Group("settings", title, body);
+		return body;
+	}
+
+	private static Button RowAction(string icon, string tooltip, Action action)
+	{
+		var button = AppIcons.Button(icon, tooltip, action, size: 12)
+			.MinWidth(AppTheme.Space6).MinHeight(AppTheme.Space6)
+			.Padding(Thickness.Zero)
+			.CornerRadius(AppTheme.RadiusXs);
+		AutomationProperties.SetName(button, tooltip);
+		return button;
+	}
+
+	private void CopyValue(string text)
+	{
+		var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
+		if (clipboard?.TrySetText(text) == true) Toast(Strings.Copied, ToastKind.Success);
+		else Toast(Strings.ClipboardUnavailable, ToastKind.Error);
+	}
+
+	private void OpenLocation(string path)
+	{
+		try
+		{
+			var opened = Directory.Exists(path) ? Shell.Open(path) : Shell.OpenInEditor(path);
+			if (!opened) Toast(Strings.OpenFailed(path), ToastKind.Error);
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+		{
+			Toast(Strings.OpenFailed(path), ToastKind.Error);
+		}
 	}
 
 	private Element McpSection(IReadOnlyList<McpServerStatus> servers)
@@ -1812,28 +2245,19 @@ public sealed class SettingsView
 	private static string DescribeAction(string id) =>
 		ShortcutMap.Definitions.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal))?.Description ?? id;
 
-	private static Element AboutSection()
+	private Element AboutSection()
 	{
-		var body = new StackPanel().Spacing(4);
-
-		foreach (var (label, value) in new (string, string)[]
-		{
-			(Strings.AboutVersion, AppInfo.Version),
-			(Strings.AboutUiFont, AppFonts.HasUiFont ? AppFonts.UiDisplayName : $"{AppFonts.UiDisplayName}（系统字体）"),
-			(Strings.AboutMonoFont, AppFonts.HasMonoFont ? AppFonts.Mono : $"{AppFonts.Mono}（系统字体）"),
-			(Strings.AboutFramework, AppInfo.Framework),
-			(Strings.AboutIcons, AppInfo.Icons),
-			(Strings.AboutRuntime, System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription),
-		})
-		{
-			body.Children(new TextBlock()
-				.Text($"{label}：{value}")
-				.TextWrapping(TextWrapping.Wrap)
-				.FontSize(AppTheme.FontSizeCaption)
-				.MutedText());
-		}
-
-		return Group("settings", Strings.SettingsAbout, body);
+		var runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+		var uiFont = AppFonts.HasUiFont ? AppFonts.UiDisplayName : $"{AppFonts.UiDisplayName}（系统字体）";
+		var monoFont = AppFonts.HasMonoFont ? AppFonts.Mono : $"{AppFonts.Mono}（系统字体）";
+		return Group("settings", Strings.SettingsAbout, Rows([
+			new(Strings.AboutVersion, AppInfo.Version, Copy: AppInfo.Version),
+			new(Strings.AboutUiFont, uiFont),
+			new(Strings.AboutMonoFont, monoFont),
+			new(Strings.AboutFramework, AppInfo.Framework),
+			new(Strings.AboutIcons, AppInfo.Icons),
+			new(Strings.AboutRuntime, runtime, Copy: runtime),
+		]));
 	}
 
 	private Element ArchiveSection(IReadOnlyList<SessionListItem> archived)
@@ -1912,32 +2336,30 @@ public sealed class SettingsView
 		else
 		{
 			var display = SessionStatisticsDisplay.Create(session);
-			foreach (var (label, value) in new (string, string)[]
+			var sessionFile = session.Session.SessionFile ?? string.Empty;
+			var model = $"{session.Model.Provider}/{session.Model.Id}";
+			var rows = new List<InfoRow>
 			{
-				(Strings.SettingsSessionFile, session.Session.SessionFile ?? "—"),
-				(Strings.SettingsSessionId, session.Session.SessionId),
-				(Strings.SettingsModel, $"{session.Model.Provider}/{session.Model.Id}"),
-				(Strings.Thinking, Strings.ThinkingLevelName(session.ThinkingLevel)),
-				(Strings.SettingsEntries, session.Session.EntryCount.ToString()),
-			})
-			{
-				body.Children(new TextBlock()
-					.Text($"{label}：{value}")
-					.TextWrapping(TextWrapping.Wrap)
-					.FontSize(AppTheme.FontSizeCaption)
-					.MutedText());
-			}
+				new(Strings.SettingsSessionFile, sessionFile.Length == 0 ? "—" : sessionFile,
+					Copy: sessionFile.Length == 0 ? null : sessionFile,
+					OpenPath: sessionFile.Length == 0 ? null : sessionFile),
+				new(Strings.SettingsSessionId, session.Session.SessionId, Copy: session.Session.SessionId),
+				new(Strings.SettingsModel, model, Copy: model),
+				new(Strings.Thinking, Strings.ThinkingLevelName(session.ThinkingLevel)),
+				new(Strings.SettingsEntries, session.Session.EntryCount.ToString()),
+			};
 			foreach (var row in display.Rows())
 			{
-				body.Children(new TextBlock().Text($"{row.Label}：{row.Value}").HoverTip(row.Hint)
-					.TextWrapping(TextWrapping.Wrap).FontSize(AppTheme.FontSizeCaption).MutedText());
+				rows.Add(new InfoRow(row.Label, row.Value, Hint: row.Hint));
 			}
+
+			body.Children(Rows(rows));
 		}
 
 		if (session is not null)
 		{
 			var model = session.Model;
-			body.Children(AppIcons.Button(
+			var defaultButton = AppIcons.Button(
 				"star",
 				Strings.MakeDefaultModel,
 				() =>
@@ -1959,7 +2381,9 @@ public sealed class SettingsView
 						Toast(ex is ConfigurationConflictException ? Strings.ConfigConflict : Strings.ConfigFailed, ToastKind.Error);
 					}
 				},
-				size: 13));
+				size: 13);
+			Anchor("session.defaultModel", defaultButton);
+			body.Children(defaultButton);
 		}
 
 		return Group("message-square", Strings.SettingsSession, body);

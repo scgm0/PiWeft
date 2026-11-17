@@ -589,9 +589,51 @@ public class AnthropicProviderTests
 		Assert.Equal("continue", root.GetProperty("thread").GetProperty("type").GetString());
 		Assert.Equal("msg_1", root.GetProperty("thread").GetProperty("previous_message_id").GetString());
 		Assert.Single(root.GetProperty("messages").EnumerateArray());
-		Assert.Equal("again", root.GetProperty("messages")[0].GetProperty("content").GetString());
+		// 缓存断点落在最后一条 user 消息上，字符串 content 因此变成块数组。
+		var lastContent = root.GetProperty("messages")[0].GetProperty("content");
+		Assert.Equal("again", lastContent[0].GetProperty("text").GetString());
+		Assert.Equal("ephemeral", lastContent[0].GetProperty("cache_control").GetProperty("type").GetString());
 		Assert.False(root.TryGetProperty("system", out _));
 		Assert.False(root.TryGetProperty("tools", out _));
+	}
+
+	[Fact]
+	public async Task PlacesCacheBreakpointsOnToolsAndTheLastUserTurn()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+
+		var context = new Context
+		{
+			SystemPrompt = "be terse",
+			Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }],
+			Tools =
+			[
+				new Tool { Name = "bash", Description = "run", Parameters = new() { ["type"] = "object" } },
+				new Tool { Name = "read", Description = "read", Parameters = new() { ["type"] = "object" } },
+			],
+		};
+
+		var stream = provider.Stream(
+			Sonnet(),
+			context,
+			new StreamOptions { ApiKey = "test-key", ThinkingLevel = ThinkingLevels.Off });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var root = document.RootElement;
+
+		// 工具定义的断点在最后一个工具上，会话历史的断点在最后一条 user 消息的最后一个块上。
+		var tools = root.GetProperty("tools");
+		Assert.False(tools[0].TryGetProperty("cache_control", out _));
+		Assert.Equal("ephemeral", tools[1].GetProperty("cache_control").GetProperty("type").GetString());
+
+		var messages = root.GetProperty("messages");
+		var lastBlock = messages[messages.GetArrayLength() - 1].GetProperty("content")[0];
+		Assert.Equal("hi", lastBlock.GetProperty("text").GetString());
+		Assert.Equal("ephemeral", lastBlock.GetProperty("cache_control").GetProperty("type").GetString());
 	}
 
 	[Fact]

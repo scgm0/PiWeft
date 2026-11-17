@@ -313,6 +313,164 @@ public class BedrockConverseProviderTests
 			new StreamOptions { ThinkingLevel = ThinkingLevels.High }));
 	}
 
+	[Fact]
+	public async Task WritesToolResultImagesInsideOneToolResultBlock()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => BinaryStream(StreamFrame) };
+		var provider = new BedrockConverseProvider(new HttpClient(handler));
+
+		await WithCredentialsAsync(async () =>
+		{
+			var context = new Context
+			{
+				Messages =
+				[
+					new UserMessage { Content = MessageContent.FromText("读图"), Timestamp = 1 },
+					new AssistantMessage
+					{
+						Content = [new ToolCall { Id = "toolu_1", Name = "read", Arguments = new() { ["path"] = "a.png" } }],
+						Timestamp = 2,
+					},
+					new ToolResultMessage
+					{
+						ToolCallId = "toolu_1",
+						ToolName = "read",
+						Content =
+						[
+							new TextContent { Text = "Read image file [image/png]" },
+							new ImageContent { Data = "AAAA", MimeType = "image/png" },
+						],
+						Timestamp = 3,
+					},
+				],
+			};
+
+			var stream = provider.Stream(
+				Model() with { Input = ["text", "image"] },
+				context,
+				new StreamOptions { MaxTokens = 512, CacheRetention = CacheRetentions.None });
+			await foreach (var _ in stream)
+			{
+			}
+
+			using var document = JsonDocument.Parse(handler.LastBody!);
+			var blocks = document.RootElement.GetProperty("messages")[2].GetProperty("content");
+			// 一个 toolUseId 只能对应一个 toolResult 块，文本与图片在它的 content 数组里。
+			Assert.Equal(1, blocks.GetArrayLength());
+			var content = blocks[0].GetProperty("toolResult").GetProperty("content");
+			Assert.Equal(2, content.GetArrayLength());
+			Assert.Equal("Read image file [image/png]", content[0].GetProperty("text").GetString());
+			var image = content[1].GetProperty("image");
+			Assert.Equal("png", image.GetProperty("format").GetString());
+			Assert.Equal("AAAA", image.GetProperty("source").GetProperty("bytes").GetString());
+		});
+	}
+
+	[Fact]
+	public async Task MovesErrorToolResultImagesAfterTheToolResultsForClaude()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => BinaryStream(StreamFrame) };
+		var provider = new BedrockConverseProvider(new HttpClient(handler));
+
+		await WithCredentialsAsync(async () =>
+		{
+			var context = new Context
+			{
+				Messages =
+				[
+					new UserMessage { Content = MessageContent.FromText("读图"), Timestamp = 1 },
+					new AssistantMessage
+					{
+						Content = [new ToolCall { Id = "toolu_1", Name = "read", Arguments = new() { ["path"] = "a.png" } }],
+						Timestamp = 2,
+					},
+					new ToolResultMessage
+					{
+						ToolCallId = "toolu_1",
+						ToolName = "read",
+						IsError = true,
+						Content =
+						[
+							new TextContent { Text = "decode failed" },
+							new ImageContent { Data = "AAAA", MimeType = "image/png" },
+						],
+						Timestamp = 3,
+					},
+				],
+			};
+
+			var stream = provider.Stream(
+				Model() with { Input = ["text", "image"] },
+				context,
+				new StreamOptions { MaxTokens = 512, CacheRetention = CacheRetentions.None });
+			await foreach (var _ in stream)
+			{
+			}
+
+			using var document = JsonDocument.Parse(handler.LastBody!);
+			var blocks = document.RootElement.GetProperty("messages")[2].GetProperty("content");
+			Assert.Equal(3, blocks.GetArrayLength());
+			var toolResult = blocks[0].GetProperty("toolResult");
+			Assert.Equal("error", toolResult.GetProperty("status").GetString());
+			Assert.Equal(
+				"(image attached after the tool results)",
+				toolResult.GetProperty("content")[1].GetProperty("text").GetString());
+			Assert.StartsWith("Images from the error result of tool call toolu_1", blocks[1].GetProperty("text").GetString());
+			Assert.Equal("AAAA", blocks[2].GetProperty("image").GetProperty("source").GetProperty("bytes").GetString());
+		});
+	}
+
+	[Fact]
+	public async Task AddsCachePointToTheLastUserTurnForCacheableClaude()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => BinaryStream(StreamFrame) };
+		var provider = new BedrockConverseProvider(new HttpClient(handler));
+
+		await WithCredentialsAsync(async () =>
+		{
+			var context = new Context
+			{
+				Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }],
+			};
+
+			var stream = provider.Stream(
+				Model(),
+				context,
+				new StreamOptions { MaxTokens = 512, CacheRetention = CacheRetentions.Long });
+			await foreach (var _ in stream)
+			{
+			}
+
+			using var document = JsonDocument.Parse(handler.LastBody!);
+			var content = document.RootElement.GetProperty("messages")[0].GetProperty("content");
+			var cachePoint = content[content.GetArrayLength() - 1].GetProperty("cachePoint");
+			Assert.Equal("default", cachePoint.GetProperty("type").GetString());
+			Assert.Equal("1h", cachePoint.GetProperty("ttl").GetString());
+		});
+	}
+
+	[Fact]
+	public async Task OmitsCachePointForModelsWithoutPromptCaching()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => BinaryStream(StreamFrame) };
+		var provider = new BedrockConverseProvider(new HttpClient(handler));
+
+		await WithCredentialsAsync(async () =>
+		{
+			var stream = provider.Stream(
+				Model("meta.llama-4-70b-v1:0"),
+				new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }] },
+				new StreamOptions { MaxTokens = 512 });
+			await foreach (var _ in stream)
+			{
+			}
+
+			using var document = JsonDocument.Parse(handler.LastBody!);
+			var content = document.RootElement.GetProperty("messages")[0].GetProperty("content");
+			Assert.Equal(1, content.GetArrayLength());
+		});
+	}
+
 	private static async Task WithCredentialsAsync(Func<Task> body)
 	{
 		var previousId = Environment.GetEnvironmentVariable("AWS_ACCESS_KEY_ID");

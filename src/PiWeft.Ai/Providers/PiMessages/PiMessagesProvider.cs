@@ -177,7 +177,7 @@ public sealed class PiMessagesProvider : IApiProvider
 
 			writer.WriteEndObject();
 			writer.WriteEndObject();
-		});
+		}, Transcript.EstimateRequestBytes(context.Messages, context.Tools));
 
 		options.NotifyRequestPayload(bytes, model);
 		if (options.OnPayload is { } onPayload)

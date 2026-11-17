@@ -28,6 +28,30 @@ public class ConstrainedSamplingTests
 	};
 
 	[Fact]
+	public void StrictSchemasAreCachedPerInstanceAndLeaveTheOriginalAlone()
+	{
+		var parameters = ReadSchema();
+
+		var first = ConstrainedSampling.MakeStrictJsonSchema(parameters);
+		var second = ConstrainedSampling.MakeStrictJsonSchema(parameters);
+
+		Assert.Same(first, second);
+		Assert.Equal(["path"], parameters["required"]!.AsArray().Select(node => node!.GetValue<string>()));
+		Assert.Null(parameters["additionalProperties"]);
+	}
+
+	[Fact]
+	public void ProviderSpecificWhitelistBypassesTheCache()
+	{
+		var parameters = ReadSchema();
+
+		var shared = ConstrainedSampling.MakeStrictJsonSchema(parameters);
+		var providerSpecific = ConstrainedSampling.MakeStrictJsonSchema(parameters, static (key, _) => key == "offset");
+
+		Assert.NotSame(shared, providerSpecific);
+	}
+
+	[Fact]
 	public void OptionalPropertiesBecomeNullableAndEveryPropertyIsRequired()
 	{
 		var strict = ConstrainedSampling.MakeStrictJsonSchema(ReadSchema());

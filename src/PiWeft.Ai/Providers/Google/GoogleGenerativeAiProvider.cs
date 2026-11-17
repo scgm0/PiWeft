@@ -112,8 +112,9 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 		int? maxOutputTokens,
 		string? apiKey)
 	{
-		var bytes = JsonPayload.Write(writer =>
-			GoogleWire.WriteRequest(writer, model, messages, tools, options, thinkingBudget, maxOutputTokens));
+		var bytes = JsonPayload.Write(
+			writer => GoogleWire.WriteRequest(writer, model, messages, tools, options, thinkingBudget, maxOutputTokens),
+			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
 		{

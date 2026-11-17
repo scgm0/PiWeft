@@ -128,6 +128,120 @@ public class GoogleGenerativeAiProviderTests
 	}
 
 	[Fact]
+	public async Task SendsToolResultImagesInsideFunctionResponseForGemini3()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new GoogleGenerativeAiProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model("gemini-3-pro") with { Input = ["text", "image"] },
+			ToolImageContext(),
+			new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var contents = document.RootElement.GetProperty("contents");
+		Assert.Equal(3, contents.GetArrayLength());
+
+		var functionResponse = contents[2].GetProperty("parts")[0].GetProperty("functionResponse");
+		var inline = functionResponse.GetProperty("parts")[0].GetProperty("inlineData");
+		Assert.Equal("image/png", inline.GetProperty("mimeType").GetString());
+		Assert.Equal("AAAA", inline.GetProperty("data").GetString());
+	}
+
+	[Fact]
+	public async Task SendsToolResultImagesAsSeparateUserTurnForGemini2()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new GoogleGenerativeAiProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model() with { Input = ["text", "image"] },
+			ToolImageContext(),
+			new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var contents = document.RootElement.GetProperty("contents");
+		// 老模型不认 functionResponse.parts，图片另起一条 user content。
+		Assert.Equal(4, contents.GetArrayLength());
+		Assert.False(contents[2].GetProperty("parts")[0].GetProperty("functionResponse").TryGetProperty("parts", out _));
+
+		var imageParts = contents[3].GetProperty("parts");
+		Assert.Equal("user", contents[3].GetProperty("role").GetString());
+		Assert.Equal("Tool result image:", imageParts[0].GetProperty("text").GetString());
+		Assert.Equal("AAAA", imageParts[1].GetProperty("inlineData").GetProperty("data").GetString());
+	}
+
+	[Fact]
+	public async Task PairsToolCallIdsOnlyOnModelsThatUseThem()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new GoogleGenerativeAiProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model("gemini-3-pro"),
+			ToolImageContext(),
+			new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var contents = document.RootElement.GetProperty("contents");
+		Assert.Equal("call_1", contents[1].GetProperty("parts")[0].GetProperty("functionCall").GetProperty("id").GetString());
+		Assert.Equal("call_1", contents[2].GetProperty("parts")[0].GetProperty("functionResponse").GetProperty("id").GetString());
+	}
+
+	[Fact]
+	public async Task OmitsToolCallIdsOnGeminiTwo()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new GoogleGenerativeAiProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model(),
+			ToolImageContext(),
+			new StreamOptions { ApiKey = "test-key" });
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var contents = document.RootElement.GetProperty("contents");
+		Assert.False(contents[1].GetProperty("parts")[0].GetProperty("functionCall").TryGetProperty("id", out _));
+		Assert.False(contents[2].GetProperty("parts")[0].GetProperty("functionResponse").TryGetProperty("id", out _));
+	}
+
+	private static Context ToolImageContext() => new()
+	{
+		Messages =
+		[
+			new UserMessage { Content = MessageContent.FromText("读图"), Timestamp = 1 },
+			new AssistantMessage
+			{
+				Content = [new ToolCall { Id = "call_1", Name = "read", Arguments = new() { ["path"] = "a.png" } }],
+				Timestamp = 2,
+			},
+			new ToolResultMessage
+			{
+				ToolCallId = "call_1",
+				ToolName = "read",
+				Content =
+				[
+					new TextContent { Text = "Read image file [image/png]" },
+					new ImageContent { Data = "AAAA", MimeType = "image/png" },
+				],
+				Timestamp = 3,
+			},
+		],
+	};
+
+	[Fact]
 	public async Task SendsExpectedRequest()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };

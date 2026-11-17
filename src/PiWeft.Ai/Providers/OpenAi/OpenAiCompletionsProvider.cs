@@ -149,8 +149,9 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 			string.IsNullOrEmpty(options.SessionId)
 			? null
 			: options.SessionId.Length <= 64 ? options.SessionId : options.SessionId[..64];
-		var bytes = JsonPayload.Write(writer =>
-			OpenAiCompletionsWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, thinkingMode, maxTokens, promptCacheKey));
+		var bytes = JsonPayload.Write(
+			writer => OpenAiCompletionsWire.WriteRequest(writer, model, messages, tools, options, reasoningEffort, thinkingMode, maxTokens, promptCacheKey),
+			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
 		{

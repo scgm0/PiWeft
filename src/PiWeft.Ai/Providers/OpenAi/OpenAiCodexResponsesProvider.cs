@@ -156,18 +156,20 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 		int? maxOutputTokens,
 		string? cacheKey)
 	{
-		var bytes = JsonPayload.Write(writer => OpenAiResponsesWire.WriteRequest(
-			writer,
-			model,
-			messages,
-			tools,
-			options,
-			reasoningEffort,
-			maxOutputTokens,
-			modelNameOverride: null,
-			store: false,
-			promptCacheKey: cacheKey,
-			supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? true));
+		var bytes = JsonPayload.Write(
+			writer => OpenAiResponsesWire.WriteRequest(
+				writer,
+				model,
+				messages,
+				tools,
+				options,
+				reasoningEffort,
+				maxOutputTokens,
+				modelNameOverride: null,
+				store: false,
+				promptCacheKey: cacheKey,
+				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? true),
+			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
 		{

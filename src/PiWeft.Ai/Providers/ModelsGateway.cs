@@ -16,9 +16,10 @@ internal static class JsonPayload
 		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
-	public static byte[] Write(Action<Utf8JsonWriter> write)
+	public static byte[] Write(Action<Utf8JsonWriter> write, int estimatedBytes = 4096)
 	{
-		var buffer = new ArrayBufferWriter<byte>(4096);
+		// 请求里带图时体积以 base64 为主，按预估分配能省掉十来次翻倍扩容与最终的那次整块拷贝。
+		var buffer = new ArrayBufferWriter<byte>(estimatedBytes > 4096 ? estimatedBytes : 4096);
 		using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
 		{
 			write(writer);
