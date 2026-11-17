@@ -238,10 +238,30 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			heatmap.Add(new JsonObject { ["date"] = cell.Date, ["tokens"] = cell.Tokens, ["level"] = cell.Level });
 		}
 
+		var dailyModels = new List<JsonNode?>(report.DailyModels.Count);
+		foreach (var day in report.DailyModels)
+		{
+			dailyModels.Add(new JsonObject
+			{
+				["date"] = day.Date,
+				["models"] = new JsonArray([.. day.Models.Select(static model => (JsonNode?)new JsonObject
+				{
+					["provider"] = model.Provider,
+					["model"] = model.Model,
+					["totals"] = TotalsJson(model.Totals),
+				})]),
+			});
+		}
+
 		return new JsonObject
 		{
 			["totals"] = TotalsJson(report.Totals),
+			["sessions"] = report.Sessions,
+			["turns"] = report.Turns,
+			["longestSessionMs"] = report.LongestSessionMs,
+			["truncated"] = report.Truncated,
 			["days"] = new JsonArray([.. days]),
+			["dailyModels"] = new JsonArray([.. dailyModels]),
 			["models"] = new JsonArray([.. models]),
 			["projects"] = new JsonArray([.. projects]),
 			["heatmap"] = new JsonArray([.. heatmap]),
@@ -257,6 +277,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		["tokens"] = totals.Tokens,
 		["messages"] = totals.Messages,
 		["cost"] = totals.Cost,
+		["cacheHitPercent"] = totals.CacheHitPercent,
 	};
 
 	internal static string ExportJsonl(CodingAgentSession session, string? outputPath, bool safe = false)

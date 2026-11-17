@@ -19,6 +19,7 @@ public sealed class Utf8LineReader : IDisposable
 	private int _readStart;
 	private int _readEnd;
 	private int _lineLength;
+	private ReadOnlyMemory<byte> _currentLine;
 	private bool _firstLine = true;
 	private bool _skipPartialLine;
 	private bool _disposed;
@@ -48,6 +49,9 @@ public sealed class Utf8LineReader : IDisposable
 	}
 
 	public long BytesRead => _stream.Position - (_readEnd - _readStart);
+
+	/// <summary>最近一次 <see cref="TryReadLine"/> 返回的整行字节，不含换行与 BOM；下次读取前有效。</summary>
+	public ReadOnlyMemory<byte> CurrentLineMemory => _currentLine;
 
 	public bool TryReadLine(out ReadOnlySpan<byte> line)
 	{
@@ -81,7 +85,7 @@ public sealed class Utf8LineReader : IDisposable
 						return false;
 					}
 
-					line = Finish(_lineBuffer.AsSpan(0, _lineLength));
+					line = Finish(_lineBuffer.AsMemory(0, _lineLength));
 					return true;
 				}
 			}
@@ -92,17 +96,18 @@ public sealed class Utf8LineReader : IDisposable
 			{
 				// 零拷贝快路径：整行本来就在读缓冲里（会话文件的行几乎都远小于一块），
 				// 再抄进行缓冲等于给几十 MB 多走一遍内存。返回的跨度只有效到下一次调用为止，
-				// 这正是本类型的契约，两个调用方都当场消费完。
+				// 这正是本类型的契约，调用方都当场消费完。
 				if (_lineLength == 0)
 				{
+					var raw = _readBuffer.AsMemory(_readStart, newline);
 					_readStart += newline + 1;
-					line = Finish(chunk[..newline]);
+					line = Finish(raw);
 					return true;
 				}
 
 				Append(chunk[..newline]);
 				_readStart += newline + 1;
-				line = Finish(_lineBuffer.AsSpan(0, _lineLength));
+				line = Finish(_lineBuffer.AsMemory(0, _lineLength));
 				return true;
 			}
 
@@ -111,10 +116,10 @@ public sealed class Utf8LineReader : IDisposable
 		}
 	}
 
-	private ReadOnlySpan<byte> Finish(ReadOnlySpan<byte> raw)
+	private ReadOnlySpan<byte> Finish(ReadOnlyMemory<byte> raw)
 	{
 		var result = raw;
-		if (result.Length > 0 && result[^1] == (byte)'\r')
+		if (result.Length > 0 && result.Span[^1] == (byte)'\r')
 		{
 			result = result[..^1];
 		}
@@ -122,13 +127,14 @@ public sealed class Utf8LineReader : IDisposable
 		if (_firstLine)
 		{
 			_firstLine = false;
-			if (result.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]))
+			if (result.Span.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]))
 			{
 				result = result[3..];
 			}
 		}
 
-		return result;
+		_currentLine = result;
+		return result.Span;
 	}
 
 	private void Append(ReadOnlySpan<byte> chunk)
@@ -178,6 +184,7 @@ public sealed class Utf8LineReader : IDisposable
 			ArrayPool<byte>.Shared.Return(_lineBuffer);
 		}
 
+		_currentLine = default;
 		_readBuffer = [];
 		_lineBuffer = [];
 	}

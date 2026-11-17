@@ -1,226 +1,35 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
-using PiWeft.CodingAgent.Session;
-using PiWeft.CodingAgent.Stats;
 
 namespace PiWeft.Desktop;
 
-/// D-07 用量统计：跨会话聚合每日/模型/项目用量并画热力图。
-/// 扫描按需触发、单遍读取、文件数与行长有上限，不在后台常驻线程。
+/// 使用统计页签：把「应用用量」面板放进可滚动的主区。
+/// 设置弹窗复用同一个面板，只是不再显示标题（分区标题已经在弹窗顶部）。
 internal sealed class UsageStatsView
 {
-	private readonly Func<string> _sessionsRoot;
-	private readonly Func<string, string, ModelCostRates?> _rates;
-	private readonly StackPanel _content = new();
-	private readonly TextBlock _summary = new();
-	private readonly Button _refresh;
-	private CancellationTokenSource? _abort;
-	private int _generation;
-	private bool _open = true;
+	private readonly UsageStatsPanel _panel;
 
 	public UsageStatsView(Func<string> sessionsRoot, Func<string, string, ModelCostRates?>? rates = null)
 	{
-		_sessionsRoot = sessionsRoot;
-		_rates = rates ?? ((_, _) => null);
-		_content.Spacing(AppTheme.Space3);
-		_refresh = AppIcons.Button("refresh-cw", Strings.UsageStatsRefresh, () => _ = RefreshAsync());
-
+		_panel = new UsageStatsPanel(sessionsRoot, rates, showHeading: true);
 		View = new Border()
 			.StyleName(AppStyles.Window)
 			.Child(new ScrollViewer().SmoothScrolling()
-				.Content(new StackPanel()
-					.Spacing(AppTheme.Space3)
+				.Content(new Border()
 					.Padding(new Thickness(AppTheme.Space6))
-					.Children(
-						new TextBlock().Text(Strings.UsageStatsTitle).FontSize(18).FontWeight(FontWeight.Bold).PrimaryText(),
-						new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
-							.Children(_refresh, _summary.FontSize(AppTheme.FontSizeCaption).SubtleText()),
-						_content))
+					.HorizontalAlignment(HorizontalAlignment.Center)
+					.Child(_panel.View))
 				.AutoVerticalScroll()
 				.NoHorizontalScroll());
-
 		_ = RefreshAsync();
 	}
 
 	public UIElement View { get; }
 
-	public void ApplyTheme() => AppStyles.ApplyTextColors(View);
+	public void ApplyTheme() => _panel.ApplyTheme();
 
-	public void Close()
-	{
-		_open = false;
-		Cancellation.CancelQuietly(_abort);
-		_abort = null;
-	}
+	public void Close() => _panel.Close();
 
-	public async Task RefreshAsync()
-	{
-		if (!_open)
-		{
-			return;
-		}
-
-		var generation = ++_generation;
-		Cancellation.CancelQuietly(_abort);
-		var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-		_abort = cancellation;
-		_refresh.IsEnabled = false;
-		_summary.Text(Strings.UsageStatsLoading);
-
-		var root = _sessionsRoot();
-		UsageStatsReport? report = null;
-		string? error = null;
-		try
-		{
-			report = await Task
-				.Run(() => UsageStats.Scan(root, new UsageStatsOptions { Rates = _rates }, cancellation.Token), cancellation.Token)
-				.ConfigureAwait(false);
-		}
-		catch (OperationCanceledException)
-		{
-			error = Strings.UsageStatsTimeout;
-		}
-		catch (Exception ex)
-		{
-			error = ex.Message;
-		}
-
-		void Complete()
-		{
-			cancellation.Dispose();
-			if (!_open || generation != _generation)
-			{
-				return;
-			}
-
-			_abort = null;
-			_refresh.IsEnabled = true;
-			if (report is null)
-			{
-				_summary.Text(string.Empty);
-				Toasts.Error(View, error ?? Strings.UsageStatsUnavailable);
-				return;
-			}
-
-			Render(report);
-		}
-
-		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
-		if (dispatcher is null || dispatcher.IsOnUIThread)
-		{
-			Complete();
-		}
-		else
-		{
-			dispatcher.BeginInvoke(Complete);
-		}
-	}
-
-	private void Render(UsageStatsReport report)
-	{
-		foreach (var child in _content.Children.ToArray())
-		{
-			UiLifetime.Release(child);
-		}
-
-		_content.Children(_summary);
-		_summary.Text(Strings.UsageStatsSummary(report.Days.Count, report.Totals.Messages,
-			FormatTokens(report.Totals.Tokens), report.Totals.Cost));
-
-		if (report.Totals.Messages == 0 && report.Totals.Tokens == 0)
-		{
-			_content.Children(Card(Strings.UsageStatsTitle, new TextBlock()
-				.Text(Strings.UsageStatsEmpty).FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)));
-			return;
-		}
-
-		_content.Children(Card(Strings.UsageStatsHeatmap, Heatmap(report)));
-		_content.Children(Card(Strings.UsageStatsModels, ModelList(report)));
-		_content.Children(Card(Strings.UsageStatsProjects, ProjectList(report)));
-	}
-
-	private static Element Heatmap(UsageStatsReport report)
-	{
-		const int weeks = 26;
-		var cells = UsageStats.Heatmap(report, weeks);
-		var grid = new StackPanel().Spacing(2);
-		for (var weekday = 0; weekday < 7; weekday++)
-		{
-			var row = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2);
-			for (var week = 0; week < weeks; week++)
-			{
-				var cell = cells[(week * 7) + weekday];
-				var square = new Border()
-					.Width(12)
-					.Height(12)
-					.CornerRadius(2)
-					.WithTheme((theme, border) => border.Background = LevelColor(cell.Level, theme.IsDark));
-				square.HoverTip($"{cell.Date} · {FormatTokens(cell.Tokens)}");
-				row.Children(square);
-			}
-
-			grid.Children(row);
-		}
-
-		return new StackPanel().Spacing(AppTheme.Space2).Children(
-			grid,
-			new TextBlock().Text(Strings.UsageStatsHeatmapHint).FontSize(AppTheme.FontSizeMicro).FaintText());
-	}
-
-	/// GitHub 风格的热力图：浅色卡片用浅绿阶、深色卡片用深绿阶；
-	/// 0 级是“无活动”，在两种主题下都保持可见的低对比底。
-	private static Color LevelColor(int level, bool dark) => (dark, level) switch
-	{
-		(_, 1) => dark ? new Color(0x0E, 0x44, 0x29) : new Color(0x9B, 0xE9, 0xB0),
-		(_, 2) => dark ? new Color(0x00, 0x6D, 0x32) : new Color(0x4A, 0xD1, 0x7A),
-		(_, 3) => dark ? new Color(0x26, 0xA6, 0x41) : new Color(0x2E, 0xA0, 0x52),
-		(_, 4) => dark ? new Color(0x39, 0xD3, 0x53) : new Color(0x18, 0x6A, 0x36),
-		_ => dark ? new Color(0x2A, 0x2F, 0x36) : new Color(0xEB, 0xED, 0xF0),
-	};
-
-	private static Element ModelList(UsageStatsReport report)
-	{
-		var body = new StackPanel().Spacing(4);
-		foreach (var model in report.Models.Take(20))
-		{
-			body.Children(new TextBlock()
-				.Text($"{model.Provider} · {model.Model}：{FormatTokens(model.Totals.Tokens)} · {model.Totals.Messages} 条 · {model.Totals.Cost:0.####}")
-				.FontSize(AppTheme.FontSizeCaption)
-				.TextWrapping(TextWrapping.Wrap)
-				.PrimaryText());
-		}
-
-		return body;
-	}
-
-	private static Element ProjectList(UsageStatsReport report)
-	{
-		var body = new StackPanel().Spacing(4);
-		foreach (var project in report.Projects.Take(20))
-		{
-			body.Children(new TextBlock()
-				.Text($"{project.Directory}：{FormatTokens(project.Totals.Tokens)} · {project.Totals.Cost:0.####}")
-				.FontSize(AppTheme.FontSizeCaption)
-				.TextWrapping(TextWrapping.Wrap)
-				.PrimaryText());
-		}
-
-		return body;
-	}
-
-	private static Element Card(string title, Element body) => new Border()
-		.StyleName(AppStyles.Card)
-		.Padding(new Thickness(AppTheme.Space3))
-		.Child(new StackPanel().Spacing(AppTheme.Space2).Children(
-			new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Bold).SubtleText(),
-			body));
-
-	internal static string FormatTokens(long tokens) => tokens switch
-	{
-		>= 1_000_000_000 => $"{tokens / 1_000_000_000.0:0.##}B",
-		>= 1_000_000 => $"{tokens / 1_000_000.0:0.##}M",
-		>= 1_000 => $"{tokens / 1_000.0:0.##}K",
-		_ => tokens.ToString(System.Globalization.CultureInfo.InvariantCulture),
-	};
+	public Task RefreshAsync() => _panel.RefreshAsync();
 }

@@ -830,6 +830,12 @@ public class CliRunnerTests : IDisposable
 		Assert.Equal("test-model", Assert.Single(data["models"]!.AsArray())!["model"]!.GetValue<string>());
 		Assert.Equal("/work/alpha", Assert.Single(data["projects"]!.AsArray())!["directory"]!.GetValue<string>());
 		Assert.Equal(28, data["heatmap"]!.AsArray().Count);
+		Assert.Equal(1, data["sessions"]!.GetValue<int>());
+		Assert.Equal(0, data["turns"]!.GetValue<int>());
+		Assert.Equal(1000, data["longestSessionMs"]!.GetValue<double>(), 0);
+		Assert.False(data["truncated"]!.GetValue<bool>());
+		Assert.Equal(100.0 * 5.0 / 105.0, data["totals"]!["cacheHitPercent"]!.GetValue<double>(), 6);
+		Assert.Equal("test-model", Assert.Single(Assert.Single(data["dailyModels"]!.AsArray())!["models"]!.AsArray())!["model"]!.GetValue<string>());
 	}
 
 	private sealed class ChannelTextReader : TextReader

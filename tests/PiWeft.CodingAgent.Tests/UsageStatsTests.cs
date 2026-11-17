@@ -1,3 +1,4 @@
+using System.Text;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Stats;
 using Xunit;
@@ -35,11 +36,14 @@ public class UsageStatsTests : IDisposable
 	private static string Header(string timestamp, string cwd) =>
 		$$"""{"type":"session","version":3,"id":"s1","timestamp":"{{timestamp}}","cwd":"{{cwd}}"}""";
 
-	private static string Assistant(string timestamp, string provider, string model, long input, long output, long cacheRead = 0, long cacheWrite = 0, double? cost = null)
+	private static string Assistant(string timestamp, string provider, string model, long input, long output, long cacheRead = 0, long cacheWrite = 0, double? cost = null, double? durationMs = null)
 	{
 		var usage = $"{{\"input\":{input},\"output\":{output},\"cacheRead\":{cacheRead},\"cacheWrite\":{cacheWrite}" +
 			(cost is { } value ? $",\"cost\":{{\"total\":{value.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}" : string.Empty) + "}";
-		return $"{{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"{timestamp}\",\"message\":{{\"role\":\"assistant\",\"provider\":\"{provider}\",\"model\":\"{model}\",\"usage\":{usage}}}}}";
+		var duration = durationMs is { } ms
+			? $",\"durationMs\":{ms.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+			: string.Empty;
+		return $"{{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"{timestamp}\",\"message\":{{\"role\":\"assistant\",\"provider\":\"{provider}\",\"model\":\"{model}\",\"usage\":{usage}{duration}}}}}";
 	}
 
 	[Fact]
@@ -146,6 +150,177 @@ public class UsageStatsTests : IDisposable
 		// 不存在的根目录返回空报告，不抛异常。
 		Assert.Empty(UsageStats.Scan(Path.Combine(_root, "missing")).Days);
 		Assert.Equal(0, UsageStats.Scan(Path.Combine(_root, "missing")).Totals.Tokens);
+	}
+
+	[Fact]
+	public void ScanTracksDailyModelsSessionsTurnsAndLongestSession()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			"""{"type":"message","id":"u1","timestamp":"2026-06-01T10:00:01.000Z","message":{"role":"user","content":"hi"}}""",
+			Assistant("2026-06-01T10:04:00.000Z", "openai", "gpt-a", 100, 10, cost: 0.5),
+			Assistant("2026-06-01T10:20:00.000Z", "anthropic", "claude", 200, 20, cacheRead: 30, cost: 0.25),
+			// 注入上下文也是 user 角色，但带 customType，不算用户轮次。
+			"""{"type":"message","id":"u2","timestamp":"2026-06-01T10:21:00.000Z","message":{"role":"user","customType":"injected","content":"context"}}""");
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		Assert.Equal(1, report.Sessions);
+		Assert.Equal(1, report.Turns);
+		Assert.Equal(21 * 60 * 1000, report.LongestSessionMs, 0);
+		var day = Assert.Single(report.DailyModels);
+		Assert.Equal("2026-06-01", day.Date);
+		Assert.Equal(["claude", "gpt-a"], day.Models.Select(static model => model.Model));
+		Assert.Equal(30, day.Models[0].Totals.CacheRead);
+	}
+
+	[Fact]
+	public void ScanFlagsTruncatedFileLimits()
+	{
+		Session("--a--", "2026-06-03T10-00-00-000Z_s3.jsonl",
+			Header("2026-06-03T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-03T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		Session("--a--", "2026-06-02T10-00-00-000Z_s2.jsonl",
+			Header("2026-06-02T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-02T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		Session("--b--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/beta"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+
+		var limited = UsageStats.Scan(_sessions, new UsageStatsOptions { MaxFiles = 2, TimeZone = TimeZoneInfo.Utc });
+		Assert.True(limited.Truncated);
+		Assert.Equal(2, limited.Sessions);
+
+		var perProject = UsageStats.Scan(_sessions, new UsageStatsOptions { MaxFilesPerProject = 1, TimeZone = TimeZoneInfo.Utc });
+		Assert.True(perProject.Truncated);
+		Assert.Equal(2, perProject.Sessions);
+
+		var complete = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+		Assert.False(complete.Truncated);
+		Assert.Equal(3, complete.Sessions);
+	}
+
+	[Fact]
+	public void ScanPrefersReplyDurationsOverWallClockSpan()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:10:00.000Z", "openai", "gpt-a", 10, 1, durationMs: 60_000),
+			Assistant("2026-06-01T11:00:00.000Z", "openai", "gpt-a", 10, 1, durationMs: 120_000));
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		// 墙钟跨度 60 分钟，但真实回复时长只有 3 分钟；空闲间隔不能算聊天时长。
+		Assert.Equal(180_000, report.LongestSessionMs, 0);
+	}
+
+	[Fact]
+	public void ScanAcceptsUtf8BomInSessionFiles()
+	{
+		var directory = Path.Combine(_sessions, "--a--");
+		Directory.CreateDirectory(directory);
+		var path = Path.Combine(directory, "2026-06-01T10-00-00-000Z_s1.jsonl");
+		var lines = string.Join('\n',
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		File.WriteAllBytes(path, [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(lines)]);
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		Assert.Equal(1, report.Sessions);
+		Assert.Equal(10, report.Totals.Input);
+	}
+
+	[Fact]
+	public void ScanAcceptsSpacedJsonFromImportedSessions()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			"""{ "type": "session", "version": 3, "id": "s1", "timestamp": "2026-06-01T10:00:00.000Z", "cwd": "/work/alpha" }""",
+			"""{ "type": "message", "id": "u1", "timestamp": "2026-06-01T10:00:00.000Z", "message": { "role": "user", "content": "hi" } }""",
+			"""{ "type": "message", "id": "a1", "timestamp": "2026-06-01T10:04:00.000Z", "message": { "role": "assistant", "provider": "openai", "model": "gpt-a", "usage": { "input": 10, "output": 1 } } }""");
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		Assert.Equal(1, report.Sessions);
+		Assert.Equal(1, report.Turns);
+		Assert.Equal("/work/alpha", Assert.Single(report.Projects).Directory);
+		Assert.Equal(4 * 60 * 1000, report.LongestSessionMs, 0);
+	}
+
+	[Fact]
+	public void ScanBucketsDaysInTheRequestedTimeZone()
+	{
+		Session("--a--", "2026-06-01T20-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T20:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T20:00:01.000Z", "openai", "gpt-a", 10, 1));
+
+		var zone = TimeZoneInfo.CreateCustomTimeZone("Test+08", TimeSpan.FromHours(8), "Test+08", "Test+08");
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = zone });
+
+		Assert.Equal("2026-06-02", Assert.Single(report.Days).Date);
+	}
+
+	[Fact]
+	public void StreaksCountConsecutiveActiveDaysAndGiveTodayGrace()
+	{
+		var days = new[]
+		{
+			new DailyStats("2026-06-01", new StatsTotals { Input = 10 }),
+			new DailyStats("2026-06-02", new StatsTotals { Input = 10 }),
+			new DailyStats("2026-06-03", new StatsTotals { Input = 10 }),
+			new DailyStats("2026-06-04", new StatsTotals { Input = 10 }),
+			new DailyStats("2026-06-05", new StatsTotals()),
+		};
+
+		// 今天还没用：从昨天继续算，连续 4 天不断。
+		Assert.Equal(new UsageStreak(4, 4), UsageStats.Streaks(days, new DateOnly(2026, 6, 5)));
+		// 今天用了：仍是 5 天。
+		days[4] = days[4] with { Totals = new StatsTotals { Input = 1 } };
+		Assert.Equal(new UsageStreak(5, 5), UsageStats.Streaks(days, new DateOnly(2026, 6, 5)));
+		// 昨天也没用：断在今天之前。
+		Assert.Equal(new UsageStreak(0, 5), UsageStats.Streaks(days, new DateOnly(2026, 6, 7)));
+	}
+
+	[Fact]
+	public void SliceFillsMissingDaysAndComputesPeakAndStreak()
+	{
+		var days = new[]
+		{
+			new DailyStats("2026-06-01", new StatsTotals { Input = 100 }),
+			new DailyStats("2026-06-03", new StatsTotals { Input = 300 }),
+			new DailyStats("2026-06-05", new StatsTotals { Input = 50 }),
+		};
+		var dailyModels = new[]
+		{
+			new DailyModelStats("2026-06-03", [new ModelStats("openai", "gpt-a", new StatsTotals { Input = 300, Messages = 1 })]),
+			new DailyModelStats("2026-06-01", [new ModelStats("openai", "gpt-a", new StatsTotals { Input = 100, Messages = 1 })]),
+		};
+		var report = new UsageStatsReport(days, [], [], new StatsTotals { Input = 450 })
+		{
+			DailyModels = dailyModels,
+		};
+
+		var recent = UsageStats.Slice(report, 5, new DateOnly(2026, 6, 5));
+		Assert.Equal(5, recent.Days.Count);
+		Assert.Equal(450, recent.Totals.Input);
+		Assert.Equal(300, recent.PeakDayTokens);
+		Assert.Equal("2026-06-03", recent.PeakDay);
+		Assert.Equal(3, recent.ActiveDays);
+		Assert.Equal(1, recent.CurrentStreakDays);
+		Assert.Equal(1, recent.LongestStreakDays);
+		Assert.Equal(400, Assert.Single(recent.Models).Totals.Input);
+
+		var all = UsageStats.Slice(report, 0, new DateOnly(2026, 6, 5));
+		Assert.Equal("2026-06-01", all.Days[0].Date);
+		Assert.Equal(5, all.Days.Count);
+	}
+
+	[Fact]
+	public void CacheHitPercentUsesAllPromptSideBuckets()
+	{
+		var totals = new StatsTotals { Input = 100, CacheRead = 300, CacheWrite = 100 };
+		Assert.Equal(60, totals.CacheHitPercent);
+		Assert.Null(new StatsTotals().CacheHitPercent);
 	}
 
 	[Fact]

@@ -4,8 +4,9 @@ using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Extensions;
 using PiWeft.CodingAgent.Resources;
-using PiWeft.CodingAgent.Settings;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Settings;
+using PiWeft.CodingAgent.Stats;
 using PiWeft.CodingAgent.Themes;
 using PiWeft.Cli;
 
@@ -37,6 +38,12 @@ public sealed record SettingsSnapshot
 
 	public IReadOnlyList<SessionListItem> Archived { get; init; } = [];
 	public Func<IReadOnlyList<SessionListItem>>? LoadArchived { get; init; }
+
+	/// <summary>使用统计扫描的会话根目录；缺省用 <see cref="UsageStats.DefaultRoot"/>。</summary>
+	public string? SessionsRoot { get; init; }
+
+	/// <summary>模型价格查询；会话里没有 cost 时用它估算。</summary>
+	public Func<string, string, ModelCostRates?>? Rates { get; init; }
 }
 
 /// 设置弹窗的内容：分类展示系统状态，并通过独立的配置视图管理模型、认证、Agent 与 MCP 文件。
@@ -58,6 +65,7 @@ public sealed class SettingsView
 	private readonly Func<Task>? _reloadResources;
 	private readonly Action? _modelsChanged;
 	private readonly ScrollViewer _systemView;
+	private UsageStatsPanel? _usageStats;
 	private Button? _activeNavigationButton;
 	private bool _configMode;
 	private bool _extensionBusy;
@@ -145,6 +153,7 @@ public sealed class SettingsView
 	public void ApplyTheme()
 	{
 		if (_configuration.IsValueCreated) _configuration.Value.ApplyTheme();
+		_usageStats?.ApplyTheme();
 		AppStyles.ApplyTextColors((Element)View);
 	}
 
@@ -208,6 +217,8 @@ public sealed class SettingsView
 			AddNavigationButton("sounds", "bell", Strings.SettingsSounds);
 			AddNavigationButton("security", "shield", Strings.SettingsSecurity);
 			AddNavigationButton("shortcuts", "terminal", Strings.SettingsShortcuts);
+			AddNavigationGroup(Strings.SettingsGroupData, first: false);
+			AddNavigationButton("usage", "chart-column", Strings.SettingsUsageStats);
 			AddNavigationGroup(Strings.MaintenanceGroup, first: false);
 			AddNavigationButton("archive", "trash", Strings.SettingsArchive);
 			AddNavigationButton("catalog", "package", Strings.SettingsModelCatalog);
@@ -234,6 +245,7 @@ public sealed class SettingsView
 		"session" => Strings.SettingsSession,
 		"security" => Strings.SettingsSecurity,
 		"sounds" => Strings.SettingsSounds,
+		"usage" => Strings.SettingsUsageStats,
 		"archive" => Strings.SettingsArchive,
 		"catalog" => Strings.SettingsModelCatalog,
 		"shortcuts" => Strings.SettingsShortcuts,
@@ -310,6 +322,11 @@ public sealed class SettingsView
 			var file = section switch { "auth" => ConfigFile.Auth, "agent" => ConfigFile.Settings, "mcp" => ConfigFile.Mcp, _ => ConfigFile.Models };
 			if (!await _configuration.Value.OpenAsync(file, section == "source")) return;
 		}
+		if (_section == "usage" && section != "usage")
+		{
+			_usageStats?.Cancel();
+		}
+
 		_section = section;
 		BuildNavigation();
 		Refresh();
@@ -325,12 +342,21 @@ public sealed class SettingsView
 
 	public void Refresh()
 	{
-		if (_configMode) return;
+		if (_configMode)
+		{
+			// 配置模式隐藏系统设置页；使用统计的扫描没有可见目标，停掉即可。
+			_usageStats?.Cancel();
+			_usageStats = null;
+			return;
+		}
+
 		// 诊断分区的每秒脉冲跟随分区生命周期：重建前先停掉，避免旧面板的定时器继续跑。
 		_diagnosticsPulse?.Stop();
 		_diagnosticsPulse = null;
 		_diagnosticsLive = null;
 		var snapshot = _snapshot();
+		_usageStats?.Cancel();
+		_usageStats = null;
 		_content.Clear();
 		SmoothScroll.For(_systemView).Stop();
 		_systemView.SetScrollOffsets(0, 0);
@@ -348,6 +374,14 @@ public sealed class SettingsView
 				case "session": _content.Children(SessionSection(snapshot.Session)); break;
 				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
 				case "sounds": _content.Children(SoundSection()); break;
+				case "usage":
+					// 每次进入都重建：价格表可能刚被配置管理改过，旧面板的 Rates 闭包会过期。
+					// 根目录与价格委托在 UI 线程取好；扫描在后台线程，不能再回读快照。
+					var usageRoot = snapshot.SessionsRoot is { Length: > 0 } root ? root : UsageStats.DefaultRoot();
+					_usageStats = new UsageStatsPanel(() => usageRoot, snapshot.Rates, showHeading: false);
+					_content.Children(_usageStats.View);
+					_ = _usageStats.RefreshAsync();
+					break;
 				case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
 				case "catalog": _content.Children(new ModelCatalogSection(snapshot.AgentDir, _modelsChanged ?? (() => { })).View); break;
 				case "shortcuts": _content.Children(ShortcutSection()); break;

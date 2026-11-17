@@ -307,9 +307,9 @@ public static partial class Strings
 	public const string ResourcesDark = "深色";
 	public const string ResourcesUnknown = "未知";
 
-	public const string UsageStatsTitle = "用量统计";
+	public const string UsageStatsTitle = "使用统计";
 
-	public const string UsageStatsRefresh = "刷新统计";
+	public const string UsageStatsRefresh = "刷新";
 
 	public const string UsageStatsLoading = "正在扫描会话…";
 
@@ -317,18 +317,12 @@ public static partial class Strings
 
 	public const string UsageStatsUnavailable = "无法读取会话目录。";
 
-	public const string UsageStatsEmpty = "还没有可统计的会话用量。";
+	public const string UsageStatsHeatmap = "Token 活动";
 
-	public const string UsageStatsHeatmap = "每日热力图（26 周）";
-
-	public const string UsageStatsHeatmapHint = "颜色越深表示当天令牌数越多。";
-
-	public const string UsageStatsModels = "按模型";
+	public const string UsageStatsHeatmapHint = "颜色越深表示当天 Token 越多。";
 
 	public const string UsageStatsProjects = "按项目";
 
-	public static string UsageStatsSummary(int days, long messages, string tokens, double cost) =>
-		$"{days} 天 · {messages} 条回复 · {tokens} 令牌 · {cost:0.####}";
 	public static string McpConnected(int servers, int tools) => $"已连接 {servers} 个 MCP 服务器，共 {tools} 个工具。";
 
 	// 分支树

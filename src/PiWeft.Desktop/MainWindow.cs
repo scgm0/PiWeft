@@ -494,7 +494,7 @@ public sealed partial class MainWindow : Window
 		var main = new Grid();
 		main.Children(_tabControl);
 
-		// 辅助页（用量统计）左上角的返回工作区入口。
+		// 辅助页（使用统计）左上角的返回工作区入口。
 		_backButton = AppIcons.Button("arrow-left", Strings.BackToWorkspace, BackToWorkspace, size: AppIcons.ToolbarSize)
 			.HorizontalAlignment(HorizontalAlignment.Left)
 			.VerticalAlignment(VerticalAlignment.Top)
@@ -2076,6 +2076,14 @@ public sealed partial class MainWindow : Window
 					OpenSettingsDialog();
 					if (_settingsView is { } logsView) _ = logsView.SelectSectionAsync("logs");
 					break;
+				case "usage-stats":
+					// 视觉验收：使用统计的汇总条、热力图、区间切换与空态。
+					OpenSettingsDialog();
+					if (_settingsView is { } usageView) _ = usageView.SelectSectionAsync("usage");
+					break;
+				case "usage-stats-tab":
+					OpenUsageStatsTab();
+					break;
 				case "composer-security":
 					// 视觉验收：会话底栏的安全档位菜单。
 					CurrentTab()?.PrepareSecurityMenuSmoke();
@@ -2410,6 +2418,7 @@ public sealed partial class MainWindow : Window
 		await Task.Delay(view is "scroll-sweep" ? 50000
 			: view is "stream" ? 120000
 			: view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" or "subagents" ? 30000
+			: view is "usage-stats" or "usage-stats-tab" ? 16000
 			: view is "git-summary" ? 75000
 			: 7000).ConfigureAwait(false);
 		// 加载提示会阻止关窗；退出前先确认没有在途的打开。
@@ -3536,6 +3545,9 @@ public sealed partial class MainWindow : Window
 			? [.. _mcp?.Servers.Select(state => new McpServerStatus(state.Name, state.Connected, state.ToolCount, state.Error)) ?? []]
 			: [],
 		Session = CurrentSession(),
+		SessionsRoot = _arguments.SessionDir is { Length: > 0 } dir ? dir : UsageStats.DefaultRoot(),
+		// 扫描在后台线程查价格；这里只读环境引用，不回读其它 UI 状态。
+		Rates = (provider, model) => _environment?.Registry.Get(provider, model)?.Cost,
 	};
 
 	private CodingAgentSession? CurrentSession() => CurrentTab()?.Session ?? _lastSessionTab?.Session;

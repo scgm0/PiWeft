@@ -18,15 +18,21 @@ public sealed class Utf8LineReaderTests
 
 			using var reader = new Utf8LineReader(path);
 			var lines = new List<string>();
+			var memories = new List<byte[]>();
 			while (reader.TryReadLine(out var line))
 			{
 				lines.Add(Encoding.UTF8.GetString(line));
+				memories.Add(reader.CurrentLineMemory.ToArray());
+				Assert.True(reader.CurrentLineMemory.Span.SequenceEqual(line));
 			}
 
 			Assert.Equal(3, lines.Count);
 			Assert.Equal("first", lines[0]);
 			Assert.Equal(longText, lines[1]);
 			Assert.Equal("中文最后一行", lines[2]);
+			Assert.Equal(Encoding.UTF8.GetBytes("first"), memories[0]);
+			Assert.Equal(Encoding.UTF8.GetBytes(longText), memories[1]);
+			Assert.Equal(Encoding.UTF8.GetBytes("中文最后一行"), memories[2]);
 		}
 		finally
 		{

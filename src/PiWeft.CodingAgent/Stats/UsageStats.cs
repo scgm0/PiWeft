@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using PiWeft.Ai;
 
@@ -19,13 +21,39 @@ public sealed record StatsTotals
 	public double Cost { get; init; }
 
 	public long Tokens => Input + Output + CacheRead + CacheWrite;
+
+	/// <summary>缓存读取占全部输入侧 token 的比例；没有输入时为空。</summary>
+	public double? CacheHitPercent => Input + CacheRead + CacheWrite > 0
+		? 100.0 * CacheRead / (Input + CacheRead + CacheWrite)
+		: null;
 }
 
 public sealed record DailyStats(string Date, StatsTotals Totals);
 
-public sealed record ModelStats(string Provider, string Model, StatsTotals Totals);
+public sealed record DailyModelStats(string Date, IReadOnlyList<ModelStats> Models);
+
+public sealed record ModelStats(string Provider, string Model, StatsTotals Totals)
+{
+	/// <summary>模型展示名；没有模型名时退回「未知模型」。</summary>
+	public string DisplayName => Model.Length > 0 ? Model : Provider.Length > 0 ? Provider : string.Empty;
+}
 
 public sealed record ProjectStats(string Directory, StatsTotals Totals);
+
+/// <summary>一段连续日期内的用量切片。</summary>
+public sealed record UsageStatsSlice(
+	IReadOnlyList<DailyStats> Days,
+	IReadOnlyList<DailyModelStats> DailyModels,
+	IReadOnlyList<ModelStats> Models,
+	StatsTotals Totals,
+	long PeakDayTokens,
+	string? PeakDay,
+	int ActiveDays,
+	int CurrentStreakDays,
+	int LongestStreakDays);
+
+/// <summary>连续活跃天数。</summary>
+public sealed record UsageStreak(int Current, int Longest);
 
 public sealed record UsageStatsReport(
 	IReadOnlyList<DailyStats> Days,
@@ -34,6 +62,21 @@ public sealed record UsageStatsReport(
 	StatsTotals Totals)
 {
 	public static UsageStatsReport Empty { get; } = new([], [], [], new StatsTotals());
+
+	/// <summary>按日期拆开的模型用量；区间切片和趋势图只从这里取。</summary>
+	public IReadOnlyList<DailyModelStats> DailyModels { get; init; } = [];
+
+	/// <summary>扫描到的会话文件数。</summary>
+	public int Sessions { get; init; }
+
+	/// <summary>用户亲手发出的消息数；注入上下文不计。</summary>
+	public int Turns { get; init; }
+
+	/// <summary>单个会话内助手回复时长之和的最大值（毫秒）；没有时长记录时退回首末时间跨度。</summary>
+	public double LongestSessionMs { get; init; }
+
+	/// <summary>是否因文件数上限只扫描了最近一部分会话。</summary>
+	public bool Truncated { get; init; }
 }
 
 public sealed record UsageHeatCell(string Date, long Tokens, int Level);
@@ -50,6 +93,9 @@ public sealed record UsageStatsOptions
 
 	public string? Project { get; init; }
 
+	/// <summary>按哪个时区把时间戳归到自然日；缺省用本机时区。</summary>
+	public TimeZoneInfo? TimeZone { get; init; }
+
 	public Func<string, string, ModelCostRates?>? Rates { get; init; }
 }
 
@@ -57,6 +103,22 @@ public sealed record UsageStatsOptions
 /// 不做缓存也不驻留后台线程；文件数与行长都有上限。
 public static class UsageStats
 {
+	private static ReadOnlySpan<byte> UsageMarker => "\"usage\""u8;
+
+	private static ReadOnlySpan<byte> TimestampMarker => "\"timestamp\""u8;
+
+	private static ReadOnlySpan<byte> SessionMarker => "\"session\""u8;
+
+	private static ReadOnlySpan<byte> MessageMarker => "\"message\""u8;
+
+	private static ReadOnlySpan<byte> RoleMarker => "\"role\""u8;
+
+	private static ReadOnlySpan<byte> AssistantValue => "assistant"u8;
+
+	private static ReadOnlySpan<byte> UserValue => "user"u8;
+
+	private static ReadOnlySpan<byte> CustomTypeMarker => "\"customType\""u8;
+
 	public static string DefaultRoot()
 	{
 		var configured = Environment.GetEnvironmentVariable(Session.SessionPaths.EnvSessionDir);
@@ -66,40 +128,258 @@ public static class UsageStats
 	public static UsageStatsReport Scan(string sessionsRoot, UsageStatsOptions? options = null, CancellationToken cancellationToken = default)
 	{
 		options ??= new UsageStatsOptions();
-		var days = new Dictionary<string, Bucket>(StringComparer.Ordinal);
-		var models = new Dictionary<string, Bucket>(StringComparer.Ordinal);
+		var timeZone = options.TimeZone ?? TimeZoneInfo.Local;
+		var days = new Dictionary<DateOnly, Bucket>();
+		var models = new Dictionary<ModelKey, Bucket>();
 		var projects = new Dictionary<string, Bucket>(StringComparer.Ordinal);
+		var dailyModels = new Dictionary<DateOnly, Dictionary<ModelKey, Bucket>>();
+		var undated = new Bucket();
+		var sessions = 0;
+		var turns = 0;
+		var longestSessionMs = 0.0;
+		var truncated = false;
 
 		if (Directory.Exists(sessionsRoot))
 		{
 			var remaining = Math.Max(0, options.MaxFiles);
 			foreach (var directory in EnumerateDirectories(sessionsRoot, options.Project))
 			{
-				if (remaining == 0)
+				if (remaining == 0 || cancellationToken.IsCancellationRequested)
 				{
+					truncated = true;
 					break;
 				}
 
-				foreach (var file in EnumerateSessionFiles(directory, options.MaxFilesPerProject))
+				var projectFiles = 0;
+				foreach (var file in EnumerateSessionFiles(directory))
 				{
-					if (remaining == 0 || cancellationToken.IsCancellationRequested)
+					if (remaining == 0 || projectFiles >= options.MaxFilesPerProject)
+					{
+						truncated = true;
+						break;
+					}
+
+					if (cancellationToken.IsCancellationRequested)
 					{
 						break;
 					}
 
+					projectFiles++;
 					remaining--;
-					ScanFile(file, directory, options, days, models, projects, cancellationToken);
+					var session = ScanFile(file, directory, options, timeZone, days, models, projects, dailyModels, undated, cancellationToken);
+					if (session.Found)
+					{
+						sessions++;
+						turns += session.Turns;
+						var wallClock = session.Start is { } start && session.End is { } end && end > start
+							? (end - start).TotalMilliseconds
+							: 0;
+						longestSessionMs = Math.Max(longestSessionMs, session.ActiveMs > 0 ? session.ActiveMs : wallClock);
+					}
 				}
 			}
 		}
 
+		if (cancellationToken.IsCancellationRequested)
+		{
+			truncated = true;
+		}
+
 		return new UsageStatsReport(
-			[.. days.OrderBy(static pair => pair.Key, StringComparer.Ordinal).Select(static pair => new DailyStats(pair.Key, pair.Value.ToTotals()))],
-			[.. models.OrderByDescending(static pair => pair.Value.Cost).ThenByDescending(static pair => pair.Value.Tokens)
-				.Select(static pair => new ModelStats(Field(pair.Key, 0), Field(pair.Key, 1), pair.Value.ToTotals()))],
+			[.. days.OrderBy(static pair => pair.Key).Select(static pair => new DailyStats(FormatDate(pair.Key), pair.Value.ToTotals()))],
+			[.. models.OrderByDescending(static pair => pair.Value.Tokens).ThenByDescending(static pair => pair.Value.Cost)
+				.Select(static pair => new ModelStats(pair.Key.Provider, pair.Key.Model, pair.Value.ToTotals()))],
 			[.. projects.OrderByDescending(static pair => pair.Value.Tokens)
 				.Select(static pair => new ProjectStats(pair.Key, pair.Value.ToTotals()))],
-			Sum(days.Values));
+			Sum(days.Values, undated))
+		{
+			DailyModels =
+			[
+				.. dailyModels.OrderBy(static pair => pair.Key).Select(static pair => new DailyModelStats(
+					FormatDate(pair.Key),
+					[.. pair.Value.OrderByDescending(static bucket => bucket.Value.Tokens)
+						.ThenByDescending(static bucket => bucket.Value.Cost)
+						.Select(static bucket => new ModelStats(bucket.Key.Provider, bucket.Key.Model, bucket.Value.ToTotals()))]))
+			],
+			Sessions = sessions,
+			Turns = turns,
+			LongestSessionMs = longestSessionMs,
+			Truncated = truncated,
+		};
+	}
+
+	/// <summary>
+	/// 取最近 <paramref name="days"/> 个自然日的切片；<paramref name="days"/> 为 0 时返回全部历史。
+	/// 返回的日序列连续补齐，图表不必再处理空档。
+	/// </summary>
+	public static UsageStatsSlice Slice(UsageStatsReport report, int days, DateOnly today)
+	{
+		var byDate = new Dictionary<DateOnly, StatsTotals>();
+		foreach (var day in report.Days)
+		{
+			if (DateOnly.TryParseExact(day.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+			{
+				byDate[date] = day.Totals;
+			}
+		}
+
+		DateOnly start;
+		if (days > 0)
+		{
+			start = today.AddDays(1 - days);
+		}
+		else if (report.Days.Count > 0 &&
+			DateOnly.TryParseExact(report.Days[0].Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var first))
+		{
+			start = first;
+		}
+		else
+		{
+			start = today;
+		}
+
+		if (start > today)
+		{
+			start = today;
+		}
+
+		var series = new List<DailyStats>(Math.Max(0, today.DayNumber - start.DayNumber + 1));
+		for (var date = start; date <= today; date = date.AddDays(1))
+		{
+			series.Add(new DailyStats(FormatDate(date), byDate.TryGetValue(date, out var dayTotals) ? dayTotals : new StatsTotals()));
+		}
+
+		var dailyModels = new List<DailyModelStats>();
+		var modelBuckets = new Dictionary<ModelKey, Bucket>();
+		foreach (var day in report.DailyModels)
+		{
+			if (day.Date.Length == 0 ||
+				!DateOnly.TryParseExact(day.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ||
+				date < start || date > today)
+			{
+				continue;
+			}
+
+			var kept = new List<ModelStats>(day.Models.Count);
+			foreach (var model in day.Models)
+			{
+				kept.Add(model);
+				var key = new ModelKey(model.Provider, model.Model);
+				if (!modelBuckets.TryGetValue(key, out var bucket))
+				{
+					bucket = new Bucket();
+					modelBuckets[key] = bucket;
+				}
+
+				bucket.Add(model.Totals);
+			}
+
+			if (kept.Count > 0)
+			{
+				dailyModels.Add(new DailyModelStats(day.Date, kept));
+			}
+		}
+
+		// 旧报告没有日模型数据时，至少让「全部」区间能显示模型排行。
+		var models = modelBuckets
+			.OrderByDescending(static pair => pair.Value.Tokens).ThenByDescending(static pair => pair.Value.Cost)
+			.Select(static pair => new ModelStats(pair.Key.Provider, pair.Key.Model, pair.Value.ToTotals()))
+			.ToList();
+		if (models.Count == 0 && days <= 0)
+		{
+			models = [.. report.Models];
+		}
+
+		long peak = 0;
+		string? peakDay = null;
+		var activeDays = 0;
+		var longestStreak = 0;
+		var run = 0;
+		var totals = new Bucket();
+		foreach (var day in series)
+		{
+			totals.Add(day.Totals);
+			var tokens = day.Totals.Tokens;
+			if (tokens > 0)
+			{
+				activeDays++;
+				run++;
+				if (run > longestStreak)
+				{
+					longestStreak = run;
+				}
+			}
+			else
+			{
+				run = 0;
+			}
+
+			if (tokens > peak)
+			{
+				peak = tokens;
+				peakDay = day.Date;
+			}
+		}
+
+		// 序列连续且以 today 结尾，当前连续天数从尾部倒数即可，不再建集合重复解析日期。
+		var currentStreak = 0;
+		var index = series.Count - 1;
+		if (index >= 0 && series[index].Totals.Tokens == 0)
+		{
+			index--;
+		}
+
+		while (index >= 0 && series[index].Totals.Tokens > 0)
+		{
+			currentStreak++;
+			index--;
+		}
+
+		return new UsageStatsSlice(
+			series,
+			dailyModels,
+			models,
+			totals.ToTotals(),
+			peak,
+			peakDay,
+			activeDays,
+			currentStreak,
+			longestStreak);
+	}
+
+	/// <summary>连续活跃天数：今天还没使用不算断，从昨天继续算。</summary>
+	public static UsageStreak Streaks(IReadOnlyList<DailyStats> days, DateOnly today)
+	{
+		var active = new HashSet<DateOnly>();
+		foreach (var day in days)
+		{
+			if (day.Totals.Tokens > 0 &&
+				DateOnly.TryParseExact(day.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+			{
+				active.Add(date);
+			}
+		}
+
+		var longest = 0;
+		var run = 0;
+		var ordered = active.Order().ToList();
+		DateOnly? previous = null;
+		foreach (var date in ordered)
+		{
+			run = previous is { } prior && date == prior.AddDays(1) ? run + 1 : 1;
+			longest = Math.Max(longest, run);
+			previous = date;
+		}
+
+		var current = 0;
+		var cursor = active.Contains(today) ? today : today.AddDays(-1);
+		while (active.Contains(cursor))
+		{
+			current++;
+			cursor = cursor.AddDays(-1);
+		}
+
+		return new UsageStreak(current, longest);
 	}
 
 	public static IReadOnlyList<UsageHeatCell> Heatmap(UsageStatsReport report, int weeks = 26, DateOnly? today = null)
@@ -120,8 +400,9 @@ public static class UsageStats
 		var cells = new List<UsageHeatCell>(weeks * 7);
 		for (var date = start; date <= end.AddDays(6); date = date.AddDays(1))
 		{
-			var tokens = date <= last && byDate.TryGetValue(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), out var value) ? value : 0;
-			cells.Add(new UsageHeatCell(date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), tokens, Level(tokens, max)));
+			var key = FormatDate(date);
+			var tokens = date <= last && byDate.TryGetValue(key, out var value) ? value : 0;
+			cells.Add(new UsageHeatCell(key, tokens, Level(tokens, max)));
 		}
 
 		return cells;
@@ -176,7 +457,7 @@ public static class UsageStats
 		}
 	}
 
-	private static IEnumerable<string> EnumerateSessionFiles(string directory, int limit)
+	private static IEnumerable<string> EnumerateSessionFiles(string directory)
 	{
 		string[] files;
 		try
@@ -193,37 +474,46 @@ public static class UsageStats
 		}
 
 		Array.Sort(files, static (left, right) => string.CompareOrdinal(Path.GetFileName(right), Path.GetFileName(left)));
-		for (var index = 0; index < files.Length && index < limit; index++)
+		foreach (var file in files)
 		{
-			yield return files[index];
+			yield return file;
 		}
 	}
 
-	private static void ScanFile(
+	private readonly record struct ModelKey(string Provider, string Model);
+
+	private readonly record struct SessionScan(bool Found, int Turns, DateTimeOffset? Start, DateTimeOffset? End, double ActiveMs);
+
+	private static SessionScan ScanFile(
 		string file,
 		string directory,
 		UsageStatsOptions options,
-		Dictionary<string, Bucket> days,
-		Dictionary<string, Bucket> models,
+		TimeZoneInfo timeZone,
+		Dictionary<DateOnly, Bucket> days,
+		Dictionary<ModelKey, Bucket> models,
 		Dictionary<string, Bucket> projects,
+		Dictionary<DateOnly, Dictionary<ModelKey, Bucket>> dailyModels,
+		Bucket undated,
 		CancellationToken cancellationToken)
 	{
-		var since = options.Since is { } cutoff
-			? cutoff.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture)
-			: null;
-
 		string? cwd = null;
 		var project = Path.GetFileName(directory);
 		var lineCount = 0;
+		var found = false;
+		var headerChecked = false;
+		var turns = 0;
+		var activeMs = 0.0;
+		DateTimeOffset? start = null;
+		DateTimeOffset? end = null;
 
 		try
 		{
-			using var reader = new StreamReader(file);
-			while (reader.ReadLine() is { } line)
+			using var reader = new Session.Utf8LineReader(file);
+			while (reader.TryReadLine(out var line))
 			{
 				if ((++lineCount & 0xFF) == 0 && cancellationToken.IsCancellationRequested)
 				{
-					return;
+					break;
 				}
 
 				if (line.Length == 0 || line.Length > options.MaxLineBytes)
@@ -231,24 +521,64 @@ public static class UsageStats
 					continue;
 				}
 
-				// 先看头部确定项目名，其余行只解析含用量的行。
-				if (cwd is null && line.StartsWith("{\"type\":\"session\"", StringComparison.Ordinal))
+				var hasTimestamp = TryReadTimestamp(line, out var timestamp);
+				if (hasTimestamp)
 				{
-					cwd = ReadString(line, "cwd");
-					if (cwd is { Length: > 0 })
+					if (start is null || timestamp < start)
 					{
-						project = cwd;
+						start = timestamp;
 					}
 
-					continue;
+					if (end is null || timestamp > end)
+					{
+						end = timestamp;
+					}
 				}
 
-				if (!line.Contains("\"usage\"", StringComparison.Ordinal) || !line.Contains("\"timestamp\"", StringComparison.Ordinal))
+				// 第一行按会话头解析；第三方写出的 JSON 可能带空格，不能只靠前缀匹配。
+				if (!headerChecked)
+				{
+					headerChecked = true;
+					if (TryReadHeader(reader.CurrentLineMemory, out var headerCwd))
+					{
+						found = true;
+						cwd = headerCwd;
+						if (cwd is { Length: > 0 })
+						{
+							project = cwd;
+						}
+
+						continue;
+					}
+				}
+
+				// 只看 message 条目：先取角色，工具结果/用户/系统正文都不必再扫一遍找 usage。
+				if (line.IndexOf(MessageMarker) >= 0)
+				{
+					var role = ReadRole(line);
+					if (role.Length > 0 && !role.SequenceEqual(AssistantValue))
+					{
+						if (role.SequenceEqual(UserValue) && line.IndexOf(CustomTypeMarker) < 0)
+						{
+							turns++;
+						}
+
+						continue;
+					}
+				}
+
+				if (line.IndexOf(UsageMarker) < 0 || line.IndexOf(TimestampMarker) < 0)
 				{
 					continue;
 				}
 
-				ScanLine(line, project, options, since, days, models, projects);
+				if (options.Since is { } cutoff && hasTimestamp && timestamp < cutoff)
+				{
+					continue;
+				}
+
+				var date = hasTimestamp ? DateOf(timestamp, timeZone) : (DateOnly?)null;
+				activeMs += ScanLine(reader.CurrentLineMemory, date, project, options, days, models, projects, dailyModels, undated);
 			}
 		}
 		catch (IOException)
@@ -261,48 +591,55 @@ public static class UsageStats
 		catch (JsonException)
 		{
 		}
+
+		return new SessionScan(found, turns, start, end, activeMs);
 	}
 
-	private static void ScanLine(
-		string line,
+	private static double ScanLine(
+		ReadOnlyMemory<byte> line,
+		DateOnly? date,
 		string project,
 		UsageStatsOptions options,
-		string? since,
-		Dictionary<string, Bucket> days,
-		Dictionary<string, Bucket> models,
-		Dictionary<string, Bucket> projects)
+		Dictionary<DateOnly, Bucket> days,
+		Dictionary<ModelKey, Bucket> models,
+		Dictionary<string, Bucket> projects,
+		Dictionary<DateOnly, Dictionary<ModelKey, Bucket>> dailyModels,
+		Bucket undated)
 	{
 		using var document = JsonDocument.Parse(line);
 		var root = document.RootElement;
 		if (root.ValueKind != JsonValueKind.Object)
 		{
-			return;
+			return 0;
 		}
 
-		var type = root.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
-		var isMessage = type is null or "message";
+		var type = root.TryGetProperty("type", out var typeElement) ? typeElement : default;
+		var hasType = type.ValueKind == JsonValueKind.String;
+		var isMessage = !hasType || type.ValueEquals("message"u8);
 		JsonElement usage;
 		string provider;
 		string model;
+		var activeMs = 0.0;
 
 		if (isMessage)
 		{
 			if (!root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object ||
 				!message.TryGetProperty("usage", out usage) || usage.ValueKind != JsonValueKind.Object ||
-				(message.TryGetProperty("role", out var role) && role.GetString() != "assistant"))
+				(message.TryGetProperty("role", out var role) && (role.ValueKind != JsonValueKind.String || role.GetString() != "assistant")))
 			{
-				return;
+				return 0;
 			}
 
 			provider = ReadString(message, "provider") ?? string.Empty;
 			model = ReadString(message, "model") ?? string.Empty;
+			activeMs = ReadDouble(message, "durationMs");
 		}
-		else if (type == "usage")
+		else if (hasType && type.ValueEquals("usage"u8))
 		{
 			// 会话级用量条目（例如缓存保温），不计入助手回复数。
 			if (!root.TryGetProperty("usage", out usage) || usage.ValueKind != JsonValueKind.Object)
 			{
-				return;
+				return 0;
 			}
 
 			provider = ReadString(root, "provider") ?? string.Empty;
@@ -310,13 +647,7 @@ public static class UsageStats
 		}
 		else
 		{
-			return;
-		}
-
-		var timestamp = ReadString(root, "timestamp");
-		if (since is { Length: > 0 } bound && timestamp is { Length: > 0 } && string.CompareOrdinal(timestamp, bound) < 0)
-		{
-			return;
+			return 0;
 		}
 
 		var input = ReadLong(usage, "input");
@@ -324,7 +655,7 @@ public static class UsageStats
 		var cacheRead = ReadLong(usage, "cacheRead");
 		var cacheWrite = ReadLong(usage, "cacheWrite");
 		var cost = ReadCost(usage);
-		var counted = isMessage && type is not null ? 1 : 0;
+		var counted = isMessage && hasType ? 1 : 0;
 
 		if (cost <= 0 && options.Rates?.Invoke(provider, model) is { } rates)
 		{
@@ -332,28 +663,130 @@ public static class UsageStats
 				rates.CacheRead / 1_000_000.0 * cacheRead + rates.CacheWrite / 1_000_000.0 * cacheWrite;
 		}
 
-		var date = timestamp is { Length: >= 10 } ? timestamp[..10] : string.Empty;
-		Add(days, date, input, output, cacheRead, cacheWrite, counted, cost);
-		Add(models, provider + "\u0000" + model, input, output, cacheRead, cacheWrite, counted, cost);
-		Add(projects, project, input, output, cacheRead, cacheWrite, counted, cost);
-	}
-
-	private static void Add(Dictionary<string, Bucket> map, string key, long input, long output, long cacheRead, long cacheWrite, long messages, double cost)
-	{
-		if (!map.TryGetValue(key, out var bucket))
+		var modelKey = new ModelKey(provider, model);
+		if (date is { } day)
 		{
-			bucket = new Bucket();
-			map[key] = bucket;
+			Add(days, day, input, output, cacheRead, cacheWrite, counted, cost);
+			if (!dailyModels.TryGetValue(day, out var byModel))
+			{
+				byModel = new Dictionary<ModelKey, Bucket>();
+				dailyModels[day] = byModel;
+			}
+
+			Add(byModel, modelKey, input, output, cacheRead, cacheWrite, counted, cost);
+		}
+		else
+		{
+			undated.Add(input, output, cacheRead, cacheWrite, counted, cost);
 		}
 
+		Add(models, modelKey, input, output, cacheRead, cacheWrite, counted, cost);
+		Add(projects, project, input, output, cacheRead, cacheWrite, counted, cost);
+
+		return activeMs;
+	}
+
+	private static DateOnly DateOf(DateTimeOffset timestamp, TimeZoneInfo timeZone) =>
+		DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(timestamp, timeZone).DateTime);
+
+	private static bool TryReadHeader(ReadOnlyMemory<byte> line, out string? cwd)
+	{
+		cwd = null;
+		if (line.Span.IndexOf(SessionMarker) < 0)
+		{
+			return false;
+		}
+
+		try
+		{
+			using var document = JsonDocument.Parse(line);
+			var root = document.RootElement;
+			if (root.ValueKind != JsonValueKind.Object || ReadString(root, "type") != "session")
+			{
+				return false;
+			}
+
+			cwd = ReadString(root, "cwd");
+			return true;
+		}
+		catch (JsonException)
+		{
+			return false;
+		}
+	}
+
+	private static ReadOnlySpan<byte> ReadRole(ReadOnlySpan<byte> line)
+	{
+		var index = line.IndexOf(RoleMarker);
+		if (index < 0)
+		{
+			return default;
+		}
+
+		var rest = line[(index + RoleMarker.Length)..];
+		while (rest.Length > 0 && (rest[0] == (byte)':' || rest[0] == (byte)' ' || rest[0] == (byte)'\t'))
+		{
+			rest = rest[1..];
+		}
+
+		if (rest.Length == 0 || rest[0] != (byte)'"')
+		{
+			return default;
+		}
+
+		rest = rest[1..];
+		var end = rest.IndexOf((byte)'"');
+		return end < 0 ? default : rest[..end];
+	}
+
+	private static bool TryReadTimestamp(ReadOnlySpan<byte> line, out DateTimeOffset timestamp)
+	{
+		timestamp = default;
+		var index = line.IndexOf(TimestampMarker);
+		if (index < 0)
+		{
+			return false;
+		}
+
+		index += TimestampMarker.Length;
+		while (index < line.Length && (line[index] == (byte)':' || line[index] == (byte)' ' || line[index] == (byte)'\t'))
+		{
+			index++;
+		}
+
+		if (index >= line.Length || line[index] != (byte)'"')
+		{
+			return false;
+		}
+
+		index++;
+		var end = line[index..].IndexOf((byte)'"');
+		if (end <= 0)
+		{
+			return false;
+		}
+
+		var value = line.Slice(index, end);
+		Span<char> buffer = stackalloc char[64];
+		if (value.Length > buffer.Length)
+		{
+			return false;
+		}
+
+		var length = Encoding.UTF8.GetChars(value, buffer);
+		return DateTimeOffset.TryParse(buffer[..length], CultureInfo.InvariantCulture,
+			DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out timestamp);
+	}
+
+	private static void Add<TKey>(Dictionary<TKey, Bucket> map, TKey key, long input, long output, long cacheRead, long cacheWrite, long messages, double cost)
+		where TKey : notnull
+	{
+		ref var bucket = ref CollectionsMarshal.GetValueRefOrAddDefault(map, key, out _);
+		bucket ??= new Bucket();
 		bucket.Add(input, output, cacheRead, cacheWrite, messages, cost);
 	}
 
-	private static string? ReadString(string line, string property)
-	{
-		using var document = JsonDocument.Parse(line);
-		return ReadString(document.RootElement, property);
-	}
+	private static string FormatDate(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
 	private static string? ReadString(JsonElement element, string property) =>
 		element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
@@ -363,27 +796,27 @@ public static class UsageStats
 			? Math.Max(0, number)
 			: 0;
 
+	private static double ReadDouble(JsonElement element, string property) =>
+		element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number)
+			? Math.Max(0, number)
+			: 0;
+
 	private static double ReadCost(JsonElement usage) =>
 		usage.TryGetProperty("cost", out var cost) && cost.ValueKind == JsonValueKind.Object &&
 			cost.TryGetProperty("total", out var total) && total.ValueKind == JsonValueKind.Number && total.TryGetDouble(out var value) && value > 0
 			? value
 			: 0;
 
-	private static StatsTotals Sum(IEnumerable<Bucket> buckets)
+	private static StatsTotals Sum(IEnumerable<Bucket> buckets, Bucket extra)
 	{
 		var sum = new Bucket();
 		foreach (var bucket in buckets)
 		{
-			sum.Add(bucket.Input, bucket.Output, bucket.CacheRead, bucket.CacheWrite, bucket.Messages, bucket.Cost);
+			sum.Add(bucket);
 		}
 
+		sum.Add(extra);
 		return sum.ToTotals();
-	}
-
-	private static string Field(string key, int index)
-	{
-		var parts = key.Split('\u0000');
-		return index < parts.Length ? parts[index] : string.Empty;
 	}
 
 	internal sealed class Bucket(long input = 0, long output = 0, long cacheRead = 0, long cacheWrite = 0, long messages = 0, double cost = 0)
@@ -411,6 +844,12 @@ public static class UsageStats
 			Messages += messages;
 			Cost += cost;
 		}
+
+		public void Add(StatsTotals totals) =>
+			Add(totals.Input, totals.Output, totals.CacheRead, totals.CacheWrite, totals.Messages, totals.Cost);
+
+		public void Add(Bucket other) =>
+			Add(other.Input, other.Output, other.CacheRead, other.CacheWrite, other.Messages, other.Cost);
 
 		public StatsTotals ToTotals() => new()
 		{
