@@ -169,6 +169,14 @@ public static class Program
 			return 0;
 		}
 
+		// 强杀、崩溃、调试器 Stop 都走不到 Dispose，socket 文件会留在 agent 目录。
+		// 清扫放在拿到实例之后：自己的 socket 已在监听，不会被当成残留删掉。
+		var staleSockets = SingleInstance.CleanupStaleSockets();
+		if (staleSockets > 0)
+		{
+			AppLog.For<MainWindow>().ZLogInformation($"Removed {staleSockets} stale desktop sockets");
+		}
+
 		RegisterPlatform();
 		ReadingPreferences.Initialize(DesktopPreference.Load());
 		using var primarySelection = LinuxPrimarySelection.Create();

@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Text;
+using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
 
@@ -12,6 +13,9 @@ public sealed class SingleInstance : IDisposable
 	// 继续与改名前的桌面实例共用锁，防止新旧程序同时编辑同一个项目。
 	private const string MutexName = @"Local\piweft-desktop-single-instance";
 	private const string ActivateMessage = "activate";
+	private const string SocketPrefix = "piweft-desktop-";
+	// 改名前的版本留下这个名字的 socket，新版本从不访问它，只有清扫能回收。
+	private const string LegacySocketPrefix = "pi-desktop-";
 
 	private readonly Mutex? _mutex;
 	private readonly Socket? _socket;
@@ -82,6 +86,49 @@ public sealed class SingleInstance : IDisposable
 		{
 			// 另一个实例正在退出，无需激活。
 		}
+	}
+
+	/// <summary>删掉 agent 目录里没人监听的 socket 文件，返回删除个数。</summary>
+	/// <remarks>
+	/// 进程被强杀或崩溃时 <see cref="Dispose"/> 不会执行，socket 文件就留在目录里。
+	/// 每个工作目录一个键，临时目录跑出来的那些永远等不到下一次启动，只能在这里统一回收。
+	/// </remarks>
+	public static int CleanupStaleSockets()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return 0; // Windows 用互斥体，没有 socket 文件
+		}
+
+		var directory = SessionPaths.GetAgentDir();
+		if (!Directory.Exists(directory))
+		{
+			return 0;
+		}
+
+		var removed = 0;
+		foreach (var prefix in new[] { SocketPrefix, LegacySocketPrefix })
+		{
+			string[] candidates;
+			try
+			{
+				candidates = Directory.GetFiles(directory, prefix + "*.sock");
+			}
+			catch (IOException)
+			{
+				continue; // 目录正在被别的实例改写，下次启动再清
+			}
+
+			foreach (var path in candidates)
+			{
+				if (!IsLive(path) && TryDelete(path))
+				{
+					removed++;
+				}
+			}
+		}
+
+		return removed;
 	}
 
 	public void Listen(Action onActivate)
@@ -160,30 +207,31 @@ public sealed class SingleInstance : IDisposable
 		}
 	}
 
-	private static void TryDelete(string path)
+	private static bool TryDelete(string path)
 	{
 		try
 		{
 			File.Delete(path);
+			return true;
 		}
 		catch (IOException)
 		{
 			// 与另一次启动竞争，交给重试决定。
+			return false;
 		}
 		catch (UnauthorizedAccessException)
 		{
 			// 不是我们该删除的文件。
+			return false;
 		}
 	}
 
 	private static string SocketPath(string instanceKey)
 	{
-		var directory = Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-			".pi",
-			"agent");
+		// 与其余状态同放 agent 目录：PI_CODING_AGENT_DIR 指到别处时，socket 也跟着走。
+		var directory = SessionPaths.GetAgentDir();
 
 		Directory.CreateDirectory(directory);
-		return Path.Combine(directory, $"piweft-desktop-{instanceKey}.sock");
+		return Path.Combine(directory, $"{SocketPrefix}{instanceKey}.sock");
 	}
 }

@@ -202,6 +202,25 @@ public class ShellTests : IDisposable
 	}
 
 	[Fact]
+	public void StartupRemovesSocketsNobodyListensOn()
+	{
+		var key = "test-" + Guid.NewGuid().ToString("N")[..8];
+		using var instance = SingleInstance.Acquire(key);
+		Assert.True(instance.IsFirstInstance);
+
+		// 被强杀的进程只会留下文件，没有监听方；写个普通文件就够模拟这种情况。
+		var stale = Path.Combine(_agentDir, "piweft-desktop-" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant() + ".sock");
+		var legacy = Path.Combine(_agentDir, "pi-desktop-ABCDEF123456.sock");
+		File.WriteAllText(stale, string.Empty);
+		File.WriteAllText(legacy, string.Empty);
+
+		Assert.Equal(2, SingleInstance.CleanupStaleSockets());
+		Assert.False(File.Exists(stale));
+		Assert.False(File.Exists(legacy));
+		Assert.True(File.Exists(Path.Combine(_agentDir, $"piweft-desktop-{key}.sock")));
+	}
+
+	[Fact]
 	public async Task TheRunningInstanceIsNotifiedWhenAnotherLaunchSignals()
 	{
 		var key = "test-" + Guid.NewGuid().ToString("N")[..8];
