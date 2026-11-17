@@ -136,10 +136,6 @@ public sealed partial class MainWindow
 		{
 			CloseTab(tab);
 		}
-		else
-		{
-			CloseAuxTab(entry);
-		}
 	}
 
 	private void MoveTab(object entry, int delta)

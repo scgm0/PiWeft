@@ -394,7 +394,7 @@ public sealed class SettingsView
 					{
 						// 根目录与价格委托在 UI 线程取好；扫描在后台线程，不能再回读快照。
 						var usageRoot = snapshot.SessionsRoot is { Length: > 0 } root ? root : UsageStats.DefaultRoot();
-						_usageStats = new UsageStatsPanel(() => usageRoot, snapshot.Rates, showHeading: false, cache: _usageStatsCache);
+						_usageStats = new UsageStatsPanel(() => usageRoot, snapshot.Rates, cache: _usageStatsCache);
 					}
 
 					_content.Children(_usageStats.View);

@@ -73,7 +73,6 @@ public static partial class Strings
 	public const string ProjectMenuReveal = "查看文件";
 	public const string ProjectMenuNewTask = "新建任务";
 	public const string SidebarGit = "Git";
-	public const string BackToWorkspace = "返回工作区";
 	public const string MoreActions = "更多操作";
 	public const string SessionArchived = "会话已归档（可在会话目录的 .trash 里找回）";
 	public const string ProjectRemoved = "已从列表移除该项目（会话文件保留在磁盘上）";

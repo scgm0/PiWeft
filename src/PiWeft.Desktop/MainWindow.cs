@@ -46,7 +46,6 @@ public sealed partial class MainWindow : Window
 	private ThemeWatcher? _themeWatcher;
 
 	private readonly UsageStatsCache _usageStatsCache = new();
-	private UsageStatsView? _usageStatsView;
 	private string? _pendingNotice;
 	private CancellationTokenSource? _themeApplyCancellation;
 	private readonly Dictionary<string, CliEnvironment> _environments = new(StringComparer.Ordinal);
@@ -55,7 +54,6 @@ public sealed partial class MainWindow : Window
 	private bool _restoringSelection;
 	private Border _sidebar = null!;
 	private SplitPanel _workspace = null!;
-	private Button _backButton = null!;
 	private bool _sidebarPreferred;
 	private TreeView _chatsTree = null!;
 	private Button _sessionsTabButton = null!;
@@ -495,12 +493,6 @@ public sealed partial class MainWindow : Window
 		var main = new Grid();
 		main.Children(_tabControl);
 
-		// 辅助页（使用统计）左上角的返回工作区入口。
-		_backButton = AppIcons.Button("arrow-left", Strings.BackToWorkspace, BackToWorkspace, size: AppIcons.ToolbarSize)
-			.HorizontalAlignment(HorizontalAlignment.Left)
-			.VerticalAlignment(VerticalAlignment.Top)
-			.Margin(new Thickness(AppTheme.Space2))
-			.IsVisible(false);
 		// TabControl 自带的页签条仍隐藏（标题栏右段另绘）；它会给选中页画一个小底座，用主区同色遮罩盖住。
 		main.Children(new Border()
 			.Height(30)
@@ -508,7 +500,6 @@ public sealed partial class MainWindow : Window
 			.WithTheme((theme, element) => element.Background = AppTheme.For(theme).WindowBackground)
 			.IsHitTestVisible(false));
 		main.Children(_welcome);
-		main.Children(_backButton);
 
 		// 面板属于会话：每个标签在 AttachTab 里挂一个 RightPanel 进这个宿主。
 		// 主区与面板之间用默认分隔条（与左侧同一套 SplitPanel）：主区星号、面板定宽，
@@ -615,7 +606,6 @@ public sealed partial class MainWindow : Window
 			_sessionAbort.Cancel();
 			// 落盘并释放诊断文件句柄；开关状态仍留在偏好里，下次启动继续采。
 			Diagnostics.Close();
-			_usageStatsView?.Close();
 			_themeWatcher?.Dispose();
 			_themeApplyCancellation?.Cancel();
 			_themeApplyCancellation?.Dispose();
@@ -1933,11 +1923,6 @@ public sealed partial class MainWindow : Window
 		SyncTitleBarTabs();
 	}
 
-	private void CloseAuxTab(object entry)
-	{
-		CloseAuxTabCore(entry);
-	}
-
 	private static async Task ConfirmSettingsCloseAsync(SettingsView settings, ClosingEventArgs args, ClosingDeferral deferral)
 	{
 		using (deferral)
@@ -1945,30 +1930,6 @@ public sealed partial class MainWindow : Window
 			try { args.Cancel = !await settings.CanCloseAsync(); }
 			catch (InvalidOperationException) { args.Cancel = true; }
 		}
-	}
-
-	private void CloseAuxTabCore(object entry)
-	{
-		var index = _tabEntries.IndexOf(entry);
-		if (index < 0)
-		{
-			return;
-		}
-
-		_tabEntries.RemoveAt(index);
-
-		if (index < _tabControl.Tabs.Count)
-		{
-			_tabControl.RemoveTabAt(index);
-		}
-
-		if (ReferenceEquals(entry, _usageStatsView))
-		{
-			_usageStatsView?.Close();
-			_usageStatsView = null;
-		}
-
-		UpdateStatus();
 	}
 
 	private void SyncWelcomeLoading()
@@ -2002,11 +1963,6 @@ public sealed partial class MainWindow : Window
 			case null:
 				_status.Text(Strings.NoOpenSession);
 				UpdateProjectCaption();
-				return;
-
-			case UsageStatsView stats:
-				// 切到已打开的统计页时也核对一次文件指纹；缓存命中时只是一次 metadata 检查。
-				_ = stats.RefreshIfStaleAsync();
 				return;
 
 			case SessionTab active:
@@ -2083,9 +2039,6 @@ public sealed partial class MainWindow : Window
 					// 视觉验收：使用统计的汇总条、热力图、区间切换与空态。
 					OpenSettingsDialog();
 					if (_settingsView is { } usageView) _ = usageView.SelectSectionAsync("usage");
-					break;
-				case "usage-stats-tab":
-					OpenUsageStatsTab();
 					break;
 				case "composer-security":
 					// 视觉验收：会话底栏的安全档位菜单。
@@ -2421,7 +2374,7 @@ public sealed partial class MainWindow : Window
 		await Task.Delay(view is "scroll-sweep" ? 50000
 			: view is "stream" ? 120000
 			: view is "interactions" or "latest" or "latest-churn" or "latest-theme" or "outline" or "wheel" or "subagents" ? 30000
-			: view is "usage-stats" or "usage-stats-tab" ? 16000
+			: view is "usage-stats" ? 16000
 			: view is "git-summary" ? 75000
 			: 7000).ConfigureAwait(false);
 		// 加载提示会阻止关窗；退出前先确认没有在途的打开。
@@ -2568,7 +2521,6 @@ public sealed partial class MainWindow : Window
 			_settingsView?.ApplyTheme();
 			_settingsDialog?.ApplyTheme();
 			foreach (var panel in _sessionPanels.Values) panel.ApplyTheme();
-			_usageStatsView?.ApplyTheme();
 			AppStyles.ApplyTextColors(_sessionSearch.View);
 		}
 		catch (Exception ex)
@@ -2603,7 +2555,6 @@ public sealed partial class MainWindow : Window
 			_settingsView?.ApplyTheme();
 			_settingsDialog?.ApplyTheme();
 			foreach (var panel in _sessionPanels.Values) panel.ApplyTheme();
-			_usageStatsView?.ApplyTheme();
 			AppStyles.ApplyTextColors(_sessionSearch.View);
 		}
 		catch (Exception ex)
@@ -2630,20 +2581,6 @@ public sealed partial class MainWindow : Window
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Save window state", ex);
 			Console.Error.WriteLine($"piweft-desktop: 无法保存窗口状态：{ex.Message}");
-		}
-	}
-
-	private void BackToWorkspace()
-	{
-		var index = _tabEntries.FindLastIndex(entry => entry is SessionTab);
-		if (index >= 0)
-		{
-			_tabControl.SelectedIndex = index;
-			UpdateStatus();
-		}
-		else
-		{
-			CloseCurrentTab();
 		}
 	}
 
@@ -2768,14 +2705,10 @@ public sealed partial class MainWindow : Window
 
 	private void UpdateSidebarChrome()
 	{
-		var entry = _tabControl.SelectedIndex >= 0 && _tabControl.SelectedIndex < _tabEntries.Count
-			? _tabEntries[_tabControl.SelectedIndex] : null;
-		var sidebarAllowed = entry is null or SessionTab;
 		var collapsed = !_sidebarColumn.IsVisible;
 		// 展开/收起入口：展开时在左段品牌旁，收起后回到主标题栏最左侧。
-		_hideSidebarButton.IsVisible(!collapsed && sidebarAllowed);
-		_showSidebarButton.IsVisible(collapsed && sidebarAllowed);
-		_backButton.IsVisible(!sidebarAllowed);
+		_hideSidebarButton.IsVisible(!collapsed);
+		_showSidebarButton.IsVisible(collapsed);
 		UpdateChrome();
 	}
 
@@ -2896,25 +2829,13 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	private void OpenUsageStatsTab()
+	private void OpenUsageStatsSettings()
 	{
-		var index = _usageStatsView is null ? -1 : _tabEntries.IndexOf(_usageStatsView);
-		if (_usageStatsView is not null && index >= 0)
+		OpenSettingsDialog();
+		if (_settingsView is { } settings)
 		{
-			_ = _usageStatsView.RefreshIfStaleAsync();
-			_tabControl.SelectedIndex = index;
-			return;
+			_ = settings.SelectSectionAsync("usage");
 		}
-
-		_usageStatsView = new UsageStatsView(
-			() => _arguments.SessionDir is { Length: > 0 } dir ? dir : UsageStats.DefaultRoot(),
-			(provider, model) => _environment?.Registry.Get(provider, model)?.Cost,
-			_usageStatsCache);
-		_tabEntries.Add(_usageStatsView);
-		AddTab(header: null!, _usageStatsView.View, _usageStatsView);
-
-		_tabControl.SelectedIndex = _tabEntries.Count - 1;
-		UpdateStatus();
 	}
 
 	private void FocusActiveEntry()
@@ -2950,8 +2871,6 @@ public sealed partial class MainWindow : Window
 					panel.Refresh();
 				}
 
-				// 设置页可能刚扫过使用统计；共享缓存已在，页签只核对指纹后更新。
-				_ = _usageStatsView?.RefreshIfStaleAsync();
 			};
 		}
 
@@ -3121,7 +3040,7 @@ public sealed partial class MainWindow : Window
 			new(Strings.Checkpoints, Strings.ShortcutCheckpoints, ShowCheckpointsPanel),
 			new(Strings.Terminal, Strings.ShortcutTerminal, ToggleTerminalPanel),
 			new(Strings.RightPanel, Strings.ShortcutRightPanel, ToggleRightPanel),
-			new(Strings.UsageStatsTitle, string.Empty, OpenUsageStatsTab),
+			new(Strings.SettingsUsageStats, string.Empty, OpenUsageStatsSettings),
 			new(Strings.CopySessionPath, Strings.ShortcutCopyPath, () => CopySessionInfo(path: true)),
 			new(Strings.CopySessionId, Strings.ShortcutCopyId, () => CopySessionInfo(path: false)),
 			new(Strings.ExportSession, Strings.ShortcutExportSession, () => ExportCurrentSession(open: false)),
@@ -3424,18 +3343,9 @@ public sealed partial class MainWindow : Window
 	{
 		_tabControl.ClearTabs();
 
-		foreach (var entry in _tabEntries)
+		foreach (var tab in _tabEntries.OfType<SessionTab>())
 		{
-			switch (entry)
-			{
-				case SessionTab tab:
-					AddTab(header: null!, tab.View, tab);
-					break;
-
-				case UsageStatsView stats:
-					AddTab(header: null!, stats.View, stats);
-					break;
-			}
+			AddTab(header: null!, tab.View, tab);
 		}
 	}
 

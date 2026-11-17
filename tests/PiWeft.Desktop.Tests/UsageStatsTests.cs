@@ -63,7 +63,7 @@ public sealed class UsageStatsPanelTests
 			LongestSessionMs = ((2 * 60) + 5) * 60_000,
 		};
 
-		var panel = new UsageStatsPanel(() => "/missing", null, showHeading: true);
+		var panel = new UsageStatsPanel(() => "/missing", null);
 		panel.Apply(report, DateTimeOffset.Now);
 		var texts = Find<TextBlock>(panel.View).Select(static text => text.Text).ToList();
 
@@ -97,7 +97,7 @@ public sealed class UsageStatsPanelTests
 			Turns = days.Count,
 			LongestSessionMs = 60_000,
 		};
-		var panel = new UsageStatsPanel(() => "/missing", null, showHeading: false);
+		var panel = new UsageStatsPanel(() => "/missing", null);
 		panel.Apply(report, DateTimeOffset.Now);
 		Assert.Contains(Find<TextBlock>(panel.View), text => text.Text == Strings.UsageStatsDailyChart);
 
@@ -113,7 +113,7 @@ public sealed class UsageStatsPanelTests
 	[Fact]
 	public void PanelShowsEmptyStateWhenTheRangeHasNoUsage()
 	{
-		var panel = new UsageStatsPanel(() => "/missing", null, showHeading: false);
+		var panel = new UsageStatsPanel(() => "/missing", null);
 		panel.Apply(UsageStatsReport.Empty, DateTimeOffset.Now);
 		var texts = Find<TextBlock>(panel.View).Select(static text => text.Text).ToList();
 
@@ -126,7 +126,7 @@ public sealed class UsageStatsPanelTests
 	[Fact]
 	public void PanelShowsErrorNoticeAndKeepsEmptyState()
 	{
-		var panel = new UsageStatsPanel(() => "/missing", null, showHeading: false);
+		var panel = new UsageStatsPanel(() => "/missing", null);
 		panel.Fail("permission denied");
 		var texts = Find<TextBlock>(panel.View).Select(static text => text.Text).ToList();
 

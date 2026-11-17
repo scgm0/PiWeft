@@ -307,8 +307,6 @@ public static partial class Strings
 	public const string ResourcesDark = "深色";
 	public const string ResourcesUnknown = "未知";
 
-	public const string UsageStatsTitle = "使用统计";
-
 	public const string UsageStatsRefresh = "刷新";
 
 	public const string UsageStatsLoading = "正在刷新…";

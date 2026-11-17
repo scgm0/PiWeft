@@ -19,7 +19,6 @@ internal sealed class UsageStatsPanel
 	private readonly Func<string> _sessionsRoot;
 	private readonly Func<string, string, ModelCostRates?> _rates;
 	private readonly UsageStatsCache _cache;
-	private readonly bool _showHeading;
 	private readonly StackPanel _root = new();
 	private readonly StackPanel _staticBody = new();
 	private readonly StackPanel _rangeBody = new();
@@ -38,12 +37,11 @@ internal sealed class UsageStatsPanel
 	private DateOnly _sliceDay = DateOnly.FromDateTime(DateTime.Now);
 	private DateTimeOffset? _refreshedAt;
 
-	public UsageStatsPanel(Func<string> sessionsRoot, Func<string, string, ModelCostRates?>? rates = null, bool showHeading = true, UsageStatsCache? cache = null)
+	public UsageStatsPanel(Func<string> sessionsRoot, Func<string, string, ModelCostRates?>? rates = null, UsageStatsCache? cache = null)
 	{
 		_sessionsRoot = sessionsRoot;
 		_rates = rates ?? ((_, _) => null);
 		_cache = cache ?? new UsageStatsCache();
-		_showHeading = showHeading;
 		_refresh = AppIcons.TextButton("refresh-cw", Strings.UsageStatsRefresh, () => _ = RefreshAsync());
 		_source.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap)
 			.HoverTip(Strings.UsageStatsTooltip);
@@ -207,24 +205,14 @@ internal sealed class UsageStatsPanel
 
 	private Element Header()
 	{
-		var row = new StackPanel().Orientation(Orientation.Horizontal)
-			.VerticalAlignment(VerticalAlignment.Center).Spacing(AppTheme.Space2);
-		if (_showHeading)
-		{
-			row.Children(new TextBlock().Text(Strings.UsageStatsTitle)
-				.FontSize(18).FontWeight(FontWeight.SemiBold).PrimaryText()
-				.VerticalAlignment(VerticalAlignment.Center));
-		}
-
-		row.Children(new Border()
+		return new Border()
 			.Padding(new Thickness(8, 2, 8, 2))
 			.CornerRadius(AppTheme.RadiusXs)
 			.WithTheme(static (theme, border) => border.Background = AppTheme.For(theme).CardBackgroundAlt)
 			.Child(new TextBlock().Text(Strings.UsageStatsAppUsage)
 				.FontSize(AppTheme.FontSizeMicro).MutedText()
 				.VerticalAlignment(VerticalAlignment.Center))
-			.VerticalAlignment(VerticalAlignment.Center));
-		return row;
+			.VerticalAlignment(VerticalAlignment.Center);
 	}
 
 	private Element Footer()

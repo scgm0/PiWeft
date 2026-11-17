@@ -6,7 +6,7 @@ namespace PiWeft.Desktop;
 
 internal readonly record struct UsageStatsCacheResult(UsageStatsReport Report, DateTimeOffset RefreshedAt);
 
-/// <summary>设置页与页签共享的使用统计缓存：按会话文件指纹和进程内写入代数判断是否重扫。</summary>
+/// <summary>设置页使用统计的扫描缓存：按会话文件指纹和进程内写入代数判断是否重扫。</summary>
 internal sealed class UsageStatsCache
 {
 	private readonly SemaphoreSlim _gate = new(1, 1);
