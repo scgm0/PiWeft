@@ -183,8 +183,9 @@ public sealed record ChatEntry
 	}
 }
 
-/// 一次自动重试的界面状态。倒计时结束后 <see cref="RetryAtUnixMs"/> 成为过去时刻，
-/// 界面据此从「N 秒后重试」切回「正在自动重试 n/m」。
+/// 一次自动重试的退避窗口。倒计时终点是 <see cref="RetryAtUnixMs"/>；窗口里界面报
+/// 「N 秒后重试」，窗口结束后报「正在自动重试 n/m」。重试的回复一开始出字就交回
+/// 实时阶段：否则重试成功后整轮都挂着「正在自动重试」。
 public sealed record ChatRetryStatus(
 	int Attempt,
 	int MaxAttempts,
@@ -252,7 +253,10 @@ public sealed class ChatViewModel : IDisposable
 	private string? _error;
 	private long _runStarted;
 	// 自动重试的实时状态与收口提示：重试退避没有消息事件，界面靠这两个字段显示「正在重试」。
+	// 状态覆盖退避窗口和重试请求的等待期；重试的回复一出字就交给实时阶段。
 	private ChatRetryStatus? _retry;
+	// 重试的回复一出字重试状态就没了，收口提示仍要报「共重试 n/m 次」，上限单独留着。
+	private int _retryMaxAttempts;
 	private ChatRetryNotice? _retryNotice;
 	private bool _aborting;
 	// 未投递给模型的排队消息（steer + follow-up），顺序与队列一致。
@@ -639,6 +643,7 @@ public sealed class ChatViewModel : IDisposable
 			{
 				_isStreaming = false;
 				_retry = null;
+				_retryMaxAttempts = 0;
 				ResetStreaming();
 				Rebuild();
 			}
@@ -707,6 +712,9 @@ public sealed class ChatViewModel : IDisposable
 					break;
 
 				case MessageStartEvent { Message: AssistantMessage assistant }:
+					// 重试的回复开始写了：屏幕上有东西在长，状态条改报实时阶段。
+					// 留着重试状态，整轮重试（包括它跑工具的时间）都在说「正在自动重试」。
+					_retry = null;
 					ResetStreaming();
 					_streamingTimestamp = assistant.Timestamp;
 					break;
@@ -816,6 +824,7 @@ public sealed class ChatViewModel : IDisposable
 				case AutoRetryStartEvent retry:
 					AppLog.For<ChatViewModel>().ZLogWarning($"Retry scheduled: session={_session?.Session.SessionId}, attempt={retry.Attempt}, delayMs={retry.DelayMs}");
 					// 退避期间没有其它消息事件：把「正在重试 n/m」连同倒计时终点交给界面。
+					_retryMaxAttempts = retry.MaxAttempts;
 					_retry = new ChatRetryStatus(
 						retry.Attempt,
 						retry.MaxAttempts,
@@ -829,9 +838,9 @@ public sealed class ChatViewModel : IDisposable
 
 				case AutoRetryEndEvent retryEnd:
 				{
-					var status = _retry;
-					var maxAttempts = status?.MaxAttempts ?? 0;
+					var maxAttempts = _retry?.MaxAttempts ?? _retryMaxAttempts;
 					_retry = null;
+					_retryMaxAttempts = 0;
 					if (retryEnd.Success)
 					{
 						AppLog.For<ChatViewModel>().ZLogInformation($"Retry succeeded: session={_session?.Session.SessionId}, attempt={retryEnd.Attempt}");

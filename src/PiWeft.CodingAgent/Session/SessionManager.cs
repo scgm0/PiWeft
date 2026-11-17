@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
 using PiWeft.Ai;
+using PiWeft.CodingAgent.Stats;
 
 namespace PiWeft.CodingAgent.Session;
 
@@ -992,6 +993,8 @@ public sealed partial class SessionManager
 		_persistBuffer.Clear();
 		SessionJson.WriteEntryLine(_persistBuffer, entry);
 		File.AppendAllBytes(SessionFile, _persistBuffer.WrittenSpan);
+		// 使用统计缓存据此直接失效，不必等下一次文件指纹检查。
+		UsageStats.MarkChanged();
 	}
 
 	private string NextId()

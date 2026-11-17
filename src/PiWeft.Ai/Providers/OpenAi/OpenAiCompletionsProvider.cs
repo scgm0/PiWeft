@@ -112,7 +112,7 @@ public sealed class OpenAiCompletionsProvider : IApiProvider
 		}
 		catch (Exception ex)
 		{
-			stream.Push(new ErrorEvent { Reason = StopReason.Error, Partial = Failure(model, startedAt, ex.Message) });
+			stream.Push(new ErrorEvent { Reason = StopReason.Error, Partial = Failure(model, startedAt, ProviderHttp.DescribeError(ex)) });
 		}
 	}
 

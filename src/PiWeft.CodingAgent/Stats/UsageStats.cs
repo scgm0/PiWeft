@@ -20,7 +20,10 @@ public sealed record StatsTotals
 
 	public double Cost { get; init; }
 
-	public long Tokens => Input + Output + CacheRead + CacheWrite;
+	/// <summary>供应商回报的总 token 数；为 0 时回退到四个桶之和。</summary>
+	public long ReportedTokens { get; init; }
+
+	public long Tokens => ReportedTokens > 0 ? ReportedTokens : Input + Output + CacheRead + CacheWrite;
 
 	/// <summary>缓存读取占全部输入侧 token 的比例；没有输入时为空。</summary>
 	public double? CacheHitPercent => Input + CacheRead + CacheWrite > 0
@@ -101,8 +104,16 @@ public sealed record UsageStatsOptions
 
 /// 跨会话用量统计。只读会话 JSONL，按需调用、单遍扫描、逐行解析，
 /// 不做缓存也不驻留后台线程；文件数与行长都有上限。
-public static class UsageStats
+public static partial class UsageStats
 {
+	private static long _generation;
+
+	/// <summary>进程内会话数据变更代数；桌面缓存用它快速判断是否还要检查文件指纹。</summary>
+	public static long Generation => Volatile.Read(ref _generation);
+
+	/// <summary>标记会话数据已变化，下一次取使用统计时重新扫描。</summary>
+	public static void MarkChanged() => Interlocked.Increment(ref _generation);
+
 	private static ReadOnlySpan<byte> UsageMarker => "\"usage\""u8;
 
 	private static ReadOnlySpan<byte> TimestampMarker => "\"timestamp\""u8;
@@ -167,15 +178,14 @@ public static class UsageStats
 					projectFiles++;
 					remaining--;
 					var session = ScanFile(file, directory, options, timeZone, days, models, projects, dailyModels, undated, cancellationToken);
-					if (session.Found)
-					{
-						sessions++;
-						turns += session.Turns;
-						var wallClock = session.Start is { } start && session.End is { } end && end > start
-							? (end - start).TotalMilliseconds
-							: 0;
-						longestSessionMs = Math.Max(longestSessionMs, session.ActiveMs > 0 ? session.ActiveMs : wallClock);
-					}
+					// 文件在 sessions 目录里就算一次会话；头部损坏但仍有 usage 的文件不能显示成 0 会话。
+					sessions++;
+					turns += session.Turns;
+					var wallClock = session.Start is { } start && session.End is { } end && end > start
+						? (end - start).TotalMilliseconds
+						: 0;
+					// 有回复时长但缺消息时间戳时不能退回首末跨度，否则和 SessionStatistics 的活跃时长口径不一致。
+					longestSessionMs = Math.Max(longestSessionMs, session.HasDurations ? session.ActiveMs : wallClock);
 				}
 			}
 		}
@@ -482,7 +492,7 @@ public static class UsageStats
 
 	private readonly record struct ModelKey(string Provider, string Model);
 
-	private readonly record struct SessionScan(bool Found, int Turns, DateTimeOffset? Start, DateTimeOffset? End, double ActiveMs);
+	private readonly record struct SessionScan(int Turns, DateTimeOffset? Start, DateTimeOffset? End, double ActiveMs, bool HasDurations);
 
 	private static SessionScan ScanFile(
 		string file,
@@ -499,10 +509,10 @@ public static class UsageStats
 		string? cwd = null;
 		var project = Path.GetFileName(directory);
 		var lineCount = 0;
-		var found = false;
 		var headerChecked = false;
 		var turns = 0;
-		var activeMs = 0.0;
+		var active = new ActiveIntervalUnion();
+		var hasDurations = false;
 		DateTimeOffset? start = null;
 		DateTimeOffset? end = null;
 
@@ -541,7 +551,6 @@ public static class UsageStats
 					headerChecked = true;
 					if (TryReadHeader(reader.CurrentLineMemory, out var headerCwd))
 					{
-						found = true;
 						cwd = headerCwd;
 						if (cwd is { Length: > 0 })
 						{
@@ -578,7 +587,15 @@ public static class UsageStats
 				}
 
 				var date = hasTimestamp ? DateOf(timestamp, timeZone) : (DateOnly?)null;
-				activeMs += ScanLine(reader.CurrentLineMemory, date, project, options, days, models, projects, dailyModels, undated);
+				var sample = ScanLine(reader.CurrentLineMemory, date, project, options, days, models, projects, dailyModels, undated);
+				if (sample.DurationMs > 0)
+				{
+					hasDurations = true;
+					if (sample.Timestamp > 0)
+					{
+						active.Add(sample.Timestamp, sample.Timestamp + sample.DurationMs);
+					}
+				}
 			}
 		}
 		catch (IOException)
@@ -592,10 +609,10 @@ public static class UsageStats
 		{
 		}
 
-		return new SessionScan(found, turns, start, end, activeMs);
+		return new SessionScan(turns, start, end, active.TotalMs, hasDurations);
 	}
 
-	private static double ScanLine(
+	private static (double DurationMs, long Timestamp) ScanLine(
 		ReadOnlyMemory<byte> line,
 		DateOnly? date,
 		string project,
@@ -606,84 +623,44 @@ public static class UsageStats
 		Dictionary<DateOnly, Dictionary<ModelKey, Bucket>> dailyModels,
 		Bucket undated)
 	{
-		using var document = JsonDocument.Parse(line);
-		var root = document.RootElement;
-		if (root.ValueKind != JsonValueKind.Object)
+		if (!TryReadUsageLine(line, out var sample))
 		{
-			return 0;
+			return default;
 		}
 
-		var type = root.TryGetProperty("type", out var typeElement) ? typeElement : default;
-		var hasType = type.ValueKind == JsonValueKind.String;
-		var isMessage = !hasType || type.ValueEquals("message"u8);
-		JsonElement usage;
-		string provider;
-		string model;
-		var activeMs = 0.0;
+		// 供应商总量通常等于四个桶之和；总量更大时保留它（思考等额外口径），
+		// 总量更小时用桶之和，避免明细比合计还大。总量缺失则用桶之和。
+		var bucketTokens = sample.Input + sample.Output + sample.CacheRead + sample.CacheWrite;
+		var totalTokens = sample.ReportedTokens > bucketTokens ? sample.ReportedTokens : bucketTokens;
+		var cost = sample.Cost;
 
-		if (isMessage)
+		if (cost <= 0 && options.Rates?.Invoke(sample.Provider, sample.Model) is { } rates)
 		{
-			if (!root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object ||
-				!message.TryGetProperty("usage", out usage) || usage.ValueKind != JsonValueKind.Object ||
-				(message.TryGetProperty("role", out var role) && (role.ValueKind != JsonValueKind.String || role.GetString() != "assistant")))
-			{
-				return 0;
-			}
-
-			provider = ReadString(message, "provider") ?? string.Empty;
-			model = ReadString(message, "model") ?? string.Empty;
-			activeMs = ReadDouble(message, "durationMs");
-		}
-		else if (hasType && type.ValueEquals("usage"u8))
-		{
-			// 会话级用量条目（例如缓存保温），不计入助手回复数。
-			if (!root.TryGetProperty("usage", out usage) || usage.ValueKind != JsonValueKind.Object)
-			{
-				return 0;
-			}
-
-			provider = ReadString(root, "provider") ?? string.Empty;
-			model = ReadString(root, "model") ?? string.Empty;
-		}
-		else
-		{
-			return 0;
+			cost = rates.Input / 1_000_000.0 * sample.Input + rates.Output / 1_000_000.0 * sample.Output +
+				rates.CacheRead / 1_000_000.0 * sample.CacheRead + rates.CacheWrite / 1_000_000.0 * sample.CacheWrite;
 		}
 
-		var input = ReadLong(usage, "input");
-		var output = ReadLong(usage, "output");
-		var cacheRead = ReadLong(usage, "cacheRead");
-		var cacheWrite = ReadLong(usage, "cacheWrite");
-		var cost = ReadCost(usage);
-		var counted = isMessage && hasType ? 1 : 0;
-
-		if (cost <= 0 && options.Rates?.Invoke(provider, model) is { } rates)
-		{
-			cost = rates.Input / 1_000_000.0 * input + rates.Output / 1_000_000.0 * output +
-				rates.CacheRead / 1_000_000.0 * cacheRead + rates.CacheWrite / 1_000_000.0 * cacheWrite;
-		}
-
-		var modelKey = new ModelKey(provider, model);
+		var modelKey = new ModelKey(sample.Provider, sample.Model);
 		if (date is { } day)
 		{
-			Add(days, day, input, output, cacheRead, cacheWrite, counted, cost);
+			Add(days, day, sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
 			if (!dailyModels.TryGetValue(day, out var byModel))
 			{
 				byModel = new Dictionary<ModelKey, Bucket>();
 				dailyModels[day] = byModel;
 			}
 
-			Add(byModel, modelKey, input, output, cacheRead, cacheWrite, counted, cost);
+			Add(byModel, modelKey, sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
 		}
 		else
 		{
-			undated.Add(input, output, cacheRead, cacheWrite, counted, cost);
+			undated.Add(sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
 		}
 
-		Add(models, modelKey, input, output, cacheRead, cacheWrite, counted, cost);
-		Add(projects, project, input, output, cacheRead, cacheWrite, counted, cost);
+		Add(models, modelKey, sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
+		Add(projects, project, sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
 
-		return activeMs;
+		return (sample.DurationMs, sample.Timestamp);
 	}
 
 	private static DateOnly DateOf(DateTimeOffset timestamp, TimeZoneInfo timeZone) =>
@@ -697,22 +674,20 @@ public static class UsageStats
 			return false;
 		}
 
-		try
-		{
-			using var document = JsonDocument.Parse(line);
-			var root = document.RootElement;
-			if (root.ValueKind != JsonValueKind.Object || ReadString(root, "type") != "session")
-			{
-				return false;
-			}
-
-			cwd = ReadString(root, "cwd");
-			return true;
-		}
-		catch (JsonException)
+		using var document = TryParse(line);
+		if (document is null)
 		{
 			return false;
 		}
+
+		var root = document.RootElement;
+		if (root.ValueKind != JsonValueKind.Object || ReadString(root, "type") != "session")
+		{
+			return false;
+		}
+
+		cwd = ReadString(root, "cwd");
+		return true;
 	}
 
 	private static ReadOnlySpan<byte> ReadRole(ReadOnlySpan<byte> line)
@@ -778,34 +753,31 @@ public static class UsageStats
 			DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out timestamp);
 	}
 
-	private static void Add<TKey>(Dictionary<TKey, Bucket> map, TKey key, long input, long output, long cacheRead, long cacheWrite, long messages, double cost)
+	private static void Add<TKey>(Dictionary<TKey, Bucket> map, TKey key, long input, long output, long cacheRead, long cacheWrite, long reportedTokens, long messages, double cost)
 		where TKey : notnull
 	{
 		ref var bucket = ref CollectionsMarshal.GetValueRefOrAddDefault(map, key, out _);
 		bucket ??= new Bucket();
-		bucket.Add(input, output, cacheRead, cacheWrite, messages, cost);
+		bucket.Add(input, output, cacheRead, cacheWrite, reportedTokens, messages, cost);
 	}
 
 	private static string FormatDate(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
+	private static JsonDocument? TryParse(ReadOnlyMemory<byte> line)
+	{
+		try
+		{
+			return JsonDocument.Parse(line);
+		}
+		catch (JsonException)
+		{
+			// 单行损坏只丢这一行，不能让同一文件后面的用量全消失。
+			return null;
+		}
+	}
+
 	private static string? ReadString(JsonElement element, string property) =>
 		element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
-
-	private static long ReadLong(JsonElement element, string property) =>
-		element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number)
-			? Math.Max(0, number)
-			: 0;
-
-	private static double ReadDouble(JsonElement element, string property) =>
-		element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number)
-			? Math.Max(0, number)
-			: 0;
-
-	private static double ReadCost(JsonElement usage) =>
-		usage.TryGetProperty("cost", out var cost) && cost.ValueKind == JsonValueKind.Object &&
-			cost.TryGetProperty("total", out var total) && total.ValueKind == JsonValueKind.Number && total.TryGetDouble(out var value) && value > 0
-			? value
-			: 0;
 
 	private static StatsTotals Sum(IEnumerable<Bucket> buckets, Bucket extra)
 	{
@@ -819,37 +791,40 @@ public static class UsageStats
 		return sum.ToTotals();
 	}
 
-	internal sealed class Bucket(long input = 0, long output = 0, long cacheRead = 0, long cacheWrite = 0, long messages = 0, double cost = 0)
+	internal sealed class Bucket
 	{
-		public long Input { get; private set; } = input;
+		public long Input { get; private set; }
 
-		public long Output { get; private set; } = output;
+		public long Output { get; private set; }
 
-		public long CacheRead { get; private set; } = cacheRead;
+		public long CacheRead { get; private set; }
 
-		public long CacheWrite { get; private set; } = cacheWrite;
+		public long CacheWrite { get; private set; }
 
-		public long Messages { get; private set; } = messages;
+		public long ReportedTokens { get; private set; }
 
-		public double Cost { get; private set; } = cost;
+		public long Messages { get; private set; }
 
-		public long Tokens => Input + Output + CacheRead + CacheWrite;
+		public double Cost { get; private set; }
 
-		public void Add(long input, long output, long cacheRead, long cacheWrite, long messages, double cost)
+		public long Tokens => ReportedTokens > 0 ? ReportedTokens : Input + Output + CacheRead + CacheWrite;
+
+		public void Add(long input, long output, long cacheRead, long cacheWrite, long reportedTokens, long messages, double cost)
 		{
 			Input += input;
 			Output += output;
 			CacheRead += cacheRead;
 			CacheWrite += cacheWrite;
+			ReportedTokens += reportedTokens;
 			Messages += messages;
 			Cost += cost;
 		}
 
 		public void Add(StatsTotals totals) =>
-			Add(totals.Input, totals.Output, totals.CacheRead, totals.CacheWrite, totals.Messages, totals.Cost);
+			Add(totals.Input, totals.Output, totals.CacheRead, totals.CacheWrite, totals.Tokens, totals.Messages, totals.Cost);
 
 		public void Add(Bucket other) =>
-			Add(other.Input, other.Output, other.CacheRead, other.CacheWrite, other.Messages, other.Cost);
+			Add(other.Input, other.Output, other.CacheRead, other.CacheWrite, other.Tokens, other.Messages, other.Cost);
 
 		public StatsTotals ToTotals() => new()
 		{
@@ -857,6 +832,7 @@ public static class UsageStats
 			Output = Output,
 			CacheRead = CacheRead,
 			CacheWrite = CacheWrite,
+			ReportedTokens = ReportedTokens,
 			Messages = Messages,
 			Cost = Cost,
 		};

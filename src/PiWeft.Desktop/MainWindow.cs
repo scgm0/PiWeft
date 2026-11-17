@@ -45,6 +45,7 @@ public sealed partial class MainWindow : Window
 	private CommandPalette? _palette;
 	private ThemeWatcher? _themeWatcher;
 
+	private readonly UsageStatsCache _usageStatsCache = new();
 	private UsageStatsView? _usageStatsView;
 	private string? _pendingNotice;
 	private CancellationTokenSource? _themeApplyCancellation;
@@ -2003,7 +2004,9 @@ public sealed partial class MainWindow : Window
 				UpdateProjectCaption();
 				return;
 
-			case UsageStatsView:
+			case UsageStatsView stats:
+				// 切到已打开的统计页时也核对一次文件指纹；缓存命中时只是一次 metadata 检查。
+				_ = stats.RefreshIfStaleAsync();
 				return;
 
 			case SessionTab active:
@@ -2898,14 +2901,15 @@ public sealed partial class MainWindow : Window
 		var index = _usageStatsView is null ? -1 : _tabEntries.IndexOf(_usageStatsView);
 		if (_usageStatsView is not null && index >= 0)
 		{
-			_ = _usageStatsView.RefreshAsync();
+			_ = _usageStatsView.RefreshIfStaleAsync();
 			_tabControl.SelectedIndex = index;
 			return;
 		}
 
 		_usageStatsView = new UsageStatsView(
 			() => _arguments.SessionDir is { Length: > 0 } dir ? dir : UsageStats.DefaultRoot(),
-			(provider, model) => _environment?.Registry.Get(provider, model)?.Cost);
+			(provider, model) => _environment?.Registry.Get(provider, model)?.Cost,
+			_usageStatsCache);
 		_tabEntries.Add(_usageStatsView);
 		AddTab(header: null!, _usageStatsView.View, _usageStatsView);
 
@@ -2930,7 +2934,7 @@ public sealed partial class MainWindow : Window
 		{
 			if (_settingsView is null)
 			{
-				_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync, ReloadModelsAfterCatalogChange);
+				_settingsView = new SettingsView(Snapshot, ReloadConfiguration, ReconnectMcpAsync, ReloadResourcesAsync, ReloadModelsAfterCatalogChange, _usageStatsCache);
 				// 安全门改动要立刻推给所有已打开的会话，否则界面档位与实际执行用的档位会不一致。
 				_settingsView.SecurityChanged += ApplySecurityToSessions;
 				// OAuth 登录/退出改写了 auth.json：重建可用模型并把新模型源推给已打开的标签页。
@@ -2945,6 +2949,9 @@ public sealed partial class MainWindow : Window
 				{
 					panel.Refresh();
 				}
+
+				// 设置页可能刚扫过使用统计；共享缓存已在，页签只核对指纹后更新。
+				_ = _usageStatsView?.RefreshIfStaleAsync();
 			};
 		}
 

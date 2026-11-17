@@ -10,9 +10,9 @@ internal sealed class UsageStatsView
 {
 	private readonly UsageStatsPanel _panel;
 
-	public UsageStatsView(Func<string> sessionsRoot, Func<string, string, ModelCostRates?>? rates = null)
+	public UsageStatsView(Func<string> sessionsRoot, Func<string, string, ModelCostRates?>? rates = null, UsageStatsCache? cache = null)
 	{
-		_panel = new UsageStatsPanel(sessionsRoot, rates, showHeading: true);
+		_panel = new UsageStatsPanel(sessionsRoot, rates, showHeading: true, cache: cache);
 		View = new Border()
 			.StyleName(AppStyles.Window)
 			.Child(new ScrollViewer().SmoothScrolling()
@@ -22,7 +22,7 @@ internal sealed class UsageStatsView
 					.Child(_panel.View))
 				.AutoVerticalScroll()
 				.NoHorizontalScroll());
-		_ = RefreshAsync();
+		_ = _panel.RefreshIfStaleAsync();
 	}
 
 	public UIElement View { get; }
@@ -32,4 +32,6 @@ internal sealed class UsageStatsView
 	public void Close() => _panel.Close();
 
 	public Task RefreshAsync() => _panel.RefreshAsync();
+
+	public Task RefreshIfStaleAsync() => _panel.RefreshIfStaleAsync();
 }

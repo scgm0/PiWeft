@@ -311,7 +311,7 @@ public static partial class Strings
 
 	public const string UsageStatsRefresh = "刷新";
 
-	public const string UsageStatsLoading = "正在扫描会话…";
+	public const string UsageStatsLoading = "正在刷新…";
 
 	public const string UsageStatsTimeout = "统计超时";
 

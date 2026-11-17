@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.CodingAgent.Stats;
@@ -135,6 +136,67 @@ public sealed class UsageStatsPanelTests
 	}
 
 	[Fact]
+	public async Task SettingsUsageSectionReusesTheSamePanel()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-usage-settings-" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(root);
+		try
+		{
+			var cache = new UsageStatsCache(static () => 0);
+			var settings = new SettingsView(() => new SettingsSnapshot
+			{
+				AgentDir = root,
+				Cwd = root,
+				ModelCount = 0,
+				Tools = [],
+				Skills = [],
+				McpServers = [],
+				Resources = PiWeft.CodingAgent.Resources.ResourceSnapshot.Empty,
+				SessionsRoot = root,
+			}, null, null, null, null, cache);
+
+			await settings.SelectSectionAsync("usage");
+			// 让后台扫描落地，再验证重进时复用同一块面板而不是重新创建。
+			await Task.Delay(200);
+			Assert.Equal(1, cache.Scans);
+			var before = Find<TextBlock>(settings.View).Single(text => text.Text == Strings.UsageStatsAppUsage);
+
+			await settings.SelectSectionAsync("overview");
+			await settings.SelectSectionAsync("usage");
+
+			var after = Find<TextBlock>(settings.View).Single(text => text.Text == Strings.UsageStatsAppUsage);
+			Assert.Same(before, after);
+			// 共享缓存已能在指纹/代数未变时直接命中，不再重扫。
+			Assert.Equal(1, cache.Scans);
+
+			// 离开分区取消可能在途的扫描，测试结束不把后台任务带进下一个用例。
+			await settings.SelectSectionAsync("overview");
+			await Task.Delay(50);
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
+	public void DuplicateModelNamesAreQualifiedByProvider()
+	{
+		var models = new[]
+		{
+			new ModelStats("openrouter", "shared", new StatsTotals { Input = 10 }),
+			new ModelStats("deepseek", "shared", new StatsTotals { Input = 20 }),
+			new ModelStats("anthropic", "unique", new StatsTotals { Input = 30 }),
+		};
+
+		var slices = UsageStatsCharts.Slices(models, 60);
+
+		Assert.Contains(slices, slice => slice is { Label: "openrouter/shared", Hint: "openrouter/shared" });
+		Assert.Contains(slices, slice => slice is { Label: "deepseek/shared", Hint: "deepseek/shared" });
+		Assert.Contains(slices, slice => slice is { Label: "unique", Hint: "anthropic/unique" });
+	}
+
+	[Fact]
 	public void LongRangesBucketTheTrendByMonth()
 	{
 		var today = new DateOnly(2026, 6, 1);
@@ -152,5 +214,90 @@ public sealed class UsageStatsPanelTests
 		Assert.True(monthly);
 		Assert.InRange(buckets.Count, 4, 6);
 		Assert.Equal(10 * days.Count, buckets.Sum(static bucket => bucket.Tokens));
+	}
+}
+
+public sealed class UsageStatsCacheTests
+{
+	[Fact]
+	public async Task FingerprintSkipsUnchangedFilesAndRescansWhenTheyChange()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-usage-cache-" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(root);
+		try
+		{
+			WriteAssistant(root, 10);
+			var generation = 0L;
+			var cache = new UsageStatsCache(() => generation);
+			var first = await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			Assert.Equal(10, first.Report.Totals.Input);
+			Assert.Equal(1, cache.Scans);
+
+			var second = await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			Assert.Same(first.Report, second.Report);
+			Assert.Equal(1, cache.Scans);
+
+			WriteAssistant(root, 20);
+			var third = await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			Assert.Equal(20, third.Report.Totals.Input);
+			Assert.Equal(2, cache.Scans);
+
+			generation++;
+			await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			Assert.Equal(3, cache.Scans);
+
+			await cache.GetAsync(root, (_, _) => null, force: true, CancellationToken.None);
+			Assert.Equal(4, cache.Scans);
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
+	public async Task ConcurrentRequestsShareOneScan()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-usage-shared-" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(root);
+		try
+		{
+			WriteAssistant(root, 10);
+			var cache = new UsageStatsCache(static () => 0);
+			var first = cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			var second = cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			var results = await Task.WhenAll(first, second);
+
+			Assert.Equal(1, cache.Scans);
+			Assert.Same(results[0].Report, results[1].Report);
+			Assert.Equal(10, results[0].Report.Totals.Input);
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	private static void WriteAssistant(string root, long input)
+	{
+		var directory = Path.Combine(root, "--a--");
+		Directory.CreateDirectory(directory);
+		File.WriteAllLines(Path.Combine(directory, "2026-06-01T10-00-00-000Z_s1.jsonl"),
+		[
+			"""{"type":"session","version":3,"id":"s1","timestamp":"2026-06-01T10:00:00.000Z","cwd":"/work/alpha"}""",
+			new JsonObject
+			{
+				["type"] = "message",
+				["id"] = "a1",
+				["timestamp"] = "2026-06-01T10:00:01.000Z",
+				["message"] = new JsonObject
+				{
+					["role"] = "assistant",
+					["provider"] = "openai",
+					["model"] = "gpt-a",
+					["usage"] = new JsonObject { ["input"] = input, ["output"] = 1 },
+				},
+			}.ToJsonString(),
+		]);
 	}
 }

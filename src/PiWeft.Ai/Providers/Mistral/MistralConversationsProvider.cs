@@ -100,7 +100,7 @@ public sealed class MistralConversationsProvider : IApiProvider
 		}
 		catch (Exception ex)
 		{
-			PushFailure(stream, model, startedAt, DescribeError(ex));
+			PushFailure(stream, model, startedAt, ProviderHttp.DescribeError(ex));
 		}
 	}
 
@@ -268,9 +268,6 @@ public sealed class MistralConversationsProvider : IApiProvider
 
 		stream.Push(new ErrorEvent { Reason = reason, Partial = error });
 	}
-
-	private static string DescribeError(Exception exception) =>
-		Environment.GetEnvironmentVariable("PI_DEBUG_ERRORS") == "1" ? exception.ToString() : exception.Message;
 
 	private static string Truncate(string value, int max) =>
 		value.Length <= max ? value : string.Concat(value.AsSpan(0, max), "…");

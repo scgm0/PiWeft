@@ -252,6 +252,37 @@ public class OpenAiCompletionsProviderTests
 	}
 
 	[Fact]
+	public async Task SslFailureKeepsTheInnerCauseInTheErrorText()
+	{
+		var handler = new FakeHttpHandler
+		{
+			Responder = _ => throw new HttpRequestException(
+				"The SSL connection could not be established, see inner exception.",
+				new System.Security.Authentication.AuthenticationException(
+					"The remote certificate is invalid because of errors in the certificate chain: UntrustedRoot")),
+		};
+
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		var stream = provider.Stream(
+			Model(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = "k" });
+
+		var events = new List<AssistantMessageEvent>();
+		await foreach (var @event in stream)
+		{
+			events.Add(@event);
+		}
+
+		var error = Assert.IsType<ErrorEvent>(Assert.Single(events));
+		// 默认不只写「see inner exception」：证书原因进错误文本，界面与继续生成才能判。
+		Assert.Contains("SSL connection could not be established", error.Error.ErrorMessage);
+		Assert.Contains("AuthenticationException", error.Error.ErrorMessage);
+		Assert.Contains("remote certificate is invalid", error.Error.ErrorMessage);
+		Assert.False(RetryClassifier.IsRetryable(error.Error));
+	}
+
+	[Fact]
 	public void ReasoningEffortFollowsThinkingLevelMap()
 	{
 		var mapped = Model() with

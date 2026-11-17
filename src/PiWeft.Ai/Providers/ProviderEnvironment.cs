@@ -113,6 +113,30 @@ internal static class ProviderHttp
 	public static string TimeoutMessage(HeaderTimeoutScope scope) =>
 		scope.TimedOut ? "Request timed out while waiting for response headers" : "Request timed out";
 
+	/// 异常的用户可见文案：默认只给消息，不把堆栈写进会话；<c>PI_DEBUG_ERRORS=1</c> 才给完整描述。
+	/// 外层文案常常是没有原因的一句「see inner exception」（TLS 握手失败就是），
+	/// 逐层接上内层消息，界面上才看得到是证书过期还是握手被打断。
+	public static string DescribeError(Exception exception)
+	{
+		if (Environment.GetEnvironmentVariable("PI_DEBUG_ERRORS") == "1")
+		{
+			return exception.ToString();
+		}
+
+		var message = exception.Message;
+		for (var inner = exception.InnerException; inner is not null; inner = inner.InnerException)
+		{
+			if (inner.Message is not { Length: > 0 } detail || message.Contains(detail, StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			message = $"{message} ({inner.GetType().Name}: {detail})";
+		}
+
+		return message;
+	}
+
 	/// 开始一段「等响应头」的超时。返回的作用域合并调用方的取消与超时，发送请求时使用；
 	/// 正文读取一律用 <c>options.CancellationToken</c>。
 	/// 计时从第一次读 <see cref="HeaderTimeoutScope.Token"/>（发请求）开始：

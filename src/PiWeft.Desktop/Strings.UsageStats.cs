@@ -27,6 +27,7 @@ public static partial class Strings
 	public const string UsageStatsMonthlyChart = "每月 Token 趋势";
 	public const string UsageStatsModelChart = "模型用量";
 	public const string UsageStatsDetails = "用量明细";
+	public const string UsageStatsTotal = "合计 Token";
 	public const string UsageStatsUnknownModel = "未知模型";
 	public const string UsageStatsNoModels = "区间内没有模型用量。";
 	public const string UsageStatsInput = "输入 Token";
@@ -41,8 +42,10 @@ public static partial class Strings
 	public const string UsageStatsLongestChatHint = "单个会话内助手回复时长之和；没有时长记录时退回首末时间跨度。";
 	public const string UsageStatsStreakHint = "今天还没使用不算中断，从昨天继续算。";
 	public const string UsageStatsCacheHitHint = "缓存读取 ÷（输入 + 缓存读取 + 缓存写入）。";
+	public const string UsageStatsRangeTotalHint = "供应商回报的总量；与输入、输出、缓存之和不一致时取较大值，避免少算。";
+	public const string UsageStatsCostHint = "会话记录的 cost；缺失时按当前模型价格估算。";
 	public const string UsageStatsTokenUnit = "tokens";
-	public const string UsageStatsTooltip = "统计口径：助手回复里的 usage 加上会话级用量条目；按本机时区归到自然日。";
+	public const string UsageStatsTooltip = "统计口径：助手回复里的 usage 加上会话级用量条目；压缩/分支摘要与工具结果的 usage 不计，和会话统计一致。轮次只计用户亲手消息；按本机时区归到自然日。";
 
 	public static string UsageStatsSessionSummary(int sessions, int turns) => $"共 {sessions} 个会话，{turns} 轮。";
 

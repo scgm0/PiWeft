@@ -62,7 +62,7 @@ public sealed class ContinueGenerationUiTests
 	}
 
 	[Fact]
-	public async Task AccountErrorsLeaveThePrimaryButtonOnSend()
+	public async Task QuotaErrorsTurnThePrimaryButtonIntoContinue()
 	{
 		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
 		var model = FakeStreams.Model();
@@ -76,8 +76,8 @@ public sealed class ContinueGenerationUiTests
 			PromptTemplates = [],
 			Persist = false,
 			Settings = new CodingAgentSettings { Retry = new RetryPolicy(Enabled: false) },
-			// 配额类错误重跑同一条请求只会同样失败：主按钮不换「继续生成」。
-			StreamFn = (streamModel, _, _) => FakeStreams.Error(streamModel, "insufficient_quota"),
+			// 配额类错误不自动重试；换模型后点「继续生成」能接上，不必再手打一条「继续」。
+			StreamFn = (streamModel, _, _) => FakeStreams.Error(streamModel, "Insufficient Balance"),
 		});
 		using var tab = new SessionTab(session, [model], "continue-quota");
 		tab.SetExtensionText("hi");
@@ -85,8 +85,8 @@ public sealed class ContinueGenerationUiTests
 		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
 		tab.RenderForTests();
 
-		Assert.False(session.CanContinueGeneration());
-		Assert.Equal(Strings.Send, tab.PrimaryLabelForTests);
+		Assert.True(session.CanContinueGeneration());
+		Assert.Equal(Strings.Continue, tab.PrimaryLabelForTests);
 	}
 
 	[Fact]

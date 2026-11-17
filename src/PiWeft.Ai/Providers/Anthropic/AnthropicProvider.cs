@@ -165,7 +165,7 @@ public sealed class AnthropicProvider : IApiProvider
 		}
 		catch (Exception ex)
 		{
-			Fail(stream, model, startedAt, DescribeError(ex));
+			Fail(stream, model, startedAt, ProviderHttp.DescribeError(ex));
 		}
 		finally
 		{
@@ -515,9 +515,6 @@ public sealed class AnthropicProvider : IApiProvider
 
 		stream.Push(new ErrorEvent { Reason = reason, Partial = error });
 	}
-
-	internal static string DescribeError(Exception exception) =>
-		Environment.GetEnvironmentVariable("PI_DEBUG_ERRORS") == "1" ? exception.ToString() : exception.Message;
 
 	internal static string Truncate(string value, int max) =>
 		value.Length <= max ? value : string.Concat(value.AsSpan(0, max), "…");

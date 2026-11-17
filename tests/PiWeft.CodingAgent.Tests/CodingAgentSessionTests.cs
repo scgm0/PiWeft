@@ -348,8 +348,11 @@ public class CodingAgentSessionTests : IDisposable
 		{
 			(StopReason.Stop, null, false),
 			(StopReason.Error, "Service Unavailable", true),
-			// 账号类错误重跑同一条请求只会同样失败，交给标题栏的「重试」。
-			(StopReason.Error, "insufficient_quota", false),
+			// 配额类错误不自动重试，但换模型后手动继续能接上。
+			(StopReason.Error, "insufficient_quota", true),
+			(StopReason.Error, "401 Unauthorized: invalid api key", true),
+			// 请求参数类错误换模型也不会变好。
+			(StopReason.Error, "400 status code: invalid request", false),
 			// 中断的助手消息不进重放，继续只会变成重提，跟「重试」重复。
 			(StopReason.Aborted, null, false),
 			(StopReason.Length, null, true),
@@ -371,11 +374,13 @@ public class CodingAgentSessionTests : IDisposable
 	[InlineData("Request timed out", true)]
 	[InlineData("stream ended before message_stop", true)]
 	[InlineData("The service is temporarily unavailable", true)]
-	[InlineData("insufficient_quota", false)]
-	[InlineData("401 Unauthorized: invalid api key", false)]
+	[InlineData("insufficient_quota", true)]
+	[InlineData("401 Unauthorized: invalid api key", true)]
+	[InlineData("context window exceeded", true)]
 	[InlineData("Provider finish_reason: content_filter", false)]
+	[InlineData("400 status code: invalid request", false)]
 	[InlineData("", false)]
-	public void ContinueEligibilityOnlyAcceptsTransientFailures(string error, bool expected)
+	public void ContinueEligibilityAcceptsTransientAndModelSwitchFailures(string error, bool expected)
 	{
 		var failed = new AssistantMessage { StopReason = StopReason.Error, ErrorMessage = error };
 
@@ -387,11 +392,11 @@ public class CodingAgentSessionTests : IDisposable
 	public void ContinuationVerdictDoesNotLeakBetweenMessages()
 	{
 		var transient = new AssistantMessage { StopReason = StopReason.Error, ErrorMessage = "Service Unavailable" };
-		var quota = new AssistantMessage { StopReason = StopReason.Error, ErrorMessage = "insufficient_quota" };
+		var request = new AssistantMessage { StopReason = StopReason.Error, ErrorMessage = "400 status code: invalid request" };
 
 		// 结论按消息对象缓存：换一条消息必须重新判，不能沿用上一条的结论。
 		Assert.True(ContinuationPolicy.IsContinuable(transient));
-		Assert.False(ContinuationPolicy.IsContinuable(quota));
+		Assert.False(ContinuationPolicy.IsContinuable(request));
 		Assert.True(ContinuationPolicy.IsContinuable(transient));
 	}
 
@@ -448,6 +453,28 @@ public class CodingAgentSessionTests : IDisposable
 
 		await session.ContinueGenerationAsync();
 		Assert.Contains(script.Requests[0], static message => message is UserMessage { Content.Text: "subagent report" });
+	}
+
+	[Fact]
+	public async Task ContinueAfterQuotaFailureUsesTheNewModel()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueError("Insufficient Balance");
+		script.EnqueueText("continued with the new model");
+
+		using var session = CreateSession(script);
+		session.SetAutoRetryEnabled(false);
+		await session.PromptAsync("question");
+		Assert.True(session.CanContinueGeneration());
+
+		// 配额错误：用户换一个模型后点继续，不用重新输入提问。
+		session.SetModel(ScriptedSessions.Model("backup-model"));
+		await session.ContinueGenerationAsync();
+
+		Assert.Equal(2, script.Requests.Count);
+		Assert.Equal("backup-model", script.LastModel?.Id);
+		Assert.Contains(script.Requests[1], static message => message is UserMessage { Content.Text: "question" });
+		Assert.False(session.CanContinueGeneration());
 	}
 
 	[Fact]

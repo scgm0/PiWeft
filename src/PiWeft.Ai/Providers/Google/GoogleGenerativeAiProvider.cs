@@ -99,7 +99,7 @@ public sealed class GoogleGenerativeAiProvider : IApiProvider
 		}
 		catch (Exception ex)
 		{
-			PushFailure(stream, model, startedAt, ex.Message);
+			PushFailure(stream, model, startedAt, ProviderHttp.DescribeError(ex));
 		}
 	}
 

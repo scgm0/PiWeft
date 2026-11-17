@@ -99,7 +99,7 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 		}
 		catch (Exception ex)
 		{
-			PushFailure(stream, model, startedAt, ex.Message);
+			PushFailure(stream, model, startedAt, ProviderHttp.DescribeError(ex));
 		}
 	}
 

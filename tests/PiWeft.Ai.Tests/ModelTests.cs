@@ -268,6 +268,11 @@ public class RetryClassifierTests
 	[InlineData("juzi-r4: The host is configured as a Cloudflare Tunnel, but Cloudflare is currently unable to reach it.")]
 	[InlineData("520 status code")]
 	[InlineData("basispoints_tool_arguments_stalled: Tool arguments stopped making progress")]
+	[InlineData("The SSL connection could not be established, see inner exception.")]
+	[InlineData("Could not create SSL/TLS secure channel.")]
+	[InlineData("The handshake failed due to an unexpected packet format.")]
+	[InlineData("An existing connection was forcibly closed by the remote host.")]
+	[InlineData("The remote party has closed the transport stream.")]
 	public void TransientFailuresAreRetryable(string message) =>
 		Assert.True(RetryClassifier.IsRetryable(Failure(message)));
 
@@ -276,6 +281,55 @@ public class RetryClassifierTests
 	{
 		Assert.False(RetryClassifier.IsRetryable(Failure("400 status code: invalid request")));
 		Assert.False(RetryClassifier.IsRetryable(Failure("413 payload too large for this gateway")));
+	}
+
+	[Fact]
+	public void CertificateFailuresAreNotRetried()
+	{
+		// 外层说 SSL 握手失败，内层写明证书：本地配置问题，退避重试与手动继续都不会变好。
+		Assert.False(RetryClassifier.IsRetryable(Failure(
+			"The SSL connection could not be established, see inner exception. " +
+			"(AuthenticationException: The remote certificate is invalid because of errors in the certificate chain: UntrustedRoot)")));
+		Assert.False(RetryClassifier.IsRetryable(Failure("The remote certificate is invalid because of errors in the certificate chain: NotTimeValid")));
+	}
+
+	[Theory]
+	[InlineData("Insufficient Balance")]
+	[InlineData("You exceeded your current quota, please check your plan and billing details")]
+	[InlineData("Your credit balance is too low to access the API")]
+	[InlineData("invalid x-api-key")]
+	[InlineData("authentication_error: invalid api key")]
+	[InlineData("model not found: gpt-9")]
+	[InlineData("This model's maximum context length is 8192 tokens")]
+	[InlineData("context window exceeded")]
+	public void ModelSwitchFailuresKeepManualContinueButDoNotAutoRetry(string message)
+	{
+		var failure = Failure(message);
+
+		// 退避重试救不了这些错误，但用户换个模型/供应商再点「继续生成」有意义。
+		Assert.False(RetryClassifier.IsRetryable(failure));
+		Assert.True(RetryClassifier.IsManuallyRecoverable(failure));
+	}
+
+	[Fact]
+	public void ManualContinueIgnoresTheRetryDelayCap()
+	{
+		const string rateLimited = "429 Too Many Requests: retry after 7200 seconds";
+
+		// 冷却两个小时：自动重试不等，但换模型后手动重发能接上。
+		Assert.False(RetryClassifier.IsRetryable(Failure(rateLimited)));
+		Assert.True(RetryClassifier.IsManuallyRecoverable(Failure(rateLimited)));
+	}
+
+	[Fact]
+	public void ManualContinueStillSkipsPermanentFailures()
+	{
+		Assert.False(RetryClassifier.IsManuallyRecoverable(Failure(
+			"The SSL connection could not be established, see inner exception. " +
+			"(AuthenticationException: The remote certificate is invalid because of errors in the certificate chain: UntrustedRoot)")));
+		Assert.False(RetryClassifier.IsManuallyRecoverable(Failure("400 status code: invalid request")));
+		Assert.False(RetryClassifier.IsManuallyRecoverable(Failure("Provider finish_reason: content_filter")));
+		Assert.False(RetryClassifier.IsManuallyRecoverable(Failure("")));
 	}
 
 	/// 火山方舟的排队错误：403 + 嵌套 JSON，没有 429/限流字样，曾经直接当作不可重试。

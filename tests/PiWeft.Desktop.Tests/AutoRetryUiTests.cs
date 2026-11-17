@@ -1,4 +1,5 @@
 using Aprillz.MewUI.Controls;
+using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Session;
@@ -48,6 +49,62 @@ public sealed class AutoRetryUiTests
 
 		Assert.Null(tab.Chat.Retry);
 		Assert.Null(tab.Chat.TakeRetryNotice());
+		Assert.Null(tab.Chat.Error);
+	}
+
+	[Fact]
+	public async Task RetriedAttemptStopsReportingTheRetryOnceItsOutputArrives()
+	{
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		var model = FakeStreams.Model();
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var calls = 0;
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = manager.Cwd, Session = manager, Model = model, Tools = [], Skills = [], PromptTemplates = [], Persist = false,
+			// 退避很短：状态条要看到的阶段是重试的这次尝试已经在出字，卡在流里为了断言。
+			Settings = new CodingAgentSettings { Retry = new RetryPolicy(BaseDelayMs: 20) },
+			StreamFn = (streamModel, _, _) => Interlocked.Increment(ref calls) == 1
+				? FakeStreams.Error(streamModel, "Service Unavailable")
+				: FakeStreams.Text(streamModel, "重试成功", gate.Task),
+		});
+		var outcomes = new List<bool>();
+		using var subscription = session.Subscribe(@event =>
+		{
+			if (@event is AutoRetryEndEvent end)
+			{
+				outcomes.Add(end.Success);
+			}
+
+			return ValueTask.CompletedTask;
+		});
+		using var tab = new SessionTab(session, [model], "retry-live");
+		tab.SetExtensionText("hi");
+		tab.SendFromShortcut();
+
+		// 等到重试的那次尝试已经在推流：第一次尝试失败后重试接手，正文正在长。
+		var streaming = false;
+		for (var attempt = 0; attempt < 500 && !streaming; attempt++)
+		{
+			await Task.Delay(10);
+			streaming = tab.Chat.Entries().Any(entry => entry.Role == ChatRole.Assistant && entry.IsStreaming);
+		}
+
+		Assert.True(streaming);
+		tab.RenderForTests();
+		ConversationPerformanceTests.Layout(tab.View);
+
+		// 屏幕上已经在出正文：重试这一行就该让位，不能一直挂到整轮结束。
+		Assert.Null(tab.Chat.Retry);
+		Assert.Equal(RespondingKind.Responding, tab.BusyStatus?.Kind);
+
+		gate.SetResult();
+		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
+
+		// 重试确实以成功收口，状态条也跟着整条收起。
+		Assert.True(Assert.Single(outcomes));
+		tab.RenderForTests();
+		Assert.Null(tab.BusyStatus);
 		Assert.Null(tab.Chat.Error);
 	}
 

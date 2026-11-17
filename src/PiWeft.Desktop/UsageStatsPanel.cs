@@ -6,7 +6,7 @@ using PiWeft.CodingAgent.Stats;
 namespace PiWeft.Desktop;
 
 /// 使用统计的「应用用量」面板：汇总条、活动热力图、区间趋势与模型占比。
-/// 扫描全程在后台线程；区间切换只换下半页，不重扫会话。
+/// 扫描通过共享 UsageStatsCache 在后台线程执行；区间切换只换下半页，不重扫会话。
 internal sealed class UsageStatsPanel
 {
 	private enum Range
@@ -18,6 +18,7 @@ internal sealed class UsageStatsPanel
 
 	private readonly Func<string> _sessionsRoot;
 	private readonly Func<string, string, ModelCostRates?> _rates;
+	private readonly UsageStatsCache _cache;
 	private readonly bool _showHeading;
 	private readonly StackPanel _root = new();
 	private readonly StackPanel _staticBody = new();
@@ -37,10 +38,11 @@ internal sealed class UsageStatsPanel
 	private DateOnly _sliceDay = DateOnly.FromDateTime(DateTime.Now);
 	private DateTimeOffset? _refreshedAt;
 
-	public UsageStatsPanel(Func<string> sessionsRoot, Func<string, string, ModelCostRates?>? rates = null, bool showHeading = true)
+	public UsageStatsPanel(Func<string> sessionsRoot, Func<string, string, ModelCostRates?>? rates = null, bool showHeading = true, UsageStatsCache? cache = null)
 	{
 		_sessionsRoot = sessionsRoot;
 		_rates = rates ?? ((_, _) => null);
+		_cache = cache ?? new UsageStatsCache();
 		_showHeading = showHeading;
 		_refresh = AppIcons.TextButton("refresh-cw", Strings.UsageStatsRefresh, () => _ = RefreshAsync());
 		_source.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap)
@@ -75,7 +77,21 @@ internal sealed class UsageStatsPanel
 		Cancel();
 	}
 
-	public async Task RefreshAsync()
+	/// <summary>进入页面时先让共享缓存核对文件指纹；未变化就直接复用。</summary>
+	public Task RefreshIfStaleAsync()
+	{
+		if (_busy)
+		{
+			return Task.CompletedTask;
+		}
+
+		return RefreshCoreAsync(force: false);
+	}
+
+	/// <summary>手动刷新绕过缓存，强制重扫。</summary>
+	public Task RefreshAsync() => RefreshCoreAsync(force: true);
+
+	private async Task RefreshCoreAsync(bool force)
 	{
 		if (!_open)
 		{
@@ -90,23 +106,17 @@ internal sealed class UsageStatsPanel
 		var hadError = _error is not null;
 		_error = null;
 		UpdateFooter();
-		if (_report is null)
-		{
-			Render();
-		}
-		else if (hadError)
+		if (_report is null || hadError)
 		{
 			Render();
 		}
 
-		UsageStatsReport? report = null;
+		UsageStatsCacheResult? result = null;
 		string? error = null;
 		try
 		{
 			var root = _sessionsRoot();
-			report = await Task
-				.Run(() => UsageStats.Scan(root, new UsageStatsOptions { Rates = _rates }, cancellation.Token), cancellation.Token)
-				.ConfigureAwait(false);
+			result = await _cache.GetAsync(root, _rates, force, cancellation.Token).ConfigureAwait(false);
 		}
 		catch (OperationCanceledException)
 		{
@@ -115,13 +125,6 @@ internal sealed class UsageStatsPanel
 		catch (Exception ex)
 		{
 			error = ex.Message;
-		}
-
-		if (report is not null && cancellation.IsCancellationRequested)
-		{
-			// 扫描按行响应取消，超时可能带着半份数据回来；半份统计比明确报错更误导。
-			report = null;
-			error = Strings.UsageStatsTimeout;
 		}
 
 		void Complete()
@@ -134,18 +137,13 @@ internal sealed class UsageStatsPanel
 
 			_abort = null;
 			_busy = false;
-			if (report is null)
+			if (result is { } loaded)
 			{
-				_error = error ?? Strings.UsageStatsUnavailable;
-			}
-			else
-			{
-				InvalidateSlices();
-				_report = report;
-				_error = null;
-				_refreshedAt = DateTimeOffset.Now;
+				ApplyReport(loaded.Report, loaded.RefreshedAt);
+				return;
 			}
 
+			_error = error ?? Strings.UsageStatsUnavailable;
 			Render();
 		}
 
@@ -158,6 +156,32 @@ internal sealed class UsageStatsPanel
 		{
 			dispatcher.BeginInvoke(Complete);
 		}
+	}
+
+	private void ApplyReport(UsageStatsReport report, DateTimeOffset refreshedAt)
+	{
+		if (ReferenceEquals(report, _report) && _refreshedAt == refreshedAt)
+		{
+			var previousDay = _sliceDay;
+			var today = Today();
+			if (today != previousDay)
+			{
+				// 缓存命中但跨过了午夜：连续天数与近 N 日必须按新的今天重算。
+				Render();
+			}
+			else
+			{
+				UpdateFooter();
+			}
+
+			return;
+		}
+
+		InvalidateSlices();
+		_report = report;
+		_error = null;
+		_refreshedAt = refreshedAt;
+		Render();
 	}
 
 	/// <summary>仅供测试：直接套用一份失败状态，不启动扫描。</summary>
@@ -557,7 +581,8 @@ internal sealed class UsageStatsPanel
 				.WithTheme((theme, border) => border.Background = UsageStatsCharts.SliceColor(AppTheme.For(theme), model.ColorIndex));
 			var name = new TextBlock().Text(model.Label)
 				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeCaption).PrimaryText()
-				.TextTrimming(TextTrimming.CharacterEllipsis);
+				.TextTrimming(TextTrimming.CharacterEllipsis)
+				.HoverTip(model.Hint);
 			var detail = new TextBlock()
 				.Text(Strings.UsageStatsModelUsage(UsageStatsFormat.Tokens(model.Tokens), model.Replies))
 				.FontSize(11).FaintText().TextTrimming(TextTrimming.CharacterEllipsis);
@@ -568,6 +593,7 @@ internal sealed class UsageStatsPanel
 			var text = new StackPanel().Spacing(2).Children(name, detail);
 			var row = new DockPanel().LastChildFill()
 				.Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
+				.HoverTip(model.Hint)
 				.Children(swatch.DockLeft().Margin(new Thickness(0, 2, AppTheme.Space2, 0)), share, text);
 			list.Children(row);
 		}
@@ -582,6 +608,7 @@ internal sealed class UsageStatsPanel
 	{
 		var totals = slice.Totals;
 		var rows = new StackPanel().Spacing(0).Children(
+			MetricRow(Strings.UsageStatsTotal, UsageStatsFormat.Tokens(totals.Tokens), Strings.UsageStatsRangeTotalHint),
 			MetricRow(Strings.UsageStatsInput, UsageStatsFormat.Tokens(totals.Input), null),
 			MetricRow(Strings.UsageStatsOutput, UsageStatsFormat.Tokens(totals.Output), null),
 			MetricRow(Strings.UsageStatsCacheRead, UsageStatsFormat.Tokens(totals.CacheRead), null),
@@ -624,7 +651,8 @@ internal sealed class UsageStatsPanel
 				.Text(UsageStatsFormat.Tokens(project.Totals.Tokens) +
 					(project.Totals.Cost > 0 ? " · " + UsageStatsFormat.Cost(project.Totals.Cost) : string.Empty))
 				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeCaption).SubtleText()
-				.DockRight().Margin(new Thickness(AppTheme.Space3, 0, 0, 0));
+				.DockRight().Margin(new Thickness(AppTheme.Space3, 0, 0, 0))
+				.HoverTip(Strings.UsageStatsCostHint);
 			body.Children(new DockPanel().LastChildFill()
 				.Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
 				.Children(value, name));

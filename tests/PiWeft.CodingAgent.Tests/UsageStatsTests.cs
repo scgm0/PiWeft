@@ -1,5 +1,6 @@
 using System.Text;
 using PiWeft.Ai;
+using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Stats;
 using Xunit;
 
@@ -36,14 +37,20 @@ public class UsageStatsTests : IDisposable
 	private static string Header(string timestamp, string cwd) =>
 		$$"""{"type":"session","version":3,"id":"s1","timestamp":"{{timestamp}}","cwd":"{{cwd}}"}""";
 
-	private static string Assistant(string timestamp, string provider, string model, long input, long output, long cacheRead = 0, long cacheWrite = 0, double? cost = null, double? durationMs = null)
+	private static string Assistant(string timestamp, string provider, string model, long input, long output, long cacheRead = 0, long cacheWrite = 0, double? cost = null, double? durationMs = null, long? totalTokens = null)
 	{
 		var usage = $"{{\"input\":{input},\"output\":{output},\"cacheRead\":{cacheRead},\"cacheWrite\":{cacheWrite}" +
-			(cost is { } value ? $",\"cost\":{{\"total\":{value.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}" : string.Empty) + "}";
+			(cost is { } value ? $",\"cost\":{{\"total\":{value.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}" : string.Empty) +
+			(totalTokens is { } total ? $",\"totalTokens\":{total}" : string.Empty) + "}";
 		var duration = durationMs is { } ms
 			? $",\"durationMs\":{ms.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
 			: string.Empty;
-		return $"{{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"{timestamp}\",\"message\":{{\"role\":\"assistant\",\"provider\":\"{provider}\",\"model\":\"{model}\",\"usage\":{usage}{duration}}}}}";
+		var messageTimestamp = DateTimeOffset.TryParse(timestamp,
+			System.Globalization.CultureInfo.InvariantCulture,
+			System.Globalization.DateTimeStyles.AssumeUniversal, out var parsed)
+			? parsed.ToUnixTimeMilliseconds()
+			: 0;
+		return $"{{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"timestamp\":\"{timestamp}\",\"message\":{{\"role\":\"assistant\",\"provider\":\"{provider}\",\"model\":\"{model}\",\"usage\":{usage}{duration},\"timestamp\":{messageTimestamp}}}}}";
 	}
 
 	[Fact]
@@ -313,6 +320,203 @@ public class UsageStatsTests : IDisposable
 		var all = UsageStats.Slice(report, 0, new DateOnly(2026, 6, 5));
 		Assert.Equal("2026-06-01", all.Days[0].Date);
 		Assert.Equal(5, all.Days.Count);
+	}
+
+	[Fact]
+	public void ScanMatchesSessionStatisticsForTheSameSession()
+	{
+		var directory = Path.Combine(_sessions, "--a--");
+		Directory.CreateDirectory(directory);
+		var start = new DateTimeOffset(2026, 6, 1, 10, 0, 0, TimeSpan.Zero);
+		var path = Path.Combine(directory, "2026-06-01T10-00-00-000Z_s1.jsonl");
+		var header = new SessionHeader { Id = "s1", Timestamp = Iso(start), Cwd = "/work/alpha" };
+		var user = new SessionMessageEntry
+		{
+			Id = "u1",
+			Timestamp = Iso(start.AddSeconds(1)),
+			Message = new UserMessage { Timestamp = start.AddSeconds(1).ToUnixTimeMilliseconds(), Content = "hi" },
+		};
+		var reply = new SessionMessageEntry
+		{
+			Id = "a1",
+			Timestamp = Iso(start.AddSeconds(2)),
+			Message = new AssistantMessage
+			{
+				Timestamp = start.AddSeconds(2).ToUnixTimeMilliseconds(),
+				Provider = "openai",
+				Model = "gpt-a",
+				Content = [new TextContent { Text = new string('x', 5000) }],
+				Usage = UsageOf(100, 10, 20, 5, 135, 0.5),
+				DurationMs = 60_000,
+			},
+		};
+		var cacheWarm = new UsageEntry
+		{
+			Id = "warm",
+			Timestamp = Iso(start.AddSeconds(70)),
+			Kind = "cache_warm",
+			Provider = "openai",
+			Model = "gpt-a",
+			Usage = UsageOf(7, 0, 3, 0, 10, 0.01),
+		};
+		var tool = new SessionMessageEntry
+		{
+			Id = "tool",
+			Timestamp = Iso(start.AddSeconds(80)),
+			Message = new ToolResultMessage
+			{
+				ToolCallId = "call",
+				ToolName = "read",
+				Content = [new TextContent { Text = "tool output" }],
+				IsError = false,
+				DurationMs = 20,
+				// 工具结果上的 usage 不算模型回复；两边都应忽略。
+				Usage = UsageOf(999, 0, 0, 0, 999, 9),
+			},
+		};
+		var compaction = new CompactionEntry
+		{
+			Id = "compact",
+			Timestamp = Iso(start.AddSeconds(90)),
+			Summary = "summary",
+			FirstKeptEntryId = "u1",
+			// 压缩/分支摘要用量在 SessionStatistics 里也不计；保持两边同口径。
+			Usage = UsageOf(500, 50, 0, 0, 550, 5),
+		};
+		var branch = new BranchSummaryEntry
+		{
+			Id = "branch",
+			Timestamp = Iso(start.AddSeconds(100)),
+			FromId = "u1",
+			Summary = "branch",
+			Usage = UsageOf(600, 60, 0, 0, 660, 6),
+		};
+		var reply2 = new SessionMessageEntry
+		{
+			Id = "a2",
+			Timestamp = Iso(start.AddSeconds(120)),
+			Message = new AssistantMessage
+			{
+				Timestamp = start.AddSeconds(120).ToUnixTimeMilliseconds(),
+				Provider = "openai",
+				Model = "gpt-a",
+				Content = [new TextContent { Text = new string('y', 3000) }],
+				Usage = UsageOf(200, 20, 30, 0, 250, 0.25),
+				DurationMs = 30_000,
+			},
+		};
+
+		File.WriteAllLines(path,
+		[
+			SessionJson.Serialize(header), SessionJson.Serialize(user), SessionJson.Serialize(reply),
+			SessionJson.Serialize(cacheWarm), SessionJson.Serialize(tool), SessionJson.Serialize(compaction),
+			SessionJson.Serialize(branch), SessionJson.Serialize(reply2),
+		]);
+
+		var manager = SessionManager.Open(path);
+		var expected = new SessionStatisticsCache().Get(manager);
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		Assert.Equal(expected.Input, report.Totals.Input);
+		Assert.Equal(expected.Output, report.Totals.Output);
+		Assert.Equal(expected.CacheRead, report.Totals.CacheRead);
+		Assert.Equal(expected.CacheWrite, report.Totals.CacheWrite);
+		Assert.Equal(expected.Tokens, report.Totals.Tokens);
+		Assert.Equal(expected.Cost, report.Totals.Cost, 6);
+		Assert.Equal(expected.AssistantMessages, report.Totals.Messages);
+		Assert.Equal(expected.UserMessages, report.Turns);
+		Assert.Equal(1, report.Sessions);
+		Assert.Equal(90_000, report.LongestSessionMs, 0);
+	}
+
+	private static string Iso(DateTimeOffset time) =>
+		time.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
+
+	private static Usage UsageOf(long input, long output, long cacheRead, long cacheWrite, long total, double cost) => new()
+	{
+		Input = input,
+		Output = output,
+		CacheRead = cacheRead,
+		CacheWrite = cacheWrite,
+		TotalTokens = total,
+		Cost = new UsageCost { Total = cost },
+	};
+
+	[Fact]
+	public void PersistentSessionAppendInvalidatesTheGeneration()
+	{
+		var before = UsageStats.Generation;
+		var manager = SessionManager.Create("/work", Path.Combine(_root, "sessions"));
+		manager.AppendMessage(new UserMessage { Content = "hi" });
+
+		Assert.True(UsageStats.Generation > before);
+	}
+
+	[Fact]
+	public void ScanCountsAFileWithoutAHeaderAsASession()
+	{
+		var directory = Path.Combine(_sessions, "--a--");
+		Directory.CreateDirectory(directory);
+		File.WriteAllLines(Path.Combine(directory, "2026-06-01T10-00-00-000Z_s1.jsonl"),
+		[
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1),
+		]);
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		Assert.Equal(1, report.Sessions);
+		Assert.Equal(10, report.Totals.Input);
+	}
+
+	[Fact]
+	public void ScanSkipsAMalformedLineWithoutLosingTheRestOfTheFile()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1),
+			// 带 usage/timestamp 标记但 JSON 不完整；只跳过这一行。
+			"""{"type":"message","timestamp":"2026-06-01T10:00:02.000Z","message":{"role":"assistant","usage":""",
+			Assistant("2026-06-01T10:01:00.000Z", "openai", "gpt-a", 20, 2));
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		Assert.Equal(30, report.Totals.Input);
+		Assert.Equal(2, report.Totals.Messages);
+	}
+
+	[Fact]
+	public void ScanMergesOverlappingReplyDurations()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1, durationMs: 60_000),
+			Assistant("2026-06-01T10:00:31.000Z", "openai", "gpt-a", 10, 1, durationMs: 60_000),
+			Assistant("2026-06-01T10:05:00.000Z", "openai", "gpt-a", 10, 1, durationMs: 30_000));
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		// 前两段重叠 30 秒，并集 90 秒；再加 30 秒独立回复，总活跃 120 秒，而不是 150 秒。
+		Assert.Equal(120_000, report.LongestSessionMs, 0);
+	}
+
+	[Fact]
+	public void ScanUsesProviderTotalWhenItExceedsTheBucketSum()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			// 供应商总量大于四桶之和（例如思考令牌），保留供应商总量。
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 100, 10, cacheRead: 5, totalTokens: 500),
+			// 供应商总量小于四桶之和时退回桶之和，不能让明细大于合计。
+			Assistant("2026-06-01T10:01:01.000Z", "openai", "gpt-a", 100, 10, cacheRead: 5, totalTokens: 50));
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+
+		Assert.Equal(200, report.Totals.Input);
+		Assert.Equal(20, report.Totals.Output);
+		Assert.Equal(10, report.Totals.CacheRead);
+		Assert.Equal(615, report.Totals.Tokens);
+		Assert.Equal(615, Assert.Single(report.Days).Totals.Tokens);
+		Assert.Equal(615, Assert.Single(report.Models).Totals.Tokens);
 	}
 
 	[Fact]

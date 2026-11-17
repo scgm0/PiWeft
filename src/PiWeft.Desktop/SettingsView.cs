@@ -65,6 +65,7 @@ public sealed class SettingsView
 	private readonly Func<Task>? _reloadResources;
 	private readonly Action? _modelsChanged;
 	private readonly ScrollViewer _systemView;
+	private readonly UsageStatsCache? _usageStatsCache;
 	private UsageStatsPanel? _usageStats;
 	private Button? _activeNavigationButton;
 	private bool _configMode;
@@ -82,8 +83,20 @@ public sealed class SettingsView
 		Func<Task>? reconnectMcp = null,
 		Func<Task>? reloadResources = null,
 		Action? modelsChanged = null)
+		: this(snapshot, saved, reconnectMcp, reloadResources, modelsChanged, usageStatsCache: null)
+	{
+	}
+
+	internal SettingsView(
+		Func<SettingsSnapshot> snapshot,
+		Action<ConfigFile>? saved,
+		Func<Task>? reconnectMcp,
+		Func<Task>? reloadResources,
+		Action? modelsChanged,
+		UsageStatsCache? usageStatsCache)
 	{
 		_snapshot = snapshot;
+		_usageStatsCache = usageStatsCache;
 		var initial = snapshot();
 		_saved = saved ?? (_ => { });
 		_reconnectMcp = reconnectMcp;
@@ -344,9 +357,8 @@ public sealed class SettingsView
 	{
 		if (_configMode)
 		{
-			// 配置模式隐藏系统设置页；使用统计的扫描没有可见目标，停掉即可。
+			// 配置模式隐藏系统设置页；使用统计的扫描没有可见目标，停掉即可。面板留着复用。
 			_usageStats?.Cancel();
-			_usageStats = null;
 			return;
 		}
 
@@ -355,8 +367,10 @@ public sealed class SettingsView
 		_diagnosticsPulse = null;
 		_diagnosticsLive = null;
 		var snapshot = _snapshot();
-		_usageStats?.Cancel();
-		_usageStats = null;
+		if (_section != "usage")
+		{
+			_usageStats?.Cancel();
+		}
 		_content.Clear();
 		SmoothScroll.For(_systemView).Stop();
 		_systemView.SetScrollOffsets(0, 0);
@@ -375,12 +389,16 @@ public sealed class SettingsView
 				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
 				case "sounds": _content.Children(SoundSection()); break;
 				case "usage":
-					// 每次进入都重建：价格表可能刚被配置管理改过，旧面板的 Rates 闭包会过期。
-					// 根目录与价格委托在 UI 线程取好；扫描在后台线程，不能再回读快照。
-					var usageRoot = snapshot.SessionsRoot is { Length: > 0 } root ? root : UsageStats.DefaultRoot();
-					_usageStats = new UsageStatsPanel(() => usageRoot, snapshot.Rates, showHeading: false);
+					// 面板跨分区保留：切区间、滚动位置与最近一次扫描都不丢；重进由共享缓存核对文件指纹。
+					if (_usageStats is null)
+					{
+						// 根目录与价格委托在 UI 线程取好；扫描在后台线程，不能再回读快照。
+						var usageRoot = snapshot.SessionsRoot is { Length: > 0 } root ? root : UsageStats.DefaultRoot();
+						_usageStats = new UsageStatsPanel(() => usageRoot, snapshot.Rates, showHeading: false, cache: _usageStatsCache);
+					}
+
 					_content.Children(_usageStats.View);
-					_ = _usageStats.RefreshAsync();
+					_ = _usageStats.RefreshIfStaleAsync();
 					break;
 				case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
 				case "catalog": _content.Children(new ModelCatalogSection(snapshot.AgentDir, _modelsChanged ?? (() => { })).View); break;

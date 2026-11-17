@@ -25,24 +25,71 @@ public static class RetryClassifier
 	/// 这类错误交给用户决定换模型还是等重置。
 	public const int MaxAutoRetryServerDelayMs = 15 * 60 * 1000;
 
-	/// 明确不可重试的用量/配额类错误：这些是账号级限制，等几秒重试也不会变好。
-	private static readonly Regex NonRetryable = new(
+	/// 账号级限制与凭据问题：自动重试没有意义，但手动继续接得上：用户换一个模型或供应商再发一次就行。
+	private static readonly Regex AccountOrCredential = new(
 		string.Join('|',
 		[
+			// 用量 / 配额 / 余额
 			"GoUsageLimitError",
 			"FreeUsageLimitError",
 			"Monthly usage limit reached",
 			"available balance",
 			"insufficient_quota",
+			"exceeded.{0,20}quota",
+			"quota.{0,16}(?:exceeded|exhausted)",
 			"out of budget",
-			"quota exceeded",
 			"billing",
+			// DeepSeek 的「Insufficient Balance」、Anthropic 的「credit balance is too low」。
+			"insufficient.?balance",
+			"credit balance",
+			"balance.{0,20}?(?:too low|insufficient|exhausted|depleted)",
+			"payment required",
+			"余额不足",
 			"subscription_sharing_usage_limit_exceeded",
 			// Sign in with ChatGPT 的 Business 工作区管理员设置的用量上限：只有管理员能提高。
 			"subscription_sharing_workplace_individual_usage_limit_exceeded",
 			// 智谱/Z.ai 的套餐用量上限（HTTP 429 + code 1308）：几小时后才重置，重试没有意义。
 			// 只认 JSON 的 code 字段，别把请求 id/字节数里出现的 1308 当成它。
 			"\"code\"\\s*:\\s*\"?1308(?![0-9])",
+			// 凭据 / 权限
+			"authentication.?(?:error|failed|failure|required)",
+			"invalid.{0,12}api.?key",
+			"api.?key.{0,24}?(?:invalid|missing|expired|revoked|not.?(?:set|found|provided))",
+			"missing.{0,8}(?:api.?key|credential|token)",
+			"no api key",
+			"invalid.{0,8}credential",
+			"unauthorized",
+			"forbidden",
+			"permission.?denied",
+			"access.?denied",
+			"insufficient.{0,8}permission",
+		]),
+		RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+	/// 本机 TLS/证书失败：只有修证书、代理或系统时间，换模型也接不上。
+	private static readonly Regex Certificate = new(
+		string.Join('|',
+		[
+			"remote certificate is invalid",
+			"certificate has expired",
+			"certificate verify failed",
+			"self-signed certificate",
+			"unable to get local issuer certificate",
+			"sslv3 alert bad certificate",
+		]),
+		RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+	/// 换模型或换供应商后可能接上的请求类失败：模型不存在、上下文超限。
+	private static readonly Regex ModelOrContext = new(
+		string.Join('|',
+		[
+			"model.?not.?found",
+			"unknown.?model",
+			"no such model",
+			"model.{0,24}?(?:does.?not.?exist|not.?exist)",
+			"context.{0,16}?(?:window|length).{0,16}?exceed",
+			"maximum context length",
+			"context overflow",
 		]),
 		RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
@@ -116,6 +163,18 @@ public static class RetryClassifier
 			// 网关把中途断开包装成 Anthropic 风格的 api_error；PI 1.5.2+ 新增。
 			"connection.?closed",
 			"connection reset by peer",
+			// Windows 的 WSAECONNRESET 文案，和 POSIX 的 connection reset by peer 是一回事。
+			"connection was forcibly closed",
+			"connection was closed unexpectedly",
+			// TLS 握手失败：外层文案统一是「The SSL connection could not be established」，
+			// 证书类原因在 Certificate 里先排掉。
+			"ssl connection could not be established",
+			"could not create ssl/tls secure channel",
+			"ssl/tls secure channel",
+			"(?:ssl|tls|websocket).?handshake",
+			"handshake failed",
+			"unexpected packet format",
+			"remote party has closed the transport stream",
 			"other side closed",
 			"fetch failed",
 			// 裸 Node socket 错误码（read ECONNRESET / write EPIPE / connect ETIMEDOUT）。
@@ -178,7 +237,9 @@ public static class RetryClassifier
 			return false;
 		}
 
-		if (NonRetryable.IsMatch(errorMessage))
+		// 账号、凭据、模型与证书类失败自动重试不会变好，留给用户换模型或修配置。
+		if (AccountOrCredential.IsMatch(errorMessage) || Certificate.IsMatch(errorMessage) ||
+			ModelOrContext.IsMatch(errorMessage))
 		{
 			return false;
 		}
@@ -190,6 +251,30 @@ public static class RetryClassifier
 		}
 
 		return Retryable.IsMatch(errorMessage) || Queued.IsMatch(errorMessage);
+	}
+
+	/// <summary>
+	/// 手动继续生成：这次失败是否值得在（可能换过模型后）再发一次。比自动重试宽：
+	/// 配额/余额、凭据、模型不存在、上下文超限不会自动重试，但用户换模型后重发能接上；
+	/// 限流冷却超过退避上限时也一样，手动重发不受 15 分钟上限约束。
+	/// </summary>
+	public static bool IsManuallyRecoverable(AssistantMessage message)
+	{
+		if (message.StopReason != StopReason.Error || message.ErrorMessage is not { Length: > 0 } errorMessage)
+		{
+			return false;
+		}
+
+		// 证书是本机配置问题：换模型也接不上，先修证书或代理。
+		if (Certificate.IsMatch(errorMessage))
+		{
+			return false;
+		}
+
+		return AccountOrCredential.IsMatch(errorMessage) ||
+			ModelOrContext.IsMatch(errorMessage) ||
+			Retryable.IsMatch(errorMessage) ||
+			Queued.IsMatch(errorMessage);
 	}
 
 	/// 错误文本里供应商明确要求的等待时长。取第一个能解析出正秒数的提示；

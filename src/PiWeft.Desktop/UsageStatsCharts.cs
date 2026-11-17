@@ -7,7 +7,7 @@ namespace PiWeft.Desktop;
 
 internal sealed record UsageTrendBucket(string Label, string Tooltip, long Tokens);
 
-internal sealed record UsageDonutSlice(string Label, long Tokens, long Replies, int ColorIndex);
+internal sealed record UsageDonutSlice(string Label, long Tokens, long Replies, int ColorIndex, string Hint);
 
 /// 使用统计的两张图。柱状图用真实控件拼出来，留出可悬停的命中层；
 /// 环形图自绘，因为 MewUI 没有扇形路径控件。
@@ -112,11 +112,19 @@ internal static class UsageStatsCharts
 		}
 
 		var shown = models.Take(6).ToList();
+		// 同名模型来自不同供应商时只写模型名会并成两行一样的字；只给重名的那些补供应商。
+		var duplicated = shown
+			.GroupBy(UsageStatsFormat.ModelName, StringComparer.Ordinal)
+			.Where(static group => group.Count() > 1)
+			.Select(static group => group.Key)
+			.ToHashSet(StringComparer.Ordinal);
 		for (var index = 0; index < shown.Count; index++)
 		{
 			var model = shown[index];
-			slices.Add(new UsageDonutSlice(UsageStatsFormat.ModelName(model), model.Totals.Tokens,
-				model.Totals.Messages, index));
+			var name = UsageStatsFormat.ModelName(model);
+			var full = model.Provider.Length > 0 && model.Model.Length > 0 ? $"{model.Provider}/{name}" : name;
+			var label = model.Model.Length > 0 && duplicated.Contains(name) ? full : name;
+			slices.Add(new UsageDonutSlice(label, model.Totals.Tokens, model.Totals.Messages, index, full));
 		}
 
 		var shownTokens = shown.Sum(static model => model.Totals.Tokens);
@@ -124,7 +132,7 @@ internal static class UsageStatsCharts
 		{
 			var shownReplies = shown.Sum(static model => model.Totals.Messages);
 			slices.Add(new UsageDonutSlice("其他", totalTokens - shownTokens,
-				Math.Max(0, models.Sum(static model => model.Totals.Messages) - shownReplies), 6));
+				Math.Max(0, models.Sum(static model => model.Totals.Messages) - shownReplies), 6, "其他"));
 		}
 
 		return slices;
