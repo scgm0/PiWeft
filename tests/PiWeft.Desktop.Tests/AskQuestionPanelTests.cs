@@ -29,6 +29,91 @@ public sealed class AskQuestionPanelTests
 	}
 
 	[Fact]
+	public async Task QueuedBatchesWaitInsteadOfCancellingTheOpenOne()
+	{
+		var (panel, first) = Show();
+
+		// 别的会话（父标签替子代理显示）在同一块面板上提问：排进队列，不把当前这张顶掉。
+		var second = panel.ShowAsync(
+			[new AskQuestion("q9", "input", "第二个问题？", null, null, null)],
+			review: false,
+			CancellationToken.None,
+			source: "reviewer-1");
+
+		Assert.True(panel.IsOpen);
+		Assert.Contains(Find<TextBlock>(panel.View), block => block.Text == "选哪个？");
+		Assert.DoesNotContain(Find<TextBlock>(panel.View), block => block.Text == "第二个问题？");
+
+		// 第一张按取消收尾（Esc，不是 Close：Close 是关标签用的「全清」），第二张接着上场。
+		typeof(UIElement)
+			.GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
+			.Invoke(panel.View, [new KeyEventArgs(Key.Escape, 0)]);
+		Assert.True(panel.IsOpen);
+		Assert.Contains(Find<TextBlock>(panel.View), block => block.Text == "第二个问题？");
+		Assert.Contains(Find<TextBlock>(panel.View),
+			block => block.Text == Strings.AskFromSubagent("reviewer-1") && block.IsVisible);
+
+		panel.Close();
+		Assert.False(panel.IsOpen);
+		Assert.True(AskQuestions.ParseResponse(await first, Questions).Cancelled);
+		Assert.True(AskQuestions.ParseResponse(await second, [new AskQuestion("q9", "input", "第二个问题？", null, null, null)]).Cancelled);
+	}
+
+	[Fact]
+	public async Task ClosingThePanelCancelsQueuedBatches()
+	{
+		var (panel, first) = Show();
+		var second = panel.ShowAsync(
+			[new AskQuestion("q9", "input", "第二个问题？", null, null, null)],
+			review: false,
+			CancellationToken.None);
+
+		// 关标签/换会话：排队的批也要作废，否则答完上一批会弹出别人的卡片。
+		panel.Close();
+
+		Assert.False(panel.IsOpen);
+		Assert.Null(await second);
+		Assert.True(AskQuestions.ParseResponse(await first, Questions).Cancelled);
+	}
+
+	[Fact]
+	public async Task AnAlreadyCancelledRequestNeverOpensTheCard()
+	{
+		var panel = new AskQuestionPanel();
+		var root = new StackPanel();
+		_ = new Window().Content(root);
+		root.Children(panel.View);
+		using var cancelled = new CancellationTokenSource();
+		cancelled.Cancel();
+
+		// 取消先到（父会话点停止时排队的请求就是这种）：不能弹出卡片再等一张没人认领的回答。
+		var pending = panel.ShowAsync(Questions, review: false, cancelled.Token);
+
+		Assert.False(panel.IsOpen);
+		Assert.Null(await pending);
+	}
+
+	[Fact]
+	public async Task AQueuedRequestCancelledBeforeItStartsIsSkipped()
+	{
+		var (panel, first) = Show();
+		using var cancelled = new CancellationTokenSource();
+		var queued = panel.ShowAsync(
+			[new AskQuestion("q9", "input", "第二个问题？", null, null, null)],
+			review: false,
+			cancelled.Token);
+		cancelled.Cancel();
+
+		typeof(UIElement)
+			.GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
+			.Invoke(panel.View, [new KeyEventArgs(Key.Escape, 0)]);
+
+		Assert.False(panel.IsOpen);
+		Assert.Null(await queued);
+		Assert.True(AskQuestions.ParseResponse(await first, Questions).Cancelled);
+	}
+
+	[Fact]
 	public void PanelRendersQuestionTabsAndOptionButtons()
 	{
 		var (panel, _) = Show();

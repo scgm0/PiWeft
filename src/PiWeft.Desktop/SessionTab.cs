@@ -805,6 +805,9 @@ public sealed partial class SessionTab : IDisposable
 
 	internal DesktopUiHost? UiHost { get; set; }
 
+	/// 标签只借用别人的会话（默认不开标签的子代理）：关标签只释放视图，不停会话。
+	internal bool DetachedSession { get; set; }
+
 	internal bool TodoCardVisible => _todoCard.View.IsVisible;
 
 	internal AskQuestionPanel AskPanel => _askPanel;

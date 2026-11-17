@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 子代理卡的视觉验收：运行中（当前工具）/ 失败可继续（原因预览）/ 等待回答 三态行。
+# 子代理卡的视觉验收：运行中（当前工具）/ 失败可继续（原因预览）/ 等待回答 / 验证通过（预算与证据）四态行。
 # --ui-smoke subagents 直接把卡片摆成这组快照，不建子会话，截图不受回合节奏影响。
 # 每个主题三张：默认、悬停第一行、展开失败行并滚到底（任务、失败原因与会话文件）。
 #
@@ -17,6 +17,8 @@ cleanup() {
 trap cleanup EXIT
 
 for theme in dark light; do
+  # 先记下已经存在的窗口：同一台机器上还开着别的 PiWeft 时，按标题取第一条会截到错误的窗口。
+  before="$(xdotool search --onlyvisible --name 'PiWeft Desktop' 2>/dev/null | sort || true)"
   work="$output/$theme/project"
   mkdir -p "$work" "$output/$theme/agent" "$output/$theme/home/.local/share" "$output/$theme/home/.config"
   jq --arg workspace "$work" '. + {chatWorkspace: $workspace}' \
@@ -26,7 +28,18 @@ for theme in dark light; do
     --cwd "$work" --ui-smoke subagents >"$output/$theme/stdout.log" 2>"$output/$theme/stderr.log" &
   app_pid=$!
   sleep 6
-  window="$(xdotool search --onlyvisible --name '^PiWeft Desktop — ' | head -1)"
+  # 认本次新开的那一张：窗口不写 _NET_WM_PID，按名字取第一条会截到别的实例。
+  window=""
+  for candidate in $(xdotool search --onlyvisible --name 'PiWeft Desktop' 2>/dev/null || true); do
+    if ! grep -qx "$candidate" <<<"$before"; then
+      window="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$window" ]]; then
+    printf 'subagents smoke 找不到本次打开的窗口\n' >&2
+    exit 1
+  fi
   eval "$(xdotool getwindowgeometry --shell "$window")"
   # 截图前先点一下空对话区：刚映射的窗口可能还没有真正的重绘。
   xdotool mousemove --window "$window" 240 140

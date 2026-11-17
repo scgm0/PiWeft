@@ -29,12 +29,13 @@
 
 | 工具 | 用途 |
 |---|---|
-| `delegate` | `{ agent, task, label?, name?, context?, output_schema? }`，启动子代理，立即返回；`label` 是卡片上的一句话，省略时取任务首行 |
+| `delegate` | `{ agent, task, label?, name?, context?, output_schema?, verify?, max_tokens?, timeout_ms? }`，启动子代理，立即返回；`label` 是卡片上的一句话，省略时取任务首行 |
 | `wait_subagents` | `{ names?, timeout_ms?, any? }`，等到结束一轮或超时；`any: true` 第一个结束就返回，其余仍按未投递处理 |
 | `list_subagents` | 本会话的子代理与可用角色 |
 | `read_subagent` | `{ id, max_chars? }`，读子会话最近的助手正文；截断或重启后取全文 |
 | `send_to_subagent` | `{ id, message, mode? }`，追加消息，不等回复；`mode` 为 `follow_up`（默认）、`steer` 或 `auto` |
 | `stop_subagent` | `{ id }`，停当前回合，子会话仍可读 |
+| `ask_parent`（只给子会话） | `{ question, options? }`，子代理问父会话并等回答；与问用户的 `ask_question` 分工 |
 
 工具只在宿主支持子会话且深度未到上限时注册。纯 CLI、`--tools none`、子代理会话本身都拿不到这些工具。`read_subagent` 从活会话的投影或会话文件读最近 40 段助手正文，默认 12k、上限 48k。
 
@@ -43,6 +44,35 @@
 `wait_subagents` 默认等全部目标，`any: true` 改成第一个结束就返回：返回的正文只带已完成的目标，其余保持未投递，下一次 wait 还能取。已经结束的目标不会让 `any` 继续等还在跑的兄弟。
 
 子代理每完成一条助手消息，首行摘要记进运行快照的 `progress`；工具结束会清掉 `activity`。卡片、`list_subagents` 的 `Details` 与 wait 心跳都读这两个字段，长回合里能看到子代理写到了哪一句。
+
+## 运行上限与验证
+
+刹车有三道：时间、token、宿主验证。
+
+- **时限**：默认 30 分钟，`delegate.timeout_ms` 按次覆盖，角色文件写 `timeoutMinutes`。到期前先 steer 一句「停止开新工作，把已完成的与剩下的写进回复」；提前量是本次计时剩余时间的 10%，最多 2 分钟，剩余不到 3 分钟时不提醒（暂停恢复后按剩下那一截算）。到点后硬停，投递的结果带上子会话最后一条助手正文，父会话手里的半份结论不会因为超时被扔掉。
+- **等人回答时暂停计时**。子代理在 `ask_question` 或在 `ask_parent` 上停住时回合是活的，但读题的时间不该算进它的运行预算。不暂停的话，用户离开半小时回来只会看到一个被判超时、问题也丢了的子代理。暂停由子会话自己的工具起止驱动，父标签没开着也一样生效；桌面的展示同步不必参与计时。回答后按剩余时间重新起表，最少补回原预算的一半（上限 30 秒），验证期间不再起表。
+- **token 上限**：`delegate.max_tokens`，或角色文件 `maxTokens`，或 `settings.subagents.maxTokens`，0 表示不限。按每条助手消息的输入加输出累加，超了就停这一轮并投递失败结果。数字是整轮累计的计费量，不是上下文大小。
+- **宿主验证**：`verify` 是一组 shell 命令，回合成功结束后由宿主自己在子会话的 cwd 里执行（同一套进程容器与 `shellPath`/`shellCommandPrefix`）。第一条失败的就算定论，后面的不再跑。退出码与输出尾巴附进结果正文的 `verify` 段，同时进 `Details[].verify`；一条没过，这一轮标 `failed`。子会话的系统提示词会写明会被复核，模型不容易交一份「测试通过」的口头声明。验证期间运行状态仍是 `running`，卡片第三行显示 `verify: <命令>`；超时按 `settings.subagents.verifyTimeoutSeconds` 走，默认 10 分钟。
+- 计划模式下只接受只读的验证命令（与 `bash` 同一判据），否则 `delegate` 直接拒绝：宿主跑的命令不经过子会话的工具闸，不能成为写工作区的后门。
+
+这几个默认值都可以在 `settings.json` 的 `subagents` 里改：`maxActive`、`maxSpawns`、`runTimeoutMinutes`、`maxTokens`、`verifyTimeoutSeconds`、`openTabs`。桌面设置页的「子代理」卡片能改这六个。
+
+## 父会话回答问题
+
+子代理停在 `ask_parent` 上时，谁都能回答它，但顺序有讲究：
+
+1. 父会话阻塞在 `wait_subagents` 上时，wait 与「完成」一样**提前返回**：`reason: "question"`，正文带问题与「回答用 `send_to_subagent`」。父会话自己回答时 `send_to_subagent` 把消息当作答案投递给那个工具调用，不另起一轮。
+2. 等 20 秒还没有人答，问题摊到父标签的问询卡上（标题旁标「来自子代理「reviewer-1」」），用户直接答。父会话随后再答也不会重复：先答的那条取走问题，后到的按普通消息处理。
+3. 5 分钟没人答，`ask_parent` 返回「没人回答」，子代理按提示自行决定或转问用户。
+
+约束：
+
+- 答案必须落在用户已经给出的指示内。工具描述与 wait 的返回文本都写了这一句：越权的事（凭据、任务外的选择、计划模式下的写操作）转给用户，不替用户拍板。
+- 单次运行最多由父会话回答 3 次（`SubagentHub.MaxParentQuestions`），到上限后只剩用户能答。
+- 只回答「父会话有上下文」的问题：它做过的决定、给过的范围、偏好。纯实现细节由子代理自己定。
+- 等人回答期间不计入运行时限；停止、关标签、父会话关闭都会把挂起的问题按「没人回答」收尾，不会把子代理卡在工具调用里。
+
+`wait_subagents` 的 `Details` 多了 `reason`（`completed` / `any` / `timeout` / `question`）与 `questions`（`[{ name, question, options }]`）；每个子代理的 `Details` 里也有 `question`。
 
 ## 上下文
 
@@ -117,6 +147,9 @@ You review HTTP handlers. Report findings with file and line references.
 - 计划模式下 `edit`/`write` 即使在白名单里也会被拿掉；`bash` 留下，但子会话本身也在计划模式，会拦只读命令以外的调用。
 - `model`：`provider/id`，或唯一 id。解析失败回落父会话模型。
 - `thinking`：子会话思考级别，省略时沿用父会话当前级别。
+- `timeoutMinutes`：单次运行的时限（分钟）；省略时用 `settings.subagents.runTimeoutMinutes`。
+- `maxTokens`：单次运行的 token 上限；省略时用设置里的默认值。
+- `verify`：宿主在回合结束后执行的命令，支持逗号列表与 `- item` 块列表。只读类角色通常不需要。
 - `advertise`：是否把角色名与描述放进 `delegate` 的工具描述。内置角色为 `true`；新角色省略为 `false`，覆盖同名内置角色时沿用内置值。完整目录始终用 `list_subagents` 查。
 - 正文：追加在子会话系统提示词后面，再后面是委派边界。
 
@@ -134,7 +167,7 @@ You review HTTP handlers. Report findings with file and line references.
 - `customType` 与 `display` 跟 pi 同一形状落盘（`{"role":"user","customType":"…"}`，隐藏注入才写 `"display":false`）。漏写会让重启后的回报变回普通提问：分叉、重试、标题与导出全跟着错。
 - 修落盘之前的旧会话没有类型标记：桌面按正文前缀（`子代理「`、`子会话「`、`来自父会话「`）认回来，只影响显示，不改文件，也不让它们从分叉点里消失。
 - 排队卡里回报没有「撤回输入框」与「丢弃」：把机器文本撤进草稿没有意义。
-- 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。行首是状态图标（勾 / 圈 / 叉 / 停止方块），第一行左边名字与一句任务，右边耗时与 token / 费用；第二行是状态与轮数（历史项带「可继续」），行尾是角色 · 模型 · 思考级别。运行中第三行是当前工具（`read src/Auth.cs`），工具返回后清掉；失败行第三行直接给一行失败原因（错误色），完整原因在悬停与展开区。进度摘要显示在展开区，`list_subagents` 与 wait 心跳也带上。完成的行带输入 + 输出 token 与总耗时：耗时就是行右侧那个秒表，从 delegate 到回合结束，含工具与等待；`list_subagents` 的 `Details` 里是 `tokens` / `cost` / `elapsed_ms`。旧条目里的 `tokens` 曾按 `TotalTokens`（含 cacheRead）记录，恢复时会按子会话文件重算成与标签页「输入 / 输出 token」一致的口径。
+- 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。行首是状态图标（勾 / 圈 / 叉 / 停止方块），第一行左边名字与一句任务，右边耗时与 token / 费用；设了上限时写成 `12k/50k tk`。第二行是状态与轮数（历史项带「可继续」），行尾是角色 · 模型 · 思考级别。第三行按情况取一个：运行中是当前工具（`read src/Auth.cs`）或 `verify: <命令>`；失败行是一行失败原因（错误色）；跑过验证且通过时是「验证通过：<命令>」，回复被截断时是「回复被 max tokens 截断」。验证失败的原因行直接写命令与退出码，因为那时模型那句「都改好了」不能当原因。完整原因与验证输出在悬停与展开区。进度摘要显示在展开区，`list_subagents` 与 wait 心跳也带上。完成的行带输入 + 输出 token 与总耗时：耗时就是行右侧那个秒表，从 delegate 到回合结束，含工具与等待；`list_subagents` 的 `Details` 里是 `tokens` / `max_tokens` / `cost` / `elapsed_ms` / `stop_reason` / `verify`。旧条目里的 `tokens` 曾按 `TotalTokens`（含 cacheRead）记录，恢复时会按子会话文件重算成与标签页「输入 / 输出 token」一致的口径。
 - 每行可展开：任务全文、进度、最近回复与会话文件都在卡里；失败行展开后的回复段标题是「失败原因」。行是扁平行，悬停才提亮；状态变化只改文字，行与行的重建靠结构比较。运行中的耗时自己走秒，不靠工具活动刷新。行按「运行中在前、其余按结束时间倒序」排，刚结束的一轮不用翻到列表底部。卡片最多画 20 行，更早的运行留在侧栏与 `list_subagents` 里，长会话不会把整棵 UI 拖重。
 - 子代理在自己的标签里 `ask_question` 时，卡片状态改成「等待回答」，父会话标签带圆点，窗口弹一次 toast。回答后自动恢复。
 - `wait_subagents` 阻塞期间每 5 秒把「在等谁、在干什么」推一次，界面不会只剩一行「等了十分钟」。
@@ -147,7 +180,9 @@ You review HTTP handlers. Report findings with file and line references.
 - 连续 6 次回报拉起父会话后停止自动投递，用户发消息清零。停投的正文仍在 `Result` 与子会话文件里，`wait_subagents` 还能取。
 - 单次运行默认 30 分钟超时。到点把状态落到 `failed` 并投递一条带 `timed out` 的结果，迟到的 `agent_end` 不会把失败改回 idle；再发消息就是新的一次运行，重新计时。
 - `send_to_subagent` 的 `steer` 把消息放进当前运行的 steering 队列，下一个工具边界生效；空闲时用 `follow_up`，`auto` 在运行中选 steer、否则退回 follow_up。
-- 子会话在桌面上开一个后台标签，不抢当前标签；侧栏里挂在父会话下面，不占顶层会话行，也不占侧栏 200 条的顶层名额。当前标签是子会话时，父行会自动展开。有 UI 宿主，所以子代理可以自己用 `ask_question` 问用户。
+- 子代理默认不开标签：会话与它的界面宿主留在 hub 里，卡片行上的打开键按需把**活的**会话挂成标签（不是从文件冷开一份快照）。已被回收的会话先按文件冷恢复再挂，所以同一份文件始终只有一个会话对象。侧栏仍按会话文件把子会话挂在父会话下面，不占顶层行；点那一行挂的也是活会话。有 UI 宿主，所以子代理可以自己用 `ask_question` 问用户。
+- 没有标签的子代理提问时，卡片显示在**父标签**上，标题旁标注「来自子代理「reviewer-1」」，等待提示音归子会话。面板一次只显示一批，多个子代理同时问就排队，答完一张接下一张；`settings.subagents.openTabs` 打开时回到「每个子代理一个后台标签」的旧行为。
+- 详情标签只是视图：关掉它不会停子会话，提问回到父标签；父标签关闭或退出应用才把没有标签的子会话一并收掉（hub 记下 `stopped`）。`stop_subagent` 仍然只停当前回合。
 - 子会话不加载扩展，工具面只有角色白名单。
 - 子会话只弱引用父会话：父标签关掉、子标签还开着时，父会话的整份消息不会被吊住。父标签关闭会停掉正在跑的子代理，避免结果无处投递还继续烧 token；子会话标签与文件保留，仍可读取或继续。
 - 子会话头写 `parentSession`，父会话写 `piweft-subagent` 自定义条目（`start` / `started` / `idle` / `failed` / `stopped`，结束条目带 400 字摘要）。重启后按条目恢复列表（`list_subagents` 里 `restored: true`）；恢复项没有活会话，但 `send_to_subagent` 会按会话文件冷恢复，重新订阅并继续对话。计划模式下建的关系把 `planMode` 一起落盘，恢复后仍只读。任务全文只在 `start` 条目写一次，模型与思考级别跟 `started` 一起落盘，`startedAt`/`finishedAt` 随状态条目落盘；卡片展开与总耗时在重启后仍有内容。
@@ -168,6 +203,10 @@ You review HTTP handlers. Report findings with file and line references.
 ## 限制
 
 - 不支持外部 CLI 角色（claude-code / codex / cursor）。
+- 父会话只在 `wait_subagents` 里能回答问题；它空闲时不会被叫醒（pi 会，代价是额外一轮 token）。
+- 子代理与父会话同 cwd：`delegate` 没有 `cwd` 参数，跨仓库任务要么在父会话里做，要么另开会话。
+- 不开标签的子代理一回合做完就释放会话对象，只留条目、结果与会话文件。扫描 5 秒一拍，所以回收落在回合结束后的 0–5 秒。子代理基本一次性，结果已经投递、上下文在文件里，冷恢复（打开转录或再发消息）只要几毫秒到几十毫秒；真的马上追问时，活会话还没被扫到，根本不用恢复。回收前只看三件事：还在跑、还在等回答、详情标签开着，任何一条成立就不动。
+- 模型选择只有角色文件一条路：`delegate` 不能按次换 model。
 - 没有 worktree 隔离。同进程的 `FileMutationQueue` 只保证同一文件的写串行，跨文件冲突仍要父会话复核。
 - 子代理在自己的标签里提问。父会话阻塞在 `wait_subagents` 时也能在子标签作答，因为标签与回合是独立的。
 - `wait_subagents` 默认等 10 分钟；超时后结果里直接给出下一步（结束回合等消息），免得模型再等一轮。

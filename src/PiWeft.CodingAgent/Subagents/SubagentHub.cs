@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -5,6 +6,7 @@ using PiWeft.Agent;
 using PiWeft.Ai;
 using PiWeft.Ai.Json;
 using PiWeft.CodingAgent.Session;
+using PiWeft.CodingAgent.Tools;
 
 namespace PiWeft.CodingAgent.Subagents;
 
@@ -81,8 +83,20 @@ public sealed record SubagentRun
 	/// <summary>子会话累计费用。</summary>
 	public double Cost { get; init; }
 
+	/// <summary>正在等父会话或用户回答的问题；没有挂起的问题时为 null。</summary>
+	public string? Question { get; init; }
+
 	/// <summary>最近一次通过 output_schema 校验的结构化结果。</summary>
 	public JsonNode? StructuredOutput { get; init; }
+
+	/// <summary>本次运行的 token 上限；0 表示不限制。超了停 run 并投递失败结果。</summary>
+	public long MaxTokens { get; init; }
+
+	/// <summary>上一轮结束时模型给出的停止原因（<c>stop</c> / <c>length</c> / <c>error</c> / <c>aborted</c>）；未结束时为空串。</summary>
+	public string StopReason { get; init; } = string.Empty;
+
+	/// <summary>宿主在回合结束后跑过的验证命令；没有配置时为空。</summary>
+	public IReadOnlyList<SubagentVerifyResult> Verify { get; init; } = [];
 
 	/// <summary>创建时父会话是否在计划模式；冷恢复按它重建只读边界。</summary>
 	public bool PlanMode { get; init; }
@@ -103,6 +117,35 @@ public sealed record SubagentRun
 	public bool IsTerminal => State is SubagentState.Idle or SubagentState.Failed or SubagentState.Stopped;
 }
 
+/// <summary>子代理挂起的问题：父会话用 <c>send_to_subagent</c> 回答，用户也能在卡片上回答。</summary>
+public sealed record SubagentQuestion
+{
+	/// <summary>问题正文。</summary>
+	public required string Text { get; init; }
+
+	/// <summary>可选项；只是提示，回答仍是自由文本。</summary>
+	public IReadOnlyList<string> Options { get; init; } = [];
+}
+
+/// <summary>一条验证命令的结果。宿主在子代理回合结束后自己执行，父会话据此判断「测试通过」是否属实。</summary>
+public sealed record SubagentVerifyResult
+{
+	/// <summary>原样执行的命令。</summary>
+	public required string Command { get; init; }
+
+	/// <summary>退出码；超时或无法启动时为 null。</summary>
+	public int? ExitCode { get; init; }
+
+	/// <summary>命令被超时终止。</summary>
+	public bool TimedOut { get; init; }
+
+	/// <summary>输出尾巴，供结果正文与卡片展开区显示。</summary>
+	public string Output { get; init; } = string.Empty;
+
+	/// <summary>退出码为 0 且没有超时。</summary>
+	public bool Passed => !TimedOut && ExitCode == 0;
+}
+
 /// <summary>启动子代理的请求。</summary>
 public sealed record SubagentStartRequest(string Agent, string Task, string? Name = null, string? Context = null)
 {
@@ -111,6 +154,15 @@ public sealed record SubagentStartRequest(string Agent, string Task, string? Nam
 
 	/// <summary>要求最终回复返回的 JSON Schema；null 表示不要求。</summary>
 	public JsonObject? OutputSchema { get; init; }
+
+	/// <summary>本次运行的时限；null 时取角色文件或设置里的默认值。</summary>
+	public TimeSpan? RunTimeout { get; init; }
+
+	/// <summary>本次运行的 token 上限；null 时取角色文件或设置里的默认值。0 表示不限制。</summary>
+	public long? MaxTokens { get; init; }
+
+	/// <summary>回合结束后由宿主执行的验证命令；null 时取角色文件里的设置。</summary>
+	public IReadOnlyList<string>? Verify { get; init; }
 }
 
 /// <summary>启动结果：成功时带名字与子会话 id。</summary>
@@ -144,6 +196,9 @@ public sealed record SubagentStartContext(
 
 	/// <summary>要求子会话最终回复返回的 JSON Schema；null 表示不要求。</summary>
 	public JsonObject? OutputSchema { get; init; }
+
+	/// <summary>回合结束后宿主会执行的验证命令；子会话据此知道结论会被复核。</summary>
+	public IReadOnlyList<string> Verify { get; init; } = [];
 }
 
 /// <summary>冷恢复一个已结束的子代理：按会话文件重建子会话。</summary>
@@ -168,10 +223,35 @@ public sealed record SubagentReopenContext(
 
 	/// <summary>恢复后要求的结构化输出 schema。</summary>
 	public JsonObject? OutputSchema { get; init; }
+
+	/// <summary>回合结束后宿主会执行的验证命令。</summary>
+	public IReadOnlyList<string> Verify { get; init; } = [];
+}
+
+/// <summary>单个会话的子代理配额与默认值，来自 <c>settings.subagents</c>。</summary>
+public sealed record SubagentLimits
+{
+	/// <summary>默认的单次运行时限。</summary>
+	public static readonly TimeSpan DefaultRunTimeout = TimeSpan.FromMinutes(30);
+
+	/// <summary>同一个父会话同时活跃的子代理数量上限。</summary>
+	public int MaxActive { get; init; } = 4;
+
+	/// <summary>每个用户回合最多启动多少个子代理。</summary>
+	public int MaxSpawns { get; init; } = 32;
+
+	/// <summary>单次运行的时限。</summary>
+	public TimeSpan RunTimeout { get; init; } = SubagentLimits.DefaultRunTimeout;
+
+	/// <summary>单次运行的 token 上限；0 表示不限制。</summary>
+	public long MaxTokens { get; init; }
+
+	/// <summary>每条验证命令的时限。</summary>
+	public TimeSpan VerifyTimeout { get; init; } = TimeSpan.FromMinutes(10);
 }
 
 /// <summary>
-/// 宿主提供的子会话能力。桌面把子会话开成后台标签；没有宿主的纯 CLI 不注册委派工具。
+/// 宿主提供的子会话能力。桌面让子会话在 hub 里跑、按需挂标签；没有宿主的纯 CLI 不注册委派工具。
 /// </summary>
 public interface ISubagentHost
 {
@@ -232,8 +312,20 @@ public sealed class SubagentHub : IDisposable
 	/// <summary>回报连续拉起父会话的轮数上限；用户发消息清零。</summary>
 	public const int MaxAutoContinue = 6;
 
+	/// <summary>单次运行里父会话最多回答几次子代理的问题；到上限后只剩用户能回答。</summary>
+	public const int MaxParentQuestions = 3;
+
+	/// <summary>子代理问父会话的默认时限；到点按「没人回答」返回，子代理自己转为问用户。</summary>
+	public static readonly TimeSpan QuestionTimeout = TimeSpan.FromMinutes(5);
+
+	/// <summary>一次委托最多配几条验证命令。</summary>
+	public const int MaxVerifyCommands = 8;
+
+	/// <summary>单条验证命令的字符上限。</summary>
+	public const int MaxVerifyCommandChars = 500;
+
 	/// <summary>子代理单次运行的默认时限。</summary>
-	public static readonly TimeSpan DefaultRunTimeout = TimeSpan.FromMinutes(30);
+	public static readonly TimeSpan DefaultRunTimeout = SubagentLimits.DefaultRunTimeout;
 
 	private sealed class RunState
 	{
@@ -258,9 +350,49 @@ public sealed class SubagentHub : IDisposable
 
 		public bool Stopping { get; set; }
 
-		public bool TimedOut { get; set; }
+		/// 超时或超预算已经写过终结结果：迟到的 agent_end 不能再把状态改回 idle。
+		public bool Guarded { get; set; }
+
+		/// 本次运行的时限；每次运行开始时从 Run 或默认值取。
+		public TimeSpan RunTimeout { get; set; }
+
+		/// 到期前是否已经推过「收尾」提示。
+		public bool CheckpointSent { get; set; }
 
 		public CancellationTokenSource? Deadline { get; set; }
+
+		/// 计时开始时的 Stopwatch 时间戳；0 表示没有在计时（暂停中或未开始）。
+		public long DeadlineStartedAt { get; set; }
+
+		/// 暂停时剩下的时间；恢复时按它重新起表。
+		public TimeSpan DeadlineRemaining { get; set; }
+
+		/// 本轮累计输入 + 输出 token，用于预算判断；与结束时的统计口径一致。
+		public long BudgetTokens { get; set; }
+
+		/// 验证命令执行中：Stop 与 Dispose 用它杀掉还在跑的 shell。
+		public CancellationTokenSource? VerifyCancellation { get; set; }
+
+		/// 这一轮结束后要跑的验证命令；空列表表示不验证。
+		public IReadOnlyList<string> VerifyCommands { get; set; } = [];
+
+		/// 挂起的问题：子代理停在 ask_parent 上等人回答。
+		public PendingAsk? Question { get; set; }
+
+		/// 本轮已经由父会话回答过几次问题；到上限后只剩用户能回答（用户回答不占额度）。
+		public int ParentAnswers { get; set; }
+
+		/// 正在做空闲回收：会话 Dispose 会回调 NoteChildClosed，这条标记区分「收会话」与「关标签」。
+		public bool Unloading { get; set; }
+
+		/// 消息已交给子会话、AgentStart 还没到：这一段状态仍是 Idle，但会话马上要跑，不能回收。
+		public bool Sending { get; set; }
+
+		/// 轮次代数：新的一轮（或停掉）就加一。验证任务是上一代的，收尾前用它判断自己是否还该写结果。
+		public int Generation { get; set; }
+
+		/// 本轮开始时的会话累计 token；卡片显示累计值，预算比对本轮增量。
+		public long TokenBase { get; set; }
 
 		public JsonObject? OutputSchema { get; set; }
 
@@ -272,7 +404,29 @@ public sealed class SubagentHub : IDisposable
 		public List<(string Id, string Description)> ActiveTools { get; } = [];
 	}
 
-	private sealed record PendingResult(string Name, bool Failed, string Text, long Turn, JsonNode? Structured = null);
+	/// 一个挂起的问题。超时用 CancelAfter 表达：到点让等待方按「没人回答」收尾，
+	/// 不需要额外定时器；被停/被关也走同一个出口。
+	private sealed class PendingAsk(
+		string text,
+		IReadOnlyList<string> options,
+		TaskCompletionSource<string?> completion,
+		CancellationTokenSource timeout)
+	{
+		public string Text { get; } = text;
+
+		public IReadOnlyList<string> Options { get; } = options;
+
+		public TaskCompletionSource<string?> Completion { get; } = completion;
+
+		public CancellationTokenSource Timeout { get; } = timeout;
+	}
+
+	private sealed record PendingResult(string Name, bool Failed, string Text, long Turn, JsonNode? Structured = null)
+	{
+		/// 恢复出来的一轮只留了 400 字摘要：投递前在投递线程上从子会话文件补全文。
+		/// 放在这里而不是构造 hub 时读，是为了不把文件解析放到打开标签页的 UI 线程上。
+		public string? FullTextFile { get; init; }
+	}
 
 	/// 一次运行收尾的完整结果：wait 用它拿到「等的那一次」，不会读到下一次运行的正文。
 	private sealed record TurnResult(long Turn, string Text, JsonNode? Structured = null);
@@ -280,10 +434,10 @@ public sealed class SubagentHub : IDisposable
 	private readonly CodingAgentSession _owner;
 	private readonly ISubagentHost _host;
 	private readonly SubagentCatalog _catalog;
+	private readonly SubagentLimits _limits;
 	private readonly int _maxActive;
 	private readonly int _maxSpawns;
 	private readonly int _depth;
-	private readonly TimeSpan _runTimeout;
 	private readonly TimeSpan _coalesce;
 	private readonly Lock _gate = new();
 	private readonly Dictionary<string, RunState> _runs = new(StringComparer.Ordinal);
@@ -301,24 +455,31 @@ public sealed class SubagentHub : IDisposable
 		ISubagentHost host,
 		SubagentCatalog catalog,
 		int depth,
-		int maxActive = 4,
-		int maxSpawns = 32,
-		TimeSpan? runTimeout = null,
+		SubagentLimits? limits = null,
 		TimeSpan? coalesce = null)
 	{
 		_owner = owner;
 		_host = host;
 		_catalog = catalog;
 		_depth = depth;
-		_maxActive = Math.Max(1, maxActive);
-		_maxSpawns = Math.Max(1, maxSpawns);
-		_runTimeout = runTimeout is { } configured && configured > TimeSpan.Zero ? configured : DefaultRunTimeout;
+		_limits = limits ?? new SubagentLimits();
+		_maxActive = Math.Max(1, _limits.MaxActive);
+		_maxSpawns = Math.Max(1, _limits.MaxSpawns);
 		_coalesce = coalesce ?? TimeSpan.FromMilliseconds(200);
 		Restore();
 	}
 
 	/// <summary>子代理列表或状态变化；界面据此刷新。</summary>
 	public event Action? Changed;
+
+	/// <summary>某个子代理开始等用户回答。桌面据此提示；参数是当时的运行快照。</summary>
+	public event Action<SubagentRun>? AwaitingChanged;
+
+	/// <summary>某个子代理提出了一个要人回答的问题；父会话在 <c>wait_subagents</c> 里能看到，桌面可据此提示用户。</summary>
+	public event Action<SubagentRun>? QuestionRaised;
+
+	/// <summary>那个问题已经有结果了（被回答、超时或被停）：事件订阅方据此收起提示。</summary>
+	public event Action<SubagentRun>? QuestionAnswered;
 
 	/// <summary>本会话开出的子代理快照，按启动顺序。</summary>
 	public IReadOnlyList<SubagentRun> Runs => RunsSnapshot();
@@ -343,6 +504,328 @@ public sealed class SubagentHub : IDisposable
 
 	/// <summary>角色目录。</summary>
 	public SubagentCatalog Catalog => _catalog;
+
+	/// 按子会话 id 找一个运行；调用方必须已持锁。事件入口共用同一套匹配规则。
+	private RunState? FindStateLocked(string? sessionId)
+	{
+		if (string.IsNullOrEmpty(sessionId))
+		{
+			return null;
+		}
+
+		foreach (var state in _runs.Values)
+		{
+			if (string.Equals(state.Run.SessionId, sessionId, StringComparison.Ordinal))
+			{
+				return state;
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>取子代理正在等回答的问题；没有问题或找不到运行时返回 <see langword="null"/>。</summary>
+	public SubagentQuestion? PendingQuestion(string? sessionId)
+	{
+		lock (_gate)
+		{
+			var question = FindStateLocked(sessionId)?.Question;
+			return question is null
+				? null
+				: new SubagentQuestion { Text = question.Text, Options = question.Options };
+		}
+	}
+
+	/// <summary>子代理是否停在终态且没有挂起的问题；回收方按这个判断能不能释放会话。</summary>
+	public bool IsIdle(string? sessionId)
+	{
+		lock (_gate)
+		{
+			var state = FindStateLocked(sessionId);
+			return state is not null && CanUnloadLocked(state);
+		}
+	}
+
+	/// 能不能释放会话：终态、没问题、没有投递在飞、会话自己也不在跑。
+	/// 后两条挡住两个真实窗口：send 已 PromptAsync 但 AgentStart 还没到；Stop 之后 abort 还没退栈。
+	private static bool CanUnloadLocked(RunState state) =>
+		!state.Run.IsActive &&
+		state.Question is null &&
+		!state.Sending &&
+		!state.Unloading &&
+		state.Session is not { IsRunning: true };
+
+	/// <summary>
+	/// 释放一个空闲子代理的会话对象，保留运行条目与会话文件；之后 <c>send_to_subagent</c>
+	/// 或打开转录会按文件冷恢复。还在跑、在提问或没有活会话时不动它。
+	/// </summary>
+	public bool UnloadSession(string? sessionId)
+	{
+		RunState? state;
+		CodingAgentSession session;
+		SemaphoreSlim? gate = null;
+		lock (_gate)
+		{
+			state = FindStateLocked(sessionId);
+			if (state?.Session is not { IsDisposed: false } current || !CanUnloadLocked(state))
+			{
+				return false;
+			}
+
+			state.Unloading = true;
+			session = current;
+			// 闸门也在这里建：否则「先回收、后冷恢复」的时序里两边看到的是不同的对象，互斥不成立。
+			gate = state.ReopenGate ??= new SemaphoreSlim(1, 1);
+		}
+
+		// 与冷恢复互斥：Dispose 是异步收尾（字段先置 IsDisposed，回调 NoteChildClosed 在后），
+		// 中间被 ReopenAsync 插进来就会把新会话当成旧的摘掉。抢不到说明正好在恢复，下一拍再试。
+		if (!gate.Wait(0))
+		{
+			lock (_gate)
+			{
+				state.Unloading = false;
+			}
+
+			return false;
+		}
+
+		try
+		{
+			// Dispose 会回调 NoteChildClosed：Unloading 让那条路径只摘订阅，不改状态。
+			session.Dispose();
+		}
+		catch (Exception)
+		{
+			// 会话可能已经在关闭；状态与文件不受影响。
+		}
+		finally
+		{
+			lock (_gate)
+			{
+				// 订阅可能在回收期间被冷恢复换过：只清“确实没见过”的那一种情况由 NoteChildClosed 处理。
+				state.Unloading = false;
+			}
+
+			gate.Release();
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// 冷恢复一个已结束或被回收的子代理，返回活会话供界面打开（不投递消息）。
+	/// 已经有活会话时直接返回它；与 <c>send_to_subagent</c> 共用同一把恢复锁，不会开出两份。
+	/// </summary>
+	public async Task<CodingAgentSession?> ReopenForViewAsync(string? sessionId, CancellationToken cancellationToken = default)
+	{
+		RunState? state;
+		lock (_gate)
+		{
+			state = FindStateLocked(sessionId);
+			if (state is null)
+			{
+				return null;
+			}
+
+			if (state.Session is { IsDisposed: false } live)
+			{
+				return live;
+			}
+		}
+
+		SemaphoreSlim gate;
+		lock (_gate)
+		{
+			gate = state.ReopenGate ??= new SemaphoreSlim(1, 1);
+		}
+
+		await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			lock (_gate)
+			{
+				if (state.Session is { IsDisposed: false } live)
+				{
+					return live;
+				}
+			}
+
+			return await ReopenAsync(state, cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			gate.Release();
+		}
+	}
+
+	/// <summary>
+	/// 子代理向父会话提问并等回答。返回 <see langword="null"/> 表示没人回答（超时、被停、
+	/// 本轮已经问满 <see cref="MaxParentQuestions"/> 次，或本来就不在委派里）。
+	/// </summary>
+	/// <remarks>等待期间不计入运行时限；父会话用 <c>send_to_subagent</c> 回答，用户也能在卡片上回答。</remarks>
+	public async Task<string?> AskParentAsync(
+		string? childSessionId,
+		string question,
+		IReadOnlyList<string>? options,
+		CancellationToken cancellationToken,
+		TimeSpan? timeout = null)
+	{
+		var text = Clip((question ?? string.Empty).Trim(), MaxQuestionChars);
+		if (text.Length == 0)
+		{
+			return null;
+		}
+
+		RunState? state;
+		PendingAsk pending;
+		lock (_gate)
+		{
+			state = FindStateLocked(childSessionId);
+			if (state is null || state.Run.IsTerminal || state.Guarded || state.Stopping ||
+				state.Question is not null || state.ParentAnswers >= MaxParentQuestions)
+			{
+				return null;
+			}
+
+			var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			deadline.CancelAfter(timeout is { } configured && configured > TimeSpan.Zero ? configured : QuestionTimeout);
+			pending = new PendingAsk(
+				text,
+				ClipOptions(options),
+				new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously),
+				deadline);
+			state.Question = pending;
+			state.Run = state.Run with { Question = text };
+			RefreshWaitPauseLocked(state);
+		}
+
+		Changed?.Invoke();
+		QuestionRaised?.Invoke(state.Run);
+
+		var answered = false;
+		try
+		{
+			var answer = await pending.Completion.Task.WaitAsync(pending.Timeout.Token).ConfigureAwait(false);
+			answered = true;
+			return answer;
+		}
+		catch (OperationCanceledException)
+		{
+			return null;
+		}
+		finally
+		{
+			lock (_gate)
+			{
+				// 被回答时 SendAsync 已经清掉并计过数；这里只收尾超时、被停与被关。
+				if (ReferenceEquals(state.Question, pending))
+				{
+					state.Question = null;
+					state.Run = state.Run with { Question = null };
+					RefreshWaitPauseLocked(state);
+				}
+			}
+
+			pending.Timeout.Dispose();
+			if (!answered)
+			{
+				// 回答路径已由 PublishAnswer 通知过；超时与被停要从这里让界面收起问题卡。
+				Changed?.Invoke();
+				QuestionAnswered?.Invoke(state.Run);
+			}
+		}
+	}
+
+	/// <summary>用户回答子代理的问题（桌面卡片）。返回是否真的有一个挂起的问题被回答。</summary>
+	public bool AnswerQuestion(string? sessionId, string answer)
+	{
+		var text = (answer ?? string.Empty).Trim();
+		if (text.Length == 0)
+		{
+			return false;
+		}
+
+		RunState? state;
+		PendingAsk? question;
+		lock (_gate)
+		{
+			state = FindStateLocked(sessionId);
+			question = state is null ? null : TakeQuestionLocked(state, byParent: false);
+		}
+
+		if (state is null || question is null)
+		{
+			return false;
+		}
+
+		PublishAnswer(state, question, Clip(text, MaxAnswerChars));
+		return true;
+	}
+
+	/// 把挂起的问题取走；调用方随后调用 PublishAnswer。
+	/// <paramref name="byParent"/> 为 true 时记一次父会话回答，消耗本轮额度；用户回答不占。
+	private static PendingAsk? TakeQuestionLocked(RunState state, bool byParent)
+	{
+		if (state.Question is not { } question)
+		{
+			return null;
+		}
+
+		state.Question = null;
+		if (byParent)
+		{
+			state.ParentAnswers++;
+		}
+
+		state.Run = state.Run with { Question = null };
+		return question;
+	}
+
+	/// 问题答完：唤醒子代理、恢复计时、通知界面收起提示。
+	private void PublishAnswer(RunState state, PendingAsk question, string text)
+	{
+		lock (_gate)
+		{
+			RefreshWaitPauseLocked(state);
+		}
+
+		// 只完成等待，不动 Timeout：取消定时器会和 WaitAsync 抢同一个出口，
+		// 先到的是取消时，明明回答了却按「没人回答」返回。CTS 由 AskParentAsync 收尾。
+		question.Completion.TrySetResult(text);
+		Changed?.Invoke();
+		QuestionAnswered?.Invoke(state.Run);
+	}
+
+	private static IReadOnlyList<string> ClipOptions(IReadOnlyList<string>? options)
+	{
+		if (options is not { Count: > 0 })
+		{
+			return [];
+		}
+
+		var clipped = new List<string>(Math.Min(options.Count, MaxQuestionOptions));
+		foreach (var option in options)
+		{
+			var value = Clip((option ?? string.Empty).Trim(), MaxQuestionOptionChars);
+			if (value.Length > 0)
+			{
+				clipped.Add(value);
+			}
+
+			if (clipped.Count == MaxQuestionOptions)
+			{
+				break;
+			}
+		}
+
+		return clipped;
+	}
+
+	private const int MaxQuestionChars = 2_000;
+	private const int MaxQuestionOptions = 8;
+	private const int MaxQuestionOptionChars = 200;
+	private const int MaxAnswerChars = 4_000;
 
 	/// <summary>是否有子代理正在等用户回答；页签圆点用它，避免每次活动都复制整份运行列表。</summary>
 	public bool HasAwaitingUser
@@ -372,6 +855,7 @@ public sealed class SubagentHub : IDisposable
 	{
 		var restored = new Dictionary<string, RunState>(StringComparer.Ordinal);
 		var order = new List<string>();
+		var undelivered = new List<string>();
 		foreach (var entry in _owner.Session.Entries)
 		{
 			if (entry is not CustomEntry { CustomType: EntryType, Data: JsonObject data })
@@ -379,8 +863,8 @@ public sealed class SubagentHub : IDisposable
 				continue;
 			}
 
-			var kind = data["kind"]?.GetValue<string>();
-			var name = data["name"]?.GetValue<string>();
+			var kind = ReadString(data["kind"]);
+			var name = ReadString(data["name"]);
 			if (string.IsNullOrEmpty(kind) || string.IsNullOrEmpty(name))
 			{
 				continue;
@@ -395,12 +879,12 @@ public sealed class SubagentHub : IDisposable
 						Run = new SubagentRun
 						{
 							Name = name,
-							Agent = data["agent"]?.GetValue<string>() ?? string.Empty,
-							Label = data["label"]?.GetValue<string>() ?? string.Empty,
-							Brief = data["brief"]?.GetValue<string>() ?? string.Empty,
-							Model = data["model"]?.GetValue<string>() ?? string.Empty,
-							Thinking = data["thinking"]?.GetValue<string>() ?? string.Empty,
-							Depth = data["depth"]?.GetValue<int>() ?? 1,
+							Agent = ReadString(data["agent"]) ?? string.Empty,
+							Label = ReadString(data["label"]) ?? string.Empty,
+							Brief = ReadString(data["brief"]) ?? string.Empty,
+							Model = ReadString(data["model"]) ?? string.Empty,
+							Thinking = ReadString(data["thinking"]) ?? string.Empty,
+							Depth = ReadInt(data["depth"]) ?? 1,
 							StartedAt = ReadLong(data["startedAt"]) ?? 0,
 							State = SubagentState.Stopped,
 							PlanMode = ReadPlanMode(data["planMode"]),
@@ -414,23 +898,43 @@ public sealed class SubagentHub : IDisposable
 				// started 条目才带子会话 id；start 条目先占名字。
 				state.Run = state.Run with
 				{
-					SessionId = data["session"]?.GetValue<string>() is { Length: > 0 } sessionId
+					SessionId = ReadString(data["session"]) is { Length: > 0 } sessionId
 						? sessionId
 						: state.Run.SessionId,
-					SessionFile = data["file"]?.GetValue<string>() is { Length: > 0 } file
+					SessionFile = ReadString(data["file"]) is { Length: > 0 } file
 						? file
 						: state.Run.SessionFile,
-					Agent = data["agent"]?.GetValue<string>() ?? state.Run.Agent,
-					Label = data["label"]?.GetValue<string>() ?? state.Run.Label,
-					Brief = data["brief"]?.GetValue<string>() ?? state.Run.Brief,
-					Model = data["model"]?.GetValue<string>() ?? state.Run.Model,
-					Thinking = data["thinking"]?.GetValue<string>() ?? state.Run.Thinking,
+					Agent = ReadString(data["agent"]) ?? state.Run.Agent,
+					Label = ReadString(data["label"]) ?? state.Run.Label,
+					Brief = ReadString(data["brief"]) ?? state.Run.Brief,
+					Model = ReadString(data["model"]) ?? state.Run.Model,
+					Thinking = ReadString(data["thinking"]) ?? state.Run.Thinking,
+					MaxTokens = ReadLong(data["maxTokens"]) ?? state.Run.MaxTokens,
 					PlanMode = state.Run.PlanMode || ReadPlanMode(data["planMode"]),
 					State = SubagentState.Stopped,
 				};
 				if (data["outputSchema"] is JsonObject schema)
 				{
 					state.OutputSchema = schema.DeepClone().AsObject();
+				}
+
+				if (ReadLong(data["runTimeoutMs"]) is { } timeoutMs && timeoutMs > 0)
+				{
+					state.RunTimeout = TimeSpan.FromMilliseconds(timeoutMs);
+				}
+
+				if (data["verify"] is JsonArray verify)
+				{
+					var commands = new List<string>(verify.Count);
+					foreach (var item in verify)
+					{
+						if (item is JsonValue value && value.TryGetValue<string>(out var command) && command.Length > 0)
+						{
+							commands.Add(command);
+						}
+					}
+
+					state.VerifyCommands = commands;
 				}
 
 				if (ReadLong(data["tokensVersion"]) is { } version)
@@ -443,6 +947,16 @@ public sealed class SubagentHub : IDisposable
 
 			if (!restored.TryGetValue(name, out var finished))
 			{
+				continue;
+			}
+
+			if (kind == "delivered")
+			{
+				if (ReadLong(data["turn"]) is { } deliveredTurn && deliveredTurn > finished.DeliveredTurn)
+				{
+					finished.DeliveredTurn = deliveredTurn;
+				}
+
 				continue;
 			}
 
@@ -470,18 +984,34 @@ public sealed class SubagentHub : IDisposable
 					"failed" => SubagentState.Failed,
 					_ => SubagentState.Stopped,
 				},
-				Turns = data["turns"]?.GetValue<int>() ?? finished.Run.Turns,
-				Result = data["result"]?.GetValue<string>() is { Length: > 0 } result
+				Turns = ReadInt(data["turns"]) ?? finished.Run.Turns,
+				Result = ReadString(data["result"]) is { Length: > 0 } result
 					? result
 					: finished.Run.Result,
 				Tokens = ReadLong(data["tokens"]) ?? finished.Run.Tokens,
 				Cost = ReadDouble(data["cost"]) ?? finished.Run.Cost,
 				FinishedAt = ReadLong(data["finishedAt"]) ?? finished.Run.FinishedAt,
+				StopReason = ReadString(data["stopReason"]) ?? finished.Run.StopReason,
+				Verify = ReadVerifyResults(data["verifyResults"]),
 				StructuredOutput = kind is "failed" or "stopped"
 					? null
 					: persistedStructured ?? finished.Run.StructuredOutput,
 				PlanMode = finished.Run.PlanMode || ReadPlanMode(data["planMode"]),
 			};
+
+			if (ReadLong(data["turn"]) is { } resultTurn && resultTurn > 0)
+			{
+				finished.ResultTurn = resultTurn;
+				finished.TurnSeq = Math.Max(finished.TurnSeq, resultTurn);
+			}
+
+			if (ReadBool(data["deliverable"]) && kind is "idle" or "failed")
+			{
+				if (!undelivered.Contains(name))
+				{
+					undelivered.Add(name);
+				}
+			}
 		}
 
 		lock (_gate)
@@ -528,8 +1058,13 @@ public sealed class SubagentHub : IDisposable
 
 				if (state.Run.Result is { Length: > 0 } result)
 				{
-					state.TurnSeq = 1;
-					state.ResultTurn = 1;
+					// 旧条目没有 turn：算作第 1 轮，未投递时 wait 还能取一次。
+					if (state.ResultTurn <= 0)
+					{
+						state.ResultTurn = 1;
+					}
+
+					state.TurnSeq = Math.Max(state.TurnSeq, state.ResultTurn);
 					if (state.Run.State == SubagentState.Idle &&
 						state.StructuredOutput is null &&
 						state.OutputSchema is { } schema)
@@ -552,15 +1087,103 @@ public sealed class SubagentHub : IDisposable
 				_order.Add(name);
 			}
 		}
+
+		QueueRestoredResults(undelivered, restored);
+	}
+
+	/// 上一轮结果没送到父会话（关标签、退出、崩溃）就恢复了：排进队列补投一次。
+	/// 不补的话，模型永远不知道那段结论，卡片里的正文只有用户看得到。
+	private void QueueRestoredResults(List<string> names, Dictionary<string, RunState> restored)
+	{
+		if (names.Count == 0)
+		{
+			return;
+		}
+
+		var pending = new List<PendingResult>(names.Count);
+		foreach (var name in names)
+		{
+			if (!restored.TryGetValue(name, out var state) || !_runs.ContainsKey(name))
+			{
+				continue;
+			}
+
+			if (state.ResultTurn > 0 && state.DeliveredTurn >= state.ResultTurn)
+			{
+				continue;
+			}
+
+			var text = state.Run.Result ?? string.Empty;
+			if (text.Length == 0 && state.Run.SessionFile is not { Length: > 0 })
+			{
+				continue;
+			}
+
+			// 恢复出来的正文算一轮；投递成功后正常路径会补一条 delivered 记录，第二次重启不会重推。
+			state.ResultTurn = state.ResultTurn > 0 ? state.ResultTurn : 1;
+			pending.Add(new PendingResult(name, state.Run.State == SubagentState.Failed, text, state.ResultTurn, state.StructuredOutput)
+			{
+				FullTextFile = state.Run.SessionFile,
+			});
+		}
+
+		if (pending.Count == 0)
+		{
+			return;
+		}
+
+		// 下一次父会话起轮或收尾时投递；不在这里直接发，构造函数里会话还没装好。
+		lock (_gate)
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			_pending.AddRange(pending);
+		}
+	}
+
+	private static string? ReadLastAssistantTextFromFile(string file)
+	{
+		try
+		{
+			var manager = SessionManager.Open(file);
+			for (var index = manager.Entries.Count - 1; index >= 0; index--)
+			{
+				if (manager.Entries[index] is SessionMessageEntry { Message: AssistantMessage assistant })
+				{
+					var text = MessageText.Of(assistant);
+					if (text.Length > 0)
+					{
+						return text;
+					}
+				}
+			}
+		}
+		catch (Exception)
+		{
+			// 文件缺失或损坏：退回条目里的摘要。
+		}
+
+		return null;
 	}
 
 	/// <summary>用户发了一条消息：本回合的启动预算清零。回报触发的父会话轮次不算。</summary>
 	public void NoteUserPrompt()
 	{
+		var flush = false;
 		lock (_gate)
 		{
 			_spawns = 0;
 			_autoContinue = 0;
+			// 重启后补投的正文攒在队列里；用户下一次提问时先到，模型才不需要猜。
+			flush = _pending.Count > 0;
+		}
+
+		if (flush)
+		{
+			ScheduleFlush();
 		}
 	}
 
@@ -576,9 +1199,20 @@ public sealed class SubagentHub : IDisposable
 		var boundary = string.Concat(
 			"你是父会话「", context.ParentTitle, "」开出的子代理「", context.Name, "」，角色「", context.Agent.Name, "」。\n",
 			history,
-			"把结论写进最终回复：做了什么、结果在哪、还差什么。需要用户拍板时，写出阻塞点和选项后停下；",
-			"你有自己的标签页，用户可能看到也可能不看。不要只停在提问上等回答。\n",
+			"把结论写进最终回复：做了什么、结果在哪、还差什么。\n",
+			"父会话已经做过的决定、给过的范围与偏好，用 ask_parent 问它；只有用户能决定的事（权限、偏好、任务外的选择）用 ask_question。",
+			"你有自己的标签页，用户可能看到也可能不看；停在提问上等回答之前，先确认这条问题真的需要人。\n",
 			"不要开新的子代理，也不要把工作推回父会话。");
+		if (context.Verify.Count > 0)
+		{
+			// 子代理知道结论会被复核，就不容易交一份「测试通过」的口头声明。
+			boundary = string.Concat(
+				boundary,
+				"\n\n这一轮结束后，宿主会自己执行下面这些命令并记录退出码，结论按它们的真实结果判定：\n",
+				string.Join("\n", context.Verify.Select(static command => string.Concat("- `", command, "`"))),
+				"\n不要声称这些命令通过了；把改动做完，让命令自己说话。");
+		}
+
 		if (context.OutputSchema is not { } schema)
 		{
 			return boundary;
@@ -593,6 +1227,18 @@ public sealed class SubagentHub : IDisposable
 
 	/// <summary>本会话的委派深度；顶层为 0。</summary>
 	public int Depth => _depth;
+
+	/// <summary>测试用：还没投递出去的结果条数。</summary>
+	internal int PendingCount
+	{
+		get
+		{
+			lock (_gate)
+			{
+				return _pending.Count;
+			}
+		}
+	}
 
 	/// <summary>测试用：等待当前排队的投递全部完成。</summary>
 	internal Task DeliveryBarrier
@@ -625,9 +1271,51 @@ public sealed class SubagentHub : IDisposable
 			return new SubagentStartOutcome(false, UnknownAgent(request.Agent));
 		}
 
+		// 显式给的时限才做范围校验；设置与会话默认值（包括测试里的短预算）不受下限限制。
+		var runTimeout = request.RunTimeout
+			?? (definition.TimeoutMinutes is { } minutes && minutes > 0
+				? TimeSpan.FromMinutes(minutes)
+				: TimeSpan.Zero);
+		if (runTimeout <= TimeSpan.Zero)
+		{
+			runTimeout = _limits.RunTimeout;
+		}
+		else if (runTimeout < TimeSpan.FromSeconds(10) || runTimeout > TimeSpan.FromHours(24))
+		{
+			return new SubagentStartOutcome(false, "timeout_ms must be between 10000 and 86400000");
+		}
+
+		var maxTokens = request.MaxTokens ?? definition.MaxTokens ?? _limits.MaxTokens;
+		if (maxTokens < 0)
+		{
+			return new SubagentStartOutcome(false, "max_tokens must not be negative");
+		}
+
+		var verify = request.Verify ?? definition.Verify ?? [];
+		if (verify.Count > MaxVerifyCommands)
+		{
+			return new SubagentStartOutcome(false, $"too many verify commands; at most {MaxVerifyCommands}");
+		}
+
+		var planMode = _owner.PlanModeEnabled;
+		foreach (var command in verify)
+		{
+			if (command.Trim().Length == 0 || command.Length > MaxVerifyCommandChars)
+			{
+				return new SubagentStartOutcome(false,
+					$"each verify command must be 1-{MaxVerifyCommandChars} characters");
+			}
+
+			// 验证由宿主跑，不经过子会话的工具闸；计划模式下不能成为写工作区的后门。
+			if (planMode && !PlanMode.IsReadOnlyShellCommand(command))
+			{
+				return new SubagentStartOutcome(false,
+					$"verify command `{command}` is not read-only; drop verify or leave plan mode");
+			}
+		}
+
 		var context = NormalizeContext(request.Context);
 		IReadOnlyList<Message>? seed = null;
-		var planMode = _owner.PlanModeEnabled;
 		JsonObject? outputSchema = null;
 		if (request.OutputSchema is not null)
 		{
@@ -696,6 +1384,8 @@ public sealed class SubagentHub : IDisposable
 			state = new RunState
 			{
 				OutputSchema = outputSchema,
+				RunTimeout = runTimeout,
+				VerifyCommands = verify,
 				Run = new SubagentRun
 				{
 					Name = name,
@@ -704,6 +1394,7 @@ public sealed class SubagentHub : IDisposable
 					Brief = Clip(task, MaxBriefChars),
 					Depth = _depth + 1,
 					PlanMode = planMode,
+					MaxTokens = maxTokens,
 					StartedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 				},
 			};
@@ -723,6 +1414,7 @@ public sealed class SubagentHub : IDisposable
 				{
 					PlanMode = planMode,
 					OutputSchema = outputSchema,
+					Verify = verify,
 				},
 				cancellationToken).ConfigureAwait(false);
 		}
@@ -848,6 +1540,7 @@ public sealed class SubagentHub : IDisposable
 		List<RunState> waiting;
 		var completedTurns = new Dictionary<string, TurnResult>(StringComparer.Ordinal);
 		var pending = new List<(RunState State, Task<TurnResult> Task)>();
+		var questionAlreadyPending = false;
 		lock (_gate)
 		{
 			if (_disposed)
@@ -887,6 +1580,8 @@ public sealed class SubagentHub : IDisposable
 					pending.Add((state, state.Completion.Task));
 				}
 			}
+
+			questionAlreadyPending = HasPendingQuestionLocked(waiting);
 		}
 
 		var taskNames = new Dictionary<Task<TurnResult>, string>(pending.Count);
@@ -896,8 +1591,9 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		var timedOut = false;
+		var questionSeen = false;
 		// any 只要有一个目标已经结束就立即返回；继续等 pending 会把「等一个」变成「等全部」。
-		if (pending.Count > 0 && !(any && completedTurns.Count > 0))
+		if (pending.Count > 0 && !(any && completedTurns.Count > 0) && !questionAlreadyPending)
 		{
 			Report(ProgressText(waiting, "waiting"));
 
@@ -905,6 +1601,40 @@ public sealed class SubagentHub : IDisposable
 			// 让「一个子代理跑十分钟」也不至于整段没有进度。
 			using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 			deadline.CancelAfter(timeout);
+			// 子代理提问算「需要你」：它与完成一样值得提前结束等待。
+			using var stop = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+			// 用完成的 TCS 而不是跨线程读一个 bool：取消与读取之间不需要额外的内存序保证。
+			var questionSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+			var targetNames = new HashSet<string>(waiting.Select(static state => state.Run.Name), StringComparer.Ordinal);
+			void OnQuestion(SubagentRun run)
+			{
+				if (!targetNames.Contains(run.Name))
+				{
+					return;
+				}
+
+				questionSignal.TrySetResult();
+				try
+				{
+					stop.Cancel();
+				}
+				catch (ObjectDisposedException)
+				{
+					// 等待已经收尾。
+				}
+			}
+
+			QuestionRaised += OnQuestion;
+			// 订阅与「已经在等答案」之间没有原子性：订阅后补看一次，避免刚好错过那一次事件。
+			lock (_gate)
+			{
+				if (HasPendingQuestionLocked(waiting))
+				{
+					questionSignal.TrySetResult();
+					stop.Cancel();
+				}
+			}
+
 			using var heartbeat = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
 			var reporter = ReportProgressAsync(waiting, progress is null ? null : Report, heartbeat.Token);
 			var tasks = pending.Select(static item => item.Task).ToArray();
@@ -913,7 +1643,7 @@ public sealed class SubagentHub : IDisposable
 				if (any)
 				{
 					// 第一个结束就拿到结果；其余任务不 await，免得把「等一个」拖成「等全部」。
-					var first = await Task.WhenAny(tasks).WaitAsync(deadline.Token).ConfigureAwait(false);
+					var first = await Task.WhenAny(tasks).WaitAsync(stop.Token).ConfigureAwait(false);
 					if (first.IsCompletedSuccessfully && taskNames.TryGetValue(first, out var name))
 					{
 						completedTurns[name] = first.Result;
@@ -923,7 +1653,7 @@ public sealed class SubagentHub : IDisposable
 				}
 				else
 				{
-					await foreach (var completed in Task.WhenEach(tasks).WithCancellation(deadline.Token).ConfigureAwait(false))
+					await foreach (var completed in Task.WhenEach(tasks).WithCancellation(stop.Token).ConfigureAwait(false))
 					{
 						if (completed.IsCompletedSuccessfully && taskNames.TryGetValue(completed, out var name))
 						{
@@ -937,17 +1667,25 @@ public sealed class SubagentHub : IDisposable
 			catch (OperationCanceledException)
 			{
 				cancellationToken.ThrowIfCancellationRequested();
-				timedOut = true;
+				questionSeen = questionSignal.Task.IsCompleted;
+				timedOut = !questionSeen;
 			}
 			finally
 			{
+				QuestionRaised -= OnQuestion;
 				await heartbeat.CancelAsync().ConfigureAwait(false);
 				await reporter.ConfigureAwait(false);
 			}
 		}
+		else if (pending.Count > 0 && questionAlreadyPending)
+		{
+			questionSeen = true;
+		}
 
 		// 超时、被移除或任务异常：用当前状态补一份快照，别让结果段落空着。
 		var stillRunning = 0;
+		JsonArray questionDetails;
+		string questionNames;
 		lock (_gate)
 		{
 			foreach (var state in waiting)
@@ -965,12 +1703,20 @@ public sealed class SubagentHub : IDisposable
 					stillRunning++;
 				}
 			}
+
+			// 同一把锁下取问题快照：后面的正文与 Details 都读这一份。
+			questionDetails = PendingQuestionDetailsLocked(waiting);
+			questionNames = PendingQuestionNamesLocked(waiting);
 		}
 
 
 		var details = new JsonArray();
 		var text = new StringBuilder(256);
-		if (timedOut)
+		if (questionSeen)
+		{
+			text.Append("wait_subagents: a subagent is waiting for your answer.");
+		}
+		else if (timedOut)
 		{
 			text.Append("wait_subagents timed out; some subagents are still running.");
 		}
@@ -986,6 +1732,8 @@ public sealed class SubagentHub : IDisposable
 		text.Append('\n');
 		var budget = MaxWaitChars;
 		var results = new StringBuilder(256);
+		// wait 取走的正文同样要落 delivered：否则重启后同一条结果会被补投第二次。
+		var taken = new List<RunState>(waiting.Count);
 		lock (_gate)
 		{
 			foreach (var state in waiting)
@@ -1009,6 +1757,7 @@ public sealed class SubagentHub : IDisposable
 					["restored"] = run.Restored,
 					["turns"] = run.Turns,
 					["tokens"] = run.Tokens,
+					["max_tokens"] = run.MaxTokens,
 					["cost"] = run.Cost,
 					["elapsed_ms"] = ElapsedMs(run),
 					["session_id"] = run.SessionId,
@@ -1017,6 +1766,9 @@ public sealed class SubagentHub : IDisposable
 					["activity"] = run.Activity,
 					["progress"] = run.Progress,
 					["awaiting_user"] = run.AwaitingUser,
+					["question"] = run.Question,
+					["stop_reason"] = run.StopReason is { Length: > 0 } stopReason ? stopReason : null,
+					["verify"] = VerifyDetails(run.Verify),
 					// returned：这次工具调用把正文带回去了，所以它不会再走消息投递。
 					// 桌面据此补一张只读回报卡；delivered 是「调用前就已经投递过」，两者不同。
 					["delivered"] = alreadyDelivered,
@@ -1030,6 +1782,11 @@ public sealed class SubagentHub : IDisposable
 				if (run.AwaitingUser)
 				{
 					text.Append(" · waiting for user input");
+				}
+
+				if (run.Question is { Length: > 0 } question)
+				{
+					text.Append(" · asks: ").Append(Clip(question, 300));
 				}
 
 				if (run.Activity is { Length: > 0 } activity)
@@ -1080,12 +1837,30 @@ public sealed class SubagentHub : IDisposable
 				}
 
 				state.DeliveredTurn = turnResult.Turn;
+				taken.Add(state);
 				// 标记这段正文已随本次工具结果返回，桌面据此补只读卡。
 				row["returned"] = true;
 			}
 		}
 
-		if (timedOut)
+		foreach (var state in taken)
+		{
+			AppendDescriptor(state, "delivered");
+		}
+
+		if (questionSeen)
+		{
+			text.Append("\nAnswer with send_to_subagent({ id: \"<name>\", message: \"...\" }) — it is delivered as the answer, not as a new turn. ")
+				.Append("The subagent stays blocked until you answer, the user answers on the card, or the question times out. ");
+			// 把可回答的名字列出来：模型不用再猜哪个子代理在等。
+			if (questionNames.Length > 0)
+			{
+				text.Append("Waiting now: ").Append(questionNames).Append(". ");
+			}
+
+			text.Append("Answer only what this conversation already authorizes; anything else belongs to the user.");
+		}
+		else if (timedOut)
 		{
 			text.Append("\nEnd your turn instead of waiting again; the result arrives as a message when it finishes.");
 		}
@@ -1098,8 +1873,10 @@ public sealed class SubagentHub : IDisposable
 		return new SubagentOutcome(true, text.ToString().TrimEnd(), new JsonObject
 		{
 			["timed_out"] = timedOut,
+			["reason"] = questionSeen ? "question" : timedOut ? "timeout" : any && stillRunning > 0 ? "any" : "completed",
 			["any"] = any,
 			["still_running"] = stillRunning,
+			["questions"] = questionDetails,
 			["subagents"] = details,
 		});
 	}
@@ -1135,7 +1912,11 @@ public sealed class SubagentHub : IDisposable
 					["activity"] = run.Activity,
 					["progress"] = run.Progress,
 					["awaiting_user"] = run.AwaitingUser,
+					["question"] = run.Question,
 					["restored"] = run.Restored,
+					["max_tokens"] = run.MaxTokens,
+					["stop_reason"] = run.StopReason is { Length: > 0 } stopReason ? stopReason : null,
+					["verify"] = VerifyDetails(run.Verify),
 					["resumable"] = run.SessionFile is { Length: > 0 },
 					["result"] = run.Result is { Length: > 0 } result ? Clip(result, 400) : null,
 				});
@@ -1146,6 +1927,11 @@ public sealed class SubagentHub : IDisposable
 				if (run.AwaitingUser)
 				{
 					text.Append(" · waiting for user input");
+				}
+
+				if (run.Question is { Length: > 0 } question)
+				{
+					text.Append(" · asks: ").Append(Clip(question, 300));
 				}
 
 				if (run.Activity is { Length: > 0 } activity)
@@ -1389,12 +2175,35 @@ public sealed class SubagentHub : IDisposable
 			return new SubagentOutcome(false, $"no subagent matched \"{target}\"");
 		}
 
+		// 子代理正停在 ask_parent 上：这条消息就是回答，不另起一轮。
+		PendingAsk? answer = null;
+		lock (_gate)
+		{
+			if (state.Question is not null)
+			{
+				answer = TakeQuestionLocked(state, byParent: true);
+			}
+		}
+
+		if (answer is not null)
+		{
+			PublishAnswer(state, answer, Clip(text, MaxAnswerChars));
+			return new SubagentOutcome(true, $"answered {state.Run.Name}'s question");
+		}
+
 		// 停掉/超时的回合可能还在 abort：这时把消息排进 follow-up 会落在一个
 		// 不再轮询队列的运行里，既送不到也不报错。让调用方等一下子再发。
 		if (state.Run.State is SubagentState.Stopped or SubagentState.Failed &&
 			state.Session is { IsRunning: true })
 		{
 			return new SubagentOutcome(false, $"{state.Run.Name} is still stopping; wait for it to settle before sending");
+		}
+
+		// 验证期间状态还是 running，但子会话已经空了：这时起新一轮会让验证任务把结果写到新一轮头上。
+		if (state.VerifyCancellation is not null)
+		{
+			return new SubagentOutcome(false,
+				$"{state.Run.Name} is running the host verification; wait for it to finish before sending");
 		}
 
 		if (resolvedMode == "steer" && !canSteer)
@@ -1468,9 +2277,9 @@ public sealed class SubagentHub : IDisposable
 		{
 			// 不动 Completion、Result 与已投递轮次：正在等待上一轮的 wait 必须继续等这一轮收尾，
 			// 新一轮开始时 SetRunning 会根据「上一轮的 TCS 已完成」换一个新的。
-			// Stopping 只属于被停的那一轮，新消息要能正常收尾。
+			// Stopping 只属于被停的那一轮，新消息要能正常收尾；Guarded 留到新一轮的 AgentStart
+			// 再清，否则被停/超时那一轮迟到的 agent_end 会把这一轮写成它的收尾。
 			state.Stopping = false;
-			state.TimedOut = false;
 		}
 
 		var outgoing = new UserMessage
@@ -1495,8 +2304,17 @@ public sealed class SubagentHub : IDisposable
 			return new SubagentOutcome(true, $"queued for {state.Run.Name}");
 		}
 
+		if (!running)
+		{
+			// 从「空闲」到 AgentStart 之间还有一段：标上，免得回收把刚送出的一轮连会话一起 dispose。
+			lock (_gate)
+			{
+				state.Sending = true;
+			}
+		}
+
 		// 只投递不等结果：send 的语义是「排进去」，结果照常走完成消息。
-		_ = DeliverQuietlyAsync(session, outgoing);
+		_ = DeliverQuietlyAsync(state, session, outgoing);
 		return new SubagentOutcome(true, $"sent to {state.Run.Name}");
 	}
 
@@ -1532,6 +2350,7 @@ public sealed class SubagentHub : IDisposable
 					// 恢复时父会话还在计划模式，或者这条关系本来就是在计划模式下建的：继续只读。
 					PlanMode = run.PlanMode || _owner.PlanModeEnabled,
 					OutputSchema = state.OutputSchema?.DeepClone().AsObject(),
+					Verify = state.VerifyCommands,
 				},
 				cancellationToken).ConfigureAwait(false);
 		}
@@ -1572,6 +2391,8 @@ public sealed class SubagentHub : IDisposable
 			}
 
 			current.Session = child;
+			// 回收路径通常已经摘过订阅；父会话被回收、NoteChildClosed 没跑到的边角里这里补一次。
+			current.Subscription?.Dispose();
 			current.Subscription = subscription;
 			// Stopping 只描述「当前这一轮被叫停」，冷恢复之后新的一轮要能正常收尾。
 			current.Stopping = false;
@@ -1579,7 +2400,9 @@ public sealed class SubagentHub : IDisposable
 			current.Run = current.Run with
 			{
 				Restored = false,
-				State = SubagentState.Idle,
+				// 只归一起不来的启动态：冷恢复本身不代表上一轮是成功的，
+				// 把 failed/stopped 改成 idle 会让卡片和 list 与最后结果自相矛盾。
+				State = run.State == SubagentState.Starting ? SubagentState.Idle : run.State,
 				PlanMode = run.PlanMode || _owner.PlanModeEnabled,
 				Activity = null,
 				Progress = null,
@@ -1613,7 +2436,16 @@ public sealed class SubagentHub : IDisposable
 			}
 
 			state.Stopping = true;
+			// 终结状态已经写好了：这个回合迟到的 agent_end 不能再落一次，否则会和随后的
+			// send 抢同一个 RunState（把新一轮写成「已停止」）。
+			state.Guarded = true;
+			state.Generation++;
+			// 挂在问题上的那一轮先解开：否则子代理的工具要等满问题时限才醒。
+			state.Question?.Timeout.Cancel();
+			state.Question = null;
+			state.Run = state.Run with { Question = null };
 			CancelDeadlineLocked(state);
+			CancelVerifyLocked(state);
 			state.ActiveTools.Clear();
 			state.Run = state.Run with
 			{
@@ -1642,9 +2474,9 @@ public sealed class SubagentHub : IDisposable
 	}
 
 	/// <summary>子会话被宿主关掉：关系保留为 stopped，不再订阅。</summary>
-	public void NoteChildClosed(string sessionId)
+	public void NoteChildClosed(string sessionId, CodingAgentSession? session = null)
 	{
-		RunState? state = null;
+		RunState? state;
 		lock (_gate)
 		{
 			if (_disposed)
@@ -1652,17 +2484,10 @@ public sealed class SubagentHub : IDisposable
 				return;
 			}
 
-			foreach (var candidate in _runs.Values)
+			state = FindStateLocked(sessionId);
+			if (state is null || (session is not null && !ReferenceEquals(state.Session, session)))
 			{
-				if (string.Equals(candidate.Run.SessionId, sessionId, StringComparison.Ordinal))
-				{
-					state = candidate;
-					break;
-				}
-			}
-
-			if (state is null)
-			{
+				// 回收与冷恢复交错：这条通知属于已经被换掉的旧会话，别动现在这个。
 				return;
 			}
 
@@ -1670,34 +2495,48 @@ public sealed class SubagentHub : IDisposable
 			state.Subscription = null;
 			state.Session = null;
 			state.ActiveTools.Clear();
+			state.Generation++;
 			CancelDeadlineLocked(state);
-			// 已排队的 AgentEnd 可能在 Dispose 之后才到：标成 Stopping，迟到的收尾只能落 Stopped，
-			// 不能把已关闭的子会话又改回 Idle 并投递结果。
-			state.Stopping = true;
-			state.TimedOut = false;
-			// 子会话标签关掉后不能继续发消息，状态一律落到 stopped。
-			state.Run = state.Run with
+			CancelVerifyLocked(state);
+
+			if (!state.Unloading)
 			{
-				State = SubagentState.Stopped,
-				Activity = null,
-				Progress = null,
-				AwaitingUser = false,
-				FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-			};
-			state.Completion.TrySetResult(new TurnResult(0, string.Empty));
+				// 已排队的 AgentEnd 可能在关闭之后才到：标成 Stopping 与 Guarded，迟到的收尾直接忽略，
+				// 不能把已关闭的子会话又改回 Idle 并投递结果。
+				state.Stopping = true;
+				state.Guarded = true;
+				state.Question?.Timeout.Cancel();
+				state.Question = null;
+				// 子会话标签关掉后不能继续发消息，状态一律落到 stopped。
+				state.Run = state.Run with
+				{
+					State = SubagentState.Stopped,
+					Question = null,
+					Activity = null,
+					Progress = null,
+					AwaitingUser = false,
+					FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+				};
+				state.Completion.TrySetResult(new TurnResult(0, string.Empty));
+			}
+			// 空闲回收（Unloading）只把活会话摘掉：条目、状态与文件留着，
+			// send_to_subagent 与打开转录都会冷恢复。
 		}
 
 		Changed?.Invoke();
 	}
 
 	/// <summary>
-	/// 子会话开始或结束等待用户回答：只更新展示状态。找不到对应运行（历史项、关联会话）时返回 null。
+	/// 子会话开始或结束等待用户回答：只更新展示状态，同时把运行截止时间暂停与恢复。
+	/// 找不到对应运行（历史项、关联会话）时返回 <see langword="null"/>。
 	/// </summary>
 	/// <param name="sessionId">子会话 id。</param>
 	/// <param name="awaiting">是否正在等回答。</param>
 	public SubagentRun? NoteChildAwaiting(string sessionId, bool awaiting)
 	{
 		SubagentRun? snapshot;
+		var changed = false;
+		var notify = false;
 		lock (_gate)
 		{
 			if (_disposed)
@@ -1705,33 +2544,110 @@ public sealed class SubagentHub : IDisposable
 				return null;
 			}
 
-			RunState? state = null;
-			foreach (var candidate in _runs.Values)
-			{
-				if (string.Equals(candidate.Run.SessionId, sessionId, StringComparison.Ordinal))
-				{
-					state = candidate;
-					break;
-				}
-			}
-
+			var state = FindStateLocked(sessionId);
 			if (state is null || state.Run.IsTerminal)
 			{
 				return null;
 			}
 
-			if (state.Run.AwaitingUser == awaiting)
-			{
-				return null;
-			}
-
-			state.Run = state.Run with { AwaitingUser = awaiting };
+			// 幂等地维护「等待就不计时」：状态没变也要走一遍，把漏掉的暂停补上。
+			changed = state.Run.AwaitingUser != awaiting;
+			SetAwaitingLocked(state, awaiting);
 			snapshot = state.Run;
+			notify = awaiting && changed;
+		}
+
+		if (notify)
+		{
+			AwaitingChanged?.Invoke(snapshot);
 		}
 
 		Changed?.Invoke();
-		return snapshot;
+		return changed ? snapshot : null;
 	}
+
+	/// <summary>
+	/// 等用户回答的开合：改展示字段，同时暂停/恢复运行截止时间。
+	/// 两个来源都会调到这里：子会话自己的 <c>ask_question</c> 工具起止（hub 内部），
+	/// 与桌面把问询面板的开合同步过来（父标签开着时更早一步）。重复调用是空操作。
+	/// </summary>
+	private void SetAwaitingLocked(RunState state, bool awaiting)
+	{
+		if (state.Run.IsTerminal)
+		{
+			return;
+		}
+
+		if (state.Run.AwaitingUser != awaiting)
+		{
+			state.Run = state.Run with { AwaitingUser = awaiting };
+		}
+
+		RefreshWaitPauseLocked(state);
+	}
+
+	/// 子代理在等人（用户或父会话）时不该烧运行预算：两种等待共用这一处暂停/恢复，
+	/// 谁最后解除谁负责重新起表。
+	private void RefreshWaitPauseLocked(RunState state)
+	{
+		if (state.Guarded || state.Stopping || state.Run.State != SubagentState.Running)
+		{
+			return;
+		}
+
+		if (state.Run.AwaitingUser || state.Question is not null)
+		{
+			// 只看计时器是否真的在走：重复到来的「开始等」也要把表停掉。
+			if (state.Deadline is not null)
+			{
+				PauseDeadlineLocked(state);
+			}
+
+			return;
+		}
+
+		// 验证期间不计时：那一轮已经结束，计时留给验证命令自己的超时。
+		if (state.VerifyCancellation is not null || state.Deadline is not null)
+		{
+			return;
+		}
+
+		// 回答完至少再给原预算的一半（最多 30 秒）：剩下的几秒不够模型把一句话说完，
+		// 结果就是刚恢复又超时，回答白输入了。
+		var floor = state.RunTimeout > TimeSpan.Zero ? state.RunTimeout * 0.5 : MaxResumeWindow;
+		if (floor > MaxResumeWindow)
+		{
+			floor = MaxResumeWindow;
+		}
+
+		var resume = state.DeadlineRemaining > floor ? state.DeadlineRemaining : floor;
+		StartDeadlineLocked(state, resume);
+	}
+
+	/// 起表并登记；调用方已持锁。
+	private void StartDeadlineLocked(RunState state, TimeSpan remaining)
+	{
+		if (_disposed)
+		{
+			// 关会话后仍可能有排队的 AgentStart 事件：不装表，免得留下一个跑满预算的定时器。
+			return;
+		}
+
+		if (remaining <= TimeSpan.Zero)
+		{
+			remaining = TimeSpan.FromMilliseconds(1);
+		}
+
+		var deadline = new CancellationTokenSource();
+		CancelDeadlineLocked(state);
+		state.Deadline = deadline;
+		state.DeadlineRemaining = remaining;
+		state.DeadlineStartedAt = Stopwatch.GetTimestamp();
+		_ = RunDeadlineAsync(state.Run.Name, state, deadline, remaining);
+	}
+
+	/// 回答完最多补这么多时间；再长就超出它自己那一轮的意义了。
+	private static readonly TimeSpan MaxResumeWindow = TimeSpan.FromSeconds(30);
 
 	public void Dispose()
 	{
@@ -1757,7 +2673,10 @@ public sealed class SubagentHub : IDisposable
 				.OfType<CodingAgentSession>()];
 			foreach (var state in _runs.Values)
 			{
+				state.Question?.Timeout.Cancel();
+				state.Question = null;
 				CancelDeadlineLocked(state);
+				CancelVerifyLocked(state);
 				if (state.Run.IsActive)
 				{
 					// 父会话关了，结果已经无处投递：停掉正在跑的子代理，别继续烧 token。
@@ -1809,21 +2728,27 @@ public sealed class SubagentHub : IDisposable
 
 			case ToolExecutionStartEvent tool:
 				StartTool(name, tool.ToolCallId, DescribeTool(tool.ToolName, tool.Arguments));
+				if (string.Equals(tool.ToolName, AskQuestionToolName, StringComparison.Ordinal))
+				{
+					// 暂停计时由 hub 自己驱动：桌面没开着父标签时，那条展示同步根本不跑。
+					SetAwaiting(name, awaiting: true);
+				}
+
 				break;
 
 			case ToolExecutionEndEvent tool:
 				// 并行工具里一个结束不代表都结束：仍活跃的按最后开始的显示。
 				EndTool(name, tool.ToolCallId);
-				if (string.Equals(tool.ToolName, "ask_question", StringComparison.Ordinal))
+				if (string.Equals(tool.ToolName, AskQuestionToolName, StringComparison.Ordinal))
 				{
-					ClearAwaiting(name);
+					SetAwaiting(name, awaiting: false);
 				}
 
 				break;
 
 			case MessageEndEvent { Message: AssistantMessage assistant }:
-				// 每完成一条助手消息就更新进度：长回合里 parent 的 wait 与卡片能看到它写到了哪。
-				SetProgress(name, MessageText.Of(assistant));
+				// 进度与用量一起记：同一拍里两件事、一次界面刷新。
+				NoteAssistantMessage(name, assistant);
 				break;
 
 			case AgentEndEvent { WillRetry: false } end:
@@ -1831,12 +2756,13 @@ public sealed class SubagentHub : IDisposable
 				var last = MessageText.LastAssistant(end.Messages);
 				var text = last is null ? string.Empty : MessageText.Of(last);
 				var failed = last?.StopReason is StopReason.Error or StopReason.Aborted;
+				var reason = StopReasonName(last?.StopReason);
 				if (failed && text.Length == 0)
 				{
 					text = last?.ErrorMessage ?? string.Empty;
 				}
 
-				CompleteRun(name, text, failed);
+				FinishRun(name, text, failed, reason);
 				break;
 			}
 		}
@@ -1844,9 +2770,20 @@ public sealed class SubagentHub : IDisposable
 		return ValueTask.CompletedTask;
 	}
 
+	private static string StopReasonName(StopReason? reason) => reason switch
+	{
+		StopReason.Length => "length",
+		StopReason.Error => "error",
+		StopReason.Aborted => "aborted",
+		StopReason.Stop => "stop",
+		StopReason.ToolUse => "tool_use",
+		StopReason.Deferred => "deferred",
+		_ => string.Empty,
+	};
+
 	private void SetRunning(string name)
 	{
-		RunState? running;
+		TimeSpan budget;
 		lock (_gate)
 		{
 			if (!_runs.TryGetValue(name, out var state) || state.Stopping)
@@ -1866,53 +2803,142 @@ public sealed class SubagentHub : IDisposable
 			}
 
 			state.ActiveTools.Clear();
+			// 预算按轮算：新一轮有新额度，上一轮的消耗不会把这一轮提前卡住。
+			state.BudgetTokens = 0;
+			state.TokenBase = state.Run.Tokens;
+			state.CheckpointSent = false;
+			state.ParentAnswers = 0;
+			state.Sending = false;
+			state.Generation++;
+			budget = state.RunTimeout > TimeSpan.Zero ? state.RunTimeout : _limits.RunTimeout;
+			state.DeadlineRemaining = budget;
+			state.DeadlineStartedAt = 0;
 			state.Run = state.Run with
 			{
 				State = SubagentState.Running,
 				Activity = null,
 				Progress = null,
 				AwaitingUser = false,
+				// 上一轮的验证与停止原因属于上一轮：运行中展开区不该还挂着旧结论。
+				Verify = [],
+				StopReason = string.Empty,
 			};
-			running = state;
+			state.Guarded = false;
+			// 上一轮的问题不可能还挂着；万一有（停掉后马上又起一轮），让它按「没人回答」收尾。
+			state.Question?.Timeout.Cancel();
+			state.Question = null;
+			state.Run = state.Run with { Question = null };
+			// 在同一把锁里起表：否则 UI 线程刚好在此刻标上「等待回答」时看到 Deadline 还没装，
+			// 暂停落空，用户读题的时间又会算进预算。
+			StartDeadlineLocked(state, budget);
 		}
 
-		StartDeadline(name, running);
 		Changed?.Invoke();
 	}
 
-	/// 每轮运行一个截止时间：卡死的子代理不会无限烧 token。
-	private void StartDeadline(string name, RunState state)
+	/// 截止时间分两段：先推一次「收尾」，再把 run 停掉。
+	/// 只砍不提醒会把子代理已经写出的半份结果白扔，而那正是父会话需要的东西。
+	private async Task RunDeadlineAsync(
+		string name,
+		RunState state,
+		CancellationTokenSource deadline,
+		TimeSpan remaining)
 	{
-		var deadline = new CancellationTokenSource();
+		var lead = CheckpointLead(remaining);
+		// lead 为 0（短运行）时别再 steer：那句提醒会卡在到期那一刻，紧接着就是 abort。
+		if (lead > TimeSpan.Zero && lead < remaining)
+		{
+			try
+			{
+				await Task.Delay(remaining - lead, deadline.Token).ConfigureAwait(false);
+				RequestCheckpoint(name, state, lead);
+				await Task.Delay(lead, deadline.Token).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				return;
+			}
+		}
+		else
+		{
+			try
+			{
+				await Task.Delay(remaining, deadline.Token).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				return;
+			}
+		}
+
+		await EnforceDeadlineAsync(name, state, deadline).ConfigureAwait(false);
+	}
+
+	/// 收尾提前量：短运行不值得打断，长运行给一分钟把话说完。
+	internal static TimeSpan CheckpointLeadForTests(TimeSpan remaining) => CheckpointLead(remaining);
+
+	/// 收尾提前量：短运行不值得打断，长运行给一分钟把话说完。
+	private static TimeSpan CheckpointLead(TimeSpan remaining)
+	{
+		if (remaining < TimeSpan.FromMinutes(3))
+		{
+			return TimeSpan.Zero;
+		}
+
+		var lead = remaining * 0.1;
+		return lead > TimeSpan.FromMinutes(2) ? TimeSpan.FromMinutes(2) : lead;
+	}
+
+	/// 到期前让子代理自己收尾：停止开新工作，把已完成与剩下的写进最终回复。
+	private void RequestCheckpoint(string name, RunState state, TimeSpan lead)
+	{
+		CodingAgentSession? session;
 		lock (_gate)
 		{
-			if (_disposed || !_runs.TryGetValue(name, out var current) || !ReferenceEquals(current, state) ||
-				state.Run.State != SubagentState.Running)
+			if (_disposed || state.Stopping || state.Guarded || state.CheckpointSent ||
+				state.Run.State != SubagentState.Running || !_runs.TryGetValue(name, out var current) ||
+				!ReferenceEquals(current, state))
 			{
-				deadline.Dispose();
 				return;
 			}
 
-			CancelDeadlineLocked(state);
-			state.Deadline = deadline;
+			state.CheckpointSent = true;
+			session = state.Session;
 		}
 
-		_ = EnforceDeadlineAsync(name, state, deadline);
-	}
-
-	private async Task EnforceDeadlineAsync(string name, RunState state, CancellationTokenSource deadline)
-	{
-		try
-		{
-			await Task.Delay(_runTimeout, deadline.Token).ConfigureAwait(false);
-		}
-		catch (OperationCanceledException)
+		if (session is not { IsRunning: true })
 		{
 			return;
 		}
 
+		try
+		{
+			session.Steer(new UserMessage
+			{
+				// 用这次真正计时的提前量，不是整份预算重算一遍：暂停恢复后两者会差很多。
+				Content = MessageContent.FromText(CheckpointText(lead)),
+				Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+				CustomType = MessageType,
+			});
+		}
+		catch (Exception)
+		{
+			// 子会话可能正在收尾：提醒送不到就只靠后面的硬超时。
+		}
+	}
+
+	private static string CheckpointText(TimeSpan lead) => string.Concat(
+		"来自宿主：这次运行还剩 ",
+		FormatSpan(lead),
+		"。停止开新工作，把已经完成的部分、改过的文件和剩下的工作写进最终回复，然后结束这一轮。");
+
+	private static string FormatSpan(TimeSpan span) => span >= TimeSpan.FromMinutes(1)
+		? string.Create(CultureInfo.InvariantCulture, $"{(int)Math.Round(span.TotalMinutes)} 分钟")
+		: string.Create(CultureInfo.InvariantCulture, $"{(int)Math.Round(span.TotalSeconds)} 秒");
+
+	private async Task EnforceDeadlineAsync(string name, RunState state, CancellationTokenSource deadline)
+	{
 		CodingAgentSession? session;
-		long turn;
 		string text;
 		lock (_gate)
 		{
@@ -1923,50 +2949,21 @@ public sealed class SubagentHub : IDisposable
 				return;
 			}
 
-			state.TimedOut = true;
-			state.Stopping = true;
-			state.StructuredOutput = null;
-			state.ActiveTools.Clear();
-			state.ResultTurn = ++state.TurnSeq;
-			turn = state.ResultTurn;
-			text = TimeoutText();
-			state.Run = state.Run with
-			{
-				State = SubagentState.Failed,
-				Turns = state.Run.Turns + 1,
-				Result = text,
-				StructuredOutput = null,
-				Activity = null,
-				Progress = null,
-				AwaitingUser = false,
-				FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-			};
-			state.Completion.TrySetResult(new TurnResult(turn, text));
 			state.Deadline = null;
+			state.DeadlineStartedAt = 0;
 			session = state.Session;
 		}
 
 		deadline.Dispose();
-		if (session is not null)
+		var last = LastAssistantText(session);
+		text = TimeoutText(state.RunTimeout > TimeSpan.Zero ? state.RunTimeout : _limits.RunTimeout);
+		if (last is { Length: > 0 })
 		{
-			var usage = UsageOf(session);
-			lock (_gate)
-			{
-				state.Run = state.Run with { Tokens = usage.Tokens, Cost = usage.Cost };
-			}
+			// 已经写出来的正文比「超时了」有用：父会话至少能拿这段继续做。
+			text = string.Concat(text, "\n\n已写出的正文：\n", Clip(last, MaxResultChars));
 		}
 
-		try
-		{
-			AppendDescriptor(state, "failed");
-			Changed?.Invoke();
-			QueueDelivery(new PendingResult(name, true, text, turn));
-		}
-		catch (Exception)
-		{
-			// 这是一个 fire-and-forget 的超时任务；异常不能变成未观察的任务异常。
-		}
-
+		FailRun(name, state, text, failed: true);
 		try
 		{
 			session?.Abort();
@@ -1977,10 +2974,72 @@ public sealed class SubagentHub : IDisposable
 		}
 	}
 
+	/// 守卫（超时 / 超预算）的终结路径：写结果、标 guarded、投递，迟到的 agent_end 不再改状态。
+	private void FailRun(string name, RunState state, string text, bool failed, IReadOnlyList<SubagentVerifyResult>? verify = null)
+	{
+		long turn;
+		lock (_gate)
+		{
+			if (_disposed || state.Guarded || state.Stopping || !_runs.TryGetValue(name, out var current) ||
+				!ReferenceEquals(current, state))
+			{
+				return;
+			}
+
+			state.Guarded = true;
+			state.StructuredOutput = null;
+			state.ActiveTools.Clear();
+			state.Question?.Timeout.Cancel();
+			state.Question = null;
+			CancelDeadlineLocked(state);
+			CancelVerifyLocked(state);
+			state.ResultTurn = ++state.TurnSeq;
+			turn = state.ResultTurn;
+			// 用量与终端状态一起落：TCS 完成后可能马上起下一轮，TokenBase 不能再读到旧值。
+			var tokens = state.Run.Tokens;
+			var cost = state.Run.Cost;
+			if (state.Session is { } usageSession)
+			{
+				var usage = UsageOf(usageSession);
+				tokens = usage.Tokens > 0 ? usage.Tokens : tokens;
+				cost = usage.Cost > 0 ? usage.Cost : cost;
+			}
+
+			state.Run = state.Run with
+			{
+				State = failed ? SubagentState.Failed : SubagentState.Idle,
+				Turns = state.Run.Turns + 1,
+				Result = text,
+				StructuredOutput = null,
+				Activity = null,
+				Progress = null,
+				AwaitingUser = false,
+				StopReason = failed ? "error" : state.Run.StopReason,
+				Verify = verify ?? [],
+				Tokens = tokens,
+				Cost = cost,
+				FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			};
+			state.Completion.TrySetResult(new TurnResult(turn, text));
+		}
+
+		try
+		{
+			AppendDescriptor(state, "failed");
+			Changed?.Invoke();
+			QueueDelivery(new PendingResult(name, true, text, turn));
+		}
+		catch (Exception)
+		{
+			// fire-and-forget 路径：异常不能变成未观察的任务异常。
+		}
+	}
+
 	private static void CancelDeadlineLocked(RunState state)
 	{
 		var deadline = state.Deadline;
 		state.Deadline = null;
+		state.DeadlineStartedAt = 0;
 		if (deadline is null)
 		{
 			return;
@@ -1998,9 +3057,43 @@ public sealed class SubagentHub : IDisposable
 		deadline.Dispose();
 	}
 
-	private string TimeoutText() => _runTimeout >= TimeSpan.FromMinutes(1)
-		? $"subagent timed out after {_runTimeout.TotalMinutes:0.#} minutes"
-		: $"subagent timed out after {_runTimeout.TotalSeconds:0.#} seconds";
+	/// 暂停截止时间：子代理在等用户回答，这段时间不该算进它的运行预算。
+	/// 不暂停的话，用户离开半小时回来会看到一个已经被判超时、问题也丢了的子代理。
+	private void PauseDeadlineLocked(RunState state)
+	{
+		if (state.DeadlineStartedAt > 0)
+		{
+			var elapsed = Stopwatch.GetElapsedTime(state.DeadlineStartedAt);
+			state.DeadlineRemaining = state.DeadlineRemaining > elapsed
+				? state.DeadlineRemaining - elapsed
+				: TimeSpan.Zero;
+		}
+
+		CancelDeadlineLocked(state);
+	}
+
+	private static void CancelVerifyLocked(RunState state)
+	{
+		var verify = state.VerifyCancellation;
+		state.VerifyCancellation = null;
+		if (verify is null)
+		{
+			return;
+		}
+
+		try
+		{
+			verify.Cancel();
+		}
+		catch (ObjectDisposedException)
+		{
+			// 验证任务已经收尾。
+		}
+	}
+
+	private static string TimeoutText(TimeSpan budget) => budget >= TimeSpan.FromMinutes(1)
+		? $"subagent timed out after {budget.TotalMinutes:0.#} minutes"
+		: $"subagent timed out after {budget.TotalSeconds:0.#} seconds";
 
 	/// 子代理此刻在干什么：工具名加一个能认出来的参数，卡片与 list_subagents 都用它。
 	/// 并行工具调用各自记账：结束一个时若还有别的在跑，Activity 换成剩下最后开始的那个。
@@ -2047,39 +3140,67 @@ public sealed class SubagentHub : IDisposable
 		Changed?.Invoke();
 	}
 
-	/// 助手正文的进度摘要：只取首行，避免进度把卡片与 wait 的心跳撑成多行。
-	private void SetProgress(string name, string text)
+	/// 一条助手消息落定：进度摘要与 token 用量一起更新，界面只刷一次。
+	/// 预算也在这里判：超时那一道刹车之外再给一道成本闸，30 分钟足够一个小模型烧掉很多钱。
+	private void NoteAssistantMessage(string name, AssistantMessage assistant)
 	{
-		var progress = FirstLine(text, MaxProgressChars);
-		if (progress.Length == 0)
-		{
-			return;
-		}
+		var progress = FirstLineOf(assistant, MaxProgressChars);
+		var usage = assistant.Usage;
+		var delta = usage is null ? 0 : usage.Input + usage.Output;
 
+		RunState? state;
+		string? budgetText = null;
+		var changed = false;
 		lock (_gate)
 		{
-			if (!_runs.TryGetValue(name, out var state) || state.Stopping || state.Run.IsTerminal ||
-				string.Equals(state.Run.Progress, progress, StringComparison.Ordinal))
+			if (!_runs.TryGetValue(name, out state) || state.Stopping || state.Run.IsTerminal)
 			{
 				return;
 			}
 
-			state.Run = state.Run with { Progress = progress };
-		}
-
-		Changed?.Invoke();
-	}
-
-	private void ClearAwaiting(string name)
-	{
-		var changed = false;
-		lock (_gate)
-		{
-			if (_runs.TryGetValue(name, out var state) && state.Run.AwaitingUser)
+			if (progress.Length > 0 && !string.Equals(state.Run.Progress, progress, StringComparison.Ordinal))
 			{
-				state.Run = state.Run with { AwaitingUser = false };
+				state.Run = state.Run with { Progress = progress };
 				changed = true;
 			}
+
+			if (delta > 0)
+			{
+				state.BudgetTokens += delta;
+				// 会话累计口径与结束时的统计一致；预算比的是本轮增量。
+				state.Run = state.Run with { Tokens = state.TokenBase + state.BudgetTokens };
+				changed = true;
+				if (state.Run.MaxTokens > 0 && state.BudgetTokens > state.Run.MaxTokens)
+				{
+					budgetText = string.Concat(
+						"subagent stopped: this run used ",
+						state.BudgetTokens.ToString(CultureInfo.InvariantCulture),
+						" tokens, over the ",
+						state.Run.MaxTokens.ToString(CultureInfo.InvariantCulture),
+						" token budget set for it");
+				}
+			}
+		}
+
+		if (budgetText is not null)
+		{
+			CodingAgentSession? session;
+			lock (_gate)
+			{
+				session = state.Session;
+			}
+
+			FailRun(name, state, budgetText, failed: true);
+			try
+			{
+				session?.Abort();
+			}
+			catch (Exception)
+			{
+				// 子会话可能已经在关闭；结果已经写进状态与队列。
+			}
+
+			return;
 		}
 
 		if (changed)
@@ -2087,6 +3208,40 @@ public sealed class SubagentHub : IDisposable
 			Changed?.Invoke();
 		}
 	}
+
+	/// 子会话自己的问询工具起止：与桌面的展示同步共用同一套暂停/恢复。
+	private void SetAwaiting(string name, bool awaiting)
+	{
+		var changed = false;
+		SubagentRun? snapshot = null;
+		lock (_gate)
+		{
+			if (!_runs.TryGetValue(name, out var state))
+			{
+				return;
+			}
+
+			changed = state.Run.AwaitingUser != awaiting;
+			SetAwaitingLocked(state, awaiting);
+			if (awaiting && changed)
+			{
+				snapshot = state.Run;
+			}
+		}
+
+		if (snapshot is not null)
+		{
+			AwaitingChanged?.Invoke(snapshot);
+		}
+
+		if (changed)
+		{
+			Changed?.Invoke();
+		}
+	}
+
+	/// 问询工具名；子会话的工具面里只有这一个会等用户。
+	private const string AskQuestionToolName = AskQuestionTool.Name;
 
 	private static bool RemoveToolLocked(RunState state, string callId)
 	{
@@ -2120,7 +3275,205 @@ public sealed class SubagentHub : IDisposable
 
 	private const int ActivityMaxChars = 60;
 
-	private void CompleteRun(string name, string text, bool failed)
+	/// 验证输出的尾巴上限：失败通常落在最后几行，正文里不必放全文。
+	private const int MaxVerifyOutputChars = 1_200;
+
+	/// 子代理一轮结束：先看要不要跑验证命令，再落终结状态。
+	/// 配了验证的命令时这一轮停在 Running（卡片显示 verify），直到命令跑完才交给 wait 与投递。
+	private void FinishRun(string name, string text, bool failed, string stopReason)
+	{
+		RunState? state;
+		CancellationTokenSource? cancellation = null;
+		lock (_gate)
+		{
+			if (!_runs.TryGetValue(name, out state) || failed || state.Guarded || state.Stopping ||
+				state.VerifyCommands.Count == 0 || state.Session is not { IsDisposed: false })
+			{
+				state = null;
+			}
+			else
+			{
+				// 验证是宿主自己的事，再让它撞上运行时限只会把已有结论扔掉。
+				CancelDeadlineLocked(state);
+				state.Run = state.Run with { Activity = VerifyActivity(state.VerifyCommands[0]), Progress = null };
+				// 在同一把锁里登记「验证中」：否则这段窗口里 send 会放行，
+				// 起一轮把 generation 推高，验证结果连同刚结束那一轮的结论一起作废。
+				cancellation = new CancellationTokenSource();
+				state.VerifyCancellation = cancellation;
+			}
+		}
+
+		if (state is null)
+		{
+			CompleteRun(name, text, failed, stopReason);
+			return;
+		}
+
+		Changed?.Invoke();
+		_ = VerifyThenCompleteAsync(name, state, text, failed, stopReason, cancellation!);
+	}
+
+	private static string VerifyActivity(string command) => string.Concat("verify: ", Clip(command.Replace('\n', ' ').Trim(), ActivityMaxChars));
+
+	private async Task VerifyThenCompleteAsync(
+		string name,
+		RunState state,
+		string text,
+		bool failed,
+		string stopReason,
+		CancellationTokenSource cancellation)
+	{
+		using var _ = cancellation;
+		var commands = state.VerifyCommands;
+		var session = state.Session;
+		var cwd = session?.Cwd ?? _owner.Cwd;
+		var results = new List<SubagentVerifyResult>(commands.Count);
+		int generation;
+		lock (_gate)
+		{
+			if (_disposed || state.Stopping || state.Guarded ||
+				!ReferenceEquals(state.VerifyCancellation, cancellation))
+			{
+				return;
+			}
+
+			generation = state.Generation;
+		}
+
+		try
+		{
+			foreach (var command in commands)
+			{
+				if (cancellation.IsCancellationRequested)
+				{
+					return;
+				}
+
+				var result = await ExecuteVerifyAsync(command, cwd, cancellation.Token).ConfigureAwait(false);
+				results.Add(result);
+				// 第一条失败就是定论；后面的不必再花时间。
+				if (!result.Passed)
+				{
+					break;
+				}
+			}
+		}
+		finally
+		{
+			lock (_gate)
+			{
+				if (ReferenceEquals(state.VerifyCancellation, cancellation))
+				{
+					state.VerifyCancellation = null;
+				}
+			}
+		}
+
+		lock (_gate)
+		{
+			// 这一代已经不是验证时的 RunState 了（期间被停、被重新发消息）：结果交给那一轮的路径。
+			if (_disposed || state.Stopping || state.Guarded || state.Generation != generation)
+			{
+				return;
+			}
+		}
+
+		var passed = results.All(static result => result.Passed);
+		CompleteRun(name, text, failed || !passed, stopReason, results);
+	}
+
+	private async Task<SubagentVerifyResult> ExecuteVerifyAsync(string command, string cwd, CancellationToken cancellationToken)
+	{
+		try
+		{
+			var result = await ShellRunner
+				.RunAsync(
+					command,
+					cwd,
+					_limits.VerifyTimeout.TotalSeconds,
+					onOutput: null,
+					cancellationToken,
+					new ShellInvocation
+					{
+						ShellPath = _owner.Settings.ShellPath,
+						CommandPrefix = _owner.Settings.ShellCommandPrefix,
+						TempFilePrefix = "pi-subagent-verify",
+					})
+				.ConfigureAwait(false);
+
+			var output = Tail(result.Output, MaxVerifyOutputChars);
+			if (result.FullOutputPath is { Length: > 0 } fullOutput)
+			{
+				// 只留尾巴：整份输出只在临时文件里，不删会在 /tmp 里留孤文件。
+				try
+				{
+					File.Delete(fullOutput);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 删不掉就留着：验证结论不受影响。
+				}
+			}
+
+			return new SubagentVerifyResult
+			{
+				Command = command,
+				ExitCode = result.Cancelled ? null : result.ExitCode,
+				TimedOut = result.TimedOut || result.Cancelled,
+				Output = output,
+			};
+		}
+		catch (OperationCanceledException)
+		{
+			return new SubagentVerifyResult { Command = command, TimedOut = true };
+		}
+		catch (Exception exception)
+		{
+			return new SubagentVerifyResult { Command = command, Output = exception.Message };
+		}
+	}
+
+	/// 验证结果进结果正文：父会话看到的是一份自己跑过的证据，不是子代理的声明。
+	private static string VerifyEvidence(IReadOnlyList<SubagentVerifyResult> results)
+	{
+		var builder = new StringBuilder(256);
+		builder.Append("\n\nverify (run by the host after your turn):");
+		foreach (var result in results)
+		{
+			builder.Append("\n- `").Append(result.Command).Append("` → ");
+			if (result.TimedOut)
+			{
+				builder.Append("timed out");
+			}
+			else if (result.ExitCode is { } exitCode)
+			{
+				builder.Append("exit ").Append(exitCode.ToString(CultureInfo.InvariantCulture));
+			}
+			else
+			{
+				builder.Append("did not start");
+			}
+
+			if (result.Output is { Length: > 0 } output)
+			{
+				builder.Append('\n').Append(output);
+			}
+		}
+
+		if (!results.All(static result => result.Passed))
+		{
+			builder.Append("\n\nThe host verification failed; treat the work as unverified and say what is still broken.");
+		}
+
+		return builder.ToString();
+	}
+
+	private void CompleteRun(
+		string name,
+		string text,
+		bool failed,
+		string stopReason,
+		IReadOnlyList<SubagentVerifyResult>? verify = null)
 	{
 		RunState? state;
 		var stopped = false;
@@ -2131,13 +3484,17 @@ public sealed class SubagentHub : IDisposable
 				return;
 			}
 
-			// 超时已经写过失败结果：迟到的 AgentEnd 不能再把状态改回 idle。
-			if (state.TimedOut)
+			// 超时或超预算已经写过终结结果：迟到的 AgentEnd 不能再把状态改回 idle。
+			if (state.Guarded)
 			{
 				return;
 			}
 
+			// 正常收尾时不会还有问题挂着；万一有（停掉与完成抢），按「没人回答」解开。
+			state.Question?.Timeout.Cancel();
+			state.Question = null;
 			CancelDeadlineLocked(state);
+			CancelVerifyLocked(state);
 			state.ActiveTools.Clear();
 
 			if (state.Stopping)
@@ -2152,6 +3509,9 @@ public sealed class SubagentHub : IDisposable
 					AwaitingUser = false,
 					FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 				};
+				state.Question?.Timeout.Cancel();
+				state.Question = null;
+				state.Run = state.Run with { Question = null };
 				state.Completion.TrySetResult(new TurnResult(0, string.Empty));
 				stopped = true;
 			}
@@ -2172,9 +3532,26 @@ public sealed class SubagentHub : IDisposable
 					}
 				}
 
+				// 验证证据在 schema 校验之后才拼：它不属于模型输出，不能被当成 JSON 的一部分。
+				if (verify is { Count: > 0 })
+				{
+					text = string.Concat(text, VerifyEvidence(verify));
+				}
+
 				state.ResultTurn = ++state.TurnSeq;
 				state.StructuredOutput = structured;
 				var finishedState = failed ? SubagentState.Failed : SubagentState.Idle;
+				// 用量在同一把锁里取：TCS 一完成，send 可能立刻起下一轮，
+				// 那时 TokenBase 读到的必须是含本轮在内的累计值。
+				var tokens = state.Run.Tokens;
+				var cost = state.Run.Cost;
+				if (state.Session is { } usageSession)
+				{
+					var usage = UsageOf(usageSession);
+					tokens = usage.Tokens > 0 ? usage.Tokens : tokens;
+					cost = usage.Cost > 0 ? usage.Cost : cost;
+				}
+
 				state.Run = state.Run with
 				{
 					State = finishedState,
@@ -2184,18 +3561,14 @@ public sealed class SubagentHub : IDisposable
 					Activity = null,
 					Progress = null,
 					AwaitingUser = false,
+					Question = null,
+					StopReason = stopReason,
+					Verify = verify ?? [],
+					Tokens = tokens,
+					Cost = cost,
 					FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 				};
 				state.Completion.TrySetResult(new TurnResult(state.ResultTurn, text, structured));
-			}
-		}
-
-		if (state.Session is { } usageSession)
-		{
-			var usage = UsageOf(usageSession);
-			lock (_gate)
-			{
-				state.Run = state.Run with { Tokens = usage.Tokens, Cost = usage.Cost };
 			}
 		}
 
@@ -2228,6 +3601,59 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		ScheduleFlush();
+	}
+
+	/// 目标里有没有人正等着提问的回答；调用方持锁。
+	private static bool HasPendingQuestionLocked(List<RunState> waiting)
+	{
+		foreach (var state in waiting)
+		{
+			if (state.Question is not null)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// 正在等回答的子代理名字，逗号分隔；调用方持锁。
+	private static string PendingQuestionNamesLocked(List<RunState> waiting)
+	{
+		var names = new List<string>(waiting.Count);
+		foreach (var state in waiting)
+		{
+			if (state.Question is not null)
+			{
+				names.Add(state.Run.Name);
+			}
+		}
+
+		return string.Join(", ", names);
+	}
+
+	/// 挂起问题的结构化版本：名字、正文与可选项。
+	private static JsonArray PendingQuestionDetailsLocked(List<RunState> waiting)
+	{
+		var rows = new JsonArray();
+		foreach (var state in waiting)
+		{
+			if (state.Question is not { } question)
+			{
+				continue;
+			}
+
+			rows.Add((JsonNode)new JsonObject
+			{
+				["name"] = state.Run.Name,
+				["question"] = question.Text,
+				["options"] = question.Options.Count > 0
+					? new JsonArray([.. question.Options.Select(static option => (JsonNode)option)])
+					: null,
+			});
+		}
+
+		return rows;
 	}
 
 	/// 等待期间的进度：一行一个目标，带当前工具。
@@ -2376,22 +3802,26 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		var builder = new StringBuilder();
-		var accepted = new List<(RunState State, long Turn)>();
+		// Previous 是占位前的值：投递抛错时按它回退，同一段正文不会被标成已投递。
+		var accepted = new List<(RunState State, long Turn, long Previous)>();
 		foreach (var result in batch)
 		{
 			RunState? state;
+			long previous;
 			lock (_gate)
 			{
 				// 按轮去重：wait 或前一次投递已经带走这一轮，就不再重复。
-				// 这里只读 DeliveredTurn，真正标记等送达成功之后再做：投递抛错时
-				// 这一轮不能提前变成「已投递」，否则结果永远回不到父会话。
+				// 占位当场做：查完再等 200ms 合并窗口与一次投递，wait 会在这段里取走同一轮并双投。
 				if (!_runs.TryGetValue(result.Name, out state) || state is null || result.Turn <= state.DeliveredTurn)
 				{
 					continue;
 				}
+
+				previous = state.DeliveredTurn;
+				state.DeliveredTurn = result.Turn;
 			}
 
-			accepted.Add((state, result.Turn));
+			accepted.Add((state, result.Turn, previous));
 
 			if (builder.Length > 0)
 			{
@@ -2400,7 +3830,7 @@ public sealed class SubagentHub : IDisposable
 
 			var run = state.Run;
 			builder.Append("子代理「").Append(run.Name).Append('」');
-			builder.Append(result.Failed ? "这一轮失败。" : "完成了一轮。");
+			builder.Append(ResultHeadline(result.Failed, run));
 			if (run.SessionId.Length > 0)
 			{
 				builder.Append(" session_id: ").Append(run.SessionId).Append('。');
@@ -2414,10 +3844,19 @@ public sealed class SubagentHub : IDisposable
 			}
 
 			builder.Append('\n');
-			if (result.Text.Length > 0)
+			// 恢复出来的条目只有摘要：在这里读全文，已经是投递线程，不占 UI。
+			// 失败结果不换：那条正文里有超时原因、verify 证据，子会话文件的最后一段只有子代理自己的说法。
+			var body = result.Text;
+			if (!result.Failed && result.FullTextFile is { Length: > 0 } fullTextFile &&
+				ReadLastAssistantTextFromFile(fullTextFile) is { Length: > 0 } fullText)
 			{
-				builder.Append(Clip(result.Text, MaxResultChars));
-				if (result.Text.Length > MaxResultChars)
+				body = fullText;
+			}
+
+			if (body.Length > 0)
+			{
+				builder.Append(Clip(body, MaxResultChars));
+				if (body.Length > MaxResultChars)
 				{
 					builder.Append("\n（结果已截断，完整正文：")
 						.Append(run.SessionFile ?? "子会话文件")
@@ -2452,10 +3891,18 @@ public sealed class SubagentHub : IDisposable
 		}
 		catch (Exception)
 		{
-			// 没送达：父会话可能已关闭，也可能和另一轮抢跑。把这一批放回队列，
+			// 没送达：父会话可能已关闭，也可能和另一轮抢跑。把占位退回、这一批放回队列，
 			// 下一次 agent_end 再试；不占自动续跑额度，也不标记已投递。
 			lock (_gate)
 			{
+				foreach (var (state, turn, previous) in accepted)
+				{
+					if (state.DeliveredTurn == turn)
+					{
+						state.DeliveredTurn = previous;
+					}
+				}
+
 				if (!_disposed)
 				{
 					_pending.InsertRange(0, batch);
@@ -2467,15 +3914,13 @@ public sealed class SubagentHub : IDisposable
 
 		lock (_gate)
 		{
-			foreach (var (state, turn) in accepted)
-			{
-				if (turn > state.DeliveredTurn)
-				{
-					state.DeliveredTurn = turn;
-				}
-			}
-
 			_autoContinue++;
+		}
+
+		// 记下「这轮已经到过父会话」：重启后不重复推同一段正文。
+		foreach (var (state, _, _) in accepted)
+		{
+			AppendDescriptor(state, "delivered");
 		}
 
 		// 投递期间可能又攒了新的结果：再排一轮，合并到下一次投递。
@@ -2495,7 +3940,7 @@ public sealed class SubagentHub : IDisposable
 		catch (Exception exception)
 		{
 			// 首轮在 agent_start 之前就失败（鉴权、参数）：没有 agent_end，补一份失败结果。
-			CompleteRun(name, exception.Message, failed: true);
+			CompleteRun(name, exception.Message, failed: true, "error");
 		}
 	}
 
@@ -2522,7 +3967,7 @@ public sealed class SubagentHub : IDisposable
 		}
 	}
 
-	private async Task DeliverQuietlyAsync(CodingAgentSession target, UserMessage message)
+	private async Task DeliverQuietlyAsync(RunState state, CodingAgentSession target, UserMessage message)
 	{
 		try
 		{
@@ -2530,7 +3975,11 @@ public sealed class SubagentHub : IDisposable
 		}
 		catch
 		{
-			// 目标会话已关闭或正在出错：发送工具已经回了 sent。
+			// 目标会话已关闭或正在出错：发送工具已经回了 sent。放开回收标记，别让这个 run 永远不可回收。
+			lock (_gate)
+			{
+				state.Sending = false;
+			}
 		}
 	}
 
@@ -2631,6 +4080,12 @@ public sealed class SubagentHub : IDisposable
 
 			state.Subscription?.Dispose();
 			_order.Remove(name);
+			// 没建出会话就不占本回合的启动配额；否则宿主出一次错就把额度烧掉一格。
+			if (_spawns > 0)
+			{
+				_spawns--;
+			}
+
 			state.Completion.TrySetResult(new TurnResult(0, string.Empty));
 		}
 
@@ -2644,9 +4099,39 @@ public sealed class SubagentHub : IDisposable
 			return;
 		}
 
+		// 先在同一把锁下拍快照：调用点大多在锁外，边读边写会落下「新的 run + 旧的 turn」这种混搭条目。
+		SubagentRun run;
+		long deliveredTurn;
+		long resultTurn;
+		TimeSpan runTimeout;
+		IReadOnlyList<string> verifyCommands;
+		JsonObject? outputSchema;
+		JsonNode? structuredOutput;
+		lock (_gate)
+		{
+			run = state.Run;
+			deliveredTurn = state.DeliveredTurn;
+			resultTurn = state.ResultTurn;
+			runTimeout = state.RunTimeout;
+			verifyCommands = state.VerifyCommands;
+			outputSchema = state.OutputSchema;
+			structuredOutput = state.StructuredOutput;
+		}
+
 		try
 		{
-			var run = state.Run;
+			if (kind == "delivered")
+			{
+				// 投递标记只需要名字与轮次：它是文件里最常写的一类条目，带全量字段会白白撑大父会话文件。
+				_owner.Session.AppendCustom(EntryType, new JsonObject
+				{
+					["kind"] = kind,
+					["name"] = run.Name,
+					["turn"] = deliveredTurn,
+				});
+				return;
+			}
+
 			var data = new JsonObject
 			{
 				["kind"] = kind,
@@ -2674,17 +4159,41 @@ public sealed class SubagentHub : IDisposable
 			{
 				// brief 只在 start 里写一次：它本来就在委派请求里，每轮状态变化重写会白白撑大父会话文件。
 				data["brief"] = run.Brief;
+				data["runTimeoutMs"] = (long)runTimeout.TotalMilliseconds;
+				data["maxTokens"] = run.MaxTokens;
+				if (verifyCommands.Count > 0)
+				{
+					// 验证命令要跨重启保留：冷恢复后的下一轮还得继续跑同一套证据。
+					data["verify"] = new JsonArray([.. verifyCommands.Select(static command => (JsonNode)command)]);
+				}
 			}
 
-			if (kind == "start" && state.OutputSchema is { } outputSchema)
+			if (kind is "idle" or "failed")
+			{
+				// 这一轮的结果可能还躺在内存队列里就退出了：恢复时靠这个标记把它补投一次。
+				// 旧条目没有这个键，不会在升级后被当成未投递的正文重新推给模型。
+				data["deliverable"] = true;
+				data["turn"] = resultTurn;
+				if (run.StopReason.Length > 0)
+				{
+					data["stopReason"] = run.StopReason;
+				}
+
+				if (run.Verify.Count > 0)
+				{
+					data["verifyResults"] = VerifyResultsJson(run.Verify);
+				}
+			}
+
+			if (kind == "start" && outputSchema is not null)
 			{
 				// schema 只在 start 条目写一次；每次状态变化都写会把会话文件撑大。
 				data["outputSchema"] = outputSchema.DeepClone();
 			}
 
-			if (state.StructuredOutput is { } structured)
+			if (structuredOutput is not null)
 			{
-				data["structuredOutput"] = structured.DeepClone();
+				data["structuredOutput"] = structuredOutput.DeepClone();
 			}
 
 			_owner.Session.AppendCustom(EntryType, data);
@@ -2693,6 +4202,50 @@ public sealed class SubagentHub : IDisposable
 		{
 			// 关系描述符只服务于恢复与审计，写不进去不影响本轮委派。
 		}
+	}
+
+	private static JsonArray VerifyResultsJson(IReadOnlyList<SubagentVerifyResult> results)
+	{
+		var array = new JsonArray();
+		foreach (var result in results)
+		{
+			array.Add((JsonNode)new JsonObject
+			{
+				["command"] = result.Command,
+				["exitCode"] = result.ExitCode,
+				["timedOut"] = result.TimedOut,
+				["output"] = result.Output is { Length: > 0 } output ? output : null,
+			});
+		}
+
+		return array;
+	}
+
+	private static List<SubagentVerifyResult> ReadVerifyResults(JsonNode? node)
+	{
+		if (node is not JsonArray array || array.Count == 0)
+		{
+			return [];
+		}
+
+		var results = new List<SubagentVerifyResult>(array.Count);
+		foreach (var item in array)
+		{
+			if (item is not JsonObject row || ReadString(row["command"]) is not { Length: > 0 } command)
+			{
+				continue;
+			}
+
+			results.Add(new SubagentVerifyResult
+			{
+				Command = command,
+				ExitCode = ReadLong(row["exitCode"]) is { } exitCode ? (int)exitCode : null,
+				TimedOut = ReadBool(row["timedOut"]),
+				Output = ReadString(row["output"]) ?? string.Empty,
+			});
+		}
+
+		return results;
 	}
 
 	private string UnknownAgent(string? requested)
@@ -2855,14 +4408,84 @@ public sealed class SubagentHub : IDisposable
 	private static long? ReadLong(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<long>(out var number) ? number : null;
 
+	/// 会话文件是用户可编辑的：类型不对的条目按缺失处理，`GetValue` 抛异常会让整个会话打不开。
+	private static string? ReadString(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+	private static int? ReadInt(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
+
 	private static double? ReadDouble(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<double>(out var number) ? number : null;
+
+	private static bool ReadBool(JsonNode? node) =>
+		node is JsonValue value && value.TryGetValue<bool>(out var flag) && flag;
+
+	/// 子会话最近一条带正文的助手消息：超时、超预算这类硬停时用它保住已经写出来的东西。
+	private static string? LastAssistantText(CodingAgentSession? session)
+	{
+		if (session is not { IsDisposed: false })
+		{
+			return null;
+		}
+
+		try
+		{
+			var messages = session.ProjectedMessages;
+			for (var index = messages.Count - 1; index >= 0; index--)
+			{
+				if (messages[index] is AssistantMessage assistant)
+				{
+					var text = MessageText.Of(assistant);
+					if (text.Length > 0)
+					{
+						return text;
+					}
+				}
+			}
+		}
+		catch (Exception)
+		{
+			// 会话正在切换或文件不可读：没有正文就不附。
+		}
+
+		return null;
+	}
+
+	/// 输出或正文的尾部：命令失败的信号几乎总在最后几行。
+	private static string Tail(string text, int max)
+	{
+		if (text.Length <= max)
+		{
+			return text;
+		}
+
+		return string.Concat("…", text.AsSpan(text.Length - max));
+	}
 
 	private static long ElapsedMs(SubagentRun run) =>
 		run.FinishedAt > run.StartedAt && run.StartedAt > 0 ? run.FinishedAt - run.StartedAt : 0;
 
 	private static string ModelLabel(Model model) =>
 		model.Provider.Length > 0 ? string.Concat(model.Provider, "/", model.Id) : model.Id;
+
+	private static JsonArray VerifyDetails(IReadOnlyList<SubagentVerifyResult> results)
+	{
+		var array = new JsonArray();
+		foreach (var result in results)
+		{
+			array.Add((JsonNode)new JsonObject
+			{
+				["command"] = result.Command,
+				["exit_code"] = result.ExitCode,
+				["timed_out"] = result.TimedOut,
+				["passed"] = result.Passed,
+				["output"] = result.Output is { Length: > 0 } output ? Clip(output, MaxCardChars) : null,
+			});
+		}
+
+		return array;
+	}
 
 	private static (long Tokens, double Cost) UsageOf(CodingAgentSession session)
 	{
@@ -2877,6 +4500,26 @@ public sealed class SubagentHub : IDisposable
 			// 统计失败不影响结果投递。
 			return (0, 0);
 		}
+	}
+
+	private static string ResultHeadline(bool failed, SubagentRun run)
+	{
+		if (failed)
+		{
+			foreach (var result in run.Verify)
+			{
+				if (!result.Passed)
+				{
+					return "这一轮失败：宿主验证没通过。";
+				}
+			}
+
+			return "这一轮失败。";
+		}
+
+		return string.Equals(run.StopReason, "length", StringComparison.Ordinal)
+			? "这一轮完成了，但回复被 max tokens 截断。"
+			: "完成了一轮。";
 	}
 
 	private static string StateName(SubagentState state) => state switch
@@ -2898,7 +4541,24 @@ public sealed class SubagentHub : IDisposable
 			span = span[..newline];
 		}
 
-		return Clip(span.TrimEnd().ToString(), max);
+		span = span.TrimEnd();
+		// 先截断再落成字符串：一条 5 KB 的单行回复不该为 240 字进度分配两遍。
+		return span.Length <= max ? span.ToString() : string.Concat(span[..max], "…");
+	}
+
+	/// 助手消息的首行进度：跳过思考块与空块，只取第一段正文的首行。
+	/// 与 <see cref="MessageText.Of"/> 加 <see cref="FirstLine"/> 结果一致，但不会先把整条回复拼出来。
+	private static string FirstLineOf(AssistantMessage message, int max)
+	{
+		foreach (var block in message.Content)
+		{
+			if (block is TextContent { Text.Length: > 0 } text)
+			{
+				return FirstLine(text.Text, max);
+			}
+		}
+
+		return string.Empty;
 	}
 
 	/// <summary>按字符截断；刻意不切代理对，截断只发生在结果消息上。</summary>

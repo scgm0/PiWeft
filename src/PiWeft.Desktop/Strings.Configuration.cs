@@ -87,6 +87,16 @@ public static partial class Strings
 	public const string ConfigCodemodeBudget = "Codemode 声明预算";
 	public const string ConfigCodemodeBudgetHint = "codemode 描述里工具声明的 token 预算，默认 3000；0 表示只列命名空间。留空用默认。";
 	public const string ConfigCodemodeBudgetInvalid = "codemode 声明预算必须是非负整数。";
+	public const string ConfigSubagentsTitle = "子代理";
+	public const string ConfigSubagentsHint = "delegate 系列的配额，写入 settings.json 的 subagents。角色文件里的 timeoutMinutes / maxTokens 优先于这里的默认值。";
+	public const string ConfigSubagentsMaxActive = "同时活跃上限";
+	public const string ConfigSubagentsMaxSpawns = "每回合启动上限";
+	public const string ConfigSubagentsRunTimeout = "单次运行时限（分钟）";
+	public const string ConfigSubagentsMaxTokens = "单次运行 token 上限（0 为不限）";
+	public const string ConfigSubagentsVerifyTimeout = "验证命令超时（秒）";
+	public const string ConfigSubagentsOpenTabs = "启动子代理时打开标签";
+	public const string ConfigSubagentsOpenTabsHint = "默认关闭：子代理在后台跑，卡片行按需打开活的转录，标签栏不会被并行委派占满。";
+	public static string ConfigSubagentsInvalid(string field) => $"{field}超出范围：并发 1–32、每回合 1–512、时限 1–1440 分钟、token 0–10000000、验证超时 1–86400 秒。";
 	public static string ConfigToolsEnabledCount(int count) => $"{count} 个已启用";
 	public static string ConfigRemoveTool(string name) => $"移除工具 {name}";
 	public const string ConfigEditMcp = "编辑服务器";

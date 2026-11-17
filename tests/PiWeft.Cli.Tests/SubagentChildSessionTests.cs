@@ -27,7 +27,16 @@ public sealed class SubagentChildSessionTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	private CodingAgentSession CreateParent(IReadOnlyList<AgentTool>? tools = null)
+	private sealed class NoopHost : ISubagentHost
+	{
+		public Task<CodingAgentSession?> CreateChildAsync(SubagentStartContext context, CancellationToken cancellationToken) =>
+			Task.FromResult<CodingAgentSession?>(null);
+
+		public Task<CodingAgentSession?> ReopenChildAsync(SubagentReopenContext context, CancellationToken cancellationToken) =>
+			Task.FromResult<CodingAgentSession?>(null);
+	}
+
+	private CodingAgentSession CreateParent(IReadOnlyList<AgentTool>? tools = null, bool withSubagents = false)
 	{
 		var model = TestModels.Model();
 		return new CodingAgentSession(new CodingAgentSessionOptions
@@ -41,6 +50,7 @@ public sealed class SubagentChildSessionTests : IDisposable
 			PromptTemplates = [],
 			Settings = new CodingAgentSettings(),
 			Tools = tools,
+			SubagentHost = withSubagents ? new NoopHost() : null,
 		});
 	}
 
@@ -91,6 +101,57 @@ public sealed class SubagentChildSessionTests : IDisposable
 		Assert.Equal("test", child.Model.Provider);
 		Assert.Contains("You investigate a codebase", child.CurrentSystemPrompt);
 		Assert.Contains("你看不到父会话的历史", child.CurrentSystemPrompt);
+	}
+
+	[Fact]
+	public void ChildSession_InADelegationGetsAskParentOutsideTheRoleAllowlist()
+	{
+		using var parent = CreateParent(withSubagents: true);
+		var (environment, arguments) = Environment();
+		var definition = new SubagentDefinition
+		{
+			Name = "scout",
+			Description = "recon",
+			SystemPrompt = "You investigate a codebase.",
+			Tools = ["read"],
+		};
+
+		var context = new SubagentStartContext(parent, "父会话", definition, "scout-1", "看下登录流程。", 1);
+		using var child = environment.CreateChildSession(
+			arguments,
+			_root,
+			SessionManager.InMemory(_root),
+			context,
+			SubagentCatalog.Empty,
+			subagentHost: null,
+			extraTools: null,
+			uiHost: null);
+
+		// 委派边界的一部分：角色白名单不会挡住 ask_parent，也不该带出父会话的委派工具。
+		Assert.Contains(child.Tools, static tool => tool.Name == SubagentTools.AskParentName);
+		Assert.DoesNotContain(child.Tools, static tool => tool.Name == SubagentTools.DelegateName);
+		Assert.Contains("ask_parent", child.CurrentSystemPrompt);
+	}
+
+	[Fact]
+	public void ChildSession_WithoutADelegationHasNoAskParent()
+	{
+		using var parent = CreateParent();
+		var (environment, arguments) = Environment();
+		var definition = new SubagentDefinition { Name = "scout", Description = "recon", Tools = ["read"] };
+
+		var context = new SubagentStartContext(parent, "父会话", definition, "scout-1", "看下。", 1);
+		using var child = environment.CreateChildSession(
+			arguments,
+			_root,
+			SessionManager.InMemory(_root),
+			context,
+			SubagentCatalog.Empty,
+			subagentHost: null,
+			extraTools: null,
+			uiHost: null);
+
+		Assert.DoesNotContain(child.Tools, static tool => tool.Name == SubagentTools.AskParentName);
 	}
 
 	[Fact]

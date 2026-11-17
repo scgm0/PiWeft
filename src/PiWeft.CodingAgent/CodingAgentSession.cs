@@ -113,17 +113,11 @@ public sealed record CodingAgentSessionOptions
 	/// 深度上限：达到上限的会话不再注册委派工具。默认 1，只允许一层委派。
 	public int MaxSubagentDepth { get; init; } = 1;
 
-	/// 同一个父会话同时活跃的子代理数量上限。
-	public int MaxActiveSubagents { get; init; } = 4;
-
-	/// 每个用户回合最多启动多少个子代理；防止回报触发的连锁委派无限扩张。
-	public int MaxSubagentSpawns { get; init; } = 32;
+	/// 子代理的配额与默认值；省略时按 <see cref="Settings.Subagents"/> 换算。
+	public Subagents.SubagentLimits? SubagentLimits { get; init; }
 
 	/// <summary>建会话时直接进入计划模式；子代理用它继承父会话的只读边界。</summary>
 	public bool InitialPlanMode { get; init; }
-
-	/// <summary>子代理单次运行的时限；到点停止并投递失败结果。小于等于零时用默认 30 分钟。</summary>
-	public TimeSpan SubagentRunTimeout { get; init; } = TimeSpan.FromMinutes(30);
 
 	/// 子代理角色目录；省略时按 cwd 发现。子会话由宿主传入父会话的目录，避免重复扫描。
 	public Subagents.SubagentCatalog? Agents { get; init; }
@@ -291,9 +285,7 @@ public sealed partial class CodingAgentSession : IDisposable
 						agentDir: null,
 						includeProject: options.ProjectTrusted),
 					options.SubagentDepth,
-					options.MaxActiveSubagents,
-					options.MaxSubagentSpawns,
-					runTimeout: options.SubagentRunTimeout)
+					options.SubagentLimits ?? CodingAgentSettings.ToLimits(Settings.Subagents))
 				: null;
 
 		_explicitSkills = options.Skills;
@@ -4242,7 +4234,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		CancelAutoTitle();
 		_autoTitleCancellation?.Dispose();
 		_autoTitleCancellation = null;
-		SubagentParent?.Subagents?.NoteChildClosed(Session.SessionId);
+		SubagentParent?.Subagents?.NoteChildClosed(Session.SessionId, this);
 		Linked?.Dispose();
 		Subagents?.Dispose();
 		DispatchSessionLifecycle("session_shutdown");

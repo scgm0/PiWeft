@@ -100,9 +100,15 @@ public static partial class Strings
 
 	public static string LinkedTurns(int turns) => $"{turns} 轮";
 
-	public static string SubagentUsage(long tokens, double cost)
+	/// 带预算时把上限一起写出来：12k/50k tk 比单看 12k 有意义。
+	public static string SubagentUsage(long tokens, double cost, long maxTokens = 0)
 	{
-		var usage = tokens > 0 ? $"{TrajectoryFormat.CompactTokens(tokens)} tk" : string.Empty;
+		var shown = tokens > 0
+			? TrajectoryFormat.CompactTokens(tokens)
+			: maxTokens > 0 ? "0" : string.Empty;
+		var usage = maxTokens > 0
+			? $"{shown}/{TrajectoryFormat.CompactTokens(maxTokens)} tk"
+			: shown.Length > 0 ? $"{shown} tk" : string.Empty;
 		if (cost <= 0)
 		{
 			return usage;
@@ -148,7 +154,10 @@ public static partial class Strings
 	/// <summary>子代理在自己的标签里打开问询卡：状态行与卡片提示都用这一句。</summary>
 	public const string SubagentAwaitingState = "等待回答";
 
-	public const string SubagentAwaitingHint = "子代理在自己的标签里等你回答，点开子会话处理。";
+	/// <summary>子代理停在 ask_parent 上：先等父会话回答，超时后转给用户。</summary>
+	public const string SubagentQuestionState = "问父会话";
+
+	public const string SubagentAwaitingHint = "子代理在等你回答：问询卡已弹出，直接回答即可。";
 
 	public const string SubagentProgress = "进度";
 
@@ -158,6 +167,20 @@ public static partial class Strings
 
 	/// <summary>失败行的展开段取这个标题：那里的正文是错误原因，不是助手回复。</summary>
 	public const string SubagentFailure = "失败原因";
+
+	/// <summary>宿主跑过验证命令时，展开区的段落标题。</summary>
+	public const string SubagentVerifySection = "验证";
+
+	public static string SubagentVerifyPassed(string command) => $"验证通过：{command}";
+
+	public static string SubagentVerifyFailed(string command, int exitCode) => $"验证失败：{command}（退出码 {exitCode}）";
+
+	public static string SubagentVerifyTimedOut(string command) => $"验证超时：{command}";
+
+	public static string SubagentVerifyExit(int exitCode) => $"退出码 {exitCode}";
+
+	/// <summary>回复被模型输出上限截断：内容是真的，但可能缺尾巴。</summary>
+	public const string SubagentTruncated = "回复被 max tokens 截断";
 
 	public static string SubagentAwaitingInput(string name) => $"子代理「{name}」在等你回答。";
 

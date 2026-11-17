@@ -1,3 +1,4 @@
+using Aprillz.MewUI;
 using PiWeft.Agent;
 using PiWeft.Cli;
 using PiWeft.CodingAgent;
@@ -7,7 +8,8 @@ using ZLogger;
 
 namespace PiWeft.Desktop;
 
-/// 子代理的桌面宿主：每个子代理开一个后台标签，不抢当前标签。
+/// 子代理的桌面宿主：默认只建会话、不开标签（`settings.subagents.openTabs` 可回到旧行为）。
+/// 子代理在 hub 里跑，卡片行按需把活的会话挂成标签。
 internal sealed class DesktopSubagentHost(MainWindow window) : ISubagentHost
 {
 	public Task<CodingAgentSession?> CreateChildAsync(
@@ -31,48 +33,25 @@ public sealed partial class MainWindow
 		string? ParentFile,
 		DesktopUiHost UiHost,
 		DesktopSubagentHost Host,
-		SubagentCatalog Catalog);
+		SubagentCatalog Catalog,
+		SubagentHub? Hub);
 
 	private DesktopSubagentHost? _subagentHost;
 
-	/// 子会话的 ask_question 开合时同步到父会话的 hub：卡片显示「等待回答」，父标签加圆点。
-	/// 这条链路只服务当前窗口里开着的子代理；父标签没开或不是子代理（关联会话）时什么也不做。
-	private void SyncSubagentAwaiting(SessionTab child)
-	{
-		if (_sessionHostClosed)
-		{
-			return;
-		}
+	/// 没有标签的子代理：会话与它的界面宿主都留在这里，等待卡片「打开」时再挂标签。
+	/// <param name="ParentFile">父会话文件；父标签关闭时按它成批回收。</param>
+	/// <param name="Hub">父会话的 hub：回收与冷恢复都问它。</param>
+	private sealed record DetachedChild(
+		string ParentFile,
+		CodingAgentSession Session,
+		DesktopUiHost Host,
+		string Name,
+		SubagentHub Hub);
 
-		var reference = child.Session.Session.Header?.ParentSession;
-		if (reference is not { Length: > 0 })
-		{
-			return;
-		}
+	private readonly Dictionary<string, DetachedChild> _detachedChildren = new(StringComparer.Ordinal);
 
-		SessionTab? parent = null;
-		foreach (var entry in _tabEntries)
-		{
-			if (entry is SessionTab candidate &&
-				(string.Equals(candidate.Session.Session.SessionFile, reference, StringComparison.Ordinal) ||
-				 string.Equals(candidate.Session.Session.SessionId, reference, StringComparison.Ordinal)))
-			{
-				parent = candidate;
-				break;
-			}
-		}
-
-		if (parent?.Session.Subagents is not { } hub)
-		{
-			return;
-		}
-
-		var run = hub.NoteChildAwaiting(child.Session.Session.SessionId, child.AskPending);
-		if (run is { AwaitingUser: true })
-		{
-			Toasts.Show(this, Strings.SubagentAwaitingInput(run.Name));
-		}
-	}
+	/// 每拍扫一次空闲回收；没有无标签子代理时停表。
+	private DispatcherTimer? _detachedSweep;
 
 	/// 所有会话共用同一个宿主；多线程首次调用用 LazyInitializer 保证只建一个。
 	private DesktopSubagentHost SubagentSessionsHost =>
@@ -138,7 +117,7 @@ public sealed partial class MainWindow
 		}
 
 		child.SetSessionName($"{context.Name} · {ShortLabel(context.Task)}");
-		return await AttachChildAsync(child, prepared, sessionFile, cancellationToken).ConfigureAwait(false);
+		return await AttachChildAsync(child, prepared, sessionFile, context.Name, cancellationToken).ConfigureAwait(false);
 	}
 
 	/// 会话装配的三样东西：环境、父会话的工具与目录、界面宿主。
@@ -165,39 +144,82 @@ public sealed partial class MainWindow
 				new DesktopUiHost(),
 				SubagentSessionsHost,
 				parent.Subagents?.Catalog
-					?? SubagentCatalog.Discover(parent.Cwd, includeProject: parent.ProjectTrusted));
+					?? SubagentCatalog.Discover(parent.Cwd, includeProject: parent.ProjectTrusted),
+				parent.Subagents);
 		}, cancellationToken).ConfigureAwait(false);
 
-	/// 把建好的子会话挂成后台标签。挂不上就释放并删掉空会话文件。
+	/// 把建好的子会话交给界面：默认只登记（不开标签），`openTabs` 打开时挂成后台标签。
+	/// 挂不上就释放并删掉空会话文件。
 	private async Task<CodingAgentSession?> AttachChildAsync(
 		CodingAgentSession child,
 		SubagentChildPreparation prepared,
 		string? sessionFile,
+		string name,
 		CancellationToken cancellationToken,
 		bool reopened = false)
 	{
+		void Announce()
+		{
+			// 冷恢复是常态（回合结束后会回收会话），只在真正新建时提示；
+			// 打开转录或再发消息本身就是用户在操作，不需要再弹一次。
+			if (!reopened)
+			{
+				Toasts.Show(this, Strings.SubagentStarted(child.SessionName ?? child.Session.SessionId));
+			}
+
+			AppLog.For<MainWindow>().ZLogInformation(
+				$"Subagent session ready: parent={prepared.ParentFile} child={child.Session.SessionId} " +
+				$"reopened={reopened} tab={prepared.Environment.Settings.Subagents.OpenTabs}");
+		}
+
 		try
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			var attached = await DispatchAsync(() =>
-			{
-				if (_sessionHostClosed)
+			var attached = await DispatchAsync(
+				() =>
 				{
-					return false;
-				}
+					if (_sessionHostClosed)
+					{
+						return false;
+					}
 
-				var tab = AttachTab(child);
-				tab.UiHost = prepared.UiHost;
-				prepared.UiHost.Attach(tab);
-				UpdateTabHeaders();
-				RefreshSessions(force: true);
-				Toasts.Show(this, reopened
-					? Strings.SubagentReopened(child.SessionName ?? child.Session.SessionId)
-					: Strings.SubagentStarted(child.SessionName ?? child.Session.SessionId));
-				AppLog.For<MainWindow>().ZLogInformation(
-					$"Subagent session attached: parent={prepared.ParentFile} child={child.Session.SessionId}");
-				return true;
-			}, CancellationToken.None).ConfigureAwait(false);
+					if (prepared.Environment.Settings.Subagents.OpenTabs)
+					{
+						var tab = AttachTab(child);
+						tab.UiHost = prepared.UiHost;
+						prepared.UiHost.Attach(tab);
+						UpdateTabHeaders();
+						RefreshSessions(force: true);
+					}
+					else
+					{
+						if (FindTabBySessionFile(prepared.ParentFile) is not { } parent)
+						{
+							// 父标签已经不在了：子代理没有可问话的对象，别把它建成孤儿。
+							return false;
+						}
+
+						// 问题转给父标签：子代理默认没有自己的标签，但提问必须有地方显示。
+						prepared.UiHost.AttachParent(parent, name, child.Session.SessionId);
+						if (prepared.Hub is { } hub)
+						{
+							_detachedChildren[child.Session.SessionId] = new DetachedChild(
+								prepared.ParentFile ?? string.Empty,
+								child,
+								prepared.UiHost,
+								name,
+								hub);
+							EnsureDetachedSweep();
+						}
+
+						// 侧栏按会话文件扫描：刷新一次，子会话才挂到父行下面。
+						RefreshSessions(force: true);
+					}
+
+					Announce();
+					return true;
+				},
+				CancellationToken.None).ConfigureAwait(false);
 
 			if (!attached)
 			{
@@ -255,6 +277,8 @@ public sealed partial class MainWindow
 						{
 							PlanMode = context.PlanMode,
 							OutputSchema = context.OutputSchema,
+							// 重开的会话也要知道宿主会复核：不然模型又开始口头声称测试通过。
+							Verify = context.Verify,
 						},
 						prepared.Catalog,
 						prepared.Host,
@@ -270,7 +294,7 @@ public sealed partial class MainWindow
 		}
 
 		// 冷恢复不删文件：会话本来就在，里面是历史。
-		return await AttachChildAsync(child, prepared, sessionFile: null, cancellationToken, reopened: true).ConfigureAwait(false);
+		return await AttachChildAsync(child, prepared, sessionFile: null, context.Name, cancellationToken, reopened: true).ConfigureAwait(false);
 	}
 
 	/// 标签标题上的一行任务摘要：取第一行，压掉多余空白，超过 32 字截断。

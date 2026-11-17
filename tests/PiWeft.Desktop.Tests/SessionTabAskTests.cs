@@ -43,6 +43,35 @@ public sealed class SessionTabAskTests
 		Assert.True(AskQuestions.ParseResponse(await pending, Questions).Cancelled);
 	}
 
+	[Fact]
+	public async Task AChildWithoutATabAsksThroughTheParentCard()
+	{
+		using var session = ConversationPerformanceTests.CreateSession(2);
+		using var tab = new SessionTab(session, [session.Model], "ask-parent", availableModels: null);
+
+		// 子代理没有自己的标签：宿主把提问转给父标签，卡片标明来源。
+		var host = new DesktopUiHost();
+		host.AttachParent(tab, "reviewer-1", "child-session");
+		var envelope = AskQuestions.BuildEnvelope(Questions, review: false);
+
+		var pending = host.InputAsync(
+			new UiInputRequest(envelope, AskQuestions.EnvelopePlaceholder),
+			CancellationToken.None);
+
+		Assert.True(tab.AskPending);
+		Assert.Contains(Find<TextBlock>(tab.View),
+			block => block.Text == Strings.AskFromSubagent("reviewer-1") && block.IsVisible);
+		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == "选哪个？");
+
+		tab.AskPanel.Close();
+		var raw = await pending;
+		Assert.True(AskQuestions.ParseResponse(raw, Questions).Cancelled);
+
+		// 卡片收起后输入区回来。
+		Assert.False(tab.AskPending);
+		Assert.True(tab.InputAreaVisible);
+	}
+
 	private static string? ContentText(Button button) =>
 		button.Content switch
 		{

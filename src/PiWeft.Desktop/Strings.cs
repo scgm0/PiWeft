@@ -69,8 +69,6 @@ public static partial class Strings
 
 	public static string LinkedSessionStarted(string title) => $"已开始子会话「{title}」，它在后台跑；每轮结束会把结果回报到当前会话。";
 	public static string SubagentStarted(string name) => $"已启动子代理「{name}」，它在后台跑；每轮结束会把最终回复送回当前会话。";
-
-	public static string SubagentReopened(string name) => $"已重新打开子代理「{name}」，接着发消息就是继续这段对话。";
 	public static string BranchFailed(string reason) => $"分支失败：{reason}";
 	public const string CloseCurrentTab = "关闭标签";
 	public const string Copied = "已复制。";
@@ -873,6 +871,9 @@ public static partial class Strings
 	public static string ExtensionWidgetsCount(int count) => $"{count} 项";
 
 	public const string AskTitle = "需要你的输入";
+
+	/// 父标签替子代理显示提问时的来源标签。
+	public static string AskFromSubagent(string name) => $"来自子代理「{name}」";
 
 	public const string AskSubmit = "提交";
 

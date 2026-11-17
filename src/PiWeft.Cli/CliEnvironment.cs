@@ -772,6 +772,19 @@ public sealed class CliEnvironment
 			extraTools,
 			context.Parent.Tools,
 			context.Parent.PlanModeEnabled);
+		// ask_parent 是委派边界的一部分，不进角色白名单：角色文件写什么都能问父会话。
+		// 但 --tools none 与显式的排除项仍然优先，工具实例要绑到子会话本身，先用闭包占位。
+		CodingAgentSession? childSession = null;
+		var askParentExcluded =
+			arguments.NoTools ||
+			arguments.ExcludeTools.Any(pattern => MatchesName(pattern, SubagentTools.AskParentName)) ||
+			arguments.Tools.Any(entry =>
+				entry.Length > 1 && entry[0] == '-' && MatchesName(entry[1..], SubagentTools.AskParentName));
+		if (context.Parent.Subagents is not null && !askParentExcluded)
+		{
+			tools = [.. tools, SubagentTools.CreateAskParent(() => childSession)];
+		}
+
 		var boundary = SubagentHub.BuildBoundary(context);
 		var appendSystemPrompt = definition.SystemPrompt.Length > 0
 			? string.Concat(definition.SystemPrompt, "\n\n", boundary)
@@ -793,7 +806,7 @@ public sealed class CliEnvironment
 		});
 
 		var projectTrusted = arguments.ProjectTrustOverride ?? ProjectTrusted;
-		return new CodingAgentSession(new CodingAgentSessionOptions
+		var child = new CodingAgentSession(new CodingAgentSessionOptions
 		{
 			Cwd = cwd,
 			Model = model,
@@ -827,6 +840,8 @@ public sealed class CliEnvironment
 			UiHost = uiHost,
 			ProjectTrusted = projectTrusted,
 		});
+		childSession = child;
+		return child;
 	}
 
 	private Model? ResolveChildModel(SubagentDefinition definition)

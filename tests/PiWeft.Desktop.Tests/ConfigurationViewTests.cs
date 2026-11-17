@@ -172,6 +172,41 @@ public sealed class ConfigurationViewTests : IDisposable
 	}
 
 	[Fact]
+	public async Task SubagentLimitsFormRoundTripsThroughSettingsJson()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+		ConversationPerformanceTests.Layout(view.View, 640, 720);
+
+		// 文本框顺序：provider、model、retryMax、retryDelay、codemode 预算，然后是子代理的五个。
+		var fields = Find<TextBox>(view.View).ToArray();
+		Assert.Equal(Strings.ConfigSubagentsMaxActive, Find<TextBlock>(view.View)
+			.First(block => block.Text == Strings.ConfigSubagentsMaxActive).Text);
+		fields[5].Text = "8";
+		fields[6].Text = "64";
+		fields[7].Text = "45";
+		fields[8].Text = "250000";
+		fields[9].Text = "120";
+		// 启动默认不建标签：勾上才回到「每个子代理一个后台标签」。
+		var openTabs = Find<CheckBox>(view.View)
+			.First(check => check.Content is TextBlock { Text: string text } && text == Strings.ConfigSubagentsOpenTabs);
+		openTabs.IsChecked = true;
+		Assert.True(view.IsDirty);
+		view.SaveDraft();
+
+		var saved = Store.Read(ConfigFile.Settings).Parse()["subagents"]!.AsObject();
+		Assert.Equal(8, saved["maxActive"]!.GetValue<int>());
+		Assert.Equal(64, saved["maxSpawns"]!.GetValue<int>());
+		Assert.Equal(45, saved["runTimeoutMinutes"]!.GetValue<int>());
+		Assert.Equal(250_000, saved["maxTokens"]!.GetValue<int>());
+		Assert.Equal(120, saved["verifyTimeoutSeconds"]!.GetValue<int>());
+		Assert.True(saved["openTabs"]!.GetValue<bool>());
+
+		// 其它键不能因为写了 subagents 就被带走。
+		Assert.Contains(Find<TextBox>(view.View), block => block.Text == "8");
+	}
+
+	[Fact]
 	public void SaveAvailabilityTracksTheDraftAndRaisesStateChanges()
 	{
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });

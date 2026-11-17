@@ -1,3 +1,4 @@
+using System.Text;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.CodingAgent.Subagents;
@@ -12,6 +13,8 @@ internal sealed class SubagentCard
 {
 	private const int BriefPreviewChars = 600;
 	private const int ResultPreviewChars = 1_200;
+	// 验证输出在展开区里给一段尾巴：失败信息几乎总在最后几行。
+	private const int VerifyOutputPreviewChars = 800;
 	// 失败原因只留一行：卡在输入框上方，整段铺开会把别的子代理挤出视口。
 	private const int FailurePreviewChars = 160;
 	// 展开区从名字下面起排：8 头部内边距 + 14 状态图标 + 6 间距。
@@ -48,6 +51,10 @@ internal sealed class SubagentCard
 		bool Restored,
 		bool Awaiting,
 		int Turns,
+		long MaxTokens,
+		int VerifyCount,
+		string StopReason,
+		string Question,
 		bool Expanded,
 		TextBlock Status,
 		TextBlock Resumable,
@@ -147,7 +154,8 @@ internal sealed class SubagentCard
 				active++;
 			}
 
-			awaiting |= run.AwaitingUser;
+			// 等父会话回答也算「需要你」：父会话可能没接上，20 秒后问题会落到问询卡上。
+			awaiting |= run.AwaitingUser || run.Question is { Length: > 0 };
 		}
 
 		HasAwaiting = awaiting;
@@ -234,7 +242,10 @@ internal sealed class SubagentCard
 			var run = runs[index];
 			var row = _rendered[index];
 			if (run.State != row.State || run.Restored != row.Restored || run.AwaitingUser != row.Awaiting ||
-				run.Turns != row.Turns ||
+				run.Turns != row.Turns || run.MaxTokens != row.MaxTokens ||
+				run.Verify.Count != row.VerifyCount ||
+				!string.Equals(run.Question ?? string.Empty, row.Question, StringComparison.Ordinal) ||
+				!string.Equals(run.StopReason, row.StopReason, StringComparison.Ordinal) ||
 				!string.Equals(run.Name, row.Name, StringComparison.Ordinal) ||
 				!string.Equals(run.Agent, row.Agent, StringComparison.Ordinal) ||
 				!string.Equals(run.Label, row.Label, StringComparison.Ordinal) ||
@@ -264,7 +275,7 @@ internal sealed class SubagentCard
 		var live = row.Live;
 		if (live.Tokens != run.Tokens || live.Cost != run.Cost)
 		{
-			SetText(row.Usage, Strings.SubagentUsage(run.Tokens, run.Cost));
+			SetText(row.Usage, Strings.SubagentUsage(run.Tokens, run.Cost, run.MaxTokens));
 			live.Tokens = run.Tokens;
 			live.Cost = run.Cost;
 		}
@@ -310,6 +321,12 @@ internal sealed class SubagentCard
 			return Strings.SubagentAwaitingState;
 		}
 
+		if (run.Question is { Length: > 0 })
+		{
+			// 父会话可能自己回答；超时后卡片会换成用户可答的问询卡。
+			return Strings.SubagentQuestionState;
+		}
+
 		var phase = Strings.SubagentStateText(run.State);
 		return run.Turns > 0 ? $"{phase} · {Strings.LinkedTurns(run.Turns)}" : phase;
 	}
@@ -322,10 +339,21 @@ internal sealed class SubagentCard
 		run.IsActive && !run.AwaitingUser ? run.Activity ?? string.Empty : string.Empty;
 
 	/// 失败行的原因：展开时交给「失败原因」段，收起时只留一行。
+	/// 宿主验证没过时直接报验证结论：模型那句「都改好了」不是失败原因。
 	/// 直接在结果文本的 span 上截首行，不在长正文上先复制一份再裁剪。
 	private static string FailurePreview(SubagentRun run, bool expanded)
 	{
-		if (expanded || run.State != SubagentState.Failed || run.Result is not { Length: > 0 } result)
+		if (run.State != SubagentState.Failed)
+		{
+			return string.Empty;
+		}
+
+		if (VerifyFailureLine(run) is { Length: > 0 } verify)
+		{
+			return verify;
+		}
+
+		if (expanded || run.Result is not { Length: > 0 } result)
 		{
 			return string.Empty;
 		}
@@ -336,6 +364,57 @@ internal sealed class SubagentCard
 			? line.ToString()
 			: string.Concat(line[..FailurePreviewChars], "…");
 	}
+
+	/// 失败的那条验证命令；都通过或没跑验证时为空。
+	private static string VerifyFailureLine(SubagentRun run)
+	{
+		foreach (var result in run.Verify)
+		{
+			if (result.Passed)
+			{
+				continue;
+			}
+
+			return result.TimedOut
+				? Strings.SubagentVerifyTimedOut(result.Command)
+				: Strings.SubagentVerifyFailed(result.Command, result.ExitCode ?? -1);
+		}
+
+		return string.Empty;
+	}
+
+	/// 非失败行的一句附注：验证通过、或回复被输出上限截断。
+	/// 截断优先：结论缺尾巴比「验证通过」更该被看见。
+	private static string NoteText(SubagentRun run)
+	{
+		if (run.State == SubagentState.Failed)
+		{
+			return string.Empty;
+		}
+
+		if (string.Equals(run.StopReason, "length", StringComparison.Ordinal))
+		{
+			return Strings.SubagentTruncated;
+		}
+
+		if (run.Verify.Count == 0)
+		{
+			return string.Empty;
+		}
+
+		foreach (var result in run.Verify)
+		{
+			if (!result.Passed)
+			{
+				return string.Empty;
+			}
+		}
+
+		return Strings.SubagentVerifyPassed(run.Verify[0].Command);
+	}
+
+	private static string NoteRole(SubagentRun run) =>
+		string.Equals(run.StopReason, "length", StringComparison.Ordinal) ? AppStyles.RoleWarning : AppStyles.RoleSuccess;
 
 	/// 状态图标：颜色与形状都表意，文字再写一遍状态名，色弱也读得出。
 	private static string StateIcon(SubagentRun run)
@@ -411,7 +490,7 @@ internal sealed class SubagentCard
 		}
 
 		duration.IsVisible(run.StartedAt > 0);
-		var usageText = Strings.SubagentUsage(run.Tokens, run.Cost);
+		var usageText = Strings.SubagentUsage(run.Tokens, run.Cost, run.MaxTokens);
 		var usage = new TextBlock()
 			.Text(usageText)
 			.FontSize(AppTheme.FontSizeMicro)
@@ -471,6 +550,15 @@ internal sealed class SubagentCard
 			.VerticalAlignment(VerticalAlignment.Center);
 		failure.IsVisible(failureText.Length > 0);
 
+		var noteText = NoteText(run);
+		var note = new TextBlock()
+			.Text(noteText)
+			.FontSize(AppTheme.FontSizeMicro)
+			.Role(NoteRole(run))
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		note.IsVisible(noteText.Length > 0);
+
 		var content = new StackPanel()
 			.Spacing(1)
 			.Children(
@@ -478,6 +566,7 @@ internal sealed class SubagentCard
 				statusLine,
 				activity,
 				failure,
+				note,
 				new TextBlock()
 					.Text(Strings.SubagentAwaitingHint)
 					.FontSize(AppTheme.FontSizeMicro)
@@ -569,6 +658,29 @@ internal sealed class SubagentCard
 					.FaintText()
 					.TextWrapping(TextWrapping.Wrap));
 			}
+
+			// 宿主跑的验证合成一段：多条命令各建一个同标题的卡片只会把展开区撑散。
+			if (run.Verify.Count > 0)
+			{
+				var verifyBody = new StringBuilder();
+				foreach (var verification in run.Verify)
+				{
+					if (verifyBody.Length > 0)
+					{
+						verifyBody.Append('\n');
+					}
+
+					verifyBody.Append(verification.TimedOut
+						? Strings.SubagentVerifyTimedOut(verification.Command)
+						: $"{verification.Command} · {Strings.SubagentVerifyExit(verification.ExitCode ?? -1)}");
+					if (verification.Output is { Length: > 0 } output)
+					{
+						verifyBody.Append('\n').Append(Tail(output, VerifyOutputPreviewChars));
+					}
+				}
+
+				body.Add(Section(Strings.SubagentVerifySection, verifyBody.ToString()));
+			}
 		}
 
 		var stack = new StackPanel()
@@ -594,6 +706,10 @@ internal sealed class SubagentCard
 			run.Restored,
 			run.AwaitingUser,
 			run.Turns,
+			run.MaxTokens,
+			run.Verify.Count,
+			run.StopReason,
+			run.Question ?? string.Empty,
 			expanded,
 			status,
 			resumable,
@@ -665,4 +781,8 @@ internal sealed class SubagentCard
 
 	private static string Clip(string text, int max) =>
 		text.Length <= max ? text : string.Concat(text.AsSpan(0, max), "…");
+
+	/// 验证输出的尾巴：失败信号总在最后几行。
+	private static string Tail(string text, int max) =>
+		text.Length <= max ? text : string.Concat("…", text.AsSpan(text.Length - max));
 }

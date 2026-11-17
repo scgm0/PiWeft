@@ -12,10 +12,38 @@ namespace PiWeft.Desktop;
 internal sealed class DesktopUiHost : IUiHost
 {
 	private SessionTab? _tab;
+	private SessionTab? _parentTab;
+	private string? _source;
+	private string? _alertSessionId;
 	private UIElement? _owner;
 	private AskQuestionPanel? _overlayPanel;
 
 	public bool HasUi => true;
+
+	/// 没有自己的标签时把交互转给父标签：子代理在后台跑，问题要有地方问。
+	/// <paramref name="source"/> 是卡片上的来源标签（子代理名字），
+	/// <paramref name="alertSessionId"/> 让等待提示音归到子会话而不是父会话。
+	public void AttachParent(SessionTab parent, string? source, string? alertSessionId = null)
+	{
+		_parentTab = parent;
+		_source = source;
+		_alertSessionId = alertSessionId;
+	}
+
+	/// 自己的标签关掉后回到父标签路由。
+	public void DetachTab()
+	{
+		_tab = null;
+	}
+
+	/// 父标签也没了（父会话关闭、子会话回收）：断掉所有引用，别再往死标签上送问题。
+	public void DetachParent()
+	{
+		_tab = null;
+		_parentTab = null;
+		_source = null;
+		_alertSessionId = null;
+	}
 
 	/// 窗口级宿主：会话还没建出来时的项目信任询问用（没有页签可以挂内联卡片），
 	/// 卡片以窗口浮层展示，回答完即收。
@@ -99,7 +127,14 @@ internal sealed class DesktopUiHost : IUiHost
 		{
 			if (_tab is { } tab)
 			{
-				_ = RunAsync(tab, questions, review, cancellationToken, completion);
+				_ = RunAsync(tab.AskPanel, questions, review, null, null, cancellationToken, completion);
+				return;
+			}
+
+			if (_parentTab is { } parent)
+			{
+				// 父标签的面板一次只显示一批，多出来的排队（AskQuestionPanel 内部按 FIFO 接）。
+				_ = RunAsync(parent.AskPanel, questions, review, _source, _alertSessionId, cancellationToken, completion);
 				return;
 			}
 
@@ -117,15 +152,18 @@ internal sealed class DesktopUiHost : IUiHost
 	}
 
 	private static async Task RunAsync(
-		SessionTab tab,
+		AskQuestionPanel panel,
 		IReadOnlyList<AskQuestion> questions,
 		bool review,
+		string? source,
+		string? alertSessionId,
 		CancellationToken cancellationToken,
 		TaskCompletionSource<string?> completion)
 	{
 		try
 		{
-			completion.TrySetResult(await tab.AskPanel.ShowAsync(questions, review, cancellationToken).ConfigureAwait(true));
+			completion.TrySetResult(
+				await panel.ShowAsync(questions, review, cancellationToken, source, alertSessionId).ConfigureAwait(true));
 		}
 		catch (Exception ex)
 		{
@@ -161,7 +199,13 @@ internal sealed class DesktopUiHost : IUiHost
 		{
 			if (_tab is { } tab)
 			{
-				_ = RunDialogAsync(tab, question, cancellationToken, completion, project);
+				_ = RunDialogAsync(tab.AskPanel, question, null, null, cancellationToken, completion, project);
+				return;
+			}
+
+			if (_parentTab is { } parent)
+			{
+				_ = RunDialogAsync(parent.AskPanel, question, _source, _alertSessionId, cancellationToken, completion, project);
 				return;
 			}
 
@@ -199,15 +243,17 @@ internal sealed class DesktopUiHost : IUiHost
 	}
 
 	private static async Task RunDialogAsync<T>(
-		SessionTab tab,
+		AskQuestionPanel panel,
 		AskQuestion question,
+		string? source,
+		string? alertSessionId,
 		CancellationToken cancellationToken,
 		TaskCompletionSource<T?> completion,
 		Func<IReadOnlyList<AskAnswer>, T?> project)
 	{
 		try
 		{
-			var raw = await tab.AskPanel.ShowAsync([question], review: false, cancellationToken).ConfigureAwait(true);
+			var raw = await panel.ShowAsync([question], review: false, cancellationToken, source, alertSessionId).ConfigureAwait(true);
 			var answers = AskQuestions.ParseResponse(raw, [question]).Answers;
 			completion.TrySetResult(project(answers));
 		}

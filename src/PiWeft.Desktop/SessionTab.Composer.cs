@@ -286,6 +286,29 @@ public sealed partial class SessionTab
 				Cost = 0.0042,
 				StartedAt = now - 12_000,
 			},
+			new()
+			{
+				Name = "worker-1",
+				SessionId = "subagent-smoke-verified",
+				SessionFile = "/tmp/piweft-subagents/worker-1.jsonl",
+				Agent = "worker",
+				Label = "修掉会话卡顿并跟验证",
+				Brief = "把每帧重建的列表改成增量更新，跑桌面测试。",
+				Model = "opencode-go/deepseek-v4.1-flash",
+				Thinking = "medium",
+				State = SubagentState.Idle,
+				Turns = 2,
+				Result = "改成增量更新，桌面测试全过。",
+				Tokens = 41_800,
+				MaxTokens = 120_000,
+				Cost = 0.0093,
+				StartedAt = now - 240_000,
+				FinishedAt = now - 5_000,
+				Verify =
+				[
+					new() { Command = "dotnet test tests/PiWeft.Desktop.Tests", ExitCode = 0, Output = "Passed! - Failed: 0, Passed: 214" },
+				],
+			},
 		];
 
 		_subagentCard.RenderRunsForSmoke(runs);

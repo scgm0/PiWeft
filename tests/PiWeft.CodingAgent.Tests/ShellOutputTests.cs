@@ -8,6 +8,7 @@ namespace PiWeft.CodingAgent.Tests;
 
 /// shell 输出可以任意大：内存里只能留尾部窗口，完整内容必须落到临时文件。
 /// 历史缺陷是把整条命令的输出堆在 StringBuilder 里，`yes`、`cat 大文件`、`grep -r` 会吃掉几 GB 内存。
+[Collection("shell-process")]
 public sealed class ShellOutputTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-shell-" + Guid.NewGuid().ToString("N")[..8]);
@@ -233,7 +234,8 @@ public sealed class ShellOutputTests : IDisposable
 
 		var startedAt = Stopwatch.GetTimestamp();
 		var result = await ShellRunner.RunAsync(
-			"sleep 2 & echo hi",
+			// 后台子进程活得比超时断言久：断言的是「不等它」，不是「它跑得快」。
+			"sleep 8 & echo hi",
 			_root,
 			timeoutSeconds: null,
 			onOutput: null,
@@ -242,7 +244,7 @@ public sealed class ShellOutputTests : IDisposable
 
 		Assert.Equal(0, result.ExitCode);
 		Assert.Contains("hi", result.Output);
-		Assert.True(elapsed < TimeSpan.FromSeconds(1.5), $"tool waited {elapsed} for a background child");
+		Assert.True(elapsed < TimeSpan.FromSeconds(3), $"tool waited {elapsed} for a background child");
 	}
 
 	[Fact]
@@ -464,7 +466,8 @@ public sealed class ShellOutputTests : IDisposable
 
 		var startedAt = Stopwatch.GetTimestamp();
 		var result = await ShellRunner.RunAsync(
-			"for i in $(seq 1 1200); do echo tick; sleep 0.01; done & echo started; exit 3",
+			// 不设超时这条命令要跑约 30 秒：20 秒的界仍然证明超时提前收尾，又给并发负载留出余量。
+			"for i in $(seq 1 3000); do echo tick; sleep 0.01; done & echo started; exit 3",
 			_root,
 			timeoutSeconds: 5,
 			onOutput: null,
@@ -480,7 +483,7 @@ public sealed class ShellOutputTests : IDisposable
 		Assert.Equal(3, result.ShellExitCode);
 		Assert.Contains("started", result.Output);
 		Assert.Contains("tick", result.Output);
-		Assert.True(elapsed < TimeSpan.FromSeconds(8), $"timed out tool took {elapsed}");
+		Assert.True(elapsed < TimeSpan.FromSeconds(20), $"timed out tool took {elapsed}");
 	}
 
 	[Fact]
@@ -533,7 +536,8 @@ public sealed class ShellOutputTests : IDisposable
 		Assert.Equal(0, result.ShellExitCode);
 
 		var pid = int.Parse(File.ReadAllText(pidFile).Trim(), System.Globalization.CultureInfo.InvariantCulture);
-		var deadline = DateTime.UtcNow.AddSeconds(2);
+		// 进程容器的清理在并行跑整套测试时可能慢上几秒：这里等的上限，不是延迟断言。
+		var deadline = DateTime.UtcNow.AddSeconds(10);
 		while (DateTime.UtcNow < deadline && ProcessIsAlive(pid))
 		{
 			await Task.Delay(25);

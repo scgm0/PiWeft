@@ -113,6 +113,9 @@ public sealed record CodingAgentSettings
 
 	public CodemodeSettings Codemode { get; init; } = new();
 
+	/// <summary>子代理的配额与默认值，对应 <c>settings.subagents</c>。</summary>
+	public SubagentsSettings Subagents { get; init; } = new();
+
 	/// 工具调用安全门，对应 <c>settings.security</c>。默认 <c>off</c>，全部放行；
 	/// 只从全局设置读取，见 <see cref="SecurityConfig.Load"/>。
 	public SecurityConfig Security { get; init; } = SecurityConfig.Off;
@@ -626,6 +629,18 @@ public sealed record CodingAgentSettings
 			Write(target, "autoEnable", codemode.AutoEnable);
 			root["codemode"] = target;
 		}
+
+		if (file.Subagents is { } subagents)
+		{
+			var target = root["subagents"] as JsonObject ?? new JsonObject();
+			Write(target, "maxActive", subagents.MaxActive);
+			Write(target, "maxSpawns", subagents.MaxSpawns);
+			Write(target, "runTimeoutMinutes", subagents.RunTimeoutMinutes);
+			Write(target, "maxTokens", subagents.MaxTokens);
+			Write(target, "verifyTimeoutSeconds", subagents.VerifyTimeoutSeconds);
+			Write(target, "openTabs", subagents.OpenTabs);
+			root["subagents"] = target;
+		}
 	}
 
 	// 用具体类型的重载写值：泛型的 JsonValue.Create<T> 在 AOT 下需要运行时代码生成。
@@ -839,6 +854,15 @@ public sealed record CodingAgentSettings
 			Mode = NormalizeCodemodeMode(project?.Codemode?.Mode ?? global?.Codemode?.Mode),
 			InlineBudget = NormalizeCodemodeBudget(project?.Codemode?.InlineBudget ?? global?.Codemode?.InlineBudget),
 			AutoEnable = project?.Codemode?.AutoEnable ?? global?.Codemode?.AutoEnable ?? true,
+		},
+		Subagents = new SubagentsSettings
+		{
+			MaxActive = NormalizeRange(project?.Subagents?.MaxActive ?? global?.Subagents?.MaxActive, 1, 32, 4),
+			MaxSpawns = NormalizeRange(project?.Subagents?.MaxSpawns ?? global?.Subagents?.MaxSpawns, 1, 512, 32),
+			RunTimeoutMinutes = NormalizeRange(project?.Subagents?.RunTimeoutMinutes ?? global?.Subagents?.RunTimeoutMinutes, 1, 1440, 30),
+			MaxTokens = NormalizeRange(project?.Subagents?.MaxTokens ?? global?.Subagents?.MaxTokens, 0, 10_000_000, 0),
+			VerifyTimeoutSeconds = NormalizeRange(project?.Subagents?.VerifyTimeoutSeconds ?? global?.Subagents?.VerifyTimeoutSeconds, 1, 86_400, 600),
+			OpenTabs = project?.Subagents?.OpenTabs ?? global?.Subagents?.OpenTabs ?? false,
 		},
 		// 安全门只认全局设置：项目里的 .pi/settings.json 可以随仓库一起分发，
 		// 让它能改自己的安全等级等于让仓库关掉用户的防护。
@@ -1132,6 +1156,15 @@ public sealed record CodingAgentSettings
 			InlineBudget = settings.Codemode.InlineBudget,
 			AutoEnable = settings.Codemode.AutoEnable,
 		},
+		Subagents = new SubagentsFile
+		{
+			MaxActive = settings.Subagents.MaxActive,
+			MaxSpawns = settings.Subagents.MaxSpawns,
+			RunTimeoutMinutes = settings.Subagents.RunTimeoutMinutes,
+			MaxTokens = settings.Subagents.MaxTokens,
+			VerifyTimeoutSeconds = settings.Subagents.VerifyTimeoutSeconds,
+			OpenTabs = settings.Subagents.OpenTabs,
+		},
 		Retry = new RetryFile
 		{
 			Enabled = settings.Retry.Enabled,
@@ -1151,6 +1184,19 @@ public sealed record CodingAgentSettings
 
 	private static int NormalizeCodemodeBudget(int? value) => value is >= 0 ? value.Value : CodemodeSettings.DefaultInlineBudget;
 
+	private static int NormalizeRange(int? value, int min, int max, int fallback) =>
+		value is { } number && number >= min && number <= max ? number : fallback;
+
+	/// <summary>把 <c>settings.subagents</c> 换算成 hub 的配额。</summary>
+	public static Subagents.SubagentLimits ToLimits(SubagentsSettings settings) => new()
+	{
+		MaxActive = settings.MaxActive,
+		MaxSpawns = settings.MaxSpawns,
+		RunTimeout = TimeSpan.FromMinutes(settings.RunTimeoutMinutes),
+		MaxTokens = settings.MaxTokens,
+		VerifyTimeout = TimeSpan.FromSeconds(settings.VerifyTimeoutSeconds),
+	};
+
 
 
 }
@@ -1164,6 +1210,32 @@ public sealed record CodemodeSettings
 	public int InlineBudget { get; init; } = DefaultInlineBudget;
 
 	public bool AutoEnable { get; init; } = true;
+}
+
+/// 子代理的配额与默认值，对应 <c>settings.subagents</c>。
+/// 只影响本进程里的委派：并发、每回合启动数、单次运行的时限与 token 上限。
+public sealed record SubagentsSettings
+{
+	/// <summary>同时活跃的子代理数量上限；超了直接拒绝，不排队。</summary>
+	public int MaxActive { get; init; } = 4;
+
+	/// <summary>每个用户回合最多启动多少个子代理；防止回报触发的连锁委派无限扩张。</summary>
+	public int MaxSpawns { get; init; } = 32;
+
+	/// <summary>单次运行的时限（分钟）；到点先提醒收尾，再到点停 run。</summary>
+	public int RunTimeoutMinutes { get; init; } = 30;
+
+	/// <summary>单次运行的 token 上限；0 表示不限制。子代理没写自己的上限时用这个。</summary>
+	public int MaxTokens { get; init; }
+
+	/// <summary>每条验证命令的时限（秒）。</summary>
+	public int VerifyTimeoutSeconds { get; init; } = 600;
+
+	/// <summary>
+	/// 启动子代理时是否顺带开一个后台标签。默认关：子代理在 hub 里跑，
+	/// 卡片行按需打开活的转录，标签栏不被并行委派占满。
+	/// </summary>
+	public bool OpenTabs { get; init; }
 }
 
 public sealed record SettingsFile
@@ -1235,6 +1307,24 @@ public sealed record SettingsFile
 	public RetryFile? Retry { get; init; }
 
 	public CodemodeFile? Codemode { get; init; }
+
+	public SubagentsFile? Subagents { get; init; }
+}
+
+/// <summary><c>settings.subagents</c> 的写侧形状；字段与 <see cref="SubagentsSettings"/> 对齐。</summary>
+public sealed record SubagentsFile
+{
+	public int? MaxActive { get; init; }
+
+	public int? MaxSpawns { get; init; }
+
+	public int? RunTimeoutMinutes { get; init; }
+
+	public int? MaxTokens { get; init; }
+
+	public int? VerifyTimeoutSeconds { get; init; }
+
+	public bool? OpenTabs { get; init; }
 }
 
 

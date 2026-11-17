@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
@@ -11,6 +12,7 @@ using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Stats;
 using PiWeft.CodingAgent.Settings;
+using PiWeft.CodingAgent.Subagents;
 using PiWeft.CodingAgent.Themes;
 using PiWeft.Mcp;
 using ZLogger;
@@ -619,6 +621,11 @@ public sealed partial class MainWindow : Window
 			_themeApplyCancellation = null;
 			// 每个会话面板里的伪终端都要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
 			foreach (var panel in _sessionPanels.Values) panel.Dispose();
+			// 没有标签的子代理：父会话还活着时先收，让 hub 记下 stopped 条目。
+			_detachedSweep?.Stop();
+			_detachedSweep?.Dispose();
+			_detachedSweep = null;
+			foreach (var id in _detachedChildren.Keys.ToArray()) DisposeDetachedChild(id);
 			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
 			// 侧栏摘要平时在后台线程写，关窗时同步落一次：最后一轮的会话状态不能随进程退出丢掉。
 			_catalog.FlushSummaries();
@@ -991,6 +998,19 @@ public sealed partial class MainWindow : Window
 
 		_nameBox.Text = selected.Name;
 
+		// 子代理的会话可能正在 hub 里跑：先挂活的会话或激活已有标签，
+		// 直接按文件打开会得到一份不会更新的快照。
+		if (TryActivateTab(selected.Id))
+		{
+			return;
+		}
+
+		if (_detachedChildren.ContainsKey(selected.Id))
+		{
+			_ = ActivateSessionAsync(selected.Id);
+			return;
+		}
+
 		// 打开失败由会话面板上的加载卡片就地显示，这里不抢话。
 		OpenSessionPath(selected.Path);
 	}
@@ -998,6 +1018,17 @@ public sealed partial class MainWindow : Window
 	private void OpenSessionFromSearch(SessionListItem item)
 	{
 		_nameBox.Text = item.Name;
+
+		if (TryActivateTab(item.Id))
+		{
+			return;
+		}
+
+		if (_detachedChildren.ContainsKey(item.Id))
+		{
+			_ = ActivateSessionAsync(item.Id);
+			return;
+		}
 
 		OpenSessionPath(item.Path);
 	}
@@ -1094,7 +1125,8 @@ public sealed partial class MainWindow : Window
 
 	private void CloseTab(SessionTab tab) => _ = CloseTabAsync(tab);
 
-	private async Task CloseTabAsync(SessionTab tab)
+	/// 从标签栏、侧栏与右侧面板里摘掉一个标签，不碰会话本身。
+	private void RemoveTabFromStrip(SessionTab tab)
 	{
 		var index = _tabEntries.IndexOf(tab);
 		if (index < 0)
@@ -1121,12 +1153,306 @@ public sealed partial class MainWindow : Window
 			_panelHost.Remove(panel.View);
 			panel.Dispose();
 		}
+	}
 
-		// 会话 id 在关标签前记下：CloseAsync 会收尾并释放会话，之后不宜再读它的状态。
+	private async Task CloseTabAsync(SessionTab tab)
+	{
+		if (!_tabEntries.Contains(tab))
+		{
+			return;
+		}
+
+		// 会话 id 与父会话文件在关标签前记下：CloseAsync 会收尾并释放会话，之后不宜再读它的状态。
 		var sessionId = SessionIdOf(tab);
+		var sessionFile = tab.Session.Session.SessionFile;
+		RemoveTabFromStrip(tab);
+
+		if (tab.DetachedSession)
+		{
+			// 详情标签只是视图：关掉不停子会话，提问回到父标签。
+			tab.DisposeView();
+			if (_detachedChildren.TryGetValue(sessionId, out var child))
+			{
+				child.Host.DetachTab();
+				if (FindTabBySessionFile(child.ParentFile) is { } parent)
+				{
+					child.Host.AttachParent(parent, child.Name, sessionId);
+				}
+			}
+
+			UpdateStatus();
+			return;
+		}
+
+		// 父标签关闭：没有标签的子代理无处投递，连会话一起收掉（与关子标签同义）。
+		DisposeDetachedChildrenOf(sessionFile);
 		await tab.CloseAsync();
 		SoundAlerts.Shared.Forget(sessionId);
 		UpdateStatus();
+	}
+
+	/// 按父会话文件回收这一族无标签子会话：先摘掉可能开着的详情标签，再释放会话。
+	private void DisposeDetachedChildrenOf(string? parentFile)
+	{
+		if (parentFile is not { Length: > 0 } || _detachedChildren.Count == 0)
+		{
+			return;
+		}
+
+		List<string> doomed = [];
+		foreach (var (id, child) in _detachedChildren)
+		{
+			if (string.Equals(child.ParentFile, parentFile, StringComparison.Ordinal))
+			{
+				doomed.Add(id);
+			}
+		}
+
+		foreach (var id in doomed)
+		{
+			DisposeDetachedChild(id);
+		}
+	}
+
+	private void DisposeDetachedChild(string sessionId)
+	{
+		if (!_detachedChildren.Remove(sessionId, out var child))
+		{
+			return;
+		}
+
+		// 窗口关闭时标签会被统一 Dispose，没必要也不宜再去动已关窗口的标签栏。
+		if (!_sessionHostClosed)
+		{
+			foreach (var entry in _tabEntries.OfType<SessionTab>().ToArray())
+			{
+				if (entry.DetachedSession && string.Equals(SessionIdOf(entry), sessionId, StringComparison.Ordinal))
+				{
+					RemoveTabFromStrip(entry);
+					entry.DisposeView();
+				}
+			}
+		}
+
+		child.Host.DetachParent();
+		// 先中止：正在等回答的那一轮要拿到取消，别让工具结果写进一个已释放的会话。
+		try
+		{
+			child.Session.Abort();
+		}
+		catch (ObjectDisposedException)
+		{
+			// 已经收掉了。
+		}
+
+		child.Session.Dispose();
+	}
+
+	/// 子代理的问题先留给父会话自己回答（它通常正阻塞在 <c>wait_subagents</c> 上）；
+	/// 过一会儿还没人答，再摊到父标签的问询卡上让用户回答。谁先答谁算数。
+	private async Task EscalateQuestionAsync(SessionTab owner, SubagentHub hub, SubagentRun run)
+	{
+		try
+		{
+			await Task.Delay(QuestionEscalationDelay).ConfigureAwait(false);
+		}
+		catch (Exception)
+		{
+			return;
+		}
+
+		Dispatch(() => _ = ShowQuestionToUserAsync(owner, hub, run));
+	}
+
+	private async Task ShowQuestionToUserAsync(SessionTab owner, SubagentHub hub, SubagentRun run)
+	{
+		if (_sessionHostClosed || !_tabEntries.Contains(owner))
+		{
+			return;
+		}
+
+		if (hub.PendingQuestion(run.SessionId) is not { } question)
+		{
+			// 父会话已经回答了，或者问题已经超时。
+			return;
+		}
+
+		using var cancel = new CancellationTokenSource();
+		void OnAnswered(SubagentRun answered)
+		{
+			if (!string.Equals(answered.SessionId, run.SessionId, StringComparison.Ordinal))
+			{
+				return;
+			}
+
+			try
+			{
+				cancel.Cancel();
+			}
+			catch (ObjectDisposedException)
+			{
+				// 卡片已经收尾：事件是迟到的，忽略。
+			}
+		}
+
+		hub.QuestionAnswered += OnAnswered;
+		try
+		{
+			var prompt = question.Options.Count > 0
+				? string.Concat(question.Text, "\n\n可选项：", string.Join(" / ", question.Options))
+				: question.Text;
+			AskQuestion ask = new("q1", "input", prompt, null, null, null);
+			var raw = await owner.AskPanel
+				.ShowAsync([ask], review: false, cancel.Token, source: run.Name, alertSessionId: run.SessionId)
+				.ConfigureAwait(true);
+			if (raw is null)
+			{
+				return;
+			}
+
+			var answers = AskQuestions.ParseResponse(raw, [ask]).Answers;
+			if (answers.Count > 0 && answers[0].Value is JsonValue value && value.TryGetValue<string>(out var text) &&
+				text.Trim() is { Length: > 0 } answer)
+			{
+				hub.AnswerQuestion(run.SessionId, answer);
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Escalate subagent question", ex);
+		}
+		finally
+		{
+			hub.QuestionAnswered -= OnAnswered;
+		}
+	}
+
+	private static readonly TimeSpan QuestionEscalationDelay = TimeSpan.FromSeconds(20);
+
+	/// 空闲回收：子代理一回合做完就释放会话对象，条目、文件与卡片都留着。
+	/// 子代理基本一次性，结果投递后活会话只剩内存开销；打开转录或再发消息按文件冷恢复。
+	private void EnsureDetachedSweep()
+	{
+		if (_detachedSweep is { } timer)
+		{
+			timer.Start();
+			return;
+		}
+
+		// 5 秒扫一拍：回收落在回合结束后 0–5 秒，又不用在回合收尾的同一拍里销毁会话。
+		var created = new DispatcherTimer(TimeSpan.FromSeconds(5));
+		created.Tick += SweepDetachedChildren;
+		_detachedSweep = created;
+		created.Start();
+	}
+
+	private void SweepDetachedChildren()
+	{
+		if (_sessionHostClosed || _detachedChildren.Count == 0)
+		{
+			_detachedSweep?.Stop();
+			return;
+		}
+
+		foreach (var (id, child) in _detachedChildren.ToArray())
+		{
+			if (child.Session.IsDisposed)
+			{
+				continue;
+			}
+
+			// 详情标签开着时会话在用：不回收。
+			if (FindTabBySessionId(id) is not null)
+			{
+				continue;
+			}
+
+			if (!child.Hub.IsIdle(id))
+			{
+				continue;
+			}
+
+			// Dispose 会 flush 会话文件并退订：放后台，别占一帧；上一拍卸下的条目已在前面跳过。
+			var hub = child.Hub;
+			_ = Task.Run(() =>
+			{
+				if (hub.UnloadSession(id))
+				{
+					SoundAlerts.Shared.Forget(id);
+					AppLog.For<MainWindow>().ZLogInformation($"Subagent session unloaded after its turn: child={id}");
+				}
+			});
+		}
+	}
+
+	/// 把已登记、但没有标签的子代理挂成标签（卡片或侧栏点「打开」）。返回 false 表示没有活会话。
+	/// 会话已被空闲回收时先让 hub 按文件冷恢复，保持同一时刻只有一份会话对象。
+	private async Task<bool> TryAttachDetachedChildAsync(string sessionId)
+	{
+		if (_sessionHostClosed || !_detachedChildren.TryGetValue(sessionId, out var child))
+		{
+			return false;
+		}
+
+		// 冷恢复与后台扫描可能交错：扫到终态会立刻回收，所以恢复了再确认一次。
+		for (var attempt = 0; attempt < 2 && child.Session.IsDisposed; attempt++)
+		{
+			var reopened = await child.Hub.ReopenForViewAsync(sessionId, CancellationToken.None).ConfigureAwait(true);
+			if (reopened is null || reopened.IsDisposed)
+			{
+				// 文件没了或打不开：退回按文件打开，让会话面板就地报错。
+				return false;
+			}
+
+			// 冷恢复走的是宿主，登记表可能已经被新的界面宿主与条目替换：以表里的为准。
+			if (!_detachedChildren.TryGetValue(sessionId, out child))
+			{
+				return false;
+			}
+
+			if (!ReferenceEquals(child.Session, reopened))
+			{
+				child = child with { Session = reopened };
+				_detachedChildren[sessionId] = child;
+			}
+		}
+
+		if (child.Session.IsDisposed)
+		{
+			return false;
+		}
+
+		if (TryActivateTab(sessionId))
+		{
+			return true;
+		}
+
+		var tab = AttachTab(child.Session);
+		tab.DetachedSession = true;
+		tab.UiHost = child.Host;
+		child.Host.Attach(tab);
+		UpdateTabHeaders();
+		// 不刷新侧栏：这条子会话的文件早就在目录里，建标签不改任何列表内容。
+		var index = _tabEntries.IndexOf(tab);
+		if (index >= 0)
+		{
+			_tabControl.SelectedIndex = index;
+		}
+
+		return true;
+	}
+
+	private SessionTab? FindTabBySessionId(string sessionId)
+	{
+		foreach (var entry in _tabEntries)
+		{
+			if (entry is SessionTab candidate && string.Equals(SessionIdOf(candidate), sessionId, StringComparison.Ordinal))
+			{
+				return candidate;
+			}
+		}
+
+		return null;
 	}
 
 
@@ -1460,17 +1786,21 @@ public sealed partial class MainWindow : Window
 				await connection.WaitForDirectToolsAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false);
 			}
 		};
-		// 子会话条点「打开」：按会话 id 找到同窗口里的后台标签。
+		// 子会话条点「打开」：按会话 id 激活标签；没有标签的子代理由 ActivateSessionAsync 现挂。
 		tab.LinkedSessionOpenRequested += sessionId => _ = ActivateSessionAsync(sessionId);
 		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
 		// 那条链路会顺带把会话列表重 stat 一遍。
-		tab.AskChanged += changed =>
-		{
-			UpdateTabHeaders();
-			SyncSubagentAwaiting(changed);
-		};
-		// 子代理在后台标签里开始/结束等回答：父标签也显示圆点，并弹一次 toast。
+		tab.AskChanged += _ => UpdateTabHeaders();
+		// 子代理开始/结束等回答：父标签也显示圆点，并弹一次 toast。
+		// toast 由 hub 的事件驱动，与子代理有没有标签无关。
 		tab.SubagentAwaitChanged += _ => UpdateTabHeaders();
+		if (session.Subagents is { } subagents)
+		{
+			// 事件来自子会话的事件派发线程：toast 与问询卡都要回 UI 线程，否则跨线程碰窗口。
+			subagents.AwaitingChanged += run => Dispatch(() => Toasts.Show(this, Strings.SubagentAwaitingInput(run.Name)));
+			var owner = tab;
+			subagents.QuestionRaised += run => Dispatch(() => _ = EscalateQuestionAsync(owner, subagents, run));
+		}
 		// 发过一条消息才记「上次用过的模型」（PiDeck 的 lastUsedModel），选而未发不算。
 		tab.MessageSent += sent => RememberUsedModel(sent.Session.Model);
 		// 快捷消息浮层的「管理」：设置分区属于宿主，标签只发意图。
@@ -1517,9 +1847,17 @@ public sealed partial class MainWindow : Window
 	/// 侧栏快照里没有时先后台重扫一次目录再找（重扫不能占 UI 线程）。
 	internal async Task<bool> ActivateSessionAsync(string sessionId)
 	{
-		if (TryActivateTab(sessionId))
+		if (TryActivateTab(sessionId) || await TryAttachDetachedChildAsync(sessionId).ConfigureAwait(true))
 		{
 			return true;
+		}
+
+		if (_detachedChildren.ContainsKey(sessionId))
+		{
+			// 是 hub 管的子代理，但活会话打不开：按文件再开一份就成了同一文件的两个写者。
+			// 让用户重试（再点一次会重新冷恢复），不落到下面的文件打开。
+			AppLog.For<MainWindow>().ZLogWarning($"Detached subagent session could not be reopened: child={sessionId}");
+			return false;
 		}
 
 		// 标签没开（重启后子代理条里的历史项）：从侧栏目录里找到会话文件再打开。
@@ -1538,6 +1876,25 @@ public sealed partial class MainWindow : Window
 
 		OpenSessionPath(item.Path);
 		return true;
+	}
+
+	private SessionTab? FindTabBySessionFile(string? sessionFile)
+	{
+		if (sessionFile is not { Length: > 0 })
+		{
+			return null;
+		}
+
+		foreach (var entry in _tabEntries)
+		{
+			if (entry is SessionTab candidate &&
+				string.Equals(candidate.Session.Session.SessionFile, sessionFile, StringComparison.Ordinal))
+			{
+				return candidate;
+			}
+		}
+
+		return null;
 	}
 
 	private bool TryActivateTab(string sessionId)

@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections.Frozen;
+using System.Globalization;
 
 namespace PiWeft.CodingAgent.Subagents;
 
@@ -25,6 +27,15 @@ public sealed record SubagentDefinition
 
 	/// <summary>子会话思考级别。</summary>
 	public string? Thinking { get; init; }
+
+	/// <summary>单次运行的时限（分钟）；省略时用设置里的默认值。</summary>
+	public int? TimeoutMinutes { get; init; }
+
+	/// <summary>单次运行的 token 上限；null 表示用设置里的默认值，0 表示不限制。</summary>
+	public long? MaxTokens { get; init; }
+
+	/// <summary>回合结束后由宿主跑的验证命令；省略时用父会话的设置。</summary>
+	public IReadOnlyList<string>? Verify { get; init; }
 
 	/// <summary>
 	/// 是否把角色名与描述放进 <c>delegate</c> 的模型可见目录。null 表示跟随同名角色的既有值；
@@ -64,6 +75,11 @@ public sealed class SubagentCatalog
 	/// <summary>按名字取角色；找不到返回 null。</summary>
 	public SubagentDefinition? Get(string name) => _byName.GetValueOrDefault(name);
 
+	/// 角色名允许的字符：小写字母、数字与连字符。用 SearchValues 让整段名字一次向量化扫完，
+	/// 角色文件里写错一个字符（中文、下划线、大写）也能立刻给出「不合法」。
+	private static readonly SearchValues<char> NameChars =
+		SearchValues.Create("abcdefghijklmnopqrstuvwxyz0123456789-");
+
 	/// <summary>角色名是否合法：小写字母开头，只含小写字母、数字与连字符，最长 32。</summary>
 	public static bool IsValidName(string name)
 	{
@@ -72,15 +88,8 @@ public sealed class SubagentCatalog
 			return false;
 		}
 
-		foreach (var character in name.AsSpan(1))
-		{
-			if (!char.IsAsciiLetterLower(character) && !char.IsAsciiDigit(character) && character != '-')
-			{
-				return false;
-			}
-		}
-
-		return !string.Equals(name, "lead", StringComparison.Ordinal);
+		return !name.AsSpan(1).ContainsAnyExcept(NameChars) &&
+			!string.Equals(name, "lead", StringComparison.Ordinal);
 	}
 
 	/// <summary>
@@ -236,6 +245,20 @@ public sealed class SubagentCatalog
 		bool? advertise = bool.TryParse(fields.GetValueOrDefault("advertise"), out var configuredAdvertise)
 			? configuredAdvertise
 			: null;
+		var timeoutMinutes = int.TryParse(
+			fields.GetValueOrDefault("timeoutMinutes"),
+			NumberStyles.None,
+			CultureInfo.InvariantCulture,
+			out var configuredTimeout) && configuredTimeout > 0
+			? configuredTimeout
+			: (int?)null;
+		var maxTokens = long.TryParse(
+			fields.GetValueOrDefault("maxTokens"),
+			NumberStyles.None,
+			CultureInfo.InvariantCulture,
+			out var configuredMaxTokens) && configuredMaxTokens >= 0
+			? configuredMaxTokens
+			: (long?)null;
 
 		return new SubagentDefinition
 		{
@@ -246,6 +269,9 @@ public sealed class SubagentCatalog
 			ExcludeTools = SplitList(fields.GetValueOrDefault("excludeTools")) ?? [],
 			Model = Trimmed(fields.GetValueOrDefault("model")),
 			Thinking = Trimmed(fields.GetValueOrDefault("thinking")),
+			TimeoutMinutes = timeoutMinutes,
+			MaxTokens = maxTokens,
+			Verify = SplitList(fields.GetValueOrDefault("verify")),
 			Advertise = advertise,
 			Source = source,
 			FilePath = path,

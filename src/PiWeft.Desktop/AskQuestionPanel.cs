@@ -14,6 +14,7 @@ namespace PiWeft.Desktop;
 internal sealed class AskQuestionPanel
 {
 	private readonly TextBlock _title = new();
+	private readonly TextBlock _source = new();
 	private readonly TextBlock _status = new();
 	private readonly ProgressBar _progress = new();
 	private readonly StackPanel _tabs;
@@ -26,7 +27,21 @@ internal sealed class AskQuestionPanel
 	private readonly GlyphElement _chevron;
 	private readonly Action<bool>? _openChanged;
 
+	/// 排队等待展示的一批：面板一次只显示一批，后来的排进队列而不是把上一批取消。
+	private sealed record PendingBatch(
+		IReadOnlyList<AskQuestion> Questions,
+		bool Review,
+		string? Source,
+		string? AlertSessionId,
+		Window? OverlayWindow,
+		CancellationToken Token,
+		TaskCompletionSource<string?> Completion);
+
+	private readonly Queue<PendingBatch> _batchQueue = new();
+
 	private IReadOnlyList<AskQuestion> _questions = [];
+	private string? _sourceName;
+	private string? _batchAlertSessionId;
 	private readonly List<AskAnswer?> _answers = [];
 	private readonly List<List<AskOption>> _extraOptions = [];
 	private readonly List<HashSet<int>> _multiSelected = [];
@@ -73,6 +88,11 @@ internal sealed class AskQuestionPanel
 
 		_title.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium).PrimaryText()
 			.VerticalAlignment(VerticalAlignment.Center).TextTrimming(TextTrimming.CharacterEllipsis);
+		// 来源标签：父标签替子代理显示提问时，得说清是谁在问。
+		_source.FontSize(AppTheme.FontSizeMicro).Role(AppStyles.RoleInfo)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(0, 0, AppTheme.Space1 + 2, 0))
+			.IsVisible(false);
 		_status.FontSize(AppTheme.FontSizeMicro).MutedText()
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Margin(new Thickness(AppTheme.Space2, 0, 0, 0));
@@ -85,7 +105,10 @@ internal sealed class AskQuestionPanel
 				AppIcons.Icon("circle-question-mark", AppStyles.RoleInfo, 14)
 					.Margin(new Thickness(0, 0, AppTheme.Space1 + 2, 0))
 					.Column(1),
-				_title.Column(2),
+				new StackPanel().Orientation(Orientation.Horizontal)
+					.VerticalAlignment(VerticalAlignment.Center)
+					.Children(_source, _title)
+					.Column(2),
 				_status.Column(3),
 				AppIcons.Button("x", Strings.AskCancel, () => Finish(cancelled: true), size: 13)
 					.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
@@ -150,13 +173,132 @@ internal sealed class AskQuestionPanel
 
 	public bool IsOpen => View.IsVisible;
 
-	public void Close() => Finish(cancelled: true);
+	public void Close()
+	{
+		// 先作废排队的批：Finish 会把下一批接上来，关标签时那张卡片已经没有宿主。
+		DrainQueuedBatches();
+		Finish(cancelled: true);
+	}
 
 	internal void BindSession(string? sessionId) => _alertSessionId = sessionId;
 
 	/// 窗口级浮层模式：只给「会话还没建出来」的场景用（启动时的项目信任询问）。
 	/// 普通 ask_question 一律走 <see cref="ShowAsync"/> 的会话内联卡片。
 	public Task<string?> ShowOverlayAsync(Window window, IReadOnlyList<AskQuestion> questions, bool review, CancellationToken cancellationToken)
+		=> Show(questions, review, cancellationToken, source: null, alertSessionId: null, overlayWindow: window);
+
+	public Task<string?> ShowAsync(
+		IReadOnlyList<AskQuestion> questions,
+		bool review,
+		CancellationToken cancellationToken,
+		string? source = null,
+		string? alertSessionId = null)
+		=> Show(questions, review, cancellationToken, source, alertSessionId, overlayWindow: null);
+
+	/// 面板一次只显示一批：上一批还没答完就来的排进队列，答完自动接上。
+	/// 队列里的项在轮到时才注册取消：轮到前就被取消的（子会话被停）直接跳过。
+	private Task<string?> Show(
+		IReadOnlyList<AskQuestion> questions,
+		bool review,
+		CancellationToken cancellationToken,
+		string? source,
+		string? alertSessionId,
+		Window? overlayWindow)
+	{
+		if (questions.Count == 0 || cancellationToken.IsCancellationRequested)
+		{
+			return Task.FromResult<string?>(null);
+		}
+
+		var completion = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var batch = new PendingBatch(questions, review, source, alertSessionId, overlayWindow, cancellationToken, completion);
+		if (IsOpen || _finishing)
+		{
+			_batchQueue.Enqueue(batch);
+			return completion.Task;
+		}
+
+		StartBatch(batch);
+		return completion.Task;
+	}
+
+	/// 接上队列里的下一批；返回是否真的开始了一批。
+	private bool ShowNextBatch()
+	{
+		while (_batchQueue.TryDequeue(out var next))
+		{
+			if (next.Token.IsCancellationRequested)
+			{
+				next.Completion.TrySetResult(null);
+				continue;
+			}
+
+			StartBatch(next);
+			return true;
+		}
+
+		return false;
+	}
+
+	/// 关标签/换会话时把排队的批一并作废：否则上一批答完又弹出一张别人的卡片。
+	private void DrainQueuedBatches()
+	{
+		while (_batchQueue.TryDequeue(out var batch))
+		{
+			batch.Completion.TrySetResult(null);
+		}
+	}
+
+	private void StartBatch(PendingBatch batch)
+	{
+		var questions = batch.Questions;
+		var cancellationToken = batch.Token;
+		if (batch.OverlayWindow is { } overlayWindow)
+		{
+			CreateOverlay(overlayWindow);
+		}
+
+		_questions = questions;
+		// 先换代：上一批控件的迟到回调不能写进新一批草稿。
+		_draftGeneration++;
+		_review = batch.Review && questions.Count > 1;
+		_sourceName = batch.Source;
+		_batchAlertSessionId = batch.AlertSessionId ?? _alertSessionId;
+		_answers.Clear();
+		_answers.AddRange(Enumerable.Repeat<AskAnswer?>(null, questions.Count));
+		_extraOptions.Clear();
+		_multiSelected.Clear();
+		_textDrafts.Clear();
+		_customDrafts.Clear();
+		for (var index = 0; index < questions.Count; index++)
+		{
+			_extraOptions.Add([]);
+			_multiSelected.Add([]);
+			// 草稿按题保存：切题、多选重绘、拖入路径后都不会丢；新一批用 prefill 重新开始。
+			_textDrafts.Add(questions[index].Prefill ?? string.Empty);
+			_customDrafts.Add(string.Empty);
+		}
+
+		_current = 0;
+		_expanded = true;
+		_submitting = false;
+		// 新一批接管：上一批的淡出回调不再算数，也不能把这一批一起收掉。
+		_finishing = false;
+		_completion = batch.Completion;
+		View.IsVisible(true);
+		_openChanged?.Invoke(true);
+		RenderCard();
+		// 卡片先可见再挂取消：令牌已经取消时 Register 会同步回调 Finish，
+		// 晚了 IsOpen 还是 false，Finish 会直接返回，这一批就永远没人完成。
+		_cancellation = cancellationToken.Register(static state => ((AskQuestionPanel)state!).DispatchCancel(), this);
+		// 代理停下来等用户回答：这是「需要你」的唯一现场，等用户真的看一眼再说话。
+		_alertRequestId = Guid.NewGuid().ToString("N");
+		SoundAlerts.Shared.RequestWaiting(_batchAlertSessionId, _alertRequestId);
+		FocusCurrent();
+	}
+
+	/// 窗口级浮层：与内联卡片共用同一批状态，只是给 View 换个宿主。
+	private void CreateOverlay(Window window)
 	{
 		var backdrop = new Button()
 			.Background(new Color(0xE0, 0, 0, 0))
@@ -182,57 +324,6 @@ internal sealed class AskQuestionPanel
 		TransientOverlay.Open(window, host, () => Finish(cancelled: true));
 		_overlayFade = new OverlayFade(host);
 		_overlayFade.Open();
-		return ShowAsync(questions, review, cancellationToken);
-	}
-
-	public Task<string?> ShowAsync(IReadOnlyList<AskQuestion> questions, bool review, CancellationToken cancellationToken)
-	{
-		if (questions.Count == 0)
-		{
-			return Task.FromResult<string?>(null);
-		}
-
-		// 同一面板一次只处理一批：上一批还没答完就来了新的，按取消收尾。
-		if (IsOpen)
-		{
-			Finish(cancelled: true);
-		}
-
-		_questions = questions;
-		// 先换代：上一批控件的迟到回调不能写进新一批草稿。
-		_draftGeneration++;
-		_review = review && questions.Count > 1;
-		_answers.Clear();
-		_answers.AddRange(Enumerable.Repeat<AskAnswer?>(null, questions.Count));
-		_extraOptions.Clear();
-		_multiSelected.Clear();
-		_textDrafts.Clear();
-		_customDrafts.Clear();
-		for (var index = 0; index < questions.Count; index++)
-		{
-			_extraOptions.Add([]);
-			_multiSelected.Add([]);
-			// 草稿按题保存：切题、多选重绘、拖入路径后都不会丢；新一批用 prefill 重新开始。
-			_textDrafts.Add(questions[index].Prefill ?? string.Empty);
-			_customDrafts.Add(string.Empty);
-		}
-
-		_current = 0;
-		_expanded = true;
-		_submitting = false;
-		// 新一批接管：上一批的淡出回调不再算数，也不能把这一批一起收掉。
-		_finishing = false;
-		_completion = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-		_cancellation = cancellationToken.Register(static state => ((AskQuestionPanel)state!).DispatchCancel(), this);
-
-		View.IsVisible(true);
-		_openChanged?.Invoke(true);
-		RenderCard();
-		// 代理停下来等用户回答：这是「需要你」的唯一现场，等用户真的看一眼再说话。
-		_alertRequestId = Guid.NewGuid().ToString("N");
-		SoundAlerts.Shared.RequestWaiting(_alertSessionId, _alertRequestId);
-		FocusCurrent();
-		return _completion.Task;
 	}
 
 	private void DispatchCancel()
@@ -257,8 +348,9 @@ internal sealed class AskQuestionPanel
 		var completion = _completion;
 		_completion = null;
 		_cancellation.Dispose();
-		SoundAlerts.Shared.CompleteWaiting(_alertSessionId, _alertRequestId);
+		SoundAlerts.Shared.CompleteWaiting(_batchAlertSessionId, _alertRequestId);
 		_alertRequestId = null;
+		_batchAlertSessionId = null;
 
 		// 关闭卡片时保留已答与已跳过的题：PiDeck 0.12 把「答一半关闭」当 closed，
 		// 不是整单取消；一题都没答才是 canceled。
@@ -326,8 +418,13 @@ internal sealed class AskQuestionPanel
 			overlay.Clear();
 		}
 
-		_openChanged?.Invoke(false);
 		completion.TrySetResult(AskQuestions.EncodeResponse(answers, incomplete));
+		// 队列里还有别人的问题（父会话替子代理转来的）：接上，卡片一直开着，
+		// 不给输入区一个可见的中间帧。没有下一批才通知「关」。
+		if (!ShowNextBatch())
+		{
+			_openChanged?.Invoke(false);
+		}
 	}
 
 	/// 收起前把焦点从即将移除的编辑器上摘掉：IME 提交和按键不能再落到已脱离树的控件上。
@@ -364,6 +461,8 @@ internal sealed class AskQuestionPanel
 		var total = _questions.Count;
 		var answered = _answers.Count(static answer => answer is not null);
 		_title.Text(Strings.AskTitle);
+		_source.Text(_sourceName is { Length: > 0 } source ? Strings.AskFromSubagent(source) : string.Empty);
+		_source.IsVisible(_sourceName is { Length: > 0 });
 		_status.Text(total > 1 ? Strings.AskProgress(answered, total) : string.Empty);
 		_status.IsVisible(total > 1);
 		_progress.Value = total > 0 ? answered * 100d / total : 0;

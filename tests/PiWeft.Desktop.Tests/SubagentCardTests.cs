@@ -257,6 +257,94 @@ public sealed class SubagentCardTests : IDisposable
 		}
 	}
 
+	[Fact]
+	public void RowsShowTheTokenBudgetAndTheHostVerification()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "worker-1",
+				SessionId = "subagent-verified",
+				Agent = "worker",
+				Label = "改完跑测试",
+				Model = "test/test-model",
+				State = SubagentState.Idle,
+				Turns = 1,
+				Tokens = 12_000,
+				MaxTokens = 50_000,
+				StartedAt = 1_000,
+				FinishedAt = 2_000,
+				Verify = [new SubagentVerifyResult { Command = "dotnet test", ExitCode = 0, Output = "passed" }],
+			},
+			new SubagentRun
+			{
+				Name = "worker-2",
+				SessionId = "subagent-unverified",
+				Agent = "worker",
+				Label = "改完没跑过",
+				Model = "test/test-model",
+				State = SubagentState.Failed,
+				Turns = 1,
+				Result = "都改好了。",
+				StartedAt = 1_000,
+				FinishedAt = 2_500,
+				Verify = [new SubagentVerifyResult { Command = "dotnet test", ExitCode = 1, Output = "1 failed" }],
+			},
+			new SubagentRun
+			{
+				Name = "worker-3",
+				SessionId = "subagent-asking",
+				Agent = "worker",
+				Label = "问父会话要不要改测试",
+				Model = "test/test-model",
+				State = SubagentState.Running,
+				Turns = 1,
+				Question = "要不要顺手改测试？",
+				StartedAt = 1_000,
+			},
+			new SubagentRun
+			{
+				Name = "scout-1",
+				SessionId = "subagent-truncated",
+				Agent = "scout",
+				Label = "写到一半撞上输出上限",
+				Model = "test/test-model",
+				State = SubagentState.Idle,
+				Turns = 1,
+				StopReason = "length",
+				StartedAt = 1_000,
+				FinishedAt = 3_000,
+			},
+		]);
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			// 预算与用量写在一起：只看 12k 不知道离上限还有多远。
+			Assert.Contains(blocks, block => block.Text == "12k/50k tk");
+			// 宿主自己跑过命令才算验证通过；未通过时收起状态行就直接报退出码。
+			Assert.Contains(blocks, block => block.Text == "验证通过：dotnet test");
+			Assert.Contains(blocks, block => block.Text == "验证失败：dotnet test（退出码 1）");
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentTruncated);
+			// 停在 ask_parent 上的行写「问父会话」：父会话可能自己答，超时才转给用户。
+			Assert.Contains(blocks, block => block.Text.StartsWith(Strings.SubagentQuestionState, StringComparison.Ordinal));
+
+			// 展开验证过的行：命令、退出码与输出尾巴都在卡里，不必先切到子会话。
+			card.ToggleExpandedForTests("worker-1");
+			ConversationPerformanceTests.Layout(card.View, 800, 720);
+			var expanded = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(expanded, block => block.Text == Strings.SubagentVerifySection);
+			Assert.Contains(expanded, block => block.Text == "dotnet test · 退出码 0\npassed");
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
 	private static async Task WaitForIdleAsync(SubagentHub hub, string name) =>
 		await WaitForStateAsync(hub, name, SubagentState.Idle);
 

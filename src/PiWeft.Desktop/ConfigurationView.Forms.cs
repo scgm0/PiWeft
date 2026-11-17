@@ -539,6 +539,32 @@ internal sealed partial class ConfigurationView
 		var budgetChanged = false;
 		budgetInput.OnTextChanged(_ => { budgetChanged = true; SetDirty(true); });
 
+		// 子代理配额：只回写真正改过的键，subagents 里未建模的字段保持原样。
+		var activeInput = Input(ReadInt(_root, "subagents", "maxActive", ReadInt(global, "subagents", "maxActive", 4))
+			.ToString(CultureInfo.InvariantCulture));
+		var spawnsInput = Input(ReadInt(_root, "subagents", "maxSpawns", ReadInt(global, "subagents", "maxSpawns", 32))
+			.ToString(CultureInfo.InvariantCulture));
+		var runTimeoutInput = Input(ReadInt(_root, "subagents", "runTimeoutMinutes", ReadInt(global, "subagents", "runTimeoutMinutes", 30))
+			.ToString(CultureInfo.InvariantCulture));
+		var maxTokensInput = Input(ReadInt(_root, "subagents", "maxTokens", ReadInt(global, "subagents", "maxTokens", 0))
+			.ToString(CultureInfo.InvariantCulture));
+		var verifyTimeoutInput = Input(ReadInt(_root, "subagents", "verifyTimeoutSeconds",
+			ReadInt(global, "subagents", "verifyTimeoutSeconds", 600)).ToString(CultureInfo.InvariantCulture));
+		var openTabs = Check(Strings.ConfigSubagentsOpenTabs,
+			ReadBool(_root, "subagents", "openTabs", ReadBool(global, "subagents", "openTabs", false)));
+		var openTabsChanged = false;
+		openTabs.OnCheckedChanged(_ => { openTabsChanged = true; SetDirty(true); });
+		var activeChanged = false;
+		var spawnsChanged = false;
+		var runTimeoutChanged = false;
+		var maxTokensChanged = false;
+		var verifyTimeoutChanged = false;
+		activeInput.OnTextChanged(_ => { activeChanged = true; SetDirty(true); });
+		spawnsInput.OnTextChanged(_ => { spawnsChanged = true; SetDirty(true); });
+		runTimeoutInput.OnTextChanged(_ => { runTimeoutChanged = true; SetDirty(true); });
+		maxTokensInput.OnTextChanged(_ => { maxTokensChanged = true; SetDirty(true); });
+		verifyTimeoutInput.OnTextChanged(_ => { verifyTimeoutChanged = true; SetDirty(true); });
+
 		_body.Children(
 			FormCard(Strings.ConfigDefaults, Strings.ConfigDefaultsHint,
 				Field(Strings.ConfigProvider, provider), Field(Strings.ConfigModelId, model)),
@@ -559,7 +585,15 @@ internal sealed partial class ConfigurationView
 				Field(Strings.ConfigCodemodeMode, mode),
 				Hint(Strings.ConfigCodemodeModeHint),
 				Field(Strings.ConfigCodemodeBudget, budgetInput),
-				Hint(Strings.ConfigCodemodeBudgetHint)));
+				Hint(Strings.ConfigCodemodeBudgetHint)),
+			FormCard(Strings.ConfigSubagentsTitle, Strings.ConfigSubagentsHint,
+				Field(Strings.ConfigSubagentsMaxActive, activeInput),
+				Field(Strings.ConfigSubagentsMaxSpawns, spawnsInput),
+				Field(Strings.ConfigSubagentsRunTimeout, runTimeoutInput),
+				Field(Strings.ConfigSubagentsMaxTokens, maxTokensInput),
+				Field(Strings.ConfigSubagentsVerifyTimeout, verifyTimeoutInput),
+				openTabs,
+				Hint(Strings.ConfigSubagentsOpenTabsHint)));
 		RefreshTools();
 		_saveForm = () =>
 		{
@@ -619,6 +653,17 @@ internal sealed partial class ConfigurationView
 					modeChanged ? mode.SelectedIndex switch { 1 => "on", 2 => "only", _ => null } : null,
 					parsedBudget, modeChanged, budgetChanged);
 				if (patched is null) next.Remove("codemode"); else next["codemode"] = patched;
+			}
+			if (activeChanged || spawnsChanged || runTimeoutChanged || maxTokensChanged || verifyTimeoutChanged || openTabsChanged)
+			{
+				var section = next["subagents"] as JsonObject ?? new JsonObject();
+				if (activeChanged) section["maxActive"] = ParseSubagentLimit(activeInput, 1, 32, Strings.ConfigSubagentsMaxActive);
+				if (spawnsChanged) section["maxSpawns"] = ParseSubagentLimit(spawnsInput, 1, 512, Strings.ConfigSubagentsMaxSpawns);
+				if (runTimeoutChanged) section["runTimeoutMinutes"] = ParseSubagentLimit(runTimeoutInput, 1, 1440, Strings.ConfigSubagentsRunTimeout);
+				if (maxTokensChanged) section["maxTokens"] = ParseSubagentLimit(maxTokensInput, 0, 10_000_000, Strings.ConfigSubagentsMaxTokens);
+				if (verifyTimeoutChanged) section["verifyTimeoutSeconds"] = ParseSubagentLimit(verifyTimeoutInput, 1, 86_400, Strings.ConfigSubagentsVerifyTimeout);
+				if (openTabsChanged) section["openTabs"] = openTabs.IsChecked == true;
+				next["subagents"] = section;
 			}
 			Save(next);
 		};
@@ -699,6 +744,9 @@ internal sealed partial class ConfigurationView
 	private static bool ReadEnabled(JsonObject root, string key, bool fallback) =>
 		root[key] is JsonObject obj && obj["enabled"] is JsonValue value && value.TryGetValue<bool>(out var enabled) ? enabled : fallback;
 
+	private static bool ReadBool(JsonObject root, string sectionKey, string key, bool fallback) =>
+		root[sectionKey] is JsonObject obj && obj[key] is JsonValue value && value.TryGetValue<bool>(out var flag) ? flag : fallback;
+
 	private static int ReadInt(JsonObject root, string sectionKey, string key, int fallback) =>
 		root[sectionKey] is JsonObject obj && obj[key] is JsonValue value && value.TryGetValue<int>(out var number) ? number : fallback;
 
@@ -712,6 +760,18 @@ internal sealed partial class ConfigurationView
 	private static void SetOptional(JsonObject root, string key, string value)
 	{
 		if (value.Length == 0) root.Remove(key); else root[key] = value;
+	}
+
+	/// 解析子代理配额：超范围直接报错，不悄悄改成边界值；报错带上字段名。
+	private static int ParseSubagentLimit(TextBox input, int min, int max, string field)
+	{
+		if (!int.TryParse(input.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var value) ||
+			value < min || value > max)
+		{
+			throw new ArgumentException(Strings.ConfigSubagentsInvalid(field));
+		}
+
+		return value;
 	}
 
 	private static string SafeUrl(string raw) => Uri.TryCreate(raw, UriKind.Absolute, out var uri)

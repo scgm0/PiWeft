@@ -24,4 +24,24 @@ internal static class Eventually
 
 		throw new TimeoutException($"{because}（等了 {DefaultTimeout.TotalSeconds:0} 秒仍未成立）");
 	}
+
+	/// 同上，但换一个超时：短预算的测试不该等 20 秒才报错。
+	public static Task IsTrue(Func<bool> condition, string because, TimeSpan timeout) =>
+		IsTrue(condition, because, (long)timeout.TotalMilliseconds);
+
+	private static async Task IsTrue(Func<bool> condition, string because, long milliseconds)
+	{
+		var deadline = Environment.TickCount64 + milliseconds;
+		while (Environment.TickCount64 < deadline)
+		{
+			if (condition())
+			{
+				return;
+			}
+
+			await Task.Delay(10).ConfigureAwait(false);
+		}
+
+		throw new TimeoutException($"{because}（等了 {milliseconds / 1000.0:0.#} 秒仍未成立）");
+	}
 }
