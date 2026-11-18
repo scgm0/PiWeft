@@ -8,6 +8,9 @@ public static partial class Strings
 	public const string ConfigAuth = "认证";
 	public const string ConfigSettings = "Agent 设置";
 	public const string ConfigSource = "源文件";
+	public const string ConfigScope = "保存到";
+	public const string ConfigPickModel = "从可用模型选择";
+	public const string ConfigAutoSelect = "自动选择";
 	public const string ConfigGlobal = "全局";
 	public const string ConfigProject = "当前项目";
 	public const string ConfigProvider = "供应商";

@@ -1,6 +1,7 @@
 using System.Reflection;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
 using PiWeft.Ai.Auth;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
@@ -214,6 +215,70 @@ public sealed class ConfigurationViewTests : IDisposable
 		var field = typeof(ConfigurationView).GetField("_dirtyLabel", BindingFlags.Instance | BindingFlags.NonPublic)!;
 		var label = Assert.IsType<TextBlock>(field.GetValue(view));
 		Assert.Equal(Strings.ConfigReady, label.Text);
+	}
+
+	[Fact]
+	public async Task AgentPageModelPickerFillsProviderAndModel()
+	{
+		var models = new[] { new Model { Provider = "local-openai", Id = "local-code", Type = ModelType.Chat } };
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { }, () => models);
+		await view.OpenAsync(ConfigFile.Settings);
+
+		var picker = Find<ComboBox>(view.View).First(combo =>
+			Enumerable.Range(0, combo.ItemsSource.Count)
+				.Any(index => combo.ItemsSource.GetText(index) == "local-openai/local-code"));
+		picker.SelectedIndex = 1;
+
+		Assert.Contains(Find<TextBox>(view.View), box => box.Text == "local-openai");
+		Assert.Contains(Find<TextBox>(view.View), box => box.Text == "local-code");
+		Assert.True(view.IsDirty);
+
+		picker.SelectedIndex = 0;
+		Assert.DoesNotContain(Find<TextBox>(view.View), box => box.Text == "local-openai");
+	}
+
+	[Fact]
+	public async Task AgentPageDisablesRetryFieldsWhenAutoRetryIsOff()
+	{
+		Store.Save(Store.Read(ConfigFile.Settings), "{\"retry\":{\"enabled\":false}}");
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+
+		var retries = Find<TextBox>(view.View).Single(block => block.Text == "3");
+		var delay = Find<TextBox>(view.View).Single(block => block.Text == "2000");
+		Assert.False(retries.IsEnabled);
+		Assert.False(delay.IsEnabled);
+	}
+
+	[Fact]
+	public async Task DisablingAutoRetryIgnoresInvalidRetryValues()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+		var retries = Find<TextBox>(view.View).Single(box => box.Text == "3");
+		var autoRetry = Find<CheckBox>(view.View)
+			.First(box => (box.Content as TextBlock)?.Text == Strings.ConfigAutoRetry);
+
+		retries.Text = "abc";
+		autoRetry.IsChecked(false);
+		view.SaveDraft();
+
+		var retry = Store.Read(ConfigFile.Settings).Parse()["retry"]!.AsObject();
+		Assert.False(retry["enabled"]!.GetValue<bool>());
+	}
+
+	[Fact]
+	public async Task ReloadFromDiskRefreshesCleanAgentSettings()
+	{
+		Store.Save(Store.Read(ConfigFile.Settings), "{\"defaultProvider\":\"a\",\"defaultModel\":\"b\"}");
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+		Assert.Contains(Find<TextBox>(view.View), box => box.Text == "a");
+
+		Store.Save(Store.Read(ConfigFile.Settings), "{\"defaultProvider\":\"c\",\"defaultModel\":\"d\"}");
+		view.ReloadFromDisk();
+
+		Assert.Contains(Find<TextBox>(view.View), box => box.Text == "c");
 	}
 
 	[Fact]

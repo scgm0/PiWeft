@@ -135,6 +135,15 @@ public sealed class UsageStatsPanelTests
 		UiLifetime.Release(panel.View);
 	}
 
+	private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 5000)
+	{
+		var deadline = Environment.TickCount64 + timeoutMs;
+		while (!condition() && Environment.TickCount64 < deadline)
+		{
+			await Task.Delay(25);
+		}
+	}
+
 	[Fact]
 	public async Task SettingsUsageSectionReusesTheSamePanel()
 	{
@@ -156,8 +165,8 @@ public sealed class UsageStatsPanelTests
 			}, null, null, null, null, cache);
 
 			await settings.SelectSectionAsync("usage");
-			// 让后台扫描落地，再验证重进时复用同一块面板而不是重新创建。
-			await Task.Delay(200);
+			// 让后台扫描完成，再验证重进时复用同一块面板而不是重新创建。
+			await WaitUntilAsync(() => cache.Scans == 1);
 			Assert.Equal(1, cache.Scans);
 			var before = Find<TextBlock>(settings.View).First(text => text.Text.StartsWith(Strings.UsageStatsSourceHint, StringComparison.Ordinal));
 

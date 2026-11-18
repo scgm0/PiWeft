@@ -114,7 +114,7 @@ public static partial class Strings
 
 	// 设置搜索：入口在内容列顶部，结果替换分区内容。
 	public const string SettingsSearchPlaceholder = "搜索设置项…";
-	public const string SettingsSearchHint = "搜索分区与设置项。↑↓ 选择，Enter 打开，Esc 清除；Ctrl+F 随时回到搜索框。";
+	public const string SettingsSearchHint = "搜索分区与设置项。↑↓ 选择，Enter 打开，Esc 清除；Ctrl/Cmd+F 随时回到搜索框。";
 	public const string SettingsSearchKeys = "↑↓ 选择 · Enter 打开 · Esc 清除";
 	public const string SettingsSearchResults = "搜索结果";
 	public const string SettingsSearchNoResults = "没有匹配的设置项。换个说法，或只输入一个词。";

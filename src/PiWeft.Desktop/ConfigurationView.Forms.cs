@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
 using PiWeft.Ai.Auth;
 using PiWeft.Cli;
 using PiWeft.CodingAgent;
@@ -472,7 +473,8 @@ internal sealed partial class ConfigurationView
 		var provider = Input(ConfigurationModels.Text(_root, "defaultProvider"));
 		var model = Input(ConfigurationModels.Text(_root, "defaultModel"));
 		var levels = new[] { "", "off", "minimal", "low", "medium", "high", "xhigh", "max" };
-		var thinking = new ComboBox().ItemsSource(ItemsView.Create(new[] { Strings.ConfigInherit, "off", "minimal", "low", "medium", "high", "xhigh", "max" })).Width(180);
+		var thinkingLabels = levels.Select(level => level.Length == 0 ? Strings.ConfigInherit : Strings.ThinkingLevelName(level)).ToArray();
+		var thinking = new ComboBox().ItemsSource(ItemsView.Create(thinkingLabels)).Width(180);
 		thinking.SelectedIndex = Math.Max(0, Array.IndexOf(levels, ConfigurationModels.Text(_root, "defaultThinkingLevel")));
 		var thinkingChanged = false;
 		thinking.SelectionChanged += _ => { thinkingChanged = true; SetDirty(true); };
@@ -481,15 +483,23 @@ internal sealed partial class ConfigurationView
 		var compact = Check(Strings.ConfigAutoCompaction, ReadEnabled(_root, "compaction", ReadEnabled(global, "compaction", true)));
 		var retry = Check(Strings.ConfigAutoRetry, ReadEnabled(_root, "retry", ReadEnabled(global, "retry", true)));
 		var retryMaxInput = Input(ReadInt(_root, "retry", "maxRetries", ReadInt(global, "retry", "maxRetries", 3))
-			.ToString(CultureInfo.InvariantCulture));
+			.ToString(CultureInfo.InvariantCulture)).Width(160);
 		var retryDelayInput = Input(ReadInt(_root, "retry", "baseDelayMs", ReadInt(global, "retry", "baseDelayMs", 2000))
-			.ToString(CultureInfo.InvariantCulture));
+			.ToString(CultureInfo.InvariantCulture)).Width(180);
 		var compactChanged = false;
 		var retryChanged = false;
 		var retryMaxChanged = false;
 		var retryDelayChanged = false;
 		compact.OnCheckedChanged(_ => compactChanged = true);
-		retry.OnCheckedChanged(_ => retryChanged = true);
+		var retryEnabled = retry.IsChecked == true;
+		retryMaxInput.IsEnabled(retryEnabled);
+		retryDelayInput.IsEnabled(retryEnabled);
+		retry.OnCheckedChanged(_ =>
+		{
+			retryChanged = true;
+			retryMaxInput.IsEnabled(retry.IsChecked == true);
+			retryDelayInput.IsEnabled(retry.IsChecked == true);
+		});
 		retryMaxInput.OnTextChanged(_ => retryMaxChanged = true);
 		retryDelayInput.OnTextChanged(_ => retryDelayChanged = true);
 
@@ -565,13 +575,75 @@ internal sealed partial class ConfigurationView
 		maxTokensInput.OnTextChanged(_ => { maxTokensChanged = true; SetDirty(true); });
 		verifyTimeoutInput.OnTextChanged(_ => { verifyTimeoutChanged = true; SetDirty(true); });
 
+		provider.Width(320);
+		model.Width(320);
+		budgetInput.Width(180);
+		activeInput.Width(160);
+		spawnsInput.Width(160);
+		runTimeoutInput.Width(160);
+		maxTokensInput.Width(180);
+		verifyTimeoutInput.Width(160);
+		var defaultFields = new List<UIElement>
+		{
+			Fields(Field(Strings.ConfigProvider, provider, 320), Field(Strings.ConfigModelId, model, 320)),
+		};
+
+		// 模型快捷选择用普通 ComboBox：它是原生弹层，不会占用窗口的 TransientOverlay 槽位。
+		var chatModels = _models?.Invoke().Where(static item => item.Type == ModelType.Chat).ToList() ?? [];
+		var modelOptions = new List<Model?> { null };
+		modelOptions.AddRange(chatModels);
+		var currentProvider = provider.Text.Trim();
+		var currentModel = model.Text.Trim();
+		if (currentProvider.Length > 0 && currentModel.Length > 0 &&
+			!chatModels.Any(item => string.Equals(item.Provider, currentProvider, StringComparison.Ordinal) &&
+				string.Equals(item.Id, currentModel, StringComparison.Ordinal)))
+		{
+			modelOptions.Add(new Model { Provider = currentProvider, Id = currentModel });
+		}
+
+		if (modelOptions.Count > 1)
+		{
+			var labels = modelOptions.Select(item => item is null
+				? Strings.ConfigAutoSelect
+				: item.Provider + "/" + item.Id).ToArray();
+			var picker = new ComboBox().ItemsSource(ItemsView.Create(labels)).Width(420);
+			var syncing = false;
+			picker.SelectionChanged += _ =>
+			{
+				if (syncing) return;
+				var selected = modelOptions[Math.Clamp(picker.SelectedIndex, 0, modelOptions.Count - 1)];
+				syncing = true;
+				provider.Text = selected?.Provider ?? string.Empty;
+				model.Text = selected?.Id ?? string.Empty;
+				syncing = false;
+			};
+			void SyncPicker()
+			{
+				if (syncing) return;
+				var providerId = provider.Text.Trim();
+				var modelId = model.Text.Trim();
+				var index = modelOptions.FindIndex(item => item is null
+					? providerId.Length == 0 && modelId.Length == 0
+					: string.Equals(item.Provider, providerId, StringComparison.Ordinal) &&
+						string.Equals(item.Id, modelId, StringComparison.Ordinal));
+				if (picker.SelectedIndex == index) return;
+				syncing = true;
+				picker.SelectedIndex = index;
+				syncing = false;
+			}
+			provider.OnTextChanged(_ => SyncPicker());
+			model.OnTextChanged(_ => SyncPicker());
+			SyncPicker();
+			defaultFields.Add(Field(Strings.ConfigPickModel, picker, 420));
+		}
+
+		var defaultsCard = FormCard(Strings.ConfigDefaults, Strings.ConfigDefaultsHint, [.. defaultFields]);
 		_body.Children(
-			FormCard(Strings.ConfigDefaults, Strings.ConfigDefaultsHint,
-				Field(Strings.ConfigProvider, provider), Field(Strings.ConfigModelId, model)),
+			defaultsCard,
 			FormCard(Strings.ConfigBehavior, Strings.ConfigBehaviorHint,
 				Field(Strings.Thinking, thinking), compact, retry,
-				Field(Strings.ConfigRetryMaxRetries, retryMaxInput),
-				Field(Strings.ConfigRetryBaseDelay, retryDelayInput),
+				Fields(Field(Strings.ConfigRetryMaxRetries, retryMaxInput, 180),
+					Field(Strings.ConfigRetryBaseDelay, retryDelayInput, 200)),
 				Hint(Strings.ConfigRetryHint)),
 			FormCard(Strings.ConfigToolsTitle, Strings.ConfigToolsHint,
 				new StackPanel().Spacing(AppTheme.Space2).Children(
@@ -582,16 +654,16 @@ internal sealed partial class ConfigurationView
 						.VerticalAlignment(VerticalAlignment.Center).Children(addTool, resetTools, disableTools, toolsStatus),
 					disabledWarning,
 					blockedNote),
-				Field(Strings.ConfigCodemodeMode, mode),
+				Fields(Field(Strings.ConfigCodemodeMode, mode, 180),
+					Field(Strings.ConfigCodemodeBudget, budgetInput, 180)),
 				Hint(Strings.ConfigCodemodeModeHint),
-				Field(Strings.ConfigCodemodeBudget, budgetInput),
 				Hint(Strings.ConfigCodemodeBudgetHint)),
 			FormCard(Strings.ConfigSubagentsTitle, Strings.ConfigSubagentsHint,
-				Field(Strings.ConfigSubagentsMaxActive, activeInput),
-				Field(Strings.ConfigSubagentsMaxSpawns, spawnsInput),
-				Field(Strings.ConfigSubagentsRunTimeout, runTimeoutInput),
-				Field(Strings.ConfigSubagentsMaxTokens, maxTokensInput),
-				Field(Strings.ConfigSubagentsVerifyTimeout, verifyTimeoutInput),
+				Fields(Field(Strings.ConfigSubagentsMaxActive, activeInput, 180),
+					Field(Strings.ConfigSubagentsMaxSpawns, spawnsInput, 180),
+					Field(Strings.ConfigSubagentsRunTimeout, runTimeoutInput, 220),
+					Field(Strings.ConfigSubagentsMaxTokens, maxTokensInput, 220),
+					Field(Strings.ConfigSubagentsVerifyTimeout, verifyTimeoutInput, 220)),
 				openTabs,
 				Hint(Strings.ConfigSubagentsOpenTabsHint)));
 		RefreshTools();
@@ -602,17 +674,19 @@ internal sealed partial class ConfigurationView
 			SetOptional(next, "defaultModel", model.Text.Trim());
 			if (thinkingChanged) SetOptional(next, "defaultThinkingLevel", levels[Math.Max(0, thinking.SelectedIndex)]);
 			if (compactChanged) SetEnabled(next, "compaction", compact.IsChecked == true);
-			if (retryChanged || retryMaxChanged || retryDelayChanged)
+			var retryOn = retry.IsChecked == true;
+			// 自动重试关闭时，次数/延迟不参与保存与校验；否则先输错再取消勾选会卡在禁用输入上。
+			if (retryChanged || (retryOn && (retryMaxChanged || retryDelayChanged)))
 			{
 				int? maxRetries = null;
 				int? baseDelayMs = null;
-				if (retryMaxChanged)
+				if (retryOn && retryMaxChanged)
 				{
 					if (!int.TryParse(retryMaxInput.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value is < 0 or > 20)
 						throw new ArgumentException(Strings.ConfigRetryMaxRetriesInvalid);
 					maxRetries = value;
 				}
-				if (retryDelayChanged)
+				if (retryOn && retryDelayChanged)
 				{
 					if (!int.TryParse(retryDelayInput.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value is < 0 or > 600_000)
 						throw new ArgumentException(Strings.ConfigRetryBaseDelayInvalid);

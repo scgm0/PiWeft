@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
 using System.Text.Json.Nodes;
 
 namespace PiWeft.Desktop;
@@ -8,6 +9,7 @@ internal sealed partial class ConfigurationView
 {
 	private readonly ConfigurationStore _store;
 	private readonly Action<ConfigFile> _saved;
+	private readonly Func<IReadOnlyList<Model>>? _models;
 	private readonly StackPanel _body = new();
 	private readonly ScrollViewer _scroll = new();
 	private readonly TextBlock _notice = new();
@@ -29,10 +31,12 @@ internal sealed partial class ConfigurationView
 	/// 仅供 <c>--ui-smoke config-tools</c>：把「添加工具」下拉摆出来供截图；离开 Agent 页后在 Build 里清掉。
 	private Action? _showToolMenu;
 
-	public ConfigurationView(string agentDir, string cwd, Action<ConfigFile> saved)
+	public ConfigurationView(string agentDir, string cwd, Action<ConfigFile> saved,
+		Func<IReadOnlyList<Model>>? models = null)
 	{
 		_store = new(agentDir, cwd);
 		_saved = saved;
+		_models = models;
 		_scope.ItemsSource(ItemsView.Create(new[] { Strings.ConfigGlobal, Strings.ConfigProject })).Width(150).SelectedIndex(0);
 		_scope.SelectionChanged += _ =>
 		{
@@ -47,11 +51,15 @@ internal sealed partial class ConfigurationView
 				.Children(
 					new DockPanel().LastChildFill().Children(
 						new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(
+							new TextBlock().Text(Strings.ConfigScope).FontSize(AppTheme.FontSizeCaption)
+								.SubtleText().VerticalAlignment(VerticalAlignment.Center),
 							_scope,
 							AppIcons.Button("refresh-cw", Strings.ConfigReload, () => _ = ReloadAsync()),
 							AppIcons.Button("folder-open", Strings.ConfigOpenFile, OpenFile)).DockRight(),
-						_dirtyLabel.FontSize(AppTheme.FontSizeCaption).AccentText()).Margin(new Thickness(0, 0, 0, 4)),
-					_path.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap),
+						_dirtyLabel.FontSize(AppTheme.FontSizeCaption).SubtleText()).Margin(new Thickness(0, 0, 0, 4)),
+					new DockPanel().LastChildFill().Children(
+						AppIcons.Button("copy", Strings.SettingsCopyValue, CopyPath).DockRight(),
+						_path.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap)),
 					_notice.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
 				).DockTop(),
 			// 与设置页内容区一致：右内边距放在滚动内容侧，滚动条贴弹窗右缘，
@@ -69,9 +77,22 @@ internal sealed partial class ConfigurationView
 	public event Action? AuthChanged;
 	internal void SaveDraft() => Guard(() => _saveForm?.Invoke());
 
+	/// <summary>收起挂在窗口浮层上的模型选择器等临时面板；表单重建或设置弹窗关闭时调用。</summary>
+	internal void CloseTransientPanels()
+	{
+		_toolMenu?.CloseInstantly();
+	}
+
 	/// <summary>仅用于 <c>--ui-smoke config-dirty</c>：只标脏，不写盘。</summary>
 	internal void MarkDirtyForSmoke() => SetDirty(true);
 	public void Discard() => Load();
+
+	/// <summary>弹窗重开时重读磁盘；有未保存草稿时保持现状。</summary>
+	internal void ReloadFromDisk()
+	{
+		if (_dirty) return;
+		Load();
+	}
 	public void ApplyTheme() => AppStyles.ApplyTextColors((Element)View);
 
 	public async Task<bool> OpenAsync(ConfigFile file, bool source = false)
@@ -127,6 +148,7 @@ internal sealed partial class ConfigurationView
 
 	private void Build()
 	{
+		CloseTransientPanels();
 		_saveForm = null;
 		_showToolMenu = null;
 		_toolMenu?.Dispose();
@@ -167,7 +189,16 @@ internal sealed partial class ConfigurationView
 		if (_dirty == value) return;
 		_dirty = value;
 		_dirtyLabel.Text(value ? Strings.ConfigDirty : Strings.ConfigReady);
+		if (value) _dirtyLabel.AccentText(); else _dirtyLabel.SubtleText();
 		StateChanged?.Invoke();
+	}
+
+	private void CopyPath()
+	{
+		var text = _document?.Path ?? _path.Text;
+		var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
+		if (clipboard?.TrySetText(text) == true) Toasts.Success(View, Strings.Copied);
+		else Toasts.Error(View, Strings.ClipboardUnavailable);
 	}
 
 	private void Guard(Action action)
@@ -225,7 +256,15 @@ internal sealed partial class ConfigurationView
 	private TextBox Input(string value = "") => new TextBox().PrimarySelection().Text(value).MinWidth(160).OnTextChanged(_ => SetDirty(true));
 	private CheckBox Check(string title, bool value) => new CheckBox().Content(Label(title)).IsChecked(value).OnCheckedChanged(_ => SetDirty(true));
 	private static TextBlock Label(string text) => new TextBlock().Text(text).FontSize(AppTheme.FontSizeCaption).PrimaryText();
-	private static StackPanel Field(string title, UIElement input) => new StackPanel().Spacing(4).Children(Label(title), input);
+	private static StackPanel Field(string title, UIElement input, double labelMaxWidth = 0)
+	{
+		var label = Label(title);
+		if (labelMaxWidth > 0) label.MaxWidth(labelMaxWidth).TextWrapping(TextWrapping.Wrap);
+		return new StackPanel().Spacing(4).Children(label, input);
+	}
+
+	private static WrapPanel Fields(params UIElement[] fields) =>
+		new WrapPanel().Spacing(AppTheme.Space4).Children(fields);
 	private static TextBlock Hint(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap);
 	/// 一枚工具 chip；<paramref name="disabled"/> 表示它被「扩展」里的内置开关挡下，

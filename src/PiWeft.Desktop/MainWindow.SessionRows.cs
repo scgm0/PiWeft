@@ -17,10 +17,10 @@ public sealed partial class MainWindow
 		_sessionTree.HorizontalScroll = ScrollMode.Disabled;
 		_sessionTree.ItemHeight = 36;
 		_sessionTree.Indent = 14;
-		// 滚动条贴 TreeView 右缘浮在内容上。TreeView 的 Padding 会同时移动内部滚动条
-		// 和内容边界，直接加右内边距会让条整体左移、右侧留下双倍空隙；这里只缩内容视口，
-		// 条留在右缘，悬停高亮与「⋯」停在条左侧。
-		InsetTreeScroll(_sessionTree, 10);
+		// TreeView 的行命中与 ScrollIntoView 按 TreeView.Padding 计算视口，内部 ScrollViewer
+		// 的 Padding 也绑定到它。只改 ScrollViewer 会让内容与命中区域错位；这里显式扩右侧槽位，
+		// 其它方向沿用主题默认的 4，滚动条、行背景与命中区域才会落在同一位置。
+		_sessionTree.Padding(new Thickness(4, 4, 10, 4));
 		_sessionTree.ItemPadding = new Thickness(8, 2, 8, 2);
 		_sessionTree.ItemTemplate<TreeViewNode>(context =>
 		{
@@ -73,8 +73,8 @@ public sealed partial class MainWindow
 		_chatsTree.HorizontalScroll = ScrollMode.Disabled;
 		_chatsTree.ItemHeight = 36;
 		_chatsTree.Indent = 0;
-		// 与「项目」视图保持一致：只缩内部滚动视口，滚动条留在右缘。
-		InsetTreeScroll(_chatsTree, 10);
+		// 与「项目」视图保持一致：命中区域与滚动视口共用 TreeView.Padding。
+		_chatsTree.Padding(new Thickness(4, 4, 10, 4));
 		_chatsTree.ItemPadding = new Thickness(8, 2, 8, 2);
 		_chatsTree.ItemTemplate<TreeViewNode>(context =>
 		{
@@ -108,24 +108,6 @@ public sealed partial class MainWindow
 				more.Tag = null;
 				row.HoverTip(node.Text);
 			}
-		});
-	}
-
-	/// 只缩 TreeView 内部 ScrollViewer 的内容视口，滚动条仍贴在 TreeView 右缘。
-	/// 这会覆盖 TreeView 建控件时为 ScrollViewer.Padding 建的绑定；TreeView.Padding 保持 0。
-	/// 直接设 TreeView.Padding 会把 ScrollViewer 自己也往左推，右侧出现两倍空隙。
-	private static void InsetTreeScroll(TreeView tree, double right)
-	{
-		if (tree is not IVisualTreeHost host) return;
-		host.VisitChildren(child =>
-		{
-			if (child is ScrollViewer scroll)
-			{
-				scroll.Padding(new Thickness(0, 0, right, 0));
-				return false;
-			}
-
-			return true;
 		});
 	}
 

@@ -173,7 +173,7 @@ public sealed partial class MainWindow : Window
 		{
 			// 设置面板正在等待用户按下新组合键：优先把这次按键交给它。
 			// 走窗口级处理，不走输入框，是刻意的：输入法会吞掉合成的可打印字符。
-			if (_settingsView?.CapturingId is not null)
+			if (_settingsDialog?.IsOpen == true && _settingsView?.CapturingId is not null)
 			{
 				if (key.Key == Key.Escape)
 				{
@@ -188,6 +188,10 @@ public sealed partial class MainWindow : Window
 					return;
 				}
 			}
+
+			// 设置弹窗是窗口级模态：不允许窗口快捷键再开别的 TransientOverlay，
+			// 否则 Open 会直接把设置弹窗替换掉，绕过未保存草稿的确认。
+			if (_settingsDialog?.IsOpen == true) return;
 
 			// Ctrl+1…9 直接切到第 N 个标签。
 			if (key.ControlKey && !key.ShiftKey && !key.AltKey && key.Key is >= Key.D1 and <= Key.D9)

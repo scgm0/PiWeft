@@ -49,8 +49,10 @@ internal static class SettingsSearch
 	/// <summary>全部可搜条目：每个分区一条，加上常用的具体设置项。</summary>
 	public static IReadOnlyList<SettingsSearchEntry> Entries { get; } =
 	[
-		.. SettingsSections.All.Select(static section => new SettingsSearchEntry(
-			"section:" + section.Id, section.Id, section.Title, section.Keywords)),
+		.. SettingsSections.Groups.SelectMany(static group => group.Sections.Select(section => new SettingsSearchEntry(
+			"section:" + section.Id, section.Id, section.Title, [.. section.Keywords, group.Label]))),
+		.. SettingsSections.Config.Select(static section => new SettingsSearchEntry(
+			"section:" + section.Id, section.Id, section.Title, [.. section.Keywords, Strings.ConfigurationGroup])),
 		new("item:overview.agentDir", "overview", Strings.SettingsAgentDir, ["agent", "目录", "路径", "agentDir"]),
 		new("item:overview.cwd", "overview", Strings.SettingsCwd, ["工作目录", "当前目录", "cwd", "路径"]),
 		new("item:overview.mcp", "overview", Strings.SettingsMcp, ["mcp", "服务器", "连接", "工具"]),
@@ -153,6 +155,13 @@ internal static class SettingsSearch
 		var position = 0;
 		while (position < indices.Count)
 		{
+			// 防御越界下标：内部调用方只传标题内的下标，这里保证坏的输入也不会抛。
+			if (indices[position] >= title.Length)
+			{
+				position++;
+				continue;
+			}
+
 			var from = Math.Clamp(indices[position], start, title.Length);
 			var to = from;
 			while (position + 1 < indices.Count && indices[position + 1] == to + 1)
@@ -162,7 +171,8 @@ internal static class SettingsSearch
 			}
 
 			if (from > start) segments.Add((title[start..from], false));
-			if (to >= from) segments.Add((title[from..(to + 1)], true));
+			var end = Math.Min(to + 1, title.Length);
+			if (from < end) segments.Add((title[from..end], true));
 			start = to + 1;
 			position++;
 		}

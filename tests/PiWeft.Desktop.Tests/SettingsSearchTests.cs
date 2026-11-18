@@ -114,11 +114,30 @@ public sealed class SettingsSearchTests
 	}
 
 	[Fact]
+	public void SegmentsIgnoresOutOfRangeIndices()
+	{
+		var segments = SettingsSearch.Segments("abc", [0, 99]);
+
+		Assert.Equal([("a", true), ("bc", false)], segments);
+	}
+
+	[Fact]
 	public void MultiTokenIndicesAreSortedAndUnique()
 	{
 		var hit = SettingsSearch.Match("阅读 宽度").First(h => h.Entry.Id == "appearance.width");
 
 		Assert.Equal([0, 1, 4, 5], hit.TitleIndices);
+	}
+
+	[Fact]
+	public void GroupLabelsFindSectionsInThatGroup()
+	{
+		var runtime = SettingsSearch.Match(Strings.SettingsGroupRuntime);
+		Assert.Contains(runtime, hit => hit.Entry.Id == "section:extensions");
+		Assert.Contains(runtime, hit => hit.Entry.Id == "section:shortcuts");
+
+		var config = SettingsSearch.Match(Strings.ConfigurationGroup);
+		Assert.Contains(config, hit => hit.Entry.Id == "section:auth");
 	}
 
 	[Fact]

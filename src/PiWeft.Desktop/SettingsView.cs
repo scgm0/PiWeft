@@ -87,6 +87,7 @@ public sealed class SettingsView
 	private string _section = "overview";
 
 	private ShortcutMap _shortcuts = new(DesktopPreference.Load().Shortcuts);
+	private IReadOnlyList<Model> _models = [];
 
 	public event Action? StateChanged;
 	public event Action? AuthChanged;
@@ -112,19 +113,37 @@ public sealed class SettingsView
 		_snapshot = snapshot;
 		_usageStatsCache = usageStatsCache;
 		var initial = snapshot();
-		_saved = saved ?? (_ => { });
+		_models = initial.Models;
+		_saved = saved is null
+			? static _ => { }
+			: file =>
+			{
+				saved(file);
+				// 保存模型/认证后宿主会重建模型环境；配置页的模型快捷选择读这份缓存。
+				_models = _snapshot().Models;
+			};
 		_reconnectMcp = reconnectMcp;
 		_reloadResources = reloadResources;
-		_modelsChanged = modelsChanged;
+		_modelsChanged = modelsChanged is null ? null : () =>
+		{
+			modelsChanged();
+			// 在线目录覆盖层写入或还原后，配置页的模型选择器也要读新目录。
+			_models = _snapshot().Models;
+		};
 		_configuration = new(() =>
 		{
-			var view = new ConfigurationView(initial.AgentDir, initial.Cwd, _saved);
+			var view = new ConfigurationView(initial.AgentDir, initial.Cwd, _saved, () => _models);
 			view.StateChanged += () =>
 			{
 				UpdateDirtyIndicator();
 				StateChanged?.Invoke();
 			};
-			view.AuthChanged += () => AuthChanged?.Invoke();
+			view.AuthChanged += () =>
+			{
+				// 先让宿主同步重建模型目录，再刷新配置页选择器读的缓存。
+				AuthChanged?.Invoke();
+				_models = _snapshot().Models;
+			};
 			return view;
 		});
 		_content.Spacing(AppTheme.Space4).MaxWidth(960);
@@ -265,7 +284,13 @@ public sealed class SettingsView
 		? SettingsSections.Title(_section)
 		: null;
 
-	/// <summary>把键盘焦点交给搜索框（Ctrl+F）；已有查询时全选，输入直接替换。</summary>
+	/// <summary>搜索框是否有查询；弹窗在结果/清除键获得焦点时据此处理 Esc。</summary>
+	internal bool HasActiveSearch => IsSearching;
+
+	/// <summary>清除当前搜索；供弹窗级 Esc 使用。</summary>
+	internal void ClearActiveSearch() => ClearSearch();
+
+	/// <summary>把键盘焦点交给搜索框（Ctrl/Cmd+F）；已有查询时全选，输入直接替换。</summary>
 	public void FocusSearch()
 	{
 		_searchBox.Focus();
@@ -287,12 +312,28 @@ public sealed class SettingsView
 	/// <summary>关闭后重开时回到分区内容，不带着上一次的搜索结果。</summary>
 	internal void ResetSearch() => ClearSearch(focusSearch: false);
 
+	/// <summary>关闭设置弹窗时收起配置页的临时浮层（模型选择器）。</summary>
+	internal void CloseTransientPanels()
+	{
+		if (_configuration.IsValueCreated) _configuration.Value.CloseTransientPanels();
+	}
+
 	public void ShowConfiguration() => _ = SwitchModeAsync(true);
+
+	/// <summary>重开弹窗时重读当前配置文件；外部改过 settings.json 后不会拿旧页面撞保存冲突。</summary>
+	internal void ReloadConfiguration()
+	{
+		if (_configMode && _configuration.IsValueCreated) _configuration.Value.ReloadFromDisk();
+	}
+
+	/// <summary>测试用：等待配置模式真正切换完成。</summary>
+	internal Task ShowConfigurationForTestAsync() => SwitchModeAsync(true);
 
 	private bool IsSearching => _searchQuery.Length > 0;
 
 	private async Task<bool> SwitchModeAsync(bool config)
 	{
+		ClearCapture();
 		if (_configMode == config)
 		{
 			if (IsSearching) ClearSearch();
@@ -443,6 +484,14 @@ public sealed class SettingsView
 
 	internal async Task SelectSectionAsync(string section)
 	{
+		// 改键捕获属于快捷键分区；切走分区后不能再吃窗口按键。
+		ClearCapture();
+
+		// 入口可能从任意模式跳进来（使用统计、Git 摘要都直接在系统设置里）。
+		// 先切到分区所属的模式；脏草稿的放弃确认由 SwitchModeAsync 负责。
+		var targetConfig = SettingsSections.Find(section)?.Config ?? false;
+		if (_configMode != targetConfig && !await SwitchModeAsync(targetConfig)) return;
+
 		if (_section == section)
 		{
 			// 点导航离开搜索时回到分区内容；同一分区也把结果页收起来。
@@ -490,6 +539,7 @@ public sealed class SettingsView
 		_diagnosticsPulse = null;
 		_diagnosticsLive = null;
 		var snapshot = _snapshot();
+		_models = snapshot.Models;
 		if (_section != "usage")
 		{
 			_usageStats?.Cancel();
@@ -2093,25 +2143,15 @@ public sealed class SettingsView
 		// 改键时用内联输入框，避免依赖对话框；这里保存正在编辑的动作标识。
 		body.Children(new TextBlock().Text(Strings.ShortcutsEditHint).FontSize(AppTheme.FontSizeMicro).FaintText());
 
-		foreach (var (id, description) in new (string, string)[]
+		foreach (var group in ShortcutMap.Definitions.GroupBy(static definition => definition.Category))
 		{
-			(ShortcutActions.Palette, Strings.ShortcutPalette),
-			(ShortcutActions.Send, Strings.ShortcutSend),
-			(ShortcutActions.SearchSessions, Strings.ShortcutSearch),
-			(ShortcutActions.NewSession, Strings.ShortcutNew),
-			(ShortcutActions.OpenProject, Strings.AddProject),
-			(ShortcutActions.Models, Strings.SelectModel),
-			(ShortcutActions.CloseTab, Strings.ShortcutClose),
-			(ShortcutActions.Settings, Strings.ShortcutSettingsPanel),
-			(ShortcutActions.Git, Strings.ShortcutGitPanel),
-			(ShortcutActions.Files, Strings.ShortcutFilesPanel),
-			(ShortcutActions.Terminal, Strings.ShortcutTerminal),
-			(ShortcutActions.ToggleTheme, Strings.ShortcutTheme),
-			(ShortcutActions.Refresh, Strings.ShortcutRefresh),
-			(ShortcutActions.Branches, Strings.ShortcutBranches),
-		})
-		{
-			body.Children(ShortcutRow(id, description));
+			body.Children(new TextBlock().Text(group.Key)
+				.FontSize(AppTheme.FontSizeMicro).SubtleText()
+				.Margin(new Thickness(0, AppTheme.Space3, 0, AppTheme.Space1)));
+			foreach (var definition in group)
+			{
+				body.Children(ShortcutRow(definition.Id, definition.Description));
+			}
 		}
 
 		// 固定键位（不参与改键）单独说明。
@@ -2193,6 +2233,9 @@ public sealed class SettingsView
 		CapturingId = null;
 		Refresh();
 	}
+
+	/// <summary>丢弃捕获状态但不重建分区；切分区、切模式或关闭弹窗时用。</summary>
+	internal void ClearCapture() => CapturingId = null;
 
 	public bool CaptureBinding(Key key, ModifierKeys modifiers)
 	{

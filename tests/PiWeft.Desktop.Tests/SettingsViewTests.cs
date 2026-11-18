@@ -32,6 +32,19 @@ public sealed class SettingsViewTests : IDisposable
 	}
 
 	[Fact]
+	public async Task SelectingSystemSectionLeavesConfigMode()
+	{
+		var view = CreateView();
+		await view.ShowConfigurationForTestAsync();
+		Assert.True(view.IsConfigMode);
+
+		await view.SelectSectionAsync("appearance");
+
+		Assert.False(view.IsConfigMode);
+		Assert.Equal("appearance", view.CurrentSection);
+	}
+
+	[Fact]
 	public async Task SearchNavigatesToSystemSectionAndClearsQuery()
 	{
 		var view = CreateView();
@@ -56,6 +69,18 @@ public sealed class SettingsViewTests : IDisposable
 		view.ResetSearch();
 
 		Assert.Equal(0, view.SearchResultCount);
+	}
+
+	[Fact]
+	public async Task SwitchingSectionCancelsShortcutCapture()
+	{
+		var view = CreateView();
+		view.BeginCapture(ShortcutActions.Palette);
+		Assert.NotNull(view.CapturingId);
+
+		await view.SelectSectionAsync("appearance");
+
+		Assert.Null(view.CapturingId);
 	}
 
 	[Fact]

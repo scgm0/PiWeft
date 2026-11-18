@@ -79,11 +79,31 @@ internal sealed class SettingsDialog
 				.Child(new DialogSurface().Content(card)))
 			.OnKeyDown(key =>
 			{
-				// Ctrl+F：从任何可聚焦控件回到搜索框。
-				if (key.ControlKey && key.Key == Key.F)
+				// 改键捕获期间把按键让给窗口级捕获器，Ctrl+F 也应能绑成快捷键。
+				if (_settings.CapturingId is not null)
+				{
+					if (key.Key == Key.Escape)
+					{
+						key.Handled = true;
+						_settings.CancelCapture();
+					}
+
+					return;
+				}
+
+				// Ctrl/Cmd+F：从任何可聚焦控件回到搜索框。
+				if (key.PrimaryKey && key.Key == Key.F)
 				{
 					key.Handled = true;
 					_settings.FocusSearch();
+					return;
+				}
+
+				if (key.Key == Key.Escape && _settings.HasActiveSearch)
+				{
+					// 焦点在结果行/清除键时也让 Esc 先清搜索，和搜索框内一致。
+					key.Handled = true;
+					_settings.ClearActiveSearch();
 					return;
 				}
 
@@ -120,6 +140,7 @@ internal sealed class SettingsDialog
 		window.WindowStateChanged += OnWindowStateChanged;
 		ApplyOverlayInset();
 		UpdateTitleBarDim();
+		_settings.ReloadConfiguration();
 		_settings.Refresh();
 		UpdateHeader();
 		AppStyles.ApplyTextColors((Element)View);
@@ -135,6 +156,8 @@ internal sealed class SettingsDialog
 
 	private void CloseNow()
 	{
+		_settings.ClearCapture();
+		_settings.CloseTransientPanels();
 		View.IsVisible(false);
 		if (_window is { } window)
 		{
