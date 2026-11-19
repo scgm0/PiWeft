@@ -370,7 +370,7 @@ public sealed partial class SessionTab
 	/// 直发可用性：运行中发送键是中断，附件与编辑重发状态也不该被清单消息带走。
 	private bool CanSendQuickMessage() =>
 		!_sending && !_chat.IsStreaming && _loadingAttachments == 0 &&
-		_attachments.Count == 0 && _pendingBranchEntryId is null;
+		_attachments.Count == 0 && _pendingBranchEntryId is null && _pendingAssistantEditEntryId is null;
 
 	private void ShowComposerAddMenu()
 	{

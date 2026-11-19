@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace PiWeft.Ai;
@@ -70,8 +71,9 @@ public static class Transcript
 		{
 			normalized.Add(new SystemMessage
 			{
+				// 章节已经拼进 Content：这里再留 Sections，provider 取初始系统文本时会再追加一遍，
+				// 同一段提示词发两遍（占 token 也可能让模型看到重复规则）。
 				Content = MessageContent.FromText(prompt.ToString()),
-				Sections = sections.Count > 0 ? sections : null,
 				ToolsAdded = tools is { Count: > 0 } ? tools : null,
 				Timestamp = rest.Count > 0 ? rest[0].Timestamp : 0,
 			});
@@ -82,9 +84,18 @@ public static class Transcript
 	}
 
 	public static string GetText(SystemMessage message)
-	{		if (message.Sections is not { Count: > 0 } sections)
+	{
+		if (message.Sections is not { Count: > 0 } sections)
 		{
 			return message.Text;
+		}
+
+		// 系统提示每请求读一次，拼接结果是几十 KB：按实例缓存。
+		// 用弱表而不是 record 字段：`with` 复制出来的检查点快照不该继承旧文本，
+		// 新实例是新 key，自然重新拼。
+		if (SystemTextCache.TryGetValue(message, out var cached))
+		{
+			return cached;
 		}
 
 		var builder = new StringBuilder(message.Text);
@@ -103,8 +114,12 @@ public static class Transcript
 			builder.Append(value);
 		}
 
-		return builder.ToString();
+		var text = builder.ToString();
+		SystemTextCache.AddOrUpdate(message, text);
+		return text;
 	}
+
+	private static readonly ConditionalWeakTable<SystemMessage, string> SystemTextCache = new();
 
 	/// 序列化前的请求体大小预估。图片以 base64 存在，字符数就是 UTF8 字节数；
 	/// 按它预分配缓冲，大图请求不必反复翻倍扩容。

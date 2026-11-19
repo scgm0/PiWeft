@@ -204,6 +204,46 @@ public class ChatViewModelTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ExhaustedRetryKeepsAttemptsAndReasonsOnTheErrorRow()
+	{
+		_streams.Enqueue(model => FakeStreams.Error(model, "Service Unavailable"));
+		_streams.Enqueue(model => FakeStreams.Error(model, "Still down"));
+
+		using var session = NewSession(retry: new RetryPolicy(BaseDelayMs: 10, MaxRetries: 1));
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+
+		await viewModel.SendAsync("hi").WaitAsync(TimeSpan.FromSeconds(10));
+
+		// 最终失败保留次数与原因：只闪一次 toast 的话，事后翻记录看不出重试过。
+		var error = Assert.Single(viewModel.Entries(), static entry => entry.Role == ChatRole.Error);
+		Assert.Equal(1, error.RetryAttempts);
+		Assert.Contains("Service Unavailable", Assert.Single(error.RetryErrors!));
+		Assert.Contains("Still down", error.Text);
+	}
+
+	[Fact]
+	public async Task RetryHistoryDoesNotLeakIntoTheNextTurn()
+	{
+		// 第一轮失败一次后重试成功：本轮的重试原因留在 _retryErrors 里。
+		_streams.Enqueue(model => FakeStreams.Error(model, "Service Unavailable"));
+		_streams.Enqueue(model => FakeStreams.Text(model, "recovered"));
+
+		using var session = NewSession(retry: new RetryPolicy(BaseDelayMs: 10, MaxRetries: 2));
+		using var viewModel = new ChatViewModel();
+		viewModel.Attach(session);
+		await viewModel.SendAsync("first").WaitAsync(TimeSpan.FromSeconds(10));
+
+		// 第二轮直接失败（凭据类错误不重试）：错误行不能带上一轮的重试次数。
+		_streams.Enqueue(model => FakeStreams.Error(model, "invalid api key"));
+		await viewModel.SendAsync("second").WaitAsync(TimeSpan.FromSeconds(10));
+
+		var error = Assert.Single(viewModel.Entries(), static entry => entry.Role == ChatRole.Error);
+		Assert.Equal(0, error.RetryAttempts);
+		Assert.Null(error.RetryErrors);
+	}
+
+	[Fact]
 	public async Task AutoRetryIsVisibleDuringBackoffAndReportsRecovery()
 	{
 		_streams.Enqueue(model => FakeStreams.Error(model, "Service Unavailable"));

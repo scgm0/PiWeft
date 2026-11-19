@@ -35,6 +35,7 @@ internal sealed class AssistantMessageView : IDisposable
 	private readonly Func<ChatFileChange, string> _fileHint;
 	private readonly Action<ChatFileChange>? _openDiff;
 	private readonly Button _copy;
+	private readonly Button? _edit;
 	private readonly TextFocusScrollGuard _focus;
 	private readonly Action<string> _openLink;
 	private readonly Action<ImageSource>? _previewImage;
@@ -43,7 +44,8 @@ internal sealed class AssistantMessageView : IDisposable
 	private bool _followingThinking;
 
 	public AssistantMessageView(ChatEntry entry, Action<string> copy, TextFocusScrollGuard focus, Action<ImageSource>? preview = null,
-		Action<string>? openLink = null, string? cwd = null, Action<ChatFileChange>? openDiff = null)
+		Action<string>? openLink = null, string? cwd = null, Action<ChatFileChange>? openDiff = null,
+		Action<ChatEntry>? edit = null)
 	{
 		_focus = focus;
 		_openLink = openLink ?? (url => Shell.OpenMessageLink(url, Environment.CurrentDirectory));
@@ -102,7 +104,17 @@ internal sealed class AssistantMessageView : IDisposable
 		// 思考行内部由组体/跟随增长处理；不要用外层锚点把会话滚动位置带走。
 		_focus.TrackFold(_thinking, preserveAnchor: false);
 		_copy = AppIcons.Button("copy", Strings.CopyMessage, () => copy(_entry?.Text ?? string.Empty), size: 14);
-		_headerRow = new DockPanel().LastChildFill().Children(_copy.DockRight(), _header);
+		// 流式行没有落盘 id，改不了；其余行按条目标题改写。
+		_edit = edit is not null && entry.EntryId is { Length: > 0 } entryId && !entryId.StartsWith("live-", StringComparison.Ordinal)
+			? AppIcons.Button("pencil", Strings.EditAssistantMessage, () => edit(entry), size: 14)
+			: null;
+		_headerRow = new DockPanel().LastChildFill();
+		if (_edit is not null)
+		{
+			_headerRow.Children(_edit.DockRight());
+		}
+
+		_headerRow.Children(_copy.DockRight(), _header);
 		_content = new StackPanel().Spacing(AppTheme.Space2).Children(
 			_headerRow,
 			_thinking,
@@ -161,8 +173,8 @@ internal sealed class AssistantMessageView : IDisposable
 
 	public void Update(ChatEntry entry)
 	{
-		// 头部文本的输入只有这三项：流式期每帧都重新格式化并转换时区，是纯粹的字符串垃圾。
-		var headerKey = (entry.Timestamp, entry.IsStreaming, entry.DurationMs);
+		// 头部文本的输入只有这几项：流式期每帧都重新格式化并转换时区，是纯粹的字符串垃圾。
+		var headerKey = (entry.Timestamp, entry.IsStreaming, entry.DurationMs, entry.ModelLabel);
 		if (headerKey != _headerKey)
 		{
 			_headerKey = headerKey;
@@ -173,7 +185,8 @@ internal sealed class AssistantMessageView : IDisposable
 			var timing = !entry.IsStreaming && entry.DurationMs is { } duration
 				? $"  ·  {Strings.ResponseDuration(duration)}"
 				: string.Empty;
-			_header.Text(time.Length > 0 ? $"{role}  ·  {time}{timing}" : $"{role}{timing}");
+			var model = entry.ModelLabel is { Length: > 0 } label ? $"  ·  {label}" : string.Empty;
+			_header.Text(time.Length > 0 ? $"{role}  ·  {time}{model}{timing}" : $"{role}{model}{timing}");
 		}
 		_headerRow.IsVisible(!entry.Compact);
 		_thinking.IsVisible(entry.ThinkingLength > 0 || entry.IsThinking);
@@ -287,6 +300,7 @@ internal sealed class AssistantMessageView : IDisposable
 		var shown = _bodyType.Shown;
 		_body.IsVisible(shown > 0);
 		_copy.IsVisible(!entry.Compact && !entry.IsStreaming && entry.TextLength > 0);
+		_edit?.IsVisible(!entry.Compact && !entry.IsStreaming && entry.TextLength > 0);
 		if (shown > 0)
 		{
 			var view = EnsureBodyMarkdown();
@@ -360,7 +374,7 @@ internal sealed class AssistantMessageView : IDisposable
 		_previewLine.FollowTail = followTail;
 	}
 
-	private (long Timestamp, bool Streaming, double? Duration) _headerKey;
+	private (long Timestamp, bool Streaming, double? Duration, string? Model) _headerKey;
 	private string? _thinkingLabel;
 	private string _previewText = string.Empty;
 	private bool _previewSettled;
@@ -505,6 +519,8 @@ internal sealed class AssistantMessageView : IDisposable
 		AttachToolTip = (element, text) => element.HoverTip(text),
 		BlockSpacing = AppTheme.Space2,
 		ListIndent = 28,
+		// 行距跟阅读偏好走：设置里换档不重建 Markdown 实例，下次布局读新值。
+		LineHeightScaleProvider = () => ReadingPreferences.LineHeight,
 		CardCornerRadius = AppTheme.RadiusXl,
 		// 代码块底色比页面低一档：深色主题 Page #141414 → 块 #252525，浅色 #ffffff → #f0f0f0。
 		// 用 CodeBackground（#0f0f0f / #f6f6f6）在页面上几乎看不出块边界。

@@ -101,3 +101,14 @@ public sealed record ToolExecutionEndEvent : AgentEvent
 
 	public double? DurationMs { get; init; }
 }
+
+/// 扩展加载或处理器失败。不写进会话，模型看不到；RPC 以 <c>extension_error</c> 交给客户端。
+public sealed record ExtensionErrorEvent : AgentEvent
+{
+	public required string ExtensionPath { get; init; }
+
+	/// 出错的事件名；加载期的问题为 <see langword="null"/>。
+	public string? Event { get; init; }
+
+	public required string Error { get; init; }
+}

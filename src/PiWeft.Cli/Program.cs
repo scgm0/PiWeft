@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using PiWeft.Cli;
 using PiWeft.CodingAgent;
 using ZLogger;
@@ -210,7 +211,32 @@ Console.CancelKeyPress += (_, eventArgs) =>
 	cancellation.Cancel();
 };
 
+// 进程管理器（systemd、PiDeck 的 sidecar）关 stdin 的同时常伴发 SIGTERM/SIGHUP。
+// 第一次只走优雅关闭，清理期间再收到一次才按默认处置强退：
+// 否则在途的 OAuth 刷新会被截断，供应商已轮换的 token 没写回 auth.json。
+var shutdownSignals = 0;
+void OnShutdownSignal(PosixSignalContext context)
+{
+	if (Interlocked.Increment(ref shutdownSignals) > 1)
+	{
+		// 重复信号是真的要进程立刻结束，不再阻拦。
+		return;
+	}
+
+	context.Cancel = true;
+	cancellation.Cancel();
+}
+
+using var sigterm = OperatingSystem.IsWindows()
+	? null
+	: PosixSignalRegistration.Create(PosixSignal.SIGTERM, OnShutdownSignal);
+using var sighup = OperatingSystem.IsWindows()
+	? null
+	: PosixSignalRegistration.Create(PosixSignal.SIGHUP, OnShutdownSignal);
+
 var runner = new CliRunner(environment, Console.Out, Console.Error);
 var exitCode = await runner.RunAsync(arguments, cwd, Console.In, cancellation.Token).ConfigureAwait(false);
+// 刷新已发出但还没写着：等它写完再退。超时只放弃等待，不取消刷新。
+await PiWeft.Ai.Auth.CredentialWrites.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
 AppLog.For<CliRunner>().ZLogInformation($"CLI stopped: mode={arguments.Mode.ToString()}, exitCode={exitCode}");
 return exitCode;

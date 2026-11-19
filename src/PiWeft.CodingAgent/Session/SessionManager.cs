@@ -661,7 +661,7 @@ public sealed partial class SessionManager
 		// 段首的半行由 reader 自己跳掉：它归上一段，这里只消费整行。
 		using var reader = new Utf8LineReader(path, from);
 		var previousBytes = reader.BytesRead;
-		while (reader.TryReadLine(out var line))
+		while (reader.TryReadLine(out _))
 		{
 			var consumed = reader.BytesRead;
 			var delta = (int)Math.Max(1, consumed - previousBytes);
@@ -669,7 +669,8 @@ public sealed partial class SessionManager
 			cancellationToken.ThrowIfCancellationRequested();
 			try
 			{
-				if (SessionJson.ParseLine(line) is { } parsed)
+				// 用 memory 重载：JsonDocument 直接从行缓冲解析，不复制整行。
+				if (SessionJson.ParseLine(reader.CurrentLineMemory) is { } parsed)
 				{
 					sink.Add(parsed);
 				}
@@ -895,9 +896,11 @@ public sealed partial class SessionManager
 		// 这一条总接在当前叶子后面，增量投影可以保留；只有能改早前消息的条目要整体重建。
 		// A normal message only extends the projection. Edits, compaction and summaries can
 		// change earlier messages, so those still rebuild it from the branch.
+		// CustomMessageEntry 只追加一条消息、不改历史，可以走增量；
+		// 若之后有 context_edit 指向它，那条编辑条目自己会触发全量重建。
 		Invalidate(
 			keepIncrementalProjection:
-				entry is not (ContextEditEntry or CompactionEntry or BranchSummaryEntry or CustomMessageEntry),
+				entry is not (ContextEditEntry or CompactionEntry or BranchSummaryEntry),
 			keepBranch: true);
 		_fileEntries.Add(entry);
 		_byId[entry.Id] = entry;
@@ -1199,7 +1202,7 @@ public sealed partial class SessionManager
 
 		for (var index = previousBranch.Count; index < branch.Count; index++)
 		{
-			if (branch[index] is ContextEditEntry or CompactionEntry or BranchSummaryEntry or CustomMessageEntry)
+			if (branch[index] is ContextEditEntry or CompactionEntry or BranchSummaryEntry)
 			{
 				return false;
 			}
@@ -1208,10 +1211,8 @@ public sealed partial class SessionManager
 		var tail = new List<Message>(_incrementalTail);
 		for (var index = previousBranch.Count; index < branch.Count; index++)
 		{
-			if (branch[index] is SessionMessageEntry messageEntry)
-			{
-				AddEntryMessages(tail, messageEntry, replacement: null);
-			}
+			// 新增的普通消息与 custom message 都是追加；其它条目类型对投影无贡献。
+			AddEntryMessages(tail, branch[index], replacement: null);
 		}
 
 		_incrementalTail = tail;

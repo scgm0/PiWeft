@@ -319,7 +319,18 @@ public static partial class ProviderEnvironment
 			_ => Task.FromResult<Auth.OAuthCredential?>(null),
 		};
 
-	private static async Task<Auth.OAuthCredential?> RefreshOAuthAsync(
+	private static Task<Auth.OAuthCredential?> RefreshOAuthAsync(
+		string provider,
+		Auth.OAuthCredential credential,
+		CancellationToken cancellationToken)
+	{
+		// 退出时要等这次刷新写完 auth.json（见 CredentialWrites），这里在发起处注册。
+		var task = RefreshOAuthCoreAsync(provider, credential, cancellationToken);
+		Auth.CredentialWrites.Track(task);
+		return task;
+	}
+
+	private static async Task<Auth.OAuthCredential?> RefreshOAuthCoreAsync(
 		string provider,
 		Auth.OAuthCredential credential,
 		CancellationToken cancellationToken)

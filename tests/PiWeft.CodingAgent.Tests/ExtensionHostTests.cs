@@ -61,6 +61,23 @@ public sealed class ExtensionHostTests : IDisposable
 
 
 	[Fact]
+	public void FailedExtensionIsReportedThroughDiagnostics()
+	{
+		var path = Write("broken.js", "throw new Error('boom');");
+		using var host = new ExtensionHost();
+		var reported = new List<ExtensionDiagnostic>();
+		host.Reported += reported.Add;
+
+		host.Load(_cwd, trusted: true, _agentDir);
+
+		var diagnostic = Assert.Single(host.Diagnostics);
+		Assert.Equal(path, diagnostic.ExtensionPath);
+		Assert.Null(diagnostic.Event);
+		Assert.Contains("boom", diagnostic.Message, StringComparison.Ordinal);
+		Assert.Single(reported);
+	}
+
+	[Fact]
 	public void GlobalAndProjectExtensionsAreBothDiscovered()
 	{
 		Write("global.js", "module.exports = function (pi) { pi.registerCommand('g', 'd', function () {}); };");

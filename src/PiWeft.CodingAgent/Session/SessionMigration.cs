@@ -94,7 +94,7 @@ internal static class SessionMigration
 			var firstKeptEntryId = compaction.FirstKeptEntryId;
 			if (node is JsonValue value &&
 				value.GetValueKind() == JsonValueKind.Number &&
-				value.TryGetValue<int>(out var keptIndex) &&
+				TryIndex(value, out var keptIndex) &&
 				keptIndex >= 0 && keptIndex < entries.Count && assigned[keptIndex].Length > 0)
 			{
 				firstKeptEntryId = assigned[keptIndex];
@@ -108,6 +108,24 @@ internal static class SessionMigration
 				Extra = remaining.Count > 0 ? remaining : null,
 			};
 		}
+	}
+
+	/// 下标可能是 int 或 long 后端：JsonNode.Parse 给出 JsonElement，直接构造的 JsonValue 给 long。
+	private static bool TryIndex(JsonValue value, out int result)
+	{
+		if (value.TryGetValue<int>(out result))
+		{
+			return true;
+		}
+
+		if (value.TryGetValue<long>(out var wide) && wide is >= int.MinValue and <= int.MaxValue)
+		{
+			result = (int)wide;
+			return true;
+		}
+
+		result = 0;
+		return false;
 	}
 
 	/// 未知条目写回时整行输出原始对象（见 <see cref="UnknownSessionEntry"/>），

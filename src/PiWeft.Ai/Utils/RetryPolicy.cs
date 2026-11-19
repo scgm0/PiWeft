@@ -195,6 +195,8 @@ public static class RetryClassifier
 			// WebSocket 传输
 			"websocket.?closed",
 			"websocket.?error",
+			// Codex 的 60 分钟连接上限：服务器中途关闭，重试会开新连接。
+			"websocket.?connection.?limit.?reached",
 
 			// 流被提前结束
 			"ended without",

@@ -156,4 +156,42 @@ public class DeferredTextTests
 	}
 
 	private static JsonObject ParseBlock(string line) => Assert.IsType<JsonObject>(JsonNode.Parse(line));
+
+	[Fact]
+	public void StreamingTextMaterializesOnFirstReadAndThenReusesIt()
+	{
+		var buffer = new System.Text.StringBuilder("hello");
+		var block = TextContent.FromStreaming(buffer);
+
+		// 流式期间只 append，不物化。
+		buffer.Append(" world");
+		Assert.Equal(11, block.TextLength);
+
+		var first = block.Text;
+		Assert.Equal("hello world", first);
+		// 第一次读之后缓存同一个实例：最终消息被渲染、写盘、导出时不再各解一遍。
+		Assert.Same(first, block.Text);
+
+		// 流式块没有 UTF-8 来源，写回走字符串路径。
+		Assert.False(block.IsTextDeferred);
+		Assert.False(block.TryGetUtf8(out _));
+	}
+
+	[Fact]
+	public void StreamingThinkingMaterializesOnFirstReadAndComparesByText()
+	{
+		var buffer = new System.Text.StringBuilder("think");
+		var block = ThinkingContent.FromStreaming(buffer, "sig");
+		buffer.Append("ing");
+
+		Assert.Equal(8, block.ThinkingLength);
+		var first = block.Thinking;
+		Assert.Equal("thinking", first);
+		Assert.Same(first, block.Thinking);
+
+		// 相等性按内容：两个来源不同但正文相同的块必须相等（record 默认会比较 buffer 引用）。
+		var same = new ThinkingContent { Thinking = "thinking", ThinkingSignature = "sig" };
+		Assert.Equal(same, block);
+		Assert.Equal(same.GetHashCode(), block.GetHashCode());
+	}
 }

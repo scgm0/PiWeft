@@ -273,6 +273,8 @@ public class RetryClassifierTests
 	[InlineData("The handshake failed due to an unexpected packet format.")]
 	[InlineData("An existing connection was forcibly closed by the remote host.")]
 	[InlineData("The remote party has closed the transport stream.")]
+	[InlineData("Codex WebSocket closed before response.completed (CloseStatus: 1011: websocket_connection_limit_reached)")]
+	[InlineData("Codex WebSocket failed: The WebSocket closed with status 1000 (NormalClosure)")]
 	public void TransientFailuresAreRetryable(string message) =>
 		Assert.True(RetryClassifier.IsRetryable(Failure(message)));
 
@@ -430,4 +432,25 @@ public class RetryClassifierTests
 	[Fact]
 	public void ZeroBaseDelayMeansNoWait() =>
 		Assert.Equal(0, RetryClassifier.DelayMs(new RetryPolicy(BaseDelayMs: 0), 3));
+
+	[Fact]
+	public void RegistryListCachesInvalidateOnAddAndRemove()
+	{
+		var registry = new ModelRegistry();
+		registry.Add(new Model { Id = "chat", Provider = "p", Api = "openai-completions", Type = ModelType.Chat });
+		Assert.Single(registry.List());
+		Assert.Single(registry.ChatModels());
+		Assert.Single(registry.FindById("chat"));
+
+		registry.Add(new Model { Id = "image", Provider = "p", Api = "openai-completions", Type = ModelType.Image });
+		Assert.Equal(2, registry.List().Count);
+		Assert.Single(registry.ChatModels());
+		Assert.Single(registry.ImageModels());
+		Assert.Single(registry.FindById("image"));
+
+		Assert.True(registry.Remove("p", "chat"));
+		Assert.Single(registry.List());
+		Assert.Empty(registry.ChatModels());
+		Assert.Empty(registry.FindById("chat"));
+	}
 }

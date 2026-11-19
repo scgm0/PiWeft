@@ -27,6 +27,10 @@ public sealed record ExtensionState
 
 public sealed record ExtensionFlag(string Name, string Type, string Description, object? Default);
 
+/// 一条扩展诊断：加载失败、处理器抛错、注册参数不合法等。
+/// <see cref="Event"/> 是出错的事件名，加载期的问题为 <see langword="null"/>。
+public sealed record ExtensionDiagnostic(string ExtensionPath, string? Event, string Message);
+
 /// 进程内 JS 扩展宿主：发现 → 沙箱执行 → 收集注册项（工具、命令、事件钩子）→ 派发事件。
 /// 沙箱与 codemode 同一套纪律：Jint 解释器不给扩展宿主能力（无 <c>fs</c>、<c>net</c>、<c>require</c>），
 /// 唯一出口是显式注册的 <c>__pi*</c> 宿主函数，<c>pi</c> 对象由这些函数在 JS 侧组装，
@@ -122,6 +126,28 @@ public sealed class ExtensionHost : IDisposable
 	private bool _disposed;
 
 	public ExtensionHost(IUiHost? ui = null) => _ui = ui;
+
+	private readonly List<ExtensionDiagnostic> _diagnostics = [];
+
+	/// 按发生顺序累积的全部诊断。设置页按扩展显示自己的那份，RPC 与日志读这份。
+	public IReadOnlyList<ExtensionDiagnostic> Diagnostics => _diagnostics;
+
+	/// 运行期新诊断。加载期的诊断没有听众，由会话的 <c>TakeUnreportedExtensionDiagnostics</c> 补报。
+	public event Action<ExtensionDiagnostic>? Reported;
+
+	private void Report(ExtensionState state, string message, string? @event = null)
+	{
+		// 同一条消息只记一次（每次 UI 调用都会报「没有宿主界面」），否则设置页会堆满重复行。
+		if (state.Diagnostics.Contains(message))
+		{
+			return;
+		}
+
+		state.Diagnostics.Add(message);
+		var diagnostic = new ExtensionDiagnostic(state.Descriptor.FilePath, @event, message);
+		_diagnostics.Add(diagnostic);
+		Reported?.Invoke(diagnostic);
+	}
 
 	public IReadOnlyList<ExtensionState> States => _states;
 
@@ -245,7 +271,7 @@ public sealed class ExtensionHost : IDisposable
 
 		if (!descriptor.Enabled)
 		{
-			state.Diagnostics.Add("扩展已在 settings.extensions 中停用。");
+			Report(state, "扩展已在 settings.extensions 中停用。");
 			return state;
 		}
 
@@ -259,7 +285,7 @@ public sealed class ExtensionHost : IDisposable
 
 		if (!descriptor.Supported)
 		{
-			state.Diagnostics.Add(descriptor.UnsupportedReason ?? "不支持的扩展文件");
+			Report(state, descriptor.UnsupportedReason ?? "不支持的扩展文件");
 			return state;
 		}
 
@@ -270,7 +296,7 @@ public sealed class ExtensionHost : IDisposable
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			state.Diagnostics.Add($"读取扩展失败：{exception.Message}");
+			Report(state, $"读取扩展失败：{exception.Message}");
 			return state;
 		}
 
@@ -293,7 +319,7 @@ public sealed class ExtensionHost : IDisposable
 		catch (Exception exception) when (exception is TimeoutException or ObjectDisposedException
 			or InvalidOperationException or NotSupportedException or Jint.Runtime.JavaScriptException)
 		{
-			state.Diagnostics.Add(Describe(exception));
+			Report(state, Describe(exception));
 		}
 
 		if (!state.Loaded)
@@ -345,7 +371,7 @@ public sealed class ExtensionHost : IDisposable
 			catch (Exception exception) when (exception is TimeoutException or ObjectDisposedException
 				or InvalidOperationException or NotSupportedException or Jint.Runtime.JavaScriptException or AggregateException)
 			{
-				state.Diagnostics.Add($"{@event} 处理器失败：{Describe(exception)}");
+				Report(state, $"{@event} 处理器失败：{Describe(exception)}", @event);
 			}
 		}
 
@@ -414,7 +440,7 @@ public sealed class ExtensionHost : IDisposable
 			catch (Exception exception) when (exception is TimeoutException or ObjectDisposedException
 				or InvalidOperationException or Jint.Runtime.JavaScriptException or AggregateException)
 			{
-				state.Diagnostics.Add($"命令 {name} 失败：{Describe(exception)}");
+				Report(state, $"命令 {name} 失败：{Describe(exception)}", "command");
 			}
 
 			return true;
@@ -446,7 +472,7 @@ public sealed class ExtensionHost : IDisposable
 		engine.SetValue("__piHasUI", _ui is { HasUi: true });
 		engine.SetValue("__piDiagnose", new ClrFunction(engine, "__piDiagnose", (thisObject, args) =>
 		{
-			state.Diagnostics.Add(args.At(0).AsString());
+			Report(state, args.At(0).AsString());
 			return JsValue.Undefined;
 		}));
 
@@ -458,7 +484,7 @@ public sealed class ExtensionHost : IDisposable
 			registration.NoteListener(@event);
 			if (!registration.Supported(@event))
 			{
-				state.Diagnostics.Add(
+				Report(state, 
 					$"pi.on(\"{@event}\")：当前宿主不派发这个事件，处理器不会被调用。可派发：{string.Join(", ", ExtensionRegistration.SupportedEvents)}。");
 				return JsValue.Undefined;
 			}
@@ -473,7 +499,7 @@ public sealed class ExtensionHost : IDisposable
 			var name = args.At(0).AsString();
 			if (name.Length == 0)
 			{
-				state.Diagnostics.Add("pi.registerTool：缺少 name。");
+				Report(state, "pi.registerTool：缺少 name。");
 				return JsValue.Undefined;
 			}
 
@@ -541,14 +567,14 @@ public sealed class ExtensionHost : IDisposable
 			var name = args.At(0).AsString();
 			if (name.Length == 0)
 			{
-				state.Diagnostics.Add("pi.registerFlag：缺少 name。");
+				Report(state, "pi.registerFlag：缺少 name。");
 				return JsValue.Undefined;
 			}
 
 			var type = args.At(1).AsString();
 			if (type is not ("boolean" or "string"))
 			{
-				state.Diagnostics.Add($"pi.registerFlag(\"{name}\")：type 只能是 boolean 或 string。");
+				Report(state, $"pi.registerFlag(\"{name}\")：type 只能是 boolean 或 string。");
 				return JsValue.Undefined;
 			}
 
@@ -711,7 +737,7 @@ public sealed class ExtensionHost : IDisposable
 		{
 			if (host is not { HasUi: true })
 			{
-				state.Diagnostics.Add("当前环境没有宿主界面，交互调用按取消处理。");
+				Report(state, "当前环境没有宿主界面，交互调用按取消处理。");
 				return null;
 			}
 
@@ -722,7 +748,7 @@ public sealed class ExtensionHost : IDisposable
 			}
 			catch (Exception exception) when (exception is TimeoutException or OperationCanceledException)
 			{
-				state.Diagnostics.Add("交互调用超时，按取消处理。");
+				Report(state, "交互调用超时，按取消处理。");
 				return null;
 			}
 		}
@@ -731,7 +757,7 @@ public sealed class ExtensionHost : IDisposable
 		{
 			if (host is not { HasUi: true })
 			{
-				state.Diagnostics.Add("当前环境没有宿主界面，交互调用按取消处理。");
+				Report(state, "当前环境没有宿主界面，交互调用按取消处理。");
 				return null;
 			}
 
@@ -742,7 +768,7 @@ public sealed class ExtensionHost : IDisposable
 			}
 			catch (Exception exception) when (exception is TimeoutException or OperationCanceledException)
 			{
-				state.Diagnostics.Add("交互调用超时，按取消处理。");
+				Report(state, "交互调用超时，按取消处理。");
 				return null;
 			}
 		}
@@ -752,7 +778,7 @@ public sealed class ExtensionHost : IDisposable
 		{
 			if (host is not { HasUi: true })
 			{
-				state.Diagnostics.Add("当前环境没有宿主界面。");
+				Report(state, "当前环境没有宿主界面。");
 				return;
 			}
 
@@ -817,7 +843,7 @@ public sealed class ExtensionHost : IDisposable
 
 	/// 把扩展返回的 Promise 驱动到结束。Jint 的 <c>UnwrapIfPromise</c> 会在超时或拒绝时抛异常；
 	/// 超时按宿主预算处理，拒绝按扩展自己的诊断处理，两者都不能拖垮宿主。
-	private static void AwaitScriptResult(JsValue value, string what, ExtensionState state)
+	private void AwaitScriptResult(JsValue value, string what, ExtensionState state)
 	{
 		if (!value.IsPromise())
 		{
@@ -831,11 +857,11 @@ public sealed class ExtensionHost : IDisposable
 		catch (Exception exception) when (exception is PromiseRejectedException or JavaScriptException
 			or TimeoutException or InvalidOperationException)
 		{
-			state.Diagnostics.Add($"{what} 失败：{Describe(exception)}");
+			Report(state, $"{what} 失败：{Describe(exception)}");
 		}
 	}
 
-	private static void ImportEsmExtension(Engine engine, ExtensionDescriptor descriptor, ExtensionState state)
+	private void ImportEsmExtension(Engine engine, ExtensionDescriptor descriptor, ExtensionState state)
 	{
 		var specifier = "./" + Path.GetFileName(descriptor.FilePath);
 		JsValue module;

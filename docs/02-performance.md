@@ -55,7 +55,12 @@
 - `Truncate.Head`/`Tail` 改成按 span 扫行：不再 `Split` 出整份行列表，`Tail` 也从 `List.Insert(0)` 改为反向切片。3.79 MiB / 12 万行的 shell 尾部截断从 23–32 ms、12.3 MiB 分配降到 1.3–2.5 ms、100 KiB（同一进程 20 次均值，Release）。
 - 侧栏摘要持久化到 `<agentDir>/session-summaries.json`，键为长度 + mtime + 首行指纹；追加时用尾巴指纹续扫，原地重写则整扫。缓存损坏退化为全扫；删除会话的条目下次构建时清除。读写走 System.Text.Json 源生成（141 条 83 KB 的缓存：装载 1.08 MB 分配 → 0.38 MB，2.3 ms → 1.4 ms），落盘在后台线程单飞，关窗时同步补一次。
 - 会话搜索的正文扫描按 1 MB 分块扫全文，块间留关键字长度减一的重叠；比较在 UTF-8 字节上做：没有 ASCII 字母的关键字（中日韩）走向量化 `IndexOf`，带大小写的逐个 rune 折成大写，先用 `SearchValues<byte>` 筛候选首字节再比。只有命中行前后 8 KB 才解码，摘要仍从 JSON 里取字符串值。总读盘预算 512 MB，按列表顺序预先摊好每份读多少字节（额度不够的那份读尾部，再后面的整份跳过），命中范围不随线程调度变。实测 141 份会话 / 470 MB：命中 20–25 ms / 0.3 MB 分配，未命中 59 ms（无大小写、精确路径）到 80–173 ms（带大小写的折叠路径，要逐候选解 rune）/ 0.02–0.07 MB；此前的「只读尾部 512 KB」是 110–136 ms / 118 MB，覆盖范围反而只有全文的七分之一。
-- 会话解析用 `Utf8LineReader` + `SessionJson.ParseLine(ReadOnlySpan<byte>)`；大文件按 2–3 段并行，顺序与单线程一致；进度按字节汇报。`Utf8LineReader` 对超大行缓冲（>256 KiB）交给 GC，不归还共享池。
+- 会话解析用 `Utf8LineReader` + `SessionJson.ParseLine`；大文件按 2–3 段并行，顺序与单线程一致；进度按字节汇报。`Utf8LineReader` 对超大行缓冲（>256 KiB）交给 GC，不归还共享池。
+- 会话行改用 `Utf8JsonReader` 解析（`SessionJsonReader`），不再逐行建 `JsonNode` 树，也不走 `GetString()`：大文本块未转义时直接接管 `ValueSpan`，含转义（工具输出几乎都带换行）时用 `SessionJsonUnescape` 解到池化缓冲，最后只复制实际长度。30.2 MiB / 600 条 50 KiB 工具结果的会话，打开分配 125.84 → 31.78 MiB、中位 173 → 84 ms、稳态堆 33.52 → 30.28 MiB（1.00× 文件），gen2 从 1–4 次降到 0–1 次。`dotnet run --project tools/PiWeft.SessionBench -c Release -- memory` 复现；`-- parse` 对比逐行解析（`SessionJson` 14.4 ms / 31.4 MB vs `JsonDocument` + `GetString` 28.7 ms / 61.6 MB）。`SessionJsonReaderTests` 把 reader 路径与 JsonNode 路径的序列化结果逐字节对比，覆盖转义、代理对、未知字段与未知角色。
+- 写回也走 UTF-8：延迟存储的正文直接 `WriteRawValue` 写原始字节（`JsonUtf8String`），转义用 `SearchValues<byte>` 找下一个待转义字节、中间整段复制，不再解码成 UTF-16 再编码。600 条 50 KiB 工具结果写回 253.4 → 165.9 ms、分配 62.5 MB → 0.1 MB（`SessionBench -- write`）。
+- 请求体不再复制：`JsonPayload.Write` 直接把 `ArrayBufferWriter.WrittenMemory` 交给 `ReadOnlyMemoryContent`，省掉 `ToArray` 那一份与请求体等量的分配（长会话每轮几十 MB）。Bedrock 的 SigV4 与 Codex 的 WebSocket 也接受 `ReadOnlyMemory<byte>`，签名哈希与帧发送都直接取 span。
+- 流式正文与思考用 `TextContent.FromStreaming` / `ThinkingContent.FromStreaming`：provider 每个 delta 只往 `StringBuilder` 追加，快照共享同一个实例，文本第一次被读时物化并缓存。此前每 delta 一次 `ToString()`，一条 50 KiB 回复在 2000 个 delta 下是约 50 MB 的 O(n²) 分配。`ThinkingContent` 的相等性按正文比较，不比较 buffer 引用。
+- RPC / JSON 的事件序列化复用线程静态 `ArrayBufferWriter` + `Utf8JsonWriter`（`Reset`），不再为每个流式事件新建 `MemoryStream` 与 writer。
 - 会话 JSONL 追加用 `File.AppendAllBytes` + 可复用 `ArrayBufferWriter<byte>`；SSE 每流复用 UTF-8 缓冲。
 - 分支快照用不可变列表结构共享；`BuildProjectedMessages()` 在纯追加时复用前缀；`ChatViewModel.Rebuild()` 只重算最后一个用户轮次；过程投影只重投当前轮；统计只消费新增条目。
 - 继续生成的资格查询走「投影倒扫 + 错误文本定性」：定性结果按助手消息对象缓存（`ConditionalWeakTable`），错误文本可以带整段供应商响应体。带 146 字错误的 2000 条会话，每次查询 17.7 µs → 0.24 µs、0 分配（Release，100 万次）；界面每个按键与每帧都会问一次。
@@ -89,6 +94,13 @@
 - `write` 不再整份 `Encoding.GetBytes`：改成 16 KiB 字符分块 + `Encoder.Convert` 写进池化缓冲（峰值分配从「内容大小」降到 ~48 KiB），`FileStream` 关掉内部缓冲并声明顺序写。10 MB 写入 16 ms → 8.9 ms。有测试逐字节比对一次性编码结果（含分块边界上的代理对与孤立代理项）。
 - `edit` 的行级 diff 从全表 LCS（2 万行两侧 1.6 GB、23 s）换成「公共前后缀 + 两侧唯一行锚点 + 最长递增子序列」，内存与行数线性；2 万行单处替换 24.7 s → 24 ms，patch 只含改动附近的 hunk。
 - JSON Schema 的 `$ref` 解析按 schema 根缓存（`ConditionalWeakTable` + `ConcurrentDictionary`），同一工具每次调用的参数校验不再重走 pointer。
+- `auth.json` 只读缓存按路径 + mtime + 长度判新鲜，写入路径（`WriteRoot`、`OAuthStore.Write`、`CodexAuth.Save`）显式失效。模型选择器每次打开都问一遍 `ReadApiKeys`，此前每次都是读盘 + 解析。
+- 模型目录的 `List` / `ChatModels` / `ImageModels` / `ClassifierModels` / `FindById` 缓存成不可变快照，`Add`/`Remove` 推进版本号后清空；并发读不会把旧快照写回。桌面模型选择器与 `ResolveModel` 不再每次分配新列表。
+- 系统提示文本（`GetText(SystemMessage)` 的章节拼接）按实例缓存，用 `ConditionalWeakTable` 而不是 record 字段：`with` 出来的检查点快照不会继承旧文本。每请求省一次几十 KB 的拼接。
+- `Transcript.Normalize` 把章节拼进 `Content` 后不再保留 `Sections`：此前 provider 的 `GetInitialSystemText` 会再追加一遍，系统提示整段发两次。
+- 纯追加的 `CustomMessageEntry`（子代理回报、关联会话消息、todo brief）进入增量投影，不再每条整段重建投影。
+- 重复工具调用签名直接遍历 `JsonNode` 算 FNV，字符串只取前 512 字符加长度：`write` 带 MB 级正文时不再为 64 位签名生成整串。
+- 会话事件订阅分两类：外部订阅（UI、RPC 输出）异常隔离并记 `Trace`，内部落盘订阅仍传播异常；一个渲染回调抛错不再让整轮会话失败。
 
 ## 为什么不做历史分页
 

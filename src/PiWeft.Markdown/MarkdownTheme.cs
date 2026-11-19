@@ -13,6 +13,12 @@ public sealed record MarkdownTheme
 	/// 置 0 或负值＝关闭，退回字体自然行高。
 	public double LineHeightScale { get; init; } = 1.6;
 
+	/// 行高倍率的动态来源。桌面用它接阅读偏好：改行距不需要重建 Markdown 实例。
+	public Func<double>? LineHeightScaleProvider { get; init; }
+
+	/// 实际使用的行高倍率。
+	public double EffectiveLineHeightScale => LineHeightScaleProvider?.Invoke() ?? LineHeightScale;
+
 	/// 标题行高倍率。标题字号大，需要比正文更紧的行距才不至于把一行拉成一片空白，
 	/// 取 PiDeck <c>.markdown-body h1..h6</c> 的 1.3。
 	public double HeadingLineHeightScale { get; init; } = 1.3;

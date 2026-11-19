@@ -112,6 +112,33 @@ internal sealed class ConsoleUiHost(TextReader input, TextWriter output) : IUiHo
 		}
 	}
 
+	public async Task<ToolApproval?> ApproveAsync(UiApprovalRequest request, CancellationToken cancellationToken)
+	{
+		output.WriteLine();
+		output.WriteLine(request.Title);
+		if (request.Message is { Length: > 0 } message)
+		{
+			output.WriteLine(message);
+		}
+
+		output.WriteLine("  o = 本次允许   s = 本会话允许   d = 拒绝（直接回车同拒绝）");
+		while (true)
+		{
+			output.Write("o/s/d > ");
+			output.Flush();
+			var line = await input.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+			switch (line?.Trim())
+			{
+				case "o" or "O" or "once" or "是":
+					return ToolApproval.Once;
+				case "s" or "S" or "session" or "全部":
+					return ToolApproval.Session;
+				case null or "" or "d" or "D" or "deny" or "否":
+					return ToolApproval.Deny;
+			}
+		}
+	}
+
 	public async Task<string?> EditorAsync(UiEditorRequest request, CancellationToken cancellationToken)
 	{
 		// 终端模式没有多行编辑器：退化为单行输入，空输入返回预填内容。

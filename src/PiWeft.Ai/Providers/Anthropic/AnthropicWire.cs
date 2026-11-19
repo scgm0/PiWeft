@@ -485,7 +485,7 @@ internal static class AnthropicWire
 			writer.WriteEndArray();
 		});
 
-		return JsonNode.Parse(bytes) as JsonArray ?? [];
+		return JsonNode.Parse(bytes.Span) as JsonArray ?? [];
 	}
 
 	private const string ErrorToolImagePlaceholder = "(image attached after the tool results)";

@@ -185,11 +185,7 @@ internal sealed class GoogleStreamState
 
 		_textBuffer.Append(delta);
 		_textSignature = string.IsNullOrEmpty(signature) ? _textSignature : signature;
-		_content[_textIndex] = new TextContent
-		{
-			Text = _textBuffer.ToString(),
-			TextSignature = _textSignature,
-		};
+		_content[_textIndex] = TextContent.FromStreaming(_textBuffer) with { TextSignature = _textSignature };
 
 		if (delta.Length > 0)
 		{
@@ -217,11 +213,7 @@ internal sealed class GoogleStreamState
 
 		_thinkingBuffer.Append(delta);
 		_thinkingSignature = string.IsNullOrEmpty(signature) ? _thinkingSignature : signature;
-		_content[_thinkingIndex] = new ThinkingContent
-		{
-			Thinking = _thinkingBuffer.ToString(),
-			ThinkingSignature = _thinkingSignature,
-		};
+		_content[_thinkingIndex] = ThinkingContent.FromStreaming(_thinkingBuffer, _thinkingSignature);
 
 		if (delta.Length > 0)
 		{
@@ -368,7 +360,7 @@ internal sealed class GoogleStreamState
 	{
 		_partial = _partial with
 		{
-			Content = [.. _content],
+			Content = ContentBlocks.Materialize(_content),
 			Usage = _usage,
 			StopReason = reason,
 			RawStopReason = _rawStopReason,

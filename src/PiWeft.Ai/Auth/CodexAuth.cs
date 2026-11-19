@@ -375,6 +375,7 @@ public static class CodexAuth
 				}
 
 				File.Move(temporary, path, overwrite: true);
+				AuthStore.InvalidateReadCache();
 			}
 			finally
 			{

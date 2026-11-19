@@ -210,4 +210,30 @@ public sealed class ExtensionLifecycleTests : IDisposable
 		Assert.Contains("hello weft", ui.Notifications);
 		Assert.False(session.TryExecuteSystemCommand("/not-a-command", CancellationToken.None, out _));
 	}
+
+	[Fact]
+	public void SessionTakesLoadingDiagnosticsOnce()
+	{
+		var extensionPath = Path.Combine(_root, "bad.js");
+		File.WriteAllText(extensionPath, "throw new Error('load-failure');");
+
+		using var extensions = new ExtensionHost();
+		extensions.Load(_root, trusted: true, Path.Combine(_root, "agent"), [extensionPath], includeDiscovered: false);
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = new ScriptedStreamFn().Invoke,
+			Session = SessionManager.InMemory(_root),
+			Skills = [],
+			Settings = new CodingAgentSettings(),
+			Extensions = extensions,
+		});
+
+		// 加载期没有客户端订阅：诊断排队，由客户端连上后取一次。
+		var pending = session.TakeUnreportedExtensionDiagnostics();
+		Assert.Single(pending);
+		Assert.Equal(extensionPath, pending[0].ExtensionPath);
+		Assert.Empty(session.TakeUnreportedExtensionDiagnostics());
+	}
 }

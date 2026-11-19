@@ -49,11 +49,12 @@ public sealed class ExtensionSettingsTests : IDisposable
 	{
 		var all = DesktopExtensions.All;
 
-		// PiDeck 的 14 个内置项里只有 10 个已移植；未移植的不列出，避免看起来在生效。
-		Assert.Equal(10, all.Count);
+		// PiDeck 的 14 个内置项里 13 个已移植；vision 没有对端，不列出，避免看起来在生效。
+		Assert.Equal(13, all.Count);
 		Assert.All(all, static extension => Assert.DoesNotContain(".ts", extension.Name, StringComparison.Ordinal));
 		Assert.Contains(all, static extension => extension.Name == "pi-deck-request-size-recovery");
-		Assert.DoesNotContain(all, static extension => extension.Name == "pi-deck-model-trace");
+		Assert.Contains(all, static extension => extension.Name == "pi-deck-model-trace");
+		Assert.DoesNotContain(all, static extension => extension.Name == "pi-deck-vision");
 	}
 
 	[Fact]
@@ -96,8 +97,8 @@ public sealed class ExtensionSettingsTests : IDisposable
 		ConversationPerformanceTests.Layout(view.View, 800, 720);
 
 		var toggles = Find<ToggleSwitch>(view.View).ToArray();
-		// 5 个 Pi 内置 + 10 个桌面内置 + 1 个刚发现的文件扩展。
-		Assert.Equal(16, toggles.Length);
+		// 5 个 Pi 内置 + 13 个桌面内置 + 1 个刚发现的文件扩展。
+		Assert.Equal(19, toggles.Length);
 		var texts = Find<TextBlock>(view.View).Select(static block => block.Text ?? string.Empty).ToArray();
 		Assert.Contains("pi-deck-ask-question", texts);
 		Assert.DoesNotContain(texts, static text => text.Contains(".ts", StringComparison.Ordinal));
@@ -109,8 +110,8 @@ public sealed class ExtensionSettingsTests : IDisposable
 		Assert.Contains("-builtin:mcp", entries);
 
 		toggles = Find<ToggleSwitch>(view.View).ToArray();
-		Assert.Equal(16, toggles.Length);
-		toggles[15].IsChecked = false;
+		Assert.Equal(19, toggles.Length);
+		toggles[18].IsChecked = false;
 		entries = JsonNode.Parse(File.ReadAllText(SettingsPath))!["extensions"]!.AsArray()
 			.Select(node => node!.GetValue<string>()).ToArray();
 		Assert.Contains("-" + Path.GetFullPath(extensionPath).Replace('\\', '/'), entries);

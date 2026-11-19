@@ -930,18 +930,28 @@ public sealed class SettingsView
 		};
 		var sizes = new double[] { 14, 16, 18, 20, 22 };
 		var widths = new double[] { 760, 1060, 1360 };
+		var lineHeights = new double[] { 1.6, 1.75, 1.9 };
 		var preference = DesktopPreference.Load();
 		var font = new ComboBox().Width(180).ItemsSource(ItemsView.Create(sizes.Select(size => $"{size:0} px").ToArray()))
 			.SelectedIndex(Math.Max(0, Array.IndexOf(sizes, preference.ChatFontSize)));
 		var width = new ComboBox().Width(180).ItemsSource(ItemsView.Create(new[] { Strings.ReadingCompact, Strings.ReadingComfortable, Strings.ReadingWide }))
 			.SelectedIndex(Math.Max(0, Array.IndexOf(widths, preference.ReadingWidth)));
+		var lineHeight = new ComboBox().Width(180)
+			.ItemsSource(ItemsView.Create(new[] { Strings.ReadingLineDefault, Strings.ReadingLineRelaxed, Strings.ReadingLineLoose }))
+			.SelectedIndex(Math.Max(0, Array.IndexOf(lineHeights, preference.ChatLineHeight)));
 		Anchor("appearance.font", font);
 		Anchor("appearance.width", width);
+		Anchor("appearance.line-height", lineHeight);
 		var sample = new TextBlock().Text(Strings.ReadingSample).FontSize(preference.ChatFontSize).PrimaryText().TextWrapping(TextWrapping.Wrap);
 		void SaveReading()
 		{
-			if (font.SelectedIndex < 0 || width.SelectedIndex < 0) return;
-			var next = DesktopPreference.Load() with { ChatFontSize = sizes[font.SelectedIndex], ReadingWidth = widths[width.SelectedIndex] };
+			if (font.SelectedIndex < 0 || width.SelectedIndex < 0 || lineHeight.SelectedIndex < 0) return;
+			var next = DesktopPreference.Load() with
+			{
+				ChatFontSize = sizes[font.SelectedIndex],
+				ReadingWidth = widths[width.SelectedIndex],
+				ChatLineHeight = lineHeights[lineHeight.SelectedIndex],
+			};
 			try { next.Save(); }
 			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Toast(Strings.ConfigFailed, ToastKind.Error); return; }
 			ReadingPreferences.Apply(next);
@@ -949,6 +959,7 @@ public sealed class SettingsView
 		}
 		font.SelectionChanged += _ => SaveReading();
 		width.SelectionChanged += _ => SaveReading();
+		lineHeight.SelectionChanged += _ => SaveReading();
 
 		// 等待期的功能提示轮播：与诊断、侧栏一样是「模块开关」，只停提示本身。
 		var tips = new CheckBox().Content(new TextBlock()
@@ -980,6 +991,7 @@ public sealed class SettingsView
 			Group("file-text", Strings.ReadingSettings, new StackPanel().Spacing(AppTheme.Space3).Children(
 				new DockPanel().LastChildFill().Children(font.DockRight(), LabelForPreview(Strings.ChatFontSize)),
 				new DockPanel().LastChildFill().Children(width.DockRight(), LabelForPreview(Strings.ReadingWidth)),
+				new DockPanel().LastChildFill().Children(lineHeight.DockRight(), LabelForPreview(Strings.ChatLineHeight)),
 				sample)),
 			Group("loader-circle", Strings.RespondingTipsSetting, tips));
 	}
@@ -1381,6 +1393,39 @@ public sealed class SettingsView
 				new TextBlock().Text(Strings.SettingsExtensionsFile(CodingAgentSettings.GlobalPath(snapshot.AgentDir)))
 					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap),
 				Hint(Strings.SettingsExtensionsRestart))));
+
+		// 扩展诊断来自运行中的会话（设置页只做发现，不加载扩展），进程内累积一份。
+		var diagnostics = ExtensionDiagnostics.Snapshot();
+		var diagnosticRows = new StackPanel().Spacing(2);
+		if (diagnostics.Count == 0)
+		{
+			diagnosticRows.Children(Hint(Strings.SettingsExtensionDiagnosticsEmpty));
+		}
+		else
+		{
+			foreach (var entry in diagnostics)
+			{
+				var handler = entry.Event is { Length: > 0 } name ? $" [{name}]" : string.Empty;
+				diagnosticRows.Children(new TextBlock()
+					.Text($"{entry.Timestamp:HH:mm} · {Path.GetFileName(entry.ExtensionPath)}{handler} · {entry.Message}")
+					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
+			}
+		}
+
+		var diagnosticSection = new StackPanel().Spacing(AppTheme.Space2).Children(
+			Hint(Strings.SettingsExtensionDiagnosticsHint),
+			diagnosticRows);
+		if (diagnostics.Count > 0)
+		{
+			diagnosticSection.Children(AppIcons.TextButton("trash", Strings.SettingsExtensionDiagnosticsClear, () =>
+			{
+				ExtensionDiagnostics.Clear();
+				Refresh();
+			}).HorizontalAlignment(HorizontalAlignment.Left));
+		}
+
+		panel.Children(Group("triangle-alert", Strings.SettingsExtensionDiagnostics, diagnosticSection));
+
 		panel.Children(AppIcons.TextButton("refresh-cw", Strings.SettingsExtensionsRefresh, Refresh)
 			.HorizontalAlignment(HorizontalAlignment.Left));
 		return panel;

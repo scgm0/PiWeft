@@ -6,6 +6,8 @@ using System.Text.Json.Nodes;
 using PiWeft.Ai.Providers.OpenAi;
 
 using PiWeft.Ai.Json;
+using PiWeft.Ai.Utils;
+
 namespace PiWeft.Ai.Providers.Mistral;
 
 /// Mistral 对话补全 API（<c>mistral-conversations</c>）的流式适配器。请求与工具形状紧跟 OpenAI，
@@ -148,8 +150,11 @@ public sealed class MistralConversationsProvider : IApiProvider
 
 			if (tools.Count > 0)
 			{
-				// Mistral 的受约束解码总是可用（pi 传 true），因此每个工具都带 strict 字段。
-				OpenAiCompletionsWire.WriteTools(writer, tools, supportsStrictMode: true);
+				// pi #12148：strict 会让 Mistral Large 4 的工具调用停滞数分钟，只有 compat 显式声明才发。
+				OpenAiCompletionsWire.WriteTools(
+					writer,
+					tools,
+					supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? false);
 			}
 
 			if (options.Metadata?["toolChoice"] is JsonValue toolChoice &&
@@ -185,18 +190,18 @@ public sealed class MistralConversationsProvider : IApiProvider
 
 		if (options.OnPayload is { } onPayload)
 		{
-			var node = JsonNode.Parse(bytes);
+			var node = JsonNode.Parse(bytes.Span);
 			if (node is not null && onPayload(node, model) is { } replaced)
 			{
 				bytes = Encoding.UTF8.GetBytes(replaced.ToJsonString(PiJson.NodeOptions));
 			}
 		}
 
-		options.NotifyRequestPayload(bytes, model);
+		options.NotifyRequestPayload(bytes.Span, model);
 		var baseUrl = ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 		var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/chat/completions")
 		{
-			Content = new ByteArrayContent(bytes),
+			Content = new ReadOnlyMemoryContent(bytes),
 		};
 
 		request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };

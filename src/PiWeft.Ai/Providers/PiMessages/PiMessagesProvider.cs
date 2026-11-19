@@ -179,10 +179,10 @@ public sealed class PiMessagesProvider : IApiProvider
 			writer.WriteEndObject();
 		}, Transcript.EstimateRequestBytes(context.Messages, context.Tools));
 
-		options.NotifyRequestPayload(bytes, model);
+		options.NotifyRequestPayload(bytes.Span, model);
 		if (options.OnPayload is { } onPayload)
 		{
-			var node = JsonNode.Parse(bytes);
+			var node = JsonNode.Parse(bytes.Span);
 			if (node is not null && onPayload(node, model) is { } replaced)
 			{
 				bytes = Encoding.UTF8.GetBytes(replaced.ToJsonString(PiJson.NodeOptions));
@@ -192,7 +192,7 @@ public sealed class PiMessagesProvider : IApiProvider
 		var baseUrl = ProviderEnvironment.ExpandBaseUrl(model.Provider, model.BaseUrl).TrimEnd('/');
 		var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/messages")
 		{
-			Content = new ByteArrayContent(bytes),
+			Content = new ReadOnlyMemoryContent(bytes),
 		};
 
 		request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };

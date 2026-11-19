@@ -3,10 +3,21 @@ using PiWeft.Ai;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Session;
 
-// 第一个参数选模式：缺省跑原来的用量统计刷新，`memory` 跑大会话打开的稳态堆。
+// 第一个参数选模式：缺省跑原来的用量统计刷新，`memory` 跑大会话打开的稳态堆，
+// `parse` 对比逐行解析路径的分配。
 if (args.Length > 0 && args[0] is "memory" or "large")
 {
 	return LargeSessionBenchmarks.Run(args.Length > 1 ? args[1] : null);
+}
+
+if (args.Length > 0 && args[0] == "parse")
+{
+	return ParseBenchmarks.Run();
+}
+
+if (args.Length > 0 && args[0] == "write")
+{
+	return WriteBenchmarks.Run();
 }
 
 var manager = SessionManager.InMemory(Environment.CurrentDirectory);
@@ -162,5 +173,120 @@ internal static class LargeSessionBenchmarks
 		}
 
 		return builder.ToString();
+	}
+}
+
+/// 逐行解析的分配对比：当前 `SessionJson.ParseLine`（JsonNode）与 `JsonDocument` 下限。
+/// 600 条 50 KiB 工具结果的 message 行，形状与大会话基准一致。
+internal static class ParseBenchmarks
+{
+	public static int Run()
+	{
+		const int Lines = 600;
+		const int TextChars = 50 * 1024;
+		var body = new string('x', TextChars);
+		var rows = new List<byte[]>(Lines);
+		for (var index = 0; index < Lines; index++)
+		{
+			var entry = new SessionMessageEntry
+			{
+				Message = new ToolResultMessage
+				{
+					ToolCallId = "c" + index,
+					ToolName = "bash",
+					Content = [new TextContent { Text = body }],
+					Timestamp = index,
+				},
+			};
+			rows.Add(System.Text.Encoding.UTF8.GetBytes(SessionJson.Serialize(entry)));
+		}
+
+		Measure("SessionJson", rows, static row => SessionJson.ParseLine(row));
+		Measure("JsonDocument", rows, static row =>
+		{
+			using var document = System.Text.Json.JsonDocument.Parse(row);
+			var root = document.RootElement;
+			_ = root.GetProperty("id").GetString();
+			var message = root.GetProperty("message");
+			_ = message.GetProperty("role").GetString();
+			foreach (var block in message.GetProperty("content").EnumerateArray())
+			{
+				_ = block.GetProperty("text").GetString();
+			}
+
+			return 0;
+		});
+		return 0;
+	}
+
+	private static void Measure(string name, List<byte[]> rows, Func<byte[], object?> parse)
+	{
+		foreach (var row in rows)
+		{
+			parse(row);
+		}
+
+		GC.Collect();
+		GC.WaitForPendingFinalizers();
+		GC.Collect();
+		var before = GC.GetAllocatedBytesForCurrentThread();
+		var watch = Stopwatch.StartNew();
+		object? sink = null;
+		for (var pass = 0; pass < 3; pass++)
+		{
+			foreach (var row in rows)
+			{
+				sink = parse(row);
+			}
+		}
+
+		watch.Stop();
+		var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+		Console.WriteLine($"{name}: {(watch.Elapsed.TotalMilliseconds / 3):F1} ms/pass, {allocated / 3:N0} bytes/pass (sink={sink?.GetHashCode() ?? 0})");
+	}
+}
+
+/// 写回成本：把解析出来的条目重新序列化成 JSONL 行（会话追加与整份重写都走这里）。
+/// 600 条 50 KiB 工具结果，正文含换行（真实工具输出的形状）。
+internal static class WriteBenchmarks
+{
+	public static int Run()
+	{
+		const int Lines = 600;
+		var body = string.Join('\n', Enumerable.Repeat("line of tool output", 2600));
+		var entries = new List<PiWeft.CodingAgent.Session.SessionEntry>(Lines);
+		for (var index = 0; index < Lines; index++)
+		{
+			var line = """{"type":"message","id":"e__I__","parentId":null,"timestamp":"t","message":{"role":"toolResult","toolCallId":"c","toolName":"bash","content":[{"type":"text","text":"__BODY__"}],"timestamp":1}}"""
+				.Replace("__I__", index.ToString())
+				.Replace("__BODY__", System.Text.Json.JsonEncodedText.Encode(body).ToString());
+			entries.Add(PiWeft.CodingAgent.Session.SessionJson.ParseLine(line)!.Value.Entry!);
+		}
+
+		var buffer = new System.Buffers.ArrayBufferWriter<byte>(1 << 20);
+		foreach (var entry in entries)
+		{
+			PiWeft.CodingAgent.Session.SessionJson.WriteEntryLine(buffer, entry);
+			buffer.Clear();
+		}
+
+		GC.Collect();
+		GC.WaitForPendingFinalizers();
+		GC.Collect();
+		var before = GC.GetAllocatedBytesForCurrentThread();
+		var watch = Stopwatch.StartNew();
+		for (var pass = 0; pass < 3; pass++)
+		{
+			foreach (var entry in entries)
+			{
+				PiWeft.CodingAgent.Session.SessionJson.WriteEntryLine(buffer, entry);
+				buffer.Clear();
+			}
+		}
+
+		watch.Stop();
+		var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+		Console.WriteLine($"WriteEntryLine: {(watch.Elapsed.TotalMilliseconds / 3):F1} ms/pass, {allocated / 3:N0} bytes/pass");
+		return 0;
 	}
 }

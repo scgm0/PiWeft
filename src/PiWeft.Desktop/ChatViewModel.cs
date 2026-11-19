@@ -75,6 +75,15 @@ public sealed record ChatEntry
 
 	public StreamedText? StreamedText { get; init; }
 
+	/// 这一轮用的模型（<c>provider/id</c>）。落盘的助手消息带着它，历史里切过模型也看得出来。
+	public string? ModelLabel { get; init; }
+
+	/// 本轮自动重试的次数；0 表示没有重试。只挂在最终错误行上。
+	public int RetryAttempts { get; init; }
+
+	/// 每次重试前的错误原因（按发生顺序），供错误行展开。
+	public IReadOnlyList<string>? RetryErrors { get; init; }
+
 	public int TextLength => _text is not null ? _text.Length : StreamedText?.Length ?? Deferred?.Length ?? 0;
 
 	/// 正文前 <paramref name="maxCharacters"/> 个字符。表头摘要、单行预览用它：不必为一行字把几十 KB 解出来。
@@ -258,6 +267,9 @@ public sealed class ChatViewModel : IDisposable
 	// 重试的回复一出字重试状态就没了，收口提示仍要报「共重试 n/m 次」，上限单独留着。
 	private int _retryMaxAttempts;
 	private ChatRetryNotice? _retryNotice;
+
+	/// 本轮自动重试的历次失败原因。最终失败时挂到错误行上；用户发新消息时清空。
+	private readonly List<string> _retryErrors = [];
 	private bool _aborting;
 	// 未投递给模型的排队消息（steer + follow-up），顺序与队列一致。
 	private ChatQueuedMessage[] _queued = [];
@@ -384,6 +396,7 @@ public sealed class ChatViewModel : IDisposable
 			_isCompacting = false;
 			_retry = null;
 			_retryNotice = null;
+			_retryErrors.Clear();
 			_aborting = false;
 			_queued = [];
 			// 打开会话时的首次投影就从这里走：长会话整段映射要 200+ 毫秒，必须计时。
@@ -416,6 +429,7 @@ public sealed class ChatViewModel : IDisposable
 			_error = null;
 			_retry = null;
 			_retryNotice = null;
+			_retryErrors.Clear();
 			_aborting = false;
 			_queued = [];
 		}
@@ -711,6 +725,11 @@ public sealed class ChatViewModel : IDisposable
 					ResetStreaming();
 					break;
 
+				case MessageStartEvent { Message: UserMessage }:
+					// 新的用户回合：上一轮的重试记录不再属于时间线。
+					_retryErrors.Clear();
+					break;
+
 				case MessageStartEvent { Message: AssistantMessage assistant }:
 					// 重试的回复开始写了：屏幕上有东西在长，状态条改报实时阶段。
 					// 留着重试状态，整轮重试（包括它跑工具的时间）都在说「正在自动重试」。
@@ -823,6 +842,7 @@ public sealed class ChatViewModel : IDisposable
 
 				case AutoRetryStartEvent retry:
 					AppLog.For<ChatViewModel>().ZLogWarning($"Retry scheduled: session={_session?.Session.SessionId}, attempt={retry.Attempt}, delayMs={retry.DelayMs}");
+					_retryErrors.Add(retry.ErrorMessage);
 					// 退避期间没有其它消息事件：把「正在重试 n/m」连同倒计时终点交给界面。
 					_retryMaxAttempts = retry.MaxAttempts;
 					_retry = new ChatRetryStatus(
@@ -1236,6 +1256,9 @@ public sealed class ChatViewModel : IDisposable
 						EntryId = entryIds.GetValueOrDefault(message),
 						Images = images,
 						Timestamp = assistant.Timestamp,
+						ModelLabel = assistant.Provider.Length > 0 && assistant.Model.Length > 0
+							? $"{assistant.Provider}/{assistant.Model}"
+							: null,
 						ChangedFiles = turnChanges.Count > 0 ? turnChanges.Snapshot() : [],
 					});
 				}
@@ -1258,7 +1281,15 @@ public sealed class ChatViewModel : IDisposable
 
 				if (assistant.StopReason == StopReason.Error && assistant.ErrorMessage is { Length: > 0 } error)
 				{
-					_entries.Add(new ChatEntry { Role = ChatRole.Error, Text = error });
+					// 最终失败：把本轮自动重试的次数与历次原因留在时间线上，
+					// 而不是只闪一次 toast（事后翻记录要能看出重试过几次、为什么）。
+					_entries.Add(new ChatEntry
+					{
+						Role = ChatRole.Error,
+						Text = error,
+						RetryAttempts = _retryErrors.Count,
+						RetryErrors = _retryErrors.Count > 0 ? [.. _retryErrors] : null,
+					});
 				}
 
 				return;

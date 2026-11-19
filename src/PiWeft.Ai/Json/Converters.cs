@@ -160,7 +160,18 @@ internal static class PiJsonValue
 		{
 			case TextContent text:
 				writer.WriteString("type", "text");
-				writer.WriteString("text", text.Text);
+				writer.WritePropertyName("text");
+				if (text.TryGetUtf8(out var utf8) && !JsonUtf8String.NeedsStringPath(utf8))
+				{
+					// 延迟存储的正文直接写 UTF-8：解码成字符串再编码回去会为每行多出等量的临时分配。
+					// C1 控制符与 U+2028 / U+2029 由 WriteStringValue 的 encoder 转义，交给字符串路径。
+					JsonUtf8String.Write(writer, utf8);
+				}
+				else
+				{
+					writer.WriteStringValue(text.Text);
+				}
+
 				WriteOptional(writer, "textSignature", text.TextSignature);
 				break;
 			case ThinkingContent thinking:

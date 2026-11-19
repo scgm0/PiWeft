@@ -219,7 +219,7 @@ internal sealed class BedrockStreamState
 			}
 
 			slot.Buffer.Append(text);
-			_content[slot.ContentIndex] = new TextContent { Text = slot.Buffer.ToString() };
+			_content[slot.ContentIndex] = TextContent.FromStreaming(slot.Buffer);
 			Push(new TextDeltaEvent { ContentIndex = slot.ContentIndex, Delta = text, Partial = Snapshot() });
 			return;
 		}

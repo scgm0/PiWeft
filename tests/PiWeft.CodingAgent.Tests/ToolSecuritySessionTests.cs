@@ -35,9 +35,10 @@ public class ToolSecuritySessionTests : IDisposable
 		}
 	}
 
-	private CodingAgentSession CreateSession(ScriptedStreamFn script, ToolSecurity security, bool includeCodemode = false) =>
+	private CodingAgentSession CreateSession(ScriptedStreamFn script, ToolSecurity security, bool includeCodemode = false, IUiHost? uiHost = null) =>
 		new(new CodingAgentSessionOptions
 		{
+			UiHost = uiHost,
 			// codemode 不在默认工具集里（与 pi 一致，要显式选中），需要它的用例自己带上完整目录。
 			Tools = includeCodemode ? PiWeft.CodingAgent.Tools.BuiltinTools.CatalogTools(_root) : null,
 			Cwd = _root,
@@ -398,5 +399,81 @@ public class ToolSecuritySessionTests : IDisposable
 
 		// 读取端要能扛住同样的坏文件：按「没有安全门」处理，不抛出去。
 		Assert.Equal("off", SecurityConfig.Load(agentDir).Resolve(null).Level);
+	}
+
+	[Fact]
+	public async Task ApprovalSessionRemembersTheToolForTheRestOfTheSession()
+	{
+		var level = ToolSecurity.Off with
+		{
+			Level = "ask-write",
+			Name = "写入前确认",
+			ToolActions = new Dictionary<string, string>(StringComparer.Ordinal) { ["write"] = ToolAction.Ask },
+		};
+		var first = Path.Combine(_root, "first.txt");
+		var second = Path.Combine(_root, "second.txt");
+		var script = new ScriptedStreamFn();
+		script.EnqueueToolCall("c1", "write", new JsonObject { ["path"] = first, ["content"] = "a" });
+		script.EnqueueToolCall("c2", "write", new JsonObject { ["path"] = second, ["content"] = "b" });
+		script.EnqueueText("done");
+
+		var host = new ApprovingUiHost(ToolApproval.Session);
+		using var session = CreateSession(script, level, uiHost: host);
+		await session.PromptAsync("go");
+
+		// 第一次问过之后本会话不再问，两次写入都真的执行了。
+		Assert.Equal(1, host.Approvals);
+		Assert.True(File.Exists(first));
+		Assert.True(File.Exists(second));
+	}
+
+	[Fact]
+	public async Task ApprovalOnceAsksAgainAndDenyBlocksTheCall()
+	{
+		var level = ToolSecurity.Off with
+		{
+			Level = "ask-write",
+			Name = "写入前确认",
+			ToolActions = new Dictionary<string, string>(StringComparer.Ordinal) { ["write"] = ToolAction.Ask },
+		};
+		var first = Path.Combine(_root, "first.txt");
+		var second = Path.Combine(_root, "second.txt");
+		var script = new ScriptedStreamFn();
+		script.EnqueueToolCall("c1", "write", new JsonObject { ["path"] = first, ["content"] = "a" });
+		script.EnqueueToolCall("c2", "write", new JsonObject { ["path"] = second, ["content"] = "b" });
+		script.EnqueueText("done");
+
+		// 第一次放行一次，第二次拒绝：只落第一个文件。
+		var host = new ApprovingUiHost(ToolApproval.Once, ToolApproval.Deny);
+		using var session = CreateSession(script, level, uiHost: host);
+		await session.PromptAsync("go");
+
+		Assert.Equal(2, host.Approvals);
+		Assert.True(File.Exists(first));
+		Assert.False(File.Exists(second));
+		var denied = LastToolResult(session);
+		Assert.True(denied.IsError);
+		Assert.Contains("用户拒绝", Assert.IsType<TextContent>(denied.Content[0]).Text);
+	}
+
+	/// 按顺序返回预设的审批结果；用完后一律拒绝。
+	private sealed class ApprovingUiHost(params ToolApproval[] answers) : IUiHost
+	{
+		private int _index;
+
+		public bool HasUi => true;
+
+		public int Approvals { get; private set; }
+
+		public Task<string?> InputAsync(UiInputRequest request, CancellationToken cancellationToken) =>
+			Task.FromResult<string?>(null);
+
+		public Task<ToolApproval?> ApproveAsync(UiApprovalRequest request, CancellationToken cancellationToken)
+		{
+			Approvals++;
+			var answer = _index < answers.Length ? answers[_index] : ToolApproval.Deny;
+			_index++;
+			return Task.FromResult<ToolApproval?>(answer);
+		}
 	}
 }

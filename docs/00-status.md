@@ -22,11 +22,11 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - .NET 11、`LangVersion=preview`（C# 15）、Runtime Async、制表符缩进；文档、界面文案与注释以中文为主。
 - Runtime Async 由 `Directory.Build.props` 的 `Features=runtime-async=on` 全局开启：async 方法不再生成状态机，热执行栈只剩真实帧，CLI 的 NativeAOT 产物体积 -2.3%。少数写法（自定义 `AsyncMethodBuilder`、async 方法里的 `ref`/`unsafe` 布局）不受支持；SDK 11.0.100 不接 `UseRuntimeAsync` 开关，单个项目要退出就在它的 csproj 里覆写 `<Features></Features>`。
 - 种类固定的抽象记录标 `closed`（内容块、助手事件、会话条目、分类问题/答案、codemode 输出项）：可行类固定在程序集内，消费方的 `switch` 不写兜底分支也能通过编译，新增种类时会直接编译报错而不是静默走默认分支。
-- 会话读取管线用 C# 15 union 代替 `object`：`SessionLine` 只有头部与条目两个 case，`List<object>` 变成 `List<SessionLine>`，少了裸转型。union 是 8 字节 struct，与引用等宽，读入不装箱；`OfType<T>()` 在 union 序列上恒为空（CA2021 会拦），过滤一律用模式匹配。
+- 会话读取管线用 C# 15 union 代替 `object`：`SessionLine` 只有头部与条目两个 case，`List<object>` 变成 `List<SessionLine>`，少了裸转型。union 是 8 字节 struct，与引用等宽，读入不装箱；`OfType<T>()` 在 union 序列上恒为空（CA2021 会拦），过滤一律用模式匹配。逐行解析走 `Utf8JsonReader`（`SessionJsonReader`），不建 `JsonNode` 树，大文本块直接接管 UTF-8 字节；写回用 `Utf8JsonWriter`，延迟存储的正文直接写 UTF-8 字节（`JsonUtf8String`），不经过 UTF-16。
 - `SessionManager` 的线程契约：`_stateGate` 保护条目表、索引、标签与叶子。所有写路径（含 `Append*` 的 id 生成与父链接）都在闸内；对外读属性要么取闸（`Entries`/`Header`/`Labels`/`EntryCount`/`Revision`），要么只做一次引用读（`LeafId`）。`Labels` 返回冻结快照，拿不到线上字典。并发用例见 `SessionManagerConcurrencyTests`：多写线程追加后条目链必须是一条线，读线程枚举标签/条目不得抛异常。
 - JSON 使用 `System.Text.Json` 源生成与手写转换器；不使用 Newtonsoft.Json 或供应商 SDK，保留 trim/AOT 分析器。
 - 核心库默认无第三方运行时包，例外两处：codemode 的 Jint 5 预览版（`Directory.Packages.props` + `Jint-preview` 源），以及 `PiWeft.Imaging` 的 Sdcb.SimdCodecs 分格式编解码包（纯托管、`net10.0` 单目标、`IsAotCompatible`，只引 Png/Jpeg/Gif/Webp/Bmp/Abstractions，不引会拖上 TIFF/J2K/JBIG2 的门面包）。桌面只用 `external/MewUI` 源码子模块与 `PiWeft.Markdown`（Markdig）。MewUI 的 X11 平台层自带 `Tmds.DBus.Protocol`（AT-SPI2 用）；本项目不开无障碍，裁剪后不进产物。
-- 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线（43 个 provider），`<agentDir>/models-store.json` 缓存远程目录。设置页「模型目录」下载 pi-ai npm 整包 tarball 生成最新目录写入 `<agentDir>/model-catalog.json`（GitHub main 单文件兜底），tarball 过 registry SHA-512、包内逐文件 SHA-256，覆盖层解析结果在进程内缓存；保留上一个覆盖版，桌面启动时每天自动检查一次，CLI 与桌面读取同一份覆盖层。虚拟模型支持静态 `"virtual":{"model":...}` 与动态 `"virtual":{"route":"..."}`，状态写成 `pi.virtual-model-state` 条目。
+- 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线（43 个 provider），`<agentDir>/models-store.json` 缓存远程目录。设置页「模型目录」下载 pi-ai npm 整包 tarball 生成最新目录写入 `<agentDir>/model-catalog.json`（GitHub main 单文件兜底），tarball 过 registry SHA-512、包内逐文件 SHA-256，覆盖层解析结果在进程内缓存；保留上一个覆盖版，桌面启动时每天自动检查一次，CLI 与桌面读取同一份覆盖层。内嵌基线含 GPT-6.2 Astra/Sol（OpenAI、Azure、Codex），`openai` / `azure` / `openai-codex` 的默认模型是 `gpt-6.2-sol`；两者拒绝 `none`/`minimal`，思考档从 `low` 起。虚拟模型支持静态 `"virtual":{"model":...}` 与动态 `"virtual":{"route":"..."}`，状态写成 `pi.virtual-model-state` 条目。
 - 不实现 TypeScript 扩展（JS 扩展宿主已实现）、mermaid、KaTeX、托盘、桌面通知、应用自更新、崩溃上报、内嵌浏览器；终端用独立 PTY Dock，不嵌第三方终端组件。codemode 默认不启用。
 
 ## 兼容基线
@@ -35,7 +35,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 保留 `PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、项目 `.pi`、配置文件名与 v3 JSONL 会话格式。损坏的会话头 `cwd` 回退到当前目录。
 - 日志：`<agentDir>/logs/piweft-<app>-<pid>-<日期>-<序号>.log`，一行一条，按天与 4 MB 滚动，保留 14 天、最多 31 个文件。`PI_LOG_LEVEL` 或设置页「日志 → 日志级别」控制级别，改动立即生效；设置页可筛选、搜索、分页、复制、导出诊断包与清空。异常记录在写入前、诊断包在导出前都过脱敏：家目录 → `~`、agent 目录 → `<agent>`、工作目录 → `<workspace>`、凭据 → `***`。异常记录保留类型、脱敏后的消息、内部异常链与栈。
 - 崩溃记录：`<agentDir>/crashes.json` 保留最近 5 条、7 天内的记录，下次启动提示一次（桌面 toast，CLI stderr）。
-- 系统提示词只在运行时构造，不写入会话。未知字段原样保留：会话头、条目顶层、已知角色的未建模字段（`Extra`）、未知角色整体（`CustomMessage.Raw`）、未知条目（`UnknownSessionEntry`）；`usage` / `usage.cost` 的未知字段同样保留。新增已知角色字段时须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys`。
+- 系统提示词只在运行时构造，不写入会话；章节拼进一条消息后不再保留 `Sections`，provider 取初始系统文本时不会重复追加。未知字段原样保留：会话头、条目顶层、已知角色的未建模字段（`Extra`）、未知角色整体（`CustomMessage.Raw`）、未知条目（`UnknownSessionEntry`）；`usage` / `usage.cost` 的未知字段同样保留。新增已知角色字段时须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys`。
 - `find` 的路径型 pattern 锚定搜索目录（`src/*.ts` 不再匹配 `pkg/src/a.ts`，要任意深度写 `**/src/*.ts`），开头的 `./` 会剥掉，绝对 pattern 按绝对路径匹配；`read` 的「模型不支持图片」只写进 details，不进结果正文。
 - 默认工具与 pi 一致：`read`/`bash`/`edit`/`write`，另保留 `todo`、`ask_question` 与 `tool_search`（MCP 工具默认是 codemode exposure，靠它发现）；Windows 默认含 `powershell`。`grep`/`find`/`ls`/`codemode` 需显式开启。`--tools` 支持整体替换、`+name`/`-name` 与 `--exclude-tools` 通配。
 - `write`/`edit` 就地写入（与 pi 的 `fs.writeFile` 同语义）：保持 inode、硬链接、权限位与已打开句柄；会话/设置/导入这些需要原子性的落盘仍走同目录临时文件 + rename。
@@ -47,9 +47,11 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 工具参数校验覆盖 `$ref`/`$defs`、`patternProperties`、`prefixItems` 与单值转数组（pi 1.5 的 pi-schema 子集）；不支持 TypeBox 的 `Refine`/codec 这类超出 JSON Schema 的扩展。`ask_question`/`todo` 的根 schema 不设 `additionalProperties:false`，与 PiDeck 一样容忍旧式顶层字段与未知字段。
 - 生效 settings：`shellPath`、`shellCommandPrefix`、`sessionDir`、`defaultTools`、`cacheWarming`（默认 `idle`）、`thinkingBudgets`、`images.autoResize`、`images.blockImages`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`compaction`（含 `modelOverrides`）、`retry`、`transport`、`httpIdleTimeoutMs`、`httpProxy`、`extensions`、`skills`、`prompts`、`themes`、`packages`、`enableSkillCommands`、`defaultProjectTrust`、`sessionShareDestination`、`codemode`、`security`。其余键保留不生效。
 - 启动迁移与 pi 的 `migrations.ts` 对齐：`oauth.json` / `settings.apiKeys` 并入 `auth.json`；根目录 `*.jsonl` 搬入 `sessions/<cwd>/`；`commands/` → `prompts/`；v1/v2 会话升级到 v3 并原子回写。`--export` 只读。
-- 编辑重发不新建会话：`TruncateForResend` 在原 JSONL 里把放弃的提问及后继写成 `deleted` 墓碑，叶子回到父条目。墓碑不进投影/分支树，重试与删除仍走 `context_edit`。
+- 编辑重发不新建会话：`TruncateForResend` 在原 JSONL 里把放弃的提问及后继写成 `deleted` 墓碑，叶子回到父条目。墓碑不进投影/分支树，重试与删除仍走 `context_edit`。编辑助手回复走另一条路：追加 `context_edit` 换掉投影里的正文，原条目留在文件里，不截断后续回合也不重跑。
+- 模型回退与模式无匹配要报出来：会话记录的模型已删除时回退到宿主默认，同时写一条 `Could not restore model ...` 警告（CLI stderr、桌面 toast）；`--models` / `settings.enabledModels` 里没有匹配的模式报 `No models match pattern`，不拦启动。
 - 手动继续生成与自动重试分开：上一轮是瞬态失败、输出被截断，或换模型/供应商后可能恢复的失败（配额、余额、凭据、模型不存在、上下文超限）后，草稿为空且没有排队的用户消息时，发送键变「继续生成」。它不新增提问，先追加一条空的隐藏 `piweft-continue` custom message 再续跑；重放时空正文被 provider 丢掉，所以模型看到的是同一个提问或被截断的半截回答。主动中断且没写出正文、请求参数、内容过滤、证书校验失败不接（重跑不会变好，交给标题栏「重试」或修配置）；中断前已有正文时可以继续，重放只带正文，半截推理与不完整工具调用仍丢弃。配额/余额这类不自动重试，但可以换模型后点继续，省掉手打一条「继续」。排队的注入上下文（子代理回报、关联会话消息）不拦继续，随本次请求一起送出。继续失败后仍保留继续资格。
-- `--system-prompt` 替代 preamble，`--append-system-prompt` 追加，`--no-context-files` 停用 AGENTS.md / CLAUDE.md；`--export` 导出 HTML/JSONL，`--safe` 脱敏；`--models` 限定轮换范围。
+- `--system-prompt` 替代 preamble，`--append-system-prompt` 追加，`--no-context-files` 停用 AGENTS.md / CLAUDE.md；`--export` 导出 HTML/JSONL，`--safe` 脱敏；`--models` 限定轮换范围。HTML 导出的正文按 Markdown 渲染（表格、列表、代码块），原始 HTML 与脚本式链接不执行；工具输出仍走 ANSI 转内联样式。
+- 退出收尾：CLI 接 SIGTERM/SIGHUP，第一次走优雅关闭，清理期间再收到才强退；退出前等 OAuth 刷新写完 `auth.json`，避免供应商已轮换 refresh token 而本地没保存。
 - `pi install/list/remove/update` 管理 npm/git/本地包，`--local` 写项目 `.pi/settings.json`；`settings.npmCommand` 可覆盖 npm。`pi update` 提示用发行页更新 NativeAOT 本体，`pi update --extensions` 更新包并报告 npm 版本或 git commit 变化。llama.cpp router 默认 `http://127.0.0.1:9931`。
 - `pi mcp list|add|remove|login|logout` 管理服务器与 OAuth；配置写 `<agentDir>/mcp.json`，令牌写 `<agentDir>/mcp-auth.json`（与 pi 同一份文件、同一套键与状态形状，旧的 `mcp-oauth.json` 首次读取时迁移）。写入保留其它键、注释与尾逗号。
 - CLI `@file` 展开为 `<file>` 文本块，图片作为内容块；print/JSON 模式合入重定向 stdin；RPC 拒绝 `@file`。
@@ -96,22 +98,26 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - OAuth：ChatGPT/Codex、GitHub Copilot、Anthropic、OpenRouter、xAI、Kimi、Meta、Radius；其它走 API Key。`pi auth login|logout <provider>` 与旧的 `pi login|logout <provider>` 都可用，`--api-key`/`--no-browser` 按 pi 语义解析。API Key 字段来自与桌面端共用的内置供应商目录（Cloudflare/Vertex/Bedrock 多字段）。`pi auth check` 返回 `ready`/`not_ready`/`invalid`，退出码 0/1/2。
 - `auth.json` 支持明文与 `${VAR}`，命令型凭据以 `!` 开头（10 秒超时、64 KiB、失败回落环境变量），以及 `api_key.env` 的供应商级字段（Cloudflare 账户/网关、Vertex 项目/区域/ADC、AWS 访问密钥）。写入原子，Unix 0600；损坏文件拒绝覆盖。
 - OpenCode / OpenCode Go 请求自动带 `x-opencode-session` 与 `x-opencode-client: piweft`；显式同名头优先。
-- Anthropic message thread：会话有 id 且端点支持时，后续请求只发新增消息；前缀变化或服务器拒绝时退回完整请求并重开 thread，端点不认识 `thread` 字段时本会话关闭。`compat.supportsMessageThreads` 可覆盖默认（只有直连 `api.anthropic.com` 默认开）。
+- Anthropic message thread：会话有 id 且端点支持时，后续请求只发新增消息；前缀变化或服务器拒绝时退回完整请求并重开 thread，端点不认识 `thread` 字段时本会话关闭。`compat.supportsMessageThreads` 可覆盖默认（baseUrl 指向 `api.anthropic.com` 默认开，自定义 provider id 也算）。
 - MCP OAuth 客户端身份支持 `auto`/`dcr`/`cimd`：`cimd` 用 pi 的 Client ID Metadata Document（`https://pi.dev/oauth/client.json`，授权服务器不带 `iss` 时按服务器派生路径），`auto` 在服务器支持公开客户端文档且未配 `clientName` 时优先用它。
 - MCP 支持 stdio / streamable HTTP 握手、工具/资源/模板/提示分页、通知与 OAuth（授权码 + PKCE、动态注册、回环回调、401 刷新重放、客户端凭据）。stdio 失败会杀子进程并释放连接。服务器在后台并行连接（上限 8），首轮只为 `direct` 工具等 10 秒、RPC 等全部连完，其余服务器按需等待；408/429/5xx 重试两次（`Retry-After` 优先），`notifications/message` 写入 `<agentDir>/mcp.log`（5 MB 滚动）。
 
 ## 桌面能力
 
-桌面复用 CLI 的环境装配与同一会话文件，不启动 RPC 子进程。包含多项目/多会话标签、会话树与有界正文搜索、置顶/命名/删除到 `.trash`/恢复、外部会话导入（Claude Code、Codex CLI）、文件浏览与编辑、原生 todo/ask_question/计划模式、快捷消息（插入草稿与直发）、资源与主题热重载、模型连接测试/远程目录、Git 全流程（状态、暂存、提交、分支、AI 摘要、图、比较、远端同步、stash）、检查点、轨迹、终端 Dock、使用统计（应用用量的区间趋势、模型占比、活动热力图与连续天数）、供应商余额、深浅主题。
+桌面复用 CLI 的环境装配与同一会话文件，不启动 RPC 子进程。包含多项目/多会话标签、会话树与有界正文搜索、置顶/命名/删除到 `.trash`/恢复（父会话归档时先关标签再收走关联子会话）、外部会话导入（Claude Code、Codex CLI）、文件浏览与编辑、原生 todo/ask_question/计划模式、快捷消息（插入草稿与直发）、资源与主题热重载、模型连接测试/远程目录、Git 全流程（状态、暂存、提交、分支、AI 摘要、图、比较、远端同步、stash）、检查点、轨迹、终端 Dock、使用统计（应用用量的区间趋势、模型占比、活动热力图与连续天数）、供应商余额、深浅主题、正文行距三档。
+
+同一工具与参数反复调用时，第 3/5/8 次在工具结果末尾补一句提醒（用户发新消息清零）。
 
 详见 [01-parity](01-parity.md) 与 [DESIGN](../DESIGN.md)。
 
 ## 已知限制
 
-- 扩展宿主执行 JavaScript，支持 CJS `module.exports = function (pi) {...}` 与 ESM `export default function (pi) {...}`；ESM 的相对 import 与裸模块 `typebox`、`@earendil-works/pi-coding-agent`、`@earendil-works/pi-ai` 由宿主模块表提供（旧 `@sinclair/*`、`@mariozechner/*` 同名映射），模块加载根是发现目录。异步处理器可用，Promise 由 `UnwrapIfPromise` 驱动到结束；TypeScript 仍需构建期转译；无自定义 renderer。当前派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`，其它事件注册时即报诊断。`message_update`、`tool_execution_update` 与 provider/context 类事件尚未派发。扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`（含 `model-only`）/`namespace`/`executionMode`，尚未接 `reachesTools`/`prepareLoadout`/`ctx.executeTool`。
+- 扩展宿主执行 JavaScript，支持 CJS `module.exports = function (pi) {...}` 与 ESM `export default function (pi) {...}`；ESM 的相对 import 与裸模块 `typebox`、`@earendil-works/pi-coding-agent`、`@earendil-works/pi-ai` 由宿主模块表提供（旧 `@sinclair/*`、`@mariozechner/*` 同名映射），模块加载根是发现目录。异步处理器可用，Promise 由 `UnwrapIfPromise` 驱动到结束；TypeScript 仍需构建期转译；无自定义 renderer。当前派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`，其它事件注册时即报诊断。`/reload` 先给旧宿主 `session_shutdown`，重建后重发 `session_start`；工具表每次从内置基线重建，旧扩展的工具不会留在表里，codemode 描述跟着重绑。生命周期事件带 `reason`（`startup`/`reload`/`new`/`resume`/`fork`/`quit`）与 `previousSessionFile`：RPC 的 `new_session` 先给旧会话 `session_shutdown("new")` 再构造新会话（`session_start("new")` + 上一个会话文件），`switch_session`/`fork`/`clone` 在同一实例上派发 `shutdown` + `start`。`--mode json` 也给扩展一个宿主：`session_start` 里的 `notify` 写进事件流，对话框按取消返回。`message_update`、`tool_execution_update` 与 provider/context 类事件尚未派发。扩展工具支持 `promptSnippet`/`promptGuidelines`/`outputSchema`/`exposure`（含 `model-only`）/`namespace`/`executionMode`，尚未接 `reachesTools`/`prepareLoadout`/`ctx.executeTool`。
 - `before_agent_start` 应用返回的 `systemPrompt`、就地修改的 `systemPromptOptions.sections`，以及返回的 `message`（作为隐藏 custom message 跟在用户消息后进入本轮并落盘）。
 - 仍缺的 1.5 运行时项：OpenAI `requiresThinkingAsText`、`zaiToolStream`；MCP 跨进程刷新锁。
-- 安全门 `ask` 在没有审批宿主时退化为拒绝；默认档 `off`；CLI 无切换档位命令。
+- 安全门 `ask` 在桌面与交互式 CLI 上弹三选一：本次允许 / 本会话允许 / 拒绝；本会话允许按工具名记住，不跨会话也不落盘。没有审批宿主时退化为拒绝；默认档 `off`；CLI 无切换档位命令。
+- 扩展诊断要能看见：加载失败与处理器抛错进 `ExtensionHost.Diagnostics`，运行中实时发 `extension_error` 事件（RPC），加载期的那批由 `TakeUnreportedExtensionDiagnostics` 在客户端连上后补报一次；桌面会话打开时收集到设置页「扩展」分区，并弹一条 toast。
+- 与 pi 1.5.2+337 的剩余差距：Codex `websocket-cached` 不复用连接（60 分钟上限已按 close 原因重试）。
 - CLI 仍是按行 REPL：无完整 TUI、多行编辑、`$EDITOR`、键位绑定与终端图片。
 - 并行工具里同一文件的 `edit`/`write` 已串行化；`nestedCalls` / `parentToolCallId` 尚未产出，只按未知字段保留。
 - 生图/分类网关已接入 codemode（含 `openai-decisions`、`typesafe-system-one`、`cloudflare-workers-ai-system-one`），但没有一级入口；虚拟模型路由已实现，扩展宿主动态注册未接；Codex `websocket-cached` 未复用连接。虚拟模型的图片限制按外层模型条目的 `inputLimits` 取，未使用路由目标模型的限制。

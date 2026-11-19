@@ -1759,6 +1759,17 @@ public sealed partial class MainWindow : Window
 		}
 
 		AppLog.For<MainWindow>().ZLogInformation($"Session opened: session={session.Session.SessionId}");
+		// 模型回退是启动期问题：不拦会话，但得让用户知道实际用的是哪个模型。
+		foreach (var warning in session.Warnings)
+		{
+			Toasts.Show(this, warning);
+		}
+
+		if (ExtensionDiagnostics.Absorb(session) is > 0)
+		{
+			Toasts.Show(this, Strings.ExtensionDiagnosticsReported(ExtensionDiagnostics.Count));
+		}
+
 		_tabControl.SelectedIndex = _tabEntries.Count - 1;
 		UpdateTabHeaders();
 		UpdateStatus();

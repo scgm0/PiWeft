@@ -65,6 +65,9 @@ public static partial class Strings
 	public const string BranchHere = "在此分支";
 	public const string EditAndResend = "编辑重发";
 	public const string EditPending = "已载入该提问：修改后发送会在新分支上继续。";
+	public const string EditAssistantMessage = "编辑这条回复";
+	public static string RetryAttempts(int count) => $"自动重试 {count} 次";
+	public const string EditAssistantPending = "正在编辑助手回复：发送只改模型看到的正文，不重跑这一轮。";
 	public static string Branched(string path) => $"已在该处开新分支：{path}";
 
 	public static string LinkedSessionStarted(string title) => $"已开始子会话「{title}」，它在后台跑；每轮结束会把结果回报到当前会话。";

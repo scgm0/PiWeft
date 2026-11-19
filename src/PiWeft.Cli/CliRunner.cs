@@ -23,6 +23,27 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 	private IReadOnlyList<AgentTool> _resourceTools = [];
 
+	private bool _environmentWarningsReported;
+
+	/// 启动期警告写 stderr：不拦启动，但用户要知道实际用的是哪个模型。
+	/// 环境的模式警告是进程级的，只报一次；会话的模型回退警告跟着每次新会话。
+	private void ReportWarnings(CodingAgentSession session)
+	{
+		if (!_environmentWarningsReported)
+		{
+			_environmentWarningsReported = true;
+			foreach (var warning in environment.Warnings)
+			{
+				error.WriteLine($"pi: {warning}");
+			}
+		}
+
+		foreach (var warning in session.Warnings)
+		{
+			error.WriteLine($"pi: {warning}");
+		}
+	}
+
 	private McpConnection? _mcp;
 	private CodingAgentSession? _session;
 
@@ -341,6 +362,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			session: SessionManager.Open(sessionPath, arguments.SessionDir, upgradeFile: false),
 			recordInitialThinkingLevel: false);
 
+		ReportWarnings(session);
+
 		var requested = arguments.Prompts.Count > 0 ? arguments.Prompts[0] : null;
 		var outputPath = requested is not null &&
 			requested.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)
@@ -388,6 +411,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		{
 			return flagError;
 		}
+
+		ReportWarnings(session);
 
 		var (prompts, images) = await PreparePromptsAsync(arguments, cwd, input, cancellationToken).ConfigureAwait(false);
 		for (var index = 0; index < prompts.Count; index++)
@@ -537,11 +562,16 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 	private async Task<int> RunJsonAsync(CliArguments arguments, string cwd, TextReader input, CancellationToken cancellationToken)
 	{
-		using var session = environment.CreateSession(arguments, cwd, extraTools: _extraTools);
+		// JSON 模式也给扩展一个宿主：session_start 里的 notify/status 要能写进事件流。
+		// 没有交互通道，对话框按取消返回。
+		_uiInteractive = false;
+		using var session = environment.CreateSession(arguments, cwd, extraTools: _extraTools, uiHost: this);
 		if (RejectUnknownExtensionFlags(session) is { } flagError)
 		{
 			return flagError;
 		}
+
+		ReportWarnings(session);
 
 		WriteRecord(SessionHeaderRecord(session.Session));
 
@@ -593,6 +623,28 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 
 	private IDisposable? _sessionEvents;
 
+	/// 补发会话加载期的扩展诊断。客户端在会话建立之后才订阅，加载期发生的失败
+	/// 没有听众；只报一次，重复发会让客户端在每次换会话时重刷同样的错误。
+	private void ReportPendingExtensionDiagnostics(CodingAgentSession session, bool toStdErr = false)
+	{
+		foreach (var diagnostic in session.TakeUnreportedExtensionDiagnostics())
+		{
+			if (toStdErr)
+			{
+				var suffix = diagnostic.Event is { Length: > 0 } handlerEvent ? $" [{handlerEvent}]" : string.Empty;
+				error.WriteLine($"pi: extension error ({diagnostic.ExtensionPath}){suffix}: {diagnostic.Message}");
+				continue;
+			}
+
+			WriteRecord(AgentEventWriter.Write(new ExtensionErrorEvent
+			{
+				ExtensionPath = diagnostic.ExtensionPath,
+				Event = diagnostic.Event,
+				Error = diagnostic.Message,
+			}));
+		}
+	}
+
 	/// 订阅当前会话的代理事件并写成 JSONL。订阅绑定在会话实例上，<c>new_session</c> 换实例后
 	/// 要重新订阅，否则客户端只收到 response，收不到 message_* / tool_* 事件。
 	private void SubscribeSessionEvents()
@@ -618,7 +670,13 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 			return flagError;
 		}
 
+		ReportWarnings(_session);
+
 		SubscribeSessionEvents();
+		if (_session is { } loadedSession)
+		{
+			ReportPendingExtensionDiagnostics(loadedSession);
+		}
 
 		try
 		{
@@ -1005,17 +1063,26 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 						_arguments?.SessionDir,
 						parentSession: parent);
 
+					// 先给旧会话 shutdown（reason: new），新会话构造时派发 session_start（reason: new +
+					// previousSessionFile）：扩展据此分清「换会话」与「退出」。
 					var previous = _session;
+					var previousFile = previous?.Session.SessionFile;
+					previous?.Shutdown("new");
 					_session = environment.CreateSession(
 						_arguments!,
 						_cwd,
 						session: manager,
 						extraTools: _extraTools,
-						uiHost: this);
+						uiHost: this,
+						sessionStartReason: "new",
+						previousSessionFile: previousFile);
 					previous?.Dispose();
 
-					// 新实例需要新的订阅：旧订阅随旧会话一起失效。
+					ReportWarnings(_session!);
+
+									// 新实例需要新的订阅：旧订阅随旧会话一起失效。
 					SubscribeSessionEvents();
+					ReportPendingExtensionDiagnostics(_session!);
 
 					WriteRecord(Response(id, "new_session", true, new JsonObject { ["cancelled"] = false }, null));
 					break;
@@ -1551,6 +1618,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		{
 			return flagError;
 		}
+
+		ReportWarnings(session);
 
 		error.WriteLine($"pi (PiWeft) — model {session.Model.Provider}/{session.Model.Id}. Type /exit to quit.");
 

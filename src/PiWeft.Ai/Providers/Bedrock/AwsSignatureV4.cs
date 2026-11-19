@@ -65,7 +65,7 @@ public static class AwsSignatureV4
 		string method,
 		string url,
 		IReadOnlyDictionary<string, string> headers,
-		byte[] payload,
+		ReadOnlyMemory<byte> payload,
 		string region,
 		string service,
 		AwsCredentials credentials,
@@ -77,7 +77,7 @@ public static class AwsSignatureV4
 		var amzDate = now.UtcDateTime.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
 		var dateStamp = now.UtcDateTime.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
 
-		var payloadHash = Hex(SHA256.HashData(payload));
+		var payloadHash = Hex(SHA256.HashData(payload.Span));
 
 		// 头部值先去除首尾空白，名称转小写，再按名称排序。
 		var canonical = new SortedDictionary<string, string>(StringComparer.Ordinal);

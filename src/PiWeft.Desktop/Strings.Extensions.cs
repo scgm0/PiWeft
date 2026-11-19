@@ -21,6 +21,12 @@ public static partial class Strings
 	public const string SettingsExtensionsRestart = "改动在下次新建会话或重启后生效。";
 	public const string SettingsExtensionsRefresh = "刷新";
 	public const string SettingsExtensionsSaved = "扩展开关已保存。";
+	public const string SettingsExtensionDiagnostics = "扩展诊断";
+	public const string SettingsExtensionDiagnosticsHint =
+		"本次运行中扩展加载与处理器失败的记录。不作对话内容，模型看不到；清空只影响这张列表。";
+	public const string SettingsExtensionDiagnosticsEmpty = "没有扩展诊断。";
+	public const string SettingsExtensionDiagnosticsClear = "清空";
+	public static string ExtensionDiagnosticsReported(int count) => $"有 {count} 条扩展诊断，在设置的扩展页可以查看。";
 
 	public const string SettingsBuiltinMcpHint = "内置 MCP：读取 mcp.json 并把服务器工具提供给模型。";
 	public const string SettingsBuiltinLlamaHint = "本地 llama.cpp provider 支持。";
@@ -36,6 +42,12 @@ public static partial class Strings
 		"目标模式：围绕一条目标自动续轮，直到完成、阻塞、暂停或到达轮次上限。";
 	public const string DesktopExtensionLinkedSessions =
 		"关联会话：开一个完整后台会话做独立任务，每轮结束回报父会话。";
+	public const string DesktopExtensionModelTrace =
+		"模型请求快照：按 PIDECK_MODEL_TRACE_URL 把请求体与响应头回送给宿主，用于调试。";
+	public const string DesktopExtensionSessionTitle =
+		"首轮自动命名：PIDECK_AUTO_SESSION_TITLE 为 1 时，首轮结束后给空白会话起标题。";
+	public const string DesktopExtensionSubagents =
+		"子代理委派：delegate 系列工具，异步子会话跑完把结果回报父会话。";
 	public const string DesktopExtensionNulRedirectFix =
 		"NUL 重定向修复：把 Windows 的 > nul 改写为 /dev/null，避免 Git Bash 产生删不掉的 nul 文件。";
 	public const string DesktopExtensionPlanMode =

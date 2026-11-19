@@ -629,7 +629,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 		uint dpi = GetDpi();
 		// Every chunk of this paragraph shares one leading value: it is a property of the block's
 		// font size, not of the text, so it is resolved once per layout pass.
-		_lineSpacing = ResolveLineSpacing(engine, style, dpi);
+		var lineSpacing = ResolveLineSpacing(engine, style, dpi);
 
 		if (_engine is not null && !ReferenceEquals(_engine, engine))
 		{
@@ -638,11 +638,15 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 				_engine.ManagedCache.ReleaseOwner(chunk);
 			}
 		}
-		if (_width != targetWidth || _dpi != dpi || _style != style || !ReferenceEquals(_engine, engine))
+		// 行距也是布局输入：只改行距（字号、宽度不变）时也要重建 chunk，
+		// 否则缓存的 TextLayout 会继续用旧 leading。
+		if (_width != targetWidth || _dpi != dpi || _style != style || _lineSpacing != lineSpacing ||
+			!ReferenceEquals(_engine, engine))
 		{
 			_width = targetWidth;
 			_dpi = dpi;
 			_style = style;
+			_lineSpacing = lineSpacing;
 			_engine = engine;
 			foreach (Chunk chunk in _chunks)
 			{
@@ -737,7 +741,7 @@ internal sealed class MarkdownParagraphView : TextElement, ISelectableText, IVis
 			engine,
 			style,
 			dpi,
-			_block.Kind == MarkdownBlockKind.Heading ? _theme.HeadingLineHeightScale : _theme.LineHeightScale);
+			_block.Kind == MarkdownBlockKind.Heading ? _theme.HeadingLineHeightScale : _theme.EffectiveLineHeightScale);
 
 	private bool TrySplitOpenChunk(ITextEngine engine, TextRunStyle style, uint dpi, double width)
 	{

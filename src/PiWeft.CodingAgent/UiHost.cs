@@ -6,6 +6,22 @@ public sealed record UiSelectRequest(string Title, IReadOnlyList<string> Options
 
 public sealed record UiConfirmRequest(string Title, string? Message, int? TimeoutMs);
 
+/// 工具调用的审批结果。
+public enum ToolApproval
+{
+	/// 只允许这一次。
+	Once,
+
+	/// 本会话内记住该工具，之后不再问。
+	Session,
+
+	/// 拒绝。
+	Deny,
+}
+
+/// 安全门的审批请求：标题、原因与待执行的参数。
+public sealed record UiApprovalRequest(string Title, string? Message);
+
 public sealed record UiEditorRequest(string Title, string? Prefill);
 
 public sealed record UiNotifyRequest(string Message, string NotifyType);
@@ -59,6 +75,10 @@ public interface IUiHost
 	Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken) => Task.FromResult<string?>(null);
 
 	Task<bool?> ConfirmAsync(UiConfirmRequest request, CancellationToken cancellationToken) => Task.FromResult<bool?>(null);
+
+	/// 工具审批。返回 <see langword="null"/> 表示宿主没有可用界面（调用方按拒绝处理）。
+	Task<ToolApproval?> ApproveAsync(UiApprovalRequest request, CancellationToken cancellationToken) =>
+		Task.FromResult<ToolApproval?>(null);
 
 	Task<string?> EditorAsync(UiEditorRequest request, CancellationToken cancellationToken) => Task.FromResult<string?>(null);
 

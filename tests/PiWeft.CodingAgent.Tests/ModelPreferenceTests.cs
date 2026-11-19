@@ -104,5 +104,43 @@ public sealed class ModelPreferenceTests : IDisposable
 		});
 
 		Assert.Equal(hostDefault.Id, session.Model.Id);
+		// 静默回退会让用户以为还在用旧模型：必须留一条警告给宿主上报。
+		var warning = Assert.Single(session.Warnings);
+		Assert.Contains("test/deleted-model", warning, StringComparison.Ordinal);
+		Assert.Contains($"{hostDefault.Provider}/{hostDefault.Id}", warning, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void EditAssistantMessageReplacesTheProjectedText()
+	{
+		var model = ScriptedSessions.Model();
+		var manager = SessionManager.InMemory(_project);
+		manager.AppendMessage(new UserMessage { Content = MessageContent.FromText("question") });
+		var assistantId = manager.AppendMessage(new AssistantMessage
+		{
+			Api = model.Api,
+			Provider = model.Provider,
+			Model = model.Id,
+			Content = [new TextContent { Text = "old answer" }],
+			StopReason = StopReason.Stop,
+			Usage = new Usage(),
+		});
+
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _project,
+			Model = model,
+			StreamFn = new ScriptedStreamFn().Invoke,
+			Session = manager,
+			Skills = [],
+			Settings = new CodingAgentSettings(),
+		});
+
+		session.EditAssistantMessage(assistantId, "new answer");
+
+		// 投影换成新正文，原条目仍在文件里（context_edit 只改模型看到的内容）。
+		var projected = Assert.Single(session.Session.BuildProjectedMessages().OfType<AssistantMessage>());
+		Assert.Equal("new answer", Assert.IsType<TextContent>(Assert.Single(projected.Content)).Text);
+		Assert.Contains(session.Session.Entries, entry => entry.Id == assistantId);
 	}
 }

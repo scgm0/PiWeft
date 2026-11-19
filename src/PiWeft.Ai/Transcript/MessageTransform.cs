@@ -58,6 +58,13 @@ public static class MessageTransform
 			 string.Equals(message.Api, model.Api, StringComparison.Ordinal) &&
 			 string.Equals(message.Model, model.Id, StringComparison.Ordinal));
 
+		// 同模型且没有要剔除的空思考块：直接返回原消息。
+		// 长会话每请求都会跑一遍转换，无改动的克隆是稳定存在的分配。
+		if (sameModel && !HasEmptyThinking(message.Content))
+		{
+			return message;
+		}
+
 		var content = new List<ContentBlock>(message.Content.Count);
 		foreach (var block in message.Content)
 		{
@@ -113,6 +120,22 @@ public static class MessageTransform
 		}
 
 		return message with { Content = content };
+	}
+
+	private static bool HasEmptyThinking(IReadOnlyList<ContentBlock> content)
+	{
+		for (var index = 0; index < content.Count; index++)
+		{
+			if (content[index] is ThinkingContent thinking &&
+				!thinking.Redacted.GetValueOrDefault() &&
+				string.IsNullOrEmpty(thinking.ThinkingSignature) &&
+				string.IsNullOrWhiteSpace(thinking.Thinking))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private static UserMessage DowngradeUserImages(UserMessage message, Model model)

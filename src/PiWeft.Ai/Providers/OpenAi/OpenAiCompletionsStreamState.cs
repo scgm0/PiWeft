@@ -226,11 +226,7 @@ internal sealed class OpenAiCompletionsStreamState
 			}
 
 			_thinking.Append(text);
-			_content[_thinkingIndex] = new ThinkingContent
-			{
-				Thinking = _thinking.ToString(),
-				ThinkingSignature = _thinkingSignature,
-			};
+			_content[_thinkingIndex] = ThinkingContent.FromStreaming(_thinking, _thinkingSignature);
 			Push(new ThinkingDeltaEvent { ContentIndex = _thinkingIndex, Delta = text, Partial = Snapshot() });
 			return;
 		}
@@ -352,7 +348,7 @@ internal sealed class OpenAiCompletionsStreamState
 	{
 		_partial = _partial with
 		{
-			Content = [.. _content],
+			Content = ContentBlocks.Materialize(_content),
 			Usage = _usage,
 			StopReason = reason,
 			RawStopReason = _rawStopReason,

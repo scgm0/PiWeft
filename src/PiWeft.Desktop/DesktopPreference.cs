@@ -93,6 +93,9 @@ public sealed record DesktopPreference
 	public double ChatFontSize { get; init; } = 16;
 	public double ReadingWidth { get; init; } = 880;
 
+	/// 正文行高倍率：1.6 标准、1.75 宽松、1.9 最宽。PiDeck 0.13 的三档同值。
+	public double ChatLineHeight { get; init; } = 1.6;
+
 	/// Git 提交摘要默认模型，形如 <c>provider/id</c>；空表示跟随当前会话的模型。
 	/// 思考级别同理，空表示跟随当前会话。
 	public string GitCommitModel { get; init; } = string.Empty;
@@ -198,6 +201,7 @@ public sealed record DesktopPreference
 				ChatWorkspace = root?["chatWorkspace"] is JsonValue chat && chat.TryGetValue<string>(out var chatWorkspace) ? chatWorkspace : string.Empty,
 				ChatFontSize = Math.Clamp(Number(root, "chatFontSize", positive: true) ?? 16, 14, 22),
 				ReadingWidth = Math.Clamp(Number(root, "readingWidth", positive: true) ?? 880, 760, 1360),
+				ChatLineHeight = Math.Clamp(Number(root, "chatLineHeight", positive: true) ?? 1.6, 1.6, 1.9),
 				GitCommitModel = root?["gitCommitModel"] is JsonValue commitModel && commitModel.TryGetValue<string>(out var commitModelText)
 					? commitModelText.Trim()
 					: string.Empty,
@@ -334,6 +338,15 @@ public sealed record DesktopPreference
 		}
 		root["chatFontSize"] = double.IsFinite(ChatFontSize) ? Math.Clamp(ChatFontSize, 14, 22) : 16;
 		root["readingWidth"] = double.IsFinite(ReadingWidth) ? Math.Clamp(ReadingWidth, 760, 1360) : 1060;
+		if (double.IsFinite(ChatLineHeight) && ChatLineHeight > 1.6)
+		{
+			root["chatLineHeight"] = Math.Clamp(ChatLineHeight, 1.6, 1.9);
+		}
+		else
+		{
+			// 默认值不写键：与出厂一致时 desktop.json 保持干净。
+			root.Remove("chatLineHeight");
+		}
 		if (string.IsNullOrWhiteSpace(GitCommitModel))
 		{
 			root.Remove("gitCommitModel");

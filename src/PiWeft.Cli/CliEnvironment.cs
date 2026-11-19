@@ -181,7 +181,39 @@ public sealed class CliEnvironment
 		}
 
 		var tools = ResolveTools(arguments, cwd, settings);
-		return (new CliEnvironment(registry, gateway, images, classifiers, settings, model, tools, customModels.ApiKeys, projectTrusted), null);
+		var environment = new CliEnvironment(
+			registry, gateway, images, classifiers, settings, model, tools, customModels.ApiKeys, projectTrusted)
+		{
+			Warnings = ModelPatternWarnings(registry, arguments.Models, settings.EnabledModels),
+		};
+		return (environment, null);
+	}
+
+	/// 启动期的非致命问题（模型模式无匹配）。不拦启动，但要告诉用户：
+	/// 写错一个模式后轮换列表静默变空，下一次 /model 才发现。
+	public IReadOnlyList<string> Warnings { get; init; } = [];
+
+	private static IReadOnlyList<string> ModelPatternWarnings(
+		ModelRegistry registry,
+		IReadOnlyList<string> cliPatterns,
+		IReadOnlyList<string> settingsPatterns)
+	{
+		if (cliPatterns.Count == 0 && settingsPatterns.Count == 0)
+		{
+			return [];
+		}
+
+		var models = registry.ChatModels();
+		var warnings = new List<string>();
+		foreach (var pattern in cliPatterns.Concat(settingsPatterns).Distinct(StringComparer.Ordinal))
+		{
+			if (!models.Any(model => MatchesModelPattern(model, pattern)))
+			{
+				warnings.Add($"No models match pattern \"{pattern}\"");
+			}
+		}
+
+		return warnings;
 	}
 
 	/// 启动时按 provider 查一次；冻结字典让查找走预计算哈希，不再走可变字典的分支。
@@ -191,9 +223,9 @@ public sealed class CliEnvironment
 		["amazon-bedrock"] = "us.anthropic.claude-opus-5-5",
 		["ant-ling"] = "Ring-2.6-1T",
 		["anthropic"] = "claude-opus-5-5",
-		["openai"] = "gpt-6.1-sol",
-		["azure"] = "gpt-6.1-sol",
-		["openai-codex"] = "gpt-6.1-sol",
+		["openai"] = "gpt-6.2-sol",
+		["azure"] = "gpt-6.2-sol",
+		["openai-codex"] = "gpt-6.2-sol",
 		["radius"] = "balanced",
 		["nvidia"] = "nvidia/nemotron-3.5-super-vl-120b-a12b",
 		["deepseek"] = "deepseek-v4-pro",
@@ -385,7 +417,7 @@ public sealed class CliEnvironment
 		var qualified = candidates.Select(model => (Model: model, Key: $"{model.Provider}/{model.Id}")).ToList();
 
 		// glob 模式同时匹配“provider/id”与裸 id。
-		if (pattern.IndexOfAny(['*', '?']) >= 0)
+		if (pattern.AsSpan().IndexOfAny('*', '?') >= 0)
 		{
 			var regex = SearchTools.GlobToRegex(pattern);
 			var matches = qualified
@@ -628,7 +660,9 @@ public sealed class CliEnvironment
 		string? linkedParentTitle = null,
 		ISubagentHost? subagentHost = null,
 		int subagentDepth = 0,
-		SubagentCatalog? agents = null)
+		SubagentCatalog? agents = null,
+		string sessionStartReason = "startup",
+		string? previousSessionFile = null)
 	{
 		var manager = session ?? ResolveSession(arguments, cwd, Settings.SessionDir);
 
@@ -741,6 +775,8 @@ public sealed class CliEnvironment
 			DiscoverExtensions = !arguments.NoExtensions,
 			FlagValues = arguments.UnknownFlags,
 			UiHost = uiHost,
+			SessionStartReason = sessionStartReason,
+			PreviousSessionFile = previousSessionFile,
 			ProjectTrusted = projectTrusted,
 		});
 	}

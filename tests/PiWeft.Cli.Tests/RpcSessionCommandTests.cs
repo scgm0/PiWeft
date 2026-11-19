@@ -519,6 +519,45 @@ public class RpcSessionCommandTests : IDisposable
 	}
 
 	[Fact]
+	public async Task NewSessionEmitsShutdownThenStartWithReasonAndPreviousFile()
+	{
+		var extension = Path.Combine(_root, "reason.js");
+		File.WriteAllText(extension, """
+			module.exports = function (pi) {
+				pi.on("session_start", function (event) {
+					pi.ui.notify("start:" + event.reason + ":" + (event.previousSessionFile || ""), "info");
+				});
+				pi.on("session_shutdown", function (event) {
+					pi.ui.notify("stop:" + event.reason, "info");
+				});
+			};
+			""");
+
+		var (environment, output) = Setup();
+		var runner = new CliRunner(environment, output, new StringWriter());
+		var records = await RunAsync(
+			runner,
+			Arguments("-e", extension),
+			string.Join(
+				'\n',
+				"""{"id":"1","type":"new_session"}""",
+				"""{"id":"2","type":"exit"}"""),
+			output);
+
+		var notifies = records
+			.Where(static record => record["type"]?.GetValue<string>() == "extension_ui_request" &&
+				record["method"]?.GetValue<string>() == "notify")
+			.Select(static record => record["message"]!.GetValue<string>())
+			.ToList();
+
+		Assert.Contains(notifies, static message => message.StartsWith("start:startup:", StringComparison.Ordinal));
+		Assert.Contains("stop:new", notifies);
+		// 新会话的 session_start 带上 reason 与上一个会话文件。
+		Assert.Contains(notifies, static message =>
+			message.StartsWith("start:new:", StringComparison.Ordinal) && message.Length > "start:new:".Length);
+	}
+
+	[Fact]
 	public async Task ExportHtmlWritesASelfContainedFile()
 	{
 		var (environment, output) = Setup();
@@ -544,6 +583,25 @@ public class RpcSessionCommandTests : IDisposable
 		Assert.Contains("second question", html);
 		Assert.Contains("second answer", html);
 		Assert.DoesNotContain("<script", html);
+	}
+
+	[Fact]
+	public void ExportHtmlRendersMarkdownAndDropsScriptLinks()
+	{
+		var html = SessionHtml.RenderMessageForTests(new PiWeft.Ai.UserMessage
+		{
+			Content = PiWeft.Ai.MessageContent.FromText(
+				"# Title\n\n- a\n- b\n\n`code`\n\n[bad](javascript:alert(1)) [ok](https://example.com)"),
+		});
+
+		// 正文是 Markdown：导出后应当有标题、列表与行内代码，而不是一整块 <pre>。
+		Assert.Contains(">Title</h1>", html);
+		Assert.Contains("<li>a</li>", html);
+		Assert.Contains("<code>code</code>", html);
+		Assert.DoesNotContain("<pre># Title", html);
+		// 脚本式链接不成链接，web 链接照旧。
+		Assert.DoesNotContain("javascript:", html);
+		Assert.Contains("<a href=\"https://example.com\">ok</a>", html);
 	}
 
 	[Fact]

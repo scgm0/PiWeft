@@ -16,8 +16,17 @@ public sealed partial class CliRunner : IUiHost
 
 	bool IUiHost.SupportsPiDeckWidgets => true;
 
+	/// JSON 模式没有交互通道：notify/status 照常输出，对话框一律按取消返回，
+	/// 免得扩展的 session_start 处理器把进程挂在一个没人回答的请求上。
+	private bool _uiInteractive = true;
+
 	async Task<string?> IUiHost.InputAsync(UiInputRequest request, CancellationToken cancellationToken)
 	{
+		if (!_uiInteractive)
+		{
+			return null;
+		}
+
 		var response = await SendUiRequestAsync(
 			"input",
 			new JsonObject
@@ -32,6 +41,11 @@ public sealed partial class CliRunner : IUiHost
 
 	async Task<string?> IUiHost.SelectAsync(UiSelectRequest request, CancellationToken cancellationToken)
 	{
+		if (!_uiInteractive)
+		{
+			return null;
+		}
+
 		var parameters = new JsonObject
 		{
 			["title"] = request.Title,
@@ -48,6 +62,11 @@ public sealed partial class CliRunner : IUiHost
 
 	async Task<bool?> IUiHost.ConfirmAsync(UiConfirmRequest request, CancellationToken cancellationToken)
 	{
+		if (!_uiInteractive)
+		{
+			return null;
+		}
+
 		var parameters = new JsonObject { ["title"] = request.Title };
 		if (request.Message is { Length: > 0 } message)
 		{
@@ -71,6 +90,11 @@ public sealed partial class CliRunner : IUiHost
 
 	async Task<string?> IUiHost.EditorAsync(UiEditorRequest request, CancellationToken cancellationToken)
 	{
+		if (!_uiInteractive)
+		{
+			return null;
+		}
+
 		var parameters = new JsonObject { ["title"] = request.Title };
 		if (request.Prefill is { Length: > 0 } prefill)
 		{
@@ -89,6 +113,13 @@ public sealed partial class CliRunner : IUiHost
 
 	void IUiHost.SetStatus(UiStatusRequest request)
 	{
+		// JSON 模式只发 notify：status/widget/title 是交互宿主的界面状态，
+		// 写进 JSON 事件流只会让消费者多一类要忽略的记录。
+		if (!_uiInteractive)
+		{
+			return;
+		}
+
 		var parameters = new JsonObject { ["statusKey"] = request.Key };
 		if (request.Text is not null)
 		{
@@ -100,6 +131,11 @@ public sealed partial class CliRunner : IUiHost
 
 	void IUiHost.SetWidget(UiWidgetRequest request)
 	{
+		if (!_uiInteractive)
+		{
+			return;
+		}
+
 		var parameters = new JsonObject { ["widgetKey"] = request.Key };
 		if (request.Lines is not null)
 		{
@@ -114,11 +150,21 @@ public sealed partial class CliRunner : IUiHost
 		WriteUiFireAndForget("setWidget", parameters);
 	}
 
-	void IUiHost.SetTitle(UiTitleRequest request) =>
-		WriteUiFireAndForget("setTitle", new JsonObject { ["title"] = request.Title });
+	void IUiHost.SetTitle(UiTitleRequest request)
+	{
+		if (_uiInteractive)
+		{
+			WriteUiFireAndForget("setTitle", new JsonObject { ["title"] = request.Title });
+		}
+	}
 
-	void IUiHost.SetEditorText(string text) =>
-		WriteUiFireAndForget("set_editor_text", new JsonObject { ["text"] = text });
+	void IUiHost.SetEditorText(string text)
+	{
+		if (_uiInteractive)
+		{
+			WriteUiFireAndForget("set_editor_text", new JsonObject { ["text"] = text });
+		}
+	}
 
 	private void WriteUiFireAndForget(string method, JsonObject parameters)
 	{

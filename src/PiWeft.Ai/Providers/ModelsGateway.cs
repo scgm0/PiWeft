@@ -16,9 +16,9 @@ internal static class JsonPayload
 		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
-	public static byte[] Write(Action<Utf8JsonWriter> write, int estimatedBytes = 4096)
+	public static ReadOnlyMemory<byte> Write(Action<Utf8JsonWriter> write, int estimatedBytes = 4096)
 	{
-		// 请求里带图时体积以 base64 为主，按预估分配能省掉十来次翻倍扩容与最终的那次整块拷贝。
+		// 请求里带图时体积以 base64 为主，按预估分配能省掉十来次翻倍扩容。
 		var buffer = new ArrayBufferWriter<byte>(estimatedBytes > 4096 ? estimatedBytes : 4096);
 		using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
 		{
@@ -26,7 +26,8 @@ internal static class JsonPayload
 			writer.Flush();
 		}
 
-		return buffer.WrittenSpan.ToArray();
+		// 直接交出缓冲切片：ToArray 会为每个请求再复制一份整块请求体（长会话是几十 MB）。
+		return buffer.WrittenMemory;
 	}
 }
 

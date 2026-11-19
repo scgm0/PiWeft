@@ -118,7 +118,7 @@ public static class SessionHtml
 					switch (block)
 					{
 						case TextContent text:
-							builder.Append("<pre>").Append(Escape(text.Text)).Append("</pre>\n");
+							MarkdownBody(builder, text.Text);
 							break;
 
 						case ThinkingContent thinking when !string.IsNullOrWhiteSpace(thinking.Thinking):
@@ -177,21 +177,35 @@ public static class SessionHtml
 	{
 		if (content.Blocks is { Count: > 0 } blocks)
 		{
-			RenderBlocks(builder, blocks, ansi);
+			RenderBlocks(builder, blocks, ansi, markdown: !ansi);
 			return;
 		}
 
-		builder.Append("<pre>").Append(RenderText(content.Text ?? string.Empty, ansi)).Append("</pre>\n");
+		if (ansi)
+		{
+			builder.Append("<pre>").Append(RenderText(content.Text ?? string.Empty, ansi: true)).Append("</pre>\n");
+			return;
+		}
+
+		MarkdownBody(builder, content.Text ?? string.Empty);
 	}
 
-	private static void RenderBlocks(StringBuilder builder, IReadOnlyList<ContentBlock> blocks, bool ansi = false)
+	private static void RenderBlocks(StringBuilder builder, IReadOnlyList<ContentBlock> blocks, bool ansi = false, bool markdown = false)
 	{
 		foreach (var block in blocks)
 		{
 			switch (block)
 			{
 				case TextContent text:
-					builder.Append("<pre>").Append(RenderText(text.Text, ansi)).Append("</pre>\n");
+					if (markdown)
+					{
+						MarkdownBody(builder, text.Text);
+					}
+					else
+					{
+						builder.Append("<pre>").Append(RenderText(text.Text, ansi)).Append("</pre>\n");
+					}
+
 					break;
 
 				case ImageContent image:
@@ -203,6 +217,17 @@ public static class SessionHtml
 					break;
 			}
 		}
+	}
+
+	private static void MarkdownBody(StringBuilder builder, string text)
+	{
+		var html = MarkdownHtml.Render(AnsiHtml.StripEscapes(text));
+		if (html.Length == 0)
+		{
+			return;
+		}
+
+		builder.Append("<div class=\"markdown-body\">").Append(html).Append("</div>\n");
 	}
 
 	private static void Row(StringBuilder builder, string label, string value) =>
@@ -230,6 +255,16 @@ public static class SessionHtml
 		pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .35rem 0; font-size: .9rem; }
 		pre.tool { opacity: .85; }
 		pre.error { color: #c33; }
+		.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { font-size: 1.05rem; margin: .8rem 0 .35rem; }
+		.markdown-body h1 { font-size: 1.2rem; }
+		.markdown-body p { margin: .45rem 0; }
+		.markdown-body ul, .markdown-body ol { margin: .45rem 0; padding-left: 1.4rem; }
+		.markdown-body blockquote { margin: .5rem 0; padding-left: .8rem; border-left: 3px solid #8884; opacity: .85; }
+		.markdown-body pre { background: #0001; padding: .5rem .65rem; border-radius: 4px; }
+		.markdown-body code { background: #0001; padding: 0 .2rem; border-radius: 3px; }
+		.markdown-body table { border-collapse: collapse; margin: .5rem 0; font-size: .9rem; }
+		.markdown-body th, .markdown-body td { border: 1px solid #8884; padding: .2rem .45rem; }
+		.markdown-body hr { border: 0; border-top: 1px solid #8884; margin: 1rem 0; }
 		details { margin: .75rem 0; }
 		img { max-width: 100%; }
 		""";

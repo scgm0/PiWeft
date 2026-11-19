@@ -187,5 +187,6 @@ public static class OAuthStore
 		}
 
 		File.Move(temporary, path, overwrite: true);
+		AuthStore.InvalidateReadCache();
 	}
 }

@@ -145,18 +145,18 @@ public sealed class GoogleVertexProvider : IApiProvider
 
 		if (options.OnPayload is { } onPayload)
 		{
-			var node = JsonNode.Parse(bytes);
+			var node = JsonNode.Parse(bytes.Span);
 			if (node is not null && onPayload(node, model) is { } replaced)
 			{
 				bytes = Encoding.UTF8.GetBytes(replaced.ToJsonString(PiJson.NodeOptions));
 			}
 		}
 
-		options.NotifyRequestPayload(bytes, model);
+		options.NotifyRequestPayload(bytes.Span, model);
 		var url = BuildUrl(model, options, apiKey is not null, stored);
 		var request = new HttpRequestMessage(HttpMethod.Post, url)
 		{
-			Content = new ByteArrayContent(bytes),
+			Content = new ReadOnlyMemoryContent(bytes),
 		};
 
 		request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };

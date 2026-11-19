@@ -49,11 +49,11 @@ internal static class AnthropicThreads
 		(code is null && status == 400 && message.Contains("thread", StringComparison.OrdinalIgnoreCase));
 
 	/// 默认只为直连 Anthropic 打开；网关要显式声明 <c>compat.supportsMessageThreads</c>。
+	/// 判定只看 baseUrl：自定义 provider id 指到官方端点时也该走 thread（pi 同口径）。
 	public static bool Enabled(Model model) =>
 		model.Compat?["supportsMessageThreads"] is JsonValue flag && flag.TryGetValue<bool>(out var declared)
 			? declared
-			: string.Equals(model.Provider, "anthropic", StringComparison.Ordinal) &&
-				model.BaseUrl.Contains("api.anthropic.com", StringComparison.OrdinalIgnoreCase);
+			: model.BaseUrl.Contains("api.anthropic.com", StringComparison.OrdinalIgnoreCase);
 
 	public static bool IsOff(string sessionId)
 	{
@@ -107,7 +107,7 @@ internal static class AnthropicThreads
 
 	/// 按续接方式写请求体：<c>continue</c> 去掉 <c>system</c>/<c>tools</c> 并只带新增消息，
 	/// <c>create</c> 原样加 <c>thread</c>，<c>full</c> 原样输出。
-	public static byte[] WriteBody(JsonObject body, RequestKind kind, int prefixCount, string replyId)
+	public static ReadOnlyMemory<byte> WriteBody(JsonObject body, RequestKind kind, int prefixCount, string replyId)
 	{
 		var buffer = new ArrayBufferWriter<byte>(4096);
 		using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
@@ -181,7 +181,7 @@ internal static class AnthropicThreads
 			writer.WriteEndObject();
 		}
 
-		return buffer.WrittenSpan.ToArray();
+		return buffer.WrittenMemory;
 	}
 
 	/// 记录下一次请求可以续接的位置。<paramref name="replyId"/> 为空时不记录（例如没有 message_start）。

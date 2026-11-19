@@ -171,7 +171,7 @@ public sealed class CodeModeToolTests : IDisposable
 		var system = PiWeft.Ai.Transcript.GetText(Assert.IsType<SystemMessage>(session.ProjectedMessages[0]));
 
 		Assert.Contains("MCP servers whose tools are not declared to you.", system);
-		Assert.Contains("- `mcp__docs` (codemode) Docs server", system);
+		Assert.Contains("- `mcp__docs` (codemode): Docs server", system);
 	}
 
 	[Fact]

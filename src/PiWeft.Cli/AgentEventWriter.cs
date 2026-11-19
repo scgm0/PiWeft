@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using PiWeft.Ai;
@@ -19,16 +20,20 @@ public static class AgentEventWriter
 		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
+	// 每条流式事件都要序列化一次：缓冲与 writer 按线程复用，省掉每事件一次
+	// MemoryStream + Utf8JsonWriter 的构造（长回复几千个事件）。
+	[ThreadStatic] private static ArrayBufferWriter<byte>? _buffer;
+	[ThreadStatic] private static Utf8JsonWriter? _writer;
+
 	public static string Write(AgentEvent @event)
 	{
-		using var buffer = new MemoryStream(256);
-		using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
-		{
-			Write(writer, @event);
-		}
-
-		// GetBuffer 跳过 ToArray 的整份拷贝：这两处是流式每条事件的必经路径。
-		return System.Text.Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+		var buffer = _buffer ??= new ArrayBufferWriter<byte>(512);
+		buffer.Clear();
+		var writer = _writer ??= new Utf8JsonWriter(buffer, WriterOptions);
+		writer.Reset(buffer);
+		Write(writer, @event);
+		writer.Flush();
+		return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
 	}
 
 	public static void Write(Utf8JsonWriter writer, AgentEvent @event)
@@ -136,6 +141,17 @@ public static class AgentEventWriter
 				WriteMessages(writer, queue.Steering);
 				writer.WritePropertyName("followUp");
 				WriteMessages(writer, queue.FollowUp);
+				break;
+
+			case ExtensionErrorEvent extensionError:
+				writer.WriteString("type", "extension_error");
+				writer.WriteString("extensionPath", extensionError.ExtensionPath);
+				if (extensionError.Event is { Length: > 0 } handlerEvent)
+				{
+					writer.WriteString("event", handlerEvent);
+				}
+
+				writer.WriteString("error", extensionError.Error);
 				break;
 
 			case SessionInfoChangedEvent info:

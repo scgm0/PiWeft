@@ -156,9 +156,10 @@ public class ConstrainedSamplingWireTests
 	}
 
 	[Fact]
-	public async Task MistralAlwaysSendsStrictBecauseItsDecoderSupportsIt()
+	public async Task MistralSendsStrictOnlyWithTheCompatFlag()
 	{
-		var model = new Model
+		// pi #12148：默认不带 strict。Mistral Large 4 收到 strict schema 后工具调用会停滞数分钟。
+		static Model Build(bool? strict) => new()
 		{
 			Id = "mistral-large-latest",
 			Provider = "mistral",
@@ -166,13 +167,22 @@ public class ConstrainedSamplingWireTests
 			BaseUrl = "https://api.mistral.test/v1",
 			ContextWindow = 8_000,
 			MaxTokens = 1_000,
+			Compat = strict is null ? null : new JsonObject { ["supportsStrictMode"] = strict },
 		};
 
-		using var document = await CaptureAsync(h => new MistralConversationsProvider(new HttpClient(h)), model);
-		var function = document.RootElement.GetProperty("tools")[0].GetProperty("function");
+		using (var document = await CaptureAsync(h => new MistralConversationsProvider(new HttpClient(h)), Build(null)))
+		{
+			var function = document.RootElement.GetProperty("tools")[0].GetProperty("function");
+			Assert.False(function.TryGetProperty("strict", out var absent) && absent.GetBoolean());
+			// 非 strict 不做 schema 重写：required 只留 schema 自己声明的那个。
+			Assert.Equal(1, function.GetProperty("parameters").GetProperty("required").GetArrayLength());
+		}
 
-		Assert.True(function.GetProperty("strict").GetBoolean());
-		Assert.Equal(2, function.GetProperty("parameters").GetProperty("required").GetArrayLength());
+		using (var document = await CaptureAsync(h => new MistralConversationsProvider(new HttpClient(h)), Build(true)))
+		{
+			var function = document.RootElement.GetProperty("tools")[0].GetProperty("function");
+			Assert.True(function.GetProperty("strict").GetBoolean());
+		}
 	}
 
 	[Fact]

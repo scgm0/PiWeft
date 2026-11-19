@@ -24,6 +24,30 @@ public class AgentEventWriterTests
 	};
 
 	[Fact]
+	public void ExtensionErrorEventUsesPiWireShape()
+	{
+		var record = JsonNode.Parse(AgentEventWriter.Write(new ExtensionErrorEvent
+		{
+			ExtensionPath = "/tmp/ext/broken.js",
+			Event = "tool_call",
+			Error = "boom",
+		}))!;
+
+		Assert.Equal("extension_error", record["type"]!.GetValue<string>());
+		Assert.Equal("/tmp/ext/broken.js", record["extensionPath"]!.GetValue<string>());
+		Assert.Equal("tool_call", record["event"]!.GetValue<string>());
+		Assert.Equal("boom", record["error"]!.GetValue<string>());
+
+		// 加载期失败没有事件名，不写空字段。
+		var loading = JsonNode.Parse(AgentEventWriter.Write(new ExtensionErrorEvent
+		{
+			ExtensionPath = "/tmp/ext/bad.js",
+			Error = "load failed",
+		}))!;
+		Assert.False(loading.AsObject().ContainsKey("event"));
+	}
+
+	[Fact]
 	public void AgentTurnAndMessageEventsMatchPiWireShape()
 	{
 		Assert.Equal("agent_start", JsonNode.Parse(AgentEventWriter.Write(new AgentStartEvent()))!["type"]!.GetValue<string>());
@@ -279,6 +303,36 @@ public class CliRunnerTests : IDisposable
 
 		Assert.Equal(0, exitCode);
 		Assert.Contains("Hello from print mode", output.ToString());
+	}
+
+	[Fact]
+	public async Task JsonMode_ExtensionSessionStartNotifyReachesTheEventStream()
+	{
+		var extension = Path.Combine(_root, "notify.js");
+		File.WriteAllText(extension, """
+			module.exports = function (pi) {
+				pi.on("session_start", function (event) {
+					pi.ui.notify("start:" + event.reason + ":" + (event.previousSessionFile || ""), "info");
+					pi.ui.setStatus("probe", "should-not-reach-json");
+				});
+			};
+			""");
+		var (environment, script) = Environment();
+		script.Enqueue("ok");
+		var (runner, output, _) = RunnerFor(environment);
+
+		await runner.RunAsync(
+			Arguments("--mode", "json", "--no-session", "-e", extension, "hi"),
+			_root,
+			new StringReader(""),
+			CancellationToken.None);
+
+		var text = output.ToString();
+		// JSON 模式也给扩展一个宿主：session_start 里的 notify 要出现在事件流里。
+		Assert.Contains("extension_ui_request", text);
+		Assert.Contains("start:startup:", text);
+		// 但界面状态类请求不进 JSON 事件流，否则消费者要多忽略一类记录。
+		Assert.DoesNotContain("setStatus", text);
 	}
 
 	[Fact]

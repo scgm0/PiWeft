@@ -511,7 +511,7 @@ public class AnthropicProviderTests
 		Assert.Equal("msg_1", replyId);
 
 		var bytes = AnthropicThreads.WriteBody(second, kind, prefixCount, replyId);
-		var prepared = System.Text.Json.Nodes.JsonNode.Parse(bytes)!.AsObject();
+		var prepared = System.Text.Json.Nodes.JsonNode.Parse(bytes.Span)!.AsObject();
 		Assert.Equal("continue", prepared["thread"]!["type"]!.GetValue<string>());
 		Assert.Equal("again", prepared["messages"]![0]!["content"]!.GetValue<string>());
 	}

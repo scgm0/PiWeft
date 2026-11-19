@@ -115,6 +115,10 @@ public sealed partial class SessionTab : IDisposable
 	private readonly List<(string Path, ImageContent Content)> _attachments = [];
 
 	private string? _pendingBranchEntryId;
+
+	/// 正在编辑的助手回复条目 id。与 <see cref="_pendingBranchEntryId"/> 互斥：
+	/// 一个改提问并重跑，一个只改模型看到的正文。
+	private string? _pendingAssistantEditEntryId;
 	private readonly TextBlock _emptyContext = new();
 	private readonly Border _emptyCard;
 
@@ -127,6 +131,7 @@ public sealed partial class SessionTab : IDisposable
 	private Border _headerRow = null!;
 	private readonly WrapPanel _commandBar = new();
 	private readonly Border _editNotice;
+	private readonly TextBlock _editNoticeText = new();
 
 	internal const double ComposerWidgetListMaxHeight = 180;
 	private readonly ComposerWidgetCard _todoCard;
@@ -530,9 +535,10 @@ public sealed partial class SessionTab : IDisposable
 				AppIcons.Button("x", Strings.CancelEdit, () =>
 				{
 					_pendingBranchEntryId = null;
+					_pendingAssistantEditEntryId = null;
 					_editNotice.IsVisible(false);
 				}).DockRight(),
-				new TextBlock().Text(Strings.EditPending).FontSize(AppTheme.FontSizeCaption)
+				_editNoticeText.FontSize(AppTheme.FontSizeCaption)
 					.MutedText().TextWrapping(TextWrapping.Wrap)));
 
 		_todoRows.Spacing(6);
@@ -1237,6 +1243,7 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_pendingBranchEntryId = entryId;
+		_pendingAssistantEditEntryId = null;
 		_composer.Text = text;
 		_attachments.Clear();
 		foreach (var image in images)
@@ -1245,6 +1252,25 @@ public sealed partial class SessionTab : IDisposable
 		}
 		RefreshAttachments();
 		_composer.Focus();
+		_editNoticeText.Text(Strings.EditPending);
+		_editNotice.IsVisible(true);
+	}
+
+	/// 编辑助手回复：正文进输入框，发送时追加 context_edit，不重跑这一轮。
+	private void BeginAssistantEdit(ChatEntry entry)
+	{
+		if (IsStreaming || entry.EntryId is not { Length: > 0 } entryId)
+		{
+			return;
+		}
+
+		_pendingBranchEntryId = null;
+		_pendingAssistantEditEntryId = entryId;
+		_composer.Text = entry.Text;
+		_attachments.Clear();
+		RefreshAttachments();
+		_composer.Focus();
+		_editNoticeText.Text(Strings.EditAssistantPending);
 		_editNotice.IsVisible(true);
 	}
 
@@ -1300,6 +1326,31 @@ public sealed partial class SessionTab : IDisposable
 				_composer.Text = text;
 				return;
 			}
+		}
+
+		// 编辑助手回复不是新回合：追加一条 context_edit 改模型看到的正文，不请求模型。
+		if (!continueGeneration && _pendingAssistantEditEntryId is { Length: > 0 } assistantEntryId)
+		{
+			_pendingAssistantEditEntryId = null;
+			try
+			{
+				Session.EditAssistantMessage(assistantEntryId, text);
+			}
+			catch (InvalidOperationException exception)
+			{
+				NotifyError(exception.Message);
+				_composer.Text = text;
+				return;
+			}
+
+			_attachments.Clear();
+			Dispatch(() =>
+			{
+				_editNotice.IsVisible(false);
+				RefreshAttachments();
+				Render();
+			});
+			return;
 		}
 
 		_sending = true;
@@ -2921,7 +2972,7 @@ public sealed partial class SessionTab : IDisposable
 			ChatRole.Error => Card(entry, Strings.RoleError),
 			ChatRole.Notice => NoticeRow(entry),
 			ChatRole.Report => ReportRow(entry),
-			_ => new AssistantMessageView(entry, CopyText, _textFocus, PreviewImage, OpenMessageLink, Session.Cwd, ShowFileDiff).View,
+			_ => new AssistantMessageView(entry, CopyText, _textFocus, PreviewImage, OpenMessageLink, Session.Cwd, ShowFileDiff, BeginAssistantEdit).View,
 		};
 		_textFocus.TrackTree(row);
 		return row;
@@ -3330,6 +3381,23 @@ public sealed partial class SessionTab : IDisposable
 		var content = new StackPanel()
 			.Spacing(4)
 			.Children(Header(string.Empty, entry, label), text);
+
+		// 最终失败保留自动重试的次数与原因：默认收起，不占时间线高度。
+		if (entry.RetryAttempts > 0 && entry.RetryErrors is { Count: > 0 } retryErrors)
+		{
+			var reasons = new StackPanel().Spacing(2);
+			foreach (var reason in retryErrors)
+			{
+				reasons.Children(new TextBlock().Text(reason)
+					.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap));
+			}
+
+			content.Children(new Expander()
+				.Header(new TextBlock().Text(Strings.RetryAttempts(entry.RetryAttempts))
+					.FontSize(AppTheme.FontSizeCaption).MutedText())
+				.IsExpanded(false)
+				.Content(reasons));
+		}
 
 		// 错误同样走「纬线」形态：左缘红线 + 内嵌底，不再包整圈边框。
 		var thread = new Border()

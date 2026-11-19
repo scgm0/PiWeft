@@ -216,11 +216,7 @@ internal sealed class AnthropicStreamState
 				}
 
 				_thinking.Append(text);
-				_content[index] = new ThinkingContent
-				{
-					Thinking = _thinking.ToString(),
-					ThinkingSignature = _signature,
-				};
+				_content[index] = ThinkingContent.FromStreaming(_thinking, _signature);
 				Push(new ThinkingDeltaEvent { ContentIndex = index, Delta = text, Partial = Snapshot() });
 				break;
 			}
@@ -389,7 +385,7 @@ internal sealed class AnthropicStreamState
 
 		_partial = _partial with
 		{
-			Content = [.. _content],
+			Content = ContentBlocks.Materialize(_content),
 			Usage = usage,
 			StopReason = reason ?? _stopReason,
 			RawStopReason = _rawStopReason,

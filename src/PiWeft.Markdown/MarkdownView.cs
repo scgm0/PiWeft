@@ -1134,7 +1134,7 @@ public sealed partial class MarkdownView : Control, ISubtreeInvalidationHost, IL
 	private double ListItemLeading()
 	{
 		TextRunStyle style = new(FontFamily, FontSize, FontWeight, FontStyle == FontStyle.Italic);
-		return MarkdownMetrics.LineSpacing(GetGraphicsFactory().TextEngine, style, GetDpi(), _theme.LineHeightScale);
+		return MarkdownMetrics.LineSpacing(GetGraphicsFactory().TextEngine, style, GetDpi(), _theme.EffectiveLineHeightScale);
 	}
 
 	private (FrameworkElement Marker, FrameworkElement Content) CreateListRow(MarkdownBlock item, bool loose)

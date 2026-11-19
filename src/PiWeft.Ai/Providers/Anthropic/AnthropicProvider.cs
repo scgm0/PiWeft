@@ -80,7 +80,7 @@ public sealed class AnthropicProvider : IApiProvider
 				if (threadSessionId is { } session)
 				{
 					// 只有 thread 模式才需要把请求体读成对象：普通请求直接用字节，省一次解析。
-					fullBody = JsonNode.Parse(bytes) as JsonObject;
+					fullBody = JsonNode.Parse(bytes.Span) as JsonObject;
 					if (fullBody is not null)
 					{
 						var kind = AnthropicThreads.Decide(session, fullBody, out var prefixCount, out var replyId);
@@ -90,7 +90,7 @@ public sealed class AnthropicProvider : IApiProvider
 
 				using var request = BuildRequest(model, bytes, messages, options, apiKey);
 				// 这是请求体（模型请求快照的观测点），不是流式事件。
-				options.NotifyRequestPayload(bytes, model);
+				options.NotifyRequestPayload(bytes.Span, model);
 
 				using var response = await _http
 					.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
@@ -195,7 +195,7 @@ public sealed class AnthropicProvider : IApiProvider
 	}
 
 	/// 构造完整请求体（未加 thread）。message thread 的哈希与续接都基于这份字节。
-	private static byte[] BuildPayload(
+	private static ReadOnlyMemory<byte> BuildPayload(
 		Model model,
 		IReadOnlyList<Message> messages,
 		IReadOnlyList<Tool> tools,
@@ -212,7 +212,7 @@ public sealed class AnthropicProvider : IApiProvider
 
 		if (options.OnPayload is { } onPayload)
 		{
-			var node = JsonNode.Parse(bytes);
+			var node = JsonNode.Parse(bytes.Span);
 			if (node is not null && onPayload(node, model) is { } replaced)
 			{
 				bytes = Encoding.UTF8.GetBytes(replaced.ToJsonString(PiJson.NodeOptions));
@@ -278,7 +278,7 @@ public sealed class AnthropicProvider : IApiProvider
 
 	private HttpRequestMessage BuildRequest(
 		Model model,
-		byte[] bytes,
+		ReadOnlyMemory<byte> bytes,
 		IReadOnlyList<Message> messages,
 		StreamOptions options,
 		string apiKey)
@@ -294,7 +294,7 @@ public sealed class AnthropicProvider : IApiProvider
 
 		var request = new HttpRequestMessage(HttpMethod.Post, baseUrl.TrimEnd('/') + "/v1/messages")
 		{
-			Content = new ByteArrayContent(bytes),
+			Content = new ReadOnlyMemoryContent(bytes),
 		};
 
 		request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };

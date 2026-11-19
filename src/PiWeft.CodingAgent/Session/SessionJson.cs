@@ -230,21 +230,31 @@ public static class SessionJson
 		return ParseNode(JsonNode.Parse(line));
 	}
 
-	/// 直接从 UTF-8 字节解析一行。会话文件动辄几十 MB，逐行转成 string 再解析会多一次
-	/// 整文件规模的分配；这里让 <see cref="JsonNode"/> 自己解码。
-	public static SessionLine? ParseLine(ReadOnlySpan<byte> utf8Line)
-	{
-		if (utf8Line.IsEmpty || IsWhiteSpace(utf8Line))
-		{
-			return null;
-		}
+	/// 直接从 UTF-8 字节解析一行。走 <see cref="SessionJsonReader"/>：不建 JsonNode 树，
+	/// 大文本块直接接管 UTF-8 字节。30 MiB 会话打开时的分配从 ~125 MiB 降到 ~35 MiB。
+	public static SessionLine? ParseLine(ReadOnlySpan<byte> utf8Line) => SessionJsonReader.Parse(utf8Line);
 
-		return ParseNode(JsonNode.Parse(utf8Line));
-	}
+	/// 与 span 版同义，读取循环传行缓冲的 memory 时用这个重载。
+	public static SessionLine? ParseLine(ReadOnlyMemory<byte> utf8Line) => SessionJsonReader.Parse(utf8Line);
 
 	private static SessionLine? ParseNode(JsonNode? node) => node is JsonObject obj ? ParseObject(obj) : null;
 
-	private static bool IsWhiteSpace(ReadOnlySpan<byte> line)
+	/// 把 UTF-16 正文编成 UTF-8，并校验没有孤立代理项（编码后变成 U+FFFD 就不是同一段文字）。
+	/// 会话解析的两条路径共用：转义文本只能先解成字符串，再决定要不要延迟存储。
+	internal static bool TryEncodeUtf8(string text, out byte[] utf8)
+	{
+		var bytes = GC.AllocateUninitializedArray<byte>(System.Text.Encoding.UTF8.GetByteCount(text));
+		if (System.Text.Unicode.Utf8.FromUtf16(text, bytes, out _, out var written, replaceInvalidSequences: false) != System.Buffers.OperationStatus.Done)
+		{
+			utf8 = [];
+			return false;
+		}
+
+		utf8 = written == bytes.Length ? bytes : bytes[..written];
+		return true;
+	}
+
+	internal static bool IsWhiteSpace(ReadOnlySpan<byte> line)
 	{
 		foreach (var value in line)
 		{
@@ -380,34 +390,34 @@ public static class SessionJson
 
 	// 每种条目类型自己消费的顶层字段名单。名单外的进 SessionEntry.Extra。
 	// 新增字段时必须同步这里，否则该字段会在重写时被当成未知字段重复输出。
-	private static readonly string[] BaseKeys = ["type", "id", "parentId", "timestamp"];
+	internal static readonly string[] BaseKeys = ["type", "id", "parentId", "timestamp"];
 
-	private static readonly string[] MessageKeys = [.. BaseKeys, "message"];
+	internal static readonly string[] MessageKeys = [.. BaseKeys, "message"];
 
-	private static readonly string[] ModelChangeKeys = [.. BaseKeys, "provider", "modelId"];
+	internal static readonly string[] ModelChangeKeys = [.. BaseKeys, "provider", "modelId"];
 
-	private static readonly string[] ThinkingLevelKeys = [.. BaseKeys, "thinkingLevel"];
+	internal static readonly string[] ThinkingLevelKeys = [.. BaseKeys, "thinkingLevel"];
 
-	private static readonly string[] UsageKeys = [.. BaseKeys, "kind", "provider", "model", "usage", "note"];
+	internal static readonly string[] UsageKeys = [.. BaseKeys, "kind", "provider", "model", "usage", "note"];
 
-	private static readonly string[] CompactionKeys =
+	internal static readonly string[] CompactionKeys =
 		[.. BaseKeys, "summary", "firstKeptEntryId", "tokensBefore", "details", "usage", "fromHook", "systemMessage"];
 
-	private static readonly string[] BranchSummaryKeys = [.. BaseKeys, "fromId", "summary", "details", "usage", "fromHook"];
+	internal static readonly string[] BranchSummaryKeys = [.. BaseKeys, "fromId", "summary", "details", "usage", "fromHook"];
 
-	private static readonly string[] CustomKeys = [.. BaseKeys, "customType", "data"];
+	internal static readonly string[] CustomKeys = [.. BaseKeys, "customType", "data"];
 
-	private static readonly string[] CustomMessageKeys = [.. BaseKeys, "customType", "content", "details", "display"];
+	internal static readonly string[] CustomMessageKeys = [.. BaseKeys, "customType", "content", "details", "display"];
 
-	private static readonly string[] ContextEditKeys = [.. BaseKeys, "targetId", "replacement"];
+	internal static readonly string[] ContextEditKeys = [.. BaseKeys, "targetId", "replacement"];
 
-	private static readonly string[] LabelKeys = [.. BaseKeys, "targetId", "label"];
+	internal static readonly string[] LabelKeys = [.. BaseKeys, "targetId", "label"];
 
-	private static readonly string[] DeletedKeys = [.. BaseKeys, "originalEntryId", "reason"];
+	internal static readonly string[] DeletedKeys = [.. BaseKeys, "originalEntryId", "reason"];
 
-	private static readonly string[] SessionInfoKeys = [.. BaseKeys, "name"];
+	internal static readonly string[] SessionInfoKeys = [.. BaseKeys, "name"];
 
-	private static string[] KnownKeys(string type) => type switch
+	internal static string[] KnownKeys(string type) => type switch
 	{
 		"message" => MessageKeys,
 		"model_change" => ModelChangeKeys,

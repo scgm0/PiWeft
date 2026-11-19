@@ -24,32 +24,64 @@ public sealed record TextContent : ContentBlock
 	private byte[]? _utf8;
 	private int _length;
 	private string? _text;
+	// 流式来源：provider 每个 delta 只 append 进 StringBuilder，快照共享同一个实例。
+	// 没有它就变成每个 delta 一次 ToString()，长回复的分配是 O(n²)。
+	private StringBuilder? _streaming;
+	private string? _streamingText;
 
 	public override string Type => "text";
 
 	/// 正文。延迟存储的正文每次访问都重新解码，不做常驻缓存：一旦缓存，第一次读就把省下的
 	/// UTF-16 又常驻回来了。反复读同一段大正文的调用方应当自己持有结果。
+	/// 流式来源不同：它只在读取时物化一次并缓存，否则最终消息被渲染、写盘、导出会各解一遍。
 	public string Text
 	{
-		get => _text ?? (_utf8 is null ? string.Empty : Encoding.UTF8.GetString(_utf8));
+		get
+		{
+			if (_streaming is { } streaming)
+			{
+				return _streamingText ??= streaming.ToString();
+			}
+
+			return _text ?? (_utf8 is null ? string.Empty : Encoding.UTF8.GetString(_utf8));
+		}
 		init
 		{
 			_text = value ?? string.Empty;
 			_utf8 = null;
+			_streaming = null;
+			_streamingText = null;
 			_length = _text.Length;
 		}
 	}
 
 	/// 正文字符数。延迟存储时不需要解码。
-	public int TextLength => _length;
+	public int TextLength => _streaming?.Length ?? _length;
+
+	/// 流式正文：delta 追加进 <paramref name="buffer"/>，本实例共享它，读取 <see cref="Text"/> 时才物化。
+	internal static TextContent FromStreaming(StringBuilder buffer) => new() { _streaming = buffer };
+
+	/// 是否还挂着流式缓冲。
+	internal bool IsStreaming => _streaming is not null;
+
+	/// 落成普通块：物化正文并松开 StringBuilder，最终消息不再按三倍占内存。
+	internal TextContent Materialize() => _streaming is null ? this : this with { Text = Text };
 
 	/// 正文前 <paramref name="maxCharacters"/> 个字符。延迟存储时只解码覆盖这段的字节：
 	/// 摘要、单行预览这类有界消费方不该为一两个前缀字符把几十 KB 的正文整篇解出来。
 	public string Prefix(int maxCharacters)
 	{
-		if (maxCharacters <= 0 || _length == 0)
+		if (maxCharacters <= 0 || TextLength == 0)
 		{
 			return string.Empty;
+		}
+
+		if (_streaming is { } streaming)
+		{
+			// 直接取 buffer，不走 Text 的缓存：缓存只服务整篇读取，前缀不该依赖它是否已经物化。
+			return streaming.Length <= maxCharacters
+				? streaming.ToString()
+				: streaming.ToString(0, maxCharacters);
 		}
 
 		if (_text is not null)
@@ -76,6 +108,13 @@ public sealed record TextContent : ContentBlock
 
 	/// 正文是否只存在 UTF-8 里（调试、测试与诊断用）。
 	public bool IsTextDeferred => _utf8 is not null;
+
+	/// 延迟存储的 UTF-8 正文。写回会话时直接写这份字节，不再解码成 UTF-16。
+	internal bool TryGetUtf8(out ReadOnlySpan<byte> utf8)
+	{
+		utf8 = _utf8;
+		return _utf8 is not null;
+	}
 
 	public string? TextSignature { get; init; }
 
@@ -104,13 +143,70 @@ public sealed record TextContent : ContentBlock
 
 public sealed record ThinkingContent : ContentBlock
 {
+	private string _thinking = string.Empty;
+	// 流式来源：provider 每个 delta 只 append 进 StringBuilder，快照共享同一个实例。
+	private StringBuilder? _streaming;
+	private string? _streamingText;
+
 	public override string Type => "thinking";
 
-	public string Thinking { get; init; } = string.Empty;
+	/// 思考正文。流式块在第一次读取时物化并缓存；中间快照没人读它，所以流式期间不分配。
+	public string Thinking
+	{
+		get => _streaming is { } streaming ? _streamingText ??= streaming.ToString() : _thinking;
+		init
+		{
+			_thinking = value ?? string.Empty;
+			_streaming = null;
+			_streamingText = null;
+		}
+	}
+
+	/// 思考正文字符数。流式来源不需要物化。
+	public int ThinkingLength => _streaming?.Length ?? _thinking.Length;
+
+	/// 流式思考：delta 追加进 <paramref name="buffer"/>，本实例共享它。
+	internal static ThinkingContent FromStreaming(StringBuilder buffer, string? signature = null) =>
+		new() { _streaming = buffer, ThinkingSignature = signature };
+
+	/// 是否还挂着流式缓冲。
+	internal bool IsStreaming => _streaming is not null;
+
+	/// 落成普通块：物化正文并松开 StringBuilder。
+	internal ThinkingContent Materialize() => _streaming is null ? this : this with { Thinking = Thinking };
 
 	public string? ThinkingSignature { get; init; }
 
 	public bool? Redacted { get; init; }
+
+	// record 自动生成的相等性会比较 _streaming 引用：两个内容相同的块不能因为来源不同而不等。
+	public bool Equals(ThinkingContent? other) =>
+		other is not null &&
+		string.Equals(Thinking, other.Thinking, StringComparison.Ordinal) &&
+		string.Equals(ThinkingSignature, other.ThinkingSignature, StringComparison.Ordinal) &&
+		Redacted == other.Redacted;
+
+	public override int GetHashCode() => HashCode.Combine(Thinking, ThinkingSignature, Redacted);
+}
+
+/// 把流式块落成普通块：最终消息只留正文，不再同时持有 StringBuilder 与物化后的字符串。
+internal static class ContentBlocks
+{
+	public static List<ContentBlock> Materialize(IReadOnlyList<ContentBlock> blocks)
+	{
+		var result = new List<ContentBlock>(blocks.Count);
+		foreach (var block in blocks)
+		{
+			result.Add(block switch
+			{
+				TextContent { IsStreaming: true } text => text.Materialize(),
+				ThinkingContent { IsStreaming: true } thinking => thinking.Materialize(),
+				_ => block,
+			});
+		}
+
+		return result;
+	}
 }
 
 public sealed record ImageContent : ContentBlock

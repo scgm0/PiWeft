@@ -42,6 +42,12 @@ public sealed record CodingAgentSessionOptions
 	/// 默认开：没有扩展目录时开销只是几次目录存在性检查。
 	public bool LoadExtensions { get; init; } = true;
 
+	/// <c>session_start</c> 的 reason：startup / reload / new / resume / fork（与 pi 同词汇）。
+	public string SessionStartReason { get; init; } = "startup";
+
+	/// 会话替换时告诉扩展上一个会话文件，扩展据此清理旧状态。
+	public string? PreviousSessionFile { get; init; }
+
 	public ExtensionHost? Extensions { get; init; }
 
 	public IReadOnlyList<string> ExtensionPaths { get; init; } = [];
@@ -172,8 +178,15 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	// 写少读多：订阅/退订用写时复制，Emit 每帧只读一次数组快照，不在流式热路径上加锁或复制。
 	// 订阅可能在会话跑一轮时发生（子代理在工具调用里挂父级监听），工具也能在后台线程推 update。
-	private volatile Func<AgentEvent, ValueTask>[] _listeners = [];
+	private volatile ListenerRegistration[] _listeners = [];
 	private readonly Lock _listenerGate = new();
+
+	/// 一条会话事件订阅。外部订阅默认隔离异常：渲染回调报错不该让整轮会话失败，
+	/// 也不该让后面的监听器（含落盘）收不到事件。
+	private sealed record ListenerRegistration(
+		Func<AgentEvent, ValueTask> Original,
+		Func<AgentEvent, ValueTask> Effective,
+		bool IsolateErrors);
 
 	private int _retryAttempt;
 	private AssistantMessage? _routeFailed;
@@ -241,6 +254,74 @@ public sealed partial class CodingAgentSession : IDisposable
 	public IReadOnlyList<string> UnknownExtensionFlags => Extensions?.UnknownFlags ?? [];
 
 	public IReadOnlyList<string> ExtensionFlagErrors => Extensions?.FlagErrors ?? [];
+
+	private readonly List<string> _warnings = [];
+
+	/// 启动期的非致命问题：会话记录的模型已不存在，回退到哪个模型。
+	/// 不写会话，桌面与 CLI 各报一次；静默换模型会让用户以为在用旧模型。
+	public IReadOnlyList<string> Warnings => _warnings;
+
+	private bool _shutdownDispatched;
+
+	private readonly List<ExtensionDiagnostic> _unreportedExtensionDiagnostics = [];
+	private readonly Lock _diagnosticGate = new();
+	private ExtensionHost? _diagnosticHost;
+
+	/// 取走尚未上报的扩展诊断：加载期没有客户端订阅，只能在会话启动或替换后补发一次。
+	public IReadOnlyList<ExtensionDiagnostic> TakeUnreportedExtensionDiagnostics()
+	{
+		lock (_diagnosticGate)
+		{
+			var pending = _unreportedExtensionDiagnostics.ToArray();
+			_unreportedExtensionDiagnostics.Clear();
+			return pending;
+		}
+	}
+
+	/// 订阅宿主的诊断。传入时宿主可能已经 Load 了一轮（注入的宿主），
+	/// 已有诊断也要按「有没有收听者」补发或排队。
+	private void AttachExtensionDiagnostics(ExtensionHost host)
+	{
+		if (ReferenceEquals(_diagnosticHost, host))
+		{
+			return;
+		}
+
+		if (_diagnosticHost is { } previous)
+		{
+			previous.Reported -= OnExtensionDiagnostic;
+		}
+
+		_diagnosticHost = host;
+		host.Reported += OnExtensionDiagnostic;
+		// 扩展线程可能同时在追加诊断：先取快照再枚举。
+		foreach (var diagnostic in host.Diagnostics.ToArray())
+		{
+			PublishExtensionDiagnostic(diagnostic);
+		}
+	}
+
+	private void OnExtensionDiagnostic(ExtensionDiagnostic diagnostic) => PublishExtensionDiagnostic(diagnostic);
+
+	private void PublishExtensionDiagnostic(ExtensionDiagnostic diagnostic)
+	{
+		if (_listeners.Length == 0)
+		{
+			lock (_diagnosticGate)
+			{
+				_unreportedExtensionDiagnostics.Add(diagnostic);
+			}
+
+			return;
+		}
+
+		Emit(new ExtensionErrorEvent
+		{
+			ExtensionPath = diagnostic.ExtensionPath,
+			Event = diagnostic.Event,
+			Error = diagnostic.Message,
+		});
+	}
 
 	private bool _ownsExtensions = true;
 
@@ -510,10 +591,18 @@ public sealed partial class CodingAgentSession : IDisposable
 		var recorded = Session.Entries.Count > 0 ? Session.BuildSessionContext() : null;
 		var initialModel = options.Model;
 		if (options.RestoreRecordedModel && recorded?.Model is { } recordedModel &&
-			options.Registry?.Get(recordedModel.Provider, recordedModel.ModelId) is { } known)
+			options.Registry is { } registry)
 		{
 			// 模型可能已被删除或改名：存在性校验不过就回退到宿主解析出的模型。
-			initialModel = known;
+			if (registry.Get(recordedModel.Provider, recordedModel.ModelId) is { } known)
+			{
+				initialModel = known;
+			}
+			else
+			{
+				_warnings.Add(
+					$"Could not restore model {recordedModel.Provider}/{recordedModel.ModelId}. Using {initialModel.Provider}/{initialModel.Id}");
+			}
 		}
 
 		var requestedThinkingLevel = options.ThinkingLevel
@@ -541,11 +630,8 @@ public sealed partial class CodingAgentSession : IDisposable
 			Options = _streamOptions,
 		});
 
-		// codemode 的描述要列出会话当前可调用的工具，因此等代理建好后再绑定并重建提示词。
-		// model-only 只声明给模型，脚本碰不到，别在描述里当可调用工具列出来。
-		RebindCodeMode([.. builtins
-			.Select(static builtin => builtin.Tool)
-			.Where(static tool => tool.Exposure != ToolExposure.ModelOnly)]);
+		// codemode 的重绑与提示词重建统一交给 ApplyTools：它读 _fullTools，
+		// 构造期的扩展工具与 /reload 后的新工具都能进脚本描述。
 		// 扩展工具在 LoadExtensions 里并入 _fullTools；初始的 AgentOptions.Tools 还没应用
 		// exposure/default 过滤，统一走一次 ApplyTools。
 		ApplyTools();
@@ -580,7 +666,7 @@ public sealed partial class CodingAgentSession : IDisposable
 
 		PublishPlanWidget();
 		PublishGoalWidget();
-		DispatchSessionLifecycle("session_start");
+		DispatchSessionLifecycle("session_start", options.SessionStartReason, options.PreviousSessionFile);
 	}
 
 	public string Cwd { get; }
@@ -697,11 +783,21 @@ public sealed partial class CodingAgentSession : IDisposable
 		// 这里擅自 Dispose 别人的宿主是越界。
 		if (_ownsExtensions)
 		{
+			// 旧宿主先收 session_shutdown，新宿主重建后补一次 session_start：
+			// 依赖它初始化的扩展（连 MCP、装监听）在 /reload 后不能停摆。
+			DispatchSessionLifecycle("session_shutdown", "reload", null);
+			if (_diagnosticHost is { } previousHost)
+			{
+				previousHost.Reported -= OnExtensionDiagnostic;
+				_diagnosticHost = null;
+			}
+
 			Extensions?.Dispose();
 			Extensions = null;
 			// -e npm:/git: 的解析结果也要重查：改了包版本后 /reload 就该拿到新代码。
 			ExtensionPackageCache.Invalidate();
 			LoadExtensions(_sessionOptions! with { Extensions = null });
+			DispatchSessionLifecycle("session_start", "reload", null);
 		}
 
 		ApplyTools();
@@ -1109,6 +1205,22 @@ public sealed partial class CodingAgentSession : IDisposable
 		var merged = MergeAfterToolCallHooks(extensionHook, userHook);
 
 		var content = merged?.Content ?? context.Result.Content;
+		if (RepeatToolCallNote(context) is { Length: > 0 } repeatNote)
+		{
+			// 提醒追加在结果末尾：不改变工具自己的输出，模型也能看见。
+			content = [.. content, new TextContent { Text = repeatNote }];
+			merged = new AfterToolCallResult
+			{
+				Content = content,
+				Details = merged?.Details,
+				HasDetails = merged?.HasDetails ?? false,
+				StructuredContent = merged?.StructuredContent,
+				HasStructuredContent = merged?.HasStructuredContent ?? false,
+				IsError = merged?.IsError,
+				Usage = merged?.Usage,
+				Terminate = merged?.Terminate,
+			};
+		}
 		if (!content.Any(static block => block is ImageContent))
 		{
 			return merged;
@@ -1134,6 +1246,85 @@ public sealed partial class CodingAgentSession : IDisposable
 	}
 
 	private const string ImageBlockedNote = "(image omitted: image input is disabled)";
+
+	/// 同一工具与同一参数的调用计数。阈值与 DSH 的 repeat-tool-reminder 同值：
+	/// 第 3、5、8 次追加一句提醒，用户发新消息时清零。
+	/// 并行工具批次的 afterToolCall 会并发进来，必须用并发字典。
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, int> _recentToolCalls = new();
+
+	private string? RepeatToolCallNote(AfterToolCallContext context)
+	{
+		var signature = HashToolCall(context.ToolCall.Name, context.ToolCall.Arguments);
+		var count = _recentToolCalls.AddOrUpdate(signature, 1, static (_, previous) => previous + 1);
+		if (count is not (3 or 5 or 8))
+		{
+			return null;
+		}
+
+		return $"[重复调用提醒] `{context.ToolCall.Name}` 用相同参数已调用 {count} 次。先确认是否在原地打转：换参数、换工具，或把结论写给用户。";
+	}
+
+	/// 参数 JSON 的 FNV-1a 64 位哈希。签名只在本进程内比较，不需要密码学强度。
+	/// 直接遍历 JsonNode，不先 ToJsonString：write 的正文可能几 MB，为算 64 位签名
+	/// 生成整串是单次 MB 级分配。字符串只取前 512 字符加长度，足够区分调用。
+	private static ulong HashToolCall(string toolName, JsonObject arguments)
+	{
+		var hash = Mix(14695981039346656037UL, toolName);
+		return MixNode(hash, arguments);
+	}
+
+	private static ulong Mix(ulong hash, ReadOnlySpan<char> text)
+	{
+		foreach (var c in text)
+		{
+			hash = (hash ^ c) * 1099511628211UL;
+		}
+
+		return hash;
+	}
+
+	private static ulong Mix(ulong hash, char value) => (hash ^ value) * 1099511628211UL;
+
+	private static ulong Mix(ulong hash, int value)
+	{
+		hash = (hash ^ (uint)value) * 1099511628211UL;
+		return (hash ^ (uint)(value >> 32)) * 1099511628211UL;
+	}
+
+	private static ulong MixNode(ulong hash, JsonNode? node)
+	{
+		switch (node)
+		{
+			case JsonObject obj:
+				hash = Mix(hash, '{');
+				foreach (var (name, value) in obj)
+				{
+					hash = Mix(hash, name);
+					hash = MixNode(hash, value);
+				}
+
+				return Mix(hash, '}');
+
+			case JsonArray array:
+				hash = Mix(hash, '[');
+				foreach (var item in array)
+				{
+					hash = MixNode(hash, item);
+				}
+
+				return Mix(hash, ']');
+
+			case JsonValue value when value.TryGetValue<string>(out var text):
+				hash = Mix(hash, text.AsSpan(0, Math.Min(text.Length, 512)));
+				return Mix(hash, text.Length);
+
+			case JsonValue value:
+				return Mix(hash, value.ToJsonString());
+
+			default:
+				return Mix(hash, 'n');
+		}
+	}
 
 	private static List<ContentBlock> ReplaceImages(IReadOnlyList<ContentBlock> blocks, string note)
 	{
@@ -1353,6 +1544,7 @@ public sealed partial class CodingAgentSession : IDisposable
 			throw new InvalidOperationException("Cannot switch sessions while streaming");
 		}
 
+		var previousFile = Session.SessionFile;
 		Session = session;
 		_agent.SetMessages(Session.BuildProjectedMessages());
 
@@ -1367,6 +1559,8 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		PublishTodoWidget(CurrentTodo());
+		// pi 在会话替换时给扩展 shutdown + start；本端口复用宿主，但事件照发。
+		NotifySessionReplaced("resume", previousFile);
 	}
 
 	/// 在当前会话的 <paramref name="entryId"/> 处派生，并切换到新的会话文件。
@@ -1417,6 +1611,7 @@ public sealed partial class CodingAgentSession : IDisposable
 
 			_agent.SetMessages(Session.BuildProjectedMessages());
 			PublishTodoWidget(CurrentTodo());
+			NotifySessionReplaced("fork", null);
 			return selectedText;
 		}
 
@@ -1432,6 +1627,7 @@ public sealed partial class CodingAgentSession : IDisposable
 
 		_agent.SetMessages(Session.BuildProjectedMessages());
 		PublishTodoWidget(CurrentTodo());
+		NotifySessionReplaced("fork", sourceFile);
 		return selectedText;
 	}
 
@@ -1452,6 +1648,27 @@ public sealed partial class CodingAgentSession : IDisposable
 		_agent.SetMessages(Session.BuildProjectedMessages());
 		PublishTodoWidget(CurrentTodo());
 		return truncated;
+	}
+
+	/// 「编辑助手回复」：原条目留在文件里，追加一条 <c>context_edit</c> 把投影换成新正文。
+	/// 与编辑重发不同：不截断后续回合，也不重新请求模型，下一轮看到的才是改过的正文。
+	public void EditAssistantMessage(string entryId, string text)
+	{
+		ThrowIfDisposed();
+
+		if (_agent.IsStreaming)
+		{
+			throw new InvalidOperationException("Cannot edit a message while streaming");
+		}
+
+		if (Session.Entries.FirstOrDefault(entry => string.Equals(entry.Id, entryId, StringComparison.Ordinal))
+			is not SessionMessageEntry { Message: AssistantMessage })
+		{
+			throw new InvalidOperationException($"Entry {entryId} is not an assistant message");
+		}
+
+		Session.AppendContextEdit(entryId, MessageContent.FromText(text));
+		_agent.SetMessages(Session.BuildProjectedMessages());
 	}
 
 	public void CloneAsync()
@@ -1764,22 +1981,42 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	public string? ErrorMessage => _agent.ErrorMessage;
 
-	public IDisposable Subscribe(Func<AgentEvent, ValueTask> listener)
+	/// 订阅会话事件。外部订阅（UI、RPC 输出）默认隔离异常：一个渲染回调抛错不该让整轮会话失败。
+	public IDisposable Subscribe(Func<AgentEvent, ValueTask> listener) => Subscribe(listener, isolateErrors: true);
+
+	internal IDisposable Subscribe(Func<AgentEvent, ValueTask> listener, bool isolateErrors)
 	{
-		var subscription = _agent.Subscribe(listener);
+		var effective = isolateErrors ? Isolate(listener) : listener;
+		var subscription = _agent.Subscribe(effective);
 		lock (_listenerGate)
 		{
-			_listeners = [.. _listeners, listener];
+			_listeners = [.. _listeners, new ListenerRegistration(listener, effective, isolateErrors)];
 		}
 
 		return new ListenerHandle(subscription, this, listener);
+	}
+
+	private static Func<AgentEvent, ValueTask> Isolate(Func<AgentEvent, ValueTask> listener) =>
+		@event => InvokeIsolatedAsync(listener, @event);
+
+	private static async ValueTask InvokeIsolatedAsync(Func<AgentEvent, ValueTask> listener, AgentEvent @event)
+	{
+		try
+		{
+			await listener(@event).ConfigureAwait(false);
+		}
+		catch (Exception exception)
+		{
+			// 库不引日志依赖：宿主用 Trace 监听，未挂监听器时也不会丢行为。
+			Trace.TraceError($"session event listener failed: {exception}");
+		}
 	}
 
 	private void RemoveListener(Func<AgentEvent, ValueTask> listener)
 	{
 		lock (_listenerGate)
 		{
-			var index = Array.IndexOf(_listeners, listener);
+			var index = Array.FindIndex(_listeners, registration => ReferenceEquals(registration.Original, listener));
 			if (index < 0)
 			{
 				return;
@@ -1791,7 +2028,7 @@ public sealed partial class CodingAgentSession : IDisposable
 				return;
 			}
 
-			var next = new Func<AgentEvent, ValueTask>[_listeners.Length - 1];
+			var next = new ListenerRegistration[_listeners.Length - 1];
 			Array.Copy(_listeners, 0, next, 0, index);
 			Array.Copy(_listeners, index + 1, next, index, _listeners.Length - index - 1);
 			_listeners = next;
@@ -1804,7 +2041,19 @@ public sealed partial class CodingAgentSession : IDisposable
 		var listeners = _listeners;
 		foreach (var listener in listeners)
 		{
-			listener(@event).AsTask().GetAwaiter().GetResult();
+			if (listener.IsolateErrors)
+			{
+				// 异步订阅不阻塞会话；包装层已经吞掉异常。
+				var pending = listener.Effective(@event);
+				if (!pending.IsCompletedSuccessfully)
+				{
+					_ = pending.AsTask();
+				}
+
+				continue;
+			}
+
+			listener.Original(@event).AsTask().GetAwaiter().GetResult();
 		}
 	}
 
@@ -1935,8 +2184,19 @@ public sealed partial class CodingAgentSession : IDisposable
 		PersistPlanState();
 	}
 
-	private void ApplyTools()
+	private void ApplyTools(bool rebindCodeMode = true)
 	{
+		if (rebindCodeMode)
+		{
+			// codemode 的描述列出当前可调用工具：工具集变了就重绑，否则 /reload 后脚本看不到新工具。
+			// model-only 只声明给模型，脚本碰不到，别在描述里当可调用工具列出来。
+			RebindCodeMode(
+				[.. _fullTools
+					.Where(static tool => tool.Tool.Exposure != ToolExposure.ModelOnly)
+					.Select(static tool => tool.Tool)],
+				applyTools: false);
+		}
+
 		var effective = _fullTools;
 		if (PlanModeEnabled)
 		{
@@ -2054,37 +2314,83 @@ public sealed partial class CodingAgentSession : IDisposable
 				? info with
 				{
 					Description = info.Description ?? tool.NamespaceDescription,
+					Instructions = info.Instructions ?? tool.NamespaceInstructions,
 					Deferred = info.Deferred || deferred,
 					Codemode = info.Codemode || !deferred,
 				}
-				: new McpNamespaceInfo(tool.NamespaceDescription, deferred, !deferred);
+				: new McpNamespaceInfo(tool.NamespaceDescription, tool.NamespaceInstructions, deferred, !deferred);
 		}
 
 		if (namespaces.Count == 0) return null;
 
 		var hasCodemode = namespaces.Values.Any(static info => info.Codemode);
 		var hasDeferred = namespaces.Values.Any(static info => info.Deferred);
-		var builder = new StringBuilder("MCP servers whose tools are not declared to you.");
-		if (hasCodemode) builder.Append(" Call the tools of `codemode` servers from codemode scripts.");
-		if (hasDeferred) builder.Append(" Load the tools of `tool_search` servers with `tool_search`.");
+		var intro = new StringBuilder("MCP servers whose tools are not declared to you.");
+		if (hasCodemode) intro.Append(" Call the tools of `codemode` servers from codemode scripts.");
+		if (hasDeferred) intro.Append(" Load the tools of `tool_search` servers with `tool_search`.");
 
-		foreach (var (name, info) in namespaces.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
-		{
-			var mode = info.Codemode && info.Deferred
-				? "codemode/tool_search"
-				: info.Deferred ? "tool_search" : "codemode";
-			builder.Append("\n- `").Append(name).Append("` (").Append(mode).Append(')');
-			if (info.Description is { Length: > 0 } description)
+		// 与 pi 的 renderServersSection 同口径：先把服务器行排完，超长时从尾部丢服务器并计数，
+		// 剩下的长度均分给描述。直接按字符硬截会把最后一个服务器的半行留在提示词里。
+		const int maxSectionChars = 4096;
+		const int maxDescriptionChars = 250;
+		var listed = namespaces
+			.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+			.Select(static pair =>
 			{
-				builder.Append(' ').Append(description.Length > 250 ? description[..249] + "…" : description);
+				var mode = pair.Value.Codemode && pair.Value.Deferred
+					? "codemode/tool_search"
+					: pair.Value.Deferred ? "tool_search" : "codemode";
+				return (Head: $"- `{pair.Key}` ({mode})", pair.Value);
+			})
+			.ToList();
+
+		var introText = intro.ToString();
+		static string Omitted(int count) => count > 0
+			? $"\n- … {count} more server{(count == 1 ? string.Empty : "s")}; find their tools with searchTools()"
+			: string.Empty;
+		int Size(int kept) => introText.Length +
+			listed.Take(kept).Sum(static head => head.Head.Length + 1) +
+			Omitted(listed.Count - kept).Length;
+
+		var keep = listed.Count;
+		while (keep > 0 && Size(keep) > maxSectionChars)
+		{
+			keep--;
+		}
+
+		var perServer = keep == 0
+			? 0
+			: Math.Min(maxDescriptionChars, (maxSectionChars - Size(keep)) / keep - 2);
+		var builder = new StringBuilder(introText);
+		foreach (var (head, info) in listed.Take(keep))
+		{
+			builder.Append('\n').Append(head);
+			var summary = FirstLine(info.Description) ?? FirstLine(info.Instructions);
+			if (perServer > 0 && summary is { Length: > 0 })
+			{
+				builder.Append(": ").Append(summary.Length > perServer ? summary[..(perServer - 1)] + "…" : summary);
 			}
 		}
 
-		var text = builder.ToString();
-		return text.Length > 4096 ? text[..4095] + "…" : text;
+		builder.Append(Omitted(listed.Count - keep));
+		return builder.ToString();
 	}
 
-	private sealed record McpNamespaceInfo(string? Description, bool Deferred, bool Codemode);
+	/// 摘要只取第一行：配置里的 description 与服务器 initialize 的 instructions 都可能是多段文字，
+	/// 整段塞进系统提示会把章节预算吃掉。
+	private static string? FirstLine(string? text)
+	{
+		if (string.IsNullOrWhiteSpace(text))
+		{
+			return null;
+		}
+
+		var line = text.AsSpan().Trim();
+		var newline = line.IndexOf('\n');
+		return (newline < 0 ? line : line[..newline]).TrimEnd().ToString();
+	}
+
+	private sealed record McpNamespaceInfo(string? Description, string? Instructions, bool Deferred, bool Codemode);
 
 	private async ValueTask<BeforeToolCallResult?> GuardedBeforeToolCallAsync(
 		BeforeToolCallContext context,
@@ -2197,13 +2503,10 @@ public sealed partial class CodingAgentSession : IDisposable
 			Extensions = host;
 		}
 
-		if (host.ToolRegistrations.Count == 0)
-		{
-			return;
-		}
+		AttachExtensionDiagnostics(host);
 
-		// 只并表、不重建提示词：本方法要在 _fullTools 定稿之后、代理建立之前调用；
-		// 早了会被覆盖，晚了 ApplyTools 还没有 _agent 可用。
+		// 每次都从内置基线重建：/reload 后旧扩展的工具不能留着（宿主已 Dispose，
+		// 调用会打到死引擎）；新宿主没注册工具时也要把表收回到内置集。
 		var taken = new HashSet<string>(StringComparer.Ordinal);
 		foreach (var builtin in _builtinTools)
 		{
@@ -2275,27 +2578,29 @@ public sealed partial class CodingAgentSession : IDisposable
 		var summary = context.Arguments["command"]?.ToString() is { Length: > 0 } command
 			? command.Length <= 300 ? command : command[..300] + "…"
 			: context.Arguments.ToJsonString();
-		var confirmed = await host.ConfirmAsync(
-			new UiConfirmRequest(
+		var confirmed = await host.ApproveAsync(
+			new UiApprovalRequest(
 				"安全确认",
-				$"{decision.Reason}\n\n工具：{tool}\n参数：{summary}",
-				null),
+				$"{decision.Reason}\n\n工具：{tool}\n参数：{summary}"),
 			cancellationToken).ConfigureAwait(false);
 
-		if (confirmed != true)
+		// 没界面（null）按拒绝处理：无法确认就不执行，与 pi 的 ask 无审批人时同义。
+		if (confirmed is ToolApproval.Session)
 		{
-			return new BeforeToolCallResult { Block = true, Reason = $"用户拒绝了这次 `{tool}` 调用。" };
+			lock (_securityApprovedTools)
+			{
+				_securityApprovedTools.Add(tool);
+			}
+
+			return null;
 		}
 
-		lock (_securityApprovedTools)
-		{
-			_securityApprovedTools.Add(tool);
-		}
-
-		return null;
+		return confirmed is ToolApproval.Once
+			? null
+			: new BeforeToolCallResult { Block = true, Reason = $"用户拒绝了这次 `{tool}` 调用。" };
 	}
 
-	private void RebindCodeMode(IReadOnlyList<AgentTool> tools)
+	private void RebindCodeMode(IReadOnlyList<AgentTool> tools, bool applyTools = true)
 	{
 		var index = -1;
 		for (var i = 0; i < _fullTools.Count; i++)
@@ -2315,7 +2620,10 @@ public sealed partial class CodingAgentSession : IDisposable
 		var rebuilt = _fullTools.ToList();
 		rebuilt[index] = CreateCodeModeTool(tools);
 		_fullTools = rebuilt;
-		ApplyTools();
+		if (applyTools)
+		{
+			ApplyTools(rebindCodeMode: false);
+		}
 	}
 
 	private BuiltinTool CreateCodeModeTool(IReadOnlyList<AgentTool> tools) => CodeModeToolFactory.Create(
@@ -3089,6 +3397,8 @@ public sealed partial class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> PromptAsync(string text, CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
+		// 用户新开一轮：重复调用提醒按用户消息清零。
+		_recentToolCalls.Clear();
 		// 展开技能命令与提示词模板，让 CLI、RPC、桌面与交互模式共享同一语义。
 		// 图片在这之后按当前模型归一化。PrepareInput 保持同步：计划模式与模板展开要立即生效。
 		var message = await NormalizeMessageAsync(PrepareInput(text), cancellationToken).ConfigureAwait(false);
@@ -3450,13 +3760,41 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 	}
 
-	private void DispatchSessionLifecycle(string @event)
+	private void DispatchSessionLifecycle(string @event, string reason, string? previousSessionFile)
 	{
-		DispatchExtension(@event, new JsonObject
+		var payload = new JsonObject
 		{
 			["sessionId"] = Session.SessionId,
 			["sessionFile"] = Session.SessionFile,
-		});
+			["reason"] = reason,
+		};
+		if (previousSessionFile is { Length: > 0 })
+		{
+			payload["previousSessionFile"] = previousSessionFile;
+		}
+
+		DispatchExtension(@event, payload);
+	}
+
+	/// 终结这个会话：派发一次 <c>session_shutdown</c>，之后的 <see cref="Dispose"/> 不再重复派发。
+	/// RPC 的 new_session 在换实例前调用它，扩展才能分清「退出」与「换会话」。
+	public void Shutdown(string reason = "quit")
+	{
+		if (_shutdownDispatched)
+		{
+			return;
+		}
+
+		_shutdownDispatched = true;
+		DispatchSessionLifecycle("session_shutdown", reason, null);
+	}
+
+	/// 同一个会话实例换了底层会话（switch / fork / clone）：先 shutdown 再 start，
+	/// 扩展据此重新初始化。pi 在会话替换时重建扩展实例，本端口复用实例但事件语义一致。
+	public void NotifySessionReplaced(string reason, string? previousSessionFile)
+	{
+		DispatchSessionLifecycle("session_shutdown", reason, previousSessionFile);
+		DispatchSessionLifecycle("session_start", reason, previousSessionFile);
 	}
 
 	private ValueTask CacheWarmLifecycleAsync(AgentEvent @event)
@@ -3925,6 +4263,7 @@ public sealed partial class CodingAgentSession : IDisposable
 	public async Task<IReadOnlyList<Message>> PromptAsync(Message message, CancellationToken cancellationToken = default)
 	{
 		ThrowIfDisposed();
+		_recentToolCalls.Clear();
 		// 用户消息发送前才归一化图片：桌面端的 PrepareInput 在 UI 线程上，不能在那里解码大图。
 		message = await NormalizeMessageAsync(message, cancellationToken).ConfigureAwait(false);
 		var prompts = DispatchBeforeAgentStart(message);
@@ -4252,7 +4591,13 @@ public sealed partial class CodingAgentSession : IDisposable
 		SubagentParent?.Subagents?.NoteChildClosed(Session.SessionId, this);
 		Linked?.Dispose();
 		Subagents?.Dispose();
-		DispatchSessionLifecycle("session_shutdown");
+		Shutdown();
+		if (_diagnosticHost is { } diagnosticHost)
+		{
+			diagnosticHost.Reported -= OnExtensionDiagnostic;
+			_diagnosticHost = null;
+		}
+
 		_persistence.Dispose();
 		_cacheWarmLifecycle.Dispose();
 		_modeLifecycle.Dispose();

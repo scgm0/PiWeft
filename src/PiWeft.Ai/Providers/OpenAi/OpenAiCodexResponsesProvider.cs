@@ -147,7 +147,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 		}
 	}
 
-	private static byte[] BuildRequestBody(
+	private static ReadOnlyMemory<byte> BuildRequestBody(
 		Model model,
 		IReadOnlyList<Message> messages,
 		IReadOnlyList<Tool> tools,
@@ -173,27 +173,27 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 
 		if (options.OnPayload is { } onPayload)
 		{
-			var node = JsonNode.Parse(bytes);
+			var node = JsonNode.Parse(bytes.Span);
 			if (node is not null && onPayload(node, model) is { } replaced)
 			{
 				bytes = Encoding.UTF8.GetBytes(replaced.ToJsonString(PiJson.NodeOptions));
 			}
 		}
 
-		options.NotifyRequestPayload(bytes, model);
+		options.NotifyRequestPayload(bytes.Span, model);
 		return bytes;
 	}
 
 	private static HttpRequestMessage BuildHttpRequest(
 		Model model,
-		byte[] bytes,
+		ReadOnlyMemory<byte> bytes,
 		StreamOptions options,
 		string accountId,
 		string accessToken)
 	{
 		var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(model))
 		{
-			Content = new ByteArrayContent(bytes),
+			Content = new ReadOnlyMemoryContent(bytes),
 		};
 
 		request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
@@ -231,7 +231,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 
 	private async Task<bool> RunWebSocketAsync(
 		Model model,
-		byte[] body,
+		ReadOnlyMemory<byte> body,
 		StreamOptions options,
 		AssistantMessageEventStream stream,
 		long startedAt,
@@ -251,7 +251,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			connectTimeout.CancelAfter(TimeSpan.FromMilliseconds(options.TimeoutMs is > 0 ? options.TimeoutMs.Value : 15_000));
 			await socket.ConnectAsync(new Uri(BuildWebSocketUrl(model)), connectTimeout.Token).ConfigureAwait(false);
 
-			var payload = JsonNode.Parse(body) as JsonObject ?? new JsonObject();
+			var payload = JsonNode.Parse(body.Span) as JsonObject ?? new JsonObject();
 			payload["type"] = "response.create";
 			var frame = Encoding.UTF8.GetBytes(payload.ToJsonString(PiJson.NodeOptions));
 			await socket.SendAsync(frame, WebSocketMessageType.Text, endOfMessage: true, cancellationToken).ConfigureAwait(false);
@@ -265,7 +265,10 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 				var result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
 				if (result.MessageType == WebSocketMessageType.Close)
 				{
-					throw new InvalidOperationException("Codex WebSocket closed before response.completed");
+					// 带上服务器给的 close 原因：Codex 的 60 分钟上限会以 websocket_connection_limit_reached 关闭，
+					// 自动重试靠这段文本判定「换个连接就能继续」。
+					throw new InvalidOperationException(
+						$"Codex WebSocket closed before response.completed ({result.CloseStatus}: {result.CloseStatusDescription})");
 				}
 
 				received.Write(buffer, 0, result.Count);

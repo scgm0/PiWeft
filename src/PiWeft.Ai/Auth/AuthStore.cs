@@ -122,6 +122,7 @@ public static partial class AuthStore
 		}
 
 		File.Move(temporary, path, overwrite: true);
+		InvalidateReadCache();
 	}
 
 	private static string? Text(JsonObject entry, string key) =>
@@ -653,12 +654,59 @@ public static partial class AuthStore
 		CancellationToken cancellationToken) =>
 		ReadCredential((await ReadRootAsync(agentDir, cancellationToken).ConfigureAwait(false))?[provider]);
 
+	// auth.json 的只读缓存。模型选择器每开一次就调 ReadApiKeys，逐个模型问一次凭据；
+	// 每次都读盘 + 解析会把打开模型列表变成磁盘抖动。按路径、mtime、长度判新鲜；
+	// 写入路径显式失效，避免同一时间戳内写完读到旧值。
+	private static readonly Lock ReadCacheGate = new();
+	private static string? _cachedPath;
+	private static DateTime _cachedWriteUtc;
+	private static long _cachedLength;
+	private static JsonObject? _cachedRoot;
+
+	/// 写入 auth.json 之后调用：清掉只读缓存。
+	internal static void InvalidateReadCache()
+	{
+		lock (ReadCacheGate)
+		{
+			_cachedPath = null;
+			_cachedRoot = null;
+		}
+	}
+
+	/// 缓存里的 JsonObject 只供只读使用（调用方都只读）；要改写走 ReadRootForWrite。
 	private static JsonObject? ReadRoot(string? agentDir)
 	{
 		try
 		{
 			var path = Path(agentDir);
-			return File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path)) as JsonObject : null;
+			var info = new FileInfo(path);
+			if (!info.Exists)
+			{
+				InvalidateReadCache();
+				return null;
+			}
+
+			lock (ReadCacheGate)
+			{
+				if (_cachedRoot is not null &&
+					string.Equals(_cachedPath, path, StringComparison.Ordinal) &&
+					_cachedWriteUtc == info.LastWriteTimeUtc &&
+					_cachedLength == info.Length)
+				{
+					return _cachedRoot;
+				}
+			}
+
+			var root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+			lock (ReadCacheGate)
+			{
+				_cachedPath = path;
+				_cachedWriteUtc = info.LastWriteTimeUtc;
+				_cachedLength = info.Length;
+				_cachedRoot = root;
+			}
+
+			return root;
 		}
 		catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
 		{

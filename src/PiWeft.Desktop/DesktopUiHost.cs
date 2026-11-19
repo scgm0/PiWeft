@@ -89,6 +89,29 @@ internal sealed class DesktopUiHost : IUiHost
 				? true
 				: answers.Count > 0 ? false : null);
 
+	public Task<ToolApproval?> ApproveAsync(UiApprovalRequest request, CancellationToken cancellationToken) =>
+		ShowDialogAsync<ToolApproval?>(
+			// 三态审批：一次性、本会话记住、拒绝。拒绝不带理由：参数已经展示在卡片里。
+			new AskQuestion("approval", "select", request.Message is { Length: > 0 } ? $"{request.Title}\n{request.Message}" : request.Title,
+				[
+					new AskOption("本次允许", "once", null),
+					new AskOption("本会话允许", "session", null),
+					new AskOption("拒绝", "deny", null),
+				],
+				null,
+				null),
+			cancellationToken,
+			static answers => answers.Count > 0 && answers[0].Value is { } value &&
+				value.GetValueKind() == System.Text.Json.JsonValueKind.String
+					? value.GetValue<string>() switch
+					{
+						"once" => ToolApproval.Once,
+						"session" => ToolApproval.Session,
+						"deny" => ToolApproval.Deny,
+						_ => null,
+					}
+					: null);
+
 	public Task<string?> EditorAsync(UiEditorRequest request, CancellationToken cancellationToken) =>
 		ShowDialogAsync<string?>(
 			new AskQuestion("dialog", "editor", request.Title, null, null, request.Prefill),

@@ -8,6 +8,10 @@ public static partial class Strings
 	public const string ReadingCompact = "紧凑";
 	public const string ReadingComfortable = "舒适";
 	public const string ReadingWide = "宽屏";
+	public const string ChatLineHeight = "正文行距";
+	public const string ReadingLineDefault = "标准";
+	public const string ReadingLineRelaxed = "宽松";
+	public const string ReadingLineLoose = "最宽";
 	public const string ReadingSample = "清晰的正文与统计信息，让长时间阅读更轻松。";
 	public const string StatisticsOverview = "概览";
 	public const string StatisticsDetails = "明细";

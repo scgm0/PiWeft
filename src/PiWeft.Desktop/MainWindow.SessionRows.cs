@@ -310,16 +310,52 @@ public sealed partial class MainWindow
 		_nameBox.Focus();
 	}
 
-	private void ArchiveSession(SessionListItem item)
+	private async void ArchiveSession(SessionListItem item)
 	{
 		try
 		{
-			_catalog.Delete(item.Path);
-			foreach (var tab in _tabEntries.OfType<SessionTab>()
-				.Where(tab => string.Equals(tab.Session.Session.SessionFile, item.Path, StringComparison.OrdinalIgnoreCase))
-				.ToArray())
+			// 关联子会话挂在父会话下面：父会话归档时一起收走，否则侧栏留下没有父的幽灵会话。
+			var removedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { item.Path };
+			var links = PiWeft.CodingAgent.LinkedSessionStore.Load().Links
+				.Where(link => string.Equals(link.ParentSessionId, item.Id, StringComparison.Ordinal))
+				.ToArray();
+			if (links.Length > 0)
 			{
-				CloseTab(tab);
+				// 损坏的会话文件可能撞 id：ToDictionary 会抛 ArgumentException，直接换成保留第一条。
+				var byId = new Dictionary<string, SessionListItem>(StringComparer.Ordinal);
+				foreach (var session in _catalog.List(null, 5000))
+				{
+					byId.TryAdd(session.Id, session);
+				}
+
+				foreach (var link in links)
+				{
+					if (byId.TryGetValue(link.ChildSessionId, out var child))
+					{
+						removedPaths.Add(child.Path);
+					}
+				}
+
+				// 关系条目也要清：否则下次打开同名会话时还会挂出已归档的子会话。
+				PiWeft.CodingAgent.LinkedSessionStore.Merge(
+					item.Id,
+					item.Cwd,
+					new PiWeft.CodingAgent.LinkedSessionSnapshot([], []));
+			}
+
+			// 先关标签再删文件：CloseAsync 会 abort 并等收尾，反过来做的话
+			// 收尾里的 Append 会把已移走的路径重建出一个无头会话。
+			var tabs = _tabEntries.OfType<SessionTab>()
+				.Where(tab => tab.Session.Session.SessionFile is { } path && removedPaths.Contains(path))
+				.ToArray();
+			foreach (var tab in tabs)
+			{
+				await CloseTabAsync(tab);
+			}
+
+			foreach (var path in removedPaths)
+			{
+				_catalog.Delete(path);
 			}
 
 			RefreshSessions(force: true);

@@ -245,11 +245,9 @@ internal sealed class OpenAiResponsesStreamState
 		}
 
 		slot.Buffer.Append(delta);
-		_content[slot.ContentIndex] = new ThinkingContent
-		{
-			Thinking = slot.Buffer.ToString(),
-			ThinkingSignature = ((ThinkingContent)_content[slot.ContentIndex]).ThinkingSignature,
-		};
+		_content[slot.ContentIndex] = ThinkingContent.FromStreaming(
+			slot.Buffer,
+			((ThinkingContent)_content[slot.ContentIndex]).ThinkingSignature);
 		Push(new ThinkingDeltaEvent { ContentIndex = slot.ContentIndex, Delta = delta, Partial = Snapshot() });
 	}
 
@@ -261,7 +259,7 @@ internal sealed class OpenAiResponsesStreamState
 		}
 
 		slot.Buffer.Append(delta);
-		_content[slot.ContentIndex] = new TextContent { Text = slot.Buffer.ToString() };
+		_content[slot.ContentIndex] = TextContent.FromStreaming(slot.Buffer);
 		Push(new TextDeltaEvent { ContentIndex = slot.ContentIndex, Delta = delta, Partial = Snapshot() });
 	}
 
@@ -474,7 +472,7 @@ internal sealed class OpenAiResponsesStreamState
 	{
 		_partial = _partial with
 		{
-			Content = [.. _content],
+			Content = ContentBlocks.Materialize(_content),
 			Usage = _usage,
 			StopReason = reason,
 			RawStopReason = _rawStopReason,

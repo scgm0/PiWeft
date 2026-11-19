@@ -2,7 +2,7 @@
 
 PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electron + React。本文记录桌面功能、配置安全边界与剩余差距。当前实现见 [状态](00-status.md)，视觉契约见 [DESIGN.md](../DESIGN.md)。
 
-对照基准（只读）：pi `v1.5.2+171`（`ff7414d51`，2026-11-13）、PiDeck `0.12.0`（`3273dcbfa`）；pi_agent_rust / pi-go 仅作方向参考。
+对照基准（只读）：pi `v1.5.2+337`（`653f332b6`，2026-11-19）、PiDeck `0.13.0`（`dc92c2542`）；pi_agent_rust / pi-go 仅作方向参考。
 
 ## 视觉与主题
 
@@ -27,7 +27,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | 搜索 | 元数据 + 有界正文搜索、会话内过滤 | 正则、命中高亮 |
 | 消息 | Markdown、高亮、复制、图片放大、思考折叠 | 代码行号、跨行块注释、更多语言 |
 | 工具 | 折叠摘要、状态/耗时、按工具分栏的参数与输出、统一/并排 diff、大文本固定视口虚拟化；shell 侧删除前备份进回收站、Windows `> nul` 改写、模型专用代理不传给 agent 命令 | 完整文件交互 |
-| 历史 | 编辑重发、重试、继续生成、fork、分支树、跳转、HTML 导出 | 多选批量、分支比较 |
+| 历史 | 编辑重发、重试、继续生成、编辑助手回复（`context_edit`）、fork、分支树、跳转、HTML 导出 | 多选批量、删除消息、分支比较 |
 | 输入/模型 | 斜杠命令、命令面板、改键、快捷消息（插入/直发）、模型筛选/搜索/刷新、记住上次使用、每模型思考档 | 模型收藏 |
 | 附件 | 路径引用、图片文件/字节、粘贴、复制预览；进上下文前按模型限制应用 EXIF 方向并缩放/转码，`images.autoResize` 可关，`images.blockImages` 可拦（含历史图片） | 更多媒体类型、回复转图片 |
 | 用量 | 会话统计、上下文、费用、缓存、压缩；供应商余额/套餐；Sub2API 面板余额与续期；跨会话热力图 | 火山 AK/SK、热力图下钻 |
@@ -37,7 +37,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | 文件 | 目录导航、Git 标记、内置编辑器、修改汇总 | 多文件标签、语法高亮编辑、正则搜索 |
 | 终端 | MiniPty、shell、scrollback、选择、SGR/备用屏、缩放重排、字素对齐、字格光标、OSC 4/8/10/11/12/52、鼠标、bracketed paste、IME、PRIMARY | 完整 VT100 边界、终端内搜索、多标签、快照回放 |
 | 关联会话 | 子会话工具（开 / 发消息 / 列表）、提议卡片（offer / own_initiative）、回合回报、自动续跑额度 6、子会话条、以后台标签打开、关系与提议落盘 | 跨进程恢复联动 |
-| 主题/窗口 | 深浅/系统、侧栏收起与宽度恢复、尺寸/位置恢复、单实例 | 自定义强调色、多显示器可见性 |
+| 主题/窗口 | 深浅/系统、侧栏收起与宽度恢复、尺寸/位置恢复、单实例、正文行距三档 | 自定义强调色、多显示器可见性 |
 
 内嵌浏览器、自动更新、托盘、系统通知不在范围内。
 
@@ -113,7 +113,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - `tool_search` 与 codemode 一样是目录里的内置工具，但默认启用（pi 的 `builtin:tool-search` 是 `defaultActive: false`）：MCP 工具默认 codemode exposure，不默认开启就没有发现入口。`-tool_search` 与 `-builtin:tool-search` 都能关掉它。
 - 「Agent 设置」的工具清单是整份目录：被 `settings.extensions` 挡住的内置扩展仍列在「内置扩展工具」里，名字压暗并提示原因；已写在 `defaultTools` 里的同样压暗，计数只算真会加载的工具。
 - 注册面：`pi.on`、`pi.registerTool`、`pi.registerCommand`、`pi.registerFlag`/`getFlag`、`pi.ui.*`。未知 `--flag` 交给注册者，无注册者时报错退出 2。
-- 事件：实际派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`；`message_update`、`tool_execution_update`、provider/context 类事件尚未派发。
+- 事件：实际派发 `session_start`、`session_info_changed`、`session_shutdown`、`tool_call`、`tool_result`、`before_agent_start`、`agent_start`、`agent_end`、`turn_start`、`turn_end`、`message_start`、`message_end`、`tool_execution_start`、`tool_execution_end`、`model_select`、`thinking_level_select`；`session_start`/`session_shutdown` 带 `reason` 与 `previousSessionFile`。`message_update`、`tool_execution_update`、provider/context 类事件尚未派发。
 - 事件处理器可返回对象；返回值合并进 payload，与就地改写等价。`before_agent_start` 提供可变的 `systemPromptOptions.sections`，返回的 `systemPrompt` 覆盖整段提示词，返回的 `message` 作为隐藏 custom message 跟在用户消息后进入本轮并落盘。
 - 沙箱无 `fs`/`net`/`require`/动态 import；出口只有显式 `__pi*` 宿主函数，桥一律 `ClrFunction`（AOT 无警告）。
 - 扩展的 `tool_call` 钩子排在安全门之前，但放行的调用仍过档位检查；内置工具优先于同名扩展工具。
@@ -195,7 +195,7 @@ Sub2API 模板除网关 apiKey 的 `/v1/usage` 外，还用 `panelJwt` 查面板
 | `standard` | 敏感文件读写拒绝；危险 shell 模式拒绝；目录不限 |
 | `strict` | 在 standard 上增加工作目录边界：写入目录外拒绝，读取降级放行 |
 
-- `ask` 有宿主就弹确认，没有审批人（RPC/print/守护进程）就拒绝；确认前先过路径边界与危险命令检查。
+- `ask` 在桌面与交互式 CLI 上给三选一：本次允许 / 本会话允许 / 拒绝。本会话允许按工具名记住，不跨会话也不落盘。没有审批人（RPC/print/守护进程）就拒绝；确认前先过路径边界与危险命令检查。
 - 允许按工具名在本会话记住（不跨会话、不落盘）；会话覆盖写全局 `settings.security.sessionLevels`，不写项目设置。
 - 只读全局设置；`level` 写错或缺失按 `off`。敏感路径解析符号链接真实路径；目录边界同样解析真实路径，`../` 与软链绕不过；Windows/macOS 大小写不敏感，Linux 敏感。空 `denyDirs` 条目丢弃（空目录会被当成 `/`）。
 - 危险命令表只收不可逆动作（删除根/家目录、`mkfs`、写块设备、fork bomb、关机、提权、Windows `format`/`rd /s /q`）；日常 `cp`/`mv`/`npm install`/`git commit` 在 standard 仍放行。
@@ -327,9 +327,10 @@ PiDeck 用环境变量把宿主能力交给 pi；把 `customPiPath` 指向本端
 | D-10 | 多模态 | 图片输入/预览；缺视觉桥、生图入口、语音/视频 |
 | D-11 | 远程/自动化 | 缺局域网 Web、实时推送、隧道、飞书、定时任务 |
 | D-12 | 桌面集成 | 缺托盘、系统通知、自动更新、快捷浮窗、桌面宠物；诊断包与环境体检未对齐 |
-| D-13 | 交互/长历史 | 缺项目级置顶/排序、拖拽/分屏、完整消息编辑删除、Mermaid/KaTeX；历史分页经实测不做 |
+| D-13 | 交互/长历史 | 缺项目级置顶/排序、拖拽/分屏、删除消息、Mermaid/KaTeX；历史分页经实测不做 |
 | D-14 | 工具审批 | 安全门已实现；`PIDECK_SECURITY_CONFIG` 快照接管档位与路径边界；缺 PiDeck 的独立会话存储位置与 CLI 档位切换 |
 | D-15 | 关联会话 | 子会话工具、提议卡片（offer / own_initiative）、回合回报、自动续跑额度 6、子会话条、后台标签、关系与提议落盘已实现；缺跨进程恢复联动 |
+| D-16 | PiDeck 0.13 增量 | 编辑助手回复、正文行距三档、归档父会话时带子会话、每轮模型进时间线、最终失败的重试次数与原因已接；缺过程组统一纵向滚动（仍是组内 300 DIP 视口）、活动页 GTD |
 
 ## 验证
 

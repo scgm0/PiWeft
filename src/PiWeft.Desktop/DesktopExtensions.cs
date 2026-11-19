@@ -13,10 +13,13 @@ internal static class DesktopExtensions
 		new("pi-deck-ask-question", Strings.DesktopExtensionAskQuestion),
 		new("pi-deck-goal-mode", Strings.DesktopExtensionGoalMode),
 		new("pi-deck-linked-sessions", Strings.DesktopExtensionLinkedSessions),
+		new("pi-deck-model-trace", Strings.DesktopExtensionModelTrace),
 		new("pi-deck-nul-redirect-fix", Strings.DesktopExtensionNulRedirectFix),
 		new("pi-deck-plan-mode", Strings.DesktopExtensionPlanMode),
 		new("pi-deck-retry-no-body", Strings.DesktopExtensionRetryNoBody),
 		new("pi-deck-security-gate", Strings.DesktopExtensionSecurityGate),
+		new("pi-deck-session-title", Strings.DesktopExtensionSessionTitle),
+		new("pi-deck-subagents", Strings.DesktopExtensionSubagents),
 		new("pi-deck-todo", Strings.DesktopExtensionTodo),
 		new("pi-deck-trash-guard", Strings.DesktopExtensionTrashGuard),
 	];
