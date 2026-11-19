@@ -7,14 +7,24 @@ using Xunit;
 namespace PiWeft.CodingAgent.Tests;
 
 /// 覆盖 C-01（系统提示词覆盖与项目上下文开关）与 C-03（技能命令/提示词模板统一展开）。
+[Collection("process-environment")]
 public class PromptInputTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-promptinput-" + Guid.NewGuid().ToString("N")[..8]);
+	private readonly string? _previousAgentDir;
 
-	public PromptInputTests() => Directory.CreateDirectory(_root);
+	public PromptInputTests()
+	{
+		Directory.CreateDirectory(_root);
+		// APPEND_SYSTEM.md 会从 agent 目录自动加载：指到临时目录，
+		// 开发机上的个人文件不能混进断言的 addendum。
+		_previousAgentDir = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR");
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", Path.Combine(_root, "agent"));
+	}
 
 	public void Dispose()
 	{
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _previousAgentDir);
 		if (Directory.Exists(_root))
 		{
 			Directory.Delete(_root, recursive: true);

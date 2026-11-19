@@ -131,14 +131,24 @@ internal sealed class ScriptedStreamFn
 	}
 }
 
+[Collection("process-environment")]
 public class CodingAgentSessionTests : IDisposable
 {
 	private readonly string _root = Path.Combine(Path.GetTempPath(), "piweft-session-" + Guid.NewGuid().ToString("N")[..8]);
+	private readonly string? _previousAgentDir;
 
-	public CodingAgentSessionTests() => Directory.CreateDirectory(_root);
+	public CodingAgentSessionTests()
+	{
+		Directory.CreateDirectory(_root);
+		// 系统提示词会读 agent 目录的 SYSTEM.md / APPEND_SYSTEM.md：指到临时目录，
+		// 开发机上的个人文件不能改变断言的章节。
+		_previousAgentDir = Environment.GetEnvironmentVariable("PI_CODING_AGENT_DIR");
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", Path.Combine(_root, "agent"));
+	}
 
 	public void Dispose()
 	{
+		Environment.SetEnvironmentVariable("PI_CODING_AGENT_DIR", _previousAgentDir);
 		if (Directory.Exists(_root))
 		{
 			Directory.Delete(_root, recursive: true);
@@ -343,7 +353,7 @@ public class CodingAgentSessionTests : IDisposable
 		using var session = CreateSession(script);
 		Assert.False(session.CanContinueGeneration());
 
-		// 成功那一轮没什么可继续的；继续只接瞬态失败与被截断的回合。
+		// 成功那一轮没什么可继续的；继续接瞬态失败、可换模型的失败与被截断的回合。
 		foreach (var (reason, error, expected) in new[]
 		{
 			(StopReason.Stop, null, false),
@@ -353,8 +363,8 @@ public class CodingAgentSessionTests : IDisposable
 			(StopReason.Error, "401 Unauthorized: invalid api key", true),
 			// 请求参数类错误换模型也不会变好。
 			(StopReason.Error, "400 status code: invalid request", false),
-			// 中断的助手消息不进重放，继续只会变成重提，跟「重试」重复。
-			(StopReason.Aborted, null, false),
+			// 中止时已经写出一段正文：继续接着写。
+			(StopReason.Aborted, null, true),
 			(StopReason.Length, null, true),
 		})
 		{
@@ -398,6 +408,59 @@ public class CodingAgentSessionTests : IDisposable
 		Assert.True(ContinuationPolicy.IsContinuable(transient));
 		Assert.False(ContinuationPolicy.IsContinuable(request));
 		Assert.True(ContinuationPolicy.IsContinuable(transient));
+	}
+
+	[Fact]
+	public void ContinueIsNotOfferedAfterAbortWithoutText()
+	{
+		var script = new ScriptedStreamFn();
+		using var session = CreateSession(script);
+		session.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("q") });
+		session.Session.AppendMessage(new AssistantMessage
+		{
+			StopReason = StopReason.Aborted,
+			Content =
+			[
+				new ThinkingContent { Thinking = "only thinking" },
+				new ToolCall { Id = "partial", Name = "read", Arguments = new System.Text.Json.Nodes.JsonObject() },
+			],
+		});
+
+		// 只有思考或半截工具调用：重放时会整条丢掉，继续等于重提，交给标题栏的「重试」。
+		Assert.False(session.CanContinueGeneration());
+	}
+
+	[Fact]
+	public async Task ContinueAfterAbortReplaysThePartialAnswer()
+	{
+		var script = new ScriptedStreamFn();
+		script.EnqueueText("rest of the answer");
+		using var session = CreateSession(script);
+		session.SetAutoRetryEnabled(false);
+
+		session.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("question") });
+		session.Session.AppendMessage(new AssistantMessage
+		{
+			StopReason = StopReason.Aborted,
+			ErrorMessage = "Request aborted",
+			Content =
+			[
+				new ThinkingContent { Thinking = "half a thought" },
+				new TextContent { Text = "half an answer" },
+			],
+		});
+		Assert.True(session.CanContinueGeneration());
+
+		await session.ContinueGenerationAsync();
+
+		// 代理上下文带着半截正文；provider 侧（Transcript.Normalize）再把它收成纯正文，
+		// 半截思考与不完整工具调用不进真正发出去的请求。
+		Assert.Contains(script.Requests[0], static message =>
+			message is AssistantMessage { StopReason: StopReason.Aborted } aborted &&
+			aborted.Content.OfType<TextContent>().Any(text => text.Text == "half an answer"));
+		var normalized = MessageTransform.Transform(script.Requests[0], ScriptedSessions.Model());
+		var replayed = Assert.Single(normalized.OfType<AssistantMessage>());
+		Assert.Equal("half an answer", Assert.IsType<TextContent>(Assert.Single(replayed.Content)).Text);
 	}
 
 	[Fact]

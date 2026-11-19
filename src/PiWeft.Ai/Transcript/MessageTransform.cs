@@ -5,8 +5,8 @@ using System.Text.Json.Nodes;
 namespace PiWeft.Ai;
 
 /// 请求前的消息归一化。对应 pi 的 <c>api/transform-messages.ts</c>：
-/// 丢弃不属于当前模型的 thinking、跳过失败的助手回合、为孤儿工具调用补结果、
-/// 归一工具调用 id，并把不支持图片的模型收到的图片降级为文本。
+/// 丢弃不属于当前模型的 thinking、跳过失败的助手回合、主动中止的回放只留正文、
+/// 为孤儿工具调用补结果、归一工具调用 id，并把不支持图片的模型收到的图片降级为文本。
 public static class MessageTransform
 {
 	private const string UserImagePlaceholder = "(image omitted: model does not support images)";
@@ -172,7 +172,25 @@ public static class MessageTransform
 		return replaced;
 	}
 
-	/// 重放前整理工具调用与结果：跳过 error/aborted 助手消息，为没有结果的调用补一条
+	/// <summary>中止的助手回合里有没有可重放的正文（判断中断后能否「继续生成」）。</summary>
+	public static bool HasReplayableAbortedText(AssistantMessage message) => AbortedTextOnly(message) is not null;
+
+	private static AssistantMessage? AbortedTextOnly(AssistantMessage message)
+	{
+		List<ContentBlock>? text = null;
+		foreach (var block in message.Content)
+		{
+			// TextLength 不解码延迟正文：轮廓只关心有没有字，不把整段 UTF-8 展开。
+			if (block is TextContent { TextLength: > 0 } content)
+			{
+				(text ??= []).Add(content);
+			}
+		}
+
+		return text is null ? null : message with { Content = text };
+	}
+
+	/// 重放前整理工具调用与结果：跳过 error 助手消息，为没有结果的调用补一条
 	/// “No result provided”，并把 system 消息挪到工具结果之后。
 	private static List<Message> ReconcileToolCalls(IReadOnlyList<Message> messages)
 	{
@@ -217,9 +235,21 @@ public static class MessageTransform
 				case AssistantMessage assistant:
 					ClosePending();
 
-					// 失败/中止的助手回合可能只包含半截推理或不完整工具调用，不能重放。
-					if (assistant.StopReason is StopReason.Error or StopReason.Aborted)
+					// 失败的助手回合可能只包含半截推理或不完整工具调用，不能重放。
+					if (assistant.StopReason == StopReason.Error)
 					{
+						continue;
+					}
+
+					// 主动中止的回合只重放正文，让「继续生成」接着那半截回答写；
+					// 半截推理与没执行过的工具调用仍然丢掉。
+					if (assistant.StopReason == StopReason.Aborted)
+					{
+						if (AbortedTextOnly(assistant) is { } replay)
+						{
+							result.Add(replay);
+						}
+
 						continue;
 					}
 

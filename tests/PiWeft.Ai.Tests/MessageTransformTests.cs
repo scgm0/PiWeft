@@ -58,6 +58,58 @@ public sealed class MessageTransformTests
 	}
 
 	[Fact]
+	public void AbortedAssistantReplaysOnlyItsText()
+	{
+		var messages = new List<Message>
+		{
+			new UserMessage { Content = MessageContent.FromText("q") },
+			new AssistantMessage
+			{
+				StopReason = StopReason.Aborted,
+				Content =
+				[
+					new ThinkingContent { Thinking = "half a thought" },
+					new TextContent { Text = "half an answer" },
+					new ToolCall { Id = "partial", Name = "read", Arguments = new JsonObject() },
+				],
+			},
+			new UserMessage { Content = MessageContent.Empty },
+		};
+
+		var transformed = MessageTransform.Transform(messages, TextModel());
+
+		// 中止的半截回答要能被「继续生成」接上：只留正文，思考与不完整工具调用不进重放。
+		Assert.Equal(3, transformed.Count);
+		var assistant = Assert.IsType<AssistantMessage>(transformed[1]);
+		Assert.Equal(StopReason.Aborted, assistant.StopReason);
+		var text = Assert.IsType<TextContent>(Assert.Single(assistant.Content));
+		Assert.Equal("half an answer", text.Text);
+	}
+
+	[Fact]
+	public void AbortedAssistantWithoutTextIsNotReplayed()
+	{
+		var messages = new List<Message>
+		{
+			new UserMessage { Content = MessageContent.FromText("q") },
+			new AssistantMessage
+			{
+				StopReason = StopReason.Aborted,
+				Content =
+				[
+					new ThinkingContent { Thinking = "only thinking" },
+					new ToolCall { Id = "partial", Name = "read", Arguments = new JsonObject() },
+				],
+			},
+		};
+
+		var transformed = MessageTransform.Transform(messages, TextModel());
+
+		Assert.Single(transformed);
+		Assert.IsType<UserMessage>(transformed[0]);
+	}
+
+	[Fact]
 	public void OrphanedToolCallsGetSyntheticResultsBeforeTheNextUserTurn()
 	{
 		var messages = new List<Message>

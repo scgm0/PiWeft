@@ -4010,8 +4010,7 @@ public sealed partial class CodingAgentSession : IDisposable
 					// 注入的上下文（回报、模式续轮）不重置资格。
 					continue;
 				case AssistantMessage assistant:
-					// 主动中断不接：Aborted 的助手消息在重放时被丢弃（半截推理与不完整工具调用不能回放），
-					// 「继续」会静默变成重新提问，跟标题栏的「重试」重复。
+					// 中止后是否还能接着写由 ContinuationPolicy 判：已写出正文的可以，只有思考的不能。
 					return ContinuationPolicy.IsContinuable(assistant);
 			}
 		}

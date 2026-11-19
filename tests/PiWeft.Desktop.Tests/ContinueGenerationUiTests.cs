@@ -170,6 +170,81 @@ public sealed class ContinueGenerationUiTests
 	}
 
 	[Fact]
+	public async Task AbortWithPartialTextTurnsThePrimaryButtonIntoContinue()
+	{
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var manager = SessionManager.InMemory(Environment.CurrentDirectory);
+		var model = FakeStreams.Model();
+		var calls = 0;
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = manager.Cwd,
+			Session = manager,
+			Model = model,
+			Tools = [],
+			Skills = [],
+			PromptTemplates = [],
+			Persist = false,
+			Settings = new CodingAgentSettings { Retry = new RetryPolicy(Enabled: false) },
+			StreamFn = (streamModel, messages, options) =>
+			{
+				if (Interlocked.Increment(ref calls) > 1)
+				{
+					return FakeStreams.Text(streamModel, "rest of the answer");
+				}
+
+				var blank = new AssistantMessage
+				{
+					Api = streamModel.Api,
+					Provider = streamModel.Provider,
+					Model = streamModel.Id,
+					Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+				};
+				var stream = new AssistantMessageEventStream();
+				stream.Push(new StartEvent { Partial = blank });
+				var partial = blank with { Content = [new TextContent { Text = "half an answer" }] };
+				stream.Push(new TextDeltaEvent { ContentIndex = 0, Delta = "half an answer", Partial = partial });
+				started.TrySetResult();
+				_ = Task.Run(async () =>
+				{
+					try
+					{
+						await Task.Delay(Timeout.Infinite, options.CancellationToken);
+					}
+					catch (OperationCanceledException)
+					{
+						stream.Push(new ErrorEvent
+						{
+							Reason = StopReason.Aborted,
+							Partial = partial with { StopReason = StopReason.Aborted, ErrorMessage = "Request aborted" },
+						});
+					}
+				});
+				return stream;
+			},
+		});
+		using var tab = new SessionTab(session, [model], "continue-abort");
+		tab.SetExtensionText("hi");
+		tab.SendFromShortcut();
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+		Assert.Equal(Strings.Abort, tab.PrimaryLabelForTests);
+
+		tab.PrimaryActionForTests();
+		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+
+		// 中断前写出的半截回答保留，主按钮变成继续生成。
+		Assert.Contains(tab.Chat.Entries(), static row => row.Role == ChatRole.Assistant && row.Text == "half an answer");
+		Assert.Equal(Strings.Continue, tab.PrimaryLabelForTests);
+
+		tab.PrimaryActionForTests();
+		await tab.PendingSend.WaitAsync(TimeSpan.FromSeconds(5));
+		tab.RenderForTests();
+		Assert.Contains(tab.Chat.Entries(), static row => row.Role == ChatRole.Assistant && row.Text == "rest of the answer");
+	}
+
+	[Fact]
 	public async Task ContinueShowsTheWaitingPlaceholderUntilTheFirstToken()
 	{
 		var calls = 0;
