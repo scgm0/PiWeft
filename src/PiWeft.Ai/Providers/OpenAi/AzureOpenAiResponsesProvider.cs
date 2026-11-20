@@ -55,6 +55,8 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var reasoningEffort = OpenAiResponsesProvider.ResolveReasoningEffort(model, options);
+			// 支持 configuration_update 的模型把思考档发进输入项：换档不改请求前缀，提示词缓存还在。
+			var configurationUpdateEffort = ModelCompat.FlagOr(model, "supportsMidConvoEffort", false) ? reasoningEffort : null;
 			var deployment = ResolveDeploymentName(model);
 			var (baseUrl, apiVersion) = ResolveEndpoint(model, options);
 
@@ -64,6 +66,7 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 				tools,
 				options,
 				reasoningEffort,
+				configurationUpdateEffort,
 				deployment,
 				baseUrl,
 				apiVersion,
@@ -89,7 +92,7 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 
 			await using var bodyStream = await ProviderHttp.ReadBodyAsync(response, options, cancellationToken).ConfigureAwait(false);
 
-			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId);
+			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId, configurationUpdateEffort);
 			var sse = new SseJsonReader();
 			var parser = SseParser.Create<bool>(bodyStream, (eventType, span) =>
 			{
@@ -134,6 +137,7 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
 		string? reasoningEffort,
+		string? configurationUpdateEffort,
 		string deployment,
 		string baseUrl,
 		string apiVersion,
@@ -150,7 +154,8 @@ public sealed class AzureOpenAiResponsesProvider : IApiProvider
 				reasoningEffort,
 				maxOutputTokens,
 				deployment,
-				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? true),
+				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? true,
+				configurationUpdateEffort: configurationUpdateEffort),
 			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)

@@ -95,6 +95,9 @@ public sealed record CodingAgentSettings
 
 	public string CacheWarming { get; init; } = "idle";
 
+	/// <summary><c>settings.showCacheMissNotices</c>：在会话里提示被丢弃的思考块与昂贵的缓存未命中。</summary>
+	public bool ShowCacheMissNotices { get; init; }
+
 	/// <c>settings.thinkingBudgets</c>：思考级别的自定义 token 预算。
 	public IReadOnlyDictionary<string, int> ThinkingBudgets { get; init; } =
 		new Dictionary<string, int>(StringComparer.Ordinal);
@@ -519,6 +522,15 @@ public sealed record CodingAgentSettings
 		Write(root, "steeringMode", file.SteeringMode);
 		Write(root, "followUpMode", file.FollowUpMode);
 		Write(root, "cacheWarming", file.CacheWarming);
+		// null 表示「按默认关闭」：删掉旧键，否则保存一次「关闭」后文件里仍是 true。
+		if (file.ShowCacheMissNotices is { } showNotices)
+		{
+			root["showCacheMissNotices"] = showNotices;
+		}
+		else
+		{
+			root.Remove("showCacheMissNotices");
+		}
 		if (file.ThinkingBudgets is { Count: > 0 } thinkingBudgets)
 		{
 			var levels = new JsonObject();
@@ -806,6 +818,7 @@ public sealed record CodingAgentSettings
 		SteeringMode = project?.SteeringMode ?? global?.SteeringMode ?? "one-at-a-time",
 		FollowUpMode = project?.FollowUpMode ?? global?.FollowUpMode ?? "one-at-a-time",
 		CacheWarming = project?.CacheWarming ?? global?.CacheWarming ?? "idle",
+		ShowCacheMissNotices = project?.ShowCacheMissNotices ?? global?.ShowCacheMissNotices ?? false,
 		ThinkingBudgets = MergeIntDictionary(global?.ThinkingBudgets, project?.ThinkingBudgets),
 		Images = new ImagesSettings
 		{
@@ -1100,6 +1113,7 @@ public sealed record CodingAgentSettings
 		SteeringMode = settings.SteeringMode,
 		FollowUpMode = settings.FollowUpMode,
 		CacheWarming = settings.CacheWarming,
+		ShowCacheMissNotices = settings.ShowCacheMissNotices ? true : null,
 		ThinkingBudgets = settings.ThinkingBudgets.Count > 0
 			? new Dictionary<string, int>(settings.ThinkingBudgets, StringComparer.Ordinal)
 			: null,
@@ -1255,6 +1269,8 @@ public sealed record SettingsFile
 	public string? FollowUpMode { get; init; }
 
 	public string? CacheWarming { get; init; }
+
+	public bool? ShowCacheMissNotices { get; init; }
 
 	public Dictionary<string, int>? ThinkingBudgets { get; init; }
 

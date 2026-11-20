@@ -60,7 +60,15 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			var messages = Transcript.Normalize(context, model);
 			var tools = Transcript.GetTools(messages);
 			var reasoningEffort = OpenAiResponsesProvider.ResolveReasoningEffort(model, options);
+			// Codex 后端从 GPT-6 起接受 configuration_update：思考档变化不发在 reasoning.effort 上，
+			// 否则每次换档都会改掉请求前缀，提示词缓存全部失效。
+			var configurationUpdateEffort = ModelCompat.FlagOr(model, "supportsMidConvoEffort", false) ? reasoningEffort : null;
 			var maxOutputTokens = OpenAiContextBudget.Clamp(model, messages, options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null));
+			if (maxOutputTokens is { } requestedTokens)
+			{
+				// Responses API 拒绝 16 以下的 max_output_tokens。
+				maxOutputTokens = Math.Max(16, requestedTokens);
+			}
 			var cacheKey = options.SessionId ?? options.Metadata?["prompt_cache_key"]?.GetValue<string>();
 
 			var body = BuildRequestBody(
@@ -70,7 +78,8 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 				options,
 				reasoningEffort,
 				maxOutputTokens,
-				cacheKey);
+				cacheKey,
+				configurationUpdateEffort);
 			var transport = (options.Transport ?? "auto").ToLowerInvariant();
 			var webSocket = transport is "websocket" or "websocket-cached" or "auto";
 			if (webSocket)
@@ -84,6 +93,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 					accountId,
 					credentials.Access,
 					allowFallback: transport == "auto",
+					configurationUpdateEffort,
 					cancellationToken).ConfigureAwait(false);
 				if (handled)
 				{
@@ -108,7 +118,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 
 			await using var bodyStream = await ProviderHttp.ReadBodyAsync(response, options, cancellationToken).ConfigureAwait(false);
 
-			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId);
+			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId, configurationUpdateEffort);
 			var sse = new SseJsonReader();
 			var parser = SseParser.Create<bool>(bodyStream, (eventType, span) =>
 			{
@@ -154,7 +164,8 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 		StreamOptions options,
 		string? reasoningEffort,
 		int? maxOutputTokens,
-		string? cacheKey)
+		string? cacheKey,
+		string? configurationUpdateEffort)
 	{
 		var bytes = JsonPayload.Write(
 			writer => OpenAiResponsesWire.WriteRequest(
@@ -168,7 +179,9 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 				modelNameOverride: null,
 				store: false,
 				promptCacheKey: cacheKey,
-				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? true),
+				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? true,
+				systemPromptAsInputItem: true,
+				configurationUpdateEffort: configurationUpdateEffort),
 			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
@@ -238,6 +251,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 		string accountId,
 		string accessToken,
 		bool allowFallback,
+		string? configurationUpdateEffort,
 		CancellationToken cancellationToken)
 	{
 		var started = false;
@@ -256,7 +270,7 @@ public sealed class OpenAiCodexResponsesProvider : IApiProvider
 			var frame = Encoding.UTF8.GetBytes(payload.ToJsonString(PiJson.NodeOptions));
 			await socket.SendAsync(frame, WebSocketMessageType.Text, endOfMessage: true, cancellationToken).ConfigureAwait(false);
 
-			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId);
+			var state = new OpenAiResponsesStreamState(model, stream, startedAt, ApiId, configurationUpdateEffort);
 			var buffer = new byte[64 * 1024];
 			var received = new MemoryStream();
 			var terminal = false;

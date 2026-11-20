@@ -49,6 +49,31 @@ public class OpenAiCompletionsProviderTests
 		""";
 
 	[Fact]
+	public async Task NonReasoningModelsUseSystemRole()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCompletionsProvider(new HttpClient(handler));
+		// developer 角色是给推理模型的；非推理模型仍发 system。
+		var model = Model() with { Reasoning = false };
+
+		var stream = provider.Stream(
+			model,
+			new Context
+			{
+				SystemPrompt = "be terse",
+				Messages = [new UserMessage { Content = MessageContent.FromText("hi"), Timestamp = 1 }],
+			},
+			new StreamOptions { ApiKey = "test-key" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		Assert.Equal("system", document.RootElement.GetProperty("messages")[0].GetProperty("role").GetString());
+	}
+
+	[Fact]
 	public async Task StreamsReasoningTextAndToolCall()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };

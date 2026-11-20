@@ -101,6 +101,84 @@ public class ClassifierTests
 		Assert.Equal("input_image", root.GetProperty("input")[0].GetProperty("content")[1].GetProperty("type").GetString());
 	}
 
+	[Fact]
+	public async Task DecisionsSplitsCacheTokensOutOfInput()
+	{
+		const string body = """
+			{
+			  "answers": [ { "name": "spam", "type": "predicate", "probability": 0.5 } ],
+			  "usage": {
+			    "input_tokens": 100,
+			    "output_tokens": 10,
+			    "input_tokens_details": { "cached_tokens": 40, "cache_write_tokens": 10 }
+			  }
+			}
+			""";
+		var handler = new FakeHttpHandler
+		{
+			Responder = _ => new HttpResponseMessage(HttpStatusCode.OK)
+			{
+				Content = new StringContent(body, Encoding.UTF8, "application/json"),
+			},
+		};
+		var provider = new OpenAiDecisionsProvider(new HttpClient(handler));
+		var context = new ClassifierContext
+		{
+			State = new JsonObject { ["text"] = "hi" },
+			Questions = new Dictionary<string, ClassifierQuestion>
+			{
+				["spam"] = new ClassifierBoolQuestion { Instructions = "Is it spam?" },
+			},
+		};
+
+		var result = await provider.ClassifyAsync(Model(), context, new ProviderRequestOptions { ApiKey = "key" });
+
+		// Responses 同款：缓存读写已经含在 input_tokens 里，拆出来单独计价，不再重复算进输入。
+		Assert.Equal(50, result.Usage!.Input);
+		Assert.Equal(40, result.Usage.CacheRead);
+		Assert.Equal(10, result.Usage.CacheWrite);
+		Assert.Equal(110, result.Usage.TotalTokens);
+	}
+
+	[Fact]
+	public async Task DecisionsClampsCacheTokensToInput()
+	{
+		// 坏数据：缓存读比总输入还大。夹取后 input 不能为负，缓存写也不能再占预算。
+		const string body = """
+			{
+			  "answers": [ { "name": "spam", "type": "predicate", "probability": 0.5 } ],
+			  "usage": {
+			    "input_tokens": 40,
+			    "output_tokens": 1,
+			    "input_tokens_details": { "cached_tokens": 100, "cache_write_tokens": 10 }
+			  }
+			}
+			""";
+		var handler = new FakeHttpHandler
+		{
+			Responder = _ => new HttpResponseMessage(HttpStatusCode.OK)
+			{
+				Content = new StringContent(body, Encoding.UTF8, "application/json"),
+			},
+		};
+		var provider = new OpenAiDecisionsProvider(new HttpClient(handler));
+		var context = new ClassifierContext
+		{
+			State = new JsonObject { ["text"] = "hi" },
+			Questions = new Dictionary<string, ClassifierQuestion>
+			{
+				["spam"] = new ClassifierBoolQuestion { Instructions = "Is it spam?" },
+			},
+		};
+
+		var result = await provider.ClassifyAsync(Model(), context, new ProviderRequestOptions { ApiKey = "key" });
+
+		Assert.Equal(0, result.Usage!.Input);
+		Assert.Equal(40, result.Usage.CacheRead);
+		Assert.Equal(0, result.Usage.CacheWrite);
+		Assert.Equal(41, result.Usage.TotalTokens);
+	}
+
 	private const string SystemOneResponse = """
 		{
 		  "answers": {

@@ -2,7 +2,7 @@
 
 PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electron + React。本文记录桌面功能、配置安全边界与剩余差距。当前实现见 [状态](00-status.md)，视觉契约见 [DESIGN.md](../DESIGN.md)。
 
-对照基准（只读）：pi `v1.5.2+337`（`653f332b6`，2026-11-19）、PiDeck `0.13.0`（`dc92c2542`）；pi_agent_rust / pi-go 仅作方向参考。
+对照基准（只读）：pi `v1.6.0`（`fe8a6f5dc`，2026-11-20）、PiDeck `0.13.0`（`dc92c2542`）；pi_agent_rust / pi-go 仅作方向参考。
 
 ## 视觉与主题
 
@@ -28,6 +28,7 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 | 消息 | Markdown、高亮、复制、图片放大、思考折叠 | 代码行号、跨行块注释、更多语言 |
 | 工具 | 折叠摘要、状态/耗时、按工具分栏的参数与输出、统一/并排 diff、大文本固定视口虚拟化；shell 侧删除前备份进回收站、Windows `> nul` 改写、模型专用代理不传给 agent 命令 | 完整文件交互 |
 | 历史 | 编辑重发、重试、继续生成、编辑助手回复（`context_edit`）、fork、分支树、跳转、HTML 导出 | 多选批量、删除消息、分支比较 |
+| 诊断提示 | `AssistantMessage.diagnostics` 随会话落盘；`showCacheMissNotices` 打开后提示供应商丢弃的思考块与明显的缓存未命中（>20k token 或 >$0.1），文案与 pi 一致 | 压缩费用回执、缓存浪费总览 |
 | 输入/模型 | 斜杠命令、命令面板、改键、快捷消息（插入/直发）、模型筛选/搜索/刷新、记住上次使用、每模型思考档 | 模型收藏 |
 | 附件 | 路径引用、图片文件/字节、粘贴、复制预览；进上下文前按模型限制应用 EXIF 方向并缩放/转码，`images.autoResize` 可关，`images.blockImages` 可拦（含历史图片） | 更多媒体类型、回复转图片 |
 | 用量 | 会话统计、上下文、费用、缓存、压缩；供应商余额/套餐；Sub2API 面板余额与续期；跨会话热力图 | 火山 AK/SK、热力图下钻 |
@@ -257,7 +258,7 @@ PiDeck 用环境变量把宿主能力交给 pi；把 `customPiPath` 指向本端
 
 ### 命令行与网络
 
-- `--version` 报告**兼容的 pi 版本**（`1.5.2`），不是 RPC 契约版本：PiDeck 拿它做功能门槛与更新比较，报契约版本会让它一直提示升级到用不上的 npm 包。RPC 契约版本（`1.3.0`）留在 `/changelog` 与 `--bug` 报告里。
+- `--version` 报告**兼容的 pi 版本**（`1.6.0`），不是 RPC 契约版本：PiDeck 拿它做功能门槛与更新比较，报契约版本会让它一直提示升级到用不上的 npm 包。RPC 契约版本（`1.3.0`）留在 `/changelog` 与 `--bug` 报告里。
 - `--offline` / `PI_OFFLINE=1` 跳过模型目录刷新、包更新和启动目录拉取；显式登录、安装与对话照常。
 - `pi update` 在 NativeAOT 构建里提示用发行页更新本体；`pi update --extensions` 更新包并报告 npm 版本或 git commit 变化；`--all` 同时提示本体与更新包。
 - 未知长选项按 `--flag=value` / `--flag value` / 布尔 `--flag` 收集，交给扩展；无人注册报错退出 2。短选项立即报错。

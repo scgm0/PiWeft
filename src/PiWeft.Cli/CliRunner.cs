@@ -378,8 +378,8 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	/// `--version` 报告的是**兼容的 pi 版本**，不是本端口的契约版本：PiDeck 拿它做功能门槛
 	/// （`piVersionAtLeast(version, "0.99.0")`、`MIN_PI_VERSION = "1.0.0"`）与「有新版本」比较。
 	/// 报 1.3.0 会让 PiDeck 每轮都提示升级到一个它实际用不上的 npm 包；
-	/// 报得比实现高又会让它启用本端口没有的能力。这里取对齐基准 pi `v1.5.2`。
-	public const string PiCompatibilityVersion = "1.5.2";
+	/// 报得比实现高又会让它启用本端口没有的能力。这里取对齐基准 pi `v1.6.0`。
+	public const string PiCompatibilityVersion = "1.6.0";
 
 	public static string VersionString => PiCompatibilityVersion;
 
@@ -492,6 +492,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 	private async Task RunAndPrintAsync(CodingAgentSession session, Func<CancellationToken, Task> run, CancellationToken cancellationToken)
 	{
 		var collected = new StringBuilder();
+		AssistantMessage? lastAssistant = null;
 
 		using var subscription = session.Subscribe(@event =>
 		{
@@ -500,6 +501,7 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 				case MessageEndEvent { Message: AssistantMessage assistant }:
 					lock (_outputGate)
 					{
+						lastAssistant = assistant;
 						foreach (var block in assistant.Content.OfType<TextContent>())
 						{
 							collected.Append(block.Text);
@@ -532,6 +534,20 @@ public sealed partial class CliRunner(CliEnvironment environment, TextWriter out
 		if (session.ErrorMessage is { Length: > 0 } errorMessage)
 		{
 			error.WriteLine($"pi: {errorMessage}");
+		}
+
+		// pi 的 transcript 提示：供应商剔掉了思考块、或本轮明显没命中提示词缓存时提醒一句。
+		if (session.Settings.ShowCacheMissNotices)
+		{
+			if (AssistantDiagnostics.DroppedReasoningOf(lastAssistant?.Diagnostics) is { } dropped)
+			{
+				error.WriteLine($"pi: {dropped.Notice}");
+			}
+
+			if (CacheMissDetector.Detect(session.Messages, session.Registry) is { IsNoteworthy: true } miss)
+			{
+				error.WriteLine($"pi: {miss.Notice}");
+			}
 		}
 	}
 

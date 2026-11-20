@@ -91,6 +91,49 @@ public class AnthropicProviderTests
 		""";
 
 	[Fact]
+	public async Task RecordsDroppedThinkingBlocks()
+	{
+		const string body = """
+			event: message_start
+			data: {"type":"message_start","message":{"id":"msg_t","model":"claude-sonnet-4-5","usage":{"input_tokens":4,"output_tokens":0},"input_transformations":[{"type":"thinking_dropped","path":"messages.2.content.0","reason":"prefix_binding_mismatch"}]}}
+
+			event: content_block_start
+			data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+			event: content_block_delta
+			data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}
+
+			event: content_block_stop
+			data: {"type":"content_block_stop","index":0}
+
+			event: message_delta
+			data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}
+
+			event: message_stop
+			data: {"type":"message_stop"}
+
+			""";
+		var handler = new FakeHttpHandler { Responder = _ => Sse(body) };
+		var provider = new AnthropicProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Sonnet(),
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = "k" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		var message = await stream.Result;
+		var diagnostic = Assert.Single(message.Diagnostics!);
+		Assert.Equal("anthropic_input_transformations", diagnostic.Type);
+		var entry = Assert.Single(diagnostic.Details!["transformations"]!.AsArray())!.AsObject();
+		Assert.Equal("thinking_dropped", entry["type"]!.GetValue<string>());
+		Assert.Equal("messages.2.content.0", entry["path"]!.GetValue<string>());
+	}
+
+	[Fact]
 	public async Task StreamsTextAndToolCall()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };

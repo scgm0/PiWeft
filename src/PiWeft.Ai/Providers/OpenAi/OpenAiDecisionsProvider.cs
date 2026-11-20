@@ -268,13 +268,21 @@ public sealed class OpenAiDecisionsProvider : IClassifierApiProvider
 			return null;
 		}
 
-		var input = Math.Max(0, ImageJson.Long(usage["input_tokens"]));
+		var totalInput = Math.Max(0, ImageJson.Long(usage["input_tokens"]));
 		var output = Math.Max(0, ImageJson.Long(usage["output_tokens"]));
+		// Responses 同款：input_tokens 已经包含缓存读写，单独拆出来计价，不再算进 input。
+		var details = usage["input_tokens_details"] as JsonObject;
+		var (input, cacheRead, cacheWrite) = UsageMath.SplitCacheTokens(
+			totalInput,
+			ImageJson.Long(details?["cached_tokens"]),
+			ImageJson.Long(details?["cache_write_tokens"]));
 		return CostCalculator.Calculate(model, new Usage
 		{
 			Input = input,
 			Output = output,
-			TotalTokens = input + output,
+			CacheRead = cacheRead,
+			CacheWrite = cacheWrite,
+			TotalTokens = totalInput + output,
 		});
 	}
 

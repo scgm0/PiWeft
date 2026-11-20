@@ -54,7 +54,7 @@ internal static class ShellToolFormatter
 			var endLine = truncation.TotalLines;
 			if (truncation.LastLinePartial)
 			{
-				text += $"\n\n[Showing last {Truncate.FormatSize(truncation.OutputBytes)} of line {endLine} (line is {Truncate.FormatSize(LastLineBytes(result.Output))}).{fullHint}]";
+				text += $"\n\n[Showing last {Truncate.FormatSize(truncation.OutputBytes)} of line {startLine} (line is {Truncate.FormatSize(LastLineBytes(result.Output))}).{fullHint}]";
 			}
 			else if (truncation.TruncatedBy == "lines")
 			{
@@ -168,7 +168,9 @@ internal static class ShellToolFormatter
 
 	private static long LastLineBytes(string text)
 	{
-		var newline = text.LastIndexOf('\n');
-		return Truncate.ByteCount(newline < 0 ? text : text[(newline + 1)..]);
+		// 末行可能是几十 MB 的超长行：按 span 数字节，不切出一份新字符串。
+		var span = text.AsSpan();
+		var newline = span.LastIndexOf('\n');
+		return Truncate.ByteCount(newline < 0 ? span : span[(newline + 1)..]);
 	}
 }

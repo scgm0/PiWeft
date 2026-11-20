@@ -482,6 +482,10 @@ internal sealed partial class ConfigurationView
 		var global = defaults is { Error: null } ? defaults.Parse() : new JsonObject();
 		var compact = Check(Strings.ConfigAutoCompaction, ReadEnabled(_root, "compaction", ReadEnabled(global, "compaction", true)));
 		var retry = Check(Strings.ConfigAutoRetry, ReadEnabled(_root, "retry", ReadEnabled(global, "retry", true)));
+		var showNotices = Check(Strings.ConfigShowCacheMissNotices,
+			ReadFlag(_root, "showCacheMissNotices", ReadFlag(global, "showCacheMissNotices", false)));
+		var showNoticesChanged = false;
+		showNotices.OnCheckedChanged(_ => { showNoticesChanged = true; SetDirty(true); });
 		var retryMaxInput = Input(ReadInt(_root, "retry", "maxRetries", ReadInt(global, "retry", "maxRetries", 3))
 			.ToString(CultureInfo.InvariantCulture)).Width(160);
 		var retryDelayInput = Input(ReadInt(_root, "retry", "baseDelayMs", ReadInt(global, "retry", "baseDelayMs", 2000))
@@ -641,10 +645,11 @@ internal sealed partial class ConfigurationView
 		_body.Children(
 			defaultsCard,
 			FormCard(Strings.ConfigBehavior, Strings.ConfigBehaviorHint,
-				Field(Strings.Thinking, thinking), compact, retry,
+				Field(Strings.Thinking, thinking), compact, retry, showNotices,
 				Fields(Field(Strings.ConfigRetryMaxRetries, retryMaxInput, 180),
 					Field(Strings.ConfigRetryBaseDelay, retryDelayInput, 200)),
-				Hint(Strings.ConfigRetryHint)),
+				Hint(Strings.ConfigRetryHint),
+				Hint(Strings.ConfigShowCacheMissNoticesHint)),
 			FormCard(Strings.ConfigToolsTitle, Strings.ConfigToolsHint,
 				new StackPanel().Spacing(AppTheme.Space2).Children(
 					Label(Strings.ConfigDefaultTools),
@@ -673,6 +678,7 @@ internal sealed partial class ConfigurationView
 			SetOptional(next, "defaultProvider", provider.Text.Trim());
 			SetOptional(next, "defaultModel", model.Text.Trim());
 			if (thinkingChanged) SetOptional(next, "defaultThinkingLevel", levels[Math.Max(0, thinking.SelectedIndex)]);
+			if (showNoticesChanged) next["showCacheMissNotices"] = showNotices.IsChecked == true;
 			if (compactChanged) SetEnabled(next, "compaction", compact.IsChecked == true);
 			var retryOn = retry.IsChecked == true;
 			// 自动重试关闭时，次数/延迟不参与保存与校验；否则先输错再取消勾选会卡在禁用输入上。
@@ -817,6 +823,9 @@ internal sealed partial class ConfigurationView
 
 	private static bool ReadEnabled(JsonObject root, string key, bool fallback) =>
 		root[key] is JsonObject obj && obj["enabled"] is JsonValue value && value.TryGetValue<bool>(out var enabled) ? enabled : fallback;
+
+	private static bool ReadFlag(JsonObject root, string key, bool fallback) =>
+		root[key] is JsonValue value && value.TryGetValue<bool>(out var flag) ? flag : fallback;
 
 	private static bool ReadBool(JsonObject root, string sectionKey, string key, bool fallback) =>
 		root[sectionKey] is JsonObject obj && obj[key] is JsonValue value && value.TryGetValue<bool>(out var flag) ? flag : fallback;

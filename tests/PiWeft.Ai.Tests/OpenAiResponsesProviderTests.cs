@@ -83,6 +83,139 @@ public class OpenAiResponsesProviderTests
 		""";
 
 	[Fact]
+	public async Task ChatGptSignInSkipsConfigurationUpdates()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiResponsesProvider(new HttpClient(handler));
+		var model = Model() with
+		{
+			Id = "gpt-6.2-sol",
+			Compat = new JsonObject { ["supportsMidConvoEffort"] = true },
+		};
+		var history = new List<Message>
+		{
+			new UserMessage { Content = MessageContent.FromText("first") },
+			new AssistantMessage
+			{
+				Content = [new TextContent { Text = "answer" }],
+				Api = model.Api,
+				Provider = model.Provider,
+				Model = model.Id,
+				ProviderThinkingLevel = "high",
+				StopReason = StopReason.Stop,
+			},
+			new UserMessage { Content = MessageContent.FromText("again") },
+		};
+
+		// 非 sk- 凭据走 ChatGPT 登录；该后端拒收 configuration_update，请求退回 reasoning.effort。
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = history },
+			new StreamOptions { ApiKey = "eyJhbGciOiJub25lIn0.e30.sig", ThinkingLevel = "low" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var root = document.RootElement;
+		Assert.Equal("low", root.GetProperty("reasoning").GetProperty("effort").GetString());
+		Assert.DoesNotContain(root.GetProperty("input").EnumerateArray(), static item =>
+			item.TryGetProperty("type", out var type) && type.GetString() == "configuration_update");
+	}
+
+	[Fact]
+	public async Task MidConversationEffortUsesConfigurationUpdateItems()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiResponsesProvider(new HttpClient(handler));
+		var model = Model() with
+		{
+			Id = "gpt-6.2-sol",
+			Compat = new JsonObject { ["supportsMidConvoEffort"] = true },
+		};
+
+		var history = new List<Message>
+		{
+			new UserMessage { Content = MessageContent.FromText("first") },
+			new AssistantMessage
+			{
+				Content = [new TextContent { Text = "answer" }],
+				Api = model.Api,
+				Provider = model.Provider,
+				Model = model.Id,
+				ProviderThinkingLevel = "high",
+				StopReason = StopReason.Stop,
+			},
+			new UserMessage { Content = MessageContent.FromText("again") },
+		};
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = history },
+			// sk- 开头才是普通 API Key；非 sk- 会被当成 ChatGPT 登录，后端不收 configuration_update。
+			new StreamOptions { ApiKey = "sk-test", ThinkingLevel = "low" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		var message = await stream.Result;
+		// 供应商真实档位写回消息，下一轮据此在历史里重申。
+		Assert.Equal("low", message.ProviderThinkingLevel);
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var root = document.RootElement;
+		Assert.Equal("medium", root.GetProperty("reasoning").GetProperty("effort").GetString());
+
+		var sequence = root.GetProperty("input").EnumerateArray()
+			.Select(static item => item.TryGetProperty("type", out var type) && type.GetString() == "configuration_update"
+				? $"configuration_update:{item.GetProperty("reasoning").GetProperty("effort").GetString()}"
+				: item.GetProperty("role").GetString())
+			.ToList();
+		// 更新项必须在该条历史回复之前，否则对这条回复不生效。
+		Assert.Equal(
+			["user", "configuration_update:high", "assistant", "user", "configuration_update:low"],
+			sequence);
+	}
+
+	[Fact]
+	public async Task RecordsDroppedReasoningItems()
+	{
+		const string body = """
+			event: response.created
+			data: {"type":"response.created","response":{"id":"resp_x","model":"gpt-6.2-sol","status":"in_progress"}}
+
+			event: response.output_text.delta
+			data: {"type":"response.output_text.delta","output_index":0,"delta":"ok"}
+
+			event: response.completed
+			data: {"type":"response.completed","response":{"id":"resp_x","status":"completed","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6},"input_transformations":[{"type":"reasoning","id":"rs_1","action":"removed","reason":"prefix_mismatch"},{"type":"reasoning","id":"rs_2","action":"removed","reason":"turn_boundary"}]}}
+
+			""";
+		var handler = new FakeHttpHandler { Responder = _ => Sse(body) };
+		var provider = new OpenAiResponsesProvider(new HttpClient(handler));
+
+		var stream = provider.Stream(
+			Model() with { Id = "gpt-6.2-sol" },
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = "k" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		var message = await stream.Result;
+		var diagnostic = Assert.Single(message.Diagnostics!);
+		Assert.Equal("openai_input_transformations", diagnostic.Type);
+		var transformations = diagnostic.Details!["transformations"]!.AsArray();
+		// turn_boundary 不入库：每轮都会重报，会话会平方增长。
+		var entry = Assert.Single(transformations)!.AsObject();
+		Assert.Equal("rs_1", entry["id"]!.GetValue<string>());
+		Assert.Equal("prefix_mismatch", entry["reason"]!.GetValue<string>());
+	}
+
+	[Fact]
 	public async Task StreamsReasoningTextAndFunctionCall()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };

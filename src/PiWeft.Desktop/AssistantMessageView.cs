@@ -125,6 +125,17 @@ internal sealed class AssistantMessageView : IDisposable
 			_content.Children(SessionTab.ImageView(image, preview));
 		}
 
+		// 供应商侧提示：丢弃的思考块与明显的缓存未命中，各占一行小字。
+		if (entry.DiagnosticNotice is { Length: > 0 } diagnosticNotice)
+		{
+			_content.Children(NoticeLine(diagnosticNotice));
+		}
+
+		if (entry.CacheMissNotice is { Length: > 0 } cacheMissNotice)
+		{
+			_content.Children(NoticeLine(cacheMissNotice));
+		}
+
 		View = new Border()
 			.Padding(entry.Compact ? new Thickness(0, 0, 0, 0) : new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.MaxWidth(AppTheme.MessageMaxWidth)
@@ -137,6 +148,17 @@ internal sealed class AssistantMessageView : IDisposable
 	}
 
 	public Border View { get; }
+
+	private static UIElement NoticeLine(string text) =>
+		new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(AppTheme.Space2)
+			.Children(
+				AppIcons.Icon("triangle-alert", AppStyles.RoleInfo, 12),
+				new TextBlock()
+					.Text(text)
+					.FontSize(AppTheme.FontSizeMicro)
+					.WithTheme((theme, block) => block.Foreground = AppTheme.For(theme).Info));
 
 	private sealed class MarkdownFeed
 	{

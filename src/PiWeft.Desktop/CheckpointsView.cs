@@ -387,7 +387,7 @@ public sealed class CheckpointsView
 		var (patch, error) = await Task.Run(() => Checkpoints.Patch(cwd, row.Checkpoint.Sha)).ConfigureAwait(false);
 		if (error is { Length: > 0 })
 		{
-			Toasts.Error(View, Strings.CheckpointPatchFailed(error));
+			Dispatch(() => Toasts.Error(View, Strings.CheckpointPatchFailed(error)));
 			return;
 		}
 
@@ -404,7 +404,7 @@ public sealed class CheckpointsView
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			Toasts.Error(View, Strings.CheckpointPatchFailed(exception.Message));
+			Dispatch(() => Toasts.Error(View, Strings.CheckpointPatchFailed(exception.Message)));
 			return;
 		}
 
@@ -446,21 +446,26 @@ public sealed class CheckpointsView
 				return Checkpoints.Restore(cwd, row.Checkpoint.Sha);
 			}).ConfigureAwait(false);
 
-			if (failure is { Length: > 0 })
+			Dispatch(() =>
 			{
-				Toasts.Error(View, failure);
-			}
-			else
-			{
-				Toasts.Success(View, Strings.CheckpointRestored);
-			}
-		}
-		finally
-		{
-			_restoring = false;
-		}
+				_restoring = false;
+				if (failure is { Length: > 0 })
+				{
+					Toasts.Error(View, failure);
+				}
+				else
+				{
+					Toasts.Success(View, Strings.CheckpointRestored);
+				}
 
-		Refresh();
+				Refresh();
+			});
+		}
+		catch
+		{
+			Dispatch(() => _restoring = false);
+			throw;
+		}
 	}
 
 	private async Task CreateAsync()
@@ -469,13 +474,16 @@ public sealed class CheckpointsView
 		var checkpoint = await Task.Run(() => Checkpoints.Create(cwd, "manual")).ConfigureAwait(false);
 		if (checkpoint is null)
 		{
-			Toasts.Error(View, Strings.CheckpointCreateFailed);
+			Dispatch(() => Toasts.Error(View, Strings.CheckpointCreateFailed));
 			return;
 		}
 
 		await Task.Run(() => Checkpoints.Prune(cwd)).ConfigureAwait(false);
-		Toasts.Success(View, Strings.CheckpointCreated);
-		Refresh();
+		Dispatch(() =>
+		{
+			Toasts.Success(View, Strings.CheckpointCreated);
+			Refresh();
+		});
 	}
 
 	private static string DescribeLabel(string label) => label switch

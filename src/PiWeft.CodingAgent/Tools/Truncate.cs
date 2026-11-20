@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 
 namespace PiWeft.CodingAgent.Tools;
@@ -142,6 +143,7 @@ public static class Truncate
 		var truncatedBy = "lines";
 		var lastLinePartial = false;
 		string? partial = null;
+		var keptAllBlank = true;
 
 		while (!atStart && kept < maxLines)
 		{
@@ -151,16 +153,21 @@ public static class Truncate
 				lineStart--;
 			}
 
-			var lineBytes = Utf8ByteCount(span[lineStart..lineEnd]) + (kept > 0 ? 1 : 0);
+			var line = span[lineStart..lineEnd];
+			// 行字节数只算一次：partial 分支还要用它换算成「换行 + 尾部」的增量。
+			var lineByteCount = Utf8ByteCount(line);
+			var lineBytes = lineByteCount + (kept > 0 ? 1 : 0);
 			if (outputBytes + lineBytes > maxBytes)
 			{
 				truncatedBy = "bytes";
-				if (kept == 0)
+				// 这一行超限、后面又只有空行时，取这一行的尾部：否则输出只剩空行，看起来像没有输出。
+				var remainingBytes = maxBytes - outputBytes - (kept > 0 ? 1 : 0);
+				if (kept == 0 || (!IsBlank(line) && keptAllBlank && remainingBytes > 0))
 				{
-					// 最后一行本身就超过上限：保留它的尾部。
-					partial = TakeBytesFromEnd(span[lineStart..lineEnd].ToString(), maxBytes);
-					outputBytes = ByteCount(partial);
-					kept = 1;
+					partial = TakeBytesFromEnd(line, lineByteCount, remainingBytes);
+					// 与 pi 的字节账一致：尾部与已保留行之间多一个换行，后续截断归类看这个数。
+					outputBytes += lineBytes - lineByteCount + Utf8ByteCount(partial);
+					kept++;
 					lastLinePartial = true;
 				}
 
@@ -170,6 +177,7 @@ public static class Truncate
 			kept++;
 			outputBytes += lineBytes;
 			outputStart = lineStart;
+			keptAllBlank &= IsBlank(line);
 			if (lineStart == 0)
 			{
 				atStart = true;
@@ -185,7 +193,10 @@ public static class Truncate
 			truncatedBy = "lines";
 		}
 
-		var output = partial ?? span[outputStart..contentEnd].ToString();
+		var tail = span[outputStart..contentEnd].ToString();
+		var output = partial is null
+			? tail
+			: kept > 1 ? string.Concat(partial, "\n", tail) : partial;
 		return new TruncationResult
 		{
 			Content = output,
@@ -233,6 +244,9 @@ public static class Truncate
 
 	internal static long ByteCount(string value) => Encoding.UTF8.GetByteCount(value);
 
+	/// <summary>一段文本的 UTF-8 字节数；调用方已有 span 时不复制成字符串。</summary>
+	internal static long ByteCount(ReadOnlySpan<char> value) => Utf8ByteCount(value);
+
 	private static int CountLines(ReadOnlySpan<char> content)
 	{
 		if (content.IsEmpty)
@@ -274,20 +288,44 @@ public static class Truncate
 			MaxBytes = maxBytes,
 		};
 
-	private static string TakeBytesFromEnd(string value, long maxBytes)
+	/// <summary>行内容只有空白时为 true（与 pi 的 <c>trim().length === 0</c> 同义）。</summary>
+	private static bool IsBlank(ReadOnlySpan<char> line) => line.Trim().IsEmpty;
+
+	/// 取一段 UTF-8 文本的尾部，不劈开多字节字符。直接按 UTF-16 切片算字节，
+	/// 不为超长行分配整串字符串与整份 UTF-8 字节数组（单行几十 MB 的日志很常见）。
+	private static string TakeBytesFromEnd(ReadOnlySpan<char> value, long byteCount, long maxBytes)
 	{
-		var bytes = Encoding.UTF8.GetBytes(value);
-		if (bytes.LongLength <= maxBytes)
+		if (maxBytes <= 0 || value.IsEmpty)
 		{
-			return value;
+			return string.Empty;
 		}
 
-		var start = (int)Math.Max(0, bytes.LongLength - maxBytes);
-		while (start < bytes.Length && (bytes[start] & 0xC0) == 0x80)
+		if (byteCount <= maxBytes)
 		{
-			start++;
+			return value.ToString();
 		}
 
-		return Encoding.UTF8.GetString(bytes, start, bytes.Length - start);
+		var start = value.Length;
+		long bytes = 0;
+		while (start > 0)
+		{
+			var status = Rune.DecodeLastFromUtf16(value[..start], out var rune, out var consumed);
+			// 孤立代理在 Encoding.UTF8 里写成替换字符 EF BF BD，占 3 字节、消耗一个 char。
+			var size = status == OperationStatus.Done ? rune.Utf8SequenceLength : 3;
+			if (status != OperationStatus.Done)
+			{
+				consumed = 1;
+			}
+
+			if (bytes + size > maxBytes)
+			{
+				break;
+			}
+
+			bytes += size;
+			start -= consumed;
+		}
+
+		return value[start..].ToString();
 	}
 }

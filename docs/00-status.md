@@ -31,8 +31,12 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 ## 兼容基线
 
-- CLI 产物/程序集名保持 `pi`；`--version` 报告兼容的 pi 版本 **1.5.2**（PiDeck 拿它做功能门槛与更新比较），RPC 契约版本 1.3.0 只出现在 `/changelog` 与 `--bug` 报告里。
+- CLI 产物/程序集名保持 `pi`；`--version` 报告兼容的 pi 版本 **1.6.0**（PiDeck 拿它做功能门槛与更新比较），RPC 契约版本 1.3.0 只出现在 `/changelog` 与 `--bug` 报告里。
 - 保留 `PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、项目 `.pi`、配置文件名与 v3 JSONL 会话格式。损坏的会话头 `cwd` 回退到当前目录。
+- provider 行为与 1.6.0 对齐：Gemini 版本判定不再要求 ID 以 `gemini` 开头（`vendor-gemini-4-argon` 同样拿到 strict 工具、工具调用 id 与函数响应图片），`compat.supportsStrictMode` 可覆盖；Codex 的系统提示词作为首条 `developer` 输入项发送（GPT-6.2 上不再每轮击穿提示词缓存），`supportsMidConvoEffort` 的模型（Codex、OpenAI Responses、Azure）用 `configuration_update` 切换思考档，`max_output_tokens` 最低 16；Copilot 的 Responses 与 Claude 默认发严格工具；分类器用量把 `input_tokens_details` 的缓存读写拆出 `input`。
+- 助手诊断：`AssistantMessage.diagnostics` 原样读写并随会话落盘。OpenAI 丢弃 reasoning、Anthropic 丢弃 thinking 块时各写一条 `*_input_transformations`；`settings.showCacheMissNotices` 打开后桌面与 CLI 提示丢弃计数与最后一条请求的明显缓存未命中（>20k token 或 >$0.1），文案与 pi 一致，默认关闭。
+- 自动重试的瞬态错误表补到 pi 1.6.0：Cloudflare 525、网关 `provider is temporarily unavailable`、`api_error` 事件、OpenRouter 空响应与提前结束、`admission ceiling`、`repeat the request later` 等。
+- bash/powershell 尾部截断在超长行后跟空行时保留行尾（pi #12355），状态行报输出第一行的行号。
 - 日志：`<agentDir>/logs/piweft-<app>-<pid>-<日期>-<序号>.log`，一行一条，按天与 4 MB 滚动，保留 14 天、最多 31 个文件。`PI_LOG_LEVEL` 或设置页「日志 → 日志级别」控制级别，改动立即生效；设置页可筛选、搜索、分页、复制、导出诊断包与清空。异常记录在写入前、诊断包在导出前都过脱敏：家目录 → `~`、agent 目录 → `<agent>`、工作目录 → `<workspace>`、凭据 → `***`。异常记录保留类型、脱敏后的消息、内部异常链与栈。
 - 崩溃记录：`<agentDir>/crashes.json` 保留最近 5 条、7 天内的记录，下次启动提示一次（桌面 toast，CLI stderr）。
 - 系统提示词只在运行时构造，不写入会话；章节拼进一条消息后不再保留 `Sections`，provider 取初始系统文本时不会重复追加。未知字段原样保留：会话头、条目顶层、已知角色的未建模字段（`Extra`）、未知角色整体（`CustomMessage.Raw`）、未知条目（`UnknownSessionEntry`）；`usage` / `usage.cost` 的未知字段同样保留。新增已知角色字段时须同步 `MessageJsonConverter` 与 `SessionJson.KnownKeys`。
@@ -45,7 +49,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - bash / powershell 子进程注入 `PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，启动时设置 `AI_AGENT=pi`、`PI_CODING_AGENT=true`；`settings.shellPath` / `shellCommandPrefix` 控制 shell 与前缀。
 - bash 路径、输出与收尾：命令输出进入上下文/会话前剥掉 ANSI 与 NUL/控制字符（工具保留 CR，与 pi 的精确输出一致），完整输出临时文件为 0600；shell 先退出、后台进程仍占管道时 timeout 仍然生效，并在状态行报告 shell 的真实退出码。每次调用把一整条命令装进容器：Linux 用 systemd user scope（cgroup，命令自己 `setsid` 也跑不掉），Windows 用 `KILL_ON_JOB_CLOSE` 的 Job 对象，其余 Unix 用 `setsid` 进程组。命令正常结束也杀掉容器里的残留（`dotnet build` 的 MSBuild 节点与 VBCSCompiler 因此不会活过工具调用），取消/超时按同一容器处置，没有容器时退回整树 kill。用户 `!` 命令的流式事件是 `bash_execution_update.delta` 文本块并去掉 CR，与 pi 的 bash-executor 一致。
 - 工具参数校验覆盖 `$ref`/`$defs`、`patternProperties`、`prefixItems` 与单值转数组（pi 1.5 的 pi-schema 子集）；不支持 TypeBox 的 `Refine`/codec 这类超出 JSON Schema 的扩展。`ask_question`/`todo` 的根 schema 不设 `additionalProperties:false`，与 PiDeck 一样容忍旧式顶层字段与未知字段。
-- 生效 settings：`shellPath`、`shellCommandPrefix`、`sessionDir`、`defaultTools`、`cacheWarming`（默认 `idle`）、`thinkingBudgets`、`images.autoResize`、`images.blockImages`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`compaction`（含 `modelOverrides`）、`retry`、`transport`、`httpIdleTimeoutMs`、`httpProxy`、`extensions`、`skills`、`prompts`、`themes`、`packages`、`enableSkillCommands`、`defaultProjectTrust`、`sessionShareDestination`、`codemode`、`security`。其余键保留不生效。
+- 生效 settings：`shellPath`、`shellCommandPrefix`、`sessionDir`、`defaultTools`、`cacheWarming`（默认 `idle`）、`showCacheMissNotices`（默认关）、`thinkingBudgets`、`images.autoResize`、`images.blockImages`、`steeringMode`、`followUpMode`、`modelThinkingLevels`、`enabledModels`、`branchSummary`、`compaction`（含 `modelOverrides`）、`retry`、`transport`、`httpIdleTimeoutMs`、`httpProxy`、`extensions`、`skills`、`prompts`、`themes`、`packages`、`enableSkillCommands`、`defaultProjectTrust`、`sessionShareDestination`、`codemode`、`security`。其余键保留不生效。
 - 启动迁移与 pi 的 `migrations.ts` 对齐：`oauth.json` / `settings.apiKeys` 并入 `auth.json`；根目录 `*.jsonl` 搬入 `sessions/<cwd>/`；`commands/` → `prompts/`；v1/v2 会话升级到 v3 并原子回写。`--export` 只读。
 - 编辑重发不新建会话：`TruncateForResend` 在原 JSONL 里把放弃的提问及后继写成 `deleted` 墓碑，叶子回到父条目。墓碑不进投影/分支树，重试与删除仍走 `context_edit`。编辑助手回复走另一条路：追加 `context_edit` 换掉投影里的正文，原条目留在文件里，不截断后续回合也不重跑。
 - 模型回退与模式无匹配要报出来：会话记录的模型已删除时回退到宿主默认，同时写一条 `Could not restore model ...` 警告（CLI stderr、桌面 toast）；`--models` / `settings.enabledModels` 里没有匹配的模式报 `No models match pattern`，不拦启动。
@@ -117,7 +121,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - 仍缺的 1.5 运行时项：OpenAI `requiresThinkingAsText`、`zaiToolStream`；MCP 跨进程刷新锁。
 - 安全门 `ask` 在桌面与交互式 CLI 上弹三选一：本次允许 / 本会话允许 / 拒绝；本会话允许按工具名记住，不跨会话也不落盘。没有审批宿主时退化为拒绝；默认档 `off`；CLI 无切换档位命令。
 - 扩展诊断要能看见：加载失败与处理器抛错进 `ExtensionHost.Diagnostics`，运行中实时发 `extension_error` 事件（RPC），加载期的那批由 `TakeUnreportedExtensionDiagnostics` 在客户端连上后补报一次；桌面会话打开时收集到设置页「扩展」分区，并弹一条 toast。
-- 与 pi 1.5.2+337 的剩余差距：Codex `websocket-cached` 不复用连接（60 分钟上限已按 close 原因重试）。
+- 与 pi 1.6.0 的剩余差距：Codex `websocket-cached` 不复用连接（60 分钟上限已按 close 原因重试）；`openai-responses` / Azure 的系统提示词仍发顶层 `instructions`，pi 发首条 `developer` 输入项（本端口只有一条合并后的 system，差异落在缓存前缀与工具变更通知）。
 - CLI 仍是按行 REPL：无完整 TUI、多行编辑、`$EDITOR`、键位绑定与终端图片。
 - 并行工具里同一文件的 `edit`/`write` 已串行化；`nestedCalls` / `parentToolCallId` 尚未产出，只按未知字段保留。
 - 生图/分类网关已接入 codemode（含 `openai-decisions`、`typesafe-system-one`、`cloudflare-workers-ai-system-one`），但没有一级入口；虚拟模型路由已实现，扩展宿主动态注册未接；Codex `websocket-cached` 未复用连接。虚拟模型的图片限制按外层模型条目的 `inputLimits` 取，未使用路由目标模型的限制。

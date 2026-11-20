@@ -125,15 +125,21 @@ public static class RetryClassifier
 			"servers are currently busy",
 			"currently experiencing high demand",
 			"model is at capacity",
+			// 排队超过供应商的准入门槛（sference：「waited 73.4s in queue, reaching this model's
+			// admission ceiling of 60s; retry after the hinted delay」）。
+			"admission ceiling",
 			"rate.?limit",
 			"too many requests",
 			// 状态码不能是更长单词/数字的一部分：请求 id、字节数里出现的 500/429 不该触发重试。
-			// 收藏 5xx 中的网关瞬态（Cloudflare 520-527/530）；501/505/511 这类不重试。
+			// 覆盖 5xx 中的网关瞬态（Cloudflare 520-527/530）；501/505/511 这类不重试。
 			"(?<![a-z0-9])(?:429|50[0234]|52[0-7]|530)(?![a-z0-9])",
 			// 网关空响应：pi 1.4+ 已把 bodyless 400/413 移出溢出判定，按瞬态重试。
 			@"\b(?:400|413)\s*(?:status code)?\s*\(no body\)",
 			// 也匹配 "The service is temporarily unavailable"；中文网关文案单独列。
 			"service.?(?:is.?)?(?:temporarily.?)?unavailable",
+			// 网关文案（「The provider is temporarily unavailable. Retry shortly.」）。
+			// 必须带 temporarily：光说 unavailable 往往是路由配错，不是瞬态。
+			"provider.?(?:is.?)?temporarily.?unavailable",
 			"暂时不可用",
 			"请稍后重试",
 			"server.?error",
@@ -141,6 +147,13 @@ public static class RetryClassifier
 
 			// 上游/网关的临时失败措辞（含 OpenRouter 的 "Provider returned error"）
 			"provider.?returned.?(?:an.?)?error",
+			// Anthropic 的内部错误，流开始后没有状态码：{"type":"api_error","message":"..."}。
+			// 转发 Anthropic 格式的网关也用它报上游失败。
+			"\"type\"\\s*:\\s*\"api_error\"",
+			// OpenRouter 在供应商中途失败时给 OpenAI 兼容流一个 finish_reason=error。
+			"provider finish_reason: error",
+			"returned an empty response",
+			"stopped before completing the response",
 			"exceeded request buffer limit while retrying upstream",
 			"unable to forward upstream",
 			"upstream.?request.?failed",
@@ -202,6 +215,10 @@ public static class RetryClassifier
 			"ended without",
 			"stream ended before message_stop",
 			"stream ended before a terminal response event",
+			// 网关以 SSE error 帧报的中途失败，没有状态码（#12227）。
+			"ended the response before it is complete",
+			"connection to the provider was reset",
+			"reported a failure while generating the response",
 			"http2 request did not get a response",
 			"pending stream has been canceled",
 			// .NET 的 HTTP 响应体在内容长度之前结束（chunked/SSE 被网关截断），
@@ -215,6 +232,8 @@ public static class RetryClassifier
 			"you can retry your request",
 			"try your request again",
 			"please retry your request",
+			// recursive：「Unable to process request. Repeat the request later.」
+			"repeat the request later",
 
 			// gRPC 型 provider（例如 NVIDIA NIM）
 			"ResourceExhausted",

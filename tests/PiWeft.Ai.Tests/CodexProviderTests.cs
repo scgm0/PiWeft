@@ -297,6 +297,78 @@ public class OpenAiCodexResponsesProviderTests
 	}
 
 	[Fact]
+	public async Task MidConversationEffortUsesConfigurationUpdateItems()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCodexResponsesProvider(new HttpClient(handler));
+		var model = Model() with
+		{
+			Id = "gpt-6.2-sol",
+			Compat = new JsonObject { ["supportsMidConvoEffort"] = true },
+		};
+
+		var history = new List<Message>
+		{
+			new UserMessage { Content = MessageContent.FromText("first") },
+			new AssistantMessage
+			{
+				Content = [new TextContent { Text = "answer" }],
+				Api = model.Api,
+				Provider = model.Provider,
+				Model = model.Id,
+				ProviderThinkingLevel = "high",
+				StopReason = StopReason.Stop,
+			},
+			new UserMessage { Content = MessageContent.FromText("again") },
+		};
+
+		var stream = provider.Stream(
+			model,
+			new Context { SystemPrompt = "be terse", Messages = history },
+			new StreamOptions { ApiKey = AccessToken(), Transport = "sse", ThinkingLevel = "low" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		await stream.Result;
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var root = document.RootElement;
+		// configuration_update 生效时请求里的 effort 固定，换档只改输入项。
+		Assert.Equal("medium", root.GetProperty("reasoning").GetProperty("effort").GetString());
+
+		var sequence = root.GetProperty("input").EnumerateArray()
+			.Select(static item => item.TryGetProperty("type", out var type) && type.GetString() == "configuration_update"
+				? $"configuration_update:{item.GetProperty("reasoning").GetProperty("effort").GetString()}"
+				: item.GetProperty("role").GetString())
+			.ToList();
+		Assert.Equal(
+			["developer", "user", "configuration_update:high", "assistant", "user", "configuration_update:low"],
+			sequence);
+	}
+
+	[Fact]
+	public async Task MaxOutputTokensIsClampedTo16()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new OpenAiCodexResponsesProvider(new HttpClient(handler));
+		var model = Model() with { MaxTokens = 8 };
+
+		var stream = provider.Stream(
+			model,
+			new Context { Messages = [new UserMessage { Content = MessageContent.FromText("hi") }] },
+			new StreamOptions { ApiKey = AccessToken(), Transport = "sse", MaxTokens = 8 });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		Assert.Equal(16, document.RootElement.GetProperty("max_output_tokens").GetInt32());
+	}
+
+	[Fact]
 	public async Task AutoTransportFallsBackToSse()
 	{
 		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
@@ -400,7 +472,12 @@ public class OpenAiCodexResponsesProviderTests
 		// The Codex backend rejects stored responses.
 		Assert.False(root.GetProperty("store").GetBoolean());
 		Assert.Equal("session-1", root.GetProperty("prompt_cache_key").GetString());
-		Assert.Equal("be terse", root.GetProperty("instructions").GetString());
+		// 系统提示作为首条 developer 输入项：GPT-6.2 把顶层 instructions 排在 input 之后，
+		// 新回合会把它挤出缓存前缀。
+		Assert.False(root.TryGetProperty("instructions", out _));
+		var first = root.GetProperty("input")[0];
+		Assert.Equal("developer", first.GetProperty("role").GetString());
+		Assert.Equal("be terse", first.GetProperty("content").GetString());
 	}
 
 	[Fact]

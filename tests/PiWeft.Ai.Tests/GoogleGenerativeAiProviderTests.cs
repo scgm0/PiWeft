@@ -437,6 +437,91 @@ public class GoogleGenerativeAiProviderTests
 		Assert.Equal(24576, GoogleGenerativeAiProvider.ResolveThinkingBudget(mapped, new StreamOptions { ThinkingLevel = ThinkingLevels.High }));
 	}
 
+	[Theory]
+	[InlineData("gemini-2.5-flash", false)]
+	[InlineData("gemini-3-pro", true)]
+	[InlineData("gemini-3.1-pro-preview", true)]
+	[InlineData("gemini-4-argon", true)]
+	// 供应商前缀不改变版本判定（pi #12321）。
+	[InlineData("vendor-gemini-4-argon", true)]
+	[InlineData("randomprefix-gemini-3.8-flash", true)]
+	[InlineData("claude-sonnet-5", false)]
+	public void GeminiMajorVersionIgnoresPrefixes(string id, bool strict)
+	{
+		var model = Model(id);
+		Assert.Equal(strict, GoogleWire.SupportsStrictToolSampling(model));
+		// Claude 也用 id 配对工具调用；这里只关心 Gemini 的版本判定不因前缀失效。
+		if (id.Contains("gemini", StringComparison.Ordinal))
+		{
+			Assert.Equal(strict, GoogleWire.RequiresToolCallId(id));
+		}
+	}
+
+	[Fact]
+	public void CompatOverridesGeminiStrictMode()
+	{
+		var older = Model("gemini-2.5-flash") with
+		{
+			Compat = new System.Text.Json.Nodes.JsonObject { ["supportsStrictMode"] = true },
+		};
+		Assert.True(GoogleWire.SupportsStrictToolSampling(older));
+
+		var newer = Model("gemini-4-argon") with
+		{
+			Compat = new System.Text.Json.Nodes.JsonObject { ["supportsStrictMode"] = false },
+		};
+		Assert.False(GoogleWire.SupportsStrictToolSampling(newer));
+	}
+
+	[Fact]
+	public async Task CompatStrictModeSendsValidatedTools()
+	{
+		var handler = new FakeHttpHandler { Responder = _ => Sse(StreamBody) };
+		var provider = new GoogleGenerativeAiProvider(new HttpClient(handler));
+		// 老 ID 靠 compat 打开严格模式：走 wire 才看得出 VALIDATED 与 required 都生效。
+		var model = Model("gemini-2.5-flash") with
+		{
+			Compat = new System.Text.Json.Nodes.JsonObject { ["supportsStrictMode"] = true },
+		};
+		var tool = new Tool
+		{
+			Name = "read",
+			Description = "read a file",
+			ConstrainedSampling = ConstrainedSampling.JsonSchema(),
+			Parameters = new System.Text.Json.Nodes.JsonObject
+			{
+				["type"] = "object",
+				["properties"] = new System.Text.Json.Nodes.JsonObject
+				{
+					["path"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "string" },
+				},
+				["required"] = new System.Text.Json.Nodes.JsonArray(
+					System.Text.Json.Nodes.JsonValue.Create("path")),
+			},
+		};
+
+		var stream = provider.Stream(
+			model,
+			new Context
+			{
+				Messages = [new UserMessage { Content = MessageContent.FromText("hi") }],
+				Tools = [tool],
+			},
+			new StreamOptions { ApiKey = "k" });
+
+		await foreach (var _ in stream)
+		{
+		}
+
+		using var document = JsonDocument.Parse(handler.LastBody!);
+		var root = document.RootElement;
+		Assert.Equal(
+			"VALIDATED",
+			root.GetProperty("toolConfig").GetProperty("functionCallingConfig").GetProperty("mode").GetString());
+		var declaration = root.GetProperty("tools")[0].GetProperty("functionDeclarations")[0];
+		Assert.Equal(1, declaration.GetProperty("parametersJsonSchema").GetProperty("required").GetArrayLength());
+	}
+
 	[Fact]
 	public async Task GeneratedToolCallIdsAreUnique()
 	{

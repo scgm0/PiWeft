@@ -33,9 +33,10 @@ internal static class GoogleWire
 		writer.WritePropertyName("contents");
 		WriteContents(writer, model, messages);
 
+		// 工具表与 toolConfig 判定共用一次；严格模式只看模型，与具体工具无关。
+		var supportsStrictMode = SupportsStrictToolSampling(model);
 		if (tools.Count > 0)
 		{
-			var supportsStrictMode = SupportsStrictToolSampling(model.Id);
 			writer.WritePropertyName("tools");
 			writer.WriteStartArray();
 			writer.WriteStartObject();
@@ -74,7 +75,7 @@ internal static class GoogleWire
 			writer.WriteEndObject();
 		}
 		else if (tools.Count > 0 && tools.Any(tool =>
-			ConstrainedSampling.ResolveStrictJsonSchema(tool, SupportsStrictToolSampling(model.Id)) == true))
+			ConstrainedSampling.ResolveStrictJsonSchema(tool, supportsStrictMode) == true))
 		{
 			// 有严格工具时必须用 VALIDATED 模式：否则 Gemini 不会真的执行受约束解码。
 			writer.WritePropertyName("toolConfig");
@@ -409,7 +410,9 @@ internal static class GoogleWire
 	}
 
 	/// Gemini 3+ 在 VALIDATED 工具模式里强制 required 参数；更老的模型没有这个模式。
-	internal static bool SupportsStrictToolSampling(string modelId) => GeminiMajorVersion(modelId) is { } major && major >= 3;
+	/// <c>compat.supportsStrictMode</c> 覆盖 ID 推断，给版本号藏在名字里的 Gemini 3+ 用。
+	internal static bool SupportsStrictToolSampling(Model model) =>
+		ModelCompat.Flag(model, "supportsStrictMode") ?? (GeminiMajorVersion(model.Id) is { } major && major >= 3);
 
 	/// 只有 Gemini 3+ 接受 functionResponse.parts 里的图片；其他模型另起一条 user content。
 	internal static bool SupportsMultimodalFunctionResponse(string modelId) =>
@@ -422,15 +425,17 @@ internal static class GoogleWire
 		GeminiMajorVersion(modelId) is { } major && major >= 3;
 
 	// 每个请求要问好几次版本号；手写解析避开正则与 ToLowerInvariant 的分配。
+	// 版本号可以带供应商前缀（vendor-gemini-4-argon），所以不在开头锚定。
 	private static int? GeminiMajorVersion(string modelId)
 	{
 		var span = modelId.AsSpan().Trim();
-		if (!span.StartsWith("gemini", StringComparison.OrdinalIgnoreCase))
+		var index = span.IndexOf("gemini", StringComparison.OrdinalIgnoreCase);
+		if (index < 0)
 		{
 			return null;
 		}
 
-		span = span[6..];
+		span = span[(index + 6)..];
 		if (span.StartsWith("-live", StringComparison.OrdinalIgnoreCase))
 		{
 			span = span[5..];

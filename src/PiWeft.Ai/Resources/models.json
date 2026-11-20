@@ -15052,7 +15052,8 @@
 			},
 			"compat": {
 				"forceAdaptiveThinking": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15098,7 +15099,8 @@
 			},
 			"compat": {
 				"forceAdaptiveThinking": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15138,7 +15140,8 @@
 				"Copilot-Integration-Id": "vscode-chat"
 			},
 			"compat": {
-				"supportsEagerToolInputStreaming": false
+				"supportsEagerToolInputStreaming": false,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15193,7 +15196,8 @@
 			"compat": {
 				"forceAdaptiveThinking": true,
 				"supportsTemperature": false,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15240,7 +15244,8 @@
 			"compat": {
 				"forceAdaptiveThinking": true,
 				"supportsTemperature": false,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15287,7 +15292,8 @@
 			"compat": {
 				"forceAdaptiveThinking": true,
 				"supportsTemperature": false,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15338,7 +15344,8 @@
 			"compat": {
 				"forceAdaptiveThinking": true,
 				"supportsTemperature": false,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15382,7 +15389,8 @@
 				"minimal": "low"
 			},
 			"compat": {
-				"forceAdaptiveThinking": true
+				"forceAdaptiveThinking": true,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15427,7 +15435,8 @@
 			},
 			"compat": {
 				"forceAdaptiveThinking": true,
-				"supportsTemperature": false
+				"supportsTemperature": false,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15473,7 +15482,8 @@
 			"compat": {
 				"forceAdaptiveThinking": true,
 				"supportsTemperature": false,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsStrictTools": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15608,7 +15618,8 @@
 				"max": null
 			},
 			"compat": {
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15657,7 +15668,8 @@
 				"max": null
 			},
 			"compat": {
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15717,7 +15729,8 @@
 			"compat": {
 				"supportsMidConvoSystemMessages": true,
 				"supportsAdditionalTools": true,
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15777,7 +15790,8 @@
 			"compat": {
 				"supportsMidConvoSystemMessages": true,
 				"supportsAdditionalTools": true,
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15837,7 +15851,8 @@
 			"compat": {
 				"supportsMidConvoSystemMessages": true,
 				"supportsAdditionalTools": true,
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15897,7 +15912,8 @@
 			"compat": {
 				"supportsMidConvoSystemMessages": true,
 				"supportsAdditionalTools": true,
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -15957,7 +15973,8 @@
 			"compat": {
 				"supportsMidConvoSystemMessages": true,
 				"supportsAdditionalTools": true,
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -16017,7 +16034,8 @@
 			"compat": {
 				"supportsMidConvoSystemMessages": true,
 				"supportsAdditionalTools": true,
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -16077,7 +16095,8 @@
 			"compat": {
 				"supportsMidConvoSystemMessages": true,
 				"supportsAdditionalTools": true,
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -16137,7 +16156,8 @@
 			"compat": {
 				"supportsMidConvoSystemMessages": true,
 				"supportsAdditionalTools": true,
-				"supportsOpenAIGrammarTools": true
+				"supportsOpenAIGrammarTools": true,
+				"supportsStrictMode": true
 			},
 			"inputLimits": {
 				"images": {
@@ -16204,7 +16224,10 @@
 					}
 				}
 			},
-			"type": "chat"
+			"type": "chat",
+			"compat": {
+				"supportsStrictMode": true
+			}
 		},
 		{
 			"id": "grok-4.6",
@@ -16259,7 +16282,10 @@
 					}
 				}
 			},
-			"type": "chat"
+			"type": "chat",
+			"compat": {
+				"supportsStrictMode": true
+			}
 		},
 		{
 			"id": "grok-4.7",
@@ -16314,7 +16340,10 @@
 					}
 				}
 			},
-			"type": "chat"
+			"type": "chat",
+			"compat": {
+				"supportsStrictMode": true
+			}
 		},
 		{
 			"id": "kimi-k3",
@@ -16404,7 +16433,10 @@
 					}
 				}
 			},
-			"type": "chat"
+			"type": "chat",
+			"compat": {
+				"supportsStrictMode": true
+			}
 		},
 		{
 			"type": "classifier",
@@ -25948,15 +25980,15 @@
 			"cost": {
 				"input": 0.1,
 				"output": 0,
-				"cacheRead": 0,
-				"cacheWrite": 0,
+				"cacheRead": 0.1,
+				"cacheWrite": 0.1,
 				"tiers": [
 					{
 						"inputTokensAbove": 272000,
 						"input": 0.2,
 						"output": 0,
-						"cacheRead": 0,
-						"cacheWrite": 0
+						"cacheRead": 0.2,
+						"cacheWrite": 0.2
 					}
 				]
 			},
@@ -26158,7 +26190,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsMidConvoEffort": true
 			},
 			"inputLimits": {
 				"images": {
@@ -26213,7 +26246,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsMidConvoEffort": true
 			},
 			"inputLimits": {
 				"images": {
@@ -26268,7 +26302,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsMidConvoEffort": true
 			},
 			"inputLimits": {
 				"images": {
@@ -26323,7 +26358,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsMidConvoEffort": true
 			},
 			"inputLimits": {
 				"images": {
@@ -26378,7 +26414,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsMidConvoEffort": true
 			},
 			"inputLimits": {
 				"images": {
@@ -26433,7 +26470,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsMidConvoEffort": true
 			},
 			"inputLimits": {
 				"images": {
@@ -26488,7 +26526,8 @@
 				"supportsOpenAIGrammarTools": true,
 				"supportsAdditionalTools": true,
 				"supportsToolSearch": true,
-				"supportsMidConvoSystemMessages": true
+				"supportsMidConvoSystemMessages": true,
+				"supportsMidConvoEffort": true
 			},
 			"inputLimits": {
 				"images": {
@@ -51243,6 +51282,53 @@
 				}
 			},
 			"type": "chat"
+		},
+		{
+			"id": "qwen4-max-preview",
+			"name": "Qwen4 Max Preview",
+			"api": "openai-completions",
+			"provider": "qwen-token-plan",
+			"baseUrl": "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 393216,
+			"compat": {
+				"supportsStrictMode": true,
+				"thinkingFormat": "qwen",
+				"supportsDeveloperRole": false,
+				"supportsStore": false,
+				"supportsReasoningEffort": true
+			},
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": null,
+				"xhigh": "xhigh",
+				"max": null
+			},
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			},
+			"type": "chat"
 		}
 	],
 	"qwen-token-plan-cn": [
@@ -51965,6 +52051,53 @@
 				}
 			},
 			"type": "chat"
+		},
+		{
+			"id": "qwen4-max-preview",
+			"name": "Qwen4 Max Preview",
+			"api": "openai-completions",
+			"provider": "qwen-token-plan-cn",
+			"baseUrl": "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 393216,
+			"compat": {
+				"supportsStrictMode": true,
+				"thinkingFormat": "qwen",
+				"supportsDeveloperRole": false,
+				"supportsStore": false,
+				"supportsReasoningEffort": true
+			},
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": null,
+				"xhigh": "xhigh",
+				"max": null
+			},
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			},
+			"type": "chat"
 		}
 	],
 	"qwen-token-plan-individual": [
@@ -52317,6 +52450,53 @@
 			},
 			"contextWindow": 1000000,
 			"maxTokens": 131072,
+			"compat": {
+				"supportsStrictMode": true,
+				"thinkingFormat": "qwen",
+				"supportsDeveloperRole": false,
+				"supportsStore": false,
+				"supportsReasoningEffort": true
+			},
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": null,
+				"xhigh": "xhigh",
+				"max": null
+			},
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			},
+			"type": "chat"
+		},
+		{
+			"id": "qwen4-max-preview",
+			"name": "Qwen4 Max Preview",
+			"api": "openai-completions",
+			"provider": "qwen-token-plan-individual",
+			"baseUrl": "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 393216,
 			"compat": {
 				"supportsStrictMode": true,
 				"thinkingFormat": "qwen",
@@ -52790,6 +52970,53 @@
 			},
 			"contextWindow": 1000000,
 			"maxTokens": 131072,
+			"compat": {
+				"supportsStrictMode": true,
+				"thinkingFormat": "qwen",
+				"supportsDeveloperRole": false,
+				"supportsStore": false,
+				"supportsReasoningEffort": true
+			},
+			"thinkingLevelMap": {
+				"off": null,
+				"minimal": null,
+				"low": "low",
+				"medium": "medium",
+				"high": null,
+				"xhigh": "xhigh",
+				"max": null
+			},
+			"inputLimits": {
+				"images": {
+					"resize": {
+						"maxWidth": 2000,
+						"maxHeight": 2000,
+						"maxBytes": 4718592,
+						"jpegQuality": 80
+					}
+				}
+			},
+			"type": "chat"
+		},
+		{
+			"id": "qwen4-max-preview",
+			"name": "Qwen4 Max Preview",
+			"api": "openai-completions",
+			"provider": "qwen-token-plan-individual-cn",
+			"baseUrl": "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 393216,
 			"compat": {
 				"supportsStrictMode": true,
 				"thinkingFormat": "qwen",

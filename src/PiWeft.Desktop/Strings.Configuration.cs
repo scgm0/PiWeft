@@ -65,6 +65,8 @@ public static partial class Strings
 	public const string ConfigInherit = "继承 / 默认";
 	public const string ConfigAutoCompaction = "自动压缩上下文";
 	public const string ConfigAutoRetry = "自动重试";
+	public const string ConfigShowCacheMissNotices = "提示被丢弃的思考块与缓存未命中";
+	public const string ConfigShowCacheMissNoticesHint = "对应 settings.showCacheMissNotices：供应商剔除历史思考块、或本轮明显没命中提示词缓存时，在会话里留一行提示。完整清单仍在会话文件里。默认关闭。";
 	public const string ConfigRetryMaxRetries = "最大重试次数";
 	public const string ConfigRetryBaseDelay = "基础延迟 (ms)";
 	public const string ConfigRetryHint = "只对网络抖动、限流与 5xx 生效，配额与账单错误不重试。退避按指数增长。";

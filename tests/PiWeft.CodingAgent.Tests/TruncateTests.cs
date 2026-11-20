@@ -5,7 +5,8 @@ using Xunit;
 namespace PiWeft.CodingAgent.Tests;
 
 /// `Truncate.Head`/`Tail` 现在按 span 扫行，不再 `Split` 出整份行列表。
-/// 这里用旧实现做参照，随机输入逐字段比对，保证换实现不改行为。
+/// 参考实现与生产实现同规则：随机比对只负责抓 span 重写带来的偏差，
+/// 新规则（超长行后跟空行）由显式期望值用例覆盖。
 public sealed class TruncateTests
 {
 	private static readonly string[] Fragments =
@@ -36,6 +37,18 @@ public sealed class TruncateTests
 				ReferenceTail(content, maxLines, maxBytes),
 				Truncate.Tail(content, maxLines, maxBytes));
 		}
+	}
+
+	[Fact]
+	public void OverLongLastLineFollowedByBlankLinesKeepsItsEnd()
+	{
+		// 超长行后面跟空行：旧实现只会保留空行，看起来像「(no output)」（pi #12355）。
+		var line = new string('x', 400);
+		var result = Truncate.Tail(line + "\n\n", maxLines: 2000, maxBytes: 120);
+
+		Assert.True(result.LastLinePartial);
+		Assert.True(result.Content.Trim().Length > 0);
+		Assert.EndsWith("x", result.Content.TrimEnd('\n'));
 	}
 
 	[Fact]
@@ -170,11 +183,13 @@ public sealed class TruncateTests
 			if (outputBytes + lineBytes > maxBytes)
 			{
 				truncatedBy = "bytes";
-				if (kept.Count == 0)
+				// pi 的新规则：这一行超限、后面又只有空行时取行尾，否则输出只剩空行。
+				var remainingBytes = maxBytes - outputBytes - (kept.Count > 0 ? 1 : 0);
+				if (kept.Count == 0 || (!IsBlank(lines[i]) && kept.All(IsBlank) && remainingBytes > 0))
 				{
-					var partial = TakeBytesFromEnd(lines[i], maxBytes);
+					var partial = TakeBytesFromEnd(lines[i], remainingBytes);
 					kept.Insert(0, partial);
-					outputBytes = ByteCount(partial);
+					outputBytes += lineBytes - ByteCount(lines[i]) + ByteCount(partial);
 					lastLinePartial = true;
 				}
 
@@ -235,6 +250,8 @@ public sealed class TruncateTests
 
 		return lines;
 	}
+
+	private static bool IsBlank(string line) => line.Trim().Length == 0;
 
 	private static long ByteCount(string value) => Encoding.UTF8.GetByteCount(value);
 

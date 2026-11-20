@@ -30,6 +30,66 @@ internal static class PiJsonValue
 	public static JsonObject? Object(JsonObject obj, string name) =>
 		obj.TryGetPropertyValue(name, out var node) ? node as JsonObject : null;
 
+	/// 读 <c>diagnostics</c> 数组：只要 type/timestamp/error/details，未知诊断类型原样保留。
+	public static IReadOnlyList<AssistantDiagnostic>? ReadDiagnostics(JsonNode? node)
+	{
+		if (node is not JsonArray array || array.Count == 0)
+		{
+			return null;
+		}
+
+		var result = new List<AssistantDiagnostic>(array.Count);
+		foreach (var item in array)
+		{
+			if (item is not JsonObject diagnostic)
+			{
+				continue;
+			}
+
+			result.Add(new AssistantDiagnostic
+			{
+				Type = Str(diagnostic, "type") ?? string.Empty,
+				Timestamp = Long(diagnostic, "timestamp") ?? 0,
+				Error = Object(diagnostic, "error"),
+				Details = Object(diagnostic, "details"),
+			});
+		}
+
+		return result.Count > 0 ? result : null;
+	}
+
+	public static void WriteDiagnostics(Utf8JsonWriter writer, IReadOnlyList<AssistantDiagnostic>? diagnostics)
+	{
+		if (diagnostics is not { Count: > 0 })
+		{
+			return;
+		}
+
+		writer.WritePropertyName("diagnostics");
+		writer.WriteStartArray();
+		foreach (var diagnostic in diagnostics)
+		{
+			writer.WriteStartObject();
+			writer.WriteString("type", diagnostic.Type);
+			writer.WriteNumber("timestamp", diagnostic.Timestamp);
+			if (diagnostic.Error is not null)
+			{
+				writer.WritePropertyName("error");
+				diagnostic.Error.WriteTo(writer);
+			}
+
+			if (diagnostic.Details is not null)
+			{
+				writer.WritePropertyName("details");
+				diagnostic.Details.WriteTo(writer);
+			}
+
+			writer.WriteEndObject();
+		}
+
+		writer.WriteEndArray();
+	}
+
 	public static List<JsonNode?>? Array(JsonObject obj, string name) =>
 		obj.TryGetPropertyValue(name, out var node) && node is JsonArray array ? [.. array] : null;
 
@@ -439,7 +499,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 	[
 		"role", "content", "api", "provider", "model", "responseModel", "responseId",
 		"providerThinkingLevel", "thinkingLevel", "usage", "stopReason", "errorMessage",
-		"rawStopReason", "endTurn", "durationMs", "firstTokenMs", "streamingDurationMs", "timestamp",
+		"rawStopReason", "endTurn", "durationMs", "firstTokenMs", "streamingDurationMs", "timestamp", "diagnostics",
 	];
 
 	private static readonly string[] ToolResultKeys =
@@ -528,6 +588,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 		DurationMs = PiJsonValue.Double(obj, "durationMs"),
 		FirstTokenMs = PiJsonValue.Double(obj, "firstTokenMs"),
 		StreamingDurationMs = PiJsonValue.Double(obj, "streamingDurationMs"),
+		Diagnostics = PiJsonValue.ReadDiagnostics(obj.TryGetPropertyValue("diagnostics", out var diagnostics) ? diagnostics : null),
 		Extra = PiJsonValue.ReadExtras(obj, AssistantKeys),
 	};
 
@@ -653,6 +714,7 @@ internal sealed class MessageJsonConverter : JsonConverter<Message>
 					writer.WriteNumber("streamingDurationMs", streamingDurationMs);
 				}
 
+				PiJsonValue.WriteDiagnostics(writer, assistant.Diagnostics);
 				break;
 			case ToolResultMessage result:
 				writer.WriteString("role", "toolResult");

@@ -36,6 +36,7 @@ internal sealed class OpenAiResponsesStreamState
 	private string? _errorMessage;
 	private string? _responseId;
 	private string? _responseModel;
+	private List<AssistantDiagnostic>? _diagnostics;
 	private bool _started;
 	private bool _finished;
 
@@ -43,7 +44,8 @@ internal sealed class OpenAiResponsesStreamState
 		Model model,
 		AssistantMessageEventStream stream,
 		long startedAt,
-		string api = OpenAiResponsesProvider.ApiId)
+		string api = OpenAiResponsesProvider.ApiId,
+		string? providerThinkingLevel = null)
 	{
 		_model = model;
 		_stream = stream;
@@ -53,6 +55,7 @@ internal sealed class OpenAiResponsesStreamState
 			Provider = model.Provider,
 			Model = model.Id,
 			Timestamp = startedAt,
+			ProviderThinkingLevel = providerThinkingLevel,
 			StopReason = StopReason.Pending,
 		};
 	}
@@ -122,6 +125,7 @@ internal sealed class OpenAiResponsesStreamState
 				{
 					ReadUsage(response);
 					ReadStatus(response);
+					ReadInputTransformations(response);
 				}
 
 				Finish();
@@ -407,17 +411,18 @@ internal sealed class OpenAiResponsesStreamState
 			reasoning = GetLong(outputDetails, "reasoning_tokens");
 		}
 
-		var input = Math.Max(0, (GetLong(usage, "input_tokens") ?? 0) - cached - cacheWrite);
+		var totalInput = Math.Max(0, GetLong(usage, "input_tokens") ?? 0);
+		var (input, cacheRead, cacheWriteSplit) = UsageMath.SplitCacheTokens(totalInput, cached, cacheWrite);
 		var output = GetLong(usage, "output_tokens") ?? 0;
 
 		_usage = CostCalculator.Calculate(_model, new Usage
 		{
 			Input = input,
 			Output = output,
-			CacheRead = cached,
-			CacheWrite = cacheWrite,
+			CacheRead = cacheRead,
+			CacheWrite = cacheWriteSplit,
 			Reasoning = reasoning,
-			TotalTokens = GetLong(usage, "total_tokens") ?? input + output + cached + cacheWrite,
+			TotalTokens = GetLong(usage, "total_tokens") ?? totalInput + output,
 		});
 	}
 
@@ -478,9 +483,65 @@ internal sealed class OpenAiResponsesStreamState
 			RawStopReason = _rawStopReason,
 			ResponseId = _responseId,
 			ResponseModel = _responseModel,
+			Diagnostics = _diagnostics,
 		};
 
 		return _partial;
+	}
+
+	/// 从终态响应里取被 API 丢掉的 reasoning 项，写一条诊断。
+	/// <c>turn_boundary</c> 不收：只吃当前轮 reasoning 的模型每轮都会报一次之前所有轮，
+	/// 落进会话会让文件随对话平方增长。
+	private void ReadInputTransformations(JsonElement response)
+	{
+		if (!response.TryGetProperty("input_transformations", out var transformations) ||
+			transformations.ValueKind != JsonValueKind.Array)
+		{
+			return;
+		}
+
+		JsonArray? removed = null;
+		foreach (var item in transformations.EnumerateArray())
+		{
+			if (item.ValueKind != JsonValueKind.Object ||
+				GetString(item, "type") != "reasoning" ||
+				GetString(item, "action") != "removed" ||
+				GetString(item, "reason") == "turn_boundary")
+			{
+				continue;
+			}
+
+			var entry = new JsonObject
+			{
+				["type"] = "reasoning",
+				["action"] = "removed",
+			};
+			if (GetString(item, "id") is { Length: > 0 } id)
+			{
+				entry["id"] = id;
+			}
+
+			if (GetString(item, "reason") is { Length: > 0 } reason)
+			{
+				entry["reason"] = reason;
+			}
+
+			removed ??= new JsonArray();
+			removed.Add((JsonNode?)entry);
+		}
+
+		if (removed is null)
+		{
+			return;
+		}
+
+		_diagnostics ??= [];
+		_diagnostics.Add(new AssistantDiagnostic
+		{
+			Type = "openai_input_transformations",
+			Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+			Details = new JsonObject { ["transformations"] = removed },
+		});
 	}
 
 	private void Push(AssistantMessageEvent @event) => _stream.Push(@event);

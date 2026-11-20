@@ -103,6 +103,19 @@ public sealed record ToolResultMessage : Message
 	public double? DurationMs { get; init; }
 }
 
+/// 供应商运行时写入的脱敏诊断（被丢弃的思考块、未接线的 reasoning 等）。
+/// 原样落进会话，供界面提示与排查用；不参与模型上下文。
+public sealed record AssistantDiagnostic
+{
+	public required string Type { get; init; }
+
+	public long Timestamp { get; init; }
+
+	public JsonObject? Error { get; init; }
+
+	public JsonObject? Details { get; init; }
+}
+
 public sealed record AssistantMessage : Message
 {	public override string Role => "assistant";
 
@@ -131,6 +144,8 @@ public sealed record AssistantMessage : Message
 	public string? RawStopReason { get; init; }
 
 	public bool? EndTurn { get; init; }
+
+	public IReadOnlyList<AssistantDiagnostic>? Diagnostics { get; init; }
 
 	public double? DurationMs { get; set; }
 

@@ -20,7 +20,9 @@ internal static class OpenAiResponsesWire
 		string? promptCacheKey = null,
 		string? promptCacheRetention = null,
 		JsonObject? promptCacheOptions = null,
-		bool supportsStrictMode = false)
+		bool supportsStrictMode = false,
+		bool systemPromptAsInputItem = false,
+		string? configurationUpdateEffort = null)
 	{
 		writer.WriteStartObject();
 		// Azure 使用的是部署名，它通常等于模型 id，但并不总是。
@@ -49,9 +51,10 @@ internal static class OpenAiResponsesWire
 			promptCacheOptions.WriteTo(writer);
 		}
 
-		if (!string.IsNullOrWhiteSpace(Transcript.GetInitialSystemText(messages)))
+		var systemPrompt = Transcript.GetInitialSystemText(messages);
+		if (!systemPromptAsInputItem && !string.IsNullOrWhiteSpace(systemPrompt))
 		{
-			writer.WriteString("instructions", TextSanitizer.SanitizeSurrogates(Transcript.GetInitialSystemText(messages)));
+			writer.WriteString("instructions", TextSanitizer.SanitizeSurrogates(systemPrompt));
 		}
 
 		if (maxOutputTokens is { } tokens)
@@ -68,7 +71,9 @@ internal static class OpenAiResponsesWire
 		{
 			writer.WritePropertyName("reasoning");
 			writer.WriteStartObject();
-			writer.WriteString("effort", reasoningEffort);
+			// 思考档变化改走 configuration_update 输入项，这里的 effort 固定：否则每次换档
+			// 都会改掉请求前缀，提示词缓存在 GPT-6 上全部失效。
+			writer.WriteString("effort", configurationUpdateEffort is null ? reasoningEffort : ConfigurationUpdateRequestEffort);
 			writer.WriteString("summary", "auto");
 			writer.WriteEndObject();
 
@@ -79,7 +84,7 @@ internal static class OpenAiResponsesWire
 		}
 
 		writer.WritePropertyName("input");
-		WriteInput(writer, messages);
+		WriteInput(writer, model, messages, systemPromptAsInputItem ? systemPrompt : null, configurationUpdateEffort);
 
 		if (tools.Count > 0)
 		{
@@ -127,15 +132,33 @@ internal static class OpenAiResponsesWire
 		writer.WriteEndObject();
 	}
 
-	private static void WriteInput(Utf8JsonWriter writer, IReadOnlyList<Message> messages)
+	private const string ConfigurationUpdateRequestEffort = "medium";
+
+	private static void WriteInput(
+		Utf8JsonWriter writer,
+		Model model,
+		IReadOnlyList<Message> messages,
+		string? leadingSystemText,
+		string? configurationUpdateEffort)
 	{
 		writer.WriteStartArray();
+		// 系统提示词作为首条输入项：GPT-6.2 的后端把顶层 instructions 排在 input 之后，
+		// 新回合一追加用户消息就把它挤掉，提示词缓存永远命不中。
+		if (!string.IsNullOrWhiteSpace(leadingSystemText))
+		{
+			// 与 pi 同形：developer/system 项的 content 直接是字符串，不包一层 input_text 数组。
+			writer.WriteStartObject();
+			writer.WriteString("role", model.Reasoning && ModelCompat.Flag(model, "supportsDeveloperRole") != false ? "developer" : "system");
+			writer.WriteString("content", TextSanitizer.SanitizeSurrogates(leadingSystemText));
+			writer.WriteEndObject();
+		}
+
 		foreach (var message in messages)
 		{
 			switch (message)
 			{
 				case SystemMessage:
-					// 提示词放在顶层 "instructions" 字段，不作为输入项。
+					// 提示词放在顶层 "instructions" 字段或首条输入项，没有中段 system。
 					break;
 
 				case UserMessage user:
@@ -143,6 +166,14 @@ internal static class OpenAiResponsesWire
 					break;
 
 				case AssistantMessage assistant:
+					// 历史里记录过供应商真实档位时，在那条回复前重申一次：换档不再改请求前缀。
+					if (configurationUpdateEffort is not null &&
+						assistant.Api == model.Api && assistant.Provider == model.Provider && assistant.Model == model.Id &&
+						assistant.ProviderThinkingLevel is { Length: > 0 } previousEffort)
+					{
+						WriteConfigurationUpdate(writer, previousEffort);
+					}
+
 					WriteAssistant(writer, assistant);
 					break;
 
@@ -152,7 +183,23 @@ internal static class OpenAiResponsesWire
 			}
 		}
 
+		if (configurationUpdateEffort is not null)
+		{
+			WriteConfigurationUpdate(writer, configurationUpdateEffort);
+		}
+
 		writer.WriteEndArray();
+	}
+
+	private static void WriteConfigurationUpdate(Utf8JsonWriter writer, string effort)
+	{
+		writer.WriteStartObject();
+		writer.WriteString("type", "configuration_update");
+		writer.WritePropertyName("reasoning");
+		writer.WriteStartObject();
+		writer.WriteString("effort", effort);
+		writer.WriteEndObject();
+		writer.WriteEndObject();
 	}
 
 	private static void WriteUser(Utf8JsonWriter writer, UserMessage message)

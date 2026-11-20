@@ -100,30 +100,33 @@ internal sealed class ModelCatalogSection
 		try
 		{
 			var result = await Task.Run(() => OnlineModelCatalog.CheckAsync(_agentDir)).ConfigureAwait(false);
-			await ToUiThreadAsync().ConfigureAwait(true);
-			if (!result.Ok)
+			await RunOnUiThreadAsync(() =>
 			{
-				SetNotice(FailureText(result.Error), error: true);
-			}
-			else if (result.HasUpdate)
-			{
-				SetNotice(Strings.ModelCatalogCheckAvailable(Describe(result.Remote), Describe(result.Local)), error: false);
-			}
-			else
-			{
-				SetNotice(Strings.ModelCatalogCheckLatest(Describe(result.Local)), error: false);
-			}
+				if (!result.Ok)
+				{
+					SetNotice(FailureText(result.Error), error: true);
+				}
+				else if (result.HasUpdate)
+				{
+					SetNotice(Strings.ModelCatalogCheckAvailable(Describe(result.Remote), Describe(result.Local)), error: false);
+				}
+				else
+				{
+					SetNotice(Strings.ModelCatalogCheckLatest(Describe(result.Local)), error: false);
+				}
+			}).ConfigureAwait(false);
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
 		{
-			await ToUiThreadAsync().ConfigureAwait(true);
-			SetNotice(FailureText(ModelCatalogError.Network), error: true);
+			await RunOnUiThreadAsync(() => SetNotice(FailureText(ModelCatalogError.Network), error: true)).ConfigureAwait(false);
 		}
 		finally
 		{
-			await ToUiThreadAsync().ConfigureAwait(true);
-			SetBusy(false);
-			Rebuild();
+			await RunOnUiThreadAsync(() =>
+			{
+				SetBusy(false);
+				Rebuild();
+			}).ConfigureAwait(false);
 		}
 	}
 
@@ -135,31 +138,34 @@ internal sealed class ModelCatalogSection
 		try
 		{
 			var result = await Task.Run(() => OnlineModelCatalog.UpdateAsync(_agentDir)).ConfigureAwait(false);
-			await ToUiThreadAsync().ConfigureAwait(true);
-			if (!result.Ok)
+			await RunOnUiThreadAsync(() =>
 			{
-				SetNotice(FailureText(result.Error), error: true);
-			}
-			else if (result.Updated)
-			{
-				SetNotice(Strings.ModelCatalogUpdated(result.Info?.Version, result.Info?.EntryCount ?? 0), error: false);
-				_changed();
-			}
-			else
-			{
-				SetNotice(Strings.ModelCatalogCheckLatest(Describe(result.Info)), error: false);
-			}
+				if (!result.Ok)
+				{
+					SetNotice(FailureText(result.Error), error: true);
+				}
+				else if (result.Updated)
+				{
+					SetNotice(Strings.ModelCatalogUpdated(result.Info?.Version, result.Info?.EntryCount ?? 0), error: false);
+					_changed();
+				}
+				else
+				{
+					SetNotice(Strings.ModelCatalogCheckLatest(Describe(result.Info)), error: false);
+				}
+			}).ConfigureAwait(false);
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
 		{
-			await ToUiThreadAsync().ConfigureAwait(true);
-			SetNotice(FailureText(ModelCatalogError.None), error: true);
+			await RunOnUiThreadAsync(() => SetNotice(FailureText(ModelCatalogError.None), error: true)).ConfigureAwait(false);
 		}
 		finally
 		{
-			await ToUiThreadAsync().ConfigureAwait(true);
-			SetBusy(false);
-			Rebuild();
+			await RunOnUiThreadAsync(() =>
+			{
+				SetBusy(false);
+				Rebuild();
+			}).ConfigureAwait(false);
 		}
 	}
 
@@ -172,28 +178,31 @@ internal sealed class ModelCatalogSection
 			var result = await Task.Run(() => builtin
 				? OnlineModelCatalog.RestoreBuiltin(_agentDir)
 				: OnlineModelCatalog.RestorePrevious(_agentDir)).ConfigureAwait(false);
-			await ToUiThreadAsync().ConfigureAwait(true);
-			if (!result.Ok)
+			await RunOnUiThreadAsync(() =>
 			{
-				SetNotice(FailureText(result.Error, restore: true), error: true);
-			}
-			else
-			{
-				SetNotice(builtin ? Strings.ModelCatalogBannerRestored : Strings.ModelCatalogBannerRestoredPrevious, error: false);
-				// 没有覆盖层时「还原内置版」只回报状态，不必重建整个模型环境。
-				if (result.Updated) _changed();
-			}
+				if (!result.Ok)
+				{
+					SetNotice(FailureText(result.Error, restore: true), error: true);
+				}
+				else
+				{
+					SetNotice(builtin ? Strings.ModelCatalogBannerRestored : Strings.ModelCatalogBannerRestoredPrevious, error: false);
+					// 没有覆盖层时「还原内置版」只回报状态，不必重建整个模型环境。
+					if (result.Updated) _changed();
+				}
+			}).ConfigureAwait(false);
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
 		{
-			await ToUiThreadAsync().ConfigureAwait(true);
-			SetNotice(FailureText(ModelCatalogError.None), error: true);
+			await RunOnUiThreadAsync(() => SetNotice(FailureText(ModelCatalogError.None), error: true)).ConfigureAwait(false);
 		}
 		finally
 		{
-			await ToUiThreadAsync().ConfigureAwait(true);
-			SetBusy(false);
-			Rebuild();
+			await RunOnUiThreadAsync(() =>
+			{
+				SetBusy(false);
+				Rebuild();
+			}).ConfigureAwait(false);
 		}
 	}
 
@@ -249,16 +258,32 @@ internal sealed class ModelCatalogSection
 		_ => Strings.ModelCatalogFailUnexpected,
 	};
 
-	private static Task ToUiThreadAsync()
+	/// 整段 UI 更新都要在回调里跑完。只等一个“已排到 UI 线程”的 Task 不够：
+	/// await 之后的续行会用等待处的上下文，而 Task.Run 之后已经是线程池（没有同步上下文），
+	/// 续行仍在线程池上改 `_body`。渲染线程同时在布局并枚举同一份子元素列表，
+	/// 就会抛 Collection was modified。
+	private static Task RunOnUiThreadAsync(Action action)
 	{
 		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
 		if (dispatcher is null || dispatcher.IsOnUIThread)
 		{
+			action();
 			return Task.CompletedTask;
 		}
 
 		var completion = new TaskCompletionSource();
-		dispatcher.BeginInvoke(() => completion.TrySetResult());
+		dispatcher.BeginInvoke(() =>
+		{
+			try
+			{
+				action();
+				completion.TrySetResult();
+			}
+			catch (Exception ex)
+			{
+				completion.TrySetException(ex);
+			}
+		});
 		return completion.Task;
 	}
 

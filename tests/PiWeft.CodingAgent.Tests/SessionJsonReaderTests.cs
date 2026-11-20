@@ -41,6 +41,7 @@ public sealed class SessionJsonReaderTests
 			"""{"type":"message","id":"e19","parentId":"e18","timestamp":"t","message":{"role":"hookMessage","content":"legacy","timestamp":7,"extraField":{"k":"v"}}}""",
 			"""{"type":"message","id":"e20","parentId":"e19","timestamp":"t","message":{"role":"user","content":[{"type":"image","data":"AAAA","mimeType":"image/png"}],"timestamp":8}}""",
 			"""{"type":"message","id":"e21","parentId":"e20","timestamp":"t","message":{"role":"user","content":"","timestamp":9}}""",
+			"""{"type":"message","id":"e22","parentId":"e21","timestamp":"t","message":{"role":"assistant","content":[{"type":"text","text":"x"}],"api":"openai-responses","provider":"openai","model":"gpt-6.2-sol","stopReason":"stop","timestamp":10,"diagnostics":[{"type":"openai_input_transformations","timestamp":11,"details":{"transformations":[{"type":"reasoning","id":"rs_1","action":"removed","reason":"prefix_mismatch"}]}}]}}""",
 		};
 	}
 

@@ -9,6 +9,63 @@ namespace PiWeft.Ai.Tests;
 public class MessageJsonTests
 {
 	[Fact]
+	public void AssistantMessage_RoundTrips_Diagnostics()
+	{
+		var message = new AssistantMessage
+		{
+			Api = "openai-responses",
+			Provider = "openai",
+			Model = "gpt-6.2-sol",
+			StopReason = StopReason.Stop,
+			Diagnostics =
+			[
+				new AssistantDiagnostic
+				{
+					Type = "openai_input_transformations",
+					Timestamp = 1_700_000_000_001,
+					Details = new JsonObject
+					{
+						["transformations"] = new JsonArray
+						{
+							(JsonNode?)new JsonObject
+							{
+								["type"] = "reasoning",
+								["id"] = "rs_1",
+								["action"] = "removed",
+								["reason"] = "prefix_mismatch",
+							},
+						},
+					},
+				},
+				// 未来新增的诊断类型与错误字段也要原样往返，不能因为不认识就丢。
+				new AssistantDiagnostic
+				{
+					Type = "some_future_diagnostic",
+					Timestamp = 1_700_000_000_002,
+					Error = new JsonObject
+					{
+						["name"] = "ProviderError",
+						["message"] = "boom",
+					},
+				},
+			],
+		};
+
+		var back = Assert.IsType<AssistantMessage>(PiJson.DeserializeMessage(PiJson.SerializeMessage(message)));
+
+		Assert.Equal(2, back.Diagnostics!.Count);
+		var diagnostic = back.Diagnostics[0];
+		Assert.Equal("openai_input_transformations", diagnostic.Type);
+		Assert.Equal(1_700_000_000_001, diagnostic.Timestamp);
+		var transformation = diagnostic.Details!["transformations"]!.AsArray()[0]!.AsObject();
+		Assert.Equal("prefix_mismatch", transformation["reason"]!.GetValue<string>());
+
+		var future = back.Diagnostics[1];
+		Assert.Equal("some_future_diagnostic", future.Type);
+		Assert.Equal("ProviderError", future.Error!["name"]!.GetValue<string>());
+	}
+
+	[Fact]
 	public void AssistantMessage_RoundTrips_AllBlockKinds()
 	{
 		var message = new AssistantMessage

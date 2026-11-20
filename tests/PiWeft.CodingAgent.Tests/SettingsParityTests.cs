@@ -68,6 +68,19 @@ public sealed class SettingsParityTests : IDisposable
 	}
 
 	[Fact]
+	public void ShowCacheMissNoticesIsReadWrittenAndOnlyWhenEnabled()
+	{
+		WriteGlobal("""{"showCacheMissNotices":true}""");
+
+		var settings = CodingAgentSettings.Load(Project, AgentDir, includeProject: false);
+		Assert.True(settings.ShowCacheMissNotices);
+
+		// 默认关闭时不写这个键：配置文件里只留用户改过的值。
+		Assert.Equal(true, CodingAgentSettings.ToFile(settings).ShowCacheMissNotices);
+		Assert.Null(CodingAgentSettings.ToFile(settings with { ShowCacheMissNotices = false }).ShowCacheMissNotices);
+	}
+
+	[Fact]
 	public void ImagesAutoResizeIsReadWrittenAndMerged()
 	{
 		WriteGlobal("""{"images":{"autoResize":false,"blockImages":true}}""");

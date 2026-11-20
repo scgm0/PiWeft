@@ -428,18 +428,27 @@ public sealed class SystemOneClassifierProvider : IClassifierApiProvider
 			return null;
 		}
 
-		var input = Number(usage["input_tokens"], "usage.input_tokens", allowMissing: true);
-		var output = Number(usage["output_tokens"], "usage.output_tokens", allowMissing: true);
-		if (input == 0 && output == 0)
+		var totalInput = (long)Math.Max(0, Number(usage["input_tokens"], "usage.input_tokens", allowMissing: true));
+		var output = (long)Math.Max(0, Number(usage["output_tokens"], "usage.output_tokens", allowMissing: true));
+		if (totalInput == 0 && output == 0)
 		{
 			return null;
 		}
 
+		// Responses 同款：input_tokens 已经包含缓存读写，单独拆出来计价，不再算进 input。
+		var details = usage["input_tokens_details"] as JsonObject;
+		var (input, cacheRead, cacheWrite) = UsageMath.SplitCacheTokens(
+			totalInput,
+			(long)Math.Max(0, Number(details?["cached_tokens"], "usage.input_tokens_details.cached_tokens", allowMissing: true)),
+			(long)Math.Max(0, Number(details?["cache_write_tokens"], "usage.input_tokens_details.cache_write_tokens", allowMissing: true)));
+
 		var result = new Usage
 		{
-			Input = (long)input,
-			Output = (long)output,
-			TotalTokens = (long)(input + output),
+			Input = input,
+			Output = output,
+			CacheRead = cacheRead,
+			CacheWrite = cacheWrite,
+			TotalTokens = totalInput + output,
 		};
 		return CostCalculator.Calculate(model, result);
 	}

@@ -379,6 +379,7 @@ internal static class SessionJsonReader
 		var hasToolName = false;
 		JsonNode? details = null;
 		bool? isError = null;
+		IReadOnlyList<AssistantDiagnostic>? diagnostics = null;
 		JsonObject? extra = null;
 
 		while (reader.Read())
@@ -442,6 +443,7 @@ internal static class SessionJsonReader
 				case "toolName": toolName = Str(ref reader); hasToolName = true; break;
 				case "details": details = JsonNode.Parse(ref reader); break;
 				case "isError": isError = Bool(ref reader); break;
+				case "diagnostics": diagnostics = PiJsonValue.ReadDiagnostics(JsonNode.Parse(ref reader)); break;
 				default:
 					extra ??= new JsonObject();
 					extra[name!] = JsonNode.Parse(ref reader);
@@ -487,6 +489,7 @@ internal static class SessionJsonReader
 				DurationMs = durationMs,
 				FirstTokenMs = firstTokenMs,
 				StreamingDurationMs = streamingDurationMs,
+				Diagnostics = diagnostics,
 				Extra = extra,
 			},
 			"toolResult" => new ToolResultMessage
@@ -555,7 +558,7 @@ internal static class SessionJsonReader
 	[
 		"role", "content", "api", "provider", "model", "responseModel", "responseId",
 		"providerThinkingLevel", "thinkingLevel", "usage", "stopReason", "errorMessage",
-		"rawStopReason", "endTurn", "durationMs", "firstTokenMs", "streamingDurationMs", "timestamp",
+		"rawStopReason", "endTurn", "durationMs", "firstTokenMs", "streamingDurationMs", "timestamp", "diagnostics",
 	];
 
 	private static readonly string[] ToolResultKeys =

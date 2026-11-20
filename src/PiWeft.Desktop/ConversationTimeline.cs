@@ -427,6 +427,7 @@ internal sealed class ConversationTimeline : IDisposable
 			left.DurationMs != right.DurationMs || left.ToolStartedAt != right.ToolStartedAt || left.Patch != right.Patch ||
 			(!ignoreToolArguments && left.ToolArguments != right.ToolArguments) || left.ToolCallId != right.ToolCallId ||
 			left.Compact != right.Compact ||
+			left.DiagnosticNotice != right.DiagnosticNotice || left.CacheMissNotice != right.CacheMissNotice ||
 			!SameItems(left.Images, right.Images) || !SameItems(left.ChangedFiles, right.ChangedFiles) ||
 			left.ProcessEntries.Count != right.ProcessEntries.Count)
 		{

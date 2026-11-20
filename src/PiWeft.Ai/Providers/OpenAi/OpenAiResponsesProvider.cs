@@ -45,8 +45,14 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 			var apiKey = await ProviderEnvironment
 				.ResolveApiKeyAsync(model.Provider, options, cancellationToken)
 				.ConfigureAwait(false);
+			// 支持 configuration_update 的模型把思考档发进输入项：换档不改请求前缀，提示词缓存还在。
+			// ChatGPT 登录的 access token 不是 sk-，后端拒收这个输入项，退回 reasoning.effort。
+			var configurationUpdateEffort = ModelCompat.FlagOr(model, "supportsMidConvoEffort", false) &&
+				!IsChatGptSignIn(model, apiKey)
+				? reasoningEffort
+				: null;
 
-			using var request = BuildRequest(model, messages, tools, options, reasoningEffort, apiKey);
+			using var request = BuildRequest(model, messages, tools, options, reasoningEffort, configurationUpdateEffort, apiKey);
 
 			using var response = await _http
 				.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerTimeout.Token)
@@ -64,7 +70,7 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 
 			await using var bodyStream = await ProviderHttp.ReadBodyAsync(response, options, cancellationToken).ConfigureAwait(false);
 
-			var state = new OpenAiResponsesStreamState(model, stream, startedAt);
+			var state = new OpenAiResponsesStreamState(model, stream, startedAt, providerThinkingLevel: configurationUpdateEffort);
 			var sse = new SseJsonReader();
 			var parser = SseParser.Create<bool>(bodyStream, (eventType, span) =>
 			{
@@ -109,6 +115,7 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 		IReadOnlyList<Tool> tools,
 		StreamOptions options,
 		string? reasoningEffort,
+		string? configurationUpdateEffort,
 		string? apiKey)
 	{
 		var maxOutputTokens = OpenAiContextBudget.Clamp(model, messages, options.MaxTokens ?? (model.MaxTokens > 0 ? model.MaxTokens : null));
@@ -137,7 +144,8 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 				promptCacheKey: promptCacheKey,
 				promptCacheRetention: promptCacheRetention,
 				promptCacheOptions: promptCacheOptions,
-				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? false),
+				supportsStrictMode: ModelCompat.Flag(model, "supportsStrictMode") ?? false,
+				configurationUpdateEffort: configurationUpdateEffort),
 			Transcript.EstimateRequestBytes(messages, tools));
 
 		if (options.OnPayload is { } onPayload)
@@ -195,6 +203,14 @@ public sealed class OpenAiResponsesProvider : IApiProvider
 
 	/// 把 pi 的思考级别映射到 Responses 的 <c>reasoning.effort</c>。返回 <c>null</c> 表示不带 reasoning 字段，
 	/// 这只会发生在非推理模型上。
+	/// OpenAI 官方端点收到非 sk- 凭据就是 Sign in with ChatGPT 的 access token。
+	/// 该后端拒收 configuration_update 输入项，请求要退回 reasoning.effort。
+	private static bool IsChatGptSignIn(Model model, string? apiKey) =>
+		string.Equals(model.Provider, "openai", StringComparison.Ordinal) &&
+		string.Equals(model.BaseUrl, "https://api.openai.com/v1", StringComparison.Ordinal) &&
+		apiKey is { Length: > 0 } key &&
+		!key.StartsWith("sk-", StringComparison.Ordinal);
+
 	internal static string? ResolveReasoningEffort(Model model, StreamOptions options)
 	{
 		if (!model.Reasoning)

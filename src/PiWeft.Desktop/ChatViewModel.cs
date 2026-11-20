@@ -172,6 +172,12 @@ public sealed record ChatEntry
 	/// 只在助手正文行有意义。
 	public IReadOnlyList<ChatFileChange> ChangedFiles { get; init; } = [];
 
+	/// 供应商报告的丢弃思考块提示（只在 <c>showCacheMissNotices</c> 开启时填充）。
+	public string? DiagnosticNotice { get; init; }
+
+	/// 最后一次请求的缓存未命中提示（只在 <c>showCacheMissNotices</c> 开启时填充，只挂在最后一条助手行）。
+	public string? CacheMissNotice { get; init; }
+
 	public bool IsStreaming { get; init; }
 
 	internal bool SameText(ChatEntry other)
@@ -1025,6 +1031,7 @@ public sealed class ChatViewModel : IDisposable
 		// allocations on the UI thread for each new message.
 		if (TryRebuildTail(messages, lastUser))
 		{
+			ApplyRuntimeNotices(messages);
 			_committedRows = _entries.ToArray();
 			return;
 		}
@@ -1049,7 +1056,36 @@ public sealed class ChatViewModel : IDisposable
 		_stableEntryCount = lastUser >= 0 ? stableEntryCount : _entries.Count;
 		_rebuiltMessages = messages;
 		_rebuiltLastUserIndex = lastUser;
+		ApplyRuntimeNotices(messages);
 		_committedRows = _entries.ToArray();
+	}
+
+	/// 缓存未命中提示只挂最后一条助手行：pi 也只在当轮插一行，历史行不重复报。
+	private void ApplyRuntimeNotices(IReadOnlyList<Message> messages)
+	{
+		if (_session?.Settings.ShowCacheMissNotices != true)
+		{
+			return;
+		}
+
+		var miss = CacheMissDetector.Detect(messages, _session.Registry);
+		var notice = miss is { IsNoteworthy: true } ? miss.Notice : null;
+		// 只给最后一条助手行挂当轮提示。旧提示随历史保留（pi 的 transcript 也不回改旧行）；
+		// 前缀行按引用复用，回改它们只会在下一次全量重投时突然消失。
+		var lastAssistant = -1;
+		for (var index = _entries.Count - 1; index >= 0; index--)
+		{
+			if (_entries[index].Role == ChatRole.Assistant)
+			{
+				lastAssistant = index;
+				break;
+			}
+		}
+
+		if (lastAssistant >= 0 && _entries[lastAssistant].CacheMissNotice != notice)
+		{
+			_entries[lastAssistant] = _entries[lastAssistant] with { CacheMissNotice = notice };
+		}
 	}
 
 	private bool TryRebuildTail(IReadOnlyList<Message> messages, int lastUser)
@@ -1242,7 +1278,11 @@ public sealed class ChatViewModel : IDisposable
 					}
 				}
 
-				if (text.Length > 0 || thinking.Length > 0 || images.Count > 0)
+				var diagnosticNotice = _session?.Settings.ShowCacheMissNotices == true
+					? AssistantDiagnostics.DroppedReasoningOf(assistant.Diagnostics)?.Notice
+					: null;
+				// 只有工具调用的助手轮没有正文行；带诊断时仍要建一行，否则提示无处可挂。
+				if (text.Length > 0 || thinking.Length > 0 || images.Count > 0 || diagnosticNotice is not null)
 				{
 					var hasThinkingTiming = _thinkingTimings.TryGetValue(assistant.Timestamp, out var thinkingTiming);
 					_entries.Add(new ChatEntry
@@ -1260,6 +1300,7 @@ public sealed class ChatViewModel : IDisposable
 							? $"{assistant.Provider}/{assistant.Model}"
 							: null,
 						ChangedFiles = turnChanges.Count > 0 ? turnChanges.Snapshot() : [],
+						DiagnosticNotice = diagnosticNotice,
 					});
 				}
 

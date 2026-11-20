@@ -276,6 +276,17 @@ public class RetryClassifierTests
 	[InlineData("The remote party has closed the transport stream.")]
 	[InlineData("Codex WebSocket closed before response.completed (CloseStatus: 1011: websocket_connection_limit_reached)")]
 	[InlineData("Codex WebSocket failed: The WebSocket closed with status 1000 (NormalClosure)")]
+	[InlineData("The provider is temporarily unavailable. Retry shortly.")]
+	[InlineData("admission ceiling: waited 73.4s in queue")]
+	[InlineData("{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Unable to complete this request right now.\"}}")]
+	[InlineData("Provider returned an empty response")]
+	[InlineData("The model stopped before completing the response")]
+	[InlineData("The provider ended the response before it is complete.")]
+	[InlineData("The connection to the provider was reset.")]
+	[InlineData("The provider reported a failure while generating the response.")]
+	[InlineData("Unable to process request. Repeat the request later.")]
+	[InlineData("provider finish_reason: error")]
+	[InlineData("525 status code")]
 	public void TransientFailuresAreRetryable(string message) =>
 		Assert.True(RetryClassifier.IsRetryable(Failure(message)));
 

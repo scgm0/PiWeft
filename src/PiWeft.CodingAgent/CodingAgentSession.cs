@@ -703,6 +703,9 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	public Model Model => _agent.Model;
 
+	/// 本会话解析模型用的目录；缓存未命中提示按它取缓存读单价。
+	public ModelRegistry? Registry => _registry;
+
 	public Compaction.CacheWarmingStatus? CacheWarmingStatus => _cacheWarmer?.Status;
 
 	public string ThinkingLevel => _agent.ThinkingLevel;

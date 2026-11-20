@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using PiWeft.Ai.Utils;
 
 namespace PiWeft.Ai.Providers.Anthropic;
@@ -28,6 +29,10 @@ internal sealed class AnthropicStreamState
 	private string? _rawStopReason;
 	private string? _responseId;
 	private string? _responseModel;
+	private JsonArray? _inputTransformations;
+
+	// 每次收尾都要读的三个键；静态数组避免每条诊断重分配。
+	private static readonly string[] TransformationKeys = ["type", "path", "reason"];
 	private bool _started;
 	private bool _finished;
 
@@ -119,6 +124,7 @@ internal sealed class AnthropicStreamState
 			_responseId = GetString(message, "id");
 			_responseModel = GetString(message, "model");
 			ReadUsage(message, isDelta: false);
+			ReadInputTransformations(message);
 		}
 
 		EnsureStarted();
@@ -298,6 +304,8 @@ internal sealed class AnthropicStreamState
 
 	private void OnMessageDelta(JsonElement root)
 	{
+		ReadInputTransformations(root);
+
 		if (root.TryGetProperty("usage", out _))
 		{
 			ReadUsage(root, isDelta: true);
@@ -370,6 +378,42 @@ internal sealed class AnthropicStreamState
 
 	private AssistantMessage Snapshot() => _partial = _partial with { Content = [.. _content] };
 
+	/// 服务端报告了从请求里剔掉的思考块。只存 type/path/reason，界面靠 type 判断是否值得提一句。
+	private void ReadInputTransformations(JsonElement source)
+	{
+		if (!source.TryGetProperty("input_transformations", out var array) ||
+			array.ValueKind != JsonValueKind.Array)
+		{
+			return;
+		}
+
+		var kept = new JsonArray();
+		foreach (var item in array.EnumerateArray())
+		{
+			if (item.ValueKind != JsonValueKind.Object)
+			{
+				continue;
+			}
+
+			var entry = new JsonObject();
+			foreach (var key in TransformationKeys)
+			{
+				if (GetString(item, key) is { Length: > 0 } value)
+				{
+					entry[key] = value;
+				}
+			}
+
+			if (entry.Count > 0)
+			{
+				kept.Add((JsonNode?)entry);
+			}
+		}
+
+		// 空数组也覆盖：服务端这次不再报变换，就不该再带上次的诊断。
+		_inputTransformations = kept;
+	}
+
 	private AssistantMessage FinalMessage(StopReason? reason = null)
 	{
 		var usage = new Usage
@@ -391,6 +435,16 @@ internal sealed class AnthropicStreamState
 			RawStopReason = _rawStopReason,
 			ResponseId = _responseId,
 			ResponseModel = _responseModel,
+			Diagnostics = _inputTransformations is { Count: > 0 } transformations
+				? [
+					new AssistantDiagnostic
+					{
+						Type = "anthropic_input_transformations",
+						Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+						Details = new JsonObject { ["transformations"] = transformations.DeepClone() },
+					},
+				]
+				: null,
 		};
 
 		return _partial;

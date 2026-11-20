@@ -213,8 +213,11 @@ internal static class OpenAiCompletionsWire
 			return;
 		}
 
-		var supportsDeveloperRole = model is not null &&
-			ModelCompat.FlagOr(model, "supportsDeveloperRole", model.BaseUrl.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase));
+		// developer 角色只给推理模型与 OpenAI 官方端点（含兼容代理的 baseUrl）：其余宿主拒绝该角色。
+		var supportsDeveloperRole = model is not null && model.Reasoning &&
+			ModelCompat.FlagOr(model, "supportsDeveloperRole",
+				string.Equals(model.Provider, "openai", StringComparison.Ordinal) ||
+				model.BaseUrl.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase));
 		writer.WriteStartObject();
 		writer.WriteString("role", supportsDeveloperRole ? "developer" : "system");
 		writer.WriteString("content", TextSanitizer.SanitizeSurrogates(text));
