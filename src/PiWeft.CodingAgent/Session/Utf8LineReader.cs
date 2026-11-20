@@ -14,11 +14,13 @@ public sealed class Utf8LineReader : IDisposable
 	private const int MaxPooledLineBuffer = 256 * 1024;
 
 	private readonly FileStream _stream;
+	private readonly int _maxLineBytes;
 	private byte[] _readBuffer;
 	private byte[] _lineBuffer;
 	private int _readStart;
 	private int _readEnd;
 	private int _lineLength;
+	private bool _discarding;
 	private ReadOnlyMemory<byte> _currentLine;
 	private bool _firstLine = true;
 	private bool _skipPartialLine;
@@ -26,8 +28,11 @@ public sealed class Utf8LineReader : IDisposable
 
 	/// <paramref name="fromBytes"/> 用于续读或分段并行扫：偏移落在行中间时，那条被切开的半行
 	/// 会被自动跳过（归上一段），因此调用方总是按整行消费。
-	public Utf8LineReader(string path, long fromBytes = 0)
+	/// <paramref name="maxLineBytes"/> 大于 0 时，超长行不再复制进缓冲，而是丢弃并返回空行；
+	/// 扫描只需要行内少数字段时这能省掉几十 MB 的搬运。
+	public Utf8LineReader(string path, long fromBytes = 0, int maxLineBytes = 0)
 	{
+		_maxLineBytes = Math.Max(0, maxLineBytes);
 		_stream = new FileStream(
 			path,
 			FileMode.Open,
@@ -71,6 +76,7 @@ public sealed class Utf8LineReader : IDisposable
 	private bool TryReadRawLine(out ReadOnlySpan<byte> line)
 	{
 		_lineLength = 0;
+		_discarding = false;
 		while (true)
 		{
 			if (_readStart == _readEnd)
@@ -81,7 +87,17 @@ public sealed class Utf8LineReader : IDisposable
 				{
 					if (_lineLength == 0)
 					{
+						if (_discarding)
+						{
+							// 末尾的超长行没有换行收尾，也当作一行空内容交出去，行数不变。
+							_discarding = false;
+							line = default;
+							_currentLine = default;
+							return true;
+						}
+
 						line = default;
+						_currentLine = default;
 						return false;
 					}
 
@@ -94,6 +110,26 @@ public sealed class Utf8LineReader : IDisposable
 			var newline = chunk.IndexOf((byte)'\n');
 			if (newline >= 0)
 			{
+				// 上限按去掉 \r 后的行长算，与调用方看到的 line.Length 一致（CRLF 的 \r 不计入）。
+				var lineBytes = _lineLength + newline;
+				if (lineBytes > 0 &&
+					((newline > 0 && chunk[newline - 1] == (byte)'\r') ||
+					(newline == 0 && _lineLength > 0 && _lineBuffer[_lineLength - 1] == (byte)'\r')))
+				{
+					lineBytes--;
+				}
+
+				if (_discarding || (_maxLineBytes > 0 && lineBytes > _maxLineBytes))
+				{
+					// 超长行直接丢弃：调用方拿到的是一行空内容，行边界的消费位置仍然准确。
+					_readStart += newline + 1;
+					_lineLength = 0;
+					_discarding = false;
+					line = default;
+					_currentLine = default;
+					return true;
+				}
+
 				// 零拷贝快路径：整行本来就在读缓冲里（会话文件的行几乎都远小于一块），
 				// 再抄进行缓冲等于给几十 MB 多走一遍内存。返回的跨度只有效到下一次调用为止，
 				// 这正是本类型的契约，调用方都当场消费完。
@@ -111,7 +147,17 @@ public sealed class Utf8LineReader : IDisposable
 				return true;
 			}
 
-			Append(chunk);
+			if (_maxLineBytes > 0 && !_discarding && _lineLength + chunk.Length > _maxLineBytes + 1)
+			{
+				// 后续块不再复制，等换行到来后整行丢弃。+1 给可能落在末尾的 \r 留余量。
+				_discarding = true;
+				_lineLength = 0;
+			}
+			else if (!_discarding)
+			{
+				Append(chunk);
+			}
+
 			_readStart = _readEnd;
 		}
 	}

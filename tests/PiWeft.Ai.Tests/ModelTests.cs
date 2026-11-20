@@ -258,6 +258,7 @@ public class RetryClassifierTests
 	[InlineData("connect ETIMEDOUT 1.2.3.4:443")]
 	[InlineData("fetch failed")]
 	[InlineData("Anthropic stream ended before message_stop")]
+	[InlineData("The response ended prematurely. (ResponseEnded)")]
 	[InlineData("Request timed out")]
 	[InlineData("400 status code (no body)")]
 	[InlineData("413 status code (no body)")]

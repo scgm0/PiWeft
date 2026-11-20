@@ -104,6 +104,18 @@ internal sealed class ActiveIntervalUnion
 		_exact = true;
 	}
 
+	/// <summary>复制已经收录的区间；增量扫描续读时要接着合并新旧回复的时长。</summary>
+	internal ActiveIntervalUnion Clone()
+	{
+		var clone = new ActiveIntervalUnion();
+		for (var index = 0; index < _count; index++)
+		{
+			clone.Add(_spans[index].Start, _spans[index].End);
+		}
+
+		return clone;
+	}
+
 	public double TotalMs
 	{
 		get

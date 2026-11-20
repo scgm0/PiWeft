@@ -383,6 +383,7 @@ public class CodingAgentSessionTests : IDisposable
 	[InlineData("429 Too Many Requests", true)]
 	[InlineData("Request timed out", true)]
 	[InlineData("stream ended before message_stop", true)]
+	[InlineData("The response ended prematurely. (ResponseEnded)", true)]
 	[InlineData("The service is temporarily unavailable", true)]
 	[InlineData("insufficient_quota", true)]
 	[InlineData("401 Unauthorized: invalid api key", true)]
@@ -411,11 +412,14 @@ public class CodingAgentSessionTests : IDisposable
 	}
 
 	[Fact]
-	public void ContinueIsNotOfferedAfterAbortWithoutText()
+	public async Task ContinueAfterAbortWithoutTextStillReplaysThinking()
 	{
 		var script = new ScriptedStreamFn();
+		script.EnqueueText("rest of the thought");
 		using var session = CreateSession(script);
-		session.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("q") });
+		session.SetAutoRetryEnabled(false);
+
+		session.Session.AppendMessage(new UserMessage { Content = MessageContent.FromText("question") });
 		session.Session.AppendMessage(new AssistantMessage
 		{
 			StopReason = StopReason.Aborted,
@@ -426,8 +430,61 @@ public class CodingAgentSessionTests : IDisposable
 			],
 		});
 
-		// 只有思考或半截工具调用：重放时会整条丢掉，继续等于重提，交给标题栏的「重试」。
-		Assert.False(session.CanContinueGeneration());
+		Assert.True(session.CanContinueGeneration());
+		await session.ContinueGenerationAsync();
+
+		// 思考不能被整条丢掉：继续时带着它；半截工具调用仍然剔除。
+		var normalized = MessageTransform.Transform(script.Requests[0], ScriptedSessions.Model());
+		var assistant = Assert.Single(normalized.OfType<AssistantMessage>());
+		Assert.Equal("only thinking", Assert.IsType<ThinkingContent>(Assert.Single(assistant.Content)).Thinking);
+		Assert.Contains(normalized, static message => message is UserMessage { Content.Text: "question" });
+	}
+
+	[Fact]
+	public async Task ContinueAfterAbortDuringToolExecutionKeepsTheToolBatch()
+	{
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var script = new ScriptedStreamFn();
+		script.EnqueueToolCall("call-1", "slow_tool", new System.Text.Json.Nodes.JsonObject());
+		script.EnqueueText("after the tool");
+
+		var slow = new AgentTool
+		{
+			Name = "slow_tool",
+			Label = "slow_tool",
+			Description = "Waits until the run is aborted.",
+			Parameters = new System.Text.Json.Nodes.JsonObject { ["type"] = "object", ["properties"] = new System.Text.Json.Nodes.JsonObject() },
+			Execute = async invocation =>
+			{
+				started.TrySetResult();
+				await Task.Delay(Timeout.Infinite, invocation.CancellationToken);
+				return AgentToolResult.Text("never");
+			},
+		};
+		using var session = new CodingAgentSession(new CodingAgentSessionOptions
+		{
+			Cwd = _root,
+			Model = ScriptedSessions.Model(),
+			StreamFn = script.Invoke,
+			Session = SessionManager.Create(_root, SessionsDir),
+			Skills = [],
+			Tools = [slow],
+		});
+		session.SetAutoRetryEnabled(false);
+
+		var run = session.PromptAsync("question");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		session.Abort();
+		await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+		// 工具执行中中断：最后落一条空的 aborted 助手消息，工具批次已经进会话。
+		Assert.True(session.CanContinueGeneration());
+		await session.ContinueGenerationAsync();
+
+		// 继续时带上那次工具调用与结果（缺的结果由 provider 侧补），模型接着处理。
+		var normalized = MessageTransform.Transform(script.Requests[1], ScriptedSessions.Model());
+		Assert.Contains(normalized, static message => message is AssistantMessage { StopReason: StopReason.ToolUse });
+		Assert.Contains(normalized, static message => message is ToolResultMessage { ToolCallId: "call-1" });
 	}
 
 	[Fact]
@@ -453,14 +510,17 @@ public class CodingAgentSessionTests : IDisposable
 
 		await session.ContinueGenerationAsync();
 
-		// 代理上下文带着半截正文；provider 侧（Transcript.Normalize）再把它收成纯正文，
-		// 半截思考与不完整工具调用不进真正发出去的请求。
+		// 代理上下文带着半截正文与思考；provider 侧再把它收成正文 + 思考，
+		// 不完整工具调用不进真正发出去的请求。
 		Assert.Contains(script.Requests[0], static message =>
 			message is AssistantMessage { StopReason: StopReason.Aborted } aborted &&
 			aborted.Content.OfType<TextContent>().Any(text => text.Text == "half an answer"));
 		var normalized = MessageTransform.Transform(script.Requests[0], ScriptedSessions.Model());
 		var replayed = Assert.Single(normalized.OfType<AssistantMessage>());
-		Assert.Equal("half an answer", Assert.IsType<TextContent>(Assert.Single(replayed.Content)).Text);
+		Assert.Collection(
+			replayed.Content,
+			block => Assert.Equal("half a thought", Assert.IsType<ThinkingContent>(block).Thinking),
+			block => Assert.Equal("half an answer", Assert.IsType<TextContent>(block).Text));
 	}
 
 	[Fact]

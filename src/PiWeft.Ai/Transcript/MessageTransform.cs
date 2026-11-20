@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 namespace PiWeft.Ai;
 
 /// 请求前的消息归一化。对应 pi 的 <c>api/transform-messages.ts</c>：
-/// 丢弃不属于当前模型的 thinking、跳过失败的助手回合、主动中止的回放只留正文、
+/// 丢弃不属于当前模型的 thinking、跳过失败的助手回合、主动中止的回放保留正文与思考、
 /// 为孤儿工具调用补结果、归一工具调用 id，并把不支持图片的模型收到的图片降级为文本。
 public static class MessageTransform
 {
@@ -195,22 +195,34 @@ public static class MessageTransform
 		return replaced;
 	}
 
-	/// <summary>中止的助手回合里有没有可重放的正文（判断中断后能否「继续生成」）。</summary>
-	public static bool HasReplayableAbortedText(AssistantMessage message) => AbortedTextOnly(message) is not null;
-
-	private static AssistantMessage? AbortedTextOnly(AssistantMessage message)
+	/// <summary>中止的助手回合重放正文与思考，丢掉没执行完的工具调用；两者都没有时返回 null。</summary>
+	private static AssistantMessage? AbortedReplay(AssistantMessage message)
 	{
-		List<ContentBlock>? text = null;
+		List<ContentBlock>? replay = null;
 		foreach (var block in message.Content)
 		{
-			// TextLength 不解码延迟正文：轮廓只关心有没有字，不把整段 UTF-8 展开。
-			if (block is TextContent { TextLength: > 0 } content)
+			switch (block)
 			{
-				(text ??= []).Add(content);
+				// TextLength 不解码延迟正文：这里只关心有没有字，不把整段 UTF-8 展开。
+				case TextContent { TextLength: > 0 } text:
+					(replay ??= []).Add(text);
+					break;
+
+				// 半截思考跟着重放：同名模型能续上；没签名的由 provider 侧降级成文本。
+				case ThinkingContent thinking:
+					if (!thinking.Redacted.GetValueOrDefault() &&
+						string.IsNullOrEmpty(thinking.ThinkingSignature) &&
+						string.IsNullOrWhiteSpace(thinking.Thinking))
+					{
+						break;
+					}
+
+					(replay ??= []).Add(thinking);
+					break;
 			}
 		}
 
-		return text is null ? null : message with { Content = text };
+		return replay is null ? null : message with { Content = replay };
 	}
 
 	/// 重放前整理工具调用与结果：跳过 error 助手消息，为没有结果的调用补一条
@@ -264,11 +276,11 @@ public static class MessageTransform
 						continue;
 					}
 
-					// 主动中止的回合只重放正文，让「继续生成」接着那半截回答写；
-					// 半截推理与没执行过的工具调用仍然丢掉。
+					// 主动中止的回合重放正文与思考，让「继续生成」接着那半截回答或推理写；
+					// 没执行完的工具调用仍然丢掉。
 					if (assistant.StopReason == StopReason.Aborted)
 					{
-						if (AbortedTextOnly(assistant) is { } replay)
+						if (AbortedReplay(assistant) is { } replay)
 						{
 							result.Add(replay);
 						}

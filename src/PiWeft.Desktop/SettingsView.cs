@@ -563,7 +563,7 @@ public sealed class SettingsView
 				case "security": _content.Children(SecuritySection(snapshot.AgentDir)); break;
 				case "sounds": _content.Children(SoundSection()); break;
 				case "usage":
-					// 面板跨分区保留：切区间、滚动位置与最近一次扫描都不丢；重进由共享缓存核对文件指纹。
+					// 面板跨分区保留：切区间、滚动位置与最近一次扫描都不丢；重进由共享缓存核对文件变化。
 					if (_usageStats is null)
 					{
 						// 根目录与价格委托在 UI 线程取好；扫描在后台线程，不能再回读快照。

@@ -443,13 +443,15 @@ public class UsageStatsTests : IDisposable
 	};
 
 	[Fact]
-	public void PersistentSessionAppendInvalidatesTheGeneration()
+	public void PersistentSessionAppendWritesToTheFile()
 	{
-		var before = UsageStats.Generation;
 		var manager = SessionManager.Create("/work", Path.Combine(_root, "sessions"));
+		var path = manager.SessionFile!;
+		var before = new FileInfo(path).Length;
 		manager.AppendMessage(new UserMessage { Content = "hi" });
 
-		Assert.True(UsageStats.Generation > before);
+		// 使用统计靠文件长度/写入时间发现变化，追加必须真的落到文件上。
+		Assert.True(new FileInfo(path).Length > before);
 	}
 
 	[Fact]
@@ -552,5 +554,271 @@ public class UsageStatsTests : IDisposable
 		Assert.Equal(0, cells.Single(cell => cell.Date == "2026-06-01").Level);
 		// 报告里没有的日期保持 0，不会凭空画用量。
 		Assert.Equal(0, cells.Single(cell => cell.Date == "2026-06-06").Level);
+	}
+
+	[Fact]
+	public void IncrementalScanReusesUnchangedFilesAndReadsOnlyAppendedBytes()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1, durationMs: 60_000),
+			Assistant("2026-06-01T10:01:01.000Z", "openai", "gpt-a", 20, 2, durationMs: 30_000));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc };
+
+		var first = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(1, state.ReparsedFiles);
+		Assert.Equal(0, state.ResumedFiles);
+		Assert.Equal(30, first.Totals.Input);
+		Assert.Equal(2, first.Totals.Messages);
+		Assert.Equal(90_000, first.LongestSessionMs, 0);
+
+		// 内容没变时不重读文件，结果保持一致。
+		var second = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(0, state.ReparsedFiles);
+		Assert.Equal(0, state.ResumedFiles);
+		Assert.Equal(30, second.Totals.Input);
+		Assert.Equal(2, second.Totals.Messages);
+		Assert.Equal(90_000, second.LongestSessionMs, 0);
+
+		// 追加后只重读变化文件，续读不能把已计过的行再加一遍。
+		var path = Path.Combine(_sessions, "--a--", "2026-06-01T10-00-00-000Z_s1.jsonl");
+		File.AppendAllText(path, Assistant("2026-06-01T10:02:03.000Z", "openai", "gpt-a", 40, 4, durationMs: 30_000) + "\n");
+		var third = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(1, state.ReparsedFiles);
+		Assert.Equal(1, state.ResumedFiles);
+		Assert.Equal(70, third.Totals.Input);
+		Assert.Equal(3, third.Totals.Messages);
+		Assert.Equal(3, Assert.Single(third.Days).Totals.Messages);
+		// 续读后活跃区间要接着旧区间合并，不能丢掉第一轮回复的 60 秒。
+		Assert.Equal(120_000, third.LongestSessionMs, 0);
+		Assert.True(state.TryGetFile(path, out var cachedFile));
+		Assert.Equal(new FileInfo(path).Length, cachedFile.Boundary);
+	}
+
+	[Fact]
+	public void IncrementalScanRescansRewrittenFilesWithoutDoubleCounting()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc };
+		Assert.Equal(10, UsageStats.Scan(_sessions, state, options).Totals.Input);
+
+		// 整份重写（会话补头、压缩都会走这个路径）：长度和内容都变了，必须从头重算。
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/beta"),
+			Assistant("2026-06-01T10:00:01.000Z", "anthropic", "claude", 300, 30, durationMs: 60_000));
+
+		var report = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(1, state.ReparsedFiles);
+		Assert.Equal(300, report.Totals.Input);
+		Assert.Equal("anthropic", Assert.Single(report.Models).Provider);
+		Assert.Equal("/work/beta", Assert.Single(report.Projects).Directory);
+		Assert.Equal(60_000, report.LongestSessionMs, 0);
+	}
+
+	[Fact]
+	public void IncrementalScanRescansAFileWithoutATrailingNewline()
+	{
+		var directory = Path.Combine(_sessions, "--a--");
+		Directory.CreateDirectory(directory);
+		var path = Path.Combine(directory, "2026-06-01T10-00-00-000Z_s1.jsonl");
+		File.WriteAllText(path,
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha") + "\n" +
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc };
+		Assert.Equal(10, UsageStats.Scan(_sessions, state, options).Totals.Input);
+
+		// 未以换行收尾的 EOF 不能当续读边界，追加后整份重扫，结果不能重复或缺失。
+		File.AppendAllText(path, "\n" + Assistant("2026-06-01T10:00:02.000Z", "openai", "gpt-a", 20, 2));
+		var report = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(1, state.ReparsedFiles);
+		Assert.Equal(30, report.Totals.Input);
+		Assert.Equal(2, report.Totals.Messages);
+	}
+
+	[Fact]
+	public void IncrementalScanDropsDeletedFiles()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		Session("--b--", "2026-06-02T10-00-00-000Z_s2.jsonl",
+			Header("2026-06-02T10:00:00.000Z", "/work/beta"),
+			Assistant("2026-06-02T10:00:01.000Z", "openai", "gpt-a", 100, 10));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc };
+		Assert.Equal(110, UsageStats.Scan(_sessions, state, options).Totals.Input);
+
+		File.Delete(Path.Combine(_sessions, "--b--", "2026-06-02T10-00-00-000Z_s2.jsonl"));
+		var report = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(10, report.Totals.Input);
+		Assert.Equal(1, report.Sessions);
+		Assert.Equal(0, state.ReparsedFiles);
+	}
+
+	[Fact]
+	public void IncrementalScanRescansEqualLengthRewriteWhenWriteTimeChanges()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc };
+		Assert.Equal(10, UsageStats.Scan(_sessions, state, options).Totals.Input);
+
+		// 等长改写只有写入时间能发现；显式推进一秒，不依赖文件系统的时间戳精度。
+		var path = Path.Combine(_sessions, "--a--", "2026-06-01T10-00-00-000Z_s1.jsonl");
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-b", 10, 1));
+		File.SetLastWriteTimeUtc(path, File.GetLastWriteTimeUtc(path).AddSeconds(1));
+
+		var report = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(1, state.ReparsedFiles);
+		Assert.Equal(0, state.ResumedFiles);
+		Assert.Equal("gpt-b", Assert.Single(report.Models).Model);
+		Assert.Equal(10, report.Totals.Input);
+	}
+
+	[Fact]
+	public void IncrementalScanAppliesNewRatesWithoutRereadingFiles()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 1_000_000, 0));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc, Rates = (_, _) => new ModelCostRates { Input = 1 } };
+		Assert.Equal(1.0, UsageStats.Scan(_sessions, state, options).Totals.Cost, 6);
+		Assert.Equal(1, state.ReparsedFiles);
+
+		// 换价格只重建报告，不重读文件。
+		var report = UsageStats.Scan(_sessions, state, new UsageStatsOptions
+		{
+			TimeZone = TimeZoneInfo.Utc,
+			Rates = (_, _) => new ModelCostRates { Input = 2 },
+		});
+		Assert.Equal(2.0, report.Totals.Cost, 6);
+		Assert.Equal(1_000_000, report.Totals.Input);
+		Assert.Equal(0, state.ReparsedFiles);
+		Assert.Equal(0, state.ResumedFiles);
+	}
+
+	[Fact]
+	public void ScanStateClearsCachedDatesWhenTimeZoneOrSinceChanges()
+	{
+		Session("--a--", "2026-06-01T20-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T20:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T20:00:01.000Z", "openai", "gpt-a", 10, 1));
+		var state = new UsageStats.ScanState();
+		var first = UsageStats.Scan(_sessions, state, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc });
+		Assert.Equal("2026-06-01", Assert.Single(first.Days).Date);
+		Assert.Equal(1, state.ReparsedFiles);
+
+		// 换时区必须重分桶，不能沿用旧日期。
+		var plusEight = TimeZoneInfo.CreateCustomTimeZone("+08", TimeSpan.FromHours(8), "UTC+8", "UTC+8");
+		var shifted = UsageStats.Scan(_sessions, state, new UsageStatsOptions { TimeZone = plusEight });
+		Assert.Equal("2026-06-02", Assert.Single(shifted.Days).Date);
+		Assert.Equal(10, shifted.Totals.Input);
+		Assert.Equal(1, state.ReparsedFiles);
+
+		// Since 变化也要清空，否则会保留过滤前的行。
+		var filtered = UsageStats.Scan(_sessions, state, new UsageStatsOptions
+		{
+			TimeZone = plusEight,
+			Since = new DateTimeOffset(2026, 6, 1, 20, 0, 2, TimeSpan.Zero),
+		});
+		Assert.Equal(0, filtered.Totals.Input);
+		Assert.Equal(1, state.ReparsedFiles);
+	}
+
+	[Fact]
+	public void ScanWithZeroMaxLineBytesDoesNotSkipEveryLine()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+
+		var report = UsageStats.Scan(_sessions, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc, MaxLineBytes = 0 });
+
+		Assert.Equal(10, report.Totals.Input);
+		Assert.Equal(1, report.Totals.Messages);
+	}
+
+	[Fact]
+	public void IncrementalScanKeepsPreviousTotalsWhenAFileCannotBeRead()
+	{
+		if (OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc };
+		Assert.Equal(10, UsageStats.Scan(_sessions, state, options).Totals.Input);
+
+		// 悬空符号链接仍出现在目录里，但读不出来：回退到旧缓存，页面总量不能缩水。
+		var path = Path.Combine(_sessions, "--a--", "2026-06-01T10-00-00-000Z_s1.jsonl");
+		File.Delete(path);
+		File.CreateSymbolicLink(path, Path.Combine(_root, "missing.jsonl"));
+
+		var report = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(10, report.Totals.Input);
+		Assert.Equal(1, report.Sessions);
+		Assert.Equal(1, state.ReparsedFiles);
+		// 旧数据还在，但这一轮不是完整结果。
+		Assert.True(report.Truncated);
+	}
+
+	[Fact]
+	public void IncrementalScanRescansWhenTheHeaderChangesButTailStaysPut()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc };
+		Assert.Equal(10, UsageStats.Scan(_sessions, state, options).Totals.Input);
+
+		// 等长改写会话头（cwd）后再追加一行：尾部 64 字节仍是旧内容，只有首部哈希能发现。
+		var path = Path.Combine(_sessions, "--a--", "2026-06-01T10-00-00-000Z_s1.jsonl");
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alphb"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		File.AppendAllText(path, Assistant("2026-06-01T10:02:03.000Z", "openai", "gpt-a", 20, 2) + "\n");
+
+		var report = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(1, state.ReparsedFiles);
+		Assert.Equal(0, state.ResumedFiles);
+		Assert.Equal("/work/alphb", Assert.Single(report.Projects).Directory);
+		Assert.Equal(30, report.Totals.Input);
+	}
+
+	[Fact]
+	public void IncrementalScanTrimsFilesOutsideTheLimit()
+	{
+		Session("--a--", "2026-06-01T10-00-00-000Z_s1.jsonl",
+			Header("2026-06-01T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-01T10:00:01.000Z", "openai", "gpt-a", 10, 1));
+		Session("--a--", "2026-06-02T10-00-00-000Z_s2.jsonl",
+			Header("2026-06-02T10:00:00.000Z", "/work/alpha"),
+			Assistant("2026-06-02T10:00:01.000Z", "openai", "gpt-a", 100, 10));
+		var state = new UsageStats.ScanState();
+		var options = new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc };
+		Assert.Equal(110, UsageStats.Scan(_sessions, state, options).Totals.Input);
+		Assert.Equal(2, state.ReparsedFiles);
+
+		// 上限只枚举最近一份；缓存裁剪后，再全量扫描会重读被裁掉的那份。
+		var limited = UsageStats.Scan(_sessions, state, new UsageStatsOptions { TimeZone = TimeZoneInfo.Utc, MaxFiles = 1 });
+		Assert.Equal(100, limited.Totals.Input);
+		var complete = UsageStats.Scan(_sessions, state, options);
+		Assert.Equal(1, state.ReparsedFiles);
+		Assert.Equal(110, complete.Totals.Input);
 	}
 }

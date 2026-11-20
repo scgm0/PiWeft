@@ -75,7 +75,7 @@ internal sealed class UsageStatsPanel
 		Cancel();
 	}
 
-	/// <summary>进入页面时先让共享缓存核对文件指纹；未变化就直接复用。</summary>
+	/// <summary>进入页面时让共享缓存核对一遍文件；没变就不重读内容。</summary>
 	public Task RefreshIfStaleAsync()
 	{
 		if (_busy)

@@ -33,6 +33,7 @@
 | 1000 轮追加一条 user 后重建 | 2.53 ms / 1.25 MB → 0.25–0.6 ms / 36 KB |
 | 2,000 行流式过程投影 | 1.15 ms / 233 KB → 0.07–0.12 ms |
 | 40 会话侧栏冷扫 | 39–67 ms / 34.4 MB → 19–24 ms / 0.26 MB |
+| 使用统计 275 会话 / 748 MiB | 全扫 0.75–0.92 s（改前 0.9 s，耗时基本持平）；分配 127.5 → 18.9 MiB；无变化刷新 1.1–1.4 ms / 0.72 MiB；20.7 MiB 活跃会话追加一条 0.12–0.22 ms / 43.6 KiB；报告 + 文件聚合常驻 1.97 MiB |
 | 本仓 14,208 文件遍历（rg 语义，8 线程） | 1.3 s → 0.09–0.10 s，分配 10 MiB |
 | `find` 全量列举 / `*.cs`（limit 1e6） | 0.76 s → 0.06–0.07 s / 0.043 s（fd 0.10–0.12 s / 0.09 s） |
 | 本仓 279 MiB `grep` 无命中 | 5.6 s → 0.09–0.11 s（rg 0.045 s） |
@@ -55,6 +56,7 @@
 - `Truncate.Head`/`Tail` 改成按 span 扫行：不再 `Split` 出整份行列表，`Tail` 也从 `List.Insert(0)` 改为反向切片。3.79 MiB / 12 万行的 shell 尾部截断从 23–32 ms、12.3 MiB 分配降到 1.3–2.5 ms、100 KiB（同一进程 20 次均值，Release）。
 - 侧栏摘要持久化到 `<agentDir>/session-summaries.json`，键为长度 + mtime + 首行指纹；追加时用尾巴指纹续扫，原地重写则整扫。缓存损坏退化为全扫；删除会话的条目下次构建时清除。读写走 System.Text.Json 源生成（141 条 83 KB 的缓存：装载 1.08 MB 分配 → 0.38 MB，2.3 ms → 1.4 ms），落盘在后台线程单飞，关窗时同步补一次。
 - 会话搜索的正文扫描按 1 MB 分块扫全文，块间留关键字长度减一的重叠；比较在 UTF-8 字节上做：没有 ASCII 字母的关键字（中日韩）走向量化 `IndexOf`，带大小写的逐个 rune 折成大写，先用 `SearchValues<byte>` 筛候选首字节再比。只有命中行前后 8 KB 才解码，摘要仍从 JSON 里取字符串值。总读盘预算 512 MB，按列表顺序预先摊好每份读多少字节（额度不够的那份读尾部，再后面的整份跳过），命中范围不随线程调度变。实测 141 份会话 / 470 MB：命中 20–25 ms / 0.3 MB 分配，未命中 59 ms（无大小写、精确路径）到 80–173 ms（带大小写的折叠路径，要逐候选解 rune）/ 0.02–0.07 MB；此前的「只读尾部 512 KB」是 110–136 ms / 118 MB，覆盖范围反而只有全文的七分之一。
+- 使用统计按会话文件增量：`UsageStats.ScanState` 缓存每个文件的按日/模型聚合，只重读长度或写入时间变化的文件；追加时校验文件头 256 字节与断点前 64 字节后从断点续读；文件重写、末尾没换行或读失败就整扫，读失败时保留旧数据并把报告标成截断。价格只在对齐报告时应用一次，改模型价格不必重读文件。单行超过 256 KiB 时不复制进行缓冲，按空行交回，断点仍落在行边界。
 - 会话解析用 `Utf8LineReader` + `SessionJson.ParseLine`；大文件按 2–3 段并行，顺序与单线程一致；进度按字节汇报。`Utf8LineReader` 对超大行缓冲（>256 KiB）交给 GC，不归还共享池。
 - 会话行改用 `Utf8JsonReader` 解析（`SessionJsonReader`），不再逐行建 `JsonNode` 树，也不走 `GetString()`：大文本块未转义时直接接管 `ValueSpan`，含转义（工具输出几乎都带换行）时用 `SessionJsonUnescape` 解到池化缓冲，最后只复制实际长度。30.2 MiB / 600 条 50 KiB 工具结果的会话，打开分配 125.84 → 31.78 MiB、中位 173 → 84 ms、稳态堆 33.52 → 30.28 MiB（1.00× 文件），gen2 从 1–4 次降到 0–1 次。`dotnet run --project tools/PiWeft.SessionBench -c Release -- memory` 复现；`-- parse` 对比逐行解析（`SessionJson` 14.4 ms / 31.4 MB vs `JsonDocument` + `GetString` 28.7 ms / 61.6 MB）。`SessionJsonReaderTests` 把 reader 路径与 JsonNode 路径的序列化结果逐字节对比，覆盖转义、代理对、未知字段与未知角色。
 - 写回也走 UTF-8：延迟存储的正文直接 `WriteRawValue` 写原始字节（`JsonUtf8String`），转义用 `SearchValues<byte>` 找下一个待转义字节、中间整段复制，不再解码成 UTF-16 再编码。600 条 50 KiB 工具结果写回 253.4 → 165.9 ms、分配 62.5 MB → 0.1 MB（`SessionBench -- write`）。

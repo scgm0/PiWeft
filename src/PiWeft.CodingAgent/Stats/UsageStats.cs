@@ -78,7 +78,7 @@ public sealed record UsageStatsReport(
 	/// <summary>单个会话内助手回复时长之和的最大值（毫秒）；没有时长记录时退回首末时间跨度。</summary>
 	public double LongestSessionMs { get; init; }
 
-	/// <summary>是否因文件数上限只扫描了最近一部分会话。</summary>
+	/// <summary>是否只扫描了部分会话，或某份文件读失败时保留了旧数据。</summary>
 	public bool Truncated { get; init; }
 }
 
@@ -90,6 +90,7 @@ public sealed record UsageStatsOptions
 
 	public int MaxFilesPerProject { get; init; } = 2000;
 
+	/// <summary>单行字节上限；0 表示不限制。超长行整行跳过。</summary>
 	public int MaxLineBytes { get; init; } = 256 * 1024;
 
 	public DateTimeOffset? Since { get; init; }
@@ -102,18 +103,10 @@ public sealed record UsageStatsOptions
 	public Func<string, string, ModelCostRates?>? Rates { get; init; }
 }
 
-/// 跨会话用量统计。只读会话 JSONL，按需调用、单遍扫描、逐行解析，
-/// 不做缓存也不驻留后台线程；文件数与行长都有上限。
+/// 跨会话用量统计。只读会话 JSONL，逐行解析，文件数与行长都有上限。
+/// 单次调用不缓存；要反复刷新时传入 ScanState，按文件增量重读。
 public static partial class UsageStats
 {
-	private static long _generation;
-
-	/// <summary>进程内会话数据变更代数；桌面缓存用它快速判断是否还要检查文件指纹。</summary>
-	public static long Generation => Volatile.Read(ref _generation);
-
-	/// <summary>标记会话数据已变化，下一次取使用统计时重新扫描。</summary>
-	public static void MarkChanged() => Interlocked.Increment(ref _generation);
-
 	private static ReadOnlySpan<byte> UsageMarker => "\"usage\""u8;
 
 	private static ReadOnlySpan<byte> TimestampMarker => "\"timestamp\""u8;
@@ -137,20 +130,31 @@ public static partial class UsageStats
 	}
 
 	public static UsageStatsReport Scan(string sessionsRoot, UsageStatsOptions? options = null, CancellationToken cancellationToken = default)
+		=> Scan(sessionsRoot, state: null, options, cancellationToken);
+
+	/// <summary>
+	/// 在 <paramref name="state"/> 上做增量扫描：未改动的文件直接复用上次的聚合，
+	/// 只重读新增或变更的文件。重读与解析随变更量增长；报告构建仍随文件数与天数增长。
+	/// </summary>
+	public static UsageStatsReport Scan(
+		string sessionsRoot,
+		ScanState? state,
+		UsageStatsOptions? options = null,
+		CancellationToken cancellationToken = default)
 	{
 		options ??= new UsageStatsOptions();
 		var timeZone = options.TimeZone ?? TimeZoneInfo.Local;
-		var days = new Dictionary<DateOnly, Bucket>();
-		var models = new Dictionary<ModelKey, Bucket>();
-		var projects = new Dictionary<string, Bucket>(StringComparer.Ordinal);
-		var dailyModels = new Dictionary<DateOnly, Dictionary<ModelKey, Bucket>>();
-		var undated = new Bucket();
-		var sessions = 0;
+		state?.Prepare(sessionsRoot, timeZone, options);
+
+		var scanned = new List<FileScan>();
 		var turns = 0;
 		var longestSessionMs = 0.0;
 		var truncated = false;
+		var rootExists = Directory.Exists(sessionsRoot);
+		HashSet<string>? seen = state is null ? null : new HashSet<string>(StringComparer.Ordinal);
+		var candidates = new List<FileCandidate>();
 
-		if (Directory.Exists(sessionsRoot))
+		if (rootExists)
 		{
 			var remaining = Math.Max(0, options.MaxFiles);
 			foreach (var directory in EnumerateDirectories(sessionsRoot, options.Project))
@@ -177,22 +181,159 @@ public static partial class UsageStats
 
 					projectFiles++;
 					remaining--;
-					var session = ScanFile(file, directory, options, timeZone, days, models, projects, dailyModels, undated, cancellationToken);
-					// 文件在 sessions 目录里就算一次会话；头部损坏但仍有 usage 的文件不能显示成 0 会话。
-					sessions++;
-					turns += session.Turns;
-					var wallClock = session.Start is { } start && session.End is { } end && end > start
-						? (end - start).TotalMilliseconds
-						: 0;
-					// 有回复时长但缺消息时间戳时不能退回首末跨度，否则和 SessionStatistics 的活跃时长口径不一致。
-					longestSessionMs = Math.Max(longestSessionMs, session.HasDurations ? session.ActiveMs : wallClock);
+					seen?.Add(file);
+
+					FileScan? cached = null;
+					if (state is not null)
+					{
+						state.TryGetFile(file, out var found);
+						cached = found;
+					}
+
+					var (length, writeTicks) = Snapshot(file);
+					candidates.Add(new FileCandidate(file, directory, cached, length, writeTicks));
 				}
 			}
+		}
+
+		var scans = new FileScan?[candidates.Count];
+		var pending = new List<int>();
+		for (var index = 0; index < candidates.Count; index++)
+		{
+			var candidate = candidates[index];
+			if (candidate.Cached is { } cached && candidate.Length >= 0 &&
+				cached.Length == candidate.Length && cached.LastWriteTicks == candidate.WriteTicks)
+			{
+				scans[index] = cached;
+				continue;
+			}
+
+			pending.Add(index);
+		}
+
+		if (state is not null)
+		{
+			state.ReparsedFiles = pending.Count;
+		}
+
+		// 顺序扫描：并行读同一块磁盘在冷启动时反而抢 IO，增量场景又只有一两个文件，
+		// 省下的调度开销比多出来的线程更有用。
+		foreach (var index in pending)
+		{
+			var candidate = candidates[index];
+			scans[index] = ScanFile(candidate.File, candidate.Directory, candidate.Cached,
+				candidate.Length, candidate.WriteTicks, options, timeZone, cancellationToken);
+		}
+
+		var sessions = candidates.Count;
+		for (var index = 0; index < candidates.Count; index++)
+		{
+			var candidate = candidates[index];
+			var scan = scans[index];
+			if (scan is null)
+			{
+				// 取消或读失败时保留上一份数据，别让页面上的总量缩水；
+				// 但这份数据已经旧了，报告要标成不完整。
+				scan = candidate.Cached;
+				if (scan is not null)
+				{
+					truncated = true;
+				}
+			}
+			else if (state is not null && !ReferenceEquals(scan, candidate.Cached))
+			{
+				state.SetFile(candidate.File, scan);
+				if (scan.Resumed)
+				{
+					state.ResumedFiles++;
+				}
+			}
+
+			// 文件在 sessions 目录里就算一次会话；头部损坏但仍有 usage 的文件不能显示成 0 会话。
+			if (scan is null)
+			{
+				continue;
+			}
+
+			scanned.Add(scan);
+			turns += scan.Turns;
+			var wallClock = scan.Start is { } start && scan.End is { } end && end > start
+				? (end - start).TotalMilliseconds
+				: 0;
+			// 有回复时长但缺消息时间戳时不能退回首末跨度，否则和 SessionStatistics 的活跃时长口径不一致。
+			longestSessionMs = Math.Max(longestSessionMs, scan.HasDurations ? scan.ActiveMs : wallClock);
 		}
 
 		if (cancellationToken.IsCancellationRequested)
 		{
 			truncated = true;
+		}
+
+		// 根目录不存在时看到的不是“文件都删了”，跳过裁剪，免得临时不可用清掉整份缓存。
+		if (rootExists)
+		{
+			state?.Trim(seen, options.Project, cancellationToken.IsCancellationRequested);
+		}
+
+		return BuildReport(scanned, options, sessions, turns, longestSessionMs, truncated);
+	}
+
+	private readonly record struct FileCandidate(
+		string File,
+		string Directory,
+		FileScan? Cached,
+		long Length,
+		long WriteTicks);
+
+	private static UsageStatsReport BuildReport(
+		List<FileScan> scans,
+		UsageStatsOptions options,
+		int sessions,
+		int turns,
+		double longestSessionMs,
+		bool truncated)
+	{
+		var days = new Dictionary<DateOnly, Bucket>();
+		var models = new Dictionary<ModelKey, Bucket>();
+		var projects = new Dictionary<string, Bucket>(StringComparer.Ordinal);
+		var dailyModels = new Dictionary<DateOnly, Dictionary<ModelKey, Bucket>>();
+		var undated = new Bucket();
+		var rates = options.Rates;
+
+		// 文件缓存里保留未定价的 token 桶，价格只在这里应用一次；rates 变化不必重扫文件。
+		foreach (var scan in scans)
+		{
+			foreach (var (date, byModel) in scan.Days)
+			{
+				if (!days.TryGetValue(date, out var day))
+				{
+					day = new Bucket();
+					days[date] = day;
+				}
+
+				if (!dailyModels.TryGetValue(date, out var daily))
+				{
+					daily = new Dictionary<ModelKey, Bucket>();
+					dailyModels[date] = daily;
+				}
+
+				foreach (var (key, bucket) in byModel)
+				{
+					var cost = bucket.CostWith(rates, key.Provider, key.Model);
+					day.AddCosted(bucket, cost);
+					AddCosted(daily, key, bucket, cost);
+					AddCosted(models, key, bucket, cost);
+					AddCosted(projects, scan.Project, bucket, cost);
+				}
+			}
+
+			foreach (var (key, bucket) in scan.Undated)
+			{
+				var cost = bucket.CostWith(rates, key.Provider, key.Model);
+				undated.AddCosted(bucket, cost);
+				AddCosted(models, key, bucket, cost);
+				AddCosted(projects, scan.Project, bucket, cost);
+			}
 		}
 
 		return new UsageStatsReport(
@@ -216,6 +357,14 @@ public static partial class UsageStats
 			LongestSessionMs = longestSessionMs,
 			Truncated = truncated,
 		};
+	}
+
+	private static void AddCosted<TKey>(Dictionary<TKey, Bucket> map, TKey key, Bucket source, double cost)
+		where TKey : notnull
+	{
+		ref var target = ref CollectionsMarshal.GetValueRefOrAddDefault(map, key, out _);
+		target ??= new Bucket();
+		target.AddCosted(source, cost);
 	}
 
 	/// <summary>
@@ -490,43 +639,41 @@ public static partial class UsageStats
 		}
 	}
 
-	private readonly record struct ModelKey(string Provider, string Model);
+	internal readonly record struct ModelKey(string Provider, string Model);
 
-	private readonly record struct SessionScan(int Turns, DateTimeOffset? Start, DateTimeOffset? End, double ActiveMs, bool HasDurations);
-
-	private static SessionScan ScanFile(
+	private static FileScan? ScanFile(
 		string file,
 		string directory,
+		FileScan? cached,
+		long length,
+		long writeTicks,
 		UsageStatsOptions options,
 		TimeZoneInfo timeZone,
-		Dictionary<DateOnly, Bucket> days,
-		Dictionary<ModelKey, Bucket> models,
-		Dictionary<string, Bucket> projects,
-		Dictionary<DateOnly, Dictionary<ModelKey, Bucket>> dailyModels,
-		Bucket undated,
 		CancellationToken cancellationToken)
 	{
-		string? cwd = null;
-		var project = Path.GetFileName(directory);
+		// 只有上次读到了换行收尾的 EOF 且首尾字节都对得上，才能从断点续读；否则整份重扫。
+		var resume = cached is { Boundary: > 0 } && cached.Boundary == cached.Length && length > cached.Boundary &&
+			BoundaryMatches(file, cached.Boundary, cached.BoundaryHash, cached.HeadHash);
+		var scan = resume ? cached!.Clone() : new FileScan { Project = Path.GetFileName(directory) };
+		scan.Resumed = resume;
+		var firstLine = !resume;
 		var lineCount = 0;
-		var headerChecked = false;
-		var turns = 0;
-		var active = new ActiveIntervalUnion();
-		var hasDurations = false;
-		DateTimeOffset? start = null;
-		DateTimeOffset? end = null;
+		var cancelled = false;
+		var bytesRead = -1L;
 
 		try
 		{
-			using var reader = new Session.Utf8LineReader(file);
+			using var reader = new Session.Utf8LineReader(file, resume ? cached!.Boundary : 0, options.MaxLineBytes);
 			while (reader.TryReadLine(out var line))
 			{
 				if ((++lineCount & 0xFF) == 0 && cancellationToken.IsCancellationRequested)
 				{
+					cancelled = true;
 					break;
 				}
 
-				if (line.Length == 0 || line.Length > options.MaxLineBytes)
+				// 超长行由 reader 丢弃，返回空行；这里再核一次长度覆盖 reader 未启用上限的情况。
+				if (line.Length == 0 || (options.MaxLineBytes > 0 && line.Length > options.MaxLineBytes))
 				{
 					continue;
 				}
@@ -534,27 +681,26 @@ public static partial class UsageStats
 				var hasTimestamp = TryReadTimestamp(line, out var timestamp);
 				if (hasTimestamp)
 				{
-					if (start is null || timestamp < start)
+					if (scan.Start is null || timestamp < scan.Start)
 					{
-						start = timestamp;
+						scan.Start = timestamp;
 					}
 
-					if (end is null || timestamp > end)
+					if (scan.End is null || timestamp > scan.End)
 					{
-						end = timestamp;
+						scan.End = timestamp;
 					}
 				}
 
 				// 第一行按会话头解析；第三方写出的 JSON 可能带空格，不能只靠前缀匹配。
-				if (!headerChecked)
+				if (firstLine)
 				{
-					headerChecked = true;
+					firstLine = false;
 					if (TryReadHeader(reader.CurrentLineMemory, out var headerCwd))
 					{
-						cwd = headerCwd;
-						if (cwd is { Length: > 0 })
+						if (headerCwd is { Length: > 0 })
 						{
-							project = cwd;
+							scan.Project = headerCwd;
 						}
 
 						continue;
@@ -569,14 +715,14 @@ public static partial class UsageStats
 					{
 						if (role.SequenceEqual(UserValue) && line.IndexOf(CustomTypeMarker) < 0)
 						{
-							turns++;
+							scan.Turns++;
 						}
 
 						continue;
 					}
 				}
 
-				if (line.IndexOf(UsageMarker) < 0 || line.IndexOf(TimestampMarker) < 0)
+				if (line.IndexOf(UsageMarker) < 0 || (!hasTimestamp && line.IndexOf(TimestampMarker) < 0))
 				{
 					continue;
 				}
@@ -587,41 +733,45 @@ public static partial class UsageStats
 				}
 
 				var date = hasTimestamp ? DateOf(timestamp, timeZone) : (DateOnly?)null;
-				var sample = ScanLine(reader.CurrentLineMemory, date, project, options, days, models, projects, dailyModels, undated);
+				var sample = ScanLine(reader.CurrentLineMemory, date, scan);
 				if (sample.DurationMs > 0)
 				{
-					hasDurations = true;
+					scan.HasDurations = true;
 					if (sample.Timestamp > 0)
 					{
-						active.Add(sample.Timestamp, sample.Timestamp + sample.DurationMs);
+						scan.Active.Add(sample.Timestamp, sample.Timestamp + sample.DurationMs);
 					}
 				}
 			}
+
+			bytesRead = reader.BytesRead;
 		}
-		catch (IOException)
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
 		{
-			// 单个文件读失败不影响整体统计。
-		}
-		catch (UnauthorizedAccessException)
-		{
-		}
-		catch (JsonException)
-		{
+			// 单个文件读失败不影响整体统计；不保存半截状态，下次按长度/时间变化重试。
+			return null;
 		}
 
-		return new SessionScan(turns, start, end, active.TotalMs, hasDurations);
+		if (cancelled || cancellationToken.IsCancellationRequested)
+		{
+			return null;
+		}
+
+		// 只在整份文件读完且以换行收尾时记边界：下次追加可从边界续读，不用重扫全文。
+		scan.Boundary = 0;
+		if (length > 0 && bytesRead == length && TryCaptureBoundary(file, length, out var boundaryHash, out var headHash))
+		{
+			scan.Boundary = length;
+			scan.BoundaryHash = boundaryHash;
+			scan.HeadHash = headHash;
+		}
+
+		scan.Length = length;
+		scan.LastWriteTicks = writeTicks;
+		return scan;
 	}
 
-	private static (double DurationMs, long Timestamp) ScanLine(
-		ReadOnlyMemory<byte> line,
-		DateOnly? date,
-		string project,
-		UsageStatsOptions options,
-		Dictionary<DateOnly, Bucket> days,
-		Dictionary<ModelKey, Bucket> models,
-		Dictionary<string, Bucket> projects,
-		Dictionary<DateOnly, Dictionary<ModelKey, Bucket>> dailyModels,
-		Bucket undated)
+	private static (double DurationMs, long Timestamp) ScanLine(ReadOnlyMemory<byte> line, DateOnly? date, FileScan scan)
 	{
 		if (!TryReadUsageLine(line, out var sample))
 		{
@@ -632,34 +782,8 @@ public static partial class UsageStats
 		// 总量更小时用桶之和，避免明细比合计还大。总量缺失则用桶之和。
 		var bucketTokens = sample.Input + sample.Output + sample.CacheRead + sample.CacheWrite;
 		var totalTokens = sample.ReportedTokens > bucketTokens ? sample.ReportedTokens : bucketTokens;
-		var cost = sample.Cost;
-
-		if (cost <= 0 && options.Rates?.Invoke(sample.Provider, sample.Model) is { } rates)
-		{
-			cost = rates.Input / 1_000_000.0 * sample.Input + rates.Output / 1_000_000.0 * sample.Output +
-				rates.CacheRead / 1_000_000.0 * sample.CacheRead + rates.CacheWrite / 1_000_000.0 * sample.CacheWrite;
-		}
-
-		var modelKey = new ModelKey(sample.Provider, sample.Model);
-		if (date is { } day)
-		{
-			Add(days, day, sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
-			if (!dailyModels.TryGetValue(day, out var byModel))
-			{
-				byModel = new Dictionary<ModelKey, Bucket>();
-				dailyModels[day] = byModel;
-			}
-
-			Add(byModel, modelKey, sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
-		}
-		else
-		{
-			undated.Add(sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
-		}
-
-		Add(models, modelKey, sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
-		Add(projects, project, sample.Input, sample.Output, sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, cost);
-
+		scan.Add(date, new ModelKey(sample.Provider, sample.Model), sample.Input, sample.Output,
+			sample.CacheRead, sample.CacheWrite, totalTokens, sample.Messages, sample.Cost);
 		return (sample.DurationMs, sample.Timestamp);
 	}
 
@@ -753,14 +877,6 @@ public static partial class UsageStats
 			DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out timestamp);
 	}
 
-	private static void Add<TKey>(Dictionary<TKey, Bucket> map, TKey key, long input, long output, long cacheRead, long cacheWrite, long reportedTokens, long messages, double cost)
-		where TKey : notnull
-	{
-		ref var bucket = ref CollectionsMarshal.GetValueRefOrAddDefault(map, key, out _);
-		bucket ??= new Bucket();
-		bucket.Add(input, output, cacheRead, cacheWrite, reportedTokens, messages, cost);
-	}
-
 	private static string FormatDate(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
 	private static JsonDocument? TryParse(ReadOnlyMemory<byte> line)
@@ -805,7 +921,16 @@ public static partial class UsageStats
 
 		public long Messages { get; private set; }
 
+		/// <summary>已写进会话的 cost 之和；没写 cost 的 token 另记，构建报告时按价格表估算。</summary>
 		public double Cost { get; private set; }
+
+		public long UnpricedInput { get; private set; }
+
+		public long UnpricedOutput { get; private set; }
+
+		public long UnpricedCacheRead { get; private set; }
+
+		public long UnpricedCacheWrite { get; private set; }
 
 		public long Tokens => ReportedTokens > 0 ? ReportedTokens : Input + Output + CacheRead + CacheWrite;
 
@@ -817,8 +942,48 @@ public static partial class UsageStats
 			CacheWrite += cacheWrite;
 			ReportedTokens += reportedTokens;
 			Messages += messages;
-			Cost += cost;
+			if (cost > 0)
+			{
+				Cost += cost;
+				return;
+			}
+
+			UnpricedInput += input;
+			UnpricedOutput += output;
+			UnpricedCacheRead += cacheRead;
+			UnpricedCacheWrite += cacheWrite;
 		}
+
+		public void AddCosted(Bucket source, double cost) =>
+			Add(source.Input, source.Output, source.CacheRead, source.CacheWrite, source.Tokens, source.Messages, cost);
+
+		/// <summary>没记 cost 的 token 按价格表估算；已记 cost 的部分不重复算。</summary>
+		public double CostWith(Func<string, string, ModelCostRates?>? rates, string provider, string model)
+		{
+			if (rates is null || UnpricedInput + UnpricedOutput + UnpricedCacheRead + UnpricedCacheWrite == 0 ||
+				rates(provider, model) is not { } value)
+			{
+				return Cost;
+			}
+
+			return Cost + value.Input / 1_000_000.0 * UnpricedInput + value.Output / 1_000_000.0 * UnpricedOutput +
+				value.CacheRead / 1_000_000.0 * UnpricedCacheRead + value.CacheWrite / 1_000_000.0 * UnpricedCacheWrite;
+		}
+
+		public Bucket Clone() => new()
+		{
+			Input = Input,
+			Output = Output,
+			CacheRead = CacheRead,
+			CacheWrite = CacheWrite,
+			ReportedTokens = ReportedTokens,
+			Messages = Messages,
+			Cost = Cost,
+			UnpricedInput = UnpricedInput,
+			UnpricedOutput = UnpricedOutput,
+			UnpricedCacheRead = UnpricedCacheRead,
+			UnpricedCacheWrite = UnpricedCacheWrite,
+		};
 
 		public void Add(StatsTotals totals) =>
 			Add(totals.Input, totals.Output, totals.CacheRead, totals.CacheWrite, totals.Tokens, totals.Messages, totals.Cost);

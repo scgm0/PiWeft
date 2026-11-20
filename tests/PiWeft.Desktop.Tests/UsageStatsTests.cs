@@ -151,7 +151,7 @@ public sealed class UsageStatsPanelTests
 		Directory.CreateDirectory(root);
 		try
 		{
-			var cache = new UsageStatsCache(static () => 0);
+			var cache = new UsageStatsCache();
 			var settings = new SettingsView(() => new SettingsSnapshot
 			{
 				AgentDir = root,
@@ -173,10 +173,11 @@ public sealed class UsageStatsPanelTests
 			await settings.SelectSectionAsync("overview");
 			await settings.SelectSectionAsync("usage");
 
+			// 重进会核对一次文件（增量，未变时不重读），面板本身仍然是同一块。
+			await WaitUntilAsync(() => cache.Scans == 2);
+			Assert.Equal(2, cache.Scans);
 			var after = Find<TextBlock>(settings.View).First(text => text.Text.StartsWith(Strings.UsageStatsSourceHint, StringComparison.Ordinal));
 			Assert.Same(before, after);
-			// 共享缓存已能在指纹/代数未变时直接命中，不再重扫。
-			Assert.Equal(1, cache.Scans);
 
 			// 离开分区取消可能在途的扫描，测试结束不把后台任务带进下一个用例。
 			await settings.SelectSectionAsync("overview");
@@ -229,31 +230,30 @@ public sealed class UsageStatsPanelTests
 public sealed class UsageStatsCacheTests
 {
 	[Fact]
-	public async Task FingerprintSkipsUnchangedFilesAndRescansWhenTheyChange()
+	public async Task RescansWhenFilesChangeAndRereadsOnlyThoseFiles()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "piweft-usage-cache-" + Guid.NewGuid().ToString("N")[..8]);
 		Directory.CreateDirectory(root);
 		try
 		{
 			WriteAssistant(root, 10);
-			var generation = 0L;
-			var cache = new UsageStatsCache(() => generation);
+			var cache = new UsageStatsCache();
 			var first = await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
 			Assert.Equal(10, first.Report.Totals.Input);
 			Assert.Equal(1, cache.Scans);
 
+			// 再进页面会核对文件，内容未变时增量扫描不重读，结果不变。
 			var second = await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
-			Assert.Same(first.Report, second.Report);
-			Assert.Equal(1, cache.Scans);
-
-			WriteAssistant(root, 20);
-			var third = await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
-			Assert.Equal(20, third.Report.Totals.Input);
+			Assert.Equal(10, second.Report.Totals.Input);
 			Assert.Equal(2, cache.Scans);
+			Assert.Equal(0, cache.ReparsedFiles);
 
-			generation++;
-			await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			// 写不同长度的内容：不依赖 mtime 分辨率，长度变化就能触发重扫。
+			WriteAssistant(root, 2000);
+			var third = await cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			Assert.Equal(2000, third.Report.Totals.Input);
 			Assert.Equal(3, cache.Scans);
+			Assert.Equal(1, cache.ReparsedFiles);
 
 			await cache.GetAsync(root, (_, _) => null, force: true, CancellationToken.None);
 			Assert.Equal(4, cache.Scans);
@@ -272,9 +272,11 @@ public sealed class UsageStatsCacheTests
 		try
 		{
 			WriteAssistant(root, 10);
-			var cache = new UsageStatsCache(static () => 0);
-			var first = cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
-			var second = cache.GetAsync(root, (_, _) => null, force: false, CancellationToken.None);
+			var cache = new UsageStatsCache();
+			// 两个并发调用必须传同一个 rates 委托（面板在构造时只取一次快照）。
+			Func<string, string, PiWeft.Ai.ModelCostRates?> rates = (_, _) => null;
+			var first = cache.GetAsync(root, rates, force: false, CancellationToken.None);
+			var second = cache.GetAsync(root, rates, force: false, CancellationToken.None);
 			var results = await Task.WhenAll(first, second);
 
 			Assert.Equal(1, cache.Scans);

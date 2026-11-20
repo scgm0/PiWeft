@@ -58,7 +58,7 @@ public sealed class MessageTransformTests
 	}
 
 	[Fact]
-	public void AbortedAssistantReplaysOnlyItsText()
+	public void AbortedAssistantReplaysTextAndThinkingWithoutToolCalls()
 	{
 		var messages = new List<Message>
 		{
@@ -78,16 +78,18 @@ public sealed class MessageTransformTests
 
 		var transformed = MessageTransform.Transform(messages, TextModel());
 
-		// 中止的半截回答要能被「继续生成」接上：只留正文，思考与不完整工具调用不进重放。
+		// 中止的半截回答与思考要能被「继续生成」接上；没执行完的工具调用不进重放。
 		Assert.Equal(3, transformed.Count);
 		var assistant = Assert.IsType<AssistantMessage>(transformed[1]);
 		Assert.Equal(StopReason.Aborted, assistant.StopReason);
-		var text = Assert.IsType<TextContent>(Assert.Single(assistant.Content));
-		Assert.Equal("half an answer", text.Text);
+		Assert.Collection(
+			assistant.Content,
+			block => Assert.Equal("half a thought", Assert.IsType<ThinkingContent>(block).Thinking),
+			block => Assert.Equal("half an answer", Assert.IsType<TextContent>(block).Text));
 	}
 
 	[Fact]
-	public void AbortedAssistantWithoutTextIsNotReplayed()
+	public void AbortedAssistantWithOnlyThinkingIsStillReplayed()
 	{
 		var messages = new List<Message>
 		{
@@ -105,6 +107,29 @@ public sealed class MessageTransformTests
 
 		var transformed = MessageTransform.Transform(messages, TextModel());
 
+		// 思考不能被整条丢掉：后续单元靠它接着写，没执行完的工具调用仍然剔除。
+		Assert.Equal(2, transformed.Count);
+		var assistant = Assert.IsType<AssistantMessage>(transformed[1]);
+		var thinking = Assert.IsType<ThinkingContent>(Assert.Single(assistant.Content));
+		Assert.Equal("only thinking", thinking.Thinking);
+	}
+
+	[Fact]
+	public void AbortedAssistantWithOnlyToolCallsIsNotReplayed()
+	{
+		var messages = new List<Message>
+		{
+			new UserMessage { Content = MessageContent.FromText("q") },
+			new AssistantMessage
+			{
+				StopReason = StopReason.Aborted,
+				Content = [new ToolCall { Id = "partial", Name = "read", Arguments = new JsonObject() }],
+			},
+		};
+
+		var transformed = MessageTransform.Transform(messages, TextModel());
+
+		// 只剩半截工具调用：没有可接着写的内容，整条不进重放。
 		Assert.Single(transformed);
 		Assert.IsType<UserMessage>(transformed[0]);
 	}

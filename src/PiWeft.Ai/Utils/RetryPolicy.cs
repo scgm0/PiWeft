@@ -204,6 +204,10 @@ public static class RetryClassifier
 			"stream ended before a terminal response event",
 			"http2 request did not get a response",
 			"pending stream has been canceled",
+			// .NET 的 HTTP 响应体在内容长度之前结束（chunked/SSE 被网关截断），
+			// 文本是 "The response ended prematurely. (ResponseEnded)"。
+			"response ended prematurely",
+			"responseended",
 
 			"retry delay",
 
