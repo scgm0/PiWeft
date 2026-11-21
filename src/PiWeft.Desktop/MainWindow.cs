@@ -81,6 +81,8 @@ public sealed partial class MainWindow : Window
 	private readonly CancellationTokenSource _sessionAbort = new();
 	// 窗口已关闭：后台打开可能在取消落地前就跑完了，不能再往死窗口里塞标签页。
 	private bool _sessionHostClosed;
+	// 系统注销/关机请求：这时不能弹「放弃修改」拖动会话结束。
+	private bool _systemShutdownRequested;
 	// 在途的后台打开数量；自检与无人值守演练用它等标签页就位，不猜固定延时。
 	private int _pendingSessionOpens;
 	private IReadOnlyList<SessionListItem> _allSessions = [];
@@ -584,6 +586,13 @@ public sealed partial class MainWindow : Window
 	{
 		this.Title(Strings.WindowTitle(_cwd));
 
+		// 系统注销/关机：MewUI 先发这个事件，再逐个关窗。
+		// 设置页有未保存草稿时，关窗默认弹确认；系统退出不等人，这里直接放弃。
+		if (Application.Current is { } application)
+		{
+			application.ShutdownRequested += OnShutdownRequested;
+		}
+
 		// 主题目录热重载：受信项目才监视项目主题；回调切回 UI 线程后再换肤。
 		StartThemeWatcher();
 
@@ -605,6 +614,10 @@ public sealed partial class MainWindow : Window
 		// 关闭时记住窗口状态，下次打开原位恢复。
 		this.OnClosed(() =>
 		{
+			if (Application.Current is { } application)
+			{
+				application.ShutdownRequested -= OnShutdownRequested;
+			}
 			// 窗口都没了，后台读取与投影不必再跑完。
 			_sessionHostClosed = true;
 			_sessionAbort.Cancel();
@@ -629,6 +642,7 @@ public sealed partial class MainWindow : Window
 		});
 		this.OnClosing(args =>
 		{
+			if (_systemShutdownRequested) return;
 			if (_settingsView is not { IsDirty: true } settings) return;
 			var deferral = args.GetDeferral();
 			_ = ConfirmSettingsCloseAsync(settings, args, deferral);
@@ -638,6 +652,9 @@ public sealed partial class MainWindow : Window
 		// 放后台跑完再回到 UI 线程建会话，窗口能立刻可交互，也不再阻塞首帧。
 		_ = BootstrapAsync(preference);
 	}
+
+	// 系统注销/关机：只标一下，关窗时跳过设置页的未保存确认。
+	private void OnShutdownRequested(ShutdownRequestedEventArgs args) => _systemShutdownRequested = true;
 
 	/// 启动后半程：后台准备环境与侧栏数据，回 UI 线程挂首个会话与演练入口。
 	private async Task BootstrapAsync(DesktopPreference preference)

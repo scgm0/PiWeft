@@ -43,7 +43,8 @@
 | CLI NativeAOT 产物（linux-x64，Release） | 当前提交 31,671,672 B。runtime-async 的 A/B 在同一棵树上量：关 32,060,744 B → 开 31,321,368 B（-739,376 B，**-2.3%**） |
 | `SessionManager.Open` 46 MB / 26,984 行（只读+建索引，9 轮中位） | `List<object>` 管线 402 ms / 249.2 MiB → `List<SessionLine>` union 管线 403 ms / 249.2 MiB（各 5 次采样，无差异） |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
-| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 80.6 MiB（84,471,776 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
+| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 82.1 MiB（86,067,872 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 80.6 / 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
+| MewUI 子模块更新（553f28d → 45428e1）的产物体积代价 | 同一份代码只换子模块：85,719,760 B → 86,067,872 B，+348,112 B（+0.41%）。新增的 system backdrop、托盘、多源绑定与自动化代码在不引用时不进产物；增量来自 retained 渲染（组合层缓存、backdrop pass）与 MewVG 0.11.1 |
 | MewUI 子模块更新（2b93028 → 553f28d）的产物体积代价 | 同一份代码只换子模块：84,459,584 B → 84,475,952 B，+16,368 B（+0.02%）。新增的 X11 AT-SPI2 代码与 `Tmds.DBus.Protocol` 依赖在 automation 关掉后被裁掉 |
 | `Aprillz.MewUI.Automation.Enabled` 不写 vs 写 false | 84,830,160 B → 84,475,952 B，省 354,208 B：不写这一项时裁剪器拿不到 feature 值，ILLink 里 `featurevalue="false"` 的替换不生效，整条 automation 树留在产物里 |
 | 第三方包升级的产物体积代价（linux-x64，Release，NativeAOT） | ZLogger 2.6.2 / Markdig 1.6.0 / MiniPty 1.6.0 / Test.Sdk 18.12.0 / Jint 2428 / Sdcb.SimdCodecs 2.0.0：CLI +337,712 B（+1.08%），桌面 +433,544 B（+0.52%）；其中 Jint 单独占 +41,200 B |
@@ -121,6 +122,16 @@
 - `Tag` 换强类型字段只能省一次属性查找与一次转型，与分配无关；行控件已改用 `LedgerRowView.Row`（`TrajectoryView.cs`）就是这个微清理，不再扩。
 - 真要零分配，前提是把 MewUI 的条目管道泛型化（`IItemsView<T>`、模板只走强类型），那是改上游子模块。而账本按 `turnWindow` 分窗、行数几百、每秒重建一次，单行 32 B，收益 ~10 KB/s，不值。
 - 这一块真正值得做的是**行视图复用与增量 diff**（重建行表时复用未变的行），不涉及 MewUI 也不涉及 union。
+
+## MewUI 45428e1 升级记录
+
+- MewUI 子模块 553f28d → 45428e1（75 个提交）。升级后不改项目代码就能构建，桌面测试 1237 个全部通过。
+- 已采用：`Application.ShutdownRequested`。系统注销/关机时先标位，`MainWindow.OnClosing` 跳过设置页的未保存确认：系统退出不等人，一个确认框会拖住整个会话结束。
+- 已核对：SIGTERM 的清理由 MewUI 兜住。X11 后端 `Dispose` 先 `RaiseClosed` 再销毁原生窗口，窗口 `Closed` 里的收尾（中止在途轮次、终端子进程、摘要落盘、窗口几何）照常执行，原生窗口此时仍可读 `Position`；升级前进程被运行时直接终止，这些都不会执行。
+- 已修：桌面测试偶发 `VisualTree.Visit` 越界（`SettingsUsageSectionReusesTheSamePanel`，3 次全量约 1 次）。MewUI 的遍历栈是进程级静态、只在 UI 线程安全，测试没有 dispatcher，后台回调改树时可能在线程池线程上撞车。`xunit.runner.json` 只覆盖读得到该文件的适配器，补了程序集级 `CollectionBehavior(DisableTestParallelization = true)` 兜底；连跑 10 次全量 1237 项无失败。
+- 已修的升级回归：MewUI 现在自己注册 SIGTERM，收到信号时调 `Application.Shutdown()` 结束 `Run`，但不触发窗口 `Closed`。原先只挂在 `Closed` 里的收尾（中止在途轮次、结束终端子进程、摘要落盘）会在进程退出时整段跳过。新增 `MainWindow.ReleaseForProcessExit`，由 Program 在 `Run` 返回后调用，最多等 2 s 让在途轮次写完；正常关窗仍走 `ReleaseShell`，两条路共用一个只跑一次的入口。
+- 未采纳的新能力：`Window.SystemBackdrop` 要求 `AllowsTransparency`，本项目窗口是不透明自绘框，Linux 的 MewVG 后端也不提供材质；`BackdropFilter` 是毛玻璃视觉，DESIGN.md 不用；`TrayIcon` 没有常驻托盘需求；`MultiBinding` 面向多来源复合绑定，本项目 7 处绑定都是单来源；`IGraphicsContext.GlobalAlpha` 改为相对框架 alpha，项目没有直接使用它。
+- 已核对仍要保留的项目侧规避：`SvgImageSource.Tint` 只替换 fill，Lucide 是 stroke 图标，仍需加载时预替换 `currentColor`；TextBox 的 Placeholder 聚焦即隐藏，选择器与搜索框仍自绘提示；`ThemeManager` 的 seed 仍禁止在 `Application` 运行后修改。
 
 ## 本轮审计记录（MewUI 553f28d 之后）
 
