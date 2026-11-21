@@ -222,7 +222,7 @@ public static partial class Strings
 	public const string LogPagePrev = "上一页";
 	public const string LogPageNext = "下一页";
 	public static string LogViewerHint(int files) => $"只扫描最近 {files} 个日志文件的尾部；更早的记录用「打开日志目录」查看。";
-	public const string LogLevelHint = "级别只影响之后写入的记录，改动立即生效。设置 PI_LOG_LEVEL 环境变量会盖过这里。";
+	public const string LogLevelHint = "级别只影响之后写入的记录，改动立即生效，下方查看器的筛选跟着切换。设置 PI_LOG_LEVEL 环境变量会盖过这里。";
 	public const string LogClearEmpty = "没有可删除的日志文件。";
 	public const string LogCopyEmpty = "本页没有可复制的记录。";
 	public const string LogExporting = "正在打包诊断包…";

@@ -1,4 +1,5 @@
 using Aprillz.MewUI.Controls;
+using Microsoft.Extensions.Logging;
 using PiWeft.Cli;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
@@ -66,6 +67,27 @@ public sealed class LogViewerTests : IDisposable
 	}
 
 	[Fact]
+	public async Task FollowMinimumLevelSyncsFilterAndReloads()
+	{
+		var viewer = Create();
+		ConversationPerformanceTests.Layout(viewer);
+		await viewer.PendingReload;
+
+		viewer.FollowMinimumLevel(LogLevel.Error);
+		await viewer.PendingReload;
+
+		Assert.Equal(4, Find<ComboBox>(viewer).Single().SelectedIndex);
+		var line = Assert.Single(viewer.Lines);
+		Assert.Contains("ERR", line, StringComparison.Ordinal);
+
+		// Trace 写入级别对应「全部」：历史文件里的低级别记录不能因为切级别被隐藏。
+		viewer.FollowMinimumLevel(LogLevel.Trace);
+		await viewer.PendingReload;
+		Assert.Equal(0, Find<ComboBox>(viewer).Single().SelectedIndex);
+		Assert.Equal(3, viewer.Lines.Count);
+	}
+
+	[Fact]
 	public async Task SettingsSectionHostsTheViewerAndLevelPicker()
 	{
 		var view = new SettingsView(() => new SettingsSnapshot
@@ -84,6 +106,43 @@ public sealed class LogViewerTests : IDisposable
 		Assert.Null(view.LastSectionError);
 		Assert.Single(Find<LogViewer>(view.View));
 		Assert.Contains(Texts(view.View), text => text.Contains(Strings.LogLevel, StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public async Task SettingsLevelSwitchFollowsViewerFilter()
+	{
+		var previous = AppLog.MinimumLevel;
+		try
+		{
+			var view = new SettingsView(() => new SettingsSnapshot
+			{
+				AgentDir = _root,
+				Cwd = _root,
+				ModelCount = 0,
+				Tools = [],
+				Skills = [],
+				McpServers = [],
+				Resources = PiWeft.CodingAgent.Resources.ResourceSnapshot.Empty,
+			});
+			await view.SelectSectionAsync("logs");
+			ConversationPerformanceTests.Layout(view.View);
+			var viewer = Assert.Single(Find<LogViewer>(view.View));
+			await viewer.PendingReload;
+
+			var writeLevel = Find<ComboBox>(view.View).First(static combo => combo.Width == 140);
+			writeLevel.SelectedIndex = 4;
+			await viewer.PendingReload;
+
+			Assert.Equal(LogLevel.Error, AppLog.MinimumLevel);
+			Assert.Equal("Error", DesktopPreference.Load(_root).MinimumLogLevel);
+			Assert.Equal(4, Find<ComboBox>(view.View).Single(static combo => combo.Width == 120).SelectedIndex);
+			var line = Assert.Single(viewer.Lines);
+			Assert.Contains("ERR", line, StringComparison.Ordinal);
+		}
+		finally
+		{
+			AppLog.SetMinimumLevel(previous);
+		}
 	}
 
 	[Fact]

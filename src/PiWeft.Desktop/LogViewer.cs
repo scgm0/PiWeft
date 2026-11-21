@@ -28,6 +28,7 @@ internal sealed class LogViewer : StackPanel
 	private readonly string _agentDir;
 	private readonly string _cwd;
 	private readonly string _directory;
+	private readonly ComboBox _filter;
 	private readonly ItemsControl _list;
 	private readonly TextBlock _status;
 	private readonly TextBlock _pageLabel;
@@ -48,13 +49,13 @@ internal sealed class LogViewer : StackPanel
 		_directory = Path.Combine(agentDir, "logs");
 		Spacing = AppTheme.Space3;
 
-		var filter = new ComboBox()
+		_filter = new ComboBox()
 			.ItemsSource(ItemsView.Create(Filters.Select(static entry => entry.Label).ToArray()))
 			.Width(120)
 			.SelectedIndex(0);
-		filter.SelectionChanged += _ =>
+		_filter.SelectionChanged += _ =>
 		{
-			var index = Math.Clamp(filter.SelectedIndex, 0, Filters.Length - 1);
+			var index = Math.Clamp(_filter.SelectedIndex, 0, Filters.Length - 1);
 			_level = Filters[index].Level;
 			_ = Tracked(0);
 		};
@@ -87,7 +88,7 @@ internal sealed class LogViewer : StackPanel
 			new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 				.Children(new TextBlock().Text(Strings.LogFilterLevel)
 					.FontSize(AppTheme.FontSizeMicro).SubtleText()
-					.VerticalAlignment(VerticalAlignment.Center), filter)
+					.VerticalAlignment(VerticalAlignment.Center), _filter)
 				.DockRight(),
 			search);
 
@@ -140,6 +141,27 @@ internal sealed class LogViewer : StackPanel
 
 	/// 当前页的记录文本，按显示顺序。
 	internal IReadOnlyList<string> Lines => [.. _rows.Select(static row => row.Text)];
+
+	/// 让筛选跟随写入级别。切完级别只看历史记录会以为没生效，所以下拉同步到同一档并重查。
+	/// 写入级别是 <see cref="LogLevel.Trace"/> 时对应「全部」：历史文件里总有更低级别的记录。
+	internal void FollowMinimumLevel(LogLevel level)
+	{
+		var index = Array.FindIndex(Filters, entry => entry.Level == level);
+		if (index < 0)
+		{
+			index = 0;
+		}
+
+		if (_filter.SelectedIndex == index)
+		{
+			_level = Filters[index].Level;
+			_ = Tracked(0);
+			return;
+		}
+
+		// 换选项时事件里已经重查一次，这里不再重复。
+		_filter.SelectedIndex = index;
+	}
 
 	private Task Tracked(int page) => PendingReload = ReloadAsync(page);
 

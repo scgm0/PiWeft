@@ -1696,6 +1696,7 @@ public sealed class SettingsView
 			.ItemsSource(ItemsView.Create(levels.Select(static entry => entry.Label).ToArray()))
 			.Width(140);
 		Anchor("logs.level", picker);
+		var viewer = new LogViewer(snapshot.AgentDir, snapshot.Cwd);
 		picker.SelectedIndex = Math.Max(0, Array.FindIndex(levels, entry => entry.Level == AppLog.MinimumLevel));
 		picker.SelectionChanged += _ =>
 		{
@@ -1714,6 +1715,8 @@ public sealed class SettingsView
 			}
 
 			AppLog.SetMinimumLevel(levels[index].Level);
+			// 查看器同步只看新级别：不同步的话列表里全是切换前的记录，看着像没生效。
+			viewer.FollowMinimumLevel(levels[index].Level);
 			Toast(Strings.LogLevelUpdated(levels[index].Label), ToastKind.Success);
 		};
 
@@ -1733,7 +1736,7 @@ public sealed class SettingsView
 			header,
 			new TextBlock().Text(Strings.LogLevelHint)
 				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap),
-			new LogViewer(snapshot.AgentDir, snapshot.Cwd)));
+			viewer));
 	}
 
 	/// 性能诊断：开关 + 即时快照 + 按名称聚合的耗时。面板本身不轮询，
