@@ -630,11 +630,7 @@ public static class ModelCatalogStore
 		var path = PathFor(agentDir);
 		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
-		File.WriteAllText(temporary, root.ToJsonString(new JsonSerializerOptions
-		{
-			WriteIndented = true,
-			Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-		}));
+		File.WriteAllText(temporary, root.ToJsonString(PiJson.IndentedNodeOptions));
 		File.Move(temporary, path, overwrite: true);
 	}
 }

@@ -81,6 +81,9 @@ public sealed class SettingsView
 	private bool _pickingSearch;
 	private readonly UsageStatsCache? _usageStatsCache;
 	private UsageStatsPanel? _usageStats;
+	// 分区里的后台工作（目前只有使用统计扫描）：测试要等它落地再动可视化树，
+	// MewUI 的遍历栈不是线程安全的。生产路径不读这个字段。
+	private Task _sectionWork = Task.CompletedTask;
 	private Button? _activeNavigationButton;
 	private bool _configMode;
 	private bool _extensionBusy;
@@ -519,6 +522,9 @@ public sealed class SettingsView
 		FocusNavigation();
 	}
 
+	/// 当前分区里在途的后台工作（仅测试用）。
+	internal Task WaitForSectionWorkAsync() => _sectionWork;
+
 	private void Toast(string message, ToastKind kind = ToastKind.Info) => Toasts.Show(_sectionTitle, message, kind);
 
 	/// 最近一次分区构建失败的原因；正常时为 <c>null</c>。
@@ -572,7 +578,7 @@ public sealed class SettingsView
 					}
 
 					_content.Children(_usageStats.View);
-					_ = _usageStats.RefreshIfStaleAsync();
+					_sectionWork = _usageStats.RefreshIfStaleAsync();
 					break;
 				case "archive": _content.Children(ArchiveSection(snapshot.LoadArchived?.Invoke() ?? snapshot.Archived)); break;
 				case "catalog": _content.Children(new ModelCatalogSection(snapshot.AgentDir, _modelsChanged ?? (() => { })).View); break;

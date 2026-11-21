@@ -1,7 +1,7 @@
 using System.Text;
-using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using PiWeft.Ai.Json;
 using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.CodingAgent.Security;
@@ -217,12 +217,8 @@ public sealed record SecurityConfig
 			root["security"] = node;
 		}
 
-		var text = root.ToJsonString(new JsonSerializerOptions
-		{
-			WriteIndented = true,
-			// 目录与档位名里可能有中文：默认转义会写成 uXXXX 形式，手写配置的人看不懂。
-			Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-		});
+		// 目录与档位名里可能有中文：默认转义会写成 uXXXX 形式，手写配置的人看不懂。
+		var text = root.ToJsonString(PiJson.IndentedNodeOptions);
 
 		var temporary = path + ".tmp";
 		File.WriteAllText(temporary, text, new UTF8Encoding(false));

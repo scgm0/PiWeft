@@ -363,11 +363,7 @@ public static class McpOAuthStore
 			// pi 用两空格缩进，保持一致以便两个实现来回写。
 			File.WriteAllText(
 				temporary,
-				states.ToJsonString(new JsonSerializerOptions
-				{
-					WriteIndented = true,
-					Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-				}) + "\n",
+				states.ToJsonString(PiJson.IndentedNodeOptions) + "\n",
 				new UTF8Encoding(false));
 			if (!OperatingSystem.IsWindows())
 			{

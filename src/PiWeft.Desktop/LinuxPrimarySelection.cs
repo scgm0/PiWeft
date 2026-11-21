@@ -185,6 +185,8 @@ internal sealed class ProcessPrimarySelection : IPrimarySelection, IDisposable
 			Stop(_owner);
 			_owner = null;
 		}
+		// 取消后释放：Dispose 过的 CTS 不能再取 Token，后续调用由 _disposed 挡住。
+		_shutdown.Dispose();
 	}
 }
 

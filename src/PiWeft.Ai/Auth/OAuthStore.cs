@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using PiWeft.Ai.Json;
 
 namespace PiWeft.Ai.Auth;
 
@@ -176,11 +177,7 @@ public static class OAuthStore
 		}
 
 		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
-		File.WriteAllText(temporary, root.ToJsonString(new System.Text.Json.JsonSerializerOptions
-		{
-			WriteIndented = true,
-			Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-		}));
+		File.WriteAllText(temporary, root.ToJsonString(PiJson.IndentedNodeOptions));
 		if (!OperatingSystem.IsWindows())
 		{
 			File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);

@@ -165,6 +165,9 @@ public sealed class UsageStatsPanelTests
 			}, null, null, null, null, cache);
 
 			await settings.SelectSectionAsync("usage");
+			// 等后台扫描落地：没有 dispatcher 时完成回调直接在后台线程改可视化树，
+			// 这里不等就会和下面的 Find 撞上 MewUI 共享的遍历栈。
+			await settings.WaitForSectionWorkAsync();
 			// 让后台扫描完成，再验证重进时复用同一块面板而不是重新创建。
 			await WaitUntilAsync(() => cache.Scans == 1);
 			Assert.Equal(1, cache.Scans);
@@ -172,6 +175,7 @@ public sealed class UsageStatsPanelTests
 
 			await settings.SelectSectionAsync("overview");
 			await settings.SelectSectionAsync("usage");
+			await settings.WaitForSectionWorkAsync();
 
 			// 重进会核对一次文件（增量，未变时不重读），面板本身仍然是同一块。
 			await WaitUntilAsync(() => cache.Scans == 2);

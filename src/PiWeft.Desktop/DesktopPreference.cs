@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using System.Text.Json.Nodes;
+using PiWeft.Ai.Json;
 using PiWeft.Cli;
 using PiWeft.CodingAgent.Session;
 
@@ -454,13 +455,8 @@ public sealed record DesktopPreference
 		}
 		File.WriteAllText(
 			path,
-			root.ToJsonString(new System.Text.Json.JsonSerializerOptions
-			{
-				WriteIndented = true,
-
-				// 快捷键里会出现 "+"，默认转义会写成 +，文件要能让人直接看懂和手改。
-				Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-			}));
+			// 快捷键里会出现 "+"，默认转义会写成 +，文件要能让人直接看懂和手改。
+			root.ToJsonString(PiJson.IndentedNodeOptions));
 	}
 
 	public DesktopPreference Cycle() => this with

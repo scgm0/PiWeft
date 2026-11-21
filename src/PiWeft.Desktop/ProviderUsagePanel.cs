@@ -412,7 +412,8 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 		catch (Exception ex) { result = ProviderUsageResult.Failure(ProviderUsageDisplay.ErrorText(ex), intervalMinutes: intervalMinutes); }
 		if (dispatcher is not null && !dispatcher.IsOnUIThread)
 		{
-			var completion = new TaskCompletionSource();
+			// continuation 不在 UI 线程内联执行：否则 await 之后的工作会撑在 dispatcher 回调里。
+			var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 			dispatcher.BeginInvoke(() => completion.TrySetResult());
 			await completion.Task;
 		}

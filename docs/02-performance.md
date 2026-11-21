@@ -128,10 +128,22 @@
 - MewUI 子模块 553f28d → 45428e1（75 个提交）。升级后不改项目代码就能构建，桌面测试 1237 个全部通过。
 - 已采用：`Application.ShutdownRequested`。系统注销/关机时先标位，`MainWindow.OnClosing` 跳过设置页的未保存确认：系统退出不等人，一个确认框会拖住整个会话结束。
 - 已核对：SIGTERM 的清理由 MewUI 兜住。X11 后端 `Dispose` 先 `RaiseClosed` 再销毁原生窗口，窗口 `Closed` 里的收尾（中止在途轮次、终端子进程、摘要落盘、窗口几何）照常执行，原生窗口此时仍可读 `Position`；升级前进程被运行时直接终止，这些都不会执行。
-- 已修：桌面测试偶发 `VisualTree.Visit` 越界（`SettingsUsageSectionReusesTheSamePanel`，3 次全量约 1 次）。MewUI 的遍历栈是进程级静态、只在 UI 线程安全，测试没有 dispatcher，后台回调改树时可能在线程池线程上撞车。`xunit.runner.json` 只覆盖读得到该文件的适配器，补了程序集级 `CollectionBehavior(DisableTestParallelization = true)` 兜底；连跑 10 次全量 1237 项无失败。
-- 已修的升级回归：MewUI 现在自己注册 SIGTERM，收到信号时调 `Application.Shutdown()` 结束 `Run`，但不触发窗口 `Closed`。原先只挂在 `Closed` 里的收尾（中止在途轮次、结束终端子进程、摘要落盘）会在进程退出时整段跳过。新增 `MainWindow.ReleaseForProcessExit`，由 Program 在 `Run` 返回后调用，最多等 2 s 让在途轮次写完；正常关窗仍走 `ReleaseShell`，两条路共用一个只跑一次的入口。
+- 已修：桌面测试偶发 `VisualTree.Visit` 越界（`SettingsUsageSectionReusesTheSamePanel`，全量约 3 次 1 次）。根因是 `UsageStatsPanel` 在没有 dispatcher 的测试里直接从扫描线程完成 UI 更新，与测试线程的树操作撞上 MewUI 的进程级静态遍历栈。`SettingsView` 现在保存分区后台任务（`WaitForSectionWorkAsync`），测试等它落地再动树；另补程序集级 `CollectionBehavior(DisableTestParallelization = true)` 兜底。连跑 3 次全量 1237 项无失败。
 - 未采纳的新能力：`Window.SystemBackdrop` 要求 `AllowsTransparency`，本项目窗口是不透明自绘框，Linux 的 MewVG 后端也不提供材质；`BackdropFilter` 是毛玻璃视觉，DESIGN.md 不用；`TrayIcon` 没有常驻托盘需求；`MultiBinding` 面向多来源复合绑定，本项目 7 处绑定都是单来源；`IGraphicsContext.GlobalAlpha` 改为相对框架 alpha，项目没有直接使用它。
 - 已核对仍要保留的项目侧规避：`SvgImageSource.Tint` 只替换 fill，Lucide 是 stroke 图标，仍需加载时预替换 `currentColor`；TextBox 的 Placeholder 聚焦即隐藏，选择器与搜索框仍自绘提示；`ThemeManager` 的 seed 仍禁止在 `Application` 运行后修改。
+
+## 本轮审计记录（2026-11-22）
+
+口径：`dotnet build -p:AnalysisMode=All` 加人工读码；再用 `dotnet-trace`（`dotnet-sampled-thread-time`）与 `dotnet-gcdump` 对照运行时。
+
+- 已修：`UsageStatsPanel` 的完成回调在无 dispatcher 时直接改树（测试竞态根因）。详见上方升级记录。
+- 已修：7 处写配置的 `new JsonSerializerOptions { WriteIndented = true, Encoder = ... }` 改为共享 `PiJson.IndentedNodeOptions`。`JsonSerializerOptions` 构造要初始化转换器与缓存，每次写盘重建是白花；`ProjectTrust` 顺带从默认编码器换成可读转义，中文路径不再写成 `\uXXXX`。
+- 已补：`ShellRunner` 最后一个 `DllImport` 换 `LibraryImport`（AOT 源生成，与其余 53 处一致）；`PumpAsync` 的局部锁换成 `Lock`，顺带消除 `CS9216` 装箱警告。
+- 已补：`ProcessPrimarySelection.Dispose` 取消后释放 `_shutdown`；两处 `TaskCompletionSource` 加 `RunContinuationsAsynchronously`，continuation 不再内联在 dispatcher 回调里。
+- 已删：`SessionTab.ComposerAttachments`（无调用方）。
+- 采样结论：`--ui-smoke stream` 下应用侧函数只占主线程 0.3%，`SessionTab.Render` 之外全是 MewUI 的 Measure/Arrange（7.5% / 4.3%）与 MewVG 呈现；宿主的 `WaitForFrameBudget` + `WaitForWorkOrEvents` 占 34%。应用侧优化空间已经不在渲染路径。
+- 堆对比：30 秒流式前后 20.6 → 20.9 MiB（+326 KiB），增长是字形/布局缓存与图标缓存；`HoverHints`、`TextFocusScrollGuard` 的按键都是 `ConditionalWeakTable`，无泄漏。
+- 已核对仍不修：`CodingAgentSession._runAbort/_retryAbort` 由 `using` 释放（CA2213 误报）；`McpClient._output` 归 `McpProcess` 所有；`McpConnection._refreshGate` 等 `SemaphoreSlim` 无 `AvailableWaitHandle`，不 Dispose 不泄露；`ShellRunner` 每 25 ms 的 `Task.Delay` 是轮询空闲检测，换 `PeriodicTimer` 不减少分配。
 
 ## 本轮审计记录（MewUI 553f28d 之后）
 

@@ -65,7 +65,7 @@ public sealed record ShellInvocation
 
 public sealed record ShellCommandInfo(string FileName, string[] Arguments, bool CommandFromStdin);
 
-public static class ShellRunner
+public static partial class ShellRunner
 {
 	/// pi 的 MAX_TIMEOUT_MS。超过这个值不再接受，避免 TimeSpan.CancelAfter 溢出。
 	private const double MaxTimeoutSeconds = 2_147_483.647;
@@ -267,7 +267,7 @@ public static class ShellRunner
 		try
 		{
 			using var readCancellation = new CancellationTokenSource();
-			var updateGate = new object();
+			var updateGate = new Lock();
 			var stdout = PumpAsync(process.StandardOutput.BaseStream, OutputCapture.OutputChannel.Stdout, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
 			var stderr = PumpAsync(process.StandardError.BaseStream, OutputCapture.OutputChannel.Stderr, capture, onOutput, onSnapshot, updateGate, readCancellation.Token);
 			var pumps = Task.WhenAll(stdout, stderr);
@@ -470,7 +470,7 @@ public static class ShellRunner
 		OutputCapture capture,
 		Action<string>? onOutput,
 		Action<ShellSnapshot>? onSnapshot,
-		object updateGate,
+		Lock updateGate,
 		CancellationToken cancellationToken)
 	{
 		// 每个 pump 一块池化缓冲：小命令每次调用就要两条管道，8192 字节的新数组不值得干等着 GC。
@@ -747,9 +747,8 @@ public static class ShellRunner
 	/// <summary>macOS 的 SIGSTOP 是 17，Linux 是 19（pi 在 macOS 上先 STOP 再 KILL，避免子进程唤醒 shell 继续执行）。</summary>
 	private static int SigStop => OperatingSystem.IsMacOS() ? 17 : 19;
 
-	[DllImport("libc", EntryPoint = "kill", SetLastError = true)]
-	private static extern int SysKill(int pid, int signal);
-
+	[LibraryImport("libc", EntryPoint = "kill", SetLastError = true)]
+	private static partial int SysKill(int pid, int signal);
 	/// <summary>取消/超时：先整树杀（立即），scope 再收被 reparent 或自己 setsid 的后代。</summary>
 	private static void TryKill(Process process, LinuxCommandScope? scope, WindowsJobObject? job, int? processGroupId)
 	{

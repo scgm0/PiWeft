@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using PiWeft.Ai.Json;
 using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Settings;
 
@@ -246,7 +247,7 @@ public static class ProjectTrust
 		}
 
 		var temporary = path + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
-		File.WriteAllText(temporary, sorted.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n");
+		File.WriteAllText(temporary, sorted.ToJsonString(PiJson.IndentedNodeOptions) + "\n");
 		File.Move(temporary, path, overwrite: true);
 	}
 }

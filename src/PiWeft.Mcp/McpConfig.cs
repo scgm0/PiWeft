@@ -244,11 +244,7 @@ public static partial class McpConfig
 		{
 			File.WriteAllText(
 				temporary,
-				root.ToJsonString(new JsonSerializerOptions
-				{
-					WriteIndented = true,
-					Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-				}));
+				root.ToJsonString(PiJson.IndentedNodeOptions));
 
 			if (!OperatingSystem.IsWindows())
 			{

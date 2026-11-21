@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
+using PiWeft.Ai.Json;
 using System.Text.RegularExpressions;
 
 namespace PiWeft.Ai.Auth;
@@ -111,11 +112,7 @@ public static partial class AuthStore
 		}
 
 		var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
-		File.WriteAllText(temporary, root.ToJsonString(new System.Text.Json.JsonSerializerOptions
-		{
-			WriteIndented = true,
-			Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-		}));
+		File.WriteAllText(temporary, root.ToJsonString(PiJson.IndentedNodeOptions));
 		if (!OperatingSystem.IsWindows())
 		{
 			File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);

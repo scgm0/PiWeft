@@ -271,7 +271,8 @@ internal sealed class ModelCatalogSection
 			return Task.CompletedTask;
 		}
 
-		var completion = new TaskCompletionSource();
+		// continuation 不在 UI 线程内联执行：否则调用方的后续工作会撑在 dispatcher 回调里。
+		var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		dispatcher.BeginInvoke(() =>
 		{
 			try

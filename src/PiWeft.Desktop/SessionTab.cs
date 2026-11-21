@@ -863,8 +863,6 @@ public sealed partial class SessionTab : IDisposable
 
 	internal int ComposerReferenceCount => UserReferenceRichText.Count(_composer.Text);
 
-	internal IReadOnlyList<ImageContent> ComposerAttachments => [.. _attachments.Select(static item => item.Content)];
-
 	public string Title { get; private set; }
 
 	public UIElement View { get; }

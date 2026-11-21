@@ -17,6 +17,14 @@ public static class PiJson
 		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
+	/// 写配置文件用的缩进选项。构造 <c>JsonSerializerOptions</c> 要初始化内部转换器与缓存，
+	/// 每次写盘重建一份是白花；缩进与可读转义在这里只定一次。
+	public static JsonSerializerOptions IndentedNodeOptions { get; } = new()
+	{
+		WriteIndented = true,
+		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+	};
+
 	private static JsonSerializerOptions CreateOptions()
 	{
 		var options = new JsonSerializerOptions(PiJsonContext.Default.Options)
