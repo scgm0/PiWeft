@@ -29,6 +29,15 @@ internal static class ExecutionProcess
 		for (var index = start; index < entries.Count; index++)
 		{
 			var entry = entries[index];
+			// 模式状态独立一行：先收掉当前过程组，不把它塞进组里，也不假装开始新的一轮。
+			if (entry.Role == ChatRole.System)
+			{
+				Flush(false);
+				turnId = null;
+				rows.Add(entry);
+				continue;
+			}
+
 			if (entry.Role.IsTurnBoundary())
 			{
 				// 用户消息与继续生成收据都自己开一轮：前一轮要保独立，

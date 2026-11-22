@@ -15,6 +15,10 @@ public sealed record McpTool
 	public required JsonObject InputSchema { get; init; }
 
 	public JsonObject? OutputSchema { get; init; }
+
+	/// MCP 工具注解里的 <c>readOnlyHint</c>：服务器声明它不修改数据。
+	/// 只有明确的 true 才让计划模式使用；缺省按写工具处理。
+	public bool ReadOnlyHint { get; init; }
 }
 
 public sealed record McpCallResult

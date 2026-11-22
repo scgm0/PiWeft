@@ -20,6 +20,7 @@ public static class SearchTools
 	{
 		Name = "ls",
 		Label = "ls",
+		PlanAccess = ToolPlanAccess.Allowed,
 		Description =
 			$"List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or {Truncate.DefaultMaxBytes / 1024}KB (whichever is hit first).",
 		Parameters = new JsonObject
@@ -128,6 +129,7 @@ public static class SearchTools
 	{
 		Name = "find",
 		Label = "find",
+		PlanAccess = ToolPlanAccess.Allowed,
 		Description =
 			$"Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or {Truncate.DefaultMaxBytes / 1024}KB (whichever is hit first).",
 		Parameters = new JsonObject
@@ -272,6 +274,7 @@ public static class SearchTools
 	{
 		Name = "grep",
 		Label = "grep",
+		PlanAccess = ToolPlanAccess.Allowed,
 		Description =
 			$"Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to 100 matches or {Truncate.DefaultMaxBytes / 1024}KB (whichever is hit first). Long lines are truncated to {Truncate.GrepMaxLineLength} chars.",
 		Parameters = new JsonObject

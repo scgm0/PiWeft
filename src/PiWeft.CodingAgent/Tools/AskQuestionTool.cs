@@ -19,6 +19,7 @@ public static class AskQuestionTool
 		{
 			Name = Name,
 			Label = "Ask Question",
+			PlanAccess = ToolPlanAccess.Allowed,
 			Description = Description,
 			Parameters = Parameters(),
 			Execute = invocation => ExecuteAsync(session(), invocation),

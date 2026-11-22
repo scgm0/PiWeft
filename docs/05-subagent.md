@@ -81,7 +81,7 @@
 
 fork 的子会话仍用角色的系统提示词与委派边界，不会复用父会话的请求前缀。
 
-父会话在计划模式下，子会话建好就进入计划模式：`edit`/`write` 从工具面拿掉，`bash` 仍保留但只允许只读命令。计划模式是创建时的快照，冷恢复沿用 `planMode` 条目。
+父会话在计划模式下，子会话建好就进入计划模式：`edit`/`write` 从工具面拿掉，`bash` 仍保留但只允许只读命令。计划模式是创建时的快照，冷恢复沿用 `planMode` 条目。子代理不注册 `submit_plan`：计划评审只属于顶层会话，子代理提交没人评审。
 
 `wait_subagents` 的单次正文预算 24k。装不下的结果标成 `returned: false` 留在未投递状态，下一次 `wait_subagents` 还能取；不再出现「正文被丢掉但仍报已投递」。工具结果的 `Details` 里每行带 `session_file`，截断时正文末尾也给这个路径。
 
@@ -144,7 +144,7 @@ You review HTTP handlers. Report findings with file and line references.
 - `excludeTools`：在白名单之上再排除。
 - 白名单只做收窄。父会话用 `--tools` 给了纯名字列表时，白名单不能再加回列表外的工具；父会话没显式收窄时，白名单可以补 `read`/`grep`/`find`/`ls` 这类只读发现工具，内置 `scout` 依赖这一点。写工具、shell 和已停用的内置扩展不能这样加回来。
 - 被拒的工具写进子会话系统提示词，模型不会按白名单猜；`--exclude-tools`、`NoBuiltinTools` 与计划模式同样先生效。
-- 计划模式下 `edit`/`write` 即使在白名单里也会被拿掉；`bash` 留下，但子会话本身也在计划模式，会拦只读命令以外的调用。
+- 计划模式下 `edit`/`write` 即使在白名单里也会被拿掉，`submit_plan` 不注册；`bash` 留下，但子会话本身也在计划模式，会拦只读命令以外的调用。
 - `model`：`provider/id`，或唯一 id。解析失败回落父会话模型。
 - `thinking`：子会话思考级别，省略时沿用父会话当前级别。
 - `timeoutMinutes`：单次运行的时限（分钟）；省略时用 `settings.subagents.runTimeoutMinutes`。

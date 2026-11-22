@@ -44,6 +44,32 @@ public sealed class SessionTabAskTests
 	}
 
 	[Fact]
+	public async Task PlanReviewUsesTheReviewHeaderAndScrollableDetail()
+	{
+		using var session = ConversationPerformanceTests.CreateSession(2);
+		using var tab = new SessionTab(session, [session.Model], "plan-review", availableModels: null);
+		var host = new DesktopUiHost();
+		host.Attach(tab);
+
+		var steps = PlanSteps.Extract("Plan:\n1. First step\n2. Second step").ToList();
+		var pending = host.SelectAsync(
+			new UiSelectRequest(
+				PlanSteps.NextTitle(steps),
+				["开始执行|恢复写权限", "先不执行|保持只读"],
+				null),
+			CancellationToken.None);
+
+		Assert.True(tab.AskPending);
+		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == Strings.PlanReviewTitle);
+		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text == "计划草案已就绪（2 步），是否执行？");
+		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text?.Contains("1. First step", StringComparison.Ordinal) == true);
+		Assert.Contains(Find<TextBlock>(tab.View), block => block.Text?.Contains("2. Second step", StringComparison.Ordinal) == true);
+
+		tab.AskPanel.Close();
+		Assert.Null(await pending);
+	}
+
+	[Fact]
 	public async Task AChildWithoutATabAsksThroughTheParentCard()
 	{
 		using var session = ConversationPerformanceTests.CreateSession(2);

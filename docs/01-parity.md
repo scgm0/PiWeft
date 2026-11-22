@@ -67,11 +67,11 @@ PiWeft 复用 pi 兼容核心；桌面用 MewUI + NativeAOT，PiDeck 用 Electro
 - 快捷消息入口在输入区底栏（Ctrl+Shift+M），弹层贴在按钮上方打开，搜索 + 每页 8 条：点条目把原文换行追加到草稿尾，行尾按钮直发且不动草稿与附件。清单存 `desktop.json` 的 `quickMessages`，最多 30 条、单条 200 字；设置「快捷消息」分区一行一条编辑，与出厂清单相同时不写键，显式清空写空数组。运行中、有待发附件或编辑重发未决时直发置灰。
 - 可用模型要求 API 已实现且能解析凭据；不执行命令型凭据、不发网络探测。
 - 命令/模型/图片面板是窗口级覆盖层，同一窗口只开一个；Esc 关闭，切换标签清理。
-- 计划模式在回合结束时从 `Plan:` / `计划：` 下的编号行取步骤，推 `pi-deck-plan-todos` 草案，再弹 `[PI_DECK_PLAN_NEXT]` 选单：执行会恢复写权限并立刻起一轮，`[DONE:n]` 逐条勾进度；先不执行保持只读，关闭选单退出计划模式。步骤状态写 `pi-deck-plan-mode` 条目，只在执行态随分支恢复。
-- 目标模式带 `__PI_DECK_GOAL_MODE__` 标记进入，续轮指令以隐藏 follow-up 交给模型（首行 `[GOAL MODE ACTIVE] Round: n/m`，目标全文只在系统提示 section 里）；`GOAL_COMPLETE` / `GOAL_BLOCKED: 原因` / 轮次上限（默认 32）结束，中止与出错不推进轮次。暂停/阻塞时带标记的正文只当本轮指令，目标保持不变。状态写 `pi-deck-goal-mode` 条目，目标全文只在变化时落盘、重启只恢复为暂停；`/goal resume` 与目标条的恢复在空闲时真的补一轮。
+- 计划模式在回合结束时从 `Plan:` / `计划：` 下的编号行取步骤，推 `pi-deck-plan-todos` 草案，再弹 `[PI_DECK_PLAN_NEXT]` 选单：执行会恢复写权限并立刻起一轮，`[DONE:n]` 逐条勾进度；先不执行保持只读，之后可在计划卡上开始执行，新计划会覆盖旧草案；关闭选单只收起评审，草案与只读状态保留，退出走模式 chip 或 `/plan off`，运行被取消则保持模式与草案。系统提示写明标题与逐步格式，模型没按格式写时提示一次；解析跳过代码块与步骤后的说明段。计划模式同时声明 `submit_plan(steps[])`，结构化步骤直接成为计划卡与评审内容，文本解析只给旧宿主兜底。只读边界按 `ToolPlanAccess` 白名单：MCP 只放行 `annotations.readOnlyHint`，扩展工具默认拒绝，`start_session` / `send_to_session` 与 `submit_plan` 不进子代理；bash 仍过命令判据，`find -delete`、`git branch <name>`、`git log --output`、`sort -o`、`curl -o`、`env <cmd>` 等写参数已拦。执行段随 `[DONE:n]` 勾选重建，结束或完成后把执行指令换成收尾说明。桌面把计划步骤渲染成独立「计划」卡，草案态有「开始执行」、执行态有进度条与「结束执行」，动作固定在滚动区外，步骤行可点勾选；执行期间待办卡让位，避免两份进度；切模式不再被锁住。评审卡抬头是「计划评审」，计划正文放进可滚动正文区并可展开、一键复制，自定义输入即修改意见（保持只读并作为用户消息重写计划；新计划到达前旧草案保留）。步骤状态写 `pi-deck-plan-mode` 条目，只在执行态随分支恢复。
+- 目标模式带 `__PI_DECK_GOAL_MODE__` 标记进入，续轮指令以隐藏 follow-up 交给模型（首行 `[GOAL MODE ACTIVE] Round: n/m`，目标全文只在系统提示 section 里）；`GOAL_COMPLETE` / `GOAL_BLOCKED: 原因` / 轮次上限（`settings.goal.maxRounds`，默认 32）结束。中止落 paused、请求失败与输出截断落 blocked 并带原因码，都不推进轮次；排队中的续轮在起跑前复查目标状态，历史里只保留最新一条续轮指令。轮次上限阻塞时恢复按钮换成「+10 轮」文字按钮；token 预算阻塞时恢复从当前用量重新起算；请求失败与输出截断连续 3 轮同因才阻塞，单次失败先重试；设置页「目标模式」可改新建目标的默认上限。暂停/阻塞时带标记的正文只当本轮指令，目标保持不变；阻塞原因显示在目标位置，目标全文进 tooltip。完成/阻塞写一条 `piweft-goal-ended` 时间线记录，带轮次与 token 收据；状态写 `pi-deck-goal-mode` 条目，目标全文只在变化时落盘、重启只恢复为暂停；`/goal resume` 与目标条的恢复走同一条路径，空闲时真的补一轮，停在轮次上限时先加预算。目标条可编辑全文并保留阶段与轮次；暂停中改目标（`/goal <新文本>` 或目标条编辑）保留轮次与总预算；计划与目标互斥切换时给一条暂停提示。桌面发送路径接管 `/plan`、`/goal`、`/reload`，不再当正文发给模型。
 - 关联会话由 `start_session` / `send_to_session` / `list_linked_sessions` 驱动（名字与 PiDeck 扩展一致）：子会话是同一项目的完整后台会话，独立标签、不影响当前标签。每轮结束把最后一条回复前 400 字回报父会话；父会话空闲时直接起一轮，忙时 steer（当前工具批次结束、下一次模型请求前）。`send_to_session` 的 `mode` 可取 `auto` / `steer` / `follow_up`。连续 6 次回报自动续跑后停止，用户在父会话发消息清零额度。关系与提议落在 `<agentDir>/linked-sessions.json`（字段与 PiDeck 同名），重启后子会话与 `own_initiative` 提议仍在，子会话按 `stopped` 恢复（没有活运行时）；`offer` 提议的等待者随进程消失，不恢复。纯 CLI 没有宿主，不注册这三个工具。
 - 提议卡片分两种：`offer` 默认，`start_session` 等用户点「新会话 / 在此做 / 不要」，最长 10 分钟，超时按没回答返回；`own_initiative` 只登记卡片、工具立即返回，用户点「在此做」会把简报作为用户消息发回父会话。桌面子会话条列出待决定提议与已开子会话，子会话行点击切到后台标签。
-- `ask_question` 是会话内联卡片（非遮罩）：题卡标签 + 进度 + 整行选项 + 自定义输入 + 「跳过」 + review 确认页；卡片打开时输入区折叠，页签标题加 `●`。文本题与自定义输入支持拖入本地路径，按主输入框的 `@` 引用插入；切题与多选重绘保留未提交草稿。逐题可跳过；关闭卡片时已答内容照样交回模型（`closed`），只有一题都没答才是取消。调用展开后按题号列出题目，答完的题在题干下贴选中的选项文案（自定义输入贴原文），未答/跳过各自标明。
+- `ask_question` 是会话内联卡片（非遮罩）：题卡标签 + 进度 + 整行选项 + 自定义输入 + 「跳过」 + review 确认页；卡片打开时输入区折叠，页签标题加 `●`。文本题与自定义输入统一用多行输入框，拖入本地路径插入 `@` 引用并按主输入框的 chip 渲染；普通输入 Enter 提交、Shift+Enter 换行，编辑题 Ctrl+Enter 提交。切题与多选重绘保留未提交草稿。逐题可跳过；关闭卡片时已答内容照样交回模型（`closed`），只有一题都没答才是取消。调用展开后按题号列出题目，答完的题在题干下贴选中的选项文案（自定义输入贴原文），未答/跳过各自标明。
 - 等待态常驻输入卡上方，阶段优先级退避 → 压缩 → 工具 → 正文 → 思考 → 预热/空窗；预热期三句轮播，回合内空窗只说「正在处理」；静默 2 秒补「本轮已 N 秒」。时间线尾部的等待占位行只在等首 token 时出现，条件是最后一行是用户消息且没有任何一行在流；它报时的时候状态条不再重复同一个数字。
 - 提示音：完成/出错/等待输入三类，默认完成与出错开、音量 0.6；会话完成 8 秒、全局 1.5 秒冷却；出错按边沿、等待输入按批去重；「仅失焦提醒」在前台静默。
 - 跨项目会话使用各自 cwd；运行时发送键变中断，保留草稿并禁用模型切换与历史修改。Split Send 菜单支持 steer / follow-up / 中断，排队卡可撤回或丢弃。
@@ -215,6 +215,7 @@ Sub2API 模板除网关 apiKey 的 `/v1/usage` 外，还用 `panelJwt` 查面板
 | `pi-deck-todo-brief` | 压缩后补注的不可见消息 | todo 扩展的补注判定 |
 | `pi-deck-plan-mode`（custom 条目） | `enabled/todos[].step,text,completed/executing` | plan 扩展 `session_start` 恢复执行态 |
 | `pi-deck-plan-todos`（widget key） | 计划草案/进度 widget | `SessionTodoStrip.tsx`、`ComposerComponents.tsx` |
+| `submit_plan`（工具） | 结构化计划提交：`steps[]`；只在计划模式声明，普通模式与子代理不注册 | 无对应，PiWeft 自有扩展 |
 | `[PI_DECK_PLAN_NEXT]` | 计划确认选单标题前缀 | `renderer/src/utils/askUi.ts` |
 | `pi-deck-plan-execute` / `pi-deck-plan-complete` | 执行指令与完成消息（可见 custom message） | 无按名过滤；沿用只为让 PiDeck 会话历史保持同一形态 |
 | `pi-deck-goal-mode`（custom 条目） | `enabled/phase/objective/roundsStarted/maxGoalRounds/blockReason`；objective 只在变化时写 | goal 扩展 `session_start` |

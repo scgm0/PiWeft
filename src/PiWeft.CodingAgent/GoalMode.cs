@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using PiWeft.CodingAgent.Compatibility;
 
 namespace PiWeft.CodingAgent;
@@ -11,7 +10,11 @@ public sealed record GoalState(
 	string Objective,
 	int RoundsStarted,
 	int MaxRounds,
-	string? BlockReason)
+	string? BlockReason,
+	string? BlockCode = null,
+	int ConsecutiveFailures = 0,
+	long MaxTokens = 0,
+	long TokensAtStart = 0)
 {
 	public const string Active = "active";
 	public const string Paused = "paused";
@@ -40,6 +43,18 @@ public static partial class GoalMode
 
 	public const int DefaultMaxRounds = 32;
 
+	/// 目标停在轮次上限：界面据此把「恢复」换成「再加 N 轮」。
+	public const string RoundLimitCode = "round-limit";
+
+	/// 「再加 N 轮」每次加的量。界面文案与实现共用，别各写一份。
+	public const int ExtraRounds = 10;
+
+	/// 同一类失败连续这么多轮才阻塞。单次网络抖动先重试，别把整条目标停在一次错误上。
+	public const int MaxConsecutiveFailures = 3;
+
+	/// 目标累计 token 达到预算：界面据此提示「加预算」。
+	public const string TokenLimitCode = "token-limit";
+
 	public static bool TryStripMarker(string text, out string objective)
 	{
 		if (!text.StartsWith(Marker, StringComparison.Ordinal))
@@ -52,22 +67,61 @@ public static partial class GoalMode
 		return true;
 	}
 
-	/// 终态标记：`GOAL_COMPLETE`，或 `GOAL_BLOCKED: 原因`。
+	/// 终态标记：独占一行的 `GOAL_COMPLETE`，或 `GOAL_BLOCKED: 原因`。
+	/// 代码块里的示例不算；正文里引用这两个词也不算，否则一句「完成后写 GOAL_COMPLETE」
+	/// 会让目标提前结束。
 	public static (string Phase, string? Reason)? DetectTerminal(string text)
 	{
-		if (CompleteMarker().IsMatch(text))
+		foreach (var line in MarkdownScan.Lines(text))
 		{
-			return (GoalState.Complete, null);
-		}
+			var trimmed = line.Trim();
+			if (trimmed.SequenceEqual("GOAL_COMPLETE"))
+			{
+				return (GoalState.Complete, null);
+			}
 
-		var blocked = BlockedMarker().Match(text);
-		if (blocked.Success)
-		{
-			var reason = blocked.Groups[1].Value.Trim();
-			return (GoalState.Blocked, reason.Length > 0 ? reason : "blocked");
+			if (TryParseBlocked(trimmed, out var reason))
+			{
+				return (GoalState.Blocked, reason.Length > 0 ? reason : "blocked");
+			}
 		}
 
 		return null;
+	}
+
+	/// `GOAL_BLOCKED` 后可带空格再跟冒号；原因取到行尾，手工扫描避开每行正则。
+	private static bool TryParseBlocked(ReadOnlySpan<char> line, out string reason)
+	{
+		const string marker = "GOAL_BLOCKED";
+		reason = string.Empty;
+		if (!line.StartsWith(marker, StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		var rest = line[marker.Length..].TrimStart();
+		if (rest.IsEmpty || rest[0] != ':')
+		{
+			return false;
+		}
+
+		reason = rest[1..].Trim().ToString();
+		return true;
+	}
+
+	/// 展示用：去掉回复末尾的终态标记。标记仍参与状态判定，只是不该出现在正文里。
+	public static string StripTerminal(string text)
+	{
+		var trimmed = text.TrimEnd();
+		var lineStart = trimmed.LastIndexOf('\n') + 1;
+		var lastLine = trimmed[lineStart..].Trim();
+		if (!string.Equals(lastLine, "GOAL_COMPLETE", StringComparison.Ordinal) &&
+			!TryParseBlocked(lastLine, out _))
+		{
+			return text;
+		}
+
+		return trimmed[..lineStart].TrimEnd();
 	}
 
 	/// 系统提示里的静态规则与目标全文：一次运行内不变，前缀缓存不失效。
@@ -82,6 +136,10 @@ public static partial class GoalMode
 	/// 每轮真正变化的只有轮次：单独一条隐藏消息，避免目标全文每轮重复进历史。
 	public static string RoundLine(GoalState state) =>
 		$"[GOAL MODE ACTIVE] Round: {state.RoundsStarted + 1}/{state.MaxRounds}";
+
+	/// 旧续轮消息在投影里保留位置、内容改成这一句：直接删除会让 assistant 消息相邻，
+	/// 也会让历史里的轮次标记整段消失。
+	public const string FinishedRoundText = "[GOAL MODE ACTIVE] the previous round has finished.";
 
 	/// 续轮指令带轮次，但不重复目标全文（目标在系统提示 section 里）。
 	public static string ContinuationText(GoalState state) =>
@@ -98,17 +156,10 @@ public static partial class GoalMode
 			return [];
 		}
 
-		var lines = new List<string>(3)
-		{
-			$"{state.Phase} · {state.RoundsStarted}/{state.MaxRounds}",
-			state.Objective,
-		};
-		if (state.Phase == GoalState.Blocked && state.BlockReason is { Length: > 0 } reason)
-		{
-			lines.Add(reason);
-		}
-
-		return lines;
+		var head = $"{state.Phase} · {state.RoundsStarted}/{state.MaxRounds}";
+		return state.Phase == GoalState.Blocked && state.BlockReason is { Length: > 0 } reason
+			? [head, state.Objective, reason]
+			: [head, state.Objective];
 	}
 
 	/// 目标全文只在变化时写：32 轮上限下每轮都写一份目标原文会堆满历史。
@@ -131,6 +182,26 @@ public static partial class GoalMode
 		if (state.BlockReason is { Length: > 0 } reason)
 		{
 			data["blockReason"] = reason;
+		}
+
+		if (state.BlockCode is { Length: > 0 } code)
+		{
+			data["blockCode"] = code;
+		}
+
+		if (state.ConsecutiveFailures > 0)
+		{
+			data["consecutiveFailures"] = state.ConsecutiveFailures;
+		}
+
+		if (state.MaxTokens > 0)
+		{
+			data["maxTokens"] = state.MaxTokens;
+		}
+
+		if (state.TokensAtStart > 0)
+		{
+			data["tokensAtStart"] = state.TokensAtStart;
 		}
 
 		return data;
@@ -184,6 +255,21 @@ public static partial class GoalMode
 		var reason = latest?["blockReason"] is JsonValue reasonValue && reasonValue.TryGetValue<string>(out var reasonText)
 			? reasonText
 			: null;
+		var code = latest?["blockCode"] is JsonValue codeValue && codeValue.TryGetValue<string>(out var codeText)
+			? codeText
+			: null;
+		var failures = latest?["consecutiveFailures"] is JsonValue failuresValue &&
+			failuresValue.TryGetValue<int>(out var failureCount) && failureCount > 0
+				? failureCount
+				: 0;
+		var maxTokens = latest?["maxTokens"] is JsonValue maxTokensValue &&
+			maxTokensValue.TryGetValue<long>(out var tokenLimit) && tokenLimit > 0
+				? tokenLimit
+				: 0;
+		var tokensAtStart = latest?["tokensAtStart"] is JsonValue startValue &&
+			startValue.TryGetValue<long>(out var startTokens) && startTokens > 0
+				? startTokens
+				: 0;
 
 		return new GoalState(
 			Enabled: true,
@@ -191,12 +277,12 @@ public static partial class GoalMode
 			Objective: objective,
 			RoundsStarted: rounds,
 			MaxRounds: max,
-			BlockReason: reason);
+			BlockReason: reason,
+			BlockCode: code,
+			ConsecutiveFailures: failures,
+			MaxTokens: maxTokens,
+			TokensAtStart: tokensAtStart);
 	}
 
-	[GeneratedRegex(@"\bGOAL_COMPLETE\b", RegexOptions.CultureInvariant)]
-	private static partial Regex CompleteMarker();
 
-	[GeneratedRegex(@"\bGOAL_BLOCKED\s*:\s*(.+)", RegexOptions.CultureInvariant)]
-	private static partial Regex BlockedMarker();
 }

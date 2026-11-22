@@ -76,6 +76,24 @@ internal static class ScriptedSessions
 		return stream;
 	}
 
+	public static AssistantMessageEventStream Aborted(Model model, string text = "partial answer")
+	{
+		var stream = new AssistantMessageEventStream();
+		var blank = Blank(model);
+		var message = blank with
+		{
+			Content = [new TextContent { Text = text }],
+			StopReason = StopReason.Aborted,
+		};
+
+		stream.Push(new StartEvent { Partial = blank });
+		stream.Push(new TextStartEvent { ContentIndex = 0, Partial = message });
+		stream.Push(new TextDeltaEvent { ContentIndex = 0, Delta = text, Partial = message });
+		stream.Push(new TextEndEvent { ContentIndex = 0, Content = text, Partial = message });
+		stream.Push(new DoneEvent { Reason = StopReason.Aborted, Partial = message });
+		return stream;
+	}
+
 	public static AssistantMessageEventStream Truncated(Model model, string text, long outputTokens)
 	{
 		var stream = new AssistantMessageEventStream();

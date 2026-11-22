@@ -72,7 +72,8 @@ public sealed partial class MainWindow
 				linkedSessionHost: prepared.Host,
 				subagentHost: SubagentSessionsHost,
 				linkedParent: context.Parent,
-				linkedParentTitle: context.ParentTitle),
+				linkedParentTitle: context.ParentTitle,
+				initialPlanMode: context.Parent.PlanModeEnabled),
 			cancellationToken).ConfigureAwait(false);
 
 		try

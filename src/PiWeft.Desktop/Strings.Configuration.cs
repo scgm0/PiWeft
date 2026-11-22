@@ -102,6 +102,15 @@ public static partial class Strings
 	public const string ConfigSubagentsOpenTabs = "启动子代理时打开标签";
 	public const string ConfigSubagentsOpenTabsHint = "默认关闭：子代理在后台跑，卡片行按需打开活的转录，标签栏不会被并行委派占满。";
 	public static string ConfigSubagentsInvalid(string field) => $"{field}超出范围：并发 1–32、每回合 1–512、时限 1–1440 分钟、token 0–10000000、验证超时 1–86400 秒。";
+
+	public const string ConfigGoalTitle = "目标模式";
+	public const string ConfigGoalHint = "写入 settings.json 的 goal 段，只影响新建目标；已存在的目标保留自己的上限。";
+	public const string ConfigGoalMaxRounds = "默认轮次上限（1–512）";
+	public const string ConfigGoalMaxRoundsHint = "达到上限时目标条显示「再加 10 轮」，恢复会先加预算再继续。";
+	public const string ConfigGoalMaxRoundsInvalid = "默认轮次上限超出范围：1–512。";
+	public const string ConfigGoalMaxTokens = "默认 token 预算（0 = 不限）";
+	public const string ConfigGoalMaxTokensHint = "只影响新建目标：累计 token 达到预算后目标阻塞，恢复不会自动加预算。";
+	public const string ConfigGoalMaxTokensInvalid = "默认 token 预算超出范围：0–10000000。";
 	public static string ConfigToolsEnabledCount(int count) => $"{count} 个已启用";
 	public static string ConfigRemoveTool(string name) => $"移除工具 {name}";
 	public const string ConfigEditMcp = "编辑服务器";

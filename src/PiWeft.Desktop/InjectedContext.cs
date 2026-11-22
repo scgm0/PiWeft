@@ -12,14 +12,27 @@ internal static class InjectedContext
 	/// <paramref name="text"/> 只用于旧会话：修 customType 落盘之前写出的回报没有类型标记，
 	/// 按我们自己的正文前缀认回来（只管显示，不改文件也不影响分叉与重试）。
 	public static string? Label(string? customType, string text) =>
-		customType is not null ? LabelFor(customType) : LegacyLabel(text);
+		customType is not null ? LabelFor(customType, text) : LegacyLabel(text);
 
-	private static string? LabelFor(string customType) => customType switch
+	/// 模式状态消息：独立成行，不折进「收到子代理回报」过程组。
+	public static bool IsSystemNotice(string? customType) => customType is
+		PiWeftProtocol.GoalEndedMessageType or
+		PiDeckProtocol.PlanWidgetKey or
+		PiDeckProtocol.PlanExecuteMessageType or
+		PiDeckProtocol.PlanCompleteMessageType;
+
+	private static string? LabelFor(string customType, string text) => customType switch
 	{
 		SubagentHub.ResultMessageType => Strings.ReportSubagentResult,
 		SubagentHub.MessageType => Strings.ReportParentMessage,
 		PiWeftProtocol.LinkedReportMessageType => Strings.ReportLinkedChild,
 		PiWeftProtocol.LinkedMessageType => Strings.ReportLinkedMessage,
+		PiWeftProtocol.GoalEndedMessageType => text.StartsWith("目标已完成", StringComparison.Ordinal)
+			? Strings.ReportGoalComplete
+			: Strings.ReportGoalBlocked,
+		PiDeckProtocol.PlanWidgetKey => Strings.ReportPlanSteps,
+		PiDeckProtocol.PlanExecuteMessageType => Strings.ReportPlanExecute,
+		PiDeckProtocol.PlanCompleteMessageType => Strings.ReportPlanComplete,
 		_ => null,
 	};
 

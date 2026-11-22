@@ -66,20 +66,45 @@ internal sealed class DesktopUiHost : IUiHost
 		return AskAsync(questions, AskQuestions.ReviewRequested(request.Title), cancellationToken);
 	}
 
-	public Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken) =>
-		ShowDialogAsync<string?>(
-			// PiDeck 的标记与 `label|description` 编码只对 PiDeck 有意义：
-			// 卡片显示去掉标记的主副文案，返回的仍是完整选项值。
-			new AskQuestion("dialog", "select", UiSelectText.DisplayTitle(request.Title),
+	public async Task<string?> SelectAsync(UiSelectRequest request, CancellationToken cancellationToken)
+	{
+		// PiDeck 的标记与 `label|description` 编码只对 PiDeck 有意义：
+		// 卡片显示去掉标记的主副文案，返回的仍是完整选项值。
+		string title;
+		string? detail = null;
+		string? header = null;
+		// 计划选单把计划全文接在首行问题之后。拆出来交给卡片正文，标题才不会挤成一行。
+		if (request.Title.StartsWith(PlanSteps.NextMarker, StringComparison.Ordinal))
+		{
+			(title, detail) = PlanSteps.SplitReview(request.Title);
+			header = Strings.PlanReviewTitle;
+		}
+		else
+		{
+			title = UiSelectText.DisplayTitle(request.Title);
+		}
+
+		var selected = await ShowDialogAsync<string?>(
+			new AskQuestion("dialog", "select", title,
 				[.. request.Options.Select(static option =>
 				{
 					var (label, description) = UiSelectText.SplitOption(option);
 					return new AskOption(label, option, description);
-				})], null, null),
+				})], null, null, detail, header),
 			cancellationToken,
 			static answers => answers.Count > 0 && answers[0].Value?.GetValueKind() == System.Text.Json.JsonValueKind.String
 				? answers[0].Value!.GetValue<string>()
-				: null);
+				: null).ConfigureAwait(false);
+
+		// 运行被取消（停止按钮/关闭会话）与用户主动关卡片都返回 null：
+		// 取消要抛出去，让计划评审保持模式与草案；关闭同样只收起卡片，退出走模式 chip。
+		if (selected is null && cancellationToken.IsCancellationRequested)
+		{
+			throw new OperationCanceledException(cancellationToken);
+		}
+
+		return selected;
+	}
 
 	public Task<bool?> ConfirmAsync(UiConfirmRequest request, CancellationToken cancellationToken) =>
 		ShowDialogAsync<bool?>(

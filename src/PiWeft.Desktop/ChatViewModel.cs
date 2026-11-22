@@ -33,6 +33,9 @@ public enum ChatRole
 	/// 外部注入的一轮起因：子代理回报、关联会话消息。它是模型看到的 user 消息，
 	/// 但不是用户写的，所以不用用户气泡（否则「撤回」会把机器文本当草稿放回输入框）。
 	Report,
+
+	/// 模式状态（目标结束、计划执行/完成）：独立一行，不折进过程组，也不进用户气泡。
+	System,
 }
 
 /// 轮次边界：用户消息与继续生成收据。过程组与尾投都按这两个角色切。
@@ -1232,7 +1235,10 @@ public sealed class ChatViewModel : IDisposable
 					var injected = injectedText;
 					_entries.Add(new ChatEntry
 					{
-						Role = ChatRole.Report,
+						// 计划/目标状态是独立系统行，不能借 Report 折进「收到子代理回报」过程组。
+						Role = InjectedContext.IsSystemNotice(user.CustomType)
+							? ChatRole.System
+							: ChatRole.Report,
 						Label = InjectedContext.Title(label, injected),
 						Text = injected,
 						Timestamp = user.Timestamp,
@@ -1253,7 +1259,8 @@ public sealed class ChatViewModel : IDisposable
 
 			case AssistantMessage assistant:
 			{
-				var text = TextOfBlocks(assistant.Content);
+				// 终态标记只用于驱动目标状态，不当作正文展示。
+				var text = GoalMode.StripTerminal(TextOfBlocks(assistant.Content));
 				var thinking = ThinkingOf(assistant.Content);
 				var calls = CallsOf(assistant.Content);
 				var images = ImagesOfBlocks(assistant.Content);

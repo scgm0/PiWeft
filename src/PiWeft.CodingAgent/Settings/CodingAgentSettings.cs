@@ -119,6 +119,9 @@ public sealed record CodingAgentSettings
 	/// <summary>子代理的配额与默认值，对应 <c>settings.subagents</c>。</summary>
 	public SubagentsSettings Subagents { get; init; } = new();
 
+	/// <summary>目标模式的默认值，对应 <c>settings.goal</c>。</summary>
+	public GoalSettings Goal { get; init; } = new();
+
 	/// 工具调用安全门，对应 <c>settings.security</c>。默认 <c>off</c>，全部放行；
 	/// 只从全局设置读取，见 <see cref="SecurityConfig.Load"/>。
 	public SecurityConfig Security { get; init; } = SecurityConfig.Off;
@@ -653,6 +656,14 @@ public sealed record CodingAgentSettings
 			Write(target, "openTabs", subagents.OpenTabs);
 			root["subagents"] = target;
 		}
+
+		if (file.Goal is { } goal)
+		{
+			var target = root["goal"] as JsonObject ?? new JsonObject();
+			Write(target, "maxRounds", goal.MaxRounds);
+			Write(target, "maxTokens", goal.MaxTokens);
+			root["goal"] = target;
+		}
 	}
 
 	// 用具体类型的重载写值：泛型的 JsonValue.Create<T> 在 AOT 下需要运行时代码生成。
@@ -867,6 +878,15 @@ public sealed record CodingAgentSettings
 			Mode = NormalizeCodemodeMode(project?.Codemode?.Mode ?? global?.Codemode?.Mode),
 			InlineBudget = NormalizeCodemodeBudget(project?.Codemode?.InlineBudget ?? global?.Codemode?.InlineBudget),
 			AutoEnable = project?.Codemode?.AutoEnable ?? global?.Codemode?.AutoEnable ?? true,
+		},
+		Goal = new GoalSettings
+		{
+			MaxRounds = NormalizeRange(
+				project?.Goal?.MaxRounds ?? global?.Goal?.MaxRounds,
+				1, 512, PiWeft.CodingAgent.GoalMode.DefaultMaxRounds),
+			MaxTokens = NormalizeRange(
+				project?.Goal?.MaxTokens ?? global?.Goal?.MaxTokens,
+				0, 10_000_000, 0),
 		},
 		Subagents = new SubagentsSettings
 		{
@@ -1170,6 +1190,11 @@ public sealed record CodingAgentSettings
 			InlineBudget = settings.Codemode.InlineBudget,
 			AutoEnable = settings.Codemode.AutoEnable,
 		},
+		Goal = new GoalFile
+		{
+			MaxRounds = settings.Goal.MaxRounds,
+			MaxTokens = settings.Goal.MaxTokens,
+		},
 		Subagents = new SubagentsFile
 		{
 			MaxActive = settings.Subagents.MaxActive,
@@ -1228,6 +1253,16 @@ public sealed record CodemodeSettings
 
 /// 子代理的配额与默认值，对应 <c>settings.subagents</c>。
 /// 只影响本进程里的委派：并发、每回合启动数、单次运行的时限与 token 上限。
+/// <summary>目标模式的默认值，对应 <c>settings.goal</c>。</summary>
+public sealed record GoalSettings
+{
+	/// <summary>新建目标的轮次上限；达到后目标条提供「再加 10 轮」。</summary>
+	public int MaxRounds { get; init; } = PiWeft.CodingAgent.GoalMode.DefaultMaxRounds;
+
+	/// <summary>新建目标的 token 预算；0 表示不限。达到后目标阻塞，恢复不会自动加预算。</summary>
+	public int MaxTokens { get; init; }
+}
+
 public sealed record SubagentsSettings
 {
 	/// <summary>同时活跃的子代理数量上限；超了直接拒绝，不排队。</summary>
@@ -1325,9 +1360,19 @@ public sealed record SettingsFile
 	public CodemodeFile? Codemode { get; init; }
 
 	public SubagentsFile? Subagents { get; init; }
+
+	public GoalFile? Goal { get; init; }
 }
 
 /// <summary><c>settings.subagents</c> 的写侧形状；字段与 <see cref="SubagentsSettings"/> 对齐。</summary>
+/// <summary><c>settings.goal</c> 的写侧形状；字段与 <see cref="GoalSettings"/> 对齐。</summary>
+public sealed record GoalFile
+{
+	public int? MaxRounds { get; init; }
+
+	public int? MaxTokens { get; init; }
+}
+
 public sealed record SubagentsFile
 {
 	public int? MaxActive { get; init; }

@@ -33,6 +33,10 @@ internal static class McpProtocol
 				Description = tool["description"]?.GetValue<string>() ?? string.Empty,
 				InputSchema = tool["inputSchema"] as JsonObject ?? new JsonObject { ["type"] = "object" },
 				OutputSchema = tool["outputSchema"] as JsonObject,
+				// annotations.readOnlyHint 是 MCP 标准字段；非 true 一律当可写。
+				ReadOnlyHint = tool["annotations"] is JsonObject annotations &&
+					annotations["readOnlyHint"] is JsonValue hint &&
+					hint.TryGetValue<bool>(out var readOnly) && readOnly,
 			});
 		}
 

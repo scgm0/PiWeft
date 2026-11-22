@@ -107,6 +107,52 @@ public sealed class InjectedReportTests : IDisposable
 	}
 
 	[Fact]
+	public void PlanAndGoalMessagesAreReportsNotUserBubbles()
+	{
+		var (session, chat) = Create();
+		using var _ = session;
+		using var __ = chat;
+
+		session.Session.AppendCustomMessage(
+			PiDeckProtocol.PlanWidgetKey, MessageContent.FromText("**Plan Steps (2)**"), display: true);
+		session.Session.AppendCustomMessage(
+			PiDeckProtocol.PlanExecuteMessageType, MessageContent.FromText("Execute the approved plan."), display: true);
+		session.Session.AppendCustomMessage(
+			PiDeckProtocol.PlanCompleteMessageType, MessageContent.FromText("**计划已完成** ✓"), display: true);
+		session.Session.AppendCustomMessage(
+			PiWeftProtocol.GoalEndedMessageType, MessageContent.FromText("目标已完成：修构建\n轮次：2/32"), display: true);
+		session.Session.AppendCustomMessage(
+			PiWeftProtocol.GoalEndedMessageType, MessageContent.FromText("目标已阻塞：缺少凭据\n目标：修构建"), display: true);
+
+		var rows = chat.Entries();
+		// 模式状态是独立 System 行：不能折进「收到子代理回报」过程组。
+		Assert.All(rows, static row => Assert.Equal(ChatRole.System, row.Role));
+		Assert.Equal("计划步骤", rows[0].Label);
+		Assert.Equal("计划执行", rows[1].Label);
+		Assert.Equal("计划完成", rows[2].Label);
+		Assert.Equal("目标完成", rows[3].Label);
+		Assert.Equal("目标阻塞", rows[4].Label);
+	}
+
+	[Fact]
+	public void GoalTerminalMarkerIsNotShownInTheAssistantText()
+	{
+		var (session, chat) = Create();
+		using var _ = session;
+		using var __ = chat;
+
+		session.Session.AppendMessage(new AssistantMessage
+		{
+			Content = [new TextContent { Text = "done\nGOAL_COMPLETE" }],
+			StopReason = StopReason.Stop,
+		});
+
+		var row = Assert.Single(chat.Entries());
+		Assert.Equal(ChatRole.Assistant, row.Role);
+		Assert.Equal("done", row.Text);
+	}
+
+	[Fact]
 	public void ReportIsFoldedIntoTheProcessGroupAndCollapsedByDefault()
 	{
 		var (session, chat) = Create();

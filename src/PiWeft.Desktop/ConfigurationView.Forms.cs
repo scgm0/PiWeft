@@ -564,6 +564,10 @@ internal sealed partial class ConfigurationView
 			.ToString(CultureInfo.InvariantCulture));
 		var verifyTimeoutInput = Input(ReadInt(_root, "subagents", "verifyTimeoutSeconds",
 			ReadInt(global, "subagents", "verifyTimeoutSeconds", 600)).ToString(CultureInfo.InvariantCulture));
+		var goalRoundsInput = Input(ReadInt(_root, "goal", "maxRounds",
+			ReadInt(global, "goal", "maxRounds", GoalMode.DefaultMaxRounds)).ToString(CultureInfo.InvariantCulture));
+		var goalTokensInput = Input(ReadInt(_root, "goal", "maxTokens",
+			ReadInt(global, "goal", "maxTokens", 0)).ToString(CultureInfo.InvariantCulture));
 		var openTabs = Check(Strings.ConfigSubagentsOpenTabs,
 			ReadBool(_root, "subagents", "openTabs", ReadBool(global, "subagents", "openTabs", false)));
 		var openTabsChanged = false;
@@ -573,11 +577,15 @@ internal sealed partial class ConfigurationView
 		var runTimeoutChanged = false;
 		var maxTokensChanged = false;
 		var verifyTimeoutChanged = false;
+		var goalRoundsChanged = false;
+		var goalTokensChanged = false;
 		activeInput.OnTextChanged(_ => { activeChanged = true; SetDirty(true); });
 		spawnsInput.OnTextChanged(_ => { spawnsChanged = true; SetDirty(true); });
 		runTimeoutInput.OnTextChanged(_ => { runTimeoutChanged = true; SetDirty(true); });
 		maxTokensInput.OnTextChanged(_ => { maxTokensChanged = true; SetDirty(true); });
 		verifyTimeoutInput.OnTextChanged(_ => { verifyTimeoutChanged = true; SetDirty(true); });
+		goalRoundsInput.OnTextChanged(_ => { goalRoundsChanged = true; SetDirty(true); });
+		goalTokensInput.OnTextChanged(_ => { goalTokensChanged = true; SetDirty(true); });
 
 		provider.Width(320);
 		model.Width(320);
@@ -587,6 +595,8 @@ internal sealed partial class ConfigurationView
 		runTimeoutInput.Width(160);
 		maxTokensInput.Width(180);
 		verifyTimeoutInput.Width(160);
+		goalRoundsInput.Width(160);
+		goalTokensInput.Width(180);
 		var defaultFields = new List<UIElement>
 		{
 			Fields(Field(Strings.ConfigProvider, provider, 320), Field(Strings.ConfigModelId, model, 320)),
@@ -670,7 +680,13 @@ internal sealed partial class ConfigurationView
 					Field(Strings.ConfigSubagentsMaxTokens, maxTokensInput, 220),
 					Field(Strings.ConfigSubagentsVerifyTimeout, verifyTimeoutInput, 220)),
 				openTabs,
-				Hint(Strings.ConfigSubagentsOpenTabsHint)));
+				Hint(Strings.ConfigSubagentsOpenTabsHint)),
+			FormCard(Strings.ConfigGoalTitle, Strings.ConfigGoalHint,
+				Fields(
+					Field(Strings.ConfigGoalMaxRounds, goalRoundsInput, 180),
+					Field(Strings.ConfigGoalMaxTokens, goalTokensInput, 220)),
+				Hint(Strings.ConfigGoalMaxRoundsHint),
+				Hint(Strings.ConfigGoalMaxTokensHint)));
 		RefreshTools();
 		_saveForm = () =>
 		{
@@ -733,6 +749,21 @@ internal sealed partial class ConfigurationView
 					modeChanged ? mode.SelectedIndex switch { 1 => "on", 2 => "only", _ => null } : null,
 					parsedBudget, modeChanged, budgetChanged);
 				if (patched is null) next.Remove("codemode"); else next["codemode"] = patched;
+			}
+			if (goalRoundsChanged || goalTokensChanged)
+			{
+				var section = next["goal"] as JsonObject ?? new JsonObject();
+				if (goalRoundsChanged)
+				{
+					section["maxRounds"] = ParseLimit(goalRoundsInput, 1, 512, Strings.ConfigGoalMaxRoundsInvalid);
+				}
+
+				if (goalTokensChanged)
+				{
+					section["maxTokens"] = ParseLimit(goalTokensInput, 0, 10_000_000, Strings.ConfigGoalMaxTokensInvalid);
+				}
+
+				next["goal"] = section;
 			}
 			if (activeChanged || spawnsChanged || runTimeoutChanged || maxTokensChanged || verifyTimeoutChanged || openTabsChanged)
 			{
@@ -846,12 +877,15 @@ internal sealed partial class ConfigurationView
 	}
 
 	/// 解析子代理配额：超范围直接报错，不悄悄改成边界值；报错带上字段名。
-	private static int ParseSubagentLimit(TextBox input, int min, int max, string field)
+	private static int ParseSubagentLimit(TextBox input, int min, int max, string field) =>
+		ParseLimit(input, min, max, Strings.ConfigSubagentsInvalid(field));
+
+	private static int ParseLimit(TextBox input, int min, int max, string error)
 	{
 		if (!int.TryParse(input.Text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var value) ||
 			value < min || value > max)
 		{
-			throw new ArgumentException(Strings.ConfigSubagentsInvalid(field));
+			throw new ArgumentException(error);
 		}
 
 		return value;

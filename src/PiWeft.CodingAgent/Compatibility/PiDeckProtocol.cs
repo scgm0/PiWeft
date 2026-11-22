@@ -75,6 +75,9 @@ public static class PiWeftProtocol
 	/// 目标续轮消息的 custom message 类型：以 <c>display:false</c> 落在会话里，不占时间线。
 	public const string GoalContinueRole = "piweft-goal-continue";
 
+	/// 目标结束（完成/阻塞）的时间线记录：给用户留一份摘要，不借 PiDeck 的类型。
+	public const string GoalEndedMessageType = "piweft-goal-ended";
+
 	/// 手动继续生成的空标记：内容为空、<c>display:false</c>，只用来开一轮新的请求。
 	public const string ContinueGenerationRole = "piweft-continue";
 

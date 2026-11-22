@@ -126,7 +126,7 @@ public sealed class AskQuestionPanelTests
 		Assert.Contains(Find<Button>(panel.View), button => ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true);
 		Assert.Empty(Find<ComboBox>(panel.View));
 		// select 仍保留自定义输入。
-		Assert.Contains(Find<TextBox>(panel.View), box => box.Placeholder == Strings.AskCustomPlaceholder);
+		Assert.Contains(Find<MultiLineTextBox>(panel.View), box => box.Placeholder == Strings.AskCustomPlaceholder);
 		panel.Close();
 	}
 
@@ -145,22 +145,22 @@ public sealed class AskQuestionPanelTests
 			review: false,
 			CancellationToken.None);
 
-		var first = Find<TextBox>(panel.View).Single(box => box.Placeholder == "第一题占位");
+		var first = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "第一题占位");
 		first.Text = "第一题草稿";
 		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
 			ContentText(button) == Strings.AskNext && button.IsEnabled));
 
-		var second = Find<TextBox>(panel.View).Single(box => box.Placeholder == "第二题占位");
+		var second = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "第二题占位");
 		second.Text = "第二题草稿";
 		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
 			ContentText(button) == Strings.AskPrevious));
 
-		var firstAgain = Find<TextBox>(panel.View).Single(box => box.Placeholder == "第一题占位");
+		var firstAgain = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "第一题占位");
 		Assert.Equal("第一题草稿", firstAgain.Text);
 		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
 			ContentText(button) == Strings.AskNext && button.IsEnabled));
 
-		var secondAgain = Find<TextBox>(panel.View).Single(box => box.Placeholder == "第二题占位");
+		var secondAgain = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "第二题占位");
 		Assert.Equal("第二题草稿", secondAgain.Text);
 		panel.Close();
 	}
@@ -180,25 +180,25 @@ public sealed class AskQuestionPanelTests
 			review: false,
 			CancellationToken.None);
 
-		var selectCustom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		var selectCustom = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
 		selectCustom.Text = "单选自定义草稿";
 		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
 			ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true));
 
 		// 第二题是多选：勾选项会重绘正文，自定义输入要从草稿恢复。
-		var multiCustom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		var multiCustom = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
 		multiCustom.Text = "多选自定义草稿";
 		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
 			ContentText(button)?.Contains("选项 B", StringComparison.Ordinal) == true));
 
-		multiCustom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		multiCustom = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
 		Assert.Equal("多选自定义草稿", multiCustom.Text);
 		Assert.True(Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskCustomAdd).IsEnabled);
 
 		// 回到第一题：单选自定义草稿也要还在，且「使用」可用。
 		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
 			ContentText(button) == Strings.AskPrevious));
-		selectCustom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		selectCustom = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
 		Assert.Equal("单选自定义草稿", selectCustom.Text);
 		Assert.True(Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskCustomUse).IsEnabled);
 		panel.Close();
@@ -245,7 +245,7 @@ public sealed class AskQuestionPanelTests
 			review: false,
 			CancellationToken.None);
 
-		var oldBox = Find<TextBox>(panel.View).Single(box => box.Placeholder == "旧占位");
+		var oldBox = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "旧占位");
 		oldBox.Text = "旧草稿";
 		panel.Close();
 		// 旧控件已脱离树；迟到的 TextChanged 必须被世代号忽略，不能写进下一批草稿。
@@ -255,7 +255,7 @@ public sealed class AskQuestionPanelTests
 			review: false,
 			CancellationToken.None);
 
-		Assert.Equal(string.Empty, Find<TextBox>(panel.View).Single(box => box.Placeholder == "新占位").Text);
+		Assert.Equal(string.Empty, Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "新占位").Text);
 		panel.Close();
 	}
 
@@ -277,7 +277,8 @@ public sealed class AskQuestionPanelTests
 				review: false,
 				CancellationToken.None);
 
-			var box = Find<TextBox>(panel.View).Single(candidate => candidate.Placeholder == "写点什么");
+			var box = Find<MultiLineTextBox>(panel.View).Single(candidate => candidate.Placeholder == "写点什么");
+			Assert.True(UserReferenceRichText.IsAttached(box));
 			box.Text = "before after";
 			box.Select(6, 0);
 
@@ -320,7 +321,7 @@ public sealed class AskQuestionPanelTests
 				review: false,
 				CancellationToken.None);
 
-			var custom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+			var custom = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
 			var data = new DataObject();
 			data.SetStorageItems([file]);
 			var drop = new DragEventArgs(data, default, default);
@@ -373,7 +374,7 @@ public sealed class AskQuestionPanelTests
 		ImagePreviewTests.Click(option);
 
 		// 第二题是自由输入：填好内容后点页脚提交。
-		var input = Find<TextBox>(panel.View).Single(box => box.Placeholder == "写点什么");
+		var input = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "写点什么");
 		input.Text = "补充内容";
 		var submit = Find<Button>(panel.View).Single(button =>
 			ContentText(button) == Strings.AskSubmit && button.IsEnabled);
@@ -425,7 +426,7 @@ public sealed class AskQuestionPanelTests
 		ImagePreviewTests.Click(Find<Button>(panel.View).First(button =>
 			ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true));
 
-		var input = Find<TextBox>(panel.View).Single(box => box.Placeholder == "写点什么");
+		var input = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "写点什么");
 		input.Text = "审阅内容";
 		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
 			ContentText(button) == Strings.AskNext && button.IsEnabled));
@@ -447,13 +448,13 @@ public sealed class AskQuestionPanelTests
 	{
 		var (panel, pending) = Show();
 
-		var custom = Find<TextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+		var custom = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
 		custom.Text = "自定义选项";
 		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
 			ContentText(button) == Strings.AskCustomUse && button.IsEnabled));
 
 		// 自定义答案会把 select 也答完并推进到第二题，补完输入后整批提交。
-		var input = Find<TextBox>(panel.View).Single(box => box.Placeholder == "写点什么");
+		var input = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == "写点什么");
 		input.Text = "说明";
 		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
 			ContentText(button) == Strings.AskSubmit && button.IsEnabled));

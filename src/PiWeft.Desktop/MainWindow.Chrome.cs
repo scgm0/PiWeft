@@ -455,7 +455,7 @@ public sealed partial class MainWindow
 			}
 
 			view.Label.Text(title);
-			HoverHints.Set(view.Button, title);
+			HoverHints.Set(view.Button, EntryTooltip(_tabEntries[index]));
 			selectedChanged |= index == selected;
 		}
 
@@ -523,7 +523,7 @@ public sealed partial class MainWindow
 			.Padding(new Thickness(10, 0, 8, 0))
 			.StyleName(active ? AppStyles.TitleBarTabActive : AppStyles.TitleBarTab)
 			.OnClick(() => SelectEntry(entry))
-			.HoverTip(title);
+			.HoverTip(EntryTooltip(entry));
 
 		// 右键沿用命令面板里的同一组标签动作（关闭/保留/右移…）。
 		tab.OnMouseDown(e =>
@@ -578,11 +578,27 @@ public sealed partial class MainWindow
 		UpdateStatus();
 	}
 
-	private static string EntryTitle(object entry) => entry switch
+	/// 页签悬停：标题之外再说明 ◐ 是哪一种运行，避免计划与目标共用一个标记后猜。
+	internal static string EntryTooltip(object entry) => entry switch
+	{
+		SessionTab tab when tab.AskPending => $"{tab.Title}\n{Strings.TabWaitingAnswer}",
+		SessionTab tab when tab.Session.PlanExecutionEnabled => $"{tab.Title}\n{Strings.TabPlanRunning}",
+		SessionTab tab when tab.Session.Goal.Running =>
+			$"{tab.Title}\n{Strings.TabGoalRunning(tab.Session.Goal.RoundsStarted, tab.Session.Goal.MaxRounds)}",
+		SessionTab tab => tab.Title,
+		_ => EntryTitle(entry),
+	};
+
+	internal static string EntryTitle(object entry) => entry switch
 	{
 		// 阻塞式问询卡在等回答：页签带个圆点，后台会话不必靠声音才知道卡住了（PiDeck 的 PendingAskBadge 同义）。
 		// 子代理在等回答时父标签同样带圆点：用户不必逐个后台标签找是谁卡住了。
-		SessionTab tab => tab.AskPending || tab.HasAwaitingSubagent ? "\u25cf " + tab.Title : tab.Title,
+		// 计划执行/目标运行用半圆：它需要被看见，但不是「在等你」。
+		SessionTab tab => tab.AskPending || tab.HasAwaitingSubagent
+			? "\u25cf " + tab.Title
+			: tab.HasRunningMode
+				? "\u25d0 " + tab.Title
+				: tab.Title,
 		_ => string.Empty,
 	};
 

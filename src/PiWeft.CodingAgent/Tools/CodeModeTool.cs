@@ -96,6 +96,8 @@ public static class CodeModeTool
 			{
 				Name = Name,
 				Label = Name,
+				// 脚本里的嵌套调用走同一条守卫：未标记只读的工具在计划模式下仍会被拒。
+				PlanAccess = ToolPlanAccess.Allowed,
 				Description = CreateDescription(
 					declaredTools ?? host.Tools(),
 					host.Models is not null,

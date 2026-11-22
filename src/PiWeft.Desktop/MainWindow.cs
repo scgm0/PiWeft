@@ -1817,6 +1817,12 @@ public sealed partial class MainWindow : Window
 		// 子代理开始/结束等回答：父标签也显示圆点，并弹一次 toast。
 		// toast 由 hub 的事件驱动，与子代理有没有标签无关。
 		tab.SubagentAwaitChanged += _ => UpdateTabHeaders();
+		// 计划执行/目标运行的标记同时出现在页签与侧栏；模式变化不一定是 busy 边沿。
+		tab.ModeChanged += _ =>
+		{
+			UpdateTabHeaders();
+			RefreshSessions();
+		};
 		if (session.Subagents is { } subagents)
 		{
 			// 事件来自子会话的事件派发线程：toast 与问询卡都要回 UI 线程，否则跨线程碰窗口。

@@ -31,6 +31,8 @@ public static class LinkedSessionsTool
 			{
 				Name = StartName,
 				Label = "Start Session",
+				// 计划模式不放开新会话：新会话的可写边界不由本会话控制。
+				PlanAccess = ToolPlanAccess.Denied,
 				Description =
 					"Start a separate, user-visible session in the same project for a self-contained task, or register a proposal card for the user to decide. " +
 					"initiation decides who approves: user_asked starts immediately (the user explicitly asked for another/parallel/background session); " +
@@ -55,6 +57,8 @@ public static class LinkedSessionsTool
 			{
 				Name = SendName,
 				Label = "Send To Session",
+				// 目标会话可能不在只读模式，禁止拿它代写。
+				PlanAccess = ToolPlanAccess.Denied,
 				Description =
 					"Send a message to a directly linked session: a child you started, or the parent session that started you. " +
 					"A running recipient gets it as steering before its next model request; follow_up waits for the whole turn. " +
@@ -73,6 +77,7 @@ public static class LinkedSessionsTool
 			{
 				Name = ListName,
 				Label = "List Linked Sessions",
+				PlanAccess = ToolPlanAccess.Allowed,
 				Description =
 					"List the child sessions this session started (state, turns, last report) and the parent session when this is a linked child.",
 				Parameters = new JsonObject

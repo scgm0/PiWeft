@@ -45,6 +45,7 @@ public static class TodoTool
 		{
 			Name = Name,
 			Label = "Todo",
+			PlanAccess = ToolPlanAccess.Allowed,
 			Description =
 				"Manage the current todo plan. Actions: list, add, update (id + status/text), delete (id, removing a single item), " +
 				"replace (atomically begin a new plan), restore (undo the latest replacement), and clear (intentionally remove it).",

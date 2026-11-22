@@ -95,6 +95,27 @@ public sealed class EmptySessionLayoutTests
 	private const double FloatingOverlap = 3;
 
 	[Fact]
+	public void NarrowComposerKeepsTheModeChipAndTheModelButtonApart()
+	{
+		using var session = ConversationPerformanceTests.CreateSession(0);
+		using var tab = new SessionTab(session, [session.Model], "narrow");
+		tab.SelectModeForTests(ComposerMode.Plan);
+		ConversationPerformanceTests.Layout(tab.View, 800, 720);
+
+		var chip = tab.ModeChipForTests;
+		var model = tab.ModelButtonForTests;
+		Assert.True(chip.IsVisible);
+		Assert.True(model.IsVisible);
+
+		// 窄窗口下控件可以换行，但不能互相压住点击区域。
+		var overlap = chip.Bounds.Right > model.Bounds.Left &&
+			chip.Bounds.Left < model.Bounds.Right &&
+			chip.Bounds.Bottom > model.Bounds.Top &&
+			chip.Bounds.Top < model.Bounds.Bottom;
+		Assert.False(overlap);
+	}
+
+	[Fact]
 	public void ComposerNeverShowsTheWorkspacePath()
 	{
 		using var session = ConversationPerformanceTests.CreateSession(0);

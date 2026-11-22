@@ -77,14 +77,50 @@ public sealed class ComposerModeTests : IDisposable
 	}
 
 	[Fact]
+	public void ModeSwitchQueuesUntilTheTurnEnds()
+	{
+		using var tab = Tab();
+
+		tab.QueueModeForTests(ComposerMode.Plan);
+
+		// 会话状态不动，chip 先给出「本轮后」的交代。
+		Assert.Equal(ComposerMode.Normal, tab.Mode);
+		Assert.Equal(ComposerMode.Plan, tab.PendingModeForTests);
+		Assert.Equal(Strings.ModePlan + Strings.ModePendingSuffix, tab.ModeChipTextForTests);
+
+		tab.ApplyPendingModeForTests();
+
+		Assert.Null(tab.PendingModeForTests);
+		Assert.Equal(ComposerMode.Plan, tab.Mode);
+		Assert.True(tab.Session.PlanModeEnabled);
+	}
+
+	[Fact]
+	public void PendingExitKeepsTheChipVisible()
+	{
+		using var tab = Tab();
+		tab.SelectModeForTests(ComposerMode.Plan);
+
+		tab.QueueModeForTests(ComposerMode.Normal);
+
+		Assert.Equal(ComposerMode.Plan, tab.Mode);
+		Assert.Equal(Strings.ModePlan + Strings.ModePendingExitSuffix, tab.ModeChipTextForTests);
+
+		tab.ApplyPendingModeForTests();
+
+		Assert.Equal(ComposerMode.Normal, tab.Mode);
+		Assert.Null(tab.ModeChipTextForTests);
+	}
+
+	[Fact]
 	public void LeavingGoalPausesTheRunningObjective()
 	{
 		using var tab = Tab();
 		tab.Session.SetGoal("把构建修到全绿");
 		Assert.True(tab.Session.Goal.Running);
 
-		tab.SelectModeForTests(ComposerMode.Goal);
-		Assert.True(tab.Session.Goal.Running);
+		// 目标已在跑：模式 chip 已经是目标（不再需要从菜单进入一次）。
+		Assert.Equal(ComposerMode.Goal, tab.Mode);
 
 		tab.SelectModeForTests(ComposerMode.Plan);
 		Assert.False(tab.Session.Goal.Running);
@@ -120,9 +156,7 @@ public sealed class ComposerModeTests : IDisposable
 		tab.Session.SetGoal("把构建修到全绿");
 		tab.RefreshGoalStrip();
 		Assert.True(tab.GoalStripVisible);
-		Assert.Equal(
-			Strings.GoalProgress(Strings.GoalPhase(GoalState.Active), 0, GoalMode.DefaultMaxRounds),
-			tab.GoalStripPhaseForTests);
+		Assert.Equal("进行中 · 0/32", tab.GoalStripPhaseForTests);
 
 		tab.Session.PauseGoal();
 		tab.RefreshGoalStrip();
@@ -132,6 +166,160 @@ public sealed class ComposerModeTests : IDisposable
 		tab.Session.ClearGoal();
 		tab.RefreshGoalStrip();
 		Assert.False(tab.GoalStripVisible);
+	}
+
+	[Fact]
+	public void GoalStripShowsTheBlockReasonInsteadOfTheObjective()
+	{
+		var card = new GoalStripCard(() => { }, () => { }, () => { }, _ => { });
+
+		card.Render(new GoalState(
+			true, GoalState.Blocked, "把构建修到全绿", 3, 32, "request failed", "request-failed"));
+
+		// 阻塞时目标位置让给原因；目标全文留在 tooltip。
+		Assert.True(card.IsShown);
+		Assert.Equal("request failed", card.ObjectiveTextForTests);
+	}
+
+	[Fact]
+	public void GoalStripShowsTheTokenBudgetOnlyWhenConfigured()
+	{
+		var card = new GoalStripCard(() => { }, () => { }, () => { }, _ => { });
+		card.Render(new GoalState(
+			true, GoalState.Active, "把构建修到全绿", 2, 32, null,
+			MaxTokens: 1_000, TokensAtStart: 0), usedTokens: 250);
+
+		Assert.Contains("250/1.0k tk", card.PhaseTextForTests);
+
+		card.Render(new GoalState(true, GoalState.Active, "把构建修到全绿", 3, 32, null));
+		Assert.DoesNotContain("tk", card.PhaseTextForTests);
+	}
+
+	[Fact]
+	public void GoalEditorKeepsMultipleLinesAndFileReferences()
+	{
+		string? edited = null;
+		var card = new GoalStripCard(() => { }, () => { }, () => { }, value => edited = value);
+		card.Render(new GoalState(true, GoalState.Active, "旧目标", 0, 32, null));
+
+		card.BeginEditForTests();
+		card.EditorForTests.Text = "第一行\n第二行";
+		card.EditorForTests.Select(card.EditorForTests.Text.Length, 0);
+		card.InsertReferencesForTests([Path.Combine(_root, "a b.txt")]);
+		Assert.Equal(1, UserReferenceRichText.Count(card.EditorForTests.Text));
+
+		card.CommitEditForTests();
+
+		// 多行保留换行，引用仍是原始完整路径（chip 只是显示投影）。
+		Assert.NotNull(edited);
+		Assert.StartsWith("第一行\n第二行", edited);
+		Assert.Contains("a b.txt", edited);
+		Assert.Contains("@\"", edited);
+	}
+
+	[Fact]
+	public void RunningModeMarkerFollowsTheGoal()
+	{
+		using var tab = Tab();
+		Assert.False(tab.HasRunningMode);
+		Assert.Equal(tab.Title, MainWindow.EntryTitle(tab));
+		Assert.Equal(tab.Title, MainWindow.EntryTooltip(tab));
+
+		tab.Session.SetGoal("把构建修到全绿");
+
+		Assert.True(tab.HasRunningMode);
+		Assert.StartsWith("\u25d0 ", MainWindow.EntryTitle(tab));
+		// ◐ 之外，悬停要说清是目标而不是计划。
+		Assert.Equal($"{tab.Title}\n{Strings.TabGoalRunning(0, 32)}", MainWindow.EntryTooltip(tab));
+
+		tab.Session.PauseGoal();
+
+		Assert.False(tab.HasRunningMode);
+		Assert.Equal(tab.Title, MainWindow.EntryTitle(tab));
+	}
+
+	[Fact]
+	public void ModeFollowsARunningGoalWithoutTheLocalSwitch()
+	{
+		using var tab = Tab();
+		// 恢复出来或直接创建的目标没有经过「+」菜单：_goalMode 仍是 false，chip 也要显示目标。
+		tab.Session.SetGoal("把构建修到全绿");
+
+		Assert.Equal(ComposerMode.Goal, tab.Mode);
+
+		tab.Session.PauseGoal();
+
+		Assert.Equal(ComposerMode.Normal, tab.Mode);
+	}
+
+	[Fact]
+	public void SlashCommandsIncludeTheBuiltInModes()
+	{
+		using var tab = Tab();
+
+		var commands = tab.SlashCommands();
+
+		// 发送路径已经接管这些命令，补全栏也得能发现它们。
+		Assert.Contains("plan", commands);
+		Assert.Contains("goal", commands);
+		Assert.Contains("reload", commands);
+	}
+
+	[Fact]
+	public async Task SlashCommandsAreHandledWithoutAModelTurn()
+	{
+		using var tab = Tab();
+		tab.SelectModeForTests(ComposerMode.Plan);
+		Assert.True(tab.Session.PlanModeEnabled);
+
+		await tab.SendAsync("/plan off");
+
+		// 命中本地命令：不改模式就说明没进模型。
+		Assert.False(tab.Session.PlanModeEnabled);
+		Assert.False(tab.Session.IsRunning);
+
+		tab.Session.SetGoal("把构建修到全绿");
+		await tab.SendAsync("/goal pause");
+
+		Assert.Equal(GoalState.Paused, tab.Session.Goal.Phase);
+		// 命令命中后不能又作为正文发给模型。
+		Assert.DoesNotContain(
+			tab.Session.ProjectedMessages.OfType<UserMessage>(),
+			static message => message.Content.Text?.Contains("/goal pause") == true);
+	}
+
+	[Fact]
+	public void GoalEditKeepsThePhaseAndUpdatesTheStrip()
+	{
+		using var tab = Tab();
+		tab.Session.SetGoal("旧目标", maxRounds: 10);
+		tab.Session.PauseGoal();
+		tab.RefreshGoalStrip();
+		Assert.Equal("旧目标", tab.GoalStripObjectiveForTests);
+
+		tab.Session.EditGoal("新目标");
+		tab.RefreshGoalStrip();
+
+		Assert.Equal("新目标", tab.GoalStripObjectiveForTests);
+		Assert.StartsWith(Strings.GoalPhase(GoalState.Paused), tab.GoalStripPhaseForTests);
+		Assert.Equal(10, tab.Session.Goal.MaxRounds);
+	}
+
+	[Fact]
+	public void PlanWidgetUsesItsOwnCard()
+	{
+		using var tab = Tab();
+
+		tab.SetExtensionWidget(PlanSteps.WidgetKey, ["计划草案 2 步", "☐ 1. First step", "☐ 2. Second step"]);
+
+		Assert.True(tab.PlanCardVisible);
+		Assert.Equal("计划草案 2 步", tab.PlanCardMetaForTests);
+		// 计划有专用卡，不能再以原始行落进「扩展」卡。
+		Assert.False(tab.ExtensionWidgetCardVisible);
+
+		tab.SetExtensionWidget(PlanSteps.WidgetKey, null);
+
+		Assert.False(tab.PlanCardVisible);
 	}
 
 	[Fact]

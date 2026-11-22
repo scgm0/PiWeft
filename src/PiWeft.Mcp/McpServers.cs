@@ -295,6 +295,8 @@ public static class McpToolAdapter
 		{
 			Name = name,
 			Label = name,
+			// 只读注解明确的 MCP 工具才进计划模式；其余默认拒绝。
+			PlanAccess = tool.ReadOnlyHint ? ToolPlanAccess.Allowed : ToolPlanAccess.Denied,
 			Description = description,
 			Parameters = (JsonObject)tool.InputSchema.DeepClone(),
 			OutputSchema = tool.OutputSchema is { } outputSchema ? (JsonObject)outputSchema.DeepClone() : null,

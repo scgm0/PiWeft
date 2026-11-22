@@ -49,7 +49,10 @@ public sealed partial class MainWindow
 			var time = context.Get<TextBlock>("time")!;
 			if (node.Tag is SessionListItem item)
 			{
-				title.FontWeight(FontWeight.Normal).Text((_pinnedSessionIds.Contains(item.Id) ? Strings.PinnedMark + " " : "") + item.Display);
+				title.FontWeight(FontWeight.Normal).Text(
+					(_pinnedSessionIds.Contains(item.Id) ? Strings.PinnedMark + " " : "") +
+					(SessionHasRunningMode(item.Id) ? "\u25d0 " : "") +
+					item.Display);
 				time.Text(TimeAgo(item.Modified)).IsVisible(true);
 				folder.IsVisible(false);
 				more.Tag = item;
@@ -96,7 +99,10 @@ public sealed partial class MainWindow
 			var time = context.Get<TextBlock>("time")!;
 			if (node.Tag is SessionListItem item)
 			{
-				title.FontWeight(FontWeight.Normal).Text((_pinnedSessionIds.Contains(item.Id) ? Strings.PinnedMark + " " : "") + item.Display);
+				title.FontWeight(FontWeight.Normal).Text(
+					(_pinnedSessionIds.Contains(item.Id) ? Strings.PinnedMark + " " : "") +
+					(SessionHasRunningMode(item.Id) ? "\u25d0 " : "") +
+					item.Display);
 				time.Text(TimeAgo(item.Modified)).IsVisible(true);
 				more.Tag = item;
 				row.HoverTip(item.Display);
@@ -129,6 +135,11 @@ public sealed partial class MainWindow
 			});
 		}
 	}
+
+	/// 侧栏只标记已经打开的会话：未打开的会话没有活运行时，实时模式状态不在目录快照里。
+	private bool SessionHasRunningMode(string sessionId) =>
+		_tabEntries.OfType<SessionTab>().Any(tab =>
+			tab.HasRunningMode && string.Equals(tab.Session.Session.SessionId, sessionId, StringComparison.Ordinal));
 
 	private void RowMenuClick(Button button)
 	{

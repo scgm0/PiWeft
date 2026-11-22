@@ -169,6 +169,8 @@
 - 诊断不改 `external/MewUI` 源码：帧起点来自应用侧请求，指针采样靠已有事件与各交互宿主的取样点；`scripts/mewui-source.sh` 可随时把子模块重置回上游。
 - Debug 下 MewUI DevTools（`Ctrl+Shift+P` 帧叠层、`Ctrl+Alt+Shift+P` profiler、`Ctrl+Shift+T` 视觉树、`Ctrl+Shift+I` 拾取）可用；AOT 发布会折叠。CPU 采样、堆转储、ETW/perf 仍交给外部工具；发布版已开 EventPipe，`dotnet-gcdump` 的堆分析在 NativeAOT 下不可用。
 
+- 计划/目标解析按行切片：`MarkdownScan.Lines` 用 `ref struct` 枚举 `ReadOnlySpan<char>`，长回复不再 `Split('\n')` 为每行分配字符串；编号行、`[DONE:n]` 与终态标记手工扫描，只有真正成为步骤的文本转成 string。
+- 工具守卫与 codemode 嵌套调用按 `FrozenDictionary` 查工具名，不再每次线性扫工具表；计划步骤统计一次循环，widget 行用固定数组，不再每次 Linq 委托与 List 扩容。
 ## 复现
 
 ```sh

@@ -65,6 +65,20 @@ public static class ToolExposure
 	public const string ModelOnly = "model-only";
 }
 
+/// 计划模式下的工具可用性。默认 <see cref="Denied"/>：MCP 与扩展工具在声明前不进只读面，
+/// 否则一个写文件的服务就能绕开「计划模式不改工作区」。
+public enum ToolPlanAccess
+{
+	/// 计划模式不提供这个工具。
+	Denied,
+
+	/// 只读工具，计划模式直接可用。
+	Allowed,
+
+	/// 需要额外参数守卫，目前只有 bash：命令还得过只读判据。
+	Guarded,
+}
+
 public sealed record AgentTool
 {
 	public required string Name { get; init; }
@@ -95,6 +109,9 @@ public sealed record AgentTool
 	/// 声明后请求里的参数 schema 会被改写成 provider 的严格模式子集；
 	/// 不声明就按普通 schema 发送。
 	public JsonNode? ConstrainedSampling { get; init; }
+
+	/// 计划模式下的可用性。默认拒绝，只读工具显式标 <see cref="ToolPlanAccess.Allowed"/>。
+	public ToolPlanAccess PlanAccess { get; init; } = ToolPlanAccess.Denied;
 
 	public ToolExecutionMode? ExecutionMode { get; init; }
 

@@ -662,7 +662,8 @@ public sealed class CliEnvironment
 		int subagentDepth = 0,
 		SubagentCatalog? agents = null,
 		string sessionStartReason = "startup",
-		string? previousSessionFile = null)
+		string? previousSessionFile = null,
+		bool initialPlanMode = false)
 	{
 		var manager = session ?? ResolveSession(arguments, cwd, Settings.SessionDir);
 
@@ -777,6 +778,8 @@ public sealed class CliEnvironment
 			UiHost = uiHost,
 			SessionStartReason = sessionStartReason,
 			PreviousSessionFile = previousSessionFile,
+			// 关联子会话继承父会话的只读边界：计划模式下开出的会话也不能改工作区。
+			InitialPlanMode = initialPlanMode,
 			ProjectTrusted = projectTrusted,
 		});
 	}
@@ -939,8 +942,9 @@ public sealed class CliEnvironment
 					continue;
 				}
 
-				// 计划模式连角色的显式白名单也不能解锁 edit/write。
-				if (IsChildForbidden(name) || (planMode && PlanMode.DisabledTools.Contains(name, StringComparer.Ordinal)))
+				// 计划模式连角色的显式白名单也不能解锁写工具；未声明只读的工具同样拒绝。
+				if (IsChildForbidden(name) ||
+					(planMode && IsPlanDenied(name, byName)))
 				{
 					Reject(name);
 					continue;
@@ -1033,9 +1037,15 @@ public sealed class CliEnvironment
 		LinkedSessionsTool.SendName,
 		LinkedSessionsTool.ListName,
 		CodeModeTool.Name,
+		// 计划评审属于顶层会话：子代理提交计划没人评审，只会多一轮空等。
+		PlanSubmitTool.Name,
 	], StringComparer.Ordinal);
 
 	private static bool IsChildForbidden(string name) => ChildForbiddenTools.Contains(name);
+
+	/// 计划模式下按名字查工具：表里没有的（MCP/扩展未声明）一律算可写。
+	private static bool IsPlanDenied(string name, Dictionary<string, AgentTool> byName) =>
+		!byName.TryGetValue(name, out var tool) || tool.PlanAccess == ToolPlanAccess.Denied;
 
 	private static IReadOnlyList<CodingAgent.Resources.ResourceRoot> ExplicitRoots(IReadOnlyList<string> paths, string cwd)
 	{

@@ -8,13 +8,21 @@ namespace PiWeft.CodingAgent;
 
 public sealed record AskOption(string Label, string Value, string? Description);
 
+/// 一条问询。
+/// <para>
+/// <see cref="Detail"/> 是问题的正文，渲染在标题下方、选项上方。计划评审把计划全文放这里：
+/// 标题只留一行问题，长计划不再挤在标题里被省略号截断。PiDeck 的线协议没有这个字段，
+/// 只在本地宿主之间传递。
+/// </para>
 public sealed record AskQuestion(
 	string Id,
 	string Type,
 	string Question,
 	IReadOnlyList<AskOption>? Options,
 	string? Placeholder,
-	string? Prefill);
+	string? Prefill,
+	string? Detail = null,
+	string? Header = null);
 
 /// 一条答案。<see cref="Skipped"/> 为 true 表示用户在卡片上主动跳过本题，
 /// 此时 <see cref="Value"/> 为 null，但不能当成「没答」——它已经处理完了。

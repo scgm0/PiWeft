@@ -41,7 +41,7 @@ public sealed partial class SessionTab : IDisposable
 	private readonly MultiLineTextBox _composer;
 	/// 占位提示。实例一律经 <see cref="BuildComposerHint"/> 创建（换新见 <see cref="ShowComposerHint"/>）：
 	/// 每一枚都不能命中，否则提示盖在输入框上会吞掉那一行的点击。
-	private TextBlock _composerHint = BuildComposerHint();
+	private TextBlock _composerHint = BuildComposerHint(Strings.ComposerPlaceholder);
 	/// 最近一次组合事件。只在框架没有实现 <c>ITextCompositionClient</c> 时兜底：
 	/// 事件可能迟到或丢（Update 在 End 之后到达、组合取消不发 End），拿它当权威状态会让占位永久消失。
 	private bool _composing;
@@ -140,6 +140,14 @@ public sealed partial class SessionTab : IDisposable
 	private TodoState? _renderedTodo;
 	private TodoPlan? _renderedPlan;
 
+	/// 计划步骤卡：与「待办」并列，不再混进扩展卡。首行是 PiDeck 协议的摘要，
+	/// 其余是步骤行；widget 被撤下时整卡不占位。
+	private readonly ComposerWidgetCard _planCard;
+	private readonly StackPanel _planRows = new();
+	private readonly ScrollViewer _planScroll;
+	/// 动作行放在滚动区外：长计划的「开始执行 / 结束执行」不该被步骤挤出视野。
+	private readonly StackPanel _planActions = new();
+
 	/// 输入区上方的「排队中」卡：运行中再发的消息在这里逐条列出，可撤回输入框或丢弃。
 	/// 队列为空时整卡不占位（与待办卡一致）。
 	private readonly ComposerWidgetCard _queueCard;
@@ -173,6 +181,8 @@ public sealed partial class SessionTab : IDisposable
 	/// 目标模式是输入区自己的开关：会话侧的目标要在第一条带标记的消息里才创建，
 	/// 计划模式则直接落在 <see cref="Session"/> 上，两者互斥。
 	private bool _goalMode;
+	/// 流式期间点下的模式：本轮收尾后由 Render 应用。null 表示没有待切换。
+	private ComposerMode? _pendingMode;
 	private ComposerMode _renderedMode = ComposerMode.Normal;
 	private readonly Button _testButton;
 	private bool _testing;
@@ -552,6 +562,19 @@ public sealed partial class SessionTab : IDisposable
 		_todoCard = new ComposerWidgetCard("list-checks", Strings.TodoPlanTitle);
 		_todoCard.Body.Children(_todoScroll);
 
+		// 计划步骤紧跟在待办后面：两者常同时出现，读者按「计划做什么 / 做到哪」的顺序读。
+		_planRows.Spacing(4);
+		_planScroll = new ScrollViewer()
+			.SmoothScrolling()
+			.Content(_planRows)
+			.AutoVerticalScroll()
+			.NoHorizontalScroll()
+			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
+			.MaxHeight(ComposerWidgetListMaxHeight);
+		_planActions.Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1);
+		_planCard = new ComposerWidgetCard("file-text", Strings.PlanCardTitle);
+		_planCard.Body.Children(_planScroll, _planActions);
+
 		// 排队条只列尚未投递给模型的消息；高度上限与待办卡同口径，多条时在卡内滚动。
 		_queueCard = new ComposerWidgetCard("list-ordered", Strings.QueuedMessagesTitle);
 		_queueCard.Body.Children(new ScrollViewer()
@@ -579,14 +602,14 @@ public sealed partial class SessionTab : IDisposable
 		_subagentCard = new SubagentCard(OpenLinkedSession, StopSubagent, SubagentFailed);
 
 		// 目标条贴着输入卡（PiDeck 同位置）：目标属于下一轮的输入，不属于本轮结论。
-		_goalStrip = new GoalStripCard(PauseGoal, ResumeGoal, ConfirmClearGoal);
+		_goalStrip = new GoalStripCard(PauseGoal, ResumeGoal, ConfirmClearGoal, EditGoal, Session.Cwd);
 
 		// 扩展卡与输入卡同宽同列：ReadingColumn 按阅读宽度封顶并撑满可用宽度，
 		// 卡片在自己的列里拉伸，窗口缩放与阅读宽度设置都自动跟随。
 		_widgetColumn.Spacing(AppTheme.Space2)
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
 			.IsVisible(false)
-			.Children(_queueCard.View, _todoCard.View, _linkedSessionsCard.View, _subagentCard.View, _extensionCard.View, _goalStrip.View);
+			.Children(_queueCard.View, _todoCard.View, _planCard.View, _linkedSessionsCard.View, _subagentCard.View, _extensionCard.View, _goalStrip.View);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
 		// 三段各留固定宽度：呼吸点伸缩、状态短语轮换、提示每七秒换一条；
@@ -816,6 +839,20 @@ public sealed partial class SessionTab : IDisposable
 
 	internal bool TodoCardVisible => _todoCard.View.IsVisible;
 
+	/// 计划执行或目标正在自动推进：页签/侧栏用它显示运行标记。
+	internal bool HasRunningMode => Session.PlanExecutionEnabled || Session.Goal.Running;
+
+	/// 模式运行态变化：页签与侧栏标记跟着刷新。
+	public event Action<SessionTab>? ModeChanged;
+
+	private bool _renderedModeRunning;
+
+	internal bool PlanCardVisible => _planCard.View.IsVisible;
+
+	internal string? PlanCardMetaForTests => _planCard.Meta;
+
+	internal bool ExtensionWidgetCardVisible => _extensionCard.View.IsVisible;
+
 	internal AskQuestionPanel AskPanel => _askPanel;
 
 	internal bool AskPending => _askPanel.IsOpen;
@@ -919,6 +956,13 @@ public sealed partial class SessionTab : IDisposable
 		if (key == GoalMode.WidgetKey)
 		{
 			RefreshGoalStrip();
+			return;
+		}
+
+		// 计划自成一卡（见 RefreshPlanCard）：与待办同列，标题与进度可读。
+		if (key == PlanSteps.WidgetKey)
+		{
+			RefreshPlanCard(lines);
 			return;
 		}
 
@@ -1313,6 +1357,31 @@ public sealed partial class SessionTab : IDisposable
 		}
 		if (!continueGeneration)
 		{
+			// 系统命令在发送前本地处理：/plan、/goal、/reload 不该作为正文发给模型。
+			// RPC 面由 CliRunner 走同一条路径，桌面这里补齐。后台续轮不跟本轮令牌，
+			// 否则本轮收尾释放 CTS 会把刚恢复的目标一起取消。
+			// span 判断避免每次发送分配一份 TrimStart 后的字符串。
+			if (text.AsSpan().TrimStart().StartsWith('/'))
+			{
+				try
+				{
+					if (Session.TryExecuteSystemCommand(text, CancellationToken.None, out var message))
+					{
+						if (message is { Length: > 0 })
+						{
+							Notify(message);
+						}
+
+						return;
+					}
+				}
+				catch (Exception exception)
+				{
+					AppLog.Failure(AppLog.For<SessionTab>(), "System command", exception);
+					NotifyError(exception.Message);
+				}
+			}
+
 			if (_loadingAttachments > 0)
 			{
 				Notify(Strings.AttachmentLoading);
@@ -2095,11 +2164,11 @@ public sealed partial class SessionTab : IDisposable
 	/// 命令数据来自会话发现的结果，与 RPC 的 <c>get_commands</c> 同源。
 	/// 创建占位提示：样式与命中设置在这一处配齐。提示叠在输入框上，
 	/// 每一枚（构造的或换新的）都要 IsHitTestVisible(false)，点击才能穿到输入框。
-	private static TextBlock BuildComposerHint()
+	private static TextBlock BuildComposerHint(string text)
 	{
 		var hint = new TextBlock().FontSize(AppTheme.FontSizeChat).SubtleText()
 			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.Text(Strings.ComposerPlaceholder)
+			.Text(text)
 			.Margin(new Thickness(AppTheme.Space2))
 			.IsHitTestVisible(false)
 			.VerticalAlignment(VerticalAlignment.Top);
@@ -2181,7 +2250,7 @@ public sealed partial class SessionTab : IDisposable
 		CancelComposerHintSwap();
 		var grid = _composerHintHost;
 		if (grid is null || !grid.Children.Any(child => ReferenceEquals(child, _composer))) return;
-		var fresh = BuildComposerHint();
+		var fresh = BuildComposerHint(Strings.ComposerPlaceholderFor(Mode));
 		// 换新发生在组合中（或组合刚结束还没拿到正文）时，新实例也不能默认可见。
 		if (IsComposingNow() || _composer.Text.Length > 0) fresh.IsVisible(false);
 		grid.Remove(_composerHint);
@@ -2230,6 +2299,11 @@ public sealed partial class SessionTab : IDisposable
 
 	private IEnumerable<(string Name, string Description)> Commands()
 	{
+		// 系统命令排前面：`/` 列表只取前 8 项，模板与技能可能把它挤掉。
+		yield return ("plan", "切换计划模式（on / off）");
+		yield return ("goal", "目标模式：<目标> / pause / resume / clear");
+		yield return ("reload", "重载技能、提示词、主题与上下文文件");
+
 		foreach (var template in Session.PromptTemplates)
 		{
 			yield return (template.Name, string.Empty);
@@ -2539,7 +2613,20 @@ public sealed partial class SessionTab : IDisposable
 			UpdateModeChip();
 		}
 
-		_modeChip.IsEnabled = !busy;
+		// 流式结束：待切换的模式这时才真正落盘，避免运行中换工具集。
+		if (_pendingMode is { } queuedMode && !busy)
+		{
+			_pendingMode = null;
+			ApplyMode(queuedMode);
+			return;
+		}
+
+		// 模式 chip 在流式期间也能点：切换排队，不再把入口禁用。
+		// 不要再每帧写 IsEnabled：同值写入也会走属性管线。
+		if (!_modeChip.IsEnabled)
+		{
+			_modeChip.IsEnabled = true;
+		}
 		_testButton.IsEnabled = !busy && !_testing;
 		// 这两个开关以前每帧都整表扫描一遍（流式期就是每 40 ms 扫两千行，还各分配一个枚举器）。
 		// 用户行与「有没有正文」只随投影结果变化，按行数与过滤条件缓存即可。
@@ -2637,7 +2724,7 @@ public sealed partial class SessionTab : IDisposable
 			}
 		}
 
-		_todoCard.Show(true);
+		_todoCard.Show(!Session.PlanExecutionEnabled);
 		RefreshWidgetColumn();
 	}
 
@@ -2810,6 +2897,177 @@ public sealed partial class SessionTab : IDisposable
 		if (!_chat.RetractQueued(queued)) Notify(Strings.QueuedGone);
 	}
 
+	/// 计划步骤卡：优先读会话的结构化步骤，widget 行只在没有会话状态时兜底
+	/// （合成测试/旧回放）。首行摘要放卡头，执行态给进度条与结束入口，草案态给开始入口。
+	private void RefreshPlanCard(IReadOnlyList<string>? lines)
+	{
+		var steps = Session.ActivePlanSteps;
+		var executing = Session.PlanExecutionEnabled;
+		if (steps.Count == 0)
+		{
+			if (lines is not { Count: > 1 })
+			{
+				_planRows.Clear();
+				_planCard.Show(false);
+				RefreshWidgetColumn();
+				RefreshModeMarker();
+				return;
+			}
+
+			steps = ParsePlanLines(lines);
+			executing = false;
+		}
+
+		_planRows.Clear();
+		_planActions.Clear();
+		var completed = 0;
+		for (var index = 0; index < steps.Count; index++)
+		{
+			if (steps[index].Completed)
+			{
+				completed++;
+			}
+		}
+
+		_planCard.Meta = executing
+			? Strings.PlanProgress(completed, steps.Count)
+			: PlanSteps.Summary(steps, executing);
+		if (executing)
+		{
+			_planRows.Children(new ProgressBar()
+				.Minimum(0).Maximum(steps.Count)
+				.Value(completed)
+				.Height(3)
+				.Margin(new Thickness(0, 0, 0, AppTheme.Space1)));
+		}
+
+		// 第一行未完成步骤是「当前步」：它决定这一轮做什么，给正文色；已完成的行退到最弱。
+		var currentSeen = false;
+		var interactive = executing && !IsStreaming;
+		for (var index = 0; index < steps.Count; index++)
+		{
+			var step = steps[index];
+			var current = !step.Completed && !currentSeen;
+			if (!step.Completed) currentSeen = true;
+			var text = new TextBlock()
+				.Text($"{(step.Completed ? "☑" : "☐")} {step.Step}. {step.Text}")
+				.FontSize(AppTheme.FontSizeCaption)
+				.TextWrapping(TextWrapping.Wrap);
+			if (current) text.PrimaryText();
+			else if (step.Completed) text.FaintText();
+			else text.MutedText();
+			_planRows.Children(interactive ? PlanStepRow(step, text) : text);
+		}
+
+		// 草案与执行态都要有出口：一个开始，一个结束。
+		if (executing)
+		{
+			_planActions.Children(PlanAction(Strings.PlanStopExecution, StopPlanExecution));
+		}
+		else if (Session.PlanModeEnabled)
+		{
+			_planActions.Children(PlanAction(Strings.PlanStartExecution, StartPlanExecutionFromDraft));
+		}
+
+		// 执行态的计划卡就是进度源：待办卡再列一份会给出两个「当前步」。
+		if (_renderedPlan is not null)
+		{
+			_todoCard.Show(!executing);
+		}
+
+		_planCard.Show(true);
+		RefreshWidgetColumn();
+		RefreshModeMarker();
+	}
+
+	/// 旧回放只有 widget 行：还原成步骤，交给同一套渲染。新路径不解析文本。
+	private static IReadOnlyList<PlanStep> ParsePlanLines(IReadOnlyList<string> lines)
+	{
+		var steps = new List<PlanStep>(lines.Count - 1);
+		for (var index = 1; index < lines.Count; index++)
+		{
+			var line = lines[index];
+			if (string.IsNullOrWhiteSpace(line)) continue;
+			var completed = line.StartsWith('☑');
+			var text = line.Length > 2 ? line[2..].TrimStart() : line;
+			// 兜底行形如「1. First step」：把序号去掉，渲染时统一补 `Step.`。
+			var space = text.IndexOf(' ');
+			if (space > 0 && char.IsDigit(text[0]))
+			{
+				text = text[(space + 1)..];
+			}
+
+			steps.Add(new PlanStep(steps.Count + 1, text, completed));
+		}
+
+		return steps;
+	}
+
+	/// 执行态的步骤行可点：模型漏写 [DONE:n] 时，用户能自己补勾。
+	/// 只在非流式可点，避免和回合结束时的自动勾选并发改同一份步骤表。
+	private UIElement PlanStepRow(PlanStep step, TextBlock text) => new Button()
+		.Ghost()
+		.Content(text)
+		.HorizontalAlignment(HorizontalAlignment.Stretch)
+		.Padding(new Thickness(0, 1, 0, 1))
+		.OnClick(() =>
+		{
+			if (!_disposed)
+			{
+				Session.SetPlanStepCompleted(step.Step, !step.Completed);
+			}
+		});
+
+	private static Button PlanAction(string label, Action onClick) => new Button()
+		.Ghost()
+		.Content(new TextBlock().Text(label)
+			.FontSize(AppTheme.FontSizeCaption)
+			.MutedText())
+		.HorizontalAlignment(HorizontalAlignment.Left)
+		.Padding(new Thickness(AppTheme.Space2, 2, AppTheme.Space2, 2))
+		.OnClick(onClick);
+
+	private void StopPlanExecution()
+	{
+		if (_disposed || !Session.PlanExecutionEnabled)
+		{
+			return;
+		}
+
+		// 步骤留在草案态：结束的是自动推进，不是用户已经看过的计划。
+		Session.StopPlanExecution(keepSteps: true);
+	}
+
+	private void StartPlanExecutionFromDraft()
+	{
+		if (_disposed || IsStreaming || !Session.PlanModeEnabled || Session.PlanExecutionEnabled)
+		{
+			return;
+		}
+
+		_ = StartPlanExecutionFromDraftAsync();
+	}
+
+	private async Task StartPlanExecutionFromDraftAsync()
+	{
+		try
+		{
+			await Session.StartPlanExecutionFromDraftAsync();
+		}
+		catch (OperationCanceledException)
+		{
+			// 用户中断：与发送路径一致，不当作错误。
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Start plan execution", ex);
+			if (!_disposed)
+			{
+				NotifyError(ex.Message);
+			}
+		}
+	}
+
 	private void RefreshExtensionWidgets()
 	{
 		_extensionBody.Clear();
@@ -2860,9 +3118,10 @@ public sealed partial class SessionTab : IDisposable
 
 	private void RefreshWidgetColumn()
 	{
-		// IsVisible 的同值写入也会触发失效：待办/队列/扩展/子会话/目标五处都会调这里，先比较再写。
-		var visible = _todoCard.View.IsVisible || _extensionCard.View.IsVisible || _queueCard.View.IsVisible ||
-			_linkedSessionsCard.View.IsVisible || _subagentCard.View.IsVisible || _goalStrip.View.IsVisible;
+		// IsVisible 的同值写入也会触发失效：待办/计划/队列/扩展/子会话/目标六处都会调这里，先比较再写。
+		var visible = _todoCard.View.IsVisible || _planCard.View.IsVisible || _extensionCard.View.IsVisible ||
+			_queueCard.View.IsVisible || _linkedSessionsCard.View.IsVisible || _subagentCard.View.IsVisible ||
+			_goalStrip.View.IsVisible;
 		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
 	}
 
@@ -2970,6 +3229,7 @@ public sealed partial class SessionTab : IDisposable
 			ChatRole.Error => Card(entry, Strings.RoleError),
 			ChatRole.Notice => NoticeRow(entry),
 			ChatRole.Report => ReportRow(entry),
+			ChatRole.System => SystemRow(entry),
 			_ => new AssistantMessageView(entry, CopyText, _textFocus, PreviewImage, OpenMessageLink, Session.Cwd, ShowFileDiff, BeginAssistantEdit).View,
 		};
 		_textFocus.TrackTree(row);
@@ -2989,6 +3249,27 @@ public sealed partial class SessionTab : IDisposable
 				.Children(
 					AppIcons.Icon("play", AppStyles.RoleSubtle, 12),
 					new TextBlock().Text(entry.Text).FontSize(AppTheme.FontSizeMicro).SubtleText()));
+
+	/// 模式状态：目标结束、计划执行/完成。独立一行，不借过程组的「收到子代理回报」外壳。
+	private UIElement SystemRow(ChatEntry entry)
+	{
+		var icon = entry.Label?.StartsWith("目标", StringComparison.Ordinal) == true ? "target" : "list-checks";
+		var header = new StackPanel().Orientation(Orientation.Horizontal).Spacing(6)
+			.Children(
+				AppIcons.Icon(icon, AppStyles.RoleSubtle, 12),
+				new TextBlock().Text(entry.Label ?? string.Empty)
+					.FontSize(AppTheme.FontSizeMicro).MutedText());
+		return new Border()
+			.CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(0, 2, 0, 2))
+			.MaxWidth(AppTheme.MessageMaxWidth)
+			.Child(new StackPanel().Spacing(2).Children(
+				header,
+				new TextBlock().Text(entry.Text)
+					.FontSize(AppTheme.FontSizeCaption)
+					.MutedText()
+					.TextWrapping(TextWrapping.Wrap)));
+	}
 
 	/// 注入的回报：过程组里的一步。默认一行（标题 + 首行预览），展开才读全文。
 	/// 它是模型看到的 user 消息，但用户没写它，所以不进用户气泡，也没有「撤回输入框」。

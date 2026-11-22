@@ -45,6 +45,7 @@ public static class SubagentTools
 	{
 		Name = AskParentName,
 		Label = "Ask Parent",
+		PlanAccess = ToolPlanAccess.Allowed,
 		Description =
 			"Ask the parent session a question and wait for its answer. Use it when the answer depends on context " +
 			"only the parent has: a decision it already made, a preference it set, the scope it gave you. " +
@@ -128,6 +129,8 @@ public static class SubagentTools
 				{
 					Name = DelegateName,
 					Label = "Delegate",
+					// 子会话继承父会话的只读边界，所以计划模式仍可委派调研。
+					PlanAccess = ToolPlanAccess.Allowed,
 					Description = DelegateDescription(hub.Catalog),
 					Parameters = DelegateParameters(),
 					Execute = invocation => ExecuteDelegateAsync(hub, invocation),
@@ -148,6 +151,7 @@ public static class SubagentTools
 				{
 					Name = WaitName,
 					Label = "Wait Subagents",
+					PlanAccess = ToolPlanAccess.Allowed,
 					Description =
 						"Wait until the named subagents finish a turn, or until the timeout (default 10 minutes). " +
 						"Returns state and result text for each; results taken this way are not delivered again as a separate message. " +
@@ -165,6 +169,7 @@ public static class SubagentTools
 				{
 					Name = ListName,
 					Label = "List Subagents",
+					PlanAccess = ToolPlanAccess.Allowed,
 					Description =
 						"List the subagents this session started and the agent roles available to delegate. " +
 						"Rows marked finished come from earlier sessions and have no live session; their transcript is in the session file.",
@@ -187,6 +192,7 @@ public static class SubagentTools
 				{
 					Name = ReadName,
 					Label = "Read Subagent",
+					PlanAccess = ToolPlanAccess.Allowed,
 					Description =
 						"Read the most recent assistant text of a subagent by name or session id. " +
 						"Use it when the delivered result was truncated or after a restart when only the session file remains.",
@@ -201,6 +207,8 @@ public static class SubagentTools
 				{
 					Name = SendName,
 					Label = "Send To Subagent",
+					// 子代理只读：追加要求不会变成写工作区的后门。
+					PlanAccess = ToolPlanAccess.Allowed,
 					Description =
 						"Send a message to a subagent by name or session id. " +
 						"When the child is blocked on ask_parent, the message is delivered as the answer to that question " +
@@ -221,6 +229,7 @@ public static class SubagentTools
 				{
 					Name = StopName,
 					Label = "Stop Subagent",
+					PlanAccess = ToolPlanAccess.Allowed,
 					Description = "Stop a subagent's current turn. The child session stays readable and can be inspected.",
 					Parameters = TargetParameters("name or session id"),
 					Execute = invocation => Task.FromResult(ExecuteStop(hub, invocation)),

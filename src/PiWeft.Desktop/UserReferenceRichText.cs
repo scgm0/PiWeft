@@ -96,6 +96,9 @@ internal static class UserReferenceRichText
 
 	public static int Count(string text) => UserChips.Parse(text).Count;
 
+	/// 测试用：确认某个输入框已经挂上引用投影（chip 渲染与原子编辑依赖它）。
+	internal static bool IsAttached(MultiLineTextBox box) => Attached.TryGetValue(box, out _);
+
 	public static TextRange? ExpandSelection(MultiLineTextBox box)
 	{
 		if (box.SelectionLength == 0) return null;

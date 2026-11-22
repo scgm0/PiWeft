@@ -16,9 +16,28 @@ public sealed partial class SessionTab
 	/// 当前工作模式。目标来自输入区开关，计划落在会话状态上：计划开始执行时
 	/// 会话会把 <see cref="PiWeft.CodingAgent.CodingAgentSession.PlanModeEnabled"/> 置回 false，
 	/// chip 跟着隐藏，不额外维护第二份计划状态。
-	internal ComposerMode Mode => Session.PlanModeEnabled ? ComposerMode.Plan : _goalMode ? ComposerMode.Goal : ComposerMode.Normal;
+	/// 目标条恢复出来的目标（`_goalMode` 为 false）也要把 chip 切成目标：
+	/// 状态条在跑而 chip 说普通，读者会以为模式没生效。
+	internal ComposerMode Mode
+	{
+		get
+		{
+			if (Session.PlanModeEnabled)
+			{
+				return ComposerMode.Plan;
+			}
+
+			// 每帧都会读一次：只取一份 Goal 快照，别读两遍属性。
+			var goal = Session.Goal;
+			return _goalMode || goal.Running ? ComposerMode.Goal : ComposerMode.Normal;
+		}
+	}
 
 	internal ComposerAddMenu ComposerAddMenuForTests => _composerAddMenu;
+
+	internal Button ModeChipForTests => _modeChip;
+
+	internal Button ModelButtonForTests => _modelButton;
 
 	internal ComposerPicker ComposerPickerForTests => _composerPicker;
 
@@ -27,9 +46,29 @@ public sealed partial class SessionTab
 
 	internal void SelectModeForTests(ComposerMode mode) => SelectMode(mode);
 
+	internal ComposerMode? PendingModeForTests => _pendingMode;
+
+	/// 模拟流式期间点下的模式：真实路径由 <see cref="SelectMode"/> 在 IsStreaming 时写入。
+	internal void QueueModeForTests(ComposerMode mode)
+	{
+		_pendingMode = mode;
+		UpdateModeChip();
+	}
+
+	internal void ApplyPendingModeForTests()
+	{
+		if (_pendingMode is { } mode)
+		{
+			_pendingMode = null;
+			ApplyMode(mode);
+		}
+	}
+
 	internal bool GoalStripVisible => _goalStrip.IsShown;
 
 	internal string? GoalStripPhaseForTests => _goalStrip.IsShown ? _goalStrip.PhaseTextForTests : null;
+
+	internal string? GoalStripObjectiveForTests => _goalStrip.IsShown ? _goalStrip.ObjectiveTextForTests : null;
 
 	internal bool LinkedCardVisible => _linkedSessionsCard.IsShown;
 
@@ -140,8 +179,25 @@ public sealed partial class SessionTab
 
 		var goal = Session.Goal;
 		_renderedGoalState = goal;
-		_goalStrip.Render(goal);
+		// 目标设置预算时才读统计：没有预算的常见路径不必碰统计缓存。
+		var usedTokens = goal.MaxTokens > 0
+			? Math.Max(0, Session.Statistics().Tokens - goal.TokensAtStart)
+			: 0;
+		_goalStrip.Render(goal, usedTokens);
 		RefreshWidgetColumn();
+		RefreshModeMarker();
+	}
+
+	private void RefreshModeMarker()
+	{
+		var running = HasRunningMode;
+		if (running == _renderedModeRunning)
+		{
+			return;
+		}
+
+		_renderedModeRunning = running;
+		ModeChanged?.Invoke(this);
 	}
 
 	private void PauseGoal()
@@ -151,8 +207,24 @@ public sealed partial class SessionTab
 			return;
 		}
 
-		Session.PauseGoal();
-		RefreshGoalStrip();
+		try
+		{
+			_goalStrip.SetBusy(true);
+			Session.PauseGoal(abortRun: true);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Pause goal", ex);
+			NotifyError(Strings.GoalActionFailed(ex.Message));
+		}
+		finally
+		{
+			if (!_disposed)
+			{
+				_goalStrip.SetBusy(false);
+				RefreshGoalStrip();
+			}
+		}
 	}
 
 	private void ResumeGoal()
@@ -165,9 +237,39 @@ public sealed partial class SessionTab
 		_ = ResumeGoalAsync();
 	}
 
+	private void EditGoal(string objective)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		try
+		{
+			_goalStrip.SetBusy(true);
+			Session.EditGoal(objective);
+			// 编辑结束把焦点还给输入框：编辑行收起后焦点已清，读者下一步多半是继续写。
+			FocusComposer();
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<SessionTab>(), "Edit goal", ex);
+			NotifyError(Strings.GoalActionFailed(ex.Message));
+		}
+		finally
+		{
+			if (!_disposed)
+			{
+				_goalStrip.SetBusy(false);
+				RefreshGoalStrip();
+			}
+		}
+	}
+
 	private async Task ResumeGoalAsync()
 	{
 		_goalResuming = true;
+		_goalStrip.SetBusy(true);
 		try
 		{
 			await Session.ResumeGoalAsync();
@@ -186,6 +288,7 @@ public sealed partial class SessionTab
 			_goalResuming = false;
 			if (!_disposed)
 			{
+				_goalStrip.SetBusy(false);
 				RefreshGoalStrip();
 			}
 		}
@@ -205,12 +308,29 @@ public sealed partial class SessionTab
 				return;
 			}
 
-			Session.ClearGoal();
-			RefreshGoalStrip();
+			try
+			{
+				_goalStrip.SetBusy(true);
+				Session.ClearGoal();
+			}
+			catch (Exception ex)
+			{
+				AppLog.Failure(AppLog.For<SessionTab>(), "Clear goal", ex);
+				NotifyError(Strings.GoalActionFailed(ex.Message));
+			}
+			finally
+			{
+				_goalStrip.SetBusy(false);
+				if (!_disposed)
+				{
+					RefreshGoalStrip();
+				}
+			}
 		}
 		catch (Exception ex)
 		{
-			AppLog.Failure(AppLog.For<SessionTab>(), "Clear goal", ex);
+			// 确认弹窗本身失败：不再往下走，只记一条。
+			AppLog.Failure(AppLog.For<SessionTab>(), "Confirm clear goal", ex);
 		}
 	}
 
@@ -381,13 +501,14 @@ public sealed partial class SessionTab
 
 		HoverHints.Cancel(_addButton);
 		_composerAddMenu.Show(_addButton, new ComposerAddMenu.Options(
-			Mode,
+			// 待切换优先：菜单勾要落在用户点过的那一项上，不能等本轮结束才回跳。
+			_pendingMode ?? Mode,
 			() => _ = AttachImageAsync(),
 			ShowSkillPicker,
 			ShowPromptPicker,
 			SelectMode,
-			// 流式期间工具集不能换；计划执行中换模式会丢掉待办进度。
-			CanSelectMode: !IsStreaming && !Session.PlanExecutionEnabled));
+			// 流式期间也能点：切换排队到本轮收尾，不再把入口禁用。
+			CanSelectMode: true));
 	}
 
 	private void ShowSkillPicker()
@@ -433,11 +554,10 @@ public sealed partial class SessionTab
 
 	/// 目标与计划互斥；再选一次当前项回普通。退出目标时立即暂停，
 	/// 不等下一条无标记消息（PiDeck 的 pi 分支同样马上发 /goal pause）。
+	/// 流式期间不直接换工具集：记下目标模式，本轮收尾后再应用。
 	private void SelectMode(ComposerMode mode)
 	{
-		// 计划执行中不能改模式：进入或退出计划模式都会清掉正在勾进度的步骤
-		// （SetPlanMode 同时结束执行态），用户会丢掉整张待办。执行完或停止后再切换。
-		if (_disposed || IsStreaming || Session.PlanExecutionEnabled)
+		if (_disposed)
 		{
 			return;
 		}
@@ -447,11 +567,53 @@ public sealed partial class SessionTab
 			mode = ComposerMode.Normal;
 		}
 
+		if (IsStreaming)
+		{
+			// 点 chip 取消待切换：真实模式还是普通，pending 只是排队，不能反过来变成「退出普通」。
+			if (mode == ComposerMode.Normal && _pendingMode is not null && Mode == ComposerMode.Normal)
+			{
+				_pendingMode = null;
+				Notify(Strings.ModeQueueCancelled);
+				UpdateModeChip();
+				Render();
+				return;
+			}
+
+			// 再点同一个待切换项 = 取消。
+			_pendingMode = _pendingMode == mode ? null : mode;
+			if (_pendingMode is { } pending)
+			{
+				Notify(Strings.ModeQueued(pending));
+			}
+			else
+			{
+				Notify(Strings.ModeQueueCancelled);
+			}
+
+			UpdateModeChip();
+			Render();
+			return;
+		}
+
+		_pendingMode = null;
+		ApplyMode(mode);
+	}
+
+	/// 真正落模式。流式结束后的待切换也走这里，暂停目标、收执行态只有一份实现。
+	private void ApplyMode(ComposerMode mode)
+	{
+		if (Session.PlanExecutionEnabled)
+		{
+			// 进入计划模式会重开草案，步骤由 SetPlanMode 清空；切到别的模式保留进度。
+			Session.StopPlanExecution(keepSteps: mode != ComposerMode.Plan);
+		}
+
 		_goalMode = mode == ComposerMode.Goal;
 		Session.SetPlanMode(mode == ComposerMode.Plan);
 		if (!_goalMode && Session.Goal.Running)
 		{
-			Session.PauseGoal();
+			// 与模式 chip 同步：目标被暂停必须有可见交代，否则目标条只是悄悄换了阶段名。
+			Session.PauseGoal(notify: true);
 		}
 
 		_renderedMode = mode;
@@ -461,16 +623,32 @@ public sealed partial class SessionTab
 
 	private void UpdateModeChip()
 	{
-		var mode = Mode;
-		_goalModeIcon.IsVisible(mode == ComposerMode.Goal);
-		_planModeIcon.IsVisible(mode == ComposerMode.Plan);
-		_modeChip.IsVisible(mode != ComposerMode.Normal);
-		if (mode == ComposerMode.Normal)
+		var actual = Mode;
+		var target = _pendingMode ?? actual;
+		// 待退出（pending 为普通）时 chip 仍显示当前模式，只是后面挂一句「本轮后退出」。
+		var iconMode = target == ComposerMode.Normal ? actual : target;
+		_goalModeIcon.IsVisible(iconMode == ComposerMode.Goal);
+		_planModeIcon.IsVisible(iconMode == ComposerMode.Plan);
+		_modeChip.IsVisible(actual != ComposerMode.Normal || _pendingMode is not null);
+		// 占位提示是当前模式最轻的说明：用户不必先开「+」菜单才知道这一句会被当成什么。
+		_composerHint.Text(Strings.ComposerPlaceholderFor(target));
+		if (actual == ComposerMode.Normal && _pendingMode is null)
 		{
 			return;
 		}
 
-		_modeChipLabel.Text(mode == ComposerMode.Goal ? Strings.ModeGoal : Strings.ModePlan);
-		_modeChip.HoverTip(mode == ComposerMode.Goal ? Strings.ModeGoalExit : Strings.ModePlanExit);
+		if (_pendingMode is { } pending)
+		{
+			var currentLabel = actual == ComposerMode.Goal ? Strings.ModeGoal : Strings.ModePlan;
+			var targetLabel = pending == ComposerMode.Goal ? Strings.ModeGoal : Strings.ModePlan;
+			_modeChipLabel.Text(pending == ComposerMode.Normal
+				? $"{currentLabel}{Strings.ModePendingExitSuffix}"
+				: $"{targetLabel}{Strings.ModePendingSuffix}");
+			_modeChip.HoverTip(Strings.ModeChipPendingTip);
+			return;
+		}
+
+		_modeChipLabel.Text(actual == ComposerMode.Goal ? Strings.ModeGoal : Strings.ModePlan);
+		_modeChip.HoverTip(actual == ComposerMode.Goal ? Strings.ModeGoalExit : Strings.ModePlanExit);
 	}
 }

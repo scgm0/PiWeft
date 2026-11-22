@@ -460,7 +460,9 @@ internal sealed class AskQuestionPanel
 
 		var total = _questions.Count;
 		var answered = _answers.Count(static answer => answer is not null);
-		_title.Text(Strings.AskTitle);
+		_title.Text(_current >= 0 && _current < _questions.Count && _questions[_current].Header is { Length: > 0 } header
+			? header
+			: Strings.AskTitle);
 		_source.Text(_sourceName is { Length: > 0 } source ? Strings.AskFromSubagent(source) : string.Empty);
 		_source.IsVisible(_sourceName is { Length: > 0 });
 		_status.Text(total > 1 ? Strings.AskProgress(answered, total) : string.Empty);
@@ -570,6 +572,56 @@ internal sealed class AskQuestionPanel
 			.FontSize(AppTheme.FontSizeControl)
 			.PrimaryText()
 			.TextWrapping(TextWrapping.Wrap));
+		// 长正文（计划评审的计划全文）单独滚动：塞进标题会被省略号截断，也会把选项挤出卡片。
+		if (question.Detail is { Length: > 0 } detail)
+		{
+			var detailText = new TextBlock()
+				.Text(detail)
+				.FontSize(AppTheme.FontSizeCaption)
+				.MutedText()
+				.TextWrapping(TextWrapping.Wrap);
+			var detailScroll = new ScrollViewer()
+				.Content(detailText)
+				.AutoVerticalScroll()
+				.NoHorizontalScroll()
+				.MaxHeight(220);
+
+			Button copy = null!;
+			copy = new Button().Ghost()
+				.Content(new TextBlock().Text(Strings.CopyDetail).FontSize(AppTheme.FontSizeMicro).MutedText())
+				.OnClick(() =>
+				{
+					// 计划正文只读又不可选：给一个复制出口，省得用户手抄步骤。
+					var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
+					if (clipboard?.TrySetText(detail) == true)
+					{
+						copy.Content(new TextBlock().Text(Strings.Copied).FontSize(AppTheme.FontSizeMicro).SubtleText());
+					}
+				});
+
+			var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+				.HorizontalAlignment(HorizontalAlignment.Right)
+				.Children(copy);
+			// 长计划先给一个矮视口，想通读再做一次展开；卡片本身仍然限高。
+			if (detail.Length > 600)
+			{
+				var expanded = false;
+				Button toggle = null!;
+				toggle = new Button().Ghost()
+					.Content(new TextBlock().Text(Strings.ExpandDetail).FontSize(AppTheme.FontSizeMicro).MutedText())
+					.OnClick(() =>
+					{
+						expanded = !expanded;
+						detailScroll.MaxHeight(expanded ? 460 : 220);
+						toggle.Content(new TextBlock()
+							.Text(expanded ? Strings.CollapseDetail : Strings.ExpandDetail)
+							.FontSize(AppTheme.FontSizeMicro).MutedText());
+					});
+				actions.Children(toggle);
+			}
+
+			_body.Children(new StackPanel().Spacing(2).Children(detailScroll, actions));
+		}
 		if (_questions.Count > 1)
 		{
 			_body.Children(new TextBlock()
@@ -628,14 +680,18 @@ internal sealed class AskQuestionPanel
 
 			var content = new StackPanel().Orientation(Orientation.Horizontal).Spacing(6)
 				.VerticalAlignment(VerticalAlignment.Center);
-			if (multi && isSelected)
+			var check = multi
+				? AppIcons.Icon("check", AppStyles.RoleSuccess, 13).IsVisible(isSelected)
+				: null;
+			if (check is not null)
 			{
-				content.Children(AppIcons.Icon("check", AppStyles.RoleSuccess, 13));
+				content.Children(check);
 			}
 
 			content.Children(label);
 
-			_body.Children(new Button()
+			Button row = null!;
+			row = new Button()
 				.StyleName(isSelected ? AppStyles.SelectedButton : AppStyles.CardMutedButton)
 				.HorizontalAlignment(HorizontalAlignment.Stretch)
 				.Padding(new Thickness(AppTheme.Space2, 6, AppTheme.Space2, 6))
@@ -654,12 +710,18 @@ internal sealed class AskQuestionPanel
 							selected.Remove(captured);
 						}
 
-						RenderCard();
+						// 多选只换当前行的样式与勾：重建整卡会连带重建自定义输入框，
+						// 正在写的草稿虽然还在，光标却被丢回开头。
+						var nowSelected = selected.Contains(captured);
+						row.StyleName(nowSelected ? AppStyles.SelectedButton : AppStyles.CardMutedButton);
+						check?.IsVisible(nowSelected);
+						RefreshPrimaryState();
 						return;
 					}
 
 					Commit(new AskAnswer(question.Id, question.Type, JsonValue.Create(option.Value), option.Label, false));
-				}));
+				});
+			_body.Children(row);
 		}
 	}
 
@@ -675,6 +737,7 @@ internal sealed class AskQuestionPanel
 		var use = new Button().Ghost()
 			.Content(new TextBlock().Text(Strings.AskCustomUse).FontSize(AppTheme.FontSizeCaption).PrimaryText())
 			.IsEnabled(!string.IsNullOrWhiteSpace(_customDrafts[questionIndex]))
+			.VerticalAlignment(VerticalAlignment.Center)
 			.OnClick(() => CommitCustom(question, custom));
 		custom.OnTextChanged(value =>
 		{
@@ -686,9 +749,15 @@ internal sealed class AskQuestionPanel
 			_customDrafts[questionIndex] = value;
 			use.IsEnabled(!string.IsNullOrWhiteSpace(value));
 		});
+		// 多行自定义输入：Enter 提交，Shift+Enter 换行；@ 引用与主输入框同一套原子编辑。
 		custom.OnKeyDown(key =>
 		{
-			if (key.Key != Key.Enter)
+			if (UserReferenceRichText.TryHandleKey(custom, key))
+			{
+				return;
+			}
+
+			if (key.Key != Key.Enter || key.ShiftKey)
 			{
 				return;
 			}
@@ -696,6 +765,7 @@ internal sealed class AskQuestionPanel
 			key.Handled = true;
 			CommitCustom(question, custom);
 		});
+		custom.OnTextInput(input => UserReferenceRichText.TryHandleTextInput(custom, input));
 		_body.Children(new DockPanel().LastChildFill()
 			.Children(use.DockRight(), custom));
 	}
@@ -745,7 +815,12 @@ internal sealed class AskQuestionPanel
 		});
 		custom.OnKeyDown(key =>
 		{
-			if (key.Key != Key.Enter)
+			if (UserReferenceRichText.TryHandleKey(custom, key))
+			{
+				return;
+			}
+
+			if (key.Key != Key.Enter || key.ShiftKey)
 			{
 				return;
 			}
@@ -753,7 +828,9 @@ internal sealed class AskQuestionPanel
 			key.Handled = true;
 			AddCustom();
 		});
-		_body.Children(new DockPanel().LastChildFill().Children(add.DockRight(), custom));
+		custom.OnTextInput(input => UserReferenceRichText.TryHandleTextInput(custom, input));
+		_body.Children(new DockPanel().LastChildFill().Children(
+			add.DockRight().VerticalAlignment(VerticalAlignment.Center), custom));
 
 		_draftAnswer = () =>
 		{
@@ -808,48 +885,17 @@ internal sealed class AskQuestionPanel
 		var questionIndex = _current;
 		var draftGeneration = _draftGeneration;
 		var draft = _textDrafts[questionIndex];
-		if (multiLine)
-		{
-			var editor = new MultiLineTextBox().PrimarySelection()
-				.Height(120)
-				.StyleName(AppStyles.TextInput)
-				.Text(draft)
-				.Placeholder(question.Placeholder ?? string.Empty);
-			_body.Children(editor);
-			_textTarget = new AskTextTarget(editor, () => editor.Text, value => editor.Text = value);
-			_draftAnswer = () => AnswerOf(question, editor.Text);
-			editor.OnTextChanged(value =>
-			{
-				if (draftGeneration != _draftGeneration)
-				{
-					return;
-				}
-
-				_textDrafts[questionIndex] = value;
-				RefreshPrimaryState();
-			});
-			// 多行编辑沿用提交框的约定：Ctrl+Enter 提交，普通 Enter 换行。
-			editor.OnKeyDown(key =>
-			{
-				if (key.Key != Key.Enter || !key.ControlKey)
-				{
-					return;
-				}
-
-				key.Handled = true;
-				SubmitDraft();
-			});
-			return;
-		}
-
-		var text = new TextBox().PrimarySelection()
-			.StyleName(AppStyles.TextInputLine)
+		// 回答框统一用多行控件：路径引用要按主输入框的 chip 渲染，单行 TextBox 做不到。
+		var editor = new MultiLineTextBox().PrimarySelection()
+			.Height(multiLine ? 120 : 64)
+			.StyleName(AppStyles.TextInput)
 			.Text(draft)
 			.Placeholder(question.Placeholder ?? string.Empty);
-		_body.Children(text);
-		_textTarget = For(text);
-		_draftAnswer = () => AnswerOf(question, text.Text);
-		text.OnTextChanged(value =>
+		UserReferenceRichText.Attach(editor, editable: true, cwd: _cwd?.Invoke());
+		_body.Children(editor);
+		_textTarget = new AskTextTarget(editor, () => editor.Text, value => editor.Text = value);
+		_draftAnswer = () => AnswerOf(question, editor.Text);
+		editor.OnTextChanged(value =>
 		{
 			if (draftGeneration != _draftGeneration)
 			{
@@ -859,15 +905,21 @@ internal sealed class AskQuestionPanel
 			_textDrafts[questionIndex] = value;
 			RefreshPrimaryState();
 		});
-		text.OnKeyDown(key =>
+		editor.OnTextInput(input => UserReferenceRichText.TryHandleTextInput(editor, input));
+		// editor 类型沿用 Ctrl+Enter 提交；普通 input 与主输入框一致，Enter 提交、Shift+Enter 换行。
+		editor.OnKeyDown(key =>
 		{
-			if (key.Key != Key.Enter)
+			if (UserReferenceRichText.TryHandleKey(editor, key))
 			{
 				return;
 			}
 
-			key.Handled = true;
-			SubmitDraft();
+			if (key.Key == Key.Enter &&
+				(multiLine ? key.ControlKey : !key.ShiftKey))
+			{
+				key.Handled = true;
+				SubmitDraft();
+			}
 		});
 	}
 
@@ -1054,9 +1106,9 @@ internal sealed class AskQuestionPanel
 		}
 	}
 
-	private void CommitCustom(AskQuestion question, TextBox box)
+	private void CommitCustom(AskQuestion question, MultiLineTextBox box)
 	{
-		var text = box.Text?.Trim() ?? string.Empty;
+		var text = box.Text.Trim();
 		if (text.Length == 0)
 		{
 			return;
@@ -1126,12 +1178,19 @@ internal sealed class AskQuestionPanel
 		return all;
 	}
 
-	private TextBox CustomInputBox(AskQuestion question, string text) => new TextBox().PrimarySelection()
-		.StyleName(AppStyles.TextInputLine)
-		.Text(text)
-		.Placeholder(question.Placeholder ?? Strings.AskCustomPlaceholder);
+	private MultiLineTextBox CustomInputBox(AskQuestion question, string text)
+	{
+		var box = new MultiLineTextBox().PrimarySelection()
+			.Height(64)
+			.StyleName(AppStyles.TextInput)
+			.Text(text)
+			.Placeholder(question.Placeholder ?? Strings.AskCustomPlaceholder);
+		// 自定义输入也按主输入框的 @ 引用渲染 chip。
+		UserReferenceRichText.Attach(box, editable: true, cwd: _cwd?.Invoke());
+		return box;
+	}
 
-	private static AskTextTarget For(TextBox box) => new(box, () => box.Text, value => box.Text = value);
+	private static AskTextTarget For(MultiLineTextBox box) => new(box, () => box.Text, value => box.Text = value);
 
 	/// 卡片打开时主输入区已经折叠，拖放继续冒泡只会写进看不见的草稿。
 	/// 卡片自己接管落点：有文本题就把路径插到当前输入框，没有就明确拒绝。

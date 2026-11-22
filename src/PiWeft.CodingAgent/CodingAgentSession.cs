@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text;
 using System.Diagnostics;
 using System.Text.Json;
@@ -235,6 +236,11 @@ public sealed partial class CodingAgentSession : IDisposable
 	private int _estimateCount;
 
 	private IReadOnlyList<BuiltinTool> _fullTools = [];
+	/// 工具名查表：守卫与 codemode 嵌套调用在每次工具调用前都要问一次，别线性扫整张表。
+	private FrozenDictionary<string, AgentTool> _toolsByName = FrozenDictionary<string, AgentTool>.Empty;
+	private FrozenDictionary<string, AgentTool> _callableByName = FrozenDictionary<string, AgentTool>.Empty;
+	private FrozenDictionary<string, IReadOnlyList<string>> _guidelinesByName =
+		FrozenDictionary<string, IReadOnlyList<string>>.Empty;
 
 	private readonly Lazy<AgentTool>? _toolSearch;
 
@@ -439,6 +445,14 @@ public sealed partial class CodingAgentSession : IDisposable
 			}
 		}
 
+		// submit_plan 只服务顶层会话的计划模式：子代理没有评审人，注册它只会多一轮空等。
+		// 不放进 DefaultToolNames，避免改变 pi 的默认工具面与提示词比对。
+		if (options.SubagentParent is null &&
+			builtins.All(tool => !string.Equals(tool.Tool.Name, PlanSubmitTool.Name, StringComparison.Ordinal)))
+		{
+			builtins.Add(PlanSubmitTool.Create(static () => null));
+		}
+
 		// tool_search 与 codemode 一样需要会话上下文：目录里是占位，这里换成绑定实现。
 		_toolSearch = Settings.IsBuiltinExtensionEnabled(ExtensionRules.ToolSearchBuiltin)
 			? new Lazy<AgentTool>(CreateToolSearchTool)
@@ -455,6 +469,10 @@ public sealed partial class CodingAgentSession : IDisposable
 			else if (builtins[index].Tool.Name == AskQuestionToolFactory.Name)
 			{
 				builtins[index] = AskQuestionToolFactory.Create(() => this);
+			}
+			else if (builtins[index].Tool.Name == PlanSubmitTool.Name)
+			{
+				builtins[index] = PlanSubmitTool.Create(() => this);
 			}
 			else if (LinkedSessionsTool.IsName(builtins[index].Tool.Name))
 			{
@@ -863,20 +881,13 @@ public sealed partial class CodingAgentSession : IDisposable
 				// 暂停/阻塞 ≠ 完成：正文只是这一轮的指令，目标保持不变（PiDeck 同义）。
 				SetGoal(_goal.Objective, resetRounds: false);
 			}
-			else
-			{
-				lock (_goalGate)
-				{
-					_goal = _goal with { Enabled = true, Phase = GoalState.Active };
-					PersistGoalState();
-				}
-				PublishGoalWidget();
-				RefreshSystemPrompt();
-			}
+			// 目标已是 active：正文只是本轮指令，状态不变，不必写条目或重画目标条。
 		}
 		else if (_goal.Running)
 		{
-			PauseGoal();
+			// 切回普通模式发的第一条消息：目标不静默停掉，给一条提示。
+			// 只丢自动续轮，不打断正在跑的轮次：用户可能只是补充一句，不是喊停。
+			PauseGoal(notify: true);
 		}
 
 		var expanded = ExpandInput(text);
@@ -2179,8 +2190,24 @@ public sealed partial class CodingAgentSession : IDisposable
 		}
 
 		PlanModeEnabled = enabled;
+		if (_planExecution)
+		{
+			// 从执行态切回规划/普通模式：执行指令不能继续留在投影里。
+			ReplacePlanExecutionInstruction("Plan execution finished.");
+		}
+		if (enabled)
+		{
+			_planDraftNotified = false;
+		}
+		else
+		{
+			// 退出计划模式不能把「从 composer 标记进入」留在身上：
+			// 否则下次手动开计划模式，第一条普通消息会被当成切回普通而立即退出。
+			_planModeFromMarker = false;
+		}
 		// 退出计划模式同时结束执行态；草案步骤一并清掉，避免下一轮把旧计划当当前计划。
 		_planExecution = false;
+		_planToolSubmitted = false;
 		_planSteps.Clear();
 		ApplyTools();
 		PublishPlanWidget();
@@ -2189,22 +2216,44 @@ public sealed partial class CodingAgentSession : IDisposable
 
 	private void ApplyTools(bool rebindCodeMode = true)
 	{
+		// submit_plan 只在计划模式出现；普通模式留着会让模型把计划交给一个不存在的流程。
+		IReadOnlyList<BuiltinTool> EffectiveTools() => PlanModeEnabled
+			? [.. _fullTools.Where(static tool => PlanMode.IsToolAllowed(tool.Tool))]
+			: [.. _fullTools.Where(static tool => !string.Equals(tool.Tool.Name, PlanSubmitTool.Name, StringComparison.Ordinal))];
+
+		var effective = EffectiveTools();
+
+		// codemode 描述在 RebindCodeMode 里构建，会读 ToolGuidelines：先刷新这张表。
+		var guidelines = new Dictionary<string, IReadOnlyList<string>>(_fullTools.Count, StringComparer.Ordinal);
+		foreach (var tool in _fullTools)
+		{
+			guidelines[tool.Tool.Name] = tool.Guidelines;
+		}
+
+		_guidelinesByName = guidelines.ToFrozenDictionary(StringComparer.Ordinal);
+
 		if (rebindCodeMode)
 		{
 			// codemode 的描述列出当前可调用工具：工具集变了就重绑，否则 /reload 后脚本看不到新工具。
 			// model-only 只声明给模型，脚本碰不到，别在描述里当可调用工具列出来。
 			RebindCodeMode(
-				[.. _fullTools
+				[.. effective
 					.Where(static tool => tool.Tool.Exposure != ToolExposure.ModelOnly)
 					.Select(static tool => tool.Tool)],
 				applyTools: false);
+			// RebindCodeMode 换掉了 _fullTools 里的 codemode 实例：不重算的话，
+			// 接下来 SetTools 装进去的还是旧占位实现，脚本会看不到任何工具。
+			effective = EffectiveTools();
 		}
 
-		var effective = _fullTools;
-		if (PlanModeEnabled)
+		// 工具表连同提示词章节一起刷新；守卫与 tool_search 都读这一份。
+		var byName = new Dictionary<string, AgentTool>(_fullTools.Count, StringComparer.Ordinal);
+		foreach (var tool in _fullTools)
 		{
-			effective = [.. _fullTools.Where(static tool => !PlanMode.DisabledTools.Contains(tool.Tool.Name, StringComparer.Ordinal))];
+			byName[tool.Tool.Name] = tool.Tool;
 		}
+
+		_toolsByName = byName.ToFrozenDictionary(StringComparer.Ordinal);
 
 		var loaded = LoadedToolNames();
 
@@ -2244,6 +2293,13 @@ public sealed partial class CodingAgentSession : IDisposable
 			.Select(static tool => tool.Tool)
 			.Where(static tool => tool.Exposure != ToolExposure.ModelOnly)];
 		_agent.SetTools(callableTools, declared.Select(static tool => tool.Tool).ToList());
+		var callableByName = new Dictionary<string, AgentTool>(callableTools.Count, StringComparer.Ordinal);
+		foreach (var tool in callableTools)
+		{
+			callableByName[tool.Name] = tool;
+		}
+
+		_callableByName = callableByName.ToFrozenDictionary(StringComparer.Ordinal);
 		_promptTools = declared;
 		_refreshedSystemPrompt = SystemPrompt.Build(SectionsFor(declared));
 	}
@@ -2310,7 +2366,8 @@ public sealed partial class CodingAgentSession : IDisposable
 				continue;
 			}
 
-			if (PlanModeEnabled && PlanMode.DisabledTools.Contains(tool.Name, StringComparer.Ordinal)) continue;
+			// 计划模式只列真正可调用的 MCP 工具：未声明只读的服务器不该出现在提示词里。
+			if (PlanModeEnabled && !PlanMode.IsToolAllowed(tool)) continue;
 
 			var deferred = string.Equals(tool.Exposure, ToolExposure.Deferred, StringComparison.Ordinal);
 			namespaces[tool.Namespace] = namespaces.TryGetValue(tool.Namespace, out var info)
@@ -2399,18 +2456,37 @@ public sealed partial class CodingAgentSession : IDisposable
 		BeforeToolCallContext context,
 		CancellationToken cancellationToken)
 	{
+		if (!PlanModeEnabled && string.Equals(context.ToolCall.Name, PlanSubmitTool.Name, StringComparison.Ordinal))
+		{
+			return new BeforeToolCallResult { Block = true, Reason = "submit_plan is only available in plan mode" };
+		}
+
 		if (PlanModeEnabled)
 		{
-			if (PlanMode.DisabledTools.Contains(context.ToolCall.Name, StringComparer.Ordinal))
+			// 工具表可能刚刷新：按名字查当前 AgentTool，未声明只读的工具一律拒绝。
+			if (!_toolsByName.TryGetValue(context.ToolCall.Name, out var planTool) || PlanMode.IsToolDenied(planTool))
 			{
-				return new BeforeToolCallResult { Block = true, Reason = "plan mode: writing tools are disabled until the plan is approved" };
+				return new BeforeToolCallResult
+				{
+					Block = true,
+					Reason = "plan mode: this tool is not available until the plan is approved. Use read-only tools, or submit the plan with submit_plan.",
+				};
+			}
+
+			if (context.ToolCall.Name == PlanSubmitTool.Name && _planExecution)
+			{
+				return new BeforeToolCallResult { Block = true, Reason = "plan mode: the plan is already being executed" };
 			}
 
 			if (context.ToolCall.Name == "bash" &&
 				context.Arguments["command"]?.GetValue<string>() is { Length: > 0 } command &&
 				!PlanMode.IsReadOnlyShellCommand(command))
 			{
-				return new BeforeToolCallResult { Block = true, Reason = "plan mode: only read-only shell commands are allowed" };
+				return new BeforeToolCallResult
+				{
+					Block = true,
+					Reason = "plan mode: only read-only shell commands are allowed. Use git status/log/diff, ls, cat, grep, or submit the plan.",
+				};
 			}
 		}
 
@@ -2719,6 +2795,7 @@ public sealed partial class CodingAgentSession : IDisposable
 		var candidates = _fullTools
 			.Select(static tool => tool.Tool)
 			.Where(tool => IsDiscoveryExposure(tool.Exposure)
+				&& (!PlanModeEnabled || PlanMode.IsToolAllowed(tool))
 				&& !declared.Contains(tool.Name)
 				&& !loaded.Contains(tool.Name))
 			.ToList();
@@ -2764,15 +2841,8 @@ public sealed partial class CodingAgentSession : IDisposable
 			new JsonObject { ["loaded"] = new JsonArray([.. matches.Select(static name => (JsonNode?)JsonValue.Create(name))]) }));
 	}
 
-	private IReadOnlyList<string> ToolGuidelines(string name)
-	{
-		foreach (var builtin in _fullTools)
-		{
-			if (string.Equals(builtin.Tool.Name, name, StringComparison.Ordinal)) return builtin.Guidelines;
-		}
-
-		return [];
-	}
+	private IReadOnlyList<string> ToolGuidelines(string name) =>
+		_guidelinesByName.TryGetValue(name, out var guidelines) ? guidelines : [];
 
 	private static AgentTool WithCodemodeHint(AgentTool tool)
 	{
@@ -2802,9 +2872,9 @@ public sealed partial class CodingAgentSession : IDisposable
 		IReadOnlyList<Message>? messages)
 	{
 		var tools = _agent.Tools;
-		var tool = tools.FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
 		var toolCall = new ToolCall { Id = toolCallId, Name = name, Arguments = arguments };
-		if (tool is null)
+		// 嵌套调用是 codemode 的热路径：按名字查冻结表，不再每次扫一遍工具列表。
+		if (!_callableByName.TryGetValue(name, out var tool))
 		{
 			return new AgentToolCallOutcome
 			{
@@ -4417,7 +4487,7 @@ public sealed partial class CodingAgentSession : IDisposable
 			return;
 		}
 
-		if (_drainingModeTurn)
+		if (Volatile.Read(ref _drainingModeTurn) != 0)
 		{
 			// 续轮循环马上要重建投影并 ContinueAsync：把消息写进分支，下一轮自然带上。
 			Session.AppendMessage(message);
@@ -4837,6 +4907,7 @@ public sealed partial class CodingAgentSession : IDisposable
 			{
 				TodoToolFactory.Name => TodoToolFactory.Create(() => Session, PublishTodoWidget).Tool,
 				AskQuestionToolFactory.Name => AskQuestionToolFactory.Create(() => this).Tool,
+				PlanSubmitTool.Name => PlanSubmitTool.Create(() => this).Tool,
 				LinkedSessionsTool.StartName or LinkedSessionsTool.SendName or LinkedSessionsTool.ListName =>
 					LinkedSessionsTool.Bind(tool.Name, () => this).Tool,
 				ToolSearchToolFactory.Name when _toolSearch is { } lazy => lazy.Value,
@@ -4860,6 +4931,9 @@ public sealed partial class CodingAgentSession : IDisposable
 					continue;
 				case AskQuestionToolFactory.Name:
 					rebuilt.Add(AskQuestionToolFactory.Create(() => this));
+					continue;
+				case PlanSubmitTool.Name:
+					rebuilt.Add(PlanSubmitTool.Create(() => this));
 					continue;
 				case LinkedSessionsTool.StartName:
 				case LinkedSessionsTool.SendName:

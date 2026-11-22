@@ -71,7 +71,7 @@ internal static class SettingsSections
 		new("auth", true, Strings.ConfigAuth, "key-round",
 			["认证", "凭据", "API Key", "OAuth", "登录", "auth"]),
 		new("agent", true, Strings.ConfigSettings, "wrench",
-			["Agent 设置", "工具", "codemode", "子代理", "重试", "压缩", "agent", "settings"]),
+			["Agent 设置", "工具", "codemode", "子代理", "目标", "轮次", "token", "预算", "重试", "压缩", "agent", "settings", "goal"]),
 		new("mcp", true, Strings.SettingsMcp, "terminal",
 			["MCP", "服务器", "工具", "mcp"]),
 		new("source", true, Strings.ConfigSource, "square-pen",

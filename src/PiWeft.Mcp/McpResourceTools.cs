@@ -77,6 +77,7 @@ public static class McpResourceTools
 	{
 		Name = ListResourcesTool,
 		Label = ListResourcesTool,
+		PlanAccess = ToolPlanAccess.Allowed,
 		Description =
 			"Lists resources provided by MCP servers. Resources allow servers to share data that provides context to " +
 			"language models, such as files, database schemas, or application-specific information. Prefer resources " +
@@ -104,6 +105,7 @@ public static class McpResourceTools
 	{
 		Name = ListResourceTemplatesTool,
 		Label = ListResourceTemplatesTool,
+		PlanAccess = ToolPlanAccess.Allowed,
 		Description =
 			"Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share " +
 			"data that takes parameters and provides context to language models, such as files, database schemas, or " +
@@ -131,6 +133,7 @@ public static class McpResourceTools
 	{
 		Name = ReadResourceTool,
 		Label = ReadResourceTool,
+		PlanAccess = ToolPlanAccess.Allowed,
 		Description = "Read a specific resource from an MCP server given the server name and resource URI.",
 		Parameters = (JsonObject)ReadParameters.DeepClone(),
 		Execute = async invocation =>

@@ -31,6 +31,8 @@ public static class BashTool
 	{
 		Name = "bash",
 		Label = "bash",
+		// 工具本身能写，但计划模式仍要保留它：命令级守卫只放行只读命令。
+		PlanAccess = ToolPlanAccess.Guarded,
 		Description =
 			$"Execute a bash command in the current working directory. Returns stdout and stderr. " +
 			$"Output is truncated to last {Truncate.DefaultMaxLines} lines or {Truncate.DefaultMaxBytes / 1024}KB (whichever is hit first). " +

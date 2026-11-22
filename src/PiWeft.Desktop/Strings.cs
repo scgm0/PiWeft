@@ -972,11 +972,11 @@ public static partial class Strings
 
 	public const string AskHintMultiSelectLast = "可勾选多个；勾完后点「提交」。";
 
-	public const string AskHintInput = "输入后回车或点「下一题」；留空不算作答。";
+	public const string AskHintInput = "输入后回车或点「下一题」；Shift+Enter 换行，可拖入文件；留空不算作答。";
 
-	public const string AskHintInputLast = "输入后回车或点「提交」；留空不算作答。";
+	public const string AskHintInputLast = "输入后回车或点「提交」；Shift+Enter 换行，可拖入文件；留空不算作答。";
 
-	public const string AskHintEditor = "多行输入，Ctrl+Enter 提交；留空不算作答。";
+	public const string AskHintEditor = "多行输入，Ctrl+Enter 提交；可拖入文件；留空不算作答。";
 
 	public const string PlanMode = "计划";
 

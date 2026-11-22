@@ -26,11 +26,64 @@ public static partial class Strings
 
 	public const string ModePlan = "计划";
 
-	public const string ModePlanHint = "只读分析并生成计划，确认后再执行；开启期间停用 edit / write。";
+	/// 计划步骤卡的标题。与「待办」并列，不再混在「扩展」卡里。
+	public const string PlanCardTitle = "计划";
+
+	/// 计划卡上的两个出口：草案态开始执行，执行态结束自动推进（保留已勾步骤）。
+	public const string PlanStartExecution = "开始执行";
+
+	/// 执行态卡头：完成数、总数与剩余。比单纯 n/m 更能看出还有几步。
+	public static string PlanProgress(int completed, int total) =>
+		$"计划进度 {completed}/{total} · {total - completed} 待处理";
+
+	public const string PlanStopExecution = "结束执行";
+
+	/// 计划评审卡的抬头：一眼区分普通问询与计划确认。
+	public const string PlanReviewTitle = "计划评审";
+
+	/// 长正文（计划全文）的复制出口：卡片里的文本不可选中，只能走这一条。
+	public const string CopyDetail = "复制全文";
+
+	public const string ExpandDetail = "展开全文";
+
+	public const string CollapseDetail = "收起全文";
+
+	public const string ModePlanHint = "只读分析并生成计划，确认后再执行；开启期间停用 edit / write / powershell。";
+
+	/// 占位提示随模式变：普通模式说通用输入，两种模式各说这一句该写什么。
+	internal static string ComposerPlaceholderFor(ComposerMode mode) => mode switch
+	{
+		ComposerMode.Plan => "输入任务以生成计划，确认前保持只读…",
+		ComposerMode.Goal => "输入要达成的目标，发送后自动连续推进…",
+		_ => ComposerPlaceholder,
+	};
 
 	public const string ModeGoalExit = "暂停目标并退出目标模式";
 
 	public const string ModePlanExit = "退出计划模式";
+
+	/// 流式期间点模式：切换排队到本轮收尾。
+	internal static string ModeQueued(ComposerMode mode) => mode switch
+	{
+		ComposerMode.Goal => "本轮结束后切换到目标模式。",
+		ComposerMode.Plan => "本轮结束后切换到计划模式。",
+		_ => "本轮结束后退出当前模式。",
+	};
+
+	public const string ModeQueueCancelled = "已取消模式切换。";
+
+	public const string ModePendingSuffix = " · 本轮后";
+
+	public const string ModePendingExitSuffix = " · 本轮后退出";
+
+	public const string ModeChipPendingTip = "本轮结束后生效，再点一次取消。";
+
+	// 页签悬停：◐ 只说明「有东西在跑」，具体是计划还是目标由这一行补。
+	public const string TabWaitingAnswer = "等待回答";
+
+	public const string TabPlanRunning = "计划执行中";
+
+	public static string TabGoalRunning(int rounds, int max) => $"目标进行中（{rounds}/{max}）";
 
 	public const string SkillPickerTitle = "选择技能";
 
@@ -56,7 +109,21 @@ public static partial class Strings
 
 	public const string GoalResume = "恢复";
 
+	/// 目标停在轮次上限时，恢复按钮的提示换成加轮次：直接恢复会立刻再撞上限。
+	public static string GoalExtendRounds => $"再加 {GoalMode.ExtraRounds} 轮并继续";
+
+	/// token 预算阻塞的恢复：从当前用量重新起算，不清空已花掉的会话统计。
+	public const string GoalResetTokenBudget = "从当前用量重新计算 token 预算并继续";
+
 	public const string GoalClear = "清除";
+
+	public const string GoalEdit = "编辑目标";
+
+	public const string GoalSaveEdit = "保存";
+
+	public const string GoalEditHint = "Enter 保存，Shift+Enter 换行；可拖入文件插入 @ 引用。";
+
+	public const string GoalCancelEdit = "取消";
 
 	public const string GoalClearConfirmTitle = "清除当前目标？";
 
@@ -70,9 +137,27 @@ public static partial class Strings
 		_ => "已暂停",
 	};
 
-	public static string GoalProgress(string phase, int rounds, int max) => $"{phase} · {rounds}/{max}";
+	public static string GoalProgress(string phase, int rounds, int max, long usedTokens = 0, long maxTokens = 0) =>
+		maxTokens > 0
+			? $"{phase} · {rounds}/{max} · {TrajectoryFormat.CompactTokens(usedTokens)}/{TrajectoryFormat.CompactTokens(maxTokens)} tk"
+			: $"{phase} · {rounds}/{max}";
 
 	public static string GoalResumeFailed(string reason) => $"恢复目标失败：{reason}";
+
+	/// 目标条的暂停/清除失败：与恢复失败分开措辞，用户知道是哪一步没成。
+	public static string GoalActionFailed(string reason) => $"目标操作失败：{reason}";
+
+	/// 目标结束记录在时间线上的标签：完成与阻塞分开。
+	public const string ReportGoalComplete = "目标完成";
+
+	public const string ReportGoalBlocked = "目标阻塞";
+
+	/// 计划执行过程的时间线标签：这些是可见 custom message，不该冒充用户提问。
+	public const string ReportPlanSteps = "计划步骤";
+
+	public const string ReportPlanExecute = "计划执行";
+
+	public const string ReportPlanComplete = "计划完成";
 
 	// 关联会话：提议卡片与子会话条。措辞对齐 PiDeck 的 linkedSessions.*。
 	public const string LinkedSessionsTitle = "子会话";

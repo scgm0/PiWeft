@@ -179,15 +179,19 @@ public sealed class ConfigurationViewTests : IDisposable
 		await view.OpenAsync(ConfigFile.Settings);
 		ConversationPerformanceTests.Layout(view.View, 640, 720);
 
-		// 文本框顺序：provider、model、retryMax、retryDelay、codemode 预算，然后是子代理的五个。
+		// 文本框顺序：provider、model、retryMax、retryDelay、codemode 预算、
+		// 子代理五项，最后是目标轮次上限。
 		var fields = Find<TextBox>(view.View).ToArray();
 		Assert.Equal(Strings.ConfigSubagentsMaxActive, Find<TextBlock>(view.View)
 			.First(block => block.Text == Strings.ConfigSubagentsMaxActive).Text);
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.ConfigGoalMaxRounds);
 		fields[5].Text = "8";
 		fields[6].Text = "64";
 		fields[7].Text = "45";
 		fields[8].Text = "250000";
 		fields[9].Text = "120";
+		fields[10].Text = "64";
+		fields[11].Text = "500000";
 		// 启动默认不建标签：勾上才回到「每个子代理一个后台标签」。
 		var openTabs = Find<CheckBox>(view.View)
 			.First(check => check.Content is TextBlock { Text: string text } && text == Strings.ConfigSubagentsOpenTabs);
@@ -202,6 +206,9 @@ public sealed class ConfigurationViewTests : IDisposable
 		Assert.Equal(250_000, saved["maxTokens"]!.GetValue<int>());
 		Assert.Equal(120, saved["verifyTimeoutSeconds"]!.GetValue<int>());
 		Assert.True(saved["openTabs"]!.GetValue<bool>());
+		var goal = Store.Read(ConfigFile.Settings).Parse()["goal"]!;
+		Assert.Equal(64, goal["maxRounds"]!.GetValue<int>());
+		Assert.Equal(500_000, goal["maxTokens"]!.GetValue<int>());
 
 		// 其它键不能因为写了 subagents 就被带走。
 		Assert.Contains(Find<TextBox>(view.View), block => block.Text == "8");

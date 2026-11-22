@@ -43,6 +43,7 @@ public static class ToolSearchTool
 		{
 			Name = Name,
 			Label = Name,
+			PlanAccess = ToolPlanAccess.Allowed,
 			Description = Description,
 			Parameters = Parameters(),
 			Execute = static _ => Task.FromResult(AgentToolResult.Error("tool_search is not available in this session")),
