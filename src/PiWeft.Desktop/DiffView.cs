@@ -30,16 +30,25 @@ public static class DiffView
 		}
 
 		var index = 0;
+		// 每行的分类按行号存一份：长行被文本控件切片后，分类器只拿得到行中段，
+		// 切片文本里已经没有 +/- 前缀，只能按行号取整行的颜色。
+		var lineKinds = new DiffLineKind[lineCount];
 		foreach (var line in normalized.AsSpan().EnumerateLines())
 		{
 			var last = ++index == lineCount;
-			if (line.StartsWith("@@"))
+			// 行首前缀只扫一遍，行号列的分支和分类表共用它。
+			var kind = DiffSyntax.KindOf(line);
+			lineKinds[index - 1] = kind;
+			if (kind == DiffLineKind.Header)
 			{
 				(oldLine, newLine) = DiffSyntax.ParseHunkHeader(line, oldLine, newLine);
 				NextGutterLine();
 			}
-			else if (DiffSyntax.IsMetadata(line) || last && line.IsEmpty) NextGutterLine();
-			else if (line.StartsWith("-"))
+			else if (kind is DiffLineKind.Metadata or DiffLineKind.FileHeader || last && line.IsEmpty)
+			{
+				NextGutterLine();
+			}
+			else if (kind == DiffLineKind.Deleted)
 			{
 				NextGutterLine();
 				gutterText.Append(oldLine++);
@@ -48,7 +57,7 @@ public static class DiffView
 			{
 				NextGutterLine();
 				gutterText.Append(newLine++);
-				if (!line.StartsWith("+")) oldLine++;
+				if (kind != DiffLineKind.Added) oldLine++;
 			}
 		}
 
@@ -58,7 +67,7 @@ public static class DiffView
 		if (large) text.MaxHeight(MessageText.LargeTextMaxHeight).VerticalAlignment(VerticalAlignment.Top);
 		text.Foreground = AppTheme.TextMuted;
 		text.Tag = null;
-		text.Extensions.Classifiers.Add(new DiffClassifier());
+		text.Extensions.Classifiers.Add(new DiffClassifier(lineKinds));
 		text.InvalidateTextView();
 		// 换肤后重新分类一次：语义色取当前配色，否则深色那一套会留在浅色代码底上。
 		text.WithTheme((theme, view) =>
@@ -110,6 +119,8 @@ public static class DiffView
 		var newText = new StringBuilder(patch.Length / 2);
 		var oldNumbers = new StringBuilder(rows.Count * 3);
 		var newNumbers = new StringBuilder(rows.Count * 3);
+		var oldKinds = new DiffLineKind[rows.Count];
+		var newKinds = new DiffLineKind[rows.Count];
 		var maxNumber = 0;
 		for (int rowIndex = 0, rowCount = rows.Count; rowIndex < rowCount; rowIndex++)
 		{
@@ -122,6 +133,9 @@ public static class DiffView
 				newNumbers.Append('\n');
 			}
 
+			// 换行已经写完，两列这一行的下标就是 rowIndex。
+			oldKinds[rowIndex] = SideKind(row, old: true);
+			newKinds[rowIndex] = SideKind(row, old: false);
 			AppendSideLine(oldText, row, old: true);
 			AppendSideLine(newText, row, old: false);
 			if (row.OldNumber is { } oldNumber)
@@ -142,8 +156,8 @@ public static class DiffView
 		var large = capLargeText && (oldText.Length >= MessageText.LargeTextCharacters ||
 			newText.Length >= MessageText.LargeTextCharacters || rows.Count > MessageText.LargeTextLines);
 		var wideGutter = maxNumber > 99_999;
-		var left = SideColumn(focus, oldText.ToString(), oldNumbers.ToString(), large, wideGutter);
-		var right = SideColumn(focus, newText.ToString(), newNumbers.ToString(), large, wideGutter);
+		var left = SideColumn(focus, oldText.ToString(), oldNumbers.ToString(), large, wideGutter, oldKinds);
+		var right = SideColumn(focus, newText.ToString(), newNumbers.ToString(), large, wideGutter, newKinds);
 		SyncColumns(left, right);
 		// 两列等分宽度：列宽跟着宿主走，不固定在阅读宽度的一半上。
 		var content = new Grid().Columns("*,*").Spacing(AppTheme.Space2)
@@ -159,13 +173,13 @@ public static class DiffView
 	}
 
 	private static SideColumnView SideColumn(TextFocusScrollGuard? focus, string text, string numbers, bool large,
-		bool wideGutter)
+		bool wideGutter, DiffLineKind[] kinds)
 	{
 		var body = MessageText.Create(text, mono: true, wrap: false, fontSize: AppTheme.FontSizeMicro);
 		if (large) body.MaxHeight(MessageText.LargeTextMaxHeight).VerticalAlignment(VerticalAlignment.Top);
 		body.Foreground = AppTheme.TextMuted;
 		body.Tag = null;
-		body.Extensions.Classifiers.Add(new DiffClassifier());
+		body.Extensions.Classifiers.Add(new DiffClassifier(kinds));
 		body.InvalidateTextView();
 		body.WithTheme((theme, view) =>
 		{
@@ -265,6 +279,16 @@ public static class DiffView
 		}
 	}
 
+	/// 并排一列里这一行的分类。缺一侧的占位行按上下文行算，与 <see cref="AppendSideLine"/> 打的空格前缀一致。
+	private static DiffLineKind SideKind(DiffRow row, bool old) => row.Kind switch
+	{
+		DiffRowKind.Header => DiffLineKind.Header,
+		DiffRowKind.Change => old ? DiffLineKind.Deleted : DiffLineKind.Added,
+		DiffRowKind.Deletion => old ? DiffLineKind.Deleted : DiffLineKind.Context,
+		DiffRowKind.Addition => old ? DiffLineKind.Context : DiffLineKind.Added,
+		_ => DiffLineKind.Context,
+	};
+
 	/// 把一行并排文本追加到列缓冲。空行占位、hunk 头与标记的规则与统一视图一致。
 	private static void AppendSideLine(StringBuilder builder, DiffRow row, bool old)
 	{
@@ -294,16 +318,28 @@ public static class DiffView
 	internal static (int OldLine, int NewLine) ParseHunkHeader(string line, int fallbackOld, int fallbackNew) =>
 		DiffSyntax.ParseHunkHeader(line, fallbackOld, fallbackNew);
 
-	internal sealed class DiffClassifier : ITextClassifier
+	/// <param name="kinds">每行的分类，按文档行号索引。为 null 时按切片首字符现判。
+	/// 文本控件把长行按视口切片后，<c>LogicalLine.LineNumber</c> 仍是整行的行号，
+	/// 按它取颜色，切片从行中间开始也不会丢掉 +/-。</param>
+	internal sealed class DiffClassifier(DiffLineKind[]? kinds = null) : ITextClassifier
 	{
 		public void Classify(in TextClassificationContext context, IList<TextPaintSpan> output)
 		{
 			var text = context.Text.Span;
 			if (text.IsEmpty) return;
+			var lineNumber = context.LogicalLine.LineNumber;
+			var kind = kinds is not null && (uint)lineNumber < (uint)kinds.Length
+				? kinds[lineNumber]
+				: DiffSyntax.KindOf(text);
 			// 代码表面在浅色主题下是浅底，diff 的语义色必须取当前配色，不能写死深色一套。
-			var color = text.StartsWith("@@", StringComparison.Ordinal) ? AppTheme.TextPrimary :
-				text.StartsWith("+++", StringComparison.Ordinal) || text.StartsWith("---", StringComparison.Ordinal) ? AppTheme.TextFaint :
-				text[0] == '+' ? AppTheme.Success : text[0] == '-' ? AppTheme.Error : AppTheme.TextMuted;
+			var color = kind switch
+			{
+				DiffLineKind.Header => AppTheme.TextPrimary,
+				DiffLineKind.FileHeader => AppTheme.TextFaint,
+				DiffLineKind.Added => AppTheme.Success,
+				DiffLineKind.Deleted => AppTheme.Error,
+				_ => AppTheme.TextMuted,
+			};
 			output.Add(new TextPaintSpan(new TextRange(0, text.Length), color));
 		}
 	}

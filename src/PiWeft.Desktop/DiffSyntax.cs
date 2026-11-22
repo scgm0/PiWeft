@@ -1,5 +1,23 @@
 namespace PiWeft.Desktop;
 
+/// 统一 diff 一行的语义分类。只看行首前缀，与 <see cref="DiffSyntax.IsMetadata"/> 同一套判定。
+internal enum DiffLineKind : byte
+{
+	Context,
+
+	Added,
+
+	Deleted,
+
+	Header,
+
+	/// 文件头 <c>+++</c>/<c>---</c>，颜色比其余元信息深一档。
+	FileHeader,
+
+	/// <c>diff </c>、<c>index </c>、<c>\ No newline</c> 这类补丁元信息。
+	Metadata,
+}
+
 /// 统一 diff 的行分类：元信息行与 <c>@@ -a,b +c,d @@</c> 头。
 /// 判定按 <see cref="ReadOnlySpan{T}"/> 做，逐行调用也不分配：一个几千行的补丁在展开 diff 时
 /// 要过一遍所有行，用 <c>Regex.Match</c> 每行都会产出一个 Match 与两个 Capture（实测 6.7k 行
@@ -7,9 +25,26 @@ namespace PiWeft.Desktop;
 /// 一等 span 转换直接传入，调用点不需要写 <c>.AsSpan()</c>。
 internal static class DiffSyntax
 {
+	/// 按行首前缀给整行分类。首字符分派，上下文行只比较一个字符。
+	public static DiffLineKind KindOf(ReadOnlySpan<char> line)
+	{
+		if (line.IsEmpty) return DiffLineKind.Context;
+		return line[0] switch
+		{
+			'@' => line.StartsWith("@@") ? DiffLineKind.Header : DiffLineKind.Context,
+			'+' => line.StartsWith("+++") ? DiffLineKind.FileHeader : DiffLineKind.Added,
+			'-' => line.StartsWith("---") ? DiffLineKind.FileHeader : DiffLineKind.Deleted,
+			'd' => line.StartsWith("diff ") ? DiffLineKind.Metadata : DiffLineKind.Context,
+			'i' => line.StartsWith("index ") ? DiffLineKind.Metadata : DiffLineKind.Context,
+			// 文件末尾没有换行的提示行。
+			'\\' => DiffLineKind.Metadata,
+			_ => DiffLineKind.Context,
+		};
+	}
+
+	/// 文件头与补丁元信息。判定与 <see cref="KindOf"/> 同一份，两边不会只修好一边。
 	public static bool IsMetadata(ReadOnlySpan<char> line) =>
-		line.StartsWith("+++") || line.StartsWith("---") || line.StartsWith("diff ") ||
-		line.StartsWith("index ") || (!line.IsEmpty && line[0] == '\\');
+		KindOf(line) is DiffLineKind.FileHeader or DiffLineKind.Metadata;
 
 	/// 解析 hunk 头两侧的行数（头部省略 <c>,数量</c> 时为 1）；认不出来时返回 (0, 0)。
 	/// 行数用来按 hunk 消费内容行：内容行本身以 <c>--</c> / <c>++</c> 开头时，

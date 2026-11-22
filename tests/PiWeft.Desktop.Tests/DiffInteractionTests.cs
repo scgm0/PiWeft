@@ -50,6 +50,84 @@ public sealed class DiffInteractionTests
 	}
 
 	[Fact]
+	public void LongDiffLinesKeepTheirColorsAfterHorizontalScroll()
+	{
+		// 长行超过文本控件的切片阈值后，分类器只拿到视口附近的一段：没有行首就判不出 +/-。
+		var patch = "@@ -1,2 +1,2 @@\n+" + new string('x', 1200) + "\n-" + new string('y', 1200) + "\n";
+		var view = DiffView.Render(patch);
+		ConversationPerformanceTests.Layout(view, 400, 200);
+		var body = Find<MultiLineTextBox>(view).Single(text => text.IsHitTestVisible);
+
+		Assert.Contains(AppPalette.Dark.Success, PaintedColors(body));
+		Assert.Contains(AppPalette.Dark.Error, PaintedColors(body));
+
+		ScrollTo(body, 2000, 0);
+		ConversationPerformanceTests.Layout(view, 400, 200);
+		Assert.True(body.HorizontalOffset > 0);
+
+		Assert.Contains(AppPalette.Dark.Success, PaintedColors(body));
+		Assert.Contains(AppPalette.Dark.Error, PaintedColors(body));
+		UiLifetime.Release(view);
+	}
+
+	[Fact]
+	public void LongSideBySideDiffKeepsItsColorsAfterHorizontalScroll()
+	{
+		var patch = "@@ -1,2 +1,2 @@\n-" + new string('x', 1200) + "\n+" + new string('y', 1200) + "\n";
+		var view = DiffView.RenderSideBySide(patch, null);
+		ConversationPerformanceTests.Layout(view, 700, 300);
+		var bodies = Find<MultiLineTextBox>(view).Where(text => text.IsHitTestVisible).ToArray();
+		// 左侧旧行、右侧新行：滚动前先确认两列各自的颜色。
+		Assert.Contains(AppPalette.Dark.Error, PaintedColors(bodies[0]));
+		Assert.Contains(AppPalette.Dark.Success, PaintedColors(bodies[1]));
+
+		ScrollTo(bodies[0], 2000, 0);
+		ConversationPerformanceTests.Layout(view, 700, 300);
+		Assert.True(bodies[0].HorizontalOffset > 0);
+
+		Assert.Contains(AppPalette.Dark.Error, PaintedColors(bodies[0]));
+		Assert.Contains(AppPalette.Dark.Success, PaintedColors(bodies[1]));
+		UiLifetime.Release(view);
+	}
+
+	[Fact]
+	public void ClassifierUsesTheDocumentLineNumberForSliceColors()
+	{
+		// 行号 1 是新增行，但切片从行中段开始：文本里已经没有 '+'。
+		var spans = new List<TextPaintSpan>();
+		new DiffView.DiffClassifier([DiffLineKind.Context, DiffLineKind.Added])
+			.Classify(new TextClassificationContext(
+				new LogicalTextLine(1, 800, 16, 1200), "middle of a line".AsMemory(), IdentityTextOffsetMap.Instance), spans);
+		Assert.Equal(AppPalette.Dark.Success, Assert.Single(spans).Foreground);
+	}
+
+	[Fact]
+	public void PatchMetadataStaysMutedAndOnlyFileHeadersStayFaint()
+	{
+		Assert.Equal(AppPalette.Dark.TextMuted, Classify("diff --git a/x b/x"));
+		Assert.Equal(AppPalette.Dark.TextMuted, Classify("index 0000000..1111111"));
+		Assert.Equal(AppPalette.Dark.TextMuted, Classify("\\ No newline at end of file"));
+		Assert.Equal(AppPalette.Dark.TextFaint, Classify("--- a/x"));
+		Assert.Equal(AppPalette.Dark.TextFaint, Classify("+++ b/x"));
+		Assert.Equal(AppPalette.Dark.TextPrimary, Classify("@@ -1 +1 @@"));
+	}
+
+	private static Color? Classify(string line)
+	{
+		var spans = new List<TextPaintSpan>();
+		new DiffView.DiffClassifier().Classify(new TextClassificationContext(
+			new LogicalTextLine(0, 0, line.Length, line.Length), line.AsMemory(), IdentityTextOffsetMap.Instance), spans);
+		return Assert.Single(spans).Foreground;
+	}
+
+	private static Color[] PaintedColors(MultiLineTextBox text) =>
+		text.VisibleTextLines.SelectMany(line => line.PaintSpans)
+			.Select(span => span.Foreground)
+			.OfType<Color>()
+			.Distinct()
+			.ToArray();
+
+	[Fact]
 	public void LongDiffLinesScrollHorizontallyWhileGutterRemainsFixedAndRowsStayAligned()
 	{
 		var view = DiffView.Render("@@ -10 +20 @@\n-" + new string('x', 1000) + "\n+short");
