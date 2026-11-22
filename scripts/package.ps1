@@ -41,8 +41,29 @@ Copy-Item (Join-Path $repo 'README.md') $stage
 if ($Rid.StartsWith('osx-')) {
     $bundle = Join-Path $stage 'PiWeft Desktop.app/Contents'
     $macos = Join-Path $bundle 'MacOS'
+    $resources = Join-Path $bundle 'Resources'
     New-Item -ItemType Directory -Path $macos -Force | Out-Null
+    New-Item -ItemType Directory -Path $resources -Force | Out-Null
     Move-Item (Join-Path $stage 'piweft-desktop') (Join-Path $macos 'piweft-desktop')
+
+    # .icns 只在 macOS 上能生成（iconutil），所以不进仓库：用 sips 从 1024 缩放拼出 iconset。
+    $iconset = Join-Path $stage 'PiWeft.iconset'
+    New-Item -ItemType Directory -Path $iconset -Force | Out-Null
+    $iconFiles = @{
+        'icon_16x16.png' = 16; 'icon_16x16@2x.png' = 32;
+        'icon_32x32.png' = 32; 'icon_32x32@2x.png' = 64;
+        'icon_128x128.png' = 128; 'icon_128x128@2x.png' = 256;
+        'icon_256x256.png' = 256; 'icon_256x256@2x.png' = 512;
+        'icon_512x512.png' = 512; 'icon_512x512@2x.png' = 1024
+    }
+    $iconSource = Join-Path $repo 'src/PiWeft.Desktop/Resources/appicon/png/piweft-1024.png'
+    foreach ($name in $iconFiles.Keys) {
+        & sips -z $iconFiles[$name] $iconFiles[$name] $iconSource --out (Join-Path $iconset $name) | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "sips failed for $name" }
+    }
+    & iconutil -c icns $iconset -o (Join-Path $resources 'PiWeft.icns')
+    if ($LASTEXITCODE -ne 0) { throw 'iconutil failed' }
+    Remove-Item -Recurse -Force $iconset
     $bundleVersion = ($Version -split '[-+]')[0]
     $plist = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -51,6 +72,7 @@ if ($Rid.StartsWith('osx-')) {
 <key>CFBundleIdentifier</key><string>dev.piweft.desktop</string>
 <key>CFBundleName</key><string>PiWeft Desktop</string>
 <key>CFBundleExecutable</key><string>piweft-desktop</string>
+<key>CFBundleIconFile</key><string>PiWeft</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>$bundleVersion</string>
 <key>CFBundleShortVersionString</key><string>$bundleVersion</string>
@@ -63,7 +85,7 @@ if ($Rid.StartsWith('osx-')) {
     if ($LASTEXITCODE -ne 0) { throw 'chmod failed' }
     & codesign --force --deep --sign - (Join-Path $stage 'PiWeft Desktop.app')
     if ($LASTEXITCODE -ne 0) { throw 'codesign failed' }
-} elseif (-not $Rid.StartsWith('win-')) {
+} elseif ($Rid.StartsWith('linux-')) {
     & chmod +x (Join-Path $stage 'pi') (Join-Path $stage 'piweft-desktop')
     if ($LASTEXITCODE -ne 0) { throw 'chmod failed' }
 }

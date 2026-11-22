@@ -1,4 +1,5 @@
 using PiWeft.Cli;
+using PiWeft.CodingAgent;
 using PiWeft.Desktop;
 using Xunit;
 
@@ -53,6 +54,54 @@ public class SessionGroupsTests
 		var entry = Assert.Single(SessionGroups.Nest([orphan]));
 		Assert.Equal("child", entry.Item.Id);
 		Assert.Empty(entry.Children);
+	}
+
+	[Fact]
+	public void LinkedSessionsNestUnderTheirParent()
+	{
+		var cwd = Path.Combine(Path.GetTempPath(), "piweft-nest");
+		var parent = Item("parent", cwd);
+		var child = Item("linked-child", cwd);
+
+		var entry = Assert.Single(SessionGroups.Nest(
+			[parent, child],
+			[new LinkedSessionLink("linked-child", "parent", "重构", LinkedSessionLink.Idle, 2, null, 0)]));
+
+		Assert.Equal("parent", entry.Item.Id);
+		var nested = Assert.Single(entry.Children);
+		Assert.Equal("linked-child", nested.Item.Id);
+		Assert.Equal(SessionChildKind.Linked, nested.Kind);
+	}
+
+	[Fact]
+	public void LinkedSessionsWithoutTheirParentStayTopLevel()
+	{
+		var cwd = Path.Combine(Path.GetTempPath(), "piweft-nest");
+		var orphan = Item("linked-child", cwd);
+
+		var entry = Assert.Single(SessionGroups.Nest(
+			[orphan],
+			[new LinkedSessionLink("linked-child", "missing", "重构", LinkedSessionLink.Idle, 1, null, 0)]));
+
+		Assert.Equal("linked-child", entry.Item.Id);
+		Assert.Empty(entry.Children);
+	}
+
+	[Fact]
+	public void SubagentAndLinkedChildrenKeepTheirOwnKind()
+	{
+		var cwd = Path.Combine(Path.GetTempPath(), "piweft-nest");
+		var parent = Item("parent", cwd);
+		var subagent = Item("subagent-child", cwd) with { ParentSession = "parent", Origin = "subagent" };
+		var linked = Item("linked-child", cwd);
+
+		var entry = Assert.Single(SessionGroups.Nest(
+			[parent, subagent, linked],
+			[new LinkedSessionLink("linked-child", "parent", "重构", LinkedSessionLink.Running, 1, null, 0)]));
+
+		Assert.Equal(
+			[SessionChildKind.Subagent, SessionChildKind.Linked],
+			entry.Children.Select(static child => child.Kind));
 	}
 
 	[Fact]

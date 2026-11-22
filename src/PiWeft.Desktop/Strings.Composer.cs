@@ -216,7 +216,64 @@ public static partial class Strings
 	// 子代理：只做异步委派，措辞与工具名区分开。
 	public const string SubagentCardTitle = "子代理";
 
+	/// 侧栏子行只写需要被看见的状态：已完成与历史项不占位置。
+	public const string SidebarSubagentStarting = "启动中";
+
+	public const string SidebarSubagentRunning = "运行中";
+
+	public const string SidebarSubagentAwaiting = "等待回答";
+
+	public const string SidebarSubagentQuestion = "问父会话";
+
+	public const string SidebarSubagentFailed = "失败";
+
+	public static string SidebarSubagentChildrenRunning(int count) => $"{count} 个子代理在跑";
+
+	public static string SidebarSubagentChildrenAwaiting(int count) => $"{count} 个等待回答";
+
+	/// 父行的子项计数：子代理与关联会话分开，只有一种时不提另一种。
+	public static string SidebarChildCounts(int subagents, int linked) => (subagents, linked) switch
+	{
+		(> 0, > 0) => $"{subagents} 子代理 · {linked} 关联",
+		(> 0, 0) => $"{subagents} 子代理",
+		_ => $"{linked} 关联",
+	};
+
 	public const string SubagentStop = "停止";
+
+	/// 失败行的「接着做」：不要求用户再写一遍任务。
+	public const string SubagentContinue = "继续";
+
+	public const string SubagentContinuePrompt = "上一轮没完成，接着做；先说你已经做到哪、卡在哪。";
+
+	public static string SubagentContinueFailed(string reason) => $"继续失败：{reason}";
+
+	/// 子代理停在 ask_parent 上时，卡片展开区里的问题与内联回答。
+	public const string SubagentQuestion = "问题";
+
+	public const string SubagentAnswer = "回答";
+
+	public const string SubagentAnswerPlaceholder = "回答子代理的问题";
+
+	public const string SubagentAnswerEmpty = "回答不能为空。";
+
+	/// 卡片展开区的自由输入：运行中会在当前回合的工具边界插入。
+	public const string SubagentSend = "发送";
+
+	public const string SubagentMessagePlaceholder = "给子代理发消息；运行中会在当前回合的工具边界插入";
+
+	public const string SubagentMessageEmpty = "消息不能为空。";
+
+	public static string SubagentSendFailed(string reason) => $"发送失败：{reason}";
+
+	public static string SubagentAnswerFailed(string name) =>
+		$"回答失败：「{name}」的问题可能已被父会话或超时取走。";
+
+	/// 通过 output_schema 校验的结果：模型与 list_subagents 都看得到，卡片也该有。
+	public const string SubagentStructured = "结构化结果";
+
+	/// 本次运行发起的工具调用数：与 token 一起看，能分清「多轮小步」与「一次长任务」。
+	public static string SubagentToolCalls(int count) => $"{count} 次工具调用";
 
 	public static string SubagentCardMeta(int active, int total, int shown = -1)
 	{
@@ -245,6 +302,20 @@ public static partial class Strings
 	public const string SubagentAwaitingHint = "子代理在等你回答：问询卡已弹出，直接回答即可。";
 
 	public const string SubagentProgress = "进度";
+
+	/// 当前工具加「多久以前」。长任务里当前工具名可能十分钟不变，单看它分不出在跑还是卡住。
+	public static string SubagentActivity(string activity, long ageMs, long staleAfterMs) =>
+		ageMs >= staleAfterMs
+			? $"{activity} · {SubagentActivityAge(ageMs)}没有新动作"
+			: $"{activity} · {SubagentActivityAge(ageMs)}";
+
+	private static string SubagentActivityAge(long millis) => millis switch
+	{
+		< 5_000 => "刚刚",
+		< 60_000 => $"{millis / 1_000} 秒前",
+		< 3_600_000 => $"{millis / 60_000} 分钟前",
+		_ => $"{millis / 3_600_000} 小时前",
+	};
 
 	public const string SubagentBrief = "任务";
 
@@ -286,4 +357,8 @@ public static partial class Strings
 	public static string QueuedInjectedTip(string preview) => $"等待下一轮处理的回报：{preview}";
 
 	public static string SubagentStopFailed(string name) => $"停不掉子代理「{name}」，它可能已经结束。";
+
+	/// 关父标签会停掉没有自己标签的子代理；批量关闭时只问一次。
+	public static string SubagentCloseConfirm(int running) =>
+		$"还有 {running} 个子代理在跑。关掉标签会停掉它们，结果不会再送回本会话。";
 }

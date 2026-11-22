@@ -74,6 +74,18 @@ public sealed partial class MainWindow : Window
 	// 展开过的会话行（会话文件路径）：子代理会话挂在父行下，默认折叠，
 	// 而每轮刷新都重建整棵树，不记下来就一折到底。只在内存里，重启后恢复默认。
 	private readonly HashSet<string> _expandedSessionRows = new(StringComparer.Ordinal);
+	// 窗口级子代理状态：侧栏与命令面板读这一份，不再逐个标签扫 hub。
+	private readonly SubagentStatusIndex _subagentStatus = new();
+	// 侧栏每行要的父会话汇总，重建树时算一次，不必每行扫一遍全部子代理。
+	private IReadOnlyDictionary<string, (int Active, int Awaiting)> _subagentSummaries =
+		new Dictionary<string, (int Active, int Awaiting)>();
+	// 关联会话关系表：侧栏把 <c>start_session</c> 挖出的子会话也挂到父行下。
+	// 每次侧栏扫描时在后台重读，不在 UI 线程读盘。
+	private IReadOnlyList<LinkedSessionLink> _linkedLinks = [];
+	private Task? _linkedLinksRefresh;
+	private bool _linkedLinksDirty;
+	// 子代理 Changed 的合并标记：同一帧多次状态变化只汇总一次。
+	private int _subagentStatusQueued;
 	// 准备阶段会话面板里的加载段落（打开会话 / 写回会话名称），以及窗口关闭时中断后台读取的令牌源。
 	private readonly SessionLoadingPanel _sessionLoading = new();
 	private TextBlock _welcomeTitle = null!;
@@ -140,6 +152,8 @@ public sealed partial class MainWindow : Window
 		// 窗口本身显式使用内嵌 Regular：默认样式、继承文本与框架对话框都从这里拿到同一张脸。
 		this.FontFamily = AppFonts.DefaultUi;
 		this.FontWeight = FontWeight.Normal;
+		// 任务栏、alt-tab 和 Dock 用同一份 .ico；资源名写错就让启动直接失败，不静默丢图标。
+		this.Icon = IconSource.FromResource<MainWindow>("PiWeft.Desktop.Resources.appicon.piweft.ico");
 		// 自定义标题栏要在显示原生窗口前定型：Win32/macOS 走客户区延伸，X11 走无边框。
 		ConfigureWindowFrame();
 
@@ -560,6 +574,13 @@ public sealed partial class MainWindow : Window
 
 	private async void Startup()
 	{
+		// MewUI 的 X11 后端在 CreateWindow 里先调 AttachBackend/ApplyIcon，再初始化 _cardinalAtom，
+		// 首次 SetIcon 因 _cardinalAtom == 0 被跳过，_NET_WM_ICON 一直为空。窗口此时已 attach，
+		// 重设一次属性会再走 SetIcon，任务栏和 alt-tab 才有图标。
+		var windowIcon = Icon;
+		Icon = null;
+		Icon = windowIcon;
+
 		try
 		{
 			// 默认策略为 ask 且存在受保护项目资源时，先弹卡片问是否信任（选择会记住）。
@@ -846,9 +867,12 @@ public sealed partial class MainWindow : Window
 
 		var watch = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
 		IReadOnlyList<SessionListItem> listed;
+		IReadOnlyList<LinkedSessionLink> links;
 		try
 		{
-			listed = await Task.Run(() => _catalog.List()).ConfigureAwait(true);
+			// 关系表跟会话目录一起扫：侧栏要用它把关联会话挂到父行下。
+			(listed, links) = await Task.Run(
+				() => (_catalog.List(), LinkedSessionStore.Load().Links)).ConfigureAwait(true);
 		}
 		catch (Exception ex)
 		{
@@ -864,7 +888,7 @@ public sealed partial class MainWindow : Window
 				return false;
 			}
 
-			ApplySessions(listed);
+			ApplySessions(listed, links: links);
 			if (watch is not null)
 			{
 				Diagnostics.Record("sidebar.refresh", watch, $"sessions={_allSessions.Count}");
@@ -875,9 +899,16 @@ public sealed partial class MainWindow : Window
 	}
 
 	/// 把扫到的清单落进侧栏：置顶排最前，剩下的按修改时间（列表本身已排好）。
-	private void ApplySessions(IReadOnlyList<SessionListItem> listed, DesktopPreference? preference = null)
+	private void ApplySessions(
+		IReadOnlyList<SessionListItem> listed,
+		DesktopPreference? preference = null,
+		IReadOnlyList<LinkedSessionLink>? links = null)
 	{
 		preference ??= DesktopPreference.Load();
+		if (links is not null)
+		{
+			_linkedLinks = links;
+		}
 		_allSessions =
 		[
 			.. listed.Where(item => preference.IsPinned(item.Id)),
@@ -905,6 +936,7 @@ public sealed partial class MainWindow : Window
 	{
 		var selectedId = SelectedSession()?.Id ?? CurrentTab()?.Session.Session.SessionId;
 		var rows = new List<SessionListItem>(_sessions);
+		_subagentSummaries = _subagentStatus.Summaries();
 
 		// 「对话」= 聊天目录里的会话。与 PiDeck 的内置 Chat 项目一致：它不是全部会话的平铺，
 		// 否则同一批会话会在两个分段里重复出现，项目视图失去区分度。
@@ -919,7 +951,7 @@ public sealed partial class MainWindow : Window
 				ProjectLabel(group.Cwd, group.Sessions.Count),
 				[.. SessionGroups.Nest([.. group.Sessions
 					.OrderByDescending(item => preference.IsPinned(item.Id))
-					.ThenByDescending(static item => item.Modified)])
+					.ThenByDescending(static item => item.Modified)], _linkedLinks)
 					.Select(entry => SessionNode(entry, preference))],
 				tag: group.Cwd))
 			.ToList();
@@ -961,7 +993,7 @@ public sealed partial class MainWindow : Window
 			.ToArray();
 		_chatNodes =
 		[
-			.. SessionGroups.Nest(orderedChats).Select(entry => SessionNode(entry, preference)),
+			.. SessionGroups.Nest(orderedChats, _linkedLinks).Select(entry => SessionNode(entry, preference)),
 		];
 		_chatsTree.ItemsSource(_chatNodes);
 		foreach (var node in _chatNodes)
@@ -981,16 +1013,83 @@ public sealed partial class MainWindow : Window
 	private static string ProjectLabel(string cwd, int count) =>
 		count > 1 ? $"{ShortCwd(cwd)} ({count})" : ShortCwd(cwd);
 
-	private string SessionLine(SessionListItem item, DesktopPreference preference)
+	private string SessionLine(SessionTreeEntry entry, DesktopPreference preference)
 	{
+		var item = entry.Item;
 		var pin = preference.IsPinned(item.Id) ? $"{Strings.PinnedMark} " : string.Empty;
+		// 有子代理在跑或等回答时优先报活动：它比「名下有几个子会话」更急。
+		var status = SubagentLineSuffix(item);
+		var counts = status.Length > 0 ? string.Empty : ChildCounts(entry);
 
-		return $"{pin}{item.Display} · {TimeAgo(item.Modified)}";
+		return $"{pin}{item.Display}{status}{counts} · {TimeAgo(item.Modified)}";
+	}
+
+	/// 父行的子项计数：子代理与关联会话分开，用户在侧栏就知道这一行下面有什么。
+	private static string ChildCounts(SessionTreeEntry entry)
+	{
+		if (entry.Children.Count == 0)
+		{
+			return string.Empty;
+		}
+
+		var subagents = 0;
+		var linked = 0;
+		foreach (var child in entry.Children)
+		{
+			if (child.Kind == SessionChildKind.Subagent)
+			{
+				subagents++;
+			}
+			else
+			{
+				linked++;
+			}
+		}
+
+		return $" · {Strings.SidebarChildCounts(subagents, linked)}";
+	}
+
+	/// 侧栏行尾的子代理状态：子行写自己的状态，父行写名下有几个在跑或等回答。
+	/// 只在需要被看见的状态下写，已完成与历史项不占位置。
+	private string SubagentLineSuffix(SessionListItem item)
+	{
+		if (_subagentStatus.TryGet(item.Id, out var entry))
+		{
+			if (entry.Awaiting)
+			{
+				return $" · {Strings.SidebarSubagentAwaiting}";
+			}
+
+			if (entry.Question)
+			{
+				return $" · {Strings.SidebarSubagentQuestion}";
+			}
+
+			return entry.State switch
+			{
+				SubagentState.Starting => $" · {Strings.SidebarSubagentStarting}",
+				SubagentState.Running => $" · {Strings.SidebarSubagentRunning}",
+				SubagentState.Failed => $" · {Strings.SidebarSubagentFailed}",
+				_ => string.Empty,
+			};
+		}
+
+		if (!_subagentSummaries.TryGetValue(item.Id, out var summary))
+		{
+			return string.Empty;
+		}
+
+		if (summary.Awaiting > 0)
+		{
+			return $" · {Strings.SidebarSubagentChildrenAwaiting(summary.Awaiting)}";
+		}
+
+		return summary.Active > 0 ? $" · {Strings.SidebarSubagentChildrenRunning(summary.Active)}" : string.Empty;
 	}
 
 	/// 递归建侧栏会话行：子代理/关联子会话挂在父会话下面。
 	private TreeViewNode SessionNode(SessionTreeEntry entry, DesktopPreference preference) =>
-		new(SessionLine(entry.Item, preference),
+		new(SessionLine(entry, preference),
 			[.. entry.Children.Select(child => SessionNode(child, preference))],
 			tag: entry.Item);
 
@@ -1117,11 +1216,20 @@ public sealed partial class MainWindow : Window
 
 		try
 		{
-			// 先关掉对应标签，避免继续往已移走的文件追加。
+			// 先关掉对应标签，避免继续往已移走的文件追加。删除已确认过，不再为子代理弹第二次。
 			var open = _tabEntries.OfType<SessionTab>().Where(tab => tab.Session.Session.SessionFile == selected.Path).ToList();
 			foreach (var tab in open)
 			{
-				CloseTab(tab);
+				var id = SessionIdOf(tab);
+				// 先关标签（这会停掉还在跑的子代理），再摘运行记录：
+				// Forget 只接受终态，顺序反过来会漏掉正在跑的那条。
+				await CloseTabAsync(tab, confirmRunningSubagents: false).ConfigureAwait(true);
+				if (_subagentStatus.TryGet(id, out var entry))
+				{
+					StopAndForgetSubagent(entry.ParentSessionId, id);
+				}
+
+				_subagentStatus.RemoveSession(id);
 			}
 
 			var moved = _catalog.Delete(selected.Path);
@@ -1167,11 +1275,22 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	private async Task CloseTabAsync(SessionTab tab)
+	/// 关一个标签；返回 false 表示用户取消了（只在确认子代理时会发生）。
+	private async Task<bool> CloseTabAsync(SessionTab tab, bool confirmRunningSubagents = true)
 	{
 		if (!_tabEntries.Contains(tab))
 		{
-			return;
+			return false;
+		}
+
+		// 关父标签会停掉没有自己标签的子代理：先问一句，不让人以为任务还在后台跑。
+		// 批量关闭与删除会话已经确认过一次，由调用方传 false 跳过。
+		var running = confirmRunningSubagents && !tab.DetachedSession && tab.Session.Subagents is { } subagents
+			? subagents.ActiveRunCount()
+			: 0;
+		if (running > 0 && !await MessageBox.ConfirmAsync(Strings.SubagentCloseConfirm(running)))
+		{
+			return false;
 		}
 
 		// 会话 id 与父会话文件在关标签前记下：CloseAsync 会收尾并释放会话，之后不宜再读它的状态。
@@ -1193,14 +1312,21 @@ public sealed partial class MainWindow : Window
 			}
 
 			UpdateStatus();
-			return;
+			return true;
 		}
 
 		// 父标签关闭：没有标签的子代理无处投递，连会话一起收掉（与关子标签同义）。
 		DisposeDetachedChildrenOf(sessionFile);
+		// 索引也要清：否则关掉的父会话在侧栏还挂着「2 个子代理在跑」。
+		if (_subagentStatus.RemoveParent(sessionId) && _sessionsLoaded)
+		{
+			FilterSessions();
+		}
+
 		await tab.CloseAsync();
 		SoundAlerts.Shared.Forget(sessionId);
 		UpdateStatus();
+		return true;
 	}
 
 	/// 按父会话文件回收这一族无标签子会话：先摘掉可能开着的详情标签，再释放会话。
@@ -1247,17 +1373,22 @@ public sealed partial class MainWindow : Window
 		}
 
 		child.Host.DetachParent();
+		if (child.Session is not { } session)
+		{
+			return;
+		}
+
 		// 先中止：正在等回答的那一轮要拿到取消，别让工具结果写进一个已释放的会话。
 		try
 		{
-			child.Session.Abort();
+			session.Abort();
 		}
 		catch (ObjectDisposedException)
 		{
 			// 已经收掉了。
 		}
 
-		child.Session.Dispose();
+		session.Dispose();
 	}
 
 	/// 子代理的问题先留给父会话自己回答（它通常正阻塞在 <c>wait_subagents</c> 上）；
@@ -1368,8 +1499,16 @@ public sealed partial class MainWindow : Window
 
 		foreach (var (id, child) in _detachedChildren.ToArray())
 		{
+			if (child.Session is null)
+			{
+				// 已回收：条目留着当冷恢复入口，不再持有会话对象。
+				continue;
+			}
+
 			if (child.Session.IsDisposed)
 			{
+				// 回收已完成：把会话引用摘掉，不然整份转录会吊到父标签关闭。
+				_detachedChildren[id] = child with { Session = null };
 				continue;
 			}
 
@@ -1395,6 +1534,12 @@ public sealed partial class MainWindow : Window
 				}
 			});
 		}
+
+		// 条目还留着当冷恢复入口，但都只有会话文件了：停表，下次挂载/冷恢复再起。
+		if (_detachedChildren.Values.All(static child => child.Session is null))
+		{
+			_detachedSweep?.Stop();
+		}
 	}
 
 	/// 把已登记、但没有标签的子代理挂成标签（卡片或侧栏点「打开」）。返回 false 表示没有活会话。
@@ -1407,7 +1552,7 @@ public sealed partial class MainWindow : Window
 		}
 
 		// 冷恢复与后台扫描可能交错：扫到终态会立刻回收，所以恢复了再确认一次。
-		for (var attempt = 0; attempt < 2 && child.Session.IsDisposed; attempt++)
+		for (var attempt = 0; attempt < 2 && child.Session is null or { IsDisposed: true }; attempt++)
 		{
 			var reopened = await child.Hub.ReopenForViewAsync(sessionId, CancellationToken.None).ConfigureAwait(true);
 			if (reopened is null || reopened.IsDisposed)
@@ -1429,10 +1574,13 @@ public sealed partial class MainWindow : Window
 			}
 		}
 
-		if (child.Session.IsDisposed)
+		if (child.Session is not { IsDisposed: false })
 		{
 			return false;
 		}
+
+		// 冷恢复的会话也要参与空闲回收：表停了就重新起一拍。
+		EnsureDetachedSweep();
 
 		if (TryActivateTab(sessionId))
 		{
@@ -1647,9 +1795,11 @@ public sealed partial class MainWindow : Window
 		// 扫描期间先说明在干什么，避免展开侧栏看到空列表以为没有会话。
 		ShowSidebarScanning();
 		IReadOnlyList<SessionListItem> listed;
+		IReadOnlyList<LinkedSessionLink> links;
 		try
 		{
-			listed = await Task.Run(() => _catalog.List()).ConfigureAwait(true);
+			(listed, links) = await Task.Run(
+				() => (_catalog.List(), LinkedSessionStore.Load().Links)).ConfigureAwait(true);
 		}
 		catch (Exception ex)
 		{
@@ -1663,7 +1813,7 @@ public sealed partial class MainWindow : Window
 		_sessionsLoad = null;
 		UpdateSidebarEmptyHints();
 
-		ApplySessions(listed, preference);
+		ApplySessions(listed, preference, links);
 
 		// 搜索可能先于列表打开：拿到数据后按当前关键字重跑一次。
 		_sessionSearch.Reload();
@@ -1829,6 +1979,9 @@ public sealed partial class MainWindow : Window
 			subagents.AwaitingChanged += run => Dispatch(() => Toasts.Show(this, Strings.SubagentAwaitingInput(run.Name)));
 			var owner = tab;
 			subagents.QuestionRaised += run => Dispatch(() => _ = EscalateQuestionAsync(owner, subagents, run));
+			// 离开父标签后仍要能看出谁在跑、谁在等：状态边沿进窗口级索引，
+			// 工具活动与 token 变化留在卡片里原地刷新。
+			subagents.Changed += QueueSubagentStatusRefresh;
 		}
 		// 发过一条消息才记「上次用过的模型」（PiDeck 的 lastUsedModel），选而未发不算。
 		tab.MessageSent += sent => RememberUsedModel(sent.Session.Model);
@@ -1859,6 +2012,8 @@ public sealed partial class MainWindow : Window
 
 		_tabEntries.Add(tab);
 		AddTab(header: null!, content: tab.View, entry: tab);
+		// 重启后已结束的子代理也要进索引：侧栏后缀与命令面板不等到下一次工具事件。
+		QueueSubagentStatusRefresh();
 
 		// 这个会话自己的右侧面板：文件 / Git / 轨迹 / 检查点都以它的工作目录为基准，默认收起。
 		// 面板视图挂在共享宿主里，切换会话只切可见性，终端等状态不会丢。
@@ -3117,6 +3272,28 @@ public sealed partial class MainWindow : Window
 			}),
 		};
 
+		// 子代理：谁在跑、谁在等回答。排在内置命令之前，空查询也能看到等待项；
+		// 同名子代理可存在于不同父会话，标题带上父会话名才分得清。
+		List<PaletteCommand> subagentCommands = [];
+		foreach (var entry in _subagentStatus.Entries())
+		{
+			var state = entry.Awaiting
+				? Strings.SidebarSubagentAwaiting
+				: entry.Question
+					? Strings.SidebarSubagentQuestion
+					: Strings.SubagentStateText(entry.State);
+			var sessionId = entry.SessionId;
+			var parent = entry.ParentTitle.Length > 0
+				? $" · {(entry.ParentTitle.Length > 24 ? string.Concat(entry.ParentTitle.AsSpan(0, 24), "…") : entry.ParentTitle)}"
+				: string.Empty;
+			subagentCommands.Add(new PaletteCommand(
+				$"{Strings.SubagentCardTitle} · {entry.Name}{parent}",
+				$"{state} · {entry.Agent}",
+				() => _ = ActivateSessionAsync(sessionId)));
+		}
+
+		commands.InsertRange(0, subagentCommands);
+
 		foreach (var project in DesktopPreference.Load().RecentProjects.Where(Directory.Exists))
 		{
 			commands.Add(new PaletteCommand($"{Strings.RecentProjects} · {ShortCwd(project)}", project, () => _ = OpenProjectAsync(project)));
@@ -3401,17 +3578,47 @@ public sealed partial class MainWindow : Window
 	private void CloseOtherTabs()
 	{
 		var keep = CurrentTab();
-		foreach (var tab in _tabEntries.OfType<SessionTab>().Where(tab => !ReferenceEquals(tab, keep)).ToList())
-		{
-			CloseTab(tab);
-		}
+		CloseTabs([.. _tabEntries.OfType<SessionTab>().Where(tab => !ReferenceEquals(tab, keep))]);
 	}
 
-	private void CloseAllTabs()
+	private void CloseAllTabs() =>
+		CloseTabs([.. _tabEntries.OfType<SessionTab>()]);
+
+	/// 批量关闭：有子代理在跑时只问一次，不逐个标签弹窗。
+	private void CloseTabs(IReadOnlyList<SessionTab> targets)
 	{
-		foreach (var tab in _tabEntries.OfType<SessionTab>().ToList())
+		var running = 0;
+		foreach (var tab in targets)
 		{
-			CloseTab(tab);
+			if (!tab.DetachedSession && tab.Session.Subagents is { } hub)
+			{
+				running += hub.ActiveRunCount();
+			}
+		}
+
+		if (running == 0)
+		{
+			foreach (var tab in targets)
+			{
+				_ = CloseTabAsync(tab, confirmRunningSubagents: false);
+			}
+
+			return;
+		}
+
+		_ = ConfirmCloseTabsAsync(targets, running);
+	}
+
+	private async Task ConfirmCloseTabsAsync(IReadOnlyList<SessionTab> targets, int running)
+	{
+		if (!await MessageBox.ConfirmAsync(Strings.SubagentCloseConfirm(running)).ConfigureAwait(true))
+		{
+			return;
+		}
+
+		foreach (var tab in targets)
+		{
+			await CloseTabAsync(tab, confirmRunningSubagents: false).ConfigureAwait(true);
 		}
 	}
 

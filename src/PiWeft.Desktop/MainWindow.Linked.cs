@@ -93,6 +93,8 @@ public sealed partial class MainWindow
 				prepared.UiHost.Attach(tab);
 				UpdateTabHeaders();
 				RefreshSessions(force: true);
+				// 关系表在 CreateChildAsync 返回后才落盘；下一拍再读一次，侧栏才挂得上父行。
+				QueueLinkedLinksRefresh();
 				Toasts.Show(this, Strings.LinkedSessionStarted(context.Title));
 				AppLog.For<MainWindow>().ZLogInformation(
 					$"Linked session started: parent={context.Parent.Session.SessionId} child={child.Session.SessionId} title={context.Title}");
@@ -138,6 +140,66 @@ public sealed partial class MainWindow
 
 			return true;
 		}, CancellationToken.None);
+	}
+
+	/// 关联会话的关系表在 <c>CreateChildAsync</c> 返回后才落盘；
+	/// 立刻扫描可能读到旧表，侧栏会把子会话留在顶层。排到下一拍再读一次。
+	private void QueueLinkedLinksRefresh()
+	{
+		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
+		if (dispatcher is null)
+		{
+			return;
+		}
+
+		dispatcher.BeginInvoke(() => _ = RefreshLinkedLinksAsync());
+	}
+
+	/// 只重读关系表并重建侧栏，不再扫一遍会话目录。
+	/// 同时开多个关联会话时共用一次读盘：后来的请求排在这一次后面。
+	private Task RefreshLinkedLinksAsync()
+	{
+		if (_linkedLinksRefresh is { IsCompleted: false } running)
+		{
+			// 这一拍读到的可能是旧表：记一笔，读完再补一次，别把后来的关系吞掉。
+			_linkedLinksDirty = true;
+			return running;
+		}
+
+		var task = RefreshLinkedLinksOnceAsync();
+		_linkedLinksRefresh = task;
+		return task;
+	}
+
+	private async Task RefreshLinkedLinksOnceAsync()
+	{
+		try
+		{
+			var links = await Task.Run(() => LinkedSessionStore.Load().Links).ConfigureAwait(true);
+			if (_sessionHostClosed)
+			{
+				return;
+			}
+
+			_linkedLinks = links;
+			if (_sessionsLoaded)
+			{
+				FilterSessions();
+			}
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Reload linked sessions", ex);
+		}
+		finally
+		{
+			_linkedLinksRefresh = null;
+			if (_linkedLinksDirty)
+			{
+				_linkedLinksDirty = false;
+				_ = RefreshLinkedLinksAsync();
+			}
+		}
 	}
 
 	/// 把 UI 线程的工作投递出去并等它完成；调用方取消或窗口关闭时不会无限等。

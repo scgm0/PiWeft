@@ -41,9 +41,10 @@ public sealed partial class MainWindow
 	/// 没有标签的子代理：会话与它的界面宿主都留在这里，等待卡片「打开」时再挂标签。
 	/// <param name="ParentFile">父会话文件；父标签关闭时按它成批回收。</param>
 	/// <param name="Hub">父会话的 hub：回收与冷恢复都问它。</param>
+	/// <param name="Session">空闲回收后置空；条目留着，按同一个 hub 冷恢复，避免同一文件两份会话。</param>
 	private sealed record DetachedChild(
 		string ParentFile,
-		CodingAgentSession Session,
+		CodingAgentSession? Session,
 		DesktopUiHost Host,
 		string Name,
 		SubagentHub Hub);

@@ -1,6 +1,7 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Cli;
+using PiWeft.CodingAgent.Subagents;
 
 namespace PiWeft.Desktop;
 
@@ -359,9 +360,39 @@ public sealed partial class MainWindow
 			var tabs = _tabEntries.OfType<SessionTab>()
 				.Where(tab => tab.Session.Session.SessionFile is { } path && removedPaths.Contains(path))
 				.ToArray();
+
+			// 有子代理在跑时只问一次；用户取消就什么都不删，标签与文件都保持原样。
+			var running = 0;
 			foreach (var tab in tabs)
 			{
-				await CloseTabAsync(tab);
+				if (!tab.DetachedSession && tab.Session.Subagents is { } hub)
+				{
+					running += hub.ActiveRunCount();
+				}
+			}
+
+			if (running > 0 && !await MessageBox.ConfirmAsync(Strings.SubagentCloseConfirm(running)))
+			{
+				return;
+			}
+
+			foreach (var tab in tabs)
+			{
+				var id = SessionIdOf(tab);
+				await CloseTabAsync(tab, confirmRunningSubagents: false).ConfigureAwait(true);
+				// 子代理会话被归档：先停那一轮，再把运行记录摘掉，父 hub 才不会把它加回索引。
+				if (_subagentStatus.TryGet(id, out var entry))
+				{
+					StopAndForgetSubagent(entry.ParentSessionId, id);
+				}
+
+				_subagentStatus.RemoveSession(id);
+			}
+
+			// 关联子会话没有标签时也要清掉它们名下的子代理索引。
+			foreach (var link in links)
+			{
+				_subagentStatus.RemoveParent(link.ChildSessionId);
 			}
 
 			foreach (var path in removedPaths)
@@ -400,5 +431,60 @@ public sealed partial class MainWindow
 
 		RefreshSessions(force: true);
 		_banner.Text(Strings.ProjectRemoved);
+	}
+
+	/// 子代理状态变化：把本窗口所有标签的 hub 快照汇进索引，真变了才重建侧栏。
+	/// 多个子代理同时收尾时，一帧只汇总一次；已关标签不在遍历里，迟到的 Changed 写不回来。
+	private void ApplySubagentStatuses()
+	{
+		if (_sessionHostClosed)
+		{
+			return;
+		}
+
+		var changed = false;
+		foreach (var tab in _tabEntries.OfType<SessionTab>())
+		{
+			if (tab.Session.Subagents is { } hub)
+			{
+				changed |= _subagentStatus.Update(SessionIdOf(tab), tab.Title, hub.RunsSnapshot());
+			}
+		}
+
+		if (changed && _sessionsLoaded)
+		{
+			FilterSessions();
+		}
+	}
+
+	/// 删除子代理会话文件：先停掉那一轮，再把运行记录从父 hub 里摘掉。
+	/// 只摘索引不够，父 hub 的下一份快照会把还在跑的条目加回来。
+	private void StopAndForgetSubagent(string parentSessionId, string sessionId)
+	{
+		foreach (var tab in _tabEntries.OfType<SessionTab>())
+		{
+			if (string.Equals(SessionIdOf(tab), parentSessionId, StringComparison.Ordinal) &&
+				tab.Session.Subagents is { } hub)
+			{
+				hub.Stop(sessionId);
+				hub.Forget(sessionId);
+				return;
+			}
+		}
+	}
+
+	/// hub 的事件来自子会话线程；同一帧里的多次 Changed 只排一次汇总。
+	private void QueueSubagentStatusRefresh()
+	{
+		if (Interlocked.Exchange(ref _subagentStatusQueued, 1) == 1)
+		{
+			return;
+		}
+
+		Dispatch(() =>
+		{
+			Interlocked.Exchange(ref _subagentStatusQueued, 0);
+			ApplySubagentStatuses();
+		});
 	}
 }

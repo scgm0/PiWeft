@@ -5,6 +5,7 @@ using PiWeft.CodingAgent.Session;
 using PiWeft.CodingAgent.Subagents;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using System.Text.Json.Nodes;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
 
@@ -338,6 +339,192 @@ public sealed class SubagentCardTests : IDisposable
 			var expanded = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
 			Assert.Contains(expanded, block => block.Text == Strings.SubagentVerifySection);
 			Assert.Contains(expanded, block => block.Text == "dotnet test · 退出码 0\npassed");
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void ExpandedQuestionRowShowsTheQuestionAndAnAnswerBox()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "worker-1",
+				SessionId = "subagent-asking",
+				Agent = "worker",
+				Label = "问父会话要不要改测试",
+				Model = "test/test-model",
+				State = SubagentState.Running,
+				Turns = 1,
+				Question = "要不要顺手改测试？",
+				StartedAt = 1_000,
+			},
+		]);
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+		card.ToggleExpandedForTests("worker-1");
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			// 父会话可能不在跟前：问题与回答框都放在卡片里，不必等 20 秒摊到问询卡。
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentQuestion);
+			Assert.Contains(blocks, block => block.Text == "要不要顺手改测试？");
+			Assert.Single(Find<TextBox>(card.View));
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void ExpandedRowShowsTheStructuredOutput()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "reviewer-1",
+				SessionId = "subagent-structured",
+				Agent = "reviewer",
+				Label = "审查结果",
+				Model = "test/test-model",
+				State = SubagentState.Idle,
+				Turns = 1,
+				Result = "审查完成。",
+				StructuredOutput = new JsonObject
+				{
+					["files"] = new JsonArray("src/A.cs"),
+				},
+				StartedAt = 1_000,
+				FinishedAt = 2_000,
+			},
+		]);
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+		card.ToggleExpandedForTests("reviewer-1");
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			// 模型与 list_subagents 都拿得到结构化结果；卡片展开区不能漏。
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentStructured);
+			Assert.Contains(blocks, block => block.Text.Contains("\"files\"", StringComparison.Ordinal));
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void RunningRowShowsHowLongAgoTheToolStarted()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "scout-1",
+				SessionId = "subagent-long-tool",
+				Agent = "scout",
+				Label = "跟一次长命令",
+				Model = "test/test-model",
+				State = SubagentState.Running,
+				Turns = 1,
+				Activity = "bash dotnet test",
+				LastActivityAt = now - 90_000,
+				StartedAt = now - 300_000,
+			},
+		]);
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			// 当前工具名十分钟不变时，右侧那个总耗时看不出它是在跑还是卡住。
+			Assert.Contains(blocks, block =>
+				block.Text.StartsWith("bash dotnet test", StringComparison.Ordinal) &&
+				block.Text.Contains("分钟前", StringComparison.Ordinal));
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void ExpandedRowShowsTheToolCallCount()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "worker-1",
+				SessionId = "subagent-tool-calls",
+				Agent = "worker",
+				Label = "改完跑测试",
+				Model = "test/test-model",
+				State = SubagentState.Idle,
+				Turns = 1,
+				ToolCalls = 12,
+				StartedAt = 1_000,
+				FinishedAt = 2_000,
+			},
+		]);
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+		card.ToggleExpandedForTests("worker-1");
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			// token 与工具数一起看，才分得清「多轮小步」与「一次长任务」。
+			Assert.Contains(blocks, block => block.Text == "12 次工具调用");
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void ExpandedIdleRowOffersAFreeTextMessageBox()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "worker-1",
+				SessionId = "subagent-free-text",
+				Agent = "worker",
+				Label = "改完跑测试",
+				Model = "test/test-model",
+				State = SubagentState.Idle,
+				Turns = 1,
+				StartedAt = 1_000,
+				FinishedAt = 2_000,
+			},
+		]);
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+		card.ToggleExpandedForTests("worker-1");
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			// 不必先开标签才能追问；运行中这条消息会走 steer。
+			var box = Assert.Single(Find<TextBox>(card.View));
+			Assert.Equal(Strings.SubagentMessagePlaceholder, box.Placeholder);
 		}
 		finally
 		{

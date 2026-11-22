@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+	<title>PiWeft</title>
+	<defs>
+		<!-- 天光只压顶部 60%，深底不是死平的，小尺寸也不会变灰。 -->
+		<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#ffffff" stop-opacity="0.07"/>
+			<stop offset="0.6" stop-color="#ffffff" stop-opacity="0"/>
+		</linearGradient>
+		<!-- 字轨渐变止于 #e9e9e9：再重的话 16px 下 W 底部发灰，浅色任务栏上显脏。 -->
+		<linearGradient id="glyph" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#ffffff"/>
+			<stop offset="0.62" stop-color="#fbfbfb"/>
+			<stop offset="1" stop-color="#e9e9e9"/>
+		</linearGradient>
+		<filter id="drop" x="-30%" y="-30%" width="160%" height="180%">
+			<feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.45"/>
+		</filter>
+	</defs>
+	<rect width="1024" height="1024" rx="230" fill="#0f0f0f"/>
+	<rect width="1024" height="1024" rx="230" fill="url(#sky)"/>
+	<rect x="4" y="4" width="1016" height="1016" rx="226" fill="none" stroke="#2c2c2c" stroke-width="8"/>
+	<!-- W 是填充轮廓而不是 stroke + clip：缩略图器、浏览器、rsvg 都按同一份几何渲染，
+	     不会出现文件管理器里斜切、任务栏里平切的分歧。坐标由 scripts/make-icons.py 的注释说明来源。 -->
+	<g filter="url(#drop)">
+		<path d="M176 272 L98.1 308.4 L409.7 974.5 L512 746.2 L614.3 974.5 L925.9 308.4 L848 272 L753.1 272 L617.7 561.5 L512 325.8 L406.3 561.5 L270.9 272 Z" fill="url(#glyph)"/>
+	</g>
+</svg>

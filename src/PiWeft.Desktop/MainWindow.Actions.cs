@@ -102,20 +102,15 @@ public sealed partial class MainWindow
 		Add(Strings.CloseCurrentTab, () => CloseEntry(entry));
 		Add(Strings.KeepCurrentTab, () =>
 		{
-			foreach (var other in _tabEntries.Where(other => !ReferenceEquals(entry, other)).ToArray())
-			{
-				CloseEntry(other);
-			}
+			// 批量关：有子代理在跑时只问一次，不逐标签弹窗。
+			CloseTabs([.. _tabEntries.OfType<SessionTab>().Where(other => !ReferenceEquals(entry, other))]);
 		});
 		Add(Strings.CloseTabsToRight, () =>
 		{
 			var index = _tabEntries.IndexOf(entry);
 			if (index >= 0)
 			{
-				foreach (var other in _tabEntries.Skip(index + 1).ToArray())
-				{
-					CloseEntry(other);
-				}
+				CloseTabs([.. _tabEntries.Skip(index + 1).OfType<SessionTab>()]);
 			}
 		}, () => _tabEntries.IndexOf(entry) is var index && index >= 0 && index < _tabEntries.Count - 1);
 		menu.AddSeparator();

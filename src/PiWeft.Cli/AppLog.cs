@@ -7,7 +7,8 @@ using ZLogger.Providers;
 
 namespace PiWeft.Cli;
 
-/// 自定义枚举先转为字符串，避免 ZLogger 在 NativeAOT 下反射创建枚举数组。
+/// 日志消息里的枚举参数一律先 <c>ToString()</c>：ZLogger 用反射建枚举数组，
+/// NativeAOT 裁掉该数组类型后类型初始化抛异常，整条记录丢失，前缀还会粘到下一行。
 public sealed class AppLog : IDisposable
 {
 	private static ILoggerFactory _factory = NullLoggerFactory.Instance;
@@ -104,7 +105,7 @@ public sealed class AppLog : IDisposable
 		Volatile.Write(ref _factory, factory);
 		AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
 		TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
-		For<AppLog>().ZLogInformation($"Logging started: application={application}, process={Environment.ProcessId}, runtime={Environment.Version}, level={MinimumLevel}");
+		For<AppLog>().ZLogInformation($"Logging started: application={application}, process={Environment.ProcessId}, runtime={Environment.Version}, level={MinimumLevel.ToString()}");
 		return new AppLog(factory);
 	}
 
@@ -194,7 +195,9 @@ public sealed class AppLog : IDisposable
 	{
 		if (Interlocked.Exchange(ref _reportedFailure, 1) == 0)
 		{
-			Console.Error.WriteLine($"pi: 文件日志不可用（{exception.GetType().Name}），应用将继续运行。");
+			// 这条也覆盖单条记录格式化失败，此时文件日志仍在工作，不能报成不可用。
+			// 只报类型名看不出根因（TypeInitializationException 的 InnerException 才是原因）。
+			Console.Error.WriteLine($"pi: 日志写入失败（{Redactor.Line(Chain(exception))}），应用将继续运行。");
 		}
 	}
 

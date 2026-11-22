@@ -1555,6 +1555,103 @@ public sealed class SubagentTests : IDisposable
 	}
 
 	[Fact]
+	public async Task Forget_DropsAFinishedRunFromTheList()
+	{
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到。");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("结论。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理结束");
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+
+		Assert.True(hub.Forget(started.Name!));
+		Assert.Empty(hub.Runs);
+		hub.Describe(out var details);
+		Assert.Empty(details["subagents"]!.AsArray());
+		Assert.False(hub.Forget(started.Name!));
+	}
+
+	[Fact]
+	public async Task ReadingTheFirstTurnDoesNotSwallowTheSameTextInTheSecondTurn()
+	{
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到第一轮。");
+		parentStream.EnqueueText("父会话收到第二轮。");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("检查通过。");
+		childStream.EnqueueText("检查通过。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "第一轮结束");
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+
+		// 第一轮读一遍；第二轮正文完全相同，也不能被上一轮的已读记录扣下。
+		Assert.True(hub.Read(started.Name!).Ok);
+		var sent = await hub.SendAsync(started.Name!, "再查一遍。");
+		Assert.True(sent.Ok, sent.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().Turns == 2, "第二轮结束");
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+
+		var last = parentStream.Requests[^1];
+		Assert.Equal(
+			2,
+			last.OfType<UserMessage>().Count(static message => message.CustomType == SubagentHub.ResultMessageType));
+	}
+
+	[Fact]
+	public async Task Forget_ClearsAQueuedDelivery()
+	{
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var parentStream = new ScriptedStreamFn();
+		parentStream.Enqueue(model =>
+		{
+			started.TrySetResult();
+			return GatedText(model, "父会话第一轮。", gate.Task);
+		});
+		parentStream.EnqueueText("父会话第二轮。");
+
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("子代理报告。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var parentTurn = parent.PromptAsync("先做这个。");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		var child = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		Assert.True(child.Ok, child.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理结束");
+
+		// 父会话还在跑：结果留在队列里；删掉这条运行后，队列里的正文也要一起清。
+		Assert.True(hub.Forget(child.Name!));
+		Assert.Empty(hub.Runs);
+
+		parent.FollowUp(parent.PrepareInput("排队的问题。"));
+		gate.SetResult();
+		await parentTurn.WaitAsync(TimeSpan.FromSeconds(10));
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+
+		Assert.DoesNotContain(
+			parentStream.Requests.SelectMany(static request => request).OfType<UserMessage>(),
+			static message => message.CustomType == SubagentHub.ResultMessageType);
+	}
+
+	[Fact]
 	public async Task Send_QueuesASecondTurnAndDeliversItsResult()
 	{
 		var parentStream = new ScriptedStreamFn();
@@ -1622,6 +1719,141 @@ public sealed class SubagentTests : IDisposable
 		var late = await hub.SendAsync(started.Name!, "已经结束了。", "steer");
 		Assert.False(late.Ok);
 		Assert.Contains("not running", late.Text);
+	}
+
+	[Fact]
+	public async Task QueuedUserPromptDoesNotDeliverAFinishedReportTwice()
+	{
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var parentStream = new ScriptedStreamFn();
+		parentStream.Enqueue(model =>
+		{
+			started.TrySetResult();
+			return GatedText(model, "父会话第一轮。", gate.Task);
+		});
+		parentStream.EnqueueText("父会话第二轮。");
+
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("子代理报告。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var parentTurn = parent.PromptAsync("先做这个。");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		var child = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		Assert.True(child.Ok, child.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理结束");
+
+		// 用户在父会话运行中排队一条消息：PrepareInput 会触发 NoteUserPrompt → flush。
+		var queued = parent.PrepareInput("排队的问题。");
+		parent.FollowUp(queued);
+
+		gate.SetResult();
+		await parentTurn.WaitAsync(TimeSpan.FromSeconds(10));
+		// 投递有自己的合并窗口：等它真的落地，再读父会话的上下文。
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+		await Eventually.IsTrue(() => !parent.IsRunning, "父会话两轮都结束");
+
+		// 最后一次请求就是模型看到的上下文：回报只该有一条。
+		var last = parentStream.Requests[^1];
+		var reports = last
+			.OfType<UserMessage>()
+			.Count(static message => message.CustomType == SubagentHub.ResultMessageType);
+		Assert.Equal(1, reports);
+	}
+
+	[Fact]
+	public async Task ReadingAFinishedResultSuppressesItsPendingDelivery()
+	{
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var parentStream = new ScriptedStreamFn();
+		parentStream.Enqueue(model =>
+		{
+			started.TrySetResult();
+			return GatedText(model, "父会话第一轮。", gate.Task);
+		});
+		parentStream.EnqueueText("父会话第二轮。");
+
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("子代理报告。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var parentTurn = parent.PromptAsync("先做这个。");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		var child = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		Assert.True(child.Ok, child.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理结束");
+		Assert.Equal(SubagentState.Idle, hub.Runs.Single().State);
+
+		// 父会话还在跑：结果留在 _pending；父会话先读一遍正文。
+		var read = hub.Read(child.Name!);
+		Assert.True(read.Ok, read.Text);
+		Assert.Contains("子代理报告", read.Text);
+
+		// 用户排队一条消息：会触发 NoteUserPrompt；正文已经读过，不再补投。
+		parent.FollowUp(parent.PrepareInput("排队的问题。"));
+		gate.SetResult();
+		await parentTurn.WaitAsync(TimeSpan.FromSeconds(10));
+		await Eventually.IsTrue(() => !parent.IsRunning, "父会话两轮都结束");
+
+		Assert.DoesNotContain(
+			parentStream.Requests.SelectMany(static request => request).OfType<UserMessage>(),
+			static message => message.CustomType == SubagentHub.ResultMessageType);
+	}
+
+	[Fact]
+	public async Task TruncatedReadDoesNotSuppressTheFullDelivery()
+	{
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var parentStream = new ScriptedStreamFn();
+		parentStream.Enqueue(model =>
+		{
+			started.TrySetResult();
+			return GatedText(model, "父会话第一轮。", gate.Task);
+		});
+		parentStream.EnqueueText("父会话第二轮。");
+
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("完整的子代理报告。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var parentTurn = parent.PromptAsync("先做这个。");
+		await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+		var child = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		Assert.True(child.Ok, child.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理结束");
+
+		// 只看一个字符：不能因为「读过」就把完整结果扣下。
+		var read = hub.Read(child.Name!, 1);
+		Assert.True(read.Ok, read.Text);
+
+		parent.FollowUp(parent.PrepareInput("排队的问题。"));
+		gate.SetResult();
+		await parentTurn.WaitAsync(TimeSpan.FromSeconds(10));
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+		await Eventually.IsTrue(() => !parent.IsRunning, "父会话两轮都结束");
+
+		var last = parentStream.Requests[^1];
+		Assert.Equal(
+			1,
+			last.OfType<UserMessage>().Count(static message => message.CustomType == SubagentHub.ResultMessageType));
 	}
 
 	[Fact]

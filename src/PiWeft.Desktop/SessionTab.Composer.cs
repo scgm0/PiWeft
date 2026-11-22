@@ -3,6 +3,7 @@ using Aprillz.MewUI.Controls;
 using PiWeft.Cli;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Subagents;
+using System.Text.Json.Nodes;
 
 namespace PiWeft.Desktop;
 
@@ -367,6 +368,8 @@ public sealed partial class SessionTab
 				State = SubagentState.Running,
 				Turns = 1,
 				Activity = "read src/PiWeft.Desktop/SessionTab.cs",
+				ToolCalls = 7,
+				LastActivityAt = now - 3_000,
 				Tokens = 31_500,
 				Cost = 0.0071,
 				StartedAt = now - 42_000,
@@ -419,8 +422,14 @@ public sealed partial class SessionTab
 				State = SubagentState.Idle,
 				Turns = 2,
 				Result = "改成增量更新，桌面测试全过。",
+				StructuredOutput = new JsonObject
+				{
+					["fixed"] = true,
+					["tests"] = "passed",
+				},
 				Tokens = 41_800,
 				MaxTokens = 120_000,
+				ToolCalls = 12,
 				Cost = 0.0093,
 				StartedAt = now - 240_000,
 				FinishedAt = now - 5_000,

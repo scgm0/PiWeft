@@ -1,6 +1,7 @@
 using System.Text;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai.Json;
 using PiWeft.CodingAgent.Subagents;
 
 namespace PiWeft.Desktop;
@@ -29,6 +30,9 @@ internal sealed class SubagentCard
 	private readonly List<RowState> _rendered = [];
 	// 展开状态按名字记：状态变化会让整行重建，展开的内容不能跟着合上。
 	private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
+	// 输入框草稿也按名字记：轮次结束会重建行，打了一半的消息不能丢。
+	// 问题框与自由输入框分开存：问题被父会话取走后，半截回答不该变成普通消息。
+	private readonly Dictionary<(string Name, bool Answer), string> _drafts = new();
 	// 回调在标签构造时给一次：刷新不带参数，调用点就不会每次建闭包与委托。
 	private readonly Action<string> _openChild;
 	private readonly Func<string, bool> _stopChild;
@@ -59,20 +63,23 @@ internal sealed class SubagentCard
 		TextBlock Status,
 		TextBlock Resumable,
 		TextBlock Identity,
-		TextBlock Activity,
+		LiveActivityText Activity,
 		TextBlock Failure,
 		LiveDurationText Duration,
 		TextBlock Usage,
 		TextBlock? Progress,
+		TextBlock? Tools,
 		LiveState Live);
 
 	// 每个工具起止都会变的源值放可变对象：每次刷新原地改，
 	// 不用 record with 复制整行（结构字段与控制引用占了二十多项）。
-	private sealed class LiveState(long tokens, double cost, string? activity, string? progress, string? result)
+	private sealed class LiveState(long tokens, double cost, string? activity, long lastActivityAt, int toolCalls, string? progress, string? result)
 	{
 		public long Tokens { get; set; } = tokens;
 		public double Cost { get; set; } = cost;
 		public string? ActivityValue { get; set; } = activity;
+		public long LastActivityAt { get; set; } = lastActivityAt;
+		public int ToolCalls { get; set; } = toolCalls;
 		public string? ProgressValue { get; set; } = progress;
 		public string? ResultValue { get; set; } = result;
 	}
@@ -280,10 +287,12 @@ internal sealed class SubagentCard
 			live.Cost = run.Cost;
 		}
 
-		if (!string.Equals(live.ActivityValue, run.Activity, StringComparison.Ordinal))
+		if (!string.Equals(live.ActivityValue, run.Activity, StringComparison.Ordinal) ||
+			live.LastActivityAt != run.LastActivityAt)
 		{
-			SetText(row.Activity, ActivityText(run));
+			row.Activity.SetActivity(ActivityText(run), run.LastActivityAt, run.IsActive && !run.AwaitingUser);
 			live.ActivityValue = run.Activity;
+			live.LastActivityAt = run.LastActivityAt;
 		}
 
 		if (row.Progress is { } progress &&
@@ -291,6 +300,12 @@ internal sealed class SubagentCard
 		{
 			SetText(progress, run.Progress is { Length: > 0 } value ? $"{Strings.SubagentProgress}：{value}" : string.Empty);
 			live.ProgressValue = run.Progress;
+		}
+
+		if (row.Tools is { } tools && live.ToolCalls != run.ToolCalls)
+		{
+			SetText(tools, run.ToolCalls > 0 ? Strings.SubagentToolCalls(run.ToolCalls) : string.Empty);
+			live.ToolCalls = run.ToolCalls;
 		}
 
 		if (!ReferenceEquals(live.ResultValue, run.Result))
@@ -532,14 +547,16 @@ internal sealed class SubagentCard
 			.Children(status.Column(0), resumable.Column(1), identity.Column(2));
 
 		var activityText = ActivityText(run);
-		var activity = new TextBlock()
-			.Text(activityText)
-			.FontSize(AppTheme.FontSizeMicro)
-			.FontFamily(AppTheme.MonoFont)
-			.SubtleText()
-			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.VerticalAlignment(VerticalAlignment.Center);
-		activity.IsVisible(activityText.Length > 0);
+		var activity = new LiveActivityText()
+		{
+			FontSize = AppTheme.FontSizeMicro,
+			FontFamily = AppTheme.MonoFont,
+		};
+		activity.SubtleText();
+		activity.TextTrimming(TextTrimming.CharacterEllipsis);
+		activity.VerticalAlignment = VerticalAlignment.Center;
+		// 运行中的行每秒自己走一次时间；结束时停在最后一条工具名，不再计时。
+		activity.SetActivity(activityText, run.LastActivityAt, run.IsActive && !run.AwaitingUser);
 
 		var failureText = FailurePreview(run, expanded);
 		var failure = new TextBlock()
@@ -609,6 +626,14 @@ internal sealed class SubagentCard
 					.VerticalAlignment(VerticalAlignment.Center));
 		}
 
+		if (run.State == SubagentState.Failed)
+		{
+			// 失败行不要求先开标签再重开一轮：原会话还在文件里，follow-up 会冷恢复。
+			actions.Children(
+				AppIcons.Button("refresh-cw", Strings.SubagentContinue, () => Continue(run), size: 12)
+					.VerticalAlignment(VerticalAlignment.Center));
+		}
+
 		var chevron = new Button()
 			.Ghost()
 			.Padding(new Thickness(AppTheme.Space1))
@@ -627,6 +652,7 @@ internal sealed class SubagentCard
 
 		var body = new List<UIElement>(5);
 		TextBlock? progress = null;
+		TextBlock? tools = null;
 		if (expanded)
 		{
 			progress = new TextBlock()
@@ -637,16 +663,65 @@ internal sealed class SubagentCard
 				.IsVisible(run.Progress is { Length: > 0 });
 			body.Add(progress);
 
+			// 展开期间子代理还在跑：工具数会变，留一枚可写的文本给 SetMeta 更新。
+			tools = new TextBlock()
+				.Text(run.ToolCalls > 0 ? Strings.SubagentToolCalls(run.ToolCalls) : string.Empty)
+				.FontSize(AppTheme.FontSizeMicro)
+				.SubtleText()
+				.IsVisible(run.ToolCalls > 0);
+			body.Add(tools);
+
 			if (run.Brief is { Length: > 0 } brief)
 			{
 				body.Add(Section(Strings.SubagentBrief, Clip(brief, BriefPreviewChars)));
+			}
+
+			if (run.Question is { Length: > 0 } question)
+			{
+				// 父会话可能不在这里，用户在卡片上直接答，不必等 20 秒摊到问询卡。
+				body.Add(Section(Strings.SubagentQuestion, question));
+				var answer = new TextBox()
+					.PrimarySelection()
+					.Placeholder(Strings.SubagentAnswerPlaceholder)
+					.Text(_drafts.GetValueOrDefault((run.Name, true)) ?? string.Empty)
+					.OnTextChanged(text => _drafts[(run.Name, true)] = text ?? string.Empty);
+				body.Add(new Grid()
+					.Columns("*,Auto")
+					.Spacing(4)
+					.Children(
+						answer.Column(0),
+						AppIcons.Button("send-horizontal", Strings.SubagentAnswer, () => Answer(run, answer)).Column(1)));
+			}
+			else
+			{
+				// 空闲时排下一轮，运行中在当前工具边界插入。失败行的「继续」是一键路径，
+				// 这里是自由输入：追问、追范围、改变做法。
+				var message = new TextBox()
+					.PrimarySelection()
+					.Placeholder(Strings.SubagentMessagePlaceholder)
+					.Text(_drafts.GetValueOrDefault((run.Name, false)) ?? string.Empty)
+					.OnTextChanged(text => _drafts[(run.Name, false)] = text ?? string.Empty);
+				body.Add(new Grid()
+					.Columns("*,Auto")
+					.Spacing(4)
+					.Children(
+						message.Column(0),
+						AppIcons.Button("send-horizontal", Strings.SubagentSend, () => Send(run, message)).Column(1)));
 			}
 
 			if (run.Result is { Length: > 0 } resultText)
 			{
 				body.Add(Section(
 					run.State == SubagentState.Failed ? Strings.SubagentFailure : Strings.SubagentResult,
-					Clip(resultText, ResultPreviewChars)));
+					Clip(resultText, ResultPreviewChars),
+					copyText: resultText));
+			}
+
+			if (run.StructuredOutput is { } structured)
+			{
+				// 模型与 list_subagents 已经看到结构化结果；卡片展开区之前漏了它。
+				var json = structured.ToJsonString(PiJson.NodeOptions);
+				body.Add(Section(Strings.SubagentStructured, Clip(json, ResultPreviewChars), copyText: json));
 			}
 
 			if (run.SessionFile is { Length: > 0 } file)
@@ -719,7 +794,8 @@ internal sealed class SubagentCard
 			duration,
 			usage,
 			progress,
-			new LiveState(run.Tokens, run.Cost, run.Activity, run.Progress, run.Result)));
+			tools,
+			new LiveState(run.Tokens, run.Cost, run.Activity, run.LastActivityAt, run.ToolCalls, run.Progress, run.Result)));
 	}
 
 	private static long? EndedAt(SubagentRun run)
@@ -749,22 +825,140 @@ internal sealed class SubagentCard
 		return string.Join(" · ", parts);
 	}
 
-	private static Border Section(string label, string text) => new Border()
-		.StyleName(AppStyles.CardMuted)
-		.CornerRadius(AppTheme.RadiusSm)
-		.Padding(new Thickness(AppTheme.Space2))
-		.Child(new StackPanel()
-			.Spacing(2)
-			.Children(
-				new TextBlock()
-					.Text(label)
-					.FontSize(AppTheme.FontSizeMicro)
-					.SubtleText(),
-				new TextBlock()
-					.Text(text)
-					.FontSize(AppTheme.FontSizeCaption)
-					.MutedText()
-					.TextWrapping(TextWrapping.Wrap)));
+	private Border Section(string label, string text, string? copyText = null)
+	{
+		var header = new Grid()
+			.Columns("*,Auto")
+			.Children(new TextBlock()
+				.Text(label)
+				.FontSize(AppTheme.FontSizeMicro)
+				.SubtleText()
+				.Column(0));
+		if (copyText is { Length: > 0 } copy)
+		{
+			header.Children(AppIcons.Button("copy", Strings.CopyMessage, () => Copy(copy), size: 12).Column(1));
+		}
+
+		return new Border()
+			.StyleName(AppStyles.CardMuted)
+			.CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(AppTheme.Space2))
+			.Child(new StackPanel()
+				.Spacing(2)
+				.Children(
+					header,
+					new TextBlock()
+						.Text(text)
+						.FontSize(AppTheme.FontSizeCaption)
+						.MutedText()
+						.TextWrapping(TextWrapping.Wrap)));
+	}
+
+	/// 复制走系统剪贴板；剪贴板不可用时退成一条提示，不静默吞掉。
+	private void Copy(string text)
+	{
+		var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
+		Toasts.Show(View, clipboard?.TrySetText(text) == true ? Strings.Copied : Strings.ClipboardUnavailable);
+	}
+
+	/// 失败行继续：follow-up 一条，不需要用户再写一遍任务。
+	/// 已经回收的会话由 hub 按会话文件冷恢复。
+	private void Continue(SubagentRun run)
+	{
+		if (_hub is not { } hub)
+		{
+			return;
+		}
+
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				var outcome = await hub.SendAsync(run.Name, Strings.SubagentContinuePrompt).ConfigureAwait(false);
+				if (!outcome.Ok)
+				{
+					Notify(Strings.SubagentContinueFailed(outcome.Text));
+				}
+			}
+			catch (Exception ex)
+			{
+				Notify(Strings.SubagentContinueFailed(ex.Message));
+			}
+		});
+	}
+
+	/// 卡片上回答 ask_parent 的问题；取走问题后父会话再答会按普通消息处理。
+	private void Answer(SubagentRun run, TextBox input)
+	{
+		var answer = (input.Text ?? string.Empty).Trim();
+		if (answer.Length == 0)
+		{
+			Notify(Strings.SubagentAnswerEmpty);
+			return;
+		}
+
+		// 先清空再答：AnswerQuestion 可能同步重建行，之后再碰旧输入框不安全。
+		input.Text = string.Empty;
+		_drafts.Remove((run.Name, true));
+		if (_hub is null || !_hub.AnswerQuestion(run.SessionId, answer))
+		{
+			Notify(Strings.SubagentAnswerFailed(run.Name));
+		}
+	}
+
+	/// 卡片上的自由输入：运行中走 steer，空闲时排下一轮。
+	private void Send(SubagentRun run, TextBox input)
+	{
+		var message = (input.Text ?? string.Empty).Trim();
+		if (message.Length == 0)
+		{
+			Notify(Strings.SubagentMessageEmpty);
+			return;
+		}
+
+		if (_hub is not { } hub)
+		{
+			return;
+		}
+
+		// 点发送就清空：后台续体不能碰控件，留着文本容易再点一次重发。
+		input.Text = string.Empty;
+		_drafts.Remove((run.Name, false));
+
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				var outcome = await hub.SendAsync(run.Name, message, "auto").ConfigureAwait(false);
+				if (!outcome.Ok)
+				{
+					Notify(Strings.SubagentSendFailed(outcome.Text));
+				}
+			}
+			catch (Exception ex)
+			{
+				Notify(Strings.SubagentSendFailed(ex.Message));
+			}
+		});
+	}
+
+	/// 后台线程来的错误回 UI 线程：toast 要碰窗口。
+	private void Notify(string message)
+	{
+		if (!Application.IsRunning)
+		{
+			return;
+		}
+
+		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
+		if (dispatcher is null || dispatcher.IsOnUIThread)
+		{
+			_failed?.Invoke(message);
+			return;
+		}
+
+		dispatcher.BeginInvoke(() => _failed?.Invoke(message));
+	}
 
 	private void Toggle(string name)
 	{

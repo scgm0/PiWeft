@@ -1,0 +1,162 @@
+using PiWeft.CodingAgent.Subagents;
+using Xunit;
+
+namespace PiWeft.Desktop.Tests;
+
+/// 窗口级子代理索引：只跟状态边沿，不跟工具活动与 token。
+public sealed class SubagentStatusIndexTests
+{
+	private static SubagentRun Run(
+		string name,
+		string sessionId,
+		SubagentState state = SubagentState.Running,
+		bool awaiting = false,
+		string? question = null,
+		string? activity = null,
+		long tokens = 0) => new()
+	{
+		Name = name,
+		SessionId = sessionId,
+		Agent = "scout",
+		State = state,
+		AwaitingUser = awaiting,
+		Question = question,
+		Activity = activity,
+		Tokens = tokens,
+	};
+
+	[Fact]
+	public void FirstSnapshotChangesAndRepeatingItDoesNot()
+	{
+		var index = new SubagentStatusIndex();
+		SubagentRun[] runs = [Run("scout-1", "child-1")];
+
+		Assert.True(index.Update("parent", "父会话", runs));
+		Assert.False(index.Update("parent", "父会话", [Run("scout-1", "child-1")]));
+	}
+
+	[Fact]
+	public void ActivityAndUsageDoNotTriggerASidebarRebuild()
+	{
+		var index = new SubagentStatusIndex();
+		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1", activity: "read a.cs")]));
+
+		// 每个工具起止都会改这两样；侧栏不显示它们，不该跟着重建整棵树。
+		Assert.False(index.Update("parent", "父会话", [Run("scout-1", "child-1", activity: "grep foo", tokens: 9000)]));
+	}
+
+	[Fact]
+	public void AwaitingAndQuestionFlipTheIndex()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent", "父会话", [Run("scout-1", "child-1")]);
+
+		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1", awaiting: true)]));
+		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1", question: "走哪条路？")]));
+		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1", state: SubagentState.Idle)]));
+	}
+
+	[Fact]
+	public void RemovedRunsLeaveTheIndex()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent", "父会话", [Run("scout-1", "child-1"), Run("worker-1", "child-2")]);
+
+		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1")]));
+		Assert.True(index.TryGet("child-1", out _));
+		Assert.False(index.TryGet("child-2", out _));
+		Assert.False(index.Update("parent", "父会话", [Run("scout-1", "child-1")]));
+	}
+
+	[Fact]
+	public void SummariesCountActiveAndAwaitingPerParent()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent-a", "父会话",
+		[
+			Run("scout-1", "child-1"),
+			Run("scout-2", "child-2", awaiting: true),
+			Run("worker-1", "child-3", state: SubagentState.Idle),
+		]);
+		index.Update("parent-b", "父会话", [Run("scout-9", "child-9", state: SubagentState.Running)]);
+
+		var summaries = index.Summaries();
+		Assert.Equal((2, 1), summaries["parent-a"]);
+		Assert.Equal((1, 0), summaries["parent-b"]);
+	}
+
+	[Fact]
+	public void EntriesPutWaitingFirstThenRunningThenTheRest()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent", "父会话",
+		[
+			Run("done", "child-1", state: SubagentState.Idle),
+			Run("worker", "child-2"),
+			Run("asking", "child-3", awaiting: true),
+		]);
+
+		var entries = index.Entries();
+		Assert.Equal(["asking", "worker", "done"], entries.Select(static entry => entry.Name));
+	}
+
+	[Fact]
+	public void ShrinkingOneParentDoesNotDependOnTheGlobalCount()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent-a", "A", [Run("scout-1", "child-1")]);
+		index.Update("parent-b", "B", [Run("scout-2", "child-2")]);
+
+		// P1 的过期条目被 P2 的条目把总数抬平：按全局计数判断会漏清。
+		Assert.True(index.Update("parent-a", "A", [Run("scout-3", "child-3"), Run("scout-4", "child-4")]));
+		Assert.False(index.TryGet("child-1", out _));
+		Assert.True(index.TryGet("child-2", out _));
+	}
+
+	[Fact]
+	public void TheSameChildInTwoParentsDoesNotFlipEveryFrame()
+	{
+		var index = new SubagentStatusIndex();
+		Assert.True(index.Update("parent-a", "A", [Run("scout-1", "child-1")]));
+
+		// fork 会复制同一条子代理记录：状态相同就不该每帧改写父会话、触发侧栏重建。
+		Assert.False(index.Update("parent-b", "B", [Run("scout-1", "child-1")]));
+		Assert.True(index.TryGet("child-1", out var entry));
+		Assert.Equal("parent-a", entry.ParentSessionId);
+	}
+
+	[Fact]
+	public void RemoveSessionDropsOneChild()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent", "父会话", [Run("scout-1", "child-1"), Run("scout-2", "child-2")]);
+
+		Assert.True(index.RemoveSession("child-1"));
+		Assert.False(index.TryGet("child-1", out _));
+		Assert.True(index.TryGet("child-2", out _));
+		Assert.False(index.RemoveSession(string.Empty));
+		Assert.False(index.RemoveSession("missing"));
+	}
+
+	[Fact]
+	public void RemoveParentDropsOnlyItsChildren()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent-a", "父会话", [Run("scout-1", "child-1")]);
+		index.Update("parent-b", "父会话", [Run("scout-2", "child-2")]);
+
+		Assert.True(index.RemoveParent("parent-a"));
+		Assert.False(index.TryGet("child-1", out _));
+		Assert.True(index.TryGet("child-2", out _));
+		Assert.False(index.RemoveParent("missing"));
+	}
+
+	[Fact]
+	public void RunsWithoutASessionIdStayOut()
+	{
+		var index = new SubagentStatusIndex();
+		// 子会话还没建好：没有可跳转的 id，等下一份快照。
+		Assert.False(index.Update("parent", "父会话", [Run("scout-1", string.Empty, state: SubagentState.Starting)]));
+		Assert.Empty(index.Entries());
+	}
+}

@@ -1,12 +1,27 @@
 using PiWeft.Cli;
+using PiWeft.CodingAgent;
 
 namespace PiWeft.Desktop;
 
 /// 侧栏「项目」的一行：规范化后的工作目录，以及它下面的会话。刚添加、还没开过任务的目录会话为空。
 internal sealed record ProjectGroup(string Cwd, IReadOnlyList<SessionListItem> Sessions);
 
+/// 子行相对父会话的关系。只影响侧栏计数与标记，不影响排序。
+internal enum SessionChildKind
+{
+	/// 顶层会话。
+	Root,
+	/// 子代理会话：会话文件头带 <c>origin=subagent</c>。
+	Subagent,
+	/// 关联会话：关系记在 <c>linked-sessions.json</c>。
+	Linked,
+}
+
 /// 侧栏里的一棵会话树：子会话挂在父会话下面，父会话缺失时子会话自己当根。
-internal sealed record SessionTreeEntry(SessionListItem Item, IReadOnlyList<SessionTreeEntry> Children);
+internal sealed record SessionTreeEntry(
+	SessionListItem Item,
+	IReadOnlyList<SessionTreeEntry> Children,
+	SessionChildKind Kind = SessionChildKind.Root);
 
 /// 侧栏两个分段的归属规则：工作目录就是聊天目录的会话属于「对话」，其余属于「项目」。
 /// 与 PiDeck 的内置 Chat 项目一致：「对话」是一块没有项目上下文的聊天工作区，
@@ -23,8 +38,11 @@ internal static class SessionGroups
 		[.. sessions.Where(item => !IsChat(item, chatWorkspace))];
 
 	/// 把子会话挂到父会话下面；父会话不在列表里时子会话保持顶层。
+	/// 子代理看会话文件头的 <c>parentSession</c>，关联会话看关系表；两者都可能多级。
 	/// 用 visited 兜住手改文件造成的环，最坏退化成平铺，不递归到栈溢出。
-	public static IReadOnlyList<SessionTreeEntry> Nest(IReadOnlyList<SessionListItem> sessions)
+	public static IReadOnlyList<SessionTreeEntry> Nest(
+		IReadOnlyList<SessionListItem> sessions,
+		IReadOnlyList<LinkedSessionLink>? linked = null)
 	{
 		if (sessions.Count == 0)
 		{
@@ -43,33 +61,60 @@ internal static class SessionGroups
 			}
 		}
 
-		var byParent = new Dictionary<string, List<SessionListItem>>(StringComparer.Ordinal);
-		var roots = new List<SessionListItem>();
+		// 关联会话的关系表用会话 id；父会话已经不在目录里时子行保持顶层，不挂到不存在的行上。
+		var linkedParents = new Dictionary<string, string>(StringComparer.Ordinal);
+		if (linked is { Count: > 0 })
+		{
+			foreach (var link in linked)
+			{
+				if (byKey.TryGetValue(link.ParentSessionId, out var parentId) &&
+					!string.Equals(parentId, link.ChildSessionId, StringComparison.Ordinal))
+				{
+					linkedParents[link.ChildSessionId] = parentId;
+				}
+			}
+		}
+
+		var byParent = new Dictionary<string, List<(SessionListItem Item, SessionChildKind Kind)>>(StringComparer.Ordinal);
+		var roots = new List<(SessionListItem Item, SessionChildKind Kind)>();
 		foreach (var item in sessions)
 		{
+			var kind = SessionChildKind.Root;
+			var parentId = string.Empty;
 			if (item.Origin == "subagent" &&
 				item.ParentSession.Length > 0 &&
-				byKey.TryGetValue(item.ParentSession, out var parentId) &&
-				parentId != item.Id)
+				byKey.TryGetValue(item.ParentSession, out var subagentParent) &&
+				!string.Equals(subagentParent, item.Id, StringComparison.Ordinal))
+			{
+				kind = SessionChildKind.Subagent;
+				parentId = subagentParent;
+			}
+			else if (linkedParents.TryGetValue(item.Id, out var linkedParent))
+			{
+				kind = SessionChildKind.Linked;
+				parentId = linkedParent;
+			}
+
+			if (kind == SessionChildKind.Root)
+			{
+				roots.Add((item, kind));
+			}
+			else
 			{
 				if (!byParent.TryGetValue(parentId, out var children))
 				{
 					byParent[parentId] = children = [];
 				}
 
-				children.Add(item);
-			}
-			else
-			{
-				roots.Add(item);
+				children.Add((item, kind));
 			}
 		}
 
 		var visited = new HashSet<string>(StringComparer.Ordinal);
 		var result = new List<SessionTreeEntry>(sessions.Count);
-		foreach (var item in roots)
+		foreach (var (item, kind) in roots)
 		{
-			result.Add(Build(item, 0, []));
+			result.Add(Build(item, 0, [], kind));
 		}
 
 		// 环或父会话缺失时也要有入口：没访问过的一律当根。
@@ -77,31 +122,31 @@ internal static class SessionGroups
 		{
 			if (!visited.Contains(item.Id))
 			{
-				result.Add(Build(item, 0, []));
+				result.Add(Build(item, 0, [], SessionChildKind.Root));
 			}
 		}
 
 		return result;
 
-		SessionTreeEntry Build(SessionListItem item, int depth, HashSet<string> path)
+		SessionTreeEntry Build(SessionListItem item, int depth, HashSet<string> path, SessionChildKind kind)
 		{
 			visited.Add(item.Id);
 			if (depth >= 8 || !byParent.TryGetValue(item.Id, out var children) || children.Count == 0)
 			{
-				return new SessionTreeEntry(item, []);
+				return new SessionTreeEntry(item, [], kind);
 			}
 
 			var branch = new HashSet<string>(path, StringComparer.Ordinal) { item.Id };
 			var nested = new List<SessionTreeEntry>(children.Count);
-			foreach (var child in children)
+			foreach (var (child, childKind) in children)
 			{
 				if (!branch.Contains(child.Id) && !visited.Contains(child.Id))
 				{
-					nested.Add(Build(child, depth + 1, branch));
+					nested.Add(Build(child, depth + 1, branch, childKind));
 				}
 			}
 
-			return new SessionTreeEntry(item, nested);
+			return new SessionTreeEntry(item, nested, kind);
 		}
 	}
 
