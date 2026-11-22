@@ -511,7 +511,8 @@ internal sealed class AssistantMessageView : IDisposable
 			break;
 		}
 		text.Tag = muted ? AppStyles.RoleMuted : AppStyles.RolePrimary;
-		text.Extensions.Classifiers.Add(new KeywordClassifier(language));
+		// 文档交给分类器：长行被切片后按整行重新分类，不再逐段丢上下文。
+		text.Extensions.Classifiers.Add(new KeywordClassifier(language, text.Document));
 		// 换肤后重建视图并重新排布，避免代码块只剩背景（见 AppStyles.RefreshTextView）。
 		text.WithTheme((theme, view) => AppStyles.RefreshTextView(view));
 	}

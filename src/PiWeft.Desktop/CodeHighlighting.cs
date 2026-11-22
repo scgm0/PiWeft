@@ -6,7 +6,10 @@ namespace PiWeft.Desktop;
 
 /// 代码块的轻量语法着色：按语言识别关键字、字符串、注释与数字。
 /// 只做逐行扫描（不跟踪跨行块注释），对聊天里展示的片段足够，且完全无依赖、AOT 友好。
-public sealed class KeywordClassifier(string? language) : ITextClassifier
+/// <param name="document">文本控件的文档。传了它才能按整行分类：长行被视口切片后，
+/// 分类器只收到一段，段落里看不到字符串起点或 <c>//</c> 前面的代码。
+/// 一个分类器只对应一个文档。</param>
+public sealed class KeywordClassifier(string? language, IReadOnlyTextDocument? document = null) : ITextClassifier
 {
 	private static readonly FrozenDictionary<string, FrozenSet<string>> KeywordSets =
 		new[] { "csharp", "typescript", "javascript", "python", "bash", "json", "sql", "rust", "go" }
@@ -15,12 +18,72 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 
 	private readonly string _language = Normalize(language);
 	private readonly FrozenSet<string> _keywords = KeywordSets.GetValueOrDefault(Normalize(language), FrozenSet<string>.Empty);
+	private CachedLine? _lineCache;
 
 	public string Language => _language.Length == 0 ? "text" : _language;
 
 	public void Classify(in TextClassificationContext context, IList<TextPaintSpan> output)
 	{
-		var text = context.Text.Span;
+		var length = context.Text.Length;
+		if (length == 0) return;
+		var lineNumber = context.LogicalLine.LineNumber;
+		if (document is null || (uint)lineNumber >= (uint)document.LineCount)
+		{
+			var local = new List<(int Start, int Length, TokenKind Kind)>();
+			ClassifyLine(context.Text.Span, local);
+			Emit(local, 0, length, output);
+			return;
+		}
+
+		// 长行横滚时同一行会被切成几段反复送进来。按整行分类一次再裁到段内，
+		// 片段里看不到字符串起点或 // 前面的代码，逐段扫会偏色。
+		var version = document.Version;
+		var cache = _lineCache;
+		if (cache is null || cache.LineNumber != lineNumber || cache.Version != version)
+		{
+			var source = document.GetLineByNumber(lineNumber);
+			var tokens = new List<(int Start, int Length, TokenKind Kind)>();
+			// 切片就是整行时直接用框架给的文本，省一次 GetText 分配；短行绝大多数走这条。
+			var sliceOffset = context.LogicalLine.Offset - source.Offset;
+			var lineText = sliceOffset == 0 && length == source.Length
+				? context.Text.Span
+				: document.GetText(source.Offset, source.Length);
+			ClassifyLine(lineText, tokens);
+			cache = new CachedLine(lineNumber, version, source.Offset, tokens.ToArray());
+			_lineCache = cache;
+		}
+
+		// 颜色在输出时按当前主题取，缓存的是 token 位置：换肤后命中缓存也不会留着旧色。
+		var start = context.LogicalLine.Offset - cache.LineStart;
+		Emit(cache.Tokens, start, start + length, output);
+	}
+
+	/// 把整行 token 裁到切片范围，并平移到切片坐标。
+	private static void Emit(IReadOnlyList<(int Start, int Length, TokenKind Kind)> tokens, int start, int end,
+		IList<TextPaintSpan> output)
+	{
+		for (var index = 0; index < tokens.Count; index++)
+		{
+			var (tokenStart, tokenLength, kind) = tokens[index];
+			var from = Math.Max(tokenStart, start);
+			var to = Math.Min(tokenStart + tokenLength, end);
+			if (to > from)
+			{
+				output.Add(new TextPaintSpan(new TextRange(from - start, to - from), ColorOf(kind)));
+			}
+		}
+	}
+
+	private static Color ColorOf(TokenKind kind) => kind switch
+	{
+		TokenKind.Keyword => SyntaxPalette.Keyword,
+		TokenKind.String => SyntaxPalette.String,
+		TokenKind.Comment => SyntaxPalette.Comment,
+		_ => SyntaxPalette.Number,
+	};
+
+	private void ClassifyLine(ReadOnlySpan<char> text, List<(int Start, int Length, TokenKind Kind)> output)
+	{
 		var keywords = _keywords.GetAlternateLookup<ReadOnlySpan<char>>();
 		var index = 0;
 
@@ -31,7 +94,7 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 			// 行注释
 			if (IsLineCommentStart(text, index))
 			{
-				Add(output, index, text.Length - index, SyntaxPalette.Comment);
+				Add(output, index, text.Length - index, TokenKind.Comment);
 				return;
 			}
 
@@ -39,7 +102,7 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 			if (c is '"' or '\'' or '`')
 			{
 				var end = ScanString(text, index);
-				Add(output, index, end - index, SyntaxPalette.String);
+				Add(output, index, end - index, TokenKind.String);
 				index = end;
 				continue;
 			}
@@ -53,7 +116,7 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 					end++;
 				}
 
-				Add(output, index, end - index, SyntaxPalette.Number);
+				Add(output, index, end - index, TokenKind.Number);
 				index = end;
 				continue;
 			}
@@ -70,7 +133,7 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 				var word = text[index..end];
 				if (keywords.Contains(word))
 				{
-					Add(output, index, end - index, SyntaxPalette.Keyword);
+					Add(output, index, end - index, TokenKind.Keyword);
 				}
 
 				index = end;
@@ -121,12 +184,24 @@ public sealed class KeywordClassifier(string? language) : ITextClassifier
 		return text.Length;
 	}
 
-	private static void Add(IList<TextPaintSpan> output, int offset, int length, Color color)
+	private static void Add(List<(int Start, int Length, TokenKind Kind)> output, int offset, int length, TokenKind kind)
 	{
 		if (length > 0)
 		{
-			output.Add(new TextPaintSpan(new TextRange(offset, length), color));
+			output.Add((offset, length, kind));
 		}
+	}
+
+	/// 一行的完整分类结果，token 区间相对行首；颜色在输出时按当前主题取。
+	private sealed record CachedLine(int LineNumber, long Version, int LineStart,
+		(int Start, int Length, TokenKind Kind)[] Tokens);
+
+	private enum TokenKind : byte
+	{
+		Keyword,
+		String,
+		Comment,
+		Number,
 	}
 
 	private static bool IsIdentifierStart(char c) => char.IsAsciiLetter(c) || c == '_' || c == '$';
