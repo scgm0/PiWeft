@@ -4,6 +4,7 @@ public static partial class Strings
 {
 	// 托盘
 	public const string TrayShowWindow = "显示主窗口";
+	public const string TrayHideWindow = "隐藏主窗口";
 	public const string TrayQuit = "退出 PiWeft";
 
 	// 关闭行为

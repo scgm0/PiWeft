@@ -91,6 +91,11 @@ sleep 1
 
 wait_phase revealed
 [[ -n "$(visible_window)" ]] || { printf 'FAIL: window not visible after reveal\n'; exit 1; }
+menus="$(grep -o 'tray-menu=[^ ]*' "$output/stdout.log" | cut -d= -f2 | tr '\n' ' ')"
+if [[ "$menus" != "pi.tray.hide pi.tray.show pi.tray.hide " ]]; then
+  printf 'FAIL: tray menu did not follow window state: %s\n' "$menus"
+  exit 1
+fi
 for _ in $(seq 1 120); do
   kill -0 "$app_pid" 2>/dev/null || break
   sleep 0.25
