@@ -51,6 +51,8 @@ public sealed class SubagentTests : IDisposable
 		int depth = 0,
 		int maxActive = 4,
 		int maxSpawns = 32,
+		int maxWriters = 0,
+		bool team = false,
 		SessionManager? session = null,
 		TimeSpan? runTimeout = null) =>
 		new(new CodingAgentSessionOptions
@@ -69,6 +71,8 @@ public sealed class SubagentTests : IDisposable
 			{
 				MaxActive = maxActive,
 				MaxSpawns = maxSpawns,
+				MaxWriters = maxWriters,
+				Team = team,
 				RunTimeout = runTimeout ?? TimeSpan.FromMinutes(30),
 			},
 			Agents = catalog ?? Builtins,
@@ -1358,6 +1362,263 @@ public sealed class SubagentTests : IDisposable
 		gate.SetResult();
 		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理结束");
 		Assert.Null(hub.Runs.Single().Progress);
+	}
+
+	[Fact]
+	public async Task ClearWorktreeDropsThePathFromTheRun()
+	{
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(new ScriptedStreamFn());
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+		var started = await hub.StartAsync(new SubagentStartRequest("worker", "写一下。") { Worktree = true });
+		Assert.True(started.Ok, started.Text);
+		Assert.NotNull(hub.Runs.Single().WorktreePath);
+
+		Assert.True(hub.ClearWorktree(started.Name!));
+		var run = hub.Runs.Single();
+		Assert.Null(run.WorktreePath);
+		Assert.Null(run.WorktreeBranch);
+	}
+
+	[Fact]
+	public void TeamBoardClaimsCompletesAndRejectsStaleRevisions()
+	{
+		using var parent = CreateParent(new ScriptedStreamFn(), new FakeHost(_root), team: true);
+		var board = Assert.IsType<TeamBoard>(Assert.IsType<SubagentHub>(parent.Subagents).Team);
+
+		var created = board.Create("lead", "写登录流程", "改 Auth.cs 并跑测试。", null, ["src/Auth.cs"]);
+		Assert.True(created.Ok, created.Text);
+		var task = Assert.Single(board.Tasks);
+		Assert.Equal("task-1", task.Id);
+		Assert.Equal(TeamTaskStatus.Pending, task.Status);
+
+		var claimed = board.Update("worker-1", task.Id, task.Revision, "claim");
+		Assert.True(claimed.Ok, claimed.Text);
+		var stale = board.Update("lead", task.Id, task.Revision, "complete");
+		Assert.False(stale.Ok);
+		Assert.Contains("stale", stale.Text);
+
+		var completed = board.Update("worker-1", task.Id, task.Revision + 1, "complete");
+		Assert.True(completed.Ok, completed.Text);
+		Assert.Equal(TeamTaskStatus.Completed, board.Get(task.Id).Details!["task"]!["status"]!.GetValue<string>());
+	}
+
+	[Fact]
+	public void TeamBoardBlocksUnreadyDependenciesAndDetectsCycles()
+	{
+		using var parent = CreateParent(new ScriptedStreamFn(), new FakeHost(_root), team: true);
+		var board = Assert.IsType<TeamBoard>(Assert.IsType<SubagentHub>(parent.Subagents).Team);
+
+		Assert.True(board.Create("lead", "先做 A", "A 的说明。", null, null).Ok);
+		Assert.True(board.Create("lead", "再做 B", "B 的说明。", ["task-1"], null).Ok);
+
+		var blocked = board.Update("worker-1", "task-2", 1, "claim");
+		Assert.False(blocked.Ok);
+		Assert.Contains("dependencies", blocked.Text);
+
+		// task-1 依赖 task-2，而 task-2 已依赖 task-1：成环。
+		var cycle = board.Update("lead", "task-1", 1, "set_dependencies", blockedBy: ["task-2"]);
+		Assert.False(cycle.Ok);
+		Assert.Contains("cycle", cycle.Text);
+
+		Assert.True(board.Update("lead", "task-1", 1, "complete").Ok);
+		Assert.True(board.Update("worker-1", "task-2", 1, "claim").Ok);
+	}
+
+	[Fact]
+	public void TeamBoardRestoresFromTheParentSessionLog()
+	{
+		using var parent = CreateParent(new ScriptedStreamFn(), new FakeHost(_root), team: true);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+		var board = Assert.IsType<TeamBoard>(hub.Team);
+		Assert.True(board.Create("lead", "持久化", "重启后还要在。", null, ["src/A.cs"]).Ok);
+
+		using var reopened = new SubagentHub(
+			parent,
+			new FakeHost(_root),
+			hub.Catalog,
+			0,
+			new SubagentLimits { Team = true });
+		var restored = Assert.IsType<TeamBoard>(reopened.Team);
+		var task = Assert.Single(restored.Tasks);
+		Assert.Equal("task-1", task.Id);
+		Assert.Equal("持久化", task.Subject);
+		Assert.Equal(["src/A.cs"], task.WriteScopes);
+	}
+
+	[Fact]
+	public void TeamToolsAreRegisteredForTheParentWhenTeamIsOn()
+	{
+		using var parent = CreateParent(new ScriptedStreamFn(), new FakeHost(_root), team: true);
+		var names = parent.Tools.Select(static tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+		Assert.Contains(TeamTools.CreateName, names);
+		Assert.Contains(TeamTools.ListName, names);
+		Assert.Contains(TeamTools.GetName, names);
+		Assert.Contains(TeamTools.UpdateName, names);
+
+		using var plain = CreateParent(new ScriptedStreamFn(), new FakeHost(_root));
+		Assert.DoesNotContain(TeamTools.CreateName, plain.Tools.Select(static tool => tool.Name));
+	}
+
+	[Fact]
+	public async Task WorktreeRequiresAWritingRole()
+	{
+		using var parent = CreateParent(new ScriptedStreamFn(), new FakeHost(_root));
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var rejected = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。") { Worktree = true });
+		Assert.False(rejected.Ok);
+		Assert.Contains("worktree", rejected.Text);
+	}
+
+	[Fact]
+	public async Task WorktreeStartsAWriterWithABranchAndPassesItToTheHost()
+	{
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(new ScriptedStreamFn());
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到。");
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("worker", "写一下。") { Worktree = true });
+		Assert.True(started.Ok, started.Text);
+		var run = hub.Runs.Single();
+		Assert.StartsWith("piweft/", run.WorktreeBranch, StringComparison.Ordinal);
+		Assert.NotNull(run.WorktreePath);
+		var context = Assert.Single(host.Contexts);
+		Assert.True(context.Worktree);
+		Assert.Equal(run.WorktreeBranch, context.WorktreeBranch);
+	}
+
+	[Fact]
+	public async Task WriterLimit_RejectsASecondWritingSubagent()
+	{
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var firstStream = new ScriptedStreamFn();
+		firstStream.Enqueue(model => GatedText(model, "第一轮。", gate.Task));
+		var scoutStream = new ScriptedStreamFn();
+		scoutStream.EnqueueText("查完了。");
+		var thirdStream = new ScriptedStreamFn();
+		thirdStream.EnqueueText("第三轮。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(firstStream);
+		host.Streams.Enqueue(scoutStream);
+		host.Streams.Enqueue(thirdStream);
+
+		var parentStream = new ScriptedStreamFn();
+		for (var index = 0; index < 4; index++)
+		{
+			parentStream.EnqueueText("父会话收到。");
+		}
+
+		using var parent = CreateParent(parentStream, host, maxWriters: 1);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var first = await hub.StartAsync(new SubagentStartRequest("worker", "先写一个。"));
+		Assert.True(first.Ok, first.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single(run => run.Name == first.Name).State == SubagentState.Running, "第一个写者应占住名额");
+
+		var second = await hub.StartAsync(new SubagentStartRequest("worker", "同时再写一个。"));
+		Assert.False(second.Ok);
+		Assert.Contains("writer limit", second.Text);
+
+		// 只读子代理不占写者名额。
+		var scout = await hub.StartAsync(new SubagentStartRequest("scout", "只读查一下。"));
+		Assert.True(scout.Ok, scout.Text);
+
+		gate.SetResult();
+		await Eventually.IsTrue(() => hub.Runs.Single(run => run.Name == first.Name).State == SubagentState.Idle, "第一个写者结束");
+		var third = await hub.StartAsync(new SubagentStartRequest("worker", "现在可以写了。"));
+		Assert.True(third.Ok, third.Text);
+	}
+
+	[Fact]
+	public async Task WriterLimit_AppliesWhenAnIdleWriterContinues()
+	{
+		var firstGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var secondGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var firstStream = new ScriptedStreamFn();
+		firstStream.Enqueue(model => GatedText(model, "第一轮。", firstGate.Task));
+		firstStream.Enqueue(model => GatedText(model, "第二轮。", secondGate.Task));
+		var secondStream = new ScriptedStreamFn();
+		secondStream.EnqueueText("另一个。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(firstStream);
+		host.Streams.Enqueue(secondStream);
+
+		var parentStream = new ScriptedStreamFn();
+		for (var index = 0; index < 4; index++)
+		{
+			parentStream.EnqueueText("父会话收到。");
+		}
+
+		using var parent = CreateParent(parentStream, host, maxWriters: 1);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+		var first = await hub.StartAsync(new SubagentStartRequest("worker", "先写。"));
+		Assert.True(first.Ok, first.Text);
+		firstGate.SetResult();
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "第一轮结束");
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+
+		var sent = await hub.SendAsync(first.Name!, "再写一轮。");
+		Assert.True(sent.Ok, sent.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Running, "继续的一轮应重新占名额");
+
+		var second = await hub.StartAsync(new SubagentStartRequest("worker", "同时写。"));
+		Assert.False(second.Ok);
+		Assert.Contains("writer limit", second.Text);
+		secondGate.SetResult();
+	}
+
+	[Fact]
+	public async Task ChangedFilesAreRecordedForWriteTools()
+	{
+		var childStream = new ScriptedStreamFn();
+		childStream.Enqueue(model => TextThenToolCall(
+			model,
+			"先写一个文件。",
+			"call-1",
+			"write",
+			new JsonObject { ["path"] = "changed.txt", ["content"] = "hello" }));
+		childStream.EnqueueText("写完了。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+		var started = await hub.StartAsync(new SubagentStartRequest("worker", "改个东西。"));
+		Assert.True(started.Ok, started.Text);
+
+		await Eventually.IsTrue(() => hub.Runs.Single().ChangedFiles.Count == 1, "写工具的路径应记进改动文件");
+		var run = hub.Runs.Single();
+		Assert.Contains("changed.txt", run.ChangedFiles[0], StringComparison.Ordinal);
+		Assert.False(run.MayWrite);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理结束");
+	}
+
+	[Fact]
+	public async Task ShellToolsMarkTheRunAsPossibleWriter()
+	{
+		var childStream = new ScriptedStreamFn();
+		childStream.Enqueue(model => TextThenToolCall(
+			model,
+			"跑一条命令。",
+			"call-1",
+			"bash",
+			new JsonObject { ["command"] = "true" }));
+		childStream.EnqueueText("跑完了。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+		var started = await hub.StartAsync(new SubagentStartRequest("worker", "跑一下。"));
+		Assert.True(started.Ok, started.Text);
+
+		await Eventually.IsTrue(() => hub.Runs.Single().MayWrite, "shell 工具应标可能写入");
+		Assert.Empty(hub.Runs.Single().ChangedFiles);
 	}
 
 	[Fact]

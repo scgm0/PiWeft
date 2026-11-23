@@ -13,7 +13,9 @@ public sealed class SubagentStatusIndexTests
 		bool awaiting = false,
 		string? question = null,
 		string? activity = null,
-		long tokens = 0) => new()
+		long tokens = 0,
+		IReadOnlyList<string>? changedFiles = null,
+		bool mayWrite = false) => new()
 	{
 		Name = name,
 		SessionId = sessionId,
@@ -23,6 +25,8 @@ public sealed class SubagentStatusIndexTests
 		Question = question,
 		Activity = activity,
 		Tokens = tokens,
+		ChangedFiles = changedFiles ?? [],
+		MayWrite = mayWrite,
 	};
 
 	[Fact]
@@ -81,8 +85,22 @@ public sealed class SubagentStatusIndexTests
 		index.Update("parent-b", "父会话", [Run("scout-9", "child-9", state: SubagentState.Running)]);
 
 		var summaries = index.Summaries();
-		Assert.Equal((2, 1), summaries["parent-a"]);
-		Assert.Equal((1, 0), summaries["parent-b"]);
+		Assert.Equal((2, 1, 0), summaries["parent-a"]);
+		Assert.Equal((1, 0, 0), summaries["parent-b"]);
+	}
+
+	[Fact]
+	public void SummariesCountChangedFilesNotPossibleWrites()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent", "父会话",
+		[
+			Run("worker-1", "child-1", changedFiles: ["/repo/a.cs", "/repo/b.cs"]),
+			Run("worker-2", "child-2", mayWrite: true),
+		]);
+
+		// 「可能写入」不算确定改动：父行只说有一个子代理真的改了文件。
+		Assert.Equal((2, 0, 1), index.Summaries()["parent"]);
 	}
 
 	[Fact]

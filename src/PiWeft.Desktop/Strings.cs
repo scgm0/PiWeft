@@ -419,6 +419,36 @@ public static partial class Strings
 
 	public const string GitDone = "已完成。";
 
+	public const string GitWorktreeAdded = "隔离副本已创建。";
+
+	public const string GitWorktreeRemoved = "隔离副本已删除。";
+
+	public const string GitWorktreeBranchKept = "隔离副本已删除，但分支还在。";
+
+	public static string GitWorktreeBaseMissing(string reference) => $"基线 commit 不存在：{reference}";
+
+	public const string GitPatchApplied = "改动已应用到主工作区。";
+
+	public const string GitPatchConflict = "patch 与主工作区冲突，未应用。";
+
+	public const string GitPatchWriteFailed = "写临时 patch 文件失败。";
+
+	public const string GitWorktreeDirtyMain = "主工作区有未提交改动，patch 可能冲突。";
+
+	public const string GitWorktreeNoChanges = "隔离副本没有改动。";
+
+	public const string WorktreeCleanup = "清理隔离副本";
+
+	public static string WorktreeCleanupDetail(int count) => $"{count} 个父会话已不在的副本";
+
+	public static string WorktreeCleanupConfirm(int count) => $"删除 {count} 个孤儿隔离副本与分支？主工作区不受影响。";
+
+	public const string WorktreeCleanupNone = "没有需要清理的隔离副本。";
+
+	public static string WorktreeCleanupDone(int count) => $"已清理 {count} 个隔离副本。";
+
+	public static string WorktreeCleanupPartial(int removed, int failed) => $"清理了 {removed} 个，{failed} 个失败。";
+
 	public const string GitStage = "暂存";
 
 	public const string GitUnstage = "取消暂存";

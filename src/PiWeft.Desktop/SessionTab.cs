@@ -1,3 +1,4 @@
+using PiWeft.CodingAgent.Subagents;
 using System.Diagnostics;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
@@ -163,8 +164,12 @@ public sealed partial class SessionTab : IDisposable
 	private readonly SubagentCard _subagentCard;
 	/// 上一次算出的「有子代理在等回答」：避免每次工具活动都去刷页签标题。
 	private bool _awaitingSubagents;
+	private int _runningSubagents = -1;
 	private readonly GoalStripCard _goalStrip;
 	private readonly ReadingColumn _widgetColumn = new();
+	private readonly ComposerWorkbench _workbench;
+	private readonly WorkspaceNoticeView _workspaceNotice = new();
+	private readonly TeamTasksCard _teamTasksCard = new();
 	private readonly Button _retry;
 	private readonly Button _copyReply;
 	private readonly Button _modelButton;
@@ -252,6 +257,12 @@ public sealed partial class SessionTab : IDisposable
 
 	/// 子代理从「没在等」变成「在等回答」（或反向）时触发；页签圆点靠它刷新。
 	public event Action<SessionTab>? SubagentAwaitChanged;
+
+	/// 隔离副本的「应用 / 丢弃」交给窗口：git 操作与确认框不进标签。
+	internal event Action<SessionTab, SubagentRun, WorktreeAction>? WorktreeActionRequested;
+
+	/// 正在跑的子代理数量变化；页签状态点靠它刷新。
+	public event Action? SubagentStatusChanged;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
 		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null,
@@ -599,17 +610,43 @@ public sealed partial class SessionTab : IDisposable
 		_linkedSessionsCard = new LinkedSessionsCard();
 
 		// 子代理条：只列本会话开出的子代理，运行中可以停。
-		_subagentCard = new SubagentCard(OpenLinkedSession, StopSubagent, SubagentFailed);
+		_subagentCard = new SubagentCard(
+			OpenLinkedSession,
+			StopSubagent,
+			SubagentFailed,
+			RequestWorktreeAction,
+			ShowWorktreeDiff);
 
 		// 目标条贴着输入卡（PiDeck 同位置）：目标属于下一轮的输入，不属于本轮结论。
 		_goalStrip = new GoalStripCard(PauseGoal, ResumeGoal, ConfirmClearGoal, EditGoal, Session.Cwd);
+
+		// 工作台接管所有扩展卡：卡头不再各占一行，摘要行给标题与计数，内容区一次只展开一节。
+		_workbench = new ComposerWorkbench(
+		[
+			new WorkbenchSection("goal", Strings.WorkbenchGoal, _goalStrip.View,
+				() => _goalStrip.IsShown, () => _goalStrip.Summary, Icon: "target"),
+			new WorkbenchSection("plan", Strings.PlanCardTitle, _planCard.View,
+				() => _planCard.View.IsVisible, () => _planCard.Meta, Icon: "file-text"),
+			new WorkbenchSection("queue", Strings.QueuedMessagesTitle, _queueCard.View,
+				() => _queueCard.View.IsVisible, () => _queueCard.Meta, Icon: "list-ordered"),
+			new WorkbenchSection("todo", Strings.TodoPlanTitle, _todoCard.View,
+				() => _todoCard.View.IsVisible, () => _todoCard.Meta, Icon: "list-checks"),
+			new WorkbenchSection("subagent", Strings.SubagentCardTitle, _subagentCard.View,
+				() => _subagentCard.IsShown, () => _subagentCard.Meta, Icon: "sparkles"),
+			new WorkbenchSection("team", Strings.TeamTasksTitle, _teamTasksCard.View,
+				() => _teamTasksCard.IsShown, () => _teamTasksCard.Meta, Icon: "list-checks"),
+			new WorkbenchSection("linked", Strings.LinkedSessionsTitle, _linkedSessionsCard.View,
+				() => _linkedSessionsCard.IsShown, () => _linkedSessionsCard.Meta, Icon: "message-square"),
+			new WorkbenchSection("extensions", Strings.ExtensionWidgetsTitle, _extensionCard.View,
+				() => _extensionCard.View.IsVisible, () => _extensionCard.Meta, Icon: "package"),
+		]);
 
 		// 扩展卡与输入卡同宽同列：ReadingColumn 按阅读宽度封顶并撑满可用宽度，
 		// 卡片在自己的列里拉伸，窗口缩放与阅读宽度设置都自动跟随。
 		_widgetColumn.Spacing(AppTheme.Space2)
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
 			.IsVisible(false)
-			.Children(_queueCard.View, _todoCard.View, _planCard.View, _linkedSessionsCard.View, _subagentCard.View, _extensionCard.View, _goalStrip.View);
+			.Children(_workspaceNotice.View, _workbench.View);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
 		// 三段各留固定宽度：呼吸点伸缩、状态短语轮换、提示每七秒换一条；
@@ -654,6 +691,7 @@ public sealed partial class SessionTab : IDisposable
 			IsVisible = false,
 		};
 		_busyColumn.Children(_busyLine);
+		_workbench.AttachStatus(_busyColumn);
 
 		var composerPane = _composerPane = new Border()
 			.StyleName(AppStyles.Composer)
@@ -738,7 +776,7 @@ public sealed partial class SessionTab : IDisposable
 
 		_inputStack = new StackPanel()
 			.Spacing(2)
-			.Children(_widgetColumn, _emptyCard.IsVisible(false), _busyColumn, composerPane);
+			.Children(_widgetColumn, _emptyCard.IsVisible(false), composerPane);
 
 		// 问询卡片与会话同宽同列：真实窗口里该宽由 ReadingPreferences 随阅读宽度再算一次。
 		_askPanel = new AskQuestionPanel(OnAskVisibilityChanged, () => Session.Cwd);
@@ -812,7 +850,13 @@ public sealed partial class SessionTab : IDisposable
 		if (Session.Subagents is { } subagents)
 		{
 			subagents.Changed += OnSubagentsChanged;
+			if (subagents.Team is { } team)
+			{
+				team.Changed += OnTeamChanged;
+			}
+
 			RefreshSubagents();
+			RefreshTeamTasks();
 		}
 
 		var pickers = Diagnostics.Enabled ? Stopwatch.StartNew() : null;
@@ -841,6 +885,10 @@ public sealed partial class SessionTab : IDisposable
 
 	/// 计划执行或目标正在自动推进：页签/侧栏用它显示运行标记。
 	internal bool HasRunningMode => Session.PlanExecutionEnabled || Session.Goal.Running;
+
+	/// 正在跑的子代理数量；页签状态与侧栏用它。
+	/// hub 直接数，不复制快照：这个值在每次标题刷新时都会读。
+	internal int RunningSubagentCount => Session.Subagents?.ActiveRunCount() ?? 0;
 
 	/// 模式运行态变化：页签与侧栏标记跟着刷新。
 	public event Action<SessionTab>? ModeChanged;
@@ -882,7 +930,21 @@ public sealed partial class SessionTab : IDisposable
 	internal int QueueCardRowCount => _queueRows.Children.Count;
 
 	/// 测试用：直接把一份队列快照铺到排队卡上，不需要真跑一轮。
-	internal void RefreshQueueForTests(IReadOnlyList<ChatQueuedMessage> queued) => RefreshQueueStrip(queued);
+	internal void ShowSubagentCardForTests()
+	{
+		_workbench.SelectForTests("subagent");
+		// 选中只给卡头预览；测试要看行，再展开卡体。
+		_subagentCard.Expand();
+		RefreshWidgetColumn();
+	}
+
+	internal void RefreshQueueForTests(IReadOnlyList<ChatQueuedMessage> queued)
+	{
+		RefreshQueueStrip(queued);
+		// 默认收起是产品行为；测试要量排队卡的布局，选中后再展开卡体。
+		_workbench.SelectForTests("queue");
+		_queueCard.IsExpanded = true;
+	}
 
 	internal SendOptionsMenu SendMenuForTests => _sendMenu;
 
@@ -1119,6 +1181,10 @@ public sealed partial class SessionTab : IDisposable
 		if (Session.Subagents is { } subagents)
 		{
 			subagents.Changed -= OnSubagentsChanged;
+			if (subagents.Team is { } team)
+			{
+				team.Changed -= OnTeamChanged;
+			}
 		}
 
 		_chat.Changed -= OnChatChanged;
@@ -2548,7 +2614,12 @@ public sealed partial class SessionTab : IDisposable
 		_busyStatus = responding;
 		var kindChanged = responding?.Kind != _busyKind;
 		_busyKind = responding?.Kind;
-		_busyColumn.IsVisible(responding is not null);
+		var busyVisible = responding is not null;
+		if (_busyColumn.IsVisible != busyVisible)
+		{
+			_busyColumn.IsVisible(busyVisible);
+			RefreshWidgetColumn();
+		}
 		if (responding is { } active)
 		{
 			if (kindChanged)
@@ -3119,9 +3190,8 @@ public sealed partial class SessionTab : IDisposable
 	private void RefreshWidgetColumn()
 	{
 		// IsVisible 的同值写入也会触发失效：待办/计划/队列/扩展/子会话/目标六处都会调这里，先比较再写。
-		var visible = _todoCard.View.IsVisible || _planCard.View.IsVisible || _extensionCard.View.IsVisible ||
-			_queueCard.View.IsVisible || _linkedSessionsCard.View.IsVisible || _subagentCard.View.IsVisible ||
-			_goalStrip.View.IsVisible;
+		_workbench.Refresh();
+		var visible = _workspaceNotice.View.IsVisible || _workbench.IsShown;
 		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
 	}
 

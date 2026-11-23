@@ -650,10 +650,12 @@ public sealed record CodingAgentSettings
 			var target = root["subagents"] as JsonObject ?? new JsonObject();
 			Write(target, "maxActive", subagents.MaxActive);
 			Write(target, "maxSpawns", subagents.MaxSpawns);
+			Write(target, "maxWriters", subagents.MaxWriters);
 			Write(target, "runTimeoutMinutes", subagents.RunTimeoutMinutes);
 			Write(target, "maxTokens", subagents.MaxTokens);
 			Write(target, "verifyTimeoutSeconds", subagents.VerifyTimeoutSeconds);
 			Write(target, "openTabs", subagents.OpenTabs);
+			Write(target, "team", subagents.Team);
 			root["subagents"] = target;
 		}
 
@@ -892,10 +894,12 @@ public sealed record CodingAgentSettings
 		{
 			MaxActive = NormalizeRange(project?.Subagents?.MaxActive ?? global?.Subagents?.MaxActive, 1, 32, 4),
 			MaxSpawns = NormalizeRange(project?.Subagents?.MaxSpawns ?? global?.Subagents?.MaxSpawns, 1, 512, 32),
+			MaxWriters = NormalizeRange(project?.Subagents?.MaxWriters ?? global?.Subagents?.MaxWriters, 0, 16, 0),
 			RunTimeoutMinutes = NormalizeRange(project?.Subagents?.RunTimeoutMinutes ?? global?.Subagents?.RunTimeoutMinutes, 1, 1440, 30),
 			MaxTokens = NormalizeRange(project?.Subagents?.MaxTokens ?? global?.Subagents?.MaxTokens, 0, 10_000_000, 0),
 			VerifyTimeoutSeconds = NormalizeRange(project?.Subagents?.VerifyTimeoutSeconds ?? global?.Subagents?.VerifyTimeoutSeconds, 1, 86_400, 600),
 			OpenTabs = project?.Subagents?.OpenTabs ?? global?.Subagents?.OpenTabs ?? false,
+			Team = project?.Subagents?.Team ?? global?.Subagents?.Team ?? false,
 		},
 		// 安全门只认全局设置：项目里的 .pi/settings.json 可以随仓库一起分发，
 		// 让它能改自己的安全等级等于让仓库关掉用户的防护。
@@ -1199,10 +1203,12 @@ public sealed record CodingAgentSettings
 		{
 			MaxActive = settings.Subagents.MaxActive,
 			MaxSpawns = settings.Subagents.MaxSpawns,
+			MaxWriters = settings.Subagents.MaxWriters,
 			RunTimeoutMinutes = settings.Subagents.RunTimeoutMinutes,
 			MaxTokens = settings.Subagents.MaxTokens,
 			VerifyTimeoutSeconds = settings.Subagents.VerifyTimeoutSeconds,
 			OpenTabs = settings.Subagents.OpenTabs,
+			Team = settings.Subagents.Team,
 		},
 		Retry = new RetryFile
 		{
@@ -1231,6 +1237,8 @@ public sealed record CodingAgentSettings
 	{
 		MaxActive = settings.MaxActive,
 		MaxSpawns = settings.MaxSpawns,
+		MaxWriters = settings.MaxWriters,
+		Team = settings.Team,
 		RunTimeout = TimeSpan.FromMinutes(settings.RunTimeoutMinutes),
 		MaxTokens = settings.MaxTokens,
 		VerifyTimeout = TimeSpan.FromSeconds(settings.VerifyTimeoutSeconds),
@@ -1271,6 +1279,9 @@ public sealed record SubagentsSettings
 	/// <summary>每个用户回合最多启动多少个子代理；防止回报触发的连锁委派无限扩张。</summary>
 	public int MaxSpawns { get; init; } = 32;
 
+	/// <summary>同一工作目录同时活跃的写子代理上限；0 表示不限。</summary>
+	public int MaxWriters { get; init; }
+
 	/// <summary>单次运行的时限（分钟）；到点先提醒收尾，再到点停 run。</summary>
 	public int RunTimeoutMinutes { get; init; } = 30;
 
@@ -1285,6 +1296,9 @@ public sealed record SubagentsSettings
 	/// 卡片行按需打开活的转录，标签栏不被并行委派占满。
 	/// </summary>
 	public bool OpenTabs { get; init; }
+
+	/// <summary>是否启用共享任务板。默认关：普通委派不需要第二套待办。</summary>
+	public bool Team { get; init; }
 }
 
 public sealed record SettingsFile
@@ -1379,6 +1393,8 @@ public sealed record SubagentsFile
 
 	public int? MaxSpawns { get; init; }
 
+	public int? MaxWriters { get; init; }
+
 	public int? RunTimeoutMinutes { get; init; }
 
 	public int? MaxTokens { get; init; }
@@ -1386,6 +1402,8 @@ public sealed record SubagentsFile
 	public int? VerifyTimeoutSeconds { get; init; }
 
 	public bool? OpenTabs { get; init; }
+
+	public bool? Team { get; init; }
 }
 
 

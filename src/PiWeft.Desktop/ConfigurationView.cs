@@ -267,6 +267,10 @@ internal sealed partial class ConfigurationView
 		new WrapPanel().Spacing(AppTheme.Space4).Children(fields);
 	private static TextBlock Hint(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap);
+
+	/// 卡片内的分组小标题：同一张卡里把并发、运行预算和界面开关分开读。
+	private static TextBlock SubLabel(string text) => new TextBlock().Text(text)
+		.FontSize(AppTheme.FontSizeCaption).FontWeight(FontWeight.Medium).PrimaryText();
 	/// 一枚工具 chip；<paramref name="disabled"/> 表示它被「扩展」里的内置开关挡下，
 	/// 名字压暗并给出原因，× 仍可用（把已经失效的条目清掉）。
 	private static UIElement ToolChip(string name, Action remove, bool disabled = false)
@@ -293,12 +297,30 @@ internal sealed partial class ConfigurationView
 
 	private static Button ActionButton(string title, Action action) => new Button().Content(Label(title)).OnClick(action);
 
-	private static Element FormCard(string title, string hint, params UIElement[] fields) => new Border()
-		.StyleName(AppStyles.Card).Padding(new Thickness(AppTheme.Space4)).Child(
-			new StackPanel().Spacing(AppTheme.Space3).Children(
-				Label(title).FontWeight(FontWeight.Bold),
-				new TextBlock().Text(hint).FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap))
-			.Children(fields));
+	private static Element FormCard(string title, string hint, params UIElement[] fields) =>
+		FormCard(null, title, hint, fields);
+
+	/// 带图标的表单卡：设置页的每张卡先给一个可扫的图标，标题与说明再往下读。
+	private static Element FormCard(string? icon, string title, string hint, params UIElement[] fields)
+	{
+		var heading = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(AppTheme.Space2)
+			.VerticalAlignment(VerticalAlignment.Center);
+		if (icon is { Length: > 0 })
+		{
+			heading.Children(AppIcons.Icon(icon, AppStyles.RoleSubtle, 14));
+		}
+
+		heading.Children(Label(title).FontWeight(FontWeight.Bold));
+
+		return new Border()
+			.StyleName(AppStyles.Card).Padding(new Thickness(AppTheme.Space4)).Child(
+				new StackPanel().Spacing(AppTheme.Space3).Children(
+					heading,
+					new TextBlock().Text(hint).FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap))
+				.Children(fields));
+	}
 
 	private async Task DeleteAsync(string title, Action mutation)
 	{

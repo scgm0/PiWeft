@@ -50,10 +50,7 @@ public sealed partial class MainWindow
 			var time = context.Get<TextBlock>("time")!;
 			if (node.Tag is SessionListItem item)
 			{
-				title.FontWeight(FontWeight.Normal).Text(
-					(_pinnedSessionIds.Contains(item.Id) ? Strings.PinnedMark + " " : "") +
-					(SessionHasRunningMode(item.Id) ? "\u25d0 " : "") +
-					item.Display);
+				title.FontWeight(FontWeight.Normal).Text(node.Text);
 				time.Text(TimeAgo(item.Modified)).IsVisible(true);
 				folder.IsVisible(false);
 				more.Tag = item;
@@ -100,10 +97,7 @@ public sealed partial class MainWindow
 			var time = context.Get<TextBlock>("time")!;
 			if (node.Tag is SessionListItem item)
 			{
-				title.FontWeight(FontWeight.Normal).Text(
-					(_pinnedSessionIds.Contains(item.Id) ? Strings.PinnedMark + " " : "") +
-					(SessionHasRunningMode(item.Id) ? "\u25d0 " : "") +
-					item.Display);
+				title.FontWeight(FontWeight.Normal).Text(node.Text);
 				time.Text(TimeAgo(item.Modified)).IsVisible(true);
 				more.Tag = item;
 				row.HoverTip(item.Display);
@@ -136,11 +130,6 @@ public sealed partial class MainWindow
 			});
 		}
 	}
-
-	/// 侧栏只标记已经打开的会话：未打开的会话没有活运行时，实时模式状态不在目录快照里。
-	private bool SessionHasRunningMode(string sessionId) =>
-		_tabEntries.OfType<SessionTab>().Any(tab =>
-			tab.HasRunningMode && string.Equals(tab.Session.Session.SessionId, sessionId, StringComparison.Ordinal));
 
 	private void RowMenuClick(Button button)
 	{
@@ -433,6 +422,107 @@ public sealed partial class MainWindow
 		_banner.Text(Strings.ProjectRemoved);
 	}
 
+	/// 同一项目里另一个会话在跑或改过文件时，给每个标签推一行提示。
+	/// 目标会话在跑、或有子代理在跑、或改过文件；只取最近列表里的第一个。
+	private void UpdateWorkspaceNotices()
+	{
+		// 关联子会话挂在父行下面，不是用户眼里的「另一个会话」；也跳过它们的占用提示。
+		HashSet<string> linkedChildren = _linkedLinks.Count > 0
+			? [.. _linkedLinks.Select(static link => link.ChildSessionId)]
+			: [];
+		foreach (var tab in _tabEntries.OfType<SessionTab>())
+		{
+			var cwd = tab.Session.Cwd;
+			var ownFiles = _sessionActivity.Get(SessionIdOf(tab))?.Files ?? [];
+			SessionListItem? other = null;
+			var text = string.Empty;
+			foreach (var item in _sessions)
+			{
+				if (string.Equals(item.Id, SessionIdOf(tab), StringComparison.Ordinal) ||
+					string.Equals(item.Origin, "subagent", StringComparison.Ordinal) ||
+					linkedChildren.Contains(item.Id) ||
+					!SessionGroups.SamePath(item.Cwd, cwd))
+				{
+					continue;
+				}
+
+				if (DescribeWorkspaceUsage(item, ownFiles) is { Length: > 0 } usage)
+				{
+					other = item;
+					text = usage;
+					break;
+				}
+			}
+
+			if (other is null)
+			{
+				tab.SetWorkspaceNotice(null, null);
+				continue;
+			}
+
+			var id = other.Id;
+			tab.SetWorkspaceNotice(text, () => _ = ActivateSessionAsync(id));
+		}
+	}
+
+	private string DescribeWorkspaceUsage(SessionListItem item, IReadOnlyList<string> ownFiles)
+	{
+		_subagentSummaries.TryGetValue(item.Id, out var summary);
+		if (summary.Active > 0)
+		{
+			return Strings.WorkspaceNoticeSubagentRunning(item.Display);
+		}
+
+		var activity = _sessionActivity.Get(item.Id);
+		if (activity is { Streaming: true })
+		{
+			return Strings.WorkspaceNoticeRunning(item.Display);
+		}
+
+		if (summary.Changed > 0)
+		{
+			return Strings.WorkspaceNoticeSubagentChanged(item.Display);
+		}
+
+		if (activity is { ChangedFiles: > 0 } && ownFiles.Count > 0)
+		{
+			foreach (var file in activity.Files)
+			{
+				if (ownFiles.Contains(file, StringComparer.Ordinal))
+				{
+					return Strings.WorkspaceNoticeSameFile(item.Display, Path.GetFileName(file));
+				}
+			}
+		}
+
+		return activity is { ChangedFiles: > 0 }
+			? Strings.WorkspaceNoticeChanged(item.Display, activity.ChangedFiles)
+			: string.Empty;
+	}
+
+	/// 父会话自己的活动：流式中，或最后一条有改动的助手行。
+	/// 返回 true 表示侧栏要重建。子代理的改动由 <see cref="SubagentStatusIndex"/> 单独算。
+	private bool UpdateSessionActivity(SessionTab tab)
+	{
+		var sessionId = SessionIdOf(tab);
+		if (tab.IsStreaming)
+		{
+			return _sessionActivity.Update(sessionId, true, []);
+		}
+
+		IReadOnlyList<ChatFileChange> changed = [];
+		foreach (var entry in tab.Chat.Entries())
+		{
+			if (entry.ChangedFiles.Count > 0)
+			{
+				// 只留最后一轮：拖几轮的会话不必把历史改动全部算进占用。
+				changed = entry.ChangedFiles;
+			}
+		}
+
+		return _sessionActivity.Update(sessionId, false, changed);
+	}
+
 	/// 子代理状态变化：把本窗口所有标签的 hub 快照汇进索引，真变了才重建侧栏。
 	/// 多个子代理同时收尾时，一帧只汇总一次；已关标签不在遍历里，迟到的 Changed 写不回来。
 	private void ApplySubagentStatuses()
@@ -447,7 +537,29 @@ public sealed partial class MainWindow
 		{
 			if (tab.Session.Subagents is { } hub)
 			{
-				changed |= _subagentStatus.Update(SessionIdOf(tab), tab.Title, hub.RunsSnapshot());
+				var runs = hub.RunsSnapshot();
+				if (hub.Team is { } team)
+				{
+					foreach (var run in runs)
+					{
+						if (!_subagentStatus.TryGet(run.SessionId, out var previous) ||
+							!previous.IsActive ||
+							!run.IsTerminal)
+						{
+							continue;
+						}
+
+						var task = team.Tasks.FirstOrDefault(candidate =>
+							candidate.Status == TeamTaskStatus.InProgress &&
+							string.Equals(candidate.Owner, run.Name, StringComparison.Ordinal));
+						if (task is not null)
+						{
+							Toasts.Show(this, Strings.TeamTaskOwnerFinished(run.Name, task.Subject));
+						}
+					}
+				}
+
+				changed |= _subagentStatus.Update(SessionIdOf(tab), tab.Title, runs);
 			}
 		}
 

@@ -558,6 +558,8 @@ internal sealed partial class ConfigurationView
 			.ToString(CultureInfo.InvariantCulture));
 		var spawnsInput = Input(ReadInt(_root, "subagents", "maxSpawns", ReadInt(global, "subagents", "maxSpawns", 32))
 			.ToString(CultureInfo.InvariantCulture));
+		var writersInput = Input(ReadInt(_root, "subagents", "maxWriters", ReadInt(global, "subagents", "maxWriters", 0))
+			.ToString(CultureInfo.InvariantCulture));
 		var runTimeoutInput = Input(ReadInt(_root, "subagents", "runTimeoutMinutes", ReadInt(global, "subagents", "runTimeoutMinutes", 30))
 			.ToString(CultureInfo.InvariantCulture));
 		var maxTokensInput = Input(ReadInt(_root, "subagents", "maxTokens", ReadInt(global, "subagents", "maxTokens", 0))
@@ -572,8 +574,13 @@ internal sealed partial class ConfigurationView
 			ReadBool(_root, "subagents", "openTabs", ReadBool(global, "subagents", "openTabs", false)));
 		var openTabsChanged = false;
 		openTabs.OnCheckedChanged(_ => { openTabsChanged = true; SetDirty(true); });
+		var team = Check(Strings.ConfigSubagentsTeam,
+			ReadBool(_root, "subagents", "team", ReadBool(global, "subagents", "team", false)));
+		var teamChanged = false;
+		team.OnCheckedChanged(_ => { teamChanged = true; SetDirty(true); });
 		var activeChanged = false;
 		var spawnsChanged = false;
+		var writersChanged = false;
 		var runTimeoutChanged = false;
 		var maxTokensChanged = false;
 		var verifyTimeoutChanged = false;
@@ -581,6 +588,7 @@ internal sealed partial class ConfigurationView
 		var goalTokensChanged = false;
 		activeInput.OnTextChanged(_ => { activeChanged = true; SetDirty(true); });
 		spawnsInput.OnTextChanged(_ => { spawnsChanged = true; SetDirty(true); });
+		writersInput.OnTextChanged(_ => { writersChanged = true; SetDirty(true); });
 		runTimeoutInput.OnTextChanged(_ => { runTimeoutChanged = true; SetDirty(true); });
 		maxTokensInput.OnTextChanged(_ => { maxTokensChanged = true; SetDirty(true); });
 		verifyTimeoutInput.OnTextChanged(_ => { verifyTimeoutChanged = true; SetDirty(true); });
@@ -592,6 +600,7 @@ internal sealed partial class ConfigurationView
 		budgetInput.Width(180);
 		activeInput.Width(160);
 		spawnsInput.Width(160);
+		writersInput.Width(160);
 		runTimeoutInput.Width(160);
 		maxTokensInput.Width(180);
 		verifyTimeoutInput.Width(160);
@@ -651,37 +660,51 @@ internal sealed partial class ConfigurationView
 			defaultFields.Add(Field(Strings.ConfigPickModel, picker, 420));
 		}
 
-		var defaultsCard = FormCard(Strings.ConfigDefaults, Strings.ConfigDefaultsHint, [.. defaultFields]);
+		var defaultsCard = FormCard("settings", Strings.ConfigDefaults, Strings.ConfigDefaultsHint, [.. defaultFields]);
 		_body.Children(
 			defaultsCard,
-			FormCard(Strings.ConfigBehavior, Strings.ConfigBehaviorHint,
-				Field(Strings.Thinking, thinking), compact, retry, showNotices,
+			FormCard("activity", Strings.ConfigBehavior, Strings.ConfigBehaviorHint,
+				SubLabel(Strings.ConfigBehaviorModel),
+				Field(Strings.Thinking, thinking),
+				SubLabel(Strings.ConfigBehaviorAutomation),
+				compact, retry,
 				Fields(Field(Strings.ConfigRetryMaxRetries, retryMaxInput, 180),
 					Field(Strings.ConfigRetryBaseDelay, retryDelayInput, 200)),
 				Hint(Strings.ConfigRetryHint),
+				SubLabel(Strings.ConfigBehaviorNotices),
+				showNotices,
 				Hint(Strings.ConfigShowCacheMissNoticesHint)),
-			FormCard(Strings.ConfigToolsTitle, Strings.ConfigToolsHint,
-				new StackPanel().Spacing(AppTheme.Space2).Children(
-					Label(Strings.ConfigDefaultTools),
-					Hint(Strings.ConfigDefaultToolsHint),
-					chips,
-					new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
-						.VerticalAlignment(VerticalAlignment.Center).Children(addTool, resetTools, disableTools, toolsStatus),
-					disabledWarning,
-					blockedNote),
+			FormCard("wrench", Strings.ConfigToolsTitle, Strings.ConfigToolsHint,
+				SubLabel(Strings.ConfigToolsDefaults),
+				Hint(Strings.ConfigDefaultToolsHint),
+				chips,
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+					.VerticalAlignment(VerticalAlignment.Center).Children(addTool, resetTools, disableTools, toolsStatus),
+				disabledWarning,
+				blockedNote,
+				SubLabel(Strings.ConfigToolsCodemode),
 				Fields(Field(Strings.ConfigCodemodeMode, mode, 180),
 					Field(Strings.ConfigCodemodeBudget, budgetInput, 180)),
 				Hint(Strings.ConfigCodemodeModeHint),
 				Hint(Strings.ConfigCodemodeBudgetHint)),
-			FormCard(Strings.ConfigSubagentsTitle, Strings.ConfigSubagentsHint,
+			FormCard("sparkles", Strings.ConfigSubagentsTitle, Strings.ConfigSubagentsHint,
+				SubLabel(Strings.ConfigSubagentsConcurrency),
 				Fields(Field(Strings.ConfigSubagentsMaxActive, activeInput, 180),
 					Field(Strings.ConfigSubagentsMaxSpawns, spawnsInput, 180),
-					Field(Strings.ConfigSubagentsRunTimeout, runTimeoutInput, 220),
+					Field(Strings.ConfigSubagentsMaxWriters, writersInput, 180)),
+				Hint(Strings.ConfigSubagentsConcurrencyHint),
+				SubLabel(Strings.ConfigSubagentsRuntime),
+				Fields(Field(Strings.ConfigSubagentsRunTimeout, runTimeoutInput, 220),
 					Field(Strings.ConfigSubagentsMaxTokens, maxTokensInput, 220),
 					Field(Strings.ConfigSubagentsVerifyTimeout, verifyTimeoutInput, 220)),
+				Hint(Strings.ConfigSubagentsRuntimeHint),
+				SubLabel(Strings.ConfigSubagentsUi),
 				openTabs,
-				Hint(Strings.ConfigSubagentsOpenTabsHint)),
-			FormCard(Strings.ConfigGoalTitle, Strings.ConfigGoalHint,
+				Hint(Strings.ConfigSubagentsOpenTabsHint),
+				team,
+				Hint(Strings.ConfigSubagentsTeamHint)),
+			FormCard("target", Strings.ConfigGoalTitle, Strings.ConfigGoalHint,
+				SubLabel(Strings.ConfigGoalBudget),
 				Fields(
 					Field(Strings.ConfigGoalMaxRounds, goalRoundsInput, 180),
 					Field(Strings.ConfigGoalMaxTokens, goalTokensInput, 220)),
@@ -765,15 +788,17 @@ internal sealed partial class ConfigurationView
 
 				next["goal"] = section;
 			}
-			if (activeChanged || spawnsChanged || runTimeoutChanged || maxTokensChanged || verifyTimeoutChanged || openTabsChanged)
+			if (activeChanged || spawnsChanged || writersChanged || runTimeoutChanged || maxTokensChanged || verifyTimeoutChanged || openTabsChanged || teamChanged)
 			{
 				var section = next["subagents"] as JsonObject ?? new JsonObject();
 				if (activeChanged) section["maxActive"] = ParseSubagentLimit(activeInput, 1, 32, Strings.ConfigSubagentsMaxActive);
 				if (spawnsChanged) section["maxSpawns"] = ParseSubagentLimit(spawnsInput, 1, 512, Strings.ConfigSubagentsMaxSpawns);
+				if (writersChanged) section["maxWriters"] = ParseSubagentLimit(writersInput, 0, 16, Strings.ConfigSubagentsMaxWriters);
 				if (runTimeoutChanged) section["runTimeoutMinutes"] = ParseSubagentLimit(runTimeoutInput, 1, 1440, Strings.ConfigSubagentsRunTimeout);
 				if (maxTokensChanged) section["maxTokens"] = ParseSubagentLimit(maxTokensInput, 0, 10_000_000, Strings.ConfigSubagentsMaxTokens);
 				if (verifyTimeoutChanged) section["verifyTimeoutSeconds"] = ParseSubagentLimit(verifyTimeoutInput, 1, 86_400, Strings.ConfigSubagentsVerifyTimeout);
 				if (openTabsChanged) section["openTabs"] = openTabs.IsChecked == true;
+				if (teamChanged) section["team"] = team.IsChecked == true;
 				next["subagents"] = section;
 			}
 			Save(next);

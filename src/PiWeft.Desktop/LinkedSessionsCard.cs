@@ -23,6 +23,8 @@ internal sealed class LinkedSessionsCard
 
 	internal bool IsShown => View.IsVisible;
 
+	internal string Meta => _card.Meta;
+
 	internal int RowCount => _rows.Children.Count;
 
 	public void Render(LinkedSessionHub? hub, Action<string> openChild, Action<string> failed)

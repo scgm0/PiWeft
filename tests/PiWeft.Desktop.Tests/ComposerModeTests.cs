@@ -169,6 +169,20 @@ public sealed class ComposerModeTests : IDisposable
 	}
 
 	[Fact]
+	public void GoalStripStartsCollapsedAndExpandsOnDemand()
+	{
+		var card = new GoalStripCard(() => { }, () => { }, () => { }, _ => { });
+		card.Render(new GoalState(true, GoalState.Active, "把构建修到全绿，并补上回归测试。", 0, 32, null));
+		Assert.True(card.IsShown);
+		Assert.False(card.IsExpanded);
+
+		card.ToggleExpandedForTests();
+		Assert.True(card.IsExpanded);
+		card.ToggleExpandedForTests();
+		Assert.False(card.IsExpanded);
+	}
+
+	[Fact]
 	public void GoalStripShowsTheBlockReasonInsteadOfTheObjective()
 	{
 		var card = new GoalStripCard(() => { }, () => { }, () => { }, _ => { });
@@ -223,13 +237,15 @@ public sealed class ComposerModeTests : IDisposable
 		using var tab = Tab();
 		Assert.False(tab.HasRunningMode);
 		Assert.Equal(tab.Title, MainWindow.EntryTitle(tab));
+		Assert.Null(MainWindow.EntryStatus(tab));
 		Assert.Equal(tab.Title, MainWindow.EntryTooltip(tab));
 
 		tab.Session.SetGoal("把构建修到全绿");
 
 		Assert.True(tab.HasRunningMode);
-		Assert.StartsWith("\u25d0 ", MainWindow.EntryTitle(tab));
-		// ◐ 之外，悬停要说清是目标而不是计划。
+		Assert.Equal(tab.Title, MainWindow.EntryTitle(tab));
+		Assert.Equal(Strings.TabGoalShort(0, 32), MainWindow.EntryStatus(tab)?.Text);
+		// 状态点之外，悬停要说清是目标而不是计划。
 		Assert.Equal($"{tab.Title}\n{Strings.TabGoalRunning(0, 32)}", MainWindow.EntryTooltip(tab));
 
 		tab.Session.PauseGoal();

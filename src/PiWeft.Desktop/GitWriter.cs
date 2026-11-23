@@ -379,13 +379,175 @@ public static class GitWriter
 	private static bool IsValidStashReference(string reference) =>
 		reference.StartsWith("stash@{", StringComparison.Ordinal) && reference.EndsWith('}') && reference.Length > 7;
 
-	private static GitResult Run(string cwd, string[] arguments, string? successMessage = null) =>
-		Finish(RunCapture(cwd, arguments, LocalTimeout), successMessage ?? Strings.GitDone);
+	/// <summary>解析仓库根与基线 commit；worktree 创建前先取这两个值，diff 才能钉在创建时的基线。</summary>
+	public static (bool Ok, string Repository, string BaseCommit) WorktreeBase(string cwd, string reference)
+	{
+		var top = RunCapture(cwd, ["rev-parse", "--show-toplevel"], LocalTimeout);
+		if (!top.Ok)
+		{
+			return (false, string.Empty, Combine(top.Stdout, top.Stderr));
+		}
+
+		var repository = top.Stdout.Trim();
+		if (repository.Length == 0)
+		{
+			return (false, string.Empty, Strings.GitNotRepository);
+		}
+
+		var baseRef = string.IsNullOrWhiteSpace(reference) ? "HEAD" : reference.Trim();
+		var commit = RunCapture(repository, ["rev-parse", "--verify", "--end-of-options", baseRef + "^{commit}"], LocalTimeout);
+		return commit.Ok
+			? (true, repository, commit.Stdout.Trim())
+			: (false, repository, Combine(commit.Stdout, commit.Stderr));
+	}
+
+	/// <summary>在仓库里建一个隔离副本；失败时由调用方清理目录与分支。</summary>
+	public static GitResult WorktreeAdd(string repository, string path, string branch, string baseCommit)
+	{
+		// .git/worktrees 是共享元数据：两个子代理同时创建副本会互相踩。
+		lock (RepoLockFor(repository))
+		{
+			var capture = RunCapture(
+				repository,
+				["worktree", "add", path, "-b", branch, baseCommit],
+				LocalTimeout);
+			return capture.Ok ? GitResult.Success(Strings.GitWorktreeAdded) : Failure(capture);
+		}
+	}
+
+	/// <summary>删掉隔离副本与分支；副本已经不在了也算删掉目录这一步失败，调用方按提示处理。</summary>
+	public static GitResult WorktreeRemove(string repository, string path, string branch)
+	{
+		lock (RepoLockFor(repository))
+		{
+			var removed = RunCapture(repository, ["worktree", "remove", "--force", path], LocalTimeout);
+			if (!removed.Ok)
+			{
+				return Failure(removed);
+			}
+
+			// 分支可能已经被合并或手动删掉：删不掉不算整体失败。
+			var deleted = RunCapture(repository, ["branch", "-D", branch], LocalTimeout);
+			RunCapture(repository, ["worktree", "prune"], LocalTimeout);
+			return deleted.Ok
+				? GitResult.Success(Strings.GitWorktreeRemoved)
+				: GitResult.Failure(Strings.GitWorktreeBranchKept, Limit(Combine(deleted.Stdout, deleted.Stderr)));
+		}
+	}
+
+	/// <summary>隔离副本相对基线的完整 patch（含二进制）。</summary>
+	public static (bool Ok, string Text) WorktreePatch(string worktree, string baseCommit)
+	{
+		var capture = RunCapture(
+			worktree,
+			[
+				"diff", baseCommit, "--binary", "--no-color", "--no-ext-diff", "--no-textconv",
+				"--src-prefix=a/", "--dst-prefix=b/", "--line-prefix=", "--no-relative",
+			],
+			LocalTimeout);
+		return (capture.Ok, capture.Ok ? capture.Stdout : Combine(capture.Stdout, capture.Stderr));
+	}
+
+	/// <summary>隔离副本的 diff stat；卡片上的一行摘要用。</summary>
+	public static (bool Ok, string Text) WorktreeStat(string worktree, string baseCommit)
+	{
+		var capture = RunCapture(worktree, ["diff", baseCommit, "--stat", "--no-color"], LocalTimeout);
+		return (capture.Ok, capture.Ok ? capture.Stdout.Trim() : Combine(capture.Stdout, capture.Stderr));
+	}
+
+	/// <summary>把 patch 应用到主工作区；先 --check，冲突时不动文件。</summary>
+	public static GitResult WorktreeApply(string repository, string patch)
+	{
+		var path = Path.Combine(Path.GetTempPath(), "piweft-worktree-" + Guid.NewGuid().ToString("N") + ".patch");
+		try
+		{
+			File.WriteAllText(path, patch);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return GitResult.Failure(Strings.GitPatchWriteFailed, exception.Message);
+		}
+
+		try
+		{
+			lock (RepoLockFor(repository))
+			{
+				var check = RunCapture(repository, ["apply", "--check", "--binary", path], LocalTimeout);
+				if (!check.Ok)
+				{
+					return GitResult.Failure(Strings.GitPatchConflict, Limit(Combine(check.Stdout, check.Stderr)));
+				}
+
+				var applied = RunCapture(repository, ["apply", "--binary", path], LocalTimeout);
+				return applied.Ok ? GitResult.Success(Strings.GitPatchApplied) : Failure(applied);
+			}
+		}
+		finally
+		{
+			try
+			{
+				File.Delete(path);
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+			{
+				// 临时文件删不掉不影响结果。
+			}
+		}
+	}
+
+	private static GitResult Run(string cwd, string[] arguments, string? successMessage = null)
+	{
+		lock (RepoLockFor(cwd))
+		{
+			return Finish(RunCapture(cwd, arguments, LocalTimeout), successMessage ?? Strings.GitDone);
+		}
+	}
 
 	/// 网络操作：关掉终端提示。<c>GIT_TERMINAL_PROMPT=0</c> 把「等用户输入密码」从挂死
 	/// （要等满 120 秒超时）变成立刻返回可分类的认证错误，凭据管理器与 askpass 不受影响。
-	private static GitResult RunNetwork(string cwd, string[] arguments, string successMessage) =>
-		Finish(RunCapture(cwd, arguments, NetworkTimeout, disableTerminalPrompt: true), successMessage);
+	private static GitResult RunNetwork(string cwd, string[] arguments, string successMessage)
+	{
+		lock (RepoLockFor(cwd))
+		{
+			return Finish(RunCapture(cwd, arguments, NetworkTimeout, disableTerminalPrompt: true), successMessage);
+		}
+	}
+
+	/// 同一仓库的写操作串行：另一个会话的 stash/checkout 会把这边的未提交改动卷走。
+	/// 按规范化 cwd 归到固定条带，不建无界字典。仓库根与子目录可能落在不同条带，
+	/// 桌面会话通常以仓库根为 cwd；<c>bash</c> 里的 git 不经过这里。
+	private static readonly Lock[] RepoStripes = CreateRepoStripes();
+
+	private static Lock[] CreateRepoStripes()
+	{
+		var stripes = new Lock[64];
+		for (var index = 0; index < stripes.Length; index++)
+		{
+			stripes[index] = new Lock();
+		}
+
+		return stripes;
+	}
+
+	private static Lock RepoLockFor(string cwd)
+	{
+		string key;
+		try
+		{
+			key = Path.GetFullPath(cwd);
+		}
+		catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			key = cwd;
+		}
+
+		if (OperatingSystem.IsWindows())
+		{
+			key = key.ToUpperInvariant();
+		}
+
+		return RepoStripes[(uint)StringComparer.Ordinal.GetHashCode(key) % (uint)RepoStripes.Length];
+	}
 
 	private static GitResult Finish(GitCapture capture, string successMessage)
 	{

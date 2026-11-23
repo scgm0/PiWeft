@@ -6,6 +6,13 @@ using PiWeft.CodingAgent.Subagents;
 
 namespace PiWeft.Desktop;
 
+/// 隔离副本的两个操作：应用到主工作区，或删掉副本与未应用的改动。
+internal enum WorktreeAction
+{
+	Apply,
+	Discard,
+}
+
 /// 输入区上方的「子代理」卡：列出本会话开出的子代理，点行展开详情，行尾的打开键切到子会话标签，
 /// 运行中的可以停。每行左侧是状态图标，名字与一句任务之后是右侧的耗时与用量；
 /// 任务全文、进度与最近回复在展开区里看得到，不必先切到子会话标签。
@@ -37,6 +44,8 @@ internal sealed class SubagentCard
 	private readonly Action<string> _openChild;
 	private readonly Func<string, bool> _stopChild;
 	private readonly Action<string> _failed;
+	private readonly Action<SubagentRun, WorktreeAction>? _worktreeAction;
+	private readonly Action<SubagentRun>? _viewWorktreeDiff;
 	// 行数据来源：真实会话取 hub 快照；--ui-smoke 直接给一组固定快照，截图不受回合节奏影响。
 	private SubagentHub? _hub;
 	private SubagentRun[]? _smokeRuns;
@@ -55,6 +64,10 @@ internal sealed class SubagentCard
 		bool Restored,
 		bool Awaiting,
 		int Turns,
+		int ChangedFiles,
+		bool MayWrite,
+		string Worktree,
+		string WorktreeBranch,
 		long MaxTokens,
 		int VerifyCount,
 		string StopReason,
@@ -84,12 +97,19 @@ internal sealed class SubagentCard
 		public string? ResultValue { get; set; } = result;
 	}
 
-	public SubagentCard(Action<string> openChild, Func<string, bool> stopChild, Action<string> failed)
+	public SubagentCard(
+		Action<string> openChild,
+		Func<string, bool> stopChild,
+		Action<string> failed,
+		Action<SubagentRun, WorktreeAction>? worktreeAction = null,
+		Action<SubagentRun>? viewWorktreeDiff = null)
 	{
 		// 回调在标签构造时给一次：读屏每有工具起止就刷新，逐个参数传会在调用点建闭包与委托。
 		_openChild = openChild;
 		_stopChild = stopChild;
 		_failed = failed;
+		_worktreeAction = worktreeAction;
+		_viewWorktreeDiff = viewWorktreeDiff;
 		_rows.Spacing(6);
 		_card = new ComposerWidgetCard("sparkles", Strings.SubagentCardTitle);
 		// 二十行共用 180 DIP 视口，滚轮瞬移会看丢当前行；与其它浮层一样走平滑滚动。
@@ -105,6 +125,11 @@ internal sealed class SubagentCard
 	public Border View => _card.View;
 
 	internal bool IsShown => View.IsVisible;
+
+	internal void Expand() => _card.IsExpanded = true;
+
+	/// 工作台摘要用的计数文本。
+	internal string Meta => _card.Meta;
 
 	internal int RowCount => _rows.Children.Count;
 
@@ -250,6 +275,9 @@ internal sealed class SubagentCard
 			var row = _rendered[index];
 			if (run.State != row.State || run.Restored != row.Restored || run.AwaitingUser != row.Awaiting ||
 				run.Turns != row.Turns || run.MaxTokens != row.MaxTokens ||
+				run.ChangedFiles.Count != row.ChangedFiles || run.MayWrite != row.MayWrite ||
+				!string.Equals(run.WorktreePath ?? string.Empty, row.Worktree, StringComparison.Ordinal) ||
+				!string.Equals(run.WorktreeBranch ?? string.Empty, row.WorktreeBranch, StringComparison.Ordinal) ||
 				run.Verify.Count != row.VerifyCount ||
 				!string.Equals(run.Question ?? string.Empty, row.Question, StringComparison.Ordinal) ||
 				!string.Equals(run.StopReason, row.StopReason, StringComparison.Ordinal) ||
@@ -576,12 +604,34 @@ internal sealed class SubagentCard
 			.VerticalAlignment(VerticalAlignment.Center);
 		note.IsVisible(noteText.Length > 0);
 
+		var changesText = Strings.SubagentChanges(run.ChangedFiles.Count, run.MayWrite);
+		var changes = new TextBlock()
+			.Text(changesText)
+			.FontSize(AppTheme.FontSizeMicro)
+			.SubtleText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		changes.IsVisible(changesText.Length > 0);
+
+		var worktreeText = run.WorktreePath is { Length: > 0 }
+			? Strings.SubagentWorktree(run.WorktreeBranch)
+			: string.Empty;
+		var worktree = new TextBlock()
+			.Text(worktreeText)
+			.FontSize(AppTheme.FontSizeMicro)
+			.MutedText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		worktree.IsVisible(worktreeText.Length > 0);
+
 		var content = new StackPanel()
 			.Spacing(1)
 			.Children(
 				titleLine,
 				statusLine,
 				activity,
+				changes,
+				worktree,
 				failure,
 				note,
 				new TextBlock()
@@ -607,6 +657,22 @@ internal sealed class SubagentCard
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.HorizontalAlignment(HorizontalAlignment.Right);
+		if (run.WorktreePath is { Length: > 0 } worktreePath)
+		{
+			actions.Children(AppIcons.Button("folder-open", Strings.SubagentWorktreeOpen, () =>
+				{
+					try
+					{
+						Shell.Open(worktreePath);
+					}
+					catch (Exception ex)
+					{
+						Notify(ex.Message);
+					}
+				}, size: 12)
+				.VerticalAlignment(VerticalAlignment.Center));
+		}
+
 		if (run.SessionId.Length > 0)
 		{
 			actions.Children(AppIcons.Button("external-link", Strings.LinkedOpen, () => _openChild?.Invoke(run.SessionId), size: 12)
@@ -676,6 +742,16 @@ internal sealed class SubagentCard
 				body.Add(Section(Strings.SubagentBrief, Clip(brief, BriefPreviewChars)));
 			}
 
+			if (run.ChangedFiles.Count > 0)
+			{
+				var files = string.Join("\n", run.ChangedFiles);
+				body.Add(Section(Strings.SubagentChangedFiles, files, copyText: files));
+			}
+			else if (run.MayWrite)
+			{
+				body.Add(Section(Strings.SubagentChangedFiles, Strings.SubagentMayWriteHint));
+			}
+
 			if (run.Question is { Length: > 0 } question)
 			{
 				// 父会话可能不在这里，用户在卡片上直接答，不必等 20 秒摊到问询卡。
@@ -722,6 +798,34 @@ internal sealed class SubagentCard
 				// 模型与 list_subagents 已经看到结构化结果；卡片展开区之前漏了它。
 				var json = structured.ToJsonString(PiJson.NodeOptions);
 				body.Add(Section(Strings.SubagentStructured, Clip(json, ResultPreviewChars), copyText: json));
+			}
+
+			if (run.WorktreePath is { Length: > 0 } expandedWorktree)
+			{
+				body.Add(Section(
+					Strings.SubagentWorktreePath,
+					$"{expandedWorktree}\n{run.WorktreeBranch}\n{ShortSha(run.WorktreeBase)}",
+					copyText: expandedWorktree));
+				if (run.IsTerminal)
+				{
+					var worktreeActions = new WrapPanel().Spacing(AppTheme.Space1);
+					if (_viewWorktreeDiff is { } viewDiff)
+					{
+						worktreeActions.Children(AppIcons.TextButton(
+							"file-diff",
+							Strings.SubagentWorktreeDiff,
+							() => viewDiff(run)));
+					}
+
+					if (_worktreeAction is { } worktreeAction)
+					{
+						worktreeActions.Children(
+							AppIcons.TextButton("download", Strings.SubagentWorktreeApply, () => worktreeAction(run, WorktreeAction.Apply)),
+							AppIcons.TextButton("trash", Strings.SubagentWorktreeDiscard, () => worktreeAction(run, WorktreeAction.Discard)));
+					}
+
+					body.Add(worktreeActions);
+				}
 			}
 
 			if (run.SessionFile is { Length: > 0 } file)
@@ -781,6 +885,10 @@ internal sealed class SubagentCard
 			run.Restored,
 			run.AwaitingUser,
 			run.Turns,
+			run.ChangedFiles.Count,
+			run.MayWrite,
+			run.WorktreePath ?? string.Empty,
+			run.WorktreeBranch ?? string.Empty,
 			run.MaxTokens,
 			run.Verify.Count,
 			run.StopReason,
@@ -972,6 +1080,9 @@ internal sealed class SubagentCard
 
 	private static string Preview(string text) =>
 		text.Length <= 400 ? text : string.Concat(text.AsSpan(0, 400), "…");
+
+	private static string ShortSha(string? sha) =>
+		sha is { Length: > 8 } ? sha[..8] : sha ?? string.Empty;
 
 	private static string Clip(string text, int max) =>
 		text.Length <= max ? text : string.Concat(text.AsSpan(0, max), "…");

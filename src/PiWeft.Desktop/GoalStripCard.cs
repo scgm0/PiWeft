@@ -20,6 +20,10 @@ internal sealed class GoalStripCard
 	private readonly Button _clear;
 	private readonly Grid _browseRow;
 	private readonly Grid _editRow;
+	private readonly ProgressBar _progress;
+	private readonly TextBlock _details;
+	private readonly GlyphElement _chevron;
+	private bool _expanded;
 	/// 编辑器按需创建：未编辑时视觉树里只有浏览行，主输入框不会撞上第二个 MultiLineTextBox。
 	private MultiLineTextBox? _editor;
 	private readonly Action<string> _editAction;
@@ -43,10 +47,37 @@ internal sealed class GoalStripCard
 		_objective.FontSize(AppTheme.FontSizeCaption)
 			.MutedText()
 			.HorizontalAlignment(HorizontalAlignment.Stretch)
+			.TextWrapping(TextWrapping.NoWrap)
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Margin(new Thickness(0, 0, AppTheme.Space2, 0));
 
+		_details = new TextBlock()
+			.FontSize(AppTheme.FontSizeCaption)
+			.MutedText()
+			.TextWrapping(TextWrapping.Wrap)
+			.Margin(new Thickness(AppTheme.Space2 + 14 + 6, 0, AppTheme.Space2, AppTheme.Space2))
+			.IsVisible(false);
+		_chevron = new GlyphElement()
+			.Kind(GlyphKind.ChevronDown)
+			.GlyphSize(3)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.WithTheme((theme, element) => element.Foreground = AppTheme.For(theme).TextSubtle);
+		var expand = new Button()
+			.Ghost()
+			.Content(_chevron)
+			.Padding(new Thickness(AppTheme.Space1))
+			.VerticalAlignment(VerticalAlignment.Center)
+			.HoverTip(Strings.GoalExpandHint)
+			.OnClick(ToggleExpanded);
+		_objective.OnMouseDown(e =>
+		{
+			if (e.Button == MouseButton.Left)
+			{
+				e.Handled = true;
+				ToggleExpanded();
+			}
+		});
 		_edit = ActionButton("pencil", Strings.GoalEdit, BeginEdit);
 		_pause = ActionButton("pause", Strings.GoalPause, pause);
 		_resume = ActionButton("play", Strings.GoalResume, resume);
@@ -68,13 +99,18 @@ internal sealed class GoalStripCard
 			.Children(_edit, _pause, _resume, _extend, _clear);
 
 		_browseRow = new Grid()
-			.Columns("Auto,Auto,*,Auto")
+			.Columns("Auto,Auto,*,Auto,Auto")
 			.MinHeight(AppTheme.ControlHeightLg)
 			.Children(
 				icon.Column(0),
 				_phase.Column(1),
 				_objective.Column(2),
-				actions.Column(3));
+				expand.Column(3),
+				actions.Column(4));
+		_progress = new ProgressBar()
+			.Height(3)
+			.Margin(new Thickness(AppTheme.Space2, 0, AppTheme.Space1, 0))
+			.IsVisible(false);
 
 		// 编辑行与浏览行同格重叠，用可见性切换：不重建卡片，也不动外层布局。
 		_editRow = new Grid()
@@ -92,7 +128,9 @@ internal sealed class GoalStripCard
 			.CornerRadius(AppTheme.RadiusMd)
 			.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space1, 0))
 			.IsVisible(false)
-			.Child(new Grid().Children(_browseRow, _editRow));
+			.Child(new Grid().Children(
+				new StackPanel().Children(_browseRow, _details, _progress),
+				_editRow));
 	}
 
 	public Border View { get; }
@@ -102,6 +140,15 @@ internal sealed class GoalStripCard
 	internal string PhaseTextForTests => _phase.Text;
 
 	internal string ObjectiveTextForTests => _objective.Text;
+
+	/// 工作台摘要用的一行状态。
+	internal string Summary => _objective.Text.Length == 0
+		? _phase.Text
+		: $"{_phase.Text} · {_objective.Text}";
+
+	internal bool IsExpanded => _expanded;
+
+	internal void ToggleExpandedForTests() => ToggleExpanded();
 
 	internal MultiLineTextBox EditorForTests => _editor
 		?? throw new InvalidOperationException("目标编辑框只在编辑态创建。");
@@ -134,6 +181,13 @@ internal sealed class GoalStripCard
 
 		var previous = _rendered;
 		_rendered = goal;
+		if (previous is not null && !string.Equals(previous.Objective, goal.Objective, StringComparison.Ordinal))
+		{
+			// 目标换了：回到单行摘要，别把旧目标的展开态带过来。
+			_expanded = false;
+			_details.IsVisible(false);
+			_chevron.Kind(GlyphKind.ChevronDown);
+		}
 		// 完成态不占位（PiDeck 同义）：完成消息与 toast 已经在时间线上说过一次。
 		var visible = goal.Objective.Length > 0 && goal.Phase != GoalState.Complete;
 		View.IsVisible(visible);
@@ -172,7 +226,17 @@ internal sealed class GoalStripCard
 			? goal.BlockReason
 			: null;
 		_objective.Text(blockedReason ?? goal.Objective);
-		_objective.HoverTip(blockedReason is null ? goal.Objective : $"{goal.BlockReason}\n{goal.Objective}");
+		_objective.HoverTip(blockedReason is null
+			? $"{Strings.GoalExpandHint}\n{goal.Objective}"
+			: $"{Strings.GoalExpandHint}\n{goal.BlockReason}\n{goal.Objective}");
+		_details.Text(blockedReason is null ? goal.Objective : $"{goal.BlockReason}\n{goal.Objective}");
+		_details.IsVisible(_expanded);
+		_progress.IsVisible(goal.MaxRounds > 0);
+		if (goal.MaxRounds > 0)
+		{
+			_progress.Maximum(goal.MaxRounds);
+			_progress.Value(Math.Clamp(goal.RoundsStarted, 0, goal.MaxRounds));
+		}
 		_pause.IsVisible(goal.Phase == GoalState.Active);
 		// 阻塞也给恢复：只能清除的话，条上就没有纠错入口。
 		var limitBlocked = goal.Phase == GoalState.Blocked && goal.BlockCode == GoalMode.RoundLimitCode;
@@ -248,6 +312,7 @@ internal sealed class GoalStripCard
 		_editRow.Children(editor.Column(0));
 		editor.Text(goal.Objective);
 		_editing = true;
+		_details.IsVisible(false);
 		_browseRow.IsVisible(false);
 		_editRow.IsVisible(true);
 		editor.Focus();
@@ -328,6 +393,14 @@ internal sealed class GoalStripCard
 
 		_editRow.IsVisible(false);
 		_browseRow.IsVisible(true);
+		_details.IsVisible(_expanded);
+	}
+
+	private void ToggleExpanded()
+	{
+		_expanded = !_expanded;
+		_details.IsVisible(_expanded);
+		_chevron.Kind(_expanded ? GlyphKind.ChevronUp : GlyphKind.ChevronDown);
 	}
 
 	private void ReleaseEditorFocus()

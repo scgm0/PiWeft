@@ -455,6 +455,28 @@ public sealed partial class MainWindow
 			}
 
 			view.Label.Text(title);
+			var status = EntryStatus(_tabEntries[index]);
+			var hasStatus = status is not null;
+			if (view.StatusDot.IsVisible != hasStatus)
+			{
+				view.StatusDot.IsVisible(hasStatus);
+			}
+
+			if (status is { } activeStatus)
+			{
+				view.StatusDot.Background(AppStyles.ColorForRole(activeStatus.Role));
+				if (!string.Equals(view.StatusText.Text, activeStatus.Text, StringComparison.Ordinal))
+				{
+					view.StatusText.Text(activeStatus.Text);
+				}
+
+				view.StatusText.Role(activeStatus.Role);
+			}
+
+			if (view.StatusText.IsVisible != hasStatus)
+			{
+				view.StatusText.IsVisible(hasStatus);
+			}
 			HoverHints.Set(view.Button, EntryTooltip(_tabEntries[index]));
 			selectedChanged |= index == selected;
 		}
@@ -508,6 +530,26 @@ public sealed partial class MainWindow
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.VerticalAlignment(VerticalAlignment.Center);
 
+		var status = EntryStatus(entry);
+		var dot = new Border()
+			.Width(6)
+			.Height(6)
+			.CornerRadius(3)
+			.VerticalAlignment(VerticalAlignment.Center);
+		dot.IsVisible(status is not null);
+		if (status is { } initialStatus)
+		{
+			dot.Background(AppStyles.ColorForRole(initialStatus.Role));
+		}
+
+		var statusText = new TextBlock()
+			.FontSize(AppTheme.FontSizeMicro)
+			.Role(status?.Role ?? AppStyles.RoleSubtle)
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center);
+		statusText.Text(status?.Text ?? string.Empty);
+		statusText.IsVisible(status is not null);
+
 		var close = BuildTitleTabClose(entry);
 		close.IsVisible(active);
 
@@ -515,7 +557,7 @@ public sealed partial class MainWindow
 			.Orientation(Orientation.Horizontal)
 			.Spacing(4)
 			.VerticalAlignment(VerticalAlignment.Center)
-			.Children(label, close);
+			.Children(dot, label, statusText, close);
 
 		var tab = new Button()
 			.Content(row)
@@ -536,11 +578,16 @@ public sealed partial class MainWindow
 			}
 		});
 
-		return new TitleTabView(tab, close, label);
+		return new TitleTabView(tab, close, label, dot, statusText);
 	}
 
-	// 三个引用的小视图元组：每次重建按值放进列表，不再为每个页签多建一个对象。
-	private readonly record struct TitleTabView(Button Button, Button Close, TextBlock Label);
+	// 五个引用的小视图元组：每次重建按值放进列表，不再为每个页签多建一个对象。
+	private readonly record struct TitleTabView(
+		Button Button,
+		Button Close,
+		TextBlock Label,
+		Border StatusDot,
+		TextBlock StatusText);
 
 	private Button BuildTitleTabClose(object entry)
 	{
@@ -582,23 +629,41 @@ public sealed partial class MainWindow
 	internal static string EntryTooltip(object entry) => entry switch
 	{
 		SessionTab tab when tab.AskPending => $"{tab.Title}\n{Strings.TabWaitingAnswer}",
-		SessionTab tab when tab.Session.PlanExecutionEnabled => $"{tab.Title}\n{Strings.TabPlanRunning}",
+		SessionTab tab when tab.HasAwaitingSubagent => $"{tab.Title}\n{Strings.TabSubagentAwaiting}",
 		SessionTab tab when tab.Session.Goal.Running =>
 			$"{tab.Title}\n{Strings.TabGoalRunning(tab.Session.Goal.RoundsStarted, tab.Session.Goal.MaxRounds)}",
+		SessionTab tab when tab.Session.PlanExecutionEnabled => $"{tab.Title}\n{Strings.TabPlanRunning}",
+		SessionTab tab when tab.RunningSubagentCount > 0 =>
+			$"{tab.Title}\n{Strings.TabSubagentsRunning(tab.RunningSubagentCount)}",
+		SessionTab tab when tab.IsStreaming => $"{tab.Title}\n{Strings.TabRunning}",
 		SessionTab tab => tab.Title,
 		_ => EntryTitle(entry),
 	};
 
+	/// 页签上的状态：等待回答优先，其次目标、计划、子代理、正在跑。
+	/// 返回 null 时不画状态点与状态字。
+	internal static TitleTabStatus? EntryStatus(object entry) => entry switch
+	{
+		SessionTab tab when tab.AskPending || tab.HasAwaitingSubagent =>
+			new TitleTabStatus(AppStyles.RoleWarning, Strings.TabWaitingAnswerShort),
+		SessionTab tab when tab.Session.Goal.Running =>
+			new TitleTabStatus(AppStyles.RoleInfo,
+				Strings.TabGoalShort(tab.Session.Goal.RoundsStarted, tab.Session.Goal.MaxRounds)),
+		SessionTab tab when tab.Session.PlanExecutionEnabled =>
+			new TitleTabStatus(AppStyles.RoleInfo, Strings.TabPlanShort),
+		SessionTab tab when tab.RunningSubagentCount > 0 =>
+			new TitleTabStatus(AppStyles.RoleInfo, Strings.TabSubagentsShort(tab.RunningSubagentCount)),
+		SessionTab tab when tab.IsStreaming =>
+			new TitleTabStatus(AppStyles.RoleInfo, Strings.TabRunning),
+		_ => null,
+	};
+
+	internal readonly record struct TitleTabStatus(string Role, string Text);
+
 	internal static string EntryTitle(object entry) => entry switch
 	{
-		// 阻塞式问询卡在等回答：页签带个圆点，后台会话不必靠声音才知道卡住了（PiDeck 的 PendingAskBadge 同义）。
-		// 子代理在等回答时父标签同样带圆点：用户不必逐个后台标签找是谁卡住了。
-		// 计划执行/目标运行用半圆：它需要被看见，但不是「在等你」。
-		SessionTab tab => tab.AskPending || tab.HasAwaitingSubagent
-			? "\u25cf " + tab.Title
-			: tab.HasRunningMode
-				? "\u25d0 " + tab.Title
-				: tab.Title,
+		// 状态不再拼进标题：页签用状态点 + 状态字，标题保持可搜索、可读。
+		SessionTab tab => tab.Title,
 		_ => string.Empty,
 	};
 

@@ -76,9 +76,11 @@ public sealed partial class MainWindow : Window
 	private readonly HashSet<string> _expandedSessionRows = new(StringComparer.Ordinal);
 	// 窗口级子代理状态：侧栏与命令面板读这一份，不再逐个标签扫 hub。
 	private readonly SubagentStatusIndex _subagentStatus = new();
+	// 窗口级会话活动：父会话自己在跑、自己改过多少文件。
+	private readonly SessionActivityIndex _sessionActivity = new();
 	// 侧栏每行要的父会话汇总，重建树时算一次，不必每行扫一遍全部子代理。
-	private IReadOnlyDictionary<string, (int Active, int Awaiting)> _subagentSummaries =
-		new Dictionary<string, (int Active, int Awaiting)>();
+	private IReadOnlyDictionary<string, (int Active, int Awaiting, int Changed)> _subagentSummaries =
+		new Dictionary<string, (int Active, int Awaiting, int Changed)>();
 	// 关联会话关系表：侧栏把 <c>start_session</c> 挖出的子会话也挂到父行下。
 	// 每次侧栏扫描时在后台重读，不在 UI 线程读盘。
 	private IReadOnlyList<LinkedSessionLink> _linkedLinks = [];
@@ -936,6 +938,7 @@ public sealed partial class MainWindow : Window
 	{
 		var selectedId = SelectedSession()?.Id ?? CurrentTab()?.Session.Session.SessionId;
 		var rows = new List<SessionListItem>(_sessions);
+		NormalizeSubagentRows(rows);
 		_subagentSummaries = _subagentStatus.Summaries();
 
 		// 「对话」= 聊天目录里的会话。与 PiDeck 的内置 Chat 项目一致：它不是全部会话的平铺，
@@ -948,7 +951,7 @@ public sealed partial class MainWindow : Window
 		// 聊天目录里的会话只属于「对话」，不再作为项目出现在这里。
 		var nodes = SessionGroups.ProjectGroups(rows, _chatWorkspace, preference.Projects, preference.DismissedProjects)
 			.Select(group => new TreeViewNode(
-				ProjectLabel(group.Cwd, group.Sessions.Count),
+				ProjectLabel(group.Cwd, group.Sessions.Count, ProjectWriters(group)),
 				[.. SessionGroups.Nest([.. group.Sessions
 					.OrderByDescending(item => preference.IsPinned(item.Id))
 					.ThenByDescending(static item => item.Modified)], _linkedLinks)
@@ -1003,6 +1006,7 @@ public sealed partial class MainWindow : Window
 
 		ExpandCurrentSessionPath();
 		UpdateSidebarEmptyHints();
+		UpdateWorkspaceNotices();
 
 		if (selectedId is not null)
 		{
@@ -1010,18 +1014,86 @@ public sealed partial class MainWindow : Window
 		}
 	}
 
-	private static string ProjectLabel(string cwd, int count) =>
-		count > 1 ? $"{ShortCwd(cwd)} ({count})" : ShortCwd(cwd);
+	/// 子代理的 cwd 可能是隔离副本。侧栏仍按父会话的项目分组，否则它会被拆到另一个项目行。
+	/// 只改展示用的副本，不动会话本身；打开与激活仍按 Path。
+	private static void NormalizeSubagentRows(List<SessionListItem> rows)
+	{
+		Dictionary<string, SessionListItem>? byKey = null;
+		for (var index = 0; index < rows.Count; index++)
+		{
+			var item = rows[index];
+			if (!string.Equals(item.Origin, "subagent", StringComparison.Ordinal) ||
+				item.ParentSession.Length == 0)
+			{
+				continue;
+			}
+
+			byKey ??= SessionKeyMap(rows);
+			if (byKey.TryGetValue(item.ParentSession, out var parent) &&
+				parent.Cwd.Length > 0 &&
+				!string.Equals(parent.Cwd, item.Cwd, StringComparison.Ordinal))
+			{
+				rows[index] = item with { Cwd = parent.Cwd };
+			}
+		}
+	}
+
+	private static Dictionary<string, SessionListItem> SessionKeyMap(List<SessionListItem> rows)
+	{
+		var byKey = new Dictionary<string, SessionListItem>(rows.Count * 2, StringComparer.Ordinal);
+		foreach (var item in rows)
+		{
+			byKey[item.Id] = item;
+			if (item.Path.Length > 0)
+			{
+				byKey[item.Path] = item;
+			}
+		}
+
+		return byKey;
+	}
+
+	private static string ProjectLabel(string cwd, int count, int writers)
+	{
+		var label = count > 1 ? $"{ShortCwd(cwd)} ({count})" : ShortCwd(cwd);
+		return writers > 0 ? $"{label} · {Strings.ProjectWriting(writers)}" : label;
+	}
+
+	/// 项目行上的「几个会话改了文件」：只数确定改动，`bash` 的可能写入留在会话行。
+	private int ProjectWriters(ProjectGroup group)
+	{
+		var writers = 0;
+		foreach (var session in group.Sessions)
+		{
+			if (_subagentSummaries.TryGetValue(session.Id, out var summary) && summary.Changed > 0)
+			{
+				writers++;
+			}
+			else if (_sessionActivity.Get(session.Id) is { ChangedFiles: > 0 })
+			{
+				writers++;
+			}
+		}
+
+		return writers;
+	}
 
 	private string SessionLine(SessionTreeEntry entry, DesktopPreference preference)
 	{
 		var item = entry.Item;
 		var pin = preference.IsPinned(item.Id) ? $"{Strings.PinnedMark} " : string.Empty;
 		// 有子代理在跑或等回答时优先报活动：它比「名下有几个子会话」更急。
+		// 没有子代理时才轮到父会话自己的「运行中 / 3 文件」。
 		var status = SubagentLineSuffix(item);
+		if (status.Length == 0)
+		{
+			status = SessionActivitySuffix(item);
+		}
+
 		var counts = status.Length > 0 ? string.Empty : ChildCounts(entry);
 
-		return $"{pin}{item.Display}{status}{counts} · {TimeAgo(item.Modified)}";
+		// 时间由侧栏行的 time 列单独显示；这里只拼标题与状态，避免模板再拼一遍时重复。
+		return $"{pin}{item.Display}{status}{counts}";
 	}
 
 	/// 父行的子项计数：子代理与关联会话分开，用户在侧栏就知道这一行下面有什么。
@@ -1049,6 +1121,22 @@ public sealed partial class MainWindow : Window
 		return $" · {Strings.SidebarChildCounts(subagents, linked)}";
 	}
 
+	/// 父会话自己的状态：正在跑，或者最后一轮改过几个文件。
+	private string SessionActivitySuffix(SessionListItem item)
+	{
+		if (_sessionActivity.Get(item.Id) is not { } activity)
+		{
+			return string.Empty;
+		}
+
+		if (activity.Streaming)
+		{
+			return $" · {Strings.SidebarSessionRunning}";
+		}
+
+		return activity.ChangedFiles > 0 ? $" · {Strings.SidebarSubagentFiles(activity.ChangedFiles)}" : string.Empty;
+	}
+
 	/// 侧栏行尾的子代理状态：子行写自己的状态，父行写名下有几个在跑或等回答。
 	/// 只在需要被看见的状态下写，已完成与历史项不占位置。
 	private string SubagentLineSuffix(SessionListItem item)
@@ -1065,13 +1153,24 @@ public sealed partial class MainWindow : Window
 				return $" · {Strings.SidebarSubagentQuestion}";
 			}
 
-			return entry.State switch
+			var state = entry.State switch
 			{
-				SubagentState.Starting => $" · {Strings.SidebarSubagentStarting}",
-				SubagentState.Running => $" · {Strings.SidebarSubagentRunning}",
-				SubagentState.Failed => $" · {Strings.SidebarSubagentFailed}",
+				SubagentState.Starting => Strings.SidebarSubagentStarting,
+				SubagentState.Running => Strings.SidebarSubagentRunning,
+				SubagentState.Failed => Strings.SidebarSubagentFailed,
 				_ => string.Empty,
 			};
+			if (state.Length > 0)
+			{
+				return $" · {state}";
+			}
+
+			if (entry.ChangedFiles > 0)
+			{
+				return $" · {Strings.SidebarSubagentFiles(entry.ChangedFiles)}";
+			}
+
+			return entry.MayWrite ? $" · {Strings.SidebarSubagentMayWrite}" : string.Empty;
 		}
 
 		if (!_subagentSummaries.TryGetValue(item.Id, out var summary))
@@ -1084,7 +1183,12 @@ public sealed partial class MainWindow : Window
 			return $" · {Strings.SidebarSubagentChildrenAwaiting(summary.Awaiting)}";
 		}
 
-		return summary.Active > 0 ? $" · {Strings.SidebarSubagentChildrenRunning(summary.Active)}" : string.Empty;
+		if (summary.Active > 0)
+		{
+			return $" · {Strings.SidebarSubagentChildrenRunning(summary.Active)}";
+		}
+
+		return summary.Changed > 0 ? $" · {Strings.SidebarSubagentChanged(summary.Changed)}" : string.Empty;
 	}
 
 	/// 递归建侧栏会话行：子代理/关联子会话挂在父会话下面。
@@ -1318,6 +1422,7 @@ public sealed partial class MainWindow : Window
 		// 父标签关闭：没有标签的子代理无处投递，连会话一起收掉（与关子标签同义）。
 		DisposeDetachedChildrenOf(sessionFile);
 		// 索引也要清：否则关掉的父会话在侧栏还挂着「2 个子代理在跑」。
+		_sessionActivity.Remove(sessionId);
 		if (_subagentStatus.RemoveParent(sessionId) && _sessionsLoaded)
 		{
 			FilterSessions();
@@ -1358,6 +1463,8 @@ public sealed partial class MainWindow : Window
 		{
 			return;
 		}
+
+		_sessionActivity.Remove(sessionId);
 
 		// 窗口关闭时标签会被统一 Dispose，没必要也不宜再去动已关窗口的标签栏。
 		if (!_sessionHostClosed)
@@ -1961,12 +2068,16 @@ public sealed partial class MainWindow : Window
 		};
 		// 子会话条点「打开」：按会话 id 激活标签；没有标签的子代理由 ActivateSessionAsync 现挂。
 		tab.LinkedSessionOpenRequested += sessionId => _ = ActivateSessionAsync(sessionId);
+
+		// 隔离副本的应用 / 丢弃要确认与 git，统一交给窗口。
+		tab.WorktreeActionRequested += (owner, run, action) => _ = RunWorktreeActionAsync(owner, run, action);
 		// 问询卡开关只影响页签标题上那个小圆点；不能搭 StateChanged 的顺风车，
 		// 那条链路会顺带把会话列表重 stat 一遍。
 		tab.AskChanged += _ => UpdateTabHeaders();
 		// 子代理开始/结束等回答：父标签也显示圆点，并弹一次 toast。
 		// toast 由 hub 的事件驱动，与子代理有没有标签无关。
 		tab.SubagentAwaitChanged += _ => UpdateTabHeaders();
+		tab.SubagentStatusChanged += UpdateTabHeaders;
 		// 计划执行/目标运行的标记同时出现在页签与侧栏；模式变化不一定是 busy 边沿。
 		tab.ModeChanged += _ =>
 		{
@@ -1996,9 +2107,15 @@ public sealed partial class MainWindow : Window
 			UpdateTabHeaders();
 			// 提示音只关心「运行态 → 空闲」「无错误 → 有错误」这两条边沿，会话自己报即可。
 			SoundAlerts.Shared.Observe(SessionIdOf(tab), tab.IsStreaming, tab.Chat.Error);
+			var activityChanged = UpdateSessionActivity(tab);
 			if (!tab.IsStreaming)
 			{
 				RefreshSessions();
+			}
+			else if (activityChanged && _sessionsLoaded)
+			{
+				// 开始流式：侧栏的「运行中」要立刻出现；结束时 RefreshSessions 会重建。
+				FilterSessions();
 			}
 		};
 		tab.Forked += _ => RefreshSessions(force: true);
@@ -2275,6 +2392,21 @@ public sealed partial class MainWindow : Window
 				case "subagents":
 					// 视觉验收：子代理卡的三态行（运行中 / 失败可继续 / 等待回答）。
 					CurrentTab()?.PrepareSubagentsSmoke();
+					break;
+
+				case "todo":
+					// 视觉验收：工作台的待办节，检查选中态与列表展开。
+					CurrentTab()?.PrepareTodoSmoke();
+					break;
+
+				case "goal":
+					// 视觉验收：工作台的目标节、单行目标与轮次进度条。
+					CurrentTab()?.PrepareGoalSmoke();
+					break;
+
+				case "goal-edit":
+					// 视觉验收：目标编辑态的多行输入、保存/取消与引用 chip。
+					CurrentTab()?.PrepareGoalEditSmoke();
 					break;
 				case "wheel":
 					// 滚动性能采样演练：展开执行过程后持续滚轮压测，供外部剖析对照。
@@ -3286,13 +3418,24 @@ public sealed partial class MainWindow : Window
 			var parent = entry.ParentTitle.Length > 0
 				? $" · {(entry.ParentTitle.Length > 24 ? string.Concat(entry.ParentTitle.AsSpan(0, 24), "…") : entry.ParentTitle)}"
 				: string.Empty;
+			var changed = entry.ChangedFiles > 0
+				? $" · {entry.ChangedFiles} 文件"
+				: entry.MayWrite ? $" · {Strings.SidebarSubagentMayWrite}" : string.Empty;
 			subagentCommands.Add(new PaletteCommand(
 				$"{Strings.SubagentCardTitle} · {entry.Name}{parent}",
-				$"{state} · {entry.Agent}",
+				$"{state} · {entry.Agent}{changed}",
 				() => _ = ActivateSessionAsync(sessionId)));
 		}
 
 		commands.InsertRange(0, subagentCommands);
+
+		if (WorktreeRegistry.Orphans() is { Count: > 0 } orphans)
+		{
+			commands.Insert(0, new PaletteCommand(
+				Strings.WorktreeCleanup,
+				Strings.WorktreeCleanupDetail(orphans.Count),
+				() => _ = CleanupWorktreesAsync()));
+		}
 
 		foreach (var project in DesktopPreference.Load().RecentProjects.Where(Directory.Exists))
 		{

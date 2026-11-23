@@ -824,6 +824,12 @@ public sealed class CliEnvironment
 			tools = [.. tools, SubagentTools.CreateAskParent(() => childSession)];
 		}
 
+		if (context.Parent.Subagents?.Team is { } team)
+		{
+			// Team 工具不进角色白名单：团队任务属于委派边界，开了 Team 每个成员都该看到。
+			tools = [.. tools, .. TeamTools.Create(team, context.Name).Select(static tool => tool.Tool)];
+		}
+
 		var boundary = SubagentHub.BuildBoundary(context);
 		var appendSystemPrompt = definition.SystemPrompt.Length > 0
 			? string.Concat(definition.SystemPrompt, "\n\n", boundary)

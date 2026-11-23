@@ -63,9 +63,17 @@ public sealed partial class MainWindow
 		SubagentStartContext context,
 		CancellationToken cancellationToken)
 	{
-		var prepared = await PrepareChildAsync(context.Parent, cancellationToken).ConfigureAwait(false);
+		WorktreeLease? worktree = null;
+		if (context.Worktree)
+		{
+			// git worktree add 要几秒：放后台，别卡 UI；失败会由 hub 转成创建错误。
+			worktree = await Task.Run(() => CreateWorktree(context), cancellationToken).ConfigureAwait(false);
+		}
+
+		var prepared = await PrepareChildAsync(context.Parent, worktree?.Path, cancellationToken).ConfigureAwait(false);
 		if (prepared is null)
 		{
+			DiscardWorktree(worktree);
 			return null;
 		}
 
@@ -114,16 +122,24 @@ public sealed partial class MainWindow
 		}
 		catch (OperationCanceledException)
 		{
+			DiscardWorktree(worktree);
 			return null;
 		}
 
 		child.SetSessionName($"{context.Name} · {ShortLabel(context.Task)}");
-		return await AttachChildAsync(child, prepared, sessionFile, context.Name, cancellationToken).ConfigureAwait(false);
+		var attached = await AttachChildAsync(child, prepared, sessionFile, context.Name, cancellationToken).ConfigureAwait(false);
+		if (attached is null)
+		{
+			DiscardWorktree(worktree);
+		}
+
+		return attached;
 	}
 
 	/// 会话装配的三样东西：环境、父会话的工具与目录、界面宿主。
 	private async Task<SubagentChildPreparation?> PrepareChildAsync(
 		CodingAgentSession parent,
+		string? cwdOverride,
 		CancellationToken cancellationToken) =>
 		await DispatchAsync(() =>
 		{
@@ -132,20 +148,21 @@ public sealed partial class MainWindow
 				return (SubagentChildPreparation?)null;
 			}
 
+			var cwd = string.IsNullOrEmpty(cwdOverride) ? parent.Cwd : cwdOverride;
 			var parentFile = parent.Session.SessionFile;
 			var sessionDir = parentFile is { Length: > 0 }
 				? Path.GetDirectoryName(parentFile)
 				: null;
 			return new SubagentChildPreparation(
-				EnvironmentFor(parent.Cwd),
-				McpToolsFor(parent.Cwd),
-				parent.Cwd,
+				EnvironmentFor(cwd),
+				McpToolsFor(cwd),
+				cwd,
 				sessionDir,
 				parentFile,
 				new DesktopUiHost(),
 				SubagentSessionsHost,
 				parent.Subagents?.Catalog
-					?? SubagentCatalog.Discover(parent.Cwd, includeProject: parent.ProjectTrusted),
+					?? SubagentCatalog.Discover(cwd, includeProject: parent.ProjectTrusted),
 				parent.Subagents);
 		}, cancellationToken).ConfigureAwait(false);
 
@@ -245,7 +262,14 @@ public sealed partial class MainWindow
 		SubagentReopenContext context,
 		CancellationToken cancellationToken)
 	{
-		var prepared = await PrepareChildAsync(context.Parent, cancellationToken).ConfigureAwait(false);
+		if (context.WorktreePath is { Length: > 0 } worktreePath && !Directory.Exists(worktreePath))
+		{
+			// 隔离副本被删了：不把会话拉回主工作区，免得同一份改动落在错误的地方。
+			AppLog.For<MainWindow>().ZLogWarning($"Cannot reopen subagent: worktree is gone: {worktreePath}");
+			return null;
+		}
+
+		var prepared = await PrepareChildAsync(context.Parent, context.WorktreePath, cancellationToken).ConfigureAwait(false);
 		if (prepared is null)
 		{
 			return null;
@@ -280,6 +304,9 @@ public sealed partial class MainWindow
 							OutputSchema = context.OutputSchema,
 							// 重开的会话也要知道宿主会复核：不然模型又开始口头声称测试通过。
 							Verify = context.Verify,
+							Worktree = context.WorktreePath is { Length: > 0 },
+							WorktreeBranch = context.WorktreeBranch,
+							WorktreeBase = context.WorktreeBase,
 						},
 						prepared.Catalog,
 						prepared.Host,
@@ -296,6 +323,175 @@ public sealed partial class MainWindow
 
 		// 冷恢复不删文件：会话本来就在，里面是历史。
 		return await AttachChildAsync(child, prepared, sessionFile: null, context.Name, cancellationToken, reopened: true).ConfigureAwait(false);
+	}
+
+	/// 清理父会话文件已经不在的隔离副本；只处理创建超过一天的，避免误删刚归档的会话。
+	private async Task CleanupWorktreesAsync()
+	{
+		var orphans = WorktreeRegistry.Orphans();
+		if (orphans.Count == 0)
+		{
+			Toasts.Show(this, Strings.WorktreeCleanupNone);
+			return;
+		}
+
+		if (!await MessageBox.ConfirmAsync(
+				Strings.WorktreeCleanupConfirm(orphans.Count),
+				owner: this).ConfigureAwait(true))
+		{
+			return;
+		}
+
+		var removed = 0;
+		var failed = 0;
+		foreach (var entry in orphans)
+		{
+			var result = await Task.Run(
+				() => GitWriter.WorktreeRemove(entry.Repository, entry.Path, entry.Branch)).ConfigureAwait(true);
+			if (result.Ok)
+			{
+				WorktreeRegistry.Forget(entry.Path);
+				removed++;
+			}
+			else
+			{
+				failed++;
+			}
+		}
+
+		Toasts.Show(this, failed == 0
+			? Strings.WorktreeCleanupDone(removed)
+			: Strings.WorktreeCleanupPartial(removed, failed));
+	}
+
+	/// 隔离副本的「应用」与「丢弃」：git 在后台跑，确认框与 toast 留在 UI 线程。
+	private async Task RunWorktreeActionAsync(SessionTab tab, SubagentRun run, WorktreeAction action)
+	{
+		if (_sessionHostClosed || !_tabEntries.Contains(tab) || run.WorktreePath is not { Length: > 0 } path)
+		{
+			return;
+		}
+
+		var repository = tab.Session.Cwd;
+		try
+		{
+			if (action == WorktreeAction.Discard)
+			{
+				if (!await MessageBox.ConfirmAsync(
+						Strings.SubagentWorktreeDiscardConfirm(run.Name),
+						owner: this).ConfigureAwait(true))
+				{
+					return;
+				}
+
+				var removed = await Task.Run(
+					() => GitWriter.WorktreeRemove(repository, path, run.WorktreeBranch ?? string.Empty)).ConfigureAwait(true);
+				if (!removed.Ok)
+				{
+					Toasts.Error(this, removed.Message);
+					return;
+				}
+
+				WorktreeRegistry.Forget(path);
+				tab.Session.Subagents?.ClearWorktree(run.Name);
+				Toasts.Success(this, removed.Message.Length > 0 ? removed.Message : Strings.GitWorktreeRemoved);
+				return;
+			}
+
+			var baseline = run.WorktreeBase ?? "HEAD";
+			var (ok, patch) = await Task.Run(() => GitWriter.WorktreePatch(path, baseline)).ConfigureAwait(true);
+			if (!ok)
+			{
+				Toasts.Error(this, patch);
+				return;
+			}
+
+			if (patch.Length == 0)
+			{
+				Toasts.Show(this, Strings.GitWorktreeNoChanges);
+				return;
+			}
+
+			var applied = await Task.Run(() => GitWriter.WorktreeApply(repository, patch)).ConfigureAwait(true);
+			Toasts.Show(this, applied.Message, applied.Ok ? ToastKind.Success : ToastKind.Error);
+		}
+		catch (Exception exception)
+		{
+			Toasts.Error(this, exception.Message);
+		}
+	}
+
+	/// 一次隔离副本：仓库根、工作目录、分支与基线 commit。
+	private sealed record WorktreeLease(string Repository, string Path, string Branch, string BaseCommit);
+
+	/// 建隔离副本。基线先解析成 commit，子代理运行期间父仓库的 HEAD 移动也不会把 diff 带偏。
+	private static WorktreeLease CreateWorktree(SubagentStartContext context)
+	{
+		var baseline = GitWriter.WorktreeBase(context.Parent.Cwd, context.WorktreeBase ?? "HEAD");
+		if (!baseline.Ok)
+		{
+			throw new InvalidOperationException($"cannot create worktree: {baseline.BaseCommit}");
+		}
+
+		var worktreeRoot = Path.Combine(SessionPaths.GetAgentDir(), "worktrees");
+		Directory.CreateDirectory(worktreeRoot);
+		var repoName = SafeName(Path.GetFileName(baseline.Repository));
+		var path = Path.Combine(
+			worktreeRoot,
+			$"{repoName}-{context.Name}-{Guid.NewGuid().ToString("N")[..6]}");
+		var branch = context.WorktreeBranch ?? $"piweft/{context.Name}";
+		var added = GitWriter.WorktreeAdd(baseline.Repository, path, branch, baseline.BaseCommit);
+		if (!added.Ok)
+		{
+			DiscardWorktree(new WorktreeLease(baseline.Repository, path, branch, baseline.BaseCommit));
+			throw new InvalidOperationException($"cannot create worktree: {added.Message}");
+		}
+
+				context.WorktreeBaseResolved?.Invoke(baseline.BaseCommit);
+		WorktreeRegistry.Record(new WorktreeEntry(
+			baseline.Repository,
+			path,
+			branch,
+			context.Parent.Session.SessionFile ?? string.Empty,
+			context.Name,
+			DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+		return new WorktreeLease(baseline.Repository, path, branch, baseline.BaseCommit);
+	}
+
+	/// 失败回滚或用户丢弃时删副本与分支；只在后台线程调用。
+	private static void DiscardWorktree(WorktreeLease? worktree)
+	{
+		if (worktree is null)
+		{
+			return;
+		}
+
+		try
+		{
+			var removed = GitWriter.WorktreeRemove(worktree.Repository, worktree.Path, worktree.Branch);
+			if (removed.Ok)
+			{
+				WorktreeRegistry.Forget(worktree.Path);
+			}
+			else
+			{
+				AppLog.For<MainWindow>().ZLogWarning(
+					$"Worktree cleanup failed: path={worktree.Path} branch={worktree.Branch} {removed.Message}");
+			}
+		}
+		catch (Exception exception)
+		{
+			AppLog.Failure(AppLog.For<MainWindow>(), "Discard subagent worktree", exception);
+		}
+	}
+
+	private static string SafeName(string value)
+	{
+		var chars = value
+			.Where(static character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_')
+			.Take(40)
+			.ToArray();
+		return chars.Length > 0 ? new string(chars) : "repo";
 	}
 
 	/// 标签标题上的一行任务摘要：取第一行，压掉多余空白，超过 32 字截断。

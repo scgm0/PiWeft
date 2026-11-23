@@ -12,12 +12,12 @@ internal sealed class ComposerWidgetCard
 	private readonly GlyphElement _chevron;
 	private readonly TextBlock _meta = new();
 	private readonly StackPanel _body;
-	private bool _expanded = true;
+	private bool _expanded;
 
 	public ComposerWidgetCard(string icon, string title)
 	{
 		_chevron = new GlyphElement()
-			.Kind(GlyphKind.ChevronUp)
+			.Kind(GlyphKind.ChevronDown)
 			.GlyphSize(3)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.WithTheme((theme, element) => element.Foreground = AppTheme.For(theme).TextSubtle);
@@ -57,7 +57,8 @@ internal sealed class ComposerWidgetCard
 
 		_body = new StackPanel()
 			.Spacing(AppTheme.Space1)
-			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3));
+			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))
+			.IsVisible(false);
 
 		// 宽度由宿主列统一给出（与输入卡同宽），卡片自己不再猜内容宽度：
 		// 拉伸对齐 + MaxWidth 在 MewUI 里会得到内容宽或越过上限，二者都不对。

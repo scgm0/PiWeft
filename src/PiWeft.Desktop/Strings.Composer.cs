@@ -81,6 +81,26 @@ public static partial class Strings
 	// 页签悬停：◐ 只说明「有东西在跑」，具体是计划还是目标由这一行补。
 	public const string TabWaitingAnswer = "等待回答";
 
+	public const string TabWaitingAnswerShort = "待答";
+
+	public const string TabPlanShort = "计划";
+
+	public static string TabGoalShort(int rounds, int max) => $"目标 {rounds}/{max}";
+
+	public static string TabSubagentsShort(int count) => $"{count} 子代理";
+
+	public const string TabRunning = "运行";
+
+	public const string TabSubagentAwaiting = "子代理在等你回答";
+
+	public static string TabSubagentsRunning(int count) => $"{count} 个子代理在跑";
+
+	public const string SidebarWaiting = "待答";
+
+	public const string SidebarPlan = "计划";
+
+	public static string SidebarGoal(int rounds, int max) => $"目标 {rounds}/{max}";
+
 	public const string TabPlanRunning = "计划执行中";
 
 	public static string TabGoalRunning(int rounds, int max) => $"目标进行中（{rounds}/{max}）";
@@ -118,6 +138,8 @@ public static partial class Strings
 	public const string GoalClear = "清除";
 
 	public const string GoalEdit = "编辑目标";
+
+	public const string GoalExpandHint = "点击展开目标全文";
 
 	public const string GoalSaveEdit = "保存";
 
@@ -274,6 +296,107 @@ public static partial class Strings
 
 	/// 本次运行发起的工具调用数：与 token 一起看，能分清「多轮小步」与「一次长任务」。
 	public static string SubagentToolCalls(int count) => $"{count} 次工具调用";
+
+	/// 子代理本轮改过的文件；shell 只能标「可能写入」。
+	public static string SubagentChanges(int files, bool mayWrite) => (files, mayWrite) switch
+	{
+		(> 0, true) => $"{files} 个文件 · 可能写入",
+		(> 0, false) => $"{files} 个文件",
+		(0, true) => "可能写入",
+		_ => string.Empty,
+	};
+
+	public const string SubagentChangedFiles = "改动文件";
+
+	public static string SubagentWorktree(string? branch) =>
+		branch is { Length: > 0 } ? $"隔离副本 · {branch}" : "隔离副本";
+
+	public const string SubagentWorktreePath = "隔离副本";
+
+	public const string SubagentWorktreeOpen = "打开目录";
+
+	public const string SubagentWorktreeApply = "应用改动";
+
+	public const string SubagentWorktreeDiff = "查看改动";
+
+	public const string SubagentWorktreeDiscard = "丢弃副本";
+
+	public static string SubagentWorktreeDiscardConfirm(string name) =>
+		$"删除子代理「{name}」的隔离副本与未应用的改动？主工作区不受影响。";
+
+	public const string SubagentMayWriteHint = "跑过 shell 命令，无法确定写了哪些文件；展开子会话或看 git diff 确认。";
+
+	public static string SidebarSubagentChanged(int count) => $"{count} 个改了文件";
+
+	public static string SidebarSubagentFiles(int count) => $"{count} 文件";
+
+	public const string SidebarSubagentMayWrite = "可能写入";
+
+	public static string ProjectWriting(int count) => $"{count} 个在写";
+
+	public const string SidebarSessionRunning = "运行中";
+
+	public const string WorkspaceNoticeOpen = "查看";
+
+	public const string WorkbenchTitle = "工作台";
+
+	public const string WorkbenchGoal = "目标";
+
+	public const string WorkbenchExpand = "展开工作台";
+
+	public const string WorkbenchCollapse = "收起工作台";
+
+	public const string TeamTasksTitle = "团队任务";
+
+	public static string TeamTasksMeta(int active, int pending, int total) =>
+		$"{active} 进行中 · {pending} 待领取 · 共 {total}";
+
+	public static string TeamTaskStatusText(string status) => status switch
+	{
+		TeamTaskStatus.InProgress => "进行中",
+		TeamTaskStatus.Completed => "已完成",
+		TeamTaskStatus.Deleted => "已删除",
+		_ => "待领取",
+	};
+
+	public const string TeamTaskUnowned = "待领取";
+
+	public static string TeamTaskBlockedBy(string ids) => $"依赖：{ids}";
+
+	public static string TeamTaskWriteScopes(string scopes) => $"写范围：{scopes}";
+
+	public static string TeamTaskRevision(int revision) => $"revision {revision}";
+
+	public static string TeamTaskOpenOwner(string owner) => $"打开「{owner}」";
+
+	public const string TeamTaskCopy = "复制详情";
+
+	public const string TeamTaskOwnerEnded = "已结束";
+
+	public static string TeamTaskOwnerFinished(string owner, string subject) =>
+		$"「{owner}」结束了，但任务「{subject}」仍在进行中。";
+
+	public static string TeamTasksShowAll(int remaining) => $"显示其余 {remaining} 个";
+
+	public const string TeamTasksShowLess = "收起";
+
+	public static string TeamTasksFilterOwner(string owner) => $"只看「{owner}」";
+
+	public static string TeamTasksFilterMeta(string owner, int count) => $"只看「{owner}」 · {count} 个";
+
+	public const string TeamTasksClearFilter = "清除筛选";
+
+	public static string TeamTasksOwnerEmpty(string owner) => $"「{owner}」名下没有未删除的任务。";
+
+	public static string WorkspaceNoticeRunning(string title) => $"「{title}」正在这个项目里运行。";
+
+	public static string WorkspaceNoticeSubagentRunning(string title) => $"「{title}」的子代理正在这个项目里运行。";
+
+	public static string WorkspaceNoticeChanged(string title, int files) => $"「{title}」改过这个项目的 {files} 个文件。";
+
+	public static string WorkspaceNoticeSubagentChanged(string title) => $"「{title}」的子代理改过这个项目的文件。";
+
+	public static string WorkspaceNoticeSameFile(string title, string file) => $"「{title}」也在改 {file}。";
 
 	public static string SubagentCardMeta(int active, int total, int shown = -1)
 	{

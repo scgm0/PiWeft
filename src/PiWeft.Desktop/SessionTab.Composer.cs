@@ -101,6 +101,80 @@ public sealed partial class SessionTab
 		});
 	}
 
+	private void OnTeamChanged() => Dispatch(RefreshTeamTasks);
+
+	private void RefreshTeamTasks()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_teamTasksCard.Render(Session.Subagents?.Team, OpenTeamOwner, Session.Subagents);
+		RefreshWidgetColumn();
+	}
+
+	private void ShowWorktreeDiff(SubagentRun run)
+	{
+		if (_disposed || run.WorktreePath is not { Length: > 0 } path)
+		{
+			return;
+		}
+
+		_ = ShowWorktreeDiffAsync(run, path);
+	}
+
+	private async Task ShowWorktreeDiffAsync(SubagentRun run, string path)
+	{
+		var baseline = run.WorktreeBase ?? "HEAD";
+		var (ok, patch) = await Task.Run(() => GitWriter.WorktreePatch(path, baseline)).ConfigureAwait(true);
+		if (_disposed)
+		{
+			return;
+		}
+
+		var message = ok
+			? patch.Length == 0 ? Strings.GitWorktreeNoChanges : null
+			: patch;
+		_fileDiffPreview.Show(View, new DiffPreviewContent(
+			Strings.SubagentWorktreePath,
+			run.WorktreeBranch ?? string.Empty,
+			path,
+			0,
+			0,
+			ok ? patch : string.Empty,
+			message,
+			IsError: !ok));
+	}
+
+	private void OpenTeamOwner(TeamTask task)
+	{
+		if (task.Owner is not { Length: > 0 } owner ||
+			string.Equals(owner, "lead", StringComparison.Ordinal))
+		{
+			return;
+		}
+
+		var run = Session.Subagents?.Runs.FirstOrDefault(
+			candidate => string.Equals(candidate.Name, owner, StringComparison.Ordinal));
+		if (run?.SessionId is { Length: > 0 } sessionId)
+		{
+			OpenLinkedSession(sessionId);
+		}
+	}
+
+	/// 同一项目里另一个会话在跑或改过文件：输入框上方一行提示，不阻塞。
+	internal void SetWorkspaceNotice(string? text, Action? open)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_workspaceNotice.Set(text, open);
+		RefreshWidgetColumn();
+	}
+
 	/// 子代理条：启动、结束、停止都会触发；重建行与卡片可见性。
 	internal void RefreshSubagents()
 	{
@@ -111,6 +185,13 @@ public sealed partial class SessionTab
 
 		_subagentCard.Render(Session.Subagents);
 		RefreshWidgetColumn();
+
+		var running = RunningSubagentCount;
+		if (running != _runningSubagents)
+		{
+			_runningSubagents = running;
+			SubagentStatusChanged?.Invoke();
+		}
 
 		// 页签圆点只在「有子代理开始/结束等回答」时翻转；工具活动不碰标题栏。
 		// 用卡片这一帧的快照，不再让 hub 扫描第二遍。
@@ -145,6 +226,14 @@ public sealed partial class SessionTab
 		if (!_disposed)
 		{
 			NotifyError(message);
+		}
+	}
+
+	private void RequestWorktreeAction(SubagentRun run, WorktreeAction action)
+	{
+		if (!_disposed)
+		{
+			WorktreeActionRequested?.Invoke(this, run, action);
 		}
 	}
 
@@ -349,6 +438,29 @@ public sealed partial class SessionTab
 			"给子会话条补一组布局截图，检查提议卡片在窄窗口下的换行。",
 			LinkedSessionProposal.OwnInitiative);
 
+	/// 仅供 --ui-smoke todo：选中工作台的待办节，供外部脚本截选中态与列表。
+	internal void PrepareTodoSmoke()
+	{
+		_workbench.SelectForTests("todo");
+		RefreshWidgetColumn();
+	}
+
+	/// 仅供 --ui-smoke goal：设一个目标并选中工作台的目标节，供外部脚本截目标条与进度条。
+	internal void PrepareGoalSmoke()
+	{
+		Session.SetGoal("把构建修到全绿，并补上回归测试。");
+		RefreshGoalStrip();
+		_workbench.SelectForTests("goal");
+		RefreshWidgetColumn();
+	}
+
+	/// 仅供 --ui-smoke goal-edit：目标节进入编辑态，供外部脚本截多行输入与引用 chip。
+	internal void PrepareGoalEditSmoke()
+	{
+		PrepareGoalSmoke();
+		_goalStrip.BeginEditForTests();
+	}
+
 	/// 仅供 --ui-smoke subagents：把子代理卡摆成运行中 / 失败可继续 / 等待回答三行，外部脚本截图。
 	/// 只进内存，不建子会话，不写会话文件。
 	internal void PrepareSubagentsSmoke()
@@ -441,6 +553,8 @@ public sealed partial class SessionTab
 		];
 
 		_subagentCard.RenderRunsForSmoke(runs);
+		_workbench.SelectForTests("subagent");
+		_subagentCard.Expand();
 		RefreshWidgetColumn();
 	}
 

@@ -535,6 +535,17 @@ public sealed partial class CodingAgentSession : IDisposable
 					builtins.Add(tool);
 				}
 			}
+
+			if (subagents.Team is { } team)
+			{
+				foreach (var tool in TeamTools.Create(team, "lead"))
+				{
+					if (!builtins.Any(existing => string.Equals(existing.Tool.Name, tool.Tool.Name, StringComparison.Ordinal)))
+					{
+						builtins.Add(tool);
+					}
+				}
+			}
 		}
 		else
 		{

@@ -16,7 +16,9 @@ internal sealed class SubagentStatusIndex
 		string Agent,
 		SubagentState State,
 		bool Awaiting,
-		bool Question)
+		bool Question,
+		int ChangedFiles,
+		bool MayWrite)
 	{
 		public bool IsActive => State is SubagentState.Starting or SubagentState.Running;
 	}
@@ -58,7 +60,9 @@ internal sealed class SubagentStatusIndex
 				run.Agent,
 				run.State,
 				run.AwaitingUser,
-				run.Question is { Length: > 0 });
+				run.Question is { Length: > 0 },
+				run.ChangedFiles.Count,
+				run.MayWrite);
 			changed = true;
 		}
 
@@ -98,7 +102,9 @@ internal sealed class SubagentStatusIndex
 		string.Equals(entry.Agent, run.Agent, StringComparison.Ordinal) &&
 		entry.State == run.State &&
 		entry.Awaiting == run.AwaitingUser &&
-		entry.Question == (run.Question is { Length: > 0 });
+		entry.Question == (run.Question is { Length: > 0 }) &&
+		entry.ChangedFiles == run.ChangedFiles.Count &&
+		entry.MayWrite == run.MayWrite;
 
 	/// 父会话的标签关了：它名下的条目一起收走，免得迟到的刷新把行又挂回来。
 	internal bool RemoveParent(string parentSessionId)
@@ -128,27 +134,28 @@ internal sealed class SubagentStatusIndex
 	internal bool TryGet(string sessionId, out Entry entry) => _bySession.TryGetValue(sessionId, out entry!);
 
 	/// 按父会话汇总。侧栏每行查一次，所以先按父会话分好。
-	internal IReadOnlyDictionary<string, (int Active, int Awaiting)> Summaries()
+	internal IReadOnlyDictionary<string, (int Active, int Awaiting, int Changed)> Summaries()
 	{
 		if (_bySession.Count == 0)
 		{
 			return EmptySummaries;
 		}
 
-		var byParent = new Dictionary<string, (int Active, int Awaiting)>(StringComparer.Ordinal);
+		var byParent = new Dictionary<string, (int Active, int Awaiting, int Changed)>(StringComparer.Ordinal);
 		foreach (var entry in _bySession.Values)
 		{
 			byParent.TryGetValue(entry.ParentSessionId, out var current);
 			var active = current.Active + (entry.IsActive ? 1 : 0);
 			var awaiting = current.Awaiting + (entry.Awaiting || entry.Question ? 1 : 0);
-			byParent[entry.ParentSessionId] = (active, awaiting);
+			var changed = current.Changed + (entry.ChangedFiles > 0 ? 1 : 0);
+			byParent[entry.ParentSessionId] = (active, awaiting, changed);
 		}
 
 		return byParent;
 	}
 
-	private static readonly IReadOnlyDictionary<string, (int Active, int Awaiting)> EmptySummaries =
-		new Dictionary<string, (int Active, int Awaiting)>();
+	private static readonly IReadOnlyDictionary<string, (int Active, int Awaiting, int Changed)> EmptySummaries =
+		new Dictionary<string, (int Active, int Awaiting, int Changed)>();
 
 	/// 命令面板的顺序：等回答的先（有人在等用户），其次在跑，其余按名字。
 	/// 快照在小数组上排，不复制进额外结构。

@@ -75,6 +75,13 @@ public static partial class Strings
 	public const string ConfigAddMcp = "添加服务器";
 	public const string ConfigToolsTitle = "工具与 Codemode";
 	public const string ConfigToolsHint = "工具与 codemode 的设置，改动写入 settings.json。";
+
+	public const string ConfigBehaviorModel = "模型与推理";
+	public const string ConfigBehaviorAutomation = "自动化";
+	public const string ConfigBehaviorNotices = "提示";
+	public const string ConfigToolsDefaults = "默认工具";
+	public const string ConfigToolsCodemode = "Codemode";
+	public const string ConfigGoalBudget = "预算";
 	public const string ConfigDefaultTools = "默认工具";
 	public const string ConfigToolsGroupBuiltin = "内置工具";
 	public const string ConfigToolsGroupExtension = "内置扩展工具";
@@ -93,15 +100,31 @@ public static partial class Strings
 	public const string ConfigCodemodeBudgetHint = "codemode 描述里工具声明的 token 预算，默认 3000；0 表示只列命名空间。留空用默认。";
 	public const string ConfigCodemodeBudgetInvalid = "codemode 声明预算必须是非负整数。";
 	public const string ConfigSubagentsTitle = "子代理";
-	public const string ConfigSubagentsHint = "delegate 系列的配额，写入 settings.json 的 subagents。角色文件里的 timeoutMinutes / maxTokens 优先于这里的默认值。";
+	public const string ConfigSubagentsHint = "delegate 系列的配额，写入 settings.json 的 subagents。角色文件里的 timeoutMinutes / maxTokens 优先于这里的默认值。写者上限只作用于新启动的写子代理：同一工作目录已有 N 个在跑时，第二个直接拒绝。";
 	public const string ConfigSubagentsMaxActive = "同时活跃上限";
 	public const string ConfigSubagentsMaxSpawns = "每回合启动上限";
+
+	public const string ConfigSubagentsMaxWriters = "同时写者上限（0 为不限）";
+
+	public const string ConfigSubagentsConcurrency = "并发与写者";
+
+	public const string ConfigSubagentsConcurrencyHint = "同时活跃上限、每回合启动上限与同一工作目录的写者上限。写者为 0 时不限；开严格模式后第二个写者会被拒绝，直到前一个结束。";
+
+	public const string ConfigSubagentsRuntime = "运行预算";
+
+	public const string ConfigSubagentsRuntimeHint = "单次运行的时限、token 上限与每条验证命令的超时。角色文件里的 timeoutMinutes / maxTokens 优先于这里的默认值。";
+
+	public const string ConfigSubagentsUi = "界面与协作";
 	public const string ConfigSubagentsRunTimeout = "单次运行时限（分钟）";
 	public const string ConfigSubagentsMaxTokens = "单次运行 token 上限（0 为不限）";
 	public const string ConfigSubagentsVerifyTimeout = "验证命令超时（秒）";
 	public const string ConfigSubagentsOpenTabs = "启动子代理时打开标签";
 	public const string ConfigSubagentsOpenTabsHint = "默认关闭：子代理在后台跑，卡片行按需打开活的转录，标签栏不会被并行委派占满。";
-	public static string ConfigSubagentsInvalid(string field) => $"{field}超出范围：并发 1–32、每回合 1–512、时限 1–1440 分钟、token 0–10000000、验证超时 1–86400 秒。";
+
+	public const string ConfigSubagentsTeam = "启用共享任务板";
+
+	public const string ConfigSubagentsTeamHint = "默认关闭：开启后父会话与子代理拿到 team_task_* 工具，任务按 owner、依赖与 revision 协作；普通委派不需要它。";
+	public static string ConfigSubagentsInvalid(string field) => $"{field}超出范围：并发 1–32、每回合 1–512、写者 0–16、时限 1–1440 分钟、token 0–10000000、验证超时 1–86400 秒。";
 
 	public const string ConfigGoalTitle = "目标模式";
 	public const string ConfigGoalHint = "写入 settings.json 的 goal 段，只影响新建目标；已存在的目标保留自己的上限。";

@@ -29,9 +29,9 @@
 
 | 工具 | 用途 |
 |---|---|
-| `delegate` | `{ agent, task, label?, name?, context?, output_schema?, verify?, max_tokens?, timeout_ms? }`，启动子代理，立即返回；`label` 是卡片上的一句话，省略时取任务首行 |
+| `delegate` | `{ agent, task, label?, name?, context?, output_schema?, verify?, max_tokens?, timeout_ms?, worktree?, worktree_base? }`，启动子代理，立即返回；`label` 是卡片上的一句话，省略时取任务首行；`worktree` 在独立 Git 工作区里跑 |
 | `wait_subagents` | `{ names?, timeout_ms?, any? }`，等到结束一轮或超时；`any: true` 第一个结束就返回，其余仍按未投递处理 |
-| `list_subagents` | 本会话的子代理与可用角色；开头一行带 `running 2/4` 容量，每行带轮数与工具调用数 |
+| `list_subagents` | 本会话的子代理与可用角色；开头一行带 `running 2/4` 容量，每行带轮数、工具调用数与改动文件数 |
 | `read_subagent` | `{ id, max_chars? }`，读子会话最近的助手正文；截断或重启后取全文。同一轮正常完成、完整读到最终正文、且没有结构化结果/验证证据时，读过的正文不再作为回报补投 |
 | `send_to_subagent` | `{ id, message, mode? }`，追加消息，不等回复；`mode` 为 `follow_up`（默认）、`steer` 或 `auto` |
 | `stop_subagent` | `{ id }`，停当前回合，子会话仍可读 |
@@ -57,7 +57,7 @@
 - **宿主验证**：`verify` 是一组 shell 命令，回合成功结束后由宿主自己在子会话的 cwd 里执行（同一套进程容器与 `shellPath`/`shellCommandPrefix`）。第一条失败的就算定论，后面的不再跑。退出码与输出尾巴附进结果正文的 `verify` 段，同时进 `Details[].verify`；一条没过，这一轮标 `failed`。子会话的系统提示词会写明会被复核，模型不容易交一份「测试通过」的口头声明。验证期间运行状态仍是 `running`，卡片第三行显示 `verify: <命令>`；超时按 `settings.subagents.verifyTimeoutSeconds` 走，默认 10 分钟。
 - 计划模式下只接受只读的验证命令（与 `bash` 同一判据），否则 `delegate` 直接拒绝：宿主跑的命令不经过子会话的工具闸，不能成为写工作区的后门。
 
-这几个默认值都可以在 `settings.json` 的 `subagents` 里改：`maxActive`、`maxSpawns`、`runTimeoutMinutes`、`maxTokens`、`verifyTimeoutSeconds`、`openTabs`。桌面设置页的「子代理」卡片能改这六个。
+这几个默认值都可以在 `settings.json` 的 `subagents` 里改：`maxActive`、`maxSpawns`、`maxWriters`、`runTimeoutMinutes`、`maxTokens`、`verifyTimeoutSeconds`、`openTabs`。桌面设置页的「子代理」卡片能改这七个。
 
 ## 父会话回答问题
 
@@ -151,6 +151,8 @@ You review HTTP handlers. Report findings with file and line references.
 - `thinking`：子会话思考级别，省略时沿用父会话当前级别。
 - `timeoutMinutes`：单次运行的时限（分钟）；省略时用 `settings.subagents.runTimeoutMinutes`。
 - `maxTokens`：单次运行的 token 上限；省略时用设置里的默认值。
+- `worktree`：是否在独立 Git 工作区里跑；只对写角色有意义，计划模式下拒绝。
+- `worktreeBase`：隔离副本的基线 ref；省略时 `HEAD`。
 - `verify`：宿主在回合结束后执行的命令，支持逗号列表与 `- item` 块列表。只读类角色通常不需要。
 - `advertise`：是否把角色名与描述放进 `delegate` 的工具描述。内置角色为 `true`；新角色省略为 `false`，覆盖同名内置角色时沿用内置值。完整目录始终用 `list_subagents` 查。
 - 正文：追加在子会话系统提示词后面，再后面是委派边界。
@@ -169,6 +171,11 @@ You review HTTP handlers. Report findings with file and line references.
 - `customType` 与 `display` 跟 pi 同一形状落盘（`{"role":"user","customType":"…"}`，隐藏注入才写 `"display":false`）。漏写会让重启后的回报变回普通提问：分叉、重试、标题与导出全跟着错。
 - 修落盘之前的旧会话没有类型标记：桌面按正文前缀（`子代理「`、`子会话「`、`来自父会话「`）认回来，只影响显示，不改文件，也不让它们从分叉点里消失。
 - 排队卡里回报没有「撤回输入框」与「丢弃」：把机器文本撤进草稿没有意义。
+- 子代理卡第三行在活动下面写改动：`3 个文件`、`可能写入`（跑过 shell，无法列出文件）或空（只读）。`edit`/`write` 的 `path` 在工具开始时记进运行快照；展开区列出绝对路径，可复制。`changedFiles` 随 `start`/`idle`/`failed` 条目落盘，重启后仍在；`list_subagents` 的 `Details` 里是 `changed_files` / `may_write`。
+- 侧栏父行：有子代理在跑或等回答时优先报活动；都没有时才轮到父会话自己「运行中」或「3 文件」。项目行写「1 个在写」，只数确定改动，不数 `bash` 的可能写入。
+- 同一项目里另一个会话在跑或改过文件时，本会话输入框上方出现一行提示（不是卡）：「A」的子代理正在这个项目里运行，带「查看」跳到那边。提示不阻塞发送，只在有其它写者时出现。
+- 同一仓库的 Git 写操作（commit/checkout/stash/reset/merge/rebase/pull/push）在桌面上按 cwd 串行，避免一个会话的 stash 卷走另一个会话的未提交改动。`bash` 里的 git 不经过这条约束，脚本仍要自己确认。
+- 隔离副本开着的行在第三行写「隔离副本 · piweft/worker-1-…」，展开区有路径、分支、基线与「应用改动 / 丢弃副本」；行尾的「打开目录」在文件管理器里打开副本。
 - 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。行首是状态图标（勾 / 圈 / 叉 / 停止方块），第一行左边名字与一句任务，右边耗时与 token / 费用；设了上限时写成 `12k/50k tk`。第二行是状态与轮数（历史项带「可继续」），行尾是角色 · 模型 · 思考级别。第三行按情况取一个：运行中是当前工具（`read src/Auth.cs`）或 `verify: <命令>`；失败行是一行失败原因（错误色）；跑过验证且通过时是「验证通过：<命令>」，回复被截断时是「回复被 max tokens 截断」。验证失败的原因行直接写命令与退出码，因为那时模型那句「都改好了」不能当原因。完整原因与验证输出在悬停与展开区。进度摘要显示在展开区，`list_subagents` 与 wait 心跳也带上。完成的行带输入 + 输出 token 与总耗时：耗时就是行右侧那个秒表，从 delegate 到回合结束，含工具与等待；`list_subagents` 的 `Details` 里是 `tokens` / `max_tokens` / `cost` / `elapsed_ms` / `stop_reason` / `verify`。旧条目里的 `tokens` 曾按 `TotalTokens`（含 cacheRead）记录，恢复时会按子会话文件重算成与标签页「输入 / 输出 token」一致的口径。
 - 运行中的当前工具带「多久以前」：`bash dotnet test · 3 分钟前没有新动作`。卡片每秒自己走一次，不等 hub 的事件；2 分钟内只写「12 秒前」，超过才提示没有新动作。总耗时看行右侧的秒表，两个数一起才分得清「在跑长命令」与「卡住」：总耗时从 `delegate` 起算，活动时间只跟最后一次工具起止或助手消息。
 - 侧栏也给子行写状态：运行中 / 等待回答 / 问父会话 / 失败；父行写「2 个子代理在跑」或「1 个等待回答」，没有活动时写「2 子代理 · 1 关联」。状态来自窗口级索引，只收状态边沿，工具活动与 token 不触发侧栏重建。离开父标签后仍看得出谁卡住了。
@@ -182,6 +189,8 @@ You review HTTP handlers. Report findings with file and line references.
 ## 生命周期
 
 - 深度上限 1。子代理会话不注册 `delegate` 系列工具，也不带关联会话工具，递归停在第一层。
+- 并发上限 4，超了直接拒绝，不排队。给空闲子代理发消息也算开一轮，同样受这个上限约束；首轮还在启动时 `send_to_subagent` 先排队，不会和首轮抢子会话。
+- `maxWriters` 是严格写者上限，默认 0（不限）。开启后同一工作目录同时最多 N 个写子代理：角色工具面含 `edit`/`write`/`bash`/`powershell`（`tools` 省略视为可能写）就算写者，超了直接拒绝并给 `settings.subagents.maxWriters` 的下一步。只算正在跑的写者；已结束的写子代理 `send_to_subagent` 继续时重新申请，恢复的历史项按角色重新占名额。默认关：同项目开第二个会话做另一件事是常见用法，默认互斥会挡住它。
 - 并发上限 4，超了直接拒绝，不排队。给空闲子代理发消息也算开一轮，同样受这个上限约束；首轮还在启动时 `send_to_subagent` 先排队，不会和首轮抢子会话。
 - 每个用户回合最多启动 32 个；子代理回报触发的父会话轮次不重置预算，用户自己发消息才清零。
 - 连续 6 次回报拉起父会话后停止自动投递，用户发消息清零。停投的正文仍在 `Result` 与子会话文件里，`wait_subagents` 还能取。
@@ -208,6 +217,27 @@ You review HTTP handlers. Report findings with file and line references.
 - 结果截断用 span，不切数组；正文超过 12k 字符只保留头部并指向子会话文件。工具结果 `Details` 里给界面卡片留的正文压到 4k，避免同一段正文在会话文件里存两份。
 - 全部代码无反射、无动态、无第三方依赖，NativeAOT 安全。
 
+## 共享任务板
+
+`settings.subagents.team` 打开后，父会话与每个子代理都拿到四个工具：
+
+| 工具 | 用途 |
+|---|---|
+| `team_task_create` | `{ subject, description, blocked_by?, write_scopes? }`，建一个 pending、未领取的任务 |
+| `team_task_list` | `{ status?, owner?, unowned? }`，列未删除任务 |
+| `team_task_get` | `{ id }`，读 revision、owner、依赖与 ready |
+| `team_task_update` | `{ id, expected_revision, action, ... }`，`claim` / `release` / `complete` / `reopen` / `edit` / `set_dependencies` / `reassign` / `delete` |
+
+- owner 是 `lead` 或子代理名；`reassign` 只有 lead 能做，其他成员自己 claim / complete 自己的任务。
+- 每次修改带 `expected_revision`，过期写回 `stale team task ... current revision is ...`，不做静默覆盖。
+- `claim` 要求 `pending` 且依赖全部 completed；否则 `unfinished dependencies`。`blocked_by` 会查缺失、自己依赖自己与环。
+- `write_scopes` 是工作区相对路径，只用于提示重叠，不锁文件，也不能授权写。
+- 任务变更不唤醒任何成员、不结束 `wait_subagents`。要另一个子代理动手，父会话用 `send_to_subagent`。`wait_subagents` / `list_subagents` / `read_subagent` 的 `Details` 里带 `team_tasks`，列出该子代理名下仍在进行中的任务。
+- 任务快照 append 到父会话的 `piweft-team-task` 条目，重启后按最后一条恢复；一个团队最多 256 个未删除任务。
+- Team 工具不进角色白名单：它是委派边界的一部分，开了 Team 每个成员都有。计划模式允许它，因为改的是任务板，不是工作区。
+- 输入区上方多一条「团队任务」：进行中在前、待领取其次、已完成最后，默认 5 行，其余用「显示其余 N 个」展开；行里是状态、标题、owner，悬停看描述与依赖。点行展开描述、revision、依赖与写范围，并可一键复制完整详情；owner 是子代理时给「打开」直接挂它的转录，也可「只看该 owner」筛选，任务条标题显示当前筛选并可清除。owner 已经结束但任务仍是进行中时，行尾标「已结束」，并弹一次轻提示；只在 Team 打开且有任务时出现。
+- 限制：共享同一个 checkout，`write_scopes` 只是建议；跨进程、跨团队、worktree 与任务 board 的联动都不做。
+
 ## 限制
 
 - 不支持外部 CLI 角色（claude-code / codex / cursor）。
@@ -215,7 +245,11 @@ You review HTTP handlers. Report findings with file and line references.
 - 子代理与父会话同 cwd：`delegate` 没有 `cwd` 参数，跨仓库任务要么在父会话里做，要么另开会话。
 - 不开标签的子代理一回合做完就释放会话对象，只留条目、结果与会话文件。扫描 5 秒一拍，所以回收落在回合结束后的 0–5 秒。子代理基本一次性，结果已经投递、上下文在文件里，冷恢复（打开转录或再发消息）只要几毫秒到几十毫秒；真的马上追问时，活会话还没被扫到，根本不用恢复。回收前只看三件事：还在跑、还在等回答、详情标签开着，任何一条成立就不动。
 - 模型选择只有角色文件一条路：`delegate` 不能按次换 model。
-- 没有 worktree 隔离。同进程的 `FileMutationQueue` 只保证同一文件的写串行，跨文件冲突仍要父会话复核。
+- worktree 隔离默认关。`worktree: true` 时子代理在 `<agentDir>/worktrees/<repo>-<name>-<short>` 开出新分支 `piweft/<name>-<session>`，基线默认 `HEAD`；`git worktree add` 失败即不启动，创建失败会回滚目录与分支。
+- 子代理的 `cwd` 是隔离副本，`SessionManager` 与工具都以它为根；侧栏仍把会话归到父项目下。结果正文带 `worktree:` 行，`list_subagents` / `read_subagent` 的 `Details` 带 `worktree_path` / `worktree_branch` / `worktree_base`；`start` / 终态条目落盘，重启后冷恢复仍用副本路径，副本被删则拒绝恢复。
+- 卡片显示「隔离副本 · 分支」，行尾可打开目录；展开区列出路径、分支与基线短 SHA，终态时给「查看改动」「应用改动」「丢弃副本」。查看改动把整份 worktree patch 放进现有 diff 浮层，不重读主工作区。应用 = `git diff <base> --binary` → `git apply --check` → `git apply`，不自动提交；冲突就停在检查，主工作区不动。丢弃要确认，删副本与分支，主工作区不受影响。
+- 父会话自己的写仍在主工作区；隔离副本只隔离子代理。`bash` 里的 git 写不经过桌面 Git 写锁，副本内可以随意；跨会话的主工作区冲突仍靠占用提示与 `maxWriters`。
+- 副本登记在 `<agentDir>/worktrees/index.json`。父会话文件已不存在、目录还在的副本算孤儿：总在创建满一天后才出现在命令面板的「清理隔离副本」里，确认后逐个删副本与分支；不自动清理，避免把刚归档会话的改动删掉。
 - 子代理在自己的标签里提问。父会话阻塞在 `wait_subagents` 时也能在子标签作答，因为标签与回合是独立的。
 - `wait_subagents` 默认等 10 分钟；超时后结果里直接给出下一步（结束回合等消息），免得模型再等一轮。
 - 子代理条上的历史项标「可继续」：给它发消息就会从会话文件重新打开；点行打开转录。

@@ -71,6 +71,8 @@ public sealed class SubagentCardTests : IDisposable
 
 		using var tab = new SessionTab(session, [model], "subagents");
 		ConversationPerformanceTests.Layout(tab.View, 960, 720);
+		tab.ShowSubagentCardForTests();
+		ConversationPerformanceTests.Layout(tab.View, 960, 720);
 
 		Assert.True(tab.SubagentCardVisible);
 		Assert.Equal(1, tab.SubagentCardRowCount);
@@ -102,6 +104,7 @@ public sealed class SubagentCardTests : IDisposable
 
 		using var tab = new SessionTab(session, [model], "subagents-expanded");
 		ConversationPerformanceTests.Layout(tab.View, 960, 720);
+		tab.ShowSubagentCardForTests();
 		tab.SubagentCardForTests.ToggleExpandedForTests("scout-1");
 		ConversationPerformanceTests.Layout(tab.View, 960, 720);
 
@@ -137,6 +140,7 @@ public sealed class SubagentCardTests : IDisposable
 
 		using var tab = new SessionTab(session, [model], "subagents-alloc");
 		ConversationPerformanceTests.Layout(tab.View, 960, 720);
+		tab.ShowSubagentCardForTests();
 		for (var index = 0; index < 8; index++)
 		{
 			tab.RefreshSubagents();
@@ -177,6 +181,8 @@ public sealed class SubagentCardTests : IDisposable
 		await WaitForStateAsync(hub, "scout-1", SubagentState.Failed);
 
 		using var tab = new SessionTab(session, [model], "subagents-failed");
+		ConversationPerformanceTests.Layout(tab.View, 960, 720);
+		tab.ShowSubagentCardForTests();
 		ConversationPerformanceTests.Layout(tab.View, 960, 720);
 
 		var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(tab.View).ToArray();
@@ -233,6 +239,7 @@ public sealed class SubagentCardTests : IDisposable
 			StartedAt = 1_000 + index,
 			FinishedAt = 2_000 + index,
 		}).ToArray());
+		card.Expand();
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 
 		try
@@ -319,6 +326,7 @@ public sealed class SubagentCardTests : IDisposable
 				FinishedAt = 3_000,
 			},
 		]);
+		card.Expand();
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 
 		try
@@ -367,6 +375,7 @@ public sealed class SubagentCardTests : IDisposable
 		]);
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 		card.ToggleExpandedForTests("worker-1");
+		card.Expand();
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 
 		try
@@ -409,6 +418,7 @@ public sealed class SubagentCardTests : IDisposable
 		]);
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 		card.ToggleExpandedForTests("reviewer-1");
+		card.Expand();
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 
 		try
@@ -445,6 +455,7 @@ public sealed class SubagentCardTests : IDisposable
 				StartedAt = now - 300_000,
 			},
 		]);
+		card.Expand();
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 
 		try
@@ -454,6 +465,124 @@ public sealed class SubagentCardTests : IDisposable
 			Assert.Contains(blocks, block =>
 				block.Text.StartsWith("bash dotnet test", StringComparison.Ordinal) &&
 				block.Text.Contains("分钟前", StringComparison.Ordinal));
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void WorktreeShowsItsBranchAndPath()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { }, (_, _) => { }, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "worker-1",
+				SessionId = "subagent-worktree",
+				Agent = "worker",
+				Label = "隔离副本里改",
+				Model = "test/test-model",
+				State = SubagentState.Idle,
+				Turns = 1,
+				WorktreePath = "/tmp/piweft-worktrees/repo-worker-1",
+				WorktreeBranch = "piweft/worker-1-abcd1234",
+				WorktreeBase = "0123456",
+				StartedAt = 1_000,
+				FinishedAt = 2_000,
+			},
+		]);
+		card.Expand();
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentWorktree("piweft/worker-1-abcd1234"));
+
+			card.ToggleExpandedForTests("worker-1");
+			ConversationPerformanceTests.Layout(card.View, 800, 720);
+			var expanded = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(expanded, block => block.Text == Strings.SubagentWorktreePath);
+			Assert.Contains(expanded, block => block.Text.Contains("/tmp/piweft-worktrees", StringComparison.Ordinal));
+			Assert.Contains(expanded, block => block.Text == Strings.SubagentWorktreeDiff);
+			Assert.Contains(expanded, block => block.Text == Strings.SubagentWorktreeApply);
+			Assert.Contains(expanded, block => block.Text == Strings.SubagentWorktreeDiscard);
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void ChangedFilesShowOnTheRowAndInTheExpandedSection()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "worker-1",
+				SessionId = "subagent-changed-files",
+				Agent = "worker",
+				Label = "改了登录流程",
+				Model = "test/test-model",
+				State = SubagentState.Idle,
+				Turns = 1,
+				ChangedFiles = ["/repo/src/Auth.cs", "/repo/src/Login.cs"],
+				StartedAt = 1_000,
+				FinishedAt = 2_000,
+			},
+		]);
+		card.Expand();
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentChanges(2, mayWrite: false));
+
+			card.ToggleExpandedForTests("worker-1");
+			ConversationPerformanceTests.Layout(card.View, 800, 720);
+			var expanded = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(expanded, block => block.Text == Strings.SubagentChangedFiles);
+			Assert.Contains(expanded, block => block.Text == "/repo/src/Auth.cs\n/repo/src/Login.cs");
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void ShellOnlyWriterShowsPossibleWriteWithoutAFileList()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "worker-1",
+				SessionId = "subagent-may-write",
+				Agent = "worker",
+				Label = "跑了脚本",
+				Model = "test/test-model",
+				State = SubagentState.Running,
+				Turns = 1,
+				MayWrite = true,
+				StartedAt = 1_000,
+			},
+		]);
+		card.Expand();
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentChanges(0, mayWrite: true));
 		}
 		finally
 		{
@@ -483,6 +612,7 @@ public sealed class SubagentCardTests : IDisposable
 		]);
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 		card.ToggleExpandedForTests("worker-1");
+		card.Expand();
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 
 		try
@@ -518,6 +648,7 @@ public sealed class SubagentCardTests : IDisposable
 		]);
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 		card.ToggleExpandedForTests("worker-1");
+		card.Expand();
 		ConversationPerformanceTests.Layout(card.View, 800, 720);
 
 		try

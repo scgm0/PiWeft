@@ -68,6 +68,21 @@ public sealed record SubagentRun
 	/// <summary>累计发起的工具调用数；卡片与 list_subagents 用它判断工作量。</summary>
 	public int ToolCalls { get; init; }
 
+	/// <summary>本轮 edit/write 落到的文件，绝对路径，按首次编辑顺序。</summary>
+	public IReadOnlyList<string> ChangedFiles { get; init; } = [];
+
+	/// <summary>隔离副本的工作目录；没有开 worktree 时为 null。</summary>
+	public string? WorktreePath { get; init; }
+
+	/// <summary>隔离副本的分支名。</summary>
+	public string? WorktreeBranch { get; init; }
+
+	/// <summary>隔离副本的基线 ref；diff 以它为基线。没有显式指定时是 HEAD。</summary>
+	public string? WorktreeBase { get; init; }
+
+	/// <summary>跑过可能写入的 shell 命令；无法静态判断具体文件。</summary>
+	public bool MayWrite { get; init; }
+
 	/// <summary>运行中正在调用的工具与摘要（<c>read src/a.cs</c>）；结束或未开始时为 null。</summary>
 	public string? Activity { get; init; }
 
@@ -172,6 +187,12 @@ public sealed record SubagentStartRequest(string Agent, string Task, string? Nam
 
 	/// <summary>回合结束后由宿主执行的验证命令；null 时取角色文件里的设置。</summary>
 	public IReadOnlyList<string>? Verify { get; init; }
+
+	/// <summary>在独立 Git 工作区里运行；null 时取角色文件。只对写角色有意义。</summary>
+	public bool? Worktree { get; init; }
+
+	/// <summary>隔离副本的基线 ref；null 时用角色文件或 HEAD。</summary>
+	public string? WorktreeBase { get; init; }
 }
 
 /// <summary>启动结果：成功时带名字与子会话 id。</summary>
@@ -208,6 +229,18 @@ public sealed record SubagentStartContext(
 
 	/// <summary>回合结束后宿主会执行的验证命令；子会话据此知道结论会被复核。</summary>
 	public IReadOnlyList<string> Verify { get; init; } = [];
+
+	/// <summary>宿主为这个子代理建隔离副本；分支由 hub 生成。</summary>
+	public bool Worktree { get; init; }
+
+	/// <summary>隔离副本的分支名；<see cref="Worktree"/> 为 false 时忽略。</summary>
+	public string? WorktreeBranch { get; init; }
+
+	/// <summary>隔离副本的基线 ref；null 时 HEAD。</summary>
+	public string? WorktreeBase { get; init; }
+
+	/// <summary>宿主解析出基线 commit 后回写；diff 钉在它上面，父仓库 HEAD 移动也不影响。</summary>
+	public Action<string>? WorktreeBaseResolved { get; init; }
 }
 
 /// <summary>冷恢复一个已结束的子代理：按会话文件重建子会话。</summary>
@@ -235,6 +268,15 @@ public sealed record SubagentReopenContext(
 
 	/// <summary>回合结束后宿主会执行的验证命令。</summary>
 	public IReadOnlyList<string> Verify { get; init; } = [];
+
+	/// <summary>隔离副本路径；冷恢复时目录还在就用它当 cwd。</summary>
+	public string? WorktreePath { get; init; }
+
+	/// <summary>隔离副本分支。</summary>
+	public string? WorktreeBranch { get; init; }
+
+	/// <summary>隔离副本基线 commit。</summary>
+	public string? WorktreeBase { get; init; }
 }
 
 /// <summary>单个会话的子代理配额与默认值，来自 <c>settings.subagents</c>。</summary>
@@ -248,6 +290,12 @@ public sealed record SubagentLimits
 
 	/// <summary>每个用户回合最多启动多少个子代理。</summary>
 	public int MaxSpawns { get; init; } = 32;
+
+	/// <summary>同一工作目录同时活跃的写子代理上限；0 表示不限。</summary>
+	public int MaxWriters { get; init; }
+
+	/// <summary>是否启用共享任务板。</summary>
+	public bool Team { get; init; }
 
 	/// <summary>单次运行的时限。</summary>
 	public TimeSpan RunTimeout { get; init; } = SubagentLimits.DefaultRunTimeout;
@@ -360,6 +408,18 @@ public sealed class SubagentHub : IDisposable
 		/// 最近一次 read_subagent 给父会话看的正文。结果与它相同时不再重复投递。
 		public string? LastReadText { get; set; }
 
+		/// 本轮 edit/write 碰过的文件；Run.ChangedFiles 只在新增时重建数组。
+		public HashSet<string> ChangedFiles { get; } = new(StringComparer.Ordinal);
+
+		/// 跑过 shell 类工具：无法确定写了哪些文件。
+		public bool MayWrite { get; set; }
+
+		/// 这个角色可能有写工具：严格模式按它占写者名额。
+		public bool Writer { get; set; }
+
+		/// 写者名额租约；终态、停止、移除时还回去。
+		public IDisposable? WriterLease { get; set; }
+
 		public bool Stopping { get; set; }
 
 		/// 超时或超预算已经写过终结结果：迟到的 agent_end 不能再把状态改回 idle。
@@ -450,6 +510,7 @@ public sealed class SubagentHub : IDisposable
 	private readonly int _maxActive;
 	private readonly int _maxSpawns;
 	private readonly int _depth;
+	private readonly TeamBoard? _team;
 	private readonly TimeSpan _coalesce;
 	private readonly Lock _gate = new();
 	private readonly Dictionary<string, RunState> _runs = new(StringComparer.Ordinal);
@@ -479,6 +540,23 @@ public sealed class SubagentHub : IDisposable
 		_maxSpawns = Math.Max(1, _limits.MaxSpawns);
 		_coalesce = coalesce ?? TimeSpan.FromMilliseconds(200);
 		Restore();
+		_team = _limits.Team ? new TeamBoard(owner, IsTeamMember) : null;
+	}
+
+	/// <summary>共享任务板；Team 模式关闭时为 null。</summary>
+	public TeamBoard? Team => _team;
+
+	private bool IsTeamMember(string name)
+	{
+		if (string.Equals(name, "lead", StringComparison.Ordinal))
+		{
+			return true;
+		}
+
+		lock (_gate)
+		{
+			return _runs.ContainsKey(name);
+		}
 	}
 
 	/// <summary>子代理列表或状态变化；界面据此刷新。</summary>
@@ -912,12 +990,15 @@ public sealed class SubagentHub : IDisposable
 			{
 				if (!restored.TryGetValue(name, out var state))
 				{
+					var agentName = ReadString(data["agent"]) ?? string.Empty;
 					state = new RunState
 					{
+						// 恢复项继续时也要按角色重新占写者名额，不能让重启绕过严格模式。
+						Writer = _catalog.Get(agentName) is { } definition && IsWriter(definition),
 						Run = new SubagentRun
 						{
 							Name = name,
-							Agent = ReadString(data["agent"]) ?? string.Empty,
+							Agent = agentName,
 							Label = ReadString(data["label"]) ?? string.Empty,
 							Brief = ReadString(data["brief"]) ?? string.Empty,
 							Model = ReadString(data["model"]) ?? string.Empty,
@@ -926,6 +1007,11 @@ public sealed class SubagentHub : IDisposable
 							StartedAt = ReadLong(data["startedAt"]) ?? 0,
 							State = SubagentState.Stopped,
 							PlanMode = ReadPlanMode(data["planMode"]),
+							ChangedFiles = ReadStrings(data["changedFiles"]),
+							MayWrite = ReadBool(data["mayWrite"]),
+							WorktreePath = ReadString(data["worktreePath"]),
+							WorktreeBranch = ReadString(data["worktreeBranch"]),
+							WorktreeBase = ReadString(data["worktreeBase"]),
 							Restored = true,
 						},
 					};
@@ -949,6 +1035,9 @@ public sealed class SubagentHub : IDisposable
 					Thinking = ReadString(data["thinking"]) ?? state.Run.Thinking,
 					MaxTokens = ReadLong(data["maxTokens"]) ?? state.Run.MaxTokens,
 					PlanMode = state.Run.PlanMode || ReadPlanMode(data["planMode"]),
+					WorktreePath = ReadString(data["worktreePath"]) ?? state.Run.WorktreePath,
+					WorktreeBranch = ReadString(data["worktreeBranch"]) ?? state.Run.WorktreeBranch,
+					WorktreeBase = ReadString(data["worktreeBase"]) ?? state.Run.WorktreeBase,
 					State = SubagentState.Stopped,
 				};
 				if (data["outputSchema"] is JsonObject schema)
@@ -985,6 +1074,17 @@ public sealed class SubagentHub : IDisposable
 
 			if (!restored.TryGetValue(name, out var finished))
 			{
+				continue;
+			}
+
+			if (kind == "worktree-removed")
+			{
+				finished.Run = finished.Run with
+				{
+					WorktreePath = null,
+					WorktreeBranch = null,
+					WorktreeBase = null,
+				};
 				continue;
 			}
 
@@ -1035,6 +1135,10 @@ public sealed class SubagentHub : IDisposable
 					? null
 					: persistedStructured ?? finished.Run.StructuredOutput,
 				PlanMode = finished.Run.PlanMode || ReadPlanMode(data["planMode"]),
+				ChangedFiles = ReadStrings(data["changedFiles"]) is { Count: > 0 } changedFiles
+					? changedFiles
+					: finished.Run.ChangedFiles,
+				MayWrite = ReadBool(data["mayWrite"]) || finished.Run.MayWrite,
 			};
 
 			if (ReadLong(data["turn"]) is { } resultTurn && resultTurn > 0)
@@ -1256,6 +1360,11 @@ public sealed class SubagentHub : IDisposable
 				"\n不要声称这些命令通过了；把改动做完，让命令自己说话。");
 		}
 
+		if (context.Parent.Subagents?.Team is not null)
+		{
+			boundary = string.Concat(boundary, "\n\n", TeamBoard.Policy);
+		}
+
 		if (context.OutputSchema is not { } schema)
 		{
 			return boundary;
@@ -1357,6 +1466,22 @@ public sealed class SubagentHub : IDisposable
 			}
 		}
 
+		var worktree = request.Worktree ?? definition.Worktree ?? false;
+		var worktreeBase = request.WorktreeBase ?? definition.WorktreeBase;
+		if (worktree && planMode)
+		{
+			return new SubagentStartOutcome(false, "worktree is a write operation; leave plan mode first");
+		}
+		if (worktree && !IsWriter(definition))
+		{
+			return new SubagentStartOutcome(false, "worktree needs a writing role; this role cannot change files");
+		}
+		if (worktreeBase is { Length: > 0 } requestedBase &&
+			(requestedBase.Length > 200 || requestedBase.StartsWith('-')))
+		{
+			return new SubagentStartOutcome(false, "worktree_base must be a plain ref name such as HEAD or a branch");
+		}
+
 		var context = NormalizeContext(request.Context);
 		IReadOnlyList<Message>? seed = null;
 		JsonObject? outputSchema = null;
@@ -1397,6 +1522,7 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		RunState state;
+		string? worktreeBranch = null;
 		lock (_gate)
 		{
 			if (_disposed)
@@ -1424,12 +1550,27 @@ public sealed class SubagentHub : IDisposable
 				return new SubagentStartOutcome(false, $"a subagent named \"{name}\" already exists");
 			}
 
+			// 严格模式：同一工作目录的写子代理串行。默认 0 表示不限；隔离副本不占父工作区名额。
+			var writer = IsWriter(definition);
+			worktreeBranch = worktree
+				? $"piweft/{name}-{_owner.Session.SessionId[..8]}"
+				: null;
+			IDisposable? writerLease = null;
+			if (writer && !worktree && !WorkspaceWriterGate.TryAcquire(_owner.Cwd, _limits.MaxWriters, out writerLease))
+			{
+				return new SubagentStartOutcome(false,
+					$"writer limit reached: this workspace already has {_limits.MaxWriters} writing subagent(s). " +
+					"Wait for one to finish, or raise settings.subagents.maxWriters.");
+			}
+
 			var startedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 			state = new RunState
 			{
 				OutputSchema = outputSchema,
 				RunTimeout = runTimeout,
 				VerifyCommands = verify,
+				Writer = writer,
+				WriterLease = writerLease,
 				Run = new SubagentRun
 				{
 					Name = name,
@@ -1441,6 +1582,8 @@ public sealed class SubagentHub : IDisposable
 					MaxTokens = maxTokens,
 					StartedAt = startedAt,
 					LastActivityAt = startedAt,
+					WorktreeBranch = worktreeBranch,
+					WorktreeBase = worktree ? worktreeBase ?? "HEAD" : null,
 				},
 			};
 			_runs[name] = state;
@@ -1460,6 +1603,21 @@ public sealed class SubagentHub : IDisposable
 					PlanMode = planMode,
 					OutputSchema = outputSchema,
 					Verify = verify,
+					Worktree = worktree,
+					WorktreeBranch = worktreeBranch,
+					WorktreeBase = worktree ? worktreeBase ?? "HEAD" : null,
+					WorktreeBaseResolved = worktree
+						? commit =>
+						{
+							lock (_gate)
+							{
+								if (_runs.TryGetValue(name, out var current))
+								{
+									current.Run = current.Run with { WorktreeBase = commit };
+								}
+							}
+						}
+						: null,
 				},
 				cancellationToken).ConfigureAwait(false);
 		}
@@ -1526,6 +1684,7 @@ public sealed class SubagentHub : IDisposable
 				SessionFile = child.Session.SessionFile,
 				Model = ModelLabel(child.Model),
 				Thinking = child.ThinkingLevel,
+				WorktreePath = worktree ? child.Cwd : current.Run.WorktreePath,
 			};
 		}
 
@@ -1801,6 +1960,14 @@ public sealed class SubagentHub : IDisposable
 					["state"] = StateName(run.State),
 					["restored"] = run.Restored,
 					["turns"] = run.Turns,
+					["changed_files"] = run.ChangedFiles is { Count: > 0 } changed
+						? new JsonArray([.. changed.Select(static file => (JsonNode)file)])
+						: null,
+					["may_write"] = run.MayWrite,
+					["worktree_path"] = run.WorktreePath,
+					["worktree_branch"] = run.WorktreeBranch,
+					["worktree_base"] = run.WorktreeBase,
+					["team_tasks"] = TeamTasksJson(run.Name),
 					["tokens"] = run.Tokens,
 					["max_tokens"] = run.MaxTokens,
 					["cost"] = run.Cost,
@@ -1926,6 +2093,33 @@ public sealed class SubagentHub : IDisposable
 		});
 	}
 
+	/// 这个子代理名下仍在进行中的团队任务；给 wait / list / read 的 Details 用。
+	/// 任务板没开时返回 null，不占字段。
+	private JsonArray? TeamTasksJson(string owner)
+	{
+		if (_team is null)
+		{
+			return null;
+		}
+
+		var tasks = _team.Tasks
+			.Where(task => task.Status == TeamTaskStatus.InProgress &&
+				string.Equals(task.Owner, owner, StringComparison.Ordinal))
+			.ToArray();
+		if (tasks.Length == 0)
+		{
+			return null;
+		}
+
+		return new JsonArray([.. tasks.Select(static task => (JsonNode)new JsonObject
+		{
+			["id"] = task.Id,
+			["revision"] = task.Revision,
+			["subject"] = task.Subject,
+			["status"] = task.Status,
+		})]);
+	}
+
 	/// <summary>列本会话开出的子代理；给 <c>list_subagents</c> 用。</summary>
 	/// <param name="details">同一份列表的结构化形式，给界面与程序调用方用。</param>
 	public string Describe(out JsonObject details)
@@ -1959,6 +2153,14 @@ public sealed class SubagentHub : IDisposable
 					["state"] = StateName(run.State),
 					["turns"] = run.Turns,
 					["tool_calls"] = run.ToolCalls,
+					["changed_files"] = run.ChangedFiles is { Count: > 0 } changed
+						? new JsonArray([.. changed.Select(static file => (JsonNode)file)])
+						: null,
+					["may_write"] = run.MayWrite,
+					["worktree_path"] = run.WorktreePath,
+					["worktree_branch"] = run.WorktreeBranch,
+					["worktree_base"] = run.WorktreeBase,
+					["team_tasks"] = TeamTasksJson(run.Name),
 					["tokens"] = run.Tokens,
 					["cost"] = run.Cost,
 					["elapsed_ms"] = ElapsedMs(run),
@@ -1984,6 +2186,20 @@ public sealed class SubagentHub : IDisposable
 				if (run.ToolCalls > 0)
 				{
 					text.Append(" · ").Append(run.ToolCalls).Append(" tool calls");
+				}
+
+				if (run.ChangedFiles.Count > 0)
+				{
+					text.Append(" · ").Append(run.ChangedFiles.Count).Append(" files changed");
+				}
+				else if (run.MayWrite)
+				{
+					text.Append(" · may write files");
+				}
+
+				if (run.WorktreePath is { Length: > 0 })
+				{
+					text.Append(" · worktree ").Append(run.WorktreeBranch ?? run.WorktreePath);
 				}
 				if (run.AwaitingUser)
 				{
@@ -2216,6 +2432,10 @@ public sealed class SubagentHub : IDisposable
 			["turns"] = run.Turns,
 			["session_id"] = run.SessionId,
 			["session_file"] = file,
+			["worktree_path"] = run.WorktreePath,
+			["worktree_branch"] = run.WorktreeBranch,
+			["worktree_base"] = run.WorktreeBase,
+			["team_tasks"] = TeamTasksJson(run.Name),
 			// 正文已经在工具结果里进过一次会话文件，这里只留画卡够用的预览。
 			["text"] = Clip(body, MaxCardChars),
 			["chars"] = body.Length,
@@ -2317,6 +2537,20 @@ public sealed class SubagentHub : IDisposable
 				{
 					return new SubagentOutcome(false,
 						$"cannot send to {state.Run.Name}: {_maxActive} subagents are already active. Wait for one to finish or stop it.");
+				}
+
+				// 空闲的写子代理继续跑时重新占名额：严格模式下不能让 send 绕过写者上限。
+				// 隔离副本不占父工作区名额，它和主工作区不在一个目录。
+				if (state.Writer && state.Run.WorktreePath is null && state.WriterLease is null)
+				{
+					if (!WorkspaceWriterGate.TryAcquire(_owner.Cwd, _limits.MaxWriters, out var writerLease))
+					{
+						return new SubagentOutcome(false,
+							$"writer limit reached: this workspace already has {_limits.MaxWriters} writing subagent(s). " +
+							"Wait for one to finish, or raise settings.subagents.maxWriters.");
+					}
+
+					state.WriterLease = writerLease;
 				}
 			}
 		}
@@ -2442,6 +2676,9 @@ public sealed class SubagentHub : IDisposable
 					PlanMode = run.PlanMode || _owner.PlanModeEnabled,
 					OutputSchema = state.OutputSchema?.DeepClone().AsObject(),
 					Verify = state.VerifyCommands,
+					WorktreePath = run.WorktreePath,
+					WorktreeBranch = run.WorktreeBranch,
+					WorktreeBase = run.WorktreeBase,
 				},
 				cancellationToken).ConfigureAwait(false);
 		}
@@ -2546,6 +2783,8 @@ public sealed class SubagentHub : IDisposable
 				AwaitingUser = false,
 				FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			};
+			state.WriterLease?.Dispose();
+			state.WriterLease = null;
 			state.Completion.TrySetResult(new TurnResult(0, string.Empty));
 			session = state.Session;
 		}
@@ -2562,6 +2801,31 @@ public sealed class SubagentHub : IDisposable
 		}
 
 		return new SubagentOutcome(true, $"stopped {state.Run.Name}");
+	}
+
+	/// <summary>隔离副本已被删除：清掉运行里的路径与分支，重启后不再显示一个不存在的目标。</summary>
+	public bool ClearWorktree(string target)
+	{
+		RunState? state;
+		lock (_gate)
+		{
+			state = ResolveOneLocked(target);
+			if (state is null)
+			{
+				return false;
+			}
+
+			state.Run = state.Run with
+			{
+				WorktreePath = null,
+				WorktreeBranch = null,
+				WorktreeBase = null,
+			};
+		}
+
+		AppendDescriptor(state, "worktree-removed");
+		Changed?.Invoke();
+		return true;
 	}
 
 	/// <summary>会话文件被删除：把这条运行记录从列表里摘掉，命令面板不再挂一个打不开的目标。</summary>
@@ -2583,6 +2847,8 @@ public sealed class SubagentHub : IDisposable
 			state.Subscription?.Dispose();
 			state.Subscription = null;
 			state.Session = null;
+			state.WriterLease?.Dispose();
+			state.WriterLease = null;
 			_runs.Remove(state.Run.Name);
 			_order.Remove(state.Run.Name);
 			_pending.RemoveAll(result => string.Equals(result.Name, state.Run.Name, StringComparison.Ordinal));
@@ -2639,6 +2905,8 @@ public sealed class SubagentHub : IDisposable
 					AwaitingUser = false,
 					FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 				};
+				state.WriterLease?.Dispose();
+				state.WriterLease = null;
 				state.Completion.TrySetResult(new TurnResult(0, string.Empty));
 			}
 			// 空闲回收（Unloading）只把活会话摘掉：条目、状态与文件留着，
@@ -2809,6 +3077,8 @@ public sealed class SubagentHub : IDisposable
 						State = SubagentState.Stopped,
 						FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 					};
+					state.WriterLease?.Dispose();
+					state.WriterLease = null;
 					state.Completion.TrySetResult(new TurnResult(0, string.Empty));
 				}
 			}
@@ -2849,7 +3119,7 @@ public sealed class SubagentHub : IDisposable
 				break;
 
 			case ToolExecutionStartEvent tool:
-				StartTool(name, tool.ToolCallId, DescribeTool(tool.ToolName, tool.Arguments));
+				StartTool(name, tool.ToolCallId, DescribeTool(tool.ToolName, tool.Arguments), tool.ToolName, tool.Arguments);
 				if (string.Equals(tool.ToolName, AskQuestionToolName, StringComparison.Ordinal))
 				{
 					// 暂停计时由 hub 自己驱动：桌面没开着父标签时，那条展示同步根本不跑。
@@ -3144,6 +3414,8 @@ public sealed class SubagentHub : IDisposable
 				Cost = cost,
 				FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			};
+			state.WriterLease?.Dispose();
+			state.WriterLease = null;
 			state.Completion.TrySetResult(new TurnResult(turn, text));
 		}
 
@@ -3221,7 +3493,7 @@ public sealed class SubagentHub : IDisposable
 
 	/// 子代理此刻在干什么：工具名加一个能认出来的参数，卡片与 list_subagents 都用它。
 	/// 并行工具调用各自记账：结束一个时若还有别的在跑，Activity 换成剩下最后开始的那个。
-	private void StartTool(string name, string callId, string description)
+	private void StartTool(string name, string callId, string description, string toolName, JsonObject arguments)
 	{
 		lock (_gate)
 		{
@@ -3232,10 +3504,40 @@ public sealed class SubagentHub : IDisposable
 
 			RemoveToolLocked(state, callId);
 			state.ActiveTools.Add((callId, description));
+
+			// 写工具的 path 是确定的；bash/powershell 只能标「可能写入」。
+			if (toolName is "edit" or "write" &&
+				arguments.TryGetPropertyValue("path", out var pathNode) &&
+				pathNode is JsonValue pathValue &&
+				pathValue.TryGetValue<string>(out var path) &&
+				path.Length > 0)
+			{
+				var cwd = state.Session?.Cwd ?? _owner.Cwd;
+				var full = path;
+				try
+				{
+					full = Path.GetFullPath(path, cwd);
+				}
+				catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+				{
+					// 路径本身有问题：保留原样，至少让用户看到指向。
+				}
+
+				state.ChangedFiles.Add(full);
+			}
+			else if (toolName is "bash" or "powershell")
+			{
+				state.MayWrite = true;
+			}
+
 			state.Run = state.Run with
 			{
 				Activity = description,
 				ToolCalls = state.Run.ToolCalls + 1,
+				ChangedFiles = state.ChangedFiles.Count > state.Run.ChangedFiles.Count
+					? [.. state.ChangedFiles]
+					: state.Run.ChangedFiles,
+				MayWrite = state.MayWrite,
 				LastActivityAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 			};
 		}
@@ -3391,6 +3693,15 @@ public sealed class SubagentHub : IDisposable
 
 		return false;
 	}
+
+	/// 角色可能有写工具：`tools` 省略时沿用父工具，按写者算；显式白名单只看有没有写工具。
+	/// 计划模式不改变这个判断，严格模式在计划下也会拦住只读 bash。
+	private static bool IsWriter(SubagentDefinition definition) =>
+		!definition.ExcludeTools.Any(IsWriteToolName) &&
+		(definition.Tools is null || definition.Tools.Any(IsWriteToolName));
+
+	private static bool IsWriteToolName(string name) =>
+		name is "edit" or "write" or "bash" or "powershell";
 
 	private static string DescribeTool(string tool, JsonObject arguments)
 	{
@@ -3709,6 +4020,8 @@ public sealed class SubagentHub : IDisposable
 					Cost = cost,
 					FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
 				};
+				state.WriterLease?.Dispose();
+				state.WriterLease = null;
 				state.Completion.TrySetResult(new TurnResult(state.ResultTurn, text, structured));
 			}
 		}
@@ -3991,6 +4304,15 @@ public sealed class SubagentHub : IDisposable
 				builder.Append(" session_id: ").Append(run.SessionId).Append('。');
 			}
 
+			if (run.WorktreePath is { Length: > 0 } worktree)
+			{
+				builder.Append("\nworktree: ").Append(worktree);
+				if (run.WorktreeBranch is { Length: > 0 } branch)
+				{
+					builder.Append(" (branch ").Append(branch).Append(')');
+				}
+			}
+
 			if (result.Structured is { } structured)
 			{
 				builder.Append("\nstructured_output:\n")
@@ -4234,6 +4556,8 @@ public sealed class SubagentHub : IDisposable
 			}
 
 			state.Subscription?.Dispose();
+			state.WriterLease?.Dispose();
+			state.WriterLease = null;
 			_order.Remove(name);
 			// 没建出会话就不占本回合的启动配额；否则宿主出一次错就把额度烧掉一格。
 			if (_spawns > 0)
@@ -4304,6 +4628,9 @@ public sealed class SubagentHub : IDisposable
 				["label"] = run.Label,
 				["model"] = run.Model,
 				["thinking"] = run.Thinking,
+				["worktreePath"] = run.WorktreePath,
+				["worktreeBranch"] = run.WorktreeBranch,
+				["worktreeBase"] = run.WorktreeBase,
 				// 卡片的总耗时与「运行中」秒表都从这两个时间戳算；旧条目没有就按会话文件回填。
 				["startedAt"] = run.StartedAt > 0 ? run.StartedAt : null,
 				["finishedAt"] = run.FinishedAt > 0 ? run.FinishedAt : null,
@@ -4320,6 +4647,19 @@ public sealed class SubagentHub : IDisposable
 				{
 					// 验证命令要跨重启保留：冷恢复后的下一轮还得继续跑同一套证据。
 					data["verify"] = new JsonArray([.. verifyCommands.Select(static command => (JsonNode)command)]);
+				}
+			}
+
+			if (kind is "start" or "idle" or "failed" or "stopped")
+			{
+				if (run.ChangedFiles.Count > 0)
+				{
+					data["changedFiles"] = new JsonArray([.. run.ChangedFiles.Select(static file => (JsonNode)file)]);
+				}
+
+				if (run.MayWrite)
+				{
+					data["mayWrite"] = true;
 				}
 			}
 
@@ -4575,6 +4915,25 @@ public sealed class SubagentHub : IDisposable
 
 	private static bool ReadBool(JsonNode? node) =>
 		node is JsonValue value && value.TryGetValue<bool>(out var flag) && flag;
+
+	private static IReadOnlyList<string> ReadStrings(JsonNode? node)
+	{
+		if (node is not JsonArray array || array.Count == 0)
+		{
+			return [];
+		}
+
+		var values = new List<string>(array.Count);
+		foreach (var item in array)
+		{
+			if (item is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > 0)
+			{
+				values.Add(text);
+			}
+		}
+
+		return values;
+	}
 
 	/// 子会话最近一条带正文的助手消息：超时、超预算这类硬停时用它保住已经写出来的东西。
 	private static string? LastAssistantText(CodingAgentSession? session)

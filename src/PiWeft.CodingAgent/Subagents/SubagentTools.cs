@@ -283,6 +283,8 @@ public static class SubagentTools
 		}
 
 		var outputSchema = schemaNode is JsonObject schema ? schema.DeepClone().AsObject() : null;
+		var worktree = JsonArgs.Bool(invocation.Arguments["worktree"]);
+		var worktreeBase = JsonArgs.String(invocation.Arguments["worktree_base"])?.Trim();
 		var outcome = await hub.StartAsync(
 			new SubagentStartRequest(agent, task, name, context)
 			{
@@ -291,6 +293,8 @@ public static class SubagentTools
 				RunTimeout = timeoutMs is > 0 ? TimeSpan.FromMilliseconds(timeoutMs.Value) : null,
 				MaxTokens = maxTokens,
 				Verify = verify,
+				Worktree = worktree,
+				WorktreeBase = worktreeBase is { Length: > 0 } ? worktreeBase : null,
 			},
 			invocation.CancellationToken).ConfigureAwait(false);
 
@@ -514,6 +518,19 @@ public static class SubagentTools
 				["description"] =
 					"Optional max runtime in milliseconds, 10000 to 86400000. The child is nudged to wrap up shortly " +
 					"before the deadline and stopped at it. Omit to use the session default.",
+			},
+			["worktree"] = new JsonObject
+			{
+				["type"] = "boolean",
+				["description"] =
+					"Run the child in an isolated Git worktree on a new branch. The parent workspace stays untouched; " +
+					"the result reports the worktree path and branch so changes can be reviewed, applied or discarded. " +
+					"Only for writing roles, and not in plan mode.",
+			},
+			["worktree_base"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] = "Optional base ref for the worktree; defaults to HEAD.",
 			},
 		},
 		["required"] = new JsonArray("agent", "task"),

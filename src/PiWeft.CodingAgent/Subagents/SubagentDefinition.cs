@@ -37,6 +37,12 @@ public sealed record SubagentDefinition
 	/// <summary>回合结束后由宿主跑的验证命令；省略时用父会话的设置。</summary>
 	public IReadOnlyList<string>? Verify { get; init; }
 
+	/// <summary>是否在独立 Git 工作区里运行；只对写角色有意义。</summary>
+	public bool? Worktree { get; init; }
+
+	/// <summary>隔离副本的基线 ref；省略时 HEAD。</summary>
+	public string? WorktreeBase { get; init; }
+
 	/// <summary>
 	/// 是否把角色名与描述放进 <c>delegate</c> 的模型可见目录。null 表示跟随同名角色的既有值；
 	/// 新角色未写时为 false。完整列表始终可由 <c>list_subagents</c> 查到。
@@ -259,6 +265,9 @@ public sealed class SubagentCatalog
 			out var configuredMaxTokens) && configuredMaxTokens >= 0
 			? configuredMaxTokens
 			: (long?)null;
+		bool? worktree = bool.TryParse(fields.GetValueOrDefault("worktree"), out var configuredWorktree)
+			? configuredWorktree
+			: null;
 
 		return new SubagentDefinition
 		{
@@ -272,6 +281,8 @@ public sealed class SubagentCatalog
 			TimeoutMinutes = timeoutMinutes,
 			MaxTokens = maxTokens,
 			Verify = SplitList(fields.GetValueOrDefault("verify")),
+			Worktree = worktree,
+			WorktreeBase = Trimmed(fields.GetValueOrDefault("worktreeBase")),
 			Advertise = advertise,
 			Source = source,
 			FilePath = path,
