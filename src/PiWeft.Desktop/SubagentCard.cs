@@ -598,16 +598,39 @@ internal sealed class SubagentCard
 			.Role(NoteRole(run))
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.VerticalAlignment(VerticalAlignment.Center);
-		note.IsVisible(noteText.Length > 0);
+		// 验证通过但这一轮还在跑时，详情行属于当前的 verify 命令：两句话叠在同一格里只会互相盖住。
+		note.IsVisible(noteText.Length > 0 && !run.IsActive);
 
 		var changesText = Strings.SubagentChanges(run.ChangedFiles.Count, run.MayWrite);
 		var changes = new TextBlock()
 			.Text(changesText)
 			.FontSize(AppTheme.FontSizeMicro)
 			.SubtleText()
+			.HorizontalAlignment(HorizontalAlignment.Right)
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.VerticalAlignment(VerticalAlignment.Center);
 		changes.IsVisible(changesText.Length > 0);
+
+		// 详情行：当前工具、失败原因、验证结论共用这一格，改动计数靠右。
+		// 以前它们各占一行、空内容整行隐藏：快速连调工具时每次起止都增删一行，卡片高度跟着跳。
+		// 这里行常驻，内容只在同一格里换字；两个零透明度的测量桩撑住行高（正文与等宽字体各一），
+		// 有没有活动、有没有改动都不改变行高。
+		var detail = new Grid()
+			.Columns("*,Auto")
+			.Spacing(6)
+			.Children(
+				new Grid()
+					.Columns("*")
+					.Children(
+						new TextBlock().Text(" ").FontSize(AppTheme.FontSizeMicro)
+							.Opacity(0).GridPosition(0, 0),
+						new TextBlock().Text(" ").FontSize(AppTheme.FontSizeMicro)
+							.FontFamily(AppTheme.MonoFont).Opacity(0).GridPosition(0, 0),
+						activity.GridPosition(0, 0),
+						failure.GridPosition(0, 0),
+						note.GridPosition(0, 0))
+					.GridPosition(0, 0),
+				changes.GridPosition(0, 1));
 
 		var worktreeText = run.WorktreePath is { Length: > 0 }
 			? Strings.SubagentWorktree(run.WorktreeBranch)
@@ -620,22 +643,27 @@ internal sealed class SubagentCard
 			.VerticalAlignment(VerticalAlignment.Center);
 		worktree.IsVisible(worktreeText.Length > 0);
 
+		// 没有详情可写的行不占这一行：已完成、没有改动也没有验证结论的行保持两行高。
+		// 这些取舍只依赖 SameStructure 比较的字段，行重建时才重算，运行中不会来回变。
+		var showDetail = run.IsActive && !run.AwaitingUser ||
+			failureText.Length > 0 || noteText.Length > 0 || changesText.Length > 0;
+
 		var content = new StackPanel()
 			.Spacing(1)
-			.Children(
-				titleLine,
-				statusLine,
-				activity,
-				changes,
-				worktree,
-				failure,
-				note,
-				new TextBlock()
-					.Text(Strings.SubagentAwaitingHint)
-					.FontSize(AppTheme.FontSizeMicro)
-					.Role(AppStyles.RoleWarning)
-					.TextWrapping(TextWrapping.Wrap)
-					.IsVisible(run.AwaitingUser));
+			.Children(titleLine, statusLine);
+		if (showDetail)
+		{
+			content.Children(detail);
+		}
+
+		content.Children(
+			worktree,
+			new TextBlock()
+				.Text(Strings.SubagentAwaitingHint)
+				.FontSize(AppTheme.FontSizeMicro)
+				.Role(AppStyles.RoleWarning)
+				.TextWrapping(TextWrapping.Wrap)
+				.IsVisible(run.AwaitingUser));
 
 		var header = new Button()
 			.Ghost()

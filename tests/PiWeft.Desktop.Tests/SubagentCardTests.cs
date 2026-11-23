@@ -435,6 +435,53 @@ public sealed class SubagentCardTests : IDisposable
 	}
 
 	[Fact]
+	public void ToolActivityAndFileChangesDoNotResizeTheRow()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+		SubagentRun Run(string? activity, bool mayWrite) => new()
+		{
+			Name = "scout-1",
+			SessionId = "subagent-stable-height",
+			Agent = "scout",
+			Label = "扫一遍入口",
+			Model = "test/test-model",
+			State = SubagentState.Running,
+			Turns = 1,
+			Activity = activity,
+			LastActivityAt = now,
+			MayWrite = mayWrite,
+			ChangedFiles = mayWrite ? ["/repo/src/Auth.cs", "/repo/src/Login.cs"] : [],
+			StartedAt = now - 5_000,
+		};
+
+		card.RenderRunsForSmoke([Run("read src/Auth.cs", mayWrite: false)]);
+		card.Expand();
+		try
+		{
+			var withTool = RowHeight(card);
+
+			// 工具结束、下一个还没开始：activity 为空。旧实现把整行藏起来，卡片矮一行。
+			card.RenderRunsForSmoke([Run(activity: null, mayWrite: false)]);
+			Assert.Equal(withTool, RowHeight(card));
+
+			// 第一次写文件：改动计数从未知变成有值，也只在同一行里换字。
+			card.RenderRunsForSmoke([Run("edit src/Auth.cs", mayWrite: true)]);
+			Assert.Equal(withTool, RowHeight(card));
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	private static double RowHeight(SubagentCard card)
+	{
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+		return card.View.DesiredSize.Height;
+	}
+
+	[Fact]
 	public void RunningRowShowsHowLongAgoTheToolStarted()
 	{
 		var card = new SubagentCard(_ => { }, _ => true, _ => { });
