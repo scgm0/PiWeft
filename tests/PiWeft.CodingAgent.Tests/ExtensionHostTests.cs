@@ -405,6 +405,22 @@ public sealed class ExtensionHostTests : IDisposable
 	}
 
 	[Fact]
+	public async Task AsyncCommandEntryRunsTheHandler()
+	{
+		using var host = new ExtensionHost();
+		Write("cmd-async.js", """
+			module.exports = function (pi) {
+				pi.registerCommand("hello", { description: "异步打招呼", handler: function (argument) { globalThis.asyncSeen = "hi " + argument; } });
+			};
+			""");
+		host.Load(_cwd, trusted: true, _agentDir);
+
+		Assert.True(await host.TryRunCommandAsync("hello", "async"));
+		Assert.Equal("hi async", host.States[0].Engine!.GetValue("asyncSeen").AsString());
+		Assert.False(await host.TryRunCommandAsync("missing", "x"));
+	}
+
+	[Fact]
 	public void EventHandlerCanRewriteThePayloadAndTheHostSeesIt()
 	{
 		using var host = new ExtensionHost();

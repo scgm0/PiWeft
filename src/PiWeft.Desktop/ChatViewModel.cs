@@ -1012,11 +1012,13 @@ public sealed class ChatViewModel : IDisposable
 
 	private void Rebuild()
 	{
-		_rowsSnapshot = null;
-		_tools.Clear();
+		// revision 没变就不要碰投影缓存与运行中的工具表：这一步在事件流的收口分支里调，
+		// 清掉 _tools 会把还没落盘的工具行从界面上抹掉（要等 tool_execution_end 才回来）。
 		if (_session is not null && ReferenceEquals(_builtSession, _session.Session) &&
 			_builtRevision == _session.Session.Revision) return;
 
+		_rowsSnapshot = null;
+		_tools.Clear();
 		if (_session is null)
 		{
 			_entries.Clear();

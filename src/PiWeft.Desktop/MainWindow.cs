@@ -79,8 +79,9 @@ public sealed partial class MainWindow : Window
 	// 窗口级会话活动：父会话自己在跑、自己改过多少文件。
 	private readonly SessionActivityIndex _sessionActivity = new();
 	// 侧栏每行要的父会话汇总，重建树时算一次，不必每行扫一遍全部子代理。
-	private IReadOnlyDictionary<string, (int Active, int Awaiting, int Changed)> _subagentSummaries =
-		new Dictionary<string, (int Active, int Awaiting, int Changed)>();
+	// 具体字典类型：每次侧栏刷新这里要被查几百次，接口字段的 TryGetValue 走虚调用。
+	private Dictionary<string, (int Active, int Awaiting, int Changed)> _subagentSummaries =
+		new(StringComparer.Ordinal);
 	// 关联会话关系表：侧栏把 <c>start_session</c> 挖出的子会话也挂到父行下。
 	// 每次侧栏扫描时在后台重读，不在 UI 线程读盘。
 	private IReadOnlyList<LinkedSessionLink> _linkedLinks = [];
@@ -576,15 +577,16 @@ public sealed partial class MainWindow : Window
 
 	private async void Startup()
 	{
-		// MewUI 的 X11 后端在 CreateWindow 里先调 AttachBackend/ApplyIcon，再初始化 _cardinalAtom，
-		// 首次 SetIcon 因 _cardinalAtom == 0 被跳过，_NET_WM_ICON 一直为空。窗口此时已 attach，
-		// 重设一次属性会再走 SetIcon，任务栏和 alt-tab 才有图标。
-		var windowIcon = Icon;
-		Icon = null;
-		Icon = windowIcon;
-
 		try
 		{
+			// MewUI 的 X11 后端在 CreateWindow 里先调 AttachBackend/ApplyIcon，再初始化 _cardinalAtom，
+			// 首次 SetIcon 因 _cardinalAtom == 0 被跳过，_NET_WM_ICON 一直为空。窗口此时已 attach，
+			// 重设一次属性会再走 SetIcon，任务栏和 alt-tab 才有图标。
+			// 这段也放在 try 里：X11 后端报错时 async void 的异常会直接结束进程。
+			var windowIcon = Icon;
+			Icon = null;
+			Icon = windowIcon;
+
 			// 默认策略为 ask 且存在受保护项目资源时，先弹卡片问是否信任（选择会记住）。
 			if (ProjectTrust.HasPendingDecision(_cwd, trustOverride: _arguments.ProjectTrustOverride))
 			{
@@ -961,6 +963,21 @@ public sealed partial class MainWindow : Window
 
 		_pinnedSessionIds = preference.Pinned.ToHashSet(StringComparer.Ordinal);
 		_sessionNodes = nodes;
+		// 预先记录项目行的计数，子代理状态边沿只比较数字，不重复拼项目标签。
+		_projectRowStats.Clear();
+		foreach (var node in nodes)
+		{
+			if (node.Tag is not string cwd)
+			{
+				continue;
+			}
+
+			var count = 0;
+			var writers = 0;
+			CountProjectSessions(node, ref count, ref writers);
+			_projectRowStats[cwd] = (count, writers);
+		}
+
 		_sessionTree.ItemsSource(nodes);
 
 		// 默认折叠：只展开「上次展开过」的项目，以及当前选中会话所在的项目
@@ -1078,9 +1095,11 @@ public sealed partial class MainWindow : Window
 		return writers;
 	}
 
-	private string SessionLine(SessionTreeEntry entry, DesktopPreference preference)
+	private string SessionLine(SessionTreeEntry entry, DesktopPreference preference) =>
+		SessionLine(entry.Item, preference, ChildCounts(entry));
+
+	private string SessionLine(SessionListItem item, DesktopPreference preference, string childCounts)
 	{
-		var item = entry.Item;
 		var pin = preference.IsPinned(item.Id) ? $"{Strings.PinnedMark} " : string.Empty;
 		// 有子代理在跑或等回答时优先报活动：它比「名下有几个子会话」更急。
 		// 没有子代理时才轮到父会话自己的「运行中 / 3 文件」。
@@ -1090,7 +1109,7 @@ public sealed partial class MainWindow : Window
 			status = SessionActivitySuffix(item);
 		}
 
-		var counts = status.Length > 0 ? string.Empty : ChildCounts(entry);
+		var counts = status.Length > 0 ? string.Empty : childCounts;
 
 		// 时间由侧栏行的 time 列单独显示；这里只拼标题与状态，避免模板再拼一遍时重复。
 		return $"{pin}{item.Display}{status}{counts}";
@@ -2084,6 +2103,8 @@ public sealed partial class MainWindow : Window
 			UpdateTabHeaders();
 			RefreshSessions();
 		};
+		// 轮次推进不改变模式，但页签上的「目标 1/32」要跟着走。
+		tab.GoalProgressChanged += _ => UpdateTabHeaders();
 		if (session.Subagents is { } subagents)
 		{
 			// 事件来自子会话的事件派发线程：toast 与问询卡都要回 UI 线程，否则跨线程碰窗口。
@@ -2255,7 +2276,11 @@ public sealed partial class MainWindow : Window
 	{
 		var index = _tabControl.SelectedIndex;
 		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
-		if (_lastSessionTab is { } previous && !ReferenceEquals(entry, previous)) previous.HideTransientPanels();
+		if (_lastSessionTab is { } previous && !ReferenceEquals(entry, previous))
+		{
+			previous.HideTransientPanels();
+			previous.SetActive(false);
+		}
 
 		// 加载中（或停在错误态）时准备阶段面板要可见，加载段落才有地方显示；
 		// 同时旧会话视图整体让位：这段时间屏幕上只该有加载提示，不透出上一个会话。
@@ -2277,6 +2302,7 @@ public sealed partial class MainWindow : Window
 
 			case SessionTab active:
 				_lastSessionTab = active;
+				active.SetActive(true);
 				RestoreSelection(active.Session.Session.SessionId);
 				UpdateProjectCaption();
 				return;
@@ -2397,6 +2423,11 @@ public sealed partial class MainWindow : Window
 				case "todo":
 					// 视觉验收：工作台的待办节，检查选中态与列表展开。
 					CurrentTab()?.PrepareTodoSmoke();
+					break;
+
+				case "workspace":
+					// 视觉验收：其他会话占用节的卡头预览与多条列表。
+					CurrentTab()?.PrepareWorkspaceSmoke();
 					break;
 
 				case "goal":

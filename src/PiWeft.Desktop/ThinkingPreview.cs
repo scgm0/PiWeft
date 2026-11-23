@@ -218,6 +218,9 @@ internal sealed class StreamPump(FrameworkElement owner, Action onFrame) : IDisp
 	///    就是真的看不见，重画它纯属白烧。
 	internal static bool NeedsFrames(Element node)
 	{
+		// 自身被显式隐藏时祖先链看不出：预览行就是靠 IsVisible=false 让位的，
+		// Bounds 还停在隐藏前那一版，不查这里会继续每帧吃满。
+		if (node is UIElement { IsVisible: false }) return false;
 		if (node.FindVisualRoot() is not Window) return false;
 		var bounds = node.Bounds;
 		if (bounds.Width <= 0 || bounds.Height <= 0) return false;
@@ -299,6 +302,13 @@ internal sealed class MarqueeLine : Panel
 			if (!StreamPump.NeedsFrames(this))
 			{
 				_sweep.Stop();
+				// 相位回到未开始：停表后到重新测量启动之间若有一次重绘，不能留一道定格光带。
+				if (_sweepPhase >= 0)
+				{
+					_sweepPhase = -1;
+					InvalidateVisual();
+				}
+
 				return;
 			}
 			_sweepPhase = progress;

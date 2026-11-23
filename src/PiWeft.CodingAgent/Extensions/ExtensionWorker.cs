@@ -13,8 +13,9 @@ internal sealed class ExtensionWorker : IDisposable
 {
 	private readonly ConcurrentQueue<Action> _queue = new();
 	private readonly SemaphoreSlim _signal = new(0);
+	private int _wakePending;
 	private readonly Thread _thread;
-	private readonly int _threadId;
+	private volatile int _threadId;
 	private volatile bool _stopping;
 
 	/// worker 自身的故障。本程序集不依赖日志框架（宿主各自有 sink），所以只收集、由宿主读走并上报。
@@ -28,7 +29,6 @@ internal sealed class ExtensionWorker : IDisposable
 			IsBackground = true,
 			Name = "piweft-extension-" + name,
 		};
-		_threadId = Environment.CurrentManagedThreadId;
 		_thread.Start();
 	}
 
@@ -43,8 +43,17 @@ internal sealed class ExtensionWorker : IDisposable
 			return completion.Task;
 		}
 
+		// 超时后调用方已经放弃：项还在队列里，跑掉会变成「当时没反应、过后才生效」。
+		// 用一个共享格子记放弃状态，worker 取到它时直接落到已取消。
+		int[] abandoned = [0];
 		_queue.Enqueue(() =>
 		{
+			if (Volatile.Read(ref abandoned[0]) != 0)
+			{
+				completion.TrySetCanceled();
+				return;
+			}
+
 			try
 			{
 				completion.TrySetResult(work());
@@ -56,7 +65,20 @@ internal sealed class ExtensionWorker : IDisposable
 		});
 		Wake();
 
-		return completion.Task.WaitAsync(timeout);
+		return AwaitWithTimeoutAsync(completion.Task, timeout, abandoned);
+	}
+
+	private static async Task<T> AwaitWithTimeoutAsync<T>(Task<T> task, TimeSpan timeout, int[] abandoned)
+	{
+		try
+		{
+			return await task.WaitAsync(timeout).ConfigureAwait(false);
+		}
+		catch (TimeoutException)
+		{
+			Volatile.Write(ref abandoned[0], 1);
+			throw;
+		}
 	}
 
 	public void Post(Action work)
@@ -78,6 +100,9 @@ internal sealed class ExtensionWorker : IDisposable
 
 	private void Run()
 	{
+		// 必须在 worker 线程上取：构造函数的线程 id 不是执行 Run 的那一个，
+		// 比错会让扩展把「已在 worker 上」判成 false，回调自己排到自己后面再同步等，卡满超时。
+		_threadId = Environment.CurrentManagedThreadId;
 		while (!_stopping)
 		{
 			while (_queue.TryDequeue(out var action))
@@ -97,7 +122,9 @@ internal sealed class ExtensionWorker : IDisposable
 				break;
 			}
 
-			_signal.Wait(TimeSpan.FromMilliseconds(200));
+			// 一次入队只发一个信号；否则排 1000 条就要空转 1000 次 Wait/TryDequeue。
+			_signal.Wait();
+			Interlocked.Exchange(ref _wakePending, 0);
 		}
 
 		// 退出前排空剩余项，让等待方的 Task 都落到「已停止」，不挂着。
@@ -120,13 +147,10 @@ internal sealed class ExtensionWorker : IDisposable
 
 	private void Wake()
 	{
-		try
+		// 0→1 才 Release。消费端唤醒后把标志清回 0，避免排 N 条时信号计数堆到 N。
+		if (Interlocked.Exchange(ref _wakePending, 1) == 0)
 		{
 			_signal.Release();
-		}
-		catch (SemaphoreFullException)
-		{
-			// 已有唤醒信号在排队。
 		}
 	}
 }

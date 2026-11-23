@@ -449,6 +449,47 @@ public sealed class ExtensionHost : IDisposable
 		return false;
 	}
 
+	/// 异步版命令入口：桌面发送路径用，避免扩展卡死时在 UI 线程同步等满 InvokeTimeout。
+	public async Task<bool> TryRunCommandAsync(string name, string argument)
+	{
+		if (_disposed)
+		{
+			return false;
+		}
+
+		foreach (var state in _states)
+		{
+			var command = state.Registration.Commands.FirstOrDefault(candidate =>
+				string.Equals(candidate.Name, name, StringComparison.Ordinal));
+			if (command is null || state.Worker is not { } worker)
+			{
+				continue;
+			}
+
+			try
+			{
+				if (worker.OnWorkerThread)
+				{
+					command.Invoke(argument);
+				}
+				else
+				{
+					await worker.RunAsync<bool>(() => { command.Invoke(argument); return true; }, InvokeTimeout)
+						.ConfigureAwait(false);
+				}
+			}
+			catch (Exception exception) when (exception is TimeoutException or ObjectDisposedException
+				or InvalidOperationException or Jint.Runtime.JavaScriptException or AggregateException)
+			{
+				Report(state, $"命令 {name} 失败：{Describe(exception)}", "command");
+			}
+
+			return true;
+		}
+
+		return false;
+	}
+
 	public void RunCommand(string name, string argument) => TryRunCommand(name, argument);
 
 	private void Register(ExtensionState state, string source, ExtensionDescriptor descriptor, bool esm)

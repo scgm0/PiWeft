@@ -34,6 +34,10 @@ internal sealed class TeamTasksCard
 
 	internal string Meta => _card.Meta;
 
+	internal void ShowHeader(bool visible) => _card.ShowHeader(visible);
+
+	internal void Expand() => _card.IsExpanded = true;
+
 	internal void Render(
 		TeamBoard? board,
 		Action<TeamTask>? openOwner = null,

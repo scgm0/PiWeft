@@ -15,11 +15,13 @@ internal sealed class LiveActivityText : TextBlock
 	private string _activity = string.Empty;
 	private long _lastActivityAt;
 	private bool _running;
-	private DispatcherTimer? _clock;
+	private bool _registered;
 	private string? _shown;
 	private bool _disposed;
 
 	/// 每次工具起止或状态边沿调用；运行中才建表。
+	internal bool IsTicking => _registered;
+
 	internal void SetActivity(string? activity, long lastActivityAt, bool running)
 	{
 		if (_disposed)
@@ -49,6 +51,15 @@ internal sealed class LiveActivityText : TextBlock
 		return base.MeasureContent(availableSize);
 	}
 
+	// 切走的标签页内容被摘出视觉树，切回来不保证重测（布局缓存仍有效），
+	// 所以表得在重挂时自己回来，与 LiveDurationText 同一条路径。
+	protected override void OnVisualRootChanged(Element? oldRoot, Element? newRoot)
+	{
+		if (newRoot is Window && _running) Start();
+		else Stop();
+		base.OnVisualRootChanged(oldRoot, newRoot);
+	}
+
 	protected override void OnDispose()
 	{
 		_disposed = true;
@@ -58,15 +69,13 @@ internal sealed class LiveActivityText : TextBlock
 
 	private void Start()
 	{
-		if (_disposed || _clock is not null || !Application.IsRunning || FindVisualRoot() is not Window) return;
-		_clock = new DispatcherTimer(TimeSpan.FromMilliseconds(TickIntervalMs));
-		_clock.OnTick(Tick);
-		_clock.Start();
+		if (_disposed || _registered || FindVisualRoot() is not Window) return;
+		LiveActivityClock.Register(this);
 	}
 
 	private void Tick()
 	{
-		// 摘掉、折叠或释放后不再写；重新挂回会重新测量，MeasureContent 会再启动。
+		// 摘掉、折叠或释放后不再写；重新挂回由 OnVisualRootChanged 重启。
 		if (_disposed || FindVisualRoot() is not Window || StreamPump.HiddenByCollapsedExpander(this))
 		{
 			Stop();
@@ -96,12 +105,14 @@ internal sealed class LiveActivityText : TextBlock
 		if (IsVisible != visible) IsVisible = visible;
 	}
 
+	internal void MarkRegistered(bool registered) => _registered = registered;
+
+	internal void TickFromClock() => Tick();
+
 	private void Stop()
 	{
-		if (_clock is not { } clock) return;
-		_clock = null;
-		clock.Stop();
-		clock.Dispose();
+		if (!_registered) return;
+		LiveActivityClock.Unregister(this);
 	}
 
 	private static long NowMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();

@@ -567,8 +567,10 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		_inputQueue = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
 		var session = _session;
 		var queue = _inputQueue;
-		_ = Task.Run(() => PumpAsync(session, _shellCancel.Token));
-		_ = Task.Run(() => WriteLoopAsync(session, queue.Reader, _shellCancel.Token));
+		// 捕获 token：StopShell 会把 _shellCancel 置 null，lambda 在后台线程上读到的是空引用。
+		var cancel = _shellCancel;
+		_ = Task.Run(() => PumpAsync(session, cancel.Token));
+		_ = Task.Run(() => WriteLoopAsync(session, queue.Reader, cancel.Token));
 		_input.Focus();
 	}
 

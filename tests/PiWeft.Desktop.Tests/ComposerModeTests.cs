@@ -175,6 +175,7 @@ public sealed class ComposerModeTests : IDisposable
 		card.Render(new GoalState(true, GoalState.Active, "把构建修到全绿，并补上回归测试。", 0, 32, null));
 		Assert.True(card.IsShown);
 		Assert.False(card.IsExpanded);
+		Assert.DoesNotContain("把构建", card.Summary);
 
 		card.ToggleExpandedForTests();
 		Assert.True(card.IsExpanded);
@@ -207,6 +208,20 @@ public sealed class ComposerModeTests : IDisposable
 
 		card.Render(new GoalState(true, GoalState.Active, "把构建修到全绿", 3, 32, null));
 		Assert.DoesNotContain("tk", card.PhaseTextForTests);
+	}
+
+	[Fact]
+	public void GoalTokenBudgetFollowsUsedTokensWithinTheSameGoal()
+	{
+		var card = new GoalStripCard(() => { }, () => { }, () => { }, _ => { });
+		var goal = new GoalState(true, GoalState.Active, "把构建修到全绿", 2, 32, null,
+			MaxTokens: 1_000, TokensAtStart: 0);
+		card.Render(goal, usedTokens: 100);
+		Assert.Contains("100/1.0k tk", card.PhaseTextForTests);
+
+		// 同一份 GoalState 实例在整轮里不会换；用量变化也必须刷新。
+		card.Render(goal, usedTokens: 250);
+		Assert.Contains("250/1.0k tk", card.PhaseTextForTests);
 	}
 
 	[Fact]
@@ -252,6 +267,28 @@ public sealed class ComposerModeTests : IDisposable
 
 		Assert.False(tab.HasRunningMode);
 		Assert.Equal(tab.Title, MainWindow.EntryTitle(tab));
+	}
+
+	[Fact]
+	public void GoalProgressRefreshesTheTabWithoutAModeSwitch()
+	{
+		using var tab = Tab();
+		tab.Session.SetGoal("把构建修到全绿", maxRounds: 4);
+		// 先落一帧：真实的推送路径（SetExtensionWidget）会在目标建立时就刷过一次。
+		tab.RefreshGoalStrip();
+		var progress = 0;
+		var mode = 0;
+		tab.GoalProgressChanged += _ => progress++;
+		tab.ModeChanged += _ => mode++;
+
+		// 轮次上限变了、模式没翻转：widget 推送到标签（SetExtensionWidget → RefreshGoalStrip）后，
+		// 页签上的「目标 0/4」必须自己跟到 0/8，不能等点到别的页签时那条重建路径顺带刷一次。
+		tab.Session.ExtendGoalRounds(4);
+		tab.RefreshGoalStrip();
+
+		Assert.Equal(1, progress);
+		Assert.Equal(0, mode);
+		Assert.Equal(Strings.TabGoalShort(0, 8), MainWindow.EntryStatus(tab)?.Text);
 	}
 
 	[Fact]

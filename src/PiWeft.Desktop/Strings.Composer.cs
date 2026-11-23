@@ -141,6 +141,8 @@ public static partial class Strings
 
 	public const string GoalExpandHint = "点击展开目标全文";
 
+	public const string GoalEditTitle = "编辑目标";
+
 	public const string GoalSaveEdit = "保存";
 
 	public const string GoalEditHint = "Enter 保存，Shift+Enter 换行；可拖入文件插入 @ 引用。";
@@ -338,11 +340,20 @@ public static partial class Strings
 
 	public const string WorkspaceNoticeOpen = "查看";
 
+	public const string WorkspaceNoticeTitle = "其他会话";
+
+	public static string WorkspaceNoticeMeta(int count, int running, int changed, int sameFile)
+	{
+		var parts = new List<string>(3);
+		if (running > 0) parts.Add($"{running} 个正在运行");
+		if (changed > 0) parts.Add($"{changed} 个改过文件");
+		if (sameFile > 0) parts.Add($"{sameFile} 个在改同一文件");
+		return parts.Count == 0 ? $"{count} 个会话" : $"{count} 个会话 · {string.Join(" · ", parts)}";
+	}
+
 	public const string WorkbenchTitle = "工作台";
 
 	public const string WorkbenchGoal = "目标";
-
-	public const string WorkbenchExpand = "展开工作台";
 
 	public const string WorkbenchCollapse = "收起工作台";
 

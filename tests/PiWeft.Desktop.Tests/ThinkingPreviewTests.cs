@@ -344,6 +344,26 @@ public sealed class ThinkingPreviewTests
 	}
 
 	[Fact]
+	public void HiddenPreviewLineAsksForNoFrames()
+	{
+		// 展开思考时预览行只设 IsVisible=false，不再测量；Bounds 还停在隐藏前那一版。
+		// NeedsFrames 不看自身就每帧回 true，扫光时钟留在 AnimationManager 里把宿主拖进持续渲染。
+		var line = new MarqueeLine(new TextBlock().Text("预览")) { FollowTail = true };
+		var window = new Window().Content(line);
+		try
+		{
+			ConversationPerformanceTests.Layout(line, ColumnWidth, 40);
+			Assert.True(StreamPump.NeedsFrames(line));
+			line.IsVisible = false;
+			Assert.False(StreamPump.NeedsFrames(line));
+		}
+		finally
+		{
+			UiLifetime.Release(window);
+		}
+	}
+
+	[Fact]
 	public void ShortStreamingLineStaysAtTheLeftEdge()
 	{
 		// 行还没写满可用宽度时不该往右贴：PiDeck 的 scrollLeft = scrollWidth - clientWidth 在这种情况下是 0。

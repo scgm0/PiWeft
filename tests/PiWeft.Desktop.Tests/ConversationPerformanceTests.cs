@@ -225,6 +225,26 @@ public sealed class ConversationPerformanceTests(ITestOutputHelper output)
 		Assert.InRange(Find<MarkdownView>(tab.View).Count(), 1, 10);
 	}
 
+	[Fact]
+	public void HiddenSessionTabDefersRenderingUntilSelectedAgain()
+	{
+		// 后台页签不投影、不建行：事件只留 pending，切回时补一帧。
+		using var session = CreateSession(0);
+		using var tab = new SessionTab(session, [session.Model], "hidden");
+		Layout(tab.View);
+		var stateChanges = 0;
+		tab.StateChanged += _ => stateChanges++;
+		tab.SetActive(false);
+		tab.Chat.SmokeWaitingTurn("后台消息");
+		// 状态点不能等切回才更新：隐藏页签也要走一次运行边沿。
+		Assert.Equal(1, stateChanges);
+		Layout(tab.View);
+		Assert.DoesNotContain(Find<MultiLineTextBox>(tab.View), box => box.Text == "后台消息");
+		tab.SetActive(true);
+		Layout(tab.View);
+		Assert.Contains(Find<MultiLineTextBox>(tab.View), box => box.Text == "后台消息");
+	}
+
 	internal static void Layout(SessionTab tab) => Layout(tab.View);
 
 	internal static void Layout(UIElement view, double width = 960, double height = 720)

@@ -441,47 +441,70 @@ public sealed partial class MainWindow
 		RebuildTitleBarTabs(selected, reveal || _titleTabStrip.HasPendingReveal);
 	}
 
-	/// 标题是页签里唯一会原地变的文字；改完不重排整条按钮。返回值表示当前页签是否变了宽度。
+	/// 标题与状态各写各的：状态（目标轮次、子代理数）与标题无关，靠标题变化的顺风车会让
+	/// 「目标 1/32」停在旧值。返回值表示当前页签的标题是否变了宽度。
 	private bool UpdateTitleBarTabTitles(int selected)
 	{
 		var selectedChanged = false;
 		for (var index = 0; index < _titleTabViews.Count; index++)
 		{
 			var view = _titleTabViews[index];
-			var title = EntryTitle(_tabEntries[index]);
-			if (string.Equals(view.Label.Text, title, StringComparison.Ordinal))
+			var entry = _tabEntries[index];
+			var title = EntryTitle(entry);
+			var titleChanged = !string.Equals(view.Label.Text, title, StringComparison.Ordinal);
+			if (titleChanged)
+			{
+				view.Label.Text(title);
+			}
+
+			if (!titleChanged && !UpdateTitleBarTabStatus(view, EntryStatus(entry)))
 			{
 				continue;
 			}
 
-			view.Label.Text(title);
-			var status = EntryStatus(_tabEntries[index]);
-			var hasStatus = status is not null;
-			if (view.StatusDot.IsVisible != hasStatus)
-			{
-				view.StatusDot.IsVisible(hasStatus);
-			}
-
-			if (status is { } activeStatus)
-			{
-				view.StatusDot.Background(AppStyles.ColorForRole(activeStatus.Role));
-				if (!string.Equals(view.StatusText.Text, activeStatus.Text, StringComparison.Ordinal))
-				{
-					view.StatusText.Text(activeStatus.Text);
-				}
-
-				view.StatusText.Role(activeStatus.Role);
-			}
-
-			if (view.StatusText.IsVisible != hasStatus)
-			{
-				view.StatusText.IsVisible(hasStatus);
-			}
-			HoverHints.Set(view.Button, EntryTooltip(_tabEntries[index]));
-			selectedChanged |= index == selected;
+			HoverHints.Set(view.Button, EntryTooltip(entry));
+			selectedChanged |= titleChanged && index == selected;
 		}
 
 		return selectedChanged;
+	}
+
+	/// 状态点与状态字：文案与可见性都没变就不碰控件。
+	/// 状态字唯一决定角色，所以颜色跟着文字一起换，不必单独比较。
+	private static bool UpdateTitleBarTabStatus(TitleTabView view, TitleTabStatus? status)
+	{
+		var hasStatus = status is not null;
+		var changed = false;
+		if (view.StatusDot.IsVisible != hasStatus)
+		{
+			view.StatusDot.IsVisible(hasStatus);
+			changed = true;
+		}
+
+		if (view.StatusText.IsVisible != hasStatus)
+		{
+			view.StatusText.IsVisible(hasStatus);
+			changed = true;
+		}
+
+		if (status is not { } active)
+		{
+			return changed;
+		}
+
+		if (!string.Equals(view.StatusText.Text, active.Text, StringComparison.Ordinal))
+		{
+			view.StatusText.Text(active.Text);
+			changed = true;
+		}
+
+		if (changed)
+		{
+			view.StatusDot.Background(AppStyles.ColorForRole(active.Role));
+			view.StatusText.Role(active.Role);
+		}
+
+		return changed;
 	}
 
 	private void RebuildTitleBarTabs(int selected, bool reveal)

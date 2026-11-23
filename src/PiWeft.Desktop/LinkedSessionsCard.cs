@@ -25,6 +25,10 @@ internal sealed class LinkedSessionsCard
 
 	internal string Meta => _card.Meta;
 
+	internal void ShowHeader(bool visible) => _card.ShowHeader(visible);
+
+	internal void Expand() => _card.IsExpanded = true;
+
 	internal int RowCount => _rows.Children.Count;
 
 	public void Render(LinkedSessionHub? hub, Action<string> openChild, Action<string> failed)

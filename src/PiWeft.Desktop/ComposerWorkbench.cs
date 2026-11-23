@@ -11,6 +11,7 @@ internal sealed record WorkbenchSection(
 	UIElement View,
 	Func<bool> IsShown,
 	Func<string> Meta,
+	Action? Expand = null,
 	string? Icon = null);
 
 /// 工作台摘要行。内容区一次只挂一个 section，避免所有卡片同时抢高度。
@@ -20,16 +21,24 @@ internal sealed class ComposerWorkbench
 	private readonly StackPanel _chips = new();
 	private readonly ScrollViewer _chipScroll;
 	private readonly StackPanel _content = new();
-	private readonly StackPanel _statusHost = new();
 	private readonly TextBlock _title;
-	private readonly GlyphElement _chevron;
-	private readonly Button _fold;
-	private UIElement? _status;
+	private readonly Button _titleButton;
 	private string? _selected;
 	private string? _hosted;
 	private int _signature = -1;
+	private string? _styledSelected;
+	private bool _stylesApplied;
 	private readonly List<WorkbenchSection> _visible = [];
+	private readonly List<ChipView> _chipViews = [];
 	private bool _expanded;
+
+	private sealed record ChipView(
+		string Key,
+		string? IconName,
+		Image? Icon,
+		TextBlock Title,
+		TextBlock? Detail,
+		Button Button);
 
 	public ComposerWorkbench(IReadOnlyList<WorkbenchSection> sections)
 	{
@@ -45,48 +54,57 @@ internal sealed class ComposerWorkbench
 			.VerticalAlignment(VerticalAlignment.Center);
 
 		var icon = AppIcons.Icon("layout-grid", AppStyles.RoleSubtle, 14)
-			.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
 			.VerticalAlignment(VerticalAlignment.Center);
 		_title = new TextBlock()
 			.Text(Strings.WorkbenchTitle)
 			.FontSize(AppTheme.FontSizeCaption)
 			.FontWeight(FontWeight.Medium)
 			.PrimaryText()
-			.VerticalAlignment(VerticalAlignment.Center)
-			.Margin(new Thickness(0, 0, AppTheme.Space2, 0));
-
-		_chevron = new GlyphElement()
-			.Kind(GlyphKind.ChevronDown)
-			.GlyphSize(3)
-			.VerticalAlignment(VerticalAlignment.Center)
-			.WithTheme((theme, element) => element.Foreground = AppTheme.For(theme).TextSubtle);
-		_fold = new Button()
+			.VerticalAlignment(VerticalAlignment.Center);
+		// 图标与「工作台」整块可点：这是摘要行最自然的折叠入口，不必非点最右侧箭头。
+		_titleButton = new Button()
 			.Ghost()
-			.Content(_chevron)
-			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
-			.Width(24)
-			.Height(24)
-			.OnClick(Toggle)
-			.HoverTip(Strings.WorkbenchExpand);
+			.Content(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(AppTheme.Space2)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(icon, _title))
+			// 悬停底要包住图标和文字，留出左右内边距；不然 ghost 的圆角底贴字，像被裁过。
+			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0))
+			.Height(26)
+			.CornerRadius(AppTheme.RadiusSm)
+			.HorizontalAlignment(HorizontalAlignment.Left)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(0, 0, AppTheme.Space1, 0))
+			.OnClick(Toggle);
 
 		var header = new Grid()
-			.Columns("Auto,Auto,*,Auto")
+			.Columns("Auto,*")
 			.Children(
-				icon.Column(0),
-				_title.Column(1),
-				_chipScroll.Column(2),
-				_fold.Column(3));
+				_titleButton.Column(0),
+				_chipScroll.Column(1));
 
 		_content.IsVisible(false);
-		_statusHost.IsVisible(false);
 
 		View = new StackPanel()
 			.Spacing(AppTheme.Space2)
 			.IsVisible(false)
-			.Children(header, _statusHost, _content);
+			.Children(header, _content);
 	}
 
 	public StackPanel View { get; }
+
+	internal Button TitleButtonForTests => _titleButton;
+
+	internal Button ChipButtonForTests(string key)
+	{
+		foreach (var chip in _chipViews)
+		{
+			if (chip.Key == key) return chip.Button;
+		}
+
+		throw new InvalidOperationException($"chip 不存在：{key}");
+	}
 
 	public bool IsShown
 	{
@@ -97,18 +115,13 @@ internal sealed class ComposerWorkbench
 				if (section.IsShown()) return true;
 			}
 
-			return _status?.IsVisible == true;
+			return false;
 		}
 	}
 
 	public bool IsExpanded => _expanded;
 
-	/// 执行中状态块挂在摘要行下方，收起时也可见；工作台自己不另画一行。
-	public void AttachStatus(UIElement status)
-	{
-		_status = status;
-		_statusHost.Children(status);
-	}
+	internal string? SelectedKeyForTests => _selected;
 
 	public void Refresh()
 	{
@@ -118,15 +131,19 @@ internal sealed class ComposerWorkbench
 			if (section.IsShown()) _visible.Add(section);
 		}
 
-		if (_selected is null || !VisibleContains(_selected))
+		if (_selected is not null && !VisibleContains(_selected))
 		{
-			_selected = _visible.Count == 0 ? null : _visible[0].Key;
+			_selected = null;
+			_expanded = false;
 		}
 
-		// 每帧都要算摘要：用 HashCode 累加，避免给稳定态拼签名字符串。
+		if (!_expanded)
+		{
+			_selected = null;
+		}
+
+		// 结构签名只包含可见集合与文字；选中/展开只改颜色，不重建按钮，保住键盘焦点。
 		var hash = new HashCode();
-		hash.Add(_expanded);
-		hash.Add(_selected);
 		foreach (var section in _visible)
 		{
 			hash.Add(section.Key);
@@ -140,6 +157,10 @@ internal sealed class ComposerWorkbench
 			_signature = signature;
 			RebuildChips(_visible);
 		}
+		else if (!_stylesApplied || !string.Equals(_styledSelected, _selected, StringComparison.Ordinal))
+		{
+			ApplyChipStyles();
+		}
 
 		if (_selected is null)
 		{
@@ -147,8 +168,7 @@ internal sealed class ComposerWorkbench
 		}
 
 		_content.IsVisible(_expanded);
-		_chevron.Kind(_expanded ? GlyphKind.ChevronUp : GlyphKind.ChevronDown);
-		_fold.HoverTip(_expanded ? Strings.WorkbenchCollapse : Strings.WorkbenchExpand);
+		_titleButton.HoverTip(_selected is null ? null : Strings.WorkbenchCollapse);
 
 		if (_expanded && _selected is not null)
 		{
@@ -156,23 +176,23 @@ internal sealed class ComposerWorkbench
 			if (section is not null && _hosted != section.Key)
 			{
 				_hosted = section.Key;
-				Clear(_content);
+				_content.Clear();
 				_content.Children(section.View);
 			}
 		}
 		else if (!_expanded && _hosted is not null)
 		{
 			_hosted = null;
-			Clear(_content);
+			_content.Clear();
 		}
 
-		_statusHost.IsVisible(_status?.IsVisible == true);
 		View.IsVisible(IsShown);
 	}
 
-	// 中文界面按字宽估算：24 字左右约 220 DIP，超出再交给 hover tip 看全文。
+	// 中文界面按字宽估算：32 字能放下「2 个会话 · 1 个正在运行 · 1 个改过文件」，
+	// 再长才交给 hover tip 看全文。
 	private static string ClipMeta(string meta) =>
-		meta.Length <= 24 ? meta : string.Concat(meta.AsSpan(0, 24), "…");
+		meta.Length <= 32 ? meta : string.Concat(meta.AsSpan(0, 32), "…");
 
 	private bool VisibleContains(string key)
 	{
@@ -197,55 +217,35 @@ internal sealed class ComposerWorkbench
 	/// 测试与截图走同一条路径：选中这一节并展开内容。
 	internal void SelectForTests(string key) => Select(key);
 
-	// Panel.Children 是只读视图；清空只能逐个 Remove。
-	private static void Clear(StackPanel panel)
-	{
-		foreach (var child in panel.Children.ToArray())
-		{
-			panel.Remove(child);
-		}
-	}
-
 	private void RebuildChips(IReadOnlyList<WorkbenchSection> visible)
 	{
-		Clear(_chips);
+		_chips.Clear();
+		_chipViews.Clear();
 		foreach (var section in visible)
 		{
-			var selected = section.Key == _selected;
 			var meta = section.Meta();
-			// 选中只改文字颜色，不铺底色：工作台是文本摘要行，按参考项目的卡头保持轻。
 			var title = new TextBlock()
 				.Text(section.Title)
 				.FontSize(AppTheme.FontSizeCaption)
 				.VerticalAlignment(VerticalAlignment.Center);
 			// 不靠 TextBlock.MaxWidth 截断：MewUI 会按上限报宽度，短摘要后面留一段空白。
 			// 先按字符预算裁剪，按钮宽度就只包住实际文字。
-			var detail = new TextBlock()
-				.Text(ClipMeta(meta))
-				.FontSize(AppTheme.FontSizeCaption)
-				.VerticalAlignment(VerticalAlignment.Center);
-			if (selected)
-			{
-				title.PrimaryText();
-				detail.PrimaryText();
-			}
-			else
-			{
-				title.SubtleText();
-				detail.FaintText();
-			}
-
+			var detail = meta.Length == 0
+				? null
+				: new TextBlock()
+					.Text(ClipMeta(meta))
+					.FontSize(AppTheme.FontSizeCaption)
+					.VerticalAlignment(VerticalAlignment.Center);
 			var content = new StackPanel()
 				.Orientation(Orientation.Horizontal)
 				.Spacing(AppTheme.Space1)
 				.VerticalAlignment(VerticalAlignment.Center);
-			if (section.Icon is { Length: > 0 } icon)
-			{
-				content.Children(AppIcons.Icon(icon, selected ? AppStyles.RoleInfo : AppStyles.RoleSubtle, 13));
-			}
-
+			var icon = section.Icon is { Length: > 0 } iconName
+				? AppIcons.Icon(iconName, AppStyles.RoleSubtle, 13)
+				: null;
+			if (icon is not null) content.Children(icon);
 			content.Children(title);
-			if (meta.Length > 0)
+			if (detail is not null)
 			{
 				content.Children(new TextBlock().Text("·").FontSize(AppTheme.FontSizeCaption)
 					.FaintText().VerticalAlignment(VerticalAlignment.Center));
@@ -265,13 +265,43 @@ internal sealed class ComposerWorkbench
 				.OnClick(() => Select(section.Key))
 				.HoverTip(meta.Length == 0 ? section.Title : $"{section.Title} · {meta}");
 			_chips.Children(chip);
+			_chipViews.Add(new ChipView(section.Key, section.Icon, icon, title, detail, chip));
+		}
+
+		ApplyChipStyles();
+	}
+
+	private void ApplyChipStyles()
+	{
+		_styledSelected = _selected;
+		_stylesApplied = true;
+		foreach (var chip in _chipViews)
+		{
+			var selected = chip.Key == _selected;
+			if (selected)
+			{
+				chip.Title.PrimaryText();
+				chip.Detail?.PrimaryText();
+			}
+			else
+			{
+				chip.Title.SubtleText();
+				chip.Detail?.FaintText();
+			}
+
+			if (chip.Icon is not null && chip.IconName is { Length: > 0 } iconName)
+			{
+				chip.Icon.Source(AppIcons.Get(iconName,
+					AppStyles.ColorForRole(selected ? AppStyles.RoleInfo : AppStyles.RoleSubtle)));
+			}
 		}
 	}
 
 	private void Select(string key)
 	{
-		if (_selected == key && _expanded)
+		if (_selected == key)
 		{
+			_selected = null;
 			_expanded = false;
 			Refresh();
 			return;
@@ -279,13 +309,29 @@ internal sealed class ComposerWorkbench
 
 		_selected = key;
 		_expanded = true;
-		// 选中只把这一节的卡头放进内容区；卡体仍保持收起，由用户再点卡头展开。
+		// 卡头已由摘要 chip 取代，选中时直接打开这一节的卡体。
+		foreach (var section in _sections)
+		{
+			if (section.Key == key)
+			{
+				section.Expand?.Invoke();
+				break;
+			}
+		}
+
 		Refresh();
 	}
 
 	private void Toggle()
 	{
-		_expanded = !_expanded;
+		// 默认没有选中项；只有已经选中时，标题区才承担「取消选中并收起」。
+		if (_selected is null)
+		{
+			return;
+		}
+
+		_selected = null;
+		_expanded = false;
 		Refresh();
 	}
 }

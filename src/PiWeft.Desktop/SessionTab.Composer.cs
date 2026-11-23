@@ -163,16 +163,19 @@ public sealed partial class SessionTab
 		}
 	}
 
-	/// 同一项目里另一个会话在跑或改过文件：输入框上方一行提示，不阻塞。
-	internal void SetWorkspaceNotice(string? text, Action? open)
+	/// 同一项目里其他会话在跑或改过文件：收进工作台，卡头给预览，展开列出全部。
+	/// 条目没变就不刷工作台：侧栏每次刷新都会进来，重算摘要白花。
+	internal void SetWorkspaceNotice(IReadOnlyList<WorkspaceNoticeEntry> entries, Action<string> open)
 	{
 		if (_disposed)
 		{
 			return;
 		}
 
-		_workspaceNotice.Set(text, open);
-		RefreshWidgetColumn();
+		if (_workspaceNotice.Set(entries, open))
+		{
+			RefreshWidgetColumn();
+		}
 	}
 
 	/// 子代理条：启动、结束、停止都会触发；重建行与卡片可见性。
@@ -276,6 +279,15 @@ public sealed partial class SessionTab
 		_goalStrip.Render(goal, usedTokens);
 		RefreshWidgetColumn();
 		RefreshModeMarker();
+
+		// 页签上的「目标 1/32」只认是否在跑、轮次与上限：续轮时这几项变、模式标记不变，
+		// 所以单独报一次，否则页签要等到下次重建才跟上。
+		var progress = (goal.Running, goal.RoundsStarted, goal.MaxRounds);
+		if (progress != _tabGoalProgress)
+		{
+			_tabGoalProgress = progress;
+			GoalProgressChanged?.Invoke(this);
+		}
 	}
 
 	private void RefreshModeMarker()
@@ -437,6 +449,19 @@ public sealed partial class SessionTab
 			"补桌面测试",
 			"给子会话条补一组布局截图，检查提议卡片在窄窗口下的换行。",
 			LinkedSessionProposal.OwnInitiative);
+
+	/// 仅供 --ui-smoke workspace：摆两条其他会话占用，选中并展开，检查卡头预览与多行列表。
+	internal void PrepareWorkspaceSmoke()
+	{
+		_workspaceNotice.Set(
+		[
+			new WorkspaceNoticeEntry("a", WorkspaceNoticeKind.Running, "「对比 @/home/scgm/TestBuild/deepseek-harness」正在这个项目里运行。"),
+			new WorkspaceNoticeEntry("b", WorkspaceNoticeKind.Changed, "「排查一下，a 会话正在调用工具」改过这个项目的 3 个文件。"),
+		], _ => { });
+		_workbench.SelectForTests("workspace");
+		_workspaceNotice.ExpandForTests();
+		RefreshWidgetColumn();
+	}
 
 	/// 仅供 --ui-smoke todo：选中工作台的待办节，供外部脚本截选中态与列表。
 	internal void PrepareTodoSmoke()

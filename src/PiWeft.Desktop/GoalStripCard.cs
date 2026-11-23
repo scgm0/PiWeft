@@ -11,7 +11,10 @@ internal sealed class GoalStripCard
 {
 	/// 目标条随每次 widget 推送与渲染刷新：同一份状态重复写入会触发无谓的布局失效。
 	private GoalState? _rendered;
+	private long _renderedUsedBucket = -1;
 	private readonly TextBlock _phase = new();
+	private readonly Image _goalIcon;
+	private readonly TextBlock _editStatus = new();
 	private readonly TextBlock _objective = new();
 	private readonly Button _edit;
 	private readonly Button _pause;
@@ -19,8 +22,8 @@ internal sealed class GoalStripCard
 	private readonly Button _extend;
 	private readonly Button _clear;
 	private readonly Grid _browseRow;
-	private readonly Grid _editRow;
-	private readonly ProgressBar _progress;
+	private readonly StackPanel _editRow;
+	private readonly StackPanel _editEditorHost = new();
 	private readonly TextBlock _details;
 	private readonly GlyphElement _chevron;
 	private bool _expanded;
@@ -34,7 +37,7 @@ internal sealed class GoalStripCard
 	{
 		_editAction = edit;
 		_cwd = cwd;
-		var icon = AppIcons.Icon("target", AppStyles.RoleSubtle, 14)
+		_goalIcon = AppIcons.Icon("target", AppStyles.RoleSubtle, 14)
 			.Margin(new Thickness(0, 0, AppTheme.Space2 + 2, 0))
 			.VerticalAlignment(VerticalAlignment.Center);
 
@@ -94,7 +97,7 @@ internal sealed class GoalStripCard
 		_clear = ActionButton("trash", Strings.GoalClear, clear);
 
 		var actions = new StackPanel().Orientation(Orientation.Horizontal)
-			.Spacing(2)
+			.Spacing(AppTheme.Space1)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Children(_edit, _pause, _resume, _extend, _clear);
 
@@ -102,26 +105,45 @@ internal sealed class GoalStripCard
 			.Columns("Auto,Auto,*,Auto,Auto")
 			.MinHeight(AppTheme.ControlHeightLg)
 			.Children(
-				icon.Column(0),
+				_goalIcon.Column(0),
 				_phase.Column(1),
 				_objective.Column(2),
 				expand.Column(3),
 				actions.Column(4));
-		_progress = new ProgressBar()
-			.Height(3)
-			.Margin(new Thickness(AppTheme.Space2, 0, AppTheme.Space1, 0))
-			.IsVisible(false);
 
 		// 编辑行与浏览行同格重叠，用可见性切换：不重建卡片，也不动外层布局。
-		_editRow = new Grid()
-			.Columns("*,Auto,Auto")
-			.MinHeight(AppTheme.ControlHeightLg)
-			.IsVisible(false)
+		_editStatus.FontSize(AppTheme.FontSizeMicro)
+			.SubtleText()
+			.TextTrimming(TextTrimming.CharacterEllipsis)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Margin(new Thickness(AppTheme.Space2 + 2, 0, 0, 0));
+		var editHeader = new Grid()
+			.Columns("Auto,Auto,*,Auto")
+			.MinHeight(AppTheme.ControlHeightSm)
+			.Margin(new Thickness(0, AppTheme.Space2, 0, 0))
 			.Children(
-				AppIcons.Button("check", Strings.GoalSaveEdit, () => CommitEdit(edit), size: 13)
-					.Width(AppTheme.ControlHeightSm).Height(AppTheme.ControlHeightSm).Column(1),
-				AppIcons.Button("x", Strings.GoalCancelEdit, CancelEdit, size: 13)
-					.Width(AppTheme.ControlHeightSm).Height(AppTheme.ControlHeightSm).Column(2));
+				AppIcons.Icon("target", AppStyles.RoleInfo, 13)
+					.Margin(new Thickness(0, 0, AppTheme.Space2, 0))
+					.VerticalAlignment(VerticalAlignment.Center).Column(0),
+				new TextBlock().Text(Strings.GoalEditTitle)
+					.FontSize(AppTheme.FontSizeCaption)
+					.PrimaryText()
+					.VerticalAlignment(VerticalAlignment.Center).Column(1),
+				_editStatus.Column(2),
+				new StackPanel()
+					.Orientation(Orientation.Horizontal)
+					.Spacing(2)
+					.VerticalAlignment(VerticalAlignment.Center)
+					.Children(
+						AppIcons.Button("check", Strings.GoalSaveEdit, () => CommitEdit(edit), size: 13)
+							.Width(AppTheme.ControlHeightSm).Height(AppTheme.ControlHeightSm),
+						AppIcons.Button("x", Strings.GoalCancelEdit, CancelEdit, size: 13)
+							.Width(AppTheme.ControlHeightSm).Height(AppTheme.ControlHeightSm))
+					.Column(3));
+		_editRow = new StackPanel()
+			.Spacing(2)
+			.IsVisible(false)
+			.Children(editHeader, _editEditorHost);
 
 		View = new Border()
 			.StyleName(AppStyles.Card)
@@ -129,7 +151,7 @@ internal sealed class GoalStripCard
 			.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space1, 0))
 			.IsVisible(false)
 			.Child(new Grid().Children(
-				new StackPanel().Children(_browseRow, _details, _progress),
+				new StackPanel().Children(_browseRow, _details),
 				_editRow));
 	}
 
@@ -141,10 +163,8 @@ internal sealed class GoalStripCard
 
 	internal string ObjectiveTextForTests => _objective.Text;
 
-	/// 工作台摘要用的一行状态。
-	internal string Summary => _objective.Text.Length == 0
-		? _phase.Text
-		: $"{_phase.Text} · {_objective.Text}";
+	/// 工作台摘要只给状态：阶段、轮次与预算；目标全文留在目标条和 tooltip 里。
+	internal string Summary => _phase.Text;
 
 	internal bool IsExpanded => _expanded;
 
@@ -174,13 +194,17 @@ internal sealed class GoalStripCard
 	/// <paramref name="usedTokens"/> 是目标开始后累计的 token，只有设了预算才显示。
 	public void Render(GoalState goal, long usedTokens = 0)
 	{
-		if (ReferenceEquals(_rendered, goal))
+		// 同一份 GoalState 在整轮里不会换新实例，但 token 用量会涨：把用量折进比较键，
+		// 否则「x/y tk」会停在本轮开始那一刻。100 token 一档，够用又不至于逐 token 重排。
+		var usedBucket = goal.MaxTokens > 0 ? usedTokens / 100 : 0;
+		if (ReferenceEquals(_rendered, goal) && _renderedUsedBucket == usedBucket)
 		{
 			return;
 		}
 
 		var previous = _rendered;
 		_rendered = goal;
+		_renderedUsedBucket = usedBucket;
 		if (previous is not null && !string.Equals(previous.Objective, goal.Objective, StringComparison.Ordinal))
 		{
 			// 目标换了：回到单行摘要，别把旧目标的展开态带过来。
@@ -206,12 +230,22 @@ internal sealed class GoalStripCard
 		}
 
 		var phase = Strings.GoalPhase(goal.Phase);
+		var phaseRole = goal.Phase switch
+		{
+			GoalState.Active => AppStyles.RoleInfo,
+			GoalState.Paused => AppStyles.RoleWarning,
+			GoalState.Blocked => AppStyles.RoleError,
+			_ => AppStyles.RolePrimary,
+		};
+		_phase.Role(phaseRole);
+		_goalIcon.Source(AppIcons.Get("target", AppStyles.ColorForRole(phaseRole)));
 		_phase.Text(Strings.GoalProgress(
 			phase,
 			goal.RoundsStarted,
 			goal.MaxRounds,
 			usedTokens,
 			goal.MaxTokens));
+		_editStatus.Text(_phase.Text);
 		if (goal.Phase == GoalState.Blocked && goal.BlockReason is { Length: > 0 } reason)
 		{
 			_phase.HoverTip(reason);
@@ -226,17 +260,12 @@ internal sealed class GoalStripCard
 			? goal.BlockReason
 			: null;
 		_objective.Text(blockedReason ?? goal.Objective);
+		_objective.Role(blockedReason is null ? AppStyles.RoleMuted : AppStyles.RoleError);
 		_objective.HoverTip(blockedReason is null
 			? $"{Strings.GoalExpandHint}\n{goal.Objective}"
 			: $"{Strings.GoalExpandHint}\n{goal.BlockReason}\n{goal.Objective}");
 		_details.Text(blockedReason is null ? goal.Objective : $"{goal.BlockReason}\n{goal.Objective}");
 		_details.IsVisible(_expanded);
-		_progress.IsVisible(goal.MaxRounds > 0);
-		if (goal.MaxRounds > 0)
-		{
-			_progress.Maximum(goal.MaxRounds);
-			_progress.Value(Math.Clamp(goal.RoundsStarted, 0, goal.MaxRounds));
-		}
 		_pause.IsVisible(goal.Phase == GoalState.Active);
 		// 阻塞也给恢复：只能清除的话，条上就没有纠错入口。
 		var limitBlocked = goal.Phase == GoalState.Blocked && goal.BlockCode == GoalMode.RoundLimitCode;
@@ -309,11 +338,12 @@ internal sealed class GoalStripCard
 
 		var editor = CreateEditor();
 		_editor = editor;
-		_editRow.Children(editor.Column(0));
+		_editEditorHost.Children(editor);
 		editor.Text(goal.Objective);
 		_editing = true;
 		_details.IsVisible(false);
 		_browseRow.IsVisible(false);
+		_editStatus.Text(_phase.Text);
 		_editRow.IsVisible(true);
 		editor.Focus();
 		editor.Select(editor.Text.Length, 0);
@@ -326,9 +356,8 @@ internal sealed class GoalStripCard
 			.StyleName(AppStyles.TextInput)
 			.FontSize(AppTheme.FontSizeCaption)
 			.Height(64)
-			// 与主输入框一致：输入区融进卡片底色，只留文字与引用 chip。
-			.BorderThickness(0)
-			.Background(AppTheme.Transparent)
+			// 编辑框在原卡片里画一圈输入边框：它和主输入框不是同一个输入面，需要一条边界。
+			.BorderThickness(1)
 			.Margin(new Thickness(0, 2, AppTheme.Space1, 2))
 			.HoverTip(Strings.GoalEditHint);
 		// 与主输入框同一套 @ 引用：原始文本仍是完整路径，只是显示成行内 chip。
@@ -387,7 +416,7 @@ internal sealed class GoalStripCard
 		_editing = false;
 		if (_editor is { } editor)
 		{
-			_editRow.Remove(editor);
+			_editEditorHost.Remove(editor);
 			_editor = null;
 		}
 
@@ -419,5 +448,6 @@ internal sealed class GoalStripCard
 	private static Button ActionButton(string icon, string tip, Action onClick) =>
 		AppIcons.Button(icon, tip, onClick, size: 14)
 			.Width(AppTheme.ControlHeightSm)
-			.Height(AppTheme.ControlHeightSm);
+			.Height(AppTheme.ControlHeightSm)
+			.CornerRadius(AppTheme.ControlHeightSm / 2);
 }

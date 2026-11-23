@@ -74,6 +74,15 @@ internal sealed class PendingReplyView : StackPanel
 		return base.MeasureContent(availableSize);
 	}
 
+	// 切走的标签页内容被摘出视觉树，重挂不保证重测（布局缓存仍有效）：
+	// Tick 只跳过写入不停表，但摘掉时还继续每 500ms 空跑。与两个秒表控件同一套生命周期。
+	protected override void OnVisualRootChanged(Element? oldRoot, Element? newRoot)
+	{
+		if (newRoot is Window) Start();
+		else Stop();
+		base.OnVisualRootChanged(oldRoot, newRoot);
+	}
+
 	private void Start()
 	{
 		// 没有窗口（自检、单测）就没有 dispatcher，只按数据帧推进；释放后不再排心跳。
@@ -85,7 +94,7 @@ internal sealed class PendingReplyView : StackPanel
 
 	private void OnTick()
 	{
-		// 折叠、切走的标签页、滚出视口：只跳过写入，不停表（见类注释）。
+		// 折叠、滚出视口：只跳过写入，不停表；切走标签页由 OnVisualRootChanged 停表。
 		if (!StreamPump.NeedsFrames(this)) return;
 
 		Update();

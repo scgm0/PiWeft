@@ -422,66 +422,80 @@ public sealed partial class MainWindow
 		_banner.Text(Strings.ProjectRemoved);
 	}
 
-	/// 同一项目里另一个会话在跑或改过文件时，给每个标签推一行提示。
-	/// 目标会话在跑、或有子代理在跑、或改过文件；只取最近列表里的第一个。
+	// 项目路径规范化结果按原串缓存：侧栏刷新时 (标签 × 会话) 的双循环不再重复 GetFullPath。
+	private readonly Dictionary<string, string> _projectKeys = new(StringComparer.Ordinal);
+	// 每个标签的占用条目在 UI 线程串行收集；复用列表，稳定刷新不每次 new。
+	private readonly List<WorkspaceNoticeEntry> _workspaceNotices = [];
+	// 每个标签每次刷新都传同一个跳转回调：缓存一份，不再为每个标签分配闭包。
+	private Action<string>? _workspaceOpen;
+	private readonly HashSet<string> _changedSubagentSessions = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, (int Count, int Writers)> _projectRowStats = new(StringComparer.Ordinal);
+
+	private string ProjectKey(string path)
+	{
+		if (_projectKeys.TryGetValue(path, out var key))
+		{
+			return key;
+		}
+
+		key = SessionGroups.SafeProjectPath(path);
+		_projectKeys[path] = key;
+		return key;
+	}
+
+	/// 同一项目里其他会话在跑或改过文件时，给每个标签推工作台条目。
+	/// 不再只取第一个：卡头按状态汇总数量，展开后可以分别跳到每个会话。
 	private void UpdateWorkspaceNotices()
 	{
 		// 关联子会话挂在父行下面，不是用户眼里的「另一个会话」；也跳过它们的占用提示。
 		HashSet<string> linkedChildren = _linkedLinks.Count > 0
 			? [.. _linkedLinks.Select(static link => link.ChildSessionId)]
 			: [];
+		_workspaceOpen ??= id => _ = ActivateSessionAsync(id);
 		foreach (var tab in _tabEntries.OfType<SessionTab>())
 		{
-			var cwd = tab.Session.Cwd;
-			var ownFiles = _sessionActivity.Get(SessionIdOf(tab))?.Files ?? [];
-			SessionListItem? other = null;
-			var text = string.Empty;
+			var tabId = SessionIdOf(tab);
+			var tabKey = ProjectKey(tab.Session.Cwd);
+			var ownFiles = _sessionActivity.Get(tabId)?.Files ?? [];
+			_workspaceNotices.Clear();
 			foreach (var item in _sessions)
 			{
-				if (string.Equals(item.Id, SessionIdOf(tab), StringComparison.Ordinal) ||
+				if (string.Equals(item.Id, tabId, StringComparison.Ordinal) ||
 					string.Equals(item.Origin, "subagent", StringComparison.Ordinal) ||
 					linkedChildren.Contains(item.Id) ||
-					!SessionGroups.SamePath(item.Cwd, cwd))
+					!SessionGroups.SameKey(ProjectKey(item.Cwd), tabKey))
 				{
 					continue;
 				}
 
-				if (DescribeWorkspaceUsage(item, ownFiles) is { Length: > 0 } usage)
+				if (DescribeWorkspaceUsage(item, ownFiles) is { } usage)
 				{
-					other = item;
-					text = usage;
-					break;
+					_workspaceNotices.Add(new WorkspaceNoticeEntry(
+						item.Id, usage.Kind, usage.Title, usage.ChangedFiles, usage.FileName, usage.Subagent));
 				}
 			}
 
-			if (other is null)
-			{
-				tab.SetWorkspaceNotice(null, null);
-				continue;
-			}
-
-			var id = other.Id;
-			tab.SetWorkspaceNotice(text, () => _ = ActivateSessionAsync(id));
+			tab.SetWorkspaceNotice(_workspaceNotices, _workspaceOpen);
 		}
 	}
 
-	private string DescribeWorkspaceUsage(SessionListItem item, IReadOnlyList<string> ownFiles)
+	private WorkspaceUsage? DescribeWorkspaceUsage(SessionListItem item, IReadOnlyList<string> ownFiles)
 	{
 		_subagentSummaries.TryGetValue(item.Id, out var summary);
 		if (summary.Active > 0)
 		{
-			return Strings.WorkspaceNoticeSubagentRunning(item.Display);
+			return new(WorkspaceNoticeKind.Running, item.Display, Subagent: true);
 		}
 
 		var activity = _sessionActivity.Get(item.Id);
 		if (activity is { Streaming: true })
 		{
-			return Strings.WorkspaceNoticeRunning(item.Display);
+			return new(WorkspaceNoticeKind.Running, item.Display);
 		}
 
 		if (summary.Changed > 0)
 		{
-			return Strings.WorkspaceNoticeSubagentChanged(item.Display);
+			return new(WorkspaceNoticeKind.Changed, item.Display, Subagent: true);
 		}
 
 		if (activity is { ChangedFiles: > 0 } && ownFiles.Count > 0)
@@ -490,14 +504,152 @@ public sealed partial class MainWindow
 			{
 				if (ownFiles.Contains(file, StringComparer.Ordinal))
 				{
-					return Strings.WorkspaceNoticeSameFile(item.Display, Path.GetFileName(file));
+					return new(WorkspaceNoticeKind.SameFile, item.Display, FileName: Path.GetFileName(file));
 				}
 			}
 		}
 
 		return activity is { ChangedFiles: > 0 }
-			? Strings.WorkspaceNoticeChanged(item.Display, activity.ChangedFiles)
-			: string.Empty;
+			? new(WorkspaceNoticeKind.Changed, item.Display, activity.ChangedFiles)
+			: null;
+	}
+
+	/// 子代理状态边沿只改行文字，不重建 TreeViewNode；返回是否有节点文本真的变了。
+	/// 集合用具体 HashSet：每个节点都要 Contains，接口参数会把去虚拟化留在门外。
+	private void RefreshSessionRows(HashSet<string> sessionIds)
+	{
+		if (sessionIds.Count == 0)
+		{
+			return;
+		}
+
+		var preference = DesktopPreference.Load();
+		var changed = RefreshNodeTexts(_sessionNodes, sessionIds, preference);
+		changed |= RefreshNodeTexts(_chatNodes, sessionIds, preference);
+		// 子代理的改动数也会进项目行的「N 个在写」，不能只刷会话行。
+		changed |= RefreshProjectTexts();
+		if (!changed)
+		{
+			return;
+		}
+
+		if (_sessionTree.ItemsSource is TreeItemsView<TreeViewNode> sessions)
+		{
+			sessions.Invalidate();
+		}
+
+		if (_chatsTree.ItemsSource is TreeItemsView<TreeViewNode> chats)
+		{
+			chats.Invalidate();
+		}
+	}
+
+	private bool RefreshNodeTexts(
+		IReadOnlyList<TreeViewNode> nodes,
+		HashSet<string> sessionIds,
+		DesktopPreference preference)
+	{
+		var changed = false;
+		foreach (var node in nodes)
+		{
+			if (node.Tag is SessionListItem item && sessionIds.Contains(item.Id))
+			{
+				var text = SessionLine(item, preference, ChildCounts(node));
+				if (!string.Equals(node.Text, text, StringComparison.Ordinal))
+				{
+					node.Text = text;
+					changed = true;
+				}
+			}
+
+			if (node.Children.Count > 0)
+			{
+				changed |= RefreshNodeTexts(node.Children, sessionIds, preference);
+			}
+		}
+
+		return changed;
+	}
+
+	private bool RefreshProjectTexts()
+	{
+		var changed = false;
+		foreach (var node in _sessionNodes)
+		{
+			if (node.Tag is not string cwd)
+			{
+				continue;
+			}
+
+			var count = 0;
+			var writers = 0;
+			CountProjectSessions(node, ref count, ref writers);
+			if (_projectRowStats.TryGetValue(cwd, out var previous) &&
+				previous.Count == count && previous.Writers == writers)
+			{
+				continue;
+			}
+
+			_projectRowStats[cwd] = (count, writers);
+			var text = ProjectLabel(cwd, count, writers);
+			if (string.Equals(node.Text, text, StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			node.Text = text;
+			changed = true;
+		}
+
+		return changed;
+	}
+
+	private void CountProjectSessions(TreeViewNode node, ref int count, ref int writers)
+	{
+		foreach (var child in node.Children)
+		{
+			if (child.Tag is SessionListItem item)
+			{
+				count++;
+				if (_subagentSummaries.TryGetValue(item.Id, out var summary) && summary.Changed > 0)
+				{
+					writers++;
+				}
+				else if (_sessionActivity.Get(item.Id) is { ChangedFiles: > 0 })
+				{
+					writers++;
+				}
+			}
+
+			if (child.Children.Count > 0)
+			{
+				CountProjectSessions(child, ref count, ref writers);
+			}
+		}
+	}
+
+	private static string ChildCounts(TreeViewNode node)
+	{
+		if (node.Children.Count == 0)
+		{
+			return string.Empty;
+		}
+
+		var subagents = 0;
+		var linked = 0;
+		foreach (var child in node.Children)
+		{
+			if (child.Tag is SessionListItem { Origin: "subagent" })
+			{
+				subagents++;
+			}
+			else
+			{
+				linked++;
+			}
+		}
+
+		return $" · {Strings.SidebarChildCounts(subagents, linked)}";
 	}
 
 	/// 父会话自己的活动：流式中，或最后一条有改动的助手行。
@@ -523,7 +675,7 @@ public sealed partial class MainWindow
 		return _sessionActivity.Update(sessionId, false, changed);
 	}
 
-	/// 子代理状态变化：把本窗口所有标签的 hub 快照汇进索引，真变了才重建侧栏。
+	/// 子代理状态变化：把本窗口所有标签的 hub 快照汇进索引，真变了只刷新受影响行文本。
 	/// 多个子代理同时收尾时，一帧只汇总一次；已关标签不在遍历里，迟到的 Changed 写不回来。
 	private void ApplySubagentStatuses()
 	{
@@ -533,6 +685,8 @@ public sealed partial class MainWindow
 		}
 
 		var changed = false;
+		var changedSessions = _changedSubagentSessions;
+		changedSessions.Clear();
 		foreach (var tab in _tabEntries.OfType<SessionTab>())
 		{
 			if (tab.Session.Subagents is { } hub)
@@ -559,13 +713,18 @@ public sealed partial class MainWindow
 					}
 				}
 
-				changed |= _subagentStatus.Update(SessionIdOf(tab), tab.Title, runs);
+				changed |= _subagentStatus.Update(SessionIdOf(tab), tab.Title, runs, changedSessions);
 			}
 		}
 
 		if (changed && _sessionsLoaded)
 		{
-			FilterSessions();
+			// 不重建整棵树：只刷新受影响的会话行文本，再让 TreeItemsView 重置可见行绑定。
+			_subagentSummaries = _subagentStatus.Summaries();
+			RefreshSessionRows(changedSessions);
+			// 工作台的跨会话占用也读这份摘要：子代理起止就是「另一个会话在跑」的信号，
+			// 不跟上的话卡头和条目要等到下一次全量侧栏重建才更新。
+			UpdateWorkspaceNotices();
 		}
 	}
 

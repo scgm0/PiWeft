@@ -12,6 +12,7 @@ internal sealed class ComposerWidgetCard
 	private readonly GlyphElement _chevron;
 	private readonly TextBlock _meta = new();
 	private readonly StackPanel _body;
+	private readonly ScrollViewer _bodyScroll;
 	private bool _expanded;
 
 	public ComposerWidgetCard(string icon, string title)
@@ -57,7 +58,17 @@ internal sealed class ComposerWidgetCard
 
 		_body = new StackPanel()
 			.Spacing(AppTheme.Space1)
-			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))
+			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0));
+
+		// 所有扩展卡共用这一个滚动体：限高、平滑滚动，卡片自己不再套 ScrollViewer。
+		_bodyScroll = new ScrollViewer()
+			.SmoothScrolling()
+			.Content(_body)
+			.AutoVerticalScroll()
+			.NoHorizontalScroll()
+			// 上下留白放在滚动视口上：滚到中间时内容也不会贴住卡体上下边。
+			.Padding(new Thickness(0, AppTheme.Space3, 0, AppTheme.Space3))
+			.MaxHeight(SessionTab.ComposerWidgetListMaxHeight)
 			.IsVisible(false);
 
 		// 宽度由宿主列统一给出（与输入卡同宽），卡片自己不再猜内容宽度：
@@ -68,7 +79,7 @@ internal sealed class ComposerWidgetCard
 			.ClipToBounds(true)
 			.HorizontalAlignment(HorizontalAlignment.Stretch)
 			.IsVisible(false)
-			.Child(new StackPanel().Children(_header, _body));
+			.Child(new StackPanel().Children(_header, _bodyScroll));
 	}
 
 	public Border View { get; }
@@ -98,9 +109,20 @@ internal sealed class ComposerWidgetCard
 		{
 			if (_expanded == value) return;
 			_expanded = value;
-			_body.IsVisible(value);
+			_bodyScroll.IsVisible(value);
 			_chevron.Kind(value ? GlyphKind.ChevronUp : GlyphKind.ChevronDown);
 		}
+	}
+
+	/// 工作台托管时隐藏卡头：摘要行已经给出标题与计数，内容区只留卡体。
+	public void ShowHeader(bool visible)
+	{
+		if (_header.IsVisible == visible)
+		{
+			return;
+		}
+
+		_header.IsVisible(visible);
 	}
 
 	public void Show(bool visible)

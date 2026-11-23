@@ -26,6 +26,10 @@ public sealed partial class SessionTab : IDisposable
 	private readonly DispatcherTimer _busyTimer = new(TimeSpan.FromMilliseconds(RespondingStatusPolicy.PulseStepMs));
 	private readonly SendOptionsMenu _sendMenu = new();
 	private int _renderPending;
+	private int _stateNotifyQueued;
+	// 是否是当前选中的标签页。后台页签不投影、不刷行：事件只留一个 pending 标记，
+	// 多会话并行时投影与行表刷新会相乘。
+	private volatile bool _active = true;
 	private volatile bool _disposed;
 	private bool _sending;
 
@@ -137,7 +141,6 @@ public sealed partial class SessionTab : IDisposable
 	internal const double ComposerWidgetListMaxHeight = 180;
 	private readonly ComposerWidgetCard _todoCard;
 	private readonly StackPanel _todoRows = new();
-	private readonly ScrollViewer _todoScroll;
 	private TodoState? _renderedTodo;
 	private TodoPlan? _renderedPlan;
 
@@ -145,7 +148,6 @@ public sealed partial class SessionTab : IDisposable
 	/// 其余是步骤行；widget 被撤下时整卡不占位。
 	private readonly ComposerWidgetCard _planCard;
 	private readonly StackPanel _planRows = new();
-	private readonly ScrollViewer _planScroll;
 	/// 动作行放在滚动区外：长计划的「开始执行 / 结束执行」不该被步骤挤出视野。
 	private readonly StackPanel _planActions = new();
 
@@ -156,6 +158,8 @@ public sealed partial class SessionTab : IDisposable
 	private IReadOnlyList<ChatQueuedMessage>? _renderedQueue;
 	/// 目标条只在会话换了一份目标状态时重绘：Render 每 40ms 一次，别每帧比较整段目标文本。
 	private GoalState? _renderedGoalState;
+	/// 上一次通知页签的目标进度：整份目标状态每次续轮都会变，页签只认这三项。
+	private (bool Running, int Rounds, int MaxRounds)? _tabGoalProgress;
 
 	private readonly ComposerWidgetCard _extensionCard;
 	private readonly StackPanel _extensionBody = new();
@@ -263,6 +267,11 @@ public sealed partial class SessionTab : IDisposable
 
 	/// 正在跑的子代理数量变化；页签状态点靠它刷新。
 	public event Action? SubagentStatusChanged;
+
+	/// 目标进度（是否在跑、轮次、上限）变化时触发；页签上的「目标 1/32」靠它刷新。
+	/// 不能搭 <see cref="ModeChanged"/>：那条只在「有没有在跑」翻转时才发，轮次推进时不动，
+	/// 而且它还要顺带重刷会话列表，每轮都来一次不划算。
+	public event Action<SessionTab>? GoalProgressChanged;
 
 	public SessionTab(CodingAgentSession session, IReadOnlyList<Model> models, string title,
 		Func<IReadOnlyList<Model>>? availableModels = null, ChatViewModel? chat = null,
@@ -563,48 +572,22 @@ public sealed partial class SessionTab : IDisposable
 					.MutedText().TextWrapping(TextWrapping.Wrap)));
 
 		_todoRows.Spacing(6);
-		_todoScroll = new ScrollViewer()
-			.SmoothScrolling()
-			.Content(_todoRows)
-			.AutoVerticalScroll()
-			.NoHorizontalScroll()
-			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
-			.MaxHeight(ComposerWidgetListMaxHeight);
 		_todoCard = new ComposerWidgetCard("list-checks", Strings.TodoPlanTitle);
-		_todoCard.Body.Children(_todoScroll);
+		_todoCard.Body.Children(_todoRows);
 
 		// 计划步骤紧跟在待办后面：两者常同时出现，读者按「计划做什么 / 做到哪」的顺序读。
 		_planRows.Spacing(4);
-		_planScroll = new ScrollViewer()
-			.SmoothScrolling()
-			.Content(_planRows)
-			.AutoVerticalScroll()
-			.NoHorizontalScroll()
-			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
-			.MaxHeight(ComposerWidgetListMaxHeight);
 		_planActions.Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1);
 		_planCard = new ComposerWidgetCard("file-text", Strings.PlanCardTitle);
-		_planCard.Body.Children(_planScroll, _planActions);
+		_planCard.Body.Children(_planRows, _planActions);
 
 		// 排队条只列尚未投递给模型的消息；高度上限与待办卡同口径，多条时在卡内滚动。
 		_queueCard = new ComposerWidgetCard("list-ordered", Strings.QueuedMessagesTitle);
-		_queueCard.Body.Children(new ScrollViewer()
-			.SmoothScrolling()
-			.Content(_queueRows)
-			.AutoVerticalScroll()
-			.NoHorizontalScroll()
-			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
-			.MaxHeight(ComposerWidgetListMaxHeight));
+		_queueCard.Body.Children(_queueRows);
 
 		_extensionBody.Spacing(AppTheme.Space2);
 		_extensionCard = new ComposerWidgetCard("package", Strings.ExtensionWidgetsTitle);
-		_extensionCard.Body.Children(new ScrollViewer()
-			.SmoothScrolling()
-			.Content(_extensionBody)
-			.AutoVerticalScroll()
-			.NoHorizontalScroll()
-			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
-			.MaxHeight(ComposerWidgetListMaxHeight));
+		_extensionCard.Body.Children(_extensionBody);
 
 		// 子会话条：提议卡片 + 已开出的关联会话；有内容才占位。
 		_linkedSessionsCard = new LinkedSessionsCard();
@@ -621,32 +604,41 @@ public sealed partial class SessionTab : IDisposable
 		_goalStrip = new GoalStripCard(PauseGoal, ResumeGoal, ConfirmClearGoal, EditGoal, Session.Cwd);
 
 		// 工作台接管所有扩展卡：卡头不再各占一行，摘要行给标题与计数，内容区一次只展开一节。
+		_todoCard.ShowHeader(false);
+		_planCard.ShowHeader(false);
+		_queueCard.ShowHeader(false);
+		_extensionCard.ShowHeader(false);
+		_subagentCard.ShowHeader(false);
+		_linkedSessionsCard.ShowHeader(false);
+		_teamTasksCard.ShowHeader(false);
+		_workspaceNotice.ShowHeader(false);
 		_workbench = new ComposerWorkbench(
 		[
+			new WorkbenchSection("workspace", Strings.WorkspaceNoticeTitle, _workspaceNotice.View,
+				() => _workspaceNotice.IsShown, () => _workspaceNotice.Meta, _workspaceNotice.Expand, Icon: "activity"),
 			new WorkbenchSection("goal", Strings.WorkbenchGoal, _goalStrip.View,
 				() => _goalStrip.IsShown, () => _goalStrip.Summary, Icon: "target"),
 			new WorkbenchSection("plan", Strings.PlanCardTitle, _planCard.View,
-				() => _planCard.View.IsVisible, () => _planCard.Meta, Icon: "file-text"),
+				() => _planCard.View.IsVisible, () => _planCard.Meta, () => _planCard.IsExpanded = true, Icon: "file-text"),
 			new WorkbenchSection("queue", Strings.QueuedMessagesTitle, _queueCard.View,
-				() => _queueCard.View.IsVisible, () => _queueCard.Meta, Icon: "list-ordered"),
+				() => _queueCard.View.IsVisible, () => _queueCard.Meta, () => _queueCard.IsExpanded = true, Icon: "list-ordered"),
 			new WorkbenchSection("todo", Strings.TodoPlanTitle, _todoCard.View,
-				() => _todoCard.View.IsVisible, () => _todoCard.Meta, Icon: "list-checks"),
+				() => _todoCard.View.IsVisible, () => _todoCard.Meta, () => _todoCard.IsExpanded = true, Icon: "list-checks"),
 			new WorkbenchSection("subagent", Strings.SubagentCardTitle, _subagentCard.View,
-				() => _subagentCard.IsShown, () => _subagentCard.Meta, Icon: "sparkles"),
+				() => _subagentCard.IsShown, () => _subagentCard.Meta, _subagentCard.Expand, Icon: "sparkles"),
 			new WorkbenchSection("team", Strings.TeamTasksTitle, _teamTasksCard.View,
-				() => _teamTasksCard.IsShown, () => _teamTasksCard.Meta, Icon: "list-checks"),
+				() => _teamTasksCard.IsShown, () => _teamTasksCard.Meta, _teamTasksCard.Expand, Icon: "list-checks"),
 			new WorkbenchSection("linked", Strings.LinkedSessionsTitle, _linkedSessionsCard.View,
-				() => _linkedSessionsCard.IsShown, () => _linkedSessionsCard.Meta, Icon: "message-square"),
+				() => _linkedSessionsCard.IsShown, () => _linkedSessionsCard.Meta, _linkedSessionsCard.Expand, Icon: "message-square"),
 			new WorkbenchSection("extensions", Strings.ExtensionWidgetsTitle, _extensionCard.View,
-				() => _extensionCard.View.IsVisible, () => _extensionCard.Meta, Icon: "package"),
+				() => _extensionCard.View.IsVisible, () => _extensionCard.Meta, () => _extensionCard.IsExpanded = true, Icon: "package"),
 		]);
 
 		// 扩展卡与输入卡同宽同列：ReadingColumn 按阅读宽度封顶并撑满可用宽度，
 		// 卡片在自己的列里拉伸，窗口缩放与阅读宽度设置都自动跟随。
 		_widgetColumn.Spacing(AppTheme.Space2)
 			.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))
-			.IsVisible(false)
-			.Children(_workspaceNotice.View, _workbench.View);
+			.IsVisible(false);
 
 		// 会话进行态指示行：与 composer 卡同宽居中，贴在输入卡上方（PiDeck 同款）。
 		// 三段各留固定宽度：呼吸点伸缩、状态短语轮换、提示每七秒换一条；
@@ -691,7 +683,8 @@ public sealed partial class SessionTab : IDisposable
 			IsVisible = false,
 		};
 		_busyColumn.Children(_busyLine);
-		_workbench.AttachStatus(_busyColumn);
+		// 执行状态在输入框上方的顺序是「提示 → 正在执行 → 工作台」：先让用户看到当前在做什么，再看摘要。
+		_widgetColumn.Children(_busyColumn, _workbench.View);
 
 		var composerPane = _composerPane = new Border()
 			.StyleName(AppStyles.Composer)
@@ -1197,18 +1190,50 @@ public sealed partial class SessionTab : IDisposable
 
 	private void OnChatChanged()
 	{
-		if (_disposed || Interlocked.Exchange(ref _renderPending, 1) != 0)
+		if (_disposed) return;
+		// 先置 pending 再判后台：切回时 SetActive 看到 pending 就补这一帧。
+		if (Interlocked.Exchange(ref _renderPending, 1) == 0 && _active)
 		{
+			Dispatch(() =>
+			{
+				if (!_disposed)
+				{
+					_renderTimer.Start();
+				}
+			});
+		}
+
+		// 后台页签不投影，但标题页签的状态点要跟运行边沿：只读状态，不碰时间线。
+		// 同一时刻最多排一个回调，事件风暴不会被 Dispatch 放大。
+		if (!_active && Interlocked.Exchange(ref _stateNotifyQueued, 1) == 0)
+		{
+			Dispatch(() =>
+			{
+				Interlocked.Exchange(ref _stateNotifyQueued, 0);
+				if (_disposed || _active) return;
+				var busy = _chat.IsStreaming;
+				if (_lastBusy == busy) return;
+				_lastBusy = busy;
+				StateChanged?.Invoke(this);
+			});
+		}
+	}
+
+	/// 更新标签页选中状态。隐藏时停掉渲染与心跳，只留 pending；切回时补一帧。
+	internal void SetActive(bool active)
+	{
+		if (_active == active) return;
+		_active = active;
+		if (!active)
+		{
+			_renderTimer.Stop();
+			_busyTimer.Stop();
 			return;
 		}
 
-		Dispatch(() =>
-		{
-			if (!_disposed)
-			{
-				_renderTimer.Start();
-			}
-		});
+		// 先清 pending 再渲染：渲染期间的新事件会重新置位并排下一拍。
+		Interlocked.Exchange(ref _renderPending, 0);
+		if (!_disposed) Render();
 	}
 
 	private void Send()
@@ -1431,6 +1456,12 @@ public sealed partial class SessionTab : IDisposable
 			{
 				try
 				{
+					// 扩展命令先异步跑：扩展卡死时不能把 UI 线程同步等满超时。
+					if (await Session.TryExecuteExtensionCommandAsync(text).ConfigureAwait(true))
+					{
+						return;
+					}
+
 					if (Session.TryExecuteSystemCommand(text, CancellationToken.None, out var message))
 					{
 						if (message is { Length: > 0 })
@@ -3191,7 +3222,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		// IsVisible 的同值写入也会触发失效：待办/计划/队列/扩展/子会话/目标六处都会调这里，先比较再写。
 		_workbench.Refresh();
-		var visible = _workspaceNotice.View.IsVisible || _workbench.IsShown;
+		var visible = _busyColumn.IsVisible || _workbench.IsShown;
 		if (_widgetColumn.IsVisible != visible) _widgetColumn.IsVisible(visible);
 	}
 

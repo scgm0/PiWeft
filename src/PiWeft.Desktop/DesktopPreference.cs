@@ -16,6 +16,12 @@ public sealed record DesktopPreference
 	public const string LightTheme = "light";
 	public const string SystemTheme = "system";
 
+	// 侧栏、目标条、声音与窗口设置都会在 UI 线程频繁读 desktop.json；
+	// 只有文件时间戳或长度变化才重新解析，保存时显式失效。
+	private static readonly Lock PreferenceCacheGate = new();
+	private static readonly Dictionary<string, CachedPreference> PreferenceCache = new(StringComparer.Ordinal);
+	private readonly record struct CachedPreference(DateTime WriteTimeUtc, long Length, DesktopPreference Value);
+
 	public string Theme { get; init; } = DarkTheme;
 
 	public IReadOnlyList<string> Pinned { get; init; } = [];
@@ -158,16 +164,33 @@ public sealed record DesktopPreference
 	public static DesktopPreference Load(string? agentDir = null)
 	{
 		var path = Path(agentDir);
-		if (!File.Exists(path))
-		{
-			return new DesktopPreference();
-		}
-
 		try
 		{
+			var info = new FileInfo(path);
+			if (!info.Exists)
+			{
+				lock (PreferenceCacheGate)
+				{
+					PreferenceCache.Remove(path);
+				}
+
+				return new DesktopPreference();
+			}
+
+			var writeTime = info.LastWriteTimeUtc;
+			var length = info.Length;
+			lock (PreferenceCacheGate)
+			{
+				if (PreferenceCache.TryGetValue(path, out var cached) &&
+					cached.WriteTimeUtc == writeTime && cached.Length == length)
+				{
+					return cached.Value;
+				}
+			}
+
 			var root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
 			var theme = root?["theme"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
-			return new DesktopPreference
+			var preference = new DesktopPreference
 			{
 				// 取值可以是内建名，也可以是自定义 pi 主题名；解析失败时由 DesktopTheme 回退。
 				Theme = string.IsNullOrWhiteSpace(theme) ? DarkTheme : theme,
@@ -233,9 +256,21 @@ public sealed record DesktopPreference
 				QuickMessageItems = ReadQuickMessages(root?["quickMessages"]),
 				SoundAlert = SoundAlertJson.Parse(root?["soundAlert"]),
 			};
+			lock (PreferenceCacheGate)
+			{
+				PreferenceCache[path] = new CachedPreference(writeTime, length, preference);
+			}
+
+			return preference;
 		}
-		catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+		catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException or
+			ArgumentException or NotSupportedException)
 		{
+			lock (PreferenceCacheGate)
+			{
+				PreferenceCache.Remove(path);
+			}
+
 			AppLog.Failure(AppLog.For<DesktopPreference>(), "Read desktop preferences", ex);
 			return new DesktopPreference();
 		}
@@ -457,6 +492,11 @@ public sealed record DesktopPreference
 			path,
 			// 快捷键里会出现 "+"，默认转义会写成 +，文件要能让人直接看懂和手改。
 			root.ToJsonString(PiJson.IndentedNodeOptions));
+
+		lock (PreferenceCacheGate)
+		{
+			PreferenceCache.Remove(path);
+		}
 	}
 
 	public DesktopPreference Cycle() => this with

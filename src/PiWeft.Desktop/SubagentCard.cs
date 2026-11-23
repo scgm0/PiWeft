@@ -112,14 +112,7 @@ internal sealed class SubagentCard
 		_viewWorktreeDiff = viewWorktreeDiff;
 		_rows.Spacing(6);
 		_card = new ComposerWidgetCard("sparkles", Strings.SubagentCardTitle);
-		// 二十行共用 180 DIP 视口，滚轮瞬移会看丢当前行；与其它浮层一样走平滑滚动。
-		_card.Body.Children(new ScrollViewer()
-			.SmoothScrolling()
-			.Content(_rows)
-			.AutoVerticalScroll()
-			.NoHorizontalScroll()
-			.Padding(new Thickness(0, 0, AppTheme.Space2, 0))
-			.MaxHeight(SessionTab.ComposerWidgetListMaxHeight));
+		_card.Body.Children(_rows);
 	}
 
 	public Border View => _card.View;
@@ -127,6 +120,8 @@ internal sealed class SubagentCard
 	internal bool IsShown => View.IsVisible;
 
 	internal void Expand() => _card.IsExpanded = true;
+
+	internal void ShowHeader(bool visible) => _card.ShowHeader(visible);
 
 	/// 工作台摘要用的计数文本。
 	internal string Meta => _card.Meta;
@@ -153,7 +148,8 @@ internal sealed class SubagentCard
 	internal void RenderRunsForSmoke(SubagentRun[] runs)
 	{
 		_hub = null;
-		_smokeRuns = runs;
+		// Ordered 会原地排序；复制一份，别把调用方的 fixture 顺序改掉。
+		_smokeRuns = [.. runs];
 		Refresh(force: true);
 	}
 
@@ -1075,7 +1071,44 @@ internal sealed class SubagentCard
 			_expanded.Remove(name);
 		}
 
-		Refresh(force: true);
+		RefreshRow(name);
+	}
+
+	/// 只替换被展开/收起的那一行：其他行里正在输入的 TextBox、光标和 IME 不受影响。
+	/// 找不到对应快照时退回整表刷新，保证状态仍然一致。
+	private void RefreshRow(string name)
+	{
+		var runs = _smokeRuns ?? _hub?.RunsSnapshot();
+		if (runs is null)
+		{
+			Refresh(force: true);
+			return;
+		}
+
+		Ordered(runs);
+		SubagentRun? run = null;
+		foreach (var candidate in runs)
+		{
+			if (string.Equals(candidate.Name, name, StringComparison.Ordinal))
+			{
+				run = candidate;
+				break;
+			}
+		}
+
+		var index = _rendered.FindIndex(row => string.Equals(row.Name, name, StringComparison.Ordinal));
+		if (run is null || index < 0 || index >= _rows.Children.Count)
+		{
+			Refresh(force: true);
+			return;
+		}
+
+		var (rowView, meta) = Row(run);
+		var old = _rows.Children[index];
+		_rows.Remove(old);
+		UiLifetime.Release(old);
+		_rows.Insert(index, rowView);
+		_rendered[index] = meta;
 	}
 
 	private static string Preview(string text) =>

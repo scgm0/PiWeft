@@ -1029,6 +1029,29 @@ public sealed partial class CodingAgentSession
 	/// 不接管就会被写进用户消息、交给模型当正文回答。命中后不写会话，RPC 回
 	/// <c>disposition:"handled"</c>，PiDeck 据此撤掉乐观用户消息。
 	/// </para>
+	/// 桌面发送路径的扩展命令异步入口。只处理扩展命令；内置命令仍走同步版本。
+	/// 返回 true 表示命令已接管（失败也返回 true，和同步版本一致）。
+	public async Task<bool> TryExecuteExtensionCommandAsync(string text)
+	{
+		// 取一次：/reload 可能在 await 期间把 Extensions 置空，第二处硬解引用会 NRE。
+		var extensions = Extensions;
+		if (extensions is null)
+		{
+			return false;
+		}
+
+		var trimmed = text.Trim();
+		if (trimmed.Length < 2 || trimmed[0] != '/')
+		{
+			return false;
+		}
+
+		var space = trimmed.IndexOf(' ');
+		var name = space < 0 ? trimmed[1..] : trimmed[1..space];
+		var argument = space < 0 ? string.Empty : trimmed[(space + 1)..].Trim();
+		return await extensions.TryRunCommandAsync(name, argument).ConfigureAwait(false);
+	}
+
 	public bool TryExecuteSystemCommand(string text, CancellationToken cancellationToken, out string? message)
 	{
 		message = null;

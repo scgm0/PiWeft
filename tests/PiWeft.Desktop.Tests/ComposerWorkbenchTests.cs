@@ -13,7 +13,8 @@ public sealed class ComposerWorkbenchTests
 		card.Body.Add(new TextBlock().Text("一行待办"));
 		var workbench = new ComposerWorkbench(
 		[
-			new WorkbenchSection("todo", "待办", card.View, () => shown, () => "9 完成"),
+			new WorkbenchSection("todo", "待办", card.View, () => shown, () => "9 完成",
+				() => card.IsExpanded = true),
 		]);
 		return (workbench, card);
 	}
@@ -26,19 +27,60 @@ public sealed class ComposerWorkbenchTests
 
 		Assert.True(workbench.IsShown);
 		Assert.False(workbench.IsExpanded);
+		Assert.Null(workbench.SelectedKeyForTests);
 		Assert.False(card.IsExpanded);
 	}
 
 	[Fact]
-	public void SelectingAChipShowsTheCollapsedCardPreview()
+	public void SelectingAChipExpandsTheSectionBody()
 	{
 		var (workbench, card) = Build();
 		workbench.Refresh();
 		workbench.SelectForTests("todo");
 
 		Assert.True(workbench.IsExpanded);
-		// 选中给的是预览卡头；卡体仍收起，第二次点击才展开。
-		Assert.False(card.IsExpanded);
+		Assert.Equal("todo", workbench.SelectedKeyForTests);
+		Assert.True(card.IsExpanded);
+	}
+
+	[Fact]
+	public void TitleAreaCollapsesAndClearsTheSelection()
+	{
+		var (workbench, card) = Build();
+		workbench.Refresh();
+		ImagePreviewTests.Click(workbench.TitleButtonForTests);
+		Assert.False(workbench.IsExpanded);
+		Assert.Null(workbench.SelectedKeyForTests);
+
+		workbench.SelectForTests("todo");
+		Assert.True(workbench.IsExpanded);
+		Assert.True(card.IsExpanded);
+
+		ImagePreviewTests.Click(workbench.TitleButtonForTests);
+		Assert.False(workbench.IsExpanded);
+		Assert.Null(workbench.SelectedKeyForTests);
+	}
+
+	[Fact]
+	public void SelectingAChipKeepsTheButtonInstance()
+	{
+		var (workbench, _) = Build();
+		workbench.Refresh();
+		var before = workbench.ChipButtonForTests("todo");
+		workbench.SelectForTests("todo");
+		Assert.Same(before, workbench.ChipButtonForTests("todo"));
+	}
+
+	[Fact]
+	public void ClickingTheSelectedChipCollapsesAndClears()
+	{
+		var (workbench, _) = Build();
+		workbench.Refresh();
+		workbench.SelectForTests("todo");
+		workbench.SelectForTests("todo");
+
+		Assert.False(workbench.IsExpanded);
+		Assert.Null(workbench.SelectedKeyForTests);
 	}
 
 	[Fact]

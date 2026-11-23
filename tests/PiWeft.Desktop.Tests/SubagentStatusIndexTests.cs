@@ -40,6 +40,24 @@ public sealed class SubagentStatusIndexTests
 	}
 
 	[Fact]
+	public void ChangedSessionsReportRowsThatNeedTextRefresh()
+	{
+		var index = new SubagentStatusIndex();
+		var changed = new HashSet<string>(StringComparer.Ordinal);
+		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1")], changed));
+		Assert.Contains("parent", changed);
+		Assert.Contains("child-1", changed);
+
+		changed.Clear();
+		Assert.False(index.Update("parent", "父会话", [Run("scout-1", "child-1", activity: "read a.cs")], changed));
+		Assert.Empty(changed);
+
+		changed.Clear();
+		Assert.True(index.Update("parent", "父会话", [], changed));
+		Assert.Contains("child-1", changed);
+	}
+
+	[Fact]
 	public void ActivityAndUsageDoNotTriggerASidebarRebuild()
 	{
 		var index = new SubagentStatusIndex();

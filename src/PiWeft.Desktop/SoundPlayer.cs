@@ -285,15 +285,32 @@ internal static partial class SoundPlayer
 		}
 
 		start.ArgumentList.Add(path);
-		using var process = Process.Start(start);
+		var process = Process.Start(start);
 		if (process is null)
 		{
 			return;
 		}
 
-		// 输出必须读干：aplay 之类的错误信息虽小，但子进程写不出去会一直等到播放结束。
-		_ = process.StandardError.ReadToEndAsync();
-		_ = process.StandardOutput.ReadToEndAsync();
+		// 不能在这里 using：Dispose 会关掉子进程的管道，正在读的两个任务以未观察异常结束，
+		// 提示音也可能被 SIGPIPE 截断。等两路读到 EOF 再释放。
+		_ = DrainAndReleaseAsync(process);
+	}
+
+	private static async Task DrainAndReleaseAsync(Process process)
+	{
+		try
+		{
+			// 输出必须读干：aplay 之类的错误信息虽小，但子进程写不出去会一直等到播放结束。
+			await Task.WhenAll(process.StandardError.ReadToEndAsync(), process.StandardOutput.ReadToEndAsync()).ConfigureAwait(false);
+		}
+		catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException)
+		{
+			// 播放器提前退出：输出已读到 EOF，没什么可收的。
+		}
+		finally
+		{
+			process.Dispose();
+		}
 	}
 
 	[System.Runtime.Versioning.SupportedOSPlatform("windows")]

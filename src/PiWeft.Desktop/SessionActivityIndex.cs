@@ -19,17 +19,31 @@ internal sealed class SessionActivityIndex
 			return false;
 		}
 
+		// 稳定期先逐项比较，不先分配新数组：侧栏每次刷新都会走这里。
+		if (_bySession.TryGetValue(sessionId, out var previous) &&
+			previous.Streaming == streaming &&
+			previous.Files.Count == changedFiles.Count)
+		{
+			var same = true;
+			for (var index = 0; index < changedFiles.Count; index++)
+			{
+				if (!string.Equals(previous.Files[index], changedFiles[index].Path, StringComparison.Ordinal))
+				{
+					same = false;
+					break;
+				}
+			}
+
+			if (same)
+			{
+				return false;
+			}
+		}
+
 		var files = new string[changedFiles.Count];
 		for (var index = 0; index < changedFiles.Count; index++)
 		{
 			files[index] = changedFiles[index].Path;
-		}
-
-		if (_bySession.TryGetValue(sessionId, out var previous) &&
-			previous.Streaming == streaming &&
-			previous.Files.SequenceEqual(files, StringComparer.Ordinal))
-		{
-			return false;
 		}
 
 		_bySession[sessionId] = new Entry(streaming, files);

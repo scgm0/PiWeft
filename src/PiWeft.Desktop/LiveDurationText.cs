@@ -12,13 +12,15 @@ namespace PiWeft.Desktop;
 /// （实测：计时停在离开视口那一刻）。空转一拍只做一次 <see cref="StreamPump.NeedsFrames"/> 向上遍历，
 /// 10Hz 量级可不计；无窗口（自检/单测）时只显示一次初值，不建计时器。
 /// 折叠的 Expander 内容例外：它不参与视觉树，停表后展开会重新测量，因此那里真正停表。
+/// 切走的标签页内容被摘出视觉树，停表；切回来也<b>不会</b>重新测量（布局缓存仍有效），
+/// 所以重挂由 <see cref="OnVisualRootChanged"/> 直接重启。
 internal sealed class LiveDurationText : TextBlock
 {
 	private const int TickIntervalMs = 100;
 
 	private long _startedAt;
 	private long _endedAt;
-	private DispatcherTimer? _clock;
+	private bool _registered;
 	private string? _shown;
 	private bool _disposed;
 
@@ -50,16 +52,26 @@ internal sealed class LiveDurationText : TextBlock
 		return base.MeasureContent(availableSize);
 	}
 
+	/// 仅测试用：挂载生命周期是否让秒表真的在走。
+	internal bool IsTicking => _registered;
+
+	// 切走标签页：TabControl 把内容整棵摘出视觉树。切回来只把 Parent 接回去，不保证重测，
+	// 秒表得在这里自己回来（否则停在上次读数，要展开一次步骤行才复活）。
+	protected override void OnVisualRootChanged(Element? oldRoot, Element? newRoot)
+	{
+		if (newRoot is Window) Start();
+		else Stop();
+		base.OnVisualRootChanged(oldRoot, newRoot);
+	}
+
 	private void Start()
 	{
-		if (_startedAt <= 0 || _endedAt > 0 || _clock is not null || _disposed || !Application.IsRunning) return;
+		if (_startedAt <= 0 || _endedAt > 0 || _registered || _disposed) return;
 		// 还没挂到窗口的子树（正在构建、即将加入）不建表：挂上后的测量会再进来。
 		if (FindVisualRoot() is not Window) return;
 		// 折叠内容里的行可能被上层重新测量；真开始后下拍也会停，不如这里直接不建计时器。
 		if (StreamPump.HiddenByCollapsedExpander(this)) return;
-		_clock = new DispatcherTimer(TimeSpan.FromMilliseconds(TickIntervalMs));
-		_clock.OnTick(Tick);
-		_clock.Start();
+		LiveDurationClock.Register(this);
 	}
 
 	private void Tick()
@@ -75,12 +87,12 @@ internal sealed class LiveDurationText : TextBlock
 		}
 
 		// 其余不可见的拍只跳过写入，绝不停表：滚出视口再回来不会有测量来叫醒它，
-		// 停了读数就冻在离开那一刻（切走的标签页同理）。自己被显式隐藏时也不必写，
+		// 停了读数就冻在离开那一刻。自己被显式隐藏时也不必写，
 		// 但要停表得由宿主收口跨度（见 AssistantMessageView）。
 		if (!IsVisible || !StreamPump.NeedsFrames(this))
 		{
 			// 例外：宿主重建或虚拟化回收会把元素从窗口摘掉，这时没有任何测量会再叫醒它。
-			// 停表；重新挂回会触发测量，MeasureContent 再 Start。
+			// 停表；重新挂回由 OnVisualRootChanged 重启。
 			if (FindVisualRoot() is not Window)
 			{
 				Stop();
@@ -100,12 +112,14 @@ internal sealed class LiveDurationText : TextBlock
 		Text = text;
 	}
 
+	internal void MarkRegistered(bool registered) => _registered = registered;
+
+	internal void TickFromClock() => Tick();
+
 	private void Stop()
 	{
-		if (_clock is not { } clock) return;
-		_clock = null;
-		clock.Stop();
-		clock.Dispose();
+		if (!_registered) return;
+		LiveDurationClock.Unregister(this);
 	}
 
 	protected override void OnDispose()
