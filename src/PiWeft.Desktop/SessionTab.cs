@@ -30,6 +30,8 @@ public sealed partial class SessionTab : IDisposable
 	// 是否是当前选中的标签页。后台页签不投影、不刷行：事件只留一个 pending 标记，
 	// 多会话并行时投影与行表刷新会相乘。
 	private volatile bool _active = true;
+	// 窗口隐藏到托盘后不可见：连当前页签也停像素与心跳，任务继续推进，恢复时补一帧。
+	private volatile bool _windowVisible = true;
 	private volatile bool _disposed;
 	private bool _sending;
 
@@ -816,7 +818,8 @@ public sealed partial class SessionTab : IDisposable
 		{
 			_renderTimer.Stop();
 			Interlocked.Exchange(ref _renderPending, 0);
-			if (!_disposed)
+			// 隐藏路径可能还有一个已排队的启动回调先到；这里再挡一次，隐藏后一帧都不画。
+			if (!_disposed && _windowVisible)
 			{
 				Render();
 			}
@@ -825,7 +828,7 @@ public sealed partial class SessionTab : IDisposable
 		{
 			// 等待期没有任何消息事件，这一拍就是唯一的推进：状态条的呼吸点、轮播、
 			// 已等待时长与退避倒计时全部跟着它走。整帧 Render 在这一拍里几乎全是缓存命中。
-			if (!_disposed) Render();
+			if (!_disposed && _windowVisible) Render();
 		};
 		_imagePreview.Status = (message, ok) =>
 		{
@@ -1192,11 +1195,12 @@ public sealed partial class SessionTab : IDisposable
 	{
 		if (_disposed) return;
 		// 先置 pending 再判后台：切回时 SetActive 看到 pending 就补这一帧。
-		if (Interlocked.Exchange(ref _renderPending, 1) == 0 && _active)
+		if (Interlocked.Exchange(ref _renderPending, 1) == 0 && _active && _windowVisible)
 		{
 			Dispatch(() =>
 			{
-				if (!_disposed)
+				// 排队到这里时窗口可能已经隐藏：不能再把帧泵点着。
+				if (!_disposed && _windowVisible)
 				{
 					_renderTimer.Start();
 				}
@@ -1224,6 +1228,7 @@ public sealed partial class SessionTab : IDisposable
 	{
 		if (_active == active) return;
 		_active = active;
+		UpdateFrameGate();
 		if (!active)
 		{
 			_renderTimer.Stop();
@@ -1233,8 +1238,33 @@ public sealed partial class SessionTab : IDisposable
 
 		// 先清 pending 再渲染：渲染期间的新事件会重新置位并排下一拍。
 		Interlocked.Exchange(ref _renderPending, 0);
-		if (!_disposed) Render();
+		if (!_disposed && _windowVisible) Render();
 	}
+
+	/// <summary>窗口隐藏到托盘时停掉当前页签的渲染与心跳；恢复时补一帧。</summary>
+	internal void SetWindowVisible(bool visible)
+	{
+		if (_windowVisible == visible) return;
+		_windowVisible = visible;
+		UpdateFrameGate();
+		if (!visible)
+		{
+			_renderTimer.Stop();
+			_busyTimer.Stop();
+			return;
+		}
+
+		if (_active && !_disposed)
+		{
+			Interlocked.Exchange(ref _renderPending, 0);
+			Render();
+		}
+	}
+
+	/// 帧泵（思考预览、扫光）每拍检查这个标记（StreamPump.NeedsFrames）。
+	/// 后台标签与隐藏窗口都不该吃帧：一个时钟留在 AnimationManager 里就会把宿主拖进持续渲染。
+	private void UpdateFrameGate()
+		=> _terminalSplit.Tag = _windowVisible && _active ? null : StreamPump.HiddenByWindow;
 
 	private void Send()
 	{
@@ -2676,7 +2706,7 @@ public sealed partial class SessionTab : IDisposable
 
 		// 心跳只在跑回合的时候开：推流期数据帧自己会把帧打进来，但模型一旦卡顿、工具一旦跑久，
 		// 屏幕就不再有事件。没有这一拍，呼吸点会停在半道上，看起来像卡死了。
-		if (busy)
+		if (busy && _windowVisible)
 		{
 			if (!_busyTimer.IsEnabled) _busyTimer.Start();
 		}

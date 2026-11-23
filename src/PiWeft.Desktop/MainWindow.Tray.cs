@@ -83,10 +83,13 @@ public sealed partial class MainWindow
 		X11WindowMapping.Map(Handle);
 		Activate();
 		_hiddenToTray = false;
+		CurrentTab()?.SetWindowVisible(true);
 	}
 
 	private void HideToTray()
 	{
+		// 停止当前页签的渲染与心跳；任务与模型流不受影响，恢复时补一帧。
+		CurrentTab()?.SetWindowVisible(false);
 		Hide();
 		_hiddenToTray = true;
 		AppLog.For<MainWindow>().ZLogInformation($"Window hidden to tray");
@@ -117,13 +120,14 @@ public sealed partial class MainWindow
 	}
 
 	/// <summary>关闭→隐藏→唤回的无人值守演练：阶段写进 stdout，外部脚本在对应窗口检查窗口是否可见。</summary>
-	internal async Task RunTraySmokeAsync()
+	internal async Task RunTraySmokeAsync(bool idle = false)
 	{
 		await WaitForSessionOpensAsync().ConfigureAwait(false);
 		Dispatch(() =>
 		{
 			// 隐藏后流式计时器仍在跑：stdout 的 stream t= 行继续增长即是任务没被关窗打断的证据。
-			CurrentTab()?.PrepareStreamSmoke();
+			// idle 只验证隐藏本身的开销，不启动流式。
+			if (!idle) CurrentTab()?.PrepareStreamSmoke();
 			UpdateTrayToggle();
 			Console.WriteLine($"piweft-desktop: tray supported={TrayIcon.IsSupported} closeToTray={DesktopPreference.Load().CloseToTray}");
 			Console.WriteLine($"piweft-desktop: tray-menu={_trayToggle?.Command?.Id}");

@@ -49,6 +49,16 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void SaveReplacesTheFileAtomically()
+	{
+		(DesktopPreference.Load(_agentDir) with { Theme = DesktopPreference.LightTheme }).Save(_agentDir);
+
+		Assert.True(File.Exists(DesktopPreference.Path(_agentDir)));
+		Assert.False(File.Exists(DesktopPreference.Path(_agentDir) + ".tmp"));
+		Assert.Equal(DesktopPreference.LightTheme, DesktopPreference.Load(_agentDir).Theme);
+	}
+
+	[Fact]
 	public void CloseToTrayDefaultsOnAndOnlyTheOffStateIsStored()
 	{
 		// 默认开：旧偏好文件没有这个键时也驻留；写盘只在关掉时留一个 false。

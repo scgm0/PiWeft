@@ -503,10 +503,14 @@ public sealed record DesktopPreference
 		{
 			root.Remove("pinned");
 		}
+		// 先写临时文件再原子替换：进程在写盘中途被杀时，旧文件仍是完整的一份，
+		// 不会留下半截 JSON 让下次 Load 回退到默认值。
+		var temporary = path + ".tmp";
 		File.WriteAllText(
-			path,
+			temporary,
 			// 快捷键里会出现 "+"，默认转义会写成 +，文件要能让人直接看懂和手改。
 			root.ToJsonString(PiJson.IndentedNodeOptions));
+		File.Move(temporary, path, overwrite: true);
 
 		lock (PreferenceCacheGate)
 		{

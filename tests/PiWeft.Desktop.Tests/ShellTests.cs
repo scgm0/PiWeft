@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Session;
 using PiWeft.Desktop;
@@ -184,21 +185,58 @@ public class ShellTests : IDisposable
 	public void OnlyTheFirstInstanceHoldsTheKey()
 	{
 		var key = "test-" + Guid.NewGuid().ToString("N")[..8];
+		var socketPath = Path.Combine(_agentDir, $"piweft-desktop-{key}.sock");
 
 		using (var first = SingleInstance.Acquire(key))
 		{
 			Assert.True(first.IsFirstInstance);
+			// 生产里首实例总会 Listen；探活连接要有人 accept，否则会占满 backlog。
+			first.Listen(static () => { });
 
-			using var second = SingleInstance.Acquire(key);
-			Assert.False(second.IsFirstInstance);
+			using (var second = SingleInstance.Acquire(key))
+			{
+				Assert.False(second.IsFirstInstance);
+			}
 
-			// Signalling a running instance must not throw when one is listening.
+			// 第二实例退出时不能删掉首实例的 socket：文件没了，下一次启动就会误判成残留文件，
+			// 让两个实例同时编辑同一批会话。
+			Assert.True(File.Exists(socketPath));
+			using var stillSecond = SingleInstance.Acquire(key);
+			Assert.False(stillSecond.IsFirstInstance);
+
+			// 最后再发信号：首实例这里没有 Listen，未 accept 的连接会占住 backlog，
+			// 之后再 Acquire 的探活连接可能被阻塞。
 			SingleInstance.SignalRunningInstance(key);
 		}
 
 		// The socket is released, so a later launch becomes the first instance again.
 		using var third = SingleInstance.Acquire(key);
 		Assert.True(third.IsFirstInstance);
+	}
+
+	[Fact]
+	public async Task TheListenerSurvivesAClientReset()
+	{
+		var key = "test-" + Guid.NewGuid().ToString("N")[..8];
+		using var instance = SingleInstance.Acquire(key);
+		Assert.True(instance.IsFirstInstance);
+
+		var activated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		instance.Listen(() => activated.TrySetResult());
+
+		// 客户端重置连接会让监听循环里的 ReceiveAsync 抛异常；通道必须继续接受下一次信号。
+		using (var client = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified))
+		{
+			client.Connect(new UnixDomainSocketEndPoint(Path.Combine(_agentDir, $"piweft-desktop-{key}.sock")));
+			client.LingerState = new LingerOption(enable: true, seconds: 0);
+			client.Send([1, 2, 3]);
+		}
+
+		await Task.Delay(100);
+		SingleInstance.SignalRunningInstance(key);
+		Assert.True(
+			await Task.WhenAny(activated.Task, Task.Delay(TimeSpan.FromSeconds(10))) == activated.Task,
+			"the listener stopped after a client reset");
 	}
 
 	[Fact]

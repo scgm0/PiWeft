@@ -2228,9 +2228,11 @@ public sealed partial class MainWindow : Window
 			{
 				args.Cancel = !await settings.CanCloseAsync();
 			}
-			catch (InvalidOperationException)
+			catch (Exception ex)
 			{
+				// 确认框都弹不出来时按取消处理：宁可留在窗口里，也不能带着未保存草稿关掉。
 				args.Cancel = true;
+				AppLog.Failure(AppLog.For<MainWindow>(), "Confirm settings close", ex);
 			}
 
 			// 用户留在窗口里：取消这次退出，下次关窗回到正常策略（驻留或确认）。
@@ -2320,9 +2322,9 @@ public sealed partial class MainWindow : Window
 
 		await Task.Delay(1500).ConfigureAwait(false);
 
-		if (view == "tray")
+		if (view is "tray" or "tray-idle")
 		{
-			_ = RunTraySmokeAsync();
+			_ = RunTraySmokeAsync(idle: view == "tray-idle");
 			return;
 		}
 

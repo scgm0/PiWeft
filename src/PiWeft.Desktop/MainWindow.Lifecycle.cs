@@ -9,6 +9,9 @@ public sealed partial class MainWindow
 	/// 项目信任询问可能让 StartupCore 晚几百毫秒，这段时间点关闭也必须走隐藏与收尾。
 	private void RegisterWindowLifecycle()
 	{
+		// 最小化后窗口同样不可见：停掉帧泵，否则后台流式会话会继续以满帧空转。
+		this.WindowStateChanged += state => CurrentTab()?.SetWindowVisible(state != Aprillz.MewUI.Controls.WindowState.Minimized);
+
 		// 关闭时记住窗口状态，下次打开原位恢复。
 		this.OnClosed(() =>
 		{

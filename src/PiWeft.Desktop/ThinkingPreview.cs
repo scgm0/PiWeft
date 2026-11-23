@@ -192,6 +192,9 @@ internal sealed class Typewriter
 /// 不读进度。没窗口（自检/单测）时不启动，由数据帧自己推进。
 internal sealed class StreamPump(FrameworkElement owner, Action onFrame) : IDisposable
 {
+	/// 窗口隐藏到托盘后整棵会话树不可见：挂在根上的标记让所有帧泵在下一次检查时停表。
+	internal static readonly object HiddenByWindow = new();
+
 	private readonly AnimationClock _clock = new(TimeSpan.FromDays(1), static value => value);
 
 	internal void Start()
@@ -221,6 +224,7 @@ internal sealed class StreamPump(FrameworkElement owner, Action onFrame) : IDisp
 		// 自身被显式隐藏时祖先链看不出：预览行就是靠 IsVisible=false 让位的，
 		// Bounds 还停在隐藏前那一版，不查这里会继续每帧吃满。
 		if (node is UIElement { IsVisible: false }) return false;
+		if (node is FrameworkElement { Tag: var ownTag } && ReferenceEquals(ownTag, HiddenByWindow)) return false;
 		if (node.FindVisualRoot() is not Window) return false;
 		var bounds = node.Bounds;
 		if (bounds.Width <= 0 || bounds.Height <= 0) return false;
@@ -228,6 +232,7 @@ internal sealed class StreamPump(FrameworkElement owner, Action onFrame) : IDisp
 		for (var parent = node.Parent; parent is not null; child = parent, parent = parent.Parent)
 		{
 			if (parent is UIElement { IsVisible: false }) return false;
+			if (parent is FrameworkElement { Tag: var tag } && ReferenceEquals(tag, HiddenByWindow)) return false;
 			// 折叠的 Expander 不把 Content 交给视觉树，但 Parent 链和 IsVisible 都看不出这一点。
 			if (parent is Expander { IsExpanded: false } expander && ReferenceEquals(expander.Content, child)) return false;
 			if (parent is ScrollViewer viewport && !Intersects(viewport.Bounds, bounds)) return false;

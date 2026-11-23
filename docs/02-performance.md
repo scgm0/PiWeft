@@ -43,8 +43,8 @@
 | CLI NativeAOT 产物（linux-x64，Release） | 当前提交 31,671,672 B。runtime-async 的 A/B 在同一棵树上量：关 32,060,744 B → 开 31,321,368 B（-739,376 B，**-2.3%**） |
 | `SessionManager.Open` 46 MB / 26,984 行（只读+建索引，9 轮中位） | `List<object>` 管线 402 ms / 249.2 MiB → `List<SessionLine>` union 管线 403 ms / 249.2 MiB（各 5 次采样，无差异） |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
-| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 82.7 MiB（86,702,752 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 82.5 / 82.1 / 80.6 / 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
-| 桌面托盘驻留的产物体积代价 | 同一份代码只加托盘入口：86,539,488 B → 86,702,752 B，+163,264 B（+0.19%）。托盘后端此前已由 X11 宿主带进产物，增量是 `TrayIcon` 实例、菜单与设置项 |
+| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 82.7 MiB（86,706,864 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 82.5 / 82.1 / 80.6 / 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
+| 桌面托盘驻留的产物体积代价 | 同一份代码只加托盘入口：86,539,488 B → 86,706,864 B，+167,376 B（+0.19%）。托盘后端此前已由 X11 宿主带进产物，增量是 `TrayIcon` 实例、菜单与设置项 |
 | MewUI 子模块更新（45428e1 → c2cd7ef）的产物体积代价 | 同一份代码只换子模块：86,067,872 B → 86,539,488 B，+471,616 B（+0.55%）。11 个提交新增 Linux 托盘（StatusNotifierItem）与应用标识；托盘后端挂在 `X11PlatformHost` 上，产物里保留了 `Tmds.DBus.Protocol` 与 `TrayIcon` 符号，AT-SPI2 关闭已不足以把 DBus 栈裁掉 |
 | MewUI 子模块更新（553f28d → 45428e1）的产物体积代价 | 同一份代码只换子模块：85,719,760 B → 86,067,872 B，+348,112 B（+0.41%）。新增的 system backdrop、托盘、多源绑定与自动化代码在不引用时不进产物；增量来自 retained 渲染（组合层缓存、backdrop pass）与 MewVG 0.11.1 |
 | MewUI 子模块更新（2b93028 → 553f28d）的产物体积代价 | 同一份代码只换子模块：84,459,584 B → 84,475,952 B，+16,368 B（+0.02%）。新增的 X11 AT-SPI2 代码与 `Tmds.DBus.Protocol` 依赖在 automation 关掉后被裁掉 |
@@ -162,6 +162,17 @@
 - 已核对无问题：会话追加在 `_stateGate` 内写文件并在失败时回滚；`Utf8LineReader` 的零拷贝快路径与池化上限；`grep`/`find` 的字节扫描、`SearchValues` 预筛、mmap 阈值与上限即停；SSE 复用字节缓冲、每事件只留一份 `JsonDocument`；`Agent._listeners` 写时复制 + `volatile`；`CodingAgentSession` 的 run CTS 由 `using` 持有；诊断帧档/计数档常态零分配（有测试守着）。
 - 分析器全量模式共 7571 条，逐类看过：`CA2000` 的 `StringContent`/`FormUrlEncodedContent` 是 GC 压力不是句柄泄漏（冷路径）；`CA2213` 命中的 UI 控件由可视树释放；`CA2012` 的 `List<ValueTask>` 是「收集后各 await 一次」的合法用法；`CA1508` 在 `union` 模式匹配上误报（`SessionLine` 的 `is` 分支被当成必真）。没有发现功能 bug。
 - 没有采纳：`MewUITouch`/`MewUIEnvironmentDebugLogging` 等开关的裁剪收益未测，改行为不值；条目管道泛型化是改上游，理由见上一节。
+
+## 本轮审计记录（2026-11-23）
+
+口径：`dotnet build -p:AnalysisMode=All` 与人工读码；运行时用 `--ui-smoke tray` / `tray-idle` 的隐藏阶段读 `/proc/<pid>/stat` 的 utime+stime（4 秒窗口），AOT 发布版复测。
+
+- 已修：隐藏到托盘后 CPU 99% 的根因是思考预览的 `AnimationClock`（`StreamPump` 逐字泵、`MarqueeLine` 扫光）只判断节点可见/在视口，不知道窗口已隐藏；MewUI 宿主因此持续渲染。`StreamPump.HiddenByWindow` 标记挂到 `SessionTab` 根，`SetActive`（后台标签）与 `SetWindowVisible`（隐藏/最小化）统一更新；排队中的 `_renderTimer.Start` 与 `Render()` 里的 `_busyTimer` 再判一次 `_windowVisible`，隐藏瞬间的在途 delta 不会把帧泵点着。`--ui-smoke tray` 隐藏阶段 3.97 s/4 s → 0.20 s/4 s（AOT 0.17 s），流式输出继续；`tray-idle` 隐藏 0.24 s/4 s，说明不是 MewVG 空转。
+- 已修：单实例第二实例退出时无条件删 socket 文件（`Dispose` 不看是否持有监听 socket），下一次启动会把它当残留，同一项目能开出第二个实例。现在只有持有监听 socket 的首实例删除；测试覆盖第二实例退出后文件仍在。
+- 已修：单实例监听循环把 `ReceiveAsync`/`onActivate` 放在 try 外，一次客户端 RST 或 dispatcher 已停就让激活通道永久失效。整轮包 try/catch，取消/释放退出，其它异常记日志后继续；测试用 `LingerState(0)` 造 RST。
+- 已修：`desktop.json` 直接覆盖写，进程在写盘中途被杀会留下半截 JSON，下次 Load 回退默认值（窗口几何、项目、置顶、快捷消息一起丢）。改成同目录 `.tmp` + `File.Move(overwrite)`；测试断言无残留且可解析。
+- 已修：设置页关窗确认只捕 `InvalidOperationException`，其它异常让窗口带着未保存草稿关闭且 `_exitRequested` 不复位。现在任何异常都按取消处理并记日志。
+- 已核对未修：`LiveActivityClock`/`LiveDurationClock` 在隐藏时仍每 100 ms/1 s 改文本（剩余约 5% CPU 的一部分）；`X11WindowMapping` 每次唤回新开一条 X 连接；`AgentLoop` 单条消息内的工具并发无上限；`CloseTabAsync` 仍是 fire-and-forget。前三者收益小或改动面大，暂留。
 
 ## 诊断面板
 

@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using System.Text;
+using PiWeft.Cli;
 using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
@@ -143,24 +144,28 @@ public sealed class SingleInstance : IDisposable
 		{
 			while (!cancellation.IsCancellationRequested)
 			{
-				Socket accepted;
 				try
 				{
-					accepted = await _socket.AcceptAsync(cancellation).ConfigureAwait(false);
-				}
-				catch (Exception)
-				{
-					return; // 已释放或被取消
-				}
-
-				using (accepted)
-				{
+					using var accepted = await _socket.AcceptAsync(cancellation).ConfigureAwait(false);
 					var buffer = new byte[64];
 					var read = await accepted.ReceiveAsync(buffer, cancellation).ConfigureAwait(false);
 					if (read > 0 && Encoding.UTF8.GetString(buffer, 0, read).StartsWith(ActivateMessage, StringComparison.Ordinal))
 					{
 						onActivate();
 					}
+				}
+				catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+				{
+					return;
+				}
+				catch (ObjectDisposedException)
+				{
+					return; // socket 已释放
+				}
+				catch (Exception ex)
+				{
+					// 一个客户端用 RST 断开或 onActivate 抛错，不该让整条激活通道死掉。
+					AppLog.Warning(AppLog.For<SingleInstance>(), "Single-instance listener", ex);
 				}
 			}
 		});
@@ -178,7 +183,9 @@ public sealed class SingleInstance : IDisposable
 		_socket?.Dispose();
 		_mutex?.Dispose();
 
-		if (_socketPath is not null && File.Exists(_socketPath))
+		// 只有真正持有监听 socket 的实例才能删文件：非首实例的路径指向正在运行的实例，
+		// 它退出时删掉文件会让第二次启动把那个实例误判成残留，单实例保证随之失效。
+		if (_socket is not null && _socketPath is not null && File.Exists(_socketPath))
 		{
 			try
 			{
