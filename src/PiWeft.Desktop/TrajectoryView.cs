@@ -335,7 +335,7 @@ internal sealed class TrajectoryView : IDisposable
 		var window = TrajectoryLedger.Window(_model.Turns, _turnWindow);
 		var max = SmoothScroll.For(_ledgerScroll).MaxVerticalOffset;
 		Console.WriteLine(
-			$"piweft-desktop: trajectory turns={_model.Turns.Count} records={_model.Records.Count} " +
+			$"PiWeft: trajectory turns={_model.Turns.Count} records={_model.Records.Count} " +
 			$"folded={folded} window={window.Count} rows={_ledgerRows.Count} selected={_selectedId ?? "-"} " +
 			$"ledger={_ledger.Bounds.Width:0}x{_ledger.Bounds.Height:0} offset={_ledgerScroll.VerticalOffset:0}/{max:0} " +
 			$"turn0={(_model.Turns.Count > 0 ? $"{TrajectoryFormat.Time(_model.Turns[0].StartedAt)}..{TrajectoryFormat.Time(_model.Turns[0].EndedAt ?? 0)} dur={_model.Turns[0].DurationMs:0} live={_model.Turns[0].InFlight}" : "-")}");

@@ -35,7 +35,7 @@ public sealed partial class MainWindow
 
 		var tray = new TrayIcon()
 			.Icon(Icon)
-			.ToolTipText(Strings.WindowTitle(_cwd))
+			.ToolTipText(Strings.AppDisplayName)
 			.ContextMenu(menu)
 			.Command(show)
 			.IsVisible(true);
@@ -129,34 +129,34 @@ public sealed partial class MainWindow
 			// idle 只验证隐藏本身的开销，不启动流式。
 			if (!idle) CurrentTab()?.PrepareStreamSmoke();
 			UpdateTrayToggle();
-			Console.WriteLine($"piweft-desktop: tray supported={TrayIcon.IsSupported} closeToTray={DesktopPreference.Load().CloseToTray}");
-			Console.WriteLine($"piweft-desktop: tray-menu={_trayToggle?.Command?.Id}");
-			Console.WriteLine("piweft-desktop: tray-phase=shown");
+			Console.WriteLine($"PiWeft: tray supported={TrayIcon.IsSupported} closeToTray={DesktopPreference.Load().CloseToTray}");
+			Console.WriteLine($"PiWeft: tray-menu={_trayToggle?.Command?.Id}");
+			Console.WriteLine("PiWeft: tray-phase=shown");
 		});
 		await Task.Delay(4000).ConfigureAwait(false);
 
 		Dispatch(() =>
 		{
-			Console.WriteLine("piweft-desktop: tray-phase=hidden");
+			Console.WriteLine("PiWeft: tray-phase=hidden");
 			Close();
 			UpdateTrayToggle();
-			Console.WriteLine($"piweft-desktop: tray-menu={_trayToggle?.Command?.Id}");
+			Console.WriteLine($"PiWeft: tray-menu={_trayToggle?.Command?.Id}");
 		});
 		await Task.Delay(15000).ConfigureAwait(false);
 
 		Dispatch(() =>
 		{
-			Console.WriteLine("piweft-desktop: tray-phase=revealed");
+			Console.WriteLine("PiWeft: tray-phase=revealed");
 			Reveal();
 			UpdateTrayToggle();
-			Console.WriteLine($"piweft-desktop: tray-menu={_trayToggle?.Command?.Id}");
+			Console.WriteLine($"PiWeft: tray-menu={_trayToggle?.Command?.Id}");
 		});
 		await Task.Delay(3000).ConfigureAwait(false);
 
 		Dispatch(() =>
 		{
 			// 走托盘退出的真实路径：置退出标记、关窗、OnClosed 收尾；不是直接 Shutdown。
-			Console.WriteLine("piweft-desktop: tray smoke ok");
+			Console.WriteLine("PiWeft: tray smoke ok");
 			ExitFromTray();
 		});
 	}

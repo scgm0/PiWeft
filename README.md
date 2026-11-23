@@ -1,6 +1,6 @@
 # PiWeft
 
-PiWeft 是 C# / .NET 11 的编码智能体，含 NativeAOT CLI `pi` 与 MewUI 桌面工作台 `piweft-desktop`。会话文件与 pi 兼容。
+PiWeft 是 C# / .NET 11 的编码智能体，含 NativeAOT CLI `pi` 与 MewUI 桌面工作台（可执行文件 `PiWeft`）。会话文件与 pi 兼容。
 
 - [项目状态](docs/00-status.md) · [pi / PiDeck 兼容](docs/01-parity.md) · [性能](docs/02-performance.md) · [codemode](docs/03-codemode.md) · [Markdown](docs/04-markdown.md) · [子代理](docs/05-subagent.md) · [视觉契约](DESIGN.md)
 - 沿用 pi 的参数、RPC JSONL 协议与环境变量：`PI_CODING_AGENT_DIR`、`PI_LOG_LEVEL`、`~/.pi/agent`、`.pi`、配置文件名和 v3 JSONL 会话格式不变。
@@ -37,7 +37,7 @@ NativeAOT 需在目标平台构建（Windows: VS C++；macOS: Xcode CLT；Ubuntu
 ./scripts/package.ps1 -Rid linux-x64 -Version 0.1.0
 ```
 
-RID：`win-x64`、`win-arm64`（仅本地）、`linux-x64`、`linux-arm64`、`osx-x64`、`osx-arm64`。输出 `artifacts/packages/`：两个可执行文件、字体/图标许可证、ZIP（Windows）或 TAR.GZ（Linux/macOS，macOS 含 ad-hoc 签名的 `.app`）及 SHA-256。重复构建请换 `-Output`。未做 Windows/Apple 签名与公证。
+RID：`win-x64`、`win-arm64`（仅本地）、`linux-x64`、`linux-arm64`、`osx-x64`、`osx-arm64`。输出 `artifacts/packages/`：两个可执行文件（`pi` 与 `PiWeft`）、字体/图标许可证、ZIP（Windows）或 TAR.GZ（Linux/macOS，macOS 含 ad-hoc 签名的 `.app`）及 SHA-256。重复构建请换 `-Output`。未做 Windows/Apple 签名与公证。
 
 ## CI
 

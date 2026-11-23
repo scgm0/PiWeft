@@ -4,6 +4,9 @@ namespace PiWeft.Desktop;
 public static partial class Strings
 {
 	// 窗口
+	/// <summary>桌面上的应用显示名：任务栏、托盘与桌面条目都用它；可执行名是 PiWeft。</summary>
+	public const string AppDisplayName = "PiWeft Desktop";
+
 	public static string WindowTitle(string cwd) => $"PiWeft Desktop — {cwd}";
 
 	// 侧栏

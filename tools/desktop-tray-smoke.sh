@@ -7,7 +7,7 @@
 # 与「隐藏后失联」无关。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
-dll="$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll"
+dll="$root/src/PiWeft.Desktop/bin/Debug/net11.0/PiWeft.dll"
 output="$(mktemp -d /tmp/piweft-tray-XXXXXX)"
 app_pid=""
 cleanup() {

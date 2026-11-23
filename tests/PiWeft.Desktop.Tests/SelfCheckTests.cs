@@ -25,7 +25,7 @@ public class SelfCheckTests : IDisposable
 	[Fact]
 	public async Task SelfCheckReportsAModelToolsAndSessions()
 	{
-		var shell = Path.Combine(AppContext.BaseDirectory, "piweft-desktop.dll");
+		var shell = Path.Combine(AppContext.BaseDirectory, "PiWeft.dll");
 		Assert.True(File.Exists(shell), $"the shell is not built next to the tests: {shell}");
 
 		var info = new ProcessStartInfo("dotnet")
@@ -73,7 +73,7 @@ public class SelfCheckTests : IDisposable
 			RedirectStandardError = true,
 			UseShellExecute = false,
 		};
-		info.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "piweft-desktop.dll"));
+		info.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "PiWeft.dll"));
 		info.ArgumentList.Add("--cwd");
 		info.ArgumentList.Add(Path.Combine(_root, "missing"));
 		info.Environment["PI_CODING_AGENT_DIR"] = Path.Combine(_root, "agent");
@@ -103,7 +103,7 @@ public class SelfCheckTests : IDisposable
 			RedirectStandardError = true,
 			UseShellExecute = false,
 		};
-		info.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "piweft-desktop.dll"));
+		info.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "PiWeft.dll"));
 		info.ArgumentList.Add("--self-check");
 		info.ArgumentList.Add("--cwd");
 		info.ArgumentList.Add(_root);
@@ -124,7 +124,7 @@ public class SelfCheckTests : IDisposable
 	[Fact]
 	public async Task SelfCheckFailsOnAMissingDirectory()
 	{
-		var shell = Path.Combine(AppContext.BaseDirectory, "piweft-desktop.dll");
+		var shell = Path.Combine(AppContext.BaseDirectory, "PiWeft.dll");
 		Assert.True(File.Exists(shell), $"the shell is not built next to the tests: {shell}");
 
 		var info = new ProcessStartInfo("dotnet")

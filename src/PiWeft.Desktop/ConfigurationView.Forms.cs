@@ -872,7 +872,7 @@ internal sealed partial class ConfigurationView
 			timer.Stop();
 			timer.Dispose();
 			_showToolMenu?.Invoke();
-			Console.WriteLine("piweft-desktop: ui smoke 已打开工具下拉");
+			Console.WriteLine("PiWeft: ui smoke 已打开工具下拉");
 		};
 		timer.Start();
 	}

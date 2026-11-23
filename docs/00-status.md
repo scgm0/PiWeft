@@ -1,6 +1,6 @@
 # PiWeft 状态
 
-PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .NET 11：NativeAOT CLI `pi` 与 MewUI 桌面工作台 `piweft-desktop`。会话文件与 pi、PiDeck 互通，但不是完整移植。
+PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .NET 11：NativeAOT CLI `pi` 与 MewUI 桌面工作台 `PiWeft`。会话文件与 pi、PiDeck 互通，但不是完整移植。
 
 构建/打包见 [README](../README.md)；兼容与差距见 [01-parity](01-parity.md)；性能见 [02-performance](02-performance.md)；codemode 见 [03-codemode](03-codemode.md)；Markdown 见 [04-markdown](04-markdown.md)。
 

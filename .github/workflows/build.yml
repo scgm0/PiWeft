@@ -73,14 +73,14 @@ jobs:
           $staged = Get-ChildItem -Path './artifacts/stage' -Directory -Filter 'PiWeft-*' | Select-Object -First 1
           if ($null -eq $staged) { throw 'staged package directory is missing' }
           if (-not (Test-Path (Join-Path $staged.FullName "pi$extension"))) { throw "staged CLI binary is not named pi$extension" }
-          $desktopRelative = if ($IsMacOS) { 'PiWeft Desktop.app/Contents/MacOS/piweft-desktop' } else { "piweft-desktop$extension" }
+          $desktopRelative = if ($IsMacOS) { 'PiWeft Desktop.app/Contents/MacOS/PiWeft' } else { "PiWeft$extension" }
           if (-not (Test-Path (Join-Path $staged.FullName $desktopRelative))) { throw "staged desktop binary is missing: $desktopRelative" }
       - name: Verify published desktop
         shell: pwsh
         run: |
           $env:PI_CODING_AGENT_DIR = Join-Path $env:RUNNER_TEMP 'pi-agent-smoke'
           $extension = if ($IsWindows) { '.exe' } else { '' }
-          & "./artifacts/publish/${{ matrix.rid }}/PiWeft.Desktop/piweft-desktop$extension" --self-check --cwd $env:GITHUB_WORKSPACE
+          & "./artifacts/publish/${{ matrix.rid }}/PiWeft.Desktop/PiWeft$extension" --self-check --cwd $env:GITHUB_WORKSPACE
           if ($LASTEXITCODE -ne 0) { throw 'Published desktop self-check failed' }
       - name: Upload package
         uses: actions/upload-artifact@v7

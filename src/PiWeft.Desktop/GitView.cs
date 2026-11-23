@@ -1432,7 +1432,7 @@ public sealed partial class GitView : IDisposable
 
 	internal void ReportSummaryForSmoke() =>
 		Console.WriteLine(
-			"piweft-desktop: git summary draft=" +
+			"PiWeft: git summary draft=" +
 			(_commitDraft.Length > 0 ? _commitDraft.Replace("\n", " \\n") : "(空)") +
 			" failure=" + (_summaryFailure?.ToString() ?? "(无)") +
 			" detail=" + (_lastFailureDetail ?? string.Empty).Replace("\n", " \\n"));

@@ -172,7 +172,7 @@ public sealed class CheckpointsView
 		var labels = _rows.Children.Count;
 		var first = _rowState.FirstOrDefault();
 		Console.WriteLine(
-			$"piweft-desktop: checkpoints rows={labels} count=\"{_count.Text}\" " +
+			$"PiWeft: checkpoints rows={labels} count=\"{_count.Text}\" " +
 			$"first-summary=\"{first?.Summary.Text ?? string.Empty}\" " +
 			$"diff-visible={(first?.DiffHost.IsVisible == true)} diff-lines={first?.DiffLines ?? 0}");
 	}

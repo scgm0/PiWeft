@@ -6,7 +6,7 @@ using ZLogger;
 namespace PiWeft.Desktop;
 
 /// 桌面外壳的入口：注册平台宿主与渲染后端、保证单实例、然后运行主窗口。
-/// 用法：<c>piweft-desktop [--cwd &lt;目录&gt;] [--self-check]</c>。
+/// 用法：<c>PiWeft [--cwd &lt;目录&gt;] [--self-check]</c>。
 public static class Program
 {
 	public static int Main(string[] args)
@@ -24,7 +24,7 @@ public static class Program
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Desktop startup", ex);
 			CrashLog.Record(CrashKind.FatalError, ex);
-			Console.Error.WriteLine($"piweft-desktop: {Strings.WindowStartFailed(ex.Message)}");
+			Console.Error.WriteLine($"PiWeft: {Strings.WindowStartFailed(ex.Message)}");
 			return 1;
 		}
 	}
@@ -99,7 +99,7 @@ public static class Program
 		if (!Directory.Exists(cwd))
 		{
 			AppLog.For<MainWindow>().ZLogWarning($"Working directory does not exist");
-			Console.Error.WriteLine($"piweft-desktop: {Strings.NoSuchDirectory(cwd)}");
+			Console.Error.WriteLine($"PiWeft: {Strings.NoSuchDirectory(cwd)}");
 			return 2;
 		}
 
@@ -134,7 +134,7 @@ public static class Program
 			AppLog.Failure(AppLog.For<MainWindow>(), "UI dispatcher", args.Exception);
 			// 拦下来不等于没出事：界面态可能已经错乱，留一条记录给下次启动提示。
 			CrashLog.Record(CrashKind.DispatcherException, args.Exception, cwd: cwd);
-			Console.Error.WriteLine($"piweft-desktop: UI 线程异常：{args.Exception}");
+			Console.Error.WriteLine($"PiWeft: UI 线程异常：{args.Exception}");
 			args.Handled = true;
 		};
 
@@ -165,7 +165,7 @@ public static class Program
 		{
 			SingleInstance.SignalRunningInstance(instanceKey);
 			AppLog.For<MainWindow>().ZLogInformation($"Existing desktop instance activated");
-			Console.Error.WriteLine($"piweft-desktop: {Strings.AnotherInstance}");
+			Console.Error.WriteLine($"PiWeft: {Strings.AnotherInstance}");
 			return 0;
 		}
 
@@ -207,7 +207,7 @@ public static class Program
 					if (firstPaint is not null)
 					{
 						Diagnostics.Record("startup.first-paint", firstPaint);
-						Console.WriteLine($"piweft-desktop: first-paint {firstPaint.Elapsed.TotalMilliseconds:0} ms");
+						Console.WriteLine($"PiWeft: first-paint {firstPaint.Elapsed.TotalMilliseconds:0} ms");
 					}
 
 					ReportPreviousCrash(window);
@@ -224,7 +224,7 @@ public static class Program
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Desktop runtime", ex);
 			CrashLog.Record(CrashKind.FatalError, ex, cwd: cwd);
-			Console.Error.WriteLine($"piweft-desktop: {Strings.WindowStartFailed(ex.ToString())}");
+			Console.Error.WriteLine($"PiWeft: {Strings.WindowStartFailed(ex.ToString())}");
 			return 1;
 		}
 		finally

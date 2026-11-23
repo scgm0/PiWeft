@@ -50,7 +50,7 @@ public sealed class SidebarRefreshSmokeTests(ITestOutputHelper output)
 		var sessionFile = existing.SessionFile!;
 		Assert.True(File.Exists(sessionFile), $"会话文件没有落盘：{sessionFile}");
 
-		var shell = Path.Combine(AppContext.BaseDirectory, "piweft-desktop.dll");
+		var shell = Path.Combine(AppContext.BaseDirectory, "PiWeft.dll");
 		Assert.True(File.Exists(shell), $"the shell is not built next to the tests: {shell}");
 		var info = new ProcessStartInfo("dotnet") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
 		info.ArgumentList.Add(shell);
@@ -82,8 +82,8 @@ public sealed class SidebarRefreshSmokeTests(ITestOutputHelper output)
 			output.WriteLine(stdout);
 			output.WriteLine(stderr);
 
-			Assert.Contains("piweft-desktop: sidebar-refresh applied=True before=1 after=2", stdout);
-			Assert.Contains("piweft-desktop: ui smoke ok", stdout);
+			Assert.Contains("PiWeft: sidebar-refresh applied=True before=1 after=2", stdout);
+			Assert.Contains("PiWeft: ui smoke ok", stdout);
 			Assert.Equal(0, process.ExitCode);
 		}
 		finally

@@ -115,7 +115,7 @@ public sealed class BranchPanel
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<BranchPanel>(), "Navigate with branch summary", ex);
-			Console.Error.WriteLine($"piweft-desktop: {Strings.JumpFailed(ex.Message)}");
+			Console.Error.WriteLine($"PiWeft: {Strings.JumpFailed(ex.Message)}");
 		}
 	}
 
@@ -129,7 +129,7 @@ public sealed class BranchPanel
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<BranchPanel>(), "Navigate session branch", ex);
-			Console.Error.WriteLine($"piweft-desktop: {Strings.JumpFailed(ex.Message)}");
+			Console.Error.WriteLine($"PiWeft: {Strings.JumpFailed(ex.Message)}");
 		}
 	}
 

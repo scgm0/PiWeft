@@ -2,7 +2,7 @@
 
 	<PropertyGroup>
 		<OutputType>Exe</OutputType>
-		<AssemblyName>piweft-desktop</AssemblyName>
+		<AssemblyName>PiWeft</AssemblyName>
 		<AssemblyTitle>PiWeft Desktop</AssemblyTitle>
 		<RootNamespace>PiWeft.Desktop</RootNamespace>
 		<!-- Windows 把 .ico 嵌成 exe 的 Win32 资源；其他平台忽略这一项，图标走 Window.Icon。 -->

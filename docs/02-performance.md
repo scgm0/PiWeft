@@ -43,8 +43,8 @@
 | CLI NativeAOT 产物（linux-x64，Release） | 当前提交 31,671,672 B。runtime-async 的 A/B 在同一棵树上量：关 32,060,744 B → 开 31,321,368 B（-739,376 B，**-2.3%**） |
 | `SessionManager.Open` 46 MB / 26,984 行（只读+建索引，9 轮中位） | `List<object>` 管线 402 ms / 249.2 MiB → `List<SessionLine>` union 管线 403 ms / 249.2 MiB（各 5 次采样，无差异） |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
-| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 82.7 MiB（86,706,864 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 82.5 / 82.1 / 80.6 / 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
-| 桌面托盘驻留的产物体积代价 | 同一份代码只加托盘入口：86,539,488 B → 86,706,864 B，+167,376 B（+0.19%）。托盘后端此前已由 X11 宿主带进产物，增量是 `TrayIcon` 实例、菜单与设置项 |
+| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 82.7 MiB（86,706,856 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 82.5 / 82.1 / 80.6 / 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
+| 桌面托盘驻留的产物体积代价 | 同一份代码只加托盘入口：86,539,488 B → 86,706,856 B，+167,368 B（+0.19%）。托盘后端此前已由 X11 宿主带进产物，增量是 `TrayIcon` 实例、菜单与设置项 |
 | MewUI 子模块更新（45428e1 → c2cd7ef）的产物体积代价 | 同一份代码只换子模块：86,067,872 B → 86,539,488 B，+471,616 B（+0.55%）。11 个提交新增 Linux 托盘（StatusNotifierItem）与应用标识；托盘后端挂在 `X11PlatformHost` 上，产物里保留了 `Tmds.DBus.Protocol` 与 `TrayIcon` 符号，AT-SPI2 关闭已不足以把 DBus 栈裁掉 |
 | MewUI 子模块更新（553f28d → 45428e1）的产物体积代价 | 同一份代码只换子模块：85,719,760 B → 86,067,872 B，+348,112 B（+0.41%）。新增的 system backdrop、托盘、多源绑定与自动化代码在不引用时不进产物；增量来自 retained 渲染（组合层缓存、backdrop pass）与 MewVG 0.11.1 |
 | MewUI 子模块更新（2b93028 → 553f28d）的产物体积代价 | 同一份代码只换子模块：84,459,584 B → 84,475,952 B，+16,368 B（+0.02%）。新增的 X11 AT-SPI2 代码与 `Tmds.DBus.Protocol` 依赖在 automation 关掉后被裁掉 |
@@ -128,7 +128,7 @@
 ## MewUI c2cd7ef 升级记录
 
 - MewUI 子模块 45428e1 → c2cd7ef（11 个提交）。升级后不改项目代码能构建；桌面 1315 项测试通过，全量其余项目通过。
-- 已采用：`Application.Create().WithApplicationId(...)`。桌面把 `com.mystivaid.piweft` 交给平台，与 `scripts/package.ps1` 的 `CFBundleIdentifier` 一致；Windows 得到 AppUserModelID，Linux 的 `WM_CLASS` res_class 用它。xprop 实测 `WM_CLASS(STRING) = "dotnet", "com.mystivaid.piweft"`：res_name 是启动进程名，AOT 原生启动时是 `piweft-desktop`。
+- 已采用：`Application.Create().WithApplicationId(...)`。桌面把 `com.mystivaid.piweft` 交给平台，与 `scripts/package.ps1` 的 `CFBundleIdentifier` 一致；Windows 得到 AppUserModelID，Linux 的 `WM_CLASS` res_class 用它。xprop 实测 `WM_CLASS(STRING) = "dotnet", "com.mystivaid.piweft"`：res_name 是启动进程名，AOT 原生启动时是 `PiWeft`。
 - 已核对：X11 `MewVGX11GraphicsFactory` 的 display 关闭通知、macOS MewVG `Clear` 的裁剪修正都落在本项目的调用路径之外；项目没有 `TrayIcon`。
 - 已量：AOT 体积见上表，+471,616 B。产物里能看到 `Tmds.DBus.Protocol` 与 `TrayIcon` 符号。
 
@@ -197,7 +197,7 @@
 dotnet run --project tools/PiWeft.SessionBench
 xvfb-run -a dotnet test PiWeft.slnx
 xvfb-run -a dotnet test tests/PiWeft.Desktop.Tests --filter FullyQualifiedName~ConversationPerformanceTests --logger 'console;verbosity=detailed'
-PI_WORKSPACE_SMOKE_APP="$PWD/artifacts/desktop-optimized-linux-x64/piweft-desktop" \
+PI_WORKSPACE_SMOKE_APP="$PWD/artifacts/desktop-optimized-linux-x64/PiWeft" \
   xvfb-run -a -s '-screen 0 1600x1000x24' python3 tools/desktop-workspace-smoke.py 0 4 9 10 11
 ```
 

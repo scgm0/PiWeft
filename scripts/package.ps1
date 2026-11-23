@@ -29,7 +29,7 @@ if (-not $SkipPublish) {
 
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 $extension = if ($Rid.StartsWith('win-')) { '.exe' } else { '' }
-foreach ($item in @(@('PiWeft.Cli', "pi$extension"), @('PiWeft.Desktop', "piweft-desktop$extension"))) {
+foreach ($item in @(@('PiWeft.Cli', "pi$extension"), @('PiWeft.Desktop', "PiWeft$extension"))) {
     $source = Join-Path $publish "$($item[0])/$($item[1])"
     if (-not (Test-Path $source)) { throw "Missing published binary: $source" }
     Copy-Item $source $stage
@@ -44,7 +44,7 @@ if ($Rid.StartsWith('osx-')) {
     $resources = Join-Path $bundle 'Resources'
     New-Item -ItemType Directory -Path $macos -Force | Out-Null
     New-Item -ItemType Directory -Path $resources -Force | Out-Null
-    Move-Item (Join-Path $stage 'piweft-desktop') (Join-Path $macos 'piweft-desktop')
+    Move-Item (Join-Path $stage 'PiWeft') (Join-Path $macos 'PiWeft')
 
     # .icns 只在 macOS 上能生成（iconutil），所以不进仓库：用 sips 从 1024 缩放拼出 iconset。
     $iconset = Join-Path $stage 'PiWeft.iconset'
@@ -71,7 +71,8 @@ if ($Rid.StartsWith('osx-')) {
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.mystivaid.piweft</string>
 <key>CFBundleName</key><string>PiWeft Desktop</string>
-<key>CFBundleExecutable</key><string>piweft-desktop</string>
+<key>CFBundleDisplayName</key><string>PiWeft Desktop</string>
+<key>CFBundleExecutable</key><string>PiWeft</string>
 <key>CFBundleIconFile</key><string>PiWeft</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>$bundleVersion</string>
@@ -81,12 +82,12 @@ if ($Rid.StartsWith('osx-')) {
 </dict></plist>
 "@
     [IO.File]::WriteAllText((Join-Path $bundle 'Info.plist'), $plist, [Text.UTF8Encoding]::new($false))
-    & chmod +x (Join-Path $macos 'piweft-desktop') (Join-Path $stage 'pi')
+    & chmod +x (Join-Path $macos 'PiWeft') (Join-Path $stage 'pi')
     if ($LASTEXITCODE -ne 0) { throw 'chmod failed' }
     & codesign --force --deep --sign - (Join-Path $stage 'PiWeft Desktop.app')
     if ($LASTEXITCODE -ne 0) { throw 'codesign failed' }
 } elseif ($Rid.StartsWith('linux-')) {
-    & chmod +x (Join-Path $stage 'pi') (Join-Path $stage 'piweft-desktop')
+    & chmod +x (Join-Path $stage 'pi') (Join-Path $stage 'PiWeft')
     if ($LASTEXITCODE -ne 0) { throw 'chmod failed' }
 }
 

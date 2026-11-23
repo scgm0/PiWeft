@@ -33,7 +33,7 @@ for theme in dark light; do
 2026-11-17 05:18:54.100 [DBG] PiWeft.Desktop.ChatViewModel | token usage refreshed
 LOG
 
-  HOME="$home" PI_CODING_AGENT_DIR="$agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/piweft-desktop.dll" \
+  HOME="$home" PI_CODING_AGENT_DIR="$agent" dotnet "$root/src/PiWeft.Desktop/bin/Debug/net11.0/PiWeft.dll" \
     --cwd "$work" --ui-smoke logs-settings >"$output/$theme/stdout.log" 2>"$output/$theme/stderr.log" &
   app_pid=$!
   # 会话打开 1.5 s 后派发演练，再等一次查询回来；6 s 时列表已经排布完。

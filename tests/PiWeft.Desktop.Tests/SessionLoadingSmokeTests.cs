@@ -49,7 +49,7 @@ public sealed class SessionLoadingSmokeTests(ITestOutputHelper output)
 		File.SetLastWriteTimeUtc(first.SessionFile!, DateTime.UtcNow.AddMinutes(5));
 		File.SetLastWriteTimeUtc(second.SessionFile!, DateTime.UtcNow);
 
-		var shell = Path.Combine(AppContext.BaseDirectory, "piweft-desktop.dll");
+		var shell = Path.Combine(AppContext.BaseDirectory, "PiWeft.dll");
 		Assert.True(File.Exists(shell), $"the shell is not built next to the tests: {shell}");
 		var info = new ProcessStartInfo("dotnet") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
 		info.ArgumentList.Add(shell);

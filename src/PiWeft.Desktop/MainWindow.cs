@@ -613,7 +613,7 @@ public sealed partial class MainWindow : Window
 			_banner.Text(Strings.StartupFailed(ex.ToString()));
 			_status.Text(ex.Message);
 			AppLog.Failure(AppLog.For<MainWindow>(), "Window startup", ex);
-			Console.Error.WriteLine($"piweft-desktop: {Strings.StartupFailed(ex.ToString())}");
+			Console.Error.WriteLine($"PiWeft: {Strings.StartupFailed(ex.ToString())}");
 		}
 	}
 
@@ -2301,10 +2301,10 @@ public sealed partial class MainWindow : Window
 		var before = _sessions.Count;
 		var applied = await RefreshSessionsAsync().ConfigureAwait(true);
 		var after = _sessions.Count;
-		Console.WriteLine($"piweft-desktop: sidebar-refresh applied={applied} before={before} after={after}");
+		Console.WriteLine($"PiWeft: sidebar-refresh applied={applied} before={before} after={after}");
 		if (!applied || after != before + 1)
 		{
-			Console.Error.WriteLine("piweft-desktop: sidebar-refresh 没有把新会话刷进侧栏");
+			Console.Error.WriteLine("PiWeft: sidebar-refresh 没有把新会话刷进侧栏");
 			Environment.ExitCode = 1;
 		}
 	}
@@ -2373,13 +2373,13 @@ public sealed partial class MainWindow : Window
 					{
 						_ = OpenSessionPathAsync(other.Path);
 						Console.WriteLine(
-							$"piweft-desktop: loading in-flight tabVisible={_tabControl.IsVisible} " +
+							$"PiWeft: loading in-flight tabVisible={_tabControl.IsVisible} " +
 							$"welcomeVisible={_welcome.IsVisible} prompt={_sessionLoading.Showing} " +
 							$"panels={_panelHost.IsVisible}");
 					}
 					else
 					{
-						Console.Error.WriteLine("piweft-desktop: loading smoke 没有第二个会话");
+						Console.Error.WriteLine("PiWeft: loading smoke 没有第二个会话");
 						Environment.ExitCode = 1;
 					}
 
@@ -2713,11 +2713,11 @@ public sealed partial class MainWindow : Window
 					_sessionSearch.Show(this);
 					break;
 				default:
-					Console.Error.WriteLine($"piweft-desktop: 未知的界面演练目标：{view}");
+					Console.Error.WriteLine($"PiWeft: 未知的界面演练目标：{view}");
 					break;
 			}
 
-			Console.WriteLine($"piweft-desktop: ui smoke 已打开 {view}，标签数={_tabEntries.Count}");
+			Console.WriteLine($"PiWeft: ui smoke 已打开 {view}，标签数={_tabEntries.Count}");
 		});
 
 		// latest 供外部脚本连续滚动/截图，需要比单张截图更长的驻留窗口。
@@ -2750,19 +2750,19 @@ public sealed partial class MainWindow : Window
 			if (view == "resources" && _settingsView?.LastSectionError is { Length: > 0 } error)
 			{
 				// 资源页构建失败（例如引用不存在的内嵌图标）要在无人值守演练里暴露出来。
-				Console.Error.WriteLine($"piweft-desktop: resources smoke failed: {error}");
+				Console.Error.WriteLine($"PiWeft: resources smoke failed: {error}");
 				Environment.ExitCode = 1;
 			}
 
 			if (view == "loading")
 			{
 				Console.WriteLine(
-					$"piweft-desktop: loading settled tabs={_tabEntries.Count} " +
+					$"PiWeft: loading settled tabs={_tabEntries.Count} " +
 					$"welcomeVisible={_welcome.IsVisible} prompt={_sessionLoading.Showing} " +
 					$"tabVisible={_tabControl.IsVisible}");
 			}
 
-			Console.WriteLine("piweft-desktop: ui smoke ok");
+			Console.WriteLine("PiWeft: ui smoke ok");
 			Application.Shutdown();
 		});
 	}
@@ -2790,24 +2790,24 @@ public sealed partial class MainWindow : Window
 			Dispatch(() =>
 			{
 				var started = Stopwatch.StartNew();
-				Console.WriteLine($"piweft-desktop: 切换前 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
+				Console.WriteLine($"PiWeft: 切换前 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
 				oldSelection = Application.Current.Theme.Palette.SelectionBackground;
 				originalTab = CurrentTab();
 				originalTab?.PrepareThemeSmoke();
 				oldPickerColor = originalTab?.ThemeSmokePickerColor ?? default;
 				ToggleTheme();
 				started.Stop();
-				Console.WriteLine($"piweft-desktop: 换肤耗时 {started.Elapsed.TotalMilliseconds:0.0} ms");
+				Console.WriteLine($"PiWeft: 换肤耗时 {started.Elapsed.TotalMilliseconds:0.0} ms");
 			});
 
 			await Task.Delay(1500).ConfigureAwait(false);
 			Dispatch(() =>
 			{
-				Console.WriteLine($"piweft-desktop: 切换后 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
+				Console.WriteLine($"PiWeft: 切换后 主题={(AppTheme.IsLightTheme ? "浅色" : "深色")}，标签数={_tabEntries.Count}");
 				var valid = oldSelection != Application.Current.Theme.Palette.SelectionBackground &&
 					ReferenceEquals(originalTab, CurrentTab()) && originalTab?.VerifyThemeSmoke(oldPickerColor) == true;
 				Console.WriteLine(valid ? "theme controls ok: selection, picker, border, draft, caret" : "theme controls FAILED");
-				Console.WriteLine(valid ? "piweft-desktop: theme smoke ok" : "piweft-desktop: theme smoke failed");
+				Console.WriteLine(valid ? "PiWeft: theme smoke ok" : "PiWeft: theme smoke failed");
 				if (!valid) Environment.ExitCode = 1;
 			});
 
@@ -2817,7 +2817,7 @@ public sealed partial class MainWindow : Window
 		}
 		catch (Exception ex)
 		{
-			Console.Error.WriteLine($"piweft-desktop: theme smoke failed: {ex}");
+			Console.Error.WriteLine($"PiWeft: theme smoke failed: {ex}");
 			Dispatch(() => Application.Shutdown());
 		}
 	}
@@ -2837,7 +2837,7 @@ public sealed partial class MainWindow : Window
 		{
 			// 监视失败只损失热重载能力，不影响主题本身的加载。
 			AppLog.Failure(AppLog.For<MainWindow>(), "Theme watcher", ex);
-			Console.Error.WriteLine($"piweft-desktop: 主题监视不可用：{ex.Message}");
+			Console.Error.WriteLine($"PiWeft: 主题监视不可用：{ex.Message}");
 		}
 	}
 
@@ -2851,7 +2851,7 @@ public sealed partial class MainWindow : Window
 			if (!isBuiltin && resolved.Light is null && resolved.Dark is null)
 			{
 				// 自定义主题文件此刻解析失败（保存到一半或语法错误）：保留旧外观。
-				Console.Error.WriteLine($"piweft-desktop: 主题 {preference.Theme} 解析失败，保留当前外观");
+				Console.Error.WriteLine($"PiWeft: 主题 {preference.Theme} 解析失败，保留当前外观");
 				return;
 			}
 
@@ -2879,7 +2879,7 @@ public sealed partial class MainWindow : Window
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Theme hot reload", ex);
-			Console.Error.WriteLine($"piweft-desktop: 主题热重载失败：{ex.Message}");
+			Console.Error.WriteLine($"PiWeft: 主题热重载失败：{ex.Message}");
 		}
 	}
 
@@ -2913,7 +2913,7 @@ public sealed partial class MainWindow : Window
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Theme refresh", ex);
-			Console.Error.WriteLine($"piweft-desktop: 换肤刷新失败：{ex}");
+			Console.Error.WriteLine($"PiWeft: 换肤刷新失败：{ex}");
 		}
 	}
 
@@ -2933,7 +2933,7 @@ public sealed partial class MainWindow : Window
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Save window state", ex);
-			Console.Error.WriteLine($"piweft-desktop: 无法保存窗口状态：{ex.Message}");
+			Console.Error.WriteLine($"PiWeft: 无法保存窗口状态：{ex.Message}");
 		}
 	}
 

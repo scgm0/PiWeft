@@ -556,7 +556,7 @@ public sealed class TerminalDock : IDisposable, ITerminalInputSink
 		catch (Exception ex)
 		{
 			// 无人值守演练靠 stderr 判断 PTY 是否真的建起来了。
-			Console.Error.WriteLine($"piweft-desktop: pty start failed: {ex.Message}");
+			Console.Error.WriteLine($"PiWeft: pty start failed: {ex.Message}");
 			Status(Strings.TerminalFailed(ex.Message));
 			return;
 		}
