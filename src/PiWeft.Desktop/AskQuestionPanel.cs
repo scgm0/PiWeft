@@ -118,7 +118,9 @@ internal sealed class AskQuestionPanel
 		_progress.Minimum(0).Maximum(100).Height(3).Margin(new Thickness(0, 0, 0, AppTheme.Space1));
 
 		_tabs = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2);
+		// 卡片自己限高，滚动归这几个视口：与待办、扩展卡同一套平滑滚动。
 		_tabsScroll = new ScrollViewer()
+			.SmoothScrolling()
 			.Content(_tabs)
 			.AutoHorizontalScroll()
 			.NoVerticalScroll()
@@ -126,6 +128,7 @@ internal sealed class AskQuestionPanel
 			.IsVisible(false);
 
 		_bodyScroll = new ScrollViewer()
+			.SmoothScrolling()
 			.Content(_body)
 			.AutoVerticalScroll()
 			.NoHorizontalScroll()
@@ -580,7 +583,9 @@ internal sealed class AskQuestionPanel
 				.FontSize(AppTheme.FontSizeCaption)
 				.MutedText()
 				.TextWrapping(TextWrapping.Wrap);
+			// 正文视口里的嵌套小窗：自己先滚，到边界后由 ScrollCascade 交还卡片正文。
 			var detailScroll = new ScrollViewer()
+				.SmoothScrolling()
 				.Content(detailText)
 				.AutoVerticalScroll()
 				.NoHorizontalScroll()
@@ -886,7 +891,8 @@ internal sealed class AskQuestionPanel
 		var draftGeneration = _draftGeneration;
 		var draft = _textDrafts[questionIndex];
 		// 回答框统一用多行控件：路径引用要按主输入框的 chip 渲染，单行 TextBox 做不到。
-		var editor = new MultiLineTextBox().PrimarySelection()
+		// 外层正文视口已平滑，文本框不能再装控制器：嵌套里算不出余量，滚轮会被吞掉。
+		var editor = new MultiLineTextBox().PrimarySelection(smoothScroll: false)
 			.Height(multiLine ? 120 : 64)
 			.StyleName(AppStyles.TextInput)
 			.Text(draft)
@@ -1180,7 +1186,7 @@ internal sealed class AskQuestionPanel
 
 	private MultiLineTextBox CustomInputBox(AskQuestion question, string text)
 	{
-		var box = new MultiLineTextBox().PrimarySelection()
+		var box = new MultiLineTextBox().PrimarySelection(smoothScroll: false)
 			.Height(64)
 			.StyleName(AppStyles.TextInput)
 			.Text(text)

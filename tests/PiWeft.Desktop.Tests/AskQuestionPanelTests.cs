@@ -524,6 +524,60 @@ public sealed class AskQuestionPanelTests
 		panel.Close();
 	}
 
+	[Fact]
+	public void CardBodyUsesTheSmoothScrollerAndNestedDetailHandsTheWheelBack()
+	{
+		var panel = new AskQuestionPanel();
+		var host = new StackPanel();
+		_ = new Window().Content(host);
+		host.Children(panel.View);
+		// 长计划正文 + 多选项：正文区超过 320 的限高，长正文小窗也超过 220。
+		_ = panel.ShowAsync(
+			[
+				new AskQuestion(
+					"q1", "select", "选哪个？",
+					[.. Enumerable.Range(0, 24).Select(i => new AskOption($"选项 {i}", $"v{i}", null))],
+					null, null,
+					string.Join('\n', Enumerable.Range(0, 80).Select(i => $"计划第 {i} 步"))),
+			],
+			review: false,
+			CancellationToken.None);
+		ConversationPerformanceTests.Layout(panel.View, 420, 420);
+
+		var scrollers = Find<ScrollViewer>(panel.View).ToArray();
+		var body = scrollers.Single(view => view.MaxHeight == 320);
+		var detail = scrollers.Single(view => view.MaxHeight == 220);
+		// 控制器只在装过的时候才拿到：For 会顺手新建一个，拿它断言等于没测。
+		var smooth = SmoothScroll.Find(body)!;
+		Assert.NotNull(SmoothScroll.Find(detail));
+		Assert.True(smooth.MaxVerticalOffset > 0);
+
+		try
+		{
+			var step = ThemeManager.DefaultMetrics.ScrollWheelStep;
+			var wheel = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
+			smooth.RouteWheel(wheel);
+			Assert.True(wheel.Handled);
+			// 一帧只走一部分：内建滚轮会直接落一整格。
+			AnimationFrames.Frame(smooth);
+			Assert.InRange(body.VerticalOffset, 0.5, step - 0.5);
+
+			// 长正文小窗先滚自己；到底后同一格滚轮交给正文视口。
+			var inner = SmoothScroll.Find(detail)!;
+			inner.JumpToEnd();
+			var outerTarget = smooth.TargetVerticalOffset;
+			var nested = new MouseWheelEventArgs(default, default, new Vector(0, -1), false, false, false, ModifierKeys.None);
+			inner.RouteWheel(nested);
+			Assert.True(nested.Handled);
+			Assert.True(smooth.TargetVerticalOffset > outerTarget);
+		}
+		finally
+		{
+			foreach (var controller in scrollers.Select(SmoothScroll.Find).OfType<SmoothScroll>()) controller.Dispose();
+			panel.Close();
+		}
+	}
+
 	private static string? ContentText(Button button) =>
 		button.Content switch
 		{
