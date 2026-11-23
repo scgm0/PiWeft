@@ -188,7 +188,7 @@ public static class Program
 		var buildWatch = System.Diagnostics.Stopwatch.StartNew();
 		var window = new MainWindow(cwd) { ThemeSmoke = themeSmoke, SmokeTab = smokeTab, UiSmoke = uiSmoke };
 		Diagnostics.Record("startup.window-build", buildWatch);
-		instance.Listen(() => Application.Current.Dispatcher?.BeginInvoke(window.Activate));
+		instance.Listen(() => Application.Current.Dispatcher?.BeginInvoke(window.Reveal));
 
 		try
 		{

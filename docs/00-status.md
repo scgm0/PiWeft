@@ -27,7 +27,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - JSON 使用 `System.Text.Json` 源生成与手写转换器；不使用 Newtonsoft.Json 或供应商 SDK，保留 trim/AOT 分析器。
 - 核心库默认无第三方运行时包，例外两处：codemode 的 Jint 5 预览版（`Directory.Packages.props` + `Jint-preview` 源），以及 `PiWeft.Imaging` 的 Sdcb.SimdCodecs 分格式编解码包（纯托管、`net10.0` 单目标、`IsAotCompatible`，只引 Png/Jpeg/Gif/Webp/Bmp/Abstractions，不引会拖上 TIFF/J2K/JBIG2 的门面包）。桌面只用 `external/MewUI` 源码子模块与 `PiWeft.Markdown`（Markdig）。MewUI 的 X11 平台层自带 `Tmds.DBus.Protocol`；无障碍（AT-SPI2）已关，但 X11 宿主直接引用 Linux 托盘后端，这份 DBus 栈不再被裁掉（AOT 产物里保留）。
 - 模型目录以内嵌 `src/PiWeft.Ai/Resources/models.json` 为基线（43 个 provider），`<agentDir>/models-store.json` 缓存远程目录。设置页「模型目录」下载 pi-ai npm 整包 tarball 生成最新目录写入 `<agentDir>/model-catalog.json`（GitHub main 单文件兜底），tarball 过 registry SHA-512、包内逐文件 SHA-256，覆盖层解析结果在进程内缓存；保留上一个覆盖版，桌面启动时每天自动检查一次，CLI 与桌面读取同一份覆盖层。内嵌基线含 GPT-6.2 Astra/Sol（OpenAI、Azure、Codex），`openai` / `azure` / `openai-codex` 的默认模型是 `gpt-6.2-sol`；两者拒绝 `none`/`minimal`，思考档从 `low` 起。虚拟模型支持静态 `"virtual":{"model":...}` 与动态 `"virtual":{"route":"..."}`，状态写成 `pi.virtual-model-state` 条目。
-- 不实现 TypeScript 扩展（JS 扩展宿主已实现）、mermaid、KaTeX、托盘、桌面通知、应用自更新、崩溃上报、内嵌浏览器；终端用独立 PTY Dock，不嵌第三方终端组件。codemode 默认不启用。
+- 不实现 TypeScript 扩展（JS 扩展宿主已实现）、mermaid、KaTeX、桌面通知、应用自更新、崩溃上报、内嵌浏览器；终端用独立 PTY Dock，不嵌第三方终端组件。codemode 默认不启用。
 
 ## 兼容基线
 
@@ -111,6 +111,8 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 
 桌面复用 CLI 的环境装配与同一会话文件，不启动 RPC 子进程。包含多项目/多会话标签、会话树与有界正文搜索、置顶/命名/删除到 `.trash`/恢复（父会话归档时先关标签再收走关联子会话）、外部会话导入（Claude Code、Codex CLI）、文件浏览与编辑、原生 todo/ask_question/计划模式、快捷消息（插入草稿与直发）、资源与主题热重载、模型连接测试/远程目录、Git 全流程（状态、暂存、提交、分支、AI 摘要、图、比较、远端同步、stash）、检查点、轨迹、终端 Dock、使用统计（应用用量的区间趋势、模型占比、活动热力图与连续天数）、供应商余额、深浅主题、正文行距三档。
 
+关闭主窗口默认隐藏到托盘（`desktop.json` 的 `closeToTray`），会话与在途回合继续在后台跑；托盘菜单提供显示与退出，第二次启动同一目录也会把窗口唤回。托盘不可用的桌面（例如未装 AppIndicator 扩展的 GNOME）按直接关闭处理，不会把窗口藏丢；系统退出与显式退出也不驻留。
+
 同一工具与参数反复调用时，第 3/5/8 次在工具结果末尾补一句提醒（用户发新消息清零）。
 
 详见 [01-parity](01-parity.md) 与 [DESIGN](../DESIGN.md)。
@@ -145,4 +147,4 @@ dotnet publish src/PiWeft.Cli -c Release -r linux-x64
 dotnet publish src/PiWeft.Desktop -c Release -r linux-x64
 ```
 
-无头 GUI：`xvfb-run -a dotnet test PiWeft.slnx`。视觉验收脚本见 [01-parity](01-parity.md)。provider 使用打桩服务；真实数据互操作测试依赖本机会话/技能数据。
+无头 GUI：`xvfb-run -a dotnet test PiWeft.slnx`。托盘驻留与隐藏后继续跑任务：`xvfb-run -a tools/desktop-tray-smoke.sh`（先构建 Debug；无 StatusNotifier watcher 时跳过）。视觉验收脚本见 [01-parity](01-parity.md)。provider 使用打桩服务；真实数据互操作测试依赖本机会话/技能数据。

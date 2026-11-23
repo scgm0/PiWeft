@@ -49,6 +49,33 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void CloseToTrayDefaultsOnAndOnlyTheOffStateIsStored()
+	{
+		// 默认开：旧偏好文件没有这个键时也驻留；写盘只在关掉时留一个 false。
+		Assert.True(DesktopPreference.Load(_agentDir).CloseToTray);
+
+		(DesktopPreference.Load(_agentDir) with { CloseToTray = false }).Save(_agentDir);
+		Assert.False(DesktopPreference.Load(_agentDir).CloseToTray);
+		var raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw["closeToTray"]!.GetValue<bool>());
+
+		(DesktopPreference.Load(_agentDir) with { CloseToTray = true }).Save(_agentDir);
+		Assert.True(DesktopPreference.Load(_agentDir).CloseToTray);
+		raw = JsonNode.Parse(File.ReadAllText(DesktopPreference.Path(_agentDir)))!.AsObject();
+		Assert.False(raw.ContainsKey("closeToTray"));
+	}
+
+	[Fact]
+	public void CloseToTrayTreatsAMissingOrMalformedKeyAsOn()
+	{
+		File.WriteAllText(DesktopPreference.Path(_agentDir), """{ "closeToTray": "off" }""");
+		Assert.True(DesktopPreference.Load(_agentDir).CloseToTray);
+
+		File.WriteAllText(DesktopPreference.Path(_agentDir), """{ "theme": "dark" }""");
+		Assert.True(DesktopPreference.Load(_agentDir).CloseToTray);
+	}
+
+	[Fact]
 	public void ModelCatalogAutoUpdateDefaultsOnAndRoundTripsCheckedAt()
 	{
 		Assert.True(DesktopPreference.Load(_agentDir).ModelCatalogAutoUpdate);

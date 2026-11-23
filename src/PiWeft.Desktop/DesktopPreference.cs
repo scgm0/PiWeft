@@ -67,6 +67,10 @@ public sealed record DesktopPreference
 
 	public bool SidebarProjects { get; init; }
 
+	/// 关闭窗口时隐藏到托盘，任务继续在后台跑。托盘不可用的桌面（例如没装 AppIndicator 扩展的 GNOME）
+	/// 会降级为直接关闭；判定见 <see cref="TrayBehavior"/>。默认开。
+	public bool CloseToTray { get; init; } = true;
+
 	/// 性能诊断：默认关闭（生产零开销）。打开后按秒采样内存与 UI 队列延迟，
 	/// 并把关键路径耗时写进 <c>&lt;agentDir&gt;/diagnostics/</c>，用于优化前后对照。
 	public bool Diagnostics { get; init; }
@@ -207,6 +211,8 @@ public sealed record DesktopPreference
 					? logLevelText
 					: new DesktopPreference().MinimumLogLevel,
 				// 默认开：键缺失或类型不对都算开，只有显式写 false 才关。
+				CloseToTray = root?["closeToTray"] is not JsonValue closeToTray ||
+					!closeToTray.TryGetValue<bool>(out var closeToTrayOff) || closeToTrayOff,
 				RespondingTips = root?["respondingTips"] is not JsonValue respondingTips ||
 					!respondingTips.TryGetValue<bool>(out var tipsOff) || tipsOff,
 				ModelCatalogAutoUpdate = root?["modelCatalogAutoUpdate"] is not JsonValue catalogAuto ||
@@ -326,6 +332,15 @@ public sealed record DesktopPreference
 		else
 		{
 			root["logLevel"] = MinimumLogLevel;
+		}
+		// 关闭驻留默认开：只在用户关掉时落盘一个 false。
+		if (CloseToTray)
+		{
+			root.Remove("closeToTray");
+		}
+		else
+		{
+			root["closeToTray"] = false;
 		}
 		// 等待提示默认显示：只在用户关掉时落盘一个 false。
 		if (RespondingTips)

@@ -25,7 +25,7 @@ internal static class SettingsSections
 			new("overview", false, Strings.ConfigOverview, "settings",
 				["概览", "环境", "运行", "agent", "目录", "工作目录"]),
 			new("appearance", false, Strings.ConfigAppearance, "contrast",
-				["外观", "主题", "深色", "浅色", "字体", "字号", "阅读", "行宽"]),
+				["外观", "主题", "深色", "浅色", "字体", "字号", "阅读", "行宽", "托盘", "关闭", "后台"]),
 			new("git", false, Strings.SettingsGit, "git-branch",
 				["git", "提交", "摘要", "commit", "提示词"]),
 			new("quickMessages", false, Strings.SettingsQuickMessages, "message-square",

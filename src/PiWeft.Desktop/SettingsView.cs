@@ -967,6 +967,31 @@ public sealed class SettingsView
 		width.SelectionChanged += _ => SaveReading();
 		lineHeight.SelectionChanged += _ => SaveReading();
 
+		// 关闭驻留：托盘不可用时置灰并走直接退出，避免隐藏后没有唤回入口。
+		var traySupported = TrayIcon.IsSupported;
+		var trayHint = traySupported
+			? Strings.CloseToTrayHint
+			: OperatingSystem.IsLinux() && IsGnomeDesktop()
+				? $"{Strings.CloseToTrayUnavailable}{Strings.CloseToTrayGnomeHint}"
+				: Strings.CloseToTrayUnavailable;
+		var closeToTray = new CheckBox().Content(new StackPanel().Spacing(2).Children(
+			new TextBlock().Text(Strings.CloseToTraySetting).FontSize(AppTheme.FontSizeControl).PrimaryText(),
+			new TextBlock().Text(trayHint).FontSize(AppTheme.FontSizeCaption).MutedText()
+				.TextWrapping(TextWrapping.Wrap).MaxWidth(760)));
+		closeToTray.IsChecked(preference.CloseToTray && traySupported).IsEnabled(traySupported);
+		Anchor("appearance.close-to-tray", closeToTray);
+		closeToTray.OnCheckedChanged(_ =>
+		{
+			try
+			{
+				(DesktopPreference.Load() with { CloseToTray = closeToTray.IsChecked == true }).Save();
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+			{
+				Toast(Strings.ConfigFailed, ToastKind.Error);
+			}
+		});
+
 		// 等待期的功能提示轮播：与诊断、侧栏一样是「模块开关」，只停提示本身。
 		var tips = new CheckBox().Content(new TextBlock()
 			.Text(Strings.RespondingTipsSettingDesc)
@@ -999,7 +1024,16 @@ public sealed class SettingsView
 				new DockPanel().LastChildFill().Children(width.DockRight(), LabelForPreview(Strings.ReadingWidth)),
 				new DockPanel().LastChildFill().Children(lineHeight.DockRight(), LabelForPreview(Strings.ChatLineHeight)),
 				sample)),
-			Group("loader-circle", Strings.RespondingTipsSetting, tips));
+			Group("loader-circle", Strings.RespondingTipsSetting, tips),
+			Group("layout-grid", Strings.WindowSettings, closeToTray));
+	}
+
+	private static bool IsGnomeDesktop()
+	{
+		var desktop = Environment.GetEnvironmentVariable("XDG_CURRENT_DESKTOP") ??
+			Environment.GetEnvironmentVariable("XDG_SESSION_DESKTOP") ?? string.Empty;
+		return desktop.Split([':', ';'], StringSplitOptions.RemoveEmptyEntries)
+			.Any(static name => name.Equals("gnome", StringComparison.OrdinalIgnoreCase));
 	}
 
 	private static TextBlock LabelForPreview(string text) => new TextBlock().Text(text)

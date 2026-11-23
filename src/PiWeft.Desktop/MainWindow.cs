@@ -162,6 +162,9 @@ public sealed partial class MainWindow : Window
 
 		// 模型与会话都由界面决定，因此这里只用最少的默认开关。
 		_arguments = CliArguments.Parse(["--mode", "text"]).Arguments!;
+
+		RegisterWindowLifecycle();
+		InitializeTray();
 	}
 
 	private void ObserveDiagnosticsFrame() => Diagnostics.ObserveFrame(LastFrameStats);
@@ -587,6 +590,13 @@ public sealed partial class MainWindow : Window
 			Icon = null;
 			Icon = windowIcon;
 
+			// 系统注销/关机：MewUI 先发这个事件，再逐个关窗。
+			// 信任询问期间已经挂上，设置页有未保存草稿时也按这个标志跳过确认。
+			if (Application.Current is { } application)
+			{
+				application.ShutdownRequested += OnShutdownRequested;
+			}
+
 			// 默认策略为 ask 且存在受保护项目资源时，先弹卡片问是否信任（选择会记住）。
 			if (ProjectTrust.HasPendingDecision(_cwd, trustOverride: _arguments.ProjectTrustOverride))
 			{
@@ -611,13 +621,6 @@ public sealed partial class MainWindow : Window
 	{
 		this.Title(Strings.WindowTitle(_cwd));
 
-		// 系统注销/关机：MewUI 先发这个事件，再逐个关窗。
-		// 设置页有未保存草稿时，关窗默认弹确认；系统退出不等人，这里直接放弃。
-		if (Application.Current is { } application)
-		{
-			application.ShutdownRequested += OnShutdownRequested;
-		}
-
 		// 主题目录热重载：受信项目才监视项目主题；回调切回 UI 线程后再换肤。
 		StartThemeWatcher();
 
@@ -635,43 +638,6 @@ public sealed partial class MainWindow : Window
 				// 位置恢复失败不影响使用。
 			}
 		}
-
-		// 关闭时记住窗口状态，下次打开原位恢复。
-		this.OnClosed(() =>
-		{
-			if (Application.Current is { } application)
-			{
-				application.ShutdownRequested -= OnShutdownRequested;
-			}
-			// 窗口都没了，后台读取与投影不必再跑完。
-			_sessionHostClosed = true;
-			_sessionAbort.Cancel();
-			// 落盘并释放诊断文件句柄；开关状态仍留在偏好里，下次启动继续采。
-			Diagnostics.Close();
-			_themeWatcher?.Dispose();
-			_themeApplyCancellation?.Cancel();
-			_themeApplyCancellation?.Dispose();
-			_themeApplyCancellation = null;
-			// 每个会话面板里的伪终端都要显式收掉，否则窗口关闭后 shell 子进程可能继续挂着。
-			foreach (var panel in _sessionPanels.Values) panel.Dispose();
-			// 没有标签的子代理：父会话还活着时先收，让 hub 记下 stopped 条目。
-			_detachedSweep?.Stop();
-			_detachedSweep?.Dispose();
-			_detachedSweep = null;
-			foreach (var id in _detachedChildren.Keys.ToArray()) DisposeDetachedChild(id);
-			foreach (var tab in _tabEntries.OfType<SessionTab>()) tab.Dispose();
-			// 侧栏摘要平时在后台线程写，关窗时同步落一次：最后一轮的会话状态不能随进程退出丢掉。
-			_catalog.FlushSummaries();
-			CapturePanelWidth();
-			SaveWindowState();
-		});
-		this.OnClosing(args =>
-		{
-			if (_systemShutdownRequested) return;
-			if (_settingsView is not { IsDirty: true } settings) return;
-			var deferral = args.GetDeferral();
-			_ = ConfirmSettingsCloseAsync(settings, args, deferral);
-		});
 
 		// 启动最贵的三段（环境构建、模型清单、侧栏摘要扫描）都是纯 IO/解析：
 		// 放后台跑完再回到 UI 线程建会话，窗口能立刻可交互，也不再阻塞首帧。
@@ -2254,12 +2220,24 @@ public sealed partial class MainWindow : Window
 		SyncTitleBarTabs();
 	}
 
-	private static async Task ConfirmSettingsCloseAsync(SettingsView settings, ClosingEventArgs args, ClosingDeferral deferral)
+	private async Task ConfirmSettingsCloseAsync(SettingsView settings, ClosingEventArgs args, ClosingDeferral deferral)
 	{
 		using (deferral)
 		{
-			try { args.Cancel = !await settings.CanCloseAsync(); }
-			catch (InvalidOperationException) { args.Cancel = true; }
+			try
+			{
+				args.Cancel = !await settings.CanCloseAsync();
+			}
+			catch (InvalidOperationException)
+			{
+				args.Cancel = true;
+			}
+
+			// 用户留在窗口里：取消这次退出，下次关窗回到正常策略（驻留或确认）。
+			if (args.Cancel)
+			{
+				_exitRequested = false;
+			}
 		}
 	}
 
@@ -2341,6 +2319,12 @@ public sealed partial class MainWindow : Window
 		}
 
 		await Task.Delay(1500).ConfigureAwait(false);
+
+		if (view == "tray")
+		{
+			_ = RunTraySmokeAsync();
+			return;
+		}
 
 		var loadingTarget = _sessions.FirstOrDefault(item => item.Path != CurrentTab()?.Session.Session.SessionFile);
 		Dispatch(() =>

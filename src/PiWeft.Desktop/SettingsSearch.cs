@@ -60,6 +60,8 @@ internal static class SettingsSearch
 		new("appearance.font", "appearance", Strings.ChatFontSize, ["字号", "字体", "大小", "阅读", "font"], "appearance.font"),
 		new("appearance.width", "appearance", Strings.ReadingWidth, ["宽度", "行宽", "阅读", "width"], "appearance.width"),
 		new("appearance.tips", "appearance", Strings.RespondingTipsSetting, ["提示", "轮播", "等待", "tips"], "appearance.tips"),
+		new("appearance.close-to-tray", "appearance", Strings.CloseToTraySetting,
+			["托盘", "关闭", "后台", "驻留", "窗口", "tray", "close"], "appearance.close-to-tray"),
 		new("git.model", "git", Strings.GitSummaryModel, ["git", "提交", "摘要", "模型", "commit"], "git.model"),
 		new("git.thinking", "git", Strings.GitSummaryThinking, ["git", "思考", "级别", "摘要"], "git.thinking"),
 		new("git.prompt", "git", Strings.GitSummaryPrompt, ["git", "提示词", "模板", "prompt", "diff"], "git.prompt"),
