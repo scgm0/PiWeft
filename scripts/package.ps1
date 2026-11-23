@@ -69,7 +69,7 @@ if ($Rid.StartsWith('osx-')) {
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>dev.piweft.desktop</string>
+<key>CFBundleIdentifier</key><string>com.mystivaid.piweft</string>
 <key>CFBundleName</key><string>PiWeft Desktop</string>
 <key>CFBundleExecutable</key><string>piweft-desktop</string>
 <key>CFBundleIconFile</key><string>PiWeft</string>

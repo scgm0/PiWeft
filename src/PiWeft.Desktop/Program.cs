@@ -194,7 +194,7 @@ public static class Program
 		{
 			// startup 回调在 UI 线程、dispatcher 就绪之后、窗口显示之前触发：
 			// 在这里挂一个 Render 优先级的工作项，它一定排在首帧绘制之后，用来量首屏时延。
-			Application.Run(window, () =>
+			Action startup = () =>
 			{
 				if (Application.Current?.Dispatcher is not { } dispatcher)
 				{
@@ -212,7 +212,13 @@ public static class Program
 
 					ReportPreviousCrash(window);
 				});
-			});
+			};
+
+			// 应用标识必须在首个窗口之前交给平台：Windows 设为 AppUserModelID，Linux 用作 WM_CLASS。
+			Application.Create()
+				.WithApplicationId(AppInfo.ApplicationId)
+				.OnStartup(startup)
+				.Run(window);
 		}
 		catch (Exception ex)
 		{
