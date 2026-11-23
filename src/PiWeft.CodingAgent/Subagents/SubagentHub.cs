@@ -101,6 +101,9 @@ public sealed record SubagentRun
 	/// <summary>这一轮结果因为连续自动回报上限没有自动送进父会话；<c>wait_subagents</c> 仍能取。</summary>
 	public bool DeliverySuppressed { get; init; }
 
+	/// <summary>被停投的最近一轮；0 表示没有。</summary>
+	public long SuppressedTurn { get; init; }
+
 	/// <summary>给子会话的 steer 消息还在队列里，模型尚未在下一个工具边界读到它。</summary>
 	public bool SteerPending { get; init; }
 
@@ -457,6 +460,9 @@ public sealed class SubagentHub : IDisposable
 		public long ResultTurn { get; set; }
 
 		public long DeliveredTurn { get; set; }
+
+		/// 被连续回报上限留在队列里的最近一轮；0 表示没有。
+		public long SuppressedTurn { get; set; }
 
 		/// 最近一次 read_subagent 给父会话看的正文。结果与它相同时不再重复投递。
 		public string? LastReadText { get; set; }
@@ -1002,6 +1008,17 @@ public sealed class SubagentHub : IDisposable
 	private const int MaxQuestionOptionChars = 200;
 	private const int MaxAnswerChars = 4_000;
 
+	/// 投递状态由两个轮次派生：停投轮次尚未被投递/读取时，卡片与侧栏显示未投递。
+	/// 所有推进 DeliveredTurn 或 SuppressedTurn 的路径都要经过这里。
+	private static void RefreshSuppressionLocked(RunState state)
+	{
+		state.Run = state.Run with
+		{
+			SuppressedTurn = state.SuppressedTurn,
+			DeliverySuppressed = state.SuppressedTurn > state.DeliveredTurn,
+		};
+	}
+
 	/// <summary>是否有子代理正在等用户回答；页签圆点用它，避免每次活动都复制整份运行列表。</summary>
 	public bool HasAwaitingUser
 	{
@@ -1164,8 +1181,31 @@ public sealed class SubagentHub : IDisposable
 				if (ReadLong(data["turn"]) is { } deliveredTurn && deliveredTurn > finished.DeliveredTurn)
 				{
 					finished.DeliveredTurn = deliveredTurn;
+					if (finished.SuppressedTurn <= finished.DeliveredTurn)
+					{
+						finished.SuppressedTurn = 0;
+					}
+
+					RefreshSuppressionLocked(finished);
 				}
 
+				continue;
+			}
+
+			if (kind == "suppressed")
+			{
+				var suppressedTurn = ReadLong(data["turn"]) ?? 0;
+				if (suppressedTurn > finished.SuppressedTurn)
+				{
+					finished.SuppressedTurn = suppressedTurn;
+				}
+				else if (suppressedTurn <= 0)
+				{
+					// read_subagent 已经把这一轮标成已读：重启后不要再挂「未投递」。
+					finished.SuppressedTurn = 0;
+				}
+
+				RefreshSuppressionLocked(finished);
 				continue;
 			}
 
@@ -1217,6 +1257,8 @@ public sealed class SubagentHub : IDisposable
 				finished.ResultTurn = resultTurn;
 				finished.TurnSeq = Math.Max(finished.TurnSeq, resultTurn);
 			}
+
+			RefreshSuppressionLocked(finished);
 
 			if (ReadBool(data["deliverable"]) && kind is "idle" or "failed")
 			{
@@ -1301,6 +1343,7 @@ public sealed class SubagentHub : IDisposable
 					continue;
 				}
 
+				RefreshSuppressionLocked(state);
 				_runs[name] = state;
 				_order.Add(name);
 			}
@@ -1326,7 +1369,8 @@ public sealed class SubagentHub : IDisposable
 				continue;
 			}
 
-			if (state.ResultTurn > 0 && state.DeliveredTurn >= state.ResultTurn)
+			if (state.ResultTurn > 0 &&
+				(state.DeliveredTurn >= state.ResultTurn || state.SuppressedTurn >= state.ResultTurn))
 			{
 				continue;
 			}
@@ -2127,6 +2171,7 @@ public sealed class SubagentHub : IDisposable
 					["stop_reason"] = run.StopReason is { Length: > 0 } stopReason ? stopReason : null,
 					["verify"] = VerifyDetails(run.Verify),
 					["delivery_suppressed"] = run.DeliverySuppressed,
+					["suppressed_turn"] = run.SuppressedTurn > 0 ? run.SuppressedTurn : null,
 					["steer_pending"] = run.SteerPending,
 					// returned：这次工具调用把正文带回去了，所以它不会再走消息投递。
 					// 桌面据此补一张只读回报卡；delivered 是「调用前就已经投递过」，两者不同。
@@ -2196,7 +2241,11 @@ public sealed class SubagentHub : IDisposable
 				}
 
 				state.DeliveredTurn = turnResult.Turn;
-				state.Run = state.Run with { DeliverySuppressed = false };
+				if (state.SuppressedTurn <= state.DeliveredTurn)
+				{
+					state.SuppressedTurn = 0;
+				}
+				RefreshSuppressionLocked(state);
 				taken.Add(state);
 				// 标记这段正文已随本次工具结果返回，桌面据此补只读卡。
 				row["returned"] = true;
@@ -2345,6 +2394,7 @@ public sealed class SubagentHub : IDisposable
 					["stop_reason"] = run.StopReason is { Length: > 0 } stopReason ? stopReason : null,
 					["verify"] = VerifyDetails(run.Verify),
 					["delivery_suppressed"] = run.DeliverySuppressed,
+					["suppressed_turn"] = run.SuppressedTurn > 0 ? run.SuppressedTurn : null,
 					["steer_pending"] = run.SteerPending,
 					["resumable"] = run.SessionFile is { Length: > 0 },
 					["result"] = run.Result is { Length: > 0 } result ? Clip(result, 400) : null,
@@ -2762,6 +2812,7 @@ public sealed class SubagentHub : IDisposable
 
 		// 父会话已经看过这段正文：结束后的补投不再推一遍。
 		// 结构化结果与验证证据不在正文里，有它们时仍要投递。
+		var delivered = false;
 		lock (_gate)
 		{
 			state.LastReadText = body.Length > 0 ? body : null;
@@ -2774,24 +2825,21 @@ public sealed class SubagentHub : IDisposable
 				state.ResultTurn > 0;
 			if (readCompletedTurn)
 			{
-				state.Run = state.Run with { DeliverySuppressed = false };
-			}
-
-			// 只有「正常完成、完整读到最终正文、没有额外证据」才记成已投递，
-			// 避免 read 把失败/验证证据当成结论销账。
-			if (readCompletedTurn &&
-				state.Run.State == SubagentState.Idle &&
-				!string.Equals(state.Run.StopReason, "length", StringComparison.Ordinal) &&
-				state.Run.StructuredOutput is null &&
-				state.Run.Verify.Count == 0 &&
-				state.Run.Result is { Length: > 0 } final &&
-				body.EndsWith(final, StringComparison.Ordinal))
-			{
+				// 用户已经读到这一轮正文：停投提示收起，也不再作为未投递结果补发。
+				// 失败/带验证证据的结果同样算用户已读；DeliveredTurn 只在完整读到本轮时推进。
 				state.DeliveredTurn = state.ResultTurn;
+				state.SuppressedTurn = 0;
+				RefreshSuppressionLocked(state);
 				_pending.RemoveAll(result =>
 					string.Equals(result.Name, run.Name, StringComparison.Ordinal) &&
 					result.Turn <= state.ResultTurn);
+				delivered = true;
 			}
+		}
+
+		if (delivered)
+		{
+			AppendDescriptor(state, "delivered");
 		}
 
 		var builder = new StringBuilder(body.Length + 160);
@@ -2835,6 +2883,7 @@ public sealed class SubagentHub : IDisposable
 			["worktree_base"] = run.WorktreeBase,
 			["team_tasks"] = TeamTasksJson(run.Name),
 			["delivery_suppressed"] = state.Run.DeliverySuppressed,
+			["suppressed_turn"] = state.Run.SuppressedTurn > 0 ? state.Run.SuppressedTurn : null,
 			["steer_pending"] = state.Run.SteerPending,
 			["include_tools"] = includeTools,
 			// 正文已经在工具结果里进过一次会话文件，这里只留画卡够用的预览。
@@ -3713,11 +3762,11 @@ public sealed class SubagentHub : IDisposable
 				Activity = null,
 				Progress = null,
 				AwaitingUser = false,
-				// 上一轮的验证、停止原因与停投标记属于上一轮：运行中展开区不该还挂着旧结论。
+				// 上一轮的验证与停止原因属于上一轮；停投轮次没被取走时标记继续保留。
 				Verify = [],
 				StopReason = string.Empty,
-				DeliverySuppressed = false,
 			};
+			RefreshSuppressionLocked(state);
 			state.Guarded = false;
 			// 上一轮的问题不可能还挂着；万一有（停掉后马上又起一轮），让它按「没人回答」收尾。
 			state.Question?.Timeout.Cancel();
@@ -4838,7 +4887,8 @@ public sealed class SubagentHub : IDisposable
 				{
 					if (_runs.TryGetValue(result.Name, out var state) && result.Turn > state.DeliveredTurn)
 					{
-						state.Run = state.Run with { DeliverySuppressed = true };
+						state.SuppressedTurn = Math.Max(state.SuppressedTurn, result.Turn);
+						RefreshSuppressionLocked(state);
 						(suppressed ??= []).Add(state);
 					}
 				}
@@ -4862,6 +4912,11 @@ public sealed class SubagentHub : IDisposable
 
 		if (suppressed is not null)
 		{
+			foreach (var state in suppressed)
+			{
+				AppendDescriptor(state, "suppressed");
+			}
+
 			Changed?.Invoke();
 			return;
 		}
@@ -4884,6 +4939,11 @@ public sealed class SubagentHub : IDisposable
 
 				previous = state.DeliveredTurn;
 				state.DeliveredTurn = result.Turn;
+				if (state.SuppressedTurn <= state.DeliveredTurn)
+				{
+					state.SuppressedTurn = 0;
+				}
+				RefreshSuppressionLocked(state);
 			}
 
 			accepted.Add((state, result.Turn, previous));
@@ -4974,6 +5034,7 @@ public sealed class SubagentHub : IDisposable
 					if (state.DeliveredTurn == turn)
 					{
 						state.DeliveredTurn = previous;
+						RefreshSuppressionLocked(state);
 					}
 				}
 
@@ -5197,14 +5258,14 @@ public sealed class SubagentHub : IDisposable
 
 		try
 		{
-			if (kind == "delivered")
+			if (kind is "delivered" or "suppressed")
 			{
-				// 投递标记只需要名字与轮次：它是文件里最常写的一类条目，带全量字段会白白撑大父会话文件。
+				// 投递/停投标记只需要名字与轮次：它们是最常写的一类条目，带全量字段会白白撑大父会话文件。
 				_owner.Session.AppendCustom(EntryType, new JsonObject
 				{
 					["kind"] = kind,
 					["name"] = run.Name,
-					["turn"] = deliveredTurn,
+					["turn"] = kind == "delivered" ? deliveredTurn : run.SuppressedTurn,
 				});
 				return;
 			}

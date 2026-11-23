@@ -444,6 +444,10 @@ public static partial class Strings
 	/// 连续回报上限后不再自动投递；正文仍在，wait_subagents 能取。
 	public const string SubagentDeliverySuppressed = "回报未自动投递 · wait 可取";
 
+	public static string SubagentDeliverySuppressedFor(long turn) => $"第 {turn} 轮回报未自动投递 · wait 可取";
+
+	public static string SubagentNotDeliveredFor(long turn) => $"未投递（第 {turn} 轮）";
+
 	public const string SidebarSubagentNotDelivered = "未投递";
 
 	/// 已发给子代理、还在 steering 队列里，模型尚未在下一个工具边界读到。

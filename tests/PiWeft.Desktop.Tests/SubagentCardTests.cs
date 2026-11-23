@@ -371,6 +371,7 @@ public sealed class SubagentCardTests : IDisposable
 				Turns = 7,
 				Result = "报告 7。",
 				DeliverySuppressed = true,
+				SuppressedTurn = 7,
 				StartedAt = 1_000,
 				FinishedAt = 2_000,
 			},
@@ -381,7 +382,7 @@ public sealed class SubagentCardTests : IDisposable
 		try
 		{
 			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
-			Assert.Contains(blocks, block => block.Text == Strings.SubagentDeliverySuppressed);
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentDeliverySuppressedFor(7));
 		}
 		finally
 		{

@@ -32,7 +32,7 @@
 | `delegate` | `{ agent, task, label?, name?, context?, model?, thinking?, cwd?, output_schema?, verify?, max_tokens?, max_cost?, max_tool_calls?, timeout_ms?, worktree?, worktree_base? }`，启动子代理，立即返回；`label` 是卡片上的一句话，省略时取任务首行；`model`/`thinking` 按次覆盖角色设置；`cwd` 指向父工作区内的子目录；`worktree` 在独立 Git 工作区里跑 |
 | `wait_subagents` | `{ names?, timeout_ms?, any? }`，等到结束一轮或超时；`any: true` 第一个结束就返回，其余仍按未投递处理 |
 | `list_subagents` | `{ status?, agent? }`，本会话的子代理与可用角色；`status` 接受 `active`/`starting`/`running`/`idle`/`completed`/`failed`/`stopped`，`agent` 按角色过滤。开头一行带 `running 2/4` 容量，每行带轮数、工具调用数与改动文件数；可用角色带模型、思考级别、工具白名单与角色级预算 |
-| `read_subagent` | `{ id, max_chars?, include_tools? }`，读子会话最近的助手正文；`include_tools: true` 连用户消息、工具调用与工具结果一起读；截断或重启后取全文。同一轮正常完成、完整读到最终正文、且没有结构化结果/验证证据时，读过的正文不再作为回报补投 |
+| `read_subagent` | `{ id, max_chars?, include_tools? }`，读子会话最近的助手正文；`include_tools: true` 连用户消息、工具调用与工具结果一起读；截断或重启后取全文。读到本轮完整正文后把该轮标成已投递（失败与带验证证据的结果也一样），之后不再作为回报补投 |
 | `send_to_subagent` | `{ id, message, mode? }`，追加消息，不等回复；`mode` 为 `follow_up`（默认）、`steer` 或 `auto`。`steer` 在模型读到之前标 `steer_pending`，队列更新里消失后清除 |
 | `stop_subagent` | `{ id }`，停当前回合，子会话仍可读 |
 | `ask_parent`（只给子会话） | `{ question, options? }`，子代理问父会话并等回答；与问用户的 `ask_question` 分工 |
@@ -43,7 +43,7 @@
 
 `wait_subagents` 默认等全部目标，`any: true` 改成第一个结束就返回：返回的正文只带已完成的目标，其余保持未投递，下一次 wait 还能取。已经结束的目标不会让 `any` 继续等还在跑的兄弟。
 
-`read_subagent` 不改变「wait 与投递二选一」的记账，但它确实把正文交给了父会话：同一轮、正常完成、完整读到最终正文、没有结构化结果与验证证据时，读过的正文记成已投递，之后不再补发同一段。运行中读到中间正文不拦结束时的投递；只有最终正文与读过的一致时才跳过。失败、截断（`length`）、有验证证据或有结构化结果时一律照常投递。
+`read_subagent` 读到本轮完整正文后就把该轮记成已投递，之后不再补发同一段；失败、带验证证据或有结构化结果的结果也一样。运行中读到中间正文不拦结束时的投递；截断（`length`）不销账。
 
 子代理每完成一条助手消息，首行摘要记进运行快照的 `progress`；工具结束会清掉 `activity`。卡片、`list_subagents` 的 `Details` 与 wait 心跳都读这两个字段，长回合里能看到子代理写到了哪一句。
 
@@ -181,7 +181,7 @@ You review HTTP handlers. Report findings with file and line references.
 - 同一项目里另一个会话在跑或改过文件时，本会话输入框上方出现一行提示（不是卡）：「A」的子代理正在这个项目里运行，带「查看」跳到那边。提示不阻塞发送，只在有其它写者时出现。
 - 同一仓库的 Git 写操作（commit/checkout/stash/reset/merge/rebase/pull/push）在桌面上按 cwd 串行，避免一个会话的 stash 卷走另一个会话的未提交改动。`bash` 里的 git 不经过这条约束，脚本仍要自己确认。
 - 隔离副本开着的行在第三行下面写「隔离副本 · piweft/worker-1-…」，展开区有路径、分支、基线与「应用改动 / 丢弃副本」；行尾的「打开目录」在文件管理器里打开副本。
-- 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。行首是状态图标（勾 / 圈 / 叉 / 停止方块），第一行左边名字与一句任务，右边耗时与 token / 费用；设了上限时写成 `12k/50k tk`。第二行是状态与轮数（历史项带「可继续」），行尾是角色 · 模型 · 思考级别。第二行状态还会出现「回报未自动投递 · wait 可取」与「消息待送达」。第三行左边按情况取一个：运行中是当前工具（`read src/Auth.cs`）或 `verify: <命令>`；失败行是一行失败原因（错误色）；跑过验证且通过时是「验证通过：<命令>」，回复被截断时是「回复被 max tokens 截断」。验证失败的原因行直接写命令与退出码，因为那时模型那句「都改好了」不能当原因。完整原因与验证输出在悬停与展开区。进度摘要显示在展开区，`list_subagents` 与 wait 心跳也带上。完成的行带输入 + 输出 token 与总耗时：耗时就是行右侧那个秒表，从 delegate 到回合结束，含工具与等待；`list_subagents` 的 `Details` 里是 `tokens` / `max_tokens` / `cost` / `max_cost` / `max_tool_calls` / `elapsed_ms` / `stop_reason` / `verify` / `delivery_suppressed` / `steer_pending` / `cwd`。卡头摘要带全部子代理的累计 token 与费用。旧条目里的 `tokens` 曾按 `TotalTokens`（含 cacheRead）记录，恢复时会按子会话文件重算成与标签页「输入 / 输出 token」一致的口径。
+- 子代理条的状态：启动中 / 运行中 / **已完成** / 失败 / 已停止。`已完成` 表示这一轮做完了、还能继续发消息。行首是状态图标（勾 / 圈 / 叉 / 停止方块），第一行左边名字与一句任务，右边耗时与 token / 费用；设了上限时写成 `12k/50k tk`。第二行是状态与轮数（历史项带「可继续」），行尾是角色 · 模型 · 思考级别。第二行状态还会出现「第 N 轮回报未自动投递 · wait 可取」与「消息待送达」。第三行左边按情况取一个：运行中是当前工具（`read src/Auth.cs`）或 `verify: <命令>`；失败行是一行失败原因（错误色）；跑过验证且通过时是「验证通过：<命令>」，回复被截断时是「回复被 max tokens 截断」。验证失败的原因行直接写命令与退出码，因为那时模型那句「都改好了」不能当原因。完整原因与验证输出在悬停与展开区。进度摘要显示在展开区，`list_subagents` 与 wait 心跳也带上。完成的行带输入 + 输出 token 与总耗时：耗时就是行右侧那个秒表，从 delegate 到回合结束，含工具与等待；`list_subagents` 的 `Details` 里是 `tokens` / `max_tokens` / `cost` / `max_cost` / `max_tool_calls` / `elapsed_ms` / `stop_reason` / `verify` / `delivery_suppressed` / `suppressed_turn` / `steer_pending` / `cwd`。卡头摘要带全部子代理的累计 token 与费用。旧条目里的 `tokens` 曾按 `TotalTokens`（含 cacheRead）记录，恢复时会按子会话文件重算成与标签页「输入 / 输出 token」一致的口径。
 - 活动态第一次翻成失败时自动展开一次，用户收起后不再自动撑开。侧栏的失败行带原因首行；命令面板里失败的子代理描述也带原因。`SubagentStatusIndex` 只把原因首行放进索引，不复制整段正文。
 - 运行中的当前工具带「多久以前」：`bash dotnet test · 3 分钟前没有新动作`。卡片每秒自己走一次，不等 hub 的事件；2 分钟内只写「12 秒前」，超过才提示没有新动作。总耗时看行右侧的秒表，两个数一起才分得清「在跑长命令」与「卡住」：总耗时从 `delegate` 起算，活动时间只跟最后一次工具起止或助手消息。
 - 侧栏也给子行写状态：运行中 / 等待回答 / 问父会话 / 失败；父行写「2 个子代理在跑」或「1 个等待回答」，没有活动时写「2 子代理 · 1 关联」。状态来自窗口级索引，只收状态边沿，工具活动与 token 不触发侧栏重建。离开父标签后仍看得出谁卡住了。
@@ -199,7 +199,7 @@ You review HTTP handlers. Report findings with file and line references.
 - 并发上限 4，超了直接拒绝，不排队。给空闲子代理发消息也算开一轮，同样受这个上限约束；首轮还在建会话时 `send_to_subagent` 等它建好（最多 30 秒）再排 follow-up，不会按历史项冷恢复失败，也不会和首轮抢子会话。
 - `maxWriters` 是严格写者上限，默认 0（不限）。开启后同一工作目录同时最多 N 个写子代理：角色工具面含 `edit`/`write`/`bash`/`powershell`（`tools` 省略视为可能写）就算写者，超了直接拒绝并给 `settings.subagents.maxWriters` 的下一步。只算正在跑的写者；已结束的写子代理 `send_to_subagent` 继续时重新申请，恢复的历史项按角色重新占名额。默认关：同项目开第二个会话做另一件事是常见用法，默认互斥会挡住它。
 - 每个用户回合最多启动 32 个；子代理回报触发的父会话轮次不重置预算，用户自己发消息才清零。
-- 连续 6 次回报拉起父会话后停止自动投递，用户发消息清零。停投的正文仍在 `Result` 与子会话文件里，`wait_subagents` 还能取；卡片、侧栏与 `list_subagents` 标「未投递」，不会看起来像已经送到。`wait_subagents` 或 `read_subagent` 取走后标记清除。
+- 连续 6 次回报拉起父会话后停止自动投递，用户发消息清零。停投的正文仍在 `Result` 与子会话文件里，`wait_subagents` 还能取；卡片、侧栏与 `list_subagents` 标「未投递」，并记录最近停投的轮次；新开一轮不会清掉这个标记。`wait_subagents` 或 `read_subagent` 读到该轮后标记清除，重启后仍保留停投状态且不会自动补投。
 - 单次运行默认 30 分钟超时。到点把状态落到 `failed` 并投递一条带 `timed out` 的结果，迟到的 `agent_end` 不会把失败改回 idle；再发消息就是新的一次运行，重新计时。
 - `send_to_subagent` 的 `steer` 把消息放进当前运行的 steering 队列，下一个工具边界生效；空闲时用 `follow_up`，`auto` 在运行中选 steer、否则退回 follow_up。
 - 子代理默认不开标签：会话与它的界面宿主留在 hub 里，卡片行上的打开键按需把**活的**会话挂成标签（不是从文件冷开一份快照）。已被回收的会话先按文件冷恢复再挂，所以同一份文件始终只有一个会话对象。侧栏仍按会话文件把子会话挂在父会话下面，不占顶层行；点那一行挂的也是活会话。有 UI 宿主，所以子代理可以自己用 `ask_question` 问用户。

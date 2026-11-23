@@ -75,6 +75,7 @@ internal sealed class SubagentCard
 		string StopReason,
 		string Question,
 		bool DeliverySuppressed,
+		long SuppressedTurn,
 		bool SteerPending,
 		bool Expanded,
 		TextBlock Status,
@@ -348,6 +349,7 @@ internal sealed class SubagentCard
 				!string.Equals(run.WorktreeBranch ?? string.Empty, row.WorktreeBranch, StringComparison.Ordinal) ||
 				run.Verify.Count != row.VerifyCount ||
 				run.DeliverySuppressed != row.DeliverySuppressed ||
+				run.SuppressedTurn != row.SuppressedTurn ||
 				run.SteerPending != row.SteerPending ||
 				!string.Equals(run.Question ?? string.Empty, row.Question, StringComparison.Ordinal) ||
 				!string.Equals(run.StopReason, row.StopReason, StringComparison.Ordinal) ||
@@ -445,8 +447,10 @@ internal sealed class SubagentCard
 		if (run.DeliverySuppressed)
 		{
 			return run.State == SubagentState.Failed
-				? $"{status} · {Strings.SidebarSubagentNotDelivered}"
-				: Strings.SubagentDeliverySuppressed;
+				? $"{status} · {(run.SuppressedTurn > 0 ? Strings.SubagentNotDeliveredFor(run.SuppressedTurn) : Strings.SidebarSubagentNotDelivered)}"
+				: run.SuppressedTurn > 0
+					? Strings.SubagentDeliverySuppressedFor(run.SuppressedTurn)
+					: Strings.SubagentDeliverySuppressed;
 		}
 
 		return run.SteerPending ? $"{status} · {Strings.SubagentSteerPending}" : status;
@@ -1006,6 +1010,7 @@ internal sealed class SubagentCard
 			run.StopReason,
 			run.Question ?? string.Empty,
 			run.DeliverySuppressed,
+			run.SuppressedTurn,
 			run.SteerPending,
 			expanded,
 			status,

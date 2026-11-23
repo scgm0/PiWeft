@@ -2464,7 +2464,7 @@ public sealed class SubagentTests : IDisposable
 		}
 
 		var childStream = new ScriptedStreamFn();
-		for (var index = 0; index < SubagentHub.MaxAutoContinue + 1; index++)
+		for (var index = 0; index < SubagentHub.MaxAutoContinue + 2; index++)
 		{
 			childStream.EnqueueText($"报告 {index + 1}。");
 		}
@@ -2496,10 +2496,83 @@ public sealed class SubagentTests : IDisposable
 
 		// 第 7 轮没有自动投递：卡片与 list 要标出来，正文没丢。
 		await Eventually.IsTrue(() => hub.Runs.Single().DeliverySuppressed, "停投后应标记未投递");
+		Assert.Equal(SubagentHub.MaxAutoContinue + 1, hub.Runs.Single().SuppressedTurn);
+
+		// 新开一轮不能把尚未取走的停投标记清掉。
+		var sentNext = await hub.SendAsync(started.Name!, "继续第 8 轮。");
+		Assert.True(sentNext.Ok, sentNext.Text);
+		await Eventually.IsTrue(
+			() => hub.Runs.Single().Turns == SubagentHub.MaxAutoContinue + 2 && hub.Runs.Single().State == SubagentState.Idle,
+			"第 8 轮结束");
+		Assert.True(hub.Runs.Single().DeliverySuppressed, "新回合不应清掉停投标记");
+
 		var waited = await hub.WaitAsync([started.Name!], TimeSpan.FromSeconds(5));
 		Assert.True(waited.Ok, waited.Text);
-		Assert.Contains($"报告 {SubagentHub.MaxAutoContinue + 1}。", waited.Text);
+		Assert.Contains($"报告 {SubagentHub.MaxAutoContinue + 2}。", waited.Text);
 		Assert.False(hub.Runs.Single().DeliverySuppressed, "wait 取走后不应再标未投递");
+	}
+
+	[Fact]
+	public async Task Restart_KeepsSuppressedTurnAndSkipsAutoDelivery()
+	{
+		var parentStream = new ScriptedStreamFn();
+		for (var index = 0; index < SubagentHub.MaxAutoContinue; index++)
+		{
+			parentStream.EnqueueText("父会话收到。");
+		}
+
+		var childStream = new ScriptedStreamFn();
+		for (var index = 0; index < SubagentHub.MaxAutoContinue + 1; index++)
+		{
+			childStream.EnqueueText($"报告 {index + 1}。");
+		}
+
+		var manager = SessionManager.Create(_root, Path.Combine(_root, "sessions"));
+		var file = manager.SessionFile;
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+		using (var first = CreateParent(parentStream, host, session: manager))
+		{
+			var hub = Assert.IsType<SubagentHub>(first.Subagents);
+			var started = await hub.StartAsync(new SubagentStartRequest("scout", "第一轮。"));
+			Assert.True(started.Ok, started.Text);
+			for (var turn = 1; turn <= SubagentHub.MaxAutoContinue + 1; turn++)
+			{
+				await Eventually.IsTrue(
+					() => hub.Runs.Single().Turns == turn && hub.Runs.Single().State == SubagentState.Idle,
+					$"第 {turn} 轮结束");
+				await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
+				if (turn == SubagentHub.MaxAutoContinue + 1)
+				{
+					break;
+				}
+
+				var sent = await hub.SendAsync(started.Name!, $"继续第 {turn + 1} 轮。");
+				Assert.True(sent.Ok, sent.Text);
+			}
+
+			await Eventually.IsTrue(() => hub.Runs.Single().DeliverySuppressed, "停投后应标记未投递");
+		}
+
+		foreach (var child in host.Children)
+		{
+			child.Dispose();
+		}
+
+		Assert.NotNull(file);
+		var reopened = SessionManager.Open(file);
+		var secondHost = new FakeHost(_root);
+		using var second = CreateParent(new ScriptedStreamFn(), secondHost, session: reopened);
+		var restored = Assert.Single(second.Subagents!.Runs);
+		Assert.True(restored.DeliverySuppressed, "重启后停投标记应保留");
+		Assert.Equal(SubagentHub.MaxAutoContinue + 1, restored.SuppressedTurn);
+		// 停投结果不能在重启时偷偷补投；没有脚本响应时一旦补投就会抛错。
+		await second.Subagents!.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(5));
+		Assert.Empty(secondHost.Contexts);
+
+		var read = second.Subagents.Read(restored.Name);
+		Assert.True(read.Ok, read.Text);
+		Assert.False(second.Subagents.Runs.Single().DeliverySuppressed, "read 完整读过后应清除停投标记");
 	}
 
 	[Fact]
