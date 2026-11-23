@@ -15,7 +15,9 @@ public sealed class SubagentStatusIndexTests
 		string? activity = null,
 		long tokens = 0,
 		IReadOnlyList<string>? changedFiles = null,
-		bool mayWrite = false) => new()
+		bool mayWrite = false,
+		string? result = null,
+		IReadOnlyList<SubagentVerifyResult>? verify = null) => new()
 	{
 		Name = name,
 		SessionId = sessionId,
@@ -27,6 +29,8 @@ public sealed class SubagentStatusIndexTests
 		Tokens = tokens,
 		ChangedFiles = changedFiles ?? [],
 		MayWrite = mayWrite,
+		Result = result,
+		Verify = verify ?? [],
 	};
 
 	[Fact]
@@ -76,6 +80,34 @@ public sealed class SubagentStatusIndexTests
 		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1", awaiting: true)]));
 		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1", question: "走哪条路？")]));
 		Assert.True(index.Update("parent", "父会话", [Run("scout-1", "child-1", state: SubagentState.Idle)]));
+	}
+
+	[Fact]
+	public void FailedRowsCarryTheFirstResultLine()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent", "父会话",
+			[Run("scout-1", "child-1", state: SubagentState.Failed, result: "dotnet test 失败。\n详情")]);
+
+		Assert.True(index.TryGet("child-1", out var entry));
+		Assert.Equal("dotnet test 失败。", entry.Failure);
+		// 原因没变、只是同一条失败行重新报到：侧栏不该重建。
+		Assert.False(index.Update("parent", "父会话",
+			[Run("scout-1", "child-1", state: SubagentState.Failed, result: "dotnet test 失败。\n详情")]));
+	}
+
+	[Fact]
+	public void FailedRowsPreferHostVerificationOverTheModelReply()
+	{
+		var index = new SubagentStatusIndex();
+		index.Update("parent", "父会话",
+			[Run("scout-1", "child-1", state: SubagentState.Failed, result: "都改好了。",
+				verify: [new SubagentVerifyResult { Command = "dotnet test", ExitCode = 1 }])]);
+
+		Assert.True(index.TryGet("child-1", out var entry));
+		// 验证没过时，模型那句「都改好了」不能成为侧栏/toast 的失败原因。
+		Assert.Contains("验证失败", entry.Failure);
+		Assert.DoesNotContain("都改好了", entry.Failure);
 	}
 
 	[Fact]

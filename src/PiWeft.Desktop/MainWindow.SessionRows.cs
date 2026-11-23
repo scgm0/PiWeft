@@ -686,12 +686,36 @@ public sealed partial class MainWindow
 
 		var changed = false;
 		var changedSessions = _changedSubagentSessions;
+		var current = CurrentTab();
 		changedSessions.Clear();
 		foreach (var tab in _tabEntries.OfType<SessionTab>())
 		{
 			if (tab.Session.Subagents is { } hub)
 			{
 				var runs = hub.RunsSnapshot();
+				// 失败不会自己弹卡片：人可能在别的标签里，至少给一条轻提示。
+				// 成功只在父标签不在前台时提示，当前标签里能看到卡片就不重复弹。
+				foreach (var run in runs)
+				{
+					if (!run.IsTerminal ||
+						!_subagentStatus.TryGet(run.SessionId, out var finished) ||
+						!finished.IsActive)
+					{
+						continue;
+					}
+
+					if (run.State == SubagentState.Failed)
+					{
+						Toasts.Error(this, Strings.SubagentFailedNotice(run.Name, SubagentStatusIndex.FailureText(run) ?? string.Empty));
+					}
+					else if (run.State == SubagentState.Idle &&
+						!ReferenceEquals(tab, current) &&
+						(current is null || !string.Equals(SessionIdOf(current), run.SessionId, StringComparison.Ordinal)))
+					{
+						Toasts.Success(this, Strings.SubagentCompletedNotice(run.Name));
+					}
+				}
+
 				if (hub.Team is { } team)
 				{
 					foreach (var run in runs)

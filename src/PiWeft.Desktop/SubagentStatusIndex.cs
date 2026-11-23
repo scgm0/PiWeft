@@ -18,7 +18,10 @@ internal sealed class SubagentStatusIndex
 		bool Awaiting,
 		bool Question,
 		int ChangedFiles,
-		bool MayWrite)
+		bool MayWrite,
+		bool Suppressed,
+		bool SteerPending,
+		string? Failure)
 	{
 		public bool IsActive => State is SubagentState.Starting or SubagentState.Running;
 	}
@@ -46,8 +49,9 @@ internal sealed class SubagentStatusIndex
 
 			_seen.Add(run.SessionId);
 			_bySession.TryGetValue(run.SessionId, out var previous);
+			var failure = FailureText(run);
 			// 先比字段再构造：稳定期（只有工具活动变化）不分配新 Entry。
-			if (previous is not null && Matches(previous, run))
+			if (previous is not null && Matches(previous, run, failure))
 			{
 				continue;
 			}
@@ -65,7 +69,10 @@ internal sealed class SubagentStatusIndex
 				run.AwaitingUser,
 				run.Question is { Length: > 0 },
 				run.ChangedFiles.Count,
-				run.MayWrite);
+				run.MayWrite,
+				run.DeliverySuppressed,
+				run.SteerPending,
+				failure);
 			changed = true;
 		}
 
@@ -106,14 +113,55 @@ internal sealed class SubagentStatusIndex
 
 	/// 逐字段比较，避免为「没变」也构造一条新 Entry。
 	/// 父会话不参与：同一条子代理可能在 fork 后的两个标签里各有一份快照。
-	private static bool Matches(Entry entry, SubagentRun run) =>
+	private static bool Matches(Entry entry, SubagentRun run, string? failure) =>
 		string.Equals(entry.Name, run.Name, StringComparison.Ordinal) &&
 		string.Equals(entry.Agent, run.Agent, StringComparison.Ordinal) &&
 		entry.State == run.State &&
 		entry.Awaiting == run.AwaitingUser &&
 		entry.Question == (run.Question is { Length: > 0 }) &&
 		entry.ChangedFiles == run.ChangedFiles.Count &&
-		entry.MayWrite == run.MayWrite;
+		entry.MayWrite == run.MayWrite &&
+		entry.Suppressed == run.DeliverySuppressed &&
+		entry.SteerPending == run.SteerPending &&
+		string.Equals(entry.Failure, failure, StringComparison.Ordinal);
+
+	/// 侧栏、命令面板与 toast 共用的失败原因：先宿主验证结论，再模型回复首行。
+	/// 只失败时返回；成功或运行中返回 null。
+	internal static string? FailureText(SubagentRun run)
+	{
+		if (run.State != SubagentState.Failed)
+		{
+			return null;
+		}
+
+		foreach (var verify in run.Verify)
+		{
+			if (verify.Passed)
+			{
+				continue;
+			}
+
+			var line = verify.TimedOut
+				? Strings.SubagentVerifyTimedOut(verify.Command)
+				: Strings.SubagentVerifyFailed(verify.Command, verify.ExitCode ?? -1);
+			return line.Length <= 120 ? line : string.Concat(line.AsSpan(0, 120), "…");
+		}
+
+		if (run.Result is not { Length: > 0 } text)
+		{
+			return string.Empty;
+		}
+
+		var span = text.AsSpan().Trim();
+		var newline = span.IndexOfAny('\n', '\r');
+		if (newline > 0)
+		{
+			span = span[..newline];
+		}
+
+		span = span.TrimEnd();
+		return span.Length <= 120 ? span.ToString() : string.Concat(span[..120], "…");
+	}
 
 	/// 父会话的标签关了：它名下的条目一起收走，免得迟到的刷新把行又挂回来。
 	internal bool RemoveParent(string parentSessionId)

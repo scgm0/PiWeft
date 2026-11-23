@@ -141,6 +141,8 @@ public static class SubagentTools
 					"Use scout before planning in unfamiliar code, reviewer after non-trivial edits, oracle for risky decisions, and worker for a scoped implementation slice.",
 					"Write the task as a self-contained brief: scope, done criteria, how to verify, what not to touch. The child cannot see this conversation unless you pass context \"fork\".",
 					"Pass verify when the work must be proven: the host runs the command itself after the turn, so a child's claim that tests passed is checked instead of trusted.",
+					"Use model or thinking only when this task needs a different tier than the role default; an unknown model falls back to the parent model.",
+					"Use cwd only for a subdirectory of the current workspace; cross-repo work stays in the parent session.",
 					"Start independent delegations in one assistant message and keep working while they run. When only waiting is left, call wait_subagents or end your turn; the result starts a new turn.",
 					"Collect the subagent results you need before giving the user a final answer.",
 					"Do not edit the same files from both sides. Bash, formatters and code generators can overwrite concurrent edits; coordinate them explicitly and review the final diff.",
@@ -172,15 +174,37 @@ public static class SubagentTools
 					PlanAccess = ToolPlanAccess.Allowed,
 					Description =
 						"List the subagents this session started and the agent roles available to delegate. " +
-						"Rows marked finished come from earlier sessions and have no live session; their transcript is in the session file.",
+						"Rows marked finished come from earlier sessions and have no live session; their transcript is in the session file. " +
+						"Filter with status (active / starting / running / idle / completed / failed / stopped) or agent name.",
 					Parameters = new JsonObject
 					{
 						["type"] = "object",
-						["properties"] = new JsonObject(),
+						["properties"] = new JsonObject
+						{
+							["status"] = new JsonObject
+							{
+								["type"] = "string",
+								["enum"] = new JsonArray("active", "starting", "running", "idle", "completed", "failed", "stopped"),
+								["description"] = "Only rows in this state; omitted lists everything.",
+							},
+							["agent"] = new JsonObject
+							{
+								["type"] = "string",
+								["description"] = "Only rows from this role, case-insensitive.",
+							},
+						},
 					},
-					Execute = _ =>
+					Execute = invocation =>
 					{
-						var text = hub.Describe(out var details);
+						var status = JsonArgs.String(invocation.Arguments["status"])?.Trim().ToLowerInvariant();
+						if (status is { Length: > 0 } &&
+							status is not ("active" or "starting" or "running" or "idle" or "completed" or "failed" or "stopped"))
+						{
+							return Task.FromResult(AgentToolResult.Error(
+								"status must be active, starting, running, idle, completed, failed or stopped"));
+						}
+
+						var text = hub.Describe(out var details, status, JsonArgs.String(invocation.Arguments["agent"]));
 						return Task.FromResult(AgentToolResult.Text(text, details));
 					},
 				},
@@ -195,7 +219,8 @@ public static class SubagentTools
 					PlanAccess = ToolPlanAccess.Allowed,
 					Description =
 						"Read the most recent assistant text of a subagent by name or session id. " +
-						"Use it when the delivered result was truncated or after a restart when only the session file remains.",
+						"Use it when the delivered result was truncated or after a restart when only the session file remains. " +
+						"Pass include_tools = true to include user messages, tool calls and tool results.",
 					Parameters = ReadParameters(),
 					Execute = invocation => Task.FromResult(ExecuteRead(hub, invocation)),
 				},
@@ -255,6 +280,9 @@ public static class SubagentTools
 
 		var name = JsonArgs.String(invocation.Arguments["name"]);
 		var label = JsonArgs.String(invocation.Arguments["label"]);
+		var model = JsonArgs.String(invocation.Arguments["model"])?.Trim();
+		var thinking = JsonArgs.String(invocation.Arguments["thinking"])?.Trim();
+		var cwd = JsonArgs.String(invocation.Arguments["cwd"])?.Trim();
 		var context = JsonArgs.String(invocation.Arguments["context"]);
 		var schemaNode = invocation.Arguments["output_schema"];
 		if (schemaNode is not null and not JsonObject)
@@ -275,6 +303,20 @@ public static class SubagentTools
 			return AgentToolResult.Error("max_tokens must not be negative");
 		}
 
+		var maxCost = JsonArgs.Number(invocation.Arguments["max_cost"]);
+		if (maxCost is { } requestedCost && (!double.IsFinite(requestedCost) || requestedCost < 0))
+		{
+			return AgentToolResult.Error("max_cost must be a non-negative number");
+		}
+
+		var maxToolCalls = JsonArgs.Number(invocation.Arguments["max_tool_calls"]);
+		if (maxToolCalls is { } requestedToolCalls &&
+			(!double.IsFinite(requestedToolCalls) || requestedToolCalls < 0 ||
+			 requestedToolCalls != Math.Floor(requestedToolCalls) || requestedToolCalls > long.MaxValue))
+		{
+			return AgentToolResult.Error("max_tool_calls must be a non-negative integer");
+		}
+
 		var verify = ReadNames(invocation.Arguments["verify"]);
 		var singleVerify = JsonArgs.String(invocation.Arguments["verify"]);
 		if (verify is null && !string.IsNullOrWhiteSpace(singleVerify))
@@ -289,9 +331,14 @@ public static class SubagentTools
 			new SubagentStartRequest(agent, task, name, context)
 			{
 				Label = label,
+				Model = model is { Length: > 0 } ? model : null,
+				Thinking = thinking is { Length: > 0 } ? thinking : null,
+				Cwd = cwd is { Length: > 0 } ? cwd : null,
 				OutputSchema = outputSchema,
 				RunTimeout = timeoutMs is > 0 ? TimeSpan.FromMilliseconds(timeoutMs.Value) : null,
 				MaxTokens = maxTokens,
+				MaxCost = maxCost,
+				MaxToolCalls = maxToolCalls is { } toolCallLimit ? (long)toolCallLimit : null,
 				Verify = verify,
 				Worktree = worktree,
 				WorktreeBase = worktreeBase is { Length: > 0 } ? worktreeBase : null,
@@ -340,7 +387,8 @@ public static class SubagentTools
 		}
 
 		var maxChars = JsonArgs.Int(invocation.Arguments["max_chars"]) ?? 0;
-		var outcome = hub.Read(target, maxChars);
+		var includeTools = JsonArgs.Bool(invocation.Arguments["include_tools"]) ?? false;
+		var outcome = hub.Read(target, maxChars, includeTools);
 		return outcome.Ok ? AgentToolResult.Text(outcome.Text, outcome.Details) : AgentToolResult.Error(outcome.Text);
 	}
 
@@ -361,7 +409,9 @@ public static class SubagentTools
 		var mode = JsonArgs.String(invocation.Arguments["mode"]);
 		// 会话没打开时会先冷恢复（读会话文件、重建子会话），比一次工具调用稍慢。
 		var outcome = await hub.SendAsync(target, message, mode, invocation.CancellationToken).ConfigureAwait(false);
-		return outcome.Ok ? AgentToolResult.Text(outcome.Text) : AgentToolResult.Error(outcome.Text);
+		return outcome.Ok
+			? AgentToolResult.Text(outcome.Text, outcome.Details)
+			: AgentToolResult.Error(outcome.Text);
 	}
 
 	private static AgentToolResult ExecuteStop(SubagentHub hub, AgentToolInvocation invocation)
@@ -487,6 +537,26 @@ public static class SubagentTools
 					"Context mode. fresh gives the child only the task; " +
 					"fork seeds it with this conversation up to the last completed turn.",
 			},
+			["model"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] =
+					"Optional model override for this run: provider/id or a unique id. " +
+					"Omitted uses the role file, then the parent model.",
+			},
+			["thinking"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] =
+					"Optional thinking level for this run. Omitted uses the role file, then the parent level.",
+			},
+			["cwd"] = new JsonObject
+			{
+				["type"] = "string",
+				["description"] =
+					"Optional working directory for this run. Relative paths resolve against the parent cwd; " +
+					"the directory must stay inside the parent workspace. Cannot be combined with worktree.",
+			},
 			["output_schema"] = new JsonObject
 			{
 				["type"] = "object",
@@ -511,6 +581,20 @@ public static class SubagentTools
 				["description"] =
 					"Optional cap on input + output tokens for this run; the run is stopped and reported as failed " +
 					"when it goes over. 0 means no cap.",
+			},
+			["max_cost"] = new JsonObject
+			{
+				["type"] = "number",
+				["description"] =
+					"Optional cap on the provider-reported cost of this run; the run is stopped and reported as failed " +
+					"when the cumulative cost goes over. 0 means no cap.",
+			},
+			["max_tool_calls"] = new JsonObject
+			{
+				["type"] = "integer",
+				["description"] =
+					"Optional cap on tool calls in this run; the run is stopped and reported as failed when it goes over. " +
+					"0 means no cap.",
 			},
 			["timeout_ms"] = new JsonObject
 			{
@@ -574,6 +658,13 @@ public static class SubagentTools
 			{
 				["type"] = "integer",
 				["description"] = "Maximum characters to return; defaults to 12000, capped at 48000.",
+			},
+			["include_tools"] = new JsonObject
+			{
+				["type"] = "boolean",
+				["description"] =
+					"Include user messages, tool calls and tool results in the transcript. " +
+					"Omitted or false returns assistant text only.",
 			},
 		},
 		["required"] = new JsonArray("id"),

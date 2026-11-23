@@ -355,6 +355,115 @@ public sealed class SubagentCardTests : IDisposable
 	}
 
 	[Fact]
+	public void SuppressedDeliveryIsVisibleOnTheRow()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "scout-1",
+				SessionId = "subagent-suppressed",
+				Agent = "scout",
+				Label = "连续回报上限后的结果",
+				Model = "test/test-model",
+				State = SubagentState.Idle,
+				Turns = 7,
+				Result = "报告 7。",
+				DeliverySuppressed = true,
+				StartedAt = 1_000,
+				FinishedAt = 2_000,
+			},
+		]);
+		card.Expand();
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentDeliverySuppressed);
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void SteerPendingIsVisibleOnTheRow()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		card.RenderRunsForSmoke(
+		[
+			new SubagentRun
+			{
+				Name = "scout-1",
+				SessionId = "subagent-steer",
+				Agent = "scout",
+				Label = "补充一条要求",
+				Model = "test/test-model",
+				State = SubagentState.Running,
+				Turns = 1,
+				SteerPending = true,
+				StartedAt = 1_000,
+			},
+		]);
+		card.Expand();
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(blocks, block => block.Text.Contains(Strings.SubagentSteerPending, StringComparison.Ordinal));
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
+	public void FailedRowAutoExpandsOnceThenHonorsCollapse()
+	{
+		var card = new SubagentCard(_ => { }, _ => true, _ => { });
+		var running = new SubagentRun
+		{
+			Name = "worker-1",
+			SessionId = "subagent-failed",
+			Agent = "worker",
+			Label = "改完跑测试",
+			Model = "test/test-model",
+			State = SubagentState.Running,
+			Turns = 1,
+			StartedAt = 1_000,
+		};
+		card.RenderRunsForSmoke([running]);
+
+		// 活动态翻成失败的那一帧自动展开，失败原因不用再点一下。
+		var failed = running with { State = SubagentState.Failed, Result = "dotnet test 失败。", FinishedAt = 2_000 };
+		card.RenderRunsForSmoke([failed]);
+		card.Expand();
+		ConversationPerformanceTests.Layout(card.View, 800, 720);
+
+		try
+		{
+			var blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.Contains(blocks, block => block.Text == Strings.SubagentFailure);
+
+			// 用户收起后不能被下一次刷新重新撑开。
+			card.ToggleExpandedForTests("worker-1");
+			card.RenderRunsForSmoke([failed with { Result = "又失败一次。" }]);
+			ConversationPerformanceTests.Layout(card.View, 800, 720);
+			blocks = Find<Aprillz.MewUI.Controls.TextBlock>(card.View).ToArray();
+			Assert.DoesNotContain(blocks, block => block.Text == Strings.SubagentFailure);
+		}
+		finally
+		{
+			UiLifetime.Release(card.View);
+		}
+	}
+
+	[Fact]
 	public void ExpandedQuestionRowShowsTheQuestionAndAnAnswerBox()
 	{
 		var card = new SubagentCard(_ => { }, _ => true, _ => { });

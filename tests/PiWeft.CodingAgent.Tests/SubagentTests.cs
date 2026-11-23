@@ -107,11 +107,19 @@ public sealed class SubagentTests : IDisposable
 		/// 恢复前先等这个闸：并发 send 的测试用它把第一个恢复卡在 host 里。
 		public TaskCompletionSource? ReopenGate { get; set; }
 
-		public Task<CodingAgentSession?> CreateChildAsync(
+		/// 启动窗口测试用：把宿主建会话卡在这里，模拟「delegate 已返回但子会话还没建好」。
+		public TaskCompletionSource? CreateGate { get; set; }
+
+		public async Task<CodingAgentSession?> CreateChildAsync(
 			SubagentStartContext context,
 			CancellationToken cancellationToken)
 		{
 			Contexts.Add(context);
+			if (CreateGate is { } gate)
+			{
+				await gate.Task.ConfigureAwait(false);
+			}
+
 			var stream = Streams.Count > 0 ? Streams.Dequeue() : new ScriptedStreamFn();
 			// persistChildren 时给子会话真的落一个文件：冷恢复要按文件打开。
 			var manager = persistChildren
@@ -145,7 +153,7 @@ public sealed class SubagentTests : IDisposable
 				SubagentParent = context.Parent,
 			});
 			Children.Add(created);
-			return Task.FromResult<CodingAgentSession?>(created);
+			return created;
 		}
 
 		public async Task<CodingAgentSession?> ReopenChildAsync(
@@ -254,6 +262,116 @@ public sealed class SubagentTests : IDisposable
 	}
 
 	[Fact]
+	public async Task ListFiltersByStateAndAgentAndExposesRoleCapabilities()
+	{
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("结论。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "第一轮结束");
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+
+		hub.Describe(out var all);
+		Assert.Equal(1, all["listed"]!.GetValue<int>());
+
+		hub.Describe(out var completed, "completed", "scout");
+		Assert.Equal(1, completed["listed"]!.GetValue<int>());
+
+		hub.Describe(out var failed, "failed");
+		Assert.Equal(0, failed["listed"]!.GetValue<int>());
+		Assert.Contains("no subagent matched the filter", hub.Describe(out _, "failed"));
+
+		hub.Describe(out var otherAgent, agent: "reviewer");
+		Assert.Equal(0, otherAgent["listed"]!.GetValue<int>());
+
+		var scout = all["available"]!.AsArray()
+			.First(node => node!["name"]!.GetValue<string>() == "scout")!
+			.AsObject();
+		Assert.NotNull(scout["tools"]);
+	}
+
+	[Fact]
+	public async Task CostBudgetStopsTheRun()
+	{
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("贵的一次。");
+		var host = new FakeHost(_root);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "花点钱。")
+		{
+			MaxCost = 0.1,
+		});
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Failed, "费用超限应把状态落到 failed");
+		Assert.Contains("cost", hub.Runs.Single().Result!);
+		Assert.Contains("0.5", hub.Runs.Single().Result!);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+	}
+
+	[Fact]
+	public async Task ToolCallBudgetStopsTheRun()
+	{
+		File.WriteAllText(Path.Combine(_root, "a.txt"), "x");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueToolCall("read-1", "read", new JsonObject { ["path"] = "a.txt" });
+		childStream.EnqueueToolCall("read-2", "read", new JsonObject { ["path"] = "a.txt" });
+		var host = new FakeHost(_root, addReadTool: true);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "连续读。")
+		{
+			MaxToolCalls = 1,
+		});
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Failed, "工具超限应把状态落到 failed");
+		Assert.Contains("tool-call budget", hub.Runs.Single().Result!);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+	}
+
+	[Fact]
+	public async Task ToolCallBudgetIsPerTurn()
+	{
+		File.WriteAllText(Path.Combine(_root, "a.txt"), "x");
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("收到。");
+		parentStream.EnqueueText("收到。");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueToolCall("read-1", "read", new JsonObject { ["path"] = "a.txt" });
+		childStream.EnqueueText("第一轮。");
+		childStream.EnqueueToolCall("read-2", "read", new JsonObject { ["path"] = "a.txt" });
+		childStream.EnqueueText("第二轮。");
+		var host = new FakeHost(_root, addReadTool: true);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "读两次。")
+		{
+			MaxToolCalls = 1,
+		});
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "第一轮结束");
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+
+		var sent = await hub.SendAsync(started.Name!, "再读一次。");
+		Assert.True(sent.Ok, sent.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "第二轮结束");
+		Assert.Equal(2, hub.Runs.Single().Turns);
+		Assert.Equal(SubagentState.Idle, hub.Runs.Single().State);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+	}
+
+	[Fact]
 	public async Task Usage_IsExposedInTheRunAndListDetails()
 	{
 		var childStream = new ScriptedStreamFn();
@@ -274,6 +392,38 @@ public sealed class SubagentTests : IDisposable
 		var row = details["subagents"]!.AsArray()[0]!.AsObject();
 		Assert.Equal(run.Tokens, row["tokens"]!.GetValue<long>());
 		Assert.True(row["elapsed_ms"]!.GetValue<long>() >= 0);
+	}
+
+	[Fact]
+	public async Task Read_CanIncludeToolCallsAndResults()
+	{
+		File.WriteAllText(Path.Combine(_root, "a.txt"), "x");
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到。");
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueToolCall("read-1", "read", new JsonObject { ["path"] = "a.txt" });
+		childStream.EnqueueText("读完了。");
+		var host = new FakeHost(_root, addReadTool: true);
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "读文件。"));
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理结束");
+
+		var assistantOnly = hub.Read(started.Name!);
+		Assert.True(assistantOnly.Ok, assistantOnly.Text);
+		Assert.DoesNotContain("[tool", assistantOnly.Text);
+
+		var transcript = hub.Read(started.Name!, includeTools: true);
+		Assert.True(transcript.Ok, transcript.Text);
+		Assert.Contains("[user]", transcript.Text);
+		Assert.Contains("[assistant]", transcript.Text);
+		Assert.Contains("[tool read]", transcript.Text);
+		Assert.Contains("读完了", transcript.Text);
+		Assert.True(transcript.Details!["include_tools"]!.GetValue<bool>());
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
 	}
 
 	[Fact]
@@ -584,6 +734,149 @@ public sealed class SubagentTests : IDisposable
 		Assert.Contains("第一个问题", question.Content.Text);
 		var answer = Assert.IsType<AssistantMessage>(context.Seed[1]);
 		Assert.Contains("第一轮结论", MessageText.Of(answer));
+		// fork 的父历史只是上下文：父会话花掉的 token 与时长不能重复计进子代理，
+		// 否则子代理卡和全局用量都会把 fork 之前的花费再算一遍。
+		Assert.Equal(0, answer.Usage.TotalTokens);
+		Assert.Null(answer.DurationMs);
+		var parentAnswer = parent.Session.BuildProjectedMessages().OfType<AssistantMessage>().Last();
+		Assert.True(parentAnswer.Usage.TotalTokens > 0, "父会话自己的用量不能被改写");
+	}
+
+	[Fact]
+	public async Task DelegatePassesPerCallModelAndThinkingToTheHost()
+	{
+		var host = new FakeHost(_root);
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("结论。");
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。")
+		{
+			Model = "other/provider-model",
+			Thinking = "high",
+		});
+		Assert.True(started.Ok, started.Text);
+		var context = Assert.Single(host.Contexts);
+		Assert.Equal("other/provider-model", context.Model);
+		Assert.Equal("high", context.Thinking);
+
+		var tooLong = await hub.StartAsync(new SubagentStartRequest("scout", "又一个。")
+		{
+			Model = new string('a', 201),
+		});
+		Assert.False(tooLong.Ok);
+		Assert.Contains("model must be", tooLong.Text);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+	}
+
+	[Fact]
+	public async Task DelegateCwdStaysInsideTheParentWorkspace()
+	{
+		Directory.CreateDirectory(Path.Combine(_root, "work"));
+		var host = new FakeHost(_root);
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("结论。");
+		host.Streams.Enqueue(childStream);
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "查子目录。")
+		{
+			Cwd = "work",
+		});
+		Assert.True(started.Ok, started.Text);
+		Assert.Equal(Path.Combine(_root, "work"), Assert.Single(host.Contexts).Cwd);
+
+		var missing = await hub.StartAsync(new SubagentStartRequest("scout", "查不存在的目录。")
+		{
+			Cwd = "missing-dir",
+		});
+		Assert.False(missing.Ok);
+		Assert.Contains("does not exist", missing.Text);
+
+		var outside = await hub.StartAsync(new SubagentStartRequest("scout", "查父目录。")
+		{
+			Cwd = "..",
+		});
+		Assert.False(outside.Ok);
+		Assert.Contains("inside the parent workspace", outside.Text);
+
+		var both = await hub.StartAsync(new SubagentStartRequest("worker", "查隔离副本。")
+		{
+			Cwd = "work",
+			Worktree = true,
+		});
+		Assert.False(both.Ok);
+		Assert.Contains("cannot be combined with worktree", both.Text);
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+	}
+
+	[Fact]
+	public async Task SteerPendingClearsWhenTheChildReadsTheMessage()
+	{
+		File.WriteAllText(Path.Combine(_root, "a.txt"), "x");
+		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var parentStream = new ScriptedStreamFn();
+		parentStream.EnqueueText("父会话收到。");
+		var childStream = new ScriptedStreamFn();
+		childStream.Enqueue(model => GatedToolCall(model, "read-1", "read",
+			new JsonObject { ["path"] = "a.txt" }, gate.Task));
+		childStream.EnqueueText("读完了。");
+		var host = new FakeHost(_root, addReadTool: true);
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateParent(parentStream, host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+		var started = await hub.StartAsync(new SubagentStartRequest("scout", "读文件。"));
+		Assert.True(started.Ok, started.Text);
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Running, "子代理应开始运行");
+
+		var sent = await hub.SendAsync(started.Name!, "补充一条。", "steer");
+		Assert.True(sent.Ok, sent.Text);
+		Assert.True(hub.Runs.Single().SteerPending, "steer 入队后应标待送达");
+
+		gate.SetResult();
+		await Eventually.IsTrue(() => !hub.Runs.Single().SteerPending, "工具轮后的队列更新应清除待送达");
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "第二轮结束");
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
+	}
+
+	[Fact]
+	public async Task SendWhileTheChildSessionIsStartingWaitsInsteadOfFailing()
+	{
+		var host = new FakeHost(_root)
+		{
+			CreateGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+		};
+		var childStream = new ScriptedStreamFn();
+		childStream.EnqueueText("首轮结论。");
+		childStream.EnqueueText("第二轮结论。");
+		host.Streams.Enqueue(childStream);
+
+		using var parent = CreateParent(new ScriptedStreamFn(), host);
+		var hub = Assert.IsType<SubagentHub>(parent.Subagents);
+
+		var start = hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
+		await Eventually.IsTrue(() => host.Contexts.Count == 1, "宿主已开始建会话");
+
+		// delegate 已经返回名字，宿主还没建完会话：这条消息不能按「历史项」冷恢复失败。
+		var send = hub.SendAsync("scout-1", "补充一句。");
+		Assert.False(send.IsCompleted, "启动窗口内的 send 应等会话建好");
+
+		host.CreateGate.SetResult();
+		var started = await start;
+		Assert.True(started.Ok, started.Text);
+		var sent = await send;
+		Assert.True(sent.Ok, sent.Text);
+
+		await Eventually.IsTrue(
+			() => childStream.Requests.Any(request => request.Any(message =>
+				message is UserMessage user &&
+				user.Content.Text?.Contains("补充一句", StringComparison.Ordinal) == true)),
+			"启动窗口内排队的消息应进入子会话");
+		await hub.DeliveryBarrier.WaitAsync(TimeSpan.FromSeconds(10));
 	}
 
 	[Fact]
@@ -654,13 +947,14 @@ public sealed class SubagentTests : IDisposable
 	[Fact]
 	public async Task ResultIsHeldWhileTheParentRunsSoWaitAndDeliveryDoNotBothFire()
 	{
-		// 父会话正在跑一轮（模拟它阻塞在 wait_subagents 上）：子代理先完成，
-		// 结果必须攒着，不能先排成 follow-up 再被 wait 取走 —— 那会让同一段正文进两次上下文。
+		// 父会话阻塞在 wait_subagents 上：子代理完成时结果必须攒着，
+		// 不能先排成 follow-up 再被 wait 取走 —— 那会让同一段正文进两次上下文。
 		var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		var parentStream = new ScriptedStreamFn();
 		parentStream.Enqueue(model => GatedText(model, "父会话这一轮结束了。", gate.Task));
+		var childGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		var childStream = new ScriptedStreamFn();
-		childStream.EnqueueText("子代理结论。");
+		childStream.Enqueue(model => GatedText(model, "子代理结论。", childGate.Task));
 		var host = new FakeHost(_root);
 		host.Streams.Enqueue(childStream);
 
@@ -672,16 +966,20 @@ public sealed class SubagentTests : IDisposable
 
 		var started = await hub.StartAsync(new SubagentStartRequest("scout", "查一下。"));
 		Assert.True(started.Ok, started.Text);
-		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Idle, "子代理第一轮结束");
+		await Eventually.IsTrue(() => hub.Runs.Single().State == SubagentState.Running, "子代理应开始运行");
+
+		// 真的进入 wait，而不是让子代理先跑完再补一个 wait。
+		var waiting = hub.WaitAsync([started.Name!], TimeSpan.FromSeconds(5));
+		childGate.SetResult();
+
+		var waited = await waiting;
+		Assert.True(waited.Ok, waited.Text);
+		Assert.Contains("子代理结论", waited.Text);
 
 		// 父会话还在跑：结果不能提前投递（只会补跑一轮请求，不会多出「回报」那一轮）。
 		var requestsWhileRunning = parentStream.Requests.Count;
 		await Task.Delay(400);
 		Assert.Equal(requestsWhileRunning, parentStream.Requests.Count);
-
-		var waited = await hub.WaitAsync([started.Name!], TimeSpan.FromSeconds(5));
-		Assert.True(waited.Ok, waited.Text);
-		Assert.Contains("子代理结论", waited.Text);
 
 		gate.SetResult();
 		await running;
@@ -2196,10 +2494,12 @@ public sealed class SubagentTests : IDisposable
 		await Eventually.IsTrue(() => !parent.IsRunning, "父会话回报轮次收尾");
 		Assert.Equal(SubagentHub.MaxAutoContinue, parentStream.Requests.Count);
 
-		// 第 7 轮没有自动投递，但正文没丢：wait 仍能取回。
+		// 第 7 轮没有自动投递：卡片与 list 要标出来，正文没丢。
+		await Eventually.IsTrue(() => hub.Runs.Single().DeliverySuppressed, "停投后应标记未投递");
 		var waited = await hub.WaitAsync([started.Name!], TimeSpan.FromSeconds(5));
 		Assert.True(waited.Ok, waited.Text);
 		Assert.Contains($"报告 {SubagentHub.MaxAutoContinue + 1}。", waited.Text);
+		Assert.False(hub.Runs.Single().DeliverySuppressed, "wait 取走后不应再标未投递");
 	}
 
 	[Fact]
@@ -3302,6 +3602,32 @@ public sealed class SubagentTests : IDisposable
 			stream.Push(new TextDeltaEvent { ContentIndex = 0, Delta = text, Partial = message });
 			stream.Push(new TextEndEvent { ContentIndex = 0, Content = text, Partial = message });
 			stream.Push(new DoneEvent { Reason = StopReason.Stop, Partial = message });
+		});
+
+		return stream;
+	}
+
+	/// 与 GatedText 同源，但在 gate 放行后才结束一个工具调用：
+	/// 用来在「子代理正在跑」的窗口里排 steer，再观察队列更新。
+	private static AssistantMessageEventStream GatedToolCall(
+		Model model,
+		string id,
+		string name,
+		JsonObject arguments,
+		Task gate)
+	{
+		var stream = new AssistantMessageEventStream();
+		_ = Task.Run(async () =>
+		{
+			var blank = ScriptedSessions.Blank(model);
+			var call = new ToolCall { Id = id, Name = name, Arguments = arguments };
+			var message = blank with { Content = [call], StopReason = StopReason.ToolUse };
+
+			stream.Push(new StartEvent { Partial = blank });
+			stream.Push(new ToolCallStartEvent { ContentIndex = 0, Partial = message });
+			stream.Push(new ToolCallEndEvent { ContentIndex = 0, ToolCall = call, Partial = message });
+			await gate.ConfigureAwait(false);
+			stream.Push(new DoneEvent { Reason = StopReason.ToolUse, Partial = message });
 		});
 
 		return stream;

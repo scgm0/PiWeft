@@ -946,6 +946,10 @@ public static partial class Strings
 	/// 父标签替子代理显示提问时的来源标签。
 	public static string AskFromSubagent(string name) => $"来自子代理「{name}」";
 
+	/// `ask_parent` 升级到用户时说明为什么用户会看到它：原本问父会话，父会话没在等。
+	public static string ParentQuestionEscalated(string name) =>
+		$"子代理「{name}」原本在问父会话；父会话没有在等待，你可以代答。";
+
 	public const string AskSubmit = "提交";
 
 	public const string AskCancel = "关闭";

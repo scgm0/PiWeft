@@ -134,7 +134,7 @@ PiWeft 把 [pi](https://github.com/earendil-works/pi) 的核心移植为 C# / .N
 - `grep`/`find` 不跟随符号链接与目录联接；Windows 上只跳过真正的链接；OneDrive 等云同步占位符也是 reparse point，但属于普通目录，照常遍历。
 - 图片管线只处理 pi 支持的五种内联格式（PNG/JPEG/GIF/WebP/BMP）；AVIF/HEIC/TIFF 等需要先转成 PNG。`inputLimits.images.maxPerMessage` 对用户消息、`maxPerRequest` 对请求投影强制，超出部分以文本括注代替；工具结果只受 `maxPerRequest` 约束。缩放与预乘语义和 Photon 不完全逐字节一致：本实现预乘 alpha，透明边缘更干净。
 - `constrainedSampling` 已声明在 `read`/`bash`/`edit`/`write` 并在 provider 层落地 strict JSON schema（Anthropic 含额度超限的会话级降级，OpenAI Completions/Responses、Google VALIDATED、Bedrock、Mistral）。grammar 变体（codemode 的 lark 约束）尚未实现。
-- 子代理不支持外部 CLI 角色；没有 worktree 隔离，跨文件并发写仍要父会话复核。
+- 子代理不支持外部 CLI 角色；worktree 隔离只隔离写子代理，同一工作区里的跨文件并发写仍要父会话复核。
 - Windows/macOS 原生窗口、发布包、真实供应商联网与 PiDeck 完整 e2e 仍需实机验证。Windows 的 Git Bash 发现顺序、旧版 WSL 的 `-s` + stdin、PowerShell 7 优先与 UTF-8 前置、`taskkill /F /T`、`/c/` `/mnt/c/` 路径换算已按 pi 审计对齐，但缺少实机回归。
 
 ## 验证

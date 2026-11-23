@@ -34,6 +34,12 @@ public sealed record SubagentDefinition
 	/// <summary>单次运行的 token 上限；null 表示用设置里的默认值，0 表示不限制。</summary>
 	public long? MaxTokens { get; init; }
 
+	/// <summary>单次运行的费用上限；null 表示不限制。</summary>
+	public double? MaxCost { get; init; }
+
+	/// <summary>单次运行的工具调用上限；null 表示不限制。</summary>
+	public long? MaxToolCalls { get; init; }
+
 	/// <summary>回合结束后由宿主跑的验证命令；省略时用父会话的设置。</summary>
 	public IReadOnlyList<string>? Verify { get; init; }
 
@@ -265,6 +271,20 @@ public sealed class SubagentCatalog
 			out var configuredMaxTokens) && configuredMaxTokens >= 0
 			? configuredMaxTokens
 			: (long?)null;
+		var maxCost = double.TryParse(
+			fields.GetValueOrDefault("maxCost"),
+			NumberStyles.Float,
+			CultureInfo.InvariantCulture,
+			out var configuredMaxCost) && double.IsFinite(configuredMaxCost) && configuredMaxCost >= 0
+			? configuredMaxCost
+			: (double?)null;
+		var maxToolCalls = long.TryParse(
+			fields.GetValueOrDefault("maxToolCalls"),
+			NumberStyles.None,
+			CultureInfo.InvariantCulture,
+			out var configuredMaxToolCalls) && configuredMaxToolCalls >= 0
+			? configuredMaxToolCalls
+			: (long?)null;
 		bool? worktree = bool.TryParse(fields.GetValueOrDefault("worktree"), out var configuredWorktree)
 			? configuredWorktree
 			: null;
@@ -280,6 +300,8 @@ public sealed class SubagentCatalog
 			Thinking = Trimmed(fields.GetValueOrDefault("thinking")),
 			TimeoutMinutes = timeoutMinutes,
 			MaxTokens = maxTokens,
+			MaxCost = maxCost,
+			MaxToolCalls = maxToolCalls,
 			Verify = SplitList(fields.GetValueOrDefault("verify")),
 			Worktree = worktree,
 			WorktreeBase = Trimmed(fields.GetValueOrDefault("worktreeBase")),

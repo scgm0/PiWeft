@@ -1142,12 +1142,28 @@ public sealed partial class MainWindow : Window
 			{
 				SubagentState.Starting => Strings.SidebarSubagentStarting,
 				SubagentState.Running => Strings.SidebarSubagentRunning,
-				SubagentState.Failed => Strings.SidebarSubagentFailed,
+				// 失败原因首行跟着状态走：侧栏不用打开卡片就能判断要不要处理。
+				SubagentState.Failed => entry.Failure is { Length: > 0 } reason
+					? $"{Strings.SidebarSubagentFailed}：{reason}"
+					: Strings.SidebarSubagentFailed,
 				_ => string.Empty,
 			};
 			if (state.Length > 0)
 			{
-				return $" · {state}";
+				var suffix = entry.Suppressed
+					? $" · {Strings.SidebarSubagentNotDelivered}"
+					: entry.SteerPending ? $" · {Strings.SidebarSubagentSteerPending}" : string.Empty;
+				return $" · {state}{suffix}";
+			}
+
+			if (entry.Suppressed)
+			{
+				return $" · {Strings.SidebarSubagentNotDelivered}";
+			}
+
+			if (entry.SteerPending)
+			{
+				return $" · {Strings.SidebarSubagentSteerPending}";
 			}
 
 			if (entry.ChangedFiles > 0)
@@ -1533,9 +1549,12 @@ public sealed partial class MainWindow : Window
 		hub.QuestionAnswered += OnAnswered;
 		try
 		{
-			var prompt = question.Options.Count > 0
+			// 这不是子代理直接问用户（ask_question），是 ask_parent 升级：先说明原委，
+			// 用户才知道自己在替父会话回答，不会把它当成子代理越权提问。
+			var body = question.Options.Count > 0
 				? string.Concat(question.Text, "\n\n可选项：", string.Join(" / ", question.Options))
 				: question.Text;
+			var prompt = string.Concat(Strings.ParentQuestionEscalated(run.Name), "\n\n", body);
 			AskQuestion ask = new("q1", "input", prompt, null, null, null);
 			var raw = await owner.AskPanel
 				.ShowAsync([ask], review: false, cancel.Token, source: run.Name, alertSessionId: run.SessionId)
@@ -2131,6 +2150,27 @@ public sealed partial class MainWindow : Window
 		return tab;
 	}
 
+	/// 命令面板里停止一个子代理：按父会话找到 hub，子会话可能没有标签。
+	private void StopSubagentFromPalette(string parentSessionId, string sessionId)
+	{
+		foreach (var tab in _tabEntries.OfType<SessionTab>())
+		{
+			if (!string.Equals(SessionIdOf(tab), parentSessionId, StringComparison.Ordinal) ||
+				tab.Session.Subagents is not { } hub)
+			{
+				continue;
+			}
+
+			var outcome = hub.Stop(sessionId);
+			if (!outcome.Ok)
+			{
+				Toasts.Show(this, outcome.Text);
+			}
+
+			return;
+		}
+	}
+
 	/// 切到某个会话的标签（关联会话的「打开」）。找不到时返回 false；
 	/// 侧栏快照里没有时先后台重扫一次目录再找（重扫不能占 UI 线程）。
 	internal async Task<bool> ActivateSessionAsync(string sessionId)
@@ -2145,6 +2185,11 @@ public sealed partial class MainWindow : Window
 			// 是 hub 管的子代理，但活会话打不开：按文件再开一份就成了同一文件的两个写者。
 			// 让用户重试（再点一次会重新冷恢复），不落到下面的文件打开。
 			AppLog.For<MainWindow>().ZLogWarning($"Detached subagent session could not be reopened: child={sessionId}");
+			if (!_sessionHostClosed)
+			{
+				Toasts.Show(this, Strings.SessionOpenFailed);
+			}
+
 			return false;
 		}
 
@@ -2159,6 +2204,12 @@ public sealed partial class MainWindow : Window
 
 		if (item is null)
 		{
+			// 子代理的会话文件被删了（或目录快照过期）：点「打开」不能毫无反应。
+			if (!_sessionHostClosed)
+			{
+				Toasts.Show(this, Strings.SessionOpenFailed);
+			}
+
 			return false;
 		}
 
@@ -3438,10 +3489,24 @@ public sealed partial class MainWindow : Window
 			var changed = entry.ChangedFiles > 0
 				? $" · {entry.ChangedFiles} 文件"
 				: entry.MayWrite ? $" · {Strings.SidebarSubagentMayWrite}" : string.Empty;
+			var failure = entry.State == SubagentState.Failed && entry.Failure is { Length: > 0 } reason
+				? $" · {(reason.Length > 60 ? string.Concat(reason.AsSpan(0, 60), "…") : reason)}"
+				: string.Empty;
+			var steer = entry.SteerPending ? $" · {Strings.SidebarSubagentSteerPending}" : string.Empty;
+			var suppressed = entry.Suppressed ? $" · {Strings.SidebarSubagentNotDelivered}" : string.Empty;
 			subagentCommands.Add(new PaletteCommand(
 				$"{Strings.SubagentCardTitle} · {entry.Name}{parent}",
-				$"{state} · {entry.Agent}{changed}",
+				$"{state} · {entry.Agent}{changed}{failure}{steer}{suppressed}",
 				() => _ = ActivateSessionAsync(sessionId)));
+
+			if (entry.IsActive)
+			{
+				var parentSessionId = entry.ParentSessionId;
+				subagentCommands.Add(new PaletteCommand(
+					$"{Strings.SubagentStop} · {entry.Name}{parent}",
+					$"{state} · {entry.Agent}",
+					() => StopSubagentFromPalette(parentSessionId, sessionId)));
+			}
 		}
 
 		commands.InsertRange(0, subagentCommands);
@@ -3893,7 +3958,17 @@ public sealed partial class MainWindow : Window
 		&& (_environment?.Settings.IsBuiltinExtensionEnabled(ExtensionRules.McpBuiltin) ?? true);
 
 	private IReadOnlyList<AgentTool> McpToolsFor(string cwd) =>
-		McpBuiltinEnabled && string.Equals(Path.GetFullPath(cwd), Path.GetFullPath(_cwd), StringComparison.Ordinal) ? _mcpTools : [];
+		McpBuiltinEnabled && _mcpTools.Count > 0 && IsWithinWorkspace(_cwd, cwd) ? _mcpTools : [];
+
+	/// 子目录沿用父工作区的 MCP 工具；别的项目仍不借用。
+	private static bool IsWithinWorkspace(string root, string path)
+	{
+		var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
+		return relative == "." ||
+			(!Path.IsPathRooted(relative) && relative != ".." &&
+			 !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+			 !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal));
+	}
 
 	private async Task ConnectMcpAsync()
 	{

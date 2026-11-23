@@ -70,7 +70,8 @@ public sealed partial class MainWindow
 			worktree = await Task.Run(() => CreateWorktree(context), cancellationToken).ConfigureAwait(false);
 		}
 
-		var prepared = await PrepareChildAsync(context.Parent, worktree?.Path, cancellationToken).ConfigureAwait(false);
+		// worktree 设置自己的目录；普通 cwd 只允许父工作区内的子目录，hub 已校验。
+		var prepared = await PrepareChildAsync(context.Parent, worktree?.Path ?? context.Cwd, cancellationToken).ConfigureAwait(false);
 		if (prepared is null)
 		{
 			DiscardWorktree(worktree);
@@ -148,14 +149,23 @@ public sealed partial class MainWindow
 				return (SubagentChildPreparation?)null;
 			}
 
-			var cwd = string.IsNullOrEmpty(cwdOverride) ? parent.Cwd : cwdOverride;
+			var cwd = string.IsNullOrEmpty(cwdOverride) ? parent.Cwd : Path.GetFullPath(cwdOverride);
+			if (!Directory.Exists(cwd))
+			{
+				// hub 已经校验过；这里挡住并发删除或设置文件里写坏的路径。
+				return null;
+			}
+
 			var parentFile = parent.Session.SessionFile;
 			var sessionDir = parentFile is { Length: > 0 }
 				? Path.GetDirectoryName(parentFile)
 				: null;
+			// 同一工作区内的子目录复用父环境：设置、MCP 与项目信任一致，也避免
+			// 为每个子目录重新建一份 registry。worktree 或跨项目路径仍用自己的环境。
+			var environmentCwd = IsWithinWorkspace(parent.Cwd, cwd) ? parent.Cwd : cwd;
 			return new SubagentChildPreparation(
-				EnvironmentFor(cwd),
-				McpToolsFor(cwd),
+				EnvironmentFor(environmentCwd),
+				McpToolsFor(environmentCwd),
 				cwd,
 				sessionDir,
 				parentFile,
@@ -269,7 +279,7 @@ public sealed partial class MainWindow
 			return null;
 		}
 
-		var prepared = await PrepareChildAsync(context.Parent, context.WorktreePath, cancellationToken).ConfigureAwait(false);
+		var prepared = await PrepareChildAsync(context.Parent, context.WorktreePath ?? context.Cwd, cancellationToken).ConfigureAwait(false);
 		if (prepared is null)
 		{
 			return null;
@@ -301,6 +311,9 @@ public sealed partial class MainWindow
 							context.Depth)
 						{
 							PlanMode = context.PlanMode,
+							Model = context.Model,
+							Thinking = context.Thinking,
+							Cwd = context.Cwd,
 							OutputSchema = context.OutputSchema,
 							// 重开的会话也要知道宿主会复核：不然模型又开始口头声称测试通过。
 							Verify = context.Verify,

@@ -37,6 +37,8 @@ internal sealed class SubagentCard
 	private readonly List<RowState> _rendered = [];
 	// 展开状态按名字记：状态变化会让整行重建，展开的内容不能跟着合上。
 	private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
+	// 每个失败行只自动展开一次：用户收起后，下一次刷新不能又把它撑开。
+	private readonly HashSet<string> _autoExpanded = new(StringComparer.Ordinal);
 	// 输入框草稿也按名字记：轮次结束会重建行，打了一半的消息不能丢。
 	// 问题框与自由输入框分开存：问题被父会话取走后，半截回答不该变成普通消息。
 	private readonly Dictionary<(string Name, bool Answer), string> _drafts = new();
@@ -49,8 +51,8 @@ internal sealed class SubagentCard
 	// 行数据来源：真实会话取 hub 快照；--ui-smoke 直接给一组固定快照，截图不受回合节奏影响。
 	private SubagentHub? _hub;
 	private SubagentRun[]? _smokeRuns;
-	// 卡头三个数是每次刷新的固定开销：没变就不重新拼字符串。
-	private (int Active, int Total, int Shown) _meta = (-1, -1, -1);
+	// 卡头几项是每次刷新的固定开销：没变就不重新拼字符串。
+	private (int Active, int Total, int Shown, long Tokens, double Cost) _meta = (-1, -1, -1, -1, -1);
 
 	private sealed record RowState(
 		string Name,
@@ -72,6 +74,8 @@ internal sealed class SubagentCard
 		int VerifyCount,
 		string StopReason,
 		string Question,
+		bool DeliverySuppressed,
+		bool SteerPending,
 		bool Expanded,
 		TextBlock Status,
 		TextBlock Resumable,
@@ -170,11 +174,21 @@ internal sealed class SubagentCard
 			ClearRows();
 			_rendered.Clear();
 			_expanded.Clear();
+			_autoExpanded.Clear();
 			return;
+		}
+
+		// 运行被 Forget/删除后，按名字保存的展开状态与草稿也要跟着收走；
+		// 长会话里子代理名字只增不减，留着就是一份慢泄漏。
+		if (_meta.Total > runs.Length)
+		{
+			PruneRunState(runs);
 		}
 
 		var active = 0;
 		var awaiting = false;
+		long totalTokens = 0;
+		double totalCost = 0;
 		foreach (var run in runs)
 		{
 			if (run.IsActive)
@@ -182,6 +196,8 @@ internal sealed class SubagentCard
 				active++;
 			}
 
+			totalTokens += run.Tokens;
+			totalCost += run.Cost;
 			// 等父会话回答也算「需要你」：父会话可能没接上，20 秒后问题会落到问询卡上。
 			awaiting |= run.AwaitingUser || run.Question is { Length: > 0 };
 		}
@@ -192,11 +208,11 @@ internal sealed class SubagentCard
 
 		var ordered = Ordered(runs);
 		var displayCount = Math.Min(ordered.Length, MaxDisplayedRuns);
-		var metaKey = (active, runs.Length, displayCount);
+		var metaKey = (active, runs.Length, displayCount, totalTokens, totalCost);
 		if (metaKey != _meta)
 		{
 			_meta = metaKey;
-			_card.Meta = Strings.SubagentCardMeta(active, runs.Length, displayCount);
+			_card.Meta = Strings.SubagentCardMeta(active, runs.Length, displayCount, totalTokens, totalCost);
 		}
 
 		// 只在结构变化时重建：活动变化（当前工具）只改文字，保住 hover 提示与卡内焦点。
@@ -210,13 +226,69 @@ internal sealed class SubagentCard
 			return;
 		}
 
+		// 重建前记下旧状态：失败从「活动」翻过来的那一次自动展开，让原因不用再点一下。
+		var previousStates = new Dictionary<string, SubagentState>(_rendered.Count, StringComparer.Ordinal);
+		foreach (var row in _rendered)
+		{
+			previousStates[row.Name] = row.State;
+		}
+
 		_rendered.Clear();
 		ClearRows();
 		for (var index = 0; index < displayCount; index++)
 		{
-			var (row, meta) = Row(ordered[index]);
+			var run = ordered[index];
+			if (run.State == SubagentState.Failed &&
+				!_autoExpanded.Contains(run.Name) &&
+				previousStates.TryGetValue(run.Name, out var previous) &&
+				previous != SubagentState.Failed)
+			{
+				_autoExpanded.Add(run.Name);
+				_expanded.Add(run.Name);
+			}
+
+			var (row, meta) = Row(run);
 			_rendered.Add(meta);
 			_rows.Add(row);
+		}
+	}
+
+	/// 清理已经不在快照里的名字；只按名字保留的 UI 状态不能无限增长。
+	private void PruneRunState(SubagentRun[] runs)
+	{
+		if (_expanded.Count == 0 && _autoExpanded.Count == 0 && _drafts.Count == 0)
+		{
+			return;
+		}
+
+		var names = new HashSet<string>(runs.Length, StringComparer.Ordinal);
+		foreach (var run in runs)
+		{
+			names.Add(run.Name);
+		}
+
+		_expanded.RemoveWhere(name => !names.Contains(name));
+		_autoExpanded.RemoveWhere(name => !names.Contains(name));
+		if (_drafts.Count == 0)
+		{
+			return;
+		}
+
+		List<(string Name, bool Answer)>? stale = null;
+		foreach (var key in _drafts.Keys)
+		{
+			if (!names.Contains(key.Name))
+			{
+				(stale ??= []).Add(key);
+			}
+		}
+
+		if (stale is not null)
+		{
+			foreach (var key in stale)
+			{
+				_drafts.Remove(key);
+			}
 		}
 	}
 
@@ -275,6 +347,8 @@ internal sealed class SubagentCard
 				!string.Equals(run.WorktreePath ?? string.Empty, row.Worktree, StringComparison.Ordinal) ||
 				!string.Equals(run.WorktreeBranch ?? string.Empty, row.WorktreeBranch, StringComparison.Ordinal) ||
 				run.Verify.Count != row.VerifyCount ||
+				run.DeliverySuppressed != row.DeliverySuppressed ||
+				run.SteerPending != row.SteerPending ||
 				!string.Equals(run.Question ?? string.Empty, row.Question, StringComparison.Ordinal) ||
 				!string.Equals(run.StopReason, row.StopReason, StringComparison.Ordinal) ||
 				!string.Equals(run.Name, row.Name, StringComparison.Ordinal) ||
@@ -306,7 +380,7 @@ internal sealed class SubagentCard
 		var live = row.Live;
 		if (live.Tokens != run.Tokens || live.Cost != run.Cost)
 		{
-			SetText(row.Usage, Strings.SubagentUsage(run.Tokens, run.Cost, run.MaxTokens));
+			SetText(row.Usage, Strings.SubagentUsage(run.Tokens, run.Cost, run.MaxTokens, run.MaxCost));
 			live.Tokens = run.Tokens;
 			live.Cost = run.Cost;
 		}
@@ -367,7 +441,15 @@ internal sealed class SubagentCard
 		}
 
 		var phase = Strings.SubagentStateText(run.State);
-		return run.Turns > 0 ? $"{phase} · {Strings.LinkedTurns(run.Turns)}" : phase;
+		var status = run.Turns > 0 ? $"{phase} · {Strings.LinkedTurns(run.Turns)}" : phase;
+		if (run.DeliverySuppressed)
+		{
+			return run.State == SubagentState.Failed
+				? $"{status} · {Strings.SidebarSubagentNotDelivered}"
+				: Strings.SubagentDeliverySuppressed;
+		}
+
+		return run.SteerPending ? $"{status} · {Strings.SubagentSteerPending}" : status;
 	}
 
 	private static string ResumableText(SubagentRun run) =>
@@ -475,7 +557,13 @@ internal sealed class SubagentCard
 
 	private static string StatusRole(SubagentRun run)
 	{
-		if (run.AwaitingUser)
+		// 失败优先报错误色：停投标记是提示，不能盖过失败状态。
+		if (run.State == SubagentState.Failed)
+		{
+			return AppStyles.RoleError;
+		}
+
+		if (run.AwaitingUser || run.DeliverySuppressed)
 		{
 			return AppStyles.RoleWarning;
 		}
@@ -529,7 +617,7 @@ internal sealed class SubagentCard
 		}
 
 		duration.IsVisible(run.StartedAt > 0);
-		var usageText = Strings.SubagentUsage(run.Tokens, run.Cost, run.MaxTokens);
+		var usageText = Strings.SubagentUsage(run.Tokens, run.Cost, run.MaxTokens, run.MaxCost);
 		var usage = new TextBlock()
 			.Text(usageText)
 			.FontSize(AppTheme.FontSizeMicro)
@@ -917,6 +1005,8 @@ internal sealed class SubagentCard
 			run.Verify.Count,
 			run.StopReason,
 			run.Question ?? string.Empty,
+			run.DeliverySuppressed,
+			run.SteerPending,
 			expanded,
 			status,
 			resumable,

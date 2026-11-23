@@ -803,7 +803,7 @@ public sealed class CliEnvironment
 		ArgumentNullException.ThrowIfNull(context);
 
 		var definition = context.Agent;
-		var model = ResolveChildModel(definition) ?? context.Parent.Model;
+		var model = ResolveModel(context.Model) ?? ResolveChildModel(definition) ?? context.Parent.Model;
 		var (tools, rejectedTools) = ChildTools(
 			arguments,
 			cwd,
@@ -861,8 +861,8 @@ public sealed class CliEnvironment
 			ApiKeyForProvider = provider => arguments.ApiKey ?? ProviderApiKeys.GetValueOrDefault(provider),
 			Images = Images,
 			Classifiers = Classifiers,
-			// 角色没写级别时沿用父会话当前级别，而不是回到全局默认。
-			ThinkingLevel = definition.Thinking ?? context.Parent.ThinkingLevel,
+			// 本次覆盖 → 角色 → 父会话当前级别；都没有时才由会话回到全局默认。
+			ThinkingLevel = context.Thinking ?? definition.Thinking ?? context.Parent.ThinkingLevel,
 			Tools = tools,
 			Session = session,
 			Persist = true,
@@ -889,10 +889,13 @@ public sealed class CliEnvironment
 		return child;
 	}
 
-	private Model? ResolveChildModel(SubagentDefinition definition)
+	private Model? ResolveChildModel(SubagentDefinition definition) => ResolveModel(definition.Model);
+
+	/// 解析模型覆盖；空串返回 null，让调用方继续走角色或父会话。
+	private Model? ResolveModel(string? spec)
 	{
-		var spec = definition.Model?.Trim();
-		return string.IsNullOrEmpty(spec) ? null : Registry.Resolve(spec);
+		var value = spec?.Trim();
+		return string.IsNullOrEmpty(value) ? null : Registry.Resolve(value);
 	}
 
 	private (IReadOnlyList<AgentTool> Tools, IReadOnlyList<string> Rejected) ChildTools(

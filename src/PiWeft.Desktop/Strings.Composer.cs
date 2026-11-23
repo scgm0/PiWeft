@@ -210,7 +210,7 @@ public static partial class Strings
 	public static string LinkedTurns(int turns) => $"{turns} 轮";
 
 	/// 带预算时把上限一起写出来：12k/50k tk 比单看 12k 有意义。
-	public static string SubagentUsage(long tokens, double cost, long maxTokens = 0)
+	public static string SubagentUsage(long tokens, double cost, long maxTokens = 0, double maxCost = 0)
 	{
 		var shown = tokens > 0
 			? TrajectoryFormat.CompactTokens(tokens)
@@ -218,12 +218,15 @@ public static partial class Strings
 		var usage = maxTokens > 0
 			? $"{shown}/{TrajectoryFormat.CompactTokens(maxTokens)} tk"
 			: shown.Length > 0 ? $"{shown} tk" : string.Empty;
-		if (cost <= 0)
+		var costText = maxCost > 0
+			? $"${cost:0.0000}/${maxCost:0.0000}"
+			: cost > 0 ? $"${cost:0.0000}" : string.Empty;
+		if (costText.Length == 0)
 		{
 			return usage;
 		}
 
-		return usage.Length == 0 ? $"${cost:0.0000}" : $"{usage} · ${cost:0.0000}";
+		return usage.Length == 0 ? costText : $"{usage} · {costText}";
 	}
 
 	public static string LinkedState(string state) => state switch
@@ -409,10 +412,21 @@ public static partial class Strings
 
 	public static string WorkspaceNoticeSameFile(string title, string file) => $"「{title}」也在改 {file}。";
 
-	public static string SubagentCardMeta(int active, int total, int shown = -1)
+	public static string SubagentCardMeta(int active, int total, int shown = -1, long tokens = 0, double cost = 0)
 	{
-		var text = active > 0 ? $"{active} 个在跑 · 共 {total} 个" : $"共 {total} 个";
-		return shown >= 0 && shown < total ? $"{text} · 显示 {shown} 个" : text;
+		var text = active > 0 ? $"{active} 个在跑 · {total} 个" : $"{total} 个";
+		if (tokens > 0)
+		{
+			text = $"{text} · {TrajectoryFormat.CompactTokens(tokens)} tk";
+		}
+
+		if (cost > 0)
+		{
+			text = $"{text} · ${cost:0.0000}";
+		}
+
+		// 卡片只画最近 20 行：多出来的要告诉用户去哪里看，不然像是丢了。
+		return shown >= 0 && shown < total ? $"{text} · 显示 {shown} · 命令面板看全部" : text;
 	}
 
 	public static string SubagentStateText(SubagentState state) => state switch
@@ -426,6 +440,16 @@ public static partial class Strings
 	};
 
 	public const string SubagentResumable = "可继续";
+
+	/// 连续回报上限后不再自动投递；正文仍在，wait_subagents 能取。
+	public const string SubagentDeliverySuppressed = "回报未自动投递 · wait 可取";
+
+	public const string SidebarSubagentNotDelivered = "未投递";
+
+	/// 已发给子代理、还在 steering 队列里，模型尚未在下一个工具边界读到。
+	public const string SubagentSteerPending = "消息待送达";
+
+	public const string SidebarSubagentSteerPending = "待送达";
 
 	/// <summary>子代理在自己的标签里打开问询卡：状态行与卡片提示都用这一句。</summary>
 	public const string SubagentAwaitingState = "等待回答";
@@ -491,6 +515,17 @@ public static partial class Strings
 	public static string QueuedInjectedTip(string preview) => $"等待下一轮处理的回报：{preview}";
 
 	public static string SubagentStopFailed(string name) => $"停不掉子代理「{name}」，它可能已经结束。";
+
+	/// <summary>会话文件已删除或打不开：点「打开」后要有一句反馈，不能静默不动。</summary>
+	public const string SessionOpenFailed = "打不开这个会话：会话文件可能已被删除。";
+
+	/// <summary>后台子代理失败时的轻提示；正文只取失败原因首行。</summary>
+	public static string SubagentFailedNotice(string name, string reason) => reason.Length > 0
+		? $"子代理「{name}」失败：{reason}"
+		: $"子代理「{name}」失败。";
+
+	/// <summary>子代理完成且父标签不在前台时的轻提示。</summary>
+	public static string SubagentCompletedNotice(string name) => $"子代理「{name}」完成了这一轮。";
 
 	/// 关父标签会停掉没有自己标签的子代理；批量关闭时只问一次。
 	public static string SubagentCloseConfirm(int running) =>
