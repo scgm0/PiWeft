@@ -547,6 +547,15 @@ public sealed class AskQuestionPanelTests
 		var scrollers = Find<ScrollViewer>(panel.View).ToArray();
 		var body = scrollers.Single(view => view.MaxHeight == 320);
 		var detail = scrollers.Single(view => view.MaxHeight == 220);
+		// 滚动条是覆盖在内容上的细条：内容让出右侧命中区，按钮与文字不会压在它下面。
+		Assert.Equal(AppTheme.ScrollBarSlot, body.Padding.Right);
+		Assert.Equal(AppTheme.ScrollBarSlot, detail.Padding.Right);
+		var bodyContent = Assert.IsAssignableFrom<FrameworkElement>(body.Content);
+		Assert.True(body.Bounds.Right - bodyContent.Bounds.Right >= AppTheme.ScrollBarSlot - 1,
+			$"正文右缘 {bodyContent.Bounds.Right:0} 没给滚动条让位（视口右缘 {body.Bounds.Right:0}）");
+		// 正文左右边距都是 12：滚动条槽位从内容区右边距里让，不再额外加宽右侧。
+		Assert.InRange(bodyContent.Bounds.Left, panel.View.Bounds.Left + AppTheme.Space3 - 2, panel.View.Bounds.Left + AppTheme.Space3 + 2);
+		Assert.InRange(bodyContent.Bounds.Right, panel.View.Bounds.Right - AppTheme.Space3 - 2, panel.View.Bounds.Right - AppTheme.Space3 + 2);
 		// 控制器只在装过的时候才拿到：For 会顺手新建一个，拿它断言等于没测。
 		var smooth = SmoothScroll.Find(body)!;
 		Assert.NotNull(SmoothScroll.Find(detail));

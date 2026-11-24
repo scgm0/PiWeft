@@ -85,7 +85,10 @@ internal sealed class ProviderKeyPanel
 					AppIcons.TextButton("x", Strings.Cancel, Hide),
 					_save).Column(2));
 
-		var body = new ScrollViewer().SmoothScrolling().AutoVerticalScroll().NoHorizontalScroll().MaxHeight(560)
+		var body = new ScrollViewer().SmoothScrolling().AutoVerticalScroll().NoHorizontalScroll()
+			// 滚动条覆盖在内容上：卡片右内边距只留 2，滚动体自己补一格命中区。
+			.Padding(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
+			.MaxHeight(560)
 			.Content(new StackPanel().Spacing(AppTheme.Space3).Children(
 				_current,
 				_warning,
@@ -96,16 +99,18 @@ internal sealed class ProviderKeyPanel
 				_error));
 
 		var card = new Border().StyleName(AppStyles.Card).CornerRadius(AppTheme.RadiusMd)
-			.Padding(new Thickness(AppTheme.Space3)).Child(new DockPanel().LastChildFill()
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3 - AppTheme.ScrollBarSlot, AppTheme.Space3))
+			.Child(new DockPanel().LastChildFill()
 				.Spacing(AppTheme.Space2).Children(
-					new StackPanel().Spacing(4).Children(
-						new Grid().Columns("*,Auto").Children(
-							_title.Column(0),
-							AppIcons.Button("x", Strings.AuthClose, Hide).Column(1)),
-						_subtitle).DockTop(),
+					new StackPanel().Spacing(4)
+						.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)).Children(
+							new Grid().Columns("*,Auto").Children(
+								_title.Column(0),
+								AppIcons.Button("x", Strings.AuthClose, Hide).Column(1)),
+							_subtitle).DockTop(),
 					new Border().Height(1).DockTop()
 						.WithTheme((theme, border) => border.Background = AppTheme.For(theme).BorderSubtle),
-					footer.DockBottom(),
+					footer.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)).DockBottom(),
 					body));
 
 		_view = new Grid().IsVisible(false).Focusable(true).Children(

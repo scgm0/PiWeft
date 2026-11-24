@@ -1137,7 +1137,8 @@ public sealed class SettingsView
 
 		// 提示词模板（对齐 PiDeck 的 gitCommitMessagePrompt）：{diff} 是暂存区 diff 的占位符。
 		// 偏好里存空串 = 跟随内置默认模板，所以框里直接展示默认模板，用户能直接在上面改。
-		var promptBox = new MultiLineTextBox().PrimarySelection()
+		// 嵌在平滑滚动的内容区里：文本框不再装控制器，否则嵌套里算不出余量、滚轮被吞。
+		var promptBox = new MultiLineTextBox().PrimarySelection(smoothScroll: false)
 			.Height(170)
 			.FontSize(AppTheme.FontSizeCaption)
 			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))
@@ -1227,7 +1228,8 @@ public sealed class SettingsView
 		var path = DesktopPreference.Path(agentDir);
 		var items = DesktopPreference.Load(agentDir).QuickMessageList;
 
-		var box = new MultiLineTextBox().PrimarySelection()
+		// 同样嵌在平滑滚动的内容区里，文本框的内建滚轮直接写偏移。
+		var box = new MultiLineTextBox().PrimarySelection(smoothScroll: false)
 			.Height(240)
 			.FontSize(AppTheme.FontSizeCaption)
 			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))

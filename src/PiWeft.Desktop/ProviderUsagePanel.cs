@@ -89,7 +89,8 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 
 		_testButton = AppIcons.Button("play", Strings.UsageTest, () => _ = TestAsync());
 		_saveButton = AppIcons.PrimaryButton("check", Strings.UsageSave, Save);
-		var bottom = new Grid().Columns("Auto,*,Auto").Children(
+		var bottom = new Grid().Columns("Auto,*,Auto")
+			.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)).Children(
 			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(
 				AppIcons.Button("folder-open", Strings.UsageOpenFile, OpenFile), _testButton).Column(0),
 			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4)
@@ -98,16 +99,21 @@ internal sealed class ProviderUsagePanel(Func<Model> current, Func<string> cwd)
 					_saveButton).Column(2));
 
 		var scroll = new ScrollViewer().SmoothScrolling().Content(_body)
-			.AutoVerticalScroll().NoHorizontalScroll().MaxHeight(560);
+			.AutoVerticalScroll().NoHorizontalScroll()
+			// 滚动条覆盖在内容上：卡片右内边距只留 2，滚动体自己补一格命中区，
+			// 内容右缘与标题、底部对齐在 12 DIP。
+			.Padding(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
+			.MaxHeight(560);
 		return new Grid().IsVisible(false).Children(
 			new Button().Background(new Color(0x60, 0x00, 0x00, 0x00)).Cursor(CursorType.Arrow).Focusable(false)
 				.BorderThickness(0).CornerRadius(0).OnClick(Hide),
 			new UsageDialogSurface().MaxWidth(560).HorizontalAlignment(HorizontalAlignment.Center)
 				.VerticalAlignment(VerticalAlignment.Center).Margin(new Thickness(AppTheme.Space3))
 				.Content(new Border().StyleName(AppStyles.Card).CornerRadius(AppTheme.RadiusMd)
-					.Padding(new Thickness(AppTheme.Space3))
+					.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3 - AppTheme.ScrollBarSlot, AppTheme.Space3))
 					.Child(new DockPanel().LastChildFill().Spacing(AppTheme.Space2).Children(
-						new StackPanel().Spacing(AppTheme.Space2).Children(
+						new StackPanel().Spacing(AppTheme.Space2)
+							.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)).Children(
 							new Grid().Columns("*,Auto").Children(
 								_heading.Text(Strings.ProviderUsage).FontSize(AppTheme.FontSizeTitle)
 									.FontWeight(FontWeight.Bold).PrimaryText().Column(0),

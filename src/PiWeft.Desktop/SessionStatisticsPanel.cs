@@ -24,17 +24,22 @@ public sealed class SessionStatisticsPanel
 
 	public SessionStatisticsPanel(Action compact)
 	{
-		_body.Margin(new Thickness(0, 0, AppTheme.Space3, 0));
-		_compact = AppIcons.PrimaryButton("square-slash", Strings.CompactContext, compact);
+		_compact = AppIcons.PrimaryButton("square-slash", Strings.CompactContext, compact)
+			.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0));
 		_overview = AppIcons.TextButton("eye", Strings.StatisticsOverview, () => SetDetails(false));
 		_details = AppIcons.TextButton("settings", Strings.StatisticsDetails, () => SetDetails(true));
 		_overview.StyleName(AppStyles.SelectedButton);
 		var scroll = new ScrollViewer().SmoothScrolling().Content(new StackPanel().Spacing(AppTheme.Space2).Children(_body, _usage))
-			.AutoVerticalScroll().NoHorizontalScroll().MaxHeight(480);
+			.AutoVerticalScroll().NoHorizontalScroll()
+			// 滚动条覆盖在内容上，贴着视口右缘画。卡片右内边距只留 6，滚动体自己补一格命中区：
+			// 内容右缘与标题、按钮一样停在 16 DIP，左右不再一宽一窄。
+			.Padding(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
+			.MaxHeight(480);
 		// 标题区与 PiDeck 的上下文弹窗同结构：先给结论（已用百分比 + ~已用/窗口），
 		// 再用一条三段占用条与图例拆开系统、工具、对话；只看一个百分比无法判断
 		// 是上下文真的长，还是工具 schema 很大。
-		var heading = new StackPanel().Spacing(AppTheme.Space2).Children(
+		var heading = new StackPanel().Spacing(AppTheme.Space2)
+			.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)).Children(
 			new DockPanel().LastChildFill().Children(
 				AppIcons.Button("x", Strings.Cancel, Hide).DockRight(),
 				new TextBlock().Text(Strings.SessionStatistics).FontSize(AppTheme.FontSizeTitle).FontWeight(FontWeight.Bold).PrimaryText()),
@@ -61,7 +66,8 @@ public sealed class SessionStatisticsPanel
 				.Margin(new Thickness(AppTheme.Space1))
 				.Child(new Border().Width(420).MaxWidth(420)
 					.StyleName(AppStyles.PopupCard)
-					.Padding(new Thickness(AppTheme.Space4)).Child(content)))
+					.Padding(new Thickness(AppTheme.Space4, AppTheme.Space4, AppTheme.Space4 - AppTheme.ScrollBarSlot, AppTheme.Space4))
+					.Child(content)))
 			.OnKeyDown(key =>
 			{
 				if (key.Key != Key.Escape) return;

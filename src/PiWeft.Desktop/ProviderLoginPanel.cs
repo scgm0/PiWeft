@@ -98,7 +98,10 @@ internal sealed class ProviderLoginPanel
 			_retry.Column(0),
 			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4)
 				.HorizontalAlignment(HorizontalAlignment.Right).Children(_cancel, _done).Column(2));
-		var body = new ScrollViewer().SmoothScrolling().AutoVerticalScroll().NoHorizontalScroll().MaxHeight(520)
+		var body = new ScrollViewer().SmoothScrolling().AutoVerticalScroll().NoHorizontalScroll()
+			// 滚动条覆盖在内容上：卡片右内边距只留 2，滚动体自己补一格命中区。
+			.Padding(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
+			.MaxHeight(520)
 			.Content(new StackPanel().Spacing(AppTheme.Space3).Children(
 				new TextBlock().Text(_provider.Description).FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap),
 				_status,
@@ -108,14 +111,16 @@ internal sealed class ProviderLoginPanel
 					Label(Strings.AuthLogTitle).FontSize(AppTheme.FontSizeMicro).FontWeight(FontWeight.Bold).SubtleText(),
 					_logScroll)));
 		var card = new Border().StyleName(AppStyles.Card).CornerRadius(AppTheme.RadiusMd)
-			.Padding(new Thickness(AppTheme.Space3)).Child(new DockPanel().LastChildFill()
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3 - AppTheme.ScrollBarSlot, AppTheme.Space3))
+			.Child(new DockPanel().LastChildFill()
 				.Spacing(AppTheme.Space2).Children(
-					new StackPanel().Spacing(4).Children(titleRow,
+					new StackPanel().Spacing(4)
+						.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)).Children(titleRow,
 						new TextBlock().Text(Strings.AuthLoginSubtitle).FontSize(AppTheme.FontSizeMicro)
 							.SubtleText().TextWrapping(TextWrapping.Wrap)).DockTop(),
 					new Border().Height(1).DockTop()
 						.WithTheme((theme, border) => border.Background = AppTheme.For(theme).BorderSubtle),
-					footer.DockBottom(),
+					footer.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)).DockBottom(),
 					body));
 		_view = new Grid().IsVisible(false).Focusable(true).Children(
 			new Button().Background(new Color(0x60, 0x00, 0x00, 0x00)).Cursor(CursorType.Arrow).Focusable(false)

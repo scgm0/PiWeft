@@ -245,7 +245,9 @@ internal sealed partial class ConfigurationView
 		});
 		_body.Children(reveal);
 		if (!_revealed) { _saveForm = null; StateChanged?.Invoke(); return; }
-		var editor = new MultiLineTextBox().PrimarySelection().StyleName(AppStyles.TextInput).FontFamily(AppTheme.MonoFont)
+		// JSON 编辑框嵌在平滑滚动的内容区里，又自带高 420 的上限：
+		// 文本框再装平滑控制器会在嵌套里吞掉滚轮，用内建处理直接写偏移。
+		var editor = new MultiLineTextBox().PrimarySelection(smoothScroll: false).StyleName(AppStyles.TextInput).FontFamily(AppTheme.MonoFont)
 			.FontSize(AppTheme.FontSizeCaption).Height(420).Text(_document?.Raw is { Length: > 0 } raw ? raw : "{}")
 			.OnTextChanged(_ => SetDirty(true));
 		_body.Children(editor);

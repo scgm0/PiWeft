@@ -87,6 +87,15 @@ public sealed class ContextBreakdownTests
 		panel.View.Arrange(new Rect(0, 0, 720, 520));
 
 		var texts = Find<TextBlock>(panel.View).Select(text => text.Text).ToArray();
+		// 滚动条覆盖在内容上：内容让出其命中区，行尾数值不被压住。
+		var scroll = Find<ScrollViewer>(panel.View).Single();
+		Assert.Equal(AppTheme.ScrollBarSlot, scroll.Padding.Right);
+		// 标题行与滚动行右缘对齐：右边距看上去与左边一样宽，而不是多出一格滚动条。
+		var percent = Find<TextBlock>(panel.View).Single(text => text.Text.Contains("12.8%", StringComparison.Ordinal));
+		var body = (StackPanel)((StackPanel)scroll.Content!).Children[0];
+		var row = (DockPanel)body.Children.First(child => child is DockPanel);
+		var titleRight = ((UIElement)percent.Parent!).Bounds.Right;
+		Assert.InRange(row.Bounds.Right, titleRight - 2, titleRight + 2);
 		// 标题行给百分比与 ~已用/窗口；图例三段各带近似 token。
 		Assert.Contains(texts, text => text.Contains("12.8%", StringComparison.Ordinal));
 		Assert.Contains(texts, text => text.Contains("128K", StringComparison.Ordinal) && text.Contains("1M", StringComparison.Ordinal));

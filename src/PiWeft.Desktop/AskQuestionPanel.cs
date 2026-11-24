@@ -115,7 +115,8 @@ internal sealed class AskQuestionPanel
 					.Width(24).Height(24)
 					.Column(4));
 
-		_progress.Minimum(0).Maximum(100).Height(3).Margin(new Thickness(0, 0, 0, AppTheme.Space1));
+		_progress.Minimum(0).Maximum(100).Height(3)
+			.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, AppTheme.Space1));
 
 		_tabs = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2);
 		// 卡片自己限高，滚动归这几个视口：与待办、扩展卡同一套平滑滚动。
@@ -124,6 +125,9 @@ internal sealed class AskQuestionPanel
 			.Content(_tabs)
 			.AutoHorizontalScroll()
 			.NoVerticalScroll()
+			// 横向滚动条盖在标签底边：默认隐藏，滚动时再淡入。
+			.AutoHideScrollBars(true)
+			.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
 			.MaxHeight(28)
 			.IsVisible(false);
 
@@ -132,15 +136,19 @@ internal sealed class AskQuestionPanel
 			.Content(_body)
 			.AutoVerticalScroll()
 			.NoHorizontalScroll()
+			// 滚动条是覆盖在内容上的细条，贴着视口右缘画。内容区右边距只留 2，
+			// 滚动体自己补一格命中区：内容右缘与标签、页脚一样停在 12 DIP，左右一样宽。
+			.Padding(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
 			.MaxHeight(320);
 		_body.Spacing(AppTheme.Space2);
 
 		_footer = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+			.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
 			.VerticalAlignment(VerticalAlignment.Center)
 			.IsVisible(false);
 
 		_content = new StackPanel().Spacing(AppTheme.Space1)
-			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))
+			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3 - AppTheme.ScrollBarSlot, AppTheme.Space3))
 			.Children(_progress, _tabsScroll, _bodyScroll, _footer);
 
 		View = new Border()
@@ -589,6 +597,8 @@ internal sealed class AskQuestionPanel
 				.Content(detailText)
 				.AutoVerticalScroll()
 				.NoHorizontalScroll()
+				// 文字同样给滚动条让出命中区。
+				.Padding(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
 				.MaxHeight(220);
 
 			Button copy = null!;

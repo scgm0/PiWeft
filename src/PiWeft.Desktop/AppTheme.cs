@@ -116,6 +116,9 @@ public static class AppTheme
 	public const double Space4 = 16;
 	public const double Space6 = 24;
 
+	/// <summary>滚动条命中区宽度。卡内滚动体让出这一段，滚动条不压内容，左右边距也保持一致。</summary>
+	public static readonly double ScrollBarSlot = ThemeMetrics.Default.ScrollBarHitThickness;
+
 	public const double ControlHeightSm = 28;
 	public const double ControlHeightMd = 32;
 	public const double ControlHeightLg = 36;

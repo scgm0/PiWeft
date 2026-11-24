@@ -45,7 +45,10 @@ public sealed class SessionImportDialog
 			.Content(_rows)
 			.MaxHeight(420)
 			.AutoVerticalScroll()
-			.NoHorizontalScroll();
+			.NoHorizontalScroll()
+			// 滚动条覆盖在内容上：卡片右内边距只留 6，滚动体自己补一格命中区，
+			// 行尾「导入」按钮与标题、底部状态一样停在 16 DIP。
+			.Padding(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0));
 
 		_sources.Spacing(AppTheme.Space1);
 
@@ -62,6 +65,7 @@ public sealed class SessionImportDialog
 			.Children(
 				new DockPanel()
 					.LastChildFill()
+					.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0))
 					.Children(
 						new StackPanel()
 							.Orientation(Orientation.Horizontal)
@@ -71,16 +75,16 @@ public sealed class SessionImportDialog
 						new TextBlock().Text(Strings.ImportTitle).FontSize(AppTheme.FontSizeTitle)
 							.FontWeight(FontWeight.SemiBold).PrimaryText()
 							.VerticalAlignment(VerticalAlignment.Center)),
-				_sources,
+				_sources.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)),
 				_scroll,
-				_status);
+				_status.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)));
 
 		// 浮层必须是整窗容器：窗口级的 OverlayLayer 把孩子按客户区摆，
 		// 只放一张定宽卡片会既没有压暗层、也定位不到中间。
 		var card = new Border()
 			.StyleName(AppStyles.Dialog)
 			.Width(PanelWidth)
-			.Padding(new Thickness(AppTheme.Space4))
+			.Padding(new Thickness(AppTheme.Space4, AppTheme.Space4, AppTheme.Space4 - AppTheme.ScrollBarSlot, AppTheme.Space4))
 			.HorizontalAlignment(HorizontalAlignment.Center)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Child(body);
