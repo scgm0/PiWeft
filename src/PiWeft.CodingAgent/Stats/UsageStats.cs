@@ -216,13 +216,33 @@ public static partial class UsageStats
 			state.ReparsedFiles = pending.Count;
 		}
 
-		// 顺序扫描：并行读同一块磁盘在冷启动时反而抢 IO，增量场景又只有一两个文件，
-		// 省下的调度开销比多出来的线程更有用。
-		foreach (var index in pending)
+		// 按文件并行：每个文件的聚合互相独立，合并顺序不影响结果。全量首扫 2.4–2.7 s → 0.5 s，
+		// 页缓存热 0.85 s → 0.3–0.4 s。增量场景常常只有一两个文件，串行省掉调度开销。
+		if (pending.Count <= 2)
 		{
-			var candidate = candidates[index];
-			scans[index] = ScanFile(candidate.File, candidate.Directory, candidate.Cached,
-				candidate.Length, candidate.WriteTicks, options, timeZone, cancellationToken);
+			foreach (var index in pending)
+			{
+				var candidate = candidates[index];
+				scans[index] = ScanFile(candidate.File, candidate.Directory, candidate.Cached,
+					candidate.Length, candidate.WriteTicks, options, timeZone, cancellationToken);
+			}
+		}
+		else
+		{
+			// 大文件先开始：末尾只剩一个 47 MiB 文件时，其它线程已经在等它收尾。
+			var order = pending.ToArray();
+			Array.Sort(order, (left, right) => candidates[right].Length.CompareTo(candidates[left].Length));
+			Parallel.For(
+				0,
+				order.Length,
+				new ParallelOptions { MaxDegreeOfParallelism = Math.Min(Environment.ProcessorCount, 8) },
+				slot =>
+				{
+					var index = order[slot];
+					var candidate = candidates[index];
+					scans[index] = ScanFile(candidate.File, candidate.Directory, candidate.Cached,
+						candidate.Length, candidate.WriteTicks, options, timeZone, cancellationToken);
+				});
 		}
 
 		var sessions = candidates.Count;
