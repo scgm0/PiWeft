@@ -184,6 +184,21 @@ public sealed class ComposerModeTests : IDisposable
 	}
 
 	[Fact]
+	public void GoalStripCollapsesMultilineObjectiveToSingleLinePreview()
+	{
+		var card = new GoalStripCard(() => { }, () => { }, () => { }, _ => { });
+		const string objective = "请参考 @\"/tmp/a\" 优化 UI 细节\n\nUI 改动需要截图验证\n  也要保证无功能倒退。";
+		card.Render(new GoalState(true, GoalState.Active, objective, 0, 32, null));
+
+		// 收起态只给一行：换行与缩进折成空格，宽度交给省略号。
+		Assert.False(card.IsExpanded);
+		Assert.Equal(
+			"请参考 @\"/tmp/a\" 优化 UI 细节 UI 改动需要截图验证 也要保证无功能倒退。",
+			card.ObjectiveTextForTests);
+		Assert.Equal(objective, card.DetailsTextForTests);
+	}
+
+	[Fact]
 	public void GoalStripShowsTheBlockReasonInsteadOfTheObjective()
 	{
 		var card = new GoalStripCard(() => { }, () => { }, () => { }, _ => { });

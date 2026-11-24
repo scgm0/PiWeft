@@ -35,7 +35,7 @@ public sealed class ImagePreviewTests
 	{
 		var preview = new ImagePreview();
 		var window = new Window();
-		preview.Show(window, ChatImages.Source(Png));
+		preview.Show(window, ChatImages.Source(Png)!);
 		var click = new MouseEventArgs(default, default, MouseButton.Left);
 		typeof(UIElement).GetMethod("OnMouseDown", BindingFlags.Instance | BindingFlags.NonPublic)!
 			.Invoke(PreviewImage(preview), [click]);
@@ -43,7 +43,7 @@ public sealed class ImagePreviewTests
 		Assert.True(preview.IsOpen);
 		Click(Find<Button>(preview.View).Single(button => HoverHints.Text(button) is null));
 		Assert.False(preview.IsOpen);
-		preview.Show(window, ChatImages.Source(Png));
+		preview.Show(window, ChatImages.Source(Png)!);
 		var key = new KeyEventArgs(Key.Escape, 0);
 		typeof(UIElement).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(preview.View, [key]);
 		Assert.True(key.Handled);
@@ -58,7 +58,7 @@ public sealed class ImagePreviewTests
 	{
 		var preview = new ImagePreview();
 		var window = new Window();
-		preview.Show(window, ChatImages.Source(Png));
+		preview.Show(window, ChatImages.Source(Png)!);
 		ConversationPerformanceTests.Layout(preview.View, width, height);
 		var image = PreviewImage(preview);
 		var center = new Point(image.Bounds.X + image.Bounds.Width / 2, image.Bounds.Y + image.Bounds.Height / 2);
@@ -78,8 +78,8 @@ public sealed class ImagePreviewTests
 		// 面板互斥替换由 PaletteOverlayTests.OpeningAnotherPaletteClosesThePreviousWindowOverlay 覆盖。
 		var window = new Window();
 		var preview = new ImagePreview();
-		preview.Show(window, ChatImages.Source(Png));
-		preview.Show(window, ChatImages.Source(Png));
+		preview.Show(window, ChatImages.Source(Png)!);
+		preview.Show(window, ChatImages.Source(Png)!);
 		Assert.Equal(1, window.OverlayLayer.Count);
 		Assert.NotNull(PreviewImage(preview).Source);
 		preview.Hide();
@@ -90,7 +90,7 @@ public sealed class ImagePreviewTests
 	public void DetachedOwnersDoNotKeepAnUnhostedPreviewOrSource()
 	{
 		var preview = new ImagePreview();
-		preview.Show(new Border(), ChatImages.Source(Png));
+		preview.Show(new Border(), ChatImages.Source(Png)!);
 		Assert.False(preview.IsOpen);
 		Assert.Null(PreviewImage(preview).Source);
 	}

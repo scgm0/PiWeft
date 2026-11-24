@@ -470,10 +470,14 @@ public sealed partial class SessionTab
 		RefreshWidgetColumn();
 	}
 
-	/// 仅供 --ui-smoke goal：设一个目标并选中工作台的目标节，供外部脚本截目标条与进度条。
+	/// 仅供 --ui-smoke goal：设一个多行目标并选中工作台的目标节，供外部脚本截目标条与进度条。
+	/// 收起态只给一行预览；这段文本自带换行与 @ 引用，用来盯住折叠与省略。
 	internal void PrepareGoalSmoke()
 	{
-		Session.SetGoal("把构建修到全绿，并补上回归测试。");
+		Session.SetGoal(
+			"请参考 @\"/tmp/ZCode\" @\"/tmp/deepseek-harness\" 优化本项目在 UI 方面的细节与用户体验，UI 改动需要截图进行验证\n" +
+			"也要注意保证无功能倒退，需充分发挥 dotnet11+c#15 的性能优势\n" +
+			"保持高性能低占用，tok 预算充足，可以尽量去分析与优化");
 		RefreshGoalStrip();
 		_workbench.SelectForTests("goal");
 		RefreshWidgetColumn();

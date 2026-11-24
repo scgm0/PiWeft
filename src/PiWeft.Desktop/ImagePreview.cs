@@ -11,23 +11,42 @@ internal static class ChatImages
 	private sealed class CachedSource
 	{
 		private WeakReference<ImageSource>? _source;
-		public ImageSource Get(string data)
+		private bool _failed;
+
+		/// 解不了的数据也记下来：反复重试只会让同一份坏图在渲染路径上每帧抛一次。
+		public ImageSource? Get(string data)
 		{
 			if (_source?.TryGetTarget(out var source) == true) return source;
-			source = ImageSource.FromBytes(Convert.FromBase64String(data));
-			_source = new WeakReference<ImageSource>(source);
-			return source;
+			if (_failed) return null;
+
+			try
+			{
+				if (!PngCompat.TryPrepare(Convert.FromBase64String(data), out var prepared))
+				{
+					_failed = true;
+					return null;
+				}
+
+				source = ImageSource.FromBytes(prepared);
+				_source = new WeakReference<ImageSource>(source);
+				return source;
+			}
+			catch (Exception exception) when (exception is FormatException or ArgumentException)
+			{
+				_failed = true;
+				return null;
+			}
 		}
 	}
 	private static readonly ConditionalWeakTable<string, CachedSource> Sources = new();
 
 	private static readonly ConditionalWeakTable<ImageSource, PreviewPayload> Payloads = new();
 
-	internal static ImageSource Source(string data) => Sources.GetOrCreateValue(data).Get(data);
+	internal static ImageSource? Source(string data) => Sources.GetOrCreateValue(data).Get(data);
 
-	internal static ImageSource Source(ChatImage image)
+	internal static ImageSource? Source(ChatImage image)
 	{
-		var source = Source(image.Data);
+		if (Source(image.Data) is not { } source) return null;
 		Payloads.AddOrUpdate(source, new PreviewPayload(image.Data, image.MimeType));
 		return source;
 	}
@@ -37,43 +56,34 @@ internal static class ChatImages
 
 	public static UIElement Create(ChatImage image, Action<ImageSource>? preview = null)
 	{
-		try
-		{
-			var source = Source(image);
-			var thumbnail = new Image().Source(source).MaxWidth(AppTheme.MessageMaxWidth).MaxHeight(360);
-			return preview is null ? thumbnail : new Button().Ghost().Padding(0).Cursor(CursorType.Hand)
-				.HorizontalAlignment(HorizontalAlignment.Left).MaxWidth(AppTheme.MessageMaxWidth)
-				.Content(thumbnail).HoverTip(Strings.ImagePreviewOpen).OnClick(() => preview(source));
-		}
-		catch (FormatException)
-		{
-			return new TextBlock().Text(Strings.BrokenImage).FontSize(AppTheme.FontSizeCaption).Foreground(AppTheme.Error);
-		}
+		if (Source(image) is not { } source) return Broken();
+
+		var thumbnail = new Image().Source(source).MaxWidth(AppTheme.MessageMaxWidth).MaxHeight(360);
+		return preview is null ? thumbnail : new Button().Ghost().Padding(0).Cursor(CursorType.Hand)
+			.HorizontalAlignment(HorizontalAlignment.Left).MaxWidth(AppTheme.MessageMaxWidth)
+			.Content(thumbnail).HoverTip(Strings.ImagePreviewOpen).OnClick(() => preview(source));
 	}
 
 	/// 用户消息的紧凑缩略图（PiDeck 同款 64–88 DIP 方块）：历史里的大图不再把整条气泡撑满，
 	/// 点击仍打开全尺寸预览。图片按 UniformToFill 居中裁切，透明底用内嵌表面托住。
 	public static UIElement CreateThumbnail(ChatImage image, Action<ImageSource>? preview = null, double size = 88)
 	{
-		try
-		{
-			var source = Source(image);
-			var frame = new Border()
-				.Width(size).Height(size)
-				.CornerRadius(AppTheme.RadiusSm)
-				.ClipToBounds(true)
-				.WithTheme((theme, border) => border.Background = AppTheme.For(theme).CardBackgroundAlt)
-				.Child(new Image().Source(source).StretchMode(Stretch.UniformToFill));
+		if (Source(image) is not { } source) return Broken();
 
-			return preview is null ? frame : new Button().Ghost().Padding(0).CornerRadius(AppTheme.RadiusSm)
-				.Cursor(CursorType.Hand).Content(frame).HoverTip(Strings.ImagePreviewOpen)
-				.OnClick(() => preview(source));
-		}
-		catch (FormatException)
-		{
-			return new TextBlock().Text(Strings.BrokenImage).FontSize(AppTheme.FontSizeCaption).Foreground(AppTheme.Error);
-		}
+		var frame = new Border()
+			.Width(size).Height(size)
+			.CornerRadius(AppTheme.RadiusSm)
+			.ClipToBounds(true)
+			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).CardBackgroundAlt)
+			.Child(new Image().Source(source).StretchMode(Stretch.UniformToFill));
+
+		return preview is null ? frame : new Button().Ghost().Padding(0).CornerRadius(AppTheme.RadiusSm)
+			.Cursor(CursorType.Hand).Content(frame).HoverTip(Strings.ImagePreviewOpen)
+			.OnClick(() => preview(source));
 	}
+
+	private static TextBlock Broken() =>
+		new TextBlock().Text(Strings.BrokenImage).FontSize(AppTheme.FontSizeCaption).Foreground(AppTheme.Error);
 }
 
 internal sealed class ImagePreview

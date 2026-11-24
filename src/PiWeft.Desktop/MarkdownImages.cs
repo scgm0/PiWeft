@@ -98,7 +98,7 @@ internal sealed class MarkdownImageLoader : IMarkdownImageResolver
 			{
 				return null;
 			}
-			return ImageSource.FromFile(info.FullName);
+			return Prepare(File.ReadAllBytes(info.FullName));
 		}
 		if (uri.Scheme is "http" or "https")
 		{
@@ -124,13 +124,17 @@ internal sealed class MarkdownImageLoader : IMarkdownImageResolver
 					}
 					bounded.Write(buffer, 0, read);
 				}
-				return bounded.Length == 0 ? null : ImageSource.FromBytes(bounded.ToArray());
+				return bounded.Length == 0 ? null : Prepare(bounded.ToArray());
 			}
 			byte[] bytes = await response.Content.ReadAsByteArrayAsync(cancellation);
-			return bytes.Length is 0 or > MaxBytes ? null : ImageSource.FromBytes(bytes);
+			return bytes.Length is 0 or > MaxBytes ? null : Prepare(bytes);
 		}
 		return null;
 	}
+
+	/// 交给框架前统一过一遍 PNG 兼容层：16 位 PNG 框架解不了，会逐帧抛异常。
+	private static ImageSource? Prepare(byte[] bytes) =>
+		PngCompat.TryPrepare(bytes, out var prepared) ? ImageSource.FromBytes(prepared) : null;
 
 	internal static byte[] DataUriBytes(string dataUri, out string mimeType)
 	{

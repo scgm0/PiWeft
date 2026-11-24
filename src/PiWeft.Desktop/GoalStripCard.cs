@@ -163,6 +163,8 @@ internal sealed class GoalStripCard
 
 	internal string ObjectiveTextForTests => _objective.Text;
 
+	internal string DetailsTextForTests => _details.Text;
+
 	/// 工作台摘要只给状态：阶段、轮次与预算；目标全文留在目标条和 tooltip 里。
 	internal string Summary => _phase.Text;
 
@@ -259,7 +261,7 @@ internal sealed class GoalStripCard
 		var blockedReason = goal.Phase == GoalState.Blocked && goal.BlockReason is { Length: > 0 }
 			? goal.BlockReason
 			: null;
-		_objective.Text(blockedReason ?? goal.Objective);
+		_objective.Text(PreviewLine(blockedReason ?? goal.Objective));
 		_objective.Role(blockedReason is null ? AppStyles.RoleMuted : AppStyles.RoleError);
 		_objective.HoverTip(blockedReason is null
 			? $"{Strings.GoalExpandHint}\n{goal.Objective}"
@@ -274,6 +276,38 @@ internal sealed class GoalStripCard
 		_resume.HoverTip(goal.BlockCode == GoalMode.TokenLimitCode
 			? Strings.GoalResetTokenBudget
 			: Strings.GoalResume);
+	}
+
+	/// 收起态只给一行预览：<see cref="TextWrapping.NoWrap"/> 不拦截显式换行，
+	/// 从别处粘来的多行目标会把整段铺开。换行与连续空白折成单个空格，宽度交给省略号。
+	private static string PreviewLine(string text)
+	{
+		if (!text.Contains('\n') && !text.Contains('\r'))
+		{
+			return text;
+		}
+
+		var buffer = new char[text.Length];
+		var length = 0;
+		var pendingSpace = false;
+		foreach (var ch in text)
+		{
+			if (char.IsWhiteSpace(ch))
+			{
+				pendingSpace = length > 0;
+				continue;
+			}
+
+			if (pendingSpace)
+			{
+				buffer[length++] = ' ';
+				pendingSpace = false;
+			}
+
+			buffer[length++] = ch;
+		}
+
+		return new string(buffer, 0, length);
 	}
 
 	/// 目标编辑自己接管落点：文件拖到框里就插入 @ 引用，不再让事件冒泡去主输入框加附件。

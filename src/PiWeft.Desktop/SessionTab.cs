@@ -3664,8 +3664,13 @@ public sealed partial class SessionTab : IDisposable
 
 	private void PreviewAttachment(ImageContent image)
 	{
-		try { PreviewImage(ChatImages.Source(new ChatImage(image.Data, image.MimeType))); }
-		catch (FormatException) { NotifyError(Strings.BrokenImage); }
+		if (ChatImages.Source(new ChatImage(image.Data, image.MimeType)) is not { } source)
+		{
+			NotifyError(Strings.BrokenImage);
+			return;
+		}
+
+		PreviewImage(source);
 	}
 
 	/// 运行中发送键右侧的菜单（PiDeck 的 Split Send 下拉同款）：每项是「标题 + 生效时机」
