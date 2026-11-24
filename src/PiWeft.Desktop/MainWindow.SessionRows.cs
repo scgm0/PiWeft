@@ -189,6 +189,8 @@ public sealed partial class MainWindow
 		_addProjectButton.IsVisible(projects);
 		_sessionTree.IsVisible(projects);
 		_chatsTree.IsVisible(!projects);
+		// 切换分段时把当前会话所在的项目展开：启动时列表可能晚于会话打开建好。
+		ExpandCurrentSessionPath();
 		UpdateSidebarEmptyHints();
 
 		if (!persist)
@@ -215,19 +217,26 @@ public sealed partial class MainWindow
 	private void UpdateSidebarEmptyHints()
 	{
 		var scanning = !_sessionsLoaded && _sessionsLoad is not null;
-		_projectsEmpty
-			.Text(scanning ? Strings.SessionsScanning : Strings.ProjectsEmpty)
-			.IsVisible(_projectsTab && _sessionNodes.Count == 0);
-		_chatsEmpty
-			.Text(scanning ? Strings.SessionsScanning : Strings.ChatsEmpty)
-			.IsVisible(!_projectsTab && _chatNodes.Count == 0);
+		if (scanning)
+		{
+			_projectsEmpty.Show(Strings.SessionsScanning, string.Empty);
+			_chatsEmpty.Show(Strings.SessionsScanning, string.Empty);
+		}
+		else
+		{
+			_projectsEmpty.Show(Strings.ProjectsEmptyTitle, Strings.ProjectsEmptyHint);
+			_chatsEmpty.Show(Strings.ChatsEmptyTitle, Strings.ChatsEmptyHint);
+		}
+
+		_projectsEmpty.View.IsVisible(_projectsTab && _sessionNodes.Count == 0);
+		_chatsEmpty.View.IsVisible(!_projectsTab && _chatNodes.Count == 0);
 	}
 
 	/// 扫描刚开始：<see cref="_sessionsLoad"/> 要到返回后才赋值，先手写一次「读取中」。
 	private void ShowSidebarScanning()
 	{
-		if (_projectsTab) _projectsEmpty.Text(Strings.SessionsScanning).IsVisible(true);
-		else _chatsEmpty.Text(Strings.SessionsScanning).IsVisible(true);
+		if (_projectsTab) _projectsEmpty.Show(Strings.SessionsScanning, string.Empty);
+		else _chatsEmpty.Show(Strings.SessionsScanning, string.Empty);
 	}
 
 	/// 添加项目后的揭示：侧栏收着先展开，再切到「项目」分段。少了这两步，

@@ -169,7 +169,7 @@ public static class AppStyles
 
 	public static StyleSheet Create()
 	{
-		return new StyleSheet()
+		var sheet = new StyleSheet()
 			.With<Button>(ButtonInteraction)
 			.With(Window, () => Fill(typeof(Border), p => p.WindowBackground))
 			.With(FramedWindow, () => CardStyle(typeof(Border), p => p.WindowBackground))
@@ -180,7 +180,12 @@ public static class AppStyles
 			})
 			.With(TextInputLine, () => new Style(typeof(TextBox))
 			{
-				Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border))],
+				Setters =
+				[
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					// 单行输入统一内嵌表面：搜索框、重命名框、分支输入与表单字段是同一类东西。
+					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
+				],
 			})
 			.With(Sidebar, () => Fill(typeof(Border), p => p.SidebarBackground))
 			.With(Panel, () => Fill(typeof(Border), p => p.CardBackground))
@@ -348,6 +353,16 @@ public static class AppStyles
 				[
 					new StateTrigger
 					{
+						// 分段按钮没有描边：焦点与悬停同一档底色，不改变布局尺寸。
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+					new StateTrigger
+					{
 						// 悬停色取「轨道与活动段之间」的一档：深色 #141414→#252525→#2b2b2b，
 						// 浅色 #e0e0e0→#f0f0f0→#ffffff。不再和轨道同色，浅色也能看见反馈。
 						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
@@ -382,6 +397,11 @@ public static class AppStyles
 					{
 						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
 						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft))],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
 					},
 				],
 			})
@@ -450,6 +470,11 @@ public static class AppStyles
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
 						],
 					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)), Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary))],
+					},
 				],
 			})
 			// 开关型标题栏按钮的「已打开」态：与悬停同档的浮起，再加一条强调弱底，
@@ -475,6 +500,11 @@ public static class AppStyles
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
 						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground))],
 					},
 				],
 			})
@@ -510,6 +540,11 @@ public static class AppStyles
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
 						],
 					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)), Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary))],
+					},
 				],
 			})
 			// 关闭键是唯一的语义色窗口按钮：悬停只给极淡的错误色底，不抢正文注意力。
@@ -544,6 +579,11 @@ public static class AppStyles
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error)),
 						],
 					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error.WithAlpha(0x2e))), Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error))],
+					},
 				],
 			})
 			// 页签：非活动态透明、活动态浮起；文字色由 Button 的前景继承给标签。
@@ -563,6 +603,15 @@ public static class AppStyles
 					new StateTrigger
 					{
 						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
 						Setters =
 						[
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
@@ -592,6 +641,14 @@ public static class AppStyles
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
 						],
 					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+						],
+					},
 				],
 			})
 			.With(TitleBarTabClose, () => new Style(typeof(Button))
@@ -615,6 +672,11 @@ public static class AppStyles
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error.WithAlpha(0x2e))),
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Error)),
 						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground))],
 					},
 				],
 			})
@@ -658,6 +720,11 @@ public static class AppStyles
 							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText)),
 						],
 					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CodeText.WithAlpha(0x1a)))],
+					},
 				],
 			})
 			// 轮末文件 chip：底色用内嵌表面，chip 是轮末副产物，亮度低于正文。
@@ -678,6 +745,15 @@ public static class AppStyles
 					new StateTrigger
 					{
 						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
 						Setters =
 						[
 							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
@@ -711,6 +787,11 @@ public static class AppStyles
 							Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle)),
 						],
 					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
+					},
 				],
 			})
 			.With(PrimaryButton, () => new Style(typeof(Button))
@@ -739,6 +820,12 @@ public static class AppStyles
 					{
 						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
 						Setters = [Setter.Create(UIElement.OpacityProperty, 0.78)],
+					},
+					new StateTrigger
+					{
+						// 主按钮没有描边位：焦点用与悬停同档的透明度，按下仍压得更低。
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(UIElement.OpacityProperty, 0.9)],
 					},
 					// 主按钮没有“未保存”时可点：禁用态整体变灰，不保留醒目的强调白。
 					// 字色取 TextSubtle，不用 TextFaint：底色是 HoverBackground，Faint 在深色主题下
@@ -785,17 +872,43 @@ public static class AppStyles
 						Exclude = VisualStateFlags.Enabled,
 						Setters = [Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle))],
 					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(UIElement.OpacityProperty, 0.9)],
+					},
 				],
 			})
 			.With(SelectedButton, () => new Style(typeof(Button))
 			{
 				BasedOn = ButtonInteraction,
+				// 选中不等于冻结：悬停仍要有一档反馈，但不能抹掉选中的底色与描边。
+				Transitions = [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.BorderBrushProperty)],
 				Setters =
 				[
 					Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft)),
 					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
 					Setter.Create(Control.BorderThicknessProperty, 1.0),
 					Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
+				],
+				Triggers =
+				[
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground))],
+					},
+					new StateTrigger
+					{
+						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground))],
+					},
+					new StateTrigger
+					{
+						// 选中按钮已有 1px 描边：键盘焦点只提亮描边，不改变布局尺寸。
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
+					},
 				],
 			})
 			.With(GhostButton, () => new Style(typeof(Button))
@@ -814,6 +927,16 @@ public static class AppStyles
 				[
 					new StateTrigger
 					{
+						// 键盘焦点与悬停同一档底色：幽灵按钮没有描边，加边会改变行高与列宽。
+						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+						Setters =
+						[
+							Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
+							Setter.Create(Control.ForegroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextPrimary)),
+						],
+					},
+					new StateTrigger
+					{
 						// 悬停色取「轨道与活动段之间」的一档：深色 #141414→#252525→#2b2b2b，
 						// 浅色 #e0e0e0→#f0f0f0→#ffffff。不再和轨道同色，浅色也能看见反馈。
 						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
@@ -826,11 +949,40 @@ public static class AppStyles
 					},
 				],
 			});
+
+		// 未命名输入框（设置、供应商、分支等）统一发丝级边框与内嵌底色；
+		// 框架默认的亮描边在深色主题里像一圈白线，和 PiWeft 的结构线不属于同一套语言。
+		sheet.Define<TextBox>(new Style(typeof(TextBox))
+		{
+			Transitions = [Transition.Create(Control.BorderBrushProperty)],
+			Setters =
+			[
+				Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+				Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).CardBackgroundAlt)),
+				// 控件统一 13px；表单里的输入框不再比旁边的标签大一号。
+				Setter.Create(TextElement.FontSizeProperty, AppTheme.FontSizeCaption),
+			],
+			Triggers =
+			[
+				new StateTrigger
+				{
+					Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+					Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
+				},
+			],
+		});
+
+		return sheet;
 	}
 
 	private static Style CardStyle(Type target, Func<AppPalette, Color> pick) => new(target)
 	{
 		BasedOn = typeof(Button).IsAssignableFrom(target) ? ButtonInteraction : null,
+		// 可点击卡片（主题选择、问询选项、轨迹记录）必须有悬停反馈：原来只有光标变化，
+		// 鼠标扫过时整块卡片毫无反应，看起来像静态容器。
+		Transitions = typeof(Button).IsAssignableFrom(target)
+			? [Transition.Create(Control.BackgroundProperty), Transition.Create(Control.BorderBrushProperty)]
+			: [],
 		Setters =
 		[
 			Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => pick(AppTheme.For(t)))),
@@ -838,6 +990,31 @@ public static class AppStyles
 			Setter.Create(Control.BorderThicknessProperty, 1.0),
 			Setter.Create(Control.CornerRadiusProperty, AppTheme.RadiusSm),
 		],
+		Triggers = typeof(Button).IsAssignableFrom(target)
+			?
+			[
+				new StateTrigger
+				{
+					Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
+					Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground))],
+				},
+				new StateTrigger
+				{
+					Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
+					Setters =
+					[
+						Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
+						Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
+					],
+				},
+				new StateTrigger
+				{
+					// 卡片已有 1px 描边：焦点只需要把它提亮。
+					Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
+					Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
+				},
+			]
+			: [],
 	};
 
 	private static Style Fill(Type target, Func<AppPalette, Color> pick) => new(target)

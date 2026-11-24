@@ -15,7 +15,10 @@ public sealed class CheckpointsView
 	private readonly Func<string> _cwd;
 	private readonly StackPanel _rows = new();
 	private readonly List<CheckpointRow> _rowState = [];
-	private readonly TextBlock _empty = new();
+
+	/// 截图脚本可能在异步列表落地前就请求展开第一条。
+	private bool _expandFirstAfterLoad;
+	private readonly PanelEmptyState _empty = new("git-branch");
 	private readonly TextBlock _count = new();
 	private readonly ScrollViewer _scroll;
 
@@ -29,8 +32,6 @@ public sealed class CheckpointsView
 		_rows.Spacing(AppTheme.Space2);
 
 		_count.FontSize(AppTheme.FontSizeMicro).SubtleText().VerticalAlignment(VerticalAlignment.Center);
-		_empty.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
-			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0)).IsVisible(false);
 
 		var toolbar = new DockPanel()
 			.LastChildFill()
@@ -56,9 +57,20 @@ public sealed class CheckpointsView
 			.Content(new StackPanel()
 				.Spacing(AppTheme.Space2)
 				.Padding(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))
-				.Children(_empty, _rows))
+				.Children(_empty.View, _rows))
 			.AutoVerticalScroll()
 			.NoHorizontalScroll();
+
+		// 提示条、工具栏与列表是同一列的三段：原来的写法把提示塞进一个临时 Border，
+		// 再次调用 Child(_scroll) 时被整个替换掉，Hint 从来没有显示过。
+		var hint = new Border()
+			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2))
+			.Child(new TextBlock()
+				.Text(Strings.CheckpointHint)
+				.FontSize(AppTheme.FontSizeMicro)
+				.MutedText()
+				.TextWrapping(TextWrapping.Wrap))
+			.DockTop();
 
 		View = new Border()
 			.Child(new DockPanel()
@@ -68,17 +80,8 @@ public sealed class CheckpointsView
 						.Margin(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 						.Child(toolbar)
 						.DockTop(),
-					new Border()
-						.Margin(new Thickness(0, 0, 0, 0))
-						.Child(new Border()
-							.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2))
-							.Child(new TextBlock()
-								.Text(Strings.CheckpointHint)
-								.FontSize(AppTheme.FontSizeMicro)
-								.MutedText()
-								.TextWrapping(TextWrapping.Wrap))
-							.DockTop())
-						.Child(_scroll)));
+					hint,
+					_scroll));
 
 		Refresh();
 	}
@@ -151,7 +154,7 @@ public sealed class CheckpointsView
 			return;
 		}
 
-		_empty.IsVisible(false);
+		_empty.Hide();
 		_count.Text(Strings.CheckpointCount(checkpoints.Count));
 
 		_rowState.Clear();
@@ -160,6 +163,13 @@ public sealed class CheckpointsView
 			var row = CreateRow(checkpoint);
 			_rowState.Add(row);
 			_rows.Children(row.Root);
+		}
+
+		// 列表是异步建的：截图脚本请求展开时行可能还不存在，这里补上那一次。
+		if (_expandFirstAfterLoad)
+		{
+			_expandFirstAfterLoad = false;
+			_ = ToggleDiffAsync(_rowState[0]);
 		}
 
 		_ = LoadSummariesAsync(cwd, _rowState, generation);
@@ -182,12 +192,15 @@ public sealed class CheckpointsView
 		if (_rowState.FirstOrDefault() is { } first)
 		{
 			_ = ToggleDiffAsync(first);
+			return;
 		}
+
+		_expandFirstAfterLoad = true;
 	}
 
 	private void SetEmpty(string message)
 	{
-		_empty.Text(message).IsVisible(true);
+		_empty.Show(message);
 		_count.Text(string.Empty);
 	}
 

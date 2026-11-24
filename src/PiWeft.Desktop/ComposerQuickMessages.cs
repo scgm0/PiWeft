@@ -157,6 +157,10 @@ internal sealed class ComposerQuickMessages : IDisposable
 				_page = 1;
 				Refresh();
 			})
+			// 输入法组合串画在输入框里；占位提示叠在上面会盖住组合文字。
+			.OnTextCompositionStart(_ => _placeholder.IsVisible(false))
+			.OnTextCompositionUpdate(_ => _placeholder.IsVisible(false))
+			.OnTextCompositionEnd(_ => _placeholder.IsVisible(_query.Text is not { Length: > 0 }))
 			.OnKeyDown(OnQueryKeyDown);
 
 		var searchIcon = AppIcons.Icon("search", AppStyles.RoleSubtle, 15)

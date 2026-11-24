@@ -112,8 +112,8 @@ public sealed partial class MainWindow : Window
 
 	private IReadOnlyList<TreeViewNode> _chatNodes = [];
 
-	private TextBlock _chatsEmpty = null!;
-	private TextBlock _projectsEmpty = null!;
+	private SidebarEmptyHint _chatsEmpty = null!;
+	private SidebarEmptyHint _projectsEmpty = null!;
 
 	private SessionSearchPalette _sessionSearch = null!;
 	private SessionImportDialog _importDialog = null!;
@@ -126,8 +126,8 @@ public sealed partial class MainWindow : Window
 	private IReadOnlyList<TreeViewNode> _sessionNodes = [];
 	private TabControl _tabControl = null!;
 	private Border _welcome = null!;
-	private TextBlock _banner = null!;
 	private TextBlock _status = null!;
+	private SidebarNotice _banner = null!;
 
 	public bool ThemeSmoke { get; init; }
 
@@ -327,7 +327,7 @@ public sealed partial class MainWindow : Window
 	/// 构建静态外壳一次；主题切换只重解析样式与更新动态内容，不替换会话与输入控件。
 	private void BuildUi()
 	{
-		_banner = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
+		_banner = new SidebarNotice();
 		_status = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 
 		// 窗口标题栏（品牌 + 当前语境 + 窗口按钮）由 BuildChromeShell 组装；
@@ -346,7 +346,10 @@ public sealed partial class MainWindow : Window
 			.MinHeight(AppTheme.ControlHeightLg)
 			.CornerRadius(AppTheme.RadiusMd);
 
-		_nameBox = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeControl)
+		_nameBox = new TextBox().PrimarySelection().FontSize(AppTheme.FontSizeCaption)
+			.StyleName(AppStyles.TextInputLine)
+			.CornerRadius(AppTheme.RadiusMd)
+			.Height(AppTheme.ControlHeightMd)
 			.Placeholder(Strings.SessionNamePlaceholder)
 			.IsVisible(false)
 			.OnKeyDown(key =>
@@ -379,28 +382,9 @@ public sealed partial class MainWindow : Window
 		_chatsTree.Collapsing += args => RememberSessionRowExpanded(args.Item, expanded: false);
 		_chatsTree.SelectedNodeChanged += OnSessionSelected;
 
-		// 还没有会话时给一句引导，不留空白；列表铺满剩余高度，提示叠在列表上方。
-		_chatsEmpty = new TextBlock()
-			.Text(Strings.ChatsEmpty)
-			.FontSize(AppTheme.FontSizeCaption)
-			.SubtleText()
-			.TextWrapping(TextWrapping.Wrap)
-			.Margin(new Thickness(10, AppTheme.Space2, 6, 0))
-			.VerticalAlignment(VerticalAlignment.Top)
-			.IsHitTestVisible(false)
-			.IsVisible(false);
-
-		_projectsEmpty = new TextBlock()
-			.Text(Strings.ProjectsEmpty)
-			.FontSize(AppTheme.FontSizeCaption)
-			.SubtleText()
-			.TextWrapping(TextWrapping.Wrap)
-			.Margin(new Thickness(10, AppTheme.Space2, 6, 0))
-			.VerticalAlignment(VerticalAlignment.Top)
-			.IsHitTestVisible(false)
-			.IsVisible(false);
-
-		_banner.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap);
+		// 还没有会话时给一块引导，不留空白；列表铺满剩余高度，提示叠在列表上方。
+		_chatsEmpty = new SidebarEmptyHint(Strings.ChatsEmptyTitle, Strings.ChatsEmptyHint, "message-square");
+		_projectsEmpty = new SidebarEmptyHint(Strings.ProjectsEmptyTitle, Strings.ProjectsEmptyHint, "folder-open");
 
 		// 顶部「对话 | 项目」切换：两列等分侧栏宽度，侧栏拖宽时按钮跟着变宽；
 		// TextAlignment 保证文字始终落在各自按钮正中。
@@ -433,7 +417,7 @@ public sealed partial class MainWindow : Window
 			new DockPanel().LastChildFill().Children(_addProjectButton.DockRight(), _newSessionButton),
 			_searchButton,
 			_nameBox,
-			_banner);
+			_banner.View);
 
 		var git = AppIcons.Button("git-branch", Strings.Git, ShowGitPanel, size: AppIcons.ToolbarSize);
 		var palette = AppIcons.Button("terminal", Strings.PaletteButton, () => _palette?.Toggle(this), size: AppIcons.ToolbarSize);
@@ -478,7 +462,7 @@ public sealed partial class MainWindow : Window
 						new Border()
 							.Background(AppTheme.Transparent)
 							.Margin(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
-							.Child(new Grid().Children(_sessionTree, _projectsEmpty, _chatsTree.IsVisible(false), _chatsEmpty)))));
+							.Child(new Grid().Children(_sessionTree, _projectsEmpty.View, _chatsTree.IsVisible(false), _chatsEmpty.View)))));
 
 		_tabControl = new TabControl().BorderThickness(0).CornerRadius(0).Padding(Thickness.Zero)
 			.WithTheme((theme, tabs) => tabs.Background = AppTheme.For(theme).WindowBackground);
@@ -551,7 +535,8 @@ public sealed partial class MainWindow : Window
 			.MaxSecond(AppTheme.RightPanelMaxWidth)
 			.FirstLength(GridLength.Stars(1))
 			.SecondLength(GridLength.Pixels(_rightPanelWidth))
-			.First(mainColumn).Second(_panelHost);
+			.First(mainColumn).Second(_panelHost)
+			.FlatSplitter();
 
 		// 侧栏与主区之间可以拖拽调宽。
 		_sidebarPreferred = !preference.SidebarCollapsed;
@@ -560,7 +545,8 @@ public sealed partial class MainWindow : Window
 		_workspace = new SplitPanel().Horizontal().SplitterThickness(4)
 			.MinFirst(200).MinSecond(520)
 			.FirstLength(GridLength.Pixels(preference.SidebarWidth))
-			.SecondLength(GridLength.Stars(1)).First(sidebarColumn).Second(_panelSplit);
+			.SecondLength(GridLength.Stars(1)).First(sidebarColumn).Second(_panelSplit)
+			.FlatSplitter();
 		// 窗框由 Window.Template 拥有（MewUI 文档的 custom chrome 模式）：Content 只放工作区，
 		// 模板通过 ContentPresenter 投影它；重建窗框不会替换会话与输入控件。
 		Content = _workspace;
@@ -2334,6 +2320,8 @@ public sealed partial class MainWindow : Window
 			case SessionTab active:
 				_lastSessionTab = active;
 				active.SetActive(true);
+				// 会话在侧栏列表到位之前就打开了：这时补一次展开，活动会话不会折在看不见的项目里。
+				ExpandCurrentSessionPath();
 				RestoreSelection(active.Session.Session.SessionId);
 				UpdateProjectCaption();
 				return;
@@ -2509,7 +2497,8 @@ public sealed partial class MainWindow : Window
 					demoTimer.Tick += () =>
 					{
 						demoTimer.Stop();
-						this.ShowToast("演示 toast 通知。");
+						// 与应用内提示走同一条路径：手动演示也能看到真实的位置与外观。
+						Toasts.Show(_workspace, "演示 toast 通知。");
 						Console.WriteLine("toast-shown");
 					};
 					demoTimer.Start();

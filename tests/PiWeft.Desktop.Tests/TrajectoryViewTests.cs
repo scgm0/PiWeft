@@ -70,6 +70,18 @@ public sealed class TrajectoryViewTests
 	}
 
 	[Fact]
+	public void EmptySourceShowsACenteredHintInsteadOfEmptyLanes()
+	{
+		using var view = new TrajectoryView(() => new TrajectorySource([], [], false));
+		ConversationPerformanceTests.Layout(view.View, 420, 820);
+
+		Assert.Contains(Find<TextBlock>(view.View), text => text.Text == Strings.TrajectoryEmptyTitle);
+		Assert.Contains(Find<TextBlock>(view.View), text => text.Text == Strings.TrajectoryEmptyHint);
+		Assert.False(view.InspectorHostForTests.IsVisible);
+		Assert.DoesNotContain(Find<PaneSash>(view.View), sash => sash.IsVisible);
+	}
+
+	[Fact]
 	public void InspectorSashResizesTheInspectorAndClampsTheHeight()
 	{
 		using var view = View();

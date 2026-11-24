@@ -37,13 +37,14 @@ internal sealed class TrajectoryView : IDisposable
 	private readonly Func<TrajectorySource> _source;
 	private readonly ItemsControl _ledger;
 	private readonly ScrollViewer _ledgerScroll;
-	private readonly TextBlock _empty = new();
+	private readonly PanelEmptyState _empty = new("activity", centered: true);
 	private readonly StackPanel _inspectorBody = new();
 	private readonly ScrollViewer _inspectorScroll;
 	private readonly Border _inspectorHost;
 	private readonly PaneSash _inspectorSash;
 	private double _inspectorHeight;
 	private readonly TrajectoryOverview _overview = new();
+	private readonly Border _overviewHost;
 	private readonly TextBlock _turns = new();
 	private readonly TextBlock _recordCount = new();
 	private readonly Button _foldAll;
@@ -110,7 +111,7 @@ internal sealed class TrajectoryView : IDisposable
 				.VerticalAlignment(VerticalAlignment.Center));
 		}
 
-		var overview = new Border()
+		_overviewHost = new Border()
 			.BorderThickness(new Thickness(0, 0, 0, 1))
 			.WithTheme((theme, border) => border.BorderBrush = AppTheme.For(theme).BorderSubtle)
 			.Child(new Grid()
@@ -139,11 +140,6 @@ internal sealed class TrajectoryView : IDisposable
 		_ledgerScroll.SmoothScrolling().NoHorizontalScroll();
 		_ledgerScroll.AutoHideScrollBars = true;
 
-		_empty.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
-			.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Top)
-			.Margin(new Thickness(AppTheme.Space3, AppTheme.Space6, AppTheme.Space3, 0))
-			.IsVisible(false);
-
 		_inspectorScroll = new ScrollViewer()
 			.SmoothScrolling()
 			.Content(_inspectorBody)
@@ -161,11 +157,17 @@ internal sealed class TrajectoryView : IDisposable
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.Child(_inspectorScroll);
 
+		_empty.Show(Strings.TrajectoryEmptyTitle, Strings.TrajectoryEmptyHint);
 		View = new Border().Child(new Grid().Rows("Auto,Auto,*,Auto,Auto")
 			.Children(
 				header.Row(0),
-				overview.Row(1),
-				new Grid().Children(_ledger, _empty).Row(2),
+				_overviewHost.Row(1),
+				new Grid().Children(
+					_ledger,
+					_empty.View.HorizontalAlignment(HorizontalAlignment.Center)
+						.VerticalAlignment(VerticalAlignment.Center)
+						.MaxWidth(360)
+						.Margin(new Thickness(AppTheme.Space4, 0, AppTheme.Space4, 0))).Row(2),
 				_inspectorSash.Row(3),
 				_inspectorHost.Row(4)));
 
@@ -379,8 +381,14 @@ internal sealed class TrajectoryView : IDisposable
 		_overview.SetData(_model.Records, _model.DomainStart, _model.DomainEnd, _selectedId);
 
 		BuildLedgerRows();
-		_empty.IsVisible(_ledgerRows.Count == 0);
-		_ledger.IsVisible(_ledgerRows.Count > 0);
+		// 空会话不画四条空泳道和检查器：一块没有刻度的矩阵比一句说明更像坏掉的界面。
+		var empty = _ledgerRows.Count == 0;
+		_empty.View.IsVisible(empty);
+		_ledger.IsVisible(!empty);
+		_overviewHost.IsVisible(!empty);
+		_inspectorSash.IsVisible(!empty);
+		_inspectorHost.IsVisible(!empty);
+		_foldAll.IsVisible(!empty);
 		// 重建会换掉所有行视图：先丢掉旧的进行中标签，等新行绑定时再登记。
 		_liveDurations.Clear();
 		_ledger.ItemsSource = ItemsView.Create(

@@ -10,7 +10,7 @@ public sealed class FileBrowserView
 {
 	private readonly Func<string> _cwd;
 	private readonly ItemsControl _list = new();
-	private readonly TextBlock _empty = new();
+	private readonly PanelEmptyState _empty = new("folder-open");
 	private readonly MultiLineTextBox _editor = new();
 	private readonly TextBlock _title = new();
 	private readonly Button _save;
@@ -33,7 +33,6 @@ public sealed class FileBrowserView
 		_list.ItemTemplate = new DelegateTemplate<FileRow>(
 			_ => RowView(),
 			(view, row, _, _) => BindRow((Button)view, row));
-		_empty.FontSize(AppTheme.FontSizeCaption).MutedText().IsVisible(false);
 
 		// 顶栏是唯一的位置提示：列表模式显示目录，编辑模式显示文件；完整路径放悬停提示。
 		_title.FontFamily(AppTheme.MonoFont)
@@ -65,7 +64,9 @@ public sealed class FileBrowserView
 
 		_listHost = new Border()
 			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, 0))
-			.Child(new Grid().Children(_list, _empty.VerticalAlignment(VerticalAlignment.Top)));
+			.Child(new Grid().Children(_list,
+				_empty.View.VerticalAlignment(VerticalAlignment.Top)
+					.Margin(new Thickness(AppTheme.Space1, AppTheme.Space2, AppTheme.Space1, 0))));
 
 		_editorHost = new Border()
 			.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space3))
@@ -109,7 +110,7 @@ public sealed class FileBrowserView
 			return;
 		}
 
-		_empty.Text(Strings.FileBrowserLoading).IsVisible(true);
+		_empty.Show(Strings.FileBrowserLoading);
 		_list.IsVisible(false);
 		_ = RefreshAsync(cwd, relativeDir, version, dispatcher);
 	}
@@ -156,7 +157,8 @@ public sealed class FileBrowserView
 	{
 		_list.ItemsSource = ItemsView.Create(rows, static row => row.Name);
 		_list.IsVisible(rows.Count > 0);
-		_empty.Text(Strings.FileBrowserEmpty).IsVisible(rows.Count == 0);
+		if (rows.Count == 0) _empty.Show(Strings.FileBrowserEmpty, Strings.FileBrowserEmptyHint);
+		else _empty.Hide();
 		// 进入目录/刷新是换一份列表，从顶部开始；同一目录的手动刷新也回到顶部。
 		_list.SetScrollOffsets(0, 0);
 	}

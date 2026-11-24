@@ -65,6 +65,18 @@ public sealed class FileBrowserViewTests : IDisposable
 	}
 
 	[Fact]
+	public void EmptyDirectoryExplainsWhyThereIsNoFile()
+	{
+		var empty = Path.Combine(_root, "empty");
+		Directory.CreateDirectory(empty);
+		var view = new FileBrowserView(() => empty);
+		Layout(view.View);
+
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.FileBrowserEmpty);
+		Assert.Contains(Find<TextBlock>(view.View), block => block.Text == Strings.FileBrowserEmptyHint);
+	}
+
+	[Fact]
 	public void LargeDirectoriesOnlyRealizeTheViewportAndCanReachTheLastFile()
 	{
 		for (var index = 0; index < 400; index++)

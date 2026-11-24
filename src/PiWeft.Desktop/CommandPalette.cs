@@ -10,6 +10,7 @@ public sealed class CommandPalette
 	private const double RowHeight = 54;
 	private readonly Func<IReadOnlyList<PaletteCommand>> _commands;
 	private readonly TextBox _query;
+	private readonly TextBlock _hint = new();
 	private readonly StackPanel _results = new();
 	private readonly ScrollViewer _scroll;
 	private readonly List<Button> _rows = [];
@@ -30,9 +31,23 @@ public sealed class CommandPalette
 		_commands = commands;
 		_countText = countText;
 		_emptyText = emptyText ?? Strings.PaletteNoMatch;
+		var prompt = placeholder ?? Strings.PalettePlaceholder;
+		// 框架的 Placeholder 聚焦即隐藏，而命令面板打开就聚焦输入框：提示自己画。
 		_query = new TextBox().PrimarySelection()
-			.Placeholder(placeholder ?? Strings.PalettePlaceholder)
-			.OnTextChanged(_ => Refresh())
+			.StyleName(AppStyles.TextInputLine)
+			.CornerRadius(AppTheme.RadiusMd)
+			.Height(AppTheme.ControlHeightMd)
+			.FontSize(AppTheme.FontSizeCaption)
+			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0))
+			.OnTextChanged(value =>
+			{
+				_hint.IsVisible(value.Length == 0);
+				Refresh();
+			})
+			// 输入法组合串画在输入框里；提示叠在上面会盖住组合文字。
+			.OnTextCompositionStart(_ => _hint.IsVisible(false))
+			.OnTextCompositionUpdate(_ => _hint.IsVisible(false))
+			.OnTextCompositionEnd(_ => _hint.IsVisible(_query.Text is not { Length: > 0 }))
 			.OnKeyDown(key =>
 			{
 				switch (key.Key)
@@ -56,6 +71,11 @@ public sealed class CommandPalette
 				}
 			});
 
+		_hint.Text(prompt).FontSize(AppTheme.FontSizeCaption).SubtleText()
+			.VerticalAlignment(VerticalAlignment.Center).IsHitTestVisible(false)
+			.Margin(new Thickness(AppTheme.Space2 + 2, 0, 0, 0));
+		var queryHost = new Grid().Children(_query, _hint);
+
 		_results.Spacing(2);
 		_scroll = new ScrollViewer().SmoothScrolling().Content(_results).AutoVerticalScroll().NoHorizontalScroll().MaxHeight(360);
 		var content = new StackPanel().Spacing(AppTheme.Space2);
@@ -66,7 +86,7 @@ public sealed class CommandPalette
 				new TextBlock().Text(title).FontSize(AppTheme.FontSizeControl).FontWeight(FontWeight.Bold).PrimaryText()));
 		}
 
-		content.Children(_query, _scroll);
+		content.Children(queryHost, _scroll);
 		if (countText is not null)
 		{
 			content.Children(_count.FontSize(AppTheme.FontSizeMicro).SubtleText());
@@ -116,6 +136,7 @@ public sealed class CommandPalette
 		// 一次打开只取一次快照，输入每个字符无需重新发现技能或构造命令闭包。
 		_all = _commands();
 		_query.Text = string.Empty;
+		_hint.IsVisible(true);
 		Refresh();
 
 		_window = window;

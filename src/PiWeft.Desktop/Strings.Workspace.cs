@@ -64,10 +64,13 @@ public static partial class Strings
 	public const string SidebarTabChats = "对话";
 	public const string SidebarTabProjects = "项目";
 
-	public const string ChatsEmpty = "还没有对话。这里的会话不属于任何项目，点「新建」开始一个。";
+	// 空态拆成标题与说明两行：整句在窄侧栏里会从逗号处折行，标点落到下一行行首。
+	public const string ChatsEmptyTitle = "还没有对话";
+	public const string ChatsEmptyHint = "不属于任何项目的聊天放这里。\n点「新建」开始一个。";
 	public static string ChatWorkspaceFailed(string reason) => $"无法使用聊天目录：{reason}";
 	public const string AddProject = "添加项目";
-	public const string ProjectsEmpty = "还没有项目。点上方「添加项目」选择一个文件夹，之后可在它下面新建任务。";
+	public const string ProjectsEmptyTitle = "还没有项目";
+	public const string ProjectsEmptyHint = "点上方「添加项目」选一个文件夹，\n之后可在它下面新建任务。";
 	public static string ProjectAdded(string name) => $"项目已添加：{name}";
 	public const string ProjectChatWorkspace = "聊天目录属于「对话」分段，不能添加为项目。";
 	public static string ProjectRemoveFailed(string reason) => $"移除项目失败：{reason}";

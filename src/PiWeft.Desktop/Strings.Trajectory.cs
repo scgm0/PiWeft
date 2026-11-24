@@ -7,7 +7,8 @@ public static partial class Strings
 	public const string TrajectoryFoldAll = "全部折叠";
 	public const string TrajectoryUnfoldAll = "全部展开";
 	public const string TrajectoryLoadOlder = "加载更早记录";
-	public const string TrajectoryEmpty = "当前会话还没有可展示的记录。";
+	public const string TrajectoryEmptyTitle = "还没有轨迹记录";
+	public const string TrajectoryEmptyHint = "发送第一条消息后，这里按轮记录输入、模型、工具与过程。";
 	public const string TrajectoryInspectHint = "点选一条记录查看输入、输出和耗时";
 	public const string TrajectoryInFlight = "进行中";
 	public const string TrajectoryUnknownDuration = "—";

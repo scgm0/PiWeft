@@ -150,6 +150,16 @@ public sealed class CheckpointsTests : IDisposable
 	}
 
 	[Fact]
+	public void ViewShowsTheSnapshotHint()
+	{
+		CreateCheckpoint();
+		var view = new CheckpointsView(() => Repo);
+
+		// 提示曾被一个被覆盖的 Border.Child 吞掉，面板只剩列表，读者不知道恢复会动什么。
+		Assert.Contains(Find<TextBlock>(view.View), text => text.Text == Strings.CheckpointHint);
+	}
+
+	[Fact]
 	public void ViewExplainsNonGitDirectories()
 	{
 		// 必须在仓库之外：git 会向上找到 Repo，否则这里会被判成「在仓库里」。

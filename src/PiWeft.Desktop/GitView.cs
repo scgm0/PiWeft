@@ -1188,14 +1188,18 @@ public sealed partial class GitView : IDisposable
 
 		if (canInit)
 		{
+			// 主操作按内容宽，不拉满面板：空态里的按钮是下一步，不是一块底色。
 			body.Children(new Button()
 				.Primary()
 				.Height(AppTheme.ControlHeightMd)
+				.HorizontalAlignment(HorizontalAlignment.Left)
 				.Content(new TextBlock().Text(Strings.GitInit).FontSize(AppTheme.FontSizeCaption))
 				.OnClick(() => ApplyResult(GitWriter.Init(_cwd()))));
 		}
 
-		if (status.Error is { Length: > 0 } detail)
+		// 「不是 Git 仓库」的原始 stderr 只是同一句话的 git 版，铺在空态里只会稀释下一步动作；
+		// 命令不可用/超时标题已说明，其它真实失败才把原文留下来供排查。
+		if (!unavailable && !timedOut && !nonRepository && status.Error is { Length: > 0 } detail)
 		{
 			body.Children(new TextBlock().Text(detail)
 				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)

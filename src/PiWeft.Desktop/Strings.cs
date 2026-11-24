@@ -49,6 +49,7 @@ public static partial class Strings
 	public static string Deleted(string path) => $"已移动到 {path}";
 	public const string NoSessions = "此目录下暂无会话，点「新建」开始一个。";
 	public const string SessionsScanning = "正在读取会话列表…";
+	public const string DismissNotice = "关闭提示";
 	public const string SessionSearch = "搜索会话";
 	public static string EnvironmentFallback(string cwd, string reason) => $"目录 {cwd} 的环境不可用（{reason}），已回退到启动环境。";
 	public const string NoMatches = "没有匹配的会话。";
@@ -103,6 +104,14 @@ public static partial class Strings
 	public const string CloseWindow = "关闭窗口";
 	public const string WelcomeTitle = "开始一次会话";
 	public const string WelcomeBody = "左侧列出该目录下的历史会话；点「新建」开始一个，或用搜索框按名称、目录、编号查找。";
+	public const string EmptySessionHint = "描述要做的事，或从下面挑一个开始。";
+	// 起步建议只填进输入框、不直接发送：用户还能改措辞，也不会因为点错就花掉一次模型调用。
+	public const string StarterProjectLabel = "了解这个项目";
+	public const string StarterProjectPrompt = "读一遍这个项目的关键文件，说明它是做什么的、从哪里入手。";
+	public const string StarterChangesLabel = "解释最近的改动";
+	public const string StarterChangesPrompt = "看一下当前的未提交改动，说明每处改动的目的和风险。";
+	public const string StarterTestsLabel = "跑测试并修复失败";
+	public const string StarterTestsPrompt = "运行测试，定位失败原因并修复。";
 
 	// 设置面板
 	public const string Settings = "设置";
@@ -1037,7 +1046,8 @@ public static partial class Strings
 
 	public const string FileBrowserParent = "上一级";
 
-	public const string FileBrowserEmpty = "这个目录没有可显示的文件。";
+	public const string FileBrowserEmpty = "没有可显示的文件";
+	public const string FileBrowserEmptyHint = "目录为空，或只有被忽略的构建与依赖目录。";
 
 	public const string FileBrowserLoading = "正在读取文件列表…";
 

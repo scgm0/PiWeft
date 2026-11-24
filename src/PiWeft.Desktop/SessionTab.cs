@@ -101,6 +101,9 @@ public sealed partial class SessionTab : IDisposable
 	private bool _floatingHosted;
 	private Window? _floatingWindow;
 	private readonly TextBox _searchBox = new TextBox().PrimarySelection();
+	private readonly Grid _searchHost = new();
+	// 框架的 Placeholder 聚焦即隐藏，而搜索框一展开就拿到焦点：提示自己画，空查询时一直可见。
+	private readonly TextBlock _searchHint = new();
 	private readonly TextBlock _filterStatus = new();
 	private readonly TextBlock _extensionLine = new();
 	private readonly Dictionary<string, string> _extensionStatuses = new(StringComparer.Ordinal);
@@ -178,6 +181,9 @@ public sealed partial class SessionTab : IDisposable
 	private readonly TeamTasksCard _teamTasksCard = new();
 	private readonly Button _retry;
 	private readonly Button _copyReply;
+	private readonly Button _chatViewButton;
+	private readonly Button _branchViewButton;
+	private readonly Button _searchToggle;
 	private readonly Button _modelButton;
 	private readonly TextBlock _modelLabel = new();
 	private readonly Button _addButton;
@@ -197,6 +203,8 @@ public sealed partial class SessionTab : IDisposable
 	private ComposerMode _renderedMode = ComposerMode.Normal;
 	private readonly Button _testButton;
 	private bool _testing;
+	/// 正文列窄于 <see cref="CompactComposerWidth"/> 时模型铭牌只写模型名。
+	private bool _compactComposer;
 	private readonly ModelPicker _modelPicker;
 	private readonly ImagePreview _imagePreview = new();
 	private readonly FileDiffPreview _fileDiffPreview;
@@ -361,17 +369,23 @@ public sealed partial class SessionTab : IDisposable
 		};
 
 
-		// 空会话提示：与输入区同属一列，居中时正好落在输入框上方，只留一段固定间距。
+		// 空会话提示：与输入区同属一列，居中时正好落在输入框上方。
+		// 三枚起步建议把「面对空白输入框」变成一次点击：只填进输入框、不直接发送，用户还能改措辞。
+		// 空态不显示工作目录：页脚已有路径，重复展示只会挤掉建议。
 		_emptyCard = new Border()
 			.Background(AppTheme.Transparent)
-			.MaxWidth(560)
+			.MaxWidth(620)
 			.HorizontalAlignment(HorizontalAlignment.Center)
 			.Margin(new Thickness(AppTheme.Space6, 0, AppTheme.Space6, AppTheme.Space4))
 			.Child(new StackPanel()
-				.Spacing(AppTheme.Space2)
+				.Spacing(AppTheme.Space3)
 				.Children(
-					new TextBlock().Text(Strings.WelcomeTitle).FontSize(24).FontWeight(FontWeight.Medium).PrimaryText()
-						.HorizontalAlignment(HorizontalAlignment.Center)));
+					new TextBlock().Text(Strings.WelcomeTitle).FontSize(20).FontWeight(FontWeight.Medium).PrimaryText()
+						.HorizontalAlignment(HorizontalAlignment.Center),
+					new TextBlock().Text(Strings.EmptySessionHint).FontSize(AppTheme.FontSizeCaption).MutedText()
+						.TextWrapping(TextWrapping.Wrap).TextAlignment(TextAlignment.Center)
+						.HorizontalAlignment(HorizontalAlignment.Center),
+					BuildStarterPrompts()));
 
 		_timeline = new ConversationTimeline(Row);
 		_messages = _timeline.View;
@@ -548,6 +562,7 @@ public sealed partial class SessionTab : IDisposable
 			.Orientation(Orientation.Horizontal)
 			.Spacing(2)
 			.VerticalAlignment(VerticalAlignment.Center)
+			.HorizontalAlignment(HorizontalAlignment.Center)
 			.Children(_modelButton, _thinkingButton);
 		var rightActions = new StackPanel()
 			.Orientation(Orientation.Horizontal)
@@ -555,7 +570,9 @@ public sealed partial class SessionTab : IDisposable
 			.VerticalAlignment(VerticalAlignment.Center)
 			.HorizontalAlignment(HorizontalAlignment.Right)
 			.Children(_testButton, sendGroup);
-		var toolbar = new Grid().Columns("1*,Auto,1*")
+		// 左右两群按内容取宽、中间吃剩余：三列都按 1*/Auto/1* 分时，左群只拿到
+		// (总宽 − 中群)/2，400 DIP 的对话列里比它自己的自然宽还窄，最后一个图标会被挤到第二行。
+		var toolbar = new Grid().Columns("Auto,1*,Auto")
 			.Children(leftActions.Column(0), centerActions.Column(1), rightActions.Column(2));
 
 		// 上下文占用条：接近窗口上限时一眼可见。
@@ -716,18 +733,32 @@ public sealed partial class SessionTab : IDisposable
 		_mainArea.Children(_scrollToLatestWatcher);
 		_mainArea.Children(_scrollToLatestFloatHost);
 
-		var chatView = AppIcons.Button("message-square", Strings.ViewChat, () => ShowView(showChat: true));
-		var branchView = AppIcons.Button("git-branch", Strings.ViewBranches, () => ShowView(showChat: false));
-		var searchToggle = AppIcons.Button("search", Strings.SearchInSession, ToggleSearch);
+		// 对话/分支是两个视图，不是两个动作：当前视图要看得见，不能两个图标长得一模一样。
+		// 搜索框展开时也标上选中态，否则用户只能从上方是否出现输入框判断它开着。
+		_chatViewButton = AppIcons.Button("message-square", Strings.ViewChat, () => ShowView(showChat: true))
+			.StyleName(AppStyles.SelectedButton);
+		_branchViewButton = AppIcons.Button("git-branch", Strings.ViewBranches, () => ShowView(showChat: false));
+		_searchToggle = AppIcons.Button("search", Strings.SearchInSession, ToggleSearch);
 		_copyReply = AppIcons.Button("copy", Strings.CopyLastReply, CopyLastReply);
 		_retry = AppIcons.Button("rotate-ccw", Strings.Retry, () => _ = RetryAsync());
 
 		// 会话内搜索：默认收起，只留一个图标；展开后在消息区上方过滤。
 		_searchBox
-			.Placeholder(Strings.SearchInSession)
+			.StyleName(AppStyles.TextInputLine)
+			.CornerRadius(AppTheme.RadiusMd)
+			.Height(AppTheme.ControlHeightMd)
+			.FontSize(AppTheme.FontSizeCaption)
 			.Width(240)
-			.IsVisible(false)
-			.OnTextChanged(_ => ApplyFilter(_searchBox.Text?.Trim() ?? string.Empty))
+			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0))
+			.OnTextChanged(value =>
+			{
+				_searchHint.IsVisible(value.Length == 0);
+				ApplyFilter(value.Trim());
+			})
+			// 输入法组合串也画在输入框里：提示在上面会盖住组合文字，组合期间先让位。
+			.OnTextCompositionStart(_ => _searchHint.IsVisible(false))
+			.OnTextCompositionUpdate(_ => _searchHint.IsVisible(false))
+			.OnTextCompositionEnd(_ => _searchHint.IsVisible(_searchBox.Text is not { Length: > 0 }))
 			.OnKeyDown(key =>
 			{
 				if (key.Key == Key.Escape)
@@ -736,15 +767,20 @@ public sealed partial class SessionTab : IDisposable
 					ToggleSearch();
 				}
 			});
+		_searchHint.Text(Strings.SearchInSession).FontSize(AppTheme.FontSizeCaption).SubtleText()
+			.VerticalAlignment(VerticalAlignment.Center).IsHitTestVisible(false)
+			.Margin(new Thickness(AppTheme.Space2 + 2, 0, 0, 0));
+		_searchHost.Children(_searchBox, _searchHint).IsVisible(false);
 
 		_filterStatus.FontSize(AppTheme.FontSizeMicro).SubtleText().IsVisible(false);
 
 		var viewSwitch = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(2)
-			.Children(chatView, branchView);
+			.Children(_chatViewButton, _branchViewButton);
 
-		_status.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont);
+		_status.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)
+			.TextTrimming(TextTrimming.CharacterEllipsis);
 
 		// 标题行：左状态铭牌（等宽小字），右动作簇，不再是一块独立底色的条。
 		// 会话头行（状态铭牌 + 视图切换/搜索/重试）：空会话时整行隐藏，出现第一条消息后再显示。
@@ -753,7 +789,7 @@ public sealed partial class SessionTab : IDisposable
 			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
 			.Child(new DockPanel()
 				.LastChildFill()
-				.Children(viewSwitch.DockRight(), searchToggle.DockRight(),
+				.Children(viewSwitch.DockRight(), _searchToggle.DockRight(),
 					_retry.DockRight(), _copyReply.DockRight(), _filterStatus.DockRight(), _status));
 
 		var contextButton = new Button().Content(_contextLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText())
@@ -762,7 +798,8 @@ public sealed partial class SessionTab : IDisposable
 			.HorizontalAlignment(HorizontalAlignment.Center).Children(
 				_contextBar,
 				new DockPanel().LastChildFill().Children(contextButton.DockRight(),
-					_statisticsLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)));
+					_statisticsLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)
+						.TextTrimming(TextTrimming.CharacterEllipsis)));
 
 		// 输入区整列（提示文本 + 输入框 + 状态栏）：空会话时落在填充行并居中，有消息后回到贴底的自适应行。
 		_extensionLine.FontSize(AppTheme.FontSizeMicro).SubtleText().FontFamily(AppTheme.MonoFont)
@@ -785,12 +822,15 @@ public sealed partial class SessionTab : IDisposable
 			.VerticalAlignment(VerticalAlignment.Stretch)
 			.Children(_extensionLine, _askCard, _inputStack,
 				statisticsBar.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)));
+		// 右侧面板展开后正文列变窄：模型铭牌先让位，否则左群图标会被挤到第二行，
+		// 只落下一枚图标。宽度回来自动恢复 provider/model。
+		_composerColumn.SizeChanged += args => UpdateComposerDensity(args.NewSize.Width);
 
 		var layout = new Grid()
 			.Rows("Auto,Auto,*,Auto")
 			.Children(
 				_headerRow.Row(0),
-				_searchBox.HorizontalAlignment(HorizontalAlignment.Left)
+				_searchHost.HorizontalAlignment(HorizontalAlignment.Left)
 					.Margin(new Thickness(AppTheme.Space3, 0, AppTheme.Space3, AppTheme.Space2)).Row(1),
 				_mainArea.Row(2),
 				_composerColumn.Row(3));
@@ -806,7 +846,8 @@ public sealed partial class SessionTab : IDisposable
 			.MaxSecond(AppTheme.TerminalDockMaxHeight)
 			.FirstLength(GridLength.Stars(1))
 			.SecondLength(GridLength.Pixels(_terminalDockHeight))
-			.First(layout).Second(_terminalPane);
+			.First(layout).Second(_terminalPane)
+			.FlatSplitter();
 
 		View = _terminalSplit.AllowDrop().OnDragEnter(OnFilesDragOver).OnDragOver(OnFilesDragOver).OnDrop(OnFilesDropped)
 			.OnLayoutSizeChanged(args => _composer.Height = args.NewSize.Width < 640 || args.NewSize.Height < 560 ? 56 : AppTheme.ComposerHeight);
@@ -1835,11 +1876,13 @@ public sealed partial class SessionTab : IDisposable
 
 	private void ToggleSearch()
 	{
-		var show = !_searchBox.IsVisible;
-		_searchBox.IsVisible(show);
+		var show = !_searchHost.IsVisible;
+		_searchHost.IsVisible(show);
+		_searchToggle.StyleName(show ? AppStyles.SelectedButton : AppStyles.GhostButton);
 
 		if (show)
 		{
+			_searchHint.IsVisible(_searchBox.Text is not { Length: > 0 });
 			_searchBox.Focus();
 			return;
 		}
@@ -1914,6 +1957,8 @@ public sealed partial class SessionTab : IDisposable
 	{
 		_conversationScroll.Stop();
 		_messages.IsVisible(showChat);
+		_chatViewButton.StyleName(showChat ? AppStyles.SelectedButton : AppStyles.GhostButton);
+		_branchViewButton.StyleName(showChat ? AppStyles.GhostButton : AppStyles.SelectedButton);
 		UpdateOutlineVisibility();
 		SetEmptyState(showChat && _chat.Entries().Count == 0);
 		_noMatches.IsVisible(showChat && _filter.Length > 0 && _timeline.RowCount == 0);
@@ -1945,6 +1990,42 @@ public sealed partial class SessionTab : IDisposable
 		}
 
 		_composerColumn.VerticalAlignment(empty ? VerticalAlignment.Center : VerticalAlignment.Stretch);
+	}
+
+	/// 空会话的三枚起步建议：点击只把提示词填进输入框，不代替用户发送。
+	/// 用 WrapPanel 而不是三列等宽网格：窄窗口下整枚 chip 换行，不会把文字压成两行。
+	private UIElement BuildStarterPrompts()
+	{
+		(string Icon, string Label, string Prompt)[] starters =
+		[
+			("folder-open", Strings.StarterProjectLabel, Strings.StarterProjectPrompt),
+			("file-diff", Strings.StarterChangesLabel, Strings.StarterChangesPrompt),
+			("list-checks", Strings.StarterTestsLabel, Strings.StarterTestsPrompt),
+		];
+
+		var row = new CenteredWrapPanel
+		{
+			Spacing = AppTheme.Space2,
+			HorizontalAlignment = HorizontalAlignment.Center,
+		};
+		foreach (var (icon, label, prompt) in starters)
+		{
+			var content = new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(6)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					AppIcons.Icon(icon, AppStyles.RoleSubtle, 14),
+					new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption).MutedText());
+			row.Children(new Button()
+				.StyleName(AppStyles.CardMutedButton)
+				.Padding(new Thickness(AppTheme.Space2, 6, AppTheme.Space3, 6))
+				.Content(content)
+				.HoverTip(prompt)
+				.OnClick(() => Prefill(prompt)));
+		}
+
+		return row;
 	}
 
 	private async Task AttachImageAsync()
@@ -2445,7 +2526,9 @@ public sealed partial class SessionTab : IDisposable
 	private void RefreshPickers()
 	{
 		var modelName = Session.Model.Name.Length > 0 ? Session.Model.Name : Session.Model.Id;
-		_modelLabel.Text($"{Session.Model.Provider}/{modelName}").TextTrimming(TextTrimming.CharacterEllipsis);
+		// 铭牌在窄列里只写模型名：provider 前缀完整写在提示里，不为了它把工具条挤成两行。
+		_modelLabel.Text(_compactComposer ? modelName : $"{Session.Model.Provider}/{modelName}")
+			.TextTrimming(TextTrimming.CharacterEllipsis);
 		_modelButton.HoverTip($"{Session.Model.Provider}/{Session.Model.Id}\n{Strings.ModelCapabilities(Session.Model)}");
 
 		UpdateSecurityButton();
@@ -2454,6 +2537,27 @@ public sealed partial class SessionTab : IDisposable
 		// 铭牌跟 PiDeck 同款拼成一行：provider/model · max ▾；级别用原始短名，中文全名放在提示里。
 		_thinkingLabel.Text($"· {Session.ThinkingLevel}");
 		_thinkingButton.HoverTip($"{Strings.ThinkingLevelTitle}：{thinking}");
+	}
+
+	/// 正文列窄到下一档时压缩模型铭牌。阈值取工具条三群自然宽度之和：
+	/// 低于它时 Grid 的 1* 列分不到左群需要的宽度，WrapPanel 会把尾部的图标单独折到下一行。
+	private const double CompactComposerWidth = 560;
+
+	private void UpdateComposerDensity(double width)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		var compact = width is > 0 and < CompactComposerWidth;
+		if (compact == _compactComposer)
+		{
+			return;
+		}
+
+		_compactComposer = compact;
+		RefreshPickers();
 	}
 
 	/// 会话进行态（PiDeck respondingKind 同语义）。判定与措辞都在
