@@ -398,11 +398,7 @@ public static class AppStyles
 						Match = VisualStateFlags.Hot | VisualStateFlags.Enabled,
 						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).AccentSoft))],
 					},
-					new StateTrigger
-					{
-						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
-						Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
-					},
+
 				],
 			})
 			// 标题栏左右两段：左段与侧栏同色、右段与主区同色，拼成 PiDeck 式的连续窗框。
@@ -787,11 +783,7 @@ public static class AppStyles
 							Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).TextSubtle)),
 						],
 					},
-					new StateTrigger
-					{
-						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
-						Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
-					},
+
 				],
 			})
 			.With(PrimaryButton, () => new Style(typeof(Button))
@@ -903,12 +895,6 @@ public static class AppStyles
 						Match = VisualStateFlags.Pressed | VisualStateFlags.Enabled,
 						Setters = [Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground))],
 					},
-					new StateTrigger
-					{
-						// 选中按钮已有 1px 描边：键盘焦点只提亮描边，不改变布局尺寸。
-						Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
-						Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
-					},
 				],
 			})
 			.With(GhostButton, () => new Style(typeof(Button))
@@ -1006,12 +992,6 @@ public static class AppStyles
 						Setter.Create(Control.BackgroundProperty, (Func<Theme, Color>)(t => AppTheme.For(t).HoverBackground)),
 						Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
 					],
-				},
-				new StateTrigger
-				{
-					// 卡片已有 1px 描边：焦点只需要把它提亮。
-					Match = VisualStateFlags.Focused | VisualStateFlags.Enabled,
-					Setters = [Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Accent))],
 				},
 			]
 			: [],

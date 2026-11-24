@@ -67,7 +67,7 @@ internal sealed class ModelPicker
 			// 输入法组合串画在输入框里；提示叠在上面会盖住组合文字。
 			.OnTextCompositionStart(_ => _hint.IsVisible(false))
 			.OnTextCompositionUpdate(_ => _hint.IsVisible(false))
-			.OnTextCompositionEnd(_ => _hint.IsVisible(_query.Text is not { Length: > 0 }))
+			.OnTextCompositionEnd(_ => _hint.IsVisible(_query!.Text is not { Length: > 0 }))
 			.OnKeyDown(key =>
 			{
 				if (key.Key == Key.Enter)

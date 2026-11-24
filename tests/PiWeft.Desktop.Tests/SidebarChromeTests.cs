@@ -71,13 +71,9 @@ public sealed class SidebarChromeTests
 	}
 
 	[Theory]
-	[InlineData(AppStyles.CardButton)]
-	[InlineData(AppStyles.CardMutedButton)]
-	[InlineData(AppStyles.SelectedButton)]
 	[InlineData(AppStyles.GhostButton)]
 	[InlineData(AppStyles.PrimaryButton)]
 	[InlineData(AppStyles.SegmentButton)]
-	[InlineData(AppStyles.SegmentButtonActive)]
 	[InlineData(AppStyles.TitleBarTab)]
 	[InlineData(AppStyles.TitleBarTabActive)]
 	[InlineData(AppStyles.TitleBarIconButton)]
@@ -86,15 +82,32 @@ public sealed class SidebarChromeTests
 	[InlineData(AppStyles.TitleBarCloseButton)]
 	[InlineData(AppStyles.TitleBarTabClose)]
 	[InlineData(AppStyles.ChangedFileChip)]
-	[InlineData(AppStyles.ChangedFilesMore)]
 	[InlineData(AppStyles.CodeButton)]
 	[InlineData(AppStyles.AccentSegmentButton)]
-	public void ClickableSurfacesHaveHoverAndFocusFeedback(string styleName)
+	public void ClickableSurfacesHaveHoverAndNonStrokeFocusFeedback(string styleName)
 	{
 		var style = AppStyles.Create().Get(styleName);
 
 		Assert.NotNull(style);
 		Assert.Contains(style!.Triggers, trigger => trigger.Matches(VisualStateFlags.Hot | VisualStateFlags.Enabled));
 		Assert.Contains(style.Triggers, trigger => trigger.Matches(VisualStateFlags.Focused | VisualStateFlags.Enabled));
+	}
+
+	[Theory]
+	[InlineData(AppStyles.CardButton)]
+	[InlineData(AppStyles.CardMutedButton)]
+	[InlineData(AppStyles.SelectedButton)]
+	[InlineData(AppStyles.SegmentButtonActive)]
+	[InlineData(AppStyles.ChangedFilesMore)]
+	public void CardLikeSurfacesDoNotDrawAFocusStroke(string styleName)
+	{
+		var style = AppStyles.Create().Get(styleName);
+
+		Assert.NotNull(style);
+		Assert.Contains(style!.Triggers, trigger => trigger.Matches(VisualStateFlags.Hot | VisualStateFlags.Enabled));
+		// 选中卡片/按钮原本靠底色与既有 1px 结构线表达，键盘焦点不再额外提亮描边。
+		Assert.DoesNotContain(style.Triggers, trigger =>
+			trigger.Matches(VisualStateFlags.Focused | VisualStateFlags.Enabled) &&
+			trigger.Setters.Any(setter => setter.Property == Control.BorderBrushProperty));
 	}
 }
