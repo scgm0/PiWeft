@@ -49,7 +49,6 @@ public static class AppStyles
 	// 窗框（自定义标题栏）
 	public const string TitleBarSidebar = "pi-title-bar-sidebar";
 	public const string TitleBarMain = "pi-title-bar-main";
-	public const string TitleBarThread = "pi-title-bar-thread";
 	public const string TitleBarSeparator = "pi-title-bar-separator";
 	public const string TitleBarButton = "pi-title-bar-button";
 	public const string TitleBarIconButton = "pi-title-bar-icon";
@@ -422,7 +421,6 @@ public static class AppStyles
 					Setter.Create(Border.ClipToBoundsProperty, true),
 				],
 			})
-			.With(TitleBarThread, () => Fill(typeof(Border), p => p.Accent))
 			.With(TitleBarSeparator, () => Fill(typeof(Border), p => p.BorderSubtle))
 			// 标题栏图标的悬停块：小圆角，不撑满整行。
 			.With(TitleBarIconButton, () => new Style(typeof(Button))

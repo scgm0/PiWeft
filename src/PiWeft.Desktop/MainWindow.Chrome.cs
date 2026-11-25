@@ -164,16 +164,17 @@ public sealed partial class MainWindow
 			.VerticalAlignment(VerticalAlignment.Center);
 		_tabCaption.HoverTip(_cwd);
 
-		// 品牌是「织机」的门牌：2px 白色纬线 + 等宽字，和正文保持同一套材质。
-		var thread = new Border().StyleName(AppStyles.TitleBarThread)
-			.Width(AppTheme.ThreadWidth)
-			.Height(14)
+		// 品牌是「织机」的门牌：应用图标 + 加粗字，和正文保持同一套材质。
+		var mark = new Image()
+			.Source(AppIcons.Brand())
+			.Width(16)
+			.Height(16)
 			.VerticalAlignment(VerticalAlignment.Center);
 
 		var brand = new TextBlock()
 			.Text(Strings.BrandShort)
 			.FontSize(AppTheme.FontSizeCaption)
-			.FontWeight(FontWeight.SemiBold)
+			.FontWeight(FontWeight.Bold)
 			.PrimaryText()
 			.VerticalAlignment(VerticalAlignment.Center);
 
@@ -182,7 +183,7 @@ public sealed partial class MainWindow
 				.Orientation(Orientation.Horizontal)
 				.Spacing(AppTheme.Space2)
 				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(thread, brand));
+				.Children(mark, brand));
 
 		_hideSidebarButton = BuildChromeIconButton("panel-left", Strings.ToggleSidebar, ToggleSidebar);
 		_hideSidebarButton.Margin(new Thickness(10, 0, 10, 0));

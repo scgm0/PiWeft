@@ -1,7 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Input;
-using Aprillz.MewUI.Svg;
 using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
@@ -11,8 +10,6 @@ namespace PiWeft.Desktop;
 /// 只是把选择先收在草稿里，提交时一次性带进新会话。MainWindow 负责目标目录、菜单与建会话。
 internal sealed partial class WelcomeSurface : IDisposable
 {
-	private const string BrandResource = "PiWeft.Desktop.Resources.appicon.piweft.svg";
-
 	private const double BrandSize = 72;
 
 	private readonly TextBlock _targetLabel = new();
@@ -43,7 +40,7 @@ internal sealed partial class WelcomeSurface : IDisposable
 	public WelcomeSurface()
 	{
 		var brand = new Image()
-			.Source(SvgImageSource.FromResource(typeof(MainWindow).Assembly, BrandResource))
+			.Source(AppIcons.Brand())
 			.Width(BrandSize).Height(BrandSize)
 			.HorizontalAlignment(HorizontalAlignment.Center);
 

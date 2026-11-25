@@ -15,6 +15,12 @@ public static class AppIcons
 {
 	private const string ResourcePrefix = "PiWeft.Desktop.Resources.icons.";
 
+	private const string BrandResource = "PiWeft.Desktop.Resources.appicon.piweft.svg";
+
+	// 品牌标是与 exe 图标同一份矢量，与主题无关，解析一次就够；资源名只在这里写。
+	private static readonly Lazy<IImageSource> BrandSource = new(() =>
+		SvgImageSource.FromResource(typeof(AppIcons).Assembly, BrandResource));
+
 	private static readonly Dictionary<(string Name, uint Tint), SvgImageSource> Cache = [];
 	private static readonly Lock CacheGate = new();
 
@@ -24,6 +30,9 @@ public static class AppIcons
 	public const double Size = 16;
 
 	public const double ToolbarSize = 20;
+
+	/// 品牌标：侧栏标题栏与起始页共用的应用图标矢量。
+	public static IImageSource Brand() => BrandSource.Value;
 
 	public static IImageSource Get(string name, Color? tint = null)
 	{
