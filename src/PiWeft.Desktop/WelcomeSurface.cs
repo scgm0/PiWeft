@@ -37,6 +37,9 @@ internal sealed partial class WelcomeSurface : IDisposable
 
 	private ComposerMode _mode = ComposerMode.Normal;
 
+	// 掉落解析相对路径用的目标目录；打开拖放时才读，未设置时 ComposerDrop 会静默丢掉相对路径。
+	private string _cwd = string.Empty;
+
 	public WelcomeSurface()
 	{
 		var brand = new Image()
@@ -143,11 +146,15 @@ internal sealed partial class WelcomeSurface : IDisposable
 			.MaxWidth(520)
 			.HorizontalAlignment(HorizontalAlignment.Center);
 
-		View = new CenteredWidthPanel()
+		var root = new CenteredWidthPanel()
 		{
 			MaxContentWidth = AppTheme.MessageMaxWidth + AppTheme.Space6,
-		}
-			.VerticalAlignment(VerticalAlignment.Center)
+		};
+		// 与会话页一样整块接掉落：拖到品牌、卡片或起步建议上都算落进输入卡。
+		root.AllowDrop()
+			.OnDragEnter(OnFilesDragOver)
+			.OnDragOver(OnFilesDragOver)
+			.OnDrop(OnFilesDropped)
 			.Children(new StackPanel()
 				.Spacing(AppTheme.Space4)
 				.Children(
@@ -158,6 +165,7 @@ internal sealed partial class WelcomeSurface : IDisposable
 					card,
 					starters,
 					body));
+		View = root;
 	}
 
 	public FrameworkElement View { get; }
@@ -184,6 +192,7 @@ internal sealed partial class WelcomeSurface : IDisposable
 	/// 显示新会话将落在哪个目录。路径放在悬停提示里，chip 上只留短名。
 	public void SetTarget(string label, string cwd)
 	{
+		_cwd = cwd;
 		_targetLabel.Text(label);
 		TargetButton.HoverTip(string.IsNullOrWhiteSpace(cwd)
 			? Strings.WelcomeTargetTip

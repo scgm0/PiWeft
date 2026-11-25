@@ -1,6 +1,7 @@
 using System.Reflection;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using Aprillz.MewUI.Platform;
 using PiWeft.Ai;
 using PiWeft.CodingAgent.Security;
 using Xunit;
@@ -94,6 +95,64 @@ public sealed class WelcomeSurfaceTests
 	}
 
 	[Fact]
+	public void DroppedFileBecomesAnAtReference()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-welcome-drop-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var path = Path.Combine(root, "note.txt");
+			File.WriteAllText(path, "x");
+			var surface = new WelcomeSurface();
+			surface.SetTarget(Strings.SidebarTabChats, root);
+			var data = new DataObject();
+			data.SetStorageItems([path]);
+
+			var args = Drop(surface, data);
+
+			Assert.True(args.Accepted);
+			Assert.Equal(" " + ComposerDrop.Reference(path) + " ", surface.Input.Text);
+		}
+		finally
+		{
+			TempDirectory.Delete(root);
+		}
+	}
+
+	[Fact]
+	public async Task DroppedImageWaitsInTheAttachmentBar()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "piweft-welcome-image-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var path = Path.Combine(root, "photo.png");
+			File.WriteAllBytes(path, [1, 2, 3]);
+			var surface = new WelcomeSurface();
+			surface.SetTarget(Strings.SidebarTabChats, root);
+			var data = new DataObject();
+			data.SetStorageItems([path]);
+
+			var args = Drop(surface, data);
+
+			Assert.True(args.Accepted);
+			var deadline = DateTime.UtcNow.AddSeconds(5);
+			while (surface.PendingImages.Count == 0 && DateTime.UtcNow < deadline)
+			{
+				await Task.Delay(20);
+			}
+
+			Assert.Single(surface.PendingImages);
+			Assert.Equal("image/png", surface.PendingImages[0].Content.MimeType);
+			Assert.Contains(Find<TextBlock>(surface.View), text => text.Text == "photo.png");
+		}
+		finally
+		{
+			TempDirectory.Delete(root);
+		}
+	}
+
+	[Fact]
 	public void ToolbarShowsTheModelAndThinkingLikeTheSessionComposer()
 	{
 		var surface = new WelcomeSurface();
@@ -162,6 +221,14 @@ public sealed class WelcomeSurfaceTests
 			? Find<TextBlock>(panel).Select(static block => block.Text)
 				.FirstOrDefault(static text => !string.IsNullOrEmpty(text))
 			: null;
+
+	private static DragEventArgs Drop(WelcomeSurface surface, DataObject data)
+	{
+		var args = new DragEventArgs(data, new Point(1, 1), new Point(1, 1));
+		typeof(UIElement).GetMethod("OnDrop", BindingFlags.Instance | BindingFlags.NonPublic)!
+			.Invoke(surface.View, [args]);
+		return args;
+	}
 
 	private static void Press(UIElement element, KeyEventArgs args) =>
 		typeof(UIElement).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!

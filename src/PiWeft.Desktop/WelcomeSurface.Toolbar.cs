@@ -424,6 +424,53 @@ internal sealed partial class WelcomeSurface
 			});
 	}
 
+	private void OnFilesDragOver(DragEventArgs e)
+	{
+		e.Accepted = !_disposed && ComposerDrop.CanAccept(e.Data) && (e.AllowedEffects & DragDropEffects.Copy) != 0;
+		e.Effect = e.Accepted ? DragDropEffects.Copy : DragDropEffects.None;
+		e.Handled = true;
+	}
+
+	/// 与会话页同一条掉落路径：文件/URL 文本先按目标目录解析成路径，
+	/// 没有路径时再看剪贴板式图片字节。非图片插 @ 引用，图片进附件条。
+	private void OnFilesDropped(DragEventArgs e)
+	{
+		OnFilesDragOver(e);
+		if (!e.Accepted)
+		{
+			return;
+		}
+
+		e.Accepted = false;
+		e.Effect = DragDropEffects.None;
+		var paths = ComposerDrop.Paths(e.Data, _cwd);
+		if (paths.Count > 0)
+		{
+			e.Accepted = true;
+			e.Effect = DragDropEffects.Copy;
+			_ = AddFilesAsync(paths);
+			_input.Focus();
+			return;
+		}
+
+		try
+		{
+			if (ComposerDrop.RawImage(e.Data) is not { } image)
+			{
+				return;
+			}
+
+			e.Accepted = true;
+			e.Effect = DragDropEffects.Copy;
+			AddPendingImage(image.Path, image.Content);
+			_input.Focus();
+		}
+		catch (IOException)
+		{
+			NotifyError?.Invoke(Strings.AttachmentLimit);
+		}
+	}
+
 	private async Task AttachFilesAsync()
 	{
 		string[]? files;

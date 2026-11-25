@@ -47,7 +47,10 @@ internal sealed class CenteredWidthPanel : Panel
 				continue;
 			}
 
-			ui.Arrange(new Rect(x, bounds.Y, width, bounds.Height));
+			// 面板本身铺满可用区域（整块都得能接拖放），内容仍在纵向正中间。
+			var height = Math.Min(ui.DesiredSize.Height, bounds.Height);
+			var y = bounds.Y + Math.Max(0, (bounds.Height - height) / 2);
+			ui.Arrange(new Rect(x, y, width, height));
 		}
 	}
 }
