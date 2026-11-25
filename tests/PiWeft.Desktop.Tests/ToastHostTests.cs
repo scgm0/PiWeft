@@ -18,6 +18,10 @@ public sealed class ToastHostTests
 		Assert.Equal(3, host.VisibleCount);
 		Assert.Equal(1, window.OverlayLayer.Count);
 
+		// 提示条停在窗口底部；普通窗口底边留出一格，不贴着窗沿。
+		Assert.Equal(VerticalAlignment.Bottom, host.StackVerticalAlignment);
+		Assert.Equal(AppTheme.Space2, host.StackMargin.Bottom);
+
 		// 第四条挤掉最早的一条；重复的最新一条不叠卡，只重置计时。
 		host.Show("d", ToastKind.Info);
 		host.Show("d", ToastKind.Info);

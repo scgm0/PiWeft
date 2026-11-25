@@ -12,7 +12,7 @@ internal enum ToastKind
 
 internal sealed record ToastItem(string Message, ToastKind Kind);
 
-/// 窗口级 toast 的统一入口：交给 <see cref="ToastHost"/> 呈现（顶部横幅、最多三条、点穿、自动淡出）。
+/// 窗口级 toast 的统一入口：交给 <see cref="ToastHost"/> 呈现（底部提示条、最多三条、点穿、自动淡出）。
 /// 没有窗口或应用未运行时静默忽略，因此无窗口的布局测试与退出阶段调用是安全的。
 internal static class Toasts
 {

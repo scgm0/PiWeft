@@ -12,8 +12,10 @@ namespace PiWeft.Desktop;
 /// （外点、切窗、标签页收起）没有窗口可淡，直接收。
 internal sealed class FadePopup : IDisposable
 {
-	private const int FadeInMs = 200;
-	private const int FadeOutMs = 120;
+	internal const int FadeInMs = 200;
+	internal const int FadeOutMs = 120;
+	internal static readonly Func<double, double> FadeInEasing = Easing.EaseOutQuint;
+	internal static readonly Func<double, double> FadeOutEasing = Easing.EaseOutCubic;
 
 	// 起点低于这个值就等于没画出来过，直接收，不再空跑一段动画。
 	private const double HiddenThreshold = 0.01;
@@ -30,7 +32,7 @@ internal sealed class FadePopup : IDisposable
 	public FadePopup()
 	{
 		_popup.Closed += OnPopupClosed;
-		_clock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), Easing.EaseOutQuint)
+		_clock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), FadeInEasing)
 		{
 			TickCallback = OnFadeTick,
 			CompletedCallback = OnFadeCompleted,
@@ -73,11 +75,11 @@ internal sealed class FadePopup : IDisposable
 		{
 			// chrome 的 opacity 连落影一起淡入；内容先恢复，避免两套透明度相乘。
 			content.Opacity = 1;
-			StartFade(surface, 0, 1, FadeInMs, Easing.EaseOutQuint);
+			StartFade(surface, 0, 1, FadeInMs, FadeInEasing);
 		}
 		else
 		{
-			StartFade(content, 0, 1, FadeInMs, Easing.EaseOutQuint);
+			StartFade(content, 0, 1, FadeInMs, FadeInEasing);
 		}
 	}
 
@@ -102,7 +104,7 @@ internal sealed class FadePopup : IDisposable
 			content.IsHitTestVisible = false;
 		}
 
-		StartFade(surface, surface.Opacity, 0, FadeOutMs, Easing.EaseOutCubic);
+		StartFade(surface, surface.Opacity, 0, FadeOutMs, FadeOutEasing);
 	}
 
 	/// 立即关掉，不做淡出。同一个 Popup 马上要再开一次，或会话切走、浮层跟随标签页一起消失时用：
