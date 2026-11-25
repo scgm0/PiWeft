@@ -43,8 +43,9 @@
 | CLI NativeAOT 产物（linux-x64，Release） | 当前提交 31,671,672 B。runtime-async 的 A/B 在同一棵树上量：关 32,060,744 B → 开 31,321,368 B（-739,376 B，**-2.3%**） |
 | `SessionManager.Open` 46 MB / 26,984 行（只读+建索引，9 轮中位） | `List<object>` 管线 402 ms / 249.2 MiB → `List<SessionLine>` union 管线 403 ms / 249.2 MiB（各 5 次采样，无差异） |
 | SSE 事件解析 | 192 B/事件 → 72 B/事件，快 15–20% |
-| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 82.7 MiB（86,706,856 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 82.5 / 82.1 / 80.6 / 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
+| NativeAOT 桌面体积（linux-x64，Release，当前提交） | 82.9 MiB（86,926,248 B），配置含 `EventSourceSupport`（换来 `dotnet-counters`/`dotnet-trace` 可附着）与显式 `Aprillz.MewUI.Automation.Enabled=false`。旧记录 82.5 / 82.1 / 80.6 / 80.0 / 75.8 / 77.4 MiB 与 62.4 / 64.0 MB 均来自更早构建 |
 | 桌面托盘驻留的产物体积代价 | 同一份代码只加托盘入口：86,539,488 B → 86,706,856 B，+167,368 B（+0.19%）。托盘后端此前已由 X11 宿主带进产物，增量是 `TrayIcon` 实例、菜单与设置项 |
+| MewUI 子模块更新（c2cd7ef → 2f6943d）的产物体积代价 | 86,926,312 B → 86,926,248 B，-64 B。6 个提交落在窗口后端（X11 撤销后重新映射、macOS orderOut 的状态记录）与 Direct2D 的裁剪读取、DWrite 字族回退，Linux 的 MewVG 产物没有新增符号；同期删掉的 `X11WindowMapping` 也在这一份差额里 |
 | MewUI 子模块更新（45428e1 → c2cd7ef）的产物体积代价 | 同一份代码只换子模块：86,067,872 B → 86,539,488 B，+471,616 B（+0.55%）。11 个提交新增 Linux 托盘（StatusNotifierItem）与应用标识；托盘后端挂在 `X11PlatformHost` 上，产物里保留了 `Tmds.DBus.Protocol` 与 `TrayIcon` 符号，AT-SPI2 关闭已不足以把 DBus 栈裁掉 |
 | MewUI 子模块更新（553f28d → 45428e1）的产物体积代价 | 同一份代码只换子模块：85,719,760 B → 86,067,872 B，+348,112 B（+0.41%）。新增的 system backdrop、托盘、多源绑定与自动化代码在不引用时不进产物；增量来自 retained 渲染（组合层缓存、backdrop pass）与 MewVG 0.11.1 |
 | MewUI 子模块更新（2b93028 → 553f28d）的产物体积代价 | 同一份代码只换子模块：84,459,584 B → 84,475,952 B，+16,368 B（+0.02%）。新增的 X11 AT-SPI2 代码与 `Tmds.DBus.Protocol` 依赖在 automation 关掉后被裁掉 |
@@ -126,6 +127,12 @@
 - 真要零分配，前提是把 MewUI 的条目管道泛型化（`IItemsView<T>`、模板只走强类型），那是改上游子模块。而账本按 `turnWindow` 分窗、行数几百、每秒重建一次，单行 32 B，收益 ~10 KB/s，不值。
 - 这一块真正值得做的是**行视图复用与增量 diff**（重建行表时复用未变的行），不涉及 MewUI 也不涉及 union。
 
+## MewUI 2f6943d 升级记录
+
+- MewUI 子模块 c2cd7ef → 2f6943d（6 个提交）。不改代码就能构建；桌面 1422 项测试通过，全量其余项目通过。
+- 已删 `X11WindowMapping`。X11 后端的 `Hide` 改成 `XWithdrawWindow`，`PresentSurface` 对撤销过的窗口重新 `XMapWindow`，并把尺寸提示标成 `USPosition`，让 WM 用窗口自己记住的位置。托盘唤回、二次启动唤回都走这条路径，不再需要应用侧另开 X 连接补一次映射。`tools/desktop-tray-smoke.sh` 通过：关窗即隐藏、后台流式继续、二次启动把隐藏窗口唤回可见。
+- 已核对不改代码：`FrameworkElement` 的 arrange 用 `UnclippedDesiredSize` 补回被测量约束裁掉的部分，只在 arrange 槽比测量约束宽时生效；本项目自绘面板都传显式 arrange 矩形，`MarqueeLine` 的 `_lineWidth` 也来自无限宽测量，语义不变。Direct2D 的 `ITargetReadScopeContext`、圆角裁剪下的 backdrop、DWrite 字族回退只让彩色字族吃 emoji 区间，都只走 Windows 后端。macOS 的 `PresentSurface` / `IsHidden` 与 X11 是同一处改动。
+
 ## MewUI c2cd7ef 升级记录
 
 - MewUI 子模块 45428e1 → c2cd7ef（11 个提交）。升级后不改项目代码能构建；桌面 1315 项测试通过，全量其余项目通过。
@@ -173,7 +180,7 @@
 - 已修：单实例监听循环把 `ReceiveAsync`/`onActivate` 放在 try 外，一次客户端 RST 或 dispatcher 已停就让激活通道永久失效。整轮包 try/catch，取消/释放退出，其它异常记日志后继续；测试用 `LingerState(0)` 造 RST。
 - 已修：`desktop.json` 直接覆盖写，进程在写盘中途被杀会留下半截 JSON，下次 Load 回退默认值（窗口几何、项目、置顶、快捷消息一起丢）。改成同目录 `.tmp` + `File.Move(overwrite)`；测试断言无残留且可解析。
 - 已修：设置页关窗确认只捕 `InvalidOperationException`，其它异常让窗口带着未保存草稿关闭且 `_exitRequested` 不复位。现在任何异常都按取消处理并记日志。
-- 已核对未修：`LiveActivityClock`/`LiveDurationClock` 在隐藏时仍每 100 ms/1 s 改文本（剩余约 5% CPU 的一部分）；`X11WindowMapping` 每次唤回新开一条 X 连接；`AgentLoop` 单条消息内的工具并发无上限；`CloseTabAsync` 仍是 fire-and-forget。前三者收益小或改动面大，暂留。
+- 已核对未修：`LiveActivityClock`/`LiveDurationClock` 在隐藏时仍每 100 ms/1 s 改文本（剩余约 5% CPU 的一部分）；`AgentLoop` 单条消息内的工具并发无上限；`CloseTabAsync` 仍是 fire-and-forget。三项收益小或改动面大，暂留。
 
 ## 诊断面板
 

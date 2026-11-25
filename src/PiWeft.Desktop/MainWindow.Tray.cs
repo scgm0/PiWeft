@@ -80,7 +80,6 @@ public sealed partial class MainWindow
 		}
 
 		Show();
-		X11WindowMapping.Map(Handle);
 		Activate();
 		_hiddenToTray = false;
 		CurrentTab()?.SetWindowVisible(true);
