@@ -37,6 +37,15 @@ public sealed class SecuritySection
 
 	public UIElement View => _body;
 
+
+
+	/// <summary>测试用：展开第一档，覆盖编辑器的构建路径。</summary>
+	internal void ExpandFirstLevelForTest()
+	{
+		_expanded = _config.Levels.FirstOrDefault()?.Level;
+		Rebuild();
+	}
+
 	public void Reload()
 	{
 		try
@@ -62,12 +71,9 @@ public sealed class SecuritySection
 
 		_body.Clear();
 
-		_body.Children(Hint(Strings.SecurityScope));
-
 		if (_error is { Length: > 0 } error)
 		{
-			_body.Children(new TextBlock().Text(Strings.SecurityLoadFailedText(error))
-				.FontSize(AppTheme.FontSizeCaption).ErrorText().TextWrapping(TextWrapping.Wrap));
+			_body.Children(SettingsUi.Alert(Strings.SecurityLoadFailedText(error), AppStyles.RoleError));
 		}
 
 		_body.Children(ToggleGroup());
@@ -82,129 +88,123 @@ public sealed class SecuritySection
 
 	private Element ToggleGroup()
 	{
-		var enabled = new CheckBox().Content(new TextBlock()
-			.Text(Strings.SecurityEnabled).FontSize(AppTheme.FontSizeCaption).MutedText());
-		enabled.IsChecked = _config.Enabled;
-		enabled.OnCheckedChanged(_ => Update(config => config with { Enabled = enabled.IsChecked == true }));
+		var rows = new List<UIElement>();
+		var enabled = SettingsUi.SwitchRow(
+			Strings.SecurityEnabled, Strings.SecurityEnabledHint, _config.Enabled,
+			value => Update(config => config with { Enabled = value }), out _);
+		rows.Add(enabled);
 
-		var levels = LevelNames();
-		var picker = new ComboBox().ItemsSource(ItemsView.Create(levels));
-		picker.SelectedIndex = Math.Max(0, Array.IndexOf(levels, _config.DefaultLevelId));
+		var levels = _config.Levels;
+		var names = levels.Select(static level => level.Name).ToArray();
+		var picker = new ComboBox().ItemsSource(ItemsView.Create(names)).Width(SettingsUi.ControlWidth);
+		picker.SelectedIndex = Math.Max(0, levels.ToList().FindIndex(level =>
+			string.Equals(level.Level, _config.DefaultLevelId, StringComparison.Ordinal)));
 		picker.SelectionChanged += _ =>
 		{
 			var index = picker.SelectedIndex;
-			if (index >= 0 && index < levels.Length && levels[index] != _config.DefaultLevelId)
+			if (index >= 0 && index < levels.Count && levels[index].Level != _config.DefaultLevelId)
 			{
-				Update(config => config with { DefaultLevelId = levels[index] });
+				Update(config => config with { DefaultLevelId = levels[index].Level });
 			}
 		};
-
-		return Card("shield", Strings.SecurityGroup, new StackPanel().Spacing(AppTheme.Space2).Children(
-			Hint(Strings.SecurityEnabledHint),
-			enabled,
-			new DockPanel().LastChildFill().Children(
-				picker.DockRight().MinWidth(200),
-				FieldLabel(Strings.SecurityDefaultLevel))),
-			enabledTip: Strings.SecurityEnabledTip);
+		rows.Add(SettingsUi.Row(Strings.SecurityDefaultLevel, Strings.SecurityDefaultLevelHint, picker));
+		return SettingsUi.Group("shield", Strings.SecurityToggleGroup, SettingsUi.Rows(rows),
+			description: Strings.SecurityScope);
 	}
-
 
 	private Element LevelsGroup()
 	{
-		var panel = new StackPanel().Spacing(AppTheme.Space2);
-
+		var body = new StackPanel();
+		var first = true;
 		foreach (var level in _config.Levels)
 		{
-			panel.Children(LevelCard(level));
+			body.Children(SettingsUi.DividerRow(LevelCard(level), !first));
+			first = false;
 		}
 
-		panel.Children(AppIcons.TextButton("plus", Strings.SecurityNewLevel, CreateCustomLevel));
-
-		return Card("lock", Strings.SecurityLevels, panel);
+		body.Children(SettingsUi.DividerRow(
+			SmallTextButton(Strings.SecurityNewLevel, CreateCustomLevel, "plus"), topLine: true));
+		return SettingsUi.Group("lock", Strings.SecurityLevels, body,
+			description: Strings.SecurityLevelsHint,
+			meta: _config.Levels.Count.ToString());
 	}
 
-	private Element LevelCard(ToolSecurity level)
+	private UIElement LevelCard(ToolSecurity level)
 	{
 		var isDefault = string.Equals(level.Level, _config.DefaultLevelId, StringComparison.Ordinal);
 		var expanded = _expanded == level.Level;
 
-		var title = new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(AppTheme.Space2)
+		var title = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Children(
 				new TextBlock().Text(level.Name).FontSize(AppTheme.FontSizeCaption)
-					.FontWeight(FontWeight.SemiBold).PrimaryText(),
+					.FontWeight(FontWeight.SemiBold).PrimaryText()
+					.TextTrimming(TextTrimming.CharacterEllipsis).MaxWidth(320),
 				new TextBlock().Text(level.Level).FontFamily(AppTheme.MonoFont)
 					.FontSize(AppTheme.FontSizeMicro).FaintText().VerticalAlignment(VerticalAlignment.Center),
-				TagChip(isDefault
+				SettingsUi.Badge(isDefault
 					? Strings.SecurityLevelDefault
 					: level.Builtin ? Strings.SecurityLevelBuiltin : Strings.SecurityLevelCustom,
-					isDefault));
+					isDefault ? AppStyles.RoleAccent : null));
 
-		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1);
+		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1)
+			.VerticalAlignment(VerticalAlignment.Center);
 		if (!isDefault)
 		{
-			actions.Children(AppIcons.TextButton("check", Strings.SecurityMakeDefault,
-				() => Update(config => config with { DefaultLevelId = level.Level })));
+			actions.Children(SmallTextButton(Strings.SecurityMakeDefault,
+				() => Update(config => config with { DefaultLevelId = level.Level }), "check"));
 		}
 
 		if (!level.Builtin)
 		{
-			actions.Children(AppIcons.Button("trash", Strings.SecurityDeleteLevel,
+			actions.Children(SettingsUi.IconAction("trash", Strings.SecurityDeleteLevel,
 				() => Update(config => config.WithoutLevel(level.Level))));
 		}
 
-		actions.Children(new Button()
-			.StyleName(AppStyles.GhostButton)
-			.Height(AppTheme.ControlHeightSm)
-			.Content(new TextBlock()
-				.Text(expanded ? Strings.SecurityCollapse : Strings.SecurityExpand)
-				.FontSize(AppTheme.FontSizeMicro).SubtleText())
-			.OnClick(() =>
-			{
-				_expanded = expanded ? null : level.Level;
-				Rebuild();
-			}));
+		actions.Children(SmallTextButton(expanded ? Strings.SecurityCollapse : Strings.SecurityExpand, () =>
+		{
+			_expanded = expanded ? null : level.Level;
+			Rebuild();
+		}, null));
 
-		var card = new StackPanel().Spacing(AppTheme.Space2).Children(
-			new DockPanel().LastChildFill().Children(
-				actions.DockRight(),
-				title),
-			new TextBlock().Text(level.Description).FontSize(AppTheme.FontSizeMicro).MutedText()
-				.TextWrapping(TextWrapping.Wrap).IsVisible(level.Description.Length > 0));
+		var head = new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
+			.Children(title.Column(0), actions.Column(1));
+		var card = new StackPanel().Spacing(AppTheme.Space2)
+			.Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
+			.Children(head);
+		if (level.Description.Length > 0)
+		{
+			card.Children(SettingsUi.Hint(level.Description));
+		}
 
 		if (expanded)
 		{
-			card.Children(LevelEditor(level));
+			card.Children(new Border().BorderThickness(new Thickness(0, 1, 0, 0))
+				.Padding(new Thickness(0, AppTheme.Space3, 0, 0))
+				.Child(LevelEditor(level))
+				.WithTheme(static (theme, border) => border.BorderBrush = AppTheme.For(theme).Border));
 		}
 
-		return new Border()
-			.StyleName(AppStyles.CardMuted)
-			.CornerRadius(AppTheme.RadiusSm)
-			.Padding(new Thickness(AppTheme.Space3))
-			.Child(card);
+		return card;
 	}
 
-	private Element LevelEditor(ToolSecurity level)
+	private UIElement LevelEditor(ToolSecurity level)
 	{
 		var captured = level;
 		var panel = new StackPanel().Spacing(AppTheme.Space3);
 
 		// 敏感文件保护
-		var protect = new CheckBox().Content(new TextBlock()
-			.Text(Strings.SecurityProtectSensitive).FontSize(AppTheme.FontSizeCaption).MutedText());
-		protect.IsChecked = captured.ProtectSensitivePaths;
-		protect.OnCheckedChanged(_ => Update(config => config.WithLevel(captured with
-		{
-			ProtectSensitivePaths = protect.IsChecked == true,
-		})));
-		panel.Children(protect);
+		panel.Children(SettingsUi.SwitchRow(
+			Strings.SecurityProtectSensitive, null, captured.ProtectSensitivePaths,
+			value => Update(config => config.WithLevel(captured with
+			{
+				ProtectSensitivePaths = value,
+			})), out _));
 
 		// 路径边界
 		var policies = new[] { ToolPathPolicy.Unrestricted, ToolPathPolicy.Workspace, ToolPathPolicy.Custom };
 		var policyNames = Array.ConvertAll(policies, PolicyName);
-		var policy = new ComboBox().ItemsSource(ItemsView.Create(policyNames));
+		var policy = new ComboBox().ItemsSource(ItemsView.Create(policyNames)).Width(SettingsUi.ControlWidth);
 		policy.SelectedIndex = Array.IndexOf(policies, captured.PathPolicy);
 		policy.SelectionChanged += _ =>
 		{
@@ -214,9 +214,7 @@ public sealed class SecuritySection
 				Update(config => config.WithLevel(captured with { PathPolicy = policies[index] }));
 			}
 		};
-		panel.Children(new DockPanel().LastChildFill().Children(
-			policy.DockRight().MinWidth(200),
-			FieldLabel(Strings.SecurityPathPolicy)));
+		panel.Children(SettingsUi.Row(Strings.SecurityPathPolicy, null, policy));
 
 		// 目录与命令表都是「一行一条」的多行文本；改动只在失去焦点时收一次，
 		// 避免每敲一个字就写一遍设置文件。
@@ -236,9 +234,12 @@ public sealed class SecuritySection
 
 		if (!captured.Builtin)
 		{
-			var name = new TextBox().PrimarySelection().Text(captured.Name).Placeholder(Strings.SecurityLevelNamePlaceholder);
-			name.Height(AppTheme.ControlHeightSm);
-			var commit = AppIcons.TextButton("check", Strings.SecurityRename, () =>
+			var name = new TextBox().PrimarySelection().Text(captured.Name)
+				.Placeholder(Strings.SecurityLevelNamePlaceholder)
+				.StyleName(AppStyles.TextInputLine)
+				.Height(AppTheme.ControlHeightSm)
+				.Width(SettingsUi.ControlWidth);
+			var commit = SettingsUi.IconAction("check", Strings.SecurityRename, () =>
 			{
 				var text = (name.Text ?? string.Empty).Trim();
 				if (text.Length > 0 && text != captured.Name)
@@ -246,9 +247,10 @@ public sealed class SecuritySection
 					Update(config => config.WithLevel(captured with { Name = text }));
 				}
 			});
-			panel.Children(new DockPanel().LastChildFill().Children(
-				commit.DockRight(),
-				name.Margin(new Thickness(0, 0, AppTheme.Space2, 0))));
+			panel.Children(SettingsUi.Row(Strings.SecurityLevelName,
+				null,
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+					.VerticalAlignment(VerticalAlignment.Center).Children(name, commit)));
 		}
 
 		return panel;
@@ -256,12 +258,11 @@ public sealed class SecuritySection
 
 	/// 工具动作矩阵。只列内置工具集里真实存在的工具；列本端口没有的工具，
 	/// 会让人以为配了就有用。
-	private Element ToolActionsEditor(ToolSecurity level)
+	private UIElement ToolActionsEditor(ToolSecurity level)
 	{
 		var panel = new StackPanel().Spacing(AppTheme.Space1);
-
-		panel.Children(FieldLabel(Strings.SecurityToolActions));
-		panel.Children(Hint(Strings.SecurityToolActionsHint));
+		panel.Children(SettingsUi.Field(Strings.SecurityToolActions,
+			SettingsUi.Hint(Strings.SecurityToolActionsHint)));
 
 		foreach (var tool in ToolSecurity.ManagedTools)
 		{
@@ -275,12 +276,10 @@ public sealed class SecuritySection
 		return panel;
 	}
 
-	private Element ActionRow(string tool, string label, string current, Action<string> choose)
+	private UIElement ActionRow(string tool, string label, string current, Action<string> choose)
 	{
-		var buttons = new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(AppTheme.Space1);
-
+		var buttons = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Center);
 		foreach (var action in new[] { ToolAction.Allow, ToolAction.Ask, ToolAction.Deny })
 		{
 			var value = action;
@@ -288,43 +287,51 @@ public sealed class SecuritySection
 				.StyleName(string.Equals(current, value, StringComparison.Ordinal)
 					? AppStyles.SelectedButton : AppStyles.GhostButton)
 				.Height(AppTheme.ControlHeightSm)
-				.MinWidth(56)
+				.MinWidth(52)
+				.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0))
 				.Content(new TextBlock().Text(ActionName(value)).FontSize(AppTheme.FontSizeMicro)
 					.HorizontalAlignment(HorizontalAlignment.Center))
 				.OnClick(() => choose(value)));
 		}
 
-		return new DockPanel().LastChildFill().Children(
-			buttons.DockRight(),
-			new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(
-					new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption).MutedText(),
-					new TextBlock().Text(tool).FontFamily(AppTheme.MonoFont)
-						.FontSize(AppTheme.FontSizeMicro).FaintText()));
+		return new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
+			.Padding(new Thickness(0, 3, 0, 3))
+			.Children(
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+					.VerticalAlignment(VerticalAlignment.Center)
+					.Children(
+						new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption).MutedText(),
+						new TextBlock().Text(tool).FontFamily(AppTheme.MonoFont)
+							.FontSize(AppTheme.FontSizeMicro).FaintText()).Column(0),
+				buttons.Column(1));
 	}
-
 
 	private Element SessionOverridesGroup()
 	{
-		var panel = new StackPanel().Spacing(AppTheme.Space1);
-		panel.Children(Hint(Strings.SecuritySessionHint));
-
+		var rows = new List<UIElement>();
 		foreach (var (path, levelId) in _config.SessionLevels)
 		{
 			var captured = path;
-			panel.Children(new DockPanel().LastChildFill().Children(
-				AppIcons.Button("trash", Strings.SecurityClearOverride, () =>
-					Update(config => config.WithSessionLevel(captured, levelId: null))).DockRight(),
-				new TextBlock().Text($"{Path.GetFileNameWithoutExtension(path)} · {levelId}")
-					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.NoWrap)));
+			var name = Path.GetFileNameWithoutExtension(path);
+			var title = new StackPanel().Spacing(2).Children(
+				new TextBlock().Text(name).FontSize(AppTheme.FontSizeCaption).PrimaryText(),
+				new TextBlock().Text(path).FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
+					.FaintText().TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(path));
+			rows.Add(new Grid().Columns("*,auto").Spacing(AppTheme.Space3).Children(
+				title.Column(0),
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1)
+					.VerticalAlignment(VerticalAlignment.Center)
+					.Children(
+						SettingsUi.Badge(levelId, AppStyles.RoleAccent),
+						SettingsUi.IconAction("trash", Strings.SecurityClearOverride,
+							() => Update(config => config.WithSessionLevel(captured, levelId: null))))
+					.Column(1)));
 		}
 
-		return Card("git-branch", Strings.SecuritySessionLevels, panel);
+		return SettingsUi.Group("git-branch", Strings.SecuritySessionLevels, SettingsUi.Rows(rows),
+			description: Strings.SecuritySessionHint,
+			meta: rows.Count.ToString());
 	}
-
-
-	private string[] LevelNames() => [.. _config.Levels.Select(level => level.Level)];
 
 	private void CreateCustomLevel()
 	{
@@ -394,7 +401,7 @@ public sealed class SecuritySection
 		_ => Strings.SecurityActionAllow,
 	};
 
-	private Element ListEditor(string title, string hint, IReadOnlyList<string> values, Action<IReadOnlyList<string>> commit)
+	private UIElement ListEditor(string title, string hint, IReadOnlyList<string> values, Action<IReadOnlyList<string>> commit)
 	{
 		var input = new MultiLineTextBox()
 			.PrimarySelection()
@@ -421,39 +428,27 @@ public sealed class SecuritySection
 
 		return new StackPanel().Spacing(AppTheme.Space1).Children(
 			FieldLabel(title),
-			Hint(hint),
+			SettingsUi.Hint(hint),
 			input,
 			apply);
 	}
 
-	private static TextBlock TagChip(string text, bool accent)
+	/// 行内小动作：12px 文本 + 可选图标，不用主按钮的视觉重量。
+	private static Button SmallTextButton(string text, Action action, string? icon)
 	{
-		var block = new TextBlock().Text(text).FontSize(AppTheme.FontSizeMicro).VerticalAlignment(VerticalAlignment.Center);
-		return accent ? block.AccentText() : block.FaintText();
+		var content = new StackPanel().Orientation(Orientation.Horizontal).Spacing(4)
+			.VerticalAlignment(VerticalAlignment.Center);
+		if (icon is { Length: > 0 }) content.Children(AppIcons.Icon(icon, AppStyles.RoleSubtle, 12));
+		content.Children(new TextBlock().Text(text).FontSize(AppTheme.FontSizeMicro)
+			.MutedText().VerticalAlignment(VerticalAlignment.Center));
+		return new Button().Ghost().Content(content).Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+			.Height(AppTheme.ControlHeightSm).OnClick(action);
 	}
+
+
 
 	private static TextBlock FieldLabel(string text) => new TextBlock().Text(text)
 		.FontSize(AppTheme.FontSizeCaption).PrimaryText();
 
-	private static TextBlock Hint(string text) => new TextBlock().Text(text)
-		.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap);
 
-	private static Element Card(string icon, string title, UIElement content, string? enabledTip = null) => new Border()
-		.StyleName(AppStyles.Card)
-		.CornerRadius(AppTheme.RadiusMd)
-		.MaxWidth(960)
-		.ClipToBounds(true)
-		.Child(new DockPanel().LastChildFill().Children(
-			new Border().StyleName(AppStyles.CardHeader)
-				.Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space3))
-				.Child(new StackPanel().Orientation(Orientation.Horizontal)
-					.VerticalAlignment(VerticalAlignment.Center).Spacing(AppTheme.Space2)
-					.Children(
-						AppIcons.Icon(icon, AppStyles.RoleSubtle, 14),
-						new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption)
-							.FontWeight(FontWeight.SemiBold).PrimaryText(),
-						new TextBlock().Text(enabledTip ?? string.Empty).FontSize(AppTheme.FontSizeMicro)
-							.FaintText().VerticalAlignment(VerticalAlignment.Center))),
-			new Border().Padding(new Thickness(AppTheme.Space4))
-				.Child(content)));
 }

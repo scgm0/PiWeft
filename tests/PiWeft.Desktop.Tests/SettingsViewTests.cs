@@ -17,6 +17,7 @@ public sealed class SettingsViewTests : IDisposable
 	{
 		Directory.CreateDirectory(AgentDir);
 		Directory.CreateDirectory(Cwd);
+		Directory.CreateDirectory(Path.Combine(_root, "sessions"));
 	}
 
 	public void Dispose()
@@ -84,6 +85,33 @@ public sealed class SettingsViewTests : IDisposable
 	}
 
 	[Fact]
+	public async Task EverySearchAnchorResolvesInItsSection()
+	{
+		var view = CreateView();
+
+		foreach (var entry in SettingsSearch.Entries.Where(static item => item.Anchor is { Length: > 0 }))
+		{
+			// 这条锚点是「把当前模型设为默认」，只在有打开会话时出现。
+			if (entry.Anchor == "session.defaultModel") continue;
+			await view.SelectSectionAsync(entry.Section);
+			Assert.True(view.HasAnchorForTest(entry.Anchor!), $"{entry.Id} 的锚点 {entry.Anchor} 没有注册");
+		}
+	}
+
+	[Fact]
+	public async Task EverySectionBuildsWithoutError()
+	{
+		var view = CreateView();
+
+		foreach (var section in SettingsSections.All)
+		{
+			await view.SelectSectionAsync(section.Id);
+			if (section.Id == "usage") await view.WaitForSectionWorkAsync();
+			Assert.True(view.LastSectionError is null, $"{section.Id}: {view.LastSectionError}");
+		}
+	}
+
+	[Fact]
 	public async Task SearchNavigatesToConfigSectionAndSwitchesMode()
 	{
 		var view = CreateView();
@@ -108,6 +136,7 @@ public sealed class SettingsViewTests : IDisposable
 			Tools = [],
 			Skills = [],
 			McpServers = [],
+			SessionsRoot = Path.Combine(_root, "sessions"),
 		};
 		return new SettingsView(() => snapshot);
 	}

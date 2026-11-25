@@ -101,6 +101,16 @@ public static class AppTheme
 
 	public static Color Transparent => Current.Transparent;
 
+	/// 浮层遮罩：深浅主题同档，遮罩底下是界面自身而不是壁纸。
+	internal static Color Scrim(ScrimStrength strength) => strength switch
+	{
+		ScrimStrength.None => Transparent,
+		ScrimStrength.Light => new Color(0x60, 0x00, 0x00, 0x00),
+		ScrimStrength.Regular => new Color(0x80, 0x00, 0x00, 0x00),
+		ScrimStrength.Strong => new Color(0x9a, 0x00, 0x00, 0x00),
+		_ => new Color(0xE0, 0x00, 0x00, 0x00),
+	};
+
 	// 「织机」形制（DESIGN.md）：小圆角，表面靠色阶与发丝线区分，最大圆角 10。
 	public const double RadiusXs = 4;
 	public const double RadiusSm = 6;

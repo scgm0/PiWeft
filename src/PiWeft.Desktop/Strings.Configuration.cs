@@ -5,6 +5,10 @@ public static partial class Strings
 	public const string ConfigTitle = "配置管理";
 	public const string SystemSettings = "系统设置";
 	public const string ConfigModels = "模型";
+
+	public static string ConfigModelMeta(long context, long maxTokens) => $"上下文 {context:N0} · 输出 {maxTokens:N0}";
+
+	public const string ConfigNoProvidersHint = "添加供应商后可以拉取模型列表，或手动填写模型 ID。";
 	public const string ConfigAuth = "认证";
 	public const string ConfigSettings = "Agent 设置";
 	public const string ConfigSource = "源文件";
@@ -19,6 +23,38 @@ public static partial class Strings
 	public const string ConfigEditProvider = "编辑供应商";
 	public const string ConfigEditModel = "编辑模型";
 	public const string ConfigDuplicate = "复制供应商";
+	public const string ConfigProviderInfo = "供应商信息";
+
+	public const string ConfigModelInfo = "模型信息";
+
+	public const string ConfigModelInfoHint = "模型 ID 是发给供应商的值；名称只影响界面显示。";
+
+	public const string ConfigModelNameHint = "可留空，列表里就显示模型 ID。";
+
+	public const string ConfigContextHint = "该模型一次能接收的最大 token 数。";
+
+	public const string ConfigMaxTokensHint = "单次回复的最大输出 token 数。";
+
+	public const string ConfigReasoningHint = "支持思考或推理输出。";
+
+	public const string ConfigVisionHint = "支持图片输入。";
+
+	public const string ConfigPricing = "价格";
+
+	public const string ConfigPricingHint = "每百万 token 的美元价格；0 表示未提供。";
+
+	public const string ConfigProviderNamePlaceholder = "例如 openrouter";
+
+	public const string ConfigBaseUrlPlaceholder = "https://api.example.com/v1";
+
+	public const string ConfigKeyPlaceholder = "sk-…";
+
+	public const string ConfigModelIdPlaceholder = "例如 gpt-4.1";
+
+	public const string ConfigModelNamePlaceholder = "显示名称（可选）";
+
+	public const string ConfigNewKeyHint = "写入 models.json；也可以稍后在认证页设置。";
+
 	public const string ConfigName = "名称";
 	public const string ConfigBaseUrl = "API 地址";
 	public const string ConfigApi = "API 协议";
@@ -37,6 +73,22 @@ public static partial class Strings
 	public const string ConfigNoProviders = "尚未配置自定义供应商";
 	public const string ConfigNoAuth = "尚未保存凭据";
 	public const string ConfigShowSource = "显示源文件（可能含密钥）";
+
+	public const string ConfigShowSourceHint = "凭据以明文存在文件里，只在需要手改时打开。";
+
+	public const string ConfigShowSourceLockedHint = "编辑中不能隐藏源文件；保存或取消后再切换。";
+
+	public const string ConfigSourceContent = "文件内容";
+
+	public const string ConfigSourceDescription = "直接编辑 JSON 原文；保存后按普通保存流程校验并写盘。";
+
+	public const string ConfigSourceFile = "要查看的文件";
+
+	public const string ConfigSourceEditorHint = "保存时会校验 JSON 格式；含密钥的行不会进日志。";
+
+	public const string ConfigSourceHiddenTitle = "源文件已隐藏";
+
+	public const string ConfigSourceHiddenHint = "打开上面的开关后显示并编辑 JSON 原文。";
 	public const string ConfigDirty = "未保存";
 	public const string ConfigSaved = "配置已保存";
 	public const string ConfigApplied = "模型目录已更新；已打开的会话继续使用原设置，新会话使用新配置。";
@@ -72,6 +124,8 @@ public static partial class Strings
 	public const string ConfigRetryHint = "只对网络抖动、限流与 5xx 生效，配额与账单错误不重试。退避按指数增长。";
 	public const string ConfigRetryMaxRetriesInvalid = "最大重试次数必须是 0–20 的整数。";
 	public const string ConfigRetryBaseDelayInvalid = "基础延迟必须是 0–600000 的整数（毫秒）。";
+	public const string ConfigMcpGroup = "服务器";
+
 	public const string ConfigAddMcp = "添加服务器";
 	public const string ConfigToolsTitle = "工具与 Codemode";
 	public const string ConfigToolsHint = "工具与 codemode 的设置，改动写入 settings.json。";
@@ -137,6 +191,26 @@ public static partial class Strings
 	public static string ConfigToolsEnabledCount(int count) => $"{count} 个已启用";
 	public static string ConfigRemoveTool(string name) => $"移除工具 {name}";
 	public const string ConfigEditMcp = "编辑服务器";
+	public const string ConfigMcpServerInfo = "服务器信息";
+
+	public const string ConfigMcpConnection = "连接";
+
+	public const string ConfigMcpConnectionHint = "stdio 填命令与参数；HTTP 填服务地址。";
+
+	public const string ConfigCommandHint = "可执行文件或命令名，例如 npx。";
+
+	public const string ConfigArgumentsHint = "JSON 字符串数组，例如 [\"-y\", \"server\"]。";
+
+	public const string ConfigUrlHint = "http/https 端点；只用于展示与连接。";
+
+	public const string ConfigMcpNamePlaceholder = "例如 filesystem";
+
+	public const string ConfigCommandPlaceholder = "npx";
+
+	public const string ConfigArgumentsPlaceholder = "[\"-y\", \"server\"]";
+
+	public const string ConfigUrlPlaceholder = "https://example.com/mcp";
+
 	public const string ConfigEnabled = "启用";
 	public const string ConfigTransport = "传输";
 	public const string ConfigCommand = "命令";

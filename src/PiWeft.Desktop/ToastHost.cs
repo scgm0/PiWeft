@@ -26,6 +26,8 @@ internal sealed class ToastHost : IOverlayService, IDisposable
 		_stack.VerticalAlignment = VerticalAlignment.Top;
 		_stack.IsHitTestVisible = false;
 		_stack.Margin = TopInset(window);
+		// 已显示的提示条也要跟着走：最大化时弹出再还原，卡片不能停在屏幕顶端。
+		window.WindowStateChanged += OnWindowStateChanged;
 	}
 
 	internal int VisibleCount => _cards.Count;
@@ -76,6 +78,8 @@ internal sealed class ToastHost : IOverlayService, IDisposable
 		}
 	}
 
+	private void OnWindowStateChanged(WindowState _) => _stack.Margin = TopInset(_window);
+
 	private void Restart(Card card)
 	{
 		card.Timer?.Stop();
@@ -123,6 +127,7 @@ internal sealed class ToastHost : IOverlayService, IDisposable
 			card.Timer?.Stop();
 		}
 
+		_window.WindowStateChanged -= OnWindowStateChanged;
 		_cards.Clear();
 		if (_attached)
 		{

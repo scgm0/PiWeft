@@ -12,7 +12,7 @@ internal sealed class SettingsDialog
 	private const double MaxDialogWidth = 1120;
 	private const double MaxDialogHeight = 820;
 
-	private static readonly Color ScrimColor = new(0x80, 0x00, 0x00, 0x00);
+	private static readonly Color ScrimColor = AppTheme.Scrim(ScrimStrength.Regular);
 
 	private readonly SettingsView _settings;
 	private readonly Button _saveButton;
@@ -64,11 +64,7 @@ internal sealed class SettingsDialog
 
 		// 背景压暗层负责捕获点击与滚轮：点空白处走与关闭键相同的「放弃修改？」确认。
 		View = new Grid().IsVisible(false).Children(
-			new Button()
-				.Background(ScrimColor)
-				.BorderThickness(0).CornerRadius(0)
-				.Cursor(CursorType.Arrow).Focusable(false)
-				.OnClick(() => _ = RequestCloseAsync()),
+			OverlayScrim.Create(() => _ = RequestCloseAsync()),
 			new ShadowDecorator()
 				.BlurRadius(24).OffsetY(8).CornerRadius(AppTheme.RadiusLg)
 				.WithTheme((theme, shadow) => shadow.ShadowColor = theme.IsDark
@@ -138,7 +134,6 @@ internal sealed class SettingsDialog
 		View.IsVisible(true);
 		TransientOverlay.Open(window, View, Hide);
 		window.WindowStateChanged += OnWindowStateChanged;
-		ApplyOverlayInset();
 		UpdateTitleBarDim();
 		_settings.ReloadConfiguration();
 		_settings.Refresh();
@@ -219,19 +214,8 @@ internal sealed class SettingsDialog
 		}
 	}
 
-	private void OnWindowStateChanged(WindowState _)
-	{
-		ApplyOverlayInset();
-		UpdateTitleBarDim();
-	}
-
-	private void ApplyOverlayInset()
-	{
-		if (_window is not { } window || View is not FrameworkElement element) return;
-		element.Margin = window is MainWindow main
-			? MainWindow.OverlayInsetFor(main.WindowState)
-			: new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
-	}
+	// 主浮层的让位量由 TransientOverlay 统一跟随窗口状态；这里只维护最大化时补的标题栏压暗条。
+	private void OnWindowStateChanged(WindowState _) => UpdateTitleBarDim();
 
 	/// 最大化/全屏时把标题栏也纳入模态背景：主浮层从标题栏下方开始，补片负责这一条，
 	/// 避免窗口铺满屏幕后顶部留下一条亮带。补片不参与命中测试，页签与窗口按钮仍可点击。

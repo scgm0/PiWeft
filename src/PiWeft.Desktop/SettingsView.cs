@@ -149,7 +149,7 @@ public sealed class SettingsView
 			};
 			return view;
 		});
-		_content.Spacing(AppTheme.Space4).MaxWidth(960);
+		_content.Spacing(AppTheme.Space4).MaxWidth(SettingsUi.ContentWidth);
 		// 滚动条是覆盖在内容上的细条，贴着 ScrollViewer 右缘画。内容让出 16 DIP，
 		// 卡片右缘与滚动条之间就有固定空隙，滚动时不会被压住。
 		_systemView = new ScrollViewer().SmoothScrolling().Content(_content)
@@ -174,10 +174,10 @@ public sealed class SettingsView
 			.VerticalAlignment(VerticalAlignment.Center)
 			.TextTrimming(TextTrimming.CharacterEllipsis)
 			.Margin(new Thickness(AppTheme.Space3, 0, 0, 0))
-			.Text(Strings.SettingsSearchKeys);
+			.Text(Strings.SettingsSearchKeyHint);
 		var searchIcon = AppIcons.Icon("search", AppStyles.RoleSubtle, 14)
 			.Margin(new Thickness(0, 0, AppTheme.Space2, 0));
-		_searchClear = RowAction("x", Strings.SettingsSearchClear, () => ClearSearch())
+		_searchClear = SettingsUi.IconAction("x", Strings.SettingsSearchClear, () => ClearSearch())
 			.HorizontalAlignment(HorizontalAlignment.Right)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Margin(new Thickness(0, 0, AppTheme.Space1, 0));
@@ -202,17 +202,24 @@ public sealed class SettingsView
 		// 因此停在滚动条左侧，悬停和点击都不会误触滚动条。
 		var navigationColumn = new Border().StyleName(AppStyles.DialogNav).Width(196)
 			.Padding(new Thickness(10, AppTheme.Space3, 0, AppTheme.Space3))
-			.Child(new ScrollViewer().SmoothScrolling().Content(_navigation)
-				.Padding(new Thickness(0, 0, 10, 0))
-				.AutoVerticalScroll().NoHorizontalScroll());
+			.Child(new DockPanel().LastChildFill().Children(
+				new TextBlock().Text($"PiWeft {AppInfo.Version}").FontSize(AppTheme.FontSizeMicro)
+					.FontFamily(AppTheme.MonoFont).FaintText()
+					.Margin(new Thickness(AppTheme.Space2, AppTheme.Space2, 0, 0))
+					.DockBottom(),
+				new ScrollViewer().SmoothScrolling().Content(_navigation)
+					.Padding(new Thickness(0, 0, 10, 0))
+					.AutoVerticalScroll().NoHorizontalScroll()));
 
 		// 右侧内容区：分区标题与搜索框固定在顶部，只有卡片列表滚动。
 		var sectionHeader = new DockPanel().LastChildFill()
 			.Children(_sectionTitle.FontSize(AppTheme.FontSizeTitle)
 				.FontWeight(FontWeight.SemiBold).PrimaryText().VerticalAlignment(VerticalAlignment.Center));
-		var header = new StackPanel().Spacing(AppTheme.Space2)
+		var header = new Border().BorderThickness(new Thickness(0, 0, 0, 1))
+			.Padding(new Thickness(0, 0, 0, AppTheme.Space3))
+			.WithTheme(static (theme, border) => border.BorderBrush = AppTheme.For(theme).BorderSubtle)
 			.Margin(new Thickness(0, 0, AppTheme.Space4, AppTheme.Space3))
-			.Children(sectionHeader, searchRow);
+			.Child(new StackPanel().Spacing(AppTheme.Space2).Children(sectionHeader, searchRow));
 		// 右内边距不再包住整列：滚动条要贴弹窗右缘。内容侧的留白交给 _systemView 的 Padding。
 		var contentColumn = new Border().StyleName(AppStyles.DialogContent)
 			.Padding(new Thickness(AppTheme.Space4 + 4, AppTheme.Space3, 0, AppTheme.Space4))
@@ -305,6 +312,9 @@ public sealed class SettingsView
 
 	/// <summary>测试用：当前分区标识。</summary>
 	internal string CurrentSection => _section;
+
+	/// <summary>测试用：当前分区是否注册了指定锚点。</summary>
+	internal bool HasAnchorForTest(string key) => _anchors.ContainsKey(key);
 
 	/// <summary>测试用：当前搜索结果数。</summary>
 	internal int SearchResultCount => _searchHits.Count;
@@ -478,6 +488,14 @@ public sealed class SettingsView
 		if (_configuration.IsValueCreated) _configuration.Value.StartAuthLoginForSmoke(providerId);
 	}
 
+	/// <summary>仅用于 <c>--ui-smoke config-form:&lt;kind&gt;</c>：切到配置分区并打开表单。</summary>
+	internal async Task OpenConfigFormSmokeAsync(string kind)
+	{
+		await SwitchModeAsync(true);
+		await SelectSectionAsync(kind == "mcp" ? "mcp" : "models");
+		if (_configuration.IsValueCreated) _configuration.Value.OpenFormForSmoke(kind);
+	}
+
 	internal async Task OpenToolMenuSmokeAsync()
 	{
 		await SwitchModeAsync(true);
@@ -588,16 +606,25 @@ public sealed class SettingsView
 				case "about": _content.Children(AboutSection()); break;
 				default:
 				{
-					var tools = snapshot.Tools.Count == 0 ? "—" : string.Join(", ", snapshot.Tools);
-					_content.Children(Section(Strings.SettingsEnvironment, [
-						new(Strings.SettingsAgentDir, snapshot.AgentDir, Copy: snapshot.AgentDir, OpenPath: snapshot.AgentDir),
-						new(Strings.SettingsCwd, snapshot.Cwd, Copy: snapshot.Cwd, OpenPath: snapshot.Cwd),
-						new(Strings.SettingsModels, snapshot.ModelCount.ToString()),
-						new(Strings.SettingsTools, tools, Copy: snapshot.Tools.Count == 0 ? null : tools)]),
-						Section(Strings.SettingsSkills, snapshot.Skills.Count == 0
-							? [new InfoRow(Strings.SettingsNone, string.Empty)]
-							: [.. snapshot.Skills.Select(name => new InfoRow(name, string.Empty))]),
-						McpSection(snapshot.McpServers));
+					var toolChips = new WrapPanel().Spacing(AppTheme.Space1 + 2);
+					foreach (var tool in snapshot.Tools)
+					{
+						toolChips.Children(SettingsUi.Badge(tool));
+					}
+
+					_content.Children(
+						Group("layout-grid", Strings.SettingsEnvironment, SettingsUi.Rows([
+							SettingsUi.ValueRow(Strings.SettingsAgentDir, snapshot.AgentDir,
+								copy: snapshot.AgentDir, openPath: snapshot.AgentDir, copyAction: CopyValue, openAction: OpenLocation),
+							SettingsUi.ValueRow(Strings.SettingsCwd, snapshot.Cwd,
+								copy: snapshot.Cwd, openPath: snapshot.Cwd, copyAction: CopyValue, openAction: OpenLocation),
+							SettingsUi.ValueRow(Strings.SettingsModels, snapshot.ModelCount.ToString(), mono: false),
+							SettingsUi.Row(Strings.SettingsTools,
+								snapshot.Tools.Count == 0 ? Strings.SettingsNone : Strings.SettingsToolsHint,
+								toolChips, stacked: true),
+						]), description: Strings.SettingsEnvironmentHint),
+						SkillsGroup(snapshot),
+						McpSection(snapshot, snapshot.McpServers));
 					break;
 				}
 			}
@@ -682,7 +709,7 @@ public sealed class SettingsView
 			_searchView.SetScrollOffsets(0, 0);
 			_systemView.IsVisible(!_configMode);
 			if (_configuration.IsValueCreated) _configuration.Value.View.IsVisible(_configMode);
-			_searchHint.Text(Strings.SettingsSearchKeys);
+			_searchHint.Text(Strings.SettingsSearchKeyHint);
 			_sectionTitle.Text(SectionTitle(_section));
 			return;
 		}
@@ -696,9 +723,7 @@ public sealed class SettingsView
 		_systemView.IsVisible(false);
 		if (_configuration.IsValueCreated) _configuration.Value.View.IsVisible(false);
 		_sectionTitle.Text(Strings.SettingsSearchResults);
-		_searchHint.Text(_searchHits.Count == 0
-			? Strings.SettingsSearchCount(0)
-			: Strings.SettingsSearchCount(_searchHits.Count));
+		_searchHint.Text(Strings.SettingsSearchCount(_searchHits.Count) + " · " + Strings.SettingsSearchHelp);
 		RenderSearchResults();
 	}
 
@@ -864,28 +889,20 @@ public sealed class SettingsView
 		}
 
 		var current = DesktopPreference.Load().Theme;
-		var picker = new ComboBox()
-			.ItemsSource(ItemsView.Create(entries.Select(entry => entry.Label).ToArray()))
-			.Width(220);
-		Anchor("appearance.theme", picker);
-		picker.SelectedIndex = Math.Max(
-			0,
-			entries.FindIndex(entry => string.Equals(entry.Value, current, StringComparison.Ordinal)));
+		var selectedIndex = Math.Max(0, entries.FindIndex(entry => string.Equals(entry.Value, current, StringComparison.Ordinal)));
 
-		// 换肤会触发浮层重解析，重建过程中 ComboBox 可能再次抛出 SelectionChanged；
+		// 换肤会触发浮层重解析，重建过程中按钮可能再次抛 Click；
 		// 用重入保护避免同一轮里反复保存/应用主题。
 		var applying = false;
-		void ApplySelection()
+		var buttons = new List<Button>();
+		var marks = new List<Image>();
+		var names = new List<TextBlock>();
+		void ApplyThemeValue(string value)
 		{
-			if (applying || picker.SelectedIndex < 0 || picker.SelectedIndex >= entries.Count)
-			{
-				return;
-			}
-
+			if (applying) return;
 			applying = true;
 			try
 			{
-				var value = entries[picker.SelectedIndex].Value;
 				try
 				{
 					(DesktopPreference.Load() with { Theme = value }).Save();
@@ -904,68 +921,95 @@ public sealed class SettingsView
 			}
 		}
 
-		picker.SelectionChanged += _ => ApplySelection();
+		void Select(int index)
+		{
+			if (index < 0 || index >= buttons.Count) return;
+			for (var at = 0; at < buttons.Count; at++)
+			{
+				var active = at == index;
+				buttons[at].StyleName(active ? AppStyles.SelectedButton : AppStyles.CardButton);
+				marks[at].IsVisible(active);
+				if (active) names[at].AccentText(); else names[at].PrimaryText();
+			}
+
+			ApplyThemeValue(entries[index].Value);
+		}
+
 		var previews = new WrapPanel().Spacing(AppTheme.Space2);
-		var buttons = new List<Button>();
 		for (var index = 0; index < entries.Count; index++)
 		{
 			var selected = index;
-			var palette = entries[index].Palette;
-			var miniature = new Border().Background(palette.WindowBackground).BorderBrush(palette.Border)
-				.BorderThickness(1).CornerRadius(AppTheme.RadiusXs).Height(54).Child(
-					new DockPanel().LastChildFill().Children(
-						new Border().Background(palette.SidebarBackground).Width(32).DockLeft(),
-						new StackPanel().Spacing(6).Padding(new Thickness(10)).Children(
-							new Border().Background(palette.TextMuted).Height(4).Width(72).HorizontalAlignment(HorizontalAlignment.Left),
-							new Border().Background(palette.Accent).Height(5).Width(44).HorizontalAlignment(HorizontalAlignment.Left),
-							new Border().Background(
-								string.Equals(entries[selected].Value, DesktopPreference.SystemTheme, StringComparison.Ordinal)
-									? AppPalette.Light.CardBackground
-									: palette.CardBackgroundAlt).Height(6))));
-			var button = new Button().Width(176).Padding(new Thickness(AppTheme.Space2))
-				.Content(new StackPanel().Spacing(AppTheme.Space2).Children(miniature, LabelForPreview(entries[index].Label)))
-				.OnClick(() => picker.SelectedIndex = selected)
-				.StyleName(index == picker.SelectedIndex ? AppStyles.SelectedButton : AppStyles.CardButton);
+			var entry = entries[index];
+			var isSystem = string.Equals(entry.Value, DesktopPreference.SystemTheme, StringComparison.Ordinal);
+			var check = AppIcons.Icon("check", AppStyles.RolePrimary, 13)
+				.IsVisible(selected == selectedIndex);
+			marks.Add(check);
+			var name = new TextBlock().Text(entry.Label).FontSize(AppTheme.FontSizeCaption)
+				.VerticalAlignment(VerticalAlignment.Center);
+			if (index == selectedIndex) name.AccentText(); else name.PrimaryText();
+			names.Add(name);
+			var caption = new DockPanel().LastChildFill().Children(check.DockRight(), name);
+			var button = new Button().Width(214).Padding(new Thickness(AppTheme.Space2))
+				.Content(new StackPanel().Spacing(AppTheme.Space2).Children(
+					ThemeMiniature(entry.Palette, split: isSystem),
+					caption))
+				.OnClick(() => Select(selected))
+				.StyleName(index == selectedIndex ? AppStyles.SelectedButton : AppStyles.CardButton);
 			buttons.Add(button);
 			previews.Children(button);
 		}
-		picker.SelectionChanged += _ =>
-		{
-			for (var index = 0; index < buttons.Count; index++)
-				buttons[index].StyleName(index == picker.SelectedIndex ? AppStyles.SelectedButton : AppStyles.CardButton);
-		};
+
+		// 主题卡片本身就是选择器；搜索锚点落在当前主题上，跳到这一行时焦点看得见。
+		Anchor("appearance.theme", buttons[Math.Min(selectedIndex, buttons.Count - 1)]);
+
 		var sizes = new double[] { 14, 16, 18, 20, 22 };
-		var widths = new double[] { 760, 1060, 1360 };
+		var widths = new double[] { 760, 880, 1060, 1360 };
+		var widthLabels = new[] { Strings.ReadingCompact, Strings.ReadingWidthStandard, Strings.ReadingComfortable, Strings.ReadingWide };
+		var widthPreviews = new double[] { 240, 270, 300, 360 };
 		var lineHeights = new double[] { 1.6, 1.75, 1.9 };
 		var preference = DesktopPreference.Load();
 		var font = new ComboBox().Width(180).ItemsSource(ItemsView.Create(sizes.Select(size => $"{size:0} px").ToArray()))
 			.SelectedIndex(Math.Max(0, Array.IndexOf(sizes, preference.ChatFontSize)));
-		var width = new ComboBox().Width(180).ItemsSource(ItemsView.Create(new[] { Strings.ReadingCompact, Strings.ReadingComfortable, Strings.ReadingWide }))
-			.SelectedIndex(Math.Max(0, Array.IndexOf(widths, preference.ReadingWidth)));
+		var widthIndex = NearestWidthIndex(widths, preference.ReadingWidth);
+		var width = new ComboBox().Width(180).ItemsSource(ItemsView.Create(widthLabels))
+			.SelectedIndex(widthIndex);
 		var lineHeight = new ComboBox().Width(180)
 			.ItemsSource(ItemsView.Create(new[] { Strings.ReadingLineDefault, Strings.ReadingLineRelaxed, Strings.ReadingLineLoose }))
 			.SelectedIndex(Math.Max(0, Array.IndexOf(lineHeights, preference.ChatLineHeight)));
 		Anchor("appearance.font", font);
 		Anchor("appearance.width", width);
 		Anchor("appearance.line-height", lineHeight);
-		var sample = new TextBlock().Text(Strings.ReadingSample).FontSize(preference.ChatFontSize).PrimaryText().TextWrapping(TextWrapping.Wrap);
-		void SaveReading()
+		var sample = new TextBlock().Text(Strings.ReadingSample).FontSize(preference.ChatFontSize)
+			.PrimaryText().TextWrapping(TextWrapping.Wrap).MaxWidth(widthPreviews[widthIndex]);
+		var sampleColumn = new Border().StyleName(AppStyles.CardMuted).CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(AppTheme.Space3))
+			.MaxWidth(widthPreviews[widthIndex] + AppTheme.Space3 * 2)
+			.HorizontalAlignment(HorizontalAlignment.Left)
+			.Child(sample);
+		void SaveReading(DesktopPreference next)
 		{
-			if (font.SelectedIndex < 0 || width.SelectedIndex < 0 || lineHeight.SelectedIndex < 0) return;
-			var next = DesktopPreference.Load() with
-			{
-				ChatFontSize = sizes[font.SelectedIndex],
-				ReadingWidth = widths[width.SelectedIndex],
-				ChatLineHeight = lineHeights[lineHeight.SelectedIndex],
-			};
 			try { next.Save(); }
 			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Toast(Strings.ConfigFailed, ToastKind.Error); return; }
 			ReadingPreferences.Apply(next);
 			sample.FontSize(next.ChatFontSize);
+			if (width.SelectedIndex >= 0)
+			{
+				sample.MaxWidth(widthPreviews[width.SelectedIndex]);
+				sampleColumn.MaxWidth(widthPreviews[width.SelectedIndex] + AppTheme.Space3 * 2);
+			}
 		}
-		font.SelectionChanged += _ => SaveReading();
-		width.SelectionChanged += _ => SaveReading();
-		lineHeight.SelectionChanged += _ => SaveReading();
+		font.SelectionChanged += _ =>
+		{
+			if (font.SelectedIndex >= 0) SaveReading(DesktopPreference.Load() with { ChatFontSize = sizes[font.SelectedIndex] });
+		};
+		width.SelectionChanged += _ =>
+		{
+			if (width.SelectedIndex >= 0) SaveReading(DesktopPreference.Load() with { ReadingWidth = widths[width.SelectedIndex] });
+		};
+		lineHeight.SelectionChanged += _ =>
+		{
+			if (lineHeight.SelectedIndex >= 0) SaveReading(DesktopPreference.Load() with { ChatLineHeight = lineHeights[lineHeight.SelectedIndex] });
+		};
 
 		// 关闭驻留：托盘不可用时置灰并走直接退出，避免隐藏后没有唤回入口。
 		var traySupported = TrayIcon.IsSupported;
@@ -974,58 +1018,108 @@ public sealed class SettingsView
 			: OperatingSystem.IsLinux() && IsGnomeDesktop()
 				? $"{Strings.CloseToTrayUnavailable}{Strings.CloseToTrayGnomeHint}"
 				: Strings.CloseToTrayUnavailable;
-		var closeToTray = new CheckBox().Content(new StackPanel().Spacing(2).Children(
-			new TextBlock().Text(Strings.CloseToTraySetting).FontSize(AppTheme.FontSizeControl).PrimaryText(),
-			new TextBlock().Text(trayHint).FontSize(AppTheme.FontSizeCaption).MutedText()
-				.TextWrapping(TextWrapping.Wrap).MaxWidth(760)));
-		closeToTray.IsChecked(preference.CloseToTray && traySupported).IsEnabled(traySupported);
-		Anchor("appearance.close-to-tray", closeToTray);
-		closeToTray.OnCheckedChanged(_ =>
-		{
-			try
+		var closeToTray = SettingsUi.SwitchRow(
+			Strings.CloseToTraySetting, trayHint, preference.CloseToTray && traySupported,
+			checkedValue =>
 			{
-				(DesktopPreference.Load() with { CloseToTray = closeToTray.IsChecked == true }).Save();
-			}
-			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-			{
-				Toast(Strings.ConfigFailed, ToastKind.Error);
-			}
-		});
+				try
+				{
+					(DesktopPreference.Load() with { CloseToTray = checkedValue }).Save();
+				}
+				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+				{
+					Toast(Strings.ConfigFailed, ToastKind.Error);
+				}
+			},
+			out var closeToTrayToggle,
+			enabled: traySupported);
+		Anchor("appearance.close-to-tray", closeToTrayToggle);
 
 		// 等待期的功能提示轮播：与诊断、侧栏一样是「模块开关」，只停提示本身。
-		var tips = new CheckBox().Content(new TextBlock()
-			.Text(Strings.RespondingTipsSettingDesc)
-			.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
-			.MaxWidth(760));
-		tips.IsChecked(preference.RespondingTips);
-		Anchor("appearance.tips", tips);
-		tips.OnCheckedChanged(_ =>
-		{
-			var shown = tips.IsChecked == true;
-			try
+		var tips = SettingsUi.SwitchRow(
+			Strings.RespondingTipsSetting, Strings.RespondingTipsSettingDesc,
+			preference.RespondingTips,
+			checkedValue =>
 			{
-				(DesktopPreference.Load() with { RespondingTips = shown }).Save();
-			}
-			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-			{
-				Toast(Strings.ConfigFailed, ToastKind.Error);
-				return;
-			}
+				try
+				{
+					(DesktopPreference.Load() with { RespondingTips = checkedValue }).Save();
+				}
+				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+				{
+					Toast(Strings.ConfigFailed, ToastKind.Error);
+					return;
+				}
 
-			// 状态条下次读偏好就反映新选择：这一行只是旁注，不必等重启。
-			RespondingTips.Invalidate();
-		});
+				// 状态条下次读偏好就反映新选择：这一行只是旁注，不必等重启。
+				RespondingTips.Invalidate();
+			},
+			out var tipsToggle);
+		Anchor("appearance.tips", tipsToggle);
 
 		return new StackPanel().Spacing(AppTheme.Space4).Children(
-			Group("palette", Strings.ConfigTheme, new StackPanel().Spacing(AppTheme.Space3).Children(previews,
-				picker.HorizontalAlignment(HorizontalAlignment.Left))),
-			Group("file-text", Strings.ReadingSettings, new StackPanel().Spacing(AppTheme.Space3).Children(
-				new DockPanel().LastChildFill().Children(font.DockRight(), LabelForPreview(Strings.ChatFontSize)),
-				new DockPanel().LastChildFill().Children(width.DockRight(), LabelForPreview(Strings.ReadingWidth)),
-				new DockPanel().LastChildFill().Children(lineHeight.DockRight(), LabelForPreview(Strings.ChatLineHeight)),
-				sample)),
-			Group("loader-circle", Strings.RespondingTipsSetting, tips),
-			Group("layout-grid", Strings.WindowSettings, closeToTray));
+			Group("palette", Strings.ConfigTheme, new StackPanel().Spacing(AppTheme.Space3).Children(
+				previews,
+				SettingsUi.Hint(Strings.ThemeFollowHint))),
+			Group("file-text", Strings.ReadingSettings, SettingsUi.Rows([
+				SettingsUi.Row(Strings.ChatFontSize, null, font),
+				SettingsUi.Row(Strings.ReadingWidth, null, width),
+				SettingsUi.Row(Strings.ChatLineHeight, null, lineHeight),
+				SettingsUi.Row(Strings.ReadingSampleTitle, null, sampleColumn, stacked: true),
+			])),
+			Group("loader-circle", Strings.WaitingTipsGroup, SettingsUi.Rows([tips])),
+			Group("layout-grid", Strings.WindowSettings, SettingsUi.Rows([closeToTray])));
+	}
+
+	/// 主题预览：一块缩小的窗口。跟随系统时左右各画一份深/浅色，避免用深色冒充系统。
+	private static Border ThemeMiniature(AppPalette palette, bool split)
+	{
+		var content = split
+			? new Grid().Columns("*,*").Children(
+				Miniature(AppPalette.Dark).Column(0),
+				Miniature(AppPalette.Light).Column(1))
+			: Miniature(palette);
+		return new Border().Height(72).CornerRadius(AppTheme.RadiusSm)
+			.BorderThickness(1).BorderBrush(palette.Border)
+			.Background(palette.WindowBackground)
+			.ClipToBounds(true)
+			.Child(content);
+	}
+
+	private static UIElement Miniature(AppPalette palette)
+	{
+		var sidebar = new StackPanel().Spacing(6).Padding(new Thickness(8, 7, 8, 8)).Children(
+			new Border().Background(palette.TextMuted).Height(4).Width(20),
+			new Border().Background(palette.TextFaint).Height(3).Width(26),
+			new Border().Background(palette.TextFaint).Height(3).Width(16));
+		var title = new Border().Background(palette.CardBackground).Height(9)
+			.Child(new Border().Background(palette.TextFaint).Height(3).Width(32)
+				.Margin(new Thickness(8, 3, 0, 0)).HorizontalAlignment(HorizontalAlignment.Left));
+		var body = new StackPanel().Spacing(5).Padding(new Thickness(10, 8, 10, 8)).Children(
+			new Border().Background(palette.TextMuted).Height(4).Width(56),
+			new Border().Background(palette.TextFaint).Height(3).Width(78),
+			new Border().Background(palette.Accent).Height(7).Width(40));
+		var main = new DockPanel().LastChildFill().Children(title.DockTop(), body);
+		return new Border().Background(palette.WindowBackground).Child(
+			new Grid().Columns("34,*").Children(
+				new Border().Background(palette.SidebarBackground).Child(sidebar).Column(0),
+				main.Column(1)));
+	}
+
+	/// 把任意历史宽度映射到最近的预设档：880 这类不在旧下拉里的值也能正确显示。
+	private static int NearestWidthIndex(IReadOnlyList<double> widths, double value)
+	{
+		var nearest = 0;
+		var distance = double.MaxValue;
+		for (var index = 0; index < widths.Count; index++)
+		{
+			var current = Math.Abs(widths[index] - value);
+			if (current >= distance) continue;
+			distance = current;
+			nearest = index;
+		}
+
+		return nearest;
 	}
 
 	private static bool IsGnomeDesktop()
@@ -1036,8 +1130,6 @@ public sealed class SettingsView
 			.Any(static name => name.Equals("gnome", StringComparison.OrdinalIgnoreCase));
 	}
 
-	private static TextBlock LabelForPreview(string text) => new TextBlock().Text(text)
-		.FontSize(AppTheme.FontSizeControl).PrimaryText();
 
 	private Element GitSection()
 	{
@@ -1176,7 +1268,7 @@ public sealed class SettingsView
 		});
 
 		var promptReset = new Button().Ghost()
-			.Content(new TextBlock().Text(Strings.GitSummaryPromptReset).FontSize(AppTheme.FontSizeCaption).PrimaryText())
+			.Content(new TextBlock().Text(Strings.GitSummaryPromptReset).FontSize(AppTheme.FontSizeMicro).MutedText())
 			.OnClick(() =>
 			{
 				promptGate.Stop();
@@ -1184,39 +1276,37 @@ public sealed class SettingsView
 				SavePromptTemplate(GitCommitMessage.DefaultPromptTemplate);
 			});
 
-		var promptField = new StackPanel().Spacing(AppTheme.Space1).Children(
-			new TextBlock().Text(Strings.GitSummaryPrompt).FontSize(AppTheme.FontSizeCaption).SubtleText(),
+		var promptHint = SettingsUi.Hint(Strings.GitSummaryPromptHint(GitCommitMessage.DiffPlaceholder));
+		var promptFooter = new DockPanel().LastChildFill()
+			.Children(promptReset.DockRight(), promptHint);
+		var promptRow = new StackPanel().Spacing(4).Children(
+			new TextBlock().Text(Strings.GitSummaryPrompt).FontSize(AppTheme.FontSizeCaption).PrimaryText(),
 			promptBox,
-			new DockPanel().LastChildFill().Children(promptReset.DockRight(),
-				new TextBlock().Text(Strings.GitSummaryPromptHint(GitCommitMessage.DiffPlaceholder))
-					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap)));
+			promptFooter);
 
-		var body = new StackPanel().Spacing(AppTheme.Space3)
-			.Children(
-				new TextBlock().Text(Strings.GitSummarySettingsHint)
-					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap),
-				SettingField(Strings.GitSummaryModel, modelPicker),
-				SettingField(Strings.GitSummaryThinking, thinkingPicker),
-				promptField);
-
-		if (current is null)
+		var rows = new List<UIElement>
 		{
-			body.Children(new TextBlock().Text(Strings.NoOpenSession)
+			SettingsUi.Row(Strings.GitSummaryModel, null, modelPicker),
+			SettingsUi.Row(Strings.GitSummaryThinking, null, thinkingPicker),
+			new Border().Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space3)).Child(promptRow),
+		};
+
+		if (current is not null)
+		{
+			rows.Add(new TextBlock()
+				.Text($"{Strings.GitFollowSession}：{current.Model.Provider}/{current.Model.Id} · {Strings.ThinkingLevelName(current.ThinkingLevel)}")
 				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
 		}
 		else
 		{
-			body.Children(new TextBlock()
-				.Text($"{Strings.GitFollowSession}：{current.Model.Provider}/{current.Model.Id} · {Strings.ThinkingLevelName(current.ThinkingLevel)}")
+			rows.Add(new TextBlock().Text(Strings.NoOpenSession)
 				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
 		}
 
-		return Group("git-branch", Strings.SettingsGit, body);
+		return Group("git-branch", Strings.GitSummaryGeneration, SettingsUi.Rows(rows),
+			description: Strings.GitSummarySettingsHint,
+			meta: null);
 	}
-
-	private static Element SettingField(string label, UIElement control) => new StackPanel().Spacing(4).Children(
-		new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption).SubtleText(),
-		control);
 
 	/// 快捷消息分区：一行一条的纯文本编辑器。
 	/// 落盘到 desktop.json 的 <c>quickMessages</c> 键；停手 600ms 自动保存，
@@ -1280,7 +1370,12 @@ public sealed class SettingsView
 		});
 
 		var reset = new Button().Ghost()
-			.Content(new TextBlock().Text(Strings.SettingsQuickMessagesReset).FontSize(AppTheme.FontSizeCaption).PrimaryText())
+			.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					AppIcons.Icon("rotate-ccw", AppStyles.RoleSubtle, 12),
+					new TextBlock().Text(Strings.SettingsQuickMessagesReset).FontSize(AppTheme.FontSizeMicro)
+						.MutedText().VerticalAlignment(VerticalAlignment.Center)))
 			.OnClick(() =>
 			{
 				gate.Stop();
@@ -1289,7 +1384,12 @@ public sealed class SettingsView
 				Toast(Strings.SettingsQuickMessagesSaved, ToastKind.Success);
 			});
 		var openFile = new Button().Ghost()
-			.Content(new TextBlock().Text(Strings.SettingsQuickMessagesOpenFile).FontSize(AppTheme.FontSizeCaption).PrimaryText())
+			.Content(new StackPanel().Orientation(Orientation.Horizontal).Spacing(6)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					AppIcons.Icon("square-pen", AppStyles.RoleSubtle, 12),
+					new TextBlock().Text(Strings.SettingsQuickMessagesOpenFile).FontSize(AppTheme.FontSizeMicro)
+						.MutedText().VerticalAlignment(VerticalAlignment.Center)))
 			.OnClick(() =>
 			{
 				gate.Stop();
@@ -1306,24 +1406,24 @@ public sealed class SettingsView
 				}
 			});
 
-		var body = new StackPanel().Spacing(AppTheme.Space3).Children(
-			new TextBlock().Text(Strings.SettingsQuickMessagesDesc)
-				.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap),
-			new StackPanel().Spacing(4).Children(
-				new TextBlock().Text(Strings.SettingsQuickMessagesEditor).FontSize(AppTheme.FontSizeCaption).SubtleText(),
-				box,
-				new TextBlock().Text(Strings.SettingsQuickMessagesFormat(QuickMessages.MaxItems, QuickMessages.MaxLength))
-					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap)),
-			new DockPanel().LastChildFill().Children(
-				new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
-					.HorizontalAlignment(HorizontalAlignment.Right)
-					.Children(openFile, reset).DockRight(),
-				new StackPanel().Spacing(2).Children(
-					count,
-					new TextBlock().Text(Strings.SettingsQuickMessagesFileHint(path))
-						.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap))));
+		var footer = new DockPanel().LastChildFill().Children(
+			new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1)
+				.VerticalAlignment(VerticalAlignment.Center).Children(openFile, reset).DockRight(),
+			new StackPanel().Spacing(2).Children(
+				count,
+				new TextBlock().Text(Strings.SettingsQuickMessagesFileHint(path))
+					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap)));
 
-		return Group("message-square", Strings.SettingsQuickMessages, body);
+		var content = new StackPanel().Spacing(AppTheme.Space2).Children(
+			new TextBlock().Text(Strings.SettingsQuickMessagesEditor).FontSize(AppTheme.FontSizeCaption).PrimaryText(),
+			box,
+			new TextBlock().Text(Strings.SettingsQuickMessagesFormat(QuickMessages.MaxItems, QuickMessages.MaxLength))
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap),
+			footer);
+
+		return Group("message-square", Strings.QuickMessagesGroup, content,
+			description: Strings.SettingsQuickMessagesDesc,
+			meta: null);
 	}
 
 	/// 安全门分区。分区自己写 <c>settings.json</c>；保存成功后通过 <see cref="SecurityChanged"/>
@@ -1362,11 +1462,11 @@ public sealed class SettingsView
 			settings.Extensions,
 			rules: settings.ExtensionRules);
 
-		var builtins = new StackPanel().Spacing(AppTheme.Space2);
+		var builtinRows = new List<UIElement>();
 		foreach (var name in ExtensionRules.BuiltinNames)
 		{
 			var enabled = settings.IsBuiltinExtensionEnabled(name);
-			builtins.Children(ExtensionToggleRow(
+			builtinRows.Add(ExtensionToggleRow(
 				"builtin:" + name,
 				BuiltinExtensionHint(name),
 				enabled,
@@ -1375,18 +1475,14 @@ public sealed class SettingsView
 				onChanged: value => SetBuiltinExtension(snapshot, name, value)));
 		}
 
-		builtins.Children(new TextBlock()
-			.Text(Strings.SettingsExtensionsFile(CodingAgentSettings.GlobalPath(snapshot.AgentDir)))
-			.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
-
 		// builtin: 条目在上面的内置分组里单独画，不在「已安装扩展」里重列一遍。
 		var discovered = descriptors
 			.Where(static descriptor => !descriptor.Builtin)
 			.ToArray();
-		var desktopRows = new StackPanel().Spacing(AppTheme.Space2);
+		var desktopRows = new List<UIElement>();
 		foreach (var extension in DesktopExtensions.All)
 		{
-			desktopRows.Children(ExtensionToggleRow(
+			desktopRows.Add(ExtensionToggleRow(
 				extension.Name,
 				extension.Description,
 				enabled: true,
@@ -1396,80 +1492,77 @@ public sealed class SettingsView
 				stateText: Strings.SettingsDesktopExtensionBadge));
 		}
 
-		var extensionRows = new StackPanel().Spacing(AppTheme.Space2);
-		if (discovered.Length == 0)
+		var extensionRows = new List<UIElement>();
+		foreach (var extension in discovered)
 		{
-			extensionRows.Children(new TextBlock().Text(Strings.SettingsExtensionsEmpty)
-				.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
-		}
-		else
-		{
-			foreach (var extension in discovered)
-			{
-				var supported = extension.Supported;
-				var detail = supported
-					? extension.FilePath
-					: extension.UnsupportedReason + " · " + extension.FilePath;
-				extensionRows.Children(ExtensionToggleRow(
-					Path.GetFileNameWithoutExtension(extension.FilePath),
-					extension.Origin,
-					enabled: extension.Enabled && supported,
-					toggleable: supported,
-					detail,
-					value => SetExtension(snapshot, extension.FilePath, value),
-					stateText: supported ? null : Strings.SettingsExtensionsUnavailable));
-			}
+			var supported = extension.Supported;
+			var detail = supported
+				? extension.FilePath
+				: extension.UnsupportedReason + " · " + extension.FilePath;
+			extensionRows.Add(ExtensionToggleRow(
+				Path.GetFileNameWithoutExtension(extension.FilePath),
+				extension.Origin,
+				enabled: extension.Enabled && supported,
+				toggleable: supported,
+				detail,
+				value => SetExtension(snapshot, extension.FilePath, value),
+				stateText: supported ? null : Strings.SettingsExtensionsUnavailable));
 		}
 
 		var panel = new StackPanel().Spacing(AppTheme.Space4).Children(
-			Group("sparkles", Strings.SettingsBuiltinExtensions, new StackPanel().Spacing(AppTheme.Space3).Children(
-				Hint(Strings.SettingsBuiltinExtensionsHint),
-				builtins,
-				Hint(Strings.SettingsExtensionsRestart))),
-			Group("layout-grid", Strings.SettingsDesktopExtensions, new StackPanel().Spacing(AppTheme.Space3).Children(
-				Hint(Strings.SettingsDesktopExtensionsHint),
-				desktopRows)),
-			Group("package", Strings.SettingsInstalledExtensions, new StackPanel().Spacing(AppTheme.Space3).Children(
-				Hint(Strings.SettingsInstalledExtensionsHint),
-				extensionRows,
-				new TextBlock().Text(Strings.SettingsExtensionsFile(CodingAgentSettings.GlobalPath(snapshot.AgentDir)))
-					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap),
-				Hint(Strings.SettingsExtensionsRestart))));
+			Group("sparkles", Strings.SettingsBuiltinExtensions,
+				builtinRows.Count == 0
+					? SettingsUi.Empty("sparkles", Strings.SettingsExtensionsEmpty)
+					: SettingsUi.Rows(builtinRows),
+				description: Strings.SettingsBuiltinExtensionsHint,
+				meta: builtinRows.Count.ToString()),
+			Group("layout-grid", Strings.SettingsDesktopExtensions,
+				SettingsUi.Rows(desktopRows),
+				description: Strings.SettingsDesktopExtensionsHint,
+				meta: desktopRows.Count.ToString()),
+			Group("package", Strings.SettingsInstalledExtensions,
+				extensionRows.Count == 0
+					? SettingsUi.Empty("package", Strings.SettingsExtensionsEmptyTitle, Strings.SettingsExtensionsEmptyHint)
+					: SettingsUi.Rows(extensionRows),
+				description: Strings.SettingsInstalledExtensionsHint + " " + Strings.SettingsExtensionsRestart,
+				action: AppIcons.TextButton("refresh-cw", Strings.SettingsExtensionsRefresh, Refresh),
+				meta: extensionRows.Count.ToString()));
 
 		// 扩展诊断来自运行中的会话（设置页只做发现，不加载扩展），进程内累积一份。
 		var diagnostics = ExtensionDiagnostics.Snapshot();
-		var diagnosticRows = new StackPanel().Spacing(2);
-		if (diagnostics.Count == 0)
+		var diagnosticRows = new List<UIElement>();
+		foreach (var entry in diagnostics)
 		{
-			diagnosticRows.Children(Hint(Strings.SettingsExtensionDiagnosticsEmpty));
+			var handler = entry.Event is { Length: > 0 } name ? $" [{name}]" : string.Empty;
+			diagnosticRows.Add(new TextBlock()
+				.Text($"{entry.Timestamp:HH:mm} · {Path.GetFileName(entry.ExtensionPath)}{handler} · {entry.Message}")
+				.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
+		}
+
+		var diagnosticContent = new StackPanel().Spacing(AppTheme.Space2);
+		if (diagnosticRows.Count == 0)
+		{
+			diagnosticContent.Children(SettingsUi.Hint(Strings.SettingsExtensionDiagnosticsEmpty));
 		}
 		else
 		{
-			foreach (var entry in diagnostics)
-			{
-				var handler = entry.Event is { Length: > 0 } name ? $" [{name}]" : string.Empty;
-				diagnosticRows.Children(new TextBlock()
-					.Text($"{entry.Timestamp:HH:mm} · {Path.GetFileName(entry.ExtensionPath)}{handler} · {entry.Message}")
-					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
-			}
-		}
-
-		var diagnosticSection = new StackPanel().Spacing(AppTheme.Space2).Children(
-			Hint(Strings.SettingsExtensionDiagnosticsHint),
-			diagnosticRows);
-		if (diagnostics.Count > 0)
-		{
-			diagnosticSection.Children(AppIcons.TextButton("trash", Strings.SettingsExtensionDiagnosticsClear, () =>
+			diagnosticContent.Children(SettingsUi.Rows(diagnosticRows));
+			diagnosticContent.Children(AppIcons.TextButton("trash", Strings.SettingsExtensionDiagnosticsClear, () =>
 			{
 				ExtensionDiagnostics.Clear();
 				Refresh();
 			}).HorizontalAlignment(HorizontalAlignment.Left));
 		}
 
-		panel.Children(Group("triangle-alert", Strings.SettingsExtensionDiagnostics, diagnosticSection));
+		panel.Children(Group("triangle-alert", Strings.SettingsExtensionDiagnostics, diagnosticContent,
+			description: Strings.SettingsExtensionDiagnosticsHint,
+			meta: diagnostics.Count > 0 ? diagnostics.Count.ToString() : null));
 
-		panel.Children(AppIcons.TextButton("refresh-cw", Strings.SettingsExtensionsRefresh, Refresh)
-			.HorizontalAlignment(HorizontalAlignment.Left));
+		panel.Children(new DockPanel().LastChildFill().Children(
+			SettingsUi.IconAction("square-pen", Strings.ConfigOpenFile,
+				() => OpenLocation(CodingAgentSettings.GlobalPath(snapshot.AgentDir))).DockRight(),
+			new TextBlock().Text(Strings.SettingsExtensionsFile(CodingAgentSettings.GlobalPath(snapshot.AgentDir)))
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap)));
 		return panel;
 	}
 
@@ -1485,7 +1578,7 @@ public sealed class SettingsView
 
 	/// 一行扩展：左边名字、状态与说明，右边开关。不可加载的条目也画出开关位置，
 	/// 但禁用点击，避免用户以为写一条规则就能让 TypeScript 扩展跑起来。
-	private Element ExtensionToggleRow(
+	private UIElement ExtensionToggleRow(
 		string title,
 		string description,
 		bool enabled,
@@ -1494,35 +1587,30 @@ public sealed class SettingsView
 		Action<bool> onChanged,
 		string? stateText = null)
 	{
-		var state = new TextBlock()
-			.Text(stateText ?? (enabled ? Strings.SettingsExtensionsEnabled : Strings.SettingsExtensionsDisabled))
-			.FontSize(AppTheme.FontSizeMicro)
-			.VerticalAlignment(VerticalAlignment.Center);
-		if (enabled && stateText is null)
-		{
-			state.Role(AppStyles.RoleSuccess);
-		}
-		else
-		{
-			state.FaintText();
-		}
 		var heading = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 			.VerticalAlignment(VerticalAlignment.Center).Children(
-				new TextBlock().Text(title).FontSize(AppTheme.FontSizeControl)
-					.PrimaryText().VerticalAlignment(VerticalAlignment.Center),
-				state);
+				new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption)
+					.PrimaryText().VerticalAlignment(VerticalAlignment.Center));
+		var statusRole = enabled && stateText is null
+			? AppStyles.RoleSuccess
+			: stateText == Strings.SettingsExtensionsUnavailable ? AppStyles.RoleWarning : null;
+		heading.Children(SettingsUi.Status(
+			stateText ?? (enabled ? Strings.SettingsExtensionsEnabled : Strings.SettingsExtensionsDisabled),
+			statusRole));
+
 		var text = new StackPanel().Spacing(2).Children(
 			heading,
-			new TextBlock().Text(description).FontSize(AppTheme.FontSizeCaption)
+			new TextBlock().Text(description).FontSize(AppTheme.FontSizeMicro)
 				.MutedText().TextWrapping(TextWrapping.Wrap));
 		if (detail is { Length: > 0 })
 		{
-			text.Children(new TextBlock().Text(detail).FontSize(AppTheme.FontSizeMicro)
-				.FaintText().TextWrapping(TextWrapping.Wrap));
+			text.Children(new TextBlock().Text(detail).FontFamily(AppTheme.MonoFont)
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
 		}
 
 		var toggle = new ToggleSwitch().IsChecked(enabled)
 			.IsEnabled(toggleable && !_extensionBusy)
+			.HorizontalAlignment(HorizontalAlignment.Right)
 			.VerticalAlignment(VerticalAlignment.Center);
 		toggle.OnCheckedChanged(value =>
 		{
@@ -1532,8 +1620,7 @@ public sealed class SettingsView
 			}
 		});
 
-		return new Border().StyleName(AppStyles.CardMuted).CornerRadius(AppTheme.RadiusSm)
-			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space2, AppTheme.Space3, AppTheme.Space2))
+		return new Border().Padding(new Thickness(0, AppTheme.Space2 + 2, 0, AppTheme.Space2 + 2))
 			.Child(new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
 				.Children(text.Column(0), toggle.Column(1)));
 	}
@@ -1604,28 +1691,32 @@ public sealed class SettingsView
 		var resources = snapshot.Resources;
 		var panel = new StackPanel().Spacing(AppTheme.Space4);
 
-		panel.Children(Group("book-open", Strings.SettingsSkills, new StackPanel().Spacing(AppTheme.Space3).Children(
-			Hint(Strings.ResourcesSkillHint),
-			ResourceList(resources.Skills.Select(skill => new ResourceRow(
-				skill.Name, skill.Description, skill.Origin.Display, skill.FilePath))))));
+		panel.Children(ResourceGroup(
+			"book-open", Strings.SettingsSkills, Strings.ResourcesSkillHint,
+			resources.Skills.Select(skill => new ResourceRow(
+				skill.Name, skill.Description, skill.Origin.Display, skill.FilePath)),
+			Strings.SettingsSkillsEmptyTitle, Strings.SettingsSkillsEmpty(snapshot.AgentDir)));
 
-		panel.Children(Group("file-text", Strings.ResourcesPrompts, new StackPanel().Spacing(AppTheme.Space3).Children(
-			Hint(Strings.ResourcesPromptHint),
-			ResourceList(resources.Templates.Select(template => new ResourceRow(
-				template.Name, string.Empty, template.Origin.Display, template.FilePath))))));
+		panel.Children(ResourceGroup(
+			"file-text", Strings.ResourcesPrompts, Strings.ResourcesPromptHint,
+			resources.Templates.Select(template => new ResourceRow(
+				template.Name, string.Empty, template.Origin.Display, template.FilePath)),
+			Strings.ResourcesPromptsEmpty, Strings.ResourcesPromptsEmptyHint));
 
-		panel.Children(Group("palette", Strings.ResourcesThemes, new StackPanel().Spacing(AppTheme.Space3).Children(
-			Hint(Strings.ResourcesThemeHint),
-			ResourceList(resources.Themes.Select(theme => new ResourceRow(
-				theme.Name, ThemeDetail(theme), theme.Origin.Display, theme.FilePath))))));
+		panel.Children(ResourceGroup(
+			"palette", Strings.ResourcesThemes, Strings.ResourcesThemeHint,
+			resources.Themes.Select(theme => new ResourceRow(
+				theme.Name, ThemeDetail(theme), theme.Origin.Display, theme.FilePath)),
+			Strings.ResourcesThemesEmpty, Strings.ResourcesThemesEmptyHint));
 
-		panel.Children(Group("package", Strings.ResourcesPackages, new StackPanel().Spacing(AppTheme.Space3).Children(
-			Hint(Strings.ResourcesPackageHint),
-			ResourceList(resources.Packages.Select(package => new ResourceRow(
+		panel.Children(ResourceGroup(
+			"package", Strings.ResourcesPackages, Strings.ResourcesPackageHint,
+			resources.Packages.Select(package => new ResourceRow(
 				package.Name,
 				package.Source,
 				package.Scope == ResourceScope.Project ? Strings.ConfigProject : Strings.ConfigGlobal,
-				package.Root))))));
+				package.Root)),
+			Strings.ResourcesPackagesEmpty, Strings.ResourcesPackagesEmptyHint));
 
 		if (resources.Diagnostics.Count > 0)
 		{
@@ -1636,12 +1727,14 @@ public sealed class SettingsView
 					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
 			}
 
-			panel.Children(Group("settings", Strings.ResourcesDiagnostics, diagnostics));
+			panel.Children(Group("triangle-alert", Strings.ResourcesDiagnostics, diagnostics));
 		}
 
 		if (_reloadResources is not null)
 		{
-			panel.Children(AppIcons.TextButton("refresh-cw", Strings.ResourcesReload, () => _ = ReloadAsync()));
+			panel.Children(new Grid().Columns("*,auto")
+				.Children(AppIcons.TextButton("refresh-cw", Strings.ResourcesReload, () => _ = ReloadAsync())
+					.Column(1)));
 		}
 
 		return panel;
@@ -1662,33 +1755,25 @@ public sealed class SettingsView
 
 	private sealed record ResourceRow(string Name, string Detail, string Source, string Path);
 
-	private Element ResourceList(IEnumerable<ResourceRow> rows)
+	private Element ResourceGroup(
+		string icon,
+		string title,
+		string hint,
+		IEnumerable<ResourceRow> rows,
+		string emptyTitle,
+		string emptyHint)
 	{
-		var list = new StackPanel().Spacing(AppTheme.Space2);
-		var empty = true;
-
+		var items = new List<UIElement>();
 		foreach (var row in rows)
 		{
-			empty = false;
-			var header = new DockPanel().LastChildFill();
-			header.Children(
-				AppIcons.TextButton("square-pen", Strings.ResourcesOpen, () => OpenPath(row.Path)).DockRight(),
-				new TextBlock().Text(row.Source).FontSize(AppTheme.FontSizeMicro).FaintText().DockRight(),
-				new TextBlock().Text(row.Name).FontSize(AppTheme.FontSizeControl).PrimaryText());
-
-			list.Children(new StackPanel().Spacing(2).Children(
-				header,
-				new TextBlock().Text(row.Detail.Length > 0 ? row.Detail : row.Path)
-					.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap)));
+			items.Add(ResourceEntry(row.Name, row.Detail, row.Source, row.Path));
 		}
 
-		if (empty)
-		{
-			list.Children(new TextBlock().Text(Strings.ResourcesEmpty)
-				.FontSize(AppTheme.FontSizeCaption).MutedText());
-		}
-
-		return list;
+		UIElement content = items.Count == 0
+			? SettingsUi.Empty(icon, emptyTitle, emptyHint)
+			: SettingsUi.Rows(items);
+		return Group(icon, title, content, description: hint,
+			meta: items.Count == 0 ? null : Strings.ResourcesCount(items.Count));
 	}
 
 	private void OpenPath(string path)
@@ -1709,9 +1794,6 @@ public sealed class SettingsView
 	private static string ThemeDetail(ThemeEntry theme) => theme.Theme is { } parsed
 		? (parsed.Appearance == ThemeAppearance.Light ? Strings.ResourcesLight : Strings.ResourcesDark)
 		: (theme.Error ?? Strings.ResourcesInvalid);
-
-	private static TextBlock Hint(string text) => new TextBlock().Text(text)
-		.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap);
 
 	private Element LogSection()
 	{
@@ -1768,7 +1850,7 @@ public sealed class SettingsView
 			new TextBlock().Text(directory).FontSize(AppTheme.FontSizeCaption)
 				.MutedText().TextWrapping(TextWrapping.Wrap).HoverTip(directory));
 
-		return Group("folder-open", Strings.SettingsLogs, new StackPanel().Spacing(AppTheme.Space3).Children(
+		return Group("folder-open", Strings.LogGroup, new StackPanel().Spacing(AppTheme.Space3).Children(
 			header,
 			new TextBlock().Text(Strings.LogLevelHint)
 				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap),
@@ -1791,63 +1873,56 @@ public sealed class SettingsView
 		var preference = DesktopPreference.Load(snapshot.AgentDir);
 		var body = new StackPanel().Spacing(AppTheme.Space3);
 
-		var toggle = new CheckBox().Content(new TextBlock()
-			.Text(Strings.DiagnosticsDesc)
-			.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)
-			.MaxWidth(760));
-		// 勾选框放在说明前面：整段文案就是这一项的描述，与 PiDeck 的行式布局一致。
-		toggle.IsChecked(preference.Diagnostics);
-		Anchor("diagnostics.toggle", toggle);
-		toggle.OnCheckedChanged(_ =>
-		{
-			var enabled = toggle.IsChecked == true;
-			try
+		var toggle = SettingsUi.SwitchRow(
+			Strings.SettingsDiagnosticsToggle, Strings.DiagnosticsDesc, preference.Diagnostics,
+			enabled =>
 			{
-				(preference with { Diagnostics = enabled }).Save(snapshot.AgentDir);
-			}
-			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-			{
-				AppLog.Failure(AppLog.For<SettingsView>(), "Save diagnostics preference", ex);
-				Toast(Strings.ThemeChangeFailed(ex.Message), ToastKind.Error);
-				return;
-			}
+				try
+				{
+					(preference with { Diagnostics = enabled }).Save(snapshot.AgentDir);
+				}
+				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+				{
+					AppLog.Failure(AppLog.For<SettingsView>(), "Save diagnostics preference", ex);
+					Toast(Strings.ThemeChangeFailed(ex.Message), ToastKind.Error);
+					return;
+				}
 
-			Diagnostics.SetEnabled(enabled, snapshot.AgentDir);
-			_diagnosticsPaused = false;
-			if (enabled && !Diagnostics.Enabled)
-			{
-				Toast(Strings.DiagnosticsStartFailed(Diagnostics.LastError), ToastKind.Error);
-			}
-			else
-			{
-				Toast(enabled ? Strings.DiagnosticsStarted : Strings.DiagnosticsStopped,
-					enabled ? ToastKind.Success : ToastKind.Info);
-			}
-			// 重建分区：开关关掉时不该继续显示一份过期的采样数据。
-			Refresh();
-		});
-		body.Children(toggle);
+				Diagnostics.SetEnabled(enabled, snapshot.AgentDir);
+				_diagnosticsPaused = false;
+				if (enabled && !Diagnostics.Enabled)
+				{
+					Toast(Strings.DiagnosticsStartFailed(Diagnostics.LastError), ToastKind.Error);
+				}
+				else
+				{
+					Toast(enabled ? Strings.DiagnosticsStarted : Strings.DiagnosticsStopped,
+						enabled ? ToastKind.Success : ToastKind.Info);
+				}
+				// 重建分区：开关关掉时不该继续显示一份过期的采样数据。
+				Refresh();
+			},
+			out var toggleSwitch);
+		Anchor("diagnostics.toggle", toggleSwitch);
+		body.Children(SettingsUi.Rows([toggle]));
 
 		if (!preference.Diagnostics)
 		{
-			body.Children(new TextBlock().Text(Strings.DiagnosticsOff)
-				.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap));
-			return Group("list-checks", Strings.SettingsDiagnostics, body);
+			body.Children(SettingsUi.Empty("activity", Strings.DiagnosticsOffTitle, Strings.DiagnosticsOff));
+			return Group("list-checks", Strings.DiagnosticsSamplingGroup, body);
 		}
 
 		var fresh = Diagnostics.TakeSnapshot();
 		if (!string.IsNullOrEmpty(fresh.LastError))
 		{
-			body.Children(new TextBlock().Text($"诊断启动失败：{fresh.LastError}")
-				.FontSize(AppTheme.FontSizeMicro).TextWrapping(TextWrapping.Wrap).WithTheme(
-					static (theme, block) => block.Foreground = theme.Palette.Error));
+			body.Children(SettingsUi.Alert(Strings.DiagnosticsStartFailed(fresh.LastError), AppStyles.RoleError));
 		}
 		if (fresh.Counters.Count == 0 && fresh.Stats.Count == 0 && fresh.Frame.Frames == 0)
 		{
 			body.Children(new TextBlock().Text(Strings.DiagnosticsNoData)
 				.FontSize(AppTheme.FontSizeMicro).SubtleText().TextWrapping(TextWrapping.Wrap));
 			body.Children(DiagnosticsButtons(fresh));
-			return Group("list-checks", Strings.SettingsDiagnostics, body);
+			return Group("list-checks", Strings.DiagnosticsSamplingGroup, body);
 		}
 
 		body.Children(DiagnosticsButtons(fresh));
@@ -1865,7 +1940,7 @@ public sealed class SettingsView
 			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
 			.TextWrapping(TextWrapping.Wrap).HoverTip(fresh.TimingsPath ?? string.Empty));
 
-		return Group("list-checks", Strings.SettingsDiagnostics, body);
+		return Group("list-checks", Strings.DiagnosticsSamplingGroup, body);
 	}
 
 	/// 诊断分区的每秒脉冲：只更新实时区的文本/帧条，不重建控件树。
@@ -1944,34 +2019,38 @@ public sealed class SettingsView
 			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).MutedText()
 			.TextWrapping(TextWrapping.Wrap)
 			.Text(string.IsNullOrEmpty(_compactResult) ? Strings.DiagnosticsMemoryHint : _compactResult);
-		var status = new TextBlock()
-			.Text(_diagnosticsPaused ? Strings.DiagnosticsPaused : Strings.DiagnosticsSampling)
-			.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont);
-		if (_diagnosticsPaused) status.FaintText(); else status.AccentText();
-		var buttons = new WrapPanel().Spacing(AppTheme.Space2).Children(
+		var status = SettingsUi.Status(
+			_diagnosticsPaused ? Strings.DiagnosticsPaused : Strings.DiagnosticsSampling,
+			_diagnosticsPaused ? null : AppStyles.RoleSuccess);
+		var liveButtons = new WrapPanel().Spacing(AppTheme.Space2).Children(
 			AppIcons.TextButton(_diagnosticsPaused ? "play" : "pause",
 				_diagnosticsPaused ? Strings.DiagnosticsResume : Strings.DiagnosticsPause,
 				ToggleDiagnosticsPause, strong: false),
+			AppIcons.TextButton("refresh-cw", Strings.DiagnosticsRefresh, () => Refresh()),
+			AppIcons.TextButton("arrow-down", Strings.DiagnosticsCompact,
+				() => _ = CompactDiagnosticsAsync(), strong: false),
+			AppIcons.TextButton("folder-open", Strings.DiagnosticsOpenFolder, OpenDiagnosticsFolder));
+		var exportButtons = new WrapPanel().Spacing(AppTheme.Space2).Children(
 			AppIcons.TextButton("download", Strings.DiagnosticsExportTrace,
 				() => _ = ExportDiagnosticsTraceAsync(), strong: false)
 				.HoverTip(Strings.DiagnosticsExportHint),
 			AppIcons.TextButton("activity", Strings.DiagnosticsExportFirefox,
 				() => _ = ExportDiagnosticsFirefoxAsync(), strong: false)
 				.HoverTip(Strings.DiagnosticsExportFirefoxHint),
-			AppIcons.TextButton("refresh-cw", Strings.DiagnosticsRefresh, () => Refresh()),
-			AppIcons.TextButton("arrow-down", Strings.DiagnosticsCompact,
-				() => _ = CompactDiagnosticsAsync(), strong: false),
 			AppIcons.TextButton("rotate-ccw", Strings.DiagnosticsReset, () =>
 			{
 				Diagnostics.Reset();
 				_compactResult = string.Empty;
 				Refresh();
-			}),
-			AppIcons.TextButton("folder-open", Strings.DiagnosticsOpenFolder, OpenDiagnosticsFolder));
-		var body = new StackPanel().Spacing(AppTheme.Space2).Children(status, buttons, compacted);
+			}));
+		var body = new StackPanel().Spacing(AppTheme.Space2).Children(
+			status, liveButtons,
+			new Border().Height(1).Margin(new Thickness(0, 2, 0, 2))
+				.WithTheme(static (theme, line) => line.Background = AppTheme.For(theme).BorderSubtle),
+			exportButtons, compacted);
 		if (!string.IsNullOrEmpty(_diagnosticsTraceResult))
 		{
-			body.Children(new TextBlock().Text($"导出：{_diagnosticsTraceResult}")
+			body.Children(new TextBlock().Text(Strings.DiagnosticsExportInline(_diagnosticsTraceResult))
 				.FontSize(AppTheme.FontSizeMicro).FontFamily(AppTheme.MonoFont).SubtleText()
 				.TextWrapping(TextWrapping.Wrap).HoverTip(_diagnosticsTraceResult));
 		}
@@ -2069,89 +2148,9 @@ public sealed class SettingsView
 		}
 	}
 
-	private static Element Group(string icon, string title, UIElement content) => new Border()
-		.StyleName(AppStyles.Card)
-		.CornerRadius(AppTheme.RadiusMd)
-		.MaxWidth(960)
-		.ClipToBounds(true)
-		.Child(new DockPanel().LastChildFill().Children(
-			new Border().StyleName(AppStyles.CardHeader)
-				.Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space3))
-				.Child(new StackPanel().Orientation(Orientation.Horizontal)
-					.VerticalAlignment(VerticalAlignment.Center).Spacing(AppTheme.Space2)
-					.Children(
-						AppIcons.Icon(icon, AppStyles.RoleSubtle, 14),
-						new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption)
-							.FontWeight(FontWeight.SemiBold).PrimaryText()
-							.VerticalAlignment(VerticalAlignment.Center)))
-				.DockTop(),
-			new Border().Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space4))
-				.Child(content)));
-
-	/// <summary>分组里的一行值：标签靠左，值可复制、可打开所在位置。</summary>
-	/// <param name="Label">左侧字段名。</param>
-	/// <param name="Value">右侧值；空串显示为 —。</param>
-	/// <param name="Copy">非空时给一个复制按钮。</param>
-	/// <param name="OpenPath">非空时给一个打开按钮：目录用文件管理器，文件用默认编辑器。</param>
-	/// <param name="Mono">元数据用等宽；DESIGN.md 要求路径、id、统计一律等宽。</param>
-	/// <param name="Hint">值被截断或需要补充说明时的悬浮提示。</param>
-	private sealed record InfoRow(
-		string Label,
-		string Value,
-		string? Copy = null,
-		string? OpenPath = null,
-		bool Mono = true,
-		string? Hint = null);
-
-	private Element Section(string title, IReadOnlyList<InfoRow> rows) => Group("settings", title, Rows(rows));
-
-	private StackPanel Rows(IReadOnlyList<InfoRow> rows)
-	{		var body = new StackPanel().Spacing(4);
-		foreach (var row in rows)
-		{
-			var actions = new StackPanel().Orientation(Orientation.Horizontal)
-				.Spacing(2).VerticalAlignment(VerticalAlignment.Center);
-			if (row.Copy is { Length: > 0 } copy)
-			{
-				actions.Children(RowAction("copy", Strings.SettingsCopyValue, () => CopyValue(copy)));
-			}
-
-			if (row.OpenPath is { Length: > 0 } openPath)
-			{
-				var isDirectory = Directory.Exists(openPath);
-				actions.Children(RowAction(
-					isDirectory ? "folder-open" : "square-pen",
-					isDirectory ? Strings.SettingsOpenFolder : Strings.ConfigOpenFile,
-					() => OpenLocation(openPath)));
-			}
-
-			var value = new TextBlock().Text(row.Value.Length == 0 ? "—" : row.Value)
-				.FontSize(AppTheme.FontSizeCaption).PrimaryText().TextWrapping(TextWrapping.Wrap);
-			if (row.Mono) value.FontFamily(AppTheme.MonoFont);
-			var hint = row.Hint ?? (row.Value.Length > 48 ? row.Value : null);
-			if (hint is not null) value.HoverTip(hint);
-
-			var line = new DockPanel().LastChildFill().Margin(new Thickness(0, 4, 0, 4));
-			if (actions.Children.Count > 0) line.Children(actions.DockRight());
-			line.Children(
-				new TextBlock().Text(row.Label).Width(116).FontSize(AppTheme.FontSizeCaption)
-					.SubtleText().TextTrimming(TextTrimming.CharacterEllipsis).DockLeft(),
-				value);
-			body.Children(line);
-		}
-
-		return body;
-	}
-
-	private static Button RowAction(string icon, string tooltip, Action action)
-	{
-		var button = AppIcons.Button(icon, tooltip, action, size: 12)
-			.MinWidth(AppTheme.Space6).MinHeight(AppTheme.Space6)
-			.Padding(Thickness.Zero)
-			.CornerRadius(AppTheme.RadiusXs);
-		AutomationProperties.SetName(button, tooltip);
-		return button;
-	}
+	private static Element Group(string icon, string title, UIElement content,
+		string? description = null, UIElement? action = null, string? meta = null) =>
+		SettingsUi.Group(icon, title, content, description, action, meta);
 
 	private void CopyValue(string text)
 	{
@@ -2173,40 +2172,107 @@ public sealed class SettingsView
 		}
 	}
 
-	private Element McpSection(IReadOnlyList<McpServerStatus> servers)
+	private Element SkillsGroup(SettingsSnapshot snapshot)
 	{
-		var body = new StackPanel().Spacing(4);
+		var skills = snapshot.Resources.Skills;
+		var rows = new List<UIElement>();
+		if (skills.Count > 0)
+		{
+			foreach (var skill in skills)
+			{
+				rows.Add(ResourceEntry(skill.Name, skill.Description, skill.Origin.Display, skill.FilePath));
+			}
+		}
+		else
+		{
+			foreach (var name in snapshot.Skills)
+			{
+				rows.Add(ResourceEntry(name, string.Empty, string.Empty, string.Empty));
+			}
+		}
+
+		var content = rows.Count == 0
+			? SettingsUi.Empty("sparkles", Strings.SettingsSkillsEmptyTitle, Strings.SettingsSkillsEmpty(snapshot.AgentDir))
+			: SettingsUi.Rows(rows);
+		return Group("sparkles", Strings.SettingsSkills, content,
+			description: Strings.SettingsSkillsHint,
+			meta: Strings.SettingsSkillsCount(skills.Count > 0 ? skills.Count : snapshot.Skills.Count));
+	}
+
+	/// 资源分区的单行：名称 + 来源、描述、路径与打开动作；描述截断成一行，完整内容进悬停提示。
+	private UIElement ResourceEntry(string name, string detail, string source, string path)
+	{
+		var heading = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(new TextBlock().Text(name).FontSize(AppTheme.FontSizeCaption)
+				.PrimaryText().TextWrapping(TextWrapping.Wrap));
+		if (source.Length > 0) heading.Children(SettingsUi.Badge(source));
+
+		var body = new StackPanel().Spacing(2).Children(heading);
+		if (detail.Length > 0)
+		{
+			body.Children(new TextBlock().Text(detail).FontSize(AppTheme.FontSizeMicro)
+				.MutedText().TextWrapping(TextWrapping.NoWrap)
+				.TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(detail));
+		}
+
+		if (path.Length > 0)
+		{
+			var pathRow = new DockPanel().LastChildFill().Children(
+				SettingsUi.IconAction("square-pen", Strings.ResourcesOpen, () => OpenPath(path)).DockRight(),
+				new TextBlock().Text(path).FontFamily(AppTheme.MonoFont)
+					.FontSize(AppTheme.FontSizeMicro).FaintText()
+					.TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(path));
+			body.Children(pathRow);
+		}
+
+		return new Border().Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2)).Child(body);
+	}
+
+	private Element McpSection(SettingsSnapshot snapshot, IReadOnlyList<McpServerStatus> servers)
+	{
+		var agentMcp = Path.Combine(snapshot.AgentDir, "mcp.json");
+		var projectMcp = Path.Combine(snapshot.Cwd, ".pi", "mcp.json");
+		var rows = new List<UIElement>();
 
 		if (servers.Count == 0)
 		{
-			body.Children(new TextBlock()
-				.Text(Strings.SettingsMcpNone)
-				.TextWrapping(TextWrapping.Wrap)
-				.FontSize(AppTheme.FontSizeCaption)
-				.MutedText());
+			rows.Add(SettingsUi.Empty("terminal", Strings.SettingsMcpEmptyTitle, Strings.SettingsMcpEmptyHint));
 		}
-
-		foreach (var server in servers)
+		else
 		{
-			var state = server.Connected
-				? Strings.SettingsMcpTools(server.ToolCount)
-				: Strings.SettingsMcpFailed(server.Error ?? string.Empty);
-
-			body.Children(new TextBlock()
-				.Text($"{server.Name}：{state}")
-				.TextWrapping(TextWrapping.Wrap)
-				.FontSize(AppTheme.FontSizeCaption)
-				.Foreground(server.Connected ? AppTheme.Success : AppTheme.Error));
+			foreach (var server in servers)
+			{
+				var state = server.Connected
+					? Strings.SettingsMcpTools(server.ToolCount)
+					: Strings.SettingsMcpFailed(server.Error ?? string.Empty);
+				var line = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+					.VerticalAlignment(VerticalAlignment.Center);
+				line.Children(new TextBlock().Text(server.Name).FontSize(AppTheme.FontSizeCaption)
+					.PrimaryText().TextTrimming(TextTrimming.CharacterEllipsis));
+				line.Children(SettingsUi.Status(state,
+					server.Connected ? AppStyles.RoleSuccess : AppStyles.RoleError));
+				rows.Add(new Border().Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2)).Child(line));
+			}
 		}
 
-		// 改了 mcp.json 或服务器掉线时，可以不改会话直接重建连接。
+		rows.Add(SettingsUi.ValueRow(Strings.SettingsMcpGlobalConfig, agentMcp,
+			copy: agentMcp, copyAction: CopyValue));
+		rows.Add(SettingsUi.ValueRow(Strings.SettingsMcpProjectConfig, projectMcp,
+			copy: projectMcp, copyAction: CopyValue));
+
+		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space1);
+		actions.Children(AppIcons.TextButton("square-pen", Strings.SettingsMcpConfig,
+			() => _ = SelectSectionAsync("mcp"), strong: false));
 		if (_reconnectMcp is { } reconnect)
 		{
-			body.Children(AppIcons.TextButton("refresh-cw", Strings.SettingsMcpReconnect, () => _ = ReconnectAsync(reconnect))
-				.HorizontalAlignment(HorizontalAlignment.Left));
+			actions.Children(AppIcons.TextButton("refresh-cw", Strings.SettingsMcpReconnect,
+				() => _ = ReconnectAsync(reconnect), strong: false));
 		}
 
-		return Group("terminal", Strings.SettingsMcp, body);
+		return Group("terminal", Strings.SettingsMcp, SettingsUi.Rows(rows),
+			description: Strings.SettingsMcpHint, action: actions,
+			meta: servers.Count > 0 ? servers.Count.ToString() : null);
 	}
 
 	private async Task ReconnectAsync(Func<Task> reconnect)
@@ -2228,27 +2294,32 @@ public sealed class SettingsView
 	/// （MewUI 的窗口级快捷键在启动时注册）。
 	private Element ShortcutSection()
 	{
-		var body = new StackPanel().Spacing(4);
-
-		// 改键时用内联输入框，避免依赖对话框；这里保存正在编辑的动作标识。
-		body.Children(new TextBlock().Text(Strings.ShortcutsEditHint).FontSize(AppTheme.FontSizeMicro).FaintText());
-
+		var body = new StackPanel();
+		var firstGroup = true;
 		foreach (var group in ShortcutMap.Definitions.GroupBy(static definition => definition.Category))
 		{
-			body.Children(new TextBlock().Text(group.Key)
+			var header = new TextBlock().Text(group.Key)
 				.FontSize(AppTheme.FontSizeMicro).SubtleText()
-				.Margin(new Thickness(0, AppTheme.Space3, 0, AppTheme.Space1)));
+				.Margin(new Thickness(0, firstGroup ? 0 : AppTheme.Space2, 0, AppTheme.Space1));
+			body.Children(firstGroup ? header : SettingsUi.DividerRow(header, topLine: true));
+			var firstInGroup = true;
 			foreach (var definition in group)
 			{
-				body.Children(ShortcutRow(definition.Id, definition.Description));
+				body.Children(SettingsUi.DividerRow(
+					ShortcutRow(definition.Id, definition.Description), !firstInGroup));
+				firstInGroup = false;
 			}
+
+			firstGroup = false;
 		}
 
 		// 固定键位（不参与改键）单独说明。
-		body.Children(new TextBlock()
-			.Text($"Ctrl+1…9 · {Strings.ShortcutSwitch}　Esc · {Strings.ShortcutClosePalette}")
-			.FontSize(AppTheme.FontSizeMicro)
-			.FaintText());
+		var fixedKeys = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(SettingsUi.KeyCap("Ctrl+1…9"), SettingsUi.KeyCap("Esc"));
+		body.Children(SettingsUi.DividerRow(new Grid().Columns("*,auto").Spacing(AppTheme.Space3).Children(
+			SettingsUi.Hint(Strings.ShortcutsFixedKeys),
+			fixedKeys.Column(1)), topLine: true));
 
 		var conflicts = _shortcuts.Conflicts();
 		if (conflicts.Count > 0)
@@ -2259,56 +2330,66 @@ public sealed class SettingsView
 					DescribeAction(conflict.OtherId),
 					DescribeAction(conflict.Id),
 					conflict.Binding)));
-
-			body.Children(new TextBlock()
-				.Text(Strings.ShortcutsConflict + lines)
-				.FontSize(AppTheme.FontSizeMicro)
-				.AccentText());
+			body.Children(SettingsUi.Alert(Strings.ShortcutsConflict + lines));
 		}
 
 		if (_shortcuts.Ignored.Count > 0)
 		{
-			body.Children(new TextBlock()
-				.Text(Strings.ShortcutsIgnored(string.Join("、", _shortcuts.Ignored)))
-				.FontSize(AppTheme.FontSizeMicro)
-				.AccentText());
+			body.Children(SettingsUi.Alert(Strings.ShortcutsIgnored(string.Join("、", _shortcuts.Ignored))));
 		}
 
-		return Group("terminal", Strings.SettingsShortcuts, body);
+		return Group("terminal", Strings.ShortcutsGroup, body,
+			description: Strings.ShortcutsEditHint,
+			meta: ShortcutMap.Definitions.Count.ToString());
 	}
 
-	/// 一行快捷键。改键时进入「按下组合键」的捕获状态：捕获走窗口级按键处理，
-	/// 因此不受输入法影响（输入法会吞掉合成出来的可打印字符）。
-	private Element ShortcutRow(string id, string description)
+	/// 一行快捷键。键帽本身就是「改键」入口；只有覆盖过默认值才出现恢复按钮，
+	/// 默认状态的行尾不摆两个一摸一样的图标。
+	private UIElement ShortcutRow(string id, string description)
 	{
-		if (CapturingId != id)
+		var label = new TextBlock().Text(description).FontSize(AppTheme.FontSizeCaption)
+			.PrimaryText().VerticalAlignment(VerticalAlignment.Center);
+
+		if (CapturingId == id)
 		{
-			return new DockPanel()
-				.LastChildFill()
+			var cancel = SettingsUi.IconAction("x", Strings.Cancel, CancelCapture);
+			return new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
+				.Padding(new Thickness(0, AppTheme.Space1 + 1, 0, AppTheme.Space1 + 1))
 				.Children(
-					AppIcons.Button("pencil", Strings.ShortcutsEdit, () => BeginCapture(id), size: 12).DockRight(),
-					AppIcons.Button("rotate-ccw", Strings.ShortcutsReset, () => SaveShortcut(id, text: null), size: 12).DockRight(),
-					new TextBlock()
-						.Text(_shortcuts.Describe(id))
-						.FontFamily(AppTheme.MonoFont)
-						.FontSize(AppTheme.FontSizeMicro)
-						.AccentText()
-						.Width(120)
-						.DockRight(),
-					new TextBlock().Text(description).FontSize(AppTheme.FontSizeCaption).MutedText());
+					label.Column(0).VerticalAlignment(VerticalAlignment.Center),
+					new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+						.VerticalAlignment(VerticalAlignment.Center)
+						.Children(
+							new TextBlock().Text(Strings.ShortcutsPress).FontSize(AppTheme.FontSizeMicro)
+								.AccentText().VerticalAlignment(VerticalAlignment.Center),
+							cancel).Column(1));
 		}
 
-		return new DockPanel()
-			.LastChildFill()
+		var binding = new TextBlock().Text(_shortcuts.Describe(id)).FontFamily(AppTheme.MonoFont)
+			.FontSize(AppTheme.FontSizeMicro).PrimaryText();
+		var key = new Button().Content(SettingsUi.KeyCap(binding.Text ?? string.Empty))
+			.OnClick(() => BeginCapture(id))
+			.HoverTip(Strings.ShortcutsEdit)
+			.Padding(Thickness.Zero)
+			.StyleName(AppStyles.GhostButton);
+		AutomationProperties.SetName(key, $"{description}：{binding.Text}");
+
+		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+			.VerticalAlignment(VerticalAlignment.Center).Children(key);
+		if (_shortcuts.Overrides.ContainsKey(id))
+		{
+			actions.Children(SettingsUi.IconAction("rotate-ccw", Strings.ShortcutsReset,
+				() => SaveShortcut(id, text: null)));
+		}
+
+		return new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
+			.Padding(new Thickness(0, AppTheme.Space1 + 1, 0, AppTheme.Space1 + 1))
 			.Children(
-				AppIcons.Button("x", Strings.Cancel, CancelCapture, size: 12).DockRight(),
-				new TextBlock()
-					.Text(Strings.ShortcutsPress)
-					.FontSize(AppTheme.FontSizeCaption)
-					.AccentText()
-					.DockRight(),
-				new TextBlock().Text(description).FontSize(AppTheme.FontSizeCaption).MutedText());
+				label.Column(0).VerticalAlignment(VerticalAlignment.Center),
+				actions.Column(1));
 	}
+
+
 
 	public string? CapturingId { get; private set; }
 
@@ -2378,57 +2459,52 @@ public sealed class SettingsView
 	private static string DescribeAction(string id) =>
 		ShortcutMap.Definitions.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal))?.Description ?? id;
 
-	private Element AboutSection()
-	{
-		var runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
-		var uiFont = AppFonts.HasUiFont ? AppFonts.UiDisplayName : $"{AppFonts.UiDisplayName}（系统字体）";
-		var monoFont = AppFonts.HasMonoFont ? AppFonts.Mono : $"{AppFonts.Mono}（系统字体）";
-		return Group("settings", Strings.SettingsAbout, Rows([
-			new(Strings.AboutVersion, AppInfo.Version, Copy: AppInfo.Version),
-			new(Strings.AboutUiFont, uiFont),
-			new(Strings.AboutMonoFont, monoFont),
-			new(Strings.AboutFramework, AppInfo.Framework),
-			new(Strings.AboutIcons, AppInfo.Icons),
-			new(Strings.AboutRuntime, runtime, Copy: runtime),
-		]));
-	}
-
 	private Element ArchiveSection(IReadOnlyList<SessionListItem> archived)
 	{
-		var body = new StackPanel().Spacing(AppTheme.Space2);
-
-		body.Children(new TextBlock()
-			.Text(archived.Count == 0 ? Strings.ArchiveEmpty : Strings.ArchiveCount(archived.Count))
-			.TextWrapping(TextWrapping.Wrap)
-			.FontSize(AppTheme.FontSizeCaption)
-			.MutedText());
-
-		if (archived.Count > 0)
-		{
-			var purge = new Button()
-				.Content(new TextBlock().Text(Strings.ArchivePurge).FontSize(AppTheme.FontSizeMicro))
-				.OnClick(() => _ = PurgeAsync());
-
-			body.Children(purge);
-		}
-
-		foreach (var item in archived.Take(20))
+		var rows = new List<UIElement>();
+		foreach (var item in archived)
 		{
 			var captured = item;
-			body.Children(new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(AppTheme.Space2)
+			var title = new TextBlock().Text(item.Display).FontSize(AppTheme.FontSizeCaption)
+				.PrimaryText().TextWrapping(TextWrapping.NoWrap)
+				.TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(item.Display);
+			var meta = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+				.VerticalAlignment(VerticalAlignment.Center)
 				.Children(
-					new Button()
-						.Content(new TextBlock().Text(Strings.ArchiveRestore).FontSize(AppTheme.FontSizeMicro))
-						.OnClick(() => Restore(captured)),
-					new TextBlock()
-						.Text($"{captured.Display} · {captured.Cwd}")
-						.FontSize(AppTheme.FontSizeMicro)
-						.SubtleText()));
+					SettingsUi.Badge(RelativeTime(item.Modified)),
+					item.MessageCount > 0
+						? new TextBlock().Text(Strings.ArchiveMessages(item.MessageCount))
+							.FontSize(AppTheme.FontSizeMicro).FaintText()
+							.VerticalAlignment(VerticalAlignment.Center)
+						: new TextBlock().IsVisible(false));
+			var heading = new DockPanel().LastChildFill().Children(meta.DockRight(), title);
+			var path = new TextBlock().Text(item.Cwd).FontFamily(AppTheme.MonoFont)
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.NoWrap)
+				.TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(item.Cwd);
+			var label = new StackPanel().Spacing(2).Children(heading, path);
+			var restore = AppIcons.TextButton("rotate-ccw", Strings.ArchiveRestore, () => Restore(captured));
+			rows.Add(new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
+				.Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
+				.Children(label.Column(0), restore.Column(1).VerticalAlignment(VerticalAlignment.Center)));
 		}
 
-		return Group("trash", Strings.SettingsArchive, body);
+		UIElement content = rows.Count == 0
+			? SettingsUi.Empty("trash", Strings.ArchiveEmpty)
+			: SettingsUi.Rows(rows);
+		var purge = archived.Count == 0
+			? null
+			: AppIcons.TextButton("trash", Strings.ArchivePurge, () => _ = PurgeAsync());
+		return Group("trash", Strings.ArchiveGroup, content, action: purge,
+			meta: archived.Count > 0 ? archived.Count.ToString() : null);
+	}
+
+	private static string RelativeTime(DateTimeOffset time)
+	{
+		var delta = DateTimeOffset.Now - time;
+		if (delta < TimeSpan.FromMinutes(1)) return Strings.TimeJustNow;
+		if (delta < TimeSpan.FromHours(1)) return Strings.TimeMinutes(Math.Max(1, (int)delta.TotalMinutes));
+		if (delta < TimeSpan.FromDays(1)) return Strings.TimeHours(Math.Max(1, (int)delta.TotalHours));
+		return Strings.TimeDays(Math.Max(1, (int)delta.TotalDays));
 	}
 
 	private void Restore(SessionListItem item)
@@ -2457,68 +2533,115 @@ public sealed class SettingsView
 
 	private Element SessionSection(CodingAgentSession? session)
 	{
-		var body = new StackPanel().Spacing(4);
-
 		if (session is null)
 		{
-			body.Children(new TextBlock()
-				.Text(Strings.NoOpenSession)
-				.FontSize(AppTheme.FontSizeCaption)
-				.MutedText());
+			return Group("message-square", Strings.SessionInfoGroup,
+				SettingsUi.Empty("message-square", Strings.NoOpenSession),
+				description: Strings.SettingsSessionHint);
 		}
-		else
+
+		var display = SessionStatisticsDisplay.Create(session);
+		var sessionFile = session.Session.SessionFile ?? string.Empty;
+		var model = $"{session.Model.Provider}/{session.Model.Id}";
+
+		var infoRows = new List<UIElement>
 		{
-			var display = SessionStatisticsDisplay.Create(session);
-			var sessionFile = session.Session.SessionFile ?? string.Empty;
-			var model = $"{session.Model.Provider}/{session.Model.Id}";
-			var rows = new List<InfoRow>
+			SettingsUi.ValueRow(Strings.SettingsSessionFile,
+				sessionFile.Length == 0 ? "—" : sessionFile,
+				copy: sessionFile.Length == 0 ? null : sessionFile,
+				openPath: sessionFile.Length == 0 ? null : sessionFile,
+				copyAction: CopyValue, openAction: OpenLocation),
+			SettingsUi.ValueRow(Strings.SettingsSessionId, session.Session.SessionId,
+				copy: session.Session.SessionId, copyAction: CopyValue),
+			SettingsUi.ValueRow(Strings.SettingsModel, model, copy: model, copyAction: CopyValue),
+			SettingsUi.ValueRow(Strings.Thinking, Strings.ThinkingLevelName(session.ThinkingLevel), mono: false),
+			SettingsUi.ValueRow(Strings.SettingsEntries, session.Session.EntryCount.ToString(), mono: false),
+		};
+
+		var content = new StackPanel();
+		foreach (var group in display.Rows().GroupBy(static row => row.Group))
+		{
+			var rows = new List<UIElement>();
+			foreach (var row in group)
 			{
-				new(Strings.SettingsSessionFile, sessionFile.Length == 0 ? "—" : sessionFile,
-					Copy: sessionFile.Length == 0 ? null : sessionFile,
-					OpenPath: sessionFile.Length == 0 ? null : sessionFile),
-				new(Strings.SettingsSessionId, session.Session.SessionId, Copy: session.Session.SessionId),
-				new(Strings.SettingsModel, model, Copy: model),
-				new(Strings.Thinking, Strings.ThinkingLevelName(session.ThinkingLevel)),
-				new(Strings.SettingsEntries, session.Session.EntryCount.ToString()),
-			};
-			foreach (var row in display.Rows())
-			{
-				rows.Add(new InfoRow(row.Label, row.Value, Hint: row.Hint));
+				var label = new TextBlock().Text(row.Label).FontSize(AppTheme.FontSizeCaption)
+					.MutedText().TextTrimming(TextTrimming.CharacterEllipsis);
+				if (row.Hint is { Length: > 0 }) label.HoverTip(row.Hint);
+				var value = new TextBlock().Text(row.Value).FontFamily(AppTheme.MonoFont)
+					.FontSize(AppTheme.FontSizeMicro).PrimaryText()
+					.HorizontalAlignment(HorizontalAlignment.Right)
+					.TextWrapping(TextWrapping.NoWrap);
+				if (row.Hint is { Length: > 0 }) value.HoverTip(row.Hint);
+				rows.Add(new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
+					.Padding(new Thickness(0, 5, 0, 5))
+					.Children(label.Column(0).VerticalAlignment(VerticalAlignment.Center),
+						value.Column(1).VerticalAlignment(VerticalAlignment.Center)));
 			}
 
-			body.Children(Rows(rows));
+			content.Children(new TextBlock().Text(group.Key).FontSize(AppTheme.FontSizeMicro)
+				.SubtleText().Margin(new Thickness(0, AppTheme.Space3, 0, AppTheme.Space1)));
+			content.Children(SettingsUi.Rows(rows));
 		}
 
-		if (session is not null)
+		var defaultButton = AppIcons.TextButton("star", Strings.MakeDefaultModel, () =>
 		{
-			var model = session.Model;
-			var defaultButton = AppIcons.Button(
-				"star",
-				Strings.MakeDefaultModel,
-				() =>
-				{
-					try
-					{
-						var snapshot = _snapshot();
-						var store = new ConfigurationStore(snapshot.AgentDir, snapshot.Cwd);
-						var document = store.Read(ConfigFile.Settings);
-						var root = document.Parse();
-						root["defaultProvider"] = model.Provider;
-						root["defaultModel"] = model.Id;
-						store.Save(document, root.ToJsonString());
-						_saved(ConfigFile.Settings);
-						Toast(Strings.DefaultModelSaved(model.Provider, model.Id), ToastKind.Success);
-					}
-					catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
-					{
-						Toast(ex is ConfigurationConflictException ? Strings.ConfigConflict : Strings.ConfigFailed, ToastKind.Error);
-					}
-				},
-				size: 13);
-			Anchor("session.defaultModel", defaultButton);
-			body.Children(defaultButton);
-		}
+			try
+			{
+				var snapshot = _snapshot();
+				var store = new ConfigurationStore(snapshot.AgentDir, snapshot.Cwd);
+				var document = store.Read(ConfigFile.Settings);
+				var root = document.Parse();
+				root["defaultProvider"] = session.Model.Provider;
+				root["defaultModel"] = session.Model.Id;
+				store.Save(document, root.ToJsonString());
+				_saved(ConfigFile.Settings);
+				Toast(Strings.DefaultModelSaved(session.Model.Provider, session.Model.Id), ToastKind.Success);
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+			{
+				Toast(ex is ConfigurationConflictException ? Strings.ConfigConflict : Strings.ConfigFailed, ToastKind.Error);
+			}
+		}, strong: false);
+		Anchor("session.defaultModel", defaultButton);
 
-		return Group("message-square", Strings.SettingsSession, body);
+		return new StackPanel().Spacing(AppTheme.Space4).Children(
+			Group("message-square", Strings.SessionInfoGroup, SettingsUi.Rows(infoRows),
+				description: Strings.SettingsSessionHint, action: defaultButton),
+			Group("chart-column", Strings.SessionUsageGroup, content,
+				description: Strings.SessionUsageHint));
 	}
+
+	private Element AboutSection()
+	{
+		var runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+		var uiFont = AppFonts.HasUiFont ? AppFonts.UiDisplayName : $"{AppFonts.UiDisplayName}（系统字体）";
+		var monoFont = AppFonts.HasMonoFont ? AppFonts.Mono : $"{AppFonts.Mono}（系统字体）";
+		var brand = new Image().Source(AppIcons.Brand()).Width(40).Height(40)
+			.VerticalAlignment(VerticalAlignment.Center);
+		var heading = new StackPanel().Spacing(2)
+			.Children(
+				new TextBlock().Text("PiWeft").FontSize(AppTheme.FontSizeTitle)
+					.FontWeight(FontWeight.SemiBold).PrimaryText(),
+				new TextBlock().Text(Strings.AboutTagline)
+					.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap));
+		var hero = new Border().StyleName(AppStyles.CardMuted).CornerRadius(AppTheme.RadiusSm)
+			.Padding(new Thickness(AppTheme.Space3))
+			.Child(new Grid().Columns("auto,*").Spacing(AppTheme.Space3)
+				.Children(brand.Column(0), heading.Column(1)));
+
+		var rows = new List<UIElement>
+		{
+			SettingsUi.ValueRow(Strings.AboutVersion, AppInfo.Version,
+				copy: AppInfo.Version, copyAction: CopyValue, mono: false),
+			SettingsUi.ValueRow(Strings.AboutUiFont, uiFont, mono: false),
+			SettingsUi.ValueRow(Strings.AboutMonoFont, monoFont, mono: false),
+			SettingsUi.ValueRow(Strings.AboutFramework, AppInfo.Framework, mono: false),
+			SettingsUi.ValueRow(Strings.AboutIcons, AppInfo.Icons, mono: false),
+			SettingsUi.ValueRow(Strings.AboutRuntime, runtime, copy: runtime, copyAction: CopyValue, mono: false),
+		};
+		var content = new StackPanel().Spacing(AppTheme.Space3)
+			.Children(hero, SettingsUi.Rows(rows));
+		return Group("settings", Strings.AboutVersionInfo, content);
+	}
+
 }

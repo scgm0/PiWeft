@@ -126,12 +126,7 @@ internal sealed class ComposerPicker
 
 		// 与命令面板同一套：空白处点一下收起，卡片本身拿键盘事件。
 		View = new Grid().IsVisible(false).Children(
-			new Button().Background(new Color(0x80, 0, 0, 0))
-				.Cursor(CursorType.Arrow)
-				.Focusable(false)
-				.BorderThickness(0)
-				.CornerRadius(0)
-				.OnClick(Hide),
+			OverlayScrim.Create(Hide),
 			new PickerSurface()
 				.MaxWidth(PanelWidth)
 				.HorizontalAlignment(HorizontalAlignment.Center)

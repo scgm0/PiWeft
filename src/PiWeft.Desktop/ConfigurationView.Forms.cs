@@ -16,66 +16,123 @@ internal sealed partial class ConfigurationView
 		_body.Clear();
 		_saveForm = () => Save(_root);
 		var providers = _root["providers"] as JsonObject ?? new JsonObject();
-		_body.Children(new DockPanel().LastChildFill().Children(
-			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(
-				AppIcons.Button("plus", Strings.ConfigAddProvider, () => EditProvider(null)),
-				AppIcons.Button("folder-open", Strings.ConfigImport, () => _ = ImportAsync()),
-				AppIcons.Button("copy", Strings.ConfigExport, () => _ = ExportAsync())).DockRight(),
-			Label(Strings.ConfigProviderCount(providers.Count))));
-		if (providers.Count == 0) _body.Children(Label(Strings.ConfigNoProviders));
+
+		var add = AppIcons.PrimaryButton("plus", Strings.ConfigAddProvider, () => EditProvider(null));
+		var import = AppIcons.TextButton("folder-open", Strings.ConfigImport, () => _ = ImportAsync(), strong: false);
+		var export = AppIcons.TextButton("copy", Strings.ConfigExport, () => _ = ExportAsync(), strong: false);
+		if (providers.Count == 0)
+		{
+			// 空态也要能导入现成配置，不能只留一个新建按钮。
+			var emptyActions = new StackPanel().Orientation(Orientation.Horizontal)
+				.Spacing(AppTheme.Space2).Children(add, import);
+			_body.Children(SettingsUi.Empty("package", Strings.ConfigNoProviders,
+				Strings.ConfigNoProvidersHint, emptyActions));
+			return;
+		}
+
+		var toolbar = new DockPanel().LastChildFill().Children(
+			new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(import, export, add)
+				.DockRight(),
+			new TextBlock().Text(Strings.ConfigProviderCount(providers.Count))
+				.FontSize(AppTheme.FontSizeCaption).MutedText().VerticalAlignment(VerticalAlignment.Center));
+		_body.Children(toolbar);
+
 		foreach (var (name, value) in providers)
 		{
 			if (value is not JsonObject provider) continue;
 			var models = provider["models"] as JsonArray ?? new JsonArray();
-			var details = new StackPanel().Spacing(AppTheme.Space2);
-			details.Children(new DockPanel().LastChildFill().Children(
-				new StackPanel().Orientation(Orientation.Horizontal).Spacing(2).Children(
-					AppIcons.Button("pencil", Strings.ConfigEditProvider, () => EditProvider(name)),
-					AppIcons.Button("download", Strings.ConfigFetchModels, () => _ = FetchRemoteModelsAsync(name)),
-					AppIcons.Button("copy", Strings.ConfigDuplicate, () => Guard(() => DuplicateProvider(name))),
-					AppIcons.Button("trash", Strings.Delete, () => _ = DeleteAsync(name, () =>
+			var api = ConfigurationModels.Text(provider, "api");
+			var url = SafeUrl(ConfigurationModels.Text(provider, "baseUrl"));
+
+			var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					SettingsUi.IconAction("pencil", Strings.ConfigEditProvider, () => EditProvider(name)),
+					SettingsUi.IconAction("download", Strings.ConfigFetchModels, () => _ = FetchRemoteModelsAsync(name)),
+					SettingsUi.IconAction("copy", Strings.ConfigDuplicate, () => Guard(() => DuplicateProvider(name))),
+					SettingsUi.IconAction("trash", Strings.Delete, () => _ = DeleteAsync(name, () =>
 					{
 						_root["providers"]!.AsObject().Remove(name); SetDirty(true); BuildProviders();
-					}))).DockRight(),
-				Label($"{name} · {Strings.ConfigModelCount(models.Count)}").FontWeight(FontWeight.Bold)));
-			details.Children(new TextBlock().Text($"{ConfigurationModels.Text(provider, "api")} · {SafeUrl(ConfigurationModels.Text(provider, "baseUrl"))}")
-				.FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap));
-			var list = new StackPanel().Spacing(4);
+					})));
+
+			var modelRows = new List<UIElement>();
 			for (var index = 0; index < models.Count; index++)
 			{
 				var at = index;
 				var model = models[index];
 				var id = ConfigurationModels.Text(model, "id");
-				list.Children(new DockPanel().LastChildFill().Children(
-					AppIcons.Button("trash", Strings.Delete, () => _ = DeleteAsync(id, () =>
-					{
-						models.RemoveAt(at); SetDirty(true); BuildProviders();
-					})).DockRight(),
-					AppIcons.Button("pencil", Strings.ConfigEditModel, () => EditModel(name, at)).DockRight(),
-					Label($"{id} · {ConfigurationModels.Number(model, "contextWindow", 0):N0} · {ConfigurationModels.Number(model, "maxTokens", 0):N0}")));
+				var heading = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
+					.VerticalAlignment(VerticalAlignment.Center)
+					.Children(new TextBlock().Text(id).FontFamily(AppTheme.MonoFont)
+						.FontSize(AppTheme.FontSizeCaption).PrimaryText());
+				if (ConfigurationModels.Flag(model, "reasoning")) heading.Children(SettingsUi.Badge(Strings.ConfigReasoning));
+				if (model?["input"] is JsonArray input && input.Any(value => value is JsonValue v && v.TryGetValue<string>(out var text) && text == "image"))
+				{
+					heading.Children(SettingsUi.Badge(Strings.ConfigVision));
+				}
+
+				var meta = new TextBlock()
+					.Text(Strings.ConfigModelMeta(
+						ConfigurationModels.Number(model, "contextWindow", 0),
+						ConfigurationModels.Number(model, "maxTokens", 0)))
+					.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).FaintText();
+				var body = new StackPanel().Spacing(2).Children(heading, meta);
+				var ops = new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+					.VerticalAlignment(VerticalAlignment.Center)
+					.Children(
+						SettingsUi.IconAction("pencil", Strings.ConfigEditModel, () => EditModel(name, at)),
+						SettingsUi.IconAction("trash", Strings.Delete, () => _ = DeleteAsync(id, () =>
+						{
+							models.RemoveAt(at); SetDirty(true); BuildProviders();
+						})));
+				modelRows.Add(new Grid().Columns("*,auto").Spacing(AppTheme.Space3)
+					.Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2))
+					.Children(body.Column(0), ops.Column(1)));
 			}
-			list.Children(AppIcons.Button("plus", Strings.ConfigAddModel, () => EditModel(name, null)).HorizontalAlignment(HorizontalAlignment.Left));
-			details.Children(new Expander().Header(Label(Strings.ConfigModels)).Content(list));
-			_body.Children(new Border().StyleName(AppStyles.Card).CornerRadius(AppTheme.RadiusMd).Padding(new Thickness(AppTheme.Space3)).Child(details));
+
+			modelRows.Add(AppIcons.TextButton("plus", Strings.ConfigAddModel,
+				() => EditModel(name, null), strong: false));
+
+			var modelList = SettingsUi.Rows(modelRows);
+			var expander = new Expander()
+				.Header(new TextBlock().Text(Strings.ConfigModels).FontSize(AppTheme.FontSizeCaption).PrimaryText())
+				.Content(modelList);
+			var content = new StackPanel().Spacing(AppTheme.Space2).Children(expander);
+			_body.Children(SettingsUi.Group("package", name, content,
+				description: url.Length == 0 ? api : $"{api} · {url}",
+				action: actions,
+				meta: Strings.ConfigModelCount(models.Count)));
 		}
 	}
 
 	internal void EditProvider(string? oldName)
 	{
 		var provider = oldName is not null ? _root["providers"]?[oldName] : null;
-		var name = Input(oldName ?? "").IsReadOnly(oldName is not null);
-		var url = Input(ConfigurationModels.Text(provider, "baseUrl"));
-		var api = new ComboBox().ItemsSource(ItemsView.Create(CliEnvironment.SupportedApis)).MinWidth(240);
+		var name = Input(oldName ?? "").IsReadOnly(oldName is not null).Width(360)
+			.Placeholder(Strings.ConfigProviderNamePlaceholder);
+		var url = Input(ConfigurationModels.Text(provider, "baseUrl")).Width(360)
+			.Placeholder(Strings.ConfigBaseUrlPlaceholder);
+		var api = new ComboBox().ItemsSource(ItemsView.Create(CliEnvironment.SupportedApis)).Width(240);
 		var selected = Array.IndexOf(CliEnvironment.SupportedApis, ConfigurationModels.Text(provider, "api"));
 		api.SelectedIndex = Math.Max(0, selected);
 		api.SelectionChanged += _ => SetDirty(true);
-		var key = new PasswordBox().MinWidth(240);
+		var key = new PasswordBox().Width(360).Placeholder(Strings.ConfigKeyPlaceholder);
 		key.PasswordChanged += () => SetDirty(true);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(name, Strings.ConfigName);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(url, Strings.ConfigBaseUrl);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(api, Strings.ConfigApi);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(key, Strings.ConfigKey);
 		_body.Clear();
-		_body.Children(Label(oldName is null ? Strings.ConfigAddProvider : Strings.ConfigEditProvider).FontWeight(FontWeight.Bold),
-			Field(Strings.ConfigName, name), Field(Strings.ConfigBaseUrl, url), Field(Strings.ConfigApi, api),
-			Field(Strings.ConfigKey + " · " + Strings.ConfigKeepKey, key),
-			ActionButton(Strings.Cancel, () => _ = CancelFormAsync()));
+		_body.Children(
+			SettingsUi.Group("package", Strings.ConfigProviderInfo, SettingsUi.Rows([
+				SettingsUi.Row(Strings.ConfigName, null, name),
+				SettingsUi.Row(Strings.ConfigBaseUrl, null, url),
+				SettingsUi.Row(Strings.ConfigApi, null, api),
+				SettingsUi.Row(Strings.ConfigKey, oldName is null ? Strings.ConfigNewKeyHint : Strings.ConfigKeepKey, key),
+			]), description: oldName is null ? Strings.ConfigAddProvider : Strings.ConfigEditProvider),
+			FormFooter());
 		_saveForm = () =>
 		{
 			var next = ConfigurationModels.UpsertProvider(_root, oldName, name.Text.Trim(), url.Text, CliEnvironment.SupportedApis[Math.Max(0, api.SelectedIndex)], key.Password);
@@ -85,6 +142,11 @@ internal sealed partial class ConfigurationView
 		};
 	}
 
+	/// <summary>表单底部的返回动作：保存仍在弹窗标题栏，取消只负责回到列表。</summary>
+	private UIElement FormFooter() =>
+		new Grid().Columns("*,auto").Children(
+			AppIcons.TextButton("arrow-left", Strings.Cancel, () => _ = CancelFormAsync()).Column(1));
+
 	private async Task CancelFormAsync()
 	{
 		if (await CanDiscardAsync()) Load();
@@ -93,24 +155,45 @@ internal sealed partial class ConfigurationView
 	internal void EditModel(string providerName, int? index)
 	{
 		var model = index is { } at ? _root["providers"]?[providerName]?["models"]?[at] : null;
-		var id = Input(ConfigurationModels.Text(model, "id"));
-		var name = Input(ConfigurationModels.Text(model, "name"));
-		var context = Input(ConfigurationModels.Number(model, "contextWindow", 128000).ToString(CultureInfo.InvariantCulture));
-		var max = Input(ConfigurationModels.Number(model, "maxTokens", 8192).ToString(CultureInfo.InvariantCulture));
-		var reasoning = Check(Strings.ConfigReasoning, ConfigurationModels.Flag(model, "reasoning"));
-		var vision = Check(Strings.ConfigVision, model?["input"] is JsonArray input && input.Any(value => value is JsonValue v && v.TryGetValue<string>(out var text) && text == "image"));
+		var id = Input(ConfigurationModels.Text(model, "id")).Width(360).Placeholder(Strings.ConfigModelIdPlaceholder);
+		var name = Input(ConfigurationModels.Text(model, "name")).Width(360).Placeholder(Strings.ConfigModelNamePlaceholder);
+		var context = Input(ConfigurationModels.Number(model, "contextWindow", 128000).ToString(CultureInfo.InvariantCulture)).Width(180);
+		var max = Input(ConfigurationModels.Number(model, "maxTokens", 8192).ToString(CultureInfo.InvariantCulture)).Width(180);
+		var reasoning = SettingsUi.SwitchRow(Strings.ConfigReasoning, Strings.ConfigReasoningHint,
+			ConfigurationModels.Flag(model, "reasoning"), _ => SetDirty(true), out var reasoningToggle);
+		var vision = SettingsUi.SwitchRow(Strings.ConfigVision, Strings.ConfigVisionHint,
+			model?["input"] is JsonArray input && input.Any(value => value is JsonValue v && v.TryGetValue<string>(out var text) && text == "image"),
+			_ => SetDirty(true), out var visionToggle);
 		var cost = model?["cost"] as JsonObject;
-		var costInput = Input(ConfigurationModels.Decimal(cost, "input").ToString(CultureInfo.InvariantCulture));
-		var costOutput = Input(ConfigurationModels.Decimal(cost, "output").ToString(CultureInfo.InvariantCulture));
-		var costRead = Input(ConfigurationModels.Decimal(cost, "cacheRead").ToString(CultureInfo.InvariantCulture));
-		var costWrite = Input(ConfigurationModels.Decimal(cost, "cacheWrite").ToString(CultureInfo.InvariantCulture));
+		var costInput = Input(ConfigurationModels.Decimal(cost, "input").ToString(CultureInfo.InvariantCulture)).Width(180);
+		var costOutput = Input(ConfigurationModels.Decimal(cost, "output").ToString(CultureInfo.InvariantCulture)).Width(180);
+		var costRead = Input(ConfigurationModels.Decimal(cost, "cacheRead").ToString(CultureInfo.InvariantCulture)).Width(180);
+		var costWrite = Input(ConfigurationModels.Decimal(cost, "cacheWrite").ToString(CultureInfo.InvariantCulture)).Width(180);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(id, Strings.ConfigModelId);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(name, Strings.ConfigName);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(context, Strings.ConfigContext);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(max, Strings.ConfigMaxTokens);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(costInput, Strings.ConfigCostInput);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(costOutput, Strings.ConfigCostOutput);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(costRead, Strings.ConfigCostCacheRead);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(costWrite, Strings.ConfigCostCacheWrite);
 		_body.Clear();
-		_body.Children(Label($"{providerName} · {(index is null ? Strings.ConfigAddModel : Strings.ConfigEditModel)}").FontWeight(FontWeight.Bold),
-			Field(Strings.ConfigModelId, id), Field(Strings.ConfigName, name),
-			Field(Strings.ConfigContext, context), Field(Strings.ConfigMaxTokens, max), reasoning, vision,
-			Field(Strings.ConfigCostInput, costInput), Field(Strings.ConfigCostOutput, costOutput),
-			Field(Strings.ConfigCostCacheRead, costRead), Field(Strings.ConfigCostCacheWrite, costWrite),
-			ActionButton(Strings.Cancel, () => _ = CancelFormAsync()));
+		_body.Children(
+			SettingsUi.Group("wrench", Strings.ConfigModelInfo, SettingsUi.Rows([
+				SettingsUi.Row(Strings.ConfigModelId, Strings.ConfigModelInfoHint, id),
+				SettingsUi.Row(Strings.ConfigName, Strings.ConfigModelNameHint, name),
+				SettingsUi.Row(Strings.ConfigContext, Strings.ConfigContextHint, context),
+				SettingsUi.Row(Strings.ConfigMaxTokens, Strings.ConfigMaxTokensHint, max),
+				reasoning,
+				vision,
+			]), description: $"{providerName} · {(index is null ? Strings.ConfigAddModel : Strings.ConfigEditModel)}"),
+			SettingsUi.Group("chart-column", Strings.ConfigPricing, SettingsUi.Rows([
+				SettingsUi.Row(Strings.ConfigCostInput, null, costInput),
+				SettingsUi.Row(Strings.ConfigCostOutput, null, costOutput),
+				SettingsUi.Row(Strings.ConfigCostCacheRead, null, costRead),
+				SettingsUi.Row(Strings.ConfigCostCacheWrite, null, costWrite),
+			]), description: Strings.ConfigPricingHint),
+			FormFooter());
 		_saveForm = () =>
 		{
 			if (!int.TryParse(context.Text, NumberStyles.None, CultureInfo.InvariantCulture, out var contextNumber) ||
@@ -118,7 +201,7 @@ internal sealed partial class ConfigurationView
 			if (!TryCost(costInput.Text, out var costIn) || !TryCost(costOutput.Text, out var costOut) ||
 				!TryCost(costRead.Text, out var costCacheRead) || !TryCost(costWrite.Text, out var costCacheWrite)) throw new ArgumentException(Strings.ConfigCostInvalid);
 			var next = ConfigurationModels.UpsertModel(_root, providerName, index, id.Text, name.Text, contextNumber, maxNumber,
-				reasoning.IsChecked == true, vision.IsChecked == true,
+				reasoningToggle.IsChecked == true, visionToggle.IsChecked == true,
 				new ModelCostValues(costIn, costOut, costCacheRead, costCacheWrite));
 			Save(next);
 		};
@@ -210,23 +293,21 @@ internal sealed partial class ConfigurationView
 		_authList = new StackPanel().Spacing(0);
 		_authCount = new TextBlock().FontSize(AppTheme.FontSizeMicro).SubtleText();
 
-		var search = new TextBox().PrimarySelection().Placeholder(Strings.AuthKeySearch).MinWidth(220).Text(_authQuery);
+		var search = new TextBox().PrimarySelection().StyleName(AppStyles.TextInputLine)
+			.Height(AppTheme.ControlHeightSm).FontSize(AppTheme.FontSizeCaption)
+			.Placeholder(Strings.AuthKeySearch).MinWidth(220).Text(_authQuery);
 		search.OnTextChanged(_ =>
 		{
 			_authQuery = search.Text;
 			FillAuthList();
 		});
-		var toolbar = new Grid().Columns("*,Auto").Children(
-			search.Column(0),
-			new StackPanel().Orientation(Orientation.Horizontal).Spacing(2).Children(
-				AppIcons.Button("refresh-cw", Strings.ConfigReload, () => Load())).Column(1));
-
-		_body.Children(
-			Label(Strings.AuthSubscriptionTitle).FontWeight(FontWeight.Bold),
-			Hint(Strings.AuthSubscriptionHint),
-			toolbar,
+		var content = new StackPanel().Spacing(AppTheme.Space2).Children(
+			search,
 			_authCount,
 			_authList);
+		_body.Children(SettingsUi.Group("key-round", Strings.AuthSubscriptionTitle, content,
+			description: Strings.AuthSubscriptionHint,
+			action: AppIcons.Button("refresh-cw", Strings.ConfigReload, () => Load())));
 
 		// 行只建一次；搜索只切换可见性。42 行 × 每键重建整棵树是认证页最明显的性能雷点。
 		_authRows.Clear();
@@ -235,7 +316,7 @@ internal sealed partial class ConfigurationView
 		foreach (var status in _authStatuses)
 		{
 			var row = AuthRow(status);
-			var separator = new Border().Height(1).WithTheme((theme, border) => border.Background = AppTheme.For(theme).BorderSubtle);
+			var separator = new Border().Height(1).WithTheme((theme, border) => border.Background = AppTheme.For(theme).Border);
 			_authList.Children(row, separator);
 			_authRows.Add(new AuthRowEntry(row, separator, AuthSearchText(status)));
 		}
@@ -480,12 +561,16 @@ internal sealed partial class ConfigurationView
 		thinking.SelectionChanged += _ => { thinkingChanged = true; SetDirty(true); };
 		var defaults = _project ? _store.Read(ConfigFile.Settings) : null;
 		var global = defaults is { Error: null } ? defaults.Parse() : new JsonObject();
-		var compact = Check(Strings.ConfigAutoCompaction, ReadEnabled(_root, "compaction", ReadEnabled(global, "compaction", true)));
-		var retry = Check(Strings.ConfigAutoRetry, ReadEnabled(_root, "retry", ReadEnabled(global, "retry", true)));
-		var showNotices = Check(Strings.ConfigShowCacheMissNotices,
-			ReadFlag(_root, "showCacheMissNotices", ReadFlag(global, "showCacheMissNotices", false)));
+		var compact = SettingsUi.SwitchRow(Strings.ConfigAutoCompaction, null,
+			ReadEnabled(_root, "compaction", ReadEnabled(global, "compaction", true)),
+			_ => SetDirty(true), out var compactSwitch);
+		var retry = SettingsUi.SwitchRow(Strings.ConfigAutoRetry, null,
+			ReadEnabled(_root, "retry", ReadEnabled(global, "retry", true)),
+			_ => SetDirty(true), out var retrySwitch);
 		var showNoticesChanged = false;
-		showNotices.OnCheckedChanged(_ => { showNoticesChanged = true; SetDirty(true); });
+		var showNotices = SettingsUi.SwitchRow(Strings.ConfigShowCacheMissNotices, Strings.ConfigShowCacheMissNoticesHint,
+			ReadFlag(_root, "showCacheMissNotices", ReadFlag(global, "showCacheMissNotices", false)),
+			_ => { showNoticesChanged = true; SetDirty(true); }, out var showNoticesSwitch);
 		var retryMaxInput = Input(ReadInt(_root, "retry", "maxRetries", ReadInt(global, "retry", "maxRetries", 3))
 			.ToString(CultureInfo.InvariantCulture)).Width(160);
 		var retryDelayInput = Input(ReadInt(_root, "retry", "baseDelayMs", ReadInt(global, "retry", "baseDelayMs", 2000))
@@ -494,15 +579,15 @@ internal sealed partial class ConfigurationView
 		var retryChanged = false;
 		var retryMaxChanged = false;
 		var retryDelayChanged = false;
-		compact.OnCheckedChanged(_ => compactChanged = true);
-		var retryEnabled = retry.IsChecked == true;
+		compactSwitch.OnCheckedChanged(_ => compactChanged = true);
+		var retryEnabled = retrySwitch.IsChecked == true;
 		retryMaxInput.IsEnabled(retryEnabled);
 		retryDelayInput.IsEnabled(retryEnabled);
-		retry.OnCheckedChanged(_ =>
+		retrySwitch.OnCheckedChanged(_ =>
 		{
 			retryChanged = true;
-			retryMaxInput.IsEnabled(retry.IsChecked == true);
-			retryDelayInput.IsEnabled(retry.IsChecked == true);
+			retryMaxInput.IsEnabled(retrySwitch.IsChecked == true);
+			retryDelayInput.IsEnabled(retrySwitch.IsChecked == true);
 		});
 		retryMaxInput.OnTextChanged(_ => retryMaxChanged = true);
 		retryDelayInput.OnTextChanged(_ => retryDelayChanged = true);
@@ -570,14 +655,14 @@ internal sealed partial class ConfigurationView
 			ReadInt(global, "goal", "maxRounds", GoalMode.DefaultMaxRounds)).ToString(CultureInfo.InvariantCulture));
 		var goalTokensInput = Input(ReadInt(_root, "goal", "maxTokens",
 			ReadInt(global, "goal", "maxTokens", 0)).ToString(CultureInfo.InvariantCulture));
-		var openTabs = Check(Strings.ConfigSubagentsOpenTabs,
-			ReadBool(_root, "subagents", "openTabs", ReadBool(global, "subagents", "openTabs", false)));
 		var openTabsChanged = false;
-		openTabs.OnCheckedChanged(_ => { openTabsChanged = true; SetDirty(true); });
-		var team = Check(Strings.ConfigSubagentsTeam,
-			ReadBool(_root, "subagents", "team", ReadBool(global, "subagents", "team", false)));
+		var openTabs = SettingsUi.SwitchRow(Strings.ConfigSubagentsOpenTabs, Strings.ConfigSubagentsOpenTabsHint,
+			ReadBool(_root, "subagents", "openTabs", ReadBool(global, "subagents", "openTabs", false)),
+			_ => { openTabsChanged = true; SetDirty(true); }, out var openTabsSwitch);
 		var teamChanged = false;
-		team.OnCheckedChanged(_ => { teamChanged = true; SetDirty(true); });
+		var team = SettingsUi.SwitchRow(Strings.ConfigSubagentsTeam, Strings.ConfigSubagentsTeamHint,
+			ReadBool(_root, "subagents", "team", ReadBool(global, "subagents", "team", false)),
+			_ => { teamChanged = true; SetDirty(true); }, out var teamSwitch);
 		var activeChanged = false;
 		var spawnsChanged = false;
 		var writersChanged = false;
@@ -657,7 +742,11 @@ internal sealed partial class ConfigurationView
 			provider.OnTextChanged(_ => SyncPicker());
 			model.OnTextChanged(_ => SyncPicker());
 			SyncPicker();
-			defaultFields.Add(Field(Strings.ConfigPickModel, picker, 420));
+			defaultFields.Clear();
+			defaultFields.Add(SettingsUi.Field(Strings.ConfigPickModel, picker));
+			defaultFields.Add(Fields(
+				Field(Strings.ConfigProvider, provider, 320),
+				Field(Strings.ConfigModelId, model, 320)));
 		}
 
 		var defaultsCard = FormCard("settings", Strings.ConfigDefaults, Strings.ConfigDefaultsHint, [.. defaultFields]);
@@ -672,8 +761,7 @@ internal sealed partial class ConfigurationView
 					Field(Strings.ConfigRetryBaseDelay, retryDelayInput, 200)),
 				Hint(Strings.ConfigRetryHint),
 				SubLabel(Strings.ConfigBehaviorNotices),
-				showNotices,
-				Hint(Strings.ConfigShowCacheMissNoticesHint)),
+				showNotices),
 			FormCard("wrench", Strings.ConfigToolsTitle, Strings.ConfigToolsHint,
 				SubLabel(Strings.ConfigToolsDefaults),
 				Hint(Strings.ConfigDefaultToolsHint),
@@ -700,9 +788,7 @@ internal sealed partial class ConfigurationView
 				Hint(Strings.ConfigSubagentsRuntimeHint),
 				SubLabel(Strings.ConfigSubagentsUi),
 				openTabs,
-				Hint(Strings.ConfigSubagentsOpenTabsHint),
-				team,
-				Hint(Strings.ConfigSubagentsTeamHint)),
+				team),
 			FormCard("target", Strings.ConfigGoalTitle, Strings.ConfigGoalHint,
 				SubLabel(Strings.ConfigGoalBudget),
 				Fields(
@@ -717,9 +803,9 @@ internal sealed partial class ConfigurationView
 			SetOptional(next, "defaultProvider", provider.Text.Trim());
 			SetOptional(next, "defaultModel", model.Text.Trim());
 			if (thinkingChanged) SetOptional(next, "defaultThinkingLevel", levels[Math.Max(0, thinking.SelectedIndex)]);
-			if (showNoticesChanged) next["showCacheMissNotices"] = showNotices.IsChecked == true;
-			if (compactChanged) SetEnabled(next, "compaction", compact.IsChecked == true);
-			var retryOn = retry.IsChecked == true;
+			if (showNoticesChanged) next["showCacheMissNotices"] = showNoticesSwitch.IsChecked == true;
+			if (compactChanged) SetEnabled(next, "compaction", compactSwitch.IsChecked == true);
+			var retryOn = retrySwitch.IsChecked == true;
 			// 自动重试关闭时，次数/延迟不参与保存与校验；否则先输错再取消勾选会卡在禁用输入上。
 			if (retryChanged || (retryOn && (retryMaxChanged || retryDelayChanged)))
 			{
@@ -739,7 +825,7 @@ internal sealed partial class ConfigurationView
 				}
 				// retry 里未建模的子键（例如上游的 retry.provider）必须保留。
 				var section = next["retry"] as JsonObject ?? new JsonObject();
-				if (retryChanged) section["enabled"] = retry.IsChecked == true;
+				if (retryChanged) section["enabled"] = retrySwitch.IsChecked == true;
 				if (maxRetries is { } max) section["maxRetries"] = max;
 				if (baseDelayMs is { } delay) section["baseDelayMs"] = delay;
 				next["retry"] = section;
@@ -797,8 +883,8 @@ internal sealed partial class ConfigurationView
 				if (runTimeoutChanged) section["runTimeoutMinutes"] = ParseSubagentLimit(runTimeoutInput, 1, 1440, Strings.ConfigSubagentsRunTimeout);
 				if (maxTokensChanged) section["maxTokens"] = ParseSubagentLimit(maxTokensInput, 0, 10_000_000, Strings.ConfigSubagentsMaxTokens);
 				if (verifyTimeoutChanged) section["verifyTimeoutSeconds"] = ParseSubagentLimit(verifyTimeoutInput, 1, 86_400, Strings.ConfigSubagentsVerifyTimeout);
-				if (openTabsChanged) section["openTabs"] = openTabs.IsChecked == true;
-				if (teamChanged) section["team"] = team.IsChecked == true;
+				if (openTabsChanged) section["openTabs"] = openTabsSwitch.IsChecked == true;
+				if (teamChanged) section["team"] = teamSwitch.IsChecked == true;
 				next["subagents"] = section;
 			}
 			Save(next);

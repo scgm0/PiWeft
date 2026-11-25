@@ -176,8 +176,7 @@ internal sealed class ModelPicker
 
 		var content = new StackPanel().Spacing(AppTheme.Space2).Children(header, searchRow, _tree, _empty, _count);
 		View = new Grid { StyleSheet = RowStyles() }.IsVisible(false).Children(
-			new Button().Background(new Color(0x80, 0, 0, 0)).BorderThickness(0).CornerRadius(0)
-				.Cursor(CursorType.Arrow).Focusable(false).OnClick(Hide),
+			OverlayScrim.Create(Hide),
 			new ModelSurface().MaxWidth(PanelWidth).HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Center)
 				.Margin(new Thickness(AppTheme.Space3)).Content(
 					new Border().StyleName(AppStyles.Card).CornerRadius(AppTheme.RadiusMd)

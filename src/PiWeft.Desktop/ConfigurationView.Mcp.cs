@@ -12,24 +12,52 @@ internal sealed partial class ConfigurationView
 	{
 		_saveForm = () => Save(_root);
 		var servers = _root["mcpServers"] as JsonObject ?? new JsonObject();
-		_body.Children(new DockPanel().LastChildFill().Children(
-			AppIcons.PrimaryButton("plus", Strings.ConfigAddMcp, () => EditMcp(null)).DockRight(),
-			new TextBlock().Text(Strings.ConfigMcpHint).FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)));
-		if (servers.Count == 0) _body.Children(FormCard(Strings.ConfigMcpEmpty, Strings.ConfigMcpHint,
-			AppIcons.TextButton("plus", Strings.ConfigAddMcp, () => EditMcp(null)).HorizontalAlignment(HorizontalAlignment.Left)));
+		var add = AppIcons.PrimaryButton("plus", Strings.ConfigAddMcp, () => EditMcp(null));
+		if (servers.Count == 0)
+		{
+			_body.Children(SettingsUi.Group("terminal", Strings.ConfigMcpGroup,
+				SettingsUi.Empty("terminal", Strings.ConfigMcpEmpty, null, add),
+				description: Strings.ConfigMcpHint));
+			return;
+		}
+
+		var rows = new List<UIElement>();
 		foreach (var (name, node) in servers)
 		{
 			if (node is not JsonObject server) continue;
-			var enabled = Check(Strings.ConfigEnabled, !server.ContainsKey("enabled") || ConfigurationModels.Flag(server, "enabled"));
-			enabled.OnCheckedChanged(_ => { server["enabled"] = enabled.IsChecked == true; SetDirty(true); });
-			_body.Children(new Border().StyleName(AppStyles.Card).Padding(new Thickness(AppTheme.Space3)).Child(
-				new DockPanel().LastChildFill().Children(
-					AppIcons.Button("trash", Strings.Delete, () => _ = DeleteAsync(name, () => { servers.Remove(name); SetDirty(true); Build(); })).DockRight(),
-					AppIcons.Button("pencil", Strings.ConfigEditMcp, () => EditMcp(name)).DockRight(), enabled.DockRight(),
-					new StackPanel().Spacing(AppTheme.Space1).Children(
-						Label(name),
-						AuthRow(name, server)))));
+			var enabled = new ToggleSwitch()
+				.IsChecked(!server.ContainsKey("enabled") || ConfigurationModels.Flag(server, "enabled"))
+				.HorizontalAlignment(HorizontalAlignment.Left)
+				.VerticalAlignment(VerticalAlignment.Center);
+			enabled.OnCheckedChanged(value => { server["enabled"] = value; SetDirty(true); });
+
+			var endpoint = ConfigurationModels.Text(server, "url") is { Length: > 0 } url
+				? url
+				: $"{ConfigurationModels.Text(server, "command")} {server["args"]?.ToJsonString() ?? "[]"}";
+			var heading = new DockPanel().LastChildFill().Children(
+				new StackPanel().Orientation(Orientation.Horizontal).Spacing(2)
+					.VerticalAlignment(VerticalAlignment.Center)
+					.Children(
+						enabled,
+						SettingsUi.IconAction("pencil", Strings.ConfigEditMcp, () => EditMcp(name)),
+						SettingsUi.IconAction("trash", Strings.Delete, () => _ = DeleteAsync(name, () =>
+						{
+							servers.Remove(name); SetDirty(true); Build();
+						}))).DockRight(),
+				new TextBlock().Text(name).FontSize(AppTheme.FontSizeCaption)
+					.PrimaryText().VerticalAlignment(VerticalAlignment.Center));
+			var body = new StackPanel().Spacing(2).Children(
+				heading,
+				new TextBlock().Text(endpoint).FontFamily(AppTheme.MonoFont)
+					.FontSize(AppTheme.FontSizeMicro).FaintText()
+					.TextTrimming(TextTrimming.CharacterEllipsis).HoverTip(endpoint));
+			var auth = AuthRow(name, server);
+			if (auth is not TextBlock) body.Children(auth);
+			rows.Add(body);
 		}
+
+		_body.Children(SettingsUi.Group("terminal", Strings.ConfigMcpGroup, SettingsUi.Rows(rows),
+			description: Strings.ConfigMcpHint, action: add, meta: servers.Count.ToString()));
 	}
 
 	/// 授权状态与入口。只对 HTTP 服务器显示；stdio 服务器没有 OAuth，放一个「授权」按钮
@@ -99,18 +127,55 @@ internal sealed partial class ConfigurationView
 	private void EditMcp(string? oldName)
 	{
 		var server = oldName is not null ? _root["mcpServers"]?[oldName] : null;
-		var name = Input(oldName ?? "");
+		var name = Input(oldName ?? "").Width(360).Placeholder(Strings.ConfigMcpNamePlaceholder);
 		var transport = new ComboBox().ItemsSource(ItemsView.Create(new[] { "stdio", "HTTP" })).Width(180)
 			.SelectedIndex(ConfigurationModels.Text(server, "url").Length > 0 ? 1 : 0);
-		var command = Input(ConfigurationModels.Text(server, "command"));
-		var url = Input(ConfigurationModels.Text(server, "url"));
-		var args = Input(server?["args"]?.ToJsonString() ?? "[]");
-		var enabled = Check(Strings.ConfigEnabled, server is null || !server.AsObject().ContainsKey("enabled") || ConfigurationModels.Flag(server, "enabled"));
-		transport.SelectionChanged += _ => SetDirty(true);
+		var command = Input(ConfigurationModels.Text(server, "command")).Width(360)
+			.Placeholder(Strings.ConfigCommandPlaceholder);
+		var url = Input(ConfigurationModels.Text(server, "url")).Width(360)
+			.Placeholder(Strings.ConfigUrlPlaceholder);
+		var args = Input(server?["args"]?.ToJsonString() ?? "[]").Width(360)
+			.Placeholder(Strings.ConfigArgumentsPlaceholder);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(name, Strings.ConfigName);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(transport, Strings.ConfigTransport);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(command, Strings.ConfigCommand);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(args, Strings.ConfigArguments);
+		Aprillz.MewUI.Automation.AutomationProperties.SetName(url, Strings.ConfigBaseUrl);
+		var enabled = SettingsUi.SwitchRow(Strings.ConfigEnabled, null,
+			server is null || !server.AsObject().ContainsKey("enabled") || ConfigurationModels.Flag(server, "enabled"),
+			_ => SetDirty(true), out var enabledToggle);
+
+		var stdioRows = SettingsUi.Rows([
+			SettingsUi.Row(Strings.ConfigCommand, Strings.ConfigCommandHint, command),
+			SettingsUi.Row(Strings.ConfigArguments, Strings.ConfigArgumentsHint, args),
+		]);
+		var httpRows = SettingsUi.Rows([
+			SettingsUi.Row(Strings.ConfigBaseUrl, Strings.ConfigUrlHint, url),
+		]);
+		void UpdateTransport()
+		{
+			stdioRows.IsVisible(transport.SelectedIndex != 1);
+			httpRows.IsVisible(transport.SelectedIndex == 1);
+		}
+
+		transport.SelectionChanged += _ =>
+		{
+			SetDirty(true);
+			UpdateTransport();
+		};
+		UpdateTransport();
+
 		_body.Clear();
-		_body.Children(Label(oldName is null ? Strings.ConfigAddMcp : Strings.ConfigEditMcp), Field(Strings.ConfigName, name),
-			Field(Strings.ConfigTransport, transport), Field(Strings.ConfigCommand, command), Field(Strings.ConfigArguments, args),
-			Field(Strings.ConfigBaseUrl, url), enabled, ActionButton(Strings.Cancel, () => _ = CancelFormAsync()));
+		_body.Children(
+			SettingsUi.Group("terminal", Strings.ConfigMcpServerInfo, SettingsUi.Rows([
+				SettingsUi.Row(Strings.ConfigName, null, name),
+				SettingsUi.Row(Strings.ConfigTransport, null, transport),
+				enabled,
+			]), description: oldName is null ? Strings.ConfigAddMcp : Strings.ConfigEditMcp),
+			SettingsUi.Group("braces", Strings.ConfigMcpConnection,
+				new StackPanel().Children(stdioRows, httpRows),
+				description: Strings.ConfigMcpConnectionHint),
+			FormFooter());
 		_saveForm = () =>
 		{
 			var id = name.Text.Trim();
@@ -136,10 +201,11 @@ internal sealed partial class ConfigurationView
 					throw new ArgumentException(Strings.ConfigUrlRequired);
 				entry["url"] = url.Text.Trim(); entry.Remove("command"); entry.Remove("args");
 			}
-			entry["enabled"] = enabled.IsChecked == true;
+			entry["enabled"] = enabledToggle.IsChecked == true;
 			if (oldName is not null && oldName != id) servers.Remove(oldName);
 			servers[id] = entry;
 			Save(next);
 		};
 	}
+
 }

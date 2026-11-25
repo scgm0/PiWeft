@@ -5,6 +5,8 @@ namespace PiWeft.Desktop;
 public static partial class Strings
 {
 	public const string SettingsModelCatalog = "模型目录";
+
+	public const string ModelCatalogInfoGroup = "目录信息";
 	public const string ModelCatalogDescription =
 		"内置目录随版本发布；这里从 pi-ai 取最新目录覆盖到 agent 目录，没有 npm 覆盖版时可用 GitHub main 兜底。覆盖文件可随时还原。";
 	public const string ModelCatalogSource = "目录更新源";

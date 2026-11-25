@@ -311,13 +311,7 @@ internal sealed class AskQuestionPanel
 	/// 窗口级浮层：与内联卡片共用同一批状态，只是给 View 换个宿主。
 	private void CreateOverlay(Window window)
 	{
-		var backdrop = new Button()
-			.Background(new Color(0xE0, 0, 0, 0))
-			.BorderThickness(0)
-			.CornerRadius(0)
-			.Cursor(CursorType.Arrow)
-			.Focusable(false)
-			.OnClick(() => Finish(cancelled: true));
+		var backdrop = OverlayScrim.Create(() => Finish(cancelled: true), ScrimStrength.Heavy);
 		var shell = new Border()
 			.StyleName(AppStyles.Panel)
 			.CornerRadius(AppTheme.RadiusLg)

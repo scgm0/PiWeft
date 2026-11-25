@@ -114,8 +114,7 @@ public sealed class SessionSearchPalette
 
 		// 空白处的透明捕获层只负责收起；卡片在其上，不受影响。
 		View = new Grid().IsVisible(false).Children(
-			new Button().Background(AppTheme.Transparent).Cursor(CursorType.Arrow)
-				.Focusable(false).BorderThickness(0).CornerRadius(0).OnClick(Hide),
+			OverlayScrim.Create(Hide, ScrimStrength.None),
 			new SearchSurface().MaxWidth(PanelWidth)
 				.HorizontalAlignment(HorizontalAlignment.Center).VerticalAlignment(VerticalAlignment.Top)
 				.Margin(new Thickness(AppTheme.Space6, 56, AppTheme.Space6, AppTheme.Space6))

@@ -317,7 +317,8 @@ public static class AppStyles
 			{
 				Setters =
 				[
-					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).BorderSubtle)),
+					// 组头与行线用同一档结构色：卡头线比行线淡会读成两条不同层级的结构。
+					Setter.Create(Control.BorderBrushProperty, (Func<Theme, Color>)(t => AppTheme.For(t).Border)),
 					Setter.Create(Border.NonUniformBorderThicknessProperty, new Thickness(0, 0, 0, 1)),
 				]
 			})

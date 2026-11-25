@@ -133,16 +133,21 @@ public static partial class Strings
 	public const string SettingsEnvironment = "运行环境";
 	public const string SettingsLogs = "日志";
 
+	public const string LogGroup = "日志文件";
+
 	// 设置搜索：入口在内容列顶部，结果替换分区内容。
 	public const string SettingsSearchPlaceholder = "搜索设置项…";
 	public const string SettingsSearchHint = "搜索分区与设置项。↑↓ 选择，Enter 打开，Esc 清除；Ctrl/Cmd+F 随时回到搜索框。";
-	public const string SettingsSearchKeys = "↑↓ 选择 · Enter 打开 · Esc 清除";
+	public const string SettingsSearchKeyHint = "Ctrl+F 搜索";
 	public const string SettingsSearchResults = "搜索结果";
 	public const string SettingsSearchNoResults = "没有匹配的设置项。换个说法，或只输入一个词。";
 	public const string SettingsSearchClear = "清除搜索";
 	public const string SettingsCopyValue = "复制";
 	public const string SettingsOpenFolder = "打开目录";
 	public static string SettingsSearchCount(int count) => $"{count} 个结果";
+	public const string SettingsSearchHelp = "↑↓ 选择 · Enter 打开 · Esc 清除";
+
+	public static string DiagnosticsExportInline(string path) => $"导出：{path}";
 	public static string ConfigDirtyNamed(string section) => $"{section} · 未保存";
 	public static string ConfigDiscardNamed(string section) => $"「{section}」有未保存的修改，放弃这些修改？";
 
@@ -151,6 +156,10 @@ public static partial class Strings
 	public const string SettingsDiagnosticsToggle = "性能诊断开关";
 	public const string DiagnosticsDesc =
 		"采样帧成本、事件次数与关键路径耗时，写入诊断目录。默认关闭。";
+
+	public const string DiagnosticsSamplingGroup = "实时采样";
+
+	public const string DiagnosticsOffTitle = "性能诊断未启用";
 	public const string DiagnosticsRefresh = "刷新采样";
 	public const string DiagnosticsOpenFolder = "打开诊断目录";
 	public const string DiagnosticsReset = "清空统计";
@@ -263,7 +272,20 @@ public static partial class Strings
 	public const string SettingsTools = "当前工具";
 	public const string SettingsSkills = "技能";
 	public const string SettingsMcp = "MCP 服务器";
-	public const string SettingsMcpNone = "没有配置 MCP 服务器。在 <agentDir>/mcp.json 或 <项目>/.pi/mcp.json 中添加。";
+	public const string SettingsMcpGlobalConfig = "全局配置";
+	public const string SettingsMcpProjectConfig = "项目配置";
+	public const string SettingsMcpEmptyTitle = "还没有配置 MCP 服务器";
+	public const string SettingsMcpEmptyHint = "支持 stdio 与 HTTP 两种服务。改完文件后点「重连」。";
+	public static string SettingsSkillsCount(int count) => $"{count} 个";
+	public static string SettingsSkillsEmpty(string agentDir) => $"在 {agentDir}/skills 或项目的 .pi/skills 下放置 SKILL.md。";
+	public const string SettingsSkillsEmptyTitle = "还没有发现技能";
+	public const string SettingsEnvironmentHint = "本机路径、可用模型与当前工具集。";
+	public const string ThemeFollowHint = "跟随系统时按操作系统外观切换；自定义主题来自 themes 目录。";
+	public const string ReadingSampleTitle = "阅读区域预览";
+	public const string WaitingTipsGroup = "状态条";
+	public const string SettingsToolsHint = "本次会话注入的工具集。";
+	public const string SettingsSkillsHint = "任务匹配时按描述进入系统提示词，也可以用 /skill:name 显式触发。";
+	public const string SettingsMcpHint = "stdio / HTTP 服务器；配置改动保存后点「重连」生效。";
 	public const string ShortcutUnbound = "未绑定";
 	public const string ShortcutsRestart = "快捷键已保存，重启后生效。";
 	public const string ShortcutsConflict = "有快捷键冲突：";
@@ -271,18 +293,31 @@ public static partial class Strings
 	public const string ShortcutsEdit = "改键";
 	public const string ShortcutsReset = "恢复默认";
 	public const string ShortcutsPress = "请按下新的组合键…";
+	public const string ShortcutsFixedKeys = "固定键位不参与改键：Ctrl+1…9 切换标签，Esc 关闭浮层或搜索。";
 	public const string ShortcutsNeedsModifier = "这个键不能单独做快捷键，请加 Ctrl 或 Alt，或改用 F1–F24。";
 	public const string Save = "保存";
 	public const string Cancel = "取消";
 	public static string ShortcutsIgnored(string ids) => $"配置里有无法识别的快捷键项，已忽略：{ids}";
-	public const string ShortcutsEditHint = "点「改键」后按新组合键即可绑定，也可以输入组合串回车；留空或点「恢复默认」回到默认值。";
+	public const string ShortcutsEditHint = "点键帽后按新的组合键即可绑定；改过的键会多出「恢复默认」。";
 	public static string ShortcutsConflictLine(string first, string second, string binding) =>
 		$"{binding} 同时绑给了「{first}」和「{second}」";
 	public const string MakeDefaultModel = "把当前模型设为默认";
 	public static string DefaultModelSaved(string provider, string model) => $"已把 {provider}/{model} 写进全局设置。";
 	public const string SettingsShortcuts = "快捷键";
+
+	public const string ShortcutsGroup = "按键绑定";
 	public const string SettingsAbout = "关于";
 	public const string AboutVersion = "版本";
+
+	public const string AboutVersionInfo = "版本信息";
+
+	public const string AboutTagline = "C# 编码智能体与 MewUI 桌面工作台。";
+
+	public const string SettingsSessionHint = "当前会话的文件、模型与轮次。";
+
+	public const string SessionUsageGroup = "用量与耗时";
+
+	public const string SessionUsageHint = "上下文、缓存、token 与耗时。";
 	public const string AboutUiFont = "界面字体";
 	public const string AboutMonoFont = "等宽字体";
 	public const string AboutFramework = "界面框架";
@@ -302,12 +337,16 @@ public static partial class Strings
 	public const string MoveTabLeft = "标签左移";
 	public const string MoveTabRight = "标签右移";
 	public const string SettingsArchive = "归档（已删除）";
+
+	public const string ArchiveGroup = "已删除会话";
 	public const string ArchiveEmpty = "归档为空。删除的会话会移动到这里，可随时恢复。";
 	public const string ArchiveRestore = "恢复";
 	public const string ArchivePurge = "清空归档";
 	public const string ArchivePurgeConfirm = "永久删除归档里的所有会话？此操作不可撤销。";
-	public static string ArchiveCount(int count) => $"归档中有 {count} 个会话。";
+	public static string ArchiveMessages(int count) => $"{count} 条消息";
 	public const string SettingsSession = "当前会话";
+
+	public const string SessionInfoGroup = "会话信息";
 	public const string SettingsSessionFile = "会话文件";
 	public const string SettingsSessionId = "会话 id";
 	public const string SettingsModel = "模型";
@@ -318,11 +357,15 @@ public static partial class Strings
 
 	public const string SettingsMcpReconnect = "重连 MCP";
 
+	public const string SettingsMcpConfig = "配置 MCP";
+
 	public const string SettingsMcpReconnecting = "正在重连 MCP…";
 
 	public const string SettingsMcpReconnected = "MCP 已重连";
 
 	public const string SettingsGit = "Git 提交摘要";
+
+	public const string GitSummaryGeneration = "生成设置";
 	public const string SettingsResources = "资源";
 	public const string ResourcesPrompts = "提示词模板";
 	public const string ResourcesThemes = "主题";
@@ -332,7 +375,18 @@ public static partial class Strings
 	public const string ResourcesPromptHint = "提示词模板以文件名作为斜杠命令，例如 review.md 对应 /review。";
 	public const string ResourcesThemeHint = "主题在「外观」页选择；这里列出已发现的主题文件与解析结果。";
 	public const string ResourcesPackageHint = "用 pi install <source> 添加包，或直接编辑 settings.json 的 packages。";
-	public const string ResourcesEmpty = "没有发现资源。";
+	public const string ResourcesPromptsEmpty = "没有发现提示词模板";
+
+	public const string ResourcesPromptsEmptyHint = "在 commands 目录放置 .md 文件，文件名就是斜杠命令。";
+
+	public const string ResourcesThemesEmpty = "没有发现主题";
+
+	public const string ResourcesThemesEmptyHint = "在用户或项目的 themes 目录放置 pi 主题文件。";
+
+	public const string ResourcesPackagesEmpty = "没有安装 pi 包";
+
+	public const string ResourcesPackagesEmptyHint = "用 pi install <source> 添加包。";
+	public static string ResourcesCount(int count) => $"{count} 项";
 	public const string ResourcesReload = "重载资源";
 	public const string ResourcesReloaded = "资源已重载";
 	public const string ResourcesOpen = "打开文件";
@@ -774,6 +828,18 @@ public static partial class Strings
 
 	public const string SoundAlertHint = "完成与出错默认开启，等待输入默认关闭。同一会话 8 秒内只响一次，多会话只响最近一次。改动立即保存。";
 
+	public const string SoundAlertEnabledHint = "新回复完成、出错或等待输入时播放提示音。";
+
+	public const string SoundAlertOnlyWhenUnfocusedHint = "窗口在前台时不响，避免打断正在读的回复。";
+
+	public const string SoundAlertVolumeHint = "试听与提示音使用同一个音量。";
+
+	public const string SoundAlertDoneHint = "一轮回复结束时。";
+
+	public const string SoundAlertErrorHint = "本轮失败时。";
+
+	public const string SoundAlertWaitingHint = "等待你回答时。";
+
 	// 安全门设置页（设置 → 运行 → 安全门）。文案对齐 PiDeck 的安全管理面板。
 	public const string SettingsSecurity = "安全门";
 
@@ -781,15 +847,21 @@ public static partial class Strings
 
 	public const string SecurityGroup = "安全门";
 
-	public const string SecurityEnabled = "启用安全门";
+	public const string SecurityToggleGroup = "启用与档位";
 
-	public const string SecurityEnabledTip = "关闭时完全放行";
+	public const string SecurityEnabled = "启用安全门";
 
 	public const string SecurityEnabledHint = "关闭时完全放行，不看档位。";
 
 	public const string SecurityDefaultLevel = "默认档位";
 
 	public const string SecurityLevels = "档位";
+
+	public const string SecurityDefaultLevelHint = "新会话与没有单独覆盖的会话使用这一档。";
+
+	public const string SecurityLevelsHint = "每一档独立控制工具动作、路径边界与危险命令。";
+
+	public const string SecurityLevelName = "档位名称";
 
 	public const string SecurityLevelDefault = "默认";
 

@@ -117,8 +117,7 @@ internal sealed class ImagePreview
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Child(_image.OnMouseDown(args => args.Handled = true));
 		View = new Grid().IsVisible(false).Children(
-			new Button().Background(new Color(0xE0, 0, 0, 0)).BorderThickness(0).CornerRadius(0)
-				.Cursor(CursorType.Arrow).Focusable(false).OnClick(Hide),
+			OverlayScrim.Create(Hide, ScrimStrength.Heavy),
 			_frame,
 			_actions)
 			.OnKeyDown(key => { if (key.Key == Key.Escape) { key.Handled = true; Hide(); } });

@@ -25,8 +25,6 @@ internal sealed class FileDiffPreview
 	// 不能叫 MaxWidth：嵌套类里那个名字会先解析到 FrameworkElement.MaxWidth（∞），上限就形同虚设。
 	private const double MaxCardWidth = 1080;
 
-	private static readonly Color ScrimColor = new(0x9a, 0x00, 0x00, 0x00);
-
 	private readonly Grid _view;
 	private readonly TextBlock _title = new();
 	private readonly TextBlock _context = new();
@@ -102,11 +100,7 @@ internal sealed class FileDiffPreview
 			.Child(new DockPanel().LastChildFill().Children(header.DockTop(), bodyHost));
 
 		_view = new Grid().IsVisible(false).Children(
-			new Button()
-				.Background(ScrimColor)
-				.BorderThickness(0).CornerRadius(0)
-				.Cursor(CursorType.Arrow).Focusable(false)
-				.OnClick(Hide),
+			OverlayScrim.Create(Hide, ScrimStrength.Strong),
 			new ShadowDecorator()
 				.BlurRadius(24).OffsetY(8).CornerRadius(AppTheme.RadiusLg)
 				.WithTheme((theme, shadow) => shadow.ShadowColor = theme.IsDark

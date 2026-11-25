@@ -29,6 +29,8 @@ public static partial class Strings
 
 	public const string SettingsQuickMessages = "快捷消息";
 
+	public const string QuickMessagesGroup = "消息条目";
+
 	public const string SettingsQuickMessagesDesc = "底栏「快捷消息」的条目；点条目插入输入框，行尾按钮直接发送。";
 
 	public const string SettingsQuickMessagesEditor = "快捷消息条目";

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Aprillz.MewUI.Automation;
 using Aprillz.MewUI.Controls;
 using PiWeft.CodingAgent.Models;
 using Xunit;
@@ -82,7 +83,8 @@ public sealed class ModelCatalogSectionTests : IDisposable
 		var view = Create();
 		await view.SelectSectionAsync("catalog");
 
-		var toggle = Find<CheckBox>(view.View).Single();
+		var toggle = Find<ToggleSwitch>(view.View)
+			.Single(item => AutomationProperties.GetName(item) == Strings.ModelCatalogAutoUpdate);
 		Assert.False(toggle.IsChecked);
 	}
 

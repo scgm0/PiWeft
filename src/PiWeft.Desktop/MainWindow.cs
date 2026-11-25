@@ -2764,6 +2764,38 @@ public sealed partial class MainWindow : Window
 					_sessionSearch.Show(this);
 					break;
 				default:
+					// settings:<id> 打开弹窗并切到该分区，免去每个分区各写一条演练分支。
+					if (view.StartsWith("settings:", StringComparison.Ordinal)
+						&& view["settings:".Length..] is { Length: > 0 } section)
+					{
+						if (SettingsSections.Find(section) is null)
+						{
+							Console.Error.WriteLine($"PiWeft: 未知的设置分区：{section}");
+							Environment.ExitCode = 1;
+							break;
+						}
+
+						OpenSettingsDialog();
+						if (_settingsView is { } sectionView) _ = sectionView.SelectSectionAsync(section);
+						break;
+					}
+
+					// config-form:<kind> 打开配置页的新增/编辑表单（provider / model / mcp）。
+					if (view.StartsWith("config-form:", StringComparison.Ordinal)
+						&& view["config-form:".Length..] is { Length: > 0 } form)
+					{
+						if (form is not ("provider" or "model" or "mcp"))
+						{
+							Console.Error.WriteLine($"PiWeft: 未知的配置表单：{form}");
+							Environment.ExitCode = 1;
+							break;
+						}
+
+						OpenSettingsDialog();
+						if (_settingsView is { } formView) _ = formView.OpenConfigFormSmokeAsync(form);
+						break;
+					}
+
 					Console.Error.WriteLine($"PiWeft: 未知的界面演练目标：{view}");
 					break;
 			}

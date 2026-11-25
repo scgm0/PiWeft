@@ -32,6 +32,7 @@ internal sealed class ProviderKeyPanel
 	private readonly Dictionary<string, Action<string>> _writers = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _initialEnvironment;
 	private readonly string? _initialKey;
+	private readonly OverlayInsetFollower _inset = new();
 	private Window? _window;
 	private readonly OverlayFade _fade;
 	private ProviderKeyOption _selected;
@@ -114,8 +115,7 @@ internal sealed class ProviderKeyPanel
 					body));
 
 		_view = new Grid().IsVisible(false).Focusable(true).Children(
-			new Button().Background(new Color(0x60, 0x00, 0x00, 0x00)).Cursor(CursorType.Arrow).Focusable(false)
-				.BorderThickness(0).CornerRadius(0).OnClick(Hide),
+			OverlayScrim.Create(Hide, ScrimStrength.Light),
 			new AuthDialogSurface().MaxWidth(640).HorizontalAlignment(HorizontalAlignment.Center)
 				.VerticalAlignment(VerticalAlignment.Center).Margin(new Thickness(AppTheme.Space3)).Content(card))
 			.OnKeyDown(key =>
@@ -143,13 +143,7 @@ internal sealed class ProviderKeyPanel
 		if (owner.FindVisualRoot() is not Window window) return;
 		if (_view.IsVisible) { _fade.Cancel(); CloseNow(); }
 		_window = window;
-		if (View is FrameworkElement element)
-		{
-			element.Margin = window is MainWindow main
-				? MainWindow.OverlayInsetFor(main.WindowState)
-				: new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
-		}
-
+		_inset.Attach(window, _view);
 		window.OverlayLayer.Add(View);
 		View.IsVisible(true);
 		_fade.Open();
@@ -339,6 +333,7 @@ internal sealed class ProviderKeyPanel
 	private void CloseNow()
 	{
 		_view.IsVisible(false);
+		_inset.Detach();
 		_window?.OverlayLayer.Remove(_view);
 		_window = null;
 	}

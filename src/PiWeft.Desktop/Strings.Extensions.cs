@@ -18,6 +18,10 @@ public static partial class Strings
 	public const string SettingsExtensionsDisabled = "已停用";
 	public const string SettingsExtensionsUnavailable = "不可用";
 	public const string SettingsExtensionsEmpty = "没有发现扩展。把 .js 文件放进 ~/.pi/agent/extensions 或项目的 .pi/extensions。";
+
+	public const string SettingsExtensionsEmptyTitle = "没有发现扩展";
+
+	public const string SettingsExtensionsEmptyHint = "把 .js 文件放进 ~/.pi/agent/extensions 或项目的 .pi/extensions。";
 	public const string SettingsExtensionsRestart = "改动在下次新建会话或重启后生效。";
 	public const string SettingsExtensionsRefresh = "刷新";
 	public const string SettingsExtensionsSaved = "扩展开关已保存。";

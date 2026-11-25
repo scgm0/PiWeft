@@ -90,8 +90,7 @@ public sealed class SessionImportDialog
 			.Child(body);
 
 		View = new Grid().IsVisible(false).Children(
-			new Button().Background(new Color(0xE0, 0, 0, 0)).BorderThickness(0).CornerRadius(0)
-				.Cursor(CursorType.Arrow).Focusable(false).OnClick(Hide),
+			OverlayScrim.Create(Hide, ScrimStrength.Heavy),
 			card.OnMouseDown(args => args.Handled = true))
 			.OnKeyDown(key =>
 			{

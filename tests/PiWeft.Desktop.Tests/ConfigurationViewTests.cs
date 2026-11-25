@@ -1,5 +1,6 @@
 using System.Reflection;
 using Aprillz.MewUI;
+using Aprillz.MewUI.Automation;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
 using PiWeft.Ai.Auth;
@@ -51,7 +52,8 @@ public sealed class ConfigurationViewTests : IDisposable
 		await view.OpenAsync(ConfigFile.Settings, source: true);
 		Assert.Empty(Find<MultiLineTextBox>(view.View));
 		Assert.False(view.CanSave);
-		Find<CheckBox>(view.View).Single().IsChecked = true;
+		Find<ToggleSwitch>(view.View).Single(toggle =>
+			AutomationProperties.GetName(toggle) == Strings.ConfigShowSource).IsChecked = true;
 		var editor = Find<MultiLineTextBox>(view.View).Single();
 		Assert.True(view.CanSave);
 		editor.Text = "{\"unknown\":42}";
@@ -65,13 +67,36 @@ public sealed class ConfigurationViewTests : IDisposable
 	}
 
 	[Fact]
+	public async Task SourceRevealCannotBeHiddenWhileDirty()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings, source: true);
+		var reveal = Find<ToggleSwitch>(view.View)
+			.Single(toggle => AutomationProperties.GetName(toggle) == Strings.ConfigShowSource);
+		reveal.IsChecked = true;
+		reveal = Find<ToggleSwitch>(view.View)
+			.Single(toggle => AutomationProperties.GetName(toggle) == Strings.ConfigShowSource);
+		var editor = Find<MultiLineTextBox>(view.View).Single();
+		editor.Text = "{\"x\":1}";
+		Assert.True(view.IsDirty);
+		Assert.False(reveal.IsEnabled);
+
+		view.SaveDraft();
+
+		var savedReveal = Find<ToggleSwitch>(view.View)
+			.Single(toggle => AutomationProperties.GetName(toggle) == Strings.ConfigShowSource);
+		Assert.True(savedReveal.IsEnabled);
+		Assert.NotEmpty(Find<MultiLineTextBox>(view.View));
+	}
+
+	[Fact]
 	public async Task SavingProjectSettingsDoesNotTurnInheritedOptionsIntoOverrides()
 	{
 		Store.Save(Store.Read(ConfigFile.Settings), "{\"compaction\":{\"enabled\":false},\"retry\":{\"enabled\":false}}");
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
 		await view.OpenAsync(ConfigFile.Settings);
 		Find<ComboBox>(view.View).First().SelectedIndex = 1;
-		Assert.All(Find<CheckBox>(view.View), check => Assert.False(check.IsChecked));
+		Assert.All(Find<ToggleSwitch>(view.View), toggle => Assert.False(toggle.IsChecked));
 		Find<TextBox>(view.View).First().Text = "local";
 		view.SaveDraft();
 		var saved = Store.Read(ConfigFile.Settings, project: true).Parse();
@@ -194,11 +219,11 @@ public sealed class ConfigurationViewTests : IDisposable
 		fields[11].Text = "64";
 		fields[12].Text = "500000";
 		// 启动默认不建标签：勾上才回到「每个子代理一个后台标签」。
-		var openTabs = Find<CheckBox>(view.View)
-			.First(check => check.Content is TextBlock { Text: string text } && text == Strings.ConfigSubagentsOpenTabs);
+		var openTabs = Find<ToggleSwitch>(view.View)
+			.Single(toggle => AutomationProperties.GetName(toggle) == Strings.ConfigSubagentsOpenTabs);
 		openTabs.IsChecked = true;
-		var team = Find<CheckBox>(view.View)
-			.First(check => check.Content is TextBlock { Text: string text } && text == Strings.ConfigSubagentsTeam);
+		var team = Find<ToggleSwitch>(view.View)
+			.Single(toggle => AutomationProperties.GetName(toggle) == Strings.ConfigSubagentsTeam);
 		team.IsChecked = true;
 		Assert.True(view.IsDirty);
 		view.SaveDraft();
@@ -221,13 +246,27 @@ public sealed class ConfigurationViewTests : IDisposable
 	}
 
 	[Fact]
-	public void FreshViewShowsReadyLabel()
+	public void FreshViewHidesDirtyLabel()
 	{
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
 
 		var field = typeof(ConfigurationView).GetField("_dirtyLabel", BindingFlags.Instance | BindingFlags.NonPublic)!;
 		var label = Assert.IsType<TextBlock>(field.GetValue(view));
-		Assert.Equal(Strings.ConfigReady, label.Text);
+		Assert.False(label.IsVisible);
+	}
+
+	[Fact]
+	public async Task EditingShowsDirtyLabel()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Settings);
+
+		Find<TextBox>(view.View).First().Text = "local";
+
+		var field = typeof(ConfigurationView).GetField("_dirtyLabel", BindingFlags.Instance | BindingFlags.NonPublic)!;
+		var label = Assert.IsType<TextBlock>(field.GetValue(view));
+		Assert.True(label.IsVisible);
+		Assert.Equal(Strings.ConfigDirty, label.Text);
 	}
 
 	[Fact]
@@ -269,11 +308,11 @@ public sealed class ConfigurationViewTests : IDisposable
 		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
 		await view.OpenAsync(ConfigFile.Settings);
 		var retries = Find<TextBox>(view.View).Single(box => box.Text == "3");
-		var autoRetry = Find<CheckBox>(view.View)
-			.First(box => (box.Content as TextBlock)?.Text == Strings.ConfigAutoRetry);
+		var autoRetry = Find<ToggleSwitch>(view.View)
+			.Single(toggle => AutomationProperties.GetName(toggle) == Strings.ConfigAutoRetry);
 
 		retries.Text = "abc";
-		autoRetry.IsChecked(false);
+		autoRetry.IsChecked = false;
 		view.SaveDraft();
 
 		var retry = Store.Read(ConfigFile.Settings).Parse()["retry"]!.AsObject();
@@ -370,6 +409,29 @@ public sealed class ConfigurationViewTests : IDisposable
 			button.Content is StackPanel panel && Find<TextBlock>(panel).Any(block => block.Text == label))];
 
 	private static int CountButtonsLabeled(ConfigurationView view, string label) => ButtonsLabeled(view, label).Count;
+
+	[Fact]
+	public async Task McpFormShowsOnlyTheFieldsForTheSelectedTransport()
+	{
+		var view = new ConfigurationView(AgentDir, Cwd, _ => { });
+		await view.OpenAsync(ConfigFile.Mcp);
+		view.OpenFormForSmoke("mcp");
+
+		var transport = Find<ComboBox>(view.View)
+			.Single(combo => AutomationProperties.GetName(combo) == Strings.ConfigTransport);
+		var command = Find<TextBox>(view.View)
+			.Single(box => AutomationProperties.GetName(box) == Strings.ConfigCommand);
+		var url = Find<TextBox>(view.View)
+			.Single(box => AutomationProperties.GetName(box) == Strings.ConfigBaseUrl);
+
+		Assert.True(IsEffectivelyVisible(command));
+		Assert.False(IsEffectivelyVisible(url));
+
+		transport.SelectedIndex = 1;
+
+		Assert.False(IsEffectivelyVisible(command));
+		Assert.True(IsEffectivelyVisible(url));
+	}
 
 	[Fact]
 	public async Task McpRowShowsAuthorizationStatusOnlyForHttpServers()

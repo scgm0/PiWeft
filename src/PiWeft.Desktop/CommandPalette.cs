@@ -106,9 +106,7 @@ public sealed class CommandPalette
 
 		// 单独的遮罩按钮负责空白处关闭，避免 Border 的空白命中穿透到会话内容。
 		View = new Grid().IsVisible(false).Children(
-			new Button().Background(new Color(0x80, 0x00, 0x00, 0x00))
-				.Cursor(CursorType.Arrow).Focusable(false)
-				.BorderThickness(0).CornerRadius(0).OnClick(Hide),
+			OverlayScrim.Create(Hide),
 			surface).OnKeyDown(key =>
 			{
 				if (key.Key == Key.Escape)

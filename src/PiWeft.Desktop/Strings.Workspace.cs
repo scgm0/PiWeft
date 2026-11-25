@@ -6,6 +6,7 @@ public static partial class Strings
 	public const string ChatFontSize = "正文与输入字号";
 	public const string ReadingWidth = "阅读区域宽度";
 	public const string ReadingCompact = "紧凑";
+	public const string ReadingWidthStandard = "标准";
 	public const string ReadingComfortable = "舒适";
 	public const string ReadingWide = "宽屏";
 	public const string ChatLineHeight = "正文行距";
@@ -30,7 +31,7 @@ public static partial class Strings
 	public const string SettingsGroupRuntime = "运行";
 	public const string ConfigurationGroup = "配置文件";
 	public const string MaintenanceGroup = "维护";
-	public const string ConfigReady = "修改后点击保存";
+	public const string ConfigPath = "配置文件";
 	public const string ConfigDefaults = "默认供应商与模型";
 	public const string ConfigBehavior = "通用行为";
 	public const string ConfigDefaultsHint = "留空时自动选择；项目配置中留空则继承全局设置。";

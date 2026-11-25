@@ -24,7 +24,8 @@ internal sealed class ModelCatalogSection
 		_changed = changed;
 		_body.Spacing(AppTheme.Space3);
 		_notice.FontSize(AppTheme.FontSizeCaption).TextWrapping(TextWrapping.Wrap);
-		View = Group("package", Strings.SettingsModelCatalog, _body);
+		View = SettingsUi.Group("package", Strings.ModelCatalogInfoGroup, _body,
+			description: Strings.ModelCatalogDescription);
 		Rebuild();
 	}
 
@@ -37,41 +38,39 @@ internal sealed class ModelCatalogSection
 		_body.Clear();
 		_buttons.Clear();
 
-		_body.Children(Hint(Strings.ModelCatalogDescription));
-		_body.Children(InfoRow(Strings.ModelCatalogSource, Strings.ModelCatalogSourceValue));
-		_body.Children(InfoRow(Strings.ModelCatalogBuiltin,
-			Strings.ModelCatalogInfo(status.Builtin.ProviderCount, status.Builtin.EntryCount)));
+		var infoRows = new List<UIElement>();
+		infoRows.Add(SettingsUi.ValueRow(Strings.ModelCatalogSource, Strings.ModelCatalogSourceValue, mono: false));
+		infoRows.Add(SettingsUi.ValueRow(Strings.ModelCatalogBuiltin,
+			Strings.ModelCatalogInfo(status.Builtin.ProviderCount, status.Builtin.EntryCount), mono: false));
 		var overlayText = status.Overlay is { } overlay
 			? Strings.ModelCatalogOverlayInfo(overlay.Version, overlay.FetchedAt, overlay.ProviderCount, overlay.EntryCount)
 			: status.OverlayInvalid ? Strings.ModelCatalogInvalid : Strings.ModelCatalogNone;
-		_body.Children(InfoRow(Strings.ModelCatalogOverlay, overlayText, error: status.OverlayInvalid));
-		_body.Children(InfoRow(Strings.ModelCatalogBackup,
-			status.HasBackup ? Strings.ModelCatalogHasBackup : Strings.ModelCatalogNone));
+		infoRows.Add(SettingsUi.ValueRow(Strings.ModelCatalogOverlay, overlayText, mono: false,
+			hint: status.OverlayInvalid ? overlayText : null));
+		infoRows.Add(SettingsUi.ValueRow(Strings.ModelCatalogBackup,
+			status.HasBackup ? Strings.ModelCatalogHasBackup : Strings.ModelCatalogNone, mono: false));
 
-		var autoUpdate = new CheckBox();
-		autoUpdate.Content(new StackPanel().Spacing(2).Children(
-			Label(Strings.ModelCatalogAutoUpdate).FontWeight(FontWeight.SemiBold),
-			Hint(Strings.ModelCatalogAutoUpdateDesc)));
-		autoUpdate.IsChecked(preference.ModelCatalogAutoUpdate);
-		autoUpdate.OnCheckedChanged(_ =>
-		{
-			var enabled = autoUpdate.IsChecked == true;
-			try
+		var autoUpdate = SettingsUi.SwitchRow(
+			Strings.ModelCatalogAutoUpdate, Strings.ModelCatalogAutoUpdateDesc, preference.ModelCatalogAutoUpdate,
+			enabled =>
 			{
-				var current = DesktopPreference.Load(_agentDir);
-				(current with
+				try
 				{
-					ModelCatalogAutoUpdate = enabled,
-					// 刚打开开关时清掉上次检查时间：下次启动立即检查，不必等满 24 小时。
-					ModelCatalogCheckedAt = enabled ? null : current.ModelCatalogCheckedAt,
-				}).Save(_agentDir);
-			}
-			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-			{
-				Toasts.Error(View, Strings.ConfigFailed);
-			}
-		});
-		_body.Children(autoUpdate);
+					var current = DesktopPreference.Load(_agentDir);
+					(current with
+					{
+						ModelCatalogAutoUpdate = enabled,
+						// 刚打开开关时清掉上次检查时间：下次启动立即检查，不必等满 24 小时。
+						ModelCatalogCheckedAt = enabled ? null : current.ModelCatalogCheckedAt,
+					}).Save(_agentDir);
+				}
+				catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+				{
+					Toasts.Error(View, Strings.ConfigFailed);
+				}
+			}, out _);
+		infoRows.Add(autoUpdate);
+		_body.Children(SettingsUi.Rows(infoRows));
 
 		_body.Children(_notice.IsVisible(_noticeText.Length > 0));
 		RefreshNotice();
@@ -86,8 +85,10 @@ internal sealed class ModelCatalogSection
 		previous.IsEnabled(status.HasBackup);
 		open.IsEnabled(status.Overlay is not null);
 		_buttons.AddRange([check, update, restore, previous, open]);
-		_body.Children(new StackPanel().Orientation(Orientation.Horizontal)
-			.Spacing(AppTheme.Space2).Children([.. _buttons]));
+		_body.Children(new Border().BorderThickness(new Thickness(0, 1, 0, 0))
+			.Padding(new Thickness(0, AppTheme.Space3, 0, 0))
+			.Child(new WrapPanel().Spacing(AppTheme.Space2).Children([.. _buttons]))
+			.WithTheme(static (theme, border) => border.BorderBrush = AppTheme.For(theme).Border));
 
 		SetBusy(_busy);
 	}
@@ -294,35 +295,4 @@ internal sealed class ModelCatalogSection
 	private static TextBlock Label(string text) => new TextBlock()
 		.Text(text).FontSize(AppTheme.FontSizeCaption).PrimaryText();
 
-	private static TextBlock Hint(string text) => new TextBlock()
-		.Text(text).FontSize(AppTheme.FontSizeMicro).MutedText().TextWrapping(TextWrapping.Wrap);
-
-	private static UIElement InfoRow(string label, string value, bool error = false)
-	{
-		var text = new TextBlock().Text(value).FontSize(AppTheme.FontSizeCaption)
-			.TextWrapping(TextWrapping.Wrap).HoverTip(value);
-		if (error) text.Role(AppStyles.RoleError); else text.PrimaryText();
-		return new DockPanel().LastChildFill().Children(
-			new TextBlock().Text(label).Width(116).FontSize(AppTheme.FontSizeCaption).SubtleText().DockLeft(),
-			text);
-	}
-
-	private static Element Group(string icon, string title, UIElement content) => new Border()
-		.StyleName(AppStyles.Card)
-		.CornerRadius(AppTheme.RadiusMd)
-		.MaxWidth(960)
-		.ClipToBounds(true)
-		.Child(new DockPanel().LastChildFill().Children(
-			new Border().StyleName(AppStyles.CardHeader)
-				.Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space3))
-				.Child(new StackPanel().Orientation(Orientation.Horizontal)
-					.VerticalAlignment(VerticalAlignment.Center).Spacing(AppTheme.Space2)
-					.Children(
-						AppIcons.Icon(icon, AppStyles.RoleSubtle, 14),
-						new TextBlock().Text(title).FontSize(AppTheme.FontSizeCaption)
-							.FontWeight(FontWeight.SemiBold).PrimaryText()
-							.VerticalAlignment(VerticalAlignment.Center)))
-				.DockTop(),
-			new Border().Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space4))
-				.Child(content)));
 }

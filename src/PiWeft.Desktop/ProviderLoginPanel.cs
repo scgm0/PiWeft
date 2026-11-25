@@ -30,6 +30,7 @@ internal sealed class ProviderLoginPanel
 	private readonly Lock _logGate = new();
 	private readonly StringBuilder _log = new();
 	private readonly DispatcherTimer _pump;
+	private readonly OverlayInsetFollower _inset = new();
 	private Window? _window;
 	private CancellationTokenSource? _abort;
 	private TaskCompletionSource<string?>? _pending;
@@ -123,8 +124,7 @@ internal sealed class ProviderLoginPanel
 					footer.Margin(new Thickness(0, 0, AppTheme.ScrollBarSlot, 0)).DockBottom(),
 					body));
 		_view = new Grid().IsVisible(false).Focusable(true).Children(
-			new Button().Background(new Color(0x60, 0x00, 0x00, 0x00)).Cursor(CursorType.Arrow).Focusable(false)
-				.BorderThickness(0).CornerRadius(0).OnClick(Hide),
+			OverlayScrim.Create(Hide, ScrimStrength.Light),
 			new AuthDialogSurface().MaxWidth(640).HorizontalAlignment(HorizontalAlignment.Center)
 				.VerticalAlignment(VerticalAlignment.Center).Margin(new Thickness(AppTheme.Space3)).Content(card))
 			.OnKeyDown(key => { if (key.Key == Key.Escape) { key.Handled = true; Hide(); } });
@@ -141,12 +141,7 @@ internal sealed class ProviderLoginPanel
 		StopWork();
 		if (_view is { IsVisible: true }) { Fade.Cancel(); CloseNow(); }
 		_window = window;
-		if (View is FrameworkElement element)
-		{
-			element.Margin = window is MainWindow main
-				? MainWindow.OverlayInsetFor(main.WindowState)
-				: new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
-		}
+		_inset.Attach(window, (FrameworkElement)View);
 		window.OverlayLayer.Add(View);
 		View.IsVisible(true);
 		Fade.Open();
@@ -393,6 +388,7 @@ internal sealed class ProviderLoginPanel
 	{
 		if (_view is null) return;
 		_view.IsVisible(false);
+		_inset.Detach();
 		_window?.OverlayLayer.Remove(_view);
 		_window = null;
 		ClearLog();
