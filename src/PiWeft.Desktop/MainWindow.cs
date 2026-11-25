@@ -91,8 +91,10 @@ public sealed partial class MainWindow : Window
 	private int _subagentStatusQueued;
 	// 准备阶段会话面板里的加载段落（打开会话 / 写回会话名称），以及窗口关闭时中断后台读取的令牌源。
 	private readonly SessionLoadingPanel _sessionLoading = new();
-	private TextBlock _welcomeTitle = null!;
-	private TextBlock _welcomeBody = null!;
+	private WelcomeSurface _welcomeSurface = null!;
+	private readonly StartTargetMenu _startTargetMenu = new();
+	// 起始页输入卡的新会话落点：对话目录或任一项目。
+	private string _startTargetCwd = string.Empty;
 	private readonly CancellationTokenSource _sessionAbort = new();
 	// 窗口已关闭：后台打开可能在取消落地前就跑完了，不能再往死窗口里塞标签页。
 	private bool _sessionHostClosed;
@@ -469,33 +471,23 @@ public sealed partial class MainWindow : Window
 		_tabControl.SelectionChanged += _ => UpdateStatus();
 
 		// 准备阶段的会话面板：加载提示是面板自己的内容之一，不是叠在上面的卡片；
-		// 加载中用进度段落替掉欢迎文案，结束后换回。
-		_welcomeTitle = new TextBlock()
-			.Text(Strings.WelcomeTitle)
-			.FontSize(20)
-			.FontWeight(FontWeight.Medium)
-			.PrimaryText()
-			.HorizontalAlignment(HorizontalAlignment.Center);
-		_welcomeBody = new TextBlock()
-			.Text(Strings.WelcomeBody)
-			.FontSize(AppTheme.FontSizeCaption)
-			.MutedText()
-			.TextAlignment(TextAlignment.Center)
-			.MaxWidth(420)
-			.TextWrapping(TextWrapping.Wrap)
-			.HorizontalAlignment(HorizontalAlignment.Center);
+		// 加载中用进度段落替掉起始页，结束后换回。
+		_welcomeSurface = BuildWelcomeSurface();
 		_sessionLoading.Changed = SyncWelcomeLoading;
 		_sessionLoading.View.IsVisible(false);
+		// 起始页占据主区：品牌标、标语、输入卡与起步建议居中；加载段落与状态行叠在同一个格子里。
 		_welcome = new Border()
 			.StyleName(AppStyles.Window)
 			.WithTheme((theme, border) => border.Background = AppTheme.For(theme).WindowBackground)
 			.Padding(new Thickness(AppTheme.Space6))
-			.Child(new StackPanel()
-				.Spacing(AppTheme.Space3)
-				.HorizontalAlignment(HorizontalAlignment.Center)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(_welcomeTitle, _welcomeBody, _sessionLoading.View,
-					_status.HorizontalAlignment(HorizontalAlignment.Center)));
+			.Child(new DockPanel()
+				.LastChildFill()
+				.Children(
+					_status.DockBottom().HorizontalAlignment(HorizontalAlignment.Center)
+						.Margin(new Thickness(0, AppTheme.Space3, 0, 0)),
+					new Grid().Children(
+						_welcomeSurface.View,
+						_sessionLoading.View.VerticalAlignment(VerticalAlignment.Center))));
 
 		_palette = new CommandPalette(PaletteCommands);
 		_palette.Closed += FocusActiveEntry;
@@ -555,6 +547,9 @@ public sealed partial class MainWindow : Window
 		// 侧栏停在哪个分段与 PiDeck 一样记忆：对话用于日常聊天，项目用于工作区任务。
 		ShowSidebarView(preference.SidebarProjects, persist: false);
 
+		// 起始页默认跟当前分段走：在「项目」里就在窗口目录开会话，在「对话」里就落聊天目录；
+		// chip 随时可以换。
+		SetStartTarget(preference.SidebarProjects ? _cwd : _chatWorkspace);
 	}
 
 	private void SetProjectCaption(string text, string? tip = null)
@@ -693,6 +688,7 @@ public sealed partial class MainWindow : Window
 
 		_environment = environment;
 		_environments[Path.GetFullPath(_cwd)] = environment;
+		RefreshWelcomeModel();
 		_models = environment.ListAvailableModels(_arguments.ApiKey);
 		AppLog.For<MainWindow>().ZLogInformation($"Desktop ready: models={_models.Count}, tools={environment.Tools.Count}");
 
@@ -2283,8 +2279,12 @@ public sealed partial class MainWindow : Window
 	private void SyncWelcomeLoading()
 	{
 		var showing = _sessionLoading.Showing;
-		_welcomeTitle.IsVisible(!showing);
-		_welcomeBody.IsVisible(!showing);
+		if (showing)
+		{
+			_startTargetMenu.CloseInstantly();
+		}
+
+		_welcomeSurface.View.IsVisible(!showing);
 		_sessionLoading.View.IsVisible(showing);
 		UpdateStatus();
 	}
@@ -2293,6 +2293,11 @@ public sealed partial class MainWindow : Window
 	{
 		var index = _tabControl.SelectedIndex;
 		var entry = index >= 0 && index < _tabEntries.Count ? _tabEntries[index] : null;
+		// 起始页的目录菜单属于起始页：有会话顶上来时不能留在会话画面上。
+		if (entry is not null)
+		{
+			_startTargetMenu.CloseInstantly();
+		}
 		if (_lastSessionTab is { } previous && !ReferenceEquals(entry, previous))
 		{
 			previous.HideTransientPanels();
@@ -2313,7 +2318,11 @@ public sealed partial class MainWindow : Window
 		switch (entry)
 		{
 			case null:
-				_status.Text(Strings.NoOpenSession);
+				// 起始页自带落点、模型与说明；状态行只在启动失败这类情况才写东西。
+				_status.Text(string.Empty);
+				// 空状态行不留底部占位，起始页在视觉上仍然居中。
+				_status.IsVisible(false);
+				RefreshWelcomeModel();
 				UpdateProjectCaption();
 				return;
 
@@ -2422,6 +2431,10 @@ public sealed partial class MainWindow : Window
 						Environment.ExitCode = 1;
 					}
 
+					break;
+				case "welcome":
+					// 视觉验收：关掉所有标签，主区回到起始页（品牌标、输入卡、项目 chip、起步建议）。
+					CloseAllTabs();
 					break;
 				case "sidebar-refresh":
 					// 视觉验收不需要，但异步刷新的回归需要在真窗口里跑一次：

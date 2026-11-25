@@ -6,7 +6,7 @@ namespace PiWeft.Desktop;
 
 public sealed partial class MainWindow
 {
-	private async Task ChooseProjectAsync()
+	private async Task<string?> ChooseProjectAsync()
 	{
 		try
 		{
@@ -18,15 +18,19 @@ public sealed partial class MainWindow
 				Owner = this,
 				InitialDirectory = CurrentSession()?.Cwd ?? _cwd,
 			});
-			if (folder is not null)
+			if (folder is null)
 			{
-				await OpenProjectAsync(folder);
+				return null;
 			}
+
+			await OpenProjectAsync(folder);
+			return folder;
 		}
 		catch (Exception ex)
 		{
 			AppLog.Failure(AppLog.For<MainWindow>(), "Choose project directory", ex);
 			_banner.Text(Strings.ProjectAddFailed(ex.Message));
+			return null;
 		}
 	}
 

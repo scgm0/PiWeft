@@ -1994,39 +1994,7 @@ public sealed partial class SessionTab : IDisposable
 
 	/// 空会话的三枚起步建议：点击只把提示词填进输入框，不代替用户发送。
 	/// 用 WrapPanel 而不是三列等宽网格：窄窗口下整枚 chip 换行，不会把文字压成两行。
-	private UIElement BuildStarterPrompts()
-	{
-		(string Icon, string Label, string Prompt)[] starters =
-		[
-			("folder-open", Strings.StarterProjectLabel, Strings.StarterProjectPrompt),
-			("file-diff", Strings.StarterChangesLabel, Strings.StarterChangesPrompt),
-			("list-checks", Strings.StarterTestsLabel, Strings.StarterTestsPrompt),
-		];
-
-		var row = new CenteredWrapPanel
-		{
-			Spacing = AppTheme.Space2,
-			HorizontalAlignment = HorizontalAlignment.Center,
-		};
-		foreach (var (icon, label, prompt) in starters)
-		{
-			var content = new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(6)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Children(
-					AppIcons.Icon(icon, AppStyles.RoleSubtle, 14),
-					new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption).MutedText());
-			row.Children(new Button()
-				.StyleName(AppStyles.CardMutedButton)
-				.Padding(new Thickness(AppTheme.Space2, 6, AppTheme.Space3, 6))
-				.Content(content)
-				.HoverTip(prompt)
-				.OnClick(() => Prefill(prompt)));
-		}
-
-		return row;
-	}
+	private UIElement BuildStarterPrompts() => StarterPrompts.Build(Prefill);
 
 	private async Task AttachImageAsync()
 	{
@@ -2372,16 +2340,7 @@ public sealed partial class SessionTab : IDisposable
 	/// 命令数据来自会话发现的结果，与 RPC 的 <c>get_commands</c> 同源。
 	/// 创建占位提示：样式与命中设置在这一处配齐。提示叠在输入框上，
 	/// 每一枚（构造的或换新的）都要 IsHitTestVisible(false)，点击才能穿到输入框。
-	private static TextBlock BuildComposerHint(string text)
-	{
-		var hint = new TextBlock().FontSize(AppTheme.FontSizeChat).SubtleText()
-			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.Text(text)
-			.Margin(new Thickness(AppTheme.Space2))
-			.IsHitTestVisible(false)
-			.VerticalAlignment(VerticalAlignment.Top);
-		return hint;
-	}
+	private static TextBlock BuildComposerHint(string text) => ComposerHints.Build(text);
 
 	/// 显隐占位提示。显示即换一枚新实例：
 	/// 保留场景把提示节点首次录制的光栅固化在节点上。此后强制重绘、文本重建都换不掉，

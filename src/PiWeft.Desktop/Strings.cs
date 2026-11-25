@@ -103,7 +103,14 @@ public static partial class Strings
 	public const string RestoreWindow = "还原";
 	public const string CloseWindow = "关闭窗口";
 	public const string WelcomeTitle = "开始一次会话";
-	public const string WelcomeBody = "左侧列出该目录下的历史会话；点「新建」开始一个，或用搜索框按名称、目录、编号查找。";
+	public const string WelcomeSlogan = "把想法放到织机上。";
+	public const string WelcomeBody = "左侧是历史会话；点一个继续，或用搜索按名称、目录、编号查找。";
+	public const string WelcomePlaceholder = "描述要做的事，Enter 开始一次会话…";
+	public const string WelcomeStart = "开始";
+	public const string WelcomeTargetTip = "新会话放在哪个目录";
+	public const string WelcomeTargetAdd = "添加项目…";
+	public const string WelcomeModelTip = "新会话沿用最近用过的模型；进入会话后可在底栏更换。";
+	public const string WelcomeNotReady = "运行环境还没准备好，稍后再试。";
 	public const string EmptySessionHint = "描述要做的事，或从下面挑一个开始。";
 	// 起步建议只填进输入框、不直接发送：用户还能改措辞，也不会因为点错就花掉一次模型调用。
 	public const string StarterProjectLabel = "了解这个项目";
@@ -1365,7 +1372,7 @@ public static partial class Strings
 	// 错误与提示
 	public static string StartupFailed(string reason) => $"启动失败：{reason}";
 	public static string OpenSessionFailed(string reason) => $"无法打开会话：{reason}";
-
+	public static string StartSessionFailed(string reason) => $"无法开始会话：{reason}";
 	// 打开长会话时的加载提示：解析整份 JSONL 要上百毫秒到数秒，必须让 UI 有话可说。
 	// 提示与错误都显示在会话面板中央的加载卡片上，不进横幅。
 	public static string OpeningSession(string name) => $"正在打开会话「{name}」…";

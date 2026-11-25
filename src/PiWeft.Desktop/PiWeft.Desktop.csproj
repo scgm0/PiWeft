@@ -90,6 +90,10 @@
 		<EmbeddedResource Include="Resources/icons/*.svg" />
 		<!-- 同一个 .ico 也内嵌一份，运行期交给 Window.Icon（X11 的 _NET_WM_ICON 从它取位图）。 -->
 		<EmbeddedResource Include="Resources/appicon/piweft.ico" />
+		<!-- 起始页的品牌标直接渲染应用图标的 SVG：矢量源随 DPI 重绘，不再维护一份小尺寸拷贝。
+		     svg 里的 feDropShadow 不在 SvgNet 的元素表里，会被忽略，所以起始页的标比 exe 图标少一层落影。 -->
+		<EmbeddedResource Include="Resources/appicon/piweft.svg"
+			LogicalName="PiWeft.Desktop.Resources.appicon.piweft.svg" />
 		<!-- 提示音：与 PiDeck 同一套纯合成 WAV（见 Resources/sounds/README.md）。 -->
 		<EmbeddedResource Include="Resources/sounds/*.wav" />
 		<None Include="Resources/fonts/LICENSE-*.txt" />
