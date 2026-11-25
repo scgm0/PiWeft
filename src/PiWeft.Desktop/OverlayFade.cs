@@ -140,8 +140,13 @@ internal sealed class OverlayFade
 		_closing = false;
 		var closed = _onClosed;
 		_onClosed = null;
-		SetOpacity(1);
+		// 先收视图再还原不透明度：回调里若把移除推后一拍，先还原就会多画一帧满不透明的旧浮层。
+		// 回调里又开了新的一段（Reopen/Open）时不能覆盖回去，那个时钟正在跑。
 		closed?.Invoke();
+		if (!_clock.IsRunning)
+		{
+			SetOpacity(1);
+		}
 	}
 
 	private void SetOpacity(double opacity)

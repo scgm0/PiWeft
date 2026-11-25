@@ -97,7 +97,9 @@ public sealed class SessionStatisticsPanel
 		View.IsVisible(true);
 		AppStyles.ApplyTextColors(View);
 		_fade.Open();
-		_overview.Focus();
+		// 焦点跟着当前页签：明细态重新打开时再去聚焦概览，会让概览按钮带上一层焦点底色，
+		// 看起来像鼠标悬停在未选中的页签上。
+		(_showDetails ? _details : _overview).Focus();
 		_usageSummary?.Show();
 	}
 
@@ -119,6 +121,8 @@ public sealed class SessionStatisticsPanel
 		_body.Clear();
 		_values.Clear();
 		if (_display is { } display) UpdateRows(display);
+		// 键盘焦点也交给新页签，旧页签不会因为保有焦点而显示悬停底色。
+		if (IsOpen) (_showDetails ? _details : _overview).Focus();
 	}
 
 	public void Update(SessionStatisticsDisplay display, bool busy)

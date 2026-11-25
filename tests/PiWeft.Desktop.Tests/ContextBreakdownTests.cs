@@ -73,6 +73,33 @@ public sealed class ContextBreakdownTests
 	}
 
 	[Fact]
+	public void ReopeningAfterDetailsKeepsFocusOnTheActiveTab()
+	{
+		var panel = new SessionStatisticsPanel(static () => { });
+		var owner = new Border();
+		_ = new Window().Content(owner);
+		var display = new SessionStatisticsDisplay(new SessionStatistics(), 128_000, 1_000_000, 5);
+
+		panel.Show(owner, display, false);
+		var overview = Find<Button>(panel.View).Single(button =>
+			button.Content is StackPanel content && Find<TextBlock>(content).Any(text => text.Text == Strings.StatisticsOverview));
+		var details = Find<Button>(panel.View).Single(button =>
+			button.Content is StackPanel content && Find<TextBlock>(content).Any(text => text.Text == Strings.StatisticsDetails));
+		panel.ShowDetails();
+		Assert.True(details.IsFocused);
+		Assert.False(overview.IsFocused);
+
+		// 明细态关闭再打开：焦点必须留在明细，不能回到概览上显示一层焦点底色。
+		panel.Hide();
+		panel.Show(owner, display, false);
+		Assert.True(details.IsFocused);
+		Assert.False(overview.IsFocused);
+
+		panel.Hide();
+		UiLifetime.Release(panel.View);
+	}
+
+	[Fact]
 	public void StatisticsPanelShowsTheThreeSegmentsWithTheirShare()
 	{
 		var panel = new SessionStatisticsPanel(static () => { });

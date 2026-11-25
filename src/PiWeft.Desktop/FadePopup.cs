@@ -1,52 +1,45 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Animation;
 using Aprillz.MewUI.Controls;
-using Aprillz.MewUI.Rendering;
 
 namespace PiWeft.Desktop;
 
 /// 原生 <see cref="Popup"/> 的进出场动效：进入 200ms ease-out-quint，退出 120ms ease-out-cubic。
 /// 退出用 ease-out、时长也比 PiDeck 的 200ms 短：ease-in 开头几乎不动，关弹层像先卡一下。
-/// 打开时直接淡入弹层的 chrome（连同一圈落影）；关闭由框架同步拆窗口，来不及淡出，
-/// 所以把内容重挂到窗口 OverlayLayer 上做一段幽灵淡出，再释放内容。
+/// 淡出留在弹层自己的原生窗口里做完，再关窗：窗口一藏，像素就只剩别的表面能画，
+/// 而另一块表面的首帧最早也要下一帧才上屏——实测中间空 2–3 帧（≈50ms），
+/// 菜单先整个消失、再以 81% 不透明度浮回来，比不做淡出更晃眼。框架自己关掉的路径
+/// （外点、切窗、标签页收起）没有窗口可淡，直接收。
 internal sealed class FadePopup : IDisposable
 {
 	private const int FadeInMs = 200;
 	private const int FadeOutMs = 120;
 
-	// 幽灵起点低于这个值就等于没画出来过，直接释放内容，不再空跑一段动画。
-	private const double GhostMinOpacity = 0.01;
+	// 起点低于这个值就等于没画出来过，直接收，不再空跑一段动画。
+	private const double HiddenThreshold = 0.01;
 
 	private readonly Popup _popup = new();
-	private readonly AnimationClock _fadeClock;
-	private readonly AnimationClock _ghostClock;
-	private Window? _window;
-	private Window? _ghostWindow;
-	private Panel? _ghostHost;
-	private UIElement? _fadeSurface;
-	private double _fadeFrom;
-	private double _fadeTo;
-	private double _ghostFrom;
-	private double _surfaceOpacity = 1;
+	private readonly AnimationClock _clock;
+	// 淡入淡出的目标：原生弹层是 chrome（连落影一起淡），表面内宿主时是内容自己。
+	private UIElement? _surface;
+	private double _from;
+	private double _to;
+	private bool _closing;
 	private bool _disposed;
-	private bool _suppressGhost;
 
 	public FadePopup()
 	{
 		_popup.Closed += OnPopupClosed;
-		_fadeClock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), Easing.EaseOutQuint)
+		_clock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), Easing.EaseOutQuint)
 		{
 			TickCallback = OnFadeTick,
 			CompletedCallback = OnFadeCompleted,
 		};
-		_ghostClock = new AnimationClock(TimeSpan.FromMilliseconds(FadeOutMs), Easing.EaseOutCubic)
-		{
-			TickCallback = OnGhostTick,
-			CompletedCallback = FinishGhost,
-		};
 	}
 
-	public bool IsOpen => _popup.IsOpen;
+	/// 淡出期间算已关闭：调用方靠它决定「再按一次是收起还是重开」，
+	/// 收尾的 120ms 不该吃掉下一次打开。
+	public bool IsOpen => _popup.IsOpen && !_closing;
 
 	public UIElement? Content => _popup.Content;
 
@@ -57,18 +50,9 @@ internal sealed class FadePopup : IDisposable
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
 
-		FinishGhost();
-		if (_popup.IsOpen)
-		{
-			// 重新打开同一个弹层：旧内容不该再留下一层幽灵。
-			_suppressGhost = true;
-			_popup.Close();
-			_suppressGhost = false;
-		}
+		// 淡出还没走完就要重开：先收干净，旧内容不该再留在窗口上。
+		CloseInstantly();
 
-		ReleaseContent();
-		StopFade();
-		_window = anchor.FindVisualRoot() as Window;
 		content.Opacity = 0;
 		_popup.Content = content;
 		_popup.ShowAt(anchor, anchorInWindow, side);
@@ -83,41 +67,41 @@ internal sealed class FadePopup : IDisposable
 		{
 			// chrome 的 opacity 连落影一起淡入；内容先恢复，避免两套透明度相乘。
 			content.Opacity = 1;
-			StartFade(surface);
+			StartFade(surface, 0, 1, FadeInMs, Easing.EaseOutQuint);
 		}
 		else
 		{
-			StartFade(content);
+			StartFade(content, 0, 1, FadeInMs, Easing.EaseOutQuint);
 		}
 	}
 
 	public void Close()
 	{
-		if (_popup.IsOpen)
+		if (_closing)
 		{
-			_popup.Close();
 			return;
 		}
 
-		FinishGhost();
-		ReleaseContent();
+		var surface = _surface;
+		if (!Application.IsRunning || !_popup.IsOpen || surface is null || SurfaceHidden(surface))
+		{
+			CloseNow();
+			return;
+		}
+
+		_closing = true;
+		// 淡出的弹层不再接输入：点中的那一项已经执行过一次，再点一次只会重放一遍。
+		if (_popup.Content is { } content)
+		{
+			content.IsHitTestVisible = false;
+		}
+
+		StartFade(surface, surface.Opacity, 0, FadeOutMs, Easing.EaseOutCubic);
 	}
 
 	/// 立即关掉，不做淡出。同一个 Popup 马上要再开一次，或会话切走、浮层跟随标签页一起消失时用：
-	/// 那时淡出只会把旧菜单多留在窗口上 120ms，还白白往 OverlayLayer 挂一层幽灵。
-	public void CloseInstantly()
-	{
-		if (_popup.IsOpen)
-		{
-			_suppressGhost = true;
-			_popup.Close();
-			_suppressGhost = false;
-			return;
-		}
-
-		FinishGhost();
-		ReleaseContent();
-	}
+	/// 那时淡出只会把旧菜单多留在窗口上 120ms。
+	public void CloseInstantly() => CloseNow();
 
 	public void Dispose()
 	{
@@ -127,138 +111,85 @@ internal sealed class FadePopup : IDisposable
 		}
 
 		_disposed = true;
-		FinishGhost();
-		StopFade();
-		_suppressGhost = true;
-		_popup.Close();
-		_suppressGhost = false;
-		ReleaseContent();
+		CloseNow();
 		_popup.Closed -= OnPopupClosed;
 		_popup.Dispose();
 	}
 
 	private void OnPopupClosed(object? sender, PopupClosedEventArgs e)
 	{
-		StopFade();
-		var content = _popup.Content;
-		// 先取边界：内容一旦摘下父级，后续布局不再保证它停在原位。
-		var bounds = content?.Bounds ?? default;
-		var opacity = _surfaceOpacity;
-		var window = _window;
-		_popup.Content = null;
-		_window = null;
-
-		if (content is { } released)
-		{
-			if (_suppressGhost || e.Kind == PopupCloseKind.Lifecycle || !Application.IsRunning ||
-				window is null || !window.IsVisible)
-			{
-				UiLifetime.Release(released);
-			}
-			else
-			{
-				ShowGhost(window, released, bounds, opacity);
-			}
-		}
-
+		// 框架自己关掉的路径（外点、切窗、生命周期）不会先经过 Close：停下淡出，别让
+		// 收尾回调再去关一个已经拆掉的弹层。
+		_clock.Stop();
+		_closing = false;
+		_surface = null;
+		ReleaseContent();
 		Closed?.Invoke(this, e);
 	}
 
-	private void ShowGhost(Window window, UIElement content, Rect bounds, double opacity)
+	private void StartFade(UIElement surface, double from, double to, int durationMs, Func<double, double> easing)
 	{
-		FinishGhost();
-		if (bounds.Width <= 0 || bounds.Height <= 0 || opacity <= GhostMinOpacity)
-		{
-			UiLifetime.Release(content);
-			return;
-		}
-
-		var host = new GhostLayer(bounds, content) { Opacity = opacity };
-		_ghostHost = host;
-		_ghostWindow = window;
-		_ghostFrom = opacity;
-		window.OverlayLayer.Add(host);
-		_ghostClock.Start();
-	}
-
-	private void OnGhostTick(double progress)
-	{
-		if (_ghostHost is not { } host)
-		{
-			_ghostClock.Stop();
-			return;
-		}
-
-		// 浮层被提前摘掉（窗口关闭、OverlayLayer 释放）就不用再画，直接收尾。
-		if (host.Parent is null)
-		{
-			FinishGhost();
-			return;
-		}
-
-		host.Opacity = _ghostFrom * (1 - progress);
-	}
-
-	private void FinishGhost()
-	{
-		_ghostClock.Stop();
-		_ghostFrom = 0;
-		if (_ghostHost is not { } host)
-		{
-			return;
-		}
-
-		_ghostHost = null;
-		var window = _ghostWindow;
-		_ghostWindow = null;
-		window?.OverlayLayer.Remove(host);
-		UiLifetime.Release(host);
-	}
-
-	private void StartFade(UIElement surface)
-	{
-		StopFade();
-		_fadeSurface = surface;
-		_fadeFrom = 0;
-		_fadeTo = 1;
-		_surfaceOpacity = 0;
-		surface.Opacity = 0;
+		_clock.Stop();
+		_surface = surface;
+		_from = from;
+		_to = to;
+		surface.Opacity = from;
 		if (!Application.IsRunning)
 		{
-			surface.Opacity = 1;
-			_surfaceOpacity = 1;
-			_fadeSurface = null;
+			surface.Opacity = to;
 			return;
 		}
 
-		_fadeClock.Start();
+		_clock.Duration = TimeSpan.FromMilliseconds(durationMs);
+		_clock.EasingFunction = easing;
+		_clock.Start();
 	}
 
 	private void OnFadeTick(double progress)
 	{
-		var value = _fadeFrom + ((_fadeTo - _fadeFrom) * progress);
-		_surfaceOpacity = value;
-		if (_fadeSurface is { } surface)
+		if (_surface is { } surface)
 		{
-			surface.Opacity = value;
+			surface.Opacity = _from + ((_to - _from) * progress);
 		}
 	}
 
 	private void OnFadeCompleted()
 	{
-		_surfaceOpacity = _fadeTo;
-		if (_fadeSurface is { } surface)
+		if (_surface is { } surface)
 		{
-			surface.Opacity = _fadeTo;
-			_fadeSurface = null;
+			surface.Opacity = _to;
+		}
+
+		if (_closing)
+		{
+			CloseNow();
 		}
 	}
 
-	private void StopFade()
+	/// 拆窗本身是同步的：内容由 <see cref="OnPopupClosed"/> 交还给生命周期管理，
+	/// 不在这里释放，免得同一次关闭里放两遍。
+	private void CloseNow()
 	{
-		_fadeClock.Stop();
-		_fadeSurface = null;
+		_clock.Stop();
+		_closing = false;
+		_surface = null;
+		if (_popup.IsOpen)
+		{
+			_popup.Close();
+			// 正常关闭：内容由 Closed 回调交还，不在这里再放一遍。
+			if (!_popup.IsOpen)
+			{
+				return;
+			}
+		}
+
+		// 窗口已经不在时 Close 什么都不做，也就没人来释放内容。
+		ReleaseContent();
 	}
+
+	// 已经看不见的表面上再跑一段淡出等于什么都不画，直接收。
+	private static bool SurfaceHidden(UIElement surface) =>
+		!surface.IsVisible || surface.Opacity <= HiddenThreshold;
 
 	private void ReleaseContent()
 	{
@@ -269,46 +200,5 @@ internal sealed class FadePopup : IDisposable
 
 		_popup.Content = null;
 		UiLifetime.Release(content);
-	}
-
-	/// 幽灵只负责画面：铺满客户区、按原内容边界摆位，命中一律穿透。
-	/// 落影的几何与 alpha 照抄 MewUI 的 PopupChrome；换成 ShadowDecorator 时圆角与底部范围不同，
-	/// 关闭瞬间会看到阴影变重一下。
-	private sealed class GhostLayer : Panel
-	{
-		private const double ShadowBlurRadius = 8;
-		private const double ShadowOffsetY = 4;
-
-		private readonly Rect _bounds;
-		private readonly UIElement _child;
-
-		public GhostLayer(Rect bounds, UIElement child)
-		{
-			_bounds = bounds;
-			_child = child;
-			Add(child);
-		}
-
-		protected override Size MeasureContent(Size availableSize)
-		{
-			_child.Measure(new Size(_bounds.Width, _bounds.Height));
-			return Size.Empty;
-		}
-
-		protected override void ArrangeContent(Rect arranged) => _child.Arrange(_bounds);
-
-		protected override void OnRender(IGraphicsContext context)
-		{
-			var cb = _child.Bounds;
-			if (cb.Width <= 0 || cb.Height <= 0) return;
-
-			double dpiScale = GetDpi() / 96.0;
-			double radius = LayoutRounding.RoundToPixel(Theme.Metrics.ControlCornerRadius, dpiScale);
-			byte alpha = (byte)(Theme.IsDark ? 128 : 64);
-			var shadowBounds = new Rect(cb.X, cb.Y + ShadowOffsetY, cb.Width, cb.Height - ShadowOffsetY);
-			context.DrawBoxShadow(shadowBounds, radius, ShadowBlurRadius, Color.FromArgb(alpha, 0, 0, 0));
-		}
-
-		protected override UIElement? OnHitTest(Point point) => null;
 	}
 }
