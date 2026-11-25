@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
 using PiWeft.Cli;
 using PiWeft.CodingAgent;
 using PiWeft.CodingAgent.Subagents;
@@ -771,6 +772,38 @@ public sealed partial class SessionTab
 		_renderedMode = mode;
 		UpdateModeChip();
 		Render();
+	}
+
+	/// 起始页带进新会话的选择：模型、思考档、模式与安全档位在首条消息之前落地。
+	/// 起始页没有会话对象，这些选择先存在窗口侧的草稿里，标签开好后一次写入；图片同样先挂到
+	/// <see cref="_attachments"/>，发送时走的还是会话自己的那一条带图路径。
+	internal void ApplyStartChoices(
+		Model? model, string thinkingLevel, ComposerMode mode, string? securityLevel,
+		IReadOnlyList<(string Path, ImageContent Content)> images)
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		if (model is not null)
+		{
+			Session.SetModel(model);
+		}
+
+		Session.SetThinkingLevel(thinkingLevel);
+		ApplyMode(mode);
+		foreach (var (path, content) in images)
+		{
+			AddImage(path, content);
+		}
+
+		if (securityLevel is { Length: > 0 })
+		{
+			ApplySecurityLevel(securityLevel);
+		}
+
+		RefreshPickers();
 	}
 
 	private void UpdateModeChip()

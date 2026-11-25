@@ -2,21 +2,18 @@ using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Input;
 using Aprillz.MewUI.Svg;
+using PiWeft.Ai;
 
 namespace PiWeft.Desktop;
 
 /// 没有会话打开时的起始页：品牌标 + 一句标语 + 能直接开新会话的输入卡 + 三枚起步建议。
-/// 输入卡沿用会话 composer 的表面与交互（Enter 开始、Shift+Enter 换行、起步建议只填草稿），
-/// 落点由卡上的项目 chip 决定。MainWindow 负责目标目录、菜单与真正建会话。
-internal sealed class WelcomeSurface
+/// 输入卡与会话 composer 用同一套表面、尺寸与工具栏（模型、思考、+ 菜单、快捷消息、安全档位），
+/// 只是把选择先收在草稿里，提交时一次性带进新会话。MainWindow 负责目标目录、菜单与建会话。
+internal sealed partial class WelcomeSurface : IDisposable
 {
 	private const string BrandResource = "PiWeft.Desktop.Resources.appicon.piweft.svg";
 
-	private const double ColumnMaxWidth = 720;
-
 	private const double BrandSize = 72;
-
-	private const double InputHeight = 72;
 
 	private readonly TextBlock _targetLabel = new();
 
@@ -24,15 +21,21 @@ internal sealed class WelcomeSurface
 
 	private readonly Grid _inputHost;
 
-	private readonly TextBlock _model = new();
-
 	private readonly Button _startButton;
+
+	private readonly WrapPanel _attachmentBar = new();
+
+	private readonly ModelPicker _modelPicker;
 
 	private TextBlock _hint;
 
 	private bool _hintVisible = true;
 
 	private bool _composing;
+
+	private bool _disposed;
+
+	private ComposerMode _mode = ComposerMode.Normal;
 
 	public WelcomeSurface()
 	{
@@ -86,7 +89,7 @@ internal sealed class WelcomeSurface
 		_input = new MultiLineTextBox().PrimarySelection()
 			.FontSize(AppTheme.FontSizeChat)
 			.Placeholder(string.Empty)
-			.Height(InputHeight)
+			.Height(AppTheme.ComposerHeight)
 			.CornerRadius(AppTheme.RadiusMd)
 			.StyleName(AppStyles.TextInput)
 			.BorderThickness(0)
@@ -107,16 +110,13 @@ internal sealed class WelcomeSurface
 				}
 			});
 
-		_hint = ComposerHints.Build(Strings.WelcomePlaceholder);
+		_hint = ComposerHints.Build(HintText());
 		_inputHost = new Grid().Children(_input, _hint);
+		_attachmentBar.Spacing(AppTheme.Space1).IsVisible(false);
 
-		_model
-			.FontFamily(AppTheme.MonoFont)
-			.FontSize(AppTheme.FontSizeMicro)
-			.SubtleText()
-			.TextTrimming(TextTrimming.CharacterEllipsis)
-			.VerticalAlignment(VerticalAlignment.Center)
-			.HoverTip(Strings.WelcomeModelTip);
+		_modelPicker = new ModelPicker(() => _models, () => _model!, OnModelPicked);
+		_modelPicker.Closed += () => _input.Focus();
+		_composerPicker.Closed += () => _input.Focus();
 
 		var card = new Border()
 			.StyleName(AppStyles.Composer)
@@ -128,10 +128,9 @@ internal sealed class WelcomeSurface
 				.Spacing(AppTheme.Space2)
 				.Children(
 					targetButton,
+					_attachmentBar,
 					_inputHost,
-					new Grid().Columns("*,Auto").Children(
-						_model.Column(0),
-						_startButton.Column(1))));
+					BuildComposerToolbar()));
 
 		var starters = StarterPrompts.Build(Prefill);
 
@@ -146,7 +145,7 @@ internal sealed class WelcomeSurface
 
 		View = new CenteredWidthPanel()
 		{
-			MaxContentWidth = ColumnMaxWidth,
+			MaxContentWidth = AppTheme.MessageMaxWidth + AppTheme.Space6,
 		}
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Children(new StackPanel()
@@ -163,12 +162,20 @@ internal sealed class WelcomeSurface
 
 	public FrameworkElement View { get; }
 
-	/// 项目 chip：MainWindow 在它上面挂目标目录的 ContextMenu。
+	/// 项目 chip：MainWindow 在它上面挂目标目录的浮层菜单。
 	public Button TargetButton { get; }
 
 	public Button StartButton => _startButton;
 
 	public MultiLineTextBox Input => _input;
+
+	public ComposerMode Mode => _mode;
+
+	public Model? Model => _model;
+
+	public string ThinkingLevel => _thinking;
+
+	public IReadOnlyList<(string Path, ImageContent Content)> PendingImages => _pendingImages;
 
 	public event Action<string>? Submitted;
 
@@ -183,26 +190,38 @@ internal sealed class WelcomeSurface
 			: $"{Strings.WelcomeTargetTip}：{cwd}");
 	}
 
-	/// 底栏左侧的模型名。空串表示环境还没就绪，整段不占位。
-	public void SetModel(string label)
-	{
-		_model.Text(label);
-		_model.IsVisible(label.Length > 0);
-	}
-
 	public void Prefill(string text)
 	{
 		_input.Text = text;
 		_input.Focus();
 	}
 
-	public void ClearDraft() => _input.Text = string.Empty;
+	/// 提交成功后清空草稿：模式回到普通，图片与引用不留给下一次会话。
+	public void ClearDraft()
+	{
+		_mode = ComposerMode.Normal;
+		UpdateModeChip();
+		_input.Text = string.Empty;
+		_pendingImages.Clear();
+		RefreshAttachments();
+	}
 
-	/// 测试与快捷入口共用的一次提交：空草稿不动作。
+	/// 测试与快捷入口共用的一次提交：空草稿且没有附件时不动作。
 	public void Submit()
 	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		if (_loadingAttachments > 0)
+		{
+			NotifyError?.Invoke(Strings.AttachmentLoading);
+			return;
+		}
+
 		var text = _input.Text;
-		if (string.IsNullOrWhiteSpace(text))
+		if (string.IsNullOrWhiteSpace(text) && _pendingImages.Count == 0)
 		{
 			return;
 		}
@@ -210,10 +229,29 @@ internal sealed class WelcomeSurface
 		Submitted?.Invoke(text);
 	}
 
+	public void Dispose()
+	{
+		if (_disposed)
+		{
+			return;
+		}
+
+		_disposed = true;
+		DisposeComposerPopups();
+	}
+
+	/// 占位提示跟着模式走：计划与目标各说这一句会被当成什么。
+	private string HintText() => _mode switch
+	{
+		ComposerMode.Plan => Strings.ComposerPlaceholderFor(ComposerMode.Plan),
+		ComposerMode.Goal => Strings.ComposerPlaceholderFor(ComposerMode.Goal),
+		_ => Strings.WelcomePlaceholder,
+	};
+
 	private void SyncHint() => SetHint(_input.Text.Length == 0 && !IsComposingNow());
 
 	/// 显隐占位提示。复用同一节点时首次录制的光栅可能留在节点上（与会话 composer 同一个坑），
-	/// 因此每次重新显示都换一枚新实例；隐藏则立即生效，不必等一拍。
+	/// 因此每次重新显示都换一枚新实例；换文字时也换新实例。
 	private void SetHint(bool visible)
 	{
 		if (visible == _hintVisible)
@@ -228,7 +266,20 @@ internal sealed class WelcomeSurface
 			return;
 		}
 
-		var fresh = ComposerHints.Build(Strings.WelcomePlaceholder);
+		var fresh = ComposerHints.Build(HintText());
+		_inputHost.Remove(_hint);
+		_inputHost.Add(fresh);
+		_hint = fresh;
+	}
+
+	private void RefreshHintText()
+	{
+		if (!_hintVisible)
+		{
+			return;
+		}
+
+		var fresh = ComposerHints.Build(HintText());
 		_inputHost.Remove(_hint);
 		_inputHost.Add(fresh);
 		_hint = fresh;
@@ -253,4 +304,17 @@ internal sealed class WelcomeSurface
 	/// 以框架状态为准：事件可能迟到或丢，只看事件会让占位永久消失。
 	private bool IsComposingNow() =>
 		_input is ITextCompositionClient composition ? composition.IsComposing : _composing;
+
+	/// MewUI 不装同步上下文：后台读附件后回 UI 线程走这里，与 SessionTab.Dispatch 同一套。
+	private static void Dispatch(Action action)
+	{
+		var dispatcher = Application.IsRunning ? Application.Current.Dispatcher : null;
+		if (dispatcher is null || dispatcher.IsOnUIThread)
+		{
+			action();
+			return;
+		}
+
+		dispatcher.BeginInvoke(action);
+	}
 }

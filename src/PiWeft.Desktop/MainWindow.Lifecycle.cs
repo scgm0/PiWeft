@@ -25,6 +25,7 @@ public sealed partial class MainWindow
 			// 落盘并释放诊断文件句柄；开关状态仍留在偏好里，下次启动继续采。
 			Diagnostics.Close();
 			_themeWatcher?.Dispose();
+			_welcomeSurface.Dispose();
 			_startTargetMenu.Dispose();
 			_themeApplyCancellation?.Cancel();
 			_themeApplyCancellation?.Dispose();

@@ -1,6 +1,8 @@
 using System.Reflection;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using PiWeft.Ai;
+using PiWeft.CodingAgent.Security;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
 
@@ -92,24 +94,64 @@ public sealed class WelcomeSurfaceTests
 	}
 
 	[Fact]
-	public void ModelLabelHidesWhenTheEnvironmentIsNotReady()
+	public void ToolbarShowsTheModelAndThinkingLikeTheSessionComposer()
 	{
 		var surface = new WelcomeSurface();
+		var model = new Model { Id = "local-code", Provider = "local-openai", Name = "Local Code" };
+		surface.SetModel(model, "high");
 
-		surface.SetModel("Local Code");
-		Assert.Contains(Find<TextBlock>(surface.View), text => text.IsVisible && text.Text == "Local Code");
+		Assert.Equal(model, surface.Model);
+		Assert.Equal("high", surface.ThinkingLevel);
+		Assert.Contains(Find<TextBlock>(surface.View), text => text.IsVisible && text.Text == "local-openai/Local Code");
+		Assert.Contains(Find<TextBlock>(surface.View), text => text.IsVisible && text.Text == "· high");
 
-		surface.SetModel(string.Empty);
-		Assert.DoesNotContain(Find<TextBlock>(surface.View), text => text.IsVisible && text.Text == "Local Code");
+		surface.SetModel(null, string.Empty);
+		Assert.DoesNotContain(Find<TextBlock>(surface.View), text => text.Text == "local-openai/Local Code");
 	}
 
 	[Fact]
-	public void ColumnStopsAt720AndShrinksWithTheWindow()
+	public void ToolbarHasTheSessionComposerEntries()
 	{
 		var surface = new WelcomeSurface();
-		ConversationPerformanceTests.Layout(surface.View, 1000, 760);
+		var tips = Find<Button>(surface.View).Select(HoverHints.Text).ToArray();
+
+		Assert.Contains(Strings.ComposerAddTitle, tips);
+		Assert.Contains(Strings.QuickMessagesTitle, tips);
+	}
+
+	[Fact]
+	public void SecurityButtonCarriesTheLevelForTheNextSession()
+	{
+		var surface = new WelcomeSurface();
+		var level = ToolSecurity.Standard;
+		surface.SetSecurity(SecurityConfig.Off, level, hasOverride: true);
+
+		Assert.Contains(Find<Button>(surface.View), button =>
+			HoverHints.Text(button) == Strings.SecurityOverrideHint(level.Name, level.Description));
+	}
+
+	[Fact]
+	public void PlanModeRewritesThePlaceholderAndShowsTheChip()
+	{
+		var surface = new WelcomeSurface();
+		surface.SetModeForTests(ComposerMode.Plan);
+
+		Assert.Equal(ComposerMode.Plan, surface.Mode);
+		Assert.Contains(Find<TextBlock>(surface.View), text => text.IsVisible && text.Text == Strings.ModePlan);
+		Assert.Contains(Find<TextBlock>(surface.View),
+			text => text.IsVisible && text.Text == Strings.ComposerPlaceholderFor(ComposerMode.Plan));
+
+		surface.SetModeForTests(ComposerMode.Plan);
+		Assert.Equal(ComposerMode.Normal, surface.Mode);
+	}
+
+	[Fact]
+	public void ColumnFollowsTheComposerWidthAndShrinksWithTheWindow()
+	{
+		var surface = new WelcomeSurface();
+		ConversationPerformanceTests.Layout(surface.View, 1200, 760);
 		var card = Find<Border>(surface.View).Single(border => border.StyleName == AppStyles.Composer);
-		Assert.Equal(720, card.Bounds.Width, 1);
+		Assert.Equal(AppTheme.MessageMaxWidth + AppTheme.Space6, card.Bounds.Width, 1);
 
 		ConversationPerformanceTests.Layout(surface.View, 600, 760);
 		Assert.Equal(600, card.Bounds.Width, 1);

@@ -109,7 +109,6 @@ public static partial class Strings
 	public const string WelcomeStart = "开始";
 	public const string WelcomeTargetTip = "新会话放在哪个目录";
 	public const string WelcomeTargetAdd = "添加项目…";
-	public const string WelcomeModelTip = "新会话沿用最近用过的模型；进入会话后可在底栏更换。";
 	public const string WelcomeNotReady = "运行环境还没准备好，稍后再试。";
 	public const string EmptySessionHint = "描述要做的事，或从下面挑一个开始。";
 	// 起步建议只填进输入框、不直接发送：用户还能改措辞，也不会因为点错就花掉一次模型调用。
@@ -860,7 +859,7 @@ public static partial class Strings
 
 	public const string SecurityFollowDefault = "跟随默认档位";
 
-	public const string SecurityMenuHint = "为当前会话选择档位；立即写入 settings.json，对后续工具调用生效。";
+	public const string SecurityMenuHint = "为会话选择档位；立即写入 settings.json，对后续工具调用生效。";
 
 	public const string SecurityDisabledHint = "安全门总开关已关闭，所有工具调用直接放行。到设置 → 安全门里开启。";
 

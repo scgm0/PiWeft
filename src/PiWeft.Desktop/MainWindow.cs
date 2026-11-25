@@ -550,6 +550,7 @@ public sealed partial class MainWindow : Window
 		// 起始页默认跟当前分段走：在「项目」里就在窗口目录开会话，在「对话」里就落聊天目录；
 		// chip 随时可以换。
 		SetStartTarget(preference.SidebarProjects ? _cwd : _chatWorkspace);
+		RefreshWelcomeSecurity();
 	}
 
 	private void SetProjectCaption(string text, string? tip = null)
@@ -688,8 +689,8 @@ public sealed partial class MainWindow : Window
 
 		_environment = environment;
 		_environments[Path.GetFullPath(_cwd)] = environment;
-		RefreshWelcomeModel();
 		_models = environment.ListAvailableModels(_arguments.ApiKey);
+		RefreshWelcomeModel();
 		AppLog.For<MainWindow>().ZLogInformation($"Desktop ready: models={_models.Count}, tools={environment.Tools.Count}");
 
 		// 在线模型目录：默认每天检查一次，发现新版本就拉取并热替换。
@@ -2084,12 +2085,8 @@ public sealed partial class MainWindow : Window
 		}
 		// 发过一条消息才记「上次用过的模型」（PiDeck 的 lastUsedModel），选而未发不算。
 		tab.MessageSent += sent => RememberUsedModel(sent.Session.Model);
-		// 快捷消息浮层的「管理」：设置分区属于宿主，标签只发意图。
-		tab.QuickMessagesSettingsRequested += _tab =>
-		{
-			OpenSettingsDialog();
-			if (_settingsView is { } quickMessages) _ = quickMessages.SelectSectionAsync("quickMessages");
-		};
+		// 快捷消息浮层的「管理」：设置分区属于宿主，标签与起始页只发意图。
+		tab.QuickMessagesSettingsRequested += _ => OpenQuickMessagesSettings();
 		tab.StateChanged += _ =>
 		{
 			UpdateTabHeaders();
@@ -2323,6 +2320,7 @@ public sealed partial class MainWindow : Window
 				// 空状态行不留底部占位，起始页在视觉上仍然居中。
 				_status.IsVisible(false);
 				RefreshWelcomeModel();
+				RefreshWelcomeSecurity();
 				UpdateProjectCaption();
 				return;
 
