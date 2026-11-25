@@ -1,6 +1,10 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using PiWeft.Ai;
+using PiWeft.Ai.Json;
 using PiWeft.CodingAgent.Compatibility;
 using PiWeft.CodingAgent.Session;
 
@@ -87,7 +91,7 @@ internal sealed class TrajectoryRecord
 
 	internal ToolResultMessage? Result { get; set; }
 
-	internal ChatEntry? Live { get; init; }
+	internal ChatEntry? Live { get; set; }
 
 	public bool InFlight => EndedAt is null;
 }
@@ -290,7 +294,7 @@ internal static class TrajectoryBuilder
 				case CustomEntry custom:
 					AddProcess(entry.Id, TrajectoryKind.Custom, at,
 						TrajectoryText.CustomSummary(custom.CustomType, custom.Data), customType: custom.CustomType,
-						detail: custom.Data?.ToJsonString());
+						detail: custom.Data?.ToJsonString(PiJson.NodeOptions));
 					break;
 
 				case CustomMessageEntry custom when custom.CustomType == PiWeftProtocol.ContinueGenerationRole:
@@ -881,10 +885,6 @@ internal static class TrajectoryBuilder
 		public TrajectoryModel Complete(long now)
 		{
 			Flush();
-			if (_current.Count > 0)
-			{
-				Flush();
-			}
 
 			if (_leading.Count > 0)
 			{
@@ -1128,29 +1128,6 @@ internal static class TrajectoryLedger
 	{
 		var items = new List<TrajectoryLedgerItem>();
 		var run = new List<TrajectoryRecord>();
-
-		void Flush()
-		{
-			if (run.Count == 0)
-			{
-				return;
-			}
-
-			if (run.Count > limit)
-			{
-				items.Add(new TrajectoryLedgerItem.Group([.. run]));
-			}
-			else
-			{
-				foreach (var record in run)
-				{
-					items.Add(new TrajectoryLedgerItem.Record(record));
-				}
-			}
-
-			run.Clear();
-		}
-
 		foreach (var record in records)
 		{
 			if (record.Kind == TrajectoryKind.Tool)
@@ -1159,12 +1136,34 @@ internal static class TrajectoryLedger
 				continue;
 			}
 
-			Flush();
+			FlushRun(items, run, limit);
 			items.Add(new TrajectoryLedgerItem.Record(record));
 		}
 
-		Flush();
+		FlushRun(items, run, limit);
 		return items;
+	}
+
+	private static void FlushRun(List<TrajectoryLedgerItem> items, List<TrajectoryRecord> run, int limit)
+	{
+		if (run.Count == 0)
+		{
+			return;
+		}
+
+		if (run.Count > limit)
+		{
+			items.Add(new TrajectoryLedgerItem.Group([.. run]));
+		}
+		else
+		{
+			foreach (var record in run)
+			{
+				items.Add(new TrajectoryLedgerItem.Record(record));
+			}
+		}
+
+		run.Clear();
 	}
 
 	public static TrajectoryRecord? Peek(IReadOnlyList<TrajectoryRecord> records) =>
@@ -1260,23 +1259,37 @@ internal static class TrajectoryText
 		return builder.ToString();
 	}
 
-	public static string BlocksText(IReadOnlyList<ContentBlock>? blocks)
+	/// <param name="maxCharacters">最多取的字符数。检查器只显示前两万字，大段工具输出不能先整篇物化。</param>
+	public static string BlocksText(IReadOnlyList<ContentBlock>? blocks, int maxCharacters = int.MaxValue)
 	{
-		if (blocks is null || blocks.Count == 0)
+		if (blocks is null || blocks.Count == 0 || maxCharacters <= 0)
 		{
 			return string.Empty;
 		}
 
-		var builder = new StringBuilder();
-		foreach (var block in blocks)
+		// 单块是常态：直接返回原文或前缀，省一次整段复制。
+		if (blocks.Count == 1 && blocks[0] is TextContent single && single.TextLength > 0)
 		{
-			if (block is TextContent text)
-			{
-				builder.Append(text.Text);
-			}
+			return single.TextLength <= maxCharacters ? single.Text : single.Prefix(maxCharacters);
 		}
 
-		return builder.ToString();
+		StringBuilder? builder = null;
+		var remaining = maxCharacters;
+		foreach (var block in blocks)
+		{
+			if (block is not TextContent text || text.TextLength == 0 || remaining <= 0)
+			{
+				continue;
+			}
+
+			var take = Math.Min(text.TextLength, remaining);
+			var piece = take == text.TextLength ? text.Text : text.Prefix(take);
+			builder ??= new StringBuilder(Math.Min(maxCharacters, 4096));
+			builder.Append(piece);
+			remaining -= piece.Length;
+		}
+
+		return builder?.ToString() ?? string.Empty;
 	}
 
 	public static string BlocksSummary(IReadOnlyList<ContentBlock>? blocks, int limit = SummaryLimit)
@@ -1476,23 +1489,35 @@ internal static class TrajectoryText
 		builder.Append(text.AsSpan(0, Math.Min(text.Length, maxLength - builder.Length)));
 	}
 
-	public static string ThinkingText(IReadOnlyList<ContentBlock>? blocks)
+	public static string ThinkingText(IReadOnlyList<ContentBlock>? blocks, int maxCharacters = int.MaxValue)
 	{
-		if (blocks is null || blocks.Count == 0)
+		if (blocks is null || blocks.Count == 0 || maxCharacters <= 0)
 		{
 			return string.Empty;
 		}
 
-		var builder = new StringBuilder();
-		foreach (var block in blocks)
+		// 单块思考是常态：不必为整段再复制一份。
+		if (blocks.Count == 1 && blocks[0] is ThinkingContent single)
 		{
-			if (block is ThinkingContent thinking)
-			{
-				builder.Append(thinking.Thinking);
-			}
+			return single.Thinking.Length <= maxCharacters ? single.Thinking : single.Thinking[..maxCharacters];
 		}
 
-		return builder.ToString();
+		StringBuilder? builder = null;
+		var remaining = maxCharacters;
+		foreach (var block in blocks)
+		{
+			if (block is not ThinkingContent thinking || thinking.Thinking.Length == 0 || remaining <= 0)
+			{
+				continue;
+			}
+
+			var take = Math.Min(thinking.Thinking.Length, remaining);
+			builder ??= new StringBuilder(Math.Min(maxCharacters, 4096));
+			builder.Append(thinking.Thinking.AsSpan(0, take));
+			remaining -= take;
+		}
+
+		return builder?.ToString() ?? string.Empty;
 	}
 
 	public static string ContentText(MessageContent content) => content.IsText
@@ -1542,8 +1567,78 @@ internal static class TrajectoryText
 			return Summarize(error);
 		}
 
-		return Summarize(arguments.ToJsonString());
+		return Summarize(JsonPrefix(arguments));
 	}
+
+	/// 摘要只需要 JSON 前缀：最后一轮每秒重放时，几十 KB 的 codemode/扩展参数
+	/// 不能每次都整篇序列化只为取 96 个字符。
+	private static string JsonPrefix(System.Text.Json.Nodes.JsonNode node)
+	{
+		const int maxBytes = 4096;
+		var buffer = new BoundedBuffer(maxBytes);
+		try
+		{
+			using var writer = new Utf8JsonWriter(buffer, CompactJson);
+			node.WriteTo(writer);
+		}
+		catch (BufferTruncatedException)
+		{
+			// 截断就是目的：已写入的前缀足够生成摘要。
+		}
+
+		var text = Encoding.UTF8.GetString(buffer.Written);
+		// 截断点落在多字节字符中间时，去掉解码器补的替换符。
+		return text.EndsWith('\uFFFD') ? text[..^1] : text;
+	}
+
+	private static readonly JsonWriterOptions CompactJson = new()
+	{
+		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+		SkipValidation = true,
+	};
+
+	/// 限制字节数的 UTF-8 缓冲：超出上限时中断序列化，只留下可读前缀。
+	private sealed class BoundedBuffer(int limit) : IBufferWriter<byte>
+	{
+		private byte[] _buffer = new byte[Math.Min(limit, 512)];
+		private int _length;
+
+		public ReadOnlySpan<byte> Written => _buffer.AsSpan(0, _length);
+
+		public void Advance(int count)
+		{
+			if (_length + count <= limit)
+			{
+				_length += count;
+				return;
+			}
+
+			_length = limit;
+			throw new BufferTruncatedException();
+		}
+
+		public Memory<byte> GetMemory(int sizeHint = 0) => Rent(sizeHint);
+
+		public Span<byte> GetSpan(int sizeHint = 0) => Rent(sizeHint).Span;
+
+		private Memory<byte> Rent(int sizeHint)
+		{
+			if (sizeHint <= 0)
+			{
+				sizeHint = 512;
+			}
+
+			// 给 writer 留出写满一整块的空间，超出上限的字节在 Advance 时丢弃。
+			if (_buffer.Length - _length < sizeHint)
+			{
+				Array.Resize(ref _buffer, Math.Max(Math.Max(_length + sizeHint, _buffer.Length * 2), 512));
+			}
+
+			return _buffer.AsMemory(_length);
+		}
+	}
+
+	private sealed class BufferTruncatedException : Exception;
 
 	private static string? JsonString(System.Text.Json.Nodes.JsonObject arguments, params ReadOnlySpan<string> names)
 	{
@@ -1561,7 +1656,7 @@ internal static class TrajectoryText
 
 	public static string CustomSummary(string customType, System.Text.Json.Nodes.JsonNode? data)
 	{
-		var payload = data is null ? string.Empty : Summarize(data.ToJsonString(), SummaryLimit);
+		var payload = data is null ? string.Empty : Summarize(JsonPrefix(data), SummaryLimit);
 		if (payload.Length == 0)
 		{
 			return customType;
@@ -1599,9 +1694,15 @@ internal static class TrajectoryText
 		return Summarize(builder.ToString(), limit);
 	}
 
-	public static string SystemPromptText(SystemMessage system)
+	public static string SystemPromptText(SystemMessage system, int maxCharacters = int.MaxValue)
 	{
-		var builder = new StringBuilder(system.Text);
+		if (maxCharacters <= 0)
+		{
+			return string.Empty;
+		}
+
+		var builder = new StringBuilder(Math.Min(system.Text.Length, maxCharacters));
+		AppendPrefix(builder, system.Text, maxCharacters);
 		if (system.Sections is { Count: > 0 } sections)
 		{
 			foreach (var (name, value) in sections)
@@ -1611,12 +1712,18 @@ internal static class TrajectoryText
 					continue;
 				}
 
+				if (builder.Length >= maxCharacters)
+				{
+					break;
+				}
+
 				if (builder.Length > 0)
 				{
 					builder.AppendLine().AppendLine();
 				}
 
-				builder.Append("## ").Append(name).AppendLine().Append(value);
+				builder.Append("## ").Append(name).AppendLine();
+				AppendPrefix(builder, value, maxCharacters);
 			}
 		}
 
@@ -1627,33 +1734,34 @@ internal static class TrajectoryText
 	{
 		{ Kind: TrajectoryKind.Tool, Call: { } call } => call.ArgumentsError is { Length: > 0 } error
 			? error
-			: call.Arguments.ToJsonString(),
+			: call.Arguments.ToJsonString(PiJson.NodeOptions),
 		{ Source: UserMessage user } => ContentText(user.Content),
 		_ => string.Empty,
 	};
 
-	public static string OutputOf(TrajectoryRecord record)
+	/// <param name="maxCharacters">最多取的字符数。检查器先取有界前缀，复制时才要全文。</param>
+	public static string OutputOf(TrajectoryRecord record, int maxCharacters = int.MaxValue)
 	{
 		if (record.Kind == TrajectoryKind.Thinking)
 		{
 			if (record.Live is { } live)
 			{
-				return live.ThinkingSource.Slice(0, live.ThinkingLength);
+				return live.ThinkingSource.Slice(0, Math.Min(live.ThinkingLength, maxCharacters));
 			}
 
-			return ThinkingText((record.Source as AssistantMessage)?.Content);
+			return ThinkingText((record.Source as AssistantMessage)?.Content, maxCharacters);
 		}
 
 		if (record.Kind == TrajectoryKind.Tool)
 		{
-			return record.Result is { } result ? BlocksText(result.Content) : string.Empty;
+			return record.Result is { } result ? BlocksText(result.Content, maxCharacters) : string.Empty;
 		}
 
 		return record.Source switch
 		{
-			AssistantMessage assistant => BlocksText(assistant.Content),
-			ToolResultMessage result => BlocksText(result.Content),
-			SystemMessage system => SystemPromptText(system),
+			AssistantMessage assistant => BlocksText(assistant.Content, maxCharacters),
+			ToolResultMessage result => BlocksText(result.Content, maxCharacters),
+			SystemMessage system => SystemPromptText(system, maxCharacters),
 			UserMessage user => ContentText(user.Content),
 			_ => string.Empty,
 		};

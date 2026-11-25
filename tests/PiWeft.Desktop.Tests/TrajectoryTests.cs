@@ -545,6 +545,96 @@ public class TrajectoryTests
 	}
 
 	[Fact]
+	public void ToolArgumentsAndCustomDataKeepChineseReadable()
+	{
+		// 轨迹面板直接显示这些 JSON：默认编码器会把中文写成 \uXXXX，复盘时只能看到转义。
+		var entries = new List<SessionEntry>
+		{
+			Entry("user", Base, User("问题", Base)),
+			Entry("assistant", Base + 100, Assistant(Base + 100,
+				[Call("c1", "todo", new JsonObject { ["action"] = "replace", ["text"] = "修复编码" })],
+				duration: 100, stop: StopReason.ToolUse)),
+			new CustomEntry
+			{
+				Id = "custom",
+				Timestamp = Iso(Base + 200),
+				CustomType = "pi-deck-todo",
+				Data = new JsonObject { ["todos"] = new JsonArray(new JsonObject { ["text"] = "帧级取负" }) },
+			},
+		};
+
+		var model = TrajectoryBuilder.Build(entries, [], Base + 1000);
+		var tool = Assert.Single(model.Records, static item => item.Kind == TrajectoryKind.Tool);
+		Assert.Contains("修复编码", TrajectoryText.InputOf(tool));
+		Assert.DoesNotContain("\\u", TrajectoryText.InputOf(tool));
+
+		var custom = Assert.Single(model.Records, static item => item.Kind == TrajectoryKind.Custom);
+		Assert.Contains("帧级取负", custom.Detail);
+		Assert.DoesNotContain("\\u", custom.Detail);
+		Assert.Contains("帧级取负", custom.Summary);
+	}
+
+	[Fact]
+	public void LargeOutputsReadOnlyThePrefixThatWillBeShown()
+	{
+		// 检查器只显示前两万字：大段工具输出/提示词不能为了一次展开整篇物化。
+		var longText = new string('x', 50_000);
+		var result = new ToolResultMessage
+		{
+			ToolCallId = "c1",
+			ToolName = "bash",
+			Timestamp = Base + 200,
+			Content = [TextContent.Of(longText)],
+		};
+		var record = new TrajectoryRecord
+		{
+			Id = "tool",
+			Kind = TrajectoryKind.Tool,
+			Lane = TrajectoryLane.Tools,
+			Summary = "bash",
+			StartedAt = Base,
+			EndedAt = Base + 1,
+			Result = result,
+		};
+
+		Assert.Equal(10, TrajectoryText.OutputOf(record, 10).Length);
+		Assert.Equal(longText, TrajectoryText.OutputOf(record));
+
+		var system = new SystemMessage
+		{
+			Timestamp = Base,
+			Content = MessageContent.FromText(longText),
+			Sections = new Dictionary<string, string?> { ["tail"] = "section" },
+		};
+		Assert.Equal(10, TrajectoryText.SystemPromptText(system, 10).Length);
+		Assert.Contains("## tail", TrajectoryText.SystemPromptText(system));
+
+		// 多块拼接也按预算停：超出部分不再解码。
+		var blocks = new ContentBlock[] { TextContent.Of("abc"), TextContent.Of("def") };
+		Assert.Equal("abcd", TrajectoryText.BlocksText(blocks, 4));
+		Assert.Equal("abcdef", TrajectoryText.BlocksText(blocks));
+		Assert.Equal(4, TrajectoryText.ThinkingText(
+			[new ThinkingContent { Thinking = "abcdef" }], 4).Length);
+	}
+
+	[Fact]
+	public void LargeJsonArgumentsOnlySerializeTheSummaryPrefix()
+	{
+		// 最后一轮每秒重放：codemode 的整段代码/扩展状态不能为了一行摘要整篇序列化。
+		var big = new string('x', 200_000);
+		var call = Call("c1", "codemode", new JsonObject { ["code"] = big });
+		var summary = TrajectoryText.ToolSummary(call);
+		Assert.True(summary.Length <= TrajectoryText.SummaryLimit);
+		Assert.Contains("code", summary);
+
+		var custom = TrajectoryText.CustomSummary("pi-deck-todo",
+			new JsonObject { ["text"] = new string('中', 10_000) });
+		Assert.Contains("中", custom);
+		Assert.DoesNotContain("\\u", custom);
+		Assert.True(custom.Length <= TrajectoryText.SummaryLimit + "pi-deck-todo · ".Length);
+	}
+
+	[Fact]
 	public void CompactTokensMatchesLedgerColumns()
 	{
 		Assert.Equal("265", TrajectoryFormat.CompactTokens(265));

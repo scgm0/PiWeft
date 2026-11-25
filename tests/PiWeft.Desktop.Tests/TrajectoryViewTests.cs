@@ -70,6 +70,53 @@ public sealed class TrajectoryViewTests
 	}
 
 	[Fact]
+	public void InspectorKeepsGrowingWhileTheLiveRowStaysUnderTheSummaryBucket()
+	{
+		// 摘要签名按 64 字符分桶；检查器不能跟着停住，否则选中流式回复后正文再也不长。
+		var body = new StreamingBuffer();
+		body.Append("first");
+		var timestamp = Base + 100;
+		var live = Live(body, timestamp);
+		var entries = new List<SessionEntry>
+		{
+			new SessionMessageEntry
+			{
+				Id = "user",
+				Timestamp = Iso(Base),
+				Message = new UserMessage { Content = MessageContent.FromText("run"), Timestamp = Base },
+			},
+		};
+		var source = new TrajectorySource(entries, [live], true);
+		using var view = new TrajectoryView(() => source);
+		ConversationPerformanceTests.Layout(view.View, 420, 820);
+		view.SelectForSmoke($"live:{timestamp}:assistant");
+		ConversationPerformanceTests.Layout(view.View, 420, 820);
+
+		Assert.Contains(Find<MultiLineTextBox>(view.View),
+			box => box.Text.Contains("first", StringComparison.Ordinal));
+		Assert.DoesNotContain(Find<MultiLineTextBox>(view.View),
+			box => box.Text.Contains("second", StringComparison.Ordinal));
+
+		// 新快照仍在同一个 64 字符桶里：账本不重建，但检查器要拿到新正文。
+		body.Append(" second");
+		source = new TrajectorySource(entries, [Live(body, timestamp)], true);
+		view.Refresh();
+		ConversationPerformanceTests.Layout(view.View, 420, 820);
+
+		Assert.Contains(Find<MultiLineTextBox>(view.View),
+			box => box.Text.Contains("first second", StringComparison.Ordinal));
+	}
+
+	private static ChatEntry Live(StreamingBuffer body, long timestamp) => new()
+	{
+		Role = ChatRole.Assistant,
+		Text = string.Empty,
+		Timestamp = timestamp,
+		IsStreaming = true,
+		StreamedText = new StreamedText(body, 1),
+	};
+
+	[Fact]
 	public void EmptySourceShowsACenteredHintInsteadOfEmptyLanes()
 	{
 		using var view = new TrajectoryView(() => new TrajectorySource([], [], false));

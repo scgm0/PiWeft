@@ -47,6 +47,7 @@ internal sealed class TrajectoryView : IDisposable
 	private readonly Border _overviewHost;
 	private readonly TextBlock _turns = new();
 	private readonly TextBlock _recordCount = new();
+	private readonly TextBlock _foldAllLabel;
 	private readonly Button _foldAll;
 	private readonly Button _loadOlder;
 	private readonly Dictionary<string, TrajectoryRecord> _byId = new(StringComparer.Ordinal);
@@ -76,7 +77,11 @@ internal sealed class TrajectoryView : IDisposable
 		var dot = new TextBlock().Text("·").FontSize(AppTheme.FontSizeMicro).FaintText()
 			.VerticalAlignment(VerticalAlignment.Center);
 
-		_foldAll = LinkButton(Strings.TrajectoryFoldAll, ToggleAllTurns);
+		_foldAllLabel = new TextBlock()
+			.FontSize(AppTheme.FontSizeMicro)
+			.AccentText()
+			.VerticalAlignment(VerticalAlignment.Center);
+		_foldAll = LinkButton(_foldAllLabel, ToggleAllTurns);
 		_loadOlder = LinkButton(Strings.TrajectoryLoadOlder, LoadOlder);
 		_loadOlder.IsVisible(false);
 
@@ -259,6 +264,8 @@ internal sealed class TrajectoryView : IDisposable
 			// 入口没变：只推进进行中的轮头秒表与概览时间域，不重建虚拟列表。
 			// 空会话的 _foldInitialized 还没置位，但内容确实没变，不必每秒空建一次。
 			TickLiveDurations();
+			// 签名按 64 字符分桶，摘要不必每字重建；但检查器就在眼前，选中流式记录时得继续长。
+			RefreshSelectedLive(source);
 			return;
 		}
 
@@ -285,9 +292,6 @@ internal sealed class TrajectoryView : IDisposable
 				_byId[record.Id] = record;
 			}
 		}
-
-		// 构建成功后才记签名：构建抛错时下一次秒表会重试，不永久跳过。
-		_signature = signature;
 
 		if (!_foldInitialized)
 		{
@@ -328,6 +332,8 @@ internal sealed class TrajectoryView : IDisposable
 		// 第一帧固定从轮头开始，之后才沿用读者的位置。
 		var follow = _hasRendered && IsAtBottom();
 		Render(keepScroll: true, offset, follow);
+		// 渲染成功后才记签名：构建或渲染抛错时下一次秒表会重试，不永久跳过。
+		_signature = signature;
 		_hasRendered = true;
 	}
 
@@ -343,8 +349,17 @@ internal sealed class TrajectoryView : IDisposable
 			$"turn0={(_model.Turns.Count > 0 ? $"{TrajectoryFormat.Time(_model.Turns[0].StartedAt)}..{TrajectoryFormat.Time(_model.Turns[0].EndedAt ?? 0)} dur={_model.Turns[0].DurationMs:0} live={_model.Turns[0].InFlight}" : "-")}");
 	}
 
-	public void SelectForSmoke()
+	public void SelectForSmoke() => SelectForSmoke(null);
+
+	/// 选一条指定记录（测试/冒烟用）；默认选最后一轮里的工具记录。
+	public void SelectForSmoke(string? id)
 	{
+		if (id is not null)
+		{
+			Select(id, scroll: true);
+			return;
+		}
+
 		// 选最后一轮里的工具记录：窗口仍是默认的尾部三轮，「加载更早记录」不会被选中动作撑开。
 		var lastTurn = _model.Turns.Count > 0 ? _model.Turns[^1] : null;
 		var target = lastTurn?.Records.FirstOrDefault(static record => record.Kind == TrajectoryKind.Tool && !record.InFlight)
@@ -370,13 +385,10 @@ internal sealed class TrajectoryView : IDisposable
 
 	private void Render(bool keepScroll, double offset = 0, bool follow = false)
 	{
-		_turns.Text(Strings.TrajectoryTurns(_model.Turns.Count));
-		_recordCount.Text(Strings.TrajectoryRecords(_model.Records.Count));
+		SetText(_turns, Strings.TrajectoryTurns(_model.Turns.Count));
+		SetText(_recordCount, Strings.TrajectoryRecords(_model.Records.Count));
 		var allFolded = _model.Turns.Count > 0 && _model.Turns.All(turn => _folded.Contains(turn.Index));
-		_foldAll.Content(new TextBlock()
-			.Text(allFolded ? Strings.TrajectoryUnfoldAll : Strings.TrajectoryFoldAll)
-			.FontSize(AppTheme.FontSizeMicro)
-			.AccentText());
+		SetText(_foldAllLabel, allFolded ? Strings.TrajectoryUnfoldAll : Strings.TrajectoryFoldAll);
 		_loadOlder.IsVisible(_model.Turns.Count > _turnWindow);
 		_overview.SetData(_model.Records, _model.DomainStart, _model.DomainEnd, _selectedId);
 
@@ -399,25 +411,20 @@ internal sealed class TrajectoryView : IDisposable
 		var selected = _selectedId is { } id && _byId.TryGetValue(id, out var found) ? found : null;
 		// 进行中的一轮每秒会重渲染账本；检查器只有内容真的变了才重建，
 		// 否则读者正在看的入参/结果会被每秒弹回顶部。
-		var inspectorSignature = InspectorSignatureOf(selected);
-		if (_inspectorSignature != inspectorSignature)
-		{
-			// 同一条记录（通常是在流式更新）保留检查器滚动位置；换选中项才回到顶部。
-			var sameRecord = string.Equals(_inspectedId, selected?.Id, StringComparison.Ordinal);
-			var inspectorOffset = sameRecord ? _inspectorScroll.VerticalOffset : 0;
-			_inspectorSignature = inspectorSignature;
-			_inspectedId = selected?.Id;
-			ShowInspector(selected);
-			ScheduleAfterLayout(() =>
-			{
-				var max = SmoothScroll.For(_inspectorScroll).MaxVerticalOffset;
-				_inspectorScroll.SetScrollOffsets(0, Math.Clamp(inspectorOffset, 0, max));
-			});
-		}
+		SyncInspector(selected);
 
 		if (keepScroll)
 		{
 			RestoreScroll(offset, follow);
+		}
+	}
+
+	private static void SetText(TextBlock block, string text)
+	{
+		// 每秒刷新时轮数/记录数通常没变；同值写入仍会失效文本布局。
+		if (!string.Equals(block.Text, text, StringComparison.Ordinal))
+		{
+			block.Text(text);
 		}
 	}
 
@@ -473,6 +480,7 @@ internal sealed class TrajectoryView : IDisposable
 
 	private void TickLiveDurations()
 	{
+		var now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 		if (_model.Turns.Count > 0)
 		{
 			var anyInFlight = false;
@@ -485,15 +493,11 @@ internal sealed class TrajectoryView : IDisposable
 				}
 			}
 
-			if (anyInFlight)
+			if (anyInFlight && now > _model.DomainEnd)
 			{
-				var now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-				if (now > _model.DomainEnd)
-				{
-					// 进行中的会话右端跟着 now 生长：概览的开区间保持可见。
-					_model = _model with { DomainEnd = now };
-					_overview.SetData(_model.Records, _model.DomainStart, _model.DomainEnd, _selectedId);
-				}
+				// 进行中的会话右端跟着 now 生长：概览的开区间保持可见。
+				_model = _model with { DomainEnd = now };
+				_overview.SetData(_model.Records, _model.DomainStart, _model.DomainEnd, _selectedId);
 			}
 		}
 
@@ -502,11 +506,61 @@ internal sealed class TrajectoryView : IDisposable
 			return;
 		}
 
-		var current = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 		foreach (var (label, startedAt) in _liveDurations.Values)
 		{
-			label.Text(TrajectoryFormat.Duration(Math.Max(0, current - startedAt)));
+			label.Text(TrajectoryFormat.Duration(Math.Max(0, now - startedAt)));
 		}
+	}
+
+	/// 签名没变时不重建账本，但检查器里的流式正文仍要跟着长：
+	/// 摘要按 64 字符分桶是有意的，选中记录的正文不能用同一个桶宽把自己锁住。
+	private void RefreshSelectedLive(TrajectorySource source)
+	{
+		if (_selectedId is not { } id || !_byId.TryGetValue(id, out var record) || record.Live is not { } current)
+		{
+			return;
+		}
+
+		if (source.LiveRows is not { Count: > 0 } rows)
+		{
+			return;
+		}
+
+		// 行快照是不可变的：只在时间戳对得上（同一条流式回复）时换成最新的那一帧。
+		var live = rows[^1];
+		if (!live.IsStreaming || live.Role != ChatRole.Assistant || live.Timestamp != current.Timestamp)
+		{
+			return;
+		}
+
+		if (live.TextLength == current.TextLength && live.ThinkingLength == current.ThinkingLength)
+		{
+			return;
+		}
+
+		record.Live = live;
+		SyncInspector(record);
+	}
+
+	/// 选中记录的内容真的变了才重建检查器；同一记录保留滚动位置，换选中项才回到顶部。
+	private void SyncInspector(TrajectoryRecord? selected)
+	{
+		var signature = InspectorSignatureOf(selected);
+		if (_inspectorSignature == signature)
+		{
+			return;
+		}
+
+		var sameRecord = string.Equals(_inspectedId, selected?.Id, StringComparison.Ordinal);
+		var offset = sameRecord ? _inspectorScroll.VerticalOffset : 0;
+		_inspectorSignature = signature;
+		_inspectedId = selected?.Id;
+		ShowInspector(selected);
+		ScheduleAfterLayout(() =>
+		{
+			var max = SmoothScroll.For(_inspectorScroll).MaxVerticalOffset;
+			_inspectorScroll.SetScrollOffsets(0, Math.Clamp(offset, 0, max));
+		});
 	}
 
 	private void RestoreScroll(double offset, bool follow)
@@ -896,6 +950,7 @@ internal sealed class TrajectoryView : IDisposable
 		? default
 		: new InspectorSignature(
 			record.Id,
+			record.StartedAt,
 			record.Status,
 			record.EndedAt,
 			record.DurationMs,
@@ -906,6 +961,7 @@ internal sealed class TrajectoryView : IDisposable
 
 	private readonly record struct InspectorSignature(
 		string? Id,
+		long StartedAt,
 		string? Status,
 		long? EndedAt,
 		double? DurationMs,
@@ -1049,7 +1105,7 @@ internal sealed class TrajectoryView : IDisposable
 			}
 		}
 
-		var output = !liveOutputAdded ? TrajectoryText.OutputOf(record) : string.Empty;
+		var output = !liveOutputAdded ? TrajectoryText.OutputOf(record, InspectorTextLimit + 1) : string.Empty;
 		if (output.Length > 0)
 		{
 			var label = record.Kind switch
@@ -1059,7 +1115,10 @@ internal sealed class TrajectoryView : IDisposable
 				TrajectoryKind.Tool => Strings.TrajectoryFieldResult,
 				_ => Strings.TrajectoryFieldOutput,
 			};
-			_inspectorBody.Children(TextSection(label, output));
+			// 几十 KB 的工具输出/提示词先只解显示需要的前缀，复制时再取全文。
+			_inspectorBody.Children(TextSection(label, output,
+				() => TrajectoryText.OutputOf(record),
+				truncated: output.Length > InspectorTextLimit));
 			hasBody = true;
 		}
 		else if (record.Detail is { Length: > 0 } detail &&
@@ -1154,22 +1213,20 @@ internal sealed class TrajectoryView : IDisposable
 		dispatcher.BeginInvoke(DispatcherPriority.Render, action);
 	}
 
-	private static Button LinkButton(string text, Action action)
-	{
-		var label = new TextBlock()
-			.Text(text)
-			.FontSize(AppTheme.FontSizeMicro)
-			.AccentText()
-			.VerticalAlignment(VerticalAlignment.Center);
-		return new Button()
-			.StyleName(AppStyles.GhostButton)
-			.Height(22)
-			.MinHeight(22)
-			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
-			.VerticalAlignment(VerticalAlignment.Center)
-			.Content(label)
-			.OnClick(action);
-	}
+	private static Button LinkButton(string text, Action action) => LinkButton(new TextBlock()
+		.Text(text)
+		.FontSize(AppTheme.FontSizeMicro)
+		.AccentText()
+		.VerticalAlignment(VerticalAlignment.Center), action);
+
+	private static Button LinkButton(TextBlock label, Action action) => new Button()
+		.StyleName(AppStyles.GhostButton)
+		.Height(22)
+		.MinHeight(22)
+		.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+		.VerticalAlignment(VerticalAlignment.Center)
+		.Content(label)
+		.OnClick(action);
 
 	private static SourceSignature SignatureOf(TrajectorySource source)
 	{
