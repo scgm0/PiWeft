@@ -3,8 +3,15 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-public sealed class SessionStatisticsPanel
+/// 会话统计弹窗：与「+」菜单同一套原生浮层，锚定在统计入口上方，外点、切窗或 Esc 收起。
+/// 内容只建一次：统计数据与余额摘要跨开关复用，关闭只卸载；FadePopup 因此不接管释放。
+public sealed class SessionStatisticsPanel : IDisposable
 {
+	private const double CardWidth = 420;
+
+	// 与「+」菜单同一道缝：锚点上下各留 6，弹窗不贴着按钮边。
+	private const double AnchorGap = 6;
+
 	private readonly StackPanel _body = new();
 	private readonly Border _usage = new Border().IsVisible(false);
 	private ProviderUsageSummary? _usageSummary;
@@ -17,8 +24,7 @@ public sealed class SessionStatisticsPanel
 	private readonly Button _compact;
 	private readonly Button _overview;
 	private readonly Button _details;
-	private Window? _window;
-	private readonly OverlayFade _fade;
+	private readonly FadePopup _popup = new() { ReleaseContentOnClose = false };
 	private SessionStatisticsDisplay? _display;
 	private bool _showDetails;
 
@@ -52,55 +58,53 @@ public sealed class SessionStatisticsPanel
 			new StackPanel().Orientation(Orientation.Horizontal).Spacing(4).Children(_overview, _details));
 		var content = new DockPanel().LastChildFill().Spacing(AppTheme.Space3)
 			.Children(heading.DockTop(), _compact.DockBottom(), scroll);
-		// 卡片是右下角带结构线与落影的一块，背景不变暗；第一层的透明捕获层只做一件事：
-		// 点面板以外的空白处收起浮层（不吞掉外观，也不变暗）。关闭另有 × 与 Esc。
-		View = new Grid().IsVisible(false).Children(
-			new Button().Background(AppTheme.Transparent).Cursor(CursorType.Arrow)
-				.Focusable(false).BorderThickness(0).CornerRadius(0).OnClick(Hide),
-			new ShadowDecorator()
-				.BlurRadius(14).OffsetY(4).CornerRadius(AppTheme.RadiusMd)
-				.WithTheme((theme, shadow) => shadow.ShadowColor = theme.IsDark
-					? new Color(0xB4, 0x00, 0x00, 0x00)
-					: new Color(0x3C, 0x00, 0x00, 0x00))
-				.HorizontalAlignment(HorizontalAlignment.Right).VerticalAlignment(VerticalAlignment.Bottom)
-				.Margin(new Thickness(AppTheme.Space1))
-				.Child(new Border().Width(420).MaxWidth(420)
-					.StyleName(AppStyles.PopupCard)
-					.Padding(new Thickness(AppTheme.Space4, AppTheme.Space4, AppTheme.Space4 - AppTheme.ScrollBarSlot, AppTheme.Space4))
-					.Child(content)))
+		// 宽度定死：浮层按内容测量，行尾数值与标题才对得齐；高度交给滚动体，窗口矮时由浮层收口。
+		View = new Border().Width(CardWidth).MaxWidth(CardWidth)
+			.StyleName(AppStyles.PopupCard)
+			.Padding(new Thickness(AppTheme.Space4, AppTheme.Space4, AppTheme.Space4 - AppTheme.ScrollBarSlot, AppTheme.Space4))
+			.Child(content)
 			.OnKeyDown(key =>
 			{
 				if (key.Key != Key.Escape) return;
 				key.Handled = true;
 				Hide();
 			});
-		_fade = new OverlayFade((FrameworkElement)View);
+		_popup.Closed += OnPopupClosed;
 	}
 
 	public UIElement View { get; }
-	public bool IsOpen => View.IsVisible;
+	public bool IsOpen => _popup.IsOpen;
 	public event Action? Closed;
 
-	public void Show(UIElement owner, SessionStatisticsDisplay display, bool busy)
+	/// 打开在锚点上方。无后端（单测、诊断脚本未 Run）时只更新内容，不弹窗，与「+」菜单一致。
+	public void Show(UIElement anchor, SessionStatisticsDisplay display, bool busy)
 	{
-		if (owner.FindVisualRoot() is not Window window) return;
 		Update(display, busy);
-		if (IsOpen) { if (_fade.IsClosing) _fade.Reopen(); _usageSummary?.Show(); return; }
-		_window = window;
-		if (View is FrameworkElement element)
+		if (!Application.IsRunning)
 		{
-			element.Margin = window is MainWindow main
-				? MainWindow.OverlayInsetFor(main.WindowState)
-				: new Thickness(0, AppTheme.TitleBarHeight, 0, 0);
+			// 无后端（单测、诊断脚本未 Run）：内容照常更新，不弹窗。
+			_usageSummary?.Show();
+			return;
 		}
-		window.OverlayLayer.Add(View);
-		View.IsVisible(true);
-		AppStyles.ApplyTextColors(View);
-		_fade.Open();
-		// 焦点跟着当前页签：明细态重新打开时再去聚焦概览，会让概览按钮带上一层焦点底色，
-		// 看起来像鼠标悬停在未选中的页签上。
-		(_showDetails ? _details : _overview).Focus();
+		if (anchor.FindVisualRoot() is not Window) return;
 		_usageSummary?.Show();
+		if (IsOpen)
+		{
+			FocusActiveTab();
+			return;
+		}
+		// 统计入口就在输入区下方：提示属于入口却不归浮层管，会叠在刚打开的卡片上。
+		HoverHints.Cancel(anchor);
+		_popup.Show(View, anchor, Anchor(anchor), PopupAnchorSide.Above);
+		FocusActiveTab();
+	}
+
+	/// 锚点矩形与卡片同宽并贴住按钮右缘：Popup 的横向夹取以矩形左缘为起点，
+	/// 这样大卡片右缘停在按钮右缘，不会被推到屏幕外。
+	private static Rect Anchor(UIElement anchor)
+	{
+		var bounds = anchor.Bounds;
+		return new Rect(Math.Max(0, bounds.Right - CardWidth), bounds.Y - AnchorGap, CardWidth, bounds.Height + (AnchorGap * 2));
 	}
 
 	internal void SetUsage(ProviderUsageSummary summary)
@@ -121,8 +125,8 @@ public sealed class SessionStatisticsPanel
 		_body.Clear();
 		_values.Clear();
 		if (_display is { } display) UpdateRows(display);
-		// 键盘焦点也交给新页签，旧页签不会因为保有焦点而显示悬停底色。
-		if (IsOpen) (_showDetails ? _details : _overview).Focus();
+		// 键盘焦点也交给新页签，键盘操作从当前页签继续。
+		if (IsOpen) FocusActiveTab();
 	}
 
 	public void Update(SessionStatisticsDisplay display, bool busy)
@@ -161,18 +165,34 @@ public sealed class SessionStatisticsPanel
 		for (var index = 0; index < rows.Count; index++) _values[index].Text(rows[index].Value);
 	}
 
+	/// 焦点跟着当前页签：明细态重新打开时，键盘操作从明细继续，不回落到概览。
+	internal void FocusActiveTab() => (_showDetails ? _details : _overview).Focus();
+
 	public void Hide()
 	{
 		_usageSummary?.Hide();
-		if (!IsOpen || _fade.IsClosing) return;
-		_fade.Close(CloseNow);
+		_popup.Close();
 	}
 
-	private void CloseNow()
+	/// 立即收起，不做淡出：切标签时浮层要跟着旧页签一起走。
+	public void CloseInstantly()
 	{
-		View.IsVisible(false);
-		_window?.OverlayLayer.Remove(View);
-		_window = null;
+		_usageSummary?.Hide();
+		_popup.CloseInstantly();
+	}
+
+	public void Dispose()
+	{
+		_popup.Closed -= OnPopupClosed;
+		_usageSummary?.Hide();
+		_popup.Dispose();
+		UiLifetime.Release(View);
+	}
+
+	// 框架自己关掉的路径（外点、切窗）也要停掉余额查询，并让标签页把焦点收回输入区。
+	private void OnPopupClosed(object? sender, PopupClosedEventArgs e)
+	{
+		_usageSummary?.Hide();
 		Closed?.Invoke();
 	}
 }

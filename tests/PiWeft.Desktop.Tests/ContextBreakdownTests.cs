@@ -73,36 +73,31 @@ public sealed class ContextBreakdownTests
 	}
 
 	[Fact]
-	public void ReopeningAfterDetailsKeepsFocusOnTheActiveTab()
+	public void SwitchingTabsReplacesTheRowsAndMarksTheActiveTab()
 	{
-		var panel = new SessionStatisticsPanel(static () => { });
-		var owner = new Border();
-		_ = new Window().Content(owner);
+		using var panel = new SessionStatisticsPanel(static () => { });
 		var display = new SessionStatisticsDisplay(new SessionStatistics(), 128_000, 1_000_000, 5);
-
-		panel.Show(owner, display, false);
+		panel.Update(display, false);
 		var overview = Find<Button>(panel.View).Single(button =>
 			button.Content is StackPanel content && Find<TextBlock>(content).Any(text => text.Text == Strings.StatisticsOverview));
 		var details = Find<Button>(panel.View).Single(button =>
 			button.Content is StackPanel content && Find<TextBlock>(content).Any(text => text.Text == Strings.StatisticsDetails));
+
+		// 概览只留关键行；切到明细后缓存读写等内容才出现，页签底色跟着当前页签。
+		Assert.Equal(AppStyles.SelectedButton, overview.StyleName);
+		Assert.Equal(AppStyles.GhostButton, details.StyleName);
+		Assert.DoesNotContain(Find<TextBlock>(panel.View), text => text.Text == Strings.StatisticsCacheIO);
+
 		panel.ShowDetails();
-		Assert.True(details.IsFocused);
-		Assert.False(overview.IsFocused);
-
-		// 明细态关闭再打开：焦点必须留在明细，不能回到概览上显示一层焦点底色。
-		panel.Hide();
-		panel.Show(owner, display, false);
-		Assert.True(details.IsFocused);
-		Assert.False(overview.IsFocused);
-
-		panel.Hide();
-		UiLifetime.Release(panel.View);
+		Assert.Equal(AppStyles.SelectedButton, details.StyleName);
+		Assert.Equal(AppStyles.GhostButton, overview.StyleName);
+		Assert.Contains(Find<TextBlock>(panel.View), text => text.Text == Strings.StatisticsCacheIO);
 	}
 
 	[Fact]
 	public void StatisticsPanelShowsTheThreeSegmentsWithTheirShare()
 	{
-		var panel = new SessionStatisticsPanel(static () => { });
+		using var panel = new SessionStatisticsPanel(static () => { });
 		var display = new SessionStatisticsDisplay(
 			new SessionStatistics { LatestCacheHitPercent = 12, Input = 100, Output = 40 }, 128_000, 1_000_000, 3)
 		{
@@ -132,13 +127,12 @@ public sealed class ContextBreakdownTests
 		Assert.Contains("~20K", texts);
 		Assert.Contains("~8K", texts);
 		Assert.Contains("~100K", texts);
-		UiLifetime.Release(panel.View);
 	}
 
 	[Fact]
 	public void MissingBreakdownDoesNotDrawAnEmptyBar()
 	{
-		var panel = new SessionStatisticsPanel(static () => { });
+		using var panel = new SessionStatisticsPanel(static () => { });
 		panel.Update(new SessionStatisticsDisplay(new SessionStatistics(), 0, 1_000_000, 1), false);
 		panel.View.IsVisible = true;
 		panel.View.Measure(new Size(720, 520));
@@ -149,8 +143,6 @@ public sealed class ContextBreakdownTests
 		{
 			Assert.DoesNotContain(Find<TextBlock>(panel.View), text => text.Text == label && EffectivelyVisible(text));
 		}
-
-		UiLifetime.Release(panel.View);
 	}
 
 	private static bool EffectivelyVisible(Element element)

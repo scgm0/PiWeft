@@ -65,6 +65,7 @@ public sealed partial class SessionTab : IDisposable
 	private readonly TextBlock _statisticsLine = new();
 	private readonly Border _composerPane;
 	private readonly TextBlock _contextLabel = new();
+	private Button _statisticsTrigger = null!;
 	private readonly SessionStatisticsPanel _statisticsPanel;
 	private readonly ProviderUsagePanel _usagePanel;
 	private readonly ProviderUsageSummary _usageSummary;
@@ -794,6 +795,7 @@ public sealed partial class SessionTab : IDisposable
 
 		var contextButton = new Button().Content(_contextLabel.FontSize(AppTheme.FontSizeCaption).PrimaryText())
 			.HoverTip(Strings.SessionStatistics).OnClick(ShowStatistics).Ghost();
+		_statisticsTrigger = contextButton;
 		var statisticsBar = new ReadingColumn().Spacing(4).MaxWidth(AppTheme.MessageMaxWidth + AppTheme.Space6)
 			.HorizontalAlignment(HorizontalAlignment.Center).Children(
 				_contextBar,
@@ -1204,6 +1206,7 @@ public sealed partial class SessionTab : IDisposable
 		_quickMessages.Dispose();
 		_modelPicker.CloseInstantly();
 		_securityMenu.Dispose();
+		_statisticsPanel.Dispose();
 		_scroll.ScrollChanged -= OutlineScrolled;
 		_outline.Dispose();
 		_conversationScroll.Dispose();
@@ -1227,7 +1230,6 @@ public sealed partial class SessionTab : IDisposable
 		_chat.Changed -= OnChatChanged;
 		_chat.Dispose();
 		UiLifetime.Release(View);
-		UiLifetime.Release(_statisticsPanel.View);
 		UiLifetime.Release(_usagePanel.View);
 		GC.SuppressFinalize(this);
 	}
@@ -3343,7 +3345,7 @@ public sealed partial class SessionTab : IDisposable
 		return _statisticsDisplay;
 	}
 
-	public void ShowStatistics() => _statisticsPanel.Show(View, StatisticsDisplay(), IsStreaming || Session.IsCompacting);
+	public void ShowStatistics() => _statisticsPanel.Show(_statisticsTrigger, StatisticsDisplay(), IsStreaming || Session.IsCompacting);
 
 	public void SetAvailableModels(Func<IReadOnlyList<Model>> availableModels) => _modelPicker.SetSource(availableModels);
 	public void ShowStatisticsDetails()
@@ -3355,7 +3357,8 @@ public sealed partial class SessionTab : IDisposable
 	public void ShowProviderUsage() => _usagePanel.Show(View);
 	private void ConfigureProviderUsage()
 	{
-		_statisticsPanel.Hide();
+		// 马上要换成用量配置浮层：淡出只会让旧卡片在新浮层上方多留 120ms。
+		_statisticsPanel.CloseInstantly();
 		_usagePanel.Show(View);
 		_returnToStatistics = true;
 	}
@@ -3365,7 +3368,8 @@ public sealed partial class SessionTab : IDisposable
 		_returnToStatistics = false;
 		_imagePreview.Hide();
 		_fileDiffPreview.Hide();
-		_statisticsPanel.Hide();
+		// 页签内容摘下时框架可能已经收掉弹层；这里兑底立即收，不做淡出。
+		_statisticsPanel.CloseInstantly();
 		_modelPicker.Hide();
 		// 切标签时弹层跟着走：淡出只会把旧菜单多留在窗口上，直接收。
 		_composerAddMenu.CloseInstantly();

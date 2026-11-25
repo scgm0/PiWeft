@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run with: xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-statistics-smoke.sh
 # All sessions/configuration are isolated from the user's agent directory.
+# 会话统计是锚定在入口上方的原生弹层，只截应用窗口会丢掉卡片；截整屏。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 output="$(mktemp -d /tmp/pi-statistics-smoke-XXXXXX)"
@@ -57,12 +58,13 @@ JS
   xdotool getwindowgeometry --shell "$window" >"$directory/geometry.log"
   xdotool search --onlyvisible --name '^PiWeft Desktop — ' >"$directory/window-ids.log"
   sleep 0.5
-  import -window "$window" "$output/$variant.png"
-  dimensions="$(identify -format '%wx%h' "$output/$variant.png")"
+  import -window root "$output/$variant.png"
+  width="$(sed -n 's/^WIDTH=//p' "$directory/geometry.log")"
+  height="$(sed -n 's/^HEIGHT=//p' "$directory/geometry.log")"
   expected="1280x820"
   if [[ "$variant" == compact ]]; then expected="720x520"; fi
-  if [[ "$dimensions" != "$expected" ]]; then
-    printf 'Screenshot was clipped (%s, expected %s); use a 1600x1000 Xvfb screen.\n' "$dimensions" "$expected"
+  if [[ "${width}x${height}" != "$expected" ]]; then
+    printf 'Window was clipped (%sx%s, expected %s); use a 1600x1000 Xvfb screen.\n' "$width" "$height" "$expected"
     exit 1
   fi
   wait "$app_pid"

@@ -41,6 +41,10 @@ internal sealed class FadePopup : IDisposable
 	/// 收尾的 120ms 不该吃掉下一次打开。
 	public bool IsOpen => _popup.IsOpen && !_closing;
 
+	/// 关闭时是否释放内容。菜单每次打开都重建，关掉即释放；常驻面板（会话统计）复用同一棵树，
+	/// 关闭只卸载，内容由调用方自己的 Dispose 释放。
+	public bool ReleaseContentOnClose { get; init; } = true;
+
 	public UIElement? Content => _popup.Content;
 
 	/// 原生弹层真正拆掉后触发；窗口级生命周期关闭不保证还会走到这里。
@@ -54,6 +58,8 @@ internal sealed class FadePopup : IDisposable
 		CloseInstantly();
 
 		content.Opacity = 0;
+		// 复用内容（ReleaseContentOnClose = false）时，上一次淡出把命中关了，重开必须恢复。
+		content.IsHitTestVisible = true;
 		_popup.Content = content;
 		_popup.ShowAt(anchor, anchorInWindow, side);
 		if (!_popup.IsOpen)
@@ -199,6 +205,9 @@ internal sealed class FadePopup : IDisposable
 		}
 
 		_popup.Content = null;
-		UiLifetime.Release(content);
+		if (ReleaseContentOnClose)
+		{
+			UiLifetime.Release(content);
+		}
 	}
 }

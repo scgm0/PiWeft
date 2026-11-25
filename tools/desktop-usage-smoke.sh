@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 用量查询界面验收：本地假网关返回两种形态（余额 / 三档百分比），
-# 分别截图「配置弹窗」与「统计面板底部摘要」，深浅主题各一组。
+# 分别截图「配置弹窗」与「统计弹层底部摘要」，深浅主题各一组。
+# 统计弹层是独立的原生窗口：$target-screen.png 截整屏，$target.png 仍用于校对窗口尺寸。
 # Run with: xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-usage-smoke.sh
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -87,6 +88,10 @@ JSON
     sleep 2.5
     xdotool getwindowgeometry --shell "$window" >"$directory/geometry.log"
     import -window "$window" "$directory/$target.png"
+    # 统计是锚定在入口上方的原生弹层，只截应用窗口会丢掉卡片；另存整屏供视觉验收。
+    if [[ "$target" == "statistics" ]]; then
+      import -window root "$directory/$target-screen.png"
+    fi
     dimensions="$(identify -format '%wx%h' "$directory/$target.png")"
     expected="1280x820"
     if [[ "$theme" == "light" ]]; then expected="1000x720"; fi

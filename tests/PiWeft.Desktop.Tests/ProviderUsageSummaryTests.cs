@@ -20,7 +20,7 @@ public sealed class ProviderUsageSummaryTests
 		var configured = false;
 		var summary = new ProviderUsageSummary(() => FakeStreams.Model(), () => "/project", () => configured = true,
 			(_, _, _) => { Interlocked.Increment(ref calls); return Task.FromResult(Balance(12.99)); });
-		var panel = new SessionStatisticsPanel(() => { });
+		using var panel = new SessionStatisticsPanel(() => { });
 		panel.SetUsage(summary);
 		var owner = new Border();
 		_ = new Window().Content(owner);
@@ -36,7 +36,6 @@ public sealed class ProviderUsageSummaryTests
 		await summary.RefreshAsync();
 		Assert.Equal(2, calls);
 		panel.Hide();
-		UiLifetime.Release(panel.View);
 	}
 
 	[Fact]

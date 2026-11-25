@@ -4,16 +4,24 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// 窗口浮层的整块淡入淡出：进入 200ms ease-out-quint，退出 120ms ease-out-cubic。
-/// 退出用 ease-out、时长也比 PiDeck 的 200ms 短：ease-in 开头几乎不动，关闭看起来会先卡一下。
+/// 窗口浮层的整块淡入淡出：铺满主窗口的面积大，曲线比原生弹层缓一档。
+/// 进入 220ms ease-out-quad，退出 160ms ease-out-quad；quint 在慢帧下会把第一帧直接推到
+/// 五六十个百分点，整屏亮度跳一下。淡入前先以近乎透明的状态铺一帧，把布局、字体缓存和
+/// 透明层的首帧成本留在动画之前。
+/// 退出比进入短：关闭要利落；ease-in 开头几乎不动，看起来会先卡一下。
 /// 时钟与回调都是字段：Duration 与 EasingFunction 本来就可写，每次开关重造时钟只是给 GC 添活。
 internal sealed class OverlayFade
 {
-	private const int FadeInMs = 200;
-	private const int FadeOutMs = 120;
+	private const int FadeInMs = 220;
+	private const int FadeOutMs = 160;
 
 	// 起点低于这个值就当作已经看不见：直接收尾，不再空跑一帧。
 	private const double HiddenThreshold = 0.01;
+
+	// 预热帧用：大于 0 才会建透明层，小于 HiddenThreshold 所以看不见。
+	private const double PrewarmOpacity = 0.005;
+
+	private static readonly Func<double, double> OverlayEase = Easing.EaseOutQuad;
 
 	private readonly FrameworkElement _view;
 	// 与主浮层同生共死的附属元素（例如最大化时补的标题栏压暗条）：单独一层，不跟着主浮层淡出就会硬切。
@@ -23,12 +31,13 @@ internal sealed class OverlayFade
 	private double _to;
 	private Action? _onClosed;
 	private bool _closing;
+	private Window? _prewarmWindow;
 
 	public OverlayFade(FrameworkElement view, FrameworkElement? companion = null)
 	{
 		_view = view;
 		_companion = companion;
-		_clock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), Easing.EaseOutQuint)
+		_clock = new AnimationClock(TimeSpan.FromMilliseconds(FadeInMs), OverlayEase)
 		{
 			TickCallback = OnTick,
 			CompletedCallback = OnCompleted,
@@ -41,21 +50,52 @@ internal sealed class OverlayFade
 	{
 		_closing = false;
 		_onClosed = null;
-		Start(0, 1, FadeInMs, Easing.EaseOutQuint);
+		Stop();
+		UnsubscribePrewarm();
+		if (!Application.IsRunning || _view.FindVisualRoot() is not Window window)
+		{
+			Start(0, 1, FadeInMs, OverlayEase);
+			return;
+		}
+
+		_prewarmWindow = window;
+		SetOpacity(PrewarmOpacity);
+		window.FrameRendered += OnPrewarmRendered;
+		_view.InvalidateVisual();
+	}
+
+	private void OnPrewarmRendered()
+	{
+		if (_prewarmWindow is not { } window) return;
+		UnsubscribePrewarm();
+		if (_view.Parent is null) return;
+		// 从预热透明度接着走：先落到 0 会让那一帧把已建好的透明层丢掉，下一帧又要重建。
+		Start(PrewarmOpacity, 1, FadeInMs, OverlayEase);
+	}
+
+	private void UnsubscribePrewarm()
+	{
+		if (_prewarmWindow is { } window)
+		{
+			window.FrameRendered -= OnPrewarmRendered;
+			_prewarmWindow = null;
+		}
 	}
 
 	/// 淡出途中又要显示同一个浮层：从当前不透明度接回 1，避免闪一下。
 	public void Reopen()
 	{
+		UnsubscribePrewarm();
 		var from = Math.Clamp(_view.Opacity, 0, 1);
 		_closing = false;
 		_onClosed = null;
-		Start(from, 1, FadeInMs, Easing.EaseOutQuint);
+		Start(from, 1, FadeInMs, OverlayEase);
 	}
 
 	/// 立即放弃正在进行的淡出/淡入，不触发关闭回调；调用方随后自己做同步收尾。
 	public void Cancel()
 	{
+		UnsubscribePrewarm();
 		_closing = false;
 		_onClosed = null;
 		Stop();
@@ -69,6 +109,7 @@ internal sealed class OverlayFade
 			return;
 		}
 
+		UnsubscribePrewarm();
 		if (!Application.IsRunning)
 		{
 			SetOpacity(1);
@@ -78,6 +119,7 @@ internal sealed class OverlayFade
 
 		_closing = true;
 		_onClosed = closed;
+		_to = 0;
 		var from = Math.Clamp(_view.Opacity, 0, 1);
 		if (from <= HiddenThreshold)
 		{
@@ -85,7 +127,7 @@ internal sealed class OverlayFade
 			return;
 		}
 
-		Start(from, 0, FadeOutMs, Easing.EaseOutCubic);
+		Start(from, 0, FadeOutMs, OverlayEase);
 	}
 
 	private void Start(double from, double to, int durationMs, Func<double, double> easing)
