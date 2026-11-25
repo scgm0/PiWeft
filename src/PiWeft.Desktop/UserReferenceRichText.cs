@@ -25,15 +25,20 @@ internal static class UserReferenceRichText
 	private const double PaddingRight = 7;
 	private const double IconGap = 4;
 
-	private static readonly ConditionalWeakTable<MultiLineTextBox, object> Attached = [];
+	private static readonly ConditionalWeakTable<MultiLineTextBox, Attachment> Attached = [];
 
+	private sealed record Attachment(Func<IReadOnlySet<string>>? CommandNames);
+
+	/// <param name="cwdProvider">目标目录可能随会话/起始页切换；悬停提示按调用时的值解析相对路径。</param>
 	public static void Attach(MultiLineTextBox box, bool editable, Action<string>? onOpen = null, string? cwd = null,
-		Func<string, string?>? skillLocation = null)
+		Func<string, string?>? skillLocation = null, Func<string?>? cwdProvider = null,
+		Func<IReadOnlySet<string>>? commandNames = null)
 	{
 		if (Attached.TryGetValue(box, out _)) return;
-		Attached.Add(box, new object());
-		var projection = new ReferenceProjection();
-		var generator = new ReferenceElementGenerator();
+		Attached.Add(box, new Attachment(commandNames));
+		Func<string?> currentCwd = cwdProvider ?? (() => cwd);
+		var projection = new ReferenceProjection(commandNames);
+		var generator = new ReferenceElementGenerator(commandNames);
 		box.Extensions.Projections.Add(projection);
 		box.Extensions.ElementGenerators.Add(generator);
 		box.Extensions.Revision++;
@@ -57,7 +62,7 @@ internal static class UserReferenceRichText
 			hint = chip;
 			// 悬浮在 chip 上时把完整路径 / 技能位置交给 HoverHints，锚点就用这枚 chip 的矩形，
 			// 长消息里浮层也贴着鼠标；主题与边界翻转仍由现有 Popup 负责。
-			HoverHints.Set(box, chip is null ? null : HintFor(chip, cwd, skillLocation), hit?.Bounds);
+			HoverHints.Set(box, chip is null ? null : HintFor(chip, currentCwd(), skillLocation), hit?.Bounds);
 		};
 		box.MouseLeave += () =>
 		{
@@ -80,6 +85,7 @@ internal static class UserReferenceRichText
 
 	internal static string HintFor(IUserChip chip, string? cwd, Func<string, string?>? skillLocation)
 	{
+		if (chip is UserCommandReference command) return command.Command;
 		if (chip is UserSkillReference skill)
 		{
 			if (skillLocation?.Invoke(skill.Name) is { Length: > 0 } location) return location;
@@ -96,13 +102,18 @@ internal static class UserReferenceRichText
 
 	public static int Count(string text) => UserChips.Parse(text).Count;
 
+	internal static int Count(MultiLineTextBox box) => UserChips.Parse(box.Text, CommandsFor(box)).Count;
+
+	private static IReadOnlySet<string>? CommandsFor(MultiLineTextBox box) =>
+		Attached.TryGetValue(box, out var attachment) ? attachment.CommandNames?.Invoke() : null;
+
 	/// 测试用：确认某个输入框已经挂上引用投影（chip 渲染与原子编辑依赖它）。
 	internal static bool IsAttached(MultiLineTextBox box) => Attached.TryGetValue(box, out _);
 
 	public static TextRange? ExpandSelection(MultiLineTextBox box)
 	{
 		if (box.SelectionLength == 0) return null;
-		var references = UserChips.Parse(box.Text);
+		var references = UserChips.Parse(box.Text, CommandsFor(box));
 		if (references.Count == 0) return null;
 		var start = box.SelectionStart;
 		var end = start + box.SelectionLength;
@@ -144,7 +155,7 @@ internal static class UserReferenceRichText
 		{
 			if (!line.VisualLines.Any(visual => visual.Bounds.Contains(local))) continue;
 			var lineText = box.Text.Substring(line.LogicalLine.Offset, line.LogicalLine.Length);
-			foreach (var chip in UserChips.Parse(lineText))
+			foreach (var chip in UserChips.Parse(lineText, CommandsFor(box)))
 			{
 				var start = line.MapSourceOffsetToProjected(chip.Start);
 				var end = line.MapSourceOffsetToProjected(chip.End);
@@ -167,7 +178,7 @@ internal static class UserReferenceRichText
 
 	private static void NormalizeCaret(MultiLineTextBox box)
 	{
-		var references = UserChips.Parse(box.Text);
+		var references = UserChips.Parse(box.Text, CommandsFor(box));
 		var caret = box.CaretPosition;
 		foreach (var reference in references)
 		{
@@ -181,7 +192,7 @@ internal static class UserReferenceRichText
 	public static bool TryHandleKey(MultiLineTextBox box, KeyEventArgs key)
 	{
 		if (box.IsReadOnly) return false;
-		var references = UserChips.Parse(box.Text);
+		var references = UserChips.Parse(box.Text, CommandsFor(box));
 		if (references.Count == 0) return false;
 
 		if (key.Key is Key.Left or Key.Right && (key.ShiftKey || box.SelectionLength == 0))
@@ -222,7 +233,7 @@ internal static class UserReferenceRichText
 	public static bool TryHandleTextInput(MultiLineTextBox box, TextInputEventArgs input)
 	{
 		if (box.IsReadOnly || string.IsNullOrEmpty(input.Text)) return false;
-		var references = UserChips.Parse(box.Text);
+		var references = UserChips.Parse(box.Text, CommandsFor(box));
 		if (references.Count == 0) return false;
 
 		if (box.SelectionLength > 0)
@@ -242,16 +253,17 @@ internal static class UserReferenceRichText
 		return true;
 	}
 
-	private sealed class ReferenceProjection : ITextProjection
+	private sealed class ReferenceProjection(Func<IReadOnlySet<string>>? commandNames) : ITextProjection
 	{
 		public ProjectedText Project(in TextProjectionContext context)
 		{
 			var source = context.SourceText.ToString();
-			if (!source.Contains('@') && !source.Contains("/skill:", StringComparison.Ordinal))
+			if (!source.Contains('@') && !source.Contains("/skill:", StringComparison.Ordinal) &&
+				(commandNames is null || !source.Contains('/')))
 			{
 				return new(source.AsMemory(), IdentityTextOffsetMap.Instance);
 			}
-			var references = UserChips.Parse(source);
+			var references = UserChips.Parse(source, commandNames?.Invoke());
 			if (references.Count == 0) return new(source.AsMemory(), IdentityTextOffsetMap.Instance);
 
 			// 投影与原文逐字符等长：每枚引用占位成 1 个 U+FFFC + (n-1) 个零宽空格，
@@ -302,7 +314,7 @@ internal static class UserReferenceRichText
 			=> sourceToProjected[Math.Clamp(sourceOffset, 0, sourceToProjected.Length - 1)];
 	}
 
-	private sealed class ReferenceElementGenerator : ITextElementGenerator
+	private sealed class ReferenceElementGenerator(Func<IReadOnlySet<string>>? commandNames) : ITextElementGenerator
 	{
 		public int GetFirstInterestedOffset(in TextElementScanContext context, int startOffset)
 		{
@@ -310,7 +322,7 @@ internal static class UserReferenceRichText
 			var line = context.Document.GetLineByOffset(Math.Clamp(startOffset, 0, context.Document.TextLength));
 			var lineText = context.Document.GetText(line.Offset, line.Length);
 			if (!MayContainChip(lineText)) return -1;
-			foreach (var chip in UserChips.Parse(lineText))
+			foreach (var chip in UserChips.Parse(lineText, commandNames?.Invoke()))
 			{
 				var start = line.Offset + chip.Start;
 				if (start >= startOffset) return start;
@@ -323,7 +335,7 @@ internal static class UserReferenceRichText
 			var line = context.Document.GetLineByOffset(Math.Clamp(offset, 0, context.Document.TextLength));
 			var lineText = context.Document.GetText(line.Offset, line.Length);
 			if (!MayContainChip(lineText)) return null;
-			foreach (var chip in UserChips.Parse(lineText))
+			foreach (var chip in UserChips.Parse(lineText, commandNames?.Invoke()))
 			{
 				if (line.Offset + chip.Start != offset) continue;
 				// 投影按源文等长占位，整段都要被行内对象吞掉；只给 1 列会让剩余零宽字符
@@ -338,15 +350,16 @@ internal static class UserReferenceRichText
 			return null;
 		}
 
-		private static bool MayContainChip(string text)
-			=> text.Contains('@') || text.Contains("/skill:", StringComparison.Ordinal);
+		private bool MayContainChip(string text)
+			=> text.Contains('@') || text.Contains("/skill:", StringComparison.Ordinal) ||
+			   (commandNames is not null && text.Contains('/'));
 	}
 
 	private sealed class ReferenceEditableRegions(MultiLineTextBox box) : IEditableRegionProvider
 	{
 		public bool CanInsert(int offset)
 		{
-			var references = UserChips.Parse(box.Text);
+			var references = UserChips.Parse(box.Text, CommandsFor(box));
 			foreach (var reference in references)
 			{
 				if (offset > reference.Start && offset < reference.End) return false;
@@ -366,7 +379,12 @@ internal static class UserReferenceRichText
 		private ITextLayout? _labelLayout;
 		private ITextEngine? _labelEngine;
 
-		private Color Accent => chip.Kind == UserChipKind.Skill ? AppTheme.Thinking : AppTheme.Info;
+		private Color Accent => chip.Kind switch
+		{
+			UserChipKind.Skill => AppTheme.Thinking,
+			UserChipKind.Command => AppTheme.TextPrimary,
+			_ => AppTheme.Info,
+		};
 
 		public InlineMetrics Measure()
 		{
@@ -383,8 +401,13 @@ internal static class UserReferenceRichText
 
 			// 图标取自内嵌 Lucide SVG（sparkles / file-text / folder-open）：自己画的四角星与
 			// 文件/文件夹轮廓和全应用其它图标笔触不一致，也跟不上 Lucide 的形状。
-			DrawChipIcon(context.Graphics,
-				chip.Kind == UserChipKind.Skill ? "sparkles" : chip.IsDirectory ? "folder-open" : "file-text",
+			var icon = chip.Kind switch
+			{
+				UserChipKind.Skill => "sparkles",
+				UserChipKind.Command => "file-text",
+				_ => chip.IsDirectory ? "folder-open" : "file-text",
+			};
+			DrawChipIcon(context.Graphics, icon,
 				new Point(origin.X + PaddingLeft, origin.Y + (ChipHeight - IconSize) / 2), accent);
 
 			if (EnsureLabelLayout() is not { } layout) return;

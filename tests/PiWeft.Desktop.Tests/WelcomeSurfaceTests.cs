@@ -3,6 +3,8 @@ using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using Aprillz.MewUI.Platform;
 using PiWeft.Ai;
+using PiWeft.CodingAgent.Prompts;
+using PiWeft.CodingAgent.Resources;
 using PiWeft.CodingAgent.Security;
 using Xunit;
 using static PiWeft.Desktop.Tests.VisualTree;
@@ -150,6 +152,57 @@ public sealed class WelcomeSurfaceTests
 		{
 			TempDirectory.Delete(root);
 		}
+	}
+
+	[Fact]
+	public void PromptTemplateTokensProjectToChipsAndDeleteAtomically()
+	{
+		var surface = new WelcomeSurface
+		{
+			ResourceProvider = () => new ResourceSnapshot
+			{
+				Templates =
+				[
+					new PromptTemplate { Name = "review", Content = string.Empty, FilePath = "/tmp/review.md" },
+				],
+			},
+		};
+		surface.SetTarget(Strings.SidebarTabChats, "/tmp");
+		surface.Prefill("跑 /review 看看");
+		ConversationPerformanceTests.Layout(surface.View, 960, 720);
+
+		Assert.Equal(1, UserReferenceRichText.Count(surface.Input));
+		var names = new HashSet<string>(StringComparer.Ordinal) { "review" };
+		var command = Assert.IsType<UserCommandReference>(UserChips.Parse(surface.Input.Text, names)[0]);
+		var line = surface.Input.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
+		Assert.Equal(command.End - command.Start,
+			line.MapSourceOffsetToProjected(command.End) - line.MapSourceOffsetToProjected(command.Start));
+
+		surface.Input.MoveCaret(command.End, false);
+		Assert.True(UserReferenceRichText.TryHandleKey(surface.Input, new KeyEventArgs(Key.Backspace, 0)));
+		Assert.DoesNotContain("/review", surface.Input.Text);
+	}
+
+	[Fact]
+	public void FileReferencesProjectToChipsAndDeleteAtomically()
+	{
+		var surface = new WelcomeSurface();
+		const string draft = "看 @\"src/App.cs\" 和 /skill:review";
+		surface.Prefill(draft);
+		ConversationPerformanceTests.Layout(surface.View, 960, 720);
+
+		Assert.True(UserReferenceRichText.IsAttached(surface.Input));
+		Assert.Equal(2, UserReferenceRichText.Count(surface.Input.Text));
+		var file = Assert.IsType<UserFileReference>(UserChips.Parse(draft)[0]);
+		var line = surface.Input.VisibleTextLines.Single(row => row.LogicalLine.Offset == 0);
+		Assert.Equal(file.End - file.Start,
+			line.MapSourceOffsetToProjected(file.End) - line.MapSourceOffsetToProjected(file.Start));
+
+		// 与 composer 一样按整枚 chip 编辑：光标贴在右缘按 Backspace 删掉整段引用。
+		surface.Input.MoveCaret(file.End, false);
+		Assert.True(UserReferenceRichText.TryHandleKey(surface.Input, new KeyEventArgs(Key.Backspace, 0)));
+		Assert.DoesNotContain("src/App.cs", surface.Input.Text);
+		Assert.Equal(1, UserReferenceRichText.Count(surface.Input.Text));
 	}
 
 	[Fact]

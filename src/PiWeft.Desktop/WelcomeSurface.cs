@@ -37,6 +37,9 @@ internal sealed partial class WelcomeSurface : IDisposable
 	// 掉落解析相对路径用的目标目录；打开拖放时才读，未设置时 ComposerDrop 会静默丢掉相对路径。
 	private string _cwd = string.Empty;
 
+	// 行内命令 chip 的白名单缓存：换目标目录或打开提示词选择器时失效。
+	private IReadOnlySet<string>? _commandNames;
+
 	public WelcomeSurface()
 	{
 		var brand = new Image()
@@ -102,16 +105,27 @@ internal sealed partial class WelcomeSurface : IDisposable
 			.OnTextCompositionEnd(_ => CompositionEnded())
 			.OnKeyDown(key =>
 			{
+				// 文件/技能引用是行内原子：方向键跳过，Backspace/Delete 整枚删除。
+				if (UserReferenceRichText.TryHandleKey(_input!, key)) return;
+
 				// Enter 开始，Shift+Enter 换行，与会话 composer 同一套按键。
 				if (key.Key == Key.Enter && !key.ShiftKey)
 				{
 					key.Handled = true;
 					Submit();
 				}
-			});
+			})
+			.OnTextInput(input => UserReferenceRichText.TryHandleTextInput(_input!, input));
 
 		_hint = ComposerHints.Build(HintText());
 		_inputHost = new Grid().Children(_input, _hint);
+
+		// 草稿里的 @"path" 与 /skill:名称 与会话 composer 一样画成行内 chip；
+		// 原文保持不变，提交时仍按完整路径/命令发出。
+		UserReferenceRichText.Attach(_input, editable: true,
+			skillLocation: name => ResourceProvider?.Invoke().Skills
+				.FirstOrDefault(skill => string.Equals(skill.Name, name, StringComparison.Ordinal))?.FilePath,
+			cwdProvider: () => _cwd, commandNames: CommandNames);
 		_attachmentBar.Spacing(AppTheme.Space1).IsVisible(false);
 
 		_modelPicker = new ModelPicker(() => _models, () => _model!, OnModelPicked);
@@ -190,6 +204,7 @@ internal sealed partial class WelcomeSurface : IDisposable
 	public void SetTarget(string label, string cwd)
 	{
 		_cwd = cwd;
+		_commandNames = null;
 		_targetLabel.Text(label);
 		TargetButton.HoverTip(string.IsNullOrWhiteSpace(cwd)
 			? Strings.WelcomeTargetTip
@@ -244,6 +259,28 @@ internal sealed partial class WelcomeSurface : IDisposable
 
 		_disposed = true;
 		DisposeComposerPopups();
+	}
+
+	/// 行内命令 chip 的白名单：系统命令 + 目标目录的提示词模板。
+	/// 技能走 /skill: 解析器；模板在打开选择器或换目录后重新取一次。
+	private IReadOnlySet<string> CommandNames()
+	{
+		if (_commandNames is { } cached)
+		{
+			return cached;
+		}
+
+		var names = new HashSet<string>(StringComparer.Ordinal) { "plan", "goal", "reload" };
+		if (ResourceProvider?.Invoke() is { } resources)
+		{
+			foreach (var template in resources.Templates)
+			{
+				names.Add(template.Name);
+			}
+		}
+
+		_commandNames = names;
+		return names;
 	}
 
 	/// 占位提示跟着模式走：计划与目标各说这一句会被当成什么。

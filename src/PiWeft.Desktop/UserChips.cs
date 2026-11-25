@@ -4,6 +4,7 @@ internal enum UserChipKind
 {
 	File,
 	Skill,
+	Command,
 }
 
 /// 正文里可以画成行内 chip 的一段原文（文件引用或技能调用）。
@@ -40,17 +41,19 @@ internal sealed record UserSkillReference(string Name, int Start, int End) : IUs
 
 internal static class UserChips
 {
-	public static IReadOnlyList<IUserChip> Parse(string text)
+	public static IReadOnlyList<IUserChip> Parse(string text, IReadOnlySet<string>? commandNames = null)
 	{
 		if (text.Length == 0) return [];
 		var files = UserFileReferences.Parse(text);
 		var skills = UserSkillReferences.Parse(text);
-		if (files.Count == 0) return skills.Count == 0 ? [] : [.. skills];
-		if (skills.Count == 0) return [.. files];
+		var commands = UserCommandReferences.Parse(text, commandNames);
+		var count = files.Count + skills.Count + commands.Count;
+		if (count == 0) return [];
 
-		var chips = new List<IUserChip>(files.Count + skills.Count);
+		var chips = new List<IUserChip>(count);
 		chips.AddRange(files);
 		chips.AddRange(skills);
+		chips.AddRange(commands);
 		chips.Sort(static (left, right) => left.Start.CompareTo(right.Start));
 		var merged = new List<IUserChip>(chips.Count);
 		var coverEnd = -1;
@@ -63,4 +66,19 @@ internal static class UserChips
 		}
 		return merged;
 	}
+}
+
+/// 草稿与用户消息里的提示词/斜杠命令调用：<c>/review</c>、<c>/plan</c>。
+/// 命令名走白名单（当前会话或起始页目标目录的模板 + 系统命令）；未知斜杠文本保持纯文本。
+internal sealed record UserCommandReference(string Name, int Start, int End) : IUserChip
+{
+	public UserChipKind Kind => UserChipKind.Command;
+
+	public string Value => Name;
+
+	public string Display => Name;
+
+	public bool IsDirectory => false;
+
+	public string Command => "/" + Name;
 }

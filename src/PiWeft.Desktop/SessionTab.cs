@@ -6,6 +6,7 @@ using Aprillz.MewUI.Input;
 using Aprillz.MewUI.Platform;
 using PiWeft.Ai;
 using PiWeft.CodingAgent;
+using PiWeft.CodingAgent.Prompts;
 using PiWeft.CodingAgent.Security;
 using PiWeft.CodingAgent.Tools;
 using PiWeft.Cli;
@@ -54,6 +55,9 @@ public sealed partial class SessionTab : IDisposable
 	private bool _composing;
 	private DispatcherTimer? _composerHintTimer;
 	private Grid? _composerHintHost;
+	// 行内命令 chip 的白名单缓存：模板列表引用变了才重建（/reload 后自动失效）。
+	private IReadOnlySet<string>? _referenceCommands;
+	private IReadOnlyList<PromptTemplate>? _referenceCommandTemplates;
 	private readonly Button _sendButton;
 	private readonly Button _sendMenuButton;
 	private readonly Border _sendDivider;
@@ -453,7 +457,8 @@ public sealed partial class SessionTab : IDisposable
 			.OnTextInput(input => UserReferenceRichText.TryHandleTextInput(_composer!, input));
 
 		// 草稿里的文件引用和 /skill:名称 都用行内 chip 显示；原始 @"..." / /skill:... 仍留在文档里。
-		UserReferenceRichText.Attach(_composer, editable: true, cwd: Session.Cwd, skillLocation: SkillLocation);
+		UserReferenceRichText.Attach(_composer, editable: true, cwd: Session.Cwd, skillLocation: SkillLocation,
+			commandNames: ReferenceCommandNames);
 
 		// 默认右键菜单的「粘贴」只看剪贴板有无文本，纯图片时菜单项是灰的。
 		// 替换同一个语义命令：菜单、快捷键与工具栏仍走 StandardCommands.Paste，
@@ -999,7 +1004,7 @@ public sealed partial class SessionTab : IDisposable
 
 	internal bool ChatStreaming => _chat.IsStreaming;
 
-	internal int ComposerReferenceCount => UserReferenceRichText.Count(_composer.Text);
+	internal int ComposerReferenceCount => UserReferenceRichText.Count(_composer);
 
 	public string Title { get; private set; }
 
@@ -2484,6 +2489,27 @@ public sealed partial class SessionTab : IDisposable
 		}
 	}
 
+	/// 行内命令 chip 的白名单：系统命令 + 当前会话的提示词模板。
+	/// 技能仍由 /skill: 解析器处理；模板列表引用变了（例如 /reload）才重建这份集合。
+	private IReadOnlySet<string> ReferenceCommandNames()
+	{
+		var templates = Session.PromptTemplates;
+		if (_referenceCommands is { } cached && ReferenceEquals(templates, _referenceCommandTemplates))
+		{
+			return cached;
+		}
+
+		var names = new HashSet<string>(StringComparer.Ordinal) { "plan", "goal", "reload" };
+		foreach (var template in templates)
+		{
+			names.Add(template.Name);
+		}
+
+		_referenceCommandTemplates = templates;
+		_referenceCommands = names;
+		return names;
+	}
+
 	private void RefreshPickers()
 	{
 		var modelName = Session.Model.Name.Length > 0 ? Session.Model.Name : Session.Model.Id;
@@ -3570,7 +3596,7 @@ public sealed partial class SessionTab : IDisposable
 			body = MessageText.Create(collapsible ? collapsedText : text);
 			UserReferenceRichText.Attach(body, editable: false,
 				onOpen: path => Shell.OpenMessageLink(path, Session.Cwd, message => NotifyError(message)),
-				cwd: Session.Cwd, skillLocation: SkillLocation);
+				cwd: Session.Cwd, skillLocation: SkillLocation, commandNames: ReferenceCommandNames);
 			_textFocus.Track(body);
 			bubble.Children(body);
 		}

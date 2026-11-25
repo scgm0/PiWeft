@@ -281,6 +281,8 @@ internal sealed partial class WelcomeSurface
 			return;
 		}
 
+		// 清单每次打开都重取：刚新增的模板插入后要能立刻识别成 chip。
+		_commandNames = null;
 		var templates = ResourceProvider?.Invoke().Templates ?? [];
 		_composerPicker.Show(View, Strings.PromptPickerTitle, Strings.PromptPickerPlaceholder,
 			Strings.PromptPickerEmpty, Strings.PromptPickerNoMatch,
