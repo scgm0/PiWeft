@@ -89,6 +89,7 @@ internal static class ChatImages
 internal sealed class ImagePreview
 {
 	private readonly Image _image = new();
+	private readonly Border _frame;
 	private readonly Button _close;
 	private readonly Button _copy;
 	private readonly StackPanel _actions;
@@ -109,11 +110,16 @@ internal sealed class ImagePreview
 		_actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 			.HorizontalAlignment(HorizontalAlignment.Right).VerticalAlignment(VerticalAlignment.Top)
 			.Margin(new Thickness(AppTheme.Space3)).Children(_copy, _close);
+		// 图片边缘与遮罩同为深色时看不出边界，透明 PNG 也分不清图片到哪为止，所以给图片本身一圈细线。
+		// 线色跟按钮一样取深色配色的浅色前景：遮罩始终是 0xE0 黑，不随主题换色。
+		_frame = new Border().BorderThickness(1).BorderBrush(AppPalette.Dark.CodeText.WithAlpha(0x40))
+			.Margin(new Thickness(48)).HorizontalAlignment(HorizontalAlignment.Center)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Child(_image.OnMouseDown(args => args.Handled = true));
 		View = new Grid().IsVisible(false).Children(
 			new Button().Background(new Color(0xE0, 0, 0, 0)).BorderThickness(0).CornerRadius(0)
 				.Cursor(CursorType.Arrow).Focusable(false).OnClick(Hide),
-			_image.Margin(new Thickness(48)).HorizontalAlignment(HorizontalAlignment.Center)
-				.VerticalAlignment(VerticalAlignment.Center).OnMouseDown(args => args.Handled = true),
+			_frame,
 			_actions)
 			.OnKeyDown(key => { if (key.Key == Key.Escape) { key.Handled = true; Hide(); } });
 		_fade = new OverlayFade((FrameworkElement)View);

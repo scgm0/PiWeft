@@ -31,6 +31,19 @@ public sealed class ImagePreviewTests
 	}
 
 	[Fact]
+	public void PreviewedImageSitsInsideAThinFrame()
+	{
+		// 浮层遮罩始终是深色，暗图与透明 PNG 的边界只能靠这圈细线勾出来。
+		var preview = new ImagePreview();
+		preview.Show(new Window(), ChatImages.Source(Png)!);
+		var image = PreviewImage(preview);
+		var frame = Assert.IsType<Border>(image.Parent);
+		Assert.Same(image, frame.Child);
+		Assert.Equal(1, frame.BorderThickness);
+		Assert.True(frame.BorderBrush.A > 0);
+	}
+
+	[Fact]
 	public void EscapeAndBackdropCloseWhileClickingTheImageKeepsThePreviewOpen()
 	{
 		var preview = new ImagePreview();
