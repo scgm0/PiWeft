@@ -311,6 +311,24 @@ public static partial class Strings
 
 	public const string AboutVersionInfo = "版本信息";
 
+	public const string AboutLinksGroup = "相关项目";
+
+	public const string AboutLinksHint = "各项目的文档与源码地址。";
+
+	public const string AboutLinkPiDocs = "pi 文档";
+
+	public const string AboutLinkPiWeft = "PiWeft 仓库";
+
+	public const string AboutLinkMarkdown = "PiWeft.Markdown 源码";
+
+	public const string AboutLinkMewUi = "MewUI 仓库";
+
+	public const string AboutLinkPiDeck = "PiDeck 桌面参考";
+
+	public const string AboutLinkLucide = "Lucide 图标库";
+
+	public const string AboutLinkDotNet = ".NET 官网";
+
 	public const string AboutTagline = "C# 编码智能体与 MewUI 桌面工作台。";
 
 	public const string SettingsSessionHint = "当前会话的文件、模型与轮次。";
@@ -475,6 +493,7 @@ public static partial class Strings
 	public const string OpenInEditor = "在编辑器中打开";
 	public static string OpenedInEditor(string path) => $"已用编辑器打开：{path}";
 	public static string OpenFailed(string path) => $"打开失败（未配置 $EDITOR，也没有默认程序）：{path}";
+	public static string OpenLinkFailed(string url) => $"打开链接失败（没有可用的浏览器）：{url}";
 	public static string FileMissing(string path) => $"文件不存在：{path}";
 	public const string CopySessionPath = "复制会话文件路径";
 	public const string CopySessionId = "复制会话 ID";
@@ -697,7 +716,11 @@ public static partial class Strings
 
 	public const string GitGraphNoFilteredCommits = "当前筛选没有提交。";
 
-	public const string GitGraphLoadMore = "加载更多";
+	public const string GitLoadMore = "加载更多";
+
+	public const string GitCommitFilesLoading = "正在读取提交文件…";
+
+	public const string GitCompareRunning = "正在比较…";
 
 	public const string GitCommitDetailUnavailable = "无法读取提交详情。";
 
@@ -967,6 +990,11 @@ public static partial class Strings
 	public static string GitChangeCount(int count) => $"{count} 个改动";
 
 	public static string GitDiffStat(int added, int removed) => $"+{added} −{removed}";
+
+	// 改动行尾的增删数：两侧分开展示并各自着色，只显示非零的一侧。
+	public static string GitAddedLines(int added) => $"+{added}";
+
+	public static string GitRemovedLines(int removed) => $"−{removed}";
 	public static string FilterMatches(int matched, int total) => $"{matched} / {total} 条匹配";
 	public const string CloseTab = "关闭";
 	public const string NoOpenSession = "从左侧选择一个会话，或点「新建」开始。";
@@ -1068,6 +1096,8 @@ public static partial class Strings
 	public const string AskCustomUse = "使用";
 
 	public const string AskCustomAdd = "添加";
+
+	public const string AskCustomRemove = "删除这条自定义选项";
 
 	public const string AskAnswered = "已作答";
 

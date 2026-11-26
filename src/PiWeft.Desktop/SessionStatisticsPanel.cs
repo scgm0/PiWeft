@@ -3,8 +3,9 @@ using Aprillz.MewUI.Controls;
 
 namespace PiWeft.Desktop;
 
-/// 会话统计弹窗：与「+」菜单同一套原生浮层，锚定在统计入口上方，外点、切窗或 Esc 收起。
-/// 内容只建一次：统计数据与余额摘要跨开关复用，关闭只卸载；FadePopup 因此不接管释放。
+/// 会话统计弹窗：走窗口的 TransientOverlay，卡片锚在统计入口上方，外点、切窗或 Esc 收起。
+/// 内容只建一次：统计数据与余额摘要跨开关复用，收起只摘层。
+/// 卡片跟着窗口一起重绘，切页签改高度时不会碰到原生窗口重设尺寸那一帧。
 public sealed class SessionStatisticsPanel : IDisposable
 {
 	private const double CardWidth = 420;
@@ -24,9 +25,14 @@ public sealed class SessionStatisticsPanel : IDisposable
 	private readonly Button _compact;
 	private readonly Button _overview;
 	private readonly Button _details;
-	private readonly FadePopup _popup = new() { ReleaseContentOnClose = false };
+	private readonly ShadowDecorator _shadow;
+	private readonly Grid _overlay;
+	private readonly OverlayFade _fade;
 	private SessionStatisticsDisplay? _display;
+	private Window? _window;
+	private UIElement? _anchor;
 	private bool _showDetails;
+	private bool _open;
 
 	public SessionStatisticsPanel(Action compact)
 	{
@@ -69,11 +75,25 @@ public sealed class SessionStatisticsPanel : IDisposable
 				key.Handled = true;
 				Hide();
 			});
-		_popup.Closed += OnPopupClosed;
+		// 卡片与窗口一起排布：高度变了只重画窗口，不再有原生弹层窗口改尺寸时先露一帧旧像素的问题。
+		_shadow = new ShadowDecorator()
+			.BlurRadius(8)
+			.OffsetY(4)
+			.CornerRadius(AppTheme.RadiusMd)
+			// 与 PopupChrome 的落影同参：8 模糊、下移 4，深色 50% / 浅色 25%。
+			.WithTheme((theme, shadow) => shadow.ShadowColor = theme.IsDark
+				? new Color(0x80, 0x00, 0x00, 0x00)
+				: new Color(0x40, 0x00, 0x00, 0x00))
+			.HorizontalAlignment(HorizontalAlignment.Right)
+			.VerticalAlignment(VerticalAlignment.Bottom);
+		_fade = OverlayFade.PopupLike(_shadow);
+		// 空白处的透明捕获层只负责收起；卡片在它上面，不受影响。
+		var scrim = OverlayScrim.Create(Hide, ScrimStrength.None);
+		_overlay = new Grid().Children(scrim, _shadow);
 	}
 
 	public UIElement View { get; }
-	public bool IsOpen => _popup.IsOpen;
+	public bool IsOpen => _open;
 	public event Action? Closed;
 
 	/// 打开在锚点上方。无后端（单测、诊断脚本未 Run）时只更新内容，不弹窗，与「+」菜单一致。
@@ -86,25 +106,55 @@ public sealed class SessionStatisticsPanel : IDisposable
 			_usageSummary?.Show();
 			return;
 		}
-		if (anchor.FindVisualRoot() is not Window) return;
+		if (anchor.FindVisualRoot() is not Window window) return;
 		_usageSummary?.Show();
-		if (IsOpen)
+		if (_open)
 		{
 			FocusActiveTab();
 			return;
 		}
 		// 统计入口就在输入区下方：提示属于入口却不归浮层管，会叠在刚打开的卡片上。
 		HoverHints.Cancel(anchor);
-		_popup.Show(View, anchor, Anchor(anchor), PopupAnchorSide.Above);
+		if (_window is null)
+		{
+			window.Deactivated += OnWindowDeactivated;
+			window.WindowStateChanged += OnWindowStateChanged;
+		}
+		_window = window;
+		_anchor = anchor;
+		_shadow.Child = View;
+		Place(anchor, window);
+		TransientOverlay.Open(window, _overlay, Hide);
+		_open = true;
+		if (_fade.IsClosing) _fade.Reopen();
+		else _fade.Open();
 		FocusActiveTab();
 	}
 
-	/// 锚点矩形与卡片同宽并贴住按钮右缘：Popup 的横向夹取以矩形左缘为起点，
-	/// 这样大卡片右缘停在按钮右缘，不会被推到屏幕外。
-	private static Rect Anchor(UIElement anchor)
+	// 卡片贴锚点右缘、底边停在锚点上方；窗口里放不下时压矮卡片，交给它自己的滚动区。
+	// 用右/下边距定位：窗口尺寸变化时卡片跟着右缘与底边，和输入区一起走。
+	private void Place(UIElement anchor, Window window)
 	{
-		var bounds = anchor.Bounds;
-		return new Rect(Math.Max(0, bounds.Right - CardWidth), bounds.Y - AnchorGap, CardWidth, bounds.Height + (AnchorGap * 2));
+		var (margin, maxHeight) = Placement(anchor.Bounds, window.ClientSize,
+			OverlayInsetFollower.InsetFor(window), _shadow.ShadowPadding);
+		_shadow.Margin(margin);
+		_shadow.MaxHeight(maxHeight);
+	}
+
+	/// 窗口内浮层的摆放尺寸：返回卡片容器的外边距与最大高度。
+	/// 边距以窗口级浮层的可见区（窗口减去标题栏与阴影边）的右/下缘为基准，
+	/// 锚点随输入区贴着这两条边时卡片就能跟着走。
+	internal static (Thickness Margin, double MaxHeight) Placement(
+		Rect anchor, Size client, Thickness inset, Thickness shadowPadding)
+	{
+		var gridRight = Math.Max(0, client.Width - inset.Right);
+		var gridBottom = Math.Max(0, client.Height - inset.Bottom);
+		var margin = new Thickness(0, 0,
+			Math.Max(0, gridRight - (anchor.Right + shadowPadding.Right)),
+			Math.Max(0, gridBottom - (anchor.Y - AnchorGap + shadowPadding.Bottom)));
+		// 卡片最高长到浮层可见区的顶边（标题栏下方），再高就压矮滚动。
+		var maxHeight = Math.Max(0, anchor.Y - AnchorGap - inset.Top - shadowPadding.Top) + shadowPadding.VerticalThickness;
+		return (margin, maxHeight);
 	}
 
 	internal void SetUsage(ProviderUsageSummary summary)
@@ -171,28 +221,56 @@ public sealed class SessionStatisticsPanel : IDisposable
 	public void Hide()
 	{
 		_usageSummary?.Hide();
-		_popup.Close();
+		if (!_open) return;
+		_open = false;
+		_fade.Close(CloseNow);
 	}
 
 	/// 立即收起，不做淡出：切标签时浮层要跟着旧页签一起走。
 	public void CloseInstantly()
 	{
 		_usageSummary?.Hide();
-		_popup.CloseInstantly();
+		if (!_open && !_fade.IsClosing) return;
+		_open = false;
+		_fade.Cancel();
+		CloseNow();
 	}
 
 	public void Dispose()
 	{
-		_popup.Closed -= OnPopupClosed;
+		_fade.Cancel();
+		_open = false;
+		Detach();
 		_usageSummary?.Hide();
-		_popup.Dispose();
 		UiLifetime.Release(View);
+		UiLifetime.Release(_overlay);
 	}
 
-	// 框架自己关掉的路径（外点、切窗）也要停掉余额查询，并让标签页把焦点收回输入区。
-	private void OnPopupClosed(object? sender, PopupClosedEventArgs e)
+	// 外点/切窗收起时也要停掉余额查询，并让标签页把焦点收回输入区。
+	private void CloseNow()
 	{
-		_usageSummary?.Hide();
+		Detach();
 		Closed?.Invoke();
+	}
+
+	private void Detach()
+	{
+		if (_window is { } window)
+		{
+			window.Deactivated -= OnWindowDeactivated;
+			window.WindowStateChanged -= OnWindowStateChanged;
+			TransientOverlay.Remove(window, _overlay);
+			_window = null;
+		}
+		_anchor = null;
+		_shadow.Child = null;
+	}
+
+	private void OnWindowDeactivated() => CloseInstantly();
+
+	// 最大化/还原会换一套标题栏让位量；遮罩由 TransientOverlay 跟着走，卡片得按新边距再摆一次。
+	private void OnWindowStateChanged(WindowState _)
+	{
+		if (_window is { } window && _anchor is { } anchor) Place(anchor, window);
 	}
 }

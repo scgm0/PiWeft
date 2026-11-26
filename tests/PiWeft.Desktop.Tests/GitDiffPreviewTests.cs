@@ -97,4 +97,21 @@ public sealed class GitDiffPreviewTests : IDisposable
 		Assert.NotNull(content);
 		Assert.Contains("+world", content.Patch, StringComparison.Ordinal);
 	}
+
+	[Fact]
+	public void FileRowsShowTheirAddedAndRemovedLineCounts()
+	{
+		Write("app.cs", "first\nsecond\nthird\n");
+		RunGit("add", "--all");
+		RunGit("commit", "-qm", "base");
+		Write("app.cs", "first\nchanged\n");
+
+		using var view = new GitView(() => _root);
+		ConversationPerformanceTests.Layout(view.View, 360, 700);
+
+		var texts = Find<TextBlock>(view.View).Select(static text => text.Text).ToList();
+		// 第二、三行被换掉：+1 −2。
+		Assert.Contains(Strings.GitAddedLines(1), texts);
+		Assert.Contains(Strings.GitRemovedLines(2), texts);
+	}
 }

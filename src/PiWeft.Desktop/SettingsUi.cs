@@ -21,13 +21,15 @@ internal static class SettingsUi
 	/// <param name="description">标题下的一句说明；为空时不占行。</param>
 	/// <param name="action">组头右端的动作（按钮/文本链接）。</param>
 	/// <param name="meta">标题后的弱化计数，例如「24 项」。</param>
+	/// <param name="bodyPadding">组内容的内边距；需要让行内按钮的悬停底与卡片边留出空隙时传入。</param>
 	public static UIElement Group(
 		string icon,
 		string title,
 		UIElement content,
 		string? description = null,
 		UIElement? action = null,
-		string? meta = null)
+		string? meta = null,
+		Thickness? bodyPadding = null)
 	{
 		var titleRow = new StackPanel().Orientation(Orientation.Horizontal).Spacing(AppTheme.Space2)
 			.VerticalAlignment(VerticalAlignment.Center)
@@ -53,7 +55,7 @@ internal static class SettingsUi
 			.Padding(new Thickness(AppTheme.Space4, AppTheme.Space3, AppTheme.Space4, AppTheme.Space3))
 			.Child(header).DockTop();
 		var body = new Border()
-			.Padding(new Thickness(AppTheme.Space4, AppTheme.Space2, AppTheme.Space4, AppTheme.Space3))
+			.Padding(bodyPadding ?? new Thickness(AppTheme.Space4, AppTheme.Space2, AppTheme.Space4, AppTheme.Space3))
 			.Child(content);
 
 		return new Border().StyleName(AppStyles.Card)
@@ -145,6 +147,28 @@ internal static class SettingsUi
 				.SubtleText().TextTrimming(TextTrimming.CharacterEllipsis).DockLeft(),
 			text);
 		return new Border().Padding(new Thickness(0, AppTheme.Space2, 0, AppTheme.Space2)).Child(line);
+	}
+
+	/// <summary>整行可点的外链：左侧行文案，右侧外链标记；点击交给系统浏览器。</summary>
+	/// <param name="label">行文案。</param>
+	/// <param name="url">目标地址，同时作悬停提示。</param>
+	/// <param name="open">点击回调。</param>
+	public static UIElement LinkRow(string label, string url, Action open)
+	{
+		var marker = AppIcons.Icon("external-link", AppStyles.RoleFaint, 12);
+		marker.HorizontalAlignment(HorizontalAlignment.Right);
+		return new Button().Ghost()
+			.HorizontalAlignment(HorizontalAlignment.Stretch)
+			// 水平内边距给悬停底留出空隙；调用方把组内容的内边距同步减掉这一档，文字才能与值行对齐。
+			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space1))
+			.Content(new Grid().Columns("*,auto").Spacing(AppTheme.Space2)
+				.Children(
+					new TextBlock().Text(label).FontSize(AppTheme.FontSizeCaption)
+						.PrimaryText().VerticalAlignment(VerticalAlignment.Center)
+						.TextTrimming(TextTrimming.CharacterEllipsis).Column(0),
+					marker.Column(1)))
+			.OnClick(open)
+			.HoverTip(url);
 	}
 
 	/// <summary>二元开关行：标题在左，开关在右。</summary>

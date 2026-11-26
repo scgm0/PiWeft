@@ -730,7 +730,22 @@ internal sealed class AskQuestionPanel
 
 					Commit(new AskAnswer(question.Id, question.Type, JsonValue.Create(option.Value), option.Label, false));
 				});
-			_body.Children(row);
+			if (!multi || index < (question.Options?.Count ?? 0))
+			{
+				_body.Children(row);
+				continue;
+			}
+
+			// 自定义添加的项只有这里能删：尾部挂一个删除键，删完整卡重建，
+			// 后面被选中的下标由 RemoveCustomOption 一并前移。
+			var remove = AppIcons.Button("trash", Strings.AskCustomRemove,
+					() => RemoveCustomOption(question, captured), size: 12)
+				.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+				.Width(24).Height(24)
+				.VerticalAlignment(VerticalAlignment.Center);
+			_body.Children(new Grid().Columns("*,Auto").Children(
+				row.Column(0).VerticalAlignment(VerticalAlignment.Center),
+				remove.Column(1)));
 		}
 	}
 
@@ -1178,6 +1193,33 @@ internal sealed class AskQuestionPanel
 		}
 
 		return null;
+	}
+
+	private void RemoveCustomOption(AskQuestion question, int index)
+	{
+		if (_submitting || _current < 0 || _current >= _extraOptions.Count)
+		{
+			return;
+		}
+
+		var extras = _extraOptions[_current];
+		var extraIndex = index - (question.Options?.Count ?? 0);
+		if (extraIndex < 0 || extraIndex >= extras.Count)
+		{
+			return;
+		}
+
+		extras.RemoveAt(extraIndex);
+		// 勾选集合记的是整条选项列表的下标：删掉一条后，后面的下标整体前移一格。
+		var selected = _multiSelected[_current];
+		selected.Remove(index);
+		foreach (var moved in selected.Where(value => value > index).ToArray())
+		{
+			selected.Remove(moved);
+			selected.Add(moved - 1);
+		}
+
+		RenderCard();
 	}
 
 	private List<AskOption> OptionsFor(AskQuestion question)

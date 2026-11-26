@@ -88,7 +88,7 @@ JSON
     sleep 2.5
     xdotool getwindowgeometry --shell "$window" >"$directory/geometry.log"
     import -window "$window" "$directory/$target.png"
-    # 统计是锚定在入口上方的原生弹层，只截应用窗口会丢掉卡片；另存整屏供视觉验收。
+    # 统计是窗口内浮层：卡片在应用窗口里，另存整屏只用来保留桌面环境。
     if [[ "$target" == "statistics" ]]; then
       import -window root "$directory/$target-screen.png"
     fi

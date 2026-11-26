@@ -205,6 +205,47 @@ public sealed class AskQuestionPanelTests
 	}
 
 	[Fact]
+	public async Task CustomMultiSelectOptionsCanBeRemoved()
+	{
+		var panel = new AskQuestionPanel();
+		var host = new StackPanel();
+		_ = new Window().Content(host);
+		host.Children(panel.View);
+		var questions = new List<AskQuestion>
+		{
+			new("q1", "multi_select", "多选？", [new AskOption("选项 A", "A", null)], null, null),
+		};
+		var pending = panel.ShowAsync(questions, review: false, CancellationToken.None);
+
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
+			ContentText(button)?.Contains("选项 A", StringComparison.Ordinal) == true));
+
+		// 连加两条自定义项：它们都默认勾上。
+		foreach (var text in new[] { "自定义 X", "自定义 Y" })
+		{
+			var custom = Find<MultiLineTextBox>(panel.View).Single(box => box.Placeholder == Strings.AskCustomPlaceholder);
+			custom.Text = text;
+			ImagePreviewTests.Click(Find<Button>(panel.View).Single(button => ContentText(button) == Strings.AskCustomAdd));
+		}
+
+		Assert.Contains(Find<Button>(panel.View), button => ContentText(button) == "自定义 X");
+		Assert.Contains(Find<Button>(panel.View), button => ContentText(button) == "自定义 Y");
+		Assert.Equal(2, Find<Button>(panel.View).Count(button => HoverHints.Text(button) == Strings.AskCustomRemove));
+
+		// 删掉第一条自定义项：后面的勾选要跟着下标前移，而不是错位到别的选项上。
+		ImagePreviewTests.Click(Find<Button>(panel.View).First(button => HoverHints.Text(button) == Strings.AskCustomRemove));
+		Assert.DoesNotContain(Find<Button>(panel.View), button => ContentText(button) == "自定义 X");
+		Assert.Equal(1, Find<Button>(panel.View).Count(button => HoverHints.Text(button) == Strings.AskCustomRemove));
+
+		ImagePreviewTests.Click(Find<Button>(panel.View).Single(button =>
+			ContentText(button) == Strings.AskSubmit && button.IsEnabled));
+		var response = AskQuestions.ParseResponse(await pending, questions);
+		Assert.False(response.Cancelled);
+		Assert.Equal(new[] { "A", "自定义 Y" },
+			response.Answers[0].Value!.AsArray().Select(static node => node!.GetValue<string>()).ToArray());
+	}
+
+	[Fact]
 	public void EditorDraftsSurviveNavigation()
 	{
 		var panel = new AskQuestionPanel();

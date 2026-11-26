@@ -2149,8 +2149,9 @@ public sealed class SettingsView
 	}
 
 	private static Element Group(string icon, string title, UIElement content,
-		string? description = null, UIElement? action = null, string? meta = null) =>
-		SettingsUi.Group(icon, title, content, description, action, meta);
+		string? description = null, UIElement? action = null, string? meta = null,
+		Thickness? bodyPadding = null) =>
+		SettingsUi.Group(icon, title, content, description, action, meta, bodyPadding);
 
 	private void CopyValue(string text)
 	{
@@ -2641,7 +2642,33 @@ public sealed class SettingsView
 		};
 		var content = new StackPanel().Spacing(AppTheme.Space3)
 			.Children(hero, SettingsUi.Rows(rows));
-		return Group("settings", Strings.AboutVersionInfo, content);
+
+		// 链接单独成组：值行是「可复制的事实」（含字体、运行时这类没有站点的项），
+		// 把值改成链接就选不中文本了；一行一个项目也让「界面框架」里拼在一起的两个项目各指各的。
+		var linkRows = new List<UIElement>
+		{
+			SettingsUi.LinkRow(Strings.AboutLinkPiDocs, AppInfo.PiDocsUrl, () => OpenLink(AppInfo.PiDocsUrl)),
+			SettingsUi.LinkRow(Strings.AboutLinkPiWeft, AppInfo.RepositoryUrl, () => OpenLink(AppInfo.RepositoryUrl)),
+			SettingsUi.LinkRow(Strings.AboutLinkMarkdown, AppInfo.MarkdownUrl, () => OpenLink(AppInfo.MarkdownUrl)),
+			SettingsUi.LinkRow(Strings.AboutLinkMewUi, AppInfo.MewUiUrl, () => OpenLink(AppInfo.MewUiUrl)),
+			SettingsUi.LinkRow(Strings.AboutLinkPiDeck, AppInfo.PiDeckUrl, () => OpenLink(AppInfo.PiDeckUrl)),
+			SettingsUi.LinkRow(Strings.AboutLinkLucide, AppInfo.LucideUrl, () => OpenLink(AppInfo.LucideUrl)),
+			SettingsUi.LinkRow(Strings.AboutLinkDotNet, AppInfo.DotNetUrl, () => OpenLink(AppInfo.DotNetUrl)),
+		};
+		if (linkRows[0] is FrameworkElement firstLink) Anchor("about.links", firstLink);
+
+		return new StackPanel().Spacing(AppTheme.Space4).Children(
+			Group("settings", Strings.AboutVersionInfo, content),
+			// 组内容左右只留 8：链接行自己再留 8，两段合起来仍是 16，文字与值行的标签列对齐，
+			// 悬停底则从卡片内边缩进 8，不贴着内容边缘。
+			Group("package", Strings.AboutLinksGroup, SettingsUi.Rows(linkRows),
+				description: Strings.AboutLinksHint,
+				bodyPadding: new Thickness(AppTheme.Space2, AppTheme.Space2, AppTheme.Space2, AppTheme.Space3)));
+	}
+
+	private void OpenLink(string url)
+	{
+		if (!Shell.Open(url)) Toast(Strings.OpenLinkFailed(url), ToastKind.Error);
 	}
 
 }

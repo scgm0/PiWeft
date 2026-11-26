@@ -76,6 +76,7 @@ internal static class SettingsSearch
 		new("logs.level", "logs", Strings.LogLevel, ["日志", "级别", "level", "trace", "debug"], "logs.level"),
 		new("diagnostics.toggle", "diagnostics", Strings.SettingsDiagnosticsToggle, ["诊断", "性能", "采样", "帧"], "diagnostics.toggle"),
 		new("about.version", "about", Strings.AboutVersion, ["版本", "version"]),
+		new("about.links", "about", Strings.AboutLinksGroup, ["链接", "项目", "源码", "仓库", "github", "docs"], "about.links"),
 		new("models.addProvider", "models", Strings.ConfigAddProvider, ["供应商", "provider", "添加"]),
 		new("models.addModel", "models", Strings.ConfigAddModel, ["模型", "model", "添加"]),
 		new("models.import", "models", Strings.ConfigImport, ["导入", "JSON"]),

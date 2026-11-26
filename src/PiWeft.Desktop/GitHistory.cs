@@ -21,6 +21,9 @@ public sealed record GitCommitEntry(
 
 public sealed record GitCommitFile(string Status, string Path, string? OriginalPath)
 {
+	/// 这一个文件的增删行数；二进制、纯改名与读不到统计时为 null。
+	internal GitDiffStat? DiffStat { get; init; }
+
 	public string Letter => Status.Length > 0 ? Status[..1] : "M";
 
 	public string FileName => Path.Length == 0
@@ -177,8 +180,13 @@ public static class GitHistoryReader
 			? new[] { "diff", "--name-status", "-z", "--find-renames", parent, commit.Hash }
 			: new[] { "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-z", "--find-renames", commit.Hash };
 		var (filesOutput, fileError, filesExitCode) = GitStatusReader.RunDetailed(cwd, fileArguments, MaxDiffOutput);
-		var files = filesExitCode == 0 ? ParseNameStatus(filesOutput) : [];
-		var (insertions, deletions) = ShortStat(cwd, commit.Hash);
+		var (stats, truncated) = NumStat(cwd, parent, commit.Hash);
+		var files = filesExitCode == 0 ? ParseNameStatus(filesOutput, stats) : [];
+		// numstat 已经跑过一遍完整差异，合计直接从它加出来，不再为 shortstat 再跑一次。
+		// 被 4 MiB 上限截断时退回 shortstat：它只有一行汇总，不受这个上限影响。
+		var (insertions, deletions) = stats is { } counted && !truncated
+			? Sum(counted.Values)
+			: ShortStat(cwd, commit.Hash);
 		return new GitCommitDetail(
 			commit,
 			files,
@@ -250,7 +258,12 @@ public static class GitHistoryReader
 			}
 		}
 
-		return new GitBranchComparison(ParseNameStatus(filesOutput), ahead, behind, baseHash, targetHash);
+		var (statOutput, _, statExitCode) = GitStatusReader.RunDetailed(
+			cwd,
+			["diff", "--no-relative", "--numstat", "-z", "--diff-filter=ADMR", range],
+			MaxDiffOutput);
+		var stats = statExitCode == 0 ? GitDiffStatsReader.Parse(statOutput) : null;
+		return new GitBranchComparison(ParseNameStatus(filesOutput, stats), ahead, behind, baseHash, targetHash);
 	}
 
 	public static GitFileDiff CompareFileDiff(
@@ -282,7 +295,22 @@ public static class GitHistoryReader
 			: new GitFileDiff(string.Empty, ErrorText(error));
 	}
 
-	internal static IReadOnlyList<GitCommitFile> ParseNameStatus(string output)
+	/// 一个提交的逐文件增删数：与详情共用父提交的选取，合并提交按第一父比较。
+	private static (IReadOnlyDictionary<string, GitDiffStat>? Stats, bool Truncated) NumStat(
+		string cwd,
+		string? parent,
+		string hash)
+	{
+		string[] arguments = parent is { Length: > 0 }
+			? ["diff", "--no-relative", "--numstat", "-z", "--find-renames", parent, hash]
+			: ["diff-tree", "--no-relative", "--root", "--no-commit-id", "--numstat", "-r", "-z", "--find-renames", hash];
+		var (output, _, exitCode) = GitStatusReader.RunDetailed(cwd, arguments, MaxDiffOutput);
+		return exitCode == 0 ? (GitDiffStatsReader.Parse(output), GitStatusReader.IsTruncated(output)) : (null, false);
+	}
+
+	internal static IReadOnlyList<GitCommitFile> ParseNameStatus(
+		string output,
+		IReadOnlyDictionary<string, GitDiffStat>? stats = null)
 	{
 		var fields = output.Split('\0');
 		var files = new List<GitCommitFile>();
@@ -303,17 +331,34 @@ public static class GitHistoryReader
 
 				var original = fields[index + 1];
 				var target = fields[index + 2];
-				files.Add(new GitCommitFile(status, target, original));
+				files.Add(new GitCommitFile(status, target, original) { DiffStat = StatOf(stats, target) });
 				index += 2;
 			}
 			else
 			{
-				files.Add(new GitCommitFile(status, fields[index + 1], null));
+				var path = fields[index + 1];
+				files.Add(new GitCommitFile(status, path, null) { DiffStat = StatOf(stats, path) });
 				index++;
 			}
 		}
 
 		return files;
+	}
+
+	private static GitDiffStat? StatOf(IReadOnlyDictionary<string, GitDiffStat>? stats, string path) =>
+		stats is not null && stats.TryGetValue(path, out var stat) ? stat : null;
+
+	private static (int Insertions, int Deletions) Sum(IEnumerable<GitDiffStat> stats)
+	{
+		var insertions = 0;
+		var deletions = 0;
+		foreach (var stat in stats)
+		{
+			insertions += stat.Added;
+			deletions += stat.Removed;
+		}
+
+		return (insertions, deletions);
 	}
 
 	internal static IReadOnlyList<GitCommitEntry> ParseLog(string output)

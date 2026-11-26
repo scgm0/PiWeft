@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run with: xvfb-run -a -s '-screen 0 1600x1000x24' bash tools/desktop-statistics-smoke.sh
 # All sessions/configuration are isolated from the user's agent directory.
-# 会话统计是锚定在入口上方的原生弹层，只截应用窗口会丢掉卡片；截整屏。
+# 会话统计现在是窗口内浮层：卡片在应用窗口里，整屏截图只用来保留桌面环境。
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 output="$(mktemp -d /tmp/pi-statistics-smoke-XXXXXX)"

@@ -15,6 +15,7 @@ internal readonly record struct GitPaneLayout(
 
 	public const double MinBody = 60;
 
+	// 比较区默认 160：结果列表自带视口滚动，拖高才看得到更多行；再高会把「更改」挤到放不下提交框。
 	public static GitPaneLayout Default { get; } = new(220, 160, 140, true, true, false, false);
 
 	public static double ExpandedHeight(double body) =>

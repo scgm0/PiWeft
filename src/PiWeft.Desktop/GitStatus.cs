@@ -413,8 +413,13 @@ public static class GitStatusReader
 			}
 		}
 
-		return truncated ? builder.ToString() + "\n… (truncated)" : builder.ToString();
+		return truncated ? builder.ToString() + TruncationMarker : builder.ToString();
 	}
+
+	/// 输出被 <see cref="ReadBoundedAsync"/> 截断时追加的标记；调用方据此退回不受上限影响的读法。
+	internal const string TruncationMarker = "\n… (truncated)";
+
+	internal static bool IsTruncated(string output) => output.EndsWith(TruncationMarker, StringComparison.Ordinal);
 
 	/// 让 git 说英文。失败分类（<see cref="GitFailure"/>）按英文特征串匹配，用户机器上的
 	/// 本地化输出会让它静默失配：中文环境里 <c>git pull</c> 的报错是「无法快进」，

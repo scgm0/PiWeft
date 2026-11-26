@@ -101,7 +101,7 @@ for index, (view, theme, width, height) in enumerate(CASES):
             if dimensions != f"{width}x{height}":
                 raise RuntimeError(f"Screenshot clipped: {dimensions}, expected {width}x{height}")
             if view.startswith("statistics"):
-                # 会话统计是锚定在入口上方的原生弹层：应用窗口截图看不到卡片，另存整屏供视觉验收。
+                # 会话统计是窗口内浮层：卡片在应用窗口里，另存整屏只用来保留桌面环境。
                 subprocess.run(["import", "-window", "root", str(directory / "screen.png")], check=True)
             start, ticks = time.monotonic(), cpu_ticks(process.pid)
             time.sleep(2)

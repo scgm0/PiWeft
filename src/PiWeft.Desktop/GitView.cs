@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Net.Http;
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
@@ -27,6 +26,10 @@ public sealed partial class GitView : IDisposable
 	private readonly Border _failureHost = new();
 	private readonly Border _composerHost = new();
 	private readonly Border _listHost = new();
+	// 每行高度固定（文件 27 / 目录 26 / 分节 28，统一取 28）：固定行高才能让 presenter 只建视口内的行。
+	private const double ChangeRowHeight = 28;
+	private readonly ItemsControl _changesList = new();
+	private readonly StackPanel _changesEmpty = new();
 	private readonly Border _graphHost = new();
 	private readonly Border _compareHost = new();
 	private readonly Border _moreHost = new();
@@ -35,6 +38,7 @@ public sealed partial class GitView : IDisposable
 	private readonly PaneSash _moreSash;
 	private GitPaneLayout _panes;
 	private GitStatus? _lastStatus;
+	private GitChangeStats _stats = GitChangeStats.Empty;
 	private bool _sectionsBuilt;
 
 	// 与轮末 chip 同一块浮层：右侧面板不再保留内嵌的 diff 卡片。
@@ -49,18 +53,36 @@ public sealed partial class GitView : IDisposable
 	private IReadOnlyList<string> _branches = [];
 	private bool _graphLoaded;
 	private bool _graphDirty = true;
+	// 合计（rev-list --count）在翻页之间不会变：只有状态刷新/换筛选后才重新数。
+	private bool _graphCountDirty = true;
 	private IReadOnlyList<GitCommitEntry> _graphCommits = [];
 	private int _graphTotal;
 	private string? _graphError;
+	// 图这一节搭一次：节头单独宿主，滚动视口一直活着。换掉视口会把滚动位置丢回顶部，
+	// 展开提交、点「加载更多」时读者正在看的那一段就跳走了。
+	private readonly Border _graphHeaderHost = new();
+	private readonly ScrollViewer _graphScroll = new();
+	private DockPanel? _graphPane;
 	private readonly HashSet<string> _expandedCommits = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, GitCommitDetail> _commitDetails = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _commitErrors = new(StringComparer.Ordinal);
+	// 一个提交可能有上千个文件：详情文件列表分页，只建前几十行。
+	private const int CommitFilePageSize = 50;
+	private const int CompareFilePageSize = 50;
+	// 比较节正文的最小高度：扣掉节头、基准/目标、比较按钮与状态行，至少还留得下一行文件。
+	private const double CompareMinBody = 120;
+	private readonly Dictionary<string, int> _commitFilePages = new(StringComparer.Ordinal);
+	private readonly HashSet<string> _commitLoading = new(StringComparer.Ordinal);
+	private int _commitDetailVersion;
 	private string _compareBase = string.Empty;
 	private string _compareTarget = string.Empty;
 	private GitBranchComparison? _compareResult;
 	private string _compareResultBase = string.Empty;
 	private string _compareResultTarget = string.Empty;
 	private string? _compareError;
+	private int _comparePage = CompareFilePageSize;
+	private bool _compareLoading;
+	private int _compareVersion;
 	private string _commitDraft = string.Empty;
 	private string _branchDraft = string.Empty;
 	private string? _lastFailureMessage;
@@ -75,6 +97,8 @@ public sealed partial class GitView : IDisposable
 	private CancellationTokenSource? _summaryAbort;
 	private bool _disposed;
 	private int _refreshVersion;
+	private bool _refreshInFlight;
+	private bool _refreshQueued;
 	private bool _graphLoading;
 	private int _graphVersion;
 	private MultiLineTextBox? _commitInput;
@@ -99,6 +123,18 @@ public sealed partial class GitView : IDisposable
 		_compareSash = new PaneSash(() => _panes.Compare, height => SetPaneBody(Pane.Compare, height), SavePanes);
 		_moreSash = new PaneSash(() => _panes.More, height => SetPaneBody(Pane.More, height), SavePanes);
 		_panes = GitPaneLayout.Decode(DesktopPreference.Load().GitPanes.GetValueOrDefault(_cwd()));
+		if (_panes.Compare < CompareMinBody)
+		{
+			// 旧布局存在 60 之类的小高度：比较节的按钮会被节高裁掉，读回来先抬到最小可用高度。
+			_panes = _panes.WithCompare(CompareMinBody, _panes.CompareOpen);
+		}
+
+		_graphScroll
+			.SmoothScrolling()
+			// 右侧给滚动条留出浮层宽度。
+			.Padding(new Thickness(0, 0, 10, 0))
+			.AutoVerticalScroll()
+			.NoHorizontalScroll();
 
 		// 进度条向 PiDeck 看齐：按等待上限爬升，不用无限循环的不确定条，让用户知道还剩多久。
 		_summaryTimer.Tick += UpdateSummaryProgress;
@@ -109,6 +145,30 @@ public sealed partial class GitView : IDisposable
 			_failureHost.DockTop(),
 			_composerHost.DockTop(),
 			_listHost);
+
+		// 改动可能有上万条（未跟踪的构建产物、大合并）。以前一次把每行都建出来：每行约 20 个控件，
+		// 2 万条要 6 秒建树加 8 秒布局，面板打开就冻住。这里交给固定行高 presenter 只建视口内的行。
+		_changesList.FixedHeightPresenter(ChangeRowHeight)
+			.ItemPadding(Thickness.Zero)
+			.BorderThickness(0)
+			.Background(AppTheme.Transparent)
+			// 右侧留出滚动条的浮层宽度：行尾的暂存按钮与比例条不该压在滚动条下面。
+			.Padding(new Thickness(0, 0, 10, 0))
+			.SmoothScrolling();
+		_changesList.ItemTemplate = new DelegateTemplate<GitChangeRow>(
+			static _ => new Border(),
+			(host, row, _, _) => BindChangeRow((Border)host, row));
+		_changesEmpty
+			.Orientation(Orientation.Horizontal)
+			.Spacing(6)
+			.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3, AppTheme.Space3))
+			.VerticalAlignment(VerticalAlignment.Top)
+			.IsHitTestVisible(false)
+			.IsVisible(false)
+			.Children(
+				AppIcons.Icon("circle-check", AppStyles.RoleSuccess, 14),
+				new TextBlock().Text(Strings.GitNoPendingChanges).FontSize(AppTheme.FontSizeCaption).MutedText());
+		_listHost.Child = new Grid().Children(_changesList, _changesEmpty);
 		// 一行一节，吸掉剩余空间的那行由 ApplyPaneHeights 指定（见 AbsorberRow）。
 		// 折叠某一节后，剩余高度要还给别的节，否则原地留一块空白。
 		_root.Children(
@@ -153,11 +213,25 @@ public sealed partial class GitView : IDisposable
 			return;
 		}
 
+		if (_refreshInFlight)
+		{
+			// 已有一轮在跑：等它回来再补一轮。直接再开一组 git 进程只会让两轮互相作废。
+			_refreshQueued = true;
+			return;
+		}
+
+		StartRefresh(dispatcher);
+	}
+
+	private void StartRefresh(IDispatcher dispatcher)
+	{
+		_refreshInFlight = true;
+		_refreshQueued = false;
 		var version = ++_refreshVersion;
-		// A status refresh also invalidates an in-flight graph load; its result belongs to the
-		// previous repository snapshot and must not overwrite the new graph.
+		// 状态刷新也让在途的图加载作废：它对应上一份仓库快照。
 		_graphVersion++;
 		_graphLoading = false;
+		_graphCountDirty = true;
 		var cwd = _cwd();
 		_ = RefreshAsync(cwd, version, dispatcher);
 	}
@@ -165,34 +239,70 @@ public sealed partial class GitView : IDisposable
 	private async Task RefreshAsync(string cwd, int version, IDispatcher dispatcher)
 	{
 		GitStatus status;
+		GitChangeStats stats;
 		try
 		{
-			status = await Task.Run(() => GitStatusReader.Read(cwd)).ConfigureAwait(false);
+			// 行数统计和状态一起在后台读：面板打开前要多等两次 git diff，但都在 UI 线程外。
+			(status, stats) = await Task.Run(() =>
+			{
+				var read = GitStatusReader.Read(cwd);
+				return (read, read.IsRepository ? ReadStats(cwd, read) : GitChangeStats.Empty);
+			}).ConfigureAwait(false);
 		}
 		catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
 		{
 			status = new GitStatus { IsRepository = false, Error = Strings.GitUnavailable };
+			stats = GitChangeStats.Empty;
+		}
+		catch (Exception ex)
+		{
+			// 后台读抛了预期外的异常也要收尾：否则在途标记永远不清，面板不再刷新。
+			AppLog.Failure(AppLog.For<GitView>(), "Refresh Git panel", ex);
+			status = new GitStatus { IsRepository = false, Error = Strings.GitUnavailable };
+			stats = GitChangeStats.Empty;
 		}
 
 		void Complete()
 		{
-			if (_disposed || version != _refreshVersion)
+			_refreshInFlight = false;
+			if (_disposed)
 			{
 				return;
 			}
 
-			ApplyStatus(status);
+			if (version == _refreshVersion)
+			{
+				ApplyStatus(status, stats);
+			}
+
+			if (_refreshQueued)
+			{
+				_refreshQueued = false;
+				StartRefresh(dispatcher);
+			}
 		}
 
 		if (dispatcher.IsOnUIThread) Complete();
 		else dispatcher.BeginInvoke(Complete);
 	}
 
-	private void Rebuild() => ApplyStatus(GitStatusReader.Read(_cwd()));
+	/// 只读有内容的一侧：没有暂存改动就不跑 --cached，只有未跟踪文件就不跑工作区 diff。
+	private static GitChangeStats ReadStats(string cwd, GitStatus status) =>
+		GitDiffStatsReader.Read(
+			cwd,
+			status.Changes.Any(static change => change.HasStaged),
+			status.Changes.Any(static change => change.WorkTreeStatus is not (" " or "?")));
 
-	private void ApplyStatus(GitStatus status)
+	private void Rebuild()
+	{
+		var status = GitStatusReader.Read(_cwd());
+		ApplyStatus(status, status.IsRepository ? ReadStats(_cwd(), status) : GitChangeStats.Empty);
+	}
+
+	private void ApplyStatus(GitStatus status, GitChangeStats stats)
 	{
 		_lastStatus = status;
+		_stats = stats;
 		try
 		{
 			RebuildSections();
@@ -269,13 +379,50 @@ public sealed partial class GitView : IDisposable
 
 	private void RebuildComposer(GitStatus status) => Swap(_composerHost, BuildCommitComposer(status));
 
-	private void RebuildList() => Swap(_listHost, BuildChangeList(_lastStatus!));
+	/// 重建更改行表。列表控件本身不换：换成新宿主会把滚动位置、已建的行与悬停态一起丢掉。
+	private void RebuildList()
+	{
+		var rows = GitChangeList.Build(_lastStatus!, _collapsedDirectories, _stats);
+		_changesEmpty.IsVisible = rows.Count == 0;
+		_changesList.IsVisible = rows.Count > 0;
+		_changesList.ItemsSource = ItemsView.Create(
+			rows,
+			// 行文本只用于量列表自然宽度。给了真姓名，超长文件名会把 extent 撞出视口宽度，
+			// 列表底部就多一条横向滚动条；行里的 TextBlock 自己会截断成省略号。
+			static _ => string.Empty,
+			static row => row.Key);
+	}
 
 	private void RebuildGraph()
 	{
 		var branches = _panes.GraphOpen || _panes.CompareOpen ? CurrentBranches() : [];
-		Swap(_graphHost, BuildGraphPane(branches));
+		LoadGraph(branches);
+		if (_graphPane is null)
+		{
+			_graphPane = new DockPanel().LastChildFill().Children(_graphHeaderHost.DockTop(), _graphScroll);
+			Swap(_graphHost, _graphPane);
+		}
+
+		Swap(_graphHeaderHost, BuildGraphHeader(branches));
+		_graphScroll.IsVisible = _panes.GraphOpen;
+		if (_panes.GraphOpen)
+		{
+			SetGraphContent(BuildGraphContent());
+		}
+
 		ApplyPaneHeights();
+	}
+
+	/// 只换图的内容：视口不换，滚动位置与滚动动画都留在原地。
+	private void SetGraphContent(UIElement content)
+	{
+		if (_graphScroll.Content is { } previous)
+		{
+			_graphScroll.Content = null;
+			UiLifetime.Release(previous);
+		}
+
+		_graphScroll.Content = content;
 	}
 
 	private void RebuildCompare()
@@ -321,7 +468,7 @@ public sealed partial class GitView : IDisposable
 
 		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
-			_branches = GitWriter.Branches(_cwd());
+			_branches = ReadBranches(_cwd());
 			_branchesLoaded = true;
 			_branchesDirty = false;
 			return _branches;
@@ -342,15 +489,7 @@ public sealed partial class GitView : IDisposable
 
 	private async Task LoadBranchesAsync(string cwd, int version, IDispatcher dispatcher)
 	{
-		IReadOnlyList<string> branches;
-		try
-		{
-			branches = await Task.Run(() => GitWriter.Branches(cwd)).ConfigureAwait(false);
-		}
-		catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-		{
-			branches = [];
-		}
+		var branches = await Task.Run(() => ReadBranches(cwd)).ConfigureAwait(false);
 
 		void Complete()
 		{
@@ -369,6 +508,21 @@ public sealed partial class GitView : IDisposable
 
 		if (dispatcher.IsOnUIThread) Complete();
 		else dispatcher.BeginInvoke(Complete);
+	}
+
+	/// 读分支列表：异常不能漏出 fire-and-forget 任务，否则 _branchesLoading 永远为 true，
+	/// 筛选与比较节再也拿不到分支。
+	private static IReadOnlyList<string> ReadBranches(string cwd)
+	{
+		try
+		{
+			return GitWriter.Branches(cwd);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<GitView>(), "Read Git branches", ex);
+			return [];
+		}
 	}
 
 	private UIElement BuildBranchBar(GitStatus status)
@@ -803,106 +957,68 @@ public sealed partial class GitView : IDisposable
 		await RunGitAsync(() => GitWriter.Commit(_cwd(), draft), Strings.GitCommitBusy, onSuccess: () => _commitDraft = string.Empty);
 	}
 
-	private UIElement BuildChangeList(GitStatus status)
+	/// 把一行折进列表容器。Bind 只在新实现一行或列表代际变化时调用；先比对身份，
+	/// 同一行的内容不重弄（重复求值来自 ItemsView 每次重建都换实例）。
+	private void BindChangeRow(Border host, GitChangeRow row)
 	{
-		var list = new StackPanel().Spacing(2);
-		var conflicts = status.Changes.Where(static change => change.IsConflict).ToList();
-		var staged = status.Changes.Where(static change => change.HasStaged && !change.IsConflict).ToList();
-		var unstaged = status.Changes.Where(static change => change.HasWorkTree && !change.IsConflict).ToList();
-
-		if (conflicts.Count == 0 && staged.Count == 0 && unstaged.Count == 0)
+		if (host.Tag is GitChangeRow previous && ReferenceEquals(previous, row) && host.Child is not null)
 		{
-			list.Children(new StackPanel()
-				.Orientation(Orientation.Horizontal)
-				.Spacing(6)
-				.VerticalAlignment(VerticalAlignment.Center)
-				.Padding(new Thickness(AppTheme.Space3, AppTheme.Space3, AppTheme.Space3, AppTheme.Space3))
-				.Children(
-					AppIcons.Icon("circle-check", AppStyles.RoleSuccess, 14),
-					new TextBlock().Text(Strings.GitNoPendingChanges).FontSize(AppTheme.FontSizeCaption).MutedText()));
-		}
-		else
-		{
-			if (conflicts.Count > 0)
-			{
-				list.Children(BuildChangeSection(Strings.GitMergeChanges, conflicts, stagedSide: false, bulkLabel: null, bulk: null, conflict: true, allowActions: false));
-			}
-
-			if (staged.Count > 0)
-			{
-				list.Children(BuildChangeSection(
-					Strings.GitStaged,
-					staged,
-					stagedSide: true,
-					bulkLabel: Strings.GitUnstageAll,
-					bulk: () => ApplyResult(GitWriter.Unstage(_cwd(), [.. staged.Select(static change => change.Path)])),
-					conflict: false,
-					allowActions: true));
-			}
-
-			if (unstaged.Count > 0)
-			{
-				list.Children(BuildChangeSection(
-					Strings.GitUnstaged,
-					unstaged,
-					stagedSide: false,
-					bulkLabel: Strings.GitStageAll,
-					bulk: () => ApplyResult(GitWriter.Stage(_cwd(), [.. unstaged.Select(static change => change.Path)])),
-					conflict: false,
-					allowActions: true));
-			}
+			return;
 		}
 
-		return new ScrollViewer()
-			.SmoothScrolling()
-			.Content(list)
-			.AutoVerticalScroll()
-			.NoHorizontalScroll();
+		host.Tag = row;
+		if (host.Child is { } stale)
+		{
+			host.Child = null;
+			UiLifetime.Release(stale);
+		}
+
+		host.Child = row.Kind switch
+		{
+			GitChangeRowKind.Section => BuildSectionRow(row),
+			GitChangeRowKind.Directory => BuildDirectoryRow(row),
+			_ => BuildFileRow(row),
+		};
 	}
 
-	private UIElement BuildChangeSection(
-		string title,
-		IReadOnlyList<GitChange> changes,
-		bool stagedSide,
-		string? bulkLabel,
-		Action? bulk,
-		bool conflict,
-		bool allowActions)
+	private UIElement BuildSectionRow(GitChangeRow row)
 	{
-		var section = new StackPanel().Spacing(1);
 		var header = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(6)
 			.VerticalAlignment(VerticalAlignment.Center)
 			.Children(
-				new TextBlock().Text(title).FontSize(AppTheme.FontSizeMicro)
+				new TextBlock().Text(row.Title).FontSize(AppTheme.FontSizeMicro)
 					.FontWeight(FontWeight.SemiBold)
-					.WithTheme((theme, text) => text.Foreground = conflict ? AppTheme.For(theme).Error : AppTheme.For(theme).TextPrimary),
-				new TextBlock().Text(changes.Count.ToString()).FontSize(AppTheme.FontSizeMicro).FaintText());
+					.WithTheme((theme, text) => text.Foreground = row.Conflict
+						? AppTheme.For(theme).Error
+						: AppTheme.For(theme).TextPrimary),
+				new TextBlock().Text(row.Changes.Count.ToString()).FontSize(AppTheme.FontSizeMicro).FaintText());
+		header.IsHitTestVisible = false;
 
-		var row = new DockPanel().LastChildFill().Margin(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, 0));
-		if (bulk is not null && bulkLabel is not null)
+		var host = new DockPanel().LastChildFill().Margin(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, 0));
+		if (row.AllowActions)
 		{
-			var action = SmallTextButton(bulkLabel, bulk);
+			var changes = row.Changes;
+			var action = SmallTextButton(
+				row.Staged ? Strings.GitUnstageAll : Strings.GitStageAll,
+				() => _ = RunGitAsync(
+					() => row.Staged
+						? GitWriter.Unstage(_cwd(), [.. changes.Select(static change => change.Path)])
+						: GitWriter.Stage(_cwd(), [.. changes.Select(static change => change.Path)]),
+					Strings.GitBusy));
 			action.IsEnabled = !_busy && !_generating;
-			row.Children(action.DockRight());
+			host.Children(action.DockRight());
 		}
 
-		row.Children(header);
-		section.Children(row);
-		foreach (var treeRow in GitChangeTree.Build(changes, _collapsedDirectories))
-		{
-			section.Children(treeRow.IsDirectory
-				? BuildDirectoryRow(treeRow, stagedSide, allowActions)
-				: BuildFileRow(treeRow.File!, treeRow.Depth, stagedSide, conflict, allowActions));
-		}
-
-		return section;
+		return host.Children(header);
 	}
 
-	private UIElement BuildDirectoryRow(GitTreeRow row, bool stagedSide, bool allowActions)
+	private UIElement BuildDirectoryRow(GitChangeRow row)
 	{
-		var collapsed = _collapsedDirectories.Contains(row.Path);
+		var tree = row.Tree!;
+		var path = tree.Path;
+		var collapsed = _collapsedDirectories.Contains(path);
 		var directoryContent = new StackPanel()
 			.Orientation(Orientation.Horizontal)
 			.Spacing(5)
@@ -910,22 +1026,22 @@ public sealed partial class GitView : IDisposable
 			.Children(
 				ThemedGlyph(collapsed ? GlyphKind.ChevronRight : GlyphKind.ChevronDown, AppStyles.RoleFaint, 2.5),
 				AppIcons.Icon("folder-open", AppStyles.RoleSubtle, 13),
-				new TextBlock().Text(row.Label).FontSize(AppTheme.FontSizeCaption).MutedText()
-					.MaxWidth(Math.Max(80, 220 - row.Depth * 10))
+				new TextBlock().Text(tree.Label).FontSize(AppTheme.FontSizeCaption).MutedText()
+					.MaxWidth(Math.Max(80, 220 - tree.Depth * 10))
 					.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis),
-				new TextBlock().Text(row.Changes.Count.ToString()).FontSize(AppTheme.FontSizeMicro).FaintText());
+				new TextBlock().Text(tree.Changes.Count.ToString()).FontSize(AppTheme.FontSizeMicro).FaintText());
 		FlatContent(directoryContent);
 
 		var directoryButton = new Button()
 			.Ghost()
 			.Height(26)
-			.Padding(new Thickness(AppTheme.Space2 + row.Depth * 10, 0, AppTheme.Space1, 0))
+			.Padding(new Thickness(AppTheme.Space2 + tree.Depth * 10, 0, AppTheme.Space1, 0))
 			.Content(directoryContent)
 			.OnClick(() =>
 			{
-				if (!_collapsedDirectories.Remove(row.Path))
+				if (!_collapsedDirectories.Remove(path))
 				{
-					_collapsedDirectories.Add(row.Path);
+					_collapsedDirectories.Add(path);
 				}
 
 				// 折叠只影响改动树本身。
@@ -933,61 +1049,115 @@ public sealed partial class GitView : IDisposable
 			});
 
 		var action = GlyphButton(
-			stagedSide ? GlyphKind.Minus : GlyphKind.Plus,
-			stagedSide ? Strings.GitUnstageDirectory : Strings.GitStageDirectory,
+			row.Staged ? GlyphKind.Minus : GlyphKind.Plus,
+			row.Staged ? Strings.GitUnstageDirectory : Strings.GitStageDirectory,
 			() =>
 			{
-				var paths = row.Changes.Select(static change => change.Path).ToArray();
-				ApplyResult(stagedSide ? GitWriter.Unstage(_cwd(), paths) : GitWriter.Stage(_cwd(), paths));
+				var paths = tree.Changes.Select(static change => change.Path).ToArray();
+				// 目录可能上千个文件：git add 放线程池，别卡住面板。
+				_ = RunGitAsync(
+					() => row.Staged ? GitWriter.Unstage(_cwd(), paths) : GitWriter.Stage(_cwd(), paths),
+					Strings.GitBusy);
 			});
 		action.IsEnabled = !_busy && !_generating;
-		action.IsVisible = allowActions;
+		action.IsVisible = row.AllowActions;
 
 		return new DockPanel().LastChildFill().Children(action.DockRight(), directoryButton);
 	}
 
-	private UIElement BuildFileRow(GitChange change, int depth, bool stagedSide, bool conflict, bool allowActions)
+	private UIElement BuildFileRow(GitChangeRow row)
 	{
-		var letter = conflict ? "U" : change.StatusLetter(stagedSide);
+		var tree = row.Tree!;
+		var change = tree.File!;
+		var letter = row.Conflict ? "U" : change.StatusLetter(row.Staged);
 		var letterRole = LetterRole(letter);
-		var rowContent = new StackPanel()
-			.Orientation(Orientation.Horizontal)
-			.Spacing(6)
-			.VerticalAlignment(VerticalAlignment.Center)
-			.Children(
-				new TextBlock().Text(letter)
-					.FontFamily(AppTheme.MonoFont)
-					.FontSize(AppTheme.FontSizeMicro)
-					.Width(14)
-					.WithTheme((theme, text) => text.Foreground = RoleColor(AppTheme.For(theme), letterRole)),
-				new TextBlock().Text(change.FileName)
-					.FontSize(AppTheme.FontSizeCaption)
-					.MutedText()
-					.MaxWidth(Math.Max(80, 240 - depth * 10))
-					.TextWrapping(TextWrapping.NoWrap)
-					.TextTrimming(TextTrimming.CharacterEllipsis));
+		// 行尾停靠统计，文件名占剩余宽度并自己截断：面板窄到 360 时也不会把行撑出可视区。
+		var rowContent = new DockPanel().LastChildFill();
+		if (BuildDiffStat(row.Stat, AppTheme.FontSizeCaption) is { } stat)
+		{
+			rowContent.Children(stat.Margin(new Thickness(8, 0, 2, 0)).DockRight());
+		}
+
+		rowContent.Children(
+			new TextBlock().Text(letter)
+				.FontFamily(AppTheme.MonoFont)
+				.FontSize(AppTheme.FontSizeMicro)
+				.Width(14)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.WithTheme((theme, text) => text.Foreground = RoleColor(AppTheme.For(theme), letterRole))
+				.DockLeft(),
+			new TextBlock().Text(change.FileName)
+				.FontSize(AppTheme.FontSizeCaption)
+				.MutedText()
+				.MaxWidth(Math.Max(80, 240 - tree.Depth * 10))
+				.TextWrapping(TextWrapping.NoWrap)
+				.TextTrimming(TextTrimming.CharacterEllipsis)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Margin(new Thickness(6, 0, 0, 0)));
 		FlatContent(rowContent);
 
-		var row = new Button()
+		var rowButton = new Button()
 			.Ghost()
 			.Height(27)
-			.Padding(new Thickness(AppTheme.Space2 + depth * 10, 0, AppTheme.Space1, 0))
+			.Padding(new Thickness(AppTheme.Space2 + tree.Depth * 10, 0, AppTheme.Space1, 0))
 			.Content(rowContent)
-			.OnClick(() => SelectDiff(change, stagedSide))
+			.OnClick(() => SelectDiff(change, row.Staged))
 			.HoverTip(change.Path + "\n" + change.Label);
-		row.Tag = change;
+		rowButton.Tag = change;
 
 		var action = GlyphButton(
-			stagedSide ? GlyphKind.Minus : GlyphKind.Plus,
-			stagedSide ? Strings.GitUnstage : Strings.GitStage,
-			() => ApplyResult(stagedSide ? GitWriter.Unstage(_cwd(), [change.Path]) : GitWriter.Stage(_cwd(), [change.Path])));
+			row.Staged ? GlyphKind.Minus : GlyphKind.Plus,
+			row.Staged ? Strings.GitUnstage : Strings.GitStage,
+			() => _ = RunGitAsync(
+				() => row.Staged
+					? GitWriter.Unstage(_cwd(), [change.Path])
+					: GitWriter.Stage(_cwd(), [change.Path]),
+				Strings.GitBusy));
 		action.IsEnabled = !_busy && !_generating;
-		action.IsVisible = allowActions;
+		action.IsVisible = row.AllowActions;
 		action.Tag = change;
 
 		return new Border()
 			.CornerRadius(AppTheme.RadiusXs)
-			.Child(new DockPanel().LastChildFill().Children(action.DockRight(), row));
+			.Child(new DockPanel().LastChildFill().Children(action.DockRight(), rowButton));
+	}
+
+	/// 行尾的增删行数与五格比例条；没有数字（未跟踪、二进制、纯改名）就不占位置。
+	/// 更改列表、提交详情与分支比较共用同一套排版，字号跟各自行里的文件名一致。
+	private static FrameworkElement? BuildDiffStat(GitDiffStat? stat, double fontSize)
+	{
+		if (stat is not { } counted || counted.Total <= 0)
+		{
+			return null;
+		}
+
+		var numbers = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(4)
+			.VerticalAlignment(VerticalAlignment.Center);
+		if (counted.Added > 0)
+		{
+			numbers.Children(new TextBlock().Text(Strings.GitAddedLines(counted.Added))
+				.FontFamily(AppTheme.MonoFont).FontSize(fontSize)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Success));
+		}
+
+		if (counted.Removed > 0)
+		{
+			numbers.Children(new TextBlock().Text(Strings.GitRemovedLines(counted.Removed))
+				.FontFamily(AppTheme.MonoFont).FontSize(fontSize)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.WithTheme((theme, text) => text.Foreground = AppTheme.For(theme).Error));
+		}
+
+		var blocks = new DiffStatBlocks();
+		blocks.Set(counted.Added, counted.Removed);
+		return new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(6)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(numbers, blocks);
 	}
 
 	/// 点一行改动：读这一份差异并交给浮层，面板本身不再内嵌 diff 卡片。
@@ -1051,6 +1221,30 @@ public sealed partial class GitView : IDisposable
 
 	/// 最近一次交给浮层的差异内容；无窗口的测试用它核对读出的补丁与来源标记。
 	internal DiffPreviewContent? LastDiffContentForTests => _lastDiffContent;
+
+	/// 改动行总数（含分节标题行）与已实例化的行数：用例靠它确认大改动集不会全量建控件。
+	internal int ChangeRowCountForTests => _changesList.ItemsSource.Count;
+
+	internal bool IsChangeRowRealizedForTests(int index) => _changesList.TryGetContainer(index, out _);
+
+	internal void ScrollChangesForTests(double offset) => _changesList.SetScrollOffsets(0, offset);
+
+	internal int RealizedChangeRowsForTests
+	{
+		get
+		{
+			var realized = 0;
+			for (var index = 0; index < ChangeRowCountForTests; index++)
+			{
+				if (_changesList.TryGetContainer(index, out _))
+				{
+					realized++;
+				}
+			}
+
+			return realized;
+		}
+	}
 
 	private UIElement BuildMorePane(GitStatus status)
 	{
@@ -1261,7 +1455,16 @@ public sealed partial class GitView : IDisposable
 
 		_busy = true;
 		_busyMessage = busyMessage;
-		Refresh();
+		// 忙状态只用上一次快照重画（按钮禁用态与忙碌文案）：此刻再读一遍 status + numstat
+		// 白开一组 git 进程，完成后 ApplyResult 里的 Refresh 才是要结果的那一次。
+		if (_lastStatus is not null)
+		{
+			RebuildChanges();
+		}
+		else
+		{
+			Refresh();
+		}
 
 		GitResult result;
 		try
@@ -1607,7 +1810,7 @@ public sealed partial class GitView : IDisposable
 	/// 几行改动，所以三节加起来不能把上面挤没。
 	private void SetPaneBody(Pane pane, double body)
 	{
-		var clamped = GitPaneLayout.ClampBody(body, MaxPaneBody());
+		var clamped = Math.Max(FloorBody(pane), GitPaneLayout.ClampBody(body, MaxPaneBody()));
 		_panes = pane switch
 		{
 			Pane.Graph => _panes.WithGraph(clamped, _panes.GraphOpen),
@@ -1617,6 +1820,8 @@ public sealed partial class GitView : IDisposable
 
 		ApplyPaneHeights();
 	}
+
+	private static double FloorBody(Pane pane) => pane == Pane.Compare ? CompareMinBody : GitPaneLayout.MinBody;
 
 	private double MaxPaneBody()
 	{
@@ -1645,10 +1850,13 @@ public sealed partial class GitView : IDisposable
 			sash.IsVisible = open && repo;
 		}
 
+		// 窗口很矮时固定的节加起来可能超过可用高度：更改区按自己的行裁剪，
+		// 否则提交框会画到下面「图」的节头上，两层文字叠在一起。
+		_changesBody.ClipToBounds = true;
 		_changesBody.IsVisible = _panes.ChangesOpen && repo;
 		_changesBody.Height = _panes.ChangesOpen ? double.NaN : 0;
 		Apply(_graphHost, _graphSash, GraphRow, _panes.Graph, _panes.GraphOpen);
-		Apply(_compareHost, _compareSash, CompareRow, _panes.Compare, _panes.CompareOpen);
+		Apply(_compareHost, _compareSash, CompareRow, Math.Max(FloorBody(Pane.Compare), _panes.Compare), _panes.CompareOpen);
 		Apply(_moreHost, _moreSash, MoreRow, _panes.More, _panes.MoreOpen);
 
 		_root.Rows(
@@ -1664,8 +1872,6 @@ public sealed partial class GitView : IDisposable
 			(MoreRow == absorber ? "*" : "auto"));
 		_root.InvalidateMeasure();
 	}
-
-	private bool PaneAbsorbs(int row) => AbsorberRow() == row;
 
 	private const int ChangesRow = 3;
 	private const int GraphRow = 5;
@@ -1710,7 +1916,7 @@ public sealed partial class GitView : IDisposable
 	/// 让按钮的显示内容不参与命中测试。不关掉时，鼠标在一行里走过图标/文字/计数会让命中叶子不断换，
 	/// 每换一次都要重算悬停链并重绘一帧；快速扫过列表时输入队列就是这样堆起来的（高亮「不跟手」）。
 	/// 按钮本体仍然命中（整行一次），行尾的动作按钮是兄弟节点，不受影响。
-	private static void FlatContent(StackPanel content) => content.IsHitTestVisible = false;
+	private static void FlatContent(Panel content) => content.IsHitTestVisible = false;
 
 	/// 主按钮文字：面板里所有 Primary 按钮的标签都居中，不贴着按钮左缘。
 	/// 字色不写死：主按钮样式在可用 / 禁用两态自己换 Foreground，标签继承它才不会在禁用时变成
@@ -1783,6 +1989,47 @@ public sealed partial class GitView : IDisposable
 	{
 		SetPaneBody(Pane.Graph, body);
 		SavePanes();
+	}
+
+	/// 展开图里第一条提交：用例靠它核对大提交的文件列表是否分页。
+	internal void ExpandFirstCommitForTests()
+	{
+		if (_graphCommits.Count > 0)
+		{
+			ToggleCommit(_graphCommits[0]);
+		}
+	}
+
+	/// 展开/收起第 <paramref name="index"/> 条提交：用例靠它核对重排后图的滚动位置是否保留。
+	internal void ToggleCommitForTests(int index)
+	{
+		if ((uint)index < (uint)_graphCommits.Count)
+		{
+			ToggleCommit(_graphCommits[index]);
+		}
+	}
+
+	internal void ScrollGraphForTests(double offset) => _graphScroll.SetScrollOffsets(0, offset);
+
+	internal double GraphScrollOffsetForTests => _graphScroll.VerticalOffset;
+
+	/// 把比较节设成给定正文高度并展开：用例核对最小高度下限与内容裁剪。
+	internal void SetCompareHeightForTests(double body)
+	{
+		_panes = _panes.WithCompare(body, open: true);
+		SetPaneBody(Pane.Compare, body);
+		RebuildCompare();
+	}
+
+	internal double ComparePaneHeightForTests => _compareHost.Height;
+
+	/// 直接跑一次分支比较：绕过下拉选择，用例只关心结果行的分页。
+	internal void CompareBranchesForTests(string baseRef, string targetRef)
+	{
+		_panes = _panes.WithCompare(_panes.Compare, true);
+		_compareBase = baseRef;
+		_compareTarget = targetRef;
+		RunCompare();
 	}
 
 	internal void ReportGraphGeometryForSmoke()
