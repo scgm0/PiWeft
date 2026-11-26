@@ -127,6 +127,17 @@ public sealed record DesktopPreference
 	public IReadOnlyDictionary<string, string> GitPanes { get; init; } =
 		new Dictionary<string, string>(StringComparer.Ordinal);
 
+	/// 比较节的「已看」标记：键是 <c>仓库|baseHash|targetHash</c>，值是文件标识列表。
+	/// 值里存的是比较行的 key（含改名前的原路径），同一提交对重新打开时还原进度；
+	/// 分支移动后哈希变化，旧标记自然失效。只记分支间比较，工作区范围不落盘。
+	public IReadOnlyDictionary<string, IReadOnlyList<string>> GitViewed { get; init; } =
+		new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+
+	/// 比较节上次用的审查层，按仓库记（`all` / `implementation` / `interface` / `tests`）。
+	/// 有人只在实现层里审，切走再回来不该每次都重选。
+	public IReadOnlyDictionary<string, string> GitReviewLens { get; init; } =
+		new Dictionary<string, string>(StringComparer.Ordinal);
+
 	/// 命令 Dock 使用的 shell 可执行文件；空表示自动（<c>$SHELL</c> → bash → sh）。
 	/// 只影响终端面板，不改动系统登录 shell。
 	public string TerminalShell { get; init; } = string.Empty;
@@ -245,6 +256,8 @@ public sealed record DesktopPreference
 					? lastModelText.Trim()
 					: string.Empty,
 				GitPanes = ReadStringMap(root?["gitPanes"]),
+				GitViewed = ReadGitViewed(root?["gitViewed"]),
+				GitReviewLens = ReadStringMap(root?["gitReviewLens"]),
 				TerminalShell = root?["terminalShell"] is JsonValue shell && shell.TryGetValue<string>(out var shellPath)
 					? shellPath.Trim()
 					: string.Empty,
@@ -447,6 +460,36 @@ public sealed record DesktopPreference
 			root["gitPanes"] = panes;
 		}
 
+		if (GitViewed.Count == 0)
+		{
+			root.Remove("gitViewed");
+		}
+		else
+		{
+			var viewed = new JsonObject();
+			foreach (var (key, paths) in GitViewed)
+			{
+				viewed[key] = new JsonArray([.. paths.Select(static path => (JsonNode?)JsonValue.Create(path))]);
+			}
+
+			root["gitViewed"] = viewed;
+		}
+
+		if (GitReviewLens.Count == 0)
+		{
+			root.Remove("gitReviewLens");
+		}
+		else
+		{
+			var lens = new JsonObject();
+			foreach (var (repo, layer) in GitReviewLens)
+			{
+				lens[repo] = layer;
+			}
+
+			root["gitReviewLens"] = lens;
+		}
+
 		if (string.IsNullOrWhiteSpace(TerminalShell))
 		{
 			root.Remove("terminalShell");
@@ -568,6 +611,49 @@ public sealed record DesktopPreference
 
 		return this with { GitPanes = map };
 	}
+
+	/// 记下一组已看标记；空列表删掉这一对比较。最多留 24 对，按写入顺序淘汰最旧的。
+	public DesktopPreference WithGitViewed(string key, IReadOnlyList<string> paths)
+	{
+		var map = new Dictionary<string, IReadOnlyList<string>>(GitViewed, StringComparer.Ordinal);
+		map.Remove(key);
+		if (paths.Count > 0)
+		{
+			map[key] = [.. paths.Distinct(StringComparer.Ordinal).Take(MaxViewedPaths)];
+		}
+
+		while (map.Count > MaxViewedComparisons)
+		{
+			map.Remove(map.Keys.First());
+		}
+
+		return this with { GitViewed = map };
+	}
+
+	/// 记住某个仓库的比较审查层；空值删掉这一条。最多 24 个仓库。
+	public DesktopPreference WithGitReviewLens(string repository, string layer)
+	{
+		var map = new Dictionary<string, string>(GitReviewLens, StringComparer.Ordinal);
+		var key = System.IO.Path.GetFullPath(repository);
+		map.Remove(key);
+		if (layer.Length > 0)
+		{
+			map[key] = layer;
+		}
+
+		while (map.Count > MaxReviewLensRepositories)
+		{
+			map.Remove(map.Keys.First());
+		}
+
+		return this with { GitReviewLens = map };
+	}
+
+	private const int MaxReviewLensRepositories = 24;
+
+	private const int MaxViewedComparisons = 24;
+
+	private const int MaxViewedPaths = 500;
 
 	public DesktopPreference TogglePinned(string sessionId)
 	{
@@ -725,6 +811,43 @@ public sealed record DesktopPreference
 		}
 
 		return pinned;
+	}
+
+	private static Dictionary<string, IReadOnlyList<string>> ReadGitViewed(JsonNode? node)
+	{
+		var map = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+		if (node is not JsonObject obj)
+		{
+			return map;
+		}
+
+		foreach (var (key, value) in obj)
+		{
+			if (map.Count >= MaxViewedComparisons || key.Length == 0 || value is not JsonArray array)
+			{
+				continue;
+			}
+
+			var paths = new List<string>();
+			foreach (var item in array)
+			{
+				if (item is JsonValue text && text.TryGetValue<string>(out var path) && !string.IsNullOrWhiteSpace(path))
+				{
+					paths.Add(path);
+					if (paths.Count >= MaxViewedPaths)
+					{
+						break;
+					}
+				}
+			}
+
+			if (paths.Count > 0)
+			{
+				map[key] = paths;
+			}
+		}
+
+		return map;
 	}
 
 	private static Dictionary<string, string> ReadStringMap(JsonNode? node)

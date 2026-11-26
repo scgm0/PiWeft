@@ -34,14 +34,18 @@ internal sealed class FileDiffPreview
 	private readonly Button _unified;
 	private readonly Button _sideBySide;
 	private readonly Button _open;
+	private readonly Button _quote;
 	private readonly Button _close;
 	private readonly TextFocusScrollGuard _focus;
 	private readonly OverlayFade _fade;
+	// 当前渲染出的 diff 正文控件：引用时优先取其中的选区。
+	private readonly List<MultiLineTextBox> _diffBodies = [];
 
 	private Window? _window;
 	private UIElement? _returnFocus;
 	private DiffPreviewContent? _content;
 	private Action<string>? _openInEditor;
+	private Action<string>? _quoteToInput;
 	private bool _sideBySideMode;
 
 	public FileDiffPreview()
@@ -67,10 +71,12 @@ internal sealed class FileDiffPreview
 			.Child(new StackPanel().Orientation(Orientation.Horizontal).Spacing(2).Children(_unified, _sideBySide));
 
 		_open = AppIcons.Button("square-pen", Strings.OpenInEditor, OpenInEditor, size: 14);
+		_quote = AppIcons.Button("message-square", Strings.DiffQuoteToInput, QuoteToInput, size: 14);
+		_quote.IsVisible = false;
 		_close = AppIcons.Button("x", Strings.GitCloseDiff, Hide, size: 14);
 		var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(4)
 			.VerticalAlignment(VerticalAlignment.Center)
-			.Children(modes, _open, _close);
+			.Children(modes, _quote, _open, _close);
 
 		// 标题与路径各占一份星号宽度：卡片封顶 1080 后，头部放不下所有 MaxWidth 的和，
 		// StackPanel 不会收缩，路径会压到右侧按钮上。
@@ -127,7 +133,11 @@ internal sealed class FileDiffPreview
 	internal bool CanOpenFile => _open.IsVisible;
 
 	/// 打开一份 diff。宿主面缺失（无窗口、无头测试）时静默返回。
-	public void Show(UIElement owner, DiffPreviewContent content, Action<string>? openInEditor = null)
+	public void Show(
+		UIElement owner,
+		DiffPreviewContent content,
+		Action<string>? openInEditor = null,
+		Action<string>? quoteToInput = null)
 	{
 		if (!Application.IsRunning) return;
 		if (owner.FindVisualRoot() is not Window window) return;
@@ -137,7 +147,7 @@ internal sealed class FileDiffPreview
 			CloseNow();
 		}
 
-		Load(content, openInEditor);
+		Load(content, openInEditor, quoteToInput);
 		_window = window;
 		if (IsOpen)
 		{
@@ -169,12 +179,13 @@ internal sealed class FileDiffPreview
 	}
 
 	/// 无窗口时装载内容，供无头测试检查头部与 diff 文本。
-	internal void LoadForTests(DiffPreviewContent content) => Load(content, null);
+	internal void LoadForTests(DiffPreviewContent content) => Load(content, null, null);
 
-	private void Load(DiffPreviewContent content, Action<string>? openInEditor)
+	private void Load(DiffPreviewContent content, Action<string>? openInEditor, Action<string>? quoteToInput)
 	{
 		_content = content;
 		_openInEditor = openInEditor;
+		_quoteToInput = quoteToInput;
 		_title.Text(content.Title);
 		_title.HoverTip(content.Path);
 		_context.Text(content.Context);
@@ -185,6 +196,7 @@ internal sealed class FileDiffPreview
 		_stat.IsVisible = _stat.Text.Length > 0;
 		// 历史来源（提交 / 分支比较）打开工作区文件会看错版本，这类请求不给编辑器入口。
 		_open.IsVisible = content.CanOpenFile;
+		_quote.IsVisible = quoteToInput is not null;
 		SetMode(false);
 	}
 
@@ -195,6 +207,7 @@ internal sealed class FileDiffPreview
 		_window = null;
 		_content = null;
 		_openInEditor = null;
+		_quoteToInput = null;
 		SetChild(null);
 		_returnFocus?.Focus();
 		_returnFocus = null;
@@ -211,6 +224,7 @@ internal sealed class FileDiffPreview
 	private void RenderDiff()
 	{
 		var content = _content;
+		_diffBodies.Clear();
 		UIElement body;
 		if (content?.Message is { Length: > 0 } message)
 		{
@@ -233,8 +247,8 @@ internal sealed class FileDiffPreview
 					.MutedText()
 					.Margin(new Thickness(AppTheme.Space3)))
 				: _sideBySideMode
-					? DiffView.RenderSideBySide(patch, _focus, capLargeText: false)
-					: DiffView.Render(patch, _focus, capLargeText: false);
+					? DiffView.RenderSideBySide(patch, _focus, capLargeText: false, _diffBodies)
+					: DiffView.Render(patch, _focus, capLargeText: false, _diffBodies);
 		}
 
 		SetChild(body);
@@ -259,6 +273,52 @@ internal sealed class FileDiffPreview
 		}
 
 		_body.Child = content;
+	}
+
+	/// 把这份差异折算成一句可继续追问的草稿：路径、来源、增删行数都带上，
+	/// 模型不必再自己猜是哪一份改动。
+	internal static string QuoteText(DiffPreviewContent content)
+	{
+		var context = content.Context.Length > 0 ? content.Context + "，" : string.Empty;
+		return $"针对 @\"{content.Path}\" 的改动（{context}+{content.Added} −{content.Removed}），" +
+			"请解释改了什么、有什么风险。";
+	}
+
+	/// 有选区时只引用选中的这一段：读者已经圈出关心的行，不必让模型再自己找。
+	internal static string QuoteSelectionText(DiffPreviewContent content, string selection)
+	{
+		var text = selection.Trim();
+		if (text.Length > 4000)
+		{
+			text = string.Concat(text.AsSpan(0, 4000), "\n…");
+		}
+
+		var context = content.Context.Length > 0 ? content.Context + "，" : string.Empty;
+		return $"针对 @\"{content.Path}\" 中选中的这段改动（{context}文件共 +{content.Added} −{content.Removed}）：\n" +
+			"```diff\n" + text + "\n```\n" +
+			"请解释它做了什么、有什么风险。";
+	}
+
+	private void QuoteToInput()
+	{
+		if (_quoteToInput is not { } quote || _content is not { } content)
+		{
+			return;
+		}
+
+		// 选区优先：单列取正文控件的选区，并排模式取先选中（或正在编辑）的那一列。
+		var selected = string.Empty;
+		foreach (var body in _diffBodies)
+		{
+			if (body.SelectionLength > 0 && body.SelectedText.Trim() is { Length: > 0 } text)
+			{
+				selected = text;
+				break;
+			}
+		}
+
+		quote(selected.Length > 0 ? QuoteSelectionText(content, selected) : QuoteText(content));
+		Hide();
 	}
 
 	private void OpenInEditor()

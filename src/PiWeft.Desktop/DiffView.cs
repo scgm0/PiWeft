@@ -13,7 +13,11 @@ public static class DiffView
 
 	/// <param name="capLargeText">大补丁是否限高 240。对话里的工具行用（避免一行 diff 撑满会话），
 	/// 差异浮层不用：卡片按窗口高度收口，正文自己滚。</param>
-	internal static UIElement Render(string patch, TextFocusScrollGuard? focus, bool capLargeText = true)
+	internal static UIElement Render(
+		string patch,
+		TextFocusScrollGuard? focus,
+		bool capLargeText = true,
+		List<MultiLineTextBox>? bodies = null)
 	{
 		var normalized = patch.Replace("\r\n", "\n").Replace('\r', '\n');
 		var oldLine = 0;
@@ -69,6 +73,7 @@ public static class DiffView
 		text.Tag = null;
 		text.Extensions.Classifiers.Add(new DiffClassifier(lineKinds));
 		text.InvalidateTextView();
+		bodies?.Add(text);
 		// 换肤后重新分类一次：语义色取当前配色，否则深色那一套会留在浅色代码底上。
 		text.WithTheme((theme, view) =>
 		{
@@ -105,7 +110,11 @@ public static class DiffView
 	/// 两列的横纵偏移同步到同一个绝对值（滚一列，另一列跟着走），行号列固定在左缘。
 	/// 正文自己按宿主给的高度收口，只物化可见行。
 	/// <param name="capLargeText">同 <see cref="Render"/>：工具行限高 240，浮层按窗口高度。</param>
-	internal static UIElement RenderSideBySide(string patch, TextFocusScrollGuard? focus, bool capLargeText = true)
+	internal static UIElement RenderSideBySide(
+		string patch,
+		TextFocusScrollGuard? focus,
+		bool capLargeText = true,
+		List<MultiLineTextBox>? bodies = null)
 	{
 		var rows = SideBySideDiff.Parse(patch);
 		if (rows.Count == 0)
@@ -158,6 +167,8 @@ public static class DiffView
 		var wideGutter = maxNumber > 99_999;
 		var left = SideColumn(focus, oldText.ToString(), oldNumbers.ToString(), large, wideGutter, oldKinds);
 		var right = SideColumn(focus, newText.ToString(), newNumbers.ToString(), large, wideGutter, newKinds);
+		bodies?.Add(left.Body);
+		bodies?.Add(right.Body);
 		SyncColumns(left, right);
 		// 两列等分宽度：列宽跟着宿主走，不固定在阅读宽度的一半上。
 		var content = new Grid().Columns("*,*").Spacing(AppTheme.Space2)

@@ -62,7 +62,7 @@ internal static class GitChangeList
 		}
 
 		Append(rows, Strings.GitMergeChanges, conflicts,
-			staged: false, conflict: true, allowActions: false, collapsedDirectories, stats);
+			staged: false, conflict: true, allowActions: true, collapsedDirectories, stats);
 		Append(rows, Strings.GitStaged, stagedChanges,
 			staged: true, conflict: false, allowActions: true, collapsedDirectories, stats);
 		Append(rows, Strings.GitUnstaged, unstagedChanges,

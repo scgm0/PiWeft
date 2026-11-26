@@ -113,6 +113,36 @@ public static class AppIcons
 		return image;
 	}
 
+	/// 选择菜单里表示「当前项」的勾：仓库、分支与图筛选三处共用，颜色跟随强调色。
+	internal static IconTemplate CheckTemplate() => new(static _ => new GlyphElement()
+		.Kind(GlyphKind.CheckMark)
+		.GlyphSize(4)
+		.Foreground(AppTheme.Accent)
+		.HorizontalAlignment(HorizontalAlignment.Center)
+		.VerticalAlignment(VerticalAlignment.Center));
+
+	/// 换掉一个受主题跟踪的图标的形状，角色与反色语义不变。
+	/// 用于「已看」这类原地翻转的开关：不必为一次点击重建整段列表。
+	internal static void SetIcon(Image image, string icon, string? role = null)
+	{
+		lock (CacheGate)
+		{
+			if (!Info.TryGetValue(image, out var info))
+			{
+				return;
+			}
+
+			// 换形状时也可以换角色：已看/未看是两种语义状态，不能沿用建控件时的颜色。
+			var nextRole = role ?? info.Role;
+			var tint = nextRole is { } named ? AppStyles.ColorForRole(named)
+				: info.OnAccent ? AppTheme.TextOnAccent
+				: info.Tint;
+			image.Source(Get(icon, tint));
+			Info.Remove(image);
+			Info.Add(image, info with { Icon = icon, Role = nextRole });
+		}
+	}
+
 	public static void RefreshAll()
 	{
 		lock (CacheGate)

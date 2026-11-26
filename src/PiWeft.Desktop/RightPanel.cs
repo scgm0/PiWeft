@@ -26,6 +26,10 @@ public sealed class RightPanel : IDisposable
 	private readonly Dictionary<RightPanelSection, UIElement> _views = [];
 	private readonly GitCommitAssistant? _gitAssistant;
 	private readonly Action? _openGitSettings;
+	// 隔离副本可能属于另一个团队成员的目录：面板只发「开个会话」的意图，建会话归主窗口。
+	private readonly Action<string>? _openSessionIn;
+	// 差异浮层的「引用到输入框」落到当前会话的 composer。
+	private readonly Action<string>? _quoteToComposer;
 	private readonly DispatcherTimer _trajectoryTimer = new(TimeSpan.FromSeconds(1));
 	private Func<TrajectorySource>? _trajectorySource;
 	private FileBrowserView? _files;
@@ -42,11 +46,15 @@ public sealed class RightPanel : IDisposable
 		Func<string> cwd,
 		GitCommitAssistant? gitAssistant = null,
 		Action? openGitSettings = null,
-		RightPanelSection section = RightPanelSection.Files)
+		RightPanelSection section = RightPanelSection.Files,
+		Action<string>? openSessionIn = null,
+		Action<string>? quoteToComposer = null)
 	{
 		_cwd = cwd;
 		_gitAssistant = gitAssistant;
 		_openGitSettings = openGitSettings;
+		_openSessionIn = openSessionIn;
+		_quoteToComposer = quoteToComposer;
 		_section = section;
 
 		var tabs = new StackPanel()
@@ -176,6 +184,14 @@ public sealed class RightPanel : IDisposable
 
 	public void SelectFirstGitChangeForSmoke() => _git?.SelectFirstChangeForSmoke();
 
+	public void OpenGitWorktreeEditorForSmoke() => _git?.OpenWorktreeEditorForSmoke();
+
+	public void OpenGitWorktreeCompareForSmoke(string baseRef) => _git?.OpenWorktreeCompareForSmoke(baseRef);
+
+	public void SetGitCompareLensForSmoke(GitReviewLayer layer) => _git?.SetCompareLensForSmoke(layer);
+
+	public void ExpandGitCommitForSmoke() => _git?.ExpandFirstCommitForSmoke();
+
 	public void GenerateGitSummaryForSmoke() => _git?.GenerateSummaryForSmoke();
 
 	public void ReportGitSummaryForSmoke() => _git?.ReportSummaryForSmoke();
@@ -191,7 +207,7 @@ public sealed class RightPanel : IDisposable
 	public void ExpandFirstCheckpointDiffForSmoke() => _checkpoints?.ExpandFirstDiffForSmoke();
 
 
-	public void Refresh()
+	public void Refresh(bool auto = false)
 	{
 		if (_disposed || !_open)
 		{
@@ -205,7 +221,9 @@ public sealed class RightPanel : IDisposable
 				break;
 
 			case RightPanelSection.Git:
-				_git?.Refresh();
+				// 自动刷新不动正在写的提交框：重建会把焦点与半句草稿一起吞掉。
+				if (auto) _git?.RefreshAuto();
+				else _git?.Refresh();
 				break;
 
 			case RightPanelSection.Trajectory:
@@ -254,9 +272,15 @@ public sealed class RightPanel : IDisposable
 			UIElement view = section switch
 			{
 				RightPanelSection.Files => (_files = new FileBrowserView(_cwd)).View,
-				RightPanelSection.Git => (_git = new GitView(_cwd, _gitAssistant, _openGitSettings)).View,
+				RightPanelSection.Git => (_git = new GitView(
+					_cwd,
+					_gitAssistant,
+					_openGitSettings,
+					openSessionIn: _openSessionIn,
+					quoteToComposer: _quoteToComposer)).View,
 				RightPanelSection.Trajectory => (_trajectory = new TrajectoryView(ProjectTrajectory)).View,
-				_ => (_checkpoints = new CheckpointsView(_cwd)).View,
+				// 检查点跟随 Git 面板选中的仓库：放弃子仓库改动时打的快照要能在这一节里找回。
+				_ => (_checkpoints = new CheckpointsView(() => _git?.CurrentRepositoryPath ?? _cwd())).View,
 			};
 
 			_views[section] = view;
@@ -331,6 +355,9 @@ public sealed class RightPanel : IDisposable
 		_disposed = true;
 		_trajectoryTimer.Stop();
 		_trajectory?.Dispose();
+		// diff 浮层挂在窗口的 OverlayLayer 上，不属于面板可视树：不在这里收掉，
+		// 关掉会话后整窗遮罩与卡片会继续盖在新会话上。
+		_git?.HideOverlays();
 		_git?.Dispose();
 	}
 

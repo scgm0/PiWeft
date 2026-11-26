@@ -34,7 +34,8 @@ public class GitChangeListTests
 
 		Assert.Equal(Strings.GitMergeChanges, rows[0].Title);
 		Assert.True(rows[0].Conflict);
-		Assert.False(rows[0].AllowActions);
+		// 冲突文件的「暂存」在 git 里就是标记已解决：面板要能收尾合并，不能只读。
+		Assert.True(rows[0].AllowActions);
 		Assert.Equal(["conflict.cs"], rows[0].Changes.Select(static change => change.Path));
 
 		Assert.Equal(Strings.GitStaged, rows[2].Title);

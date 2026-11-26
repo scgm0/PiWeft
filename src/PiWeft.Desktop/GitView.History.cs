@@ -33,7 +33,7 @@ public sealed partial class GitView
 		var count = _graphCountDirty || _graphTotal == 0;
 		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
-			var (log, total) = ReadGraph(_cwd(), _graphPage, _graphRef, count);
+			var (log, total) = ReadGraph(Repo(), _graphPage, _graphRef, count);
 			ApplyGraph(log, total);
 			return;
 		}
@@ -45,7 +45,7 @@ public sealed partial class GitView
 
 		_graphLoading = true;
 		var version = ++_graphVersion;
-		var cwd = _cwd();
+		var cwd = Repo();
 		var page = _graphPage;
 		var graphRef = _graphRef;
 		_ = LoadGraphAsync(cwd, page, graphRef, count, version, dispatcher);
@@ -289,6 +289,66 @@ public sealed partial class GitView
 		return body;
 	}
 
+	/// 提交操作菜单：复制哈希、撤销、拣选、软重置。合并提交的 revert / cherry-pick 要指定主线，
+	/// 面板不猜，直接把入口置灰并说明原因。
+	private void ShowCommitMenu(Button owner, GitCommitEntry commit)
+	{
+		var menu = new ContextMenu();
+		var merge = commit.Parents.Count > 1;
+		void Add(string label, Action action, bool enabled = true)
+		{
+			var command = new Command($"pi.git.commit.{menu.Items.Count}", label);
+			owner.Commands.Register(command, action, () => enabled && !_busy && !_generating);
+			menu.Items.Add(new MenuItem(command));
+		}
+
+		Add(Strings.GitCopyHash, () => CopyText(commit.Hash, Strings.GitHashCopied(commit.Hash)));
+		menu.AddSeparator();
+		Add(Strings.GitRevertCommit, () => _ = RevertCommitAsync(commit), enabled: !merge);
+		Add(Strings.GitCherryPick, () => _ = CherryPickCommitAsync(commit), enabled: !merge);
+		Add(Strings.GitResetSoft, () => _ = ResetSoftAsync(commit));
+		if (merge)
+		{
+			menu.AddSeparator();
+			var hint = new Command("pi.git.commit.merge", Strings.GitRevertMergeUnsupported);
+			owner.Commands.Register(hint, static () => { }, static () => false);
+			menu.Items.Add(new MenuItem(hint));
+		}
+
+		menu.Placement = MenuPlacement.Below;
+		menu.Show(owner);
+	}
+
+	private Task RevertCommitAsync(GitCommitEntry commit)
+	{
+		var repo = Repo();
+		return ConfirmRunAsync(
+			Strings.GitRevertConfirm(commit.ShortHash, commit.Subject),
+			Strings.GitRevertDetail,
+			() => GitWriter.RevertCommit(repo, commit.Hash),
+			Strings.GitRevertBusy);
+	}
+
+	private Task CherryPickCommitAsync(GitCommitEntry commit)
+	{
+		var repo = Repo();
+		return ConfirmRunAsync(
+			Strings.GitCherryPickConfirm(commit.ShortHash, commit.Subject),
+			Strings.GitRevertDetail,
+			() => GitWriter.CherryPickCommit(repo, commit.Hash),
+			Strings.GitCherryPickBusy);
+	}
+
+	private Task ResetSoftAsync(GitCommitEntry commit)
+	{
+		var repo = Repo();
+		return ConfirmRunAsync(
+			Strings.GitResetSoftConfirm(commit.ShortHash, commit.Subject),
+			Strings.GitResetSoftDetail,
+			() => GitWriter.ResetSoft(repo, commit.Hash),
+			Strings.GitResetSoftBusy);
+	}
+
 	private void ToggleCommit(GitCommitEntry commit)
 	{
 		if (!_expandedCommits.Remove(commit.Hash))
@@ -313,11 +373,11 @@ public sealed partial class GitView
 
 		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
-			ApplyCommitDetail(hash, ReadCommitDetail(_cwd(), hash), _commitDetailVersion);
+			ApplyCommitDetail(hash, ReadCommitDetail(Repo(), hash), _commitDetailVersion);
 			return;
 		}
 
-		var cwd = _cwd();
+		var cwd = Repo();
 		_ = LoadCommitDetailAsync(cwd, hash, _commitDetailVersion, dispatcher);
 	}
 
@@ -402,11 +462,21 @@ public sealed partial class GitView
 				.MutedText().TextWrapping(TextWrapping.Wrap));
 		}
 
-		body.Children(new TextBlock()
-			.Text($"{detail.Commit.AuthorName} <{detail.Commit.AuthorEmail}> · " +
-				$"{detail.Commit.AuthorDate.ToLocalTime():yyyy-MM-dd HH:mm} · {detail.Commit.ShortHash}")
-			.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
-			.FaintText().TextWrapping(TextWrapping.Wrap));
+		// 作者行右侧：复制全哈希，以及提交操作菜单（撤销 / 拣选 / 软重置）。
+		// 拿到哈希去 rebase / bisect 时不用回终端；改写历史的动作全部落在菜单里，不占主行。
+		var commitHash = commit.Hash;
+		var copyHash = RowIconButton("copy", Strings.GitCopyHash,
+			() => CopyText(commitHash, Strings.GitHashCopied(commitHash)));
+		Button? commitMenu = null;
+		commitMenu = RowIconButton("ellipsis", Strings.GitCommitActions,
+			() => ShowCommitMenu(commitMenu!, commit));
+		body.Children(new DockPanel().LastChildFill().Children(
+			new StackPanel().Orientation(Orientation.Horizontal).Spacing(2).Children(copyHash, commitMenu).DockRight(),
+			new TextBlock()
+				.Text($"{detail.Commit.AuthorName} <{detail.Commit.AuthorEmail}> · " +
+					$"{detail.Commit.AuthorDate.ToLocalTime():yyyy-MM-dd HH:mm} · {detail.Commit.ShortHash}")
+				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro)
+				.FaintText().TextWrapping(TextWrapping.Wrap)));
 		body.Children(new TextBlock()
 			.Text(Strings.GitCommitFiles(detail.Files.Count, detail.Insertions, detail.Deletions))
 			.FontSize(AppTheme.FontSizeMicro).FaintText());
@@ -496,12 +566,7 @@ public sealed partial class GitView
 
 	private void ShowGraphFilterMenu(Button owner, IReadOnlyList<string> branches)
 	{
-		var checkIcon = new IconTemplate(size => new GlyphElement()
-			.Kind(GlyphKind.CheckMark)
-			.GlyphSize(4)
-			.Foreground(AppTheme.Accent)
-			.HorizontalAlignment(HorizontalAlignment.Center)
-			.VerticalAlignment(VerticalAlignment.Center));
+		var checkIcon = AppIcons.CheckTemplate();
 		var menu = new ContextMenu();
 		var all = new Command("pi.git.graph.all", Strings.GitGraphFilterAll);
 		owner.Commands.Register(all, () => SelectGraphRef(string.Empty));
@@ -612,7 +677,7 @@ public sealed partial class GitView
 		// 视口滚动，抽高那一节时也一起长，不会把列表和滚动条一起裁掉。
 		var body = new DockPanel().LastChildFill()
 			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space2));
-		if (branches.Count < 2)
+		if (branches.Count == 0)
 		{
 			// 装在 StackPanel 里再停靠：直接当填充子级排会被拉到整节高，文字画在中间。
 			body.Children(new StackPanel().Children(new TextBlock().Text(Strings.GitCompareNeedsBranches)
@@ -621,7 +686,7 @@ public sealed partial class GitView
 		}
 
 		NormalizeCompareSelection(status, branches);
-		var basePicker = ComparePicker(branches, _compareBase);
+		var basePicker = ComparePicker(branches, Math.Max(0, branches.ToList().IndexOf(_compareBase)));
 		basePicker.SelectionChanged += _ =>
 		{
 			if (basePicker.SelectedIndex < 0 || basePicker.SelectedIndex >= branches.Count)
@@ -632,15 +697,21 @@ public sealed partial class GitView
 			_compareBase = branches[basePicker.SelectedIndex];
 			DropCompareResult();
 		};
-		var targetPicker = ComparePicker(branches, _compareTarget);
+		// 目标多一项「工作区」：分支之间比已提交的历史，工作区那一项连同未提交与未跟踪一起比。
+		var targetLabels = branches.Append(Strings.GitCompareWorkingTree).ToArray();
+		var targetIndex = IsWorktreeTarget(_compareTarget)
+			? branches.Count
+			: Math.Max(0, branches.ToList().IndexOf(_compareTarget));
+		var targetPicker = ComparePicker(targetLabels, targetIndex);
 		targetPicker.SelectionChanged += _ =>
 		{
-			if (targetPicker.SelectedIndex < 0 || targetPicker.SelectedIndex >= branches.Count)
+			var index = targetPicker.SelectedIndex;
+			if (index < 0 || index > branches.Count)
 			{
 				return;
 			}
 
-			_compareTarget = branches[targetPicker.SelectedIndex];
+			_compareTarget = index < branches.Count ? branches[index] : GitHistoryReader.WorktreeTarget;
 			DropCompareResult();
 		};
 
@@ -671,17 +742,39 @@ public sealed partial class GitView
 		}
 		else if (_compareResult is { } comparison)
 		{
+			var worktree = IsWorktreeTarget(comparison.TargetHash);
 			top.Children(new TextBlock()
-				.Text(Strings.GitAheadBehind(comparison.Ahead, comparison.Behind))
+				.Text(worktree
+					? Strings.GitCompareWorkingTreeSummary(comparison.Ahead)
+					: Strings.GitAheadBehind(comparison.Ahead, comparison.Behind))
 				.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).FaintText());
 			if (comparison.Files.Count == 0)
 			{
-				top.Children(new TextBlock().Text(Strings.GitCompareEmpty)
+				top.Children(new TextBlock()
+					.Text(worktree ? Strings.GitCompareEmptyWorktree : Strings.GitCompareEmpty)
 					.FontSize(AppTheme.FontSizeMicro).FaintText());
 			}
 			else
 			{
-				fileList = BuildCompareFileList(comparison);
+				_compareVisibleFiles = VisibleCompareFiles(comparison);
+				_compareViewedText = new TextBlock()
+					.Text(Strings.GitCompareViewed(ViewedCompareCount(), _compareVisibleFiles.Count))
+					.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).FaintText()
+					.VerticalAlignment(VerticalAlignment.Center)
+					.HorizontalAlignment(HorizontalAlignment.Right);
+				top.Children(new Grid().Columns("auto,*,auto").Spacing(AppTheme.Space1).Children(
+					CompareLensPicker().Column(0),
+					_compareViewedText.Column(2)));
+				if (_compareVisibleFiles.Count == 0)
+				{
+					top.Children(new TextBlock()
+						.Text(Strings.GitCompareLensEmpty(GitReviewLayers.Label(_compareLens)))
+						.FontSize(AppTheme.FontSizeMicro).FaintText());
+				}
+				else
+				{
+					fileList = BuildCompareFileList(comparison);
+				}
 			}
 		}
 		else
@@ -701,31 +794,33 @@ public sealed partial class GitView
 	/// 比较结果的文件列表：只建前几十行，剩下的走「加载更多」；视口由外层给的高度决定。
 	private UIElement BuildCompareFileList(GitBranchComparison comparison)
 	{
-		var label = _compareResultBase + "..." + _compareResultTarget;
+		var label = _compareResultBase + "..." +
+			(IsWorktreeTarget(comparison.TargetHash) ? Strings.GitCompareWorkingTreeShort : _compareResultTarget);
+		var visible = _compareVisibleFiles;
 		var rows = new StackPanel().Spacing(0);
-		var shown = Math.Min(comparison.Files.Count, Math.Max(CompareFilePageSize, _comparePage));
+		var shown = Math.Min(visible.Count, Math.Max(CompareFilePageSize, _comparePage));
 		for (var index = 0; index < shown; index++)
 		{
-			rows.Children(BuildCompareFileRow(comparison, comparison.Files[index], label));
+			rows.Children(BuildCompareFileRow(comparison, visible[index], label));
 		}
 
 		var files = new StackPanel().Spacing(0).Children(rows);
-		if (shown < comparison.Files.Count)
+		if (shown < visible.Count)
 		{
 			var loaded = shown;
 			Button? more = null;
 			more = SmallTextButton(Strings.GitLoadMore, () =>
 			{
 				// 只追加下一页：重建整节会把滚动位置丢回顶部。
-				var next = Math.Min(comparison.Files.Count, loaded + CompareFilePageSize);
+				var next = Math.Min(visible.Count, loaded + CompareFilePageSize);
 				for (var index = loaded; index < next; index++)
 				{
-					rows.Children(BuildCompareFileRow(comparison, comparison.Files[index], label));
+					rows.Children(BuildCompareFileRow(comparison, visible[index], label));
 				}
 
 				loaded = next;
 				_comparePage = next;
-				if (next >= comparison.Files.Count)
+				if (next >= visible.Count)
 				{
 					more!.IsVisible = false;
 				}
@@ -746,28 +841,43 @@ public sealed partial class GitView
 
 	private void NormalizeCompareSelection(GitStatus status, IReadOnlyList<string> branches)
 	{
-		if (!branches.Contains(_compareTarget, StringComparer.Ordinal))
+		if (!IsWorktreeTarget(_compareTarget) && !branches.Contains(_compareTarget, StringComparer.Ordinal))
 		{
 			_compareTarget = status.Branch.Length > 0 && branches.Contains(status.Branch, StringComparer.Ordinal)
 				? status.Branch
 				: branches[0];
 		}
 
-		if (!branches.Contains(_compareBase, StringComparer.Ordinal) ||
-			string.Equals(_compareBase, _compareTarget, StringComparison.Ordinal))
+		if (!branches.Contains(_compareBase, StringComparer.Ordinal))
 		{
-			_compareBase = branches.FirstOrDefault(branch => !string.Equals(branch, _compareTarget, StringComparison.Ordinal))
-				?? _compareTarget;
+			_compareBase = branches[0];
+		}
+
+		if (!IsWorktreeTarget(_compareTarget) && string.Equals(_compareBase, _compareTarget, StringComparison.Ordinal))
+		{
+			// 只有一个分支时分支间比较没有意义，退回「工作区 vs 分叉点」。
+			if (branches.Count > 1)
+			{
+				_compareBase = branches.FirstOrDefault(branch => !string.Equals(branch, _compareTarget, StringComparison.Ordinal))
+					?? _compareBase;
+			}
+			else
+			{
+				_compareTarget = GitHistoryReader.WorktreeTarget;
+			}
 		}
 	}
 
-	private static ComboBox ComparePicker(IReadOnlyList<string> branches, string selected)
+	private static bool IsWorktreeTarget(string reference) =>
+		string.Equals(reference, GitHistoryReader.WorktreeTarget, StringComparison.Ordinal);
+
+	private static ComboBox ComparePicker(IReadOnlyList<string> labels, int selectedIndex)
 	{
 		var picker = new ComboBox()
-			.ItemsSource(ItemsView.Create(branches.ToArray()))
+			.ItemsSource(ItemsView.Create(labels.ToArray()))
 			.Height(24)
 			.FontSize(AppTheme.FontSizeCaption);
-		picker.SelectedIndex = Math.Max(0, branches.ToList().IndexOf(selected));
+		picker.SelectedIndex = Math.Max(0, Math.Min(selectedIndex, labels.Count - 1));
 		return picker;
 	}
 
@@ -799,13 +909,13 @@ public sealed partial class GitView
 
 		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
-			ApplyCompare(baseRef, targetRef, ReadCompare(_cwd(), baseRef, targetRef));
+			ApplyCompare(baseRef, targetRef, ReadCompare(Repo(), baseRef, targetRef));
 			return;
 		}
 
 		RebuildCompare();
 		var version = ++_compareVersion;
-		var cwd = _cwd();
+		var cwd = Repo();
 		_ = LoadCompareAsync(cwd, baseRef, targetRef, version, dispatcher);
 	}
 
@@ -830,6 +940,27 @@ public sealed partial class GitView
 	private void ApplyCompare(string baseRef, string targetRef, GitBranchComparison comparison)
 	{
 		_compareLoading = false;
+		// 新结果的文件集合可能完全不同：旧的已看标记不能跟过来。
+		_viewedCompareFiles.Clear();
+		_compareVisibleFiles = [];
+		_reviewRules = GitReviewRules.Load(Repo());
+		_compareLayers = new Dictionary<string, GitReviewLayer>(comparison.Files.Count, StringComparer.Ordinal);
+		foreach (var file in comparison.Files)
+		{
+			_compareLayers.TryAdd(file.Path, GitReviewLayers.For(file.Path, _reviewRules));
+		}
+
+		// 同一对提交重新打开时还原「已看」进度；分支动过则哈希不同，旧标记自然不套用。
+		if (comparison.Error is null &&
+			!IsWorktreeTarget(comparison.TargetHash) &&
+			PreferenceLoader().GitViewed.TryGetValue(ViewedCompareKey(comparison), out var viewed))
+		{
+			foreach (var key in viewed)
+			{
+				_viewedCompareFiles.Add(key);
+			}
+		}
+
 		_compareResult = comparison;
 		_compareResultBase = baseRef;
 		_compareResultTarget = targetRef;
@@ -843,6 +974,9 @@ public sealed partial class GitView
 	{
 		_compareVersion++;
 		_compareLoading = false;
+		_viewedCompareFiles.Clear();
+		_compareVisibleFiles = [];
+		_compareLayers = null;
 		_compareResult = null;
 		_compareError = null;
 		// 调用点就在被重建的下拉自身的事件里：这一拍重画会把下拉连同事件源一起换掉，推迟一拍。
@@ -862,9 +996,205 @@ public sealed partial class GitView
 		}
 	}
 
-	private UIElement BuildCompareFileRow(GitBranchComparison result, GitCommitFile file, string label) =>
-		FileLikeRow(file, () => ShowDiff(GitDiffRequest.Compare(
-			result.BaseHash, result.TargetHash, label, file.Path, file.OriginalPath)));
+	private UIElement BuildCompareFileRow(GitBranchComparison result, GitCommitFile file, string label)
+	{
+		var key = CompareFileKey(file);
+		var viewed = _viewedCompareFiles.Contains(key);
+		var row = FileLikeRow(file, () =>
+		{
+			if (IsWorktreeTarget(result.TargetHash))
+			{
+				ShowDiff(GitDiffRequest.CompareWorkingTree(
+					result.BaseHash, label, file.Path, untracked: file.Letter == "?"));
+				return;
+			}
+
+			ShowDiff(GitDiffRequest.Compare(
+				result.BaseHash, result.TargetHash, label, file.Path, file.OriginalPath));
+		});
+		row.Opacity(viewed ? 0.55 : 1);
+
+		// 已看是人工进度：原地翻转图标与透明度，不重建列表——重建会把滚动位置拉回顶部。
+		var icon = AppIcons.Icon(viewed ? "circle-check" : "circle", viewed ? AppStyles.RoleSuccess : AppStyles.RoleSubtle, 13);
+		Button? toggle = null;
+		toggle = new Button()
+			.Ghost()
+			.Width(20)
+			.Height(20)
+			.Padding(Thickness.Zero)
+			.Content(icon)
+			.HoverTip(viewed ? Strings.GitCompareUnmarkViewed : Strings.GitCompareMarkViewed)
+			.OnClick(() =>
+			{
+				var nowViewed = !_viewedCompareFiles.Remove(key);
+				if (nowViewed)
+				{
+					_viewedCompareFiles.Add(key);
+				}
+
+				AppIcons.SetIcon(
+					icon,
+					nowViewed ? "circle-check" : "circle",
+					nowViewed ? AppStyles.RoleSuccess : AppStyles.RoleSubtle);
+				row.Opacity(nowViewed ? 0.55 : 1);
+				HoverHints.Set(toggle!, nowViewed ? Strings.GitCompareUnmarkViewed : Strings.GitCompareMarkViewed);
+				UpdateCompareViewedText();
+				PersistCompareViewed();
+			});
+
+		return new DockPanel().LastChildFill().Children(toggle.DockLeft(), row);
+	}
+
+	/// 审查层选择：换层只重排列表，已看标记跟着文件走。
+	private void SelectCompareLens(GitReviewLayer layer)
+	{
+		if (_compareLens == layer)
+		{
+			return;
+		}
+
+		_compareLens = layer;
+		_comparePage = CompareFilePageSize;
+		if (Application.IsRunning)
+		{
+			// 无窗口用例只验证筛选，不写用户的 desktop.json。
+			SaveCompareLens(layer);
+		}
+
+		// 事件源就是即将被换掉的下拉：推迟一拍再重建（与 DropCompareResult 同一条理由）。
+		if (Application.IsRunning && Application.Current.Dispatcher is { } dispatcher)
+		{
+			dispatcher.BeginInvoke(() =>
+			{
+				if (!_disposed)
+				{
+					RebuildCompare();
+				}
+			});
+		}
+		else
+		{
+			RebuildCompare();
+		}
+	}
+
+	/// 读当前仓库上次用的审查层；文件损坏或未知值退回「全部文件」。
+	private GitReviewLayer LoadCompareLens()
+	{
+		try
+		{
+			if (PreferenceLoader().GitReviewLens.TryGetValue(Repo(), out var layer))
+			{
+				return layer switch
+				{
+					"implementation" => GitReviewLayer.Implementation,
+					"interface" => GitReviewLayer.Interface,
+					"tests" => GitReviewLayer.Tests,
+					_ => GitReviewLayer.All,
+				};
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+		{
+			AppLog.Failure(AppLog.For<GitView>(), "Read review lens", ex);
+		}
+
+		return GitReviewLayer.All;
+	}
+
+	private void SaveCompareLens(GitReviewLayer layer)
+	{
+		try
+		{
+			var name = layer switch
+			{
+				GitReviewLayer.Implementation => "implementation",
+				GitReviewLayer.Interface => "interface",
+				GitReviewLayer.Tests => "tests",
+				_ => "all",
+			};
+			var preference = PreferenceLoader().WithGitReviewLens(Repo(), name);
+			if (PreferenceSaver is { } saver)
+			{
+				saver(preference);
+			}
+			else
+			{
+				preference.Save();
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+		{
+			AppLog.Failure(AppLog.For<GitView>(), "Save review lens", ex);
+		}
+	}
+
+	private ComboBox CompareLensPicker()
+	{
+		var labels = new[]
+		{
+			GitReviewLayers.Label(GitReviewLayer.All),
+			GitReviewLayers.Label(GitReviewLayer.Implementation),
+			GitReviewLayers.Label(GitReviewLayer.Interface),
+			GitReviewLayers.Label(GitReviewLayer.Tests),
+		};
+		var picker = new ComboBox()
+			.ItemsSource(ItemsView.Create(labels))
+			.Height(22)
+			.FontSize(AppTheme.FontSizeMicro)
+			.HoverTip(Strings.GitCompareLens);
+		picker.SelectedIndex = (int)_compareLens;
+		picker.SelectionChanged += _ =>
+			SelectCompareLens((GitReviewLayer)Math.Clamp(picker.SelectedIndex, 0, labels.Length - 1));
+		return picker;
+	}
+
+	private IReadOnlyList<GitCommitFile> VisibleCompareFiles(GitBranchComparison comparison)
+	{
+		if (_compareLens == GitReviewLayer.All)
+		{
+			return comparison.Files;
+		}
+
+		var files = new List<GitCommitFile>(comparison.Files.Count);
+		foreach (var file in comparison.Files)
+		{
+			var layer = _compareLayers is not null && _compareLayers.TryGetValue(file.Path, out var cached)
+				? cached
+				: GitReviewLayers.For(file.Path, _reviewRules);
+			if (layer == _compareLens)
+			{
+				files.Add(file);
+			}
+		}
+
+		return files;
+	}
+
+	private static string CompareFileKey(GitCommitFile file) =>
+		file.OriginalPath is { Length: > 0 } original ? original + "\0" + file.Path : file.Path;
+
+	private int ViewedCompareCount()
+	{
+		var viewed = 0;
+		foreach (var file in _compareVisibleFiles)
+		{
+			if (_viewedCompareFiles.Contains(CompareFileKey(file)))
+			{
+				viewed++;
+			}
+		}
+
+		return viewed;
+	}
+
+	private void UpdateCompareViewedText()
+	{
+		if (_compareViewedText is { } text)
+		{
+			text.Text(Strings.GitCompareViewed(ViewedCompareCount(), _compareVisibleFiles.Count));
+		}
+	}
 
 	/// 读提交详情：解析异常不能漏出 fire-and-forget 任务，否则详情占位会一直停在「正在读取」。
 	private static GitCommitDetail? ReadCommitDetail(string cwd, string hash)
@@ -885,7 +1215,9 @@ public sealed partial class GitView
 	{
 		try
 		{
-			return GitHistoryReader.Compare(cwd, baseRef, targetRef);
+			return IsWorktreeTarget(targetRef)
+				? GitHistoryReader.CompareWorkingTree(cwd, baseRef)
+				: GitHistoryReader.Compare(cwd, baseRef, targetRef);
 		}
 		catch (Exception ex)
 		{

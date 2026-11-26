@@ -123,6 +123,7 @@ public sealed partial class MainWindow
 		if (entry is SessionTab tab)
 		{
 			menu.AddSeparator();
+			Add(Strings.HandoffBrief, () => _ = tab.CopyHandoffBriefAsync());
 			Add(Strings.OpenProjectDirectory, () => Shell.Open(tab.Session.Cwd));
 		}
 

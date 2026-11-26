@@ -26,14 +26,16 @@ public class GitWriteTests : IDisposable
 		GC.SuppressFinalize(this);
 	}
 
-	private void RunGit(params string[] arguments)
+	private void RunGit(params string[] arguments) => RunGitAt(_root, arguments);
+
+	private static void RunGitAt(string cwd, params string[] arguments)
 	{
 		var startInfo = new ProcessStartInfo("git")
 		{
 			RedirectStandardOutput = true,
 			RedirectStandardError = true,
 			UseShellExecute = false,
-			WorkingDirectory = _root,
+			WorkingDirectory = cwd,
 		};
 
 		foreach (var argument in arguments)
@@ -102,6 +104,30 @@ public class GitWriteTests : IDisposable
 		var branches = GitWriter.Branches(_root);
 		Assert.Equal("main", branches[0]);
 		Assert.Contains("feature/one", branches);
+	}
+
+	[Fact]
+	public void UnstageWorksBeforeTheFirstCommit()
+	{
+		// unborn 分支没有 HEAD：restore --staged 与 reset 都解析不到，要退回 rm --cached。
+		var fresh = Path.Combine(Path.GetTempPath(), "piweft-git-unborn-" + Guid.NewGuid().ToString("N")[..8]);
+		Directory.CreateDirectory(fresh);
+		try
+		{
+			RunGitAt(fresh, "init", "-q", "-b", "main");
+			File.WriteAllText(Path.Combine(fresh, "a.txt"), "x\n");
+			Assert.True(GitWriter.Stage(fresh, ["a.txt"]).Ok);
+
+			var unstaged = GitWriter.Unstage(fresh, ["a.txt"]);
+
+			Assert.True(unstaged.Ok, unstaged.Message);
+			var change = Assert.Single(GitStatusReader.Read(fresh).Changes);
+			Assert.Equal("?", change.IndexStatus);
+		}
+		finally
+		{
+			Directory.Delete(fresh, recursive: true);
+		}
 	}
 
 	[Fact]

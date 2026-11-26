@@ -2087,12 +2087,23 @@ public sealed partial class MainWindow : Window
 		tab.MessageSent += sent => RememberUsedModel(sent.Session.Model);
 		// 快捷消息浮层的「管理」：设置分区属于宿主，标签与起始页只发意图。
 		tab.QuickMessagesSettingsRequested += _ => OpenQuickMessagesSettings();
+		// 回合边沿：只在「跑完 → 空闲」那一次刷右侧面板。
+		var wasStreaming = tab.IsStreaming;
 		tab.StateChanged += _ =>
 		{
 			UpdateTabHeaders();
 			// 提示音只关心「运行态 → 空闲」「无错误 → 有错误」这两条边沿，会话自己报即可。
 			SoundAlerts.Shared.Observe(SessionIdOf(tab), tab.IsStreaming, tab.Chat.Error);
 			var activityChanged = UpdateSessionActivity(tab);
+			// 回合结束是 Git 面板最该更新的时刻：agent 刚改完一批文件，面板还停在上一轮。
+			// 只在那一条边沿刷一次；流式中频繁的状态变化不碰面板。
+			var streaming = tab.IsStreaming;
+			if (wasStreaming && !streaming && _sessionPanels.TryGetValue(tab, out var endedPanel))
+			{
+				endedPanel.Refresh(auto: true);
+			}
+
+			wasStreaming = streaming;
 			if (!tab.IsStreaming)
 			{
 				RefreshSessions();
@@ -2119,7 +2130,12 @@ public sealed partial class MainWindow : Window
 
 		// 这个会话自己的右侧面板：文件 / Git / 轨迹 / 检查点都以它的工作目录为基准，默认收起。
 		// 面板视图挂在共享宿主里，切换会话只切可见性，终端等状态不会丢。
-		var panel = new RightPanel(() => session.Cwd, CreateGitAssistant(session, environment), OpenGitAssistantSettings);
+		var panel = new RightPanel(
+			() => session.Cwd,
+			CreateGitAssistant(session, environment),
+			OpenGitAssistantSettings,
+			openSessionIn: NewSessionIn,
+			quoteToComposer: tab.AppendToComposer);
 		panel.BindTrajectory(() => tab.TrajectorySnapshot());
 		panel.SetHeaderRightInset(_panelHeaderRightInset);
 		_sessionPanels[tab] = panel;
@@ -2570,6 +2586,57 @@ public sealed partial class MainWindow : Window
 				case "waiting":
 					// 首轮等待的视觉验收：状态条 + 呼吸点 + 已等待时长 + 功能提示 + 时间线占位行。
 					CurrentTab()?.PrepareWaitingSmoke();
+					break;
+				case "git-panel":
+					// 视觉验收：只展开面板，不打开 diff 浮层（行内动作与「更多」区才看得见）。
+					ShowGitPanel();
+					break;
+				case "git-compare":
+					// 视觉验收：比较节选「工作区」，看未提交/未跟踪与分叉点的全貌。
+					ShowGitPanel();
+					if (CurrentTab() is { } compareTab && _sessionPanels.TryGetValue(compareTab, out var comparePanel))
+					{
+						comparePanel.OpenGitWorktreeCompareForSmoke("side");
+					}
+
+					break;
+				case "git-compare-lens":
+					// 视觉验收：.gitattributes 把 src/Staged.cs 标成测试层，切到「测试」只留它。
+					ShowGitPanel();
+					var lensTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(900));
+					lensTimer.Tick += () =>
+					{
+						lensTimer.Stop();
+						if (CurrentTab() is { } lensTab && _sessionPanels.TryGetValue(lensTab, out var lensPanel))
+						{
+							lensPanel.OpenGitWorktreeCompareForSmoke("side");
+							lensPanel.SetGitCompareLensForSmoke(GitReviewLayer.Tests);
+						}
+					};
+					lensTimer.Start();
+					break;
+				case "git-commit":
+					// 视觉验收：展开一条提交，核对复制哈希与提交操作菜单的入口。
+					ShowGitPanel();
+					var commitTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(900));
+					commitTimer.Tick += () =>
+					{
+						commitTimer.Stop();
+						if (CurrentTab() is { } commitTab && _sessionPanels.TryGetValue(commitTab, out var commitPanel))
+						{
+							commitPanel.ExpandGitCommitForSmoke();
+						}
+					};
+					commitTimer.Start();
+					break;
+				case "git-worktree":
+					// 视觉验收：新建隔离副本的内嵌编辑器（名称、基线、提示与按钮）。
+					ShowGitPanel();
+					if (CurrentTab() is { } worktreeTab && _sessionPanels.TryGetValue(worktreeTab, out var worktreePanel))
+					{
+						worktreePanel.OpenGitWorktreeEditorForSmoke();
+					}
+
 					break;
 				case "git":
 					ShowGitPanel();
@@ -3480,6 +3547,14 @@ public sealed partial class MainWindow : Window
 			new(Strings.CopySessionPath, Strings.ShortcutCopyPath, () => CopySessionInfo(path: true)),
 			new(Strings.CopySessionId, Strings.ShortcutCopyId, () => CopySessionInfo(path: false)),
 			new(Strings.ExportSession, Strings.ShortcutExportSession, () => ExportCurrentSession(open: false)),
+			new(Strings.HandoffBrief, Strings.ShortcutHandoffBrief, () =>
+			{
+				if (CurrentTab() is { } handoffTab)
+				{
+					_ = handoffTab.CopyHandoffBriefAsync();
+				}
+			}),
+			new(Strings.ReviewChanges, Strings.ShortcutReviewChanges, () => CurrentTab()?.InsertChangeReviewPrompt()),
 			new(Strings.ExportSessionAndOpen, Strings.ShortcutExportAndOpen, () => ExportCurrentSession(open: true)),
 			new(Strings.ToggleTheme, Strings.ShortcutTheme, ToggleTheme),
 			new(Strings.RefreshSessions, Strings.ShortcutRefresh, () => RefreshSessions(force: true)),

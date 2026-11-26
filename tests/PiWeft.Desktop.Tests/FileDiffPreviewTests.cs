@@ -81,6 +81,23 @@ public sealed class FileDiffPreviewTests
 	}
 
 	[Fact]
+	public void QuoteTextNamesThePathContextAndLineCounts()
+	{
+		var quote = FileDiffPreview.QuoteText(Content(context: "工作区"));
+		Assert.Contains("@\"/repo/docs/a.md\"", quote);
+		Assert.Contains("工作区，+2 −1", quote);
+		Assert.Contains("请解释改了什么、有什么风险。", quote);
+
+		var noContext = FileDiffPreview.QuoteText(Content(context: string.Empty));
+		Assert.Contains("的改动（+2 −1）", noContext);
+
+		var selection = FileDiffPreview.QuoteSelectionText(Content(context: "工作区"), "-old\n+new\n");
+		Assert.Contains("```diff\n-old\n+new\n```", selection);
+		Assert.Contains("工作区，文件共 +2 −1", selection);
+		Assert.Contains("请解释它做了什么、有什么风险。", selection);
+	}
+
+	[Fact]
 	public void SmallPatchHugsItsContent()
 	{
 		var preview = new FileDiffPreview();

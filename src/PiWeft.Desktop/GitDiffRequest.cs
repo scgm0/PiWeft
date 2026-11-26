@@ -6,6 +6,7 @@ internal enum GitDiffKind
 	Staged,
 	Commit,
 	Compare,
+	WorkingTreeCompare,
 }
 
 /// 一次文件差异请求。工作区/暂存、提交内文件与分支比较都折算成同一份请求，
@@ -41,4 +42,11 @@ internal sealed record GitDiffRequest(
 		BaseHash: baseHash,
 		TargetHash: targetHash,
 		OriginalPath: originalPath);
+
+	public static GitDiffRequest CompareWorkingTree(string forkHash, string label, string path, bool untracked) => new(
+		GitDiffKind.WorkingTreeCompare,
+		path,
+		label,
+		BaseHash: forkHash,
+		Untracked: untracked);
 }

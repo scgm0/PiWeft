@@ -41,9 +41,9 @@ public sealed record GitChange(string IndexStatus, string WorkTreeStatus, string
 		};
 	}
 
-	public string FileName => Path.Length == 0
-		? Path
-		: Path[(Path.Replace('\\', '/').LastIndexOf('/') + 1)..];
+	/// 取最后一段名字。未跟踪的目录条目以 `/` 结尾（例如嵌套仓库的 `packages/`），
+	/// 直接按最后一个斜杠切会得到空串，行里就只剩一个状态字母。
+	public string FileName => GitPathText.LeafName(Path);
 
 	public string Directory
 	{
@@ -326,6 +326,9 @@ public static class GitStatusReader
 		};
 
 		ApplyLocale(startInfo);
+		// 行里的路径来自 git 自己的输出，可能含通配符字符；diff/show 的路径参数要按字面量解释，
+		// 否则 `a*.txt` 会把 `ab.txt` 的差异也读进来。
+		startInfo.Environment["GIT_LITERAL_PATHSPECS"] = "1";
 		foreach (var argument in arguments)
 		{
 			startInfo.ArgumentList.Add(argument);

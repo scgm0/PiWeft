@@ -146,6 +146,9 @@ public sealed partial class MainWindow
 		this.Loaded += UpdateChrome;
 		this.ClientSizeChanged += _ => UpdateChrome();
 		this.WindowStateChanged += _ => UpdateChrome();
+		// 回到前台时刷新可见面板：在终端里提交、切分支或拉取之后，不必先手动点刷新。
+		// 只刷当前分段一次，代价是一次 git status。
+		this.Activated += RefreshActivePanel;
 		UpdateChrome();
 		SyncTitleBarTabs(force: true);
 
@@ -806,6 +809,21 @@ public sealed partial class MainWindow
 		_shadow.BlurRadius = normal ? ShadowExtent : 0;
 		_shadow.OffsetY = normal ? ShadowOffset : 0;
 		_shadow.CornerRadius = normal ? AppTheme.RadiusLg : 0;
+	}
+
+	/// 窗口回到前台：当前会话的右侧面板若开着就刷一次。自动档会跳过正在写的提交框。
+	/// 只刷当前分段：在终端里提交、切分支、拉取之后不必先手动刷新。
+	private void RefreshActivePanel()
+	{
+		if (_panelHost?.IsVisible != true)
+		{
+			return;
+		}
+
+		if (CurrentTab() is { } tab && _sessionPanels.TryGetValue(tab, out var panel) && panel.IsOpen)
+		{
+			panel.Refresh(auto: true);
+		}
 	}
 
 	private void SyncNativeBorderColor()

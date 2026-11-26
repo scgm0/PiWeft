@@ -15,6 +15,15 @@ public sealed record GitResult(bool Ok, string Message, string? Detail = null)
 
 public sealed record GitStashEntry(string Reference, string Description);
 
+/// <summary>一条 git 工作树记录（<c>git worktree list --porcelain</c>）。</summary>
+public sealed record GitWorktree(string Path, string Head, string Branch, bool Detached, bool IsMain)
+{
+	/// <summary>分支短名；分离头指针时为空。</summary>
+	public string BranchName => Branch.Length > 0 && Branch.StartsWith("refs/heads/", StringComparison.Ordinal)
+		? Branch["refs/heads/".Length..]
+		: Branch;
+}
+
 /// 把 git 的原始输出翻成一句能照着做的中文。git 的错误文本是稳定的英文，也被脚本广泛依赖，
 /// 按特征串分类可靠；分类不出来就退回 output 首行，至少不吞信息。
 /// 要区分「工作区状态不对」与「环境/认证/网络不通」：前者用户自己能解决，后者要看凭据或代理。
@@ -62,6 +71,13 @@ public static class GitFailure
 
 			// 远端名不存在（首次推送挑错远端时会走到这里）。
 			_ when Contains(text, "does not appear to be a git repository") => Strings.GitUnknownRemote,
+
+			// 隔离副本：同名分支或目录已经存在。
+			_ when Contains(text, "already exists") => Strings.GitWorktreeExists,
+
+			// 提交操作：上一个 revert / cherry-pick 还没收尾。
+			_ when Contains(text, "is already in progress") || Contains(text, "sequencer") =>
+				Strings.GitCommitSequenceRunning,
 
 			// 无上游 / 无远端。
 			_ when Contains(text, "has no upstream branch")
@@ -124,7 +140,7 @@ public static class GitWriter
 			return GitResult.Failure(Strings.GitNoSelection);
 		}
 
-		return Run(cwd, ["add", "--", .. paths]);
+		return Run(cwd, ["add", "--", .. paths], literalPathspecs: true);
 	}
 
 	public static GitResult Unstage(string cwd, IReadOnlyList<string> paths)
@@ -137,7 +153,7 @@ public static class GitWriter
 		// HEAD 不存在（全新仓库）时 restore --staged 会失败，改用 reset。
 		var arguments = new List<string> { "restore", "--staged", "--" };
 		arguments.AddRange(paths);
-		var result = Run(cwd, [.. arguments]);
+		var result = Run(cwd, [.. arguments], literalPathspecs: true);
 		if (result.Ok)
 		{
 			return result;
@@ -145,7 +161,16 @@ public static class GitWriter
 
 		var reset = new List<string> { "reset", "--" };
 		reset.AddRange(paths);
-		return Run(cwd, [.. reset]);
+		var resetResult = Run(cwd, [.. reset], literalPathspecs: true);
+		if (resetResult.Ok)
+		{
+			return resetResult;
+		}
+
+		// 还没有首个提交（unborn 分支）时 reset 也解析不到 HEAD：从索引里撤掉文件。
+		var cached = new List<string> { "rm", "--cached", "--" };
+		cached.AddRange(paths);
+		return Run(cwd, [.. cached], literalPathspecs: true);
 	}
 
 	public static GitResult Commit(string cwd, string message)
@@ -322,9 +347,219 @@ public static class GitWriter
 			: GitResult.Success(Strings.GitStashCreated);
 	}
 
-	public static GitResult StashPop(string cwd)
+	public static GitResult StashPop(string cwd, string reference = "stash@{0}")
 	{
-		return Run(cwd, ["stash", "pop"], Strings.GitStashPopped);
+		if (!IsValidStashReference(reference))
+		{
+			return GitResult.Failure(Strings.GitStashReferenceInvalid);
+		}
+
+		return Run(cwd, ["stash", "pop", reference], Strings.GitStashPopped);
+	}
+
+	/// <summary>
+	/// 放弃工作区改动：已跟踪文件回到索引里的内容，未跟踪文件从磁盘删除。
+	/// 调用方负责先确认与打检查点：这一步不可撤销。
+	/// </summary>
+	public static GitResult Discard(string cwd, IReadOnlyList<string> tracked, IReadOnlyList<string> untracked)
+	{
+		if (!HasPaths(tracked) && !HasPaths(untracked))
+		{
+			return GitResult.Failure(Strings.GitNoSelection);
+		}
+
+		lock (RepoLockFor(cwd))
+		{
+			var failed = new List<string>();
+			var details = new List<string>();
+			if (HasPaths(tracked))
+			{
+				var restore = RunCapture(
+					cwd,
+					["restore", "--worktree", "--", .. tracked],
+					LocalTimeout,
+					literalPathspecs: true);
+				if (!restore.Ok)
+				{
+					// 老 git 或索引里没有该路径时 restore 会失败，退回 checkout 的等价语义。
+					var checkout = RunCapture(
+						cwd,
+						["checkout", "--", .. tracked],
+						LocalTimeout,
+						literalPathspecs: true);
+					if (!checkout.Ok)
+					{
+						failed.Add(Failure(checkout).Message);
+						details.Add(Limit(Combine(checkout.Stdout, checkout.Stderr)));
+					}
+				}
+			}
+
+			if (HasPaths(untracked))
+			{
+				// git clean 对含 .git 的目录只提示 "Skipping repository" 并返回 0：面板会报成功，
+				// 目录却原样还在。这里先拒绝，避免“已放弃”与实际不符（也避免 -ff 删掉整棵仓库）。
+				foreach (var path in untracked)
+				{
+					if (IsNestedRepository(cwd, path))
+					{
+						return GitResult.Failure(Strings.GitDiscardNestedRepository(path));
+					}
+				}
+
+				// 用 git clean 而不是直接删文件：它只清未跟踪项，不会顺着路径删到被忽略或已跟踪的内容。
+				var clean = RunCapture(
+					cwd,
+					["clean", "-f", "-d", "--", .. untracked],
+					LocalTimeout,
+					literalPathspecs: true);
+				if (!clean.Ok)
+				{
+					failed.Add(Failure(clean).Message);
+					details.Add(Limit(Combine(clean.Stdout, clean.Stderr)));
+				}
+			}
+
+			return failed.Count == 0
+				? GitResult.Success(Strings.GitDiscardDone)
+				: GitResult.Failure(failed[0], details.Count > 0 ? details[0] : null);
+		}
+	}
+
+	/// <summary>撤销一个提交：生成一个新提交把它的改动反向应用。</summary>
+	public static GitResult RevertCommit(string cwd, string hash)
+	{
+		if (!IsFullCommitHash(hash))
+		{
+			return GitResult.Failure(Strings.GitCommitHashInvalid);
+		}
+
+		return Run(cwd, ["revert", "--no-edit", hash], Strings.GitRevertDone);
+	}
+
+	/// <summary>把某个提交拣选到当前分支（生成一个新提交）。</summary>
+	public static GitResult CherryPickCommit(string cwd, string hash)
+	{
+		if (!IsFullCommitHash(hash))
+		{
+			return GitResult.Failure(Strings.GitCommitHashInvalid);
+		}
+
+		return Run(cwd, ["cherry-pick", hash], Strings.GitCherryPickDone);
+	}
+
+	/// <summary>软重置：HEAD 移到目标提交，改动留在暂存区，不碰工作区文件。</summary>
+	public static GitResult ResetSoft(string cwd, string hash)
+	{
+		if (!IsFullCommitHash(hash))
+		{
+			return GitResult.Failure(Strings.GitCommitHashInvalid);
+		}
+
+		return Run(cwd, ["reset", "--soft", hash], Strings.GitResetSoftDone);
+	}
+
+	/// <summary>应用一条 stash 但保留条目；与 pop 分清，误点还有退路。</summary>
+	public static GitResult StashApply(string cwd, string reference = "stash@{0}")
+	{
+		if (!IsValidStashReference(reference))
+		{
+			return GitResult.Failure(Strings.GitStashReferenceInvalid);
+		}
+
+		var capture = RunCapture(cwd, ["stash", "apply", reference], LocalTimeout);
+		if (!capture.Ok)
+		{
+			return Failure(capture);
+		}
+
+		var output = Combine(capture.Stdout, capture.Stderr);
+		return output.Contains("CONFLICT", StringComparison.OrdinalIgnoreCase)
+			? GitResult.Failure(Strings.GitConflict)
+			: GitResult.Success(Strings.GitStashApplied);
+	}
+
+	/// <summary>列出仓库的全部工作树（含主工作区与子代理的隔离副本）。</summary>
+	public static IReadOnlyList<GitWorktree> Worktrees(string cwd)
+	{
+		var capture = RunCapture(cwd, ["worktree", "list", "--porcelain"], LocalTimeout);
+		if (!capture.Ok)
+		{
+			return [];
+		}
+
+		var entries = new List<GitWorktree>();
+		var path = string.Empty;
+		var head = string.Empty;
+		var branch = string.Empty;
+		var detached = false;
+
+		void Flush()
+		{
+			if (path.Length == 0)
+			{
+				return;
+			}
+
+			// porcelain 的第一条就是主工作区：git 保证顺序，不靠路径猜测。
+			entries.Add(new GitWorktree(path, head, branch, detached, entries.Count == 0));
+			path = string.Empty;
+			head = string.Empty;
+			branch = string.Empty;
+			detached = false;
+		}
+
+		foreach (var raw in capture.Stdout.Split('\n'))
+		{
+			var line = raw.TrimEnd('\r');
+			if (line.Length == 0)
+			{
+				Flush();
+				continue;
+			}
+
+			var space = line.IndexOf(' ');
+			var key = space < 0 ? line : line[..space];
+			var value = space < 0 ? string.Empty : line[(space + 1)..].Trim();
+			switch (key)
+			{
+				case "worktree":
+					path = value;
+					break;
+				case "HEAD":
+					head = value;
+					break;
+				case "branch":
+					branch = value;
+					break;
+				case "detached":
+					detached = true;
+					break;
+			}
+		}
+
+		Flush();
+		return entries;
+	}
+
+	/// <summary>清理目录已经不在的工作树登记（<c>git worktree prune</c>），分支不受影响。</summary>
+	public static GitResult WorktreePrune(string repository) =>
+		Run(repository, ["worktree", "prune"], Strings.GitWorktreePruneDone);
+
+	/// <summary>只删工作树目录，保留分支：面板里删别人的副本时分支可能有内容。</summary>
+	public static GitResult WorktreeRemoveOnly(string repository, string path)
+	{
+		lock (RepoLockFor(repository))
+		{
+			var removed = RunCapture(repository, ["worktree", "remove", "--force", "--", path], LocalTimeout);
+			if (!removed.Ok)
+			{
+				return Failure(removed);
+			}
+
+			RunCapture(repository, ["worktree", "prune"], LocalTimeout);
+			return GitResult.Success(Strings.GitWorktreeRemoved);
+		}
 	}
 
 	public static GitResult StashDrop(string cwd, string reference)
@@ -376,6 +611,31 @@ public static class GitWriter
 	private static bool IsValidName(string name) =>
 		name.Length > 0 && name[0] != '-' && name.Trim() == name && !name.Any(char.IsWhiteSpace);
 
+	/// 未跟踪的目录里还套着一个仓库（含 gitfile 形态）时不能交给 clean：它要么静默跳过，
+	/// 要么在 -ff 下整棵删掉，两种都不是“放弃一个未跟踪文件”的意思。
+	private static bool IsNestedRepository(string cwd, string path)
+	{
+		try
+		{
+			var full = Path.Combine(cwd, path.TrimEnd('/', '\\'));
+			if (!Directory.Exists(full))
+			{
+				return false;
+			}
+
+			var dotGit = Path.Combine(full, ".git");
+			return Directory.Exists(dotGit) || File.Exists(dotGit);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+		{
+			return false;
+		}
+	}
+
+	/// 提交操作只接受完整对象名：短引用可能命中同名分支或前缀歧义，以 `-` 开头也会被当成选项。
+	private static bool IsFullCommitHash(string value) =>
+		value.Length is 40 or 64 && value.All(static character => char.IsAsciiHexDigit(character));
+
 	private static bool IsValidStashReference(string reference) =>
 		reference.StartsWith("stash@{", StringComparison.Ordinal) && reference.EndsWith('}') && reference.Length > 7;
 
@@ -404,6 +664,23 @@ public static class GitWriter
 	/// <summary>在仓库里建一个隔离副本；失败时由调用方清理目录与分支。</summary>
 	public static GitResult WorktreeAdd(string repository, string path, string branch, string baseCommit)
 	{
+		// 三个参数都会进 argv：分支名以 `-` 开头会被 git 当成选项，路径必须写绝对路径。
+		// 子代理的副本由代码生成，面板里的是用户输入，两条路都从同一处收口。
+		if (!IsValidName(branch))
+		{
+			return GitResult.Failure(Strings.GitBranchNameInvalid);
+		}
+
+		if (baseCommit.Length == 0 || baseCommit[0] == '-')
+		{
+			return GitResult.Failure(Strings.GitWorktreeBaseMissing(baseCommit));
+		}
+
+		if (path.Length == 0 || path[0] == '-' || !Path.IsPathRooted(path))
+		{
+			return GitResult.Failure(Strings.GitWorktreePathInvalid(path));
+		}
+
 		// .git/worktrees 是共享元数据：两个子代理同时创建副本会互相踩。
 		lock (RepoLockFor(repository))
 		{
@@ -418,16 +695,27 @@ public static class GitWriter
 	/// <summary>删掉隔离副本与分支；副本已经不在了也算删掉目录这一步失败，调用方按提示处理。</summary>
 	public static GitResult WorktreeRemove(string repository, string path, string branch)
 	{
+		// 两个值来自登记表与会话文件，可能被外部改写：以 `-` 开头会被 git 当成选项。
+		if (path.Length == 0 || path[0] == '-' || !Path.IsPathRooted(path))
+		{
+			return GitResult.Failure(Strings.GitWorktreePathInvalid(path));
+		}
+
+		if (!IsValidName(branch))
+		{
+			return GitResult.Failure(Strings.GitBranchNameInvalid);
+		}
+
 		lock (RepoLockFor(repository))
 		{
-			var removed = RunCapture(repository, ["worktree", "remove", "--force", path], LocalTimeout);
+			var removed = RunCapture(repository, ["worktree", "remove", "--force", "--", path], LocalTimeout);
 			if (!removed.Ok)
 			{
 				return Failure(removed);
 			}
 
 			// 分支可能已经被合并或手动删掉：删不掉不算整体失败。
-			var deleted = RunCapture(repository, ["branch", "-D", branch], LocalTimeout);
+			var deleted = RunCapture(repository, ["branch", "-D", "--", branch], LocalTimeout);
 			RunCapture(repository, ["worktree", "prune"], LocalTimeout);
 			return deleted.Ok
 				? GitResult.Success(Strings.GitWorktreeRemoved)
@@ -495,11 +783,17 @@ public static class GitWriter
 		}
 	}
 
-	private static GitResult Run(string cwd, string[] arguments, string? successMessage = null)
+	private static GitResult Run(
+		string cwd,
+		string[] arguments,
+		string? successMessage = null,
+		bool literalPathspecs = false)
 	{
 		lock (RepoLockFor(cwd))
 		{
-			return Finish(RunCapture(cwd, arguments, LocalTimeout), successMessage ?? Strings.GitDone);
+			return Finish(
+				RunCapture(cwd, arguments, LocalTimeout, literalPathspecs: literalPathspecs),
+				successMessage ?? Strings.GitDone);
 		}
 	}
 
@@ -595,7 +889,8 @@ public static class GitWriter
 		string cwd,
 		string[] arguments,
 		TimeSpan timeout,
-		bool disableTerminalPrompt = false)
+		bool disableTerminalPrompt = false,
+		bool literalPathspecs = false)
 	{
 		var startInfo = new ProcessStartInfo("git")
 		{
@@ -614,6 +909,14 @@ public static class GitWriter
 		if (disableTerminalPrompt)
 		{
 			startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
+		}
+
+		if (literalPathspecs)
+		{
+			// 路径来自 git status 的原始输出，可能含 * ? [ 这类字符；`--` 之后必须按字面量
+			// 匹配，否则名为 `a*.txt` 的文件会连带命中 `ab.txt`。不能全局设：stash 内部
+			// 依赖普通 pathspec 语义，全局钉住会让 --include-untracked 漏掉未跟踪文件。
+			startInfo.Environment["GIT_LITERAL_PATHSPECS"] = "1";
 		}
 
 		foreach (var argument in arguments)

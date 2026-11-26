@@ -327,7 +327,16 @@ public static partial class Strings
 	public const string SubagentWorktreeDiscard = "丢弃副本";
 
 	public static string SubagentWorktreeDiscardConfirm(string name) =>
-		$"删除子代理「{name}」的隔离副本与未应用的改动？主工作区不受影响。";
+		$"删除子代理「{name}」的隔离副本、分支与未应用的提交？主工作区不受影响。";
+
+	public const string SubagentWorktreeDiscardDetail =
+		"分支上的提交会一起删掉；需要保留就先应用改动或复制提交。";
+
+	public static string SubagentWorktreeApplyConfirm(string name) =>
+		$"把子代理「{name}」的改动应用到主工作区？应用前会先打一个检查点。";
+
+	public const string SubagentWorktreeApplyDetail =
+		"patch 会改写主工作区；应用前会自动打 before-apply 检查点，可从右侧检查点恢复。";
 
 	public const string SubagentMayWriteHint = "跑过 shell 命令，无法确定写了哪些文件；展开子会话或看 git diff 确认。";
 

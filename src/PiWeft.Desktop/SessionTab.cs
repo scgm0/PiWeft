@@ -3746,7 +3746,8 @@ public sealed partial class SessionTab : IDisposable
 		_fileDiffPreview.Show(
 			View,
 			new DiffPreviewContent(file.FileName, string.Empty, fullPath, file.Added, file.Removed, file.Patch),
-			OpenChangedFile);
+			OpenChangedFile,
+			AppendToComposer);
 	}
 
 	/// 工具参数里可能是相对路径；编辑器和提示里都用解析后的绝对路径。

@@ -49,6 +49,49 @@ public class DesktopPreferenceTests : IDisposable
 	}
 
 	[Fact]
+	public void ViewedCompareFilesRoundTripAndPrune()
+	{
+		DesktopPreference.Load(_agentDir)
+			.WithGitViewed("repo|a|b", ["x", "y"])
+			.WithGitViewed("repo|a|c", ["z"])
+			.Save(_agentDir);
+
+		var loaded = DesktopPreference.Load(_agentDir);
+		Assert.Equal(["x", "y"], loaded.GitViewed["repo|a|b"]);
+		Assert.Equal(["z"], loaded.GitViewed["repo|a|c"]);
+
+		loaded.WithGitViewed("repo|a|b", []).Save(_agentDir);
+		Assert.False(DesktopPreference.Load(_agentDir).GitViewed.ContainsKey("repo|a|b"));
+
+		// 最多留 24 对比较，最旧的先掉。
+		var many = DesktopPreference.Load(_agentDir);
+		for (var index = 0; index < 30; index++)
+		{
+			many = many.WithGitViewed($"k{index}", ["p"]);
+		}
+
+		Assert.Equal(24, many.GitViewed.Count);
+		Assert.False(many.GitViewed.ContainsKey("k0"));
+		Assert.True(many.GitViewed.ContainsKey("k29"));
+	}
+
+	[Fact]
+	public void ReviewLensRoundTripsPerRepository()
+	{
+		DesktopPreference.Load(_agentDir)
+			.WithGitReviewLens("/repo/a", "tests")
+			.WithGitReviewLens("/repo/b", "interface")
+			.Save(_agentDir);
+
+		var loaded = DesktopPreference.Load(_agentDir);
+		Assert.Equal("tests", loaded.GitReviewLens[Path.GetFullPath("/repo/a")]);
+		Assert.Equal("interface", loaded.GitReviewLens[Path.GetFullPath("/repo/b")]);
+
+		loaded.WithGitReviewLens("/repo/a", string.Empty).Save(_agentDir);
+		Assert.False(DesktopPreference.Load(_agentDir).GitReviewLens.ContainsKey(Path.GetFullPath("/repo/a")));
+	}
+
+	[Fact]
 	public void SaveReplacesTheFileAtomically()
 	{
 		(DesktopPreference.Load(_agentDir) with { Theme = DesktopPreference.LightTheme }).Save(_agentDir);

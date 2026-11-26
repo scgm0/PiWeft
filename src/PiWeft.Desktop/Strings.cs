@@ -484,6 +484,10 @@ public static partial class Strings
 	public static string Exported(string path) => $"已导出：{path}";
 	public static string ExportFailed(string reason) => $"导出失败：{reason}";
 	public const string GitNotRepository = "不是 Git 仓库";
+
+	public const string GitLoading = "正在读取仓库…";
+
+	public const string GitLoadingHint = "换仓库后会重新读状态、分支、提交图与比较结果。";
 	public const string GitUnavailable = "找不到 git 命令";
 	public const string GitTimeout = "git status 超时";
 	public const string GitClean = "工作区干净";
@@ -495,6 +499,24 @@ public static partial class Strings
 	public static string OpenFailed(string path) => $"打开失败（未配置 $EDITOR，也没有默认程序）：{path}";
 	public static string OpenLinkFailed(string url) => $"打开链接失败（没有可用的浏览器）：{url}";
 	public static string FileMissing(string path) => $"文件不存在：{path}";
+	public const string ReviewChanges = "审查当前改动";
+
+	public const string ShortcutReviewChanges = "把审查提示词放进输入框，按 P0-P3 给结论";
+
+	public const string ChangeReviewPromptInserted = "已把审查提示词放进输入框。";
+
+	public const string ChangeReviewPrompt =
+		"请审查当前工作区相对上次提交的改动（含未跟踪文件）：先看 git status 与 git diff，再按 P0/P1/P2/P3 " +
+		"列出问题，每条给出文件与行号；最后给出是否可以提交的结论。只报告，不改文件。";
+
+	public const string HandoffBrief = "复制交接简报";
+
+	public const string ShortcutHandoffBrief = "把当前进度压成一页 Markdown，便于换人接手";
+
+	public static string HandoffCopied(int characters) => $"已复制交接简报（{characters} 字）。";
+
+	public static string HandoffFailed(string reason) => $"生成交接简报失败：{reason}";
+
 	public const string CopySessionPath = "复制会话文件路径";
 	public const string CopySessionId = "复制会话 ID";
 	public const string ShortcutCopyPath = "便于在终端里继续查看或分享";
@@ -600,6 +622,139 @@ public static partial class Strings
 
 	public const string GitStash = "暂存改动";
 
+	public const string GitStashApply = "应用并保留条目";
+
+	public const string GitStashApplied = "已应用最近一条 stash（条目保留）。";
+
+	// 放弃更改：面板里唯一会丢数据的动作，文案要写清楚丢什么、能不能找回。
+	public const string GitDiscard = "放弃更改";
+
+	public const string GitDiscardUntracked = "删除未跟踪文件";
+
+	public const string GitDiscardDirectory = "放弃此目录的更改";
+
+	public const string GitDiscardAll = "放弃全部";
+
+	public const string GitDiscardDone = "已放弃更改。";
+
+	public static string GitDiscardConfirm(int files) =>
+		$"放弃 {files} 个文件的未暂存改动？已跟踪文件回到暂存区里的版本（没有暂存就是上次提交），未跟踪文件从磁盘删除。";
+
+	public static string GitDiscardConfirmNamed(string name) =>
+		$"放弃「{name}」的未暂存改动？已跟踪文件回到暂存区里的版本（没有暂存就是上次提交），未跟踪文件从磁盘删除。";
+
+	public static string GitDiscardConfirmDirectory(string name) =>
+		$"放弃「{name}」下所有未暂存改动？已跟踪文件回到暂存区里的版本（没有暂存就是上次提交），未跟踪文件从磁盘删除。";
+
+	public const string GitDiscardConfirmDetail =
+		"放弃前会先打一个检查点，可在右侧「检查点」里恢复。未跟踪文件不在 git 里，只能靠这个检查点找回。";
+
+	public const string GitDiscardEmpty = "这一节没有可放弃的改动。";
+
+	public static string GitDiscardNestedRepository(string path) =>
+		$"「{path.TrimEnd('/', '\\')}」里还是一个 Git 仓库，放弃不会删它。需要的话手动删除目录。";
+
+	public const string GitDiscardBusy = "正在放弃更改…";
+
+	public const string GitDiscardCheckpointFailed =
+		"没能建检查点，已取消放弃更改。放弃不可撤销，先要一份能恢复的快照。";
+
+	// 合并冲突：面板里只有「标记为已解决」，真正的合并仍由人决定。
+	public const string GitMarkResolved = "标记为已解决";
+
+	public const string GitMarkAllResolved = "全部标记为已解决";
+
+	public const string GitResolvedDone = "已标记为已解决，解决后即可提交。";
+
+	// 隔离副本（git worktree）：子代理与多人并行时各自一份目录，这里统一看得见。
+	public const string GitWorktrees = "隔离副本";
+
+	public const string GitWorktreeMain = "主工作区";
+
+	public const string GitWorktreeOpen = "打开目录";
+
+	public const string GitWorktreeNew = "新建隔离副本";
+
+	public const string GitWorktreeCreate = "创建副本";
+
+	public const string GitWorktreeCreated = "已创建隔离副本。";
+
+	public const string GitWorktreeCreateBusy = "正在创建隔离副本…";
+
+	public const string GitWorktreeNamePlaceholder = "新分支名（也用作副本目录名）";
+
+	public const string GitWorktreeBasePlaceholder = "基线（默认 HEAD，可写分支或 tag）";
+
+	public const string GitWorktreeExists = "同名分支或目录已存在。换一个名字，或先删掉旧的副本。";
+
+	public const string GitWorktreeNewHint = "副本从基线新建分支，不带走当前未提交的改动；建好后可在这里开新会话。";
+
+	public static string GitWorktreePathInvalid(string path) => $"副本目录必须是绝对路径：{path}";
+
+
+	public const string GitWorktreeSession = "在新会话中打开";
+
+	public const string GitWorktreeRemove = "删除副本";
+
+	public const string GitWorktreeNone = "没有隔离副本。子代理用 worktree 隔离时会出现在这里。";
+
+	public const string GitWorktreeMissing = "目录已丢失";
+
+	public const string GitWorktreePrune = "清理残留记录";
+
+	public const string GitWorktreePruneDone = "已清理隔离副本的残留记录。";
+
+	public const string GitMoreLoading = "正在读取…";
+
+	public static string GitWorktreeRemoveConfirm(string branch, string path) =>
+		$"删除隔离副本「{(branch.Length > 0 ? branch : path)}」？分支会保留，目录里的未提交改动会一起删掉。";
+
+	public const string GitWorktreeRemoveDetail = "分支不会删。目录里的未提交改动不在 git 里，删了就找不回来。";
+
+	public const string GitCopyHash = "复制提交哈希";
+
+	// 提交图上的提交操作：都改写历史或新建提交，全部要确认。
+	public const string GitCommitActions = "提交操作";
+
+	public const string GitRevertCommit = "撤销此提交";
+
+	public const string GitCherryPick = "拣选到当前分支";
+
+	public const string GitResetSoft = "软重置到此提交";
+
+	public const string GitCommitHashInvalid = "提交哈希不合法。";
+
+	public const string GitCommitSequenceRunning = "上一个 revert 或 cherry-pick 还没收尾，先去终端解决。";
+
+	public const string GitRevertBusy = "正在撤销提交…";
+
+	public const string GitCherryPickBusy = "正在拣选提交…";
+
+	public const string GitResetSoftBusy = "正在软重置…";
+
+	public const string GitRevertDone = "已生成反向提交。";
+
+	public const string GitCherryPickDone = "已拣选到当前分支。";
+
+	public const string GitResetSoftDone = "已软重置，改动留在暂存区。";
+
+	public const string GitRevertMergeUnsupported = "合并提交要先指定主线，请在终端用 git revert -m。";
+
+	public static string GitRevertConfirm(string hash, string subject) =>
+		$"撤销 {hash}「{subject}」？会生成一个新提交把它的改动反向应用。";
+
+	public static string GitCherryPickConfirm(string hash, string subject) =>
+		$"把 {hash}「{subject}」拣选到当前分支？会生成一个新提交。";
+
+	public static string GitResetSoftConfirm(string hash, string subject) =>
+		$"把 HEAD 软重置到 {hash}「{subject}」？之后的提交会从分支上消失，改动留在暂存区。";
+
+	public const string GitRevertDetail = "工作区有冲突时操作会停下，按提示去终端处理。";
+
+	public const string GitResetSoftDetail = "这条只移动分支指针，不删工作区文件；提交对象仍可找回。";
+
+	public static string GitHashCopied(string hash) => $"已复制 {hash}";
+
 	public const string GitStashPop = "应用";
 
 	public const string GitStashResolved = "丢弃";
@@ -642,6 +797,14 @@ public static partial class Strings
 
 	public const string GitNothingStaged = "还没有暂存的改动。勾选要提交的文件，或用「全部暂存」。";
 
+	public const string GitStageAllAndCommit = "全部暂存并提交";
+
+	public static string GitStageAllAndCommitConfirm(int files) =>
+		$"把 {files} 个改动全部暂存并提交？没勾选过的文件也会一起进来。";
+
+	public const string GitStageAllAndCommitDetail =
+		"确认后会先全部暂存再提交；只想提交其中几个文件时，用行尾的暂存键挑。";
+
 	public const string GitPushRejected = "远端有你本地没有的提交，推送被拒绝。先拉取再推送。";
 
 	public const string GitAuthFailed = "认证失败：本机没有可用凭据。先在终端 git push 登录，或配置 credential helper / SSH key。";
@@ -675,7 +838,13 @@ public static partial class Strings
 
 	public const string GitCloseDiff = "关闭差异";
 
+	public const string DiffQuoteToInput = "引用到输入框";
+
+	public const string DiffQuotedToInput = "已引用到输入框。";
+
 	public const string GitBranchMenu = "切换分支";
+
+	public const string GitRepositoryMenu = "切换仓库（会话目录里的根仓库与子仓库）";
 
 	public const string GitNewBranchMenu = "新建分支…";
 
@@ -736,9 +905,36 @@ public static partial class Strings
 
 	public const string GitCompareAction = "比较";
 
-	public const string GitCompareNeedsBranches = "至少需要两个本地分支才能比较。";
+	public const string GitCompareNeedsBranches = "仓库还没有分支，无法比较。";
 
-	public const string GitCompareHint = "选择基准与目标分支后点比较。";
+	public const string GitCompareHint = "选基准与目标后点比较；目标可选「工作区」，连同未提交改动一起看。";
+
+	public const string GitCompareWorkingTree = "工作区（含未提交）";
+
+	public const string GitCompareWorkingTreeShort = "工作区";
+
+	public static string GitCompareWorkingTreeSummary(int ahead) => $"分叉点之后 {ahead} 个提交 · 含未提交与未跟踪文件";
+
+	public const string GitCompareEmptyWorktree = "工作区与分叉点之间没有差异。";
+
+	// 审查层与已看标记：比较列表按 interface / implementation / tests 分层，已看是人工进度。
+	public const string GitReviewLayerAll = "全部文件";
+
+	public const string GitReviewLayerImplementation = "实现";
+
+	public const string GitReviewLayerInterface = "接口";
+
+	public const string GitReviewLayerTests = "测试";
+
+	public const string GitCompareMarkViewed = "标记已看";
+
+	public const string GitCompareUnmarkViewed = "取消已看";
+
+	public static string GitCompareViewed(int viewed, int total) => $"已看 {viewed}/{total}";
+
+	public static string GitCompareLensEmpty(string layer) => $"{layer}里没有文件。";
+
+	public const string GitCompareLens = "审查层";
 
 	public const string GitCompareEmpty = "两个分支之间没有差异。";
 

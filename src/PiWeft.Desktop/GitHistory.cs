@@ -26,9 +26,8 @@ public sealed record GitCommitFile(string Status, string Path, string? OriginalP
 
 	public string Letter => Status.Length > 0 ? Status[..1] : "M";
 
-	public string FileName => Path.Length == 0
-		? Path
-		: Path[(Path.Replace('\\', '/').LastIndexOf('/') + 1)..];
+	/// 取最后一段名字；未跟踪目录条目以 `/` 结尾时不能切成空串。
+	public string FileName => GitPathText.LeafName(Path);
 }
 
 public sealed record GitCommitDetail(
@@ -266,6 +265,84 @@ public static class GitHistoryReader
 		return new GitBranchComparison(ParseNameStatus(filesOutput, stats), ahead, behind, baseHash, targetHash);
 	}
 
+	/// 工作区相对分叉点的全貌：base 与 HEAD 的 merge-base 之后，再加上未提交与未跟踪文件。
+	/// dsh 的本地改动视图就是这一段，PiWeft 用它回答「这个分支连同没提交的东西相对 main 变了什么」。
+	public static GitBranchComparison CompareWorkingTree(string cwd, string baseReference)
+	{
+		var baseHash = Resolve(cwd, baseReference);
+		if (baseHash is null)
+		{
+			return new GitBranchComparison([], 0, 0, string.Empty, WorktreeTarget, Strings.GitCompareFailed);
+		}
+
+		// 分叉点优先：直接对 base 的 HEAD 比会把 base 分支后来的提交算成「回退」。
+		var fork = MergeBase(cwd, baseHash, "HEAD") ?? baseHash;
+		var (filesOutput, filesError, filesExitCode) = GitStatusReader.RunDetailed(
+			cwd,
+			["diff", "--name-status", "-z", "--diff-filter=ADMR", fork],
+			MaxDiffOutput);
+		if (filesExitCode != 0)
+		{
+			return new GitBranchComparison([], 0, 0, fork, WorktreeTarget, ErrorText(filesError));
+		}
+
+		var (statOutput, _, statExitCode) = GitStatusReader.RunDetailed(
+			cwd,
+			["diff", "--no-relative", "--numstat", "-z", "--diff-filter=ADMR", fork],
+			MaxDiffOutput);
+		var stats = statExitCode == 0 ? GitDiffStatsReader.Parse(statOutput) : null;
+		var files = ParseNameStatus(filesOutput, stats).ToList();
+
+		// 未跟踪文件不在 git diff 里：单独补上，字母用问号，与改动列表同一套读法。
+		var (untrackedOutput, _, untrackedExitCode) = GitStatusReader.RunDetailed(
+			cwd,
+			["ls-files", "--others", "--exclude-standard", "-z"],
+			MaxDiffOutput);
+		// 输出被上限截断时末尾是标记行，不是路径；宁可少列未跟踪项，也不把标记当文件名。
+		if (untrackedExitCode == 0 && !GitStatusReader.IsTruncated(untrackedOutput))
+		{
+			foreach (var path in untrackedOutput.Split('\0'))
+			{
+				if (path.Length > 0)
+				{
+					files.Add(new GitCommitFile("?", path, null));
+				}
+			}
+		}
+
+		var ahead = 0;
+		var (countOutput, _, countExitCode) = GitStatusReader.RunDetailed(
+			cwd,
+			["rev-list", "--count", $"{fork}..HEAD"],
+			256);
+		if (countExitCode == 0)
+		{
+			_ = int.TryParse(countOutput.Trim(), out ahead);
+		}
+
+		return new GitBranchComparison(files, ahead, 0, fork, WorktreeTarget);
+	}
+
+	/// 工作区相对分叉点的单文件补丁；未跟踪文件交给调用方用合成 diff。
+	public static GitFileDiff WorkingTreeFileDiff(string cwd, string forkHash, string path, int maxLines = 400)
+	{
+		if (!IsHash(forkHash) || path.Length == 0)
+		{
+			return new GitFileDiff(string.Empty, Strings.GitDiffFailed);
+		}
+
+		var (output, error, exitCode) = GitStatusReader.RunDetailed(
+			cwd,
+			["diff", "--no-color", "--unified=3", forkHash, "--", path],
+			512 * 1024);
+		return exitCode == 0
+			? new GitFileDiff(GitStatusReader.Truncate(output, maxLines))
+			: new GitFileDiff(string.Empty, ErrorText(error));
+	}
+
+	/// 「目标 = 工作区」在比较结果里的代号：分支名不允许控制字符，不会撞名。
+	internal const string WorktreeTarget = "\u0001worktree";
+
 	public static GitFileDiff CompareFileDiff(
 		string cwd,
 		string baseHash,
@@ -400,6 +477,13 @@ public static class GitHistoryReader
 		if (age < TimeSpan.FromDays(30)) return Strings.GitDaysAgo(Math.Max(1, (int)age.TotalDays));
 		if (age < TimeSpan.FromDays(365)) return Strings.GitMonthsAgo(Math.Max(1, (int)(age.TotalDays / 30)));
 		return Strings.GitYearsAgo(Math.Max(1, (int)(age.TotalDays / 365)));
+	}
+
+	private static string? MergeBase(string cwd, string left, string right)
+	{
+		var (output, _, exitCode) = GitStatusReader.RunDetailed(cwd, ["merge-base", left, right], 256);
+		var hash = output.Trim();
+		return exitCode == 0 && IsHash(hash) ? hash : null;
 	}
 
 	private static string? Resolve(string cwd, string reference)

@@ -392,6 +392,7 @@ public sealed partial class MainWindow
 			{
 				if (!await MessageBox.ConfirmAsync(
 						Strings.SubagentWorktreeDiscardConfirm(run.Name),
+						detail: Strings.SubagentWorktreeDiscardDetail,
 						owner: this).ConfigureAwait(true))
 				{
 					return;
@@ -425,6 +426,24 @@ public sealed partial class MainWindow
 				return;
 			}
 
+			// 应用 patch 会改写主工作区（删除/改名都算）：和面板里放弃更改同一条规矩，
+			// 先确认、再打检查点；检查点建不出来就不应用。
+			var dirty = GitStatusReader.Read(repository).Changes.Count > 0;
+			if (!await MessageBox.ConfirmAsync(
+					Strings.SubagentWorktreeApplyConfirm(run.Name),
+					detail: dirty ? Strings.GitWorktreeDirtyMain : Strings.SubagentWorktreeApplyDetail,
+					owner: this).ConfigureAwait(true))
+			{
+				return;
+			}
+
+			var checkpoint = await Task.Run(() => Checkpoints.Create(repository, "before-apply")).ConfigureAwait(true);
+			if (checkpoint is null)
+			{
+				Toasts.Error(this, Strings.GitDiscardCheckpointFailed);
+				return;
+			}
+
 			var applied = await Task.Run(() => GitWriter.WorktreeApply(repository, patch)).ConfigureAwait(true);
 			Toasts.Show(this, applied.Message, applied.Ok ? ToastKind.Success : ToastKind.Error);
 		}
@@ -446,7 +465,9 @@ public sealed partial class MainWindow
 			throw new InvalidOperationException($"cannot create worktree: {baseline.BaseCommit}");
 		}
 
-		var worktreeRoot = Path.Combine(SessionPaths.GetAgentDir(), "worktrees");
+		// 绝对路径：WorktreeAdd 只收绝对路径（相对路径会被 git 按仓库 cwd 解析，落到意想不到的位置），
+		// 而 agent 目录可以由环境变量配成相对形式。
+		var worktreeRoot = Path.GetFullPath(Path.Combine(SessionPaths.GetAgentDir(), "worktrees"));
 		Directory.CreateDirectory(worktreeRoot);
 		var repoName = SafeName(Path.GetFileName(baseline.Repository));
 		var path = Path.Combine(

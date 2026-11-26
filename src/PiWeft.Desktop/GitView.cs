@@ -3,6 +3,7 @@ using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
 using PiWeft.Ai;
 using PiWeft.Cli;
+using PiWeft.CodingAgent.Session;
 
 namespace PiWeft.Desktop;
 
@@ -11,8 +12,24 @@ namespace PiWeft.Desktop;
 public sealed partial class GitView : IDisposable
 {
 	private readonly Func<string> _cwd;
+	// 会话目录里可能并排多个仓库：面板的 git 操作落在用户选中的那个上。
+	private IReadOnlyList<GitRepository> _repos = [];
+	private string _repoPath = string.Empty;
 	private readonly GitCommitAssistant? _assistant;
 	private readonly Action? _openSettings;
+	// 确认弹窗做成回调：无窗口的单测里不能弹 MessageBox，但「放弃更改」必须有确认。
+	private readonly Func<string, string, Task<bool>> _confirm;
+	// 隔离副本上「开个会话」：建会话与刷新侧栏是主窗口的事，面板只发目录。
+	private readonly Action<string>? _openSessionIn;
+	// 副本目录落在 agent 目录下，与子代理的隔离副本同一处；测试注入临时目录。
+	private readonly Func<string> _worktreeRoot;
+	// 差异浮层里的「引用到输入框」：把草稿追加到当前会话的 composer。
+	private readonly Action<string>? _quoteToComposer;
+	private bool _worktreeEditorVisible;
+	private bool _focusWorktreeAfterBuild;
+	private string _worktreeDraft = string.Empty;
+	private string _worktreeBaseDraft = string.Empty;
+	private TextBox? _worktreeInput;
 
 	private readonly Grid _host = new();
 	private readonly HashSet<string> _collapsedDirectories = new(StringComparer.Ordinal);
@@ -69,6 +86,8 @@ public sealed partial class GitView : IDisposable
 	// 一个提交可能有上千个文件：详情文件列表分页，只建前几十行。
 	private const int CommitFilePageSize = 50;
 	private const int CompareFilePageSize = 50;
+	// 新建隔离副本的表单：标题、两行提示、两个输入与按钮，140 的默认区高放不下。
+	private const double WorktreeEditorMinBody = 170;
 	// 比较节正文的最小高度：扣掉节头、基准/目标、比较按钮与状态行，至少还留得下一行文件。
 	private const double CompareMinBody = 120;
 	private readonly Dictionary<string, int> _commitFilePages = new(StringComparer.Ordinal);
@@ -81,6 +100,53 @@ public sealed partial class GitView : IDisposable
 	private string _compareResultTarget = string.Empty;
 	private string? _compareError;
 	private int _comparePage = CompareFilePageSize;
+	// 审查层与已看标记：比较结果按层过滤，已看是人工进度，换结果时清空。
+	private GitReviewLayer _compareLens;
+	private readonly HashSet<string> _viewedCompareFiles = new(StringComparer.Ordinal);
+	private IReadOnlyList<GitCommitFile> _compareVisibleFiles = [];
+	private TextBlock? _compareViewedText;
+	// 层按路径分类要切串，比较结果不变时不必每条重画都算一遍。
+	private Dictionary<string, GitReviewLayer>? _compareLayers;
+	// 仓内 .gitattributes 的分层规则：比较时读一次，设置新结果时一起用。
+	private GitReviewRules _reviewRules = GitReviewRules.Empty;
+	// 「已看」标记要落盘；测试替换这两处，避免读写用户的 desktop.json。
+	internal Func<DesktopPreference> PreferenceLoader { get; set; } = static () => DesktopPreference.Load();
+
+	internal Action<DesktopPreference>? PreferenceSaver { get; set; }
+
+	private string ViewedCompareKey(GitBranchComparison comparison) =>
+		$"{Repo()}|{comparison.BaseHash}|{comparison.TargetHash}";
+
+	/// 只把分支间比较的已看进度落盘：工作区目标的分叉点哈希不变，内容却会变，标记会失真。
+	private void PersistCompareViewed()
+	{
+		if (_compareResult is not { } comparison ||
+			comparison.Error is not null ||
+			IsWorktreeTarget(comparison.TargetHash))
+		{
+			return;
+		}
+
+		try
+		{
+			var key = ViewedCompareKey(comparison);
+			var paths = _viewedCompareFiles.Count == 0 ? [] : _viewedCompareFiles.ToArray();
+			var preference = PreferenceLoader().WithGitViewed(key, paths);
+			if (PreferenceSaver is { } saver)
+			{
+				saver(preference);
+			}
+			else
+			{
+				preference.Save();
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+		{
+			// 落盘失败不影响当前的审查进度。
+			AppLog.Failure(AppLog.For<GitView>(), "Save viewed compare files", ex);
+		}
+	}
 	private bool _compareLoading;
 	private int _compareVersion;
 	private string _commitDraft = string.Empty;
@@ -109,20 +175,50 @@ public sealed partial class GitView : IDisposable
 	private string _summaryFailureText = string.Empty;
 	private ProgressBar? _summaryBar;
 	private readonly DispatcherTimer _summaryTimer = new(TimeSpan.FromMilliseconds(250));
+	// 面板可见时按仓库签名轮询：签名没变就不启动任何 git 子进程。
+	// 子代理或在终端里 commit / 切分支 / fetch 后，面板两秒内自己跟上。
+	private readonly DispatcherTimer _pollTimer = new(TimeSpan.FromSeconds(2));
+	private long? _signature;
+	private long? _refSignature;
+	// 轮询的签名读取在后台线程：引用很多时枚举 refs 不该压在 UI 线程上。
+	private bool _signatureChecking;
+	// 「更多」区的两份列表由后台读、按脏位刷新，不在 UI 线程起 git 进程。
+	private IReadOnlyList<GitStashEntry> _stashes = [];
+	private IReadOnlyList<GitWorktree> _worktrees = [];
+	private bool _moreDirty = true;
+	private bool _moreLoading;
 	private DateTime _summaryStarted;
 
-	public GitView(Func<string> cwd, GitCommitAssistant? assistant = null, Action? openSettings = null)
+	/// 面板当前操作的仓库：默认会话目录，选中子仓库后所有读写都以它为准。
+	private string Repo() => _repoPath.Length > 0 ? _repoPath : _cwd();
+
+	private static string DefaultWorktreeRoot() => Path.GetFullPath(Path.Combine(SessionPaths.GetAgentDir(), "worktrees"));
+
+	public GitView(
+		Func<string> cwd,
+		GitCommitAssistant? assistant = null,
+		Action? openSettings = null,
+		Func<string, string, Task<bool>>? confirm = null,
+		Action<string>? openSessionIn = null,
+		Func<string>? worktreeRoot = null,
+		Action<string>? quoteToComposer = null)
 	{
 		_cwd = cwd;
 		_assistant = assistant;
 		_openSettings = openSettings;
+		_openSessionIn = openSessionIn;
+		_worktreeRoot = worktreeRoot ?? DefaultWorktreeRoot;
+		_quoteToComposer = quoteToComposer;
+
+		_confirm = confirm ?? ((message, detail) =>
+			MessageBox.ConfirmAsync(message, PromptIconKind.Warning, detail));
 
 		// 三条可拖的分隔条：每条锚定「按下的那一刻、下面那一节多高」，之后按指针的窗口坐标
 		// 换算出这一节应有的高度（见 PaneSash 的说明：用增量累加会自我抵消）。
 		_graphSash = new PaneSash(() => _panes.Graph, height => SetPaneBody(Pane.Graph, height), SavePanes);
 		_compareSash = new PaneSash(() => _panes.Compare, height => SetPaneBody(Pane.Compare, height), SavePanes);
 		_moreSash = new PaneSash(() => _panes.More, height => SetPaneBody(Pane.More, height), SavePanes);
-		_panes = GitPaneLayout.Decode(DesktopPreference.Load().GitPanes.GetValueOrDefault(_cwd()));
+		_panes = GitPaneLayout.Decode(DesktopPreference.Load().GitPanes.GetValueOrDefault(Repo()));
 		if (_panes.Compare < CompareMinBody)
 		{
 			// 旧布局存在 60 之类的小高度：比较节的按钮会被节高裁掉，读回来先抬到最小可用高度。
@@ -138,6 +234,7 @@ public sealed partial class GitView : IDisposable
 
 		// 进度条向 PiDeck 看齐：按等待上限爬升，不用无限循环的不确定条，让用户知道还剩多久。
 		_summaryTimer.Tick += UpdateSummaryProgress;
+		_pollTimer.Tick += PollSignature;
 
 		// 骨架只搭一次：DockPanel 的子级顺序即停靠顺序。底部先停靠的在最下面，
 		// 所以自下而上是「更多 / 分隔条 / 比较 / 分隔条 / 图 / 分隔条」，「更改」吃掉剩余高度。
@@ -187,6 +284,14 @@ public sealed partial class GitView : IDisposable
 		// Initial load is asynchronous in a running window: Git status/graph must not run on the
 		// UI thread while the panel is opening. Headless tests keep the synchronous path.
 		Refresh();
+		if (Application.IsRunning)
+		{
+			// 面板建好就开始盯仓库签名；收起或切到别的分段时 PollSignature 自己跳过。
+			_pollTimer.Start();
+		}
+
+		LoadRepositories();
+		_compareLens = LoadCompareLens();
 	}
 
 	public UIElement View { get; }
@@ -223,6 +328,138 @@ public sealed partial class GitView : IDisposable
 		StartRefresh(dispatcher);
 	}
 
+	/// 自动刷新（轮询发现仓库变了、窗口回到前台、回合结束）：正在写提交信息时不动列表，
+	/// 否则重建提交框会把焦点与已经输入的半句一起吞掉。返回是否真的重读了一次。
+	internal bool RefreshAuto()
+	{
+		if (_disposed || _commitInput?.IsFocused == true)
+		{
+			return false;
+		}
+
+		Refresh();
+		return true;
+	}
+
+	/// 比较仓库签名；变了就重读状态。返回是否真的刷新了。
+	private bool RefreshIfChanged()
+	{
+		if (_disposed)
+		{
+			return false;
+		}
+
+		var snapshot = GitSignature.Read(Repo());
+		if (snapshot is not { } signature)
+		{
+			// 仓库被删/移走：之前有签名就强制刷一次，让面板回到「不是仓库」。
+			return _signature is not null && RefreshAuto();
+		}
+
+		if (_signature == signature.Full)
+		{
+			return false;
+		}
+
+		// 引用变了才重读提交图与分支列表：暂存一次只动 index，不该为它多跑一遍 git log。
+		var refsChanged = _refSignature != signature.Refs;
+		_graphDirty |= refsChanged;
+		_branchesDirty |= refsChanged;
+
+		// 签名在读到结果之后才记：`git status` 自己会重写 index（stat 缓存刷新），
+		// 先记再读会把那次重写当成「又变了」，两秒一拍地白跑。
+		return RefreshAuto();
+	}
+
+	/// 两秒一拍：面板看不见、正在跑写操作或已有刷新在途时都不动。
+	private void PollSignature()
+	{
+		if (_disposed || !Application.IsRunning)
+		{
+			_pollTimer.Stop();
+			return;
+		}
+
+		if (_busy || _generating || _refreshInFlight || _signatureChecking || !IsPanelVisible())
+		{
+			return;
+		}
+
+		if (Application.Current.Dispatcher is not { } dispatcher)
+		{
+			return;
+		}
+
+		_signatureChecking = true;
+		_ = CheckSignatureAsync(Repo(), dispatcher);
+	}
+
+	/// 签名在后台读：大仓库的 refs 有几百上千个文件，枚举不能压在两秒一拍的 UI 线程上。
+	private async Task CheckSignatureAsync(string repo, IDispatcher dispatcher)
+	{
+		GitSignatureValue? signature = null;
+		try
+		{
+			signature = await Task.Run(() => GitSignature.Read(repo)).ConfigureAwait(false);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<GitView>(), "Read Git signature", ex);
+		}
+
+		void Complete()
+		{
+			_signatureChecking = false;
+			if (_disposed)
+			{
+				return;
+			}
+
+			if (signature is not { } current)
+			{
+				if (_signature is not null)
+				{
+					_signature = null;
+					_refSignature = null;
+					RefreshAuto();
+				}
+
+				return;
+			}
+
+			if (_signature == current.Full)
+			{
+				return;
+			}
+
+			var refsChanged = _refSignature != current.Refs;
+			_graphDirty |= refsChanged;
+			_branchesDirty |= refsChanged;
+			RefreshAuto();
+		}
+
+		if (dispatcher.IsOnUIThread) Complete();
+		else dispatcher.BeginInvoke(Complete);
+	}
+
+	/// 面板可能在窗口里被收起（右侧面板关掉）、被切到别的分段，或者整窗隐藏到托盘：
+	/// 这三种情况都不该继续 stat/poll，收起时不花任何代价。
+	private bool IsPanelVisible()
+	{
+		for (Element? element = View; element is not null; element = element.Parent)
+		{
+			if (element is FrameworkElement { IsVisible: false })
+			{
+				return false;
+			}
+		}
+
+		return View.FindVisualRoot() is Window window && window.IsVisible && window.WindowState != WindowState.Minimized;
+	}
+
+	/// 测试入口：跳过计时器与可见性，直接跑一次签名比较。
+	internal bool RefreshIfSignatureChangedForTests() => RefreshIfChanged();
+
 	private void StartRefresh(IDispatcher dispatcher)
 	{
 		_refreshInFlight = true;
@@ -232,7 +469,7 @@ public sealed partial class GitView : IDisposable
 		_graphVersion++;
 		_graphLoading = false;
 		_graphCountDirty = true;
-		var cwd = _cwd();
+		var cwd = Repo();
 		_ = RefreshAsync(cwd, version, dispatcher);
 	}
 
@@ -240,19 +477,24 @@ public sealed partial class GitView : IDisposable
 	{
 		GitStatus status;
 		GitChangeStats stats;
+		GitSignatureValue? signature;
 		try
 		{
 			// 行数统计和状态一起在后台读：面板打开前要多等两次 git diff，但都在 UI 线程外。
-			(status, stats) = await Task.Run(() =>
+			// 签名同批算完：ApplyStatus 之后不用再在 UI 线程上 stat 一遍引用目录。
+			(status, stats, signature) = await Task.Run(() =>
 			{
 				var read = GitStatusReader.Read(cwd);
-				return (read, read.IsRepository ? ReadStats(cwd, read) : GitChangeStats.Empty);
+				return (read,
+					read.IsRepository ? ReadStats(cwd, read) : GitChangeStats.Empty,
+					GitSignature.Read(cwd));
 			}).ConfigureAwait(false);
 		}
 		catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
 		{
 			status = new GitStatus { IsRepository = false, Error = Strings.GitUnavailable };
 			stats = GitChangeStats.Empty;
+			signature = null;
 		}
 		catch (Exception ex)
 		{
@@ -260,6 +502,7 @@ public sealed partial class GitView : IDisposable
 			AppLog.Failure(AppLog.For<GitView>(), "Refresh Git panel", ex);
 			status = new GitStatus { IsRepository = false, Error = Strings.GitUnavailable };
 			stats = GitChangeStats.Empty;
+			signature = null;
 		}
 
 		void Complete()
@@ -272,6 +515,8 @@ public sealed partial class GitView : IDisposable
 
 			if (version == _refreshVersion)
 			{
+				_signature = signature?.Full;
+				_refSignature = signature?.Refs;
 				ApplyStatus(status, stats);
 			}
 
@@ -295,12 +540,25 @@ public sealed partial class GitView : IDisposable
 
 	private void Rebuild()
 	{
-		var status = GitStatusReader.Read(_cwd());
-		ApplyStatus(status, status.IsRepository ? ReadStats(_cwd(), status) : GitChangeStats.Empty);
+		var status = GitStatusReader.Read(Repo());
+		var stats = status.IsRepository ? ReadStats(Repo(), status) : GitChangeStats.Empty;
+		// 签名在状态之后读：`git status` 可能自己重写 index，先读会把那次重写当变化。
+		var signature = status.IsRepository ? GitSignature.Read(Repo()) : null;
+		_signature = signature?.Full;
+		_refSignature = signature?.Refs;
+		ApplyStatus(status, stats);
 	}
 
 	private void ApplyStatus(GitStatus status, GitChangeStats stats)
 	{
+		// 「先去暂存」这类内联提示在暂存之后就该消失，否则一直钉在提交框下面。
+		if (_summaryFailure == GitSummaryFailure.EmptyDiff &&
+			status.Changes.Any(static change => change.HasStaged && !change.IsConflict))
+		{
+			_summaryFailure = null;
+			_summaryFailureText = string.Empty;
+		}
+
 		_lastStatus = status;
 		_stats = stats;
 		try
@@ -319,7 +577,13 @@ public sealed partial class GitView : IDisposable
 
 	private void RebuildSections()
 	{
-		var status = _lastStatus ??= GitStatusReader.Read(_cwd());
+		if (_lastStatus is not { } status)
+		{
+			// 换仓库的窗口期：旧行已经撤下、新状态还没回来，留一块明确的加载态。
+			ShowRepositoryLoading();
+			return;
+		}
+
 		if (!_sectionsBuilt)
 		{
 			_host.Children(_root);
@@ -366,9 +630,42 @@ public sealed partial class GitView : IDisposable
 		}
 	}
 
+	/// 换仓库的窗口期：撤下所有跟旧仓库有关的节，只留一句加载说明。
+	/// 旧行留在界面上更危险：它们的动作闭包会在切换后落到新仓库上。
+	private void ShowRepositoryLoading()
+	{
+		if (!_sectionsBuilt)
+		{
+			_host.Children(_root);
+			_sectionsBuilt = true;
+		}
+
+		_notRepoHost.IsVisible = true;
+		_graphHost.IsVisible = false;
+		_graphSash.IsVisible = false;
+		_compareHost.IsVisible = false;
+		_compareSash.IsVisible = false;
+		_moreHost.IsVisible = false;
+		_moreSash.IsVisible = false;
+		_changesHeaderHost.IsVisible = false;
+		_changesBody.IsVisible = false;
+		_branchBarHost.IsVisible = false;
+		Swap(_notRepoHost, new StackPanel()
+			.Spacing(AppTheme.Space2)
+			.Padding(new Thickness(AppTheme.Space4))
+			.Children(
+				new TextBlock().Text(Strings.GitLoading)
+					.FontSize(AppTheme.FontSizeControl).FontWeight(FontWeight.SemiBold).PrimaryText(),
+				new TextBlock().Text(Strings.GitLoadingHint)
+					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap)));
+	}
+
 	private void RebuildChanges()
 	{
-		var status = _lastStatus!;
+		if (_lastStatus is not { } status)
+		{
+			return;
+		}
 		// 提交框与 diff 面板都留在各自的宿主里：换一节不影响另一节的焦点与滚动位置。
 		Swap(_changesHeaderHost, BuildChangesHeader(status));
 		Swap(_failureHost, BuildFailureStrip());
@@ -382,7 +679,12 @@ public sealed partial class GitView : IDisposable
 	/// 重建更改行表。列表控件本身不换：换成新宿主会把滚动位置、已建的行与悬停态一起丢掉。
 	private void RebuildList()
 	{
-		var rows = GitChangeList.Build(_lastStatus!, _collapsedDirectories, _stats);
+		if (_lastStatus is not { } status)
+		{
+			return;
+		}
+
+		var rows = GitChangeList.Build(status, _collapsedDirectories, _stats);
 		_changesEmpty.IsVisible = rows.Count == 0;
 		_changesList.IsVisible = rows.Count > 0;
 		_changesList.ItemsSource = ItemsView.Create(
@@ -427,15 +729,119 @@ public sealed partial class GitView : IDisposable
 
 	private void RebuildCompare()
 	{
+		if (_lastStatus is not { } status)
+		{
+			return;
+		}
+
 		var branches = _panes.GraphOpen || _panes.CompareOpen ? CurrentBranches() : [];
-		Swap(_compareHost, BuildComparePane(_lastStatus!, branches));
+		Swap(_compareHost, BuildComparePane(status, branches));
 		ApplyPaneHeights();
+	}
+
+	/// 「更多」区的列表（stash / 隔离副本）在后台读：面板每次刷新都在 UI 线程起两个
+	/// git 进程会卡住滚动与输入，和 status/分支/图各自下线程池的做法不一致。
+	private void LoadMore()
+	{
+		if (_moreLoading)
+		{
+			return;
+		}
+
+		_moreDirty = false;
+		var repo = Repo();
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		{
+			_stashes = ReadStashes(repo);
+			_worktrees = ReadWorktrees(repo);
+			return;
+		}
+
+		_moreLoading = true;
+		_ = LoadMoreAsync(repo, dispatcher);
+	}
+
+	private async Task LoadMoreAsync(string repo, IDispatcher dispatcher)
+	{
+		IReadOnlyList<GitStashEntry> stashes;
+		IReadOnlyList<GitWorktree> worktrees;
+		try
+		{
+			(stashes, worktrees) = await Task.Run(() => (ReadStashes(repo), ReadWorktrees(repo))).ConfigureAwait(false);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<GitView>(), "Read Git more pane", ex);
+			stashes = [];
+			worktrees = [];
+		}
+
+		void Complete()
+		{
+			_moreLoading = false;
+			if (_disposed)
+			{
+				return;
+			}
+
+			_stashes = stashes;
+			_worktrees = worktrees;
+			RebuildMore();
+		}
+
+		if (dispatcher.IsOnUIThread) Complete();
+		else dispatcher.BeginInvoke(Complete);
+	}
+
+	private static IReadOnlyList<GitStashEntry> ReadStashes(string repo)
+	{
+		try
+		{
+			return GitWriter.Stashes(repo);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<GitView>(), "Read Git stashes", ex);
+			return [];
+		}
+	}
+
+	private static IReadOnlyList<GitWorktree> ReadWorktrees(string repo)
+	{
+		try
+		{
+			return GitWriter.Worktrees(repo);
+		}
+		catch (Exception ex)
+		{
+			AppLog.Failure(AppLog.For<GitView>(), "Read Git worktrees", ex);
+			return [];
+		}
 	}
 
 	private void RebuildMore()
 	{
-		Swap(_moreHost, BuildMorePane(_lastStatus!));
+		// 面板刚建好、首轮异步状态还没回来时也可能走到这里（展开「更多」或截图脚本）：
+		// 没有快照就先要一份，别拿 null 去建整段。
+		if (_lastStatus is not { } status)
+		{
+			Refresh();
+			return;
+		}
+
+		if (_panes.MoreOpen && _moreDirty)
+		{
+			LoadMore();
+		}
+
+		Swap(_moreHost, BuildMorePane(status));
 		ApplyPaneHeights();
+		// 编辑器重建后把焦点要回来：点「新建隔离副本」之后应该直接能打字。
+		if (_focusWorktreeAfterBuild && _worktreeInput is not null)
+		{
+			_focusWorktreeAfterBuild = false;
+			_worktreeInput.Focus();
+		}
 	}
 
 	private void RebuildBottomPanes(GitStatus status)
@@ -468,7 +874,7 @@ public sealed partial class GitView : IDisposable
 
 		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
 		{
-			_branches = ReadBranches(_cwd());
+			_branches = ReadBranches(Repo());
 			_branchesLoaded = true;
 			_branchesDirty = false;
 			return _branches;
@@ -480,7 +886,7 @@ public sealed partial class GitView : IDisposable
 		{
 			_branchesLoading = true;
 			var version = ++_branchesVersion;
-			var cwd = _cwd();
+			var cwd = Repo();
 			_ = LoadBranchesAsync(cwd, version, dispatcher);
 		}
 
@@ -563,6 +969,8 @@ public sealed partial class GitView : IDisposable
 		{
 			_branchesDirty = true;
 			_graphDirty = true;
+			// 手动刷新顺带重扫仓库列表：在子目录里新建仓库、删掉子仓库后不用重开面板。
+			LoadRepositories();
 			Refresh();
 		});
 		refresh.IsEnabled = !_busy && !_generating;
@@ -570,7 +978,7 @@ public sealed partial class GitView : IDisposable
 
 		if (status.IsRepository)
 		{
-			var fetch = ToolbarButton("download", Strings.GitFetch, () => _ = RunGitAsync(() => GitWriter.Fetch(_cwd()), Strings.GitFetchBusy));
+			var fetch = ToolbarButton("download", Strings.GitFetch, () => _ = RunRepoGitAsync(GitWriter.Fetch, Strings.GitFetchBusy));
 			fetch.IsEnabled = status.HasRemotes && !_busy && !_generating;
 			right.Children(fetch);
 
@@ -578,13 +986,13 @@ public sealed partial class GitView : IDisposable
 			var pushing = _busy && _busyMessage == Strings.GitPushBusy;
 			var pullTooltip = status.Behind > 0 ? Strings.GitPullBehind(status.Behind) : Strings.GitPull;
 			var pull = ToolbarCountButton("arrow-down", pullTooltip,
-				() => _ = RunGitAsync(() => GitWriter.Pull(_cwd()), Strings.GitPullBusy), status.Behind, pulling);
+				() => _ = RunRepoGitAsync(GitWriter.Pull, Strings.GitPullBusy), status.Behind, pulling);
 			pull.IsEnabled = status.HasRemotes && status.HasUpstream && !status.Detached && !_busy && !_generating;
 			right.Children(pull);
 
 			var pushTooltip = status.Ahead > 0 ? Strings.GitPushAhead(status.Ahead) : Strings.GitPush;
 			var push = ToolbarCountButton("arrow-up", pushTooltip,
-				() => _ = RunGitAsync(() => GitWriter.Push(_cwd()), Strings.GitPushBusy), status.Ahead, pushing);
+				() => _ = RunRepoGitAsync(GitWriter.Push, Strings.GitPushBusy), status.Ahead, pushing);
 			push.IsEnabled = status.HasRemotes && !status.Detached && !_busy && !_generating;
 			right.Children(push);
 		}
@@ -616,7 +1024,224 @@ public sealed partial class GitView : IDisposable
 		// 闭包需要按钮本身作为菜单锚点；先建按钮再挂事件。
 		branchButton.OnClick(() => ShowBranchMenu(branchButton!, status));
 
+		if (_repos.Count > 1)
+		{
+			// 只有真的扫到多个仓库才占位置：单仓库会话的分支栏保持原样。
+			var left = new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(2)
+				.Children(RepositoryChip(), branchButton);
+			return new DockPanel().LastChildFill().Children(right.DockRight(), left);
+		}
+
 		return new DockPanel().LastChildFill().Children(right.DockRight(), branchButton);
+	}
+
+	/// 仓库 chip：当前仓库名 + 下拉；切换后所有节都按新仓库重读。
+	private Button RepositoryChip()
+	{
+		var current = _repos.FirstOrDefault(repository =>
+			string.Equals(repository.Path, Repo(), StringComparison.OrdinalIgnoreCase));
+		var label = current is { IsRoot: false }
+			? current.Label
+			: _repos.FirstOrDefault(static repository => repository.IsRoot)?.Label ?? Path.GetFileName(Repo());
+		var chip = new Button()
+			.Ghost()
+			.Height(AppTheme.ControlHeightSm)
+			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+			.HorizontalAlignment(HorizontalAlignment.Left)
+			.Content(new StackPanel()
+				.Orientation(Orientation.Horizontal)
+				.Spacing(4)
+				.VerticalAlignment(VerticalAlignment.Center)
+				.Children(
+					AppIcons.Icon("folder-open", AppStyles.RoleSubtle, 13),
+					new TextBlock().Text(label)
+						.FontSize(AppTheme.FontSizeMicro)
+						.MutedText()
+						.MaxWidth(64)
+						.TextWrapping(TextWrapping.NoWrap)
+						.TextTrimming(TextTrimming.CharacterEllipsis),
+					ThemedGlyph(GlyphKind.ChevronDown, AppStyles.RoleFaint, 3)));
+		chip.OnClick(() => ShowRepositoryMenu(chip, current?.Path ?? _repoPath));
+		chip.IsEnabled = !_busy && !_generating;
+		chip.HoverTip(Strings.GitRepositoryMenu);
+		chip.Tag = Strings.GitRepositoryMenu;
+		return chip;
+	}
+
+	private void ShowRepositoryMenu(Button owner, string selectedPath)
+	{
+		var checkIcon = AppIcons.CheckTemplate();
+
+		var menu = new ContextMenu();
+		for (var index = 0; index < _repos.Count; index++)
+		{
+			var repository = _repos[index];
+			var command = new Command($"pi.git.repo.{index}", repository.IsRoot ? $"{repository.Label}（根）" : repository.Label);
+			owner.Commands.Register(command, () => SelectRepository(repository.Path));
+			menu.Items.Add(new MenuItem(command)
+			{
+				Icon = string.Equals(repository.Path, selectedPath, StringComparison.OrdinalIgnoreCase) ? checkIcon : null,
+			});
+		}
+
+		menu.Placement = MenuPlacement.Below;
+		menu.MaxMenuHeight = 320;
+		menu.Show(owner);
+	}
+
+	/// 切换仓库：存下旧仓库的面板布局，清掉全部按仓库缓存的结果，再按新仓库重读。
+	private void SelectRepository(string path)
+	{
+		if (string.Equals(Repo(), path, StringComparison.OrdinalIgnoreCase))
+		{
+			return;
+		}
+
+		SavePanes();
+		_repoPath = path;
+		ResetRepositoryState();
+		_panes = GitPaneLayout.Decode(DesktopPreference.Load().GitPanes.GetValueOrDefault(Repo()));
+		_compareLens = LoadCompareLens();
+		Refresh();
+	}
+
+	private void ResetRepositoryState()
+	{
+		// 在途的状态读取属于上一个仓库：版本号推进后不会被应用。
+		_refreshVersion++;
+		_branchesVersion++;
+		_branchesLoading = false;
+		_branchesLoaded = false;
+		_branchesDirty = true;
+		_branches = [];
+		_graphVersion++;
+		_graphLoading = false;
+		_graphLoaded = false;
+		_graphDirty = true;
+		_graphCountDirty = true;
+		_graphCommits = [];
+		_graphTotal = 0;
+		ResetCommitDetails();
+		_compareVersion++;
+		_compareLoading = false;
+		_compareResult = null;
+		_compareError = null;
+		_compareVisibleFiles = [];
+		_compareLayers = null;
+		_reviewRules = GitReviewRules.Empty;
+		_compareLens = GitReviewLayer.All;
+		_viewedCompareFiles.Clear();
+		// 折叠状态与副本表单属于上一个仓库：换仓库后路径都不一样了。
+		_collapsedDirectories.Clear();
+		_worktreeEditorVisible = false;
+		_worktreeDraft = string.Empty;
+		_worktreeBaseDraft = string.Empty;
+		_lastStatus = null;
+		_lastFailureMessage = null;
+		_lastFailureDetail = null;
+		_summaryFailure = null;
+		_summaryFailureText = string.Empty;
+		_signature = null;
+		_refSignature = null;
+		_moreDirty = true;
+		_moreLoading = false;
+		_stashes = [];
+		_worktrees = [];
+	}
+
+	private void LoadRepositories()
+	{
+		var cwd = _cwd();
+		if (!Application.IsRunning || Application.Current.Dispatcher is not { } dispatcher)
+		{
+			ApplyRepositories(GitRepositories.Scan(cwd));
+			return;
+		}
+
+		_ = LoadRepositoriesAsync(cwd, dispatcher);
+	}
+
+	private async Task LoadRepositoriesAsync(string cwd, IDispatcher dispatcher)
+	{
+		IReadOnlyList<GitRepository> repositories;
+		try
+		{
+			repositories = await Task.Run(() => GitRepositories.Scan(cwd)).ConfigureAwait(false);
+		}
+		catch (Exception ex)
+		{
+			// 扫描只是便利：失败就当只有会话目录一个仓库，面板照常可用。
+			AppLog.Failure(AppLog.For<GitView>(), "Scan Git repositories", ex);
+			repositories = [];
+		}
+
+		void Complete()
+		{
+			if (!_disposed)
+			{
+				ApplyRepositories(repositories);
+			}
+		}
+
+		if (dispatcher.IsOnUIThread) Complete();
+		else dispatcher.BeginInvoke(Complete);
+	}
+
+	private void ApplyRepositories(IReadOnlyList<GitRepository> repositories)
+	{
+		if (SameRepositories(repositories))
+		{
+			return;
+		}
+
+		var selectedGone = _repoPath.Length > 0 &&
+			!repositories.Any(repository => string.Equals(repository.Path, _repoPath, StringComparison.OrdinalIgnoreCase));
+		_repos = repositories;
+		if (selectedGone)
+		{
+			_repoPath = string.Empty;
+			ResetRepositoryState();
+		}
+
+		// 首轮状态还没回来且已有一轮刷新在途：那轮 ApplyStatus 会重画分支栏，
+		// 不为一枚按钮再排第二轮 git status。只有确实没有在途刷新时才自己拉一次。
+		if (_lastStatus is null)
+		{
+			if (!_refreshInFlight)
+			{
+				Refresh();
+			}
+
+			return;
+		}
+
+		if (selectedGone)
+		{
+			Refresh();
+			return;
+		}
+
+		RebuildSections();
+	}
+
+	private bool SameRepositories(IReadOnlyList<GitRepository> repositories)
+	{
+		if (repositories.Count != _repos.Count)
+		{
+			return false;
+		}
+
+		for (var index = 0; index < repositories.Count; index++)
+		{
+			if (!string.Equals(repositories[index].Path, _repos[index].Path, StringComparison.OrdinalIgnoreCase))
+			{
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private UIElement BuildNewBranchEditor()
@@ -661,18 +1286,13 @@ public sealed partial class GitView : IDisposable
 
 	private void ShowBranchMenu(Button owner, GitStatus status)
 	{
-		var branches = GitWriter.Branches(_cwd()).ToList();
+		var branches = GitWriter.Branches(Repo()).ToList();
 		if (branches.Count == 0 && status.Branch.Length > 0)
 		{
 			branches.Add(status.Branch);
 		}
 
-		var checkIcon = new IconTemplate(size => new GlyphElement()
-			.Kind(GlyphKind.CheckMark)
-			.GlyphSize(4)
-			.Foreground(AppTheme.Accent)
-			.HorizontalAlignment(HorizontalAlignment.Center)
-			.VerticalAlignment(VerticalAlignment.Center));
+		var checkIcon = AppIcons.CheckTemplate();
 
 		var menu = new ContextMenu();
 		for (var index = 0; index < branches.Count; index++)
@@ -686,7 +1306,7 @@ public sealed partial class GitView : IDisposable
 					return;
 				}
 
-				_ = RunGitAsync(() => GitWriter.SwitchBranch(_cwd(), name), Strings.GitBusy);
+				_ = RunRepoGitAsync(repo => GitWriter.SwitchBranch(repo, name), Strings.GitBusy);
 			});
 			menu.Items.Add(new MenuItem(command)
 			{
@@ -714,14 +1334,14 @@ public sealed partial class GitView : IDisposable
 
 	private void CreateBranch(string? name)
 	{
-		var result = GitWriter.CreateBranch(_cwd(), name?.Trim() ?? string.Empty);
-		if (result.Ok)
-		{
-			_branchDraft = string.Empty;
-			_branchEditorVisible = false;
-		}
-
-		ApplyResult(result);
+		_ = RunRepoGitAsync(
+			repo => GitWriter.CreateBranch(repo, name?.Trim() ?? string.Empty),
+			Strings.GitBusy,
+			onSuccess: () =>
+			{
+				_branchDraft = string.Empty;
+				_branchEditorVisible = false;
+			});
 	}
 
 
@@ -835,6 +1455,12 @@ public sealed partial class GitView : IDisposable
 		actions.Children(commit.Column(1));
 
 		var body = new StackPanel().Spacing(AppTheme.Space1).Children(_commitInput, actions);
+		if (staged == 0 && status.Changes.Count > 0 && !_busy && !_generating)
+		{
+			// 没有暂存但有改动：给一个一键入口，但必须确认——「全部」会把没看过的文件也带进去。
+			body.Children(SmallTextButton(Strings.GitStageAllAndCommit, () => _ = StageAllAndCommitAsync()));
+		}
+
 		if (staged == 0 && !_busy && !_generating)
 		{
 			body.Children(new TextBlock()
@@ -946,7 +1572,8 @@ public sealed partial class GitView : IDisposable
 			return;
 		}
 
-		var status = GitStatusReader.Read(_cwd());
+		var repo = Repo();
+		var status = GitStatusReader.Read(repo);
 		if (!status.Changes.Any(static change => change.HasStaged && !change.IsConflict))
 		{
 			Toasts.Show(View, Strings.GitNothingStaged);
@@ -954,7 +1581,7 @@ public sealed partial class GitView : IDisposable
 		}
 
 		var draft = message.Trim();
-		await RunGitAsync(() => GitWriter.Commit(_cwd(), draft), Strings.GitCommitBusy, onSuccess: () => _commitDraft = string.Empty);
+		await RunGitAsync(() => GitWriter.Commit(repo, draft), Strings.GitCommitBusy, onSuccess: () => _commitDraft = string.Empty);
 	}
 
 	/// 把一行折进列表容器。Bind 只在新实现一行或列表代际变化时调用；先比对身份，
@@ -1000,15 +1627,43 @@ public sealed partial class GitView : IDisposable
 		if (row.AllowActions)
 		{
 			var changes = row.Changes;
-			var action = SmallTextButton(
-				row.Staged ? Strings.GitUnstageAll : Strings.GitStageAll,
-				() => _ = RunGitAsync(
-					() => row.Staged
-						? GitWriter.Unstage(_cwd(), [.. changes.Select(static change => change.Path)])
-						: GitWriter.Stage(_cwd(), [.. changes.Select(static change => change.Path)]),
-					Strings.GitBusy));
-			action.IsEnabled = !_busy && !_generating;
-			host.Children(action.DockRight());
+			var paths = changes.Select(static change => change.Path).ToArray();
+			if (row.Conflict)
+			{
+				// 冲突文件的「暂存」在 git 里就是标记已解决：解决完才能提交。
+				var resolve = SmallTextButton(
+					Strings.GitMarkAllResolved,
+					() => _ = RunRepoGitAsync(repo => GitWriter.Stage(repo, paths), Strings.GitBusy));
+				resolve.IsEnabled = !_busy && !_generating;
+				host.Children(resolve.DockRight());
+			}
+			else
+			{
+				var actions = new StackPanel()
+					.Orientation(Orientation.Horizontal)
+					.Spacing(2)
+					.VerticalAlignment(VerticalAlignment.Center);
+				var action = SmallTextButton(
+					row.Staged ? Strings.GitUnstageAll : Strings.GitStageAll,
+					() => _ = RunRepoGitAsync(
+						repo => row.Staged
+							? GitWriter.Unstage(repo, paths)
+							: GitWriter.Stage(repo, paths),
+						Strings.GitBusy));
+				action.IsEnabled = !_busy && !_generating;
+				actions.Children(action);
+				if (!row.Staged)
+				{
+					// 放弃整节等于丢掉这一节的未暂存改动；未跟踪文件也一并清掉。
+					// 放在暂存键右侧：破坏性动作离读的位置最远。
+					var discardAll = RowIconButton("rotate-ccw", Strings.GitDiscardAll,
+						() => _ = DiscardAsync(changes, Strings.GitDiscardConfirm(changes.Count)));
+					discardAll.IsEnabled = !_busy && !_generating;
+					actions.Children(discardAll);
+				}
+
+				host.Children(actions.DockRight());
+			}
 		}
 
 		return host.Children(header);
@@ -1048,21 +1703,36 @@ public sealed partial class GitView : IDisposable
 				RebuildList();
 			});
 
-		var action = GlyphButton(
-			row.Staged ? GlyphKind.Minus : GlyphKind.Plus,
-			row.Staged ? Strings.GitUnstageDirectory : Strings.GitStageDirectory,
-			() =>
-			{
-				var paths = tree.Changes.Select(static change => change.Path).ToArray();
-				// 目录可能上千个文件：git add 放线程池，别卡住面板。
-				_ = RunGitAsync(
-					() => row.Staged ? GitWriter.Unstage(_cwd(), paths) : GitWriter.Stage(_cwd(), paths),
-					Strings.GitBusy);
-			});
+		var action = row.Conflict
+			? ResolveButton(Strings.GitMarkResolved, [.. tree.Changes.Select(static change => change.Path)])
+			: GlyphButton(
+				row.Staged ? GlyphKind.Minus : GlyphKind.Plus,
+				row.Staged ? Strings.GitUnstageDirectory : Strings.GitStageDirectory,
+				() =>
+				{
+					var paths = tree.Changes.Select(static change => change.Path).ToArray();
+					// 目录可能上千个文件：git add 放线程池，别卡住面板。
+					_ = RunRepoGitAsync(
+						repo => row.Staged ? GitWriter.Unstage(repo, paths) : GitWriter.Stage(repo, paths),
+						Strings.GitBusy);
+				});
 		action.IsEnabled = !_busy && !_generating;
 		action.IsVisible = row.AllowActions;
 
-		return new DockPanel().LastChildFill().Children(action.DockRight(), directoryButton);
+		var actions = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(1)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(action);
+		if (row.AllowActions && !row.Staged && !row.Conflict)
+		{
+			var discard = RowIconButton("rotate-ccw", Strings.GitDiscardDirectory,
+				() => _ = DiscardAsync(tree.Changes, Strings.GitDiscardConfirmDirectory(tree.Label)));
+			discard.IsEnabled = !_busy && !_generating;
+			actions.Children(discard);
+		}
+
+		return new DockPanel().LastChildFill().Children(actions.DockRight(), directoryButton);
 	}
 
 	private UIElement BuildFileRow(GitChangeRow row)
@@ -1105,21 +1775,40 @@ public sealed partial class GitView : IDisposable
 			.HoverTip(change.Path + "\n" + change.Label);
 		rowButton.Tag = change;
 
-		var action = GlyphButton(
-			row.Staged ? GlyphKind.Minus : GlyphKind.Plus,
-			row.Staged ? Strings.GitUnstage : Strings.GitStage,
-			() => _ = RunGitAsync(
-				() => row.Staged
-					? GitWriter.Unstage(_cwd(), [change.Path])
-					: GitWriter.Stage(_cwd(), [change.Path]),
-				Strings.GitBusy));
+		var action = row.Conflict
+			? ResolveButton(Strings.GitMarkResolved, [change.Path])
+			: GlyphButton(
+				row.Staged ? GlyphKind.Minus : GlyphKind.Plus,
+				row.Staged ? Strings.GitUnstage : Strings.GitStage,
+				() => _ = RunRepoGitAsync(
+					repo => row.Staged
+						? GitWriter.Unstage(repo, [change.Path])
+						: GitWriter.Stage(repo, [change.Path]),
+					Strings.GitBusy));
 		action.IsEnabled = !_busy && !_generating;
 		action.IsVisible = row.AllowActions;
 		action.Tag = change;
 
+		var actions = new StackPanel()
+			.Orientation(Orientation.Horizontal)
+			.Spacing(1)
+			.VerticalAlignment(VerticalAlignment.Center)
+			.Children(action);
+		if (row.AllowActions && !row.Staged && !row.Conflict)
+		{
+			var untracked = change.IndexStatus == "?" && change.WorkTreeStatus == "?";
+			var discard = RowIconButton(
+				untracked ? "trash" : "rotate-ccw",
+				untracked ? Strings.GitDiscardUntracked : Strings.GitDiscard,
+				() => _ = DiscardAsync([change], Strings.GitDiscardConfirmNamed(change.FileName)));
+			discard.IsEnabled = !_busy && !_generating;
+			discard.Tag = change;
+			actions.Children(discard);
+		}
+
 		return new Border()
 			.CornerRadius(AppTheme.RadiusXs)
-			.Child(new DockPanel().LastChildFill().Children(action.DockRight(), rowButton));
+			.Child(new DockPanel().LastChildFill().Children(actions.DockRight(), rowButton));
 	}
 
 	/// 行尾的增删行数与五格比例条；没有数字（未跟踪、二进制、纯改名）就不占位置。
@@ -1167,6 +1856,125 @@ public sealed partial class GitView : IDisposable
 		ShowDiff(GitDiffRequest.WorkingTree(change.Path, stagedSide, untracked));
 	}
 
+	/// 放弃未暂存改动：先确认，再打检查点，最后 restore / clean。
+	/// 检查点建不出来就中止：这一步不可撤销，没有可恢复的快照宁可什么都不做。
+	/// 已暂存的那一份不在放弃范围内（先取消暂存），部分暂存的文件只回退工作区这一侧。
+	private async Task DiscardAsync(IReadOnlyList<GitChange> changes, string message)
+	{
+		if (_disposed || _busy || _generating)
+		{
+			return;
+		}
+
+		// 确认框可能开着很久：把它之后的检查点与 restore/clean 钉在点击这一刻的仓库上，
+		// 否则中途切仓库会让快照落在 A、删除落在 B。
+		var repo = Repo();
+		var tracked = new List<string>();
+		var untracked = new List<string>();
+		foreach (var change in changes)
+		{
+			if (change.IndexStatus == "?" && change.WorkTreeStatus == "?")
+			{
+				untracked.Add(change.Path);
+			}
+			else if (change.WorkTreeStatus is not " ")
+			{
+				tracked.Add(change.Path);
+			}
+		}
+
+		if (tracked.Count == 0 && untracked.Count == 0)
+		{
+			Toasts.Show(View, Strings.GitDiscardEmpty);
+			return;
+		}
+
+		await ConfirmRunAsync(
+			message,
+			Strings.GitDiscardConfirmDetail,
+			() =>
+			{
+				if (Checkpoints.Create(repo, "before-discard") is null)
+				{
+					return GitResult.Failure(Strings.GitDiscardCheckpointFailed);
+				}
+
+				Checkpoints.Prune(repo);
+				return GitWriter.Discard(repo, tracked, untracked);
+			},
+			Strings.GitDiscardBusy).ConfigureAwait(true);
+	}
+
+	/// 全部暂存并提交：面板里唯一会带走「没勾选文件」的动作，所以先确认。
+	/// 有冲突时直接拒绝：add 会把带冲突标记的文件标成已解决。
+	private async Task StageAllAndCommitAsync()
+	{
+		if (_disposed || _busy || _generating)
+		{
+			return;
+		}
+
+		var message = _commitInput?.Text ?? _commitDraft;
+		if (string.IsNullOrWhiteSpace(message))
+		{
+			Toasts.Error(View, Strings.GitCommitMessageRequired);
+			return;
+		}
+
+		var repo = Repo();
+		var status = GitStatusReader.Read(repo);
+		if (status.IsRepository && status.Changes.Any(static change => change.IsConflict))
+		{
+			Toasts.Error(View, Strings.GitConflict);
+			return;
+		}
+
+		var paths = status.Changes.Select(static change => change.Path).ToArray();
+		if (paths.Length == 0)
+		{
+			Toasts.Show(View, Strings.GitNothingToCommit);
+			return;
+		}
+
+		var draft = message.Trim();
+		await ConfirmRunAsync(
+			Strings.GitStageAllAndCommitConfirm(paths.Length),
+			Strings.GitStageAllAndCommitDetail,
+			() =>
+			{
+				var staged = GitWriter.Stage(repo, paths);
+				return staged.Ok ? GitWriter.Commit(repo, draft) : staged;
+			},
+			Strings.GitCommitBusy,
+			onSuccess: () => _commitDraft = string.Empty).ConfigureAwait(true);
+	}
+
+	/// 冲突行的动作：`git add` 就是标记已解决，用对勾比加号更像「收尾」。
+	private Button ResolveButton(string tooltip, IReadOnlyList<string> paths) =>
+		RowIconButton("circle-check", tooltip,
+			() => _ = RunRepoGitAsync(repo => GitWriter.Stage(repo, paths), Strings.GitBusy));
+
+	/// 行尾的小图标按钮：表格式行高 27，26 的按钮会把行撑高，取 22 留出悬停底色。
+	private static Button RowIconButton(string icon, string tooltip, Action action)
+	{
+		var button = AppIcons.Button(icon, tooltip, action, size: 13);
+		button.Width(22).Height(22).Padding(Thickness.Zero);
+		return button;
+	}
+
+	private void CopyText(string text, string successMessage)
+	{
+		var clipboard = Application.IsRunning ? Application.Current.PlatformServices.Clipboard : null;
+		if (clipboard?.TrySetText(text) == true)
+		{
+			Toasts.Success(View, successMessage);
+		}
+		else
+		{
+			Toasts.Error(View, Strings.ClipboardUnavailable);
+		}
+	}
+
 	/// 读一份差异并打开浮层。工作区/暂存来自 git status，提交与分支比较来自历史读取；
 	/// 读取失败或没有差异时浮层显示说明而不是空卡片。
 	private void ShowDiff(GitDiffRequest request)
@@ -1177,12 +1985,12 @@ public sealed partial class GitView : IDisposable
 		switch (request.Kind)
 		{
 			case GitDiffKind.Staged:
-				diff = GitStatusReader.StagedDiff(_cwd(), path);
+				diff = GitStatusReader.StagedDiff(Repo(), path);
 				break;
 			case GitDiffKind.Commit:
 			{
 				var content = GitHistoryReader.CommitFileDiff(
-					_cwd(), request.CommitHash ?? string.Empty, request.BaseHash, path, request.OriginalPath);
+					Repo(), request.CommitHash ?? string.Empty, request.BaseHash, path, request.OriginalPath);
 				diff = content.Text;
 				error = content.Error;
 				break;
@@ -1190,19 +1998,35 @@ public sealed partial class GitView : IDisposable
 			case GitDiffKind.Compare:
 			{
 				var content = GitHistoryReader.CompareFileDiff(
-					_cwd(), request.BaseHash ?? string.Empty, request.TargetHash ?? string.Empty,
+					Repo(), request.BaseHash ?? string.Empty, request.TargetHash ?? string.Empty,
 					path, request.OriginalPath);
 				diff = content.Text;
 				error = content.Error;
 				break;
 			}
+			case GitDiffKind.WorkingTreeCompare:
+			{
+				if (request.Untracked)
+				{
+					// 未跟踪文件不在 git diff 里：与改动列表共用合成补丁。
+					diff = GitStatusReader.Diff(Repo(), path, untracked: true);
+				}
+				else
+				{
+					var content = GitHistoryReader.WorkingTreeFileDiff(Repo(), request.BaseHash ?? string.Empty, path);
+					diff = content.Text;
+					error = content.Error;
+				}
+
+				break;
+			}
 			default:
-				diff = GitStatusReader.Diff(_cwd(), path, request.Untracked);
+				diff = GitStatusReader.Diff(Repo(), path, request.Untracked);
 				break;
 		}
 
 		var (added, removed) = DiffStats.Count(diff);
-		var full = Path.IsPathRooted(path) ? path : Path.Combine(_cwd(), path);
+		var full = Path.IsPathRooted(path) ? path : Path.Combine(Repo(), path);
 		var fileName = Path.GetFileName(path);
 		var preview = new DiffPreviewContent(
 			fileName.Length > 0 ? fileName : path,
@@ -1213,10 +2037,10 @@ public sealed partial class GitView : IDisposable
 			diff,
 			error is not null ? Strings.GitDiffFailedReason(error) : diff.Length == 0 ? Strings.GitNoDiff : null,
 			IsError: error is not null,
-			// 提交/比较是历史内容，打开工作区文件会看错版本。
-			CanOpenFile: request.Kind is GitDiffKind.WorkingTree or GitDiffKind.Staged);
+			// 提交/分支比较是历史内容，打开工作区文件会看错版本；工作区范围看的就是当前文件。
+			CanOpenFile: request.Kind is GitDiffKind.WorkingTree or GitDiffKind.Staged or GitDiffKind.WorkingTreeCompare);
 		_lastDiffContent = preview;
-		_diffPreview.Show(View, preview, OpenInEditor);
+		_diffPreview.Show(View, preview, OpenInEditor, _quoteToComposer);
 	}
 
 	/// 最近一次交给浮层的差异内容；无窗口的测试用它核对读出的补丁与来源标记。
@@ -1283,21 +2107,31 @@ public sealed partial class GitView : IDisposable
 		var content = new StackPanel().Spacing(AppTheme.Space2)
 			.Padding(new Thickness(AppTheme.Space2, AppTheme.Space1, AppTheme.Space2, AppTheme.Space2));
 
-		content.Children(BuildAssistantSettingsRow());
-		content.Children(BuildStashSection());
-		if (!status.HasRemotes)
+		if (_worktreeEditorVisible)
 		{
-			content.Children(new TextBlock().Text(Strings.GitNoRemote)
-				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+			// 新建副本时「更多」只留这一块：默认 140 高的区里塞着 stash 与摘要设置时，
+			// 输入框和按钮会落到视口外，用户得先滚一遍才能填表。
+			content.Children(BuildWorktreeEditor());
+		}
+		else
+		{
+			content.Children(BuildAssistantSettingsRow());
+			content.Children(BuildStashSection());
+			content.Children(BuildWorktreeSection());
+			if (!status.HasRemotes)
+			{
+				content.Children(new TextBlock().Text(Strings.GitNoRemote)
+					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+			}
 		}
 
-		return new StackPanel().Spacing(0)
-			.Children(header, new ScrollViewer()
-				.SmoothScrolling()
-				.MaxHeight(_panes.More)
-				.Content(content)
-				.AutoVerticalScroll()
-				.NoHorizontalScroll());
+		var scroll = new ScrollViewer()
+			.SmoothScrolling()
+			.MaxHeight(_panes.More)
+			.Content(content)
+			.AutoVerticalScroll()
+			.NoHorizontalScroll();
+		return new StackPanel().Spacing(0).Children(header, scroll);
 	}
 
 	private UIElement BuildAssistantSettingsRow()
@@ -1328,18 +2162,18 @@ public sealed partial class GitView : IDisposable
 
 	private UIElement BuildStashSection()
 	{
-		var cwd = _cwd();
 		var section = new StackPanel().Spacing(2);
-		var push = ToolbarButton("package", Strings.GitStash, () => _ = RunGitAsync(() => GitWriter.StashPush(cwd), Strings.GitBusy));
+		var push = ToolbarButton("package", Strings.GitStash, () => _ = RunRepoGitAsync(GitWriter.StashPush, Strings.GitBusy));
 		push.IsEnabled = !_busy && !_generating;
 		section.Children(new DockPanel().LastChildFill().Children(push.DockRight(),
 			new TextBlock().Text(Strings.GitStashes).FontSize(AppTheme.FontSizeMicro)
 				.FontWeight(FontWeight.SemiBold).MutedText()));
 
-		var stashes = GitWriter.Stashes(cwd);
+		var stashes = _stashes;
 		if (stashes.Count == 0)
 		{
-			section.Children(new TextBlock().Text(Strings.GitStashEmpty)
+			section.Children(new TextBlock()
+				.Text(_moreLoading ? Strings.GitMoreLoading : Strings.GitStashEmpty)
 				.FontSize(AppTheme.FontSizeMicro).FaintText());
 			return section;
 		}
@@ -1347,11 +2181,13 @@ public sealed partial class GitView : IDisposable
 		foreach (var stash in stashes)
 		{
 			var captured = stash;
-			var pop = ToolbarButton("rotate-ccw", Strings.GitStashPop, () => _ = RunGitAsync(() => GitWriter.StashPop(cwd), Strings.GitBusy));
-			var drop = ToolbarButton("trash", Strings.GitStashResolved, () => _ = RunGitAsync(() => GitWriter.StashDrop(cwd, captured.Reference), Strings.GitBusy));
+			var apply = ToolbarButton("download", Strings.GitStashApply, () => _ = RunRepoGitAsync(repo => GitWriter.StashApply(repo, captured.Reference), Strings.GitBusy));
+			var pop = ToolbarButton("rotate-ccw", Strings.GitStashPop, () => _ = RunRepoGitAsync(repo => GitWriter.StashPop(repo, captured.Reference), Strings.GitBusy));
+			var drop = ToolbarButton("trash", Strings.GitStashResolved, () => _ = RunRepoGitAsync(repo => GitWriter.StashDrop(repo, captured.Reference), Strings.GitBusy));
+			apply.IsEnabled = !_busy && !_generating;
 			pop.IsEnabled = !_busy && !_generating;
 			drop.IsEnabled = !_busy && !_generating;
-			var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(1).Children(pop, drop);
+			var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(1).Children(apply, pop, drop);
 			section.Children(new DockPanel().LastChildFill().Children(actions.DockRight(),
 				new TextBlock()
 					.Text(captured.Description.Length > 0 ? captured.Description : captured.Reference)
@@ -1360,6 +2196,228 @@ public sealed partial class GitView : IDisposable
 		}
 
 		return section;
+	}
+
+	/// 隔离副本：子代理的 worktree、或者用户自己开给另一个人/另一个任务的目录。
+	/// 只许打开目录或删副本；分支保留，避免面板里一键删掉别人还在用的分支。
+	private UIElement BuildWorktreeSection()
+	{
+		var section = new StackPanel().Spacing(2);
+		var add = ToolbarButton("plus", Strings.GitWorktreeNew, () =>
+		{
+			// 编辑器在「更多」区里，先保证这一节展开并且放得下表单。
+			_panes = _panes.WithMore(Math.Max(_panes.More, WorktreeEditorMinBody), open: true);
+			_worktreeEditorVisible = true;
+			_focusWorktreeAfterBuild = true;
+			RebuildMore();
+		});
+		add.IsEnabled = !_busy && !_generating;
+		section.Children(new DockPanel().LastChildFill().Children(add.DockRight(),
+			new TextBlock().Text(Strings.GitWorktrees).FontSize(AppTheme.FontSizeMicro)
+				.FontWeight(FontWeight.SemiBold).MutedText()));
+
+		var linked = _worktrees.Where(static worktree => !worktree.IsMain).ToArray();
+		if (linked.Length == 0)
+		{
+			section.Children(new TextBlock()
+				.Text(_moreLoading ? Strings.GitMoreLoading : Strings.GitWorktreeNone)
+				.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap));
+			return section;
+		}
+
+		foreach (var worktree in linked)
+		{
+			var entry = worktree;
+			var missing = !Directory.Exists(entry.Path);
+			var label = entry.BranchName.Length > 0 ? entry.BranchName : Strings.GitWorktreeMain;
+			if (missing)
+			{
+				label += "（" + Strings.GitWorktreeMissing + "）";
+			}
+
+			var open = ToolbarButton("folder-open", Strings.GitWorktreeOpen, () => Shell.Open(entry.Path));
+			var remove = ToolbarButton("trash", Strings.GitWorktreeRemove, () => _ = RemoveWorktreeAsync(entry));
+			remove.IsEnabled = !_busy && !_generating;
+			var actions = new StackPanel().Orientation(Orientation.Horizontal).Spacing(1);
+			if (missing)
+			{
+				// 目录没了：打开/开会话都没意义，只留清掉 git 里的残留登记。
+				actions.Children(ToolbarButton(
+					"trash",
+					Strings.GitWorktreePrune,
+					() => _ = RunRepoGitAsync(GitWriter.WorktreePrune, Strings.GitBusy)));
+			}
+			else
+			{
+				if (_openSessionIn is { } openSessionIn)
+				{
+					// 隔离副本最常见的用途就是在里面另起一轮工作：省掉「先复制路径再开会话」。
+					actions.Children(ToolbarButton("message-square", Strings.GitWorktreeSession, () => openSessionIn(entry.Path)));
+				}
+
+				actions.Children(open, remove);
+			}
+
+			var body = new StackPanel().Spacing(0).Children(
+				new TextBlock().Text(label)
+					.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).MutedText()
+					.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis)
+					.HoverTip(entry.Path),
+				new TextBlock().Text(entry.Path)
+					.FontFamily(AppTheme.MonoFont).FontSize(AppTheme.FontSizeMicro).FaintText()
+					.TextWrapping(TextWrapping.NoWrap).TextTrimming(TextTrimming.CharacterEllipsis)
+					.HoverTip(entry.Path));
+
+			section.Children(new DockPanel().LastChildFill()
+				.Margin(new Thickness(0, 2, 0, 0))
+				.Children(actions.DockRight(), body));
+		}
+
+		return section;
+	}
+
+	/// 新建副本：分支名由用户输入，基线默认 HEAD。两个输入框都内嵌在「更多」区，
+	/// 建好后再点行尾的「在新会话中打开」把它交给一轮新工作。
+	private UIElement BuildWorktreeEditor()
+	{
+		TextBox? name = null;
+		TextBox? baseline = null;
+		name = new TextBox().PrimarySelection()
+			.Text(_worktreeDraft)
+			.Placeholder(Strings.GitWorktreeNamePlaceholder)
+			.Height(AppTheme.ControlHeightSm)
+			.FontSize(AppTheme.FontSizeCaption)
+			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0))
+			.StyleName(AppStyles.TextInputLine)
+			.OnTextChanged(value => _worktreeDraft = value)
+			.OnKeyDown(key => WorktreeEditorKey(key, name, baseline));
+		baseline = new TextBox().PrimarySelection()
+			.Text(_worktreeBaseDraft)
+			.Placeholder(Strings.GitWorktreeBasePlaceholder)
+			.Height(AppTheme.ControlHeightSm)
+			.FontSize(AppTheme.FontSizeCaption)
+			.Padding(new Thickness(AppTheme.Space2, 0, AppTheme.Space2, 0))
+			.StyleName(AppStyles.TextInputLine)
+			.OnTextChanged(value => _worktreeBaseDraft = value)
+			.OnKeyDown(key => WorktreeEditorKey(key, name, baseline));
+		_worktreeInput = name;
+
+		var create = new Button()
+			.Content(CenteredLabel(Strings.GitWorktreeCreate).PrimaryText())
+			.Height(AppTheme.ControlHeightSm)
+			.OnClick(() => CreateWorktree(name?.Text, baseline?.Text));
+		var cancel = new Button()
+			.Ghost()
+			.Height(AppTheme.ControlHeightSm)
+			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, 0))
+			.Content(new TextBlock().Text(Strings.Cancel).FontSize(AppTheme.FontSizeMicro).MutedText())
+			.OnClick(() =>
+			{
+				_worktreeEditorVisible = false;
+				RebuildMore();
+			});
+
+		// 基线输入与两个按钮同一行：面板宽 360 时也要能整块看见，不留第三行。
+		var actions = new Grid().Columns("*,auto,auto").Spacing(AppTheme.Space1)
+			.Children(baseline.Column(0), create.Column(1), cancel.Column(2));
+
+		return new Border()
+			.Padding(new Thickness(AppTheme.Space1, 0, AppTheme.Space1, AppTheme.Space1))
+			.Child(new StackPanel().Spacing(AppTheme.Space1).Children(
+				new TextBlock().Text(Strings.GitWorktreeNew)
+					.FontSize(AppTheme.FontSizeMicro).FontWeight(FontWeight.SemiBold).MutedText(),
+				new TextBlock().Text(Strings.GitWorktreeNewHint)
+					.FontSize(AppTheme.FontSizeMicro).FaintText().TextWrapping(TextWrapping.Wrap),
+				name,
+				actions));
+	}
+
+	private void WorktreeEditorKey(KeyEventArgs key, TextBox? name, TextBox? baseline)
+	{
+		if (key.Key == Key.Enter)
+		{
+			key.Handled = true;
+			CreateWorktree(name?.Text, baseline?.Text);
+		}
+		else if (key.Key == Key.Escape)
+		{
+			key.Handled = true;
+			_worktreeEditorVisible = false;
+			RebuildMore();
+		}
+	}
+
+	private void CreateWorktree(string? name, string? baseReference)
+	{
+		if (_busy || _generating || _disposed)
+		{
+			return;
+		}
+
+		var branch = name?.Trim() ?? string.Empty;
+		if (branch.Length == 0)
+		{
+			ApplyResult(GitResult.Failure(Strings.GitBranchNameInvalid));
+			return;
+		}
+
+		var reference = string.IsNullOrWhiteSpace(baseReference) ? "HEAD" : baseReference.Trim();
+		var repo = Repo();
+		_ = RunGitAsync(
+			() =>
+			{
+				var baseline = GitWriter.WorktreeBase(repo, reference);
+				if (!baseline.Ok)
+				{
+					return GitResult.Failure(Strings.GitWorktreeBaseMissing(reference), baseline.BaseCommit);
+				}
+
+				var root = _worktreeRoot();
+				Directory.CreateDirectory(root);
+				var path = Path.Combine(
+					root,
+					$"{SafeWorktreeName(Path.GetFileName(baseline.Repository))}-" +
+					$"{SafeWorktreeName(branch)}-{Guid.NewGuid().ToString("N")[..4]}");
+				return GitWriter.WorktreeAdd(baseline.Repository, path, branch, baseline.BaseCommit);
+			},
+			Strings.GitWorktreeCreateBusy,
+			onSuccess: () =>
+			{
+				_worktreeDraft = string.Empty;
+				_worktreeBaseDraft = string.Empty;
+				_worktreeEditorVisible = false;
+			});
+	}
+
+	/// 目录名只留字母数字与三个分隔符：分支名允许 `feature/x`、`v1.2` 这类形态。
+	private static string SafeWorktreeName(string value)
+	{
+		var builder = new System.Text.StringBuilder(value.Length);
+		foreach (var character in value)
+		{
+			builder.Append(char.IsLetterOrDigit(character) || character is '-' or '_' or '.' ? character : '-');
+		}
+
+		var trimmed = builder.ToString().Trim('-', '.');
+		return trimmed.Length == 0 ? "copy" : trimmed.Length <= 40 ? trimmed : trimmed[..40];
+	}
+
+	private async Task RemoveWorktreeAsync(GitWorktree worktree)
+	{
+		if (_disposed || _busy || _generating)
+		{
+			return;
+		}
+
+		var repository = Repo();
+		var path = worktree.Path;
+		await ConfirmRunAsync(
+			Strings.GitWorktreeRemoveConfirm(worktree.BranchName, path),
+			Strings.GitWorktreeRemoveDetail,
+			() => GitWriter.WorktreeRemoveOnly(repository, path),
+			Strings.GitBusy,
+			// 登记表只用于清理入口：副本自己删掉后不能再被当成孤儿重复处理。
+			onSuccess: () => WorktreeRegistry.Forget(path)).ConfigureAwait(true);
 	}
 
 
@@ -1377,7 +2435,7 @@ public sealed partial class GitView : IDisposable
 				AppIcons.Icon("git-branch", AppStyles.RoleSubtle, 22),
 				new TextBlock().Text(unavailable ? Strings.GitUnavailable : Strings.GitNotRepository)
 					.FontSize(AppTheme.FontSizeControl).FontWeight(FontWeight.SemiBold).PrimaryText(),
-				new TextBlock().Text(canInit ? Strings.GitNotRepositoryHint(_cwd()) : Strings.GitNotRepository)
+				new TextBlock().Text(canInit ? Strings.GitNotRepositoryHint(Repo()) : Strings.GitNotRepository)
 					.FontSize(AppTheme.FontSizeCaption).MutedText().TextWrapping(TextWrapping.Wrap));
 
 		if (canInit)
@@ -1388,7 +2446,7 @@ public sealed partial class GitView : IDisposable
 				.Height(AppTheme.ControlHeightMd)
 				.HorizontalAlignment(HorizontalAlignment.Left)
 				.Content(new TextBlock().Text(Strings.GitInit).FontSize(AppTheme.FontSizeCaption))
-				.OnClick(() => ApplyResult(GitWriter.Init(_cwd()))));
+				.OnClick(() => _ = RunRepoGitAsync(GitWriter.Init, Strings.GitBusy)));
 		}
 
 		// 「不是 Git 仓库」的原始 stderr 只是同一句话的 git 版，铺在空态里只会稀释下一步动作；
@@ -1413,6 +2471,7 @@ public sealed partial class GitView : IDisposable
 			_lastFailureDetail = null;
 			_branchesDirty = true;
 			_graphDirty = true;
+			_moreDirty = true;
 		}
 		else
 		{
@@ -1422,6 +2481,36 @@ public sealed partial class GitView : IDisposable
 		}
 
 		Refresh();
+	}
+
+	/// 确认后执行一次写操作：守卫、确认框、忙碌文案与收尾只写一遍。
+	/// 破坏性动作（放弃、删副本、提交级操作）都从这里过，避免各抄一份 25 行。
+	private async Task ConfirmRunAsync(
+		string message,
+		string detail,
+		Func<GitResult> action,
+		string busyMessage,
+		Action? onSuccess = null)
+	{
+		if (_disposed || _busy || _generating)
+		{
+			return;
+		}
+
+		if (!await _confirm(message, detail).ConfigureAwait(true))
+		{
+			return;
+		}
+
+		await RunGitAsync(action, busyMessage, onSuccess).ConfigureAwait(true);
+	}
+
+	/// 把动作钉在点击那一刻的仓库上：确认框、后台线程与切换仓库都不改变它的目标。
+	/// 返回的 Task 与 <see cref="RunGitAsync"/> 语义一致。
+	private Task RunRepoGitAsync(Func<string, GitResult> action, string busyMessage, Action? onSuccess = null)
+	{
+		var repo = Repo();
+		return RunGitAsync(() => action(repo), busyMessage, onSuccess);
 	}
 
 	private async Task RunGitAsync(Func<GitResult> action, string busyMessage, Action? onSuccess = null)
@@ -1524,14 +2613,14 @@ public sealed partial class GitView : IDisposable
 			return;
 		}
 
-		var status = GitStatusReader.Read(_cwd());
+		var status = GitStatusReader.Read(Repo());
 		if (!status.Changes.Any(static change => change.HasStaged && !change.IsConflict))
 		{
 			SetSummaryFailure(GitSummaryFailure.EmptyDiff, Strings.GitStageBeforeGenerate);
 			return;
 		}
 
-		var diff = GitStatusReader.StagedDiffAll(_cwd(), GitCommitMessage.MaxDiffCharacters);
+		var diff = GitStatusReader.StagedDiffAll(Repo(), GitCommitMessage.MaxDiffCharacters);
 		if (!diff.Ok)
 		{
 			// 读 diff 失败（cwd 失效 / 仓库损坏 / git 超时）不能当成「空暂存区」：
@@ -1721,7 +2810,7 @@ public sealed partial class GitView : IDisposable
 
 	private void OpenInEditor(string path)
 	{
-		var full = Path.IsPathRooted(path) ? path : Path.Combine(_cwd(), path);
+		var full = Path.IsPathRooted(path) ? path : Path.Combine(Repo(), path);
 		if (!File.Exists(full))
 		{
 			Toasts.Error(View, Strings.FileMissing(full));
@@ -1905,7 +2994,7 @@ public sealed partial class GitView : IDisposable
 	{
 		try
 		{
-			DesktopPreference.Load().WithGitPanes(_cwd(), _panes.Encode()).Save();
+			DesktopPreference.Load().WithGitPanes(Repo(), _panes.Encode()).Save();
 		}
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 		{
@@ -1952,10 +3041,11 @@ public sealed partial class GitView : IDisposable
 	private static Button GlyphButton(GlyphKind kind, string tooltip, Action action)
 	{
 		var glyph = ThemedGlyph(kind, AppStyles.RoleSubtle, 3);
+		// 与 RowIconButton 同尺寸：同一行里两颗动作键差 2 DIP 会显得一高一低。
 		return new Button()
 			.Ghost()
-			.Width(24)
-			.Height(24)
+			.Width(22)
+			.Height(22)
 			.Padding(0)
 			.Content(glyph)
 			.OnClick(action)
@@ -1991,6 +3081,12 @@ public sealed partial class GitView : IDisposable
 		SavePanes();
 	}
 
+	/// 仅供 --ui-smoke git-compare-lens：切到某一审查层，截图核对 .gitattributes 覆盖与筛选结果。
+	internal void SetCompareLensForSmoke(GitReviewLayer layer) => SelectCompareLens(layer);
+
+	/// 仅供 --ui-smoke git-commit：展开图里第一条提交，截图核对复制/操作菜单的入口。
+	internal void ExpandFirstCommitForSmoke() => ExpandFirstCommitForTests();
+
 	/// 展开图里第一条提交：用例靠它核对大提交的文件列表是否分页。
 	internal void ExpandFirstCommitForTests()
 	{
@@ -2013,6 +3109,24 @@ public sealed partial class GitView : IDisposable
 
 	internal double GraphScrollOffsetForTests => _graphScroll.VerticalOffset;
 
+	/// 仅供 --ui-smoke git-worktree：展开「更多」并打开新建副本编辑器，带一份草稿。
+	internal void OpenWorktreeEditorForSmoke()
+	{
+		_panes = _panes.WithMore(_panes.More, open: true);
+		_worktreeEditorVisible = true;
+		_worktreeDraft = "review/team-copy";
+		_worktreeBaseDraft = "HEAD";
+		RebuildMore();
+	}
+
+	/// 展开「更多」区：stash 与隔离副本的渲染用例从这里进。
+	internal void OpenMorePaneForTests()
+	{
+		_panes = _panes.WithMore(_panes.More, open: true);
+		RebuildMore();
+		ApplyPaneHeights();
+	}
+
 	/// 把比较节设成给定正文高度并展开：用例核对最小高度下限与内容裁剪。
 	internal void SetCompareHeightForTests(double body)
 	{
@@ -2023,12 +3137,48 @@ public sealed partial class GitView : IDisposable
 
 	internal double ComparePaneHeightForTests => _compareHost.Height;
 
+	/// 测试用：扫描结果、当前仓库与切仓库（绕过下拉事件）。
+	internal IReadOnlyList<GitRepository> RepositoriesForTests => _repos;
+
+	/// 面板当前操作的仓库；右侧「检查点」分节跟随它，才能找回子仓库里的快照。
+	internal string CurrentRepositoryPath => Repo();
+
+	internal string CurrentRepositoryForTests => Repo();
+
+	internal string CurrentBranchForTests => _lastStatus?.Branch ?? string.Empty;
+
+	internal void SelectRepositoryForTests(string path) => SelectRepository(path);
+
+	/// 测试用：直接切审查层（绕过下拉事件）。
+	internal void SetCompareLensForTests(GitReviewLayer layer) => SelectCompareLens(layer);
+
+	internal int CompareVisibleCountForTests => _compareVisibleFiles.Count;
+
 	/// 直接跑一次分支比较：绕过下拉选择，用例只关心结果行的分页。
 	internal void CompareBranchesForTests(string baseRef, string targetRef)
 	{
 		_panes = _panes.WithCompare(_panes.Compare, true);
 		_compareBase = baseRef;
 		_compareTarget = targetRef;
+		RunCompare();
+	}
+
+	/// 直接跑一次「工作区 vs 分叉点」：绕过下拉与异步加载，用例只关心结果行。
+	internal void CompareWorkingTreeForTests(string baseRef)
+	{
+		_panes = _panes.WithCompare(_panes.Compare, true);
+		_compareBase = baseRef;
+		_compareTarget = GitHistoryReader.WorktreeTarget;
+		RunCompare();
+	}
+
+	/// 仅供 --ui-smoke git-compare：展开比较节并跑一次工作区范围，供截图核对下拉与结果行。
+	internal void OpenWorktreeCompareForSmoke(string baseRef)
+	{
+		_panes = _panes.WithCompare(Math.Max(_panes.Compare, 260), true);
+		_compareBase = baseRef;
+		_compareTarget = GitHistoryReader.WorktreeTarget;
+		RebuildCompare();
 		RunCompare();
 	}
 
@@ -2060,7 +3210,7 @@ public sealed partial class GitView : IDisposable
 
 	public void SelectFirstChangeForSmoke()
 	{
-		var status = GitStatusReader.Read(_cwd());
+		var status = GitStatusReader.Read(Repo());
 		if (status.Changes.FirstOrDefault() is { } first)
 		{
 			var untracked = first.IndexStatus == "?" && first.WorkTreeStatus == "?";
@@ -2089,5 +3239,7 @@ public sealed partial class GitView : IDisposable
 		_summaryAbort = null;
 		_summaryTimer.Stop();
 		_summaryTimer.Dispose();
+		_pollTimer.Stop();
+		_pollTimer.Dispose();
 	}
 }
